@@ -1,0 +1,145 @@
+use super::regs::*;
+use crate::signal::{SigSet, SignalStack};
+use core::fmt::Debug;
+use loongArch64::register::prmd;
+#[repr(C)]
+#[derive(Default, Debug, Clone, Copy)]
+pub struct MachineContext {
+    gp: GeneralRegs,
+    fp: FloatRegs,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UserContext {
+    pub flags: usize,
+    pub link: usize,
+    pub stack: SignalStack,
+    pub sigmask: SigSet,
+    pub __pad: [u8; 128],
+    pub mcontext: MachineContext,
+}
+
+impl UserContext {
+    pub const PADDING_SIZE: usize = 128;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+/// The trap cotext containing the user context and the supervisor level
+pub struct TrapContext {
+    /// The registers to be preserved.
+    gp: GeneralRegs,
+    fp: FloatRegs,
+    /// A copy of register a0, useful when we need to restart syscall
+    pub origin_a0: usize,
+    /// Privilege level of the trap context
+    sstatus: prmd::Prmd,
+    /// The current sp to be recovered on next entry into kernel space.
+    pub kernel_stack: usize,
+}
+impl TrapContext {
+    pub fn app_init_context(entry: usize, sp: usize, kernel_sp: usize) -> Self {
+        let pr_md = prmd::read();
+        let mut cx = Self {
+            gp: GeneralRegs::default(),
+            fp: FloatRegs::default(),
+            origin_a0: 0,
+            sstatus: pr_md,
+            kernel_stack: kernel_sp,
+        };
+        cx.gp.pc = entry;
+        cx.set_sp(sp);
+        cx
+    }
+    pub fn as_mctx(&self) -> MachineContext {
+        MachineContext {
+            gp: self.gp,
+            fp: self.fp,
+        }
+    }
+    pub fn copy_from_mctx(&mut self, mctx: MachineContext) {
+        self.gp = mctx.gp;
+        self.fp = mctx.fp;
+    }
+    pub fn get_syscall_id(&self) -> usize {
+        self.gp.a7
+    }
+
+    pub fn get_syscall_args(&self) -> [usize; 6] {
+        [
+            self.gp.a0, self.gp.a1, self.gp.a2, self.gp.a3, self.gp.a4, self.gp.a5,
+        ]
+    }
+    pub fn get_a0(&self) -> usize {
+        self.gp.a0
+    }
+
+    pub fn set_a0(&mut self, val: usize) {
+        self.gp.a0 = val;
+    }
+
+    pub fn get_a1(&self) -> usize {
+        self.gp.a1
+    }
+
+    pub fn set_a1(&mut self, val: usize) {
+        self.gp.a1 = val;
+    }
+
+    pub fn get_a2(&self) -> usize {
+        self.gp.a2
+    }
+
+    pub fn set_a2(&mut self, val: usize) {
+        self.gp.a2 = val;
+    }
+
+    pub fn get_sepc(&self) -> usize {
+        self.gp.pc
+    }
+
+    pub fn set_sepc(&mut self, val: usize) {
+        self.gp.pc = val
+    }
+
+    pub fn sepc_step(&mut self, val: isize) {
+        self.gp.pc += val as usize
+    }
+
+    pub fn get_sp(&self) -> usize {
+        self.gp.sp
+    }
+
+    pub fn set_sp(&mut self, sp: usize) {
+        self.gp.sp = sp;
+    }
+
+    pub fn get_tp(&self) -> usize {
+        self.gp.tp
+    }
+
+    pub fn set_tp(&mut self, tp: usize) {
+        self.gp.tp = tp;
+    }
+
+    pub fn get_ra(&self) -> usize {
+        self.gp.ra
+    }
+
+    pub fn set_ra(&mut self, ra: usize) {
+        self.gp.ra = ra;
+    }
+}
+
+impl Debug for TrapContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TrapContext")
+            .field("gp", &self.gp)
+            .field("fp", &self.fp)
+            .field("origin_a0", &self.origin_a0)
+            // .field("sstatus", &self.sstatus)
+            .field("kernel_sp", &format_args!("{:#x}", self.kernel_stack))
+            .finish()
+    }
+}

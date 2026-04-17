@@ -1,7 +1,14 @@
 [package]
 name = "os"
 version = "0.1.0"
-edition = "2024"
+authors = [
+    "Maoyang Zheng <925349624@qq.com>",
+    "Zheyu Weng <windflower_weng@qq.com>",
+    "Chenhao Zhang <934111946@qq.com>",
+]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 riscv = { git = "https://github.com/rcore-os/riscv", features = ["inline-asm"], optional = true }
@@ -20,6 +27,10 @@ loongArch64 = { git = "https://github.com/Godones/loongArch64", optional = true 
 
 [build-dependencies]
 cfg-if = { version = "1.0.0" }
+
+# 这里将os中所有使用到cty的库重定向为修改过的cty（只有lwext4_rust需要cty）
+[patch.crates-io]
+cty = { path = "../cty" }   # TODO: 明晃晃地放在外面是不是不太好
 
 [features]
 # default = ["loongarch64"]
@@ -41,3 +52,5 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+
+
