@@ -7,7 +7,9 @@ ARCH := riscv64
 
 TARGET := riscv64gc-unknown-none-elf
 
-DISK_IMG := ./2025_testsuits_img/pre-2025/sdcard-rv.img
+# DISK_IMG := ./2026_testsuits_img/pre_tests/sdcard-rv.img
+DISK_IMG := ./2026_testsuits_img/individual_tests/sdcard-rvbasic.img
+
 
 KERNEL_ELF := $(PROJECT_ROOT)/os/target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := kernel-rv

@@ -18,7 +18,7 @@ compile_commands.json
 build-musl-generic
 kernel-rv
 kernel-la
-/2025_testsuits_img
+/2026_testsuits_img
 
 *.dtb
 *.dts
