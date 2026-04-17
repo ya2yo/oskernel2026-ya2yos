@@ -15,6 +15,7 @@ fat32.img
 ext4.img
 compile_commands.json
 *.a
+!os/vendor/**
 build-musl-generic
 kernel-rv
 kernel-la
