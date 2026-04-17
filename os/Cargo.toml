@@ -4,3 +4,40 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+riscv = { git = "https://github.com/rcore-os/riscv", features = ["inline-asm"], optional = true }
+sbi-rt = { version = "0.0.2", features = ["legacy"], optional = true }
+buddy_system_allocator = "0.6"
+bitflags = "1.2.1"
+xmas-elf = "0.7.0"
+virtio-drivers= { version="0.2.0" }
+lwext4_rust= {path = "../lwext4_rust"}
+log = "0.4"
+spin = "0.9.8"
+hashbrown = "0.12.0"
+num_enum = { version = "0.7.2", default-features = false }
+cfg-if = { version = "1.0.0" }
+loongArch64 = { git = "https://github.com/Godones/loongArch64", optional = true }
+
+[build-dependencies]
+cfg-if = { version = "1.0.0" }
+
+[features]
+# default = ["loongarch64"]
+# default = ["riscv64"]
+# 级别相关定义在./os/src/logger.rs
+error = []          # 启用 error 级别
+warn = []           # 启用 warn 级别
+info = []           # 启用 info 级别
+debug = []          # 启用 debug 级别
+trace = []          # 启用 trace 级别
+# 定义和架构相关的条件编译
+riscv64 = ["riscv", "sbi-rt"]  # 列表中的库，表示如果启用这个feature则加载这些库
+loongarch64 = ["loongArch64"]
+
+[profile.release]
+# 在 release 模式下也保留调试信息，用于gdb等调试
+debug = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

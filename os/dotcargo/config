@@ -1,0 +1,31 @@
+[build]
+target = "riscv64gc-unknown-none-elf"
+
+[target.riscv64gc-unknown-none-elf]
+# TODO: 这里的链接文件？
+rustflags = [
+    "-Clink-arg=-Tsrc/linker-qemu.ld", "-Cforce-frame-pointers=yes"
+]
+
+[target.loongarch64-unknown-none]
+rustflags = [
+    "-Clink-arg=-Tsrc/arch/loongarch64/qemu/linker.ld", "-Cforce-frame-pointers=yes",
+    "-Clink-arg=-nostdlib",
+    "-Clink-arg=-static",
+    "-Cpanic=abort"
+]
+linker = "loongarch64-linux-gnu-gcc"
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/rcore-os/riscv"]
+git = "https://github.com/rcore-os/riscv"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/Godones/loongArch64"]
+git = "https://github.com/Godones/loongArch64"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
