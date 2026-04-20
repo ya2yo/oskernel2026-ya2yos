@@ -1,688 +1,522 @@
-use core::{fmt::UpperExp, future::Future, net::SocketAddr, sync::atomic::{AtomicBool, AtomicU8, Ordering}, time::{self, Duration}};
-
-use crate::{ net::addr::LOCAL_IPV4, sync::{mutex::SpinNoIrqLock, UPSafeCell}, syscall::{sys_error::SysError, SysResult}, task::current_task, timer::{ffi::TimeSpec, get_current_time, get_current_time_duration, timed_task::ksleep}, utils::{get_waker, suspend_now, yield_now}};
-
-use super::{addr::{ ZERO_IPV4_ADDR, ZERO_IPV4_ENDPOINT}, get_ephemeral_port, listen_table::ListenTable, socket::{PollState, Sock}, NetPollTimer, SocketSetWrapper, ETH0, LISTEN_TABLE, PORT_END, PORT_START, RCV_SHUTDOWN, SEND_SHUTDOWN, SHUTDOWN_MASK, SHUTRD, SHUTRDWR, SHUTWR, SOCKET_SET, SOCK_RAND_SEED, TCP_TX_BUF_LEN};
-use alloc::vec::Vec;
-use fatfs::warn;
-use hal::println;
-use smoltcp::{
-    iface::{SocketHandle, SocketSet},
-    socket::tcp::{self, ConnectError, State},
-    wire::{IpAddress, IpEndpoint, IpListenEndpoint},
+use alloc::vec;
+use core::{
+    net::{Ipv4Addr, SocketAddr},
+    sync::atomic::{AtomicBool, Ordering},
+    task::Context,
 };
-use spin::Spin;
-use super::socket::SockResult;
-use rand::{Rng, SeedableRng};
-use rand::rngs::SmallRng;
-use rand::RngCore;
-use log::info;
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum SocketState {
-    /// Socket is not working
-    Closed = 0,
-    /// Socket is waiting for connection
-    Busy = 1,
-    /// Socket is connecting(for user socket)
-    Connecting = 2,
-    /// Socket is connected(for user socket)
-    Connected = 3,
-    /// Socket is listening(for server socket)
-    Listening = 4,
+use crate::utils::{SysErrNo,SysResult};
+use axio::prelude::*;
+use axpoll::{IoEvents, PollSet, Pollable};
+use axsync::Mutex;
+use smoltcp::{
+    iface::SocketHandle,
+    socket::tcp as smol,
+    time::Duration,
+    wire::{IpEndpoint, IpListenEndpoint},
+};
+
+use crate::{
+    LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx,
+    SocketOps,
+    consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
+    general::GeneralOptions,
+    get_service,
+    options::{Configurable, GetSocketOption, SetSocketOption},
+    poll_interfaces,
+    state::*,
+};
+
+pub(crate) fn new_tcp_socket() -> smol::Socket<'static> {
+    smol::Socket::new(
+        smol::SocketBuffer::new(vec![0; TCP_RX_BUF_LEN]),
+        smol::SocketBuffer::new(vec![0; TCP_TX_BUF_LEN]),
+    )
 }
 
-impl From<u8> for SocketState {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => SocketState::Closed,
-            1 => SocketState::Busy,
-            2 => SocketState::Connecting,
-            3 => SocketState::Connected,
-            4 => SocketState::Listening,
-            _ => panic!("Invalid SocketState value"),
-        }
-    }
-}
-/// TCP Socket
+/// A TCP socket that provides POSIX-like APIs.
 pub struct TcpSocket {
-    /// socket state
-    state: AtomicU8,
-    /// socket handle
-    handle: UPSafeCell<Option<SocketHandle>>,
-    /// local endpoint
-    local_endpoint: UPSafeCell<Option<IpEndpoint>>,
-    /// remote endpoint
-    remote_endpoint: UPSafeCell<Option<IpEndpoint>>,
-    /// whether in non=blokcing mode
-    nonblock_flag: AtomicBool,
-    /// shutdown flag
-    shutdown_flag: UPSafeCell<u8>,
-    /// reuse addr flag
-    reuse_addr_flag: AtomicBool,
-    /// timeout flag
-    pub timeout: SpinNoIrqLock<Option<TimeSpec>>,
+    state: StateLock,
+    handle: SocketHandle,
+
+    general: GeneralOptions,
+    rx_closed: AtomicBool,
+    poll_rx_closed: PollSet,
 }
 
-unsafe impl Send for TcpSocket {}
 unsafe impl Sync for TcpSocket {}
 
 impl TcpSocket {
-    /// new a TcpSocket without a socket handle (Still not get in the SocketSet)
-    pub const fn new_v4_without_handle() -> Self {
+    /// Creates a new TCP socket.
+    pub fn new() -> Self {
         Self {
-            state: AtomicU8::new(SocketState::Closed as u8),
-            handle: UPSafeCell::const_new(None),
-            local_endpoint: UPSafeCell::const_new(Some(ZERO_IPV4_ENDPOINT)),
-            remote_endpoint: UPSafeCell::const_new(Some(ZERO_IPV4_ENDPOINT)),
-            nonblock_flag: AtomicBool::new(false),
-            shutdown_flag: UPSafeCell::const_new(0),
-            reuse_addr_flag: AtomicBool::new(false),
-            timeout: SpinNoIrqLock::new(None),
+            state: StateLock::new(State::Idle),
+            handle: SOCKET_SET.add(new_tcp_socket()),
+
+            general: GeneralOptions::new(),
+            rx_closed: AtomicBool::new(false),
+            poll_rx_closed: PollSet::new(),
         }
-    }
-    /// create a TcpSocket with a socket handle
-    pub const fn new_v4_connected(handle: SocketHandle, local_endpoint: IpEndpoint, remote_endpoint: IpEndpoint) -> Self {
-        Self {
-            state: AtomicU8::new(SocketState::Connected as u8),
-            handle: UPSafeCell::const_new(Some(handle)),
-            local_endpoint: UPSafeCell::const_new(Some(local_endpoint)),
-            remote_endpoint: UPSafeCell::const_new(Some(remote_endpoint)),
-            nonblock_flag: AtomicBool::new(false),
-            shutdown_flag: UPSafeCell::const_new(0),
-            reuse_addr_flag: AtomicBool::new(false),
-            timeout: SpinNoIrqLock::new(None),
-        }
-    }
-    /// get the socket state
-    pub fn state(&self) -> SocketState {
-        self.state.load(Ordering::SeqCst).into()
-    }
-    /// set the socket state
-    pub fn set_state(&self, state: u8) {
-        self.state.store(state, Ordering::SeqCst)
-    }
-    pub fn update_state<F, T>(&self, expect_state: SocketState, new_state: SocketState, f: F) -> Result<SockResult<T>, u8>
-    where 
-        F: FnOnce() -> SockResult<T>,
-    {
-        match self.state
-        .compare_exchange(expect_state as u8, SocketState::Busy as u8, Ordering::Acquire, Ordering::Acquire)
-        {
-            Ok(_) => {
-                let res = f();
-                if res.is_ok() {
-                    self.set_state(new_state as u8);
-                }else {
-                    self.set_state(expect_state as u8);
-                }
-                Ok(res)
-            }
-            Err(actual_state) => {Err(actual_state as u8)}
-        }
-    }
-    /// get the socket handle mut ref
-    pub fn mut_handle(&self) -> Option<&mut SocketHandle> {
-        self.handle.exclusive_access().as_mut()
-    }
-    /// get the socket handle ref
-    pub fn handle(&self) -> Option<SocketHandle> {
-        unsafe{
-            self.handle.get().read()
-        }
-    }
-    /// set the socket handle
-    pub fn set_handle(&self, handle: SocketHandle) {
-        unsafe {
-            self.handle.get().write(Some(handle));
-        }
-    }
-    /// get the local endpoint ref
-    pub fn local_endpoint(&self) -> Option<IpEndpoint> {
-        unsafe{
-            self.local_endpoint.get().read()
-        }
-    }
-    /// set the local endpoint
-    pub fn set_local_endpoint(&self, endpoint: IpEndpoint) {
-        unsafe{
-            self.local_endpoint.get().write(Some(endpoint));
-        }
-    }
-    pub fn set_local_endpoint_with_port(&self, port: u16) {
-        let inner_endpoint = self.local_endpoint.exclusive_access().clone().unwrap();
-        let addr = inner_endpoint.addr;
-        unsafe {
-            self.local_endpoint.get().write(Some(IpEndpoint::new(addr, port)));
-        }
-    }
-    /// get the remote endpoint ref
-    pub fn remote_endpoint(&self) -> Option<IpEndpoint> {
-        unsafe {
-            self.remote_endpoint.get().read()
-        }
-    }
-    /// set the remote endpoint
-    pub fn set_remote_endpoint(&self, endpoint: IpEndpoint) {
-        unsafe{
-            self.remote_endpoint.get().write(Some(endpoint));
-        }
-    }
-    /// set non-blocking mode
-    pub fn set_nonblock(&self, nonblock: bool) {
-        self.nonblock_flag.store(nonblock, Ordering::SeqCst)
-    }
-    /// get non-blocking mode
-    pub fn nonblock(&self) -> bool {
-        self.nonblock_flag.load(Ordering::SeqCst)
-    }
-    /// get shutdown flag
-    pub fn get_shutdown(&self) -> u8 {
-        self.shutdown_flag.exclusive_access().clone()
-    }
-    /// set shutdown flag
-    pub fn set_shutdown(&self, flag: u8) {
-        unsafe {
-            self.shutdown_flag.get().write(flag)
-        }
-    }
-    /// get reuse_addr_flag
-    pub fn get_reuse_addr(&self) -> bool {
-        self.reuse_addr_flag.load(Ordering::Acquire)
     }
 
-    /// set reuse_addr_flag
-    pub fn set_reuse_addr(&self, reuse_flag: bool) {
-        self.reuse_addr_flag.store(reuse_flag, Ordering::Release)
-    }
+    /// Creates a new TCP socket that is already connected.
+    fn new_connected(handle: SocketHandle) -> Self {
+        let result = Self {
+            state: StateLock::new(State::Connected),
+            handle,
 
-    /// get timeout
-    pub fn get_timeout(&self) -> Option<TimeSpec> {
-        *self.timeout.lock()
-    }
-    /// set timeout
-    pub fn set_timeout(&self, timeout: Option<TimeSpec>) {
-        *self.timeout.lock() = timeout;
+            general: GeneralOptions::new(),
+            rx_closed: AtomicBool::new(false),
+            poll_rx_closed: PollSet::new(),
+        };
+        result.with_smol_socket(|socket| {
+            result
+                .general
+                .set_device_mask(get_service().device_mask_for(&socket.get_bound_endpoint()));
+        });
+        result
     }
 }
 
-impl TcpSocket {
-    pub async fn connect(&self, addr: IpEndpoint) ->SockResult<()>{
-        // first yield now 
-        yield_now().await;
-        // now change the state to connecting , wait for poll connect event
-        self.update_state(SocketState::Closed, SocketState::Connecting, ||{
-            let handle = self.handle().unwrap_or_else(||SOCKET_SET.add_socket(SocketSetWrapper::new_tcp_socket()));
-            let robust_endpoint = self.robost_port_endpoint()?;
-            let (local_endpoint, remote_endpoint) = SOCKET_SET.with_socket_mut::<tcp::Socket, _, _>(handle, |socket|{
-                socket.connect(ETH0.get().unwrap().iface.lock().context(),addr,robust_endpoint)
-                .or_else(|e| match e {
-                    ConnectError::InvalidState => {
-                        log::warn!("[TcpSocket::connect] failed: InvalidState");
-                        Err(SysError::EBADF)
-                    }
-                    ConnectError::Unaddressable => {
-                        log::warn!("[TcpSocket::connect] failed: Unaddressable");
-                        Err(SysError::EADDRNOTAVAIL)
-                    }
-                })?;
-                Ok((socket.local_endpoint(), socket.remote_endpoint()))
-            })?;
-            self.set_local_endpoint(local_endpoint.unwrap());
-            self.set_remote_endpoint(remote_endpoint.unwrap());
-            self.set_handle(handle);
-            // log::info!("[TCP CONNCECT], local_endpoint_port: {}, remote_endpoint_port:{}", self.local_endpoint().port,self.remote_endpoint().port);
-            Ok(())
-        }).unwrap_or_else(|_|{
-            log::warn!("[TcpSocket::connect] failed to connect for alreay connected socket");
-            Err(SysError::EEXIST)
-        })?;
-        
-        // up to now the state is connecting, wait for poll connect event
-        if self.nonblock() {
-            Err(SysError::EINPROGRESS)
-        }else {
-            self.block_on_future(|| async {
-                let connection_info = self.poll_connect().await;
-                if !connection_info {
-                    log::warn!("[TcpSocket::connect] try agian");
-                    Err(SysError::EAGAIN)
-                }else if self.state() == SocketState::Connected {
-                    Ok(())
-                }else {
-                    log::warn!("[TcpSocket::connect] connection refused");
-                    Err(SysError::ECONNREFUSED)
-                }
-            }).await
-        }
-    }
-    
-    pub fn bind(&self, mut new_endpoint: IpEndpoint) -> SockResult<()>  {
-        // log::info!("[TcpSocket::bind] start to bind");
-        self.update_state(SocketState::Closed, SocketState::Closed,||{
-            // info!("new end point port {}", new_endpoint.port);
-            if new_endpoint.port == 0 {
-                let port = get_ephemeral_port()?;
-                new_endpoint.port = port;
-                // info!("[TcpSocket::bind] local port is 0, use port {}",port);
-            }
-            let old = unsafe {
-                self.local_endpoint.get().read().unwrap()
-            };
-            if old != ZERO_IPV4_ENDPOINT {
-                // already bind
-                return Err(SysError::EINVAL); 
-            }
-            if let IpAddress::Ipv6(v6) = new_endpoint.addr {
-                if v6.is_unspecified() {
-                    // change unspecified v6 address to v4 address
-                    new_endpoint.addr = ZERO_IPV4_ADDR;
-                }
-            }  
-            self.set_local_endpoint(new_endpoint);
-            // info!("now self local endpoint port {}",unsafe {
-            //     self.local_endpoint.get().read().unwrap().port
-            // });
-            Ok(())
-        })
-        .unwrap_or_else(|_|{
-            info!("[TcpSocket::bind] failed to bind");
-            Err(SysError::EINVAL)
-        })
-    }
-    
-    pub fn listen(&self) -> SockResult<()> {
-        let waker = current_task().unwrap().waker_ref().as_ref().unwrap();
-        self.update_state(SocketState::Closed, SocketState::Listening, ||{
-            let inner_endpoint = self.robost_port_endpoint()?;
-            self.set_local_endpoint_with_port(inner_endpoint.port);
-            LISTEN_TABLE.listen(inner_endpoint, waker)?;
-            // info!("[TcpSocket::listen] listening on endpoint which addr is {}, port is {}", inner_endpoint.addr.unwrap(),inner_endpoint.port);
-            Ok(())
-        }).unwrap_or_else(|_| {
-            Ok(())
-        })
-    }
-    
-    pub fn set_nonblocking(&self) {
-        self.set_nonblock(true);
-    }
-    
-    pub fn peer_addr(&self) -> SockResult<IpEndpoint> {
-        match self.state() {
-            SocketState::Connected | SocketState::Listening => {
-                let remote_endpoint = self.remote_endpoint().unwrap();
-                Ok(remote_endpoint)
-            }
-            _ => Err(SysError::ENOTCONN),
-        }
-    }
-    
-    pub fn local_addr(&self) -> SockResult<IpEndpoint> {
-        match self.state() {
-            SocketState::Connected | SocketState::Listening | SocketState::Closed => {
-                let local_endpoint = self.local_endpoint().unwrap();
-                Ok(local_endpoint)
-            }
-            _ => Err(SysError::ENOTCONN),
-        }
-    }
-    
-    pub async fn send(&self, data: &[u8], _remote_addr: Option<IpEndpoint>) -> SockResult<usize> {
-        let shutdown = self.get_shutdown();
-        if shutdown & SEND_SHUTDOWN != 0 {
-            log::warn!("[TcpSocket::send] shutdown&SEND_SHUTDOWN != 0, return 0");
-            return Ok(0);
-        }
-        if self.state() == SocketState::Connecting {
-            return Err(SysError::EAGAIN);
-        }else if self.state() != SocketState::Connected && shutdown == 0 {
-            return Err(SysError::ENOTCONN);
-        }else {
-            let handle = self.handle().unwrap();
-            let waker = get_waker().await;
-            let ret = self.block_on(|| {
-                SOCKET_SET.with_socket_mut::<tcp::Socket,_,_>( handle, |socket| {
-                    if !socket.is_active() || !socket.may_send() {
-                        return Err(SysError::ECONNRESET);
-                    }else if socket.can_send() {
-                        let len = socket.send_slice(data).map_err(|_| {
-                            log::warn!("send error beacuse of EBADF");
-                            SysError::EBADF
-                        })?;
-                        Ok(len)
-                    }else {
-                         // tx buffer is full
-                        log::info!("[TcpSocket::send] handle{handle} send buffer is full, register waker and suspend");
-                        socket.register_send_waker(&waker);
-                        Err(SysError::EAGAIN)
-                    }
-                })
-            }).await;
-            if let Ok(bytes) = ret {
-                if bytes > TCP_TX_BUF_LEN / 2 {
-                    ksleep(Duration::from_millis(2)).await;
-                } else {
-                    yield_now().await;
-                }
-            }
-            SOCKET_SET.poll_interfaces();
-            ret
-        }
-    }
-    
-    pub async fn recv(&self, data: &mut [u8]) -> SockResult<(usize, IpEndpoint)> {
-        let shutdown = self.get_shutdown();
-        let mut has_timeout_flag= (false, get_current_time_duration());
-        match self.get_timeout() {
-            Some(timeout) => {
-                has_timeout_flag.0 = true;
-                has_timeout_flag.1 += timeout.into();
-            }
-            None => {}
-        }
-        if shutdown & RCV_SHUTDOWN != 0 {
-            info!("[tcp socket] shutdown&RCV_SHUTDOWN != 0, return 0");
-            let peer_addr = self.peer_addr()?;
-            return Ok((0, peer_addr));
-        }
-        if self.state() == SocketState::Connecting {
-            return Err(SysError::EAGAIN);
-        }
-        else if self.state() != SocketState::Connected && shutdown == 0 {
-            return Err(SysError::ENOTCONN);
-        }
-        else {
-            let peer_addr = self.peer_addr()?;
-            let handle = self.handle().unwrap();
-            let waker = get_waker().await;
-            self.block_on(|| {
-                SOCKET_SET.with_socket_mut::<tcp::Socket,_,_>(handle, |socket|{
-                    if !socket.is_active() {
-                        // not open 
-                        log::warn!("[TcpSocket::recv] socket recv() failed because handle is not active");
-                        return Err(SysError::ECONNREFUSED);
-                    }else if !socket.may_recv() {
-                        return Ok((0,peer_addr));
-                    }else if socket.recv_queue() > 0 {
-                        //data available
-                        let len = socket.recv_slice(data).map_err(|_|{
-                            log::warn!("socket recv failed becasue of bad state");
-                            SysError::EBADF
-                        })?;
-                        return Ok((len, peer_addr))
-                    }else {
-                        // no more data
-                        // log::info!("[TcpSocket::recv] handle{handle} has no data to recv, register waker and suspend");
-                        if get_current_time_duration() > has_timeout_flag.1 && has_timeout_flag.0 {
-                            return Err(SysError::ETIMEOUT);
-                        }
-                        else {
-                            socket.register_recv_waker(&waker);
-                            Err(SysError::EAGAIN)
-                        }  
-                    }
-                })
-            }).await
-        }
-        
-    }
-
-    pub fn shutdown(&self, how: u8) -> SockResult<()> {
-        let mut shutdown = self.get_shutdown();
-        match how {
-            SHUTRD => shutdown |= RCV_SHUTDOWN,
-            SHUTWR => shutdown |= SEND_SHUTDOWN,
-            SHUTRDWR => shutdown |= SHUTDOWN_MASK,
-            _ => return Err(SysError::EINVAL),
-        }
-        self.set_shutdown(shutdown);
-        // for stream socket
-        self.update_state(SocketState::Connected, SocketState::Closed, ||  {
-            let handle = self.handle().unwrap();
-            SOCKET_SET.with_socket_mut::<tcp::Socket, _, _,>(handle, |socket| {
-                // info!("tcp socket shutdown, before state is {}", socket.state());
-                socket.close();
-                // info!("tcp socket shutdown, after state is {}" , socket.state());
-            });
-            let time_instance = SOCKET_SET.poll_interfaces();
-            SOCKET_SET.check_poll(time_instance);
-            Ok(())
-        }).unwrap_or(Ok(()))?;
-        // for listener socket
-        self.update_state(SocketState::Listening, SocketState::Closed, ||{
-            let local_port = self.local_endpoint().unwrap().port;
-            self.set_local_endpoint(ZERO_IPV4_ENDPOINT);
-            LISTEN_TABLE.unlisten(local_port);
-            let time_instance = SOCKET_SET.poll_interfaces();
-            SOCKET_SET.check_poll(time_instance);
-            Ok(())
-        }).unwrap_or(Ok(()))?;
-        Ok(()) 
-    }
-    pub async fn poll(&self) -> PollState {
-        match self.state() {
-            SocketState::Connecting => {
-                let writable = self.poll_connect().await;
-                PollState {
-                    readable: false,
-                    writable: writable,
-                    hangup: false,
-                }
-            },
-            SocketState::Closed => {
-                let hangup = self.poll_closed();
-                PollState {
-                    readable: false,
-                    writable: false,
-                    hangup: hangup,
-                }
-            },
-            SocketState::Busy => PollState { readable: false, writable: false, hangup: false },
-            SocketState::Connected => self.poll_stream().await,
-            SocketState::Listening => {
-                let readable = self.poll_listener();
-                PollState {
-                    readable,
-                    writable: false,
-                    hangup: false,
-                }
-            },
-        }
+impl Default for TcpSocket {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
+/// Private methods
 impl TcpSocket {
-    /// read current endpoint and make it robust if it lack port or anything else
-    fn  robost_port_endpoint(&self) -> SockResult<IpListenEndpoint> {
-        let local_endpoint = self.local_endpoint().unwrap();
-        let port = if local_endpoint.port == 0 {
-            // info!("get a random port");
-            get_ephemeral_port()?
-        }else {
-            local_endpoint.port
-        };
-        // info!("[robost_port_endpoint] now port is {} ",port);
-        let addr = if local_endpoint.addr.is_unspecified() {
-            // log::warn!("[robost_port_endpoint] local endpoint addr is unspecified, use ipv4 local addr");
-            // Some(LOCAL_IPV4)
-            None
-        }else {
-            Some(local_endpoint.addr)
-        };
-        // log::info!("[robost_port_endpoint] addr is {:?}, port is {}", addr, port);
-        Ok(IpListenEndpoint {
-            addr,
-            port,
-        })
-    }
-    /// block_on a future and wait for poll_connect to check its connection state
-    async fn block_on_future<F, T, Future> (&self, mut f: F) -> SockResult<T>
-    where 
-        F: FnMut() -> Future,
-        Future: core::future::Future<Output = SockResult<T>>,
-        {
-            // log::info!("in block on future");
-            if self.nonblock() {
-                f().await
-            }else {
-                loop {
-                    let time_instance = SOCKET_SET.poll_interfaces();
-                    let ret = f().await;
-                    SOCKET_SET.check_poll(time_instance);
-                    match ret {
-                        Ok(res) => {
-                            return Ok(res);
-                        }
-                        Err(SysError::EAGAIN) => {
-                            log::warn!("[block_on_future] ret state:EAGAIN!");
-                            suspend_now().await;
-                            let task = current_task().unwrap();
-                            let has_signal_flag = task.with_sig_manager(|sig_manager| {
-                                let block_sig = sig_manager.blocked_sigs;
-                                sig_manager.check_pending_flag(!block_sig)
-                            });
-                            if has_signal_flag {
-                                log::warn!("[block_on] has signal flag, return EINTR");
-                                return Err(SysError::EINTR);
-                            }
-                        }
-                        Err(e) => {
-                            return Err(e);
-                    }
-                }
-            }
-        }
-    }
-    async fn block_on<F, T>(&self, mut f: F) -> SockResult<T>
-    where 
-        F: FnMut() -> SockResult<T>,
-    {
-        if self.nonblock() {
-            f()
-        }else {
-            loop {
-                let time_instance = SOCKET_SET.poll_interfaces();
-                let ret = f();
-                SOCKET_SET.check_poll(time_instance);
-                match ret {
-                    Ok(res) => {
-                        return Ok(res);
-                    }
-                    Err(SysError::EAGAIN) => {
-                        suspend_now().await;
-                        let task = current_task().unwrap();
-                        let has_signal_flag = task.with_sig_manager(|sig_manager| {
-                            let block_sig = sig_manager.blocked_sigs;
-                            sig_manager.check_pending_flag(!block_sig)
-                        });
-                        if has_signal_flag {
-                            log::warn!("[block_on] has signal flag, return EINTR");
-                            return Err(SysError::EINTR);
-                        }
-                    }
-                    Err(e) => {
-                        return Err(e);
-                    }
-                }
-            }
-        }
-    }
-    /// poll the tcp connect event and return true if the socket is connected
-    async fn poll_connect(&self) -> bool {
-        let handle = unsafe{self.handle.get().read()}.unwrap();
-        let waker = get_waker().await;
-        SOCKET_SET.with_socket_mut::<tcp::Socket,_,_>(handle, |socket|{
-            match socket.state() {
-                State::SynSent => {
-                    // this means the request is sent, but not yet received by the remote endpoint
-                    info!("[TcpSocket::poll_concect]:the request is sent, but not yet received by the remote endpoint ");
-                    socket.register_recv_waker(&waker);
-                    false
-                }
-                State::Established => {
-                    // this means the connection is established
-                    self.set_state(SocketState::Connected as u8);
-                    // info!("[TcpSocket::poll_concect] socket is connected");
-                    true
-                }
-                _ => {
-                    log::warn!("wrong state, back to zero state");
-                    self.local_endpoint.exclusive_access().replace(ZERO_IPV4_ENDPOINT);
-                    self.remote_endpoint.exclusive_access().replace(ZERO_IPV4_ENDPOINT);
-                    self.set_state(SocketState::Closed as u8);
-                    true
-                }
-            } 
-        })
-    }
-    async fn poll_stream(&self) -> PollState {
-        let handle = unsafe {
-            self.handle.get().read().unwrap()
-        };
-        let waker = get_waker().await;
-        SOCKET_SET.with_socket_mut::<tcp::Socket,_,_>(handle, |socket|{
-            let readable = !socket.may_recv()  || socket.can_recv();
-            let writable = !socket.may_send() || socket.can_send();
-            if !readable {
-                socket.register_recv_waker(&waker);
-            }  
-            if !writable {
-                socket.register_send_waker(&waker);
-            }
-            PollState {
-                readable,
-                writable,
-                hangup: false,
-            }
-        })
+    fn state(&self) -> State {
+        self.state.get()
     }
 
-    fn poll_listener(&self) -> bool {
-        let local_addr = self.local_addr().unwrap();
-        let readable = LISTEN_TABLE.can_accept(local_addr.port);
-        readable
+    #[inline]
+    fn is_listening(&self) -> bool {
+        self.state() == State::Listening
     }
 
-    fn poll_closed(&self) -> bool {
-        let handle = unsafe {
-            self.handle.get().read()
-        };
-        if let Some(handle) = handle {
-            SOCKET_SET.with_socket_mut::<tcp::Socket,_,_>(handle, |socket| {
-                log::warn!(
-                    "[TcpSocket::poll_closed] handle {handle} state {}",
-                    socket.state()
+    fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
+        SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
+    }
+
+    fn bound_endpoint(&self) -> AxResult<IpListenEndpoint> {
+        let endpoint = self.with_smol_socket(|socket| socket.get_bound_endpoint());
+        if endpoint.port == 0 {
+            ax_bail!(InvalidInput, "not bound");
+        }
+        Ok(endpoint)
+    }
+
+    fn poll_connect(&self) -> IoEvents {
+        let mut events = IoEvents::empty();
+        let writable = self.with_smol_socket(|socket| match socket.state() {
+            smol::State::SynSent => false, // wait for connection
+            smol::State::Established => {
+                self.state.set(State::Connected); // connected
+                debug!(
+                    "TCP socket {}: connected to {}",
+                    self.handle,
+                    socket.remote_endpoint().unwrap(),
                 );
-                matches!(socket.state(), State::CloseWait| State::FinWait2 | State::TimeWait)
-            })
-        }else {
-            false
-        }
+                true
+            }
+            _ => {
+                self.state.set(State::Closed); // connection failed
+                true
+            }
+        });
+        events.set(IoEvents::OUT, writable);
+        events
     }
-    /// accept method for listener socket, only for tcp socket
-    pub async fn accecpt(&self) -> SockResult<TcpSocket> {
-        if self.state() != SocketState::Listening {
-            log::warn!("socket accept state is not listening");
-            return Err(SysError::EINVAL);
+
+    fn poll_stream(&self) -> IoEvents {
+        let mut events = IoEvents::empty();
+        self.with_smol_socket(|socket| {
+            events.set(
+                IoEvents::IN,
+                !self.rx_closed.load(Ordering::Acquire)
+                    && (!socket.may_recv() || socket.can_recv()),
+            );
+            events.set(IoEvents::OUT, !socket.may_send() || socket.can_send());
+        });
+        events
+    }
+
+    fn poll_listener(&self) -> IoEvents {
+        let mut events = IoEvents::empty();
+        events.set(
+            IoEvents::IN,
+            LISTEN_TABLE
+                .can_accept(self.bound_endpoint().unwrap().port)
+                .unwrap(),
+        );
+        events
+    }
+}
+
+impl Configurable for TcpSocket {
+    fn get_option_inner(&self, option: &mut GetSocketOption) -> AxResult<bool> {
+        use GetSocketOption as O;
+
+        if self.general.get_option_inner(option)? {
+            return Ok(true);
         }
-        let local_port = self.local_endpoint().unwrap().port;
-        // log::info!("[accept]: local_port is {}", local_port);
-        self.block_on(|| {
-            let (handle, (local_endpoint, remote_endpoint)) = LISTEN_TABLE.accept(local_port)?;
-            // info!("TCP socket accepted a new connection {}", remote_endpoint);
-            Ok(TcpSocket::new_v4_connected(handle, local_endpoint, remote_endpoint))
-        }).await
+
+        match option {
+            O::NoDelay(no_delay) => {
+                **no_delay = self.with_smol_socket(|socket| !socket.nagle_enabled());
+            }
+            O::KeepAlive(keep_alive) => {
+                **keep_alive = self.with_smol_socket(|socket| socket.keep_alive().is_some());
+            }
+            O::MaxSegment(max_segment) => {
+                // TODO(mivik): get actual MSS
+                **max_segment = 1460;
+            }
+            O::SendBuffer(size) => {
+                **size = TCP_TX_BUF_LEN;
+            }
+            O::ReceiveBuffer(size) => {
+                **size = TCP_RX_BUF_LEN;
+            }
+            O::TcpInfo(_) => {
+                // TODO(mivik): implement TCP_INFO
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn set_option_inner(&self, option: SetSocketOption) -> AxResult<bool> {
+        use SetSocketOption as O;
+
+        if self.general.set_option_inner(option)? {
+            return Ok(true);
+        }
+
+        match option {
+            O::NoDelay(no_delay) => {
+                self.with_smol_socket(|socket| {
+                    socket.set_nagle_enabled(!no_delay);
+                });
+            }
+            O::KeepAlive(keep_alive) => {
+                self.with_smol_socket(|socket| {
+                    socket.set_keep_alive(keep_alive.then(|| Duration::from_secs(75)));
+                });
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
+impl SocketOps for TcpSocket {
+    fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
+        let mut local_addr = local_addr.into_ip()?;
+        self.state
+            .lock(State::Idle)
+            .map_err(|_| ax_err_type!(InvalidInput, "already bound"))?
+            .transit(State::Idle, || {
+                // TODO: check addr is available
+                if local_addr.port() == 0 {
+                    local_addr.set_port(get_ephemeral_port()?);
+                }
+                if !self.general.reuse_address() {
+                    SOCKET_SET.bind_check(local_addr.ip().into(), local_addr.port())?;
+                }
+
+                self.with_smol_socket(|socket| {
+                    if socket.get_bound_endpoint().port != 0 {
+                        return Err(AxError::InvalidInput);
+                    }
+                    let endpoint = IpListenEndpoint {
+                        addr: if local_addr.ip().is_unspecified() {
+                            None
+                        } else {
+                            Some(local_addr.ip().into())
+                        },
+                        port: local_addr.port(),
+                    };
+                    socket.set_bound_endpoint(endpoint);
+                    self.general
+                        .set_device_mask(get_service().device_mask_for(&endpoint));
+                    Ok(())
+                })?;
+                debug!("TCP socket {}: binding to {}", self.handle, local_addr);
+                Ok(())
+            })
+    }
+
+    fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
+        let remote_addr = remote_addr.into_ip()?;
+        self.state
+            .lock(State::Idle)
+            .map_err(|state| {
+                if state == State::Connecting {
+                    AxError::InProgress
+                } else {
+                    // TODO(mivik): error code
+                    ax_err_type!(AlreadyConnected)
+                }
+            })?
+            .transit(State::Connecting, || {
+                // TODO: check remote addr unreachable
+                // let (bound_endpoint, remote_endpoint) = self.get_endpoint_pair(remote_addr)?;
+                let remote_endpoint = IpEndpoint::from(remote_addr);
+                let mut bound_endpoint =
+                    self.with_smol_socket(|socket| socket.get_bound_endpoint());
+                if bound_endpoint.addr.is_none() {
+                    bound_endpoint.addr =
+                        Some(get_service().get_source_address(&remote_endpoint.addr));
+                }
+                if bound_endpoint.port == 0 {
+                    bound_endpoint.port = get_ephemeral_port()?;
+                }
+                info!(
+                    "TCP connection from {} to {}",
+                    bound_endpoint, remote_endpoint
+                );
+
+                self.with_smol_socket(|socket| {
+                    socket.set_bound_endpoint(bound_endpoint);
+                    self.general
+                        .set_device_mask(get_service().device_mask_for(&bound_endpoint));
+                    socket
+                        .connect(
+                            get_service().iface.context(),
+                            remote_endpoint,
+                            bound_endpoint,
+                        )
+                        .map_err(|e| match e {
+                            smol::ConnectError::InvalidState => {
+                                ax_err_type!(AlreadyConnected)
+                            }
+                            smol::ConnectError::Unaddressable => {
+                                ax_err_type!(ConnectionRefused, "unaddressable")
+                            }
+                        })?;
+                    Ok(())
+                })
+            })?;
+
+        // Hack: let the server listen
+        axtask::yield_now();
+
+        // Here our state must be `CONNECTING`, and only one thread can run here.
+        self.general.send_poller(self, || {
+            poll_interfaces();
+            let events = self.poll_connect();
+            if !events.contains(IoEvents::OUT) {
+                Err(AxError::WouldBlock)
+            } else if self.state() == State::Connected {
+                Ok(())
+            } else {
+                Err(ax_err_type!(ConnectionRefused, "connection refused"))
+            }
+        })
+    }
+
+    fn listen(&self) -> AxResult {
+        if let Ok(guard) = self.state.lock(State::Idle) {
+            guard.transit(State::Listening, || {
+                let bound_endpoint = self.with_smol_socket(|socket| socket.get_bound_endpoint());
+                LISTEN_TABLE.listen(bound_endpoint)?;
+                debug!("listening on {}", bound_endpoint);
+                Ok(())
+            })?;
+        } else {
+            // ignore simultaneous `listen`s.
+        }
+        Ok(())
+    }
+
+    fn accept(&self) -> AxResult<Socket> {
+        if !self.is_listening() {
+            ax_bail!(InvalidInput, "not listening");
+        }
+
+        let bound_port = self.bound_endpoint()?.port;
+        self.general.recv_poller(self, || {
+            poll_interfaces();
+            LISTEN_TABLE.accept(bound_port).map(|handle| {
+                let socket = TcpSocket::new_connected(handle);
+                debug!(
+                    "accepted connection from {}, {}",
+                    handle,
+                    socket.with_smol_socket(|socket| socket.remote_endpoint().unwrap())
+                );
+                Socket::Tcp(socket)
+            })
+        })
+    }
+
+    fn send(&self, mut src: impl Read, _options: SendOptions) -> AxResult<usize> {
+        // SAFETY: `self.handle` should be initialized in a connected socket.
+        self.general.send_poller(self, || {
+            poll_interfaces();
+            self.with_smol_socket(|socket| {
+                if !socket.is_active() {
+                    Err(AxError::NotConnected)
+                } else if !socket.can_send() {
+                    Err(AxError::WouldBlock)
+                } else {
+                    // connected, and the tx buffer is not full
+                    let len = socket
+                        .send(|buffer| {
+                            let result = src.read(buffer);
+                            let len = result.unwrap_or(0);
+                            (len, result)
+                        })
+                        .map_err(|_| ax_err_type!(NotConnected, "not connected?"))??;
+                    Ok(len)
+                }
+            })
+        })
+    }
+
+    fn recv(&self, mut dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize> {
+        if self.rx_closed.load(Ordering::Acquire) {
+            return Err(AxError::NotConnected);
+        }
+        self.general.recv_poller(self, || {
+            poll_interfaces();
+            self.with_smol_socket(|socket| {
+                if !socket.is_active() {
+                    Err(AxError::NotConnected)
+                } else if !socket.may_recv() {
+                    Ok(0)
+                } else if socket.recv_queue() == 0 {
+                    Err(AxError::WouldBlock)
+                } else if options.flags.contains(RecvFlags::PEEK) {
+                    dst.write(
+                        socket
+                            .peek(dst.remaining_mut())
+                            .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?,
+                    )
+                } else {
+                    socket
+                        .recv(|buf| {
+                            let result = dst.write(buf);
+                            let len = result.unwrap_or(0);
+                            (len, result)
+                        })
+                        .map_err(|_| ax_err_type!(NotConnected, "not connected?"))?
+                }
+            })
+        })
+    }
+
+    fn local_addr(&self) -> AxResult<SocketAddrEx> {
+        self.with_smol_socket(|socket| {
+            let endpoint = socket.get_bound_endpoint();
+            Ok(SocketAddrEx::Ip(SocketAddr::new(
+                endpoint
+                    .addr
+                    .map_or_else(|| Ipv4Addr::UNSPECIFIED.into(), Into::into),
+                endpoint.port,
+            )))
+        })
+    }
+
+    fn peer_addr(&self) -> AxResult<SocketAddrEx> {
+        self.with_smol_socket(|socket| {
+            Ok(SocketAddrEx::Ip(
+                socket
+                    .remote_endpoint()
+                    .ok_or(AxError::NotConnected)?
+                    .into(),
+            ))
+        })
+    }
+
+    fn shutdown(&self, how: Shutdown) -> AxResult {
+        // TODO(mivik): shutdown
+        if how.has_read() {
+            self.rx_closed.store(true, Ordering::Release);
+            self.poll_rx_closed.wake();
+        }
+
+        // stream
+        if let Ok(guard) = self.state.lock(State::Connected) {
+            guard.transit(State::Closed, || {
+                if how.has_write() {
+                    self.with_smol_socket(|socket| {
+                        debug!("TCP socket {}: shutting down", self.handle);
+                        socket.close();
+                    });
+                }
+                poll_interfaces();
+                Ok(())
+            })?;
+        }
+
+        // listener
+        if let Ok(guard) = self.state.lock(State::Listening) {
+            guard.transit(State::Closed, || {
+                LISTEN_TABLE.unlisten(self.bound_endpoint()?.port);
+                poll_interfaces();
+                Ok(())
+            })?;
+        }
+
+        // ignore for other states
+        Ok(())
+    }
+}
+
+impl Pollable for TcpSocket {
+    fn poll(&self) -> IoEvents {
+        poll_interfaces();
+        let mut events = match self.state() {
+            State::Connecting => self.poll_connect(),
+            State::Connected | State::Idle | State::Closed => self.poll_stream(),
+            State::Listening => self.poll_listener(),
+            State::Busy => IoEvents::empty(),
+        };
+        events.set(IoEvents::RDHUP, self.rx_closed.load(Ordering::Acquire));
+        events
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
+            self.general.register_waker(context.waker());
+        }
+        if events.contains(IoEvents::RDHUP) {
+            self.poll_rx_closed.register(context.waker());
+        }
     }
 }
 
 impl Drop for TcpSocket {
-    fn drop (&mut self) {
-        log::info!("[TcpSocket::drop]");
-        self.shutdown(SHUTRDWR).ok();
-        if let Some(handle) = unsafe{self.handle.get().read()} {
-            SOCKET_SET.remove(handle);
+    fn drop(&mut self) {
+        if let Err(err) = self.shutdown(Shutdown::Both) {
+            warn!("TCP socket {}: shutdown failed: {}", self.handle, err);
         }
+        SOCKET_SET.remove(self.handle);
+        // This is crucial for the close messages to be sent.
+        poll_interfaces();
     }
+}
+
+fn get_ephemeral_port() -> SysResult<u16> {
+    const PORT_START: u16 = 0xc000;
+    const PORT_END: u16 = 0xffff;
+    static CURR: Mutex<u16> = Mutex::new(PORT_START);
+
+    let mut curr = CURR.lock();
+    let mut tries = 0;
+    // TODO: more robust
+    while tries <= PORT_END - PORT_START {
+        let port = *curr;
+        if *curr == PORT_END {
+            *curr = PORT_START;
+        } else {
+            *curr += 1;
+        }
+        if LISTEN_TABLE.can_listen(port) {
+            return Ok(port);
+        }
+        tries += 1;
+    }
+    Ok(1)
 }
