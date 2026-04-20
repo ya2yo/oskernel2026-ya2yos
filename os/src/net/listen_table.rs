@@ -1,64 +1,36 @@
-use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
-use fatfs::{info, warn};
-use core::{
-    ops::{Deref, DerefMut},
-    task::Waker,
-};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec};
+use core::ops::DerefMut;
+
+use axerrno::{AxError, AxResult};
+use axsync::Mutex;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
-    socket::tcp::{self, State},
-    wire::{IpAddress, IpEndpoint, IpListenEndpoint},
+    socket::tcp::{self, SocketBuffer, State},
+    wire::{IpEndpoint, IpListenEndpoint},
 };
 
-use crate::{net::SocketSetWrapper, sync::mutex::SpinNoIrqLock, syscall::sys_error::SysError};
+use crate::{
+    SOCKET_SET,
+    consts::{LISTEN_QUEUE_SIZE, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
+};
 
-use super::{socket::SockResult, LISTEN_QUEUE_SIZE,SOCKET_SET};
-/// u16 num 
 const PORT_NUM: usize = 65536;
-/// entry for listen table
-struct ListenEntry{
-    /// ip endpoint that listen on
+
+struct ListenTableEntryInner {
     listen_endpoint: IpListenEndpoint,
-    /// temporary holding area for half-open connections
-    /// —that is, connection requests that have received a SYN from a client, 
-    /// but have not yet completed the three-way handshake.
     syn_queue: VecDeque<SocketHandle>,
-    /// waker for waiting for incoming connection
-    waker: Waker,
 }
 
-impl ListenEntry {
-    pub fn new(listen_endpoint: IpListenEndpoint, waker: &Waker) -> Self {
+impl ListenTableEntryInner {
+    pub fn new(listen_endpoint: IpListenEndpoint) -> Self {
         Self {
             listen_endpoint,
             syn_queue: VecDeque::with_capacity(LISTEN_QUEUE_SIZE),
-            waker: waker.clone(),
         }
-    }
-    /// check if the listen entry can accept incoming connection
-    fn can_accept(&self, dst: IpAddress) -> bool {
-        match self.listen_endpoint.addr {
-            Some(addr) => {
-                if addr == dst {
-                    return true;
-                }
-                if let IpAddress::Ipv6(v6) = addr {
-                    if v6.is_unspecified()  || (dst.as_bytes().len() == 4 && v6.is_ipv4_mapped() && v6.as_bytes()[12..] == dst.as_bytes()[..]){ 
-                        return true;
-                    }
-                }
-                false
-            },
-            None => true,
-        }
-    }
-    /// get self waker wake
-    pub fn wake(self) {
-        self.waker.wake_by_ref()
     }
 }
 
-impl Drop for ListenEntry {
+impl Drop for ListenTableEntryInner {
     fn drop(&mut self) {
         for &handle in &self.syn_queue {
             SOCKET_SET.remove(handle);
@@ -66,124 +38,133 @@ impl Drop for ListenEntry {
     }
 }
 
-/// A table for managing TCP listen ports.
-/// Each index corresponds to a specific port number.
+type ListenTableEntry = Arc<Mutex<Option<Box<ListenTableEntryInner>>>>;
+
 pub struct ListenTable {
-    inner: Box<[SpinNoIrqLock<Option<Box<ListenEntry>>>]>,
+    tcp: Box<[ListenTableEntry]>,
 }
 
 impl ListenTable {
-    /// Create a new empty `ListenTable`.
     pub fn new() -> Self {
-        let inner = unsafe {
+        let tcp = unsafe {
             let mut buf = Box::new_uninit_slice(PORT_NUM);
             for i in 0..PORT_NUM {
-                buf[i].write(SpinNoIrqLock::new(None));
+                buf[i].write(Arc::default());
             }
             buf.assume_init()
         };
-        Self { inner }
+        Self { tcp }
     }
-    /// check if a port can listen
-    pub fn can_listen(&self, port: u16) -> bool {
-        self.inner[port as usize].lock().is_none()
-    }
-    /// set a port listen
-    pub fn listen(&self, listen_endpoint: IpListenEndpoint, waker: &Waker)-> SockResult<()> {
-        let port = listen_endpoint.port;
-        let mut entry = self.inner[port as usize].lock();
-        if entry.is_none() {
-            *entry = Some(Box::new(ListenEntry::new(listen_endpoint, waker)));
-            Ok(())
-        }
-        else {
-            // the entry shouldn't be listened before
-            Err(SysError::EADDRINUSE)
-        }
-    }
-    /// unlisten a port, used in shutdown a socket
-    pub fn unlisten(&self, port: u16) {
-        log::info!("TCP socket unlisten on {}", port);
-        if let Some(entry) = self.inner[port as usize].lock().take() {
-            entry.wake()
-        }
-    }
-    /// accept a connection, check the syn queue and find the available connection
-    pub fn accept(&self, port: u16) -> SockResult<(SocketHandle, (IpEndpoint, IpEndpoint))> {
-        if let Some(entry) = self.inner[port as usize].lock().deref_mut() {
-            let syn_queue = &mut entry.syn_queue;
-            let (idx, addr_tuple) = syn_queue.iter()
-            .enumerate()
-            .find_map(|(idx, &handle)| {
-                is_connected(handle).then(||(idx, get_addr_tuple(handle)))
-            }).ok_or_else(||{
-                log::warn!("[Listen Table] no available socket_handle");
-                SysError::EAGAIN
-            })?; 
-            if idx > 0 {
-                log::warn!(
-                    "slow SYN queue enumeration: index = {}, len = {}!",
-                    idx,
-                    syn_queue.len()
-                );
-            }
-            let handle = syn_queue.swap_remove_front(idx).unwrap();
-            log::info!("TCP socket {}: accepted connection from {}", handle, addr_tuple.0);
-            Ok((handle,addr_tuple))
-        }else {
-            log::warn!("[listen table] failed: not listen");
-            Err(SysError::EINVAL)
-        }
-    }
-    pub fn can_accept(&self,port: u16) -> bool {
-        if let Some(entry) = self.inner[port as usize].lock().deref(){
-            entry.syn_queue.iter().any(|&handle| is_connected(handle))
-        }else{
-            log::error!("have been set as listening, wouldn't happen");
-            false
-        }    
-    }
-    /// handle incoming tcp packet, check if the packet is for a listening port,
-    /// and add the connection to the syn queue if possible.
-    pub fn handle_coming_packet(&self, src: IpEndpoint, dst: IpEndpoint, sockets: &mut SocketSet<'_>) {
-        if let Some(entry) = self.inner[dst.port as usize].lock().deref_mut() {
-            if !entry.can_accept(dst.addr) {
-                log::warn!("[LISTEN_TABLE] not listening on addr {}", dst.addr);
-                return;
-            }
-            if entry.syn_queue.len() >= LISTEN_QUEUE_SIZE {
-                log::warn!("[LISTEN_TABLE] syn_queue overflow!");
-                return;
-            }
-            entry.waker.wake_by_ref();
-            log::info!(
-                "[ListenTable::incoming_tcp_packet] wake the socket who listens port {}",
-                dst.port
-            );
-            let mut socket = SocketSetWrapper::new_tcp_socket();
-            if socket.listen(entry.listen_endpoint).is_ok() {
-                let handle = sockets.add(socket);
-                log::info!("TCP socket {}: prepare for connection {} -> {}", handle, src, entry.listen_endpoint);
-                entry.syn_queue.push_back(handle);
-            }
-        }else {
-            log::warn!("[ListenTable::incoming_tcp_packet] not listening on port {}", dst.port);
-        }
-    } 
 
+    pub fn can_listen(&self, port: u16) -> bool {
+        self.tcp[port as usize].lock().is_none()
+    }
+
+    pub fn listen(&self, listen_endpoint: IpListenEndpoint) -> AxResult {
+        let port = listen_endpoint.port;
+        assert_ne!(port, 0);
+        let mut entry = self.tcp[port as usize].lock();
+        if entry.is_none() {
+            *entry = Some(Box::new(ListenTableEntryInner::new(listen_endpoint)));
+            Ok(())
+        } else {
+            warn!("socket already listening on port {port}");
+            Err(AxError::AddrInUse)
+        }
+    }
+
+    pub fn unlisten(&self, port: u16) {
+        debug!("TCP socket unlisten on {}", port);
+        *self.tcp[port as usize].lock() = None;
+    }
+
+    fn listen_entry(&self, port: u16) -> Arc<Mutex<Option<Box<ListenTableEntryInner>>>> {
+        self.tcp[port as usize].clone()
+    }
+
+    pub fn can_accept(&self, port: u16) -> AxResult<bool> {
+        if let Some(entry) = self.listen_entry(port).lock().as_ref() {
+            Ok(entry.syn_queue.iter().any(|&handle| is_connected(handle)))
+        } else {
+            warn!("accept before listen");
+            Err(AxError::InvalidInput)
+        }
+    }
+
+    pub fn accept(&self, port: u16) -> AxResult<SocketHandle> {
+        let entry = self.listen_entry(port);
+        let mut table = entry.lock();
+        let Some(entry) = table.deref_mut() else {
+            warn!("accept before listen");
+            return Err(AxError::InvalidInput);
+        };
+
+        let syn_queue: &mut VecDeque<SocketHandle> = &mut entry.syn_queue;
+        let idx = syn_queue
+            .iter()
+            .enumerate()
+            .find_map(|(idx, &handle)| is_connected(handle).then_some(idx))
+            .ok_or(AxError::WouldBlock)?; // wait for connection
+        if idx > 0 {
+            warn!(
+                "slow SYN queue enumeration: index = {}, len = {}!",
+                idx,
+                syn_queue.len()
+            );
+        }
+        let handle = syn_queue.swap_remove_front(idx).unwrap();
+        // If the connection is reset, return ConnectionReset error
+        // Otherwise, return the handle and the address tuple
+        if is_closed(handle) {
+            warn!("accept failed: connection reset");
+            Err(AxError::ConnectionReset)
+        } else {
+            Ok(handle)
+        }
+    }
+
+    pub fn incoming_tcp_packet(
+        &self,
+        src: IpEndpoint,
+        dst: IpEndpoint,
+        sockets: &mut SocketSet<'_>,
+    ) {
+        if let Some(entry) = self.listen_entry(dst.port).lock().deref_mut() {
+            // TODO(mivik): accept address check
+            if entry.syn_queue.len() >= LISTEN_QUEUE_SIZE {
+                // SYN queue is full, drop the packet
+                warn!("SYN queue overflow!");
+                return;
+            }
+
+            let mut socket = smoltcp::socket::tcp::Socket::new(
+                SocketBuffer::new(vec![0; TCP_RX_BUF_LEN]),
+                SocketBuffer::new(vec![0; TCP_TX_BUF_LEN]),
+            );
+            if let Err(err) = socket.listen(IpListenEndpoint {
+                addr: None,
+                port: dst.port,
+            }) {
+                warn!("Failed to listen on {}: {:?}", entry.listen_endpoint, err);
+                return;
+            }
+            let handle = sockets.add(socket);
+            debug!(
+                "TCP socket {}: prepare for connection {} -> {}",
+                handle, src, entry.listen_endpoint
+            );
+            entry.syn_queue.push_back(handle);
+        }
+    }
 }
 
 fn is_connected(handle: SocketHandle) -> bool {
-    SOCKET_SET.with_socket::<tcp::Socket,_,_>(handle, |socket| {
+    SOCKET_SET.with_socket::<tcp::Socket, _, _>(handle, |socket| {
         !matches!(socket.state(), State::Listen | State::SynReceived)
     })
 }
 
-fn get_addr_tuple(handle: SocketHandle) -> (IpEndpoint, IpEndpoint) {
-    SOCKET_SET.with_socket::<tcp::Socket, _, _>(handle, |socket| {
-        (
-            socket.local_endpoint().unwrap(),
-            socket.remote_endpoint().unwrap(),
-        )
-    })
+fn is_closed(handle: SocketHandle) -> bool {
+    SOCKET_SET
+        .with_socket::<tcp::Socket, _, _>(handle, |socket| matches!(socket.state(), State::Closed))
 }
