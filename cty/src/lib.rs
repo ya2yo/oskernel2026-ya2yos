@@ -7,6 +7,7 @@
 
 #![allow(non_camel_case_types)]
 #![deny(warnings)]
+#![allow(unexpected_cfgs)]
 #![no_std]
 
 // AD = Architecture dependent
