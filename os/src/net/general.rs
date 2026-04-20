@@ -4,11 +4,11 @@ use core::{
     time::Duration,
 };
 
-use axerrno::AxResult;
+use crate::utils::SysResult;
 use axpoll::{IoEvents, Pollable};
 use axtask::future::{block_on, poll_io, timeout};
 
-use crate::{
+use super::{
     get_service,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };

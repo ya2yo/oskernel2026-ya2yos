@@ -41,7 +41,7 @@ mod wrapper;
 use alloc::{borrow::ToOwned, boxed::Box};
 
 use axdriver::{AxDeviceContainer, prelude::*};
-use axsync::Mutex;
+use spin::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::{Lazy, Once};
 

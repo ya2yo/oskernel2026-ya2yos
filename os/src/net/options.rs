@@ -1,8 +1,9 @@
 use core::time::Duration;
 
-use axerrno::{AxError, AxResult, LinuxError};
+use crate::utils::{SysErrNo, SysResult};
 use enum_dispatch::enum_dispatch;
 
+/// 优雅处理后面不同的选项
 macro_rules! define_options {
     ($($name:ident($value:ty),)*) => {
         /// Operation to get a socket option.
@@ -80,25 +81,25 @@ define_options! {
 #[enum_dispatch]
 pub trait Configurable {
     /// Get a socket option, returns `true` if the socket supports the option.
-    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool>;
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> SysResult<bool>;
     /// Set a socket option, returns `true` if the socket supports the option.
-    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool>;
+    fn set_option_inner(&self, opt: SetSocketOption) -> SysResult<bool>;
 
     /// Get a socket option. Dispatches to [`Configurable::get_option_inner`].
-    fn get_option(&self, mut opt: GetSocketOption) -> AxResult {
+    fn get_option(&self, mut opt: GetSocketOption) -> SysResult {
         self.get_option_inner(&mut opt).and_then(|supported| {
             if !supported {
-                Err(AxError::from(LinuxError::ENOPROTOOPT))
+                Err(SysErrNo::ENOPROTOOPT)
             } else {
                 Ok(())
             }
         })
     }
     /// Set a socket option. Dispatches to [`Configurable::set_option_inner`].
-    fn set_option(&self, opt: SetSocketOption) -> AxResult {
+    fn set_option(&self, opt: SetSocketOption) -> SysResult {
         self.set_option_inner(opt).and_then(|supported| {
             if !supported {
-                Err(AxError::from(LinuxError::ENOPROTOOPT))
+                Err(SysErrNo::ENOPROTOOPT)
             } else {
                 Ok(())
             }
