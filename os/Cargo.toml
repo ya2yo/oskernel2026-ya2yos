@@ -24,6 +24,30 @@ hashbrown = "0.12.0"
 num_enum = { version = "0.7.2", default-features = false }
 cfg-if = { version = "1.0.0" }
 loongArch64 = { git = "https://github.com/Godones/loongArch64", optional = true }
+enum_dispatch = "0.3"
+event-listener = { version = "4.0", default-features = false }
+
+[dependencies.smoltcp]
+git = "https://github.com/lullabyeoytl/smoltcp_chronix.git"
+rev = "5ac01e106e3ec6daac84bba40510cf1791f0396c"  
+default-features = false
+features = [
+    "alloc",
+    "log",             
+    "medium-ethernet",
+    "medium-ip",       
+    "proto-ipv4",
+    "proto-ipv6",      
+    "socket-raw",
+    "socket-icmp",
+    "socket-udp",
+    "socket-tcp",
+    "socket-dns",
+    "async",
+    # "fragmentation-buffer-size-65536", "proto-ipv4-fragmentation",
+    # "reassembly-buffer-size-65536", "reassembly-buffer-count-32",
+    # "assembler-max-segment-count-32",
+]
 
 [build-dependencies]
 cfg-if = { version = "1.0.0" }

@@ -1,25 +1,38 @@
+//! RISC-V 架构相关的硬件时间实现
 use riscv::register::time;
 use sbi_rt;
 
-pub const CLOCK_FREQ: usize = 0x989680; // 由设备树文件获取
+/// 由设备树获取的硬件时钟频率
+pub const CLOCK_FREQ: u64 = 0x989680; 
 
-/// get current ticks
-pub fn get_ticks() -> usize {
-    time::read()
+/// 硬件层必须实现的接口
+pub trait TimeInterface {
+    fn current_ticks() -> u64;
+    fn ticks_to_nanos(ticks: u64) -> u64;
+    fn nanos_to_ticks(nanos: u64) -> u64;
+    fn set_oneshot_timer(deadline_ns: u64);
 }
 
-/// 设置一个一次性的定时器
-/// 参数ticks是定时器触发的时间，是一个绝对时间而不是一个间隔
-/// Set a one-shot timer.
-///
-/// A timer interrupt will be triggered at the given ticks
-pub fn set_oneshot_timer(ticks: usize) {
-    sbi_rt::set_timer(ticks as u64);
-}
+pub struct TimeImpl;
 
-#[inline(always)]
-pub fn get_clock_freq() -> usize {
-    CLOCK_FREQ
-}
+impl TimeInterface for TimeImpl {
+    #[inline]
+    fn current_ticks() -> u64 {
+        time::read() as u64
+    }
 
-pub fn init_clock_freq() {}
+    #[inline]
+    fn ticks_to_nanos(ticks: u64) -> u64 {
+        (ticks as u128 * 1_000_000_000 / CLOCK_FREQ as u128) as u64
+    }
+
+    #[inline]
+    fn nanos_to_ticks(nanos: u64) -> u64 {
+        (nanos as u128 * CLOCK_FREQ as u128 / 1_000_000_000) as u64
+    }
+
+    fn set_oneshot_timer(deadline_ns: u64) {
+        let ticks = Self::nanos_to_ticks(deadline_ns);
+        sbi_rt::set_timer(ticks);
+    }
+}

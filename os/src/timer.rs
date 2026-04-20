@@ -1,416 +1,162 @@
-//! RISC-V timer-related functionality
-
-use core::ops::Add;
-
-use crate::arch::time::{get_ticks, set_oneshot_timer};
-use crate::sync::SyncUnsafeCell;
-use crate::task::{handle_timer, TaskControlBlock};
-use crate::{arch::time::get_clock_freq, task::wakeup_futex_task};
-use alloc::{
-    collections::BinaryHeap,
-    sync::{Arc, Weak},
-};
+//! 通用时间管理模块
+use core::ops::{Add, Sub};
 use core::cmp::Ordering;
-use log::debug;
-
+use core::sync::atomic::{AtomicU64, Ordering};
+use alloc::{collections::BinaryHeap, sync::{Arc, Weak}};
 use spin::{Lazy, Mutex};
+use crate::sync::SyncUnsafeCell;
+use crate::arch::time::{TimeImpl, TimeInterface}; // 引入上面的硬件实现
+use crate::task::{handle_timer, TaskControlBlock};
 
-const TICKS_PER_SEC: usize = 100;
-const MSEC_PER_SEC: usize = 1000;
-// add bu tuji :   1758325855 是2025年9月某时间的时间戳
-pub const NOW_TIME_STAMP: usize = 1758325855;
+// --- 常量定义 ---
+pub const NANOS_PER_SEC: u64 = 1_000_000_000;
+pub const NANOS_PER_MS: u64 = 1_000_000;
+pub const NOW_TIME_STAMP: u64 = 1758325855; // 2025年基准时间戳
 
-#[allow(unused)]
-const USEC_PER_SEC: usize = 1000000;
-const NSEC_PER_SEC: usize = 1000000000;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Timespec {
-    pub tv_sec: usize,  //秒
-    pub tv_nsec: usize, //纳秒
+    pub tv_sec: usize,
+    pub tv_nsec: usize,
 }
 
 impl Timespec {
     pub fn new(sec: usize, nsec: usize) -> Self {
+        Self { tv_sec: sec, tv_nsec: nsec }
+    }
+
+    /// 将 Timespec 转换为总纳秒数
+    pub fn as_nanos(&self) -> u64 {
+        self.tv_sec as u64 * NANOS_PER_SEC + self.tv_nsec as u64
+    }
+
+    /// 从纳秒数创建 Timespec
+    pub fn from_nanos(nanos: u64) -> Self {
         Self {
-            tv_sec: sec,
-            tv_nsec: nsec,
+            tv_sec: (nanos / NANOS_PER_SEC) as usize,
+            tv_nsec: (nanos % NANOS_PER_SEC) as usize,
         }
     }
-    pub fn to_tick(&self) -> usize {
-        let clock_freq = get_clock_freq();
-        self.tv_sec * clock_freq + (self.tv_nsec * clock_freq / NSEC_PER_SEC)
+
+    /// 转换为硬件 Ticks（用于底层比较）
+    pub fn to_ticks(&self) -> u64 {
+        TimeImpl::nanos_to_ticks(self.as_nanos())
     }
 }
 
+// 简化 Timespec 的算术运算
 impl Add for Timespec {
-    type Output = Timespec;
-    fn add(self, rhs: Self) -> Self::Output {
-        let mut tv_sec = self.tv_sec + rhs.tv_sec;
-        let mut tv_nsec = self.tv_nsec + rhs.tv_nsec;
-        tv_sec += tv_nsec / (1_000_000_000usize);
-        tv_nsec %= 1_000_000_000usize;
-        Self { tv_sec, tv_nsec }
-    }
-}
-
-impl PartialOrd for Timespec {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if self.tv_sec > other.tv_sec {
-            Some(Ordering::Greater)
-        } else if self.tv_sec < other.tv_sec {
-            Some(Ordering::Less)
-        } else {
-            if self.tv_nsec > other.tv_nsec {
-                Some(Ordering::Greater)
-            } else if self.tv_nsec < other.tv_nsec {
-                Some(Ordering::Less)
-            } else {
-                Some(Ordering::Equal)
-            }
-        }
-    }
-}
-
-pub fn calculate_left_timespec(endtime: Timespec) -> Timespec {
-    let nowtime = get_time_spec();
-    let mut endsec = endtime.tv_sec;
-    let mut nsec: isize = endtime.tv_nsec as isize - nowtime.tv_nsec as isize;
-    if nsec < 0 {
-        endsec -= 1;
-        nsec = 1_000_000_000isize + nsec;
-    }
-    Timespec {
-        tv_sec: endsec - nowtime.tv_sec,
-        tv_nsec: nsec as usize,
-    }
-}
-
-pub struct Tms {
-    pub tms_utime: isize,  //用户模式下花费的CPU时间
-    pub tms_stime: isize,  //内核模式下花费的CPU时间
-    pub tms_cutime: isize, //子进程在用户模式下花费的CPU时间
-    pub tms_cstime: isize, //子进程在内核模式下花费的CPU时间
-}
-
-impl Tms {
-    pub fn new(time_data: &TimeData) -> Self {
-        Self {
-            tms_utime: time_data.utime,
-            tms_stime: time_data.stime,
-            tms_cutime: time_data.cutime,
-            tms_cstime: time_data.cstime,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct TimeData {
-    pub utime: isize,
-    pub stime: isize,
-    pub cutime: isize,
-    pub cstime: isize,
-    pub lasttime: isize,
-}
-
-impl TimeData {
-    pub fn new() -> Self {
-        let now = (get_time_ms()) as isize;
-        Self {
-            utime: 0,
-            stime: 0,
-            cutime: 0,
-            cstime: 0,
-            lasttime: now,
-        }
-    }
-    pub fn update_utime(&mut self) {
-        let now = (get_time_ms()) as isize;
-        let duration = now - self.lasttime;
-        self.utime += duration;
-        self.lasttime = now;
-    }
-    pub fn update_stime(&mut self) {
-        let now = (get_time_ms()) as isize;
-        let duration = now - self.lasttime;
-        self.stime += duration;
-        self.lasttime = now;
-    }
-    pub fn clear(&mut self) {
-        let now = (get_time_ms()) as isize;
-        self.utime = 0;
-        self.stime = 0;
-        self.cutime = 0;
-        self.cstime = 0;
-        self.lasttime = now;
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self::from_nanos(self.as_nanos() + rhs.as_nanos())
     }
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Itimerval {
-    /// Interval for periodic timer
-    pub it_interval: TimeVal,
-    /// Time until next expiration
-    pub it_value: TimeVal,
-}
-
-impl Itimerval {
-    pub fn new() -> Self {
-        Self {
-            it_interval: TimeVal::new(0, 0),
-            it_value: TimeVal::new(0, 0),
-        }
-    }
-}
-///以实际（即挂钟）时间倒计时。在每次到期时，都会生成一个 SIGALRM 信号
-pub const ITIMER_REAL: usize = 0;
-/// 此计时器根据进程消耗的用户模式 CPU 时间倒计时。（测量值包括进程中所有线程消耗的 CPU 时间。
-/// 在每次到期时，都会生成一个 SIGVTALRM 信号
-pub const ITIMER_VIRTUAL: usize = 1;
-/// 此计时器根据进程消耗的总 CPU 时间（即用户和系统）进行倒计时。（测量值包括进程中所有线程消耗的 CPU 时间。
-/// 在每次到期时，都会生成一个 SIGPROF 信号。
-pub const ITIMER_PROF: usize = 2;
-
-/// 三种 itimer,实际只会使用ITIMER_REAL
-pub struct Timer {
-    pub inner: SyncUnsafeCell<TimerInner>,
-}
-
-pub struct TimerInner {
-    pub timer: Itimerval,
-    pub last_time: TimeVal,
-    pub once: bool,
-}
-
-impl TimerInner {
-    pub fn new() -> Self {
-        Self {
-            timer: Itimerval::new(),
-            last_time: TimeVal::new(0, 0),
-            once: false,
-        }
-    }
-}
-
-impl Timer {
-    pub fn new() -> Self {
-        Self {
-            inner: SyncUnsafeCell::new(TimerInner::new()),
-        }
-    }
-    pub fn set_timer(&self, new: Itimerval) {
-        let inner = self.inner.get_unchecked_mut();
-        inner.timer = new;
-        inner.once = false;
-        inner.last_time = TimeVal::new(0, 0);
-    }
-    pub fn set_last_time(&self, last_time: TimeVal) {
-        self.inner.get_unchecked_mut().last_time = last_time;
-    }
-    pub fn set_trigger_once(&self, once: bool) {
-        self.inner.get_unchecked_mut().once = once;
-    }
-    pub fn trigger_once(&self) -> bool {
-        self.inner.get_unchecked_ref().once
-    }
-    pub fn last_time(&self) -> TimeVal {
-        self.inner.get_unchecked_ref().last_time
-    }
-    pub fn timer(&self) -> Itimerval {
-        self.inner.get_unchecked_ref().timer
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeVal {
-    pub tv_sec: usize,  //秒
-    pub tv_usec: usize, //微秒
+    pub tv_sec: usize,
+    pub tv_usec: usize,
 }
 
 impl TimeVal {
     pub fn new(sec: usize, usec: usize) -> Self {
-        Self {
-            tv_sec: sec,
-            tv_usec: usec,
-        }
+        Self { tv_sec: sec, tv_usec: usec }
     }
+    
     pub fn now() -> Self {
-        let now_time = get_time_ms();
+        let nanos = monotonic_time_nanos();
         Self {
-            tv_sec: now_time / 1000,
-            tv_usec: (now_time % 1000) * 1000,
-        }
-    }
-    pub fn is_empty(&self) -> bool {
-        self.tv_sec == 0 && self.tv_usec == 0
-    }
-}
-
-impl Add for TimeVal {
-    type Output = TimeVal;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        let usec = self.tv_usec + rhs.tv_usec;
-        Self {
-            tv_sec: self.tv_sec + rhs.tv_sec + usec / 1_000_000,
-            tv_usec: usec % 1_000_000,
+            tv_sec: (nanos / NANOS_PER_SEC) as usize,
+            tv_usec: ((nanos % NANOS_PER_SEC) / 1000) as usize,
         }
     }
 }
 
-impl PartialOrd for TimeVal {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if self.tv_sec > other.tv_sec {
-            Some(Ordering::Greater)
-        } else if self.tv_sec < other.tv_sec {
-            Some(Ordering::Less)
-        } else {
-            if self.tv_usec > other.tv_usec {
-                Some(Ordering::Greater)
-            } else if self.tv_usec < other.tv_usec {
-                Some(Ordering::Less)
-            } else {
-                Some(Ordering::Equal)
-            }
-        }
-    }
-}
-#[allow(unused)]
-pub struct Rusage {
-    pub ru_utime: TimeVal,
-    pub ru_stime: TimeVal,
-    //unused but needed
-    ru_maxrss: isize,
-    ru_ixrss: isize,
-    ru_idrss: isize,
-    ru_isrss: isize,
-    ru_minflt: isize,
-    ru_majflt: isize,
-    ru_nswap: isize,
-    ru_inblock: isize,
-    ru_oublock: isize,
-    ru_msgsnd: isize,
-    ru_msgrcv: isize,
-    ru_nsignals: isize,
-    ru_nvcsw: isize,
-    ru_nivcsw: isize,
+/// 获取自系统启动以来的纳秒数（单调递增）
+pub fn monotonic_time_nanos() -> u64 {
+    TimeImpl::ticks_to_nanos(TimeImpl::current_ticks())
 }
 
-impl Rusage {
-    pub fn new_from_ms(utime: usize, stime: usize) -> Self {
-        let utimeval = TimeVal::new(utime / 1000, (utime % 1000) * 1000);
-        let stimeval = TimeVal::new(stime / 1000, (stime % 1000) * 1000);
-        Self {
-            ru_utime: utimeval,
-            ru_stime: stimeval,
-            ru_maxrss: 0,
-            ru_ixrss: 0,
-            ru_idrss: 0,
-            ru_isrss: 0,
-            ru_minflt: 0,
-            ru_majflt: 0,
-            ru_nswap: 0,
-            ru_inblock: 0,
-            ru_oublock: 0,
-            ru_msgsnd: 0,
-            ru_msgrcv: 0,
-            ru_nsignals: 0,
-            ru_nvcsw: 0,
-            ru_nivcsw: 0,
-        }
-    }
-}
-
-/// get current time in microseconds
 pub fn get_time_ms() -> usize {
-    get_ticks() / (get_clock_freq() / MSEC_PER_SEC)
+    (monotonic_time_nanos() / NANOS_PER_MS) as usize
 }
 
 pub fn get_time_spec() -> Timespec {
-    let time = get_time_ms();
-    Timespec::new(time / 1000, (time % 1000) * 1000000)
+    Timespec::from_nanos(monotonic_time_nanos())
 }
-/// set the next timer interrupt
+
+/// 设置下次触发时间（基于当前时间加 1 秒）
 pub fn set_next_trigger() {
-    // set_oneshot_timer(get_ticks() + get_clock_freq() / TICKS_PER_SEC);
-    // 调低时钟频率
-    set_oneshot_timer(get_ticks() + get_clock_freq());
+    let next_ns = monotonic_time_nanos() + NANOS_PER_SEC;
+    TimeImpl::set_oneshot_timer(next_ns);
+}
+
+#[derive(Clone)]
+pub struct TimeData {
+    pub utime: usize,
+    pub stime: usize,
+    pub last_timestamp_ms: usize,
+}
+
+impl TimeData {
+    pub fn new() -> Self {
+        Self {
+            utime: 0,
+            stime: 0,
+            last_timestamp_ms: get_time_ms(),
+        }
+    }
+
+    fn update_common(&mut self) -> usize {
+        let now = get_time_ms();
+        let diff = now.saturating_sub(self.last_timestamp_ms);
+        self.last_timestamp_ms = now;
+        diff
+    }
+
+    pub fn update_utime(&mut self) { self.utime += self.update_common(); }
+    pub fn update_stime(&mut self) { self.stime += self.update_common(); }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum TimerType {
-    Futex,
-    StoppedTask,
-}
+pub enum TimerType { Futex, StoppedTask }
 
-/// 时钟计数器，与 itimer 间隔定时器不同，用于阻塞唤醒进程
 pub struct TimerCondVar {
     pub expire: Timespec,
     pub task: Weak<TaskControlBlock>,
     pub kind: TimerType,
-    pub extra_data: usize, // 一个计时器服务调用者自行决定用途的额外字段
+    pub extra_data: usize,
 }
+
 impl PartialEq for TimerCondVar {
-    fn eq(&self, other: &Self) -> bool {
-        self.expire == other.expire
-    }
+    fn eq(&self, other: &Self) -> bool { self.expire == other.expire }
 }
 impl Eq for TimerCondVar {}
-impl PartialOrd for TimerCondVar {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let a = -(self.expire.to_tick() as isize);
-        let b = -(other.expire.to_tick() as isize);
-        Some(a.cmp(&b))
-    }
-}
+
 impl Ord for TimerCondVar {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
+        other.expire.cmp(&self.expire)
+    }
+}
+impl PartialOrd for TimerCondVar {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
 pub static TIMERS: Lazy<Mutex<BinaryHeap<TimerCondVar>>> =
-    Lazy::new(|| Mutex::new(BinaryHeap::<TimerCondVar>::new()));
-
-/// 这里的futex_key指的是futex的版本号
-/// futex模块用它来区分每一次不同的futex Wait
-pub fn add_futex_timer(expire: Timespec, task: &Arc<TaskControlBlock>, futex_key: usize) {
-    let mut timers = TIMERS.lock();
-    debug!("add futex timer task {} {}", task.pid(), task.tid());
-    timers.push(TimerCondVar {
-        expire,
-        task: Arc::downgrade(&task),
-        kind: TimerType::Futex,
-        extra_data: futex_key,
-    });
-}
-
-pub fn add_stopped_task_timer(expire: Timespec, task: Arc<TaskControlBlock>) {
-    let mut timers = TIMERS.lock();
-    timers.push(TimerCondVar {
-        expire,
-        task: Arc::downgrade(&task),
-        kind: TimerType::StoppedTask,
-        extra_data: 0,
-    });
-}
+    Lazy::new(|| Mutex::new(BinaryHeap::new()));
 
 pub fn check_futex_timer() {
     let mut timers = TIMERS.lock();
     let current = get_time_spec();
+    
     while let Some(timer) = timers.peek() {
-        // debug!("expire={:?}, current={:?}", timer.expire, current);
         if timer.expire <= current {
             if let Some(task) = timer.task.upgrade() {
-                debug!("[check_timer] wake up task {} {}", task.pid(), task.tid());
                 if timer.kind == TimerType::Futex {
-                    // 调用 wakeup_task 唤醒超时线程
-                    handle_timer(Arc::clone(&task), timer.extra_data);
-                } else if timer.kind == TimerType::StoppedTask {
-                    todo!()
-                    // wakeup_stopped_task(Arc::clone(&task));
+                    handle_timer(task, timer.extra_data);
                 }
             }
             timers.pop();
@@ -418,4 +164,26 @@ pub fn check_futex_timer() {
             break;
         }
     }
+}
+
+/// 系统启动时距离 Unix Epoch 的偏移量（纳秒）
+static EPOCH_OFFSET_NANOS: AtomicU64 = AtomicU64::new(1758325855 * 1_000_000_000);
+
+/// 获取开机后的单调时间（纳秒）
+pub fn monotonic_time_nanos() -> u64 {
+    TimeImpl::ticks_to_nanos(TimeImpl::current_ticks())
+}
+
+/// 获取实时时间（纳秒）
+pub fn wall_time_nanos() -> u64 {
+    // 实时时间 = 单调时间 + 偏移量
+    monotonic_time_nanos() + EPOCH_OFFSET_NANOS.load(Ordering::Relaxed)
+}
+
+
+pub fn set_wall_time(now_nanos: u64) {
+    let monotonic = monotonic_time_nanos();
+    // 计算新的偏移量：偏移量 = 真实当前时间 - 单调时间
+    let new_offset = now_nanos.saturating_sub(monotonic);
+    EPOCH_OFFSET_NANOS.store(new_offset, Ordering::Relaxed);
 }
