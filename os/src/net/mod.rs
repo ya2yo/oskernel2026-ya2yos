@@ -1,13 +1,11 @@
-//! [ArceOS](https://github.com/rcore-os/arceos) network module.
+//! 本模块来源于ArceOS 网络模块。
 //!
-//! It provides unified networking primitives for TCP/UDP communication
-//! using various underlying network stacks. Currently, only [smoltcp] is
-//! supported.
 //!
-//! # Organization
-//!
-//! - [`tcp::TcpSocket`]: A TCP socket that provides POSIX-like APIs.
-//! - [`udp::UdpSocket`]: A UDP socket that provides POSIX-like APIs.
+//! # 初始化流程
+//! 1. 系统启动时探测到 VirtIO 网络设备。
+//! 2. 调用 [`init_network`] 传入探测到的设备容器。
+//! 3. 配置环回接口 (lo) 和以太网接口 (eth0)。
+//! 4. 设置默认路由规则。
 //!
 //! [smoltcp]: https://github.com/smoltcp-rs/smoltcp
 
@@ -40,8 +38,7 @@ mod wrapper;
 
 use alloc::{borrow::ToOwned, boxed::Box};
 use crate::drivers::DeviceContainer;
-use crate::drivers::VirtIoBlkDev;
-use crate::drivers::VirtIoBlkDev2;
+use crate::drivers::virtio_net::VirtIoNetDevImpl;
 use spin::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::{Lazy, Once};
@@ -55,12 +52,14 @@ use self::{
     service::Service,
     wrapper::SocketSetWrapper,
 };
-
+/// 全局监听表，用于跟踪所有处于监听状态的套接字。
 static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
+/// 全局套接字集合，管理所有活跃的网络连接。
 static SOCKET_SET: Lazy<SocketSetWrapper> = Lazy::new(SocketSetWrapper::new);
-
+/// 网络服务核心单例，负责接口调度和协议栈处理。
 static SERVICE: Once<Mutex<Service>> = Once::new();
-
+/// 获取网络服务实例的互斥锁。
+/// 如果在调用 `init_network` 之前调用此函数，将会触发 panic。
 fn get_service() -> spin::MutexGuard<'static, Service> {
     SERVICE
         .get()
@@ -68,13 +67,23 @@ fn get_service() -> spin::MutexGuard<'static, Service> {
         .lock()
 }
 
-/// Initializes the network subsystem by NIC devices.
-pub fn init_network(mut net_devs: DeviceContainer<AxNetDevice>) {
+/// 初始化网络子系统。
+///
+/// 该函数执行以下操作：
+/// 1. 初始化路由管理器。
+/// 2. 注册并配置环回接口 (Loopback, 127.0.0.1)。
+/// 3. 从 `net_devs` 容器中提取一个物理/虚拟网卡（如果存在），配置为 `eth0`。
+/// 4. 根据 `consts` 中的配置设置 IP 地址、子网掩码及默认网关。
+/// 5. 启动全局网络服务单例。
+///
+/// # 参数
+/// - `net_devs`: 包含探测到的网络设备驱动实例的容器。
+pub fn init_network(mut net_devs: DeviceContainer<VirtIoNetDevImpl>) {
     info!("Initialize network subsystem...");
 
     let mut router = Router::new();
     let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
-
+    // 1. 配置环回接口 (Loopback)
     let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
     router.add_rule(Rule::new(
         lo_ip.into(),
@@ -82,7 +91,7 @@ pub fn init_network(mut net_devs: DeviceContainer<AxNetDevice>) {
         lo_dev,
         lo_ip.address().into(),
     ));
-
+    // 2. 配置物理接口 (Ethernet)
     let eth0_ip = if let Some(dev) = net_devs.take_one() {
         info!("  use NIC 0: {:?}", dev.device_name());
 
@@ -94,7 +103,7 @@ pub fn init_network(mut net_devs: DeviceContainer<AxNetDevice>) {
             dev,
             eth0_ip,
         )));
-
+        // 添加默认路由规则
         router.add_rule(Rule::new(
             Ipv4Cidr::new(Ipv4Address::UNSPECIFIED, 0).into(),
             Some(GATEWAY.parse().expect("Invalid gateway address")),
@@ -111,11 +120,11 @@ pub fn init_network(mut net_devs: DeviceContainer<AxNetDevice>) {
         warn!("  No network device found!");
         None
     };
-
+    // 打印当前所有路由接口
     for dev in &router.devices {
         info!("Device: {}", dev.name());
     }
-
+    // 3. 构造并启动服务
     let mut service = Service::new(router);
     service.iface.update_ip_addrs(|ip_addrs| {
         ip_addrs.push(lo_ip.into()).unwrap();
@@ -128,7 +137,7 @@ pub fn init_network(mut net_devs: DeviceContainer<AxNetDevice>) {
 
 /// Init vsock subsystem by vsock devices.
 #[cfg(feature = "vsock")]
-pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
+pub fn init_vsock(mut vsock_devs: DeviceContainer<VirtIoNetDevImpl>) {
     use self::device::register_vsock_device;
     info!("Initialize vsock subsystem...");
     if let Some(dev) = vsock_devs.take_one() {
@@ -141,7 +150,13 @@ pub fn init_vsock(mut vsock_devs: AxDeviceContainer<AxVsockDevice>) {
     }
 }
 
-/// Poll all network interfaces for new events.
+/// 轮询网络接口以处理待办事件。
+///
+/// 该函数必须在系统的外层循环或中断处理中被定期调用。
+/// 它负责触发 smoltcp 的协议栈处理，包括：
+/// - 从硬件接收缓冲区读取数据包。
+/// - 处理重传定时器。
+/// - 将待发送的数据包写入硬件。
 pub fn poll_interfaces() {
     while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
 }

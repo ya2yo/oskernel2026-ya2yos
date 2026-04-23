@@ -8,7 +8,7 @@ use core::{
 use crate::utils::{SysErrNo,SysResult};
 use axio::prelude::*;
 use axpoll::{IoEvents, PollSet, Pollable};
-use axsync::Mutex;
+use spin::Mutex;
 use smoltcp::{
     iface::SocketHandle,
     socket::tcp as smol,

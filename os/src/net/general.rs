@@ -4,8 +4,8 @@ use core::{
     time::Duration,
 };
 
-use crate::utils::SysResult;
-use axpoll::{IoEvents, Pollable};
+use crate::{fs::File, utils::SysResult};
+use crate::syscall::PollEvents;
 use axtask::future::{block_on, poll_io, timeout};
 
 use super::{
@@ -73,30 +73,30 @@ impl GeneralOptions {
         get_service().register_waker(self.device_mask(), waker);
     }
 
-    pub fn send_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+    pub fn send_poller<P: File, F: FnMut() -> SysResult<T>, T>(
         &self,
         pollable: &P,
         f: F,
-    ) -> AxResult<T> {
+    ) -> SysResult<T> {
         block_on(timeout(
             self.send_timeout(),
-            poll_io(pollable, IoEvents::OUT, self.nonblocking(), f),
+            poll_io(pollable, PollEvents::OUT, self.nonblocking(), f),
         ))?
     }
 
-    pub fn recv_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+    pub fn recv_poller<P: File, F: FnMut() -> SysResult<T>, T>(
         &self,
         pollable: &P,
         f: F,
-    ) -> AxResult<T> {
+    ) -> SysResult<T> {
         block_on(timeout(
             self.recv_timeout(),
-            poll_io(pollable, IoEvents::IN, self.nonblocking(), f),
+            poll_io(pollable, PollEvents::IN, self.nonblocking(), f),
         ))?
     }
 }
 impl Configurable for GeneralOptions {
-    fn get_option_inner(&self, option: &mut GetSocketOption) -> AxResult<bool> {
+    fn get_option_inner(&self, option: &mut GetSocketOption) -> SysResult<bool> {
         use GetSocketOption as O;
         match option {
             O::Error(error) => {
@@ -120,7 +120,7 @@ impl Configurable for GeneralOptions {
         Ok(true)
     }
 
-    fn set_option_inner(&self, option: SetSocketOption) -> AxResult<bool> {
+    fn set_option_inner(&self, option: SetSocketOption) -> SysResult<bool> {
         use SetSocketOption as O;
 
         match option {
