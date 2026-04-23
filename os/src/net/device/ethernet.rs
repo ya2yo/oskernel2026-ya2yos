@@ -1,3 +1,4 @@
+//! 以太网设备驱动层
 use alloc::{string::String, vec};
 use core::task::Waker;
 
@@ -20,23 +21,26 @@ use crate::{
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
 
+/// 邻居表项，存储 IP 地址对应的 MAC 地址及其过期时间
 struct Neighbor {
     hardware_address: EthernetAddress,
     expires_at: Instant,
 }
 
+/// 以太网设备结构体
 pub struct EthernetDevice {
     name: String,
-    inner: AxNetDevice,
-    neighbors: HashMap<IpAddress, Option<Neighbor>>,
-    ip: Ipv4Cidr,
-
+    inner: AxNetDevice,                                 // 实际的硬件驱动接口
+    neighbors: HashMap<IpAddress, Option<Neighbor>>,    // ARP 缓存表：None 表示正在请求中   
+    ip: Ipv4Cidr,                                       // 本机的 IP 地址配置
+    /// 待发送队列：当目标 MAC 地址未知（正在进行 ARP 查询）时，IP 包暂时存在这里
     pending_packets: PacketBuffer<'static, IpAddress>,
 }
 impl EthernetDevice {
-    const NEIGHBOR_TTL: Duration = Duration::from_secs(60);
+    const NEIGHBOR_TTL: Duration = Duration::from_secs(60); // 有效期60s
 
     pub fn new(name: String, inner: AxNetDevice, ip: Ipv4Cidr) -> Self {
+        // 初始化待发送缓冲区
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
             vec![
@@ -60,6 +64,7 @@ impl EthernetDevice {
         EthernetAddress(self.inner.mac_address().0)
     }
 
+    /// 内部辅助函数：封装以太网头部并发送数据
     fn send_to<F>(
         inner: &mut AxNetDevice,
         dst: EthernetAddress,
@@ -69,6 +74,7 @@ impl EthernetDevice {
     ) where
         F: FnOnce(&mut [u8]),
     {
+        // 回收驱动中已发送完毕的缓冲区
         if let Err(err) = inner.recycle_tx_buffers() {
             warn!("recycle_tx_buffers failed: {:?}", err);
             return;

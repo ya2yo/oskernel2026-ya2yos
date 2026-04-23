@@ -12,6 +12,7 @@ pub use loopback::*;
 #[cfg(feature = "vsock")]
 pub use vsock::*;
 
+/// 设备抽象层
 pub trait Device: Send + Sync {
     fn name(&self) -> &str;
 
