@@ -8,15 +8,16 @@ use core::{
 
 #[cfg(feature = "vsock")]
 use axdriver::prelude::VsockAddr;
-use axerrno::{AxError, AxResult, LinuxError};
-use axio::prelude::*;
-use axpoll::{IoEvents, Pollable};
+
+use crate::{fs::File, utils::{SysErrNo,SysResult}};
+// use axio::prelude::*;
+use crate::syscall::PollEvents;
 use bitflags::bitflags;
 use enum_dispatch::enum_dispatch;
 
 #[cfg(feature = "vsock")]
 use crate::vsock::VsockSocket;
-use crate::{
+use crate::net::{
     options::{Configurable, GetSocketOption, SetSocketOption},
     tcp::TcpSocket,
     udp::UdpSocket,
@@ -37,31 +38,31 @@ pub enum SocketAddrEx {
 
 impl SocketAddrEx {
     /// Convert into an IP socket address, or return an error if not IP.
-    pub fn into_ip(self) -> AxResult<SocketAddr> {
+    pub fn into_ip(self) -> SysErrResult<SocketAddr> {
         match self {
             SocketAddrEx::Ip(addr) => Ok(addr),
-            SocketAddrEx::Unix(_) => Err(AxError::from(LinuxError::EAFNOSUPPORT)),
+            SocketAddrEx::Unix(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
             #[cfg(feature = "vsock")]
-            SocketAddrEx::Vsock(_) => Err(AxError::from(LinuxError::EAFNOSUPPORT)),
+            SocketAddrEx::Vsock(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
         }
     }
 
     /// Convert into a Unix socket address, or return an error if not Unix.
-    pub fn into_unix(self) -> AxResult<UnixSocketAddr> {
+    pub fn into_unix(self) -> SysErrResult<UnixSocketAddr> {
         match self {
             SocketAddrEx::Unix(addr) => Ok(addr),
-            SocketAddrEx::Ip(_) => Err(AxError::from(LinuxError::EAFNOSUPPORT)),
+            SocketAddrEx::Ip(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
             #[cfg(feature = "vsock")]
-            SocketAddrEx::Vsock(_) => Err(AxError::from(LinuxError::EAFNOSUPPORT)),
+            SocketAddrEx::Vsock(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
         }
     }
 
     /// Convert into a vsock address, or return an error if not vsock.
     #[cfg(feature = "vsock")]
-    pub fn into_vsock(self) -> AxResult<VsockAddr> {
+    pub fn into_vsock(self) -> SysErrResult<VsockAddr> {
         match self {
-            SocketAddrEx::Ip(_) => Err(AxError::from(LinuxError::EAFNOSUPPORT)),
-            SocketAddrEx::Unix(_) => Err(AxError::from(LinuxError::EAFNOSUPPORT)),
+            SocketAddrEx::Ip(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
+            SocketAddrEx::Unix(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
             SocketAddrEx::Vsock(addr) => Ok(addr),
         }
     }
@@ -154,31 +155,31 @@ impl Shutdown {
 #[enum_dispatch]
 pub trait SocketOps: Configurable {
     /// Binds an unbound socket to the given address and port.
-    fn bind(&self, local_addr: SocketAddrEx) -> AxResult;
+    fn bind(&self, local_addr: SocketAddrEx) -> SysErrResult;
     /// Connects the socket to a remote address.
-    fn connect(&self, remote_addr: SocketAddrEx) -> AxResult;
+    fn connect(&self, remote_addr: SocketAddrEx) -> SysErrResult;
 
     /// Starts listening on the bound address and port.
-    fn listen(&self) -> AxResult {
-        Err(AxError::OperationNotSupported)
+    fn listen(&self) -> SysErrResult {
+        Err(SysErrNo::OperationNotSupported)
     }
     /// Accepts a connection on a listening socket, returning a new socket.
-    fn accept(&self) -> AxResult<Socket> {
-        Err(AxError::OperationNotSupported)
+    fn accept(&self) -> SysErrResult<Socket> {
+        Err(SysErrNo::OperationNotSupported)
     }
 
     /// Send data to the socket, optionally to a specific address.
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize>;
+    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> SysErrResult<usize>;
     /// Receive data from the socket.
-    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize>;
+    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> SysErrResult<usize>;
 
     /// Get the local endpoint of the socket.
-    fn local_addr(&self) -> AxResult<SocketAddrEx>;
+    fn local_addr(&self) -> SysErrResult<SocketAddrEx>;
     /// Get the remote endpoint of the socket.
-    fn peer_addr(&self) -> AxResult<SocketAddrEx>;
+    fn peer_addr(&self) -> SysErrResult<SocketAddrEx>;
 
     /// Shutdown the socket, closing the connection.
-    fn shutdown(&self, how: Shutdown) -> AxResult;
+    fn shutdown(&self, how: Shutdown) -> SysErrResult;
 }
 
 /// Network socket abstraction.
@@ -195,8 +196,8 @@ pub enum Socket {
     Vsock(VsockSocket),
 }
 
-impl Pollable for Socket {
-    fn poll(&self) -> IoEvents {
+impl File for Socket {
+    fn poll(&self) -> PollEvents {
         match self {
             Socket::Tcp(tcp) => tcp.poll(),
             Socket::Udp(udp) => udp.poll(),
@@ -206,7 +207,7 @@ impl Pollable for Socket {
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    fn register(&self, context: &mut Context<'_>, events: PollEvents) {
         match self {
             Socket::Tcp(tcp) => tcp.register(context, events),
             Socket::Udp(udp) => udp.register(context, events),

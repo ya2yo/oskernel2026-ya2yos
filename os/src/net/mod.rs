@@ -39,8 +39,9 @@ pub mod vsock;
 mod wrapper;
 
 use alloc::{borrow::ToOwned, boxed::Box};
-
-use axdriver::{AxDeviceContainer, prelude::*};
+use crate::drivers::DeviceContainer;
+use crate::drivers::VirtIoBlkDev;
+use crate::drivers::VirtIoBlkDev2;
 use spin::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::{Lazy, Once};
@@ -60,7 +61,7 @@ static SOCKET_SET: Lazy<SocketSetWrapper> = Lazy::new(SocketSetWrapper::new);
 
 static SERVICE: Once<Mutex<Service>> = Once::new();
 
-fn get_service() -> axsync::MutexGuard<'static, Service> {
+fn get_service() -> spin::MutexGuard<'static, Service> {
     SERVICE
         .get()
         .expect("Network service not initialized")
@@ -68,7 +69,7 @@ fn get_service() -> axsync::MutexGuard<'static, Service> {
 }
 
 /// Initializes the network subsystem by NIC devices.
-pub fn init_network(mut net_devs: AxDeviceContainer<AxNetDevice>) {
+pub fn init_network(mut net_devs: DeviceContainer<AxNetDevice>) {
     info!("Initialize network subsystem...");
 
     let mut router = Router::new();

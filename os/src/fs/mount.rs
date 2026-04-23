@@ -9,6 +9,18 @@ pub struct MountTable {
 }
 
 impl MountTable {
+    /// 执行挂载操作
+    /// 
+    /// # 参数
+    /// - `special`: 源设备路径（如 "/dev/sdc1" 或 "none"）
+    /// - `dir`: 目标挂载点（如 "/mnt"）
+    /// - `fstype`: 文件系统类型（如 "vfat", "ext2"）
+    /// - `flags`: 挂载标志位（如只读、重新挂载等）
+    /// - `data`: 挂载所需的额外参数字符串（通常由具体文件系统解析）
+    ///
+    /// # 返回值
+    /// - `0`: 成功
+    /// - `-1`: 挂载表已满或失败
     pub fn mount(
         &mut self,
         special: String,
@@ -41,14 +53,21 @@ impl MountTable {
         self.mnt_list.push((special, dir, fstype, flags));
         0
     }
-
+    /// 查询某个目录是否是挂载点
+    /// 
+    /// # 返回
+    /// 如果该目录已挂载，返回该项信息的克隆，否则返回 None
     pub fn got_mount(&mut self, dir: String) -> Option<(String, String, String, u32)> {
         if let Some(mount) = self.mnt_list.iter().find(|&(_, d, _, _)| *d == dir) {
             return Some((*mount).clone());
         }
         return None;
     }
-
+    /// 执行卸载操作
+    /// 
+    /// # 参数
+    /// - `special`: 在标准 Linux 中通常是路径，但此实现中可能是设备名或挂载点路径
+    /// - `flags`: 卸载标志（如 MNT_FORCE 等）
     pub fn umount(&mut self, special: String, flags: u32) -> isize {
         let len = self.mnt_list.len();
 
@@ -66,7 +85,11 @@ impl MountTable {
         -1
     }
 }
-
+/// 全局单例挂载表
+/// 
+/// - `Lazy`: 确保在第一次使用时才初始化内存。
+/// - `Arc`: 原子引用计数，允许跨线程共享该实例。
+/// - `Mutex`: 互斥锁，确保在多核并发操作挂载表时不会出现竞态条件。
 pub static MNT_TABLE: Lazy<Arc<Mutex<MountTable>>> = Lazy::new(|| {
     let mnt_table = MountTable {
         mnt_list: Vec::new(),

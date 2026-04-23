@@ -1,5 +1,6 @@
 mod blk;
 mod pci;
+mod net;
 use alloc::slice;
 pub use blk::*;
 use log::debug;

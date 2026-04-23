@@ -18,7 +18,7 @@ pub use devfs::*;
 pub use ext4_lw::{superblock_fs_stat, superblock_ls, superblock_root_inode, superblock_sync};
 pub use fs_info::FsInfo;
 pub use fstruct::*;
-pub mod socket_defs;
+// pub mod socket_defs;
 use log::debug;
 pub use mount::MNT_TABLE;
 pub use pipe::{make_pipe, Pipe};
