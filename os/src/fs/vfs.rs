@@ -126,13 +126,13 @@ pub trait File: Send + Sync {
     fn fstat(&self) -> Kstat{
         unimplemented!("not implemented!")
     }
-    /// ppoll处理
-    fn poll(&self, _events: PollEvents) -> PollEvents {
-        unimplemented!()
-    }
     /// 设置偏移量,并非所有文件都支持
     fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
         unimplemented!("not support!");
+    }
+    /// ppoll处理
+    fn poll(&self, _events: PollEvents) -> PollEvents {
+        unimplemented!()
     }
     /// Registers wakers for I/O events.
     fn register(&self, context: &mut Context<'_>, events: PollEvents){
