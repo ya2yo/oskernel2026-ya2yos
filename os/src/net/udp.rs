@@ -4,10 +4,9 @@ use core::{
     task::Context,
 };
 
-use axerrno::{AxError, AxResult, ax_bail, ax_err_type};
-use axio::prelude::*;
-use axpoll::{IoEvents, Pollable};
-use axsync::Mutex;
+use crate::utils::{SysErrNo,SysResult};
+use crate::syscall::PollEvents;
+use spin::Mutex;
 use smoltcp::{
     iface::SocketHandle,
     phy::PacketMeta,
@@ -17,13 +16,8 @@ use smoltcp::{
 };
 use spin::RwLock;
 
-use crate::{
-    RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, SocketAddrEx, SocketOps,
-    consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
-    general::GeneralOptions,
-    get_service,
-    options::{Configurable, GetSocketOption, SetSocketOption},
-    poll_interfaces,
+use super::{
+    consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN}, fs::File, general::GeneralOptions, get_service, options::{Configurable, GetSocketOption, SetSocketOption}, poll_interfaces, RecvFlags, RecvOptions, SendOptions, Shutdown, SocketAddrEx, SocketOps, SOCKET_SET
 };
 
 pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
@@ -311,23 +305,23 @@ impl SocketOps for UdpSocket {
     }
 }
 
-impl Pollable for UdpSocket {
-    fn poll(&self) -> IoEvents {
+impl File for UdpSocket {
+    fn poll(&self) -> PollEvents {
         poll_interfaces();
         if self.local_addr.read().is_none() {
-            return IoEvents::empty();
+            return PollEvents::empty();
         }
 
-        let mut events = IoEvents::empty();
+        let mut events = PollEvents::empty();
         self.with_smol_socket(|socket| {
-            events.set(IoEvents::IN, socket.can_recv());
-            events.set(IoEvents::OUT, socket.can_send());
+            events.set(PollEvents::IN, socket.can_recv());
+            events.set(PollEvents::OUT, socket.can_send());
         });
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        if events.intersects(IoEvents::IN | IoEvents::OUT) {
+    fn register(&self, context: &mut Context<'_>, events: PollEvents) {
+        if events.intersects(PollEvents::IN | PollEvents::OUT) {
             self.general.register_waker(context.waker());
         }
     }

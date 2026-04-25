@@ -1,7 +1,7 @@
 use alloc::vec;
 
-use axerrno::{AxError, AxResult};
-use axsync::Mutex;
+use crate::utils::{SysErrNo,SysResult};
+use spin::Mutex;
 use event_listener::Event;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
@@ -47,7 +47,7 @@ impl<'a> SocketSetWrapper<'a> {
         f(socket)
     }
 
-    pub fn bind_check(&self, addr: IpAddress, port: u16) -> AxResult {
+    pub fn bind_check(&self, addr: IpAddress, port: u16) -> SysResult {
         if port == 0 {
             return Ok(());
         }
@@ -59,12 +59,12 @@ impl<'a> SocketSetWrapper<'a> {
                 Socket::Tcp(s) => {
                     let local_addr = s.get_bound_endpoint();
                     if local_addr.addr == Some(addr) && local_addr.port == port {
-                        return Err(AxError::AddrInUse);
+                        return Err(SysErrNo::EADDRINUSE);
                     }
                 }
                 Socket::Udp(s) => {
                     if s.endpoint().addr == Some(addr) && s.endpoint().port == port {
-                        return Err(AxError::AddrInUse);
+                        return Err(SysErrNo::EADDRINUSE);
                     }
                 }
                 _ => continue,

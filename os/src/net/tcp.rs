@@ -491,7 +491,7 @@ impl File for TcpSocket {
     fn write(&self, buf: crate::mm::UserBuffer) -> crate::utils::SyscallRet {
         self.send(buf, SendOptions::default())
     }
-    fn poll(&self) -> PollEvents {
+    fn poll(&self, _events:PollEvents) -> PollEvents {
         poll_interfaces();
         let mut events = match self.state() {
             State::Connecting => self.poll_connect(),

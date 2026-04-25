@@ -199,7 +199,7 @@ pub enum Socket {
 impl File for Socket {
     fn poll(&self) -> PollEvents {
         match self {
-            Socket::Tcp(tcp) => tcp.poll(),
+            Socket::Tcp(tcp) => tcp.poll(PollEvents::empty()),
             Socket::Udp(udp) => udp.poll(),
             Socket::Unix(unix) => unix.poll(),
             #[cfg(feature = "vsock")]

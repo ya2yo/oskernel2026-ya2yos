@@ -8,7 +8,7 @@ use smoltcp::{
     wire::{IpAddress, IpCidr, IpProtocol, IpVersion, Ipv4Packet, Ipv6Packet, TcpPacket},
 };
 
-use crate::{
+use super::{
     LISTEN_TABLE,
     consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::Device,
