@@ -45,7 +45,7 @@ pub use manager::*;
 use spin::Lazy;
 use switch::__abandon;
 pub use sysinfo::Sysinfo;
-pub use task::{Process, RobustList, TaskControlBlock, TaskStatus};
+pub use task::{Process, RobustList, TaskControlBlock, TaskStatus, TaskRef, WeakTaskRef};
 
 pub use aux::*;
 pub use processor::{

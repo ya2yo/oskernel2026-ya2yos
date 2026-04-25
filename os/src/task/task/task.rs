@@ -600,6 +600,11 @@ impl TaskControlBlock {
             }
         }
     }
+    pub fn set_status(&self,status:TaskStatus){
+        let mut task_inner=self.inner_lock();
+        task_inner.task_status=status;
+        drop(task_inner);
+    }
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -610,3 +615,5 @@ pub enum TaskStatus {
     Blocked,
     Stopped,
 }
+pub type TaskRef=Arc<TaskControlBlock>;
+pub type WeakTaskRef = Weak<TaskControlBlock>;

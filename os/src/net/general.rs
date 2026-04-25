@@ -4,9 +4,10 @@ use core::{
     time::Duration,
 };
 
-use crate::{fs::File, utils::SysResult};
+use crate::{fs::File, task::current_task, utils::SysResult};
 use crate::syscall::PollEvents;
 use crate::task::schedule;
+use crate::utils::SysErrNo;
 
 use super::{
     get_service,
@@ -85,7 +86,9 @@ impl GeneralOptions {
                     if self.nonblocking() {
                         return Err(SysErrNo::EAGAIN);
                     }
-                    let task = axtask::current();
+                    let task = current_task().unwrap_or_else(||{
+                        panic!("No current_task!Error occur at net.rs/general.rs:90, send_poller");
+                    });
                     task.set_status(TaskStatus::Blocked);
                     pollable.add_waiter(task.clone());
                     self.schedule(task.get_context_ptr());
