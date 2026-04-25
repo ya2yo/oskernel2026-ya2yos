@@ -30,10 +30,10 @@ pub mod tcp;
 /// UDP socket implementation.
 pub mod udp;
 /// Unix domain socket implementation.
-pub mod unix;
+// pub mod unix;
 /// Vsock socket implementation.
-#[cfg(feature = "vsock")]
-pub mod vsock;
+// #[cfg(feature = "vsock")]
+// pub mod vsock;
 mod wrapper;
 
 use alloc::{borrow::ToOwned, boxed::Box};
@@ -135,20 +135,20 @@ pub fn init_network(mut net_devs: DeviceContainer<VirtIoNetDevImpl>) {
     SERVICE.call_once(|| Mutex::new(service));
 }
 
-/// Init vsock subsystem by vsock devices.
-#[cfg(feature = "vsock")]
-pub fn init_vsock(mut vsock_devs: DeviceContainer<VirtIoNetDevImpl>) {
-    use self::device::register_vsock_device;
-    info!("Initialize vsock subsystem...");
-    if let Some(dev) = vsock_devs.take_one() {
-        info!("  use vsock 0: {:?}", dev.device_name());
-        if let Err(e) = register_vsock_device(dev) {
-            warn!("Failed to initialize vsock device: {:?}", e);
-        }
-    } else {
-        warn!("  No vsock device found!");
-    }
-}
+// /// Init vsock subsystem by vsock devices.
+// #[cfg(feature = "vsock")]
+// pub fn init_vsock(mut vsock_devs: DeviceContainer<VirtIoNetDevImpl>) {
+//     use self::device::register_vsock_device;
+//     info!("Initialize vsock subsystem...");
+//     if let Some(dev) = vsock_devs.take_one() {
+//         info!("  use vsock 0: {:?}", dev.device_name());
+//         if let Err(e) = register_vsock_device(dev) {
+//             warn!("Failed to initialize vsock device: {:?}", e);
+//         }
+//     } else {
+//         warn!("  No vsock device found!");
+//     }
+// }
 
 /// 轮询网络接口以处理待办事件。
 ///

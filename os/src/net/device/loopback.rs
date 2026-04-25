@@ -1,14 +1,14 @@
 use alloc::vec;
 use core::task::Waker;
 
-use axpoll::PollSet;
+use crate::utils::PollSet;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
     time::Instant,
     wire::IpAddress,
 };
 
-use crate::{
+use super::super::{
     consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::Device,
 };

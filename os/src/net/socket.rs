@@ -6,8 +6,6 @@ use core::{
     task::Context,
 };
 
-#[cfg(feature = "vsock")]
-use axdriver::prelude::VsockAddr;
 
 use crate::{fs::File, utils::{SysErrNo,SysResult}};
 // use axio::prelude::*;
@@ -15,25 +13,17 @@ use crate::syscall::PollEvents;
 use bitflags::bitflags;
 use enum_dispatch::enum_dispatch;
 
-#[cfg(feature = "vsock")]
-use crate::vsock::VsockSocket;
 use crate::net::{
     options::{Configurable, GetSocketOption, SetSocketOption},
     tcp::TcpSocket,
     udp::UdpSocket,
-    unix::{UnixSocket, UnixSocketAddr},
 };
 
-/// Extended socket address supporting IP, Unix, and vsock address families.
+/// Extended socket address supporting IP families.
 #[derive(Clone, Debug)]
 pub enum SocketAddrEx {
     /// An IP (v4/v6) socket address.
     Ip(SocketAddr),
-    /// A Unix domain socket address.
-    Unix(UnixSocketAddr),
-    /// A vsock socket address.
-    #[cfg(feature = "vsock")]
-    Vsock(VsockAddr),
 }
 
 impl SocketAddrEx {
@@ -41,29 +31,6 @@ impl SocketAddrEx {
     pub fn into_ip(self) -> SysErrResult<SocketAddr> {
         match self {
             SocketAddrEx::Ip(addr) => Ok(addr),
-            SocketAddrEx::Unix(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
-            #[cfg(feature = "vsock")]
-            SocketAddrEx::Vsock(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
-        }
-    }
-
-    /// Convert into a Unix socket address, or return an error if not Unix.
-    pub fn into_unix(self) -> SysErrResult<UnixSocketAddr> {
-        match self {
-            SocketAddrEx::Unix(addr) => Ok(addr),
-            SocketAddrEx::Ip(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
-            #[cfg(feature = "vsock")]
-            SocketAddrEx::Vsock(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
-        }
-    }
-
-    /// Convert into a vsock address, or return an error if not vsock.
-    #[cfg(feature = "vsock")]
-    pub fn into_vsock(self) -> SysErrResult<VsockAddr> {
-        match self {
-            SocketAddrEx::Ip(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
-            SocketAddrEx::Unix(_) => Err(SysErrNo::from(SysErrNo::EAFNOSUPPORT)),
-            SocketAddrEx::Vsock(addr) => Ok(addr),
         }
     }
 }
@@ -189,11 +156,6 @@ pub enum Socket {
     Udp(UdpSocket),
     /// TCP socket.
     Tcp(TcpSocket),
-    /// Unix domain socket.
-    Unix(UnixSocket),
-    /// Virtio socket.
-    #[cfg(feature = "vsock")]
-    Vsock(VsockSocket),
 }
 
 impl File for Socket {
@@ -201,9 +163,6 @@ impl File for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.poll(PollEvents::empty()),
             Socket::Udp(udp) => udp.poll(),
-            Socket::Unix(unix) => unix.poll(),
-            #[cfg(feature = "vsock")]
-            Socket::Vsock(vsock) => vsock.poll(),
         }
     }
 
@@ -211,9 +170,6 @@ impl File for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.register(context, events),
             Socket::Udp(udp) => udp.register(context, events),
-            Socket::Unix(unix) => unix.register(context, events),
-            #[cfg(feature = "vsock")]
-            Socket::Vsock(vsock) => vsock.register(context, events),
         }
     }
 }

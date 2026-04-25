@@ -3,16 +3,15 @@ use core::{
     pin::Pin,
     task::{Context, Waker},
 };
-
-use axhal::time::{NANOS_PER_MICROS, TimeValue, wall_time_nanos};
-use axtask::future::sleep_until;
+use crate::task::sleep_until;
+use crate::timer::{Timespec,NANOS_PER_MICROS, wall_time_nanos};
 use smoltcp::{
     iface::{Interface, SocketSet},
     time::Instant,
     wire::{HardwareAddress, IpAddress, IpListenEndpoint},
 };
 
-use crate::{SOCKET_SET, router::Router};
+use super::{SOCKET_SET, router::Router};
 
 fn now() -> Instant {
     Instant::from_micros_const((wall_time_nanos() / NANOS_PER_MICROS) as i64)

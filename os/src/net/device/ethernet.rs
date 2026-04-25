@@ -1,9 +1,6 @@
 //! 以太网设备驱动层
 use alloc::{string::String, vec};
 use core::task::Waker;
-
-use axdriver::prelude::*;
-use axtask::future::register_irq_waker;
 use hashbrown::HashMap;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
@@ -14,7 +11,7 @@ use smoltcp::{
     },
 };
 
-use crate::{
+use super::super::{
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
     device::Device,
 };

@@ -6,7 +6,7 @@ use core::{
 
 use crate::{fs::File, utils::SysResult};
 use crate::syscall::PollEvents;
-use axtask::future::{block_on, poll_io, timeout};
+use crate::task::schedule;
 
 use super::{
     get_service,
@@ -78,10 +78,21 @@ impl GeneralOptions {
         pollable: &P,
         f: F,
     ) -> SysResult<T> {
-        block_on(timeout(
-            self.send_timeout(),
-            poll_io(pollable, PollEvents::OUT, self.nonblocking(), f),
-        ))?
+        loop {
+            match f() {
+                Ok(res) => return Ok(res),
+                Err(e) if e == SysErrNo::EAGAIN => {
+                    if self.nonblocking() {
+                        return Err(SysErrNo::EAGAIN);
+                    }
+                    let task = axtask::current();
+                    task.set_status(TaskStatus::Blocked);
+                    pollable.add_waiter(task.clone());
+                    self.schedule(task.get_context_ptr());
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     pub fn recv_poller<P: File, F: FnMut() -> SysResult<T>, T>(
@@ -89,10 +100,22 @@ impl GeneralOptions {
         pollable: &P,
         f: F,
     ) -> SysResult<T> {
-        block_on(timeout(
-            self.recv_timeout(),
-            poll_io(pollable, PollEvents::IN, self.nonblocking(), f),
-        ))?
+        loop {
+            match f() {
+                Ok(res) => return Ok(res),
+                Err(e) if e == SysErrNo::EAGAIN => {
+                    if self.nonblocking() {
+                        return Err(SysErrNo::EAGAIN);
+                    }
+                    
+                    let task = axtask::current();
+                    task.set_status(TaskStatus::Blocked);
+                    _pollable.add_waiter(task.clone());
+                    self.schedule(task.get_context_ptr());
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 impl Configurable for GeneralOptions {

@@ -19,6 +19,7 @@ xmas-elf = "0.7.0"
 virtio-drivers= { version="0.2.0" }
 lwext4_rust= {path = "../lwext4_rust"}
 log = "0.4"
+kernel_guard = "0.1"
 spin = "0.9.8"
 hashbrown = "0.12.0"
 num_enum = { version = "0.7.2", default-features = false }
@@ -48,7 +49,6 @@ trace = []          # 启用 trace 级别
 # 定义和架构相关的条件编译
 riscv64 = ["riscv", "sbi-rt"]  # 列表中的库，表示如果启用这个feature则加载这些库
 loongarch64 = ["loongArch64"]
-vsock = []
 
 [profile.release]
 # 在 release 模式下也保留调试信息，用于gdb等调试
