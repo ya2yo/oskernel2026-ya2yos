@@ -30,6 +30,8 @@ event-listener = { version = "4.0", default-features = false }
 smallvec = "1.15.1"
 smoltcp = { git = "https://github.com/starry-os/smoltcp.git", branch = "main"}
 kspin = "0.1"
+futures-util = "0.3.32"
+
 [build-dependencies]
 cfg-if = { version = "1.0.0" }
 
@@ -49,6 +51,7 @@ trace = []          # 启用 trace 级别
 # 定义和架构相关的条件编译
 riscv64 = ["riscv", "sbi-rt"]  # 列表中的库，表示如果启用这个feature则加载这些库
 loongarch64 = ["loongArch64"]
+irq = []
 
 [profile.release]
 # 在 release 模式下也保留调试信息，用于gdb等调试

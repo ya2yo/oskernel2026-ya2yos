@@ -1,7 +1,7 @@
 use core::{future::poll_fn, task::Poll};
 
-use axerrno::{AxError, AxResult};
-use axpoll::{IoEvents, Pollable};
+use crate::utils::{SysResult,SysErrNo};
+use crate::utils::{Pollable, IoEvents};
 
 /// A helper to wrap a synchronous non-blocking I/O function into an
 /// asynchronous function.
@@ -10,26 +10,26 @@ use axpoll::{IoEvents, Pollable};
 ///
 /// * `pollable`: The pollable object to register for I/O events.
 /// * `events`: The I/O events to wait for.
-/// * `non_blocking`: If true, the function will return `AxError::WouldBlock`
+/// * `non_blocking`: If true, the function will return `SysErrNo::WouldBlock`
 ///   immediately when the I/O operation would block.
 /// * `f`: The synchronous non-blocking I/O function to be wrapped. It should
-///   return `AxError::WouldBlock` when the operation would block.
-pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+///   return `SysErrNo::WouldBlock` when the operation would block.
+pub async fn poll_io<P: Pollable, F: FnMut() -> SysResult<T>, T>(
     pollable: &P,
     events: IoEvents,
     non_blocking: bool,
     mut f: F,
-) -> AxResult<T> {
+) -> SysResult<T> {
     super::interruptible(poll_fn(move |cx| match f() {
         Ok(value) => Poll::Ready(Ok(value)),
-        Err(AxError::WouldBlock) => {
+        Err(SysErrNo::EAGAIN) => {
             if non_blocking {
-                return Poll::Ready(Err(AxError::WouldBlock));
+                return Poll::Ready(Err(SysErrNo::EAGAIN));
             }
             pollable.register(cx, events);
             match f() {
                 Ok(value) => Poll::Ready(Ok(value)),
-                Err(AxError::WouldBlock) => Poll::Pending,
+                Err(SysErrNo::EAGAIN) => Poll::Pending,
                 Err(e) => Poll::Ready(Err(e)),
             }
         }
@@ -43,7 +43,7 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
     use alloc::collections::{BTreeMap, btree_map::Entry};
 
-    use axpoll::PollSet;
+    use crate::utils::PollSet;
     use kspin::SpinNoIrq;
 
     static POLL_IRQ: SpinNoIrq<BTreeMap<usize, PollSet>> = SpinNoIrq::new(BTreeMap::new());

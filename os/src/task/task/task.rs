@@ -31,9 +31,11 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+use core::{sync::atomic::AtomicBool, task::Poll};
 use core::mem::size_of;
 use log::debug;
 use spin::{rwlock::RwLock, Mutex, MutexGuard};
+use futures_util::task::AtomicWaker;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RobustList {
@@ -55,6 +57,10 @@ pub struct TaskControlBlock {
     kernel_stack: KernelStackOnHeap,
     pub process: Arc<Process>,
     // mutable
+    // 异步中断/信号同步 
+    pub interrupted: AtomicBool,
+    pub interrupt_waker: AtomicWaker,
+
     inner: Mutex<TaskControlBlockInner>,
 }
 
@@ -213,6 +219,9 @@ impl TaskControlBlock {
             tid: tid_handle,
             kernel_stack,
             process: process.clone(),
+            interrupted:AtomicBool::new(false),
+            interrupted: AtomicBool::new(false),
+            interrupt_waker: AtomicWaker::new(),
             inner: Mutex::new(TaskControlBlockInner {
                 tcb: Weak::new(),
                 trap_cx_ppn: 0.into(),
@@ -374,7 +383,7 @@ impl TaskControlBlock {
         task_inner.user_heappoint = user_hp;
         task_inner.user_heapbottom = user_hp;
     }
-    ///
+    /// 复制进程
     pub fn clone_process(
         self: &Arc<TaskControlBlock>,
         flags: CloneFlags,
@@ -463,6 +472,8 @@ impl TaskControlBlock {
             tid: tid_handle,
             kernel_stack,
             process: process,
+            interrupted: AtomicBool::new(false),
+            interrupt_waker: AtomicWaker::new(),
             inner: Mutex::new(TaskControlBlockInner {
                 tcb: Weak::new(),
                 trap_cx_ppn: 0.into(),
@@ -578,7 +589,7 @@ impl TaskControlBlock {
         inner.user_heappoint = ret;
         return ret;
     }
-
+    /// 检查计时器
     pub fn check_timer(&self) {
         let mut task_inner = self.inner_lock();
         let timer = task_inner.timer.clone();
@@ -604,6 +615,21 @@ impl TaskControlBlock {
         let mut task_inner=self.inner_lock();
         task_inner.task_status=status;
         drop(task_inner);
+    }
+    pub fn poll_interrupt(&self,cx: core::task::Context) -> Poll<()>{
+        if self.interrupted.swap(false, Ordering::AcqRel) {
+            Poll::Ready(())
+        } else {
+            self.interrupt_waker.register(cx.waker());
+            Poll::Pending
+        }
+    }
+    pub fn clear_interrupt(&self) {
+        self.interrupted.store(false, Ordering::Release);
+    }
+    pub fn interrupt(&self) {
+        self.interrupted.store(true, Ordering::Release);
+        self.interrupt_waker.wake();
     }
 }
 

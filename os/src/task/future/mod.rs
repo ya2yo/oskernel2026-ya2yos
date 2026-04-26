@@ -8,7 +8,7 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
-use crate::utils::SysErrNo;
+use crate::{task::{block_current_and_run_next, current_task, ready_queue, TaskStatus}, utils::SysErrNo};
 use kernel_guard::NoPreemptIrqSave;
 use kspin::SpinNoIrq;
 use super::{WeakTaskRef, TaskRef};
@@ -48,12 +48,15 @@ impl Wake for Waker {
     fn wake_by_ref(self: &Arc<Self>) {
         // 尝试将弱引用升级为强引用
         if let Some(task) = self.task.upgrade() {
-            // 获取任务所属的运行队列   
-            let mut rq = select_run_queue::<NoPreemptIrqSave>(&task);
             // 标记已唤醒
             *self.woke.lock() = true;
             // 调用调度器接口，取消任务的阻塞状态
-            rq.unblock_task(task, false);
+            let mut inner=task.inner_lock();
+            if inner.task_status!=TaskStatus::Ready {
+                inner.task_status=TaskStatus::Ready;
+                drop(inner);
+                ready_queue::add_task(&task);
+            }
         }
     }
 }
@@ -64,15 +67,13 @@ impl Wake for Waker {
 /// 如果 Future 返回 Pending，则会将当前任务挂起（休眠）。
 /// 
 /// 注意：此函数不处理中断，通常不建议在需要响应信号的用户态任务中直接使用。
-pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
+pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
     // 将 Future 固定在栈上（Pinning）
-    let mut fut = pin!(f.into_future());
+    let mut fut = pin!(f);
     // 获取当前正在运行的任务
-    let curr = current();
-    // 保持对当前任务的强引用，确保在阻塞期间任务对象不被销毁
-    let task = curr.clone();
+    let task=current_task().unwrap();
     // 创建 Waker 并包装成标准库的 Context
-    let waker = AxWaker::new(&task);
+    let waker = Waker::new(&task);
     let woke = &waker.woke;
     let waker = Waker::from(waker.clone());
     let mut cx = Context::from_waker(&waker);
@@ -84,21 +85,20 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
         match fut.as_mut().poll(&mut cx) {
             Poll::Pending => {
                 // 如果 Future 还没准备好，准备阻塞当前任务
-                let mut rq = current_run_queue::<NoPreemptIrqSave>();
                 let woke = woke.lock();
                 if !*woke {
                     // 如果在 poll 之后、进入此逻辑前没有发生唤醒，则真正进入阻塞调度
                     // 传入锁保护的变量是为了在释放锁的同时进行上下文切换
-                    rq.blocked_resched(woke);
+                    block_current_and_run_next();
                 } else {
                      // 如果在执行过程中已经被唤醒
                     // 则释放锁并主动让出 CPU，稍后再次尝试
                     drop(woke);
-                    crate::yield_now();
+                    core::hint::spin_loop();
                 }
             }
             // Future 已完成，返回其结果
-            Poll::Ready(output) => break output,
+            Poll::Ready(output) => return output,
         }
     }
 }
@@ -125,9 +125,9 @@ impl From<Interrupted> for AxError {
 ///
 /// 在每次轮询内部 Future 之前，都会先检查当前任务是否有挂起的中断。
 /// 如果有中断，则直接返回 `Err(Interrupted)`。
-pub async fn interruptible<F: IntoFuture>(f: F) -> Result<F::Output, Interrupted> {
-    let mut f = pin!(f.into_future());
-    let curr = current();
+pub async fn interruptible<F: core::future::Future>(f: F) -> Result<F::Output, Interrupted> {
+    let mut f = pin!(f);
+    let curr = current_task().unwrap();
     poll_fn(|cx| {
         // 首先检查当前任务的中断状态
         if curr.poll_interrupt(cx).is_ready() {
