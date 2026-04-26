@@ -1,6 +1,5 @@
 use crate::{
-    sync::SyncUnsafeCell,
-    utils::{GeneralRet, SysErrNo, SyscallRet},
+    fs::files::Socket, sync::SyncUnsafeCell, utils::{GeneralRet, SysErrNo, SyscallRet}
 };
 use alloc::{sync::Arc, vec, vec::Vec};
 
@@ -28,6 +27,9 @@ impl FileDescriptor {
         }
     }
     pub fn file(&self) -> Result<Arc<OSFile>, SysErrNo> {
+        self.file.file()
+    }
+    pub fn socket(&self)->Result<Arc<Socket>,SysErrNo>{
         self.file.file()
     }
     pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {

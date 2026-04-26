@@ -7,6 +7,7 @@ use files::{devfs, pipe, stdio};
 pub use files::{make_socket, make_socketpair, OSFile};
 mod stat;
 mod vfs;
+use crate::fs::files::Socket;
 use crate::mm::UserBuffer;
 use crate::syscall::FaccessatFileMode;
 use crate::utils::{GeneralRet, SysErrNo};
@@ -100,6 +101,7 @@ pub const NONE_MODE: u32 = 0;
 #[derive(Clone)]
 pub enum FileClass {
     File(Arc<OSFile>),
+    Socket(Arc<Socket>),
     Abs(Arc<dyn File>),
 }
 
@@ -107,18 +109,28 @@ impl FileClass {
     pub fn file(&self) -> Result<Arc<OSFile>, SysErrNo> {
         match self {
             FileClass::File(f) => Ok(f.clone()),
+            FileClass::Socket(_)=>Ok(SysErrNo::EINVAL),
             FileClass::Abs(_) => Err(SysErrNo::EINVAL),
+        }
+    }
+    pub fn socket(&self)->Result<Arc<Socket>,SysErrNo>{
+        match self {
+            FileClass::File(_)=>Err(SysErrNo::EINVAL),
+            FileClass::Socket(f)=>Of(f.clone()),
+            FileClass::Abs(_)=>Err(SysErrNo::EINVAL),
         }
     }
     pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {
         match self {
             FileClass::File(_) => Err(SysErrNo::EINVAL),
+            FileClass::Socket(_)=>Err(SysErrNo::EINVAL),
             FileClass::Abs(f) => Ok(f.clone()),
         }
     }
     pub fn any(&self) -> Arc<dyn File> {
         match self {
             FileClass::File(f) => f.clone(),
+            FileClass::Socket(s)=>s.clone(),
             FileClass::Abs(f) => f.clone(),
         }
     }

@@ -91,6 +91,12 @@ percpu_static! {
     TIMER_RUNTIME: TimerRuntime = TimerRuntime::new(),
 }
 
+#[allow(dead_code)]
+pub(crate) fn check_timer_events() {
+    // SAFETY: only called in timer::check_events
+    unsafe { TIMER_RUNTIME.current_ref_mut_raw() }.wake();
+}
+
 fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
     // FIXME: optimize `percpu` crate! should disable irq and provide more apis
     let _g = kernel_guard::NoPreemptIrqSave::new();
@@ -121,5 +127,50 @@ pub async fn sleep_until(deadline: Timespec) {
     let key = with_current(|r| r.add(deadline));
     if let Some(key) = key {
         TimerFuture(key).await;
+    }
+}
+
+/// Error returned by [`timeout`] and [`timeout_at`].
+#[derive(Debug, PartialEq, Eq)]
+pub struct Elapsed(());
+
+impl fmt::Display for Elapsed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "deadline elapsed")
+    }
+}
+
+impl core::error::Error for Elapsed {}
+
+impl From<Elapsed> for AxError {
+    fn from(_: Elapsed) -> Self {
+        AxError::TimedOut
+    }
+}
+
+/// Requires a `Future` to complete before the specified duration has elapsed.
+pub async fn timeout<F: IntoFuture>(
+    duration: Option<Duration>,
+    f: F,
+) -> Result<F::Output, Elapsed> {
+    timeout_at(
+        duration.and_then(|x| x.checked_add(axhal::time::wall_time())),
+        f,
+    )
+    .await
+}
+
+/// Requires a `Future` to complete before the specified deadline.
+pub async fn timeout_at<F: IntoFuture>(
+    deadline: Option<TimeValue>,
+    f: F,
+) -> Result<F::Output, Elapsed> {
+    if let Some(deadline) = deadline {
+        select_biased! {
+            res = f.into_future().fuse() => Ok(res),
+            _ = sleep_until(deadline).fuse() => Err(Elapsed(())),
+        }
+    } else {
+        Ok(f.await)
     }
 }

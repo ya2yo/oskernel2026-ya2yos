@@ -28,7 +28,7 @@ mod task;
 mod tid;
 mod future;
 
-pub use future::sleep_until;
+pub use future::*;
 pub use crate::arch::context::TaskContext;
 use crate::{
     arch::cpu::hart_id,

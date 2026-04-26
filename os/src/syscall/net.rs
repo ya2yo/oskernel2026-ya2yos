@@ -8,10 +8,7 @@ use crate::{
         make_socket, make_socketpair,
         socket_defs::{SockAddrInet, SocketDomain},
         FileClass, FileDescriptor, OpenFlags,
-    },
-    mm::{get_data, put_data, safe_translated_byte_buffer, translated_refmut},
-    task::current_task,
-    utils::{SysErrNo, SyscallRet},
+    }, mm::{get_data, put_data, safe_translated_byte_buffer, translated_refmut}, net::{Socket, SocketOps}, task::{current_task, current_token}, utils::{SysErrNo, SyscallRet}
 };
 use log::{debug, warn};
 
@@ -103,12 +100,44 @@ pub fn sys_bind(_sockfd: usize, _addr: *const u8, _addrlen: u32) -> SyscallRet {
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/getsockname.2.html
-pub fn sys_getsockname(_sockfd: usize, _addr: *const u8, _addrlen: u32) -> SyscallRet {
+pub fn sys_getsockname(fd: usize, addr: *const u8, addr_len: usize) -> SyscallRet {
     warn!(
         "[sys_getsockname] fd={}, addr={}, len={}",
-        _sockfd, _addr as usize, _addrlen
+        fd, addr as usize, addr_len
     );
-    warn!("sys_getsockname is not implemented, return Ok(0)");
+    if (fd as isize) < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+    if addr == 0 {
+        return Err(SysErrNo::EFAULT);
+    }
+    log::info!("sys_getsockname fd: {}, addr: {:#x}, addr_len: {}", fd, addr, addr_len);
+    let task = current_task().unwrap();
+    let token=current_token();
+    let inner = task.inner_lock();
+    if fd >= inner.fd_table.len() {
+        return Err(SysErrNo::EBADF);
+    }
+    let file=match &inner.fd_table.try_get(fd) {
+        Some(f)=>f.clone(),
+        None=>return Err(SysErrNo::EBADF),
+    };
+    drop(inner);
+    let socket = file.socket()?;
+    let local_addr = socket.get_local_addr(); // 假设 Socket 有这个方法
+    let addr_bytes = local_addr.as_bytes();   // 转换为 sockaddr 字节流
+
+    let mut user_len = copy_from_user(addr_len_ptr); // 从用户态读入缓冲区大小
+    let real_len = addr_bytes.len() as u32;
+    
+    // 确定拷贝长度：取用户缓冲区和实际地址长度的最小值
+    let copy_len = core::cmp::min(user_len, real_len);
+    
+    // 拷贝地址数据到用户态 addr 指向的内存
+    copy_to_user(addr, &addr_bytes[..copy_len as usize]);
+    
+    // 把真实的地址长度写回用户态 addr_len_ptr
+    copy_to_user(addr_len_ptr, &real_len);
     Ok(0)
 }
 

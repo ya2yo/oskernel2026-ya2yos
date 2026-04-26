@@ -5,7 +5,7 @@ use crate::{
     fs::{OpenFlags, String},
     mm::UserBuffer,
     syscall::PollEvents,
-    utils::{SysErrNo, SyscallRet},
+    utils::{SysErrNo, SysResult, SyscallRet},
 };
 use alloc::{sync::Arc, vec::Vec};
 
@@ -125,6 +125,10 @@ pub trait File: Send + Sync {
     /// 获得文件信息
     fn fstat(&self) -> Kstat{
         unimplemented!("not implemented!")
+    }
+    /// 获取文件路径
+    fn path(&self) -> Cow<'_, str>{
+        unimplemented!("not implemented");
     }
     /// 设置偏移量,并非所有文件都支持
     fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {

@@ -38,7 +38,7 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> SysResult<T>, T>(
     .await?
 }
 
-#[cfg(feature = "irq")]
+// #[cfg(feature = "irq")]
 /// Registers a waker for the given IRQ number.
 pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
     use alloc::collections::{BTreeMap, btree_map::Entry};

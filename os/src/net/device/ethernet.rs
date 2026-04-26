@@ -1,6 +1,9 @@
 //! 以太网设备驱动层
 use alloc::{string::String, vec};
 use core::task::Waker;
+
+use crate::drivers::virtio_net::VirtIoNetDevImpl;
+use crate::task::register_irq_waker;
 use hashbrown::HashMap;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
@@ -27,7 +30,7 @@ struct Neighbor {
 /// 以太网设备结构体
 pub struct EthernetDevice {
     name: String,
-    inner: AxNetDevice,                                 // 实际的硬件驱动接口
+    inner: VirtIoNetDevImpl,                                 // 实际的硬件驱动接口
     neighbors: HashMap<IpAddress, Option<Neighbor>>,    // ARP 缓存表：None 表示正在请求中   
     ip: Ipv4Cidr,                                       // 本机的 IP 地址配置
     /// 待发送队列：当目标 MAC 地址未知（正在进行 ARP 查询）时，IP 包暂时存在这里
@@ -63,7 +66,7 @@ impl EthernetDevice {
 
     /// 内部辅助函数：封装以太网头部并发送数据
     fn send_to<F>(
-        inner: &mut AxNetDevice,
+        inner: &mut VirtIoNetDevImpl,
         dst: EthernetAddress,
         size: usize,
         f: F,
