@@ -2,6 +2,9 @@
 use crate::mm::MapPermission;
 use num_enum::FromPrimitive;
 
+/// 可以打开文件的最大数量
+pub const FILE_LIMIT: usize = 1024;
+
 bitflags! {
     pub struct WaitOption:u8{
         const DEFAULT = 0;

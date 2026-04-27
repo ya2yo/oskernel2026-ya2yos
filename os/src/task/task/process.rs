@@ -11,9 +11,7 @@ use spin::{
 };
 
 use crate::{
-    mm::{MemorySet, MemorySetInner},
-    signal::SigTable,
-    task::TaskControlBlock,
+    fs::FdTable, mm::{MemorySet, MemorySetInner}, signal::SigTable, task::TaskControlBlock
 };
 
 /// 进程/线程组 类
@@ -32,19 +30,23 @@ unsafe impl Sync for Process {}
 pub struct ProcessInner {
     pub memory_set: Arc<RwLock<MemorySet>>,
     pub sig_table: Arc<Mutex<SigTable>>,
+    /// 进程打开的文件描述符表
+    pub fd_table:Arc<FdTable>,
 }
 
 impl Process {
     pub fn new(
         memory_set: Arc<RwLock<MemorySet>>,
         sig_table: Arc<Mutex<SigTable>>,
+        fd_table: Arc<FdTable>,
         pid: usize,
         parent: Option<Arc<Process>>,
     ) -> Arc<Self> {
         let ret = Arc::new(Self {
             inner: Mutex::new(ProcessInner {
-                memory_set: memory_set,
+                memory_set,
                 sig_table,
+                fd_table,
             }),
             pid,
             parent: parent.clone(),

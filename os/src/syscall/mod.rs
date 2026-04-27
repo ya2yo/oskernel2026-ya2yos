@@ -352,7 +352,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Listen => sys_listen(args[0], args[1] as u32),
         Syscall::Accept => sys_accept(args[0], args[1] as *const u8, args[2] as u32),
         Syscall::Connect => sys_connect(args[0], args[1] as *const u8, args[2] as u32),
-        Syscall::GetSockName => sys_getsockname(args[0], args[1] as *const u8, args[2] as u32),
+        Syscall::GetSockName => sys_getsockname(args[0], args[1] as *const u8, args[2] as usize),
         Syscall::GetPeerName => sys_getpeername(args[0], args[1] as *const u8, args[2] as u32),
         Syscall::SendTo => sys_sendto(
             args[0],

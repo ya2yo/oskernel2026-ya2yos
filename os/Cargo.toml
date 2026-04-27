@@ -31,7 +31,6 @@ smallvec = "1.15.1"
 smoltcp = { git = "https://github.com/starry-os/smoltcp.git", branch = "main"}
 kspin = "0.1"
 futures-util = { version = "0.3.32", default-features = false }
-scope-local = "0.1"
 
 [build-dependencies]
 cfg-if = { version = "1.0.0" }

@@ -109,14 +109,14 @@ impl FileClass {
     pub fn file(&self) -> Result<Arc<OSFile>, SysErrNo> {
         match self {
             FileClass::File(f) => Ok(f.clone()),
-            FileClass::Socket(_)=>Ok(SysErrNo::EINVAL),
+            FileClass::Socket(_)=>Err(SysErrNo::EINVAL),
             FileClass::Abs(_) => Err(SysErrNo::EINVAL),
         }
     }
     pub fn socket(&self)->Result<Arc<Socket>,SysErrNo>{
         match self {
             FileClass::File(_)=>Err(SysErrNo::EINVAL),
-            FileClass::Socket(f)=>Of(f.clone()),
+            FileClass::Socket(f)=>Ok(f.clone()),
             FileClass::Abs(_)=>Err(SysErrNo::EINVAL),
         }
     }

@@ -108,7 +108,7 @@ pub fn sys_getsockname(fd: usize, addr: *const u8, addr_len: usize) -> SyscallRe
     if (fd as isize) < 0 {
         return Err(SysErrNo::EBADF);
     }
-    if addr == 0 {
+    if addr as uszie == 0 {
         return Err(SysErrNo::EFAULT);
     }
     log::info!("sys_getsockname fd: {}, addr: {:#x}, addr_len: {}", fd, addr, addr_len);
