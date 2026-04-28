@@ -1,4 +1,3 @@
-use alloc::sync::Arc;
 use crate::utils::{SyscallRet, SysErrNo};
 use crate::task::{current_task};
 use crate::mm::{safe_translated_byte_buffer,UserBuffer};

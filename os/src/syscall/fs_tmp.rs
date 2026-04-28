@@ -249,66 +249,9 @@ pub fn sys_close(fd: usize) -> SyscallRet {
 
 
 
-/// 参考 https://man7.org/linux/man-pages/man2/dup.2.html
-pub fn sys_dup(fd: usize) -> SyscallRet {
-    let task = current_task().unwrap();
-    let mut proc_inner = task.get_process().inner_lock();
-    let file=match proc_inner.fd_table.try_get(fd) {
-        Some(f)=>f.clone(),
-        None=>return Err(SysErrNo::EBADF),
-    };
-    let fd_new=proc_inner.fd_table.alloc_fd()?;
-    let mut new_file=file;
-    new_file.unset_cloexec();// 坑点：dup得到的新fd必须移除CLOEXEC标志
-    proc_inner.fd_table.set(fd_new, new_file);
-    proc_inner.fs_info.dup_fd_path(fd, new_fd);
-    Ok(fd_new)
-}
 
-/// 参考 https://man7.org/linux/man-pages/man2/dup3.2.html
-pub fn sys_dup3(old: usize, new: usize, flags: u32) -> SyscallRet {
-    let task = current_task().unwrap();
-    let task_inner = task.inner_lock();
 
-    debug!(
-        "[sys_dup3] : oldfd is {}, newfd is {}, flags is {}",
-        old, new, flags
-    );
-    if old == new {
-        return Err(SysErrNo::EINVAL);
-    }
-    if old >= task_inner.fd_table.len() || new >= task_inner.fd_table.get_soft_limit() {
-        return Err(SysErrNo::EMFILE); // 添加文件描述符耗尽检查
-    }
 
-    if old >= task_inner.fd_table.len()
-        || (old as isize) < 0
-        || (new as isize) < 0
-        || new >= task_inner.fd_table.get_soft_limit()
-    {
-        error!("lots of");
-        return Err(SysErrNo::EBADF);
-    }
-    // 检查文件描述符表是否已满
-
-    if task_inner.fd_table.try_get(old).is_none() {
-        return Err(SysErrNo::EINVAL);
-    }
-
-    if task_inner.fd_table.len() <= new {
-        task_inner.fd_table.resize(new + 1)?;
-    }
-
-    let mut file = task_inner.fd_table.get(old);
-    if flags == 0x800000 || flags == 0x80000 {
-        //flags包含O_CLOEXEC,为新的fd设置该标志，否则不设置
-        file.set_cloexec();
-    } else {
-        file.unset_cloexec();
-    }
-    task_inner.fd_table.set(new, file);
-    Ok(new)
-}
 
 /// 参考 https://man7.org/linux/man-pages/man2/chdir.2.html
 pub fn sys_chdir(path: *const u8) -> SyscallRet {
