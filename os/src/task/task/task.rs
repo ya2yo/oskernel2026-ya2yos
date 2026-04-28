@@ -3,7 +3,7 @@ use super::super::{
     aux::{Aux, AuxType},
     tid_to_task, TaskContext, TidHandle,
 };
-use super::process::Process;
+use super::super::process::Process;
 use crate::{
     arch::context::TrapContext,
     arch::memory_layout::{
@@ -217,7 +217,7 @@ impl TaskControlBlock {
             sig_table.clone(),
             Arc::new(FdTable::new_with_stdio()),
             1,
-            None,
+            None
         );
         let task = Self {
             tid: tid_handle,

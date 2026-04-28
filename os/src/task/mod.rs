@@ -54,7 +54,7 @@ pub use processor::{
     Processor, PROCESSORS,
 };
 pub use tid::TidHandle;
-
+pub use process::*;
 /// 初始进程的pid
 pub const INITPROC_PID: usize = 1;
 
