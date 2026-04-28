@@ -141,6 +141,7 @@ mod net;
 mod options;
 mod process;
 mod signal;
+mod task;
 mod time;
 
 use crate::task::{current_task, sys_futex};
@@ -157,6 +158,7 @@ use net::*;
 pub use options::*;
 use process::*;
 use signal::*;
+use task::*;
 use time::*;
 
 /// handle syscall exception with `syscall_id` and other arguments

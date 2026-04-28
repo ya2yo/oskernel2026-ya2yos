@@ -272,24 +272,16 @@ pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/dup.2.html
 pub fn sys_dup(fd: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let task_inner = task.inner_lock();
-    if fd >= task_inner.fd_table.len() {
-        return Err(SysErrNo::EMFILE);
-    }
-
-    if (fd as isize) < 0 {
-        return Err(SysErrNo::EBADF);
-    }
-
-    if task_inner.fd_table.try_get(fd).is_none() {
-        return Err(SysErrNo::EINVAL);
-    }
-
-    let fd_new = task_inner.fd_table.alloc_fd()?;
-    let mut file = task_inner.fd_table.get(fd);
-    file.unset_cloexec();
-    task_inner.fd_table.set(fd_new, file);
-    task_inner.fs_info.lock().insert_with_glue(fd, fd_new);
+    let mut proc_inner = task.get_process().inner_lock();
+    let file=match proc_inner.fd_table.try_get(fd) {
+        Some(f)=>f.clone(),
+        None=>return Err(SysErrNo::EBADF),
+    };
+    let fd_new=proc_inner.fd_table.alloc_fd()?;
+    let mut new_file=file;
+    new_file.unset_cloexec();// 坑点：dup得到的新fd必须移除CLOEXEC标志
+    proc_inner.fd_table.set(fd_new, new_file);
+    proc_inner.fs_info.dup_fd_path(fd, new_fd);
     Ok(fd_new)
 }
 

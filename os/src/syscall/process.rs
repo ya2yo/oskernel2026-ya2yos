@@ -112,23 +112,22 @@ pub fn sys_clone(
     flags: usize,
     stack_ptr: usize,
     parent_tid_ptr: usize,
+    #[cfg(target_arch = "loongarch64")] child_tid_ptr: usize,
     tls_ptr: usize,
-    child_tid_ptr: usize,
+    #[cfg(not(target_arch = "loongarch64"))] child_tid_ptr: usize,
 ) -> SyscallRet {
-    let flags = CloneFlags::from_bits(flags as u32).unwrap();
+    let flags = match CloneFlags::from_bits(flags as u32) {
+        Some(f) => f,
+        None => return Err(SysErrNo::EINVAL),
+    };
     debug!(
-        "[sys_clone] flags {:?},stack:{:#x},parent_tid_ptr:{:#x},child_tid_ptr:{:#x},tls_ptr:{:#x}",
-        flags, stack_ptr, parent_tid_ptr, child_tid_ptr, tls_ptr
+        "[sys_clone] flags {:?}, stack:{:#x}, parent_tid:{:#x}, tls:{:#x}, child_tid:{:#x}",
+        flags, stack_ptr, parent_tid_ptr, tls_ptr, child_tid_ptr
     );
-    // if current_task().unwrap().pid() == 4 {
-    //     return Ok(current_task().unwrap().tid());
-    // }
 
-    if flags.contains(CloneFlags::CLONE_THREAD) {
-        assert!(flags.contains(CloneFlags::CLONE_SIGHAND));
-        assert!(flags.contains(CloneFlags::CLONE_VM));
-    }
     let task = current_task().unwrap();
+
+    // 调用统一的逻辑接口
     let new_task = task.clone_process(
         flags,
         stack_ptr,
@@ -136,10 +135,10 @@ pub fn sys_clone(
         tls_ptr,
         child_tid_ptr as *mut u32,
     )?;
+
     let new_tid = new_task.tid();
-    // we do not have to move to next instruction since we have done it before
-    // add new task to scheduler
     ready_queue::add_task(&new_task);
+
     Ok(new_tid)
 }
 
