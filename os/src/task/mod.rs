@@ -19,16 +19,16 @@
 #[allow(rustdoc::private_intra_doc_links)]
 mod aux;
 mod futex;
+mod future;
 mod kernel_stack;
 mod manager;
 mod processor;
 mod switch;
 mod sysinfo;
+mod process;
 mod task;
 mod tid;
-mod future;
 
-pub use future::*;
 pub use crate::arch::context::TaskContext;
 use crate::{
     arch::cpu::hart_id,
@@ -40,19 +40,24 @@ use crate::{
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 pub use futex::*;
+pub use future::*;
 use log::{debug, error};
 pub use manager::*;
 use spin::Lazy;
 use switch::__abandon;
 pub use sysinfo::Sysinfo;
-pub use task::{Process, RobustList, TaskControlBlock, TaskStatus, TaskRef, WeakTaskRef};
-
+pub use task::*;
+pub use process::*;
 pub use aux::*;
 pub use processor::{
     current_task, current_token, current_trap_cx, run_tasks, schedule, take_current_task,
     Processor, PROCESSORS,
 };
 pub use tid::TidHandle;
+
+/// 初始进程的pid
+pub const INITPROC_PID: usize = 1;
+
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     let task = current_task().unwrap();
