@@ -12,7 +12,7 @@ use crate::{
     },
     arch::page_table::PageTable,
     fs::{
-        create_proc_dir_and_file, open, FdTable, FsInfo, OpenFlags, DEFAULT_DIR_MODE,
+        create_proc_dir_and_file, open, OpenFlags, DEFAULT_DIR_MODE,
         DEFAULT_FILE_MODE,
     },
     mm::{
@@ -31,11 +31,11 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::{sync::atomic::AtomicBool, task::Poll};
 use core::mem::size_of;
+use core::{sync::atomic::AtomicBool, task::Poll};
+use futures_util::task::AtomicWaker;
 use log::debug;
 use spin::{rwlock::RwLock, Mutex, MutexGuard};
-use futures_util::task::AtomicWaker;
 
 #[derive(Clone, Copy, Debug)]
 pub struct RobustList {
@@ -57,10 +57,10 @@ pub struct TaskControlBlock {
     kernel_stack: KernelStackOnHeap,
     pub process: Arc<Process>,
     // mutable
-    // 异步中断/信号同步 
+    // 异步中断/信号同步
     pub interrupted: AtomicBool,
     pub interrupt_waker: AtomicWaker,
-
+    /// 内部主要数据，使用锁进行包含保护
     inner: Mutex<TaskControlBlockInner>,
 }
 
@@ -71,7 +71,7 @@ impl Drop for TaskControlBlock {
 }
 
 pub struct TaskControlBlockInner {
-    tcb: Weak<TaskControlBlock>, // 我想要这么干，但是这是非法的
+    tcb: Weak<TaskControlBlock>, // 方便回到process去获取文件描述符表等公共资源
     trap_cx_ppn: PhysPageNum,    // TrapContext缓冲区物理页
     pub trap_cx_bottom: usize,   // TrapContext缓冲区虚拟地址基地址
 
@@ -79,7 +79,7 @@ pub struct TaskControlBlockInner {
     pub task_cx: TaskContext,
     pub task_status: TaskStatus,
     // pub fd_table: Arc<FdTable>,
-    pub fs_info: Arc<Mutex<FsInfo>>,
+    // pub fs_info: Arc<Mutex<FsInfo>>,
     pub time_data: TimeData,
 
     // 用于TaskControlBlockInner::growproc
@@ -157,7 +157,12 @@ impl TaskControlBlockInner {
         }
     }
 
-    pub fn get_abs_path(&self, tcb: &TaskControlBlock,dirfd: isize, path: &str) -> Result<String, SysErrNo> {
+    pub fn get_abs_path(
+        &self,
+        tcb: &TaskControlBlock,
+        dirfd: isize,
+        path: &str,
+    ) -> Result<String, SysErrNo> {
         if is_abs_path(path) {
             Ok(get_abs_path("/", path))
         } else if dirfd != -100 {
@@ -207,12 +212,18 @@ impl TaskControlBlock {
         debug!("TCB::new kstack top = {:#x}", kernel_stack_top);
         let memory_set = Arc::new(RwLock::new(MemorySet::new(memory_set)));
         let sig_table = Arc::new(Mutex::new(SigTable::new()));
-        let process = Process::new(memory_set.clone(), sig_table.clone(), Arc::new(FdTable::new_with_stdio()), 1, None);
+        let process = Process::new(
+            memory_set.clone(),
+            sig_table.clone(),
+            Arc::new(FdTable::new_with_stdio()),
+            1,
+            None,
+        );
         let task = Self {
             tid: tid_handle,
             kernel_stack,
             process: process.clone(),
-            interrupted:AtomicBool::new(false),
+            interrupted: AtomicBool::new(false),
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             inner: Mutex::new(TaskControlBlockInner {
@@ -223,7 +234,7 @@ impl TaskControlBlock {
                 task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                 task_status: TaskStatus::Ready,
                 // fd_table: Arc::new(FdTable::new_with_stdio()),
-                fs_info: Arc::new(Mutex::new(FsInfo::new_for_initproc())),
+                // fs_info: Arc::new(Mutex::new(FsInfo::new_for_initproc())),
                 time_data: TimeData::new(),
                 user_heappoint: user_heapbottom,
                 user_heapbottom,
@@ -249,6 +260,7 @@ impl TaskControlBlock {
         drop(task_inner);
         arc_task
     }
+    /// exec的主逻辑
     pub fn exec(&self, elf_data: &[u8], argv: &Vec<String>, env: &mut Vec<String>) {
         let mut task_inner = self.inner_lock();
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
@@ -408,7 +420,9 @@ impl TaskControlBlock {
         let fs_info = if flags.contains(CloneFlags::CLONE_FS) {
             Arc::clone(&parent_inner.fs_info)
         } else {
-            Arc::new(Mutex::new(FsInfo::from_another(&parent_inner.fs_info.lock())))
+            Arc::new(Mutex::new(FsInfo::from_another(
+                &parent_inner.fs_info.lock(),
+            )))
         };
 
         // 处理打开文件表
@@ -423,7 +437,9 @@ impl TaskControlBlock {
         let sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
             Arc::clone(&parent_proc_inner.sig_table)
         } else {
-            Arc::new(Mutex::new(SigTable::from_another(&*parent_proc_inner.get_locked_sigtable())))
+            Arc::new(Mutex::new(SigTable::from_another(
+                &*parent_proc_inner.get_locked_sigtable(),
+            )))
         };
 
         // 确定子进程对象
@@ -443,7 +459,7 @@ impl TaskControlBlock {
             ppid = self.pid();
             timer = Arc::new(Timer::new());
             sig_mask = parent_inner.sig_mask.clone();
-            
+
             // 创建新的进程结构体，传入刚刚决定好的资源
             // 注意：这里需要给 Process::new 增加 fd_table 参数，或者单独设置
             process = Process::new(
@@ -481,7 +497,7 @@ impl TaskControlBlock {
                 user_stack_top: 0,
                 task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                 task_status: TaskStatus::Ready,
-                fs_info,
+                // fs_info,
                 time_data: TimeData::new(),
                 user_heappoint: parent_inner.user_heappoint,
                 user_heapbottom: parent_inner.user_heapbottom,
@@ -499,13 +515,13 @@ impl TaskControlBlock {
         // 设置 Weak 引用
         let mut child_inner = child.inner_lock();
         child_inner.tcb = Arc::downgrade(&child);
-        
+
         // 将任务加入进程的任务列表
         process.meta_lock().tasks.push(Arc::downgrade(&child));
 
         // 处理用户态上下文
         child_inner.alloc_user_res();
-        
+
         if flags.contains(CloneFlags::CLONE_THREAD) {
             // 线程逻辑：拷贝父线程的寄存器状态
             *child_inner.trap_cx() = *parent_inner.trap_cx();
@@ -527,7 +543,7 @@ impl TaskControlBlock {
             child_inner.trap_cx().set_a0(0);
         }
 
-        // 处理特殊的线程启动参数 
+        // 处理特殊的线程启动参数
         let trap_cx = child_inner.trap_cx();
         trap_cx.kernel_stack = kernel_stack_top;
 
@@ -536,7 +552,7 @@ impl TaskControlBlock {
             // 移除 alloc_user_res 自动分配的栈映射，改用指定的地址
             // ... (保持你原来的 remove_area 逻辑)
             trap_cx.set_sp(stack);
-            
+
             // 设置线程入口
             let token = parent_proc_inner.get_locked_memory_set().token();
             let entry_point = get_data(token, stack as *const usize);
@@ -560,7 +576,7 @@ impl TaskControlBlock {
         drop(parent_inner);
 
         tid_to_task::insert(child.tid(), &child);
-        
+
         Ok(child)
     }
 
@@ -603,12 +619,12 @@ impl TaskControlBlock {
             }
         }
     }
-    pub fn set_status(&self,status:TaskStatus){
-        let mut task_inner=self.inner_lock();
-        task_inner.task_status=status;
+    pub fn set_status(&self, status: TaskStatus) {
+        let mut task_inner = self.inner_lock();
+        task_inner.task_status = status;
         drop(task_inner);
     }
-    pub fn poll_interrupt(&self,cx: core::task::Context) -> Poll<()>{
+    pub fn poll_interrupt(&self, cx: core::task::Context) -> Poll<()> {
         if self.interrupted.swap(false, Ordering::AcqRel) {
             Poll::Ready(())
         } else {
@@ -627,6 +643,10 @@ impl TaskControlBlock {
     pub fn get_fd_table(&self) -> Arc<FdTable> {
         self.process.inner_lock().fd_table.clone()
     }
+    /// 获取当前进程相关的文件使用信息
+    pub fn get_fs_info(&self)->Arc<FsInfo>{
+        self.process.inner_lock().fs_info.clone()
+    }
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -637,5 +657,5 @@ pub enum TaskStatus {
     Blocked,
     Stopped,
 }
-pub type TaskRef=Arc<TaskControlBlock>;
+pub type TaskRef = Arc<TaskControlBlock>;
 pub type WeakTaskRef = Weak<TaskControlBlock>;

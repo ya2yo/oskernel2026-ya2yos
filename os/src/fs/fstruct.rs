@@ -1,15 +1,15 @@
 use crate::{
     fs::files::Socket,
-    sync::SyncUnsafeCell,
     utils::{GeneralRet, SysErrNo, SyscallRet},
 };
 use alloc::{sync::Arc, vec, vec::Vec};
 
+use spin::rwlock::RwLock;
 use log::debug;
 
 use super::{File, FileClass, OSFile, OpenFlags, Stdin, Stdout};
 pub struct FdTable {
-    inner: SyncUnsafeCell<FdTableInner>,
+    inner: RwLock<FdTableInner>,
 }
 
 #[derive(Clone)]
@@ -85,11 +85,13 @@ impl FdTableInner {
 }
 
 impl FdTable {
+    /// 创建新的fd_table
     fn new(fd_table: FdTableInner) -> Self {
         Self {
-            inner: SyncUnsafeCell::new(fd_table),
+            inner: RwLock::new(fd_table),
         }
     }
+    /// 创建带有标准输入输出错误的fd_table
     pub fn new_with_stdio() -> Self {
         FdTable::new(FdTableInner::new(
             128,
@@ -104,7 +106,7 @@ impl FdTable {
     pub fn from_another(another: &Arc<FdTable>) -> Self {
         let other = another.get_ref();
         Self {
-            inner: SyncUnsafeCell::new(FdTableInner {
+            inner: RwLock::new(FdTableInner {
                 soft_limit: other.soft_limit,
                 hard_limit: other.hard_limit,
                 files: other.files.clone(),

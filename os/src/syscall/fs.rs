@@ -37,7 +37,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         debug!("write EINVAL early return");
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = &inner.fd_table.try_get(fd) {
+    if let Some(file) = task.get_fd_table().try_get(fd) {
         let process = task.process.inner_lock();
         let memory_set = process.get_locked_memory_set();
         let file: Arc<dyn File> = file.any();
@@ -69,7 +69,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     if fd >= inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = &inner.fd_table.try_get(fd) {
+    if let Some(file) = task.get_fd_table().try_get(fd) {
         let process = task.process.inner_lock();
         let memory_set = process.get_locked_memory_set();
         let file: Arc<dyn File> = file.any();
@@ -103,7 +103,7 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     if fd >= inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = &inner.fd_table.try_get(fd) {
+    if let Some(file) = task.get_fd_table().try_get(fd) {
         let file = file.any();
         if !file.writable() {
             return Err(SysErrNo::EACCES);
@@ -140,7 +140,7 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     if fd >= inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = &inner.fd_table.try_get(fd) {
+    if let Some(file) = task.get_fd_table().try_get(fd) {
         let file = file.any();
         if !file.readable() {
             return Err(SysErrNo::EACCES);
@@ -182,7 +182,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     let path = translated_str(token, path);
     let mut flags = OpenFlags::from_bits(flags).unwrap();
 
-    let mut abs_path = task_inner.get_abs_path(dirfd, &path)?;
+    let mut abs_path = task_inner.get_abs_path(&task,dirfd, &path)?;
 
     debug!(
         "[sys_openat] path is {}, flags is {:?}, mode is {:o}",
@@ -232,18 +232,17 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
 pub fn sys_close(fd: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.inner_lock();
-
     debug!("[sys_close] fd is {}", fd);
 
-    if (fd as isize) < 0 || fd >= inner.fd_table.len() {
+    if (fd as isize) < 0 || fd >= task.get_fd_table().len() {
         return Err(SysErrNo::EBADF);
     }
 
-    if inner.fd_table.try_get(fd).is_none() {
+    if task.get_fd_table().try_get(fd).is_none() {
         return Ok(0);
     }
 
-    inner.fd_table.take(fd);
+    task.get_fd_table().take(fd);
     inner.fs_info.lock().remove(fd);
     Ok(0)
 }
@@ -251,26 +250,23 @@ pub fn sys_close(fd: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/getcwd.2.html
 pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
-    let process = task.process.inner_lock();
-    let memory_set = &*process.get_locked_memory_set();
-
-    if (buf as isize) < 0 || if_bad_address(buf as usize) || (size as isize) < 0 {
-        return Err(SysErrNo::EFAULT);
-    }
-    let cwd: String = inner.fs_info.lock().cwd().to_string();
-    let cwdlen = cwd.len();
-    if size < cwdlen + 1 {
-        // 考虑到\0的存在，我们需要+1
-        debug!("sys_getcwd: ERANGE: buffer size is not long enough!");
+    let proc_inner = task.process.inner_lock();
+    let cwd = proc_inner.fs_info.get_cwd();
+    let cwd_bytes = cwd.as_bytes();
+    let cwd_len_with_null = cwd_bytes.len() + 1;
+    if size < cwd_len_with_null {
         return Err(SysErrNo::ERANGE);
     }
-    debug!("sys_getcwd: return [{}]", cwd);
-    let mut cwd_vec = cwd.as_bytes().to_vec();
-    cwd_vec.push(0); // 手动追加C风格字符串结束符
-    let mut buffer = UserBuffer::new(safe_translated_byte_buffer(memory_set, buf, size).unwrap());
-    buffer.write(cwd_vec.as_slice());
-    Ok(cwdlen + 1 as usize)
+    let memory_set=proc_inner.get_locked_memory_set_read();
+    let buffers=match safe_translated_byte_buffer(&memory_set, buf, size) {
+        Some(bufs)=>bufs,
+        None=>return Err(SysErrNo::EFAULT),
+    };
+    let mut user_buf=UserBuffer::new(buffers);
+    user_buf.write(cwd_bytes);
+    let null_bytes:[u8;1]=[0];
+    user_buf.write_at(cwd_bytes.len(),&null_bytes);
+    Ok(buf as usize)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/dup.2.html
@@ -390,7 +386,7 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
 
-    let abs_path = inner.get_abs_path(dirfd, &path)?;
+    let abs_path = inner.get_abs_path(&task,dirfd, &path)?;
     if let Ok(_) = open(&abs_path, OpenFlags::O_RDWR, NONE_MODE) {
         return Err(SysErrNo::EEXIST);
     }
@@ -450,7 +446,7 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, _flags: u32) -> SyscallRet {
     let token = task.process.inner_lock().get_locked_memory_set().token();
 
     let path = translated_str(token, path);
-    let abs_path = inner.get_abs_path(dirfd, &path)?;
+    let abs_path = inner.get_abs_path(&task,dirfd, &path)?;
     // TODO(ZMY) 支持符号链接,socket,FIFO,device
     // 如果是File但尚有对应的fd未关闭,等到close时unlink
     // 如果是符号链接,直接移除
@@ -553,15 +549,16 @@ pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
 pub fn sys_pipe2(fd: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
+    let fd_table=task.get_fd_table();
     let token = task.process.inner_lock().get_locked_memory_set().token();
 
     let (read_pipe, write_pipe) = make_pipe();
-    let read_fd = task_inner.fd_table.alloc_fd()?;
+    let read_fd = fd_table.alloc_fd()?;
     task_inner
         .fd_table
         .set(read_fd, FileDescriptor::default(FileClass::Abs(read_pipe)));
-    let write_fd = task_inner.fd_table.alloc_fd()?;
-    task_inner.fd_table.set(
+    let write_fd = fd_table.alloc_fd()?;
+    fd_table.set(
         write_fd,
         FileDescriptor::default(FileClass::Abs(write_pipe)),
     );
@@ -927,7 +924,7 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
     if offset < 0 || fd >= inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = &inner.fd_table.try_get(fd) {
+    if let Some(file) = task.get_fd_table().try_get(fd) {
         let file = file.file()?;
         if !file.writable() {
             return Err(SysErrNo::EACCES);
@@ -957,7 +954,7 @@ pub fn sys_pread64(fd: usize, buf: *const u8, count: usize, offset: isize) -> Sy
     if offset < 0 || fd >= inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = &inner.fd_table.try_get(fd) {
+    if let Some(file) = task.get_fd_table().try_get(fd) {
         let file = file.file()?;
         if !file.readable() {
             return Err(SysErrNo::EACCES);
@@ -1329,7 +1326,7 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, mask: usize) -> Sysc
                 fds[i].revents = PollEvents::empty();
                 continue;
             }
-            if let Some(file) = &inner.fd_table.try_get(fds[i].fd as usize) {
+            if let Some(file) = task.get_fd_table().try_get(fds[i].fd as usize) {
                 let file: Arc<dyn File> = file.any();
                 let res = file.poll(fds[i].events);
                 if !res.is_empty() {
@@ -1422,7 +1419,7 @@ pub fn sys_pselect6(
         if let Some(readfds) = using_readfds.as_mut() {
             for i in 0..nfds {
                 if readfds.got_fd(i) {
-                    if let Some(file) = &inner.fd_table.try_get(i) {
+                    if let Some(file) = task.get_fd_table().try_get(i) {
                         let file: Arc<dyn File> = file.any();
                         let event = file.poll(PollEvents::IN);
                         if !event.contains(PollEvents::IN) {
@@ -1439,7 +1436,7 @@ pub fn sys_pselect6(
         if let Some(writefds) = using_writefds.as_mut() {
             for i in 0..nfds {
                 if writefds.got_fd(i) {
-                    if let Some(file) = &inner.fd_table.try_get(i) {
+                    if let Some(file) = task.get_fd_table().try_get(i) {
                         let file: Arc<dyn File> = file.any();
                         let event = file.poll(PollEvents::OUT);
                         if !event.contains(PollEvents::OUT) {
@@ -1457,7 +1454,7 @@ pub fn sys_pselect6(
         if let Some(exceptfds) = using_exceptfds.as_mut() {
             for i in 0..nfds {
                 if exceptfds.got_fd(i) {
-                    if let Some(file) = &inner.fd_table.try_get(i) {
+                    if let Some(file) = task.get_fd_table().try_get(i) {
                         let file: Arc<dyn File> = file.any();
                         let event = file.poll(PollEvents::ERR | PollEvents::HUP);
                         if !event.contains(PollEvents::ERR) && !event.contains(PollEvents::HUP) {

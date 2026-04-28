@@ -17,7 +17,7 @@ use alloc::vec;
 use alloc::{sync::Arc, vec::Vec};
 pub use devfs::*;
 pub use ext4_lw::{superblock_fs_stat, superblock_ls, superblock_root_inode, superblock_sync};
-pub use fs_info::FsInfo;
+pub use fs_info::*;
 pub use fstruct::*;
 // pub mod socket_defs;
 use log::debug;

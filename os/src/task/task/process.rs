@@ -6,12 +6,11 @@ use alloc::{
 };
 use log::{debug, error, warn};
 use spin::{
-    rwlock::{RwLock, RwLockWriteGuard},
-    Lazy, Mutex, MutexGuard, RwLockReadGuard,
+    Lazy, Mutex, MutexGuard, RwLockReadGuard, mutex::Mutex, rwlock::{RwLock, RwLockWriteGuard}
 };
 
 use crate::{
-    fs::FdTable, mm::{MemorySet, MemorySetInner}, signal::SigTable, task::TaskControlBlock
+    fs::{FSInfo, FdTable, FSInfo}, mm::{MemorySet, MemorySetInner}, signal::SigTable, task::TaskControlBlock
 };
 
 /// 进程/线程组 类
@@ -28,13 +27,56 @@ unsafe impl Sync for Process {}
 
 /// 进程可变部分
 pub struct ProcessInner {
-    pub memory_set: Arc<RwLock<MemorySet>>,
-    pub sig_table: Arc<Mutex<SigTable>>,
+    memory_set: Arc<RwLock<MemorySet>>,
+    sig_table: Arc<Mutex<SigTable>>,
     /// 进程打开的文件描述符表
     pub fd_table:Arc<FdTable>,
+    pub fs_info: Arc<FSInfo>,
 }
 
 impl Process {
+    /// 为实现fork做准备
+    /// 从父进程 fork 出一个子进程
+    pub fn fork(self:&Arc<Self>,new_pid:usize)->Arc<Self> {
+        let parent_inner=self.inner_lock();
+        // 拷贝地址空间
+        let new_memory_set=
+        Arc::new(RwLock::new(MemorySet::from(&parent_inner.get_locked_memory_set_read())));
+        // 拷贝信号表
+        let new_sig_table=
+        Arc::new(Mutex::new(SigTable::from_another(&parent_inner.get_locked_sigtable())));
+        // 拷贝文件描述符
+        let new_fd_table=Arc::new(FdTable::from_another(&parent_inner.fd_table));
+        // 拷贝文件系统环境
+        let new_fs_info=Arc::new(FSInfo::from_another(&parent_inner.fs_info));
+
+        Arc::new(Self {
+            pid: new_pid,
+            parent: Some(Arc::clone(self)),
+            inner: Mutex::new(ProcessInner {
+                memory_set: new_memory_set,
+                sig_table: new_sig_table,
+                fd_table: new_fd_table,
+                fs_info: new_fs_info,
+            }),
+            meta: Mutex::new(ProcessMeta {
+                tasks: Vec::new(),
+                children: Vec::new(),
+            }),
+        })
+    }
+    /// 退出时调用，进行托孤
+    pub fn exit_and_reparent(&self) {
+        let mut meta=self.meta_lock();
+        let initproc=Self::get_process_arc_by_pid(1).expect("initproc not found!");
+        for child_weak in meta.children {
+            if let Some(child)=child_weak.upgrade() {
+                initproc.meta_lock().children.push(Arc::downgrade(&child));
+            }
+        }
+        meta.tasks.clear();
+    }
+    /// 创建新进程
     pub fn new(
         memory_set: Arc<RwLock<MemorySet>>,
         sig_table: Arc<Mutex<SigTable>>,
@@ -47,6 +89,7 @@ impl Process {
                 memory_set,
                 sig_table,
                 fd_table,
+                fs_info: Arc::new(FsInfo::new_for_initproc()),
             }),
             pid,
             parent: parent.clone(),
@@ -72,19 +115,19 @@ impl Process {
         }
         ret
     }
-
+    /// 获取inner的锁
     pub fn inner_lock(&self) -> MutexGuard<ProcessInner> {
         self.inner
             .try_lock()
             .expect(&format!("fail to get proc lock({})", self.pid))
     }
-
+    /// 获取元数据的锁
     pub fn meta_lock(&self) -> MutexGuard<ProcessMeta> {
         self.meta
             .try_lock()
             .expect(&format!("fail to get proc.meta lock({})", self.pid))
     }
-
+    /// 获取父进程的pid
     pub fn ppid(&self) -> usize {
         if let Some(parent) = &self.parent {
             parent.pid
@@ -92,7 +135,7 @@ impl Process {
             0
         }
     }
-
+    /// 改变内存映射关系和信号表
     pub fn change_memory_set_and_sigtable(
         &self,
         new_memory_set: MemorySet,
@@ -102,7 +145,7 @@ impl Process {
         inner_lock.memory_set = Arc::new(RwLock::new(new_memory_set));
         inner_lock.sig_table = Arc::new(Mutex::new(new_sigtable));
     }
-
+    /// 通过pid获取对应的进程
     pub fn get_process_arc_by_pid(pid: usize) -> Option<Arc<Process>> {
         let ret = PID_2_PROCESS_ARC
             .try_lock()
@@ -160,6 +203,14 @@ impl Process {
             panic!("remove process[{}] fail! it does not exist!", pid);
         }
     }
+    /// 向进程中添加一个线程
+    pub fn add_task(&self, task:Arc<TaskControlBlock>){
+        self.meta_lock().tasks.push(Arc::downgrade(&task));
+    }
+    /// 获取当前进程中还活着的线程数量
+    pub fn alive_tasks_count(&self) -> usize {
+        self.meta_lock().tasks.iter().filter(|t| t.upgrade().is_some()).count()
+    }
 }
 
 impl Drop for Process {
@@ -170,18 +221,19 @@ impl Drop for Process {
 }
 
 impl ProcessInner {
-    pub fn get_locked_memory_set(&self) -> RwLockReadGuard<'_, MemorySet> {
+    /// 内存相关的读锁
+    pub fn get_locked_memory_set_read(&self) -> RwLockReadGuard<'_, MemorySet> {
         self.memory_set
             .try_read()
             .expect("You should not fail to get lock in a 1 HART system!")
     }
-
+    /// 内存相关的写锁
     pub fn get_locked_memory_set_write(&self) -> RwLockWriteGuard<'_, MemorySet> {
         self.memory_set
             .try_write()
             .expect("You should not fail to get lock in a 1 HART system!")
     }
-
+    /// 信号表获取
     pub fn get_locked_sigtable(&self) -> MutexGuard<'_, SigTable> {
         self.sig_table
             .try_lock()
