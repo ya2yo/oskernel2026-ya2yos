@@ -1,10 +1,9 @@
 use crate::{
-    fs::files::Socket,
-    utils::{GeneralRet, SysErrNo, SyscallRet},
+    fs::files::Socket, syscall::Syscall, utils::{GeneralRet, SysErrNo, SyscallRet}
 };
 use alloc::{sync::Arc, vec, vec::Vec};
 
-use spin::rwlock::RwLock;
+use spin::rwlock::{RwLock,RwLockReadGuard, RwLockWriteGuard};
 use log::debug;
 
 use super::{File, FileClass, OSFile, OpenFlags, Stdin, Stdout};
@@ -16,49 +15,6 @@ pub struct FdTable {
 pub struct FileDescriptor {
     pub flags: OpenFlags,
     pub file: FileClass,
-}
-
-impl FileDescriptor {
-    pub fn new(flags: OpenFlags, file: FileClass) -> Self {
-        Self { flags, file }
-    }
-    pub fn default(file: FileClass) -> Self {
-        Self {
-            flags: OpenFlags::empty(),
-            file,
-        }
-    }
-    pub fn file(&self) -> Result<Arc<OSFile>, SysErrNo> {
-        self.file.file()
-    }
-    pub fn socket(&self) -> Result<Arc<Socket>, SysErrNo> {
-        self.file.socket()
-    }
-    pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {
-        self.file.abs()
-    }
-    pub fn any(&self) -> Arc<dyn File> {
-        self.file.any()
-    }
-
-    pub fn unset_cloexec(&mut self) {
-        self.flags &= !OpenFlags::O_CLOEXEC;
-    }
-    pub fn set_cloexec(&mut self) {
-        self.flags |= OpenFlags::O_CLOEXEC;
-    }
-    pub fn cloexec(&self) -> bool {
-        self.flags.contains(OpenFlags::O_CLOEXEC)
-    }
-    pub fn non_block(&self) -> bool {
-        self.flags.contains(OpenFlags::O_NONBLOCK)
-    }
-    pub fn unset_nonblock(&mut self) {
-        self.flags &= !OpenFlags::O_NONBLOCK;
-    }
-    pub fn set_nonblock(&mut self) {
-        self.flags |= OpenFlags::O_NONBLOCK;
-    }
 }
 
 struct FdTableInner {
@@ -86,7 +42,7 @@ impl FdTableInner {
 
 impl FdTable {
     /// 创建新的fd_table
-    fn new(fd_table: FdTableInner) -> Self {
+    pub fn new(fd_table: FdTableInner) -> Self {
         Self {
             inner: RwLock::new(fd_table),
         }
@@ -97,12 +53,13 @@ impl FdTable {
             128,
             256,
             vec![
-                Some(FileDescriptor::default(FileClass::Abs(Arc::new(Stdin)))),
-                Some(FileDescriptor::default(FileClass::Abs(Arc::new(Stdout)))),
-                Some(FileDescriptor::default(FileClass::Abs(Arc::new(Stdout)))),
+                Some(FileDescriptor { flags: OpenFlags::empty(), file: FileClass::Abs(Arc::new(Stdin))}),
+                Some(FileDescriptor { flags: OpenFlags::empty(), file: FileClass::Abs(Arc::new(Stdout))}),
+                Some(FileDescriptor { flags: OpenFlags::empty(), file: FileClass::Abs(Arc::new(Stdout))}),
             ],
         ))
     }
+
     pub fn from_another(another: &Arc<FdTable>) -> Self {
         let other = another.get_ref();
         Self {
@@ -113,32 +70,43 @@ impl FdTable {
             }),
         }
     }
+    /// 清空fd_table
     pub fn clear(&self) {
         self.get_mut().files.clear();
     }
+    /// 分配一个新的最小可用fd
     pub fn alloc_fd(&self) -> SyscallRet {
-        let fd_table = &mut self.get_mut().files;
-        if let Some(fd) = (0..fd_table.len()).find(|fd| fd_table[*fd].is_none()) {
+        let mut inner = self.get_mut();
+        let soft_limit = inner.soft_limit; 
+        let fd_table = &mut inner.files;
+
+        if let Some(fd) = inner.files.iter().position(|slot| slot.is_none()) {
             return Ok(fd);
         }
-        if fd_table.len() + 1 > self.get_soft_limit() {
+        
+        if fd_table.len() >= soft_limit {
             return Err(SysErrNo::EMFILE);
         }
+        
         fd_table.push(None);
         Ok(fd_table.len() - 1)
     }
+    /// 分配大于参数的fd
     pub fn alloc_fd_larger_than(&self, arg: usize) -> SyscallRet {
-        let fd_table = &mut self.get_mut().files;
-        if arg > self.get_soft_limit() {
+        let mut inner=self.get_mut();
+        let soft_limit=inner.soft_limit;
+        let fd_table=&mut inner.files;
+
+        if arg >= soft_limit {
             return Err(SysErrNo::EMFILE);
         }
-        if fd_table.len() + 1 > self.get_soft_limit() {
+        if fd_table.len() >= soft_limit {
             return Err(SysErrNo::EMFILE);
         }
-        if fd_table.len() < arg {
-            fd_table.resize(arg, None);
+        if fd_table.len() <= arg {
+            fd_table.resize(arg+1, None);
         }
-        if let Some(fd) = (arg..fd_table.len()).find(|fd| fd_table[*fd].is_none()) {
+        if let Some(fd) = fd_table.iter().skip(arg).position(|slot| slot.is_none()) {
             Ok(fd)
         } else {
             fd_table.push(None);
@@ -148,7 +116,7 @@ impl FdTable {
     pub fn close_on_exec(&self) {
         let fd_table = &mut self.get_mut().files;
         for idx in 0..fd_table.len() {
-            if fd_table[idx].is_some() && fd_table[idx].as_ref().unwrap().cloexec() {
+            if fd_table[idx].is_some() && fd_table[idx].as_ref().unwrap().flags.contains(OpenFlags::O_CLOEXEC) {
                 fd_table[idx].take();
             }
         }
@@ -158,35 +126,74 @@ impl FdTable {
     }
 
     pub fn resize(&self, size: usize) -> GeneralRet {
-        if size > self.get_soft_limit() {
+        let mut inner=self.get_mut();
+        let soft_limit=inner.soft_limit;
+        let fd_table=&mut inner.files;
+        if size > soft_limit {
             return Err(SysErrNo::EMFILE);
         }
-        self.get_mut().files.resize(size, None);
+        fd_table.resize(size, None);
         Ok(())
     }
 
+    /// 安全地尝试获取文件描述符副本
     pub fn try_get(&self, fd: usize) -> Option<FileDescriptor> {
-        self.get_mut().files[fd].clone()
+        self.get_ref()
+            .files
+            .get(fd)        // 安全检查边界
+            .and_then(|x| x.as_ref()) // 检查是否为 Some
+            .cloned()
     }
 
-    pub fn get(&self, fd: usize) -> FileDescriptor {
-        self.get_mut().files[fd].clone().unwrap()
+    /// 用于系统调用：获取文件描述符，失败返回 EBADF
+    pub fn get(&self, fd: usize) -> Result<FileDescriptor, SysErrNo> {
+        self.try_get(fd).ok_or(SysErrNo::EBADF)
     }
 
-    pub fn set_cloexec(&self, fd: usize) {
-        self.get_mut().files[fd].as_mut().unwrap().set_cloexec();
+    pub fn get_cloexec(&self,fd: usize)->Result<bool, SysErrNo> {
+        let desc = self.get_ref()
+            .files
+            .get(fd)
+            .and_then(|x| x.as_ref() )
+            .ok_or(SysErrNo::EBADF)?;
+        Ok(desc.flags.contains(OpenFlags::O_CLOEXEC))
     }
 
-    pub fn unset_cloexec(&self, fd: usize) {
-        self.get_mut().files[fd].as_mut().unwrap().unset_cloexec();
+    pub fn set_cloexec(&self, fd: usize) ->SyscallRet {
+        let mut inner = self.get_mut();
+        let file_desc = inner.files.get_mut(fd)
+            .and_then(|slot| slot.as_mut())
+            .ok_or(SysErrNo::EBADF)?;
+        
+        file_desc.flags.insert(OpenFlags::O_CLOEXEC);
+        Ok(0)
     }
 
-    pub fn set_nonblock(&self, fd: usize) {
-        self.get_mut().files[fd].as_mut().unwrap().set_nonblock();
+    pub fn unset_cloexec(&self, fd: usize) ->SyscallRet {
+        let mut inner = self.get_mut();
+        let desc = inner.files.get_mut(fd)
+            .and_then(|x| x.as_mut())
+            .ok_or(SysErrNo::EBADF)?;
+        desc.flags.remove(OpenFlags::O_CLOEXEC);
+        Ok(0)
     }
 
-    pub fn unset_nonblock(&self, fd: usize) {
-        self.get_mut().files[fd].as_mut().unwrap().unset_nonblock();
+    pub fn set_nonblock(&self, fd: usize) ->SyscallRet {
+        let mut inner = self.get_mut();
+        let desc = inner.files.get_mut(fd)
+            .and_then(|x| x.as_mut())
+            .ok_or(SysErrNo::EBADF)?;
+        desc.flags.insert(OpenFlags::O_NONBLOCK);
+        Ok(0)
+    }
+
+    pub fn unset_nonblock(&self, fd: usize) ->SyscallRet {
+        let mut inner = self.get_mut();
+        let desc = inner.files.get_mut(fd)
+            .and_then(|x| x.as_mut())
+            .ok_or(SysErrNo::EBADF)?;
+        desc.flags.remove(OpenFlags::O_NONBLOCK);
+        Ok(0)
     }
 
     pub fn get_hard_limit(&self) -> usize {
@@ -198,28 +205,48 @@ impl FdTable {
     }
 
     pub fn set_limit(&self, soft_limit: usize, hard_limit: usize) {
-        let inner = self.get_mut();
+        let mut inner = self.get_mut();
         inner.soft_limit = soft_limit;
         inner.hard_limit = hard_limit;
     }
 
-    pub fn set(&self, fd: usize, file: FileDescriptor) {
-        self.get_mut().files[fd] = Some(file);
+    pub fn set(&self, fd: usize, file: FileDescriptor)->Result<(), SysErrNo> {
+        let mut inner = self.get_mut();
+        if fd >= inner.soft_limit {
+            return Err(SysErrNo::EMFILE);
+        }
+        if fd >= inner.files.len() {
+            inner.files.resize(fd + 1, None);
+        }
+        inner.files[fd] = Some(file);
+        Ok(())
     }
-
+    /// 修改文件描述符
     pub fn set_flags(&self, fd: usize, file: FileDescriptor) {
         self.get_mut().files[fd] = Some(file);
     }
 
     pub fn take(&self, fd: usize) -> Option<FileDescriptor> {
-        self.get_mut().files[fd].take()
+        let mut inner = self.get_mut();
+        inner.files.get_mut(fd).and_then(|slot| slot.take())
     }
 
-    fn get_mut(&self) -> &mut FdTableInner {
-        self.inner.get_unchecked_mut()
+    fn get_mut(&self) -> RwLockWriteGuard<'_, FdTableInner> {
+        self.inner.write()
     }
 
-    fn get_ref(&self) -> &FdTableInner {
-        self.inner.get_unchecked_ref()
+    fn get_ref(&self) -> RwLockReadGuard<'_, FdTableInner> {
+        self.inner.read()
+    }
+    pub fn with_fd_mut<F, T>(&self, fd: usize, mut f: F) -> Result<T, SysErrNo>
+    where
+        F: FnMut(&mut FileDescriptor) -> T,
+    {
+        let mut inner = self.get_mut();
+        if let Some(Some(fd_obj)) = inner.files.get_mut(fd) {
+            Ok(f(fd_obj))
+        } else {
+            Err(SysErrNo::EBADFD)
+        }
     }
 }

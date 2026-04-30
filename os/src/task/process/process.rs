@@ -10,7 +10,7 @@ use spin::{
 };
 
 use crate::{
-    fs::{FSInfo, FdTable, FSInfo}, mm::{MemorySet, MemorySetInner}, signal::SigTable, task::TaskControlBlock
+    fs::FdTable, mm::{MemorySet, MemorySetInner}, signal::SigTable, task::TaskControlBlock, utils::SyscallRet
 };
 
 /// 进程/线程组 类
@@ -210,6 +210,23 @@ impl Process {
     /// 获取当前进程中还活着的线程数量
     pub fn alive_tasks_count(&self) -> usize {
         self.meta_lock().tasks.iter().filter(|t| t.upgrade().is_some()).count()
+    }
+
+    // 只会在sys_fcntl里面调用的一些辅助函数
+
+    pub fn do_fcntl_setfd(&self,fd:usize, cloexec:bool)->SyscallRet {
+        if cloexec {
+            self.inner_lock().fd_table.set_cloexec(fd)
+        }else{
+            self.inner_lock().fd_table.unset_cloexec(fd)
+        }
+    }
+    pub fn do_fcntl_setfl(&self, fd:usize, nonblock:bool)->SyscallRet {
+        if nonblock {
+            self.inner_lock().fd_table.set_nonblock(fd)
+        }else {
+            self.inner_lock().fd_table.unset_nonblock(fd)
+        }
     }
 }
 

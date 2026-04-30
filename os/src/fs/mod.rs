@@ -34,7 +34,7 @@ mod map_dynamic_link;
 pub use map_dynamic_link::{
     map_dynamic_link_file, map_dynamic_link_file_directly_map, map_library_path,
 };
-// 定义一份打开文件的标志
+/// 定义一份打开文件的标志
 bitflags! {
     pub struct OpenFlags: u32 {
         // reserve 3 bits for the access mode
