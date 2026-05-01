@@ -10,9 +10,9 @@ fn dup_fd(old_fd: usize, cloexec: bool) -> SyscallRet {
     let mut proc_inner = task.get_process().inner_lock();
     let mut new_desc = proc_inner.fd_table.get(old_fd)?; 
     if cloexec {
-        new_desc.flags.insert(OpenFlags::O_CLOEXEC);
+        new_desc.set_cloexec();
     } else {
-        new_desc.flags.remove(OpenFlags::O_CLOEXEC);
+        new_desc.unset_cloexec();;
     }
     let new_fd = proc_inner.fd_table.alloc_fd()?;
     if let Err(e) = proc_inner.fd_table.set(new_fd, new_desc) {
@@ -102,9 +102,8 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             let flags = proc_inner
                 .fd_table
                 .try_get(fd)
-                .ok_or(SysErrNo::EBADFD)?
-                .flags
-                .bits();
+                .ok_or(SysErrNo::EBADF)?
+                .flags();
             Ok(flags as usize)
         },
         F_SETFL => {

@@ -1,5 +1,5 @@
 use crate::{
-    fs::files::Socket, syscall::Syscall, utils::{GeneralRet, SysErrNo, SyscallRet}
+    fs::files::Socket, mm::UserBuffer, syscall::Syscall, utils::{GeneralRet, SysErrNo, SyscallRet}
 };
 use alloc::{sync::Arc, vec, vec::Vec};
 
@@ -13,8 +13,51 @@ pub struct FdTable {
 
 #[derive(Clone)]
 pub struct FileDescriptor {
-    pub flags: OpenFlags,
-    pub file: FileClass,
+    flags: OpenFlags,
+    file: FileClass,
+}
+
+impl FileDescriptor {
+    pub fn new(flags: OpenFlags, file: FileClass) -> Self {
+        Self { flags, file }
+    }
+    pub fn default(file: FileClass) -> Self {
+        Self {
+            flags: OpenFlags::empty(),
+            file,
+        }
+    }
+    pub fn flags(&self)->u32 {
+        self.flags.bits()
+    }
+    pub fn file(&self) -> Result<Arc<OSFile>, SysErrNo> {
+        self.file.file()
+    }
+    pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {
+        self.file.abs()
+    }
+    pub fn any(&self) -> Arc<dyn File> {
+        self.file.any()
+    }
+
+    pub fn unset_cloexec(&mut self) {
+        self.flags.remove(OpenFlags::O_CLOEXEC);
+    }
+    pub fn set_cloexec(&mut self) {
+        self.flags.insert(OpenFlags::O_CLOEXEC);
+    }
+    pub fn cloexec(&self) -> bool {
+        self.flags.contains(OpenFlags::O_CLOEXEC)
+    }
+    pub fn non_block(&self) -> bool {
+        self.flags.contains(OpenFlags::O_NONBLOCK)
+    }
+    pub fn unset_nonblock(&mut self) {
+        self.flags.remove(OpenFlags::O_NONBLOCK);
+    }
+    pub fn set_nonblock(&mut self) {
+        self.flags.insert(OpenFlags::O_NONBLOCK);
+    }
 }
 
 struct FdTableInner {
@@ -59,7 +102,7 @@ impl FdTable {
             ],
         ))
     }
-
+    /// 克隆一份页表
     pub fn from_another(another: &Arc<FdTable>) -> Self {
         let other = another.get_ref();
         Self {
@@ -113,6 +156,7 @@ impl FdTable {
             Ok(fd_table.len() - 1)
         }
     }
+    /// 对fd表中权限位有O_CLOEXEC进行关闭
     pub fn close_on_exec(&self) {
         let fd_table = &mut self.get_mut().files;
         for idx in 0..fd_table.len() {
@@ -121,10 +165,11 @@ impl FdTable {
             }
         }
     }
+    /// 返回fd表的长度
     pub fn len(&self) -> usize {
         self.get_ref().files.len()
     }
-
+    /// 修改fd表的大小
     pub fn resize(&self, size: usize) -> GeneralRet {
         let mut inner=self.get_mut();
         let soft_limit=inner.soft_limit;
@@ -248,5 +293,10 @@ impl FdTable {
         } else {
             Err(SysErrNo::EBADFD)
         }
+    }
+    // 下面的函数要求直接对文件进行操作而不只是flags
+
+    pub fn try_get_file(&self,fd:usize) -> Option<Arc<dyn File>> {
+        Some(self.get_ref().files[fd].unwrap().file.any())
     }
 }

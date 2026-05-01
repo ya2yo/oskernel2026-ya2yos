@@ -26,68 +26,9 @@ use log::{debug, error, warn};
 
 use super::{FcntlCmd, Iovec, RLimit};
 
-/// 参考 https://man7.org/linux/man-pages/man2/write.2.html
-pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
-    debug!("[sys_write] fd is {}, len={}", fd, len);
-    // TODO: 死锁？
-    let task = current_task().unwrap();
-    let inner = task.inner_lock();
 
-    if fd >= inner.fd_table.len() {
-        debug!("write EINVAL early return");
-        return Err(SysErrNo::EINVAL);
-    }
-    if let Some(file) = task.get_fd_table().try_get(fd) {
-        let process = task.process.inner_lock();
-        let memory_set = process.get_locked_memory_set();
-        let file: Arc<dyn File> = file.any();
-        if !file.writable() {
-            return Err(SysErrNo::EACCES);
-        }
-        let file = file.clone();
-        let buffer = safe_translated_byte_buffer(&*memory_set, buf, len).unwrap();
-        let buffer = UserBuffer::new(buffer);
 
-        // 注意！一些文件的write可能会阻塞，还可能借用task_inner，所以我们应该drop task_inner
-        drop(inner);
-        drop(memory_set);
-        drop(process);
-        let ret = file.write(buffer)?;
-        debug!("buffer 3");
-        Ok(ret)
-    } else {
-        debug!("write EBADF");
-        Err(SysErrNo::EBADF)
-    }
-}
 
-/// 参考 https://man7.org/linux/man-pages/man2/read.2.html
-pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
-    let task = current_task().unwrap();
-    let inner = task.inner_lock();
-
-    if fd >= inner.fd_table.len() {
-        return Err(SysErrNo::EINVAL);
-    }
-    if let Some(file) = task.get_fd_table().try_get(fd) {
-        let process = task.process.inner_lock();
-        let memory_set = process.get_locked_memory_set();
-        let file: Arc<dyn File> = file.any();
-        if !file.readable() {
-            return Err(SysErrNo::EACCES);
-        }
-        // 注意！一些文件的read可能会阻塞，还可能借用task_inner，所以我们应该drop task_inner
-        let buffer = safe_translated_byte_buffer(&*memory_set, buf, len).unwrap();
-        let buffer = UserBuffer::new(buffer);
-        drop(inner);
-        drop(memory_set);
-        drop(process);
-        let ret = file.read(buffer)?;
-        Ok(ret)
-    } else {
-        Err(SysErrNo::EBADF)
-    }
-}
 
 /// 参考 https://man7.org/linux/man-pages/man2/writev.2.html
 pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {

@@ -13,7 +13,7 @@ use crate::{
     arch::page_table::PageTable,
     fs::{
         create_proc_dir_and_file, open, OpenFlags, DEFAULT_DIR_MODE,
-        DEFAULT_FILE_MODE,
+        DEFAULT_FILE_MODE,FdTable
     },
     mm::{
         get_data, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet,
