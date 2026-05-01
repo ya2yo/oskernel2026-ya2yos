@@ -10,7 +10,7 @@ use spin::{
 };
 
 use crate::{
-    fs::FdTable, mm::{MemorySet, MemorySetInner}, signal::SigTable, task::TaskControlBlock, utils::SyscallRet
+    fs::{FdTable,FSInfo}, mm::{MemorySet, MemorySetInner}, signal::SigTable, task::TaskControlBlock, utils::SyscallRet
 };
 
 /// 进程/线程组 类

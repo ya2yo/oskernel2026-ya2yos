@@ -1,0 +1,32 @@
+use alloc::string::ToString;
+use log::debug;
+
+use crate::{fs::{FileClass, FileDescriptor, make_pipe}, mm::translated_refmut, task::current_task};
+
+/// 参考 https://man7.org/linux/man-pages/man2/pipe2.2.html
+pub fn sys_pipe2(fd: *mut u32) -> SyscallRet {
+    let task = current_task().unwrap();
+    let task_inner = task.inner_lock();
+    let proc_inner=task.process.inner_lock();
+    let fd_table=task.get_fd_table();
+    let token = proc_inner.get_locked_memory_set_write().token();
+
+    let (read_pipe, write_pipe) = make_pipe();
+    let read_fd = fd_table.alloc_fd()?;
+    proc_inner
+        .fd_table
+        .set(read_fd, FileDescriptor::default(FileClass::Abs(read_pipe)));
+    let write_fd = fd_table.alloc_fd()?;
+    fd_table.set(
+        write_fd,
+        FileDescriptor::default(FileClass::Abs(write_pipe)),
+    );
+    let mut locked_fs_info = proc_inner.fs_info.clone();
+
+    locked_fs_info.insert("pipe".to_string(), read_fd);
+    locked_fs_info.insert("pipe".to_string(), write_fd);
+    debug!("pipe read fd is {}, write fd is {}", read_fd, write_fd);
+    *translated_refmut(token, fd) = read_fd as u32;
+    *translated_refmut(token, unsafe { fd.add(1) }) = write_fd as u32;
+    Ok(0)
+}
