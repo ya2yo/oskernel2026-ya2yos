@@ -125,12 +125,16 @@ pub use self::loopback::Loopback;
 pub use self::pcap_writer::{PcapLinkType, PcapMode, PcapSink, PcapWriter};
 #[cfg(all(feature = "phy-raw_socket", unix))]
 pub use self::raw_socket::RawSocket;
-pub use self::tracer::Tracer;
+pub use self::tracer::{Tracer, TracerDirection, TracerPacket};
 #[cfg(all(
     feature = "phy-tuntap_interface",
     any(target_os = "linux", target_os = "android")
 ))]
 pub use self::tuntap_interface::TunTapInterface;
+
+/// The IPV4 payload fragment size must be an increment of this value.
+#[cfg(feature = "proto-ipv4-fragmentation")]
+pub const IPV4_FRAGMENT_PAYLOAD_ALIGNMENT: usize = 8;
 
 /// Metadata associated to a packet.
 ///
@@ -287,6 +291,13 @@ impl DeviceCapabilities {
             Medium::Ieee802154 => self.max_transmission_unit, // TODO(thvdveld): what is the MTU for Medium::IEEE802
         }
     }
+
+    /// Special case method to determine the maximum payload size that is based on the MTU and also aligned per spec.
+    #[cfg(feature = "proto-ipv4-fragmentation")]
+    pub fn max_ipv4_fragment_size(&self, ip_header_len: usize) -> usize {
+        let payload_mtu = self.ip_mtu() - ip_header_len;
+        payload_mtu - (payload_mtu % IPV4_FRAGMENT_PAYLOAD_ALIGNMENT)
+    }
 }
 
 /// Type of medium of a device.
@@ -380,11 +391,6 @@ pub trait RxToken {
     fn meta(&self) -> PacketMeta {
         PacketMeta::default()
     }
-
-    /// Preprocess the incomming packet before it is passed to the stack.
-    ///
-    /// e.g., prepare TCP sockets when received a SYN packet.
-    fn preprocess(&self, _sockets: &mut crate::iface::SocketSet<'_>) {}
 }
 
 /// A token to transmit a single network packet.

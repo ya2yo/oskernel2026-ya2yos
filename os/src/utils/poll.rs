@@ -9,58 +9,18 @@ use core::{
     mem::MaybeUninit,
     task::{Context, Waker},
 };
-
+use crate::syscall::PollEvents;
 use alloc::{boxed::Box, sync::Arc, task::Wake};
 use bitflags::bitflags;
-use linux_raw_sys::general::*;
 use spin::{Lazy, Mutex};
-
-bitflags! {
-    /// I/O events.
-    #[derive(Debug, Clone, Copy)]
-    pub struct IoEvents: u32 {
-        /// Available for read
-        const IN     = POLLIN;
-        /// Urgent data for read
-        const PRI    = POLLPRI;
-        /// Available for write
-        const OUT    = POLLOUT;
-
-        /// Error condition
-        const ERR    = POLLERR;
-        /// Hang up
-        const HUP    = POLLHUP;
-        /// Invalid request
-        const NVAL   = POLLNVAL;
-
-        /// Equivalent to [`IN`](Self::IN)
-        const RDNORM = POLLRDNORM;
-        /// Priority band data can be read
-        const RDBAND = POLLRDBAND;
-        /// Equivalent to [`OUT`](Self::OUT)
-        const WRNORM = POLLWRNORM;
-        /// Priority data can be written
-        const WRBAND = POLLWRBAND;
-
-        /// Message
-        const MSG    = POLLMSG;
-        /// Remove
-        const REMOVE = POLLREMOVE;
-        /// Stream socket peer closed connection, or shut down writing half of connection.
-        const RDHUP  = POLLRDHUP;
-
-        /// Events that are always polled even without specifying them.
-        const ALWAYS_POLL = Self::ERR.bits() | Self::HUP.bits();
-    }
-}
 
 /// Trait for types that can be polled for I/O events.
 pub trait Pollable {
     /// Polls for I/O events.
-    fn poll(&self) -> IoEvents;
+    fn poll(&self) -> PollEvents;
 
     /// Registers wakers for I/O events.
-    fn register(&self, context: &mut Context<'_>, events: IoEvents);
+    fn register(&self, context: &mut Context<'_>, events: PollEvents);
 }
 
 const POLL_SET_CAPACITY: usize = 64;

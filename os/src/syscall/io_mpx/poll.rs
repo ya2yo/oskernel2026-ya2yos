@@ -1,3 +1,8 @@
+use alloc::{sync::Arc, vec::Vec};
+
+use crate::{
+    fs::File, mm::{translated_ref, translated_refmut}, syscall::{PollEvents, options::PollFd}, task::{current_task, suspend_current_and_run_next}, timer::{Timespec, get_time_ms}, utils::{SysErrNo, SyscallRet}};
+
 /// 参考 https://man7.org/linux/man-pages/man2/ppoll.2.html
 pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, mask: usize) -> SyscallRet {
     let task = current_task().unwrap();

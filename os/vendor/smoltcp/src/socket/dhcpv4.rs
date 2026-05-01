@@ -5,9 +5,9 @@ use crate::iface::Context;
 use crate::time::{Duration, Instant};
 use crate::wire::dhcpv4::field as dhcpv4_field;
 use crate::wire::{
-    DhcpMessageType, DhcpPacket, DhcpRepr, IpAddress, IpProtocol, Ipv4Address, Ipv4AddressExt,
-    Ipv4Cidr, Ipv4Repr, UdpRepr, DHCP_CLIENT_PORT, DHCP_MAX_DNS_SERVER_COUNT, DHCP_SERVER_PORT,
-    UDP_HEADER_LEN,
+    DHCP_CLIENT_PORT, DHCP_MAX_DNS_SERVER_COUNT, DHCP_SERVER_PORT, DhcpMessageType, DhcpPacket,
+    DhcpRepr, IpAddress, IpProtocol, Ipv4Address, Ipv4AddressExt, Ipv4Cidr, Ipv4Repr,
+    UDP_HEADER_LEN, UdpRepr,
 };
 use crate::wire::{DhcpOption, HardwareAddress};
 use heapless::Vec;
@@ -358,10 +358,10 @@ impl<'a> Socket<'a> {
         );
 
         // Copy over the payload into the receive packet buffer.
-        if let Some(buffer) = self.receive_packet_buffer.as_mut() {
-            if let Some(buffer) = buffer.get_mut(..payload.len()) {
-                buffer.copy_from_slice(payload);
-            }
+        if let Some(buffer) = self.receive_packet_buffer.as_mut()
+            && let Some(buffer) = buffer.get_mut(..payload.len())
+        {
+            buffer.copy_from_slice(payload);
         }
 
         match (&mut self.state, dhcp_repr.message_type) {
@@ -574,13 +574,9 @@ impl<'a> Socket<'a> {
         // 0x0f * 4 = 60 bytes.
         const MAX_IPV4_HEADER_LEN: usize = 60;
 
-        // We don't directly modify self.transaction_id because sending the packet
-        // may fail. We only want to update state after successfully sending.
-        let next_transaction_id = Self::random_transaction_id(cx);
-
         let mut dhcp_repr = DhcpRepr {
             message_type: DhcpMessageType::Discover,
-            transaction_id: next_transaction_id,
+            transaction_id: self.transaction_id,
             secs: 0,
             client_hardware_address: ethernet_addr,
             client_ip: Ipv4Address::UNSPECIFIED,
@@ -624,6 +620,9 @@ impl<'a> Socket<'a> {
                     return Ok(());
                 }
 
+                let next_transaction_id = Self::random_transaction_id(cx);
+                dhcp_repr.transaction_id = next_transaction_id;
+
                 // send packet
                 net_debug!(
                     "DHCP send DISCOVER to {}: {:?}",
@@ -666,7 +665,6 @@ impl<'a> Socket<'a> {
                     + (self.retry_config.initial_request_timeout << (state.retry as u32 / 2));
                 state.retry += 1;
 
-                self.transaction_id = next_transaction_id;
                 Ok(())
             }
             ClientState::Renewing(state) => {
@@ -691,6 +689,9 @@ impl<'a> Socket<'a> {
                 }
                 dhcp_repr.message_type = DhcpMessageType::Request;
                 dhcp_repr.client_ip = state.config.address.address();
+
+                let next_transaction_id = Self::random_transaction_id(cx);
+                dhcp_repr.transaction_id = next_transaction_id;
 
                 net_debug!("DHCP send renew to {}: {:?}", ipv4_repr.dst_addr, dhcp_repr);
                 ipv4_repr.payload_len = udp_repr.header_len() + dhcp_repr.buffer_len();
@@ -742,7 +743,7 @@ impl<'a> Socket<'a> {
     ///
     /// The socket has an internal "configuration changed" flag. If
     /// set, this function returns the configuration and resets the flag.
-    pub fn poll(&mut self) -> Option<Event> {
+    pub fn poll(&mut self) -> Option<Event<'_>> {
         if !self.config_changed {
             None
         } else if let ClientState::Renewing(state) = &self.state {

@@ -1,12 +1,12 @@
 use crate::{
-    fs::files::Socket, mm::UserBuffer, syscall::Syscall, utils::{GeneralRet, SysErrNo, SyscallRet}
+    fs::files::{OSFile, Socket}, mm::UserBuffer, syscall::Syscall, utils::{GeneralRet, SysErrNo, SyscallRet}
 };
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use spin::rwlock::{RwLock,RwLockReadGuard, RwLockWriteGuard};
 use log::debug;
 
-use super::{File, FileClass, OSFile, OpenFlags, Stdin, Stdout};
+use super::{File, FileClass, OpenFlags, Stdin, Stdout};
 pub struct FdTable {
     inner: RwLock<FdTableInner>,
 }

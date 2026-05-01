@@ -4,12 +4,12 @@ mod fs_info;
 mod fstruct;
 mod mount;
 use files::{devfs, pipe, stdio};
-pub use files::{make_socket, make_socketpair, OSFile};
+// pub use files::{make_socket, make_socketpair, OSFile};
 mod stat;
 mod vfs;
-use crate::fs::files::Socket;
+use crate::fs::files::{OSFile, Socket};
 use crate::mm::UserBuffer;
-use crate::syscall::FaccessatFileMode;
+// use crate::syscall::FaccessatFileMode;
 use crate::utils::{GeneralRet, SysErrNo};
 
 use alloc::string::String;
@@ -34,8 +34,9 @@ mod map_dynamic_link;
 pub use map_dynamic_link::{
     map_dynamic_link_file, map_dynamic_link_file_directly_map, map_library_path,
 };
-/// 定义一份打开文件的标志
+
 bitflags! {
+    /// 定义一份打开文件的标志
     pub struct OpenFlags: u32 {
         // reserve 3 bits for the access mode
         const O_RDONLY      = 0;           // Read only

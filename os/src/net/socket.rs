@@ -39,7 +39,6 @@ bitflags! {
     /// Flags for sending data to a socket.
     ///
     /// See [`SocketOps::send`].
-    #[derive(Default, Debug, Clone, Copy)]
     pub struct SendFlags: u32 {
     }
 }
@@ -48,7 +47,6 @@ bitflags! {
     /// Flags for receiving data from a socket.
     ///
     /// See [`SocketOps::recv`].
-    #[derive(Default, Debug, Clone, Copy)]
     pub struct RecvFlags: u32 {
         /// Receive data without removing it from the queue.
         const PEEK = 0x01;

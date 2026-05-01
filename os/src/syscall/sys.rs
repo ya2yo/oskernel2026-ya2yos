@@ -1,3 +1,7 @@
+use crate::{fs::open_device_file, mm::{UserBuffer, if_bad_address, translated_byte_buffer}, task::current_task, utils::{SysErrNo, SyscallRet}};
+
+
+
 /// 参考 https://man7.org/linux/man-pages/man2/getrandom.2.html
 pub fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();

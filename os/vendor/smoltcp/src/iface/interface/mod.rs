@@ -38,8 +38,12 @@ use super::fragmentation::{Fragmenter, FragmentsBuffer};
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
 use super::neighbor::{Answer as NeighborAnswer, Cache as NeighborCache};
 use super::socket_set::SocketSet;
-use crate::config::{IFACE_MAX_ADDR_COUNT, IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT};
+use crate::config::{
+    IFACE_MAX_ADDR_COUNT, IFACE_MAX_PREFIX_COUNT, IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT,
+};
 use crate::iface::Routes;
+#[cfg(feature = "proto-ipv6-slaac")]
+use crate::iface::Slaac;
 use crate::phy::PacketMeta;
 use crate::phy::{ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use crate::rand::Rand;
@@ -142,6 +146,12 @@ pub struct InterfaceInner {
     tag: u16,
     ip_addrs: Vec<IpCidr, IFACE_MAX_ADDR_COUNT>,
     any_ip: bool,
+    #[cfg(feature = "proto-ipv6-slaac")]
+    slaac_enabled: bool,
+    #[cfg(feature = "proto-ipv6-slaac")]
+    slaac: Slaac,
+    #[cfg(feature = "proto-ipv6-slaac")]
+    slaac_updated: Instant,
     routes: Routes,
     #[cfg(feature = "multicast")]
     multicast: multicast::State,
@@ -169,6 +179,10 @@ pub struct Config {
     /// **NOTE**: we use the same PAN ID for destination and source.
     #[cfg(feature = "medium-ieee802154")]
     pub pan_id: Option<Ieee802154Pan>,
+
+    /// Enable stateless address autoconfiguration on the interface.
+    #[cfg(feature = "proto-ipv6")]
+    pub slaac: bool,
 }
 
 impl Config {
@@ -178,6 +192,8 @@ impl Config {
             hardware_addr,
             #[cfg(feature = "medium-ieee802154")]
             pan_id: None,
+            #[cfg(feature = "proto-ipv6")]
+            slaac: false,
         }
     }
 }
@@ -262,6 +278,12 @@ impl Interface {
                 ipv4_id,
                 #[cfg(feature = "proto-sixlowpan")]
                 sixlowpan_address_context: Vec::new(),
+                #[cfg(feature = "proto-ipv6-slaac")]
+                slaac_enabled: config.slaac,
+                #[cfg(feature = "proto-ipv6-slaac")]
+                slaac: Slaac::new(),
+                #[cfg(feature = "proto-ipv6-slaac")]
+                slaac_updated: Instant::from_millis(0),
                 rand,
             },
         }
@@ -333,15 +355,18 @@ impl Interface {
         self.inner.ipv6_addr()
     }
 
-    /// Get an address from the interface that could be used as source address. For IPv4, this is
-    /// the first IPv4 address from the list of addresses. For IPv6, the address is based on the
-    /// destination address and uses RFC6724 for selecting the source address.
+    /// Get an address from the interface that could be used as source address.
+    /// For IPv4, this function tries to find a registered IPv4 address in the same
+    /// subnet as the destination, falling back to the first IPv4 address if none is
+    /// found. For IPv6, the selection is based on RFC6724.
     pub fn get_source_address(&self, dst_addr: &IpAddress) -> Option<IpAddress> {
         self.inner.get_source_address(dst_addr)
     }
 
-    /// Get an address from the interface that could be used as source address. This is the first
-    /// IPv4 address from the list of addresses in the interface.
+    /// Get an IPv4 source address based on a destination address. This function tries
+    /// to find the first IPv4 address from the interface that is in the same subnet as
+    /// the destination address. If no such address is found, the first IPv4 address
+    /// from the interface is returned.
     #[cfg(feature = "proto-ipv4")]
     pub fn get_source_address_ipv4(&self, dst_addr: &Ipv4Address) -> Option<Ipv4Address> {
         self.inner.get_source_address_ipv4(dst_addr)
@@ -414,7 +439,9 @@ impl Interface {
     #[cfg(feature = "_proto-fragmentation")]
     pub fn set_reassembly_timeout(&mut self, timeout: Duration) {
         if timeout > Duration::from_secs(60) {
-            net_debug!("RFC 4944 specifies that the reassembly timeout MUST be set to a maximum of 60 seconds");
+            net_debug!(
+                "RFC 4944 specifies that the reassembly timeout MUST be set to a maximum of 60 seconds"
+            );
         }
         self.fragments.reassembly_timeout = timeout;
     }
@@ -434,7 +461,8 @@ impl Interface {
     /// If this is a concern for your application (i.e. your environment doesn't
     /// have preemptive scheduling, or `poll()` is called from a main loop where
     /// other important things are processed), you may use the lower-level methods
-    /// [`poll_egress()`](Self::poll_egress) and [`poll_ingress_single()`](Self::poll_ingress_single).
+    /// [`poll_egress()`](Self::poll_egress), [`poll_maintenance()`](Self::poll_maintenance)
+    /// and [`poll_ingress_single()`](Self::poll_ingress_single).
     /// This allows you to insert yields or process other events between processing
     /// individual ingress packets.
     pub fn poll(
@@ -447,8 +475,7 @@ impl Interface {
 
         let mut res = PollResult::None;
 
-        #[cfg(feature = "_proto-fragmentation")]
-        self.fragments.assembler.remove_expired(timestamp);
+        self.poll_maintenance(timestamp);
 
         // Process ingress while there's packets available.
         loop {
@@ -460,9 +487,11 @@ impl Interface {
         }
 
         // Process egress.
-        match self.poll_egress(timestamp, device, sockets) {
-            PollResult::None => {}
-            PollResult::SocketStateChanged => res = PollResult::SocketStateChanged,
+        loop {
+            match self.poll_egress(timestamp, device, sockets) {
+                PollResult::None => break,
+                PollResult::SocketStateChanged => res = PollResult::SocketStateChanged,
+            }
         }
 
         res
@@ -495,6 +524,11 @@ impl Interface {
             }
         }
 
+        #[cfg(feature = "proto-ipv6-slaac")]
+        if self.inner.slaac_enabled {
+            self.ndisc_rs_egress(device);
+        }
+
         #[cfg(feature = "multicast")]
         self.multicast_egress(device);
 
@@ -522,6 +556,21 @@ impl Interface {
         self.socket_ingress(device, sockets)
     }
 
+    /// Maintain stateful processing on the device.
+    ///
+    /// This is guaranteed to always perform a bounded amount of work.
+    pub fn poll_maintenance(&mut self, timestamp: Instant) {
+        self.inner.now = timestamp;
+
+        #[cfg(feature = "_proto-fragmentation")]
+        self.fragments.assembler.remove_expired(timestamp);
+
+        #[cfg(feature = "proto-ipv6-slaac")]
+        if self.inner.slaac.sync_required(timestamp) {
+            self.sync_slaac_state(timestamp)
+        }
+    }
+
     /// Return a _soft deadline_ for calling [poll] the next time.
     /// The [Instant] returned is the time at which you should call [poll] next.
     /// It is harmless (but wastes energy) to call it before the [Instant], and
@@ -538,22 +587,29 @@ impl Interface {
             return Some(Instant::from_millis(0));
         }
 
-        let inner = &mut self.inner;
-
-        sockets
+        #[allow(unused_mut)]
+        let mut res = sockets
             .items()
-            .filter_map(move |item| {
-                let socket_poll_at = item.socket.poll_at(inner);
-                match item
-                    .meta
-                    .poll_at(socket_poll_at, |ip_addr| inner.has_neighbor(&ip_addr))
-                {
+            .filter_map(|item| {
+                let socket_poll_at = item.socket.poll_at(&mut self.inner);
+                match item.meta.poll_at(
+                    socket_poll_at,
+                    |ip_addr| self.inner.has_neighbor(&ip_addr),
+                    timestamp,
+                ) {
                     PollAt::Ingress => None,
                     PollAt::Time(instant) => Some(instant),
                     PollAt::Now => Some(Instant::from_millis(0)),
                 }
             })
-            .min()
+            .min();
+
+        #[cfg(feature = "proto-ipv6-slaac")]
+        if self.inner.slaac_enabled {
+            res = res.min(self.inner.slaac.poll_at(timestamp));
+        }
+
+        res
     }
 
     /// Return an _advisory wait time_ for calling [poll] the next time.
@@ -581,7 +637,6 @@ impl Interface {
             return PollIngressSingleResult::None;
         };
 
-        rx_token.preprocess(sockets);
         let rx_meta = rx_token.meta();
         rx_token.consume(|frame| {
             if frame.is_empty() {
@@ -594,12 +649,10 @@ impl Interface {
                     if let Some(packet) =
                         self.inner
                             .process_ethernet(sockets, rx_meta, frame, &mut self.fragments)
-                    {
-                        if let Err(err) =
+                        && let Err(err) =
                             self.inner.dispatch(tx_token, packet, &mut self.fragmenter)
-                        {
-                            net_debug!("Failed to send response: {:?}", err);
-                        }
+                    {
+                        net_debug!("Failed to send response: {:?}", err);
                     }
                 }
                 #[cfg(feature = "medium-ip")]
@@ -607,15 +660,14 @@ impl Interface {
                     if let Some(packet) =
                         self.inner
                             .process_ip(sockets, rx_meta, frame, &mut self.fragments)
-                    {
-                        if let Err(err) = self.inner.dispatch_ip(
+                        && let Err(err) = self.inner.dispatch_ip(
                             tx_token,
                             PacketMeta::default(),
                             packet,
                             &mut self.fragmenter,
-                        ) {
-                            net_debug!("Failed to send response: {:?}", err);
-                        }
+                        )
+                    {
+                        net_debug!("Failed to send response: {:?}", err);
                     }
                 }
                 #[cfg(feature = "medium-ieee802154")]
@@ -623,15 +675,14 @@ impl Interface {
                     if let Some(packet) =
                         self.inner
                             .process_ieee802154(sockets, rx_meta, frame, &mut self.fragments)
-                    {
-                        if let Err(err) = self.inner.dispatch_ip(
+                        && let Err(err) = self.inner.dispatch_ip(
                             tx_token,
                             PacketMeta::default(),
                             packet,
                             &mut self.fragmenter,
-                        ) {
-                            net_debug!("Failed to send response: {:?}", err);
-                        }
+                        )
+                    {
+                        net_debug!("Failed to send response: {:?}", err);
                     }
                 }
             }
@@ -808,6 +859,12 @@ impl InterfaceInner {
         self.now = now
     }
 
+    #[cfg(test)]
+    #[allow(unused)] // unused depending on which sockets are enabled
+    pub(crate) fn set_ip_addrs(&mut self, addrs: Vec<IpCidr, IFACE_MAX_ADDR_COUNT>) {
+        self.ip_addrs = addrs;
+    }
+
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
     fn check_hardware_addr(addr: &HardwareAddress) {
         if !addr.is_unicast() {
@@ -824,7 +881,14 @@ impl InterfaceInner {
     }
 
     /// Check whether the interface has the given IP address assigned.
-    fn has_ip_addr<T: Into<IpAddress>>(&self, addr: T) -> bool {
+    ///
+    /// Always returns true if [`InterfaceInner::any_ip`].
+    pub(crate) fn has_ip_addr<T: Into<IpAddress>>(&self, addr: T) -> bool {
+        // If any IP is set to true, we don't bother about checking the IP.
+        if self.any_ip {
+            return true;
+        }
+
         let addr = addr.into();
         self.ip_addrs.iter().any(|probe| probe.address() == addr)
     }
@@ -1193,8 +1257,6 @@ impl InterfaceInner {
                 #[cfg(feature = "proto-ipv6")]
                 IpVersion::Ipv6 => frame.set_ethertype(EthernetProtocol::Ipv6),
             }
-
-            Ok(())
         };
 
         // Emit function for the IP header and payload.
@@ -1217,10 +1279,16 @@ impl InterfaceInner {
                         net_debug!("start fragmentation");
 
                         // Calculate how much we will send now (including the Ethernet header).
-                        let tx_len = self.caps.max_transmission_unit;
 
                         let ip_header_len = repr.buffer_len();
-                        let first_frag_ip_len = self.caps.ip_mtu();
+                        let first_frag_data_len =
+                            self.caps.max_ipv4_fragment_size(repr.buffer_len());
+                        let first_frag_ip_len = first_frag_data_len + ip_header_len;
+                        let mut tx_len = first_frag_ip_len;
+                        #[cfg(feature = "medium-ethernet")]
+                        if matches!(caps.medium, Medium::Ethernet) {
+                            tx_len += EthernetFrame::<&[u8]>::header_len();
+                        }
 
                         if frag.buffer.len() < total_ip_len {
                             net_debug!(
@@ -1242,11 +1310,11 @@ impl InterfaceInner {
                         // Save the IP header for other fragments.
                         frag.ipv4.repr = *repr;
 
-                        // Save how much bytes we will send now.
-                        frag.sent_bytes = first_frag_ip_len;
-
                         // Modify the IP header
-                        repr.payload_len = first_frag_ip_len - repr.buffer_len();
+                        repr.payload_len = first_frag_data_len;
+
+                        // Save the number of bytes we will send now.
+                        frag.sent_bytes = first_frag_ip_len;
 
                         // Emit the IP header to the buffer.
                         emit_ip(&ip_repr, &mut frag.buffer);
@@ -1266,7 +1334,7 @@ impl InterfaceInner {
                         tx_token.consume(tx_len, |mut tx_buffer| {
                             #[cfg(feature = "medium-ethernet")]
                             if matches!(self.caps.medium, Medium::Ethernet) {
-                                emit_ethernet(&ip_repr, tx_buffer)?;
+                                emit_ethernet(&ip_repr, tx_buffer);
                                 tx_buffer = &mut tx_buffer[EthernetFrame::<&[u8]>::header_len()..];
                             }
 
@@ -1276,14 +1344,16 @@ impl InterfaceInner {
                             // Copy the IP header and the payload.
                             tx_buffer[..first_frag_ip_len]
                                 .copy_from_slice(&frag.buffer[..first_frag_ip_len]);
+                        });
 
-                            Ok(())
-                        })
+                        Ok(())
                     }
 
                     #[cfg(not(feature = "proto-ipv4-fragmentation"))]
                     {
-                        net_debug!("Enable the `proto-ipv4-fragmentation` feature for fragmentation support.");
+                        net_debug!(
+                            "Enable the `proto-ipv4-fragmentation` feature for fragmentation support."
+                        );
                         Ok(())
                     }
                 } else {
@@ -1293,13 +1363,14 @@ impl InterfaceInner {
                     tx_token.consume(total_len, |mut tx_buffer| {
                         #[cfg(feature = "medium-ethernet")]
                         if matches!(self.caps.medium, Medium::Ethernet) {
-                            emit_ethernet(&ip_repr, tx_buffer)?;
+                            emit_ethernet(&ip_repr, tx_buffer);
                             tx_buffer = &mut tx_buffer[EthernetFrame::<&[u8]>::header_len()..];
                         }
 
                         emit_ip(&ip_repr, tx_buffer);
-                        Ok(())
-                    })
+                    });
+
+                    Ok(())
                 }
             }
             // We don't support IPv6 fragmentation yet.
@@ -1313,13 +1384,13 @@ impl InterfaceInner {
                     tx_token.consume(total_len, |mut tx_buffer| {
                         #[cfg(feature = "medium-ethernet")]
                         if matches!(self.caps.medium, Medium::Ethernet) {
-                            emit_ethernet(&ip_repr, tx_buffer)?;
+                            emit_ethernet(&ip_repr, tx_buffer);
                             tx_buffer = &mut tx_buffer[EthernetFrame::<&[u8]>::header_len()..];
                         }
 
                         emit_ip(&ip_repr, tx_buffer);
-                        Ok(())
-                    })
+                    });
+                    Ok(())
                 }
             }
         }

@@ -5,7 +5,7 @@ use core::{
     task::Context,
 };
 
-use crate::utils::{SysErrNo,SysResult};
+use crate::{mm::UserBuffer, utils::{PollSet, SysErrNo, SysResult}};
 use crate::syscall::PollEvents;
 use crate::fs::File;
 use spin::Mutex;
@@ -109,7 +109,7 @@ impl TcpSocket {
     fn bound_endpoint(&self) -> SysResult<IpListenEndpoint> {
         let endpoint = self.with_smol_socket(|socket| socket.get_bound_endpoint());
         if endpoint.port == 0 {
-            ax_bail!(InvalidInput, "not bound");
+            // ax_bail!(InvalidInput, "not bound");
         }
         Ok(endpoint)
     }
@@ -225,7 +225,7 @@ impl SocketOps for TcpSocket {
         let mut local_addr = local_addr.into_ip()?;
         self.state
             .lock(State::Idle)// 只有 Idle 状态可以绑定
-            .map_err(|_| ax_err_type!(InvalidInput, "already bound"))?
+            .map_err(|_| return Err(SysErrNo::EINVAL))?
             .transit(State::Idle, || {
                 // 如果没指定端口，则自动分配一个临时端口
                 if local_addr.port() == 0 {
@@ -269,7 +269,7 @@ impl SocketOps for TcpSocket {
                     SysErrNo::InProgress
                 } else {
                     // TODO(mivik): error code
-                    ax_err_type!(AlreadyConnected)
+                    // ax_err_type!(AlreadyConnected)
                 }
             })?
             .transit(State::Connecting, || {
@@ -305,10 +305,10 @@ impl SocketOps for TcpSocket {
                         )
                         .map_err(|e| match e {
                             smol::ConnectError::InvalidState => {
-                                ax_err_type!(AlreadyConnected)
+                                Err(SysErrNo::EALREADY)
                             }
                             smol::ConnectError::Unaddressable => {
-                                ax_err_type!(ConnectionRefused, "unaddressable")
+                                Err(SysErrNo::ECONNREFUSED)
                             }
                         })?;
                     Ok(())
@@ -316,7 +316,7 @@ impl SocketOps for TcpSocket {
             })?;
 
         // 出让 CPU 尝试给协议栈处理时间
-        axtask::yield_now();
+        // axtask::yield_now();
 
         // 循环等待连接结果或阻塞
         self.general.send_poller(self, || {
@@ -327,7 +327,7 @@ impl SocketOps for TcpSocket {
             } else if self.state() == State::Connected {
                 Ok(())
             } else {
-                Err(ax_err_type!(ConnectionRefused, "connection refused"))
+                Err(SysErrNo::ECONNREFUSED)
             }
         })
     }
@@ -349,7 +349,7 @@ impl SocketOps for TcpSocket {
     /// 接受一个新的连接请求
     fn accept(&self) -> SysResult<Socket> {
         if !self.is_listening() {
-            ax_bail!(InvalidInput, "not listening");
+            return Err(SysErrNo::EINVAL)
         }
 
         let bound_port = self.bound_endpoint()?.port;
@@ -368,7 +368,7 @@ impl SocketOps for TcpSocket {
         })
     }
     /// 发送数据
-    fn send(&self, mut src: impl Read, _options: SendOptions) -> SysResult<usize> {
+    fn send(&self, mut src: impl File, _options: SendOptions) -> SysResult<usize> {
         // SAFETY: `self.handle` should be initialized in a connected socket.
         self.general.send_poller(self, || {
             poll_interfaces();
@@ -381,18 +381,18 @@ impl SocketOps for TcpSocket {
                     // 将数据从 src 读取并填充到 smoltcp 的发送缓冲区
                     let len = socket
                         .send(|buffer| {
-                            let result = src.read(buffer);
+                            let result = src.read(UserBuffer::from(buffer));
                             let len = result.unwrap_or(0);
                             (len, result)
                         })
-                        .map_err(|_| ax_err_type!(ENOTCONN, "not connected?"))??;
+                        .map_err(|_| Err(SysErrNo::ENOTCONN))??;
                     Ok(len)
                 }
             })
         })
     }
     /// 接收数据
-    fn recv(&self, mut dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> SysResult<usize> {
+    fn recv(&self, mut dst: impl File, options: RecvOptions<'_>) -> SysResult<usize> {
         if self.rx_closed.load(Ordering::Acquire) {
             return Err(SysErrNo::ENOTCONN);
         }
@@ -407,20 +407,20 @@ impl SocketOps for TcpSocket {
                     Err(SysErrNo::EAGAIN)// 暂无数据
                 } else if options.flags.contains(RecvFlags::PEEK) {
                     // PEEK 模式,只读不删
-                    dst.write(
+                    dst.write(UserBuffer::from(
                         socket
                             .peek(dst.remaining_mut())
-                            .map_err(|_| ax_err_type!(ENOTCONN, "not connected?"))?,
+                            .map_err(|_| Err(SysErrNo::ENOTCONN))?),
                     )
                 } else {
                     // 正常接收,将数据从缓冲区移动到 dst
                     socket
                         .recv(|buf| {
-                            let result = dst.write(buf);
+                            let result = dst.write(UserBuffer::from(buf));
                             let len = result.unwrap_or(0);
                             (len, result)
                         })
-                        .map_err(|_| ax_err_type!(ENOTCONN, "not connected?"))?
+                        .map_err(|_| Err(SysErrNo::ENOTCONN))?
                 }
             })
         })

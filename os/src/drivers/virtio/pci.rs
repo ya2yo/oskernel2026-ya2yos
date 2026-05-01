@@ -3,7 +3,6 @@ use crate::arch::page_table::get_token_from_regs;
 use crate::drivers::{BaseDriver, BlockDriver, DevResult, DeviceType};
 use crate::mm::{self, cma_alloc, VirtAddr, VirtPageNum, KERNEL_SPACE};
 use log::{debug, warn};
-use lwext4_rust::add;
 use spin::Mutex;
 use virtio_drivers::device::blk::VirtIOBlk;
 use virtio_drivers::transport::mmio::VirtIOHeader;

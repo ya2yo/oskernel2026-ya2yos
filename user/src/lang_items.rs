@@ -1,8 +1,10 @@
+use alloc::string::ToString;
+
 use super::exit;
 
 #[panic_handler]
 fn panic_handler(panic_info: &core::panic::PanicInfo) -> ! {
-    let err = panic_info.message().unwrap();
+    let err = panic_info.message().to_string();
     if let Some(location) = panic_info.location() {
         println!(
             "In User Space,Panicked at {}:{}, {}",

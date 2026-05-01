@@ -4,7 +4,6 @@ use bitflags::bitflags;
 
 bitflags! {
     /// 手册上clone_args的第一个字段，关于flags
-    #[derive(Debug,Clone, Copy, Default)]
     pub struct CloneFlags: u64 {
         // SIGCHLD 是一个信号，在UNIX和类UNIX操作系统中，当一个子进程改变了它的状态时，内核会向其父进程发送这个信号。这个信号可以用来通知父进程子进程已经终止或者停止了。父进程可以采取适当的行动，比如清理资源或者等待子进程的状态。
         // 以下是SIGCHLD信号的一些常见用途：
@@ -64,5 +63,10 @@ bitflags! {
         const CLONE_NEWPID = 1 << 29;
         const CLONE_NEWNET = 1 << 30;
         const CLONE_IO = 1 << 31;
+    }
+}
+impl CloneFlags {
+    pub fn is_fork(&self) -> bool {
+        self.contains(CloneFlags::SIGCHLD)
     }
 }

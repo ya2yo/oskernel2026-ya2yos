@@ -13,7 +13,7 @@ use crate::{
     arch::page_table::PageTable,
     fs::{
         create_proc_dir_and_file, open, OpenFlags, DEFAULT_DIR_MODE,
-        DEFAULT_FILE_MODE,FdTable
+        DEFAULT_FILE_MODE,FdTable,FSInfo
     },
     mm::{
         get_data, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet,
@@ -32,7 +32,7 @@ use alloc::{
     vec::Vec,
 };
 use core::mem::size_of;
-use core::{sync::atomic::AtomicBool, task::Poll};
+use core::{sync::atomic::{AtomicBool,Ordering}, task::Poll};
 use futures_util::task::AtomicWaker;
 use log::debug;
 use spin::{rwlock::RwLock, Mutex, MutexGuard};
@@ -170,7 +170,7 @@ impl TaskControlBlockInner {
             let dirfd = dirfd as usize;
             if let Some(file) = tcb.get_fd_table().try_get(dirfd) {
                 let base_path = file.file()?.inode.path();
-                drop(proc_inner);
+                // drop(proc_inner);
                 if path.is_empty() {
                     Ok(base_path)
                 } else {
@@ -420,7 +420,7 @@ impl TaskControlBlock {
         let fs_info = if flags.contains(CloneFlags::CLONE_FS) {
             Arc::clone(&parent_inner.fs_info)
         } else {
-            Arc::new(Mutex::new(FsInfo::from_another(
+            Arc::new(Mutex::new(FSInfo::from_another(
                 &parent_inner.fs_info.lock(),
             )))
         };
@@ -624,7 +624,7 @@ impl TaskControlBlock {
         task_inner.task_status = status;
         drop(task_inner);
     }
-    pub fn poll_interrupt(&self, cx: core::task::Context) -> Poll<()> {
+    pub fn poll_interrupt(&self, cx: &mut core::task::Context) -> Poll<()> {
         if self.interrupted.swap(false, Ordering::AcqRel) {
             Poll::Ready(())
         } else {
@@ -644,7 +644,7 @@ impl TaskControlBlock {
         self.process.inner_lock().fd_table.clone()
     }
     /// 获取当前进程相关的文件使用信息
-    pub fn get_fs_info(&self)->Arc<FsInfo>{
+    pub fn get_fs_info(&self)->Arc<FSInfo>{
         self.process.inner_lock().fs_info.clone()
     }
 }

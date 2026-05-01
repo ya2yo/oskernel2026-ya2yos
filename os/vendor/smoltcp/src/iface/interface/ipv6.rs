@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::iface::Route;
+
 /// Enum used for the process_hopbyhop function. In some cases, when discarding a packet, an ICMP
 /// parameter problem message needs to be transmitted to the source of the address. In other cases,
 /// the processing of the IP packet can continue.
@@ -212,11 +214,6 @@ impl InterfaceInner {
             && !self.has_multicast_group(ipv6_repr.dst_addr)
             && !ipv6_repr.dst_addr.is_loopback()
         {
-            if !self.any_ip {
-                net_trace!("Rejecting IPv6 packet; any_ip=false");
-                return None;
-            }
-
             if !ipv6_repr.dst_addr.x_is_unicast() {
                 net_trace!(
                     "Rejecting IPv6 packet; {} is not a unicast address",
@@ -228,12 +225,15 @@ impl InterfaceInner {
             if self
                 .routes
                 .lookup(&IpAddress::Ipv6(ipv6_repr.dst_addr), self.now)
-                .map_or(true, |router_addr| !self.has_ip_addr(router_addr))
+                .is_none_or(|router_addr| !self.has_ip_addr(router_addr))
             {
                 net_trace!("Rejecting IPv6 packet; no matching routes");
 
                 return None;
             }
+
+            net_trace!("Rejecting IPv6 packet; no assigned address");
+            return None;
         }
 
         #[cfg(feature = "socket-raw")]
@@ -342,7 +342,9 @@ impl InterfaceInner {
             ),
 
             #[cfg(feature = "socket-tcp")]
-            IpProtocol::Tcp => self.process_tcp(sockets, ipv6_repr.into(), ip_payload),
+            IpProtocol::Tcp => {
+                self.process_tcp(sockets, handled_by_raw_socket, ipv6_repr.into(), ip_payload)
+            }
 
             #[cfg(feature = "socket-raw")]
             _ if handled_by_raw_socket => None,
@@ -396,6 +398,7 @@ impl InterfaceInner {
 
         match icmp_repr {
             // Respond to echo requests.
+            #[cfg(feature = "auto-icmp-echo-reply")]
             Icmpv6Repr::EchoRequest {
                 ident,
                 seq_no,
@@ -439,6 +442,7 @@ impl InterfaceInner {
             _ if handled_by_icmp_socket => None,
 
             // FIXME: do something correct here?
+            // By doing nothing, this arm handles the case when auto echo replies are disabled.
             _ => None,
         }
     }
@@ -501,6 +505,31 @@ impl InterfaceInner {
                 } else {
                     None
                 }
+            }
+            #[cfg(feature = "proto-ipv6-slaac")]
+            NdiscRepr::RouterAdvert {
+                hop_limit: _,
+                flags: _,
+                router_lifetime,
+                reachable_time: _,
+                retrans_time: _,
+                lladdr: _,
+                mtu: _,
+                prefix_info,
+            } if self.slaac_enabled => {
+                if ip_repr.src_addr.is_link_local()
+                    && (ip_repr.dst_addr == IPV6_LINK_LOCAL_ALL_NODES
+                        || ip_repr.dst_addr.is_link_local())
+                    && ip_repr.hop_limit == 255
+                {
+                    self.slaac.process_advertisement(
+                        &ip_repr.src_addr,
+                        router_lifetime,
+                        prefix_info,
+                        self.now,
+                    )
+                }
+                None
             }
             _ => None,
         }
@@ -579,5 +608,134 @@ impl InterfaceInner {
             },
             IpPayload::HopByHopIcmpv6(hbh_repr, Icmpv6Repr::Mld(mld_repr)),
         ))
+    }
+}
+
+impl Interface {
+    /// Synchronize the slaac address and router state with the interface state.
+    #[cfg(feature = "proto-ipv6-slaac")]
+    pub(super) fn sync_slaac_state(&mut self, timestamp: Instant) {
+        let required_addresses: Vec<_, IFACE_MAX_PREFIX_COUNT> = self
+            .inner
+            .slaac
+            .prefix()
+            .iter()
+            .filter_map(|(prefix, prefixinfo)| {
+                if prefixinfo.is_valid(timestamp) {
+                    Ipv6Cidr::from_link_prefix(prefix, self.inner.hardware_addr())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let removed_addresses: Vec<_, IFACE_MAX_PREFIX_COUNT> = self
+            .inner
+            .slaac
+            .prefix()
+            .iter()
+            .filter_map(|(prefix, prefixinfo)| {
+                if !prefixinfo.is_valid(timestamp) {
+                    Ipv6Cidr::from_link_prefix(prefix, self.inner.hardware_addr())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        self.update_ip_addrs(|addresses| {
+            for address in required_addresses {
+                if !addresses.contains(&IpCidr::Ipv6(address)) {
+                    let _ = addresses.push(IpCidr::Ipv6(address));
+                }
+            }
+            addresses.retain(|address| {
+                if let IpCidr::Ipv6(address) = address {
+                    !removed_addresses.contains(address)
+                } else {
+                    true
+                }
+            });
+        });
+
+        {
+            let required_routes = self
+                .inner
+                .slaac
+                .routes()
+                .into_iter()
+                .filter(|required| required.is_valid(timestamp));
+
+            let removed_routes = self
+                .inner
+                .slaac
+                .routes()
+                .into_iter()
+                .filter(|r| !r.is_valid(timestamp));
+
+            self.inner.routes.update(|routes| {
+                routes.retain(|r| match (&r.cidr, &r.via_router) {
+                    (IpCidr::Ipv6(cidr), IpAddress::Ipv6(via_router)) => !removed_routes
+                        .clone()
+                        .any(|f| f.same_route(cidr, via_router)),
+                    _ => true,
+                });
+
+                for route in required_routes {
+                    if routes.iter().all(|r| match (&r.cidr, &r.via_router) {
+                        (IpCidr::Ipv6(cidr), IpAddress::Ipv6(via_router)) => {
+                            !route.same_route(cidr, via_router)
+                        }
+                        _ => false,
+                    }) {
+                        let _ = routes.push(Route {
+                            cidr: route.cidr.into(),
+                            via_router: route.via_router.into(),
+                            preferred_until: None,
+                            expires_at: None,
+                        });
+                    }
+                }
+            });
+        }
+        self.inner.slaac_updated = timestamp;
+        self.inner.slaac.update_slaac_state(timestamp);
+    }
+
+    /// Retrieve the timestamp at which the slaac state was last updated.
+    #[cfg(feature = "proto-ipv6-slaac")]
+    pub fn slaac_updated_at(&self) -> Instant {
+        self.inner.slaac_updated
+    }
+
+    /// Emit a router solicitation when required by the interface's slaac state machine.
+    #[cfg(feature = "proto-ipv6-slaac")]
+    pub(super) fn ndisc_rs_egress(&mut self, device: &mut (impl Device + ?Sized)) {
+        if !self.inner.slaac.rs_required(self.inner.now) {
+            return;
+        }
+        let rs_repr = Icmpv6Repr::Ndisc(NdiscRepr::RouterSolicit {
+            lladdr: Some(self.hardware_addr().into()),
+        });
+        let ipv6_repr = Ipv6Repr {
+            src_addr: self.inner.link_local_ipv6_address().unwrap(),
+            dst_addr: IPV6_LINK_LOCAL_ALL_ROUTERS,
+            next_header: IpProtocol::Icmpv6,
+            payload_len: rs_repr.buffer_len(),
+            hop_limit: 255,
+        };
+        let packet = Packet::new_ipv6(ipv6_repr, IpPayload::Icmpv6(rs_repr));
+        let Some(tx_token) = device.transmit(self.inner.now) else {
+            return;
+        };
+        // NOTE(unwrap): packet destination is multicast, which is always routable and doesn't require neighbor discovery.
+        self.inner
+            .dispatch_ip(
+                tx_token,
+                PacketMeta::default(),
+                packet,
+                &mut self.fragmenter,
+            )
+            .unwrap();
+        self.inner.slaac.rs_sent(self.inner.now);
     }
 }

@@ -42,6 +42,9 @@ impl Timespec {
         let clock_freq = get_clock_freq();
         self.tv_sec * clock_freq + (self.tv_nsec * clock_freq / NSEC_PER_SEC)
     }
+    pub fn from_nanos(nanos : u64)->Self {
+        Self { tv_sec: (nanos/NANOS_PER_SEC) as usize , tv_nsec: (nanos % NANOS_PER_SEC) as usize }
+    }
 }
 
 impl Add for Timespec {
@@ -335,7 +338,11 @@ pub fn get_time_ns()->usize {
 }
 
 pub fn wall_time_nanos()->u64 {
-    get_time_ns() + NOW_TIME_STAMP
+    get_time_ns() as u64 + NOW_TIME_STAMP as u64
+}
+
+pub fn wall_time()->Timespec {
+    Timespec::from_nanos(wall_time_nanos())
 }
 
 pub fn get_time_spec() -> Timespec {

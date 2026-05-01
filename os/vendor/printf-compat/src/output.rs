@@ -1,11 +1,9 @@
 //! Various ways to output formatting data.
 
 use core::cell::Cell;
-use core::ffi::VaList;
+use core::ffi::*;
 use core::fmt;
 use core::str::from_utf8;
-
-use cty::*;
 
 #[cfg(feature = "std")]
 pub use yes_std::*;
@@ -223,14 +221,16 @@ macro_rules! define_unumeric {
 ///
 /// - only valid UTF-8 data can be printed.
 /// - an `X` format specifier with a `#` flag prints the hex data in uppercase,
-///   but the leading `0x` is still lowercase
+///   but the leading `0x` is still lowercase.
 /// - an `o` format specifier with a `#` flag precedes the number with an `o`
-///   instead of `0`
+///   instead of `0`.
 /// - `g`/`G` (shorted floating point) is aliased to `f`/`F`` (decimal floating
-///   point)
-/// - same for `a`/`A` (hex floating point)
+///   point).
+/// - same for `a`/`A` (hex floating point).
 /// - the `n` format specifier, [`Specifier::WriteBytesWritten`], is not
 ///   implemented and will cause an error if encountered.
+/// - precision is ignored for integral types, instead of specifying the
+///   minimum number of digits.
 pub fn fmt_write(w: &mut impl fmt::Write) -> impl FnMut(Argument) -> c_int + '_ {
     use fmt::Write;
     move |Argument {
@@ -276,9 +276,9 @@ pub fn fmt_write(w: &mut impl fmt::Write) -> impl FnMut(Argument) -> c_int + '_ 
             },
             Specifier::Char(data) => {
                 if flags.contains(Flags::LEFT_ALIGN) {
-                    write!(w, "{:width$}", data as char, width = width as usize)
+                    write!(w, "{:width$}", data as u8 as char, width = width as usize)
                 } else {
-                    write!(w, "{:>width$}", data as char, width = width as usize)
+                    write!(w, "{:>width$}", data as u8 as char, width = width as usize)
                 }
             }
             Specifier::Pointer(data) => {
@@ -308,10 +308,7 @@ pub fn fmt_write(w: &mut impl fmt::Write) -> impl FnMut(Argument) -> c_int + '_ 
 /// # Safety
 ///
 /// [`VaList`]s are *very* unsafe. The passed `format` and `args` parameter must be a valid [`printf` format string](http://www.cplusplus.com/reference/cstdio/printf/).
-pub unsafe fn display<'a, 'b>(
-    format: *const c_char,
-    va_list: VaList<'a, 'b>,
-) -> VaListDisplay<'a, 'b> {
+pub unsafe fn display<'a>(format: *const c_char, va_list: VaList<'a>) -> VaListDisplay<'a> {
     VaListDisplay {
         format,
         va_list,
@@ -326,41 +323,34 @@ pub unsafe fn display<'a, 'b>(
 /// ```rust
 /// #![feature(c_variadic)]
 ///
-/// use cty::{c_char, c_int};
+/// use core::ffi::{c_char, c_int};
 ///
-/// #[no_mangle]
-/// unsafe extern "C" fn c_library_print(str: *const c_char, mut args: ...) -> c_int {
-///     let format = printf_compat::output::display(str, args.as_va_list());
+/// #[unsafe(no_mangle)]
+/// unsafe extern "C" fn c_library_print(str: *const c_char, args: ...) -> c_int {
+///     let format = unsafe { printf_compat::output::display(str, args) };
 ///     println!("{}", format);
 ///     format.bytes_written()
 /// }
 /// ```
-///
-/// If you have access to [`std`], i.e. not an embedded platform, you can use
-/// [`std::os::raw`] instead of [`cty`].
-pub struct VaListDisplay<'a, 'b> {
+pub struct VaListDisplay<'a> {
     format: *const c_char,
-    va_list: VaList<'a, 'b>,
+    va_list: VaList<'a>,
     written: Cell<c_int>,
 }
 
-impl VaListDisplay<'_, '_> {
+impl VaListDisplay<'_> {
     /// Get the number of bytes written, or 0 if there was an error.
     pub fn bytes_written(&self) -> c_int {
         self.written.get()
     }
 }
 
-impl<'a, 'b> fmt::Display for VaListDisplay<'a, 'b> {
+impl<'a> fmt::Display for VaListDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         unsafe {
-            let bytes = crate::format(self.format, self.va_list.clone().as_va_list(), fmt_write(f));
+            let bytes = crate::format(self.format, self.va_list.clone(), fmt_write(f));
             self.written.set(bytes);
-            if bytes < 0 {
-                Err(fmt::Error)
-            } else {
-                Ok(())
-            }
+            if bytes < 0 { Err(fmt::Error) } else { Ok(()) }
         }
     }
 }

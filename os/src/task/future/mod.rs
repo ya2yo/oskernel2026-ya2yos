@@ -21,24 +21,24 @@ pub use time::*;
 
 /// 内核任务唤醒器
 /// 关联了一个具体的内核任务，当 Future 就绪时，通过它唤醒对应的任务。
-struct Waker {
+struct MyWaker {
     /// 目标任务的弱引用，防止循环引用导致任务无法释放
     task: WeakTaskRef,
     /// 唤醒状态标志，使用带自旋锁的 bool 保证多核安全
     woke: SpinNoIrq<bool>,
 }
 
-impl Waker {
+impl MyWaker {
     /// 为指定的任务创建一个新的 Waker
     fn new(task: &TaskRef) -> Arc<Self> {
-        Arc::new(Waker {
+        Arc::new(MyWaker {
             task: Arc::downgrade(task),
             woke: SpinNoIrq::new(false),
         })
     }
 }
 
-impl Wake for Waker {
+impl Wake for MyWaker {
     /// 消耗型唤醒,转移所有权
     fn wake(self: Arc<Self>) {
         self.wake_by_ref();
@@ -73,7 +73,7 @@ pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
     // 获取当前正在运行的任务
     let task=current_task().unwrap();
     // 创建 Waker 并包装成标准库的 Context
-    let waker = Waker::new(&task);
+    let waker = MyWaker::new(&task);
     let woke = &waker.woke;
     let waker = Waker::from(waker.clone());
     let mut cx = Context::from_waker(&waker);
@@ -115,9 +115,9 @@ impl fmt::Display for Interrupted {
 
 impl core::error::Error for Interrupted {}
 
-impl From<Interrupted> for AxError {
+impl From<Interrupted> for SysErrNo {
     fn from(_: Interrupted) -> Self {
-        AxError::Interrupted
+        SysErrNo::EINTR
     }
 }
 

@@ -159,10 +159,10 @@ use crate::{
 use fs::*;
 use memory::*;
 use net::*;
-pub use options::*;
+pub use options::{PollEvents, FutexCmd, FutexOpt, RLimit, Utsname, SignalMaskFlag,MmapFlags,MmapProt};
 use process::*;
 use signal::*;
-use task::*;
+pub use task::*;
 use time::*;
 use resource::*;
 use sys::*;

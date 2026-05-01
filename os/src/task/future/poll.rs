@@ -1,7 +1,8 @@
 use core::{future::poll_fn, task::Poll};
 
 use crate::utils::{SysResult,SysErrNo};
-use crate::utils::{Pollable, IoEvents};
+use crate::utils::Pollable;
+use crate::syscall::PollEvents;
 
 /// A helper to wrap a synchronous non-blocking I/O function into an
 /// asynchronous function.
@@ -16,7 +17,7 @@ use crate::utils::{Pollable, IoEvents};
 ///   return `SysErrNo::WouldBlock` when the operation would block.
 pub async fn poll_io<P: Pollable, F: FnMut() -> SysResult<T>, T>(
     pollable: &P,
-    events: IoEvents,
+    events: PollEvents,
     non_blocking: bool,
     mut f: F,
 ) -> SysResult<T> {
@@ -54,13 +55,13 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         }
     }
 
-    match POLL_IRQ.lock().entry(irq) {
-        Entry::Vacant(e) => {
-            axhal::irq::register_irq_hook(irq_hook);
-            axhal::irq::set_enable(irq, true);
-            e.insert(PollSet::new())
-        }
-        Entry::Occupied(e) => e.into_mut(),
-    }
-    .register(waker);
+    // match POLL_IRQ.lock().entry(irq) {
+    //     Entry::Vacant(e) => {
+    //         axhal::irq::register_irq_hook(irq_hook);
+    //         axhal::irq::set_enable(irq, true);
+    //         e.insert(PollSet::new())
+    //     }
+    //     Entry::Occupied(e) => e.into_mut(),
+    // }
+    // .register(waker);
 }

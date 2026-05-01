@@ -14,68 +14,6 @@ bitflags! {
     }
 }
 
-bitflags! {
-    /// Open file flags
-    pub struct CloneFlags: u32 {
-        ///
-        const SIGCHLD = (1 << 4) | (1 << 0);
-        ///set if VM shared between processes
-        const CLONE_VM = 1 << 8;
-        ///set if fs info shared between processes
-        const CLONE_FS = 1 << 9;
-        ///set if open files shared between processes
-        const CLONE_FILES = 1 << 10;
-        ///set if signal handlers and blocked signals shared
-        const CLONE_SIGHAND = 1 << 11;
-        ///set if a pidfd should be placed in parent
-        const CLONE_PIDFD = 1 << 12;
-        ///set if we want to let tracing continue on the child too
-        const CLONE_PTRACE = 1 << 13;
-        ///set if the parent wants the child to wake it up on mm_release
-        const CLONE_VFORK = 1 << 14;
-        ///set if we want to have the same parent as the cloner
-        const CLONE_PARENT = 1 << 15;
-        ///Same thread group?
-        const CLONE_THREAD = 1 << 16;
-        ///New mount namespace group
-        const CLONE_NEWNS = 1 << 17;
-        ///share system V SEM_UNDO semantics
-        const CLONE_SYSVSEM = 1 << 18;
-        ///create a new TLS for the child
-        const CLONE_SETTLS = 1 << 19;
-        ///set the TID in the parent
-        const CLONE_PARENT_SETTID = 1 << 20;
-        ///clear the TID in the child
-        const CLONE_CHILD_CLEARTID = 1 << 21;
-        ///Unused, ignored
-        const CLONE_DETACHED = 1 << 22;
-        ///set if the tracing process can't force CLONE_PTRACE on this clone
-        const CLONE_UNTRACED = 1 << 23;
-        ///set the TID in the child
-        const CLONE_CHILD_SETTID = 1 << 24;
-        ///New cgroup namespace
-        const CLONE_NEWCGROUP = 1 << 25;
-        ///New utsname namespace
-        const CLONE_NEWUTS = 1 << 26;
-        ///New ipc namespace
-        const CLONE_NEWIPC = 1 << 27;
-        /// New user namespace
-        const CLONE_NEWUSER = 1 << 28;
-        ///New pid namespace
-        const CLONE_NEWPID = 1 << 29;
-        ///New network namespace
-        const CLONE_NEWNET = 1 << 30;
-        ///Clone io context
-        const CLONE_IO = 1 << 31;
-    }
-}
-
-impl CloneFlags {
-    pub fn is_fork(&self) -> bool {
-        self.contains(CloneFlags::SIGCHLD)
-    }
-}
-
 // For Mmap
 bitflags! {
     /// Mmap permissions
@@ -195,6 +133,8 @@ bitflags! {
     pub struct PollEvents: u16 {
         /// 可读
         const IN = 0x0001;
+        /// 紧急数据
+        const PRI = 0x002;
         /// 可写
         const OUT = 0x0004;
         /// 报错
@@ -203,6 +143,20 @@ bitflags! {
         const HUP = 0x0010;
         /// 无效的 fd
         const INVAL = 0x0020;
+        /// 普通数据可读
+        const RDNORM=0x0040;
+        /// 有优先带数据可以读
+        const RDBAND = 0x0080;
+        /// 可以写入普通数据
+        const WRNORM = 0x0100;
+        /// 可以写入优先带数据
+        const WRBAND = 0x0200;
+        /// 有一个sigpoll消息可用
+        const MSG = 0x0400;
+        /// 将该文件描述符从队列中移除
+        const REMOVE = 0x1000;
+        /// socket关闭连接
+        const RDHUP = 0x2000;
     }
 }
 

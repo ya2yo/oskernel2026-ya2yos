@@ -1,6 +1,6 @@
 use log::{debug, warn};
 use lwext4_rust::{
-    bindings::{O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
+    ffi::{O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
     Ext4File, InodeTypes,
 };
 

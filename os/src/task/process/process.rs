@@ -6,7 +6,7 @@ use alloc::{
 };
 use log::{debug, error, warn};
 use spin::{
-    Lazy, Mutex, MutexGuard, RwLockReadGuard, mutex::Mutex, rwlock::{RwLock, RwLockWriteGuard}
+    Lazy, Mutex, MutexGuard, RwLockReadGuard, rwlock::{RwLock, RwLockWriteGuard}
 };
 
 use crate::{
@@ -89,7 +89,7 @@ impl Process {
                 memory_set,
                 sig_table,
                 fd_table,
-                fs_info: Arc::new(FsInfo::new_for_initproc()),
+                fs_info: Arc::new(FSInfo::new_for_initproc()),
             }),
             pid,
             parent: parent.clone(),

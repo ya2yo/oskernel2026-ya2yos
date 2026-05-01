@@ -1,3 +1,7 @@
+use core::ops::{Deref, DerefMut};
+
+use smallvec::SmallVec;
+
 /// A structure that contains all device drivers of a certain category.
 pub struct DeviceContainer<D>(SmallVec<[D; 1]>);
 

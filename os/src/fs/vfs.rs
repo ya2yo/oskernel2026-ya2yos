@@ -1,5 +1,7 @@
 // 该文件定义了抽象的Inode trait和File trait
 
+use core::task::Context;
+
 use super::{InodeType, Kstat, Statfs};
 use crate::{
     fs::{OpenFlags, String},
@@ -7,9 +9,9 @@ use crate::{
     syscall::PollEvents,
     utils::{SysErrNo, SysResult, SyscallRet},
 };
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 
-///
+/// 超级块抽象
 pub trait SuperBlock: Send + Sync {
     fn root_inode(&self) -> Arc<dyn Inode>;
     fn sync(&self);

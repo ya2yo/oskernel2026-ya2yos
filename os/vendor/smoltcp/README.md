@@ -12,7 +12,7 @@ include complicated compile-time computations, such as macro or type tricks, eve
 at cost of performance degradation.
 
 _smoltcp_ does not need heap allocation *at all*, is [extensively documented][docs],
-and compiles on stable Rust 1.81 and later.
+and compiles on stable Rust 1.91 and later.
 
 _smoltcp_ achieves [~Gbps of throughput](#examplesbenchmarkrs) when tested against
 the Linux TCP stack in loopback mode.
@@ -86,7 +86,7 @@ The IGMPv1 and IGMPv2 protocols are supported, and IPv4 multicast is available.
 The ICMPv4 protocol is supported, and ICMP sockets are available.
 
   * ICMPv4 header checksum is supported.
-  * ICMPv4 echo replies are generated in response to echo requests.
+  * ICMPv4 echo replies are generated in response to echo requests by default.
   * ICMP sockets can listen to ICMPv4 Port Unreachable messages, or any ICMPv4 messages with
     a given IPv4 identifier field.
   * ICMPv4 protocol unreachable messages are **not** passed to higher layers when received.
@@ -97,14 +97,14 @@ The ICMPv4 protocol is supported, and ICMP sockets are available.
 The ICMPv6 protocol is supported, and ICMP sockets are available.
 
   * ICMPv6 header checksum is supported.
-  * ICMPv6 echo replies are generated in response to echo requests.
+  * ICMPv6 echo replies are generated in response to echo requests by default.
   * ICMPv6 protocol unreachable messages are **not** passed to higher layers when received.
 
 #### NDISC
 
   * Neighbor Advertisement messages are generated in response to Neighbor Solicitations.
-  * Router Advertisement messages are **not** generated or read.
-  * Router Solicitation messages are **not** generated or read.
+  * Router Advertisement messages are read, but **not** generated.
+  * Router Solicitation messages are generated, but **not** read.
   * Redirected Header messages are **not** generated or read.
 
 ### UDP layer
@@ -132,10 +132,10 @@ The TCP protocol is supported over IPv4 and IPv6, and server and client TCP sock
   * Nagle's algorithm is implemented.
   * Selective acknowledgements are **not** implemented.
   * Silly window syndrome avoidance is **not** implemented.
-  * Congestion control is **not** implemented.
+  * Congestion control is optional, `CUBIC` and `Reno` are implemented.
   * Timestamping is **not** supported.
   * Urgent pointer is **ignored**.
-  * Probing Zero Windows is **not** implemented.
+  * Probing Zero Windows is implemented.
   * Packetization Layer Path MTU Discovery [PLPMTU](https://tools.ietf.org/rfc/rfc4821.txt) is **not** implemented.
 
 ## Installation
@@ -255,6 +255,11 @@ Amount of "IP address -> hardware address" entries the neighbor cache (also know
 ### `IFACE_MAX_ROUTE_COUNT`
 
 Max amount of routes that can be added to one interface. Includes the default route. Includes both IPv4 and IPv6. Default: 2.
+
+### `IFACE_MAX_PREFIX_COUNT`
+
+Max amount of IPv6 prefixes that can be added to one interface via SLAAC.
+Should be lower or equal to `IFACE_MAX_ADDR_COUNT`.
 
 ### `FRAGMENTATION_BUFFER_SIZE`
 

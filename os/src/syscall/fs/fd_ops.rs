@@ -1,7 +1,7 @@
 use super::fcntl::*;
-use crate::fs::{OpenFlags, open};
+use crate::fs::{FileDescriptor, OpenFlags, open};
 use crate::mm::translated_str;
-use crate::syscall::{FcntlCmd, Syscall, process};
+use crate::syscall::{options::FcntlCmd, Syscall, process};
 use crate::task::current_task;
 use crate::utils::{SysErrNo, SyscallRet};
 use log::{debug, error, warn};
@@ -20,7 +20,7 @@ fn dup_fd(old_fd: usize, cloexec: bool) -> SyscallRet {
     if cloexec {
         new_desc.set_cloexec();
     } else {
-        new_desc.unset_cloexec();;
+        new_desc.unset_cloexec();
     }
     let new_fd = proc_inner.fd_table.alloc_fd()?;
     if let Err(e) = proc_inner.fd_table.set(new_fd, new_desc) {

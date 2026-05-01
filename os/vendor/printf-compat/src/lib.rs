@@ -30,9 +30,8 @@
 //!
 //! ## 🔬 Small
 //!
-//! This crate is `no_std` compatible (`printf-compat = { version = "0.1",
-//! default-features = false }` in your Cargo.toml). The main machinery doesn't
-//! require the use of [`core::fmt`], and it can't panic.
+//! This crate is `no_std` compatible (with `default-features = false`).
+//! The main machinery doesn't require the use of [`core::fmt`], and it can't panic.
 //!
 //! ## 🔒 Safe (as can be)
 //!
@@ -64,36 +63,35 @@
 //!
 //! ```rust
 //! # #![feature(c_variadic)]
-//! use cty::{c_char, c_int};
+//! use core::ffi::{c_char, c_int};
 //!
-//! #[no_mangle]
-//! unsafe extern "C" fn c_library_print(str: *const c_char, mut args: ...) -> c_int {
+//! #[unsafe(no_mangle)]
+//! unsafe extern "C" fn c_library_print(str: *const c_char, args: ...) -> c_int {
 //!     todo!()
 //! }
 //! ```
 //!
-//! If you have access to [`std`], i.e. not an embedded platform, you can use
-//! [`std::os::raw`] instead of [`cty`]. Also, think about what you're doing:
+//! Think about what you're doing:
 //!
-//! - If you're implenting `printf` *because you don't have one*, you'll want to
-//!   call it `printf` and add `#[no_mangle]`.
+//! - If you're implementing `printf` *because you don't have one*, you'll want to
+//!   call it `printf` and add `#[unsafe(no_mangle)]`.
 //! - Likewise, if you're creating a custom log function for a C library and it
-//!   expects to call a globally-defined function, keep `#[no_mangle]` and
+//!   expects to call a globally-defined function, keep `#[unsafe(no_mangle)]` and
 //!   rename the function to what it expects.
 //! - On the other hand, if your C library expects you to call a function to
 //!   register a callback ([example 1][sigrok-log], [example 2][libusb-log]),
-//!   remove `#[no_mangle]`.
+//!   remove `#[unsafe(no_mangle)]`.
 //!
 //! Now, add your logic:
 //!
 //! ```rust
 //! # #![feature(c_variadic)]
-//! # use cty::{c_char, c_int};
-//! # #[no_mangle]
-//! # unsafe extern "C" fn c_library_print(str: *const c_char, mut args: ...) -> c_int {
+//! # use core::ffi::{c_char, c_int};
+//! # #[unsafe(no_mangle)]
+//! # unsafe extern "C" fn c_library_print(str: *const c_char, args: ...) -> c_int {
 //! use printf_compat::{format, output};
 //! let mut s = String::new();
-//! let bytes_written = format(str, args.as_va_list(), output::fmt_write(&mut s));
+//! let bytes_written = format(str, args, output::fmt_write(&mut s));
 //! println!("{}", s);
 //! bytes_written
 //! # }
@@ -112,17 +110,13 @@
 //! [`ufmt`]: https://docs.rs/ufmt/
 //! [`defmt`]: https://defmt.ferrous-systems.com/
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![feature(c_variadic)]
 
-use core::fmt;
-use cstr_core::CStr;
-use cty::*;
+use core::{ffi::*, fmt};
 
 pub mod output;
 mod parser;
-#[cfg(test)]
-mod tests;
 use argument::*;
 pub use parser::format;
 pub mod argument {
@@ -133,6 +127,7 @@ pub mod argument {
         ///
         /// Definitions from
         /// [Wikipedia](https://en.wikipedia.org/wiki/Printf_format_string#Flags_field).
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
         pub struct Flags: u8 {
             /// Left-align the output of this placeholder. (The default is to
             /// right-align the output.)
@@ -245,6 +240,8 @@ pub mod argument {
 
     impl From<SignedInt> for i64 {
         fn from(num: SignedInt) -> Self {
+            // Some casts are only needed on some platforms.
+            #[allow(clippy::unnecessary_cast)]
             match num {
                 SignedInt::Int(x) => x as i64,
                 SignedInt::Char(x) => x as i64,
@@ -295,6 +292,8 @@ pub mod argument {
 
     impl From<UnsignedInt> for u64 {
         fn from(num: UnsignedInt) -> Self {
+            // Some casts are only needed on some platforms.
+            #[allow(clippy::unnecessary_cast)]
             match num {
                 UnsignedInt::Int(x) => x as u64,
                 UnsignedInt::Char(x) => x as u64,
@@ -358,7 +357,7 @@ pub mod argument {
         }
     }
 
-    /// An argument as passed to [`format`][crate::format].
+    /// An argument as passed to [`format()`].
     #[derive(Debug, Copy, Clone, PartialEq)]
     pub struct Argument<'a> {
         pub flags: Flags,
@@ -401,7 +400,7 @@ pub mod argument {
         /// need to null terminate a string to print it, you can skip that step.
         String(&'a CStr),
         /// `c`
-        Char(u8),
+        Char(c_char),
         /// `x`
         Hex(UnsignedInt),
         /// `X`

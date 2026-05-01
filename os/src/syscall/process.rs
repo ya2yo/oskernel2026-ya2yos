@@ -105,7 +105,7 @@ pub fn sys_clone(
     tls_ptr: usize,
     #[cfg(not(target_arch = "loongarch64"))] child_tid_ptr: usize,
 ) -> SyscallRet {
-    let flags = match CloneFlags::from_bits(flags as u32) {
+    let flags = match CloneFlags::from_bits(flags as u64) {
         Some(f) => f,
         None => return Err(SysErrNo::EINVAL),
     };

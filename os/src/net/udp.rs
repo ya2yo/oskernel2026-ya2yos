@@ -17,7 +17,7 @@ use smoltcp::{
 use spin::RwLock;
 
 use super::{
-    consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN}, fs::File, general::GeneralOptions, get_service, options::{Configurable, GetSocketOption, SetSocketOption}, poll_interfaces, RecvFlags, RecvOptions, SendOptions, Shutdown, SocketAddrEx, SocketOps, SOCKET_SET
+    consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN}, super::fs::File, general::GeneralOptions, get_service, options::{Configurable, GetSocketOption, SetSocketOption}, poll_interfaces, RecvFlags, RecvOptions, SendOptions, Shutdown, SocketAddrEx, SocketOps, SOCKET_SET
 };
 
 pub(crate) fn new_udp_socket() -> smol::Socket<'static> {

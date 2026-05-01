@@ -1,4 +1,4 @@
-use crate::{mm::{translated_ref, translated_refmut}, syscall::RLimit, task::current_task};
+use crate::{mm::{translated_ref, translated_refmut}, syscall::RLimit, task::current_task, utils::SyscallRet};
 
 /// 参考 https://man7.org/linux/man-pages/man2/prlimit64.2.html
 pub fn sys_prlimit(

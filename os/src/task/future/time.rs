@@ -5,12 +5,12 @@ use core::{
     task::{Context, Poll, Waker},
     time::Duration,
 };
-
+use crate::timer::wall_time;
 use crate::timer::Timespec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct TimerKey {
-    deadline: TimeValue,
+    deadline: Timespec,
     key: u64,
 }
 
@@ -27,7 +27,7 @@ impl TimerRuntime {
         }
     }
 
-    fn add(&mut self, deadline: TimeValue) -> Option<TimerKey> {
+    fn add(&mut self, deadline: Timespec) -> Option<TimerKey> {
         if deadline <= wall_time() {
             return None;
         }

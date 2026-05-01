@@ -1,5 +1,10 @@
-use crate::{fs::{InodeType, MAX_PATH_LEN, NONE_MODE, OpenFlags, open, superblock_fs_stat}, mm::{if_bad_address, put_data, translated_str}, syscall::{FaccessatFileMode, FaccessatMode}, task::{Process, current_task}, utils::{SysErrNo, rsplit_once, trim_start_slash}};
-use crate::task::Process;
+use crate::{
+    fs::{InodeType, Kstat, MAX_PATH_LEN, MNT_TABLE, NONE_MODE, OpenFlags, Statfs, open, superblock_fs_stat}, 
+    mm::{if_bad_address, put_data, translated_str}, 
+    syscall::options::{FaccessatFileMode, FaccessatMode}, 
+    task::{Process, current_task}, 
+    utils::{SysErrNo, SyscallRet, rsplit_once, trim_start_slash}};
+
 
 /// 参考 https://man7.org/linux/man-pages/man2/fstat.2.html
 pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {

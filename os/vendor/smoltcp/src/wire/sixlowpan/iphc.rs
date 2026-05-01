@@ -4,9 +4,9 @@
 //! [RFC 6282 § 3.1]: https://datatracker.ietf.org/doc/html/rfc6282#section-3.1
 
 use super::{
-    AddressContext, AddressMode, Error, NextHeader, Result, UnresolvedAddress, DISPATCH_IPHC_HEADER,
+    AddressContext, AddressMode, DISPATCH_IPHC_HEADER, Error, NextHeader, Result, UnresolvedAddress,
 };
-use crate::wire::{ieee802154::Address as LlAddress, ipv6, ipv6::AddressExt, IpProtocol};
+use crate::wire::{IpProtocol, ieee802154::Address as LlAddress, ipv6, ipv6::AddressExt};
 use byteorder::{ByteOrder, NetworkEndian};
 
 mod field {
@@ -218,7 +218,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the Source Address.
-    pub fn src_addr(&self) -> Result<UnresolvedAddress> {
+    pub fn src_addr(&self) -> Result<UnresolvedAddress<'_>> {
         let start = (self.ip_fields_start()
             + self.traffic_class_size()
             + self.next_header_size()
@@ -275,7 +275,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the Destination Address.
-    pub fn dst_addr(&self) -> Result<UnresolvedAddress> {
+    pub fn dst_addr(&self) -> Result<UnresolvedAddress<'_>> {
         let start = (self.ip_fields_start()
             + self.traffic_class_size()
             + self.next_header_size()

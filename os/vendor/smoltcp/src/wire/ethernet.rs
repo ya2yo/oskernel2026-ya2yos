@@ -65,6 +65,17 @@ impl Address {
     pub const fn is_local(&self) -> bool {
         self.0[0] & 0x02 != 0
     }
+
+    /// Convert the address to an Extended Unique Identifier (EUI-64)
+    pub fn as_eui_64(&self) -> Option<[u8; 8]> {
+        let mut bytes = [0; 8];
+        bytes[0..3].copy_from_slice(&self.0[0..3]);
+        bytes[3] = 0xFF;
+        bytes[4] = 0xFE;
+        bytes[5..8].copy_from_slice(&self.0[3..6]);
+        bytes[0] ^= 1 << 1;
+        Some(bytes)
+    }
 }
 
 impl fmt::Display for Address {
@@ -134,11 +145,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     /// Returns `Err(Error)` if the buffer is too short.
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.as_ref().len();
-        if len < HEADER_LEN {
-            Err(Error)
-        } else {
-            Ok(())
-        }
+        if len < HEADER_LEN { Err(Error) } else { Ok(()) }
     }
 
     /// Consumes the frame, returning the underlying buffer.

@@ -14,7 +14,6 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use log::{debug, error};
-use lwext4_rust::bindings::EINVAL;
 use spin::{Lazy, Mutex};
 
 // -------------------------type defs--------------------------------

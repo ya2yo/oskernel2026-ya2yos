@@ -1,8 +1,7 @@
-use alloc::{sync::Arc, vec};
+use alloc::{vec,sync::Arc, vec::Vec};
 use log::debug;
 
-
-use crate::{fs::{File, SEEK_CUR, SEEK_SET}, mm::{UserBuffer, safe_translated_byte_buffer, translated_byte_buffer, translated_refmut}, syscall::Iovec, task::current_task, utils::{SysErrNo, SyscallRet}};
+use crate::{fs::{File, SEEK_CUR, SEEK_SET}, mm::{UserBuffer, safe_translated_byte_buffer, translated_byte_buffer, translated_ref, translated_refmut}, syscall::options::Iovec, task::current_task, timer::get_time_ms, utils::{SysErrNo, SyscallRet}};
 
 
 /// 参考 https://man7.org/linux/man-pages/man2/write.2.html
@@ -53,7 +52,6 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         // 注意！一些文件的read可能会阻塞，还可能借用task_inner，所以我们应该drop task_inner
         let buffer = safe_translated_byte_buffer(&*memory_set, buf, len).unwrap();
         let buffer = UserBuffer::new(buffer);
-        drop(inner);
         drop(memory_set);
         drop(process);
         let ret = file.read(buffer)?;
