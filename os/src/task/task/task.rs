@@ -393,180 +393,64 @@ impl TaskControlBlock {
         tls: usize,
         child_tid: *mut u32,
     ) -> Result<Arc<TaskControlBlock>, SysErrNo> {
-        // 锁住父对象以获取必要资源
-        let parent_inner = self.inner.lock();
-        let parent_proc_inner = self.process.inner_lock();
-
-        let tid_handle = TidHandle::new();
-        let kernel_stack = KernelStackOnHeap::new();
-        let kernel_stack_top = kernel_stack.top();
-
-        // 处理地址空间
-        let memory_set = if flags.contains(CloneFlags::VM) {
-            // 线程：共享内存
-            Arc::clone(&parent_proc_inner.memory_set)
+        // 获取/创建 PCB (ProcessControlBlock)
+        let new_process = if flags.contains(CloneFlags::CLONE_THREAD) {
+            // 情况 A: 创建新线程，共享当前进程
+            Arc::clone(&self.process)
         } else {
-            // 进程：拷贝内存映射（Copy-on-Write 逻辑通常在这里触发）
-            Arc::new(RwLock::new(MemorySet::new(
-                MemorySetInner::from_existed_user(&*&parent_proc_inner.get_locked_memory_set_read()),
-            )))
+            // 情况 B: fork，创建新进程
+            // 注意：这里需要分配一个新的 PID，假设由全局分配器提供
+            let new_pid = alloc_pid(); 
+            self.process.do_proc_clone(new_pid)
         };
 
+        // 为新线程分配内核栈和新 TID
+        let new_tid = alloc_tid();
+        let kernel_stack = KernelStack::new()?; 
 
-        // 处理打开文件表
-        // 注意：现在 fd_table 是从 parent_proc_inner 获取的
-        let fd_table = if flags.contains(CloneFlags::CLONE_FILES) {
-            Arc::clone(&parent_proc_inner.fd_table)
-        } else {
-            Arc::new(FdTable::from_another(&parent_proc_inner.fd_table))
-        };
+        // 复制并修改 TrapContext
+        // 我们需要获取当前线程在内核态保存的用户态寄存器快照
+        let mut child_trap_cx = self.inner_lock().get_trap_cx().clone();
+        
+        // 子进程/子线程 fork 返回值为 0
+        child_trap_cx.x[10] = 0; // x10 是 RISC-V 的 a0
 
-        // 处理信号处理程序表
-        let sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
-            Arc::clone(&parent_proc_inner.sig_table)
-        } else {
-            Arc::new(Mutex::new(SigTable::from_another(
-                &*parent_proc_inner.get_locked_sigtable(),
-            )))
-        };
-
-        // 确定子进程对象
-        let (pid, ppid, timer, sig_mask);
-        let process: Arc<Process>;
-
-        if flags.contains(CloneFlags::CLONE_THREAD) {
-            // 创建线程：属于同一个进程
-            pid = self.pid(); // 线程组 ID (TGID) 相同
-            ppid = self.ppid();
-            timer = Arc::clone(&parent_inner.timer);
-            sig_mask = SigSet::empty();
-            process = Arc::clone(&self.process);
-        } else {
-            // 创建子进程 (Fork)
-            pid = tid_handle.tid;
-            ppid = self.pid();
-            timer = Arc::new(Timer::new());
-            sig_mask = parent_inner.sig_mask.clone();
-
-            // 创建新的进程结构体，传入刚刚决定好的资源
-            // 注意：这里需要给 Process::new 增加 fd_table 参数，或者单独设置
-            process = Process::new(
-                memory_set.clone(),
-                sig_table.clone(),
-                fd_table.clone(),
-                pid,
-                Some(Arc::clone(&self.process)),
-            );
+        // 如果用户指定了新的栈（pthread_create），则更新 sp
+        if stack != 0 {
+            child_trap_cx.x[2] = stack; // x2 是 RISC-V 的 sp
         }
 
-        // 修改父线程中指定的内存地址
-        if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
-            let token = parent_proc_inner.get_locked_memory_set_read().token();
-            *translated_refmut(token, parent_tid) = tid_handle.tid as u32;
+        // 如果设置了 CLONE_SETTLS，更新线程指针
+        if flags.contains(CloneFlags::CLONE_SETTLS) {
+            child_trap_cx.x[4] = tls; // x4 是 RISC-V 的 tp
         }
 
-        // 创建 TCB
-        let clear_child_tid = if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) {
-            child_tid as usize
-        } else {
-            0
-        };
-
-        let child = Arc::new(TaskControlBlock {
-            tid: tid_handle,
+        // 4. 创建新的 TaskControlBlock (TCB)
+        let new_task = Arc::new(TaskControlBlock {
+            tid: new_tid,
+            process: Arc::clone(&new_process),
             kernel_stack,
-            process: process.clone(),
-            interrupted: AtomicBool::new(false),
-            interrupt_waker: AtomicWaker::new(),
-            inner: Mutex::new(TaskControlBlockInner {
-                tcb: Weak::new(),
-                trap_cx_ppn: 0.into(),
-                trap_cx_bottom: 0,
-                user_stack_top: 0,
-                task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+            inner: Mutex::new(TaskInner {
+                trap_cx_ppn: ..., // 指向新分配的 trap_cx
                 task_status: TaskStatus::Ready,
-                // fs_info,
-                time_data: TimeData::new(),
-                user_heappoint: parent_inner.user_heappoint,
-                user_heapbottom: parent_inner.user_heapbottom,
-                clear_child_tid,
-                sig_mask,
-                sig_pending: SigSet::empty(),
-                timer,
-                robust_list: RobustList::default(),
-                user_id: parent_inner.user_id,
-                futex_pa: 0,
-                futex_key: 0,
+                // ... 其他初始化
             }),
         });
 
-        // 设置 Weak 引用
-        let mut child_inner = child.inner_lock();
-        child_inner.tcb = Arc::downgrade(&child);
+        // 5. 将新任务放入进程的任务列表中
+        new_process.add_task(Arc::clone(&new_task));
 
-        // 将任务加入进程的任务列表
-        process.meta_lock().tasks.push(Arc::downgrade(&child));
-
-        // 处理用户态上下文
-        child_inner.alloc_user_res();
-
-        if flags.contains(CloneFlags::CLONE_THREAD) {
-            // 线程逻辑：拷贝父线程的寄存器状态
-            *child_inner.trap_cx() = *parent_inner.trap_cx();
-        } else {
-            // 进程逻辑：从父进程地址空间拷贝数据
-            let parent_mm = parent_proc_inner.get_locked_memory_set_read();
-            let proc_inner=process.inner_lock();
-            let child_mm = proc_inner.get_locked_memory_set_read();
-
-            // 拷贝栈和 Trap 上下文所在的内存区域内容
-            child_mm.lazy_clone_area(
-                VirtAddr::from(child_inner.user_stack_top - USER_STACK_SIZE).floor(),
-                parent_mm.get_ref(),
-            );
-            child_mm.clone_area(
-                VirtAddr::from(child_inner.trap_cx_bottom).floor(),
-                parent_mm.get_ref(),
-            );
-            // 子进程 fork 返回 0
-            child_inner.trap_cx().set_a0(0);
+        // 6. 处理 TID 写入用户空间 (根据 flags)
+        if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
+            // 安全地写入 parent_tid
+            unsafe { *parent_tid = new_tid as u32; }
         }
-
-        // 处理特殊的线程启动参数
-        let trap_cx = child_inner.trap_cx();
-        trap_cx.kernel_stack = kernel_stack_top;
-
-        if stack != 0 {
-            // 如果指定了新的用户栈（pthread_create）
-            // 移除 alloc_user_res 自动分配的栈映射，改用指定的地址
-            // ... (保持你原来的 remove_area 逻辑)
-            trap_cx.set_sp(stack);
-
-            // 设置线程入口
-            let token = parent_proc_inner.get_locked_memory_set_read().token();
-            let entry_point = get_data(token, stack as *const usize);
-            let arg = get_data(token, (stack + 8) as *const usize);
-            trap_cx.set_sepc(entry_point);
-            trap_cx.set_a0(arg);
-        }
-
-        if flags.contains(CloneFlags::CLONE_SETTLS) {
-            trap_cx.set_tp(tls);
-        }
-
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-            let child_token = process.inner_lock().get_locked_memory_set_read().token();
-            *translated_refmut(child_token, child_tid) = child.tid() as u32;
+            // 注意：这通常需要等到切换到子进程空间后再写，或者在创建时通过地址空间映射写入
         }
 
-        // 结尾
-        drop(child_inner);
-        drop(parent_proc_inner);
-        drop(parent_inner);
-
-        tid_to_task::insert(child.tid(), &child);
-
-        Ok(child)
+        Ok(new_task)
+    }
     }
 
     ///修改数据段大小，懒分配

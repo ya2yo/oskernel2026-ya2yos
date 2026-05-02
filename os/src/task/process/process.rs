@@ -37,23 +37,34 @@ pub struct ProcessInner {
 impl Process {
     /// 为实现fork做准备
     /// 从父进程 fork 出一个子进程
-    pub fn fork(self:&Arc<Self>,new_pid:usize)->Arc<Self> {
+    /// 
+    /// 1. 分配pid 2.修改parent 3.初始化元数据() 4. 拷贝inner里面的数据
+    pub fn do_proc_clone(self:&Arc<Self>,new_pid:usize)->Arc<Self> {
         let parent_inner=self.inner_lock();
         // 拷贝地址空间
         let parent_memory_set_guard = parent_inner.get_locked_memory_set_read(); // 获取 RwLockReadGuard<MemorySet>
         let parent_memory_set_inner = parent_memory_set_guard.get_ref(); // 获取 &MemorySetInner
         let new_memory_set_inner = MemorySetInner::from_another(parent_memory_set_inner);
-        let new_memory_set = Arc::new(RwLock::new(
-        MemorySet::new(new_memory_set_inner)
-        ));
+        // 根据 CLONE_VM 决定共享还是拷贝地址空间
+        let new_memory_set = if flags.contains(CloneFlags::CLONE_VM) {
+            Arc::clone(&parent_inner.memory_set)
+        } else {
+            // COW 拷贝逻辑
+            todo!()
+        };
         // 拷贝信号表
         let new_sig_table=
         Arc::new(Mutex::new(SigTable::from_another(&parent_inner.get_locked_sigtable())));
         // 拷贝文件描述符
-        let new_fd_table=Arc::new(FdTable::from_another(&parent_inner.fd_table));
+         // 根据 CLONE_FILES 决定共享还是拷贝文件表
+        let new_fd_table = if flags.contains(CloneFlags::CLONE_FILES) {
+            Arc::clone(&parent_inner.fd_table)
+        } else {
+            Arc::new(FdTable::from_another(&parent_inner.fd_table))
+        };
         // 拷贝文件系统环境
         let new_fs_info=Arc::new(FSInfo::from_another(&parent_inner.fs_info));
-
+        // 元数据的初始化中，只有fork的那个线程会存在，因此在那里完成
         Arc::new(Self {
             pid: new_pid,
             parent: Some(Arc::clone(self)),
