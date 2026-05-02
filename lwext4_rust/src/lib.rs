@@ -3,6 +3,10 @@
 #![feature(c_variadic, c_size_t)]
 #![feature(associated_type_defaults)]
 
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(non_snake_case)]
+
 extern crate alloc;
 
 #[macro_use]
@@ -10,21 +14,24 @@ extern crate log;
 
 mod ulibc;
 
-pub mod ffi {
-    #![allow(non_upper_case_globals)]
-    #![allow(non_camel_case_types)]
-    #![allow(non_snake_case)]
+// include!("bindings.rs");
+pub mod bindings;
+pub mod blockdev;
+pub mod file;
 
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+pub use blockdev::*;
+pub use file::{Ext4File, InodeTypes};
+
+pub fn add(left: usize, right: usize) -> usize {
+    left + right
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-mod blockdev;
-mod error;
-mod fs;
-mod inode;
-mod util;
-
-pub use blockdev::{BlockDevice, EXT4_DEV_BSIZE};
-pub use error::{Ext4Error, Ext4Result};
-pub use fs::*;
-pub use inode::*;
+    #[test]
+    fn it_works() {
+        let result = add(2, 2);
+        assert_eq!(result, 4);
+    }
+}

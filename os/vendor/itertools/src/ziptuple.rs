@@ -1,27 +1,29 @@
 use super::size_hint;
 
-/// See [`multizip`] for more information.
+/// See [`multizip`](../fn.multizip.html) for more information.
 #[derive(Clone, Debug)]
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 pub struct Zip<T> {
     t: T,
 }
 
-/// An iterator that generalizes `.zip()` and allows running multiple iterators in lockstep.
+/// An iterator that generalizes *.zip()* and allows running multiple iterators in lockstep.
 ///
 /// The iterator `Zip<(I, J, ..., M)>` is formed from a tuple of iterators (or values that
-/// implement [`IntoIterator`]) and yields elements
+/// implement `IntoIterator`) and yields elements
 /// until any of the subiterators yields `None`.
 ///
 /// The iterator element type is a tuple like like `(A, B, ..., E)` where `A` to `E` are the
 /// element types of the subiterator.
 ///
-/// **Note:** The result of this function is a value of a named type (`Zip<(I, J,
+/// **Note:** The result of this macro is a value of a named type (`Zip<(I, J,
 /// ..)>` of each component iterator `I, J, ...`) if each component iterator is
 /// nameable.
 ///
-/// Prefer [`izip!()`](crate::izip) over `multizip` for the performance benefits of using the
+/// Prefer [`izip!()`] over `multizip` for the performance benefits of using the
 /// standard library `.zip()`. Prefer `multizip` if a nameable type is needed.
+///
+/// [`izip!()`]: macro.izip.html
 ///
 /// ```
 /// use itertools::multizip;
@@ -37,8 +39,8 @@ pub struct Zip<T> {
 /// assert_eq!(results, [0 + 3, 10 + 7, 29, 36]);
 /// ```
 pub fn multizip<T, U>(t: U) -> Zip<T>
-where
-    Zip<T>: From<U> + Iterator,
+    where Zip<T>: From<U>,
+          Zip<T>: Iterator,
 {
     Zip::from(t)
 }
@@ -81,7 +83,7 @@ macro_rules! impl_zip_iter {
 
             fn size_hint(&self) -> (usize, Option<usize>)
             {
-                let sh = (usize::MAX, None);
+                let sh = (::std::usize::MAX, None);
                 let ($(ref $B,)*) = self.t;
                 $(
                     let sh = size_hint::min($B.size_hint(), sh);
@@ -96,30 +98,6 @@ macro_rules! impl_zip_iter {
                 $B: ExactSizeIterator,
             )*
         { }
-
-        #[allow(non_snake_case)]
-        impl<$($B),*> DoubleEndedIterator for Zip<($($B,)*)> where
-            $(
-                $B: DoubleEndedIterator + ExactSizeIterator,
-            )*
-        {
-            #[inline]
-            fn next_back(&mut self) -> Option<Self::Item> {
-                let ($(ref mut $B,)*) = self.t;
-                let size = *[$( $B.len(), )*].iter().min().unwrap();
-
-                $(
-                    if $B.len() != size {
-                        for _ in 0..$B.len() - size { $B.next_back(); }
-                    }
-                )*
-
-                match ($($B.next_back(),)*) {
-                    ($(Some($B),)*) => Some(($($B,)*)),
-                    _ => None,
-                }
-            }
-        }
     );
 }
 
@@ -131,7 +109,3 @@ impl_zip_iter!(A, B, C, D, E);
 impl_zip_iter!(A, B, C, D, E, F);
 impl_zip_iter!(A, B, C, D, E, F, G);
 impl_zip_iter!(A, B, C, D, E, F, G, H);
-impl_zip_iter!(A, B, C, D, E, F, G, H, I);
-impl_zip_iter!(A, B, C, D, E, F, G, H, I, J);
-impl_zip_iter!(A, B, C, D, E, F, G, H, I, J, K);
-impl_zip_iter!(A, B, C, D, E, F, G, H, I, J, K, L);

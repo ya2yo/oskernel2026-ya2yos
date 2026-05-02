@@ -1,7 +1,7 @@
 use log::{debug, warn};
 use lwext4_rust::{
-    ffi::{O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
-    Ext4File, InodeTypes,
+    bindings::{O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
+    Ext4File, InodeTypes
 };
 
 use crate::{

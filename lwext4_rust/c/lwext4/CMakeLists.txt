@@ -1,6 +1,7 @@
-cmake_minimum_required(VERSION 3.5)
 project(lwext4 C)
+cmake_minimum_required(VERSION 3.4)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include_directories(include)
 include_directories(${PROJECT_BINARY_DIR}/include)
@@ -44,13 +45,13 @@ else()
     endif()
     set (INSTALL_LIB 1)
 
-    add_definitions(-DCONFIG_DEBUG_PRINTF=1)
+    add_definitions(-DCONFIG_DEBUG_PRINTF=0)
     add_definitions(-DCONFIG_DEBUG_ASSERT=1)
 
     add_definitions(-DCONFIG_HAVE_OWN_OFLAGS=1)
     add_definitions(-DCONFIG_HAVE_OWN_ERRNO=1)
     add_definitions(-DCONFIG_HAVE_OWN_ASSERT=1)
-    add_definitions(-DCONFIG_USE_USER_MALLOC=1)
+    add_definitions(-DCONFIG_USE_USER_MALLOC=0)
     add_definitions(-DCONFIG_BLOCK_DEV_CACHE_SIZE=16)
 
     add_subdirectory(fs_test)

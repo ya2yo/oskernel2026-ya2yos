@@ -1,16 +1,17 @@
-use std::cell::Cell;
 use std::fmt;
+use std::cell::RefCell;
 
 /// Format all iterator elements lazily, separated by `sep`.
 ///
 /// The format value can only be formatted once, after that the iterator is
 /// exhausted.
 ///
-/// See [`.format_with()`](crate::Itertools::format_with) for more information.
+/// See [`.format_with()`](../trait.Itertools.html#method.format_with) for more information.
+#[derive(Clone)]
 pub struct FormatWith<'a, I, F> {
     sep: &'a str,
-    /// `FormatWith` uses interior mutability because `Display::fmt` takes `&self`.
-    inner: Cell<Option<(I, F)>>,
+    /// FormatWith uses interior mutability because Display::fmt takes &self.
+    inner: RefCell<Option<(I, F)>>,
 }
 
 /// Format all iterator elements lazily, separated by `sep`.
@@ -18,91 +19,77 @@ pub struct FormatWith<'a, I, F> {
 /// The format value can only be formatted once, after that the iterator is
 /// exhausted.
 ///
-/// See [`.format()`](crate::Itertools::format)
+/// See [`.format()`](../trait.Itertools.html#method.format)
 /// for more information.
+#[derive(Clone)]
 pub struct Format<'a, I> {
     sep: &'a str,
-    /// `Format` uses interior mutability because `Display::fmt` takes `&self`.
-    inner: Cell<Option<I>>,
+    /// Format uses interior mutability because Display::fmt takes &self.
+    inner: RefCell<Option<I>>,
 }
 
-pub fn new_format<I, F>(iter: I, separator: &str, f: F) -> FormatWith<'_, I, F>
-where
-    I: Iterator,
-    F: FnMut(I::Item, &mut dyn FnMut(&dyn fmt::Display) -> fmt::Result) -> fmt::Result,
+pub fn new_format<'a, I, F>(iter: I, separator: &'a str, f: F) -> FormatWith<'a, I, F>
+    where I: Iterator,
+          F: FnMut(I::Item, &mut dyn FnMut(&dyn fmt::Display) -> fmt::Result) -> fmt::Result
 {
     FormatWith {
         sep: separator,
-        inner: Cell::new(Some((iter, f))),
+        inner: RefCell::new(Some((iter, f))),
     }
 }
 
-pub fn new_format_default<I>(iter: I, separator: &str) -> Format<'_, I>
-where
-    I: Iterator,
+pub fn new_format_default<'a, I>(iter: I, separator: &'a str) -> Format<'a, I>
+    where I: Iterator,
 {
     Format {
         sep: separator,
-        inner: Cell::new(Some(iter)),
+        inner: RefCell::new(Some(iter)),
     }
 }
 
-impl<I, F> fmt::Display for FormatWith<'_, I, F>
-where
-    I: Iterator,
-    F: FnMut(I::Item, &mut dyn FnMut(&dyn fmt::Display) -> fmt::Result) -> fmt::Result,
+impl<'a, I, F> fmt::Display for FormatWith<'a, I, F>
+    where I: Iterator,
+          F: FnMut(I::Item, &mut dyn  FnMut(&dyn fmt::Display) -> fmt::Result) -> fmt::Result
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let (mut iter, mut format) = match self.inner.take() {
+        let (mut iter, mut format) = match self.inner.borrow_mut().take() {
             Some(t) => t,
             None => panic!("FormatWith: was already formatted once"),
         };
 
         if let Some(fst) = iter.next() {
             format(fst, &mut |disp: &dyn fmt::Display| disp.fmt(f))?;
-            iter.try_for_each(|elt| {
-                if !self.sep.is_empty() {
+            for elt in iter {
+                if self.sep.len() > 0 {
+
                     f.write_str(self.sep)?;
                 }
-                format(elt, &mut |disp: &dyn fmt::Display| disp.fmt(f))
-            })?;
+                format(elt, &mut |disp: &dyn fmt::Display| disp.fmt(f))?;
+            }
         }
         Ok(())
     }
 }
 
-impl<I, F> fmt::Debug for FormatWith<'_, I, F>
-where
-    I: Iterator,
-    F: FnMut(I::Item, &mut dyn FnMut(&dyn fmt::Display) -> fmt::Result) -> fmt::Result,
+impl<'a, I> Format<'a, I>
+    where I: Iterator,
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl<I> Format<'_, I>
-where
-    I: Iterator,
-{
-    fn format(
-        &self,
-        f: &mut fmt::Formatter,
-        cb: fn(&I::Item, &mut fmt::Formatter) -> fmt::Result,
-    ) -> fmt::Result {
-        let mut iter = match self.inner.take() {
+    fn format<F>(&self, f: &mut fmt::Formatter, mut cb: F) -> fmt::Result
+        where F: FnMut(&I::Item, &mut fmt::Formatter) -> fmt::Result,
+    {
+        let mut iter = match self.inner.borrow_mut().take() {
             Some(t) => t,
             None => panic!("Format: was already formatted once"),
         };
 
         if let Some(fst) = iter.next() {
             cb(&fst, f)?;
-            iter.try_for_each(|elt| {
-                if !self.sep.is_empty() {
+            for elt in iter {
+                if self.sep.len() > 0 {
                     f.write_str(self.sep)?;
                 }
-                cb(&elt, f)
-            })?;
+                cb(&elt, f)?;
+            }
         }
         Ok(())
     }
@@ -123,56 +110,5 @@ macro_rules! impl_format {
     }
 }
 
-impl_format! {Display Debug UpperExp LowerExp UpperHex LowerHex Octal Binary Pointer}
-
-impl<I, F> Clone for FormatWith<'_, I, F>
-where
-    (I, F): Clone,
-{
-    fn clone(&self) -> Self {
-        struct PutBackOnDrop<'r, 'a, I, F> {
-            into: &'r FormatWith<'a, I, F>,
-            inner: Option<(I, F)>,
-        }
-        // This ensures we preserve the state of the original `FormatWith` if `Clone` panics
-        impl<I, F> Drop for PutBackOnDrop<'_, '_, I, F> {
-            fn drop(&mut self) {
-                self.into.inner.set(self.inner.take())
-            }
-        }
-        let pbod = PutBackOnDrop {
-            inner: self.inner.take(),
-            into: self,
-        };
-        Self {
-            inner: Cell::new(pbod.inner.clone()),
-            sep: self.sep,
-        }
-    }
-}
-
-impl<I> Clone for Format<'_, I>
-where
-    I: Clone,
-{
-    fn clone(&self) -> Self {
-        struct PutBackOnDrop<'r, 'a, I> {
-            into: &'r Format<'a, I>,
-            inner: Option<I>,
-        }
-        // This ensures we preserve the state of the original `FormatWith` if `Clone` panics
-        impl<I> Drop for PutBackOnDrop<'_, '_, I> {
-            fn drop(&mut self) {
-                self.into.inner.set(self.inner.take())
-            }
-        }
-        let pbod = PutBackOnDrop {
-            inner: self.inner.take(),
-            into: self,
-        };
-        Self {
-            inner: Cell::new(pbod.inner.clone()),
-            sep: self.sep,
-        }
-    }
-}
+impl_format!{Display Debug
+             UpperExp LowerExp UpperHex LowerHex Octal Binary Pointer}

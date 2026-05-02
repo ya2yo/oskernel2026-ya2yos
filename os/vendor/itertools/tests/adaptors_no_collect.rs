@@ -11,25 +11,21 @@ impl Iterator for PanickingCounter {
     fn next(&mut self) -> Option<Self::Item> {
         self.curr += 1;
 
-        assert_ne!(
-            self.curr, self.max,
-            "Input iterator reached maximum of {} suggesting collection by adaptor",
-            self.max
-        );
+        if self.curr == self.max {
+            panic!(
+                "Input iterator reached maximum of {} suggesting collection by adaptor",
+                self.max
+            );
+        }
 
         Some(())
     }
 }
 
 fn no_collect_test<A, T>(to_adaptor: T)
-where
-    A: Iterator,
-    T: Fn(PanickingCounter) -> A,
+    where A: Iterator, T: Fn(PanickingCounter) -> A
 {
-    let counter = PanickingCounter {
-        curr: 0,
-        max: 10_000,
-    };
+    let counter = PanickingCounter { curr: 0, max: 10_000 };
     let adaptor = to_adaptor(counter);
 
     for _ in adaptor.take(5) {}

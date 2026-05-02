@@ -1,40 +1,28 @@
-use std::fmt;
-use std::iter::{Fuse, FusedIterator, Peekable};
+use std::iter::{Fuse,Peekable};
 
-/// An iterator adaptor that wraps each element in an [`Position`].
+/// An iterator adaptor that wraps each element in an [`Position`](../enum.Position.html).
 ///
-/// Iterator element type is `(Position, I::Item)`.
+/// Iterator element type is `Position<I::Item>`.
 ///
-/// See [`.with_position()`](crate::Itertools::with_position) for more information.
+/// See [`.with_position()`](../trait.Itertools.html#method.with_position) for more information.
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 pub struct WithPosition<I>
-where
-    I: Iterator,
+    where I: Iterator,
 {
     handled_first: bool,
     peekable: Peekable<Fuse<I>>,
 }
 
-impl<I> fmt::Debug for WithPosition<I>
-where
-    I: Iterator,
-    Peekable<Fuse<I>>: fmt::Debug,
-{
-    debug_fmt_fields!(WithPosition, handled_first, peekable);
-}
-
 impl<I> Clone for WithPosition<I>
-where
-    I: Clone + Iterator,
-    I::Item: Clone,
+    where I: Clone + Iterator,
+          I::Item: Clone,
 {
     clone_fields!(handled_first, peekable);
 }
 
 /// Create a new `WithPosition` iterator.
 pub fn with_position<I>(iter: I) -> WithPosition<I>
-where
-    I: Iterator,
+    where I: Iterator,
 {
     WithPosition {
         handled_first: false,
@@ -42,24 +30,36 @@ where
     }
 }
 
-/// The first component of the value yielded by `WithPosition`.
+/// A value yielded by `WithPosition`.
 /// Indicates the position of this element in the iterator results.
 ///
-/// See [`.with_position()`](crate::Itertools::with_position) for more information.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Position {
+/// See [`.with_position()`](trait.Itertools.html#method.with_position) for more information.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Position<T> {
     /// This is the first element.
-    First,
+    First(T),
     /// This is neither the first nor the last element.
-    Middle,
+    Middle(T),
     /// This is the last element.
-    Last,
+    Last(T),
     /// This is the only element.
-    Only,
+    Only(T),
+}
+
+impl<T> Position<T> {
+    /// Return the inner value.
+    pub fn into_inner(self) -> T {
+        match self {
+            Position::First(x) |
+            Position::Middle(x) |
+            Position::Last(x) |
+            Position::Only(x) => x,
+        }
+    }
 }
 
 impl<I: Iterator> Iterator for WithPosition<I> {
-    type Item = (Position, I::Item);
+    type Item = Position<I::Item>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.peekable.next() {
@@ -70,15 +70,15 @@ impl<I: Iterator> Iterator for WithPosition<I> {
                     // Peek to see if this is also the last item,
                     // in which case tag it as `Only`.
                     match self.peekable.peek() {
-                        Some(_) => Some((Position::First, item)),
-                        None => Some((Position::Only, item)),
+                        Some(_) => Some(Position::First(item)),
+                        None => Some(Position::Only(item)),
                     }
                 } else {
                     // Have seen the first item, and there's something left.
                     // Peek to see if this is the last item.
                     match self.peekable.peek() {
-                        Some(_) => Some((Position::Middle, item)),
-                        None => Some((Position::Last, item)),
+                        Some(_) => Some(Position::Middle(item)),
+                        None => Some(Position::Last(item)),
                     }
                 }
             }
@@ -90,35 +90,8 @@ impl<I: Iterator> Iterator for WithPosition<I> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.peekable.size_hint()
     }
-
-    fn fold<B, F>(mut self, mut init: B, mut f: F) -> B
-    where
-        F: FnMut(B, Self::Item) -> B,
-    {
-        if let Some(mut head) = self.peekable.next() {
-            if !self.handled_first {
-                // The current head is `First` or `Only`,
-                // it depends if there is another item or not.
-                match self.peekable.next() {
-                    Some(second) => {
-                        let first = std::mem::replace(&mut head, second);
-                        init = f(init, (Position::First, first));
-                    }
-                    None => return f(init, (Position::Only, head)),
-                }
-            }
-            // Have seen the first item, and there's something left.
-            init = self.peekable.fold(init, |acc, mut item| {
-                std::mem::swap(&mut head, &mut item);
-                f(acc, (Position::Middle, item))
-            });
-            // The "head" is now the last item.
-            init = f(init, (Position::Last, head));
-        }
-        init
-    }
 }
 
-impl<I> ExactSizeIterator for WithPosition<I> where I: ExactSizeIterator {}
-
-impl<I: Iterator> FusedIterator for WithPosition<I> {}
+impl<I> ExactSizeIterator for WithPosition<I>
+    where I: ExactSizeIterator,
+{ }

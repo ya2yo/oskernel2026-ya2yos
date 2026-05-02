@@ -1,22 +1,22 @@
 [package]
 name = "itertools"
-version = "0.14.0"
+version = "0.9.0"
 
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/rust-itertools/itertools"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/bluss/rust-itertools"
 documentation = "https://docs.rs/itertools/"
 authors = ["bluss"]
-readme = "README.md"
 
 description = "Extra iterator adaptors, iterator methods, free functions, and macros."
 
-keywords = ["iterator", "data-structure", "zip", "product"]
-categories = ["algorithms", "rust-patterns", "no-std", "no-std::no-alloc"]
+keywords = ["iterator", "data-structure", "zip", "product", "group-by"]
+categories = ["algorithms", "rust-patterns"]
+exclude = ["/bors.toml"]
 
 edition = "2018"
 
-# When bumping, please resolve all `#[allow(clippy::*)]` that are newly resolvable.
-rust-version = "1.63.0"
+[package.metadata.release]
+no-dev-version = true
 
 [lib]
 bench = false
@@ -27,15 +27,18 @@ either = { version = "1.0", default-features = false }
 
 [dev-dependencies]
 rand = "0.7"
-criterion = { version = "0.4.0", features = ["html_reports"] }
-paste = "1.0.0"  # Used in test_std to instantiate generic tests
-permutohedron = "0.2"
-quickcheck = { version = "0.9", default-features = false }
+criterion = "=0.3.0" # TODO update criterion version once it becomes compatible with our minimum required Rust verision or bump minimum required rust version
+
+[dev-dependencies.quickcheck]
+version = "0.9"
+default-features = false
+
+[dev-dependencies.permutohedron]
+version = "0.2"
 
 [features]
 default = ["use_std"]
-use_std = ["use_alloc", "either/use_std"]
-use_alloc = []
+use_std = []
 
 [profile]
 bench = { debug = true }
@@ -57,25 +60,9 @@ name = "combinations_with_replacement"
 harness = false
 
 [[bench]]
-name = "tree_reduce"
+name = "tree_fold1"
 harness = false
 
 [[bench]]
 name = "bench1"
-harness = false
-
-[[bench]]
-name = "combinations"
-harness = false
-
-[[bench]]
-name = "powerset"
-harness = false
-
-[[bench]]
-name = "specializations"
-harness = false
-
-[[bench]]
-name = "k_smallest"
 harness = false

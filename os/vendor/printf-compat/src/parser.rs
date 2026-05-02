@@ -1,4 +1,7 @@
-use core::ffi::*;
+use core::ffi::VaList;
+
+use cstr_core::CStr;
+use cty::*;
 
 use crate::{Argument, DoubleFormat, Flags, SignedInt, Specifier, UnsignedInt};
 use itertools::Itertools;
@@ -10,7 +13,7 @@ fn next_char(sub: &[u8]) -> &[u8] {
 /// Parse the [Flags field](https://en.wikipedia.org/wiki/Printf_format_string#Flags_field).
 fn parse_flags(mut sub: &[u8]) -> (Flags, &[u8]) {
     let mut flags: Flags = Flags::empty();
-    while let Some(&ch) = sub.first() {
+    while let Some(&ch) = sub.get(0) {
         flags.insert(match ch {
             b'-' => Flags::LEFT_ALIGN,
             b'+' => Flags::PREPEND_PLUS,
@@ -28,10 +31,10 @@ fn parse_flags(mut sub: &[u8]) -> (Flags, &[u8]) {
 /// Parse the [Width field](https://en.wikipedia.org/wiki/Printf_format_string#Width_field).
 unsafe fn parse_width<'a>(mut sub: &'a [u8], args: &mut VaList) -> (c_int, &'a [u8]) {
     let mut width: c_int = 0;
-    if sub.first() == Some(&b'*') {
-        return (unsafe { args.arg() }, next_char(sub));
+    if sub.get(0) == Some(&b'*') {
+        return (args.arg(), next_char(sub));
     }
-    while let Some(&ch) = sub.first() {
+    while let Some(&ch) = sub.get(0) {
         match ch {
             // https://rust-malaysia.github.io/code/2020/07/11/faster-integer-parsing.html#the-bytes-solution
             b'0'..=b'9' => width = width * 10 + (ch & 0x0f) as c_int,
@@ -44,9 +47,9 @@ unsafe fn parse_width<'a>(mut sub: &'a [u8], args: &mut VaList) -> (c_int, &'a [
 
 /// Parse the [Precision field](https://en.wikipedia.org/wiki/Printf_format_string#Precision_field).
 unsafe fn parse_precision<'a>(sub: &'a [u8], args: &mut VaList) -> (Option<c_int>, &'a [u8]) {
-    match sub.first() {
+    match sub.get(0) {
         Some(&b'.') => {
-            let (prec, sub) = unsafe { parse_width(next_char(sub), args) };
+            let (prec, sub) = parse_width(next_char(sub), args);
             (Some(prec), sub)
         }
         _ => (None, sub),
@@ -73,31 +76,31 @@ enum Length {
 impl Length {
     unsafe fn parse_signed(self, args: &mut VaList) -> SignedInt {
         match self {
-            Length::Int => SignedInt::Int(unsafe { args.arg() }),
-            Length::Char => SignedInt::Char(unsafe { args.arg::<c_int>() } as c_schar),
-            Length::Short => SignedInt::Short(unsafe { args.arg::<c_int>() } as c_short),
-            Length::Long => SignedInt::Long(unsafe { args.arg() }),
-            Length::LongLong => SignedInt::LongLong(unsafe { args.arg() }),
+            Length::Int => SignedInt::Int(args.arg()),
+            Length::Char => SignedInt::Char(args.arg()),
+            Length::Short => SignedInt::Short(args.arg()),
+            Length::Long => SignedInt::Long(args.arg()),
+            Length::LongLong => SignedInt::LongLong(args.arg()),
             // for some reason, these exist as different options, yet produce the same output
-            Length::Usize | Length::Isize => SignedInt::Isize(unsafe { args.arg() }),
+            Length::Usize | Length::Isize => SignedInt::Isize(args.arg()),
         }
     }
     unsafe fn parse_unsigned(self, args: &mut VaList) -> UnsignedInt {
         match self {
-            Length::Int => UnsignedInt::Int(unsafe { args.arg() }),
-            Length::Char => UnsignedInt::Char(unsafe { args.arg::<c_uint>() } as c_uchar),
-            Length::Short => UnsignedInt::Short(unsafe { args.arg::<c_uint>() } as c_ushort),
-            Length::Long => UnsignedInt::Long(unsafe { args.arg() }),
-            Length::LongLong => UnsignedInt::LongLong(unsafe { args.arg() }),
+            Length::Int => UnsignedInt::Int(args.arg()),
+            Length::Char => UnsignedInt::Char(args.arg()),
+            Length::Short => UnsignedInt::Short(args.arg()),
+            Length::Long => UnsignedInt::Long(args.arg()),
+            Length::LongLong => UnsignedInt::LongLong(args.arg()),
             // for some reason, these exist as different options, yet produce the same output
-            Length::Usize | Length::Isize => UnsignedInt::Isize(unsafe { args.arg() }),
+            Length::Usize | Length::Isize => UnsignedInt::Isize(args.arg()),
         }
     }
 }
 
 /// Parse the [Length field](https://en.wikipedia.org/wiki/Printf_format_string#Length_field).
 fn parse_length(sub: &[u8]) -> (Length, &[u8]) {
-    match sub.first().copied() {
+    match sub.get(0).copied() {
         Some(b'h') => match sub.get(1).copied() {
             Some(b'h') => (Length::Char, sub.get(2..).unwrap_or(&[])),
             _ => (Length::Short, next_char(sub)),
@@ -122,7 +125,7 @@ pub unsafe fn format(
     mut args: VaList,
     mut handler: impl FnMut(Argument) -> c_int,
 ) -> c_int {
-    let str = unsafe { CStr::from_ptr(format).to_bytes() };
+    let str = CStr::from_ptr(format).to_bytes();
     let mut iter = str.split(|&c| c == b'%');
     let mut written = 0;
 
@@ -151,11 +154,11 @@ pub unsafe fn format(
             continue;
         }
         let (flags, sub) = parse_flags(sub);
-        let (width, sub) = unsafe { parse_width(sub, &mut args) };
-        let (precision, sub) = unsafe { parse_precision(sub, &mut args) };
+        let (width, sub) = parse_width(sub, &mut args);
+        let (precision, sub) = parse_precision(sub, &mut args);
         let (length, sub) = parse_length(sub);
         let ch = sub
-            .first()
+            .get(0)
             .unwrap_or(if next.is_some() { &b'%' } else { &0 });
         err!(handler(Argument {
             flags,
@@ -166,56 +169,31 @@ pub unsafe fn format(
                     last_was_percent = true;
                     Specifier::Percent
                 }
-                b'd' | b'i' => Specifier::Int(unsafe { length.parse_signed(&mut args) }),
-                b'x' => Specifier::Hex(unsafe { length.parse_unsigned(&mut args) }),
-                b'X' => Specifier::UpperHex(unsafe { length.parse_unsigned(&mut args) }),
-                b'u' => Specifier::Uint(unsafe { length.parse_unsigned(&mut args) }),
-                b'o' => Specifier::Octal(unsafe { length.parse_unsigned(&mut args) }),
+                b'd' | b'i' => Specifier::Int(length.parse_signed(&mut args)),
+                b'x' => Specifier::Hex(length.parse_unsigned(&mut args)),
+                b'X' => Specifier::UpperHex(length.parse_unsigned(&mut args)),
+                b'u' => Specifier::Uint(length.parse_unsigned(&mut args)),
+                b'o' => Specifier::Octal(length.parse_unsigned(&mut args)),
                 b'f' | b'F' => Specifier::Double {
-                    value: unsafe { args.arg() },
+                    value: args.arg(),
                     format: DoubleFormat::Normal.set_upper(ch.is_ascii_uppercase()),
                 },
                 b'e' | b'E' => Specifier::Double {
-                    value: unsafe { args.arg() },
+                    value: args.arg(),
                     format: DoubleFormat::Scientific.set_upper(ch.is_ascii_uppercase()),
                 },
                 b'g' | b'G' => Specifier::Double {
-                    value: unsafe { args.arg() },
+                    value: args.arg(),
                     format: DoubleFormat::Auto.set_upper(ch.is_ascii_uppercase()),
                 },
                 b'a' | b'A' => Specifier::Double {
-                    value: unsafe { args.arg() },
+                    value: args.arg(),
                     format: DoubleFormat::Hex.set_upper(ch.is_ascii_uppercase()),
                 },
-                b's' => {
-                    let arg: *mut c_char = unsafe { args.arg() };
-                    // As a common extension supported by glibc, musl, and
-                    // others, format a NULL pointer as "(null)".
-                    if arg.is_null() {
-                        Specifier::Bytes(b"(null)")
-                    } else {
-                        Specifier::String(unsafe { CStr::from_ptr(arg) })
-                    }
-                }
-                b'c' => {
-                    trait CharToInt {
-                        type IntType;
-                    }
-
-                    impl CharToInt for c_schar {
-                        type IntType = c_int;
-                    }
-
-                    impl CharToInt for c_uchar {
-                        type IntType = c_uint;
-                    }
-
-                    Specifier::Char(
-                        unsafe { args.arg::<<c_char as CharToInt>::IntType>() } as c_char
-                    )
-                }
-                b'p' => Specifier::Pointer(unsafe { args.arg() }),
-                b'n' => Specifier::WriteBytesWritten(written, unsafe { args.arg() }),
+                b's' => Specifier::String(CStr::from_ptr(args.arg())),
+                b'c' => Specifier::Char(args.arg()),
+                b'p' => Specifier::Pointer(args.arg()),
+                b'n' => Specifier::WriteBytesWritten(written, args.arg()),
                 _ => return -1,
             },
         }));

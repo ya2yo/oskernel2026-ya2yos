@@ -7,7 +7,7 @@ use files::{devfs, pipe, stdio};
 // pub use files::{make_socket, make_socketpair, OSFile};
 mod stat;
 mod vfs;
-use crate::fs::files::{OSFile, Socket};
+pub use crate::fs::files::{OSFile, Socket};
 use crate::mm::UserBuffer;
 // use crate::syscall::FaccessatFileMode;
 use crate::utils::{GeneralRet, SysErrNo};
