@@ -18,7 +18,7 @@ fn flush_preload() {
     v.push(unsafe {
         core::slice::from_raw_parts_mut(
             initproc_start as *mut u8,
-            initproc_end as usize - initproc_start as usize,
+            initproc_end as *const() as usize - initproc_start as *const() as usize,
         ) as &'static mut [u8]
     });
     initproc.write(UserBuffer::new(v));

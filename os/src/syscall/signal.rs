@@ -44,7 +44,7 @@ pub fn sys_rt_sigaction(
             // 忽略
             KSigAction::ignore()
         } else {
-            let customed = new_act.sa_handler != exit_current_and_run_next as usize;
+            let customed = new_act.sa_handler != exit_current_and_run_next as *const() as usize;
             KSigAction {
                 act: new_act,
                 customed,

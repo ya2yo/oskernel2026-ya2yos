@@ -1,4 +1,6 @@
 //!Implementation of [`Processor`] and Intersection of control flow
+use core::cell::SyncUnsafeCell;
+
 use super::{__abandon, ready_queue, TaskContext, TaskControlBlock, TaskStatus};
 use crate::arch::cpu::hart_id;
 
@@ -18,7 +20,7 @@ pub struct Processor {
 ///Init PROCESSORS
 pub fn processors_init() {
     unsafe {
-        for p in PROCESSORS.iter_mut() {
+        for p in (*PROCESSORS.get()).iter_mut() {
             p.idle_task_cx = Some(Box::new(TaskContext::zero_init()));
         }
     }
@@ -48,8 +50,9 @@ impl Processor {
 
 const EMPTY_PROCESSOR: Processor = Processor::new();
 /// 不需要加锁,每个核只会访问固定的Processor
-pub static mut PROCESSORS: [Processor; HART_NUM] = [EMPTY_PROCESSOR; HART_NUM];
-
+pub static PROCESSORS: SyncUnsafeCell<[Processor; HART_NUM]> = SyncUnsafeCell::new(
+    [EMPTY_PROCESSOR; HART_NUM]
+);
 ///attach to processors
 fn get_proc_by_hartid(hartid: usize) -> &'static mut Processor {
     if hartid >= HART_NUM {
@@ -58,7 +61,7 @@ fn get_proc_by_hartid(hartid: usize) -> &'static mut Processor {
             hartid
         )
     }
-    unsafe { &mut PROCESSORS[hartid] }
+    unsafe { &mut (*PROCESSORS.get())[hartid] }
 }
 
 ///The main part of process execution and scheduling

@@ -65,7 +65,7 @@ pub fn handle_signal(signo: usize) {
         debug!("sa_handler:{:#x}", sig_action.act.sa_handler as usize);
         // 就在S模式运行,转换成fn(i32)
         if sig_action.act.sa_handler != 1 {
-            if sig_action.act.sa_handler == exit_current_and_run_next as usize {
+            if sig_action.act.sa_handler == exit_current_and_run_next as *const() as usize {
                 exit_current_and_run_next((signo + 128) as i32);
             }
         }
@@ -177,7 +177,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
                 if #[cfg(feature = "loongarch64")] {
                     trampoline = memory_layout::sigreturn_va();
                 } else if #[cfg(feature = "riscv64")] {
-                    trampoline = sigreturn_trampoline as usize;
+                    trampoline = sigreturn_trampoline as *const() as usize;
                 }
             }
             //warn!("set sigreturn_trampoline={:#x} as ra", trampoline);

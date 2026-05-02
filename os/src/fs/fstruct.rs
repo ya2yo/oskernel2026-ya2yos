@@ -60,7 +60,7 @@ impl FileDescriptor {
     }
 }
 
-struct FdTableInner {
+pub struct FdTableInner {
     soft_limit: usize,
     hard_limit: usize,
     files: Vec<Option<FileDescriptor>>,
@@ -85,7 +85,7 @@ impl FdTableInner {
 
 impl FdTable {
     /// 创建新的fd_table
-    pub fn new(fd_table: FdTableInner) -> Self {
+    fn new(fd_table: FdTableInner) -> Self {
         Self {
             inner: RwLock::new(fd_table),
         }

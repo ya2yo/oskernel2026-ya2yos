@@ -19,7 +19,7 @@ pub struct Pipe {
 }
 
 impl Pipe {
-    fn inner_lock(&self) -> MutexGuard<PipeRingBuffer> {
+    fn inner_lock(&self) -> MutexGuard<'_,PipeRingBuffer> {
         self.buffer.lock()
     }
     /// 创建管道的读端

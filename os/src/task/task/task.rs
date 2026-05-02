@@ -186,7 +186,7 @@ impl TaskControlBlockInner {
 }
 
 impl TaskControlBlock {
-    pub fn inner_lock(&self) -> MutexGuard<TaskControlBlockInner> {
+    pub fn inner_lock(&self) -> MutexGuard<'_,TaskControlBlockInner> {
         self.inner.try_lock().expect("fail to get task inner")
     }
     pub fn tid(&self) -> usize {
@@ -412,14 +412,6 @@ impl TaskControlBlock {
             )))
         };
 
-        // 处理文件系统信息
-        let fs_info = if flags.contains(CloneFlags::CLONE_FS) {
-            Arc::clone(&parent_proc_inner.fs_info)
-        } else {
-            Arc::new(FSInfo::from_another(
-                &parent_proc_inner.fs_info,
-            ))
-        };
 
         // 处理打开文件表
         // 注意：现在 fd_table 是从 parent_proc_inner 获取的

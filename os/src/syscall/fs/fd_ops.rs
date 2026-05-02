@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicI32, Ordering};
+
 use super::fcntl::*;
 use crate::fs::{FileDescriptor, OpenFlags, open};
 use crate::mm::translated_str;
@@ -154,7 +156,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
 }
 
 
-static mut TMP_FILE_COUNTER: i32 = 0;
+static TMP_FILE_COUNTER:AtomicI32 = AtomicI32::new(0);
 
 /// 参考 https://man7.org/linux/man-pages/man2/openat.2.html
 pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> SyscallRet {
@@ -183,10 +185,9 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
         assert!(flags.contains(OpenFlags::O_DIRECTORY));
         // 这里我们简化处理一下……我们创建一个真实文件，且永远不会删除它
         flags.insert(OpenFlags::O_CREATE);
-        abs_path = unsafe {
-            TMP_FILE_COUNTER += 1;
-            // 此处abs_path似乎必须是/tmp
-            format!("{}/{}.tmp", abs_path, TMP_FILE_COUNTER)
+        abs_path = {
+            let count = TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            format!("{}/{}.tmp", abs_path, count)
         };
         flags.remove(OpenFlags::O_TMPFILE); // 因为简化处理，TMP标志位在这里被拦截
         flags.remove(OpenFlags::O_DIRECTORY); // 避免下面的open真的给咱创建一个目录

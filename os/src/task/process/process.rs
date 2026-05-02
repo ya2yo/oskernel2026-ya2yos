@@ -120,13 +120,13 @@ impl Process {
         ret
     }
     /// 获取inner的锁
-    pub fn inner_lock(&self) -> MutexGuard<ProcessInner> {
+    pub fn inner_lock(&self) -> MutexGuard<'_,ProcessInner> {
         self.inner
             .try_lock()
             .expect(&format!("fail to get proc lock({})", self.pid))
     }
     /// 获取元数据的锁
-    pub fn meta_lock(&self) -> MutexGuard<ProcessMeta> {
+    pub fn meta_lock(&self) -> MutexGuard<'_,ProcessMeta> {
         self.meta
             .try_lock()
             .expect(&format!("fail to get proc.meta lock({})", self.pid))

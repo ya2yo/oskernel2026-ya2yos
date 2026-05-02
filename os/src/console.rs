@@ -12,12 +12,10 @@ impl Write for Stdout {
         Ok(())
     }
 }
-static mut STDOUT: Mutex<Stdout> = Mutex::new(Stdout {});
+static STDOUT: Mutex<Stdout> = Mutex::new(Stdout {});
 pub fn print(args: fmt::Arguments) {
     // Stdout.write_fmt(args).unwrap();
-    unsafe {
-        STDOUT.lock().write_fmt(args).unwrap();
-    }
+    STDOUT.lock().write_fmt(args).unwrap();
 }
 
 #[macro_export]

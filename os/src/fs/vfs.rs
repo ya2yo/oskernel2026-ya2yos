@@ -141,7 +141,7 @@ pub trait File: Send + Sync {
         unimplemented!()
     }
     /// Registers wakers for I/O events.
-    fn register(&self, context: &mut Context<'_>, events: PollEvents){
+    fn register(&self, _context: &mut Context<'_>, _events: PollEvents){
         unimplemented!("not support!");
     }
 }

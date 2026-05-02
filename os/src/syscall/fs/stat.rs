@@ -11,7 +11,6 @@ use crate::{
 /// 参考 https://man7.org/linux/man-pages/man2/fstat.2.html
 pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
     let proc_inner=task.process.inner_lock();
     let token = task.process.inner_lock().get_locked_memory_set_read().token();
 

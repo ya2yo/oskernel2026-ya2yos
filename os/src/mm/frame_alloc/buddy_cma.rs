@@ -20,12 +20,12 @@ pub fn init_cma() {
     extern "C" {
         fn ekernel();
     }
-    assert!(ekernel as usize % 4096 == 0);
+    assert!(ekernel as *const() as usize % 4096 == 0);
     assert!(PHYSICAL_MEMORY_START % 4096 == 0);
     assert!(PHYSICAL_MEMORY_SIZE % 4096 == 0);
 
     // kernel使用的空间大小+kernel之前为MMIO保留的空间大小
-    let used_physical_memory = (ekernel as usize - PHYSICAL_MEMORY_START) - KERNEL_ADDR_OFFSET;
+    let used_physical_memory = (ekernel as *const() as usize - PHYSICAL_MEMORY_START) - KERNEL_ADDR_OFFSET;
     let size = PHYSICAL_MEMORY_SIZE - used_physical_memory;
     let left = KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_START + used_physical_memory;
     println!("init_cma:");

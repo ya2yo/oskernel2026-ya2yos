@@ -241,7 +241,6 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         return Err(SysErrNo::ENOEXEC); // 这个报错会告诉调用者：这不是ELF
     }
     locked_fs_info.set_exe(abs_path);
-    drop(locked_fs_info);
     drop(proc_inner);
 
     task.exec(&elf_data, &argv_vec, &mut env);

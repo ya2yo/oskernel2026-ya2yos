@@ -6,7 +6,6 @@ use crate::{fs::{FileClass, FileDescriptor, make_pipe}, mm::translated_refmut, t
 /// 参考 https://man7.org/linux/man-pages/man2/pipe2.2.html
 pub fn sys_pipe2(fd: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let task_inner = task.inner_lock();
     let proc_inner=task.process.inner_lock();
     let fd_table=task.get_fd_table();
     let token = proc_inner.get_locked_memory_set_write().token();
@@ -21,7 +20,7 @@ pub fn sys_pipe2(fd: *mut u32) -> SyscallRet {
         write_fd,
         FileDescriptor::default(FileClass::Abs(write_pipe)),
     );
-    let mut locked_fs_info = proc_inner.fs_info.clone();
+    let locked_fs_info = proc_inner.fs_info.clone();
 
     locked_fs_info.insert("pipe".to_string(), read_fd);
     locked_fs_info.insert("pipe".to_string(), write_fd);

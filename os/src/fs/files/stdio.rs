@@ -24,7 +24,7 @@ impl File for Stdin {
         false
     }
     fn read(&self, mut user_buf: UserBuffer) -> SyscallRet {
-        panic!("HXC: What do you want from stdin??");
+        // panic!("HXC: What do you want from stdin??");
         //一次读取多个字符
         let mut count: usize = 0;
         let mut buf = Vec::new();

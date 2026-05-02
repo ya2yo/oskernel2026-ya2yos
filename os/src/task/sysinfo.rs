@@ -36,7 +36,7 @@ impl Sysinfo {
             uptime: newuptime,
             loads: [0; 3],
             totalram: newtotalram,
-            freeram: newtotalram - ekernel as usize,
+            freeram: newtotalram - ekernel as *const() as usize,
             sharedram: 0,
             bufferram: 0,
             totalswap: 0,
