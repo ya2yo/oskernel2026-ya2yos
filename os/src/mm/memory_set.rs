@@ -194,6 +194,43 @@ pub struct MemorySetInner {
 }
 
 impl MemorySetInner {
+    /// 从另一个地址空间克隆一个新的地址空间 
+    pub fn from_another(another: &MemorySetInner) -> Self {
+        let mut memory_set = Self::new_from_kernel();
+        
+        for area in another.areas.iter() {
+            // 跳过不该在 fork 时拷贝的段（如信号上下文 Trap 段，由线程管理分配）
+            if area.area_type == MapAreaType::Trap {
+                continue;
+            }
+
+            let mut new_area = MapArea::from_another(area);
+            
+            // 处理共享内存段 (SHM)
+            if area.area_type == MapAreaType::Shm || 
+               (area.area_type == MapAreaType::Mmap && area.mmap_flags.contains(MmapFlags::MAP_SHARED)) {
+                // 共享内存：子进程直接映射相同的物理页帧
+                let frames = area.data_frames.values().cloned().collect();
+                memory_set.push_with_given_frames(new_area, frames);
+                continue;
+            }
+
+            // 处理普通段（Elf, Stack, Brk, 私有 Mmap）：执行写时复制 (COW) 逻辑
+            // 1. 先把当前 area 里的所有物理页改为只读并标记为 COW
+            // 2. 将这些物理页映射到新的地址空间
+            for (vpn, _) in area.data_frames.iter() {
+                // 注意：这里需要调用 PageTable 的底层方法来处理 PTE 权限转换
+                another.page_table.handle_cow_mapping_from_exited_user(*vpn, &mut memory_set);
+            }
+
+            // 拷贝已分配的页表项追踪信息
+            new_area.data_frames = area.data_frames.clone();
+            memory_set.push_lazily(new_area);
+        }
+        
+        tlb_invalidate();
+        memory_set
+    }
     ///Create an empty `MemorySet`
     pub fn new_bare() -> Self {
         Self {

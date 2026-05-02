@@ -334,7 +334,7 @@ pub fn get_time_ms() -> usize {
 
 /// get current time in nanoseconds 
 pub fn get_time_ns()->usize {
-    get_ticks()/(get_clock_freq() / NANOS_PER_SEC)
+    get_ticks()/(get_clock_freq() / NANOS_PER_SEC as usize)
 }
 
 pub fn wall_time_nanos()->u64 {

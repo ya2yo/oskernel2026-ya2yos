@@ -25,7 +25,7 @@ pub fn sys_rt_sigaction(
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let sigtable = process.get_locked_sigtable();
-    let token = process.get_locked_memory_set().token();
+    let token = process.get_locked_memory_set_read().token();
     if old_act as usize != 0 {
         let sig_act = sigtable.action(signo).act;
         put_data(token, old_act, sig_act);
@@ -64,7 +64,7 @@ pub fn sys_rt_sigreturn() -> SyscallRet {
 pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) -> SyscallRet {
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set();
+    let memory_set = process.get_locked_memory_set_read();
     let mut task_inner = task.inner_lock();
     let how = SignalMaskFlag::from_bits(how).ok_or(SysErrNo::EINVAL)?;
 
@@ -112,7 +112,7 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
     // TODO(ZMY): 暂停线程
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
     let mask = get_data(token, mask);
     let old_mask = task_inner.sig_mask;
     task_inner.sig_mask = mask;

@@ -79,7 +79,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
 
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     let trap_cx = task_inner.trap_cx();
     let mut user_sp = trap_cx.get_sp();
@@ -192,7 +192,7 @@ pub fn restore_frame() -> SyscallRet {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
 
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     let trap_cx = task_inner.trap_cx();
     let mut user_sp = trap_cx.get_sp();

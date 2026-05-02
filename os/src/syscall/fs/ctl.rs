@@ -2,7 +2,7 @@ use alloc::string::String;
 use alloc::vec;
 use log::{debug, warn};
 
-use crate::fs::{FsIndex, InodeType, MAX_PATH_LEN, NONE_MODE, OpenFlags, SEEK_CUR, SEEK_SET, open, superblock_sync};
+use crate::fs::{File, FsIndex, InodeType, MAX_PATH_LEN, NONE_MODE, OpenFlags, SEEK_CUR, SEEK_SET, open, superblock_sync};
 use crate::syscall::process;
 use crate::timer::{NOW_TIME_STAMP, Timespec, get_time_ms};
 use crate::utils::{SysErrNo, SyscallRet, get_abs_path, rsplit_once};
@@ -40,7 +40,6 @@ pub fn sys_ioctl(_fd: usize, _cmd: usize, _arg: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/chdir.2.html
 pub fn sys_chdir(path: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
     let proc_inner=task.process.inner_lock();
     let token = task.process.inner_lock().get_locked_memory_set_write().token();
 
@@ -56,9 +55,9 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
 
     debug!("[sys_chdir] path is {}", path);
 
-    let mut locked_fs_info = inner.fs_info.lock();
+    let locked_fs_info = &proc_inner.fs_info;
 
-    let abs_path = get_abs_path(locked_fs_info.cwd(), &path);
+    let abs_path = get_abs_path(&locked_fs_info.get_cwd(), &path);
 
     debug!("[sys_chdir] abs_path is {}", abs_path);
     let osfile = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
@@ -104,9 +103,8 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/getdents64.2.html
 pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
     let process = task.process.inner_lock();
-    let memory_set = &*process.get_locked_memory_set();
+    let memory_set = &*&&process.get_locked_memory_set_read();
 
     debug!(
         "[sys_getdents64] fd is {}, buf addr  is {:x}, len is {}",
@@ -144,7 +142,8 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, _flags: u32) -> SyscallRet {
     // assert!(flags != AT_REMOVEDIR, "not support yet");
     let task = current_task().unwrap();
     let inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let proc_inner=task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_read().token();
 
     let path = translated_str(token, path);
     let abs_path = inner.get_abs_path(&task,dirfd, &path)?;
@@ -154,7 +153,7 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, _flags: u32) -> SyscallRet {
     // 如果是socket, FIFO, or device,移除但现有的fd可继续使用
     let osfile = open(&abs_path, OpenFlags::O_UNLINK, NONE_MODE)?.file()?;
 
-    let locked_fs_info = inner.fs_info.lock();
+    let locked_fs_info = &proc_inner.fs_info;
 
     debug!(
         "[sys_unlinkat] path={},link_cnt={},has_activate_fd={}",
@@ -190,7 +189,7 @@ pub fn sys_utimensat(
     }
     let task = current_task().unwrap();
     let inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
     let path = if !path.is_null() {
         translated_str(token, path)
     } else {
@@ -257,7 +256,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
 
     // assert!(path == "/proc/self/exe", "unsupported other path!");
     if path == "/proc/self/exe" {
-        let mut exe: String = inner.fs_info.lock().exe().to_string();
+        let mut exe: String = proc_inner.fs_info.get_exe();
         exe.push('\0');
 
         debug!("fs_info={}", exe);
@@ -287,7 +286,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
 pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
     let target_path = translated_str(token, target);
     let link_path = translated_str(token, linkpath);
 
@@ -352,29 +351,30 @@ pub fn sys_fchownat(
 
 pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
+    let proc_inner=task.process.inner_lock();
 
-    if (fd as isize) < 0 && fd >= inner.fd_table.len() {
+    if (fd as isize) < 0 && fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
 
     debug!("[sys_fchmod] fd is {},new mode is {:o}", fd, mode);
 
-    let file = inner.fd_table.get(fd).file()?;
+    let file = proc_inner.fd_table.get(fd)?.file()?;
     file.inode.fmode_set(mode);
     Ok(0)
 }
 
 pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let task_inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let task_inner=task.inner_lock();
+    let proc_inner = task.process.inner_lock();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     if (flags as isize) < 0 {
         return Err(SysErrNo::EINVAL);
     }
 
-    if dirfd != -100 && dirfd as usize >= task_inner.fd_table.len() {
+    if dirfd != -100 && dirfd as usize >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
 

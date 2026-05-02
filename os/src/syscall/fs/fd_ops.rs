@@ -15,7 +15,7 @@ use alloc::{
 
 fn dup_fd(old_fd: usize, cloexec: bool) -> SyscallRet {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let mut proc_inner = task.get_process().inner_lock();
+    let proc_inner = task.process.inner_lock();
     let mut new_desc = proc_inner.fd_table.get(old_fd)?; 
     if cloexec {
         new_desc.set_cloexec();
@@ -104,25 +104,25 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         FcntlCmd::F_DUPFD => {
             let fd_new = proc_inner.fd_table.alloc_fd_larger_than(arg)?;
             proc_inner.fd_table.set(fd_new, file);
-            proc_inner.fs_info.lock().insert_with_glue(fd, fd_new);
+            proc_inner.fs_info.dup_fd_path(fd, fd_new);
             return Ok(fd_new);
         }
         FcntlCmd::F_DUPFD_CLOEXEC => {
             let fd_new = proc_inner.fd_table.alloc_fd_larger_than(arg)?;
             file.set_cloexec();
             proc_inner.fd_table.set(fd_new, file);
-            proc_inner.fs_info.lock().insert_with_glue(fd, fd_new);
+            proc_inner.fs_info.dup_fd_path(fd, fd_new);
             return Ok(fd_new);
         }
         FcntlCmd::F_GETFD => {
-            return if proc_inner.fd_table.get(fd).cloexec() {
+            return if proc_inner.fd_table.get(fd)?.cloexec() {
                 Ok(1)
             } else {
                 Ok(0)
             };
         }
         FcntlCmd::F_SETFD => {
-            if arg & FD_CLOEXEC == 0 {
+            if arg & FD_CLOEXEC as usize == 0 {
                 proc_inner.fd_table.unset_cloexec(fd);
             } else {
                 proc_inner.fd_table.set_cloexec(fd);
@@ -164,8 +164,8 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
 
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let process=task.process.inner_lock();
-    let token = process.get_locked_memory_set_read().token();
+    let proc_inner=task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_read().token();
     let path = translated_str(token, path);
     let mut flags = OpenFlags::from_bits(flags).unwrap();
 
@@ -193,11 +193,11 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
 
         // 剩下的就和普通open一样处理就行了
         let inode = open(&abs_path, flags, mode)?;
-        let new_fd = process.fd_table.alloc_fd()?;
-        process
+        let new_fd = proc_inner.fd_table.alloc_fd()?;
+        proc_inner
             .fd_table
             .set(new_fd, FileDescriptor::new(flags, inode));
-        process.fs_info.insert(abs_path, new_fd);
+        proc_inner.fs_info.insert(abs_path, new_fd);
         return Ok(new_fd);
     }
 
@@ -206,12 +206,12 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     }
 
     let inode = open(&abs_path, flags, mode)?;
-    let new_fd = task_inner.fd_table.alloc_fd()?;
-    process
+    let new_fd = proc_inner.fd_table.alloc_fd()?;
+    proc_inner
         .fd_table
         .set(new_fd, FileDescriptor::new(flags, inode));
 
-    process.fs_info.lock().insert(abs_path, new_fd);
+    proc_inner.fs_info.insert(abs_path, new_fd);
     return Ok(new_fd);
 }
 

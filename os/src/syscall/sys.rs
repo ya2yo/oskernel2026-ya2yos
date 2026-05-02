@@ -5,7 +5,7 @@ use crate::{fs::open_device_file, mm::{UserBuffer, if_bad_address, translated_by
 /// 参考 https://man7.org/linux/man-pages/man2/getrandom.2.html
 pub fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     if (flags as i32) < 0 {
         return Err(SysErrNo::EINVAL);

@@ -27,7 +27,7 @@ pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
     if fd >= proc_inner.fd_table.len() || proc_inner.fd_table.try_get(fd).is_none() {
         return Err(SysErrNo::EBADF);
     }
-    let file = proc_inner.fd_table.get(fd).any();
+    let file = proc_inner.fd_table.get(fd)?.any();
     put_data(token, kst, file.fstat());
     Ok(0)
 }

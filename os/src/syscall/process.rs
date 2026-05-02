@@ -134,9 +134,9 @@ pub fn sys_clone(
 /// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
 pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let task_inner = task.inner_lock();
+    let proc_inner = task.process.inner_lock();
 
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
     let mut path = trim_start_slash(translated_str(token, path));
     if path.starts_with("ltp/testcases/bin/\u{1b}[1;32m") {
         //去除颜色
@@ -213,15 +213,15 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
 
     debug!("[sys_execve] env is {:?}", env);
 
-    let mut locked_fs_info = task_inner.fs_info.lock();
-    let cwd = locked_fs_info.cwd();
-    let exe = locked_fs_info.exe();
+    let locked_fs_info = &proc_inner.fs_info;
+    let cwd = locked_fs_info.get_cwd();
+    let exe = locked_fs_info.get_exe();
     let mut abs_path = get_abs_path(&cwd, &path);
     // HXC:
     // 如果是/proc/self/exe，特殊处理
     // 这个实现有点将就，只会重构文件系统的时候再想想怎么处理吧
     if abs_path == "/proc/self/exe" {
-        abs_path = exe.into();
+        abs_path = exe.clone().into();
         if argv_vec[0] == "/proc/self/exe" {
             argv_vec[0] = exe.into();
         }
@@ -242,7 +242,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     }
     locked_fs_info.set_exe(abs_path);
     drop(locked_fs_info);
-    drop(task_inner);
+    drop(proc_inner);
 
     task.exec(&elf_data, &argv_vec, &mut env);
     // 不用切换页表，因为return_to_user会切换
@@ -312,7 +312,7 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
                     "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}",
                     pid, found_pid, exit_code, wstatus as usize
                 );
-                let token = task.process.inner_lock().get_locked_memory_set().token();
+                let token = task.process.inner_lock().get_locked_memory_set_read().token();
                 if exit_code >= 128 && exit_code <= 255 {
                     //表示由于信号而退出的
                     put_data(token, wstatus, exit_code);
@@ -403,7 +403,7 @@ pub fn sys_brk(brk_addr: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/sysinfo.2.html
 pub fn sys_sysinfo(info: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     put_data(
         token,
@@ -479,7 +479,7 @@ pub fn sys_clock_nanosleep(
     const TIME_ABSTIME: u32 = 1;
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set();
+    let memory_set = process.get_locked_memory_set_read();
 
     if clockid != 0 {
         return Err(SysErrNo::EOPNOTSUPP);
@@ -527,7 +527,7 @@ pub fn sys_clock_nanosleep(
             debug!("interupt by signal");
             if remain as usize != 0 {
                 let process = task.process.inner_lock();
-                let memory_set = process.get_locked_memory_set();
+                let memory_set = process.get_locked_memory_set_read();
                 safe_put_data(&*memory_set, remain, calculate_left_timespec(endtime));
             }
             //handle_signal(signo);
@@ -559,7 +559,7 @@ pub fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut usize
     }
     if let Some(task) = task {
         let task_inner = task.inner_lock();
-        let token = task.process.inner_lock().get_locked_memory_set().token();
+        let token = task.process.inner_lock().get_locked_memory_set_read().token();
         put_data(token, head_ptr, task_inner.robust_list.head);
         put_data(token, len_ptr, task_inner.robust_list.len);
         Ok(0)

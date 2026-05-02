@@ -189,9 +189,6 @@ impl TaskControlBlock {
     pub fn inner_lock(&self) -> MutexGuard<TaskControlBlockInner> {
         self.inner.try_lock().expect("fail to get task inner")
     }
-    pub fn get_process(&self) -> Arc<Process> {
-        self.process.clone()
-    }
     pub fn tid(&self) -> usize {
         self.tid.tid
     }

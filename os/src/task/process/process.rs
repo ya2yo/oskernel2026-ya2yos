@@ -40,8 +40,12 @@ impl Process {
     pub fn fork(self:&Arc<Self>,new_pid:usize)->Arc<Self> {
         let parent_inner=self.inner_lock();
         // 拷贝地址空间
-        let new_memory_set=
-        Arc::new(RwLock::new(parent_inner.get_locked_memory_set_read()));
+        let parent_memory_set_guard = parent_inner.get_locked_memory_set_read(); // 获取 RwLockReadGuard<MemorySet>
+        let parent_memory_set_inner = parent_memory_set_guard.get_ref(); // 获取 &MemorySetInner
+        let new_memory_set_inner = MemorySetInner::from_another(parent_memory_set_inner);
+        let new_memory_set = Arc::new(RwLock::new(
+        MemorySet::new(new_memory_set_inner)
+        ));
         // 拷贝信号表
         let new_sig_table=
         Arc::new(Mutex::new(SigTable::from_another(&parent_inner.get_locked_sigtable())));

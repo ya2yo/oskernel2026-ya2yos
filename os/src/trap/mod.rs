@@ -99,7 +99,7 @@ pub fn trap_handler() {
             {
                 let task = current_task().unwrap();
                 let process = task.process.inner_lock();
-                let memory_set = process.get_locked_memory_set();
+                let memory_set = process.get_locked_memory_set_read();
                 ok = memory_set.lazy_page_fault(VirtAddr::from(stval).floor(), cause); // ok表示是否是lazy_page_fault，如果不是返回 false
                 if !ok {
                     ok = memory_set.cow_page_fault(VirtAddr::from(stval).floor(), cause);
@@ -200,9 +200,9 @@ pub fn trap_return() {
     // 启动任务的页表
     current_task()
         .unwrap()
-        .get_process()
+        .process
         .inner_lock()
-        .get_locked_memory_set()
+        .get_locked_memory_set_read()
         .activate();
 
     unsafe {

@@ -7,7 +7,9 @@ use files::{devfs, pipe, stdio};
 // pub use files::{make_socket, make_socketpair, OSFile};
 mod stat;
 mod vfs;
-pub use crate::fs::files::{OSFile, Socket};
+pub use crate::fs::files::OSFile;
+#[cfg(feature = "net")]
+pub use crate::fs::files::Socket;
 use crate::mm::UserBuffer;
 // use crate::syscall::FaccessatFileMode;
 use crate::utils::{GeneralRet, SysErrNo};
@@ -102,6 +104,7 @@ pub const NONE_MODE: u32 = 0;
 #[derive(Clone)]
 pub enum FileClass {
     File(Arc<OSFile>),
+    #[cfg(feature = "net")]
     Socket(Arc<Socket>),
     Abs(Arc<dyn File>),
 }
@@ -110,10 +113,12 @@ impl FileClass {
     pub fn file(&self) -> Result<Arc<OSFile>, SysErrNo> {
         match self {
             FileClass::File(f) => Ok(f.clone()),
+            #[cfg(feature = "net")]
             FileClass::Socket(_)=>Err(SysErrNo::EINVAL),
             FileClass::Abs(_) => Err(SysErrNo::EINVAL),
         }
     }
+    #[cfg(feature = "net")]
     pub fn socket(&self)->Result<Arc<Socket>,SysErrNo>{
         match self {
             FileClass::File(_)=>Err(SysErrNo::EINVAL),
@@ -124,6 +129,7 @@ impl FileClass {
     pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {
         match self {
             FileClass::File(_) => Err(SysErrNo::EINVAL),
+            #[cfg(feature = "net")]
             FileClass::Socket(_)=>Err(SysErrNo::EINVAL),
             FileClass::Abs(f) => Ok(f.clone()),
         }
@@ -131,6 +137,7 @@ impl FileClass {
     pub fn any(&self) -> Arc<dyn File> {
         match self {
             FileClass::File(f) => f.clone(),
+            #[cfg(feature = "net")]
             FileClass::Socket(s)=>s.clone(),
             FileClass::Abs(f) => f.clone(),
         }

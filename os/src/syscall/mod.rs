@@ -137,6 +137,7 @@ pub enum Syscall {
 
 mod fs;
 mod memory;
+#[cfg(feature = "net")]
 mod net;
 mod options;
 mod process;
@@ -158,6 +159,7 @@ use crate::{
 };
 use fs::*;
 use memory::*;
+#[cfg(feature = "net")]
 use net::*;
 pub use options::{PollEvents, FutexCmd, FutexOpt, RLimit, Utsname, SignalMaskFlag,MmapFlags,MmapProt};
 use process::*;
@@ -351,19 +353,28 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Shmget => sys_shmget(args[0] as i32, args[1], args[2] as i32),
         Syscall::Shmctl => sys_shmctl(args[0] as i32, args[1] as i32, args[2]),
         Syscall::Shmat => sys_shmat(args[0] as i32, args[1], args[2] as i32),
+        #[cfg(feature = "net")]
         Syscall::Socket => sys_socket(args[0] as u32, args[1] as u32, args[2] as u32),
+        #[cfg(feature = "net")]
         Syscall::Socketpair => sys_socketpair(
             args[0] as u32,
             args[1] as u32,
             args[2] as u32,
             args[3] as *mut u32,
         ),
+        #[cfg(feature = "net")]
         Syscall::Bind => sys_bind(args[0], args[1] as *const u8, args[2] as u32),
+        #[cfg(feature = "net")]
         Syscall::Listen => sys_listen(args[0], args[1] as u32),
+        #[cfg(feature = "net")]
         Syscall::Accept => sys_accept(args[0], args[1] as *const u8, args[2] as u32),
+        #[cfg(feature = "net")]
         Syscall::Connect => sys_connect(args[0], args[1] as *const u8, args[2] as u32),
+        #[cfg(feature = "net")]
         Syscall::GetSockName => sys_getsockname(args[0], args[1] as *const u8, args[2] as usize),
+        #[cfg(feature = "net")]
         Syscall::GetPeerName => sys_getpeername(args[0], args[1] as *const u8, args[2] as u32),
+        #[cfg(feature = "net")]
         Syscall::SendTo => sys_sendto(
             args[0],
             args[1] as *const u8,
@@ -372,6 +383,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[4] as *const u8,
             args[5] as u32,
         ),
+        #[cfg(feature = "net")]
         Syscall::RecvFrom => sys_recvfrom(
             args[0],
             args[1] as *mut u8,
@@ -380,6 +392,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[4] as *const u8,
             args[5] as u32,
         ),
+        #[cfg(feature = "net")]
         Syscall::SetSockOpt => sys_setsockopt(
             args[0],
             args[1] as u32,
@@ -387,7 +400,15 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[3] as *const u8,
             args[4] as u32,
         ),
+        #[cfg(feature = "net")]
         Syscall::SendMsg => sys_sendmsg(args[0], args[1] as *const u8, args[2] as u32),
+        #[cfg(feature = "net")]
+        Syscall::Accept4 => sys_accept4(
+            args[0] as usize,
+            args[1] as *const u8,
+            args[2] as u32,
+            args[3] as u32,
+        ),
         Syscall::Clone => sys_clone(args[0], args[1], args[2], args[3], args[4]),
         Syscall::Brk => sys_brk(args[0]),
         Syscall::Execve => sys_execve(
@@ -408,12 +429,6 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Mprotect => sys_mprotect(args[0], args[1], args[2] as u32),
         Syscall::MSync => Ok(0),
         Syscall::Madvise => sys_madvise(args[0], args[1], args[2]),
-        Syscall::Accept4 => sys_accept4(
-            args[0] as usize,
-            args[1] as *const u8,
-            args[2] as u32,
-            args[3] as u32,
-        ),
         Syscall::Wait4 => sys_wait4(args[0] as isize, args[1] as *mut i32, args[2] as i32),
         Syscall::Prlimit => sys_prlimit(
             args[0],

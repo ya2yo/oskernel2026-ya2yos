@@ -28,7 +28,6 @@
 #![allow(unused_imports)]
 #![no_std]
 #![no_main]
-#![feature(panic_info_message)]
 #![feature(alloc_error_handler)]
 #![feature(sync_unsafe_cell)]
 extern crate alloc;
@@ -45,6 +44,7 @@ pub mod fs;
 pub mod lang_items;
 pub mod logger;
 pub mod mm;
+#[cfg(feature = "net")]
 pub mod net;
 pub mod signal;
 pub mod sync;
@@ -131,7 +131,7 @@ pub fn rust_main(hartid: usize) -> ! {
   |___/                   |___/         
             "#
         );
-        #[cfg(feature = "loongarch")]
+        #[cfg(feature = "loongarch64")]
         arch::memory_layout::print_memlayout();
         // 时钟频率初始化
         arch::time::init_clock_freq();

@@ -1,6 +1,5 @@
 //! A library for polling I/O events and waking up tasks.
 
-#![no_std]
 #![deny(missing_docs)]
 
 extern crate alloc;

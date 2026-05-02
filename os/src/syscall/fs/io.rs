@@ -153,7 +153,7 @@ pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
     if fd >= inner.fd_table.len() || inner.fd_table.try_get(fd).is_none() {
         return Err(SysErrNo::EINVAL);
     }
-    let file = inner.fd_table.get(fd).file()?;
+    let file = inner.fd_table.get(fd)?.file()?;
     file.lseek(offset, whence)
 }
 
@@ -161,7 +161,7 @@ pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
 pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.process.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     debug!(
         "[sys_sendfile] outfd is {}, infd is {}, offset_ptr is {}, count is {}",
@@ -266,11 +266,10 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
 /// 参考 https://man7.org/linux/man-pages/man2/pread64.2.html
 pub fn sys_pread64(fd: usize, buf: *const u8, count: usize, offset: isize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
-    let process = task.process.inner_lock();
-    let memory_set = &*process.get_locked_memory_set();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = &*&proc_inner.get_locked_memory_set_read();
 
-    if offset < 0 || fd >= inner.fd_table.len() {
+    if offset < 0 || fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
     if let Some(file) = task.get_fd_table().try_get(fd) {

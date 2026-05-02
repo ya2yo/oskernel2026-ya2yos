@@ -12,7 +12,7 @@ const MAX_CLOCKS: usize = 12;
 /// 参考 https://man7.org/linux/man-pages/man2/gettimeofday.2.html
 pub fn sys_gettimeofday(ts: *mut Timespec, tz: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     if (ts as isize) < 0 || if_bad_address(ts as usize) {
         return Err(SysErrNo::EFAULT);
@@ -31,7 +31,7 @@ pub fn sys_gettimeofday(ts: *mut Timespec, tz: usize) -> SyscallRet {
 pub fn sys_times(tms: *mut Tms) -> SyscallRet {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     put_data(token, tms, Tms::new(&task_inner.time_data));
     Ok(0)
@@ -47,7 +47,7 @@ pub fn sys_settimer(
     assert!(which == ITIMER_REAL, "only support Itimer Real");
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     if old_value as usize != 0 {
         put_data(token, old_value, task_inner.timer.timer());
@@ -77,7 +77,7 @@ pub fn sys_clock_gettime(clockid: usize, tp: *mut Timespec) -> SyscallRet {
     }
     let task = current_task().unwrap();
 
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
     let mut time = get_time_spec();
 
     if clockid == 1 {
@@ -123,7 +123,7 @@ pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
 
     let task = current_task().unwrap();
     let inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     match who {
         RUSAGESELF => {
@@ -158,7 +158,7 @@ pub fn sys_clock_getres(clockid: usize, res: *mut Timespec) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     //assert!(clockid == 1, "other clockid not supported!");
 

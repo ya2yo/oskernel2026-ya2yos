@@ -14,7 +14,8 @@ pub fn sys_pselect6(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let mut inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let proc_inner=task.process.inner_lock();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     // debug!("[sys_pselect6] nfds is {}, readfds is {}, writefds is {}, exceptfds is {}, timeout is {}, sigmask is {}",nfds,readfds,writefds,exceptfds,timeout,sigmask);
 
@@ -23,7 +24,7 @@ pub fn sys_pselect6(
         inner.sig_mask = get_data(token, sigmask as *const SigSet);
     }
 
-    let nfds = min(nfds, inner.fd_table.get_soft_limit());
+    let nfds = min(nfds, proc_inner.fd_table.get_soft_limit());
 
     let mut using_readfds = if readfds != 0 {
         Some(get_data(token, readfds as *mut FdSet))
@@ -59,6 +60,7 @@ pub fn sys_pselect6(
     let begin = get_time_ms() * 1_000_000;
 
     //由于每次循环结束需要让出cpu，因此需要在每次循环时重新获得锁
+    drop(proc_inner);
     drop(inner);
     drop(task);
 

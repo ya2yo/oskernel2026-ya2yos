@@ -8,7 +8,7 @@ use crate::{
 pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, mask: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
 
     debug!(
         "[sys_ppoll] fds_ptr is {}, nfds is {}, tmo_p is {}, mask is {}",

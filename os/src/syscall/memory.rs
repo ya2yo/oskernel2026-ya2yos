@@ -48,9 +48,8 @@ pub fn sys_mmap(
         addr, len, fd as isize, off, flags, map_perm
     );
     let task = current_task().unwrap();
-    let task_inner = task.inner_lock();
     let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set();
+    let memory_set = process.get_locked_memory_set_write();
     let len = page_round_up(len);
     if fd == usize::MAX {
         if !flags.contains(MmapFlags::MAP_ANONYMOUS) {
@@ -67,7 +66,7 @@ pub fn sys_mmap(
         return Ok(rv);
     }
     // check fd and map_permission
-    let file = task_inner.fd_table.get(fd).file()?;
+    let file = process.fd_table.get(fd)?.file()?;
     // 读写权限
     if map_perm.contains(MapPermission::R) && !file.readable()
         || flags.contains(MmapFlags::MAP_SHARED)
@@ -86,7 +85,7 @@ pub fn sys_munmap(addr: usize, len: usize) -> SyscallRet {
     debug!("[sys_munmap] addr={:#x}, len={:#x}", addr, len);
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set();
+    let memory_set = process.get_locked_memory_set_write();
     let len = page_round_up(len);
     if if_bad_address(addr) {
         remove_bad_address(addr);
@@ -128,7 +127,7 @@ pub fn sys_mremap(
     }
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set();
+    let memory_set = process.get_locked_memory_set_write();
     let old_area = memory_set
         .get_mut()
         .find_area_by_range(
@@ -198,7 +197,7 @@ pub fn sys_mprotect(addr: usize, len: usize, prot: u32) -> SyscallRet {
 
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set();
+    let memory_set = process.get_locked_memory_set_write();
     let start_vpn = VirtAddr::from(addr).floor();
     let end_vpn = VirtAddr::from(addr + len).ceil();
     //修改各段的mappermission

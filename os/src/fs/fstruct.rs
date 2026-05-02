@@ -1,5 +1,5 @@
 use crate::{
-    fs::files::{OSFile, Socket}, mm::UserBuffer, syscall::Syscall, utils::{GeneralRet, SysErrNo, SyscallRet}
+    fs::files::OSFile, mm::UserBuffer, syscall::Syscall, utils::{GeneralRet, SysErrNo, SyscallRet}
 };
 use alloc::{sync::Arc, vec, vec::Vec};
 
@@ -123,7 +123,7 @@ impl FdTable {
         let soft_limit = inner.soft_limit; 
         let fd_table = &mut inner.files;
 
-        if let Some(fd) = inner.files.iter().position(|slot| slot.is_none()) {
+        if let Some(fd) = fd_table.iter().position(|slot| slot.is_none()) {
             return Ok(fd);
         }
         
@@ -196,7 +196,8 @@ impl FdTable {
     }
 
     pub fn get_cloexec(&self,fd: usize)->Result<bool, SysErrNo> {
-        let desc = self.get_ref()
+        let fd_inner=self.get_ref();
+        let desc = fd_inner
             .files
             .get(fd)
             .and_then(|x| x.as_ref() )
@@ -297,6 +298,6 @@ impl FdTable {
     // 下面的函数要求直接对文件进行操作而不只是flags
 
     pub fn try_get_file(&self,fd:usize) -> Option<Arc<dyn File>> {
-        Some(self.get_ref().files[fd].unwrap().file.any())
+        Some(self.get_mut().files[fd].as_mut().unwrap().file.any())
     }
 }
