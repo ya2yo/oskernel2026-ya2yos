@@ -308,10 +308,10 @@ pub fn fmt_write(w: &mut impl fmt::Write) -> impl FnMut(Argument) -> c_int + '_ 
 /// # Safety
 ///
 /// [`VaList`]s are *very* unsafe. The passed `format` and `args` parameter must be a valid [`printf` format string](http://www.cplusplus.com/reference/cstdio/printf/).
-pub unsafe fn display<'a, 'b>(
+pub unsafe fn display<'a>(
     format: *const c_char,
-    va_list: VaList<'a, 'b>,
-) -> VaListDisplay<'a, 'b> {
+    va_list: VaList<'a>,
+) -> VaListDisplay<'a> {
     VaListDisplay {
         format,
         va_list,
