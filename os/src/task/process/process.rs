@@ -41,7 +41,7 @@ impl Process {
         let parent_inner=self.inner_lock();
         // 拷贝地址空间
         let new_memory_set=
-        Arc::new(RwLock::new(MemorySet::from(&parent_inner.get_locked_memory_set_read())));
+        Arc::new(RwLock::new(parent_inner.get_locked_memory_set_read()));
         // 拷贝信号表
         let new_sig_table=
         Arc::new(Mutex::new(SigTable::from_another(&parent_inner.get_locked_sigtable())));
@@ -69,7 +69,7 @@ impl Process {
     pub fn exit_and_reparent(&self) {
         let mut meta=self.meta_lock();
         let initproc=Self::get_process_arc_by_pid(1).expect("initproc not found!");
-        for child_weak in meta.children {
+        for child_weak in &meta.children {
             if let Some(child)=child_weak.upgrade() {
                 initproc.meta_lock().children.push(Arc::downgrade(&child));
             }
@@ -89,7 +89,7 @@ impl Process {
                 memory_set,
                 sig_table,
                 fd_table,
-                fs_info: Arc::new(FSInfo::new_for_initproc()),
+                fs_info: Arc::new(FSInfo::new_initproc()),
             }),
             pid,
             parent: parent.clone(),

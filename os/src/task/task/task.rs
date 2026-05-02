@@ -114,7 +114,7 @@ impl TaskControlBlockInner {
     fn alloc_user_res(&mut self) {
         let tcb_arc = self.tcb.upgrade().unwrap();
         let process = tcb_arc.process.inner_lock();
-        let memory_set = process.get_locked_memory_set();
+        let memory_set = process.get_locked_memory_set_read();
 
         let (ustack_bottom, ustack_top) = memory_set.lazy_insert_framed_area_with_hint(
             USER_STACK_TOP,
@@ -180,7 +180,7 @@ impl TaskControlBlockInner {
                 Err(SysErrNo::EINVAL)
             }
         } else {
-            Ok(get_abs_path(self.fs_info.lock().cwd(), path))
+            Ok(get_abs_path(&tcb.get_fs_info().get_cwd(), path))
         }
     }
 }
@@ -223,7 +223,6 @@ impl TaskControlBlock {
             tid: tid_handle,
             kernel_stack,
             process: process.clone(),
-            interrupted: AtomicBool::new(false),
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             inner: Mutex::new(TaskControlBlockInner {
@@ -406,23 +405,23 @@ impl TaskControlBlock {
         let kernel_stack_top = kernel_stack.top();
 
         // 处理地址空间
-        let memory_set = if flags.contains(CloneFlags::CLONE_VM) {
+        let memory_set = if flags.contains(CloneFlags::VM) {
             // 线程：共享内存
             Arc::clone(&parent_proc_inner.memory_set)
         } else {
             // 进程：拷贝内存映射（Copy-on-Write 逻辑通常在这里触发）
             Arc::new(RwLock::new(MemorySet::new(
-                MemorySetInner::from_existed_user(&*parent_proc_inner.get_locked_memory_set()),
+                MemorySetInner::from_existed_user(&*&parent_proc_inner.get_locked_memory_set_read()),
             )))
         };
 
         // 处理文件系统信息
         let fs_info = if flags.contains(CloneFlags::CLONE_FS) {
-            Arc::clone(&parent_inner.fs_info)
+            Arc::clone(&parent_proc_inner.fs_info)
         } else {
-            Arc::new(Mutex::new(FSInfo::from_another(
-                &parent_inner.fs_info.lock(),
-            )))
+            Arc::new(FSInfo::from_another(
+                &parent_proc_inner.fs_info,
+            ))
         };
 
         // 处理打开文件表
@@ -473,7 +472,7 @@ impl TaskControlBlock {
 
         // 修改父线程中指定的内存地址
         if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
-            let token = parent_proc_inner.get_locked_memory_set().token();
+            let token = parent_proc_inner.get_locked_memory_set_read().token();
             *translated_refmut(token, parent_tid) = tid_handle.tid as u32;
         }
 
@@ -527,8 +526,9 @@ impl TaskControlBlock {
             *child_inner.trap_cx() = *parent_inner.trap_cx();
         } else {
             // 进程逻辑：从父进程地址空间拷贝数据
-            let parent_mm = parent_proc_inner.get_locked_memory_set();
-            let child_mm = process.inner_lock().get_locked_memory_set();
+            let parent_mm = parent_proc_inner.get_locked_memory_set_read();
+            let proc_inner=process.inner_lock();
+            let child_mm = proc_inner.get_locked_memory_set_read();
 
             // 拷贝栈和 Trap 上下文所在的内存区域内容
             child_mm.lazy_clone_area(
@@ -554,7 +554,7 @@ impl TaskControlBlock {
             trap_cx.set_sp(stack);
 
             // 设置线程入口
-            let token = parent_proc_inner.get_locked_memory_set().token();
+            let token = parent_proc_inner.get_locked_memory_set_read().token();
             let entry_point = get_data(token, stack as *const usize);
             let arg = get_data(token, (stack + 8) as *const usize);
             trap_cx.set_sepc(entry_point);
@@ -566,7 +566,7 @@ impl TaskControlBlock {
         }
 
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-            let child_token = process.inner_lock().get_locked_memory_set().token();
+            let child_token = process.inner_lock().get_locked_memory_set_read().token();
             *translated_refmut(child_token, child_tid) = child.tid() as u32;
         }
 
@@ -584,7 +584,7 @@ impl TaskControlBlock {
     pub fn growproc(&self, grow_size: isize) -> usize {
         let mut inner = self.inner_lock();
         let process = self.process.inner_lock();
-        let memory_set = process.get_locked_memory_set();
+        let memory_set = process.get_locked_memory_set_write();
 
         if grow_size == 0 {
             return inner.user_heappoint;

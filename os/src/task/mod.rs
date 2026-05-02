@@ -19,6 +19,7 @@
 #[allow(rustdoc::private_intra_doc_links)]
 mod aux;
 mod futex;
+#[cfg(feature = "net")]
 mod future;
 mod kernel_stack;
 mod manager;
@@ -40,6 +41,7 @@ use crate::{
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 pub use futex::*;
+#[cfg(feature = "net")]
 pub use future::*;
 use log::{debug, error};
 pub use manager::*;
@@ -129,7 +131,7 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
 pub fn exit_current_and_run_next(exit_code: i32) {
     let task = take_current_task().unwrap();
     let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set();
+    let memory_set = process.get_locked_memory_set_read();
     let mut inner = task.inner_lock();
     debug!(
         "[sys_exit] exit_current_and_run_next() -- thread {} exit, exit_code = {}",
@@ -139,7 +141,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     // CLONE_CHILD_CLEARTID
     if inner.clear_child_tid != 0 {
-        let token = process.get_locked_memory_set().token();
+        let token = process.get_locked_memory_set_read().token();
         put_data(token, inner.clear_child_tid as *mut u32, 0);
         // 唤醒等待在 child_tid 的进程
         let pa = memory_set
@@ -151,7 +153,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // 释放futex
     handle_futex_when_exit(
         &inner.robust_list,
-        process.get_locked_memory_set().token(),
+        process.get_locked_memory_set_read().token(),
         task.pid(),
     );
     debug!("exit_current_and_run_next: futex released");
@@ -177,11 +179,10 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             .collect();
         if tasks.iter().all(|task| task.inner_lock().is_zombie()) {
             send_signal_to_thread_group(task.ppid(), SigSet::SIGCHLD);
-            let task_inner = task.inner_lock();
 
             memory_set.recycle_data_pages();
-            task_inner.fd_table.clear();
-            task_inner.fs_info.lock().clear();
+            process.fd_table.clear();
+            process.fs_info.clear();
 
             let sigtable = process.get_locked_sigtable();
             if !sigtable.is_exited() {

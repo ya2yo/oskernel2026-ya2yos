@@ -2,12 +2,10 @@ mod device;
 mod disk;
 mod virtio;
 mod devcont;
-mod net;
 pub use device::*;
 pub use disk::*;
 pub use virtio::*;
 pub use devcont::*;
-pub use net::*;
 use virtio_drivers::transport::mmio::VirtIOHeader;
 
 use crate::arch::memory_layout::KERNEL_ADDR_OFFSET;

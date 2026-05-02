@@ -195,7 +195,7 @@ pub fn sys_futex(
 
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set();
+    let memory_set = process.get_locked_memory_set_read();
     let task_inner = task.inner_lock();
     let token = memory_set.token();
     let pa = memory_set

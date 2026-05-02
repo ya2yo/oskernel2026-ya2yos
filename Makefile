@@ -113,6 +113,9 @@ set_env:
 	@rustup component add rust-src
 	@rustup component add llvm-tools-preview
 
+trick:
+	sudo chown -R $USER:$USER .
+
 .PHONY: all all-arch riscv64-build loongarch64-build build-arch set_env_arch \
         run log clean objdump gdbserver gdbclient setup_cargo cleanup_cargo set_env
 
