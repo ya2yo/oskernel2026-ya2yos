@@ -11,9 +11,6 @@
 
 #![no_std]
 
-#[macro_use]
-extern crate log;
-extern crate alloc;
 
 mod consts;
 mod device;
@@ -37,21 +34,22 @@ pub mod udp;
 mod wrapper;
 
 use alloc::{borrow::ToOwned, boxed::Box};
+use log::{info, warn};
 use crate::drivers::DeviceContainer;
-use crate::drivers::virtio_net::VirtIoNetDevImpl;
 use spin::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::{Lazy, Once};
-
+use virtio_drivers::device::net::VirtIONet;
 pub use self::socket::*;
 use self::{
     consts::{GATEWAY, IP, IP_PREFIX},
-    device::{EthernetDevice, LoopbackDevice},
     listen_table::ListenTable,
     router::{Router, Rule},
     service::Service,
     wrapper::SocketSetWrapper,
 };
+pub use self::device::{EthernetDevice, LoopbackDevice};
+
 /// 全局监听表，用于跟踪所有处于监听状态的套接字。
 static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);
 /// 全局套接字集合，管理所有活跃的网络连接。
@@ -78,7 +76,7 @@ fn get_service() -> spin::MutexGuard<'static, Service> {
 ///
 /// # 参数
 /// - `net_devs`: 包含探测到的网络设备驱动实例的容器。
-pub fn init_network(mut net_devs: DeviceContainer<VirtIoNetDevImpl>) {
+pub fn init_network(mut net_devs: DeviceContainer<VirtIONet<>>) {
     info!("Initialize network subsystem...");
 
     let mut router = Router::new();

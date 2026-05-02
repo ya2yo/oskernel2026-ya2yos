@@ -1,5 +1,6 @@
 use alloc::{boxed::Box, vec, vec::Vec};
 
+use log::warn;
 use smoltcp::{
     iface::SocketSet,
     phy::{DeviceCapabilities, Medium},
@@ -217,10 +218,10 @@ impl<'a> smoltcp::phy::RxToken for RxToken<'a> {
     {
         f(self.0)// 直接传递包数据给协议栈处理  
     }
-    /// 在协议栈正式处理包之前的预处理阶段
-    fn preprocess(&self, sockets: &mut SocketSet) {
-        snoop_tcp_packet(self.0, sockets);
-    }
+    // /// 在协议栈正式处理包之前的预处理阶段
+    // fn preprocess(&self, sockets: &mut SocketSet) {
+    //     snoop_tcp_packet(self.0, sockets);
+    // }
 }
 /// 为 Router 实现 Device 特性，使其能作为 smoltcp 的后端
 impl smoltcp::phy::Device for Router {

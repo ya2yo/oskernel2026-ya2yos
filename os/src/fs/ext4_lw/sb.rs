@@ -5,7 +5,7 @@ use crate::{
     sync::SyncUnsafeCell,
 };
 use alloc::sync::Arc;
-use log::{error, warn};
+use log::{debug, error, warn};
 use lwext4_rust::{Ext4BlockWrapper, InodeTypes, KernelDevOp};
 use spin::Lazy;
 
@@ -14,7 +14,7 @@ use super::Ext4Inode;
 /// EXT4 超级块结构体，维护文件系统的全局元数据
 struct Ext4SuperBlock {
     /// 包装了 lwext4 的挂载点信息，SyncUnsafeCell 用于处理 C 库的内部可变性
-    inner: SyncUnsafeCell<Ext4BlockWrapper<Disdianxinxk>>,
+    inner: SyncUnsafeCell<Ext4BlockWrapper<Disk>>,
     /// 根目录节点
     root: Arc<dyn Inode>,
 }

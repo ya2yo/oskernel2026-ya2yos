@@ -66,6 +66,7 @@ trace = []          # 启用 trace 级别
 riscv64 = ["riscv", "sbi-rt"]  # 列表中的库，表示如果启用这个feature则加载这些库
 loongarch64 = ["loongArch64"]
 irq = []
+log = []
 
 [profile.release]
 # 在 release 模式下也保留调试信息，用于gdb等调试

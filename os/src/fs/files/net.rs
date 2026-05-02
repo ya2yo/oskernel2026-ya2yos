@@ -1,6 +1,7 @@
 use alloc::{borrow::Cow, format, sync::Arc};
 use core::{ffi::c_int, ops::Deref, task::Context};
 
+use crate::mm::UserBuffer;
 use crate::utils::{SysErrNo, SysResult};
 use crate::net::{
     RecvOptions, SendOptions, Socket as SocketInner, SocketOps,
@@ -25,17 +26,17 @@ impl Deref for Socket {
 }
 
 impl File for Socket {
-    fn read(&self, dst: &mut IoDst) -> SysResult<usize> {
+    fn read(&self, dst: UserBuffer) -> SysResult<usize> {
         self.recv(dst, RecvOptions::default())
     }
 
-    fn write(&self, src: &mut IoSrc) -> SysResult<usize> {
+    fn write(&self, src: UserBuffer) -> SysResult<usize> {
         self.send(src, SendOptions::default())
     }
 
-    fn fstat(&self) -> SysResult<Kstat> {
+    fn fstat(&self) -> Kstat {
         let mode = S_IFSOCK | 0o666; 
-        Ok(Kstat {
+        Kstat {
             st_mode: mode as u32,
             st_nlink: 1,          // 即使是虚拟文件，链接数也至少为 1
             st_size: 0,           // Socket 大小通常返回 0
@@ -43,7 +44,7 @@ impl File for Socket {
             st_blocks: 0,         // 未占用磁盘块
             // 如果有条件，可以填充时间戳，否则保持 Default(0)
             ..Kstat::default()
-        })
+        }
     }
 
     // fn nonblocking(&self) -> bool {

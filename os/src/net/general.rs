@@ -8,7 +8,7 @@ use crate::{fs::File, task::{block_on, current_task, poll_io, timeout}, utils::S
 use crate::syscall::PollEvents;
 use crate::task::schedule;
 use crate::utils::SysErrNo;
-use crate::utils::IoEvents;
+
 
 use super::{
     get_service,
@@ -90,7 +90,7 @@ impl GeneralOptions {
     ) -> SysResult<T> {
         block_on(timeout(
             self.send_timeout(),
-            poll_io(pollable, IoEvents::OUT, self.nonblocking(), f),
+            poll_io(pollable, PollEvents::OUT, self.nonblocking(), f),
         ))?
     }
     /// 接收操作的通用轮询处理器
@@ -102,7 +102,7 @@ impl GeneralOptions {
     ) -> SysResult<T> {
         block_on(timeout(
             self.recv_timeout(),
-            poll_io(pollable, IoEvents::IN, self.nonblocking(), f),
+            poll_io(pollable, PollEvents::IN, self.nonblocking(), f),
         ))?
     }
 }

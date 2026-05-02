@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec};
+use log::{debug, warn};
 use core::ops::DerefMut;
 
 use crate::utils::{SysErrNo, SysResult};
@@ -98,7 +99,7 @@ impl ListenTable {
     }
 
     /// 检查当前队列中是否有已经完成握手、可以被 accept 的连接
-    pub fn can_accept(&self, port: u16) -> AxResult<bool> {
+    pub fn can_accept(&self, port: u16) -> SysResult<bool> {
         if let Some(entry) = self.listen_entry(port).lock().as_ref() {
             Ok(entry.syn_queue.iter().any(|&handle| is_connected(handle)))
         } else {
@@ -108,13 +109,13 @@ impl ListenTable {
     }
 
     /// 从监听队列中提取一个已建立的连接
-    pub fn accept(&self, port: u16) -> AxResult<SocketHandle> {
+    pub fn accept(&self, port: u16) -> SysResult<SocketHandle> {
         let entry = self.listen_entry(port);
         let mut table = entry.lock();
         // 确保该端口确实在监听
         let Some(entry) = table.deref_mut() else {
             warn!("accept before listen");
-            return Err(AxError::InvalidInput);
+            return Err(SysErrNo::EINVAL);
         };
 
         let syn_queue: &mut VecDeque<SocketHandle> = &mut entry.syn_queue;
@@ -123,7 +124,7 @@ impl ListenTable {
             .iter()
             .enumerate()
             .find_map(|(idx, &handle)| is_connected(handle).then_some(idx))
-            .ok_or(AxError::WouldBlock)?; // wait for connection
+            .ok_or(SysErrNo::EAGAIN)?; // wait for connection
         if idx > 0 {
             warn!(
                 "slow SYN queue enumeration: index = {}, len = {}!",
@@ -136,7 +137,7 @@ impl ListenTable {
         // 如果在取出的一瞬间连接断开了
         if is_closed(handle) {
             warn!("accept failed: connection reset");
-            Err(AxError::ConnectionReset)
+            Err(SysErrNo::ECONNRESET)
         } else {
             Ok(handle)
         }

@@ -1,7 +1,6 @@
 use alloc::boxed::Box;
 use core::{
-    pin::Pin,
-    task::{Context, Waker},
+    future::Future, pin::Pin, task::{Context, Waker}
 };
 use crate::task::sleep_until;
 use crate::timer::{Timespec,NANOS_PER_MICROS, wall_time_nanos};
@@ -64,7 +63,7 @@ impl Service {
         let next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
 
         if let Some(t) = next {
-            let next = TimeValue::from_micros(t.total_micros() as _);
+            let next = Timespec::from_micros(t.total_micros() as _);
 
             // drop old timeout future
             self.timeout = None;

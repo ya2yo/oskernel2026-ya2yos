@@ -28,7 +28,7 @@ pub enum SocketAddrEx {
 
 impl SocketAddrEx {
     /// Convert into an IP socket address, or return an error if not IP.
-    pub fn into_ip(self) -> SysErrResult<SocketAddr> {
+    pub fn into_ip(self) -> SysResult<SocketAddr> {
         match self {
             SocketAddrEx::Ip(addr) => Ok(addr),
         }
@@ -120,31 +120,31 @@ impl Shutdown {
 #[enum_dispatch]
 pub trait SocketOps: Configurable {
     /// Binds an unbound socket to the given address and port.
-    fn bind(&self, local_addr: SocketAddrEx) -> SysErrResult;
+    fn bind(&self, local_addr: SocketAddrEx) -> SysResult;
     /// Connects the socket to a remote address.
-    fn connect(&self, remote_addr: SocketAddrEx) -> SysErrResult;
+    fn connect(&self, remote_addr: SocketAddrEx) -> SysResult;
 
     /// Starts listening on the bound address and port.
-    fn listen(&self) -> SysErrResult {
+    fn listen(&self) -> SysResult {
         Err(SysErrNo::OperationNotSupported)
     }
     /// Accepts a connection on a listening socket, returning a new socket.
-    fn accept(&self) -> SysErrResult<Socket> {
+    fn accept(&self) -> SysResult<Socket> {
         Err(SysErrNo::OperationNotSupported)
     }
 
     /// Send data to the socket, optionally to a specific address.
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> SysErrResult<usize>;
+    fn send(&self, src: impl File, options: SendOptions) -> SysResult<usize>;
     /// Receive data from the socket.
-    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> SysErrResult<usize>;
+    fn recv(&self, dst: impl File, options: RecvOptions<'_>) -> SysResult<usize>;
 
     /// Get the local endpoint of the socket.
-    fn local_addr(&self) -> SysErrResult<SocketAddrEx>;
+    fn local_addr(&self) -> SysResult<SocketAddrEx>;
     /// Get the remote endpoint of the socket.
-    fn peer_addr(&self) -> SysErrResult<SocketAddrEx>;
+    fn peer_addr(&self) -> SysResult<SocketAddrEx>;
 
     /// Shutdown the socket, closing the connection.
-    fn shutdown(&self, how: Shutdown) -> SysErrResult;
+    fn shutdown(&self, how: Shutdown) -> SysResult;
 }
 
 /// Network socket abstraction.
@@ -157,10 +157,10 @@ pub enum Socket {
 }
 
 impl File for Socket {
-    fn poll(&self) -> PollEvents {
+    fn poll(&self, _events:PollEvents) -> PollEvents {
         match self {
             Socket::Tcp(tcp) => tcp.poll(PollEvents::empty()),
-            Socket::Udp(udp) => udp.poll(),
+            Socket::Udp(udp) => udp.poll(PollEvents::empty()),
         }
     }
 

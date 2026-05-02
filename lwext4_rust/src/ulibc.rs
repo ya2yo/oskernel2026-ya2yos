@@ -12,7 +12,7 @@ unsafe extern "C" fn printf(str: *const c_char, mut args: ...) -> c_int {
     use printf_compat::{format, output};
 
     let mut s = String::new();
-    let bytes_written = format(str as _, args.as_va_list(), output::fmt_write(&mut s));
+    let bytes_written = format(str as _, args, output::fmt_write(&mut s));
     //println!("{}", s);
     info!("{}", s);
 
