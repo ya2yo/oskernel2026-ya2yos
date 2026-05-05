@@ -114,7 +114,7 @@ set_env:
 	@rustup component add llvm-tools-preview
 
 trick:
-	sudo chown -R $USER:$USER .
+	sudo chown -R ya2yo:ya2yo .
 
 .PHONY: all all-arch riscv64-build loongarch64-build build-arch set_env_arch \
         run log clean objdump gdbserver gdbclient setup_cargo cleanup_cargo set_env
