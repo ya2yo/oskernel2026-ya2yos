@@ -66,7 +66,7 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
-
+    let fd_table=proc_inner.fd_table.clone();
     // debug!(
     //     "[sys_writev] fd is {}, iov is {:x}, iovcnt is {}",
     //     fd, iov as usize, iovcnt
@@ -75,7 +75,7 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     if fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = task.get_fd_table().try_get(fd) {
+    if let Some(file) = fd_table.try_get(fd) {
         let file = file.any();
         if !file.writable() {
             return Err(SysErrNo::EBADF);
