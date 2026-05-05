@@ -53,13 +53,13 @@ extern "C" {
 }
 
 pub fn sigreturn_ka() -> usize {
-    sigreturn_trampoline as usize
+    sigreturn_trampoline as *const() as usize
 }
 
 pub fn sigreturn_pa() -> usize {
-    sigreturn_trampoline as usize - KERNEL_ADDR_OFFSET
+    sigreturn_trampoline as *const() as usize - KERNEL_ADDR_OFFSET
 }
 
 pub fn sigreturn_va() -> usize {
-    sigreturn_trampoline as usize
+    sigreturn_trampoline as *const() as usize
 }

@@ -1180,89 +1180,33 @@ impl MemorySetInner {
     ///Clone a same `MemorySet`
     pub fn from_existed_user(user_space: &MemorySet) -> MemorySetInner {
         let mut memory_set = Self::new_from_kernel();
-        // copy data sections
-        for area in user_space.get_mut().areas.iter_mut() {
-            // don't copy stack and trap
-            // 每个线程单独分配
-            if area.area_type == MapAreaType::Stack || area.area_type == MapAreaType::Trap {
+        let old_inner = user_space.get_mut();
+
+        for area in old_inner.areas.iter_mut() {
+            // 跳过 TrapContext 段，因为每个线程必须拥有独立的 TrapContext 物理页
+            if area.area_type == MapAreaType::Trap {
                 continue;
             }
+
+            // 创建 MapArea 副本（注意：这里不拷贝物理页，只拷贝元数据）
             let mut new_area = MapArea::from_another(area);
-            if area.area_type == MapAreaType::Mmap
-                && !area.mmap_flags.contains(MmapFlags::MAP_SHARED)
-            {
-                GROUP_SHARE.lock().add_area(new_area.groupid);
-            }
-            // Mmap和brk是lazy allocation
-            if area.area_type == MapAreaType::Mmap || area.area_type == MapAreaType::Brk {
-                //已经分配且独占/被写过的部分以及读共享部分按cow处理
-                //其余是未分配部分，直接clone即可
-                if area.mmap_flags.contains(MmapFlags::MAP_SHARED) {
-                    let frames = area.data_frames.values().cloned().collect();
-                    memory_set.push_with_given_frames(new_area, frames);
-                    continue;
-                }
-                new_area.data_frames = area.data_frames.clone();
-                for (vpn, _) in area.data_frames.iter() {
-                    let vpn = *vpn;
-                    // let pte = user_space.get_mut().page_table.translate(vpn).unwrap();
-                    // let mut pte_flags = pte.get_flags();
-                    // let src_ppn = pte.get_ppn();
-                    // // 对于可写的页，或者有写时复制的标志位的页
-                    // // 需要考虑写时复制
-                    // if pte_flags.contains(PTEFlags::WRITEABLE) || pte_flags.contains(PTEFlags::COW)
-                    // {
-                    //     pte_flags &= !PTEFlags::WRITEABLE;
-                    //     pte_flags |= PTEFlags::COW;
-                    // }
 
-                    // pte.set_flags(pte_flags);
-                    // memory_set.page_table.map(vpn, src_ppn, pte_flags);
-                    user_space
-                        .get_mut()
-                        .page_table
-                        .handle_cow_mapping_from_exited_user(vpn, &mut memory_set);
-                }
-                memory_set.push_lazily(new_area);
-                continue;
-            }
-            // let mut page_table = &mut user_space.page_table;
-            // ELF总是cow的
-            if area.area_type == MapAreaType::Elf {
-                for vpn in area.vpn_range {
-                    // 此段逻辑和上面很类似，可以考虑合并
-                    // let pte = user_space.get_mut().page_table.translate(vpn).unwrap();
-                    // let pte_flags = (pte.get_flags() & !PTEFlags::WRITEABLE) | PTEFlags::COW;
-                    // let src_ppn = pte.get_ppn();
-                    // pte.set_flags(pte_flags);
-                    // memory_set.page_table.map(vpn, src_ppn, pte_flags);
-                    user_space
-                        .get_mut()
-                        .page_table
-                        .handle_cow_mapping_from_exited_user(vpn, &mut memory_set);
-                }
-
-                new_area.data_frames = area.data_frames.clone();
-                memory_set.push_lazily(new_area);
-                continue;
-            }
-            // 映射相同的Frame
-            if area.area_type == MapAreaType::Shm {
+            if area.area_type == MapAreaType::Shm || 
+               (area.area_type == MapAreaType::Mmap && area.mmap_flags.contains(MmapFlags::MAP_SHARED)) {
+                // 共享内存：直接映射相同的物理页帧
                 let frames = area.data_frames.values().cloned().collect();
                 memory_set.push_with_given_frames(new_area, frames);
-                continue;
-            }
-
-            //既不是cow也不是mmap还不是shm
-            memory_set.push(new_area, None);
-
-            // copy data from another space
-            for vpn in area.vpn_range {
-                let src_ppn = user_space.translate(vpn).unwrap();
-                let dst_ppn = memory_set.translate(vpn).unwrap();
-                dst_ppn
-                    .bytes_array_mut()
-                    .copy_from_slice(src_ppn.bytes_array_mut());
+            } else {
+                // 私有段 (Elf, Stack, Brk, Private Mmap): 执行写时复制 (COW)
+                // 1. 将父进程该段的所有页表项设为只读并标记 COW
+                // 2. 子进程映射到相同的物理页，同样标记为只读和 COW
+                for (vpn, _) in area.data_frames.iter() {
+                    old_inner.page_table.handle_cow_mapping_from_exited_user(*vpn, &mut memory_set);
+                }
+                
+                // 将已记录的 FrameTracker 引用拷贝过去，增加物理页引用计数
+                new_area.data_frames = area.data_frames.clone();
+                memory_set.push_lazily(new_area);
             }
         }
         tlb_invalidate();

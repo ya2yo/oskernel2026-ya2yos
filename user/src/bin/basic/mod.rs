@@ -1,16 +1,17 @@
 use crate::*;
 
 /// 参数可以是"brk\0"等
+#[allow(unused)]
 pub fn run_basic_musl(path: &str) {
     let args = [path];
     fork_and_run("/musl/basic\0", &args);
 }
-
+#[allow(unused)]
 pub fn run_basic_glibc(path: &str) {
     let args = [path];
     fork_and_run("/glibc/basic\0", &args);
 }
-
+#[allow(unused)]
 pub static ALL_BASIC: [&str; 32] = [
     "brk\0",
     "chdir\0",
@@ -45,7 +46,7 @@ pub static ALL_BASIC: [&str; 32] = [
     "write\0",
     "yield\0",
 ];
-
+#[allow(unused)]
 static LA_BASIC_BLACKLIST: [&str; 3] = ["fstat\0", "mmap\0", "munmap\0"];
 
 // ./busybox echo "#### OS COMP TEST GROUP START basic-musl ####"
@@ -53,7 +54,7 @@ static LA_BASIC_BLACKLIST: [&str; 3] = ["fstat\0", "mmap\0", "munmap\0"];
 // ./run-all.sh
 // cd ..
 // ./busybox echo "#### OS COMP TEST GROUP END basic-musl ####"
-
+#[allow(unused)]
 pub fn run_all_basic_musl_except_blacklist() {
     println!("#### OS COMP TEST GROUP START basic-musl ####");
     for program in basic::ALL_BASIC {
@@ -64,7 +65,7 @@ pub fn run_all_basic_musl_except_blacklist() {
     }
     println!("#### OS COMP TEST GROUP END basic-musl ####");
 }
-
+#[allow(unused)]
 pub fn run_all_basic_glibc_except_blacklist() {
     println!("#### OS COMP TEST GROUP START basic-glibc ####");
     for program in basic::ALL_BASIC {

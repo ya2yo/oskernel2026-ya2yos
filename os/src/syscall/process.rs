@@ -105,47 +105,29 @@ pub fn sys_clone(
     tls_ptr: usize,
     #[cfg(not(target_arch = "loongarch64"))] child_tid_ptr: usize,
 ) -> SyscallRet {
-    // 标志位转换与校验
-    let flags = match CloneFlags::from_bits((flags & !0xff) as u64) {
+    let flags_val = (flags & !0xff) as u64;
+    let clone_flags = match CloneFlags::from_bits(flags_val) {
         Some(f) => f,
         None => return Err(SysErrNo::EINVAL),
     };
 
-    // 低 8 位是退出信号，通常是 SIGCHLD (17)
-    let _exit_signal = flags.bits() & 0xff;
-
-    debug!(
-        "[sys_clone] flags {:?}, stack:{:#x}, parent_tid:{:#x}, tls:{:#x}, child_tid:{:#x}",
-        flags, stack_ptr, parent_tid_ptr, tls_ptr, child_tid_ptr
-    );
-
-    // CLONE_THREAD 必须与 CLONE_SIGHAND 同时设置
-    if flags.contains(CloneFlags::CLONE_THREAD) && !flags.contains(CloneFlags::CLONE_SIGHAND) {
-        return Err(SysErrNo::EINVAL);
-    }
-    // CLONE_SIGHAND 必须与 CLONE_VM 同时设置
-    if flags.contains(CloneFlags::CLONE_SIGHAND) && !flags.contains(CloneFlags::CLONE_VM) {
-        return Err(SysErrNo::EINVAL);
-    }
-
-    // 获取当前任务并执行克隆逻辑
     let task = current_task().unwrap();
-
+    
+    // 执行克隆
     let new_task = task.do_task_clone(
-        flags,
+        clone_flags,
         stack_ptr,
         parent_tid_ptr,
         tls_ptr,
         child_tid_ptr,
     )?;
 
-    // 获取新任务的 TID 并加入调度器
-    // 这里的 new_tid 对父进程返回，子进程在切换回来时会由于 TrapContext 被修改而返回 0
     let new_tid = new_task.tid();
     
-    // 将新任务放入 Ready 队列
+    // 将子任务放入就绪队列，等待调度器执行
     ready_queue::add_task(&new_task);
 
+    // 父进程返回子进程的 TID
     Ok(new_tid)
 }
 

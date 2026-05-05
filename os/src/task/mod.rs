@@ -218,7 +218,7 @@ pub static INITPROC: Lazy<Arc<TaskControlBlock>> = Lazy::new(|| {
 pub fn add_initproc() {
     ready_queue::add_task(&INITPROC);
 
-    tid_to_task::insert(0, &INITPROC);
+    tid_to_task::insert(INITPROC.tid(), &INITPROC);
 }
 ///Init PROCESSORS
 pub fn init() {

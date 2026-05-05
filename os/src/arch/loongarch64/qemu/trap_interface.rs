@@ -56,7 +56,7 @@ fn estat_to_trap(value: estat::Trap) -> Trap {
                 debug!("INE Fault, we should stop here for qemu debug");
                 let proc = current_task().unwrap().get_process();
                 let proc = proc.inner_lock();
-                let mem_set = proc.get_locked_memory_set();
+                let mem_set = proc.get_locked_memory_set_read();
 
                 mem_set.activate();
                 debug!("translated: {:?}", mem_set.translate_va(0x10000.into()));

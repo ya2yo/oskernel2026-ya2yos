@@ -22,7 +22,7 @@
 // fi
 
 use crate::*;
-
+#[allow(unused)]
 pub fn run_lua_musl_testsuit(path: &str) {
     let r = fork_and_run("/musl\0", &["./lua\0", path]);
     if r == 0 {
@@ -33,6 +33,7 @@ pub fn run_lua_musl_testsuit(path: &str) {
 }
 
 /// loongarch-lua-glibc还不行……
+#[allow(unused)]
 pub fn run_lua_glibc_testsuit(path: &str) {
     let r = fork_and_run("/glibc\0", &["./lua\0", path]);
     if r == 0 {
@@ -41,7 +42,7 @@ pub fn run_lua_glibc_testsuit(path: &str) {
         println!("testcase lua {} fail", path);
     }
 }
-
+#[allow(unused)]
 pub static ALL_LUA: [&str; 9] = [
     "date.lua\0",
     "file_io.lua\0",
@@ -53,9 +54,9 @@ pub static ALL_LUA: [&str; 9] = [
     "sort.lua\0",
     "strings.lua\0",
 ];
-
+#[allow(unused)]
 pub static LUA_BLACKLIST: [&str; 1] = ["date.lua\0"];
-
+#[allow(unused)]
 pub fn run_all_lua_musl() {
     println!("#### OS COMP TEST GROUP START lua-musl ####");
     for i in ALL_LUA {
@@ -67,6 +68,7 @@ pub fn run_all_lua_musl() {
 }
 
 /// loongarch-lua-glibc还不行……
+#[allow(unused)]
 pub fn run_all_lua_glibc() {
     println!("#### OS COMP TEST GROUP START lua-glibc ####");
     for i in ALL_LUA {

@@ -49,7 +49,7 @@ pub fn set_kernel_trap_entry() {
         pub fn trap_from_kernel() -> !;
     }
     unsafe {
-        stvec::write(trap_from_kernel as usize, TrapMode::Direct);
+        stvec::write(trap_from_kernel as *const() as usize, TrapMode::Direct);
     }
 }
 #[inline]
@@ -58,7 +58,7 @@ pub fn set_user_trap_entry() {
         fn __trap_from_user();
     }
     unsafe {
-        stvec::write(__trap_from_user as usize, TrapMode::Direct);
+        stvec::write(__trap_from_user as *const() as usize, TrapMode::Direct);
     }
 }
 
