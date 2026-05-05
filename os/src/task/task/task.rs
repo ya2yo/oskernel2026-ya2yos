@@ -424,7 +424,7 @@ impl TaskControlBlock {
             child_trap_cx.set_tp(tls); 
         }
 
-        // 4. 创建新的 TaskControlBlock (TCB)
+        // 创建新的 TCB
         let new_task_inner = TaskControlBlockInner {
             tcb: Weak::new(), // 稍后设置
             trap_cx_ppn: 0.into(),    // alloc_user_res 会填充
@@ -454,11 +454,11 @@ impl TaskControlBlock {
             interrupt_waker: AtomicWaker::new(),
             inner: Mutex::new(new_task_inner),
         });
+
         // 设置 Weak 引用
         new_task.inner_lock().tcb = Arc::downgrade(&new_task);
 
-         // 为子线程分配/拷贝用户态资源
-        // 如果是非 VM 共享的进程，alloc_user_res 内部应当能够处理
+        // 为子线程分配/拷贝用户态资源
         new_task.inner_lock().alloc_user_res();
 
         // 将修改好的寄存器快照写入子线程的 TrapContext 页

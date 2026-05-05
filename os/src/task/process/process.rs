@@ -51,6 +51,7 @@ impl Process {
             let new_aspace_inner = MemorySetInner::from_another(old_aspace.get_ref());
             Arc::new(RwLock::new(MemorySet::new(new_aspace_inner)))
         };
+
         // 拷贝信号表
         let new_sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
             Arc::clone(&parent_inner.sig_table)
@@ -58,6 +59,7 @@ impl Process {
             // 拷贝信号处理动作（Dispositions）
             Arc::new(Mutex::new(SigTable::from_another(&parent_inner.get_locked_sigtable())))
         };
+
         // 处理文件描述符表 
         let new_fd_table = if flags.contains(CloneFlags::CLONE_FILES) {
             Arc::clone(&parent_inner.fd_table)
@@ -65,12 +67,14 @@ impl Process {
             // 拷贝一份当前的文件表镜像
             Arc::new(FdTable::from_another(&parent_inner.fd_table))
         };
+
         // 拷贝文件系统环境
         let new_fs_info = if flags.contains(CloneFlags::CLONE_FS) {
             Arc::clone(&parent_inner.fs_info)
         } else {
             Arc::new(FSInfo::from_another(&parent_inner.fs_info))
         };
+        
         // 元数据的初始化中，只有fork的那个线程会存在，因此在那里完成
         let new_proc = Arc::new(Self {
             pid: new_pid,
