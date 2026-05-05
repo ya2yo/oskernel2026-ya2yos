@@ -138,7 +138,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
 
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = proc_inner.get_locked_memory_set_read().token();
     let mut path = trim_start_slash(translated_str(token, path));
     if path.starts_with("ltp/testcases/bin/\u{1b}[1;32m") {
         //去除颜色

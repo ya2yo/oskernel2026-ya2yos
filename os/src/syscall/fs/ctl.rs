@@ -41,7 +41,7 @@ pub fn sys_ioctl(_fd: usize, _cmd: usize, _arg: usize) -> SyscallRet {
 pub fn sys_chdir(path: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner=task.process.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_write().token();
+    let token = proc_inner.get_locked_memory_set_write().token();
 
     if (path as isize) <= 0 || if_bad_address(path as usize) {
         return Err(SysErrNo::EFAULT);
@@ -104,7 +104,7 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
 pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
-    let memory_set = &*&&process.get_locked_memory_set_read();
+    let memory_set = &*process.get_locked_memory_set_read();
 
     debug!(
         "[sys_getdents64] fd is {}, buf addr  is {:x}, len is {}",
@@ -368,7 +368,7 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
     let task = current_task().unwrap();
     let task_inner=task.inner_lock();
     let proc_inner = task.process.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = proc_inner.get_locked_memory_set_read().token();
 
     if (flags as isize) < 0 {
         return Err(SysErrNo::EINVAL);

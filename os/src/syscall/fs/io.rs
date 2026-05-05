@@ -65,7 +65,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
 pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = proc_inner.get_locked_memory_set_read().token();
 
     // debug!(
     //     "[sys_writev] fd is {}, iov is {:x}, iovcnt is {}",
@@ -161,7 +161,7 @@ pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
 pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.process.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = inner.get_locked_memory_set_read().token();
 
     debug!(
         "[sys_sendfile] outfd is {}, infd is {}, offset_ptr is {}, count is {}",

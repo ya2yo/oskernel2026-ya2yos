@@ -12,7 +12,7 @@ use crate::{
 pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner=task.process.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = proc_inner.get_locked_memory_set_read().token();
 
     if (kst as isize) <= 0 || if_bad_address(kst as usize) {
         return Err(SysErrNo::EFAULT);
@@ -38,6 +38,7 @@ pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, _flags: usize
     let inner = task.inner_lock();
     let proc_inner=task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
+    drop(proc_inner);
     let path = trim_start_slash(translated_str(token, path));
 
     let abs_path = inner.get_abs_path(&task, dirfd, &path)?;
@@ -65,7 +66,7 @@ pub fn sys_faccessat(dirfd: isize, path: *const u8, mode: u32, _flags: usize) ->
     let task = current_task().unwrap();
     let inner = task.inner_lock();
     let proc_inner=task.process.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = proc_inner.get_locked_memory_set_read().token();
     if (path as isize) <= 0 {
         return Err(SysErrNo::EFAULT);
     }

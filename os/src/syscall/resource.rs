@@ -15,7 +15,7 @@ pub fn sys_prlimit(
     if pid == 0 {
         let task = current_task().unwrap();
         let mut inner = task.process.inner_lock();
-        let token = task.process.inner_lock().get_locked_memory_set_read().token();
+        let token = inner.get_locked_memory_set_read().token();
         let fd_table = &mut inner.fd_table;
         if !old_limit.is_null() {
             // 说明是get

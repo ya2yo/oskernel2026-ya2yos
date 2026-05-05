@@ -15,7 +15,7 @@ pub fn sys_pselect6(
     let task = current_task().unwrap();
     let mut inner = task.inner_lock();
     let proc_inner=task.process.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = proc_inner.get_locked_memory_set_read().token();
 
     // debug!("[sys_pselect6] nfds is {}, readfds is {}, writefds is {}, exceptfds is {}, timeout is {}, sigmask is {}",nfds,readfds,writefds,exceptfds,timeout,sigmask);
 

@@ -298,6 +298,6 @@ impl FdTable {
     // 下面的函数要求直接对文件进行操作而不只是flags
 
     pub fn try_get_file(&self,fd:usize) -> Option<Arc<dyn File>> {
-        Some(self.get_mut().files[fd].as_mut().unwrap().file.any())
+        self.get_mut().files[fd].as_mut().and_then(|f|Some(f.any()))
     }
 }

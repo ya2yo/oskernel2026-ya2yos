@@ -7,7 +7,7 @@ use crate::{fs::{FileClass, FileDescriptor, make_pipe}, mm::translated_refmut, t
 pub fn sys_pipe2(fd: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner=task.process.inner_lock();
-    let fd_table=task.get_fd_table();
+    let fd_table=proc_inner.fd_table.clone();
     let token = proc_inner.get_locked_memory_set_write().token();
 
     let (read_pipe, write_pipe) = make_pipe();

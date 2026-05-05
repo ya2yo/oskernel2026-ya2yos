@@ -166,13 +166,13 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
 
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let proc_inner=task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let token = task.process.inner_lock().get_locked_memory_set_read().token();
     let path = translated_str(token, path);
+
     let mut flags = OpenFlags::from_bits(flags).unwrap();
 
     let mut abs_path = task_inner.get_abs_path(&task,dirfd, &path)?;
-
+    let proc_inner=task.process.inner_lock();
     debug!(
         "[sys_openat] path is {}, flags is {:?}, mode is {:o}",
         &abs_path, flags, mode
@@ -219,18 +219,19 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
 /// 参考 https://man7.org/linux/man-pages/man2/close.2.html
 pub fn sys_close(fd: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock();
+    let inner = task.process.inner_lock();// 拿到锁就不用调用get_fd_table了
+    let fd_table=inner.fd_table.clone();
     debug!("[sys_close] fd is {}", fd);
 
-    if (fd as isize) < 0 || fd >= task.get_fd_table().len() {
+    if (fd as isize) < 0 || fd >= fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
 
-    if task.get_fd_table().try_get(fd).is_none() {
+    if fd_table.try_get(fd).is_none() {
         return Ok(0);
     }
 
-    task.get_fd_table().take(fd);
+    fd_table.take(fd);
     inner.fs_info.remove(fd);
     Ok(0)
 }
