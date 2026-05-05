@@ -33,7 +33,7 @@ QEMU_CMD := qemu-system-riscv64 \
 OBJDUMP := rust-objdump --arch-name=$(ARCH)
 OBJCOPY := rust-objcopy --binary-architecture=$(ARCH)
 
-GDB_TOOL := riscv64-unknown-elf-gdb
+GDB_TOOL := gdb-multiarch
 
 export PLATFORM MEMORY_SIZE SMP MODE
 export ARCH PLATFORM TARGET DISK_IMG KERNEL_ELF KERNEL_BIN

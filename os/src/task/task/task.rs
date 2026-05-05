@@ -182,7 +182,7 @@ impl TaskControlBlock {
         self.tid.0
     }
     pub fn pid(&self) -> usize {
-        self.process.pid.0
+        self.process.pid
     }
     pub fn ppid(&self) -> usize {
         self.process.ppid()
@@ -203,7 +203,7 @@ impl TaskControlBlock {
             memory_set.clone(),
             sig_table.clone(),
             Arc::new(FdTable::new_with_stdio()),
-            tid_handle.clone(),
+            tid_handle.0,
             None
         );
         let task = Self {
@@ -375,144 +375,194 @@ impl TaskControlBlock {
         task_inner.user_heapbottom = user_hp;
     }
     /// 复制进程，注意这里需要实现 fork 的主要逻辑
-     pub fn do_task_clone(
+    pub fn clone_process(
         self: &Arc<TaskControlBlock>,
         flags: CloneFlags,
-        user_stack: usize,
-        parent_tid_ptr: usize,
+        stack: usize,
+        parent_tid: *mut u32,
         tls: usize,
-        child_tid_ptr: usize,
+        child_tid: *mut u32,
     ) -> Result<Arc<TaskControlBlock>, SysErrNo> {
-        // 1. 分配 TID 和内核栈
-        let tid_handle = TidHandle::alloc().ok_or(SysErrNo::ENOMEM)?;
-        let new_tid = tid_handle.0;
+        let parent_inner = self.inner.lock();
+
+        let tid_handle = TidHandle::alloc().unwrap();
         let kernel_stack = KernelStackOnHeap::new();
         let kernel_stack_top = kernel_stack.top();
-
-        // 2. 确定进程归属和地址空间
-        let (process, is_thread) = if flags.contains(CloneFlags::CLONE_THREAD) {
-            (Arc::clone(&self.process), true)
+        debug!("TCB::new kstack top = {:#x}", kernel_stack_top);
+        // 检查是否共享虚拟内存
+        let memory_set = if flags.contains(CloneFlags::CLONE_VM) {
+            self.process.inner.try_lock().unwrap().memory_set.clone()
         } else {
-            let pid_handle = TidHandle::alloc().ok_or(SysErrNo::ENOMEM)?;
-            (self.process.do_proc_clone(flags, pid_handle), false)
+            Arc::new(RwLock::new(MemorySet::new(
+                MemorySetInner::from_existed_user(
+                    &*self.process.inner_lock().get_locked_memory_set_read(),
+                ),
+            )))
         };
-
-        // 3. 准备子线程的 TCB 内部数据
-        let parent_inner = self.inner_lock();
-        let mut child_trap_cx = *parent_inner.trap_cx(); // 复制寄存器快照
-
-        let new_task_inner = TaskControlBlockInner {
-            tcb: Weak::new(),
-            trap_cx_ppn: 0.into(),    // 稍后通过 alloc_user_res 填充
-            trap_cx_bottom: 0,
-            user_stack_top: parent_inner.user_stack_top,
-            task_cx: TaskContext::goto_trap_return(kernel_stack_top),
-            task_status: TaskStatus::Ready,
-            time_data: TimeData::new(),
-            user_heappoint: parent_inner.user_heappoint,
-            user_heapbottom: parent_inner.user_heapbottom,
-            clear_child_tid: if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) { child_tid_ptr } else { 0 },
-            sig_mask: parent_inner.sig_mask,
-            sig_pending: SigSet::empty(),
-            timer: Arc::new(Timer::new()),
-            robust_list: RobustList::default(),
-            user_id: parent_inner.user_id,
-            futex_pa: 0,
-            futex_key: 0,
+        // 检查是否共享文件系统信息
+        let fs_info = if flags.contains(CloneFlags::CLONE_FS) {
+            Arc::clone(&self.process.inner_lock().fs_info)
+        } else {
+            Arc::new(FSInfo::from_another(
+                &self.process.inner_lock().fs_info,
+            ))
         };
-        drop(parent_inner);
+        // 检查是否共享打开文件表
+        let fd_table = if flags.contains(CloneFlags::CLONE_FILES) {
+            Arc::clone(&self.process.inner_lock().fd_table)
+        } else {
+            Arc::new(FdTable::from_another(&self.process.inner_lock().fd_table))
+        };
+        // 检查是否共享信号处理程序表
+        let sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
+            self.process.inner.try_lock().unwrap().sig_table.clone()
+        } else {
+            Arc::new(Mutex::new(SigTable::from_another(
+                &*self.process.inner_lock().get_locked_sigtable(),
+            )))
+        };
+        // 检查是否需要设置 parent_tid
+        if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
+            *translated_refmut(
+                self.process.inner_lock().get_locked_memory_set_read().token(),
+                parent_tid,
+            ) = tid_handle.0 as u32;
+        }
+        let clear_child_tid = if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) {
+            child_tid as usize
+        } else {
+            0
+        };
+        let (pid, mut ppid, timer, sig_mask);
+        let process: Arc<Process>;
 
-        // 4. 创建 TCB 对象
-        let new_task = Arc::new(Self {
+        // 检查是否创建线程
+        if flags.contains(CloneFlags::CLONE_THREAD) {
+            pid = self.pid();
+            ppid = self.ppid();
+            timer = Arc::clone(&parent_inner.timer);
+            sig_mask = SigSet::empty();
+            process = self.process.clone();
+        } else {
+            pid = tid_handle.0;
+            ppid = self.pid();
+            timer = Arc::new(Timer::new());
+            sig_mask = parent_inner.sig_mask.clone();
+            process = Process::new(
+                memory_set.clone(),
+                sig_table.clone(),
+                fd_table,
+                pid,
+                Some(self.process.clone()),
+            );
+        }
+        if flags.contains(CloneFlags::CLONE_PARENT) {
+            ppid = self.ppid();
+        }
+
+        let child = Arc::new(TaskControlBlock {
             tid: tid_handle,
             kernel_stack,
-            process: Arc::clone(&process),
-            interrupted: AtomicBool::new(false),
-            interrupt_waker: AtomicWaker::new(),
-            inner: Mutex::new(new_task_inner),
+            process: process,
+            interrupted:AtomicBool::new(false),
+            interrupt_waker:AtomicWaker::new(),
+            inner: Mutex::new(TaskControlBlockInner {
+                tcb: Weak::new(),
+                trap_cx_ppn: 0.into(),
+                trap_cx_bottom: 0,
+                user_stack_top: 0,
+                task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                task_status: TaskStatus::Ready,
+                // fd_table,
+                // fs_info,
+                time_data: TimeData::new(),
+                user_heappoint: parent_inner.user_heappoint,
+                user_heapbottom: parent_inner.user_heapbottom,
+                clear_child_tid,
+                sig_mask,
+                sig_pending: SigSet::empty(),
+                timer,
+                robust_list: RobustList::default(),
+                user_id: parent_inner.user_id,
+                futex_pa: 0,
+                futex_key: 0,
+            }),
         });
-        new_task.inner_lock().tcb = Arc::downgrade(&new_task);
 
-        // 5. 分配用户态资源 (TrapContext 和 Stack)
-        {
-            let mut inner = new_task.inner_lock();
-            let proc_inner = process.inner_lock();
-            let memory_set = proc_inner.get_locked_memory_set_write();
+        let mut child_inner = child.inner_lock();
+        child_inner.tcb = Arc::downgrade(&child);
+        child.process.meta_lock().tasks.push(Arc::downgrade(&child));
 
-            // A. 无论进程还是线程，都必须分配独立的 TrapContext 物理页
-            let (trap_cx_bottom, _) = memory_set.insert_framed_area_with_hint(
-                USER_TRAP_CONTEXT_TOP,
-                PAGE_SIZE,
-                MapPermission::R | MapPermission::W,
-                MapAreaType::Trap,
-            );
-            inner.trap_cx_bottom = trap_cx_bottom;
-            inner.trap_cx_ppn = memory_set.translate(VirtAddr::from(trap_cx_bottom).floor()).unwrap();
-
-            // B. 处理用户栈
-            if is_thread {
-                // 如果是新线程
-                if user_stack != 0 {
-                    // 用户指定了栈（如 pthread_create 分配的栈）
-                    child_trap_cx.set_sp(user_stack);
-                } else {
-                    // 内核需要为新线程分配一个新栈
-                    let (_, ustack_top) = memory_set.lazy_insert_framed_area_with_hint(
-                        inner.user_stack_top - PAGE_SIZE, // 在当前栈下方寻找新位置
-                        USER_STACK_SIZE,
-                        MapPermission::R | MapPermission::W | MapPermission::U,
-                        MapAreaType::Stack,
-                    );
-                    inner.user_stack_top = ustack_top;
-                    child_trap_cx.set_sp(ustack_top);
-                }
-            } else {
-                // 如果是 Fork (新进程)
-                // 已经在 MemorySetInner::from_existed_user 中通过 COW 复制了父进程的栈
-                // child_trap_cx.set_sp 沿用父进程快照即可
-                if user_stack != 0 {
-                    child_trap_cx.set_sp(user_stack);
-                }
-            }
-        }
-
-        // 6. 完善寄存器上下文设置
-        child_trap_cx.set_a0(0); // 子进程返回 0
-        if flags.contains(CloneFlags::CLONE_SETTLS) {
-            child_trap_cx.set_tp(tls); // 设置线程局部存储指针 (tp 寄存器)
-        }
-        *new_task.inner_lock().trap_cx() = child_trap_cx;
-
-        // 7. 处理 TID 写入 (使用辅助函数确保跨页/懒加载安全)
-        if flags.contains(CloneFlags::CLONE_PARENT_SETTID) && parent_tid_ptr != 0 {
-            let token = self.process.inner_lock().memory_set.read().token();
-            self.safe_write_mem(token, parent_tid_ptr, new_tid as i32);
-        }
-        if flags.contains(CloneFlags::CLONE_CHILD_SETTID) && child_tid_ptr != 0 {
-            let token = process.inner_lock().memory_set.read().token();
-            new_task.safe_write_mem(token, child_tid_ptr, new_tid as i32);
-        }
-
-        // 8. 注册任务
-        process.add_task(Arc::clone(&new_task));
-        Ok(new_task)
-    }
-
-    /// 安全写入用户内存，处理可能触发的 Lazy Page Fault
-    fn safe_write_mem<T: Copy+'static>(&self, token: usize, addr: usize, value: T) {
-        if let Some(ptr) = strong_translated_refmut(token, addr as *mut T) {
-            *ptr = value;
+        if flags.contains(CloneFlags::CLONE_THREAD) {
+            // 线程
+            child_inner.alloc_user_res();
+            *child_inner.trap_cx() = *parent_inner.trap_cx();
         } else {
-            // 如果物理页不存在，尝试手动触发一次懒加载（在复杂内核中应由统一的 copy_to_user 处理）
-            let vpn = VirtAddr::from(addr).floor();
-            let proc_inner = self.process.inner_lock();
-            let mset = proc_inner.get_locked_memory_set_write();
-            if mset.get_mut().lazy_page_fault(vpn, Trap::Exception(Exception::StorePageFault)) {
-                if let Some(ptr) = strong_translated_refmut(token, addr as *mut T) {
-                    *ptr = value;
-                }
-            }
+            // fork
+            let process = &self.process.inner_lock();
+            let another = &*process.get_locked_memory_set_read();
+            child_inner.alloc_user_res();
+            let child_proc = child.process.inner_lock();
+
+            let child_mm = child_proc.get_locked_memory_set_read();
+            child_mm.lazy_clone_area(
+                VirtAddr::from(child_inner.user_stack_top - USER_STACK_SIZE).floor(),
+                another.get_ref(),
+            );
+            child_mm.clone_area(
+                VirtAddr::from(child_inner.trap_cx_bottom).floor(),
+                another.get_ref(),
+            );
+
+            // for child process, fork returns 0
+            child_inner.trap_cx().set_a0(0);
         }
+        let trap_cx = child_inner.trap_cx();
+        trap_cx.kernel_stack = kernel_stack_top;
+
+        if stack != 0 {
+            // 移除分配的stack
+            let ustack = child_inner.user_stack_top;
+            child
+                .process
+                .inner_lock()
+                .get_locked_memory_set_read()
+                .remove_area_with_start_vpn(VirtAddr::from(ustack - USER_STACK_SIZE).floor());
+            child_inner.user_stack_top = 0;
+            // 设置运行的起始地址和参数以及stack
+            let token = self.process.inner_lock().get_locked_memory_set_read().token();
+            let entry_point = get_data(token, stack as *const usize);
+            let arg = get_data(token, (stack + 8) as *const usize);
+            // sepc/entry
+            // debug!("[new thread] entry_point:{:#x}", entry_point);
+            trap_cx.set_sepc(entry_point);
+            //a0
+            trap_cx.set_a0(arg);
+            //sp
+            trap_cx.set_sp(stack);
+        }
+        
+        if flags.contains(CloneFlags::CLONE_SETTLS) {
+            // tp
+            trap_cx.set_tp(tls);
+        }
+        // CLONE_CHILD_SETTID
+        if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
+            let child_token = child.process.inner_lock().get_locked_memory_set_read().token();
+            *translated_refmut(child_token, child_tid) = child.tid() as u32;
+        }
+
+        if flags.contains(CloneFlags::SIGCHLD) {
+            create_proc_dir_and_file(pid, ppid);
+        }
+
+        drop(child_inner);
+        drop(parent_inner);
+        tid_to_task::insert(child.tid(), &child);
+        // if !flags.contains(CloneFlags::CLONE_THREAD) {
+        //     insert_into_process_group(child.ppid(), &child);
+        // }
+        Ok(child)
     }
 
     ///修改数据段大小，懒分配
