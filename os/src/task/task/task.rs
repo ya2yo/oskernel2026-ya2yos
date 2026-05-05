@@ -203,6 +203,7 @@ impl TaskControlBlock {
             memory_set.clone(),
             sig_table.clone(),
             Arc::new(FdTable::new_with_stdio()),
+            Arc::new(FSInfo::new_initproc()),
             tid_handle.0,
             None
         );
@@ -452,6 +453,7 @@ impl TaskControlBlock {
                 memory_set.clone(),
                 sig_table.clone(),
                 fd_table,
+                fs_info,
                 pid,
                 Some(self.process.clone()),
             );

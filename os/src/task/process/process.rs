@@ -51,6 +51,7 @@ impl Process {
         memory_set: Arc<RwLock<MemorySet>>,
         sig_table: Arc<Mutex<SigTable>>,
         fd_table: Arc<FdTable>,
+        fs_info:Arc<FSInfo>,
         pid: usize,
         parent: Option<Arc<Process>>,
     ) -> Arc<Self> {
@@ -60,7 +61,7 @@ impl Process {
                 memory_set,
                 sig_table,
                 fd_table,
-                fs_info: Arc::new(FSInfo::new_initproc()),
+                fs_info,
             }),
             pid,
             parent: parent.clone(),
