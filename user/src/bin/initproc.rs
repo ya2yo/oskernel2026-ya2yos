@@ -25,11 +25,12 @@ fn run_testsuit(root: &str, script: &str) {
 }
 
 pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
-    // println!("enter fork_and_run!");
+    println!("enter fork_and_run!");
     let pid = fork();
     if pid == 0 {
         // 子进程
         chdir(dir);
+        println!("execve args: {} {} {}",args[0],args[1],args[2]);
         let ret = execve(&args);
         println!("execve fail!");
         exit(0);

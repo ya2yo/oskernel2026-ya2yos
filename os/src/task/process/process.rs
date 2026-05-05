@@ -186,20 +186,20 @@ impl Process {
 
     // 只会在sys_fcntl里面调用的一些辅助函数
 
-    pub fn do_fcntl_setfd(&self,fd:usize, cloexec:bool)->SyscallRet {
-        if cloexec {
-            self.inner_lock().fd_table.set_cloexec(fd)
-        }else{
-            self.inner_lock().fd_table.unset_cloexec(fd)
-        }
-    }
-    pub fn do_fcntl_setfl(&self, fd:usize, nonblock:bool)->SyscallRet {
-        if nonblock {
-            self.inner_lock().fd_table.set_nonblock(fd)
-        }else {
-            self.inner_lock().fd_table.unset_nonblock(fd)
-        }
-    }
+    // pub fn do_fcntl_setfd(&self,fd:usize, cloexec:bool)->SyscallRet {
+    //     if cloexec {
+    //         self.inner_lock().fd_table.set_cloexec(fd)
+    //     }else{
+    //         self.inner_lock().fd_table.unset_cloexec(fd)
+    //     }
+    // }
+    // pub fn do_fcntl_setfl(&self, fd:usize, nonblock:bool)->SyscallRet {
+    //     if nonblock {
+    //         self.inner_lock().fd_table.set_nonblock(fd)
+    //     }else {
+    //         self.inner_lock().fd_table.unset_nonblock(fd)
+    //     }
+    // }
 }
 
 impl Drop for Process {

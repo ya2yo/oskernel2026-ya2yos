@@ -140,17 +140,17 @@ impl FdTable {
         let soft_limit=inner.soft_limit;
         let fd_table=&mut inner.files;
 
-        if arg >= soft_limit {
+        if arg > soft_limit {
             return Err(SysErrNo::EMFILE);
         }
-        if fd_table.len() >= soft_limit {
+        if fd_table.len()+1 > soft_limit {
             return Err(SysErrNo::EMFILE);
         }
-        if fd_table.len() <= arg {
-            fd_table.resize(arg+1, None);
+        if fd_table.len() < arg {
+            fd_table.resize(arg, None);
         }
         if let Some(fd) = fd_table.iter().skip(arg).position(|slot| slot.is_none()) {
-            Ok(fd)
+            Ok(fd+arg)
         } else {
             fd_table.push(None);
             Ok(fd_table.len() - 1)

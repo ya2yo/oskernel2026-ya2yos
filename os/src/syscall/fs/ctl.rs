@@ -72,21 +72,20 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/mkdirat.2.html
 pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
-    let process=task.process.inner_lock();
-    let token = process.get_locked_memory_set_write().token();
+    let task_inner = task.inner_lock();
+    let proc_inner=task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_write().token();
     let path = translated_str(token, path);
-
     debug!(
         "[sys_mkdirat] dirfd is {},path is {},mode is {}",
         dirfd, path, mode
     );
 
-    if dirfd != -100 && dirfd as usize >= process.fd_table.len() {
+    if dirfd != -100 && dirfd as usize >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
-
-    let abs_path = inner.get_abs_path(&task,dirfd, &path)?;
+    drop(proc_inner);
+    let abs_path = task_inner.get_abs_path(&task,dirfd, &path)?;
     if let Ok(_) = open(&abs_path, OpenFlags::O_RDWR, NONE_MODE) {
         return Err(SysErrNo::EEXIST);
     }
