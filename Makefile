@@ -98,7 +98,7 @@ gdbserver: all
 gdbclient:
 	@$(GDB_TOOL) $(KERNEL_ELF) \
         -ex 'target remote localhost:1234' \
-		-ex 'b os::lang_items::panic' 
+		-ex 'b os::timer::check_futex_timer' 
 
 setup_cargo:
 	-@cd ./os && mkdir -p .cargo && cp -f dotcargo/config .cargo/

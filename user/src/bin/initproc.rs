@@ -25,6 +25,7 @@ fn run_testsuit(root: &str, script: &str) {
 }
 
 pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
+    // println!("enter fork_and_run!");
     let pid = fork();
     if pid == 0 {
         // 子进程

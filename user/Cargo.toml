@@ -16,6 +16,6 @@ debug = true
 
 [features]
 # default = ["loongarch64"]
-# default = ["riscv64"]
+default = ["riscv64"]
 riscv64 = []
 loongarch64 = []
