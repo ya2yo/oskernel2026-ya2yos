@@ -5,25 +5,21 @@ use super::super::{
 };
 use super::super::process::Process;
 use crate::{
-    arch::context::TrapContext,
-    arch::memory_layout::{
+    arch::{context::TrapContext, memory_layout::{
         PAGE_SIZE, PRE_ALLOC_PAGES, USER_HEAP_SIZE, USER_STACK_SIZE, USER_STACK_TOP,
         USER_TRAP_CONTEXT_TOP,
-    },
-    arch::page_table::PageTable,
+    }, page_table::PageTable},
     fs::{
-        create_proc_dir_and_file, open, OpenFlags, DEFAULT_DIR_MODE,
-        DEFAULT_FILE_MODE,FdTable,FSInfo
+        DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, FSInfo, FdTable, OpenFlags, create_proc_dir_and_file, open
     },
     mm::{
-        get_data, put_data, translated_refmut, MapAreaType, MapPermission, MemorySet,
-        MemorySetInner, PhysPageNum, VirtAddr,
+        MapAreaType, MapPermission, MemorySet, MemorySetInner, PhysPageNum, VirtAddr, get_data, put_data, translate::strong_translated_refmut, translated_refmut
     },
     signal::{SigSet, SigTable},
     syscall::CloneFlags,
     task::kernel_stack::KernelStackOnHeap,
     timer::{TimeData, TimeVal, Timer},
-    utils::{get_abs_path, is_abs_path, SysErrNo},
+    utils::{SysErrNo, get_abs_path, is_abs_path},
 };
 use alloc::{
     format,
@@ -190,10 +186,10 @@ impl TaskControlBlock {
         self.inner.try_lock().expect("fail to get task inner")
     }
     pub fn tid(&self) -> usize {
-        self.tid.tid
+        self.tid.0
     }
     pub fn pid(&self) -> usize {
-        self.process.pid
+        self.process.pid.0
     }
     pub fn ppid(&self) -> usize {
         self.process.ppid()
@@ -203,7 +199,7 @@ impl TaskControlBlock {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, user_heapbottom, entry_point, _) = MemorySetInner::from_elf(elf_data);
         // alloc a pid and a kernel stack in kernel space
-        let tid_handle = TidHandle::new();
+        let tid_handle = TidHandle::alloc().unwrap();
         let kernel_stack = KernelStackOnHeap::new();
         let kernel_stack_top = kernel_stack.top();
         debug!("TCB::new kstack top = {:#x}", kernel_stack_top);
@@ -213,7 +209,7 @@ impl TaskControlBlock {
             memory_set.clone(),
             sig_table.clone(),
             Arc::new(FdTable::new_with_stdio()),
-            1,
+            TidHandle(1),
             None
         );
         let task = Self {
@@ -385,72 +381,108 @@ impl TaskControlBlock {
         task_inner.user_heapbottom = user_hp;
     }
     /// 复制进程，注意这里需要实现 fork 的主要逻辑
-    pub fn clone_process(
+    pub fn do_task_clone(
         self: &Arc<TaskControlBlock>,
         flags: CloneFlags,
-        stack: usize,
-        parent_tid: *mut u32,
+        user_stack: usize,
+        parent_tid_ptr: usize,
         tls: usize,
-        child_tid: *mut u32,
+        child_tid_ptr: usize,
     ) -> Result<Arc<TaskControlBlock>, SysErrNo> {
-        // 获取/创建 PCB (ProcessControlBlock)
-        let new_process = if flags.contains(CloneFlags::CLONE_THREAD) {
-            // 情况 A: 创建新线程，共享当前进程
+        // 分配 TID 
+        let tid_handle = TidHandle::alloc().ok_or(SysErrNo::ENOMEM)?;
+        let new_tid = tid_handle.0;
+        // 确定进程归属 
+        let process = if flags.contains(CloneFlags::CLONE_THREAD) {
+            // 创建线程：共享当前进程结构
             Arc::clone(&self.process)
         } else {
-            // 情况 B: fork，创建新进程
-            // 注意：这里需要分配一个新的 PID，假设由全局分配器提供
-            let new_pid = alloc_pid(); 
-            self.process.do_proc_clone(new_pid)
+            // 创建进程：通过 do_proc_clone 创建新的进程结构
+            // 注意：这里我们再分配一个 ID 作为新进程的 PID
+            let pid_handle = TidHandle::alloc().ok_or(SysErrNo::ENOMEM)?;
+            self.process.do_proc_clone(flags, pid_handle)
         };
+        
+        // 创建内核栈
+        let kernel_stack = KernelStackOnHeap::new();
+        let kernel_stack_top = kernel_stack.top();
 
-        // 为新线程分配内核栈和新 TID
-        let new_tid = alloc_tid();
-        let kernel_stack = KernelStack::new()?; 
-
-        // 复制并修改 TrapContext
-        // 我们需要获取当前线程在内核态保存的用户态寄存器快照
-        let mut child_trap_cx = self.inner_lock().get_trap_cx().clone();
+         // 准备子线程的 TrapContext
+        let task_inner = self.inner_lock();
+        let mut child_trap_cx = *task_inner.trap_cx();
         
         // 子进程/子线程 fork 返回值为 0
-        child_trap_cx.x[10] = 0; // x10 是 RISC-V 的 a0
+        child_trap_cx.set_ra(0); // 子进程/线程返回 0
 
-        // 如果用户指定了新的栈（pthread_create），则更新 sp
-        if stack != 0 {
-            child_trap_cx.x[2] = stack; // x2 是 RISC-V 的 sp
+        // 如果提供了用户栈（pthread_create），则使用新栈
+        if user_stack != 0 {
+            child_trap_cx.set_sp(user_stack);
         }
 
-        // 如果设置了 CLONE_SETTLS，更新线程指针
+        // 如果提供了 TLS，设置线程指针寄存器 (RISC-V 的 tp, x86 的 fs/gs)
         if flags.contains(CloneFlags::CLONE_SETTLS) {
-            child_trap_cx.x[4] = tls; // x4 是 RISC-V 的 tp
+            child_trap_cx.set_tp(tls); 
         }
 
         // 4. 创建新的 TaskControlBlock (TCB)
-        let new_task = Arc::new(TaskControlBlock {
-            tid: new_tid,
-            process: Arc::clone(&new_process),
+        let new_task_inner = TaskControlBlockInner {
+            tcb: Weak::new(), // 稍后设置
+            trap_cx_ppn: 0.into(),    // alloc_user_res 会填充
+            trap_cx_bottom: 0,
+            user_stack_top: task_inner.user_stack_top,
+            task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+            task_status: TaskStatus::Ready,
+            time_data: TimeData::new(),
+            user_heappoint: task_inner.user_heappoint,
+            user_heapbottom: task_inner.user_heapbottom,
+            clear_child_tid: if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) { child_tid_ptr } else { 0 },
+            sig_mask: task_inner.sig_mask,
+            sig_pending: SigSet::empty(), // 信号不继承
+            timer: Arc::new(Timer::new()),
+            robust_list: RobustList::default(),
+            user_id: task_inner.user_id,
+            futex_pa: 0,
+            futex_key: 0,
+        };
+        drop(task_inner); // 释放父线程锁
+
+        let new_task = Arc::new(Self {
+            tid: tid_handle,
             kernel_stack,
-            inner: Mutex::new(TaskInner {
-                trap_cx_ppn: ..., // 指向新分配的 trap_cx
-                task_status: TaskStatus::Ready,
-                // ... 其他初始化
-            }),
+            process: Arc::clone(&process),
+            interrupted: AtomicBool::new(false),
+            interrupt_waker: AtomicWaker::new(),
+            inner: Mutex::new(new_task_inner),
         });
+        // 设置 Weak 引用
+        new_task.inner_lock().tcb = Arc::downgrade(&new_task);
 
-        // 5. 将新任务放入进程的任务列表中
-        new_process.add_task(Arc::clone(&new_task));
+         // 为子线程分配/拷贝用户态资源
+        // 如果是非 VM 共享的进程，alloc_user_res 内部应当能够处理
+        new_task.inner_lock().alloc_user_res();
 
-        // 6. 处理 TID 写入用户空间 (根据 flags)
-        if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
-            // 安全地写入 parent_tid
-            unsafe { *parent_tid = new_tid as u32; }
+        // 将修改好的寄存器快照写入子线程的 TrapContext 页
+        *new_task.inner_lock().trap_cx() = child_trap_cx;
+
+        // 将线程加入进程管理
+        process.add_task(Arc::clone(&new_task));
+
+        // 处理 TID 写入用户空间 (根据 flags)
+        if flags.contains(CloneFlags::CLONE_PARENT_SETTID) && parent_tid_ptr != 0 {
+            // 写入父进程空间
+            let token = self.process.inner_lock().memory_set.read().token();
+            if let Some(ptr) = strong_translated_refmut(token, parent_tid_ptr as *mut i32) {
+                *ptr = new_tid as i32;
+            }
         }
-        if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-            // 注意：这通常需要等到切换到子进程空间后再写，或者在创建时通过地址空间映射写入
+        if flags.contains(CloneFlags::CLONE_CHILD_SETTID) && child_tid_ptr != 0 {
+            let token = process.inner_lock().memory_set.read().token();
+            if let Some(ptr) = strong_translated_refmut(token, child_tid_ptr as *mut i32) {
+                *ptr = new_tid as i32;
+            }
         }
 
-        Ok(new_task)
-    }
+        Ok(Arc::clone(&new_task))
     }
 
     ///修改数据段大小，懒分配

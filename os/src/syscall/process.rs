@@ -105,27 +105,45 @@ pub fn sys_clone(
     tls_ptr: usize,
     #[cfg(not(target_arch = "loongarch64"))] child_tid_ptr: usize,
 ) -> SyscallRet {
-    let flags = match CloneFlags::from_bits(flags as u64) {
+    // 标志位转换与校验
+    let flags = match CloneFlags::from_bits((flags & !0xff) as u64) {
         Some(f) => f,
         None => return Err(SysErrNo::EINVAL),
     };
+
+    // 低 8 位是退出信号，通常是 SIGCHLD (17)
+    let _exit_signal = flags.bits() & 0xff;
+
     debug!(
         "[sys_clone] flags {:?}, stack:{:#x}, parent_tid:{:#x}, tls:{:#x}, child_tid:{:#x}",
         flags, stack_ptr, parent_tid_ptr, tls_ptr, child_tid_ptr
     );
 
+    // CLONE_THREAD 必须与 CLONE_SIGHAND 同时设置
+    if flags.contains(CloneFlags::CLONE_THREAD) && !flags.contains(CloneFlags::CLONE_SIGHAND) {
+        return Err(SysErrNo::EINVAL);
+    }
+    // CLONE_SIGHAND 必须与 CLONE_VM 同时设置
+    if flags.contains(CloneFlags::CLONE_SIGHAND) && !flags.contains(CloneFlags::CLONE_VM) {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // 获取当前任务并执行克隆逻辑
     let task = current_task().unwrap();
 
-    // 调用统一的逻辑接口
-    let new_task = task.clone_process(
+    let new_task = task.do_task_clone(
         flags,
         stack_ptr,
-        parent_tid_ptr as *mut u32,
+        parent_tid_ptr,
         tls_ptr,
-        child_tid_ptr as *mut u32,
+        child_tid_ptr,
     )?;
 
+    // 获取新任务的 TID 并加入调度器
+    // 这里的 new_tid 对父进程返回，子进程在切换回来时会由于 TrapContext 被修改而返回 0
     let new_tid = new_task.tid();
+    
+    // 将新任务放入 Ready 队列
     ready_queue::add_task(&new_task);
 
     Ok(new_tid)
@@ -288,7 +306,7 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
             return Err(SysErrNo::ECHILD);
         }
         // 如果是等待特定进程，但是自己根本没有这个子进程，则退出
-        if pid != -1 && children.iter().all(|proc| proc.pid != pid as usize) {
+        if pid != -1 && children.iter().all(|proc| proc.pid.0 != pid as usize) {
             return Err(SysErrNo::ECHILD);
         }
 
@@ -297,19 +315,19 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
             .enumerate()
             .find(|(_, p)| {
                 // ++++ temporarily access child PCB exclusively
-                p.all_tasks_exited() && (pid == -1 || pid as usize == p.pid)
+                p.all_tasks_exited() && (pid == -1 || pid as usize == p.pid.0)
                 // ++++ release child PCB
             })
             .map(|(idx, p)| (idx, Arc::clone(p)));
         drop(children);
         if let Some((idx, child)) = pair {
-            let found_pid = child.pid;
+            let found_pid = child.pid.clone();
             let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
 
             if wstatus as usize != 0x0 {
                 debug!(
                     "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}",
-                    pid, found_pid, exit_code, wstatus as usize
+                    pid, found_pid.0, exit_code, wstatus as usize
                 );
                 let token = task.process.inner_lock().get_locked_memory_set_read().token();
                 if exit_code >= 128 && exit_code <= 255 {
@@ -324,8 +342,8 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
             // 从全局进程映射中移除
             // 在移除前，我们得先把手上的这个Arc给丢掉
             drop(child);
-            Process::remove_from_global_map(found_pid);
-            return Ok(found_pid);
+            Process::remove_from_global_map(found_pid.0);
+            return Ok(found_pid.0);
         } else {
             drop(process_meta);
             drop(task);

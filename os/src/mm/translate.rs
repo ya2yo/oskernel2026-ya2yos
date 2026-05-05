@@ -1,7 +1,7 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use crate::{
-    arch::time::get_ticks,
-    mm::{memory_set, KernelAddr, PhysPageNum},
+    arch::{memory_layout::PAGE_SIZE, time::get_ticks},
+    mm::{KernelAddr, PhysPageNum, memory_set},
 };
 
 use super::{MemorySet, StepByOne, VirtAddr};
@@ -150,6 +150,34 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
     let page_table = PageTable::from_token(token);
     let va = ptr as usize;
     KernelAddr::from(page_table.translate_va(VirtAddr::from(va)).unwrap()).as_mut()
+}
+
+/// 安全地将用户空间指针翻译为内核态的可变引用
+/// token: 进程页表的 token 
+/// ptr: 用户空间的原始指针
+pub fn strong_translated_refmut<T>(token: usize, ptr: *mut T) -> Option<&'static mut T> {
+    let page_table = PageTable::from_token(token);
+    let va = ptr as usize;
+
+    // 1. 检查对齐 (Alignment)
+    if va % core::mem::align_of::<T>() != 0 {
+        return None;
+    }
+
+    // 检查是否跨页边界
+    // 如果对象跨越了页面，简单的物理地址转换是不够的，通常需要分段读写或临时映射
+    let size = core::mem::size_of::<T>();
+    if (va % PAGE_SIZE) + size > PAGE_SIZE {
+        // 对于简单的 PID写入，通常不会跨页，但作为通用函数必须考虑
+        return None; 
+    }
+    page_table
+        .translate_va(VirtAddr::from(va))
+        .map(|pa| { 
+            // 转换为内核虚拟地址并转为引用
+            // 注意：这里返回的生命周期应该绑定在调用者身上，而不是 'static
+            KernelAddr::from(pa).as_mut() 
+        })
 }
 
 pub fn safe_translated_refmut<T>(memory_set: &MemorySet, ptr: *mut T) -> &'static mut T {
