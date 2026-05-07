@@ -1,8 +1,5 @@
 use alloc::{
-    collections::btree_map::BTreeMap,
-    format,
-    sync::{Arc, Weak},
-    vec::Vec,
+    collections::btree_map::BTreeMap, format, string::String, sync::{Arc, Weak}, vec::Vec
 };
 use log::{debug, error, warn};
 use spin::{
@@ -10,7 +7,7 @@ use spin::{
 };
 
 use crate::{
-    fs::{FSInfo, FdTable}, mm::{MemorySet, MemorySetInner}, signal::SigTable, syscall::CloneFlags, task::{TaskControlBlock, TidHandle}, utils::SyscallRet
+    fs::{FSInfo, FdTable}, mm::{MemorySet, MemorySetInner}, signal::SigTable, syscall::CloneFlags, task::{TaskControlBlock, TidHandle}, utils::{SysErrNo, SyscallRet, get_abs_path, is_abs_path}
 };
 
 /// 进程/线程组 类
@@ -227,6 +224,32 @@ impl ProcessInner {
         self.sig_table
             .try_lock()
             .expect("You should not fail to get lock in a 1 HART system!")
+    }
+    /// 获取绝对路径
+    pub fn get_abs_path(
+        &self,
+        dirfd: isize,
+        path: &str,
+    ) -> Result<String, SysErrNo> {
+        if is_abs_path(path) {
+            Ok(get_abs_path("/", path))
+        } else if dirfd != -100 {
+            // AT_FDCWD=-100
+            let dirfd = dirfd as usize;
+            if let Some(file) = self.fd_table.try_get(dirfd) {
+                let base_path = file.file()?.inode.path();
+                // drop(proc_inner);
+                if path.is_empty() {
+                    Ok(base_path)
+                } else {
+                    Ok(get_abs_path(&base_path, path))
+                }
+            } else {
+                Err(SysErrNo::EINVAL)
+            }
+        } else {
+            Ok(get_abs_path(&self.fs_info.get_cwd(), path))
+        }
     }
 }
 

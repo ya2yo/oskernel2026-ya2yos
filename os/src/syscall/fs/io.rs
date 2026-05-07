@@ -106,19 +106,19 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/readv.2.html
 pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock();
-    let token = inner.get_locked_memory_set_write().token();
+    let proc_inner = task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_read().token();
 
-    if fd >= inner.fd_table.len() {
+    if fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = task.get_fd_table().try_get(fd) {
+    if let Some(file) = proc_inner.fd_table.try_get(fd) {
         let file = file.any();
         if !file.readable() {
             return Err(SysErrNo::EACCES);
         }
         // release current task TCB manually to avoid multi-borrow
-        drop(inner);
+        drop(proc_inner);
         drop(task);
         let mut ret: usize = 0;
         let iovec_size = core::mem::size_of::<Iovec>();
@@ -243,7 +243,7 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
     if offset < 0 || fd >= inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = task.get_fd_table().try_get(fd) {
+    if let Some(file) = inner.fd_table.try_get(fd) {
         let file = file.file()?;
         if !file.writable() {
             return Err(SysErrNo::EACCES);
@@ -272,7 +272,7 @@ pub fn sys_pread64(fd: usize, buf: *const u8, count: usize, offset: isize) -> Sy
     if offset < 0 || fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = task.get_fd_table().try_get(fd) {
+    if let Some(file) = proc_inner.fd_table.try_get(fd) {
         let file = file.file()?;
         if !file.readable() {
             return Err(SysErrNo::EACCES);

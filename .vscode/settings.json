@@ -4,5 +4,6 @@
     "rust-analyzer.diagnostics.disabled": [
         "unresolved-proc-macro"
     ],
-    "rust-analyzer.cargo.allTargets": false
+    "rust-analyzer.cargo.allTargets": false,
+    "rust-analyzer.checkOnSave": true
 }

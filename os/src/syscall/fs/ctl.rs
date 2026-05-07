@@ -72,7 +72,6 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/mkdirat.2.html
 pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let task_inner = task.inner_lock();
     let proc_inner=task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_write().token();
     let path = translated_str(token, path);
@@ -84,8 +83,7 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     if dirfd != -100 && dirfd as usize >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
-    drop(proc_inner);
-    let abs_path = task_inner.get_abs_path(&task,dirfd, &path)?;
+    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     if let Ok(_) = open(&abs_path, OpenFlags::O_RDWR, NONE_MODE) {
         return Err(SysErrNo::EEXIST);
     }
@@ -140,12 +138,11 @@ pub fn sys_linkat(
 pub fn sys_unlinkat(dirfd: isize, path: *const u8, _flags: u32) -> SyscallRet {
     // assert!(flags != AT_REMOVEDIR, "not support yet");
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
     let proc_inner=task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
 
     let path = translated_str(token, path);
-    let abs_path = inner.get_abs_path(&task,dirfd, &path)?;
+    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     // TODO(ZMY) 支持符号链接,socket,FIFO,device
     // 如果是File但尚有对应的fd未关闭,等到close时unlink
     // 如果是符号链接,直接移除
@@ -187,8 +184,8 @@ pub fn sys_utimensat(
         return Err(SysErrNo::EBADF);
     }
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let proc_inner=task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_read().token();
     let path = if !path.is_null() {
         translated_str(token, path)
     } else {
@@ -222,7 +219,7 @@ pub fn sys_utimensat(
         };
     }
 
-    let abs_path = inner.get_abs_path(&task, dirfd, &path)?;
+    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     let osfile = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     osfile.inode.set_timestamps(atime_sec, mtime_sec, None)?;
     return Ok(0);
@@ -237,7 +234,6 @@ pub fn sys_sync() -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/readlinkat.2.html
 pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
     let proc_inner=task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
     let self_token = current_token();
@@ -271,7 +267,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
         return Ok(res);
     }
     // debug!("[sys_read_linkat] got path : {}", inner.fs_info.get_cwd());
-    let abs_path = inner.get_abs_path(&task,dirfd, &path)?;
+    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     let mut linkbuf = vec![0u8; bufsize];
     let file = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
     let readcnt = file.inode.read_link(&mut linkbuf, bufsize)?;
@@ -284,8 +280,8 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
 
 pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let proc_inner=task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_read().token();
     let target_path = translated_str(token, target);
     let link_path = translated_str(token, linkpath);
 
@@ -294,7 +290,7 @@ pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) ->
         target_path, newdirfd, link_path
     );
 
-    let abs_link_path = inner.get_abs_path(&task, newdirfd, &link_path)?;
+    let abs_link_path = proc_inner.get_abs_path( newdirfd, &link_path)?;
     //检查linkpath是否已存在
     if let Ok(_) = open(&abs_link_path, OpenFlags::empty(), NONE_MODE) {
         return Err(SysErrNo::EEXIST);
@@ -326,14 +322,14 @@ pub fn sys_renameat2(
     _flags: u32,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let proc_inner=task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_read().token();
     let oldpath = translated_str(token, oldpath);
     let newpath = translated_str(token, newpath);
 
-    let old_abs_path = inner.get_abs_path(&task, olddirfd, &oldpath)?;
+    let old_abs_path = proc_inner.get_abs_path(olddirfd, &oldpath)?;
     let osfile = open(&old_abs_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
-    let new_abs_path = inner.get_abs_path(&task, newdirfd, &newpath)?;
+    let new_abs_path = proc_inner.get_abs_path( newdirfd, &newpath)?;
     osfile.inode.rename(&old_abs_path, &new_abs_path)
 }
 
@@ -365,7 +361,6 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
 
 pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let task_inner=task.inner_lock();
     let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
 
@@ -391,7 +386,7 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
         return Err(SysErrNo::ENOENT);
     }
 
-    let abs_path = task_inner.get_abs_path(&task, dirfd, &path)?;
+    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
 
     debug!(
         "[sys_fchmodat] path is {}, flags is {}, new mode is {:o}",

@@ -60,7 +60,6 @@ impl Drop for TaskControlBlock {
 }
 
 pub struct TaskControlBlockInner {
-    tcb: Weak<TaskControlBlock>, // 方便回到process去获取文件描述符表等公共资源
     trap_cx_ppn: PhysPageNum,    // TrapContext缓冲区物理页
     pub trap_cx_bottom: usize,   // TrapContext缓冲区虚拟地址基地址
 
@@ -97,80 +96,6 @@ impl TaskControlBlockInner {
 
     pub fn is_zombie(&self) -> bool {
         self.task_status == TaskStatus::Zombie
-    }
-
-    /// 在clone_user_res,
-    fn alloc_user_res(&mut self) {
-        let tcb_arc = self.tcb.upgrade().unwrap();
-        let process = tcb_arc.process.inner_lock();
-        let memory_set = process.get_locked_memory_set_read();
-
-        let (ustack_bottom, ustack_top) = memory_set.lazy_insert_framed_area_with_hint(
-            USER_STACK_TOP,
-            USER_STACK_SIZE,
-            MapPermission::R | MapPermission::W | MapPermission::U,
-            MapAreaType::Stack,
-        );
-        let (trap_cx_bottom, _) = memory_set.insert_framed_area_with_hint(
-            USER_TRAP_CONTEXT_TOP,
-            PAGE_SIZE,
-            MapPermission::R | MapPermission::W,
-            MapAreaType::Trap,
-        );
-        let trap_cx_ppn = memory_set
-            .translate(VirtAddr::from(trap_cx_bottom).floor())
-            .unwrap();
-        self.user_stack_top = ustack_top;
-        self.trap_cx_ppn = trap_cx_ppn;
-        self.trap_cx_bottom = trap_cx_bottom;
-
-        //预先为栈顶分配几页，用于环境变量等初始数据
-
-        // 在self.memory_set中找到第一个.range()==user_stack_range()的MapArea对象的可变引用
-        // TrustOS中，这一步是在本函数中执行的
-        // HXC在对mm模块进行重构时，将其移动到MemorySetInner中
-
-        let area = memory_set
-            .get_mut()
-            .find_area_by_range(
-                VirtAddr::from(ustack_bottom).floor(),
-                VirtAddr::from(ustack_top).floor(),
-            )
-            .unwrap();
-
-        for i in 1..=PRE_ALLOC_PAGES {
-            let vpn = (area.vpn_range.end().0 - i).into();
-            if memory_set.translate(vpn).is_none() {
-                area.map_one(&mut memory_set.get_mut().page_table, vpn);
-            }
-        }
-    }
-
-    pub fn get_abs_path(
-        &self,
-        tcb: &TaskControlBlock,
-        dirfd: isize,
-        path: &str,
-    ) -> Result<String, SysErrNo> {
-        if is_abs_path(path) {
-            Ok(get_abs_path("/", path))
-        } else if dirfd != -100 {
-            // AT_FDCWD=-100
-            let dirfd = dirfd as usize;
-            if let Some(file) = tcb.get_fd_table().try_get(dirfd) {
-                let base_path = file.file()?.inode.path();
-                // drop(proc_inner);
-                if path.is_empty() {
-                    Ok(base_path)
-                } else {
-                    Ok(get_abs_path(&base_path, path))
-                }
-            } else {
-                Err(SysErrNo::EINVAL)
-            }
-        } else {
-            Ok(get_abs_path(&tcb.get_fs_info().get_cwd(), path))
-        }
     }
 }
 
@@ -214,7 +139,6 @@ impl TaskControlBlock {
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             inner: Mutex::new(TaskControlBlockInner {
-                tcb: Weak::new(),
                 trap_cx_ppn: 0.into(),
                 trap_cx_bottom: 0,
                 user_stack_top: 0,
@@ -238,8 +162,7 @@ impl TaskControlBlock {
         let arc_task = Arc::new(task);
         process.meta_lock().tasks.push(Arc::downgrade(&arc_task));
         let mut task_inner = arc_task.inner_lock();
-        task_inner.tcb = Arc::downgrade(&arc_task);
-        task_inner.alloc_user_res();
+        arc_task.alloc_user_res(&mut task_inner);
         // prepare TrapContext in user space
         let trap_cx = task_inner.trap_cx();
         *trap_cx =
@@ -271,7 +194,7 @@ impl TaskControlBlock {
             .change_memory_set_and_sigtable(memory_set, SigTable::new());
 
         // 重新分配用户资源
-        task_inner.alloc_user_res();
+        self.alloc_user_res(&mut task_inner);
         {
             self.get_fd_table().close_on_exec();
         }
@@ -469,7 +392,6 @@ impl TaskControlBlock {
             interrupted:AtomicBool::new(false),
             interrupt_waker:AtomicWaker::new(),
             inner: Mutex::new(TaskControlBlockInner {
-                tcb: Weak::new(),
                 trap_cx_ppn: 0.into(),
                 trap_cx_bottom: 0,
                 user_stack_top: 0,
@@ -492,18 +414,17 @@ impl TaskControlBlock {
         });
 
         let mut child_inner = child.inner_lock();
-        child_inner.tcb = Arc::downgrade(&child);
         child.process.meta_lock().tasks.push(Arc::downgrade(&child));
 
         if flags.contains(CloneFlags::CLONE_THREAD) {
             // 线程
-            child_inner.alloc_user_res();
+            self.alloc_user_res(&mut child_inner);
             *child_inner.trap_cx() = *parent_inner.trap_cx();
         } else {
             // fork
             let process = &self.process.inner_lock();
             let another = &*process.get_locked_memory_set_read();
-            child_inner.alloc_user_res();
+            child.alloc_user_res(&mut child_inner);
             let child_proc = child.process.inner_lock();
 
             let child_mm = child_proc.get_locked_memory_set_read();
@@ -564,7 +485,7 @@ impl TaskControlBlock {
         // if !flags.contains(CloneFlags::CLONE_THREAD) {
         //     insert_into_process_group(child.ppid(), &child);
         // }
-        Ok(child)
+        Ok(child.clone())
     }
 
     ///修改数据段大小，懒分配
@@ -637,6 +558,44 @@ impl TaskControlBlock {
     /// 获取线程所在的进程
     pub fn get_process(&self)->Arc<Process> {
         self.process.clone()
+    }
+    /// 在clone_user_res,
+    fn alloc_user_res(&self,task_inner: &mut TaskControlBlockInner) {
+        let (_, ustack_top,trap_cx_bottom,trap_cx_ppn) = {
+            let proc_inner = self.process.inner_lock();
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            let (u_bottom,u_top) =memory_set.lazy_insert_framed_area_with_hint(
+                USER_STACK_TOP,
+                USER_STACK_SIZE,
+                MapPermission::R | MapPermission::W | MapPermission::U,
+                MapAreaType::Stack,
+            );
+            let (t_cx,_) = memory_set.insert_framed_area_with_hint(
+            USER_TRAP_CONTEXT_TOP,
+                PAGE_SIZE,
+            MapPermission::R | MapPermission::W,
+            MapAreaType::Trap,
+            );
+            let t_cx_ppn= memory_set
+            .translate(VirtAddr::from(t_cx).floor())
+            .unwrap();
+            // 预分配页
+            let area = memory_set.get_mut().find_area_by_range(
+                VirtAddr::from(u_bottom).floor(),
+                VirtAddr::from(u_top).floor(),
+            ).unwrap();
+            for i in 1..=PRE_ALLOC_PAGES {
+                let vpn = (area.vpn_range.end().0 - i).into();
+                if memory_set.translate(vpn).is_none() {
+                    area.map_one(&mut memory_set.get_mut().page_table, vpn);
+                }
+            }
+            (u_bottom,u_top,t_cx,t_cx_ppn)
+        };
+        // 锁 TCB 并回写结果 
+        task_inner.user_stack_top = ustack_top;
+        task_inner.trap_cx_ppn = trap_cx_ppn;
+        task_inner.trap_cx_bottom = trap_cx_bottom;
     }
 }
 

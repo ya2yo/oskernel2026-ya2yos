@@ -35,13 +35,11 @@ pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
 pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, _flags: usize) -> SyscallRet {
     let task = current_task().unwrap();
 
-    let inner = task.inner_lock();
     let proc_inner=task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
-    drop(proc_inner);
     let path = trim_start_slash(translated_str(token, path));
 
-    let abs_path = inner.get_abs_path(&task, dirfd, &path)?;
+    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     //log::info!("[sys_fstatat] abs_path={}", &abs_path);
 
     if abs_path == "/ls" || abs_path == "/xargs" || abs_path == "/sleep" {
@@ -103,7 +101,7 @@ pub fn sys_faccessat(dirfd: isize, path: *const u8, mode: u32, _flags: usize) ->
         }
     }
 
-    let abs_path = inner.get_abs_path(&task, dirfd, &path)?;
+    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
     let parent_inode = open(&parent_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
     let parent_mode = parent_inode.inode.fmode()? & 0xfff;
