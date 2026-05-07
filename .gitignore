@@ -24,3 +24,4 @@ kernel-la
 *.dtb
 *.dts
 *.txt
+!os/vendor/**
