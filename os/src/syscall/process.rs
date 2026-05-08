@@ -95,43 +95,7 @@ pub fn sys_settidaddress(tidptr: usize) -> SyscallRet {
     sys_gettid()
 }
 
-/// 参考 https://man7.org/linux/man-pages/man2/clone.2.html
-/// void (*fn)(void* arg) 参数通过栈传递,如果stack_ptr!=0, fn=0(stack),arg=8(stack)
-pub fn sys_clone(
-    flags: usize,
-    stack_ptr: usize,
-    parent_tid_ptr: usize,
-    #[cfg(target_arch = "loongarch64")] child_tid_ptr: usize,
-    tls_ptr: usize,
-    #[cfg(not(target_arch = "loongarch64"))] child_tid_ptr: usize,
-) -> SyscallRet {
-    let flags = CloneFlags::from_bits(flags as u64).unwrap();
-    debug!(
-        "[sys_clone] flags {:?},stack:{:#x},parent_tid_ptr:{:#x},child_tid_ptr:{:#x},tls_ptr:{:#x}",
-        flags, stack_ptr, parent_tid_ptr, child_tid_ptr, tls_ptr
-    );
-    // if current_task().unwrap().pid() == 4 {
-    //     return Ok(current_task().unwrap().tid());
-    // }
 
-    if flags.contains(CloneFlags::CLONE_THREAD) {
-        assert!(flags.contains(CloneFlags::CLONE_SIGHAND));
-        assert!(flags.contains(CloneFlags::CLONE_VM));
-    }
-    let task = current_task().unwrap();
-    let new_task = task.clone_process(
-        flags,
-        stack_ptr,
-        parent_tid_ptr as *mut u32,
-        tls_ptr,
-        child_tid_ptr as *mut u32,
-    )?;
-    let new_tid = new_task.tid();
-    // we do not have to move to next instruction since we have done it before
-    // add new task to scheduler
-    ready_queue::add_task(&new_task);
-    Ok(new_tid)
-}
 
 /// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
 pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {

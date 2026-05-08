@@ -1,6 +1,6 @@
 mod clone;
 // mod clone3;
-// mod ctl;
+mod ctl;
 // mod execve;
 mod exit;
 // mod job;
@@ -9,5 +9,5 @@ mod exit;
 // mod wait;
 
 pub use self::{
-    clone::*, exit::*// clone3::*, ctl::*, execve::*, job::*, schedule::*, thread::*, wait::*,
+    clone::*, exit::*, ctl::* // clone3::*, execve::*, job::*, schedule::*, thread::*, wait::*,
 };

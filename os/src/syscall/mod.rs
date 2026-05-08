@@ -278,7 +278,6 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::Exit => sys_exit(args[0] as i32),
         Syscall::ExitGroup => sys_exit_group(args[0] as i32),
-        Syscall::SetTidAddress => sys_settidaddress(args[0]),
         Syscall::Futex => sys_futex(
             args[0] as *mut i32,
             args[1] as u32,
@@ -341,7 +340,6 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::SetSid => sys_setsid(),
         Syscall::GetRusage => sys_getrusage(args[0] as isize, args[1] as *mut Rusage),
         Syscall::GetTimeOfDay => sys_gettimeofday(args[0] as *mut Timespec, args[1] as usize),
-        Syscall::Umask => sys_umask(args[0] as u32),
         Syscall::Uname => sys_uname(args[0] as *mut u8),
         Syscall::GetPid => sys_getpid(),
         Syscall::GetPPid => sys_getppid(),
@@ -412,11 +410,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::Clone => sys_clone(args[0], args[1], args[2], args[3], args[4]),
         Syscall::Brk => sys_brk(args[0]),
-        Syscall::Execve => sys_execve(
-            args[0] as *const u8,
-            args[1] as *const usize,
-            args[2] as *const usize,
-        ),
+        
         Syscall::Mmap => sys_mmap(
             args[0],
             args[1],
@@ -431,12 +425,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::MSync => Ok(0),
         Syscall::Madvise => sys_madvise(args[0], args[1], args[2]),
         Syscall::Wait4 => sys_wait4(args[0] as isize, args[1] as *mut i32, args[2] as i32),
-        Syscall::Prlimit => sys_prlimit(
-            args[0],
-            args[1] as u32,
-            args[2] as *const RLimit,
-            args[3] as *mut RLimit,
-        ),
+        
         Syscall::Renameat2 => sys_renameat2(
             args[0] as isize,
             args[1] as *const u8,
@@ -449,6 +438,23 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::CopyFileRange => {
             sys_copy_file_range(args[0], args[1], args[2], args[3], args[4], args[5] as u32)
         }
+
+        // task ops
+        Syscall::Execve => sys_execve(
+            args[0] as *const u8,
+            args[1] as *const usize,
+            args[2] as *const usize,
+        ),
+        Syscall::SetTidAddress => sys_settidaddress(args[0]),
+        Syscall::Prlimit => sys_prlimit(
+            args[0],
+            args[1] as u32,
+            args[2] as *const RLimit,
+            args[3] as *mut RLimit,
+        ),
+        Syscall::Umask => sys_umask(args[0] as u32),
+        Syscall::GetMempolicy => sys_get_mempolicy(args[0], args[1], args[2], args[3], args[4]),
+
         Syscall::Shutdown => shutdown(false),
         _ => {
             error!(
