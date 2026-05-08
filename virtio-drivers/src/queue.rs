@@ -174,6 +174,23 @@ impl<H: Hal> VirtQueue<H> {
         self.pop_used(token, inputs, outputs)
     }
 
+    /// Returns whether the driver should notify the device after adding a new buffer to the
+    /// virtqueue.
+    ///
+    /// This will be false if the device has supressed notifications.
+    pub fn should_notify(&self) -> bool {
+        if self.event_idx {
+            // Safe because self.used points to a valid, aligned, initialised, dereferenceable, readable
+            // instance of UsedRing.
+            let avail_event = unsafe { (*self.used.as_ptr()).avail_event.load(Ordering::Acquire) };
+            self.avail_idx >= avail_event.wrapping_add(1)
+        } else {
+            // Safe because self.used points to a valid, aligned, initialised, dereferenceable, readable
+            // instance of UsedRing.
+            unsafe { (*self.used.as_ptr()).flags.load(Ordering::Acquire) & 0x0001 == 0 }
+        }
+    }
+
     /// Returns a non-null pointer to the descriptor at the given index.
     fn desc_ptr(&mut self, index: u16) -> *mut Descriptor {
         // Safe because self.desc is properly aligned and dereferenceable.

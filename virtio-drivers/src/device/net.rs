@@ -1,5 +1,6 @@
 //! Driver for VirtIO network devices.
 
+use crate::device::{MIN_BUFFER_LEN, VirtError, VirtResult};
 use crate::hal::Hal;
 use crate::queue::VirtQueue;
 use crate::transport::Transport;
@@ -7,7 +8,7 @@ use crate::volatile::{volread, ReadOnly};
 use crate::Result;
 use bitflags::bitflags;
 use core::mem::{size_of, MaybeUninit};
-use log::{debug, info};
+use log::{debug, info, warn};
 use zerocopy::{AsBytes, FromBytes};
 
 /// The virtio network device is a virtual ethernet card.
@@ -69,6 +70,47 @@ impl<H: Hal, T: Transport> VirtIONet<H, T> {
     /// Whether can send packet.
     pub fn can_send(&self) -> bool {
         self.send_queue.available_desc() >= 2
+    }
+
+    /// Whether the length of the receive buffer is valid.
+    fn check_rx_buf_len(rx_buf: &[u8]) -> VirtResult<()> {
+        if rx_buf.len() < MIN_BUFFER_LEN {
+            warn!("Receive buffer len {} is too small", rx_buf.len());
+            Err(VirtError::InvalidParam)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Submits a request to receive a buffer immediately without waiting for
+    /// the reception to complete.
+    ///
+    /// It will submit request to the VirtIO net device and return a token
+    /// identifying the position of the first descriptor in the chain. If there
+    /// are not enough descriptors to allocate, then it returns
+    /// [`Error::QueueFull`].
+    ///
+    /// The caller can then call [`poll_receive`] with the returned token to
+    /// check whether the device has finished handling the request. Once it has,
+    /// the caller must call [`receive_complete`] with the same buffer before
+    /// reading the response.
+    ///
+    /// # Safety
+    ///
+    /// `rx_buf` is still borrowed by the underlying VirtIO net device even after
+    /// this method returns. Thus, it is the caller's responsibility to guarantee
+    /// that they are not accessed before the request is completed in order to
+    /// avoid data races.
+    ///
+    /// [`poll_receive`]: Self::poll_receive
+    /// [`receive_complete`]: Self::receive_complete
+    pub unsafe fn receive_begin(&mut self, rx_buf: &mut [u8]) -> VirtResult<u16> {
+        Self::check_rx_buf_len(rx_buf)?;
+        let token = self.recv_queue.add(&[], &mut [rx_buf])?;
+        if self.recv_queue.should_notify() {
+            self.transport.notify(QUEUE_RECEIVE);
+        }
+        Ok(token)
     }
 
     /// Whether can receive packet.
