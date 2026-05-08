@@ -7,7 +7,7 @@ pub fn sys_get_mempolicy(
     _maxnode: usize,
     _addr: usize,
     _flags: usize,
-) -> SysResultsult<isize> {
+) -> SysResult<usize> {
     log::error!("Unimplemented sys_get_mempolicy");
     Ok(0)
 }

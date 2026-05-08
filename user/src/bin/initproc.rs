@@ -25,12 +25,11 @@ fn run_testsuit(root: &str, script: &str) {
 }
 
 pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
-    println!("enter fork_and_run!");
+    println!("{:?}",args);
     let pid = fork();
     if pid == 0 {
         // 子进程
         chdir(dir);
-        println!("execve args: {} {} {}",args[0],args[1],args[2]);
         let ret = execve(&args);
         println!("execve fail!");
         exit(0);
@@ -405,15 +404,15 @@ fn main() -> i32 {
     // run_specific_test("musl\0", "entry-static.exe\0", "getpwnam_r_errno\0");
 
     /* PASS */
-    // run_testsuit("musl\0", "basic_testcode.sh\0"); // OK
-    // run_testsuit("musl\0", "busybox_testcode.sh\0"); // OK
-    // run_testsuit("musl\0", "lua_testcode.sh\0"); // OK
-    // run_testsuit("musl\0", "iozone_testcode.sh\0"); // 磁盘性能测试，可通过，但是时间有点长
-    // run_testsuit("musl\0", "libctest_testcode.sh\0"); // 210分，已经够高
-    // run_testsuit("musl\0", "libcbench_testcode.sh\0");
+    run_testsuit("musl\0", "basic_testcode.sh\0"); // OK
+    run_testsuit("musl\0", "busybox_testcode.sh\0"); // OK
+    run_testsuit("musl\0", "lua_testcode.sh\0"); // OK
+    run_testsuit("musl\0", "iozone_testcode.sh\0"); // 磁盘性能测试，可通过，但是时间有点长
+    run_testsuit("musl\0", "libctest_testcode.sh\0"); // 210分，已经够高
+    run_testsuit("musl\0", "libcbench_testcode.sh\0");
 
     /* FAIL */
-    run_testsuit("musl\0", "cyclictest_testcode.sh\0"); // panic：完全未实现
+    // run_testsuit("musl\0", "cyclictest_testcode.sh\0"); // panic：完全未实现
     // run_testsuit("musl\0", "iperf_testcode.sh\0"); // panic：error + 完全未实现，需要实现进程组
     // run_testsuit("musl\0", "lmbench_testcode.sh\0"); // 卡死：耗时很长 + overhead之后卡死
     // run_testsuit("musl\0", "ltp_testcode.sh\0"); // 部分PASS + 卡死

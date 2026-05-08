@@ -9,7 +9,8 @@ pub fn run_ltp_tests_musl(tests: &[&str], blacklist: &[&str]) {
             continue;
         }
         println!("RUN LTP CASE {}", test);
-        let r = fork_and_run("/musl/ltp/testcases/bin\0", &[test]);
+        
+        let r = fork_and_run("/musl/ltp/testcases/bin\0", &["busy_box\0","",test]);
         println!("FAIL LTP CASE {} : {}", test, r); // 这不是表示失败了，这只是告诉外界程序返回值是多少而已
     }
     println!("#### OS COMP TEST GROUP END ltp-musl ####");
