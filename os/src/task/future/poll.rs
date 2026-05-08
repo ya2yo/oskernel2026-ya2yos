@@ -1,7 +1,7 @@
 use core::{future::poll_fn, task::Poll};
 
+use crate::fs::File;
 use crate::utils::{SysResult,SysErrNo};
-use crate::utils::Pollable;
 use crate::syscall::PollEvents;
 
 /// A helper to wrap a synchronous non-blocking I/O function into an
@@ -15,7 +15,7 @@ use crate::syscall::PollEvents;
 ///   immediately when the I/O operation would block.
 /// * `f`: The synchronous non-blocking I/O function to be wrapped. It should
 ///   return `SysErrNo::WouldBlock` when the operation would block.
-pub async fn poll_io<P: Pollable, F: FnMut() -> SysResult<T>, T>(
+pub async fn poll_io<P: File, F: FnMut() -> SysResult<T>, T>(
     pollable: &P,
     events: PollEvents,
     non_blocking: bool,

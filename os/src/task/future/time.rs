@@ -1,11 +1,8 @@
 use alloc::collections::BTreeMap;
 use core::{
-    fmt,
-    pin::Pin,
-    task::{Context, Poll, Waker},
-    time::Duration,
+    fmt, future::{Future, IntoFuture}, pin::Pin, task::{Context, Poll, Waker}, time::Duration
 };
-use crate::timer::wall_time;
+use crate::{timer::wall_time, utils::SysErrNo};
 use crate::timer::Timespec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -142,9 +139,9 @@ impl fmt::Display for Elapsed {
 
 impl core::error::Error for Elapsed {}
 
-impl From<Elapsed> for AxError {
+impl From<Elapsed> for SysErrNo {
     fn from(_: Elapsed) -> Self {
-        AxError::TimedOut
+        SysErrNo::ETIMEDOUT
     }
 }
 
@@ -162,7 +159,7 @@ pub async fn timeout<F: IntoFuture>(
 
 /// Requires a `Future` to complete before the specified deadline.
 pub async fn timeout_at<F: IntoFuture>(
-    deadline: Option<TimeValue>,
+    deadline: Option<Timespec>,
     f: F,
 ) -> Result<F::Output, Elapsed> {
     if let Some(deadline) = deadline {

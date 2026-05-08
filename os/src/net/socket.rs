@@ -1,3 +1,4 @@
+//! 套接字相关数据结构
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     any::Any,
@@ -6,8 +7,7 @@ use core::{
     task::Context,
 };
 
-
-use crate::{fs::File, utils::{SysErrNo,SysResult}};
+use crate::{fs::File, mm::UserBuffer, utils::{SysErrNo, SysResult}};
 // use axio::prelude::*;
 use crate::syscall::PollEvents;
 use bitflags::bitflags;
@@ -19,7 +19,7 @@ use crate::net::{
     udp::UdpSocket,
 };
 
-/// Extended socket address supporting IP families.
+/// 套接字地址的扩展，目前只支持ip类型
 #[derive(Clone, Debug)]
 pub enum SocketAddrEx {
     /// An IP (v4/v6) socket address.
@@ -27,7 +27,7 @@ pub enum SocketAddrEx {
 }
 
 impl SocketAddrEx {
-    /// Convert into an IP socket address, or return an error if not IP.
+    /// 转换成套接字地址
     pub fn into_ip(self) -> SysResult<SocketAddr> {
         match self {
             SocketAddrEx::Ip(addr) => Ok(addr),
@@ -36,17 +36,26 @@ impl SocketAddrEx {
 }
 
 bitflags! {
-    /// Flags for sending data to a socket.
+    /// 向套接字发送数据的标志
     ///
     /// See [`SocketOps::send`].
+    #[derive(Default, Debug, Clone, Copy)]
     pub struct SendFlags: u32 {
+        const MSG_OOB          = 0x1;
+        const MSG_DONTROUTE    = 0x4;
+        const MSG_DONTWAIT     = 0x40;
+        const MSG_EOR          = 0x80;
+        const MSG_CONFIRM      = 0x800;
+        const MSG_NOSIGNAL     = 0x4000;
+        const MSG_MORE         = 0x8000;
     }
 }
 
 bitflags! {
-    /// Flags for receiving data from a socket.
+    /// 代表接受数据的标志
     ///
     /// See [`SocketOps::recv`].
+    #[derive(Default, Debug, Clone, Copy)]
     pub struct RecvFlags: u32 {
         /// Receive data without removing it from the queue.
         const PEEK = 0x01;
@@ -60,7 +69,7 @@ bitflags! {
 /// Type alias for ancillary control message data.
 pub type CMsgData = Box<dyn Any + Send + Sync>;
 
-/// Options for sending data to a socket.
+/// 向套接字发送数据的选项
 ///
 /// See [`SocketOps::send`].
 #[derive(Default, Debug)]
@@ -73,7 +82,7 @@ pub struct SendOptions {
     pub cmsg: Vec<CMsgData>,
 }
 
-/// Options for receiving data from a socket.
+/// 从套接字接收数据的选项
 ///
 /// See [`SocketOps::recv`].
 #[derive(Default)]
@@ -94,7 +103,7 @@ impl Debug for RecvOptions<'_> {
     }
 }
 
-/// Kind of shutdown operation to perform on a socket.
+/// 关闭套接字操作的类型
 #[derive(Debug, Clone, Copy)]
 pub enum Shutdown {
     /// Shut down the read half.
@@ -116,7 +125,7 @@ impl Shutdown {
     }
 }
 
-/// Operations that can be performed on a socket.
+/// 套接字应该实现的方法
 #[enum_dispatch]
 pub trait SocketOps: Configurable {
     /// Binds an unbound socket to the given address and port.
@@ -126,17 +135,17 @@ pub trait SocketOps: Configurable {
 
     /// Starts listening on the bound address and port.
     fn listen(&self) -> SysResult {
-        Err(SysErrNo::OperationNotSupported)
+        Err(SysErrNo::EOPNOTSUPP)
     }
     /// Accepts a connection on a listening socket, returning a new socket.
     fn accept(&self) -> SysResult<Socket> {
-        Err(SysErrNo::OperationNotSupported)
+        Err(SysErrNo::EOPNOTSUPP)
     }
 
     /// Send data to the socket, optionally to a specific address.
-    fn send(&self, src: impl File, options: SendOptions) -> SysResult<usize>;
+    fn send(&self, src: UserBuffer, options: SendOptions) -> SysResult<usize>;
     /// Receive data from the socket.
-    fn recv(&self, dst: impl File, options: RecvOptions<'_>) -> SysResult<usize>;
+    fn recv(&self, dst:UserBuffer, options: RecvOptions<'_>) -> SysResult<usize>;
 
     /// Get the local endpoint of the socket.
     fn local_addr(&self) -> SysResult<SocketAddrEx>;
@@ -147,7 +156,7 @@ pub trait SocketOps: Configurable {
     fn shutdown(&self, how: Shutdown) -> SysResult;
 }
 
-/// Network socket abstraction.
+/// 网络套接字抽象
 #[enum_dispatch(Configurable, SocketOps)]
 pub enum Socket {
     /// UDP socket.

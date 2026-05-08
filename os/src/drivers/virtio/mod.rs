@@ -5,6 +5,8 @@ pub use blk::*;
 use log::debug;
 pub use pci::*;
 use virtio_drivers::Hal;
+mod net;
+use net::*;
 
 use crate::{
     arch::page_table::PageTable,
@@ -96,3 +98,30 @@ impl Hal for VirtIoHalCMAImpl {
         }
     }
 }
+
+/// 虚拟IO设备的错误类型
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VirtError {
+    /// There are not enough descriptors available in the virtqueue, try again later.
+    QueueFull,
+    /// The device is not ready.
+    NotReady,
+    /// The device used a different descriptor chain to the one we were expecting.
+    WrongToken,
+    /// The queue is already in use.
+    AlreadyUsed,
+    /// Invalid parameter.
+    InvalidParam,
+    /// Failed to alloc DMA memory.
+    DmaError,
+    /// I/O Error
+    IoError,
+    /// The request was not supported by the device.
+    Unsupported,
+    /// The config space advertised by the device is smaller than the driver expected.
+    ConfigSpaceTooSmall,
+    /// The device doesn't have any config space, but the driver expects some.
+    ConfigSpaceMissing,
+}
+/// 虚拟设备的返回值
+pub type VirtResult<T = ()> = core::result::Result<T, VirtError>;

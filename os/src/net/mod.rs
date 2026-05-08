@@ -9,9 +9,6 @@
 //!
 //! [smoltcp]: https://github.com/smoltcp-rs/smoltcp
 
-#![no_std]
-
-
 mod consts;
 mod device;
 mod general;

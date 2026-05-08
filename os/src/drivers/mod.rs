@@ -2,11 +2,15 @@ mod device;
 mod disk;
 mod virtio;
 mod devcont;
+#[cfg(feature = "net")]
+mod net;
 pub use device::*;
 pub use disk::*;
 pub use virtio::*;
 pub use devcont::*;
-use virtio_drivers::transport::mmio::VirtIOHeader;
+#[cfg(feature = "net")]
+pub use net::*;
+use virtio_drivers::{device::net::VirtIONet, transport::mmio::{MmioTransport, VirtIOHeader}};
 
 use crate::arch::memory_layout::KERNEL_ADDR_OFFSET;
 
@@ -15,7 +19,7 @@ pub type BlockDeviceImpl = VirtIoBlkDev<VirtIoHalCMAImpl>;
 
 #[cfg(feature = "loongarch64")]
 pub type BlockDeviceImpl = VirtIoBlkDev2<VirtIoHalCMAImpl>;
-
+pub type NetDeviceImpl=VirtIONet<VirtIoHalCMAImpl, MmioTransport>;
 impl BlockDeviceImpl {
     #[cfg(feature = "riscv64")]
     pub fn new_device() -> Self {

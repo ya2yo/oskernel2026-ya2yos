@@ -25,7 +25,7 @@ pub const NOW_TIME_STAMP: usize = 1758325855;// add bu tuji :   1758325855 是20
 const USEC_PER_SEC: usize = 1000000;
 const NSEC_PER_SEC: usize = 1000000000;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Ord,Clone, Copy, PartialEq, Eq)]
 pub struct Timespec {
     pub tv_sec: usize,  //秒
     pub tv_nsec: usize, //纳秒
@@ -44,6 +44,9 @@ impl Timespec {
     }
     pub fn from_nanos(nanos : u64)->Self {
         Self { tv_sec: (nanos/NANOS_PER_SEC) as usize , tv_nsec: (nanos % NANOS_PER_SEC) as usize }
+    }
+    pub fn from_micros(micros:u64)->Self {
+        Self { tv_sec: (micros / MSEC_PER_SEC as u64) as usize , tv_nsec: (micros % MSEC_PER_SEC as u64) as usize }
     }
 }
 
