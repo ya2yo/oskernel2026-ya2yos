@@ -122,6 +122,7 @@ pub enum Syscall {
     Mprotect = 226,
     MSync = 227,
     Madvise = 233,
+    GetMempolicy=236,
     Accept4 = 242,
     Wait4 = 260,
     Prlimit = 261,

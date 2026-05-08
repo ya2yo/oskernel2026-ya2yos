@@ -55,7 +55,7 @@ cty = { path = "../cty" }   # TODO: 明晃晃地放在外面是不是不太好
 
 [features]
 # default = ["loongarch64"]
-# default = ["riscv64"]
+default = ["riscv64"]
 # 级别相关定义在./os/src/logger.rs
 error = []          # 启用 error 级别
 warn = []           # 启用 warn 级别
