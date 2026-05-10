@@ -44,7 +44,7 @@ smoltcp = {version = "0.13.1", default-features = false, features=[
     ]
 }
 kspin = "0.1"
-futures-macro = {version = "0.3.32", default-features = false }
+futures-util = {version = "0.3.32", default-features = false }
 
 [build-dependencies]
 cfg-if = { version = "1.0.0" }

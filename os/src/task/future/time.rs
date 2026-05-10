@@ -4,6 +4,7 @@ use core::{
 };
 use crate::{timer::wall_time, utils::SysErrNo};
 use crate::timer::Timespec;
+use futures_macro::select_internal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct TimerKey {
