@@ -41,36 +41,70 @@ pub enum IpiTarget {
     },
 }
 
+const MAX_IRQ_COUNT: usize = 256;
+
+pub static IRQ_HANDLERS: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
 
 /// IRQ management interface.
-pub trait IrqIf {
-    /// Enables or disables the given IRQ.
-    fn set_enable(irq: usize, enabled: bool);
+/// Enables or disables the given IRQ.
+pub fn set_enable(irq: usize, _enabled: bool){
+    if irq<MAX_IRQ_COUNT {
+        unimplemented!("Call your hardware driver to enable/disable IRQ");
+    }
+}
 
-    /// Registers an IRQ handler for the given IRQ.
-    ///
-    /// It also enables the IRQ if the registration succeeds. It returns `false`
-    /// if the registration failed.
-    fn register(irq: usize, handler: IrqHandler) -> bool;
+/// Registers an IRQ handler for the given IRQ.
+///
+/// It also enables the IRQ if the registration succeeds. It returns `false`
+/// if the registration failed.
+pub fn register(irq: usize, handler: IrqHandler) -> bool{
+    if IRQ_HANDLERS.register_handler(irq, handler) {
+        set_enable(irq, true);
+        true
+    }else{
+        false
+    }
+}
 
-    /// Unregisters the IRQ handler for the given IRQ.
-    ///
-    /// It also disables the IRQ if the unregistration succeeds. It returns the
-    /// existing handler if it is registered, `None` otherwise.
-    fn unregister(irq: usize) -> Option<IrqHandler>;
+/// Unregisters the IRQ handler for the given IRQ.
+///
+/// It also disables the IRQ if the unregistration succeeds. It returns the
+/// existing handler if it is registered, `None` otherwise.
+pub fn unregister(irq: usize) -> Option<IrqHandler>{
+    let handler = IRQ_HANDLERS.unregister_handler(irq);
+    if handler.is_some() {
+        set_enable(irq, false);
+    }
+    handler
+}
 
-    /// Handles the IRQ.
-    ///
-    /// It is called by the common interrupt handler. It should look up in the
-    /// IRQ handler table and calls the corresponding handler. If necessary, it
-    /// also acknowledges the interrupt controller after handling.
-    ///
-    /// Returns the "real" IRQ number. On some platforms, this may differ from
-    /// the input `irq` number, for example on AArch64 the input `irq` is
-    /// ignored and the real IRQ number is obtained from the GIC. Returns
-    /// `None` if the IRQ is spurious.
-    fn handle(irq: usize) -> Option<usize>;
+/// Handles the IRQ.
+///
+/// It is called by the common interrupt handler. It should look up in the
+/// IRQ handler table and calls the corresponding handler. If necessary, it
+/// also acknowledges the interrupt controller after handling.
+///
+/// Returns the "real" IRQ number. On some platforms, this may differ from
+/// the input `irq` number, for example on AArch64 the input `irq` is
+/// ignored and the real IRQ number is obtained from the GIC. Returns
+/// `None` if the IRQ is spurious.
+pub fn handle(irq: usize) -> Option<usize>{
+    let real_irq = irq; 
+    let hook=IRQ_HOOK.load(Ordering::Relaxed);
+    if hook!=0 {
+        let hook_fn: fn(usize)=unsafe {
+            core::mem::transmute(hook)
+        };
+        hook_fn(real_irq);
+    }
+    if !IRQ_HANDLERS.handle(real_irq) {
+        println!("Unhandled IRQ: {}",real_irq);
+    }
+    unimplemented!("通知硬件中断处理完成");
+    Some(real_irq)
+}
 
-    /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
-    fn send_ipi(irq_num: usize, target: IpiTarget);
+/// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
+pub fn send_ipi(_irq_num: usize, _target: IpiTarget){
+    unimplemented!("call hardware function")
 }

@@ -1,10 +1,11 @@
 use alloc::collections::BTreeMap;
+use spin::Mutex;
 use core::{
     fmt, future::{Future, IntoFuture}, pin::Pin, task::{Context, Poll, Waker}, time::Duration
 };
 use crate::{timer::wall_time, utils::SysErrNo};
 use crate::timer::Timespec;
-use futures_macro::select_internal;
+use futures_util::{FutureExt, select_biased};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct TimerKey {
@@ -72,33 +73,22 @@ impl TimerRuntime {
     }
 }
 
-macro_rules! percpu_static {
-    ($(
-        $(#[$comment:meta])*
-        $name:ident: $ty:ty = $init:expr
-    ),* $(,)?) => {
-        $(
-            $(#[$comment])*
-            #[percpu::def_percpu]
-            static $name: $ty = $init;
-        )*
-    };
-}
-
-percpu_static! {
-    TIMER_RUNTIME: TimerRuntime = TimerRuntime::new(),
-}
+static mut TIMER_RUNTIME: TimerRuntime = TimerRuntime::new();
 
 #[allow(dead_code)]
 pub(crate) fn check_timer_events() {
     // SAFETY: only called in timer::check_events
-    unsafe { TIMER_RUNTIME.current_ref_mut_raw() }.wake();
+    unsafe {
+        (&mut *core::ptr::addr_of_mut!(TIMER_RUNTIME)).wake();
+    }
 }
 
 fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
     // FIXME: optimize `percpu` crate! should disable irq and provide more apis
     let _g = kernel_guard::NoPreemptIrqSave::new();
-    f(unsafe { TIMER_RUNTIME.current_ref_mut_raw() })
+    unsafe {
+        f(&mut *core::ptr::addr_of_mut!(TIMER_RUNTIME))
+    }
 }
 
 /// Future returned by `sleep` and `sleep_until`.
@@ -166,9 +156,8 @@ pub async fn timeout_at<F: IntoFuture>(
     if let Some(deadline) = deadline {
         select_biased! {
             res = f.into_future().fuse() => Ok(res),
-            _ = sleep_until(deadline).fuse() => Err(Elapsed(())),
+            _ = sleep_until(deadline.into()).fuse() => Err(Elapsed(())),
         }
-        Ok(f.await)
     } else {
         Ok(f.await)
     }

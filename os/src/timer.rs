@@ -38,6 +38,15 @@ impl From<Timespec> for Duration {
         Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
     }
 }
+impl From<core::time::Duration> for Timespec {
+    fn from(duration: core::time::Duration) -> Self {
+        Self {
+            tv_sec: duration.as_secs() as usize,
+            tv_nsec: duration.subsec_nanos() as usize,
+        }
+    }
+}
+
 impl Add<Duration> for Timespec {
     type Output = Timespec;
 
