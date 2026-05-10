@@ -1,3 +1,4 @@
+//! 网络传输过程中的缓冲区类型
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::ptr::NonNull;
 

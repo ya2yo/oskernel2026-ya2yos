@@ -3,6 +3,7 @@ use alloc::{string::String, vec};
 use log::{debug, trace, warn};
 use core::task::Waker;
 use virtio_drivers::device::net::VirtIONet;
+use crate::drivers::{BaseDriver, DevError, NetDriverOps};
 use crate::{drivers::NetDeviceImpl, utils::SysErrNo};
 use crate::task::register_irq_waker;
 use hashbrown::HashMap;
@@ -62,7 +63,7 @@ impl EthernetDevice {
 
     #[inline]
     fn hardware_address(&self) -> EthernetAddress {
-        EthernetAddress(self.inner.mac())
+        EthernetAddress(self.inner.mac_address().0)
     }
 
     /// 内部辅助函数：封装以太网头部并发送数据
@@ -273,7 +274,7 @@ impl Device for EthernetDevice {
             let rx_buf = match self.inner.receive() {
                 Ok(buf) => buf,
                 Err(err) => {
-                    if !matches!(err, SysErrNo::EAGAIN) {
+                    if !matches!(err, DevError::Again) {
                         warn!("receive failed: {:?}", err);
                     }
                     return false;

@@ -5,7 +5,7 @@ use crate::drivers::{VirtError, VirtResult};
 use super::super::{BaseDriver,DevError, DevResult, DeviceType};
 
 use super::super::net::{EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps};
-use virtio_drivers::{device::net::VirtIONet as InnerDev, transport::Transport, Hal};
+use virtio_drivers::{device::net::VirtIONetRaw as InnerDev, transport::Transport, Hal};
 
 use super::as_dev_err;
 
@@ -21,7 +21,7 @@ pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
     tx_buffers: [Option<NetBufBox>; QS],
     free_tx_bufs: Vec<NetBufBox>,
     buf_pool: Arc<NetBufPool>,
-    inner: InnerDev<H, T>,
+    inner: InnerDev<H, T, QS>,
     irq: Option<usize>,
 }
 
@@ -97,7 +97,7 @@ impl<H: Hal, T: Transport, const QS: usize> BaseDriver for VirtIoNetDev<H, T, QS
 impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, QS> {
     #[inline]
     fn mac_address(&self) -> EthernetAddress {
-        EthernetAddress(self.inner.mac())
+        EthernetAddress(self.inner.mac_address())
     }
 
     #[inline]

@@ -7,3 +7,6 @@ cfg_if::cfg_if! {
         pub use loongarch64::*;
     }
 }
+// 中断请求
+mod irq;
+pub use irq::*;

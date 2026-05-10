@@ -151,7 +151,7 @@ pub async fn timeout<F: IntoFuture>(
     f: F,
 ) -> Result<F::Output, Elapsed> {
     timeout_at(
-        duration.and_then(|x| x.checked_add(axhal::time::wall_time())),
+        duration.and_then(|x| x.checked_add(wall_time().into())),
         f,
     )
     .await
@@ -159,7 +159,7 @@ pub async fn timeout<F: IntoFuture>(
 
 /// Requires a `Future` to complete before the specified deadline.
 pub async fn timeout_at<F: IntoFuture>(
-    deadline: Option<Timespec>,
+    deadline: Option<Duration>,
     f: F,
 ) -> Result<F::Output, Elapsed> {
     if let Some(deadline) = deadline {
@@ -167,6 +167,7 @@ pub async fn timeout_at<F: IntoFuture>(
             res = f.into_future().fuse() => Ok(res),
             _ = sleep_until(deadline).fuse() => Err(Elapsed(())),
         }
+        Ok(f.await)
     } else {
         Ok(f.await)
     }

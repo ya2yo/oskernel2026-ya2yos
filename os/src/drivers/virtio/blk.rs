@@ -47,14 +47,14 @@ impl<H: Hal> BlockDriver for VirtIoBlkDev<H> {
     fn read_block(&mut self, block_id: usize, buf: &mut [u8]) -> DevResult {
         self.inner
             .lock()
-            .read_block(block_id as _, buf)
+            .read_blocks(block_id as _, buf)
             .map_err(as_dev_err)
     }
 
     fn write_block(&mut self, block_id: usize, buf: &[u8]) -> DevResult {
         self.inner
             .lock()
-            .write_block(block_id as _, buf)
+            .write_blocks(block_id as _, buf)
             .map_err(as_dev_err)
     }
 

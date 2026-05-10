@@ -1,5 +1,6 @@
 use core::{future::poll_fn, task::Poll};
 
+use crate::arch;
 use crate::fs::File;
 use crate::utils::{SysResult,SysErrNo};
 use crate::syscall::PollEvents;
@@ -55,13 +56,13 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         }
     }
 
-    // match POLL_IRQ.lock().entry(irq) {
-    //     Entry::Vacant(e) => {
-    //         axhal::irq::register_irq_hook(irq_hook);
-    //         axhal::irq::set_enable(irq, true);
-    //         e.insert(PollSet::new())
-    //     }
-    //     Entry::Occupied(e) => e.into_mut(),
-    // }
-    // .register(waker);
+    match POLL_IRQ.lock().entry(irq) {
+        Entry::Vacant(e) => {
+            arch::register_irq_hook(irq_hook);
+            arch::set_enable(irq, true);
+            e.insert(PollSet::new())
+        }
+        Entry::Occupied(e) => e.into_mut(),
+    }
+    .register(waker);
 }

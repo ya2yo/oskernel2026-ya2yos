@@ -1,6 +1,7 @@
 //! RISC-V timer-related functionality
 
 use core::ops::Add;
+use core::time::Duration;
 
 use crate::arch::time::{get_ticks, set_oneshot_timer};
 use crate::sync::SyncUnsafeCell;
@@ -25,10 +26,33 @@ pub const NOW_TIME_STAMP: usize = 1758325855;// add bu tuji :   1758325855 是20
 const USEC_PER_SEC: usize = 1000000;
 const NSEC_PER_SEC: usize = 1000000000;
 
+/// 遵循POSIX标准，用于高精度的时间戳
 #[derive(Debug, Ord,Clone, Copy, PartialEq, Eq)]
 pub struct Timespec {
     pub tv_sec: usize,  //秒
     pub tv_nsec: usize, //纳秒
+}
+
+impl From<Timespec> for Duration {
+    fn from(ts:Timespec)->Self{
+        Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+    }
+}
+impl Add<Duration> for Timespec {
+    type Output = Timespec;
+
+    fn add(self, rhs: Duration) -> Self::Output {
+        let mut sec = self.tv_sec + rhs.as_secs() as usize;
+        let mut nsec = self.tv_nsec + rhs.subsec_nanos() as usize;
+        
+        // 处理纳秒进位
+        if nsec >= 1_000_000_000 {
+            sec += 1;
+            nsec -= 1_000_000_000;
+        }
+        
+        Timespec::new(sec, nsec)
+    }
 }
 
 impl Timespec {
@@ -228,7 +252,7 @@ impl Timer {
         self.inner.get_unchecked_ref().timer
     }
 }
-
+/// 遵循旧版POSIX标准，用于旧接口
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimeVal {
@@ -284,6 +308,8 @@ impl PartialOrd for TimeVal {
         }
     }
 }
+
+/// 资源使用统计
 #[allow(unused)]
 pub struct Rusage {
     pub ru_utime: TimeVal,

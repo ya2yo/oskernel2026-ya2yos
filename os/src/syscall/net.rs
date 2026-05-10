@@ -79,7 +79,7 @@ pub fn sys_sendto(
 /// 参考 https://man7.org/linux/man-pages/man2/recvfrom.2.html
 pub fn sys_recvfrom(
     _sockfd: usize,
-    buf: *mut u8,
+    _buf: *mut u8,
     _len: usize,
     _flags: u32,
     _src_addr: *const u8,
