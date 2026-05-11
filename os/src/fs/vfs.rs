@@ -136,6 +136,14 @@ pub trait File: Send + Sync {
     fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
         unimplemented!("not support!");
     }
+    /// 是否是非阻塞的
+    fn nonblocking(&self) -> bool {
+        false
+    }
+    /// 设置为非阻塞
+    fn set_nonblocking(&self, _nonblocking: bool) -> SysResult {
+        Ok(())
+    }
     /// ppoll处理
     fn poll(&self, _events: PollEvents) -> PollEvents {
         unimplemented!()

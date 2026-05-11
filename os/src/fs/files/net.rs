@@ -47,21 +47,21 @@ impl File for Socket {
         }
     }
 
-    // fn nonblocking(&self) -> bool {
-    //     let mut result = false;
-    //     self.get_option(GetSocketOption::NonBlocking(&mut result))
-    //         .unwrap();
-    //     result
-    // }
+    fn nonblocking(&self) -> bool {
+        let mut result = false;
+        self.get_option(GetSocketOption::NonBlocking(&mut result))
+            .unwrap();
+        result
+    }
 
-    // fn set_nonblocking(&self, nonblocking: bool) -> SysResult<()> {
-    //     self.0
-    //         .set_option(SetSocketOption::NonBlocking(&nonblocking))
-    // }
+    fn set_nonblocking(&self, nonblocking: bool) -> SysResult<()> {
+        self.0
+            .set_option(SetSocketOption::NonBlocking(&nonblocking))
+    }
 
-    // fn path(&self) -> Cow<'_, str> {
-    //     format!("socket:[{}]", self as *const _ as usize).into()
-    // }
+    fn path(&self) -> Cow<'_, str> {
+        format!("socket:[{}]", self as *const _ as usize).into()
+    }
 
     // fn from_fd(fd: c_int) -> SysResult<Arc<Self>>
     // where
