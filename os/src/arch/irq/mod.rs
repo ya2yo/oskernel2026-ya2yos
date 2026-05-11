@@ -47,7 +47,8 @@ pub static IRQ_HANDLERS: HandlerTable<MAX_IRQ_COUNT> = HandlerTable::new();
 
 /// IRQ management interface.
 /// Enables or disables the given IRQ.
-pub fn set_enable(irq: usize, _enabled: bool){
+pub fn set_enable(_irq: usize, _enabled: bool){
+    #[cfg(feature = "irq")]
     if irq<MAX_IRQ_COUNT {
         unimplemented!("Call your hardware driver to enable/disable IRQ");
     }
