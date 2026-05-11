@@ -103,7 +103,7 @@ pub fn trampoline(hartid: usize) {
 static FIRST_HART: AtomicBool = AtomicBool::new(true);
 static INIT_FINISHED: AtomicBool = AtomicBool::new(false);
 static START_HART_ID: AtomicUsize = AtomicUsize::new(0);
-/// boot start_hart之外的所有 hart
+// /// boot start_hart之外的所有 hart
 // pub fn boot_all_harts(hartid: usize) {
 //     for i in (0..arch::config::HART_NUM).filter(|id| *id != hartid) {
 //         let sbi_ret = arch::cpu::hart_start(i, arch::memory_layout::HART_START_ADDR).into_result();

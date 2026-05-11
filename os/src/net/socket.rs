@@ -39,7 +39,7 @@ bitflags! {
     /// 向套接字发送数据的标志
     ///
     /// See [`SocketOps::send`].
-    #[derive(Default, Debug, Clone, Copy)]
+    #[derive(Default)]
     pub struct SendFlags: u32 {
         const MSG_OOB          = 0x1;
         const MSG_DONTROUTE    = 0x4;
@@ -55,7 +55,7 @@ bitflags! {
     /// 代表接受数据的标志
     ///
     /// See [`SocketOps::recv`].
-    #[derive(Default, Debug, Clone, Copy)]
+    #[derive(Default)]
     pub struct RecvFlags: u32 {
         /// Receive data without removing it from the queue.
         const PEEK = 0x01;

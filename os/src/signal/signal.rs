@@ -267,7 +267,7 @@ impl SigInfo {
             si_errno: si_errno as u32,
             si_code: si_code as u32,
             si_12: 0,
-            si_16: si_16,
+            si_16,
             __pad: [0; 128 - 5 * core::mem::size_of::<u32>()],
         }
     }

@@ -388,7 +388,7 @@ impl TaskControlBlock {
         let child = Arc::new(TaskControlBlock {
             tid: tid_handle,
             kernel_stack,
-            process: process,
+            process,
             interrupted:AtomicBool::new(false),
             interrupt_waker:AtomicWaker::new(),
             inner: Mutex::new(TaskControlBlockInner {
