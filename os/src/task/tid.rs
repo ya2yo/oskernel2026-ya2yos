@@ -3,11 +3,11 @@ use core::ops::Deref;
 
 use crate::utils::IdAllocator;
 use alloc::vec::Vec;
-use spin::{Lazy, Mutex};
+use spin::Mutex;
 
 // 放弃TrustOS中专用的Tid分配器，分配器逻辑独立出去，成为一个专门的类，见os/src/utils/id_allocator.rs
-// 这里仍然使用了懒分配，目的在于使得这个对象被构造得足够晚。由于分配器内部需要维护一个哈希集合，这个对象不能编译时构造
-static GLOBAL_ID_ALLOCATOR: Lazy<Mutex<IdAllocator>> = Lazy::new(|| Mutex::new(IdAllocator::new(1)));
+// 这里仍然使用了懒分配，目的在于使得这个对象被构造得足够晚。
+static GLOBAL_ID_ALLOCATOR: Mutex<IdAllocator> = Mutex::new(IdAllocator::new(1));
 
 ///Bind pid lifetime to `TidHandle`
 #[derive(Debug,Clone)]
