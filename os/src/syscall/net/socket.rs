@@ -55,3 +55,49 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
     fd_table.set(new_fd, file_desc)?;
     Ok(new_fd)
 }
+
+/// 参考 https://www.man7.org/linux/man-pages/man2/socketpair.2.html
+pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> SyscallRet {
+    debug!(
+        "[sys_socketpair] domain is {}, type is {}, protocol is {}, sv is {}",
+        domain, stype, protocol, sv as usize
+    );
+    todo!("socketpair")
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/bind.2.html
+pub fn sys_bind(_sockfd: usize, _addr: *const u8, _addrlen: u32) -> SyscallRet {
+    debug!(
+        "[sys_bind] fd={}, addr={}, len={}",
+        _sockfd, _addr as usize, _addrlen
+    );
+    unimplemented!("sys_bind not done")
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/listen.2.html
+pub fn sys_listen(_sockfd: usize, _backlog: u32) -> SyscallRet {
+    warn!("[sys_listen] fd={}", _sockfd,);
+    warn!("sys_listen is not implemented, return Ok(0)");
+    Ok(0)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/accept.2.html
+pub fn sys_accept(_sockfd: usize, _addr: *const u8, _addrlen: u32) -> SyscallRet {
+    warn!("[sys_accept] fd={}", _sockfd,);
+    warn!("sys_accept is not implemented, return Ok(0)");
+    Ok(0)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/connect.2.html
+pub fn sys_connect(_sockfd: usize, _addr: *const u8, _addrlen: u32) -> SyscallRet {
+    warn!("[sys_connect] fd={}", _sockfd,);
+    warn!("sys_connect is not implemented, return Ok(0)");
+    Ok(0)
+}
+
+
+pub fn sys_accept4(_sockfd: usize, _addr: *const u8, _addrlen: u32, _flags: u32) -> SyscallRet {
+    warn!("[sys_accept4] fd={}", _sockfd,);
+    warn!("sys_accept4 is not implemented, return Ok(0)");
+    Ok(0)
+}
