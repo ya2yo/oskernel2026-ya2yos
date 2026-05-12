@@ -13,7 +13,6 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
     // 提取 socket类型
     let ty = raw_ty & 0xFF;
     let task=current_task().unwrap();
-    let pid=task.pid();
     let socket_inner = match (domain, ty) {
         (AF_INET, SOCK_STREAM) => {
             if proto != 0 && proto != IPPROTO_TCP as _ {
