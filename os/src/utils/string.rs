@@ -58,7 +58,7 @@ pub fn rsplit_once<'a>(s: &'a str, delimiter: &str) -> (&'a str, &'a str) {
 /// 如果path本身就是绝对路径，则直接返回path的String形式
 /// 如果取base_path="/"，可以用来把从root开始的相对路径转为绝对路径
 pub fn get_abs_path(base_path: &str, path: &str) -> String {
-    if is_abs_path(&path) {
+    if is_abs_path(path) {
         path.to_string()
     } else {
         let mut wpath = {
@@ -68,7 +68,7 @@ pub fn get_abs_path(base_path: &str, path: &str) -> String {
                 path2vec(base_path)
             }
         };
-        path2abs(&mut wpath, &path2vec(&path))
+        path2abs(&mut wpath, &path2vec(path))
     }
 }
 
@@ -76,6 +76,5 @@ pub fn strip_color(s: String, prefix: &str, suffix: &str) -> String {
     debug!("prefix is {}, suffix is {}", prefix, suffix);
     let trimmed_start = s.strip_prefix(prefix).unwrap_or(&s);
     let trimmed_result = trimmed_start.strip_suffix(suffix).unwrap_or(trimmed_start);
-    let ret = String::from("ltp/testcases/bin/") + trimmed_result;
-    ret
+    String::from("ltp/testcases/bin/") + trimmed_result
 }

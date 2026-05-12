@@ -7,8 +7,7 @@ extern crate user_lib;
 
 use libctest::runall::{run_specific_test, runall};
 use user_lib::{
-    chdir, execve, exit, fork, println, run_busyboxsh, run_libc_bench, run_lmbench_test, shutdown,
-    wait, waitpid,
+    AF_INET, SOCK_DGRAM, SOCK_STREAM, chdir, execve, exit, fork, println, run_busyboxsh, run_libc_bench, run_lmbench_test, shutdown, socket, wait, waitpid
 };
 
 mod basic;
@@ -25,7 +24,7 @@ fn run_testsuit(root: &str, script: &str) {
 }
 
 pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
-    println!("{:?}",args);
+    println!("{:?}", args);
     let pid = fork();
     if pid == 0 {
         // 子进程
@@ -398,6 +397,7 @@ fn test_ltp() {
 #[cfg(feature = "riscv64")]
 fn main() -> i32 {
     println!("initproc running......");
+    test_socket();
     // 这三个用到了socket
     // run_specific_test("musl\0", "entry-static.exe\0", "socket\0");
     // run_specific_test("musl\0", "entry-static.exe\0", "getpwnam_r_crash\0");
@@ -415,7 +415,7 @@ fn main() -> i32 {
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0"); // panic：完全未实现
     // run_testsuit("musl\0", "iperf_testcode.sh\0"); // panic：error + 完全未实现，需要实现进程组
     // run_testsuit("musl\0", "lmbench_testcode.sh\0"); // 卡死：耗时很长 + overhead之后卡死
-    run_testsuit("musl\0", "ltp_testcode.sh\0"); // 部分PASS + 卡死
+    // run_testsuit("musl\0", "ltp_testcode.sh\0"); // 部分PASS + 卡死
     // test_ltp();
     // run_testsuit("musl\0", "netperf_testcode.sh\0");  // panic；完全没实现
 
@@ -437,5 +437,48 @@ fn main() -> i32 {
     // run_testsuit("glibc\0", "netperf_testcode.sh\0"); // panic；完全没实现
 
     shutdown(); // 似乎有点bug，直接return 0不会导致QEMU退出
+    0
+}
+
+fn test_socket() -> i32 {
+    println!("---- Test Socket syscall ----");
+    // 测试创建 TCP socket
+    println!("Testint TCP socket creation...");
+    let fd_tcp = socket(AF_INET, SOCK_STREAM, 0);
+    if fd_tcp >= 0 {
+        println!("SUCCESS: TCP socket created, fd: {}.", fd_tcp);
+    } else {
+        println!("FAILED: TCP socket creation returned error: {}", fd_tcp);
+    }
+    // 测试创建 UDP socket
+    println!("Testing UDP socket creation...");
+    let fd_udp = socket(AF_INET, SOCK_DGRAM, 0);
+    if fd_udp >= 0 {
+        println!("SUCCESS: UDP socket created, fd: {}.", fd_udp);
+    } else {
+        println!("FAILED: UDP socket creation returned error: {}.", fd_udp);
+    }
+    // 测试不支持的协议族
+    println!("Testing unsupported domain...");
+    let fd_err = socket(1, SOCK_STREAM, 0);
+    if fd_err < 0 {
+        println!(
+            "SUCCESS: Correctly rejected unsupported domain, error: {}.",
+            fd_err
+        );
+    } else {
+        println!(
+            "FAILED: Should not have created socket for AF_UNIX, but got fd: {}.",
+            fd_err
+        );
+    }
+    // 测试无效参数
+    let fd_invalid = socket(999, SOCK_STREAM, 0);
+    if fd_invalid < 0 {
+        println!(
+            "SUCCESS: Correctly rejected invalid domain, error: {}.",
+            fd_invalid
+        );
+    }
     0
 }

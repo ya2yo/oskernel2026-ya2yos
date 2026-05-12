@@ -23,10 +23,10 @@ mod futex;
 mod future;
 mod kernel_stack;
 mod manager;
+mod process;
 mod processor;
 mod switch;
 mod sysinfo;
-mod process;
 mod task;
 mod tid;
 
@@ -40,23 +40,23 @@ use crate::{
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
+pub use aux::*;
 pub use futex::*;
 #[cfg(feature = "net")]
 pub use future::*;
 use log::{debug, error};
 pub use manager::*;
-use spin::Lazy;
-use switch::__abandon;
-pub use sysinfo::Sysinfo;
-pub use task::*;
 pub use process::*;
-pub use aux::*;
+pub use process::*;
 pub use processor::{
     current_task, current_token, current_trap_cx, run_tasks, schedule, take_current_task,
     Processor, PROCESSORS,
 };
+use spin::Lazy;
+use switch::__abandon;
+pub use sysinfo::Sysinfo;
+pub use task::*;
 pub use tid::TidHandle;
-pub use process::*;
 /// 初始进程的pid
 pub const INITPROC_PID: usize = 1;
 

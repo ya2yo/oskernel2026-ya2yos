@@ -1,18 +1,21 @@
-use alloc::sync::Arc;
-use log::{debug, warn};
+use super::consts::*;
 use crate::fs::{FdTable, File, FileClass, FileDescriptor, OpenFlags, Socket};
-use crate::net::Socket as SocketInner;
 use crate::net::tcp::TcpSocket;
 use crate::net::udp::UdpSocket;
-use crate::{task::{Process, current_task}, utils::{SysErrNo, SyscallRet}};
-use super::consts::*;
+use crate::net::Socket as SocketInner;
+use crate::{
+    task::{current_task, Process},
+    utils::{SysErrNo, SyscallRet},
+};
+use alloc::sync::Arc;
+use log::{debug, warn};
 
 /// 参考 https://man7.org/linux/man-pages/man2/socket.2.html
 pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
     debug!("sys_socket <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
     // 提取 socket类型
     let ty = raw_ty & 0xFF;
-    let task=current_task().unwrap();
+    let task = current_task().unwrap();
     let socket_inner = match (domain, ty) {
         (AF_INET, SOCK_STREAM) => {
             if proto != 0 && proto != IPPROTO_TCP as _ {
@@ -38,19 +41,16 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
     };
     let socket = Arc::new(Socket(socket_inner));
 
-    let proc_inner=task.process.inner_lock();
-    let fd_table=proc_inner.fd_table.clone();
-    let new_fd=fd_table.alloc_fd()?;
+    let proc_inner = task.process.inner_lock();
+    let fd_table = proc_inner.fd_table.clone();
+    let new_fd = fd_table.alloc_fd()?;
     let mut open_flags = OpenFlags::empty();
-    
+
     if raw_ty & OpenFlags::O_CLOEXEC.bits() != 0 {
         open_flags |= OpenFlags::O_CLOEXEC;
     }
 
-    let file_desc = FileDescriptor::new(
-        open_flags, 
-        FileClass::Socket(socket)
-    );
+    let file_desc = FileDescriptor::new(open_flags, FileClass::Socket(socket));
 
     fd_table.set(new_fd, file_desc)?;
     Ok(new_fd)
@@ -95,9 +95,17 @@ pub fn sys_connect(_sockfd: usize, _addr: *const u8, _addrlen: u32) -> SyscallRe
     Ok(0)
 }
 
-
 pub fn sys_accept4(_sockfd: usize, _addr: *const u8, _addrlen: u32, _flags: u32) -> SyscallRet {
     warn!("[sys_accept4] fd={}", _sockfd,);
     warn!("sys_accept4 is not implemented, return Ok(0)");
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test]
+    fn test_socket_logic(){
+    }
+
 }

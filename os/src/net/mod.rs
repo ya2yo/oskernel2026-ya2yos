@@ -74,7 +74,7 @@ fn get_service() -> spin::MutexGuard<'static, Service> {
 /// # 参数
 /// - `net_devs`: 包含探测到的网络设备驱动实例的容器。
 pub fn init_network(mut net_devs: DeviceContainer<NetDeviceImpl>) {
-    info!("Initialize network subsystem...");
+    println!("Initialize network subsystem...");
 
     let mut router = Router::new();
     let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));

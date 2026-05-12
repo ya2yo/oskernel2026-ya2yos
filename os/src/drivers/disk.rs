@@ -37,7 +37,7 @@ impl Disk {
     /// Set the position of the cursor.
     pub fn set_position(&mut self, pos: usize) {
         self.block_id = pos / BLOCK_SIZE;
-        self.offset = pos as usize % BLOCK_SIZE;
+        self.offset = pos % BLOCK_SIZE;
     }
 
     /// Read within one block, returns the number of bytes read.
@@ -114,7 +114,7 @@ impl Disk {
             buf.len() == BLOCK_SIZE,
             "Buffer length must be equal to BLOCK_SIZE"
         );
-        assert!(offset % BLOCK_SIZE == 0);
+        assert!(offset.is_multiple_of(BLOCK_SIZE));
         let block_id = offset / BLOCK_SIZE;
         self.dev.write_block(block_id, buf).unwrap();
         Ok(buf.len())

@@ -53,7 +53,7 @@ impl File for OSFile {
 
         // 这边要使用 iter_mut()，因为要将数据写入
         for slice in buf.buffers.iter_mut() {
-            let read_size = self.inode.read_at(inner.offset, *slice)?;
+            let read_size = self.inode.read_at(inner.offset, slice)?;
             if read_size == 0 {
                 break;
             }

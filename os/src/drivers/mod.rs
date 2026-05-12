@@ -4,8 +4,10 @@ mod virtio;
 mod devcont;
 #[cfg(feature = "net")]
 mod net;
+use alloc::sync::Arc;
 pub use device::*;
 pub use disk::*;
+use spin::Lazy;
 pub use virtio::*;
 pub use devcont::*;
 #[cfg(feature = "net")]
@@ -38,5 +40,24 @@ impl BlockDeviceImpl {
     #[cfg(feature = "loongarch64")]
     pub fn new_device() -> Self {
         Self::new()
+    }
+}
+
+impl NetDeviceImpl {
+    #[cfg(feature = "riscv64")]
+    pub fn new_device() -> Self {
+        use core::ptr::NonNull;
+        let header = NonNull::new(VIRTIO_NET_BASE as *mut VirtIOHeader)
+            .expect("VirtIO Net base address is null");
+        let transport = unsafe {
+            MmioTransport::new(header)
+                .expect("Failed to create MmioTransport for VirtIO Net")
+        };
+        Self::try_new(transport, None).expect("Failed to initialize VirtIoNetDev")
+    }
+
+    #[cfg(feature = "loongarch64")]
+    pub fn new_device() -> Self {
+        unimplemented!("Net device for LoongArch64 is not implemented yet");
     }
 }

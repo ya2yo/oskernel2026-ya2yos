@@ -57,11 +57,14 @@ pub mod utils;
 // use crate::{mm::activate_kernel_space};
 use arch::*;
 use cfg_if::cfg_if;
+use log::info;
+use smoltcp::phy::DeviceCapabilities;
 use core::{
     arch::asm,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    usize,
 };
+
+use crate::drivers::{DeviceContainer, NetDeviceImpl};
 
 /// clear BSS segment
 fn clear_bss() {
@@ -70,8 +73,11 @@ fn clear_bss() {
         fn ebss();
     }
     unsafe {
-        core::slice::from_raw_parts_mut(sbss as *const() as usize as *mut u8, ebss as *const() as usize - sbss as *const() as usize)
-            .fill(0);
+        core::slice::from_raw_parts_mut(
+            sbss as *const () as usize as *mut u8,
+            ebss as *const () as usize - sbss as *const () as usize,
+        )
+        .fill(0);
     }
 }
 
@@ -117,7 +123,7 @@ static START_HART_ID: AtomicUsize = AtomicUsize::new(0);
 #[no_mangle]
 /// the rust entry-point of os
 pub fn rust_main(hartid: usize) -> ! {
-    if FIRST_HART.load(Ordering::SeqCst) == true {
+    if FIRST_HART.load(Ordering::SeqCst) {
         FIRST_HART.store(false, Ordering::SeqCst);
         clear_bss();
         println!("[kernel] Hello, world!");
@@ -156,6 +162,12 @@ pub fn rust_main(hartid: usize) -> ! {
         fs::init();
         println!("complete.");
 
+        let net_dev = NetDeviceImpl::new_device();
+        let net_devices = DeviceContainer::from_one(net_dev);
+        print!("net::init...");
+        net::init_network(net_devices);
+        println!("complete.");
+
         print!("task::add_initproc...");
         task::add_initproc();
         println!("complete.");
@@ -177,7 +189,9 @@ pub fn rust_main(hartid: usize) -> ! {
         println!("complete.");
     } else {
         // barrier
-        while !INIT_FINISHED.load(Ordering::SeqCst) {}
+        while !INIT_FINISHED.load(Ordering::SeqCst) {
+            core::hint::spin_loop();
+        }
 
         println!(
             "[kernel] ---------- hart {} is starting... ----------",

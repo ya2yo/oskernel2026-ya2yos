@@ -1,3 +1,4 @@
+//! PCI总线，负责管理块设备
 use crate::arch::memory_layout::{KERNEL_ADDR_OFFSET, MMIO_MAP_OFFSET};
 use crate::arch::page_table::get_token_from_regs;
 use crate::drivers::{BaseDriver, BlockDriver, DevResult, DeviceType};
@@ -33,7 +34,7 @@ fn pci_config_read(bus: u8, device: u8, func: u8, offset: u8) -> u32 {
             | (offset as usize));
     let addr = addr as *mut u32;
 
-    return unsafe { *addr };
+    unsafe { *addr }
 }
 
 fn pci_config_write(bus: u8, device: u8, func: u8, offset: u8, val: u32) {
@@ -51,7 +52,7 @@ fn pci_config_write(bus: u8, device: u8, func: u8, offset: u8, val: u32) {
 fn read_status() -> u16 {
     let x: u32 = pci_config_read(0, DEVICE, 0, 4);
     let hig: u16 = (x >> 16) as u16;
-    return hig;
+    hig
 }
 
 fn write_status(s: u16) {
@@ -182,7 +183,7 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                             if size > 0 {
                                 let addr = 0x40000000;
                                 warn!("Allocated address: {:#x}", addr);
-                                root.set_bar_32(func, i as u8, addr as u32);
+                                root.set_bar_32(func, i, addr as u32);
                                 //device.ranges.push(addr..addr + size);
                             }
                         }
@@ -190,7 +191,7 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                             if size > 0 {
                                 let addr = 0x40008000;
                                 warn!("Allocated address: {:#x}", addr);
-                                root.set_bar_64(func, i as u8, addr as u64);
+                                root.set_bar_64(func, i, addr as u64);
                             }
                         }
                         _ => {
@@ -221,12 +222,11 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                 transport.read_device_features(),
                 transport.max_queue_size(0)
             );
-            let ret = Self {
+            Self {
                 inner: Mutex::new(
                     VirtIOBlk::<H, PciTransport>::new(transport).expect("VirtIOBlk create failed"),
                 ),
-            };
-            ret
+            }
         }
     }
 }

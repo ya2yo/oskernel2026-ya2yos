@@ -64,6 +64,12 @@ pub fn open_device_file(abs_path: &str) -> Result<Arc<dyn File>, SysErrNo> {
     }
 }
 
+impl Default for DevZero {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// zero设备
 impl DevZero {
     pub fn new() -> Self {
@@ -104,6 +110,12 @@ impl File for DevZero {
             revents |= PollEvents::OUT;
         }
         revents
+    }
+}
+
+impl Default for DevNull {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -183,6 +195,12 @@ impl Debug for RtcTime {
     }
 }
 
+impl Default for DevRtc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// 时钟设备
 impl DevRtc {
     pub fn new() -> Self {
@@ -231,6 +249,12 @@ impl File for DevRtc {
     }
 }
 
+impl Default for DevRandom {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// 随机数设备
 impl DevRandom {
     pub fn new() -> Self {
@@ -274,6 +298,12 @@ impl File for DevRandom {
     }
 }
 
+impl Default for DevTty {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// 终端设备
 impl DevTty {
     pub fn new() -> Self {
@@ -313,6 +343,12 @@ impl File for DevTty {
             revents |= PollEvents::OUT;
         }
         revents
+    }
+}
+
+impl Default for DevCpuDmaLatency {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
