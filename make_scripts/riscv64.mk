@@ -25,7 +25,7 @@ QEMU_CMD := qemu-system-riscv64 \
     -bios default \
     -drive file=disk.img,if=none,format=raw,id=x0 \
     -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
-    -device virtio-net-device,netdev=net \
+    -device virtio-net-device,netdev=net,bus=virtio-mmio-bus.1 \
     -netdev user,id=net \
 	-snapshot
 # -snapshot是为了避免修改被保存仅镜像
