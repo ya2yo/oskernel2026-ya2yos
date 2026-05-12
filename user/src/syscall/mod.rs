@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 use core::arch::asm;
+mod socket;
+pub use socket::*;
 
 use alloc::vec::Vec;
 
@@ -49,6 +51,7 @@ const SYSCALL_GETTIMEOFDAY: usize = 169;
 const SYSCALL_GETPID: usize = 172;
 const SYSCALL_GETPPID: usize = 173;
 const SYSCALL_SYSINFO: usize = 179;
+const SYSCALL_SOCKET:usize = 198;
 const SYSCALL_CLONE: usize = 220;
 const SYSCALL_EXECVE: usize = 221;
 const SYSCALL_WAIT4: usize = 260;
