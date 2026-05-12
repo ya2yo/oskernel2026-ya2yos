@@ -19,22 +19,22 @@ use spin::{Lazy, Mutex};
 const TICKS_PER_SEC: usize = 100;
 const MSEC_PER_SEC: usize = 1000;
 pub const NANOS_PER_SEC: u64 = 1_000_000_000;
-pub const NANOS_PER_MICROS:u64 = 1_000;
-pub const NOW_TIME_STAMP: usize = 1758325855;// add bu tuji :   1758325855 是2025年9月某时间的时间戳
+pub const NANOS_PER_MICROS: u64 = 1_000;
+pub const NOW_TIME_STAMP: usize = 1758325855; // add bu tuji :   1758325855 是2025年9月某时间的时间戳
 
 #[allow(unused)]
 const USEC_PER_SEC: usize = 1000000;
 const NSEC_PER_SEC: usize = 1000000000;
 
 /// 遵循POSIX标准，用于高精度的时间戳
-#[derive(Debug, Ord,Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Ord, Clone, Copy, PartialEq, Eq)]
 pub struct Timespec {
     pub tv_sec: usize,  //秒
     pub tv_nsec: usize, //纳秒
 }
 
 impl From<Timespec> for Duration {
-    fn from(ts:Timespec)->Self{
+    fn from(ts: Timespec) -> Self {
         Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
     }
 }
@@ -53,13 +53,13 @@ impl Add<Duration> for Timespec {
     fn add(self, rhs: Duration) -> Self::Output {
         let mut sec = self.tv_sec + rhs.as_secs() as usize;
         let mut nsec = self.tv_nsec + rhs.subsec_nanos() as usize;
-        
+
         // 处理纳秒进位
         if nsec >= 1_000_000_000 {
             sec += 1;
             nsec -= 1_000_000_000;
         }
-        
+
         Timespec::new(sec, nsec)
     }
 }
@@ -75,11 +75,17 @@ impl Timespec {
         let clock_freq = get_clock_freq();
         self.tv_sec * clock_freq + (self.tv_nsec * clock_freq / NSEC_PER_SEC)
     }
-    pub fn from_nanos(nanos : u64)->Self {
-        Self { tv_sec: (nanos/NANOS_PER_SEC) as usize , tv_nsec: (nanos % NANOS_PER_SEC) as usize }
+    pub fn from_nanos(nanos: u64) -> Self {
+        Self {
+            tv_sec: (nanos / NANOS_PER_SEC) as usize,
+            tv_nsec: (nanos % NANOS_PER_SEC) as usize,
+        }
     }
-    pub fn from_micros(micros:u64)->Self {
-        Self { tv_sec: (micros / MSEC_PER_SEC as u64) as usize , tv_nsec: (micros % MSEC_PER_SEC as u64) as usize }
+    pub fn from_micros(micros: u64) -> Self {
+        Self {
+            tv_sec: (micros / MSEC_PER_SEC as u64) as usize,
+            tv_nsec: (micros % MSEC_PER_SEC as u64) as usize,
+        }
     }
 }
 
@@ -118,7 +124,7 @@ pub fn calculate_left_timespec(endtime: Timespec) -> Timespec {
     let mut nsec: isize = endtime.tv_nsec as isize - nowtime.tv_nsec as isize;
     if nsec < 0 {
         endsec -= 1;
-        nsec = 1_000_000_000isize + nsec;
+        nsec += 1_000_000_000isize;
     }
     Timespec {
         tv_sec: endsec - nowtime.tv_sec,
@@ -151,6 +157,12 @@ pub struct TimeData {
     pub cutime: isize,
     pub cstime: isize,
     pub lasttime: isize,
+}
+
+impl Default for TimeData {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TimeData {
@@ -195,6 +207,12 @@ pub struct Itimerval {
     pub it_value: TimeVal,
 }
 
+impl Default for Itimerval {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Itimerval {
     pub fn new() -> Self {
         Self {
@@ -223,6 +241,12 @@ pub struct TimerInner {
     pub once: bool,
 }
 
+impl Default for TimerInner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TimerInner {
     pub fn new() -> Self {
         Self {
@@ -230,6 +254,12 @@ impl TimerInner {
             last_time: TimeVal::new(0, 0),
             once: false,
         }
+    }
+}
+
+impl Default for Timer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -370,16 +400,16 @@ pub fn get_time_ms() -> usize {
     get_ticks() / (get_clock_freq() / MSEC_PER_SEC)
 }
 
-/// get current time in nanoseconds 
-pub fn get_time_ns()->usize {
-    get_ticks()/(get_clock_freq() / NANOS_PER_SEC as usize)
+/// get current time in nanoseconds
+pub fn get_time_ns() -> usize {
+    (get_ticks() as u128 * NANOS_PER_SEC as u128 / get_clock_freq() as u128) as usize
 }
 
-pub fn wall_time_nanos()->u64 {
+pub fn wall_time_nanos() -> u64 {
     get_time_ns() as u64 + NOW_TIME_STAMP as u64
 }
 
-pub fn wall_time()->Timespec {
+pub fn wall_time() -> Timespec {
     Timespec::from_nanos(wall_time_nanos())
 }
 
@@ -437,7 +467,7 @@ pub fn add_futex_timer(expire: Timespec, task: &Arc<TaskControlBlock>, futex_key
     debug!("add futex timer task {} {}", task.pid(), task.tid());
     timers.push(TimerCondVar {
         expire,
-        task: Arc::downgrade(&task),
+        task: Arc::downgrade(task),
         kind: TimerType::Futex,
         extra_data: futex_key,
     });
