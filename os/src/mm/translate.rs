@@ -25,23 +25,6 @@ pub fn translated_byte_buffer(
     while start < end {
         let start_va = VirtAddr::from(start);
         let mut vpn = start_va.floor();
-        // match page_table.translate(vpn) {
-        //     None => {
-        //         log::debug!("vpn {:#x} not found", vpn.0);
-
-        //         return None;
-        //     }
-        //     Some(pte) => {
-        //         let pte_flags = pte.get_flags();
-        //         if !pte_flags.contains(PTEFlags::VALID) {
-        //             log::debug!("vpn {:#x} invalid", vpn.0);
-        //             log::debug!("ppn={:#x}", pte.get_ppn().0);
-        //             loop {}
-        //             return None;
-        //         }
-        //     }
-        // }
-        // let ppn = page_table.translate(vpn).unwrap().get_ppn();
         let ppn = match page_table.translate(vpn) {
             None => {
                 debug!("vpn {:#x} not found", vpn.0);

@@ -44,20 +44,6 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
         .expect("mmap_write_page_fault should not fail");
     //设置为cow
     let vpn = VirtAddr::from(va).floor();
-    // let mut pte_flags = vma.flags() | PTEFlags::VALID;
-    // //可写的才需要cow
-    // if pte_flags.contains(PTEFlags::WRITEABLE) {
-    //     pte_flags &= !PTEFlags::WRITEABLE;
-    //     pte_flags |= PTEFlags::COW;
-    // }
-    // // TODO: 可能低效
-    // if let Some(pte) = page_table.translate(vpn) {
-    //     let old_flag = pte.get_flags();
-    //     pte.set_flags(pte_flags | old_flag);
-    // } else {
-    //     panic!("found not(pfh)");
-    //     page_table.map(vpn, 0.into(), pte_flags);
-    // }
     page_table.handle_mmap_write_page_fault(vpn, vma.map_perm);
 }
 ///mmap读触发的lazy alocation，查看是否有共享页可直接用，没有再直接分配
@@ -68,13 +54,6 @@ pub fn mmap_read_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut 
         let vpn = va.into();
         let ppn = frame.ppn;
         vma.data_frames.insert(vpn, frame);
-
-        // let mut pte_flags = vma.flags() | PTEFlags::VALID;
-        // //可写的才需要cow
-        // if pte_flags.contains(PTEFlags::WRITEABLE) {
-        //     pte_flags &= !PTEFlags::WRITEABLE;
-        //     pte_flags |= PTEFlags::COW;
-        // }
 
         // page_table.map(vpn, ppn, pte_flags);
         page_table.handle_mmap_read_page_fault(vpn, ppn, vma.map_perm);
