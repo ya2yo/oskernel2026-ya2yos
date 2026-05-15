@@ -3,10 +3,12 @@ use crate::fs::{FdTable, File, FileClass, FileDescriptor, OpenFlags, Socket};
 use crate::net::tcp::TcpSocket;
 use crate::net::udp::UdpSocket;
 use crate::net::{Socket as SocketInner, SocketAddrEx};
+use crate::syscall::net::addr::SocketAddrExt;
 use crate::{
     task::{current_task, Process},
     utils::{SysErrNo, SyscallRet},
 };
+use crate::net::SocketOps;
 use alloc::sync::Arc;
 use log::{debug, warn};
 
@@ -71,11 +73,8 @@ pub fn sys_bind(sockfd: usize, addr: *const u8, addrlen: u32) -> SyscallRet {
         "[sys_bind] fd={}, addr={}, len={}",
         sockfd, addr as usize, addrlen
     );
-    let addr = SocketAddrEx:read_from_user(, addrlen)?;
-    debug!("sys_bind <= fd: {fd}, addr: {addr:?}");
-
-    Socket::from_fd(fd)?.bind(addr)?;
-
+    let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
+    Socket::from_fd(sockfd)?.0.bind(addr)?;
     Ok(0)
 }
 

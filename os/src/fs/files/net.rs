@@ -6,6 +6,7 @@ use crate::net::{
     options::{Configurable, GetSocketOption, SetSocketOption},
     RecvOptions, SendOptions, Socket as SocketInner, SocketOps,
 };
+use crate::task::current_task;
 use crate::utils::{SysErrNo, SysResult};
 // use axpoll::{IoEvents, Pollable};
 use crate::syscall::PollEvents;
@@ -22,6 +23,17 @@ impl Deref for Socket {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl Socket {
+    pub fn from_fd(fd: usize) -> SysResult<Arc<Self>>
+    where
+        Self: Sized + 'static,
+    {
+        let task=current_task().unwrap();
+        let fd_table=task.get_fd_table();
+        fd_table.get(fd)?.socket()
     }
 }
 
@@ -62,15 +74,6 @@ impl File for Socket {
     fn path(&self) -> Cow<'_, str> {
         format!("socket:[{}]", self as *const _ as usize).into()
     }
-
-    // fn from_fd(fd: c_int) -> SysResult<Arc<Self>>
-    // where
-    //     Self: Sized + 'static,
-    // {
-    //     get_file_like(fd)?
-    //         .downcast_arc()
-    //         .map_err(|_| SysErrNo::ENOTSOCK)
-    // }
 
     fn poll(&self, events: PollEvents) -> PollEvents {
         self.0.poll(events)

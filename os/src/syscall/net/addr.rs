@@ -8,7 +8,7 @@ use core::{
 };
 
 use crate::{net::SocketAddrEx, syscall::net::{AF_INET, AF_INET6, AF_UNIX}, utils::{SysErrNo, SysResult}};
-
+use linux_raw_sys::net::*;
 
 /// Trait to extend [`SocketAddr`] and its variants with methods for reading
 /// from and writing to user space.
@@ -70,11 +70,11 @@ impl SocketAddrExt for SocketAddr {
 impl SocketAddrExt for SocketAddrV4 {
     fn read_from_user(addr: *const u8, addrlen: u32) -> SysResult<Self> {
         if addrlen != size_of::<sockaddr_in>() as u32 {
-            return Err(AxError::InvalidInput);
+            return Err(SysErrNo::EINVAL);
         }
-        let addr_in = addr.cast::<sockaddr_in>().get_as_ref()?;
+        let addr_in = unsafe{*addr.cast::<sockaddr_in>()};
         if addr_in.sin_family as u32 != AF_INET {
-            return Err(AxError::from(LinuxError::EAFNOSUPPORT));
+            return Err(SysErrNo::EAFNOSUPPORT);
         }
 
         Ok(SocketAddrV4::new(
@@ -103,11 +103,11 @@ impl SocketAddrExt for SocketAddrV4 {
 impl SocketAddrExt for SocketAddrV6 {
     fn read_from_user(addr: *const u8, addrlen: u32) -> SysResult<Self> {
         if addrlen != size_of::<sockaddr_in6>() as u32 {
-            return Err(AxError::InvalidInput);
+            return Err(SysErrNo::EINVAL);
         }
-        let addr_in6 = addr.cast::<sockaddr_in6>().get_as_ref()?;
+        let addr_in6 = unsafe{ *addr.cast::<sockaddr_in6>() };
         if addr_in6.sin6_family as u32 != AF_INET6 {
-            return Err(AxError::from(LinuxError::EAFNOSUPPORT));
+            return Err(SysErrNo::EAFNOSUPPORT);
         }
 
         Ok(SocketAddrV6::new(

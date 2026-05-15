@@ -1,5 +1,5 @@
 use crate::{
-    fs::files::OSFile,
+    fs::{Socket, files::OSFile},
     mm::UserBuffer,
     syscall::Syscall,
     utils::{GeneralRet, SysErrNo, SyscallRet},
@@ -38,6 +38,9 @@ impl FileDescriptor {
     }
     pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {
         self.file.abs()
+    }
+    pub fn socket(&self) ->Result<Arc<Socket>, SysErrNo> {
+        self.file.socket()
     }
     pub fn any(&self) -> Arc<dyn File> {
         self.file.any()
