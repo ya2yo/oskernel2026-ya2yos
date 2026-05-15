@@ -66,10 +66,10 @@ pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> S
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/bind.2.html
-pub fn sys_bind(_sockfd: usize, _addr: *const u8, _addrlen: u32) -> SyscallRet {
+pub fn sys_bind(sockfd: usize, addr: *const u8, addrlen: u32) -> SyscallRet {
     debug!(
         "[sys_bind] fd={}, addr={}, len={}",
-        _sockfd, _addr as usize, _addrlen
+        sockfd, addr as usize, addrlen
     );
     unimplemented!("sys_bind not done")
 }

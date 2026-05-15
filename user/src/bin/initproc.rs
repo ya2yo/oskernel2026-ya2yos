@@ -41,7 +41,7 @@ pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
 }
 
 #[no_mangle]
-#[cfg(feature = "loongarch64")]
+#[cfg(target_arch = "loongarch64")]
 fn main() -> i32 {
     println!("initproc running......");
     basic::run_all_basic_musl_except_blacklist();
@@ -91,7 +91,7 @@ fn main() -> i32 {
     shutdown();
     return 0;
 }
-
+#[allow(unused)]
 fn test_ltp() {
     // 对于run_ltp_tests_musl函数，
     // 你可以传递FILELIST的一个子集（或者切片？）给它
@@ -394,7 +394,7 @@ fn test_ltp() {
 }
 
 #[no_mangle]
-#[cfg(feature = "riscv64")]
+#[cfg(target_arch = "riscv64")]
 fn main() -> i32 {
     println!("initproc running......");
     test_socket();

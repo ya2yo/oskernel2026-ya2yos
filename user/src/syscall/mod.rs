@@ -62,7 +62,7 @@ const SYSCALL_COPYFILERANGE: usize = 285;
 const SYSCALL_SHUTDOWN: usize = 1000;
 const SYSCALL_STRACE: usize = 2000;
 
-#[cfg(feature = "riscv64")]
+#[cfg(target_arch = "riscv64")]
 fn syscall(id: usize, args: [isize; 6]) -> isize {
     let mut ret: isize;
     unsafe {
@@ -80,7 +80,7 @@ fn syscall(id: usize, args: [isize; 6]) -> isize {
     ret
 }
 
-#[cfg(feature = "loongarch64")]
+#[cfg(target_arch = "loongarch64")]
 fn syscall(id: usize, args: [isize; 6]) -> isize {
     let mut ret: isize;
     unsafe {

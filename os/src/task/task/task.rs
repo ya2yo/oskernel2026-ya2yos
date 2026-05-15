@@ -32,11 +32,10 @@ pub struct RobustList {
     pub len: usize,
 }
 
-impl RobustList {
-    // from strace
-    pub const HEAD_SIZE: usize = 24;
-    pub fn default() -> Self {
-        RobustList { head: 0, len: 24 }
+pub const HEAD_SIZE: usize = 24;
+impl Default for RobustList {
+    fn default() -> Self {
+        RobustList { head: 0, len: HEAD_SIZE }
     }
 }
 
@@ -171,7 +170,7 @@ impl TaskControlBlock {
         arc_task
     }
     /// exec的主逻辑
-    pub fn exec(&self, elf_data: &[u8], argv: &Vec<String>, env: &mut Vec<String>) {
+    pub fn exec(&self, elf_data: &[u8], argv: &[String], env: &mut [String]) {
         let mut task_inner = self.inner_lock();
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
@@ -258,11 +257,11 @@ impl TaskControlBlock {
         // println!("env pointers:");
         user_sp -= envp.len() * size_of::<usize>();
         let envp_base = user_sp;
-        for i in 0..envp.len() {
+        for (i, data) in envp.iter().enumerate() {
             put_data(
                 token,
                 (user_sp + i * size_of::<usize>()) as *mut usize,
-                envp[i],
+                *data,
             );
         }
 
@@ -270,11 +269,11 @@ impl TaskControlBlock {
         user_sp -= argvp.len() * size_of::<usize>();
         let argv_base = user_sp;
         //将参数指针数组放入栈中
-        for i in 0..argvp.len() {
+        for (i, &data) in argvp.iter().enumerate() {
             put_data(
                 token,
                 (user_sp + i * size_of::<usize>()) as *mut usize,
-                argvp[i],
+                data,
             );
         }
 
@@ -319,7 +318,7 @@ impl TaskControlBlock {
         } else {
             Arc::new(RwLock::new(MemorySet::new(
                 MemorySetInner::from_existed_user(
-                    &*self.process.inner_lock().get_locked_memory_set_read(),
+                    &self.process.inner_lock().get_locked_memory_set_read(),
                 ),
             )))
         };
@@ -342,7 +341,7 @@ impl TaskControlBlock {
             self.process.inner.try_lock().unwrap().sig_table.clone()
         } else {
             Arc::new(Mutex::new(SigTable::from_another(
-                &*self.process.inner_lock().get_locked_sigtable(),
+                &self.process.inner_lock().get_locked_sigtable(),
             )))
         };
         // 检查是否需要设置 parent_tid
@@ -371,7 +370,7 @@ impl TaskControlBlock {
             pid = tid_handle.0;
             ppid = self.pid();
             timer = Arc::new(Timer::new());
-            sig_mask = parent_inner.sig_mask.clone();
+            sig_mask = parent_inner.sig_mask;
             process = Process::new(
                 memory_set.clone(),
                 sig_table.clone(),
@@ -503,7 +502,7 @@ impl TaskControlBlock {
             .grow(grow_size, inner.user_heappoint, inner.user_heapbottom);
 
         inner.user_heappoint = ret;
-        return ret;
+        ret
     }
     /// 检查计时器
     pub fn check_timer(&self) {

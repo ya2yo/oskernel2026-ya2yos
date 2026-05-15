@@ -505,7 +505,7 @@ pub fn sys_clock_nanosleep(
 
 /// 参考 https://man7.org/linux/man-pages/man2/set_robust_list.2.html
 pub fn sys_set_robust_list(head: usize, len: usize) -> SyscallRet {
-    if len != crate::task::RobustList::HEAD_SIZE {
+    if len != crate::task::HEAD_SIZE {
         debug!("sys_set_robust_list len != HEAD_SIZE. early return");
         return Err(SysErrNo::EINVAL);
     }
