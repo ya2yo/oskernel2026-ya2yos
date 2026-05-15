@@ -45,7 +45,15 @@ smoltcp = {version = "0.13.1", default-features = false, features=[
 }
 kspin = "0.1"
 futures-util = {version = "0.3.32", default-features = false, features = ["async-await-macro"] }
-
+linux-raw-sys = { version = "0.12", default-features = false, features = [
+    "no_std",
+    "general",
+    "net",
+    "prctl",
+    "system",
+    "ioctl",
+    "loop_device",
+] }
 [build-dependencies]
 cfg-if = { version = "1.0.0" }
 

@@ -2,7 +2,7 @@ use super::consts::*;
 use crate::fs::{FdTable, File, FileClass, FileDescriptor, OpenFlags, Socket};
 use crate::net::tcp::TcpSocket;
 use crate::net::udp::UdpSocket;
-use crate::net::Socket as SocketInner;
+use crate::net::{Socket as SocketInner, SocketAddrEx};
 use crate::{
     task::{current_task, Process},
     utils::{SysErrNo, SyscallRet},
@@ -71,7 +71,12 @@ pub fn sys_bind(sockfd: usize, addr: *const u8, addrlen: u32) -> SyscallRet {
         "[sys_bind] fd={}, addr={}, len={}",
         sockfd, addr as usize, addrlen
     );
-    unimplemented!("sys_bind not done")
+    let addr = SocketAddrEx:read_from_user(, addrlen)?;
+    debug!("sys_bind <= fd: {fd}, addr: {addr:?}");
+
+    Socket::from_fd(fd)?.bind(addr)?;
+
+    Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/listen.2.html
