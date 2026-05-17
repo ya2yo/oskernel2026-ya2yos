@@ -10,9 +10,9 @@ use smoltcp::{
 };
 
 use super::{
-    LISTEN_TABLE,
     consts::{SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::Device,
+    LISTEN_TABLE,
 };
 
 /// 路由规则
@@ -22,7 +22,7 @@ pub struct Rule {
     pub via: Option<IpAddress>, // 下一跳网关地址
     pub dev: usize,             // 该网段对应的设备索引
     pub src: IpAddress,         // 本地源地址
-}   
+}
 
 impl Rule {
     pub fn new(filter: IpCidr, via: Option<IpAddress>, dev: usize, src: IpAddress) -> Self {
@@ -65,10 +65,10 @@ impl RouteTable {
 /// 它本身实现了 smoltcp::phy::Device 特性，因此对协议栈来说它像是一个“网卡”
 /// 但实际上它内部管理着多个真实的物理设备
 pub struct Router {
-    rx_buffer: PacketBuffer,                // 接收缓冲区，存放从各个物理设备收到的包
-    tx_buffer: PacketBuffer,                // 发送缓冲区，存放协议栈准备发出的包
-    pub(crate) devices: Vec<Box<dyn Device>>,// 路由器连接的所有网卡设备
-    pub(crate) table: RouteTable,           // 路由表
+    rx_buffer: PacketBuffer, // 接收缓冲区，存放从各个物理设备收到的包
+    tx_buffer: PacketBuffer, // 发送缓冲区，存放协议栈准备发出的包
+    pub(crate) devices: Vec<Box<dyn Device>>, // 路由器连接的所有网卡设备
+    pub(crate) table: RouteTable, // 路由表
 }
 impl Router {
     pub fn new() -> Self {
@@ -95,7 +95,7 @@ impl Router {
 
     pub fn add_device(&mut self, device: Box<dyn Device>) -> usize {
         self.devices.push(device);
-        self.devices.len() - 1  // 返回新设备的索引
+        self.devices.len() - 1 // 返回新设备的索引
     }
     /// 轮询读取物理设备上的原始数据包进入路由器的 rx_buffer
     pub fn poll(&mut self, timestamp: Instant) {
@@ -216,7 +216,7 @@ impl<'a> smoltcp::phy::RxToken for RxToken<'a> {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        f(self.0)// 直接传递包数据给协议栈处理  
+        f(self.0) // 直接传递包数据给协议栈处理
     }
     // /// 在协议栈正式处理包之前的预处理阶段
     // fn preprocess(&self, sockets: &mut SocketSet) {

@@ -114,23 +114,23 @@ impl FileClass {
         match self {
             FileClass::File(f) => Ok(f.clone()),
             #[cfg(feature = "net")]
-            FileClass::Socket(_)=>Err(SysErrNo::EINVAL),
+            FileClass::Socket(_) => Err(SysErrNo::EINVAL),
             FileClass::Abs(_) => Err(SysErrNo::EINVAL),
         }
     }
     #[cfg(feature = "net")]
-    pub fn socket(&self)->Result<Arc<Socket>,SysErrNo>{
+    pub fn socket(&self) -> Result<Arc<Socket>, SysErrNo> {
         match self {
-            FileClass::File(_)=>Err(SysErrNo::ENOTSOCK),
-            FileClass::Socket(f)=>Ok(f.clone()),
-            FileClass::Abs(_)=>Err(SysErrNo::ENOTSOCK),
+            FileClass::File(_) => Err(SysErrNo::ENOTSOCK),
+            FileClass::Socket(f) => Ok(f.clone()),
+            FileClass::Abs(_) => Err(SysErrNo::ENOTSOCK),
         }
     }
     pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {
         match self {
             FileClass::File(_) => Err(SysErrNo::EINVAL),
             #[cfg(feature = "net")]
-            FileClass::Socket(_)=>Err(SysErrNo::EINVAL),
+            FileClass::Socket(_) => Err(SysErrNo::EINVAL),
             FileClass::Abs(f) => Ok(f.clone()),
         }
     }
@@ -138,7 +138,7 @@ impl FileClass {
         match self {
             FileClass::File(f) => f.clone(),
             #[cfg(feature = "net")]
-            FileClass::Socket(s)=>s.clone(),
+            FileClass::Socket(s) => s.clone(),
             FileClass::Abs(f) => f.clone(),
         }
     }

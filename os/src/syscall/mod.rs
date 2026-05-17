@@ -125,7 +125,7 @@ pub enum Syscall {
     Mprotect = 226,
     MSync = 227,
     Madvise = 233,
-    GetMempolicy=236,
+    GetMempolicy = 236,
     Accept4 = 242,
     Wait4 = 260,
     Prlimit = 261,
@@ -138,19 +138,19 @@ pub enum Syscall {
 }
 
 mod fs;
+mod io_mpx;
 mod memory;
+mod mm;
 #[cfg(feature = "net")]
 mod net;
 mod options;
 mod process;
+mod resource;
 mod signal;
+mod sync;
+mod sys;
 mod task;
 mod time;
-mod resource;
-mod sys;
-mod mm;
-mod sync;
-mod io_mpx;
 
 use crate::task::{current_task, sys_futex};
 use crate::{
@@ -161,19 +161,21 @@ use crate::{
     utils::SyscallRet,
 };
 use fs::*;
+use io_mpx::*;
 use memory::*;
+use mm::*;
 #[cfg(feature = "net")]
 use net::*;
-pub use options::{PollEvents, FutexCmd, FutexOpt, RLimit, Utsname, SignalMaskFlag,MmapFlags,MmapProt};
+pub use options::{
+    FutexCmd, FutexOpt, MmapFlags, MmapProt, PollEvents, RLimit, SignalMaskFlag, Utsname,
+};
 use process::*;
+use resource::*;
 use signal::*;
+use sync::*;
+use sys::*;
 pub use task::*;
 use time::*;
-use resource::*;
-use sys::*;
-use mm::*;
-use io_mpx::*;
-use sync::*;
 
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
@@ -415,7 +417,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::Clone => sys_clone(args[0], args[1], args[2], args[3], args[4]),
         Syscall::Brk => sys_brk(args[0]),
-        
+
         Syscall::Mmap => sys_mmap(
             args[0],
             args[1],
@@ -430,7 +432,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::MSync => Ok(0),
         Syscall::Madvise => sys_madvise(args[0], args[1], args[2]),
         Syscall::Wait4 => sys_wait4(args[0] as isize, args[1] as *mut i32, args[2] as i32),
-        
+
         Syscall::Renameat2 => sys_renameat2(
             args[0] as isize,
             args[1] as *const u8,

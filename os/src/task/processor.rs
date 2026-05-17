@@ -51,9 +51,8 @@ impl Processor {
 
 const EMPTY_PROCESSOR: Processor = Processor::new();
 /// 不需要加锁,每个核只会访问固定的Processor
-pub static PROCESSORS: SyncUnsafeCell<[Processor; HART_NUM]> = SyncUnsafeCell::new(
-    [EMPTY_PROCESSOR; HART_NUM]
-);
+pub static PROCESSORS: SyncUnsafeCell<[Processor; HART_NUM]> =
+    SyncUnsafeCell::new([EMPTY_PROCESSOR; HART_NUM]);
 ///attach to processors
 fn get_proc_by_hartid(hartid: usize) -> &'static mut Processor {
     if hartid >= HART_NUM {

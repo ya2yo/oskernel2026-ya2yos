@@ -1,7 +1,11 @@
 use alloc::{sync::Arc, vec::Vec};
 use log::debug;
 
-use crate::{mm::put_data, task::{Process, current_task, suspend_current_and_run_next}, utils::{SysErrNo, SyscallRet}};
+use crate::{
+    mm::put_data,
+    task::{current_task, suspend_current_and_run_next, Process},
+    utils::{SysErrNo, SyscallRet},
+};
 
 /// input.pid<-1: 等待一个子进程，其pgid==abs(input.pid)。这里的pgid指的是进程组id
 /// input.pid=-1: 等待任一一个子进程的结束。
@@ -66,7 +70,11 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
                     "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}",
                     pid, found_pid, exit_code, wstatus as usize
                 );
-                let token = task.process.inner_lock().get_locked_memory_set_read().token();
+                let token = task
+                    .process
+                    .inner_lock()
+                    .get_locked_memory_set_read()
+                    .token();
                 if exit_code >= 128 && exit_code <= 255 {
                     //表示由于信号而退出的
                     put_data(token, wstatus, exit_code);

@@ -7,7 +7,11 @@ use core::{
     task::Context,
 };
 
-use crate::{fs::File, mm::UserBuffer, utils::{SysErrNo, SysResult}};
+use crate::{
+    fs::File,
+    mm::UserBuffer,
+    utils::{SysErrNo, SysResult},
+};
 // use axio::prelude::*;
 use crate::syscall::PollEvents;
 use bitflags::bitflags;
@@ -145,7 +149,7 @@ pub trait SocketOps: Configurable {
     /// Send data to the socket, optionally to a specific address.
     fn send(&self, src: UserBuffer, options: SendOptions) -> SysResult<usize>;
     /// Receive data from the socket.
-    fn recv(&self, dst:UserBuffer, options: RecvOptions<'_>) -> SysResult<usize>;
+    fn recv(&self, dst: UserBuffer, options: RecvOptions<'_>) -> SysResult<usize>;
 
     /// Get the local endpoint of the socket.
     fn local_addr(&self) -> SysResult<SocketAddrEx>;
@@ -166,7 +170,7 @@ pub enum Socket {
 }
 
 impl File for Socket {
-    fn poll(&self, _events:PollEvents) -> PollEvents {
+    fn poll(&self, _events: PollEvents) -> PollEvents {
         match self {
             Socket::Tcp(tcp) => tcp.poll(PollEvents::empty()),
             Socket::Udp(udp) => udp.poll(PollEvents::empty()),

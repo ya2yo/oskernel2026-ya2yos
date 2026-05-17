@@ -1,12 +1,11 @@
 //! 以太网设备驱动层
-use alloc::{string::String, vec};
-use log::{debug, trace, warn};
-use core::task::Waker;
-use virtio_drivers::device::net::VirtIONet;
 use crate::drivers::{BaseDriver, DevError, NetDriverOps};
-use crate::{drivers::NetDeviceImpl, utils::SysErrNo};
 use crate::task::register_irq_waker;
+use crate::{drivers::NetDeviceImpl, utils::SysErrNo};
+use alloc::{string::String, vec};
+use core::task::Waker;
 use hashbrown::HashMap;
+use log::{debug, trace, warn};
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
     time::{Duration, Instant},
@@ -15,6 +14,7 @@ use smoltcp::{
         EthernetRepr, IpAddress, Ipv4Cidr,
     },
 };
+use virtio_drivers::device::net::VirtIONet;
 
 use super::super::{
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
@@ -32,16 +32,16 @@ struct Neighbor {
 /// 以太网设备结构体
 pub struct EthernetDevice {
     name: String,
-    inner: NetDeviceImpl,                       // 实际的硬件驱动接口
-    neighbors: HashMap<IpAddress, Option<Neighbor>>,    // ARP 缓存表：None 表示正在请求中   
-    ip: Ipv4Cidr,                                       // 本机的 IP 地址配置
+    inner: NetDeviceImpl,                            // 实际的硬件驱动接口
+    neighbors: HashMap<IpAddress, Option<Neighbor>>, // ARP 缓存表：None 表示正在请求中
+    ip: Ipv4Cidr,                                    // 本机的 IP 地址配置
     /// 待发送队列：当目标 MAC 地址未知（正在进行 ARP 查询）时，IP 包暂时存在这里
     pending_packets: PacketBuffer<'static, IpAddress>,
 }
 impl EthernetDevice {
     const NEIGHBOR_TTL: Duration = Duration::from_secs(60); // 有效期60s
 
-    pub fn new(name: String, inner:NetDeviceImpl , ip: Ipv4Cidr) -> Self {
+    pub fn new(name: String, inner: NetDeviceImpl, ip: Ipv4Cidr) -> Self {
         // 初始化待发送缓冲区
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],

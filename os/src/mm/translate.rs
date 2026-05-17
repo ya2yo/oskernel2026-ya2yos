@@ -1,7 +1,7 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use crate::{
     arch::{memory_layout::PAGE_SIZE, time::get_ticks},
-    mm::{KernelAddr, PhysPageNum, address, memory_set},
+    mm::{address, memory_set, KernelAddr, PhysPageNum},
 };
 
 use super::{MemorySet, StepByOne, VirtAddr};
@@ -232,7 +232,6 @@ pub fn safe_put_data<T: 'static>(memory_set: &MemorySet, ptr: *mut T, data: T) {
         *safe_translated_refmut(memory_set, ptr) = data;
     }
 }
-
 
 /// 类似于 Linux 的 copy_from_user，封装了地址翻译逻辑。
 /// - token: 源用户空间的页表 token

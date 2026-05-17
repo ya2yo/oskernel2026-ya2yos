@@ -8,82 +8,67 @@ authors = [
 ]
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-riscv = { git = "https://github.com/rcore-os/riscv", features = ["inline-asm"], optional = true }
-sbi-rt = { version = "0.0.2", features = ["legacy"], optional = true }
 buddy_system_allocator = "0.6"
 bitflags = "1.2.1"
 xmas-elf = "0.7.0"
 virtio-drivers = "0.7.5"
 lwext4_rust= {path = "../lwext4_rust"}
-# lwext4_rust = "0.2.0"
 log = "0.4"
 kernel_guard = "0.1"
 spin = "0.9.8"
 hashbrown = "0.12.0"
 num_enum = { version = "0.7.2", default-features = false }
 cfg-if = { version = "1.0.0" }
-loongArch64 = { git = "https://github.com/Godones/loongArch64", optional = true }
 enum_dispatch = "0.3"
 event-listener = { version = "4.0", default-features = false }
 smallvec = "1.15.1"
-smoltcp = {version = "0.13.1", default-features = false, features=[
-    "alloc",               
-    "log",                 
-    "medium-ethernet",    
-    "medium-ip", 
-    "proto-ipv4",          # IPv4 支持
-    "proto-ipv6",          # IPv6支持
-    "socket-icmp",         
-    "socket-udp",          # 常用：UDP 协议
-    "socket-tcp",          # 常用：TCP 协议
-    "socket-raw",
-    "async",               
-    ]
-}
 kspin = "0.1"
-futures-util = {version = "0.3.32", default-features = false, features = ["async-await-macro"] }
-linux-raw-sys = { version = "0.12", default-features = false, features = [
-    "no_std",
-    "general",
-    "net",
-    "prctl",
-    "system",
-    "ioctl",
-    "loop_device",
+futures-util = { version = "0.3.32", default-features = false, features = ["async-await-macro"] }
+
+smoltcp = { version = "0.13.1", default-features = false, features = [
+    "alloc", "log", "medium-ethernet", "medium-ip", "proto-ipv4", 
+    "proto-ipv6", "socket-icmp", "socket-udp", "socket-tcp", "socket-raw", "async"
 ] }
+
+linux-raw-sys = { version = "0.12", default-features = false, features = [
+    "no_std", "general", "net", "prctl", "system", "ioctl", "loop_device"
+] }
+
+# 架构特定依赖
+
+# 当 target 为 riscv64 时自动引入
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+riscv = { git = "https://github.com/rcore-os/riscv", features = ["inline-asm"] }
+sbi-rt = { version = "0.0.2", features = ["legacy"] }
+
+# 当 target 为 loongarch64 时自动引入
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+loongArch64 = { git = "https://github.com/Godones/loongArch64" }
+
 [build-dependencies]
 cfg-if = { version = "1.0.0" }
 
-# 这里将os中所有使用到cty的库重定向为修改过的cty（只有lwext4_rust需要cty）
 [patch.crates-io]
-cty = { path = "../cty" }   # TODO: 明晃晃地放在外面是不是不太好
-smoltcp = {path = "vendor/smoltcp" }
-
+cty = { path = "../cty" }
+smoltcp = { path = "vendor/smoltcp" }
 
 [features]
-# default = ["loongarch64"]
-default = ["riscv64", "net"]
-# 级别相关定义在./os/src/logger.rs
-error = []          # 启用 error 级别
-warn = []           # 启用 warn 级别
-info = []           # 启用 info 级别
-debug = []          # 启用 debug 级别
-trace = []          # 启用 trace 级别
-# 定义和架构相关的条件编译
-riscv64 = ["riscv", "sbi-rt"]  # 列表中的库，表示如果启用这个feature则加载这些库
-loongarch64 = ["loongArch64"]
+default = ["net"]
+error = []
+warn = []
+info = []
+debug = []
+trace = []
 irq = []
 net = []
 
+# 这里不再需要 riscv64 = ["riscv", "sbi-rt"]，因为 target 会自动处理
+# 但如果你代码里还在用 #[cfg(feature = "riscv64")]，建议改为 #[cfg(target_arch = "riscv64")]
+
 [profile.release]
-# 在 release 模式下也保留调试信息，用于gdb等调试
 debug = true
 panic = "abort"
 
 [profile.dev]
 panic = "abort"
-
-

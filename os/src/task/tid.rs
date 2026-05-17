@@ -10,7 +10,7 @@ use spin::Mutex;
 static GLOBAL_ID_ALLOCATOR: Mutex<IdAllocator> = Mutex::new(IdAllocator::new(1));
 
 ///Bind pid lifetime to `TidHandle`
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct TidHandle(pub usize);
 
 impl TidHandle {

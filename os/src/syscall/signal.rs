@@ -44,7 +44,7 @@ pub fn sys_rt_sigaction(
             // 忽略
             KSigAction::ignore()
         } else {
-            let customed = new_act.sa_handler != exit_current_and_run_next as *const() as usize;
+            let customed = new_act.sa_handler != exit_current_and_run_next as *const () as usize;
             KSigAction {
                 act: new_act,
                 customed,
@@ -112,7 +112,11 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
     // TODO(ZMY): 暂停线程
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = task
+        .process
+        .inner_lock()
+        .get_locked_memory_set_read()
+        .token();
     let mask = get_data(token, mask);
     let old_mask = task_inner.sig_mask;
     task_inner.sig_mask = mask;

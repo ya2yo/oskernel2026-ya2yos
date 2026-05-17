@@ -8,10 +8,13 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
-use crate::{task::{block_current_and_run_next, current_task, ready_queue, TaskStatus}, utils::SysErrNo};
+use super::{TaskRef, WeakTaskRef};
+use crate::{
+    task::{block_current_and_run_next, current_task, ready_queue, TaskStatus},
+    utils::SysErrNo,
+};
 use kernel_guard::NoPreemptIrqSave;
 use kspin::SpinNoIrq;
-use super::{WeakTaskRef, TaskRef};
 
 mod poll;
 pub use poll::*;
@@ -51,9 +54,9 @@ impl Wake for MyWaker {
             // 标记已唤醒
             *self.woke.lock() = true;
             // 调用调度器接口，取消任务的阻塞状态
-            let mut inner=task.inner_lock();
-            if inner.task_status!=TaskStatus::Ready {
-                inner.task_status=TaskStatus::Ready;
+            let mut inner = task.inner_lock();
+            if inner.task_status != TaskStatus::Ready {
+                inner.task_status = TaskStatus::Ready;
                 drop(inner);
                 ready_queue::add_task(&task);
             }
@@ -65,13 +68,13 @@ impl Wake for MyWaker {
 ///
 /// 这是内核中的“同步转异步”桥梁。它会不断轮询 Future，
 /// 如果 Future 返回 Pending，则会将当前任务挂起（休眠）。
-/// 
+///
 /// 注意：此函数不处理中断，通常不建议在需要响应信号的用户态任务中直接使用。
 pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
     // 将 Future 固定在栈上（Pinning）
     let mut fut = pin!(f);
     // 获取当前正在运行的任务
-    let task=current_task().unwrap();
+    let task = current_task().unwrap();
     // 创建 Waker 并包装成标准库的 Context
     let waker = MyWaker::new(&task);
     let woke = &waker.woke;
@@ -91,7 +94,7 @@ pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
                     // 传入锁保护的变量是为了在释放锁的同时进行上下文切换
                     block_current_and_run_next();
                 } else {
-                     // 如果在执行过程中已经被唤醒
+                    // 如果在执行过程中已经被唤醒
                     // 则释放锁并主动让出 CPU，稍后再次尝试
                     drop(woke);
                     core::hint::spin_loop();

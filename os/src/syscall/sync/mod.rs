@@ -1,2 +1,2 @@
-mod futex;  
+mod futex;
 pub use futex::*;

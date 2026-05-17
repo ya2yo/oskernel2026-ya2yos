@@ -30,13 +30,7 @@ pub mod udp;
 // pub mod vsock;
 mod wrapper;
 
-use alloc::{borrow::ToOwned, boxed::Box};
-use log::{info, warn};
-use crate::drivers::{BaseDriver, DeviceContainer, NetDeviceImpl, NetDriverOps};
-use spin::Mutex;
-use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
-use spin::{Lazy, Once};
-use virtio_drivers::device::net::VirtIONet;
+pub use self::device::{EthernetDevice, LoopbackDevice};
 pub use self::socket::*;
 use self::{
     consts::{GATEWAY, IP, IP_PREFIX},
@@ -45,7 +39,13 @@ use self::{
     service::Service,
     wrapper::SocketSetWrapper,
 };
-pub use self::device::{EthernetDevice, LoopbackDevice};
+use crate::drivers::{BaseDriver, DeviceContainer, NetDeviceImpl, NetDriverOps};
+use alloc::{borrow::ToOwned, boxed::Box};
+use log::{info, warn};
+use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
+use spin::Mutex;
+use spin::{Lazy, Once};
+use virtio_drivers::device::net::VirtIONet;
 
 /// 全局监听表，用于跟踪所有处于监听状态的套接字。
 static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);

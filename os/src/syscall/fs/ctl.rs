@@ -2,12 +2,18 @@ use alloc::string::String;
 use alloc::vec;
 use log::{debug, warn};
 
-use crate::fs::{File, FsIndex, InodeType, MAX_PATH_LEN, NONE_MODE, OpenFlags, SEEK_CUR, SEEK_SET, open, superblock_sync};
+use crate::fs::{
+    open, superblock_sync, File, FsIndex, InodeType, OpenFlags, MAX_PATH_LEN, NONE_MODE, SEEK_CUR,
+    SEEK_SET,
+};
+use crate::mm::{
+    get_data, if_bad_address, safe_translated_byte_buffer, translated_byte_buffer, translated_str,
+    UserBuffer,
+};
 use crate::syscall::process;
-use crate::timer::{NOW_TIME_STAMP, Timespec, get_time_ms};
-use crate::utils::{SysErrNo, SyscallRet, get_abs_path, rsplit_once};
 use crate::task::{current_task, current_token};
-use crate::mm::{UserBuffer, get_data, if_bad_address, safe_translated_byte_buffer, translated_byte_buffer, translated_str};
+use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
+use crate::utils::{get_abs_path, rsplit_once, SysErrNo, SyscallRet};
 
 /// 参考 https://man7.org/linux/man-pages/man2/getcwd.2.html
 pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
@@ -19,15 +25,15 @@ pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
     if size < cwd_len_with_null {
         return Err(SysErrNo::ERANGE);
     }
-    let memory_set=proc_inner.get_locked_memory_set_read();
-    let buffers=match safe_translated_byte_buffer(&memory_set, buf, size) {
-        Some(bufs)=>bufs,
-        None=>return Err(SysErrNo::EFAULT),
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let buffers = match safe_translated_byte_buffer(&memory_set, buf, size) {
+        Some(bufs) => bufs,
+        None => return Err(SysErrNo::EFAULT),
     };
-    let mut user_buf=UserBuffer::new(buffers);
+    let mut user_buf = UserBuffer::new(buffers);
     user_buf.write(cwd_bytes);
-    let null_bytes:[u8;1]=[0];
-    user_buf.write_at(cwd_bytes.len(),&null_bytes);
+    let null_bytes: [u8; 1] = [0];
+    user_buf.write_at(cwd_bytes.len(), &null_bytes);
     Ok(buf as usize)
 }
 
@@ -40,7 +46,7 @@ pub fn sys_ioctl(_fd: usize, _cmd: usize, _arg: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/chdir.2.html
 pub fn sys_chdir(path: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_write().token();
 
     if (path as isize) <= 0 || if_bad_address(path as usize) {
@@ -72,7 +78,7 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/mkdirat.2.html
 pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_write().token();
     let path = translated_str(token, path);
     debug!(
@@ -138,7 +144,7 @@ pub fn sys_linkat(
 pub fn sys_unlinkat(dirfd: isize, path: *const u8, _flags: u32) -> SyscallRet {
     // assert!(flags != AT_REMOVEDIR, "not support yet");
     let task = current_task().unwrap();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
 
     let path = translated_str(token, path);
@@ -184,7 +190,7 @@ pub fn sys_utimensat(
         return Err(SysErrNo::EBADF);
     }
     let task = current_task().unwrap();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
     let path = if !path.is_null() {
         translated_str(token, path)
@@ -234,7 +240,7 @@ pub fn sys_sync() -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/readlinkat.2.html
 pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
     let self_token = current_token();
     debug!("path={:#x}", path as usize);
@@ -280,7 +286,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
 
 pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
     let target_path = translated_str(token, target);
     let link_path = translated_str(token, linkpath);
@@ -290,7 +296,7 @@ pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) ->
         target_path, newdirfd, link_path
     );
 
-    let abs_link_path = proc_inner.get_abs_path( newdirfd, &link_path)?;
+    let abs_link_path = proc_inner.get_abs_path(newdirfd, &link_path)?;
     //检查linkpath是否已存在
     if let Ok(_) = open(&abs_link_path, OpenFlags::empty(), NONE_MODE) {
         return Err(SysErrNo::EEXIST);
@@ -322,14 +328,14 @@ pub fn sys_renameat2(
     _flags: u32,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
     let oldpath = translated_str(token, oldpath);
     let newpath = translated_str(token, newpath);
 
     let old_abs_path = proc_inner.get_abs_path(olddirfd, &oldpath)?;
     let osfile = open(&old_abs_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
-    let new_abs_path = proc_inner.get_abs_path( newdirfd, &newpath)?;
+    let new_abs_path = proc_inner.get_abs_path(newdirfd, &newpath)?;
     osfile.inode.rename(&old_abs_path, &new_abs_path)
 }
 
@@ -346,7 +352,7 @@ pub fn sys_fchownat(
 
 pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
 
     if (fd as isize) < 0 && fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EBADF);

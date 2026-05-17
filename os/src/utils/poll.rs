@@ -4,13 +4,13 @@
 
 extern crate alloc;
 
+use crate::syscall::PollEvents;
+use alloc::{boxed::Box, sync::Arc, task::Wake};
+use bitflags::bitflags;
 use core::{
     mem::MaybeUninit,
     task::{Context, Waker},
 };
-use crate::syscall::PollEvents;
-use alloc::{boxed::Box, sync::Arc, task::Wake};
-use bitflags::bitflags;
 use spin::{Lazy, Mutex};
 
 // /// Trait for types that can be polled for I/O events.

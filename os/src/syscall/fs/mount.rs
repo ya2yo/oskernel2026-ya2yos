@@ -1,6 +1,11 @@
 use alloc::string::String;
 
-use crate::{fs::MNT_TABLE, mm::translated_str, task::current_token, utils::{SysErrNo, SyscallRet}};
+use crate::{
+    fs::MNT_TABLE,
+    mm::translated_str,
+    task::current_token,
+    utils::{SysErrNo, SyscallRet},
+};
 
 /// 参考 https://man7.org/linux/man-pages/man2/umount2.2.html
 pub fn sys_umount2(special: *const u8, flags: u32) -> SyscallRet {

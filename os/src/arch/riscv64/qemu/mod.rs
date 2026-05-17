@@ -6,6 +6,6 @@ pub mod time;
 pub mod tlb;
 // pub mod trap;
 mod asms;
+pub mod config;
 pub mod context;
 pub mod trap_interface;
-pub mod config;

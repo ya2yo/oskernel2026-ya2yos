@@ -1,18 +1,18 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec};
-use log::{debug, warn};
 use core::ops::DerefMut;
+use log::{debug, warn};
 
 use crate::utils::{SysErrNo, SysResult};
-use spin::Mutex;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp::{self, SocketBuffer, State},
     wire::{IpEndpoint, IpListenEndpoint},
 };
+use spin::Mutex;
 
 use super::{
-    SOCKET_SET,
     consts::{LISTEN_QUEUE_SIZE, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
+    SOCKET_SET,
 };
 
 /// 总端口数量 (0-65535)
@@ -22,7 +22,7 @@ const PORT_NUM: usize = 65536;
 struct ListenTableEntryInner {
     /// 监听的 IP 和 端口信息
     listen_endpoint: IpListenEndpoint,
-    /// 等待被 accept 的 Socket 队列 
+    /// 等待被 accept 的 Socket 队列
     syn_queue: VecDeque<SocketHandle>,
 }
 
@@ -150,7 +150,7 @@ impl ListenTable {
         dst: IpEndpoint,
         sockets: &mut SocketSet<'_>,
     ) {
-         // 如果目标端口正在监听
+        // 如果目标端口正在监听
         if let Some(entry) = self.listen_entry(dst.port).lock().deref_mut() {
             // 检查队列（Backlog）是否已满
             if entry.syn_queue.len() >= LISTEN_QUEUE_SIZE {

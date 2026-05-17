@@ -1,8 +1,17 @@
-use alloc::{vec,sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use log::debug;
 
-use crate::{fs::{File, SEEK_CUR, SEEK_SET}, mm::{UserBuffer, safe_translated_byte_buffer, translated_byte_buffer, translated_ref, translated_refmut}, syscall::options::Iovec, task::current_task, timer::get_time_ms, utils::{SysErrNo, SyscallRet}};
-
+use crate::{
+    fs::{File, SEEK_CUR, SEEK_SET},
+    mm::{
+        safe_translated_byte_buffer, translated_byte_buffer, translated_ref, translated_refmut,
+        UserBuffer,
+    },
+    syscall::options::Iovec,
+    task::current_task,
+    timer::get_time_ms,
+    utils::{SysErrNo, SyscallRet},
+};
 
 /// 参考 https://man7.org/linux/man-pages/man2/write.2.html
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
@@ -27,7 +36,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         drop(memory_set);
         drop(process);
         drop(task);
-        let ret=f.write(buffer)?;
+        let ret = f.write(buffer)?;
         debug!("buffer 3");
         Ok(ret)
     } else {
@@ -39,7 +48,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/read.2.html
 pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let fd_table=task.get_fd_table();
+    let fd_table = task.get_fd_table();
     if fd >= fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
@@ -66,7 +75,7 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
-    let fd_table=proc_inner.fd_table.clone();
+    let fd_table = proc_inner.fd_table.clone();
     // debug!(
     //     "[sys_writev] fd is {}, iov is {:x}, iovcnt is {}",
     //     fd, iov as usize, iovcnt

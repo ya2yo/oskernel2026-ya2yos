@@ -1,11 +1,15 @@
-use alloc::collections::BTreeMap;
-use spin::Mutex;
-use core::{
-    fmt, future::{Future, IntoFuture}, pin::Pin, task::{Context, Poll, Waker}, time::Duration
-};
-use crate::{timer::wall_time, utils::SysErrNo};
 use crate::timer::Timespec;
-use futures_util::{FutureExt, select_biased};
+use crate::{timer::wall_time, utils::SysErrNo};
+use alloc::collections::BTreeMap;
+use core::{
+    fmt,
+    future::{Future, IntoFuture},
+    pin::Pin,
+    task::{Context, Poll, Waker},
+    time::Duration,
+};
+use futures_util::{select_biased, FutureExt};
+use spin::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct TimerKey {
@@ -86,9 +90,7 @@ pub(crate) fn check_timer_events() {
 fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
     // FIXME: optimize `percpu` crate! should disable irq and provide more apis
     let _g = kernel_guard::NoPreemptIrqSave::new();
-    unsafe {
-        f(&mut *core::ptr::addr_of_mut!(TIMER_RUNTIME))
-    }
+    unsafe { f(&mut *core::ptr::addr_of_mut!(TIMER_RUNTIME)) }
 }
 
 /// Future returned by `sleep` and `sleep_until`.
@@ -108,7 +110,6 @@ impl Drop for TimerFuture {
         with_current(|r| r.cancel(&self.0));
     }
 }
-
 
 /// Waits until `deadline` is reached.
 pub async fn sleep_until(deadline: Timespec) {
@@ -141,11 +142,7 @@ pub async fn timeout<F: IntoFuture>(
     duration: Option<Duration>,
     f: F,
 ) -> Result<F::Output, Elapsed> {
-    timeout_at(
-        duration.and_then(|x| x.checked_add(wall_time().into())),
-        f,
-    )
-    .await
+    timeout_at(duration.and_then(|x| x.checked_add(wall_time().into())), f).await
 }
 
 /// Requires a `Future` to complete before the specified deadline.

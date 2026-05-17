@@ -9,5 +9,5 @@ mod thread;
 mod wait;
 
 pub use self::{
-    clone::*, exit::*, ctl::*, clone3::*, execve::*, job::*, schedule::*, thread::*, wait::*,
+    clone::*, clone3::*, ctl::*, execve::*, exit::*, job::*, schedule::*, thread::*, wait::*,
 };

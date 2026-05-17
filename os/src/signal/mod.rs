@@ -65,7 +65,7 @@ pub fn handle_signal(signo: usize) {
         debug!("sa_handler:{:#x}", sig_action.act.sa_handler as usize);
         // 就在S模式运行,转换成fn(i32)
         if sig_action.act.sa_handler != 1 {
-            if sig_action.act.sa_handler == exit_current_and_run_next as *const() as usize {
+            if sig_action.act.sa_handler == exit_current_and_run_next as *const () as usize {
                 exit_current_and_run_next((signo + 128) as i32);
             }
         }
@@ -79,7 +79,11 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
 
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = task
+        .process
+        .inner_lock()
+        .get_locked_memory_set_read()
+        .token();
 
     let trap_cx = task_inner.trap_cx();
     let mut user_sp = trap_cx.get_sp();
@@ -174,9 +178,9 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
         } else {
             let trampoline: usize;
             cfg_if::cfg_if! {
-                if #[cfg(feature = "loongarch64")] {
+                if #[cfg(target_arch = "loongarch64")] {
                     trampoline = memory_layout::sigreturn_va();
-                } else if #[cfg(feature = "riscv64")] {
+                } else if #[cfg(target_arch = "riscv64")] {
                     trampoline = sigreturn_trampoline as *const() as usize;
                 }
             }
@@ -192,7 +196,11 @@ pub fn restore_frame() -> SyscallRet {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
 
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = task
+        .process
+        .inner_lock()
+        .get_locked_memory_set_read()
+        .token();
 
     let trap_cx = task_inner.trap_cx();
     let mut user_sp = trap_cx.get_sp();

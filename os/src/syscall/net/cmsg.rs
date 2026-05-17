@@ -1,9 +1,14 @@
-use alloc::{slice, sync::Arc, vec::Vec};
-use core::mem::{size_of, align_of};
-use linux_raw_sys::net::{SCM_RIGHTS, SOL_SOCKET, cmsghdr};
 use alloc::vec;
+use alloc::{slice, sync::Arc, vec::Vec};
+use core::mem::{align_of, size_of};
+use linux_raw_sys::net::{cmsghdr, SCM_RIGHTS, SOL_SOCKET};
 // 假设这些是你项目中已有的定义
-use crate::{fs::File, mm::UserBuffer, task::current_task, utils::{SysErrNo, SysResult}};
+use crate::{
+    fs::File,
+    mm::UserBuffer,
+    task::current_task,
+    utils::{SysErrNo, SysResult},
+};
 
 const CMSG_ALIGN_SIZE: usize = size_of::<usize>();
 
@@ -48,8 +53,10 @@ impl CMsg {
                 let mut fds = Vec::new();
                 for chunk in data.chunks_exact(size_of::<i32>()) {
                     let fd = i32::from_ne_bytes(chunk.try_into().unwrap());
-                    if fd < 0 { return Err(SysErrNo::EBADFD); }
-                    
+                    if fd < 0 {
+                        return Err(SysErrNo::EBADFD);
+                    }
+
                     let fd_table = current_task().ok_or(SysErrNo::ESRCH)?.get_fd_table();
                     let f = fd_table.get(fd as usize)?.any();
                     fds.push(f);
@@ -93,11 +100,11 @@ impl CMsgBuilder {
         }
 
         // 3. 在内核中先构造 Body 数据
-        // 由于 UserBuffer 可能跨页，最稳妥的方法是先在内核申请一个临时 buffer 
+        // 由于 UserBuffer 可能跨页，最稳妥的方法是先在内核申请一个临时 buffer
         // 或者是让 body_writer 直接往内核 buffer 写，然后再通过 UserBuffer 写入用户态
         let max_body_size = self.buffer.len() - (start_offset + hdr_size);
         let mut tmp_body = vec![0u8; core::cmp::min(max_body_size, 4096)]; // 限制大小防止溢出
-        
+
         let actual_body_len = body_writer(&mut tmp_body)?;
         let total_msg_len = hdr_size + actual_body_len;
 
@@ -109,15 +116,17 @@ impl CMsgBuilder {
         };
 
         // 5. 写入 Header 到 UserBuffer
-        let hdr_bytes = unsafe {
-            slice::from_raw_parts(&hdr as *const _ as *const u8, hdr_size)
-        };
+        let hdr_bytes = unsafe { slice::from_raw_parts(&hdr as *const _ as *const u8, hdr_size) };
         if self.buffer.write_at(start_offset, hdr_bytes) != hdr_size as isize {
             return Err(SysErrNo::EFAULT);
         }
 
         // 6. 写入 Body 到 UserBuffer
-        if self.buffer.write_at(start_offset + hdr_size, &tmp_body[..actual_body_len]) != actual_body_len as isize {
+        if self
+            .buffer
+            .write_at(start_offset + hdr_size, &tmp_body[..actual_body_len])
+            != actual_body_len as isize
+        {
             return Err(SysErrNo::EFAULT);
         }
 

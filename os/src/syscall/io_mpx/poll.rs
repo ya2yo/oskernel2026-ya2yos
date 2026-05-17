@@ -2,13 +2,23 @@ use alloc::{sync::Arc, vec::Vec};
 use log::debug;
 
 use crate::{
-    fs::File, mm::{translated_ref, translated_refmut}, syscall::{PollEvents, options::PollFd}, task::{current_task, suspend_current_and_run_next}, timer::{Timespec, get_time_ms}, utils::{SysErrNo, SyscallRet}};
+    fs::File,
+    mm::{translated_ref, translated_refmut},
+    syscall::{options::PollFd, PollEvents},
+    task::{current_task, suspend_current_and_run_next},
+    timer::{get_time_ms, Timespec},
+    utils::{SysErrNo, SyscallRet},
+};
 
 /// 参考 https://man7.org/linux/man-pages/man2/ppoll.2.html
 pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, mask: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.inner_lock();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = task
+        .process
+        .inner_lock()
+        .get_locked_memory_set_read()
+        .token();
 
     debug!(
         "[sys_ppoll] fds_ptr is {}, nfds is {}, tmo_p is {}, mask is {}",

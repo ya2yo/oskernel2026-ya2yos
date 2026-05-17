@@ -16,4 +16,3 @@ pub fn sys_get_mempolicy(
     log::error!("Unimplemented sys_get_mempolicy");
     Ok(0)
 }
-
