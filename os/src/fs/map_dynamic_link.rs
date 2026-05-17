@@ -88,12 +88,12 @@ pub fn map_dynamic_link_file(path: &str) -> &str {
 pub fn map_dynamic_link_file_directly_map(path: &str) -> &str {
     let res = map_library_path(path);
     if let Some(lib) = res {
-        return lib;
+        lib
     } else {
         warn!(
             "Warning: map_dynamic_link_file_directly_map cannot find DL path for path:{}",
             path
         );
-        return path;
+        path
     }
 }

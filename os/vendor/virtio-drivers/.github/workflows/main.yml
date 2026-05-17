@@ -9,12 +9,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          components: rustfmt, clippy
+      - uses: actions/checkout@v4
       - name: Check code format
         uses: actions-rs/cargo@v1
         with:
@@ -28,11 +23,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
+      - uses: actions/checkout@v4
       - name: Build with no features
         uses: actions-rs/cargo@v1
         with:
@@ -59,32 +50,25 @@ jobs:
           args: --all-features
 
   examples:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         example:
           - aarch64
           - riscv
+          - x86_64
         include:
           - example: aarch64
-            toolchain: stable
-            target: aarch64-unknown-none
             packages: qemu-system-arm gcc-aarch64-linux-gnu
           - example: riscv
-            toolchain: nightly-2022-11-03
-            target: riscv64imac-unknown-none-elf
             packages: qemu-system-misc
+          - example: x86_64
+            packages: qemu-system-x86
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Install QEMU
-        run: sudo apt update && sudo apt install ${{ matrix.packages }}
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: ${{ matrix.toolchain }}
-          target: ${{ matrix.target }}
-          components: llvm-tools-preview, rustfmt
+        run: sudo apt update && sudo apt install ${{ matrix.packages }} && sudo chmod 666 /dev/vhost-vsock
       - name: Check code format
         working-directory: examples/${{ matrix.example }}
         run: cargo fmt --all -- --check
@@ -93,4 +77,4 @@ jobs:
         run: make kernel
       - name: Run
         working-directory: examples/${{ matrix.example }}
-        run: QEMU_ARGS="-display none" make qemu
+        run: QEMU_ARGS="-display none -audiodev none,id=audio0" make qemu accel="off"

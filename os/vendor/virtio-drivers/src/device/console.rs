@@ -1,17 +1,18 @@
 //! Driver for VirtIO console devices.
 
-use crate::hal::{Dma, Hal};
+use crate::hal::Hal;
 use crate::queue::VirtQueue;
 use crate::transport::Transport;
 use crate::volatile::{volread, ReadOnly, WriteOnly};
-use crate::Result;
+use crate::{Result, PAGE_SIZE};
+use alloc::boxed::Box;
 use bitflags::bitflags;
 use core::ptr::NonNull;
-use log::info;
 
 const QUEUE_RECEIVEQ_PORT_0: u16 = 0;
 const QUEUE_TRANSMITQ_PORT_0: u16 = 1;
-const QUEUE_SIZE: u16 = 2;
+const QUEUE_SIZE: usize = 2;
+const SUPPORTED_FEATURES: Features = Features::RING_EVENT_IDX.union(Features::RING_INDIRECT_DESC);
 
 /// Driver for a VirtIO console device.
 ///
@@ -38,17 +39,28 @@ const QUEUE_SIZE: u16 = 2;
 /// # Ok(())
 /// # }
 /// ```
-pub struct VirtIOConsole<'a, H: Hal, T: Transport> {
+pub struct VirtIOConsole<H: Hal, T: Transport> {
     transport: T,
     config_space: NonNull<Config>,
-    receiveq: VirtQueue<H>,
-    transmitq: VirtQueue<H>,
-    queue_buf_dma: Dma<H>,
-    queue_buf_rx: &'a mut [u8],
+    receiveq: VirtQueue<H, QUEUE_SIZE>,
+    transmitq: VirtQueue<H, QUEUE_SIZE>,
+    queue_buf_rx: Box<[u8; PAGE_SIZE]>,
     cursor: usize,
     pending_len: usize,
     /// The token of the outstanding receive request, if there is one.
     receive_token: Option<u16>,
+}
+
+// SAFETY: The config space can be accessed from any thread.
+unsafe impl<H: Hal, T: Transport + Send> Send for VirtIOConsole<H, T> where
+    VirtQueue<H, QUEUE_SIZE>: Send
+{
+}
+
+// SAFETY: A `&VirtIOConsole` only allows reading the config space.
+unsafe impl<H: Hal, T: Transport + Sync> Sync for VirtIOConsole<H, T> where
+    VirtQueue<H, QUEUE_SIZE>: Sync
+{
 }
 
 /// Information about a console device, read from its configuration space.
@@ -62,27 +74,35 @@ pub struct ConsoleInfo {
     pub max_ports: u32,
 }
 
-impl<H: Hal, T: Transport> VirtIOConsole<'_, H, T> {
+impl<H: Hal, T: Transport> VirtIOConsole<H, T> {
     /// Creates a new VirtIO console driver.
     pub fn new(mut transport: T) -> Result<Self> {
-        transport.begin_init(|features| {
-            let features = Features::from_bits_truncate(features);
-            info!("Device features {:?}", features);
-            let supported_features = Features::empty();
-            (features & supported_features).bits()
-        });
+        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES);
         let config_space = transport.config_space::<Config>()?;
-        let receiveq = VirtQueue::new(&mut transport, QUEUE_RECEIVEQ_PORT_0, QUEUE_SIZE)?;
-        let transmitq = VirtQueue::new(&mut transport, QUEUE_TRANSMITQ_PORT_0, QUEUE_SIZE)?;
-        let queue_buf_dma = Dma::new(1)?;
-        let queue_buf_rx = unsafe { &mut queue_buf_dma.as_buf()[0..] };
+        let receiveq = VirtQueue::new(
+            &mut transport,
+            QUEUE_RECEIVEQ_PORT_0,
+            negotiated_features.contains(Features::RING_INDIRECT_DESC),
+            negotiated_features.contains(Features::RING_EVENT_IDX),
+        )?;
+        let transmitq = VirtQueue::new(
+            &mut transport,
+            QUEUE_TRANSMITQ_PORT_0,
+            negotiated_features.contains(Features::RING_INDIRECT_DESC),
+            negotiated_features.contains(Features::RING_EVENT_IDX),
+        )?;
+
+        // Safe because no alignment or initialisation is required for [u8], the DMA buffer is
+        // dereferenceable, and the lifetime of the reference matches the lifetime of the DMA buffer
+        // (which we don't otherwise access).
+        let queue_buf_rx = Box::new([0; PAGE_SIZE]);
+
         transport.finish_init();
         let mut console = VirtIOConsole {
             transport,
             config_space,
             receiveq,
             transmitq,
-            queue_buf_dma,
             queue_buf_rx,
             cursor: 0,
             pending_len: 0,
@@ -113,7 +133,13 @@ impl<H: Hal, T: Transport> VirtIOConsole<'_, H, T> {
         if self.receive_token.is_none() && self.cursor == self.pending_len {
             // Safe because the buffer lasts at least as long as the queue, and there are no other
             // outstanding requests using the buffer.
-            self.receive_token = Some(unsafe { self.receiveq.add(&[], &[self.queue_buf_rx]) }?);
+            self.receive_token = Some(unsafe {
+                self.receiveq
+                    .add(&[], &mut [self.queue_buf_rx.as_mut_slice()])
+            }?);
+            if self.receiveq.should_notify() {
+                self.transport.notify(QUEUE_RECEIVEQ_PORT_0);
+            }
         }
         Ok(())
     }
@@ -137,13 +163,22 @@ impl<H: Hal, T: Transport> VirtIOConsole<'_, H, T> {
         let mut flag = false;
         if let Some(receive_token) = self.receive_token {
             if self.receive_token == self.receiveq.peek_used() {
-                let len = self
-                    .receiveq
-                    .pop_used(receive_token, &[], &[self.queue_buf_rx])?;
+                // Safe because we are passing the same buffer as we passed to `VirtQueue::add` in
+                // `poll_retrieve` and it is still valid.
+                let len = unsafe {
+                    self.receiveq.pop_used(
+                        receive_token,
+                        &[],
+                        &mut [self.queue_buf_rx.as_mut_slice()],
+                    )?
+                };
                 flag = true;
                 assert_ne!(len, 0);
                 self.cursor = 0;
                 self.pending_len = len as usize;
+                // Clear `receive_token` so that when the buffer is used up the next call to
+                // `poll_retrieve` will add a new pending request.
+                self.receive_token.take();
             }
         }
         Ok(flag)
@@ -168,14 +203,13 @@ impl<H: Hal, T: Transport> VirtIOConsole<'_, H, T> {
     /// Sends a character to the console.
     pub fn send(&mut self, chr: u8) -> Result<()> {
         let buf: [u8; 1] = [chr];
-        // Safe because the buffer is valid until we pop_used below.
         self.transmitq
-            .add_notify_wait_pop(&[&buf], &[], &mut self.transport)?;
+            .add_notify_wait_pop(&[&buf], &mut [], &mut self.transport)?;
         Ok(())
     }
 }
 
-impl<H: Hal, T: Transport> Drop for VirtIOConsole<'_, H, T> {
+impl<H: Hal, T: Transport> Drop for VirtIOConsole<H, T> {
     fn drop(&mut self) {
         // Clear any pointers pointing to DMA regions, so the device doesn't try to access them
         // after they have been freed.
@@ -193,6 +227,7 @@ struct Config {
 }
 
 bitflags! {
+    #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
     struct Features: u64 {
         const SIZE                  = 1 << 0;
         const MULTIPORT             = 1 << 1;
@@ -223,12 +258,12 @@ mod tests {
         hal::fake::FakeHal,
         transport::{
             fake::{FakeTransport, QueueStatus, State},
-            DeviceStatus, DeviceType,
+            DeviceType,
         },
     };
     use alloc::{sync::Arc, vec};
     use core::ptr::NonNull;
-    use std::sync::Mutex;
+    use std::{sync::Mutex, thread};
 
     #[test]
     fn receive() {
@@ -239,11 +274,8 @@ mod tests {
             emerg_wr: WriteOnly::default(),
         };
         let state = Arc::new(Mutex::new(State {
-            status: DeviceStatus::empty(),
-            driver_features: 0,
-            guest_page_size: 0,
-            interrupt_pending: false,
-            queues: vec![QueueStatus::default(); 2],
+            queues: vec![QueueStatus::default(), QueueStatus::default()],
+            ..Default::default()
         }));
         let transport = FakeTransport {
             device_type: DeviceType::Console,
@@ -265,7 +297,7 @@ mod tests {
         // Make a character available, and simulate an interrupt.
         {
             let mut state = state.lock().unwrap();
-            state.write_to_queue(QUEUE_SIZE, QUEUE_RECEIVEQ_PORT_0, &[42]);
+            state.write_to_queue::<QUEUE_SIZE>(QUEUE_RECEIVEQ_PORT_0, &[42]);
 
             state.interrupt_pending = true;
         }
@@ -276,5 +308,44 @@ mod tests {
         assert_eq!(console.recv(false).unwrap(), Some(42));
         assert_eq!(console.recv(true).unwrap(), Some(42));
         assert_eq!(console.recv(true).unwrap(), None);
+    }
+
+    #[test]
+    fn send() {
+        let mut config_space = Config {
+            cols: ReadOnly::new(0),
+            rows: ReadOnly::new(0),
+            max_nr_ports: ReadOnly::new(0),
+            emerg_wr: WriteOnly::default(),
+        };
+        let state = Arc::new(Mutex::new(State {
+            queues: vec![QueueStatus::default(), QueueStatus::default()],
+            ..Default::default()
+        }));
+        let transport = FakeTransport {
+            device_type: DeviceType::Console,
+            max_queue_size: 2,
+            device_features: 0,
+            config_space: NonNull::from(&mut config_space),
+            state: state.clone(),
+        };
+        let mut console = VirtIOConsole::<FakeHal, FakeTransport<Config>>::new(transport).unwrap();
+
+        // Start a thread to simulate the device waiting for characters.
+        let handle = thread::spawn(move || {
+            println!("Device waiting for a character.");
+            State::wait_until_queue_notified(&state, QUEUE_TRANSMITQ_PORT_0);
+            println!("Transmit queue was notified.");
+
+            let data = state
+                .lock()
+                .unwrap()
+                .read_from_queue::<QUEUE_SIZE>(QUEUE_TRANSMITQ_PORT_0);
+            assert_eq!(data, b"Q");
+        });
+
+        assert_eq!(console.send(b'Q'), Ok(()));
+
+        handle.join().unwrap();
     }
 }

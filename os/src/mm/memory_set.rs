@@ -839,7 +839,6 @@ impl MemorySetInner {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data, 0);
-        } else {
         }
         self.areas.push(map_area);
     }

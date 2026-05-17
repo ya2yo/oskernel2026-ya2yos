@@ -1,13 +1,16 @@
 use alloc::vec;
-use log::{debug, info, warn};
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     task::Context,
 };
+use log::{debug, info, warn};
 
-use crate::{mm::UserBuffer, utils::{SysErrNo,SysResult}};
 use crate::syscall::PollEvents;
-use spin::Mutex;
+use crate::{
+    fs::File,
+    mm::UserBuffer,
+    utils::{SysErrNo, SysResult},
+};
 use smoltcp::{
     iface::SocketHandle,
     phy::PacketMeta,
@@ -15,10 +18,16 @@ use smoltcp::{
     storage::PacketMetadata,
     wire::{IpAddress, IpEndpoint, IpListenEndpoint},
 };
+use spin::Mutex;
 use spin::RwLock;
 
 use super::{
-    consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN}, super::fs::File, general::GeneralOptions, get_service, options::{Configurable, GetSocketOption, SetSocketOption}, poll_interfaces, RecvFlags, RecvOptions, SendOptions, Shutdown, SocketAddrEx, SocketOps, SOCKET_SET
+    consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
+    general::GeneralOptions,
+    get_service,
+    options::{Configurable, GetSocketOption, SetSocketOption},
+    poll_interfaces, RecvFlags, RecvOptions, SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    SOCKET_SET,
 };
 
 pub(crate) fn new_udp_socket() -> smol::Socket<'static> {
@@ -116,7 +125,7 @@ impl SocketOps for UdpSocket {
             local_addr.set_port(get_ephemeral_port()?);
         }
         if guard.is_some() {
-            return Err(SysErrNo::EINVAL)
+            return Err(SysErrNo::EINVAL);
         }
 
         let local_endpoint = IpEndpoint::from(local_addr);
@@ -132,10 +141,10 @@ impl SocketOps for UdpSocket {
 
         self.with_smol_socket(|socket| {
             socket.bind(endpoint).map_err(|e| match e {
-                smol::BindError::InvalidState => return Err(SysErrNo::EINVAL),
-                smol::BindError::Unaddressable => return Err(SysErrNo::ECONNREFUSED),
+                smol::BindError::InvalidState => SysErrNo::EINVAL,
+                smol::BindError::Unaddressable => SysErrNo::ECONNREFUSED,
             })
-        })?;
+        });
         self.general
             .set_device_mask(get_service().device_mask_for(&endpoint));
 
@@ -161,7 +170,7 @@ impl SocketOps for UdpSocket {
         Ok(())
     }
 
-    fn send(&self, mut src: impl File, options: SendOptions) -> SysResult<usize> {
+    fn send(&self, mut src: UserBuffer, options: SendOptions) -> SysResult<usize> {
         let (remote_addr, source_addr) = match options.to {
             Some(addr) => {
                 let addr = IpEndpoint::from(addr.into_ip()?);
@@ -171,7 +180,7 @@ impl SocketOps for UdpSocket {
             None => self.remote_endpoint()?,
         };
         if remote_addr.port == 0 || remote_addr.addr.is_unspecified() {
-            return Err(SysErrNo::EINVAL)
+            return Err(SysErrNo::EINVAL);
         }
 
         if self.local_addr.read().is_none() {
@@ -191,7 +200,7 @@ impl SocketOps for UdpSocket {
                 } else {
                     let buf = socket
                         .send(
-                            src.remaining(),
+                            src.len(),
                             UdpMetadata {
                                 endpoint: remote_addr,
                                 local_address: Some(source_addr),
@@ -199,22 +208,20 @@ impl SocketOps for UdpSocket {
                             },
                         )
                         .map_err(|e| match e {
-                            smol::SendError::BufferFull => SysErrNo::WouldBlock,
-                            smol::SendError::Unaddressable => {
-                                Err(SysErrNo::ECONNREFUSED)
-                            }
+                            smol::SendError::BufferFull => SysErrNo::EAGAIN,
+                            smol::SendError::Unaddressable => SysErrNo::ECONNREFUSED,
                         })?;
-                    let read = src.read(UserBuffer::from(buf))?;
-                    assert_eq!(read, buf.len());
-                    Ok(read)
+                    let read = src.read(buf.len());
+                    assert_eq!(read.len(), buf.len());
+                    Ok(read.len())
                 }
             })
         })
     }
 
-    fn recv(&self, mut dst: impl File, options: RecvOptions) -> SysResult<usize> {
+    fn recv(&self, mut dst: UserBuffer, options: RecvOptions) -> SysResult<usize> {
         if self.local_addr.read().is_none() {
-            return Err(SysErrNo::ENOTCONN)
+            return Err(SysErrNo::ENOTCONN);
         }
 
         enum ExpectedRemote<'a> {
@@ -233,7 +240,7 @@ impl SocketOps for UdpSocket {
                     // not bound
                     Err(SysErrNo::ENOTCONN)
                 } else if !socket.can_recv() {
-                    Err(SysErrNo::WouldBlock)
+                    Err(SysErrNo::EAGAIN)
                 } else {
                     let result = if options.flags.contains(RecvFlags::PEEK) {
                         socket.peek().map(|(data, meta)| (data, *meta))
@@ -252,12 +259,12 @@ impl SocketOps for UdpSocket {
                                         || (expected.port != 0
                                             && expected.port != meta.endpoint.port)
                                     {
-                                        return Err(SysErrNo::WouldBlock);
+                                        return Err(SysErrNo::EAGAIN);
                                     }
                                 }
                             }
 
-                            let read = dst.write(UserBuffer::from(src))?;
+                            let read = dst.write(src);
                             if read < src.len() {
                                 warn!("UDP message truncated: {} -> {} bytes", src.len(), read);
                             }
@@ -268,7 +275,7 @@ impl SocketOps for UdpSocket {
                                 read
                             })
                         }
-                        Err(smol::RecvError::Exhausted) => Err(SysErrNo::WouldBlock),
+                        Err(smol::RecvError::Exhausted) => Err(SysErrNo::EAGAIN),
                         Err(smol::RecvError::Truncated) => {
                             unreachable!("UDP socket recv never returns Err(Truncated)")
                         }
@@ -283,8 +290,8 @@ impl SocketOps for UdpSocket {
             Some(addr) => addr
                 .map(Into::into)
                 .map(SocketAddrEx::Ip)
-                .ok_or(SysErrNo::NotConnected),
-            None => Err(SysErrNo::NotConnected),
+                .ok_or(SysErrNo::ENOTCONN),
+            None => Err(SysErrNo::ENOTCONN),
         }
     }
 
@@ -307,7 +314,7 @@ impl SocketOps for UdpSocket {
 }
 
 impl File for UdpSocket {
-    fn poll(&self, _e:PollEvents) -> PollEvents {
+    fn poll(&self, _e: PollEvents) -> PollEvents {
         poll_interfaces();
         if self.local_addr.read().is_none() {
             return PollEvents::empty();

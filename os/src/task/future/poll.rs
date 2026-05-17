@@ -1,7 +1,8 @@
 use core::{future::poll_fn, task::Poll};
 
+use crate::arch;
+use crate::fs::File;
 use crate::utils::{SysResult,SysErrNo};
-use crate::utils::Pollable;
 use crate::syscall::PollEvents;
 
 /// A helper to wrap a synchronous non-blocking I/O function into an
@@ -15,7 +16,7 @@ use crate::syscall::PollEvents;
 ///   immediately when the I/O operation would block.
 /// * `f`: The synchronous non-blocking I/O function to be wrapped. It should
 ///   return `SysErrNo::WouldBlock` when the operation would block.
-pub async fn poll_io<P: Pollable, F: FnMut() -> SysResult<T>, T>(
+pub async fn poll_io<P: File, F: FnMut() -> SysResult<T>, T>(
     pollable: &P,
     events: PollEvents,
     non_blocking: bool,
@@ -55,13 +56,13 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         }
     }
 
-    // match POLL_IRQ.lock().entry(irq) {
-    //     Entry::Vacant(e) => {
-    //         axhal::irq::register_irq_hook(irq_hook);
-    //         axhal::irq::set_enable(irq, true);
-    //         e.insert(PollSet::new())
-    //     }
-    //     Entry::Occupied(e) => e.into_mut(),
-    // }
-    // .register(waker);
+    match POLL_IRQ.lock().entry(irq) {
+        Entry::Vacant(e) => {
+            arch::register_irq_hook(irq_hook);
+            arch::set_enable(irq, true);
+            e.insert(PollSet::new())
+        }
+        Entry::Occupied(e) => e.into_mut(),
+    }
+    .register(waker);
 }

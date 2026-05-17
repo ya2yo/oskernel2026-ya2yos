@@ -1,7 +1,7 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use crate::{
     arch::{memory_layout::PAGE_SIZE, time::get_ticks},
-    mm::{KernelAddr, PhysPageNum, memory_set},
+    mm::{KernelAddr, PhysPageNum, address, memory_set},
 };
 
 use super::{MemorySet, StepByOne, VirtAddr};
@@ -25,23 +25,6 @@ pub fn translated_byte_buffer(
     while start < end {
         let start_va = VirtAddr::from(start);
         let mut vpn = start_va.floor();
-        // match page_table.translate(vpn) {
-        //     None => {
-        //         log::debug!("vpn {:#x} not found", vpn.0);
-
-        //         return None;
-        //     }
-        //     Some(pte) => {
-        //         let pte_flags = pte.get_flags();
-        //         if !pte_flags.contains(PTEFlags::VALID) {
-        //             log::debug!("vpn {:#x} invalid", vpn.0);
-        //             log::debug!("ppn={:#x}", pte.get_ppn().0);
-        //             loop {}
-        //             return None;
-        //         }
-        //     }
-        // }
-        // let ppn = page_table.translate(vpn).unwrap().get_ppn();
         let ppn = match page_table.translate(vpn) {
             None => {
                 debug!("vpn {:#x} not found", vpn.0);
@@ -74,22 +57,6 @@ pub fn safe_translated_byte_buffer(
     while start < end {
         let start_va = VirtAddr::from(start);
         let mut vpn = start_va.floor();
-        // match page_table.translate(vpn) {
-        //     None => {
-        //         memory_set.lazy_page_fault(vpn, Trap::Exception(Exception::LoadPageFault));
-        //     }
-        //     Some(ref pte) => {
-        //         if !pte.get_flags().contains(PTEFlags::VALID) {
-        //             memory_set.lazy_page_fault(vpn, Trap::Exception(Exception::LoadPageFault));
-        //         }
-        //     }
-        // }
-        // let ppn = match page_table.translate(vpn) {
-        //     None => {
-        //         return None;
-        //     }
-        //     Some(ref pte) => pte.get_ppn(),
-        // };
         let ppn = match page_table.translate(vpn) {
             Some(ppn) => ppn,
             None => {
@@ -153,31 +120,27 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
 }
 
 /// 安全地将用户空间指针翻译为内核态的可变引用
-/// token: 进程页表的 token 
+/// token: 进程页表的 token
 /// ptr: 用户空间的原始指针
 pub fn strong_translated_refmut<T>(token: usize, ptr: *mut T) -> Option<&'static mut T> {
     let page_table = PageTable::from_token(token);
     let va = ptr as usize;
-
-    // 1. 检查对齐 (Alignment)
+    // 检查对齐
     if va % core::mem::align_of::<T>() != 0 {
         return None;
     }
-
     // 检查是否跨页边界
     // 如果对象跨越了页面，简单的物理地址转换是不够的，通常需要分段读写或临时映射
     let size = core::mem::size_of::<T>();
     if (va % PAGE_SIZE) + size > PAGE_SIZE {
         // 对于简单的 PID写入，通常不会跨页，但作为通用函数必须考虑
-        return None; 
+        return None;
     }
-    page_table
-        .translate_va(VirtAddr::from(va))
-        .map(|pa| { 
-            // 转换为内核虚拟地址并转为引用
-            // 注意：这里返回的生命周期应该绑定在调用者身上，而不是 'static
-            KernelAddr::from(pa).as_mut() 
-        })
+    page_table.translate_va(VirtAddr::from(va)).map(|pa| {
+        // 转换为内核虚拟地址并转为引用
+        // 注意：这里返回的生命周期应该绑定在调用者身上，而不是 'static
+        KernelAddr::from(pa).as_mut()
+    })
 }
 
 pub fn safe_translated_refmut<T>(memory_set: &MemorySet, ptr: *mut T) -> &'static mut T {
@@ -268,6 +231,87 @@ pub fn safe_put_data<T: 'static>(memory_set: &MemorySet, ptr: *mut T, data: T) {
     } else {
         *safe_translated_refmut(memory_set, ptr) = data;
     }
+}
+
+
+/// 类似于 Linux 的 copy_from_user，封装了地址翻译逻辑。
+/// - token: 源用户空间的页表 token
+/// - src: 用户空间的源虚拟地址
+/// - dst: 内核空间的目标缓冲区
+///
+/// 返回读取的字节数；若源地址不合法则返回 None
+pub fn copy_from_user(token: usize, src: usize, dst: &mut [u8]) -> Option<usize> {
+    let page_table = PageTable::from_token(token);
+    let mut start = src;
+    let end = start + dst.len();
+    let mut dst_offset = 0;
+    while start < end {
+        let start_va = VirtAddr::from(start);
+        let mut vpn = start_va.floor();
+        let ppn = match page_table.translate(vpn) {
+            None => {
+                // 源页未映射
+                if dst_offset == 0 {
+                    return None;
+                }
+                return Some(dst_offset);
+            }
+            Some(ppn) => ppn,
+        };
+        vpn.step();
+        let mut end_va: VirtAddr = vpn.into();
+        end_va = end_va.min(VirtAddr::from(end));
+        let copy_len: usize = <address::VirtAddr as Into<usize>>::into(end_va) - start;
+        let src_slice = if end_va.page_offset() == 0 {
+            &ppn.bytes_array()[start_va.page_offset()..]
+        } else {
+            &ppn.bytes_array()[start_va.page_offset()..end_va.page_offset()]
+        };
+        dst[dst_offset..dst_offset + copy_len].copy_from_slice(&src_slice[..copy_len]);
+        dst_offset += copy_len;
+        start = end_va.into();
+    }
+    Some(dst_offset)
+}
+
+/// 类似于 Linux 的 copy_to_user，封装了地址翻译逻辑。
+/// - token: 目标用户空间的页表 token
+/// - dst: 用户空间的目标虚拟地址
+/// - src: 内核空间的源数据切片
+///
+/// 返回写入的字节数；若目标地址不合法则返回 None
+pub fn copy_to_user(token: usize, dst: usize, src: &[u8]) -> Option<usize> {
+    let page_table = PageTable::from_token(token);
+    let mut start = dst;
+    let end = start + src.len();
+    let mut src_offset = 0;
+    while start < end {
+        let start_va = VirtAddr::from(start);
+        let mut vpn = start_va.floor();
+        let ppn = match page_table.translate(vpn) {
+            None => {
+                // 目标页未映射，返回已成功复制的字节数
+                if src_offset == 0 {
+                    return None;
+                }
+                return Some(src_offset);
+            }
+            Some(ppn) => ppn,
+        };
+        vpn.step();
+        let mut end_va: VirtAddr = vpn.into();
+        end_va = end_va.min(VirtAddr::from(end));
+        let copy_len: usize = <address::VirtAddr as Into<usize>>::into(end_va) - start;
+        let dst_slice = if end_va.page_offset() == 0 {
+            &mut ppn.bytes_array_mut()[start_va.page_offset()..]
+        } else {
+            &mut ppn.bytes_array_mut()[start_va.page_offset()..end_va.page_offset()]
+        };
+        dst_slice[..copy_len].copy_from_slice(&src[src_offset..src_offset + copy_len]);
+        src_offset += copy_len;
+        start = end_va.into();
+    }
+    Some(src_offset)
 }
 
 ///Array of u8 slice that user communicate with os

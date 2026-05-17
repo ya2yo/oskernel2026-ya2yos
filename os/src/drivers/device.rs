@@ -18,6 +18,11 @@ pub trait BaseDriver: Send + Sync {
 
     /// The type of the device.
     fn device_type(&self) -> DeviceType;
+    
+    /// The IRQ number of the device, if applicable.
+    fn irq_num(&self) -> Option<usize> {
+        None
+    }
 }
 /// The error type for device operation failures.
 #[allow(unused)]

@@ -84,8 +84,8 @@ fn futex_wait_bitset(
     let futex_key = new_futex_key();
     let waiter = FutexWaiter {
         task: Arc::downgrade(&task),
-        bitset: bitset,
-        futex_key: futex_key,
+        bitset,
+        futex_key,
     };
     let mut inner = task.inner_lock();
     inner.futex_pa = pa;

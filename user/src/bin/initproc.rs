@@ -7,8 +7,7 @@ extern crate user_lib;
 
 use libctest::runall::{run_specific_test, runall};
 use user_lib::{
-    chdir, execve, exit, fork, println, run_busyboxsh, run_libc_bench, run_lmbench_test, shutdown,
-    wait, waitpid,
+    AF_INET, SOCK_DGRAM, SOCK_STREAM, chdir, execve, exit, fork, println, run_busyboxsh, run_libc_bench, run_lmbench_test, shutdown, socket, wait, waitpid
 };
 
 mod basic;
@@ -25,7 +24,7 @@ fn run_testsuit(root: &str, script: &str) {
 }
 
 pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
-    println!("{:?}",args);
+    println!("{:?}", args);
     let pid = fork();
     if pid == 0 {
         // 子进程
@@ -42,7 +41,7 @@ pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
 }
 
 #[no_mangle]
-#[cfg(feature = "loongarch64")]
+#[cfg(target_arch = "loongarch64")]
 fn main() -> i32 {
     println!("initproc running......");
     basic::run_all_basic_musl_except_blacklist();
@@ -92,7 +91,7 @@ fn main() -> i32 {
     shutdown();
     return 0;
 }
-
+#[allow(unused)]
 fn test_ltp() {
     // 对于run_ltp_tests_musl函数，
     // 你可以传递FILELIST的一个子集（或者切片？）给它
@@ -395,9 +394,10 @@ fn test_ltp() {
 }
 
 #[no_mangle]
-#[cfg(feature = "riscv64")]
+#[cfg(target_arch = "riscv64")]
 fn main() -> i32 {
     println!("initproc running......");
+    // test_socket();
     // 这三个用到了socket
     // run_specific_test("musl\0", "entry-static.exe\0", "socket\0");
     // run_specific_test("musl\0", "entry-static.exe\0", "getpwnam_r_crash\0");
@@ -437,5 +437,49 @@ fn main() -> i32 {
     // run_testsuit("glibc\0", "netperf_testcode.sh\0"); // panic；完全没实现
 
     shutdown(); // 似乎有点bug，直接return 0不会导致QEMU退出
+    0
+}
+
+#[allow(unused)]
+fn test_socket() -> i32 {
+    println!("---- Test Socket syscall ----");
+    // 测试创建 TCP socket
+    println!("Testint TCP socket creation...");
+    let fd_tcp = socket(AF_INET, SOCK_STREAM, 0);
+    if fd_tcp >= 0 {
+        println!("SUCCESS: TCP socket created, fd: {}.", fd_tcp);
+    } else {
+        println!("FAILED: TCP socket creation returned error: {}", fd_tcp);
+    }
+    // 测试创建 UDP socket
+    println!("Testing UDP socket creation...");
+    let fd_udp = socket(AF_INET, SOCK_DGRAM, 0);
+    if fd_udp >= 0 {
+        println!("SUCCESS: UDP socket created, fd: {}.", fd_udp);
+    } else {
+        println!("FAILED: UDP socket creation returned error: {}.", fd_udp);
+    }
+    // 测试不支持的协议族
+    println!("Testing unsupported domain...");
+    let fd_err = socket(1, SOCK_STREAM, 0);
+    if fd_err < 0 {
+        println!(
+            "SUCCESS: Correctly rejected unsupported domain, error: {}.",
+            fd_err
+        );
+    } else {
+        println!(
+            "FAILED: Should not have created socket for AF_UNIX, but got fd: {}.",
+            fd_err
+        );
+    }
+    // 测试无效参数
+    let fd_invalid = socket(999, SOCK_STREAM, 0);
+    if fd_invalid < 0 {
+        println!(
+            "SUCCESS: Correctly rejected invalid domain, error: {}.",
+            fd_invalid
+        );
+    }
     0
 }

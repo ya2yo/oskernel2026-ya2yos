@@ -1,15 +1,19 @@
 mod blk;
 mod pci;
+use core::ptr::NonNull;
+
 use alloc::slice;
 pub use blk::*;
 use log::debug;
 pub use pci::*;
-use virtio_drivers::Hal;
+use virtio_drivers::{BufferDirection, Hal};
+mod net;
+pub use net::*;
 
 use crate::{
-    arch::page_table::PageTable,
+    arch::{memory_layout::KERNEL_ADDR_OFFSET, page_table::PageTable},
     drivers::DevError,
-    mm::{cma_alloc, cma_dealloc, KernelAddr, PhysAddr, PhysPageNum, VirtAddr},
+    mm::{KernelAddr, PhysAddr, PhysPageNum, VirtAddr, cma_alloc, cma_dealloc},
     task::current_token,
 };
 
@@ -31,24 +35,34 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
 
 pub struct VirtIoHalCMAImpl;
 
-impl Hal for VirtIoHalCMAImpl {
-    fn dma_alloc(pages: usize) -> usize {
+unsafe impl Hal for VirtIoHalCMAImpl {
+    fn dma_alloc(pages: usize,_direction: BufferDirection) -> (usize, NonNull<u8>) {
         match cma_alloc(pages) {
-            Some(addr) => addr.0,
-            None => 0,
+            Some(paddr_val) => {
+                let paddr = paddr_val.0;
+                // 计算虚拟地址。假设你的内核有固定偏移
+                let vaddr_val = paddr + KERNEL_ADDR_OFFSET; 
+                let vaddr_ptr = NonNull::new(vaddr_val as *mut u8).expect("vaddr is null");
+                
+                (paddr, vaddr_ptr)
+            }
+            None => {
+                panic!("DMA alloc failed");
+            }
         }
     }
 
-    fn dma_dealloc(pa: usize, pages: usize) -> i32 {
+    unsafe fn dma_dealloc(pa: usize, _vaddr:NonNull<u8>,pages: usize) -> i32 {
         cma_dealloc(PhysAddr(pa), pages);
         0
     }
 
-    fn phys_to_virt(addr: usize) -> usize {
-        KernelAddr::from(PhysAddr::from(addr)).0
+    unsafe fn mmio_phys_to_virt(paddr: virtio_drivers::PhysAddr, _size: usize) -> core::ptr::NonNull<u8> {
+        let vaddr = paddr + KERNEL_ADDR_OFFSET;
+        NonNull::new(vaddr as *mut u8).unwrap()
     }
 
-    fn share(
+    unsafe fn share(
         buffer: core::ptr::NonNull<[u8]>,
         direction: virtio_drivers::BufferDirection,
     ) -> virtio_drivers::PhysAddr {
@@ -56,9 +70,7 @@ impl Hal for VirtIoHalCMAImpl {
             let buffer = buffer.as_ref();
             let pages = (buffer.len() - 1 + crate::arch::memory_layout::PAGE_SIZE)
                 >> crate::arch::memory_layout::PAGE_SIZE_BITS;
-
-            let frames = cma_alloc(pages).unwrap();
-
+            let frames = cma_alloc(pages).expect("CMA alloc failed in share.");
             match direction {
                 virtio_drivers::BufferDirection::DriverToDevice => {
                     let ka = KernelAddr::from(frames);
@@ -68,12 +80,13 @@ impl Hal for VirtIoHalCMAImpl {
                     // frames.range_ppn.get_slice_mut()[..buffer.len()].copy_from_slice(buffer);
                 }
                 virtio_drivers::BufferDirection::DeviceToDriver => {}
+                BufferDirection::Both => {}
             }
             frames.0
         }
     }
 
-    fn unshare(
+    unsafe fn unshare(
         paddr: virtio_drivers::PhysAddr,
         mut buffer: core::ptr::NonNull<[u8]>,
         direction: virtio_drivers::BufferDirection,
@@ -91,8 +104,37 @@ impl Hal for VirtIoHalCMAImpl {
                     buffer.copy_from_slice(src);
                 }
                 virtio_drivers::BufferDirection::DriverToDevice => {}
+                virtio_drivers::BufferDirection::Both =>{},
             }
             cma_dealloc(PhysAddr::from(paddr), pages);
         }
     }
+    
 }
+
+/// 虚拟IO设备的错误类型
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VirtError {
+    /// There are not enough descriptors available in the virtqueue, try again later.
+    QueueFull,
+    /// The device is not ready.
+    NotReady,
+    /// The device used a different descriptor chain to the one we were expecting.
+    WrongToken,
+    /// The queue is already in use.
+    AlreadyUsed,
+    /// Invalid parameter.
+    InvalidParam,
+    /// Failed to alloc DMA memory.
+    DmaError,
+    /// I/O Error
+    IoError,
+    /// The request was not supported by the device.
+    Unsupported,
+    /// The config space advertised by the device is smaller than the driver expected.
+    ConfigSpaceTooSmall,
+    /// The device doesn't have any config space, but the driver expects some.
+    ConfigSpaceMissing,
+}
+/// 虚拟设备的返回值
+pub type VirtResult<T = ()> = core::result::Result<T, VirtError>;

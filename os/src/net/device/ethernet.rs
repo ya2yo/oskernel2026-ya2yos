@@ -3,7 +3,8 @@ use alloc::{string::String, vec};
 use log::{debug, trace, warn};
 use core::task::Waker;
 use virtio_drivers::device::net::VirtIONet;
-use crate::utils::SysErrNo;
+use crate::drivers::{BaseDriver, DevError, NetDriverOps};
+use crate::{drivers::NetDeviceImpl, utils::SysErrNo};
 use crate::task::register_irq_waker;
 use hashbrown::HashMap;
 use smoltcp::{
@@ -31,7 +32,7 @@ struct Neighbor {
 /// 以太网设备结构体
 pub struct EthernetDevice {
     name: String,
-    inner: VirtIONet<>,                                 // 实际的硬件驱动接口
+    inner: NetDeviceImpl,                       // 实际的硬件驱动接口
     neighbors: HashMap<IpAddress, Option<Neighbor>>,    // ARP 缓存表：None 表示正在请求中   
     ip: Ipv4Cidr,                                       // 本机的 IP 地址配置
     /// 待发送队列：当目标 MAC 地址未知（正在进行 ARP 查询）时，IP 包暂时存在这里
@@ -40,7 +41,7 @@ pub struct EthernetDevice {
 impl EthernetDevice {
     const NEIGHBOR_TTL: Duration = Duration::from_secs(60); // 有效期60s
 
-    pub fn new(name: String, inner: VirtIONet<>, ip: Ipv4Cidr) -> Self {
+    pub fn new(name: String, inner:NetDeviceImpl , ip: Ipv4Cidr) -> Self {
         // 初始化待发送缓冲区
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
@@ -67,7 +68,7 @@ impl EthernetDevice {
 
     /// 内部辅助函数：封装以太网头部并发送数据
     fn send_to<F>(
-        inner: &mut VirtIoNetDevImpl,
+        inner: &mut NetDeviceImpl,
         dst: EthernetAddress,
         size: usize,
         f: F,
@@ -273,7 +274,7 @@ impl Device for EthernetDevice {
             let rx_buf = match self.inner.receive() {
                 Ok(buf) => buf,
                 Err(err) => {
-                    if !matches!(err, SysErrNo::EAGAIN) {
+                    if !matches!(err, DevError::Again) {
                         warn!("receive failed: {:?}", err);
                     }
                     return false;

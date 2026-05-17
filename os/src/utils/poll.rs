@@ -13,14 +13,14 @@ use alloc::{boxed::Box, sync::Arc, task::Wake};
 use bitflags::bitflags;
 use spin::{Lazy, Mutex};
 
-/// Trait for types that can be polled for I/O events.
-pub trait Pollable {
-    /// Polls for I/O events.
-    fn poll(&self) -> PollEvents;
+// /// Trait for types that can be polled for I/O events.
+// pub trait Pollable {
+//     /// Polls for I/O events.
+//     fn poll(&self) -> PollEvents;
 
-    /// Registers wakers for I/O events.
-    fn register(&self, context: &mut Context<'_>, events: PollEvents);
-}
+//     /// Registers wakers for I/O events.
+//     fn register(&self, context: &mut Context<'_>, events: PollEvents);
+// }
 
 const POLL_SET_CAPACITY: usize = 64;
 

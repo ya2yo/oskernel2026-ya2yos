@@ -16,7 +16,7 @@ sbi-rt = { version = "0.0.2", features = ["legacy"], optional = true }
 buddy_system_allocator = "0.6"
 bitflags = "1.2.1"
 xmas-elf = "0.7.0"
-virtio-drivers= { version="0.2.0" }
+virtio-drivers = "0.7.5"
 lwext4_rust= {path = "../lwext4_rust"}
 # lwext4_rust = "0.2.0"
 log = "0.4"
@@ -32,7 +32,8 @@ smallvec = "1.15.1"
 smoltcp = {version = "0.13.1", default-features = false, features=[
     "alloc",               
     "log",                 
-    "medium-ethernet",     
+    "medium-ethernet",    
+    "medium-ip", 
     "proto-ipv4",          # IPv4 支持
     "proto-ipv6",          # IPv6支持
     "socket-icmp",         
@@ -43,19 +44,28 @@ smoltcp = {version = "0.13.1", default-features = false, features=[
     ]
 }
 kspin = "0.1"
-futures-util = { version = "0.3.32", default-features = false }
-
+futures-util = {version = "0.3.32", default-features = false, features = ["async-await-macro"] }
+linux-raw-sys = { version = "0.12", default-features = false, features = [
+    "no_std",
+    "general",
+    "net",
+    "prctl",
+    "system",
+    "ioctl",
+    "loop_device",
+] }
 [build-dependencies]
 cfg-if = { version = "1.0.0" }
 
 # 这里将os中所有使用到cty的库重定向为修改过的cty（只有lwext4_rust需要cty）
 [patch.crates-io]
 cty = { path = "../cty" }   # TODO: 明晃晃地放在外面是不是不太好
+smoltcp = {path = "vendor/smoltcp" }
 
 
 [features]
 # default = ["loongarch64"]
-# default = ["riscv64"]
+default = ["riscv64", "net"]
 # 级别相关定义在./os/src/logger.rs
 error = []          # 启用 error 级别
 warn = []           # 启用 warn 级别

@@ -12,7 +12,7 @@ DISK_IMG := ./2025_testsuits_img/pre-2025/sdcard-la.img
 KERNEL_ELF := $(PROJECT_ROOT)/os/target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := kernel-la
 
-KERNEL_BUILD_ARGS := --$(MODE) --features "$(ARCH)" --target $(TARGET)
+KERNEL_BUILD_ARGS := --$(MODE) --target $(TARGET)
 
 # 注释掉的qemu命令是评测是使用的命令，二者区别在于bus参数
 # 不知道什么原因bus参数报错：qemu-system-loongarch64: -device virtio-blk-pci,drive=x0,bus=virtio-mmio-bus.0: Bus 'virtio-mmio-bus.0' not found

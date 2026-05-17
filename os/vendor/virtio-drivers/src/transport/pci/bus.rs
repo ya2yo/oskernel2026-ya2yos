@@ -2,6 +2,7 @@
 
 use bitflags::bitflags;
 use core::{
+    array,
     convert::TryFrom,
     fmt::{self, Display, Formatter},
 };
@@ -24,6 +25,7 @@ pub const PCI_CAP_ID_VNDR: u8 = 0x09;
 
 bitflags! {
     /// The status register in PCI configuration space.
+    #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
     pub struct Status: u16 {
         // Bits 0-2 are reserved.
         /// The state of the device's INTx# signal.
@@ -53,6 +55,7 @@ bitflags! {
 
 bitflags! {
     /// The command register in PCI configuration space.
+    #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
     pub struct Command: u16 {
         /// The device can respond to I/O Space accesses.
         const IO_SPACE = 1 << 0;
@@ -244,6 +247,22 @@ impl PciRoot {
         }
     }
 
+    /// Returns information about all the given device function's BARs.
+    pub fn bars(
+        &mut self,
+        device_function: DeviceFunction,
+    ) -> Result<[Option<BarInfo>; 6], PciError> {
+        let mut bars = array::from_fn(|_| None);
+        let mut bar_index = 0;
+        while bar_index < 6 {
+            let info = self.bar_info(device_function, bar_index)?;
+            let takes_two_entries = info.takes_two_entries();
+            bars[usize::from(bar_index)] = Some(info);
+            bar_index += if takes_two_entries { 2 } else { 1 };
+        }
+        Ok(bars)
+    }
+
     /// Gets information about the given BAR of the given device function.
     pub fn bar_info(
         &mut self,
@@ -313,6 +332,13 @@ impl PciRoot {
         }
     }
 }
+
+// SAFETY: `mmio_base` is only used for MMIO, which can happen from any thread or CPU core.
+unsafe impl Send for PciRoot {}
+
+// SAFETY: `&PciRoot` only allows MMIO reads, which are fine to happen concurrently on different CPU
+// cores.
+unsafe impl Sync for PciRoot {}
 
 /// Information about a PCI Base Address Register.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -8,3 +8,4 @@ pub mod tlb;
 mod asms;
 pub mod context;
 pub mod trap_interface;
+pub mod config;

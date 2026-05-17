@@ -9,9 +9,6 @@
 //!
 //! [smoltcp]: https://github.com/smoltcp-rs/smoltcp
 
-#![no_std]
-
-
 mod consts;
 mod device;
 mod general;
@@ -35,7 +32,7 @@ mod wrapper;
 
 use alloc::{borrow::ToOwned, boxed::Box};
 use log::{info, warn};
-use crate::drivers::DeviceContainer;
+use crate::drivers::{BaseDriver, DeviceContainer, NetDeviceImpl, NetDriverOps};
 use spin::Mutex;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::{Lazy, Once};
@@ -76,12 +73,12 @@ fn get_service() -> spin::MutexGuard<'static, Service> {
 ///
 /// # 参数
 /// - `net_devs`: 包含探测到的网络设备驱动实例的容器。
-pub fn init_network(mut net_devs: DeviceContainer<VirtIONet<>>) {
-    info!("Initialize network subsystem...");
+pub fn init_network(mut net_devs: DeviceContainer<NetDeviceImpl>) {
+    println!("Initialize network subsystem...");
 
     let mut router = Router::new();
     let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
-    // 1. 配置环回接口 (Loopback)
+    // 配置环回loopback接口
     let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
     router.add_rule(Rule::new(
         lo_ip.into(),
@@ -89,7 +86,7 @@ pub fn init_network(mut net_devs: DeviceContainer<VirtIONet<>>) {
         lo_dev,
         lo_ip.address().into(),
     ));
-    // 2. 配置物理接口 (Ethernet)
+    // 配置以太网物理接口
     let eth0_ip = if let Some(dev) = net_devs.take_one() {
         info!("  use NIC 0: {:?}", dev.device_name());
 
@@ -122,7 +119,7 @@ pub fn init_network(mut net_devs: DeviceContainer<VirtIONet<>>) {
     for dev in &router.devices {
         info!("Device: {}", dev.name());
     }
-    // 3. 构造并启动服务
+    // 构造并启动服务
     let mut service = Service::new(router);
     service.iface.update_ip_addrs(|ip_addrs| {
         ip_addrs.push(lo_ip.into()).unwrap();

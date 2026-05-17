@@ -7,7 +7,6 @@ use core::fmt::{self, Debug, Formatter};
 use log::debug;
 
 /// manage a frame which has the same lifecycle as the tracker
-
 pub struct FrameTracker {
     pub ppn: PhysPageNum,
 }

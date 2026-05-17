@@ -7,6 +7,8 @@ pub mod console;
 mod arch;
 mod lang_items;
 mod syscall;
+mod net;
+pub use net::*;
 
 extern crate alloc;
 #[macro_use]
@@ -32,7 +34,7 @@ pub fn handle_alloc_error(layout: core::alloc::Layout) -> ! {
 pub extern "C" fn _start() -> ! {
     unsafe {
         HEAP.lock()
-            .init(HEAP_SPACE.as_ptr() as usize, USER_HEAP_SIZE);
+            .init(core::ptr::addr_of_mut!(HEAP_SPACE) as usize, USER_HEAP_SIZE);
     }
     exit(main());
 }

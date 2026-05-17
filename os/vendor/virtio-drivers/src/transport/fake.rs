@@ -1,11 +1,16 @@
 use super::{DeviceStatus, DeviceType, Transport};
 use crate::{
-    queue::{fake_write_to_queue, Descriptor},
+    queue::{fake_read_write_queue, Descriptor},
     PhysAddr, Result,
 };
 use alloc::{sync::Arc, vec::Vec};
-use core::{any::TypeId, ptr::NonNull};
-use std::sync::Mutex;
+use core::{
+    any::TypeId,
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
+use std::{sync::Mutex, thread};
 
 /// A fake implementation of [`Transport`] for unit tests.
 #[derive(Debug)]
@@ -30,12 +35,18 @@ impl<C> Transport for FakeTransport<C> {
         self.state.lock().unwrap().driver_features = driver_features;
     }
 
-    fn max_queue_size(&self) -> u32 {
+    fn max_queue_size(&mut self, _queue: u16) -> u32 {
         self.max_queue_size
     }
 
     fn notify(&mut self, queue: u16) {
-        self.state.lock().unwrap().queues[queue as usize].notified = true;
+        self.state.lock().unwrap().queues[queue as usize]
+            .notified
+            .store(true, Ordering::SeqCst);
+    }
+
+    fn get_status(&self) -> DeviceStatus {
+        self.state.lock().unwrap().status
     }
 
     fn set_status(&mut self, status: DeviceStatus) {
@@ -44,6 +55,10 @@ impl<C> Transport for FakeTransport<C> {
 
     fn set_guest_page_size(&mut self, guest_page_size: u32) {
         self.state.lock().unwrap().guest_page_size = guest_page_size;
+    }
+
+    fn requires_legacy_layout(&self) -> bool {
+        false
     }
 
     fn queue_set(
@@ -104,24 +119,89 @@ impl State {
     /// Simulates the device writing to the given queue.
     ///
     /// The fake device always uses descriptors in order.
-    pub fn write_to_queue(&mut self, queue_size: u16, queue_index: u16, data: &[u8]) {
-        let receive_queue = &self.queues[queue_index as usize];
-        assert_ne!(receive_queue.descriptors, 0);
-        fake_write_to_queue(
-            queue_size,
-            receive_queue.descriptors as *const Descriptor,
-            receive_queue.driver_area,
-            receive_queue.device_area,
-            data,
-        );
+    pub fn write_to_queue<const QUEUE_SIZE: usize>(&mut self, queue_index: u16, data: &[u8]) {
+        let queue = &self.queues[queue_index as usize];
+        assert_ne!(queue.descriptors, 0);
+        assert!(fake_read_write_queue(
+            queue.descriptors as *const [Descriptor; QUEUE_SIZE],
+            queue.driver_area as *const u8,
+            queue.device_area as *mut u8,
+            |input| {
+                assert_eq!(input, Vec::new());
+                data.to_owned()
+            },
+        ));
+    }
+
+    /// Simulates the device reading from the given queue.
+    ///
+    /// Data is read into the `data` buffer passed in. Returns the number of bytes actually read.
+    ///
+    /// The fake device always uses descriptors in order.
+    pub fn read_from_queue<const QUEUE_SIZE: usize>(&mut self, queue_index: u16) -> Vec<u8> {
+        let queue = &self.queues[queue_index as usize];
+        assert_ne!(queue.descriptors, 0);
+
+        let mut ret = None;
+
+        // Read data from the queue but don't write any response.
+        assert!(fake_read_write_queue(
+            queue.descriptors as *const [Descriptor; QUEUE_SIZE],
+            queue.driver_area as *const u8,
+            queue.device_area as *mut u8,
+            |input| {
+                ret = Some(input);
+                Vec::new()
+            },
+        ));
+
+        ret.unwrap()
+    }
+
+    /// Simulates the device reading data from the given queue and then writing a response back.
+    ///
+    /// The fake device always uses descriptors in order.
+    ///
+    /// Returns true if a descriptor chain was available and processed, or false if no descriptors were
+    /// available.
+    pub fn read_write_queue<const QUEUE_SIZE: usize>(
+        &mut self,
+        queue_index: u16,
+        handler: impl FnOnce(Vec<u8>) -> Vec<u8>,
+    ) -> bool {
+        let queue = &self.queues[queue_index as usize];
+        assert_ne!(queue.descriptors, 0);
+        fake_read_write_queue(
+            queue.descriptors as *const [Descriptor; QUEUE_SIZE],
+            queue.driver_area as *const u8,
+            queue.device_area as *mut u8,
+            handler,
+        )
+    }
+
+    /// Waits until the given queue is notified.
+    pub fn wait_until_queue_notified(state: &Mutex<Self>, queue_index: u16) {
+        while !Self::poll_queue_notified(state, queue_index) {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Checks if the given queue has been notified.
+    ///
+    /// If it has, returns true and resets the status so this will return false until it is notified
+    /// again.
+    pub fn poll_queue_notified(state: &Mutex<Self>, queue_index: u16) -> bool {
+        state.lock().unwrap().queues[usize::from(queue_index)]
+            .notified
+            .swap(false, Ordering::SeqCst)
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default)]
 pub struct QueueStatus {
     pub size: u32,
     pub descriptors: PhysAddr,
     pub driver_area: PhysAddr,
     pub device_area: PhysAddr,
-    pub notified: bool,
+    pub notified: AtomicBool,
 }

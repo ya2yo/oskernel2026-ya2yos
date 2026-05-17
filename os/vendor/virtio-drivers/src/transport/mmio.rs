@@ -310,6 +310,13 @@ impl MmioTransport {
     }
 }
 
+// SAFETY: `header` is only used for MMIO, which can happen from any thread or CPU core.
+unsafe impl Send for MmioTransport {}
+
+// SAFETY: `&MmioTransport` only allows MMIO reads or getting the config space, both of which are
+// fine to happen concurrently on different CPU cores.
+unsafe impl Sync for MmioTransport {}
+
 impl Transport for MmioTransport {
     fn device_type(&self) -> DeviceType {
         // Safe because self.header points to a valid VirtIO MMIO region.
@@ -338,9 +345,12 @@ impl Transport for MmioTransport {
         }
     }
 
-    fn max_queue_size(&self) -> u32 {
+    fn max_queue_size(&mut self, queue: u16) -> u32 {
         // Safe because self.header points to a valid VirtIO MMIO region.
-        unsafe { volread!(self.header, queue_num_max) }
+        unsafe {
+            volwrite!(self.header, queue_sel, queue.into());
+            volread!(self.header, queue_num_max)
+        }
     }
 
     fn notify(&mut self, queue: u16) {
@@ -348,6 +358,11 @@ impl Transport for MmioTransport {
         unsafe {
             volwrite!(self.header, queue_notify, queue.into());
         }
+    }
+
+    fn get_status(&self) -> DeviceStatus {
+        // Safe because self.header points to a valid VirtIO MMIO region.
+        unsafe { volread!(self.header, status) }
     }
 
     fn set_status(&mut self, status: DeviceStatus) {
@@ -368,6 +383,13 @@ impl Transport for MmioTransport {
             MmioVersion::Modern => {
                 // No-op, modern devices don't care.
             }
+        }
+    }
+
+    fn requires_legacy_layout(&self) -> bool {
+        match self.version {
+            MmioVersion::Legacy => true,
+            MmioVersion::Modern => false,
         }
     }
 
@@ -435,7 +457,11 @@ impl Transport for MmioTransport {
                 // Safe because self.header points to a valid VirtIO MMIO region.
                 unsafe {
                     volwrite!(self.header, queue_sel, queue.into());
+
                     volwrite!(self.header, queue_ready, 0);
+                    // Wait until we read the same value back, to ensure synchronisation (see 4.2.2.2).
+                    while volread!(self.header, queue_ready) != 0 {}
+
                     volwrite!(self.header, queue_num, 0);
                     volwrite!(self.header, queue_desc_low, 0);
                     volwrite!(self.header, queue_desc_high, 0);
@@ -481,5 +507,12 @@ impl Transport for MmioTransport {
             );
         }
         Ok(NonNull::new((self.header.as_ptr() as usize + CONFIG_SPACE_OFFSET) as _).unwrap())
+    }
+}
+
+impl Drop for MmioTransport {
+    fn drop(&mut self) {
+        // Reset the device when the transport is dropped.
+        self.set_status(DeviceStatus::empty())
     }
 }

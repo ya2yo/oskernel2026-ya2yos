@@ -104,7 +104,7 @@ struct PageTableEntry {
 impl PageTableEntry {
     fn new(ppn: PhysPageNum, flags: RVPTEFlags) -> Self {
         PageTableEntry {
-            bits: ppn.0 << 10 | flags.bits as usize,
+            bits: ppn.0 << 10 | flags.bits,
         }
     }
     #[inline(always)]
@@ -118,7 +118,7 @@ impl PageTableEntry {
     }
     #[inline(always)]
     fn set_flags(&mut self, flags: RVPTEFlags) {
-        self.bits = (self.bits & !0x3FF) | (flags.bits as usize);
+        self.bits = (self.bits & !0x3FF) | flags.bits;
     }
 }
 
@@ -175,7 +175,6 @@ impl PageTable {
     fn find_valid_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
         self.find_pte(vpn)
             .filter(|pte| pte.get_flags().contains(RVPTEFlags::VALID))
-            .map(|pte| pte)
     }
     fn map_by_pte_flags(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, pte_flags: RVPTEFlags) {
         let pte = self.find_pte_create(vpn).unwrap();
@@ -188,6 +187,13 @@ impl PageTable {
         *pte = PageTableEntry::new(ppn, pte_flags | RVPTEFlags::VALID);
     }
 }
+
+impl Default for PageTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // 实现PageTable的通用函数
 impl PageTable {
     /// 生成空页表
@@ -347,10 +353,15 @@ impl PageTable {
             fn sdata();
             fn edata();
         }
-        let mid_text: VirtAddr = (stext as *const() as usize + (etext as*const() as usize - stext as *const() as usize) / 2).into();
-        let mid_rodata: VirtAddr =
-            (srodata as *const() as usize + (erodata as *const() as usize - srodata as *const() as usize) / 2).into();
-        let mid_data: VirtAddr = (sdata as *const() as usize + (edata as *const() as usize - sdata as *const() as usize) / 2).into();
+        let mid_text: VirtAddr = (stext as *const () as usize
+            + (etext as *const () as usize - stext as *const () as usize) / 2)
+            .into();
+        let mid_rodata: VirtAddr = (srodata as *const () as usize
+            + (erodata as *const () as usize - srodata as *const () as usize) / 2)
+            .into();
+        let mid_data: VirtAddr = (sdata as *const () as usize
+            + (edata as *const () as usize - sdata as *const () as usize) / 2)
+            .into();
         assert!(!self
             .find_valid_pte(mid_text.floor())
             .unwrap()

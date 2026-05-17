@@ -19,7 +19,7 @@ impl FsIndex {
     }
 
     pub fn find_inode_idx(path: &str) -> Option<Arc<dyn Inode>> {
-        FSIDX.read().get(path).map(|inode| Arc::clone(inode))
+        FSIDX.read().get(path).map(Arc::clone)
     }
 
     pub fn insert_inode_idx(path: &str, inode: Arc<dyn Inode>) {

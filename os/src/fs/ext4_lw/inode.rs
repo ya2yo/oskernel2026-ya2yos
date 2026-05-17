@@ -1,7 +1,7 @@
 use log::{debug, warn};
 use lwext4_rust::{
     bindings::{O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
-    Ext4File, InodeTypes
+    Ext4File, InodeTypes,
 };
 
 use crate::{
@@ -47,7 +47,6 @@ impl Ext4Inode {
 }
 
 impl Inode for Ext4Inode {
-
     /// 获取文件大小
     fn size(&self) -> usize {
         let file = &mut self.inner.get_unchecked_mut().f;
@@ -92,24 +91,22 @@ impl Inode for Ext4Inode {
         let file = &mut self.inner.get_unchecked_mut().f;
         let path = file.path();
         let path = path.to_str().unwrap();
-        file.file_open(path, O_RDONLY)
-            .map_err(|e| SysErrNo::from(e))?;
+        file.file_open(path, O_RDONLY).map_err(SysErrNo::from)?;
         file.file_seek(off as i64, SEEK_SET)
-            .map_err(|e| SysErrNo::from(e))?;
+            .map_err(SysErrNo::from)?;
         let r = file.file_read(buf);
-        r.map_err(|e| SysErrNo::from(e))
+        r.map_err(SysErrNo::from)
     }
 
     fn write_at(&self, off: usize, buf: &[u8]) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
         let path = file.path();
         let path = path.to_str().unwrap();
-        file.file_open(path, O_RDWR)
-            .map_err(|e| SysErrNo::from(e))?;
+        file.file_open(path, O_RDWR).map_err(SysErrNo::from)?;
         file.file_seek(off as i64, SEEK_SET)
-            .map_err(|e| SysErrNo::from(e))?;
+            .map_err(SysErrNo::from)?;
         let r = file.file_write(buf);
-        r.map_err(|e| SysErrNo::from(e))
+        r.map_err(SysErrNo::from)
     }
 
     /// 截断文件到指定长度
@@ -118,10 +115,10 @@ impl Inode for Ext4Inode {
         let path = file.path();
         let path = path.to_str().unwrap();
         file.file_open(path, O_RDWR | O_CREAT | O_TRUNC)
-            .map_err(|e| SysErrNo::from(e))?;
+            .map_err(SysErrNo::from)?;
 
         let t = file.file_truncate(size as u64);
-        t.map_err(|e| SysErrNo::from(e))
+        t.map_err(SysErrNo::from)
     }
 
     fn rename(&self, path: &str, new_path: &str) -> SyscallRet {
@@ -137,8 +134,7 @@ impl Inode for Ext4Inode {
         ctime: Option<u64>,
     ) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
-        file.set_time(atime, mtime, ctime)
-            .map_err(|e| SysErrNo::from(e))
+        file.set_time(atime, mtime, ctime).map_err(SysErrNo::from)
     }
 
     /// 将文件缓存刷新到磁盘
@@ -154,16 +150,15 @@ impl Inode for Ext4Inode {
         if file_type == InodeType::File {
             let path = file.path();
             let path = path.to_str().unwrap();
-            file.file_open(path, O_RDONLY)
-                .map_err(|e| SysErrNo::from(e))?;
+            file.file_open(path, O_RDONLY).map_err(SysErrNo::from)?;
             let size = file.file_size() as usize;
             let mut buf: Vec<u8> = vec![0; size];
-            file.file_seek(0, SEEK_SET).map_err(|e| SysErrNo::from(e))?;
+            file.file_seek(0, SEEK_SET).map_err(SysErrNo::from)?;
             let r = file.file_read(buf.as_mut_slice());
             if let Err(e) = r {
-                return Err(SysErrNo::from(e));
+                Err(SysErrNo::from(e))
             } else {
-                return Ok(buf);
+                Ok(buf)
             }
         } else {
             unimplemented!("not support!");
@@ -221,7 +216,7 @@ impl Inode for Ext4Inode {
             // 我自认为这是对的
             let abs_path = file_path;
             //debug!("[Inode.find] symlink abs_path={}", &abs_path);
-            return self.find(&abs_path, flags, loop_times + 1);
+            self.find(abs_path, flags, loop_times + 1)
 
             // Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK)))
         } else {
@@ -236,13 +231,10 @@ impl Inode for Ext4Inode {
 
         // 兼容性修补，处理时间戳高位。
         // lwext4 在某些实现中会将纳秒和秒混合存储在一个 u64 中，这里剥离出秒部分
-        if tmp_stat.st_atime > (1 << 32)
-            || tmp_stat.st_mtime > (1 << 32)
-            || tmp_stat.st_mtime > (1 << 32)
-        {
-            tmp_stat.st_ctime = tmp_stat.st_ctime & 0xFFFF_FFFF;
-            tmp_stat.st_atime = tmp_stat.st_atime & 0xFFFF_FFFF;
-            tmp_stat.st_mtime = tmp_stat.st_mtime & 0xFFFF_FFFF;
+        if tmp_stat.st_atime > (1 << 32) || tmp_stat.st_mtime > (1 << 32) {
+            tmp_stat.st_ctime &= 0xFFFF_FFFF;
+            tmp_stat.st_atime &= 0xFFFF_FFFF;
+            tmp_stat.st_mtime &= 0xFFFF_FFFF;
         }
         Kstat {
             st_dev: stat.st_dev,
@@ -263,9 +255,7 @@ impl Inode for Ext4Inode {
     /// 读取目录项内容
     fn read_dentry(&self, off: usize, len: usize) -> Result<(Vec<u8>, isize), SysErrNo> {
         let file = &mut self.inner.get_unchecked_mut().f;
-        let entries = file
-            .read_dir_from(off as u64)
-            .map_err(|e| SysErrNo::from(e))?;
+        let entries = file.read_dir_from(off as u64).map_err(SysErrNo::from)?;
         let mut de: Vec<u8> = Vec::new();
         let (mut res, mut f_off) = (0usize, off);
         for entry in entries {
@@ -289,14 +279,12 @@ impl Inode for Ext4Inode {
 
     fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
-        file.file_readlink(buf, bufsize)
-            .map_err(|e| SysErrNo::from(e))
+        file.file_readlink(buf, bufsize).map_err(SysErrNo::from)
     }
 
     fn sym_link(&self, target: &str, path: &str) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
-        file.file_fsymlink(target, path)
-            .map_err(|e| SysErrNo::from(e))
+        file.file_fsymlink(target, path).map_err(SysErrNo::from)
     }
     /// 获取硬链接计数
     fn link_cnt(&self) -> SyscallRet {
@@ -314,7 +302,7 @@ impl Inode for Ext4Inode {
 
     fn unlink(&self, path: &str) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
-        file.file_remove(path).map_err(|e| SysErrNo::from(e))
+        file.file_remove(path).map_err(SysErrNo::from)
     }
 
     fn path(&self) -> String {
@@ -331,11 +319,11 @@ impl Inode for Ext4Inode {
 
     fn fmode(&self) -> Result<u32, SysErrNo> {
         let file = &mut self.inner.get_unchecked_mut().f;
-        file.file_mode().map_err(|e| SysErrNo::from(e))
+        file.file_mode().map_err(SysErrNo::from)
     }
     fn fmode_set(&self, mode: u32) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
-        file.file_mode_set(mode).map_err(|e| SysErrNo::from(e))
+        file.file_mode_set(mode).map_err(SysErrNo::from)
     }
 }
 

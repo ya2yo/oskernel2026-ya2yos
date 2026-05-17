@@ -34,7 +34,7 @@ pub fn backtrace() {
 }
 /// 对齐到页
 pub fn page_round_up(v: usize) -> usize {
-    if v % PAGE_SIZE == 0 {
+    if v.is_multiple_of(PAGE_SIZE) {
         v
     } else {
         v - (v % PAGE_SIZE) + PAGE_SIZE

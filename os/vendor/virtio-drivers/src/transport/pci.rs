@@ -5,7 +5,8 @@ pub mod bus;
 use self::bus::{DeviceFunction, DeviceFunctionInfo, PciError, PciRoot, PCI_CAP_ID_VNDR};
 use super::{DeviceStatus, DeviceType, Transport};
 use crate::{
-    hal::{Hal, PhysAddr, VirtAddr},
+    hal::{Hal, PhysAddr},
+    nonnull_slice_from_raw_parts,
     volatile::{
         volread, volwrite, ReadOnly, Volatile, VolatileReadable, VolatileWritable, WriteOnly,
     },
@@ -14,7 +15,7 @@ use crate::{
 use core::{
     fmt::{self, Display, Formatter},
     mem::{align_of, size_of},
-    ptr::{self, addr_of_mut, NonNull},
+    ptr::{addr_of_mut, NonNull},
 };
 
 /// The PCI vendor ID for VirtIO devices.
@@ -230,10 +231,13 @@ impl Transport for PciTransport {
         }
     }
 
-    fn max_queue_size(&self) -> u32 {
+    fn max_queue_size(&mut self, queue: u16) -> u32 {
         // Safe because the common config pointer is valid and we checked in get_bar_region that it
         // was aligned.
-        unsafe { volread!(self.common_cfg, queue_size) }.into()
+        unsafe {
+            volwrite!(self.common_cfg, queue_select, queue);
+            volread!(self.common_cfg, queue_size).into()
+        }
     }
 
     fn notify(&mut self, queue: u16) {
@@ -250,6 +254,13 @@ impl Transport for PciTransport {
         }
     }
 
+    fn get_status(&self) -> DeviceStatus {
+        // Safe because the common config pointer is valid and we checked in get_bar_region that it
+        // was aligned.
+        let status = unsafe { volread!(self.common_cfg, device_status) };
+        DeviceStatus::from_bits_truncate(status.into())
+    }
+
     fn set_status(&mut self, status: DeviceStatus) {
         // Safe because the common config pointer is valid and we checked in get_bar_region that it
         // was aligned.
@@ -260,6 +271,10 @@ impl Transport for PciTransport {
 
     fn set_guest_page_size(&mut self, _guest_page_size: u32) {
         // No-op, the PCI transport doesn't care.
+    }
+
+    fn requires_legacy_layout(&self) -> bool {
+        false
     }
 
     fn queue_set(
@@ -282,17 +297,9 @@ impl Transport for PciTransport {
         }
     }
 
-    fn queue_unset(&mut self, queue: u16) {
-        // Safe because the common config pointer is valid and we checked in get_bar_region that it
-        // was aligned.
-        unsafe {
-            volwrite!(self.common_cfg, queue_enable, 0);
-            volwrite!(self.common_cfg, queue_select, queue);
-            volwrite!(self.common_cfg, queue_size, 0);
-            volwrite!(self.common_cfg, queue_desc, 0);
-            volwrite!(self.common_cfg, queue_driver, 0);
-            volwrite!(self.common_cfg, queue_device, 0);
-        }
+    fn queue_unset(&mut self, _queue: u16) {
+        // The VirtIO spec doesn't allow queues to be unset once they have been set up for the PCI
+        // transport, so this is a no-op.
     }
 
     fn queue_used(&mut self, queue: u16) -> bool {
@@ -331,6 +338,21 @@ impl Transport for PciTransport {
         } else {
             Err(Error::ConfigSpaceMissing)
         }
+    }
+}
+
+// SAFETY: MMIO can be done from any thread or CPU core.
+unsafe impl Send for PciTransport {}
+
+// SAFETY: `&PciTransport` only allows MMIO reads or getting the config space, both of which are
+// fine to happen concurrently on different CPU cores.
+unsafe impl Sync for PciTransport {}
+
+impl Drop for PciTransport {
+    fn drop(&mut self) {
+        // Reset the device when the transport is dropped.
+        self.set_status(DeviceStatus::empty());
+        while self.get_status() != DeviceStatus::empty() {}
     }
 }
 
@@ -384,14 +406,16 @@ fn get_bar_region<H: Hal, T>(
         return Err(VirtioPciError::BarOffsetOutOfRange);
     }
     let paddr = bar_address as PhysAddr + struct_info.offset as PhysAddr;
-    let vaddr = H::phys_to_virt(paddr);
-    if vaddr % align_of::<T>() != 0 {
+    // Safe because the paddr and size describe a valid MMIO region, at least according to the PCI
+    // bus.
+    let vaddr = unsafe { H::mmio_phys_to_virt(paddr, struct_info.length as usize) };
+    if vaddr.as_ptr() as usize % align_of::<T>() != 0 {
         return Err(VirtioPciError::Misaligned {
             vaddr,
             alignment: align_of::<T>(),
         });
     }
-    Ok(NonNull::new(vaddr as _).unwrap())
+    Ok(vaddr.cast())
 }
 
 fn get_bar_region_slice<H: Hal, T>(
@@ -400,9 +424,10 @@ fn get_bar_region_slice<H: Hal, T>(
     struct_info: &VirtioCapabilityInfo,
 ) -> Result<NonNull<[T]>, VirtioPciError> {
     let ptr = get_bar_region::<H, T>(root, device_function, struct_info)?;
-    let raw_slice =
-        ptr::slice_from_raw_parts_mut(ptr.as_ptr(), struct_info.length as usize / size_of::<T>());
-    Ok(NonNull::new(raw_slice).unwrap())
+    Ok(nonnull_slice_from_raw_parts(
+        ptr,
+        struct_info.length as usize / size_of::<T>(),
+    ))
 }
 
 /// An error encountered initialising a VirtIO PCI transport.
@@ -428,7 +453,7 @@ pub enum VirtioPciError {
     /// The virtual address was not aligned as expected.
     Misaligned {
         /// The virtual address in question.
-        vaddr: VirtAddr,
+        vaddr: NonNull<u8>,
         /// The expected alignment in bytes.
         alignment: usize,
     },
@@ -467,7 +492,7 @@ impl Display for VirtioPciError {
             Self::BarOffsetOutOfRange => write!(f, "Capability offset greater than BAR length."),
             Self::Misaligned { vaddr, alignment } => write!(
                 f,
-                "Virtual address {:#018x} was not aligned to a {} byte boundary as expected.",
+                "Virtual address {:#018?} was not aligned to a {} byte boundary as expected.",
                 vaddr, alignment
             ),
             Self::Pci(pci_error) => pci_error.fmt(f),
@@ -480,6 +505,12 @@ impl From<PciError> for VirtioPciError {
         Self::Pci(error)
     }
 }
+
+// SAFETY: The `vaddr` field of `VirtioPciError::Misaligned` is only used for debug output.
+unsafe impl Send for VirtioPciError {}
+
+// SAFETY: The `vaddr` field of `VirtioPciError::Misaligned` is only used for debug output.
+unsafe impl Sync for VirtioPciError {}
 
 #[cfg(test)]
 mod tests {
@@ -494,11 +525,12 @@ mod tests {
 
     #[test]
     fn offset_device_ids() {
+        assert_eq!(device_type(0x1040), DeviceType::Invalid);
         assert_eq!(device_type(0x1045), DeviceType::MemoryBalloon);
         assert_eq!(device_type(0x1049), DeviceType::_9P);
         assert_eq!(device_type(0x1058), DeviceType::Memory);
-        assert_eq!(device_type(0x1040), DeviceType::Invalid);
-        assert_eq!(device_type(0x1059), DeviceType::Invalid);
+        assert_eq!(device_type(0x1059), DeviceType::Sound);
+        assert_eq!(device_type(0x1060), DeviceType::Invalid);
     }
 
     #[test]

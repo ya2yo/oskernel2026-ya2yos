@@ -11,6 +11,8 @@
 //! submodules, and you should also implement syscalls this way.
 use core::arch;
 
+#[cfg(feature = "net")]
+use linux_raw_sys::net::msghdr;
 use log::error;
 use num_enum::FromPrimitive;
 #[derive(Debug, PartialEq, FromPrimitive)]
@@ -112,6 +114,7 @@ pub enum Syscall {
     SendTo = 206,
     RecvFrom = 207,
     SetSockOpt = 208,
+    Shutdown = 210,
     SendMsg = 211,
     Brk = 214,
     Munmap = 215,
@@ -130,8 +133,6 @@ pub enum Syscall {
     Getrandom = 278,
     MemBarrier = 283,
     CopyFileRange = 285,
-    // 非标准系统调用
-    Shutdown = 1000,
     #[num_enum(default)]
     Default = 0,
 }
@@ -366,7 +367,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         #[cfg(feature = "net")]
         Syscall::Listen => sys_listen(args[0], args[1] as u32),
         #[cfg(feature = "net")]
-        Syscall::Accept => sys_accept(args[0], args[1] as *const u8, args[2] as u32),
+        Syscall::Accept => sys_accept(args[0], args[1] as *mut u8, args[2] as u32),
         #[cfg(feature = "net")]
         Syscall::Connect => sys_connect(args[0], args[1] as *const u8, args[2] as u32),
         #[cfg(feature = "net")]
@@ -400,11 +401,13 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[4] as u32,
         ),
         #[cfg(feature = "net")]
-        Syscall::SendMsg => sys_sendmsg(args[0], args[1] as *const u8, args[2] as u32),
+        Syscall::Shutdown => sys_shutdown(args[0], args[1] as u32),
+        #[cfg(feature = "net")]
+        Syscall::SendMsg => sys_sendmsg(args[0], args[1] as *const msghdr, args[2] as u32),
         #[cfg(feature = "net")]
         Syscall::Accept4 => sys_accept4(
             args[0] as usize,
-            args[1] as *const u8,
+            args[1] as *mut u8,
             args[2] as u32,
             args[3] as u32,
         ),
@@ -454,8 +457,6 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::Umask => sys_umask(args[0] as u32),
         Syscall::GetMempolicy => sys_get_mempolicy(args[0], args[1], args[2], args[3], args[4]),
-
-        Syscall::Shutdown => shutdown(false),
         _ => {
             error!(
                 "Unsupported syscall_id: {}, kernel exit this process with exitcode=-1!",

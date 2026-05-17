@@ -41,9 +41,11 @@ pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 pub const MEMORY_END: usize = PHYSICAL_MEMORY_START + PHYSICAL_MEMORY_SIZE + KERNEL_ADDR_OFFSET;
 
 pub const MMIO: &[(usize, usize)] = &[
-    (0x0010_0000, 0x00_1000), // VIRT_TEST in virt machine
-    (0x0010_1000, 0x00_1000), // VIRT_RTC in virt machine
-    (0x1000_1000, 0x00_1000), // Virtio Block in virt machine
+    (0x0010_0000, 0x00_1000), // VIRT_TEST 
+    (0x0010_1000, 0x00_1000), // VIRT_RTC 
+    (0x1000_0000, 0x00_1000), // UART0
+    (0x1000_1000, 0x00_1000), // Virtio Block 
+    (0x1000_2000, 0x00_1000), // Virtio Net 
 ];
 
 pub const MMIO_MAP_OFFSET: usize = KERNEL_ADDR_OFFSET;

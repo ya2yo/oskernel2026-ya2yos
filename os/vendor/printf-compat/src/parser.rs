@@ -191,7 +191,7 @@ pub unsafe fn format(
                     format: DoubleFormat::Hex.set_upper(ch.is_ascii_uppercase()),
                 },
                 b's' => Specifier::String(CStr::from_ptr(args.arg())),
-                b'c' => Specifier::Char(args.arg::<u32>() as u8),
+                b'c' => Specifier::Char(args.arg::<i32>() as u8),
                 b'p' => Specifier::Pointer(args.arg()),
                 b'n' => Specifier::WriteBytesWritten(written, args.arg()),
                 _ => return -1,

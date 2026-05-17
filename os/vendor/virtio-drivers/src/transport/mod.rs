@@ -6,8 +6,9 @@ pub mod mmio;
 pub mod pci;
 
 use crate::{PhysAddr, Result, PAGE_SIZE};
-use bitflags::bitflags;
-use core::ptr::NonNull;
+use bitflags::{bitflags, Flags};
+use core::{fmt::Debug, ops::BitAnd, ptr::NonNull};
+use log::debug;
 
 /// A VirtIO transport layer.
 pub trait Transport {
@@ -20,17 +21,25 @@ pub trait Transport {
     /// Writes device features.
     fn write_driver_features(&mut self, driver_features: u64);
 
-    /// Gets the max size of queue.
-    fn max_queue_size(&self) -> u32;
+    /// Gets the max size of the given queue.
+    fn max_queue_size(&mut self, queue: u16) -> u32;
 
     /// Notifies the given queue on the device.
     fn notify(&mut self, queue: u16);
+
+    /// Gets the device status.
+    fn get_status(&self) -> DeviceStatus;
 
     /// Sets the device status.
     fn set_status(&mut self, status: DeviceStatus);
 
     /// Sets the guest page size.
     fn set_guest_page_size(&mut self, guest_page_size: u32);
+
+    /// Returns whether the transport requires queues to use the legacy layout.
+    ///
+    /// Ref: 2.6.2 Legacy Interfaces: A Note on Virtqueue Layout
+    fn requires_legacy_layout(&self) -> bool;
 
     /// Sets up the given queue.
     fn queue_set(
@@ -56,16 +65,27 @@ pub trait Transport {
     /// Begins initializing the device.
     ///
     /// Ref: virtio 3.1.1 Device Initialization
-    fn begin_init(&mut self, negotiate_features: impl FnOnce(u64) -> u64) {
+    ///
+    /// Returns the negotiated set of features.
+    fn begin_init<F: Flags<Bits = u64> + BitAnd<Output = F> + Debug>(
+        &mut self,
+        supported_features: F,
+    ) -> F {
+        self.set_status(DeviceStatus::empty());
         self.set_status(DeviceStatus::ACKNOWLEDGE | DeviceStatus::DRIVER);
 
-        let features = self.read_device_features();
-        self.write_driver_features(negotiate_features(features));
+        let device_features = F::from_bits_truncate(self.read_device_features());
+        debug!("Device features: {:?}", device_features);
+        let negotiated_features = device_features & supported_features;
+        self.write_driver_features(negotiated_features.bits());
+
         self.set_status(
             DeviceStatus::ACKNOWLEDGE | DeviceStatus::DRIVER | DeviceStatus::FEATURES_OK,
         );
 
         self.set_guest_page_size(PAGE_SIZE as u32);
+
+        negotiated_features
     }
 
     /// Finishes initializing the device.
@@ -83,8 +103,8 @@ pub trait Transport {
 }
 
 bitflags! {
-    /// The device status field.
-    #[derive(Default)]
+    /// The device status field. Writing 0 into this field resets the device.
+    #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
     pub struct DeviceStatus: u32 {
         /// Indicates that the guest OS has found the device and recognized it
         /// as a valid virtio device.
@@ -140,6 +160,7 @@ pub enum DeviceType {
     Pstore = 22,
     IOMMU = 23,
     Memory = 24,
+    Sound = 25,
 }
 
 impl From<u32> for DeviceType {
@@ -167,6 +188,7 @@ impl From<u32> for DeviceType {
             22 => DeviceType::Pstore,
             23 => DeviceType::IOMMU,
             24 => DeviceType::Memory,
+            25 => DeviceType::Sound,
             _ => DeviceType::Invalid,
         }
     }

@@ -21,15 +21,15 @@ pub trait SuperBlock: Send + Sync {
 /// VfsInode接口
 /// 但是，在本项目中，它实际上只可能是Ext4Inode...
 pub trait Inode: Send + Sync {
-    ///
+    /// 返回inode的大小
     fn size(&self) -> usize {
         unimplemented!()
     }
-    ///
+    /// 返回inode的大小
     fn types(&self) -> InodeType {
         unimplemented!()
     }
-    ///
+    /// 返回inode的元数据，依据Kstate的字段
     fn fstat(&self) -> Kstat {
         unimplemented!()
     }
@@ -46,11 +46,11 @@ pub trait Inode: Send + Sync {
     ) -> Result<Arc<dyn Inode>, SysErrNo> {
         unimplemented!()
     }
-    ///
+    /// 在指定偏移位置读取数据进buf
     fn read_at(&self, _off: usize, _buf: &mut [u8]) -> SyscallRet {
         unimplemented!()
     }
-    ///
+    /// 在指定偏移位置将buf的数据写入
     fn write_at(&self, _off: usize, _buf: &[u8]) -> SyscallRet {
         unimplemented!()
     }
@@ -58,15 +58,15 @@ pub trait Inode: Send + Sync {
     fn read_dentry(&self, _off: usize, _len: usize) -> Result<(Vec<u8>, isize), SysErrNo> {
         unimplemented!()
     }
-    ///
+    /// 截断文件到指定大小
     fn truncate(&self, _size: usize) -> SyscallRet {
         unimplemented!()
     }
-    ///
+    /// 同步文件状态
     fn sync(&self) {
         unimplemented!()
     }
-    ///
+    /// 设置文件时间
     fn set_timestamps(
         &self,
         _atime: Option<u64>,
@@ -125,23 +125,31 @@ pub trait File: Send + Sync {
         unimplemented!()
     }
     /// 获得文件信息
-    fn fstat(&self) -> Kstat{
+    fn fstat(&self) -> Kstat {
         unimplemented!("not implemented!")
     }
     /// 获取文件路径
-    fn path(&self) -> Cow<'_, str>{
+    fn path(&self) -> Cow<'_, str> {
         unimplemented!("not implemented");
     }
     /// 设置偏移量,并非所有文件都支持
     fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
         unimplemented!("not support!");
     }
+    /// 是否是非阻塞的
+    fn nonblocking(&self) -> bool {
+        false
+    }
+    /// 设置为非阻塞
+    fn set_nonblocking(&self, _nonblocking: bool) -> SysResult {
+        Ok(())
+    }
     /// ppoll处理
     fn poll(&self, _events: PollEvents) -> PollEvents {
         unimplemented!()
     }
     /// Registers wakers for I/O events.
-    fn register(&self, _context: &mut Context<'_>, _events: PollEvents){
+    fn register(&self, _context: &mut Context<'_>, _events: PollEvents) {
         unimplemented!("not support!");
     }
 }

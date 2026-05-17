@@ -1,14 +1,14 @@
 macro_rules! env_or_default {
-    ($key:literal) => {
+    ($key:literal, $default:literal) => {
         match option_env!($key) {
             Some(val) => val,
-            None => "",
+            None => $default,
         }
     };
 }
 
-pub const IP: &str = env_or_default!("AX_IP");
-pub const GATEWAY: &str = env_or_default!("AX_GW");
+pub const IP: &str = env_or_default!("AX_IP", "10.0.2.15");
+pub const GATEWAY: &str = env_or_default!("AX_GW", "10.0.2.2");
 pub const IP_PREFIX: u8 = 24;
 
 pub const STANDARD_MTU: usize = 1500;
