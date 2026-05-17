@@ -14,7 +14,7 @@ DISK_IMG := ./2026_testsuits_img/pre_tests/sdcard-rv.img
 KERNEL_ELF := $(PROJECT_ROOT)/os/target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := kernel-rv
 
-KERNEL_BUILD_ARGS := --$(MODE) --target $(TARGET)
+KERNEL_BUILD_ARGS := --$(MODE) --features "$(ARCH)" --target $(TARGET)
 
 QEMU_CMD := qemu-system-riscv64 \
     -machine virt \
