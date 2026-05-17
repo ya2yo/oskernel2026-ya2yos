@@ -404,12 +404,12 @@ fn main() -> i32 {
     // run_specific_test("musl\0", "entry-static.exe\0", "getpwnam_r_errno\0");
 
     /* PASS */
-    // run_testsuit("musl\0", "basic_testcode.sh\0"); // OK
-    // run_testsuit("musl\0", "busybox_testcode.sh\0"); // OK
-    // run_testsuit("musl\0", "lua_testcode.sh\0"); // OK
-    // run_testsuit("musl\0", "iozone_testcode.sh\0"); // 磁盘性能测试，可通过，但是时间有点长
-    // run_testsuit("musl\0", "libctest_testcode.sh\0"); // 210分，已经够高
-    // run_testsuit("musl\0", "libcbench_testcode.sh\0");
+    run_testsuit("musl\0", "basic_testcode.sh\0"); // OK
+    run_testsuit("musl\0", "busybox_testcode.sh\0"); // OK
+    run_testsuit("musl\0", "lua_testcode.sh\0"); // OK
+    run_testsuit("musl\0", "iozone_testcode.sh\0"); // 磁盘性能测试，可通过，但是时间有点长
+    run_testsuit("musl\0", "libctest_testcode.sh\0"); // 210分，已经够高
+    run_testsuit("musl\0", "libcbench_testcode.sh\0");
 
     /* FAIL */
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0"); // panic：完全未实现
@@ -421,11 +421,11 @@ fn main() -> i32 {
 
     /* glibc */
     /* PASS */
-    // run_testsuit("glibc\0", "lua_testcode.sh\0"); // OK
-    // run_testsuit("glibc\0", "basic_testcode.sh\0"); // OK
-    // run_testsuit("glibc\0", "busybox_testcode.sh\0"); // OK
-    //                                                   // 没有glibc libctest测试
-    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");
+    run_testsuit("glibc\0", "lua_testcode.sh\0"); // OK
+    run_testsuit("glibc\0", "basic_testcode.sh\0"); // OK
+    run_testsuit("glibc\0", "busybox_testcode.sh\0"); // OK
+                                                      // 没有glibc libctest测试
+    run_testsuit("glibc\0", "libcbench_testcode.sh\0");
 
     /* FAIL */
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0"); // error
@@ -440,6 +440,7 @@ fn main() -> i32 {
     0
 }
 
+#[allow(unused)]
 fn test_socket() -> i32 {
     println!("---- Test Socket syscall ----");
     // 测试创建 TCP socket

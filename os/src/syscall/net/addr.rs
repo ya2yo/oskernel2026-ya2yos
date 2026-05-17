@@ -1,13 +1,21 @@
 //! Wrapper for [`sockaddr`]. Using trait to convert between [`SocketAddr`] and
 //! [`sockaddr`] types.
 
-use alloc::{slice, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     mem::size_of,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
-use crate::{net::SocketAddrEx, syscall::net::{AF_INET, AF_INET6, AF_UNIX}, utils::{SysErrNo, SysResult}};
+use crate::{
+    mm::{copy_from_user, copy_to_user},
+    task::current_token,
+};
+use crate::{
+    net::SocketAddrEx,
+    syscall::net::{AF_INET, AF_INET6, AF_UNIX},
+    utils::{SysErrNo, SysResult},
+};
 use linux_raw_sys::net::*;
 
 /// Trait to extend [`SocketAddr`] and its variants with methods for reading
@@ -30,21 +38,24 @@ fn read_family(addr: *const u8, addrlen: u32) -> SysResult<u16> {
     if size_of::<u16>() > addrlen as usize {
         return Err(SysErrNo::EINVAL);
     }
-    let family = unsafe{*addr.cast::<u16>()};
-    Ok(family)
+    let token = current_token();
+    let mut buf = [0u8; size_of::<u16>()];
+    copy_from_user(token, addr as usize, &mut buf).ok_or(SysErrNo::EFAULT)?;
+    Ok(u16::from_ne_bytes(buf))
 }
 unsafe fn cast_to_slice<T>(value: &T) -> &[u8] {
-    unsafe { core::slice::from_raw_parts(value as *const T as *const u8, size_of::<T>()) }
+    core::slice::from_raw_parts(value as *const T as *const u8, size_of::<T>())
 }
 fn fill_addr(addr: *mut u8, addrlen: &mut u32, data: &[u8]) -> SysResult<()> {
     let len = (*addrlen as usize).min(data.len());
-    unsafe {slice::from_raw_parts_mut(addr, len)}.copy_from_slice(&data[..len]);
+    let token = current_token();
+    copy_to_user(token, addr as usize, &data[..len]).ok_or(SysErrNo::EFAULT)?;
     *addrlen = data.len() as _;
     Ok(())
 }
 
 impl SocketAddrExt for SocketAddr {
-    fn read_from_user(addr: * const u8, addrlen: u32) -> SysResult<Self> {
+    fn read_from_user(addr: *const u8, addrlen: u32) -> SysResult<Self> {
         match read_family(addr, addrlen)? as u32 {
             AF_INET => SocketAddrV4::read_from_user(addr, addrlen).map(Self::V4),
             AF_INET6 => SocketAddrV6::read_from_user(addr, addrlen).map(Self::V6),
@@ -72,7 +83,10 @@ impl SocketAddrExt for SocketAddrV4 {
         if addrlen != size_of::<sockaddr_in>() as u32 {
             return Err(SysErrNo::EINVAL);
         }
-        let addr_in = unsafe{*addr.cast::<sockaddr_in>()};
+        let token = current_token();
+        let mut buf = [0u8; size_of::<sockaddr_in>()];
+        copy_from_user(token, addr as usize, &mut buf).ok_or(SysErrNo::EFAULT)?;
+        let addr_in: sockaddr_in = unsafe { *buf.as_ptr().cast() };
         if addr_in.sin_family as u32 != AF_INET {
             return Err(SysErrNo::EAFNOSUPPORT);
         }
@@ -105,7 +119,10 @@ impl SocketAddrExt for SocketAddrV6 {
         if addrlen != size_of::<sockaddr_in6>() as u32 {
             return Err(SysErrNo::EINVAL);
         }
-        let addr_in6 = unsafe{ *addr.cast::<sockaddr_in6>() };
+        let token = current_token();
+        let mut buf = [0u8; size_of::<sockaddr_in6>()];
+        copy_from_user(token, addr as usize, &mut buf).ok_or(SysErrNo::EFAULT)?;
+        let addr_in6: sockaddr_in6 = unsafe { *buf.as_ptr().cast() };
         if addr_in6.sin6_family as u32 != AF_INET6 {
             return Err(SysErrNo::EAFNOSUPPORT);
         }
@@ -137,7 +154,6 @@ impl SocketAddrExt for SocketAddrV6 {
         AF_INET6 as u16
     }
 }
-
 
 impl SocketAddrExt for SocketAddrEx {
     fn read_from_user(addr: *const u8, addrlen: u32) -> SysResult<Self> {

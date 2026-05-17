@@ -32,9 +32,9 @@ pub use mmap_bad_address::{if_bad_address, insert_bad_address, remove_bad_addres
 
 pub mod translate;
 pub use translate::{
-    get_data, put_data, safe_get_data, safe_put_data, safe_translated_byte_buffer,
-    translated_byte_buffer, translated_ref, translated_refmut, translated_str, UserBuffer,
-    UserBufferIterator,
+    copy_from_user, copy_to_user, get_data, put_data, safe_get_data, safe_put_data,
+    safe_translated_byte_buffer, translated_byte_buffer, translated_ref, translated_refmut,
+    translated_str, UserBuffer, UserBufferIterator,
 };
 
 pub use heap_allocator::ContinuousPages;

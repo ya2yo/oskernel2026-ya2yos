@@ -1,16 +1,14 @@
 use super::consts::*;
 use crate::fs::{FdTable, File, FileClass, FileDescriptor, OpenFlags, Socket};
-use crate::mm::translated_byte_buffer;
 use crate::net::tcp::TcpSocket;
 use crate::net::udp::UdpSocket;
+use crate::net::SocketOps;
 use crate::net::{Shutdown, Socket as SocketInner, SocketAddrEx};
 use crate::syscall::net::addr::SocketAddrExt;
-use crate::task::current_token;
 use crate::{
     task::{current_task, Process},
     utils::{SysErrNo, SyscallRet},
 };
-use crate::net::SocketOps;
 use alloc::sync::Arc;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
 use linux_raw_sys::net::{SHUT_RD, SHUT_RDWR, SHUT_WR};
@@ -77,8 +75,6 @@ pub fn sys_bind(sockfd: usize, addr: *const u8, addrlen: u32) -> SyscallRet {
         "[sys_bind] fd={}, addr={}, len={}",
         sockfd, addr as usize, addrlen
     );
-    let token = current_token();
-    let user_buf = translated_byte_buffer(token, addr, addrlen as usize);
     let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
     Socket::from_fd(sockfd)?.0.bind(addr)?;
     Ok(0)
@@ -130,16 +126,16 @@ pub fn sys_shutdown(sockfd: usize, how: u32) -> SyscallRet {
 pub fn sys_accept4(sockfd: usize, addr: *mut u8, mut addrlen: u32, flags: u32) -> SyscallRet {
     debug!("sys_accept <= fd: {}, flags: {}", sockfd, flags);
     let socket = Socket::from_fd(sockfd)?;
-    let socket=Socket(socket.accept()?);
-    let remote_addr=socket.local_addr()?;
+    let socket = Socket(socket.accept()?);
+    let remote_addr = socket.local_addr()?;
     if !addr.is_null() {
         remote_addr.write_to_user(addr, &mut addrlen);
     }
     // 分配新的fd
     let fd_table = current_task().unwrap().get_fd_table();
-    let fd=fd_table.alloc_fd()?;
+    let fd = fd_table.alloc_fd()?;
     // 将新的fd连接到旧的上面
-    let mut new_flags=OpenFlags::empty();
+    let mut new_flags = OpenFlags::empty();
     if flags & OpenFlags::O_NONBLOCK.bits() != 0 {
         new_flags.insert(OpenFlags::O_NONBLOCK);
         socket.set_nonblocking(true);
@@ -148,7 +144,10 @@ pub fn sys_accept4(sockfd: usize, addr: *mut u8, mut addrlen: u32, flags: u32) -
         new_flags.insert(OpenFlags::O_CLOEXEC);
     }
 
-    fd_table.set(fd, FileDescriptor::new(new_flags, FileClass::Socket(Arc::new(socket))));
-    
+    fd_table.set(
+        fd,
+        FileDescriptor::new(new_flags, FileClass::Socket(Arc::new(socket))),
+    );
+
     Ok(fd)
 }
