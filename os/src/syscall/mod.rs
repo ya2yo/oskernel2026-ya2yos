@@ -148,7 +148,8 @@ mod task;
 mod time;
 mod resource;
 mod sys;
-
+mod mm;
+mod sync;
 mod io_mpx;
 
 use crate::task::{current_task, sys_futex};
@@ -170,8 +171,9 @@ pub use task::*;
 use time::*;
 use resource::*;
 use sys::*;
-
+use mm::*;
 use io_mpx::*;
+use sync::*;
 
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
