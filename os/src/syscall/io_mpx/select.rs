@@ -1,6 +1,14 @@
 use alloc::sync::Arc;
 
-use crate::{fs::File, mm::{get_data, put_data}, signal::SigSet, syscall::{PollEvents, options::FdSet}, task::{current_task, suspend_current_and_run_next}, timer::{Timespec, get_time_ms}, utils::SyscallRet};
+use crate::{
+    fs::File,
+    mm::{get_data, put_data},
+    signal::SigSet,
+    syscall::{options::FdSet, PollEvents},
+    task::{current_task, suspend_current_and_run_next},
+    timer::{get_time_ms, Timespec},
+    utils::SyscallRet,
+};
 use core::cmp::min;
 
 /// 参考 https://man7.org/linux/man-pages/man2/pselect6.2.html
@@ -14,7 +22,7 @@ pub fn sys_pselect6(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let mut inner = task.inner_lock();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
 
     // debug!("[sys_pselect6] nfds is {}, readfds is {}, writefds is {}, exceptfds is {}, timeout is {}, sigmask is {}",nfds,readfds,writefds,exceptfds,timeout,sigmask);

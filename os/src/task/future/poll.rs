@@ -2,8 +2,8 @@ use core::{future::poll_fn, task::Poll};
 
 use crate::arch;
 use crate::fs::File;
-use crate::utils::{SysResult,SysErrNo};
 use crate::syscall::PollEvents;
+use crate::utils::{SysErrNo, SysResult};
 
 /// A helper to wrap a synchronous non-blocking I/O function into an
 /// asynchronous function.
@@ -43,7 +43,7 @@ pub async fn poll_io<P: File, F: FnMut() -> SysResult<T>, T>(
 // #[cfg(feature = "irq")]
 /// Registers a waker for the given IRQ number.
 pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
-    use alloc::collections::{BTreeMap, btree_map::Entry};
+    use alloc::collections::{btree_map::Entry, BTreeMap};
 
     use crate::utils::PollSet;
     use kspin::SpinNoIrq;

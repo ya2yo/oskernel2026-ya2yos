@@ -151,7 +151,9 @@ impl SigAction {
             match SigSet::from_sig(signo).default_op() {
                 SigOp::Continue | SigOp::Ignore => 1,
                 SigOp::Stop => 1, // TODO(ZMY): 添加Stop状态和相关函数
-                SigOp::Terminate | SigOp::CoreDump => exit_current_and_run_next as *const() as usize,
+                SigOp::Terminate | SigOp::CoreDump => {
+                    exit_current_and_run_next as *const () as usize
+                }
             }
         };
         Self {

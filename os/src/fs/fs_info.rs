@@ -130,4 +130,3 @@ impl FSInfo {
         self.inner.write().fd2path.remove(&fd);
     }
 }
-

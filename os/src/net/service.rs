@@ -1,16 +1,18 @@
+use crate::task::sleep_until;
+use crate::timer::{wall_time_nanos, Timespec, NANOS_PER_MICROS};
 use alloc::boxed::Box;
 use core::{
-    future::Future, pin::Pin, task::{Context, Waker}
+    future::Future,
+    pin::Pin,
+    task::{Context, Waker},
 };
-use crate::task::sleep_until;
-use crate::timer::{Timespec,NANOS_PER_MICROS, wall_time_nanos};
 use smoltcp::{
     iface::{Interface, SocketSet},
     time::Instant,
     wire::{HardwareAddress, IpAddress, IpListenEndpoint},
 };
 
-use super::{SOCKET_SET, router::Router};
+use super::{router::Router, SOCKET_SET};
 /// 获取当前系统的 Instant 时间（smoltcp 专用格式）
 /// 将系统墙上时间（纳秒）转换为 smoltcp 的微秒单位
 fn now() -> Instant {
@@ -48,7 +50,7 @@ impl Service {
         self.iface.poll(timestamp, &mut self.router, sockets);
         self.router.dispatch(timestamp)
     }
-     /// 根据目的 IP 地址查找路由表，获取对应的源 IP 地址
+    /// 根据目的 IP 地址查找路由表，获取对应的源 IP 地址
     pub fn get_source_address(&self, dst_addr: &IpAddress) -> IpAddress {
         let Some(rule) = self.router.table.lookup(dst_addr) else {
             panic!("no route to destination: {dst_addr}");
@@ -76,7 +78,7 @@ impl Service {
         if let Some(t) = next {
             let next = Timespec::from_micros(t.total_micros() as _);
 
-             // 清理旧的超时 Future
+            // 清理旧的超时 Future
             self.timeout = None;
             // 创建一个新的睡眠 Future，到时间后唤醒 waker
             let mut fut = Box::pin(sleep_until(next));

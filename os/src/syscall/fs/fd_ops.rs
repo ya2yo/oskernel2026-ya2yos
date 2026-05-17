@@ -1,12 +1,11 @@
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use super::fcntl::*;
-use crate::fs::{FileDescriptor, OpenFlags, open};
+use crate::fs::{open, FileDescriptor, OpenFlags};
 use crate::mm::translated_str;
-use crate::syscall::{options::FcntlCmd, Syscall, process};
+use crate::syscall::{options::FcntlCmd, process, Syscall};
 use crate::task::current_task;
 use crate::utils::{SysErrNo, SyscallRet};
-use log::{debug, error, warn};
 use alloc::{
     format,
     string::{String, ToString},
@@ -14,11 +13,12 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use log::{debug, error, warn};
 
 fn dup_fd(old_fd: usize, cloexec: bool) -> SyscallRet {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
     let proc_inner = task.process.inner_lock();
-    let mut new_desc = proc_inner.fd_table.get(old_fd)?; 
+    let mut new_desc = proc_inner.fd_table.get(old_fd)?;
     if cloexec {
         new_desc.set_cloexec();
     } else {
@@ -26,7 +26,7 @@ fn dup_fd(old_fd: usize, cloexec: bool) -> SyscallRet {
     }
     let new_fd = proc_inner.fd_table.alloc_fd()?;
     if let Err(e) = proc_inner.fd_table.set(new_fd, new_desc) {
-        proc_inner.fd_table.take(new_fd); 
+        proc_inner.fd_table.take(new_fd);
         return Err(e);
     }
     proc_inner.fs_info.dup_fd_path(old_fd, new_fd);
@@ -85,7 +85,6 @@ pub fn sys_dup3(old: usize, new: usize, flags: u32) -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/fcntl.2.html
 pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
-
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
 
@@ -155,8 +154,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     Ok(0)
 }
 
-
-static TMP_FILE_COUNTER:AtomicI32 = AtomicI32::new(0);
+static TMP_FILE_COUNTER: AtomicI32 = AtomicI32::new(0);
 
 /// 参考 https://man7.org/linux/man-pages/man2/openat.2.html
 pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> SyscallRet {
@@ -165,7 +163,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     }
 
     let task = current_task().unwrap();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
     let path = translated_str(token, path);
 
@@ -218,8 +216,8 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
 /// 参考 https://man7.org/linux/man-pages/man2/close.2.html
 pub fn sys_close(fd: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock();// 拿到锁就不用调用get_fd_table了
-    let fd_table=inner.fd_table.clone();
+    let inner = task.process.inner_lock(); // 拿到锁就不用调用get_fd_table了
+    let fd_table = inner.fd_table.clone();
     debug!("[sys_close] fd is {}", fd);
 
     if (fd as isize) < 0 || fd >= fd_table.len() {

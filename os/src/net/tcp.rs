@@ -1,30 +1,34 @@
 use alloc::vec;
-use log::{debug, info, warn};
 use core::{
     net::{Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicBool, Ordering},
     task::Context,
 };
+use log::{debug, info, warn};
 
-use crate::{fs::File, mm::UserBuffer, utils::{PollSet, SysErrNo, SysResult}};
 use crate::syscall::PollEvents;
-use spin::Mutex;
+use crate::{
+    fs::File,
+    mm::UserBuffer,
+    utils::{PollSet, SysErrNo, SysResult},
+};
 use smoltcp::{
     iface::SocketHandle,
     socket::tcp as smol,
     time::Duration,
     wire::{IpEndpoint, IpListenEndpoint},
 };
+use spin::Mutex;
 
 use super::{
-    LISTEN_TABLE, RecvFlags, RecvOptions, SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx,
-    SocketOps,
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
     general::GeneralOptions,
     get_service,
     options::{Configurable, GetSocketOption, SetSocketOption},
     poll_interfaces,
     state::*,
+    RecvFlags, RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps, LISTEN_TABLE,
+    SOCKET_SET,
 };
 /// 创建新的tcp套接字
 /// 分配接收和发送缓冲区，缓冲区大小由常量定义
@@ -132,7 +136,7 @@ impl TcpSocket {
                 true
             }
         });
-        events.set(PollEvents::OUT, writable);// 连接成功，该套接字现在可写
+        events.set(PollEvents::OUT, writable); // 连接成功，该套接字现在可写
         events
     }
     /// 轮询常规数据流状态
@@ -179,7 +183,7 @@ impl Configurable for TcpSocket {
                 **keep_alive = self.with_smol_socket(|socket| socket.keep_alive().is_some());
             }
             O::MaxSegment(max_segment) => {
-                **max_segment = 1460;// 默认 MSS
+                **max_segment = 1460; // 默认 MSS
             }
             O::SendBuffer(size) => {
                 **size = TCP_TX_BUF_LEN;
@@ -224,7 +228,7 @@ impl SocketOps for TcpSocket {
     fn bind(&self, local_addr: SocketAddrEx) -> SysResult {
         let mut local_addr = local_addr.into_ip()?;
         self.state
-            .lock(State::Idle)// 只有 Idle 状态可以绑定
+            .lock(State::Idle) // 只有 Idle 状态可以绑定
             .map_err(|_| return SysErrNo::EINVAL)?
             .transit(State::Idle, || {
                 // 如果没指定端口，则自动分配一个临时端口
@@ -263,7 +267,7 @@ impl SocketOps for TcpSocket {
     fn connect(&self, remote_addr: SocketAddrEx) -> SysResult {
         let remote_addr = remote_addr.into_ip()?;
         self.state
-            .lock(State::Idle)// 状态机检查
+            .lock(State::Idle) // 状态机检查
             .map_err(|state| {
                 if state == State::Connecting {
                     SysErrNo::EINPROGRESS
@@ -305,12 +309,8 @@ impl SocketOps for TcpSocket {
                             bound_endpoint,
                         )
                         .map_err(|e| match e {
-                            smol::ConnectError::InvalidState => {
-                                SysErrNo::EALREADY
-                            }
-                            smol::ConnectError::Unaddressable => {
-                                SysErrNo::ECONNREFUSED
-                            }
+                            smol::ConnectError::InvalidState => SysErrNo::EALREADY,
+                            smol::ConnectError::Unaddressable => SysErrNo::ECONNREFUSED,
                         });
                     Ok(())
                 })
@@ -321,7 +321,7 @@ impl SocketOps for TcpSocket {
 
         // 循环等待连接结果或阻塞
         self.general.send_poller(self, || {
-            poll_interfaces();// 驱动网卡收发
+            poll_interfaces(); // 驱动网卡收发
             let events = self.poll_connect();
             if !events.contains(PollEvents::OUT) {
                 Err(SysErrNo::EAGAIN)
@@ -350,7 +350,7 @@ impl SocketOps for TcpSocket {
     /// 接受一个新的连接请求
     fn accept(&self) -> SysResult<Socket> {
         if !self.is_listening() {
-            return Err(SysErrNo::EINVAL)
+            return Err(SysErrNo::EINVAL);
         }
 
         let bound_port = self.bound_endpoint()?.port;
@@ -378,22 +378,22 @@ impl SocketOps for TcpSocket {
                 // 检测套接字状态
                 if !socket.is_active() {
                     return Err(SysErrNo::ENOTCONN);
-                } 
+                }
                 if !socket.can_send() {
-                    return Err(SysErrNo::EAGAIN);// 发送缓冲区满
-                } 
+                    return Err(SysErrNo::EAGAIN); // 发送缓冲区满
+                }
                 let send_result = socket.send(|buffer| {
                     let data = src.read(buffer.len());
                     buffer[..data.len()].copy_from_slice(&data);
                     (data.len(), data.len())
                 });
                 // 如果在读取过程中发生了错误，优先返回那个错误
-                send_result.map_err(|_| SysErrNo::ENOTCONN)  
+                send_result.map_err(|_| SysErrNo::ENOTCONN)
             })
         })
     }
     /// 接收数据
-    fn recv(&self, mut dst:UserBuffer, options: RecvOptions<'_>) -> SysResult<usize> {
+    fn recv(&self, mut dst: UserBuffer, options: RecvOptions<'_>) -> SysResult<usize> {
         if self.rx_closed.load(Ordering::Acquire) {
             return Err(SysErrNo::ENOTCONN);
         }
@@ -403,7 +403,7 @@ impl SocketOps for TcpSocket {
                 // 状态检查
                 if !socket.is_active() {
                     return Err(SysErrNo::ENOTCONN);
-                } 
+                }
                 // may_recv 为 false 表示对方已关闭发送（FIN），且缓冲区已读完
                 if !socket.may_recv() && socket.recv_queue() == 0 {
                     return Ok(0);
@@ -413,12 +413,11 @@ impl SocketOps for TcpSocket {
                     return Err(SysErrNo::EAGAIN);
                 }
 
-
                 // 处理 PEEK 标志或正常接收
                 // smoltcp 的 peek 和 recv 都接受闭包: FnOnce(&[u8]) -> (usize, R) 或 FnOnce(&[u8]) -> R
                 if options.flags.contains(RecvFlags::PEEK) {
                     // PEEK 模式：只读取不从缓冲区删除
-                     // 获取当前缓冲区里有多少数据
+                    // 获取当前缓冲区里有多少数据
                     let avail = socket.recv_queue();
                     if avail == 0 {
                         return Err(SysErrNo::EAGAIN);
@@ -430,7 +429,7 @@ impl SocketOps for TcpSocket {
                 } else {
                     // 正常接收模式：读取并从缓冲区删除
                     let recv_result = socket.recv(|buffer| {
-                        let n=dst.write(buffer);
+                        let n = dst.write(buffer);
                         (n, n)
                     });
                     recv_result.map_err(|_| SysErrNo::ENOTCONN)
@@ -454,10 +453,7 @@ impl SocketOps for TcpSocket {
     fn peer_addr(&self) -> SysResult<SocketAddrEx> {
         self.with_smol_socket(|socket| {
             Ok(SocketAddrEx::Ip(
-                socket
-                    .remote_endpoint()
-                    .ok_or(SysErrNo::ENOTCONN)?
-                    .into(),
+                socket.remote_endpoint().ok_or(SysErrNo::ENOTCONN)?.into(),
             ))
         })
     }
@@ -475,7 +471,7 @@ impl SocketOps for TcpSocket {
                 if how.has_write() {
                     self.with_smol_socket(|socket| {
                         debug!("TCP socket {}: shutting down", self.handle);
-                        socket.close();// smoltcp 发起关闭流程
+                        socket.close(); // smoltcp 发起关闭流程
                     });
                 }
                 poll_interfaces();
@@ -504,7 +500,7 @@ impl File for TcpSocket {
     fn write(&self, buf: crate::mm::UserBuffer) -> crate::utils::SyscallRet {
         self.send(buf, SendOptions::default())
     }
-    fn poll(&self, _events:PollEvents) -> PollEvents {
+    fn poll(&self, _events: PollEvents) -> PollEvents {
         poll_interfaces();
         let mut events = match self.state() {
             State::Connecting => self.poll_connect(),
@@ -540,8 +536,8 @@ impl Drop for TcpSocket {
 }
 /// 辅助函数,分配一个临时的本地端口
 fn get_ephemeral_port() -> SysResult<u16> {
-    const PORT_START: u16 = 0xc000;// 49152
-    const PORT_END: u16 = 0xffff;// 65535
+    const PORT_START: u16 = 0xc000; // 49152
+    const PORT_END: u16 = 0xffff; // 65535
     static CURR: Mutex<u16> = Mutex::new(PORT_START);
 
     let mut curr = CURR.lock();
@@ -560,5 +556,5 @@ fn get_ephemeral_port() -> SysResult<u16> {
         }
         tries += 1;
     }
-    Ok(1)// 如果全满了，返回 1 或报错
+    Ok(1) // 如果全满了，返回 1 或报错
 }

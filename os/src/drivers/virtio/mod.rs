@@ -13,7 +13,7 @@ pub use net::*;
 use crate::{
     arch::{memory_layout::KERNEL_ADDR_OFFSET, page_table::PageTable},
     drivers::DevError,
-    mm::{KernelAddr, PhysAddr, PhysPageNum, VirtAddr, cma_alloc, cma_dealloc},
+    mm::{cma_alloc, cma_dealloc, KernelAddr, PhysAddr, PhysPageNum, VirtAddr},
     task::current_token,
 };
 
@@ -36,14 +36,14 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
 pub struct VirtIoHalCMAImpl;
 
 unsafe impl Hal for VirtIoHalCMAImpl {
-    fn dma_alloc(pages: usize,_direction: BufferDirection) -> (usize, NonNull<u8>) {
+    fn dma_alloc(pages: usize, _direction: BufferDirection) -> (usize, NonNull<u8>) {
         match cma_alloc(pages) {
             Some(paddr_val) => {
                 let paddr = paddr_val.0;
                 // 计算虚拟地址。假设你的内核有固定偏移
-                let vaddr_val = paddr + KERNEL_ADDR_OFFSET; 
+                let vaddr_val = paddr + KERNEL_ADDR_OFFSET;
                 let vaddr_ptr = NonNull::new(vaddr_val as *mut u8).expect("vaddr is null");
-                
+
                 (paddr, vaddr_ptr)
             }
             None => {
@@ -52,12 +52,15 @@ unsafe impl Hal for VirtIoHalCMAImpl {
         }
     }
 
-    unsafe fn dma_dealloc(pa: usize, _vaddr:NonNull<u8>,pages: usize) -> i32 {
+    unsafe fn dma_dealloc(pa: usize, _vaddr: NonNull<u8>, pages: usize) -> i32 {
         cma_dealloc(PhysAddr(pa), pages);
         0
     }
 
-    unsafe fn mmio_phys_to_virt(paddr: virtio_drivers::PhysAddr, _size: usize) -> core::ptr::NonNull<u8> {
+    unsafe fn mmio_phys_to_virt(
+        paddr: virtio_drivers::PhysAddr,
+        _size: usize,
+    ) -> core::ptr::NonNull<u8> {
         let vaddr = paddr + KERNEL_ADDR_OFFSET;
         NonNull::new(vaddr as *mut u8).unwrap()
     }
@@ -104,12 +107,11 @@ unsafe impl Hal for VirtIoHalCMAImpl {
                     buffer.copy_from_slice(src);
                 }
                 virtio_drivers::BufferDirection::DriverToDevice => {}
-                virtio_drivers::BufferDirection::Both =>{},
+                virtio_drivers::BufferDirection::Both => {}
             }
             cma_dealloc(PhysAddr::from(paddr), pages);
         }
     }
-    
 }
 
 /// 虚拟IO设备的错误类型

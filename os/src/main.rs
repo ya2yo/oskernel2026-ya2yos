@@ -57,12 +57,12 @@ pub mod utils;
 // use crate::{mm::activate_kernel_space};
 use arch::*;
 use cfg_if::cfg_if;
-use log::info;
-use smoltcp::phy::DeviceCapabilities;
 use core::{
     arch::asm,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use log::info;
+use smoltcp::phy::DeviceCapabilities;
 
 use crate::drivers::{DeviceContainer, NetDeviceImpl};
 
@@ -82,7 +82,7 @@ fn clear_bss() {
 }
 
 /// ADD KERNEL_ADDR_OFFSET and jump to rust_main
-#[cfg(feature = "riscv64")]
+#[cfg(target_arch = "riscv64")]
 #[no_mangle]
 pub fn trampoline(hartid: usize) {
     unsafe {
@@ -137,7 +137,7 @@ pub fn rust_main(hartid: usize) -> ! {
   |___/                   |___/         
             "#
         );
-        #[cfg(feature = "loongarch64")]
+        #[cfg(target_arch = "loongarch64")]
         arch::memory_layout::print_memlayout();
         // 时钟频率初始化
         arch::time::init_clock_freq();

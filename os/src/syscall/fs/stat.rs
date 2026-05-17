@@ -1,17 +1,20 @@
 use log::debug;
 
 use crate::{
-    fs::{InodeType, Kstat, MAX_PATH_LEN, MNT_TABLE, NONE_MODE, OpenFlags, Statfs, open, superblock_fs_stat}, 
-    mm::{if_bad_address, put_data, translated_str}, 
-    syscall::options::{FaccessatFileMode, FaccessatMode}, 
-    task::{Process, current_task}, 
-    utils::{SysErrNo, SyscallRet, rsplit_once, trim_start_slash}};
-
+    fs::{
+        open, superblock_fs_stat, InodeType, Kstat, OpenFlags, Statfs, MAX_PATH_LEN, MNT_TABLE,
+        NONE_MODE,
+    },
+    mm::{if_bad_address, put_data, translated_str},
+    syscall::options::{FaccessatFileMode, FaccessatMode},
+    task::{current_task, Process},
+    utils::{rsplit_once, trim_start_slash, SysErrNo, SyscallRet},
+};
 
 /// 参考 https://man7.org/linux/man-pages/man2/fstat.2.html
 pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
 
     if (kst as isize) <= 0 || if_bad_address(kst as usize) {
@@ -35,7 +38,7 @@ pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
 pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, _flags: usize) -> SyscallRet {
     let task = current_task().unwrap();
 
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
     let path = trim_start_slash(translated_str(token, path));
 
@@ -54,7 +57,11 @@ pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, _flags: usize
 /// 参考 https://man7.org/linux/man-pages/man2/statfs.2.html
 pub fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = task
+        .process
+        .inner_lock()
+        .get_locked_memory_set_read()
+        .token();
     put_data(token, statfs, superblock_fs_stat());
     Ok(0)
 }
@@ -63,7 +70,7 @@ pub fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
 pub fn sys_faccessat(dirfd: isize, path: *const u8, mode: u32, _flags: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.inner_lock();
-    let proc_inner=task.process.inner_lock();
+    let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
     if (path as isize) <= 0 {
         return Err(SysErrNo::EFAULT);

@@ -31,8 +31,8 @@ impl Socket {
     where
         Self: Sized + 'static,
     {
-        let task=current_task().unwrap();
-        let fd_table=task.get_fd_table();
+        let task = current_task().unwrap();
+        let fd_table = task.get_fd_table();
         fd_table.get(fd)?.socket()
     }
 }

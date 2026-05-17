@@ -4,11 +4,14 @@ use core::{
     time::Duration,
 };
 
-use crate::{fs::File, task::{block_on, current_task, poll_io, timeout}, utils::{SysResult}};
 use crate::syscall::PollEvents;
 use crate::task::schedule;
 use crate::utils::SysErrNo;
-
+use crate::{
+    fs::File,
+    task::{block_on, current_task, poll_io, timeout},
+    utils::SysResult,
+};
 
 use super::{
     get_service,
@@ -52,7 +55,7 @@ impl GeneralOptions {
     pub fn nonblocking(&self) -> bool {
         self.nonblock.load(Ordering::Relaxed)
     }
-     /// 获取当前是否是地址重用状态
+    /// 获取当前是否是地址重用状态
     pub fn reuse_address(&self) -> bool {
         self.reuse_address.load(Ordering::Relaxed)
     }
@@ -151,8 +154,7 @@ impl Configurable for GeneralOptions {
                 self.recv_timeout_nanos
                     .store(timeout.as_nanos() as u64, Ordering::Relaxed);
             }
-            O::SendBuffer(_) | O::ReceiveBuffer(_) => {
-            }
+            O::SendBuffer(_) | O::ReceiveBuffer(_) => {}
             _ => return Ok(false),
         }
         Ok(true)

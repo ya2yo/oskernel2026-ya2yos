@@ -1,6 +1,6 @@
 use alloc::vec;
-use log::warn;
 use core::task::Waker;
+use log::warn;
 
 use crate::utils::PollSet;
 use smoltcp::{

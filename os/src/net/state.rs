@@ -65,11 +65,11 @@ impl StateGuard<'_> {
     pub fn transit<R>(self, new: State, f: impl FnOnce() -> SysResult<R>) -> SysResult<R> {
         match f() {
             Ok(result) => {
-                self.0.0.store(new as u8, Ordering::Release);
+                self.0 .0.store(new as u8, Ordering::Release);
                 Ok(result)
             }
             Err(err) => {
-                self.0.0.store(self.1, Ordering::Release);
+                self.0 .0.store(self.1, Ordering::Release);
                 Err(err)
             }
         }

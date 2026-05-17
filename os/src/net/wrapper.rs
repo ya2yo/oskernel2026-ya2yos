@@ -1,14 +1,14 @@
 use alloc::vec;
 use log::debug;
 
-use crate::utils::{SysErrNo,SysResult};
-use spin::Mutex;
+use crate::utils::{SysErrNo, SysResult};
 use event_listener::Event;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::{AnySocket, Socket},
     wire::IpAddress,
 };
+use spin::Mutex;
 
 pub(crate) struct SocketSetWrapper<'a> {
     pub inner: Mutex<SocketSet<'a>>,

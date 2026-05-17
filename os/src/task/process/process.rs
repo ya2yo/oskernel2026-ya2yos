@@ -1,13 +1,23 @@
 use alloc::{
-    collections::btree_map::BTreeMap, format, string::String, sync::{Arc, Weak}, vec::Vec
+    collections::btree_map::BTreeMap,
+    format,
+    string::String,
+    sync::{Arc, Weak},
+    vec::Vec,
 };
 use log::{debug, error, warn};
 use spin::{
-    Lazy, Mutex, MutexGuard, RwLockReadGuard, rwlock::{RwLock, RwLockWriteGuard}
+    rwlock::{RwLock, RwLockWriteGuard},
+    Lazy, Mutex, MutexGuard, RwLockReadGuard,
 };
 
 use crate::{
-    fs::{FSInfo, FdTable}, mm::{MemorySet, MemorySetInner}, signal::SigTable, syscall::CloneFlags, task::{TaskControlBlock, TidHandle}, utils::{SysErrNo, SyscallRet, get_abs_path, is_abs_path}
+    fs::{FSInfo, FdTable},
+    mm::{MemorySet, MemorySetInner},
+    signal::SigTable,
+    syscall::CloneFlags,
+    task::{TaskControlBlock, TidHandle},
+    utils::{get_abs_path, is_abs_path, SysErrNo, SyscallRet},
 };
 
 /// 进程/线程组 类
@@ -27,17 +37,17 @@ pub struct ProcessInner {
     pub memory_set: Arc<RwLock<MemorySet>>,
     pub sig_table: Arc<Mutex<SigTable>>,
     /// 进程打开的文件描述符表
-    pub fd_table:Arc<FdTable>,
+    pub fd_table: Arc<FdTable>,
     pub fs_info: Arc<FSInfo>,
 }
 
 impl Process {
     /// 退出时调用，进行托孤
     pub fn exit_and_reparent(&self) {
-        let mut meta=self.meta_lock();
-        let initproc=Self::get_process_arc_by_pid(1).expect("initproc not found!");
+        let mut meta = self.meta_lock();
+        let initproc = Self::get_process_arc_by_pid(1).expect("initproc not found!");
         for child_weak in &meta.children {
-            if let Some(child)=child_weak.upgrade() {
+            if let Some(child) = child_weak.upgrade() {
                 initproc.meta_lock().children.push(Arc::downgrade(&child));
             }
         }
@@ -48,11 +58,11 @@ impl Process {
         memory_set: Arc<RwLock<MemorySet>>,
         sig_table: Arc<Mutex<SigTable>>,
         fd_table: Arc<FdTable>,
-        fs_info:Arc<FSInfo>,
+        fs_info: Arc<FSInfo>,
         pid: usize,
         parent: Option<Arc<Process>>,
     ) -> Arc<Self> {
-        let id=pid;
+        let id = pid;
         let ret = Arc::new(Self {
             inner: Mutex::new(ProcessInner {
                 memory_set,
@@ -85,13 +95,13 @@ impl Process {
         ret
     }
     /// 获取inner的锁
-    pub fn inner_lock(&self) -> MutexGuard<'_,ProcessInner> {
+    pub fn inner_lock(&self) -> MutexGuard<'_, ProcessInner> {
         self.inner
             .try_lock()
             .expect(&format!("fail to get proc lock({})", self.pid))
     }
     /// 获取元数据的锁
-    pub fn meta_lock(&self) -> MutexGuard<'_,ProcessMeta> {
+    pub fn meta_lock(&self) -> MutexGuard<'_, ProcessMeta> {
         self.meta
             .try_lock()
             .expect(&format!("fail to get proc.meta lock({})", self.pid))
@@ -173,12 +183,16 @@ impl Process {
         }
     }
     /// 向进程中添加一个线程
-    pub fn add_task(&self, task:Arc<TaskControlBlock>){
+    pub fn add_task(&self, task: Arc<TaskControlBlock>) {
         self.meta_lock().tasks.push(Arc::downgrade(&task));
     }
     /// 获取当前进程中还活着的线程数量
     pub fn alive_tasks_count(&self) -> usize {
-        self.meta_lock().tasks.iter().filter(|t| t.upgrade().is_some()).count()
+        self.meta_lock()
+            .tasks
+            .iter()
+            .filter(|t| t.upgrade().is_some())
+            .count()
     }
 
     // 只会在sys_fcntl里面调用的一些辅助函数
@@ -226,11 +240,7 @@ impl ProcessInner {
             .expect("You should not fail to get lock in a 1 HART system!")
     }
     /// 获取绝对路径
-    pub fn get_abs_path(
-        &self,
-        dirfd: isize,
-        path: &str,
-    ) -> Result<String, SysErrNo> {
+    pub fn get_abs_path(&self, dirfd: isize, path: &str) -> Result<String, SysErrNo> {
         if is_abs_path(path) {
             Ok(get_abs_path("/", path))
         } else if dirfd != -100 {

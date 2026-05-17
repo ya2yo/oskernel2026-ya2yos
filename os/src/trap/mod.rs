@@ -228,7 +228,7 @@ pub extern "C" fn trap_entry() {
     trap_return();
 }
 
-#[cfg(feature = "riscv")]
+#[cfg(target_arch = "riscv64")]
 #[no_mangle]
 pub fn trap_from_kernel() -> ! {
     let cause = get_trap_cause();
@@ -246,7 +246,7 @@ pub fn trap_from_kernel() -> ! {
     );
 }
 
-#[cfg(feature = "loongarch64")]
+#[cfg(target_arch = "loongarch64")]
 #[no_mangle]
 pub fn trap_from_kernel() {
     use log::error;

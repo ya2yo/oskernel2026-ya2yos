@@ -33,12 +33,10 @@ fn main() {
 
     println!("cargo:rerun-if-changed=../user/src/");
     cfg_if::cfg_if! {
-        if #[cfg(feature = "riscv64")] {
+        if #[cfg(target_arch = "riscv64")] {
             println!("cargo:rerun-if-changed={}", TARGET_PATH_RISCV64);
-        } else if #[cfg(feature = "loongarch64")] {
+        } else if #[cfg(target_arch = "loongarch64")] {
             println!("cargo:rerun-if-changed={}", TARGET_PATH_LOONGARCH64);
-        } else {
-            compile_error!("Unsupported architecture");
         }
     }
 }

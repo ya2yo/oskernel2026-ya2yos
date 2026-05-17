@@ -1,7 +1,15 @@
-use alloc::{string::{String, ToString}, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use log::debug;
 
-use crate::{fs::{NONE_MODE, OpenFlags, open}, mm::{translated_ref, translated_str}, task::current_task, utils::{SysErrNo, SyscallRet, get_abs_path, strip_color, trim_start_slash}};
+use crate::{
+    fs::{open, OpenFlags, NONE_MODE},
+    mm::{translated_ref, translated_str},
+    task::current_task,
+    utils::{get_abs_path, strip_color, trim_start_slash, SysErrNo, SyscallRet},
+};
 
 /// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
 pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {

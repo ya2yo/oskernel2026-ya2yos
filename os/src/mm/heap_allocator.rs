@@ -1,5 +1,9 @@
 //! The global allocator
-use core::{alloc::Layout, cell::{SyncUnsafeCell, UnsafeCell}, ptr::NonNull};
+use core::{
+    alloc::Layout,
+    cell::{SyncUnsafeCell, UnsafeCell},
+    ptr::NonNull,
+};
 
 use crate::arch::memory_layout::{KERNEL_HEAP_SIZE, PAGE_SIZE};
 use buddy_system_allocator::LockedHeap;
@@ -18,9 +22,8 @@ pub fn handle_alloc_error(layout: core::alloc::Layout) -> ! {
 struct HeapSpace([u8; KERNEL_HEAP_SIZE]);
 
 // SyncUnsafeCell虽然线程不安全，但是有分配器的锁进行保护，只是需要内部可变性
-static HEAP_SPACE: SyncUnsafeCell<HeapSpace>  = SyncUnsafeCell::new(
-    HeapSpace([0; KERNEL_HEAP_SIZE])
-);
+static HEAP_SPACE: SyncUnsafeCell<HeapSpace> =
+    SyncUnsafeCell::new(HeapSpace([0; KERNEL_HEAP_SIZE]));
 
 /// initiate heap allocator
 pub fn init_heap() {
@@ -39,7 +42,7 @@ pub fn heap_test() {
         fn sbss();
         fn ebss();
     }
-    let bss_range = sbss as *const() as usize..ebss as *const() as usize;
+    let bss_range = sbss as *const () as usize..ebss as *const () as usize;
     let a = Box::new(5);
     assert_eq!(*a, 5);
     assert!(bss_range.contains(&(a.as_ref() as *const _ as usize)));

@@ -1,4 +1,11 @@
-use crate::{fs::open_device_file, mm::{UserBuffer, if_bad_address, put_data, translated_byte_buffer}, syscall::Utsname, task::{Sysinfo, current_task, current_token, tid_to_task}, timer::get_time_ms, utils::{SysErrNo, SyscallRet}};
+use crate::{
+    fs::open_device_file,
+    mm::{if_bad_address, put_data, translated_byte_buffer, UserBuffer},
+    syscall::Utsname,
+    task::{current_task, current_token, tid_to_task, Sysinfo},
+    timer::get_time_ms,
+    utils::{SysErrNo, SyscallRet},
+};
 
 /// 参考 https://man7.org/linux/man-pages/man2/getuid.2.html
 pub fn sys_getuid() -> SyscallRet {
@@ -52,7 +59,11 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/sysinfo.2.html
 pub fn sys_sysinfo(info: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = task
+        .process
+        .inner_lock()
+        .get_locked_memory_set_read()
+        .token();
 
     put_data(
         token,
@@ -72,7 +83,11 @@ pub fn sys_syslog(_logtype: isize, _bufp: *const u8, _len: usize) -> SyscallRet 
 /// 参考 https://man7.org/linux/man-pages/man2/getrandom.2.html
 pub fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task.process.inner_lock().get_locked_memory_set_read().token();
+    let token = task
+        .process
+        .inner_lock()
+        .get_locked_memory_set_read()
+        .token();
 
     if (flags as i32) < 0 {
         return Err(SysErrNo::EINVAL);

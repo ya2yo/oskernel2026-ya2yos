@@ -38,7 +38,7 @@ pub fn main() -> i32 {
                         // child process
                         let args: Vec<String> = line
                             .split_whitespace()
-                            .map(|s| (s.to_string() + "\0"))
+                            .map(|s| s.to_string() + "\0")
                             .collect();
                         let argsstr: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                         if execve(&argsstr) == -1 {

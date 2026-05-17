@@ -41,11 +41,11 @@ pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 pub const MEMORY_END: usize = PHYSICAL_MEMORY_START + PHYSICAL_MEMORY_SIZE + KERNEL_ADDR_OFFSET;
 
 pub const MMIO: &[(usize, usize)] = &[
-    (0x0010_0000, 0x00_1000), // VIRT_TEST 
-    (0x0010_1000, 0x00_1000), // VIRT_RTC 
+    (0x0010_0000, 0x00_1000), // VIRT_TEST
+    (0x0010_1000, 0x00_1000), // VIRT_RTC
     (0x1000_0000, 0x00_1000), // UART0
-    (0x1000_1000, 0x00_1000), // Virtio Block 
-    (0x1000_2000, 0x00_1000), // Virtio Net 
+    (0x1000_1000, 0x00_1000), // Virtio Block
+    (0x1000_2000, 0x00_1000), // Virtio Net
 ];
 
 pub const MMIO_MAP_OFFSET: usize = KERNEL_ADDR_OFFSET;
@@ -55,13 +55,13 @@ extern "C" {
 }
 
 pub fn sigreturn_ka() -> usize {
-    sigreturn_trampoline as *const() as usize
+    sigreturn_trampoline as *const () as usize
 }
 
 pub fn sigreturn_pa() -> usize {
-    sigreturn_trampoline as *const() as usize - KERNEL_ADDR_OFFSET
+    sigreturn_trampoline as *const () as usize - KERNEL_ADDR_OFFSET
 }
 
 pub fn sigreturn_va() -> usize {
-    sigreturn_trampoline as *const() as usize
+    sigreturn_trampoline as *const () as usize
 }

@@ -1,8 +1,8 @@
+use crate::drivers::{VirtError, VirtResult};
 use alloc::{sync::Arc, vec::Vec};
 use log::warn;
-use crate::drivers::{VirtError, VirtResult};
 
-use super::super::{BaseDriver,DevError, DevResult, DeviceType};
+use super::super::{BaseDriver, DevError, DevResult, DeviceType};
 
 use super::super::net::{EthernetAddress, NetBuf, NetBufBox, NetBufPool, NetBufPtr, NetDriverOps};
 use virtio_drivers::{device::net::VirtIONetRaw as InnerDev, transport::Transport, Hal};
