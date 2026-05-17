@@ -1,4 +1,4 @@
-USER_BUILD_ARGS := --$(MODE) --target $(TARGET)
+USER_BUILD_ARGS := --$(MODE) --features "$(ARCH)" --target $(TARGET)
 
 USER_TARGET_DIR := $(PROJECT_ROOT)/user/target/$(TARGET)/$(MODE)
 
