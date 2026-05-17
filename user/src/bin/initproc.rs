@@ -397,7 +397,7 @@ fn test_ltp() {
 #[cfg(target_arch = "riscv64")]
 fn main() -> i32 {
     println!("initproc running......");
-    test_socket();
+    // test_socket();
     // 这三个用到了socket
     // run_specific_test("musl\0", "entry-static.exe\0", "socket\0");
     // run_specific_test("musl\0", "entry-static.exe\0", "getpwnam_r_crash\0");
@@ -416,7 +416,7 @@ fn main() -> i32 {
     // run_testsuit("musl\0", "iperf_testcode.sh\0"); // panic：error + 完全未实现，需要实现进程组
     // run_testsuit("musl\0", "lmbench_testcode.sh\0"); // 卡死：耗时很长 + overhead之后卡死
     // run_testsuit("musl\0", "ltp_testcode.sh\0"); // 部分PASS + 卡死
-    // test_ltp();
+    test_ltp();
     // run_testsuit("musl\0", "netperf_testcode.sh\0");  // panic；完全没实现
 
     /* glibc */

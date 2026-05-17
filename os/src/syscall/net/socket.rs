@@ -1,5 +1,6 @@
 use super::consts::*;
 use crate::fs::{FdTable, File, FileClass, FileDescriptor, OpenFlags, Socket};
+use crate::mm::translated_byte_buffer;
 use crate::net::tcp::TcpSocket;
 use crate::net::udp::UdpSocket;
 use crate::net::{Shutdown, Socket as SocketInner, SocketAddrEx};
@@ -76,6 +77,8 @@ pub fn sys_bind(sockfd: usize, addr: *const u8, addrlen: u32) -> SyscallRet {
         "[sys_bind] fd={}, addr={}, len={}",
         sockfd, addr as usize, addrlen
     );
+    let token = current_token();
+    let user_buf = translated_byte_buffer(token, addr, addrlen as usize);
     let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
     Socket::from_fd(sockfd)?.0.bind(addr)?;
     Ok(0)

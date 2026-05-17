@@ -57,22 +57,6 @@ pub fn safe_translated_byte_buffer(
     while start < end {
         let start_va = VirtAddr::from(start);
         let mut vpn = start_va.floor();
-        // match page_table.translate(vpn) {
-        //     None => {
-        //         memory_set.lazy_page_fault(vpn, Trap::Exception(Exception::LoadPageFault));
-        //     }
-        //     Some(ref pte) => {
-        //         if !pte.get_flags().contains(PTEFlags::VALID) {
-        //             memory_set.lazy_page_fault(vpn, Trap::Exception(Exception::LoadPageFault));
-        //         }
-        //     }
-        // }
-        // let ppn = match page_table.translate(vpn) {
-        //     None => {
-        //         return None;
-        //     }
-        //     Some(ref pte) => pte.get_ppn(),
-        // };
         let ppn = match page_table.translate(vpn) {
             Some(ppn) => ppn,
             None => {
@@ -141,12 +125,10 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
 pub fn strong_translated_refmut<T>(token: usize, ptr: *mut T) -> Option<&'static mut T> {
     let page_table = PageTable::from_token(token);
     let va = ptr as usize;
-
-    // 1. 检查对齐 (Alignment)
+    // 检查对齐
     if va % core::mem::align_of::<T>() != 0 {
         return None;
     }
-
     // 检查是否跨页边界
     // 如果对象跨越了页面，简单的物理地址转换是不够的，通常需要分段读写或临时映射
     let size = core::mem::size_of::<T>();
@@ -252,6 +234,10 @@ pub fn safe_put_data<T: 'static>(memory_set: &MemorySet, ptr: *mut T, data: T) {
         *safe_translated_refmut(memory_set, ptr) = data;
     }
 }
+
+/// 逐字节复制数据到用户空间, n为元素个数，不是字节数
+/// 一般是字节 😊
+
 
 ///Array of u8 slice that user communicate with os
 pub struct UserBuffer {

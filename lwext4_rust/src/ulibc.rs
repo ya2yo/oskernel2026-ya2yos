@@ -7,7 +7,7 @@ use core::ffi::{c_char, c_int, c_size_t, c_void};
 #[cfg(feature = "print")]
 #[linkage = "weak"]
 #[no_mangle]
-unsafe extern "C" fn printf(str: *const c_char, mut args: ...) -> c_int {
+unsafe extern "C" fn printf(str: *const c_char, args: ...) -> c_int {
     // extern "C" { pub fn printf(arg1: *const c_char, ...) -> c_int; }
     use printf_compat::{format, output};
 
