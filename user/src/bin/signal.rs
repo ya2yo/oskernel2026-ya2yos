@@ -17,7 +17,7 @@ pub fn func2() {
 #[no_mangle]
 pub fn main() -> i32 {
     println!("test signal");
-    let sig = SigAction::new(func1 as usize, 0, 0, 0);
+    let sig = SigAction::new(func1 as *const() as usize, 0, 0, 0);
     let mut old_sig = SigAction::new(0, 0, 0, 0);
     let result = sigaction(2, &sig, &mut old_sig);
     println!("sigaction result is {}", result);
