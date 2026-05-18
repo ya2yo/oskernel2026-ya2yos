@@ -1,7 +1,12 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use crate::{
     arch::{memory_layout::PAGE_SIZE, time::get_ticks},
+<<<<<<< HEAD
     mm::{address, memory_set, KernelAddr, PhysPageNum},
+=======
+    mm::{KernelAddr, MapPermission, PhysPageNum, VirtPageNum, address, memory_set},
+    utils::{SysErrNo, SyscallRet},
+>>>>>>> starry
 };
 
 use super::{MemorySet, StepByOne, VirtAddr};
@@ -233,84 +238,84 @@ pub fn safe_put_data<T: 'static>(memory_set: &MemorySet, ptr: *mut T, data: T) {
     }
 }
 
-/// 类似于 Linux 的 copy_from_user，封装了地址翻译逻辑。
-/// - token: 源用户空间的页表 token
-/// - src: 用户空间的源虚拟地址
-/// - dst: 内核空间的目标缓冲区
+/// 将数据从用户空间安全地复制到内核空间
 ///
-/// 返回读取的字节数；若源地址不合法则返回 None
-pub fn copy_from_user(token: usize, src: usize, dst: &mut [u8]) -> Option<usize> {
-    let page_table = PageTable::from_token(token);
-    let mut start = src;
-    let end = start + dst.len();
-    let mut dst_offset = 0;
-    while start < end {
-        let start_va = VirtAddr::from(start);
-        let mut vpn = start_va.floor();
-        let ppn = match page_table.translate(vpn) {
-            None => {
-                // 源页未映射
-                if dst_offset == 0 {
-                    return None;
-                }
-                return Some(dst_offset);
-            }
-            Some(ppn) => ppn,
-        };
-        vpn.step();
-        let mut end_va: VirtAddr = vpn.into();
-        end_va = end_va.min(VirtAddr::from(end));
-        let copy_len: usize = <address::VirtAddr as Into<usize>>::into(end_va) - start;
-        let src_slice = if end_va.page_offset() == 0 {
-            &ppn.bytes_array()[start_va.page_offset()..]
-        } else {
-            &ppn.bytes_array()[start_va.page_offset()..end_va.page_offset()]
-        };
-        dst[dst_offset..dst_offset + copy_len].copy_from_slice(&src_slice[..copy_len]);
-        dst_offset += copy_len;
-        start = end_va.into();
+/// - `token`: 源用户空间的页表 token
+/// - `src`: 用户空间的源虚拟地址
+/// - `dst`: 内核空间的目标缓冲区
+///
+/// 成功返回 `Ok(复制的字节数)`，失败返回 `Err(EFAULT)`
+pub fn copy_from_user(token: usize, src: usize, dst: &mut [u8]) -> SyscallRet {
+    let len = dst.len();
+    if len == 0 {
+        return Ok(0);
     }
-    Some(dst_offset)
+    if src == 0 || src.checked_add(len).is_none() {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    let page_table = PageTable::from_token(token);
+    let end = src + len;
+    let mut cur_src = src;
+    let mut cur_dst = 0;
+
+    while cur_src < end {
+        let start_va = VirtAddr::from(cur_src);
+        let vpn = start_va.floor();
+        let ppn = page_table.translate(vpn).ok_or(SysErrNo::EFAULT)?;
+        // 本页内可复制的字节数：从当前偏移到页末，或到 end
+        let next_page_va: usize = start_va.ceil().into();
+        let copy_len = (end - cur_src).min(next_page_va - cur_src);
+        
+        let src_slice =
+            &ppn.bytes_array()[start_va.page_offset()..start_va.page_offset() + copy_len];
+        dst[cur_dst..cur_dst + copy_len].copy_from_slice(src_slice);
+
+        cur_src += copy_len;
+        cur_dst += copy_len;
+    }
+
+    Ok(len)
 }
 
-/// 类似于 Linux 的 copy_to_user，封装了地址翻译逻辑。
-/// - token: 目标用户空间的页表 token
-/// - dst: 用户空间的目标虚拟地址
-/// - src: 内核空间的源数据切片
+/// 将数据从内核空间安全地复制到用户空间（对应 Linux 的 copy_to_user）
 ///
-/// 返回写入的字节数；若目标地址不合法则返回 None
-pub fn copy_to_user(token: usize, dst: usize, src: &[u8]) -> Option<usize> {
-    let page_table = PageTable::from_token(token);
-    let mut start = dst;
-    let end = start + src.len();
-    let mut src_offset = 0;
-    while start < end {
-        let start_va = VirtAddr::from(start);
-        let mut vpn = start_va.floor();
-        let ppn = match page_table.translate(vpn) {
-            None => {
-                // 目标页未映射，返回已成功复制的字节数
-                if src_offset == 0 {
-                    return None;
-                }
-                return Some(src_offset);
-            }
-            Some(ppn) => ppn,
-        };
-        vpn.step();
-        let mut end_va: VirtAddr = vpn.into();
-        end_va = end_va.min(VirtAddr::from(end));
-        let copy_len: usize = <address::VirtAddr as Into<usize>>::into(end_va) - start;
-        let dst_slice = if end_va.page_offset() == 0 {
-            &mut ppn.bytes_array_mut()[start_va.page_offset()..]
-        } else {
-            &mut ppn.bytes_array_mut()[start_va.page_offset()..end_va.page_offset()]
-        };
-        dst_slice[..copy_len].copy_from_slice(&src[src_offset..src_offset + copy_len]);
-        src_offset += copy_len;
-        start = end_va.into();
+/// - `token`: 目标用户空间的页表 token
+/// - `dst`: 用户空间的目标虚拟地址
+/// - `src`: 内核空间的源数据切片
+///
+/// 成功返回 `Ok(复制的字节数)`，失败返回 `Err(EFAULT)`
+pub fn copy_to_user(token: usize, dst: usize, src: &[u8]) -> SyscallRet {
+    let len = src.len();
+    if len == 0 {
+        return Ok(0);
     }
-    Some(src_offset)
+    if dst == 0 || dst.checked_add(len).is_none() {
+        return Err(SysErrNo::EFAULT);
+    }
+    let page_table = PageTable::from_token(token);
+    let end = dst + len;
+    let mut cur_dst = dst;
+    let mut cur_src = 0;
+
+    while cur_dst < end {
+        let start_va = VirtAddr::from(cur_dst);
+        let vpn = start_va.floor();
+        let ppn = page_table.translate(vpn).ok_or(SysErrNo::EFAULT)?;
+
+        // 本页内可复制的字节数：从当前偏移到页末，或到 end
+        let next_page_va: usize = start_va.ceil().into();
+        let copy_len = (end - cur_dst).min(next_page_va - cur_dst);
+
+        let dst_slice =
+            &mut ppn.bytes_array_mut()[start_va.page_offset()..start_va.page_offset() + copy_len];
+        dst_slice.copy_from_slice(&src[cur_src..cur_src + copy_len]);
+
+        cur_dst += copy_len;
+        cur_src += copy_len;
+    }
+
+    Ok(len)
 }
 
 ///Array of u8 slice that user communicate with os

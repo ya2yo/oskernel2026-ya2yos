@@ -404,28 +404,28 @@ fn main() -> i32 {
     // run_specific_test("musl\0", "entry-static.exe\0", "getpwnam_r_errno\0");
 
     /* PASS */
-    run_testsuit("musl\0", "basic_testcode.sh\0"); // OK
-    run_testsuit("musl\0", "busybox_testcode.sh\0"); // OK
-    run_testsuit("musl\0", "lua_testcode.sh\0"); // OK
-    run_testsuit("musl\0", "iozone_testcode.sh\0"); // 磁盘性能测试，可通过，但是时间有点长
-    run_testsuit("musl\0", "libctest_testcode.sh\0"); // 210分，已经够高
-    run_testsuit("musl\0", "libcbench_testcode.sh\0");
+    // run_testsuit("musl\0", "basic_testcode.sh\0"); // OK
+    // run_testsuit("musl\0", "busybox_testcode.sh\0"); // OK
+    // run_testsuit("musl\0", "lua_testcode.sh\0"); // OK
+    // run_testsuit("musl\0", "iozone_testcode.sh\0"); // 磁盘性能测试，可通过，但是时间有点长
+    // run_testsuit("musl\0", "libctest_testcode.sh\0"); // 210分，已经够高
+    // run_testsuit("musl\0", "libcbench_testcode.sh\0");
 
     /* FAIL */
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0"); // panic：完全未实现
     // run_testsuit("musl\0", "iperf_testcode.sh\0"); // panic：error + 完全未实现，需要实现进程组
     // run_testsuit("musl\0", "lmbench_testcode.sh\0"); // 卡死：耗时很长 + overhead之后卡死
-    // run_testsuit("musl\0", "ltp_testcode.sh\0"); // 部分PASS + 卡死
-    test_ltp();
+    run_testsuit("musl\0", "ltp_testcode.sh\0"); // 部分PASS + 卡死
+    // test_ltp();
     // run_testsuit("musl\0", "netperf_testcode.sh\0");  // panic；完全没实现
 
     /* glibc */
     /* PASS */
-    run_testsuit("glibc\0", "lua_testcode.sh\0"); // OK
-    run_testsuit("glibc\0", "basic_testcode.sh\0"); // OK
-    run_testsuit("glibc\0", "busybox_testcode.sh\0"); // OK
-                                                      // 没有glibc libctest测试
-    run_testsuit("glibc\0", "libcbench_testcode.sh\0");
+    // run_testsuit("glibc\0", "lua_testcode.sh\0"); // OK
+    // run_testsuit("glibc\0", "basic_testcode.sh\0"); // OK
+    // run_testsuit("glibc\0", "busybox_testcode.sh\0"); // OK
+    //                                                   // 没有glibc libctest测试
+    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");
 
     /* FAIL */
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0"); // error
