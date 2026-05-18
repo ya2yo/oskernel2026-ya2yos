@@ -6,11 +6,6 @@ use crate::syscall::net::addr::SocketAddrExt;
 use crate::utils::SyscallRet;
 
 /// getsockname 和 getpeername 的公共逻辑
-///
-/// 对应 Linux 内核中 `move_addr_to_user` + `sock_getname` 的流程：
-/// 1. 通过 socket 操作获取地址（local 或 peer）
-/// 2. 将地址写入用户空间
-///
 /// - `sockfd`: 套接字文件描述符
 /// - `addr`: 用户空间的目标缓冲区指针
 /// - `addrlen`: 用户提供的缓冲区大小

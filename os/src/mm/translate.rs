@@ -1,7 +1,7 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use crate::{
     arch::{memory_layout::PAGE_SIZE, time::get_ticks},
-    mm::{KernelAddr, MapPermission, PhysPageNum, VirtPageNum, address, memory_set},
+    mm::{address, memory_set, KernelAddr, MapPermission, PhysPageNum, VirtPageNum},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -262,7 +262,7 @@ pub fn copy_from_user(token: usize, src: usize, dst: &mut [u8]) -> SyscallRet {
         // 本页内可复制的字节数：从当前偏移到页末，或到 end
         let next_page_va: usize = start_va.ceil().into();
         let copy_len = (end - cur_src).min(next_page_va - cur_src);
-        
+
         let src_slice =
             &ppn.bytes_array()[start_va.page_offset()..start_va.page_offset() + copy_len];
         dst[cur_dst..cur_dst + copy_len].copy_from_slice(src_slice);

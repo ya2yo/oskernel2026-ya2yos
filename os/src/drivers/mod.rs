@@ -60,6 +60,13 @@ impl NetDeviceImpl {
 
     #[cfg(target_arch = "loongarch64")]
     pub fn new_device() -> Self {
-        unimplemented!("Net device for LoongArch64 is not implemented yet");
+        use core::ptr::NonNull;
+        const VIRTIO_NET_BASE: usize = 0x1fe00000;
+        let header = NonNull::new(VIRTIO_NET_BASE as *mut VirtIOHeader)
+            .expect("VirtIO Net base address is null");
+        let transport = unsafe {
+            MmioTransport::new(header).expect("Failed to create MmioTransport for VirtIO Net");
+        };
+        Self::try_new(transport, None).expect("Failed to initialize VirtIoNetDev")
     }
 }

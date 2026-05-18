@@ -11,7 +11,7 @@ use crate::{
 };
 use alloc::sync::Arc;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
-use linux_raw_sys::net::{SHUT_RD, SHUT_RDWR, SHUT_WR};
+use linux_raw_sys::net::{AF_INET, AF_UNIX, AF_VSOCK, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_STREAM};
 use log::{debug, warn};
 
 /// 参考 https://man7.org/linux/man-pages/man2/socket.2.html

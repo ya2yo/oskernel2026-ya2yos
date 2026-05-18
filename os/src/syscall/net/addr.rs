@@ -13,7 +13,6 @@ use crate::{
 };
 use crate::{
     net::SocketAddrEx,
-    syscall::net::{AF_INET, AF_INET6, AF_UNIX},
     utils::{SysErrNo, SysResult},
 };
 use linux_raw_sys::net::*;
