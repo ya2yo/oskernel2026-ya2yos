@@ -200,12 +200,14 @@ impl MemorySet {
         };
 
         let start_vpn = VirtAddr::from(start).floor();
-        let end_vpn = VirtAddr::from(end - 1).floor() + 1;
+        let end_vpn = VirtAddr::from(end - 1).ceil();
 
-        self.check_if_valid_user_vpn_range(
-            VPNRange::new(start_vpn, end_vpn),
-            wanted_perm,
-        )
+        unsafe {
+            self.inner.get()
+                    .as_ref() // 变成 Option<&MemorySetInner>
+                    .unwrap() // 假设你确定指针不为空
+                    .check_user_range(VPNRange::new(start_vpn, end_vpn), wanted_perm)
+        }
     }
 }
 
