@@ -1,12 +1,8 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use crate::{
     arch::{memory_layout::PAGE_SIZE, time::get_ticks},
-<<<<<<< HEAD
-    mm::{address, memory_set, KernelAddr, PhysPageNum},
-=======
     mm::{KernelAddr, MapPermission, PhysPageNum, VirtPageNum, address, memory_set},
     utils::{SysErrNo, SyscallRet},
->>>>>>> starry
 };
 
 use super::{MemorySet, StepByOne, VirtAddr};
