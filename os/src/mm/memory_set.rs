@@ -184,6 +184,29 @@ impl MemorySet {
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
         self.get_mut().page_table.translate_va(va)
     }
+    pub fn check_user_range(
+        &self,
+        start: usize,
+        len: usize,
+        wanted_perm: MapPermission,
+    ) -> bool {
+        if len == 0 {
+            return true;
+        }
+
+        let end = match start.checked_add(len) {
+            Some(v) => v,
+            None => return false,
+        };
+
+        let start_vpn = VirtAddr::from(start).floor();
+        let end_vpn = VirtAddr::from(end - 1).floor() + 1;
+
+        self.check_if_valid_user_vpn_range(
+            VPNRange::new(start_vpn, end_vpn),
+            wanted_perm,
+        )
+    }
 }
 
 /// memory set structure, controls virtual-memory space
@@ -1277,6 +1300,65 @@ impl MemorySetInner {
         self.areas.clear();
         self.page_table.clear();
         Ok(0)
+    }
+    /// 检查页表映射关系
+    /// vpn_range: 待检查的范围
+    /// wanted_map_perm: 想要的映射权限
+    fn check_user_range(&self, vpn_range:VPNRange, wanted_map_perm: MapPermission)-> bool {
+        log::trace!("[check_valid_user_vpn_range]");
+        let mut current_vpn = vpn_range.start();
+        let end_vpn = vpn_range.end();
+
+        for area in self.areas.iter() {
+            // 如果该区域在 current_vpn 之后，跳过
+            if area.vpn_range.end() <= current_vpn {
+                continue;
+            }
+            // 如果该区域不覆盖 current_vpn，说明有空洞
+            if !area.vpn_range.contains_vpn(current_vpn) {
+                log::error!(
+                    "[check_valid_user_vpn_range] can't find area with vpn {:#x}",
+                    current_vpn.0
+                );
+                self.areas.iter().for_each(|area| {
+                    log::error!(
+                        "[check_valid_user_vpn_range] area: {:#x?}, {:?}",
+                        area.vpn_range,
+                        area.map_perm
+                    );
+                });
+                // return Err(Errno::EFAULT);
+                return false
+            }
+            // 权限不满足
+            if !area.map_perm.contains(wanted_map_perm) {
+                log::error!(
+                "[check_valid_user_vpn_range] vpn {:#x} has wrong map permission: {:?}, wanted: {:?}",
+                current_vpn.0,
+                area.map_perm,
+                wanted_map_perm
+            );
+                // return Err(Errno::EFAULT);
+                return false
+            }
+            // 更新 current_vpn 到该区域结束（不要超过 end_vpn）
+            current_vpn = core::cmp::min(area.vpn_range.end(), end_vpn);
+
+            if current_vpn >= end_vpn {
+                break;
+            }
+        }
+
+        if current_vpn < end_vpn {
+            log::error!(
+                "[check_valid_user_vpn_range] reach end prematurely at {:#x}, want {:#x}",
+                current_vpn.0,
+                end_vpn.0
+            );
+            // return Err(Errno::EFAULT);
+            return false
+        }
+        true
     }
 }
 

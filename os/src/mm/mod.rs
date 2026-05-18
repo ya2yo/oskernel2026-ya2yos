@@ -15,7 +15,7 @@ mod mmap_bad_address;
 mod page_fault_handler;
 // mod page_table;
 mod shm;
-use core::arch::asm;
+use core::{arch::asm, fmt::Debug};
 
 use crate::utils::simple_range::{SimpleRange, StepByOne};
 
@@ -67,5 +67,20 @@ bitflags! {
         const FIXED      = 1 << 1;
 
         const DONTUNMAP  = 1 << 2;
+    }
+}
+
+impl VPNRange {
+    pub fn contains_vpn(self, other: VirtPageNum) -> bool {
+        self.start() <= other && other < self.end()
+    }
+}
+
+impl Debug for VPNRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VPNRange")
+            .field("start", &self.start())
+            .field("end", &self.end())
+            .finish()
     }
 }
