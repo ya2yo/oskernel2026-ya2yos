@@ -1,6 +1,7 @@
 //! 异步 Future 支持模块
 //! 提供了在内核空间执行 Future 的基础架构，包括 Waker 实现和 block_on 执行器
 use alloc::{sync::Arc, task::Wake};
+use log::debug;
 use core::{
     fmt,
     future::poll_fn,
@@ -10,8 +11,7 @@ use core::{
 
 use super::{TaskRef, WeakTaskRef};
 use crate::{
-    task::{block_current_and_run_next, current_task, ready_queue, TaskStatus},
-    utils::SysErrNo,
+    signal::SigSet, task::{TaskContext, TaskStatus, block_current_and_run_next, current_task, exit_current_and_run_next, ready_queue, schedule}, utils::SysErrNo
 };
 use kernel_guard::NoPreemptIrqSave;
 use kspin::SpinNoIrq;
@@ -71,36 +71,45 @@ impl Wake for MyWaker {
 ///
 /// 注意：此函数不处理中断，通常不建议在需要响应信号的用户态任务中直接使用。
 pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
-    // 将 Future 固定在栈上（Pinning）
     let mut fut = pin!(f);
-    // 获取当前正在运行的任务
     let task = current_task().unwrap();
-    // 创建 Waker 并包装成标准库的 Context
-    let waker = MyWaker::new(&task);
-    let woke = &waker.woke;
-    let waker = Waker::from(waker.clone());
+    debug!("strong count: {}",Arc::strong_count(&task));
+    let waker_inner = MyWaker::new(&task);
+    let woke = &waker_inner.woke;
+    let waker = Waker::from(waker_inner.clone());
     let mut cx = Context::from_waker(&waker);
-
+    // 获取内部指针用于调度
+    let task_cx_ptr = {
+        let mut inner = task.inner_lock();
+        &mut inner.task_cx as *mut TaskContext
+    };
     loop {
-        // 重置唤醒标志
-        *woke.lock() = false;
-        // 尝试轮询 Future
+        if task.inner_lock().sig_pending.contains(SigSet::SIGKILL) {
+            drop(cx);
+            drop(waker);
+            drop(fut); 
+            drop(waker_inner);
+            drop(task); 
+            // 退出。如果是被 SIGKILL 杀死的，建议退出码设为 137 (128+9)
+            exit_current_and_run_next(137);
+            unreachable!();
+        }
+
+        // 轮询 Future
         match fut.as_mut().poll(&mut cx) {
             Poll::Pending => {
-                // 如果 Future 还没准备好，准备阻塞当前任务
-                let woke = woke.lock();
-                if !*woke {
-                    // 如果在 poll 之后、进入此逻辑前没有发生唤醒，则真正进入阻塞调度
-                    // 传入锁保护的变量是为了在释放锁的同时进行上下文切换
+                let mut is_woke = woke.lock();
+                if !*is_woke {
+                    // 释放锁后再挂起，避免死锁
+                    drop(is_woke); 
                     block_current_and_run_next();
                 } else {
-                    // 如果在执行过程中已经被唤醒
-                    // 则释放锁并主动让出 CPU，稍后再次尝试
-                    drop(woke);
-                    core::hint::spin_loop();
+                    // 已经被唤醒，直接重置状态并继续
+                    *is_woke = false;
+                    drop(is_woke);
+                    schedule(task_cx_ptr);
                 }
             }
-            // Future 已完成，返回其结果
             Poll::Ready(output) => return output,
         }
     }

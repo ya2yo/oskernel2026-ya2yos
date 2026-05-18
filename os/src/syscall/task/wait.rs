@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::{self, Vec}};
 use log::debug;
 
 use crate::{
@@ -31,7 +31,7 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
 
     // 新实现
     loop {
-        debug!("Wait4 loop begin");
+        debug!("Wait4 loop begin, wait for : {}", pid);
         let task = current_task().unwrap();
         let mut process_meta = task.process.meta_lock();
         // 取子进程集合
@@ -50,17 +50,27 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
         if pid != -1 && children.iter().all(|proc| proc.pid != pid as usize) {
             return Err(SysErrNo::ECHILD);
         }
-
+        debug!("===============print my children process task=========");
+        for thread in &children {
+            debug!("my child is {}, his alive task {}", thread.pid,thread.alive_tasks_count());
+            for t in &thread.meta_lock().tasks {
+                if let Some(s) = t.upgrade() {
+                    debug!("tid: {} status: {:?}",s.tid(), s.inner_lock().task_status);
+                }
+            }
+        }
+        debug!("================over==================================");
         let pair = children
             .iter()
             .enumerate()
-            .find(|(_, p)| {
+            .find(|(_, child_p)| {
                 // ++++ temporarily access child PCB exclusively
-                p.all_tasks_exited() && (pid == -1 || pid as usize == p.pid)
+                child_p.all_tasks_exited() && (pid == -1 || pid as usize == child_p.pid)
                 // ++++ release child PCB
             })
-            .map(|(idx, p)| (idx, Arc::clone(p)));
+            .map(|(idx, child_p)| (idx, Arc::clone(child_p)));
         drop(children);
+        // 所有线程都已经退出
         if let Some((idx, child)) = pair {
             let found_pid = child.pid.clone();
             let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
@@ -90,6 +100,13 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
             Process::remove_from_global_map(found_pid);
             return Ok(found_pid);
         } else {
+            let mut id:Vec<usize> = Vec::new();
+            for task in process_meta.tasks.iter() {
+                if let Some(t) = task.upgrade() {
+                    id.push(t.tid());
+                }
+            }
+            debug!("task: {:?}",id);
             drop(process_meta);
             drop(task);
 

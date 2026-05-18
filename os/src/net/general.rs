@@ -9,7 +9,7 @@ use crate::task::schedule;
 use crate::utils::SysErrNo;
 use crate::{
     fs::File,
-    task::{block_on, current_task, poll_io, timeout},
+    task::{block_on, poll_io, timeout},
     utils::SysResult,
 };
 

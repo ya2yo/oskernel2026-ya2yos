@@ -25,3 +25,4 @@ kernel-la
 *.dts
 *.txt
 !os/vendor/**
+*.ans

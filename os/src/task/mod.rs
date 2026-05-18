@@ -64,14 +64,27 @@ pub const INITPROC_PID: usize = 1;
 pub fn suspend_current_and_run_next() {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
-    let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-    // Change status to Ready
-    task_inner.task_status = TaskStatus::Ready;
-    // ---- release current PCB
-    drop(task_inner);
-    drop(task);
-    // jump to scheduling cycle
-    schedule(task_cx_ptr);
+    let exited = {
+        let proc_inner = task.process.inner_lock();
+        let sig_table = proc_inner.get_locked_sigtable();
+        sig_table.is_exited()
+    };
+
+    if exited {
+        let exit_code = task.process.inner_lock().get_locked_sigtable().exit_code();
+        drop(task_inner);
+        drop(task);
+        exit_current_and_run_next(exit_code);
+    } else {
+        let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
+        // Change status to Ready
+        task_inner.task_status = TaskStatus::Ready;
+        // ---- release current PCB
+        drop(task_inner);
+        drop(task);
+        // jump to scheduling cycle
+        schedule(task_cx_ptr);
+    }
 }
 
 pub fn block_current_and_run_next() {
@@ -108,7 +121,20 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
     let process = task.process.inner_lock();
     let sigtable = process.get_locked_sigtable();
 
-    if sigtable.not_exited() {
+    for bro_tasks in &task.process.meta_lock().tasks {
+        if let Some(alive_t)=bro_tasks.upgrade(){
+            if alive_t.tid() ==task.tid() {
+                continue;
+            }
+            let mut alive_inner=alive_t.inner_lock();
+            if alive_inner.task_status==TaskStatus::Blocked {
+                alive_inner.task_status=TaskStatus::Ready;
+                ready_queue::add_task(&alive_t);
+            }
+            drop(alive_inner);
+        }
+    }
+    if sigtable.not_exited() {// 第一个调用的线程
         //设置进程的SIGNAL_GROUP_EXIT标志并把终止代号放到current->signal->group_exit_code字段
         sigtable.set_exit_code(exit_code);
         let pid = task.pid();
@@ -124,80 +150,80 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
         drop(task_inner);
         drop(task);
     }
-
     exit_current_and_run_next(exit_code);
 }
 
 pub fn exit_current_and_run_next(exit_code: i32) {
-    let task = take_current_task().unwrap();
-    let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set_read();
-    let mut inner = task.inner_lock();
+    let curr_task = take_current_task().unwrap();
+    let count = Arc::strong_count(&curr_task);
+    debug!("strong count: {}", count);
+    let curr_proc = curr_task.process.inner_lock();
+    let memory_set = curr_proc.get_locked_memory_set_read();
+    let mut curr_task_inner = curr_task.inner_lock();
     debug!(
         "[sys_exit] exit_current_and_run_next() -- thread {} exit, exit_code = {}",
-        task.tid(),
+        curr_task.tid(),
         exit_code
     );
 
     // CLONE_CHILD_CLEARTID
-    if inner.clear_child_tid != 0 {
-        let token = process.get_locked_memory_set_read().token();
-        put_data(token, inner.clear_child_tid as *mut u32, 0);
+    if curr_task_inner.clear_child_tid != 0 {
+        let token = curr_proc.get_locked_memory_set_read().token();
+        put_data(token, curr_task_inner.clear_child_tid as *mut u32, 0);
         // 唤醒等待在 child_tid 的进程
         let pa = memory_set
-            .translate_va(VirtAddr::from(inner.clear_child_tid))
+            .translate_va(VirtAddr::from(curr_task_inner.clear_child_tid))
             .unwrap()
             .0;
         futex_wake_up(pa, 1);
     }
     // 释放futex
     handle_futex_when_exit(
-        &inner.robust_list,
-        process.get_locked_memory_set_read().token(),
-        task.pid(),
+        &curr_task_inner.robust_list,
+        curr_proc.get_locked_memory_set_read().token(),
+        curr_task.pid(),
     );
     debug!("exit_current_and_run_next: futex released");
     // 无论如何一个轻量级进程都会是一个线程
     // 释放线程相关资源
 
-    if inner.user_stack_top != 0 {
+    if curr_task_inner.user_stack_top != 0 {
         memory_set.remove_area_with_start_vpn(
-            VirtAddr::from(inner.user_stack_top - USER_STACK_SIZE).floor(),
+            VirtAddr::from(curr_task_inner.user_stack_top - USER_STACK_SIZE).floor(),
         );
     }
-    memory_set.remove_area_with_start_vpn(VirtAddr::from(inner.trap_cx_bottom).floor());
-    inner.task_status = TaskStatus::Zombie;
-
-    drop(inner);
+    memory_set.remove_area_with_start_vpn(VirtAddr::from(curr_task_inner.trap_cx_bottom).floor());
+    curr_task_inner.task_status = TaskStatus::Zombie;
+    drop(curr_task_inner);
 
     // 一个进程的所有线程都退出了,此时回收资源
     {
-        let tasks = task.process.meta_lock().tasks.clone();
-        let tasks: Vec<Arc<TaskControlBlock>> = tasks
+        let bro_tasks = curr_task.process.meta_lock().tasks.clone();
+        let bro_tasks: Vec<Arc<TaskControlBlock>> = bro_tasks
             .into_iter()
             .filter_map(|weak| weak.upgrade()) // 自动过滤无效引用
             .collect();
-        if tasks.iter().all(|task| task.inner_lock().is_zombie()) {
-            send_signal_to_thread_group(task.ppid(), SigSet::SIGCHLD);
+        if bro_tasks.iter().all(|bro_task| bro_task.inner_lock().is_zombie()) {
+            send_signal_to_thread_group(curr_task.ppid(), SigSet::SIGCHLD);
 
             memory_set.recycle_data_pages();
-            process.fd_table.clear();
-            process.fs_info.clear();
+            curr_proc.fd_table.clear();
+            curr_proc.fs_info.clear();
 
-            let sigtable = process.get_locked_sigtable();
+            let sigtable = curr_proc.get_locked_sigtable();
             if !sigtable.is_exited() {
                 sigtable.set_exit_code(exit_code);
             }
-            remove_proc_dir_and_file(task.pid());
+            remove_proc_dir_and_file(curr_task.pid());
             // wakeup_parent(task.ppid());  // 此功能似乎无用，删去
         }
     }
     // 安全地切换内核栈
     // 复制原子指针，避免释放页
-    let tid = task.tid();
+    let tid = curr_task.tid();
     drop(memory_set);
-    drop(process);
-    drop(task);
+    drop(curr_proc);
+    drop(curr_task);
     // 启用内核页表，避免task的页表释放后控制流使用不存在的页表
     activate_kernel_space();
     // 将tid传给IDLE控制流，它会负责释放这个线程

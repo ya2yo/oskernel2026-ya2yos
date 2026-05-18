@@ -9,11 +9,12 @@ use crate::{
 use alloc::sync::Arc;
 use alloc::vec;
 use linux_raw_sys::net::{
-    IP_TTL, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, SOL_SOCKET, TCP_NODELAY
+    IP_MSFILTER, IP_MULTICAST_IF, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, SOL_SOCKET, TCP_NODELAY
 };
 use log::{debug, warn};
 
 use core::{mem::size_of, time::Duration};
+
 
 /// ABI 数据读写接口
 pub trait AbiValue: Sized {
@@ -166,6 +167,7 @@ pub fn write<T: AbiValue>(
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/setsockopt.2.html
+/// 参考了RocketOS里面的设计
 pub fn sys_setsockopt(
     sockfd: usize,          // 文件描述符
     level: u32,             // 协议，level 都会设为 SOL_SOCKET
@@ -177,10 +179,12 @@ pub fn sys_setsockopt(
         "sys_setsockopt <= fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
         sockfd, level, optname, user_optval, optlen
     );
+    debug!("strong count: {}", Arc::strong_count(&current_task().unwrap()));
     // bool compat = in_compat_syscall();
     // let compat: bool = false;// 目前只在64位上运行
     let task = current_task().unwrap();
     let fd_table = task.get_fd_table();
+    drop(task);
     let sock = fd_table.get(sockfd)?.socket()?;
     if optlen > 1024 {
         return Err(SysErrNo::EINVAL);
@@ -224,24 +228,31 @@ pub fn sys_setsockopt(
         },
         // IP 级
         IPPROTO_IP => {
-            if optname == IP_TTL {
-                let val:i32 = parse(&kern_optval)?;
-                let val = val as u8;
-                let opt = SetSocketOption::Ttl(&val);
-                sock.set_option(opt)
-            } else {
-                return Err(SysErrNo::ENOPROTOOPT);
+            match optname {
+                IP_TTL => {
+                    let val:i32 = parse(&kern_optval)?;
+                    let val = val as u8;
+                    let opt = SetSocketOption::Ttl(&val);
+                    sock.set_option(opt)
+                },
+                MCAST_JOIN_GROUP | IP_MULTICAST_IF => {
+                    Ok(())
+                }
+                _ => return Err(SysErrNo::ENOPROTOOPT),
             }
         }
         // TCP 级
         IPPROTO_TCP => {
-            if optname == TCP_NODELAY {
-                let val = parse(&kern_optval)?;
-                let opt = SetSocketOption::NoDelay(&val);
-                sock.set_option(opt)
-            } else {
-                return Err(SysErrNo::ENOPROTOOPT);
-            }
+            match optname {
+                TCP_NODELAY => {
+                    let val = parse(&kern_optval)?;
+                    let opt = SetSocketOption::NoDelay(&val);
+                    sock.set_option(opt)
+                },
+                _ => {
+                    return Err(SysErrNo::ENOPROTOOPT)
+                }
+            }            
         }
         _ => return Err(SysErrNo::ENOPROTOOPT),
     };
@@ -262,6 +273,7 @@ pub fn sys_getsockopt(
     );
     let task = current_task().unwrap();
     let fd_table = task.get_fd_table();
+    drop(task);
     let sock = fd_table.get(sockfd)?.socket()?;
     let mut kern_opt = vec![0; optlen as usize];
     match level {

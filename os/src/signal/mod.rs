@@ -244,6 +244,7 @@ fn add_signal(task: &TaskControlBlock, signal: SigSet) {
 pub fn send_signal_to_thread_group(pid: usize, sig: SigSet) -> Result<usize, SysErrNo> {
     let process = Process::get_process_arc_by_pid(pid);
     if let Some(proc) = process {
+        debug!("{} receive signal, my parent is {}", pid, proc.ppid());
         let tasks = &proc.meta_lock().tasks;
         for task in tasks.iter() {
             if let Some(task) = task.upgrade() {

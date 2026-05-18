@@ -34,6 +34,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+use core::fmt::Debug;
 use core::mem::size_of;
 use core::{
     sync::atomic::{AtomicBool, Ordering},
@@ -628,7 +629,7 @@ impl TaskControlBlock {
     }
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum TaskStatus {
     Ready,
     Running,

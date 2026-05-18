@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use log::debug;
 
 use crate::{
@@ -62,6 +63,7 @@ pub fn sys_rt_sigreturn() -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/rt_sigprocmask.2.html
 pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) -> SyscallRet {
+    debug!("strong count: {}", Arc::strong_count(&current_task().unwrap()));
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_read();

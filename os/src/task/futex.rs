@@ -183,7 +183,7 @@ pub fn sys_futex(
     debug!("futex_op={}", futex_op);
     debug!("timeout={:#x}", timeout as usize);
     debug!("uaddr={:#x}", uaddr as usize);
-
+    debug!("strong count: {}", Arc::strong_count(&current_task().unwrap()));
     // let cmd = FutexCmd::from_bits(futex_op & 0x7f).unwrap();
     let cmd = FutexCmd::try_from(futex_op & 0x7f).expect("invalid futex op");
     debug!("futex cmd={:?}", cmd);

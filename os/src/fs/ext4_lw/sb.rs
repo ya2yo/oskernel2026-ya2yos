@@ -123,13 +123,6 @@ impl KernelDevOp for Disk {
     /// 磁盘指针定位，支持从起始、当前位置、末尾进行偏移
     fn seek(dev: &mut Disk, off: i64, whence: i32) -> Result<i64, i32> {
         let size = dev.size();
-        debug!(
-            "SEEK block device size:{}, pos:{}, offset={}, whence={}",
-            size,
-            &dev.position(),
-            off,
-            whence
-        );
         let new_pos = match whence as u32 {
             lwext4_rust::bindings::SEEK_SET => Some(off),
             lwext4_rust::bindings::SEEK_CUR => dev
