@@ -165,6 +165,7 @@ pub fn rust_main(hartid: usize) -> ! {
         let net_dev = NetDeviceImpl::new_device();
         let net_devices = DeviceContainer::from_one(net_dev);
         print!("net::init...");
+        #[cfg(feature = "net")]
         net::init_network(net_devices);
         println!("complete.");
 
