@@ -100,25 +100,6 @@ fn test_ltp() {
     ltp::run_ltp_tests_musl(
         test,
         &[
-            // [0,100)区间：
-            "accept02\0", // 涉及socket(INET, bind)
-            // "access02\0",
-            "af_alg01\0", // 涉及到复杂的AF_ALG socket，先不做它
-            "af_alg02\0",
-            "af_alg03\0",
-            "af_alg04\0",
-            "af_alg05\0",
-            "af_alg06\0",
-            "af_alg07\0",
-            "asapi_01\0",
-            "asapi_02\0",
-            "asapi_03\0", // Inet6 socket，先不做它
-            "bind01\0",   // bind系列先不做
-            "bind02\0",   // 因为它们涉及socket
-            "bind03\0",   //
-            "bind04\0",
-            "bind05\0",
-            "bind06\0",
             // [100,200)区间
             "cgroup_fj_proc\0",                   // 会卡死？
             "cgroup_regression_3_1.sh\0",         // mkdir: can't create directory '/0': File exists
@@ -415,8 +396,8 @@ fn main() -> i32 {
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0"); // panic：完全未实现
     // run_testsuit("musl\0", "iperf_testcode.sh\0"); // panic：error + 完全未实现，需要实现进程组
     // run_testsuit("musl\0", "lmbench_testcode.sh\0"); // 卡死：耗时很长 + overhead之后卡死
-    run_testsuit("musl\0", "ltp_testcode.sh\0"); // 部分PASS + 卡死
-    // test_ltp();
+    // run_testsuit("musl\0", "ltp_testcode.sh\0"); // 部分PASS + 卡死
+    test_ltp();
     // run_testsuit("musl\0", "netperf_testcode.sh\0");  // panic；完全没实现
 
     /* glibc */

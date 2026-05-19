@@ -29,7 +29,7 @@ type BitsetWaitQueue = VecDeque<FutexWaiter>; // 这个u32是sys_wait_bitset的�
 // bitset用的队列的映射
 static FUTEX_QUEUE_BITMAP: Lazy<Mutex<BTreeMap<usize, BitsetWaitQueue>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
-
+// 唤醒在 pa 等待的线程
 pub fn futex_wake_up(pa: usize, max_num: i32) -> usize {
     // 重定向需求
     return futex_wake_up_bitset(pa, max_num, u32::MAX);
@@ -172,8 +172,8 @@ fn new_futex_key() -> usize {
 
 /// 参考 https://man7.org/linux/man-pages/man2/futex.2.html
 pub fn sys_futex(
-    uaddr: *mut i32,
-    futex_op: u32,
+    uaddr: *mut i32,// point to the futex word, always four-bytes
+    futex_op: u32,  // operation on futex
     val: i32,
     timeout: *const Timespec,
     uaddr2: *mut u32,
@@ -183,7 +183,6 @@ pub fn sys_futex(
     debug!("futex_op={}", futex_op);
     debug!("timeout={:#x}", timeout as usize);
     debug!("uaddr={:#x}", uaddr as usize);
-    debug!("strong count: {}", Arc::strong_count(&current_task().unwrap()));
     // let cmd = FutexCmd::from_bits(futex_op & 0x7f).unwrap();
     let cmd = FutexCmd::try_from(futex_op & 0x7f).expect("invalid futex op");
     debug!("futex cmd={:?}", cmd);
@@ -194,6 +193,7 @@ pub fn sys_futex(
     }
 
     let task = current_task().unwrap();
+    debug!("[sys_futex]: strong_count = {}", Arc::strong_count(&task));
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_read();
     let task_inner = task.inner_lock();

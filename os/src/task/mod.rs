@@ -63,6 +63,7 @@ pub const INITPROC_PID: usize = 1;
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     let task = current_task().unwrap();
+    debug!("[suspend_current_and_run_next] strong_count = {}", Arc::strong_count(&task));
     let mut task_inner = task.inner_lock();
     let exited = {
         let proc_inner = task.process.inner_lock();
@@ -156,10 +157,10 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
 
 pub fn exit_current_and_run_next(exit_code: i32) {
     let curr_task = take_current_task().unwrap();
-    // let count = Arc::strong_count(&curr_task);
-    // if count > 2 {
-    //     panic!("Someone take a reference to the TCB!");
-    // }
+    let count = Arc::strong_count(&curr_task);
+    if count > 2 {// 一份是进程调度器里面的，一份是tid2task里面的, 大于二直接死循环，不如直接panic
+        panic!("Someone take a reference to the TCB!, strong_count = {}", count);
+    }
     let curr_proc = curr_task.process.inner_lock();
     let memory_set = curr_proc.get_locked_memory_set_read();
     let mut curr_task_inner = curr_task.inner_lock();
@@ -178,7 +179,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             .translate_va(VirtAddr::from(curr_task_inner.clear_child_tid))
             .unwrap()
             .0;
-        futex_wake_up(pa, 1);
+        futex_wake_up(pa, 1);// 唤醒在 clear_child_tid 等待的线程
     }
     // 释放futex
     handle_futex_when_exit(
@@ -225,7 +226,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     let tid = curr_task.tid();
     drop(memory_set);
     drop(curr_proc);
-    debug!("start exit, strong_count: {}", Arc::strong_count(&curr_task));
     drop(curr_task);
     // 启用内核页表，避免task的页表释放后控制流使用不存在的页表
     activate_kernel_space();

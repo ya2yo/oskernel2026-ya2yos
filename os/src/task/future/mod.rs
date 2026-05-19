@@ -1,6 +1,6 @@
 //! 异步 Future 支持模块
 //! 提供了在内核空间执行 Future 的基础架构，包括 Waker 实现和 block_on 执行器
-use alloc::{sync::Arc, task::Wake};
+use alloc::{sync::Arc, task::{self, Wake}};
 use log::debug;
 use core::{
     fmt,
@@ -94,7 +94,9 @@ pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
                 let mut is_woke = waker_inner.woke.lock();
                 if !*is_woke {
                     drop(is_woke);
-                    // 此处不能持有 loop 里的 task：block 期间栈上的 Arc 无法随 abandon 释放
+                    let task = current_task().unwrap();
+                    debug!("[block_on] Pending strong_count = {}", Arc::strong_count(&task)); // 这里怎么比上面多一个
+                    drop(task);
                     block_current_and_run_next();
                 } else {
                     *is_woke = false;
@@ -104,7 +106,8 @@ pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
                         let mut inner = cur.inner_lock();
                         &mut inner.task_cx as *mut TaskContext
                     };
-                    // 不能 drop cur/fut/waker：schedule 会回到本函数继续执行
+                    debug!("strong_count = {}", Arc::strong_count(&cur));
+                    drop(cur);
                     schedule(task_cx_ptr);
                 }
             }
@@ -134,15 +137,19 @@ impl From<Interrupted> for SysErrNo {
 ///
 /// 在每次轮询内部 Future 之前，都会先检查当前任务是否有挂起的中断。
 /// 如果有中断，则直接返回 `Err(Interrupted)`。
+/// 来自 Cursor, 定位到这里强引用导致 block_on 阻塞期间多占一份 TCB 强引用。
+/// 使用 `Weak` 而非长期持有 `Arc`：避免在 `block_on` 阻塞期间多占一份 TCB 强引用。
 pub async fn interruptible<F: core::future::Future>(f: F) -> Result<F::Output, Interrupted> {
     let mut f = pin!(f);
-    let curr = current_task().unwrap();
-    poll_fn(|cx| {
-        // 首先检查当前任务的中断状态
-        if curr.poll_interrupt(cx).is_ready() {
+    let curr = Arc::downgrade(&current_task().unwrap());
+    poll_fn(move |cx| {
+        if let Some(task) = curr.upgrade() {
+            if task.poll_interrupt(cx).is_ready() {
+                return Poll::Ready(Err(Interrupted));
+            }
+        } else {
             return Poll::Ready(Err(Interrupted));
         }
-        // 如果没有中断，则轮询原本的 Future
         f.as_mut().poll(cx).map(Ok)
     })
     .await

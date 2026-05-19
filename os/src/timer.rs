@@ -491,6 +491,7 @@ pub fn check_futex_timer() {
         if timer.expire <= current {
             if let Some(task) = timer.task.upgrade() {
                 debug!("[check_timer] wake up task {} {}", task.pid(), task.tid());
+                debug!("strong count: {}", Arc::strong_count(&task));
                 if timer.kind == TimerType::Futex {
                     // 调用 wakeup_task 唤醒超时线程
                     handle_timer(Arc::clone(&task), timer.extra_data);

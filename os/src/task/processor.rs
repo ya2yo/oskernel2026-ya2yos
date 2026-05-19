@@ -72,7 +72,7 @@ pub fn run_tasks() {
         let processor = get_proc_by_hartid(hart_id());
         let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
         if let Some(cur_task) = take_current_task() {
-            debug!("Task id: {} will run.", cur_task.tid());
+            debug!("Task id: {} is running.", cur_task.tid());
             let mut cur_task_inner = cur_task.inner_lock();
 
             if let Some(next_task) = ready_queue::fetch_task() {
@@ -113,7 +113,11 @@ pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
 }
 ///Get running task
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {
-    get_proc_by_hartid(hart_id()).current()
+    let cur_task = get_proc_by_hartid(hart_id()).current();
+    // if cur_task.is_some() {
+    //     debug!("GET current_task's strong_count = {}", Arc::strong_count(&cur_task.clone().unwrap()));
+    // }
+    cur_task
 }
 ///Get token of the address space of current task
 pub fn current_token() -> usize {
@@ -137,7 +141,7 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
 
     switch(switched_task_cx_ptr, idle_task_cx_ptr);
 }
-
+/// 不会返回，调用前释放局部变量
 pub fn abandon(tid: usize) {
     let processor = get_proc_by_hartid(hart_id());
 

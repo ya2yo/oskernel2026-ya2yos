@@ -179,10 +179,10 @@ pub fn sys_setsockopt(
         "sys_setsockopt <= fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
         sockfd, level, optname, user_optval, optlen
     );
-    debug!("strong count: {}", Arc::strong_count(&current_task().unwrap()));
     // bool compat = in_compat_syscall();
     // let compat: bool = false;// 目前只在64位上运行
     let task = current_task().unwrap();
+    debug!("strong count: {}", Arc::strong_count(&task));
     let fd_table = task.get_fd_table();
     drop(task);
     let sock = fd_table.get(sockfd)?.socket()?;
