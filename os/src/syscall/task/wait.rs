@@ -55,11 +55,11 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
             debug!("my child is {}, his alive task {}", thread.pid,thread.alive_tasks_count());
             for t in &thread.meta_lock().tasks {
                 if let Some(s) = t.upgrade() {
-                    debug!("tid: {} status: {:?}",s.tid(), s.inner_lock().task_status);
+                    debug!("tid: {} status: {:?}, strong_count: {}",s.tid(), s.inner_lock().task_status, Arc::strong_count(&s));
                 }
             }
         }
-        debug!("================over==================================");
+        debug!("======================= over =========================");
         let pair = children
             .iter()
             .enumerate()
@@ -77,8 +77,8 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
 
             if wstatus as usize != 0x0 {
                 debug!(
-                    "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}",
-                    pid, found_pid, exit_code, wstatus as usize
+                    "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}, strong_count: {}", 
+                    pid, found_pid, exit_code, wstatus as usize, Arc::strong_count(&child)
                 );
                 let token = task
                     .process

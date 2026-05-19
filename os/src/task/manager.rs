@@ -78,6 +78,8 @@ pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
 }
 
 pub mod tid_to_task {
+    use log::debug;
+
     use super::{Arc, BTreeMap, Lazy, Mutex, TaskControlBlock, Vec};
     static TID_TO_TASK: Lazy<Mutex<BTreeMap<usize, Arc<TaskControlBlock>>>> =
         Lazy::new(|| Mutex::new(BTreeMap::new()));
@@ -91,6 +93,7 @@ pub mod tid_to_task {
     }
     /// 仅在exit时发生
     pub fn remove(tid: usize) {
+        debug!("[tid_to_task]: remove {}!",tid);
         let ret = TID_TO_TASK.lock().remove(&tid);
         if ret.is_none() {
             panic!("fail to remove task {}! it does not exist!", tid);

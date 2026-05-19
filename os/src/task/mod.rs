@@ -88,8 +88,9 @@ pub fn suspend_current_and_run_next() {
 }
 
 pub fn block_current_and_run_next() {
-    // error!("block_current_and_run_next() BEGIN!");
+    debug!("[block_current_and_run_next()] BEGIN!");
     let task = take_current_task().unwrap();
+    debug!("current strong_count: {}", Arc::strong_count(&task));
     let mut task_inner = task.inner_lock();
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
     task_inner.task_status = TaskStatus::Blocked;
@@ -155,8 +156,10 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
 
 pub fn exit_current_and_run_next(exit_code: i32) {
     let curr_task = take_current_task().unwrap();
-    let count = Arc::strong_count(&curr_task);
-    debug!("strong count: {}", count);
+    // let count = Arc::strong_count(&curr_task);
+    // if count > 2 {
+    //     panic!("Someone take a reference to the TCB!");
+    // }
     let curr_proc = curr_task.process.inner_lock();
     let memory_set = curr_proc.get_locked_memory_set_read();
     let mut curr_task_inner = curr_task.inner_lock();
@@ -219,10 +222,10 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         }
     }
     // 安全地切换内核栈
-    // 复制原子指针，避免释放页
     let tid = curr_task.tid();
     drop(memory_set);
     drop(curr_proc);
+    debug!("start exit, strong_count: {}", Arc::strong_count(&curr_task));
     drop(curr_task);
     // 启用内核页表，避免task的页表释放后控制流使用不存在的页表
     activate_kernel_space();

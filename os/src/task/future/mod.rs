@@ -72,45 +72,42 @@ impl Wake for MyWaker {
 /// 注意：此函数不处理中断，通常不建议在需要响应信号的用户态任务中直接使用。
 pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
     let mut fut = pin!(f);
-    let task = current_task().unwrap();
-    debug!("strong count: {}",Arc::strong_count(&task));
-    let waker_inner = MyWaker::new(&task);
-    let woke = &waker_inner.woke;
+    let waker_inner = MyWaker::new(&current_task().unwrap());
     let waker = Waker::from(waker_inner.clone());
     let mut cx = Context::from_waker(&waker);
-    // 获取内部指针用于调度
-    let task_cx_ptr = {
-        let mut inner = task.inner_lock();
-        &mut inner.task_cx as *mut TaskContext
-    };
+
     loop {
-        if task.inner_lock().sig_pending.contains(SigSet::SIGKILL) {
-            drop(cx);
-            drop(waker);
-            drop(fut); 
-            drop(waker_inner);
-            drop(task); 
-            // 退出。如果是被 SIGKILL 杀死的，建议退出码设为 137 (128+9)
-            exit_current_and_run_next(137);
-            unreachable!();
+        // 每轮单独作用域：检查完信号就释放 clone，避免带着 Arc 调用 block_current
+        {
+            let task = current_task().unwrap();
+            debug!("[block_on] strong count: {}", Arc::strong_count(&task));
+            if task.inner_lock().sig_pending.contains(SigSet::SIGKILL) {
+                drop(task);
+                exit_current_and_run_next(137);
+                unreachable!();
+            }
         }
 
-        // 轮询 Future
         match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(output) => return output,
             Poll::Pending => {
-                let mut is_woke = woke.lock();
+                let mut is_woke = waker_inner.woke.lock();
                 if !*is_woke {
-                    // 释放锁后再挂起，避免死锁
-                    drop(is_woke); 
+                    drop(is_woke);
+                    // 此处不能持有 loop 里的 task：block 期间栈上的 Arc 无法随 abandon 释放
                     block_current_and_run_next();
                 } else {
-                    // 已经被唤醒，直接重置状态并继续
                     *is_woke = false;
                     drop(is_woke);
+                    let cur = current_task().unwrap();
+                    let task_cx_ptr = {
+                        let mut inner = cur.inner_lock();
+                        &mut inner.task_cx as *mut TaskContext
+                    };
+                    // 不能 drop cur/fut/waker：schedule 会回到本函数继续执行
                     schedule(task_cx_ptr);
                 }
             }
-            Poll::Ready(output) => return output,
         }
     }
 }

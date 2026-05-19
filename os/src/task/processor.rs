@@ -72,6 +72,7 @@ pub fn run_tasks() {
         let processor = get_proc_by_hartid(hart_id());
         let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
         if let Some(cur_task) = take_current_task() {
+            debug!("Task id: {} will run.", cur_task.tid());
             let mut cur_task_inner = cur_task.inner_lock();
 
             if let Some(next_task) = ready_queue::fetch_task() {
@@ -93,7 +94,7 @@ pub fn run_tasks() {
         } else {
             // 第一次调度，抢占
             if let Some(task) = ready_queue::fetch_task() {
-                // info!("first fetch task {}", task.pid());
+                debug!("first fetch task {}", task.pid());
                 let mut task_inner = task.inner_lock();
                 let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
                 task_inner.task_status = TaskStatus::Running;
@@ -107,6 +108,7 @@ pub fn run_tasks() {
 }
 ///Take the current task,leaving a None in its place
 pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
+    debug!("[processor]: take_current_task!");
     get_proc_by_hartid(hart_id()).take_current()
 }
 ///Get running task
