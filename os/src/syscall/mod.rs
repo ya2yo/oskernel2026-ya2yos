@@ -341,7 +341,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::SigReturn => sys_rt_sigreturn(),
         Syscall::Setuid => sys_setuid(args[0] as usize),
         Syscall::Times => sys_times(args[0] as *mut Tms),
-        Syscall::SetPGid => sys_setpgid(),
+        Syscall::SetPGid => sys_setpgid(args[0] as u32, args[1] as u32),
         Syscall::GetPGid => sys_getpgid(),
         Syscall::SetSid => sys_setsid(),
         Syscall::GetRusage => sys_getrusage(args[0] as isize, args[1] as *mut Rusage),

@@ -1,12 +1,12 @@
-# 实现过程遇到的问题
+# 开发过程遇到的问题汇总
 
-## sys_clone的实现
+## sys_clone行为
 
-通过查阅资料，sys_clone就是fork在riscv平台上的实现。sys_clone具体实现：
+在riscv里面fork这个系统调用已经被clone取代
 > The clone() wrapper function creates a new process by invoking the clone system call. The child process starts by calling the function fn with the argument arg. The stack argument specifies the location of the stack used by the child process. The flags argument is a bit mask that specifies what is shared between the calling process and the child process. The low byte of flags contains the number of the termination signal sent to the parent when the child dies. The remaining arguments (parent_tid, tls, child_tid) are optional and are used to store the thread ID of the child in the parent and child processes, respectively, and to specify the address of a new TLS area for the child process.
-> The clone3() system call provides a superset of the functionality of the older clone() interface. It also provides a number of API improvements, including: space for additional flags bits; cleaner separation in the use of various arguments; and the ability to specify the size of the child’s stack area. The cl_args argument is a pointer to a structure of type struct clone_args. The size argument is the size of this structure. As with fork(), clone3() returns in both the parent and the child. It returns 0 in the child process and returns the PID of the child in the parent.
+> The clone3() system call provides a superset of the functionality of the older clone() interface. It also provides a number of API improvements, including: space for additional flags bits; cleaner separation in the use of various arguments; and the ability to specify the size of the childâs stack area. The cl_args argument is a pointer to a structure of type struct clone_args. The size argument is the size of this structure. As with fork(), clone3() returns in both the parent and the child. It returns 0 in the child process and returns the PID of the child in the parent.
 
-下面是手册上写的关于CloneFlags的字段内容:
+clone_args的字段结构
 
 ```c
 struct clone_args {
@@ -24,6 +24,8 @@ struct clone_args {
 };
 ```
 
+## pending导致死循环
+
 [32m[DEBUG] [HART0] [PID 4] [TID 5] [(Weak), (Weak), (Weak)][0m
 [32m[DEBUG] [HART0] [PID 4] [TID 5] futex_wake_up_bitset: wake 1 threads[0m
 [32m[DEBUG] [HART0] [PID 4] [TID 5] [syscall ret --- OK] Futex ret = 1[0m
@@ -36,4 +38,4 @@ struct clone_args {
 [32m[DEBUG] [HART0] [PID 4] [TID 5] [block_current_and_run_next()] BEGIN![0m
 [32m[DEBUG] [HART0] [PID 4] [TID 5] [processor]: take_current_task![0m
 
-Pending 代码块里面异常变成4，
+Pending 代码块里面的强引用导致计数异常，会导致死循环。

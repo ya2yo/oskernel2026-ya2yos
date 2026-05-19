@@ -1,4 +1,4 @@
-use log::warn;
+use log::{debug, warn};
 
 use crate::utils::SyscallRet;
 
@@ -13,7 +13,9 @@ pub fn sys_getpgid() -> SyscallRet {
     Ok(0)
 }
 
-pub fn sys_setpgid() -> SyscallRet {
-    warn!("[sys_setpgid] We do not really support process group!");
+/// https://www.man7.org/linux/man-pages/man2/setpgid.2.html
+pub fn sys_setpgid(pid: u32, pgid: u32) -> SyscallRet {
+    debug!("[sys_setpgid] start!");
+    
     Ok(0)
 }
