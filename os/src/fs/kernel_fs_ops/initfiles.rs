@@ -241,6 +241,13 @@ pub fn create_init_files() -> GeneralRet {
         "/bin/mkdir",    // ltp的cgroup_regression_3_1.sh需要它
         "/bin/rmdir",    // ltp的cgroup_regression_3_1.sh需要它
         "/bin/cat",      // ltp的cgroup_regression_3_2.sh需要它
+        "/bin/grep",     // ltp的cgroup_fj_proc需要
+        "/bin/sed",
+        "/bin/id",
+        "/bin/killall",
+        "/bin/mktemp",
+        "/bin/chmod",
+        "/bin/cut"
     ] {
         superblock_root_inode().sym_link("/musl/busybox", path);
     }

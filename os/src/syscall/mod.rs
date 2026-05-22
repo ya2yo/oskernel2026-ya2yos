@@ -134,6 +134,7 @@ pub enum Syscall {
     Getrandom = 278,
     MemBarrier = 283,
     CopyFileRange = 285,
+    MachineShutdown = 1000,
     #[num_enum(default)]
     Default = 0,
 }
@@ -454,6 +455,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::CopyFileRange => {
             sys_copy_file_range(args[0], args[1], args[2], args[3], args[4], args[5] as u32)
         }
+        Syscall::MachineShutdown => shutdown(false),
 
         // task ops
         Syscall::Execve => sys_execve(
