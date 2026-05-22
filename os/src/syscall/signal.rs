@@ -19,6 +19,7 @@ pub fn sys_rt_sigaction(
     act: *const SigAction,
     old_act: *mut SigAction,
 ) -> SyscallRet {
+    debug!("[sys_rt_sigaction] signo is {}, act is {:?}, old_act is {:?}", signo, act, old_act);
     if signo > SIG_MAX_NUM {
         return Err(SysErrNo::EINVAL);
     }
@@ -109,9 +110,11 @@ pub fn sys_rt_sigtimedwait(
 
 /// 暂时将调用线程的信号掩码替换为 mask 给出的掩码，然后暂停线程，直到传递信号，
 /// 其操作是调用信号处理程序或终止进程
+/// mask 用于屏蔽特定的信号，直到有不同的新信号传入
 /// 参考 https://man7.org/linux/man-pages/man2/rt_sigsuspend.2.html
 pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
     // TODO(ZMY): 暂停线程
+    debug!("[sys_rt_sigsuspend] mask is {:?}", mask);
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
     let token = task
@@ -127,7 +130,9 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
     loop {
         let task = current_task().unwrap();
         let mut task_inner = task.inner_lock();
-        if !task_inner.sig_pending.is_empty() {
+        let pending = task_inner.sig_pending.difference(task_inner.sig_mask);// 修复bug, 改为判断待处理信号和掩码信号的不同，
+        if !pending.is_empty() {// 发生中断
+            debug!("[sys_rt_sigsuspend] pending is {:?}", pending);
             task_inner.sig_mask = old_mask;
             return Err(SysErrNo::EINTR);
         }

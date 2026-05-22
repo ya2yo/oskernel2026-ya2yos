@@ -132,11 +132,11 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 ///Return to idle control flow for new scheduling
 pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     let processor = get_proc_by_hartid(hart_id());
-    // debug!(
-    //     "[schedule] processor pid = {} , tid = {}",
-    //     processor.current().unwrap().pid(),
-    //     processor.current().unwrap().tid()
-    // );
+    debug!(
+        "[schedule] processor pid = {} , tid = {}",
+        processor.current().unwrap().pid(),
+        processor.current().unwrap().tid()
+    );
     let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
 
     switch(switched_task_cx_ptr, idle_task_cx_ptr);
