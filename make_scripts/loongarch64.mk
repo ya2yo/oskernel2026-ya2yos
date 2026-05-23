@@ -7,7 +7,7 @@ ARCH := loongarch64
 
 TARGET := loongarch64-unknown-none
 
-DISK_IMG := ./2025_testsuits_img/pre-2025/sdcard-la.img
+DISK_IMG := ./2026_testsuits_img/pre-tests/sdcard-la.img
 
 KERNEL_ELF := $(PROJECT_ROOT)/os/target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := kernel-la
@@ -46,7 +46,7 @@ QEMU_CMD := qemu-system-loongarch64 \
 OBJDUMP := rust-objdump --arch-name=$(ARCH)
 OBJCOPY := rust-objcopy --binary-architecture=$(ARCH)
 
-GDB_TOOL := ./gdb/loongarch64-none/bin/loongarch64-none
+GDB_TOOL := gdb-multiarch
 
 export PLATFORM MEMORY_SIZE SMP MODE
 export ARCH PLATFORM TARGET DISK_IMG KERNEL_ELF KERNEL_BIN
