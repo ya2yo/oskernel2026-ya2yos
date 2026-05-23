@@ -31,7 +31,9 @@ fn test_cgroup_fj_function_cpuset_via_script() {
         "-c\0",
         "PATH=/musl/ltp/testcases/bin:/bin:$PATH; export PATH; ./cgroup_fj_function.sh cpuset\0",
     ];
+    println!("#### OS COMP TEST GROUP START ltp-musl-cgroup-fj-cpuset ####");
     fork_and_run("/musl/ltp/testcases/bin\0", &args);
+    println!("#### OS COMP TEST GROUP END ltp-musl-cgroup-fj-cpuset ####");
 }
 
 pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
@@ -48,6 +50,59 @@ pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
         let mut exit_code: i32 = 0;
         let _ = waitpid(pid as usize, &mut exit_code);
         return exit_code;
+    }
+}
+
+const LTP_TEST_START: usize = 0;
+const LTP_TESTS_PER_GROUP: usize = 1;
+
+fn trim_trailing_nul(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let mut end = bytes.len();
+    if end > 0 && bytes[end - 1] == 0 {
+        end -= 1;
+    }
+    unsafe { core::str::from_utf8_unchecked(&bytes[..end]) }
+}
+
+#[allow(unused)]
+fn run_ltp_tests_musl_separately(tests: &[&str], blacklist: &[&str]) {
+    let mut group = 0;
+    let mut i = 0;
+    while i < tests.len() {
+        let group_start = i;
+        let mut group_end = i + LTP_TESTS_PER_GROUP;
+        if group_end > tests.len() {
+            group_end = tests.len();
+        }
+
+        println!(
+            "#### OS COMP TEST GROUP START ltp-musl-{}-{} ####",
+            group,
+            LTP_TEST_START + group_start
+        );
+
+        let mut j = group_start;
+        while j < group_end {
+            let test = tests[j];
+            if blacklist.contains(&test) {
+                println!("SKIP LTP CASE {}", trim_trailing_nul(test));
+                j += 1;
+                continue;
+            }
+            println!("RUN LTP CASE {}", test);
+            let r = fork_and_run("/musl/ltp/testcases/bin\0", &[test]);
+            println!("FAIL LTP CASE {} : {}", test, r); // 这不是表示失败了，只是告诉外界程序返回值是多少
+            j += 1;
+        }
+
+        println!(
+            "#### OS COMP TEST GROUP END ltp-musl-{}-{} ####",
+            group,
+            LTP_TEST_START + group_start
+        );
+        group += 1;
+        i = group_end;
     }
 }
 
@@ -104,12 +159,11 @@ fn main() -> i32 {
 }
 #[allow(unused)]
 fn test_ltp() {
-    // 对于run_ltp_tests_musl函数，
-    // 你可以传递FILELIST的一个子集（或者切片？）给它
-    // 上次运行在getcwd01处panic，从这里恢复以验证修复并继续后续case。
-    let test = &ltp::FILELIST[774..];
+    // 每个LTP case单独作为一个测试组运行，避免单组日志超过1万行。
+    // 如需从中间恢复，修改LTP_TEST_START即可。
+    let test = &ltp::FILELIST[LTP_TEST_START..];
     // 7号存在问题
-    ltp::run_ltp_tests_musl(
+    run_ltp_tests_musl_separately(
         test,
         &[
             // [100,200)区间
@@ -686,39 +740,8 @@ fn main() -> i32 {
     // run_specific_test("musl\0", "entry-static.exe\0", "getpwnam_r_crash\0");
     // run_specific_test("musl\0", "entry-static.exe\0", "getpwnam_r_errno\0");
 
-    /* PASS */
-    // run_testsuit("musl\0", "basic_testcode.sh\0"); // OK
-    // run_testsuit("musl\0", "busybox_testcode.sh\0"); // OK
-    // run_testsuit("musl\0", "lua_testcode.sh\0"); // OK
-    // run_testsuit("musl\0", "iozone_testcode.sh\0"); // 磁盘性能测试，可通过，但是时间有点长
-    // run_testsuit("musl\0", "libctest_testcode.sh\0"); // 210分，已经够高
-    // run_testsuit("musl\0", "libcbench_testcode.sh\0");
-
-    /* FAIL */
-    // run_testsuit("musl\0", "cyclictest_testcode.sh\0"); // panic：完全未实现
-    // run_testsuit("musl\0", "iperf_testcode.sh\0"); // panic：error + 完全未实现，需要实现进程组
-    // run_testsuit("musl\0", "lmbench_testcode.sh\0"); // 卡死：耗时很长 + overhead之后卡死
-    test_ltp(); // 普通LTP case逐个运行，并跳过需要单独包装的helper/脚本
+    test_ltp(); // LTP case单独分组运行，跳过需要单独包装的helper/脚本
     test_cgroup_fj_function_cpuset_via_script(); // cgroup_fj需要带subsystem参数单独测试
-    // check_ltp();
-    // run_testsuit("musl\0", "netperf_testcode.sh\0");  // panic；完全没实现
-
-    /* glibc */
-    /* PASS */
-    // run_testsuit("glibc\0", "lua_testcode.sh\0"); // OK
-    // run_testsuit("glibc\0", "basic_testcode.sh\0"); // OK
-    // run_testsuit("glibc\0", "busybox_testcode.sh\0"); // OK
-    //                                                   // 没有glibc libctest测试
-    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");
-
-    /* FAIL */
-    // run_testsuit("glibc\0", "cyclictest_testcode.sh\0"); // error
-    // run_testsuit("glibc\0", "iperf_testcode.sh\0"); // error
-
-    // run_testsuit("glibc\0", "lmbench_testcode.sh\0"); // 耗时很长 + overhead之后卡死
-    // run_testsuit("glibc\0", "ltp_testcode.sh\0"); // error
-    // run_testsuit("glibc\0", "iozone_testcode.sh\0"); // panic：对一个具有全0页表项的页表进行读
-    // run_testsuit("glibc\0", "netperf_testcode.sh\0"); // panic；完全没实现
 
     shutdown(); // 似乎有点bug，直接return 0不会导致QEMU退出
     0
