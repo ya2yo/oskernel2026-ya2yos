@@ -1,3 +1,6 @@
+//! 本文件主要实现了关于虚拟地址到物理地址转换的相关功能
+//! 再原来的基础上，本人使用Cursor内部的ChatGPT5.5对改文件进行了修改
+//! 为了兼容性和封装性，未来的地址转换不应该直接暴露出去，只应该给外部暴露 copy_from 和 copy_to 两个接口
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use crate::{
     arch::{memory_layout::{PAGE_SIZE, PAGE_SIZE_BITS}, time::get_ticks},
