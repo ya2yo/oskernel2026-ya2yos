@@ -29,6 +29,7 @@ pub mod udp;
 // #[cfg(feature = "vsock")]
 // pub mod vsock;
 mod wrapper;
+mod unix;
 
 pub use self::device::{EthernetDevice, LoopbackDevice};
 pub use self::socket::*;
@@ -46,6 +47,7 @@ use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 use spin::Mutex;
 use spin::{Lazy, Once};
 use virtio_drivers::device::net::VirtIONet;
+pub use unix::*;
 
 /// 全局监听表，用于跟踪所有处于监听状态的套接字。
 static LISTEN_TABLE: Lazy<ListenTable> = Lazy::new(ListenTable::new);

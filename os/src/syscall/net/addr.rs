@@ -12,7 +12,7 @@ use crate::{
     task::current_task,
 };
 use crate::{
-    net::SocketAddrEx,
+    net::{SocketAddrEx, UnixSocketAddr},
     utils::{SysErrNo, SysResult},
 };
 use linux_raw_sys::net::*;
@@ -166,7 +166,7 @@ impl SocketAddrExt for SocketAddrEx {
     fn read_from_user(addr: *const u8, addrlen: u32) -> SysResult<Self> {
         match read_family(addr, addrlen)? as u32 {
             AF_INET | AF_INET6 => SocketAddr::read_from_user(addr, addrlen).map(Self::Ip),
-            // AF_UNIX => UnixSocketAddr::read_from_user(addr, addrlen).map(Self::Unix),
+            AF_UNIX => UnixSocketAddr::read_from_user(addr, addrlen).map(Self::Unix),
             _ => Err(SysErrNo::EAFNOSUPPORT),
         }
     }
@@ -174,10 +174,86 @@ impl SocketAddrExt for SocketAddrEx {
     fn write_to_user(&self, addr: *mut u8, addrlen: &mut u32) -> SysResult<()> {
         match self {
             SocketAddrEx::Ip(ip_addr) => ip_addr.write_to_user(addr, addrlen),
+            SocketAddrEx::Unix(unix_addr) => unix_addr.write_to_user(addr, addrlen),
         }
     }
 
     fn family(&self) -> u16 {
-        AF_INET as u16
+        match self {
+            SocketAddrEx::Ip(_) => AF_INET as u16,
+            SocketAddrEx::Unix(_) => AF_UNIX as u16,
+        }
+    }
+}
+
+impl SocketAddrExt for UnixSocketAddr {
+    fn read_from_user(addr: *const u8, addrlen: u32) -> SysResult<Self> {
+        let family_size = size_of::<u16>();
+        if addrlen < family_size as u32 {
+            return Err(SysErrNo::EINVAL);
+        }
+        let path_len = (addrlen as usize).saturating_sub(family_size).min(108);
+        if path_len == 0 {
+            return Ok(UnixSocketAddr::Unnamed);
+        }
+
+        let task = current_task().unwrap();
+        let process = task.process.inner_lock();
+        let memory_set = process.get_locked_memory_set_read();
+        let mut path = [0u8; 108];
+        copy_from_user(
+            &memory_set,
+            addr as usize + family_size,
+            &mut path[..path_len],
+        )
+        .map(|_| ())?;
+
+        if path[0] == 0 {
+            if path_len == 1 {
+                return Ok(UnixSocketAddr::Unnamed);
+            }
+            return Ok(UnixSocketAddr::Abstract(path[1..path_len].to_vec()));
+        }
+
+        let end = path[..path_len]
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(path_len);
+        let path = core::str::from_utf8(&path[..end]).map_err(|_| SysErrNo::EINVAL)?;
+        Ok(UnixSocketAddr::Path(path.into()))
+    }
+
+    fn write_to_user(&self, addr: *mut u8, addrlen: &mut u32) -> SysResult<()> {
+        let family_size = size_of::<u16>();
+        let mut data = [0u8; 110];
+        data[..family_size].copy_from_slice(&(AF_UNIX as u16).to_ne_bytes());
+        let used = match self {
+            UnixSocketAddr::Unnamed => family_size,
+            UnixSocketAddr::Abstract(name) => {
+                let len = name.len().min(107);
+                data[family_size] = 0;
+                data[family_size + 1..family_size + 1 + len].copy_from_slice(&name[..len]);
+                family_size + 1 + len
+            }
+            UnixSocketAddr::Path(path) => {
+                let bytes = path.as_bytes();
+                let len = bytes.len().min(107);
+                data[family_size..family_size + len].copy_from_slice(&bytes[..len]);
+                data[family_size + len] = 0;
+                family_size + len + 1
+            }
+        };
+
+        let copy_len = (*addrlen as usize).min(used);
+        let task = current_task().unwrap();
+        let process = task.process.inner_lock();
+        let memory_set = process.get_locked_memory_set_read();
+        copy_to_user(&memory_set, addr as usize, &data[..copy_len]).map(|_| ())?;
+        *addrlen = used as u32;
+        Ok(())
+    }
+
+    fn family(&self) -> u16 {
+        AF_UNIX as u16
     }
 }

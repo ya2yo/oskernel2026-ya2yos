@@ -21,6 +21,7 @@ use crate::net::{
     options::{Configurable, GetSocketOption, SetSocketOption},
     tcp::TcpSocket,
     udp::UdpSocket,
+    unix::{UnixSocket, UnixSocketAddr},
 };
 
 /// 套接字地址的扩展，目前只支持ip类型
@@ -28,6 +29,8 @@ use crate::net::{
 pub enum SocketAddrEx {
     /// An IP (v4/v6) socket address.
     Ip(SocketAddr),
+    /// A Unix domain socket address.
+    Unix(UnixSocketAddr),
 }
 
 impl SocketAddrEx {
@@ -35,6 +38,14 @@ impl SocketAddrEx {
     pub fn into_ip(self) -> SysResult<SocketAddr> {
         match self {
             SocketAddrEx::Ip(addr) => Ok(addr),
+            SocketAddrEx::Unix(_) => Err(SysErrNo::EAFNOSUPPORT),
+        }
+    }
+
+    pub fn into_unix(self) -> SysResult<UnixSocketAddr> {
+        match self {
+            SocketAddrEx::Unix(addr) => Ok(addr),
+            SocketAddrEx::Ip(_) => Err(SysErrNo::EAFNOSUPPORT),
         }
     }
 }
@@ -167,6 +178,8 @@ pub enum Socket {
     Udp(UdpSocket),
     /// TCP socket.
     Tcp(TcpSocket),
+    /// Unix domain socket.
+    Unix(UnixSocket),
 }
 
 impl File for Socket {
@@ -174,6 +187,7 @@ impl File for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.poll(PollEvents::empty()),
             Socket::Udp(udp) => udp.poll(PollEvents::empty()),
+            Socket::Unix(unix) => unix.poll(PollEvents::empty()),
         }
     }
 
@@ -181,6 +195,7 @@ impl File for Socket {
         match self {
             Socket::Tcp(tcp) => tcp.register(context, events),
             Socket::Udp(udp) => udp.register(context, events),
+            Socket::Unix(unix) => unix.register(context, events),
         }
     }
 }
