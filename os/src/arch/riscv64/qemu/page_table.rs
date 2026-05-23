@@ -288,9 +288,7 @@ impl PageTable {
         };
         let pte_flags = pte.get_flags();
         if !pte_flags.contains(RVPTEFlags::COW) {
-            // 在原来的写法中，不论是否有cow标志都会返回true，这里改为没有cow标志时返回false
-            // 简单测试发现此处valid的pte都具有cow标志，在这放一个panic，看看未来是否会出现panic
-            panic!("ly: a valid pte without COW flag found at {:#x}", va.0);
+            // 这不是COW写错误，交给上层按普通用户页错误处理。
             return false;
         }
 
