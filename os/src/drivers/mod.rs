@@ -30,7 +30,7 @@ pub type BlockDeviceImpl = VirtIoBlkDev2<VirtIoHalCMAImpl>;
 const VIRTIO_BLK_BASE: usize = 0x10001000 + KERNEL_ADDR_OFFSET;
 #[cfg(target_arch = "riscv64")]
 const VIRTIO_NET_BASE: usize = 0x10002000 + KERNEL_ADDR_OFFSET;
-
+#[cfg(target_arch = "riscv64")]
 pub type NetDeviceImpl = VirtIoNetDev<VirtIoHalCMAImpl, MmioTransport, QUEUE_SIZE>;
 
 impl BlockDeviceImpl {

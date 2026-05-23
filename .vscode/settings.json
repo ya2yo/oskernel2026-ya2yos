@@ -1,6 +1,7 @@
 {
     "cmake.ignoreCMakeListsMissing": true,
-    "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf",
+    // "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf",
+    "rust-analyzer.cargo.target": "loongarch64-unknown-none",
     "rust-analyzer.diagnostics.disabled": [
         "unresolved-proc-macro"
     ],

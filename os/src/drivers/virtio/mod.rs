@@ -1,14 +1,19 @@
-mod blk;
-mod pci;
+#[cfg(target_arch = "riscv64")]
+mod riscv;
+#[cfg(target_arch = "loongarch64")]
+mod loongarch;
 use core::ptr::NonNull;
 
 use alloc::slice;
-pub use blk::*;
 use log::debug;
-pub use pci::*;
 use virtio_drivers::{BufferDirection, Hal};
 mod net;
 pub use net::*;
+
+#[cfg(target_arch = "loongarch64")]
+pub use loongarch::VirtIoBlkDev2;
+#[cfg(target_arch = "riscv64")]
+pub use riscv::*;
 
 use crate::{
     arch::{memory_layout::KERNEL_ADDR_OFFSET, page_table::PageTable},
