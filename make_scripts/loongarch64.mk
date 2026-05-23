@@ -7,7 +7,7 @@ ARCH := loongarch64
 
 TARGET := loongarch64-unknown-none
 
-DISK_IMG := ./2026_testsuits_img/pre-tests/sdcard-la.img
+DISK_IMG := ./2026_testsuits_img/pre_tests/sdcard-la.img
 
 KERNEL_ELF := $(PROJECT_ROOT)/os/target/$(TARGET)/$(MODE)/os
 KERNEL_BIN := kernel-la

@@ -65,7 +65,7 @@ impl NetDeviceImpl {
         let header = NonNull::new(VIRTIO_NET_BASE as *mut VirtIOHeader)
             .expect("VirtIO Net base address is null");
         let transport = unsafe {
-            MmioTransport::new(header).expect("Failed to create MmioTransport for VirtIO Net");
+            MmioTransport::new(header).expect("Failed to create MmioTransport for VirtIO Net")
         };
         Self::try_new(transport, None).expect("Failed to initialize VirtIoNetDev")
     }
