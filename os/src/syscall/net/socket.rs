@@ -3,8 +3,9 @@ use crate::fs::{FdTable, File, FileClass, FileDescriptor, OpenFlags, Socket};
 use crate::net::tcp::TcpSocket;
 use crate::net::udp::UdpSocket;
 use crate::net::SocketOps;
-use crate::net::{Shutdown, Socket as SocketInner, SocketAddrEx};
+use crate::net::{Shutdown, Socket as SocketInner, SocketAddrEx, UnixSocket};
 use crate::syscall::net::addr::SocketAddrExt;
+use crate::mm::copy_to_user;
 use crate::{
     task::{current_task, Process},
     utils::{SysErrNo, SyscallRet},
@@ -33,8 +34,18 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
             }
             SocketInner::Udp(UdpSocket::new())
         }
-        // (AF_UNIX, SOCK_STREAM) => SocketInner::Unix(UnixSocket::new(StreamTransport::new(pid))),
-        // (AF_UNIX, SOCK_DGRAM) => SocketInner::Unix(UnixSocket::new(DgramTransport::new(pid))),
+        (AF_UNIX, SOCK_STREAM) => {
+            if proto != 0 {
+                return Err(SysErrNo::EPROTONOSUPPORT);
+            }
+            SocketInner::Unix(UnixSocket::new_stream())
+        }
+        (AF_UNIX, SOCK_DGRAM) => {
+            if proto != 0 {
+                return Err(SysErrNo::EPROTONOSUPPORT);
+            }
+            SocketInner::Unix(UnixSocket::new_dgram())
+        }
         (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
             return Err(SysErrNo::ESOCKTNOSUPPORT);
@@ -57,16 +68,69 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
     let file_desc = FileDescriptor::new(open_flags, FileClass::Socket(socket));
 
     fd_table.set(new_fd, file_desc)?;
+    if raw_ty & OpenFlags::O_NONBLOCK.bits() != 0 {
+        let socket = fd_table.get(new_fd)?.socket()?;
+        socket.set_nonblocking(true)?;
+    }
     Ok(new_fd)
 }
 
 /// 参考 https://www.man7.org/linux/man-pages/man2/socketpair.2.html
+/// socketpair()系统调用只能用在 UNIX domain 中，即domain 参数必须被指定为AF_UNIX。
+/// socket 的type 可以被指定为SOCK_DGRAM 或SOCK_STREAM。protocol 参数必须为0。sockfd
+/// 数组返回了引用这两个相互连接的 socket 的文件描述符。
 pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> SyscallRet {
     debug!(
         "[sys_socketpair] domain is {}, type is {}, protocol is {}, sv is {}",
         domain, stype, protocol, sv as usize
     );
-    todo!("socketpair")
+    let ty = stype & 0xff;
+    if domain!=AF_UNIX {
+        return Err(SysErrNo::EAFNOSUPPORT);
+    }
+    if protocol != 0 {
+        return Err(SysErrNo::EPROTONOSUPPORT);
+    }
+    let (sock1, sock2) = match ty {
+        SOCK_STREAM => UnixSocket::new_stream_pair(),
+        SOCK_DGRAM => UnixSocket::new_dgram_pair(),
+        _ => return Err(SysErrNo::ESOCKTNOSUPPORT),
+    };
+
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let fd_table = proc_inner.fd_table.clone();
+    let fd1 = fd_table.alloc_fd()?;
+    let fd2 = fd_table.alloc_fd()?;
+    let mut open_flags = OpenFlags::empty();
+    if stype & OpenFlags::O_CLOEXEC.bits() != 0 {
+        open_flags |= OpenFlags::O_CLOEXEC;
+    }
+    fd_table.set(
+        fd1,
+        FileDescriptor::new(
+            open_flags,
+            FileClass::Socket(Arc::new(Socket(SocketInner::Unix(sock1)))),
+        ),
+    )?;
+    fd_table.set(
+        fd2,
+        FileDescriptor::new(
+            open_flags,
+            FileClass::Socket(Arc::new(Socket(SocketInner::Unix(sock2)))),
+        ),
+    )?;
+    if stype & OpenFlags::O_NONBLOCK.bits() != 0 {
+        fd_table.get(fd1)?.socket()?.set_nonblocking(true)?;
+        fd_table.get(fd2)?.socket()?.set_nonblocking(true)?;
+    }
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let fds = [fd1 as u32, fd2 as u32];
+    let fds_bytes = unsafe {
+        core::slice::from_raw_parts(fds.as_ptr() as *const u8, core::mem::size_of_val(&fds))
+    };
+    copy_to_user(&memory_set, sv as usize, fds_bytes)?;
+    Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/bind.2.html

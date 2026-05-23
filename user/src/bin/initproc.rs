@@ -106,7 +106,8 @@ fn main() -> i32 {
 fn test_ltp() {
     // 对于run_ltp_tests_musl函数，
     // 你可以传递FILELIST的一个子集（或者切片？）给它
-    let test = &ltp::FILELIST[..];
+    // 上次运行在getcwd01处panic，从这里恢复以验证修复并继续后续case。
+    let test = &ltp::FILELIST[774..];
     // 7号存在问题
     ltp::run_ltp_tests_musl(
         test,

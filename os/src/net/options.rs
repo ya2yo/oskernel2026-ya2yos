@@ -1,7 +1,6 @@
 use core::time::Duration;
 
 use crate::utils::{SysErrNo, SysResult};
-use enum_dispatch::enum_dispatch;
 
 /// 优雅处理后面不同的选项
 macro_rules! define_options {
@@ -78,7 +77,6 @@ define_options! {
 }
 
 /// Trait for configurable socket-like objects.
-#[enum_dispatch]
 pub trait Configurable {
     /// Get a socket option, returns `true` if the socket supports the option.
     fn get_option_inner(&self, opt: &mut GetSocketOption) -> SysResult<bool>;

@@ -15,7 +15,6 @@ use crate::{
 // use axio::prelude::*;
 use crate::syscall::PollEvents;
 use bitflags::bitflags;
-use enum_dispatch::enum_dispatch;
 
 use crate::net::{
     options::{Configurable, GetSocketOption, SetSocketOption},
@@ -141,7 +140,6 @@ impl Shutdown {
 }
 
 /// 套接字应该实现的方法
-#[enum_dispatch]
 pub trait SocketOps: Configurable {
     /// Binds an unbound socket to the given address and port.
     fn bind(&self, local_addr: SocketAddrEx) -> SysResult;
@@ -172,7 +170,6 @@ pub trait SocketOps: Configurable {
 }
 
 /// 网络套接字抽象
-#[enum_dispatch(Configurable, SocketOps)]
 pub enum Socket {
     /// UDP socket.
     Udp(UdpSocket),
@@ -180,6 +177,98 @@ pub enum Socket {
     Tcp(TcpSocket),
     /// Unix domain socket.
     Unix(UnixSocket),
+}
+
+impl Configurable for Socket {
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> SysResult<bool> {
+        match self {
+            Socket::Tcp(tcp) => tcp.get_option_inner(opt),
+            Socket::Udp(udp) => udp.get_option_inner(opt),
+            Socket::Unix(unix) => unix.get_option_inner(opt),
+        }
+    }
+
+    fn set_option_inner(&self, opt: SetSocketOption) -> SysResult<bool> {
+        match self {
+            Socket::Tcp(tcp) => tcp.set_option_inner(opt),
+            Socket::Udp(udp) => udp.set_option_inner(opt),
+            Socket::Unix(unix) => unix.set_option_inner(opt),
+        }
+    }
+}
+
+impl SocketOps for Socket {
+    fn bind(&self, local_addr: SocketAddrEx) -> SysResult {
+        match self {
+            Socket::Tcp(tcp) => tcp.bind(local_addr),
+            Socket::Udp(udp) => udp.bind(local_addr),
+            Socket::Unix(unix) => unix.bind(local_addr),
+        }
+    }
+
+    fn connect(&self, remote_addr: SocketAddrEx) -> SysResult {
+        match self {
+            Socket::Tcp(tcp) => tcp.connect(remote_addr),
+            Socket::Udp(udp) => udp.connect(remote_addr),
+            Socket::Unix(unix) => unix.connect(remote_addr),
+        }
+    }
+
+    fn listen(&self) -> SysResult {
+        match self {
+            Socket::Tcp(tcp) => tcp.listen(),
+            Socket::Udp(udp) => udp.listen(),
+            Socket::Unix(unix) => unix.listen(),
+        }
+    }
+
+    fn accept(&self) -> SysResult<Socket> {
+        match self {
+            Socket::Tcp(tcp) => tcp.accept(),
+            Socket::Udp(udp) => udp.accept(),
+            Socket::Unix(unix) => unix.accept(),
+        }
+    }
+
+    fn send(&self, src: UserBuffer, options: SendOptions) -> SysResult<usize> {
+        match self {
+            Socket::Tcp(tcp) => tcp.send(src, options),
+            Socket::Udp(udp) => udp.send(src, options),
+            Socket::Unix(unix) => unix.send(src, options),
+        }
+    }
+
+    fn recv(&self, dst: UserBuffer, options: RecvOptions<'_>) -> SysResult<usize> {
+        match self {
+            Socket::Tcp(tcp) => tcp.recv(dst, options),
+            Socket::Udp(udp) => udp.recv(dst, options),
+            Socket::Unix(unix) => unix.recv(dst, options),
+        }
+    }
+
+    fn local_addr(&self) -> SysResult<SocketAddrEx> {
+        match self {
+            Socket::Tcp(tcp) => tcp.local_addr(),
+            Socket::Udp(udp) => udp.local_addr(),
+            Socket::Unix(unix) => unix.local_addr(),
+        }
+    }
+
+    fn peer_addr(&self) -> SysResult<SocketAddrEx> {
+        match self {
+            Socket::Tcp(tcp) => tcp.peer_addr(),
+            Socket::Udp(udp) => udp.peer_addr(),
+            Socket::Unix(unix) => unix.peer_addr(),
+        }
+    }
+
+    fn shutdown(&self, how: Shutdown) -> SysResult {
+        match self {
+            Socket::Tcp(tcp) => tcp.shutdown(how),
+            Socket::Udp(udp) => udp.shutdown(how),
+            Socket::Unix(unix) => unix.shutdown(how),
+        }
+    }
 }
 
 impl File for Socket {
