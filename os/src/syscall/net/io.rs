@@ -4,7 +4,7 @@ use crate::mm::{copy_from_user, translated_byte_buffer, UserBuffer};
 use crate::net::{CMsgData, SendFlags, SendOptions, SocketAddrEx, SocketOps};
 use crate::syscall::net::addr::SocketAddrExt;
 use crate::syscall::net::CMsg;
-use crate::task::current_token;
+use crate::task::{current_task, current_token};
 use crate::utils::SysErrNo;
 use crate::{fs::File, utils::SyscallRet};
 use alloc::boxed::Box;
@@ -83,12 +83,15 @@ pub fn sys_sendmsg(sockfd: usize, msg_ptr: *const msghdr, flags: u32) -> Syscall
     if msg_ptr.is_null() {
         return Err(SysErrNo::EINVAL);
     }
-    let token = current_token();
+    let task = current_task().unwrap();
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    let token = memory_set.token();
     let hdr_size = size_of::<cmsghdr>();
 
     // 通过 copy_from_user 读取 msghdr
     let mut msg_buf = [0u8; size_of::<msghdr>()];
-    copy_from_user(token, msg_ptr as usize, &mut msg_buf).map(|_| ())?;
+    copy_from_user(&memory_set, msg_ptr as usize, &mut msg_buf).map(|_| ())?;
     let msg: msghdr = unsafe { *msg_buf.as_ptr().cast() };
 
     let mut iov_slices = Vec::new();
@@ -96,7 +99,7 @@ pub fn sys_sendmsg(sockfd: usize, msg_ptr: *const msghdr, flags: u32) -> Syscall
         // 通过 copy_from_user 读取 iovec 数组
         let iovs_size = msg.msg_iovlen as usize * size_of::<iovec>();
         let mut iovs_buf = vec![0u8; iovs_size];
-        copy_from_user(token, msg.msg_iov as usize, &mut iovs_buf).map(|_| ())?;
+        copy_from_user(&memory_set, msg.msg_iov as usize, &mut iovs_buf).map(|_| ())?;
         let iovs: &[iovec] = unsafe {
             core::slice::from_raw_parts(iovs_buf.as_ptr().cast(), msg.msg_iovlen as usize)
         };
@@ -117,7 +120,7 @@ pub fn sys_sendmsg(sockfd: usize, msg_ptr: *const msghdr, flags: u32) -> Syscall
         let control_len = msg.msg_controllen as usize;
         // 通过 copy_from_user 读取整个 control 缓冲区
         let mut control_buf = vec![0u8; control_len];
-        copy_from_user(token, control_base, &mut control_buf).map(|_| ())?;
+        copy_from_user(&memory_set, control_base, &mut control_buf).map(|_| ())?;
 
         let mut offset = 0;
         while offset + size_of::<cmsghdr>() <= control_len {
@@ -139,6 +142,9 @@ pub fn sys_sendmsg(sockfd: usize, msg_ptr: *const msghdr, flags: u32) -> Syscall
     }
     let addr_ptr = msg.msg_name as *const u8;
     let addr_len = msg.msg_namelen as u32;
+    drop(memory_set);
+    drop(process);
+    drop(task);
 
     send_impl(sockfd, user_buffer, flags, addr_ptr, addr_len, cmsgs)
 }
@@ -148,11 +154,14 @@ pub fn sys_recvmsg(_sockfd: usize, msg_ptr: *mut msghdr, _flags: u32) -> Syscall
     if msg_ptr.is_null() {
         return Err(SysErrNo::EINVAL);
     }
-    let token = current_token();
+    let task = current_task().unwrap();
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    let token = memory_set.token();
 
     // 通过 copy_from_user 读取 msghdr
     let mut msg_buf = [0u8; size_of::<msghdr>()];
-    copy_from_user(token, msg_ptr as usize, &mut msg_buf).map(|_| ())?;
+    copy_from_user(&memory_set, msg_ptr as usize, &mut msg_buf).map(|_| ())?;
     let msg: msghdr = unsafe { *msg_buf.as_ptr().cast() };
 
     // 1. 准备接收数据的 UserBuffer
@@ -160,7 +169,7 @@ pub fn sys_recvmsg(_sockfd: usize, msg_ptr: *mut msghdr, _flags: u32) -> Syscall
     if msg.msg_iovlen > 0 && !msg.msg_iov.is_null() {
         let iovs_size = msg.msg_iovlen as usize * size_of::<iovec>();
         let mut iovs_buf = vec![0u8; iovs_size];
-        copy_from_user(token, msg.msg_iov as usize, &mut iovs_buf).map(|_| ())?;
+        copy_from_user(&memory_set, msg.msg_iov as usize, &mut iovs_buf).map(|_| ())?;
         let iovs: &[iovec] = unsafe {
             core::slice::from_raw_parts(iovs_buf.as_ptr().cast(), msg.msg_iovlen as usize)
         };

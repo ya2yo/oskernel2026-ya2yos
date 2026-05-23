@@ -9,7 +9,7 @@ use core::{
 
 use crate::{
     mm::{copy_from_user, copy_to_user},
-    task::current_token,
+    task::current_task,
 };
 use crate::{
     net::SocketAddrEx,
@@ -37,9 +37,11 @@ fn read_family(addr: *const u8, addrlen: u32) -> SysResult<u16> {
     if size_of::<u16>() > addrlen as usize {
         return Err(SysErrNo::EINVAL);
     }
-    let token = current_token();
+    let task = current_task().unwrap();
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
     let mut buf = [0u8; size_of::<u16>()];
-    copy_from_user(token, addr as usize, &mut buf).map(|_| ())?;
+    copy_from_user(&memory_set, addr as usize, &mut buf).map(|_| ())?;
     Ok(u16::from_ne_bytes(buf))
 }
 unsafe fn cast_to_slice<T>(value: &T) -> &[u8] {
@@ -47,8 +49,10 @@ unsafe fn cast_to_slice<T>(value: &T) -> &[u8] {
 }
 fn fill_addr(addr: *mut u8, addrlen: &mut u32, data: &[u8]) -> SysResult<()> {
     let len = (*addrlen as usize).min(data.len());
-    let token = current_token();
-    copy_to_user(token, addr as usize, &data[..len]).map(|_| ())?;
+    let task = current_task().unwrap();
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    copy_to_user(&memory_set, addr as usize, &data[..len]).map(|_| ())?;
     *addrlen = data.len() as _;
     Ok(())
 }
@@ -82,9 +86,11 @@ impl SocketAddrExt for SocketAddrV4 {
         if addrlen != size_of::<sockaddr_in>() as u32 {
             return Err(SysErrNo::EINVAL);
         }
-        let token = current_token();
+        let task = current_task().unwrap();
+        let process = task.process.inner_lock();
+        let memory_set = process.get_locked_memory_set_read();
         let mut buf = [0u8; size_of::<sockaddr_in>()];
-        copy_from_user(token, addr as usize, &mut buf).map(|_| ())?;
+        copy_from_user(&memory_set, addr as usize, &mut buf).map(|_| ())?;
         let addr_in: sockaddr_in = unsafe { *buf.as_ptr().cast() };
         if addr_in.sin_family as u32 != AF_INET {
             return Err(SysErrNo::EAFNOSUPPORT);
@@ -118,9 +124,11 @@ impl SocketAddrExt for SocketAddrV6 {
         if addrlen != size_of::<sockaddr_in6>() as u32 {
             return Err(SysErrNo::EINVAL);
         }
-        let token = current_token();
+        let task = current_task().unwrap();
+        let process = task.process.inner_lock();
+        let memory_set = process.get_locked_memory_set_read();
         let mut buf = [0u8; size_of::<sockaddr_in6>()];
-        copy_from_user(token, addr as usize, &mut buf).map(|_| ())?;
+        copy_from_user(&memory_set, addr as usize, &mut buf).map(|_| ())?;
         let addr_in6: sockaddr_in6 = unsafe { *buf.as_ptr().cast() };
         if addr_in6.sin6_family as u32 != AF_INET6 {
             return Err(SysErrNo::EAFNOSUPPORT);

@@ -1,6 +1,6 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 use crate::{
-    arch::{memory_layout::PAGE_SIZE, time::get_ticks},
+    arch::{memory_layout::{PAGE_SIZE, PAGE_SIZE_BITS}, time::get_ticks},
     mm::{address, memory_set, KernelAddr, MapPermission, PhysPageNum, VirtPageNum},
     utils::{SysErrNo, SyscallRet},
 };
@@ -12,6 +12,31 @@ use crate::trap::trap_types::*;
 use log::debug;
 
 use crate::arch::page_table::PageTable;
+
+fn checked_user_range(start: usize, len: usize) -> Result<usize, SysErrNo> {
+    if len == 0 {
+        return Ok(start);
+    }
+    if start == 0 {
+        return Err(SysErrNo::EFAULT);
+    }
+    start.checked_add(len).ok_or(SysErrNo::EFAULT)
+}
+
+fn translated_user_page(
+    memory_set: &MemorySet,
+    page_table: &PageTable,
+    vpn: VirtPageNum,
+    fault: Trap,
+) -> Option<PhysPageNum> {
+    match page_table.translate(vpn) {
+        Some(ppn) => Some(ppn),
+        None => {
+            memory_set.lazy_page_fault(vpn, fault);
+            page_table.translate(vpn)
+        }
+    }
+}
 
 /// Translate a pointer to a mutable u8 Vec through page table
 pub fn translated_byte_buffer(
@@ -53,18 +78,17 @@ pub fn safe_translated_byte_buffer(
 ) -> Option<Vec<&'static mut [u8]>> {
     let page_table = PageTable::from_token(memory_set.token());
     let mut start = ptr as usize;
-    let end = start + len;
+    let end = checked_user_range(start, len).ok()?;
     let mut v = Vec::new();
     while start < end {
         let start_va = VirtAddr::from(start);
         let mut vpn = start_va.floor();
-        let ppn = match page_table.translate(vpn) {
-            Some(ppn) => ppn,
-            None => {
-                memory_set.lazy_page_fault(vpn, Trap::Exception(Exception::LoadPageFault));
-                page_table.translate(vpn).unwrap()
-            }
-        };
+        let ppn = translated_user_page(
+            memory_set,
+            &page_table,
+            vpn,
+            Trap::Exception(Exception::StorePageFault),
+        )?;
         vpn.step();
         let mut end_va: VirtAddr = vpn.into();
         end_va = end_va.min(VirtAddr::from(end));
@@ -241,26 +265,29 @@ pub fn safe_put_data<T: 'static>(memory_set: &MemorySet, ptr: *mut T, data: T) {
 /// - `dst`: 内核空间的目标缓冲区
 ///
 /// 成功返回 `Ok(复制的字节数)`，失败返回 `Err(EFAULT)`
-pub fn copy_from_user(token: usize, src: usize, dst: &mut [u8]) -> SyscallRet {
+pub fn copy_from_user(memory_set: &MemorySet, src: usize, dst: &mut [u8]) -> SyscallRet {
     let len = dst.len();
     if len == 0 {
         return Ok(0);
     }
-    if src == 0 || src.checked_add(len).is_none() {
-        return Err(SysErrNo::EFAULT);
-    }
+    let end = checked_user_range(src, len)?;
 
-    let page_table = PageTable::from_token(token);
-    let end = src + len;
+    let page_table = PageTable::from_token(memory_set.token());
     let mut cur_src = src;
     let mut cur_dst = 0;
 
     while cur_src < end {
         let start_va = VirtAddr::from(cur_src);
         let vpn = start_va.floor();
-        let ppn = page_table.translate(vpn).ok_or(SysErrNo::EFAULT)?;
+        let ppn = translated_user_page(
+            memory_set,
+            &page_table,
+            vpn,
+            Trap::Exception(Exception::LoadPageFault),
+        )
+        .ok_or(SysErrNo::EFAULT)?;
         // 本页内可复制的字节数：从当前偏移到页末，或到 end
-        let next_page_va: usize = start_va.ceil().into();
+        let next_page_va = ((vpn.0 + 1) << PAGE_SIZE_BITS) as usize;
         let copy_len = (end - cur_src).min(next_page_va - cur_src);
 
         let src_slice =
@@ -281,26 +308,29 @@ pub fn copy_from_user(token: usize, src: usize, dst: &mut [u8]) -> SyscallRet {
 /// - `src`: 内核空间的源数据切片
 ///
 /// 成功返回 `Ok(复制的字节数)`，失败返回 `Err(EFAULT)`
-pub fn copy_to_user(token: usize, dst: usize, src: &[u8]) -> SyscallRet {
+pub fn copy_to_user(memory_set: &MemorySet, dst: usize, src: &[u8]) -> SyscallRet {
     let len = src.len();
     if len == 0 {
         return Ok(0);
     }
-    if dst == 0 || dst.checked_add(len).is_none() {
-        return Err(SysErrNo::EFAULT);
-    }
-    let page_table = PageTable::from_token(token);
-    let end = dst + len;
+    let end = checked_user_range(dst, len)?;
+    let page_table = PageTable::from_token(memory_set.token());
     let mut cur_dst = dst;
     let mut cur_src = 0;
 
     while cur_dst < end {
         let start_va = VirtAddr::from(cur_dst);
         let vpn = start_va.floor();
-        let ppn = page_table.translate(vpn).ok_or(SysErrNo::EFAULT)?;
+        let ppn = translated_user_page(
+            memory_set,
+            &page_table,
+            vpn,
+            Trap::Exception(Exception::StorePageFault),
+        )
+        .ok_or(SysErrNo::EFAULT)?;
 
         // 本页内可复制的字节数：从当前偏移到页末，或到 end
-        let next_page_va: usize = start_va.ceil().into();
+        let next_page_va = ((vpn.0 + 1) << PAGE_SIZE_BITS) as usize;
         let copy_len = (end - cur_dst).min(next_page_va - cur_dst);
 
         let dst_slice =

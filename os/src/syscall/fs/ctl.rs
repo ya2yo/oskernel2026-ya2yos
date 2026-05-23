@@ -7,8 +7,8 @@ use crate::fs::{
     SEEK_SET,
 };
 use crate::mm::{
-    get_data, if_bad_address, safe_translated_byte_buffer, translated_byte_buffer, translated_str,
-    UserBuffer,
+    copy_to_user, get_data, if_bad_address, safe_translated_byte_buffer, translated_byte_buffer,
+    translated_str, UserBuffer,
 };
 use crate::syscall::process;
 use crate::task::{current_task, current_token};
@@ -26,14 +26,9 @@ pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
         return Err(SysErrNo::ERANGE);
     }
     let memory_set = proc_inner.get_locked_memory_set_read();
-    let buffers = match safe_translated_byte_buffer(&memory_set, buf, size) {
-        Some(bufs) => bufs,
-        None => return Err(SysErrNo::EFAULT),
-    };
-    let mut user_buf = UserBuffer::new(buffers);
-    user_buf.write(cwd_bytes);
-    let null_bytes: [u8; 1] = [0];
-    user_buf.write_at(cwd_bytes.len(), &null_bytes);
+    let mut cwd_with_null = vec![0u8; cwd_len_with_null];
+    cwd_with_null[..cwd_bytes.len()].copy_from_slice(cwd_bytes);
+    copy_to_user(&memory_set, buf as usize, &cwd_with_null)?;
     Ok(buf as usize)
 }
 

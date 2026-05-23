@@ -3,7 +3,7 @@ use crate::{
     fs::Socket,
     mm::copy_from_user,
     net::options::{Configurable, GetSocketOption, SetSocketOption},
-    task::{current_task, current_token, tid_to_task::task_num},
+    task::{current_task, tid_to_task::task_num},
     utils::{SysErrNo, SysResult, SyscallRet},
 };
 use alloc::sync::Arc;
@@ -190,8 +190,13 @@ pub fn sys_setsockopt(
         return Err(SysErrNo::EINVAL);
     }
     let mut kern_optval = vec![0; optlen as usize];
-    let token = current_token();
-    copy_from_user(token, user_optval as usize, &mut kern_optval)?;
+    let task = current_task().unwrap();
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    copy_from_user(&memory_set, user_optval as usize, &mut kern_optval)?;
+    drop(memory_set);
+    drop(process);
+    drop(task);
     match level {
         SOL_SOCKET => match optname {
             SO_REUSEADDR => {
