@@ -78,6 +78,7 @@ log: set_env
 
 # 注意，make run会创建一个临时软链接
 run:
+	@rm -f disk.img
 	@ln -s $(DISK_IMG) ./disk.img
 	@-$(QEMU_CMD)
 	@rm disk.img
