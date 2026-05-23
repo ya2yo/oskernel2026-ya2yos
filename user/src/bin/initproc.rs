@@ -24,7 +24,7 @@ fn run_testsuit(root: &str, script: &str) {
 }
 
 #[allow(dead_code)]
-fn test_cgroup_fj_proc_via_script() {
+fn test_cgroup_fj_function_cpuset_via_script() {
     let args = [
         "/musl/busybox\0",
         "sh\0",
@@ -112,7 +112,13 @@ fn test_ltp() {
         test,
         &[
             // [100,200)区间
-            "cgroup_fj_proc\0",                   // 会卡死？
+            // cgroup_fj系列需要带参数的脚本入口，直接跑helper会卡死。
+            // 需要验证时使用test_cgroup_fj_function_cpuset_via_script。
+            "cgroup_fj_common.sh\0",
+            "cgroup_fj_function.sh\0",
+            "cgroup_fj_proc\0",
+            "cgroup_fj_stress.sh\0",
+            "cgroup_lib.sh\0",
             "cgroup_regression_3_1.sh\0",         // mkdir: can't create directory '/0': File exists
             "cgroup_regression_3_2.sh\0", // cat: can't open '/proc/sched_debug': No such file or directory
             "cgroup_regression_5_1.sh\0", // 卡死
@@ -395,7 +401,8 @@ fn check_ltp() {
         test,
         &[
             // [100,200)区间
-            "cgroup_fj_proc\0",                   // 会卡死？
+            // cgroup_fj系列需要带参数的脚本入口，直接跑helper会卡死。
+            // 需要验证时使用test_cgroup_fj_function_cpuset_via_script。
             "cgroup_regression_3_1.sh\0",         // mkdir: can't create directory '/0': File exists
             "cgroup_regression_3_2.sh\0", // cat: can't open '/proc/sched_debug': No such file or directory
             "cgroup_regression_5_1.sh\0", // 卡死
@@ -690,9 +697,8 @@ fn main() -> i32 {
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0"); // panic：完全未实现
     // run_testsuit("musl\0", "iperf_testcode.sh\0"); // panic：error + 完全未实现，需要实现进程组
     // run_testsuit("musl\0", "lmbench_testcode.sh\0"); // 卡死：耗时很长 + overhead之后卡死
-    // run_testsuit("musl\0", "ltp_testcode.sh\0"); // 部分PASS + 卡死
-    test_cgroup_fj_proc_via_script();
-    // test_ltp();
+    test_ltp(); // 普通LTP case逐个运行，并跳过需要单独包装的helper/脚本
+    test_cgroup_fj_function_cpuset_via_script(); // cgroup_fj需要带subsystem参数单独测试
     // check_ltp();
     // run_testsuit("musl\0", "netperf_testcode.sh\0");  // panic；完全没实现
 

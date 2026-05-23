@@ -39,3 +39,7 @@ struct clone_args {
 [32m[DEBUG] [HART0] [PID 4] [TID 5] [processor]: take_current_task![0m
 
 Pending 代码块里面的强引用导致计数异常，会导致死循环。
+
+## 单独运行cgroup_fj_proc 卡死
+
+运行cgroup_fj相关测试时，由于 `FAIL LTP CASE cgroup_fj_function.sh : 2`等相关测试的失败导致cgroup_fj_proc会直接卡死，没有信号告诉这个任务退出。通过显示地调用`./cgroup_fj_function.sh cpuset` 来避免这个错误。
