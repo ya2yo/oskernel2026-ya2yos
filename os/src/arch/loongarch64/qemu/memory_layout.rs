@@ -52,7 +52,11 @@ pub const UART_ADDR: usize = 0x1FE0_01E0;
 pub const POWER_OFF_ADDR: usize = 0x100e_001c;
 
 pub const MMIO_MAP_OFFSET: usize = 0xFFFF_FFFF_0000_0000;
-// TODO
+
+// PCI MMIO window for virtio devices (physical addresses)
+pub const VIRTIO_PCI_MMIO_BASE: usize = 0x4000_0000;
+pub const VIRTIO_PCI_MMIO_SIZE: usize = 0x10_0000; // 1MB，覆盖 20 位 BAR 内偏移
+
 // MMIO regions (physical addresses)
 pub const MMIO: &[(usize, usize)] = &[
     (0x1fe0_0000, 0x1000),     // UART0
