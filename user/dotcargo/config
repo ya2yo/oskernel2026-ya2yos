@@ -8,9 +8,10 @@ rustflags = [
     "-Clink-arg=-Tsrc/arch/linker_loongarch64.ld", "-Cforce-frame-pointers=yes",
     "-Clink-arg=-nostdlib",
     "-Clink-arg=-static",
+    "-Clink-arg=--no-relax",
     "-Cpanic=abort"
 ]
-linker = "loongarch64-linux-gnu-gcc"
+linker = "rust-lld"
 
 [source.crates-io]
 replace-with = "vendored-sources"
