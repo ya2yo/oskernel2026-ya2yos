@@ -103,6 +103,21 @@ impl Router {
             while !self.rx_buffer.is_full() && dev.recv(&mut self.rx_buffer, timestamp) {}
         }
     }
+
+    pub fn snoop_tcp_packets(&mut self, sockets: &mut SocketSet<'_>) {
+        let mut packets = Vec::new();
+        while let Ok(((), packet)) = self.rx_buffer.dequeue() {
+            snoop_tcp_packet(packet, sockets);
+            packets.push(packet.to_vec());
+        }
+        for packet in packets {
+            self.rx_buffer
+                .enqueue(packet.len(), ())
+                .unwrap()
+                .copy_from_slice(&packet);
+        }
+    }
+
     /// 分发将 tx_buffer 中的包根据路由表发送到具体的物理设备上
     pub fn dispatch(&mut self, timestamp: Instant) -> bool {
         let mut poll_next = false;

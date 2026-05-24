@@ -47,6 +47,7 @@ impl Service {
         let timestamp = now();
 
         self.router.poll(timestamp);
+        self.router.snoop_tcp_packets(sockets);
         self.iface.poll(timestamp, &mut self.router, sockets);
         self.router.dispatch(timestamp)
     }

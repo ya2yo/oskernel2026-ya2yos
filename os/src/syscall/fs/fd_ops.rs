@@ -140,9 +140,11 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             // 目前只启用nonblock
             let flags = OpenFlags::from_bits_truncate(arg as u32);
             if flags.contains(OpenFlags::O_NONBLOCK) {
-                proc_inner.fd_table.set_nonblock(fd);
+                proc_inner.fd_table.set_nonblock(fd)?;
+                file.any().set_nonblocking(true)?;
             } else {
-                proc_inner.fd_table.unset_nonblock(fd);
+                proc_inner.fd_table.unset_nonblock(fd)?;
+                file.any().set_nonblocking(false)?;
             }
             // task_inner.fd_table.set_flags(fd, Some(flags));
             // todo!()

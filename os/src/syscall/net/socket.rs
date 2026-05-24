@@ -66,6 +66,9 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
     if raw_ty & OpenFlags::O_CLOEXEC.bits() != 0 {
         open_flags |= OpenFlags::O_CLOEXEC;
     }
+    if raw_ty & OpenFlags::O_NONBLOCK.bits() != 0 {
+        open_flags |= OpenFlags::O_NONBLOCK;
+    }
 
     let file_desc = FileDescriptor::new(open_flags, FileClass::Socket(socket));
 
@@ -107,6 +110,9 @@ pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> S
     let mut open_flags = OpenFlags::empty();
     if stype & OpenFlags::O_CLOEXEC.bits() != 0 {
         open_flags |= OpenFlags::O_CLOEXEC;
+    }
+    if stype & OpenFlags::O_NONBLOCK.bits() != 0 {
+        open_flags |= OpenFlags::O_NONBLOCK;
     }
     fd_table.set(
         fd1,

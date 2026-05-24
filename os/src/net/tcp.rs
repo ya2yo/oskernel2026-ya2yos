@@ -311,7 +311,7 @@ impl SocketOps for TcpSocket {
                         .map_err(|e| match e {
                             smol::ConnectError::InvalidState => SysErrNo::EALREADY,
                             smol::ConnectError::Unaddressable => SysErrNo::ECONNREFUSED,
-                        });
+                        })?;
                     Ok(())
                 })
             })?;

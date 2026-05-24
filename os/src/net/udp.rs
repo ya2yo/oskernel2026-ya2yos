@@ -213,6 +213,7 @@ impl SocketOps for UdpSocket {
                         })?;
                     let read = src.read(buf.len());
                     assert_eq!(read.len(), buf.len());
+                    buf.copy_from_slice(&read);
                     Ok(read.len())
                 }
             })
