@@ -25,6 +25,12 @@ unsafe impl<H: Hal> Sync for VirtIoBlkDev2<H> {}
 
 const DEVICE: u8 = 1;
 
+/// 从 PCI 配置空间读取一个 32 位的寄存器值。
+/// # 参数
+/// * `bus`: PCI 总线号 (0-127)
+/// * `device`: 设备号 (0-31)
+/// * `func`: 功能号 (0-7)
+/// * `offset`: 配置空间的偏移量
 fn pci_config_read(bus: u8, device: u8, func: u8, offset: u8) -> u32 {
     let ecam_base: usize = 0x20000000 + KERNEL_ADDR_OFFSET;
     let addr: usize = ecam_base
@@ -36,7 +42,7 @@ fn pci_config_read(bus: u8, device: u8, func: u8, offset: u8) -> u32 {
 
     unsafe { *addr }
 }
-
+/// 同上，不过是往对应寄存器存 val
 fn pci_config_write(bus: u8, device: u8, func: u8, offset: u8, val: u32) {
     let ecam_base: usize = 0x20000000 + KERNEL_ADDR_OFFSET;
     let addr: usize = ecam_base
