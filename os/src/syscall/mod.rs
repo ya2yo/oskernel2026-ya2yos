@@ -12,7 +12,7 @@
 use core::arch;
 
 #[cfg(feature = "net")]
-use linux_raw_sys::net::msghdr;
+use linux_raw_sys::net::{msghdr, socklen_t};
 use log::error;
 use num_enum::FromPrimitive;
 #[derive(Debug, PartialEq, FromPrimitive)]
@@ -117,6 +117,7 @@ pub enum Syscall {
     GetSockOpt = 209,
     Shutdown = 210,
     SendMsg = 211,
+    RecvMsg = 212,
     Brk = 214,
     Munmap = 215,
     Mremap = 216,
@@ -395,8 +396,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[1] as *mut u8,
             args[2],
             args[3] as u32,
-            args[4] as *const u8,
-            args[5] as u32,
+            args[4] as *mut u8,
+            args[5] as *mut socklen_t,
         ),
         #[cfg(feature = "net")]
         Syscall::SetSockOpt => sys_setsockopt(
@@ -418,6 +419,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Shutdown => sys_shutdown(args[0], args[1] as u32),
         #[cfg(feature = "net")]
         Syscall::SendMsg => sys_sendmsg(args[0], args[1] as *const msghdr, args[2] as u32),
+        #[cfg(feature = "net")]
+        Syscall::RecvMsg => sys_recvmsg(args[0], args[1] as *mut msghdr, args[2] as u32),
         #[cfg(feature = "net")]
         Syscall::Accept4 => sys_accept4(
             args[0] as usize,

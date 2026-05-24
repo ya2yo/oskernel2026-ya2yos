@@ -1012,9 +1012,18 @@ impl MemorySetInner {
     pub fn new_kernel() -> Self {
         let memory_set = Self::new_bare();
         println!("kernel token: {:#x}", memory_set.page_table.token());
-        println!(".text [{:#x}, {:#x})", stext as *const () as usize, etext as *const () as usize);
-        println!(".rodata [{:#x}, {:#x})", srodata as *const () as usize, erodata as *const () as usize);
-        println!(".data [{:#x}, {:#x})", sdata as *const () as usize, edata as *const () as usize);
+        println!(
+            ".text [{:#x}, {:#x})",
+            stext as *const () as usize, etext as *const () as usize
+        );
+        println!(
+            ".rodata [{:#x}, {:#x})",
+            srodata as *const () as usize, erodata as *const () as usize
+        );
+        println!(
+            ".data [{:#x}, {:#x})",
+            sdata as *const () as usize, edata as *const () as usize
+        );
         println!(
             ".bss [{:#x}, {:#x})",
             sbss_with_stack as *const () as usize, ebss as *const () as usize

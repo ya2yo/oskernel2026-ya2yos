@@ -449,10 +449,15 @@ impl PageTable {
             fn sdata();
             fn edata();
         }
-        let mid_text: VirtAddr = (stext as *const () as usize + (etext as *const () as usize - stext as *const () as usize) / 2).into();
-        let mid_rodata: VirtAddr =
-            (srodata as *const () as usize + (erodata as *const () as usize - srodata as *const () as usize) / 2).into();
-        let mid_data: VirtAddr = (sdata as *const () as usize + (edata as *const () as usize - sdata as *const () as usize) / 2).into();
+        let mid_text: VirtAddr = (stext as *const () as usize
+            + (etext as *const () as usize - stext as *const () as usize) / 2)
+            .into();
+        let mid_rodata: VirtAddr = (srodata as *const () as usize
+            + (erodata as *const () as usize - srodata as *const () as usize) / 2)
+            .into();
+        let mid_data: VirtAddr = (sdata as *const () as usize
+            + (edata as *const () as usize - sdata as *const () as usize) / 2)
+            .into();
         assert!(!self
             .find_valid_pte(mid_text.floor())
             .unwrap()
