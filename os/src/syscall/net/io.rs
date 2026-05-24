@@ -1,23 +1,21 @@
 //! 参考 StarryOS: kernel/src/syscall/net/io.rs
 //! 按照 man 手册进行一定程度的完善
-use crate::fs::{FileClass, FileDescriptor, OpenFlags, Socket};
+use crate::fs::Socket;
 use crate::mm::{copy_from_user, copy_to_user, translated_byte_buffer, UserBuffer};
 use crate::net::{
     CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps,
 };
 use crate::syscall::net::addr::SocketAddrExt;
-use crate::syscall::net::{CMsg, CMsgBuilder};
+use crate::syscall::net::CMsg;
 use crate::task::{current_task, current_token};
+use crate::utils::SyscallRet;
 use crate::utils::{SysErrNo, SysResult};
-use crate::{fs::File, utils::SyscallRet};
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use linux_raw_sys::general::iovec;
-use linux_raw_sys::net::{
-    cmsghdr, msghdr, socklen_t, MSG_CMSG_CLOEXEC, MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET,
-};
-use log::{debug, warn};
+use linux_raw_sys::net::{cmsghdr, msghdr, socklen_t, MSG_PEEK, MSG_TRUNC};
+use log::debug;
 
 fn send_impl(
     sockfd: usize,
@@ -157,11 +155,7 @@ fn recv_impl(
     flags: u32,
     addr: *mut u8,
     addrlen: Option<&mut socklen_t>,
-    cmsg_builder: Option<&mut CMsgBuilder>,
 ) -> SyscallRet {
-    let task = current_task().unwrap();
-    let fd_table = task.get_fd_table();
-    let socket = fd_table.get(sockfd)?.socket()?;
     let mut recv_flags = RecvFlags::default();
     if flags & MSG_PEEK != 0 {
         recv_flags |= RecvFlags::PEEK;
@@ -169,63 +163,28 @@ fn recv_impl(
     if flags & MSG_TRUNC != 0 {
         recv_flags |= RecvFlags::TRUNCATE;
     }
-    if flags & MSG_CMSG_CLOEXEC != 0 {
-        recv_flags |= RecvFlags::CMSG_CLOEXEC;
-    }
+
     let mut remote_addr = if addr.is_null() || addrlen.is_none() {
         None
     } else {
         Some(SocketAddrEx::Ip((Ipv4Addr::UNSPECIFIED, 0).into()))
     };
-    let mut cmsg = Vec::new();
+
+    let socket = Socket::from_fd(sockfd)?;
     let recv = socket.recv(
         dst,
         RecvOptions {
             from: remote_addr.as_mut(),
             flags: recv_flags,
-            cmsg: Some(&mut cmsg),
+            cmsg: None,
         },
     )?;
+
     if let (Some(remote_addr), Some(addrlen)) = (remote_addr, addrlen) {
         remote_addr.write_to_user(addr, addrlen)?;
     }
-    if let Some(builder) = cmsg_builder {
-        let close_on_exec = recv_flags.contains(RecvFlags::CMSG_CLOEXEC);
-        for cmsg in cmsg {
-            let Ok(cmsg) = cmsg.downcast::<CMsg>() else {
-                warn!("received unexpected cmsg");
-                continue;
-            };
 
-            let pushed = match *cmsg {
-                CMsg::Rights { fds } => builder.push(SOL_SOCKET, SCM_RIGHTS, |data| {
-                    let mut written = 0;
-                    for (f, chunk) in fds.into_iter().zip(data.chunks_exact_mut(size_of::<i32>())) {
-                        let fd = add_file_like(f, close_on_exec)?;
-                        chunk.copy_from_slice(&fd.to_ne_bytes());
-                        written += size_of::<i32>();
-                    }
-                    Ok(written)
-                })?,
-            };
-            if !pushed {
-                break;
-            }
-        }
-    }
     Ok(recv)
-}
-
-fn add_file_like(file: alloc::sync::Arc<dyn File>, close_on_exec: bool) -> SysResult<i32> {
-    let fd_table = current_task().ok_or(SysErrNo::ESRCH)?.get_fd_table();
-    let fd = fd_table.alloc_fd()?;
-    let flags = if close_on_exec {
-        OpenFlags::O_CLOEXEC
-    } else {
-        OpenFlags::empty()
-    };
-    fd_table.set(fd, FileDescriptor::new(flags, FileClass::Abs(file)))?;
-    Ok(fd as i32)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/recvfrom.2.html
@@ -257,7 +216,7 @@ pub fn sys_recvfrom(
     } else {
         Some(read_user_value::<socklen_t>(addrlen_ptr as usize)?)
     };
-    let recv = recv_impl(sockfd, buffer, flags, src_addr, addrlen.as_mut(), None)?;
+    let recv = recv_impl(sockfd, buffer, flags, src_addr, addrlen.as_mut())?;
     if let Some(addrlen) = addrlen {
         write_user_value(addrlen_ptr as usize, &addrlen)?;
     }
@@ -314,33 +273,21 @@ pub fn sys_recvmsg(sockfd: usize, msg_ptr: *mut msghdr, flags: u32) -> SyscallRe
         }
     }
 
-    let cmsg_builder = if !msg.msg_control.is_null() && msg.msg_controllen > 0 {
-        let control_buffer = UserBuffer::new(
-            translated_byte_buffer(token, msg.msg_control as *mut u8, msg.msg_controllen)
-                .ok_or(SysErrNo::EFAULT)?,
-        );
-        Some(CMsgBuilder::new(control_buffer))
-    } else {
-        None
-    };
-
     drop(memory_set);
     drop(process);
     drop(task);
 
     let mut msg_namelen = msg.msg_namelen as socklen_t;
-    let mut cmsg_builder = cmsg_builder;
     let recv = recv_impl(
         sockfd,
         UserBuffer::new(iov_slices),
         flags,
         msg.msg_name as *mut u8,
         Some(&mut msg_namelen),
-        cmsg_builder.as_mut(),
     )?;
 
     msg.msg_namelen = msg_namelen as _;
-    msg.msg_controllen = cmsg_builder.as_ref().map_or(0, CMsgBuilder::len);
+    msg.msg_controllen = 0;
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_read();
