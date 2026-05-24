@@ -9,7 +9,7 @@ TARGET := loongarch64-unknown-none
 
 DISK_IMG := ./2026_testsuits_img/pre_tests/sdcard-la.img
 
-KERNEL_ELF := $(PROJECT_ROOT)/os/target/$(TARGET)/$(MODE)/os
+KERNEL_ELF := $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),$(PROJECT_ROOT)/os/target)/$(TARGET)/$(MODE)/os
 KERNEL_BIN := kernel-la
 
 KERNEL_BUILD_ARGS := --$(MODE) --target $(TARGET)

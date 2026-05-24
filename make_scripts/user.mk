@@ -1,6 +1,6 @@
 USER_BUILD_ARGS := --$(MODE) --target $(TARGET)
 
-USER_TARGET_DIR := $(PROJECT_ROOT)/user/target/$(TARGET)/$(MODE)
+USER_TARGET_DIR := $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),$(PROJECT_ROOT)/user/target)/$(TARGET)/$(MODE)
 
 USER_APP_DIR := $(PROJECT_ROOT)/user/src/bin
 

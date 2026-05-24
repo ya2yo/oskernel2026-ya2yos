@@ -7,6 +7,7 @@ elf: $(USER_APPS)
 binary: elf
 	@echo "Converting ELF files to binary for user programs..."
 	@$(foreach elf, $(USER_ELFS), $(USER_OBJCOPY) $(elf) --strip-all -O binary $(patsubst $(USER_TARGET_DIR)/%, $(USER_TARGET_DIR)/%.bin, $(elf));)
+	@if [ -n "$(CARGO_TARGET_DIR)" ]; then mkdir -p target/$(TARGET)/$(MODE) && cp $(USER_TARGET_DIR)/initproc target/$(TARGET)/$(MODE)/initproc; fi
 	@echo "Finished converting ELF files to binary for user programs."
 
 build: binary
