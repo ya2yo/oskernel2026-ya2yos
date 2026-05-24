@@ -1,7 +1,7 @@
 #[cfg(target_arch = "loongarch64")]
-mod loongarch;
+pub mod loongarch;
 #[cfg(target_arch = "riscv64")]
-mod riscv;
+pub mod riscv;
 use core::ptr::NonNull;
 
 use alloc::slice;

@@ -409,10 +409,10 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         #[cfg(feature = "net")]
         Syscall::GetSockOpt => sys_getsockopt(
             args[0],
-            args[1] as u32, 
-            args[2] as u32, 
-            args[3] as* mut u8, 
-            args[4] as u32
+            args[1] as u32,
+            args[2] as u32,
+            args[3] as *mut u8,
+            args[4] as u32,
         ),
         #[cfg(feature = "net")]
         Syscall::Shutdown => sys_shutdown(args[0], args[1] as u32),

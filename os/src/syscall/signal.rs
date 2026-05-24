@@ -19,7 +19,10 @@ pub fn sys_rt_sigaction(
     act: *const SigAction,
     old_act: *mut SigAction,
 ) -> SyscallRet {
-    debug!("[sys_rt_sigaction] signo is {}, act is {:?}, old_act is {:?}", signo, act, old_act);
+    debug!(
+        "[sys_rt_sigaction] signo is {}, act is {:?}, old_act is {:?}",
+        signo, act, old_act
+    );
     if signo > SIG_MAX_NUM {
         return Err(SysErrNo::EINVAL);
     }
@@ -130,8 +133,9 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
     loop {
         let task = current_task().unwrap();
         let mut task_inner = task.inner_lock();
-        let pending = task_inner.sig_pending.difference(task_inner.sig_mask);// 修复bug, 改为判断待处理信号和掩码信号的不同，
-        if !pending.is_empty() {// 发生中断
+        let pending = task_inner.sig_pending.difference(task_inner.sig_mask); // 修复bug, 改为判断待处理信号和掩码信号的不同，
+        if !pending.is_empty() {
+            // 发生中断
             debug!("[sys_rt_sigsuspend] pending is {:?}", pending);
             task_inner.sig_mask = old_mask;
             return Err(SysErrNo::EINTR);

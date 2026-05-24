@@ -267,7 +267,10 @@ impl SocketOps for UnixSocket {
             return Err(SysErrNo::EPIPE);
         }
         let sender = self.inner.local_addr.lock().clone();
-        target.recv_queue.lock().push_back(UnixMessage { data, sender });
+        target
+            .recv_queue
+            .lock()
+            .push_back(UnixMessage { data, sender });
         Ok(len)
     }
 
@@ -333,7 +336,10 @@ impl Drop for UnixSocket {
         let local = self.inner.local_addr.lock().clone();
         if !matches!(local, UnixSocketAddr::Unnamed) {
             let mut binds = UNIX_BINDS.lock();
-            if binds.get(&local).is_some_and(|inner| Arc::ptr_eq(inner, &self.inner)) {
+            if binds
+                .get(&local)
+                .is_some_and(|inner| Arc::ptr_eq(inner, &self.inner))
+            {
                 binds.remove(&local);
             }
         }

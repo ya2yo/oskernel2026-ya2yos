@@ -172,8 +172,8 @@ fn new_futex_key() -> usize {
 
 /// 参考 https://man7.org/linux/man-pages/man2/futex.2.html
 pub fn sys_futex(
-    uaddr: *mut i32,// point to the futex word, always four-bytes
-    futex_op: u32,  // operation on futex
+    uaddr: *mut i32, // point to the futex word, always four-bytes
+    futex_op: u32,   // operation on futex
     val: i32,
     timeout: *const Timespec,
     uaddr2: *mut u32,

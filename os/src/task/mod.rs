@@ -63,7 +63,10 @@ pub const INITPROC_PID: usize = 1;
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     let task = current_task().unwrap();
-    debug!("[suspend_current_and_run_next] strong_count = {}", Arc::strong_count(&task));
+    debug!(
+        "[suspend_current_and_run_next] strong_count = {}",
+        Arc::strong_count(&task)
+    );
     let mut task_inner = task.inner_lock();
     let exited = {
         let proc_inner = task.process.inner_lock();
@@ -124,19 +127,20 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
     let sigtable = process.get_locked_sigtable();
 
     for bro_tasks in &task.process.meta_lock().tasks {
-        if let Some(alive_t)=bro_tasks.upgrade(){
-            if alive_t.tid() ==task.tid() {
+        if let Some(alive_t) = bro_tasks.upgrade() {
+            if alive_t.tid() == task.tid() {
                 continue;
             }
-            let mut alive_inner=alive_t.inner_lock();
-            if alive_inner.task_status==TaskStatus::Blocked {
-                alive_inner.task_status=TaskStatus::Ready;
+            let mut alive_inner = alive_t.inner_lock();
+            if alive_inner.task_status == TaskStatus::Blocked {
+                alive_inner.task_status = TaskStatus::Ready;
                 ready_queue::add_task(&alive_t);
             }
             drop(alive_inner);
         }
     }
-    if sigtable.not_exited() {// 第一个调用的线程
+    if sigtable.not_exited() {
+        // 第一个调用的线程
         //设置进程的SIGNAL_GROUP_EXIT标志并把终止代号放到current->signal->group_exit_code字段
         sigtable.set_exit_code(exit_code);
         let pid = task.pid();
@@ -158,8 +162,12 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
 pub fn exit_current_and_run_next(exit_code: i32) {
     let curr_task = take_current_task().unwrap();
     let count = Arc::strong_count(&curr_task);
-    if count > 2 {// 一份是进程调度器里面的，一份是tid2task里面的, 大于二直接死循环，不如直接panic
-        panic!("Someone take a reference to the TCB!, strong_count = {}", count);
+    if count > 2 {
+        // 一份是进程调度器里面的，一份是tid2task里面的, 大于二直接死循环，不如直接panic
+        panic!(
+            "Someone take a reference to the TCB!, strong_count = {}",
+            count
+        );
     }
     let curr_proc = curr_task.process.inner_lock();
     let memory_set = curr_proc.get_locked_memory_set_read();
@@ -179,7 +187,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             .translate_va(VirtAddr::from(curr_task_inner.clear_child_tid))
             .unwrap()
             .0;
-        futex_wake_up(pa, 1);// 唤醒在 clear_child_tid 等待的线程
+        futex_wake_up(pa, 1); // 唤醒在 clear_child_tid 等待的线程
     }
     // 释放futex
     handle_futex_when_exit(
@@ -207,7 +215,10 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             .into_iter()
             .filter_map(|weak| weak.upgrade()) // 自动过滤无效引用
             .collect();
-        if bro_tasks.iter().all(|bro_task| bro_task.inner_lock().is_zombie()) {
+        if bro_tasks
+            .iter()
+            .all(|bro_task| bro_task.inner_lock().is_zombie())
+        {
             send_signal_to_thread_group(curr_task.ppid(), SigSet::SIGCHLD);
 
             memory_set.recycle_data_pages();

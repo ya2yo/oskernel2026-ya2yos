@@ -9,12 +9,12 @@ use crate::{
 use alloc::sync::Arc;
 use alloc::vec;
 use linux_raw_sys::net::{
-    IP_MSFILTER, IP_MULTICAST_IF, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, SOL_SOCKET, TCP_NODELAY
+    IP_MSFILTER, IP_MULTICAST_IF, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, SOL_SOCKET, SO_KEEPALIVE,
+    SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, TCP_NODELAY,
 };
 use log::{debug, warn};
 
 use core::{mem::size_of, time::Duration};
-
 
 /// ABI 数据读写接口
 pub trait AbiValue: Sized {
@@ -42,11 +42,7 @@ impl AbiValue for bool {
     fn read_from(data: &[u8]) -> SysResult<Self> {
         ensure_len(data, Self::SIZE)?;
 
-        let val = i32::from_ne_bytes(
-            data[..4]
-                .try_into()
-                .unwrap(),
-        );
+        let val = i32::from_ne_bytes(data[..4].try_into().unwrap());
 
         Ok(val != 0)
     }
@@ -68,11 +64,7 @@ impl AbiValue for i32 {
     fn read_from(data: &[u8]) -> SysResult<Self> {
         ensure_len(data, Self::SIZE)?;
 
-        Ok(i32::from_ne_bytes(
-            data[..4]
-                .try_into()
-                .unwrap(),
-        ))
+        Ok(i32::from_ne_bytes(data[..4].try_into().unwrap()))
     }
 
     fn write_to(self, data: &mut [u8]) -> SysResult<()> {
@@ -90,21 +82,13 @@ impl AbiValue for usize {
     fn read_from(data: &[u8]) -> SysResult<Self> {
         ensure_len(data, Self::SIZE)?;
 
-        Ok(
-            u64::from_ne_bytes(
-                data[..8]
-                    .try_into()
-                    .unwrap(),
-            ) as usize
-        )
+        Ok(u64::from_ne_bytes(data[..8].try_into().unwrap()) as usize)
     }
 
     fn write_to(self, data: &mut [u8]) -> SysResult<()> {
         ensure_len(data, Self::SIZE)?;
 
-        data[..8].copy_from_slice(
-            &(self as u64).to_ne_bytes(),
-        );
+        data[..8].copy_from_slice(&(self as u64).to_ne_bytes());
 
         Ok(())
     }
@@ -116,22 +100,11 @@ impl AbiValue for Duration {
     fn read_from(data: &[u8]) -> SysResult<Self> {
         ensure_len(data, Self::SIZE)?;
 
-        let sec = u64::from_ne_bytes(
-            data[..8]
-                .try_into()
-                .unwrap(),
-        );
+        let sec = u64::from_ne_bytes(data[..8].try_into().unwrap());
 
-        let usec = u64::from_ne_bytes(
-            data[8..16]
-                .try_into()
-                .unwrap(),
-        );
+        let usec = u64::from_ne_bytes(data[8..16].try_into().unwrap());
 
-        Ok(
-            Duration::from_secs(sec)
-                + Duration::from_micros(usec)
-        )
+        Ok(Duration::from_secs(sec) + Duration::from_micros(usec))
     }
 
     fn write_to(self, data: &mut [u8]) -> SysResult<()> {
@@ -141,13 +114,9 @@ impl AbiValue for Duration {
 
         let usec = self.subsec_micros() as u64;
 
-        data[..8].copy_from_slice(
-            &sec.to_ne_bytes(),
-        );
+        data[..8].copy_from_slice(&sec.to_ne_bytes());
 
-        data[8..16].copy_from_slice(
-            &usec.to_ne_bytes(),
-        );
+        data[8..16].copy_from_slice(&usec.to_ne_bytes());
 
         Ok(())
     }
@@ -159,10 +128,7 @@ pub fn parse<T: AbiValue>(data: &[u8]) -> SysResult<T> {
 }
 
 #[inline]
-pub fn write<T: AbiValue>(
-    data: &mut [u8],
-    val: T,
-) -> SysResult<()> {
+pub fn write<T: AbiValue>(data: &mut [u8], val: T) -> SysResult<()> {
     val.write_to(data)
 }
 
@@ -232,33 +198,25 @@ pub fn sys_setsockopt(
             _ => return Err(SysErrNo::ENOPROTOOPT),
         },
         // IP 级
-        IPPROTO_IP => {
-            match optname {
-                IP_TTL => {
-                    let val:i32 = parse(&kern_optval)?;
-                    let val = val as u8;
-                    let opt = SetSocketOption::Ttl(&val);
-                    sock.set_option(opt)
-                },
-                MCAST_JOIN_GROUP | IP_MULTICAST_IF => {
-                    Ok(())
-                }
-                _ => return Err(SysErrNo::ENOPROTOOPT),
+        IPPROTO_IP => match optname {
+            IP_TTL => {
+                let val: i32 = parse(&kern_optval)?;
+                let val = val as u8;
+                let opt = SetSocketOption::Ttl(&val);
+                sock.set_option(opt)
             }
-        }
+            MCAST_JOIN_GROUP | IP_MULTICAST_IF => Ok(()),
+            _ => return Err(SysErrNo::ENOPROTOOPT),
+        },
         // TCP 级
-        IPPROTO_TCP => {
-            match optname {
-                TCP_NODELAY => {
-                    let val = parse(&kern_optval)?;
-                    let opt = SetSocketOption::NoDelay(&val);
-                    sock.set_option(opt)
-                },
-                _ => {
-                    return Err(SysErrNo::ENOPROTOOPT)
-                }
-            }            
-        }
+        IPPROTO_TCP => match optname {
+            TCP_NODELAY => {
+                let val = parse(&kern_optval)?;
+                let opt = SetSocketOption::NoDelay(&val);
+                sock.set_option(opt)
+            }
+            _ => return Err(SysErrNo::ENOPROTOOPT),
+        },
         _ => return Err(SysErrNo::ENOPROTOOPT),
     };
     Ok(0)
@@ -299,7 +257,7 @@ pub fn sys_getsockopt(
                 sock.get_option(opt)
             }
             SO_KEEPALIVE => {
-                let mut val= parse(&kern_opt)?;
+                let mut val = parse(&kern_opt)?;
                 let opt = GetSocketOption::KeepAlive(&mut val);
                 sock.get_option(opt)
             }
@@ -340,4 +298,3 @@ pub fn sys_getsockopt(
 
     Ok(0)
 }
-

@@ -14,7 +14,7 @@ use virtio_drivers::transport::pci::PciTransport;
 use virtio_drivers::transport::{DeviceStatus, Transport};
 use virtio_drivers::{Hal, PhysAddr, PAGE_SIZE};
 
-use super::as_dev_err;
+use super::super::as_dev_err;
 
 pub struct VirtIoBlkDev2<H: Hal> {
     inner: Mutex<VirtIOBlk<H, PciTransport>>,

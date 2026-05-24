@@ -1,17 +1,25 @@
 //! 异步 Future 支持模块
 //! 提供了在内核空间执行 Future 的基础架构，包括 Waker 实现和 block_on 执行器
-use alloc::{sync::Arc, task::{self, Wake}};
-use log::debug;
+use alloc::{
+    sync::Arc,
+    task::{self, Wake},
+};
 use core::{
     fmt,
     future::poll_fn,
     pin::pin,
     task::{Context, Poll, Waker},
 };
+use log::debug;
 
 use super::{TaskRef, WeakTaskRef};
 use crate::{
-    signal::SigSet, task::{TaskContext, TaskStatus, block_current_and_run_next, current_task, exit_current_and_run_next, ready_queue, schedule}, utils::SysErrNo
+    signal::SigSet,
+    task::{
+        block_current_and_run_next, current_task, exit_current_and_run_next, ready_queue, schedule,
+        TaskContext, TaskStatus,
+    },
+    utils::SysErrNo,
 };
 use kernel_guard::NoPreemptIrqSave;
 use kspin::SpinNoIrq;
@@ -95,7 +103,10 @@ pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
                 if !*is_woke {
                     drop(is_woke);
                     let task = current_task().unwrap();
-                    debug!("[block_on] Pending strong_count = {}", Arc::strong_count(&task)); // 这里怎么比上面多一个
+                    debug!(
+                        "[block_on] Pending strong_count = {}",
+                        Arc::strong_count(&task)
+                    ); // 这里怎么比上面多一个
                     drop(task);
                     block_current_and_run_next();
                 } else {

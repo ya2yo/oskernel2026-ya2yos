@@ -184,12 +184,7 @@ impl MemorySet {
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
         self.get_mut().page_table.translate_va(va)
     }
-    pub fn check_user_range(
-        &self,
-        start: usize,
-        len: usize,
-        wanted_perm: MapPermission,
-    ) -> bool {
+    pub fn check_user_range(&self, start: usize, len: usize, wanted_perm: MapPermission) -> bool {
         if len == 0 {
             return true;
         }
@@ -203,10 +198,11 @@ impl MemorySet {
         let end_vpn = VirtAddr::from(end - 1).ceil();
 
         unsafe {
-            self.inner.get()
-                    .as_ref() // 变成 Option<&MemorySetInner>
-                    .unwrap() // 假设你确定指针不为空
-                    .check_user_range(VPNRange::new(start_vpn, end_vpn), wanted_perm)
+            self.inner
+                .get()
+                .as_ref() // 变成 Option<&MemorySetInner>
+                .unwrap() // 假设你确定指针不为空
+                .check_user_range(VPNRange::new(start_vpn, end_vpn), wanted_perm)
         }
     }
 }
@@ -1306,7 +1302,7 @@ impl MemorySetInner {
     /// 检查页表映射关系
     /// vpn_range: 待检查的范围
     /// wanted_map_perm: 想要的映射权限
-    fn check_user_range(&self, vpn_range:VPNRange, wanted_map_perm: MapPermission)-> bool {
+    fn check_user_range(&self, vpn_range: VPNRange, wanted_map_perm: MapPermission) -> bool {
         log::trace!("[check_valid_user_vpn_range]");
         let mut current_vpn = vpn_range.start();
         let end_vpn = vpn_range.end();
@@ -1330,7 +1326,7 @@ impl MemorySetInner {
                     );
                 });
                 // return Err(Errno::EFAULT);
-                return false
+                return false;
             }
             // 权限不满足
             if !area.map_perm.contains(wanted_map_perm) {
@@ -1341,7 +1337,7 @@ impl MemorySetInner {
                 wanted_map_perm
             );
                 // return Err(Errno::EFAULT);
-                return false
+                return false;
             }
             // 更新 current_vpn 到该区域结束（不要超过 end_vpn）
             current_vpn = core::cmp::min(area.vpn_range.end(), end_vpn);
@@ -1358,7 +1354,7 @@ impl MemorySetInner {
                 end_vpn.0
             );
             // return Err(Errno::EFAULT);
-            return false
+            return false;
         }
         true
     }

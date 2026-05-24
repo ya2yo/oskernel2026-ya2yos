@@ -1,18 +1,20 @@
 use super::consts::*;
 use crate::fs::{FdTable, File, FileClass, FileDescriptor, OpenFlags, Socket};
+use crate::mm::copy_to_user;
 use crate::net::tcp::TcpSocket;
 use crate::net::udp::UdpSocket;
 use crate::net::SocketOps;
 use crate::net::{Shutdown, Socket as SocketInner, SocketAddrEx, UnixSocket};
 use crate::syscall::net::addr::SocketAddrExt;
-use crate::mm::copy_to_user;
 use crate::{
     task::{current_task, Process},
     utils::{SysErrNo, SyscallRet},
 };
 use alloc::sync::Arc;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
-use linux_raw_sys::net::{AF_INET, AF_UNIX, AF_VSOCK, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_STREAM};
+use linux_raw_sys::net::{
+    AF_INET, AF_UNIX, AF_VSOCK, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_STREAM,
+};
 use log::{debug, warn};
 
 /// 参考 https://man7.org/linux/man-pages/man2/socket.2.html
@@ -85,7 +87,7 @@ pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> S
         domain, stype, protocol, sv as usize
     );
     let ty = stype & 0xff;
-    if domain!=AF_UNIX {
+    if domain != AF_UNIX {
         return Err(SysErrNo::EAFNOSUPPORT);
     }
     if protocol != 0 {

@@ -1,4 +1,7 @@
-use alloc::{sync::Arc, vec::{self, Vec}};
+use alloc::{
+    sync::Arc,
+    vec::{self, Vec},
+};
 use log::debug;
 
 use crate::{
@@ -52,10 +55,19 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
         }
         debug!("===============print my children process task=========");
         for thread in &children {
-            debug!("my child is {}, his alive task {}", thread.pid,thread.alive_tasks_count());
+            debug!(
+                "my child is {}, his alive task {}",
+                thread.pid,
+                thread.alive_tasks_count()
+            );
             for t in &thread.meta_lock().tasks {
                 if let Some(s) = t.upgrade() {
-                    debug!("tid: {} status: {:?}, strong_count: {}",s.tid(), s.inner_lock().task_status, Arc::strong_count(&s));
+                    debug!(
+                        "tid: {} status: {:?}, strong_count: {}",
+                        s.tid(),
+                        s.inner_lock().task_status,
+                        Arc::strong_count(&s)
+                    );
                 }
             }
         }
@@ -100,13 +112,13 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
             Process::remove_from_global_map(found_pid);
             return Ok(found_pid);
         } else {
-            let mut id:Vec<usize> = Vec::new();
+            let mut id: Vec<usize> = Vec::new();
             for task in process_meta.tasks.iter() {
                 if let Some(t) = task.upgrade() {
                     id.push(t.tid());
                 }
             }
-            debug!("task: {:?}",id);
+            debug!("task: {:?}", id);
             drop(process_meta);
             drop(task);
 
