@@ -270,3 +270,103 @@ impl<H: Hal> BlockDriver for VirtIoBlkDev2<H> {
         Ok(())
     }
 }
+
+#[cfg(feature = "net")]
+const VIRTIO_VENDOR_ID: u16 = 0x1af4;
+#[cfg(feature = "net")]
+const TRANSITIONAL_NET: u16 = 0x1000;
+#[cfg(feature = "net")]
+const MODERN_NET: u16 = 0x1041;
+
+#[cfg(feature = "net")]
+fn find_virtio_net_device() -> Option<DeviceFunction> {
+    for bus in 0..128 {
+        for device in 0..32 {
+            for func in 0..8 {
+                let dev_id = pci_config_read(bus, device, func, 0x00);
+                let vendor_id = (dev_id & 0xFFFF) as u16;
+                let device_id = (dev_id >> 16) as u16;
+                if vendor_id == VIRTIO_VENDOR_ID
+                    && (device_id == TRANSITIONAL_NET || device_id == MODERN_NET)
+                {
+                    return Some(DeviceFunction {
+                        bus,
+                        device,
+                        function: func,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 在 PCI 总线上查找 VirtIO 网络设备，分配 BAR 并返回初始化好的 PciTransport。
+#[cfg(feature = "net")]
+pub fn create_net_transport() -> PciTransport {
+    use super::super::VirtIoHalCMAImpl;
+
+    let net_func = find_virtio_net_device().expect("No VirtIO network device found on PCI bus");
+    println!(
+        "Found VirtIO network device at bus={}, device={}, func={}",
+        net_func.bus, net_func.device, net_func.function
+    );
+
+    unsafe {
+        let root = 0x20000000 + KERNEL_ADDR_OFFSET;
+        let mut root = PciRoot::new(root as *mut u8, Cam::Ecam);
+
+        // 启用 Memory Space
+        let mut command_reg =
+            pci_config_read(net_func.bus, net_func.device, net_func.function, 0x04);
+        command_reg |= 0x02;
+        pci_config_write(
+            net_func.bus,
+            net_func.device,
+            net_func.function,
+            0x04,
+            command_reg,
+        );
+
+        // 分配 BAR 地址（与块设备使用不同的基址，避免冲突）
+        let mut i = 0;
+        while i < 6 {
+            if let Ok(bar_info) = root.bar_info(net_func, i) {
+                if let BarInfo::Memory {
+                    address_type, size, ..
+                } = bar_info
+                {
+                    match address_type {
+                        MemoryBarType::Width32 if size > 0 => {
+                            root.set_bar_32(net_func, i, 0x4001_0000);
+                        }
+                        MemoryBarType::Width64 if size > 0 => {
+                            root.set_bar_64(net_func, i, 0x4001_8000u64);
+                        }
+                        _ => {}
+                    }
+                }
+                if bar_info.takes_two_entries() {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+
+        root.set_command(
+            net_func,
+            Command::IO_SPACE | Command::MEMORY_SPACE | Command::BUS_MASTER,
+        );
+
+        let mut transport = PciTransport::new::<VirtIoHalCMAImpl>(&mut root, net_func)
+            .expect("Failed to create PciTransport for VirtIO Net");
+
+        transport.set_status(DeviceStatus::empty());
+        transport.set_status(DeviceStatus::ACKNOWLEDGE);
+
+        transport
+    }
+}

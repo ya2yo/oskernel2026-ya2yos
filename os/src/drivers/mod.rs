@@ -12,6 +12,8 @@ pub use disk::*;
 pub use net::*;
 use spin::Lazy;
 pub use virtio::*;
+#[cfg(target_arch = "loongarch64")]
+use virtio_drivers::transport::pci::PciTransport;
 use virtio_drivers::{
     device::net::VirtIONet,
     transport::mmio::{MmioTransport, VirtIOHeader},
@@ -32,6 +34,8 @@ const VIRTIO_BLK_BASE: usize = 0x10001000 + KERNEL_ADDR_OFFSET;
 const VIRTIO_NET_BASE: usize = 0x10002000 + KERNEL_ADDR_OFFSET;
 #[cfg(target_arch = "riscv64")]
 pub type NetDeviceImpl = VirtIoNetDev<VirtIoHalCMAImpl, MmioTransport, QUEUE_SIZE>;
+#[cfg(target_arch = "loongarch64")]
+pub type NetDeviceImpl = VirtIoNetDev<VirtIoHalCMAImpl, PciTransport, QUEUE_SIZE>;
 
 impl BlockDeviceImpl {
     #[cfg(target_arch = "riscv64")]
@@ -58,15 +62,9 @@ impl NetDeviceImpl {
         Self::try_new(transport, None).expect("Failed to initialize VirtIoNetDev")
     }
 
-    #[cfg(target_arch = "loongarch64")]
+    #[cfg(all(target_arch = "loongarch64", feature = "net"))]
     pub fn new_device() -> Self {
-        use core::ptr::NonNull;
-        const VIRTIO_NET_BASE: usize = 0x1fe00000;
-        let header = NonNull::new(VIRTIO_NET_BASE as *mut VirtIOHeader)
-            .expect("VirtIO Net base address is null");
-        let transport = unsafe {
-            MmioTransport::new(header).expect("Failed to create MmioTransport for VirtIO Net")
-        };
+        let transport = crate::drivers::virtio::loongarch::pci::create_net_transport();
         Self::try_new(transport, None).expect("Failed to initialize VirtIoNetDev")
     }
 }
