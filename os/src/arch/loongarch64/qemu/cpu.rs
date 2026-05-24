@@ -86,11 +86,11 @@ pub fn init_csr_regs() {
     crmd::set_we(true); // 启用硬件监视点
 
     // 设置异常入口地址
-    set_merrentry(trap_handler as usize); // 机器异常入口
+    set_merrentry(trap_handler as *const () as usize); // 机器异常入口
     extern "C" {
         fn __tlb_rfill();
     }
-    tlbrentry::set_tlbrentry(__tlb_rfill as usize); // tlb重填异常
+    tlbrentry::set_tlbrentry(__tlb_rfill as *const () as usize); // tlb重填异常
     set_kernel_trap_entry(); // 其他异常。设置的是eentry，返回用户态时，会set_user_trap_entry();
 
     // 设置页表参数

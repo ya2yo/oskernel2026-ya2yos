@@ -102,7 +102,7 @@ pub fn set_kernel_trap_entry() {
     extern "C" {
         fn __kern_trap();
     }
-    eentry::set_eentry(__kern_trap as usize);
+    eentry::set_eentry(__kern_trap as *const () as usize);
 }
 #[inline]
 pub fn set_user_trap_entry() {
@@ -110,7 +110,7 @@ pub fn set_user_trap_entry() {
         fn __alltraps();
     }
     // 设置普通异常和中断入口
-    eentry::set_eentry(__alltraps as usize);
+    eentry::set_eentry(__alltraps as *const () as usize);
 }
 
 pub fn enable_timer_interrupt() {

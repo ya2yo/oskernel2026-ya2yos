@@ -65,7 +65,7 @@ pub fn print_memlayout() {
         fn ekernel();
     }
     println!("===MEMLAYOUT===");
-    println!("ekernel:        {:#x}", ekernel as usize);
+    println!("ekernel:        {:#x}", ekernel as *const () as usize);
     println!("MEMORY_END:     {:#x}", MEMORY_END);
     println!("UART_ADDR:      {:#x}", UART_ADDR);
     println!("POWER_OFF_ADDR: {:#x}", POWER_OFF_ADDR);
@@ -77,11 +77,11 @@ extern "C" {
 }
 
 pub fn sigreturn_ka() -> usize {
-    sigreturn_trampoline as usize
+    sigreturn_trampoline as *const () as usize
 }
 
 pub fn sigreturn_pa() -> usize {
-    sigreturn_trampoline as usize - KERNEL_ADDR_OFFSET
+    sigreturn_trampoline as *const () as usize - KERNEL_ADDR_OFFSET
 }
 
 pub fn sigreturn_va() -> usize {

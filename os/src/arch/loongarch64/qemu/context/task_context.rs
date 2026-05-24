@@ -27,7 +27,7 @@ impl TaskContext {
     // 现在我们要去往trap_return了，而不是trap_loop
     pub fn goto_trap_return(kstack_ptr: usize) -> Self {
         Self {
-            ra: trap_return as usize,
+            ra: trap_return as *const () as usize,
             sp: kstack_ptr,
             s: [0; 9],
             fp: 0,

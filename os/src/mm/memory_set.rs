@@ -1012,17 +1012,17 @@ impl MemorySetInner {
     pub fn new_kernel() -> Self {
         let memory_set = Self::new_bare();
         println!("kernel token: {:#x}", memory_set.page_table.token());
-        println!(".text [{:#x}, {:#x})", stext as usize, etext as usize);
-        println!(".rodata [{:#x}, {:#x})", srodata as usize, erodata as usize);
-        println!(".data [{:#x}, {:#x})", sdata as usize, edata as usize);
+        println!(".text [{:#x}, {:#x})", stext as *const () as usize, etext as *const () as usize);
+        println!(".rodata [{:#x}, {:#x})", srodata as *const () as usize, erodata as *const () as usize);
+        println!(".data [{:#x}, {:#x})", sdata as *const () as usize, edata as *const () as usize);
         println!(
             ".bss [{:#x}, {:#x})",
-            sbss_with_stack as usize, ebss as usize
+            sbss_with_stack as *const () as usize, ebss as *const () as usize
         );
         println!(
             "sigreturn_trampoline start: [{:#x}, {:#x}",
-            sigreturn_trampoline as usize,
-            sigreturn_trampoline as usize + PAGE_SIZE
+            sigreturn_trampoline as *const () as usize,
+            sigreturn_trampoline as *const () as usize + PAGE_SIZE
         );
 
         // println!("mapping memory-mapped registers");
