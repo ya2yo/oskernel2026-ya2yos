@@ -14,7 +14,7 @@ rustflags = [
     "-Clink-arg=-static",
     "-Cpanic=abort"
 ]
-linker = "loongarch64-linux-gnu-gcc"
+# linker = "loongarch64-linux-musl-gcc"
 
 [source.crates-io]
 replace-with = "vendored-sources"
