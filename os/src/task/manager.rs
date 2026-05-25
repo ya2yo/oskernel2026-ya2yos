@@ -38,7 +38,7 @@ pub mod ready_queue {
     pub fn add_task(task: &Arc<TaskControlBlock>) {
         // debug!("task: {} add", task.tid());
         let mut queue = READY_QUEUE.lock();
-        debug!("{:?}", queue);
+        // debug!("{:?}", queue);
         if task_in_queue(&queue, task) {
             panic!("add task fail: task already in queue!");
             //我们的futex经得起这样的考验！

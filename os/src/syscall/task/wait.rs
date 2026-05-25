@@ -34,7 +34,7 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
 
     // 新实现
     loop {
-        debug!("Wait4 loop begin, wait for : {}", pid);
+        // debug!("Wait4 loop begin, wait for : {}", pid);
         let task = current_task().unwrap();
         let mut process_meta = task.process.meta_lock();
         // 取子进程集合
@@ -45,7 +45,7 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
             .iter()
             .filter_map(|x| x.upgrade())
             .collect();
-        debug!("Wait4 len={}", children.len());
+        // debug!("Wait4 len={}", children.len());
         if children.len() == 0 {
             return Err(SysErrNo::ECHILD);
         }
@@ -53,25 +53,25 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
         if pid != -1 && children.iter().all(|proc| proc.pid != pid as usize) {
             return Err(SysErrNo::ECHILD);
         }
-        debug!("===============print my children process task=========");
-        for thread in &children {
-            debug!(
-                "my child is {}, his alive task {}",
-                thread.pid,
-                thread.alive_tasks_count()
-            );
-            for t in &thread.meta_lock().tasks {
-                if let Some(s) = t.upgrade() {
-                    debug!(
-                        "tid: {} status: {:?}, strong_count: {}",
-                        s.tid(),
-                        s.inner_lock().task_status,
-                        Arc::strong_count(&s)
-                    );
-                }
-            }
-        }
-        debug!("======================= over =========================");
+        // debug!("===============print my children process task=========");
+        // for thread in &children {
+        //     debug!(
+        //         "my child is {}, his alive task {}",
+        //         thread.pid,
+        //         thread.alive_tasks_count()
+        //     );
+        //     for t in &thread.meta_lock().tasks {
+        //         if let Some(s) = t.upgrade() {
+        //             debug!(
+        //                 "tid: {} status: {:?}, strong_count: {}",
+        //                 s.tid(),
+        //                 s.inner_lock().task_status,
+        //                 Arc::strong_count(&s)
+        //             );
+        //         }
+        //     }
+        // }
+        // debug!("======================= over =========================");
         let pair = children
             .iter()
             .enumerate()
@@ -118,13 +118,13 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
                     id.push(t.tid());
                 }
             }
-            debug!("task: {:?}", id);
+            // debug!("task: {:?}", id);
             drop(process_meta);
             drop(task);
 
-            debug!("Wait4 suspend");
+            // debug!("Wait4 suspend");
             suspend_current_and_run_next();
-            debug!("Wait4 wakeup");
+            // debug!("Wait4 wakeup");
         }
     }
 }

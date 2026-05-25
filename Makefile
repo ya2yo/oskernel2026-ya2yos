@@ -115,7 +115,7 @@ set_env:
 	@rustup component add llvm-tools-preview
 
 docker:
-	docker run --rm -it -v $(pwd):/workplace -w /workplace my-os-dev:latest bash
+	docker run --rm -it -v $(PROJECT_ROOT):/workplace -w /workplace my-os-dev-env:latest bash
 
 .PHONY: all all-arch riscv64-build loongarch64-build build-arch set_env_arch \
         run log clean objdump gdbserver gdbclient setup_cargo cleanup_cargo set_env
