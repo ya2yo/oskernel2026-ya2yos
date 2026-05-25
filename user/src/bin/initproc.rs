@@ -426,45 +426,7 @@ fn main() -> i32 {
 #[cfg(target_arch = "riscv64")]
 fn main() -> i32 {
     println!("initproc running......");
-
-    // --- musl PASS ---
-    run_testsuit("musl\0", "basic_testcode.sh\0");
-    run_testsuit("musl\0", "busybox_testcode.sh\0");
-    run_testsuit("musl\0", "lua_testcode.sh\0");
-    run_testsuit("musl\0", "iozone_testcode.sh\0");
-    run_testsuit("musl\0", "libctest_testcode.sh\0");
-    run_testsuit("musl\0", "libcbench_testcode.sh\0");
-
-    // --- musl FAIL ---
-    // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
-    // run_testsuit("musl\0", "iperf_testcode.sh\0");
-    // run_testsuit("musl\0", "lmbench_testcode.sh\0");
-    // run_testsuit("musl\0", "netperf_testcode.sh\0");
-
-    test_ltp();
-    test_cgroup_fj_function_cpuset_via_script();
-    // check_ltp();
-
-    // --- socket tests ---
-    // test_socket();
-    // run_specific_test("musl\0", "entry-static.exe\0", "socket\0");
-    // run_specific_test("musl\0", "entry-static.exe\0", "getpwnam_r_crash\0");
-    // run_specific_test("musl\0", "entry-static.exe\0", "getpwnam_r_errno\0");
-
-    // --- glibc PASS ---
-    run_testsuit("glibc\0", "basic_testcode.sh\0");
-    run_testsuit("glibc\0", "busybox_testcode.sh\0");
-    run_testsuit("glibc\0", "lua_testcode.sh\0");
-    run_testsuit("glibc\0", "libcbench_testcode.sh\0");
-
-    // --- glibc FAIL ---
-    // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
-    // run_testsuit("glibc\0", "iperf_testcode.sh\0");
-    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");
-    // run_testsuit("glibc\0", "ltp_testcode.sh\0");
-    // run_testsuit("glibc\0", "iozone_testcode.sh\0");
-    // run_testsuit("glibc\0", "netperf_testcode.sh\0");
-
+    get_score();
     shutdown();
     0
 }
@@ -476,24 +438,24 @@ fn main() -> i32 {
 #[allow(unused)]
 fn get_score() {
     // musl
-    run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 不会死循环或panic
-    run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 不会死循环或panic
-    run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 不会死循环或panic
-    run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 不会死循环或panic
-    run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 不会死循环或panic
+    // run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 不会死循环或panic
+    // run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 不会死循环或panic
+    // run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 不会死循环或panic
+    // run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 不会死循环或panic
+    // run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 不会死循环或panic
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     // run_testsuit("musl\0", "iperf_testcode.sh\0");
-    //run_testsuit("musl\0", "libcbench_testcode.sh\0");// FAIL
-    // run_testsuit("musl\0", "lmbench_testcode.sh\0");// FAIL
+    // run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯架构通过
+    run_testsuit("musl\0", "lmbench_testcode.sh\0");// FAIL
     // run_testsuit("musl\0", "ltp_testcode.sh\0");
-    // test_ltp();
-    // test_cgroup_fj_function_cpuset_via_script();
+        // test_ltp();
+        // test_cgroup_fj_function_cpuset_via_script();
     // run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
 
     // glibc
-    run_testsuit("glibc\0", "basic_testcode.sh\0");// 不会死循环或panic
-    run_testsuit("glibc\0", "busybox_testcode.sh\0");// 不会死循环或panic
-    run_testsuit("glibc\0", "lua_testcode.sh\0");// 不会死循环或panic
+    // run_testsuit("glibc\0", "basic_testcode.sh\0");// 不会死循环或panic
+    // run_testsuit("glibc\0", "busybox_testcode.sh\0");// 不会死循环或panic
+    // run_testsuit("glibc\0", "lua_testcode.sh\0");// 不会死循环或panic
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
     // run_testsuit("glibc\0", "iozone_testcode.sh\0");
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");

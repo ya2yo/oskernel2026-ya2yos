@@ -420,9 +420,7 @@ pub fn get_time_spec() -> Timespec {
 
 /// set the next timer interrupt
 pub fn set_next_trigger() {
-    // set_oneshot_timer(get_ticks() + get_clock_freq() / TICKS_PER_SEC);
-    // 调低时钟频率
-    set_oneshot_timer(get_ticks() + get_clock_freq());
+    set_oneshot_timer(get_ticks() + get_clock_freq() / TICKS_PER_SEC);
 }
 
 #[derive(Debug, PartialEq, Eq)]

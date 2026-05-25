@@ -18,6 +18,8 @@ pub enum Exception {
     FetchInstructionPageFault,
     /// 龙芯特有的PageModifyFault，发生时需要内核将这一页的dirty置为1
     PageModifyFault,
+    /// Illegal or unsupported instruction from user space.
+    IllegalInstruction,
     /// system call （在riscv64版本中等价于UserEnvCall）
     Syscall,
 }

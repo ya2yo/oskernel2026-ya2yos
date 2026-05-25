@@ -139,16 +139,17 @@ pub fn trap_handler() {
         //     // page fault exit code
         //     exit_current_and_run_next(-2);
         // }
-        // Trap::Exception(Exception::IllegalInstruction) => {
-        //     backtrace();
-        //     warn!(
-        //         "[kernel] [hart {}] IllegalInstruction at {:#x} in application, kernel killed it.",
-        //         hartid,
-        //         current_trap_cx().get_sepc(),
-        //     );
-        //     // illegal instruction exit code
-        //     exit_current_and_run_next(-3);
-        // }
+        Trap::Exception(Exception::IllegalInstruction) => {
+            backtrace();
+            warn!(
+                "[kernel] [hart {}] IllegalInstruction at {:#x} in application, kernel killed it.",
+                hartid,
+                current_trap_cx().get_sepc(),
+            );
+            // illegal instruction exit code
+            exit_current_and_run_next(-3);
+            panic!("You should not return from exit_current_and_run_next");
+        }
         Trap::Exception(Exception::PageModifyFault) => {
             let ok;
             {
@@ -165,9 +166,9 @@ pub fn trap_handler() {
         Trap::Interrupt(Interrupt::Timer) => {
             // 检查futex操作是否超时
             check_futex_timer();
+            set_next_trigger();
             // debug!("Timer Interupt!");
             suspend_current_and_run_next();
-            // set_next_trigger();
         }
         // Trap::Exception(Exception::Breakpoint) => {
         //     warn!("[kernel] Breakpoint from application");
@@ -197,10 +198,6 @@ pub fn trap_return() {
         debug!("found signo in trap_return");
         handle_signal(signo);
     }
-    if get_trap_cause() == Trap::Interrupt(Interrupt::Timer) {
-        set_next_trigger();
-    }
-
     set_user_trap_entry();
     extern "C" {
         #[allow(improper_ctypes)]

@@ -1,6 +1,6 @@
 use core::arch::asm;
 
-use log::{debug, error};
+use log::error;
 use loongArch64::{
     register::{
         badv, crmd,
@@ -13,7 +13,7 @@ use loongArch64::{
 use crate::{
     arch::{page_table::PageTable, tlb::tlb_invalidate},
     mm::{VirtAddr, VirtPageNum},
-    task::{current_task, current_token},
+    task::current_token,
     trap::{
         trap_from_kernel,
         trap_types::{Exception, Interrupt, Trap},
@@ -52,17 +52,9 @@ fn estat_to_trap(value: estat::Trap) -> Trap {
             estat::Exception::FetchPageFault => {
                 Trap::Exception(Exception::FetchInstructionPageFault)
             }
-            estat::Exception::InstructionNotExist => {
-                debug!("INE Fault, we should stop here for qemu debug");
-                let proc = current_task().unwrap().get_process();
-                let proc = proc.inner_lock();
-                let mem_set = proc.get_locked_memory_set_read();
-
-                mem_set.activate();
-                debug!("translated: {:?}", mem_set.translate_va(0x10000.into()));
-                debug!("We are using USER's pagetable now");
-                loop {}
-                panic!();
+            estat::Exception::InstructionNotExist
+            | estat::Exception::InstructionPrivilegeIllegal => {
+                Trap::Exception(Exception::IllegalInstruction)
             }
             estat::Exception::PageModifyFault => Trap::Exception(Exception::PageModifyFault),
             _ => {
@@ -125,7 +117,7 @@ pub fn enable_timer_interrupt() {
 pub fn tlb_page_modify_handler() {
     // INFO!("PageModifyFault handler");
     //找到对应的页表项，修改D位为1
-    let badv = tlbrbadv::read().vaddr(); //出错虚拟地址
+    let badv = badv::read().vaddr(); //出错虚拟地址
     let vpn: VirtAddr = badv.into(); //虚拟地址
     let vpn: VirtPageNum = vpn.floor(); //虚拟地址的虚拟页号
     let token = current_token(); //根页表的地址
