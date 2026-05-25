@@ -1,14 +1,14 @@
-use alloc::vec;
-use alloc::{slice, sync::Arc, vec::Vec};
-use core::mem::{align_of, size_of};
-use linux_raw_sys::net::{cmsghdr, SCM_RIGHTS, SOL_SOCKET};
-// 假设这些是你项目中已有的定义
 use crate::{
     fs::File,
     mm::UserBuffer,
+    net::CMsgData,
     task::current_task,
     utils::{SysErrNo, SysResult},
 };
+use alloc::vec;
+use alloc::{boxed::Box, slice, sync::Arc, vec::Vec};
+use core::mem::{align_of, size_of};
+use linux_raw_sys::net::{cmsghdr, SCM_RIGHTS, SOL_SOCKET};
 
 const CMSG_ALIGN_SIZE: usize = size_of::<usize>();
 
@@ -32,6 +32,40 @@ pub enum CMsg {
 }
 
 impl CMsg {
+    pub fn parse_control_messages(control: &[u8]) -> SysResult<Vec<CMsgData>> {
+        if control.is_empty() {
+            return Ok(Vec::new());
+        }
+        if control.len() < size_of::<cmsghdr>() {
+            return Err(SysErrNo::EINVAL);
+        }
+
+        let mut cmsgs = Vec::new();
+        let mut offset = 0usize;
+        while offset + size_of::<cmsghdr>() <= control.len() {
+            let hdr = unsafe {
+                core::ptr::read_unaligned(control.as_ptr().add(offset).cast::<cmsghdr>())
+            };
+            let cmsg_len = hdr.cmsg_len as usize;
+            if cmsg_len < size_of::<cmsghdr>() || offset + cmsg_len > control.len() {
+                return Err(SysErrNo::EINVAL);
+            }
+
+            let data_start = offset + size_of::<cmsghdr>();
+            cmsgs.push(
+                Box::new(Self::parse(&hdr, &control[data_start..offset + cmsg_len])?) as CMsgData,
+            );
+
+            let next = offset + cmsg_align(cmsg_len);
+            if next <= offset {
+                return Err(SysErrNo::EINVAL);
+            }
+            offset = next;
+        }
+
+        Ok(cmsgs)
+    }
+
     pub fn parse(hdr: &cmsghdr, data_buffer: &[u8]) -> SysResult<Self> {
         let hdr_size = size_of::<cmsghdr>();
         if (hdr.cmsg_len as usize) < hdr_size {
