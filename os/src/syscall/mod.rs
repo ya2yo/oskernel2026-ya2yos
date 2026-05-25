@@ -11,6 +11,7 @@
 //! submodules, and you should also implement syscalls this way.
 use core::arch;
 
+use linux_raw_sys::general::statx;
 #[cfg(feature = "net")]
 use linux_raw_sys::net::{msghdr, socklen_t};
 use log::error;
@@ -135,6 +136,7 @@ pub enum Syscall {
     Getrandom = 278,
     MemBarrier = 283,
     CopyFileRange = 285,
+    Statx = 291,
     MachineShutdown = 1000,
     #[num_enum(default)]
     Default = 0,
@@ -276,6 +278,13 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[3],
         ),
         Syscall::Fstat => sys_fstat(args[0], args[1] as *mut Kstat),
+        Syscall::Statx => sys_statx(
+            args[0] as isize,
+            args[1] as *const u8,
+            args[2],
+            args[3] as u32,
+            args[4] as *mut statx,
+        ),
         Syscall::Sync => sys_sync(),
         Syscall::Fsync => sys_fsync(args[0]),
         Syscall::Utimensat => sys_utimensat(

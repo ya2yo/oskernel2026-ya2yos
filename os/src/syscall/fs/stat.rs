@@ -1,3 +1,6 @@
+use linux_raw_sys::general::{
+    statx, statx_timestamp, AT_EMPTY_PATH, AT_FDCWD, STATX_BASIC_STATS, STATX__RESERVED,
+};
 use log::debug;
 
 use crate::{
@@ -5,11 +8,55 @@ use crate::{
         open, superblock_fs_stat, InodeType, Kstat, OpenFlags, Statfs, MAX_PATH_LEN, MNT_TABLE,
         NONE_MODE,
     },
-    mm::{if_bad_address, put_data, translated_str},
+    mm::{copy_to_user, if_bad_address, put_data, translated_str},
     syscall::options::{FaccessatFileMode, FaccessatMode},
-    task::{current_task, Process},
+    task::current_task,
     utils::{rsplit_once, trim_start_slash, SysErrNo, SyscallRet},
 };
+
+fn kstat_to_statx(kst: &Kstat, _mask: u32) -> statx {
+    statx {
+        stx_mask: STATX_BASIC_STATS,
+        stx_blksize: kst.st_blksize as u32,
+        stx_attributes: 0,
+        stx_nlink: kst.st_nlink,
+        stx_uid: kst.st_uid,
+        stx_gid: kst.st_gid,
+        stx_mode: kst.st_mode as u16,
+        __spare0: [0; 1],
+        stx_ino: kst.st_ino as u64,
+        stx_size: kst.st_size as u64,
+        stx_blocks: kst.st_blocks as u64,
+        stx_attributes_mask: 0,
+        stx_atime: statx_time(kst.st_atime, kst.st_atime_nsec),
+        stx_btime: statx_time(0, 0),
+        stx_ctime: statx_time(kst.st_ctime, kst.st_ctime_nsec),
+        stx_mtime: statx_time(kst.st_mtime, kst.st_mtime_nsec),
+        stx_rdev_major: 0,
+        stx_rdev_minor: kst.st_rdev as u32,
+        stx_dev_major: 0,
+        stx_dev_minor: kst.st_dev as u32,
+        stx_mnt_id: 0,
+        stx_dio_mem_align: 0,
+        stx_dio_offset_align: 0,
+        stx_subvol: 0,
+        stx_atomic_write_unit_min: 0,
+        stx_atomic_write_unit_max: 0,
+        stx_atomic_write_segments_max: 0,
+        stx_dio_read_offset_align: 0,
+        stx_atomic_write_unit_max_opt: 0,
+        __spare2: [0; 1],
+        __spare3: [0; 8],
+    }
+}
+
+fn statx_time(sec: usize, nsec: usize) -> statx_timestamp {
+    statx_timestamp {
+        tv_sec: sec as i64,
+        tv_nsec: nsec as u32,
+        __reserved: 0,
+    }
+}
 
 /// 参考 https://man7.org/linux/man-pages/man2/fstat.2.html
 pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
@@ -52,6 +99,65 @@ pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, _flags: usize
     let file = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.any();
     put_data(token, kst, file.fstat());
     return Ok(0);
+}
+/// 参考 https://man7.org/linux/man-pages/man2/statx.2.html
+/// flags 忽略以下值：AT_NO_AUTOMOUNT、AT_STATX_FORCE_SYNC、AT_STATX_DONT_SYNC
+pub fn sys_statx(
+    dirfd: isize,
+    path: *const u8,
+    flags: usize,
+    mask: u32,
+    statxbuf: *mut statx,
+) -> SyscallRet {
+    if statxbuf.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+    if mask & STATX__RESERVED != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let kstat = if path.is_null() {
+        // path 为 nullptr，且设置了 AT_EMPTY_PATH，表示获取 dirfd 指向文件的信息
+        if flags & AT_EMPTY_PATH as usize == 0 {
+            return Err(SysErrNo::EFAULT);
+        }
+        if dirfd == AT_FDCWD as isize {
+            return Err(SysErrNo::EINVAL);
+        }
+        proc_inner.fd_table.get(dirfd as usize)?.any().fstat()
+    } else {
+        let path = translated_str(memory_set.token(), path);
+        if path.is_empty() && flags & AT_EMPTY_PATH as usize != 0 {
+            // path 为空字符串，且设置了 AT_EMPTY_PATH，同样按 dirfd 查询
+            if dirfd == AT_FDCWD as isize {
+                return Err(SysErrNo::EINVAL);
+            }
+            proc_inner.fd_table.get(dirfd as usize)?.any().fstat()
+        } else {
+            if path.is_empty() {
+                return Err(SysErrNo::ENOENT);
+            }
+            // 绝对路径直接打开，dirfd 会被 get_abs_path 忽略；
+            // 相对路径则由 get_abs_path 根据 AT_FDCWD 或 dirfd 转成绝对路径
+            let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+            open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?
+                .any()
+                .fstat()
+        }
+    };
+
+    let statx = kstat_to_statx(&kstat, mask);
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            &statx as *const statx as *const u8,
+            core::mem::size_of::<statx>(),
+        )
+    };
+    copy_to_user(&memory_set, statxbuf as usize, bytes).map(|_| ())?;
+    Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/statfs.2.html

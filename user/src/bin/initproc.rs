@@ -8,7 +8,7 @@ extern crate user_lib;
 use libctest::runall::{run_specific_test, runall};
 use user_lib::{
     chdir, execve, exit, fork, println, shutdown, waitpid,
-    AF_INET, SOCK_DGRAM, SOCK_STREAM, socket,
+    AF_INET, SOCK_DGRAM, SOCK_STREAM, socket, wait
 };
 
 mod basic;
@@ -416,7 +416,7 @@ fn check_ltp() {
 #[cfg(target_arch = "loongarch64")]
 fn main() -> i32 {
     println!("initproc running......");
-
+    run_testsuit("musl\0", "basic_testcode.sh\0");
     // basic
     // basic::run_all_basic_musl_except_blacklist();
     // basic::run_all_basic_glibc_except_blacklist();
