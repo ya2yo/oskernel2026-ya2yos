@@ -416,31 +416,8 @@ fn check_ltp() {
 #[cfg(target_arch = "loongarch64")]
 fn main() -> i32 {
     println!("initproc running......");
-    run_testsuit("musl\0", "busybox_testcode.sh\0");
-    // basic
-    // basic::run_all_basic_musl_except_blacklist();
-    // basic::run_all_basic_glibc_except_blacklist();
-    // lua::run_all_lua_musl();
-
-    // libctest (musl static)
-    // println!("#### OS COMP TEST GROUP START libctest-musl ####");
-    // libctest::runall::runall("/musl\0", "entry-static.exe\0", &[
-    //     "pthread_cancel_points\0", "pthread_cancel\0", "pthread_cond\0",
-    //     "pthread_tsd\0", "stat\0", "utime\0", "pthread_robust_detach\0",
-    //     "pthread_cancel_sem_wait\0", "pthread_cond_smasher\0",
-    //     "pthread_exit_cancel\0", "pthread_once_deadlock\0",
-    //     "pthread_rwlock_ebusy\0",
-    // ]);
-    // // libctest (musl dynamic)
-    // libctest::runall::runall("/musl\0", "entry-dynamic.exe\0", &[
-    //     "pthread_cancel_points\0", "pthread_cancel\0", "pthread_cond\0",
-    //     "pthread_tsd\0", "stat\0", "utime\0", "pthread_robust_detach\0",
-    //     "pthread_cancel_sem_wait\0", "pthread_cond_smasher\0",
-    //     "pthread_exit_cancel\0", "pthread_once_deadlock\0",
-    //     "pthread_rwlock_ebusy\0", "daemon_failure\0", "fflush_exit\0",
-    // ]);
-    // println!("#### OS COMP TEST GROUP END libctest-musl ####");
-
+    // run_testsuit("musl\0", "busybox_testcode.sh\0");
+    get_score();
     shutdown();
     0
 }
@@ -451,12 +428,12 @@ fn main() -> i32 {
     println!("initproc running......");
 
     // --- musl PASS ---
-    // run_testsuit("musl\0", "basic_testcode.sh\0");
-    // run_testsuit("musl\0", "busybox_testcode.sh\0");
-    // run_testsuit("musl\0", "lua_testcode.sh\0");
-    // run_testsuit("musl\0", "iozone_testcode.sh\0");
-    // run_testsuit("musl\0", "libctest_testcode.sh\0");
-    // run_testsuit("musl\0", "libcbench_testcode.sh\0");
+    run_testsuit("musl\0", "basic_testcode.sh\0");
+    run_testsuit("musl\0", "busybox_testcode.sh\0");
+    run_testsuit("musl\0", "lua_testcode.sh\0");
+    run_testsuit("musl\0", "iozone_testcode.sh\0");
+    run_testsuit("musl\0", "libctest_testcode.sh\0");
+    run_testsuit("musl\0", "libcbench_testcode.sh\0");
 
     // --- musl FAIL ---
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
@@ -475,10 +452,10 @@ fn main() -> i32 {
     // run_specific_test("musl\0", "entry-static.exe\0", "getpwnam_r_errno\0");
 
     // --- glibc PASS ---
-    // run_testsuit("glibc\0", "basic_testcode.sh\0");
-    // run_testsuit("glibc\0", "busybox_testcode.sh\0");
-    // run_testsuit("glibc\0", "lua_testcode.sh\0");
-    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");
+    run_testsuit("glibc\0", "basic_testcode.sh\0");
+    run_testsuit("glibc\0", "busybox_testcode.sh\0");
+    run_testsuit("glibc\0", "lua_testcode.sh\0");
+    run_testsuit("glibc\0", "libcbench_testcode.sh\0");
 
     // --- glibc FAIL ---
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
@@ -499,22 +476,24 @@ fn main() -> i32 {
 #[allow(unused)]
 fn get_score() {
     // musl
-    run_testsuit("musl\0", "basic_testcode.sh\0");
-    run_testsuit("musl\0", "busybox_testcode.sh\0");
-    run_testsuit("musl\0", "libctest_testcode.sh\0");
-    run_testsuit("musl\0", "lua_testcode.sh\0");
-    // run_testsuit("musl\0", "iozone_testcode.sh\0");
+    run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 不会死循环或panic
+    run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 不会死循环或panic
+    run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 不会死循环或panic
+    run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 不会死循环或panic
+    run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 不会死循环或panic
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     // run_testsuit("musl\0", "iperf_testcode.sh\0");
-    // run_testsuit("musl\0", "libcbench_testcode.sh\0");
-    // run_testsuit("musl\0", "lmbench_testcode.sh\0");
+    //run_testsuit("musl\0", "libcbench_testcode.sh\0");// FAIL
+    // run_testsuit("musl\0", "lmbench_testcode.sh\0");// FAIL
     // run_testsuit("musl\0", "ltp_testcode.sh\0");
-    // run_testsuit("musl\0", "netperf_testcode.sh\0");
+    // test_ltp();
+    // test_cgroup_fj_function_cpuset_via_script();
+    // run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
 
     // glibc
-    run_testsuit("glibc\0", "basic_testcode.sh\0");
-    run_testsuit("glibc\0", "busybox_testcode.sh\0");
-    run_testsuit("glibc\0", "lua_testcode.sh\0");
+    run_testsuit("glibc\0", "basic_testcode.sh\0");// 不会死循环或panic
+    run_testsuit("glibc\0", "busybox_testcode.sh\0");// 不会死循环或panic
+    run_testsuit("glibc\0", "lua_testcode.sh\0");// 不会死循环或panic
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
     // run_testsuit("glibc\0", "iozone_testcode.sh\0");
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");

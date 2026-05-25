@@ -5,7 +5,7 @@ use virtio_drivers::transport::mmio::MmioTransport;
 use virtio_drivers::transport::mmio::VirtIOHeader;
 use virtio_drivers::Hal;
 
-use super::as_dev_err;
+use super::super::as_dev_err;
 
 pub struct VirtIoBlkDev<H: Hal> {
     inner: Mutex<VirtIOBlk<H, MmioTransport>>,
