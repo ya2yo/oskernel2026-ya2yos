@@ -438,14 +438,14 @@ fn main() -> i32 {
 #[allow(unused)]
 fn get_score() {
     // musl
-    // run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 不会死循环或panic
-    // run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 不会死循环或panic
-    // run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 不会死循环或panic
-    // run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 不会死循环或panic
-    // run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 不会死循环或panic
+    // run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     // run_testsuit("musl\0", "iperf_testcode.sh\0");
-    // run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯架构通过
+    // run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
     run_testsuit("musl\0", "lmbench_testcode.sh\0");// FAIL
     // run_testsuit("musl\0", "ltp_testcode.sh\0");
         // test_ltp();
@@ -453,9 +453,9 @@ fn get_score() {
     // run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
 
     // glibc
-    // run_testsuit("glibc\0", "basic_testcode.sh\0");// 不会死循环或panic
-    // run_testsuit("glibc\0", "busybox_testcode.sh\0");// 不会死循环或panic
-    // run_testsuit("glibc\0", "lua_testcode.sh\0");// 不会死循环或panic
+    // run_testsuit("glibc\0", "basic_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
     // run_testsuit("glibc\0", "iozone_testcode.sh\0");
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");

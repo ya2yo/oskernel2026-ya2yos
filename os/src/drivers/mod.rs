@@ -10,6 +10,8 @@ pub use device::*;
 pub use disk::*;
 #[cfg(feature = "net")]
 pub use net::*;
+#[cfg(feature = "net")]
+use log::warn;
 use spin::Lazy;
 pub use virtio::*;
 #[cfg(target_arch = "loongarch64")]
@@ -52,14 +54,34 @@ impl BlockDeviceImpl {
 
 impl NetDeviceImpl {
     #[cfg(target_arch = "riscv64")]
-    pub fn new_device() -> Self {
+    pub fn try_new_device() -> Option<Self> {
         use core::ptr::NonNull;
-        let header = NonNull::new(VIRTIO_NET_BASE as *mut VirtIOHeader)
-            .expect("VirtIO Net base address is null");
-        let transport = unsafe {
-            MmioTransport::new(header).expect("Failed to create MmioTransport for VirtIO Net")
+
+        let Some(header) = NonNull::new(VIRTIO_NET_BASE as *mut VirtIOHeader) else {
+            warn!("VirtIO Net base address is null");
+            return None;
         };
-        Self::try_new(transport, None).expect("Failed to initialize VirtIoNetDev")
+
+        let transport = match unsafe { MmioTransport::new(header) } {
+            Ok(transport) => transport,
+            Err(err) => {
+                warn!("No usable VirtIO Net MMIO device at {:#x}: {:?}", VIRTIO_NET_BASE, err);
+                return None;
+            }
+        };
+
+        match Self::try_new(transport, None) {
+            Ok(device) => Some(device),
+            Err(err) => {
+                warn!("Failed to initialize VirtIO Net device: {:?}", err);
+                None
+            }
+        }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub fn new_device() -> Self {
+        Self::try_new_device().expect("Failed to initialize VirtIO Net device")
     }
 
     #[cfg(all(target_arch = "loongarch64", feature = "net"))]
