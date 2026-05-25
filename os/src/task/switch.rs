@@ -23,7 +23,7 @@ extern "C" {
 /// 对汇编函数__switch的包装
 /// 会在__switch之后检查返回值，如果不为0则释放那个页
 pub fn switch(current_task_cx_ptr: *mut TaskContext, next_task_cx_ptr: *const TaskContext) {
-    debug!("[switch] happen!");
+    // debug!("[switch] happen!");
     let tid = unsafe { __switch(current_task_cx_ptr, next_task_cx_ptr) };
     if tid != 0 {
         tid_to_task::remove(tid);

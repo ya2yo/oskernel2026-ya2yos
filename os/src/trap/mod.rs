@@ -18,7 +18,9 @@ use core::panic::PanicInfo;
 use crate::{
     arch::{cpu::hart_id, page_table::PageTable, trap_interface::tlb_page_modify_handler},
     mm::{VirtAddr, VirtPageNum},
-    signal::{check_if_any_sig_for_current_task, handle_signal, send_signal_to_thread, SigSet},
+    signal::{
+        check_if_any_sig_for_current_task, handle_signal, send_signal_to_thread, SigSet, SIGSEGV,
+    },
     syscall::{syscall, Syscall},
     task::{
         current_task, current_token, current_trap_cx, exit_current_and_run_next,
@@ -107,23 +109,27 @@ pub fn trap_handler() {
                 // drop task inner and task to avoid deadlock and exit exception
             }
             if !ok {
+                let has_sigsegv_handler = {
+                    let task = current_task().unwrap();
+                    let proc_inner = task.process.inner_lock();
+                    let sig_action = proc_inner.get_locked_sigtable().action(SIGSEGV);
+                    sig_action.customed
+                };
+                if has_sigsegv_handler && cause == Trap::Exception(Exception::StorePageFault) {
+                    let tid = current_task().unwrap().tid();
+                    send_signal_to_thread(tid, SigSet::SIGSEGV);
+                    return;
+                }
                 warn!(
-                "[kernel] hart {} {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
-                hartid,
-                cause,
-                stval,
-                current_trap_cx().get_sepc(),
-            );
-                //发送段错误信号
-                // warn!("going to send SIGSEGV signal!");
+                    "[kernel] hart {} {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                    hartid,
+                    cause,
+                    stval,
+                    current_trap_cx().get_sepc(),
+                );
                 warn!("don't send SIGSEGV, just exit the process");
-                exit_current_and_run_next(-2);
+                exit_current_and_run_next(-2); // page fault exit code
                 panic!("You should not return from exit_current_and_run_next");
-
-                let tid = current_task().unwrap().tid();
-                send_signal_to_thread(tid, SigSet::SIGSEGV);
-                // page fault exit code
-                //exit_current_and_run_next(-2);
             }
         }
         // Trap::Exception(Exception::StoreFault)

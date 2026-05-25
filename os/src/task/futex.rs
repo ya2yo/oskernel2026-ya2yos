@@ -36,13 +36,13 @@ pub fn futex_wake_up(pa: usize, max_num: i32) -> usize {
 }
 
 fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32) -> usize {
-    log::debug!(
-        "[futex_requeue],old_key={:?},max_wakeup={},new_key={:?},max_requeue={}",
-        old_pa,
-        max_wakeup,
-        new_pa,
-        max_requeue
-    );
+    // log::debug!(
+    //     "[futex_requeue],old_key={:?},max_wakeup={},new_key={:?},max_requeue={}",
+    //     old_pa,
+    //     max_wakeup,
+    //     new_pa,
+    //     max_requeue
+    // );
     let mut futex_queue = FUTEX_QUEUE_BITMAP.lock();
     let mut num = 0;
     let mut num2 = 0;
@@ -76,7 +76,7 @@ fn futex_wait_bitset(
     bitset: u32,
     timeout: Option<Timespec>,
 ) -> SyscallRet {
-    debug!("wait bitset = {:b}", bitset);
+    // debug!("wait bitset = {:b}", bitset);
     // 在futex wait 的基础上，除了插入的队列不同，在队列项中多加了一个bitset，其他没有区别
     let mut waitq = FUTEX_QUEUE_BITMAP.lock();
     // 向key对应的等待队列中插入当前进程的弱指针。
@@ -108,9 +108,9 @@ fn futex_wait_bitset(
     // 释放锁……
     drop(task);
     drop(waitq);
-    debug!("futex_wait_bitset sleeping...");
+    // debug!("futex_wait_bitset sleeping...");
     block_current_and_run_next();
-    debug!("futex_wait_bitset wake up!");
+    // debug!("futex_wait_bitset wake up!");
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
     // woke by signal
@@ -121,7 +121,7 @@ fn futex_wait_bitset(
     {
         return Err(SysErrNo::EINTR);
     }
-    debug!("futex_wait_bitset return!");
+    // debug!("futex_wait_bitset return!");
     Ok(0)
 }
 

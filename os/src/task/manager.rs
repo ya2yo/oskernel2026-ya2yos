@@ -36,7 +36,7 @@ pub mod ready_queue {
     }
     /// 向就绪队列中添加
     pub fn add_task(task: &Arc<TaskControlBlock>) {
-        debug!("task: {} add", task.tid());
+        // debug!("task: {} add", task.tid());
         let mut queue = READY_QUEUE.lock();
         debug!("{:?}", queue);
         if task_in_queue(&queue, task) {
@@ -93,7 +93,7 @@ pub mod tid_to_task {
     }
     /// 仅在exit时发生
     pub fn remove(tid: usize) {
-        debug!("[tid_to_task]: remove {}!", tid);
+        // debug!("[tid_to_task]: remove {}!", tid);
         let ret = TID_TO_TASK.lock().remove(&tid);
         if ret.is_none() {
             panic!("fail to remove task {}! it does not exist!", tid);

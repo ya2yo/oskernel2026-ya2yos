@@ -63,10 +63,10 @@ pub const INITPROC_PID: usize = 1;
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     let task = current_task().unwrap();
-    debug!(
-        "[suspend_current_and_run_next] strong_count = {}",
-        Arc::strong_count(&task)
-    );
+    // debug!(
+    //     "[suspend_current_and_run_next] strong_count = {}",
+    //     Arc::strong_count(&task)
+    // );
     let mut task_inner = task.inner_lock();
     let exited = {
         let proc_inner = task.process.inner_lock();
@@ -92,9 +92,9 @@ pub fn suspend_current_and_run_next() {
 }
 
 pub fn block_current_and_run_next() {
-    debug!("[block_current_and_run_next()] BEGIN!");
+    // debug!("[block_current_and_run_next()] BEGIN!");
     let task = take_current_task().unwrap();
-    debug!("current strong_count: {}", Arc::strong_count(&task));
+    // debug!("current strong_count: {}", Arc::strong_count(&task));
     let mut task_inner = task.inner_lock();
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
     task_inner.task_status = TaskStatus::Blocked;
@@ -172,11 +172,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     let curr_proc = curr_task.process.inner_lock();
     let memory_set = curr_proc.get_locked_memory_set_read();
     let mut curr_task_inner = curr_task.inner_lock();
-    debug!(
-        "[sys_exit] exit_current_and_run_next() -- thread {} exit, exit_code = {}",
-        curr_task.tid(),
-        exit_code
-    );
+    // debug!(
+    //     "[sys_exit] exit_current_and_run_next() -- thread {} exit, exit_code = {}",
+    //     curr_task.tid(),
+    //     exit_code
+    // );
 
     // CLONE_CHILD_CLEARTID
     if curr_task_inner.clear_child_tid != 0 {
@@ -195,7 +195,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         curr_proc.get_locked_memory_set_read().token(),
         curr_task.pid(),
     );
-    debug!("exit_current_and_run_next: futex released");
+    // debug!("exit_current_and_run_next: futex released");
     // 无论如何一个轻量级进程都会是一个线程
     // 释放线程相关资源
 
