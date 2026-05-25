@@ -384,20 +384,20 @@ impl PageTable {
         };
         let pte_flags = pte.get_flags();
         if !pte_flags.contains(LAPTEFlags::COW) {
-            // 在原来的写法中，不论是否有cow标志都会返回true，这里改为没有cow标志时返回false
-            // 简单测试发现此处valid的pte都具有cow标志，在这放一个panic，看看未来是否会出现panic
-            panic!("ly: a valid pte without COW flag found at {:#x}", va.0);
+            // 这不是COW写错误，交给上层按普通用户页错误处理。
             return false;
         }
 
-        // 只有一个，不用复制
+        // 只有一个，说明父进程已经释放，不用复制
         let frame = vma.data_frames.get(&va.into()).unwrap();
 
         if Arc::strong_count(frame) == 1 {
             let mut flags = pte.get_flags();
             flags.remove(LAPTEFlags::COW);
             flags.insert(LAPTEFlags::WRITEABLE);
+            flags.insert(LAPTEFlags::DIRTY);
             pte.set_flags(flags);
+            tlb_invalidate();
             return true;
         }
 
@@ -416,7 +416,9 @@ impl PageTable {
         let mut flags = pte.get_flags();
         flags.remove(LAPTEFlags::COW);
         flags.insert(LAPTEFlags::WRITEABLE);
+        flags.insert(LAPTEFlags::DIRTY);
         pte.set_flags(flags);
+        tlb_invalidate();
 
         true
     }
@@ -433,6 +435,7 @@ impl PageTable {
         // 需要考虑写时复制
         if pte_flags.contains(LAPTEFlags::WRITEABLE) {
             pte_flags &= !LAPTEFlags::WRITEABLE;
+            pte_flags &= !LAPTEFlags::DIRTY;
             pte_flags |= LAPTEFlags::COW;
         }
         pte.set_flags(pte_flags);
@@ -484,6 +487,7 @@ impl PageTable {
         //可写的才需要cow
         if pte_flags.contains(LAPTEFlags::WRITEABLE) {
             pte_flags &= !LAPTEFlags::WRITEABLE;
+            pte_flags &= !LAPTEFlags::DIRTY;
             pte_flags |= LAPTEFlags::COW;
         }
 
@@ -495,6 +499,7 @@ impl PageTable {
         //可写的才需要cow
         if pte_flags.contains(LAPTEFlags::WRITEABLE) {
             pte_flags &= !LAPTEFlags::WRITEABLE;
+            pte_flags &= !LAPTEFlags::DIRTY;
             pte_flags |= LAPTEFlags::COW;
         }
         // TODO: 可能低效

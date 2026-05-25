@@ -150,7 +150,16 @@ pub fn trap_handler() {
         //     exit_current_and_run_next(-3);
         // }
         Trap::Exception(Exception::PageModifyFault) => {
-            tlb_page_modify_handler();
+            let ok;
+            {
+                let task = current_task().unwrap();
+                let process = task.process.inner_lock();
+                let memory_set = process.get_locked_memory_set_read();
+                ok = memory_set.cow_page_fault(VirtAddr::from(stval).floor(), cause);
+            }
+            if !ok {
+                tlb_page_modify_handler();
+            }
         }
 
         Trap::Interrupt(Interrupt::Timer) => {
