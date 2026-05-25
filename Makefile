@@ -114,8 +114,8 @@ set_env:
 	@rustup component add rust-src
 	@rustup component add llvm-tools-preview
 
-trick:
-	sudo chown -R ya2yo:ya2yo .
+docker:
+	docker run --rm -it -v $(pwd):/workplace -w /workplace my-os-dev:latest bash
 
 .PHONY: all all-arch riscv64-build loongarch64-build build-arch set_env_arch \
         run log clean objdump gdbserver gdbclient setup_cargo cleanup_cargo set_env
