@@ -15,7 +15,10 @@ use crate::{
         trap_interface::get_trap_cause,
     },
     mm::{get_data, put_data},
-    task::{current_task, exit_current_and_run_next, tid_to_task, Process, TaskControlBlock},
+    task::{
+        current_task, exit_current_and_run_next, ready_queue, tid_to_task, Process,
+        TaskControlBlock, TaskStatus,
+    },
     trap::trap_types::{Exception, Trap},
     utils::{SysErrNo, SyscallRet},
 };
@@ -233,10 +236,20 @@ pub fn restore_frame() -> SyscallRet {
 }
 
 /// 向task的inner的sig_pending按位或一个signal
+/// 对于阻塞态的线程，每次向他发送信号，都需要唤醒相应的线程进行处理
 fn add_signal(task: &TaskControlBlock, signal: SigSet) {
     let mut task_inner = task.inner_lock();
     debug!("add signal: tid {}, signal: {}", task.tid(), signal.bits());
     task_inner.sig_pending |= signal;
+    if task_inner.task_status == TaskStatus::Blocked {
+        // SIGKILL 等信号必须把任务从 pipe/futex 等等待中唤醒，
+        // 这样任务才能回到 trap 返回路径处理 pending signal。
+        task_inner.task_status = TaskStatus::Ready;
+        drop(task_inner);
+        if let Some(task) = tid_to_task::tid2task(task.tid()) {
+            ready_queue::add_task(&task);
+        }
+    }
 }
 
 /// 向进程/线程组发信号

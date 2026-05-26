@@ -3,9 +3,13 @@
 // 它的特点是
 use super::super::{File, StMode};
 use crate::fs::Kstat;
-use crate::task::{current_task, suspend_current_and_run_next};
+use crate::signal::check_if_any_sig_for_current_task;
+use crate::task::{
+    current_task, ready_queue, schedule_blocked_current, TaskControlBlock, TaskStatus,
+};
 use crate::utils::SysErrNo;
 use crate::{mm::UserBuffer, syscall::PollEvents, utils::SyscallRet};
+use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -68,6 +72,8 @@ struct PipeRingBuffer {
     status: RingBufferStatus,
     write_end: Option<Weak<Pipe>>,
     read_end: Option<Weak<Pipe>>,
+    read_waiters: VecDeque<Weak<TaskControlBlock>>,
+    write_waiters: VecDeque<Weak<TaskControlBlock>>,
 }
 
 impl PipeRingBuffer {
@@ -80,6 +86,8 @@ impl PipeRingBuffer {
             status: RingBufferStatus::Empty,
             write_end: None,
             read_end: None,
+            read_waiters: VecDeque::new(),
+            write_waiters: VecDeque::new(),
         }
     }
     pub fn set_write_end(&mut self, write_end: &Arc<Pipe>) {
@@ -175,6 +183,54 @@ impl PipeRingBuffer {
     pub fn all_write_ends_closed(&self) -> bool {
         self.write_end.as_ref().unwrap().upgrade().is_none()
     }
+    fn push_reader(&mut self, task: &Arc<TaskControlBlock>) {
+        // 空管道读需要真正睡眠等待写者；只 yield 会让 lmbench lat_pipe 在内核里空转。
+        if !self.read_waiters.iter().any(|waiter| {
+            waiter
+                .upgrade()
+                .map_or(false, |waiter| Arc::ptr_eq(&waiter, task))
+        }) {
+            self.read_waiters.push_back(Arc::downgrade(task));
+        }
+    }
+    fn push_writer(&mut self, task: &Arc<TaskControlBlock>) {
+        // 满管道写需要等待读者释放空间。
+        if !self.write_waiters.iter().any(|waiter| {
+            waiter
+                .upgrade()
+                .map_or(false, |waiter| Arc::ptr_eq(&waiter, task))
+        }) {
+            self.write_waiters.push_back(Arc::downgrade(task));
+        }
+    }
+    fn wake_reader(&mut self) {
+        // pipe 每次写入只需要唤醒一个阻塞读者即可继续推进。
+        while let Some(waiter) = self.read_waiters.pop_front() {
+            if let Some(task) = waiter.upgrade() {
+                let mut inner = task.inner_lock();
+                if inner.task_status == TaskStatus::Blocked {
+                    inner.task_status = TaskStatus::Ready;
+                    drop(inner);
+                    ready_queue::add_task(&task);
+                    break;
+                }
+            }
+        }
+    }
+    fn wake_writer(&mut self) {
+        // pipe 每次读取释放空间后，只唤醒一个阻塞写者。
+        while let Some(waiter) = self.write_waiters.pop_front() {
+            if let Some(task) = waiter.upgrade() {
+                let mut inner = task.inner_lock();
+                if inner.task_status == TaskStatus::Blocked {
+                    inner.task_status = TaskStatus::Ready;
+                    drop(inner);
+                    ready_queue::add_task(&task);
+                    break;
+                }
+            }
+        }
+    }
 }
 
 /// 创建一个管道并返回管道的读端和写端 (read_end, write_end)
@@ -202,12 +258,31 @@ impl File for Pipe {
         loop {
             let ring_buffer = self.inner_lock();
             loop_read = ring_buffer.available_read();
-            if loop_read == 0 {
-                if ring_buffer.all_write_ends_closed() {
+            if loop_read == 0 {// 管道数据为空，需要进行阻塞或关闭
+                if ring_buffer.all_write_ends_closed() {// 写者全部关闭，不会有数据了，直接返回
                     return Ok(read_size);
                 }
                 drop(ring_buffer);
-                suspend_current_and_run_next();
+                if check_if_any_sig_for_current_task().is_some() {// 一旦获取信号，必须中断系统调用
+                    return Err(SysErrNo::EINTR);
+                }
+                let task = current_task().ok_or(SysErrNo::ESRCH)?;
+                // 先置 Blocked 再入队，避免写者并发唤醒时丢失 wakeup。
+                let task_cx_ptr = {
+                    let mut task_inner = task.inner_lock();
+                    task_inner.task_status = TaskStatus::Blocked;
+                    &mut task_inner.task_cx as *mut _
+                };
+                let mut ring_buffer = self.inner_lock();
+                if ring_buffer.available_read() > 0 {
+                    // 入队前已有写者写入，恢复 Running 并直接重试读取。
+                    let mut task_inner = task.inner_lock();
+                    task_inner.task_status = TaskStatus::Running;
+                    continue;
+                }
+                ring_buffer.push_reader(&task);
+                drop(ring_buffer);
+                schedule_blocked_current(task_cx_ptr);
                 continue;
             } else {
                 break;
@@ -232,6 +307,7 @@ impl File for Pipe {
             read_size = min(loop_read, length);
             buf.write(&ring_buffer.read_bytes(read_size));
         }
+        ring_buffer.wake_writer();
         Ok(read_size)
     }
     fn write(&self, mut buf: UserBuffer) -> SyscallRet {
@@ -243,7 +319,26 @@ impl File for Pipe {
             loop_write = ring_buffer.available_write();
             if loop_write == 0 {
                 drop(ring_buffer);
-                suspend_current_and_run_next();
+                if check_if_any_sig_for_current_task().is_some() {
+                    return Err(SysErrNo::EINTR);
+                }
+                let task = current_task().ok_or(SysErrNo::ESRCH)?;
+                // 先置 Blocked 再入队，避免读者并发唤醒时丢失 wakeup。
+                let task_cx_ptr = {
+                    let mut task_inner = task.inner_lock();
+                    task_inner.task_status = TaskStatus::Blocked;
+                    &mut task_inner.task_cx as *mut _
+                };
+                let mut ring_buffer = self.inner_lock();
+                if ring_buffer.available_write() > 0 {
+                    // 入队前已有读者释放空间，恢复 Running 并直接重试写入。
+                    let mut task_inner = task.inner_lock();
+                    task_inner.task_status = TaskStatus::Running;
+                    continue;
+                }
+                ring_buffer.push_writer(&task);
+                drop(ring_buffer);
+                schedule_blocked_current(task_cx_ptr);
                 continue;
             } else {
                 break;
@@ -266,6 +361,7 @@ impl File for Pipe {
             write_size = min(loop_write, length);
             ring_buffer.write_bytes(&buf.read(write_size), write_size);
         }
+        ring_buffer.wake_reader();
         Ok(write_size)
     }
     fn fstat(&self) -> Kstat {

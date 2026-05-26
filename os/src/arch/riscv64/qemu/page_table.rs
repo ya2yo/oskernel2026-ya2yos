@@ -298,8 +298,11 @@ impl PageTable {
         if Arc::strong_count(frame) == 1 {
             let mut flags = pte.get_flags();
             flags.remove(RVPTEFlags::COW);
+            // 解除 COW 后恢复 writable/dirty，并刷新旧 TLB 权限视图。
             flags.insert(RVPTEFlags::WRITEABLE);
+            flags.insert(RVPTEFlags::DIRTY);
             pte.set_flags(flags);
+            tlb_invalidate();
             return true;
         }
 
@@ -317,8 +320,11 @@ impl PageTable {
 
         let mut flags = pte.get_flags();
         flags.remove(RVPTEFlags::COW);
+        // 复制出的新页已经是私有页，可以恢复写权限和 dirty 位。
         flags.insert(RVPTEFlags::WRITEABLE);
+        flags.insert(RVPTEFlags::DIRTY);
         pte.set_flags(flags);
+        tlb_invalidate();
 
         true
     }
@@ -334,10 +340,13 @@ impl PageTable {
         // 对于可写的页，或者有写时复制的标志位的页
         // 需要考虑写时复制
         if pte_flags.contains(RVPTEFlags::WRITEABLE) {
+            // COW 共享页不能继续保留 writable/dirty，否则 fork 后仍可能写共享页。
             pte_flags &= !RVPTEFlags::WRITEABLE;
+            pte_flags &= !RVPTEFlags::DIRTY;
             pte_flags |= RVPTEFlags::COW;
         }
         pte.set_flags(pte_flags);
+        tlb_invalidate();
         memory_set
             .page_table
             .map_by_pte_flags(vpn, src_ppn, pte_flags);
@@ -386,6 +395,7 @@ impl PageTable {
         //可写的才需要cow
         if pte_flags.contains(RVPTEFlags::WRITEABLE) {
             pte_flags &= !RVPTEFlags::WRITEABLE;
+            pte_flags &= !RVPTEFlags::DIRTY;
             pte_flags |= RVPTEFlags::COW;
         }
 
@@ -397,6 +407,7 @@ impl PageTable {
         //可写的才需要cow
         if pte_flags.contains(RVPTEFlags::WRITEABLE) {
             pte_flags &= !RVPTEFlags::WRITEABLE;
+            pte_flags &= !RVPTEFlags::DIRTY;
             pte_flags |= RVPTEFlags::COW;
         }
         // TODO: 可能低效
