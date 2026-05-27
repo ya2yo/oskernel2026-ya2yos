@@ -1,0 +1,92 @@
+# AI 工作日志
+
+## 2026-05-27: futex add_signal 与 futex_wake 竞态修复
+
+### 问题发现
+
+用户提供 `log.ans`（内核日志），要求分析报错原因。
+
+日志末尾 panic：
+```
+[kernel] Panicked at src/task/manager.rs:43 add task fail: task already in queue!
+```
+
+### 根因分析
+
+从日志中提取关键事件序列（TID 5 与 TID 6 的交互）：
+
+1. TID 5 `clone` 创建 TID 6，设置 `SIGRT_1` 信号处理函数（SA_RESTART）
+2. TID 6 调用 `futex(FUTEX_WAIT, pa)` → 创建 Waiter 插入 `FUTEX_QUEUE_BITMAP[pa]` → `block_current_and_run_next()` 进入 Blocked
+3. TID 5 调用 `tkill(SIGRT_1 → TID 6)` → `add_signal()` 检测到 TID 6 为 Blocked → 改 Ready → `ready_queue::add_task(TID 6)` ← **第一次入队**
+4. TID 5 继续运行（非抢占内核），调用 `futex(FUTEX_WAKE, pa)` → 遍历 `FUTEX_QUEUE_BITMAP[pa]` 找到残留 Waiter → `wakeup_futex_task(TID 6)` → `ready_queue::add_task(TID 6)` ← **第二次入队 → PANIC**
+
+根因位于 `os/src/signal/mod.rs:240` 的 `add_signal` 函数：向阻塞态任务发送信号时直接将其加入就绪队列，但没有清理 `FUTEX_QUEUE_BITMAP` 中对应的 Waiter 条目。
+
+此前已有的修复（`futex_wait_bitset` 中 EINTR 返回前清理 Waiter）只能覆盖**任务先被调度运行**再检测信号的路径。在非抢占内核中，发送信号的线程 TID 5 在 `tkill` 后继续执行 `futex_wake`，TID 6 无机会运行清理代码。
+
+### 修改内容
+
+| 文件 | 函数/位置 | 修改 |
+|------|-----------|------|
+| `os/src/task/manager.rs:71` | `wakeup_futex_task` | 新增 `task_status == Ready` 检查：若任务已被信号唤醒则在就绪队列中，跳过重复入队，仅清理 futex 字段 |
+| `os/src/task/futex.rs:182` | `new_futex_key` | `fetch_add(1) + 1` 使 key 从 1 开始分配，0 稳定表示"无效/已清理" |
+| `os/src/task/futex.rs:127` | `futex_wait_bitset` EINTR 路径 | 新增 `futex_key != 0` 守卫，防止 `wakeup_futex_task` 已清理后用 key=0 误操作 |
+
+---
+
+## 2026-05-27: 内核堆碎片化 — 全量测例 OOM
+
+### 问题发现
+
+用户提供 `log.ans`（全量测例日志）和 `no-log.ans`（单独 iozone 日志），要求分析为何全量运行 panic 而单独运行正常。
+
+日志末尾 panic（与 futex panic 不同）：
+```
+[kernel] Panicked at src/mm/heap_allocator.rs:18 Heap allocation error,
+         layout = Layout { size: 13770752, align: 1 (1 << 0) }
+```
+
+### 根因分析
+
+全量运行测试序列（log.ans）：
+```
+ 1. basic-musl          ✓
+ 2. busybox-musl        ✓
+ 3. libctest-musl       ✓  (最长，652 行日志)
+ 4. lua-musl            ✓
+ 5. iozone-musl         ✓
+ 6. libcbench-musl      ✓
+ 7. lmbench-musl        ✓
+ 8. basic-glibc         ✓
+ 9. busybox-glibc       ✓
+10. lua-glibc           ✓
+11. iozone-glibc        ✘ PANIC (堆分配失败)
+```
+
+单独运行仅 iozone-glibc：正常完成，shutdown。
+
+内核堆 48MB（buddy system allocator，2^n 分配）。iozone 申请 13.77MB → 向上取整为 16MB 块（2^24 ≈ 16MB）。
+
+单独运行时堆是干净的，16MB 连续块存在。全量运行 10 组测例后，**FsIndex 全局 inode 缓存** (`fs/kernel_fs_ops/fsidx.rs`) 持续增长导致碎片化。
+
+追踪了完整的资源生命周期：
+- `Process::drop` (process.rs:218): `PID_2_PROCESS_ARC.remove()` 被注释掉，但 `sys_wait4` → `remove_from_global_map` 补偿移除
+- `FsIndex`: 每次 `open()` 插入条目，仅在 `sys_unlinkat` 时删除，`sys_close` 不清理
+- `PAGE_CACHE`: 最多 128 页（512KB），有界，影响有限
+- `GROUP_SHARE`: MapArea 共享帧管理，drop 路径正确
+
+### 修改内容
+
+| 文件 | 函数 | 修改 |
+|------|------|------|
+| `os/src/syscall/fs/fd_ops.rs:219` | `sys_close` | 关闭 fd 前获取 inode path，在 `fd_table.take()` 释放 OSFile 后检查 `Arc::strong_count <= 2`，若仅剩 FsIndex 持有则淘汰缓存条目 |
+
+### 涉及文件汇总
+
+- `os/src/task/manager.rs` — `wakeup_futex_task` 防重复入队
+- `os/src/task/futex.rs` — `new_futex_key` 从 1 起始 + EINTR 路径守卫
+- `os/src/task/mod.rs` — `exit_current_group_and_run_next` debug 日志
+- `os/src/syscall/fs/fd_ops.rs` — `sys_close` FsIndex 缓存淘汰
+- `user/src/bin/initproc.rs` — 启用多组测例
+- `Docs/初赛文档/problem.md` — futex + OOM 问题文档
+- `ai.log` — 本文件（新建）

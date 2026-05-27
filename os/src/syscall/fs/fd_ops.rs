@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use super::fcntl::*;
-use crate::fs::{open, FileDescriptor, OpenFlags};
+use crate::fs::{open, FileDescriptor, FsIndex, OpenFlags};
 use crate::mm::translated_str;
 use crate::syscall::{options::FcntlCmd, process, Syscall};
 use crate::task::current_task;
@@ -226,11 +226,30 @@ pub fn sys_close(fd: usize) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
 
+    // 在关闭前获取 inode 路径，用于 FsIndex 缓存淘汰
+    let inode_path = fd_table
+        .try_get(fd)
+        .and_then(|desc| desc.file().ok())
+        .map(|osfile| osfile.inode.path());
+
     if fd_table.try_get(fd).is_none() {
         return Ok(0);
     }
 
     fd_table.take(fd);
     inner.fs_info.remove(fd);
+
+    // 若该 inode 仅被全局缓存持有，则淘汰以释放堆内存
+    if let Some(path) = inode_path {
+        if !path.is_empty() && !path.starts_with("/proc") {
+            if let Some(inode) = FsIndex::find_inode_idx(&path) {
+                // FsIndex 持有一份引用，find_inode_idx 返回的 clone 是第二份
+                if Arc::strong_count(&inode) <= 2 {
+                    FsIndex::remove_inode_idx(&path);
+                }
+            }
+        }
+    }
+
     Ok(0)
 }
