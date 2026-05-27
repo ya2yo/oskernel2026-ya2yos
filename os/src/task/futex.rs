@@ -119,6 +119,16 @@ fn futex_wait_bitset(
         .difference(task_inner.sig_mask)
         .is_empty()
     {
+        // 清理残留的 Waiter，防止后续 futex_wake 重复唤醒
+        let futex_key = task_inner.futex_key;
+        let futex_pa = task_inner.futex_pa;
+        drop(task_inner);
+        let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+        if let Some(queue) = waitq.get_mut(&futex_pa) {
+            if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
+                queue.remove(idx);
+            }
+        }
         return Err(SysErrNo::EINTR);
     }
     // debug!("futex_wait_bitset return!");
@@ -193,7 +203,7 @@ pub fn sys_futex(
     }
 
     let task = current_task().unwrap();
-    debug!("[sys_futex]: strong_count = {}", Arc::strong_count(&task));
+    // debug!("[sys_futex]: strong_count = {}", Arc::strong_count(&task));
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_read();
     let task_inner = task.inner_lock();

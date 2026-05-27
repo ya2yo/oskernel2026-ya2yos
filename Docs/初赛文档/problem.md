@@ -276,3 +276,61 @@ if task_inner.clear_child_tid != 0 {
 | `os/src/fs/map_dynamic_link.rs` | 修复 LoongArch ld-linux 映射，添加 libc.so.6 路径映射 |
 | `os/src/syscall/fs/stat.rs` | `sys_statx` 中 `translated_str` → `copy_from_user` |
 | `os/src/task/task/task.rs` | `exec()` 中提前处理 `clear_child_tid` |
+
+## futex 信号中断后残留 Waiter 导致重复唤醒 panic
+
+### 现象
+
+Docker 环境中运行内核，在 futex 相关测试中出现 panic：
+
+```c
+panic
+[kernel] Panicked at src/task/manager.rs:43 add task fail: task already in queue!
+```
+
+但相同的代码在本地环境中正常运行。
+
+### 根因
+
+`futex_wait_bitset` 被信号（如 `SIGRT_1`）中断返回 `EINTR` 时，已插入 `FUTEX_QUEUE_BITMAP` 的 `FutexWaiter` 条目没有被清理。
+
+具体时序如下：
+
+1. **TID 6** 调用 `futex_wait_bitset(pa)` → 创建 `FutexWaiter{A}` 插入等待队列 → `block_current_and_run_next()` 将 TID 6 置为 Blocked
+2. **TID 5** 调用 `tkill` 发送 `SIGRT_1` 给 TID 6
+3. **TID 6** 被信号唤醒 → `futex_wait_bitset` 检测到 pending signal → 返回 `EINTR`。**但 FutexWaiter{A} 仍然残留在 `FUTEX_QUEUE_BITMAP[pa]` 中**
+4. **TID 6** 执行信号处理函数 → sigreturn 恢复上下文
+5. **TID 6** 重新调用 `futex_wait_bitset(pa)` → 创建新的 `FutexWaiter{B}` 插入队列 → 再次 `block_current_and_run_next`
+6. **TID 5** 调用 `futex_wake(pa)` → 遍历等待队列：
+   - 弹出 `FutexWaiter{A}`（残留的旧条目）→ `wakeup_futex_task(TID 6)` → 加入 ready_queue ✓
+   - 弹出 `FutexWaiter{B}` → `wakeup_futex_task(TID 6)` → TID 6 已在 ready_queue → **PANIC!**
+
+### 为什么本地不触发
+
+这是一个调度时序竞态。Docker 环境中 QEMU/LoongArch 模拟速度与本地不同：
+
+- **Docker**：信号中断 → TID 6 重新进入 futex_wait → TID 5 才执行 wake（两个 Waiter 都在队列里，触发重复加入）
+- **本地**：TID 5 的 wake 在 TID 6 重新进入 futex_wait 之前就到达了（队列中只有一个 Waiter，不会重复）
+
+### 修改点
+
+`os/src/task/futex.rs`：`futex_wait_bitset` 在检测到信号中断准备返回 `EINTR` 前，使用 `futex_key` 从 `FUTEX_QUEUE_BITMAP` 中移除当前任务的 `FutexWaiter` 条目。
+
+```rust
+// woke by signal
+if !task_inner.sig_pending.difference(task_inner.sig_mask).is_empty() {
+    // 清理残留的 Waiter，防止后续 futex_wake 重复唤醒
+    let futex_key = task_inner.futex_key;
+    let futex_pa = task_inner.futex_pa;
+    drop(task_inner);
+    let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+    if let Some(queue) = waitq.get_mut(&futex_pa) {
+        if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
+            queue.remove(idx);
+        }
+    }
+    return Err(SysErrNo::EINTR);
+}
+```
+
+此清理模式与 `handle_timer` 中超时移除 Waiter 的逻辑一致。

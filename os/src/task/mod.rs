@@ -126,6 +126,7 @@ pub const IDLE_PID: usize = 0;
 
 /// 杀死当前线程组的所有线程
 pub fn exit_current_group_and_run_next(exit_code: i32) {
+    debug!("[exit_current_group_and_run_next] exit_code: {}", exit_code);
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
     let mut exit_code = exit_code;
