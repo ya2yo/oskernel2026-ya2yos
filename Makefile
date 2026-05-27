@@ -2,8 +2,8 @@
 
 # riscv64
 # loongarch64
-TARGET_ARCH := riscv64
-# TARGET_ARCH := loongarch64
+# TARGET_ARCH := riscv64
+TARGET_ARCH := loongarch64
 
 # all: riscv64-build loongarch64-build
 all: $(TARGET_ARCH)-build
@@ -113,7 +113,7 @@ set_env:
 	@(rustup target list | grep "${TARGET} (installed)") || rustup target add $(TARGET)
 	@rustup component add rust-src
 	@rustup component add llvm-tools-preview
-
+# 下面这个命令要求你的docker image里面有一个名字叫my-os-dev-env:latest
 docker:
 	docker run --rm -it -v $(PROJECT_ROOT):/workplace -w /workplace my-os-dev-env:latest bash
 

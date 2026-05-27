@@ -84,9 +84,9 @@ pub fn sys_settimer(
 pub fn sys_clock_gettime(clockid: usize, tp: *mut Timespec) -> SyscallRet {
     // let debug_get_time = get_time();
     // debug!("get_time = {}", debug_get_time);
-    if clockid != 0 && clockid != 1 {
-        error!("clockid != 0 and 1 ------------ clockid = {}", clockid);
-    }
+    // if clockid != 0 && clockid != 1 {
+    //     error!("clockid != 0 and 1 ------------ clockid = {}", clockid);
+    // }
     let task = current_task().unwrap();
 
     let token = task

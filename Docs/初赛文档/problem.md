@@ -26,17 +26,17 @@ struct clone_args {
 
 ## pending导致死循环
 
-[32m[DEBUG] [HART0] [PID 4] [TID 5] [(Weak), (Weak), (Weak)][0m
-[32m[DEBUG] [HART0] [PID 4] [TID 5] futex_wake_up_bitset: wake 1 threads[0m
-[32m[DEBUG] [HART0] [PID 4] [TID 5] [syscall ret --- OK] Futex ret = 1[0m
-[32m[DEBUG] [HART0] [PID 4] [TID 5] 222 return_to_user, trap_cx.sepc=0x150003b368, sp=0x2a23422998, kstack=0xffffffc0805ff000, trap_cx=0xffffffc0836aa000[0m
-[32m[DEBUG] [HART0] [PID 4] [TID 5] 111 trap_handler: scause=Exception(Syscall), stval=0x0, sepc=0x150006093c[0m
-[32m[DEBUG] [HART0] [PID 4] [TID 5] [syscall begin] Accept sepc = 0x1500060940[0m
-[32m[DEBUG] [HART0] [PID 4] [TID 5] sys_accept <= fd: 3, flags: 0[0m
-[32m[DEBUG] [HART0] [PID 4] [TID 5] [block_on] strong count: 3[0m
-[32m[DEBUG] [HART0] [PID 4] [TID 5] [block_on] Pending strong_count = 4[0m
-[32m[DEBUG] [HART0] [PID 4] [TID 5] [block_current_and_run_next()] BEGIN![0m
-[32m[DEBUG] [HART0] [PID 4] [TID 5] [processor]: take_current_task![0m
+[DEBUG] [HART0] [PID 4] [TID 5] [(Weak), (Weak), (Weak)]
+[DEBUG] [HART0] [PID 4] [TID 5] futex_wake_up_bitset: wake 1 threads
+[DEBUG] [HART0] [PID 4] [TID 5] [syscall ret --- OK] Futex ret = 1
+[DEBUG] [HART0] [PID 4] [TID 5] 222 return_to_user, trap_cx.sepc=0x150003b368, sp=0x2a23422998, kstack=0xffffffc0805ff000, trap_cx=0xffffffc0836aa000
+[DEBUG] [HART0] [PID 4] [TID 5] 111 trap_handler: scause=Exception(Syscall), stval=0x0, sepc=0x150006093c
+[DEBUG] [HART0] [PID 4] [TID 5] [syscall begin] Accept sepc = 0x1500060940
+[DEBUG] [HART0] [PID 4] [TID 5] sys_accept <= fd: 3, flags: 0
+[DEBUG] [HART0] [PID 4] [TID 5] [block_on] strong count: 3
+[DEBUG] [HART0] [PID 4] [TID 5] [block_on] Pending strong_count = 4
+[DEBUG] [HART0] [PID 4] [TID 5] [block_current_and_run_next()] BEGIN!
+[DEBUG] [HART0] [PID 4] [TID 5] [processor]: take_current_task!
 
 Pending 代码块里面的强引用导致计数异常，会导致死循环。
 
@@ -44,8 +44,7 @@ Pending 代码块里面的强引用导致计数异常，会导致死循环。
 
 运行cgroup_fj相关测试时，由于 `FAIL LTP CASE cgroup_fj_function.sh : 2`等相关测试的失败导致cgroup_fj_proc会直接卡死，没有信号告诉这个任务退出。通过显示地调用`./cgroup_fj_function.sh cpuset` 来避免这个错误。
 
-## 修改后运行panic
-
+修改后运行panic
 单独运行时最后panic`[kernel] Panicked at src/arch/riscv64/qemu/page_table.rs:293 ly: a valid pte without COW flag found at 0x0` 经过检查，发现原来的设计中是这样的
 > // 在原来的写法中，不论是否有cow标志都会返回true，这里改为没有cow标志时返回false
 > // 简单测试发现此处valid的pte都具有cow标志，在这放一个panic，看看未来是否会出现panic
@@ -110,8 +109,8 @@ busybox 文件操作尾段已跑到 #### OS COMP TEST GROUP END busybox-musl ###
 
 ## lmbench
 
-[93m[WARN] [HART0] [PID 4] [TID 4] [kernel] hart 0 Exception(StorePageFault) in application, bad addr = 0x2a23446000, bad instruction = 0x1b384, kernel killed it.[0m
-[93m[WARN] [HART0] [PID 4] [TID 4] don't send SIGSEGV, just exit the process[0m
+[WARN] [HART0] [PID 4] [TID 4] [kernel] hart 0 Exception(StorePageFault) in application, bad addr = 0x2a23446000, bad instruction = 0x1b384, kernel killed it.
+[WARN] [HART0] [PID 4] [TID 4] don't send SIGSEGV, just exit the process
 
 根据 cursor 回答：这是 lmbench 的保护异常测试：它故意向只读 mmap 页写入，期望内核产生 SIGSEGV / SIGBUS，然后用户注册的 signal handler 捕获它，用来测量 protection fault 开销。
 
@@ -157,3 +156,49 @@ Pipe latency: ...
 Process fork+exit: ...
 Process fork+execve: ...
 ```
+
+## riscv 测试 iozone-glibc失败
+
+**riscv当前情况：**
+\#### OS COMP TEST GROUP START iozone-glibc ####
+iozone automatic measurements
+[ERROR] [HART0] [PID 3] [TID 3] clockid != 0 and 1 ------------ clockid = 5
+[ERROR] [HART0] [PID 3] [TID 3] clockid != 0 and 1 ------------ clockid = 5
+panic
+[kernel] Panicked at src/mm/translate.rs:118 called `Option::unwrap()` on a `None` value
+
+修改：
+将os/src/syscall/fs/stat.rs: 90 行附加位置调用的转换函数没有处理缺页情况，改为copy_from_user
+
+**loongarch当前情况:**
+Error relocating ./iozone: __isoc23_sscanf: symbol not found
+符号链接相关本人直接询问AI结果如下：
+分析结果
+  根因：os/src/fs/map_dynamic_link.rs:55 行存在路径映射错误。
+  错误链路
+  log.ans 中的报错：
+  Error relocating ./iozone:__isoc23_sscanf: symbol not found
+  __isoc23_sscanf、__isoc23_strtoll、__isoc23_strtol 是 glibc 2.38 引入的 C23 标准兼容符号。LoongArch 的磁盘镜像中 glibc 版本正是
+  2.38，这些符号是存在的。
+  问题出在内核的动态链接器路径映射。iozone 是 glibc 编译的动态链接 ELF，其 .interp 段指定的解释器路径为
+  /lib64/ld-linux-loongarch-lp64d.so.1。但内核在 map_dynamic_link.rs:55 做了错误的映射：
+  // 第 55 行 — 这是 Bug！
+  "/lib64/ld-linux-loongarch-lp64d.so.1" => Some("/musl/lib/libc.so"),
+  这导致glibc 的二进制被 musl 的 libc.so 作为动态链接器加载。musl 不提供__isoc23_* 这些 glibc 特有的 C23 符号，所以符号解析失败。
+  对比 RISC-V 为什么正常
+  RISC-V 的映射是正确的（第 40 行）：
+  "/lib/ld-linux-riscv64-lp64d.so.1" => Some("/glibc/lib/ld-linux-riscv64-lp64d.so.1"),
+  这是将 glibc 动态链接器正确地映射到了 glibc 自己的 ld-linux-riscv64-lp64d.so.1。RISC-V 的 iozone-glibc 测试失败是另一个问题（translate.rs:118
+  panic，clockid=5 导致的缺页异常，已在 problem.md 中描述），和动态链接无关。
+  修复方法
+  os/src/fs/map_dynamic_link.rs 需要两处改动：
+  第 55 行：将映射目标从 /musl/lib/libc.so 改为真正的 glibc 动态链接器：
+  "/lib64/ld-linux-loongarch-lp64d.so.1" => Some("/glibc/lib/ld-linux-loongarch-lp64d.so.1"),
+  第 19 行附近：在 DYNAMIC_PATH 集合中补上 LoongArch 的 glibc 动态链接器路径：
+  "/glibc/lib/ld-linux-loongarch-lp64d.so.1",
+
+修复完后继续报错：
+./iozone: error while loading shared libraries: libc.so.6: cannot open shared object file: No such file or directory
+panic
+[kernel] Panicked at src/mm/translate.rs:234 called `Option::unwrap()` on a `None` value
+依旧是翻译机制没有考虑到缺页情况，没有调用缺页处理函数。

@@ -1,3 +1,4 @@
+use alloc::string::String;
 use linux_raw_sys::general::{
     statx, statx_timestamp, AT_EMPTY_PATH, AT_FDCWD, STATX_BASIC_STATS, STATX__RESERVED,
 };
@@ -5,13 +6,12 @@ use log::debug;
 
 use crate::{
     fs::{
-        open, superblock_fs_stat, InodeType, Kstat, OpenFlags, Statfs, MAX_PATH_LEN, MNT_TABLE,
-        NONE_MODE,
+        InodeType, Kstat, MAX_PATH_LEN, MNT_TABLE, NONE_MODE, OpenFlags, Statfs, open, superblock_fs_stat
     },
-    mm::{copy_to_user, if_bad_address, put_data, translated_str},
+    mm::{copy_from_user, copy_to_user, if_bad_address, put_data, translated_str},
     syscall::options::{FaccessatFileMode, FaccessatMode},
     task::current_task,
-    utils::{rsplit_once, trim_start_slash, SysErrNo, SyscallRet},
+    utils::{SysErrNo, SyscallRet, rsplit_once, trim_start_slash},
 };
 
 fn kstat_to_statx(kst: &Kstat, _mask: u32) -> statx {
@@ -86,8 +86,14 @@ pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, _flags: usize
     let task = current_task().unwrap();
 
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
-    let path = trim_start_slash(translated_str(token, path));
+    let memory_set = &proc_inner.get_locked_memory_set_read();
+    let token = memory_set.token();
+    let mut dst_str = [0u8;MAX_PATH_LEN];
+    copy_from_user(memory_set, path as usize, &mut dst_str);
+    // 转成字符串
+    let len = dst_str.iter().position(|&b| b == 0).unwrap_or(MAX_PATH_LEN);
+    let path_str = core::str::from_utf8(&dst_str[..len]).unwrap_or("");
+    let path = trim_start_slash(String::from(path_str));
 
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     //log::info!("[sys_fstatat] abs_path={}", &abs_path);
