@@ -7,7 +7,7 @@
 | 类别 | 名称 |
 | ------ | ------ |
 | AI 编程工具 | Cursor, Claude Code |
-| 大语言模型 | GPT-5.5 (ChatGPT), Gemini 3 Flash Preview, DeepSeek-v4 |
+| 大语言模型 | GPT-5.5 (ChatGPT), Gemini 3 Flash Preview, DeepSeek-v4, Claude Opus 4.7 |
 
 所有 AI 工具的使用均限于**辅助开发**（代码分析、Bug 定位、代码生成建议、文档完善），最终代码决策由人工审核后采纳。按照大赛要求，本文档及开发日志、项目设计文档中均设有 AI 使用专门章节，git commit 记录中标注了 AI 使用情况。由于部分早期 commit 的 AI 标注不够完整，本文档作为最全面的补充说明。
 

@@ -457,7 +457,7 @@ fn get_score() {
     // run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
     // run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
-    run_testsuit("glibc\0", "iozone_testcode.sh\0");
+    // run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 龙芯 通过
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");
     // run_testsuit("glibc\0", "libcbench_testcode.sh\0");
     // run_testsuit("glibc\0", "libctest_testcode.sh\0");
