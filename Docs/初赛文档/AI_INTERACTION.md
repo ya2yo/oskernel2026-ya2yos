@@ -17,16 +17,24 @@
 
 ### 1. 代码理解与注释
 
-- 迁移 StarryOS 网络模块时，使用大模型辅助阅读和理解复杂的异步网络代码，添加注释
+- **StarryOS 网络模块注释**（主要工作）：使用 ChatGPT、Gemini 等模型逐文件阅读和分析 StarryOS 的网络模块代码，为以下核心文件添加了详细的中文注释：
+  - `os/src/net/mod.rs`（120行）：网络子系统初始化流程、全局单例（LISTEN_TABLE、SOCKET_SET、SERVICE）、poll_interfaces 轮询机制
+  - `os/src/net/socket.rs`（300+行）：套接字抽象层，包括 `SocketOps` trait 的所有方法语义、`SendFlags`/`RecvFlags` 每个标志位的 POSIX 语义、`SocketAddrEx` 枚举设计
+  - `os/src/net/tcp.rs`（560+行）：TCP 状态机（`Idle → Connecting → Connected → Closed`）、三次握手流程、send/recv 的 PEEK 支持、shutdown 的读写半关闭逻辑
+  - `os/src/net/udp.rs`（360行）：UDP 无连接语义、sendto/recvfrom 的地址处理、`ExpectedRemote` 枚举区分已连接/未连接模式
+  - `os/src/net/listen_table.rs`（195行）：端口监听表的数据结构（`Arc<Mutex<Option<Box<...>>>>` 设计）、SYN 队列管理、`incoming_tcp_packet` 的协议栈底层回调
+  - `os/src/net/general.rs`（160行）：通用套接字选项（非阻塞模式、超时、地址重用）及 `send_poller`/`recv_poller` 的轮询-阻塞桥接模式
+  - `os/src/task/future/mod.rs`（167行）：`Future` 执行器、`MyWaker` 的弱引用设计、`block_on` 的执行流程、`interruptible` 的可中断包装
 - 为 `pci_config` 相关函数、`trap.S` 等底层汇编代码添加注释
 
 ### 2. 代码生成
 
-- 生成 socket 系统调用的基础测试用例
-- 辅助实现 `recvfrom`、`recvmsg`、`sendmsg` 等系统调用
-- 辅助实现 `setsockopt`/`getsockopt`、Unix 类型套接字等功能
-- 辅助重构 `initproc.rs` 结构
-- 辅助完成了 `copy_from_user` 和 `copy_to_user` 的实现
+- **基于测例驱动的代码补充**：通过分析 initproc.rs 中注册的测试套件（`musl`/`glibc` × `basic`/`busybox`/`lua`/`iozone`/`libcbench`/`libctest`/`lmbench`/`ltp`/`cyclictest`），确定每个测例依赖的系统调用，使用 AI 辅助逐个实现缺失的 syscall
+- **Socket 系统调用测试**：生成 `test_socket()` 函数（`user/src/bin/initproc.rs:470`），涵盖 TCP/UDP 套接字的创建、绑定、监听、发送、接收全流程
+- 辅助实现 `recvfrom`、`recvmsg`、`sendmsg` 等系统调用及其与 `msghdr` 结构体的交互
+- 辅助实现 `setsockopt`/`getsockopt`、Unix 域套接字（`SOCK_STREAM`/`SOCK_DGRAM`）等功能
+- 辅助重构 `initproc.rs` 中测试用例的组织结构（`run_testsuit` 统一入口）
+- 辅助完成 `copy_from_user` 和 `copy_to_user` 的安全读写模式
 
 ### 3. Bug 分析与定位
 
@@ -55,9 +63,10 @@
 #### 迁移 StarryOS 网络模块（5月初）
 
 - **工具/模型**：ChatGPT, Gemini, DeepSeek
-- **场景**：代码理解
-- **描述**：StarryOS 的网络模块采用异步编程模型，代码结构复杂。使用多个大模型辅助阅读代码，添加注释以便理解 `Future`、`block_on` 等异步机制。
-- **关联 commit**：`6bafdb6`（merge starry 分支）
+- **场景**：代码理解与注释
+- **描述**：StarryOS 的网络模块基于 smoltcp 协议栈和异步 Future 模型，涉及 TCP 状态机、UDP 无连接传输、端口监听表、全局套接字集合等组件。代码原本几乎没有注释，且使用了 `Arc<Mutex<Option<Box<...>>>>` 等复杂的 Rust 嵌套类型。使用多个大模型逐文件分析代码逻辑，为全部 15+ 个文件添加了详细的中文注释，涵盖每个结构体的职责、每个方法的协议语义、每个标志位的 POSIX 含义。
+- **具体文件**：`os/src/net/{mod, socket, tcp, udp, general, listen_table, options, service, device, state, router, wrapper, consts, unix}.rs`，以及 `os/src/task/future/mod.rs`
+- **关联 commit**：`6bafdb6`（merge starry 分支，commit message 标注了 ChatGPT, Gemini, DeepSeek）
 
 #### 生成 Socket 测试用例（5月初）
 
@@ -65,6 +74,20 @@
 - **场景**：代码生成
 - **描述**：利用 AI 生成 socket 系统调用（`sys_socket`、`sys_bind`、`sys_listen`、`sys_accept` 等）的基础测试用例。
 - **关联 commit**：`ef5703d`, `7b447ed`
+
+#### 测例驱动的系统调用补充（5月初 - 5.25，持续进行）
+
+- **工具/模型**：Cursor, ChatGPT, Gemini
+- **场景**：代码生成
+- **描述**：整个开发的推进方式是"以测促补"——根据 initproc.rs 中注册的测试套件运行结果，确定缺失或错误的系统调用，使用 AI 辅助实现。initproc.rs 中维护了两组测试矩阵（musl/glibc × 10+ 个测试脚本），每个测试脚本对应一组系统调用依赖。
+- **典型流程**：
+  1. 运行某个测试脚本（如 `iozone_testcode.sh`）
+  2. 内核 panic 或返回错误码
+  3. 将错误日志提供给 AI（Cursor），询问"这个测例需要哪些系统调用？当前缺少什么？"
+  4. AI 分析后列出缺失的 syscall 及其推荐实现方式
+  5. 人工审查后采纳或调整
+  6. 重新运行测试验证
+- **通过此方式实现的主要系统调用**：`sys_statx`、`sys_sendmsg`、`sys_recvmsg`、`sys_rt_sigsuspend`、`sys_futex` 的多种操作、`sys_clone3` 等
 
 #### 重构 initproc.rs（5月初）
 
@@ -106,12 +129,23 @@
 
 ### 第三阶段：调试与 Bug 修复（5.19 - 5.23）
 
-#### 线程5僵尸线程死循环（5.19）
+#### 线程5僵尸线程死循环 — block_on 异常引用计数（5.19）
 
 - **工具/模型**：Cursor
-- **场景**：Bug 分析
-- **描述**：使用 Cursor 对输出的日志进行分析。发现线程5成为僵尸线程未能释放，导致内核死循环。根因是在引入 StarryOS 网络模块时未能充分理解异步编程思想，创建的 Future 里面对 Task 的强引用在不运行的情况下不会被释放。
-- **关键发现**：日志中 `Pending strong_count = 4` 表明引用计数异常，导致 future 无法被 drop。
+- **场景**：Bug 分析与定位
+- **描述**：内核在运行 LTP 测试前几个测例时出现死循环。使用 Cursor 对内核输出的 debug 日志进行分析。日志关键片段：
+
+  ```text
+  [block_on] strong count: 3
+  [block_on] Pending strong_count = 4
+  ```
+
+  `block_on` 函数（`os/src/task/future/mod.rs:81`）在进入 Pending 状态前后各打印一次 `Arc::strong_count`。第一次强引用计数为 3，第二次却变成了 4（代码注释："这里怎么比上面多一个"）。Cursor 分析指出：在 `block_on` 循环中，`MyWaker` 持有 `WeakTaskRef`（弱引用），但 `poll()` 调用返回 `Pending` 后，Future 内部可能通过 Waker 保存了对 Task 的额外强引用。当异步网络操作（如 `accept`、`recvfrom`）返回 Pending 时，其关联的 Future 未运行完成，但内部对 Task 的强引用不被释放，导致任务引用计数异常，永远无法进入就绪态，表现为死循环。
+
+- **根因**：引入 StarryOS 网络模块时未能充分理解异步编程思想——`MyWaker` 虽然设计为 `WeakTaskRef` 防止循环引用，但 Future 的 `poll()` 闭包在挂起期间通过 `current_task()` 额外持有了 `Arc<Task>`，导致强引用计数永远不会降到 0，任务无法被正确回收。
+
+- **修复思路**：在 `block_on` 的 Pending 分支中，确保在调用 `block_current_and_run_next()` 休眠当前任务之前，显式 drop 掉对 Task 的强引用，使调度器能正确处理任务生命周期。
+
 - **关联 commit**：`52ac423`, `c32d05c`
 
 #### 修复 translate.rs 安全性问题（5.23）
