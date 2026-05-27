@@ -334,3 +334,70 @@ if !task_inner.sig_pending.difference(task_inner.sig_mask).is_empty() {
 ```
 
 此清理模式与 `handle_timer` 中超时移除 Waiter 的逻辑一致。
+
+### 补充修复：add_signal 与 futex_wake 竞态
+
+上述修复只覆盖了**被阻塞任务先被调度运行**再检测信号的路径。但在非抢占内核中，存在另一条更短的竞态路径：
+
+#### 时序
+
+1. **TID 6** `futex_wait(pa)` → Waiter{A} 入队 → `block_current_and_run_next()` → Blocked
+2. **TID 5** `tkill(SIGRT_1 → TID 6)` → `add_signal()`:
+   - `sig_pending |= SIGRT_1`
+   - TID 6 是 Blocked → 改 Ready → **`ready_queue::add_task(TID 6)`** ← 第一次入队
+3. **TID 5** 仍在运行，调用 `futex_wake(pa)` → 遍历到残留的 Waiter{A} → `wakeup_futex_task(TID 6)`:
+   - **`ready_queue::add_task(TID 6)`** ← 第二次入队 → **PANIC!**
+
+关键在于 `add_signal`（`signal/mod.rs:240`）唤醒阻塞态任务时，**没有清理** FUTEX_QUEUE_BITMAP 中的 Waiter。TID 6 还没被调度运行（非抢占），所以第一步的 EINTR 清理代码没有机会执行。
+
+#### 修改点
+
+三处协同修复：
+
+**1. `os/src/task/manager.rs` — `wakeup_futex_task`**
+
+```rust
+pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
+    let mut task_inner = task.inner_lock();
+    if task_inner.task_status == TaskStatus::Ready {
+        // 任务已被信号唤醒并在就绪队列中，只需清理 futex 字段
+        task_inner.futex_key = 0;
+        task_inner.futex_pa = 0;
+        drop(task_inner);
+        return;
+    }
+    task_inner.task_status = TaskStatus::Ready;
+    task_inner.futex_key = 0;
+    task_inner.futex_pa = 0;
+    drop(task_inner);
+    ready_queue::add_task(&task);
+}
+```
+
+当 `futex_wake` / `handle_timer` / `futex_requeue` 调用此函数时，若任务已被 `add_signal` 提前唤醒（状态为 Ready），则跳过重复入队，仅清理 futex 字段。
+
+**2. `os/src/task/futex.rs` — `new_futex_key`**
+
+```rust
+fn new_futex_key() -> usize {
+    // +1 确保 key 从 1 开始，0 表示"无/已清理的 Waiter"
+    FUTEX_KEY_COUNTER.fetch_add(1, Ordering::Relaxed) + 1
+}
+```
+
+原来 `fetch_add` 返回旧值，第一个 key 为 0，与 `wakeup_futex_task` 中 "key=0 表示已清理" 的语义冲突。
+
+**3. `os/src/task/futex.rs` — EINTR 清理路径增加守卫**
+
+```rust
+if futex_key != 0 {
+    let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+    if let Some(queue) = waitq.get_mut(&futex_pa) {
+        if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
+            queue.remove(idx);
+        }
+    }
+}
+```
+
+当任务最终被调度运行时，`wakeup_futex_task` 可能已将 `futex_key` 清零（通过 `add_signal`→`futex_wake` 路径）。守卫避免用 key=0 误删其他 Waiter。

@@ -70,6 +70,13 @@ pub mod ready_queue {
 
 pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
     let mut task_inner = task.inner_lock();
+    if task_inner.task_status == TaskStatus::Ready {
+        // 任务已被信号唤醒并在就绪队列中，只需清理 futex 字段
+        task_inner.futex_key = 0;
+        task_inner.futex_pa = 0;
+        drop(task_inner);
+        return;
+    }
     task_inner.task_status = TaskStatus::Ready;
     task_inner.futex_key = 0;
     task_inner.futex_pa = 0;

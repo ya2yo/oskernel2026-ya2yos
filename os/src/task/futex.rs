@@ -123,10 +123,13 @@ fn futex_wait_bitset(
         let futex_key = task_inner.futex_key;
         let futex_pa = task_inner.futex_pa;
         drop(task_inner);
-        let mut waitq = FUTEX_QUEUE_BITMAP.lock();
-        if let Some(queue) = waitq.get_mut(&futex_pa) {
-            if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
-                queue.remove(idx);
+        // futex_key==0 表示 waiter 已被 wakeup_futex_task 清理，无需重复操作
+        if futex_key != 0 {
+            let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+            if let Some(queue) = waitq.get_mut(&futex_pa) {
+                if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
+                    queue.remove(idx);
+                }
             }
         }
         return Err(SysErrNo::EINTR);
@@ -177,7 +180,8 @@ fn futex_wake_up_bitset(pa: usize, max_num: i32, bitset: u32) -> usize {
 static FUTEX_KEY_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn new_futex_key() -> usize {
-    FUTEX_KEY_COUNTER.fetch_add(1, Ordering::Relaxed)
+    // +1 确保 key 从 1 开始，0 表示"无/已清理的 Waiter"
+    FUTEX_KEY_COUNTER.fetch_add(1, Ordering::Relaxed) + 1
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/futex.2.html
