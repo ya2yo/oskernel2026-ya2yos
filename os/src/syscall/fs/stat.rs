@@ -135,20 +135,24 @@ pub fn sys_statx(
         }
         proc_inner.fd_table.get(dirfd as usize)?.any().fstat()
     } else {
-        let path = translated_str(memory_set.token(), path);
-        if path.is_empty() && flags & AT_EMPTY_PATH as usize != 0 {
+        let mut dst_str = [0u8; MAX_PATH_LEN];
+        copy_from_user(&memory_set, path as usize, &mut dst_str);
+        let len = dst_str.iter().position(|&b| b == 0).unwrap_or(MAX_PATH_LEN);
+        let path_str = core::str::from_utf8(&dst_str[..len]).unwrap_or("");
+        let path_str = trim_start_slash(String::from(path_str));
+        if path_str.is_empty() && flags & AT_EMPTY_PATH as usize != 0 {
             // path 为空字符串，且设置了 AT_EMPTY_PATH，同样按 dirfd 查询
             if dirfd == AT_FDCWD as isize {
                 return Err(SysErrNo::EINVAL);
             }
             proc_inner.fd_table.get(dirfd as usize)?.any().fstat()
         } else {
-            if path.is_empty() {
+            if path_str.is_empty() {
                 return Err(SysErrNo::ENOENT);
             }
             // 绝对路径直接打开，dirfd 会被 get_abs_path 忽略；
             // 相对路径则由 get_abs_path 根据 AT_FDCWD 或 dirfd 转成绝对路径
-            let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+            let abs_path = proc_inner.get_abs_path(dirfd, &path_str)?;
             open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?
                 .any()
                 .fstat()

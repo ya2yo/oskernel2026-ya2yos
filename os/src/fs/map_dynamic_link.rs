@@ -17,7 +17,9 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         // glibc
         "/glibc/lib/dlopen_dso.so",
         "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
+        "/glibc/lib/ld-linux-loongarch-lp64d.so.1",
         "/glibc/lib/libc.so",
+        "/glibc/lib/libc.so.6",
         "/glibc/lib/libm.so",
         "/glibc/lib/tls_align_dso.so",
         "/glibc/lib/tls_get_new-dtv_dso.so",
@@ -52,8 +54,13 @@ pub fn map_library_path(requested_path: &str) -> Option<&str> {
         "/usr/lib/libc.so.6" => Some("/glibc/lib/libc.so"),       // libctest
 
         // 在实现loongarch时添加
-        "/lib64/ld-linux-loongarch-lp64d.so.1" => Some("/musl/lib/libc.so"),
+        "/lib64/ld-linux-loongarch-lp64d.so.1" => Some("/glibc/lib/ld-linux-loongarch-lp64d.so.1"),
         "/lib64/ld-musl-loongarch-lp64d.so.1" => Some("/musl/lib/libc.so"),
+        "/lib64/libc.so.6" => Some("/glibc/lib/libc.so.6"),
+        "/lib/libc.so.6" => Some("/glibc/lib/libc.so.6"),
+        "/usr/lib64/libc.so.6" => Some("/glibc/lib/libc.so.6"),
+        // 动态链接器可能以CWD为基路径搜索，CWD在调用iozone时是/glibc
+        "/glibc/libc.so.6" => Some("/glibc/lib/libc.so.6"),
         _ => None,
     }
 }

@@ -18,12 +18,16 @@ use crate::{
         DEFAULT_FILE_MODE,
     },
     mm::{
-        get_data, put_data, translate::strong_translated_refmut, translated_refmut, MapAreaType,
-        MapPermission, MemorySet, MemorySetInner, PhysPageNum, VirtAddr,
+        copy_to_user, get_data, put_data, translate::strong_translated_refmut, translated_refmut,
+        MapAreaType, MapPermission, MemorySet, MemorySetInner, PhysPageNum, VirtAddr,
     },
     signal::{SigSet, SigTable},
     syscall::CloneFlags,
-    task::{kernel_stack::KernelStackOnHeap, tid},
+    task::{
+        futex::futex_wake_up,
+        kernel_stack::KernelStackOnHeap,
+        tid,
+    },
     timer::{TimeData, TimeVal, Timer},
     trap::trap_types::{Exception, Trap},
     utils::{get_abs_path, is_abs_path, SysErrNo},
@@ -208,7 +212,24 @@ impl TaskControlBlock {
             task_inner.clear_child_tid
         );
 
-        // TODO: 此处需要clear_tid吗？
+        // execve会替换当前活跃的地址空间，clear_child_tid指向旧地址空间，
+        // 替换后在新地址空间中没有对应映射，退出时translate_va会panic
+        // 因此必须在替换前，在旧地址空间中完成写0和futex_wake
+        if task_inner.clear_child_tid != 0 {
+            let old_proc = self.process.inner_lock();
+            let old_memory_set = old_proc.get_locked_memory_set_read();
+            let _ = copy_to_user(
+                &old_memory_set,
+                task_inner.clear_child_tid as usize,
+                &[0u8; 4],
+            );
+            if let Some(pa) = old_memory_set.translate_va(VirtAddr::from(task_inner.clear_child_tid))
+            {
+                futex_wake_up(pa.0, 1);
+            }
+            drop(old_memory_set);
+            task_inner.clear_child_tid = 0;
+        }
 
         self.process
             .change_memory_set_and_sigtable(memory_set, SigTable::new());
