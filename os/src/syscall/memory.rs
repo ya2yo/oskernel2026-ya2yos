@@ -99,7 +99,7 @@ pub fn sys_mremap(
     old_size: usize,
     new_size: usize,
     flags: i32,
-    new_addr: usize,
+    _new_addr: usize,
 ) -> SyscallRet {
     let flags_bitmap = MremapFlags::from_bits(flags).expect("Invalid flags on mremap!");
     // debug!(

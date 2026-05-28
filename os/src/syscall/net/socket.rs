@@ -153,7 +153,7 @@ pub fn sys_bind(sockfd: usize, addr: *const u8, addrlen: u32) -> SyscallRet {
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/listen.2.html
-pub fn sys_listen(sockfd: usize, backlog: u32) -> SyscallRet {
+pub fn sys_listen(sockfd: usize, _backlog: u32) -> SyscallRet {
     // debug!("sys_listen <= fd: {}, backlog: {}", sockfd, backlog);
     Socket::from_fd(sockfd)?.listen()?;
 

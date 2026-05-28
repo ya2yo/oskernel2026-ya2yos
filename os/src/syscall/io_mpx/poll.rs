@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// 参考 https://man7.org/linux/man-pages/man2/ppoll.2.html
-pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, mask: usize) -> SyscallRet {
+pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.inner_lock();
     let token = task

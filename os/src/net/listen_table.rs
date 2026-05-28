@@ -146,7 +146,7 @@ impl ListenTable {
     /// 【协议栈底层调用】当网卡收到 TCP 报文且没有现成 Socket 匹配时，检查是否是发给监听端口的
     pub fn incoming_tcp_packet(
         &self,
-        src: IpEndpoint,
+        _src: IpEndpoint,
         dst: IpEndpoint,
         sockets: &mut SocketSet<'_>,
     ) {

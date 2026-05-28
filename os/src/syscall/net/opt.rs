@@ -227,7 +227,7 @@ pub fn sys_getsockopt(
     sockfd: usize,          // 文件描述符
     level: u32,             // 协议，level 都会设为 SOL_SOCKET
     optname: u32,           // 设定或取出的套接字选项
-    user_optval: *const u8, // 指向缓冲区的指针，用来指定或者返回选项的值
+    _user_optval: *const u8, // 指向缓冲区的指针，用来指定或者返回选项的值
     optlen: u32,            // 由 optval 所指向的缓冲区空间大小（字节数）
 ) -> SyscallRet {
     // debug!(

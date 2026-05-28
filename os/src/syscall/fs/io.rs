@@ -342,7 +342,7 @@ pub fn sys_copy_file_range(
     outfd: usize,
     off_out: usize,
     count: usize,
-    flags: u32,
+    _flags: u32,
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.process.inner_lock();
