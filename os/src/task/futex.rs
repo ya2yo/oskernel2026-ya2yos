@@ -139,11 +139,11 @@ fn futex_wait_bitset(
 }
 
 fn futex_wake_up_bitset(pa: usize, max_num: i32, bitset: u32) -> usize {
-    log::debug!(
-        "[sys_futex] futex wakeup thread,max_num={},key={:?}",
-        max_num,
-        pa
-    );
+    // log::debug!(
+    //     "[sys_futex] futex wakeup thread,max_num={},key={:?}",
+    //     max_num,
+    //     pa
+    // );
     let mut futex_queue = FUTEX_QUEUE_BITMAP.lock();
     let mut num: usize = 0;
     if let Some(queue) = futex_queue.get_mut(&pa) {
@@ -173,7 +173,7 @@ fn futex_wake_up_bitset(pa: usize, max_num: i32, bitset: u32) -> usize {
             }
         }
     }
-    debug!("futex_wake_up_bitset: wake {} threads", num);
+    // debug!("futex_wake_up_bitset: wake {} threads", num);
     num
 }
 
@@ -197,7 +197,6 @@ pub fn sys_futex(
     debug!("futex_op={}", futex_op);
     debug!("timeout={:#x}", timeout as usize);
     debug!("uaddr={:#x}", uaddr as usize);
-    // let cmd = FutexCmd::from_bits(futex_op & 0x7f).unwrap();
     let cmd = FutexCmd::try_from(futex_op & 0x7f).expect("invalid futex op");
     debug!("futex cmd={:?}", cmd);
     let opt = FutexOpt::from_bits_truncate(futex_op);
@@ -239,18 +238,18 @@ pub fn sys_futex(
             real_timeout = real_timeout + get_time_spec();
             // real_timeout.tv_sec += crate::timer::NOW_TIME_STAMP;
         }
-        debug!("real time out = {:?}", real_timeout);
+        // debug!("real time out = {:?}", real_timeout);
         timeout_opt = Some(real_timeout);
     }
 
-    log::debug!(
-        "[sys_futex] uaddr = {:x}, pa = {:?}, cmd = {:?}, val = {},opt={:?}",
-        uaddr as usize,
-        pa,
-        cmd,
-        val,
-        opt
-    );
+    // log::debug!(
+    //     "[sys_futex] uaddr = {:x}, pa = {:?}, cmd = {:?}, val = {},opt={:?}",
+    //     uaddr as usize,
+    //     pa,
+    //     cmd,
+    //     val,
+    //     opt
+    // );
 
     let pa2 = memory_set.translate_va(VirtAddr::from(uaddr2 as usize));
     drop(memory_set);
@@ -309,12 +308,12 @@ pub fn handle_timer(task: Arc<TaskControlBlock>, futex_key: usize) {
         // do nothing
         return;
     }
-    debug!(
-        "handle_timer: task=(tid={},key={},pa={:#x})",
-        task.tid(),
-        inner.futex_key,
-        inner.futex_pa
-    );
+    // debug!(
+    //     "handle_timer: task=(tid={},key={},pa={:#x})",
+    //     task.tid(),
+    //     inner.futex_key,
+    //     inner.futex_pa
+    // );
     // 从链表中取下这次Wait
     let queue = waitq
         .get_mut(&inner.futex_pa)

@@ -210,10 +210,10 @@ pub fn sys_faccessat(dirfd: isize, path: *const u8, mode: u32, _flags: usize) ->
 
     let mode = FaccessatMode::from_bits(mode).unwrap();
 
-    debug!(
-        "[sys_faccessat] dirfd is {} and path is {} and mode is {:?}",
-        dirfd, path, mode
-    );
+    // debug!(
+    //     "[sys_faccessat] dirfd is {} and path is {} and mode is {:?}",
+    //     dirfd, path, mode
+    // );
 
     if mode.contains(FaccessatMode::W_OK) {
         if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().got_mount(path.clone()) {

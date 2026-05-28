@@ -462,7 +462,7 @@ pub static TIMERS: Lazy<Mutex<BinaryHeap<TimerCondVar>>> =
 /// futex模块用它来区分每一次不同的futex Wait
 pub fn add_futex_timer(expire: Timespec, task: &Arc<TaskControlBlock>, futex_key: usize) {
     let mut timers = TIMERS.lock();
-    debug!("add futex timer task {} {}", task.pid(), task.tid());
+    // debug!("add futex timer task {} {}", task.pid(), task.tid());
     timers.push(TimerCondVar {
         expire,
         task: Arc::downgrade(task),
@@ -488,8 +488,8 @@ pub fn check_futex_timer() {
         // debug!("expire={:?}, current={:?}", timer.expire, current);
         if timer.expire <= current {
             if let Some(task) = timer.task.upgrade() {
-                debug!("[check_timer] wake up task {} {}", task.pid(), task.tid());
-                debug!("strong count: {}", Arc::strong_count(&task));
+                // debug!("[check_timer] wake up task {} {}", task.pid(), task.tid());
+                // debug!("strong count: {}", Arc::strong_count(&task));
                 if timer.kind == TimerType::Futex {
                     // 调用 wakeup_task 唤醒超时线程
                     handle_timer(Arc::clone(&task), timer.extra_data);

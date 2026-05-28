@@ -89,7 +89,7 @@ impl ListenTable {
 
     /// 停止对某个端口的监听并释放相关 Socket 资源
     pub fn unlisten(&self, port: u16) {
-        debug!("TCP socket unlisten on {}", port);
+        // debug!("TCP socket unlisten on {}", port);
         *self.tcp[port as usize].lock() = None;
     }
 
@@ -172,10 +172,10 @@ impl ListenTable {
             }
             // 将 Socket 加入全局管理集合并放入当前端口的待处理队列
             let handle = sockets.add(socket);
-            debug!(
-                "TCP socket {}: prepare for connection {} -> {}",
-                handle, src, entry.listen_endpoint
-            );
+            // debug!(
+            //     "TCP socket {}: prepare for connection {} -> {}",
+            //     handle, src, entry.listen_endpoint
+            // );
             entry.syn_queue.push_back(handle);
         }
     }

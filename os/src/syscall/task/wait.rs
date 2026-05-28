@@ -19,6 +19,7 @@ use crate::{
 ///
 /// 参考 https://man7.org/linux/man-pages/man2/wait4.2.html
 pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet {
+    // debug!("[sys_wait4] enter!");
     if pid < -1 {
         // 需要进程组功能
         panic!(
@@ -88,10 +89,10 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
             let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
 
             if wstatus as usize != 0x0 {
-                debug!(
-                    "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}, strong_count: {}", 
-                    pid, found_pid, exit_code, wstatus as usize, Arc::strong_count(&child)
-                );
+                // debug!(
+                //     "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}, strong_count: {}", 
+                //     pid, found_pid, exit_code, wstatus as usize, Arc::strong_count(&child)
+                // );
                 let token = task
                     .process
                     .inner_lock()

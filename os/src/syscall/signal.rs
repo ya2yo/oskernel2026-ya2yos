@@ -19,10 +19,10 @@ pub fn sys_rt_sigaction(
     act: *const SigAction,
     old_act: *mut SigAction,
 ) -> SyscallRet {
-    debug!(
-        "[sys_rt_sigaction] signo is {}, act is {:?}, old_act is {:?}",
-        signo, act, old_act
-    );
+    // debug!(
+    //     "[sys_rt_sigaction] signo is {}, act is {:?}, old_act is {:?}",
+    //     signo, act, old_act
+    // );
     if signo > SIG_MAX_NUM {
         return Err(SysErrNo::EINVAL);
     }
@@ -37,12 +37,12 @@ pub fn sys_rt_sigaction(
     }
     if act as usize != 0 {
         let new_act = get_data(token, act);
-        debug!(
-            "[sys_rt_sigaction] signo is {}, sig is {:?}, act is {:?}",
-            signo,
-            SigSet::from_sig(signo),
-            new_act
-        );
+        // debug!(
+        //     "[sys_rt_sigaction] signo is {}, sig is {:?}, act is {:?}",
+        //     signo,
+        //     SigSet::from_sig(signo),
+        //     new_act
+        // );
         let new_sig: KSigAction = if new_act.sa_handler == 0 {
             KSigAction::new(signo, false)
         } else if new_act.sa_handler == 1 {
@@ -74,10 +74,10 @@ pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) ->
     let mut task_inner = task.inner_lock();
     let how = SignalMaskFlag::from_bits(how).ok_or(SysErrNo::EINVAL)?;
 
-    debug!(
-        "oldset is {:x}, set is {:x}",
-        old_set as usize, set as usize
-    );
+    // debug!(
+    //     "oldset is {:x}, set is {:x}",
+    //     old_set as usize, set as usize
+    // );
     if old_set as usize != 0 {
         put_data(memory_set.token(), old_set, task_inner.sig_mask);
     }
@@ -117,7 +117,7 @@ pub fn sys_rt_sigtimedwait(
 /// 参考 https://man7.org/linux/man-pages/man2/rt_sigsuspend.2.html
 pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
     // TODO(ZMY): 暂停线程
-    debug!("[sys_rt_sigsuspend] mask is {:?}", mask);
+    // debug!("[sys_rt_sigsuspend] mask is {:?}", mask);
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
     let token = task
@@ -136,7 +136,7 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
         let pending = task_inner.sig_pending.difference(task_inner.sig_mask); // 修复bug, 改为判断待处理信号和掩码信号的不同，
         if !pending.is_empty() {
             // 发生中断
-            debug!("[sys_rt_sigsuspend] pending is {:?}", pending);
+            // debug!("[sys_rt_sigsuspend] pending is {:?}", pending);
             task_inner.sig_mask = old_mask;
             return Err(SysErrNo::EINTR);
         }
@@ -157,7 +157,7 @@ pub fn sys_kill(pid: isize, signo: usize) -> SyscallRet {
     }
     let sig = SigSet::from_sig(signo);
 
-    debug!("[sys_kill] pid is {}, sig is {:?}", pid, sig);
+    // debug!("[sys_kill] pid is {}, sig is {:?}", pid, sig);
 
     let ret = match pid {
         _ if pid > 0 => send_signal_to_thread_group(pid as usize, sig),
@@ -171,7 +171,7 @@ pub fn sys_kill(pid: isize, signo: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/tkill.2.html
 pub fn sys_tkill(tid: usize, signo: usize) -> SyscallRet {
     let sig = SigSet::from_sig(signo);
-    debug!("[sys_tkill] thread {} receive signal {:?}", tid, sig);
+    // debug!("[sys_tkill] thread {} receive signal {:?}", tid, sig);
     send_signal_to_thread(tid, sig);
     Ok(0)
 }
@@ -180,10 +180,10 @@ pub fn sys_tkill(tid: usize, signo: usize) -> SyscallRet {
 pub fn sys_tgkill(tgid: usize, tid: usize, signo: usize) -> SyscallRet {
     let sig = SigSet::from_sig(signo);
 
-    debug!(
-        "[sys_tgkill] tgid is {}, tid is {}, sig is {:?}",
-        tgid, tid, sig
-    );
+    // debug!(
+    //     "[sys_tgkill] tgid is {}, tid is {}, sig is {:?}",
+    //     tgid, tid, sig
+    // );
 
     send_signal_to_thread_of_proc(tgid, tid, sig);
     Ok(0)

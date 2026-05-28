@@ -124,11 +124,11 @@ impl TcpSocket {
             smol::State::SynSent => false, // 还在发送 SYN，未连接
             smol::State::Established => {
                 self.state.set(State::Connected); // 连接成功
-                debug!(
-                    "TCP socket {}: connected to {}",
-                    self.handle,
-                    socket.remote_endpoint().unwrap(),
-                );
+                // debug!(
+                //     "TCP socket {}: connected to {}",
+                //     self.handle,
+                //     socket.remote_endpoint().unwrap(),
+                // );
                 true
             }
             _ => {
@@ -258,7 +258,7 @@ impl SocketOps for TcpSocket {
                         .set_device_mask(get_service().device_mask_for(&endpoint));
                     Ok(())
                 })?;
-                debug!("TCP socket {}: binding to {}", self.handle, local_addr);
+                // debug!("TCP socket {}: binding to {}", self.handle, local_addr);
                 Ok(())
             })
     }
@@ -339,7 +339,7 @@ impl SocketOps for TcpSocket {
                 let bound_endpoint = self.with_smol_socket(|socket| socket.get_bound_endpoint());
                 // 将端口加入全局监听表
                 LISTEN_TABLE.listen(bound_endpoint)?;
-                debug!("listening on {}", bound_endpoint);
+                // debug!("listening on {}", bound_endpoint);
                 Ok(())
             })?;
         } else {
@@ -359,11 +359,11 @@ impl SocketOps for TcpSocket {
             poll_interfaces();
             LISTEN_TABLE.accept(bound_port).map(|handle| {
                 let socket = TcpSocket::new_connected(handle);
-                debug!(
-                    "accepted connection from {}, {}",
-                    handle,
-                    socket.with_smol_socket(|socket| socket.remote_endpoint().unwrap())
-                );
+                // debug!(
+                //     "accepted connection from {}, {}",
+                //     handle,
+                //     socket.with_smol_socket(|socket| socket.remote_endpoint().unwrap())
+                // );
                 Socket::Tcp(socket)
             })
         })
@@ -470,7 +470,7 @@ impl SocketOps for TcpSocket {
             guard.transit(State::Closed, || {
                 if how.has_write() {
                     self.with_smol_socket(|socket| {
-                        debug!("TCP socket {}: shutting down", self.handle);
+                        // debug!("TCP socket {}: shutting down", self.handle);
                         socket.close(); // smoltcp 发起关闭流程
                     });
                 }

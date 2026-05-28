@@ -167,10 +167,12 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
 }
 
 pub fn exit_current_and_run_next(exit_code: i32) {
+    debug!("[exit_current_and_run_next] enter!");
     let curr_task = take_current_task().unwrap();
     let count = Arc::strong_count(&curr_task);
     if count > 2 {
         // 一份是进程调度器里面的，一份是tid2task里面的, 大于二直接死循环，不如直接panic
+        error!("WRONG STRONG COUNT!!!");
         panic!(
             "Someone take a reference to the TCB!, strong_count = {}",
             count
@@ -223,6 +225,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             .into_iter()
             .filter_map(|weak| weak.upgrade()) // 自动过滤无效引用
             .collect();
+        // bro_tasks.iter().for_each(|t: &Arc<TaskControlBlock>|debug!("My bro_task is {}, status is {:?}.", t.tid(), t.inner_lock().task_status));
         if bro_tasks
             .iter()
             .all(|bro_task| bro_task.inner_lock().is_zombie())
@@ -237,6 +240,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             if !sigtable.is_exited() {
                 sigtable.set_exit_code(exit_code);
             }
+            curr_task.process.exit_and_reparent();
             remove_proc_dir_and_file(curr_task.pid());
             // wakeup_parent(task.ppid());  // 此功能似乎无用，删去
         }

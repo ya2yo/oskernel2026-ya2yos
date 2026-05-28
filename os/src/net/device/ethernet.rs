@@ -147,7 +147,7 @@ impl EthernetDevice {
             warn!("IPv6 address ARP is not supported: {}", target_ip);
             return;
         };
-        debug!("Requesting ARP for {}", target_ipv4);
+        // debug!("Requesting ARP for {}", target_ipv4);
 
         let arp_repr = ArpRepr::EthernetIpv4 {
             operation: ArpOperation::Request,
@@ -205,7 +205,7 @@ impl EthernetDevice {
                 return;
             }
 
-            debug!("ARP: {} -> {}", source_protocol_addr, source_hardware_addr);
+            // debug!("ARP: {} -> {}", source_protocol_addr, source_hardware_addr);
             self.neighbors.insert(
                 IpAddress::Ipv4(source_protocol_addr),
                 Some(Neighbor {

@@ -516,8 +516,8 @@ impl PageTable {
     /// 并试图访问这个物理页上的东西
     /// 调用此函数时，可以确保self(内核页表)已经被启用
     pub fn kernel_pagetable_test_func(&mut self) {
-        debug!("pg:{}", crmd::read().pg());
-        debug!("da:{}", crmd::read().da());
+        // debug!("pg:{}", crmd::read().pg());
+        // debug!("da:{}", crmd::read().da());
         let va = 0x20000 as usize;
         let ptr = va as *mut u64;
         let va = VirtAddr::from(va);

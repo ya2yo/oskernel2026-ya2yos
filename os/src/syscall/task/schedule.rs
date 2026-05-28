@@ -114,10 +114,10 @@ pub fn sys_clock_nanosleep(
         return Err(SysErrNo::EFAULT);
     }
 
-    debug!(
-        "[sys_clock_nanosleep] clockid is {}, flags is {}, t is {:x}, remain is {:x}",
-        clockid, flags, t as usize, remain as usize
-    );
+    // debug!(
+    //     "[sys_clock_nanosleep] clockid is {}, flags is {}, t is {:x}, remain is {:x}",
+    //     clockid, flags, t as usize, remain as usize
+    // );
 
     let t = get_data(memory_set.token(), t);
     drop(memory_set);
@@ -137,15 +137,15 @@ pub fn sys_clock_nanosleep(
         get_time_spec() + t
     };
 
-    debug!(
-        "[sys_clock_nanosleep] ready to sleep for {} sec, {} nsec",
-        t.tv_sec, t.tv_nsec
-    );
+    // debug!(
+    //     "[sys_clock_nanosleep] ready to sleep for {} sec, {} nsec",
+    //     t.tv_sec, t.tv_nsec
+    // );
 
     while get_time_ms() * 1_000_000usize - begin < waittime {
         if let Some(_) = check_if_any_sig_for_current_task() {
             //被信号唤醒
-            debug!("interupt by signal");
+            // debug!("interupt by signal");
             if remain as usize != 0 {
                 let process = task.process.inner_lock();
                 let memory_set = process.get_locked_memory_set_read();

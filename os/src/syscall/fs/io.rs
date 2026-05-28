@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec, vec::Vec};
-use log::debug;
+use log::{debug, warn};
 
 use crate::{
     fs::{File, SEEK_CUR, SEEK_SET},
@@ -15,13 +15,13 @@ use crate::{
 
 /// 参考 https://man7.org/linux/man-pages/man2/write.2.html
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
-    debug!("[sys_write] fd is {}, len={}", fd, len);
+    // debug!("[sys_write] fd is {}, len={}", fd, len);
 
     let task = current_task().unwrap();
     let fd_table = task.get_fd_table();
 
     if fd >= fd_table.len() {
-        debug!("write EINVAL early return");
+        warn!("write EINVAL early return");
         return Err(SysErrNo::EBADF);
     }
     if let Some(f) = fd_table.try_get_file(fd) {
@@ -37,10 +37,10 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         drop(process);
         drop(task);
         let ret = f.write(buffer)?;
-        debug!("buffer 3");
+        // debug!("buffer 3");
         Ok(ret)
     } else {
-        debug!("write EBADF");
+        // debug!("write EBADF");
         Err(SysErrNo::EBADF)
     }
 }
@@ -154,10 +154,10 @@ pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.process.inner_lock();
 
-    debug!(
-        "[sys_lseek] fd is {}, offset is {}, whence is {}",
-        fd, offset, whence
-    );
+    // debug!(
+    //     "[sys_lseek] fd is {}, offset is {}, whence is {}",
+    //     fd, offset, whence
+    // );
 
     if fd >= inner.fd_table.len() || inner.fd_table.try_get(fd).is_none() {
         return Err(SysErrNo::EINVAL);
@@ -172,10 +172,10 @@ pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) 
     let inner = task.process.inner_lock();
     let token = inner.get_locked_memory_set_read().token();
 
-    debug!(
-        "[sys_sendfile] outfd is {}, infd is {}, offset_ptr is {}, count is {}",
-        outfd, infd, offset_ptr, count
-    );
+    // debug!(
+    //     "[sys_sendfile] outfd is {}, infd is {}, offset_ptr is {}, count is {}",
+    //     outfd, infd, offset_ptr, count
+    // );
 
     if outfd >= inner.fd_table.len()
         || inner.fd_table.try_get(outfd).is_none()
@@ -348,7 +348,7 @@ pub fn sys_copy_file_range(
     let inner = task.process.inner_lock();
     let token = inner.get_locked_memory_set_read().token();
 
-    debug!("[sys_copy_file_range] infd is {}, off_in is {}, outfd is {}, off_out is {},count is {}, flags is {}", infd, off_in, outfd, off_out, count, flags);
+    // debug!("[sys_copy_file_range] infd is {}, off_in is {}, outfd is {}, off_out is {},count is {}, flags is {}", infd, off_in, outfd, off_out, count, flags);
 
     if outfd >= inner.fd_table.len()
         || inner.fd_table.try_get(outfd).is_none()

@@ -59,7 +59,7 @@ pub fn translated_byte_buffer(
         let mut vpn = start_va.floor();
         let ppn = match page_table.translate(vpn) {
             None => {
-                debug!("vpn {:#x} not found", vpn.0);
+                // debug!("vpn {:#x} not found", vpn.0);
                 return None;
             }
             Some(ppn) => ppn,
@@ -214,7 +214,7 @@ pub fn safe_get_data<T: 'static + Copy>(memory_set: &MemorySet, ptr: *const T) -
     let size = core::mem::size_of::<T>();
     // 若数据跨页，则转换成字节数据写入
     if (pa + size - 1).floor() != pa.floor() {
-        debug!("work in overpage");
+        // debug!("work in overpage");
         let mut bytes = vec![0u8; size];
         for i in 0..size {
             bytes[i] = *(page_table.translate_va(va).unwrap().as_ref());

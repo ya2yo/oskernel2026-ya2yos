@@ -25,7 +25,7 @@ impl<'a> SocketSetWrapper<'a> {
 
     pub fn add<T: AnySocket<'a>>(&self, socket: T) -> SocketHandle {
         let handle = self.inner.lock().add(socket);
-        debug!("socket {}: created", handle);
+        // debug!("socket {}: created", handle);
         self.new_socket.notify(1);
         handle
     }
@@ -76,6 +76,6 @@ impl<'a> SocketSetWrapper<'a> {
 
     pub fn remove(&self, handle: SocketHandle) {
         self.inner.lock().remove(handle);
-        debug!("socket {}: destroyed", handle);
+        // debug!("socket {}: destroyed", handle);
     }
 }

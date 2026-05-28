@@ -66,7 +66,7 @@ pub fn sys_settimer(
     }
     if new_value as usize != 0 {
         let new_timer = get_data(token, new_value);
-        debug!("[sys_settimer] new_timer={:?}", new_timer);
+        // debug!("[sys_settimer] new_timer={:?}", new_timer);
         task_inner.timer.set_timer(new_timer);
         task_inner.timer.set_last_time(TimeVal::now());
         if new_timer.it_interval.is_empty() {
@@ -121,10 +121,10 @@ pub fn sys_clock_gettime(clockid: usize, tp: *mut Timespec) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/getrusage.2.html
 pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
     // TrustOS目前只支持 RUSAGESELF 和 RUSAGECHILDEN
-    debug!(
-        "[sys_getrusage] who is {}, usage is {:x}",
-        who, usage as usize
-    );
+    // debug!(
+    //     "[sys_getrusage] who is {}, usage is {:x}",
+    //     who, usage as usize
+    // );
 
     if who < -1 {
         return Err(SysErrNo::EINVAL);
@@ -168,10 +168,10 @@ pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/clock_getres.2.html
 pub fn sys_clock_getres(clockid: usize, res: *mut Timespec) -> SyscallRet {
-    debug!(
-        "[sys_clock_getres] clockid is {}, res is {:x}",
-        clockid, res as usize
-    );
+    // debug!(
+    //     "[sys_clock_getres] clockid is {}, res is {:x}",
+    //     clockid, res as usize
+    // );
 
     if (clockid as isize) < 0 {
         return Err(SysErrNo::EINVAL);

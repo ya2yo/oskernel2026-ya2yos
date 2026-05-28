@@ -18,7 +18,7 @@ fn get_socket_name(
 ) -> SyscallRet {
     let socket = Socket::from_fd(sockfd)?;
     let sock_addr = get_addr(&socket)?;
-    debug!("get_socket_name: sockfd={sockfd}, addr={sock_addr:?}");
+    // debug!("get_socket_name: sockfd={sockfd}, addr={sock_addr:?}");
 
     if !addr.is_null() && addrlen > 0 {
         sock_addr.write_to_user(addr, &mut addrlen)?;

@@ -54,13 +54,13 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
         return Err(SysErrNo::ENAMETOOLONG);
     }
 
-    debug!("[sys_chdir] path is {}", path);
+    // debug!("[sys_chdir] path is {}", path);
 
     let locked_fs_info = &proc_inner.fs_info;
 
     let abs_path = get_abs_path(&locked_fs_info.get_cwd(), &path);
 
-    debug!("[sys_chdir] abs_path is {}", abs_path);
+    // debug!("[sys_chdir] abs_path is {}", abs_path);
     let osfile = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     if !osfile.inode.types().is_dir() {
         return Err(SysErrNo::ENOTDIR);
@@ -76,10 +76,10 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_write().token();
     let path = translated_str(token, path);
-    debug!(
-        "[sys_mkdirat] dirfd is {},path is {},mode is {}",
-        dirfd, path, mode
-    );
+    // debug!(
+    //     "[sys_mkdirat] dirfd is {},path is {},mode is {}",
+    //     dirfd, path, mode
+    // );
 
     if dirfd != -100 && dirfd as usize >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EBADF);
@@ -104,10 +104,10 @@ pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     let process = task.process.inner_lock();
     let memory_set = &*process.get_locked_memory_set_read();
 
-    debug!(
-        "[sys_getdents64] fd is {}, buf addr  is {:x}, len is {}",
-        fd, buf as usize, len
-    );
+    // debug!(
+    //     "[sys_getdents64] fd is {}, buf addr  is {:x}, len is {}",
+    //     fd, buf as usize, len
+    // );
 
     if fd >= process.fd_table.len() || process.fd_table.try_get(fd).is_none() {
         return Err(SysErrNo::EINVAL);
@@ -152,12 +152,12 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, _flags: u32) -> SyscallRet {
 
     let locked_fs_info = &proc_inner.fs_info;
 
-    debug!(
-        "[sys_unlinkat] path={},link_cnt={},has_activate_fd={}",
-        &abs_path,
-        osfile.inode.link_cnt()?,
-        locked_fs_info.has_fd(&abs_path)
-    );
+    // debug!(
+    //     "[sys_unlinkat] path={},link_cnt={},has_activate_fd={}",
+    //     &abs_path,
+    //     osfile.inode.link_cnt()?,
+    //     locked_fs_info.has_fd(&abs_path)
+    // );
     // TODO: HXC: 我怀疑这里的has_fd是有问题的
     if osfile.inode.link_cnt()? == 1 && locked_fs_info.has_fd(&path) {
         osfile.inode.delay();
@@ -238,24 +238,24 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
     let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
     let self_token = current_token();
-    debug!("path={:#x}", path as usize);
-    debug!("buf ={:#x}", buf as usize);
+    // debug!("path={:#x}", path as usize);
+    // debug!("buf ={:#x}", buf as usize);
     if token != self_token {
         warn!("token != self_token");
     }
     let path = translated_str(token, path);
 
-    debug!(
-        "[sys_readlinkat] dirfd is {}, path is {}, buf is {:x}, bufsize is {}",
-        dirfd, path, buf as usize, bufsize
-    );
+    // debug!(
+    //     "[sys_readlinkat] dirfd is {}, path is {}, buf is {:x}, bufsize is {}",
+    //     dirfd, path, buf as usize, bufsize
+    // );
 
     // assert!(path == "/proc/self/exe", "unsupported other path!");
     if path == "/proc/self/exe" {
         let mut exe: String = proc_inner.fs_info.get_exe();
         exe.push('\0');
 
-        debug!("fs_info={}", exe);
+        // debug!("fs_info={}", exe);
         let size_needed = exe.len();
         let buffers = safe_translated_byte_buffer(
             &&proc_inner.get_locked_memory_set_write(),
@@ -286,10 +286,10 @@ pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) ->
     let target_path = translated_str(token, target);
     let link_path = translated_str(token, linkpath);
 
-    debug!(
-        "[sys_symlinkat] target is {},newdirfd is {},linkpath is {}",
-        target_path, newdirfd, link_path
-    );
+    // debug!(
+    //     "[sys_symlinkat] target is {},newdirfd is {},linkpath is {}",
+    //     target_path, newdirfd, link_path
+    // );
 
     let abs_link_path = proc_inner.get_abs_path(newdirfd, &link_path)?;
     //检查linkpath是否已存在
@@ -353,7 +353,7 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
 
-    debug!("[sys_fchmod] fd is {},new mode is {:o}", fd, mode);
+    // debug!("[sys_fchmod] fd is {},new mode is {:o}", fd, mode);
 
     let file = proc_inner.fd_table.get(fd)?.file()?;
     file.inode.fmode_set(mode);
@@ -389,10 +389,10 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
 
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
 
-    debug!(
-        "[sys_fchmodat] path is {}, flags is {}, new mode is {:o}",
-        &abs_path, flags, mode
-    );
+    // debug!(
+    //     "[sys_fchmodat] path is {}, flags is {}, new mode is {:o}",
+    //     &abs_path, flags, mode
+    // );
 
     let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
     let parent_inode = open(&parent_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;

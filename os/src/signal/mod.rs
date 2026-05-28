@@ -46,12 +46,12 @@ pub fn handle_signal(signo: usize) {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
     let signal = SigSet::from_sig(signo);
-    debug!(
-        "[handle_signal] signo={},handle signal {:?}, sepc={:#x}",
-        signo,
-        signal,
-        task_inner.trap_cx().get_sepc()
-    );
+    // debug!(
+    //     "[handle_signal] signo={},handle signal {:?}, sepc={:#x}",
+    //     signo,
+    //     signal,
+    //     task_inner.trap_cx().get_sepc()
+    // );
     let sig_action = task
         .process
         .inner_lock()
@@ -61,11 +61,11 @@ pub fn handle_signal(signo: usize) {
     drop(task_inner);
     drop(task);
     if sig_action.customed {
-        debug!("handle_signal: setup_frame!");
+        // debug!("handle_signal: setup_frame!");
         setup_frame(signo, sig_action);
     } else {
-        debug!("handle_signal: default exit!");
-        debug!("sa_handler:{:#x}", sig_action.act.sa_handler as usize);
+        // debug!("handle_signal: default exit!");
+        // debug!("sa_handler:{:#x}", sig_action.act.sa_handler as usize);
         // 就在S模式运行,转换成fn(i32)
         if sig_action.act.sa_handler != 1 {
             if sig_action.act.sa_handler == exit_current_and_run_next as *const () as usize {
@@ -78,7 +78,7 @@ pub fn handle_signal(signo: usize) {
 /// 构建这个帧的目的就是为了执行完信号处理程序后返回到内核态，
 /// 并恢复原来内核栈的内容
 pub fn setup_frame(signo: usize, sig_action: KSigAction) {
-    debug!("customed sa_handler={:#x}", sig_action.act.sa_handler);
+    // debug!("customed sa_handler={:#x}", sig_action.act.sa_handler);
 
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
@@ -99,13 +99,13 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
         panic!("SysErrNo::ERESTART should not happen: this kernel is non-preemptive!");
         // and if `SA_RESTART` is set
         if sig_action.act.sa_flags.contains(SigActionFlags::SA_RESTART) {
-            debug!("[do_signal] syscall will restart after sigreturn");
+            // debug!("[do_signal] syscall will restart after sigreturn");
             // back to `ecall`
             trap_cx.sepc_step(-4);
             // restore syscall parameter `a0`
             trap_cx.set_a0(trap_cx.origin_a0);
         } else {
-            debug!("[do_signal] syscall was interrupted");
+            // debug!("[do_signal] syscall was interrupted");
             // will return EINTR after sigreturn
             trap_cx.set_a0(SysErrNo::EINTR as usize);
         }
@@ -131,7 +131,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
         let sig_sp = siginfo_addr;
         let sig_size = sig_sp - (task_inner.user_stack_top - USER_STACK_SIZE);
         // debug!("sig_size={:#x}", sig_size);
-        debug!("save: uctx_addr = {:#x}", uctx_addr);
+        // debug!("save: uctx_addr = {:#x}", uctx_addr);
         put_data(
             token,
             uctx_addr as *mut UserContext,
@@ -225,13 +225,13 @@ pub fn restore_frame() -> SyscallRet {
         trap_cx.copy_from_mctx(mctx);
     } else {
         let uctx_addr = user_sp as usize + size_of::<SigInfo>();
-        debug!("load: uctx_addr = {:#x}", uctx_addr);
+        // debug!("load: uctx_addr = {:#x}", uctx_addr);
         let uctx: UserContext = get_data(token, uctx_addr as *mut UserContext);
         task_inner.sig_mask = uctx.sigmask;
         let mctx = uctx.mcontext;
         trap_cx.copy_from_mctx(mctx);
     }
-    debug!("[restore_frame!] sepc= {:#x}", trap_cx.get_sepc());
+    // debug!("[restore_frame!] sepc= {:#x}", trap_cx.get_sepc());
     Ok(trap_cx.get_a0())
 }
 
@@ -239,7 +239,7 @@ pub fn restore_frame() -> SyscallRet {
 /// 对于阻塞态的线程，每次向他发送信号，都需要唤醒相应的线程进行处理
 fn add_signal(task: &TaskControlBlock, signal: SigSet) {
     let mut task_inner = task.inner_lock();
-    debug!("add signal: tid {}, signal: {}", task.tid(), signal.bits());
+    // debug!("add signal: tid {}, signal: {}", task.tid(), signal.bits());
     task_inner.sig_pending |= signal;
     if task_inner.task_status == TaskStatus::Blocked {
         // SIGKILL 等信号必须把任务从 pipe/futex 等等待中唤醒，
@@ -257,7 +257,7 @@ fn add_signal(task: &TaskControlBlock, signal: SigSet) {
 pub fn send_signal_to_thread_group(pid: usize, sig: SigSet) -> Result<usize, SysErrNo> {
     let process = Process::get_process_arc_by_pid(pid);
     if let Some(proc) = process {
-        debug!("{} receive signal, my parent is {}", pid, proc.ppid());
+        // debug!("{} receive signal, my parent is {}", pid, proc.ppid());
         let tasks = &proc.meta_lock().tasks;
         for task in tasks.iter() {
             if let Some(task) = task.upgrade() {

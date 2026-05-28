@@ -141,14 +141,14 @@ pub fn sys_setsockopt(
     user_optval: *const u8, // 指向缓冲区的指针，用来指定或者返回选项的值
     optlen: u32,            // 由 optval 所指向的缓冲区空间大小（字节数）
 ) -> SyscallRet {
-    debug!(
-        "sys_setsockopt <= fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
-        sockfd, level, optname, user_optval, optlen
-    );
+    // debug!(
+    //     "sys_setsockopt <= fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
+    //     sockfd, level, optname, user_optval, optlen
+    // );
     // bool compat = in_compat_syscall();
     // let compat: bool = false;// 目前只在64位上运行
     let task = current_task().unwrap();
-    debug!("strong count: {}", Arc::strong_count(&task));
+    // debug!("strong count: {}", Arc::strong_count(&task));
     let fd_table = task.get_fd_table();
     drop(task);
     let sock = fd_table.get(sockfd)?.socket()?;
@@ -230,10 +230,10 @@ pub fn sys_getsockopt(
     user_optval: *const u8, // 指向缓冲区的指针，用来指定或者返回选项的值
     optlen: u32,            // 由 optval 所指向的缓冲区空间大小（字节数）
 ) -> SyscallRet {
-    debug!(
-        "[getsockopt]syscall sockfd: {}, level: {}, optname: {}, user_optval: {}, optlen: {}",
-        sockfd, level, optname, user_optval as usize, optlen
-    );
+    // debug!(
+    //     "[getsockopt]syscall sockfd: {}, level: {}, optname: {}, user_optval: {}, optlen: {}",
+    //     sockfd, level, optname, user_optval as usize, optlen
+    // );
     let task = current_task().unwrap();
     let fd_table = task.get_fd_table();
     drop(task);

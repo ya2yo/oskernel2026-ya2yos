@@ -64,11 +64,11 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     //     path = String::from("/musl/busybox");
     // }
 
-    debug!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
+    // debug!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     let mut env = Vec::<String>::new();
 
     if envp.is_null() {
-        debug!("use default env");
+        // debug!("use default env");
         env.push("PATH=/bin".to_string());
         // env.push("LD_LIBRARY_PATH=/musl/lib:".to_string());
         // env.push("LD_LIBRARY_PATH=/glibc/lib:/musl/lib".to_string());
@@ -78,7 +78,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         env.push("LANG=C".to_string());
         env.push("LC_CTYPE=C".to_string());
     } else {
-        debug!("use assigned env");
+        // debug!("use assigned env");
         loop {
             let envp_ptr = *translated_ref(token, envp);
             if envp_ptr == 0 {
@@ -91,7 +91,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         }
     }
 
-    debug!("[sys_execve] env is {:?}", env);
+    // debug!("[sys_execve] env is {:?}", env);
 
     let locked_fs_info = &proc_inner.fs_info;
     let cwd = locked_fs_info.get_cwd();
@@ -106,7 +106,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
             argv_vec[0] = exe.into();
         }
     }
-    debug!("The real abs_path is {}", abs_path);
+    // debug!("The real abs_path is {}", abs_path);
     let app_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
 
     let elf_data = app_inode.inode.read_all()?;

@@ -20,10 +20,10 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, mask: usize) -> Sysc
         .get_locked_memory_set_read()
         .token();
 
-    debug!(
-        "[sys_ppoll] fds_ptr is {}, nfds is {}, tmo_p is {}, mask is {}",
-        fds_ptr, nfds, tmo_p, mask
-    );
+    // debug!(
+    //     "[sys_ppoll] fds_ptr is {}, nfds is {}, tmo_p is {}, mask is {}",
+    //     fds_ptr, nfds, tmo_p, mask
+    // );
 
     if fds_ptr == 0 {
         return Err(SysErrNo::EINVAL);

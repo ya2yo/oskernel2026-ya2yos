@@ -14,7 +14,7 @@ use spin::{
 use crate::{
     fs::{FSInfo, FdTable},
     mm::{MemorySet, MemorySetInner},
-    signal::SigTable,
+    signal::{send_signal_to_thread_group, SigSet, SigTable},
     syscall::CloneFlags,
     task::{TaskControlBlock, TidHandle},
     utils::{get_abs_path, is_abs_path, SysErrNo, SyscallRet},
@@ -25,7 +25,6 @@ use crate::{
 pub struct Process {
     pub inner: Mutex<ProcessInner>,
     pub pid: usize,
-    pub parent: Option<Arc<Process>>,
     pub meta: Mutex<ProcessMeta>,
 }
 // 我们需要向编译器保证Process含有这样的特性……这样真的好吗？
@@ -42,16 +41,51 @@ pub struct ProcessInner {
 }
 
 impl Process {
-    /// 退出时调用，进行托孤
+    /// 退出时把尚未 wait 的子进程挂到 initproc，避免子进程继续强引用已退出父进程。
     pub fn exit_and_reparent(&self) {
-        let mut meta = self.meta_lock();
-        let initproc = Self::get_process_arc_by_pid(1).expect("initproc not found!");
-        for child_weak in &meta.children {
-            if let Some(child) = child_weak.upgrade() {
-                initproc.meta_lock().children.push(Arc::downgrade(&child));
-            }
+        let orphans: Vec<Arc<Process>> = {
+            let mut meta = self.meta_lock();
+            let orphans: Vec<Arc<Process>> = meta
+                .children
+                .iter()
+                .filter_map(|w| w.upgrade())
+                .collect();
+            meta.children.clear();
+            meta.tasks.clear();
+            orphans
+        };
+        if orphans.is_empty() {
+            return;
         }
-        meta.tasks.clear();
+
+        const INIT_PID: usize = 1;
+        let initproc = Self::get_process_arc_by_pid(INIT_PID).expect("initproc not found!");
+        for child in &orphans {
+            child.meta_lock().parent_pid = INIT_PID;
+            Self::link_child_to_parent(&initproc, child);
+        }
+        drop(initproc);
+
+        let _ = send_signal_to_thread_group(INIT_PID, SigSet::SIGCHLD);
+        debug!(
+            "[exit_and_reparent] process[{}] reparented {} child(ren) to init",
+            self.pid,
+            orphans.len()
+        );
+    }
+
+    /// 在父进程的 children 中登记子进程（按 pid 去重）。
+    fn link_child_to_parent(parent: &Process, child: &Arc<Process>) {
+        let mut meta = parent.meta_lock();
+        if meta
+            .children
+            .iter()
+            .filter_map(|w| w.upgrade())
+            .any(|p| p.pid == child.pid)
+        {
+            return;
+        }
+        meta.children.push(Arc::downgrade(child));
     }
     /// 创建新进程
     pub fn new(
@@ -60,7 +94,7 @@ impl Process {
         fd_table: Arc<FdTable>,
         fs_info: Arc<FSInfo>,
         pid: usize,
-        parent: Option<Arc<Process>>,
+        parent_pid: usize,
     ) -> Arc<Self> {
         let id = pid;
         let ret = Arc::new(Self {
@@ -71,18 +105,16 @@ impl Process {
                 fs_info,
             }),
             pid,
-            parent: parent.clone(),
             meta: Mutex::new(ProcessMeta {
                 tasks: Vec::new(),
                 children: Vec::new(),
+                parent_pid,
             }),
         });
-        if let Some(parent_process) = &parent {
-            parent_process
-                .meta
-                .lock()
-                .children
-                .push(Arc::downgrade(&ret));
+        if parent_pid != 0 {
+            if let Some(parent_process) = Self::get_process_arc_by_pid(parent_pid) {
+                Self::link_child_to_parent(&parent_process, &ret);
+            }
         }
         debug!("inserting process {}", id);
         let oldval = PID_2_PROCESS_ARC
@@ -106,13 +138,9 @@ impl Process {
             .try_lock()
             .expect(&format!("fail to get proc.meta lock({})", self.pid))
     }
-    /// 获取父进程的pid
+    /// 获取父进程的 pid（0 表示无父进程，例如 initproc）
     pub fn ppid(&self) -> usize {
-        if let Some(parent) = &self.parent {
-            parent.pid
-        } else {
-            0
-        }
+        self.meta_lock().parent_pid
     }
     /// 改变内存映射关系和信号表
     pub fn change_memory_set_and_sigtable(
@@ -274,6 +302,8 @@ pub struct ProcessMeta {
     /// Process::new时，向父进程的children中插入
     /// sys_wait4时，删除
     pub children: Vec<Weak<Process>>,
+    /// 父进程 pid；0 表示无父进程
+    pub parent_pid: usize,
 }
 
 static PID_2_PROCESS_ARC: Lazy<Mutex<BTreeMap<usize, Arc<Process>>>> =

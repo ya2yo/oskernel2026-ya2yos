@@ -88,7 +88,7 @@ pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
         // 每轮单独作用域：检查完信号就释放 clone，避免带着 Arc 调用 block_current
         {
             let task = current_task().unwrap();
-            debug!("[block_on] strong count: {}", Arc::strong_count(&task));
+            // debug!("[block_on] strong count: {}", Arc::strong_count(&task));
             if task.inner_lock().sig_pending.contains(SigSet::SIGKILL) {
                 drop(task);
                 exit_current_and_run_next(137);
@@ -103,10 +103,10 @@ pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
                 if !*is_woke {
                     drop(is_woke);
                     let task = current_task().unwrap();
-                    debug!(
-                        "[block_on] Pending strong_count = {}",
-                        Arc::strong_count(&task)
-                    ); // 这里怎么比上面多一个
+                    // debug!(
+                    //     "[block_on] Pending strong_count = {}",
+                    //     Arc::strong_count(&task)
+                    // ); // 这里怎么比上面多一个
                     drop(task);
                     block_current_and_run_next();
                 } else {
@@ -117,7 +117,7 @@ pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
                         let mut inner = cur.inner_lock();
                         &mut inner.task_cx as *mut TaskContext
                     };
-                    debug!("strong_count = {}", Arc::strong_count(&cur));
+                    // debug!("strong_count = {}", Arc::strong_count(&cur));
                     drop(cur);
                     schedule(task_cx_ptr);
                 }

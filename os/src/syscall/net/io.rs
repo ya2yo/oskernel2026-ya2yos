@@ -196,7 +196,7 @@ fn send_impl(
     } else {
         Some(SocketAddrEx::read_from_user(addr, addrlen)?)
     };
-    debug!("[sys_send]fd: {sockfd}, flags: {flags}, addr: {addr:?}");
+    // debug!("[sys_send]fd: {sockfd}, flags: {flags}, addr: {addr:?}");
     let socket = Socket::from_fd(sockfd)?;
     let sent = socket.send(
         src,
@@ -283,16 +283,16 @@ pub fn sys_recvfrom(
     src_addr: *mut u8,
     addrlen_ptr: *mut socklen_t,
 ) -> SyscallRet {
-    debug!(
-        "
-        [sys_recvfrom] sockfd: {sockfd}, 
-        buf: {}, 
-        len: {}, 
-        flags: {}, 
-        src_addr: {}, 
-        addr_len: {}.",
-        buf as usize, len, flags, src_addr as usize, addrlen_ptr as usize
-    );
+    // debug!(
+    //     "
+    //     [sys_recvfrom] sockfd: {sockfd}, 
+    //     buf: {}, 
+    //     len: {}, 
+    //     flags: {}, 
+    //     src_addr: {}, 
+    //     addr_len: {}.",
+    //     buf as usize, len, flags, src_addr as usize, addrlen_ptr as usize
+    // );
     let token = current_token();
     let buffer = UserBuffer::new(translated_byte_buffer(token, buf, len).ok_or(SysErrNo::EFAULT)?);
     let mut addrlen = if src_addr.is_null() || addrlen_ptr.is_null() {

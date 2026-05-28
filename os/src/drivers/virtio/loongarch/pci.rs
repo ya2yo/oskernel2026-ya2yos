@@ -110,20 +110,20 @@ impl<H: Hal> VirtIoBlkDev2<H> {
             println!("vendor_id={:#x}, device_id={:#x}", vendor_id, device_id);
             // 启用设备(0,DEVICE,0)
             let mut command_reg = pci_config_read(0, DEVICE, 0, 0x04);
-            debug!("get cmd_reg={:#x}", command_reg);
+            // debug!("get cmd_reg={:#x}", command_reg);
             command_reg |= 0x02; // 设置bit1（Memory Space Enable）
-            debug!("new cmd_reg={:#x}", command_reg);
+            // debug!("new cmd_reg={:#x}", command_reg);
             pci_config_write(0, DEVICE, 0, 0x04, command_reg);
-            debug!(
-                "cmd_reg={:#x} write finish",
-                pci_config_read(0, DEVICE, 0, 0x04) // 0x100002，符合预期。高位的0x10是Status::CAPABILITIES_LIST
-            );
+            // debug!(
+            //     "cmd_reg={:#x} write finish",
+            //     pci_config_read(0, DEVICE, 0, 0x04) // 0x100002，符合预期。高位的0x10是Status::CAPABILITIES_LIST
+            // );
 
             // 处理能力链表
             {
-                debug!("Enter CAPABILITIES_LIST handle");
+                // debug!("Enter CAPABILITIES_LIST handle");
                 let cap_ptr = (pci_config_read(0, DEVICE, 0, 0x34) & 0xFF) as u8; // 获取Capabilities指针
-                debug!("cap_ptr={:#x}", cap_ptr);
+                // debug!("cap_ptr={:#x}", cap_ptr);
                 let mut offset = cap_ptr;
                 while offset != 0 {
                     let cap_id = pci_config_read(0, DEVICE, 0, offset) & 0xFF;
@@ -133,15 +133,15 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                         // VirtIO PCI Capability
                         let cfg_type = pci_config_read(0, DEVICE, 0, offset + 2) & 0xFF;
                         let bar_index = pci_config_read(0, DEVICE, 0, offset + 3) & 0xFF;
-                        debug!(
-                            "Found VirtIO Capability in BAR{}, cfg_type={}",
-                            bar_index, cfg_type
-                        );
+                        // debug!(
+                        //     "Found VirtIO Capability in BAR{}, cfg_type={}",
+                        //     bar_index, cfg_type
+                        // );
                     }
 
                     offset = next_ptr;
                 }
-                debug!("Leave CAPABILITIES_LIST handle");
+                // debug!("Leave CAPABILITIES_LIST handle");
             }
 
             let bar0 = root.bar_info(func, 0).unwrap();
@@ -156,7 +156,7 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                     panic!("We can assume bar0 is a IO bar!")
                 }
                 BarInfo::IO { address, size } => {
-                    debug!("bar0 :(addr={}, size={})", address, size);
+                    // debug!("bar0 :(addr={}, size={})", address, size);
                 }
             }
             // root.
@@ -167,9 +167,9 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                     panic!("bar {} is err.", i);
                     continue;
                 };
-                debug!("bar {} is ok.", i);
+                // debug!("bar {} is ok.", i);
                 if bar_info.takes_two_entries() {
-                    debug!("bar {} takes_two_entries!", i);
+                    // debug!("bar {} takes_two_entries!", i);
                 }
 
                 if let BarInfo::Memory {
@@ -179,10 +179,10 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                     address,
                 } = bar_info
                 {
-                    debug!(
-                        "bar: {:?}, {}, {}, {}",
-                        address_type, size, prefetchable, address
-                    );
+                    // debug!(
+                    //     "bar: {:?}, {}, {}, {}",
+                    //     address_type, size, prefetchable, address
+                    // );
 
                     match address_type {
                         MemoryBarType::Width32 => {
@@ -201,11 +201,11 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                             }
                         }
                         _ => {
-                            debug!("Memory BAR address type {:?} not supported.", address_type);
+                            // debug!("Memory BAR address type {:?} not supported.", address_type);
                         }
                     }
                 } else if let BarInfo::IO { address, size } = bar_info {
-                    debug!("IO bar: addr={:#x}, size={:#x}", address, size);
+                    // debug!("IO bar: addr={:#x}, size={:#x}", address, size);
                 }
                 if bar_info.takes_two_entries() {
                     i += 2;
@@ -222,12 +222,12 @@ impl<H: Hal> VirtIoBlkDev2<H> {
             transport.set_status(DeviceStatus::empty());
             transport.set_status(DeviceStatus::ACKNOWLEDGE);
 
-            log::debug!(
-                "Detected virtio PCI device with device type {:?}, features {:#018x}, qs={}",
-                transport.device_type(),
-                transport.read_device_features(),
-                transport.max_queue_size(0)
-            );
+            // log::debug!(
+            //     "Detected virtio PCI device with device type {:?}, features {:#018x}, qs={}",
+            //     transport.device_type(),
+            //     transport.read_device_features(),
+            //     transport.max_queue_size(0)
+            // );
             Self {
                 inner: Mutex::new(
                     VirtIOBlk::<H, PciTransport>::new(transport).expect("VirtIOBlk create failed"),

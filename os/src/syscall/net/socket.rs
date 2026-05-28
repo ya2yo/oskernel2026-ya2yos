@@ -19,7 +19,7 @@ use log::{debug, warn};
 
 /// 参考 https://man7.org/linux/man-pages/man2/socket.2.html
 pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
-    debug!("sys_socket <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
+    // debug!("sys_socket <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
     // 提取 socket类型
     let ty = raw_ty & 0xFF;
     let task = current_task().unwrap();
@@ -85,10 +85,10 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
 /// socket 的type 可以被指定为SOCK_DGRAM 或SOCK_STREAM。protocol 参数必须为0。sockfd
 /// 数组返回了引用这两个相互连接的 socket 的文件描述符。
 pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> SyscallRet {
-    debug!(
-        "[sys_socketpair] domain is {}, type is {}, protocol is {}, sv is {}",
-        domain, stype, protocol, sv as usize
-    );
+    // debug!(
+    //     "[sys_socketpair] domain is {}, type is {}, protocol is {}, sv is {}",
+    //     domain, stype, protocol, sv as usize
+    // );
     let ty = stype & 0xff;
     if domain != AF_UNIX {
         return Err(SysErrNo::EAFNOSUPPORT);
@@ -143,10 +143,10 @@ pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> S
 
 /// 参考 https://man7.org/linux/man-pages/man2/bind.2.html
 pub fn sys_bind(sockfd: usize, addr: *const u8, addrlen: u32) -> SyscallRet {
-    debug!(
-        "[sys_bind] fd={}, addr={}, len={}",
-        sockfd, addr as usize, addrlen
-    );
+    // debug!(
+    //     "[sys_bind] fd={}, addr={}, len={}",
+    //     sockfd, addr as usize, addrlen
+    // );
     let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
     Socket::from_fd(sockfd)?.0.bind(addr)?;
     Ok(0)
@@ -154,7 +154,7 @@ pub fn sys_bind(sockfd: usize, addr: *const u8, addrlen: u32) -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/listen.2.html
 pub fn sys_listen(sockfd: usize, backlog: u32) -> SyscallRet {
-    debug!("sys_listen <= fd: {}, backlog: {}", sockfd, backlog);
+    // debug!("sys_listen <= fd: {}, backlog: {}", sockfd, backlog);
     Socket::from_fd(sockfd)?.listen()?;
 
     Ok(0)
@@ -169,7 +169,7 @@ pub fn sys_accept(sockfd: usize, addr: *mut u8, addrlen: u32) -> SyscallRet {
 /// 参考StarryOS kernel/src/syscall/net/socket.rs
 pub fn sys_connect(sockfd: usize, addr: *const u8, addrlen: u32) -> SyscallRet {
     let addr = SocketAddrEx::read_from_user(addr, addrlen)?;
-    debug!("sys_connect <= fd: {sockfd}, addr: {addr:?}");
+    // debug!("sys_connect <= fd: {sockfd}, addr: {addr:?}");
 
     Socket::from_fd(sockfd)?.connect(addr).map_err(|e| {
         if e == SysErrNo::EAGAIN {
@@ -183,7 +183,7 @@ pub fn sys_connect(sockfd: usize, addr: *const u8, addrlen: u32) -> SyscallRet {
 }
 /// https://man7.org/linux/man-pages/man2/shutdown.2.html
 pub fn sys_shutdown(sockfd: usize, how: u32) -> SyscallRet {
-    debug!("sys_shutdown <= fd: {sockfd}, how: {how:?}");
+    // debug!("sys_shutdown <= fd: {sockfd}, how: {how:?}");
 
     let socket = Socket::from_fd(sockfd)?;
     let how = match how {
@@ -196,7 +196,7 @@ pub fn sys_shutdown(sockfd: usize, how: u32) -> SyscallRet {
 }
 
 pub fn sys_accept4(sockfd: usize, addr: *mut u8, mut addrlen: u32, flags: u32) -> SyscallRet {
-    debug!("sys_accept <= fd: {}, flags: {}", sockfd, flags);
+    // debug!("sys_accept <= fd: {}, flags: {}", sockfd, flags);
     let socket = Socket::from_fd(sockfd)?;
     let socket = Socket(socket.accept()?);
     let remote_addr = socket.local_addr()?;

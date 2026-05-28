@@ -26,10 +26,10 @@ pub fn sys_mmap(
     fd: usize,
     off: usize,
 ) -> SyscallRet {
-    debug!(
-        "sysmap({:#x},{},{:#x},{:#x},{},{})",
-        addr, len, prot, flags, fd, off
-    );
+    // debug!(
+    //     "sysmap({:#x},{},{:#x},{:#x},{},{})",
+    //     addr, len, prot, flags, fd, off
+    // );
     let map_perm: MapPermission = MmapProt::from_bits(prot).unwrap().into();
     let flags = MmapFlags::from_bits(flags).expect(&format!(
         "sys_mmap: Failed to convert flags to MmapFlags bitmap: value is {:#x}",
@@ -42,11 +42,11 @@ pub fn sys_mmap(
     if flags.contains(MmapFlags::MAP_FIXED) && addr == 0 {
         return Err(SysErrNo::EPERM);
     }
-    debug!("prot is {:?}", MmapProt::from_bits(prot).unwrap());
-    debug!(
-        "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot {:?}",
-        addr, len, fd as isize, off, flags, map_perm
-    );
+    // debug!("prot is {:?}", MmapProt::from_bits(prot).unwrap());
+    // debug!(
+    //     "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot {:?}",
+    //     addr, len, fd as isize, off, flags, map_perm
+    // );
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_write();
@@ -102,11 +102,11 @@ pub fn sys_mremap(
     new_addr: usize,
 ) -> SyscallRet {
     let flags_bitmap = MremapFlags::from_bits(flags).expect("Invalid flags on mremap!");
-    debug!(
-        "sys_mremap: old_addr={:#x}, old_size={}, new_size={}, new_addr={:#x}",
-        old_addr, old_size, new_size, new_addr
-    );
-    debug!("flags={:?}", flags_bitmap);
+    // debug!(
+    //     "sys_mremap: old_addr={:#x}, old_size={}, new_size={}, new_addr={:#x}",
+    //     old_addr, old_size, new_size, new_addr
+    // );
+    // debug!("flags={:?}", flags_bitmap);
     // 允许内核在原地址空间不足时，将内存区域移动到新的虚拟地址。此时返回值应为移动后的地址。此时new_addr参数应该被忽视
     // 如果为false，则表示必须原地扩展/收缩
     let may_move = flags_bitmap.contains(MremapFlags::MAYMOVE);
@@ -190,10 +190,10 @@ pub fn sys_mprotect(addr: usize, len: usize, prot: u32) -> SyscallRet {
     }
     let map_perm: MapPermission = MmapProt::from_bits(prot).unwrap().into();
 
-    debug!(
-        "[sys_mprotect] addr is {:x}, len is {:#x}, map_perm is {:?}",
-        addr, len, map_perm
-    );
+    // debug!(
+    //     "[sys_mprotect] addr is {:x}, len is {:#x}, map_perm is {:?}",
+    //     addr, len, map_perm
+    // );
 
     let task = current_task().unwrap();
     let process = task.process.inner_lock();

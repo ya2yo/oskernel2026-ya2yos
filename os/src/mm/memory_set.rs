@@ -458,11 +458,11 @@ impl MemorySetInner {
         }
 
         if is_dl {
-            debug!("[load_dl] encounter a dl elf");
+            // debug!("[load_dl] encounter a dl elf");
             let section = elf.find_section_by_name(".interp").unwrap();
             let mut interp = String::from_utf8(section.raw_data(&elf).to_vec()).unwrap();
             interp = interp.strip_suffix("\0").unwrap_or(&interp).to_string();
-            debug!("[load_dl] interp {}", interp);
+            // debug!("[load_dl] interp {}", interp);
 
             let interp = map_dynamic_link_file_directly_map(&interp);
 
@@ -477,7 +477,7 @@ impl MemorySetInner {
 
             Some(interp_elf.header.pt2.entry_point() as usize + DL_INTERP_OFFSET)
         } else {
-            debug!("[load_dl] encounter a static elf");
+            // debug!("[load_dl] encounter a static elf");
             None
         }
     }
@@ -545,11 +545,11 @@ impl MemorySetInner {
         }
         // 自行选择地址,计算已经使用的MMap地址
         let addr = self.find_insert_addr(MMAP_TOP, len);
-        debug!(
-            "[sys_mmap] start_va:{:#x},end_va:{:#x}",
-            VirtAddr::from(addr).0,
-            VirtAddr::from(addr + len).0
-        );
+        // debug!(
+        //     "[sys_mmap] start_va:{:#x},end_va:{:#x}",
+        //     VirtAddr::from(addr).0,
+        //     VirtAddr::from(addr + len).0
+        // );
         let area_type = if flags.contains(MmapFlags::MAP_STACK) {
             MapAreaType::Stack
         } else {

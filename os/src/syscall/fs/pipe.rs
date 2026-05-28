@@ -29,7 +29,7 @@ pub fn sys_pipe2(fd: *mut u32) -> SyscallRet {
 
     locked_fs_info.insert("pipe".to_string(), read_fd);
     locked_fs_info.insert("pipe".to_string(), write_fd);
-    debug!("pipe read fd is {}, write fd is {}", read_fd, write_fd);
+    // debug!("pipe read fd is {}, write fd is {}", read_fd, write_fd);
     *translated_refmut(token, fd) = read_fd as u32;
     *translated_refmut(token, unsafe { fd.add(1) }) = write_fd as u32;
     Ok(0)

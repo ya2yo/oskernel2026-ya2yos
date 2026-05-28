@@ -166,7 +166,7 @@ impl SocketOps for UdpSocket {
         let remote_addr = IpEndpoint::from(remote_addr);
         let src = get_service().get_source_address(&remote_addr.addr);
         *guard = Some((remote_addr, src));
-        debug!("UDP socket {}: connected to {}", self.handle, remote_addr);
+        // debug!("UDP socket {}: connected to {}", self.handle, remote_addr);
         Ok(())
     }
 
@@ -307,7 +307,7 @@ impl SocketOps for UdpSocket {
         poll_interfaces();
 
         self.with_smol_socket(|socket| {
-            debug!("UDP socket {}: shutting down", self.handle);
+            // debug!("UDP socket {}: shutting down", self.handle);
             socket.close();
         });
         Ok(())

@@ -50,7 +50,7 @@ impl FSInfoInner {
     }
 
     fn set_cwd(&mut self, cwd: String) {
-        debug!("FSInfoInner::set_cwd: cwd is set to {}", cwd.as_str());
+        // debug!("FSInfoInner::set_cwd: cwd is set to {}", cwd.as_str());
         self.cwd = cwd;
     }
     // ----------exe----------
@@ -97,7 +97,7 @@ impl FSInfo {
     }
     /// 修改当前目录
     pub fn set_cwd(&self, cwd: String) {
-        debug!("FSInfoInner::set_cwd: cwd is set to {}", cwd.as_str());
+        // debug!("FSInfoInner::set_cwd: cwd is set to {}", cwd.as_str());
         self.inner.write().cwd = cwd;
     }
     /// 获取可执行文件的绝对路径

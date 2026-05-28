@@ -35,7 +35,7 @@ fn dup_fd(old_fd: usize, cloexec: bool) -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/dup.2.html
 pub fn sys_dup(fd: usize) -> SyscallRet {
-    debug!("[sys_dup]: fd is {fd}");
+    // debug!("[sys_dup]: fd is {fd}");
     dup_fd(fd, false)
 }
 
@@ -44,10 +44,10 @@ pub fn sys_dup3(old: usize, new: usize, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
 
-    debug!(
-        "[sys_dup3] : oldfd is {}, newfd is {}, flags is {}",
-        old, new, flags
-    );
+    // debug!(
+    //     "[sys_dup3] : oldfd is {}, newfd is {}, flags is {}",
+    //     old, new, flags
+    // );
     if old == new {
         return Err(SysErrNo::EINVAL);
     }
@@ -172,10 +172,10 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     let mut flags = OpenFlags::from_bits(flags).unwrap();
 
     let mut abs_path = proc_inner.get_abs_path(dirfd, &path)?;
-    debug!(
-        "[sys_openat] path is {}, flags is {:?}, mode is {:o}",
-        &abs_path, flags, mode
-    );
+    // debug!(
+    //     "[sys_openat] path is {}, flags is {:?}, mode is {:o}",
+    //     &abs_path, flags, mode
+    // );
 
     if flags.contains(OpenFlags::O_TMPFILE) {
         // 当出现O_TMPFILE时，openat的含意是，
@@ -220,7 +220,7 @@ pub fn sys_close(fd: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.process.inner_lock(); // 拿到锁就不用调用get_fd_table了
     let fd_table = inner.fd_table.clone();
-    debug!("[sys_close] fd is {}", fd);
+    // debug!("[sys_close] fd is {}", fd);
 
     if (fd as isize) < 0 || fd >= fd_table.len() {
         return Err(SysErrNo::EBADF);

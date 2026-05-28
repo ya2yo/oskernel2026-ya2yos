@@ -75,14 +75,14 @@ pub fn map_dynamic_link_file(path: &str) -> &str {
     // 直接找没找到，试着加上前缀再找找
 
     let (_, file_name) = path.rsplit_once("/").unwrap();
-    debug!("map_dynamic_link_file: filename=[{}]", file_name);
+    // debug!("map_dynamic_link_file: filename=[{}]", file_name);
     for prefix in DYNAMIC_PREFIX.iter() {
         let full_path = format!("{}{}", prefix, file_name);
-        debug!("for prefix [{}], try full_path=[{}]", prefix, full_path);
+        // debug!("for prefix [{}], try full_path=[{}]", prefix, full_path);
         if DYNAMIC_PATH.contains(full_path.as_str()) {
             return full_path.leak();
         }
-        debug!("Failed");
+        // debug!("Failed");
     }
 
     warn!(

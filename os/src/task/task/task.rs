@@ -154,7 +154,7 @@ impl TaskControlBlock {
             Arc::new(FdTable::new_with_stdio()),
             Arc::new(FSInfo::new_initproc()),
             tid_handle.0,
-            None,
+            0,
         );
         let task = Self {
             tid: tid_handle,
@@ -411,7 +411,12 @@ impl TaskControlBlock {
             process = self.process.clone();
         } else {
             pid = tid_handle.0;
-            ppid = self.pid();
+            let parent_pid = if flags.contains(CloneFlags::CLONE_PARENT) {
+                self.ppid()
+            } else {
+                self.pid()
+            };
+            ppid = parent_pid;
             timer = Arc::new(Timer::new());
             sig_mask = parent_inner.sig_mask;
             process = Process::new(
@@ -420,11 +425,8 @@ impl TaskControlBlock {
                 fd_table,
                 fs_info,
                 pid,
-                Some(self.process.clone()),
+                parent_pid,
             );
-        }
-        if flags.contains(CloneFlags::CLONE_PARENT) {
-            ppid = self.ppid();
         }
 
         let child = Arc::new(TaskControlBlock {
