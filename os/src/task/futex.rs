@@ -76,7 +76,7 @@ fn futex_wait_bitset(
     bitset: u32,
     timeout: Option<Timespec>,
 ) -> SyscallRet {
-    // debug!("wait bitset = {:b}", bitset);
+    debug!("wait bitset = {:b}", bitset);
     // 在futex wait 的基础上，除了插入的队列不同，在队列项中多加了一个bitset，其他没有区别
     let mut waitq = FUTEX_QUEUE_BITMAP.lock();
     // 向key对应的等待队列中插入当前进程的弱指针。
@@ -108,9 +108,9 @@ fn futex_wait_bitset(
     // 释放锁……
     drop(task);
     drop(waitq);
-    // debug!("futex_wait_bitset sleeping...");
+    debug!("futex_wait_bitset sleeping...");
     block_current_and_run_next();
-    // debug!("futex_wait_bitset wake up!");
+    debug!("futex_wait_bitset wake up!");
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
     // woke by signal
@@ -242,14 +242,14 @@ pub fn sys_futex(
         timeout_opt = Some(real_timeout);
     }
 
-    // log::debug!(
-    //     "[sys_futex] uaddr = {:x}, pa = {:?}, cmd = {:?}, val = {},opt={:?}",
-    //     uaddr as usize,
-    //     pa,
-    //     cmd,
-    //     val,
-    //     opt
-    // );
+    log::debug!(
+        "[sys_futex] uaddr = {:x}, pa = {:?}, cmd = {:?}, val = {},opt={:?}",
+        uaddr as usize,
+        pa,
+        cmd,
+        val,
+        opt
+    );
 
     let pa2 = memory_set.translate_va(VirtAddr::from(uaddr2 as usize));
     drop(memory_set);

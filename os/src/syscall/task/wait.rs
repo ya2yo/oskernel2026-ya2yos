@@ -5,9 +5,7 @@ use alloc::{
 use log::debug;
 
 use crate::{
-    mm::put_data,
-    task::{current_task, suspend_current_and_run_next, Process},
-    utils::{SysErrNo, SyscallRet},
+    arch::handle, mm::put_data, signal::{check_if_any_sig_for_current_task, handle_signal}, task::{Process, current_task, suspend_current_and_run_next}, utils::{SysErrNo, SyscallRet}
 };
 
 /// input.pid<-1: 等待一个子进程，其pgid==abs(input.pid)。这里的pgid指的是进程组id
@@ -19,7 +17,7 @@ use crate::{
 ///
 /// 参考 https://man7.org/linux/man-pages/man2/wait4.2.html
 pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet {
-    // debug!("[sys_wait4] enter!");
+    debug!("[sys_wait4] enter!");
     if pid < -1 {
         // 需要进程组功能
         panic!(
@@ -35,7 +33,7 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
 
     // 新实现
     loop {
-        // debug!("Wait4 loop begin, wait for : {}", pid);
+        debug!("Wait4 loop begin, wait for : {}", pid);
         let task = current_task().unwrap();
         let mut process_meta = task.process.meta_lock();
         // 取子进程集合
@@ -46,7 +44,7 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
             .iter()
             .filter_map(|x| x.upgrade())
             .collect();
-        // debug!("Wait4 len={}", children.len());
+        debug!("Wait4 len={}", children.len());
         if children.len() == 0 {
             return Err(SysErrNo::ECHILD);
         }
@@ -54,25 +52,25 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
         if pid != -1 && children.iter().all(|proc| proc.pid != pid as usize) {
             return Err(SysErrNo::ECHILD);
         }
-        // debug!("===============print my children process task=========");
-        // for thread in &children {
-        //     debug!(
-        //         "my child is {}, his alive task {}",
-        //         thread.pid,
-        //         thread.alive_tasks_count()
-        //     );
-        //     for t in &thread.meta_lock().tasks {
-        //         if let Some(s) = t.upgrade() {
-        //             debug!(
-        //                 "tid: {} status: {:?}, strong_count: {}",
-        //                 s.tid(),
-        //                 s.inner_lock().task_status,
-        //                 Arc::strong_count(&s)
-        //             );
-        //         }
-        //     }
-        // }
-        // debug!("======================= over =========================");
+        debug!("===============print my children process task=========");
+        for thread in &children {
+            debug!(
+                "my child is {}, his alive task {}",
+                thread.pid,
+                thread.alive_tasks_count()
+            );
+            for t in &thread.meta_lock().tasks {
+                if let Some(s) = t.upgrade() {
+                    debug!(
+                        "tid: {} status: {:?}, strong_count: {}",
+                        s.tid(),
+                        s.inner_lock().task_status,
+                        Arc::strong_count(&s)
+                    );
+                }
+            }
+        }
+        debug!("======================= over =========================");
         let pair = children
             .iter()
             .enumerate()
@@ -89,10 +87,10 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
             let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
 
             if wstatus as usize != 0x0 {
-                // debug!(
-                //     "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}, strong_count: {}",
-                //     pid, found_pid, exit_code, wstatus as usize, Arc::strong_count(&child)
-                // );
+                debug!(
+                    "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}, strong_count: {}",
+                    pid, found_pid, exit_code, wstatus as usize, Arc::strong_count(&child)
+                );
                 let token = task
                     .process
                     .inner_lock()
@@ -119,13 +117,15 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
                     id.push(t.tid());
                 }
             }
-            // debug!("task: {:?}", id);
+            debug!("task: {:?}", id);
             drop(process_meta);
             drop(task);
-
-            // debug!("Wait4 suspend");
+            if check_if_any_sig_for_current_task().is_some() {
+                return Err(SysErrNo::EINTR);
+            }
+            debug!("Wait4 suspend");
             suspend_current_and_run_next();
-            // debug!("Wait4 wakeup");
+            debug!("Wait4 wakeup");
         }
     }
 }

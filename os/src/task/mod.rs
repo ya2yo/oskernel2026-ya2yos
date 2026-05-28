@@ -62,10 +62,10 @@ pub const INITPROC_PID: usize = 1;
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     let task = current_task().unwrap();
-    // debug!(
-    //     "[suspend_current_and_run_next] strong_count = {}",
-    //     Arc::strong_count(&task)
-    // );
+    debug!(
+        "[suspend_current_and_run_next] strong_count = {}",
+        Arc::strong_count(&task)
+    );
     let mut task_inner = task.inner_lock();
     let exited = {
         let proc_inner = task.process.inner_lock();
@@ -91,7 +91,7 @@ pub fn suspend_current_and_run_next() {
 }
 
 pub fn block_current_and_run_next() {
-    // debug!("[block_current_and_run_next()] BEGIN!");
+    debug!("[block_current_and_run_next()] BEGIN!");
     let task = take_current_task().unwrap();
     // debug!("current strong_count: {}", Arc::strong_count(&task));
     let mut task_inner = task.inner_lock();
