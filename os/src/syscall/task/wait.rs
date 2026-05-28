@@ -1,131 +1,138 @@
+use core::{future::poll_fn, task::Poll};
+
 use alloc::{
     sync::Arc,
-    vec::{self, Vec},
+    vec::Vec,
 };
 use log::debug;
 
 use crate::{
-    arch::handle, mm::put_data, signal::{check_if_any_sig_for_current_task, handle_signal}, task::{Process, current_task, suspend_current_and_run_next}, utils::{SysErrNo, SyscallRet}
+    mm::put_data, signal::{SIG_IGN, SIGCHLD, SigActionFlags, SigOp, SigSet, check_if_any_sig_for_current_task}, syscall::options::WaitOption, task::{Process, block_on, current_task, interruptible, suspend_current_and_run_next}, utils::{SysErrNo, SyscallRet}
 };
 
-/// input.pid<-1: 等待一个子进程，其pgid==abs(input.pid)。这里的pgid指的是进程组id
-/// input.pid=-1: 等待任一一个子进程的结束。
-///     这里子进程指的是调用者task所处的进程（线程组）的子进程
-///     （由本线程组的task调用sys_clone但选择不把新线程置于本线程组时创建的新线程组）。
-/// input.pid=0 : 等待与调用者同进程组的任一子进程的结束
-/// input.pid>0 : 等待pid==input.pid的子进程的结束。从内核的视角看，这里的pid指的是线程组id(tgid)，而不是线程id(tid)。
-///
-/// 参考 https://man7.org/linux/man-pages/man2/wait4.2.html
-pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet {
-    debug!("[sys_wait4] enter!");
-    if pid < -1 {
-        // 需要进程组功能
-        panic!(
-            "[sys_wait4] We cannot handle input.pid<-1 (input.pid={})",
-            pid
-        );
-    }
-    // 由于我们假设所有进程均属于同一个进程组，我们视pid=0为pid=-1
-    if pid == 0 {
-        pid = -1;
-    }
-    // 现在只有两种情况：pid=-1表示等待任意子进程结束，pid>0表示等待特定子进程结束
+#[derive(Debug, Clone, Copy)]
+enum WaitPid {
+    /// Wait for any child process
+    Any,
+    /// Wait for the child whose process ID is equal to the value.
+    Pid(usize),
+}
 
-    // 新实现
-    loop {
-        debug!("Wait4 loop begin, wait for : {}", pid);
+impl WaitPid {
+    fn apply(&self, child: &Process) -> bool {
+        match self {
+            WaitPid::Any => true,
+            WaitPid::Pid(pid) => child.pid == *pid,
+        }
+    }
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/waitpid.2.html
+pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
+    let options = WaitOption::from_bits_truncate(options);
+    debug!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
+
+    if pid < -1 {
+        panic!("[sys_waitpid] pgid not supported: pid={}", pid);
+    }
+
+    // pid=0 means any child in the same process group. Since we treat all
+    // processes as belonging to the same group, map 0 to Any just like -1.
+    let wait_pid = if pid <= 0 {
+        WaitPid::Any
+    } else {
+        WaitPid::Pid(pid as _)
+    };
+
+    block_on(interruptible(poll_fn(|cx| {
         let task = current_task().unwrap();
         let mut process_meta = task.process.meta_lock();
-        // 取子进程集合
 
         let children: Vec<Arc<Process>> = process_meta
             .children
-            .clone()
             .iter()
-            .filter_map(|x| x.upgrade())
+            .filter_map(|w| w.upgrade())
+            .filter(|child| wait_pid.apply(child))
             .collect();
-        debug!("Wait4 len={}", children.len());
-        if children.len() == 0 {
-            return Err(SysErrNo::ECHILD);
+
+        if children.is_empty() {
+            return Poll::Ready(Err(SysErrNo::ECHILD));
         }
-        // 如果是等待特定进程，但是自己根本没有这个子进程，则退出
-        if pid != -1 && children.iter().all(|proc| proc.pid != pid as usize) {
-            return Err(SysErrNo::ECHILD);
-        }
-        debug!("===============print my children process task=========");
-        for thread in &children {
-            debug!(
-                "my child is {}, his alive task {}",
-                thread.pid,
-                thread.alive_tasks_count()
-            );
-            for t in &thread.meta_lock().tasks {
-                if let Some(s) = t.upgrade() {
-                    debug!(
-                        "tid: {} status: {:?}, strong_count: {}",
-                        s.tid(),
-                        s.inner_lock().task_status,
-                        Arc::strong_count(&s)
-                    );
-                }
-            }
-        }
-        debug!("======================= over =========================");
+
         let pair = children
             .iter()
             .enumerate()
-            .find(|(_, child_p)| {
-                // ++++ temporarily access child PCB exclusively
-                child_p.all_tasks_exited() && (pid == -1 || pid as usize == child_p.pid)
-                // ++++ release child PCB
-            })
-            .map(|(idx, child_p)| (idx, Arc::clone(child_p)));
+            .find(|(_, child)| child.all_tasks_exited())
+            .map(|(idx, child)| (idx, Arc::clone(child)));
+
         drop(children);
-        // 所有线程都已经退出
+
         if let Some((idx, child)) = pair {
-            let found_pid = child.pid.clone();
+            let found_pid = child.pid;
             let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
 
-            if wstatus as usize != 0x0 {
-                debug!(
-                    "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}, strong_count: {}",
-                    pid, found_pid, exit_code, wstatus as usize, Arc::strong_count(&child)
-                );
+            if !wstatus.is_null() {
                 let token = task
                     .process
                     .inner_lock()
                     .get_locked_memory_set_read()
                     .token();
                 if exit_code >= 128 && exit_code <= 255 {
-                    //表示由于信号而退出的
                     put_data(token, wstatus, exit_code);
                 } else {
                     put_data(token, wstatus, exit_code << 8);
                 }
             }
-            // drop(child_inner);
-            process_meta.children.remove(idx);
-            // 从全局进程映射中移除
-            // 在移除前，我们得先把手上的这个Arc给丢掉
-            drop(child);
-            Process::remove_from_global_map(found_pid);
-            return Ok(found_pid);
-        } else {
-            let mut id: Vec<usize> = Vec::new();
-            for task in process_meta.tasks.iter() {
-                if let Some(t) = task.upgrade() {
-                    id.push(t.tid());
-                }
+
+            if !options.contains(WaitOption::WNOWAIT) {
+                process_meta.children.remove(idx);
+                drop(child);
+                Process::remove_from_global_map(found_pid);
             }
-            debug!("task: {:?}", id);
+
+            Poll::Ready(Ok(found_pid))
+        } else if options.contains(WaitOption::WNOHANG) {
+            Poll::Ready(Ok(0))
+        } else {
+            // Check for pending signals before going to sleep.
+            // Ignorable signals (SIGCHLD, SIG_IGN, default=Ignore) are
+            // consumed and the wait continues.
+            // Signals with a custom handler return EINTR (unless SA_RESTART
+            // is set, in which case we consume the signal and continue).
+            // Default Term/Core signals without a handler are left pending.
+            if let Some(signo) = check_if_any_sig_for_current_task() {
+                drop(process_meta);
+                let act = task
+                    .process
+                    .inner_lock()
+                    .get_locked_sigtable()
+                    .action(signo);
+                let ignorable = signo == SIGCHLD
+                    || act.act.sa_handler == SIG_IGN
+                    || (!act.customed
+                        && SigSet::from_sig(signo).default_op() == SigOp::Ignore);
+                if ignorable {
+                    task.inner_lock().sig_pending.remove(SigSet::from_sig(signo));
+                    drop(task);
+                    return Poll::Pending;
+                }
+                if act.customed {
+                    if !act.act.sa_flags.contains(SigActionFlags::SA_RESTART) {
+                        drop(task);
+                        return Poll::Ready(Err(SysErrNo::EINTR));
+                    }
+                    task.inner_lock().sig_pending.remove(SigSet::from_sig(signo));
+                    drop(task);
+                    return Poll::Pending;
+                }
+                drop(task);
+                return Poll::Pending;
+            }
+
+            process_meta.child_exit_event.register(cx.waker());
             drop(process_meta);
             drop(task);
-            if check_if_any_sig_for_current_task().is_some() {
-                return Err(SysErrNo::EINTR);
-            }
-            debug!("Wait4 suspend");
-            suspend_current_and_run_next();
-            debug!("Wait4 wakeup");
+            Poll::Pending
         }
-    }
+    })))?
 }

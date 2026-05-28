@@ -655,7 +655,6 @@ pub enum TaskStatus {
     Running,
     Zombie,
     Blocked,
-    Stopped,
 }
 pub type TaskRef = Arc<TaskControlBlock>;
 pub type WeakTaskRef = Weak<TaskControlBlock>;

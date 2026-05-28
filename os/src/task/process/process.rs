@@ -5,6 +5,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+use futures_util::task::AtomicWaker;
 use log::{debug, error, warn};
 use spin::{
     rwlock::{RwLock, RwLockWriteGuard},
@@ -106,6 +107,7 @@ impl Process {
                 tasks: Vec::new(),
                 children: Vec::new(),
                 parent_pid,
+                child_exit_event: AtomicWaker::new(),
             }),
         });
         if parent_pid != 0 {
@@ -301,6 +303,8 @@ pub struct ProcessMeta {
     pub children: Vec<Weak<Process>>,
     /// 父进程 pid；0 表示无父进程
     pub parent_pid: usize,
+    /// 子进程退出事件，用于唤醒等待中的父进程
+    pub child_exit_event: AtomicWaker,
 }
 
 static PID_2_PROCESS_ARC: Lazy<Mutex<BTreeMap<usize, Arc<Process>>>> =

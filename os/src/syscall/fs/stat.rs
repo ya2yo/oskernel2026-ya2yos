@@ -184,7 +184,7 @@ pub fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/faccessat.2.html
-pub fn sys_faccessat(dirfd: isize, path: *const u8, mode: u32, _flags: usize) -> SyscallRet {
+pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.inner_lock();
     let proc_inner = task.process.inner_lock();
@@ -205,16 +205,16 @@ pub fn sys_faccessat(dirfd: isize, path: *const u8, mode: u32, _flags: usize) ->
         return Err(SysErrNo::ENAMETOOLONG);
     }
 
-    if dirfd != -100 && dirfd as usize >= proc_inner.fd_table.len() {
+    if dirfd != AT_FDCWD && dirfd as usize >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
 
     let mode = FaccessatMode::from_bits(mode).unwrap();
 
-    // debug!(
-    //     "[sys_faccessat] dirfd is {} and path is {} and mode is {:?}",
-    //     dirfd, path, mode
-    // );
+    debug!(
+        "[sys_faccessat] dirfd is {} and path is {} and mode is {:?}",
+        dirfd, path, mode
+    );
 
     if mode.contains(FaccessatMode::W_OK) {
         if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().got_mount(path.clone()) {
@@ -225,7 +225,7 @@ pub fn sys_faccessat(dirfd: isize, path: *const u8, mode: u32, _flags: usize) ->
         }
     }
 
-    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
     let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
     let parent_inode = open(&parent_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
     let parent_mode = parent_inode.inode.fmode()? & 0xfff;

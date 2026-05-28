@@ -226,7 +226,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[3] as usize,
         ),
         Syscall::Faccessat => sys_faccessat(
-            args[0] as isize,
+            args[0] as i32,
             args[1] as *const u8,
             args[2] as u32,
             args[3],
@@ -453,7 +453,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Mprotect => sys_mprotect(args[0], args[1], args[2] as u32),
         Syscall::MSync => Ok(0),
         Syscall::Madvise => sys_madvise(args[0], args[1], args[2]),
-        Syscall::Wait4 => sys_wait4(args[0] as isize, args[1] as *mut i32, args[2] as i32),
+        Syscall::Wait4 => sys_waitpid(args[0] as i32, args[1] as *mut i32, args[2] as u32),
 
         Syscall::Renameat2 => sys_renameat2(
             args[0] as isize,

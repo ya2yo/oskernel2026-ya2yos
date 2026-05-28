@@ -1,16 +1,18 @@
 /// 存放系统调用的各种Option
 use crate::mm::MapPermission;
+use linux_raw_sys::general::{WCONTINUED, WNOHANG, WNOWAIT, WUNTRACED};
 use num_enum::FromPrimitive;
 
 /// 可以打开文件的最大数量
 pub const FILE_LIMIT: usize = 1024;
 
 bitflags! {
-    pub struct WaitOption:u8{
+    pub struct WaitOption:u32{
         const DEFAULT = 0;
-        const WNOHANG = 1;
-        const WUNTRACED = 2;
-        const WCONTINUED = 8;
+        const WNOHANG = WNOHANG;
+        const WUNTRACED = WUNTRACED;
+        const WCONTINUED = WCONTINUED;
+        const WNOWAIT = WNOWAIT;
     }
 }
 

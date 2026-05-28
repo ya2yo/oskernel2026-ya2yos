@@ -230,8 +230,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             .iter()
             .all(|bro_task| bro_task.inner_lock().is_zombie())
         {
-            send_signal_to_thread_group(curr_task.ppid(), SigSet::SIGCHLD);
-
             memory_set.recycle_data_pages();
             curr_proc.fd_table.clear();
             curr_proc.fs_info.clear();
@@ -242,7 +240,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             }
             curr_task.process.exit_and_reparent();
             remove_proc_dir_and_file(curr_task.pid());
-            // wakeup_parent(task.ppid());  // 此功能似乎无用，删去
+            send_signal_to_thread_group(curr_task.ppid(), SigSet::SIGCHLD);
+            // 唤醒在 waitpid 上等待的父进程
+            if let Some(parent) = Process::get_process_arc_by_pid(curr_task.ppid()) {
+                parent.meta_lock().child_exit_event.wake();
+            }
         }
     }
     // 安全地切换内核栈
