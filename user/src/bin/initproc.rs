@@ -461,7 +461,7 @@ fn get_score() {
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");
     // run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loonarch 通过
     // run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
-    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");
+    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loongarch 通过
     // run_testsuit("glibc\0", "ltp_testcode.sh\0");
     // run_testsuit("glibc\0", "netperf_testcode.sh\0");
 }
