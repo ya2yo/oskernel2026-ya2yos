@@ -258,12 +258,15 @@ impl File for Pipe {
         loop {
             let ring_buffer = self.inner_lock();
             loop_read = ring_buffer.available_read();
-            if loop_read == 0 {// 管道数据为空，需要进行阻塞或关闭
-                if ring_buffer.all_write_ends_closed() {// 写者全部关闭，不会有数据了，直接返回
+            if loop_read == 0 {
+                // 管道数据为空，需要进行阻塞或关闭
+                if ring_buffer.all_write_ends_closed() {
+                    // 写者全部关闭，不会有数据了，直接返回
                     return Ok(read_size);
                 }
                 drop(ring_buffer);
-                if check_if_any_sig_for_current_task().is_some() {// 一旦获取信号，必须中断系统调用
+                if check_if_any_sig_for_current_task().is_some() {
+                    // 一旦获取信号，必须中断系统调用
                     return Err(SysErrNo::EINTR);
                 }
                 let task = current_task().ok_or(SysErrNo::ESRCH)?;

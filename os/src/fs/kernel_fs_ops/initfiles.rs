@@ -248,7 +248,7 @@ pub fn create_init_files() -> GeneralRet {
         "/bin/mktemp",
         "/bin/chmod",
         "/bin/cut",
-        "/bin/sleep"
+        "/bin/sleep",
     ] {
         superblock_root_inode().sym_link("/musl/busybox", path);
     }

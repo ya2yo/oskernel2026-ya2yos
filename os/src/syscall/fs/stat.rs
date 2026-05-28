@@ -6,12 +6,13 @@ use log::debug;
 
 use crate::{
     fs::{
-        InodeType, Kstat, MAX_PATH_LEN, MNT_TABLE, NONE_MODE, OpenFlags, Statfs, open, superblock_fs_stat
+        open, superblock_fs_stat, InodeType, Kstat, OpenFlags, Statfs, MAX_PATH_LEN, MNT_TABLE,
+        NONE_MODE,
     },
     mm::{copy_from_user, copy_to_user, if_bad_address, put_data, translated_str},
     syscall::options::{FaccessatFileMode, FaccessatMode},
     task::current_task,
-    utils::{SysErrNo, SyscallRet, rsplit_once, trim_start_slash},
+    utils::{rsplit_once, trim_start_slash, SysErrNo, SyscallRet},
 };
 
 fn kstat_to_statx(kst: &Kstat, _mask: u32) -> statx {
@@ -88,7 +89,7 @@ pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, _flags: usize
     let proc_inner = task.process.inner_lock();
     let memory_set = &proc_inner.get_locked_memory_set_read();
     let token = memory_set.token();
-    let mut dst_str = [0u8;MAX_PATH_LEN];
+    let mut dst_str = [0u8; MAX_PATH_LEN];
     copy_from_user(memory_set, path as usize, &mut dst_str);
     // 转成字符串
     let len = dst_str.iter().position(|&b| b == 0).unwrap_or(MAX_PATH_LEN);

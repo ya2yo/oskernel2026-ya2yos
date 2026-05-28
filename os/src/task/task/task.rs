@@ -23,11 +23,7 @@ use crate::{
     },
     signal::{SigSet, SigTable},
     syscall::CloneFlags,
-    task::{
-        futex::futex_wake_up,
-        kernel_stack::KernelStackOnHeap,
-        tid,
-    },
+    task::{futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid},
     timer::{TimeData, TimeVal, Timer},
     trap::trap_types::{Exception, Trap},
     utils::{get_abs_path, is_abs_path, SysErrNo},
@@ -223,7 +219,8 @@ impl TaskControlBlock {
                 task_inner.clear_child_tid as usize,
                 &[0u8; 4],
             );
-            if let Some(pa) = old_memory_set.translate_va(VirtAddr::from(task_inner.clear_child_tid))
+            if let Some(pa) =
+                old_memory_set.translate_va(VirtAddr::from(task_inner.clear_child_tid))
             {
                 futex_wake_up(pa.0, 1);
             }
@@ -399,7 +396,7 @@ impl TaskControlBlock {
         } else {
             0
         };
-        let (pid, mut ppid, timer, sig_mask);
+        let (pid, ppid, timer, sig_mask);
         let process: Arc<Process>;
 
         // 检查是否创建线程

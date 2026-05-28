@@ -33,9 +33,9 @@ mod tid;
 pub use crate::arch::context::TaskContext;
 use crate::{
     arch::{cpu::hart_id, memory_layout::USER_STACK_SIZE},
-    fs::{NONE_MODE, OpenFlags, open, remove_proc_dir_and_file},
-    mm::{VirtAddr, activate_kernel_space, copy_to_user, get_data, put_data},
-    signal::{SigSet, send_signal_to_thread_group},
+    fs::{open, remove_proc_dir_and_file, OpenFlags, NONE_MODE},
+    mm::{activate_kernel_space, copy_to_user, get_data, put_data, VirtAddr},
+    signal::{send_signal_to_thread_group, SigSet},
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};

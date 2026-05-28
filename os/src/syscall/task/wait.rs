@@ -90,7 +90,7 @@ pub fn sys_wait4(mut pid: isize, wstatus: *mut i32, _options: i32) -> SyscallRet
 
             if wstatus as usize != 0x0 {
                 // debug!(
-                //     "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}, strong_count: {}", 
+                //     "[sys_wait4] wait pid {}: child {} exit with code {}, wstatus= {:#x}, strong_count: {}",
                 //     pid, found_pid, exit_code, wstatus as usize, Arc::strong_count(&child)
                 // );
                 let token = task

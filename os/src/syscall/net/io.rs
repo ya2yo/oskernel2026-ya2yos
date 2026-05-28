@@ -285,11 +285,11 @@ pub fn sys_recvfrom(
 ) -> SyscallRet {
     // debug!(
     //     "
-    //     [sys_recvfrom] sockfd: {sockfd}, 
-    //     buf: {}, 
-    //     len: {}, 
-    //     flags: {}, 
-    //     src_addr: {}, 
+    //     [sys_recvfrom] sockfd: {sockfd},
+    //     buf: {},
+    //     len: {},
+    //     flags: {},
+    //     src_addr: {},
     //     addr_len: {}.",
     //     buf as usize, len, flags, src_addr as usize, addrlen_ptr as usize
     // );

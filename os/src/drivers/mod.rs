@@ -9,9 +9,9 @@ pub use devcont::*;
 pub use device::*;
 pub use disk::*;
 #[cfg(feature = "net")]
-pub use net::*;
-#[cfg(feature = "net")]
 use log::warn;
+#[cfg(feature = "net")]
+pub use net::*;
 use spin::Lazy;
 pub use virtio::*;
 #[cfg(target_arch = "loongarch64")]
@@ -65,7 +65,10 @@ impl NetDeviceImpl {
         let transport = match unsafe { MmioTransport::new(header) } {
             Ok(transport) => transport,
             Err(err) => {
-                warn!("No usable VirtIO Net MMIO device at {:#x}: {:?}", VIRTIO_NET_BASE, err);
+                warn!(
+                    "No usable VirtIO Net MMIO device at {:#x}: {:?}",
+                    VIRTIO_NET_BASE, err
+                );
                 return None;
             }
         };

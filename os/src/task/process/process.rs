@@ -45,11 +45,8 @@ impl Process {
     pub fn exit_and_reparent(&self) {
         let orphans: Vec<Arc<Process>> = {
             let mut meta = self.meta_lock();
-            let orphans: Vec<Arc<Process>> = meta
-                .children
-                .iter()
-                .filter_map(|w| w.upgrade())
-                .collect();
+            let orphans: Vec<Arc<Process>> =
+                meta.children.iter().filter_map(|w| w.upgrade()).collect();
             meta.children.clear();
             meta.tasks.clear();
             orphans

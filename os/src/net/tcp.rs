@@ -124,11 +124,11 @@ impl TcpSocket {
             smol::State::SynSent => false, // 还在发送 SYN，未连接
             smol::State::Established => {
                 self.state.set(State::Connected); // 连接成功
-                // debug!(
-                //     "TCP socket {}: connected to {}",
-                //     self.handle,
-                //     socket.remote_endpoint().unwrap(),
-                // );
+                                                  // debug!(
+                                                  //     "TCP socket {}: connected to {}",
+                                                  //     self.handle,
+                                                  //     socket.remote_endpoint().unwrap(),
+                                                  // );
                 true
             }
             _ => {
