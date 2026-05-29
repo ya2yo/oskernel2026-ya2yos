@@ -197,8 +197,13 @@ pub fn sys_shutdown(sockfd: usize, how: u32) -> SyscallRet {
 
 pub fn sys_accept4(sockfd: usize, addr: *mut u8, mut addrlen: u32, flags: u32) -> SyscallRet {
     debug!("[sys_accept] fd: {}, flags: {}", sockfd, flags);
-    let socket = Socket::from_fd(sockfd)?;
-    let socket = Socket(socket.accept()?);
+    let task=current_task().unwrap();
+    let fd_table = task.get_fd_table();
+    let file = fd_table.get(sockfd)?;
+    if file.flags() & OpenFlags::O_PATH.bits() !=0 {
+        return Err(SysErrNo::EBADF)
+    }
+    let socket = Socket(file.socket()?.accept()?);
     let remote_addr = socket.local_addr()?;
     if !addr.is_null() {
         remote_addr.write_to_user(addr, &mut addrlen);

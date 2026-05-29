@@ -40,7 +40,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         // debug!("buffer 3");
         Ok(ret)
     } else {
-        // debug!("write EBADF");
+        warn!("write EBADF");
         Err(SysErrNo::EBADF)
     }
 }

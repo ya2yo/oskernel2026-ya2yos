@@ -186,11 +186,11 @@ use time::*;
 pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
     let id = syscall_id;
     let syscall_id: Syscall = Syscall::from(syscall_id);
-    log::debug!(
-        "[syscall begin] {:?} sepc = {:#x}",
-        syscall_id,
-        current_task().unwrap().inner_lock().trap_cx().get_sepc()
-    );
+    // log::debug!(
+    //     "[syscall begin] {:?} sepc = {:#x}",
+    //     syscall_id,
+    //     current_task().unwrap().inner_lock().trap_cx().get_sepc()
+    // );
     match syscall_id {
         Syscall::Getcwd => sys_getcwd(args[0] as *const u8, args[1]),
         Syscall::Dup => sys_dup(args[0]),

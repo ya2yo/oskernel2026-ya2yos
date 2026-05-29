@@ -525,7 +525,9 @@ impl TaskControlBlock {
         }
 
         if flags.contains(CloneFlags::SIGCHLD) {
-            create_proc_dir_and_file(pid, ppid);
+            let child_proc = child.process.inner_lock();
+            let child_mm = child_proc.get_locked_memory_set_read();
+            create_proc_dir_and_file(pid, ppid, &child_mm);
         }
 
         drop(child_inner);

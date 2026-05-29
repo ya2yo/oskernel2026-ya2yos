@@ -172,10 +172,10 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     let mut flags = OpenFlags::from_bits(flags).unwrap();
 
     let mut abs_path = proc_inner.get_abs_path(dirfd, &path)?;
-    // debug!(
-    //     "[sys_openat] path is {}, flags is {:?}, mode is {:o}",
-    //     &abs_path, flags, mode
-    // );
+    debug!(
+        "[sys_openat] path is {}, flags is {:?}, mode is {:o}",
+        &abs_path, flags, mode
+    );
 
     if flags.contains(OpenFlags::O_TMPFILE) {
         // 当出现O_TMPFILE时，openat的含意是，
@@ -203,6 +203,9 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
 
     if abs_path == "/proc/self/stat" {
         abs_path = format!("/proc/{}/stat", task.pid());
+    }
+    if abs_path == "/proc/self/maps" {
+        abs_path = format!("/proc/{}/maps", task.pid());
     }
 
     let inode = open(&abs_path, flags, mode)?;

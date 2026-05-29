@@ -2,7 +2,7 @@ use crate::fs::map_library_path;
 
 use super::*;
 use alloc::sync::Arc;
-use log::debug;
+use log::{debug, warn};
 fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
     // 一定能找到,因为除了RootInode外都有父结点
     let parent_dir = superblock_root_inode();
@@ -48,8 +48,8 @@ pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, Sy
             FsIndex::insert_inode_idx(abs_path, t.clone());
             inode = Some(t);
         } else {
-            debug!(
-                "unexpected error in root_inode().find({},{:?},0):{:?}",
+            warn!(
+                "Unexpected error in root_inode().find({},{:?},0):{:?}",
                 abs_path,
                 flags,
                 found_res.clone().err().unwrap()
