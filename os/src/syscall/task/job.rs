@@ -16,6 +16,6 @@ pub fn sys_getpgid() -> SyscallRet {
 /// https://www.man7.org/linux/man-pages/man2/setpgid.2.html
 pub fn sys_setpgid(_pid: u32, _pgid: u32) -> SyscallRet {
     // debug!("[sys_setpgid] start!");
-    warn!("unimplement!");
+    warn!("[sys_setpgid] unimplement!");
     Ok(0)
 }
