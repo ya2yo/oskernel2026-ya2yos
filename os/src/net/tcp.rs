@@ -1,24 +1,24 @@
+use alloc::vec::Vec;
 use alloc::vec;
+use linux_raw_sys::net::{__kernel_sockaddr_storage, AF_INET, AF_INET6};
 use core::{
-    net::{Ipv4Addr, SocketAddr},
-    sync::atomic::{AtomicBool, Ordering},
-    task::Context,
+    net::{Ipv4Addr, SocketAddr}, str::FromStr, sync::atomic::{AtomicBool, Ordering}, task::Context
 };
 use log::{debug, info, warn};
 
-use crate::syscall::PollEvents;
+use crate::{net::extract_ipaddr_from_sockaddr, syscall::PollEvents};
 use crate::{
     fs::File,
     mm::UserBuffer,
     utils::{PollSet, SysErrNo, SysResult},
 };
 use smoltcp::{
-    iface::SocketHandle,
+    iface::{MulticastError, SocketHandle},
     socket::tcp as smol,
     time::Duration,
-    wire::{IpEndpoint, IpListenEndpoint},
+    wire::{IpAddress, IpEndpoint, IpListenEndpoint},
 };
-use spin::Mutex;
+use spin::{Mutex, RwLock};
 
 use super::{
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
@@ -51,6 +51,8 @@ pub struct TcpSocket {
     rx_closed: AtomicBool,
     /// 用于处理接收端关闭时的唤醒和轮询
     poll_rx_closed: PollSet,
+    /// 记录该套接字加入的组播组列表: (接口索引, 组播组地址)
+    memberships: RwLock<Vec<(u32, IpAddress)>>,
 }
 
 unsafe impl Sync for TcpSocket {}
@@ -65,6 +67,7 @@ impl TcpSocket {
             general: GeneralOptions::new(),
             rx_closed: AtomicBool::new(false),
             poll_rx_closed: PollSet::new(),
+            memberships: RwLock::new(vec![]),
         }
     }
 
@@ -77,6 +80,7 @@ impl TcpSocket {
             general: GeneralOptions::new(),
             rx_closed: AtomicBool::new(false),
             poll_rx_closed: PollSet::new(),
+            memberships: RwLock::new(vec![]),
         };
         // 获取该套接字绑定的端点，并设置相应的网络设备掩码
         result.with_smol_socket(|socket| {
@@ -216,6 +220,58 @@ impl Configurable for TcpSocket {
                 self.with_smol_socket(|socket| {
                     socket.set_keep_alive(keep_alive.then(|| Duration::from_secs(75)));
                 });
+            }
+            O::JoinGroup(gr) => {
+                let group_addr = extract_ipaddr_from_sockaddr(&gr.gr_group)?;
+                let if_index = gr.gr_interface;
+
+                // 检查本地是否已加入过
+                {
+                    let memberships = self.memberships.read();
+                    if memberships
+                        .iter()
+                        .any(|&(idx, addr)| idx == if_index && addr == group_addr)
+                    {
+                        return Err(SysErrNo::EADDRINUSE);
+                    }
+                }
+
+                // 先通知 smoltcp（可能因组播表满而失败），成功后再记录到本地列表
+                get_service()
+                    .iface
+                    .join_multicast_group(group_addr)
+                    .map_err(|e| match e {
+                        MulticastError::GroupTableFull => SysErrNo::ENOBUFS,
+                        MulticastError::Unaddressable => SysErrNo::EINVAL,
+                    })?;
+
+                self.memberships.write().push((if_index, group_addr));
+                debug!(
+                    "TCP socket {}: joined multicast group {:?} on if_index {}",
+                    self.handle, group_addr, if_index
+                );
+            }
+            O::LeaveGroup(gr) => {
+                let group = extract_ipaddr_from_sockaddr(&gr.gr_group)?;
+                let inteface = gr.gr_interface;
+
+                let mut memberships = self.memberships.write();
+                let pos = memberships
+                    .iter()
+                    .position(|&(idx, addr)| idx==inteface && group == addr);
+                match pos {
+                    Some(idx)=>{
+                        memberships.remove(idx);
+                        drop(memberships);
+                        let _ = get_service().iface.leave_multicast_group(group);
+                        debug!(
+                            "TCP socket {}: left multicast group {:?} on if_index {}",
+                            self.handle, group, inteface
+                        );
+                    }
+                    None => return Err(SysErrNo::EADDRNOTAVAIL)
+                }
+                
             }
             _ => return Ok(false),
         }

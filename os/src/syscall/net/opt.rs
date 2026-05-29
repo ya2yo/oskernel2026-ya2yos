@@ -9,11 +9,11 @@ use crate::{
 use alloc::sync::Arc;
 use alloc::vec;
 use linux_raw_sys::net::{
-    IP_MSFILTER, IP_MULTICAST_IF, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, SOL_SOCKET, TCP_NODELAY, group_source_req
+    IP_MSFILTER, IP_MULTICAST_IF, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, SOL_SOCKET, TCP_NODELAY, group_req, group_source_req
 };
-use log::{debug, warn};
+use log::{debug, error, warn};
 
-use core::{mem::size_of, time::Duration};
+use core::{mem::size_of, ptr::read_unaligned, time::Duration};
 
 /// ABI 数据读写接口
 pub trait AbiValue: Sized {
@@ -136,6 +136,19 @@ impl AbiValue for group_source_req {
     }
 }
 
+impl AbiValue for group_req {
+    const SIZE:usize = size_of::<group_req>();
+    fn read_from(data: &[u8]) -> SysResult<Self> {
+        ensure_len(data, Self::SIZE)?;
+        Ok(unsafe {core::ptr::read_unaligned(data.as_ptr() as *const group_req)})
+    }
+    fn write_to(self, data: &mut [u8]) -> SysResult<()> {
+        ensure_len(data, Self::SIZE)?;
+        unsafe{core::ptr::write_unaligned(data.as_ptr() as *mut group_req, self)};
+        Ok(())
+    }
+}
+
 #[inline]
 pub fn parse<T: AbiValue>(data: &[u8]) -> SysResult<T> {
     T::read_from(data)
@@ -155,10 +168,10 @@ pub fn sys_setsockopt(
     user_optval: *const u8, // 指向缓冲区的指针，用来指定或者返回选项的值
     optlen: u32,            // 由 optval 所指向的缓冲区空间大小（字节数）
 ) -> SyscallRet {
-    // debug!(
-    //     "[sys_setsockopt] fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
-    //     sockfd, level, optname, user_optval, optlen
-    // );
+    debug!(
+        "[sys_setsockopt] fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
+        sockfd, level, optname, user_optval, optlen
+    );
     // bool compat = in_compat_syscall();
     // let compat: bool = false;// 目前只在64位上运行
     let task = current_task().unwrap();
@@ -223,13 +236,13 @@ pub fn sys_setsockopt(
                 sock.set_option(opt)
             }
             MCAST_JOIN_GROUP => {
-                let val: group_source_req = parse(&kern_optval)?;
+                let val: group_req = parse(&kern_optval)?;
                 let opt = SetSocketOption::JoinGroup(&val);
                 sock.set_option(opt)
             }
             IP_MULTICAST_IF => Ok(()), // 目前只返回成功，不做实际操作
             MCAST_LEAVE_GROUP => {
-                let val:group_source_req = parse(&kern_optval)?;
+                let val:group_req = parse(&kern_optval)?;
                 let opt = SetSocketOption::LeaveGroup(&val);
                 sock.set_option(opt)
             }

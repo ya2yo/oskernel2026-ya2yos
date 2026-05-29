@@ -1,4 +1,5 @@
-use alloc::vec::{self, Vec};
+use alloc::vec::Vec;
+use alloc::vec;
 use linux_raw_sys::net::{__kernel_sockaddr_storage, group_source_req};
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -6,7 +7,7 @@ use core::{
 };
 use log::{debug, info, warn};
 
-use crate::syscall::PollEvents;
+use crate::{net::extract_ipaddr_from_sockaddr, syscall::PollEvents};
 use crate::{
     fs::File,
     mm::UserBuffer,
@@ -115,9 +116,9 @@ impl Configurable for UdpSocket {
                     socket.set_hop_limit(Some(*ttl));
                 });
             }
-            O::JoinGroup(gsr) => {
-                let group_addr = extract_ipv4_from_sockaddr(&gsr.gsr_group)?;
-                let if_index = gsr.gsr_interface;
+            O::JoinGroup(gr) => {
+                let group_addr = extract_ipaddr_from_sockaddr(&gr.gr_group)?;
+                let if_index = gr.gr_interface;
 
                 // 检查本地是否已加入过
                 {
@@ -145,9 +146,9 @@ impl Configurable for UdpSocket {
                     self.handle, group_addr, if_index
                 );
             }
-            O::LeaveGroup(gsr) => {
-                let group_addr = extract_ipv4_from_sockaddr(&gsr.gsr_group)?;
-                let if_index = gsr.gsr_interface;
+            O::LeaveGroup(gr) => {
+                let group_addr = extract_ipaddr_from_sockaddr(&gr.gr_group)?;
+                let if_index = gr.gr_interface;
 
                 let mut memberships = self.memberships.write();
                 let pos = memberships
@@ -400,41 +401,6 @@ impl Drop for UdpSocket {
         self.shutdown(Shutdown::Both).ok();
         SOCKET_SET.remove(self.handle);
     }
-}
-
-/// 从 `sockaddr_storage` 中提取 IPv4 地址。
-///
-/// `sockaddr_storage` 的内存布局（对应 `sockaddr_in`）：
-/// - offset 0-1: `ss_family` (u16, host byte order)
-/// - offset 2-3: `sin_port` (u16, network byte order)
-/// - offset 4-7: `sin_addr` (u32, network byte order)
-///
-/// 只支持 AF_INET(2)，如果是其他协议族返回 `EAFNOSUPPORT`。
-fn extract_ipv4_from_sockaddr(storage: &__kernel_sockaddr_storage) -> SysResult<IpAddress> {
-    // 通过 raw pointer 读取，避免 bindgen 生成的复杂 union 类型
-    let ptr = storage as *const __kernel_sockaddr_storage as *const u8;
-    // AF_INET = 2
-    let family = u16::from_ne_bytes(unsafe { core::slice::from_raw_parts(ptr, 2) }
-        .try_into()
-        .unwrap());
-    if family != 2 {
-        return Err(SysErrNo::EAFNOSUPPORT);
-    }
-    // 读取 offset 4-7 处的 IPv4 地址 (big-endian)
-    let addr_bytes: [u8; 4] = unsafe {
-        [
-            *ptr.add(4),
-            *ptr.add(5),
-            *ptr.add(6),
-            *ptr.add(7),
-        ]
-    };
-    Ok(IpAddress::Ipv4(Ipv4Address::new(
-        addr_bytes[0],
-        addr_bytes[1],
-        addr_bytes[2],
-        addr_bytes[3],
-    )))
 }
 
 fn get_ephemeral_port() -> SysResult<u16> {

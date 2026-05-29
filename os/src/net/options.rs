@@ -1,5 +1,5 @@
 use core::time::Duration;
-use linux_raw_sys::net::group_source_req;
+use linux_raw_sys::net::group_req;
 use crate::utils::{SysErrNo, SysResult};
 
 /// 优雅处理后面不同的选项
@@ -71,8 +71,8 @@ define_options! {
 
     // ---- IP level options (IP_*) ----
     Ttl(u8),
-    JoinGroup(group_source_req),
-    LeaveGroup(group_source_req),
+    JoinGroup(group_req),
+    LeaveGroup(group_req),
     // ---- Extra options ----
     NonBlocking(bool),
 }

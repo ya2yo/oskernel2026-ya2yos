@@ -41,9 +41,11 @@ use self::{
     wrapper::SocketSetWrapper,
 };
 use crate::drivers::{BaseDriver, DeviceContainer, NetDeviceImpl, NetDriverOps};
+use crate::utils::{SysErrNo, SysResult};
 use alloc::{borrow::ToOwned, boxed::Box};
+use linux_raw_sys::net::{__kernel_sockaddr_storage, AF_INET, AF_INET6};
 use log::{info, warn};
-use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
+use smoltcp::wire::{EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr};
 use spin::Mutex;
 use spin::{Lazy, Once};
 pub use unix::*;
@@ -156,4 +158,49 @@ pub fn init_network(mut net_devs: DeviceContainer<NetDeviceImpl>) {
 /// - 将待发送的数据包写入硬件。
 pub fn poll_interfaces() {
     while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
+}
+
+/// 将 Linux 对应的__kernel_sockaddr_storage 转换成 IpAddress
+/// pub struct __kernel_sockaddr_storage__bindgen_ty_1__bindgen_ty_1 {
+///     pub ss_family: __kernel_sa_family_t,
+///     pub __data: [crate::ctypes::c_char; 126usize],
+/// }
+fn extract_ipaddr_from_sockaddr(storage: &__kernel_sockaddr_storage) -> SysResult<IpAddress> {
+    let family = unsafe {*(storage as *const _ as *const u32)};
+    match family {
+        AF_INET => {
+            // IPv4 地址在 sockaddr_in 中的偏移量是 4 字节（2字节family + 2字节port）
+            // 之后是 4 字节的地址
+            let ptr = storage as *const _ as *const u8;
+            let addr_bytes = unsafe {
+                let addr_ptr = ptr.add(4) as *const [u8; 4];
+                *addr_ptr
+            };
+            Ok(IpAddress::v4(addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3]))
+        }
+        AF_INET6 => {
+            // IPv6 地址在 sockaddr_in6 中的偏移量通常是 8 字节
+            // (2字节family + 2字节port + 4字节flowinfo)
+            // 之后是 16 字节的地址
+            let ptr = storage as *const _ as *const u8;
+            let addr_bytes = unsafe {
+                let addr_ptr = ptr.add(8) as *const [u8; 16];
+                *addr_ptr
+            };
+            Ok(IpAddress::v6(
+                u16::from_be_bytes([addr_bytes[0],  addr_bytes[1]]),
+                u16::from_be_bytes([addr_bytes[2],  addr_bytes[3]]),
+                u16::from_be_bytes([addr_bytes[4],  addr_bytes[5]]),
+                u16::from_be_bytes([addr_bytes[6],  addr_bytes[7]]),
+                u16::from_be_bytes([addr_bytes[8],  addr_bytes[9]]),
+                u16::from_be_bytes([addr_bytes[10], addr_bytes[11]]),
+                u16::from_be_bytes([addr_bytes[12], addr_bytes[13]]),
+                u16::from_be_bytes([addr_bytes[14], addr_bytes[15]]),
+            ))
+        }
+        _ => {
+            // 不支持的地址族
+            Err(SysErrNo::EAFNOSUPPORT)
+        }
+    }
 }
