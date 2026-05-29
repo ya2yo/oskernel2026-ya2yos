@@ -267,7 +267,7 @@ pub fn sys_setsockopt(
             warn!("[sys_setsockopt] unknown protocol! level = {}, optname = {}", level, optname);
             return Err(SysErrNo::ENOPROTOOPT)
         },
-    };
+    }?;
     Ok(0)
 }
 
@@ -343,7 +343,7 @@ pub fn sys_getsockopt(
             }
         }
         _ => return Err(SysErrNo::ENOPROTOOPT),
-    };
+    }?;
 
     Ok(0)
 }

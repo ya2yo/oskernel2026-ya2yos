@@ -88,5 +88,75 @@
 - `os/src/task/mod.rs` — `exit_current_group_and_run_next` debug 日志
 - `os/src/syscall/fs/fd_ops.rs` — `sys_close` FsIndex 缓存淘汰
 - `user/src/bin/initproc.rs` — 启用多组测例
-- `Docs/初赛文档/problem.md` — futex + OOM 问题文档
+- `Docs/初赛文档/problem/` — futex + OOM 问题文档
 - `ai.log` — 本文件（新建）
+
+---
+
+## 2026-05-28: wait4 信号处理与托孤修复
+
+### 问题发现
+
+libctest、lmbench 测例卡死。用户提供现象后，使用 Claude 对用户态二进制反汇编，定位到测试进程在 `wait4` 处反复进出内核。
+
+另发现父进程先于子进程退出时，子进程未挂到 initproc。
+
+### 交互与分析过程
+
+1. AI 分析反汇编结果，指出 busy-wait 发生在 `wait4` 系统调用路径。
+2. 阅读 `wait.rs`：阻塞前未调用 `check_if_any_sig_for_current_task`，与 Linux 可中断阻塞语义不符。
+3. 阅读 `process.rs` / `mod.rs`：进程退出时缺少将孤儿进程 reparent 到 initproc 的逻辑。
+4. 人工确认后实现：wait 路径增加信号分支 + `interruptible` 包装；新增 `exit_and_reparent`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/wait.rs` | 阻塞前处理 pending 信号；`interruptible` + `block_on` |
+| `os/src/task/process/process.rs` | `exit_and_reparent`、`link_child_to_parent` |
+| `os/src/task/mod.rs` | 进程全线程 zombie 时调用托孤 |
+
+### 涉及文件汇总
+
+- 上述代码文件
+- `Docs/初赛文档/problem/wait4-signal.md`、`exit-reparent.md`
+- `Docs/初赛文档/开发日志.md` — 5.28 条目
+
+---
+
+## 2026-05-29: accept02 组播与 setsockopt 日志分析
+
+### 问题发现
+
+用户提供多份 `log.ans`，依次出现：
+
+1. `router.rs` 断言 `left: 10.0.2.15, right: 127.0.0.1`
+2. `virtio/net.rs` token 65472 越界 panic
+3. `accept02.c:73 TFAIL: Multicast group was copied!`（后期 log 在修复 syscall 前）
+
+### 交互与分析过程
+
+1. 对照 LTP accept02 源码（CVE-2017-8890）：accepted fd 上 `MCAST_LEAVE_GROUP` **应失败** `EADDRNOTAVAIL`。
+2. 追踪 IGMP 发送：`join_multicast_group` 后 `poll_interfaces` 触发组播包；源地址取决于 IP 注册顺序 → 调整 eth0/lo 顺序。
+3. 组播目的 `224.0.0.0` 走 default 路由；`ethernet.send` 对组播误走 ARP → 添加组播 MAC 直发。
+4. 阅读 `tcp.rs`：`new_connected` 的 `memberships` 为空，`LeaveGroup` 正确返回 `EADDRNOTAVAIL`。
+5. 阅读 `opt.rs`：`match` 结果未 `?`，导致 syscall 始终返回 0 → 用户误判为组播被复制。
+6. virtio：对非法 token 加边界检查，避免 panic（WARN 仍可能出现）。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/net/mod.rs` | eth0 先于 lo 注册 IP |
+| `os/src/net/router.rs` | IPv4 组播路由；注释断言 |
+| `os/src/net/device/ethernet.rs` | 组播 MAC 映射与直发 |
+| `os/src/net/tcp.rs`, `udp.rs` | JoinGroup / LeaveGroup |
+| `os/src/syscall/net/opt.rs` | MCAST 选项 + `?` 传播错误 |
+| `os/src/drivers/virtio/net.rs` | `token_index` 边界检查 |
+
+### 涉及文件汇总
+
+- 上述代码文件
+- `Docs/初赛文档/problem/accept02-mcast-setsockopt.md`
+- `Docs/初赛文档/开发日志.md` — 5.29 条目
+- `.claude/skills/` — 项目 Agent 技能（doc-writing 等）

@@ -252,8 +252,40 @@
 
 - **工具/模型**：Claude Code + DeepSeek-v4
 - **场景**：文档完善
-- **描述**：使用 Claude Code 完善开发日志（`开发日志.md`）、问题解决记录（`problem.md`）和本文档。
+- **描述**：使用 Claude Code 完善开发日志（`开发日志.md`）、问题复盘（`problem/`）和本文档。
 - **关联 commit**：`d2c20ba`, `31e3369`
+
+---
+
+### 第七阶段：wait4 / 托孤与网络组播（5.28 - 5.29）
+
+#### wait4 阻塞未处理信号（5.28）
+
+- **工具/模型**：Claude
+- **场景**：Bug 分析与定位
+- **描述**：libctest、lmbench 卡死；对用户态二进制反汇编定位到 `wait4` 循环。AI 指出 wait 阻塞前未检查 pending 信号，与 Linux 可中断阻塞语义不符。人工确认后在 `wait.rs` 增加信号分支并用 `interruptible` 包装。过程详见 `ai.log` 2026-05-28 条目。
+- **关联 commit**：`3fc325b`, `6762618`
+
+#### 进程退出托孤 exit_and_reparent（5.28）
+
+- **工具/模型**：人工为主
+- **场景**：Bug 修复
+- **描述**：父进程先于子进程退出时，子进程应挂到 initproc。实现 `Process::exit_and_reparent` 并在进程全线程退出时调用。
+- **关联 commit**：`6762618`
+
+#### accept02 组播与 setsockopt（5.29）
+
+- **工具/模型**：Cursor (Composer)
+- **场景**：Bug 分析、代码生成、日志分析
+- **描述**：多轮 `log.ans` 分析：IGMP 源地址（IP 注册顺序）、组播以太网发送、router 断言、virtio token；对照 LTP accept02 与 `tcp.rs` 确认 socket 层语义正确，定位 `sys_setsockopt` 未传播 `EADDRNOTAVAIL`。AI 辅助实现组播 MAC 映射与 JoinGroup/LeaveGroup。过程详见 `ai.log` 2026-05-29 条目。
+- **关联 commit**：`e5d1b07`, `4a9b73c`, `5f90be8`；`opt.rs` `?` 修复待提交
+
+#### 项目 Agent 技能与文档规范（5.29）
+
+- **工具/模型**：Cursor (Composer)
+- **场景**：文档完善
+- **描述**：编写 `.claude/skills/` 下 build-and-test、ltp-test-triage、network-debug 等技能；定义开发日志（简约）/ problem / ai.log / AI_INTERACTION 四份文档分工。
+- **关联文件**：`.claude/skills/doc-writing/SKILL.md`
 
 ---
 
