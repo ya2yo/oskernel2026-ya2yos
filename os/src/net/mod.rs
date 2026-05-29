@@ -126,10 +126,10 @@ pub fn init_network(mut net_devs: DeviceContainer<NetDeviceImpl>) {
     // 构造并启动服务
     let mut service = Service::new(router);
     service.iface.update_ip_addrs(|ip_addrs| {
-        ip_addrs.push(lo_ip.into()).unwrap();
         if let Some(eth0_ip) = eth0_ip {
             ip_addrs.push(eth0_ip.into()).unwrap();
         }
+        ip_addrs.push(lo_ip.into()).unwrap();
     });
     SERVICE.call_once(|| Mutex::new(service));
 }

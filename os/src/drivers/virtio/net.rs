@@ -17,18 +17,28 @@ const MIN_BUFFER_LEN: usize = 1526;
 ///
 /// `QS` is the VirtIO queue size.
 pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
-    rx_buffers: [Option<NetBufBox>; QS],
-    tx_buffers: [Option<NetBufBox>; QS],
-    free_tx_bufs: Vec<NetBufBox>,
-    buf_pool: Arc<NetBufPool>,
-    inner: InnerDev<H, T, QS>,
-    irq: Option<usize>,
+    rx_buffers: [Option<NetBufBox>; QS],// 接收缓冲区
+    tx_buffers: [Option<NetBufBox>; QS],// 发生缓冲区
+    free_tx_bufs: Vec<NetBufBox>,       // 空闲发送缓冲区
+    buf_pool: Arc<NetBufPool>,          // 网络缓冲区内存池
+    inner: InnerDev<H, T, QS>,          // 底层设备实例
+    irq: Option<usize>,                 // 中断号
 }
 
 unsafe impl<H: Hal, T: Transport, const QS: usize> Send for VirtIoNetDev<H, T, QS> {}
 unsafe impl<H: Hal, T: Transport, const QS: usize> Sync for VirtIoNetDev<H, T, QS> {}
 
 impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
+    fn token_index(token: u16) -> DevResult<usize> {
+        let idx = token as usize;
+        if idx >= QS {
+            warn!("invalid virtqueue token {token} (queue size {QS})");
+            Err(DevError::BadState)
+        } else {
+            Ok(idx)
+        }
+    }
+
     /// Creates a new driver instance and initializes the device, or returns
     /// an error if any step fails.
     pub fn try_new(transport: T, irq: Option<usize>) -> DevResult<Self> {
@@ -131,16 +141,19 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
         };
         // `rx_buffers[new_token]` is expected to be `None` since it was taken
         // away at `Self::receive()` and has not been added back.
-        if self.rx_buffers[new_token as usize].is_some() {
+        let idx = Self::token_index(new_token)?;
+        if self.rx_buffers[idx].is_some() {
             return Err(DevError::BadState);
         }
-        self.rx_buffers[new_token as usize] = Some(rx_buf);
+        self.rx_buffers[idx] = Some(rx_buf);
         Ok(())
     }
 
     fn recycle_tx_buffers(&mut self) -> DevResult {
         while let Some(token) = self.inner.poll_transmit() {
-            let tx_buf = self.tx_buffers[token as usize]
+            let idx = Self::token_index(token)?;
+            let tx_buf = self
+                .tx_buffers[idx]
                 .take()
                 .ok_or(DevError::BadState)?;
             unsafe {
@@ -163,16 +176,16 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
                 .transmit_begin(tx_buf.packet_with_header())
                 .map_err(as_dev_err)?
         };
-        self.tx_buffers[token as usize] = Some(tx_buf);
+        let idx = Self::token_index(token)?;
+        self.tx_buffers[idx] = Some(tx_buf);
         Ok(())
     }
 
     fn receive(&mut self) -> DevResult<NetBufPtr> {
         self.inner.ack_interrupt();
         if let Some(token) = self.inner.poll_receive() {
-            let mut rx_buf = self.rx_buffers[token as usize]
-                .take()
-                .ok_or(DevError::BadState)?;
+            let idx = Self::token_index(token)?;
+            let mut rx_buf = self.rx_buffers[idx].take().ok_or(DevError::BadState)?;
             // Safe because the buffer lives as long as the queue.
             let (hdr_len, pkt_len) = unsafe {
                 self.inner

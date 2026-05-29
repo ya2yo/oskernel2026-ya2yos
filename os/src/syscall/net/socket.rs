@@ -196,7 +196,7 @@ pub fn sys_shutdown(sockfd: usize, how: u32) -> SyscallRet {
 }
 
 pub fn sys_accept4(sockfd: usize, addr: *mut u8, mut addrlen: u32, flags: u32) -> SyscallRet {
-    // debug!("sys_accept <= fd: {}, flags: {}", sockfd, flags);
+    debug!("[sys_accept] fd: {}, flags: {}", sockfd, flags);
     let socket = Socket::from_fd(sockfd)?;
     let socket = Socket(socket.accept()?);
     let remote_addr = socket.local_addr()?;

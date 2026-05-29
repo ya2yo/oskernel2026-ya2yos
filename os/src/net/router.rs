@@ -1,6 +1,6 @@
 use alloc::{boxed::Box, vec, vec::Vec};
 
-use log::warn;
+use log::{debug, warn};
 use smoltcp::{
     iface::SocketSet,
     phy::{DeviceCapabilities, Medium},
@@ -38,6 +38,7 @@ impl Rule {
 type PacketBuffer = smoltcp::storage::PacketBuffer<'static, ()>;
 
 /// 路由表
+#[derive(Debug)]
 pub struct RouteTable {
     rules: Vec<Rule>,
 }
@@ -91,6 +92,7 @@ impl Router {
 
     pub fn add_rule(&mut self, rule: Rule) {
         self.table.add_rule(rule);
+        debug!("[add_rule] {:?}", self.table);
     }
 
     pub fn add_device(&mut self, device: Box<dyn Device>) -> usize {
@@ -134,13 +136,22 @@ impl Router {
                         for dev in &mut self.devices {
                             poll_next |= dev.send(dst_addr, buf, timestamp);
                         }
+                    } else if packet.dst_addr().is_multicast() {
+                        let buf = packet.into_inner();
+                        for dev in &mut self.devices {
+                            if dev.name() != "lo" {
+                                poll_next |= dev.send(dst_addr, buf, timestamp);
+                            }
+                        }
                     } else {
                         // 单播包,查表路由
                         let Some(rule) = self.table.lookup(&dst_addr) else {
                             warn!("No route found for destination: {}", dst_addr);
                             continue;
                         };
-                        assert_eq!(rule.src, IpAddress::Ipv4(packet.src_addr()));
+                        // 路由表上的对应包的源地址和 packet 的源地址不一定相同
+                        // debug!("packet dst ip={}", IpAddress::Ipv4(packet.dst_addr()));
+                        // assert_eq!(rule.src, IpAddress::Ipv4(packet.src_addr()));
 
                         let next_hop = rule.via.unwrap_or(dst_addr);
                         let dev = &mut self.devices[rule.dev];

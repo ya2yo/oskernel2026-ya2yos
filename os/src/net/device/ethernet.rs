@@ -5,13 +5,13 @@ use crate::{drivers::NetDeviceImpl, utils::SysErrNo};
 use alloc::{string::String, vec};
 use core::task::Waker;
 use hashbrown::HashMap;
-use log::{debug, trace, warn};
+use log::{trace, warn};
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
     time::{Duration, Instant},
     wire::{
         ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
-        EthernetRepr, IpAddress, Ipv4Cidr,
+        EthernetRepr, IpAddress, Ipv4Address, Ipv4Cidr,
     },
 };
 use virtio_drivers::device::net::VirtIONet;
@@ -22,6 +22,19 @@ use super::super::{
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
+
+/// IPv4 组播地址映射到以太网组播 MAC（RFC 1112）。
+fn ipv4_multicast_mac(addr: Ipv4Address) -> EthernetAddress {
+    let ip = u32::from_be_bytes(addr.octets()) & 0x007f_ffff;
+    EthernetAddress([
+        0x01,
+        0x00,
+        0x5e,
+        ((ip >> 16) & 0x7f) as u8,
+        ((ip >> 8) & 0xff) as u8,
+        (ip & 0xff) as u8,
+    ])
+}
 
 /// 邻居表项，存储 IP 地址对应的 MAC 地址及其过期时间
 struct Neighbor {
@@ -121,6 +134,7 @@ impl EthernetDevice {
         };
 
         if !repr.dst_addr.is_broadcast()
+            && !repr.dst_addr.is_multicast()
             && repr.dst_addr != EMPTY_MAC
             && repr.dst_addr != self.hardware_address()
         {
@@ -304,6 +318,19 @@ impl Device for EthernetDevice {
                 EthernetProtocol::Ipv4,
             );
             return false;
+        }
+
+        if let IpAddress::Ipv4(addr) = next_hop {
+            if addr.is_multicast() {
+                Self::send_to(
+                    &mut self.inner,
+                    ipv4_multicast_mac(addr),
+                    packet.len(),
+                    |buf| buf.copy_from_slice(packet),
+                    EthernetProtocol::Ipv4,
+                );
+                return false;
+            }
         }
 
         let need_request = match self.neighbors.get(&next_hop) {
