@@ -9,8 +9,7 @@ use crate::{
 use alloc::sync::Arc;
 use alloc::vec;
 use linux_raw_sys::net::{
-    IP_MSFILTER, IP_MULTICAST_IF, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, SOL_SOCKET, SO_KEEPALIVE,
-    SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, TCP_NODELAY,
+    IP_MSFILTER, IP_MULTICAST_IF, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, SOL_SOCKET, TCP_NODELAY, group_source_req
 };
 use log::{debug, warn};
 
@@ -122,6 +121,21 @@ impl AbiValue for Duration {
     }
 }
 
+impl AbiValue for group_source_req {
+    const SIZE: usize = size_of::<group_source_req>();
+
+    fn read_from(data: &[u8]) -> SysResult<Self> {
+        ensure_len(data, Self::SIZE)?;
+        Ok(unsafe { core::ptr::read_unaligned(data.as_ptr() as *const group_source_req) })
+    }
+
+    fn write_to(self, data: &mut [u8]) -> SysResult<()> {
+        ensure_len(data, Self::SIZE)?;
+        unsafe { core::ptr::write_unaligned(data.as_mut_ptr() as *mut group_source_req, self) };
+        Ok(())
+    }
+}
+
 #[inline]
 pub fn parse<T: AbiValue>(data: &[u8]) -> SysResult<T> {
     T::read_from(data)
@@ -142,7 +156,7 @@ pub fn sys_setsockopt(
     optlen: u32,            // 由 optval 所指向的缓冲区空间大小（字节数）
 ) -> SyscallRet {
     // debug!(
-    //     "sys_setsockopt <= fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
+    //     "[sys_setsockopt] fd: {}, level: {}, optname: {}, optval: {:?}, optlen: {}",
     //     sockfd, level, optname, user_optval, optlen
     // );
     // bool compat = in_compat_syscall();
@@ -195,7 +209,10 @@ pub fn sys_setsockopt(
                 let opt = SetSocketOption::SendTimeout(&val);
                 sock.set_option(opt)
             }
-            _ => return Err(SysErrNo::ENOPROTOOPT),
+            _ => {
+                warn!("[sys_setsockopt] not available SOL_SOCKET protocol! level = {}, optname = {optname}", level);
+                return Err(SysErrNo::ENOPROTOOPT)
+            },
         },
         // IP 级
         IPPROTO_IP => match optname {
@@ -205,8 +222,21 @@ pub fn sys_setsockopt(
                 let opt = SetSocketOption::Ttl(&val);
                 sock.set_option(opt)
             }
-            MCAST_JOIN_GROUP | IP_MULTICAST_IF => Ok(()),
-            _ => return Err(SysErrNo::ENOPROTOOPT),
+            MCAST_JOIN_GROUP => {
+                let val: group_source_req = parse(&kern_optval)?;
+                let opt = SetSocketOption::JoinGroup(&val);
+                sock.set_option(opt)
+            }
+            IP_MULTICAST_IF => Ok(()), // 目前只返回成功，不做实际操作
+            MCAST_LEAVE_GROUP => {
+                let val:group_source_req = parse(&kern_optval)?;
+                let opt = SetSocketOption::LeaveGroup(&val);
+                sock.set_option(opt)
+            }
+            _ => {
+                warn!("[sys_setsockopt] not available IP protocol! level = {}, optname = {}", level, optname);
+                return Err(SysErrNo::ENOPROTOOPT)
+            },
         },
         // TCP 级
         IPPROTO_TCP => match optname {
@@ -215,9 +245,15 @@ pub fn sys_setsockopt(
                 let opt = SetSocketOption::NoDelay(&val);
                 sock.set_option(opt)
             }
-            _ => return Err(SysErrNo::ENOPROTOOPT),
+            _ => {
+                warn!("[sys_setsockopt] not available TCP protocol! level = {}, optname = {}", level, optname);
+                return Err(SysErrNo::ENOPROTOOPT)
+            },
         },
-        _ => return Err(SysErrNo::ENOPROTOOPT),
+        _ => {
+            warn!("[sys_setsockopt] unknown protocol! level = {}, optname = {}", level, optname);
+            return Err(SysErrNo::ENOPROTOOPT)
+        },
     };
     Ok(0)
 }
