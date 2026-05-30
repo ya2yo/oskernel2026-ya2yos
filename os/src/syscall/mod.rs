@@ -147,6 +147,7 @@ pub enum Syscall {
     FanotifyInit = 262,
     Renameat2 = 276,
     Getrandom = 278,
+    Bpf = 280,
     UserFaultfd = 282,
     MemBarrier = 283,
     CopyFileRange = 285,
@@ -526,6 +527,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
 
         // dummy fds
         Syscall::FanotifyInit => sys_fanotify_init(args[0] as u32, args[1] as u32),
+        Syscall::Bpf => sys_bpf(args[0] as i32, args[1] as *mut u8, args[2] as u32),
         Syscall::UserFaultfd => sys_user_faultfd(args[0] as u32),
         Syscall::PerfEventOpen => sys_perf_event_open(
             args[0] as *mut u8, 
