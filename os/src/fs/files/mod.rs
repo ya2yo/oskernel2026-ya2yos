@@ -1,15 +1,19 @@
 // 这个模块专门存放File的各个Impl
 pub mod devfs;
 #[cfg(feature = "net")]
-pub mod net;
-pub mod pipe;
-pub mod stdio;
+mod net;
+mod pipe;
+mod stdio;
 #[cfg(feature = "net")]
 pub use net::*;
 mod os_file;
-pub use os_file::OSFile;
-pub mod epoll;
-pub use epoll::{EpollCreateFlags, EpollFile, EpollReady};
-pub mod events;
-pub use events::EventFd;
+mod epoll;
+mod events;
 mod signalfd;
+mod dummyfd;
+pub use {
+    dummyfd::DummyFd,
+    events::EventFd,
+    epoll::{EpollCreateFlags, EpollFile, EpollReady},
+    os_file::OSFile,
+};

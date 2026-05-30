@@ -1,11 +1,11 @@
 use log::warn;
 
-use crate::utils::SyscallRet;
+use crate::{syscall::fs::dummyfd_create, utils::SyscallRet};
 
 /// https://www.man7.org/linux/man-pages/man2/timerfd_create.2.html
 pub fn sys_timerfd_create(_clockid: u32, _flags: u32) -> SyscallRet {
     warn!("[sys_timerfd_create] not implement!");
-    Ok(0)
+    dummyfd_create()
 }
 pub fn sys_timerfd_settime(
     _fd: u32,

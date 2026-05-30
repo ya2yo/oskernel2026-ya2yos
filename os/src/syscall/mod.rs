@@ -146,6 +146,7 @@ pub enum Syscall {
     FanotifyInit = 262,
     Renameat2 = 276,
     Getrandom = 278,
+    UserFaultfd = 282,
     MemBarrier = 283,
     CopyFileRange = 285,
     Statx = 291,
@@ -523,7 +524,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
 
         // dummy fds
         Syscall::FanotifyInit => sys_fanotify_init(args[0] as u32, args[1] as u32),
-
+        Syscall::UserFaultfd => sys_user_faultfd(args[0] as u32),
         _ => {
             error!(
                 "Unsupported syscall_id: {}, kernel exit this process with exitcode=-1!",

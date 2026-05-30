@@ -2,12 +2,11 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use log::{debug, warn};
 
 use crate::{
-    fs::{File, SEEK_CUR, SEEK_SET},
+    fs::{DummyFd, FdTable, File, FileDescriptor, OpenFlags, SEEK_CUR, SEEK_SET},
     mm::{
-        safe_translated_byte_buffer, translated_byte_buffer, translated_ref, translated_refmut,
-        UserBuffer,
+        UserBuffer, safe_translated_byte_buffer, translated_byte_buffer, translated_ref, translated_refmut
     },
-    syscall::options::Iovec,
+    syscall::{fs::dummyfd_create, options::Iovec},
     task::current_task,
     timer::get_time_ms,
     utils::{SysErrNo, SyscallRet},
@@ -441,11 +440,21 @@ pub fn sys_copy_file_range(
     Ok(writecount)
 }
 
+/// https://www.man7.org/linux/man-pages/man2/fallocate.2.html
 pub fn sys_fallocate(_fd: usize, _mode: u32, _offset: usize, _len: usize) -> SyscallRet {
-    //伪实现
+    warn!("[sys_fallocate] not implement!");
     Ok(0)
 }
+
+/// https://www.man7.org/linux/man-pages/man2/fanotify_init.2.html
 pub fn sys_fanotify_init(_flags: u32, _event_f_flags: u32) -> SyscallRet {
     warn!("[sys_fanotify_init] not implement!");
     Ok(0)
 }
+
+/// https://man7.org/linux/man-pages/man2/userfaultfd.2.html
+pub fn sys_user_faultfd(_flags: u32) -> SyscallRet {
+    warn!("[sys_fanotify_init] not implement!");
+    dummyfd_create()
+}
+
