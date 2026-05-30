@@ -133,10 +133,10 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                         // VirtIO PCI Capability
                         let cfg_type = pci_config_read(0, DEVICE, 0, offset + 2) & 0xFF;
                         let bar_index = pci_config_read(0, DEVICE, 0, offset + 3) & 0xFF;
-                        // debug!(
-                        //     "Found VirtIO Capability in BAR{}, cfg_type={}",
-                        //     bar_index, cfg_type
-                        // );
+                        debug!(
+                            "Found VirtIO Capability in BAR{}, cfg_type={}",
+                            bar_index, cfg_type
+                        );
                     }
 
                     offset = next_ptr;
@@ -156,7 +156,7 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                     panic!("We can assume bar0 is a IO bar!")
                 }
                 BarInfo::IO { address, size } => {
-                    // debug!("bar0 :(addr={}, size={})", address, size);
+                    debug!("bar0 :(addr={}, size={})", address, size);
                 }
             }
             // root.
@@ -179,10 +179,10 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                     address,
                 } = bar_info
                 {
-                    // debug!(
-                    //     "bar: {:?}, {}, {}, {}",
-                    //     address_type, size, prefetchable, address
-                    // );
+                    debug!(
+                        "bar: {:?}, {}, {}, {}",
+                        address_type, size, prefetchable, address
+                    );
 
                     match address_type {
                         MemoryBarType::Width32 => {

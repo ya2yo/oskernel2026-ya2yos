@@ -220,7 +220,7 @@ pub fn trap_return() {
     unsafe {
         // 方便调试进入__return_to_user
         let trap_cx = current_trap_cx();
-        let ptr = (trap_cx as *mut TrapContext) as usize;
+        // let ptr = (trap_cx as *mut TrapContext) as usize;
         // debug!(
         //     "222 return_to_user, trap_cx.sepc={:#x}, sp={:#x}, kstack={:#x}, trap_cx={:#x}",
         //     trap_cx.get_sepc(),
