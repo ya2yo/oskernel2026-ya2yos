@@ -1,4 +1,4 @@
-# HelloOS
+# Ya2yOS
 
 ![alt text](Docs/img/华南理工大学.png)
 
