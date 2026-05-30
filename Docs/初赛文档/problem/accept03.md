@@ -57,4 +57,28 @@ create_proc_dir_and_file(pid, ppid, &child_mm);
 
 参见 [proc_pid_maps.md](./proc_pid_maps.md)
 
-##
+## 不支持的系统调用号
+
+之后只会报错因为该系统调用不支持导致进程直接退出，最简单解决方法是在实现对应的系统调用分配一个虚假的文件描述符进行占位，这样在accept时会按照预期那样报错，`ENOTSOCK`。
+
+最小修改方式：
+
+在 `src/fs/files/` 目录下新增 `dummyfd.rs`:
+
+```rust
+//! 这是一个临时文件，这里实现的是虚假的文件描述符供那些没有真正实现的文件描述符使用
+
+use alloc::sync::Arc;
+
+use super::super::File;
+
+pub struct DummyFd;
+
+impl DummyFd {
+    pub fn new() -> Arc<Self> {
+        Arc::new(DummyFd {})
+    }
+}
+
+impl File for DummyFd {}
+```
