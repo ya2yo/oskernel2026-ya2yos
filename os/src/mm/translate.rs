@@ -6,9 +6,7 @@ use crate::{
     arch::{
         memory_layout::{PAGE_SIZE, PAGE_SIZE_BITS},
         time::get_ticks,
-    },
-    mm::{address, memory_set, KernelAddr, MapPermission, PhysPageNum, VirtPageNum},
-    utils::{SysErrNo, SyscallRet},
+    }, fs::MAX_PATH_LEN, mm::{KernelAddr, MapPermission, PhysPageNum, VirtPageNum, address, memory_set}, utils::{SysErrNo, SyscallRet}
 };
 
 use super::{MemorySet, StepByOne, VirtAddr};

@@ -48,12 +48,12 @@ pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, Sy
             FsIndex::insert_inode_idx(abs_path, t.clone());
             inode = Some(t);
         } else {
-            warn!(
-                "Unexpected error in root_inode().find({},{:?},0):{:?}",
-                abs_path,
-                flags,
-                found_res.clone().err().unwrap()
-            );
+            // warn!(
+            //     "Unexpected error in root_inode().find({},{:?},0):{:?}",
+            //     abs_path,
+            //     flags,
+            //     found_res.clone().err().unwrap()
+            // );
         }
     }
     if let Some(inode) = inode {

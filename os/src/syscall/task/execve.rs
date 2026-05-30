@@ -11,6 +11,49 @@ use crate::{
     utils::{get_abs_path, strip_color, trim_start_slash, SysErrNo, SyscallRet},
 };
 
+fn is_elf(data: &[u8]) -> bool {
+    data.len() >= 4
+        && data[0] == 0x7F
+        && data[1] == b'E'
+        && data[2] == b'L'
+        && data[3] == b'F'
+}
+
+/// Parse `#!` interpreter line per Linux binfmt_script (one optional argument).
+fn parse_shebang(data: &[u8]) -> Option<(String, Option<String>)> {
+    if data.len() < 2 || data[0] != b'#' || data[1] != b'!' {
+        return None;
+    }
+    let rest = &data[2..];
+    let line_len = rest
+        .iter()
+        .position(|&b| b == b'\n' || b == b'\r')
+        .unwrap_or(rest.len());
+    let line = core::str::from_utf8(&rest[..line_len]).ok()?.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let (interp, arg) = match line.find(char::is_whitespace) {
+        Some(idx) => {
+            let interp = line[..idx].trim();
+            let arg = line[idx..].trim();
+            if interp.is_empty() {
+                return None;
+            }
+            (
+                interp.to_string(),
+                if arg.is_empty() {
+                    None
+                } else {
+                    Some(arg.to_string())
+                },
+            )
+        }
+        None => (line.to_string(), None),
+    };
+    Some((interp, arg))
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
 pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
     let task = current_task().unwrap();
@@ -107,18 +150,31 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         }
     }
     // debug!("The real abs_path is {}", abs_path);
+    let script_abs_path = abs_path.clone();
     let app_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
 
-    let elf_data = app_inode.inode.read_all()?;
-    // 检查一下是不是ELF
-    // 读取前4字节
-    if elf_data[0] != 0x7F
-        || elf_data[1] != ('E' as u8)
-        || elf_data[2] != ('L' as u8)
-        || elf_data[3] != ('F' as u8)
-    {
-        // 这就不是ELF!
-        return Err(SysErrNo::ENOEXEC); // 这个报错会告诉调用者：这不是ELF
+    let mut elf_data = app_inode.inode.read_all()?;
+    if !is_elf(&elf_data) {
+        if let Some((interp, shebang_arg)) = parse_shebang(&elf_data) {
+            let mut new_argv = Vec::new();
+            new_argv.push(interp.clone());
+            if let Some(arg) = shebang_arg {
+                new_argv.push(arg);
+            }
+            new_argv.push(script_abs_path);
+            for arg in argv_vec.iter().skip(1) {
+                new_argv.push(arg.clone());
+            }
+            argv_vec = new_argv;
+            abs_path = get_abs_path(&cwd, trim_start_slash(interp).as_str());
+            let interp_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+            elf_data = interp_inode.inode.read_all()?;
+            if !is_elf(&elf_data) {
+                return Err(SysErrNo::ENOEXEC);
+            }
+        } else {
+            return Err(SysErrNo::ENOEXEC);
+        }
     }
     locked_fs_info.set_exe(abs_path);
     drop(proc_inner);
