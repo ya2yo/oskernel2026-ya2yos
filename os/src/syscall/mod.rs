@@ -140,6 +140,7 @@ pub enum Syscall {
     MSync = 227,
     Madvise = 233,
     GetMempolicy = 236,
+    PerfEventOpen = 241,
     Accept4 = 242,
     Wait4 = 260,
     Prlimit = 261,
@@ -525,6 +526,13 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         // dummy fds
         Syscall::FanotifyInit => sys_fanotify_init(args[0] as u32, args[1] as u32),
         Syscall::UserFaultfd => sys_user_faultfd(args[0] as u32),
+        Syscall::PerfEventOpen => sys_perf_event_open(
+            args[0] as *mut u8, 
+            args[1] as u32, 
+            args[2] as i32, 
+            args[3] as i32, 
+            args[4] as u32
+        ),
         _ => {
             error!(
                 "Unsupported syscall_id: {}, kernel exit this process with exitcode=-1!",
