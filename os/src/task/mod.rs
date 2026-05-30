@@ -230,7 +230,9 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             .iter()
             .all(|bro_task| bro_task.inner_lock().is_zombie())
         {
-            memory_set.recycle_data_pages();
+            if Arc::strong_count(&curr_proc.memory_set) ==1 {
+                memory_set.recycle_data_pages();
+            }
             curr_proc.fd_table.clear();
             curr_proc.fs_info.clear();
 

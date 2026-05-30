@@ -10,7 +10,7 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 
-use alloc::{format, vec};
+use alloc::{format, string::ToString, vec};
 use alloc::{sync::Arc, vec::Vec};
 
 use super::dirent::Dirent;
@@ -185,7 +185,7 @@ impl Inode for Ext4Inode {
         flags: OpenFlags,
         loop_times: usize,
     ) -> Result<Arc<dyn Inode>, SysErrNo> {
-        //log::info!("[Inode.find] origin path={}", path);
+        log::info!("[Inode.find] origin path={}", path);
         let file = &mut self.inner.get_unchecked_mut().f;
         if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
             Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)))
@@ -206,18 +206,18 @@ impl Inode for Ext4Inode {
             let mut file_name = [0u8; 256];
             let file = Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK);
             file.read_link(&mut file_name, 256)?;
-            let end = file_name.iter().position(|v| *v == 0).unwrap();
+            let end = file_name.iter().position(|v| *v == 0).unwrap_or(file_name.len());
             let file_path = core::str::from_utf8(&file_name[..end]).unwrap();
-            //log::info!("[Inode.find] file_path={}", file_path);
-            // let (prefix, _) = path.rsplit_once("/").unwrap();
-            //log::info!("[Inode.find] prefix={}", prefix);
-            // let abs_path = format!("{}/{}", prefix, file_path);
-            // HXC: 此处被我修改过。原先，这里需要由前缀和读得路径拼接成完整路径，而我选择直接以读得路径为abs_path
-            // 我自认为这是对的
-            let abs_path = file_path;
+            log::info!("[Inode.find] file_path={}", file_path); 
+            let next_path = if file_path.starts_with('/') {
+                // 绝对路径 symlink
+                file_path.to_string()
+            } else {
+                // 相对路径 symlink
+                join_path(path, file_path)
+            };
             //debug!("[Inode.find] symlink abs_path={}", &abs_path);
-            self.find(abs_path, flags, loop_times + 1)
-
+            self.find(&next_path, flags, loop_times + 1)
             // Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK)))
         } else {
             Err(SysErrNo::ENOENT)
@@ -372,4 +372,29 @@ fn as_inode_type(types: InodeTypes) -> InodeType {
             unreachable!()
         }
     }
+}
+/// 路径规范函数
+fn join_path(base: &str, rel: &str) -> String {
+    let mut comps = Vec::new();
+
+    for part in base.split('/') {
+        if !part.is_empty() {
+            comps.push(part);
+        }
+    }
+
+    // 去掉当前文件名
+    comps.pop();
+
+    for part in rel.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                comps.pop();
+            }
+            x => comps.push(x),
+        }
+    }
+
+    format!("/{}", comps.join("/"))
 }

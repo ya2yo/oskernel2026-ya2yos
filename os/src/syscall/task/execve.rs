@@ -64,7 +64,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     //     path = String::from("/musl/busybox");
     // }
 
-    // debug!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
+    debug!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     let mut env = Vec::<String>::new();
 
     if envp.is_null() {

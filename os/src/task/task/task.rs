@@ -466,6 +466,7 @@ impl TaskControlBlock {
             let process = &self.process.inner_lock();
             let another = &*process.get_locked_memory_set_read();
             child.alloc_user_res(&mut child_inner);
+            *child_inner.trap_cx() = *parent_inner.trap_cx();
             let child_proc = child.process.inner_lock();
 
             let child_mm = child_proc.get_locked_memory_set_read();
@@ -481,9 +482,10 @@ impl TaskControlBlock {
             // for child process, fork returns 0
             child_inner.trap_cx().set_a0(0);
         }
+        
         let trap_cx = child_inner.trap_cx();
         trap_cx.kernel_stack = kernel_stack_top;
-
+        // 处理其余参数
         if stack != 0 {
             // 移除分配的stack
             let ustack = child_inner.user_stack_top;
