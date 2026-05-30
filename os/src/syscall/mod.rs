@@ -56,11 +56,15 @@ pub enum Syscall {
     SendFile = 71,
     Pselect6 = 72,
     Ppoll = 73,
+    Signalfd4 = 74,
     ReadLinkat = 78,
     Fstatat = 79,
     Fstat = 80,
     Sync = 81,
     Fsync = 82,
+    TimerfdCreate = 85,
+    TimerfdSettime = 86,
+    TimerfdGettime = 87,
     Utimensat = 88,
     Exit = 93,
     ExitGroup = 94,
@@ -141,6 +145,8 @@ pub enum Syscall {
     MemBarrier = 283,
     CopyFileRange = 285,
     Statx = 291,
+    PidfdOpen = 434,
+    PidfdGetfd = 438,
     MachineShutdown = 1000,
     #[num_enum(default)]
     Default = 0,
@@ -197,7 +203,15 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
     // );
     match syscall_id {
         Syscall::Getcwd => sys_getcwd(args[0] as *const u8, args[1]),
+        // event
         Syscall::Eventfd2 => sys_eventfd2(args[0] as u32, args[1] as u32),
+        Syscall::TimerfdCreate => sys_timerfd_create(args[0] as u32, args[1] as u32),
+        Syscall::TimerfdSettime => sys_timerfd_settime(
+            args[0] as u32, 
+            args[1] as u32, 
+            args[2] as *const u8, 
+            args[3] as *mut u8),
+        Syscall::TimerfdGettime => sys_timerfd_gettime(args[0] as u32, args[1] as *mut u8),
         Syscall::Dup => sys_dup(args[0]),
         Syscall::Dup3 => sys_dup3(args[0], args[1], args[2] as u32),
         Syscall::Fcntl => sys_fcntl(args[0], args[1], args[2]),
@@ -270,6 +284,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::SendFile => sys_sendfile(args[0], args[1], args[2], args[3]),
         Syscall::Pselect6 => sys_pselect6(args[0], args[1], args[2], args[3], args[4], args[5]),
         Syscall::Ppoll => sys_ppoll(args[0], args[1], args[2], args[3]),
+        Syscall::Signalfd4 => sys_signalfd4(args[0] as u32, args[1] as *const u8, args[2] as u32),
         Syscall::ReadLinkat => sys_readlinkat(
             args[0] as isize,
             args[1] as *const u8,
@@ -492,6 +507,10 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::Umask => sys_umask(args[0] as u32),
         Syscall::GetMempolicy => sys_get_mempolicy(args[0], args[1], args[2], args[3], args[4]),
+
+        // pidfd
+        Syscall::PidfdOpen => sys_pidfd_open(args[0] as u32,args[1] as u32),
+        Syscall::PidfdGetfd => sys_pidfd_getfd(args[0] as i32, args[1] as i32, args[2] as u32),
         _ => {
             error!(
                 "Unsupported syscall_id: {}, kernel exit this process with exitcode=-1!",
