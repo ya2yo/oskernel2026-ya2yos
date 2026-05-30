@@ -19,12 +19,23 @@ fn is_elf(data: &[u8]) -> bool {
         && data[3] == b'F'
 }
 
-/// Parse `#!` interpreter line per Linux binfmt_script (one optional argument).
+/// 从文件头解析 shebang（`#!` 行），语义对齐 Linux `fs/binfmt_script.c`。
+///
+/// 脚本第一行格式：`#!<解释器路径>[ <可选参数>]\n`
+/// 例如 LTP access02 的 `file_x` 内容为 `#!/bin/sh\n`。
+///
+/// 返回值 `(解释器路径, 可选参数)`，例如：
+/// - 文件内容为 `#!/bin/sh\n` → `("/bin/sh", None)`
+/// - 文件内容为 `#!/usr/bin/env python3 -u\n` → `("/usr/bin/env", Some("python3 -u"))`
+///
+/// 只读第一行（到 `\n` 或 `\r` 为止），整行最多受内核读文件限制约束。
 fn parse_shebang(data: &[u8]) -> Option<(String, Option<String>)> {
+    // 必须以 #! 开头，否则不是脚本
     if data.len() < 2 || data[0] != b'#' || data[1] != b'!' {
         return None;
     }
     let rest = &data[2..];
+    // shebang 行在第一个换行处结束；若无换行则读到 buffer 末尾
     let line_len = rest
         .iter()
         .position(|&b| b == b'\n' || b == b'\r')
@@ -33,6 +44,7 @@ fn parse_shebang(data: &[u8]) -> Option<(String, Option<String>)> {
     if line.is_empty() {
         return None;
     }
+    // 解释器路径与可选参数以空白分隔，仅支持一个可选参数（与 Linux 一致）
     let (interp, arg) = match line.find(char::is_whitespace) {
         Some(idx) => {
             let interp = line[..idx].trim();
@@ -155,17 +167,26 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
 
     let mut elf_data = app_inode.inode.read_all()?;
     if !is_elf(&elf_data) {
+        // 非 ELF：尝试按 shebang 脚本处理（如 #!/bin/sh）。
+        // Linux 内核不会把脚本当最终可执行体，而是转去 exec 解释器。
         if let Some((interp, shebang_arg)) = parse_shebang(&elf_data) {
+            // 重建 argv，与 Linux binfmt_script 一致：
+            //   execve("./file_x", ["./file_x"], env)
+            // → execve("/bin/sh", ["/bin/sh", "/abs/path/file_x"], env)
+            // 若有 shebang 可选参数，插在解释器与脚本路径之间：
+            //   #!/usr/bin/env python3 → ["/usr/bin/env", "python3", "/abs/script", ...]
             let mut new_argv = Vec::new();
-            new_argv.push(interp.clone());
+            new_argv.push(interp.clone()); // argv[0]：shebang 行里的解释器字符串
             if let Some(arg) = shebang_arg {
                 new_argv.push(arg);
             }
-            new_argv.push(script_abs_path);
+            new_argv.push(script_abs_path); // 脚本绝对路径，供解释器读取
             for arg in argv_vec.iter().skip(1) {
+                // 保留用户传入的额外参数（原 argv[1..]）
                 new_argv.push(arg.clone());
             }
             argv_vec = new_argv;
+            // 打开解释器 ELF（如 /bin/sh → busybox），后续走正常 ELF 加载
             abs_path = get_abs_path(&cwd, trim_start_slash(interp).as_str());
             let interp_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
             elf_data = interp_inode.inode.read_all()?;
@@ -173,6 +194,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
                 return Err(SysErrNo::ENOEXEC);
             }
         } else {
+            // 既非 ELF 也无 shebang（如纯文本），与 Linux 一样返回 ENOEXEC
             return Err(SysErrNo::ENOEXEC);
         }
     }
