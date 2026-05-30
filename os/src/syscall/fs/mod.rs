@@ -3,7 +3,7 @@ mod event;
 mod fcntl;
 mod fd_ops;
 mod io;
-mod memfd;
+mod mman;
 mod mount;
 mod pidfd;
 mod pipe;
@@ -21,7 +21,7 @@ use crate::{
 };
 
 pub use self::{
-    ctl::*, event::*, fcntl::*, fd_ops::*, io::*, memfd::*, mount::*, pidfd::*, pipe::*,
+    ctl::*, event::*, fcntl::*, fd_ops::*, io::*, mman::*, mount::*, pidfd::*, pipe::*,
     signalfd::*, stat::*, timerfd::*, inotify::*, perf_event::*, liburing::*,bpf::*
 };
 

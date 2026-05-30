@@ -14,7 +14,7 @@ use core::arch;
 use linux_raw_sys::general::statx;
 #[cfg(feature = "net")]
 use linux_raw_sys::net::{msghdr, socklen_t};
-use log::error;
+use log::{error, warn};
 use num_enum::FromPrimitive;
 #[derive(Debug, PartialEq, FromPrimitive)]
 #[repr(usize)]
@@ -147,16 +147,19 @@ pub enum Syscall {
     FanotifyInit = 262,
     Renameat2 = 276,
     Getrandom = 278,
+    MemfdCreate = 279,
     Bpf = 280,
     UserFaultfd = 282,
     MemBarrier = 283,
     CopyFileRange = 285,
     Statx = 291,
     IoUringSetup = 425,
+    OpenTree = 428,
     Fsopen = 430,
     Fspick = 433,
     PidfdOpen = 434,
     PidfdGetfd = 438,
+    MemfdSecret = 447,
     MachineShutdown = 1000,
     #[num_enum(default)]
     Default = 0,
@@ -178,6 +181,7 @@ mod task;
 mod time;
 
 use crate::task::{current_task, sys_futex};
+use crate::utils::SysErrNo;
 use crate::{
     arch::cpu::shutdown,
     fs::{Kstat, Statfs},
@@ -529,6 +533,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
 
         // dummy fds
         Syscall::FanotifyInit => sys_fanotify_init(args[0] as u32, args[1] as u32),
+        Syscall::MemfdCreate => sys_memfd_create(args[0] as *const u8, args[1] as u32),
         Syscall::Bpf => sys_bpf(args[0] as i32, args[1] as *mut u8, args[2] as u32),
         Syscall::UserFaultfd => sys_user_faultfd(args[0] as u32),
         Syscall::PerfEventOpen => sys_perf_event_open(
@@ -539,15 +544,17 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[4] as u32
         ),
         Syscall::IoUringSetup => sys_io_uring_setup(args[0] as u32, args[1] as *mut u8),
+        Syscall::OpenTree => sys_open_tree(args[0] as i32, args[1] as *const u8, args[2] as u32),
         Syscall::Fsopen => sys_fsopen(args[0] as *const u8, args[1] as u32),
         Syscall::Fspick => sys_fspick(args[0] as i32, args[1] as *mut u8, args[2] as u32),
-
+        Syscall::MemfdSecret => sys_memfd_secret(args[0] as u32),
         _ => {
-            error!(
-                "Unsupported syscall_id: {}, kernel exit this process with exitcode=-1!",
+            warn!(
+                "Unsupported syscall_id: {}!",
                 id
             );
-            sys_exit_group(-1)
+            // sys_memfd_secret(args[0] as u32)
+            return Err(SysErrNo::ENOSYS);
         }
     }
 }
