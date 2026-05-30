@@ -140,6 +140,7 @@ pub enum Syscall {
     Accept4 = 242,
     Wait4 = 260,
     Prlimit = 261,
+    FanotifyInit = 262,
     Renameat2 = 276,
     Getrandom = 278,
     MemBarrier = 283,
@@ -511,6 +512,10 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         // pidfd
         Syscall::PidfdOpen => sys_pidfd_open(args[0] as u32,args[1] as u32),
         Syscall::PidfdGetfd => sys_pidfd_getfd(args[0] as i32, args[1] as i32, args[2] as u32),
+
+        // dummy fds
+        Syscall::FanotifyInit => sys_fanotify_init(args[0] as u32, args[1] as u32),
+
         _ => {
             error!(
                 "Unsupported syscall_id: {}, kernel exit this process with exitcode=-1!",
