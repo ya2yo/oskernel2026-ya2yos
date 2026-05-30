@@ -160,3 +160,48 @@ libctest、lmbench 测例卡死。用户提供现象后，使用 Claude 对用�
 - `Docs/初赛文档/problem/accept02-mcast-setsockopt.md`
 - `Docs/初赛文档/开发日志.md` — 5.29 条目
 - `.claude/skills/` — 项目 Agent 技能（doc-writing 等）
+
+---
+
+## 2026-05-30: LTP access04 多轮 log 分析与修复
+
+### 问题发现
+
+用户多次提供 `log.ans` 排查 `access04`：
+
+1. RISC-V：`mkdirat(mntpoint)` 后 `translate.rs:118` panic（`sys_mount` + `translated_str`）
+2. LoongArch：`TBROK Failed to acquire device`，loop 路径 `ENOENT`
+3. 修复 loop 后：`tmpfs mount EFAULT`（`special=NULL`）、`/dev/loop-control` 缺失
+
+用户确认 LoongArch musl 测例已全部通过后，要求写入文档。
+
+### 交互与分析过程
+
+1. 对照 `iozone-glibc.md` / `copy_from_user` 规范，确认 mount 与 statx 同根因。
+2. 分析 LTP 日志：`tst_test.c` 先尝试 tmpfs 只读挂载，失败后 fallback 到 loop 块设备。
+3. 实现 `loopdev.rs`：`DevLoop` + `DevLoopControl`（`LOOP_CTL_GET_FREE` 等 ioctl）。
+4. `read_user_cstr` 对 NULL 返回空串，满足 tmpfs `mount(NULL, ...)` 语义。
+5. 保留 LA `handle_mprotect` 懒分配页跳过逻辑；移除调试期 `find_pte` 日志。
+6. 用户曾要求撤销 premature 文档；测例通过后再按 doc-writing 补全四份文档。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/mount.rs` | `copy_from_user`；NULL special |
+| `os/src/fs/files/loopdev.rs` | 新建 loop / loop-control |
+| `os/src/fs/files/devfs.rs` | 设备打开路径 |
+| `os/src/fs/vfs.rs` | `File::ioctl` |
+| `os/src/syscall/fs/ctl.rs` | `sys_ioctl` 分发 |
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | `/dev/block` 等目录 |
+| `os/src/arch/loongarch64/qemu/page_table.rs` | `handle_mprotect` |
+
+### 验证
+
+LoongArch QEMU 单跑 access04：12 TPASS，退出码 0。
+
+### 涉及文件汇总
+
+- 上述代码文件
+- `Docs/初赛文档/problem/access04-ltp-musl.md`
+- `Docs/初赛文档/开发日志.md` — 5.30 条目

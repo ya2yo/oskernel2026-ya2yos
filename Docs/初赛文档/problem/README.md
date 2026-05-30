@@ -18,6 +18,7 @@
 
 ## 文件系统 / 动态链接
 
+- [LTP access04 mount / loop 设备修复](./access04-ltp-musl.md)
 - [龙芯架构 iozone-glibc 动态链接与缺页处理修复](./iozone-glibc.md)
 
 ## 测例与驱动

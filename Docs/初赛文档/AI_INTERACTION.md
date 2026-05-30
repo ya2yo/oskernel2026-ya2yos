@@ -287,6 +287,13 @@
 - **描述**：编写 `.claude/skills/` 下 build-and-test、ltp-test-triage、network-debug 等技能；定义开发日志（简约）/ problem / ai.log / AI_INTERACTION 四份文档分工。
 - **关联文件**：`.claude/skills/doc-writing/SKILL.md`
 
+#### LTP access04 mount / loop 设备（5.30）
+
+- **工具/模型**：Cursor (Composer)
+- **场景**：日志分析、Bug 修复、代码生成
+- **描述**：多轮 `log.ans` 排查 LTP access04：mount 缺页 panic → `copy_from_user`；LoongArch TBROK → 实现 loop 块设备与 `/dev/loop-control`；tmpfs `special=NULL` EFAULT → 空指针转空串；LA `handle_mprotect` 懒分配页修复。用户验证 LoongArch musl 通过后补文档。过程详见 `ai.log` 2026-05-30 条目与 [problem/access04-ltp-musl.md](./problem/access04-ltp-musl.md)。
+- **关联 commit**：待提交
+
 ---
 
 ## AI 成果总结
