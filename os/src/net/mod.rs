@@ -166,7 +166,7 @@ pub fn poll_interfaces() {
 ///     pub __data: [crate::ctypes::c_char; 126usize],
 /// }
 fn extract_ipaddr_from_sockaddr(storage: &__kernel_sockaddr_storage) -> SysResult<IpAddress> {
-    let family = unsafe {*(storage as *const _ as *const u32)};
+    let family = unsafe { *(storage as *const _ as *const u32) };
     match family {
         AF_INET => {
             // IPv4 地址在 sockaddr_in 中的偏移量是 4 字节（2字节family + 2字节port）
@@ -176,7 +176,12 @@ fn extract_ipaddr_from_sockaddr(storage: &__kernel_sockaddr_storage) -> SysResul
                 let addr_ptr = ptr.add(4) as *const [u8; 4];
                 *addr_ptr
             };
-            Ok(IpAddress::v4(addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3]))
+            Ok(IpAddress::v4(
+                addr_bytes[0],
+                addr_bytes[1],
+                addr_bytes[2],
+                addr_bytes[3],
+            ))
         }
         AF_INET6 => {
             // IPv6 地址在 sockaddr_in6 中的偏移量通常是 8 字节
@@ -188,11 +193,11 @@ fn extract_ipaddr_from_sockaddr(storage: &__kernel_sockaddr_storage) -> SysResul
                 *addr_ptr
             };
             Ok(IpAddress::v6(
-                u16::from_be_bytes([addr_bytes[0],  addr_bytes[1]]),
-                u16::from_be_bytes([addr_bytes[2],  addr_bytes[3]]),
-                u16::from_be_bytes([addr_bytes[4],  addr_bytes[5]]),
-                u16::from_be_bytes([addr_bytes[6],  addr_bytes[7]]),
-                u16::from_be_bytes([addr_bytes[8],  addr_bytes[9]]),
+                u16::from_be_bytes([addr_bytes[0], addr_bytes[1]]),
+                u16::from_be_bytes([addr_bytes[2], addr_bytes[3]]),
+                u16::from_be_bytes([addr_bytes[4], addr_bytes[5]]),
+                u16::from_be_bytes([addr_bytes[6], addr_bytes[7]]),
+                u16::from_be_bytes([addr_bytes[8], addr_bytes[9]]),
                 u16::from_be_bytes([addr_bytes[10], addr_bytes[11]]),
                 u16::from_be_bytes([addr_bytes[12], addr_bytes[13]]),
                 u16::from_be_bytes([addr_bytes[14], addr_bytes[15]]),

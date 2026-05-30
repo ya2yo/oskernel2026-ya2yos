@@ -7,9 +7,9 @@ use files::{devfs, pipe, stdio};
 // pub use files::{make_socket, make_socketpair, OSFile};
 mod stat;
 mod vfs;
-pub use crate::fs::files::OSFile;
 pub use crate::fs::files::epoll::{EpollCreateFlags, EpollFile};
 pub use crate::fs::files::events::EventFd;
+pub use crate::fs::files::OSFile;
 #[cfg(feature = "net")]
 pub use crate::fs::files::Socket;
 use crate::mm::UserBuffer;

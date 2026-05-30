@@ -445,7 +445,7 @@ pub fn sys_fallocate(_fd: usize, _mode: u32, _offset: usize, _len: usize) -> Sys
     //伪实现
     Ok(0)
 }
-pub fn sys_fanotify_init(_flags: u32, _event_f_flags: u32)->SyscallRet {
+pub fn sys_fanotify_init(_flags: u32, _event_f_flags: u32) -> SyscallRet {
     warn!("[sys_fanotify_init] not implement!");
     Ok(0)
 }

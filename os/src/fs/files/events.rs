@@ -68,18 +68,16 @@ impl File for EventFd {
         }
 
         block_on(poll_io(self, PollEvents::IN, self.nonblocking(), || {
-            let result = self.counter.fetch_update(
-                Ordering::Release,
-                Ordering::Acquire,
-                |count| {
+            let result = self
+                .counter
+                .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
                     if count > 0 {
                         let dec = if self.semaphore { 1 } else { count };
                         Some(count - dec)
                     } else {
                         None
                     }
-                },
-            );
+                });
             match result {
                 Ok(count) => {
                     dstbuf.write(&count.to_ne_bytes());
@@ -102,7 +100,7 @@ impl File for EventFd {
         if srcbuf.len() < len {
             return Err(SysErrNo::EINVAL);
         }
-        let mut val = [0u8;8];
+        let mut val = [0u8; 8];
         srcbuf.read_to(&mut val);
         let val = u64::from_ne_bytes(val);
         if val == u64::MAX {
@@ -110,17 +108,15 @@ impl File for EventFd {
         }
 
         block_on(poll_io(self, PollEvents::OUT, self.nonblocking(), || {
-            let result = self.counter.fetch_update(
-                Ordering::Release,
-                Ordering::Acquire,
-                |count| {
+            let result = self
+                .counter
+                .fetch_update(Ordering::Release, Ordering::Acquire, |count| {
                     if u64::MAX - count > val {
                         Some(count + val)
                     } else {
                         None
                     }
-                },
-            );
+                });
             match result {
                 Ok(_) => {
                     self.poll_rx.wake();

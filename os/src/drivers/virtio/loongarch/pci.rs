@@ -112,7 +112,7 @@ impl<H: Hal> VirtIoBlkDev2<H> {
             let mut command_reg = pci_config_read(0, DEVICE, 0, 0x04);
             // debug!("get cmd_reg={:#x}", command_reg);
             command_reg |= 0x02; // 设置bit1（Memory Space Enable）
-            // debug!("new cmd_reg={:#x}", command_reg);
+                                 // debug!("new cmd_reg={:#x}", command_reg);
             pci_config_write(0, DEVICE, 0, 0x04, command_reg);
             // debug!(
             //     "cmd_reg={:#x} write finish",
@@ -123,7 +123,7 @@ impl<H: Hal> VirtIoBlkDev2<H> {
             {
                 // debug!("Enter CAPABILITIES_LIST handle");
                 let cap_ptr = (pci_config_read(0, DEVICE, 0, 0x34) & 0xFF) as u8; // 获取Capabilities指针
-                // debug!("cap_ptr={:#x}", cap_ptr);
+                                                                                  // debug!("cap_ptr={:#x}", cap_ptr);
                 let mut offset = cap_ptr;
                 while offset != 0 {
                     let cap_id = pci_config_read(0, DEVICE, 0, offset) & 0xFF;

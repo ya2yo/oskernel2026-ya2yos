@@ -3,14 +3,10 @@
 use alloc::sync::Arc;
 use log::debug;
 
-use linux_raw_sys::general::{
-    epoll_event, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD,
-};
+use linux_raw_sys::general::{epoll_event, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
 
 use crate::{
-    fs::{
-        EpollCreateFlags, EpollFile, FileClass, FileDescriptor, OpenFlags,
-    },
+    fs::{EpollCreateFlags, EpollFile, FileClass, FileDescriptor, OpenFlags},
     mm::{translated_ref, translated_refmut},
     task::{current_task, suspend_current_and_run_next},
     timer::get_time_ms,

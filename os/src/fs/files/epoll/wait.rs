@@ -1,9 +1,7 @@
 //! 收集就绪事件（水平/边缘触发、ONESHOT、已关闭 fd）。
 
 use alloc::vec::Vec;
-use linux_raw_sys::general::{
-    EPOLLERR, EPOLLET, EPOLLHUP, EPOLLONESHOT,
-};
+use linux_raw_sys::general::{EPOLLERR, EPOLLET, EPOLLHUP, EPOLLONESHOT};
 
 use super::file::EpollFile;
 

@@ -5,7 +5,7 @@
 use linux_raw_sys::general::{EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE};
 
 use crate::{
-    fs::{EventFd, FileClass, FileDescriptor, OpenFlags, File},
+    fs::{EventFd, File, FileClass, FileDescriptor, OpenFlags},
     task::current_task,
     utils::{SysErrNo, SysResult, SyscallRet},
 };
@@ -49,7 +49,10 @@ pub fn sys_eventfd2(initval: u32, flags: u32) -> SyscallRet {
 
     let task = current_task().unwrap();
     let fd = task.get_fd_table().alloc_fd()?;
-    task.get_fd_table().set(fd, FileDescriptor::new(open_flags, FileClass::Abs(event_file)))?;
+    task.get_fd_table().set(
+        fd,
+        FileDescriptor::new(open_flags, FileClass::Abs(event_file)),
+    )?;
 
     Ok(fd)
 }

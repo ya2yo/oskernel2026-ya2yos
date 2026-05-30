@@ -1,18 +1,18 @@
-use alloc::vec::Vec;
 use alloc::vec;
-use linux_raw_sys::net::{__kernel_sockaddr_storage, group_source_req};
+use alloc::vec::Vec;
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     task::Context,
 };
+use linux_raw_sys::net::{__kernel_sockaddr_storage, group_source_req};
 use log::{debug, info, warn};
 
-use crate::{net::extract_ipaddr_from_sockaddr, syscall::PollEvents};
 use crate::{
     fs::File,
     mm::UserBuffer,
     utils::{SysErrNo, SysResult},
 };
+use crate::{net::extract_ipaddr_from_sockaddr, syscall::PollEvents};
 use smoltcp::{
     iface::{MulticastError, SocketHandle},
     phy::PacketMeta,

@@ -390,17 +390,17 @@ impl UserBuffer {
     pub fn read_to(&self, dst: &mut [u8]) -> usize {
         let len = dst.len();
         let mut current = 0;
-        
+
         for sub_buff in self.buffers.iter() {
             let mut sblen = sub_buff.len();
             if current + sblen > len {
                 sblen = len - current;
             }
-            
+
             // 直接拷贝到传入的 dst 中，不创建新 Vec
             dst[current..current + sblen].copy_from_slice(&sub_buff[..sblen]);
             current += sblen;
-            
+
             if current == len {
                 return current;
             }

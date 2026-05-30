@@ -1,8 +1,5 @@
 use crate::{
-    arch::{
-        memory_layout::{PAGE_SIZE},
-        time::get_ticks,
-    },
+    arch::{memory_layout::PAGE_SIZE, time::get_ticks},
     mm::{MapPermission, MemorySet, UserBuffer},
 };
 
@@ -12,9 +9,21 @@ use alloc::{format, string::String, vec::Vec};
 
 fn format_map_perm(perm: MapPermission) -> String {
     let mut s = String::with_capacity(4);
-    s.push(if perm.contains(MapPermission::R) { 'r' } else { '-' });
-    s.push(if perm.contains(MapPermission::W) { 'w' } else { '-' });
-    s.push(if perm.contains(MapPermission::X) { 'x' } else { '-' });
+    s.push(if perm.contains(MapPermission::R) {
+        'r'
+    } else {
+        '-'
+    });
+    s.push(if perm.contains(MapPermission::W) {
+        'w'
+    } else {
+        '-'
+    });
+    s.push(if perm.contains(MapPermission::X) {
+        'x'
+    } else {
+        '-'
+    });
     s.push('p');
     s
 }

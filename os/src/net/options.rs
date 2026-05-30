@@ -1,6 +1,6 @@
+use crate::utils::{SysErrNo, SysResult};
 use core::time::Duration;
 use linux_raw_sys::net::group_req;
-use crate::utils::{SysErrNo, SysResult};
 
 /// 优雅处理后面不同的选项
 macro_rules! define_options {

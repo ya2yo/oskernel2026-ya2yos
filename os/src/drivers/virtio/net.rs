@@ -17,12 +17,12 @@ const MIN_BUFFER_LEN: usize = 1526;
 ///
 /// `QS` is the VirtIO queue size.
 pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
-    rx_buffers: [Option<NetBufBox>; QS],// 接收缓冲区
-    tx_buffers: [Option<NetBufBox>; QS],// 发生缓冲区
-    free_tx_bufs: Vec<NetBufBox>,       // 空闲发送缓冲区
-    buf_pool: Arc<NetBufPool>,          // 网络缓冲区内存池
-    inner: InnerDev<H, T, QS>,          // 底层设备实例
-    irq: Option<usize>,                 // 中断号
+    rx_buffers: [Option<NetBufBox>; QS], // 接收缓冲区
+    tx_buffers: [Option<NetBufBox>; QS], // 发生缓冲区
+    free_tx_bufs: Vec<NetBufBox>,        // 空闲发送缓冲区
+    buf_pool: Arc<NetBufPool>,           // 网络缓冲区内存池
+    inner: InnerDev<H, T, QS>,           // 底层设备实例
+    irq: Option<usize>,                  // 中断号
 }
 
 unsafe impl<H: Hal, T: Transport, const QS: usize> Send for VirtIoNetDev<H, T, QS> {}
@@ -152,10 +152,7 @@ impl<H: Hal, T: Transport, const QS: usize> NetDriverOps for VirtIoNetDev<H, T, 
     fn recycle_tx_buffers(&mut self) -> DevResult {
         while let Some(token) = self.inner.poll_transmit() {
             let idx = Self::token_index(token)?;
-            let tx_buf = self
-                .tx_buffers[idx]
-                .take()
-                .ok_or(DevError::BadState)?;
+            let tx_buf = self.tx_buffers[idx].take().ok_or(DevError::BadState)?;
             unsafe {
                 self.inner
                     .transmit_complete(token, tx_buf.packet_with_header())

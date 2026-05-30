@@ -1,17 +1,20 @@
-use alloc::vec::Vec;
 use alloc::vec;
-use linux_raw_sys::net::{__kernel_sockaddr_storage, AF_INET, AF_INET6};
+use alloc::vec::Vec;
 use core::{
-    net::{Ipv4Addr, SocketAddr}, str::FromStr, sync::atomic::{AtomicBool, Ordering}, task::Context
+    net::{Ipv4Addr, SocketAddr},
+    str::FromStr,
+    sync::atomic::{AtomicBool, Ordering},
+    task::Context,
 };
+use linux_raw_sys::net::{__kernel_sockaddr_storage, AF_INET, AF_INET6};
 use log::{debug, info, warn};
 
-use crate::{net::extract_ipaddr_from_sockaddr, syscall::PollEvents};
 use crate::{
     fs::File,
     mm::UserBuffer,
     utils::{PollSet, SysErrNo, SysResult},
 };
+use crate::{net::extract_ipaddr_from_sockaddr, syscall::PollEvents};
 use smoltcp::{
     iface::{MulticastError, SocketHandle},
     socket::tcp as smol,
@@ -258,9 +261,9 @@ impl Configurable for TcpSocket {
                 let mut memberships = self.memberships.write();
                 let pos = memberships
                     .iter()
-                    .position(|&(idx, addr)| idx==inteface && group == addr);
+                    .position(|&(idx, addr)| idx == inteface && group == addr);
                 match pos {
-                    Some(idx)=>{
+                    Some(idx) => {
                         memberships.remove(idx);
                         drop(memberships);
                         let _ = get_service().iface.leave_multicast_group(group);
@@ -269,9 +272,8 @@ impl Configurable for TcpSocket {
                             self.handle, group, inteface
                         );
                     }
-                    None => return Err(SysErrNo::EADDRNOTAVAIL)
+                    None => return Err(SysErrNo::EADDRNOTAVAIL),
                 }
-                
             }
             _ => return Ok(false),
         }

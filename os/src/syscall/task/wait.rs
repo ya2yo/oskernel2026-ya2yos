@@ -1,13 +1,14 @@
 use core::{future::poll_fn, task::Poll};
 
-use alloc::{
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec::Vec};
 use log::debug;
 
 use crate::{
-    mm::put_data, signal::{SIG_IGN, SIGCHLD, SigActionFlags, SigOp, SigSet, check_if_any_sig_for_current_task}, syscall::options::WaitOption, task::{Process, block_on, current_task, interruptible, suspend_current_and_run_next}, utils::{SysErrNo, SyscallRet}
+    mm::put_data,
+    signal::{check_if_any_sig_for_current_task, SigActionFlags, SigOp, SigSet, SIGCHLD, SIG_IGN},
+    syscall::options::WaitOption,
+    task::{block_on, current_task, interruptible, suspend_current_and_run_next, Process},
+    utils::{SysErrNo, SyscallRet},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -109,10 +110,11 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
                     .action(signo);
                 let ignorable = signo == SIGCHLD
                     || act.act.sa_handler == SIG_IGN
-                    || (!act.customed
-                        && SigSet::from_sig(signo).default_op() == SigOp::Ignore);
+                    || (!act.customed && SigSet::from_sig(signo).default_op() == SigOp::Ignore);
                 if ignorable {
-                    task.inner_lock().sig_pending.remove(SigSet::from_sig(signo));
+                    task.inner_lock()
+                        .sig_pending
+                        .remove(SigSet::from_sig(signo));
                     drop(task);
                     return Poll::Pending;
                 }
@@ -121,7 +123,9 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
                         drop(task);
                         return Poll::Ready(Err(SysErrNo::EINTR));
                     }
-                    task.inner_lock().sig_pending.remove(SigSet::from_sig(signo));
+                    task.inner_lock()
+                        .sig_pending
+                        .remove(SigSet::from_sig(signo));
                     drop(task);
                     return Poll::Pending;
                 }

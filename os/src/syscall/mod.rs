@@ -208,10 +208,11 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Eventfd2 => sys_eventfd2(args[0] as u32, args[1] as u32),
         Syscall::TimerfdCreate => sys_timerfd_create(args[0] as u32, args[1] as u32),
         Syscall::TimerfdSettime => sys_timerfd_settime(
-            args[0] as u32, 
-            args[1] as u32, 
-            args[2] as *const u8, 
-            args[3] as *mut u8),
+            args[0] as u32,
+            args[1] as u32,
+            args[2] as *const u8,
+            args[3] as *mut u8,
+        ),
         Syscall::TimerfdGettime => sys_timerfd_gettime(args[0] as u32, args[1] as *mut u8),
         Syscall::Dup => sys_dup(args[0]),
         Syscall::Dup3 => sys_dup3(args[0], args[1], args[2] as u32),
@@ -510,7 +511,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::GetMempolicy => sys_get_mempolicy(args[0], args[1], args[2], args[3], args[4]),
 
         // pidfd
-        Syscall::PidfdOpen => sys_pidfd_open(args[0] as u32,args[1] as u32),
+        Syscall::PidfdOpen => sys_pidfd_open(args[0] as u32, args[1] as u32),
         Syscall::PidfdGetfd => sys_pidfd_getfd(args[0] as i32, args[1] as i32, args[2] as u32),
 
         // dummy fds
