@@ -62,12 +62,12 @@ impl File for EventFd {
     /// * 信号量模式：读取固定返回 1，计数器减 1。
     /// * 计数器为 0 且阻塞模式：挂起当前任务直到写入发生。
     /// * 返回读取的字节数（固定为 `size_of::<u64>()`）。
-    fn read(&self, dstbuf: UserBuffer) -> SyscallRet {
+    fn read(&self, mut dstbuf: UserBuffer) -> SyscallRet {
         if dstbuf.len() < size_of::<u64>() {
             return Err(SysErrNo::EINVAL);
         }
 
-        block_on(poll_io(self, PollEvents::IN, self.non_blocking(), || {
+        block_on(poll_io(self, PollEvents::IN, self.nonblocking(), || {
             let result = self.counter.fetch_update(
                 Ordering::Release,
                 Ordering::Acquire,
@@ -82,7 +82,7 @@ impl File for EventFd {
             );
             match result {
                 Ok(count) => {
-                    dstbuf.write(&count.to_ne_bytes())?;
+                    dstbuf.write(&count.to_ne_bytes());
                     self.poll_tx.wake();
                     Ok(size_of::<u64>())
                 }
@@ -102,13 +102,14 @@ impl File for EventFd {
         if srcbuf.len() < len {
             return Err(SysErrNo::EINVAL);
         }
-
-        let val = u64::from_ne_bytes(srcbuf.read(len).into());
+        let mut val = [0u8;8];
+        srcbuf.read_to(&mut val);
+        let val = u64::from_ne_bytes(val);
         if val == u64::MAX {
             return Err(SysErrNo::EINVAL);
         }
 
-        block_on(poll_io(self, PollEvents::OUT, self.non_blocking(), || {
+        block_on(poll_io(self, PollEvents::OUT, self.nonblocking(), || {
             let result = self.counter.fetch_update(
                 Ordering::Release,
                 Ordering::Acquire,
@@ -151,7 +152,7 @@ impl File for EventFd {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn poll(&self, events: PollEvents) -> PollEvents {
+    fn poll(&self, _events: PollEvents) -> PollEvents {
         let mut revents = PollEvents::empty();
         let count = self.counter.load(Ordering::Acquire);
         revents.set(PollEvents::IN, count > 0);

@@ -386,6 +386,27 @@ impl UserBuffer {
         }
         bytes
     }
+    /// 直接读取内容到传入的缓冲区中，返回实际读取的长度
+    pub fn read_to(&self, dst: &mut [u8]) -> usize {
+        let len = dst.len();
+        let mut current = 0;
+        
+        for sub_buff in self.buffers.iter() {
+            let mut sblen = sub_buff.len();
+            if current + sblen > len {
+                sblen = len - current;
+            }
+            
+            // 直接拷贝到传入的 dst 中，不创建新 Vec
+            dst[current..current + sblen].copy_from_slice(&sub_buff[..sblen]);
+            current += sblen;
+            
+            if current == len {
+                return current;
+            }
+        }
+        current
+    }
     /// 将一个Buffer的数据写入UserBuffer，返回写入长度
     pub fn write(&mut self, buff: &[u8]) -> usize {
         let len = self.len().min(buff.len());

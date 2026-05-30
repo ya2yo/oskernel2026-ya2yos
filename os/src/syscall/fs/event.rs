@@ -5,7 +5,7 @@
 use linux_raw_sys::general::{EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE};
 
 use crate::{
-    fs::{EventFd, FileClass, FileDescriptor, OpenFlags},
+    fs::{EventFd, FileClass, FileDescriptor, OpenFlags, File},
     task::current_task,
     utils::{SysErrNo, SysResult, SyscallRet},
 };
