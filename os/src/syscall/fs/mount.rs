@@ -59,3 +59,8 @@ pub fn sys_fsopen(_fsname: *const u8, _flags: u32)->SyscallRet {
     warn!("[sys_fsopen] not implement!");
     dummyfd_create()
 }
+/// https://man7.org/linux/man-pages/man2/fspick.2.html
+pub fn sys_fspick(_dirfd: i32, path: *mut u8, flags: u32) -> SyscallRet {
+    warn!("[sys_fspick] not implement!");
+    dummyfd_create()
+}

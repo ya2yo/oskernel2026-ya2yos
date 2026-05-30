@@ -154,7 +154,7 @@ pub enum Syscall {
     Statx = 291,
     IoUringSetup = 425,
     Fsopen = 430,
-
+    Fspick = 433,
     PidfdOpen = 434,
     PidfdGetfd = 438,
     MachineShutdown = 1000,
@@ -540,6 +540,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::IoUringSetup => sys_io_uring_setup(args[0] as u32, args[1] as *mut u8),
         Syscall::Fsopen => sys_fsopen(args[0] as *const u8, args[1] as u32),
+        Syscall::Fspick => sys_fspick(args[0] as i32, args[1] as *mut u8, args[2] as u32),
 
         _ => {
             error!(
