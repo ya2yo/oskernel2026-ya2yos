@@ -1,6 +1,7 @@
 //! 这个模块专门存放 File 的各个 Impl
 
 pub mod devfs;
+pub mod loopdev;
 #[cfg(feature = "net")]
 mod net;
 pub mod pipe;

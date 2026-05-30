@@ -350,6 +350,18 @@ pub fn copy_to_user(memory_set: &MemorySet, dst: usize, src: &[u8]) -> SyscallRe
     Ok(len)
 }
 
+pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, SysErrNo> {
+    if ptr.is_null() {
+        return Ok(String::new());
+    }
+    let mut dst_str = [0u8; MAX_PATH_LEN];
+    copy_from_user(memory_set, ptr as usize, &mut dst_str)?;
+    let len = dst_str.iter().position(|&b| b == 0).unwrap_or(MAX_PATH_LEN);
+    Ok(String::from(
+        core::str::from_utf8(&dst_str[..len]).unwrap_or(""),
+    ))
+}
+
 ///Array of u8 slice that user communicate with os
 pub struct UserBuffer {
     ///U8 vec

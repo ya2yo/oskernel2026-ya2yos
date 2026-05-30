@@ -148,6 +148,10 @@ pub trait File: Send + Sync {
     fn poll(&self, _events: PollEvents) -> PollEvents {
         unimplemented!("File::poll")
     }
+    /// ioctl 处理，默认返回 ENOTTY
+    fn ioctl(&self, _cmd: u32, _arg: usize, _memory_set: &crate::mm::MemorySet) -> SyscallRet {
+        Err(SysErrNo::ENOTTY)
+    }
     /// Registers wakers for I/O events.
     fn register(&self, _context: &mut Context<'_>, _events: PollEvents) {
         unimplemented!("File::register");

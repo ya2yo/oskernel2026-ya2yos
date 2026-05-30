@@ -14,6 +14,7 @@ use core::cmp::min;
 use spin::{Lazy, Mutex, RwLock};
 
 use super::super::{stat::StMode, File, Kstat, Stdin, Stdout};
+use super::loopdev;
 
 pub struct DevZero;
 pub struct DevNull;
@@ -45,6 +46,9 @@ pub fn unregister_device(abs_path: &str) {
 }
 
 pub fn find_device(abs_path: &str) -> bool {
+    if abs_path == loopdev::LOOP_CONTROL_PATH || loopdev::parse_loop_device(abs_path).is_some() {
+        return true;
+    }
     DEVICES.lock().get(abs_path).is_some()
 }
 
@@ -53,6 +57,12 @@ pub fn get_devno(abs_path: &str) -> usize {
 }
 
 pub fn open_device_file(abs_path: &str) -> Result<Arc<dyn File>, SysErrNo> {
+    if abs_path == loopdev::LOOP_CONTROL_PATH {
+        return Ok(loopdev::DevLoopControl::open());
+    }
+    if let Some(num) = loopdev::parse_loop_device(abs_path) {
+        return Ok(loopdev::DevLoop::open(num, abs_path));
+    }
     match abs_path {
         "/dev/zero" => Ok(Arc::new(DevZero::new())),
         "/dev/null" => Ok(Arc::new(DevNull::new())),

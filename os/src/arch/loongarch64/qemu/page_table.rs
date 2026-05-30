@@ -372,9 +372,21 @@ impl PageTable {
 impl PageTable {
     /// param: param add_flags: 需要添加的权限
     pub fn handle_mprotect(&mut self, vpn: VirtPageNum, add_flags: MapPermission) {
-        let pte = self.find_pte_create(vpn).unwrap();
-        let old_flags = pte.get_flags();
-        pte.set_flags(LAPTEFlags::from_bits_truncate(add_flags.bits() as usize) | old_flags);
+        // 只对已映射的有效页表项进行权限修改。
+        // 对于懒分配尚未映射的页，跳过修改，权限会在缺页时由 MapArea 应用。
+        if let Some(pte) = self.find_valid_pte(vpn) {
+            let old_flags = pte.get_flags();
+            // 使用正确的 From<MapPermission> 转换，而非 from_bits_truncate。
+            // MapPermission 的位布局 (R=bit1,W=bit2,X=bit3,U=bit4) 与
+            // LAPTEFlags (DIRTY=bit1,PLV=bit2-3,MAT_CC=bit4) 完全不同，
+            // from_bits_truncate 会导致标志位语义错误。
+            // From<MapPermission> 已包含 VALID | MAT_CC | P，故只需保留
+            // 正交的结构性标志（DIRTY, COW, GLOBAL）。
+            let new_flags = LAPTEFlags::from(add_flags);
+            let preserved =
+                old_flags & (LAPTEFlags::DIRTY | LAPTEFlags::COW | LAPTEFlags::GLOBAL);
+            pte.set_flags(new_flags | preserved);
+        }
     }
     /// return: 若错误是COW且成功处理了COW页错误，返回true，否则返回false
     pub fn handle_cow_page_fault(&mut self, va: VirtAddr, vma: &mut MapArea) -> bool {

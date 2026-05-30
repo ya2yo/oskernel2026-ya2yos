@@ -2,13 +2,19 @@ use alloc::string::String;
 use log::warn;
 
 use crate::{
-    fs::MNT_TABLE, mm::translated_str, syscall::fs::dummyfd_create, task::current_token, utils::{SysErrNo, SyscallRet}
+    fs::{MAX_PATH_LEN, MNT_TABLE},
+    mm::{MemorySet, copy_from_user, translate::read_user_cstr},
+    syscall::fs::dummyfd_create,
+    task::current_task,
+    utils::{SysErrNo, SyscallRet},
 };
 
 /// 参考 https://man7.org/linux/man-pages/man2/umount2.2.html
 pub fn sys_umount2(special: *const u8, flags: u32) -> SyscallRet {
-    let token = current_token();
-    let special = translated_str(token, special);
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let special = read_user_cstr(&memory_set, special)?;
 
     let ret = MNT_TABLE.lock().umount(special, flags);
     if ret != -1 {
@@ -26,16 +32,14 @@ pub fn sys_mount(
     flags: u32,
     data: *const u8,
 ) -> SyscallRet {
-    const MS_RDONLY: u32 = 1;
-    const MS_REMOUNT: u32 = 32;
-
-    let token = current_token();
-    let special = translated_str(token, special);
-    let dir = translated_str(token, dir);
-    let ftype = translated_str(token, ftype);
-    //log::info!("flags = {}", flags);
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let special = read_user_cstr(&memory_set, special)?;
+    let dir = read_user_cstr(&memory_set, dir)?;
+    let ftype = read_user_cstr(&memory_set, ftype)?;
     if !data.is_null() {
-        let data = translated_str(token, data);
+        let data = read_user_cstr(&memory_set, data)?;
         let ret = MNT_TABLE.lock().mount(special, dir, ftype, flags, data);
         if ret != -1 {
             Ok(0)
@@ -61,7 +65,7 @@ pub fn sys_open_tree(_dirfd: i32, _path: *const u8, _flags: u32) -> SyscallRet {
 }
 
 /// https://man7.org/linux/man-pages/man2/fsopen.2.html
-pub fn sys_fsopen(_fsname: *const u8, _flags: u32)->SyscallRet {
+pub fn sys_fsopen(_fsname: *const u8, _flags: u32) -> SyscallRet {
     warn!("[sys_fsopen] not implement!");
     dummyfd_create()
 }

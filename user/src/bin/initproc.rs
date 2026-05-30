@@ -56,8 +56,8 @@ fn trim_trailing_nul(s: &str) -> &str {
 // LTP test helpers
 // ---------------------------------------------------------------------------
 
-const LTP_TEST_START: usize = 0;
-const LTP_TESTS_PER_GROUP: usize = 10;
+const LTP_TEST_START: usize = 9;
+const LTP_TESTS_PER_GROUP: usize = 1;
 
 /// LTP 测试黑名单。
 /// 前 5 项 (cgroup_fj_*) 仅 `test_ltp` 需要跳过，

@@ -14,6 +14,7 @@ use crate::syscall::process;
 use crate::task::{current_task, current_token};
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
 use crate::utils::{get_abs_path, rsplit_once, SysErrNo, SyscallRet};
+use linux_raw_sys::loop_device::LOOP_SET_FD;
 
 /// 参考 https://man7.org/linux/man-pages/man2/getcwd.2.html
 pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
@@ -33,9 +34,15 @@ pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/ioctl.2.html
-pub fn sys_ioctl(_fd: usize, _cmd: usize, _arg: usize) -> SyscallRet {
-    // 伪实现
-    Ok(0)
+pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    if cmd as u32 == LOOP_SET_FD {
+        proc_inner.fd_table.get(arg)?;
+    }
+    let file = proc_inner.fd_table.get(fd)?.any();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    file.ioctl(cmd as u32, arg, &memory_set)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/chdir.2.html

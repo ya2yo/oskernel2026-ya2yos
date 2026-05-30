@@ -144,6 +144,22 @@ pub fn create_init_files() -> GeneralRet {
     )?;
     //注册设备/dev/misc/rtc
     register_device("/dev/misc/rtc");
+    // loop 设备路径由 devfs 动态解析，此处仅创建常用目录
+    open(
+        "/dev/block",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
+        DEFAULT_DIR_MODE,
+    )?;
+    open(
+        "/dev/loop",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
+        DEFAULT_DIR_MODE,
+    )?;
+    open(
+        "/dev/shm",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
+        DEFAULT_DIR_MODE,
+    )?;
     //创建/etc文件夹
     open(
         "/etc",
