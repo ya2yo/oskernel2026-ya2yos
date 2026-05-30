@@ -1,10 +1,8 @@
 use alloc::string::String;
+use log::warn;
 
 use crate::{
-    fs::MNT_TABLE,
-    mm::translated_str,
-    task::current_token,
-    utils::{SysErrNo, SyscallRet},
+    fs::MNT_TABLE, mm::translated_str, syscall::fs::dummyfd_create, task::current_token, utils::{SysErrNo, SyscallRet}
 };
 
 /// 参考 https://man7.org/linux/man-pages/man2/umount2.2.html
@@ -54,4 +52,10 @@ pub fn sys_mount(
             Err(SysErrNo::ENOSPC)
         }
     }
+}
+
+/// https://man7.org/linux/man-pages/man2/fsopen.2.html
+pub fn sys_fsopen(_fsname: *const u8, _flags: u32)->SyscallRet {
+    warn!("[sys_fsopen] not implement!");
+    dummyfd_create()
 }

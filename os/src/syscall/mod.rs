@@ -153,6 +153,8 @@ pub enum Syscall {
     CopyFileRange = 285,
     Statx = 291,
     IoUringSetup = 425,
+    Fsopen = 430,
+
     PidfdOpen = 434,
     PidfdGetfd = 438,
     MachineShutdown = 1000,
@@ -537,6 +539,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[4] as u32
         ),
         Syscall::IoUringSetup => sys_io_uring_setup(args[0] as u32, args[1] as *mut u8),
+        Syscall::Fsopen => sys_fsopen(args[0] as *const u8, args[1] as u32),
+
         _ => {
             error!(
                 "Unsupported syscall_id: {}, kernel exit this process with exitcode=-1!",
