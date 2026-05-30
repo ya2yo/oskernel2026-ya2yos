@@ -12,6 +12,7 @@ mod stat;
 mod timerfd;
 mod inotify;
 mod perf_event;
+mod liburing;
 use crate::{
     fs::{DummyFd, FileDescriptor, OpenFlags},
     task::current_task,
@@ -20,7 +21,7 @@ use crate::{
 
 pub use self::{
     ctl::*, event::*, fcntl::*, fd_ops::*, io::*, memfd::*, mount::*, pidfd::*, pipe::*,
-    signalfd::*, stat::*, timerfd::*, inotify::*, perf_event::*,
+    signalfd::*, stat::*, timerfd::*, inotify::*, perf_event::*, liburing::*,
 };
 
 fn dummyfd_create() -> SyscallRet {
