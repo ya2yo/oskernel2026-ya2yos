@@ -294,6 +294,13 @@
 - **描述**：多轮 `log.ans` 排查 LTP access04：mount 缺页 panic → `copy_from_user`；LoongArch TBROK → 实现 loop 块设备与 `/dev/loop-control`；tmpfs `special=NULL` EFAULT → 空指针转空串；LA `handle_mprotect` 懒分配页修复。用户验证 LoongArch musl 通过后补文档。过程详见 `ai.log` 2026-05-30 条目与 [problem/access04-ltp-musl.md](./problem/access04-ltp-musl.md)。
 - **关联 commit**：待提交
 
+#### LTP access02 execve shebang（5.30）
+
+- **工具/模型**：Cursor (Composer)
+- **场景**：日志分析、Bug 修复
+- **描述**：提供 LoongArch `log.ans`，`access02` 在 X_OK 执行验证阶段 4× TFAIL；对照 LTP 源码确认 `file_x` 为 `#!/bin/sh` 脚本；定位 `sys_execve` 对非 ELF 直接 `ENOEXEC`。AI 实现 shebang 解析与解释器 argv 重建，用户验证通过后补文档。详见 `ai.log` 2026-05-30 access02 条目与 [problem/access02-ltp-execve.md](./problem/access02-ltp-execve.md)。
+- **关联 commit**：待提交
+
 ---
 
 ## AI 成果总结

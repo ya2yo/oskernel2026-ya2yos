@@ -3,10 +3,10 @@
 ## 当前问题
 
 ```bash
-[93m[WARN] [HART0] [PID 4] [TID 4] [kernel] hart 0 Exception(LoadPageFault) in application, bad addr = 0xffffffffffffff68, bad instruction = 0x150005db0c, kernel killed it.[0m
-[93m[WARN] [HART0] [PID 4] [TID 4] don't send SIGSEGV, just exit the process[0m
-[93m[WARN] [HART0] [PID 3] [TID 3] [kernel] hart 0 Exception(StorePageFault) in application, bad addr = 0x15000a5760, bad instruction = 0x150004eae0, kernel killed it.[0m
-[93m[WARN] [HART0] [PID 3] [TID 3] don't send SIGSEGV, just exit the process[0m
+[WARN] [HART0] [PID 4] [TID 4] [kernel] hart 0 Exception(LoadPageFault) in application, bad addr = 0xffffffffffffff68, bad instruction = 0x150005db0c, kernel killed it.
+[WARN] [HART0] [PID 4] [TID 4] don't send SIGSEGV, just exit the process
+[WARN] [HART0] [PID 3] [TID 3] [kernel] hart 0 Exception(StorePageFault) in application, bad addr = 0x15000a5760, bad instruction = 0x150004eae0, kernel killed it.
+[WARN] [HART0] [PID 3] [TID 3] don't send SIGSEGV, just exit the process
 ```
 
 ## 第一处 LoadPageFault
@@ -23,16 +23,16 @@ bad addr 刚好是 -152 可能是在创建子进程的时候忘记对trap的位�
 ## 新的问题
 
 ```bash
-ccess02.c:129: [1;31mTFAIL: [0mexecute file_x as root failed: ENOENT (2)
-access02.c:129: [1;31mTFAIL: [0mexecute file_x as nobody failed: ENOENT (2)
-access02.c:60: [1;31mTFAIL: [0maccess(symlink_f, F_OK) as root failed: ENOENT (2)
-access02.c:60: [1;31mTFAIL: [0maccess(symlink_f, F_OK) as nobody failed: ENOENT (2)
-access02.c:60: [1;31mTFAIL: [0maccess(symlink_r, R_OK) as root failed: ENOENT (2)
-access02.c:60: [1;31mTFAIL: [0maccess(symlink_r, R_OK) as nobody failed: ENOENT (2)
-access02.c:60: [1;31mTFAIL: [0maccess(symlink_w, W_OK) as root failed: ENOENT (2)
-access02.c:60: [1;31mTFAIL: [0maccess(symlink_w, W_OK) as nobody failed: ENOENT (2)
-access02.c:60: [1;31mTFAIL: [0maccess(symlink_x, X_OK) as root failed: ENOENT (2)
-access02.c:60: [1;31mTFAIL: [0maccess(symlink_x, X_OK) as nobody failed: ENOENT (2)
+ccess02.c:129: TFAIL: execute file_x as root failed: ENOENT (2)
+access02.c:129: TFAIL: execute file_x as nobody failed: ENOENT (2)
+access02.c:60: TFAIL: access(symlink_f, F_OK) as root failed: ENOENT (2)
+access02.c:60: TFAIL: access(symlink_f, F_OK) as nobody failed: ENOENT (2)
+access02.c:60: TFAIL: access(symlink_r, R_OK) as root failed: ENOENT (2)
+access02.c:60: TFAIL: access(symlink_r, R_OK) as nobody failed: ENOENT (2)
+access02.c:60: TFAIL: access(symlink_w, W_OK) as root failed: ENOENT (2)
+access02.c:60: TFAIL: access(symlink_w, W_OK) as nobody failed: ENOENT (2)
+access02.c:60: TFAIL: access(symlink_x, X_OK) as root failed: ENOENT (2)
+access02.c:60: TFAIL: access(symlink_x, X_OK) as nobody failed: ENOENT (2)
 ```
 
 根据ChatGPT没找到一方面是没有/bin/sh的符号链接，另一方面是符号链接处理的有问题,原来的处理逻辑使用读到的路径，忽视了可能是相对路径。

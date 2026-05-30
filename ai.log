@@ -205,3 +205,40 @@ LoongArch QEMU 单跑 access04：12 TPASS，退出码 0。
 - 上述代码文件
 - `Docs/初赛文档/problem/access04-ltp-musl.md`
 - `Docs/初赛文档/开发日志.md` — 5.30 条目
+
+---
+
+## 2026-05-30: LTP access02 execve shebang
+
+### 问题发现
+
+用户提供 LoongArch `log.ans`（`LTP_TEST_START=7`，单跑 `access02`）。12 TPASS / 4 TFAIL，退出码 256。失败信息：
+
+```text
+sh: can't execute './file_x': Exec format error
+access02.c:129: TFAIL: execute file_x as root failed: SUCCESS (0)
+```
+
+`access(file_x, X_OK)` 已通过，符号链接用例也全部 TPASS。
+
+### 根因分析
+
+对照 LTP `access02.c`：X_OK 分支在 `access()` 通过后调用 `system("./file_x")`。setup 写入 `file_x` 为 mode `0555`、内容 `#!/bin/sh\n`。
+
+`sys_execve` 仅识别 ELF，非 ELF 返回 `ENOEXEC`；busybox 报 Exec format error。已有 `.sh` 后缀特判不覆盖 `file_x`。`/bin/sh` symlink 已存在，缺的是内核 shebang 解析。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/execve.rs` | `parse_shebang`；非 ELF 时按 Linux binfmt_script 重建 argv 并加载解释器 |
+
+### 验证
+
+用户确认 LoongArch `access02` 全部通过。
+
+### 涉及文件汇总
+
+- `os/src/syscall/task/execve.rs`
+- `Docs/初赛文档/problem/access02-ltp-execve.md`
+- `Docs/初赛文档/开发日志.md` — 5.30 条目
