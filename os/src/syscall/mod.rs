@@ -20,6 +20,7 @@ use num_enum::FromPrimitive;
 #[repr(usize)]
 pub enum Syscall {
     Getcwd = 17,
+    Eventfd2 = 19,
     EpollCreate1 = 20,
     EpollCtl = 21,
     EpollPwait = 22,
@@ -196,6 +197,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
     // );
     match syscall_id {
         Syscall::Getcwd => sys_getcwd(args[0] as *const u8, args[1]),
+        Syscall::Eventfd2 => sys_eventfd2(args[0] as u32, args[1] as u32),
         Syscall::Dup => sys_dup(args[0]),
         Syscall::Dup3 => sys_dup3(args[0], args[1], args[2] as u32),
         Syscall::Fcntl => sys_fcntl(args[0], args[1], args[2]),

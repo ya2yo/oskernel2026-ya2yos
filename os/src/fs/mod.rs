@@ -9,6 +9,7 @@ mod stat;
 mod vfs;
 pub use crate::fs::files::OSFile;
 pub use crate::fs::files::epoll::{EpollCreateFlags, EpollFile};
+pub use crate::fs::files::events::EventFd;
 #[cfg(feature = "net")]
 pub use crate::fs::files::Socket;
 use crate::mm::UserBuffer;

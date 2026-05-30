@@ -10,3 +10,5 @@ mod os_file;
 pub use os_file::OSFile;
 pub mod epoll;
 pub use epoll::{EpollCreateFlags, EpollFile, EpollReady};
+pub mod events;
+pub use events::EventFd;
