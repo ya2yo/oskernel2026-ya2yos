@@ -20,6 +20,9 @@ use num_enum::FromPrimitive;
 #[repr(usize)]
 pub enum Syscall {
     Getcwd = 17,
+    EpollCreate1 = 20,
+    EpollCtl = 21,
+    EpollPwait = 22,
     Dup = 23,
     Dup3 = 24,
     Fcntl = 25,
@@ -467,6 +470,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::CopyFileRange => {
             sys_copy_file_range(args[0], args[1], args[2], args[3], args[4], args[5] as u32)
         }
+        Syscall::EpollCreate1 => sys_epoll_create1(args[0] as u32),
+        Syscall::EpollCtl => sys_epoll_ctl(args[0], args[1], args[2], args[3]),
+        Syscall::EpollPwait => sys_epoll_pwait(args[0], args[1], args[2], args[3], args[4]),
         Syscall::MachineShutdown => shutdown(false),
 
         // task ops

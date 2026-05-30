@@ -1,1 +1,154 @@
+//! `epoll_create1` / `epoll_ctl` / `epoll_pwait` — 参数与用户缓冲区，语义在 `fs::files::epoll`。
 
+use alloc::sync::Arc;
+use log::debug;
+
+use linux_raw_sys::general::{
+    epoll_event, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD,
+};
+
+use crate::{
+    fs::{
+        EpollCreateFlags, EpollFile, FileClass, FileDescriptor, OpenFlags,
+    },
+    mm::{translated_ref, translated_refmut},
+    task::{current_task, suspend_current_and_run_next},
+    timer::get_time_ms,
+    utils::{SysErrNo, SyscallRet},
+};
+
+pub fn sys_epoll_create1(flags: u32) -> SyscallRet {
+    let eflags = EpollCreateFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
+    debug!("[sys_epoll_create1] flags={:?}", eflags);
+
+    let task = current_task().unwrap();
+    let epoll_file = Arc::new(EpollFile::new());
+
+    let open_flags = if eflags.contains(EpollCreateFlags::CLOEXEC) {
+        OpenFlags::O_CLOEXEC
+    } else {
+        OpenFlags::empty()
+    };
+
+    let fd = task.get_fd_table().alloc_fd()?;
+    task.get_fd_table().set(
+        fd,
+        FileDescriptor::new(open_flags, FileClass::Abs(epoll_file.clone())),
+    )?;
+
+    EpollFile::register_fd(fd, &epoll_file);
+
+    debug!("[sys_epoll_create1] created epoll fd={}", fd);
+    Ok(fd)
+}
+
+pub fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event_ptr: usize) -> SyscallRet {
+    let task = current_task().unwrap();
+    let token = task
+        .process
+        .inner_lock()
+        .get_locked_memory_set_read()
+        .token();
+
+    let fd_i32 = fd as i32;
+    let epoll_file = EpollFile::lookup(epfd)?;
+
+    if op != EPOLL_CTL_DEL as usize {
+        task.get_fd_table().get(fd)?;
+        if fd == epfd {
+            return Err(SysErrNo::EINVAL);
+        }
+    }
+
+    match op {
+        x if x == EPOLL_CTL_ADD as usize => {
+            let event = *translated_ref(token, event_ptr as *const epoll_event);
+            debug!(
+                "[sys_epoll_ctl] ADD epfd={}, fd={}, events=0x{:x}, data=0x{:x}",
+                epfd, fd, event.events, event.data
+            );
+            epoll_file.ctl_add(fd_i32, event.events, event.data)?;
+            Ok(0)
+        }
+        x if x == EPOLL_CTL_MOD as usize => {
+            let event = *translated_ref(token, event_ptr as *const epoll_event);
+            debug!(
+                "[sys_epoll_ctl] MOD epfd={}, fd={}, events=0x{:x}, data=0x{:x}",
+                epfd, fd, event.events, event.data
+            );
+            epoll_file.ctl_mod(fd_i32, event.events, event.data)?;
+            Ok(0)
+        }
+        x if x == EPOLL_CTL_DEL as usize => {
+            debug!("[sys_epoll_ctl] DEL epfd={}, fd={}", epfd, fd);
+            epoll_file.ctl_del(fd_i32)?;
+            Ok(0)
+        }
+        _ => Err(SysErrNo::EINVAL),
+    }
+}
+
+pub fn sys_epoll_pwait(
+    epfd: usize,
+    events_ptr: usize,
+    maxevents: usize,
+    timeout: usize,
+    _sigmask: usize,
+) -> SyscallRet {
+    if events_ptr == 0 && maxevents > 0 {
+        return Err(SysErrNo::EFAULT);
+    }
+    if maxevents == 0 {
+        return Ok(0);
+    }
+
+    let waittime: isize = if timeout == usize::MAX {
+        -1
+    } else {
+        timeout as isize
+    };
+
+    if waittime == 0 {
+        return epoll_wait_once(epfd, events_ptr, maxevents);
+    }
+
+    let begin = get_time_ms();
+    loop {
+        let count = epoll_wait_once(epfd, events_ptr, maxevents)?;
+        if count > 0 {
+            return Ok(count);
+        }
+        if waittime > 0 && (get_time_ms() - begin) >= waittime as usize {
+            return Ok(0);
+        }
+        suspend_current_and_run_next();
+    }
+}
+
+/// 单次扫描：写用户 `epoll_event` 数组并返回就绪数量。
+fn epoll_wait_once(epfd: usize, events_ptr: usize, maxevents: usize) -> SyscallRet {
+    let task = current_task().unwrap();
+    let token = task
+        .process
+        .inner_lock()
+        .get_locked_memory_set_read()
+        .token();
+    let epoll_file = EpollFile::lookup(epfd)?;
+
+    let mut poll_one = |fd: i32, registered: u32| {
+        let desc = task.get_fd_table().try_get(fd as usize)?;
+        let file = desc.any();
+        Some(EpollFile::poll_mask(file.as_ref(), registered))
+    };
+
+    let ready = epoll_file.collect_ready(&mut poll_one, maxevents);
+    let events_slice = events_ptr as *mut epoll_event;
+    for (i, ev) in ready.iter().enumerate() {
+        let user_event = epoll_event {
+            events: ev.events,
+            data: ev.data,
+        };
+        *unsafe { translated_refmut(token, events_slice.add(i)) } = user_event;
+    }
+    Ok(ready.len())
+}
