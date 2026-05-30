@@ -8,3 +8,5 @@ pub mod stdio;
 pub use net::*;
 mod os_file;
 pub use os_file::OSFile;
+pub mod epoll;
+pub use epoll::{EpollCreateFlags, EpollFile, EpollReady};
