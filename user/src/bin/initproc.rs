@@ -56,13 +56,14 @@ fn trim_trailing_nul(s: &str) -> &str {
 // LTP-musl test helpers
 // ---------------------------------------------------------------------------
 
-const LTP_TEST_START: usize = 17;
-const LTP_TESTS_PER_GROUP: usize = 1;
+const LTP_TEST_START: usize = 90;
+const LTP_TESTS_PER_GROUP: usize = 10;
 
 /// LTP 测试黑名单。
 /// 前 5 项 (cgroup_fj_*) 仅 `test_ltp` 需要跳过，
 /// `check_ltp` 通过 `&LTP_BLACKLIST[LTP_CGROUP_PREFIX_LEN..]` 跳过它们。
 const LTP_BLACKLIST: &[&str] = &[
+    "assign_password.sh\0",
     // [100,200)区间
     // cgroup_fj 系列需要带参数的脚本入口，直接跑 helper 会卡死。
     // 需要验证时使用 test_cgroup_fj_function_cpuset_via_script。

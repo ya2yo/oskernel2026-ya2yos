@@ -108,7 +108,10 @@ pub enum Syscall {
     Setdomainname = 162,
     GetRusage = 165,
     Umask = 166,
+    Prctl = 167,
+    GetCpu = 168,
     GetTimeOfDay = 169,
+    SetTimeOfDay = 170,
     Adjtimex = 171,
     GetPid = 172,
     GetPPid = 173,
@@ -561,6 +564,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Acct => sys_acct(args[0] as *const u8),
         Syscall::Capget => sys_capget(args[0] as *mut CapUserHeader, args[1] as *mut CapUserData),
         Syscall::Capset => sys_capset(args[0] as *mut CapUserHeader, args[1] as *const CapUserData),
+        Syscall::Prctl => sys_prctl(args[0] as u32, args[1], args[2], args[3], args[4]),
         _ => {
             warn!(
                 "Unsupported syscall_id: {}!",

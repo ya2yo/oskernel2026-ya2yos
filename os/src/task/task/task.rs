@@ -103,6 +103,8 @@ pub struct TaskControlBlockInner {
     pub timer: Arc<Timer>,
     pub robust_list: RobustList,
     pub user_id: usize,
+    /// PR_SET_PDEATHSIG 设置的父进程死亡信号 (0 表示未设置)
+    pub pdeath_signal: u8,
 
     // 用于futex
     pub futex_pa: usize,  // 当前正在等待的pa
@@ -175,6 +177,7 @@ impl TaskControlBlock {
                 timer: Arc::new(Timer::new()),
                 robust_list: RobustList::default(),
                 user_id: 0,
+                pdeath_signal: 0,
                 futex_pa: 0,
                 futex_key: 0,
             }),
@@ -449,6 +452,7 @@ impl TaskControlBlock {
                 timer,
                 robust_list: RobustList::default(),
                 user_id: parent_inner.user_id,
+                pdeath_signal: 0,
                 futex_pa: 0,
                 futex_key: 0,
             }),
