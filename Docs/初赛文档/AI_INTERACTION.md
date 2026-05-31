@@ -308,6 +308,20 @@
 - **描述**：按 syscall-implementation skill 实现 `setresgid`/`getresgid`：TCB 维护 GID 三元组、Linux 级联语义与非特权 EPERM 检查；修正 `GetResgid` 编号 148→150。RISC-V `setresgid01` 5× TPASS。详见 `ai.log` 2026-05-31 条目与 [problem/setresgid-syscall.md](./problem/setresgid-syscall.md)。
 - **关联 commit**：待提交
 
+#### clone03 MAP_SHARED fork 帧共享修复（5.31）
+
+- **工具/模型**：Cursor (Composer)
+- **场景**：Bug 分析与定位
+- **描述**：提供 `log.ans`，AI 分析 clone03 失败日志，定位 `from_existed_user` 中 MAP_SHARED 懒分配区域 fork 后父子各自独立分配物理帧，破坏共享语义。同时定位 `recycle_data_pages` 中 `MAP_ANONYMOUS` 区域 `unwrap() None` panic。实现预 fault pass（MAP_ANONYMOUS 零页 / 文件支撑读文件），并增加 `is_some()` 检查。详见 `ai.log` 与 [problem/clone-mmap-shared-fork.md](./problem/clone-mmap-shared-fork.md)。
+- **关联 commit**：待提交
+
+#### clone04 缺页 SIGSEGV 与 _Fork 语义修复（5.31）
+
+- **工具/模型**：Cursor (Composer)
+- **场景**：Bug 分析与定位
+- **描述**：提供 `log.ans`，AI 分析 clone04（NULL child_stack）故障链：musl wrapper 向 `0xfffffffffffffff0` 写入触发缺页，内核仅在有自定义 handler 时才发 SIGSEGV，否则直接 `exit(-2)`。修复为无条件发送 SIGSEGV、fork 路径 sig_mask 清零（_Fork 语义）。详见 `ai.log` 2026-05-31 条目与 [problem/clone04-fork-sigsegv.md](./problem/clone04-fork-sigsegv.md)。
+- **关联 commit**：待提交
+
 ---
 
 ## AI 成果总结

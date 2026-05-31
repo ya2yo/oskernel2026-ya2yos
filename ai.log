@@ -268,3 +268,36 @@ RISC-V 单跑 `setresgid01`：5× TPASS。
 - `os/src/syscall/sys.rs`
 - `os/src/syscall/mod.rs`
 - `Docs/初赛文档/problem/setresgid-syscall.md`
+
+---
+
+## 2026-05-31: clone04 缺页 SIGSEGV 与 _Fork 语义修复
+
+### 问题发现
+
+用户提供 `log.ans`，`clone04` 测试退出码 254。日志显示 `StorePageFault` at `0xfffffffffffffff0`，内核打印 "don't send SIGSEGV, just exit the process"。
+
+### 根因分析
+
+AI 分析 `clone04.c` 源码：测试调用 `ltp_clone(0, child_fn, NULL, CHILD_STACK_SIZE, NULL)`，预期返回 EINVAL。musl 的 `__clone` 汇编 wrapper 在 syscall 前向 `child_stack - 16 = -16 = 0xfffffffffffffff0` 写入函数指针，触发无法恢复的缺页。
+
+内核 trap handler（`trap/mod.rs`）仅在进程有自定义 SIGSEGV handler 时才发送信号，否则直接 `exit(-2)`。这与 Linux 行为不符：应始终发送 SIGSEGV，由信号分发机制根据默认动作终止。
+
+同时发现 fork 路径子进程 `sig_mask` 继承自父进程，不符合 `_Fork`（POSIX 严格 fork）的干净掩码要求。
+
+### 修改内容
+
+| 文件 | 位置 | 修改 |
+|------|------|------|
+| `os/src/trap/mod.rs` | `fn trap_handler` 缺页分支 | 删掉 `has_sigsegv_handler` 检查，无条件 `send_signal_to_thread(SIGSEGV)` |
+| `os/src/task/task/task.rs` | `fn clone_process` fork 路径 | `sig_mask` 改为 `SigSet::empty()` |
+
+### 验证
+
+进程被 SIGSEGV 正确终止，退出码 128+11=139（替代原 254）。
+
+### 涉及文件汇总
+
+- `os/src/trap/mod.rs`
+- `os/src/task/task/task.rs`
+- `Docs/初赛文档/problem/clone04-fork-sigsegv.md`
