@@ -1,7 +1,7 @@
 use log::{debug, warn};
 
 use crate::utils::{SysErrNo, SyscallRet};
-use crate::mm::translated_str;
+use crate::mm::read_user_cstr;
 use crate::task::current_task;
 use spin::{Lazy, Mutex};
 
@@ -36,11 +36,11 @@ pub fn sys_add_key(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     // 翻译 type 和 description 字符串用于检查
     let type_str = if !key_type.is_null() {
-        translated_str(token, key_type)
+        read_user_cstr(&memory_set, key_type)?
     } else {
         return Err(SysErrNo::EFAULT);
     };

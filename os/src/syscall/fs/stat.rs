@@ -9,7 +9,7 @@ use crate::{
         open, superblock_fs_stat, InodeType, Kstat, OpenFlags, Statfs, MAX_PATH_LEN, MNT_TABLE,
         NONE_MODE,
     },
-    mm::{copy_from_user, copy_to_user, if_bad_address, put_data, translated_str},
+    mm::{copy_from_user, copy_to_user, if_bad_address, put_data, read_user_cstr},
     syscall::options::{FaccessatFileMode, FaccessatMode},
     task::current_task,
     utils::{rsplit_once, trim_start_slash, SysErrNo, SyscallRet},
@@ -188,14 +188,14 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> S
     let task = current_task().unwrap();
     let inner = task.inner_lock();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
     if (path as isize) <= 0 {
         return Err(SysErrNo::EFAULT);
     }
     if (mode as i32) < 0 {
         return Err(SysErrNo::EINVAL);
     }
-    let path = translated_str(token, path);
+    let path = read_user_cstr(&memory_set, path)?;
 
     if path.len() == 0 {
         return Err(SysErrNo::ENOENT);

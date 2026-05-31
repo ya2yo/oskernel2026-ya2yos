@@ -7,8 +7,8 @@ use crate::fs::{
     SEEK_SET,
 };
 use crate::mm::{
-    copy_to_user, get_data, if_bad_address, safe_translated_byte_buffer, translated_byte_buffer,
-    translated_str, UserBuffer,
+    copy_to_user, get_data, if_bad_address, read_user_cstr, safe_translated_byte_buffer, translated_byte_buffer,
+    UserBuffer,
 };
 use crate::task::{current_task, current_token};
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
@@ -48,13 +48,13 @@ pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
 pub fn sys_chdir(path: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_write().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     if (path as isize) <= 0 || if_bad_address(path as usize) {
         return Err(SysErrNo::EFAULT);
     }
 
-    let path = translated_str(token, path);
+    let path = read_user_cstr(&memory_set, path)?;
 
     if path.len() > MAX_PATH_LEN {
         return Err(SysErrNo::ENAMETOOLONG);
@@ -80,8 +80,8 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
 pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_write().token();
-    let path = translated_str(token, path);
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let path = read_user_cstr(&memory_set, path)?;
     // debug!(
     //     "[sys_mkdirat] dirfd is {},path is {},mode is {}",
     //     dirfd, path, mode
@@ -146,9 +146,9 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, _flags: u32) -> SyscallRet {
     // assert!(flags != AT_REMOVEDIR, "not support yet");
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
-    let path = translated_str(token, path);
+    let path = read_user_cstr(&memory_set, path)?;
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     // TODO(ZMY) 支持符号链接,socket,FIFO,device
     // 如果是File但尚有对应的fd未关闭,等到close时unlink
@@ -192,9 +192,10 @@ pub fn sys_utimensat(
     }
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let token = memory_set.token();
     let path = if !path.is_null() {
-        translated_str(token, path)
+        read_user_cstr(&memory_set, path)?
     } else {
         String::new()
     };
@@ -242,14 +243,15 @@ pub fn sys_sync() -> SyscallRet {
 pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let token = memory_set.token();
     let self_token = current_token();
     // debug!("path={:#x}", path as usize);
     // debug!("buf ={:#x}", buf as usize);
     if token != self_token {
         warn!("token != self_token");
     }
-    let path = translated_str(token, path);
+    let path = read_user_cstr(&memory_set, path)?;
 
     // debug!(
     //     "[sys_readlinkat] dirfd is {}, path is {}, buf is {:x}, bufsize is {}",
@@ -288,9 +290,9 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
 pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
-    let target_path = translated_str(token, target);
-    let link_path = translated_str(token, linkpath);
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let target_path = read_user_cstr(&memory_set, target)?;
+    let link_path = read_user_cstr(&memory_set, linkpath)?;
 
     // debug!(
     //     "[sys_symlinkat] target is {},newdirfd is {},linkpath is {}",
@@ -330,9 +332,9 @@ pub fn sys_renameat2(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
-    let oldpath = translated_str(token, oldpath);
-    let newpath = translated_str(token, newpath);
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let oldpath = read_user_cstr(&memory_set, oldpath)?;
+    let newpath = read_user_cstr(&memory_set, newpath)?;
 
     let old_abs_path = proc_inner.get_abs_path(olddirfd, &oldpath)?;
     let osfile = open(&old_abs_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
@@ -369,7 +371,7 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
 pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     if (flags as isize) < 0 {
         return Err(SysErrNo::EINVAL);
@@ -383,7 +385,7 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
         return Err(SysErrNo::EFAULT);
     }
 
-    let path = translated_str(token, path);
+    let path = read_user_cstr(&memory_set, path)?;
 
     if path.len() > MAX_PATH_LEN {
         return Err(SysErrNo::ENAMETOOLONG);

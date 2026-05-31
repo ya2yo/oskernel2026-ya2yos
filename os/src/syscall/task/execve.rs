@@ -6,7 +6,7 @@ use log::debug;
 
 use crate::{
     fs::{open, OpenFlags, NONE_MODE},
-    mm::{translated_ref, translated_str},
+    mm::{read_user_cstr, translated_ref},
     task::current_task,
     utils::{get_abs_path, strip_color, trim_start_slash, SysErrNo, SyscallRet},
 };
@@ -71,8 +71,9 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
 
-    let token = proc_inner.get_locked_memory_set_read().token();
-    let mut path = trim_start_slash(translated_str(token, path));
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let token = memory_set.token();
+    let mut path = trim_start_slash(read_user_cstr(&memory_set, path)?);
     if path.starts_with("ltp/testcases/bin/\u{1b}[1;32m") {
         //去除颜色
         path = strip_color(path, "ltp/testcases/bin/\u{1b}[1;32m", "\u{1b}[m");
@@ -98,7 +99,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         if argv_ptr == 0 {
             break;
         }
-        argv_vec.push(translated_str(token, argv_ptr as *const u8));
+        argv_vec.push(read_user_cstr(&memory_set, argv_ptr as *const u8)?);
         unsafe {
             argv = argv.add(1);
         }
@@ -139,7 +140,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
             if envp_ptr == 0 {
                 break;
             }
-            env.push(translated_str(token, envp_ptr as *const u8));
+            env.push(read_user_cstr(&memory_set, envp_ptr as *const u8)?);
             unsafe {
                 envp = envp.add(1);
             }
@@ -199,6 +200,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         }
     }
     locked_fs_info.set_exe(abs_path);
+    drop(memory_set);
     drop(proc_inner);
 
     task.exec(&elf_data, &argv_vec, &mut env);

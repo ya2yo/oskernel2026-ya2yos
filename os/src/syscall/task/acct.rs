@@ -1,7 +1,7 @@
 use crate::{
     fs::{open, FileClass, InodeType, OpenFlags, MAX_PATH_LEN, NONE_MODE},
     mm::{
-        get_data, if_bad_address, put_data, safe_put_data, translated_ref, translated_str, VirtAddr,
+        get_data, if_bad_address, put_data, read_user_cstr, safe_put_data, translated_ref, VirtAddr,
     },
     signal::{check_if_any_sig_for_current_task, handle_signal},
     syscall::{CloneFlags, Utsname},
@@ -57,8 +57,8 @@ pub fn sys_acct(filename: *const u8) -> SyscallRet {
     }
 
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
-    let path = translated_str(token, filename);
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let path = read_user_cstr(&memory_set, filename)?;
 
     // 检查路径长度
     if path.len() > MAX_PATH_LEN {
@@ -68,6 +68,7 @@ pub fn sys_acct(filename: *const u8) -> SyscallRet {
     // 计算绝对路径
     let abs_path = get_abs_path(&proc_inner.fs_info.get_cwd(), &path);
     debug!("[sys_acct] filename = {}, abs_path = {}", path, abs_path);
+    drop(memory_set);
     drop(proc_inner);
 
     // 尝试打开文件以验证路径有效

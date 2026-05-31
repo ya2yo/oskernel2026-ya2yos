@@ -106,23 +106,6 @@ pub fn safe_translated_byte_buffer(
     Some(v)
 }
 
-/// Translate a pointer to a mutable u8 Vec end with `\0` through page table to a `String`
-pub fn translated_str(token: usize, ptr: *const u8) -> String {
-    let page_table = PageTable::from_token(token);
-    let mut string = String::new();
-    let mut va = ptr as usize;
-    loop {
-        let ch: u8 =
-            *(KernelAddr::from(page_table.translate_va(VirtAddr::from(va)).unwrap()).as_mut());
-        if ch == 0 {
-            break;
-        }
-        string.push(ch as char);
-        va += 1;
-    }
-    string
-}
-
 #[allow(unused)]
 ///Translate a generic through page table and return a reference
 pub fn translated_ref<T>(token: usize, ptr: *const T) -> &'static T {
