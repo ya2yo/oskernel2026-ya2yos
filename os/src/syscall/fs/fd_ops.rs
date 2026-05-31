@@ -2,6 +2,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use super::fcntl::*;
 use crate::fs::{open, FileDescriptor, FsIndex, OpenFlags};
+use crate::mm::translate::read_user_cstr;
 use crate::mm::translated_str;
 use crate::syscall::{options::FcntlCmd, process, Syscall};
 use crate::task::current_task;
@@ -160,14 +161,15 @@ static TMP_FILE_COUNTER: AtomicI32 = AtomicI32::new(0);
 
 /// 参考 https://man7.org/linux/man-pages/man2/openat.2.html
 pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> SyscallRet {
+    debug!("[sys_openat] dirfd={}, path={:x}, flags={:x}, mode={}", dirfd, path as u64, flags, mode);
     if path as usize == 0 {
         return Err(SysErrNo::ENOENT);
     }
 
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
-    let path = translated_str(token, path);
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let path = read_user_cstr(&*memory_set, path)?;
 
     let mut flags = OpenFlags::from_bits(flags).unwrap();
 

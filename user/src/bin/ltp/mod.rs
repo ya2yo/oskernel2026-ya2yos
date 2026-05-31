@@ -111,8 +111,10 @@ pub fn run_ltp_tests_glibc(tests: &[&str], blacklist: &[&str]) {
     println!("#### OS COMP TEST GROUP END ltp-glibc ####");
 }
 
-/// 单独测试 glibc 版本下某个特定的 LTP 测例
-/// 用法：ltp::test_glibc_single("brk01")
+/// 单独测试 glibc 版本下某个特定的 LTP 测例。
+/// **注意：test_name 必须以 `\0` 结尾**（C 字符串约定），否则 execve 会失败。
+///
+/// 用法：`ltp::test_glibc_single("brk01\0")`
 #[allow(unused)]
 pub fn test_glibc_single(test_name: &str) {
     println!("RUN GLIBC LTP SINGLE CASE {}", test_name);

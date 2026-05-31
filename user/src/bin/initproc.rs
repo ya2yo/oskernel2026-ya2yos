@@ -463,7 +463,7 @@ fn get_score() {
     // run_testsuit("glibc\0", "netperf_testcode.sh\0");
 
     // --- glibc LTP 逐个测例调试 (brk/mmap/munmap 排查) ---
-    ltp::test_glibc_single("brk01");                     // 单测 brk01
+    ltp::test_glibc_single("brk01\0");                   // 单测 brk01 (注意：测例名必须带 \0)
     // ltp::test_glibc_memory();                            // 跑全部内存相关测例
     // ltp::test_glibc_custom(&["brk01\0", "brk02\0"]);      // 自定义一组测例
 }

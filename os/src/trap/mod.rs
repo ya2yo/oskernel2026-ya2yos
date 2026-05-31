@@ -132,19 +132,6 @@ pub fn trap_handler() {
                 panic!("You should not return from exit_current_and_run_next");
             }
         }
-        // Trap::Exception(Exception::StoreFault)
-        // | Trap::Exception(Exception::InstructionFault)
-        // | Trap::Exception(Exception::LoadFault) => {
-        //     warn!(
-        //         "[kernel] hart {} {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
-        //         hartid,
-        //         scause.cause(),
-        //         stval,
-        //         current_trap_cx().get_sepc(),
-        //     );
-        //     // page fault exit code
-        //     exit_current_and_run_next(-2);
-        // }
         Trap::Exception(Exception::IllegalInstruction) => {
             backtrace();
             warn!(
