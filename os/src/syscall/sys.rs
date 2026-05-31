@@ -1,3 +1,5 @@
+use log::warn;
+
 use crate::{
     fs::open_device_file,
     mm::{if_bad_address, put_data, translated_byte_buffer, UserBuffer},
@@ -33,6 +35,11 @@ pub fn sys_setuid(uid: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
     task_inner.user_id = uid;
+    Ok(0)
+}
+/// https://man7.org/linux/man-pages/man2/setresuid.2.html
+pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32)->SyscallRet {
+    warn!("[sys_setresuid] not implement!");
     Ok(0)
 }
 

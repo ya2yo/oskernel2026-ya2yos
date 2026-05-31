@@ -69,6 +69,7 @@ pub enum Syscall {
     TimerfdSettime = 86,
     TimerfdGettime = 87,
     Utimensat = 88,
+    Acct = 89,
     Exit = 93,
     ExitGroup = 94,
     SetTidAddress = 96,
@@ -96,6 +97,7 @@ pub enum Syscall {
     SigTimedWait = 137,
     SigReturn = 139,
     Setuid = 146,
+    Setresuid = 147,
     Times = 153,
     SetPGid = 154,
     GetPGid = 155,
@@ -171,7 +173,6 @@ mod mm;
 #[cfg(feature = "net")]
 mod net;
 mod options;
-mod process;
 mod resource;
 mod signal;
 mod sync;
@@ -196,7 +197,6 @@ use net::*;
 pub use options::{
     FutexCmd, FutexOpt, MmapFlags, MmapProt, PollEvents, RLimit, SignalMaskFlag, Utsname,
 };
-use process::*;
 use resource::*;
 use signal::*;
 use sync::*;
@@ -388,6 +388,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::SigReturn => sys_rt_sigreturn(),
         Syscall::Setuid => sys_setuid(args[0] as usize),
+        Syscall::Setresuid => sys_setresuid(args[0] as u32, args[1] as u32, args[2] as u32),
         Syscall::Times => sys_times(args[0] as *mut Tms),
         Syscall::SetPGid => sys_setpgid(args[0] as u32, args[1] as u32),
         Syscall::GetPGid => sys_getpgid(),
@@ -546,6 +547,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Fsopen => sys_fsopen(args[0] as *const u8, args[1] as u32),
         Syscall::Fspick => sys_fspick(args[0] as i32, args[1] as *mut u8, args[2] as u32),
         Syscall::MemfdSecret => sys_memfd_secret(args[0] as u32),
+        Syscall::Acct => sys_acct(args[0] as *const u8),
         _ => {
             warn!(
                 "Unsupported syscall_id: {}!",
