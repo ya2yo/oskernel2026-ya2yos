@@ -301,6 +301,13 @@
 - **描述**：提供 LoongArch `log.ans`，`access02` 在 X_OK 执行验证阶段 4× TFAIL；对照 LTP 源码确认 `file_x` 为 `#!/bin/sh` 脚本；定位 `sys_execve` 对非 ELF 直接 `ENOEXEC`。AI 实现 shebang 解析与解释器 argv 重建，用户验证通过后补文档。详见 `ai.log` 2026-05-30 access02 条目与 [problem/access02-ltp-execve.md](./problem/access02-ltp-execve.md)。
 - **关联 commit**：待提交
 
+#### setresgid(149) 系统调用（5.31）
+
+- **工具/模型**：Cursor (Composer)
+- **场景**：代码生成、测例验证
+- **描述**：按 syscall-implementation skill 实现 `setresgid`/`getresgid`：TCB 维护 GID 三元组、Linux 级联语义与非特权 EPERM 检查；修正 `GetResgid` 编号 148→150。RISC-V `setresgid01` 5× TPASS。详见 `ai.log` 2026-05-31 条目与 [problem/setresgid-syscall.md](./problem/setresgid-syscall.md)。
+- **关联 commit**：待提交
+
 ---
 
 ## AI 成果总结

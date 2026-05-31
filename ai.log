@@ -242,3 +242,29 @@ access02.c:129: TFAIL: execute file_x as root failed: SUCCESS (0)
 - `os/src/syscall/task/execve.rs`
 - `Docs/初赛文档/problem/access02-ltp-execve.md`
 - `Docs/初赛文档/开发日志.md` — 5.30 条目
+
+---
+
+## 2026-05-31 — setresgid(149) 系统调用
+
+### 用户请求
+
+根据 skill 实现 149 号系统调用（Linux `setresgid`）。
+
+### 实现
+
+1. `TaskControlBlockInner` 增加 `real_gid` / `effective_gid` / `saved_gid`，fork 继承
+2. `os/src/syscall/sys.rs`：`sys_setresgid`、`sys_getresgid`；更新 `getgid`/`getegid`/`getgroups`
+3. `syscall/mod.rs`：路由 `SetResgid`(149)、`GetResgid`(150)、`GetResuid`(148)；修正 GetResgid 编号
+4. 顺带修复 `sys_chroot` 编译错误（`read_user_cstr` + 目录检查）
+
+### 验证
+
+RISC-V 单跑 `setresgid01`：5× TPASS。
+
+### 涉及文件
+
+- `os/src/task/task/task.rs`
+- `os/src/syscall/sys.rs`
+- `os/src/syscall/mod.rs`
+- `Docs/初赛文档/problem/setresgid-syscall.md`

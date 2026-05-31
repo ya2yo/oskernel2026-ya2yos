@@ -4,6 +4,7 @@
 
 ## 进程 / 线程 / 信号
 
+- [setresgid(149) 系统调用](./setresgid-syscall.md)
 - [sys_clone行为](./clone.md)
 - [pending导致死循环](./block-on-pending.md)
 - [单独运行cgroup_fj_proc 卡死](./cgroup-fj-proc.md)

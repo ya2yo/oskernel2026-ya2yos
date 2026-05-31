@@ -2,13 +2,14 @@ use linux_raw_sys::{general::{_LINUX_CAPABILITY_VERSION_1, _LINUX_CAPABILITY_VER
 use log::{debug, warn};
 
 use crate::{
-    fs::open_device_file,
-    mm::{get_data, if_bad_address, put_data, translated_byte_buffer, UserBuffer},
+    fs::{open, open_device_file, InodeType, OpenFlags, NONE_MODE},
+    mm::{get_data, if_bad_address, put_data, read_user_cstr, translated_byte_buffer, UserBuffer},
     syscall::Utsname,
     task::{current_task, current_token, tid_to_task, Sysinfo},
     timer::get_time_ms,
     utils::{SysErrNo, SyscallRet},
 };
+use alloc::sync::Arc;
 
 /// 参考 https://man7.org/linux/man-pages/man2/getuid.2.html
 pub fn sys_getuid() -> SyscallRet {
@@ -24,12 +25,16 @@ pub fn sys_geteuid() -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/getgid.2.html
 pub fn sys_getgid() -> SyscallRet {
-    Ok(0) // root group
+    let task = current_task().unwrap();
+    let gid = task.inner_lock().effective_gid as usize;
+    Ok(gid)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/getegid.2.html
 pub fn sys_getegid() -> SyscallRet {
-    Ok(0) // root group
+    let task = current_task().unwrap();
+    let gid = task.inner_lock().effective_gid as usize;
+    Ok(gid)
 }
 
 pub fn sys_setuid(uid: usize) -> SyscallRet {
@@ -38,9 +43,183 @@ pub fn sys_setuid(uid: usize) -> SyscallRet {
     task_inner.user_id = uid;
     Ok(0)
 }
+
+/// 参考 https://man7.org/linux/man-pages/man2/chroot.2.html
+pub fn sys_chroot(path: *const u8) -> SyscallRet {
+    debug!("[chroot] path=0x{:x}", path as usize);
+
+    let task = current_task().unwrap();
+
+    if path.is_null() {
+        return Err(SysErrNo::EINVAL);
+    }
+    if (path as isize) <= 0 || if_bad_address(path as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    if task.inner_lock().user_id != 0 {
+        return Err(SysErrNo::EPERM);
+    }
+
+    let path_str = {
+        let proc_inner = task.process.inner_lock();
+        let memory_set = proc_inner.get_locked_memory_set_read();
+        read_user_cstr(&memory_set, path)?
+    };
+
+    let file = open(&path_str, OpenFlags::O_RDONLY, NONE_MODE)?;
+    let osfile = file.file()?;
+    if osfile.inode.types() != InodeType::Dir {
+        return Err(SysErrNo::ENOTDIR);
+    }
+
+    task.process.inner_lock().fs_info.set_cwd(path_str);
+    debug!("[chroot] success");
+    Ok(0)
+}
+
 /// https://man7.org/linux/man-pages/man2/setresuid.2.html
-pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32)->SyscallRet {
+pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32) -> SyscallRet {
     warn!("[sys_setresuid] not implement!");
+    Ok(0)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/getresuid.2.html
+pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> SyscallRet {
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_read().token();
+    let inner = task.inner_lock();
+    let real_uid = inner.user_id as u32;
+
+    for (ptr, value) in [(ruid, real_uid), (euid, real_uid), (suid, real_uid)] {
+        if ptr.is_null() {
+            continue;
+        }
+        if (ptr as isize) <= 0 || if_bad_address(ptr as usize) {
+            return Err(SysErrNo::EFAULT);
+        }
+        put_data(token, ptr, value);
+    }
+    Ok(0)
+}
+
+/// (gid_t)-1：保持对应 GID 不变
+const GID_UNCHANGED: u32 = u32::MAX;
+
+fn gid_arg_valid(gid: u32) -> bool {
+    gid == GID_UNCHANGED || gid <= 65535
+}
+
+fn compute_resgid(
+    cur_r: u32,
+    cur_e: u32,
+    cur_s: u32,
+    rgid: u32,
+    egid: u32,
+    sgid: u32,
+) -> (u32, u32, u32) {
+    let mut new_r = cur_r;
+    let mut new_e = cur_e;
+    let mut new_s = cur_s;
+
+    if rgid != GID_UNCHANGED {
+        new_r = rgid;
+        if egid == GID_UNCHANGED {
+            new_e = rgid;
+        }
+        if sgid == GID_UNCHANGED {
+            new_s = rgid;
+        }
+    }
+    if egid != GID_UNCHANGED {
+        new_e = egid;
+        if sgid == GID_UNCHANGED {
+            new_s = egid;
+        }
+    }
+    if sgid != GID_UNCHANGED {
+        new_s = sgid;
+    }
+
+    (new_r, new_e, new_s)
+}
+
+fn setresgid_allowed(
+    cur_r: u32,
+    cur_e: u32,
+    cur_s: u32,
+    new_r: u32,
+    new_e: u32,
+    new_s: u32,
+    rgid: u32,
+    egid: u32,
+    sgid: u32,
+) -> bool {
+    let allowed = [cur_r, cur_e, cur_s];
+    if new_r != cur_r && !allowed.contains(&new_r) {
+        return false;
+    }
+    if new_e != cur_e && !allowed.contains(&new_e) {
+        return false;
+    }
+    if new_s != cur_s && !allowed.contains(&new_s) {
+        return false;
+    }
+
+    let explicit = (rgid != GID_UNCHANGED) as u32
+        + (egid != GID_UNCHANGED) as u32
+        + (sgid != GID_UNCHANGED) as u32;
+    explicit <= 1
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/setresgid.2.html
+pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> SyscallRet {
+    if !gid_arg_valid(rgid) || !gid_arg_valid(egid) || !gid_arg_valid(sgid) {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let mut inner = task.inner_lock();
+
+    let cur_r = inner.real_gid;
+    let cur_e = inner.effective_gid;
+    let cur_s = inner.saved_gid;
+    let (new_r, new_e, new_s) = compute_resgid(cur_r, cur_e, cur_s, rgid, egid, sgid);
+
+    let privileged = inner.user_id == 0 || inner.effective_gid == 0;
+    if !privileged
+        && !setresgid_allowed(cur_r, cur_e, cur_s, new_r, new_e, new_s, rgid, egid, sgid)
+    {
+        return Err(SysErrNo::EPERM);
+    }
+
+    inner.real_gid = new_r;
+    inner.effective_gid = new_e;
+    inner.saved_gid = new_s;
+    Ok(0)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/getresgid.2.html
+pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> SyscallRet {
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_read().token();
+    let inner = task.inner_lock();
+
+    for (ptr, value) in [
+        (rgid, inner.real_gid),
+        (egid, inner.effective_gid),
+        (sgid, inner.saved_gid),
+    ] {
+        if ptr.is_null() {
+            continue;
+        }
+        if (ptr as isize) <= 0 || if_bad_address(ptr as usize) {
+            return Err(SysErrNo::EFAULT);
+        }
+        put_data(token, ptr, value);
+    }
     Ok(0)
 }
 
@@ -169,7 +348,7 @@ pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallR
         _LINUX_CAPABILITY_VERSION_1 | _LINUX_CAPABILITY_VERSION_2 | _LINUX_CAPABILITY_VERSION_3
     );
     if !supported {
-        hdr.version = LINUX_CAPABILITY_VERSION_3;
+        hdr.version = _LINUX_CAPABILITY_VERSION_3;
         put_data(token, hdrp, hdr);
         debug!("[capget] unsupported version -> fallback to V3");
         return Err(SysErrNo::EINVAL);
@@ -334,4 +513,58 @@ pub fn sys_prctl(
             Err(SysErrNo::EINVAL)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// getgroups(158) / setgroups(159)
+// ---------------------------------------------------------------------------
+
+/// 参考 https://man7.org/linux/man-pages/man2/getgroups.2.html
+pub fn sys_getgroups(size: usize, list: *mut u32) -> SyscallRet {
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_read().token();
+
+    // 返回至少一个组 (root: gid=0)
+    let count = 1usize;
+
+    if size == 0 {
+        // 查询所需缓冲区大小
+        debug!("[getgroups] query size -> {}", count);
+        return Ok(count);
+    }
+
+    if size < count {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if (list as isize) <= 0 || if_bad_address(list as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    let gid = task.inner_lock().effective_gid;
+    put_data(token, list, gid);
+    debug!("[getgroups] wrote {} group", count);
+    Ok(count)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/setgroups.2.html
+pub fn sys_setgroups(size: usize, list: *const u32) -> SyscallRet {
+    let task = current_task().unwrap();
+
+    // 非 root 不可设置
+    if task.inner_lock().user_id != 0 {
+        return Err(SysErrNo::EPERM);
+    }
+
+    if size == 0 || size > 65536 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if (list as isize) <= 0 || if_bad_address(list as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    debug!("[setgroups] size={}", size);
+    Ok(0)
 }
