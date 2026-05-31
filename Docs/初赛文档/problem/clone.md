@@ -1,4 +1,6 @@
-# sys_clone行为
+# clone 修复过程
+
+## sys_clone行为
 
 在riscv里面fork这个系统调用已经被clone取代
 > The clone() wrapper function creates a new process by invoking the clone system call. The child process starts by calling the function fn with the argument arg. The stack argument specifies the location of the stack used by the child process. The flags argument is a bit mask that specifies what is shared between the calling process and the child process. The low byte of flags contains the number of the termination signal sent to the parent when the child dies. The remaining arguments (parent_tid, tls, child_tid) are optional and are used to store the thread ID of the child in the parent and child processes, respectively, and to specify the address of a new TLS area for the child process.
@@ -21,3 +23,7 @@ struct clone_args {
     u64 cgroup;       /* File descriptor for target cgroup of child (since Linux 5.7) */
 };
 ```
+
+## clone 父子共享物理页异常
+
+[clone-mmap-shared-fork](./clone-mmap-shared-fork.md)
