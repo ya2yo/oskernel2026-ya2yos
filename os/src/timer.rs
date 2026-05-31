@@ -22,6 +22,10 @@ pub const NANOS_PER_SEC: u64 = 1_000_000_000;
 pub const NANOS_PER_MICROS: u64 = 1_000;
 pub const NOW_TIME_STAMP: usize = 1758325855; // add bu tuji :   1758325855 是2025年9月某时间的时间戳
 
+/// clock_settime(CLOCK_REALTIME) 对系统时间的偏移量 (秒)
+/// 初始为 0，通过 clock_settime 调整
+pub static CLOCK_REALTIME_OFFSET: Lazy<Mutex<i64>> = Lazy::new(|| Mutex::new(0));
+
 #[allow(unused)]
 const USEC_PER_SEC: usize = 1000000;
 const NSEC_PER_SEC: usize = 1000000000;
@@ -378,7 +382,7 @@ pub struct Timex {
     pub errcnt: i64,         // 0x90: PPS 校准错误计数
     pub stbcnt: i64,         // 0x98: PPS 稳定性计数
     pub tai: i32,            // 0xa0: TAI 偏移
-    _pad3: u32,              // 0xa4: 对齐填充至 0xa8
+    _padding: [i32; 11],     // 0xa4: 与 __kernel_timex 尾部对齐
 }
 
 impl Timex {
@@ -408,13 +412,90 @@ impl Timex {
             errcnt: 0,
             stbcnt: 0,
             tai: 0,
-            _pad3: 0,
+            _padding: [0; 11],
         }
     }
 }
 
 unsafe impl Send for Timex {}
 unsafe impl Sync for Timex {}
+
+/// CLOCK_REALTIME 的 NTP 调整状态（adjtimex / clock_adjtime 共享）
+static REALTIME_TIMEX: Lazy<Mutex<Timex>> = Lazy::new(|| Mutex::new(Timex::defaults()));
+
+const ADJ_OFFSET: u32 = 0x0001;
+const ADJ_FREQUENCY: u32 = 0x0002;
+const ADJ_MAXERROR: u32 = 0x0004;
+const ADJ_ESTERROR: u32 = 0x0008;
+const ADJ_STATUS: u32 = 0x0010;
+const ADJ_TIMECONST: u32 = 0x0020;
+const ADJ_MICRO: u32 = 0x1000;
+const ADJ_NANO: u32 = 0x2000;
+const ADJ_TICK: u32 = 0x4000;
+const ADJ_OFFSET_SS_READ: u32 = 0xa001;
+const STA_NANO: i32 = 0x2000;
+pub const TIME_OK: usize = 0;
+/// Linux USER_HZ（sysconf _SC_CLK_TCK）
+const USER_HZ: i64 = 100;
+
+/// 读取当前 REALTIME timex 参数（modes=0 路径）
+pub fn timex_get_realtime() -> Timex {
+    let mut tx = REALTIME_TIMEX.lock();
+    tx.modes = 0;
+    tx.time = TimeVal::now();
+    *tx
+}
+
+/// 应用 timex 调整；`privileged` 为 true 表示具备 CAP_SYS_TIME（简化为 root）
+pub fn timex_apply(tx: &Timex, privileged: bool) -> Result<usize, crate::utils::SysErrNo> {
+    if tx.modes == 0 {
+        return Ok(TIME_OK);
+    }
+
+    if !privileged && tx.modes != ADJ_OFFSET_SS_READ {
+        return Err(crate::utils::SysErrNo::EPERM);
+    }
+
+    if tx.modes == ADJ_OFFSET_SS_READ {
+        return Ok(TIME_OK);
+    }
+
+    let mut state = REALTIME_TIMEX.lock();
+    if tx.modes & ADJ_OFFSET != 0 {
+        state.offset = tx.offset;
+    }
+    if tx.modes & ADJ_FREQUENCY != 0 {
+        state.freq = tx.freq;
+    }
+    if tx.modes & ADJ_MAXERROR != 0 {
+        state.maxerror = tx.maxerror;
+    }
+    if tx.modes & ADJ_ESTERROR != 0 {
+        state.esterror = tx.esterror;
+    }
+    if tx.modes & ADJ_STATUS != 0 {
+        state.status = tx.status;
+    }
+    if tx.modes & ADJ_TIMECONST != 0 {
+        state.constant = tx.constant;
+    }
+    if tx.modes & ADJ_TICK != 0 {
+        let min_tick = 900_000 / USER_HZ;
+        let max_tick = 1_100_000 / USER_HZ;
+        if tx.tick < min_tick || tx.tick > max_tick {
+            return Err(crate::utils::SysErrNo::EINVAL);
+        }
+        state.tick = tx.tick;
+    }
+    if tx.modes & ADJ_MICRO != 0 {
+        state.status &= !STA_NANO;
+    }
+    if tx.modes & ADJ_NANO != 0 {
+        state.status |= STA_NANO;
+    }
+    state.status = 0;
+    Ok(TIME_OK)
+}
 
 /// 资源使用统计
 #[allow(unused)]

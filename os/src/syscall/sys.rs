@@ -20,7 +20,9 @@ pub fn sys_getuid() -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/geteuid.2.html
 pub fn sys_geteuid() -> SyscallRet {
-    Ok(0) // root user
+    let task = current_task().unwrap();
+    let uid = task.inner_lock().effective_uid as usize;
+    Ok(uid)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/getgid.2.html
@@ -40,7 +42,13 @@ pub fn sys_getegid() -> SyscallRet {
 pub fn sys_setuid(uid: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
-    task_inner.user_id = uid;
+    if uid > 65535 {
+        return Err(SysErrNo::EINVAL);
+    }
+    let uid = uid as u32;
+    task_inner.user_id = uid as usize;
+    task_inner.effective_uid = uid;
+    task_inner.saved_uid = uid;
     Ok(0)
 }
 
@@ -78,9 +86,99 @@ pub fn sys_chroot(path: *const u8) -> SyscallRet {
     Ok(0)
 }
 
+/// (uid_t)-1：保持对应 UID 不变
+const UID_UNCHANGED: u32 = u32::MAX;
+
+fn uid_arg_valid(uid: u32) -> bool {
+    uid == UID_UNCHANGED || uid <= 65535
+}
+
+fn compute_resuid(
+    cur_r: u32,
+    cur_e: u32,
+    cur_s: u32,
+    ruid: u32,
+    euid: u32,
+    suid: u32,
+) -> (u32, u32, u32) {
+    let mut new_r = cur_r;
+    let mut new_e = cur_e;
+    let mut new_s = cur_s;
+
+    if ruid != UID_UNCHANGED {
+        new_r = ruid;
+        if euid == UID_UNCHANGED {
+            new_e = ruid;
+        }
+        if suid == UID_UNCHANGED {
+            new_s = ruid;
+        }
+    }
+    if euid != UID_UNCHANGED {
+        new_e = euid;
+        if suid == UID_UNCHANGED {
+            new_s = euid;
+        }
+    }
+    if suid != UID_UNCHANGED {
+        new_s = suid;
+    }
+
+    (new_r, new_e, new_s)
+}
+
+fn setresuid_allowed(
+    cur_r: u32,
+    cur_e: u32,
+    cur_s: u32,
+    new_r: u32,
+    new_e: u32,
+    new_s: u32,
+    ruid: u32,
+    euid: u32,
+    suid: u32,
+) -> bool {
+    let allowed = [cur_r, cur_e, cur_s];
+    if new_r != cur_r && !allowed.contains(&new_r) {
+        return false;
+    }
+    if new_e != cur_e && !allowed.contains(&new_e) {
+        return false;
+    }
+    if new_s != cur_s && !allowed.contains(&new_s) {
+        return false;
+    }
+
+    let explicit = (ruid != UID_UNCHANGED) as u32
+        + (euid != UID_UNCHANGED) as u32
+        + (suid != UID_UNCHANGED) as u32;
+    explicit <= 1
+}
+
 /// https://man7.org/linux/man-pages/man2/setresuid.2.html
-pub fn sys_setresuid(_ruid: u32, _euid: u32, _suid: u32) -> SyscallRet {
-    warn!("[sys_setresuid] not implement!");
+pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> SyscallRet {
+    if !uid_arg_valid(ruid) || !uid_arg_valid(euid) || !uid_arg_valid(suid) {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let mut inner = task.inner_lock();
+
+    let cur_r = inner.user_id as u32;
+    let cur_e = inner.effective_uid;
+    let cur_s = inner.saved_uid;
+    let (new_r, new_e, new_s) = compute_resuid(cur_r, cur_e, cur_s, ruid, euid, suid);
+
+    let privileged = inner.user_id == 0 || inner.effective_uid == 0;
+    if !privileged
+        && !setresuid_allowed(cur_r, cur_e, cur_s, new_r, new_e, new_s, ruid, euid, suid)
+    {
+        return Err(SysErrNo::EPERM);
+    }
+
+    inner.user_id = new_r as usize;
+    inner.effective_uid = new_e;
+    inner.saved_uid = new_s;
     Ok(0)
 }
 
@@ -92,7 +190,11 @@ pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> SyscallR
     let inner = task.inner_lock();
     let real_uid = inner.user_id as u32;
 
-    for (ptr, value) in [(ruid, real_uid), (euid, real_uid), (suid, real_uid)] {
+    for (ptr, value) in [
+        (ruid, real_uid),
+        (euid, inner.effective_uid),
+        (suid, inner.saved_uid),
+    ] {
         if ptr.is_null() {
             continue;
         }
