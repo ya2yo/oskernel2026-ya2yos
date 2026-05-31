@@ -103,9 +103,11 @@ pub enum Syscall {
     GetPGid = 155,
     SetSid = 157,
     Uname = 160,
+    Setdomainname = 162,
     GetRusage = 165,
     Umask = 166,
     GetTimeOfDay = 169,
+    Adjtimex = 171,
     GetPid = 172,
     GetPPid = 173,
     GetUid = 174,
@@ -189,7 +191,7 @@ use crate::{
     arch::cpu::shutdown,
     fs::{Kstat, Statfs},
     signal::{SigAction, SigInfo, SigSet},
-    timer::{Itimerval, Rusage, Timespec, Tms},
+    timer::{Itimerval, Rusage, Timespec, Timex, Tms},
     utils::SyscallRet,
 };
 use fs::*;
@@ -398,6 +400,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::SetSid => sys_setsid(),
         Syscall::GetRusage => sys_getrusage(args[0] as isize, args[1] as *mut Rusage),
         Syscall::GetTimeOfDay => sys_gettimeofday(args[0] as *mut Timespec, args[1] as usize),
+        Syscall::Adjtimex => sys_adjtimex(args[0] as *mut Timex),
         Syscall::Uname => sys_uname(args[0] as *mut u8),
         Syscall::GetPid => sys_getpid(),
         Syscall::GetPPid => sys_getppid(),

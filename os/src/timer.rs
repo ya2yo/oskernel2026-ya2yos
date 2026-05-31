@@ -348,6 +348,74 @@ impl PartialOrd for TimeVal {
     }
 }
 
+/// NTP 时间调整参数（对应 Linux struct timex）
+///
+/// 布局与 RISC-V 64-bit 的 C struct timex 兼容。
+/// 关键字段: modes(0)、offset(8)、freq(16)、status(40)、tick(88)
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct Timex {
+    pub modes: u32,          // 0x00: 模式选择器
+    _pad0: u32,              // 0x04: 对齐填充
+    pub offset: i64,         // 0x08: 时间偏移 (usec)
+    pub freq: i64,           // 0x10: 频率偏移 (scaled ppm)
+    pub maxerror: i64,       // 0x18: 最大误差 (usec)
+    pub esterror: i64,       // 0x20: 估计误差 (usec)
+    pub status: i32,         // 0x28: 时钟状态
+    _pad1: u32,              // 0x2c: 对齐填充
+    pub constant: i64,       // 0x30: PLL 时间常数
+    pub precision: i64,      // 0x38: 时钟精度 (usec, 只读)
+    pub tolerance: i64,      // 0x40: 时钟频率容差 (ppm, 只读)
+    pub time: TimeVal,       // 0x48: 当前时间 (只读)
+    pub tick: i64,           // 0x58: 时钟滴答间隔 (usec)
+    pub ppsfreq: i64,        // 0x60: PPS 频率
+    pub jitter: i64,         // 0x68: PPS 抖动
+    pub shift: i32,          // 0x70: PPS 间隔稳定性
+    _pad2: u32,              // 0x74: 对齐填充
+    pub stabil: i64,         // 0x78: PPS 稳定性
+    pub jitcnt: i64,         // 0x80: PPS 抖动计数
+    pub calcnt: i64,         // 0x88: PPS 校准间隔计数
+    pub errcnt: i64,         // 0x90: PPS 校准错误计数
+    pub stbcnt: i64,         // 0x98: PPS 稳定性计数
+    pub tai: i32,            // 0xa0: TAI 偏移
+    _pad3: u32,              // 0xa4: 对齐填充至 0xa8
+}
+
+impl Timex {
+    /// 创建填充了合理默认值的 Timex（对应 modes=0 时的读取操作）
+    pub fn defaults() -> Self {
+        Self {
+            modes: 0,
+            _pad0: 0,
+            offset: 0,
+            freq: 0,
+            maxerror: 500000,   // 默认最大误差 500ms
+            esterror: 500000,
+            status: 0,          // TIME_OK
+            _pad1: 0,
+            constant: 2,
+            precision: 1,
+            tolerance: 32768000,
+            time: TimeVal::now(),
+            tick: 10000,        // 默认 10ms (100Hz)
+            ppsfreq: 0,
+            jitter: 0,
+            shift: 0,
+            _pad2: 0,
+            stabil: 0,
+            jitcnt: 0,
+            calcnt: 0,
+            errcnt: 0,
+            stbcnt: 0,
+            tai: 0,
+            _pad3: 0,
+        }
+    }
+}
+
+unsafe impl Send for Timex {}
+unsafe impl Sync for Timex {}
+
 /// 资源使用统计
 #[allow(unused)]
 pub struct Rusage {

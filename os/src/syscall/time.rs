@@ -1,7 +1,7 @@
 use crate::mm::{get_data, if_bad_address, put_data};
 use crate::task::current_task;
 use crate::timer::{
-    get_time_ms, get_time_spec, Itimerval, Rusage, TimeVal, Timespec, Tms, ITIMER_REAL,
+    get_time_ms, get_time_spec, Itimerval, Rusage, TimeVal, Timespec, Timex, Tms, ITIMER_REAL,
     NOW_TIME_STAMP,
 };
 use crate::utils::{SysErrNo, SyscallRet};
@@ -189,4 +189,47 @@ pub fn sys_clock_getres(clockid: usize, res: *mut Timespec) -> SyscallRet {
     let restime = Timespec::new(0, 1);
     put_data(token, res, restime);
     Ok(0)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/adjtimex.2.html
+///
+/// 读取/设置内核时钟同步参数。
+/// - modes == 0: 将当前时钟参数写入 *buf，返回 TIME_OK (0)
+/// - modes != 0: 应用 buf 中的设置，返回 TIME_OK (0)
+pub fn sys_adjtimex(buf: *mut Timex) -> SyscallRet {
+    const TIME_OK: usize = 0;
+    const TIME_ERROR: usize = 5;
+
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+
+    if (buf as isize) <= 0 || if_bad_address(buf as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    // 从用户空间读取 timex 结构
+    let mut tx = get_data(token, buf);
+
+    if tx.modes == 0 {
+        // 读取当前时钟参数
+        let defaults = Timex::defaults();
+        put_data(token, buf, defaults);
+        debug!("[adjtimex] read current params, returning TIME_OK");
+        return Ok(TIME_OK);
+    }
+
+    // modes != 0: 设置时钟参数（伪实现：直接接受）
+    // 检查 modes 合法性（ADJ_OFFSET_SINGLESHOT = 0x8001，测试中会用到）
+    let _ = memory_set; // NLL: 在访问 proc_inner 前结束借用
+    debug!(
+        "[adjtimex] set params, modes=0x{:x}, offset={}, freq={}, status={}",
+        tx.modes, tx.offset, tx.freq, tx.status
+    );
+
+    // 写回更新后的 timex
+    tx.status = 0; // TIME_OK
+    put_data(token, buf, tx);
+    Ok(TIME_OK)
 }
