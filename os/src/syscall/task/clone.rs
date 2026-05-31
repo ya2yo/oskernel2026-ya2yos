@@ -89,7 +89,7 @@ pub fn sys_clone(
 ) -> SyscallRet {
     let flags = CloneFlags::from_bits(flags as u64).unwrap();
     debug!(
-        "[sys_clone] flags {:?},stack:{:#x},parent_tid_ptr:{:#x},child_tid_ptr:{:#x},tls_ptr:{:#x}",
+        "[sys_clone] flags={:?},stack:{:#x},parent_tid_ptr:{:#x},child_tid_ptr:{:#x},tls_ptr:{:#x}",
         flags, stack_ptr, parent_tid_ptr, child_tid_ptr, tls_ptr
     );
     // if current_task().unwrap().pid() == 4 {

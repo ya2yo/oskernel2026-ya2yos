@@ -529,27 +529,6 @@ impl TaskControlBlock {
         trap_cx.kernel_stack = kernel_stack_top;
         // 处理其余参数
         if stack != 0 {
-            // 移除分配的stack
-            let ustack = child_inner.user_stack_top;
-            child
-                .process
-                .inner_lock()
-                .get_locked_memory_set_read()
-                .remove_area_with_start_vpn(VirtAddr::from(ustack - USER_STACK_SIZE).floor());
-            child_inner.user_stack_top = 0;
-            // 设置运行的起始地址和参数以及stack
-            let token = self
-                .process
-                .inner_lock()
-                .get_locked_memory_set_read()
-                .token();
-            let entry_point = get_data(token, stack as *const usize);
-            let arg = get_data(token, (stack + 8) as *const usize);
-            // sepc/entry
-            // debug!("[new thread] entry_point:{:#x}", entry_point);
-            trap_cx.set_sepc(entry_point);
-            //a0
-            trap_cx.set_a0(arg);
             //sp
             trap_cx.set_sp(stack);
         }
