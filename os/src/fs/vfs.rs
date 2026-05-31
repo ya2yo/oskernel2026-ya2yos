@@ -110,11 +110,13 @@ pub trait Inode: Send + Sync {
 
 /// 文件接口
 pub trait File: Send + Sync {
+    /// 默认: 可读（子类型可按需覆写）
     fn readable(&self) -> bool {
-        unimplemented!("File::readable")
+        true
     }
+    /// 默认: 可写（子类型可按需覆写）
     fn writable(&self) -> bool {
-        unimplemented!("File:;writable")
+        true
     }
     /// read 指的是从文件中读取数据放到缓冲区中，最多将缓冲区填满，并返回实际读取的字节数
     fn read(&self, _buf: UserBuffer) -> SyscallRet {

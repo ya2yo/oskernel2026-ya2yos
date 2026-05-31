@@ -12,4 +12,12 @@ impl DummyFd {
     }
 }
 
-impl File for DummyFd {}
+impl File for DummyFd {
+    fn readable(&self) -> bool {
+        true
+    }
+
+    fn writable(&self) -> bool {
+        true
+    }
+}
