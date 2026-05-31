@@ -70,6 +70,8 @@ pub enum Syscall {
     TimerfdGettime = 87,
     Utimensat = 88,
     Acct = 89,
+    Capget = 90,
+    Capset = 91,
     Exit = 93,
     ExitGroup = 94,
     SetTidAddress = 96,
@@ -557,6 +559,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Fspick => sys_fspick(args[0] as i32, args[1] as *mut u8, args[2] as u32),
         Syscall::MemfdSecret => sys_memfd_secret(args[0] as u32),
         Syscall::Acct => sys_acct(args[0] as *const u8),
+        Syscall::Capget => sys_capget(args[0] as *mut CapUserHeader, args[1] as *mut CapUserData),
+        Syscall::Capset => sys_capset(args[0] as *mut CapUserHeader, args[1] as *const CapUserData),
         _ => {
             warn!(
                 "Unsupported syscall_id: {}!",
