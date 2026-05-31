@@ -61,7 +61,7 @@ pub const INITPROC_PID: usize = 1;
 
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
-    debug!("[suspend_current_and_run_next]!");
+    // debug!("[suspend_current_and_run_next]!");
     let task = current_task().unwrap();
     // debug!(
     //     "[suspend_current_and_run_next] strong_count = {}",

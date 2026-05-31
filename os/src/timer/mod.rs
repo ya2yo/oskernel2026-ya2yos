@@ -111,7 +111,8 @@ pub fn get_time_ns() -> usize {
 
 /// 获取当前的墙上时钟纳秒数 (开机时间 + NOW_TIME_STAMP)
 pub fn wall_time_nanos() -> u64 {
-    get_time_ns() as u64 + NOW_TIME_STAMP as u64
+    // get_time_ns() 单位是纳秒，NOW_TIME_STAMP 单位是秒，需要先把秒转换成纳秒再相加
+    get_time_ns() as u64 + NOW_TIME_STAMP as u64 * NANOS_PER_SEC
 }
 
 /// 获取当前墙上时钟 Timespec (开机时间 + NOW_TIME_STAMP)
