@@ -310,6 +310,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[3] as u32,
         ),
         Syscall::Close => sys_close(args[0]),
+        Syscall::CloseRange => sys_close_range(args[0] as u32, args[1] as u32, args[2] as u32),
         Syscall::Pipe2 => sys_pipe2(args[0] as *mut u32),
         Syscall::Getdents64 => sys_getdents64(args[0], args[1] as *const u8, args[2]),
         Syscall::Lseek => sys_lseek(args[0], args[1] as isize, args[2]),

@@ -52,11 +52,6 @@ pub fn sys_bpf(_cmd: i32, _attr: *mut u8, _size: u32) -> SyscallRet {
     dummyfd_create()
 }
 
-/// https://man7.org/linux/man-pages/man2/close_range.2.html
-pub fn sys_close_range(first: u32, last: u32, flags: i32) -> SyscallRet {
-    Ok(0)
-}
-
 /// https://man7.org/linux/man-pages/man2/io_uring_setup.2.html
 pub fn sys_io_uring_setup(_entriers: u32, _params: *mut u8)->SyscallRet {
     warn!("[sys_io_uring_setup] not implement!");

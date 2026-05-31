@@ -257,3 +257,83 @@ pub fn sys_close(fd: usize) -> SyscallRet {
 
     Ok(0)
 }
+
+bitflags! {
+    struct CloseRangeFlags: u32{
+        const UNSHARE = 1 << 1;
+        const CLOEXEC = 1 << 2;
+    }
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/close_range.2.html
+pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
+    if first > last {
+        return Err(SysErrNo::EINVAL)
+    }
+    let flags = CloseRangeFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
+    debug!("[sys_close_range] first={}, last={}, flags={:?}", first, last, flags);
+
+    // TODO: UNSHARE flag support
+    // UNSHARE (1 << 1): Copy-on-write on all file descriptors in the range
+    // This requires copying the fd_table
+    if flags.contains(CloseRangeFlags::UNSHARE) {
+        // TODO: Implement UNSHARE functionality
+        // This should create a copy-on-write snapshot of the fd_table for the range
+        // For now, we'll skip this flag
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // CLOEXEC (1 << 2): Close all file descriptors in the range on exec
+    if flags.contains(CloseRangeFlags::CLOEXEC) {
+        let task = current_task().unwrap();
+        let fd_table = task.get_fd_table();
+        for fd in first..=last {
+            if fd as usize >= fd_table.len() {
+                continue;
+            }
+            // Try to get the file descriptor, ignore errors
+            if let Some(mut desc) = fd_table.try_get(fd as usize) {
+                desc.set_cloexec();
+            }
+        }
+    } else {
+        // Close all file descriptors in the range
+        let task = current_task().unwrap();
+        let fd_table = task.get_fd_table();
+        let inner = task.process.inner_lock();
+        let proc_inner = inner;
+
+        for fd in first..=last {
+            if fd as usize >= fd_table.len() {
+                continue;
+            }
+
+            // Get inode path for FsIndex cache eviction before closing
+            let inode_path = fd_table
+                .try_get(fd as usize)
+                .and_then(|desc| desc.file().ok())
+                .map(|osfile| osfile.inode.path());
+
+            // Remove from fd_table
+            if let Some(_) = fd_table.take(fd as usize) {
+                // Remove from fs_info
+                proc_inner.fs_info.remove(fd as usize);
+            }
+
+            // Evict inode from FsIndex cache if it's no longer referenced
+            if let Some(path) = inode_path {
+                if !path.is_empty() && !path.starts_with("/proc") {
+                    if let Some(inode) = FsIndex::find_inode_idx(&path) {
+                        // FsIndex holds one reference, find_inode_idx returns clone as second reference
+                        if Arc::strong_count(&inode) <= 2 {
+                            FsIndex::remove_inode_idx(&path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(0)
+}
+
