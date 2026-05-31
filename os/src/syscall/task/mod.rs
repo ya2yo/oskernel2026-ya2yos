@@ -7,8 +7,8 @@ mod job;
 mod schedule;
 mod thread;
 mod wait;
-mod process;
+mod acct;
 
 pub use self::{
-    clone::*, clone3::*, ctl::*, execve::*, exit::*, job::*, schedule::*, thread::*, wait::*, process::*,
+    clone::*, clone3::*, ctl::*, execve::*, exit::*, job::*, schedule::*, thread::*, wait::*, acct::*,
 };

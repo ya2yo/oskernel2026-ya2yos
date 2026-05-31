@@ -4,7 +4,7 @@ use super::fcntl::*;
 use crate::fs::{open, FileDescriptor, FsIndex, OpenFlags};
 use crate::mm::translate::read_user_cstr;
 use crate::mm::translated_str;
-use crate::syscall::{options::FcntlCmd, process, Syscall};
+use crate::syscall::{options::FcntlCmd, Syscall};
 use crate::task::current_task;
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::{

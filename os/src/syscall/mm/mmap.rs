@@ -12,7 +12,6 @@ use crate::{
         shm_find, MapArea, MapAreaType, MapPermission, MremapFlags, ShmFlags, VirtAddr,
         VirtPageNum,
     },
-    syscall::process,
     task::{self, current_task},
     utils::{page_round_up, SysErrNo, SyscallRet},
 };

@@ -7,7 +7,7 @@ use crate::{
         restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group,
         send_signal_to_thread_of_proc, KSigAction, SigAction, SigInfo, SigSet, SIG_MAX_NUM,
     },
-    syscall::{process, SignalMaskFlag},
+    syscall::SignalMaskFlag,
     task::{current_task, exit_current_and_run_next, suspend_current_and_run_next},
     timer::Timespec,
     utils::{SysErrNo, SyscallRet},

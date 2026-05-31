@@ -10,7 +10,6 @@ use crate::mm::{
     copy_to_user, get_data, if_bad_address, safe_translated_byte_buffer, translated_byte_buffer,
     translated_str, UserBuffer,
 };
-use crate::syscall::process;
 use crate::task::{current_task, current_token};
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
 use crate::utils::{get_abs_path, rsplit_once, SysErrNo, SyscallRet};
