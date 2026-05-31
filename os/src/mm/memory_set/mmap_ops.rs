@@ -54,6 +54,7 @@ impl MemorySetInner {
         file: Option<Arc<OSFile>>,
         off: usize,
     ) -> usize {
+        debug!("[mmap] addr={:x}, len={}, map_perm={:?}, flags={:?}", addr, len, map_perm, flags);
         if flags.contains(MmapFlags::MAP_FIXED) {
             let start_vpn = VirtAddr::from(addr).floor();
             let end_vpn = VirtAddr::from(addr + len).ceil();
@@ -92,6 +93,7 @@ impl MemorySetInner {
 
     /// munmap
     pub fn munmap(&mut self, addr: usize, len: usize) -> SyscallRet {
+        debug!("[munmap] addr={:x}, len={}", addr, len);
         let start_vpn = VirtPageNum::from(VirtAddr::from(addr));
         let end_vpn = VirtPageNum::from(VirtAddr::from(addr + len));
         while let Some((idx, area)) = self
@@ -106,6 +108,7 @@ impl MemorySetInner {
         {
             if area.mmap_flags.contains(MmapFlags::MAP_SHARED)
                 && area.map_perm.contains(MapPermission::W)
+                && area.mmap_file.file.is_some()
             {
                 let mut wb_range: Vec<(VirtPageNum, VirtPageNum)> = Vec::new();
                 VPNRange::new(start_vpn, end_vpn)

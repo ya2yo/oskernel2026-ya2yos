@@ -14,7 +14,7 @@ use log::error;
 /// map area structure, controls a contiguous piece of virtual memory
 /// 逻辑段
 pub struct MapArea {
-    pub vpn_range: VPNRange,
+    pub vpn_range: VPNRange, // 左闭右开
 
     // data_frames维护所有被frame管理的物理页的虚实地址映射
     // 和页表相比，这个键值对只关心本区间内容

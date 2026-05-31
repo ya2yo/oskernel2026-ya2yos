@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use log::debug;
+use log::{debug, error};
 
 use crate::{
     mm::{get_data, put_data, safe_get_data},
@@ -19,11 +19,12 @@ pub fn sys_rt_sigaction(
     act: *const SigAction,
     old_act: *mut SigAction,
 ) -> SyscallRet {
-    // debug!(
-    //     "[sys_rt_sigaction] signo is {}, act is {:?}, old_act is {:?}",
-    //     signo, act, old_act
-    // );
+    debug!(
+        "[sys_rt_sigaction] signo is {}, act is {:?}, old_act is {:?}",
+        signo, act, old_act
+    );
     if signo > SIG_MAX_NUM {
+        error!("too big signo");
         return Err(SysErrNo::EINVAL);
     }
 

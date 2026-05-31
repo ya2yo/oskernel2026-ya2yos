@@ -80,8 +80,8 @@ pub const NANOS_PER_SEC: u64 = 1_000_000_000;
 /// 每微秒的纳秒数
 pub const NANOS_PER_MICROS: u64 = 1_000;
 /// 开机时间到 UNIX 纪元 (1970-01-01) 的固定偏移量 (秒)
-/// 当前值 ≈ 2025-09-20，使墙上时钟接近真实时间
-pub const NOW_TIME_STAMP: usize = 1758325855;
+//// 2026-05-31 00:00:00 UTC
+pub const NOW_TIME_STAMP: usize = 1_777_593_600;
 
 #[allow(unused)]
 const USEC_PER_SEC: usize = 1000000;

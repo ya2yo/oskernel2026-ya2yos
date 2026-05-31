@@ -11,7 +11,7 @@ use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::PAGE_SIZE;
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
-use crate::mm::MemorySet;
+use crate::mm::{MemorySet, page_fault_handler};
 use crate::syscall::MmapFlags;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -20,6 +20,38 @@ impl MemorySetInner {
     /// Clone a same `MemorySet`
     pub fn from_existed_user(user_space: &MemorySet) -> MemorySetInner {
         let mut memory_set = Self::new_from_kernel();
+
+        // Pre-fault MAP_SHARED areas: lazy mmap pages need backing frames
+        // allocated before forking, otherwise parent and child would each
+        // independently allocate their own frames on page fault, breaking
+        // MAP_SHARED semantics.
+        {
+            let u = user_space.get_mut();
+            let areas_ptr: *mut Vec<MapArea> = &mut u.areas;
+            let pt_ptr: *mut PageTable = &mut u.page_table;
+            for area in unsafe { &mut *areas_ptr }.iter_mut() {
+                if area.area_type != MapAreaType::Mmap
+                    || !area.mmap_flags.contains(MmapFlags::MAP_SHARED)
+                {
+                    continue;
+                }
+                let pt = unsafe { &mut *pt_ptr };
+                for vpn in area.vpn_range {
+                    if !area.data_frames.contains_key(&vpn) {
+                        if area.mmap_file.file.is_none() {
+                            // MAP_ANONYMOUS: just allocate a zeroed frame
+                            area.map_one(pt, vpn);
+                        } else {
+                            // file-backed: use the write-fault handler to
+                            // read file data into the frame
+                            let va = VirtAddr::from(vpn);
+                            page_fault_handler::mmap_write_page_fault(va, pt, area);
+                        }
+                    }
+                }
+            }
+        }
+
         for area in user_space.get_mut().areas.iter_mut() {
             // don't copy stack and trap
             if area.area_type == MapAreaType::Stack || area.area_type == MapAreaType::Trap {

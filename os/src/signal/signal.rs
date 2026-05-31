@@ -1,4 +1,4 @@
-use crate::task::exit_current_and_run_next;
+use crate::{signal::SIG_MAX_NUM, task::exit_current_and_run_next};
 
 /// 仿照Linux signal实现
 pub const SIGHUP: usize = 1; /* Hangup.  */
@@ -122,7 +122,10 @@ impl SigSet {
     }
 
     pub fn from_sig(signo: usize) -> Self {
-        SigSet::from_bits(1 << (signo - 1)).unwrap()
+        if signo == 0 || signo > SIG_MAX_NUM {
+            panic!("invalid signal number: {}", signo);
+        }
+        SigSet::from_bits_truncate(1 << (signo - 1))
     }
     pub fn peek_front(&self) -> Option<usize> {
         if self.is_empty() {

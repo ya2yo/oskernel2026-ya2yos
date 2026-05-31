@@ -99,7 +99,8 @@ pub static FILELIST: [&str; 2820] = [
     "capset01\0",
     "capset02\0",
     "capset03\0",
-    "capset04\0",
+    "capset04\0",// 100
+
     "cfs_bandwidth01\0",
     "cgroup_core01\0",
     "cgroup_core02\0",
@@ -149,7 +150,7 @@ pub static FILELIST: [&str; 2820] = [
     "chroot02\0",
     "chroot03\0",
     "chroot04\0",
-    "cleanup_lvm.sh\0",
+    "cleanup_lvm.sh\0", // 50
     "clock_adjtime01\0",
     "clock_adjtime02\0",
     "clock_getres01\0",
@@ -159,7 +160,7 @@ pub static FILELIST: [&str; 2820] = [
     "clock_gettime04\0",
     "clock_nanosleep01\0",
     "clock_nanosleep02\0",
-    "clock_nanosleep03\0",
+    "clock_nanosleep03\0", // 60
     "clock_nanosleep04\0",
     "clock_settime01\0",
     "clock_settime02\0",
@@ -169,7 +170,7 @@ pub static FILELIST: [&str; 2820] = [
     "clone03\0",
     "clone04\0",
     "clone05\0",
-    "clone06\0",
+    "clone06\0", // 70
     "clone07\0",
     "clone08\0",
     "clone09\0",
@@ -199,7 +200,8 @@ pub static FILELIST: [&str; 2820] = [
     "cpuctl_fj_cpu-hog\0",
     "cpuctl_fj_simple_echo\0",
     "cpuctl_latency_check_task\0",
-    "cpuctl_latency_test\0",
+    "cpuctl_latency_test\0", // 200
+
     "cpuctl_test01\0",
     "cpuctl_test02\0",
     "cpuctl_test03\0",

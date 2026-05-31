@@ -4,6 +4,7 @@ pub mod signal;
 use core::mem::size_of;
 
 use alloc::sync::Arc;
+use linux_raw_sys::general::SIGEV_MAX_SIZE;
 use log::{debug, warn};
 pub use sigact::*;
 pub use signal::*;
@@ -23,7 +24,7 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 
-pub const SIG_MAX_NUM: usize = 33;
+pub const SIG_MAX_NUM: usize = SIGEV_MAX_SIZE as usize;
 pub const SIG_ERR: usize = usize::MAX;
 pub const SIG_DFL: usize = 0;
 pub const SIG_IGN: usize = 1;

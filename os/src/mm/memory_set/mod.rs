@@ -470,6 +470,7 @@ impl MemorySetInner {
             if area.area_type == MapAreaType::Mmap {
                 if area.mmap_flags.contains(MmapFlags::MAP_SHARED)
                     && area.map_perm.contains(MapPermission::W)
+                    && area.mmap_file.file.is_some()
                 {
                     let addr: VirtAddr = area.vpn_range.start().into();
                     let mapped_len: usize = area
