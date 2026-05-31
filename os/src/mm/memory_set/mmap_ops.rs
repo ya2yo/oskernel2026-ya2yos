@@ -15,7 +15,7 @@ use super::{
     translated_byte_buffer, FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer,
     VPNRange, VirtAddr, VirtPageNum,
 };
-use crate::arch::memory_layout::{MMAP_TOP, PAGE_SIZE};
+use crate::arch::memory_layout::{MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS};
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
 use crate::fs::{File, OSFile, OpenFlags, SEEK_CUR, SEEK_SET};
@@ -238,6 +238,11 @@ impl MemorySetInner {
     }
 
     pub fn lazy_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
+        // log::info!(
+        // "fault vpn={:?} va={:#x}",
+        //     vpn,
+        //     vpn.0 << PAGE_SIZE_BITS
+        // );
         let ppn = self.page_table.translate(vpn);
         if !ppn.is_none() { return false; }
         // mmap

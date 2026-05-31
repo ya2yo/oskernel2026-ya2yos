@@ -454,16 +454,16 @@ fn get_score() {
     // run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
     // run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
-    // run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 龙芯 通过
+    // run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过 逆天龙芯make log 和 make 的行为不一样，怎么测
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");
     // run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loonarch 通过
-    // run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
-    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loongarch 通过
+    // run_testsuit("glibc\0", "libctest_testcode.sh\0");
+    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv 通过
     // run_testsuit("glibc\0", "ltp_testcode.sh\0");
     // run_testsuit("glibc\0", "netperf_testcode.sh\0");
 
     // --- glibc LTP 逐个测例调试 (brk/mmap/munmap 排查) ---
-    ltp::test_glibc_single("brk01\0");                   // 单测 brk01 (注意：测例名必须带 \0)
+    // ltp::test_glibc_single("brk01\0");                   // 单测 brk01 (注意：测例名必须带 \0)
     // ltp::test_glibc_memory();                            // 跑全部内存相关测例
     // ltp::test_glibc_custom(&["brk01\0", "brk02\0"]);      // 自定义一组测例
 }

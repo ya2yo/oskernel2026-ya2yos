@@ -1,2 +1,3 @@
 mod brk;
-pub use brk::*;
+mod mmap;
+pub use {brk::*, mmap::*,};

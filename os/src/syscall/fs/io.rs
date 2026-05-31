@@ -75,10 +75,10 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     let proc_inner = task.process.inner_lock();
     let token = proc_inner.get_locked_memory_set_read().token();
     let fd_table = proc_inner.fd_table.clone();
-    // debug!(
-    //     "[sys_writev] fd is {}, iov is {:x}, iovcnt is {}",
-    //     fd, iov as usize, iovcnt
-    // );
+    debug!(
+        "[sys_writev] fd is {}, iov is {:x}, iovcnt is {}",
+        fd, iov as usize, iovcnt
+    );
 
     if fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);

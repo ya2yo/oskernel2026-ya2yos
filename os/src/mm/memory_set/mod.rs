@@ -350,8 +350,7 @@ impl MemorySetInner {
             .find(|area| area.area_type == MapAreaType::Brk)
             .unwrap();
         let new_addr: usize = user_heappoint + grow_size as usize; // 生长后的地址
-        let new_vpn: VirtPageNum = (new_addr / PAGE_SIZE + 1).into();
-
+         let new_vpn: VirtPageNum = VirtAddr::from(new_addr).ceil();
         if grow_size > 0 {
             let user_vpn_top: VirtPageNum = ((user_heapbottom + USER_HEAP_SIZE) / PAGE_SIZE).into();
             if new_vpn >= user_vpn_top {
@@ -561,7 +560,7 @@ impl MemorySetInner {
 /// Check PageTable running correctly
 pub fn remap_test() {
     // Defined in kernel_init.rs
-    super::kernel_init::remap_test();
+    kernel_init::remap_test();
 }
 
 #[allow(unused)]

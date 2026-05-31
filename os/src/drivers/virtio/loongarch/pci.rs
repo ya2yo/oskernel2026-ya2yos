@@ -205,7 +205,7 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                         }
                     }
                 } else if let BarInfo::IO { address, size } = bar_info {
-                    // debug!("IO bar: addr={:#x}, size={:#x}", address, size);
+                    debug!("IO bar: addr={:#x}, size={:#x}", address, size);
                 }
                 if bar_info.takes_two_entries() {
                     i += 2;

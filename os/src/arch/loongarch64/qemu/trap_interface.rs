@@ -1,6 +1,6 @@
 use core::arch::asm;
 
-use log::error;
+use log::{debug, error};
 use loongArch64::{
     register::{
         badv, crmd,
@@ -59,21 +59,22 @@ fn estat_to_trap(value: estat::Trap) -> Trap {
             estat::Exception::PageModifyFault => Trap::Exception(Exception::PageModifyFault),
             _ => {
                 error!(
-                    "Fail to convert LoongArch estat({:?}) to TatlinOS Trap type!",
+                    "Fail to convert LoongArch estat({:?}) to Trap type!",
                     value
                 );
                 Trap::Unknown
             }
         },
         estat::Trap::MachineError(_) => {
-            error!("Fail to convert LoongArch MachineError to TatlinOS Trap type!",);
+            error!("Fail to convert LoongArch MachineError to Trap type!",);
             Trap::Unknown
         }
         estat::Trap::Unknown => {
             error!(
-                "Fail to convert LoongArch Unknown to TatlinOS Trap type! {:#x}",
+                "Fail to convert LoongArch Unknown to Trap type! {:#x}",
                 estat::read().ecode()
             );
+            // panic!();
             Trap::Unknown
         }
     }

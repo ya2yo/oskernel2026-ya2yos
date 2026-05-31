@@ -3,7 +3,7 @@
 use alloc::format;
 use log::debug;
 
-use super::{MmapFlags, MmapProt};
+use super::super::{MmapFlags, MmapProt};
 use crate::{
     arch::memory_layout::PAGE_SIZE,
     fs::File,
@@ -26,10 +26,10 @@ pub fn sys_mmap(
     fd: usize,
     off: usize,
 ) -> SyscallRet {
-    // debug!(
-    //     "sysmap({:#x},{},{:#x},{:#x},{},{})",
-    //     addr, len, prot, flags, fd, off
-    // );
+    debug!(
+        "[sysmap] addr={:#x},len={},prot={:#x},flags={:#x},fd={},off={}",
+        addr, len, prot, flags, fd, off
+    );
     let map_perm: MapPermission = MmapProt::from_bits(prot).unwrap().into();
     let flags = MmapFlags::from_bits(flags).expect(&format!(
         "sys_mmap: Failed to convert flags to MmapFlags bitmap: value is {:#x}",
@@ -42,11 +42,6 @@ pub fn sys_mmap(
     if flags.contains(MmapFlags::MAP_FIXED) && addr == 0 {
         return Err(SysErrNo::EPERM);
     }
-    // debug!("prot is {:?}", MmapProt::from_bits(prot).unwrap());
-    // debug!(
-    //     "[sys_mmap]: addr {:#x}, len {:#x}, fd {}, offset {:#x}, flags {:?}, prot {:?}",
-    //     addr, len, fd as isize, off, flags, map_perm
-    // );
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_write();
@@ -76,7 +71,7 @@ pub fn sys_mmap(
         return Err(SysErrNo::EPERM);
     }
     let rv = memory_set.mmap(addr, len, map_perm, flags, Some(file), off);
-    // debug!("[sys_mmap] alloc addr={:#x}", rv);
+    debug!("[sys_mmap] alloc addr={:#x}", rv);
     Ok(rv)
 }
 
