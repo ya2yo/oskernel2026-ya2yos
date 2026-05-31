@@ -27,6 +27,7 @@ fn scause_to_trap(value: scause::Trap) -> Trap {
                 Trap::Exception(Exception::FetchInstructionPageFault)
             }
             scause::Exception::UserEnvCall => Trap::Exception(Exception::Syscall),
+            scause::Exception::IllegalInstruction => Trap::Exception(Exception::IllegalInstruction),
             _ => {
                 error!(
                     "Fail to convert RISCV scause({:?}) to TatlinOS Trap type!",
