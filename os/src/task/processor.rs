@@ -80,11 +80,23 @@ pub fn run_tasks() {
                 let next_task_cx_ptr = &next_task_inner.task_cx as *const TaskContext;
                 next_task_inner.task_status = TaskStatus::Running;
                 drop(next_task_inner);
+                let cur_vfork = cur_task_inner.task_status == TaskStatus::VforkBlocked;
                 drop(cur_task_inner);
                 processor.current = Some(next_task);
-                ready_queue::add_task(&cur_task);
+                // VFORK parent stays out of ready queue; woke only by child exit/exec.
+                if !cur_vfork {
+                    ready_queue::add_task(&cur_task);
+                }
                 switch(idle_task_cx_ptr, next_task_cx_ptr);
             } else {
+                // No ready task: re-run current unless it is VFORK-blocked.
+                if cur_task_inner.task_status == TaskStatus::VforkBlocked {
+                    // VFORK parent must not spin; drop it and let logic handle wake-up.
+                    drop(cur_task_inner);
+                    drop(cur_task);
+                    // Loop back to wait for child exit to wake parent.
+                    continue;
+                }
                 cur_task_inner.task_status = TaskStatus::Running;
                 let cur_task_cx_ptr = &cur_task_inner.task_cx as *const TaskContext;
                 drop(cur_task_inner);

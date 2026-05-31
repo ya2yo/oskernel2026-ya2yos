@@ -81,8 +81,11 @@ pub fn suspend_current_and_run_next() {
         exit_current_and_run_next(exit_code);
     } else {
         let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-        // Change status to Ready
-        task_inner.task_status = TaskStatus::Ready;
+        // Change status to Ready, unless blocked by VFORK
+        // (VFORK parents stay blocked until child exits or execs).
+        if task_inner.task_status != TaskStatus::VforkBlocked {
+            task_inner.task_status = TaskStatus::Ready;
+        }
         // ---- release current PCB
         drop(task_inner);
         drop(task);
@@ -207,6 +210,21 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         curr_task.pid(),
     );
     // debug!("exit_current_and_run_next: futex released");
+
+    // VFORK: wake up parent if it was suspended waiting for this child
+    if let Some(parent) = Process::get_process_arc_by_pid(curr_task.ppid()) {
+        for task_weak in &parent.meta_lock().tasks {
+            if let Some(t) = task_weak.upgrade() {
+                let mut parent_inner = t.inner_lock();
+                if parent_inner.vfork_wait_child == curr_task.tid() {
+                    parent_inner.vfork_wait_child = 0;
+                    parent_inner.task_status = TaskStatus::Ready;
+                    ready_queue::add_task(&t);
+                }
+            }
+        }
+    }
+
     // 无论如何一个轻量级进程都会是一个线程
     // 释放线程相关资源
 

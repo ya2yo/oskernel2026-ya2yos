@@ -96,6 +96,9 @@ pub struct TaskControlBlockInner {
 
     /// 当线程退出时，要将这个指针指向的int置为0，并唤醒等待它的futex
     pub clear_child_tid: usize,
+    /// VFORK: if non-zero, parent is suspended waiting for this child PID to
+    /// exit or exec. Set by CLONE_VFORK, cleared when child wakes the parent.
+    pub vfork_wait_child: usize,
     /// 被屏蔽的信号
     pub sig_mask: SigSet,
     /// 待处理信号集合
@@ -177,6 +180,7 @@ impl TaskControlBlock {
                 user_heappoint: user_heapbottom,
                 user_heapbottom,
                 clear_child_tid: 0,
+                vfork_wait_child: 0,
                 sig_mask: SigSet::empty(),
                 sig_pending: SigSet::empty(),
                 timer: Arc::new(Timer::new()),
@@ -215,6 +219,22 @@ impl TaskControlBlock {
         let memory_set = MemorySet::new(memory_set);
 
         task_inner.time_data.clear();
+
+        // VFORK: wake up parent if it was suspended waiting for this task
+        // (exec replaces the process image, which counts as "done" for vfork)
+        let ppid = self.ppid();
+        if let Some(parent_proc) = Process::get_process_arc_by_pid(ppid) {
+            for task_weak in &parent_proc.meta_lock().tasks {
+                if let Some(t) = task_weak.upgrade() {
+                    let mut parent_inner = t.inner_lock();
+                    if parent_inner.vfork_wait_child == self.tid() {
+                        parent_inner.vfork_wait_child = 0;
+                        parent_inner.task_status = TaskStatus::Ready;
+                        crate::task::ready_queue::add_task(&t);
+                    }
+                }
+            }
+        }
 
         debug!(
             "task_inner.clear_child_tid={:#x}",
@@ -358,7 +378,7 @@ impl TaskControlBlock {
         tls: usize,
         child_tid: *mut u32,
     ) -> Result<Arc<TaskControlBlock>, SysErrNo> {
-        let parent_inner = self.inner.lock();
+        let mut parent_inner = self.inner.lock();
 
         let tid_handle = TidHandle::alloc().unwrap();
         let kernel_stack = KernelStackOnHeap::new();
@@ -459,6 +479,7 @@ impl TaskControlBlock {
                 user_heappoint: parent_inner.user_heappoint,
                 user_heapbottom: parent_inner.user_heapbottom,
                 clear_child_tid,
+                vfork_wait_child: 0,
                 sig_mask,
                 sig_pending: SigSet::empty(),
                 timer,
@@ -551,6 +572,14 @@ impl TaskControlBlock {
             let child_proc = child.process.inner_lock();
             let child_mm = child_proc.get_locked_memory_set_read();
             create_proc_dir_and_file(pid, ppid, &child_mm);
+        }
+
+        // VFORK: suspend parent until child execs or exits.
+        // The parent is woken in exit_current_and_run_next() when the
+        // child terminates, or in execve() when the child replaces itself.
+        if flags.contains(CloneFlags::CLONE_VFORK) {
+            parent_inner.vfork_wait_child = child.tid();
+            parent_inner.task_status = TaskStatus::VforkBlocked;
         }
 
         drop(child_inner);
@@ -680,6 +709,8 @@ pub enum TaskStatus {
     Running,
     Zombie,
     Blocked,
+    /// VFORK: parent is suspended until child execs or exits.
+    VforkBlocked,
 }
 pub type TaskRef = Arc<TaskControlBlock>;
 pub type WeakTaskRef = Weak<TaskControlBlock>;
