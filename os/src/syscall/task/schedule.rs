@@ -1,3 +1,4 @@
+use linux_raw_sys::general::{CLOCK_REALTIME, TIMER_ABSTIME};
 use log::debug;
 
 use crate::{
@@ -97,61 +98,66 @@ pub fn sys_clock_nanosleep(
     t: *const Timespec,
     remain: *mut Timespec,
 ) -> SyscallRet {
-    const TIME_ABSTIME: u32 = 1;
-    let task = current_task().unwrap();
-    let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set_read();
 
-    if clockid != 0 {
-        return Err(SysErrNo::EOPNOTSUPP);
-    }
-
-    if (t as isize) <= 0 || if_bad_address(t as usize) {
-        return Err(SysErrNo::EFAULT);
-    }
-
-    if (remain as isize) < 0 || if_bad_address(remain as usize) {
-        return Err(SysErrNo::EFAULT);
-    }
-
-    // debug!(
-    //     "[sys_clock_nanosleep] clockid is {}, flags is {}, t is {:x}, remain is {:x}",
-    //     clockid, flags, t as usize, remain as usize
-    // );
-
-    let t = get_data(memory_set.token(), t);
-    drop(memory_set);
-    drop(process);
-    if t.tv_nsec >= 1_000_000_000usize {
+    // 仅支持 CLOCK_REALTIME
+    if clockid != CLOCK_REALTIME as usize {
         return Err(SysErrNo::EINVAL);
     }
 
-    let waittime = t.tv_sec * 1_000_000_000usize + t.tv_nsec;
+    // t 必须有效
+    if t.is_null() || (t as isize) <= 0 || if_bad_address(t as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
 
-    let begin = get_time_ms() * 1_000_000usize;
+    // remain 可为 NULL (调用者不关心剩余时间)，非 NULL 则必须有效
+    if !remain.is_null() && ((remain as isize) <= 0 || if_bad_address(remain as usize)) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    let task = current_task().unwrap();
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    let t = get_data(memory_set.token(), t);
+    drop(memory_set);
+    drop(process);
+
+    // tv_nsec 必须在 [0, 10^9) 范围内
+    if t.tv_nsec >= 1_000_000_000 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // 以纳秒为单位的总睡眠时长
+    let total_ns = t.tv_sec * 1_000_000_000 + t.tv_nsec;
+
+    // 绝对时间模式: 计算到目标时刻的剩余纳秒数
+    if flags == TIME_ABSTIME {
+        let now = get_time_spec();
+        // 目标时刻已过 → 立即返回
+        if t.tv_sec < now.tv_sec || (t.tv_sec == now.tv_sec && t.tv_nsec <= now.tv_nsec) {
+            return Ok(0);
+        }
+    }
+
+    // 记录起始时间 (纳秒) 和截止时刻 (用于被信号中断时计算剩余)
+    let begin_ns = get_time_ms() * 1_000_000;
     let endtime = if flags == TIME_ABSTIME {
-        //绝对时间
-        t
+        t // 绝对时间: 截止时刻就是 t 本身
     } else {
-        //相对时间
-        get_time_spec() + t
+        get_time_spec() + t // 相对时间: 当前 + 时长
     };
 
-    // debug!(
-    //     "[sys_clock_nanosleep] ready to sleep for {} sec, {} nsec",
-    //     t.tv_sec, t.tv_nsec
-    // );
+    loop {
+        let elapsed_ns = get_time_ms() * 1_000_000 - begin_ns;
+        if elapsed_ns >= total_ns {
+            break;
+        }
 
-    while get_time_ms() * 1_000_000usize - begin < waittime {
         if let Some(_) = check_if_any_sig_for_current_task() {
-            //被信号唤醒
-            // debug!("interupt by signal");
-            if remain as usize != 0 {
+            if !remain.is_null() {
                 let process = task.process.inner_lock();
                 let memory_set = process.get_locked_memory_set_read();
                 safe_put_data(&*memory_set, remain, calculate_left_timespec(endtime));
             }
-            //handle_signal(signo);
             return Err(SysErrNo::EINTR);
         }
         suspend_current_and_run_next();

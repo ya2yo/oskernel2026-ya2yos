@@ -56,8 +56,8 @@ fn trim_trailing_nul(s: &str) -> &str {
 // LTP-musl test helpers
 // ---------------------------------------------------------------------------
 
-const LTP_TEST_START: usize = 90;
-const LTP_TESTS_PER_GROUP: usize = 10;
+const LTP_TEST_START: usize = 160;
+const LTP_TESTS_PER_GROUP: usize = 1;
 
 /// LTP 测试黑名单。
 /// 前 5 项 (cgroup_fj_*) 仅 `test_ltp` 需要跳过，
@@ -80,12 +80,12 @@ const LTP_BLACKLIST: &[&str] = &[
     "cgroup_regression_6_2.sh\0",
     "cgroup_regression_fork_processes\0",
     "cgroup_regression_getdelays\0",
-    "clock_nanosleep01\0",
-    "clock_nanosleep04\0",
-    "clone02\0",
-    "clone03\0",
-    "clone08\0",
-    "connect01\0",
+    // "clock_nanosleep01\0",
+    // "clock_nanosleep04\0",
+    // "clone02\0",
+    // "clone03\0",
+    // "clone08\0",
+    // "connect01\0",
     "cpuctl_fj_cpu-hog\0",
     // [200,300)区间
     "cpufreq_boost\0",
