@@ -53,7 +53,7 @@ fn trim_trailing_nul(s: &str) -> &str {
 }
 
 // ---------------------------------------------------------------------------
-// LTP test helpers
+// LTP-musl test helpers
 // ---------------------------------------------------------------------------
 
 const LTP_TEST_START: usize = 7;
@@ -367,9 +367,7 @@ fn run_ltp_tests_musl_separately(tests: &[&str], blacklist: &[&str]) {
         }
 
         println!(
-            "#### OS COMP TEST GROUP START ltp-musl-{}-{} ####",
-            group,
-            LTP_TEST_START + group_start
+            "#### OS COMP TEST GROUP START ltp-musl ####"
         );
 
         let mut j = group_start;
@@ -387,14 +385,13 @@ fn run_ltp_tests_musl_separately(tests: &[&str], blacklist: &[&str]) {
         }
 
         println!(
-            "#### OS COMP TEST GROUP END ltp-musl-{}-{} ####",
-            group,
-            LTP_TEST_START + group_start
+            "#### OS COMP TEST GROUP END ltp-musl ####"
         );
         group += 1;
         i = group_end;
     }
 }
+
 
 #[allow(unused)]
 fn test_ltp() {
@@ -438,62 +435,35 @@ fn main() -> i32 {
 #[allow(unused)]
 fn get_score() {
     // musl
-    run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     // run_testsuit("musl\0", "iperf_testcode.sh\0");
-    run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
-    run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
+    // run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
+    // run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
     // run_testsuit("musl\0", "ltp_testcode.sh\0");
-        test_ltp();
+        // test_ltp();
         // test_cgroup_fj_function_cpuset_via_script();
     // run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
 
     // glibc
-    run_testsuit("glibc\0", "basic_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "basic_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
-    run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 龙芯 通过
+    // run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 龙芯 通过
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");
-    run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loonarch 通过
+    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loonarch 通过
     // run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
-    run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loongarch 通过
+    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loongarch 通过
     // run_testsuit("glibc\0", "ltp_testcode.sh\0");
     // run_testsuit("glibc\0", "netperf_testcode.sh\0");
-}
 
-#[allow(unused)]
-fn test_socket() -> i32 {
-    println!("---- Test Socket syscall ----");
-
-    let fd_tcp = socket(AF_INET, SOCK_STREAM, 0);
-    if fd_tcp >= 0 {
-        println!("SUCCESS: TCP socket created, fd: {}.", fd_tcp);
-    } else {
-        println!("FAILED: TCP socket creation returned error: {}", fd_tcp);
-    }
-
-    let fd_udp = socket(AF_INET, SOCK_DGRAM, 0);
-    if fd_udp >= 0 {
-        println!("SUCCESS: UDP socket created, fd: {}.", fd_udp);
-    } else {
-        println!("FAILED: UDP socket creation returned error: {}.", fd_udp);
-    }
-
-    let fd_err = socket(1, SOCK_STREAM, 0);
-    if fd_err < 0 {
-        println!("SUCCESS: Correctly rejected unsupported domain, error: {}.", fd_err);
-    } else {
-        println!("FAILED: Should not have created socket for AF_UNIX, but got fd: {}.", fd_err);
-    }
-
-    let fd_invalid = socket(999, SOCK_STREAM, 0);
-    if fd_invalid < 0 {
-        println!("SUCCESS: Correctly rejected invalid domain, error: {}.", fd_invalid);
-    }
-    0
+    // --- glibc LTP 逐个测例调试 (brk/mmap/munmap 排查) ---
+    ltp::test_glibc_single("brk01");                     // 单测 brk01
+    // ltp::test_glibc_memory();                            // 跑全部内存相关测例
+    // ltp::test_glibc_custom(&["brk01\0", "brk02\0"]);      // 自定义一组测例
 }
