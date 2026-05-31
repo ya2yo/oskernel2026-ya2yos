@@ -301,3 +301,36 @@ AI 分析 `clone04.c` 源码：测试调用 `ltp_clone(0, child_fn, NULL, CHILD_
 - `os/src/trap/mod.rs`
 - `os/src/task/task/task.rs`
 - `Docs/初赛文档/problem/clone04-fork-sigsegv.md`
+
+---
+
+## 2026-05-31: clone05 CLONE_VFORK 实现
+
+### 问题发现
+
+clone05 (CLONE_VFORK) 测试失败：`child_exited retval 0 != 1`。
+父进程在 vfork 后没有被挂起，立即继续执行。
+
+### 根因分析
+
+内核完全未处理 CLONE_VFORK。第一轮修复加入 VforkBlocked 挂起后仍失败——日志显示三处调度路径绕过了 VforkBlocked：
+`suspend_current_and_run_next` 无条件设回 Ready、`run_tasks` 无差别重新入队、空队列路径仍运行 VforkBlocked 任务。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/task/task.rs` | 加 `VforkBlocked` 状态 + `vfork_wait_child` 字段；clone_process 挂起；exec 唤醒 |
+| `os/src/task/mod.rs` | exit 唤醒 vfork 父进程；suspend 跳过 VforkBlocked |
+| `os/src/task/processor.rs` | run_tasks 不重新入队 VforkBlocked；空队列 drop+continue |
+
+### 验证
+
+clone05 TPASS。
+
+### 涉及文件汇总
+
+- `os/src/task/task/task.rs`
+- `os/src/task/mod.rs`
+- `os/src/task/processor.rs`
+- `Docs/初赛文档/problem/clone05-vfork.md`

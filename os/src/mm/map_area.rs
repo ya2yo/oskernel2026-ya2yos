@@ -125,11 +125,7 @@ impl MapArea {
                 break;
             }
         }
-        debug!(
-            "map vpn={:?} ppn={:?}",
-            vpn,
-            ppn
-        );
+        // debug!("map vpn={:?} ppn={:?}", vpn, ppn);
         ppn
     }
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {

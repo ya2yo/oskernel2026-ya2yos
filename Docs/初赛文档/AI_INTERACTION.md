@@ -315,11 +315,11 @@
 - **描述**：提供 `log.ans`，AI 分析 clone03 失败日志，定位 `from_existed_user` 中 MAP_SHARED 懒分配区域 fork 后父子各自独立分配物理帧，破坏共享语义。同时定位 `recycle_data_pages` 中 `MAP_ANONYMOUS` 区域 `unwrap() None` panic。实现预 fault pass（MAP_ANONYMOUS 零页 / 文件支撑读文件），并增加 `is_some()` 检查。详见 `ai.log` 与 [problem/clone-mmap-shared-fork.md](./problem/clone-mmap-shared-fork.md)。
 - **关联 commit**：待提交
 
-#### clone04 缺页 SIGSEGV 与 _Fork 语义修复（5.31）
+#### clone05 CLONE_VFORK 挂起机制（5.31）
 
 - **工具/模型**：Cursor (Composer)
 - **场景**：Bug 分析与定位
-- **描述**：提供 `log.ans`，AI 分析 clone04（NULL child_stack）故障链：musl wrapper 向 `0xfffffffffffffff0` 写入触发缺页，内核仅在有自定义 handler 时才发 SIGSEGV，否则直接 `exit(-2)`。修复为无条件发送 SIGSEGV、fork 路径 sig_mask 清零（_Fork 语义）。详见 `ai.log` 2026-05-31 条目与 [problem/clone04-fork-sigsegv.md](./problem/clone04-fork-sigsegv.md)。
+- **描述**：提供 `log.ans`，AI 分析 clone05 测试失败原因：内核完全未实现 CLONE_VFORK 挂起。第一轮修复后持续失败，对比两轮日志定位三处调度路径（suspend_current_and_run_next 无条件 Ready、run_tasks 无差别入队、空队列 keep-running）绕过 VforkBlocked。逐一修复后测试通过。详见 `ai.log` 2026-05-31 条目与 [problem/clone05-vfork.md](./problem/clone05-vfork.md)。
 - **关联 commit**：待提交
 
 ---

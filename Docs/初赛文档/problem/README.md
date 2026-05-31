@@ -8,6 +8,7 @@
 - [sys_clone行为](./clone.md)
 - [clone03: fork 后 MAP_SHARED 帧未共享与 recycle panic](./clone-mmap-shared-fork.md)
 - [clone04: 缺页未发 SIGSEGV 与 _Fork 语义](./clone04-fork-sigsegv.md)
+- [clone05: CLONE_VFORK 挂起机制](./clone05-vfork.md)
 - [pending导致死循环](./block-on-pending.md)
 - [单独运行cgroup_fj_proc 卡死](./cgroup-fj-proc.md)
 - [futex 信号中断后残留 Waiter 导致重复唤醒 panic](./futex-waiter-panic.md)
