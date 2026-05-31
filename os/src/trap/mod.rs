@@ -109,27 +109,19 @@ pub fn trap_handler() {
                 // drop task inner and task to avoid deadlock and exit exception
             }
             if !ok {
-                let has_sigsegv_handler = {
-                    let task = current_task().unwrap();
-                    let proc_inner = task.process.inner_lock();
-                    let sig_action = proc_inner.get_locked_sigtable().action(SIGSEGV);
-                    sig_action.customed
-                };
-                if has_sigsegv_handler {
-                    let tid = current_task().unwrap().tid();
-                    send_signal_to_thread(tid, SigSet::SIGSEGV);
-                    return;
-                }
+                // Always send SIGSEGV and let the signal mechanism decide:
+                // - custom handler → setup_frame, jump to user handler
+                // - default action  → terminate (128 + signo)
+                let tid = current_task().unwrap().tid();
                 warn!(
-                    "[kernel] hart {} {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                    "[kernel] hart {} {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, sending SIGSEGV.",
                     hartid,
                     cause,
                     stval,
                     current_trap_cx().get_sepc(),
                 );
-                warn!("don't send SIGSEGV, just exit the process");
-                exit_current_and_run_next(-2); // page fault exit code
-                panic!("You should not return from exit_current_and_run_next");
+                send_signal_to_thread(tid, SigSet::SIGSEGV);
+                return;
             }
         }
         Trap::Exception(Exception::IllegalInstruction) => {

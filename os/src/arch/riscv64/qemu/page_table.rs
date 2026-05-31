@@ -282,6 +282,7 @@ impl PageTable {
     }
     /// return: 若错误是COW且成功处理了COW页错误，返回true，否则返回false
     pub fn handle_cow_page_fault(&mut self, va: VirtAddr, vma: &mut MapArea) -> bool {
+        debug!("[handle_cow_page_fault] va={:?}", va);
         let pte = match self.find_valid_pte(va.floor()) {
             Some(pte) => pte,
             None => return false,

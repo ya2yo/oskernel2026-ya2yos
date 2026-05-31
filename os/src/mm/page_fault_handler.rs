@@ -14,6 +14,7 @@ use crate::arch::page_table::PageTable;
 
 ///mmap写触发的lazy alocation，直接新分配帧
 pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) {
+    debug!("[mmap_write_page_fault] va={:?}", va);
     // 映射页面,拷贝数据
     vma.map_one(page_table, va.into());
     if vma.mmap_file.file.is_none() {
@@ -48,6 +49,7 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
 }
 ///mmap读触发的lazy alocation，查看是否有共享页可直接用，没有再直接分配
 pub fn mmap_read_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) {
+    debug!("[mmap_read_page_fault] va={:?}", va);
     let frame = GROUP_SHARE.lock().find(vma.groupid, va.into());
     if let Some(frame) = frame {
         //有现成的，直接clone,需要是cow的

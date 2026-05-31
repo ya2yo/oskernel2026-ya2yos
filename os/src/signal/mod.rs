@@ -47,12 +47,12 @@ pub fn handle_signal(signo: usize) {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
     let signal = SigSet::from_sig(signo);
-    // debug!(
-    //     "[handle_signal] signo={},handle signal {:?}, sepc={:#x}",
-    //     signo,
-    //     signal,
-    //     task_inner.trap_cx().get_sepc()
-    // );
+    debug!(
+        "[handle_signal] signo={},handle signal {:?}, sepc={:#x}",
+        signo,
+        signal,
+        task_inner.trap_cx().get_sepc()
+    );
     let sig_action = task
         .process
         .inner_lock()

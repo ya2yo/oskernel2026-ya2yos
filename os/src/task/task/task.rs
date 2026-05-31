@@ -428,7 +428,9 @@ impl TaskControlBlock {
             };
             ppid = parent_pid;
             timer = Arc::new(Timer::new());
-            sig_mask = parent_inner.sig_mask;
+            // _Fork: child starts with clean signal mask so AS-safe
+            // functions work in the restricted post-fork environment.
+            sig_mask = SigSet::empty();
             process = Process::new(
                 memory_set.clone(),
                 sig_table.clone(),
