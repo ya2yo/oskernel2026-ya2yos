@@ -336,10 +336,43 @@ pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, 
         return Ok(String::new());
     }
     let mut dst_str = [0u8; MAX_PATH_LEN];
-    copy_from_user(memory_set, ptr as usize, &mut dst_str)?;
-    let len = dst_str.iter().position(|&b| b == 0).unwrap_or(MAX_PATH_LEN);
+    let mut pos = 0;
+    let ptr_addr = ptr as usize;
+
+    // 逐页读取用户空间字符串，在遇到 '\0' 时提前停止，
+    // 避免因尝试读取 MAX_PATH_LEN 字节而跨越未映射的页边界
+    while pos < MAX_PATH_LEN {
+        let current_addr = ptr_addr + pos;
+        // 计算当前页内还能读取多少字节
+        let vpn = VirtAddr::from(current_addr).floor();
+        let page_end = ((vpn.0 + 1) << PAGE_SIZE_BITS) as usize;
+        let chunk_size = core::cmp::min(page_end - current_addr, MAX_PATH_LEN - pos);
+
+        // 尝试从用户空间复制这一块
+        if copy_from_user(memory_set, current_addr, &mut dst_str[pos..pos + chunk_size]).is_err() {
+            // 该块无法读取：检查已经读取的部分是否已包含完整字符串
+            if let Some(null_pos) = dst_str[..pos].iter().position(|&b| b == 0) {
+                return Ok(String::from(
+                    core::str::from_utf8(&dst_str[..null_pos]).unwrap_or(""),
+                ));
+            }
+            return Err(SysErrNo::EFAULT);
+        }
+
+        // 在新读取的块中查找 '\0'
+        if let Some(offset) = dst_str[pos..pos + chunk_size].iter().position(|&b| b == 0) {
+            let null_pos = pos + offset;
+            return Ok(String::from(
+                core::str::from_utf8(&dst_str[..null_pos]).unwrap_or(""),
+            ));
+        }
+
+        pos += chunk_size;
+    }
+
+    // 读取了 MAX_PATH_LEN 均未遇到 '\0'
     Ok(String::from(
-        core::str::from_utf8(&dst_str[..len]).unwrap_or(""),
+        core::str::from_utf8(&dst_str).unwrap_or(""),
     ))
 }
 
