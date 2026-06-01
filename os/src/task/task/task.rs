@@ -503,6 +503,8 @@ impl TaskControlBlock {
             // 线程
             self.alloc_user_res(&mut child_inner);
             *child_inner.trap_cx() = *parent_inner.trap_cx();
+            // 与 Linux 一致：子线程的 clone 返回值应为 0
+            child_inner.trap_cx().set_a0(0);
         } else {
             // fork
             let process = &self.process.inner_lock();
