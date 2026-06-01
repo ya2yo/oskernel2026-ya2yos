@@ -119,6 +119,31 @@ pub fn create_init_files() -> GeneralRet {
     let membuf = UserBuffer::new(memvec);
     let memsize = memfile.write(membuf)?;
     debug!("create /proc/meminfo with {} sizes", memsize);
+    //创建/proc/sys/kernel/tainted 内核污染标记
+    open(
+        "/proc/sys",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
+        DEFAULT_DIR_MODE,
+    )?;
+    open(
+        "/proc/sys/kernel",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
+        DEFAULT_DIR_MODE,
+    )?;
+    let taintedfile = open(
+        "/proc/sys/kernel/tainted",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+        DEFAULT_FILE_MODE,
+    )?
+    .file()?;
+    let mut tainted = String::from("0\n");
+    let mut taintedvec = Vec::new();
+    unsafe {
+        let t = tainted.as_bytes_mut();
+        taintedvec.push(core::slice::from_raw_parts_mut(t.as_mut_ptr(), t.len()));
+    }
+    let taintedbuf = UserBuffer::new(taintedvec);
+    taintedfile.write(taintedbuf)?;
     //创建/dev文件夹
     open(
         "/dev",

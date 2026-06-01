@@ -34,6 +34,7 @@ pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/ioctl.2.html
 pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
+    debug!("[sys_ioctl] fd={}, cmd={}, arg={}", fd, cmd, arg);
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     if cmd as u32 == LOOP_SET_FD {

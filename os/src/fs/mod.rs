@@ -87,7 +87,7 @@ impl OpenFlags {
     }
 }
 
-pub const MAX_PATH_LEN: usize = 50;
+pub const MAX_PATH_LEN: usize = 256;
 
 pub const SEEK_SET: usize = 0;
 pub const SEEK_CUR: usize = 1;

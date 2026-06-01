@@ -8,7 +8,7 @@ pub struct KernelStackOnHeap {
 impl KernelStackOnHeap {
     pub fn new() -> Self {
         Self {
-            pages: ContinuousPages::new(3).expect("fail to alloc KStack!"),
+            pages: ContinuousPages::new(4).expect("fail to alloc KStack!"),
         }
     }
     pub fn base(&self) -> usize {
@@ -16,6 +16,6 @@ impl KernelStackOnHeap {
     }
 
     pub fn top(&self) -> usize {
-        self.pages.base() + 3 * PAGE_SIZE
+        self.pages.base() + 4 * PAGE_SIZE
     }
 }

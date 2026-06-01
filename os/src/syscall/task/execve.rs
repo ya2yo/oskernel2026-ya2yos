@@ -6,7 +6,7 @@ use log::debug;
 
 use crate::{
     fs::{open, OpenFlags, NONE_MODE},
-    mm::{read_user_cstr, translated_ref},
+    mm::{read_user_cstr, safe_translated_ref},
     task::current_task,
     utils::{get_abs_path, strip_color, trim_start_slash, SysErrNo, SyscallRet},
 };
@@ -72,7 +72,6 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     let proc_inner = task.process.inner_lock();
 
     let memory_set = proc_inner.get_locked_memory_set_read();
-    let token = memory_set.token();
     let mut path = trim_start_slash(read_user_cstr(&memory_set, path)?);
     if path.starts_with("ltp/testcases/bin/\u{1b}[1;32m") {
         //去除颜色
@@ -83,7 +82,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     //处理argv参数
     let mut argv_vec = Vec::<String>::new();
     if !argv.is_null() {
-        let argv_ptr = *translated_ref(token, argv);
+        let argv_ptr = *safe_translated_ref(&memory_set, argv);
         if argv_ptr != 0 {
             argv_vec.push(path.clone());
             unsafe {
@@ -95,7 +94,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         if argv.is_null() {
             break;
         }
-        let argv_ptr = *translated_ref(token, argv);
+        let argv_ptr = *safe_translated_ref(&memory_set, argv);
         if argv_ptr == 0 {
             break;
         }
@@ -136,7 +135,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     } else {
         // debug!("use assigned env");
         loop {
-            let envp_ptr = *translated_ref(token, envp);
+            let envp_ptr = *safe_translated_ref(&memory_set, envp);
             if envp_ptr == 0 {
                 break;
             }
