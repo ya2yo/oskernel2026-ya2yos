@@ -65,8 +65,8 @@ pub fn handle_signal(signo: usize) {
         // debug!("handle_signal: setup_frame!");
         setup_frame(signo, sig_action);
     } else {
-        // debug!("handle_signal: default exit!");
-        // debug!("sa_handler:{:#x}", sig_action.act.sa_handler as usize);
+        debug!("handle_signal: default exit!");
+        debug!("sa_handler:{:#x}", sig_action.act.sa_handler as usize);
         // 就在S模式运行,转换成fn(i32)
         if sig_action.act.sa_handler != 1 {
             if sig_action.act.sa_handler == exit_current_and_run_next as *const () as usize {

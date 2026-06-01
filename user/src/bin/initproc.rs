@@ -11,6 +11,8 @@ use user_lib::{
     AF_INET, SOCK_DGRAM, SOCK_STREAM, socket, wait
 };
 
+use crate::libctest::pthread_cancel_points::run_musl_static;
+
 mod basic;
 mod libctest;
 mod lmbench;
@@ -438,7 +440,8 @@ fn get_score() {
     // musl
     // run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     // run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    run_musl_static();
     // run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     // run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     // run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
