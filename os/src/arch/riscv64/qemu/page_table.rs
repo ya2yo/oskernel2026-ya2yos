@@ -280,26 +280,24 @@ impl PageTable {
         let old_flags = pte.get_flags();
         pte.set_flags(RVPTEFlags::from_bits_truncate(add_flags.bits() as usize) | old_flags);
     }
-    /// return: 若错误是COW且成功处理了COW页错误，返回true，否则返回false
+    /// return: 若成功处理了页错误（COW 写错误 / ELF 段权限升级），返回true，否则返回false
     pub fn handle_cow_page_fault(&mut self, va: VirtAddr, vma: &mut MapArea) -> bool {
         debug!("[handle_cow_page_fault] va={:?}", va);
         let pte = match self.find_valid_pte(va.floor()) {
             Some(pte) => pte,
             None => return false,
         };
-        let pte_flags = pte.get_flags();
-        if !pte_flags.contains(RVPTEFlags::COW) {
-            // 这不是COW写错误，交给上层按普通用户页错误处理。
-            return false;
-        }
 
-        // 只有一个，不用复制
-        let frame = vma.data_frames.get(&va.into()).unwrap();
+        // 必须有对应的 frame（ELF 段用 data_frames 跟踪）
+        let refcnt = match vma.data_frames.get(&va.into()) {
+            Some(f) => Arc::strong_count(f),
+            None => return false,
+        };
 
-        if Arc::strong_count(frame) == 1 {
+        // 只有一个引用：无需复制物理页，直接调整权限即可
+        if refcnt == 1 {
             let mut flags = pte.get_flags();
-            flags.remove(RVPTEFlags::COW);
-            // 解除 COW 后恢复 writable/dirty，并刷新旧 TLB 权限视图。
+            flags.remove(RVPTEFlags::COW); // 无 COW 时是空操作
             flags.insert(RVPTEFlags::WRITEABLE);
             flags.insert(RVPTEFlags::DIRTY);
             pte.set_flags(flags);
@@ -307,21 +305,17 @@ impl PageTable {
             return true;
         }
 
-        //旧物理页的内容复制到新物理页
-        // 原物理页：
+        // 多个引用（COW 共享或非 COW 共享）：复制物理页内容
         let src = pte.get_ppn().bytes_array_mut();
-        // 取消原来的映射，新建一个映射
         vma.unmap_one(self, va.into());
         vma.map_one(self, va.into());
         tlb_invalidate();
-        // 新物理页
         let pte = self.find_valid_pte(va.floor()).unwrap();
         let dst = &mut pte.get_ppn().bytes_array_mut()[..PAGE_SIZE];
         dst.copy_from_slice(src);
 
         let mut flags = pte.get_flags();
         flags.remove(RVPTEFlags::COW);
-        // 复制出的新页已经是私有页，可以恢复写权限和 dirty 位。
         flags.insert(RVPTEFlags::WRITEABLE);
         flags.insert(RVPTEFlags::DIRTY);
         pte.set_flags(flags);

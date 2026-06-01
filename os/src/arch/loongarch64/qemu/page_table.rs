@@ -388,24 +388,23 @@ impl PageTable {
             pte.set_flags(new_flags | preserved);
         }
     }
-    /// return: 若错误是COW且成功处理了COW页错误，返回true，否则返回false
+    /// return: 若成功处理了页错误（COW 写错误 / ELF 段权限升级），返回true，否则返回false
     pub fn handle_cow_page_fault(&mut self, va: VirtAddr, vma: &mut MapArea) -> bool {
         let pte = match self.find_valid_pte(va.floor()) {
             Some(pte) => pte,
             None => return false,
         };
-        let pte_flags = pte.get_flags();
-        if !pte_flags.contains(LAPTEFlags::COW) {
-            // 这不是COW写错误，交给上层按普通用户页错误处理。
-            return false;
-        }
 
-        // 只有一个，说明父进程已经释放，不用复制
-        let frame = vma.data_frames.get(&va.into()).unwrap();
+        // 必须有对应的 frame（ELF 段用 data_frames 跟踪）
+        let refcnt = match vma.data_frames.get(&va.into()) {
+            Some(f) => Arc::strong_count(f),
+            None => return false,
+        };
 
-        if Arc::strong_count(frame) == 1 {
+        // 只有一个引用：无需复制物理页，直接调整权限即可
+        if refcnt == 1 {
             let mut flags = pte.get_flags();
-            flags.remove(LAPTEFlags::COW);
+            flags.remove(LAPTEFlags::COW); // 无 COW 时是空操作
             flags.insert(LAPTEFlags::WRITEABLE);
             flags.insert(LAPTEFlags::DIRTY);
             pte.set_flags(flags);
@@ -413,14 +412,11 @@ impl PageTable {
             return true;
         }
 
-        //旧物理页的内容复制到新物理页
-        // 原物理页：
+        // 多个引用（COW 共享或非 COW 共享）：复制物理页内容
         let src = pte.get_ppn().bytes_array_mut();
-        // 取消原来的映射，新建一个映射
         vma.unmap_one(self, va.into());
         vma.map_one(self, va.into());
         tlb_invalidate();
-        // 新物理页
         let pte = self.find_valid_pte(va.floor()).unwrap();
         let dst = &mut pte.get_ppn().bytes_array_mut()[..PAGE_SIZE];
         dst.copy_from_slice(src);
