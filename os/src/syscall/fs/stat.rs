@@ -9,7 +9,7 @@ use crate::{
         open, superblock_fs_stat, InodeType, Kstat, OpenFlags, Statfs, MAX_PATH_LEN, MNT_TABLE,
         NONE_MODE,
     },
-    mm::{copy_from_user, copy_to_user, if_bad_address, put_data, read_user_cstr},
+    mm::{copy_to_user, if_bad_address, put_data, read_user_cstr},
     syscall::options::{FaccessatFileMode, FaccessatMode},
     task::current_task,
     utils::{rsplit_once, trim_start_slash, SysErrNo, SyscallRet},
@@ -89,12 +89,8 @@ pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, _flags: usize
     let proc_inner = task.process.inner_lock();
     let memory_set = &proc_inner.get_locked_memory_set_read();
     let token = memory_set.token();
-    let mut dst_str = [0u8; MAX_PATH_LEN];
-    copy_from_user(memory_set, path as usize, &mut dst_str);
-    // 转成字符串
-    let len = dst_str.iter().position(|&b| b == 0).unwrap_or(MAX_PATH_LEN);
-    let path_str = core::str::from_utf8(&dst_str[..len]).unwrap_or("");
-    let path = trim_start_slash(String::from(path_str));
+    let path = read_user_cstr(memory_set, path)?;
+    let path = trim_start_slash(path);
 
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     //log::info!("[sys_fstatat] abs_path={}", &abs_path);
@@ -136,11 +132,8 @@ pub fn sys_statx(
         }
         proc_inner.fd_table.get(dirfd as usize)?.any().fstat()
     } else {
-        let mut dst_str = [0u8; MAX_PATH_LEN];
-        copy_from_user(&memory_set, path as usize, &mut dst_str);
-        let len = dst_str.iter().position(|&b| b == 0).unwrap_or(MAX_PATH_LEN);
-        let path_str = core::str::from_utf8(&dst_str[..len]).unwrap_or("");
-        let path_str = trim_start_slash(String::from(path_str));
+        let path_str = read_user_cstr(&memory_set, path)?;
+        let path_str = trim_start_slash(path_str);
         if path_str.is_empty() && flags & AT_EMPTY_PATH as usize != 0 {
             // path 为空字符串，且设置了 AT_EMPTY_PATH，同样按 dirfd 查询
             if dirfd == AT_FDCWD as isize {

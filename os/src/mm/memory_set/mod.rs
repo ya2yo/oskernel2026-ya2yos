@@ -470,24 +470,23 @@ impl MemorySetInner {
             if area.area_type == MapAreaType::Mmap {
                 if area.mmap_flags.contains(MmapFlags::MAP_SHARED)
                     && area.map_perm.contains(MapPermission::W)
-                    && area.mmap_file.file.is_some()
                 {
-                    let addr: VirtAddr = area.vpn_range.start().into();
-                    let mapped_len: usize = area
-                        .vpn_range
-                        .into_iter()
-                        .filter(|vpn| area.data_frames.contains_key(&vpn))
-                        .count()
-                        * PAGE_SIZE;
-                    let file = area.mmap_file.file.clone().unwrap();
-                    file.write(UserBuffer {
-                        buffers: translated_byte_buffer(
+                    if let Some(file) = area.mmap_file.file.clone() {
+                        let addr: VirtAddr = area.vpn_range.start().into();
+                        let mapped_len: usize = area
+                            .vpn_range
+                            .into_iter()
+                            .filter(|vpn| area.data_frames.contains_key(&vpn))
+                            .count()
+                            * PAGE_SIZE;
+                        if let Some(buffers) = translated_byte_buffer(
                             self.page_table.token(),
                             addr.0 as *const u8,
                             mapped_len,
-                        )
-                        .unwrap(),
-                    })?;
+                        ) {
+                            file.write(UserBuffer { buffers })?;
+                        }
+                    }
                 }
             }
         }
