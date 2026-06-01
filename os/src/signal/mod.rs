@@ -64,6 +64,9 @@ pub fn handle_signal(signo: usize) {
     if sig_action.customed {
         // debug!("handle_signal: setup_frame!");
         setup_frame(signo, sig_action);
+        // 标记信号已拦截：可中断 syscall 应返回 EINTR
+        let task = current_task().unwrap();
+        task.inner_lock().sig_eintr = true;
     } else {
         debug!("handle_signal: default exit!");
         debug!("sa_handler:{:#x}", sig_action.act.sa_handler as usize);

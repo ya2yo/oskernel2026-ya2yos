@@ -74,18 +74,16 @@ use spin::{Lazy, Mutex};
 /// 系统 tick 频率 (100Hz)，每 10ms 一个时钟滴答
 const TICKS_PER_SEC: usize = 100;
 /// 每秒钟的毫秒数
-const MSEC_PER_SEC: usize = 1000;
+pub const MSEC_PER_SEC: usize = 1000;
+/// 每秒钟的微秒数
+pub const USEC_PER_SEC: u64 = 1_000_000;
 /// 每秒钟的纳秒数
 pub const NANOS_PER_SEC: u64 = 1_000_000_000;
-/// 每微秒的纳秒数
-pub const NANOS_PER_MICROS: u64 = 1_000;
+/// 没毫秒的纳秒数
+pub const NANOS_PER_MICROS: u64 = 1_000_000;
 /// 开机时间到 UNIX 纪元 (1970-01-01) 的固定偏移量 (秒)
 //// 2026-05-31 00:00:00 UTC
 pub const NOW_TIME_STAMP: usize = 1_777_593_600;
-
-#[allow(unused)]
-const USEC_PER_SEC: usize = 1000000;
-const NSEC_PER_SEC: usize = 1000000000;
 
 // ---------------------------------------------------------------------------
 // 墙上时钟偏移 (clock_settime / adjtimex 修改)

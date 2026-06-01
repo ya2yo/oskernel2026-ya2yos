@@ -117,6 +117,8 @@ pub struct TaskControlBlockInner {
     // 用于futex
     pub futex_pa: usize,  // 当前正在等待的pa
     pub futex_key: usize, // 当前正在等待的Wait的版本号
+    /// 信号已交付但被透明处理（setup_frame），可中断 syscall 应返回 EINTR
+    pub sig_eintr: bool,
 }
 
 impl TaskControlBlockInner {
@@ -194,6 +196,7 @@ impl TaskControlBlock {
                 pdeath_signal: 0,
                 futex_pa: 0,
                 futex_key: 0,
+                sig_eintr: false,
             }),
         };
         let arc_task = Arc::new(task);
@@ -493,6 +496,7 @@ impl TaskControlBlock {
                 pdeath_signal: 0,
                 futex_pa: 0,
                 futex_key: 0,
+                sig_eintr: false,
             }),
         });
 

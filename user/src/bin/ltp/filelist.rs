@@ -150,7 +150,7 @@ pub static FILELIST: [&str; 2820] = [
     "chroot02\0",
     "chroot03\0",
     "chroot04\0",
-    "cleanup_lvm.sh\0", // 50
+    "cleanup_lvm.sh\0", // 150
     "clock_adjtime01\0",
     "clock_adjtime02\0",
     "clock_getres01\0",
@@ -160,7 +160,7 @@ pub static FILELIST: [&str; 2820] = [
     "clock_gettime04\0",
     "clock_nanosleep01\0",
     "clock_nanosleep02\0",
-    "clock_nanosleep03\0", // 60
+    "clock_nanosleep03\0", // 160
     "clock_nanosleep04\0",
     "clock_settime01\0",
     "clock_settime02\0",

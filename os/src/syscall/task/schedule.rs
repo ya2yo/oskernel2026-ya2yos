@@ -1,6 +1,9 @@
 use core::sync::atomic::AtomicU32;
 
-use linux_raw_sys::general::{CLOCK_MONOTONIC, CLOCK_REALTIME, TIMER_ABSTIME};
+use linux_raw_sys::general::{
+    CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_THREAD_CPUTIME_ID,
+    TIMER_ABSTIME,
+};
 use log::debug;
 
 use crate::{
@@ -8,7 +11,7 @@ use crate::{
     mm::{get_data, if_bad_address, put_data, safe_put_data},
     signal::check_if_any_sig_for_current_task,
     task::{current_task, current_token, suspend_current_and_run_next},
-    timer::{calculate_left_timespec, get_time_ms, get_time_spec, Timespec},
+    timer::{NANOS_PER_SEC, MSEC_PER_SEC, Timespec, calculate_left_timespec, get_time_ms, get_time_spec},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -22,23 +25,32 @@ pub fn sys_sched_yield() -> SyscallRet {
 pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
     let token = current_token();
 
-    // debug!(
-    //     "[sys_nanosleep] req is {:x}, rem is {:x}",
-    //     req as usize, rem as usize
-    // );
-
     let req = get_data(token, req);
-    let waittime = req.tv_sec * 1_000_000_000usize + req.tv_nsec;
-    let begin = get_time_ms() * 1_000_000usize;
+    if req.tv_nsec >= NANOS_PER_SEC as usize {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let waittime = req.tv_sec * (NANOS_PER_SEC as usize) + req.tv_nsec;
+    let begin = get_time_ms() * ( NANOS_PER_SEC as usize / MSEC_PER_SEC );
     let endtime = get_time_spec() + req;
 
-    // debug!(
-    //     "[sys_nanosleep] ready to sleep for {} sec, {} nsec",
-    //     req.tv_sec, req.tv_nsec
-    // );
+    debug!(
+        "[sys_nanosleep] ready to sleep for {} sec, {} nsec",
+        req.tv_sec, req.tv_nsec
+    );
 
+    let task = current_task().unwrap();
     while get_time_ms() * 1_000_000usize - begin < waittime {
-        if let Some(_) = check_if_any_sig_for_current_task() {
+        if check_if_any_sig_for_current_task().is_some()
+            || {
+                let mut task_inner = task.inner_lock();
+                let eintr = task_inner.sig_eintr;
+                if eintr {
+                    task_inner.sig_eintr = false;
+                }
+                eintr
+            }
+        {
             //被信号唤醒
             if rem as usize != 0 {
                 put_data(token, rem, calculate_left_timespec(endtime));
@@ -101,7 +113,14 @@ pub fn sys_clock_nanosleep(
     t: *const Timespec,
     remain: *mut Timespec,
 ) -> SyscallRet {
-    // 支持 CLOCK_REALTIME 和 CLOCK_MONOTONIC
+    // Linux 仅支持 CLOCK_REALTIME / CLOCK_MONOTONIC
+    // CLOCK_PROCESS_CPUTIME_ID / CLOCK_THREAD_CPUTIME_ID → EOPNOTSUPP
+    // 其他 clockid → EINVAL
+    if clockid == CLOCK_PROCESS_CPUTIME_ID as usize
+        || clockid == CLOCK_THREAD_CPUTIME_ID as usize
+    {
+        return Err(SysErrNo::EOPNOTSUPP);
+    }
     if clockid != CLOCK_REALTIME as usize && clockid != CLOCK_MONOTONIC as usize {
         return Err(SysErrNo::EINVAL);
     }
@@ -165,7 +184,17 @@ pub fn sys_clock_nanosleep(
             break;
         }
 
-        if let Some(_) = check_if_any_sig_for_current_task() {
+        // 检查信号：pending 信号或已被 trap handler 拦截的信号
+        if check_if_any_sig_for_current_task().is_some()
+            || {
+                let mut task_inner = task.inner_lock();
+                let eintr = task_inner.sig_eintr;
+                if eintr {
+                    task_inner.sig_eintr = false;
+                }
+                eintr
+            }
+        {
             if !remain.is_null() {
                 let process = task.process.inner_lock();
                 let memory_set = process.get_locked_memory_set_read();
