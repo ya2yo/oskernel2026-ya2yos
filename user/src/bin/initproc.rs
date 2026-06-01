@@ -447,7 +447,7 @@ fn get_score() {
     // run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
     // run_testsuit("musl\0", "ltp_testcode.sh\0");
         // #[cfg(target_arch = "riscv64")]
-        test_ltp();
+        // test_ltp();
         // test_cgroup_fj_function_cpuset_via_script();
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     // run_testsuit("musl\0", "iperf_testcode.sh\0");
@@ -455,7 +455,7 @@ fn get_score() {
 
     // glibc
     // run_testsuit("glibc\0", "basic_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    // run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
     // run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
     // #[cfg(target_arch = "riscv64")]
     // run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过 逆天龙芯make log 和 make 的行为不一样，怎么测

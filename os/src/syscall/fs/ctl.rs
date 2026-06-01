@@ -247,8 +247,6 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
     let memory_set = proc_inner.get_locked_memory_set_read();
     let token = memory_set.token();
     let self_token = current_token();
-    // debug!("path={:#x}", path as usize);
-    // debug!("buf ={:#x}", buf as usize);
     if token != self_token {
         warn!("token != self_token");
     }
@@ -267,7 +265,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
         // debug!("fs_info={}", exe);
         let size_needed = exe.len();
         let buffers = safe_translated_byte_buffer(
-            &&proc_inner.get_locked_memory_set_write(),
+            &&proc_inner.get_locked_memory_set_read(),
             buf,
             size_needed,
         );
