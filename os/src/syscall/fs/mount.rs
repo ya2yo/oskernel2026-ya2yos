@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// 参考 https://man7.org/linux/man-pages/man2/pivot_root.2.html
-pub fn sys_pivot_root(new_root: usize, put_old: usize) -> SyscallRet {
+pub fn sys_pivot_root(_new_root: usize, _put_old: usize) -> SyscallRet {
     warn!("[sys_pivot_root] not implement!");
     /*
        EBUSY  new_root or put_old is on the current root mount.  (This

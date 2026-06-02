@@ -7,13 +7,16 @@ mod mount;
 mod pipe;
 mod stat;
 
+use alloc::vec::Vec;
 use linux_raw_sys::ctypes::c_int;
 use log::warn;
 
 use crate::{
     fs::{DummyFd, FileDescriptor, OpenFlags},
+    mm::{UserBuffer, translated_byte_buffer, translated_refmut},
+    syscall::options::Iovec,
     task::current_task,
-    utils::SyscallRet,
+    utils::{SysErrNo, SyscallRet},
 };
 
 pub use self::{
@@ -99,4 +102,99 @@ pub fn sys_timerfd_settime(
 pub fn sys_timerfd_gettime(_fd: u32, _curr_value: *mut u8) -> SyscallRet {
     warn!("[sys_timerfd_gettime] not implement!");
     Ok(0)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/vmsplice.2.html
+///
+/// 将用户空间 iovec 数据 splice 到 pipe 中。
+///
+/// # 参数
+/// - `fd`: 目标 pipe 写端文件描述符
+/// - `iov`: 指向用户空间 iovec 数组的指针
+/// - `nr_segs`: iovec 数组元素个数（最大 1024）
+/// - `flags`: SPLICE_F_MOVE / SPLICE_F_NONBLOCK / SPLICE_F_MORE / SPLICE_F_GIFT
+///
+/// # 返回值
+/// 成功时返回实际写入 pipe 的字节数
+pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet {
+    const SPLICE_F_MOVE: u32 = 0x01;
+    const SPLICE_F_NONBLOCK: u32 = 0x02;
+    const SPLICE_F_MORE: u32 = 0x04;
+    const SPLICE_F_GIFT: u32 = 0x08;
+
+    // 校验 flags 中不含未定义位
+    let valid_flags = SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE | SPLICE_F_GIFT;
+    if flags & !valid_flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // nr_segs 上限
+    if nr_segs == 0 || nr_segs > 1024 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let token = proc_inner.get_locked_memory_set_read().token();
+    let fd_table = proc_inner.fd_table.clone();
+    let fd = fd as usize;
+
+    if fd >= fd_table.len() {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let fd_entry = match fd_table.try_get(fd) {
+        Some(f) => f,
+        None => return Err(SysErrNo::EBADF),
+    };
+
+    // vmsplice 要求 fd 必须是 pipe（内部用 FileClass::Abs 表示）
+    // abs() 对 FileClass::Abs 返回 Ok，对普通文件/套接字返回 Err → 映射为 EINVAL
+    let file = fd_entry.abs().map_err(|_| SysErrNo::EINVAL)?;
+
+    if !file.writable() {
+        return Err(SysErrNo::EBADF);
+    }
+
+    // 释放锁，避免 pipe write 阻塞时死锁
+    drop(proc_inner);
+    drop(task);
+
+    // 遍历 iovec，从用户空间读取全部数据到内核缓冲区
+    let iovec_size = core::mem::size_of::<Iovec>();
+    let mut kernel_buf: Vec<u8> = Vec::new();
+
+    for i in 0..nr_segs as usize {
+        let current = unsafe { (iov as *const u8).add(iovec_size * i) };
+        let iovinfo = *translated_refmut(token, current as *mut Iovec);
+        if iovinfo.iov_len == 0 {
+            continue;
+        }
+        // 翻译用户空间地址，逐个片段复制
+        let buf_slices =
+            translated_byte_buffer(token, iovinfo.iov_base as *mut u8, iovinfo.iov_len)
+                .ok_or(SysErrNo::EFAULT)?;
+        for slice in buf_slices {
+            kernel_buf.extend_from_slice(slice);
+        }
+    }
+
+    let total_len = kernel_buf.len();
+    if total_len == 0 {
+        return Ok(0);
+    }
+
+    // 构造 UserBuffer 写入 pipe
+    let mut ub_v = Vec::with_capacity(1);
+    unsafe {
+        ub_v.push(core::slice::from_raw_parts_mut(
+            kernel_buf.as_mut_ptr(),
+            total_len,
+        ));
+    }
+    let ub = UserBuffer::new(ub_v);
+
+    // pipe.write() 内部处理阻塞等待和 EINTR
+    let ret = file.write(ub)?;
+    Ok(ret)
 }

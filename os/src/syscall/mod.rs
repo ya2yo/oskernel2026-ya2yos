@@ -95,6 +95,7 @@ pub enum Syscall {
     SchedGetaffinity = 123,
     SchedYield = 124,
     ShedGetPriorityMax = 125,
+    ShedGetPriorityMin = 126,
     SigKill = 129,
     Tkill = 130,
     Tgkill = 131,

@@ -4,7 +4,7 @@ use linux_raw_sys::general::{
     CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_THREAD_CPUTIME_ID,
     TIMER_ABSTIME,
 };
-use log::debug;
+use log::{debug, warn};
 
 use crate::{
     arch::time::get_clock_freq,
@@ -204,5 +204,15 @@ pub fn sys_clock_nanosleep(
         }
         suspend_current_and_run_next();
     }
+    Ok(0)
+}
+
+/// https://man7.org/linux/man-pages/man2/sched_get_priority_max.2.html
+pub fn sys_sched_get_priority_max(_policy: i32)->SyscallRet {
+    warn!("[sys_sched_get_priority_max] not implement!");
+    Ok(0)
+}
+pub fn sys_sched_get_priority_min(_policy: i32)->SyscallRet {
+    warn!("[sys_sched_get_priority_min] not implement!");
     Ok(0)
 }
