@@ -58,7 +58,7 @@ fn trim_trailing_nul(s: &str) -> &str {
 // LTP-musl test helpers
 // ---------------------------------------------------------------------------
 
-const LTP_TEST_START: usize = 219;
+const LTP_TEST_START: usize = 220;
 const LTP_TESTS_PER_GROUP: usize = 1;
 
 /// LTP 测试黑名单。
@@ -93,7 +93,7 @@ const LTP_BLACKLIST: &[&str] = &[
     "cpuhotplug_do_disk_write_loop\0",
     "cpuhotplug_do_spin_loop\0",
     "cpufreq_boost\0",
-    "crash02\0",
+    // "crash02\0",
     "creat06\0",
     "creat07\0",
     "cve-2017-17052\0",

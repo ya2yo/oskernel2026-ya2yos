@@ -5,9 +5,33 @@ use crate::{
     fs::{MAX_PATH_LEN, MNT_TABLE},
     mm::{MemorySet, copy_from_user, translate::read_user_cstr},
     syscall::fs::dummyfd_create,
-    task::current_task,
+    task::{current_task, current_token},
     utils::{SysErrNo, SyscallRet},
 };
+
+/// 参考 https://man7.org/linux/man-pages/man2/pivot_root.2.html
+pub fn sys_pivot_root(new_root: usize, put_old: usize) -> SyscallRet {
+    warn!("[sys_pivot_root] not implement!");
+    /*
+       EBUSY  new_root or put_old is on the current root mount.  (This
+              error covers the pathological case where new_root is "/".)
+       EINVAL new_root is not a mount point.
+       EINVAL put_old is not at or underneath new_root.
+       EINVAL The current root directory is not a mount point (because of
+              an earlier chroot(2)).
+       EINVAL The current root is on the rootfs (initial ramfs) mount;
+              see NOTES.
+       EINVAL Either the mount point at new_root, or the parent mount of
+              that mount point, has propagation type MS_SHARED.
+       EINVAL put_old is a mount point and has the propagation type
+              MS_SHARED.
+       ENOTDIR
+              new_root or put_old is not a directory.
+       EPERM  The calling process does not have the CAP_SYS_ADMIN
+              capability. 
+    */
+    Ok(0)
+}
 
 /// 参考 https://man7.org/linux/man-pages/man2/umount2.2.html
 pub fn sys_umount2(special: *const u8, flags: u32) -> SyscallRet {
