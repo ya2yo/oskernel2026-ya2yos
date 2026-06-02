@@ -3,7 +3,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use alloc::vec::Vec;
-use log::debug;
+use log::{debug, warn};
 use spin::Mutex;
 
 use crate::mm::{PhysAddr, PhysPageNum};
@@ -14,6 +14,10 @@ use super::{cma_alloc, cma_dealloc};
 pub struct PageCache {
     free_list: Mutex<Vec<PhysPageNum>>, // 空闲页链表
     count: AtomicUsize,                 // 当前缓存页数
+    /// Total frames allocated (for diagnostics)
+    pub total_allocated: AtomicUsize,
+    /// Total frames deallocated (for diagnostics)
+    pub total_deallocated: AtomicUsize,
 }
 
 impl PageCache {
@@ -27,6 +31,8 @@ impl PageCache {
         Self {
             free_list: Mutex::new(Vec::new()),
             count: AtomicUsize::new(0),
+            total_allocated: AtomicUsize::new(0),
+            total_deallocated: AtomicUsize::new(0),
         }
     }
 
@@ -36,6 +42,7 @@ impl PageCache {
         loop {
             if let Some(ppn) = list.pop() {
                 self.count.fetch_sub(1, Ordering::Relaxed);
+                self.total_allocated.fetch_add(1, Ordering::Relaxed);
                 return Some(ppn);
             }
 
@@ -43,7 +50,17 @@ impl PageCache {
             for _ in 0..Self::REFILL_BATCH {
                 let page = match cma_alloc(1) {
                     Some(addr) => PhysPageNum::from(addr),
-                    None => return None,
+                    None => {
+                        let total = self.total_allocated.load(Ordering::Relaxed);
+                        let freed = self.total_deallocated.load(Ordering::Relaxed);
+                        warn!(
+                            "CMA OOM! total_allocated={}, total_freed={}, in_use={}",
+                            total,
+                            freed,
+                            total.saturating_sub(freed)
+                        );
+                        return None;
+                    }
                 };
                 list.push(page);
             }
@@ -55,6 +72,7 @@ impl PageCache {
     pub fn dealloc(&self, ppn: PhysPageNum) {
         let mut list = self.free_list.lock();
         list.push(ppn);
+        self.total_deallocated.fetch_add(1, Ordering::Relaxed);
         let count = self.count.fetch_add(1, Ordering::Relaxed) + 1;
 
         // 超过高水位线时刷回

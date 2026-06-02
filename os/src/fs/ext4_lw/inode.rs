@@ -185,7 +185,7 @@ impl Inode for Ext4Inode {
         flags: OpenFlags,
         loop_times: usize,
     ) -> Result<Arc<dyn Inode>, SysErrNo> {
-        log::info!("[Inode.find] origin path={}", path);
+        // log::info!("[Inode.find] origin path={}", path);
         let file = &mut self.inner.get_unchecked_mut().f;
         if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
             Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)))
@@ -208,7 +208,7 @@ impl Inode for Ext4Inode {
             file.read_link(&mut file_name, 256)?;
             let end = file_name.iter().position(|v| *v == 0).unwrap_or(file_name.len());
             let file_path = core::str::from_utf8(&file_name[..end]).unwrap();
-            log::info!("[Inode.find] file_path={}", file_path); 
+            // log::info!("[Inode.find] file_path={}", file_path); 
             let next_path = if file_path.starts_with('/') {
                 // 绝对路径 symlink
                 file_path.to_string()

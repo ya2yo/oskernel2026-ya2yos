@@ -201,6 +201,10 @@ impl MemorySet {
 pub struct MemorySetInner {
     pub page_table: PageTable,
     pub areas: Vec<MapArea>,
+    /// Total virtual memory allocated via mmap (bytes).
+    /// Used to enforce a limit and avoid runaway allocation
+    /// from exhausting physical memory through lazy page faults.
+    pub total_mmap_size: usize,
 }
 
 impl MemorySetInner {
@@ -209,12 +213,14 @@ impl MemorySetInner {
         Self {
             page_table: PageTable::new(),
             areas: Vec::new(),
+            total_mmap_size: 0,
         }
     }
     pub fn new_from_kernel() -> Self {
         Self {
             page_table: PageTable::new_from_kernel(),
             areas: Vec::new(),
+            total_mmap_size: 0,
         }
     }
     ///Get pagetable `root_ppn`
@@ -235,7 +241,7 @@ impl MemorySetInner {
         self.push(
             MapArea::new(start_va, end_va, MapType::Framed, permission, area_type),
             None,
-        );
+        ).ok(); // OOM is unlikely here; if it happens the area is simply not mapped
     }
     pub fn lazy_insert_framed_area(
         &mut self,
@@ -424,7 +430,10 @@ impl MemorySetInner {
 
             let dst_ppn = match this_page_table.translate(vpn) {
                 Some(ppn) => ppn,
-                None => this_area.map_one(&mut this_page_table, vpn),
+                None => match this_area.map_one(&mut this_page_table, vpn) {
+                    Some(ppn) => ppn,
+                    None => continue, // OOM — skip this page
+                },
             };
 
             dst_ppn
@@ -432,19 +441,23 @@ impl MemorySetInner {
                 .copy_from_slice(src_ppn.bytes_array());
         }
     }
-    pub(crate) fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
-        map_area.map(&mut self.page_table);
+    /// Push a MapArea with eager frame allocation. Returns Err(()) on OOM.
+    pub(crate) fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> Result<(), ()> {
+        map_area.map(&mut self.page_table)?;
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data, 0);
         }
         self.areas.push(map_area);
+        Ok(())
     }
-    pub(crate) fn push_with_offset(&mut self, mut map_area: MapArea, offset: usize, data: Option<&[u8]>) {
-        map_area.map(&mut self.page_table);
+    /// Push a MapArea with eager frame allocation and data offset. Returns Err(()) on OOM.
+    pub(crate) fn push_with_offset(&mut self, mut map_area: MapArea, offset: usize, data: Option<&[u8]>) -> Result<(), ()> {
+        map_area.map(&mut self.page_table)?;
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data, offset);
         }
         self.areas.push(map_area);
+        Ok(())
     }
     pub(crate) fn push_with_given_frames(&mut self, mut map_area: MapArea, frames: Vec<Arc<FrameTracker>>) {
         map_area.map_given_frames(&mut self.page_table, frames);

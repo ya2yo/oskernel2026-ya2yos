@@ -308,7 +308,9 @@ impl PageTable {
         // 多个引用（COW 共享或非 COW 共享）：复制物理页内容
         let src = pte.get_ppn().bytes_array_mut();
         vma.unmap_one(self, va.into());
-        vma.map_one(self, va.into());
+        if vma.map_one(self, va.into()).is_none() {
+            return false; // OOM — let trap handler send SIGSEGV
+        }
         tlb_invalidate();
         let pte = self.find_valid_pte(va.floor()).unwrap();
         let dst = &mut pte.get_ppn().bytes_array_mut()[..PAGE_SIZE];

@@ -40,7 +40,7 @@ impl MemorySetInner {
                     if !area.data_frames.contains_key(&vpn) {
                         if area.mmap_file.file.is_none() {
                             // MAP_ANONYMOUS: just allocate a zeroed frame
-                            area.map_one(pt, vpn);
+                            area.map_one(pt, vpn); // ignore OOM — lazy fault later
                         } else {
                             // file-backed: use the write-fault handler to
                             // read file data into the frame
@@ -101,7 +101,7 @@ impl MemorySetInner {
             }
 
             // neither COW nor mmap nor shm
-            memory_set.push(new_area, None);
+            memory_set.push(new_area, None).ok();
 
             // copy data from another space
             for vpn in area.vpn_range {

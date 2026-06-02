@@ -1,7 +1,10 @@
+use log::debug;
+
 use crate::{task::current_task, utils::SyscallRet};
 
 /// 参考 https://man7.org/linux/man-pages/man2/brk.2.html
 pub fn sys_brk(brk_addr: usize) -> SyscallRet {
+    debug!("[sys_brk] brk_addr={:#x}", brk_addr);
     let former_addr = current_task().unwrap().growproc(0);
     if brk_addr == 0 {
         return Ok(former_addr);

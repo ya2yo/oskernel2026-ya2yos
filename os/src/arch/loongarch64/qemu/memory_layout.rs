@@ -12,6 +12,10 @@ pub const USER_STACK_SIZE: usize = 1024 * 1024 * 8; // 8MB
 pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 2;
 pub const KERNEL_HEAP_SIZE: usize = 0x3_000_000; // 48MB
 pub const USER_HEAP_SIZE: usize = 0x10_000_000; // 256MB
+/// Maximum total mmap size per process.
+/// Prevent runaway mmap from consuming all virtual space
+/// and subsequently exhausting physical memory via lazy page faults.
+pub const MAX_MMAP_SIZE: usize = 0x100_000_00; // 256MB
 pub const PRE_ALLOC_PAGES: usize = 8;
 
 // 内核虚拟地址的起始地址

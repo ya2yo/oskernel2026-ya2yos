@@ -5,7 +5,7 @@ use log::debug;
 
 use super::super::{MmapFlags, MmapProt};
 use crate::{
-    arch::memory_layout::PAGE_SIZE,
+    arch::memory_layout::{MAX_MMAP_SIZE, PAGE_SIZE},
     fs::File,
     mm::{
         if_bad_address, insert_bad_address, remove_bad_address, shm_attach, shm_create, shm_drop,
@@ -45,16 +45,34 @@ pub fn sys_mmap(
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_write();
     let len = page_round_up(len);
+    // Reject unreasonably large single mmap requests.
+    // Glibc on our char-device stdin probes available memory by
+    // mmap'ing exponentially-growing anonymous regions.  Without a
+    // per-request limit a 134 MiB mmap succeeds (virtual address
+    // space is cheap) but touching its pages triggers page faults
+    // that exhaust physical CMA frames before the caller can munmap.
+    // CMA has ~78 MiB free after kernel/initproc allocations.
+    // A single request larger than 64 MiB risks touching all its
+    // pages and exhausting physical frames (as glibc probing does).
+    if len > MAX_MMAP_SIZE / 4 {
+        return Err(SysErrNo::ENOMEM);
+    }
     if fd == usize::MAX {
         if !flags.contains(MmapFlags::MAP_ANONYMOUS) {
             return Err(SysErrNo::EBADF);
         }
         let rv = memory_set.mmap(addr, len, map_perm, flags, None, usize::MAX);
+        if rv == 0 {
+            return Err(SysErrNo::ENOMEM);
+        }
         return Ok(rv);
     }
     if flags.contains(MmapFlags::MAP_ANONYMOUS) {
         //映射1字节没有任何权限的地址
         let rv = memory_set.mmap(0, 1, MapPermission::empty(), flags, None, usize::MAX);
+        if rv == 0 {
+            return Err(SysErrNo::ENOMEM);
+        }
         insert_bad_address(rv);
         log::info!("bad address is 0x{:x}", rv);
         return Ok(rv);

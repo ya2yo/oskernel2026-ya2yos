@@ -41,33 +41,33 @@ impl MemorySetInner {
         let e_sig_trap = sigreturn_trampoline as *const () as usize + PAGE_SIZE;
         memory_set.push(
             MapArea::new((stext as *const () as usize).into(), (s_sig_trap).into(),
-                MapType::Direct, MapPermission::R | MapPermission::X, MapAreaType::Elf), None);
+                MapType::Direct, MapPermission::R | MapPermission::X, MapAreaType::Elf), None).expect("kernel OOM");
         memory_set.push(
             MapArea::new((e_sig_trap).into(), (etext as *const () as usize).into(),
-                MapType::Direct, MapPermission::R | MapPermission::X, MapAreaType::Elf), None);
+                MapType::Direct, MapPermission::R | MapPermission::X, MapAreaType::Elf), None).expect("kernel OOM");
         memory_set.push(
             MapArea::new((s_sig_trap).into(), (e_sig_trap).into(),
-                MapType::Direct, MapPermission::R | MapPermission::X | MapPermission::U, MapAreaType::Elf), None);
+                MapType::Direct, MapPermission::R | MapPermission::X | MapPermission::U, MapAreaType::Elf), None).expect("kernel OOM");
 
         println!("mapping .rodata section");
         memory_set.push(
             MapArea::new((srodata as *const () as usize).into(), (erodata as *const () as usize).into(),
-                MapType::Direct, MapPermission::R, MapAreaType::Elf), None);
+                MapType::Direct, MapPermission::R, MapAreaType::Elf), None).expect("kernel OOM");
 
         println!("mapping .data section");
         memory_set.push(
             MapArea::new((sdata as *const () as usize).into(), (edata as *const () as usize).into(),
-                MapType::Direct, MapPermission::R | MapPermission::W, MapAreaType::Elf), None);
+                MapType::Direct, MapPermission::R | MapPermission::W, MapAreaType::Elf), None).expect("kernel OOM");
 
         println!("mapping .bss section");
         memory_set.push(
             MapArea::new((sbss_with_stack as *const () as usize).into(), (ebss as *const () as usize).into(),
-                MapType::Direct, MapPermission::R | MapPermission::W, MapAreaType::Elf), None);
+                MapType::Direct, MapPermission::R | MapPermission::W, MapAreaType::Elf), None).expect("kernel OOM");
 
         println!("mapping physical memory");
         memory_set.push(
             MapArea::new((ekernel as *const () as usize).into(), MEMORY_END.into(),
-                MapType::Direct, MapPermission::R | MapPermission::W, MapAreaType::Physical), None);
+                MapType::Direct, MapPermission::R | MapPermission::W, MapAreaType::Physical), None).expect("kernel OOM");
 
         println!("mapping memory-mapped registers");
         for pair in MMIO {
@@ -75,7 +75,7 @@ impl MemorySetInner {
             let end_va = start_va + (*pair).1;
             memory_set.push(
                 MapArea::new(start_va.into(), end_va.into(),
-                    MapType::Direct, MapPermission::R | MapPermission::W, MapAreaType::MMIO), None);
+                    MapType::Direct, MapPermission::R | MapPermission::W, MapAreaType::MMIO), None).expect("kernel OOM");
         }
         println!("create new kernel successfully!");
         memory_set

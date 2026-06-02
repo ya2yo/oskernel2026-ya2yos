@@ -41,7 +41,7 @@ use core::{
     task::Poll,
 };
 use futures_util::task::AtomicWaker;
-use log::debug;
+use log::{debug, error};
 use spin::{rwlock::RwLock, Mutex, MutexGuard};
 
 #[repr(C)]
@@ -152,7 +152,8 @@ impl TaskControlBlock {
     /// 只有initproc会调用
     pub fn new(elf_data: &[u8]) -> Arc<Self> {
         // memory_set with elf program headers/trampoline/trap context/user stack
-        let (memory_set, user_heapbottom, entry_point, _) = MemorySetInner::from_elf(elf_data);
+        let (memory_set, user_heapbottom, entry_point, _) =
+            MemorySetInner::from_elf(elf_data).expect("initproc: OOM during ELF load");
         println!("Entry Point: {:#x}", entry_point);
         // alloc a pid and a kernel stack in kernel space
         let tid_handle = TidHandle::alloc().unwrap();
@@ -217,12 +218,15 @@ impl TaskControlBlock {
         arc_task
     }
     /// exec的主逻辑
-    pub fn exec(&self, elf_data: &[u8], argv: &[String], env: &mut [String]) {
+    pub fn exec(&self, elf_data: &[u8], argv: &[String], env: &mut [String]) -> Result<(), ()> {
         let mut task_inner = self.inner_lock();
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
         debug!("exec: goto from_elf");
-        let (memory_set, user_hp, entry_point, mut auxv) = MemorySetInner::from_elf(elf_data);
+        let (memory_set, user_hp, entry_point, mut auxv) =
+            MemorySetInner::from_elf(elf_data).map_err(|_| {
+                error!("exec: OOM during ELF load");
+            })?;
         debug!("exec: return from from_elf");
         let token = memory_set.token();
         let memory_set = MemorySet::new(memory_set);
@@ -377,6 +381,7 @@ impl TaskControlBlock {
         *task_inner.trap_cx() = trap_cx;
         task_inner.user_heappoint = user_hp;
         task_inner.user_heapbottom = user_hp;
+        Ok(())
     }
     /// 复制进程，注意这里需要实现 fork 的主要逻辑
     pub fn clone_process(

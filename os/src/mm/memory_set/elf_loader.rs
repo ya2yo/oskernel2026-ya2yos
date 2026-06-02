@@ -42,7 +42,7 @@ impl MemorySetInner {
             let interp_file = interp_inode.unwrap();
             let interp_elf_data = interp_file.inode.read_all().unwrap();
             let interp_elf = xmas_elf::ElfFile::new(&interp_elf_data).unwrap();
-            self.map_elf(&interp_elf, DL_INTERP_OFFSET.into());
+            self.map_elf(&interp_elf, DL_INTERP_OFFSET.into()).ok()?;
 
             Some(interp_elf.header.pt2.entry_point() as usize + DL_INTERP_OFFSET)
         } else {
@@ -50,7 +50,7 @@ impl MemorySetInner {
         }
     }
 
-    fn map_elf(&mut self, elf: &ElfFile, offset: VirtAddr) -> (VirtPageNum, VirtAddr) {
+    fn map_elf(&mut self, elf: &ElfFile, offset: VirtAddr) -> Result<(VirtPageNum, VirtAddr), ()> {
         let elf_header = elf.header;
         let ph_count = elf_header.pt2.ph_count();
 
@@ -82,16 +82,16 @@ impl MemorySetInner {
                 self.push_with_offset(
                     map_area, data_offset,
                     Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
-                );
+                )?;
             }
         }
-        (max_end_vpn, header_va.into())
+        Ok((max_end_vpn, header_va.into()))
     }
 
     /// Include sections in elf and trampoline and TrapContext and user stack,
     /// also returns user_sp and entry point.
     /// 不包括用户栈和Trap
-    pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize, Vec<Aux>) {
+    pub fn from_elf(elf_data: &[u8]) -> Result<(Self, usize, usize, Vec<Aux>), ()> {
         let mut auxv = Vec::new();
         let mut memory_set = Self::new_from_kernel();
         let elf = xmas_elf::ElfFile::new(elf_data).unwrap();
@@ -122,7 +122,7 @@ impl MemorySetInner {
         auxv.push(Aux::new(AuxType::SECURE, 0 as usize));
         auxv.push(Aux::new(AuxType::NOTELF, 0x112d as usize));
 
-        let (max_end_vpn, head_va) = memory_set.map_elf(&elf, VirtAddr(0));
+        let (max_end_vpn, head_va) = memory_set.map_elf(&elf, VirtAddr(0))?;
 
         let ph_head_addr = head_va.0 + elf.header.pt2.ph_offset() as usize;
         auxv.push(Aux { aux_type: AuxType::PHDR, value: ph_head_addr as usize });
@@ -136,6 +136,6 @@ impl MemorySetInner {
             MapAreaType::Brk,
         ));
 
-        (memory_set, user_heap_bottom, entry_point, auxv)
+        Ok((memory_set, user_heap_bottom, entry_point, auxv))
     }
 }

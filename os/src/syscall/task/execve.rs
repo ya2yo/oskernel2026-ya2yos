@@ -202,7 +202,8 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     drop(memory_set);
     drop(proc_inner);
 
-    task.exec(&elf_data, &argv_vec, &mut env);
     // 不用切换页表，因为return_to_user会切换
+    task.exec(&elf_data, &argv_vec, &mut env)
+        .map_err(|_| SysErrNo::ENOMEM)?;
     Ok(0)
 }

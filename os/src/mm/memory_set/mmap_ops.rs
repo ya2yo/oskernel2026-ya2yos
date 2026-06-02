@@ -15,7 +15,7 @@ use super::{
     translated_byte_buffer, FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer,
     VPNRange, VirtAddr, VirtPageNum,
 };
-use crate::arch::memory_layout::{MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS};
+use crate::arch::memory_layout::{MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS};
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
 use crate::fs::{File, OSFile, OpenFlags, SEEK_CUR, SEEK_SET};
@@ -75,9 +75,24 @@ impl MemorySetInner {
                     file, off, flags,
                 ));
             }
+            // MAP_FIXED replaces existing mappings; don't count toward mmap total.
             return addr;
         }
+        // Reject if this allocation would exceed the per-process mmap limit.
+        // Without this check, runaway mmap (e.g. glibc ungetc on a char device)
+        // can allocate unlimited virtual space and exhaust physical memory
+        // through subsequent lazy page faults.
+        if self.total_mmap_size + len > MAX_MMAP_SIZE {
+            debug!(
+                "[mmap] ENOMEM: total_mmap_size={}, request={}, max={}",
+                self.total_mmap_size, len, MAX_MMAP_SIZE
+            );
+            return 0; // signals failure to sys_mmap, which returns ENOMEM
+        }
         let addr = self.find_insert_addr(MMAP_TOP, len);
+        if addr == 0 {
+            return 0; // no space found
+        }
         let area_type = if flags.contains(MmapFlags::MAP_STACK) {
             MapAreaType::Stack
         } else {
@@ -88,6 +103,7 @@ impl MemorySetInner {
             MapType::Framed, map_perm, area_type,
             file, off, flags,
         ));
+        self.total_mmap_size += len;
         addr
     }
 
@@ -151,8 +167,12 @@ impl MemorySetInner {
             }
             let area_end_vpn = area.vpn_range.end();
             if area_end_vpn <= end_vpn {
+                let area_size = (area_end_vpn.0 - area.vpn_range.start().0) * PAGE_SIZE;
+                self.total_mmap_size = self.total_mmap_size.saturating_sub(area_size);
                 self.areas.remove(idx);
             } else {
+                let trimmed = (end_vpn.0 - area.vpn_range.start().0) * PAGE_SIZE;
+                self.total_mmap_size = self.total_mmap_size.saturating_sub(trimmed);
                 area.vpn_range = VPNRange::new(end_vpn, area_end_vpn);
             }
             tlb_invalidate();
@@ -241,7 +261,7 @@ impl MemorySetInner {
     }
 
     pub fn lazy_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
-        debug!("[lazy_page_fault] vpn={:?} scause={:?}", vpn, scause);
+        // debug!("[lazy_page_fault] vpn={:?} scause={:?}", vpn, scause);
         let ppn = self.page_table.translate(vpn);
         if !ppn.is_none() { return false; }
         // mmap
@@ -249,22 +269,21 @@ impl MemorySetInner {
             .filter(|area| area.area_type == MapAreaType::Mmap)
             .find(|area| { let (start, end) = area.vpn_range.range(); start <= vpn && vpn < end })
         {
-            if scause == Trap::Exception(Exception::LoadPageFault)
+            let ok = if scause == Trap::Exception(Exception::LoadPageFault)
                 || scause == Trap::Exception(Exception::FetchInstructionPageFault)
             {
-                mmap_read_page_fault(vpn.into(), &mut self.page_table, area);
+                mmap_read_page_fault(vpn.into(), &mut self.page_table, area)
             } else {
-                mmap_write_page_fault(vpn.into(), &mut self.page_table, area);
-            }
-            return true;
+                mmap_write_page_fault(vpn.into(), &mut self.page_table, area)
+            };
+            return ok; // false on OOM → SIGSEGV in trap handler
         }
         // brk or stack
         if let Some(area) = self.areas.iter_mut()
             .filter(|area| area.area_type == MapAreaType::Brk || area.area_type == MapAreaType::Stack)
             .find(|area| { let (start, end) = area.vpn_range.range(); start <= vpn && vpn < end })
         {
-            lazy_page_fault(vpn.into(), &mut self.page_table, area);
-            return true;
+            return lazy_page_fault(vpn.into(), &mut self.page_table, area); // false on OOM → SIGSEGV
         }
         false
     }

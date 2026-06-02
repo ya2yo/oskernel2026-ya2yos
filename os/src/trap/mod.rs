@@ -62,12 +62,12 @@ pub fn trap_handler() {
     set_kernel_trap_entry();
     let cause = get_trap_cause();
     let stval = get_trap_virt_addr();
-    debug!(
-        "111 trap_handler: scause={:?}, stval={:#x}, sepc={:#x}",
-        cause,
-        stval,
-        current_trap_cx().get_sepc()
-    );
+    // debug!(
+    //     "111 trap_handler: scause={:?}, stval={:#x}, sepc={:#x}",
+    //     cause,
+    //     stval,
+    //     current_trap_cx().get_sepc()
+    // );
     match cause {
         Trap::Exception(Exception::Syscall) => {
             // jump to next instruction anyway
@@ -199,14 +199,14 @@ pub fn trap_return() {
     unsafe {
         // 方便调试进入__return_to_user
         let trap_cx = current_trap_cx();
-        let ptr = (trap_cx as *mut TrapContext) as usize;
-        debug!(
-            "222 return_to_user, trap_cx.sepc={:#x}, sp={:#x}, kstack={:#x}, trap_cx={:#x}",
-            trap_cx.get_sepc(),
-            trap_cx.get_sp(),
-            trap_cx.kernel_stack,
-            ptr
-        );
+        // let ptr = (trap_cx as *mut TrapContext) as usize;
+        // debug!(
+        //     "222 return_to_user, trap_cx.sepc={:#x}, sp={:#x}, kstack={:#x}, trap_cx={:#x}",
+        //     trap_cx.get_sepc(),
+        //     trap_cx.get_sp(),
+        //     trap_cx.kernel_stack,
+        //     ptr
+        // );
         __return_to_user(trap_cx as *mut TrapContext);
     }
     panic!("You should not return from __return_to_user!");

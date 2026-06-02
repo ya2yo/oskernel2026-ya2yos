@@ -94,28 +94,27 @@ impl MapArea {
             groupid: another.groupid,
         }
     }
-    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> PhysPageNum {
+    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> Option<PhysPageNum> {
         let ppn: PhysPageNum;
         if self.area_type == MapAreaType::MMIO {
             ppn = PhysPageNum(vpn.0 - (MMIO_MAP_OFFSET >> PAGE_SIZE_BITS));
             page_table.map(vpn, ppn, self.map_perm);
-            return ppn;
+            return Some(ppn);
         }
         match self.map_type {
             MapType::Direct => {
                 ppn = PhysPageNum(vpn.0 - KERNEL_PGNUM_OFFSET);
             }
             MapType::Framed => {
-                let frame = FrameTracker::alloc().unwrap();
+                let frame = FrameTracker::alloc()?;
                 ppn = frame.ppn;
                 self.data_frames.insert(vpn, frame);
             }
         }
 
         page_table.map(vpn, ppn, self.map_perm);
-        let bytes = ppn.bytes_array();
         // 打印调试信息
-        for b in bytes.iter() {
+        for b in ppn.bytes_array().iter() {
             if *b != 0 {
                 error!(
                     "new page not zero! vpn={:?} ppn={:?}",
@@ -125,20 +124,20 @@ impl MapArea {
                 break;
             }
         }
-        debug!("[map_one] vpn={:?} ppn={:?}, perm={:?}, type={:?}", vpn, ppn, self.map_perm, self.map_type);
-        ppn
+        Some(ppn)
     }
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
-        debug!("[unmap_one] vpn={:?}", vpn);
+        // debug!("[unmap_one] vpn={:?}", vpn);
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
         }
         page_table.unmap(vpn);
     }
-    pub fn map(&mut self, page_table: &mut PageTable) {
+    pub fn map(&mut self, page_table: &mut PageTable) -> Result<(), ()> {
         for vpn in self.vpn_range {
-            self.map_one(page_table, vpn);
+            self.map_one(page_table, vpn).ok_or(())?;
         }
+        Ok(())
     }
     pub fn map_given_frames(&mut self, page_table: &mut PageTable, frames: Vec<Arc<FrameTracker>>) {
         for (vpn, frame) in self.vpn_range.clone().into_iter().zip(frames.into_iter()) {

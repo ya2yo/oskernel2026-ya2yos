@@ -60,8 +60,11 @@ pub fn cma_alloc(pages: usize) -> Option<PhysAddr> {
     match layout_opt {
         Some(layout) => {
             let mut locked = CMA_ALLOCATOR.lock();
-            let ptr_result = locked.alloc(layout);
-            let ptr = ptr_result.unwrap().as_ptr() as usize;
+            let ptr_result = match locked.alloc(layout){
+                Ok(ptr)=>ptr,
+                Err(_) => return None,
+            };
+            let ptr = ptr_result.as_ptr() as usize;
             assert_eq!(ptr % PAGE_SIZE, 0);
             let va = KernelAddr::from(ptr);
             let pa = PhysAddr::from(va);
