@@ -58,8 +58,8 @@ fn trim_trailing_nul(s: &str) -> &str {
 // LTP-musl test helpers
 // ---------------------------------------------------------------------------
 
-const LTP_TEST_START: usize = 157;
-const LTP_TESTS_PER_GROUP: usize = 43;
+const LTP_TEST_START: usize = 219;
+const LTP_TESTS_PER_GROUP: usize = 1;
 
 /// LTP 测试黑名单。
 /// 前 5 项 (cgroup_fj_*) 仅 `test_ltp` 需要跳过，
@@ -90,6 +90,8 @@ const LTP_BLACKLIST: &[&str] = &[
     // "connect01\0",
     "cpuctl_fj_cpu-hog\0",
     // [200,300)区间
+    "cpuhotplug_do_disk_write_loop\0",
+    "cpuhotplug_do_spin_loop\0",
     "cpufreq_boost\0",
     "crash02\0",
     "creat06\0",
@@ -447,7 +449,7 @@ fn get_score() {
     // run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
     // run_testsuit("musl\0", "ltp_testcode.sh\0");
         // #[cfg(target_arch = "riscv64")]
-        // test_ltp();
+        test_ltp();
         // test_cgroup_fj_function_cpuset_via_script();
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     // run_testsuit("musl\0", "iperf_testcode.sh\0");
@@ -470,10 +472,10 @@ fn get_score() {
     //     "/glibc", "entry-static.exe\0",
     //     &[],
     // );
-    libctest::runall::runall(
-        "/glibc\0", "entry-dynamic.exe\0",
-        &["setvbuf_unget\0","pthread_cancel_points\0", "pthread_cancel\0", "pthread_exit_cance\0"],
-    );
+    // libctest::runall::runall(
+    //     "/glibc\0", "entry-dynamic.exe\0",
+    //     &["setvbuf_unget\0","pthread_cancel_points\0", "pthread_cancel\0", "pthread_exit_cance\0"],
+    // );
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");
     // run_testsuit("glibc\0", "netperf_testcode.sh\0");

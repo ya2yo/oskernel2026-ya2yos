@@ -288,20 +288,24 @@ const SA_NODEFER: usize = 0x40000000; /* Don't automatically block the signal wh
                                       :usize                 its handler is being executed.  */
 const SA_RESETHAND: usize = 0x80000000; /* Reset to SIG_DFL on entry to handler.  */
 
+/// sigaction 结构体，字段顺序必须与 C struct sigaction 和内核 SigAction 一致：
+/// sa_handler, sa_flags, sa_restorer, sa_mask
+/// https://man7.org/linux/man-pages/man2/sigaction.2.html
+#[repr(C)]
 pub struct SigAction {
     pub sa_handler: usize,
     pub sa_flags: usize,
-    pub sa_mask: usize,
     pub sa_restore: usize,
+    pub sa_mask: usize,
 }
 
 impl SigAction {
-    pub fn new(sa_handler: usize, sa_flags: usize, sa_mask: usize, sa_restore: usize) -> Self {
+    pub fn new(sa_handler: usize, sa_flags: usize, sa_restore: usize, sa_mask: usize) -> Self {
         Self {
             sa_handler,
             sa_flags,
-            sa_mask,
             sa_restore,
+            sa_mask,
         }
     }
 }

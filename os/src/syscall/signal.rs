@@ -4,7 +4,8 @@ use log::{debug, error};
 use crate::{
     mm::{get_data, put_data, safe_get_data, try_get_data},
     signal::{
-        KSigAction, SIG_MAX_NUM, SigAction, SigInfo, SigSet, restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group, send_signal_to_thread_of_proc
+        KSigAction, SIG_MAX_NUM, SigAction, SigInfo, SigSet, restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group, send_signal_to_thread_of_proc,
+        SIGKILL, SIGSTOP,
     },
     syscall::SignalMaskFlag,
     task::{current_task, current_token, exit_current_and_run_next, suspend_current_and_run_next},
@@ -19,14 +20,24 @@ pub fn sys_rt_sigaction(
     old_act: *mut SigAction,
 ) -> SyscallRet {
     debug!(
-        "[sys_rt_sigaction] signo is {}, act is {:?}, old_act is {:?}",
+        "[sys_rt_sigaction] signo is {:#b}, act is {:?}, old_act is {:?}",
         signo, act, old_act
     );
-    if signo > SIG_MAX_NUM {
-        error!("too big signo");
+    // signo == 0 用于检查进程是否存在，这里不允许
+    if signo == 0 || signo > SIG_MAX_NUM {
+        error!("invalid signo: {}", signo);
         return Err(SysErrNo::EINVAL);
     }
-
+    // SIGKILL 和 SIGSTOP 不可被捕获或忽略 (POSIX.1-2001)
+    if (signo == SIGKILL || signo == SIGSTOP) && act as usize != 0 {
+        let token = current_token();
+        let new_act = get_data(token, act);
+        if new_act.sa_handler != 0 {
+            // 不允许修改 SIGKILL/SIGSTOP 的 handler（SIG_DFL 除外）
+            debug!("[sys_rt_sigaction] attempt to change SIGKILL/SIGSTOP handler");
+            return Err(SysErrNo::EINVAL);
+        }
+    }
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let sigtable = process.get_locked_sigtable();
@@ -37,18 +48,20 @@ pub fn sys_rt_sigaction(
     }
     if act as usize != 0 {
         let new_act = get_data(token, act);
-        // debug!(
-        //     "[sys_rt_sigaction] signo is {}, sig is {:?}, act is {:?}",
-        //     signo,
-        //     SigSet::from_sig(signo),
-        //     new_act
-        // );
+        debug!(
+            "[sys_rt_sigaction] signo is {}, sig is {:?}, act is {:?}",
+            signo,
+            SigSet::from_sig(signo),
+            new_act
+        );
         let new_sig: KSigAction = if new_act.sa_handler == 0 {
+            // SIG_DFL: 恢复默认行为
             KSigAction::new(signo, false)
         } else if new_act.sa_handler == 1 {
-            // 忽略
+            // SIG_IGN: 忽略信号
             KSigAction::ignore()
         } else {
+            // 用户自定义处理函数
             let customed = new_act.sa_handler != exit_current_and_run_next as *const () as usize;
             KSigAction {
                 act: new_act,
@@ -70,25 +83,20 @@ pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) ->
     let task = current_task().unwrap();
     let token = current_token();
     // debug!("strong count: {}", Arc::strong_count(&task));
-    let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set_read();
+    let _process = task.process.inner_lock();
     let mut task_inner = task.inner_lock();
     let how = SignalMaskFlag::from_bits(how).ok_or(SysErrNo::EINVAL)?;
 
-    // debug!(
-    //     "oldset is {:x}, set is {:x}",
-    //     old_set as usize, set as usize
-    // );
     if old_set as usize != 0 {
         put_data(token, old_set, task_inner.sig_mask);
     }
     if set as usize != 0 {
         let mask = try_get_data(token, set).ok_or(SysErrNo::EINVAL)?;
 
-        // debug!(
-        //     "[sys_sigprocmask] how is {:?}, mask is {:?}, old_set is {:x}",
-        //     how, mask, old_set as usize
-        // );
+        debug!(
+            "[sys_sigprocmask] how is {:?}, mask is {:?}, old_set is {:x}",
+            how, mask, old_set as usize
+        );
 
         // let mut blocked = &mut task_inner.sig_mask;
         match how {

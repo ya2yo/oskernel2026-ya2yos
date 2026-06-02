@@ -85,6 +85,16 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
     // debug!("customed sa_handler={:#x}", sig_action.act.sa_handler);
 
     let task = current_task().unwrap();
+
+    // SA_RESETHAND: 在调用信号处理函数之前将 handler 重置为 SIG_DFL
+    // 这样信号处理函数仅在第一次收到信号时被调用
+    if sig_action.act.sa_flags.contains(SigActionFlags::SA_RESETHAND) {
+        task.process
+            .inner_lock()
+            .get_locked_sigtable()
+            .set_action(signo, KSigAction::new(signo, false));
+    }
+
     let mut task_inner = task.inner_lock();
     let token = task
         .process
@@ -196,7 +206,13 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
         },
     );
 
-    task_inner.sig_mask |= sig_action.act.sa_mask | SigSet::from_sig(signo);
+    // 默认：在处理函数执行期间阻塞当前信号 + sa_mask 中的信号
+    // SA_NODEFER: 不自动阻塞当前信号
+    let mut new_mask = sig_action.act.sa_mask;
+    if !sig_action.act.sa_flags.contains(SigActionFlags::SA_NODEFER) {
+        new_mask |= SigSet::from_sig(signo);
+    }
+    task_inner.sig_mask |= new_mask;
 }
 /// 恢复栈帧
 pub fn restore_frame() -> SyscallRet {
