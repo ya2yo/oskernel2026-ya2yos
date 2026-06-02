@@ -4,7 +4,7 @@ use linux_raw_sys::general::{
     CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_THREAD_CPUTIME_ID,
     TIMER_ABSTIME,
 };
-use log::{debug, warn};
+use log::{debug};
 
 use crate::{
     arch::time::get_clock_freq,
@@ -208,11 +208,25 @@ pub fn sys_clock_nanosleep(
 }
 
 /// https://man7.org/linux/man-pages/man2/sched_get_priority_max.2.html
-pub fn sys_sched_get_priority_max(_policy: i32)->SyscallRet {
-    warn!("[sys_sched_get_priority_max] not implement!");
-    Ok(0)
+///
+/// 返回指定调度策略的最大静态优先级。
+/// 策略: 0=SCHED_OTHER, 1=SCHED_FIFO, 2=SCHED_RR
+pub fn sys_sched_get_priority_max(policy: i32) -> SyscallRet {
+    match policy {
+        0 => Ok(0),    // SCHED_OTHER: 仅一个优先级
+        1 => Ok(99),   // SCHED_FIFO
+        2 => Ok(99),   // SCHED_RR
+        _ => Err(SysErrNo::EINVAL),
+    }
 }
-pub fn sys_sched_get_priority_min(_policy: i32)->SyscallRet {
-    warn!("[sys_sched_get_priority_min] not implement!");
-    Ok(0)
+/// https://man7.org/linux/man-pages/man2/sched_get_priority_min.2.html
+///
+/// 返回指定调度策略的最小静态优先级。
+pub fn sys_sched_get_priority_min(policy: i32) -> SyscallRet {
+    match policy {
+        0 => Ok(0),    // SCHED_OTHER: 仅一个优先级
+        1 => Ok(1),    // SCHED_FIFO
+        2 => Ok(1),    // SCHED_RR
+        _ => Err(SysErrNo::EINVAL),
+    }
 }

@@ -94,8 +94,8 @@ pub enum Syscall {
     SchedSetaffinity = 122,
     SchedGetaffinity = 123,
     SchedYield = 124,
-    ShedGetPriorityMax = 125,
-    ShedGetPriorityMin = 126,
+    SchedGetPriorityMax = 125,
+    SchedGetPriorityMin = 126,
     SigKill = 129,
     Tkill = 130,
     Tgkill = 131,
@@ -331,6 +331,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Pselect6 => sys_pselect6(args[0], args[1], args[2], args[3], args[4], args[5]),
         Syscall::Ppoll => sys_ppoll(args[0], args[1], args[2], args[3]),
         Syscall::Signalfd4 => sys_signalfd4(args[0] as u32, args[1] as *const u8, args[2] as u32),
+        Syscall::Vmsplice => sys_vmsplice(args[0] as i32, args[1], args[2] as u32, args[3] as u32),
         Syscall::ReadLinkat => sys_readlinkat(
             args[0] as isize,
             args[1] as *const u8,
@@ -397,6 +398,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::SchedSetaffinity => sys_sched_setaffinity(args[0], args[1], args[2]),
         Syscall::SchedGetaffinity => sys_sched_getaffinity(args[0], args[1], args[2]),
         Syscall::SchedYield => sys_sched_yield(),
+        Syscall::SchedGetPriorityMax => sys_sched_get_priority_max(args[0] as i32),
+        Syscall::SchedGetPriorityMin => sys_sched_get_priority_min(args[0] as i32),
+
         Syscall::SigKill => sys_kill(args[0] as isize, args[1]),
         Syscall::Tkill => sys_tkill(args[0], args[1]),
         Syscall::Tgkill => sys_tgkill(args[0], args[1], args[2]),
