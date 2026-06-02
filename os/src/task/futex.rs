@@ -396,7 +396,7 @@ fn handle_futex_death_entry(uaddr: usize, token: usize, pid: usize) -> bool {
 /// * `token`       – page-table token of the exiting process.
 /// * `pid`         – TID of the exiting thread (used as futex owner id).
 pub fn handle_futex_when_exit(robust_list: &RobustListHead, token: usize, pid: usize) {
-    let head: usize = robust_list.list;
+    let head: usize = robust_list.list;// User-space base address of robust_list_head
     if head == 0 {
         debug!("[handle_futex_when_exit] robust_list.list is 0, nothing to do");
         return;
@@ -406,15 +406,15 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, token: usize, pid: u
     //   +0  list.next          : usize
     //   +8  futex_offset       : isize   (signed offset from entry → futex word)
     //   +16 list_op_pending    : usize
-    let futex_offset: isize = get_data(token, (head + 8) as *const isize);
-    let list_op_pending: usize = get_data(token, (head + 16) as *const usize);
+    let futex_offset: isize = get_data(token, (head + 8) as *const isize);// true value
+    let list_op_pending: usize = get_data(token, (head + 16) as *const usize);// *robust_list
     debug!(
         "[handle_futex_when_exit] head={:#x}, futex_offset={}, list_op_pending={:#x}, pid={}",
         head, futex_offset, list_op_pending, pid,
     );
     // ---- 1. Handle the *pending* entry (list_op_pending) first ----
     if list_op_pending != 0 {
-        let futex_word_addr = (list_op_pending as isize).wrapping_add(futex_offset) as usize;
+        let futex_word_addr = (list_op_pending as isize).wrapping_add(futex_offset) as usize;// virtaddr
         debug!(
             "[handle_futex_when_exit] processing pending entry at {:#x}, futex_word={:#x}",
             list_op_pending, futex_word_addr,
@@ -425,7 +425,7 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, token: usize, pid: u
     }
     // ---- 2. Walk the circular robust list ----
     // First real entry: head->list.next (= *head because list is at offset 0).
-    let mut entry: usize = get_data(token, head as *const usize);
+    let mut entry: usize = get_data(token, head as *const usize);// robust_list
     let mut limit: usize = ROBUST_LIST_LIMIT;
     while entry != head && limit > 0 {
         limit -= 1;

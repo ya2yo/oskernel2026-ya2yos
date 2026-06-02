@@ -45,16 +45,12 @@ use log::debug;
 use spin::{rwlock::RwLock, Mutex, MutexGuard};
 
 #[repr(C)]
-struct RobustList {
-    next: usize,// 用户空间虚拟地址
-}
-#[repr(C)]
 /// 对应 linux 的 robust_list_head
 #[derive(Clone, Copy, Debug)]
 pub struct RobustListHead {
-    pub list: usize, /// 用户空间的虚拟地址 == 0 if empty
+    pub list: usize, //robust_list(robust_list *) 用户空间的虚拟地址 0 if empty
     pub futex_offset: isize, // relative offset
-    pub list_op_pending: usize,// first set this field when change
+    pub list_op_pending: usize,// robust_list_ptr(** robust_list) first set this field when change 
 }
 
 impl Default for RobustListHead {
