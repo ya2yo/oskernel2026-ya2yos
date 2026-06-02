@@ -1,5 +1,5 @@
 PLATFORM := qemu
-MEMORY_SIZE := 128M  # 0x8000000
+MEMORY_SIZE := 2G    # VisionFive 2 板载 2~8GB，QEMU 模拟匹配
 SMP := 1  # CPU核心数
 MODE := release
 

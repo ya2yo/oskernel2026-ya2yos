@@ -95,8 +95,8 @@ pub struct TaskControlBlockInner {
     pub time_data: TimeData,
 
     // 用于TaskControlBlockInner::growproc
-    user_heappoint: usize,  //堆顶指针,小于等于user_heaptop
-    user_heapbottom: usize, //堆底指针
+    pub user_heappoint: usize,  //堆顶指针,小于等于user_heaptop
+    pub user_heapbottom: usize, //堆底指针
 
     /// 当线程退出时，要将这个指针指向的int置为0，并唤醒等待它的futex
     pub clear_child_tid: usize,

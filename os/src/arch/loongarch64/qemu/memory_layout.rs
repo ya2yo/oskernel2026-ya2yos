@@ -3,7 +3,7 @@
 use crate::config::THREAD_MAX_NUM;
 
 pub const PHYSICAL_MEMORY_START: usize = 0; // la64的物理内存从0开始，而riscv的物理内存从0x8000_0000开始
-pub const PHYSICAL_MEMORY_SIZE: usize = 0x800_0000; // 128MB
+pub const PHYSICAL_MEMORY_SIZE: usize = 0x8000_0000; // 2GB
 
 pub const PAGE_SIZE: usize = 0x1000; // 4KB
 pub const PAGE_SIZE_BITS: usize = 12;
@@ -11,9 +11,13 @@ pub const PAGE_SIZE_BITS: usize = 12;
 pub const USER_STACK_SIZE: usize = 1024 * 1024 * 8; // 8MB
 pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 2;
 pub const KERNEL_HEAP_SIZE: usize = 0x3_000_000; // 48MB
-pub const USER_HEAP_SIZE: usize = 0x10_000_000; // 256MB
+pub const USER_HEAP_SIZE: usize = 0x100_000_00; // 256MB (virtual reservation)
+/// Maximum heap (brk) growth per process.
+/// Caps runaway brk from exhausting physical memory.
+pub const MAX_BRK_SIZE: usize = 0x2000_0000; // 512MB
 /// Maximum total mmap size per process.
-/// Prevent runaway mmap from consuming all virtual space
+/// Prevent runaway mmap from exhausting physical memory.
+pub const MAX_MMAP_SIZE: usize = 0x4000_0000; // 1GB
 /// and subsequently exhausting physical memory via lazy page faults.
 pub const MAX_MMAP_SIZE: usize = 0x100_000_00; // 256MB
 pub const PRE_ALLOC_PAGES: usize = 8;
