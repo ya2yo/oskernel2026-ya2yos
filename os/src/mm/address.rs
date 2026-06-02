@@ -83,6 +83,19 @@ impl From<usize> for PhysPageNum {
     }
 }
 /// 拓展虚拟地址到512GB
+impl VirtAddr {
+    /// Fallible version: returns None for non-canonical Sv39 addresses
+    /// instead of panicking. Used by try_get_data to safely handle
+    /// potentially corrupted user-space pointers (e.g. robust list).
+    pub fn try_from(v: usize) -> Option<Self> {
+        let tmp = (v as isize >> VA_WIDTH_SV39) as isize;
+        if tmp == 0 || tmp == -1 {
+            Some(Self(v))
+        } else {
+            None
+        }
+    }
+}
 impl From<usize> for VirtAddr {
     fn from(v: usize) -> Self {
         // Self(v & ((1 << VA_WIDTH_SV39) - 1))

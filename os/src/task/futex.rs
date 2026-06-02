@@ -406,8 +406,23 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, token: usize, pid: u
     //   +0  list.next          : usize
     //   +8  futex_offset       : isize   (signed offset from entry → futex word)
     //   +16 list_op_pending    : usize
-    let futex_offset: isize = get_data(token, (head + 8) as *const isize);// true value
-    let list_op_pending: usize = get_data(token, (head + 16) as *const usize);// *robust_list
+    //
+    // Use try_get_data: the process may have been killed by SIGSEGV and
+    // its memory may be partially unmapped (e.g. after glibc probing OOM).
+    let futex_offset: isize = match try_get_data(token, (head + 8) as *const isize) {
+        Some(v) => v,
+        None => {
+            debug!("[handle_futex_when_exit] head+8 unmapped, stopping");
+            return;
+        }
+    };
+    let list_op_pending: usize = match try_get_data(token, (head + 16) as *const usize) {
+        Some(v) => v,
+        None => {
+            debug!("[handle_futex_when_exit] head+16 unmapped, stopping");
+            return;
+        }
+    };
     debug!(
         "[handle_futex_when_exit] head={:#x}, futex_offset={}, list_op_pending={:#x}, pid={}",
         head, futex_offset, list_op_pending, pid,
@@ -425,7 +440,13 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, token: usize, pid: u
     }
     // ---- 2. Walk the circular robust list ----
     // First real entry: head->list.next (= *head because list is at offset 0).
-    let mut entry: usize = get_data(token, head as *const usize);// robust_list
+    let mut entry: usize = match try_get_data(token, head as *const usize) {
+        Some(v) => v,
+        None => {
+            debug!("[handle_futex_when_exit] head unmapped, stopping");
+            return;
+        }
+    };
     let mut limit: usize = ROBUST_LIST_LIMIT;
     while entry != head && limit > 0 {
         limit -= 1;

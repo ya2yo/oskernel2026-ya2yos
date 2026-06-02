@@ -2,13 +2,12 @@ use alloc::sync::Arc;
 use log::{debug, error};
 
 use crate::{
-    mm::{get_data, put_data, safe_get_data},
+    mm::{get_data, put_data, safe_get_data, try_get_data},
     signal::{
-        restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group,
-        send_signal_to_thread_of_proc, KSigAction, SigAction, SigInfo, SigSet, SIG_MAX_NUM,
+        KSigAction, SIG_MAX_NUM, SigAction, SigInfo, SigSet, restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group, send_signal_to_thread_of_proc
     },
     syscall::SignalMaskFlag,
-    task::{current_task, exit_current_and_run_next, suspend_current_and_run_next},
+    task::{current_task, current_token, exit_current_and_run_next, suspend_current_and_run_next},
     timer::Timespec,
     utils::{SysErrNo, SyscallRet},
 };
@@ -69,6 +68,7 @@ pub fn sys_rt_sigreturn() -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/rt_sigprocmask.2.html
 pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) -> SyscallRet {
     let task = current_task().unwrap();
+    let token = current_token();
     // debug!("strong count: {}", Arc::strong_count(&task));
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_read();
@@ -80,10 +80,10 @@ pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) ->
     //     old_set as usize, set as usize
     // );
     if old_set as usize != 0 {
-        put_data(memory_set.token(), old_set, task_inner.sig_mask);
+        put_data(token, old_set, task_inner.sig_mask);
     }
     if set as usize != 0 {
-        let mask = safe_get_data(&*memory_set, set);
+        let mask = try_get_data(token, set).ok_or(SysErrNo::EINVAL)?;
 
         // debug!(
         //     "[sys_sigprocmask] how is {:?}, mask is {:?}, old_set is {:x}",

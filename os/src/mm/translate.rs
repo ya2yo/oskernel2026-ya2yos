@@ -170,7 +170,10 @@ pub fn safe_translated_refmut<T>(memory_set: &MemorySet, ptr: *mut T) -> &'stati
 /// 如果地址无法翻译或跨页，返回 `None` 而不是 panic。
 pub fn try_get_data<T: 'static + Copy>(token: usize, ptr: *const T) -> Option<T> {
     let page_table = PageTable::from_token(token);
-    let va = VirtAddr::from(ptr as usize);
+    let va = match VirtAddr::try_from(ptr as usize) {
+        Some(v) => v,
+        None => return None, // non-canonical VA (e.g. corrupted robust list pointer)
+    };
     // 对齐检查
     if ptr as usize % core::mem::align_of::<T>() != 0 {
         return None;

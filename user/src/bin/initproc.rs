@@ -463,8 +463,17 @@ fn get_score() {
     // #[cfg(target_arch = "riscv64")]
     // run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
     // run_testsuit("glibc\0", "ltp_testcode.sh\0");
-    // run_testsuit("glibc\0", "libctest_testcode.sh\0");
-        libctest::setvbuf_unget::run_glibc_static();
+    // glibc libctest: static + dynamic (skip pthread_cancel_points for dynamic
+    // because it requires libgcc_s.so.1 which is not on the disk image)
+    libctest::runall::run_specific_test("/glibc\0", "entry-dynamic.exe\0", "pthread_exit_cancel\0");
+    // libctest::runall::runall(
+    //     "/glibc", "entry-static.exe\0",
+    //     &[],
+    // );
+    // libctest::runall::runall(
+    //     "/glibc\0", "entry-dynamic.exe\0",
+    //     &["pthread_cancel_points\0", "pthread_cancel\0"],
+    // );
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");
     // run_testsuit("glibc\0", "netperf_testcode.sh\0");
