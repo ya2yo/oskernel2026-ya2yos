@@ -125,11 +125,11 @@ impl MapArea {
                 break;
             }
         }
-        // debug!("[map_one] vpn={:?} ppn={:?}, perm={:?}, type={:?}", vpn, ppn, self.map_perm, self.map_type);
+        debug!("[map_one] vpn={:?} ppn={:?}, perm={:?}, type={:?}", vpn, ppn, self.map_perm, self.map_type);
         ppn
     }
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
-        // debug!("[unmap_one] vpn={:?}", vpn);
+        debug!("[unmap_one] vpn={:?}", vpn);
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
         }
@@ -147,6 +147,7 @@ impl MapArea {
         }
     }
     pub fn unmap(&mut self, page_table: &mut PageTable) {
+        debug!("[unmap] start! page_table's ppn={:#x}", page_table.token());
         for vpn in self.vpn_range {
             self.unmap_one(page_table, vpn);
         }

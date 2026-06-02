@@ -1,10 +1,11 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    mm::{get_data, put_data, PhysAddr, VirtAddr},
+    arch::page_table::PageTable,
+    mm::{PhysAddr, VirtAddr, get_data, put_data, try_get_data},
     syscall::{FutexCmd, FutexOpt},
-    task::RobustList,
-    timer::{add_futex_timer, get_time_spec, Timespec},
+    task::{RobustListHead, tid_to_task},
+    timer::{Timespec, add_futex_timer, get_time_spec},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -15,6 +16,16 @@ use alloc::{
 };
 use log::{debug, error};
 use spin::{Lazy, Mutex};
+
+// ------------------------- robust futex constants ------------------------
+/// Bit 31: there are waiters sleeping on this futex
+const FUTEX_WAITERS: u32 = 0x80000000;
+/// Bit 30: the original owner died while holding this futex
+const FUTEX_OWNER_DIED: u32 = 0x40000000;
+/// Bits 0..29: thread id
+const FUTEX_TID_MASK: u32 = 0x3fffffff;
+/// Upper bound on the number of robust-list entries we walk before giving up
+const ROBUST_LIST_LIMIT: usize = 2048;
 
 // -------------------------type defs--------------------------------
 
@@ -77,10 +88,10 @@ fn futex_wait_bitset(
     timeout: Option<Timespec>,
 ) -> SyscallRet {
     debug!("wait bitset = {:b}", bitset);
-    // 在futex wait 的基础上，除了插入的队列不同，在队列项中多加了一个bitset，其他没有区别
+    // 清除上次的定时器超时标记
+    task.inner_lock().futex_timedout = false;
+
     let mut waitq = FUTEX_QUEUE_BITMAP.lock();
-    // 向key对应的等待队列中插入当前进程的弱指针。
-    // 如果没有这个队列？那就新建一个
     let futex_key = new_futex_key();
     let waiter = FutexWaiter {
         task: Arc::downgrade(&task),
@@ -105,25 +116,23 @@ fn futex_wait_bitset(
             queue
         });
     }
-    // 释放锁……
     drop(task);
     drop(waitq);
     debug!("futex_wait_bitset sleeping...");
     block_current_and_run_next();
     debug!("futex_wait_bitset wake up!");
     let task = current_task().unwrap();
-    let task_inner = task.inner_lock();
-    // woke by signal
+    let mut task_inner = task.inner_lock();
+
+    // 1) 因信号唤醒 → EINTR
     if !task_inner
         .sig_pending
         .difference(task_inner.sig_mask)
         .is_empty()
     {
-        // 清理残留的 Waiter，防止后续 futex_wake 重复唤醒
         let futex_key = task_inner.futex_key;
         let futex_pa = task_inner.futex_pa;
         drop(task_inner);
-        // futex_key==0 表示 waiter 已被 wakeup_futex_task 清理，无需重复操作
         if futex_key != 0 {
             let mut waitq = FUTEX_QUEUE_BITMAP.lock();
             if let Some(queue) = waitq.get_mut(&futex_pa) {
@@ -134,7 +143,27 @@ fn futex_wait_bitset(
         }
         return Err(SysErrNo::EINTR);
     }
-    // debug!("futex_wait_bitset return!");
+
+    // 2) 因超时唤醒 → ETIMEDOUT
+    if task_inner.futex_timedout {
+        let futex_key = task_inner.futex_key;
+        let futex_pa = task_inner.futex_pa;
+        task_inner.futex_timedout = false;
+        drop(task_inner);
+        // 超时定时器已通过 handle_timer 将 waiter 摘下并设置了 timedout 标记；
+        // futex_key 在 wakeup_futex_task 里已被清 0，此处是安全网。
+        if futex_key != 0 {
+            let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+            if let Some(queue) = waitq.get_mut(&futex_pa) {
+                if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
+                    queue.remove(idx);
+                }
+            }
+        }
+        return Err(SysErrNo::ETIMEDOUT);
+    }
+
+    drop(task_inner);
     Ok(0)
 }
 
@@ -294,11 +323,141 @@ pub fn sys_futex(
     }
 }
 
-pub fn handle_futex_when_exit(_robust_list: &RobustList, _token: usize, _pid: usize) {
-    // 不行，我们的实现是错误的
-    // 宁可不运行这个函数
-    return;
-    // 以后再来改吧
+// ---------------------------------------------------------------------------
+// Robust-futex helpers
+// ---------------------------------------------------------------------------
+/// Reference: linux7.0
+/// Atomically mark a futex word as `FUTEX_OWNER_DIED` and wake waiters,
+/// but *only when* the futex is currently owned by `pid`.
+///
+/// Returns `true` if we owned the futex (and therefore performed the update),
+/// `false` otherwise.
+///
+/// The update uses a retry loop to emulate a hardware cmpxchg:
+///  1. read  `uval`
+///  2. if `(uval & TID_MASK) != pid` → not ours, return false
+///  3. write `(uval & WAITERS) | OWNER_DIED`
+///  4. re-read to verify → if someone raced with us, go to 1.
+fn handle_futex_death_entry(uaddr: usize, token: usize, pid: usize) -> bool {
+    debug!("[handle_futex_death_entry] uaddr={:#x}, token={}, pid={}", uaddr, token, pid);
+    loop {
+        // ---- read current futex word ----
+        let uval: u32 = match try_get_data(token, uaddr as *const u32) {
+            Some(v) => v,
+            None => {
+                debug!("[handle_futex_death_entry] uaddr {:#x} is unmapped, skip", uaddr);
+                return false;
+            }
+        };
+        // Not owned by the exiting task → nothing to do.
+        if uval as usize & FUTEX_TID_MASK as usize != pid {
+            return false;
+        }
+        // Preserve the WAITERS bit, set OWNER_DIED, clear TID.
+        let newval: u32 = (uval & FUTEX_WAITERS) | FUTEX_OWNER_DIED;
+        // ---- write back ----
+        put_data(token, uaddr as *mut u32, newval);
+        // ---- verify (poor-man's cmpxchg) ----
+        let after: u32 = match try_get_data(token, uaddr as *const u32) {
+            Some(v) => v,
+            None => {
+                debug!("[handle_futex_death_entry] uaddr {:#x} became unmapped, skip", uaddr);
+                return false;
+            }
+        };
+        if after != newval {
+            // Someone else modified the word concurrently – retry.
+            continue;
+        }
+        // ---- wake one waiter if there were any ----
+        if uval & FUTEX_WAITERS != 0 {
+            let page_table = PageTable::from_token(token);
+            if let Some(pa) = page_table.translate_va(VirtAddr::from(uaddr)) {
+                futex_wake_up(pa.0, 1);
+            }
+        }
+
+        return true;
+    }
+}
+
+/// Process the robust futex list when a thread exits.
+///
+/// Reference:
+///   Linux `exit_robust_list()` in `kernel/futex/core.c`
+///   https://www.kernel.org/doc/html/latest/locking/robust-futexes.html
+///
+/// Walks the circular singly-linked robust list, marks every futex we still
+/// own with `FUTEX_OWNER_DIED`, and wakes up one waiter per futex.
+///
+/// # Arguments
+/// * `robust_list` – kernel-side copy of `RobustListHead`; its `list` field is
+///   the user-space VA of the list head.
+/// * `token`       – page-table token of the exiting process.
+/// * `pid`         – TID of the exiting thread (used as futex owner id).
+pub fn handle_futex_when_exit(robust_list: &RobustListHead, token: usize, pid: usize) {
+    let head: usize = robust_list.list;
+    if head == 0 {
+        debug!("[handle_futex_when_exit] robust_list.list is 0, nothing to do");
+        return;
+    }
+    // ---- Read futex_offset & list_op_pending from the user-space head ----
+    // Layout of `struct robust_list_head` (RV64 ABI):
+    //   +0  list.next          : usize
+    //   +8  futex_offset       : isize   (signed offset from entry → futex word)
+    //   +16 list_op_pending    : usize
+    let futex_offset: isize = get_data(token, (head + 8) as *const isize);
+    let list_op_pending: usize = get_data(token, (head + 16) as *const usize);
+    debug!(
+        "[handle_futex_when_exit] head={:#x}, futex_offset={}, list_op_pending={:#x}, pid={}",
+        head, futex_offset, list_op_pending, pid,
+    );
+    // ---- 1. Handle the *pending* entry (list_op_pending) first ----
+    if list_op_pending != 0 {
+        let futex_word_addr = (list_op_pending as isize).wrapping_add(futex_offset) as usize;
+        debug!(
+            "[handle_futex_when_exit] processing pending entry at {:#x}, futex_word={:#x}",
+            list_op_pending, futex_word_addr,
+        );
+        handle_futex_death_entry(futex_word_addr, token, pid);
+        // Atomically clear list_op_pending so userspace sees we handled it.
+        put_data(token, (head + 16) as *mut usize, 0usize);
+    }
+    // ---- 2. Walk the circular robust list ----
+    // First real entry: head->list.next (= *head because list is at offset 0).
+    let mut entry: usize = get_data(token, head as *const usize);
+    let mut limit: usize = ROBUST_LIST_LIMIT;
+    while entry != head && limit > 0 {
+        limit -= 1;
+        // Read the next pointer from the current entry.
+        // Bit 0 is the "list-op-pending" marker – mask it off.
+        let raw_next: usize = match try_get_data(token, entry as *const usize) {
+            Some(v) => v,
+            None => {
+                debug!(
+                    "[handle_futex_when_exit] invalid entry {:#x}, stopping walk",
+                    entry
+                );
+                break;
+            }
+        };
+        let next: usize = raw_next & !1usize;
+        // Compute futex-word address: entry + futex_offset
+        let futex_word_addr = (entry as isize).wrapping_add(futex_offset) as usize;
+        debug!(
+            "[handle_futex_when_exit] entry={:#x}, futex_word={:#x}, next={:#x}",
+            entry, futex_word_addr, next,
+        );
+        handle_futex_death_entry(futex_word_addr, token, pid);
+        entry = next;
+    }
+    if limit == 0 {
+        error!(
+            "[handle_futex_when_exit] ROBUST_LIST_LIMIT ({}) reached – list possibly corrupted",
+            ROBUST_LIST_LIMIT,
+        );
+    }
+    debug!("[handle_futex_when_exit] done");
 }
 
 pub fn handle_timer(task: Arc<TaskControlBlock>, futex_key: usize) {
@@ -308,21 +467,21 @@ pub fn handle_timer(task: Arc<TaskControlBlock>, futex_key: usize) {
         // do nothing
         return;
     }
-    // debug!(
-    //     "handle_timer: task=(tid={},key={},pa={:#x})",
-    //     task.tid(),
-    //     inner.futex_key,
-    //     inner.futex_pa
-    // );
+    let futex_pa = inner.futex_pa;
+    drop(inner);
     // 从链表中取下这次Wait
     let queue = waitq
-        .get_mut(&inner.futex_pa)
+        .get_mut(&futex_pa)
         .expect("How could get_mut fail?");
 
     let idx = queue.iter().position(|x| x.futex_key == futex_key);
     if let Some(idx) = idx {
         queue.remove(idx);
-        drop(inner);
+        // 标记超时，确保 futex_wait_bitset 返回 ETIMEDOUT 而非 Ok(0)
+        {
+            let mut inner = task.inner_lock();
+            inner.futex_timedout = true;
+        }
         wakeup_futex_task(task);
     }
 }

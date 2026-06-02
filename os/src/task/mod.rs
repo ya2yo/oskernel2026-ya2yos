@@ -203,11 +203,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             .0;
         futex_wake_up(pa, 1); // 唤醒在 clear_child_tid 等待的线程
     }
-    // 释放futex
+    // 释放futex (必须用 tid 而非 pid，因为 futex word 低 30 位存的是 TID)
     handle_futex_when_exit(
         &curr_task_inner.robust_list,
         curr_proc.get_locked_memory_set_read().token(),
-        curr_task.pid(),
+        curr_task.tid(),
     );
     // debug!("exit_current_and_run_next: futex released");
 

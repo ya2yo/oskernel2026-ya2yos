@@ -9,5 +9,5 @@ pub mod pthread_robust_detach;
 pub mod sscanf_long;
 pub mod stat;
 pub mod utime;
-
+pub mod printf_fmt_n;
 pub mod runall;

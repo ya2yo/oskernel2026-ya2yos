@@ -166,6 +166,32 @@ pub fn safe_translated_refmut<T>(memory_set: &MemorySet, ptr: *mut T) -> &'stati
     KernelAddr::from(page_table.translate_va(VirtAddr::from(va)).unwrap()).as_mut()
 }
 
+/// 从 `token` 地址空间 `ptr` 处读取数据（fallible 版本）。
+/// 如果地址无法翻译或跨页，返回 `None` 而不是 panic。
+pub fn try_get_data<T: 'static + Copy>(token: usize, ptr: *const T) -> Option<T> {
+    let page_table = PageTable::from_token(token);
+    let va = VirtAddr::from(ptr as usize);
+    // 对齐检查
+    if ptr as usize % core::mem::align_of::<T>() != 0 {
+        return None;
+    }
+    let pa = page_table.translate_va(va)?;
+    let size = core::mem::size_of::<T>();
+    // 若数据跨页，逐个字节翻译
+    if (pa + size - 1).floor() != pa.floor() {
+        let mut bytes = vec![0u8; size];
+        let mut cur_va = va;
+        for i in 0..size {
+            let byte_pa = page_table.translate_va(cur_va)?;
+            bytes[i] = *KernelAddr::from(byte_pa).as_ref();
+            cur_va = cur_va + 1;
+        }
+        Some(unsafe { *(bytes.as_slice().as_ptr() as usize as *const T) })
+    } else {
+        Some(*KernelAddr::from(pa).as_ref::<T>())
+    }
+}
+
 /// 从 `token` 地址空间 `ptr` 处读取数据，
 /// 其中虚拟地址 `ptr` 解析得到的物理地址可以跨页。
 ///

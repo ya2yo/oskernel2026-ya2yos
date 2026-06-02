@@ -2,20 +2,19 @@ use log::{debug, warn};
 
 use crate::{
     mm::put_data,
-    task::{current_task, tid_to_task},
+    task::{RobustListHead, current_task, tid_to_task},
     utils::{SysErrNo, SyscallRet},
 };
 
 /// 参考 https://man7.org/linux/man-pages/man2/set_robust_list.2.html
 pub fn sys_set_robust_list(head: usize, len: usize) -> SyscallRet {
-    if len != crate::task::HEAD_SIZE {
+    if len != core::mem::size_of::<RobustListHead>() {
         warn!("sys_set_robust_list len != HEAD_SIZE. early return");
         return Err(SysErrNo::EINVAL);
     }
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
-    task_inner.robust_list.head = head;
-    task_inner.robust_list.len = len; // 要不把它取消注释了？
+    task_inner.robust_list.list = head;
     Ok(0)
 }
 
@@ -32,8 +31,8 @@ pub fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut usize
             .inner_lock()
             .get_locked_memory_set_read()
             .token();
-        put_data(token, head_ptr, task_inner.robust_list.head);
-        put_data(token, len_ptr, task_inner.robust_list.len);
+        put_data(token, head_ptr, task_inner.robust_list.list);
+        put_data(token, len_ptr, core::mem::size_of::<RobustListHead>());
         Ok(0)
     } else {
         Err(SysErrNo::ESRCH)

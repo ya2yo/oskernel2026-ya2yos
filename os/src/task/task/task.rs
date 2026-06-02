@@ -44,18 +44,26 @@ use futures_util::task::AtomicWaker;
 use log::debug;
 use spin::{rwlock::RwLock, Mutex, MutexGuard};
 
+#[repr(C)]
+struct RobustList {
+    next: usize,// 用户空间虚拟地址
+}
+#[repr(C)]
+/// 对应 linux 的 robust_list_head
 #[derive(Clone, Copy, Debug)]
-pub struct RobustList {
-    pub head: usize,
-    pub len: usize,
+pub struct RobustListHead {
+    pub list: usize, /// 用户空间的虚拟地址 == 0 if empty
+    pub futex_offset: isize, // relative offset
+    pub list_op_pending: usize,// first set this field when change
 }
 
-pub const HEAD_SIZE: usize = 24;
-impl Default for RobustList {
+impl Default for RobustListHead {
     fn default() -> Self {
-        RobustList {
-            head: 0,
-            len: HEAD_SIZE,
+        RobustListHead {
+            // 暂时设为 0，因为 Default 函数无法知道对象未来的内存地址
+            list: 0, 
+            futex_offset: 0,
+            list_op_pending: 0,
         }
     }
 }
@@ -104,7 +112,7 @@ pub struct TaskControlBlockInner {
     /// 待处理信号集合
     pub sig_pending: SigSet,
     pub timer: Arc<Timer>,
-    pub robust_list: RobustList,
+    pub robust_list: RobustListHead,
     pub user_id: usize,
     pub effective_uid: u32,
     pub saved_uid: u32,
@@ -117,6 +125,7 @@ pub struct TaskControlBlockInner {
     // 用于futex
     pub futex_pa: usize,  // 当前正在等待的pa
     pub futex_key: usize, // 当前正在等待的Wait的版本号
+    pub futex_timedout: bool, // 本次 futex wait 因超时而唤醒
     /// 信号已交付但被透明处理（setup_frame），可中断 syscall 应返回 EINTR
     pub sig_eintr: bool,
 }
@@ -186,7 +195,7 @@ impl TaskControlBlock {
                 sig_mask: SigSet::empty(),
                 sig_pending: SigSet::empty(),
                 timer: Arc::new(Timer::new()),
-                robust_list: RobustList::default(),
+                robust_list: RobustListHead::default(),
                 user_id: 0,
                 effective_uid: 0,
                 saved_uid: 0,
@@ -196,6 +205,7 @@ impl TaskControlBlock {
                 pdeath_signal: 0,
                 futex_pa: 0,
                 futex_key: 0,
+                futex_timedout: false,
                 sig_eintr: false,
             }),
         };
@@ -486,7 +496,7 @@ impl TaskControlBlock {
                 sig_mask,
                 sig_pending: SigSet::empty(),
                 timer,
-                robust_list: RobustList::default(),
+                robust_list: RobustListHead::default(),
                 user_id: parent_inner.user_id,
                 effective_uid: parent_inner.effective_uid,
                 saved_uid: parent_inner.saved_uid,
@@ -496,6 +506,7 @@ impl TaskControlBlock {
                 pdeath_signal: 0,
                 futex_pa: 0,
                 futex_key: 0,
+                futex_timedout: false,
                 sig_eintr: false,
             }),
         });
