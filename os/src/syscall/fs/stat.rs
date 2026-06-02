@@ -176,6 +176,25 @@ pub fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
     Ok(0)
 }
 
+/// 参考 https://man7.org/linux/man-pages/man2/fstatfs.2.html
+///
+/// 返回 fd 所在文件系统的统计信息，写入用户空间 Statfs 缓冲区。
+/// 当前内核仅有单一 ext4 文件系统，所有 fd 返回相同的 superblock 数据。
+pub fn sys_fstatfs(fd: i32, buf: usize) -> SyscallRet {
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let fd = fd as usize;
+
+    // 校验 fd 有效性
+    if fd >= proc_inner.fd_table.len() || proc_inner.fd_table.try_get(fd).is_none() {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let token = proc_inner.get_locked_memory_set_read().token();
+    put_data(token, buf as *mut Statfs, superblock_fs_stat());
+    Ok(0)
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/faccessat.2.html
 pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> SyscallRet {
     let task = current_task().unwrap();
