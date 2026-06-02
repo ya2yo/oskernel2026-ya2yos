@@ -261,7 +261,7 @@ impl MemorySetInner {
     }
 
     pub fn lazy_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
-        // debug!("[lazy_page_fault] vpn={:?} scause={:?}", vpn, scause);
+        debug!("[lazy_page_fault] vpn={:?} scause={:?}", vpn, scause);
         let ppn = self.page_table.translate(vpn);
         if !ppn.is_none() { return false; }
         // mmap
@@ -298,6 +298,7 @@ impl MemorySetInner {
                 area.area_type == MapAreaType::Elf
                     || area.area_type == MapAreaType::Brk
                     || area.area_type == MapAreaType::Mmap
+                    || area.area_type == MapAreaType::Stack
             })
             .find(|area| { let (start, end) = area.vpn_range.range(); start <= vpn && vpn < end })
         {

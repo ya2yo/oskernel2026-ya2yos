@@ -293,12 +293,13 @@ impl PageTable {
             Some(f) => Arc::strong_count(f),
             None => return false,
         };
-
+        debug!("---> refcnt={}",refcnt);
         // 只有一个引用：无需复制物理页，直接调整权限即可
         if refcnt == 1 {
             let mut flags = pte.get_flags();
             flags.remove(RVPTEFlags::COW); // 无 COW 时是空操作
             flags.insert(RVPTEFlags::WRITEABLE);
+            flags.insert(RVPTEFlags::READABLE);
             flags.insert(RVPTEFlags::DIRTY);
             pte.set_flags(flags);
             tlb_invalidate();
