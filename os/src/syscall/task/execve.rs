@@ -6,7 +6,7 @@ use log::debug;
 
 use crate::{
     fs::{open, OpenFlags, NONE_MODE},
-    mm::{read_user_cstr, safe_translated_ref},
+    mm::{copy_from_user, read_user_cstr},
     task::current_task,
     utils::{get_abs_path, strip_color, trim_start_slash, SysErrNo, SyscallRet},
 };
@@ -82,7 +82,10 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     //处理argv参数
     let mut argv_vec = Vec::<String>::new();
     if !argv.is_null() {
-        let argv_ptr = *safe_translated_ref(&memory_set, argv);
+        let mut argv_ptr: usize = 0;
+        copy_from_user(&memory_set, argv as usize, unsafe {
+            core::slice::from_raw_parts_mut(&mut argv_ptr as *mut usize as *mut u8, core::mem::size_of::<usize>())
+        })?;
         if argv_ptr != 0 {
             argv_vec.push(path.clone());
             unsafe {
@@ -94,7 +97,10 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         if argv.is_null() {
             break;
         }
-        let argv_ptr = *safe_translated_ref(&memory_set, argv);
+        let mut argv_ptr: usize = 0;
+        copy_from_user(&memory_set, argv as usize, unsafe {
+            core::slice::from_raw_parts_mut(&mut argv_ptr as *mut usize as *mut u8, core::mem::size_of::<usize>())
+        })?;
         if argv_ptr == 0 {
             break;
         }
@@ -135,7 +141,10 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     } else {
         // debug!("use assigned env");
         loop {
-            let envp_ptr = *safe_translated_ref(&memory_set, envp);
+            let mut envp_ptr: usize = 0;
+            copy_from_user(&memory_set, envp as usize, unsafe {
+                core::slice::from_raw_parts_mut(&mut envp_ptr as *mut usize as *mut u8, core::mem::size_of::<usize>())
+            })?;
             if envp_ptr == 0 {
                 break;
             }

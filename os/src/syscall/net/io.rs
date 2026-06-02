@@ -2,13 +2,13 @@
 // StarryOS 原先的实现过于简单，实际linux实现相当复杂
 // 以下根据 StarryOS 原先 net 模块的实现进行扩充
 use crate::fs::Socket;
-use crate::mm::{copy_from_user, copy_to_user, translated_byte_buffer, UserBuffer};
+use crate::mm::{copy_from_user, copy_to_user, safe_translated_byte_buffer, UserBuffer};
 use crate::net::{
     CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps,
 };
 use crate::syscall::net::addr::SocketAddrExt;
 use crate::syscall::net::CMsg;
-use crate::task::{current_task, current_token};
+use crate::task::current_task;
 use crate::utils::{SysErrNo, SysResult, SyscallRet};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -154,7 +154,9 @@ fn read_iovecs(msg: &msghdr) -> SysResult<Vec<iovec>> {
 }
 
 fn iovecs_to_user_buffer(iovs: &[iovec]) -> SysResult<UserBuffer> {
-    let token = current_token();
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
     let mut slices = Vec::new();
     for iov in iovs {
         let len = iov.iov_len as usize;
@@ -164,7 +166,7 @@ fn iovecs_to_user_buffer(iovs: &[iovec]) -> SysResult<UserBuffer> {
         if iov.iov_base.is_null() {
             return Err(SysErrNo::EFAULT);
         }
-        let buffers = translated_byte_buffer(token, iov.iov_base as *const u8, len)
+        let buffers = safe_translated_byte_buffer(&memory_set, iov.iov_base as *const u8, len)
             .ok_or(SysErrNo::EFAULT)?;
         slices.extend(buffers);
     }
@@ -219,8 +221,12 @@ pub fn sys_sendto(
     dest_addr: *const u8,
     addrlen: u32,
 ) -> SyscallRet {
-    let token = current_token();
-    let buffer = UserBuffer::new(translated_byte_buffer(token, buf, len).ok_or(SysErrNo::EFAULT)?);
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    let buffer = UserBuffer::new(
+        safe_translated_byte_buffer(&memory_set, buf, len).ok_or(SysErrNo::EFAULT)?,
+    );
     send_impl(sockfd, buffer, flags, dest_addr, addrlen, Vec::new())
 }
 
@@ -283,18 +289,12 @@ pub fn sys_recvfrom(
     src_addr: *mut u8,
     addrlen_ptr: *mut socklen_t,
 ) -> SyscallRet {
-    // debug!(
-    //     "
-    //     [sys_recvfrom] sockfd: {sockfd},
-    //     buf: {},
-    //     len: {},
-    //     flags: {},
-    //     src_addr: {},
-    //     addr_len: {}.",
-    //     buf as usize, len, flags, src_addr as usize, addrlen_ptr as usize
-    // );
-    let token = current_token();
-    let buffer = UserBuffer::new(translated_byte_buffer(token, buf, len).ok_or(SysErrNo::EFAULT)?);
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    let buffer = UserBuffer::new(
+        safe_translated_byte_buffer(&memory_set, buf, len).ok_or(SysErrNo::EFAULT)?,
+    );
     let mut addrlen = if src_addr.is_null() || addrlen_ptr.is_null() {
         None
     } else {

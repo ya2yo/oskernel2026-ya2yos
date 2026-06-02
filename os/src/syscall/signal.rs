@@ -2,13 +2,13 @@ use alloc::sync::Arc;
 use log::{debug, error};
 
 use crate::{
-    mm::{get_data, put_data, safe_get_data, try_get_data},
+    mm::{copy_from_user, copy_to_user},
     signal::{
         KSigAction, SIG_MAX_NUM, SigAction, SigInfo, SigSet, restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group, send_signal_to_thread_of_proc,
         SIGKILL, SIGSTOP,
     },
     syscall::SignalMaskFlag,
-    task::{current_task, current_token, exit_current_and_run_next, suspend_current_and_run_next},
+    task::{current_task, exit_current_and_run_next, suspend_current_and_run_next},
     timer::Timespec,
     utils::{SysErrNo, SyscallRet},
 };
@@ -30,8 +30,13 @@ pub fn sys_rt_sigaction(
     }
     // SIGKILL 和 SIGSTOP 不可被捕获或忽略 (POSIX.1-2001)
     if (signo == SIGKILL || signo == SIGSTOP) && act as usize != 0 {
-        let token = current_token();
-        let new_act = get_data(token, act);
+        let task = current_task().unwrap();
+        let process = task.process.inner_lock();
+        let memory_set = process.get_locked_memory_set_read();
+        let mut new_act: SigAction = unsafe { core::mem::zeroed() };
+        copy_from_user(&memory_set, act as usize, unsafe {
+            core::slice::from_raw_parts_mut(&mut new_act as *mut SigAction as *mut u8, core::mem::size_of::<SigAction>())
+        })?;
         if new_act.sa_handler != 0 {
             // 不允许修改 SIGKILL/SIGSTOP 的 handler（SIG_DFL 除外）
             debug!("[sys_rt_sigaction] attempt to change SIGKILL/SIGSTOP handler");
@@ -41,13 +46,18 @@ pub fn sys_rt_sigaction(
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let sigtable = process.get_locked_sigtable();
-    let token = process.get_locked_memory_set_read().token();
+    let memory_set = process.get_locked_memory_set_read();
     if old_act as usize != 0 {
         let sig_act = sigtable.action(signo).act;
-        put_data(token, old_act, sig_act);
+        copy_to_user(&memory_set, old_act as usize, unsafe {
+            core::slice::from_raw_parts(&sig_act as *const SigAction as *const u8, core::mem::size_of::<SigAction>())
+        })?;
     }
     if act as usize != 0 {
-        let new_act = get_data(token, act);
+        let mut new_act: SigAction = unsafe { core::mem::zeroed() };
+        copy_from_user(&memory_set, act as usize, unsafe {
+            core::slice::from_raw_parts_mut(&mut new_act as *mut SigAction as *mut u8, core::mem::size_of::<SigAction>())
+        })?;
         debug!(
             "[sys_rt_sigaction] signo is {}, sig is {:?}, act is {:?}",
             signo,
@@ -81,17 +91,21 @@ pub fn sys_rt_sigreturn() -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/rt_sigprocmask.2.html
 pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = current_token();
-    // debug!("strong count: {}", Arc::strong_count(&task));
-    let _process = task.process.inner_lock();
+    let process = task.process.inner_lock();
+    let memory_set = &*process.get_locked_memory_set_read();
     let mut task_inner = task.inner_lock();
     let how = SignalMaskFlag::from_bits(how).ok_or(SysErrNo::EINVAL)?;
 
     if old_set as usize != 0 {
-        put_data(token, old_set, task_inner.sig_mask);
+        copy_to_user(memory_set, old_set as usize, unsafe {
+            core::slice::from_raw_parts(&task_inner.sig_mask as *const SigSet as *const u8, core::mem::size_of::<SigSet>())
+        })?;
     }
     if set as usize != 0 {
-        let mask = try_get_data(token, set).ok_or(SysErrNo::EINVAL)?;
+        let mut mask: SigSet = SigSet::default();
+        copy_from_user(memory_set, set as usize, unsafe {
+            core::slice::from_raw_parts_mut(&mut mask as *mut SigSet as *mut u8, core::mem::size_of::<SigSet>())
+        })?;
 
         debug!(
             "[sys_sigprocmask] how is {:?}, mask is {:?}, old_set is {:x}",
@@ -129,16 +143,16 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
     // debug!("[sys_rt_sigsuspend] mask is {:?}", mask);
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
-    let mask = get_data(token, mask);
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    let mut mask_val: SigSet = SigSet::default();
+    copy_from_user(&memory_set, mask as usize, unsafe {
+        core::slice::from_raw_parts_mut(&mut mask_val as *mut SigSet as *mut u8, core::mem::size_of::<SigSet>())
+    })?;
+    let mask = mask_val;
     let old_mask = task_inner.sig_mask;
     task_inner.sig_mask = mask;
     drop(task_inner);
-    drop(task);
     loop {
         let task = current_task().unwrap();
         let mut task_inner = task.inner_lock();

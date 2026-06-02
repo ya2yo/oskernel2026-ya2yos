@@ -2,7 +2,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     arch::page_table::PageTable,
-    mm::{PhysAddr, VirtAddr, get_data, put_data, try_get_data},
+    mm::{PhysAddr, VirtAddr, copy_from_user, get_data, put_data, try_get_data},
     syscall::{FutexCmd, FutexOpt},
     task::{RobustListHead, tid_to_task},
     timer::{Timespec, add_futex_timer, get_time_spec},
@@ -222,12 +222,7 @@ pub fn sys_futex(
     uaddr2: *mut u32,
     _val3: i32,
 ) -> SyscallRet {
-    debug!("Enter sys_futex");
-    debug!("futex_op={}", futex_op);
-    debug!("timeout={:#x}", timeout as usize);
-    debug!("uaddr={:#x}", uaddr as usize);
-    let cmd = FutexCmd::try_from(futex_op & 0x7f).expect("invalid futex op");
-    debug!("futex cmd={:?}", cmd);
+    let cmd = FutexCmd::try_from(futex_op & 0x7f).map_err(|_| SysErrNo::EINVAL)?;
     let opt = FutexOpt::from_bits_truncate(futex_op);
     // 检查uaddr一定是4字节对齐（因为是int*）
     if uaddr.align_offset(4) != 0 {
@@ -255,7 +250,11 @@ pub fn sys_futex(
         if timeout as usize == usize::MAX {
             return Err(SysErrNo::EINVAL);
         }
-        let mut real_timeout = get_data(token, timeout);
+        let mut real_timeout = Timespec::default();
+        copy_from_user(&memory_set, timeout as usize, unsafe{
+            core::slice::from_raw_parts_mut(&mut real_timeout as *mut Timespec as *mut _, 
+            core::mem::size_of::<Timespec>())
+        })?;
         if opt.contains(FutexOpt::FUTEX_CLOCK_REALTIME) {
             // 此时的timeout是相对于1970年的时间，而非时间间隔
             // 因此，我们减去“开机时间-1970”
@@ -288,7 +287,7 @@ pub fn sys_futex(
         FutexCmd::Wait | FutexCmd::WaitBitset => {
             // 理论上，既然会进入到这里，那么，用户态程序应该是获取锁失败了
             // 在这里做出检查：取出uaddr的值，看看到底是不是!=val
-            if get_data(token, uaddr) != val {
+            if try_get_data(token, uaddr).ok_or(SysErrNo::EFAULT)? != val {
                 return Err(SysErrNo::EAGAIN);
             }
             let bitset = if cmd == FutexCmd::Wait {

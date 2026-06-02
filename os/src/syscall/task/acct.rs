@@ -1,8 +1,6 @@
 use crate::{
     fs::{open, FileClass, InodeType, OpenFlags, MAX_PATH_LEN, NONE_MODE},
-    mm::{
-        get_data, if_bad_address, put_data, read_user_cstr, safe_put_data, translated_ref, VirtAddr,
-    },
+    mm::{if_bad_address, read_user_cstr},
     signal::{check_if_any_sig_for_current_task, handle_signal},
     syscall::{CloneFlags, Utsname},
     task::{

@@ -4,7 +4,7 @@ use log::{debug, warn};
 use crate::{
     fs::{DummyFd, FdTable, File, FileDescriptor, OpenFlags, SEEK_CUR, SEEK_SET},
     mm::{
-        UserBuffer, safe_translated_byte_buffer, translated_byte_buffer, translated_ref, translated_refmut
+        UserBuffer, copy_from_user, copy_to_user, safe_translated_byte_buffer,
     },
     syscall::{fs::dummyfd_create, options::Iovec},
     task::current_task,
@@ -73,8 +73,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
 pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
-    let fd_table = proc_inner.fd_table.clone();
+
     debug!(
         "[sys_writev] fd is {}, iov is {:x}, iovcnt is {}",
         fd, iov as usize, iovcnt
@@ -83,25 +82,32 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     if fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = fd_table.try_get(fd) {
+    if let Some(file) = proc_inner.fd_table.try_get(fd) {
         let file = file.any();
         if !file.writable() {
             return Err(SysErrNo::EBADF);
         }
         // release current task TCB manually to avoid multi-borrow
+        let iovec_size = core::mem::size_of::<Iovec>();
+        let mut bufs: Vec<UserBuffer> = Vec::new();
+        {
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            for i in 0..iovcnt {
+                let current = (iov as usize) + iovec_size * i ;
+                let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
+                copy_from_user(&memory_set, current, &mut iov_buf)?;
+                let iovinfo: Iovec = unsafe { core::mem::transmute(iov_buf) };
+                let buf = UserBuffer::new(
+                    safe_translated_byte_buffer(&memory_set, iovinfo.iov_base as *mut u8, iovinfo.iov_len)
+                        .ok_or(SysErrNo::EFAULT)?,
+                );
+                bufs.push(buf);
+            }
+        }
         drop(proc_inner);
         drop(task);
         let mut ret: usize = 0;
-        let iovec_size = core::mem::size_of::<Iovec>();
-
-        for i in 0..iovcnt {
-            // current iovec pointer
-            let current = unsafe { iov.add(iovec_size * i) };
-            let iovinfo = *translated_refmut(token, current as *mut Iovec);
-            let buf = UserBuffer::new(
-                translated_byte_buffer(token, iovinfo.iov_base as *mut u8, iovinfo.iov_len)
-                    .unwrap(),
-            );
+        for buf in bufs {
             let write_ret = file.write(buf)?;
             ret += write_ret as usize;
         }
@@ -115,37 +121,67 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
 pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
 
     if fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = proc_inner.fd_table.try_get(fd) {
-        let file = file.any();
-        if !file.readable() {
-            return Err(SysErrNo::EACCES);
-        }
-        // release current task TCB manually to avoid multi-borrow
-        drop(proc_inner);
-        drop(task);
-        let mut ret: usize = 0;
-        let iovec_size = core::mem::size_of::<Iovec>();
-
-        for i in 0..iovcnt {
-            // current iovec pointer
-            let current = unsafe { iov.add(iovec_size * i) };
-            let iovinfo = *translated_refmut(token, current as *mut Iovec);
-            let buf = UserBuffer::new(
-                translated_byte_buffer(token, iovinfo.iov_base as *mut u8, iovinfo.iov_len)
-                    .unwrap(),
-            );
-            let read_ret = file.read(buf)?;
-            ret += read_ret as usize;
-        }
-        Ok(ret)
-    } else {
-        Err(SysErrNo::EBADF)
+    let file = match proc_inner.fd_table.try_get(fd) {
+        Some(f) => f.any(),
+        None => return Err(SysErrNo::EBADF),
+    };
+    if !file.readable() {
+        return Err(SysErrNo::EACCES);
     }
+
+    let iovec_size = core::mem::size_of::<Iovec>();
+    let mut total: usize = 0;
+
+    for i in 0..iovcnt {
+        // 阶段 1：持锁读取 iovec 元数据 + 分配内核缓冲区
+        let (iov_base, iov_len, mut kernel_buf) = {
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            let iov_ptr = (iov as usize) + iovec_size * i ;
+
+            // copy_from_user 替代 translated_refmut：安全读取 iovec 结构体
+            let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
+            copy_from_user(&memory_set, iov_ptr, &mut iov_buf)?;
+            // SAFETY: Iovec is #[repr(C)], two usize fields, 16 bytes on 64-bit
+            let iovinfo: Iovec = unsafe { core::mem::transmute(iov_buf) };
+
+            if iovinfo.iov_len == 0 {
+                (0, 0, Vec::new())
+            } else {
+                (iovinfo.iov_base, iovinfo.iov_len, vec![0u8; iovinfo.iov_len])
+            }
+        };
+        // 锁在此处释放（memory_set 和 proc_inner 的借用结束）
+
+        if iov_len == 0 {
+            continue;
+        }
+
+        // 阶段 2：无锁读取文件 → 内核缓冲区（可能阻塞，不持锁）
+        let read_ret = {
+            let mut ub_v = Vec::with_capacity(1);
+            unsafe {
+                ub_v.push(core::slice::from_raw_parts_mut(
+                    kernel_buf.as_mut_ptr(),
+                    iov_len,
+                ));
+            }
+            file.read(UserBuffer::new(ub_v))?
+        };
+
+        // 阶段 3：持锁将内核缓冲区 → 用户空间
+        {
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            // copy_to_user 替代 translated_byte_buffer：安全写入用户空间
+            copy_to_user(&memory_set, iov_base, &kernel_buf[..read_ret])?;
+        }
+
+        total += read_ret as usize;
+    }
+    Ok(total)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/lseek.2.html
@@ -169,12 +205,6 @@ pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
 pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.process.inner_lock();
-    let token = inner.get_locked_memory_set_read().token();
-
-    // debug!(
-    //     "[sys_sendfile] outfd is {}, infd is {}, offset_ptr is {}, count is {}",
-    //     outfd, infd, offset_ptr, count
-    // );
 
     if outfd >= inner.fd_table.len()
         || inner.fd_table.try_get(outfd).is_none()
@@ -193,6 +223,18 @@ pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) 
     if !infile.readable() {
         return Err(SysErrNo::EACCES);
     }
+
+    // 在释放锁之前读取用户空间的 offset
+    let user_offset = if offset_ptr != 0 {
+        let memory_set = inner.get_locked_memory_set_read();
+        let mut off: isize = 0;
+        copy_from_user(&memory_set, offset_ptr, unsafe {
+            core::slice::from_raw_parts_mut(&mut off as *mut isize as *mut u8, core::mem::size_of::<isize>())
+        })?;
+        off
+    } else {
+        0
+    };
 
     drop(inner);
     drop(task);
@@ -213,12 +255,10 @@ pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) 
     if offset_ptr == 0 {
         readcount = infile.read(inbuffer)?;
     } else {
-        let offset = *translated_ref(token, offset_ptr as *const isize);
-        if offset < 0 {
+        if user_offset < 0 {
             return Err(SysErrNo::EINVAL);
         }
-        // infile.set_offset(offset as usize);
-        infile.lseek(offset, SEEK_SET)?;
+        infile.lseek(user_offset, SEEK_SET)?;
         readcount = infile.read(inbuffer)?;
     }
 
@@ -246,7 +286,6 @@ pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) 
 pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.process.inner_lock();
-    let token = inner.get_locked_memory_set_read().token();
 
     if offset < 0 || fd >= inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
@@ -257,14 +296,19 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
             return Err(SysErrNo::EACCES);
         }
         let file = file.clone();
+        let buffer = {
+            let memory_set = inner.get_locked_memory_set_read();
+            UserBuffer::new(
+                safe_translated_byte_buffer(&memory_set, buf, count)
+                    .ok_or(SysErrNo::EFAULT)?,
+            )
+        };
         // release current task TCB manually to avoid multi-borrow
         drop(inner);
         drop(task);
         let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
         file.lseek(offset, SEEK_SET)?;
-        let ret = file.write(UserBuffer::new(
-            translated_byte_buffer(token, buf, count).unwrap(),
-        ))?;
+        let ret = file.write(buffer)?;
         file.lseek(cur_offset, SEEK_SET)?;
         return Ok(ret);
     }
@@ -345,9 +389,6 @@ pub fn sys_copy_file_range(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.process.inner_lock();
-    let token = inner.get_locked_memory_set_read().token();
-
-    // debug!("[sys_copy_file_range] infd is {}, off_in is {}, outfd is {}, off_out is {},count is {}, flags is {}", infd, off_in, outfd, off_out, count, flags);
 
     if outfd >= inner.fd_table.len()
         || inner.fd_table.try_get(outfd).is_none()
@@ -366,6 +407,30 @@ pub fn sys_copy_file_range(
     if !infile.readable() {
         return Err(SysErrNo::EACCES);
     }
+
+    // 在释放锁之前读取用户空间的 offset
+    let (in_offset, out_offset) = {
+        let memory_set = inner.get_locked_memory_set_read();
+        let in_off = if off_in != 0 {
+            let mut off: isize = 0;
+            copy_from_user(&memory_set, off_in, unsafe {
+                core::slice::from_raw_parts_mut(&mut off as *mut isize as *mut u8, core::mem::size_of::<isize>())
+            })?;
+            off
+        } else {
+            0
+        };
+        let out_off = if off_out != 0 {
+            let mut off: isize = 0;
+            copy_from_user(&memory_set, off_out, unsafe {
+                core::slice::from_raw_parts_mut(&mut off as *mut isize as *mut u8, core::mem::size_of::<isize>())
+            })?;
+            off
+        } else {
+            0
+        };
+        (in_off, out_off)
+    };
 
     drop(inner);
     drop(task);
@@ -387,14 +452,13 @@ pub fn sys_copy_file_range(
     if off_in == 0 {
         readcount = infile.read(inbuffer)?;
     } else {
-        let offset = *translated_ref(token, off_in as *const isize);
-        if offset < 0 {
+        if in_offset < 0 {
             return Err(SysErrNo::EINVAL);
         }
-        let in_offset = infile.lseek(0, SEEK_CUR)?;
-        infile.lseek(offset, SEEK_SET)?;
+        let cur_in_offset = infile.lseek(0, SEEK_CUR)?;
+        infile.lseek(in_offset, SEEK_SET)?;
         readcount = infile.read(inbuffer)?;
-        infile.lseek(in_offset as isize, SEEK_SET)?;
+        infile.lseek(cur_in_offset as isize, SEEK_SET)?;
     }
 
     if readcount == 0 {
@@ -417,24 +481,43 @@ pub fn sys_copy_file_range(
     if off_out == 0 {
         writecount = outfile.write(outbuffer)?;
     } else {
-        let offset = *translated_ref(token, off_out as *const isize);
-        if offset < 0 {
+        if out_offset < 0 {
             return Err(SysErrNo::EINVAL);
         }
-        let out_offset = outfile.lseek(0, SEEK_CUR)?;
-        outfile.lseek(offset, SEEK_SET)?;
+        let cur_out_offset = outfile.lseek(0, SEEK_CUR)?;
+        outfile.lseek(out_offset, SEEK_SET)?;
         writecount = outfile.write(outbuffer)?;
-        outfile.lseek(out_offset as isize, SEEK_SET)?;
+        outfile.lseek(cur_out_offset as isize, SEEK_SET)?;
     }
     outfile
         .inode
         .set_timestamps(None, Some((get_time_ms() / 1000) as u64), None);
     //如果系统调用执行成功，*off_in和*off_out将会增加复制的长度
     if off_in != 0 {
-        *translated_refmut(token, off_in as *mut isize) += writecount as isize;
+        let task = current_task().unwrap();
+        let inner = task.process.inner_lock();
+        let memory_set = inner.get_locked_memory_set_read();
+        let mut cur_off: isize = 0;
+        copy_from_user(&memory_set, off_in, unsafe {
+            core::slice::from_raw_parts_mut(&mut cur_off as *mut isize as *mut u8, core::mem::size_of::<isize>())
+        })?;
+        cur_off += writecount as isize;
+        copy_to_user(&memory_set, off_in, unsafe {
+            core::slice::from_raw_parts(&cur_off as *const isize as *const u8, core::mem::size_of::<isize>())
+        })?;
     }
     if off_out != 0 {
-        *translated_refmut(token, off_out as *mut isize) += writecount as isize;
+        let task = current_task().unwrap();
+        let inner = task.process.inner_lock();
+        let memory_set = inner.get_locked_memory_set_read();
+        let mut cur_off: isize = 0;
+        copy_from_user(&memory_set, off_out, unsafe {
+            core::slice::from_raw_parts_mut(&mut cur_off as *mut isize as *mut u8, core::mem::size_of::<isize>())
+        })?;
+        cur_off += writecount as isize;
+        copy_to_user(&memory_set, off_out, unsafe {
+            core::slice::from_raw_parts(&cur_off as *const isize as *const u8, core::mem::size_of::<isize>())
+        })?;
     }
 
     Ok(writecount)

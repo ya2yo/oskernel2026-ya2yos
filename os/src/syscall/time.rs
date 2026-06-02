@@ -1,4 +1,4 @@
-use crate::mm::{get_data, if_bad_address, put_data};
+use crate::mm::{copy_from_user, copy_to_user, if_bad_address};
 use crate::task::current_task;
 use crate::timer::{
     CLOCK_REALTIME_OFFSET, ITIMER_REAL, Itimerval, NANOS_PER_SEC, NOW_TIME_STAMP, Rusage, TIME_OK, TimeVal, Timespec, Timex, Tms, get_time_ms, get_time_spec, timex_apply, timex_get_realtime
@@ -12,11 +12,8 @@ const MAX_CLOCKS: usize = 12;
 /// 参考 https://man7.org/linux/man-pages/man2/gettimeofday.2.html
 pub fn sys_gettimeofday(ts: *mut Timespec, tz: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     if (ts as isize) < 0 || if_bad_address(ts as usize) {
         return Err(SysErrNo::EFAULT);
@@ -27,7 +24,9 @@ pub fn sys_gettimeofday(ts: *mut Timespec, tz: usize) -> SyscallRet {
     }
     let mut time = get_time_spec();
     time.tv_sec += NOW_TIME_STAMP;
-    put_data(token, ts, time);
+    copy_to_user(&memory_set, ts as usize, unsafe {
+        core::slice::from_raw_parts(&time as *const Timespec as *const u8, core::mem::size_of::<Timespec>())
+    })?;
     Ok(0)
 }
 
@@ -35,13 +34,12 @@ pub fn sys_gettimeofday(ts: *mut Timespec, tz: usize) -> SyscallRet {
 pub fn sys_times(tms: *mut Tms) -> SyscallRet {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
-
-    put_data(token, tms, Tms::new(&task_inner.time_data));
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let tms_data = Tms::new(&task_inner.time_data);
+    copy_to_user(&memory_set, tms as usize, unsafe {
+        core::slice::from_raw_parts(&tms_data as *const Tms as *const u8, core::mem::size_of::<Tms>())
+    })?;
     Ok(0)
 }
 
@@ -55,17 +53,21 @@ pub fn sys_settimer(
     assert!(which == ITIMER_REAL, "only support Itimer Real");
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
-
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
     if old_value as usize != 0 {
-        put_data(token, old_value, task_inner.timer.timer());
+        let timer = task_inner.timer.timer();
+        copy_to_user(&memory_set, old_value as usize, unsafe{
+            core::slice::from_raw_parts(&timer as *const Itimerval as *const _, 
+            core::mem::size_of::<Itimerval>())
+        })?;
     }
     if new_value as usize != 0 {
-        let new_timer = get_data(token, new_value);
+        let mut new_timer = Itimerval::default();
+        copy_from_user(&memory_set, new_value as usize, unsafe{
+            core::slice::from_raw_parts_mut(&mut new_timer as *mut Itimerval as *mut _, 
+            core::mem::size_of::<Itimerval>())
+        })?;
         // debug!("[sys_settimer] new_timer={:?}", new_timer);
         task_inner.timer.set_timer(new_timer);
         task_inner.timer.set_last_time(TimeVal::now());
@@ -89,11 +91,8 @@ pub fn sys_clock_gettime(clockid: usize, tp: *mut Timespec) -> SyscallRet {
     // }
     let task = current_task().unwrap();
 
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
     let mut time = get_time_spec();
 
     if clockid == 1 {
@@ -111,7 +110,9 @@ pub fn sys_clock_gettime(clockid: usize, tp: *mut Timespec) -> SyscallRet {
         return Err(SysErrNo::EINVAL);
     }
 
-    put_data(token, tp, time);
+    copy_to_user(&memory_set, tp as usize, unsafe {
+        core::slice::from_raw_parts(&time as *const Timespec as *const u8, core::mem::size_of::<Timespec>())
+    })?;
     // error!(
     //     "[sys_clock_gettime] clockid is {}, time={:?}",
     //     clockid, time
@@ -140,11 +141,8 @@ pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
 
     let task = current_task().unwrap();
     let inner = task.inner_lock();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     match who {
         RUSAGESELF => {
@@ -152,7 +150,9 @@ pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
                 inner.time_data.utime as usize,
                 inner.time_data.stime as usize,
             );
-            put_data(token, usage, gotusage);
+            copy_to_user(&memory_set, usage as usize, unsafe {
+                core::slice::from_raw_parts(&gotusage as *const Rusage as *const u8, core::mem::size_of::<Rusage>())
+            })?;
             Ok(0)
         }
         RUSAGECHILDEN => {
@@ -160,7 +160,9 @@ pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
                 inner.time_data.cutime as usize,
                 inner.time_data.cstime as usize,
             );
-            put_data(token, usage, gotusage);
+            copy_to_user(&memory_set, usage as usize, unsafe {
+                core::slice::from_raw_parts(&gotusage as *const Rusage as *const u8, core::mem::size_of::<Rusage>())
+            })?;
             Ok(0)
         }
         _ => return Err(SysErrNo::EINVAL),
@@ -168,7 +170,7 @@ pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/clock_getres.2.html
-pub fn sys_clock_getres(clockid: usize, res: *mut Timespec) -> SyscallRet {
+pub fn sys_clock_getres(clockid: usize, res: usize) -> SyscallRet {
     // debug!(
     //     "[sys_clock_getres] clockid is {}, res is {:x}",
     //     clockid, res as usize
@@ -179,17 +181,21 @@ pub fn sys_clock_getres(clockid: usize, res: *mut Timespec) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     //assert!(clockid == 1, "other clockid not supported!");
-
     let restime = Timespec::new(0, 1);
-    put_data(token, res, restime);
-    Ok(0)
+    copy_to_user(
+        &memory_set, 
+        res, 
+        unsafe { 
+            core::slice::from_raw_parts(&restime as *const Timespec as *const _ , 
+            core::mem::size_of::<Timespec>()) 
+        }
+    )?;
+
+    Ok(0) // 返回成功
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/adjtimex.2.html
@@ -200,17 +206,23 @@ pub fn sys_clock_getres(clockid: usize, res: *mut Timespec) -> SyscallRet {
 pub fn sys_adjtimex(buf: *mut Timex) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
     let privileged = task.inner_lock().effective_uid == 0;
 
     if (buf as isize) <= 0 || if_bad_address(buf as usize) {
         return Err(SysErrNo::EFAULT);
     }
 
-    let tx = get_data(token, buf);
+    let mut tx = Timex::defaults();
+    copy_from_user(&memory_set, buf as usize, unsafe {
+        core::slice::from_raw_parts_mut(&mut tx as *mut Timex as *mut u8, core::mem::size_of::<Timex>())
+    })?;
 
     if tx.modes == 0 {
-        put_data(token, buf, timex_get_realtime());
+        let realtime = timex_get_realtime();
+        copy_to_user(&memory_set, buf as usize, unsafe {
+            core::slice::from_raw_parts(&realtime as *const Timex as *const u8, core::mem::size_of::<Timex>())
+        })?;
         debug!("[adjtimex] read current params, returning TIME_OK");
         return Ok(TIME_OK);
     }
@@ -221,7 +233,10 @@ pub fn sys_adjtimex(buf: *mut Timex) -> SyscallRet {
     );
 
     let ret = timex_apply(&tx, privileged)?;
-    put_data(token, buf, timex_get_realtime());
+    let realtime = timex_get_realtime();
+    copy_to_user(&memory_set, buf as usize, unsafe {
+        core::slice::from_raw_parts(&realtime as *const Timex as *const u8, core::mem::size_of::<Timex>())
+    })?;
     Ok(ret)
 }
 
@@ -239,13 +254,19 @@ pub fn sys_clock_adjtime(clock_id: u32, buf: *mut Timex) -> SyscallRet {
 
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
     let privileged = task.inner_lock().effective_uid == 0;
 
-    let tx = get_data(token, buf);
+    let mut tx = Timex::defaults();
+    copy_from_user(&memory_set, buf as usize, unsafe {
+        core::slice::from_raw_parts_mut(&mut tx as *mut Timex as *mut u8, core::mem::size_of::<Timex>())
+    })?;
 
     if tx.modes == 0 {
-        put_data(token, buf, timex_get_realtime());
+        let realtime = timex_get_realtime();
+        copy_to_user(&memory_set, buf as usize, unsafe {
+            core::slice::from_raw_parts(&realtime as *const Timex as *const u8, core::mem::size_of::<Timex>())
+        })?;
         debug!("[clock_adjtime] read current params");
         return Ok(TIME_OK);
     }
@@ -256,7 +277,10 @@ pub fn sys_clock_adjtime(clock_id: u32, buf: *mut Timex) -> SyscallRet {
     );
 
     let ret = timex_apply(&tx, privileged)?;
-    put_data(token, buf, timex_get_realtime());
+    let realtime = timex_get_realtime();
+    copy_to_user(&memory_set, buf as usize, unsafe {
+        core::slice::from_raw_parts(&realtime as *const Timex as *const u8, core::mem::size_of::<Timex>())
+    })?;
     Ok(ret)
 }
 
@@ -277,12 +301,12 @@ pub fn sys_clock_settime(clock_id: u32, tp: *const Timespec) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
-    let ts = get_data(token, tp);
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let mut ts = Timespec::new(0, 0);
+    copy_from_user(&memory_set, tp as usize, unsafe {
+        core::slice::from_raw_parts_mut(&mut ts as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+    })?;
 
     // EINVAL: tv_nsec < 0 或 >= 10^9
     if  ts.tv_nsec as u64 >= NANOS_PER_SEC {

@@ -1,16 +1,18 @@
 use alloc::string::String;
 use alloc::vec;
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_FOLLOW};
 use log::{debug, warn};
+use lwext4_rust::file::OsDirent;
 
 use crate::fs::{
     open, superblock_sync, File, FsIndex, InodeType, OpenFlags, MAX_PATH_LEN, NONE_MODE, SEEK_CUR,
     SEEK_SET,
 };
 use crate::mm::{
-    copy_to_user, get_data, if_bad_address, read_user_cstr, safe_translated_byte_buffer, translated_byte_buffer,
+    copy_from_user, copy_to_user, if_bad_address, read_user_cstr, safe_translated_byte_buffer,
     UserBuffer,
 };
-use crate::task::{current_task, current_token};
+use crate::task::current_task;
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
 use crate::utils::{get_abs_path, rsplit_once, SysErrNo, SyscallRet};
 use linux_raw_sys::loop_device::LOOP_SET_FD;
@@ -132,13 +134,22 @@ pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/linkat.2.html
 pub fn sys_linkat(
-    _oldfd: isize,
-    _oldpath: *const u8,
-    _newfd: isize,
-    _newpath: *const u8,
-    _flags: u32,
+    oldfd: isize,
+    oldpath: *const u8,
+    newfd: isize,
+    newpath: *const u8,
+    flags: u32,
 ) -> SyscallRet {
-    todo!();
+    let new_entry:OsDirent;
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let oldpath = read_user_cstr(&memory_set, oldpath)?;
+    let new_path = read_user_cstr(&memory_set, newpath)?;
+    let file =open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
+    let newfile = open(&new_path, OpenFlags::O_CREATE, NONE_MODE)?.file()?;
+    newfile.inode=file.inode;
+    Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/unlinkat.2.html
@@ -194,7 +205,6 @@ pub fn sys_utimensat(
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
-    let token = memory_set.token();
     let path = if !path.is_null() {
         read_user_cstr(&memory_set, path)?
     } else {
@@ -214,8 +224,14 @@ pub fn sys_utimensat(
         atime_sec = Some(nowtime);
         mtime_sec = Some(nowtime);
     } else {
-        let atime = get_data(token, times);
-        let mtime = get_data(token, unsafe { times.add(1) });
+        let mut atime = Timespec::new(0, 0);
+        copy_from_user(&memory_set, times as usize, unsafe {
+            core::slice::from_raw_parts_mut(&mut atime as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+        })?;
+        let mut mtime = Timespec::new(0, 0);
+        copy_from_user(&memory_set, unsafe { times.add(1) } as usize, unsafe {
+            core::slice::from_raw_parts_mut(&mut mtime as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+        })?;
         match atime.tv_nsec {
             UTIME_NOW => atime_sec = Some(nowtime),
             UTIME_OMIT => (),
@@ -245,11 +261,6 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
-    let token = memory_set.token();
-    let self_token = current_token();
-    if token != self_token {
-        warn!("token != self_token");
-    }
     let path = read_user_cstr(&memory_set, path)?;
 
     // debug!(
@@ -279,7 +290,10 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
     let mut linkbuf = vec![0u8; bufsize];
     let file = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
     let readcnt = file.inode.read_link(&mut linkbuf, bufsize)?;
-    let mut buffer = UserBuffer::new(translated_byte_buffer(token, buf, readcnt).unwrap());
+    let mut buffer = UserBuffer::new(
+        safe_translated_byte_buffer(&proc_inner.get_locked_memory_set_read(), buf, readcnt)
+            .ok_or(SysErrNo::EFAULT)?,
+    );
     buffer.write(&linkbuf);
     Ok(readcnt)
 

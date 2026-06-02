@@ -19,7 +19,8 @@ use super::NANOS_PER_SEC;
 const NSEC_PER_SEC: usize = 1_000_000_000;
 const MSEC_PER_SEC: usize = 1_000;
 
-#[derive(Debug, Ord, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+#[derive(Default,Debug, Ord, Clone, Copy, PartialEq, Eq)]
 pub struct Timespec {
     pub tv_sec: usize,
     pub tv_nsec: usize,

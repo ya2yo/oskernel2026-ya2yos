@@ -8,9 +8,9 @@ use log::{debug};
 
 use crate::{
     arch::time::get_clock_freq,
-    mm::{get_data, if_bad_address, put_data, safe_put_data},
+    mm::{copy_from_user, copy_to_user, if_bad_address},
     signal::check_if_any_sig_for_current_task,
-    task::{current_task, current_token, suspend_current_and_run_next},
+    task::{current_task, suspend_current_and_run_next},
     timer::{NANOS_PER_SEC, MSEC_PER_SEC, Timespec, calculate_left_timespec, get_time_ms, get_time_spec},
     utils::{SysErrNo, SyscallRet},
 };
@@ -23,10 +23,18 @@ pub fn sys_sched_yield() -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/nanosleep.2.html
 pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
-    let token = current_token();
+    let task = current_task().unwrap();
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    let mut req_val = Timespec::new(0, 0);
+    copy_from_user(&memory_set, req as usize, unsafe {
+        core::slice::from_raw_parts_mut(&mut req_val as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+    })?;
+    drop(memory_set);
+    drop(process);
+    let req = req_val;
 
-    let req = get_data(token, req);
-    if req.tv_nsec >= NANOS_PER_SEC as usize {
+    if req.tv_nsec >= NANOS_PER_SEC as usize || (req.tv_sec as isize) < 0 {
         return Err(SysErrNo::EINVAL);
     }
 
@@ -39,7 +47,6 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
         req.tv_sec, req.tv_nsec
     );
 
-    let task = current_task().unwrap();
     while get_time_ms() * 1_000_000usize - begin < waittime {
         if check_if_any_sig_for_current_task().is_some()
             || {
@@ -51,9 +58,13 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
                 eintr
             }
         {
-            //被信号唤醒
             if rem as usize != 0 {
-                put_data(token, rem, calculate_left_timespec(endtime));
+                let process = task.process.inner_lock();
+                let memory_set = process.get_locked_memory_set_read();
+                let left = calculate_left_timespec(endtime);
+                copy_to_user(&memory_set, rem as usize, unsafe {
+                    core::slice::from_raw_parts(&left as *const Timespec as *const u8, core::mem::size_of::<Timespec>())
+                })?;
             }
             return Err(SysErrNo::EINTR);
         }
@@ -135,7 +146,11 @@ pub fn sys_clock_nanosleep(
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_read();
-    let t = get_data(memory_set.token(), t);
+    let mut t_val = Timespec::new(0, 0);
+    copy_from_user(&memory_set, t as usize, unsafe {
+        core::slice::from_raw_parts_mut(&mut t_val as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+    })?;
+    let t = t_val;
     debug!("[sys_clock_nanosleep] clock_id={clockid}, flags={flags}, t={:?}", t);
     drop(memory_set);
     drop(process);
@@ -198,7 +213,10 @@ pub fn sys_clock_nanosleep(
             if !remain.is_null() {
                 let process = task.process.inner_lock();
                 let memory_set = process.get_locked_memory_set_read();
-                safe_put_data(&*memory_set, remain, calculate_left_timespec(endtime));
+                let left = calculate_left_timespec(endtime);
+                copy_to_user(&memory_set, remain as usize, unsafe {
+                    core::slice::from_raw_parts(&left as *const Timespec as *const u8, core::mem::size_of::<Timespec>())
+                })?;
             }
             return Err(SysErrNo::EINTR);
         }

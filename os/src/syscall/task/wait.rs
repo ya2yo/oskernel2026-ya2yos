@@ -4,7 +4,7 @@ use alloc::{sync::Arc, vec::Vec};
 use log::debug;
 
 use crate::{
-    mm::put_data,
+    mm::copy_to_user,
     signal::{check_if_any_sig_for_current_task, SigActionFlags, SigOp, SigSet, SIGCHLD, SIG_IGN},
     syscall::options::WaitOption,
     task::{block_on, current_task, interruptible, suspend_current_and_run_next, Process},
@@ -73,15 +73,19 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
             let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
 
             if !wstatus.is_null() {
-                let token = task
+                let proc_inner = task
                     .process
-                    .inner_lock()
-                    .get_locked_memory_set_read()
-                    .token();
-                if exit_code >= 128 && exit_code <= 255 {
-                    put_data(token, wstatus, exit_code);
+                    .inner_lock();
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                let value = if exit_code >= 128 && exit_code <= 255 {
+                    exit_code
                 } else {
-                    put_data(token, wstatus, exit_code << 8);
+                    exit_code << 8
+                };
+                if copy_to_user(&memory_set, wstatus as usize, unsafe {
+                    core::slice::from_raw_parts(&value as *const i32 as *const u8, core::mem::size_of::<i32>())
+                }).is_err() {
+                    return Poll::Ready(Err(SysErrNo::EFAULT));
                 }
             }
 

@@ -2,10 +2,10 @@ use linux_raw_sys::{general::{_LINUX_CAPABILITY_VERSION_1, _LINUX_CAPABILITY_VER
 use log::{debug, warn};
 
 use crate::{
-    fs::{open, open_device_file, InodeType, OpenFlags, NONE_MODE},
-    mm::{get_data, if_bad_address, put_data, read_user_cstr, translated_byte_buffer, UserBuffer},
+    fs::{InodeType, NONE_MODE, OpenFlags, open, open_device_file},
+    mm::{UserBuffer, copy_from_user, copy_to_user, if_bad_address, read_user_cstr, safe_translated_byte_buffer},
     syscall::Utsname,
-    task::{current_task, current_token, tid_to_task, Sysinfo},
+    task::{Sysinfo, current_task, tid_to_task},
     timer::get_time_ms,
     utils::{SysErrNo, SyscallRet},
 };
@@ -186,7 +186,7 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> SyscallRet {
 pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
     let inner = task.inner_lock();
     let real_uid = inner.user_id as u32;
 
@@ -201,7 +201,9 @@ pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> SyscallR
         if (ptr as isize) <= 0 || if_bad_address(ptr as usize) {
             return Err(SysErrNo::EFAULT);
         }
-        put_data(token, ptr, value);
+        copy_to_user(&memory_set, ptr as usize, unsafe {
+            core::slice::from_raw_parts(&value as *const u32 as *const u8, core::mem::size_of::<u32>())
+        })?;
     }
     Ok(0)
 }
@@ -306,7 +308,7 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> SyscallRet {
 pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
     let inner = task.inner_lock();
 
     for (ptr, value) in [
@@ -320,7 +322,9 @@ pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> SyscallR
         if (ptr as isize) <= 0 || if_bad_address(ptr as usize) {
             return Err(SysErrNo::EFAULT);
         }
-        put_data(token, ptr, value);
+        copy_to_user(&memory_set, ptr as usize, unsafe {
+            core::slice::from_raw_parts(&value as *const u32 as *const u8, core::mem::size_of::<u32>())
+        })?;
     }
     Ok(0)
 }
@@ -340,25 +344,24 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
         machine: str2u8("RISC-V64"),
         domainname: str2u8("TrustOS"),
     };
-    let token = current_token();
-    put_data(token, buf as *mut Utsname, uname);
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    copy_to_user(&memory_set, buf as usize, unsafe {
+        core::slice::from_raw_parts(&uname as *const Utsname as *const u8, core::mem::size_of::<Utsname>())
+    })?;
     Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/sysinfo.2.html
 pub fn sys_sysinfo(info: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
-
-    put_data(
-        token,
-        info as *mut Sysinfo,
-        Sysinfo::new(get_time_ms() / 1000, 1 << 56, tid_to_task::task_num()),
-    );
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let sysinfo = Sysinfo::new(get_time_ms() / 1000, 1 << 56, tid_to_task::task_num());
+    copy_to_user(&memory_set, info as usize, unsafe {
+        core::slice::from_raw_parts(&sysinfo as *const Sysinfo as *const u8, core::mem::size_of::<Sysinfo>())
+    })?;
     // debug!("[sys_sysinfo] ourinfo is {:?}", ourinfo);
     Ok(0)
 }
@@ -372,11 +375,8 @@ pub fn sys_syslog(_logtype: isize, _bufp: *const u8, _len: usize) -> SyscallRet 
 /// 参考 https://man7.org/linux/man-pages/man2/getrandom.2.html
 pub fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     if (flags as i32) < 0 {
         return Err(SysErrNo::EINVAL);
@@ -391,7 +391,7 @@ pub fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRe
     }
 
     open_device_file("/dev/random")?.read(UserBuffer::new(
-        translated_byte_buffer(token, buf_ptr, buflen).unwrap(),
+        safe_translated_byte_buffer(&memory_set, buf_ptr, buflen).ok_or(SysErrNo::EFAULT)?,
     ))
 }
 
@@ -399,7 +399,7 @@ pub fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRe
 // capability 系统调用
 // ---------------------------------------------------------------------------
 /// 对应 C struct __user_cap_header_struct
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct CapUserHeader {
     pub version: u32,
@@ -419,7 +419,7 @@ pub struct CapUserData {
 pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     // EFAULT: 非法地址
     if (hdrp as isize) <= 0 || if_bad_address(hdrp as usize) {
@@ -429,7 +429,10 @@ pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallR
         return Err(SysErrNo::EFAULT);
     }
 
-    let mut hdr = get_data(token, hdrp);
+    let mut hdr = CapUserHeader::default();
+    copy_from_user(&memory_set, hdrp as usize, unsafe {
+        core::slice::from_raw_parts_mut(&mut hdr as *mut CapUserHeader as *mut u8, core::mem::size_of::<CapUserHeader>())
+    })?;
     debug!("[capget] version=0x{:x}, pid={}", hdr.version, hdr.pid);
 
     // EINVAL: pid < 0 (仅 pid == 0 表示自身)
@@ -451,7 +454,9 @@ pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallR
     );
     if !supported {
         hdr.version = _LINUX_CAPABILITY_VERSION_3;
-        put_data(token, hdrp, hdr);
+        copy_to_user(&memory_set, hdrp as usize, unsafe {
+            core::slice::from_raw_parts(&hdr as *const CapUserHeader as *const u8, core::mem::size_of::<CapUserHeader>())
+        })?;
         debug!("[capget] unsupported version -> fallback to V3");
         return Err(SysErrNo::EINVAL);
     }
@@ -462,7 +467,9 @@ pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallR
         permitted: 0,
         inheritable: 0,
     };
-    put_data(token, datap, data);
+    copy_to_user(&memory_set, datap as usize, unsafe {
+        core::slice::from_raw_parts(&data as *const CapUserData as *const u8, core::mem::size_of::<CapUserData>())
+    })?;
     debug!("[capget] success, version=0x{:x}", hdr.version);
     Ok(0)
 }
@@ -472,7 +479,7 @@ pub fn sys_capset(hdrp: *mut CapUserHeader, datap: *const CapUserData) -> Syscal
     // 伪实现: 允许设置但不实际存储
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     if (hdrp as isize) <= 0 || if_bad_address(hdrp as usize) {
         return Err(SysErrNo::EFAULT);
@@ -480,8 +487,16 @@ pub fn sys_capset(hdrp: *mut CapUserHeader, datap: *const CapUserData) -> Syscal
     if (datap as isize) <= 0 || if_bad_address(datap as usize) {
         return Err(SysErrNo::EFAULT);
     }
+    let mut hdr = CapUserHeader::default(); // 假设实现了 Default，或者用 core::mem::zeroed()
 
-    let hdr = get_data(token, hdrp);
+    let hdr_ptr = &mut hdr as *mut CapUserHeader as *mut u8;
+    let hdr_size = core::mem::size_of::<CapUserHeader>();
+
+    copy_from_user(
+        &memory_set, 
+        hdrp as usize, 
+        unsafe { core::slice::from_raw_parts_mut(hdr_ptr, hdr_size) }
+    )?;
     debug!("[capset] version=0x{:x}, pid={}", hdr.version, hdr.pid);
 
     // EPERM: 非 root 不能设置 capabilities
@@ -527,8 +542,11 @@ pub fn sys_prctl(
             drop(inner);
             if arg2 != 0 {
                 let proc_inner = task.process.inner_lock();
-                let token = proc_inner.get_locked_memory_set_read().token();
-                put_data(token, arg2 as *mut i32, sig as i32);
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                let sig_val = sig as i32;
+                copy_to_user(&memory_set, arg2, unsafe {
+                    core::slice::from_raw_parts(&sig_val as *const i32 as *const u8, core::mem::size_of::<i32>())
+                })?;
             }
             debug!("[prctl] get pdeath_signal={}", sig);
             Ok(0)
@@ -625,7 +643,7 @@ pub fn sys_prctl(
 pub fn sys_getgroups(size: usize, list: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     // 返回至少一个组 (root: gid=0)
     let count = 1usize;
@@ -645,7 +663,9 @@ pub fn sys_getgroups(size: usize, list: *mut u32) -> SyscallRet {
     }
 
     let gid = task.inner_lock().effective_gid;
-    put_data(token, list, gid);
+    copy_to_user(&memory_set, list as usize, unsafe {
+        core::slice::from_raw_parts(&gid as *const u32 as *const u8, core::mem::size_of::<u32>())
+    })?;
     debug!("[getgroups] wrote {} group", count);
     Ok(count)
 }

@@ -2,7 +2,7 @@ use alloc::string::ToString;
 use log::{debug, warn};
 
 use crate::{
-    fs::{FileClass, FileDescriptor, make_pipe}, mm::translated_refmut, syscall::fs::dummyfd_create, task::current_task, utils::SyscallRet
+    fs::{FileClass, FileDescriptor, make_pipe}, mm::copy_to_user, syscall::fs::dummyfd_create, task::current_task, utils::SyscallRet
 };
 
 /// 参考 https://man7.org/linux/man-pages/man2/pipe2.2.html
@@ -10,7 +10,7 @@ pub fn sys_pipe2(fd: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let fd_table = proc_inner.fd_table.clone();
-    let token = proc_inner.get_locked_memory_set_write().token();
+    let memory_set = proc_inner.get_locked_memory_set_write();
 
     let (read_pipe, write_pipe) = make_pipe();
     let read_fd = fd_table.alloc_fd()?;
@@ -27,8 +27,14 @@ pub fn sys_pipe2(fd: *mut u32) -> SyscallRet {
     locked_fs_info.insert("pipe".to_string(), read_fd);
     locked_fs_info.insert("pipe".to_string(), write_fd);
     // debug!("pipe read fd is {}, write fd is {}", read_fd, write_fd);
-    *translated_refmut(token, fd) = read_fd as u32;
-    *translated_refmut(token, unsafe { fd.add(1) }) = write_fd as u32;
+    let rfd = read_fd as u32;
+    copy_to_user(&memory_set, fd as usize, unsafe {
+        core::slice::from_raw_parts(&rfd as *const u32 as *const u8, core::mem::size_of::<u32>())
+    })?;
+    let wfd = write_fd as u32;
+    copy_to_user(&memory_set, unsafe { fd.add(1) } as usize, unsafe {
+        core::slice::from_raw_parts(&wfd as *const u32 as *const u8, core::mem::size_of::<u32>())
+    })?;
     Ok(0)
 }
 

@@ -9,7 +9,7 @@ use crate::{
         open, superblock_fs_stat, InodeType, Kstat, OpenFlags, Statfs, MAX_PATH_LEN, MNT_TABLE,
         NONE_MODE,
     },
-    mm::{copy_to_user, if_bad_address, put_data, read_user_cstr},
+    mm::{copy_to_user, if_bad_address, read_user_cstr},
     syscall::options::{FaccessatFileMode, FaccessatMode},
     task::current_task,
     utils::{rsplit_once, trim_start_slash, SysErrNo, SyscallRet},
@@ -63,22 +63,20 @@ fn statx_time(sec: usize, nsec: usize) -> statx_timestamp {
 pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     if (kst as isize) <= 0 || if_bad_address(kst as usize) {
         return Err(SysErrNo::EFAULT);
     }
 
-    // debug!(
-    //     "[sys_fstat] fd is {:?}, kst_addr is {:#x}",
-    //     fd, kst as usize
-    // );
-
     if fd >= proc_inner.fd_table.len() || proc_inner.fd_table.try_get(fd).is_none() {
         return Err(SysErrNo::EBADF);
     }
     let file = proc_inner.fd_table.get(fd)?.any();
-    put_data(token, kst, file.fstat());
+    let kst_data = file.fstat();
+    copy_to_user(&memory_set, kst as usize, unsafe {
+        core::slice::from_raw_parts(&kst_data as *const Kstat as *const u8, core::mem::size_of::<Kstat>())
+    })?;
     Ok(0)
 }
 
@@ -88,19 +86,20 @@ pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, _flags: usize
 
     let proc_inner = task.process.inner_lock();
     let memory_set = &proc_inner.get_locked_memory_set_read();
-    let token = memory_set.token();
     let path = read_user_cstr(memory_set, path)?;
     let path = trim_start_slash(path);
 
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
-    //log::info!("[sys_fstatat] abs_path={}", &abs_path);
 
     if abs_path == "/ls" || abs_path == "/xargs" || abs_path == "/sleep" {
         open(&abs_path, OpenFlags::O_CREATE, NONE_MODE);
     }
 
     let file = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.any();
-    put_data(token, kst, file.fstat());
+    let kst_data = file.fstat();
+    copy_to_user(memory_set, kst as usize, unsafe {
+        core::slice::from_raw_parts(&kst_data as *const Kstat as *const u8, core::mem::size_of::<Kstat>())
+    })?;
     return Ok(0);
 }
 /// 参考 https://man7.org/linux/man-pages/man2/statx.2.html
@@ -167,12 +166,12 @@ pub fn sys_statx(
 /// 参考 https://man7.org/linux/man-pages/man2/statfs.2.html
 pub fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
-    put_data(token, statfs, superblock_fs_stat());
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let stat = superblock_fs_stat();
+    copy_to_user(&memory_set, statfs as usize, unsafe {
+        core::slice::from_raw_parts(&stat as *const Statfs as *const u8, core::mem::size_of::<Statfs>())
+    })?;
     Ok(0)
 }
 
@@ -190,9 +189,15 @@ pub fn sys_fstatfs(fd: i32, buf: usize) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
 
-    let token = proc_inner.get_locked_memory_set_read().token();
-    put_data(token, buf as *mut Statfs, superblock_fs_stat());
-    Ok(0)
+    let stat = superblock_fs_stat();
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            &stat as *const Statfs as *const u8,
+            core::mem::size_of::<Statfs>(),
+        )
+    };
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    copy_to_user(&memory_set, buf, bytes)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/faccessat.2.html

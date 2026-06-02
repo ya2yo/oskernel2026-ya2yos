@@ -40,6 +40,7 @@ pub const SIGRTMIN: usize = 32;
 pub const SIGRT_1: usize = SIGRTMIN + 1;
 
 bitflags! {
+    #[derive(Default)]
     pub struct SigSet: usize {
         const SIGHUP    = 1 << (SIGHUP -1);
         const SIGINT    = 1 << (SIGINT - 1);

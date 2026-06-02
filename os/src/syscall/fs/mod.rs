@@ -13,7 +13,7 @@ use log::warn;
 
 use crate::{
     fs::{DummyFd, FileDescriptor, OpenFlags},
-    mm::{UserBuffer, translated_byte_buffer, translated_refmut},
+    mm::{UserBuffer, copy_from_user, safe_translated_byte_buffer},
     syscall::options::Iovec,
     task::current_task,
     utils::{SysErrNo, SyscallRet},
@@ -135,7 +135,7 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
 
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
+    let memory_set = proc_inner.get_locked_memory_set_read();
     let fd_table = proc_inner.fd_table.clone();
     let fd = fd as usize;
 
@@ -156,28 +156,31 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
         return Err(SysErrNo::EBADF);
     }
 
-    // 释放锁，避免 pipe write 阻塞时死锁
-    drop(proc_inner);
-    drop(task);
-
-    // 遍历 iovec，从用户空间读取全部数据到内核缓冲区
+    // 遍历 iovec，从用户空间读取全部数据到内核缓冲区（在持锁状态下完成翻译）
     let iovec_size = core::mem::size_of::<Iovec>();
     let mut kernel_buf: Vec<u8> = Vec::new();
 
     for i in 0..nr_segs as usize {
-        let current = unsafe { (iov as *const u8).add(iovec_size * i) };
-        let iovinfo = *translated_refmut(token, current as *mut Iovec);
+        let current =  (iov as usize) + iovec_size * i ;
+        let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
+        copy_from_user(&memory_set, current, &mut iov_buf)?;
+        let iovinfo: Iovec = unsafe { core::mem::transmute(iov_buf) };
         if iovinfo.iov_len == 0 {
             continue;
         }
         // 翻译用户空间地址，逐个片段复制
         let buf_slices =
-            translated_byte_buffer(token, iovinfo.iov_base as *mut u8, iovinfo.iov_len)
+            safe_translated_byte_buffer(&memory_set, iovinfo.iov_base as *mut u8, iovinfo.iov_len)
                 .ok_or(SysErrNo::EFAULT)?;
         for slice in buf_slices {
             kernel_buf.extend_from_slice(slice);
         }
     }
+
+    // 释放锁，避免 pipe write 阻塞时死锁
+    drop(memory_set);
+    drop(proc_inner);
+    drop(task);
 
     let total_len = kernel_buf.len();
     if total_len == 0 {

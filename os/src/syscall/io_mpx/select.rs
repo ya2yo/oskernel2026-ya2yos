@@ -2,9 +2,9 @@ use alloc::sync::Arc;
 
 use crate::{
     fs::File,
-    mm::{get_data, put_data},
+    mm::{copy_from_user, copy_to_user},
     signal::SigSet,
-    syscall::{options::FdSet, PollEvents},
+    syscall::{options::{FdSet, FD_SET_LEN}, PollEvents},
     task::{current_task, suspend_current_and_run_next},
     timer::{get_time_ms, Timespec},
     utils::SyscallRet,
@@ -23,51 +23,62 @@ pub fn sys_pselect6(
     let task = current_task().unwrap();
     let mut inner = task.inner_lock();
     let proc_inner = task.process.inner_lock();
-    let token = proc_inner.get_locked_memory_set_read().token();
-
-    // debug!("[sys_pselect6] nfds is {}, readfds is {}, writefds is {}, exceptfds is {}, timeout is {}, sigmask is {}",nfds,readfds,writefds,exceptfds,timeout,sigmask);
+    let memory_set = proc_inner.get_locked_memory_set_read();
 
     let old_mask = inner.sig_mask;
     if sigmask != 0 {
-        inner.sig_mask = get_data(token, sigmask as *const SigSet);
+        let mut sigset = SigSet::default();
+        copy_from_user(&memory_set, sigmask, unsafe {
+            core::slice::from_raw_parts_mut(&mut sigset as *mut SigSet as *mut u8, core::mem::size_of::<SigSet>())
+        })?;
+        inner.sig_mask = sigset;
     }
 
     let nfds = min(nfds, proc_inner.fd_table.get_soft_limit());
 
     let mut using_readfds = if readfds != 0 {
-        Some(get_data(token, readfds as *mut FdSet))
+        let mut fdset = FdSet { fds_bits: [0; FD_SET_LEN] };
+        copy_from_user(&memory_set, readfds, unsafe {
+            core::slice::from_raw_parts_mut(&mut fdset as *mut FdSet as *mut u8, core::mem::size_of::<FdSet>())
+        })?;
+        Some(fdset)
     } else {
         None
     };
     let mut using_writefds = if writefds != 0 {
-        Some(get_data(token, writefds as *mut FdSet))
+        let mut fdset = FdSet { fds_bits: [0; FD_SET_LEN] };
+        copy_from_user(&memory_set, writefds, unsafe {
+            core::slice::from_raw_parts_mut(&mut fdset as *mut FdSet as *mut u8, core::mem::size_of::<FdSet>())
+        })?;
+        Some(fdset)
     } else {
         None
     };
     let mut using_exceptfds = if exceptfds != 0 {
-        Some(get_data(token, exceptfds as *mut FdSet))
+        let mut fdset = FdSet { fds_bits: [0; FD_SET_LEN] };
+        copy_from_user(&memory_set, exceptfds, unsafe {
+            core::slice::from_raw_parts_mut(&mut fdset as *mut FdSet as *mut u8, core::mem::size_of::<FdSet>())
+        })?;
+        Some(fdset)
     } else {
         None
     };
 
     // pselect 不会更新 timeout 的值，而 select 会
     let waittime = if timeout == 0 {
-        //为0则永远等待直到完成
         -1
     } else {
-        // let timespec = translated_ref(token, timeout as *const Timespec);
-        let timespec = get_data(token, timeout as *const Timespec);
-        // debug!(
-        //     "[sys_pselect6] waittime is {} sec, {} nsec",
-        //     timespec.tv_sec, timespec.tv_nsec
-        // );
-
+        let mut timespec = Timespec::new(0, 0);
+        copy_from_user(&memory_set, timeout, unsafe {
+            core::slice::from_raw_parts_mut(&mut timespec as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+        })?;
         (timespec.tv_sec * 1_000_000_000 + timespec.tv_nsec) as isize
     };
 
     let begin = get_time_ms() * 1_000_000;
 
     //由于每次循环结束需要让出cpu，因此需要在每次循环时重新获得锁
+    drop(memory_set);
     drop(proc_inner);
     drop(inner);
     drop(task);
@@ -132,16 +143,26 @@ pub fn sys_pselect6(
 
         //如果有响应了则返回,或者如果时间是0，0（只监视一遍），也需要返回结果
         if num > 0 || waittime == 0 {
-            // debug!("[sys_pselect6] ret for num:{},waittime:{}", num, waittime);
-            if let Some(using_readfds) = using_readfds {
-                put_data(token, readfds as *mut FdSet, using_readfds);
-            }
-            if let Some(using_writefds) = using_writefds {
-                put_data(token, writefds as *mut FdSet, using_writefds);
-            }
-            if let Some(using_exceptfds) = using_exceptfds {
-                // debug!("[sys_pselect6] exceptfds is {:?}", using_exceptfds);
-                put_data(token, exceptfds as *mut FdSet, using_exceptfds);
+            // 重新获取 memory_set 以写回结果
+            {
+                let task = current_task().unwrap();
+                let proc_inner = task.process.inner_lock();
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                if let Some(using_readfds) = using_readfds {
+                    copy_to_user(&memory_set, readfds, unsafe {
+                        core::slice::from_raw_parts(&using_readfds as *const FdSet as *const u8, core::mem::size_of::<FdSet>())
+                    })?;
+                }
+                if let Some(using_writefds) = using_writefds {
+                    copy_to_user(&memory_set, writefds, unsafe {
+                        core::slice::from_raw_parts(&using_writefds as *const FdSet as *const u8, core::mem::size_of::<FdSet>())
+                    })?;
+                }
+                if let Some(using_exceptfds) = using_exceptfds {
+                    copy_to_user(&memory_set, exceptfds, unsafe {
+                        core::slice::from_raw_parts(&using_exceptfds as *const FdSet as *const u8, core::mem::size_of::<FdSet>())
+                    })?;
+                }
             }
             if sigmask != 0 {
                 inner.sig_mask = old_mask;
@@ -151,7 +172,6 @@ pub fn sys_pselect6(
 
         //或者时间到了也可以返回
         if waittime > 0 && get_time_ms() * 1000000 - begin >= waittime as usize {
-            // debug!("[sys_pselect6] ret for timeout");
             if sigmask != 0 {
                 inner.sig_mask = old_mask;
             }

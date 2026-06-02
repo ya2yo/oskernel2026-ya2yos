@@ -7,7 +7,7 @@ use linux_raw_sys::general::{epoll_event, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CT
 
 use crate::{
     fs::{EpollCreateFlags, EpollFile, FileClass, FileDescriptor, OpenFlags},
-    mm::{translated_ref, translated_refmut},
+    mm::{copy_from_user, copy_to_user},
     task::{current_task, suspend_current_and_run_next},
     timer::get_time_ms,
     utils::{SysErrNo, SyscallRet},
@@ -40,11 +40,8 @@ pub fn sys_epoll_create1(flags: u32) -> SyscallRet {
 
 pub fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event_ptr: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
 
     let fd_i32 = fd as i32;
     let epoll_file = EpollFile::lookup(epfd)?;
@@ -58,7 +55,10 @@ pub fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event_ptr: usize) -> Sys
 
     match op {
         x if x == EPOLL_CTL_ADD as usize => {
-            let event = *translated_ref(token, event_ptr as *const epoll_event);
+            let mut event: epoll_event = unsafe { core::mem::zeroed() };
+            copy_from_user(&memory_set, event_ptr, unsafe {
+                core::slice::from_raw_parts_mut(&mut event as *mut epoll_event as *mut u8, core::mem::size_of::<epoll_event>())
+            })?;
             debug!(
                 "[sys_epoll_ctl] ADD epfd={}, fd={}, events=0x{:x}, data=0x{:x}",
                 epfd, fd, event.events, event.data
@@ -67,7 +67,10 @@ pub fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event_ptr: usize) -> Sys
             Ok(0)
         }
         x if x == EPOLL_CTL_MOD as usize => {
-            let event = *translated_ref(token, event_ptr as *const epoll_event);
+            let mut event: epoll_event = unsafe { core::mem::zeroed() };
+            copy_from_user(&memory_set, event_ptr, unsafe {
+                core::slice::from_raw_parts_mut(&mut event as *mut epoll_event as *mut u8, core::mem::size_of::<epoll_event>())
+            })?;
             debug!(
                 "[sys_epoll_ctl] MOD epfd={}, fd={}, events=0x{:x}, data=0x{:x}",
                 epfd, fd, event.events, event.data
@@ -124,11 +127,8 @@ pub fn sys_epoll_pwait(
 /// 单次扫描：写用户 `epoll_event` 数组并返回就绪数量。
 fn epoll_wait_once(epfd: usize, events_ptr: usize, maxevents: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
     let epoll_file = EpollFile::lookup(epfd)?;
 
     let mut poll_one = |fd: i32, registered: u32| {
@@ -138,13 +138,14 @@ fn epoll_wait_once(epfd: usize, events_ptr: usize, maxevents: usize) -> SyscallR
     };
 
     let ready = epoll_file.collect_ready(&mut poll_one, maxevents);
-    let events_slice = events_ptr as *mut epoll_event;
     for (i, ev) in ready.iter().enumerate() {
         let user_event = epoll_event {
             events: ev.events,
             data: ev.data,
         };
-        *unsafe { translated_refmut(token, events_slice.add(i)) } = user_event;
+        copy_to_user(&memory_set, events_ptr + i * core::mem::size_of::<epoll_event>(), unsafe {
+            core::slice::from_raw_parts(&user_event as *const epoll_event as *const u8, core::mem::size_of::<epoll_event>())
+        })?;
     }
     Ok(ready.len())
 }
