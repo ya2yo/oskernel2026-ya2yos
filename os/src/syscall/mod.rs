@@ -11,7 +11,7 @@
 //! submodules, and you should also implement syscalls this way.
 use core::arch;
 
-use linux_raw_sys::general::statx;
+use linux_raw_sys::general::{open_how, statx};
 #[cfg(feature = "net")]
 use linux_raw_sys::net::{msghdr, socklen_t};
 use log::{error, warn};
@@ -83,6 +83,8 @@ pub enum Syscall {
     GetRobustList = 100,
     NanoSleep = 101,
     SetTimer = 103,
+    InitModule = 105,
+    DeleteModule = 106,
     ClockSetTime = 112,
     ClockGettime = 113,
     ClockGetres = 114,
@@ -212,7 +214,7 @@ use crate::{
     arch::cpu::shutdown,
     fs::{Kstat, Statfs},
     signal::{SigAction, SigInfo, SigSet},
-    timer::{Itimerval, Rusage, Timespec, Timex, Tms},
+    timer::{Itimerval, Rusage, TimeVal, Timespec, Timex, Tms},
     utils::SyscallRet,
 };
 use fs::*;
@@ -319,6 +321,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::Close => sys_close(args[0]),
         Syscall::CloseRange => sys_close_range(args[0] as u32, args[1] as u32, args[2] as u32),
+        Syscall::Openat2 => sys_openat2(
+            args[0] as isize,
+            args[1] as *const u8,
+            args[2] as *const open_how,
+            args[3],
+        ),
         Syscall::Pipe2 => sys_pipe2(args[0] as *mut u32),
         Syscall::Getdents64 => sys_getdents64(args[0], args[1] as *const u8, args[2]),
         Syscall::Lseek => sys_lseek(args[0], args[1] as isize, args[2]),
@@ -391,6 +399,10 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[3] as *mut Timespec,
         ),
         Syscall::SysLog => sys_syslog(args[0] as isize, args[1] as *const u8, args[2]),
+        Syscall::InitModule => {
+            sys_init_module(args[0] as *const u8, args[1], args[2] as *const u8)
+        }
+        Syscall::DeleteModule => sys_delete_module(args[0] as *const u8, args[1] as u32),
         Syscall::SchedSetScheduler => {
             sys_sched_setscheduler(args[0], args[1], args[2] as *const u8)
         }
@@ -434,10 +446,19 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::GetGroup => sys_getgroups(args[0], args[1] as *mut u32),
         Syscall::SetGroup => sys_setgroups(args[0], args[1] as *const u32),
         Syscall::GetRusage => sys_getrusage(args[0] as isize, args[1] as *mut Rusage),
+        Syscall::GetCpu => sys_getcpu(
+            args[0] as *mut u32,
+            args[1] as *mut u32,
+            args[2] as *mut u8,
+        ),
         Syscall::GetTimeOfDay => sys_gettimeofday(args[0] as *mut Timespec, args[1] as usize),
+        Syscall::SetTimeOfDay => {
+            sys_settimeofday(args[0] as *const TimeVal, args[1] as *const u8)
+        }
         Syscall::Adjtimex => sys_adjtimex(args[0] as *mut Timex),
         Syscall::ClockAdjtime => sys_clock_adjtime(args[0] as u32, args[1] as *mut Timex),
         Syscall::Uname => sys_uname(args[0] as *mut u8),
+        Syscall::Setdomainname => sys_setdomainname(args[0] as *const u8, args[1]),
         Syscall::GetPid => sys_getpid(),
         Syscall::GetPPid => sys_getppid(),
         Syscall::GetUid => sys_getuid(),

@@ -2,7 +2,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use super::fcntl::*;
 use crate::fs::{open, FileDescriptor, FsIndex, OpenFlags, map_dynamic_link_file};
-use crate::mm::translate::read_user_cstr;
+use crate::mm::{copy_from_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::{options::FcntlCmd, Syscall};
 use crate::task::current_task;
 use crate::utils::{SysErrNo, SyscallRet};
@@ -13,6 +13,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use linux_raw_sys::general::open_how;
 use log::{debug, error, warn};
 
 fn dup_fd(old_fd: usize, cloexec: bool) -> SyscallRet {
@@ -339,5 +340,83 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
     }
 
     Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// openat2(437)
+// ---------------------------------------------------------------------------
+
+/// 参考 https://man7.org/linux/man-pages/man2/openat2.2.html
+///
+/// openat 的扩展版本，通过 struct open_how 传递 flags / mode / resolve。
+///
+/// # 参数
+/// - `dirfd`: 目录文件描述符，AT_FDCWD 表示当前工作目录
+/// - `path`: 要打开的路径（用户空间指针）
+/// - `how`: 指向 struct open_how 的指针
+/// - `usize`: sizeof(struct open_how)，应 >= 24
+///
+/// struct open_how { __u64 flags; __u64 mode; __u64 resolve; }
+///
+/// 当前实现忽略 resolve 字段，直接委托给 sys_openat。
+pub fn sys_openat2(dirfd: isize, path: *const u8, how: *const open_how, usize: usize) -> SyscallRet {
+    debug!(
+        "[sys_openat2] dirfd={}, path={:x}, how={:x}, usize={}",
+        dirfd, path as usize, how as usize, usize
+    );
+
+    // EINVAL: usize 必须至少为 sizeof(open_how)
+    if usize < core::mem::size_of::<open_how>() {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // EFAULT: how 必须有效
+    if how.is_null() || (how as isize) <= 0 || if_bad_address(how as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+
+    // 从用户空间读取 open_how 结构
+    let mut open_how_val = open_how {
+        flags: 0,
+        mode: 0,
+        resolve: 0,
+    };
+    copy_from_user(&memory_set, how as usize, unsafe {
+        core::slice::from_raw_parts_mut(
+            &mut open_how_val as *mut open_how as *mut u8,
+            core::mem::size_of::<open_how>(),
+        )
+    })?;
+
+    // 释放锁，委托给 sys_openat（它会重新获取自己的锁）
+    drop(memory_set);
+    drop(proc_inner);
+    drop(task);
+
+    debug!(
+        "[sys_openat2] flags=0x{:x}, mode=0{:o}, resolve=0x{:x}",
+        open_how_val.flags, open_how_val.mode, open_how_val.resolve
+    );
+
+    // 如果调用者明确要求了尚不支持的 resolve 特性，返回 EOPNOTSUPP
+    // resolve != 0 时，检查是否仅包含已知标志
+    if open_how_val.resolve != 0 {
+        // RESOLVE_CACHED (32) 是可接受的（仅用于 vfs 缓存提示）
+        if open_how_val.resolve & !32u64 != 0 {
+            warn!(
+                "[sys_openat2] unsupported resolve flags: 0x{:x}",
+                open_how_val.resolve
+            );
+            // 对于不支持的严格 resolve 标志，返回 EINVAL 而不是静默忽略
+            return Err(SysErrNo::EINVAL);
+        }
+    }
+
+    // 委托给 sys_openat
+    sys_openat(dirfd, path, open_how_val.flags as u32, open_how_val.mode as u32)
 }
 

@@ -58,8 +58,8 @@ fn trim_trailing_nul(s: &str) -> &str {
 // LTP-musl test helpers
 // ---------------------------------------------------------------------------
 
-const LTP_TEST_START: usize = 0;
-const LTP_TESTS_PER_GROUP: usize = 250;
+const LTP_TEST_START: usize = 300;
+const LTP_TESTS_PER_GROUP: usize = 100;
 
 /// LTP 测试黑名单。
 /// 前 5 项 (cgroup_fj_*) 仅 `test_ltp` 需要跳过，
@@ -450,13 +450,13 @@ fn main() -> i32 {
 #[allow(unused)]
 fn get_score() {
     // musl
-    run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
-    run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
+    // run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
+    // run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
 
     // run_testsuit("musl\0", "ltp_testcode.sh\0");
         #[cfg(target_arch = "riscv64")]
@@ -467,17 +467,17 @@ fn get_score() {
     // run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
 
     // glibc
-    run_testsuit("glibc\0", "basic_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    #[cfg(target_arch = "riscv64")]
-    run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过 
-    #[cfg(target_arch = "riscv64")]
-    run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv  通过
-    run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
-    // run_testsuit("glibc\0", "ltp_testcode.sh\0");
-    #[cfg(target_arch = "riscv64")]
-    run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv 通过
+    // run_testsuit("glibc\0", "basic_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // #[cfg(target_arch = "riscv64")]
+    // run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过 
+    // #[cfg(target_arch = "riscv64")]
+    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv  通过
+    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
+    // // run_testsuit("glibc\0", "ltp_testcode.sh\0");
+    // #[cfg(target_arch = "riscv64")]
+    // run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv 通过
 
     
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");

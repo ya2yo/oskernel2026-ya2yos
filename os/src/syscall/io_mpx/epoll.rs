@@ -19,6 +19,7 @@ pub fn sys_epoll_create1(flags: u32) -> SyscallRet {
 
     let task = current_task().unwrap();
     let epoll_file = Arc::new(EpollFile::new());
+    let fd_table = task.get_fd_table();
 
     let open_flags = if eflags.contains(EpollCreateFlags::CLOEXEC) {
         OpenFlags::O_CLOEXEC
@@ -26,8 +27,8 @@ pub fn sys_epoll_create1(flags: u32) -> SyscallRet {
         OpenFlags::empty()
     };
 
-    let fd = task.get_fd_table().alloc_fd()?;
-    task.get_fd_table().set(
+    let fd = fd_table.alloc_fd()?;
+    fd_table.set(
         fd,
         FileDescriptor::new(open_flags, FileClass::Abs(epoll_file.clone())),
     )?;
@@ -42,12 +43,12 @@ pub fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event_ptr: usize) -> Sys
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_read();
-
+    let fd_table = &process.fd_table;
     let fd_i32 = fd as i32;
     let epoll_file = EpollFile::lookup(epfd)?;
 
     if op != EPOLL_CTL_DEL as usize {
-        task.get_fd_table().get(fd)?;
+        fd_table.get(fd)?;
         if fd == epfd {
             return Err(SysErrNo::EINVAL);
         }

@@ -2,11 +2,11 @@
 
 # riscv64
 # loongarch64
-# TARGET_ARCH := riscv64
-TARGET_ARCH := loongarch64
+TARGET_ARCH := riscv64
+# TARGET_ARCH := loongarch64
 
-all: riscv64-build loongarch64-build
-# all: $(TARGET_ARCH)-build
+# all: riscv64-build loongarch64-build
+all: $(TARGET_ARCH)-build
 
 export PROJECT_ROOT := $(CURDIR)
 

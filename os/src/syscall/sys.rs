@@ -10,6 +10,28 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+// ---------------------------------------------------------------------------
+// 动态 domainname (被 uname / setdomainname 共享)
+// ---------------------------------------------------------------------------
+
+/// 内核级 NIS domainname 存储
+static DOMAIN_NAME: spin::Mutex<[u8; 65]> = spin::Mutex::new([0; 65]);
+static DOMAIN_NAME_INIT: AtomicBool = AtomicBool::new(false);
+
+/// 获取动态 domainname 的字节数组 (未设置则返回默认值 "TrustOS")
+fn get_domainname_bytes() -> [u8; 65] {
+    if DOMAIN_NAME_INIT.load(Ordering::Relaxed) {
+        *DOMAIN_NAME.lock()
+    } else {
+        let mut b = [0; 65];
+        let default = b"TrustOS";
+        let copy_len = default.len().min(65);
+        b[..copy_len].copy_from_slice(&default[..copy_len]);
+        b
+    }
+}
 
 /// 参考 https://man7.org/linux/man-pages/man2/getuid.2.html
 pub fn sys_getuid() -> SyscallRet {
@@ -342,7 +364,7 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
         release: str2u8("5.0.0"),
         version: str2u8("5.0.0"),
         machine: str2u8("RISC-V64"),
-        domainname: str2u8("TrustOS"),
+        domainname: get_domainname_bytes(),
     };
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
@@ -689,4 +711,125 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> SyscallRet {
 
     debug!("[setgroups] size={}", size);
     Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// getcpu(168)
+// ---------------------------------------------------------------------------
+
+/// 参考 https://man7.org/linux/man-pages/man2/getcpu.2.html
+///
+/// 返回当前线程所在的 CPU 编号和 NUMA 节点编号。
+/// 单核系统下始终返回 cpu=0, node=0。
+pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: *mut u8) -> SyscallRet {
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+
+    // tcache must be NULL when called from userspace (used only by vDSO)
+    // We ignore it for simplicity
+
+    let cpu_val: u32 = 0;
+    let node_val: u32 = 0;
+
+    if !cpu.is_null() {
+        if (cpu as isize) <= 0 || if_bad_address(cpu as usize) {
+            return Err(SysErrNo::EFAULT);
+        }
+        copy_to_user(&memory_set, cpu as usize, unsafe {
+            core::slice::from_raw_parts(
+                &cpu_val as *const u32 as *const u8,
+                core::mem::size_of::<u32>(),
+            )
+        })?;
+    }
+    if !node.is_null() {
+        if (node as isize) <= 0 || if_bad_address(node as usize) {
+            return Err(SysErrNo::EFAULT);
+        }
+        copy_to_user(&memory_set, node as usize, unsafe {
+            core::slice::from_raw_parts(
+                &node_val as *const u32 as *const u8,
+                core::mem::size_of::<u32>(),
+            )
+        })?;
+    }
+
+    debug!("[getcpu] cpu=0, node=0");
+    Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// setdomainname(162)
+// ---------------------------------------------------------------------------
+
+/// 参考 https://man7.org/linux/man-pages/man2/setdomainname.2.html
+///
+/// 设置系统的 NIS domain name。
+/// 仅 root 可以调用；name 最长为 64 字节。
+pub fn sys_setdomainname(name: *const u8, len: usize) -> SyscallRet {
+    let task = current_task().unwrap();
+
+    // EPERM: 非 root 不可设置
+    if task.inner_lock().user_id != 0 {
+        return Err(SysErrNo::EPERM);
+    }
+
+    // EINVAL: 长度超出限制
+    if len > 64 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+
+    if len > 0 {
+        if name.is_null() || (name as isize) <= 0 || if_bad_address(name as usize) {
+            return Err(SysErrNo::EFAULT);
+        }
+
+        let bufs = safe_translated_byte_buffer(&memory_set, name as *mut u8, len)
+            .ok_or(SysErrNo::EFAULT)?;
+
+        let mut dn = DOMAIN_NAME.lock();
+        dn.fill(0);
+        let mut copied = 0usize;
+        for buf_slice in bufs {
+            let to_copy = core::cmp::min(buf_slice.len(), len - copied);
+            dn[copied..copied + to_copy].copy_from_slice(&buf_slice[..to_copy]);
+            copied += to_copy;
+            if copied >= len {
+                break;
+            }
+        }
+        DOMAIN_NAME_INIT.store(true, Ordering::Relaxed);
+    } else {
+        // len == 0: 清除 domainname
+        let mut dn = DOMAIN_NAME.lock();
+        *dn = [0; 65];
+        DOMAIN_NAME_INIT.store(false, Ordering::Relaxed);
+    }
+
+    debug!("[setdomainname] len={}", len);
+    Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// init_module(105) / delete_module(106)
+// ---------------------------------------------------------------------------
+
+/// 参考 https://man7.org/linux/man-pages/man2/init_module.2.html
+///
+/// 加载内核模块。当前内核不支持模块加载。
+pub fn sys_init_module(_module_image: *const u8, _len: usize, _param_values: *const u8) -> SyscallRet {
+    warn!("[init_module] kernel module loading not supported");
+    Err(SysErrNo::EPERM)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/delete_module.2.html
+///
+/// 卸载内核模块。当前内核不支持模块卸载。
+pub fn sys_delete_module(_name: *const u8, _flags: u32) -> SyscallRet {
+    warn!("[delete_module] kernel module unloading not supported");
+    Err(SysErrNo::EPERM)
 }

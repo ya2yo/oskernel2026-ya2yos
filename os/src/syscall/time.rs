@@ -324,3 +324,57 @@ pub fn sys_clock_settime(clock_id: u32, tp: *const Timespec) -> SyscallRet {
     );
     Ok(0)
 }
+
+// ---------------------------------------------------------------------------
+// settimeofday(170)
+// ---------------------------------------------------------------------------
+
+/// 参考 https://man7.org/linux/man-pages/man2/settimeofday.2.html
+///
+/// 设置系统实时时钟 (CLOCK_REALTIME)。
+/// - `tv`: 要设置的时间值 (struct timeval)
+/// - `tz`: 时区信息 (已废弃，应为 NULL，否则返回 EINVAL)
+pub fn sys_settimeofday(tv: *const TimeVal, tz: *const u8) -> SyscallRet {
+    // EFAULT: tv 不能为空
+    if tv.is_null() || (tv as isize) <= 0 || if_bad_address(tv as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    // tz 参数已废弃，通常应为 NULL
+    if !tz.is_null() {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // EPERM: 只有 root 可以设置系统时间
+    let task = current_task().unwrap();
+    if task.inner_lock().effective_uid != 0 {
+        return Err(SysErrNo::EPERM);
+    }
+
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+
+    let mut timeval = TimeVal::new(0, 0);
+    copy_from_user(&memory_set, tv as usize, unsafe {
+        core::slice::from_raw_parts_mut(
+            &mut timeval as *mut TimeVal as *mut u8,
+            core::mem::size_of::<TimeVal>(),
+        )
+    })?;
+
+    // EINVAL: tv_usec 必须在 [0, 10^6) 范围内
+    if timeval.tv_usec >= 1_000_000 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // 转换为 Timespec 并设置 CLOCK_REALTIME
+    let desired_sec = timeval.tv_sec as i64;
+    let current_raw_sec = (get_time_spec().tv_sec + NOW_TIME_STAMP) as i64;
+    *CLOCK_REALTIME_OFFSET.lock() = desired_sec - current_raw_sec;
+
+    debug!(
+        "[settimeofday] set time to {}.{:06}, offset={}",
+        timeval.tv_sec, timeval.tv_usec, desired_sec - current_raw_sec
+    );
+    Ok(0)
+}
