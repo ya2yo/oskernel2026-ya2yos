@@ -32,9 +32,9 @@ mod tid;
 
 pub use crate::arch::context::TaskContext;
 use crate::{
-    arch::{cpu::hart_id, memory_layout::USER_STACK_SIZE},
+    arch::cpu::hart_id,
     fs::{open, remove_proc_dir_and_file, OpenFlags, NONE_MODE},
-    mm::{activate_kernel_space, copy_to_user, get_data, put_data, VirtAddr},
+    mm::{activate_kernel_space, copy_to_user, VirtAddr},
     signal::{send_signal_to_thread_group, SigSet},
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
 };
@@ -227,15 +227,52 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     // 无论如何一个轻量级进程都会是一个线程
     // 释放线程相关资源
-
-    if curr_task_inner.user_stack_top != 0 {
-        memory_set.remove_area_with_start_vpn(
-            VirtAddr::from(curr_task_inner.user_stack_top - USER_STACK_SIZE).floor(),
-        );
+    // 回收内核分配的栈区域（用户态 mmap 的线程栈不存在 Stack 类型的 MapArea，自然跳过）
+    if let Some(stack_start) = memory_set
+        .get_ref()
+        .areas
+        .iter()
+        .find(|area| area.area_type == MapAreaType::Stack)
+        .map(|area| area.vpn_range.start())
+    {
+        memory_set.remove_area_with_start_vpn(stack_start);
     }
     memory_set.remove_area_with_start_vpn(VirtAddr::from(curr_task_inner.trap_cx_bottom).floor());
     curr_task_inner.task_status = TaskStatus::Zombie;
+    let curr_tid = curr_task.tid();
     drop(curr_task_inner);
+
+    // 唤醒被阻塞的兄弟线程，防止它们因等待本线程清理资源而永久死锁
+    {
+        let bro_tasks = curr_task.process.meta_lock().tasks.clone();
+        let bro_tasks: Vec<Arc<TaskControlBlock>> = bro_tasks
+            .into_iter()
+            .filter_map(|weak| weak.upgrade())
+            .collect();
+        for bro_task in &bro_tasks {
+            if bro_task.tid() != curr_tid {
+                let mut bro_inner = bro_task.inner_lock();
+                if bro_inner.task_status == TaskStatus::Blocked {
+                    let futex_key = bro_inner.futex_key;
+                    let futex_pa = bro_inner.futex_pa;
+                    bro_inner.task_status = TaskStatus::Ready;
+                    bro_inner.futex_key = 0;
+                    bro_inner.futex_pa = 0;
+                    drop(bro_inner);
+                    // 从 futex 等待队列中移除
+                    if futex_key != 0 {
+                        let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+                        if let Some(queue) = waitq.get_mut(&futex_pa) {
+                            if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
+                                queue.remove(idx);
+                            }
+                        }
+                    }
+                    ready_queue::add_task(bro_task);
+                }
+            }
+        }
+    }
 
     // 一个进程的所有线程都退出了,此时回收资源
     {

@@ -87,7 +87,6 @@ pub struct TaskControlBlockInner {
     trap_cx_ppn: PhysPageNum,  // TrapContext缓冲区物理页
     pub trap_cx_bottom: usize, // TrapContext缓冲区虚拟地址基地址
 
-    pub user_stack_top: usize, // exclusive
     pub task_cx: TaskContext,
     pub task_status: TaskStatus,
     // pub fd_table: Arc<FdTable>,
@@ -193,7 +192,6 @@ impl TaskControlBlock {
             inner: Mutex::new(TaskControlBlockInner {
                 trap_cx_ppn: 0.into(),
                 trap_cx_bottom: 0,
-                user_stack_top: 0,
                 task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                 task_status: TaskStatus::Ready,
                 // fd_table: Arc::new(FdTable::new_with_stdio()),
@@ -223,11 +221,11 @@ impl TaskControlBlock {
         let arc_task = Arc::new(task);
         process.meta_lock().tasks.push(Arc::downgrade(&arc_task));
         let mut task_inner = arc_task.inner_lock();
-        arc_task.alloc_user_res(&mut task_inner);
+        let ustack_top = arc_task.alloc_user_res(&mut task_inner);
         // prepare TrapContext in user space
         let trap_cx = task_inner.trap_cx();
         *trap_cx =
-            TrapContext::app_init_context(entry_point, task_inner.user_stack_top, kernel_stack_top);
+            TrapContext::app_init_context(entry_point, ustack_top, kernel_stack_top);
         drop(task_inner);
         arc_task
     }
@@ -292,14 +290,14 @@ impl TaskControlBlock {
             .change_memory_set_and_sigtable(memory_set, SigTable::new());
 
         // 重新分配用户资源
-        self.alloc_user_res(&mut task_inner);
+        let ustack_top = self.alloc_user_res(&mut task_inner);
         {
             self.get_fd_table().close_on_exec();
         }
         task_inner.sig_mask = SigSet::empty();
         task_inner.sig_pending = SigSet::empty();
 
-        let mut user_sp = task_inner.user_stack_top;
+        let mut user_sp = ustack_top;
 
         // println!("user_sp:{:#X}  argv:{:?}", user_sp, argv);
 
@@ -498,7 +496,6 @@ impl TaskControlBlock {
             inner: Mutex::new(TaskControlBlockInner {
                 trap_cx_ppn: 0.into(),
                 trap_cx_bottom: 0,
-                user_stack_top: 0,
                 task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                 task_status: TaskStatus::Ready,
                 // fd_table,
@@ -531,7 +528,12 @@ impl TaskControlBlock {
 
         if flags.contains(CloneFlags::CLONE_THREAD) {
             // 线程
-            self.alloc_user_res(&mut child_inner);
+            if stack != 0 {
+                // 用户提供了线程栈，只分配 trap context 即可
+                self.alloc_trap_context_only(&mut child_inner);
+            } else {
+                self.alloc_user_res(&mut child_inner);
+            }
             *child_inner.trap_cx() = *parent_inner.trap_cx();
             // 与 Linux 一致：子线程的 clone 返回值应为 0
             child_inner.trap_cx().set_a0(0);
@@ -544,10 +546,15 @@ impl TaskControlBlock {
             let child_proc = child.process.inner_lock();
 
             let child_mm = child_proc.get_locked_memory_set_read();
-            child_mm.lazy_clone_area(
-                VirtAddr::from(child_inner.user_stack_top - USER_STACK_SIZE).floor(),
-                another.get_ref(),
-            );
+            // 从子进程 memory_set 中查找 Stack 区域作为栈底
+            let child_stack_bottom = child_mm
+                .get_ref()
+                .areas
+                .iter()
+                .find(|area| area.area_type == MapAreaType::Stack)
+                .map(|area| area.vpn_range.start())
+                .expect("fork: child has no Stack area");
+            child_mm.lazy_clone_area(child_stack_bottom, another.get_ref());
             child_mm.clone_area(
                 VirtAddr::from(child_inner.trap_cx_bottom).floor(),
                 another.get_ref(),
@@ -673,9 +680,9 @@ impl TaskControlBlock {
     pub fn get_process(&self) -> Arc<Process> {
         self.process.clone()
     }
-    /// 在clone_user_res,
-    fn alloc_user_res(&self, task_inner: &mut TaskControlBlockInner) {
-        let (_, ustack_top, trap_cx_bottom, trap_cx_ppn) = {
+    /// 分配用户栈和 trap context 区域，并返回用户栈顶地址
+    fn alloc_user_res(&self, task_inner: &mut TaskControlBlockInner) -> usize {
+        let (ustack_top, trap_cx_bottom, trap_cx_ppn) = {
             let proc_inner = self.process.inner_lock();
             let memory_set = proc_inner.get_locked_memory_set_read();
             let (u_bottom, u_top) = memory_set.lazy_insert_framed_area_with_hint(
@@ -705,10 +712,27 @@ impl TaskControlBlock {
                     area.map_one(&mut memory_set.get_mut().page_table, vpn);
                 }
             }
-            (u_bottom, u_top, t_cx, t_cx_ppn)
+            (u_top, t_cx, t_cx_ppn)
         };
-        // 锁 TCB 并回写结果
-        task_inner.user_stack_top = ustack_top;
+        task_inner.trap_cx_ppn = trap_cx_ppn;
+        task_inner.trap_cx_bottom = trap_cx_bottom;
+        ustack_top
+    }
+    /// 仅为线程分配 trap context 区域（不分配栈空间，栈由用户提供）。
+    /// 用于 CLONE_THREAD 且用户指定了栈地址的场景。
+    fn alloc_trap_context_only(&self, task_inner: &mut TaskControlBlockInner) {
+        let (trap_cx_bottom, trap_cx_ppn) = {
+            let proc_inner = self.process.inner_lock();
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            let (t_cx, _) = memory_set.insert_framed_area_with_hint(
+                USER_TRAP_CONTEXT_TOP,
+                PAGE_SIZE,
+                MapPermission::R | MapPermission::W,
+                MapAreaType::Trap,
+            );
+            let t_cx_ppn = memory_set.translate(VirtAddr::from(t_cx).floor()).unwrap();
+            (t_cx, t_cx_ppn)
+        };
         task_inner.trap_cx_ppn = trap_cx_ppn;
         task_inner.trap_cx_bottom = trap_cx_bottom;
     }

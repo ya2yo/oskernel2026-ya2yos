@@ -342,6 +342,13 @@
 - **描述**：用户询问 Task 中 6 个 uid/gid 字段的用途，AI 添加注释块说明 POSIX 凭证三元组的区别（real/effective/saved）及各自在文件权限检查中的用途。详见 `ai.log` 2026-06-03 条目。
 - **关联 commit**：待提交
 
+#### pthread_cancel_points 信号帧与 futex 死锁修复（6.3）
+
+- **工具/模型**：Claude Code (Claude Opus 4.7)
+- **场景**：Bug 分析与定位、代码重构
+- **描述**：用户提供 log.ans 指出 TID 4 异常退出和 TID 3 死锁两个 bug。AI 分析 TID 调用序列定位到 setup_frame 栈边界检查使用了错误的 user_stack_top（主线程栈而非 mmap 线程栈）和 exit_current_and_run_next 未唤醒 futex 阻塞的兄弟线程。修复过程中用户指出 user_stack_top 字段冗余，AI 进一步分析其 6 处使用场景均可通过 memory_set.areas 动态查找替代，移除了该字段。详见 `ai.log` 2026-06-03 条目。
+- **关联 commit**：待提交
+
 ---
 
 ## AI 成果总结

@@ -15,7 +15,7 @@ use crate::{
         memory_layout::{self, USER_STACK_SIZE},
         trap_interface::get_trap_cause,
     },
-    mm::{get_data, put_data},
+    mm::{get_data, put_data, VirtAddr},
     task::{
         current_task, exit_current_and_run_next, ready_queue, tid_to_task, Process,
         TaskControlBlock, TaskStatus,
@@ -96,17 +96,27 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
     }
 
     let mut task_inner = task.inner_lock();
-    let token = task
-        .process
-        .inner_lock()
-        .get_locked_memory_set_read()
-        .token();
-
     let trap_cx = task_inner.trap_cx();
     let mut user_sp = trap_cx.get_sp();
 
-    // 检查用户栈是否有足够空间放置信号帧，防止栈溢出导致内核 panic
-    let stack_bottom = task_inner.user_stack_top - USER_STACK_SIZE;
+    // 动态查找包含当前 sp 的 MapArea，以此确定栈的真实边界。
+    // 这对 mmap 分配的线程栈也能正确工作。
+    let (token, stack_bottom) = {
+        let process_lock = task.process.inner_lock();
+        let memory_set_guard = process_lock.get_locked_memory_set_read();
+        let token = memory_set_guard.token();
+        let sp_vpn = VirtAddr::from(user_sp).floor();
+        let stack_bottom = memory_set_guard
+            .get_ref()
+            .areas
+            .iter()
+            .find(|area| {
+                area.vpn_range.start() <= sp_vpn && sp_vpn < area.vpn_range.end()
+            })
+            .map(|area| VirtAddr::from(area.vpn_range.start()).0)
+            .unwrap_or_else(|| user_sp.saturating_sub(USER_STACK_SIZE));
+        (token, stack_bottom)
+    };
     let min_frame_size = if sig_action.act.sa_flags.contains(SigActionFlags::SA_SIGINFO) {
         size_of::<UserContext>() + size_of::<SigInfo>() + size_of::<usize>() // uctx + siginfo + magic
     } else {
@@ -162,7 +172,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
         let uctx_addr = user_sp - size_of::<UserContext>();
         let siginfo_addr = uctx_addr - size_of::<SigInfo>();
         let sig_sp = siginfo_addr;
-        let sig_size = sig_sp - (task_inner.user_stack_top - USER_STACK_SIZE);
+        let sig_size = sig_sp - stack_bottom;
         // debug!("sig_size={:#x}", sig_size);
         // debug!("save: uctx_addr = {:#x}", uctx_addr);
         put_data(

@@ -29,7 +29,7 @@ const ROBUST_LIST_LIMIT: usize = 2048;
 
 // -------------------------type defs--------------------------------
 
-struct FutexWaiter {
+pub struct FutexWaiter {
     pub task: Weak<TaskControlBlock>,
     pub bitset: u32,
     pub futex_key: usize,
@@ -38,7 +38,7 @@ struct FutexWaiter {
 type BitsetWaitQueue = VecDeque<FutexWaiter>; // 这个u32是sys_wait_bitset的那个bitset
 
 // bitset用的队列的映射
-static FUTEX_QUEUE_BITMAP: Lazy<Mutex<BTreeMap<usize, BitsetWaitQueue>>> =
+pub static FUTEX_QUEUE_BITMAP: Lazy<Mutex<BTreeMap<usize, BitsetWaitQueue>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
 // 唤醒在 pa 等待的线程
 pub fn futex_wake_up(pa: usize, max_num: i32) -> usize {
@@ -271,7 +271,7 @@ pub fn sys_futex(
     }
 
     log::debug!(
-        "[sys_futex] uaddr = {:x}, pa = {:?}, cmd = {:?}, val = {},opt={:?}",
+        "[sys_futex] uaddr = {:x}, pa = {:#x?}, cmd = {:?}, val = {},opt={:?}",
         uaddr as usize,
         pa,
         cmd,

@@ -435,3 +435,41 @@ AI 为 `os/src/task/task/task.rs` 添加了注释块，说明 POSIX 凭证三元
 ### 涉及文件
 
 - `os/src/task/task/task.rs`
+
+## 2026-06-03: 线程信号帧栈检查与 futex 退出死锁修复
+
+### 问题发现
+
+用户提供 `log.ans` 分析，指出两个问题：
+1. TID 4 不应该退出——栈空间管理有问题
+2. TID 4 退出时应该唤醒 TID 3（阻塞在 futex 上），否则死锁
+
+### 根因分析
+
+AI 分析 log.ans 中的 TID 调用序列：
+- TID 3 通过 clone(CLONE_THREAD, stack=0x2a23446ad0) 创建 TID 4
+- TID 3 发送 SIGRT_1 → TID 4，用 futex wake 唤醒 TID 4
+- TID 3 阻塞于 futex_wait(0x2a23446b30)（pthread_join）
+- TID 4 被唤醒，收到信号，handle_signal → setup_frame 报 "user stack too small"
+
+**Bug 1 根因**：setup_frame 使用 `task_inner.user_stack_top - USER_STACK_SIZE` 判定栈底。对于 CLONE_THREAD + 用户提供栈的线程，`user_stack_top` 仍指向内核分配的主栈区域（~0x2ffe447000），而实际 SP 在 mmap 区域（0x2a234469d0）。栈边界完全不匹配，导致空间检查失败→线程被异常终止。
+
+**Bug 2 根因**：exit_current_and_run_next 只处理 clear_child_tid（地址 0x1200a27c8）和 robust list（为 0），TID 3 等待的 join futex（0x2a23446b30）未被任何清理路径照顾。兄弟线程永久阻塞→进程死锁。
+
+用户后续追问：`user_stack_top` 是否有必要保留。AI 分析其 6 处使用场景，确认均可通过 memory_set.areas 动态查找替代。这是更接近 Linux（task_struct 不保存用户栈顶）的设计。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/signal/mod.rs` | setup_frame：按 SP 动态定位所在 MapArea，以其起始地址为栈底；回退逻辑用 sp - USER_STACK_SIZE |
+| `os/src/task/task/task.rs` | 移除 user_stack_top 字段；alloc_user_res 返回栈顶；新增 alloc_trap_context_only（CLONE_THREAD + 用户栈用）；fork/initproc/execve 调用方适配 |
+| `os/src/task/mod.rs` | exit 栈回收改为查找 Stack 区域；新增兄弟线程 futex 唤醒逻辑 |
+| `os/src/task/futex.rs` | FUTEX_QUEUE_BITMAP 改为 pub |
+
+### 涉及文件汇总
+
+- 代码：`os/src/signal/mod.rs`, `os/src/task/task/task.rs`, `os/src/task/mod.rs`, `os/src/task/futex.rs`
+- 文档：`Docs/初赛文档/problem/thread-signal-stack-futex-deadlock.md`（新建）
+- 索引：`Docs/初赛文档/problem/README.md`（更新）
+- 日志：`Docs/初赛文档/开发日志.md`（更新）
