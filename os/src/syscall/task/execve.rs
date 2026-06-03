@@ -130,7 +130,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
 
     if envp.is_null() {
         // debug!("use default env");
-        env.push("PATH=/bin".to_string());
+        env.push("PATH=/bin:.".to_string());
         // env.push("LD_LIBRARY_PATH=/musl/lib:".to_string());
         // env.push("LD_LIBRARY_PATH=/glibc/lib:/musl/lib".to_string());
         //设置系统最大负载

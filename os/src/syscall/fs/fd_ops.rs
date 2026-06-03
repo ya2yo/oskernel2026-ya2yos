@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use super::fcntl::*;
-use crate::fs::{open, FileDescriptor, FsIndex, OpenFlags};
+use crate::fs::{open, FileDescriptor, FsIndex, OpenFlags, map_dynamic_link_file};
 use crate::mm::translate::read_user_cstr;
 use crate::syscall::{options::FcntlCmd, Syscall};
 use crate::task::current_task;
@@ -193,6 +193,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
         flags.remove(OpenFlags::O_DIRECTORY); // 避免下面的open真的给咱创建一个目录
 
         // 剩下的就和普通open一样处理就行了
+        let abs_path = map_dynamic_link_file(&abs_path).to_string();
         let inode = open(&abs_path, flags, mode)?;
         let new_fd = proc_inner.fd_table.alloc_fd()?;
         proc_inner
@@ -208,6 +209,9 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     if abs_path == "/proc/self/maps" {
         abs_path = format!("/proc/{}/maps", task.pid());
     }
+
+    // 动态库路径重定向：将动态链接器请求的标准路径映射到实际文件位置
+    let abs_path = map_dynamic_link_file(&abs_path).to_string();
 
     let inode = open(&abs_path, flags, mode)?;
     let new_fd = proc_inner.fd_table.alloc_fd()?;

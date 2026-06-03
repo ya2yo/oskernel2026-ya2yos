@@ -24,6 +24,42 @@ fn flush_preload() {
     initproc.write(UserBuffer::new(v));
 }
 
+/// 将内嵌的 libgcc_s.so.1 写入 glibc 库目录，
+/// 解决竞赛固定镜像中缺少该库的问题（glibc pthread 测试依赖此库）
+fn flush_libgcc_s() {
+    extern "C" {
+        fn libgcc_s_start();
+        fn libgcc_s_end();
+    }
+
+    let size = libgcc_s_end as *const () as usize - libgcc_s_start as *const () as usize;
+    // 如果内嵌的库大小为 0（编译时未找到文件），则跳过
+    if size == 0 {
+        return;
+    }
+
+    // 确保 /glibc/lib 目录存在
+    open(
+        "/glibc/lib",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
+        DEFAULT_DIR_MODE,
+    ).ok();
+
+    let file = open(
+        "/glibc/lib/libgcc_s.so.1",
+        OpenFlags::O_CREATE,
+        DEFAULT_FILE_MODE,
+    )
+    .unwrap()
+    .file()
+    .unwrap();
+    let mut v = Vec::new();
+    v.push(unsafe {
+        core::slice::from_raw_parts_mut(libgcc_s_start as *mut u8, size)
+    });
+    file.write(UserBuffer::new(v));
+}
+
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobody:/bin/bash\n";
 const MEMINFO: &str = r"
@@ -78,6 +114,8 @@ const PRELOAD: &str = "";
 pub fn create_init_files() -> GeneralRet {
     // 写入预先加载内容
     flush_preload();
+    // 写入内嵌的 libgcc_s.so.1（解决 glibc pthread 测试依赖问题）
+    flush_libgcc_s();
     //创建/proc文件夹
     open(
         "/proc",
@@ -294,6 +332,9 @@ pub fn create_init_files() -> GeneralRet {
     ] {
         superblock_root_inode().sym_link("/musl/busybox", path);
     }
+
+    // glibc 动态链接器查找 libm.so.6，实际文件是 libm.so（内容相同）
+    superblock_root_inode().sym_link("/glibc/lib/libm.so", "/glibc/lib/libm.so.6");
 
     println!("create_init_files success!");
     Ok(())

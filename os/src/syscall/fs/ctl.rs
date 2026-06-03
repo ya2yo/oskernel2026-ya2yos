@@ -324,6 +324,8 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
         let res = buffer.write(exe.as_bytes());
         return Ok(res);
     }
+    // 限制 bufsize 防止恶意巨量内存分配（参考 Linux PATH_MAX = 4096）
+    let bufsize = core::cmp::min(bufsize, 4096usize);
     // debug!("[sys_read_linkat] got path : {}", inner.fs_info.get_cwd());
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     let mut linkbuf = vec![0u8; bufsize];

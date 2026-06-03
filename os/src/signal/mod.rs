@@ -105,6 +105,25 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
     let trap_cx = task_inner.trap_cx();
     let mut user_sp = trap_cx.get_sp();
 
+    // 检查用户栈是否有足够空间放置信号帧，防止栈溢出导致内核 panic
+    let stack_bottom = task_inner.user_stack_top - USER_STACK_SIZE;
+    let min_frame_size = if sig_action.act.sa_flags.contains(SigActionFlags::SA_SIGINFO) {
+        size_of::<UserContext>() + size_of::<SigInfo>() + size_of::<usize>() // uctx + siginfo + magic
+    } else {
+        size_of::<MachineContext>() + size_of::<SigSet>() + size_of::<usize>() // mctx + mask + magic
+    };
+    if user_sp < stack_bottom + min_frame_size {
+        // 栈空间不足，无法安全设置信号帧，直接终止进程
+        warn!(
+            "setup_frame: user stack too small for signal {}, sp={:#x}, stack_bottom={:#x}",
+            signo, user_sp, stack_bottom
+        );
+        drop(task_inner);
+        drop(task);
+        exit_current_and_run_next((signo + 128) as i32);
+        unreachable!()
+    }
+
     // if this syscall wants to restart
     if get_trap_cause() == Trap::Exception(Exception::Syscall)
         && trap_cx.get_a0() == SysErrNo::ERESTART as usize

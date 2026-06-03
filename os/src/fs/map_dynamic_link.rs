@@ -21,6 +21,8 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "/glibc/lib/libc.so",
         "/glibc/lib/libc.so.6",
         "/glibc/lib/libm.so",
+        "/glibc/lib/libm.so.6",
+        "/glibc/lib/libgcc_s.so.1",
         "/glibc/lib/tls_align_dso.so",
         "/glibc/lib/tls_get_new-dtv_dso.so",
         "/glibc/lib/tls_init_dso.so",
@@ -50,8 +52,13 @@ pub fn map_library_path(requested_path: &str) -> Option<&str> {
         // add by tuji
         "/lib/ld-musl-riscv64.so.1" => Some("/musl/lib/libc.so"), // ltp
         "/lib/ld-musl-riscv64-sf.so.1" => Some("/musl/lib/libc.so"), // libctest
-        "/usr/lib/libm.so.6" => Some("/glibc/lib/libm.so"),       // libctest
-        "/usr/lib/libc.so.6" => Some("/glibc/lib/libc.so"),       // libctest
+        "/usr/lib/libm.so.6" => Some("/glibc/lib/libm.so.6"),    // libctest
+        "/lib/libm.so.6" => Some("/glibc/lib/libm.so.6"),        // 动态链接器搜索路径
+        "/lib/riscv64-linux-gnu/libm.so.6" => Some("/glibc/lib/libm.so.6"),
+        "/usr/lib/libc.so.6" => Some("/glibc/lib/libc.so"),      // libctest
+        "/lib/libgcc_s.so.1" => Some("/glibc/lib/libgcc_s.so.1"), // libctest (pthread)
+        "/usr/lib/libgcc_s.so.1" => Some("/glibc/lib/libgcc_s.so.1"),
+        "/usr/lib/riscv64-linux-gnu/libgcc_s.so.1" => Some("/glibc/lib/libgcc_s.so.1"),
 
         // 在实现loongarch时添加
         "/lib64/ld-linux-loongarch-lp64d.so.1" => Some("/glibc/lib/ld-linux-loongarch-lp64d.so.1"),
@@ -65,7 +72,24 @@ pub fn map_library_path(requested_path: &str) -> Option<&str> {
     }
 }
 
+/// 判断路径是否看起来像一个共享库（文件名以 .so 或 .so.N 结尾）
+fn looks_like_shared_library(path: &str) -> bool {
+    let file_name = path.rsplit_once('/').map(|(_, f)| f).unwrap_or(path);
+    if let Some(pos) = file_name.rfind(".so") {
+        let suffix = &file_name[pos..];
+        suffix == ".so" || suffix[3..].chars().all(|c| c == '.' || c.is_ascii_digit())
+    } else {
+        false
+    }
+}
+
 pub fn map_dynamic_link_file(path: &str) -> &str {
+    // 只拦截共享库路径（如 libc.so.6, ld-linux.so.1），
+    // 排除 ld.so.preload、ld.so.cache 等非库文件
+    if !looks_like_shared_library(path) {
+        return path;
+    }
+
     // DYNAMIC_PATH是一个本文件内定义的字符串集合
     // 其中列出了所有的可被链接的库
     // 这个集合应当随着测试集的更改而更改

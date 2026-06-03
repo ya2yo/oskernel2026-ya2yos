@@ -227,6 +227,8 @@ pub fn sys_sendto(
     let buffer = UserBuffer::new(
         safe_translated_byte_buffer(&memory_set, buf, len).ok_or(SysErrNo::EFAULT)?,
     );
+    drop(memory_set);
+    drop(process);
     send_impl(sockfd, buffer, flags, dest_addr, addrlen, Vec::new())
 }
 
@@ -295,6 +297,8 @@ pub fn sys_recvfrom(
     let buffer = UserBuffer::new(
         safe_translated_byte_buffer(&memory_set, buf, len).ok_or(SysErrNo::EFAULT)?,
     );
+    drop(memory_set);
+    drop(process);
     let mut addrlen = if src_addr.is_null() || addrlen_ptr.is_null() {
         None
     } else {

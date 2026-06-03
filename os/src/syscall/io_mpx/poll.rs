@@ -1,6 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use log::debug;
 use alloc::vec;
+use core::cmp::min;
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_to_user},
@@ -20,6 +21,10 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
     if fds_ptr == 0 {
         return Err(SysErrNo::EINVAL);
     }
+
+    // 限制 nfds 不超过进程的 fd 软限制，防止恶意或异常的 nfds 值
+    // 导致巨量内存分配（参考 sys_pselect6 的做法）
+    let nfds = min(nfds, proc_inner.fd_table.get_soft_limit());
 
     let user_fds_ptr = fds_ptr;
     let pollfd_size = core::mem::size_of::<PollFd>();
@@ -46,7 +51,9 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
     let begin = get_time_ms() * 1000000;
 
     //由于每次循环结束需要让出cpu，因此需要在每次循环时重新获得锁
+    drop(memory_set);
     drop(inner);
+    drop(proc_inner);
 
     loop {
         let task = current_task().unwrap();

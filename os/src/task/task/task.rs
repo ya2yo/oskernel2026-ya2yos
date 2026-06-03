@@ -406,7 +406,7 @@ impl TaskControlBlock {
         tls: usize,
         child_tid: *mut u32,
     ) -> Result<Arc<TaskControlBlock>, SysErrNo> {
-        let mut parent_inner = self.inner.lock();
+        let parent_inner = self.inner.lock();
 
         let tid_handle = TidHandle::alloc().unwrap();
         let kernel_stack = KernelStackOnHeap::new();
