@@ -11,6 +11,7 @@ use crate::mm::{
     copy_from_user, copy_to_user, if_bad_address, read_user_cstr, safe_translated_byte_buffer,
     UserBuffer,
 };
+use crate::syscall::FaccessatFileMode;
 use crate::task::current_task;
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
 use crate::utils::{get_abs_path, rsplit_once, SysErrNo, SyscallRet};
@@ -448,10 +449,10 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
 
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
 
-    // debug!(
-    //     "[sys_fchmodat] path is {}, flags is {}, new mode is {:o}",
-    //     &abs_path, flags, mode
-    // );
+    debug!(
+        "[sys_fchmodat] path is {}, flags is {}, new mode is {:o}",
+        &abs_path, flags, mode
+    );
 
     let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
     let parent_inode = open(&parent_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
@@ -459,13 +460,11 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
         return Err(SysErrNo::ENOTDIR);
     }
 
-    /*
     debug!(
         "{} set {:?}",
         abs_path,
         FaccessatFileMode::from_bits_truncate(mode)
     );
-    */
 
     let inode = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
     inode.inode.fmode_set(mode);

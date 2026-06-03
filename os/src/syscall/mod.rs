@@ -221,7 +221,7 @@ use mm::*;
 #[cfg(feature = "net")]
 use net::*;
 pub use options::{
-    FutexCmd, FutexOpt, MmapFlags, MmapProt, PollEvents, RLimit, SignalMaskFlag, Utsname,
+    FutexCmd, FutexOpt, MmapFlags, MmapProt, PollEvents, RLimit, SignalMaskFlag, Utsname,FaccessatFileMode
 };
 use resource::*;
 use signal::*;

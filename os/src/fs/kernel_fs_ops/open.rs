@@ -1,11 +1,12 @@
 use crate::fs::map_library_path;
 use crate::task::current_task;
-use crate::syscall::options::FaccessatFileMode;
+use crate::syscall::FaccessatFileMode;
 
 use super::*;
 use alloc::sync::Arc;
 use log::{debug, warn};
 fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
+    debug!("[create_file] abs_path={}, flags={:?}, mode={:o}", abs_path, flags, mode);
     // 检查父目录的写入和执行权限
     // 参考 faccessat 的权限检查逻辑
     if let Some(parent_path) = {
@@ -21,6 +22,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
             }
         }
     } {
+        debug!("[create_file] parent_path={}", parent_path);
         // 查找父目录的 inode
         let parent_inode_opt = if FsIndex::has_inode(parent_path) {
             FsIndex::find_inode_idx(parent_path)
@@ -30,34 +32,73 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
                     FsIndex::insert_inode_idx(parent_path, inode.clone());
                     Some(inode)
                 }
-                Err(_) => None,
+                Err(e) => {
+                    debug!("[create_file] parent inode not found: {:?}", e);
+                    None
+                }
             }
         };
 
         if let Some(parent_inode) = parent_inode_opt {
-            let parent_mode = parent_inode.fmode()? & 0xfff;
+            let parent_fmode = parent_inode.fmode()?;
+            let parent_mode = parent_fmode & 0xfff;
             let parent_mode = FaccessatFileMode::from_bits_truncate(parent_mode);
 
             if let Some(task) = current_task() {
                 let task_inner = task.inner_lock();
-                // root (uid 0) 绕过权限检查
-                if task_inner.user_id != 0 {
-                    // 检查父目录的可执行(搜索)权限
-                    if !(parent_mode.contains(FaccessatFileMode::S_IXUSR)
-                        || parent_mode.contains(FaccessatFileMode::S_IXGRP)
-                        || parent_mode.contains(FaccessatFileMode::S_IXOTH))
-                    {
+                debug!(
+                    "[create_file] uid={} euid={} gid={} egid={} parent_mode={:o}",
+                    task_inner.user_id, task_inner.effective_uid,
+                    task_inner.real_gid, task_inner.effective_gid, parent_fmode & 0xfff
+                );
+                // root (euid 0) 绕过权限检查
+                // 使用 effective_uid，因为 Linux 文件权限检查基于 effective uid
+                if task_inner.effective_uid != 0 {
+                    // 获取父目录的 owner uid/gid，用于判断进程是 owner/group/other
+                    let pstat = parent_inode.fstat();
+                    let owner_uid = pstat.st_uid;
+                    let owner_gid = pstat.st_gid;
+                    let my_uid = task_inner.effective_uid;
+                    let my_gid = task_inner.effective_gid;
+
+                    debug!(
+                        "[create_file] owner_uid={} owner_gid={} my_uid={} my_gid={}",
+                        owner_uid, owner_gid, my_uid, my_gid
+                    );
+
+                    // 确定进程属于 owner / group / other 哪一类
+                    let (has_write, has_exec) = if my_uid == owner_uid {
+                        (
+                            parent_mode.contains(FaccessatFileMode::S_IWUSR),
+                            parent_mode.contains(FaccessatFileMode::S_IXUSR),
+                        )
+                    } else if my_gid == owner_gid {
+                        (
+                            parent_mode.contains(FaccessatFileMode::S_IWGRP),
+                            parent_mode.contains(FaccessatFileMode::S_IXGRP),
+                        )
+                    } else {
+                        (
+                            parent_mode.contains(FaccessatFileMode::S_IWOTH),
+                            parent_mode.contains(FaccessatFileMode::S_IXOTH),
+                        )
+                    };
+
+                    debug!("[create_file] has_write={} has_exec={}", has_write, has_exec);
+                    if !has_exec {
+                        debug!("[create_file] EACCES: no exec permission on parent");
                         return Err(SysErrNo::EACCES);
                     }
-                    // 检查父目录的可写权限
-                    if !(parent_mode.contains(FaccessatFileMode::S_IWUSR)
-                        || parent_mode.contains(FaccessatFileMode::S_IWGRP)
-                        || parent_mode.contains(FaccessatFileMode::S_IWOTH))
-                    {
+                    if !has_write {
+                        debug!("[create_file] EACCES: no write permission on parent");
                         return Err(SysErrNo::EACCES);
                     }
+                } else {
+                    debug!("[create_file] root user, bypass permission check");
                 }
             }
+        } else {
+            debug!("[create_file] parent inode not found, skip permission check");
         }
     }
 
@@ -118,6 +159,43 @@ pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, Sy
             return Err(SysErrNo::ENOTDIR);
         }
         let (readable, writable) = flags.read_write();
+        // 如果以写模式打开，检查文件的写权限
+        if writable {
+            if let Some(task) = current_task() {
+                let task_inner = task.inner_lock();
+                debug!(
+                    "[open] existing file writable check: uid={} euid={} abs_path={}",
+                    task_inner.user_id, task_inner.effective_uid, abs_path
+                );
+                if task_inner.effective_uid != 0 {
+                    let file_stat = inode.fstat();
+                    let file_fmode = inode.fmode()?;
+                    let file_mode = file_fmode & 0xfff;
+                    let file_mode = FaccessatFileMode::from_bits_truncate(file_mode);
+                    let my_uid = task_inner.effective_uid;
+                    let my_gid = task_inner.effective_gid;
+                    let owner_uid = file_stat.st_uid;
+                    let owner_gid = file_stat.st_gid;
+
+                    debug!(
+                        "[open] file mode={:o} owner_uid={} owner_gid={} my_uid={} my_gid={}",
+                        file_fmode & 0xfff, owner_uid, owner_gid, my_uid, my_gid
+                    );
+
+                    let has_write = if my_uid == owner_uid {
+                        file_mode.contains(FaccessatFileMode::S_IWUSR)
+                    } else if my_gid == owner_gid {
+                        file_mode.contains(FaccessatFileMode::S_IWGRP)
+                    } else {
+                        file_mode.contains(FaccessatFileMode::S_IWOTH)
+                    };
+                    if !has_write {
+                        debug!("[open] EACCES: no write permission on existing file");
+                        return Err(SysErrNo::EACCES);
+                    }
+                }
+            }
+        }
         let osfile = OSFile::new(readable, writable, inode);
         if flags.contains(OpenFlags::O_APPEND) {
             osfile.lseek(0, SEEK_END)?;
@@ -130,6 +208,7 @@ pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, Sy
 
     // 节点不存在
     if flags.contains(OpenFlags::O_CREATE) {
+        debug!("[open] file not found, calling create_file for {}", abs_path);
         return create_file(abs_path, flags, mode);
     }
     Err(SysErrNo::ENOENT)

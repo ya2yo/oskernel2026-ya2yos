@@ -204,6 +204,8 @@ pub fn sys_fstatfs(fd: i32, buf: usize) -> SyscallRet {
 pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.inner_lock();
+    let user_id = inner.user_id;
+    drop(inner);
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
     if (path as isize) <= 0 {
@@ -250,7 +252,7 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> S
     if parent_inode.inode.types() != InodeType::Dir {
         return Err(SysErrNo::ENOTDIR);
     }
-    if inner.user_id != 0
+    if user_id != 0
         && !(parent_mode.contains(FaccessatFileMode::S_IXUSR)
             || parent_mode.contains(FaccessatFileMode::S_IXGRP)
             || parent_mode.contains(FaccessatFileMode::S_IXOTH))
@@ -262,7 +264,7 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> S
     let file_mode = inode.inode.fmode()? & 0xfff;
     let file_mode = FaccessatFileMode::from_bits_truncate(file_mode);
     if mode.contains(FaccessatMode::R_OK)
-        && inner.user_id != 0
+        && user_id != 0
         && !(file_mode.contains(FaccessatFileMode::S_IRUSR)
             || file_mode.contains(FaccessatFileMode::S_IRGRP)
             || file_mode.contains(FaccessatFileMode::S_IROTH))
@@ -270,7 +272,7 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> S
         return Err(SysErrNo::EACCES);
     }
     if mode.contains(FaccessatMode::W_OK)
-        && inner.user_id != 0
+        && user_id != 0
         && !(file_mode.contains(FaccessatFileMode::S_IWUSR)
             || file_mode.contains(FaccessatFileMode::S_IWGRP)
             || file_mode.contains(FaccessatFileMode::S_IWOTH))

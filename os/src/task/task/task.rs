@@ -564,13 +564,13 @@ impl TaskControlBlock {
                 .token();
             *translated_refmut(child_token, child_tid) = child.tid() as u32;
         }
-
+        drop(parent_inner);
         if flags.contains(CloneFlags::SIGCHLD) {
             let child_proc = child.process.inner_lock();
             let child_mm = child_proc.get_locked_memory_set_read();
             create_proc_dir_and_file(pid, ppid, &child_mm);
         }
-
+        let mut parent_inner = self.inner_lock();
         // VFORK: suspend parent until child execs or exits.
         // The parent is woken in exit_current_and_run_next() when the
         // child terminates, or in execve() when the child replaces itself.
