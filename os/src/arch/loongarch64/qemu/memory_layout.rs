@@ -19,7 +19,6 @@ pub const MAX_BRK_SIZE: usize = 0x800_0000; // 128MB
 /// Prevent runaway mmap from exhausting physical memory.
 pub const MAX_MMAP_SIZE: usize = 0x1000_0000; // 256MB
 /// and subsequently exhausting physical memory via lazy page faults.
-pub const MAX_MMAP_SIZE: usize = 0x100_000_00; // 256MB
 pub const PRE_ALLOC_PAGES: usize = 8;
 
 // 内核虚拟地址的起始地址

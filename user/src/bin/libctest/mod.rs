@@ -13,3 +13,4 @@ pub mod printf_fmt_n;
 pub mod runall;
 pub mod setvbuf_unget;
 pub mod wcsstr_false_negative;
+pub mod tls;
