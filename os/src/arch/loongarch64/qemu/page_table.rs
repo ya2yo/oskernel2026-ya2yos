@@ -396,9 +396,13 @@ impl PageTable {
         };
 
         // 必须有对应的 frame（ELF 段用 data_frames 跟踪）
+        // fork 子进程的 Brk 区域可能存在无 data_frames 条目的 COW PTE；
+        // 此时仍应分配新帧并复制数据，防止 heap 元数据因 lazy fault 被清零。
         let refcnt = match vma.data_frames.get(&va.into()) {
             Some(f) => Arc::strong_count(f),
-            None => return false,
+            // No FrameTracker: always go through the copy path so that
+            // a new FrameTracker is created and the original data is preserved.
+            None => 2,
         };
 
         // 只有一个引用：无需复制物理页，直接调整权限即可

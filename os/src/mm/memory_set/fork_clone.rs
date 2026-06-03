@@ -71,12 +71,28 @@ impl MemorySetInner {
                     continue;
                 }
                 new_area.data_frames = area.data_frames.clone();
-                for (vpn, _) in area.data_frames.iter() {
-                    let vpn = *vpn;
-                    user_space
+                // Iterate the full vpn_range for Brk areas: the parent may have
+                // PTEs for VPNs not tracked in data_frames (e.g. after brk
+                // shrink→grow cycles).  For each such VPN we must create a child
+                // COW PTE so the child sees the parent's heap data instead of
+                // a zero page from a subsequent lazy fault.
+                let vpns: Vec<_> = if area.area_type == MapAreaType::Brk {
+                    area.vpn_range.into_iter().collect()
+                } else {
+                    area.data_frames.keys().copied().collect()
+                };
+                for vpn in vpns {
+                    if user_space
                         .get_mut()
                         .page_table
-                        .handle_cow_mapping_from_exited_user(vpn, &mut memory_set);
+                        .find_valid_pte(vpn)
+                        .is_some()
+                    {
+                        user_space
+                            .get_mut()
+                            .page_table
+                            .handle_cow_mapping_from_exited_user(vpn, &mut memory_set);
+                    }
                 }
                 memory_set.push_lazily(new_area);
                 continue;

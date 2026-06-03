@@ -289,9 +289,11 @@ impl PageTable {
         };
 
         // 必须有对应的 frame（ELF 段用 data_frames 跟踪）
+        // fork 子进程的 Brk 区域可能存在无 data_frames 条目的 COW PTE；
+        // 此时仍应分配新帧并复制数据。
         let refcnt = match vma.data_frames.get(&va.into()) {
             Some(f) => Arc::strong_count(f),
-            None => return false,
+            None => 2, // no tracker → force copy path
         };
         debug!("---> refcnt={}",refcnt);
         // 只有一个引用：无需复制物理页，直接调整权限即可
