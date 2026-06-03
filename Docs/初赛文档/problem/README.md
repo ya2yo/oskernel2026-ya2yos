@@ -25,6 +25,8 @@
 - [LTP access02 execve shebang 脚本](./access02-ltp-execve.md)
 - [LTP access04 mount / loop 设备修复](./access04-ltp-musl.md)
 - [龙芯架构 iozone-glibc 动态链接与缺页处理修复](./iozone-glibc.md)
+- [LTP creat04 open 权限检查](./creat04-open-permission.md)
+- [sys_linkat 硬链接实现与 lwext4 重构](./linkat-hardlink-refactor.md)
 
 ## 测例与驱动
 

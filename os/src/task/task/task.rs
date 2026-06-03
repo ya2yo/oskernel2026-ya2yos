@@ -109,12 +109,26 @@ pub struct TaskControlBlockInner {
     pub sig_pending: SigSet,
     pub timer: Arc<Timer>,
     pub robust_list: RobustListHead,
-    pub user_id: usize,
-    pub effective_uid: u32,
-    pub saved_uid: u32,
-    pub real_gid: u32,
-    pub effective_gid: u32,
-    pub saved_gid: u32,
+    /// POSIX 进程凭证（Credentials）
+    /// 参考 Linux task_struct 中 `struct cred` 的 UID/GID 三元组
+    ///
+    /// 每个 UID/GID 有三个值：
+    ///   real     — 实际用户/组 ID（谁启动了这个进程），用于记账和信号权限
+    ///   effective — 有效用户/组 ID（用于文件访问权限检查），setuid 程序运行时此值会变
+    ///   saved     — 保存的 set-user-ID（允许进程通过 setresuid 来回切换 effective uid）
+    ///
+    /// 重要区别：
+    ///   - `faccessat(2)` 检查 real uid/gid（用户实际是谁）
+    ///   - `open(2)` / `creat(2)` / 文件权限检查使用 effective uid/gid（当前特权级别）
+    ///   - root（euid=0）绕过所有权限检查
+    ///
+    /// setresuid(-1, uid, -1)：只改 effective uid，real uid 保持 root → 非 root 权限
+    pub user_id: usize,        // real uid（实际用户 ID）
+    pub effective_uid: u32,    // effective uid（有效用户 ID，权限检查用）
+    pub saved_uid: u32,        // saved set-user-ID（setuid 保存值）
+    pub real_gid: u32,         // real gid（实际组 ID）
+    pub effective_gid: u32,    // effective gid（有效组 ID，权限检查用）
+    pub saved_gid: u32,        // saved set-group-ID（setgid 保存值）
     /// PR_SET_PDEATHSIG 设置的父进程死亡信号 (0 表示未设置)
     pub pdeath_signal: u8,
 

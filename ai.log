@@ -334,3 +334,104 @@ clone05 TPASS。
 - `os/src/task/mod.rs`
 - `os/src/task/processor.rs`
 - `Docs/初赛文档/problem/clone05-vfork.md`
+
+---
+
+## 2026-06-02: LTP creat04 open 权限检查修复
+
+### 问题发现
+
+用户提供 `log.ans`，要求分析哪个应该失败的 syscall 返回了成功。日志显示 `creat04.c:40: TFAIL: call succeeded unexpectedly`，测试中用 `setresuid` 切换到非特权用户后调用 `openat(O_CREATE)` 创建文件，预期 EACCES 但实际返回成功。
+
+### 根因分析
+
+AI 分析日志的 syscall 调用序列，追踪到 `sys_openat` → `open` → `create_file` 路径。关键发现：
+
+1. **`create_file` 完全没有权限检查**：`os/src/fs/kernel_fs_ops/open.rs` 的 `create_file` 函数直接调用 `parent_dir.create()`，不检查父目录的写/执行权限。
+
+2. **`sys_fchownat` 是 stub**：`os/src/syscall/fs/ctl.rs:396` 的 `sys_fchownat` 所有参数加 `_` 前缀，永远返回 `Ok(0)`，不实际修改文件 owner。
+
+3. **`open()` 打开已有文件也不检查写权限**：LTP test round 2 创建已存在的 file1 走到 `open` 的已有文件分支，该分支无权限检查。
+
+4. **root 判定用错字段**（第二轮调试发现）：第一版使用 `task_inner.user_id`（real uid）判断 root，但 `setresuid(-1, uid, -1)` 只改 effective uid，real uid 仍为 0。debug 日志显示 `uid=0 euid=1` 但走到 `root user, bypass permission check`。AI 指出 Linux 文件权限检查基于 effective uid，应改为 `task_inner.effective_uid`。
+
+### 修改内容（两轮迭代）
+
+| 轮次 | 文件 | 修改 |
+|------|------|------|
+| 第一轮 | `os/src/fs/kernel_fs_ops/open.rs` | `create_file` 添加父目录权限检查（owner/group/other 三级），但使用 `user_id` 判断 root — 有 bug |
+| | `os/src/syscall/fs/ctl.rs` | 取消注释 `sys_fchmodat` debug 日志，添加 debug 输出便于排查 |
+| 第二轮 | `os/src/fs/kernel_fs_ops/open.rs` | 修正 root 判定：`user_id` → `effective_uid`；`open()` 已有文件分支也增加写权限检查 |
+
+### 调试过程
+
+用户重新编译运行后发现仍然 TFAIL。AI 添加详细 debug 日志，输出 uid/euid/gid/egid/owner_uid/owner_gid/has_write/has_exec。第二轮日志揭示 bug：
+```
+[create_file] uid=0 euid=1 gid=0 egid=0 parent_mode=700
+[create_file] root user, bypass permission check   ← BUG
+```
+修复后预期：
+```
+[create_file] EACCES: no write permission on parent  ← effective uid=1, owner=0, 属于 other, S_IWOTH=0
+```
+
+### 涉及文件汇总
+
+- `os/src/fs/kernel_fs_ops/open.rs` — 核心修复
+- `os/src/syscall/fs/ctl.rs` — debug 日志启用
+- `Docs/初赛文档/problem/creat04-open-permission.md` — 问题文档
+- `Docs/初赛文档/开发日志.md` — 开发日志更新
+
+---
+
+## 2026-06-03: lwext4 重构与 sys_linkat 实现
+
+### 问题发现
+
+用户询问 `sys_linkat` 实际工作是否在 `lwext4_rust` 中完成，并要求生成实现文档。
+
+### 分析
+
+AI 查看 commit `857ede1` 的完整 diff，梳理四层调用链：
+
+```
+sys_linkat() → Inode::hard_link() → Ext4Inode::hard_link() → Ext4File::file_hardlink() → FFI ext4_flink()
+```
+
+确认硬链接的磁盘操作完全在 `lwext4_rust/src/file.rs` 通过 `ext4_flink` FFI 完成，内核只做校验和路由。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/ctl.rs` | 重写 `sys_linkat`：AT_EMPTY_PATH 支持、目录 EPERM 检查、已有路径 EEXIST、FsIndex 同步 |
+| `os/src/fs/vfs.rs` | Inode trait 新增 `hard_link` 方法 |
+| `os/src/fs/ext4_lw/inode.rs` | 实现 `hard_link` 委托给 lwext4_rust；`read_dentry` 改用 lwext4_rust 的 OsDirent |
+| `os/src/fs/ext4_lw/dirent.rs` | 删除（OsDirent 定义统一到 lwext4_rust） |
+| `lwext4_rust/src/file.rs` | 新增 `file_hardlink()` FFI 调用；`OsDirent` 添加 `len()`/`off()`/`as_bytes()` |
+
+### 涉及文件汇总
+
+- `Docs/初赛文档/problem/linkat-hardlink-refactor.md` — 问题文档
+- `Docs/初赛文档/开发日志.md` — 开发日志更新
+- `Docs/初赛文档/problem/README.md` — 索引更新
+
+---
+
+## 2026-06-03: Task 凭证字段注释
+
+### 描述
+
+用户注意到 Task 结构体中有 `user_id`/`effective_uid`/`saved_uid`/`real_gid`/`effective_gid`/`saved_gid` 六个字段，要求说明用途。
+
+### 操作
+
+AI 为 `os/src/task/task/task.rs` 添加了注释块，说明 POSIX 凭证三元组的含义：
+- real/effective/saved 三者的区别
+- `faccessat` 用 real uid，`open`/`creat` 用 effective uid
+- root（euid=0）绕过权限检查
+- `setresuid(-1, uid, -1)` 只改 effective uid 的陷阱
+
+### 涉及文件
+
+- `os/src/task/task/task.rs`

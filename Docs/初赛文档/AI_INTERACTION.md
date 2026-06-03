@@ -320,6 +320,26 @@
 - **工具/模型**：Cursor (Composer)
 - **场景**：Bug 分析与定位
 - **描述**：提供 `log.ans`，AI 分析 clone05 测试失败原因：内核完全未实现 CLONE_VFORK 挂起。第一轮修复后持续失败，对比两轮日志定位三处调度路径（suspend_current_and_run_next 无条件 Ready、run_tasks 无差别入队、空队列 keep-running）绕过 VforkBlocked。逐一修复后测试通过。详见 `ai.log` 2026-05-31 条目与 [problem/clone05-vfork.md](./problem/clone05-vfork.md)。
+
+#### LTP creat04 open 权限检查修复（6.2）
+
+- **工具/模型**：Claude Code (Claude Opus 4.7)
+- **场景**：Bug 分析与定位、代码生成、日志调试
+- **描述**：用户提供 `log.ans` 要求分析"哪个应该失败的 syscall 返回成功"。AI 追踪 syscall 调用序列，定位 `create_file` 完全无权限检查、`sys_fchownat` 是 stub、`open()` 已有文件无写检查三个根因。AI 生成 owner/group/other 三级权限检查代码。第一版使用 `user_id`（real uid）判定 root，用户重跑仍 TFAIL；AI 添加 debug 日志后发现 `setresuid(-1,u,-1)` 只改 effective uid 不改 real uid，修正为 `effective_uid`。详见 `ai.log` 2026-06-02 条目与 [problem/creat04-open-permission.md](./problem/creat04-open-permission.md)。
+- **关联 commit**：`3c2803e`, `7db430b`
+
+#### lwext4 重构与 sys_linkat 文档（6.3）
+
+- **工具/模型**：Claude Code (Claude Opus 4.7)
+- **场景**：代码理解与文档完善
+- **描述**：用户询问 `sys_linkat` 实际工作是否在 lwext4_rust 中完成。AI 查看 commit `857ede1` 的完整 diff（6 文件、98 增/69 删），梳理四层调用链（syscall → VFS → ext4 适配 → lwext4 FFI），按 doc-writing skill 模板生成详细文档。详见 `ai.log` 2026-06-03 条目与 [problem/linkat-hardlink-refactor.md](./problem/linkat-hardlink-refactor.md)。
+- **关联 commit**：`857ede1`
+
+#### Task 凭证字段注释（6.3）
+
+- **工具/模型**：Claude Code (Claude Opus 4.7)
+- **场景**：代码理解与注释
+- **描述**：用户询问 Task 中 6 个 uid/gid 字段的用途，AI 添加注释块说明 POSIX 凭证三元组的区别（real/effective/saved）及各自在文件权限检查中的用途。详见 `ai.log` 2026-06-03 条目。
 - **关联 commit**：待提交
 
 ---
@@ -330,11 +350,11 @@
 
 | 使用场景 | 次数（约） | 涉及 commit 数 |
 | ---------- | ----------- | --------------- |
-| 代码理解与注释 | 3 | 5+ |
-| 代码生成 | 8 | 15+ |
-| Bug 分析与定位 | 10 | 20+ |
+| 代码理解与注释 | 5 | 5+ |
+| 代码生成 | 9 | 15+ |
+| Bug 分析与定位 | 12 | 20+ |
 | 架构适配与调试 | 5 | 15+ |
-| 文档完善 | 3 | 5+ |
+| 文档完善 | 5 | 5+ |
 
 ### 关键成果
 
