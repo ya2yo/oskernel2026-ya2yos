@@ -13,7 +13,7 @@ use crate::{
 use alloc::{format, string::ToString, vec};
 use alloc::{sync::Arc, vec::Vec};
 
-use super::dirent::Dirent;
+use lwext4_rust::file::OsDirent;
 
 /// 防止符号链接死循环的最大跳转次数
 const MAX_LOOPTIMES: usize = 5;
@@ -124,6 +124,13 @@ impl Inode for Ext4Inode {
     fn rename(&self, path: &str, new_path: &str) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
         file.file_rename(path, new_path)
+            .map_or(Err(SysErrNo::ENOENT), |_| Ok(0))
+    }
+
+    /// 创建硬链接：hardlink_path 指向 old_path 相同的 inode
+    fn hard_link(&self, old_path: &str, new_path: &str) -> SyscallRet {
+        let file = &mut self.inner.get_unchecked_mut().f;
+        file.file_hardlink(old_path, new_path)
             .map_or(Err(SysErrNo::ENOENT), |_| Ok(0))
     }
 
@@ -259,19 +266,12 @@ impl Inode for Ext4Inode {
         let mut de: Vec<u8> = Vec::new();
         let (mut res, mut f_off) = (0usize, off);
         for entry in entries {
-            let dirent = Dirent {
-                d_ino: entry.d_ino,
-                d_off: entry.d_off,
-                d_reclen: entry.d_reclen,
-                d_type: entry.d_type,
-                d_name: entry.d_name,
-            };
-            if res + dirent.len() > len {
+            if res + entry.len() > len {
                 break;
             }
-            res += dirent.len();
-            f_off = dirent.off();
-            de.extend_from_slice(dirent.as_bytes());
+            res += entry.len();
+            f_off = entry.off();
+            de.extend_from_slice(entry.as_bytes());
         }
         // assert!(res != 0);
         Ok((de, f_off as isize))

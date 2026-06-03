@@ -2,7 +2,6 @@ use alloc::string::String;
 use alloc::vec;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_FOLLOW};
 use log::{debug, warn};
-use lwext4_rust::file::OsDirent;
 
 use crate::fs::{
     open, superblock_sync, File, FsIndex, InodeType, OpenFlags, MAX_PATH_LEN, NONE_MODE, SEEK_CUR,
@@ -140,15 +139,54 @@ pub fn sys_linkat(
     newpath: *const u8,
     flags: u32,
 ) -> SyscallRet {
-    let new_entry:OsDirent;
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
-    let oldpath = read_user_cstr(&memory_set, oldpath)?;
-    let new_path = read_user_cstr(&memory_set, newpath)?;
-    let file =open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
-    let newfile = open(&new_path, OpenFlags::O_CREATE, NONE_MODE)?.file()?;
-    newfile.inode=file.inode;
+
+    let old_path_str = read_user_cstr(&memory_set, oldpath)?;
+    let new_path_str = read_user_cstr(&memory_set, newpath)?;
+
+    // 处理 AT_EMPTY_PATH：若 oldpath 为空字符串，则使用 oldfd 对应的已打开文件
+    if flags & AT_EMPTY_PATH as u32 != 0 && old_path_str.is_empty() {
+        // newpath 不能为空
+        if new_path_str.is_empty() {
+            return Err(SysErrNo::ENOENT);
+        }
+        let new_abs_path = proc_inner.get_abs_path(newfd, &new_path_str)?;
+        // 新路径不能已存在
+        if open(&new_abs_path, OpenFlags::empty(), NONE_MODE).is_ok() {
+            return Err(SysErrNo::EEXIST);
+        }
+        // 通过 oldfd 获取原始 inode
+        let old_file = proc_inner.fd_table.get(oldfd as usize)?.file()?;
+        let old_path = old_file.inode.path();
+        old_file.inode.hard_link(&old_path, &new_abs_path)?;
+        FsIndex::insert_inode_idx(&new_abs_path, old_file.inode.clone());
+        return Ok(0);
+    }
+
+    // 常规路径解析
+    let old_abs_path = proc_inner.get_abs_path(oldfd, &old_path_str)?;
+    let new_abs_path = proc_inner.get_abs_path(newfd, &new_path_str)?;
+
+    // 打开原文件
+    let osfile = open(&old_abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
+
+    // 不允许对目录创建硬链接
+    if osfile.inode.types() == InodeType::Dir {
+        return Err(SysErrNo::EPERM);
+    }
+
+    // 新路径不能已存在
+    if open(&new_abs_path, OpenFlags::empty(), NONE_MODE).is_ok() {
+        return Err(SysErrNo::EEXIST);
+    }
+
+    // 在文件系统层面创建硬链接
+    osfile.inode.hard_link(&old_abs_path, &new_abs_path)?;
+    // 更新目录索引：新路径与旧路径共享同一个 inode
+    FsIndex::insert_inode_idx(&new_abs_path, osfile.inode.clone());
+
     Ok(0)
 }
 

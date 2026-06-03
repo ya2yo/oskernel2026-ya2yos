@@ -211,6 +211,26 @@ impl Ext4File {
         Ok(EOK as usize)
     }
 
+    /// Create a hard link for a file.
+    /// - `path`: Path to existing file.
+    /// - `hardlink_path`: Path of the new hard link (must not exist).
+    pub fn file_hardlink(&mut self, path: &str, hardlink_path: &str) -> Result<usize, i32> {
+        let c_path = CString::new(path).expect("CString::new failed");
+        let c_path = c_path.into_raw();
+        let c_hardlink_path = CString::new(hardlink_path).expect("CString::new failed");
+        let c_hardlink_path = c_hardlink_path.into_raw();
+        let r = unsafe { ext4_flink(c_path, c_hardlink_path) };
+        unsafe {
+            drop(CString::from_raw(c_path));
+            drop(CString::from_raw(c_hardlink_path));
+        }
+        if r != EOK as i32 {
+            error!("ext4_flink error: rc = {}", r);
+            return Err(r);
+        }
+        Ok(EOK as usize)
+    }
+
     /// Remove file by path.
     pub fn file_remove(&mut self, path: &str) -> Result<usize, i32> {
         //debug!("file_remove {}", path);
@@ -813,6 +833,23 @@ pub struct OsDirent {
     pub d_reclen: u16,     // 当前 dirent 的长度
     pub d_type: u8,        // 文件类型
     pub d_name: [u8; 256], // 文件名
+}
+
+impl OsDirent {
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.d_reclen as usize
+    }
+    #[inline(always)]
+    pub fn off(&self) -> usize {
+        self.d_off as usize
+    }
+
+    /// 将当前目录项解释为字节切片，用于 getdents64 序列化
+    pub fn as_bytes(&self) -> &[u8] {
+        // 名字数组大小不定，按 d_reclen 解释
+        unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, self.len()) }
+    }
 }
 
 #[derive(Clone)]

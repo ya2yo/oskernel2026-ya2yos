@@ -90,6 +90,10 @@ pub trait Inode: Send + Sync {
     fn rename(&self, _path: &str, _new_path: &str) -> SyscallRet {
         unimplemented!("Inode::rename")
     }
+    /// 创建硬链接
+    fn hard_link(&self, _old_path: &str, _new_path: &str) -> SyscallRet {
+        unimplemented!("Inode::hard_link")
+    }
     fn delay(&self) {
         unimplemented!("Inode::delay")
     }

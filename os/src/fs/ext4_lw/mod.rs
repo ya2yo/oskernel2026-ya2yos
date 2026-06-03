@@ -1,4 +1,3 @@
-mod dirent;
 mod inode;
 mod sb;
 pub use inode::*;
