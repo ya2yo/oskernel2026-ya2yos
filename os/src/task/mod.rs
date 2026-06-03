@@ -33,9 +33,9 @@ mod tid;
 pub use crate::arch::context::TaskContext;
 use crate::{
     arch::cpu::hart_id,
-    fs::{open, remove_proc_dir_and_file, OpenFlags, NONE_MODE},
-    mm::{activate_kernel_space, copy_to_user, VirtAddr},
-    signal::{send_signal_to_thread_group, SigSet},
+    fs::{NONE_MODE, OpenFlags, open, remove_proc_dir_and_file},
+    mm::{MapAreaType, VirtAddr, activate_kernel_space, copy_to_user},
+    signal::{SigSet, send_signal_to_thread_group},
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
@@ -194,14 +194,14 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // CLONE_CHILD_CLEARTID
     if curr_task_inner.clear_child_tid != 0 {
         let memory_set = curr_proc.get_locked_memory_set_read();
-        // put_data(token, curr_task_inner.clear_child_tid as *mut u32, 0);
-        copy_to_user(&memory_set, curr_task_inner.clear_child_tid as usize, &[0]);
+        let _ = copy_to_user(&memory_set, curr_task_inner.clear_child_tid as usize, &[0]);
         // 唤醒等待在 child_tid 的进程
-        let pa = memory_set
-            .translate_va(VirtAddr::from(curr_task_inner.clear_child_tid))
-            .unwrap()
-            .0;
-        futex_wake_up(pa, 1); // 唤醒在 clear_child_tid 等待的线程
+        // 线程的 clear_child_tid 可能已被用户态 munmap 释放，
+        // translate_va 会返回 None，此时跳过 futex_wake 即可。
+        if let Some(pa) = memory_set.translate_va(VirtAddr::from(curr_task_inner.clear_child_tid))
+        {
+            futex_wake_up(pa.0, 1);
+        }
     }
     // 释放futex (必须用 tid 而非 pid，因为 futex word 低 30 位存的是 TID)
     handle_futex_when_exit(
