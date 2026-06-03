@@ -85,7 +85,7 @@ impl MemorySetInner {
                     if user_space
                         .get_mut()
                         .page_table
-                        .find_valid_pte(vpn)
+                        .translate(vpn)
                         .is_some()
                     {
                         user_space
