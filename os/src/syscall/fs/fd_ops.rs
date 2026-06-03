@@ -1,8 +1,9 @@
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use super::fcntl::*;
+use super::file_lock::{self, Flock};
 use crate::fs::{open, FileDescriptor, FsIndex, OpenFlags, map_dynamic_link_file};
-use crate::mm::{copy_from_user, if_bad_address, translate::read_user_cstr};
+use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::{options::FcntlCmd, Syscall};
 use crate::task::current_task;
 use crate::utils::{SysErrNo, SyscallRet};
@@ -99,19 +100,20 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         return Err(SysErrNo::EINVAL);
     }
 
-    let mut file = proc_inner.fd_table.get(fd)?;
-    let cmd = FcntlCmd::from_bits(cmd).unwrap();
+    let cmd = FcntlCmd::from_bits(cmd).ok_or(SysErrNo::EINVAL)?;
 
     match cmd {
         FcntlCmd::F_DUPFD => {
+            let file = proc_inner.fd_table.get(fd)?;
             let fd_new = proc_inner.fd_table.alloc_fd_larger_than(arg)?;
             proc_inner.fd_table.set(fd_new, file);
             proc_inner.fs_info.dup_fd_path(fd, fd_new);
             return Ok(fd_new);
         }
         FcntlCmd::F_DUPFD_CLOEXEC => {
-            let fd_new = proc_inner.fd_table.alloc_fd_larger_than(arg)?;
+            let mut file = proc_inner.fd_table.get(fd)?;
             file.set_cloexec();
+            let fd_new = proc_inner.fd_table.alloc_fd_larger_than(arg)?;
             proc_inner.fd_table.set(fd_new, file);
             proc_inner.fs_info.dup_fd_path(fd, fd_new);
             return Ok(fd_new);
@@ -131,6 +133,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             }
         }
         FcntlCmd::F_GETFL => {
+            let file = proc_inner.fd_table.get(fd)?;
             let mut res = OpenFlags::O_RDWR.bits() as usize;
             if file.non_block() {
                 res |= OpenFlags::O_NONBLOCK.bits() as usize;
@@ -138,7 +141,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             return Ok(res);
         }
         FcntlCmd::F_SETFL => {
-            // 目前只启用nonblock
+            let file = proc_inner.fd_table.get(fd)?;
             let flags = OpenFlags::from_bits_truncate(arg as u32);
             if flags.contains(OpenFlags::O_NONBLOCK) {
                 proc_inner.fd_table.set_nonblock(fd)?;
@@ -147,9 +150,170 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
                 proc_inner.fd_table.unset_nonblock(fd)?;
                 file.any().set_nonblocking(false)?;
             }
-            // task_inner.fd_table.set_flags(fd, Some(flags));
-            // todo!()
         }
+
+        // -------------------------------------------------------------------
+        // 文件记录锁（F_GETLK / F_SETLK / F_SETLKW）
+        // 按 inode 路径在全局锁表中管理 POSIX advisory record lock
+        // -------------------------------------------------------------------
+        FcntlCmd::F_GETLK | FcntlCmd::F_GETLK64 => {
+            let (inode_path, file_size) = {
+                let file = proc_inner.fd_table.get(fd)?;
+                let osfile = file.file()?;
+                (osfile.inode.path(), osfile.inode.size() as i64)
+            };
+
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            let mut flock_bytes = [0u8; 32];
+            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
+            let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
+
+            file_lock::getlk(&inode_path, &mut flock, file_size)?;
+
+            let result_bytes = flock.to_bytes();
+            copy_to_user(&memory_set, arg, &result_bytes)?;
+            return Ok(0);
+        }
+        FcntlCmd::F_SETLK | FcntlCmd::F_SETLK64 => {
+            let (inode_path, file_size) = {
+                let file = proc_inner.fd_table.get(fd)?;
+                let osfile = file.file()?;
+                (osfile.inode.path(), osfile.inode.size() as i64)
+            };
+
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            let mut flock_bytes = [0u8; 32];
+            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
+            let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
+
+            file_lock::setlk(&inode_path, &flock, file_size)?;
+            return Ok(0);
+        }
+        FcntlCmd::F_SETLKW | FcntlCmd::F_SETLKW64 => {
+            // F_SETLKW 应阻塞等待直到锁可用；当前简化为非阻塞行为
+            let (inode_path, file_size) = {
+                let file = proc_inner.fd_table.get(fd)?;
+                let osfile = file.file()?;
+                (osfile.inode.path(), osfile.inode.size() as i64)
+            };
+
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            let mut flock_bytes = [0u8; 32];
+            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
+            let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
+
+            file_lock::setlk(&inode_path, &flock, file_size)?;
+            return Ok(0);
+        }
+
+        // -------------------------------------------------------------------
+        // OFD（Open File Description）锁 — 简化委托给 POSIX 锁逻辑
+        // -------------------------------------------------------------------
+        FcntlCmd::F_OFD_GETLK => {
+            let (inode_path, file_size) = {
+                let file = proc_inner.fd_table.get(fd)?;
+                let osfile = file.file()?;
+                (osfile.inode.path(), osfile.inode.size() as i64)
+            };
+
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            let mut flock_bytes = [0u8; 32];
+            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
+            let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
+
+            file_lock::getlk(&inode_path, &mut flock, file_size)?;
+
+            let result_bytes = flock.to_bytes();
+            copy_to_user(&memory_set, arg, &result_bytes)?;
+            return Ok(0);
+        }
+        FcntlCmd::F_OFD_SETLK | FcntlCmd::F_OFD_SETLKW => {
+            let (inode_path, file_size) = {
+                let file = proc_inner.fd_table.get(fd)?;
+                let osfile = file.file()?;
+                (osfile.inode.path(), osfile.inode.size() as i64)
+            };
+
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            let mut flock_bytes = [0u8; 32];
+            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
+            let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
+
+            file_lock::setlk(&inode_path, &flock, file_size)?;
+            return Ok(0);
+        }
+
+        // -------------------------------------------------------------------
+        // 文件 owner / 信号（主要用于套接字）
+        // -------------------------------------------------------------------
+        FcntlCmd::F_GETOWN => {
+            // 返回接收 SIGIO/SIGURG 的进程 ID；-1 表示无 owner
+            return Ok((-1i32) as usize);
+        }
+        FcntlCmd::F_SETOWN => {
+            // 设置 owner，当前静默成功（仅对 socket fd 有意义）
+        }
+        FcntlCmd::F_SETSIG => {
+            // 设置信号，静默成功
+        }
+        FcntlCmd::F_GETSIG => {
+            // 0 表示默认行为（SIGIO）
+            return Ok(0);
+        }
+        FcntlCmd::F_SETOWN_EX | FcntlCmd::F_GETOWN_EX => {
+            // 扩展 owner 类型（TID/PID/PGRP），暂不支持
+            return Err(SysErrNo::EINVAL);
+        }
+
+        // -------------------------------------------------------------------
+        // 文件租约（file lease）
+        // -------------------------------------------------------------------
+        FcntlCmd::F_SETLEASE => {
+            // 简化实现：始终返回 EAGAIN（无冲突打开时可成功，但当前不做跟踪）
+            // 正确实现需要跟踪每个文件的所有打开 fd，此处作为 stub
+            return Err(SysErrNo::EAGAIN);
+        }
+        FcntlCmd::F_GETLEASE => {
+            // 返回当前租约类型，F_UNLCK 表示无租约
+            return Ok(F_UNLCK as usize);
+        }
+
+        // -------------------------------------------------------------------
+        // 目录变动通知
+        // -------------------------------------------------------------------
+        FcntlCmd::F_NOTIFY => {
+            return Err(SysErrNo::EINVAL);
+        }
+
+        // -------------------------------------------------------------------
+        // DUPFD_QUERY — 查询 F_DUPFD 将分配的 fd 编号（不实际分配）
+        // -------------------------------------------------------------------
+        FcntlCmd::F_DUPFD_QUERY => {
+            let fd_table = &proc_inner.fd_table;
+            let soft_limit = fd_table.get_soft_limit();
+            if arg >= soft_limit {
+                return Err(SysErrNo::EINVAL);
+            }
+            for candidate in arg..soft_limit {
+                if fd_table.try_get(candidate).is_none() {
+                    return Ok(candidate);
+                }
+            }
+            return Err(SysErrNo::EMFILE);
+        }
+
+        // -------------------------------------------------------------------
+        // pipe 大小
+        // -------------------------------------------------------------------
+        FcntlCmd::F_SETPIPE_SZ => {
+            // 暂不支持动态调整 pipe 大小
+            return Err(SysErrNo::EINVAL);
+        }
+        FcntlCmd::F_GETPIPE_SZ => {
+            // 默认 Linux pipe 容量为 16 页（64 KiB）
+            return Ok(65536);
+        }
+
         _ => {
             return Err(SysErrNo::EINVAL);
         }

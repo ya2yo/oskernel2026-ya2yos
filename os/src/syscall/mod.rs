@@ -106,6 +106,7 @@ pub enum Syscall {
     SigProcMask = 135,
     SigTimedWait = 137,
     SigReturn = 139,
+    Setreuid = 145,
     Setuid = 146,
     Setresuid = 147,
     GetResuid = 148,

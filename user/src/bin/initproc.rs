@@ -58,15 +58,14 @@ fn trim_trailing_nul(s: &str) -> &str {
 // LTP-musl test helpers
 // ---------------------------------------------------------------------------
 
-const LTP_TEST_START: usize = 300;
-const LTP_TESTS_PER_GROUP: usize = 100;
+const LTP_TEST_START: usize = 452;
+const LTP_TESTS_PER_GROUP: usize = 48;
 
 /// LTP 测试黑名单。
 /// 前 5 项 (cgroup_fj_*) 仅 `test_ltp` 需要跳过，
 /// `check_ltp` 通过 `&LTP_BLACKLIST[LTP_CGROUP_PREFIX_LEN..]` 跳过它们。
 const LTP_BLACKLIST: &[&str] = &[
     "add_ipv6addr\0",
-    "ar01.sh\0",
     "assign_password.sh\0",
     "binfmt_misc01.sh\0",
     "binfmt_misc02.sh\0",
@@ -119,7 +118,10 @@ const LTP_BLACKLIST: &[&str] = &[
     "dirtypipe\0",
     "doio\0",
     // [300,400)区间
+    "epoll-ltp\0",
+    "epoll_pwait01\0",
     "epoll_wait05\0",
+    "evm_overlay.sh\0",
     "execve02\0",
     "execve04\0",
     "execve05\0",

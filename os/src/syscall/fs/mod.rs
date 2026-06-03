@@ -2,6 +2,7 @@ mod ctl;
 mod event;
 mod fcntl;
 mod fd_ops;
+mod file_lock;
 mod io;
 mod mount;
 mod pipe;

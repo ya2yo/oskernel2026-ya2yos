@@ -68,13 +68,15 @@ pub fn handle_signal(signo: usize) {
         let task = current_task().unwrap();
         task.inner_lock().sig_eintr = true;
     } else {
-        debug!("handle_signal: default exit!");
-        debug!("sa_handler:{:#x}", sig_action.act.sa_handler as usize);
-        // 就在S模式运行,转换成fn(i32)
-        if sig_action.act.sa_handler != 1 {
-            if sig_action.act.sa_handler == exit_current_and_run_next as *const () as usize {
-                exit_current_and_run_next((signo + 128) as i32);
-            }
+        // 默认信号处理：
+        // - sa_handler == 1 (SIG_IGN) → 忽略信号（SIGCHLD/SIGURG/SIGWINCH等）
+        // - sa_handler == exit_current_and_run_next → 终止进程（SIGTERM/SIGINT等）
+        // - 其它值也按终止处理，避免信号被静默忽略导致死循环
+        if sig_action.act.sa_handler == 1 {
+            debug!("handle_signal: ignore (SIG_IGN), signo={}", signo);
+        } else {
+            debug!("handle_signal: terminate, signo={}", signo);
+            exit_current_and_run_next((signo + 128) as i32);
         }
     }
 }

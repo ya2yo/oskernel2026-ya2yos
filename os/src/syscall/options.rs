@@ -205,8 +205,29 @@ bitflags! {
         const F_GETFD = 1;
         const F_SETFD = 2;
         const F_GETFL = 3;
-        const F_SETFL= 4;
-        const F_DUPFD_CLOEXEC= 1030;
+        const F_SETFL = 4;
+        const F_GETLK = 5;
+        const F_SETLK = 6;
+        const F_SETLKW = 7;
+        const F_SETOWN = 8;
+        const F_GETOWN = 9;
+        const F_SETSIG = 10;
+        const F_GETSIG = 11;
+        const F_GETLK64 = 12;
+        const F_SETLK64 = 13;
+        const F_SETLKW64 = 14;
+        const F_SETOWN_EX = 15;
+        const F_GETOWN_EX = 16;
+        const F_OFD_GETLK = 36;
+        const F_OFD_SETLK = 37;
+        const F_OFD_SETLKW = 38;
+        const F_SETLEASE = 1024;
+        const F_GETLEASE = 1025;
+        const F_NOTIFY = 1026;
+        const F_DUPFD_QUERY = 1027;
+        const F_DUPFD_CLOEXEC = 1030;
+        const F_SETPIPE_SZ = 1031;
+        const F_GETPIPE_SZ = 1032;
     }
 }
 
