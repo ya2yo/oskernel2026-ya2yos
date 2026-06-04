@@ -21,7 +21,7 @@ use crate::{
         copy_to_user, get_data, put_data, translate::strong_translated_refmut, translated_refmut,
         MapAreaType, MapPermission, MemorySet, MemorySetInner, PhysPageNum, VirtAddr,
     },
-    signal::{SigSet, SigTable},
+    signal::{SigSet, SigTable, SIGCHLD},
     syscall::CloneFlags,
     task::{futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid},
     timer::{TimeData, TimeVal, Timer},
@@ -586,7 +586,19 @@ impl TaskControlBlock {
             *translated_refmut(child_token, child_tid) = child.tid() as u32;
         }
         drop(parent_inner);
-        if flags.contains(CloneFlags::SIGCHLD) {
+        // 设置 exit_signal：普通 fork 带 SIGCHLD 则退出时通知父进程，
+        // clone/thread 不带 SIGCHLD 则不发送信号
+        {
+            let mut child_meta = child.process.meta_lock();
+            child_meta.exit_signal = if flags.contains(CloneFlags::SIGCHLD) {
+                SIGCHLD as i32
+            } else {
+                -1
+            };
+        }
+        // 无论是否带 SIGCHLD，都为子进程创建 /proc/<pid>/stat 和 /proc/<pid>/maps，
+        // 否则 LTP 等测试框架的清理代码无法通过 /proc 判断进程状态而陷入死循环
+        {
             let child_proc = child.process.inner_lock();
             let child_mm = child_proc.get_locked_memory_set_read();
             create_proc_dir_and_file(pid, ppid, &child_mm);

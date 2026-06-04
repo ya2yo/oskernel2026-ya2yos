@@ -54,6 +54,20 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
             .iter()
             .filter_map(|w| w.upgrade())
             .filter(|child| wait_pid.apply(child))
+            .filter(|child| {
+                // __WALL: wait for all children regardless of exit_signal
+                if options.contains(WaitOption::__WALL) {
+                    return true;
+                }
+                let child_exit_signal = child.meta_lock().exit_signal;
+                if options.contains(WaitOption::__WCLONE) {
+                    // __WCLONE: only wait for clone children (exit_signal == -1)
+                    child_exit_signal == -1
+                } else {
+                    // default: only wait for children created with SIGCHLD
+                    child_exit_signal == SIGCHLD as i32
+                }
+            })
             .collect();
 
         if children.is_empty() {

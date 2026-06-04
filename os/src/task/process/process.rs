@@ -108,6 +108,7 @@ impl Process {
                 children: Vec::new(),
                 parent_pid,
                 child_exit_event: AtomicWaker::new(),
+                exit_signal: -1,
             }),
         });
         if parent_pid != 0 {
@@ -305,6 +306,11 @@ pub struct ProcessMeta {
     pub parent_pid: usize,
     /// 子进程退出事件，用于唤醒等待中的父进程
     pub child_exit_event: AtomicWaker,
+    /// 进程退出时发送给父进程的信号（对应 Linux task_struct.exit_signal）
+    /// - 普通 fork (SIGCHLD): 值为 17 (SIGCHLD)，退出时通知父进程
+    /// - clone/thread (无 SIGCHLD): 值为 -1，退出时不发送信号
+    /// 用于 waitpid 的 __WALL/__WCLONE 过滤以及退出时是否发送信号给父进程
+    pub exit_signal: i32,
 }
 
 static PID_2_PROCESS_ARC: Lazy<Mutex<BTreeMap<usize, Arc<Process>>>> =

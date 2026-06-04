@@ -13,6 +13,10 @@ bitflags! {
         const WUNTRACED = WUNTRACED;
         const WCONTINUED = WCONTINUED;
         const WNOWAIT = WNOWAIT;
+        /// Wait for all children regardless of exit_signal type (SIGCHLD or clone)
+        const __WALL = 0x40000000;
+        /// Wait for clone children only (those created without SIGCHLD, exit_signal == -1)
+        const __WCLONE = 0x80000000;
     }
 }
 
