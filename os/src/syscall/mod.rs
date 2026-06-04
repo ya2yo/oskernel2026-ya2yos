@@ -660,6 +660,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::IoUringSetup => sys_io_uring_setup(args[0] as u32, args[1] as *mut u8),
         Syscall::OpenTree => sys_open_tree(args[0] as i32, args[1] as *const u8, args[2] as u32),
         Syscall::Fsopen => sys_fsopen(args[0] as *const u8, args[1] as u32),
+        Syscall::Fsconfig => sys_fsconfig(args[0] as i32, args[1] as u32, args[2], args[3], args[4] as i32),
         Syscall::Fspick => sys_fspick(args[0] as i32, args[1] as *mut u8, args[2] as u32),
         Syscall::MemfdSecret => sys_memfd_secret(args[0] as u32),
         Syscall::Acct => sys_acct(args[0] as *const u8),
