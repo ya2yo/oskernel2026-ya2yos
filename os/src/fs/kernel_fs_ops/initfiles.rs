@@ -314,6 +314,7 @@ pub fn create_init_files() -> GeneralRet {
         DEFAULT_DIR_MODE,
     )?;
     // 创建一系列符号链接指向busybox，这样就近似实现了bash
+    // 注意：ext4_fsymlink 遇到已存在文件会静默失败（返回Ok但不覆盖）
     for path in [
         "/bin/ls",       // which ls 需要它
         "/bin/basename", // 如果不加这个，ltp_testcode.sh会无法使用basename
@@ -330,10 +331,47 @@ pub fn create_init_files() -> GeneralRet {
         "/bin/sleep",
         "/bin/sh",
         "/bin/awk",
+        "/bin/mount",
+        "/bin/umount",
+        "/bin/rm",       // fs_bind 清理需要
+        "/bin/cp",       // 通用文件操作
+        "/bin/mv",
+        "/bin/touch",
+        "/bin/ln",
     ] {
+        let _ = superblock_root_inode().unlink(path);
         if let Err(e) = superblock_root_inode().sym_link("/musl/busybox", path) {
             println!("WARN: sym_link {} -> /musl/busybox failed: {:?}", path, e);
         }
+    }
+
+    // tst_sleep 和 tst_timeout_kill 不是 busybox applet，用 shell 脚本实现
+    // tst_sleep: 将 LTP 的 "100ms" 格式转为 busybox sleep 支持的 "0.100" 秒格式
+    {
+        let mut content = String::from("#!/bin/sh\n# LTP tst_sleep wrapper: converts 100ms -> 0.100\narg=\"$1\"\ncase \"$arg\" in\n    *ms) /bin/sleep \"0.${arg%ms}\" ;;\n    *) /bin/sleep \"$arg\" ;;\nesac\n");
+        let file = open("/bin/tst_sleep", OpenFlags::O_CREATE | OpenFlags::O_RDWR, DEFAULT_FILE_MODE)?.file()?;
+        let mut v = Vec::new();
+        unsafe { v.push(core::slice::from_raw_parts_mut(content.as_bytes_mut().as_mut_ptr(), content.len())); }
+        file.write(UserBuffer::new(v))?;
+        file.inode.sync();
+    }
+    // tst_timeout_kill: 发送 SIGTERM + SIGKILL 终止超时 watchdog
+    {
+        let mut content = String::from("#!/bin/sh\n# LTP tst_timeout_kill wrapper\npid=\"$1\"\nif [ -n \"$pid\" ] && [ \"$pid\" -gt 0 ] 2>/dev/null; then\n    kill -TERM \"$pid\" 2>/dev/null\n    /bin/sleep 0.1\n    kill -KILL \"$pid\" 2>/dev/null\nfi\n");
+        let file = open("/bin/tst_timeout_kill", OpenFlags::O_CREATE | OpenFlags::O_RDWR, DEFAULT_FILE_MODE)?.file()?;
+        let mut v = Vec::new();
+        unsafe { v.push(core::slice::from_raw_parts_mut(content.as_bytes_mut().as_mut_ptr(), content.len())); }
+        file.write(UserBuffer::new(v))?;
+        file.inode.sync();
+    }
+    // tst_rod: LTP "remove old directory" → rm -rf
+    {
+        let mut content = String::from("#!/bin/sh\n# LTP tst_rod wrapper\n/bin/rm -rf \"$@\"\n");
+        let file = open("/bin/tst_rod", OpenFlags::O_CREATE | OpenFlags::O_RDWR, DEFAULT_FILE_MODE)?.file()?;
+        let mut v = Vec::new();
+        unsafe { v.push(core::slice::from_raw_parts_mut(content.as_bytes_mut().as_mut_ptr(), content.len())); }
+        file.write(UserBuffer::new(v))?;
+        file.inode.sync();
     }
 
     // 磁盘镜像中 glibc/lib 下已同时存在 libm.so 和 libm.so.6（两个独立文件），

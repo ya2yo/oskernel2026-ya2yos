@@ -33,13 +33,15 @@ pub fn create_proc_dir_and_file(
     ppid: usize,
     memory_set: &MemorySet,
 ) -> Result<(), SysErrNo> {
-    open(
+    let procdir = open(
         format!("/proc/{}", pid).as_str(),
         OpenFlags::O_DIRECTORY | OpenFlags::O_CREATE | OpenFlags::O_RDWR,
         DEFAULT_DIR_MODE,
     )
     .unwrap()
     .file()?;
+    // 强制刷盘确保目录创建持久化，否则后续在目录内创建的文件可能不可见
+    procdir.inode.sync();
 
     //创建进程状态文件/proc/<pid>/stat
     let statfile = open(
@@ -65,6 +67,7 @@ pub fn create_proc_dir_and_file(
     }
     let statbuf = UserBuffer::new(statvec);
     statfile.write(statbuf)?;
+    statfile.inode.sync();
 
     //创建进程内存映射文件/proc/<pid>/maps
     let mapsfile = open(
@@ -99,6 +102,7 @@ pub fn create_proc_dir_and_file(
     }
     let mapsbuf = UserBuffer::new(mapsvec);
     mapsfile.write(mapsbuf)?;
+    mapsfile.inode.sync();
 
     Ok(())
 }

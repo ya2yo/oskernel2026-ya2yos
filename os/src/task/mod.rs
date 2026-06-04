@@ -288,8 +288,15 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             }
             curr_task.process.exit_and_reparent();
             remove_proc_dir_and_file(curr_task.pid());
-            send_signal_to_thread_group(curr_task.ppid(), SigSet::SIGCHLD);
-            // 唤醒在 waitpid 上等待的父进程
+            // 仅当创建时指定了 SIGCHLD 才通知父进程（对应 Linux exit_signal）
+            let exit_signal = curr_task.process.meta_lock().exit_signal;
+            if exit_signal >= 0 {
+                send_signal_to_thread_group(
+                    curr_task.ppid(),
+                    SigSet::from_sig(exit_signal as usize),
+                );
+            }
+            // 唤醒在 waitpid 上等待的父进程（无论是否有 exit_signal，父进程都可能通过 __WALL 等待）
             if let Some(parent) = Process::get_process_arc_by_pid(curr_task.ppid()) {
                 parent.meta_lock().child_exit_event.wake();
             }

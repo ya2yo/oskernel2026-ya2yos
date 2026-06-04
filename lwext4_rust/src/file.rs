@@ -110,7 +110,7 @@ impl Ext4File {
     pub fn file_close(&mut self) -> Result<usize, i32> {
         if self.file_desc.mp != core::ptr::null_mut() {
             //debug!("file_close {:?}", self.get_path());
-            // self.file_cache_flush()?;
+            self.file_cache_flush()?;
             unsafe {
                 ext4_fclose(&mut self.file_desc);
             }
