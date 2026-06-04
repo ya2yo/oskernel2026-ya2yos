@@ -1,11 +1,11 @@
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::{future::poll_fn, sync::atomic::{AtomicI32, Ordering}, task::Poll};
 
 use super::fcntl::*;
 use super::file_lock::{self, Flock};
 use crate::fs::{open, FileDescriptor, FsIndex, OpenFlags, map_dynamic_link_file};
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::{options::FcntlCmd, Syscall};
-use crate::task::current_task;
+use crate::task::{block_on, current_task, interruptible};
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::{
     format,
@@ -16,6 +16,72 @@ use alloc::{
 };
 use linux_raw_sys::general::open_how;
 use log::{debug, error, warn};
+
+/// https://man7.org/linux/man-pages/man2/flock.2.html
+///
+/// 对 fd 指定的文件应用或释放 advisory lock。
+///
+/// # 参数
+/// - `fd`: 打开的文件描述符
+/// - `op`: 操作类型：
+///   - `LOCK_SH` (1): 共享锁（多个持有者可共存）
+///   - `LOCK_EX` (2): 排他锁（独占）
+///   - `LOCK_NB` (4): 非阻塞（与 LOCK_SH/LOCK_EX 按位或）
+///   - `LOCK_UN` (8): 解锁
+///
+/// # 阻塞语义
+/// - 未设置 `LOCK_NB` 时，若锁冲突则阻塞等待直到锁可用或被信号中断
+/// - 设置 `LOCK_NB` 时，锁冲突立即返回 `EAGAIN`
+pub fn sys_flock(fd: i32, op: i32) -> SyscallRet {
+    let valid_mask = LOCK_SH | LOCK_EX | LOCK_NB | LOCK_UN;
+    if op & !valid_mask != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let fd_table = task.get_fd_table();
+    let fd_desc = fd_table.get(fd as usize)?;
+
+    // flock 仅适用于普通文件（OSFile），非普通文件返回 EINVAL
+    let osfile = fd_desc.file()?;
+
+    let inode_path = osfile.inode.path();
+    let file_ptr = Arc::as_ptr(&osfile) as usize;
+
+    // --- 解锁 ---
+    if (op & LOCK_UN) != 0 {
+        file_lock::flock_unlock(&inode_path, file_ptr);
+        return Ok(0);
+    }
+
+    // --- 加锁 ---
+    let lock_type = op & (LOCK_SH | LOCK_EX);
+    if lock_type != LOCK_SH && lock_type != LOCK_EX {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let nonblock = (op & LOCK_NB) != 0;
+
+    if nonblock {
+        return file_lock::flock_try_lock(&inode_path, file_ptr, lock_type).map(|_| 0);
+    }
+
+    // 阻塞等待（可被信号中断）
+    // 参照 waitpid 的 block_on + interruptible + poll_fn 模式
+    drop(task);
+    let path = inode_path; // String，移入闭包
+    block_on(interruptible(poll_fn(move |cx| {
+        match file_lock::flock_try_lock(&path, file_ptr, lock_type) {
+            Ok(()) => Poll::Ready(Ok(0)),
+            Err(SysErrNo::EAGAIN) => {
+                // 注册 waker，当其他进程释放锁时会被唤醒
+                file_lock::flock_register_waker(&path, cx.waker());
+                Poll::Pending
+            }
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    })))?
+}
 
 fn dup_fd(old_fd: usize, cloexec: bool) -> SyscallRet {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;

@@ -50,6 +50,12 @@ pub const DN_RENAME: u32 = 0x00000010;
 pub const DN_ATTRIB: u32 = 0x00000020;
 pub const DN_MULTISHOT: u32 = 0x80000000;
 
+/* for flock() */
+pub const LOCK_SH: i32 = 1;
+pub const LOCK_EX: i32 = 2;
+pub const LOCK_NB: i32 = 4;
+pub const LOCK_UN: i32 = 8;
+
 pub const SEEK_SET: i16 = 0;
 pub const SEEK_CUR: i16 = 1;
 pub const SEEK_END: i16 = 2;

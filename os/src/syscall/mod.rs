@@ -19,6 +19,19 @@ use num_enum::FromPrimitive;
 #[derive(Debug, PartialEq, FromPrimitive)]
 #[repr(usize)]
 pub enum Syscall {
+    IoSetup = 0,
+    IoDestroy = 1,
+    IoSubmit = 2,
+    IoCancel = 3,
+    IoGetEvents = 4,
+    Setxattr = 5,
+    Lsetxattr = 6,
+    Fsetxattr = 7,
+    Getxattr = 8,
+    Flistxattr = 13,
+    Removexattr = 14,
+    Lremovexattr = 15,
+    Fremovexattr = 16,
     Getcwd = 17,
     Eventfd2 = 19,
     EpollCreate1 = 20,
@@ -31,6 +44,7 @@ pub enum Syscall {
     InotifyAddWatch = 27,
     InotifyRmWatch = 28,
     Ioctl = 29,
+    Flock = 32,
     Mkdirat = 34,
     Unlinkat = 35,
     Symlinkat = 36,
@@ -193,7 +207,7 @@ pub enum Syscall {
     MemfdSecret = 447,
     MachineShutdown = 1000,
     #[num_enum(default)]
-    Default = 0,
+    Default = 9999,
 }
 
 mod fs;
@@ -261,6 +275,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Dup => sys_dup(args[0]),
         Syscall::Dup3 => sys_dup3(args[0], args[1], args[2] as u32),
         Syscall::Fcntl => sys_fcntl(args[0], args[1], args[2]),
+        Syscall::Flock => sys_flock(args[0] as i32, args[1] as i32),
         Syscall::Ioctl => sys_ioctl(args[0], args[1], args[2]),
         Syscall::Mkdirat => sys_mkdirat(args[0] as isize, args[1] as *const u8, args[2] as u32),
         Syscall::Unlinkat => sys_unlinkat(args[0] as isize, args[1] as *const u8, args[2] as u32),
