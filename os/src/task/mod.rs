@@ -227,16 +227,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     // 无论如何一个轻量级进程都会是一个线程
     // 释放线程相关资源
-    // 回收内核分配的栈区域（用户态 mmap 的线程栈不存在 Stack 类型的 MapArea，自然跳过）
-    if let Some(stack_start) = memory_set
-        .get_ref()
-        .areas
-        .iter()
-        .find(|area| area.area_type == MapAreaType::Stack)
-        .map(|area| area.vpn_range.start())
-    {
-        memory_set.remove_area_with_start_vpn(stack_start);
-    }
     memory_set.remove_area_with_start_vpn(VirtAddr::from(curr_task_inner.trap_cx_bottom).floor());
     curr_task_inner.task_status = TaskStatus::Zombie;
     let curr_tid = curr_task.tid();

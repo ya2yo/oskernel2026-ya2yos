@@ -328,13 +328,16 @@ pub fn create_init_files() -> GeneralRet {
         "/bin/chmod",
         "/bin/cut",
         "/bin/sleep",
-        "/bin/sh"
+        "/bin/sh",
+        "/bin/awk",
     ] {
-        superblock_root_inode().sym_link("/musl/busybox", path);
+        if let Err(e) = superblock_root_inode().sym_link("/musl/busybox", path) {
+            println!("WARN: sym_link {} -> /musl/busybox failed: {:?}", path, e);
+        }
     }
 
-    // glibc 动态链接器查找 libm.so.6，实际文件是 libm.so（内容相同）
-    superblock_root_inode().sym_link("/glibc/lib/libm.so", "/glibc/lib/libm.so.6");
+    // 磁盘镜像中 glibc/lib 下已同时存在 libm.so 和 libm.so.6（两个独立文件），
+    // 此处不再创建重复的符号链接，避免覆盖已存在的普通文件。
 
     println!("create_init_files success!");
     Ok(())

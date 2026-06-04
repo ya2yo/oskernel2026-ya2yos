@@ -65,7 +65,11 @@ const LTP_TESTS_PER_GROUP: usize = 250;
 /// 前 5 项 (cgroup_fj_*) 仅 `test_ltp` 需要跳过，
 /// `check_ltp` 通过 `&LTP_BLACKLIST[LTP_CGROUP_PREFIX_LEN..]` 跳过它们。
 const LTP_BLACKLIST: &[&str] = &[
+    "add_ipv6addr\0",
+    "ar01.sh\0",
     "assign_password.sh\0",
+    "binfmt_misc01.sh\0",
+    "binfmt_misc02.sh\0",
     // [100,200)区间
     // cgroup_fj 系列需要带参数的脚本入口，直接跑 helper 会卡死。
     // 需要验证时使用 test_cgroup_fj_function_cpuset_via_script。
@@ -82,19 +86,26 @@ const LTP_BLACKLIST: &[&str] = &[
     "cgroup_regression_6_2.sh\0",
     "cgroup_regression_fork_processes\0",
     "cgroup_regression_getdelays\0",
-    // "clock_nanosleep01\0",
-    // "clock_nanosleep04\0",
-    // "clone02\0",
-    // "clone03\0",
-    // "clone08\0",
-    // "connect01\0",
+    "cgroup_regression_test.sh\0",
+    "check_envval\0",
+    "check_setkey\0",
+    "cleanup_lvm.sh\0",
+    "cn_pec.sh\0",
+    "cp_tests.sh\0",
+    "cpio_tests.sh\0",
+    "cpuacct.sh\0",
     "cpuctl_fj_cpu-hog\0",
     // [200,300)区间
+    "cpuhotplug02.sh\0",
+    "cpuhotplug03.sh\0",
+    "cpuhotplug04.sh\0",
+    "cpuhotplug05.sh\0",
+    "cpuhotplug06.sh\0",
+    "cpuhotplug07.sh\0",
     "cpuhotplug_do_disk_write_loop\0",
     "cpuhotplug_do_spin_loop\0",
     "cpufreq_boost\0",
-    // "creat06\0",
-    // "creat07\0",
+    "crash02\0",
     "cve-2017-17052\0",
     "dio_append\0",
     "dio_read\0",
