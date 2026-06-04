@@ -43,14 +43,36 @@ pub fn sys_times(tms: *mut Tms) -> SyscallRet {
     Ok(0)
 }
 
+/// 参考 https://www.man7.org/linux/man-pages/man2/setitimer.2.html
+///
+/// 读取指定 itimer 的当前值到用户空间的 `struct itimerval`。
+/// 仿照 sys_settimer 的模式：读 task_inner.timer.timer() → copy_to_user。
+pub fn sys_gettimer(_which: i32, curr_value: usize) -> SyscallRet {
+    if curr_value == 0 {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    let task = current_task().unwrap();
+    let task_inner = task.inner_lock();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+
+    let timer = task_inner.timer.timer();
+    copy_to_user(&memory_set, curr_value, unsafe {
+        core::slice::from_raw_parts(
+            &timer as *const Itimerval as *const u8,
+            core::mem::size_of::<Itimerval>(),
+        )
+    })?;
+    Ok(0)
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/setitimer.2.html
 pub fn sys_settimer(
     which: usize,
     new_value: *const Itimerval,
     old_value: *mut Itimerval,
 ) -> SyscallRet {
-    // TrustOS目前只支持 ITIMER_REAL
-    assert!(which == ITIMER_REAL, "only support Itimer Real");
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
     let proc_inner = task.process.inner_lock();
