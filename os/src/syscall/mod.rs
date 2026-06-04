@@ -30,6 +30,8 @@ pub enum Syscall {
     Getxattr = 8,
     Lgetxattr = 9,
     Fgetxattr = 10,
+    Listxattr = 11,
+    Llistxattr = 12,
     Flistxattr = 13,
     Removexattr = 14,
     Lremovexattr = 15,
@@ -260,12 +262,19 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         current_task().unwrap().inner_lock().trap_cx().get_sepc()
     );
     match syscall_id {
+        // Xattr
         Syscall::Setxattr => sys_setxattr(args[0], args[1], args[2], args[3], args[4]),
         Syscall::Lsetxattr => sys_lsetxattr(args[0], args[1], args[2], args[3], args[4]),
         Syscall::Fsetxattr => sys_fsetxattr(args[0], args[1], args[2], args[3], args[4]),
         Syscall::Getxattr => sys_getxattr(args[0], args[1], args[2], args[3]),
         Syscall::Lgetxattr => sys_lgetxattr(args[0], args[1], args[2], args[3]),
         Syscall::Fgetxattr => sys_fgetxattr(args[0], args[1], args[2], args[3]),
+        Syscall::Listxattr => sys_listxattr(args[0], args[1], args[2]),
+        Syscall::Llistxattr => sys_llistxattr(args[0], args[1], args[2]),
+        Syscall::Flistxattr => sys_flistxattr(args[0], args[1], args[2]),
+        Syscall::Removexattr => sys_removexattr(args[0], args[1]),
+        Syscall::Lremovexattr => sys_removexattr(args[0], args[1]),
+        Syscall::Fremovexattr => sys_removexattr(args[0], args[1]),
 
         Syscall::Getcwd => sys_getcwd(args[0] as *const u8, args[1]),
         // event

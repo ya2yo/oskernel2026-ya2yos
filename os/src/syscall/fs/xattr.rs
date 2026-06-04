@@ -13,7 +13,7 @@ pub fn sys_lsetxattr(path: usize, name: usize, value: usize, size: usize, flags:
     Ok(0)
 }
 
-pub fn sys_fsetxattr(path: usize, name: usize, value: usize, size: usize, flags: usize) -> SyscallRet {
+pub fn sys_fsetxattr(fd: usize, name: usize, value: usize, size: usize, flags: usize) -> SyscallRet {
     debug!("[sys_fsetxattr] path={}, name={}, value={}, size={}, flag={}", path, name, value, size, flags);
     Ok(0)
 }
@@ -27,7 +27,28 @@ pub fn sys_lgetxattr(path: usize, name: usize, value: usize, size: usize) -> Sys
     debug!("[sys_lgetxattr] path={}, name={}, value={}, size={}", path, name, value, size);
     Ok(0)
 }
-pub fn sys_fgetxattr(path: usize, name: usize, value: usize, size: usize) -> SyscallRet {
+pub fn sys_fgetxattr(fd: usize, name: usize, value: usize, size: usize) -> SyscallRet {
     debug!("[sys_fgetxattr] path={}, name={}, value={}, size={}", path, name, value, size);
+    Ok(0)
+}
+
+/// https://www.man7.org/linux/man-pages/man2/listxattr.2.html
+pub fn sys_listxattr(path: usize, list: usize, size: usize)->SyscallRet {
+    Ok(0)
+}
+pub fn sys_llistxattr(path: usize, list: usize, size: usize)->SyscallRet {
+    Ok(0)
+}
+pub fn sys_flistxattr(fd: usize, list: usize, size: usize)->SyscallRet {
+    Ok(0)
+}
+/// https://www.man7.org/linux/man-pages/man2/removexattr.2.html
+pub fn sys_removexattr(path: usize, name: usize)->SyscallRet {
+    Ok(0)
+}
+pub fn sys_lremovexattr(path: usize, name: usize)->SyscallRet {
+    Ok(0)
+}
+pub fn sys_femovexattr(fd: usize, name: usize)->SyscallRet {
     Ok(0)
 }
