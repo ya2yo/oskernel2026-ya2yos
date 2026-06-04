@@ -142,7 +142,7 @@ const LTP_BLACKLIST: &[&str] = &[
     "fcntl37\0",
     "fcntl37_64\0",
     // [500,600)区间
-    "flock03\0",
+    "flock04\0",
     "force_erase.sh\0",
     "fork04\0",
     "fork07\0",

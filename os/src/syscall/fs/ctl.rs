@@ -4,8 +4,8 @@ use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_FOLLOW};
 use log::{debug, warn};
 
 use crate::fs::{
-    open, superblock_sync, File, FsIndex, InodeType, OpenFlags, MAX_PATH_LEN, NONE_MODE, SEEK_CUR,
-    SEEK_SET,
+    open, superblock_root_inode, superblock_sync, File, FsIndex, InodeType, OpenFlags, MAX_PATH_LEN,
+    NONE_MODE, SEEK_CUR, SEEK_SET,
 };
 use crate::mm::{
     copy_from_user, copy_to_user, if_bad_address, read_user_cstr, safe_translated_byte_buffer,
@@ -76,6 +76,66 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
     }
     locked_fs_info.set_cwd(abs_path);
 
+    Ok(0)
+}
+
+/// 参考 https://www.man7.org/linux/man-pages/man2/mknod.2.html
+///
+/// 在 dirfd 指定的目录下创建文件系统节点（常规文件 / FIFO / 设备文件等）。
+/// 参考 mkdirat 的实现模式：路径解析 + open()/inode 创建。
+pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> SyscallRet {
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let path = read_user_cstr(&memory_set, path as *const u8)?;
+
+    // AT_FDCWD = -100
+    if dirfd != -100 && dirfd as usize >= proc_inner.fd_table.len() {
+        return Err(SysErrNo::EBADF);
+    }
+    let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
+
+    // 已存在 → EEXIST
+    if open(&abs_path, OpenFlags::O_RDWR, NONE_MODE).is_ok() {
+        return Err(SysErrNo::EEXIST);
+    }
+
+    let perm = (mode & 0o777) as u32;
+    let type_bits = ((mode & 0o170000) >> 12) as u8;
+
+    let inode_type = match type_bits {
+        0o1 => InodeType::Fifo,
+        0o2 => InodeType::CharDevice,
+        0o4 => InodeType::Dir,
+        0o6 => InodeType::BlockDevice,
+        0o10 => InodeType::File,
+        0o12 => InodeType::SymLink,
+        0o14 => InodeType::Socket,
+        _ => return Err(SysErrNo::EINVAL),
+    };
+
+    // 普通文件走 open() 以获得完整权限检查
+    if inode_type == InodeType::File {
+        return match open(
+            &abs_path,
+            OpenFlags::O_CREATE | OpenFlags::O_EXCL | OpenFlags::O_RDWR,
+            perm,
+        ) {
+            Ok(_) => Ok(0),
+            Err(_) => Err(SysErrNo::ENOENT),
+        };
+    }
+
+    // 目录应使用 mkdirat
+    if inode_type == InodeType::Dir {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // FIFO / 设备 / 套接字：直接通过 inode 创建
+    let root = superblock_root_inode();
+    let inode = root.create(&abs_path, inode_type)?;
+    inode.fmode_set(perm)?;
+    FsIndex::insert_inode_idx(&abs_path, inode);
     Ok(0)
 }
 

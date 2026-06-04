@@ -7,6 +7,7 @@ mod io;
 mod mount;
 mod pipe;
 mod stat;
+mod xattr;
 
 use alloc::vec::Vec;
 use linux_raw_sys::ctypes::c_int;
@@ -22,7 +23,7 @@ use crate::{
 
 pub use self::{
     ctl::*, event::*, fcntl::*, fd_ops::*, io::*, mount::*, pipe::*,
-    stat::*,
+    stat::*, xattr::*,
 };
 
 fn dummyfd_create() -> SyscallRet {

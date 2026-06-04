@@ -28,6 +28,8 @@ pub enum Syscall {
     Lsetxattr = 6,
     Fsetxattr = 7,
     Getxattr = 8,
+    Lgetxattr = 9,
+    Fgetxattr = 10,
     Flistxattr = 13,
     Removexattr = 14,
     Lremovexattr = 15,
@@ -45,6 +47,7 @@ pub enum Syscall {
     InotifyRmWatch = 28,
     Ioctl = 29,
     Flock = 32,
+    Mknodat = 33,
     Mkdirat = 34,
     Unlinkat = 35,
     Symlinkat = 36,
@@ -257,6 +260,13 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         current_task().unwrap().inner_lock().trap_cx().get_sepc()
     );
     match syscall_id {
+        Syscall::Setxattr => sys_setxattr(args[0], args[1], args[2], args[3], args[4]),
+        Syscall::Lsetxattr => sys_lsetxattr(args[0], args[1], args[2], args[3], args[4]),
+        Syscall::Fsetxattr => sys_fsetxattr(args[0], args[1], args[2], args[3], args[4]),
+        Syscall::Getxattr => sys_getxattr(args[0], args[1], args[2], args[3]),
+        Syscall::Lgetxattr => sys_lgetxattr(args[0], args[1], args[2], args[3]),
+        Syscall::Fgetxattr => sys_fgetxattr(args[0], args[1], args[2], args[3]),
+
         Syscall::Getcwd => sys_getcwd(args[0] as *const u8, args[1]),
         // event
         Syscall::Eventfd2 => sys_eventfd2(args[0] as u32, args[1] as u32),
@@ -276,6 +286,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Dup3 => sys_dup3(args[0], args[1], args[2] as u32),
         Syscall::Fcntl => sys_fcntl(args[0], args[1], args[2]),
         Syscall::Flock => sys_flock(args[0] as i32, args[1] as i32),
+        Syscall::Mknodat => sys_mknodat(args[0] as i32, args[1], args[2], args[3]),
         Syscall::Ioctl => sys_ioctl(args[0], args[1], args[2]),
         Syscall::Mkdirat => sys_mkdirat(args[0] as isize, args[1] as *const u8, args[2] as u32),
         Syscall::Unlinkat => sys_unlinkat(args[0] as isize, args[1] as *const u8, args[2] as u32),
