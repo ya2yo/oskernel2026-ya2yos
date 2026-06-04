@@ -1,5 +1,5 @@
 use alloc::string::String;
-use log::warn;
+use log::{debug, warn};
 
 use crate::{
     fs::{MAX_PATH_LEN, MNT_TABLE},
@@ -93,6 +93,13 @@ pub fn sys_fsopen(_fsname: *const u8, _flags: u32) -> SyscallRet {
     warn!("[sys_fsopen] not implement!");
     dummyfd_create()
 }
+
+/// https://www.man7.org/linux//man-pages/man2/fsconfig.2.html
+pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> SyscallRet {
+    debug!("[sys_fsconfig] fd={}, cmd={}, key={}, value={}, aux={}", fd, cmd, key, value, aux);
+    Ok(0)
+}
+
 /// https://man7.org/linux/man-pages/man2/fspick.2.html
 pub fn sys_fspick(_dirfd: i32, _path: *mut u8, _flags: u32) -> SyscallRet {
     warn!("[sys_fspick] not implement!");

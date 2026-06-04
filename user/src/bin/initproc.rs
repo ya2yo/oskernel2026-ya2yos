@@ -58,7 +58,7 @@ fn trim_trailing_nul(s: &str) -> &str {
 // LTP-musl test helpers
 // ---------------------------------------------------------------------------
 
-const LTP_TEST_START: usize = 600;
+const LTP_TEST_START: usize = 800;
 const LTP_TESTS_PER_GROUP: usize = 50;
 
 /// LTP 测试黑名单。
@@ -261,12 +261,12 @@ const LTP_BLACKLIST: &[&str] = &[
     "genhypot\0",
     "genmodf\0",
     // [800,900)区间
-    "getpid02\0",
-    "getrusage03\0",
-    "getrusage04\0",
-    "getsockopt02\0",
-    "growfiles\0",
-    "hackbench\0",
+    // "getpid02\0",
+    // "getrusage03\0",
+    // "getrusage04\0",
+    // "getsockopt02\0",
+    // "growfiles\0",
+    // "hackbench\0",
     // [900,1000)区间
     "in6_02\0",
     "inode01\0",
