@@ -298,6 +298,9 @@ pub fn sys_getsockopt(
     let fd_table = task.get_fd_table();
     drop(task);
     let sock = fd_table.get(sockfd)?.socket()?;
+    if optlen > 1024 {
+        return Err(SysErrNo::EINVAL);
+    }
     let mut kern_opt = vec![0; optlen as usize];
     match level {
         SOL_SOCKET => match optname {
