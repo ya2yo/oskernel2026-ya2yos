@@ -1,5 +1,7 @@
 use crate::*;
+mod blacklist;
 mod filelist;
+pub use blacklist::{LTP_BLACKLIST, LTP_CGROUP_PREFIX_LEN};
 pub use filelist::FILELIST;
 
 // ---------------------------------------------------------------------------
@@ -47,6 +49,58 @@ pub fn check_ltp_tests_musl(tests: &[&str], blacklist: &[&str]) {
         println!("FAIL LTP CASE {} : {}", test, r); // 这不是表示失败了，这只是告诉外界程序返回值是多少而已
     }
     println!("#### OS COMP TEST GROUP END ltp-musl ####");
+}
+
+const LTP_TEST_START: usize = 950;
+const LTP_TESTS_PER_GROUP: usize = 50;
+
+#[allow(unused)]
+pub fn run_ltp_tests_musl_separately(tests: &[&str], blacklist: &[&str]) {
+    let mut group = 0;
+    let mut i = 0;
+    while i < tests.len() {
+        let group_start = i;
+        let mut group_end = i + LTP_TESTS_PER_GROUP;
+        if group_end > tests.len() {
+            group_end = tests.len();
+        }
+
+        println!(
+            "#### OS COMP TEST GROUP START ltp-musl ####"
+        );
+
+        let mut j = group_start;
+        while j < group_end {
+            let test = tests[j];
+            if blacklist.contains(&test) {
+                println!("SKIP LTP CASE {}", trim_trailing_nul(test));
+                j += 1;
+                continue;
+            }
+            println!("RUN LTP CASE {}", test);
+            let r = fork_and_run("/musl/ltp/testcases/bin\0", &[test]);
+            println!("FAIL LTP CASE {} : {}", test, r);
+            j += 1;
+        }
+
+        println!(
+            "#### OS COMP TEST GROUP END ltp-musl ####"
+        );
+        group += 1;
+        i = group_end;
+    }
+}
+
+#[allow(unused)]
+pub fn test_ltp() {
+    let test = &FILELIST[LTP_TEST_START..LTP_TEST_START + LTP_TESTS_PER_GROUP];
+    run_ltp_tests_musl_separately(test, LTP_BLACKLIST);
+}
+
+#[allow(unused)]
+pub fn check_ltp() {
+    let test = &FILELIST[..];
+    check_ltp_tests_musl(test, &LTP_BLACKLIST[LTP_CGROUP_PREFIX_LEN..]);
 }
 
 // ---------------------------------------------------------------------------

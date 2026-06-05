@@ -338,6 +338,8 @@ pub fn create_init_files() -> GeneralRet {
         "/bin/mv",
         "/bin/touch",
         "/bin/ln",
+        "/bin/gzip",
+        "/bin/gunzip",
     ] {
         let _ = superblock_root_inode().unlink(path);
         if let Err(e) = superblock_root_inode().sym_link("/musl/busybox", path) {

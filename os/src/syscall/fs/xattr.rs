@@ -1,6 +1,6 @@
 use log::debug;
 
-use crate::utils::SyscallRet;
+use crate::utils::{SysErrNo, SyscallRet};
 
 /// 参考 https://www.man7.org/linux/man-pages/man2/fsetxattr.2.html
 pub fn sys_setxattr(path: usize, name: usize, value: usize, size: usize, flags: usize) -> SyscallRet {
@@ -21,7 +21,7 @@ pub fn sys_fsetxattr(fd: usize, name: usize, value: usize, size: usize, flags: u
 /// https://www.man7.org/linux/man-pages/man2/getxattr.2.html
 pub fn sys_getxattr(path: usize, name: usize, value: usize, size: usize)->SyscallRet {
     debug!("[sys_getxattr] path={}, name={}, value={}, size={}", path, name, value, size);
-    Ok(0)
+    Err(SysErrNo::ENODATA)
 }
 pub fn sys_lgetxattr(path: usize, name: usize, value: usize, size: usize) -> SyscallRet {
     debug!("[sys_lgetxattr] path={}, name={}, value={}, size={}", path, name, value, size);
