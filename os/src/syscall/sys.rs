@@ -177,6 +177,59 @@ fn setresuid_allowed(
     explicit <= 1
 }
 
+/// 参考 https://man7.org/linux/man-pages/man2/setreuid.2.html
+///
+/// 设置进程的真实用户 ID 和有效用户 ID。
+/// -1 表示保持该值不变。
+pub fn sys_setreuid(ruid: usize, euid: usize) -> SyscallRet {
+    let ruid = ruid as u32;
+    let euid = euid as u32;
+
+    if !uid_arg_valid(ruid) || !uid_arg_valid(euid) {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let mut inner = task.inner_lock();
+
+    let old_r = inner.user_id as u32;
+    let old_e = inner.effective_uid;
+    let old_s = inner.saved_uid;
+
+    // -1 保持原值
+    let new_r = if ruid == UID_UNCHANGED { old_r } else { ruid };
+    let new_e = if euid == UID_UNCHANGED { old_e } else { euid };
+
+    // 两者都为 -1：无变化
+    if ruid == UID_UNCHANGED && euid == UID_UNCHANGED {
+        return Ok(0);
+    }
+
+    let privileged = inner.user_id == 0 || inner.effective_uid == 0;
+
+    if !privileged {
+        // 非特权：ruid 只能设为 old_ruid 或 old_euid
+        if ruid != UID_UNCHANGED && ruid != old_r && ruid != old_e {
+            return Err(SysErrNo::EPERM);
+        }
+        // 非特权：euid 只能设为 old_ruid、old_euid 或 old_suid
+        if euid != UID_UNCHANGED && euid != old_r && euid != old_e && euid != old_s {
+            return Err(SysErrNo::EPERM);
+        }
+    }
+
+    // Linux 语义: ruid 被改变 或 euid 被设为不等于旧 ruid 的值时，
+    // saved-set-user-ID 被置为新的 euid
+    if (ruid != UID_UNCHANGED) || (euid != UID_UNCHANGED && new_e != old_r) {
+        inner.saved_uid = new_e;
+    }
+
+    inner.user_id = new_r as usize;
+    inner.effective_uid = new_e;
+
+    Ok(0)
+}
+
 /// https://man7.org/linux/man-pages/man2/setresuid.2.html
 pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> SyscallRet {
     if !uid_arg_valid(ruid) || !uid_arg_valid(euid) || !uid_arg_valid(suid) {
@@ -297,6 +350,55 @@ fn setresgid_allowed(
         + (egid != GID_UNCHANGED) as u32
         + (sgid != GID_UNCHANGED) as u32;
     explicit <= 1
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/setregid.2.html
+///
+/// 设置进程的真实组 ID 和有效组 ID。
+/// -1 表示保持该值不变。
+pub fn sys_setregid(rgid: usize, egid: usize) -> SyscallRet {
+    let rgid = rgid as u32;
+    let egid = egid as u32;
+
+    if !gid_arg_valid(rgid) || !gid_arg_valid(egid) {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let mut inner = task.inner_lock();
+
+    let old_r = inner.real_gid;
+    let old_e = inner.effective_gid;
+    let old_s = inner.saved_gid;
+
+    let new_r = if rgid == GID_UNCHANGED { old_r } else { rgid };
+    let new_e = if egid == GID_UNCHANGED { old_e } else { egid };
+
+    if rgid == GID_UNCHANGED && egid == GID_UNCHANGED {
+        return Ok(0);
+    }
+
+    let privileged = inner.user_id == 0 || inner.effective_gid == 0;
+
+    if !privileged {
+        if rgid != GID_UNCHANGED && rgid != old_r && rgid != old_e {
+            return Err(SysErrNo::EPERM);
+        }
+        if egid != GID_UNCHANGED && egid != old_r && egid != old_e && egid != old_s {
+            return Err(SysErrNo::EPERM);
+        }
+    }
+
+    // Linux 语义: rgid 被改变 或 egid 被设为不等于旧 rgid 的值时，
+    // saved-set-group-ID 被置为新的 egid
+    if (rgid != GID_UNCHANGED) || (egid != GID_UNCHANGED && new_e != old_r) {
+        inner.saved_gid = new_e;
+    }
+
+    inner.real_gid = new_r;
+    inner.effective_gid = new_e;
+
+    Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/setresgid.2.html
