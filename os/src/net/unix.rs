@@ -300,12 +300,14 @@ impl SocketOps for UnixSocket {
     }
 
     fn peer_addr(&self) -> SysResult<SocketAddrEx> {
-        let peer = self.inner.peer_addr.lock().clone();
-        if matches!(peer, UnixSocketAddr::Unnamed) {
-            Err(SysErrNo::ENOTCONN)
-        } else {
-            Ok(SocketAddrEx::Unix(peer))
+        // 检查socket是否已连接（通过connect或socketpair）
+        // 即使peer_addr尚未绑定（如socketpair两端都是unnamed），
+        // 只要peer连接存在，getpeername也应该成功返回。
+        if self.inner.peer.lock().is_none() {
+            return Err(SysErrNo::ENOTCONN);
         }
+        let peer = self.inner.peer_addr.lock().clone();
+        Ok(SocketAddrEx::Unix(peer))
     }
 
     fn shutdown(&self, how: Shutdown) -> SysResult {
