@@ -2,7 +2,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     arch::page_table::PageTable,
-    mm::{PhysAddr, VirtAddr, copy_from_user, get_data, put_data, try_get_data},
+    mm::{PhysAddr, VirtAddr, copy_from_user, get_data, put_data, translate_user_va_safe, try_get_data},
     syscall::{FutexCmd, FutexOpt},
     task::{RobustListHead, tid_to_task},
     timer::{Timespec, add_futex_timer, get_time_spec},
@@ -235,10 +235,16 @@ pub fn sys_futex(
     let memory_set = process.get_locked_memory_set_read();
     let task_inner = task.inner_lock();
     let token = memory_set.token();
-    let pa = memory_set
-        .translate_va(VirtAddr::from(uaddr as usize))
-        .unwrap()
-        .0;
+
+    // 安全地将用户 VA 转为 PA：先通过 copy_from_user 触发延迟页分配，
+    // 确保页面已映射后再查询页表，避免在未分配页面上 panic
+    let pa = translate_user_va_safe(&memory_set, VirtAddr::from(uaddr as usize))?;
+    // 仅在 Requeue 操作时才需要翻译 uaddr2
+    let pa2 = if cmd == FutexCmd::Requeue {
+        Some(translate_user_va_safe(&memory_set, VirtAddr::from(uaddr2 as usize))?)
+    } else {
+        None
+    };
 
     // 处理时间问题
     // 仅有在Wait时，才需考虑timeout
@@ -252,12 +258,12 @@ pub fn sys_futex(
         }
         let mut real_timeout = Timespec::default();
         copy_from_user(&memory_set, timeout as usize, unsafe{
-            core::slice::from_raw_parts_mut(&mut real_timeout as *mut Timespec as *mut _, 
+            core::slice::from_raw_parts_mut(&mut real_timeout as *mut Timespec as *mut _,
             core::mem::size_of::<Timespec>())
         })?;
         if opt.contains(FutexOpt::FUTEX_CLOCK_REALTIME) {
             // 此时的timeout是相对于1970年的时间，而非时间间隔
-            // 因此，我们减去“开机时间-1970”
+            // 因此，我们减去"开机时间-1970"
             real_timeout.tv_sec -= crate::timer::NOW_TIME_STAMP; // 开机时间相对于1970的秒数
                                                                  // 用一个常数定义这个秒数还是有点太奇怪了，应该想办法改掉
         } else {
@@ -271,7 +277,7 @@ pub fn sys_futex(
     }
 
     log::debug!(
-        "[sys_futex] uaddr = {:x}, pa = {:#x?}, cmd = {:?}, val = {},opt={:?}",
+        "[sys_futex] uaddr = {:x}, pa = {:#x}, cmd = {:?}, val = {}, opt={:?}",
         uaddr as usize,
         pa,
         cmd,
@@ -279,7 +285,6 @@ pub fn sys_futex(
         opt
     );
 
-    let pa2 = memory_set.translate_va(VirtAddr::from(uaddr2 as usize));
     drop(memory_set);
     drop(task_inner);
     drop(process);
@@ -295,7 +300,7 @@ pub fn sys_futex(
             } else {
                 _val3 as u32
             };
-            futex_wait_bitset(pa, task, bitset, timeout_opt) // 这合适吗？
+            futex_wait_bitset(pa, task, bitset, timeout_opt)
         }
         FutexCmd::Wake | FutexCmd::WakeBitset => {
             drop(task);
@@ -304,12 +309,12 @@ pub fn sys_futex(
             } else {
                 _val3 as u32
             };
-            Ok(futex_wake_up_bitset(pa, val, bitset)) // 这合适吗？
+            Ok(futex_wake_up_bitset(pa, val, bitset))
         }
         FutexCmd::Requeue => {
             drop(task);
             if let Some(pa2) = pa2 {
-                return Ok(futex_requeue(pa, val, pa2.0, timeout as i32));
+                return Ok(futex_requeue(pa, val, pa2, timeout as i32));
             } else {
                 return Err(SysErrNo::EINVAL);
             }

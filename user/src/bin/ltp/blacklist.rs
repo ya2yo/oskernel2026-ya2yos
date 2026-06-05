@@ -25,6 +25,7 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "cgroup_regression_getdelays\0",
     "cgroup_regression_test.sh\0",
     "check_envval\0",
+    "check_netem\0",
     "check_setkey\0",
     "cleanup_lvm.sh\0",
     "cn_pec.sh\0",

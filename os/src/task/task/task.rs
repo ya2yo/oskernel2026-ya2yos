@@ -18,7 +18,7 @@ use crate::{
         DEFAULT_FILE_MODE,
     },
     mm::{
-        copy_to_user, get_data, put_data, translate::strong_translated_refmut, translated_refmut,
+        copy_to_user, get_data, put_data, translated_refmut,
         MapAreaType, MapPermission, MemorySet, MemorySetInner, PhysPageNum, VirtAddr,
     },
     signal::{SigSet, SigTable, SIGCHLD},

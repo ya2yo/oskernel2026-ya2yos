@@ -114,55 +114,10 @@ pub fn translated_ref<T>(token: usize, ptr: *const T) -> &'static T {
     KernelAddr::from(page_table.translate_va(VirtAddr::from(va)).unwrap()).as_ref()
 }
 
-pub fn safe_translated_ref<T>(memory_set: &MemorySet, ptr: *const T) -> &'static T {
-    let page_table = PageTable::from_token(memory_set.token());
-    let va = ptr as usize;
-    let start_va = VirtAddr::from(va);
-    let vpn = start_va.floor();
-    if let None = page_table.translate(vpn) {
-        memory_set.lazy_page_fault(vpn, Trap::Exception(Exception::LoadPageFault));
-    }
-    KernelAddr::from(page_table.translate_va(VirtAddr::from(va)).unwrap()).as_ref()
-}
 ///Translate a generic through page table and return a mutable reference
 pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
     let page_table = PageTable::from_token(token);
     let va = ptr as usize;
-    KernelAddr::from(page_table.translate_va(VirtAddr::from(va)).unwrap()).as_mut()
-}
-
-/// 安全地将用户空间指针翻译为内核态的可变引用
-/// token: 进程页表的 token
-/// ptr: 用户空间的原始指针
-pub fn strong_translated_refmut<T>(token: usize, ptr: *mut T) -> Option<&'static mut T> {
-    let page_table = PageTable::from_token(token);
-    let va = ptr as usize;
-    // 检查对齐
-    if va % core::mem::align_of::<T>() != 0 {
-        return None;
-    }
-    // 检查是否跨页边界
-    // 如果对象跨越了页面，简单的物理地址转换是不够的，通常需要分段读写或临时映射
-    let size = core::mem::size_of::<T>();
-    if (va % PAGE_SIZE) + size > PAGE_SIZE {
-        // 对于简单的 PID写入，通常不会跨页，但作为通用函数必须考虑
-        return None;
-    }
-    page_table.translate_va(VirtAddr::from(va)).map(|pa| {
-        // 转换为内核虚拟地址并转为引用
-        // 注意：这里返回的生命周期应该绑定在调用者身上，而不是 'static
-        KernelAddr::from(pa).as_mut()
-    })
-}
-
-pub fn safe_translated_refmut<T>(memory_set: &MemorySet, ptr: *mut T) -> &'static mut T {
-    let page_table = PageTable::from_token(memory_set.token());
-    let va = ptr as usize;
-    let start_va = VirtAddr::from(va);
-    let vpn = start_va.floor();
-    if let None = page_table.translate(vpn) {
-        memory_set.lazy_page_fault(vpn, Trap::Exception(Exception::LoadPageFault));
-    }
     KernelAddr::from(page_table.translate_va(VirtAddr::from(va)).unwrap()).as_mut()
 }
 
@@ -217,25 +172,6 @@ pub fn get_data<T: 'static + Copy>(token: usize, ptr: *const T) -> T {
     }
 }
 
-pub fn safe_get_data<T: 'static + Copy>(memory_set: &MemorySet, ptr: *const T) -> T {
-    let page_table = PageTable::from_token(memory_set.token());
-    let mut va = VirtAddr::from(ptr as usize);
-    let pa = page_table.translate_va(va).unwrap();
-    let size = core::mem::size_of::<T>();
-    // 若数据跨页，则转换成字节数据写入
-    if (pa + size - 1).floor() != pa.floor() {
-        // debug!("work in overpage");
-        let mut bytes = vec![0u8; size];
-        for i in 0..size {
-            bytes[i] = *(page_table.translate_va(va).unwrap().as_ref());
-            va = va + 1;
-        }
-        unsafe { *(bytes.as_slice().as_ptr() as usize as *const T) }
-    } else {
-        *safe_translated_ref(memory_set, ptr)
-    }
-}
-
 /// 将数据 `data` 写入 `token` 地址空间 `ptr` 处，
 /// 其中虚拟地址 `ptr` 解析得到的物理地址可以跨页
 pub fn put_data<T: 'static>(token: usize, ptr: *mut T, data: T) {
@@ -253,24 +189,6 @@ pub fn put_data<T: 'static>(token: usize, ptr: *mut T, data: T) {
         }
     } else {
         *translated_refmut(token, ptr) = data;
-    }
-}
-
-pub fn safe_put_data<T: 'static>(memory_set: &MemorySet, ptr: *mut T, data: T) {
-    let page_table = PageTable::from_token(memory_set.token());
-    let mut va = VirtAddr::from(ptr as usize);
-    let pa = page_table.translate_va(va).unwrap();
-    let size = core::mem::size_of::<T>();
-    // 若数据跨页，则转换成字节数据写入
-    if (pa + size - 1).floor() != pa.floor() {
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&data as *const _ as usize as *const u8, size) };
-        for i in 0..size {
-            *(page_table.translate_va(va).unwrap().as_mut()) = bytes[i];
-            va = va + 1;
-        }
-    } else {
-        *safe_translated_refmut(memory_set, ptr) = data;
     }
 }
 
@@ -358,6 +276,28 @@ pub fn copy_to_user(memory_set: &MemorySet, dst: usize, src: &[u8]) -> SyscallRe
     }
 
     Ok(len)
+}
+
+/// 安全地将用户虚拟地址转换为物理地址。
+///
+/// 遵循内核设计原则：先通过 `copy_from_user` 触发延迟页分配，
+/// 确保页面已映射后再进行 VA→PA 转换。避免在未分配页面上直接
+/// 调用 `translate_va` 导致 panic 或遗漏延迟分配。
+pub fn translate_user_va_safe(
+    memory_set: &MemorySet,
+    va: VirtAddr,
+) -> Result<usize, SysErrNo> {
+    let page_table = PageTable::from_token(memory_set.token());
+    let vpn = va.floor();
+    // 页面未映射时，通过 copy_from_user 触发延迟页分配
+    if page_table.translate(vpn).is_none() {
+        let mut dummy = [0u8; 4];
+        copy_from_user(memory_set, va.into(), &mut dummy)?;
+    }
+    page_table
+        .translate_va(va)
+        .map(|pa| pa.0)
+        .ok_or(SysErrNo::EFAULT)
 }
 
 pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, SysErrNo> {
