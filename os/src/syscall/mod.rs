@@ -199,6 +199,7 @@ pub enum Syscall {
     Prlimit = 261,
     FanotifyInit = 262,
     ClockAdjtime = 266,
+    Kcmp = 272,
     Renameat2 = 276,
     Getrandom = 278,
     MemfdCreate = 279,
@@ -638,6 +639,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[2] as *const RLimit,
             args[3] as *mut RLimit,
         ),
+        Syscall::Kcmp => sys_kcmp(args[0], args[1], args[2] as i32, args[3], args[4]),
         Syscall::Umask => sys_umask(args[0] as u32),
         Syscall::GetMempolicy => sys_get_mempolicy(args[0], args[1], args[2], args[3], args[4]),
 

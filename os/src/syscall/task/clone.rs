@@ -69,6 +69,10 @@ bitflags! {
         const CLONE_NEWPID = 1 << 29;
         const CLONE_NEWNET = 1 << 30;
         const CLONE_IO = 1 << 31;
+        /// 清除子进程的信号处理表 (Linux 5.5+)
+        const CLONE_CLEAR_SIGHAND = 1u64 << 32;
+        /// 将子进程放入指定 cgroup (Linux 5.7+)
+        const CLONE_INTO_CGROUP = 1u64 << 33;
     }
 }
 impl CloneFlags {
@@ -87,7 +91,7 @@ pub fn sys_clone(
     tls_ptr: usize,
     #[cfg(not(target_arch = "loongarch64"))] child_tid_ptr: usize,
 ) -> SyscallRet {
-    let flags = CloneFlags::from_bits(flags as u64).unwrap();
+    let flags = CloneFlags::from_bits_truncate(flags as u64);
     debug!(
         "[sys_clone] flags={:?},stack:{:#x},parent_tid_ptr:{:#x},child_tid_ptr:{:#x},tls_ptr:{:#x}",
         flags, stack_ptr, parent_tid_ptr, child_tid_ptr, tls_ptr
