@@ -69,7 +69,7 @@ pub fn sys_gettimer(_which: i32, curr_value: usize) -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/setitimer.2.html
 pub fn sys_settimer(
-    which: usize,
+    _which: usize,
     new_value: *const Itimerval,
     old_value: *mut Itimerval,
 ) -> SyscallRet {

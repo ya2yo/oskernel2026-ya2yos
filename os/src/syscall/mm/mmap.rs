@@ -8,9 +8,9 @@ use crate::{
     arch::memory_layout::{MAX_MMAP_SIZE, PAGE_SIZE},
     fs::File,
     mm::{
-        if_bad_address, insert_bad_address, remove_bad_address, shm_attach, shm_create, shm_drop,
-        shm_find, MapArea, MapAreaType, MapPermission, MremapFlags, ShmFlags, VirtAddr,
-        VirtPageNum,
+        copy_to_user, if_bad_address, insert_bad_address, remove_bad_address, shm_attach,
+        shm_create, shm_drop, shm_find, MapArea, MapAreaType, MapPermission, MremapFlags,
+        ShmFlags, VirtAddr, VirtPageNum,
     },
     task::{self, current_task},
     utils::{page_round_up, SysErrNo, SyscallRet},
@@ -272,6 +272,62 @@ pub fn sys_shmat(shmid: i32, shmaddr: usize, shmflag: i32) -> SyscallRet {
         key if key < 0 => Err(SysErrNo::EINVAL),
         _ => shm_attach(shmid as usize, shmaddr, permission),
     }
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/mincore.2.html
+///
+/// 查询地址范围内各页是否驻留在物理内存中。
+/// vec[i] 的最低位为 1 表示该页在 RAM 中（已分配物理帧）。
+/// 本内核无 swap，因此已分配帧的页面始终返回 1，惰性分配的页面返回 0。
+pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> SyscallRet {
+    // EFAULT: vec 必须为有效用户态可写地址
+    if vec.is_null() || (vec as isize) <= 0 || if_bad_address(vec as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    // EINVAL: addr 必须页对齐
+    if addr % PAGE_SIZE != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // 长度为 0 直接成功
+    if length == 0 {
+        return Ok(0);
+    }
+
+    // EINVAL: 溢出检查
+    let end = match addr.checked_add(length) {
+        Some(v) => v,
+        None => return Err(SysErrNo::EINVAL),
+    };
+
+    let task = current_task().unwrap();
+    let proc = task.process.inner_lock();
+    let memory_set = proc.get_locked_memory_set_read();
+
+    // ENOMEM: 地址范围必须全部在已有映射内
+    if !memory_set.check_user_range(addr, length, MapPermission::R) {
+        return Err(SysErrNo::ENOMEM);
+    }
+
+    // 计算需要的 vec 大小
+    let num_pages = (length + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    let mut vec_data = alloc::vec![0u8; num_pages];
+
+    for i in 0..num_pages {
+        let page_addr = addr + i * PAGE_SIZE;
+        let vpn = VirtAddr::from(page_addr).floor();
+        // translate 返回 Some 表示页表中有映射（物理帧已分配）
+        if memory_set.translate(vpn).is_some() {
+            vec_data[i] = 1;
+        }
+    }
+
+    // 写回用户态 vec
+    copy_to_user(&memory_set, vec as usize, &vec_data)?;
+
+    Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/shmctl.2.html
