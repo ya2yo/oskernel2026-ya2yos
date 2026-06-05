@@ -3,6 +3,9 @@
 use alloc::sync::Arc;
 
 use super::super::File;
+use crate::mm::UserBuffer;
+use crate::syscall::PollEvents;
+use crate::utils::{SysErrNo, SyscallRet};
 
 pub struct DummyFd;
 
@@ -19,5 +22,17 @@ impl File for DummyFd {
 
     fn writable(&self) -> bool {
         true
+    }
+
+    fn read(&self, _buf: UserBuffer) -> SyscallRet {
+        Err(SysErrNo::EINVAL)
+    }
+
+    fn write(&self, _buf: UserBuffer) -> SyscallRet {
+        Err(SysErrNo::EINVAL)
+    }
+
+    fn poll(&self, _events: PollEvents) -> PollEvents {
+        PollEvents::empty()
     }
 }

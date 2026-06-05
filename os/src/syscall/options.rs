@@ -67,6 +67,8 @@ bitflags! {
         /// 栈，自动延伸
         const MAP_STACK = 1 << 17;
         const MAP_14 = 1<<14;   // TODO: 奇奇怪怪，为什么glibc entry-static.exe pthread_cancel_points会用到这个标志位？
+        /// 预先填充页表（MAP_POPULATE），我们作为 no-op 接受
+        const MAP_POPULATE = 1 << 15;
     }
 }
 

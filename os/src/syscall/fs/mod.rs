@@ -9,17 +9,23 @@ mod pipe;
 mod stat;
 mod xattr;
 
+use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::vec;
 use linux_raw_sys::ctypes::c_int;
 use log::warn;
 
 use crate::{
-    fs::{DummyFd, FileDescriptor, OpenFlags},
+    fs::{DummyFd, FileDescriptor, FileClass, InotifyFd, OpenFlags, File},
     mm::{UserBuffer, copy_from_user, safe_translated_byte_buffer},
     syscall::options::Iovec,
     task::current_task,
     utils::{SysErrNo, SyscallRet},
 };
+
+// inotify_init1 标志 — 与 O_CLOEXEC / O_NONBLOCK 值相同
+const IN_CLOEXEC: u32 = OpenFlags::O_CLOEXEC.bits();
+const IN_NONBLOCK: u32 = OpenFlags::O_NONBLOCK.bits();
 
 pub use self::{
     ctl::*, event::*, fcntl::*, fd_ops::*, io::*, mount::*, pipe::*,
@@ -37,18 +43,72 @@ fn dummyfd_create() -> SyscallRet {
 }
 
 /// https://man7.org/linux/man-pages/man2/inotify_init1.2.html
-pub fn sys_inotify_init1(_flags: u32) -> SyscallRet {
-    warn!("[sys_inotify_init1] not implement!");
-    dummyfd_create()
+pub fn sys_inotify_init1(flags: u32) -> SyscallRet {
+    // 只允许 IN_CLOEXEC 和 IN_NONBLOCK 两个标志
+    let valid_flags = IN_CLOEXEC | IN_NONBLOCK;
+    if flags & !valid_flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let inotify_file = InotifyFd::new();
+    if flags & IN_NONBLOCK != 0 {
+        inotify_file.set_nonblocking(true)?;
+    }
+
+    let mut open_flags = OpenFlags::O_RDWR;
+    if flags & IN_CLOEXEC != 0 {
+        open_flags |= OpenFlags::O_CLOEXEC;
+    }
+    if flags & IN_NONBLOCK != 0 {
+        open_flags |= OpenFlags::O_NONBLOCK;
+    }
+
+    let task = current_task().unwrap();
+    let fd = task.get_fd_table().alloc_fd()?;
+    task.get_fd_table()
+        .set(fd, FileDescriptor::new(open_flags, FileClass::Abs(inotify_file.clone())))?;
+    // 注册到全局表，供 add_watch / rm_watch 查找
+    InotifyFd::register_fd(fd, &inotify_file);
+    Ok(fd)
 }
+
 /// https://man7.org/linux/man-pages/man2/inotify_add_watch.2.html
-pub fn sys_inotify_add_watch(_fd: c_int, _path: *const u8, _mask: u32)-> SyscallRet {
-    warn!("[sys_inotify_add_watch] not implement!");
-    Ok(0)
+pub fn sys_inotify_add_watch(fd: c_int, path: *const u8, mask: u32) -> SyscallRet {
+    if fd < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+    let fd = fd as usize;
+    let inotify = InotifyFd::lookup(fd)?;
+
+    // 从用户空间读取路径字符串（最多 4096 字节含 '\0'）
+    let path_str = {
+        let task = current_task().unwrap();
+        let process = task.process.inner_lock();
+        let memory_set = process.get_locked_memory_set_read();
+        let buf = safe_translated_byte_buffer(&memory_set, path, 4096).unwrap();
+        let buf = UserBuffer::new(buf);
+        let max_len = buf.len();
+        let mut raw = vec![0u8; max_len];
+        let read_len = buf.read_to(&mut raw);
+        // 找到 '\0' 终止符
+        let end = raw[..read_len].iter().position(|&b| b == 0).unwrap_or(read_len);
+        String::from_utf8_lossy(&raw[..end]).into_owned()
+    };
+
+    if mask == 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    inotify.add_watch(path_str, mask)
 }
-pub fn sys_inotify_rm_watch(_fd: c_int, _wd: c_int) -> SyscallRet {
-    warn!("[sys_inotify_rm_watch] not implement!");
-    Ok(0)
+
+pub fn sys_inotify_rm_watch(fd: c_int, wd: c_int) -> SyscallRet {
+    if fd < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+    let fd = fd as usize;
+    let inotify = InotifyFd::lookup(fd)?;
+    inotify.rm_watch(wd)
 }
 
 /// https://man7.org/linux/man-pages/man2/bpf.2.html
