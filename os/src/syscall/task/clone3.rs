@@ -57,7 +57,9 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
     if exit_signal != 0 {
         flags |= exit_signal;
     }
-
+    drop(memory_set);
+    drop(proc_inner);
+    drop(task);
     // Delegate to the existing legacy clone implementation.
     // The parameter order differs between architectures (see sys_clone
     // signature in clone.rs), so we use cfg‑gated calls.
