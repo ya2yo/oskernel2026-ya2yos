@@ -13,19 +13,14 @@ use crate::mm::UserBuffer;
 use crate::syscall::PollEvents;
 use crate::utils::{SysErrNo, SysResult, SyscallRet};
 
-// ---------------------------------------------------------------------------
-// 消息结构
-// ---------------------------------------------------------------------------
 
+/// 消息结构
 struct MqMessage {
     data: Vec<u8>,
     prio: u32,
 }
 
-// ---------------------------------------------------------------------------
-// Mqueue 定义
-// ---------------------------------------------------------------------------
-
+/// Mqueue 定义
 pub struct Mqueue {
     /// 队列名称 ("/myqueue")
     name: Mutex<String>,
@@ -46,10 +41,7 @@ struct MqueueInner {
     nonblocking: bool,
 }
 
-// ---------------------------------------------------------------------------
 // 全局注册表
-// ---------------------------------------------------------------------------
-
 /// fd → Mqueue 映射（用于 mq_send/mq_receive 查找）
 static MQUEUE_TABLE: Lazy<Mutex<BTreeMap<usize, Weak<Mqueue>>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
@@ -58,10 +50,7 @@ static MQUEUE_TABLE: Lazy<Mutex<BTreeMap<usize, Weak<Mqueue>>>> =
 pub static NAME_REGISTRY: Lazy<Mutex<BTreeMap<String, Arc<Mqueue>>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
 
-// ---------------------------------------------------------------------------
 // Mqueue 实现
-// ---------------------------------------------------------------------------
-
 impl Mqueue {
     /// 创建一个新的消息队列
     pub fn new(name: String, maxmsg: usize, msgsize: usize) -> Arc<Self> {
@@ -169,11 +158,6 @@ pub struct MqAttr {
 }
 
 pub const O_NONBLOCK: i64 = 2048;
-
-// ---------------------------------------------------------------------------
-// File trait 实现
-// ---------------------------------------------------------------------------
-
 impl File for Mqueue {
     fn readable(&self) -> bool {
         // 队列非空时可读

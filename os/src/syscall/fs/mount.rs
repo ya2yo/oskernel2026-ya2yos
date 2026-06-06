@@ -88,6 +88,27 @@ pub fn sys_open_tree(_dirfd: i32, _path: *const u8, _flags: u32) -> SyscallRet {
     Ok(0)
 }
 
+/// https://man7.org/linux/man-pages/man2/move_mount.2.html
+///
+/// 将已挂载的文件系统从一个位置移动到另一个位置。
+///
+/// # 参数
+/// - `from_dirfd`: 源目录的 fd
+/// - `from_path`: 源挂载点路径
+/// - `to_dirfd`: 目标目录的 fd
+/// - `to_path`: 目标挂载点路径
+/// - `flags`: 移动标志 (MOVE_MOUNT_F_*)
+pub fn sys_move_mount(
+    _from_dirfd: i32,
+    _from_path: *const u8,
+    _to_dirfd: i32,
+    _to_path: *const u8,
+    _flags: u32,
+) -> SyscallRet {
+    warn!("[sys_move_mount] not implement!");
+    Ok(0)
+}
+
 /// https://man7.org/linux/man-pages/man2/fsopen.2.html
 pub fn sys_fsopen(_fsname: *const u8, _flags: u32) -> SyscallRet {
     warn!("[sys_fsopen] not implement!");
@@ -217,4 +238,23 @@ pub fn sys_fsmount(_fd: i32, _flags: u32, _attr_flags: u32) -> SyscallRet {
 pub fn sys_fspick(_dirfd: i32, _path: *mut u8, _flags: u32) -> SyscallRet {
     warn!("[sys_fspick] not implement!");
     dummyfd_create()
+}
+
+/// https://man7.org/linux/man-pages/man2/mount_setattr.2.html
+///
+/// 修改已挂载文件系统的属性（只读、nosuid 等）。
+///
+/// # 参数
+/// - `dirfd`: 挂载点所在目录的 fd
+/// - `path`: 挂载点路径
+/// - `flags`: AT_* 标志
+/// - `attr`: 指向 mount_attr 结构的指针
+pub fn sys_mount_setattr(
+    _dirfd: i32,
+    _path: *const u8,
+    _flags: u32,
+    _attr: usize,
+) -> SyscallRet {
+    warn!("[sys_mount_setattr] not implement!");
+    Ok(0)
 }

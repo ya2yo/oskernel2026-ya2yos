@@ -235,6 +235,7 @@ pub enum Syscall {
     Statx = 291,
     IoUringSetup = 425,
     OpenTree = 428,
+    MoveMount = 429,
     Fsopen = 430,
     Fsconfig = 431,
     FsMount = 432,
@@ -245,6 +246,7 @@ pub enum Syscall {
     Openat2 = 437,
     PidfdGetfd = 438,
     EpollPwait2 = 441,
+    MountSetattr = 442,
     MemfdSecret = 447,
     FutexWaitv = 449,
     FutexWait = 455,
@@ -712,6 +714,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         // pidfd
         Syscall::PidfdOpen => sys_pidfd_open(args[0] as u32, args[1] as u32),
         Syscall::PidfdGetfd => sys_pidfd_getfd(args[0] as i32, args[1] as i32, args[2] as u32),
+        Syscall::MountSetattr => sys_mount_setattr(args[0] as i32, args[1] as *const u8, args[2] as u32, args[3] as usize),
 
         // dummy fds
         Syscall::FanotifyInit => sys_fanotify_init(args[0] as u32, args[1] as u32),
@@ -727,6 +730,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::IoUringSetup => sys_io_uring_setup(args[0] as u32, args[1] as *mut u8),
         Syscall::OpenTree => sys_open_tree(args[0] as i32, args[1] as *const u8, args[2] as u32),
+        Syscall::MoveMount => sys_move_mount(args[0] as i32, args[1] as *const u8, args[2] as i32, args[3] as *const u8, args[4] as u32),
         Syscall::Fsopen => sys_fsopen(args[0] as *const u8, args[1] as u32),
         Syscall::Fsconfig => sys_fsconfig(args[0] as i32, args[1] as u32, args[2], args[3], args[4] as i32),
         Syscall::FsMount => sys_fsmount(args[0] as i32, args[1] as u32, args[2] as u32),
