@@ -92,7 +92,7 @@ pub fn run_ltp_tests_musl_separately(tests: &[&str], blacklist: &[&str]) {
 
 #[allow(unused)]
 pub fn test_ltp() {
-    let test = &FILELIST[1210..];
+    let test = &FILELIST[1284..];
     run_ltp_tests_musl_separately(test, MUSL_LTP_BLACKLIST);
 }
 

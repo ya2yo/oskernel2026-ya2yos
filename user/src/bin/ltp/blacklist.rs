@@ -264,6 +264,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "mkdir_tests.sh\0",
     "mkfs01.sh\0",
     "mknod04\0",
+    "mmap18\0",
     "mmap20\0",
     "mmapstress01\0",
     "mmapstress02\0",

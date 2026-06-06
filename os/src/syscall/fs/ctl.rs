@@ -86,14 +86,16 @@ pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> Syscall
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
+    let fd_table = proc_inner.fd_table.clone();
     let path = read_user_cstr(&memory_set, path as *const u8)?;
 
     // AT_FDCWD = -100
-    if dirfd != -100 && dirfd as usize >= proc_inner.fd_table.len() {
+    if dirfd != -100 && dirfd as usize >= fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
     let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
-
+    drop(memory_set);
+    drop(proc_inner);
     // 已存在 → EEXIST
     if open(&abs_path, OpenFlags::O_RDWR, NONE_MODE).is_ok() {
         return Err(SysErrNo::EEXIST);
