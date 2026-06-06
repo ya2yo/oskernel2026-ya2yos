@@ -400,3 +400,29 @@ pub fn sys_settimeofday(tv: *const TimeVal, tz: *const u8) -> SyscallRet {
     );
     Ok(0)
 }
+
+// ---------------------------------------------------------------------------
+// POSIX per‑process timers: timer_create(107) / timer_delete(111)
+// ---------------------------------------------------------------------------
+
+/// 参考 https://man7.org/linux/man-pages/man2/timer_create.2.html
+///
+/// 创建 POSIX 每进程定时器。当前内核未实现 POSIX 定时器子系统，
+/// 始终返回 ENOSYS。
+pub fn sys_timer_create(
+    _clockid: i32,
+    _sevp: *const u8,
+    _timerid: *mut u32,
+) -> SyscallRet {
+    debug!("[sys_timer_create] not implemented");
+    Err(SysErrNo::ENOSYS)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/timer_delete.2.html
+///
+/// 删除 POSIX 每进程定时器。当前内核未实现 POSIX 定时器子系统，
+/// 始终返回 ENOSYS。
+pub fn sys_timer_delete(_timerid: usize) -> SyscallRet {
+    debug!("[sys_timer_delete] not implemented");
+    Err(SysErrNo::ENOSYS)
+}

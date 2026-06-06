@@ -109,6 +109,8 @@ pub enum Syscall {
     SetTimer = 103,
     InitModule = 105,
     DeleteModule = 106,
+    TimerCreate = 107,
+    TimerDelete = 111,
     ClockSetTime = 112,
     ClockGettime = 113,
     ClockGetres = 114,
@@ -466,6 +468,10 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             sys_init_module(args[0] as *const u8, args[1], args[2] as *const u8)
         }
         Syscall::DeleteModule => sys_delete_module(args[0] as *const u8, args[1] as u32),
+        Syscall::TimerCreate => {
+            sys_timer_create(args[0] as i32, args[1] as *const u8, args[2] as *mut u32)
+        }
+        Syscall::TimerDelete => sys_timer_delete(args[0]),
         Syscall::SchedSetScheduler => {
             sys_sched_setscheduler(args[0], args[1], args[2] as *const u8)
         }
