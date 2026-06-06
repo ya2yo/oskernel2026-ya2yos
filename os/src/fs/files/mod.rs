@@ -14,10 +14,12 @@ mod events;
 mod signalfd;
 mod dummyfd;
 mod inotify;
+pub mod mqueue;
 pub use {
     dummyfd::DummyFd,
     events::EventFd,
     epoll::{EpollCreateFlags, EpollFile, EpollReady},
     os_file::OSFile,
     inotify::{InotifyFd, InotifyMask},
+    mqueue::{Mqueue, MqAttr},
 };
