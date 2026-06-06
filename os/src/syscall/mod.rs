@@ -99,6 +99,7 @@ pub enum Syscall {
     ExitGroup = 94,
     WaitId = 95,
     SetTidAddress = 96,
+    Unshare = 97,
     Futex = 98,
     SetRobustList = 99,
     GetRobustList = 100,
@@ -168,6 +169,7 @@ pub enum Syscall {
     Shmget = 194,
     Shmctl = 195,
     Shmat = 196,
+    Shmdt = 197,
     Socket = 198,
     Socketpair = 199,
     Bind = 200,
@@ -487,6 +489,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[1] as *const SigSet,
             args[2] as *mut SigSet,
         ),
+        Syscall::SigPending => sys_rt_sigpending(args[0]),
         Syscall::SigTimedWait => sys_rt_sigtimedwait(
             args[0] as *const SigSet,
             args[1] as *mut SigInfo,

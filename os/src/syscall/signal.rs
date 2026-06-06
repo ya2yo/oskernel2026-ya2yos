@@ -123,6 +123,19 @@ pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) ->
     Ok(0)
 }
 
+/// 参考 https://www.man7.org/linux/man-pages/man2/sigpending.2.html
+pub fn sys_rt_sigpending(set: usize)->SyscallRet {
+    let task = current_task().unwrap();
+    let task_inner = task.inner_lock();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let sig_pending = task_inner.sig_pending;
+    copy_to_user(&memory_set, set, unsafe{ core::slice::from_raw_parts(
+            &sig_pending as *const SigSet as *const _, 
+            core::mem::size_of::<SigSet>())});
+    Ok(0)
+}
+
 /// 在指定时间内挂起给定信号
 /// 参考 https://man7.org/linux/man-pages/man2/rt_sigtimedwait.2.html
 pub fn sys_rt_sigtimedwait(
