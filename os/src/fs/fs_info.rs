@@ -16,6 +16,8 @@ struct FSInfoInner {
     exe: String,
     /// 一个文件对应多个fd
     fd2path: HashMap<usize, String>,
+    /// 文件模式创建掩码 (umask)，默认 0o022
+    umask: u32,
 }
 
 impl FSInfoInner {
@@ -30,6 +32,7 @@ impl FSInfoInner {
             cwd: String::from("/"),
             fd2path,
             exe: String::from("/initproc"),
+            umask: 0o022,
         }
     }
     fn from_another(another: &FSInfoInner) -> Self {
@@ -37,6 +40,7 @@ impl FSInfoInner {
             cwd: another.get_cwd(),
             exe: another.get_exe(),
             fd2path: another.fd2path.clone(),
+            umask: another.umask,
         }
     }
     fn clear(&mut self) {
@@ -128,5 +132,16 @@ impl FSInfo {
     /// 关闭文件时移除映射
     pub fn remove(&self, fd: usize) {
         self.inner.write().fd2path.remove(&fd);
+    }
+    /// 获取当前的 umask 值
+    pub fn get_umask(&self) -> u32 {
+        self.inner.read().umask
+    }
+    /// 设置新的 umask 值（仅低 9 位有效），返回旧的 umask
+    pub fn set_umask(&self, mask: u32) -> u32 {
+        let mut inner = self.inner.write();
+        let old = inner.umask;
+        inner.umask = mask & 0o777;
+        old
     }
 }

@@ -328,22 +328,24 @@ pub fn create_init_files() -> GeneralRet {
         "/bin/grep",     // ltp的cgroup_fj_proc需要
         "/bin/gunzip",
         "/bin/gzip",
-        "/bin/ln",
-        "/bin/ls",       // which ls 需要它
-        "/bin/mkdir",    // ltp的cgroup_regression_3_1.sh需要它
-        "/bin/rmdir",    // ltp的cgroup_regression_3_1.sh需要它
-        "/bin/sed",
+        "/bin/killall",
         "/bin/id",
         "/bin/ip",
-        "/bin/killall",
+        "/bin/ln",
+        "/bin/ls",       // which ls 需要它
+        "/bin/locale",
+        "/bin/mkdir",    // ltp的cgroup_regression_3_1.sh需要它
         "/bin/mktemp",
+        "/bin/rmdir",    // ltp的cgroup_regression_3_1.sh需要它
+        "/bin/rsh",
+        "/bin/sed",
         "/bin/sleep",
         "/bin/sh",
+        "/bin/touch",
         "/bin/mount",
         "/bin/umount",
         "/bin/rm",       // fs_bind 清理需要
         "/bin/mv",
-        "/bin/touch",
     ] {
         let _ = superblock_root_inode().unlink(path);
         if let Err(e) = superblock_root_inode().sym_link("/musl/busybox", path) {

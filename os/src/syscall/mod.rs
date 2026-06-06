@@ -205,6 +205,7 @@ pub enum Syscall {
     Mincore = 232,
     Madvise = 233,
     GetMempolicy = 236,
+    SetMempolicy = 237,
     PerfEventOpen = 241,
     Accept4 = 242,
     Wait4 = 260,
@@ -669,6 +670,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Kcmp => sys_kcmp(args[0], args[1], args[2] as i32, args[3], args[4]),
         Syscall::Umask => sys_umask(args[0] as u32),
         Syscall::GetMempolicy => sys_get_mempolicy(args[0], args[1], args[2], args[3], args[4]),
+        Syscall::SetMempolicy => sys_set_mempolicy(args[0] as i32, args[1] as *const u64, args[2] as u64),
 
         // pidfd
         Syscall::PidfdOpen => sys_pidfd_open(args[0] as u32, args[1] as u32),
