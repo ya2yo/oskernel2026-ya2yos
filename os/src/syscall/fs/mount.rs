@@ -197,6 +197,22 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
     }
 }
 
+/// https://man7.org/linux/man-pages/man2/fsmount.2.html
+///
+/// 将 fsopen/fspick 获得的文件系统上下文挂载到命名空间中。
+///
+/// # 参数
+/// - `fd`: 由 fsopen(2) 或 fspick(2) 返回的文件系统上下文 fd
+/// - `flags`: 挂载标志 (MOUNT_ATTR_*)
+/// - `attr_flags`: 挂载属性
+///
+/// # 返回
+/// 成功返回 0，失败返回 -1 并设置 errno。
+pub fn sys_fsmount(_fd: i32, _flags: u32, _attr_flags: u32) -> SyscallRet {
+    warn!("[sys_fsmount] not implement!");
+    Ok(0)
+}
+
 /// https://man7.org/linux/man-pages/man2/fspick.2.html
 pub fn sys_fspick(_dirfd: i32, _path: *mut u8, _flags: u32) -> SyscallRet {
     warn!("[sys_fspick] not implement!");
