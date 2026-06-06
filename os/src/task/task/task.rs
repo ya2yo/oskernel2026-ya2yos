@@ -92,11 +92,9 @@ pub struct TaskControlBlockInner {
     // pub fd_table: Arc<FdTable>,
     // pub fs_info: Arc<Mutex<FsInfo>>,
     pub time_data: TimeData,
-
     // 用于TaskControlBlockInner::growproc
     pub user_heappoint: usize,  //堆顶指针,小于等于user_heaptop
     pub user_heapbottom: usize, //堆底指针
-
     /// 当线程退出时，要将这个指针指向的int置为0，并唤醒等待它的futex
     pub clear_child_tid: usize,
     /// VFORK: if non-zero, parent is suspended waiting for this child PID to
@@ -408,6 +406,10 @@ impl TaskControlBlock {
         Ok(())
     }
     /// 复制进程，注意这里需要实现 fork 的主要逻辑
+    ///
+    /// 采用两阶段模式避免死锁：
+    /// 1. 在父进程锁内提取所有需要的数据（Arc clone + Copy 字段）
+    /// 2. 释放父进程锁后再构造和设置子进程
     pub fn clone_process(
         self: &Arc<TaskControlBlock>,
         flags: CloneFlags,
@@ -416,89 +418,114 @@ impl TaskControlBlock {
         tls: usize,
         child_tid: *mut u32,
     ) -> Result<Arc<TaskControlBlock>, SysErrNo> {
-        let parent_inner = self.inner.lock();
-        let parent_proc_inner = self.process.inner_lock();
         let tid_handle = TidHandle::alloc().unwrap();
         let kernel_stack = KernelStackOnHeap::new();
         let kernel_stack_top = kernel_stack.top();
         debug!("TCB::new kstack top = {:#x}", kernel_stack_top);
-        // 检查是否共享虚拟内存
-        let memory_set = if flags.contains(CloneFlags::CLONE_VM) {
-            parent_proc_inner.memory_set.clone()
-        } else {
-            Arc::new(RwLock::new(MemorySet::new(
-                MemorySetInner::from_existed_user(
-                    &parent_proc_inner.get_locked_memory_set_read(),
-                ),
-            )))
-        };
-        // 检查是否共享文件系统信息
-        let fs_info = if flags.contains(CloneFlags::CLONE_FS) {
-            Arc::clone(&parent_proc_inner.fs_info)
-        } else {
-            Arc::new(FSInfo::from_another(&parent_proc_inner.fs_info))
-        };
-        // 检查是否共享打开文件表
-        let fd_table = if flags.contains(CloneFlags::CLONE_FILES) {
-            Arc::clone(&parent_proc_inner.fd_table)
-        } else {
-            Arc::new(FdTable::from_another(&parent_proc_inner.fd_table))
-        };
-        // 检查是否共享信号处理程序表
-        let sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
-            parent_proc_inner.sig_table.clone()
-        } else {
-            Arc::new(Mutex::new(SigTable::from_another(
-                &parent_proc_inner.get_locked_sigtable(),
-            )))
-        };
-        // 检查是否需要设置 parent_tid
-        if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
-            let parent_mem = parent_proc_inner
-                .get_locked_memory_set_read();
-            copy_to_user_val(&*parent_mem, parent_tid, &(tid_handle.0 as u32)).unwrap();
-        }
-        let clear_child_tid = if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) {
-            child_tid as usize
-        } else {
-            0
-        };
-        let (pid, ppid, timer, sig_mask);
-        let process: Arc<Process>;
 
-        // 检查是否创建线程
-        if flags.contains(CloneFlags::CLONE_THREAD) {
-            pid = self.pid();
-            ppid = self.ppid();
-            timer = Arc::clone(&parent_inner.timer);
-            sig_mask = SigSet::empty();
-            process = self.process.clone();
-        } else {
-            pid = tid_handle.0;
-            let parent_pid = if flags.contains(CloneFlags::CLONE_PARENT) {
-                self.ppid()
+        // ==================== Phase 1: 在父进程锁内提取数据 ====================
+        let (
+            child_memory_set_arc, child_fs_info, child_fd_table, child_sig_table,
+            child_pid, child_ppid, child_timer, child_sig_mask, process_arc,
+            clear_child_tid, parent_memory_set_arc,
+            parent_trap_cx, parent_heappoint, parent_heapbottom,
+            parent_user_id, parent_euid, parent_suid,
+            parent_rgid, parent_egid, parent_sgid, parent_nice,
+        );
+        {
+            let parent_inner = self.inner.lock();
+            let parent_proc_inner = self.process.inner_lock();
+
+            // 保存父进程 memory_set Arc（fork 时需要读取父进程页面来 clone_area）
+            parent_memory_set_arc = parent_proc_inner.memory_set.clone();
+
+            // 子进程 memory_set
+            child_memory_set_arc = if flags.contains(CloneFlags::CLONE_VM) {
+                parent_proc_inner.memory_set.clone()
             } else {
-                self.pid()
+                Arc::new(RwLock::new(MemorySet::new(
+                    MemorySetInner::from_existed_user(
+                        &parent_proc_inner.get_locked_memory_set_read(),
+                    ),
+                )))
             };
-            ppid = parent_pid;
-            timer = Arc::new(Timer::new());
-            // _Fork: child starts with clean signal mask so AS-safe
-            // functions work in the restricted post-fork environment.
-            sig_mask = SigSet::empty();
-            process = Process::new(
-                memory_set.clone(),
-                sig_table.clone(),
-                fd_table,
-                fs_info,
-                pid,
-                parent_pid,
-            );
-        }
+
+            // fs / fd / sig
+            child_fs_info = if flags.contains(CloneFlags::CLONE_FS) {
+                Arc::clone(&parent_proc_inner.fs_info)
+            } else {
+                Arc::new(FSInfo::from_another(&parent_proc_inner.fs_info))
+            };
+            child_fd_table = if flags.contains(CloneFlags::CLONE_FILES) {
+                Arc::clone(&parent_proc_inner.fd_table)
+            } else {
+                Arc::new(FdTable::from_another(&parent_proc_inner.fd_table))
+            };
+            child_sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
+                parent_proc_inner.sig_table.clone()
+            } else {
+                Arc::new(Mutex::new(SigTable::from_another(
+                    &parent_proc_inner.get_locked_sigtable(),
+                )))
+            };
+
+            // CLONE_PARENT_SETTID: 写入父进程地址空间
+            if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
+                let parent_mem = parent_proc_inner.get_locked_memory_set_read();
+                copy_to_user_val(&*parent_mem, parent_tid, &(tid_handle.0 as u32)).unwrap();
+            }
+
+            clear_child_tid = if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) {
+                child_tid as usize
+            } else {
+                0
+            };
+
+            // 确定 pid / 进程归属
+            if flags.contains(CloneFlags::CLONE_THREAD) {
+                child_pid = self.pid();
+                child_ppid = self.ppid();
+                child_timer = Arc::clone(&parent_inner.timer);
+                child_sig_mask = SigSet::empty();
+                process_arc = self.process.clone();
+            } else {
+                child_pid = tid_handle.0;
+                child_ppid = if flags.contains(CloneFlags::CLONE_PARENT) {
+                    self.ppid()
+                } else {
+                    self.pid()
+                };
+                child_timer = Arc::new(Timer::new());
+                child_sig_mask = SigSet::empty();
+                process_arc = Process::new(
+                    child_memory_set_arc.clone(),
+                    child_sig_table.clone(),
+                    child_fd_table,
+                    child_fs_info,
+                    child_pid,
+                    child_ppid,
+                );
+            }
+
+            // 提取父进程 inner 中需要复制给子进程的字段
+            parent_trap_cx = *parent_inner.trap_cx();
+            parent_heappoint = parent_inner.user_heappoint;
+            parent_heapbottom = parent_inner.user_heapbottom;
+            parent_user_id = parent_inner.user_id;
+            parent_euid = parent_inner.effective_uid;
+            parent_suid = parent_inner.saved_uid;
+            parent_rgid = parent_inner.real_gid;
+            parent_egid = parent_inner.effective_gid;
+            parent_sgid = parent_inner.saved_gid;
+            parent_nice = parent_inner.nice;
+        } // parent_inner, parent_proc_inner 在此释放
+
+        // ==================== Phase 2: 构造子进程（不持有父进程锁）====================
 
         let child = Arc::new(TaskControlBlock {
             tid: tid_handle,
             kernel_stack,
-            process,
+            process: process_arc,
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             inner: Mutex::new(TaskControlBlockInner {
@@ -506,57 +533,53 @@ impl TaskControlBlock {
                 trap_cx_bottom: 0,
                 task_cx: TaskContext::goto_trap_return(kernel_stack_top),
                 task_status: TaskStatus::Ready,
-                // fd_table,
-                // fs_info,
                 time_data: TimeData::new(),
-                user_heappoint: parent_inner.user_heappoint,
-                user_heapbottom: parent_inner.user_heapbottom,
+                user_heappoint: parent_heappoint,
+                user_heapbottom: parent_heapbottom,
                 clear_child_tid,
                 vfork_wait_child: 0,
-                sig_mask,
+                sig_mask: child_sig_mask,
                 sig_pending: SigSet::empty(),
-                timer,
+                timer: child_timer,
                 robust_list: RobustListHead::default(),
-                user_id: parent_inner.user_id,
-                effective_uid: parent_inner.effective_uid,
-                saved_uid: parent_inner.saved_uid,
-                real_gid: parent_inner.real_gid,
-                effective_gid: parent_inner.effective_gid,
-                saved_gid: parent_inner.saved_gid,
+                user_id: parent_user_id,
+                effective_uid: parent_euid,
+                saved_uid: parent_suid,
+                real_gid: parent_rgid,
+                effective_gid: parent_egid,
+                saved_gid: parent_sgid,
                 pdeath_signal: 0,
                 futex_pa: 0,
                 futex_key: 0,
                 futex_timedout: false,
                 sig_eintr: false,
                 sigtimedwait_timedout: false,
-                nice: parent_inner.nice,
+                nice: parent_nice,
             }),
         });
 
-        let mut child_inner = child.inner_lock();
+        // 将子进程/线程注册到进程的任务列表
         child.process.meta_lock().tasks.push(Arc::downgrade(&child));
 
+        let mut child_inner = child.inner_lock();
+
         if flags.contains(CloneFlags::CLONE_THREAD) {
-            // 线程
             if stack != 0 {
-                // 用户提供了线程栈，只分配 trap context 即可
-                self.alloc_trap_context_only(&mut child_inner);
+                child.alloc_trap_context_only(&mut child_inner);
             } else {
-                self.alloc_user_res(&mut child_inner);
+                child.alloc_user_res(&mut child_inner);
             }
-            *child_inner.trap_cx() = *parent_inner.trap_cx();
-            // 与 Linux 一致：子线程的 clone 返回值应为 0
+            *child_inner.trap_cx() = parent_trap_cx;
             child_inner.trap_cx().set_a0(0);
         } else {
-            // fork
-            let process = &parent_proc_inner;
-            let another = &*process.get_locked_memory_set_read();
+            // fork: 从父进程复制内存
+            let parent_mem = parent_memory_set_arc.read();
+            let parent_ref = parent_mem.get_ref();
             child.alloc_user_res(&mut child_inner);
-            *child_inner.trap_cx() = *parent_inner.trap_cx();
-            let child_proc = child.process.inner_lock();
+            *child_inner.trap_cx() = parent_trap_cx;
 
+            let child_proc = child.process.inner_lock();
             let child_mm = child_proc.get_locked_memory_set_read();
-            // 从子进程 memory_set 中查找 Stack 区域作为栈底
             let child_stack_bottom = child_mm
                 .get_ref()
                 .areas
@@ -564,39 +587,32 @@ impl TaskControlBlock {
                 .find(|area| area.area_type == MapAreaType::Stack)
                 .map(|area| area.vpn_range.start())
                 .expect("fork: child has no Stack area");
-            child_mm.lazy_clone_area(child_stack_bottom, another.get_ref());
+            child_mm.lazy_clone_area(child_stack_bottom, parent_ref);
             child_mm.clone_area(
                 VirtAddr::from(child_inner.trap_cx_bottom).floor(),
-                another.get_ref(),
+                parent_ref,
             );
-
-            // for child process, fork returns 0
             child_inner.trap_cx().set_a0(0);
         }
-        
+
         let trap_cx = child_inner.trap_cx();
         trap_cx.kernel_stack = kernel_stack_top;
-        // 处理其余参数
         if stack != 0 {
-            //sp
             trap_cx.set_sp(stack);
         }
-
         if flags.contains(CloneFlags::CLONE_SETTLS) {
-            // tp
             trap_cx.set_tp(tls);
         }
-        // CLONE_CHILD_SETTID
+
+        // CLONE_CHILD_SETTID: 写入子进程地址空间
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-            let child_mem = parent_proc_inner
+            let child_proc_inner = child.process.inner_lock();
+            let child_mem = child_proc_inner
                 .get_locked_memory_set_read();
             copy_to_user_val(&*child_mem, child_tid, &(child.tid() as u32)).unwrap();
         }
-        drop(memory_set);
-        drop(parent_proc_inner);
-        drop(parent_inner);
-        // 设置 exit_signal：普通 fork 带 SIGCHLD 则退出时通知父进程，
-        // clone/thread 不带 SIGCHLD 则不发送信号
+
+        // exit_signal
         {
             let mut child_meta = child.process.meta_lock();
             child_meta.exit_signal = if flags.contains(CloneFlags::SIGCHLD) {
@@ -605,28 +621,25 @@ impl TaskControlBlock {
                 -1
             };
         }
-        // 无论是否带 SIGCHLD，都为子进程创建 /proc/<pid>/stat 和 /proc/<pid>/maps，
-        // 否则 LTP 等测试框架的清理代码无法通过 /proc 判断进程状态而陷入死循环
+
+        // 为子进程创建 /proc/<pid>/stat 和 /proc/<pid>/maps
         {
             let child_proc = child.process.inner_lock();
             let child_mm = child_proc.get_locked_memory_set_read();
-            create_proc_dir_and_file(pid, ppid, &child_mm);
+            create_proc_dir_and_file(child_pid, child_ppid, &child_mm);
         }
-        let mut parent_inner = self.inner_lock();
-        // VFORK: suspend parent until child execs or exits.
-        // The parent is woken in exit_current_and_run_next() when the
-        // child terminates, or in execve() when the child replaces itself.
-        if flags.contains(CloneFlags::CLONE_VFORK) {
-            parent_inner.vfork_wait_child = child.tid();
-            parent_inner.task_status = TaskStatus::VforkBlocked;
+
+        // VFORK: 挂起父进程直到子进程 exec 或退出
+        {
+            let mut parent_inner = self.inner_lock();
+            if flags.contains(CloneFlags::CLONE_VFORK) {
+                parent_inner.vfork_wait_child = child.tid();
+                parent_inner.task_status = TaskStatus::VforkBlocked;
+            }
         }
 
         drop(child_inner);
-        drop(parent_inner);
         tid_to_task::insert(child.tid(), &child);
-        // if !flags.contains(CloneFlags::CLONE_THREAD) {
-        //     insert_into_process_group(child.ppid(), &child);
-        // }
         Ok(child.clone())
     }
 

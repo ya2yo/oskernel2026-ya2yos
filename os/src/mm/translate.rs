@@ -23,6 +23,10 @@ fn checked_user_range(start: usize, len: usize) -> Result<usize, SysErrNo> {
     if start == 0 {
         return Err(SysErrNo::EFAULT);
     }
+    // 验证起始地址是合法的 SV39 规范地址，避免后续 VirtAddr::from  panic
+    if VirtAddr::try_from(start).is_none() {
+        return Err(SysErrNo::EFAULT);
+    }
     start.checked_add(len).ok_or(SysErrNo::EFAULT)
 }
 
@@ -93,7 +97,7 @@ pub fn copy_from_user(memory_set: &MemorySet, src: usize, dst: &mut [u8]) -> Sys
     let mut cur_dst = 0;
 
     while cur_src < end {
-        let start_va = VirtAddr::from(cur_src);
+        let start_va = VirtAddr::try_from(cur_src).ok_or(SysErrNo::EFAULT)?;
         let vpn = start_va.floor();
         let ppn = translated_user_page(
             memory_set,
@@ -135,7 +139,7 @@ pub fn copy_to_user(memory_set: &MemorySet, dst: usize, src: &[u8]) -> SyscallRe
     let mut cur_src = 0;
 
     while cur_dst < end {
-        let start_va = VirtAddr::from(cur_dst);
+        let start_va = VirtAddr::try_from(cur_dst).ok_or(SysErrNo::EFAULT)?;
         let vpn = start_va.floor();
         let ppn = translated_user_page(
             memory_set,
@@ -195,7 +199,19 @@ pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, 
     while pos < MAX_PATH_LEN {
         let current_addr = ptr_addr + pos;
         // 计算当前页内还能读取多少字节
-        let vpn = VirtAddr::from(current_addr).floor();
+        let va = match VirtAddr::try_from(current_addr) {
+            Some(va) => va,
+            None => {
+                // 非法 VA：检查已读部分，若已有完整字符串则返回
+                if let Some(null_pos) = dst_str[..pos].iter().position(|&b| b == 0) {
+                    return Ok(String::from(
+                        core::str::from_utf8(&dst_str[..null_pos]).unwrap_or(""),
+                    ));
+                }
+                return Err(SysErrNo::EFAULT);
+            }
+        };
+        let vpn = va.floor();
         let page_end = ((vpn.0 + 1) << PAGE_SIZE_BITS) as usize;
         let chunk_size = core::cmp::min(page_end - current_addr, MAX_PATH_LEN - pos);
 
@@ -243,7 +259,7 @@ pub(crate) fn read_user_bytes_direct(token: usize, src: usize, len: usize) -> Op
     let end = src + len;
     let mut cur_dst = 0;
     while cur_src < end {
-        let start_va = VirtAddr::from(cur_src);
+        let start_va = VirtAddr::try_from(cur_src)?;
         let vpn = start_va.floor();
         let ppn = page_table.translate(vpn)?;
         let next_page_va = ((vpn.0 + 1) << PAGE_SIZE_BITS) as usize;
@@ -269,7 +285,7 @@ pub(crate) fn write_user_bytes_direct(token: usize, dst: usize, src: &[u8]) -> O
     let end = dst + len;
     let mut cur_src = 0;
     while cur_dst < end {
-        let start_va = VirtAddr::from(cur_dst);
+        let start_va = VirtAddr::try_from(cur_dst)?;
         let vpn = start_va.floor();
         let ppn = page_table.translate(vpn)?;
         let next_page_va = ((vpn.0 + 1) << PAGE_SIZE_BITS) as usize;

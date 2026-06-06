@@ -119,8 +119,8 @@ fn get_score() {
     // run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
     // // // run_testsuit("glibc\0", "ltp_testcode.sh\0");
     // #[cfg(target_arch = "riscv64")]
-    run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv 通过
-    // libctest::pthread_cancel_points::run_glibc_dynamic();
+    // run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv 通过
+    libctest::pthread_robust_detach::run_glibc_dynamic();
 
     
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
