@@ -79,9 +79,7 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
         }
         //有响应了就可以返回
         if resnum > 0 {
-            let task2 = current_task().unwrap();
-            let proc2 = task2.process.inner_lock();
-            let mem_set = proc2.get_locked_memory_set_read();
+            let mem_set = proc_inner.get_locked_memory_set_read();
             copy_to_user(&mem_set, user_fds_ptr, &kernel_fds)?;
             return Ok(resnum);
         }

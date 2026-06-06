@@ -158,9 +158,11 @@ impl TaskControlBlock {
     pub fn tid(&self) -> usize {
         self.tid.0
     }
+    /// 获取当前进程的pid
     pub fn pid(&self) -> usize {
         self.process.pid
     }
+    /// 获取父进程pid
     pub fn ppid(&self) -> usize {
         self.process.ppid()
     }

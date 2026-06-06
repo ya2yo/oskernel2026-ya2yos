@@ -504,9 +504,13 @@ pub struct UserBufferIterator {
 impl Iterator for UserBufferIterator {
     type Item = *mut u8;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_buffer >= self.buffers.len() {
-            None
-        } else {
+        while self.current_buffer < self.buffers.len() {
+            // Skip empty buffers
+            if self.buffers[self.current_buffer].is_empty() {
+                self.current_buffer += 1;
+                self.current_idx = 0;
+                continue;
+            }
             let r = &mut self.buffers[self.current_buffer][self.current_idx] as *mut _;
             if self.current_idx + 1 == self.buffers[self.current_buffer].len() {
                 self.current_idx = 0;
@@ -514,7 +518,8 @@ impl Iterator for UserBufferIterator {
             } else {
                 self.current_idx += 1;
             }
-            Some(r)
+            return Some(r);
         }
+        None
     }
 }

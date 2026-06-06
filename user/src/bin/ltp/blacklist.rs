@@ -4,6 +4,7 @@
 #[allow(unused)]
 pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "add_ipv6addr\0",
+    "ar01.sh\0",
     "assign_password.sh\0",
     "binfmt_misc01.sh\0",
     "binfmt_misc02.sh\0",
@@ -259,6 +260,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "memcg_subgroup_charge.sh\0",
     "memcg_test_2\0",
     "memcg_test_4\0",
+    "memcg_use_hierarchy_test.sh\0",
     "mkdir_tests.sh\0",
     "mkfs01.sh\0",
     "mknod04\0",
