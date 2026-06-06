@@ -61,7 +61,8 @@ pub use timex::{
 };
 pub use rusage::Rusage;
 pub use timer_condvar::{
-    add_futex_timer, add_stopped_task_timer, check_futex_timer, TimerCondVar, TimerType, TIMERS,
+    add_futex_timer, add_sigtimedwait_timer, add_stopped_task_timer, check_futex_timer,
+    TimerCondVar, TimerType, TIMERS,
 };
 
 use crate::arch::time::{get_clock_freq, get_ticks, set_oneshot_timer};

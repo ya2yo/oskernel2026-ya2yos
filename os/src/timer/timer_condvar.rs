@@ -24,7 +24,7 @@ use alloc::{
 use core::cmp::Ordering;
 use spin::{Lazy, Mutex};
 
-use crate::task::{handle_timer, TaskControlBlock};
+use crate::task::{TaskControlBlock, handle_sigtimedwait_timer, handle_timer};
 
 use super::{get_time_spec, Timespec};
 
@@ -32,6 +32,7 @@ use super::{get_time_spec, Timespec};
 pub enum TimerType {
     Futex,
     StoppedTask,
+    SigTimedWait,
 }
 
 /// 定时器条目，存入全局 TIMERS 最小堆
@@ -93,6 +94,20 @@ pub fn add_stopped_task_timer(expire: Timespec, task: Arc<TaskControlBlock>) {
     });
 }
 
+/// 添加 sigtimedwait 超时定时器
+///
+/// - `expire`: 超时时刻 (绝对时间)
+/// - `task`: 等待信号的任务
+pub fn add_sigtimedwait_timer(expire: Timespec, task: &Arc<TaskControlBlock>) {
+    let mut timers = TIMERS.lock();
+    timers.push(TimerCondVar {
+        expire,
+        task: Arc::downgrade(task),
+        kind: TimerType::SigTimedWait,
+        extra_data: 0,
+    });
+}
+
 /// 检查并唤醒所有到期的定时器 (每次时钟中断调用)
 pub fn check_futex_timer() {
     let mut timers = TIMERS.lock();
@@ -100,10 +115,16 @@ pub fn check_futex_timer() {
     while let Some(timer) = timers.peek() {
         if timer.expire <= current {
             if let Some(task) = timer.task.upgrade() {
-                if timer.kind == TimerType::Futex {
-                    handle_timer(Arc::clone(&task), timer.extra_data);
-                } else if timer.kind == TimerType::StoppedTask {
-                    todo!()
+                match timer.kind {
+                    TimerType::Futex => {
+                        handle_timer(Arc::clone(&task), timer.extra_data);
+                    }
+                    TimerType::SigTimedWait => {
+                        handle_sigtimedwait_timer(Arc::clone(&task));
+                    }
+                    TimerType::StoppedTask => {
+                        todo!()
+                    }
                 }
             }
             timers.pop();

@@ -8,8 +8,8 @@ use crate::{
         SIGKILL, SIGSTOP,
     },
     syscall::SignalMaskFlag,
-    task::{current_task, exit_current_and_run_next, suspend_current_and_run_next},
-    timer::Timespec,
+    task::{block_current_and_run_next, current_task, exit_current_and_run_next, suspend_current_and_run_next},
+    timer::{add_sigtimedwait_timer, get_time_spec, Timespec},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -136,15 +136,111 @@ pub fn sys_rt_sigpending(set: usize)->SyscallRet {
     Ok(0)
 }
 
-/// 在指定时间内挂起给定信号
+/// 在指定时间内等待信号集中的任一信号变为 pending 状态
+/// 返回已消耗的信号编号；超时返回 EAGAIN
 /// 参考 https://man7.org/linux/man-pages/man2/rt_sigtimedwait.2.html
 pub fn sys_rt_sigtimedwait(
-    _sig: *const SigSet,
-    _info: *mut SigInfo,
-    _timeout: *const Timespec,
+    set_ptr: *const SigSet,
+    info_ptr: *mut SigInfo,
+    timeout_ptr: *const Timespec,
 ) -> SyscallRet {
-    // TODO(ZMY): Linux实现与POSIX标准不同,只在部分pthread测试使用过,伪实现
-    Ok(0)
+    // 清除上一次遗留的超时标记
+    {
+        let task = current_task().unwrap();
+        task.inner_lock().sigtimedwait_timedout = false;
+    }
+
+    // 从用户空间拷贝信号集和超时参数（需要先获取 memory_set）
+    let sigset = {
+        let task = current_task().unwrap();
+        let proc_inner = task.process.inner_lock();
+        let memory_set = proc_inner.get_locked_memory_set_read();
+
+        let mut sigset: SigSet = SigSet::default();
+        if set_ptr as usize != 0 {
+            copy_from_user(&memory_set, set_ptr as usize, unsafe {
+                core::slice::from_raw_parts_mut(
+                    &mut sigset as *mut SigSet as *mut u8,
+                    core::mem::size_of::<SigSet>(),
+                )
+            })?;
+        }
+
+        // 处理超时参数并注册定时器
+        if !timeout_ptr.is_null() {
+            if timeout_ptr as usize == usize::MAX {
+                return Err(SysErrNo::EINVAL);
+            }
+            let mut ts: Timespec = Timespec::default();
+            copy_from_user(&memory_set, timeout_ptr as usize, unsafe {
+                core::slice::from_raw_parts_mut(
+                    &mut ts as *mut Timespec as *mut u8,
+                    core::mem::size_of::<Timespec>(),
+                )
+            })?;
+            if ts.tv_nsec >= 1_000_000_000 {
+                return Err(SysErrNo::EINVAL);
+            }
+            let now = get_time_spec();
+            let expire_time = now + ts;
+            let task = current_task().unwrap();
+            add_sigtimedwait_timer(expire_time, &task);
+        }
+
+        sigset
+    };
+    // memory_set 和 proc_inner 已在这里 drop，后续不需要再持有进程锁
+
+    loop {
+        let task = current_task().unwrap();
+        let mut task_inner = task.inner_lock();
+
+        // 检查是否因超时被唤醒
+        if task_inner.sigtimedwait_timedout {
+            task_inner.sigtimedwait_timedout = false;
+            drop(task_inner);
+            return Err(SysErrNo::EAGAIN);
+        }
+
+        // 查找 sigset 中尚未被屏蔽的待处理信号
+        let unmasked_pending = task_inner
+            .sig_pending
+            .difference(task_inner.sig_mask);
+
+        // 与请求的 sigset 取交集
+        let matched = sigset & unmasked_pending;
+
+        if !matched.is_empty() {
+            // 取出编号最小的匹配信号
+            let signo = matched.peek_front().unwrap();
+            let signal = SigSet::from_sig(signo);
+            // 从 pending 集合中消耗该信号
+            task_inner.sig_pending.remove(signal);
+            // 填充 siginfo
+            if info_ptr as usize != 0 {
+                let sig_info = SigInfo::new(
+                    signo as u32,
+                    0,
+                    (-1i32) as u32, // si_code: SI_QUEUE
+                    task.pid() as u32,
+                );
+                let proc_inner = task.process.inner_lock();
+                let mem_set = proc_inner.get_locked_memory_set_read();
+                copy_to_user(&mem_set, info_ptr as usize, unsafe {
+                    core::slice::from_raw_parts(
+                        &sig_info as *const SigInfo as *const u8,
+                        core::mem::size_of::<SigInfo>(),
+                    )
+                })?;
+            }
+
+            drop(task_inner);
+            return Ok(signo);
+        }
+        drop(task_inner);
+        drop(task);
+        block_current_and_run_next();
+    }
 }
 
 /// 暂时将调用线程的信号掩码替换为 mask 给出的掩码，然后暂停线程，直到传递信号，

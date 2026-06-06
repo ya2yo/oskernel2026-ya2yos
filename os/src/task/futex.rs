@@ -510,3 +510,12 @@ pub fn handle_timer(task: Arc<TaskControlBlock>, futex_key: usize) {
         wakeup_futex_task(task);
     }
 }
+
+/// 处理 sigtimedwait 超时：标记超时并唤醒任务
+pub fn handle_sigtimedwait_timer(task: Arc<TaskControlBlock>) {
+    {
+        let mut inner = task.inner_lock();
+        inner.sigtimedwait_timedout = true;
+    }
+    wakeup_futex_task(task);
+}

@@ -137,6 +137,8 @@ pub struct TaskControlBlockInner {
     pub futex_timedout: bool, // 本次 futex wait 因超时而唤醒
     /// 信号已交付但被透明处理（setup_frame），可中断 syscall 应返回 EINTR
     pub sig_eintr: bool,
+    /// sigtimedwait 因超时而唤醒
+    pub sigtimedwait_timedout: bool,
     /// nice 值，范围 -20..19，默认 0（用于 getpriority/setpriority syscall）
     pub nice: i32,
 }
@@ -218,6 +220,7 @@ impl TaskControlBlock {
                 futex_key: 0,
                 futex_timedout: false,
                 sig_eintr: false,
+                sigtimedwait_timedout: false,
                 nice: 0,
             }),
         };
@@ -526,6 +529,7 @@ impl TaskControlBlock {
                 futex_key: 0,
                 futex_timedout: false,
                 sig_eintr: false,
+                sigtimedwait_timedout: false,
                 nice: parent_inner.nice,
             }),
         });
