@@ -263,3 +263,28 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
     let ret = file.write(ub)?;
     Ok(ret)
 }
+
+/// 参考 https://man7.org/linux/man-pages/man2/splice.2.html
+///
+/// 在两个文件描述符之间零拷贝传输数据（至少一个必须是管道）。
+/// 当前内核未实现零拷贝 splice 机制，始终返回 EINVAL。
+pub fn sys_splice(
+    _fd_in: i32,
+    _off_in: *const i64,
+    _fd_out: i32,
+    _off_out: *const i64,
+    _len: usize,
+    _flags: u32,
+) -> SyscallRet {
+    log::debug!("[sys_splice] not implemented");
+    Err(SysErrNo::EINVAL)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/tee.2.html
+///
+/// 在两个管道之间复制数据而不消耗数据。
+/// 当前内核未实现零拷贝 tee 机制，始终返回 EINVAL。
+pub fn sys_tee(_fd_in: i32, _fd_out: i32, _len: usize, _flags: u32) -> SyscallRet {
+    log::debug!("[sys_tee] not implemented");
+    Err(SysErrNo::EINVAL)
+}
