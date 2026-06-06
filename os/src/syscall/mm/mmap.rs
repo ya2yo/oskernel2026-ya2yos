@@ -1,7 +1,7 @@
 //! memory related syscall
 
 use alloc::format;
-use log::debug;
+use log::{debug, warn};
 
 use super::super::{MmapFlags, MmapProt};
 use crate::{
@@ -339,7 +339,8 @@ pub fn sys_shmctl(shmid: i32, cmd: i32, _buf: usize) -> SyscallRet {
             Ok(0)
         }
         _ => {
-            panic!("[sys_shmctl] unsupport cmd");
+            warn!("[sys_shmctl] unsupport cmd");
+            Err(SysErrNo::ENOSYS)
         }
     }
 }

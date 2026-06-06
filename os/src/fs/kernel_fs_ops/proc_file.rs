@@ -37,9 +37,7 @@ pub fn create_proc_dir_and_file(
         format!("/proc/{}", pid).as_str(),
         OpenFlags::O_DIRECTORY | OpenFlags::O_CREATE | OpenFlags::O_RDWR,
         DEFAULT_DIR_MODE,
-    )
-    .unwrap()
-    .file()?;
+    )?.file()?;
     // 强制刷盘确保目录创建持久化，否则后续在目录内创建的文件可能不可见
     procdir.inode.sync();
 
