@@ -106,7 +106,23 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
     let parent_dir = superblock_root_inode();
     let (readable, writable) = flags.read_write();
     let inode = parent_dir.create(abs_path, flags.node_type())?;
-    inode.fmode_set(mode);
+    // Apply the process umask to the requested file mode.
+    // umask specifies which permission bits to *clear* from the mode.
+    // During early boot (fs::init) there is no current task, so we
+    // fall back to the default umask 0o022.
+    let umask = match current_task() {
+        Some(task) => {
+            let proc_inner = task.process.inner_lock();
+            proc_inner.fs_info.get_umask()
+        }
+        None => 0o022,
+    };
+    let effective_mode = mode & !umask;
+    debug!(
+        "[create_file] mode={:o} umask={:o} → effective={:o}",
+        mode, umask, effective_mode
+    );
+    inode.fmode_set(effective_mode);
     FsIndex::insert_inode_idx(abs_path, inode.clone());
     let osinode = OSFile::new(readable, writable, inode);
     Ok(FileClass::File(Arc::new(osinode)))

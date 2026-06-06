@@ -377,6 +377,8 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "udp4-uni-basic03\0",
     "udp4-uni-basic04\0",
     "udp4-uni-basic05\0",
+    "udp4-uni-basic06\0",
+    "udp4-uni-basic07\0",
     "udp6-multi-diffip01\0",
     "udp6-multi-diffip02\0",
     "udp6-multi-diffip03\0",

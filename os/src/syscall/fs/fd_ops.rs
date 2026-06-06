@@ -399,11 +399,15 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
+    let fd_table = proc_inner.fd_table.clone();
+    let fs_info = proc_inner.fs_info.clone();
     let path = read_user_cstr(&*memory_set, path)?;
+    drop(memory_set);
 
     let mut flags = OpenFlags::from_bits(flags).unwrap();
 
     let mut abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    drop(proc_inner);
     debug!(
         "[sys_openat] path is {}, flags is {:?}, mode is {:o}",
         &abs_path, flags, mode
@@ -426,11 +430,9 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
         // 剩下的就和普通open一样处理就行了
         let abs_path = map_dynamic_link_file(&abs_path).to_string();
         let inode = open(&abs_path, flags, mode)?;
-        let new_fd = proc_inner.fd_table.alloc_fd()?;
-        proc_inner
-            .fd_table
-            .set(new_fd, FileDescriptor::new(flags, inode));
-        proc_inner.fs_info.insert(abs_path, new_fd);
+        let new_fd = fd_table.alloc_fd()?;
+        fd_table.set(new_fd, FileDescriptor::new(flags, inode));
+        fs_info.insert(abs_path, new_fd);
         return Ok(new_fd);
     }
 
@@ -445,12 +447,10 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     let abs_path = map_dynamic_link_file(&abs_path).to_string();
 
     let inode = open(&abs_path, flags, mode)?;
-    let new_fd = proc_inner.fd_table.alloc_fd()?;
-    proc_inner
-        .fd_table
-        .set(new_fd, FileDescriptor::new(flags, inode));
+    let new_fd = fd_table.alloc_fd()?;
+    fd_table.set(new_fd, FileDescriptor::new(flags, inode));
 
-    proc_inner.fs_info.insert(abs_path, new_fd);
+    fs_info.insert(abs_path, new_fd);
     return Ok(new_fd);
 }
 

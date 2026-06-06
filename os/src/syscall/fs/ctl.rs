@@ -145,6 +145,7 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
     let path = read_user_cstr(&memory_set, path)?;
+    drop(memory_set);
     // debug!(
     //     "[sys_mkdirat] dirfd is {},path is {},mode is {}",
     //     dirfd, path, mode
@@ -154,6 +155,7 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    drop(proc_inner);
     if let Ok(_) = open(&abs_path, OpenFlags::O_RDWR, NONE_MODE) {
         return Err(SysErrNo::EEXIST);
     }
