@@ -13,10 +13,16 @@ use crate::{
 
 #[derive(Debug, Clone, Copy)]
 enum WaitPid {
-    /// Wait for any child process
+    /// Wait for any child process (pid == -1 or the effective pid == 0).
     Any,
-    /// Wait for the child whose process ID is equal to the value.
+    /// Wait for the child whose process ID is equal to the value (pid > 0).
     Pid(usize),
+    /// Wait for any child whose process group ID equals the absolute value
+    /// of pid (pid < -1).  Since the kernel does not yet track per‑process
+    /// pgid, this filter currently accepts no children.  Once full job‑control
+    /// is added, `ProcessMeta` will carry a `pgid` field and this match arm
+    /// will compare against it.
+    Pgid(u32),
 }
 
 impl WaitPid {
@@ -24,6 +30,14 @@ impl WaitPid {
         match self {
             WaitPid::Any => true,
             WaitPid::Pid(pid) => child.pid == *pid,
+            // TODO: when ProcessMeta gains a pgid field, compare child.pgid
+            // against `*pgid` here.
+            WaitPid::Pgid(_pgid) => {
+                // No child currently carries a process‑group ID, so this
+                // filter never matches.  When pgid support is added, change
+                // this to `child.pgid == *pgid`.
+                false
+            }
         }
     }
 }
@@ -33,16 +47,22 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
     let options = WaitOption::from_bits_truncate(options);
     debug!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
-    if pid < -1 {
-        panic!("[sys_waitpid] pgid not supported: pid={}", pid);
-    }
-
-    // pid=0 means any child in the same process group. Since we treat all
-    // processes as belonging to the same group, map 0 to Any just like -1.
-    let wait_pid = if pid <= 0 {
-        WaitPid::Any
-    } else {
-        WaitPid::Pid(pid as _)
+    // Interpret the `pid` argument per POSIX waitpid() semantics:
+    //
+    //   pid > 0   : wait for the specific child with that PID.
+    //   pid == 0  : wait for any child in the caller's process group.
+    //   pid == -1 : wait for any child (most common).
+    //   pid < -1  : wait for any child whose process group ID equals -pid.
+    //
+    // Because this kernel does not yet implement proper process‑group
+    // tracking (getpgid / setpgid / setsid are stubs), pid == 0 is treated
+    // identically to pid == -1.  pid < -1 uses the Pgid filter which
+    // currently never matches, so callers passing a negative value other
+    // than -1 will receive ECHILD.
+    let wait_pid = match pid {
+        ..=-2 => WaitPid::Pgid((-pid) as u32),
+        -1 | 0 => WaitPid::Any,
+        1.. => WaitPid::Pid(pid as usize),
     };
 
     block_on(interruptible(poll_fn(|cx| {
