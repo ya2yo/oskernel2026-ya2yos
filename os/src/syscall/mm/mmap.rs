@@ -134,11 +134,11 @@ pub fn sys_mremap(
     // 如果存在，则并不调整原来的map，而是创建一个新的[new_addr, new_addr+new_size]虚拟地址空间，映射到原来的物理地址空间
     let dont_unmap = flags_bitmap.contains(MremapFlags::DONTUNMAP);
     if dont_unmap {
-        println!("sys_munmap for DONTUNMAP unimplemented!");
-        unimplemented!();
+        warn!("sys_munmap for DONTUNMAP unimplemented!");
+        return Err(SysErrNo::ENOSYS)
     }
     if fixed && !may_move {
-        panic!("fixed && !may_mov");
+        return Err(SysErrNo::EINVAL);
     }
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
@@ -166,7 +166,8 @@ pub fn sys_mremap(
     let old_perm = old_area.map_perm;
 
     if fixed {
-        unimplemented!();
+        warn!("fixed not implement");
+        return Err(SysErrNo::ENOSYS)
     } else if may_move {
         // sys_munmap(old_addr, old_size);
         // debug!("[sys_munmap] addr={:#x}, len={:#x}", addr, len);
@@ -200,7 +201,7 @@ pub fn sys_mremap(
         return Ok(rv);
     } else {
         // fixed == may_move == 0
-        unimplemented!();
+        return Err(SysErrNo::ENOSYS)
     }
 }
 
