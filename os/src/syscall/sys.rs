@@ -935,3 +935,21 @@ pub fn sys_delete_module(_name: *const u8, _flags: u32) -> SyscallRet {
     warn!("[delete_module] kernel module unloading not supported");
     Err(SysErrNo::EPERM)
 }
+
+// ---------------------------------------------------------------------------
+// vhangup(58)
+// ---------------------------------------------------------------------------
+
+/// 参考 https://man7.org/linux/man-pages/man2/vhangup.2.html
+///
+/// 模拟在当前终端上挂起（hangup）。调用成功时返回 0。
+/// 调用需要 CAP_SYS_TTY_CONFIG 特权（root）。
+/// 由于当前内核没有完整的 VT 支持，特权检查通过后直接返回成功。
+pub fn sys_vhangup() -> SyscallRet {
+    let task = current_task().unwrap();
+    // 仅 root 可以调用 vhangup()
+    if task.inner_lock().effective_uid != 0 {
+        return Err(SysErrNo::EPERM);
+    }
+    Ok(0)
+}

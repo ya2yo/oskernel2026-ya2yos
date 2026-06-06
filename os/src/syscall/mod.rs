@@ -68,6 +68,7 @@ pub enum Syscall {
     Fchownat = 54,
     Openat = 56,
     Close = 57,
+    Vhangup = 58,
     Pipe2 = 59,
     Getdents64 = 61,
     Lseek = 62,
@@ -96,6 +97,7 @@ pub enum Syscall {
     Capset = 91,
     Exit = 93,
     ExitGroup = 94,
+    WaitId = 95,
     SetTidAddress = 96,
     Futex = 98,
     SetRobustList = 99,
@@ -124,6 +126,7 @@ pub enum Syscall {
     SigSuspend = 133,
     SigAction = 134,
     SigProcMask = 135,
+    SigPending = 136,
     SigTimedWait = 137,
     SigReturn = 139,
     Setpriority = 140,
@@ -225,7 +228,10 @@ pub enum Syscall {
     CloseRange = 436,
     Openat2 = 437,
     PidfdGetfd = 438,
+    EpollPwait2 = 441,
     MemfdSecret = 447,
+    FutexWaitv = 449,
+    FutexWait = 455,
     MachineShutdown = 1000,
     #[num_enum(default)]
     Default = 9999,
@@ -684,6 +690,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Capget => sys_capget(args[0] as *mut CapUserHeader, args[1] as *mut CapUserData),
         Syscall::Capset => sys_capset(args[0] as *mut CapUserHeader, args[1] as *const CapUserData),
         Syscall::Chroot => sys_chroot(args[0] as *const u8),
+        Syscall::Vhangup => sys_vhangup(),
         Syscall::Prctl => sys_prctl(args[0] as u32, args[1], args[2], args[3], args[4]),
         _ => {
             warn!(
