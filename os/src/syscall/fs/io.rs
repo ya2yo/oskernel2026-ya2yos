@@ -12,69 +12,117 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 
+/// 单次 write() 最多分配的内核缓冲区大小 (64KB)。
+/// 超过此大小的写操作将被切分为多次 write，避免内核堆 OOM。
+const IO_CHUNK_SIZE: usize = 0x10000; // 64KB
+
 /// 参考 https://man7.org/linux/man-pages/man2/write.2.html
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
-    // debug!("[sys_write] fd is {}, len={}", fd, len);
-
-    let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
-
-    if fd >= proc_inner.fd_table.len() {
-        warn!("write EINVAL early return");
-        return Err(SysErrNo::EBADF);
+    if len == 0 {
+        return Ok(0);
     }
-    if let Some(f) = proc_inner.fd_table.try_get_file(fd) {
-        let memory_set = proc_inner.get_locked_memory_set_read();
-        let mut kernel_buf = vec![0u8; len];
-        copy_from_user(&*memory_set, buf as usize, &mut kernel_buf)?;
-        let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+
+    // ---- 阶段 0: 校验 fd、取出文件引用、检查可写 ----
+    let f = {
+        let task = current_task().unwrap();
+        let proc_inner = task.process.inner_lock();
+
+        if fd >= proc_inner.fd_table.len() {
+            warn!("write EBADF: fd out of range");
+            return Err(SysErrNo::EBADF);
+        }
+        let f = match proc_inner.fd_table.try_get_file(fd) {
+            Some(f) => f,
+            None => {
+                warn!("write EBADF: fd not exist");
+                return Err(SysErrNo::EBADF);
+            }
+        };
         if !f.writable() {
             return Err(SysErrNo::EBADF);
         }
-        // 注意！一些文件的write可能会阻塞，还可能借用process，所以我们应该drop process
-        drop(memory_set);
-        drop(proc_inner);
-        drop(task);
-        let ret = f.write(buffer)?;
-        // debug!("buffer 3");
-        Ok(ret)
-    } else {
-        warn!("write EBADF");
-        Err(SysErrNo::EBADF)
+        f
+    }; // 锁在此处释放
+
+    // ---- 阶段 1: 分片写 ----
+    let mut total_written: usize = 0;
+    let mut user_ptr = buf as usize;
+
+    while total_written < len {
+        let chunk_len = IO_CHUNK_SIZE.min(len - total_written);
+        let mut kernel_buf = vec![0u8; chunk_len];
+
+        // 持锁：从用户空间拷贝当前分片到内核缓冲区
+        {
+            let task = current_task().unwrap();
+            let proc_inner = task.process.inner_lock();
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            copy_from_user(&*memory_set, user_ptr, &mut kernel_buf)?;
+        }
+
+        let ub = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+        let written = f.write(ub)?;
+        total_written += written;
+        user_ptr += written;
+
+        // 短写：文件无法继续接收数据，提前返回
+        if written < chunk_len {
+            break;
+        }
     }
+
+    Ok(total_written)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/read.2.html
 pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
-    let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
-    if fd >= proc_inner.fd_table.len() {
-        return Err(SysErrNo::EINVAL);
+    if len == 0 {
+        return Ok(0);
     }
-    if let Some(file) = proc_inner.fd_table.try_get_file(fd) {
-        let memory_set = proc_inner.get_locked_memory_set_read();
+    // 内核缓冲区上界：避免因 len 过大导致内核堆 OOM。
+    // POSIX 允许 read() 返回少于请求的字节数，调用者必须处理短读。
+    let chunk_len = IO_CHUNK_SIZE.min(len);
+
+    // ---- 阶段 0: 校验 fd、取出文件引用、检查可读 ----
+    let file = {
+        let task = current_task().unwrap();
+        let proc_inner = task.process.inner_lock();
+        if fd >= proc_inner.fd_table.len() {
+            return Err(SysErrNo::EINVAL);
+        }
+        let file = match proc_inner.fd_table.try_get_file(fd) {
+            Some(f) => f,
+            None => return Err(SysErrNo::EBADF),
+        };
         if !file.readable() {
             return Err(SysErrNo::EACCES);
         }
-        let mut kernel_buf = vec![0u8; len];
-        let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-        drop(memory_set);
-        drop(proc_inner);
-        let ret = file.read(buffer)?;
-        // Write file data back to user space
-        {
-            let proc = task.process.inner_lock();
-            let mem = proc.get_locked_memory_set_read();
-            copy_to_user(&*mem, buf as usize, &kernel_buf[..ret])?;
-        }
-        Ok(ret)
-    } else {
-        Err(SysErrNo::EBADF)
+        file
+    }; // 锁在此处释放
+
+    // ---- 阶段 1: 单次无锁读 ----
+    let mut kernel_buf = vec![0u8; chunk_len];
+    let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+    let ret = file.read(buffer)?;
+
+    // ---- 阶段 2: 持锁写回用户空间 ----
+    if ret > 0 {
+        let task = current_task().unwrap();
+        let proc_inner = task.process.inner_lock();
+        let mem = proc_inner.get_locked_memory_set_read();
+        copy_to_user(&*mem, buf as usize, &kernel_buf[..ret])?;
     }
+    Ok(ret)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/writev.2.html
 pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
+    // iovec 数量上限，防止遍历过多
+    const IOV_MAX: usize = 1024;
+    if iovcnt == 0 || iovcnt > IOV_MAX {
+        return Err(SysErrNo::EINVAL);
+    }
+
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
 
@@ -86,44 +134,50 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     if fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = proc_inner.fd_table.try_get(fd) {
-        let file = file.any();
-        if !file.writable() {
-            return Err(SysErrNo::EBADF);
-        }
-        // release current task TCB manually to avoid multi-borrow
-        let iovec_size = core::mem::size_of::<Iovec>();
-        let mut kernel_bufs: Vec<Vec<u8>> = Vec::new();
-        let mut bufs: Vec<UserBuffer> = Vec::new();
-        {
-            let memory_set = proc_inner.get_locked_memory_set_read();
-            for i in 0..iovcnt {
-                let current = (iov as usize) + iovec_size * i ;
-                let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
-                copy_from_user(&memory_set, current, &mut iov_buf)?;
-                let iovinfo: Iovec = unsafe { core::mem::transmute(iov_buf) };
-                let mut kb = vec![0u8; iovinfo.iov_len];
-                copy_from_user(&memory_set, iovinfo.iov_base as usize, &mut kb)?;
-                let ub = unsafe { user_buffer_from_kernel(&mut kb) };
-                kernel_bufs.push(kb);
-                bufs.push(ub);
-            }
-        }
-        drop(proc_inner);
-        drop(task);
-        let mut ret: usize = 0;
-        for buf in bufs {
-            let write_ret = file.write(buf)?;
-            ret += write_ret as usize;
-        }
-        Ok(ret)
-    } else {
-        Err(SysErrNo::EBADF)
+    let file = match proc_inner.fd_table.try_get(fd) {
+        Some(f) => f.any(),
+        None => return Err(SysErrNo::EBADF),
+    };
+    if !file.writable() {
+        return Err(SysErrNo::EBADF);
     }
+
+    let iovec_size = core::mem::size_of::<Iovec>();
+    let mut kernel_bufs: Vec<Vec<u8>> = Vec::new();
+    let mut bufs: Vec<UserBuffer> = Vec::new();
+    {
+        let memory_set = proc_inner.get_locked_memory_set_read();
+        for i in 0..iovcnt {
+            let current = (iov as usize) + iovec_size * i;
+            let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
+            copy_from_user(&memory_set, current, &mut iov_buf)?;
+            let iovinfo: Iovec = unsafe { core::mem::transmute(iov_buf) };
+            // 单个 iovec 的缓冲区上界：防止内核堆 OOM
+            let copy_len = IO_CHUNK_SIZE.min(iovinfo.iov_len);
+            let mut kb = vec![0u8; copy_len];
+            copy_from_user(&memory_set, iovinfo.iov_base as usize, &mut kb)?;
+            let ub = unsafe { user_buffer_from_kernel(&mut kb) };
+            kernel_bufs.push(kb);
+            bufs.push(ub);
+        }
+    }
+    drop(proc_inner);
+    drop(task);
+    let mut ret: usize = 0;
+    for buf in bufs {
+        let write_ret = file.write(buf)?;
+        ret += write_ret as usize;
+    }
+    Ok(ret)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/readv.2.html
 pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
+    const IOV_MAX: usize = 1024;
+    if iovcnt == 0 || iovcnt > IOV_MAX {
+        return Err(SysErrNo::EINVAL);
+    }
+
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
 
@@ -145,21 +199,19 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
         // 阶段 1：持锁读取 iovec 元数据 + 分配内核缓冲区
         let (iov_base, iov_len, mut kernel_buf) = {
             let memory_set = proc_inner.get_locked_memory_set_read();
-            let iov_ptr = (iov as usize) + iovec_size * i ;
+            let iov_ptr = (iov as usize) + iovec_size * i;
 
-            // copy_from_user 替代 translated_refmut：安全读取 iovec 结构体
             let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
             copy_from_user(&memory_set, iov_ptr, &mut iov_buf)?;
-            // SAFETY: Iovec is #[repr(C)], two usize fields, 16 bytes on 64-bit
             let iovinfo: Iovec = unsafe { core::mem::transmute(iov_buf) };
 
             if iovinfo.iov_len == 0 {
                 (0, 0, Vec::new())
             } else {
-                (iovinfo.iov_base, iovinfo.iov_len, vec![0u8; iovinfo.iov_len])
+                let buf_len = IO_CHUNK_SIZE.min(iovinfo.iov_len);
+                (iovinfo.iov_base, buf_len, vec![0u8; buf_len])
             }
         };
-        // 锁在此处释放（memory_set 和 proc_inner 的借用结束）
 
         if iov_len == 0 {
             continue;
@@ -180,7 +232,6 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
         // 阶段 3：持锁将内核缓冲区 → 用户空间
         {
             let memory_set = proc_inner.get_locked_memory_set_read();
-            // copy_to_user 替代 translated_byte_buffer：安全写入用户空间
             copy_to_user(&memory_set, iov_base, &kernel_buf[..read_ret])?;
         }
 
@@ -244,8 +295,10 @@ pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) 
     drop(inner);
     drop(task);
 
+    // 内核缓冲区上界：防止 count 过大导致 OOM
+    let chunk_count = IO_CHUNK_SIZE.min(count);
     //构造输入缓冲池
-    let mut buf = vec![0u8; count];
+    let mut buf = vec![0u8; chunk_count];
     let mut inbufv = Vec::new();
     unsafe {
         inbufv.push(core::slice::from_raw_parts_mut(
@@ -301,9 +354,10 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
             return Err(SysErrNo::EACCES);
         }
         let file = file.clone();
+        let chunk_count = IO_CHUNK_SIZE.min(count);
         let mut kernel_buf = {
             let memory_set = inner.get_locked_memory_set_read();
-            let mut kb = vec![0u8; count];
+            let mut kb = vec![0u8; chunk_count];
             copy_from_user(&memory_set, buf as usize, &mut kb)?;
             kb
         };
@@ -337,7 +391,8 @@ pub fn sys_pread64(fd: usize, buf: *const u8, count: usize, offset: isize) -> Sy
         // release current task TCB manually to avoid multi-borrow
         let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
         file.lseek(offset, SEEK_SET)?;
-        let mut kernel_buf = vec![0u8; count];
+        let chunk_count = IO_CHUNK_SIZE.min(count);
+        let mut kernel_buf = vec![0u8; chunk_count];
         let ub = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
         let ret = file.read(ub)?;
         copy_to_user(memory_set, buf as usize, &kernel_buf[..ret])?;
@@ -508,8 +563,10 @@ pub fn sys_copy_file_range(
     drop(inner);
     drop(task);
 
+    // 内核缓冲区上界：防止 count 过大导致 OOM
+    let chunk_count = IO_CHUNK_SIZE.min(count);
     //构造输入缓冲池
-    let mut buf = vec![0u8; count];
+    let mut buf = vec![0u8; chunk_count];
     let mut inbufv = Vec::new();
     unsafe {
         inbufv.push(core::slice::from_raw_parts_mut(
