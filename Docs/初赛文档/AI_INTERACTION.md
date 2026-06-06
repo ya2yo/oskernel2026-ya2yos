@@ -342,11 +342,39 @@
 - **描述**：用户询问 Task 中 6 个 uid/gid 字段的用途，AI 添加注释块说明 POSIX 凭证三元组的区别（real/effective/saved）及各自在文件权限检查中的用途。详见 `ai.log` 2026-06-03 条目。
 - **关联 commit**：待提交
 
-#### pthread_cancel_points 信号帧与 futex 死锁修复（6.3）
+#### 批量 syscall 实现：mincore/mlock/flock/mknodat/xattr/inotify 等（6.4-6.5）
+
+- **工具/模型**：DeepSeek
+- **场景**：代码生成
+- **描述**：用户使用 deepseek 批量生成多个系统调用的基础代码框架，包括 mincore、mlock 系列、flock、mknodat、xattr、setreuid/setregid、inotify、sys_fsconfig、priority/rlimit 等。人工审核后集成到内核。详见 `ai.log` 2026-06-04 和 2026-06-05 条目。
+- **关联 commit**：多个
+
+#### getpeername01 bug 修复（6.5）
+
+- **工具/模型**：DeepSeek
+- **场景**：Bug 分析与定位
+- **描述**：提供 getpeername01 测试失败信息，AI 分析定位 addrlen 参数传递问题。修复后 4 个 LTP 测试用例通过。详见 `ai.log` 2026-06-05 条目。
+- **关联 commit**：`f80ceed`
+
+#### 系统调用冲刺：setgid/personality/msg/mq/clone3/unshare 等（6.6）
+
+- **工具/模型**：DeepSeek
+- **场景**：代码生成
+- **描述**：用户使用 deepseek 批量生成 20+ 系统调用的基础代码，包括 setgid(144)、personality、msg 系列、mq 系列、clone3、unshare、memopolicy、umask、fdatasync、sync_file_range 等。ext4 符号链接读取也通过 deepseek 辅助完成。人工审核修改后合入。详见 `ai.log` 2026-06-06 条目。
+- **关联 commit**：多个
+
+#### futex 退出处理机制 bug 修复（6.6）
+
+- **工具/模型**：DeepSeek
+- **场景**：Bug 分析与定位
+- **描述**：提供 log.ans，deepseek 辅助检查日志定位 futex 退出时处理机制的 bug，包括 clear_child_tid 已 unmap 导致 translate_va unwrap panic 和兄弟线程 futex 未唤醒等。详见 `ai.log` 2026-06-06 条目。
+- **关联 commit**：`66d6983`、`7905fb7`
+
+#### sigtimedwait 实现与 pthread_cancel_points 分析（6.6）
 
 - **工具/模型**：Claude Code (Claude Opus 4.7)
-- **场景**：Bug 分析与定位、代码重构
-- **描述**：用户提供 log.ans 指出 TID 4 异常退出和 TID 3 死锁两个 bug。AI 分析 TID 调用序列定位到 setup_frame 栈边界检查使用了错误的 user_stack_top（主线程栈而非 mmap 线程栈）和 exit_current_and_run_next 未唤醒 futex 阻塞的兄弟线程。修复过程中用户指出 user_stack_top 字段冗余，AI 进一步分析其 6 处使用场景均可通过 memory_set.areas 动态查找替代，移除了该字段。详见 `ai.log` 2026-06-03 条目。
+- **场景**：Bug 分析与定位、代码生成
+- **描述**：用户提供 pthread_cancel_points.c 测试代码和 log.ans。AI 逐场景追踪 7 个测试场景的 TID 调用序列、futex 事件和 Tgkill 信号传递，定位到：1) cancel 信号在 PTHREAD_CANCEL_DISABLE 时被过早消费；2) sys_rt_sigtimedwait 为伪实现（始终返回假信号 0）破坏 glibc 取消机制。AI 实现了完整的 sigtimedwait（解析 sigset+timeout → 定时器超时 → 循环检查 pending 信号 → 消耗信号/返回 signo）。用户确认修复后 crash 消失，仅剩 glibc 调度竞态导致的 "non-blocking pthread_join" 1 个失败。详见 `ai.log` 2026-06-06 条目。
 - **关联 commit**：待提交
 
 ---
@@ -357,11 +385,11 @@
 
 | 使用场景 | 次数（约） | 涉及 commit 数 |
 | ---------- | ----------- | --------------- |
-| 代码理解与注释 | 5 | 5+ |
-| 代码生成 | 9 | 15+ |
-| Bug 分析与定位 | 12 | 20+ |
+| 代码理解与注释 | 6 | 5+ |
+| 代码生成 | 15 | 40+ |
+| Bug 分析与定位 | 15 | 25+ |
 | 架构适配与调试 | 5 | 15+ |
-| 文档完善 | 5 | 5+ |
+| 文档完善 | 6 | 5+ |
 
 ### 关键成果
 

@@ -473,3 +473,164 @@ AI 分析 log.ans 中的 TID 调用序列：
 - 文档：`Docs/初赛文档/problem/thread-signal-stack-futex-deadlock.md`（新建）
 - 索引：`Docs/初赛文档/problem/README.md`（更新）
 - 日志：`Docs/初赛文档/开发日志.md`（更新）
+
+---
+
+## 2026-06-04: LTP 300-500 — fcntl/flock/mknodat/xattr
+
+### 问题发现
+
+用户推进 LTP 300-500 测例，多个测试因缺少系统调用或功能不完整而失败。
+
+### 交互与分析过程
+
+1. 用户提供测例失败信息，AI（deepseek）辅助分析缺失的 syscall
+2. 扩展 fcntl 处理更多命令（F_SETFL/F_GETFL 等）
+3. 实现 sys_flock（文件锁）、sys_mknodat（设备节点/命名管道创建）、基础 xattr 操作
+4. 修复子进程退出信号语义（TCB 增加 exit_signal 字段）
+5. 创建 busybox 符号链接目录，模拟 tst_sleep/tst_timeout_kill
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/ctl.rs` | 扩展 fcntl；实现 flock、mknodat |
+| `os/src/syscall/fs/` | 新增 xattr 操作 |
+| `os/src/task/task/task.rs` | 增加 exit_signal 字段 |
+| `os/src/syscall/net/opt.rs` | 修复 getsockopt 未拦截异常分配 |
+| 用户态文件 | busybox 符号链接、内嵌 shell 脚本 |
+
+### 涉及文件汇总
+
+- 系统调用实现：fcntl 扩展、flock、mknodat、xattr
+- 任务控制块：exit_signal
+- 日志：`Docs/初赛文档/开发日志.md`
+
+---
+
+## 2026-06-05: 批量 syscall 实现 — mincore/setreuid/mlock/inotify 等
+
+### 问题发现
+
+LTP 测例持续推进中触发大量 ENOSYS，需批量补全系统调用。
+
+### 交互与分析过程
+
+用户使用 deepseek 批量生成以下 syscall 的基础代码框架，人工审核后集成到内核：
+
+1. **mincore**：检查内存页是否在物理内存中
+2. **setreuid/setregid**：与已有 setresuid/setresgid 共享 TCB 凭证逻辑
+3. **mlock 系列**（mlock/munlock/mlockall/munlockall）：内存锁定，基础实现
+4. **process_vm_readv_writev**：跨进程内存读写
+5. **inotify_init/add_watch/rm_watch**：文件变化监控基础框架
+6. **sys_fsconfig**：文件系统配置
+7. **priority/rlimit**：getpriority/setpriority/getrlimit/setrlimit
+
+同时 AI 辅助分析 getpeername01 失败：addrlen 参数传递有误，修复后 4 个用例通过。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/mm/` | 新增 mincore、mlock 系列 |
+| `os/src/syscall/sys.rs` | 新增 setreuid/setregid |
+| `os/src/syscall/fs/` | 新增 inotify 基础框架、sys_fsconfig |
+| `os/src/syscall/task/` | 新增 process_vm_readv_writev、priority/rlimit |
+| `os/src/syscall/net/opt.rs` | 修复 getpeername addrlen |
+
+### 涉及文件汇总
+
+- 系统调用模块大范围新增
+- 日志：`Docs/初赛文档/开发日志.md`
+
+---
+
+## 2026-06-06: 系统调用冲刺 — 20+ syscall + 修复
+
+### 问题发现
+
+LTP 前端 1600 测例通过，但仍有大量 ENOSYS，需批量补齐。
+
+### 交互与分析过程
+
+用户使用 deepseek 辅助生成以下 syscall：
+
+1. **setgid(144)**：TCB 增加 gid 凭证，与 setresgid 共享逻辑
+2. **personality**：进程个性设置
+3. **name_to_handle_at / open_by_handle_at**：文件句柄操作，伪实现
+4. **msg 系列**（msgget/msgctl/msgsnd/msgrcv）：System V 消息队列
+5. **mq 系列**（mq_open/mq_unlink/mq_timedsend/mq_timedreceive 等）：POSIX 消息队列
+6. **splice / tee**：管道数据零拷贝，伪实现
+7. **mount_setattr / open_tree**：mount API 扩展结构
+8. **timer_create / timer_delete**：POSIX 定时器，伪实现
+9. **memopolicy / umask**：NUMA 内存策略 + 文件权限掩码
+10. **clone3**：新版 clone，修复锁未释放 bug
+11. **unshare**：命名空间分离
+12. **sigpending**：检查挂起信号
+13. **vhangup**：终端挂断
+14. **fdatasync / sync_file_range**：数据同步
+15. **ext4 符号链接读取**：修复 ext4inode 对 symlink 的 readlink 支持
+
+修复类：
+- 删除 unwrap 直接 panic（mremap、mmap、stat、create_proc_dir_and_file），改为返回错误
+- 修复 futex VA 直接翻译的 bug，移除 translate.rs 不再使用的翻译函数
+- 修复 mmap 缺少 MAP_FIXED_NOREPLACE 标志位
+- 修复 clone3 未释放 proc_inner 锁
+- 修复 wait 对 pid < -1 直接报错
+- 修复 open 路径未释放 proc_inner 的 bug
+
+### 修改内容
+
+| 类别 | 文件 | 修改 |
+|------|------|------|
+| 新 syscall | `os/src/syscall/sys.rs` | setgid、personality、memopolicy、umask |
+| 新 syscall | `os/src/syscall/ipc/` | msg 系列、mq 系列 |
+| 新 syscall | `os/src/syscall/fs/` | name_to_handle、open_by_handle、fdatasync、sync_file_range、splice、tee、mount_setattr |
+| 新 syscall | `os/src/syscall/task/` | clone3、unshare、timer_create、timer_delete |
+| 新 syscall | `os/src/syscall/signal.rs` | sigpending |
+| 新 syscall | `os/src/syscall/` | vhangup |
+| 修复 | 多个文件 | unwrap → 返回错误、锁修复、VA 翻译修复 |
+| 修复 | `os/src/syscall/task/ctl.rs` | mmap flags 补充 |
+| 修复 | `os/src/fs/ext4_lw/` | symlink 符号链接读取 |
+
+### 涉及文件汇总
+
+- 大量 syscall 模块新增和修改
+- 日志：`Docs/初赛文档/开发日志.md`
+
+---
+
+## 2026-06-06: sigtimedwait 实现与 pthread_cancel_points 分析
+
+### 问题发现
+
+用户提供 C 代码 `pthread_cancel_points.c` 和 `log.ans`，要求分析测试失败原因。测试验证 7 个场景的线程取消点行为（sem_wait/sem_timedwait/pthread_join 的阻塞和非阻塞版本，以及 shm_open 非取消点场景），进程退出码 1。
+
+### 根因分析
+
+AI 逐场景追踪 TID 调用序列，分析 futex 事件、Tgkill 信号传递、SigReturn 处理：
+
+1. **cancel 信号被过早消费**：`pthread_cancel` 在 run_execute 线程阻塞于 `sem_seq` 且 cancel 状态为 DISABLED 时发送 SIGRTMIN。信号中断 futex_wait（EINTR），SIGRTMIN handler 设置 cancel flag 后信号被消耗。线程 re-enter futex 继续等待 sem_seq，唤醒后 `pthread_setcancelstate(ENABLE)` 仅改状态不主动检查 cancel。下一个取消点调用才检查 flag。
+
+2. **sigtimedwait 为伪实现**：原 `sys_rt_sigtimedwait` 始终返回 `Ok(0)`（假信号 0），破坏 glibc 内部依赖 sigtimedwait 的信号等待机制。
+
+3. **非阻塞 pthread_join 竞态**：`td_test` 线程在 `sem_test=1` 时立即完成并退出。`run_execute` 调用 `pthread_join(td_test)` 时目标线程已终止，glibc 走 fast-path 直接返回结果，不检查 cancel flag。在单核非抢占内核上，此竞态比 Linux 多核更易触发。
+
+### 修改内容（sigtimedwait）
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/signal.rs` | 重写 `sys_rt_sigtimedwait`：解析 sigset+timeout → 注册定时器 → 循环检查 pending 信号（排除 masked）→ 匹配成功则消耗信号/填充 siginfo/返回 signo → 超时返回 EAGAIN → 否则 block_current_and_run_next() |
+| `os/src/task/task/task.rs` | `TaskControlBlockInner` 新增 `sigtimedwait_timedout: bool` 字段，初始化为 false |
+| `os/src/timer/timer_condvar.rs` | `TimerType` 新增 `SigTimedWait` 变体；新增 `add_sigtimedwait_timer()`；`check_futex_timer` 按 TimerType 分派处理 |
+| `os/src/task/futex.rs` | 新增 `handle_sigtimedwait_timer()`：设置超时标记并唤醒任务 |
+| `os/src/timer/mod.rs` | 导出 `add_sigtimedwait_timer` |
+
+### 验证
+
+sigtimedwait 实现后，原 SIGTRAP crash 和内部错误消失，仅剩 "non-blocking pthread_join" 1 个失败——该失败为单核调度时序导致的 glibc fast-path 竞态，非内核 bug。
+
+### 涉及文件汇总
+
+- 代码：`os/src/syscall/signal.rs`、`os/src/task/task/task.rs`、`os/src/timer/timer_condvar.rs`、`os/src/task/futex.rs`、`os/src/timer/mod.rs`
+- 日志：`Docs/初赛文档/开发日志.md`
