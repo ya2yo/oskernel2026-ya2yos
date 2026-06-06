@@ -12,7 +12,7 @@ use crate::mm::page_fault_handler::{
     cow_page_fault, lazy_page_fault, mmap_read_page_fault, mmap_write_page_fault,
 };
 use super::{
-    translated_byte_buffer, FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer,
+    read_user_bytes_direct, user_buffer_from_kernel, FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer,
     VPNRange, VirtAddr, VirtPageNum,
 };
 use crate::arch::memory_layout::{MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS};
@@ -174,16 +174,15 @@ impl MemorySetInner {
                 wb_range.into_iter().for_each(|(start_vpn, end_vpn)| {
                     let start_addr: usize = VirtAddr::from(start_vpn).into();
                     let mapped_len: usize = (end_vpn.0 - start_vpn.0) * PAGE_SIZE;
-                    let buf = UserBuffer {
-                        buffers: translated_byte_buffer(
-                            self.page_table.token(),
-                            start_addr as *const u8,
-                            mapped_len,
-                        )
-                        .unwrap(),
-                    };
-                    file.lseek((start_addr - addr) as isize, SEEK_SET);
-                    file.write(buf);
+                    if let Some(mut kernel_buf) = read_user_bytes_direct(
+                        self.page_table.token(),
+                        start_addr,
+                        mapped_len,
+                    ) {
+                        let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+                        file.lseek((start_addr - addr) as isize, SEEK_SET);
+                        file.write(buf);
+                    }
                 });
                 file.lseek(off as isize, SEEK_SET);
             }

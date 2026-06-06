@@ -6,14 +6,13 @@ use crate::{
     arch::{
         memory_layout::{PAGE_SIZE, PAGE_SIZE_BITS},
         time::get_ticks,
-    }, fs::MAX_PATH_LEN, mm::{KernelAddr, MapPermission, PhysPageNum, VirtPageNum, address, memory_set}, utils::{SysErrNo, SyscallRet}
+    }, fs::MAX_PATH_LEN, mm::{PhysPageNum, VirtPageNum}, utils::{SysErrNo, SyscallRet}
 };
 
 use super::{MemorySet, StepByOne, VirtAddr};
-use alloc::{string::String, sync::Arc, vec, vec::Vec};
+use alloc::{string::String, vec, vec::Vec};
 
 use crate::trap::trap_types::*;
-use log::debug;
 
 use crate::arch::page_table::PageTable;
 
@@ -42,154 +41,37 @@ fn translated_user_page(
     }
 }
 
-/// Translate a pointer to a mutable u8 Vec through page table
-pub fn translated_byte_buffer(
-    token: usize,
-    ptr: *const u8,
-    len: usize,
-) -> Option<Vec<&'static mut [u8]>> {
-    let page_table = PageTable::from_token(token);
-    let mut start = ptr as usize;
-    let end = start + len;
-    let mut v = Vec::new();
-    while start < end {
-        let start_va = VirtAddr::from(start);
-        let mut vpn = start_va.floor();
-        let ppn = match page_table.translate(vpn) {
-            None => {
-                // debug!("vpn {:#x} not found", vpn.0);
-                return None;
-            }
-            Some(ppn) => ppn,
-        };
-        vpn.step();
-        let mut end_va: VirtAddr = vpn.into();
-        end_va = end_va.min(VirtAddr::from(end));
-        if end_va.page_offset() == 0 {
-            v.push(&mut ppn.bytes_array_mut()[start_va.page_offset()..]);
-        } else {
-            v.push(&mut ppn.bytes_array_mut()[start_va.page_offset()..end_va.page_offset()]);
-        }
-        start = end_va.into();
-    }
-    Some(v)
-}
-/// Safely Translate a pointer to a mutable u8 Vec through page table
-pub fn safe_translated_byte_buffer(
-    memory_set: &MemorySet,
-    ptr: *const u8,
-    len: usize,
-) -> Option<Vec<&'static mut [u8]>> {
-    let page_table = PageTable::from_token(memory_set.token());
-    let mut start = ptr as usize;
-    let end = checked_user_range(start, len).ok()?;
-    let mut v = Vec::new();
-    while start < end {
-        let start_va = VirtAddr::from(start);
-        let mut vpn = start_va.floor();
-        let ppn = translated_user_page(
-            memory_set,
-            &page_table,
-            vpn,
-            Trap::Exception(Exception::StorePageFault),
-        )?;
-        vpn.step();
-        let mut end_va: VirtAddr = vpn.into();
-        end_va = end_va.min(VirtAddr::from(end));
-        if end_va.page_offset() == 0 {
-            v.push(&mut ppn.bytes_array_mut()[start_va.page_offset()..]);
-        } else {
-            v.push(&mut ppn.bytes_array_mut()[start_va.page_offset()..end_va.page_offset()]);
-        }
-        start = end_va.into();
-    }
-    Some(v)
-}
-
-#[allow(unused)]
-///Translate a generic through page table and return a reference
-pub fn translated_ref<T>(token: usize, ptr: *const T) -> &'static T {
-    let page_table = PageTable::from_token(token);
-    let va = ptr as usize;
-    KernelAddr::from(page_table.translate_va(VirtAddr::from(va)).unwrap()).as_ref()
-}
-
-///Translate a generic through page table and return a mutable reference
-pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
-    let page_table = PageTable::from_token(token);
-    let va = ptr as usize;
-    KernelAddr::from(page_table.translate_va(VirtAddr::from(va)).unwrap()).as_mut()
-}
-
-/// 从 `token` 地址空间 `ptr` 处读取数据（fallible 版本）。
-/// 如果地址无法翻译或跨页，返回 `None` 而不是 panic。
-pub fn try_get_data<T: 'static + Copy>(token: usize, ptr: *const T) -> Option<T> {
-    let page_table = PageTable::from_token(token);
-    let va = match VirtAddr::try_from(ptr as usize) {
-        Some(v) => v,
-        None => return None, // non-canonical VA (e.g. corrupted robust list pointer)
-    };
-    // 对齐检查
-    if ptr as usize % core::mem::align_of::<T>() != 0 {
-        return None;
-    }
-    let pa = page_table.translate_va(va)?;
-    let size = core::mem::size_of::<T>();
-    // 若数据跨页，逐个字节翻译
-    if (pa + size - 1).floor() != pa.floor() {
-        let mut bytes = vec![0u8; size];
-        let mut cur_va = va;
-        for i in 0..size {
-            let byte_pa = page_table.translate_va(cur_va)?;
-            bytes[i] = *KernelAddr::from(byte_pa).as_ref();
-            cur_va = cur_va + 1;
-        }
-        Some(unsafe { *(bytes.as_slice().as_ptr() as usize as *const T) })
-    } else {
-        Some(*KernelAddr::from(pa).as_ref::<T>())
-    }
-}
-
-/// 从 `token` 地址空间 `ptr` 处读取数据，
-/// 其中虚拟地址 `ptr` 解析得到的物理地址可以跨页。
+/// 安全地从用户空间复制任意类型 T 的值到内核空间。
 ///
-/// 类型 `T` 需实现 Copy trait
-pub fn get_data<T: 'static + Copy>(token: usize, ptr: *const T) -> T {
-    let page_table = PageTable::from_token(token);
-    let mut va = VirtAddr::from(ptr as usize);
-    let pa = page_table.translate_va(va).unwrap();
-    let size = core::mem::size_of::<T>();
-    // 若数据跨页，则转换成字节数据写入
-    if (pa + size - 1).floor() != pa.floor() {
-        let mut bytes = vec![0u8; size];
-        for i in 0..size {
-            bytes[i] = *(page_table.translate_va(va).unwrap().as_ref());
-            va = va + 1;
-        }
-        unsafe { *(bytes.as_slice().as_ptr() as usize as *const T) }
-    } else {
-        *translated_ref(token, ptr)
-    }
+/// 底层调用 `copy_from_user`，自动处理跨页、延迟页分配等。
+/// 成功返回 `Ok(T)`，失败返回 `Err(EFAULT)`。
+pub fn copy_from_user_val<T: Sized>(memory_set: &MemorySet, src: *const T) -> Result<T, SysErrNo> {
+    let mut val: core::mem::MaybeUninit<T> = core::mem::MaybeUninit::uninit();
+    let dst_slice = unsafe {
+        core::slice::from_raw_parts_mut(val.as_mut_ptr() as *mut u8, core::mem::size_of::<T>())
+    };
+    copy_from_user(memory_set, src as usize, dst_slice)?;
+    Ok(unsafe { val.assume_init() })
 }
 
-/// 将数据 `data` 写入 `token` 地址空间 `ptr` 处，
-/// 其中虚拟地址 `ptr` 解析得到的物理地址可以跨页
-pub fn put_data<T: 'static>(token: usize, ptr: *mut T, data: T) {
-    let page_table = PageTable::from_token(token);
-    let mut va = VirtAddr::from(ptr as usize);
-    let pa = page_table.translate_va(va).unwrap();
-    let size = core::mem::size_of::<T>();
-    // 若数据跨页，则转换成字节数据写入
-    if (pa + size - 1).floor() != pa.floor() {
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&data as *const _ as usize as *const u8, size) };
-        for i in 0..size {
-            *(page_table.translate_va(va).unwrap().as_mut()) = bytes[i];
-            va = va + 1;
-        }
-    } else {
-        *translated_refmut(token, ptr) = data;
-    }
+/// 安全地从内核空间复制任意类型 T 的值到用户空间。
+///
+/// 底层调用 `copy_to_user`，自动处理跨页、延迟页分配等。
+/// 成功返回 `Ok(())`，失败返回 `Err(EFAULT)`。
+pub fn copy_to_user_val<T: Sized>(memory_set: &MemorySet, dst: *mut T, val: &T) -> Result<(), SysErrNo> {
+    let src_slice = unsafe {
+        core::slice::from_raw_parts(val as *const T as *const u8, core::mem::size_of::<T>())
+    };
+    copy_to_user(memory_set, dst as usize, src_slice)?;
+    Ok(())
+}
+
+/// 可失败地从用户空间复制任意类型 T 的值到内核空间。
+///
+/// 与 `copy_from_user_val` 相同，但返回 `Option<T>` 以兼容原有 `try_get_data` 的调用风格。
+/// 用于 futex 等需要在用户内存可能被部分 unmap 时优雅降级的场景。
+pub fn try_copy_from_user_val<T: Sized>(memory_set: &MemorySet, src: *const T) -> Option<T> {
+    copy_from_user_val(memory_set, src).ok()
 }
 
 /// 将数据从用户空间安全地复制到内核空间
@@ -343,6 +225,72 @@ pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, 
     Ok(String::from(
         core::str::from_utf8(&dst_str).unwrap_or(""),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers for mm-crate use (pages guaranteed mapped)
+// ---------------------------------------------------------------------------
+
+/// Internal: read bytes from user memory via page table.
+/// Pages must already be mapped (used in writeback scenarios).
+pub(crate) fn read_user_bytes_direct(token: usize, src: usize, len: usize) -> Option<Vec<u8>> {
+    if len == 0 {
+        return Some(Vec::new());
+    }
+    let page_table = PageTable::from_token(token);
+    let mut buf = vec![0u8; len];
+    let mut cur_src = src;
+    let end = src + len;
+    let mut cur_dst = 0;
+    while cur_src < end {
+        let start_va = VirtAddr::from(cur_src);
+        let vpn = start_va.floor();
+        let ppn = page_table.translate(vpn)?;
+        let next_page_va = ((vpn.0 + 1) << PAGE_SIZE_BITS) as usize;
+        let copy_len = (end - cur_src).min(next_page_va - cur_src);
+        let src_slice =
+            &ppn.bytes_array()[start_va.page_offset()..start_va.page_offset() + copy_len];
+        buf[cur_dst..cur_dst + copy_len].copy_from_slice(src_slice);
+        cur_src += copy_len;
+        cur_dst += copy_len;
+    }
+    Some(buf)
+}
+
+/// Internal: write bytes to user memory via page table.
+/// Pages must already be mapped (used in page-fault scenarios).
+pub(crate) fn write_user_bytes_direct(token: usize, dst: usize, src: &[u8]) -> Option<()> {
+    let len = src.len();
+    if len == 0 {
+        return Some(());
+    }
+    let page_table = PageTable::from_token(token);
+    let mut cur_dst = dst;
+    let end = dst + len;
+    let mut cur_src = 0;
+    while cur_dst < end {
+        let start_va = VirtAddr::from(cur_dst);
+        let vpn = start_va.floor();
+        let ppn = page_table.translate(vpn)?;
+        let next_page_va = ((vpn.0 + 1) << PAGE_SIZE_BITS) as usize;
+        let copy_len = (end - cur_dst).min(next_page_va - cur_dst);
+        let dst_slice =
+            &mut ppn.bytes_array_mut()[start_va.page_offset()..start_va.page_offset() + copy_len];
+        dst_slice.copy_from_slice(&src[cur_src..cur_src + copy_len]);
+        cur_dst += copy_len;
+        cur_src += copy_len;
+    }
+    Some(())
+}
+
+/// 从内核分配的缓冲区创建 UserBuffer。
+///
+/// # Safety
+/// 调用者必须确保 `buf` 的生命周期长于返回的 `UserBuffer` 的使用期。
+pub unsafe fn user_buffer_from_kernel(buf: &mut [u8]) -> UserBuffer {
+    let len = buf.len();
+    let ptr = buf.as_mut_ptr();
+    UserBuffer::new(vec![core::slice::from_raw_parts_mut(ptr, len)])
 }
 
 ///Array of u8 slice that user communicate with os

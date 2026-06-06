@@ -1,6 +1,7 @@
 // Page Fault Handler 回调
 
 use alloc::sync::Arc;
+use alloc::vec;
 use log::{debug, warn};
 
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
 };
 
 use super::group::GROUP_SHARE;
-use super::{translated_byte_buffer, MapArea, UserBuffer, VirtAddr};
+use super::{write_user_bytes_direct, user_buffer_from_kernel, MapArea, UserBuffer, VirtAddr};
 use crate::arch::page_table::PageTable;
 
 ///mmap写触发的lazy alocation，直接新分配帧
@@ -33,10 +34,10 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
         SEEK_SET,
     )
     .expect("mmap_write_page_fault should not fail");
-    file.read(UserBuffer {
-        buffers: translated_byte_buffer(page_table.token(), va as *const u8, PAGE_SIZE).unwrap(),
-    })
-    .expect("mmap_write_page_fault should not fail");
+    let mut kernel_buf = vec![0u8; PAGE_SIZE];
+    let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+    file.read(buf).expect("mmap_write_page_fault should not fail");
+    write_user_bytes_direct(page_table.token(), va as usize, &kernel_buf);
     file.lseek(old_offset as isize, SEEK_SET)
         .expect("mmap_write_page_fault should not fail");
     //设置为cow

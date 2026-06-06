@@ -2,7 +2,7 @@
 // StarryOS 原先的实现过于简单，实际linux实现相当复杂
 // 以下根据 StarryOS 原先 net 模块的实现进行扩充
 use crate::fs::Socket;
-use crate::mm::{copy_from_user, copy_to_user, safe_translated_byte_buffer, UserBuffer};
+use crate::mm::{copy_from_user, copy_to_user, user_buffer_from_kernel, UserBuffer};
 use crate::net::{
     CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps,
 };
@@ -153,11 +153,13 @@ fn read_iovecs(msg: &msghdr) -> SysResult<Vec<iovec>> {
     Ok(iovs)
 }
 
-fn iovecs_to_user_buffer(iovs: &[iovec]) -> SysResult<UserBuffer> {
+fn iovecs_to_buf_and_ub(iovs: &[iovec]) -> SysResult<(Vec<u8>, UserBuffer)> {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_read();
-    let mut slices = Vec::new();
+    let total_len: usize = iovs.iter().map(|i| i.iov_len as usize).sum();
+    let mut kernel_buf = vec![0u8; total_len];
+    let mut offset = 0;
     for iov in iovs {
         let len = iov.iov_len as usize;
         if len == 0 {
@@ -166,11 +168,12 @@ fn iovecs_to_user_buffer(iovs: &[iovec]) -> SysResult<UserBuffer> {
         if iov.iov_base.is_null() {
             return Err(SysErrNo::EFAULT);
         }
-        let buffers = safe_translated_byte_buffer(&memory_set, iov.iov_base as *const u8, len)
-            .ok_or(SysErrNo::EFAULT)?;
-        slices.extend(buffers);
+        copy_from_user(&memory_set, iov.iov_base as usize, &mut kernel_buf[offset..offset + len])
+            .map(|_| ())?;
+        offset += len;
     }
-    Ok(UserBuffer::new(slices))
+    let ub = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+    Ok((kernel_buf, ub))
 }
 
 fn parse_cmsgs(msg: &msghdr) -> SysResult<Vec<CMsgData>> {
@@ -224,18 +227,20 @@ pub fn sys_sendto(
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_read();
-    let buffer = UserBuffer::new(
-        safe_translated_byte_buffer(&memory_set, buf, len).ok_or(SysErrNo::EFAULT)?,
-    );
+    let mut kernel_buf = vec![0u8; len];
+    copy_from_user(&memory_set, buf as usize, &mut kernel_buf)?;
+    let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
     drop(memory_set);
     drop(process);
-    send_impl(sockfd, buffer, flags, dest_addr, addrlen, Vec::new())
+    let ret = send_impl(sockfd, buffer, flags, dest_addr, addrlen, Vec::new());
+    drop(kernel_buf);
+    ret
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/sendmsg.2.html
 pub fn sys_sendmsg(sockfd: usize, msg_ptr: *const msghdr, flags: u32) -> SyscallRet {
     let msg = copy_msghdr_from_user(msg_ptr)?;
-    let user_buffer = iovecs_to_user_buffer(&read_iovecs(&msg)?)?;
+    let (_kernel_buf, user_buffer) = iovecs_to_buf_and_ub(&read_iovecs(&msg)?)?;
     let cmsgs = parse_cmsgs(&msg)?;
     send_impl(
         sockfd,
@@ -292,19 +297,20 @@ pub fn sys_recvfrom(
     addrlen_ptr: *mut socklen_t,
 ) -> SyscallRet {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let process = task.process.inner_lock();
-    let memory_set = process.get_locked_memory_set_read();
-    let buffer = UserBuffer::new(
-        safe_translated_byte_buffer(&memory_set, buf, len).ok_or(SysErrNo::EFAULT)?,
-    );
-    drop(memory_set);
-    drop(process);
+    let mut kernel_buf = vec![0u8; len];
+    let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
     let mut addrlen = if src_addr.is_null() || addrlen_ptr.is_null() {
         None
     } else {
         Some(copy_socklen_from_user(addrlen_ptr as *const socklen_t)?)
     };
     let recv = recv_impl(sockfd, buffer, flags, src_addr, addrlen.as_mut())?;
+    // Write received data back to user space
+    {
+        let process = task.process.inner_lock();
+        let memory_set = process.get_locked_memory_set_read();
+        copy_to_user(&memory_set, buf as usize, &kernel_buf[..recv])?;
+    }
     if let Some(addrlen) = addrlen {
         copy_socklen_to_user(addrlen_ptr, addrlen)?;
     }
@@ -314,7 +320,7 @@ pub fn sys_recvfrom(
 /// 参考 https://man7.org/linux/man-pages/man2/recvmsg.2.html
 pub fn sys_recvmsg(sockfd: usize, msg_ptr: *mut msghdr, flags: u32) -> SyscallRet {
     let mut msg = copy_msghdr_from_user(msg_ptr as *const msghdr)?;
-    let user_buffer = iovecs_to_user_buffer(&read_iovecs(&msg)?)?;
+    let (_kernel_buf, user_buffer) = iovecs_to_buf_and_ub(&read_iovecs(&msg)?)?;
 
     let mut msg_namelen = if msg.msg_name.is_null() {
         0

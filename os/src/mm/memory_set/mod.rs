@@ -16,7 +16,7 @@ mod mmap_ops;
 use super::group::GROUP_SHARE;
 use super::map_area::MapType;
 use super::{
-    translated_byte_buffer, FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer,
+    read_user_bytes_direct, user_buffer_from_kernel, FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer,
     VPNRange, VirtAddr, VirtPageNum,
 };
 use crate::arch::memory_layout::{KERNEL_ADDR_OFFSET, MMAP_TOP, PAGE_SIZE, USER_HEAP_SIZE};
@@ -492,12 +492,13 @@ impl MemorySetInner {
                             .filter(|vpn| area.data_frames.contains_key(&vpn))
                             .count()
                             * PAGE_SIZE;
-                        if let Some(buffers) = translated_byte_buffer(
+                        if let Some(mut kernel_buf) = read_user_bytes_direct(
                             self.page_table.token(),
-                            addr.0 as *const u8,
+                            addr.0 as usize,
                             mapped_len,
                         ) {
-                            file.write(UserBuffer { buffers })?;
+                            let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+                            file.write(buf)?;
                         }
                     }
                 }

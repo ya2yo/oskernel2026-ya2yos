@@ -1,8 +1,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    arch::page_table::PageTable,
-    mm::{PhysAddr, VirtAddr, copy_from_user, get_data, put_data, translate_user_va_safe, try_get_data},
+    mm::{MemorySet, VirtAddr, copy_from_user, copy_from_user_val, copy_to_user_val, translate_user_va_safe, try_copy_from_user_val},
     syscall::{FutexCmd, FutexOpt},
     task::{RobustListHead, tid_to_task},
     timer::{Timespec, add_futex_timer, get_time_spec},
@@ -234,7 +233,6 @@ pub fn sys_futex(
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_read();
     let task_inner = task.inner_lock();
-    let token = memory_set.token();
 
     // 安全地将用户 VA 转为 PA：先通过 copy_from_user 触发延迟页分配，
     // 确保页面已映射后再查询页表，避免在未分配页面上 panic
@@ -285,16 +283,19 @@ pub fn sys_futex(
         opt
     );
 
+    // 在释放锁之前检查 futex 值（Wait/WaitBitset 需要原子性检查）
+    if matches!(cmd, FutexCmd::Wait | FutexCmd::WaitBitset) {
+        let current_val: i32 = copy_from_user_val(&memory_set, uaddr)?;
+        if current_val != val {
+            return Err(SysErrNo::EAGAIN);
+        }
+    }
+
     drop(memory_set);
     drop(task_inner);
     drop(process);
     match cmd {
         FutexCmd::Wait | FutexCmd::WaitBitset => {
-            // 理论上，既然会进入到这里，那么，用户态程序应该是获取锁失败了
-            // 在这里做出检查：取出uaddr的值，看看到底是不是!=val
-            if try_get_data(token, uaddr).ok_or(SysErrNo::EFAULT)? != val {
-                return Err(SysErrNo::EAGAIN);
-            }
             let bitset = if cmd == FutexCmd::Wait {
                 u32::MAX
             } else {
@@ -342,11 +343,11 @@ pub fn sys_futex(
 ///  2. if `(uval & TID_MASK) != pid` → not ours, return false
 ///  3. write `(uval & WAITERS) | OWNER_DIED`
 ///  4. re-read to verify → if someone raced with us, go to 1.
-fn handle_futex_death_entry(uaddr: usize, token: usize, pid: usize) -> bool {
-    debug!("[handle_futex_death_entry] uaddr={:#x}, token={}, pid={}", uaddr, token, pid);
+fn handle_futex_death_entry(uaddr: usize, memory_set: &MemorySet, pid: usize) -> bool {
+    debug!("[handle_futex_death_entry] uaddr={:#x}, pid={}", uaddr, pid);
     loop {
         // ---- read current futex word ----
-        let uval: u32 = match try_get_data(token, uaddr as *const u32) {
+        let uval: u32 = match try_copy_from_user_val(memory_set, uaddr as *const u32) {
             Some(v) => v,
             None => {
                 debug!("[handle_futex_death_entry] uaddr {:#x} is unmapped, skip", uaddr);
@@ -360,9 +361,9 @@ fn handle_futex_death_entry(uaddr: usize, token: usize, pid: usize) -> bool {
         // Preserve the WAITERS bit, set OWNER_DIED, clear TID.
         let newval: u32 = (uval & FUTEX_WAITERS) | FUTEX_OWNER_DIED;
         // ---- write back ----
-        put_data(token, uaddr as *mut u32, newval);
+        let _ = copy_to_user_val(memory_set, uaddr as *mut u32, &newval);
         // ---- verify (poor-man's cmpxchg) ----
-        let after: u32 = match try_get_data(token, uaddr as *const u32) {
+        let after: u32 = match try_copy_from_user_val(memory_set, uaddr as *const u32) {
             Some(v) => v,
             None => {
                 debug!("[handle_futex_death_entry] uaddr {:#x} became unmapped, skip", uaddr);
@@ -375,9 +376,8 @@ fn handle_futex_death_entry(uaddr: usize, token: usize, pid: usize) -> bool {
         }
         // ---- wake one waiter if there were any ----
         if uval & FUTEX_WAITERS != 0 {
-            let page_table = PageTable::from_token(token);
-            if let Some(pa) = page_table.translate_va(VirtAddr::from(uaddr)) {
-                futex_wake_up(pa.0, 1);
+            if let Ok(pa) = translate_user_va_safe(memory_set, VirtAddr::from(uaddr)) {
+                futex_wake_up(pa, 1);
             }
         }
 
@@ -399,7 +399,7 @@ fn handle_futex_death_entry(uaddr: usize, token: usize, pid: usize) -> bool {
 ///   the user-space VA of the list head.
 /// * `token`       – page-table token of the exiting process.
 /// * `pid`         – TID of the exiting thread (used as futex owner id).
-pub fn handle_futex_when_exit(robust_list: &RobustListHead, token: usize, pid: usize) {
+pub fn handle_futex_when_exit(robust_list: &RobustListHead, memory_set: &MemorySet, pid: usize) {
     let head: usize = robust_list.list;// User-space base address of robust_list_head
     if head == 0 {
         debug!("[handle_futex_when_exit] robust_list.list is 0, nothing to do");
@@ -411,16 +411,16 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, token: usize, pid: u
     //   +8  futex_offset       : isize   (signed offset from entry → futex word)
     //   +16 list_op_pending    : usize
     //
-    // Use try_get_data: the process may have been killed by SIGSEGV and
+    // Use try_copy_from_user_val: the process may have been killed by SIGSEGV and
     // its memory may be partially unmapped (e.g. after glibc probing OOM).
-    let futex_offset: isize = match try_get_data(token, (head + 8) as *const isize) {
+    let futex_offset: isize = match try_copy_from_user_val(memory_set, (head + 8) as *const isize) {
         Some(v) => v,
         None => {
             debug!("[handle_futex_when_exit] head+8 unmapped, stopping");
             return;
         }
     };
-    let list_op_pending: usize = match try_get_data(token, (head + 16) as *const usize) {
+    let list_op_pending: usize = match try_copy_from_user_val(memory_set, (head + 16) as *const usize) {
         Some(v) => v,
         None => {
             debug!("[handle_futex_when_exit] head+16 unmapped, stopping");
@@ -438,13 +438,13 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, token: usize, pid: u
             "[handle_futex_when_exit] processing pending entry at {:#x}, futex_word={:#x}",
             list_op_pending, futex_word_addr,
         );
-        handle_futex_death_entry(futex_word_addr, token, pid);
+        handle_futex_death_entry(futex_word_addr, memory_set, pid);
         // Atomically clear list_op_pending so userspace sees we handled it.
-        put_data(token, (head + 16) as *mut usize, 0usize);
+        let _ = copy_to_user_val(memory_set, (head + 16) as *mut usize, &0usize);
     }
     // ---- 2. Walk the circular robust list ----
     // First real entry: head->list.next (= *head because list is at offset 0).
-    let mut entry: usize = match try_get_data(token, head as *const usize) {
+    let mut entry: usize = match try_copy_from_user_val(memory_set, head as *const usize) {
         Some(v) => v,
         None => {
             debug!("[handle_futex_when_exit] head unmapped, stopping");
@@ -456,7 +456,7 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, token: usize, pid: u
         limit -= 1;
         // Read the next pointer from the current entry.
         // Bit 0 is the "list-op-pending" marker – mask it off.
-        let raw_next: usize = match try_get_data(token, entry as *const usize) {
+        let raw_next: usize = match try_copy_from_user_val(memory_set, entry as *const usize) {
             Some(v) => v,
             None => {
                 debug!(
@@ -473,7 +473,7 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, token: usize, pid: u
             "[handle_futex_when_exit] entry={:#x}, futex_word={:#x}, next={:#x}",
             entry, futex_word_addr, next,
         );
-        handle_futex_death_entry(futex_word_addr, token, pid);
+        handle_futex_death_entry(futex_word_addr, memory_set, pid);
         entry = next;
     }
     if limit == 0 {
@@ -511,11 +511,13 @@ pub fn handle_timer(task: Arc<TaskControlBlock>, futex_key: usize) {
     }
 }
 
-/// 处理 sigtimedwait 超时：标记超时并唤醒任务
+/// 处理 sigtimedwait 超时：标记超时并通过 interrupt 唤醒 block_on 中的 poll_fn
 pub fn handle_sigtimedwait_timer(task: Arc<TaskControlBlock>) {
     {
         let mut inner = task.inner_lock();
         inner.sigtimedwait_timedout = true;
     }
-    wakeup_futex_task(task);
+    // 使用 interrupt() 而非 wakeup_futex_task()：block_on + poll_fn 通过
+    // interrupt_waker 注册了 waker，interrupt() 会触发它唤醒 block_on 循环。
+    task.interrupt();
 }

@@ -1,15 +1,16 @@
+use core::{future::poll_fn, task::Poll};
+
 use alloc::sync::Arc;
 use log::{debug, error};
 
 use crate::{
     mm::{copy_from_user, copy_to_user},
     signal::{
-        KSigAction, SIG_MAX_NUM, SigAction, SigInfo, SigSet, restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group, send_signal_to_thread_of_proc,
-        SIGKILL, SIGSTOP,
+        KSigAction, SIG_MAX_NUM, SIGKILL, SIGSTOP, SigAction, SigInfo, SigSet, restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group, send_signal_to_thread_of_proc
     },
     syscall::SignalMaskFlag,
-    task::{block_current_and_run_next, current_task, exit_current_and_run_next, suspend_current_and_run_next},
-    timer::{add_sigtimedwait_timer, get_time_spec, Timespec},
+    task::{block_on, current_task, exit_current_and_run_next, suspend_current_and_run_next},
+    timer::{Timespec, add_sigtimedwait_timer, get_time_spec},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -149,7 +150,6 @@ pub fn sys_rt_sigtimedwait(
         let task = current_task().unwrap();
         task.inner_lock().sigtimedwait_timedout = false;
     }
-
     // 从用户空间拷贝信号集和超时参数（需要先获取 memory_set）
     let sigset = {
         let task = current_task().unwrap();
@@ -165,7 +165,6 @@ pub fn sys_rt_sigtimedwait(
                 )
             })?;
         }
-
         // 处理超时参数并注册定时器
         if !timeout_ptr.is_null() {
             if timeout_ptr as usize == usize::MAX {
@@ -186,30 +185,27 @@ pub fn sys_rt_sigtimedwait(
             let task = current_task().unwrap();
             add_sigtimedwait_timer(expire_time, &task);
         }
-
         sigset
     };
     // memory_set 和 proc_inner 已在这里 drop，后续不需要再持有进程锁
-
-    loop {
+    block_on(poll_fn(|cx| {
         let task = current_task().unwrap();
         let mut task_inner = task.inner_lock();
+
+        // 注册 waker：定时器到期时通过 task.interrupt() 唤醒
+        task.interrupt_waker.register(cx.waker());
 
         // 检查是否因超时被唤醒
         if task_inner.sigtimedwait_timedout {
             task_inner.sigtimedwait_timedout = false;
             drop(task_inner);
-            return Err(SysErrNo::EAGAIN);
+            return Poll::Ready(Err(SysErrNo::EAGAIN));
         }
 
-        // 查找 sigset 中尚未被屏蔽的待处理信号
-        let unmasked_pending = task_inner
-            .sig_pending
-            .difference(task_inner.sig_mask);
-
-        // 与请求的 sigset 取交集
-        let matched = sigset & unmasked_pending;
-
+        // 查找 sigset 中已有的待处理信号（不检查 sig_mask；
+        // POSIX 要求调用前已将 set 中的信号 block，故 pending 中的
+        // 目标信号必然被屏蔽，不应被 difference 排除）
+        let matched = sigset & task_inner.sig_pending;
         if !matched.is_empty() {
             // 取出编号最小的匹配信号
             let signo = matched.peek_front().unwrap();
@@ -235,12 +231,12 @@ pub fn sys_rt_sigtimedwait(
             }
 
             drop(task_inner);
-            return Ok(signo);
+            return Poll::Ready(Ok(signo));
         }
+
         drop(task_inner);
-        drop(task);
-        block_current_and_run_next();
-    }
+        Poll::Pending
+    }))
 }
 
 /// 暂时将调用线程的信号掩码替换为 mask 给出的掩码，然后暂停线程，直到传递信号，

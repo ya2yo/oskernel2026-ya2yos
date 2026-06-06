@@ -3,13 +3,14 @@ use log::{debug, warn};
 
 use crate::{
     fs::{InodeType, NONE_MODE, OpenFlags, open, open_device_file},
-    mm::{UserBuffer, copy_from_user, copy_to_user, if_bad_address, read_user_cstr, safe_translated_byte_buffer},
+    mm::{UserBuffer, copy_from_user, copy_to_user, if_bad_address, read_user_cstr, user_buffer_from_kernel},
     syscall::Utsname,
     task::{Sysinfo, current_task, tid_to_task},
     timer::get_time_ms,
     utils::{SysErrNo, SyscallRet},
 };
 use alloc::sync::Arc;
+use alloc::vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 // ---------------------------------------------------------------------------
@@ -528,9 +529,13 @@ pub fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRe
         return Err(SysErrNo::EINVAL);
     }
 
-    open_device_file("/dev/random")?.read(UserBuffer::new(
-        safe_translated_byte_buffer(&memory_set, buf_ptr, buflen).ok_or(SysErrNo::EFAULT)?,
-    ))
+    {
+        let mut kernel_buf = vec![0u8; buflen];
+        let ub = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+        let read_len = open_device_file("/dev/random")?.read(ub)?;
+        copy_to_user(&memory_set, buf_ptr as usize, &kernel_buf[..read_len])?;
+        Ok(read_len)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -904,20 +909,9 @@ pub fn sys_setdomainname(name: *const u8, len: usize) -> SyscallRet {
             return Err(SysErrNo::EFAULT);
         }
 
-        let bufs = safe_translated_byte_buffer(&memory_set, name as *mut u8, len)
-            .ok_or(SysErrNo::EFAULT)?;
-
         let mut dn = DOMAIN_NAME.lock();
         dn.fill(0);
-        let mut copied = 0usize;
-        for buf_slice in bufs {
-            let to_copy = core::cmp::min(buf_slice.len(), len - copied);
-            dn[copied..copied + to_copy].copy_from_slice(&buf_slice[..to_copy]);
-            copied += to_copy;
-            if copied >= len {
-                break;
-            }
-        }
+        copy_from_user(&memory_set, name as usize, &mut dn[..len])?;
         DOMAIN_NAME_INIT.store(true, Ordering::Relaxed);
     } else {
         // len == 0: 清除 domainname

@@ -18,7 +18,7 @@ use crate::{
         DEFAULT_FILE_MODE,
     },
     mm::{
-        copy_to_user, get_data, put_data, translated_refmut,
+        copy_to_user, copy_to_user_val,
         MapAreaType, MapPermission, MemorySet, MemorySetInner, PhysPageNum, VirtAddr,
     },
     signal::{SigSet, SigTable, SIGCHLD},
@@ -246,7 +246,6 @@ impl TaskControlBlock {
                 error!("exec: OOM during ELF load");
             })?;
         debug!("exec: return from from_elf");
-        let token = memory_set.token();
         let memory_set = MemorySet::new(memory_set);
 
         task_inner.time_data.clear();
@@ -306,6 +305,10 @@ impl TaskControlBlock {
         task_inner.sig_mask = SigSet::empty();
         task_inner.sig_pending = SigSet::empty();
 
+        // 获取新地址空间用于栈写入
+        let proc_inner = self.process.inner_lock();
+        let proc_mem = proc_inner.get_locked_memory_set_read();
+
         let mut user_sp = ustack_top;
 
         // println!("user_sp:{:#X}  argv:{:?}", user_sp, argv);
@@ -317,9 +320,9 @@ impl TaskControlBlock {
             envp.push(user_sp);
             // println!("{:#X}:{}", user_sp, env);
             for (j, c) in env.as_bytes().iter().enumerate() {
-                *translated_refmut(token, (user_sp + j) as *mut u8) = *c;
+                copy_to_user_val(&*proc_mem, (user_sp + j) as *mut u8, c).unwrap();
             }
-            *translated_refmut(token, (user_sp + env.len()) as *mut u8) = 0;
+            copy_to_user_val(&*proc_mem, (user_sp + env.len()) as *mut u8, &0u8).unwrap();
         }
         envp.push(0);
         user_sp -= user_sp % size_of::<usize>();
@@ -332,10 +335,10 @@ impl TaskControlBlock {
             argvp.push(user_sp);
             // println!("{:#X}:{}", user_sp, arg);
             for (j, c) in arg.as_bytes().iter().enumerate() {
-                *translated_refmut(token, (user_sp + j) as *mut u8) = *c;
+                copy_to_user_val(&*proc_mem, (user_sp + j) as *mut u8, c).unwrap();
             }
             // 添加字符串末尾的 null 字符
-            *translated_refmut(token, (user_sp + arg.len()) as *mut u8) = 0;
+            copy_to_user_val(&*proc_mem, (user_sp + arg.len()) as *mut u8, &0u8).unwrap();
         }
         user_sp -= user_sp % size_of::<usize>(); //以8字节对齐
         argvp.push(0);
@@ -344,7 +347,7 @@ impl TaskControlBlock {
         user_sp -= 16;
         auxv.push(Aux::new(AuxType::RANDOM, user_sp));
         for i in 0..0xf {
-            *translated_refmut(token, (user_sp + i) as *mut u8) = i as u8;
+            copy_to_user_val(&*proc_mem, (user_sp + i) as *mut u8, &(i as u8)).unwrap();
         }
         user_sp -= user_sp % 16;
 
@@ -355,8 +358,8 @@ impl TaskControlBlock {
         for aux in auxv.iter().rev() {
             // println!("{:?}", aux);
             user_sp -= size_of::<Aux>();
-            *translated_refmut(token, user_sp as *mut usize) = aux.aux_type as usize;
-            *translated_refmut(token, (user_sp + size_of::<usize>()) as *mut usize) = aux.value;
+            copy_to_user_val(&*proc_mem, user_sp as *mut usize, &(aux.aux_type as usize)).unwrap();
+            copy_to_user_val(&*proc_mem, (user_sp + size_of::<usize>()) as *mut usize, &aux.value).unwrap();
         }
 
         //将环境变量指针数组放入栈中
@@ -364,11 +367,11 @@ impl TaskControlBlock {
         user_sp -= envp.len() * size_of::<usize>();
         let envp_base = user_sp;
         for (i, data) in envp.iter().enumerate() {
-            put_data(
-                token,
+            copy_to_user_val(
+                &*proc_mem,
                 (user_sp + i * size_of::<usize>()) as *mut usize,
-                *data,
-            );
+                data,
+            ).unwrap();
         }
 
         // println!("arg pointers:");
@@ -376,23 +379,23 @@ impl TaskControlBlock {
         let argv_base = user_sp;
         //将参数指针数组放入栈中
         for (i, &data) in argvp.iter().enumerate() {
-            put_data(
-                token,
+            copy_to_user_val(
+                &*proc_mem,
                 (user_sp + i * size_of::<usize>()) as *mut usize,
-                data,
-            );
+                &data,
+            ).unwrap();
         }
 
         //将argc放入栈中
         user_sp -= size_of::<usize>();
-        *translated_refmut(token, user_sp as *mut usize) = argv.len();
+        copy_to_user_val(&*proc_mem, user_sp as *mut usize, &argv.len()).unwrap();
 
         //以8字节对齐
         user_sp -= user_sp % size_of::<usize>();
         //println!("user_sp:{:#X}", user_sp);
 
         // 将设置了O_CLOEXEC位的文件描述符关闭
-        self.get_fd_table().close_on_exec();
+        proc_inner.fd_table.close_on_exec();
 
         let mut trap_cx =
             TrapContext::app_init_context(entry_point, user_sp, self.kernel_stack.top());
@@ -414,50 +417,46 @@ impl TaskControlBlock {
         child_tid: *mut u32,
     ) -> Result<Arc<TaskControlBlock>, SysErrNo> {
         let parent_inner = self.inner.lock();
-
+        let parent_proc_inner = self.process.inner_lock();
         let tid_handle = TidHandle::alloc().unwrap();
         let kernel_stack = KernelStackOnHeap::new();
         let kernel_stack_top = kernel_stack.top();
         debug!("TCB::new kstack top = {:#x}", kernel_stack_top);
         // 检查是否共享虚拟内存
         let memory_set = if flags.contains(CloneFlags::CLONE_VM) {
-            self.process.inner.try_lock().unwrap().memory_set.clone()
+            parent_proc_inner.memory_set.clone()
         } else {
             Arc::new(RwLock::new(MemorySet::new(
                 MemorySetInner::from_existed_user(
-                    &self.process.inner_lock().get_locked_memory_set_read(),
+                    &parent_proc_inner.get_locked_memory_set_read(),
                 ),
             )))
         };
         // 检查是否共享文件系统信息
         let fs_info = if flags.contains(CloneFlags::CLONE_FS) {
-            Arc::clone(&self.process.inner_lock().fs_info)
+            Arc::clone(&parent_proc_inner.fs_info)
         } else {
-            Arc::new(FSInfo::from_another(&self.process.inner_lock().fs_info))
+            Arc::new(FSInfo::from_another(&parent_proc_inner.fs_info))
         };
         // 检查是否共享打开文件表
         let fd_table = if flags.contains(CloneFlags::CLONE_FILES) {
-            Arc::clone(&self.process.inner_lock().fd_table)
+            Arc::clone(&parent_proc_inner.fd_table)
         } else {
-            Arc::new(FdTable::from_another(&self.process.inner_lock().fd_table))
+            Arc::new(FdTable::from_another(&parent_proc_inner.fd_table))
         };
         // 检查是否共享信号处理程序表
         let sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
-            self.process.inner.try_lock().unwrap().sig_table.clone()
+            parent_proc_inner.sig_table.clone()
         } else {
             Arc::new(Mutex::new(SigTable::from_another(
-                &self.process.inner_lock().get_locked_sigtable(),
+                &parent_proc_inner.get_locked_sigtable(),
             )))
         };
         // 检查是否需要设置 parent_tid
         if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
-            *translated_refmut(
-                self.process
-                    .inner_lock()
-                    .get_locked_memory_set_read()
-                    .token(),
-                parent_tid,
-            ) = tid_handle.0 as u32;
+            let parent_mem = parent_proc_inner
+                .get_locked_memory_set_read();
+            copy_to_user_val(&*parent_mem, parent_tid, &(tid_handle.0 as u32)).unwrap();
         }
         let clear_child_tid = if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) {
             child_tid as usize
@@ -550,7 +549,7 @@ impl TaskControlBlock {
             child_inner.trap_cx().set_a0(0);
         } else {
             // fork
-            let process = &self.process.inner_lock();
+            let process = &parent_proc_inner;
             let another = &*process.get_locked_memory_set_read();
             child.alloc_user_res(&mut child_inner);
             *child_inner.trap_cx() = *parent_inner.trap_cx();
@@ -589,13 +588,12 @@ impl TaskControlBlock {
         }
         // CLONE_CHILD_SETTID
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-            let child_token = child
-                .process
-                .inner_lock()
-                .get_locked_memory_set_read()
-                .token();
-            *translated_refmut(child_token, child_tid) = child.tid() as u32;
+            let child_mem = parent_proc_inner
+                .get_locked_memory_set_read();
+            copy_to_user_val(&*child_mem, child_tid, &(child.tid() as u32)).unwrap();
         }
+        drop(memory_set);
+        drop(parent_proc_inner);
         drop(parent_inner);
         // 设置 exit_signal：普通 fork 带 SIGCHLD 则退出时通知父进程，
         // clone/thread 不带 SIGCHLD 则不发送信号

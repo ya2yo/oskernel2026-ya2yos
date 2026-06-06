@@ -19,7 +19,7 @@ use log::warn;
 
 use crate::{
     fs::{DummyFd, FileDescriptor, FileClass, InotifyFd, OpenFlags, File},
-    mm::{UserBuffer, copy_from_user, safe_translated_byte_buffer},
+    mm::{UserBuffer, copy_from_user, read_user_cstr},
     syscall::options::Iovec,
     task::current_task,
     utils::{SysErrNo, SyscallRet},
@@ -82,19 +82,12 @@ pub fn sys_inotify_add_watch(fd: c_int, path: *const u8, mask: u32) -> SyscallRe
     let fd = fd as usize;
     let inotify = InotifyFd::lookup(fd)?;
 
-    // 从用户空间读取路径字符串（最多 4096 字节含 '\0'）
+    // 从用户空间读取路径字符串
     let path_str = {
         let task = current_task().unwrap();
         let process = task.process.inner_lock();
         let memory_set = process.get_locked_memory_set_read();
-        let buf = safe_translated_byte_buffer(&memory_set, path, 4096).unwrap();
-        let buf = UserBuffer::new(buf);
-        let max_len = buf.len();
-        let mut raw = vec![0u8; max_len];
-        let read_len = buf.read_to(&mut raw);
-        // 找到 '\0' 终止符
-        let end = raw[..read_len].iter().position(|&b| b == 0).unwrap_or(read_len);
-        String::from_utf8_lossy(&raw[..end]).into_owned()
+        read_user_cstr(&memory_set, path)?
     };
 
     if mask == 0 {
@@ -232,13 +225,9 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
         if iovinfo.iov_len == 0 {
             continue;
         }
-        // 翻译用户空间地址，逐个片段复制
-        let buf_slices =
-            safe_translated_byte_buffer(&memory_set, iovinfo.iov_base as *mut u8, iovinfo.iov_len)
-                .ok_or(SysErrNo::EFAULT)?;
-        for slice in buf_slices {
-            kernel_buf.extend_from_slice(slice);
-        }
+        let offset = kernel_buf.len();
+        kernel_buf.resize(offset + iovinfo.iov_len, 0);
+        copy_from_user(&memory_set, iovinfo.iov_base as usize, &mut kernel_buf[offset..])?;
     }
 
     // 释放锁，避免 pipe write 阻塞时死锁

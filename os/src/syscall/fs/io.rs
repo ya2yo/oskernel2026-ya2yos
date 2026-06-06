@@ -4,7 +4,7 @@ use log::{debug, warn};
 use crate::{
     fs::{DummyFd, FdTable, File, FileDescriptor, OpenFlags, SEEK_CUR, SEEK_SET},
     mm::{
-        UserBuffer, copy_from_user, copy_to_user, safe_translated_byte_buffer,
+        UserBuffer, copy_from_user, copy_to_user, user_buffer_from_kernel,
     },
     syscall::{fs::dummyfd_create, options::Iovec},
     task::current_task,
@@ -26,8 +26,9 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     if let Some(f) = fd_table.try_get_file(fd) {
         let process = task.process.inner_lock();
         let memory_set = process.get_locked_memory_set_read();
-        let buffer = safe_translated_byte_buffer(&*memory_set, buf, len).unwrap();
-        let buffer = UserBuffer::new(buffer);
+        let mut kernel_buf = vec![0u8; len];
+        copy_from_user(&*memory_set, buf as usize, &mut kernel_buf)?;
+        let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
         if !f.writable() {
             return Err(SysErrNo::EBADF);
         }
@@ -53,16 +54,21 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     }
     if let Some(file) = fd_table.try_get_file(fd) {
         let process = task.process.inner_lock();
-        let memory_set = process.get_locked_memory_set_write();
+        let memory_set = process.get_locked_memory_set_read();
         if !file.readable() {
             return Err(SysErrNo::EACCES);
         }
-        // 注意！一些文件的read可能会阻塞，还可能借用task_inner，所以我们应该drop task_inner
-        let buffer = safe_translated_byte_buffer(&*memory_set, buf, len).unwrap();
-        let buffer = UserBuffer::new(buffer);
+        let mut kernel_buf = vec![0u8; len];
+        let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
         drop(memory_set);
         drop(process);
         let ret = file.read(buffer)?;
+        // Write file data back to user space
+        {
+            let proc = task.process.inner_lock();
+            let mem = proc.get_locked_memory_set_read();
+            copy_to_user(&*mem, buf as usize, &kernel_buf[..ret])?;
+        }
         Ok(ret)
     } else {
         Err(SysErrNo::EBADF)
@@ -89,6 +95,7 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
         }
         // release current task TCB manually to avoid multi-borrow
         let iovec_size = core::mem::size_of::<Iovec>();
+        let mut kernel_bufs: Vec<Vec<u8>> = Vec::new();
         let mut bufs: Vec<UserBuffer> = Vec::new();
         {
             let memory_set = proc_inner.get_locked_memory_set_read();
@@ -97,11 +104,11 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
                 let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
                 copy_from_user(&memory_set, current, &mut iov_buf)?;
                 let iovinfo: Iovec = unsafe { core::mem::transmute(iov_buf) };
-                let buf = UserBuffer::new(
-                    safe_translated_byte_buffer(&memory_set, iovinfo.iov_base as *mut u8, iovinfo.iov_len)
-                        .ok_or(SysErrNo::EFAULT)?,
-                );
-                bufs.push(buf);
+                let mut kb = vec![0u8; iovinfo.iov_len];
+                copy_from_user(&memory_set, iovinfo.iov_base as usize, &mut kb)?;
+                let ub = unsafe { user_buffer_from_kernel(&mut kb) };
+                kernel_bufs.push(kb);
+                bufs.push(ub);
             }
         }
         drop(proc_inner);
@@ -296,13 +303,13 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
             return Err(SysErrNo::EACCES);
         }
         let file = file.clone();
-        let buffer = {
+        let mut kernel_buf = {
             let memory_set = inner.get_locked_memory_set_read();
-            UserBuffer::new(
-                safe_translated_byte_buffer(&memory_set, buf, count)
-                    .ok_or(SysErrNo::EFAULT)?,
-            )
+            let mut kb = vec![0u8; count];
+            copy_from_user(&memory_set, buf as usize, &mut kb)?;
+            kb
         };
+        let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
         // release current task TCB manually to avoid multi-borrow
         drop(inner);
         drop(task);
@@ -332,9 +339,10 @@ pub fn sys_pread64(fd: usize, buf: *const u8, count: usize, offset: isize) -> Sy
         // release current task TCB manually to avoid multi-borrow
         let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
         file.lseek(offset, SEEK_SET)?;
-        let ret = file.read(UserBuffer::new(
-            safe_translated_byte_buffer(memory_set, buf, count).unwrap(),
-        ))?;
+        let mut kernel_buf = vec![0u8; count];
+        let ub = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+        let ret = file.read(ub)?;
+        copy_to_user(memory_set, buf as usize, &kernel_buf[..ret])?;
         file.lseek(cur_offset, SEEK_SET)?;
         Ok(ret)
     } else {

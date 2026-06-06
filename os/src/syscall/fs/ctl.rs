@@ -8,8 +8,7 @@ use crate::fs::{
     NONE_MODE, SEEK_CUR, SEEK_SET,
 };
 use crate::mm::{
-    copy_from_user, copy_to_user, if_bad_address, read_user_cstr, safe_translated_byte_buffer,
-    UserBuffer,
+    copy_from_user, copy_to_user, if_bad_address, read_user_cstr,
 };
 use crate::syscall::FaccessatFileMode;
 use crate::task::current_task;
@@ -184,12 +183,10 @@ pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         return Err(SysErrNo::EINVAL);
     }
 
-    let mut buffer = UserBuffer::new(safe_translated_byte_buffer(&memory_set, buf, len).unwrap());
-
     let file = process.fd_table.get(fd)?.file()?;
     let off = file.lseek(0, SEEK_CUR)?;
     let (de, off) = file.inode.read_dentry(off, len)?;
-    buffer.write(de.as_slice());
+    copy_to_user(&memory_set, buf as usize, de.as_slice())?;
     let _ = file.lseek(off as isize, SEEK_SET)?;
     return Ok(de.len());
 }
@@ -374,16 +371,9 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
         let mut exe: String = proc_inner.fs_info.get_exe();
         exe.push('\0');
 
-        // debug!("fs_info={}", exe);
-        let size_needed = exe.len();
-        let buffers = safe_translated_byte_buffer(
-            &&proc_inner.get_locked_memory_set_read(),
-            buf,
-            size_needed,
-        );
-        let mut buffer = UserBuffer::new(buffers.unwrap());
-
-        let res = buffer.write(exe.as_bytes());
+        let res = exe.len();
+        let mem = proc_inner.get_locked_memory_set_read();
+        copy_to_user(&*mem, buf as usize, exe.as_bytes())?;
         return Ok(res);
     }
     // 限制 bufsize 防止恶意巨量内存分配（参考 Linux PATH_MAX = 4096）
@@ -393,11 +383,8 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
     let mut linkbuf = vec![0u8; bufsize];
     let file = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
     let readcnt = file.inode.read_link(&mut linkbuf, bufsize)?;
-    let mut buffer = UserBuffer::new(
-        safe_translated_byte_buffer(&proc_inner.get_locked_memory_set_read(), buf, readcnt)
-            .ok_or(SysErrNo::EFAULT)?,
-    );
-    buffer.write(&linkbuf);
+    let mem = proc_inner.get_locked_memory_set_read();
+    copy_to_user(&*mem, buf as usize, &linkbuf[..readcnt])?;
     Ok(readcnt)
 
     // Ok(res)
