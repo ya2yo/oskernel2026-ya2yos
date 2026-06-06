@@ -1,9 +1,6 @@
-use crate::{
-    mm::copy_to_user,
-    task::current_task,
-    utils::{SysErrNo, SysResult, SyscallRet},
-};
-use log::warn;
+use crate::task::current_task;
+use crate::utils::{SysResult, SyscallRet};
+
 /// 参考 https://man7.org/linux/man-pages/man2/umask.2.html
 ///
 /// 设置进程的文件模式创建掩码为 `mask & 0777`，返回旧的掩码。
@@ -16,27 +13,29 @@ pub fn sys_umask(mask: u32) -> SyscallRet {
     Ok(old_umask as usize)
 }
 
-/// MPOL_DEFAULT — 默认 NUMA 内存策略（无约束）。
-const MPOL_DEFAULT: i32 = 0;
-
-/// 参考 https://man7.org/linux/man-pages/man2/set_mempolicy.2.html
+/// https://man7.org/linux/man-pages/man2/personality.2.html
 ///
-/// 设置调用线程的 NUMA 内存策略。
-/// 由于内核没有 NUMA 支持，仅接受 mode == MPOL_DEFAULT (0)；
-/// 其他模式返回 EINVAL。
-pub fn sys_set_mempolicy(mode: i32, nodemask: *const u64, maxnode: u64) -> SyscallRet {
-    warn!("[sys_set_mempolicy] not implement mode={}, nodemask={}, maxnode={}", mode, nodemask as usize, maxnode);
-    if mode == MPOL_DEFAULT {
-        return Ok(0);
+/// 设置或读取进程执行域（personality）。
+///
+/// - 若 `persona == 0xffffffff`，返回当前 personality 而不修改。
+/// - 否则，将 personality 设为 `persona`，返回之前的 personality。
+///
+/// 当前内核仅支持 PER_LINUX (0)。
+pub fn sys_personality(persona: u32) -> SyscallRet {
+    const READ_ONLY: u32 = 0xffffffff;
+
+    let task = current_task().unwrap();
+    let mut process = task.process.inner_lock();
+    let old = process.personality;
+
+    if persona != READ_ONLY {
+        process.personality = persona;
     }
-    // Only MPOL_DEFAULT is supported on non-NUMA kernels.
-    Err(SysErrNo::EINVAL)
+
+    Ok(old as usize)
 }
 
-/// 参考 https://man7.org/linux/man-pages/man2/get_mempolicy.2.html
-///
-/// 查询调用线程的 NUMA 内存策略。
-/// 在无 NUMA 的内核上，始终报告 mode == MPOL_DEFAULT (0)。
+// https://man7.org/linux/man-pages/man2/get_mempolicy.2.html
 pub fn sys_get_mempolicy(
     mode: usize,
     _nodemask: usize,

@@ -48,6 +48,6 @@ pub fn sys_open_by_handle_at(
     handle: *mut u8,
     flags: u32,
 ) -> SyscallRet {
-    warn!("[sys_open_by_handle_at] not implement! mount_fd={}, handle={:#X}, flags={}", mount_fd, handle as usie, flags);
+    warn!("[sys_open_by_handle_at] not implement! mount_fd={}, handle={:#X}, flags={}", mount_fd, handle as usize, flags);
     Ok(0)
 }

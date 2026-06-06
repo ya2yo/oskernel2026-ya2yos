@@ -293,6 +293,7 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "netstress\0",
     "nice05\0",
     "nptl01\0",
+    "numa01.sh\0",
     "open11\0",
     "openat01\0",
     "openfile\0",

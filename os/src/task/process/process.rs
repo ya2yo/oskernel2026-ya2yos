@@ -39,6 +39,8 @@ pub struct ProcessInner {
     /// 进程打开的文件描述符表
     pub fd_table: Arc<FdTable>,
     pub fs_info: Arc<FSInfo>,
+    /// personality(2) — PER_LINUX = 0
+    pub personality: u32,
 }
 
 impl Process {
@@ -101,6 +103,7 @@ impl Process {
                 sig_table,
                 fd_table,
                 fs_info,
+                personality: 0,
             }),
             pid,
             meta: Mutex::new(ProcessMeta {
