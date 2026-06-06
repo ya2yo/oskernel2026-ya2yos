@@ -543,6 +543,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Setresuid => sys_setresuid(args[0] as u32, args[1] as u32, args[2] as u32),
         Syscall::GetResuid => sys_getresuid(args[0] as *mut u32, args[1] as *mut u32, args[2] as *mut u32),
         Syscall::Setregid => sys_setregid(args[0], args[1]),
+        Syscall::Setgid => sys_setgid(args[0]),
         Syscall::SetResgid => sys_setresgid(args[0] as u32, args[1] as u32, args[2] as u32),
         Syscall::GetResgid => sys_getresgid(args[0] as *mut u32, args[1] as *mut u32, args[2] as *mut u32),
         Syscall::Times => sys_times(args[0] as *mut Tms),

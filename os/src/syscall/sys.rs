@@ -74,6 +74,20 @@ pub fn sys_setuid(uid: usize) -> SyscallRet {
     Ok(0)
 }
 
+/// 参考 https://man7.org/linux/man-pages/man2/setgid.2.html
+pub fn sys_setgid(gid: usize) -> SyscallRet {
+    let task = current_task().unwrap();
+    let mut task_inner = task.inner_lock();
+    if gid > 65535 {
+        return Err(SysErrNo::EINVAL);
+    }
+    let gid = gid as u32;
+    task_inner.real_gid = gid;
+    task_inner.effective_gid = gid;
+    task_inner.saved_gid = gid;
+    Ok(0)
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/chroot.2.html
 pub fn sys_chroot(path: *const u8) -> SyscallRet {
     debug!("[chroot] path=0x{:x}", path as usize);

@@ -98,6 +98,10 @@ pub fn sys_mmap(
 /// 参考 https://man7.org/linux/man-pages/man2/munmap.2.html
 pub fn sys_munmap(addr: usize, len: usize) -> SyscallRet {
     debug!("[sys_munmap] addr={:#x}, len={:#x}", addr, len);
+    // addr 必须页对齐
+    if addr % PAGE_SIZE != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_write();

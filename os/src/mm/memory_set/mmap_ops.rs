@@ -135,8 +135,8 @@ impl MemorySetInner {
             Some(v) => v,
             None => return Err(SysErrNo::EINVAL),
         };
-        let start_vpn = VirtPageNum::from(VirtAddr::from(addr));
-        let end_vpn = VirtPageNum::from(VirtAddr::from(end_addr));
+        let start_vpn = VirtAddr::from(addr).floor();
+        let end_vpn = VirtAddr::from(end_addr).ceil();
         while let Some((idx, area)) = self
             .areas
             .iter_mut()
