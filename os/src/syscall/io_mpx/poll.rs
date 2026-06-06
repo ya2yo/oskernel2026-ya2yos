@@ -57,6 +57,7 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
 
     loop {
         let task = current_task().unwrap();
+        let proc_inner = task.process.inner_lock();
         let inner = task.inner_lock();
         let mut resnum = 0;
         for i in 0..nfds {
@@ -65,7 +66,7 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
                 pfd.revents = PollEvents::empty();
                 continue;
             }
-            if let Some(file) = task.get_fd_table().try_get(pfd.fd as usize) {
+            if let Some(file) = proc_inner.fd_table.try_get(pfd.fd as usize) {
                 let file: Arc<dyn File> = file.any();
                 let res = file.poll(pfd.events);
                 if !res.is_empty() {
@@ -89,6 +90,7 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
             return Ok(0);
         }
         drop(inner);
+        drop(proc_inner);
         drop(task);
         suspend_current_and_run_next();
     }

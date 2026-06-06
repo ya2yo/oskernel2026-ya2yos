@@ -300,7 +300,7 @@ impl TaskControlBlock {
         // 重新分配用户资源
         let ustack_top = self.alloc_user_res(&mut task_inner);
         {
-            self.get_fd_table().close_on_exec();
+            self.process.inner_lock().fd_table.close_on_exec();
         }
         task_inner.sig_mask = SigSet::empty();
         task_inner.sig_pending = SigSet::empty();
@@ -688,18 +688,6 @@ impl TaskControlBlock {
     pub fn interrupt(&self) {
         self.interrupted.store(true, Ordering::Release);
         self.interrupt_waker.wake();
-    }
-    /// 获取当前任务的 FD 表,自动处理锁
-    pub fn get_fd_table(&self) -> Arc<FdTable> {
-        self.process.inner_lock().fd_table.clone()
-    }
-    /// 获取当前进程相关的文件使用信息
-    pub fn get_fs_info(&self) -> Arc<FSInfo> {
-        self.process.inner_lock().fs_info.clone()
-    }
-    /// 获取线程所在的进程
-    pub fn get_process(&self) -> Arc<Process> {
-        self.process.clone()
     }
     /// 分配用户栈和 trap context 区域，并返回用户栈顶地址
     fn alloc_user_res(&self, task_inner: &mut TaskControlBlockInner) -> usize {

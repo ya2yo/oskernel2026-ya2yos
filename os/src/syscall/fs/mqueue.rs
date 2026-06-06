@@ -76,9 +76,9 @@ pub fn sys_mq_open(
 
     // 分配 fd 并存入 fd 表
     let task = current_task().unwrap();
-    let fd_table = task.get_fd_table();
-    let newfd = fd_table.alloc_fd()?;
-    fd_table.set(
+    let proc_inner = task.process.inner_lock();
+    let newfd = proc_inner.fd_table.alloc_fd()?;
+    proc_inner.fd_table.set(
         newfd,
         crate::fs::FileDescriptor::new(OpenFlags::empty(), FileClass::Abs(mq.clone())),
     )?;

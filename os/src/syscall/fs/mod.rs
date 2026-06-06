@@ -37,9 +37,9 @@ pub use self::{
 fn dummyfd_create() -> SyscallRet {
     let dummy_file = DummyFd::new();
     let task = current_task().unwrap();
-    let fd_table = task.get_fd_table();
-    let newfd = fd_table.alloc_fd()?;
-    task.get_fd_table()
+    let proc_inner = task.process.inner_lock();
+    let newfd = proc_inner.fd_table.alloc_fd()?;
+    proc_inner.fd_table
         .set(newfd, FileDescriptor::new(OpenFlags::empty(), crate::fs::FileClass::Abs(dummy_file)));
     Ok(newfd)
 }
@@ -66,8 +66,9 @@ pub fn sys_inotify_init1(flags: u32) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let fd = task.get_fd_table().alloc_fd()?;
-    task.get_fd_table()
+    let proc_inner = task.process.inner_lock();
+    let fd = proc_inner.fd_table.alloc_fd()?;
+    proc_inner.fd_table
         .set(fd, FileDescriptor::new(open_flags, FileClass::Abs(inotify_file.clone())))?;
     // 注册到全局表，供 add_watch / rm_watch 查找
     InotifyFd::register_fd(fd, &inotify_file);

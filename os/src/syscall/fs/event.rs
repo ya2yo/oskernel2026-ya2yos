@@ -48,8 +48,9 @@ pub fn sys_eventfd2(initval: u32, flags: u32) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let fd = task.get_fd_table().alloc_fd()?;
-    task.get_fd_table().set(
+    let proc_inner = task.process.inner_lock();
+    let fd = proc_inner.fd_table.alloc_fd()?;
+    proc_inner.fd_table.set(
         fd,
         FileDescriptor::new(open_flags, FileClass::Abs(event_file)),
     )?;

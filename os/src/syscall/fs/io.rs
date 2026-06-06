@@ -17,15 +17,14 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     // debug!("[sys_write] fd is {}, len={}", fd, len);
 
     let task = current_task().unwrap();
-    let fd_table = task.get_fd_table();
+    let proc_inner = task.process.inner_lock();
 
-    if fd >= fd_table.len() {
+    if fd >= proc_inner.fd_table.len() {
         warn!("write EINVAL early return");
         return Err(SysErrNo::EBADF);
     }
-    if let Some(f) = fd_table.try_get_file(fd) {
-        let process = task.process.inner_lock();
-        let memory_set = process.get_locked_memory_set_read();
+    if let Some(f) = proc_inner.fd_table.try_get_file(fd) {
+        let memory_set = proc_inner.get_locked_memory_set_read();
         let mut kernel_buf = vec![0u8; len];
         copy_from_user(&*memory_set, buf as usize, &mut kernel_buf)?;
         let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
@@ -34,7 +33,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         }
         // 注意！一些文件的write可能会阻塞，还可能借用process，所以我们应该drop process
         drop(memory_set);
-        drop(process);
+        drop(proc_inner);
         drop(task);
         let ret = f.write(buffer)?;
         // debug!("buffer 3");
@@ -48,20 +47,19 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/read.2.html
 pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let fd_table = task.get_fd_table();
-    if fd >= fd_table.len() {
+    let proc_inner = task.process.inner_lock();
+    if fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = fd_table.try_get_file(fd) {
-        let process = task.process.inner_lock();
-        let memory_set = process.get_locked_memory_set_read();
+    if let Some(file) = proc_inner.fd_table.try_get_file(fd) {
+        let memory_set = proc_inner.get_locked_memory_set_read();
         if !file.readable() {
             return Err(SysErrNo::EACCES);
         }
         let mut kernel_buf = vec![0u8; len];
         let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
         drop(memory_set);
-        drop(process);
+        drop(proc_inner);
         let ret = file.read(buffer)?;
         // Write file data back to user space
         {

@@ -20,7 +20,7 @@ pub fn sys_epoll_create1(flags: u32) -> SyscallRet {
 
     let task = current_task().unwrap();
     let epoll_file = Arc::new(EpollFile::new());
-    let fd_table = task.get_fd_table();
+    let proc_inner = task.process.inner_lock();
 
     let open_flags = if eflags.contains(EpollCreateFlags::CLOEXEC) {
         OpenFlags::O_CLOEXEC
@@ -28,8 +28,8 @@ pub fn sys_epoll_create1(flags: u32) -> SyscallRet {
         OpenFlags::empty()
     };
 
-    let fd = fd_table.alloc_fd()?;
-    fd_table.set(
+    let fd = proc_inner.fd_table.alloc_fd()?;
+    proc_inner.fd_table.set(
         fd,
         FileDescriptor::new(open_flags, FileClass::Abs(epoll_file.clone())),
     )?;

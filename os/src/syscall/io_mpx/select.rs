@@ -85,6 +85,7 @@ pub fn sys_pselect6(
 
     loop {
         let task = current_task().unwrap();
+        let proc_inner = task.process.inner_lock();
         let mut inner = task.inner_lock();
         let mut num = 0;
 
@@ -92,7 +93,7 @@ pub fn sys_pselect6(
         if let Some(readfds) = using_readfds.as_mut() {
             for i in 0..nfds {
                 if readfds.got_fd(i) {
-                    if let Some(file) = task.get_fd_table().try_get(i) {
+                    if let Some(file) = proc_inner.fd_table.try_get(i) {
                         let file: Arc<dyn File> = file.any();
                         let event = file.poll(PollEvents::IN);
                         if !event.contains(PollEvents::IN) {
@@ -109,7 +110,7 @@ pub fn sys_pselect6(
         if let Some(writefds) = using_writefds.as_mut() {
             for i in 0..nfds {
                 if writefds.got_fd(i) {
-                    if let Some(file) = task.get_fd_table().try_get(i) {
+                    if let Some(file) = proc_inner.fd_table.try_get(i) {
                         let file: Arc<dyn File> = file.any();
                         let event = file.poll(PollEvents::OUT);
                         if !event.contains(PollEvents::OUT) {
@@ -127,7 +128,7 @@ pub fn sys_pselect6(
         if let Some(exceptfds) = using_exceptfds.as_mut() {
             for i in 0..nfds {
                 if exceptfds.got_fd(i) {
-                    if let Some(file) = task.get_fd_table().try_get(i) {
+                    if let Some(file) = proc_inner.fd_table.try_get(i) {
                         let file: Arc<dyn File> = file.any();
                         let event = file.poll(PollEvents::ERR | PollEvents::HUP);
                         if !event.contains(PollEvents::ERR) && !event.contains(PollEvents::HUP) {
@@ -178,6 +179,7 @@ pub fn sys_pselect6(
             return Ok(0);
         }
         drop(inner);
+        drop(proc_inner);
         drop(task);
         suspend_current_and_run_next();
     }

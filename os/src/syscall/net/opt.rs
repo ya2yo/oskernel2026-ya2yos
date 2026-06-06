@@ -178,7 +178,7 @@ pub fn sys_setsockopt(
     // let compat: bool = false;// 目前只在64位上运行
     let task = current_task().unwrap();
     // debug!("strong count: {}", Arc::strong_count(&task));
-    let fd_table = task.get_fd_table();
+    let fd_table = task.process.inner_lock().fd_table.clone();
     drop(task);
     let sock = fd_table.get(sockfd)?.socket()?;
     if optlen > 1024 {
@@ -295,7 +295,7 @@ pub fn sys_getsockopt(
     //     sockfd, level, optname, user_optval as usize, optlen
     // );
     let task = current_task().unwrap();
-    let fd_table = task.get_fd_table();
+    let fd_table = task.process.inner_lock().fd_table.clone();
     drop(task);
     let sock = fd_table.get(sockfd)?.socket()?;
     if optlen > 1024 {

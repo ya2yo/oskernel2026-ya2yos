@@ -32,8 +32,8 @@ impl Socket {
         Self: Sized + 'static,
     {
         let task = current_task().unwrap();
-        let fd_table = task.get_fd_table();
-        fd_table.get(fd)?.socket()
+        let proc_inner = task.process.inner_lock();
+        proc_inner.fd_table.get(fd)?.socket()
     }
 }
 

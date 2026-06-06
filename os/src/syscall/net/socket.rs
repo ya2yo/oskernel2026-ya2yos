@@ -198,32 +198,35 @@ pub fn sys_shutdown(sockfd: usize, how: u32) -> SyscallRet {
 pub fn sys_accept4(sockfd: usize, addr: *mut u8, mut addrlen: u32, flags: u32) -> SyscallRet {
     debug!("[sys_accept] fd: {}, flags: {}", sockfd, flags);
     let task = current_task().unwrap();
-    let fd_table = task.get_fd_table();
-    let file = fd_table.get(sockfd)?;
-    if file.flags() & OpenFlags::O_PATH.bits() != 0 {
-        return Err(SysErrNo::EBADF);
-    }
-    let socket = Socket(file.socket()?.accept()?);
-    let remote_addr = socket.local_addr()?;
+    let listen_sock = {
+        let proc_inner = task.process.inner_lock();
+        let file = proc_inner.fd_table.get(sockfd)?;
+        if file.flags() & OpenFlags::O_PATH.bits() != 0 {
+            return Err(SysErrNo::EBADF);
+        }
+        file.socket()?
+    }; // 释放锁后再 accept（可能阻塞）
+    let sock = Socket(listen_sock.accept()?);
+    let remote_addr = sock.local_addr()?;
     if !addr.is_null() {
         remote_addr.write_to_user(addr, &mut addrlen);
     }
     // 分配新的fd
-    let fd_table = current_task().unwrap().get_fd_table();
-    let fd = fd_table.alloc_fd()?;
+    let proc_inner = task.process.inner_lock();
+    let fd = proc_inner.fd_table.alloc_fd()?;
     // 将新的fd连接到旧的上面
     let mut new_flags = OpenFlags::empty();
     if flags & OpenFlags::O_NONBLOCK.bits() != 0 {
         new_flags.insert(OpenFlags::O_NONBLOCK);
-        socket.set_nonblocking(true);
+        sock.set_nonblocking(true);
     }
     if flags & OpenFlags::O_CLOEXEC.bits() != 0 {
         new_flags.insert(OpenFlags::O_CLOEXEC);
     }
 
-    fd_table.set(
+    proc_inner.fd_table.set(
         fd,
-        FileDescriptor::new(new_flags, FileClass::Socket(Arc::new(socket))),
+        FileDescriptor::new(new_flags, FileClass::Socket(Arc::new(sock))),
     );
 
     Ok(fd)

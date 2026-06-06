@@ -39,8 +39,8 @@ pub fn sys_flock(fd: i32, op: i32) -> SyscallRet {
     }
 
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let fd_table = task.get_fd_table();
-    let fd_desc = fd_table.get(fd as usize)?;
+    let proc_inner = task.process.inner_lock();
+    let fd_desc = proc_inner.fd_table.get(fd as usize)?;
 
     // flock 仅适用于普通文件（OSFile），非普通文件返回 EINVAL
     let osfile = fd_desc.file()?;
@@ -68,6 +68,8 @@ pub fn sys_flock(fd: i32, op: i32) -> SyscallRet {
 
     // 阻塞等待（可被信号中断）
     // 参照 waitpid 的 block_on + interruptible + poll_fn 模式
+    drop(fd_desc);
+    drop(proc_inner);
     drop(task);
     let path = inode_path; // String，移入闭包
     block_on(interruptible(poll_fn(move |cx| {
@@ -512,36 +514,34 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
     // CLOEXEC (1 << 2): Close all file descriptors in the range on exec
     if flags.contains(CloseRangeFlags::CLOEXEC) {
         let task = current_task().unwrap();
-        let fd_table = task.get_fd_table();
+        let proc_inner = task.process.inner_lock();
         for fd in first..=last {
-            if fd as usize >= fd_table.len() {
+            if fd as usize >= proc_inner.fd_table.len() {
                 continue;
             }
             // Try to get the file descriptor, ignore errors
-            if let Some(mut desc) = fd_table.try_get(fd as usize) {
+            if let Some(mut desc) = proc_inner.fd_table.try_get(fd as usize) {
                 desc.set_cloexec();
             }
         }
     } else {
         // Close all file descriptors in the range
         let task = current_task().unwrap();
-        let fd_table = task.get_fd_table();
-        let inner = task.process.inner_lock();
-        let proc_inner = inner;
+        let proc_inner = task.process.inner_lock();
 
         for fd in first..=last {
-            if fd as usize >= fd_table.len() {
+            if fd as usize >= proc_inner.fd_table.len() {
                 continue;
             }
 
             // Get inode path for FsIndex cache eviction before closing
-            let inode_path = fd_table
+            let inode_path = proc_inner.fd_table
                 .try_get(fd as usize)
                 .and_then(|desc| desc.file().ok())
                 .map(|osfile| osfile.inode.path());
 
             // Remove from fd_table
-            if let Some(_) = fd_table.take(fd as usize) {
+            if let Some(_) = proc_inner.fd_table.take(fd as usize) {
                 // Remove from fs_info
                 proc_inner.fs_info.remove(fd as usize);
             }
