@@ -51,8 +51,8 @@ pub fn check_ltp_tests_musl(tests: &[&str], blacklist: &[&str]) {
     println!("#### OS COMP TEST GROUP END ltp-musl ####");
 }
 
-const LTP_TEST_START: usize = 0;
-const LTP_TESTS_PER_GROUP: usize = 1250;
+const LTP_TEST_START: usize = 2700;
+const LTP_TESTS_PER_GROUP: usize = 50;
 
 #[allow(unused)]
 pub fn run_ltp_tests_musl_separately(tests: &[&str], blacklist: &[&str]) {

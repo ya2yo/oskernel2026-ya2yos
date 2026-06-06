@@ -316,30 +316,34 @@ pub fn create_init_files() -> GeneralRet {
     // 创建一系列符号链接指向busybox，这样就近似实现了bash
     // 注意：ext4_fsymlink 遇到已存在文件会静默失败（返回Ok但不覆盖）
     for path in [
-        "/bin/ls",       // which ls 需要它
+        "/bin/awk",
         "/bin/basename", // 如果不加这个，ltp_testcode.sh会无法使用basename
+        "/bin/bc",
+        "/bin/cat",      // ltp的cgroup_regression_3_2.sh需要它
+        "/bin/chmod",
+        "/bin/cp",       // 通用文件操作
+        "/bin/cut",
+        "/bin/dd",
+        "/bin/gdb",
+        "/bin/grep",     // ltp的cgroup_fj_proc需要
+        "/bin/gunzip",
+        "/bin/gzip",
+        "/bin/ln",
+        "/bin/ls",       // which ls 需要它
         "/bin/mkdir",    // ltp的cgroup_regression_3_1.sh需要它
         "/bin/rmdir",    // ltp的cgroup_regression_3_1.sh需要它
-        "/bin/cat",      // ltp的cgroup_regression_3_2.sh需要它
-        "/bin/grep",     // ltp的cgroup_fj_proc需要
         "/bin/sed",
         "/bin/id",
+        "/bin/ip",
         "/bin/killall",
         "/bin/mktemp",
-        "/bin/chmod",
-        "/bin/cut",
         "/bin/sleep",
         "/bin/sh",
-        "/bin/awk",
         "/bin/mount",
         "/bin/umount",
         "/bin/rm",       // fs_bind 清理需要
-        "/bin/cp",       // 通用文件操作
         "/bin/mv",
         "/bin/touch",
-        "/bin/ln",
-        "/bin/gzip",
-        "/bin/gunzip",
     ] {
         let _ = superblock_root_inode().unlink(path);
         if let Err(e) = superblock_root_inode().sym_link("/musl/busybox", path) {
