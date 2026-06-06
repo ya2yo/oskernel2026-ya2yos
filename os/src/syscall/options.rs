@@ -69,6 +69,8 @@ bitflags! {
         const MAP_14 = 1<<14;   // TODO: 奇奇怪怪，为什么glibc entry-static.exe pthread_cancel_points会用到这个标志位？
         /// 预先填充页表（MAP_POPULATE），我们作为 no-op 接受
         const MAP_POPULATE = 1 << 15;
+        /// MAP_FIXED_NOREPLACE: 类似 MAP_FIXED，但如果地址已被映射则返回 EEXIST 而不是替换
+        const MAP_FIXED_NOREPLACE = 1 << 20;
     }
 }
 

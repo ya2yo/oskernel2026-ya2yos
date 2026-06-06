@@ -55,7 +55,7 @@ impl MemorySetInner {
         off: usize,
     ) -> usize {
         debug!("[mmap] addr={:x}, len={}, map_perm={:?}, flags={:?}", addr, len, map_perm, flags);
-        if flags.contains(MmapFlags::MAP_FIXED) {
+        if flags.contains(MmapFlags::MAP_FIXED) || flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
             // 检查 addr + len 是否溢出
             let end_addr = match addr.checked_add(len) {
                 Some(v) => v,
@@ -67,6 +67,17 @@ impl MemorySetInner {
             }
             let start_vpn = VirtAddr::from(addr).floor();
             let end_vpn = VirtAddr::from(end_addr).ceil();
+            // MAP_FIXED_NOREPLACE: 如果任何现有映射与目标范围重叠，则失败
+            if flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
+                let has_overlap = self.areas.iter().any(|area| {
+                    let (l, r) = area.vpn_range.range();
+                    l < end_vpn && start_vpn < r
+                });
+                if has_overlap {
+                    debug!("[mmap] MAP_FIXED_NOREPLACE overlap: [{:x}, {:x})", addr, end_addr);
+                    return 0;
+                }
+            }
             let need_split = self.areas.iter().any(|area| {
                 let (l, r) = area.vpn_range.range();
                 if l <= start_vpn && end_vpn <= r {
@@ -84,7 +95,7 @@ impl MemorySetInner {
                     file, off, flags,
                 ));
             }
-            // MAP_FIXED replaces existing mappings; don't count toward mmap total.
+            // MAP_FIXED / MAP_FIXED_NOREPLACE 使用指定地址，不计入 mmap 总量
             return addr;
         }
         // Reject if this allocation would exceed the per-process mmap limit.
