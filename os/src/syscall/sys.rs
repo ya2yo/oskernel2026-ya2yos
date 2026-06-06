@@ -953,3 +953,24 @@ pub fn sys_vhangup() -> SyscallRet {
     }
     Ok(0)
 }
+
+// ---------------------------------------------------------------------------
+// personality(92)
+// ---------------------------------------------------------------------------
+
+/// PER_LINUX — 标准 Linux 执行域。
+const PER_LINUX: u32 = 0x0000;
+
+/// 参考 https://man7.org/linux/man-pages/man2/personality.2.html
+///
+/// 设置进程的执行域（personality）。
+/// 若 `persona == 0xffffffff`，仅返回当前的 personality 而不修改。
+/// 当前内核始终返回 `PER_LINUX`（0），不实际存储或切换执行域。
+pub fn sys_personality(_persona: usize) -> SyscallRet {
+    // If _persona != 0xffffffff, the caller wants to *set* a new
+    // personality.  0xffffffff means "get current personality without
+    // changing".  We always report PER_LINUX and ignore any attempt to
+    // set a different personality since we don't support alternate
+    // execution domains.
+    Ok(PER_LINUX as usize)
+}
