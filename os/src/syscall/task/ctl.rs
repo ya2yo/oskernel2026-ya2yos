@@ -1,5 +1,17 @@
+use log::warn;
+
+use crate::mm::copy_to_user;
 use crate::task::current_task;
 use crate::utils::{SysResult, SyscallRet};
+
+// Policies
+const MPOL_DEFAULT: i32 = 0;
+const MPOL_PREFERRED: i32 = 1;
+const MPOL_BIND: i32 = 2;
+const MPOL_INTERLEAVE: i32 = 3;
+const MPOL_LOCAL: i32 = 4;
+const MPOL_PREFERRED_MANY: i32 = 5;
+
 
 /// 参考 https://man7.org/linux/man-pages/man2/umask.2.html
 ///
@@ -42,13 +54,13 @@ pub fn sys_get_mempolicy(
     _maxnode: usize,
     _addr: usize,
     _flags: usize,
-) -> SysResult<usize> {
+) -> SyscallRet {
     // Write MPOL_DEFAULT (0) into the user's mode pointer if non-null.
     if mode != 0 {
         let task = current_task().unwrap();
         let proc_inner = task.process.inner_lock();
         let memory_set = proc_inner.get_locked_memory_set_read();
-        let mpol_val: i32 = MPOL_DEFAULT;
+        let mpol_val: i32 = 0;
         copy_to_user(&memory_set, mode, unsafe {
             core::slice::from_raw_parts(
                 &mpol_val as *const i32 as *const u8,
@@ -56,5 +68,10 @@ pub fn sys_get_mempolicy(
             )
         })?;
     }
+    Ok(0)
+}
+/// https://www.man7.org/linux/man-pages/man2/set_mempolicy.2.html
+pub fn sys_set_mempolicy(mode: i32, nodemask: usize, maxnode: usize) -> SyscallRet {
+    warn!("[sys_set_mempolicy] mode={}, nodemask={}, maxnode={}", mode, nodemask, maxnode);
     Ok(0)
 }

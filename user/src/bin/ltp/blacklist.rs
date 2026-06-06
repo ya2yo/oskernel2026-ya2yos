@@ -2,7 +2,7 @@
 /// 前 5 项 (cgroup_fj_*) 仅 `test_ltp` 需要跳过，
 /// `check_ltp` 通过 `&LTP_BLACKLIST[LTP_CGROUP_PREFIX_LEN..]` 跳过它们。
 #[allow(unused)]
-pub const LTP_BLACKLIST: &[&str] = &[
+pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "add_ipv6addr\0",
     "assign_password.sh\0",
     "binfmt_misc01.sh\0",
