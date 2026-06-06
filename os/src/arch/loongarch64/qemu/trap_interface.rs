@@ -57,6 +57,36 @@ fn estat_to_trap(value: estat::Trap) -> Trap {
                 Trap::Exception(Exception::IllegalInstruction)
             }
             estat::Exception::PageModifyFault => Trap::Exception(Exception::PageModifyFault),
+            estat::Exception::PagePrivilegeIllegal => {
+                Trap::Exception(Exception::PagePrivilegeIllegal)
+            }
+            // 以下异常归类为 SIGSEGV 场景，统一映射到 PagePrivilegeIllegal
+            // (这些异常意味着页面存在但访问权限不足，应当发 SIGSEGV 给用户进程)
+            estat::Exception::PageNonReadableFault
+            | estat::Exception::PageNonExecutableFault
+            | estat::Exception::MemoryAccessAddressError
+            | estat::Exception::AddressNotAligned
+            | estat::Exception::BoundsCheckFault => {
+                Trap::Exception(Exception::PagePrivilegeIllegal)
+            }
+            estat::Exception::Breakpoint => {
+                // 调试断点：目前未实现 ptrace，跳过该指令继续执行
+                debug!("LoongArch Breakpoint exception from user space, ignoring.");
+                Trap::Exception(Exception::PagePrivilegeIllegal)
+            }
+            estat::Exception::FloatingPointUnavailable => {
+                // 浮点不可用：发送 SIGFPE 或 SIGILL
+                // 目前映射到 IllegalInstruction 让进程终止
+                debug!("LoongArch FloatingPointUnavailable from user space.");
+                Trap::Exception(Exception::IllegalInstruction)
+            }
+            estat::Exception::TLBRFill => {
+                // TLBRFill 在 estat::read().cause() 中已被优先处理，
+                // 理论上不会到达此处，但保留兜底映射
+                error!("Unexpected TLBRFill in estat_to_trap!");
+                Trap::Exception(Exception::LoadPageFault)
+            }
+            #[allow(unreachable_patterns)]
             _ => {
                 error!(
                     "Fail to convert LoongArch estat({:?}) to Trap type!",

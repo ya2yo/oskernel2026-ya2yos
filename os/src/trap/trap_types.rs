@@ -18,6 +18,10 @@ pub enum Exception {
     FetchInstructionPageFault,
     /// 龙芯特有的PageModifyFault，发生时需要内核将这一页的dirty置为1
     PageModifyFault,
+    /// Page privilege level illegal (LoongArch: page present but privilege check fails).
+    /// Triggered when the virtual address matches a TLB entry with V=1 but the
+    /// privilege level is insufficient for the attempted access.
+    PagePrivilegeIllegal,
     /// Illegal or unsupported instruction from user space.
     IllegalInstruction,
     /// system call （在riscv64版本中等价于UserEnvCall）

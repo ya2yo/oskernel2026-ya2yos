@@ -147,6 +147,19 @@ pub fn trap_handler() {
                 tlb_page_modify_handler();
             }
         }
+        Trap::Exception(Exception::PagePrivilegeIllegal) => {
+            // 页面存在但权限不足（如用户态访问内核页、写只读页等）
+            // 这不是 lazy page fault 或 COW 能修复的，直接发送 SIGSEGV
+            let tid = current_task().unwrap().tid();
+            warn!(
+                "[kernel] hart {} PagePrivilegeIllegal in application, bad addr = {:#x}, bad instruction = {:#x}, sending SIGSEGV.",
+                hartid,
+                stval,
+                current_trap_cx().get_sepc(),
+            );
+            send_signal_to_thread(tid, SigSet::SIGSEGV);
+            return;
+        }
 
         Trap::Interrupt(Interrupt::Timer) => {
             // 检查futex操作是否超时
