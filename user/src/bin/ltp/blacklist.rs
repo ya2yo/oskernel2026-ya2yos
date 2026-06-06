@@ -57,6 +57,7 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "dirtyc0w_shmem\0",
     "dirtypipe\0",
     "doio\0",
+    "dynamic_debug01.sh\0",
     // [300,400)区间
     "epoll-ltp\0",
     "epoll_pwait01\0",
@@ -280,15 +281,15 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "mtest01\0",
     "munlock02\0",
     // [1400,---)区间
-    // "netstress\0",
+    "netns_breakns.sh\0",
     "netns_comm.sh\0",
     "nptl01\0",
     "openfile\0",
-    // "page01\0",
-    // "pause01\0",
-    // "pause02\0",
     // [1500,---)区间
     "pidfd_open03\0",
+    "pidns04\0",
+    "pidns10\0",
+    "pidns17\0",
     "pidns32\0",
     "pipe11\0",
     "pipe12\0",

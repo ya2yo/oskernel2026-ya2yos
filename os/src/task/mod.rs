@@ -234,8 +234,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
                 let mut parent_inner = t.inner_lock();
                 if parent_inner.vfork_wait_child == curr_task.tid() {
                     parent_inner.vfork_wait_child = 0;
-                    parent_inner.task_status = TaskStatus::Ready;
-                    ready_queue::add_task(&t);
+                    if parent_inner.task_status == TaskStatus::VforkBlocked {
+                        parent_inner.task_status = TaskStatus::Ready;
+                        drop(parent_inner);
+                        ready_queue::add_task(&t);
+                    }
                 }
             }
         }

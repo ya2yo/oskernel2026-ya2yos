@@ -41,9 +41,9 @@ pub mod ready_queue {
         // debug!("{:?}", queue);
         if task_in_queue(&queue, task) {
             warn!("add_task: task tid={} already in queue, skipping", task.tid());
-        } else {
-            queue.push_back(Arc::downgrade(&task));
+            return;
         }
+        queue.push_back(Arc::downgrade(&task));
     }
 
     /// 从就绪队列中取出

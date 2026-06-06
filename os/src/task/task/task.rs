@@ -255,9 +255,12 @@ impl TaskControlBlock {
             for task_weak in &parent_proc.meta_lock().tasks {
                 if let Some(t) = task_weak.upgrade() {
                     let mut parent_inner = t.inner_lock();
-                    if parent_inner.vfork_wait_child == self.tid() {
+                    if parent_inner.vfork_wait_child == self.tid()
+                        && parent_inner.task_status == TaskStatus::VforkBlocked
+                    {
                         parent_inner.vfork_wait_child = 0;
                         parent_inner.task_status = TaskStatus::Ready;
+                        drop(parent_inner);
                         crate::task::ready_queue::add_task(&t);
                     }
                 }
