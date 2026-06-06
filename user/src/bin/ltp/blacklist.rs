@@ -356,6 +356,8 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "starvation\0",
     "stat03\0",
     "stat03_64\0",
+    "statx11\0",
+    "statx12\0",
     // [2100,---)区间
     "symlink03\0",
     "sysctl01.sh\0",

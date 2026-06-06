@@ -151,13 +151,18 @@ impl Inode for Ext4Inode {
 
     /// 一次性读取整个文件内容
     fn read_all(&self) -> Result<Vec<u8>, SysErrNo> {
-        let file = &mut self.inner.get_unchecked_mut().f;
-        let file_type = as_inode_type(file.types());
+        // 先提取 path 和类型，避免后续访问 self.inner 时产生重叠借用
+        let (file_type, path_str) = {
+            let file = &mut self.inner.get_unchecked_mut().f;
+            let file_type = as_inode_type(file.types());
+            let path = file.path().to_str().unwrap().to_string();
+            (file_type, path)
+        };
 
         if file_type == InodeType::File {
-            let path = file.path();
-            let path = path.to_str().unwrap();
-            file.file_open(path, O_RDONLY).map_err(SysErrNo::from)?;
+            let file = &mut self.inner.get_unchecked_mut().f;
+            file.file_open(&path_str, O_RDONLY)
+                .map_err(SysErrNo::from)?;
             let size = file.file_size() as usize;
             let mut buf: Vec<u8> = vec![0; size];
             file.file_seek(0, SEEK_SET).map_err(SysErrNo::from)?;
@@ -167,21 +172,29 @@ impl Inode for Ext4Inode {
             } else {
                 Ok(buf)
             }
+        } else if file_type == InodeType::SymLink {
+            // 读取符号链接目标路径
+            let mut real_path_buf = [0u8; 256];
+            let link_file = Ext4Inode::new(&path_str, InodeTypes::EXT4_DE_SYMLINK);
+            link_file.read_link(&mut real_path_buf, 256)?;
+            let end = real_path_buf
+                .iter()
+                .position(|v| *v == 0)
+                .unwrap_or(real_path_buf.len());
+            let file_path =
+                core::str::from_utf8(&real_path_buf[..end]).map_err(|_| SysErrNo::EINVAL)?;
+            // 处理绝对/相对符号链接
+            let next_path = if file_path.starts_with('/') {
+                file_path.to_string()
+            } else {
+                join_path(&path_str, file_path)
+            };
+            // 通过 find 递归解析符号链接，然后读取目标文件内容
+            let real_file = self.find(&next_path, OpenFlags::O_RDONLY, 0)?;
+            real_file.read_all()
         } else {
-            unimplemented!("not support!");
-            // assert!(as_inode_type(file.types()) == InodeType::SymLink);
-            // let mut real_path_buf = [0u8; 256];
-            // file.file_readlink(&mut real_path_buf, 255)?;
-            // let end = real_path_buf
-            //     .iter()
-            //     .enumerate()
-            //     .find(|(_, v)| **v == 0)
-            //     .map(|(idx, _)| idx)
-            //     .unwrap();
-            // let real_path = format!("/{}", core::str::from_utf8(&real_path_buf[..end]).unwrap());
-            // debug!("[symlink] real_path= {}", real_path);
-            // let real_file = self.find(&real_path)?;
-            // real_file.read_all()
+            // 目录或其他不支持的类型
+            Err(SysErrNo::EISDIR)
         }
     }
 
@@ -213,9 +226,12 @@ impl Inode for Ext4Inode {
             let mut file_name = [0u8; 256];
             let file = Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK);
             file.read_link(&mut file_name, 256)?;
-            let end = file_name.iter().position(|v| *v == 0).unwrap_or(file_name.len());
+            let end = file_name
+                .iter()
+                .position(|v| *v == 0)
+                .unwrap_or(file_name.len());
             let file_path = core::str::from_utf8(&file_name[..end]).unwrap();
-            // log::info!("[Inode.find] file_path={}", file_path); 
+            // log::info!("[Inode.find] file_path={}", file_path);
             let next_path = if file_path.starts_with('/') {
                 // 绝对路径 symlink
                 file_path.to_string()

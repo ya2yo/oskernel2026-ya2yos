@@ -319,6 +319,7 @@ pub fn create_init_files() -> GeneralRet {
         "/bin/awk",
         "/bin/basename", // 如果不加这个，ltp_testcode.sh会无法使用basename
         "/bin/bc",
+        "/bin/bzip2",
         "/bin/cat",      // ltp的cgroup_regression_3_2.sh需要它
         "/bin/chmod",
         "/bin/cp",       // 通用文件操作
@@ -341,6 +342,7 @@ pub fn create_init_files() -> GeneralRet {
         "/bin/sed",
         "/bin/sleep",
         "/bin/sh",
+        "/bin/tc",
         "/bin/touch",
         "/bin/mount",
         "/bin/umount",

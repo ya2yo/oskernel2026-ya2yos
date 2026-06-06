@@ -25,7 +25,7 @@ const MPOL_DEFAULT: i32 = 0;
 /// 由于内核没有 NUMA 支持，仅接受 mode == MPOL_DEFAULT (0)；
 /// 其他模式返回 EINVAL。
 pub fn sys_set_mempolicy(mode: i32, nodemask: *const u64, maxnode: u64) -> SyscallRet {
-    warn!("[sys_set_mempolicy] not implement mode={}, nodemask={}, maxnode={}", mode, nodemask, maxnode);
+    warn!("[sys_set_mempolicy] not implement mode={}, nodemask={}, maxnode={}", mode, nodemask as usize, maxnode);
     if mode == MPOL_DEFAULT {
         return Ok(0);
     }
