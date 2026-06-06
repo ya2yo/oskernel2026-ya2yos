@@ -284,6 +284,9 @@ pub fn sys_kill(pid: isize, signo: usize) -> SyscallRet {
     if signo == 0 {
         return Ok(0);
     }
+    if signo > SIG_MAX_NUM {
+        return Err(SysErrNo::EINVAL);
+    }
     let sig = SigSet::from_sig(signo);
 
     // debug!("[sys_kill] pid is {}, sig is {:?}", pid, sig);
@@ -299,6 +302,12 @@ pub fn sys_kill(pid: isize, signo: usize) -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/tkill.2.html
 pub fn sys_tkill(tid: usize, signo: usize) -> SyscallRet {
+    if signo == 0 {
+        return Ok(0);
+    }
+    if signo > SIG_MAX_NUM {
+        return Err(SysErrNo::EINVAL);
+    }
     let sig = SigSet::from_sig(signo);
     // debug!("[sys_tkill] thread {} receive signal {:?}", tid, sig);
     send_signal_to_thread(tid, sig);
@@ -307,6 +316,12 @@ pub fn sys_tkill(tid: usize, signo: usize) -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/tgkill.2.html
 pub fn sys_tgkill(tgid: usize, tid: usize, signo: usize) -> SyscallRet {
+    if signo == 0 {
+        return Ok(0);
+    }
+    if signo > SIG_MAX_NUM {
+        return Err(SysErrNo::EINVAL);
+    }
     let sig = SigSet::from_sig(signo);
 
     // debug!(
