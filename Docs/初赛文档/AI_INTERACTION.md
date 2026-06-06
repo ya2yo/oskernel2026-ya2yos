@@ -416,3 +416,16 @@
 5. **架构知识查询** → 向 AI 查询龙芯架构的页表、异常处理等底层细节
 
 所有 AI 生成的代码或建议均经过人工审查和测试验证后才合入代码库。
+
+#### pthread_robust_detach 地址转换重构与 exit_signal 连锁修复（6.6）
+
+- **工具/模型**：Claude (Chat Mode + Code)
+- **场景**：Bug 分析与定位 + 代码重构
+- **描述**：
+  1. 用户要求将 `mm/translate.rs` 中 unsafe 地址转换函数（translated_byte_buffer 等）全部替换为 `copy_from_user`/`copy_to_user` 安全接口。AI 设计了 `copy_from_user_val<T>` / `copy_to_user_val<T>` 泛型封装，并逐文件替换 12 个文件中的 30+ 处调用。
+  2. 用户提供 `log.ans` 报 panic，AI 分析定位三个连锁 bug：VA 非法 panic（VirtAddr::from → try_from）、sigtimedwait 残留 interrupted 标志（加 clear_interrupt）、CLONE_THREAD 覆盖 exit_signal（加 !CLONE_THREAD 守卫）。
+  3. 用户要求移除 `task.get_fd_table()` 统一锁路径，AI 修改 20+ 处调用为 `proc_inner.fd_table`。
+  4. AI 通过添加调试日志 `sys_waitpid: my children (pid, exit_sig, all_exited): [(3, -1, true)]` 精确定位 exit_signal = -1 的根因。
+  5. 人工确认所有修改逻辑正确，测试通过。
+  过程详见根目录 `ai.log` 2026-06-06 条目。
+- **关联 commit**：`87f6933`、`b694ea6`、`27e3e6b`、`3afbf09`

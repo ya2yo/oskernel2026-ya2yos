@@ -146,8 +146,6 @@ pub fn sys_pselect6(
         if num > 0 || waittime == 0 {
             // 重新获取 memory_set 以写回结果
             {
-                let task = current_task().unwrap();
-                let proc_inner = task.process.inner_lock();
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 if let Some(using_readfds) = using_readfds {
                     copy_to_user(&memory_set, readfds, unsafe {

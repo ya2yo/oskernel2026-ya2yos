@@ -102,7 +102,7 @@ fn get_score() {
 
     // run_testsuit("musl\0", "ltp_testcode.sh\0");
         // #[cfg(target_arch = "riscv64")]
-        // ltp::test_ltp();
+        ltp::test_ltp();
         // test_cgroup_fj_function_cpuset_via_script();
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     // run_testsuit("musl\0", "iperf_testcode.sh\0");
@@ -114,13 +114,11 @@ fn get_score() {
     // run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
     // #[cfg(target_arch = "riscv64")]
     // run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过 
-    // #[cfg(target_arch = "riscv64")]
-    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv  通过
+    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loongarch 通过
     // run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
-    // // // run_testsuit("glibc\0", "ltp_testcode.sh\0");
-    // #[cfg(target_arch = "riscv64")]
-    // run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv 通过
-    libctest::pthread_robust_detach::run_glibc_dynamic();
+    // run_testsuit("glibc\0", "ltp_testcode.sh\0");
+    // run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
+    // libctest::pthread_robust_detach::run_glibc_dynamic();
 
     
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");

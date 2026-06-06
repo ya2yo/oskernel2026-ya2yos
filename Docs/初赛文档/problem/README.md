@@ -15,6 +15,7 @@
 - [wait4 阻塞未处理信号导致死循环](./wait4-signal.md)
 - [进程退出托孤 exit_and_reparent](./exit-reparent.md)
 - [线程信号栈检查错误与 futex 退出死锁](./thread-signal-stack-futex-deadlock.md)
+- [pthread_robust_detach：地址转换重构 + exit_signal 覆盖 + interrupted 残留](./pthread-robust-detach.md)
 
 ## 内存 / 页表
 

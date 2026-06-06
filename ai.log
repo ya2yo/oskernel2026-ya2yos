@@ -634,3 +634,45 @@ sigtimedwait 实现后，原 SIGTRAP crash 和内部错误消失，仅剩 "non-b
 
 - 代码：`os/src/syscall/signal.rs`、`os/src/task/task/task.rs`、`os/src/timer/timer_condvar.rs`、`os/src/task/futex.rs`、`os/src/timer/mod.rs`
 - 日志：`Docs/初赛文档/开发日志.md`
+
+---
+
+## 2026-06-06: pthread_robust_detach 修复 — 地址转换重构 + 三个连锁 bug
+
+### 问题发现
+
+用户提供 `log.ans`，报 `[kernel] Panicked at src/mm/address.rs:103 invalid va: 0x2e417e0221140`，`pthread_robust_detach` 测试失败。
+
+### 根因分析
+
+AI 分析日志后定位三个独立 bug：
+
+1. **非法 VA panic**：robust futex 链表被破坏，`next` 指针为 `0x2e417e0221140`（非 SV39 规范地址）。`copy_from_user` 内部 `VirtAddr::from()` 直接 `assert!` panic。修复：所有 `from` → `try_from`，非法时返回 `EFAULT`。
+
+2. **sigtimedwait 残留 interrupted**：`sigtimedwait` 超时时 `handle_sigtimedwait_timer` 调用 `task.interrupt()` 设置 `interrupted = true`，但返回 `EAGAIN` 后未清除。随后 `waitpid` 的 `interruptible` 看到残留标志直接返回 `EINTR`。修复：超时分支加 `task.clear_interrupt()`。
+
+3. **CLONE_THREAD 覆盖 exit_signal**：PID 2 fork PID 3 时设置 `exit_signal = SIGCHLD(17)`。PID 3 随后 `CLONE_THREAD` 创建 TID 4，`clone_process` 再次执行 exit_signal 设置代码 —— 线程共享进程，`child.process == self.process`，将 `SIGCHLD` 覆盖为 `-1`。`waitpid` 过滤器要求 `exit_signal == SIGCHLD` → 匹配失败 → `ECHILD`。修复：exit_signal 设置加 `!CLONE_THREAD` 守卫。
+
+AI 通过调试日志（`sys_waitpid: my children (pid, exit_sig, all_exited): [(3, -1, true)]`）精确定位 exit_signal 被覆盖的根因。
+
+### 死锁问题
+
+调试过程中 AI 添加的日志 `c.meta_lock().exit_signal` 和 `c.all_tasks_exited()` 分别调用了 `c.meta_lock()`（后者内部也调），导致进程 2 的 meta 锁被连续获取 → panic at process.rs:148。修复为一次锁内提取全部字段。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/mm/translate.rs` | 删除 translated_byte_buffer/safe_translated_byte_buffer/translated_refmut/put_data/get_data；新增 copy_from_user_val/copy_to_user_val/try_copy_from_user_val；所有 VirtAddr::from → try_from；新增内部辅助函数 |
+| `os/src/task/task/task.rs` | clone_process 两阶段重构避免死锁；exit_signal 加 !CLONE_THREAD 守卫 |
+| `os/src/task/futex.rs` | 函数签名适配 &MemorySet；try_get_data → try_copy_from_user_val |
+| `os/src/task/mod.rs` | 调用方适配新签名；exit 路径加调试日志 |
+| `os/src/signal/mod.rs` | get_data/put_data → copy_from_user_val/copy_to_user_val |
+| `os/src/syscall/signal.rs` | sigtimedwait 超时加 clear_interrupt() |
+| `os/src/syscall/task/wait.rs` | 新增 children 状态调试日志 |
+| 15+ syscall 文件 | 去 task.get_fd_table()，统一 proc_inner.fd_table；safe_translated_byte_buffer → 内核缓冲区 + copy_from_user/copy_to_user |
+
+### 涉及文件汇总
+
+- 代码：`os/src/mm/translate.rs`、`os/src/task/task/task.rs`、`os/src/task/futex.rs`、`os/src/task/mod.rs`、`os/src/signal/mod.rs`、`os/src/syscall/signal.rs`、`os/src/syscall/task/wait.rs`、`os/src/syscall/sys.rs`、`os/src/syscall/net/io.rs`、`os/src/syscall/fs/*.rs`、`os/src/syscall/io_mpx/*.rs`、`os/src/syscall/net/*.rs`、`os/src/mm/memory_set/*.rs`、`os/src/mm/page_fault_handler.rs`、`os/src/fs/files/net.rs`
+- 文档：`Docs/初赛文档/开发日志.md`、`Docs/初赛文档/problem/pthread-robust-detach.md`、`Docs/初赛文档/problem/README.md`
