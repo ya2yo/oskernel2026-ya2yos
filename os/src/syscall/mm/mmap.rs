@@ -35,12 +35,6 @@ pub fn sys_mmap(
     // flags=0x4022导致问题
     // 不对啊，1<<14这一位没用啊？
 
-    // 地址合法性 (MAP_FIXED / MAP_FIXED_NOREPLACE 要求 addr 非零)
-    if (flags.contains(MmapFlags::MAP_FIXED) || flags.contains(MmapFlags::MAP_FIXED_NOREPLACE))
-        && addr == 0
-    {
-        return Err(SysErrNo::EPERM);
-    }
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_write();
@@ -88,7 +82,7 @@ pub fn sys_mmap(
             && map_perm.contains(MapPermission::W)
             && !file.writable()
     {
-        return Err(SysErrNo::EPERM);
+        return Err(SysErrNo::EACCES);
     }
     let rv = memory_set.mmap(addr, len, map_perm, flags, Some(file), off);
     debug!("[sys_mmap] alloc addr={:#x}", rv);
