@@ -50,6 +50,12 @@ impl Process {
             let mut meta = self.meta_lock();
             let orphans: Vec<Arc<Process>> =
                 meta.children.iter().filter_map(|w| w.upgrade()).collect();
+            debug!(
+                "[exit_and_reparent] pid {} clearing {} children, {} tasks",
+                self.pid,
+                orphans.len(),
+                meta.tasks.len()
+            );
             meta.children.clear();
             meta.tasks.clear();
             orphans

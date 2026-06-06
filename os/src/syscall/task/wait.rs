@@ -69,6 +69,14 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
         let task = current_task().unwrap();
         let mut process_meta = task.process.meta_lock();
 
+        let all_weak_children: Vec<_> = process_meta.children.iter()
+            .filter_map(|w| w.upgrade().map(|c| {
+                let meta = c.meta_lock();
+                (c.pid, meta.exit_signal, meta.tasks.iter().all(|x| x.upgrade().is_none()))
+            }))
+            .collect();
+        debug!("sys_waitpid: my children (pid, exit_sig, all_exited): {:?}", all_weak_children);
+
         let children: Vec<Arc<Process>> = process_meta
             .children
             .iter()

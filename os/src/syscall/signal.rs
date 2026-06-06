@@ -198,6 +198,7 @@ pub fn sys_rt_sigtimedwait(
         // 检查是否因超时被唤醒
         if task_inner.sigtimedwait_timedout {
             task_inner.sigtimedwait_timedout = false;
+            task.clear_interrupt(); // 清除 timer 设置的 interrupted 标志，避免污染后续 syscall
             drop(task_inner);
             return Poll::Ready(Err(SysErrNo::EAGAIN));
         }

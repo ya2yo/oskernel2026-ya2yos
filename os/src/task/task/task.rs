@@ -612,14 +612,18 @@ impl TaskControlBlock {
             copy_to_user_val(&*child_mem, child_tid, &(child.tid() as u32)).unwrap();
         }
 
-        // exit_signal
-        {
+        // exit_signal: 仅 fork（非线程）才设置，线程共享进程不能覆盖已有值
+        if !flags.contains(CloneFlags::CLONE_THREAD) {
             let mut child_meta = child.process.meta_lock();
             child_meta.exit_signal = if flags.contains(CloneFlags::SIGCHLD) {
                 SIGCHLD as i32
             } else {
                 -1
             };
+            debug!(
+                "[clone_process] fork pid={}, flags={:?}, exit_signal={}",
+                child_pid, flags, child_meta.exit_signal
+            );
         }
 
         // 为子进程创建 /proc/<pid>/stat 和 /proc/<pid>/maps

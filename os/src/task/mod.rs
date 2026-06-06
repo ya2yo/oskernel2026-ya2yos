@@ -298,7 +298,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             .iter()
             .all(|bro_task| bro_task.inner_lock().is_zombie())
         {
-            if Arc::strong_count(&curr_proc.memory_set) ==1 {
+            debug!("[exit] pid {}: all tasks zombie, calling exit_and_reparent", curr_task.pid());
+            if Arc::strong_count(&curr_proc.memory_set) == 1 {
                 memory_set.recycle_data_pages();
             }
             curr_proc.fd_table.clear();
@@ -322,6 +323,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             if let Some(parent) = Process::get_process_arc_by_pid(curr_task.ppid()) {
                 parent.meta_lock().child_exit_event.wake();
             }
+        } else {
+            debug!("[exit] pid {}: NOT all tasks zombie, bro_tasks count: {}", curr_task.pid(), bro_tasks.len());
         }
     }
     // 安全地切换内核栈
