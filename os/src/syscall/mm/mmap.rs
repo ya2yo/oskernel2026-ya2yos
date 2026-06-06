@@ -29,11 +29,9 @@ pub fn sys_mmap(
         "[sysmap] addr={:#x},len={},prot={:#x},flags={:#x},fd={},off={}",
         addr, len, prot, flags, fd, off
     );
-    let map_perm: MapPermission = MmapProt::from_bits(prot).unwrap().into();
-    let flags = MmapFlags::from_bits(flags).expect(&format!(
-        "sys_mmap: Failed to convert flags to MmapFlags bitmap: value is {:#x}",
-        flags
-    ));
+    let map_perm: MapPermission = MmapProt::from_bits_truncate(prot).into();
+    // 使用 from_bits_truncate 忽略未知标志位，与 Linux 内核行为一致
+    let flags = MmapFlags::from_bits_truncate(flags);
     // flags=0x4022导致问题
     // 不对啊，1<<14这一位没用啊？
 
@@ -221,7 +219,7 @@ pub fn sys_mprotect(addr: usize, len: usize, prot: u32) -> SyscallRet {
         Some(v) => v,
         None => return Err(SysErrNo::EINVAL),
     };
-    let map_perm: MapPermission = MmapProt::from_bits(prot).unwrap().into();
+    let map_perm: MapPermission = MmapProt::from_bits_truncate(prot).into();
 
     // debug!(
     //     "[sys_mprotect] addr is {:x}, len is {:#x}, map_perm is {:?}",

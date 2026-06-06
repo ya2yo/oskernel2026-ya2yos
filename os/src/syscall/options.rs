@@ -1,6 +1,6 @@
 /// 存放系统调用的各种Option
 use crate::mm::MapPermission;
-use linux_raw_sys::general::{WCONTINUED, WNOHANG, WNOWAIT, WUNTRACED};
+use linux_raw_sys::general::{MAP_ANONYMOUS, MAP_DENYWRITE, MAP_EXECUTABLE, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN, MAP_NORESERVE, MAP_POPULATE, MAP_PRIVATE, MAP_SHARED, MAP_STACK, WCONTINUED, WNOHANG, WNOWAIT, WUNTRACED};
 use num_enum::FromPrimitive;
 
 /// 可以打开文件的最大数量
@@ -55,22 +55,26 @@ bitflags! {
     /// Mmap flags
     pub struct MmapFlags: u32 {
         /// 修改会同步到文件，其他进程会看见这些修改
-        const MAP_SHARED = 1 << 0;
+        const MAP_SHARED = MAP_SHARED;
         /// 修改不会同步到文件
-        const MAP_PRIVATE = 1 << 1;
+        const MAP_PRIVATE = MAP_PRIVATE;
         /// 强制使用该位置进行映射
-        const MAP_FIXED = 1 << 4;
+        const MAP_FIXED = MAP_FIXED;
         /// 创建匿名映射​（不与文件关联，初始化为零），此时 fd 应为 -1。
-        const MAP_ANONYMOUS = 1 << 5;
+        const MAP_ANONYMOUS = MAP_ANONYMOUS;
+        /// 映射向下增长（用于栈），本内核作为 no-op 接受
+        const MAP_GROWSDOWN = MAP_GROWSDOWN;
+        /// This flag is ignored.
+        const MAP_EXECUTABLE = MAP_EXECUTABLE;
         /// 有了这个标志后，禁止对映射文件写入（通过 write 调用），仅允许通过映射修改。
-        const MAP_DENYWRITE = 1 << 11;
+        const MAP_DENYWRITE = MAP_DENYWRITE;
         /// 栈，自动延伸
-        const MAP_STACK = 1 << 17;
-        const MAP_14 = 1<<14;   // TODO: 奇奇怪怪，为什么glibc entry-static.exe pthread_cancel_points会用到这个标志位？
+        const MAP_STACK = MAP_STACK;
+        const MAP_NORESERVE = MAP_NORESERVE;   
         /// 预先填充页表（MAP_POPULATE），我们作为 no-op 接受
-        const MAP_POPULATE = 1 << 15;
+        const MAP_POPULATE = MAP_POPULATE;
         /// MAP_FIXED_NOREPLACE: 类似 MAP_FIXED，但如果地址已被映射则返回 EEXIST 而不是替换
-        const MAP_FIXED_NOREPLACE = 1 << 20;
+        const MAP_FIXED_NOREPLACE = MAP_FIXED_NOREPLACE;
     }
 }
 
