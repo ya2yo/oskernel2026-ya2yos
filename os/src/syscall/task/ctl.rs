@@ -3,7 +3,7 @@ use crate::{
     task::current_task,
     utils::{SysErrNo, SysResult, SyscallRet},
 };
-
+use log::warn;
 /// 参考 https://man7.org/linux/man-pages/man2/umask.2.html
 ///
 /// 设置进程的文件模式创建掩码为 `mask & 0777`，返回旧的掩码。
@@ -24,7 +24,8 @@ const MPOL_DEFAULT: i32 = 0;
 /// 设置调用线程的 NUMA 内存策略。
 /// 由于内核没有 NUMA 支持，仅接受 mode == MPOL_DEFAULT (0)；
 /// 其他模式返回 EINVAL。
-pub fn sys_set_mempolicy(mode: i32, _nodemask: *const u64, _maxnode: u64) -> SyscallRet {
+pub fn sys_set_mempolicy(mode: i32, nodemask: *const u64, maxnode: u64) -> SyscallRet {
+    warn!("[sys_set_mempolicy] not implement mode={}, nodemask={}, maxnode={}", mode, nodemask, maxnode);
     if mode == MPOL_DEFAULT {
         return Ok(0);
     }

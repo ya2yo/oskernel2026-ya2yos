@@ -376,6 +376,73 @@ pub fn sys_fsync(fd: usize) -> SyscallRet {
     Ok(0)
 }
 
+/// 参考 https://man7.org/linux/man-pages/man2/fdatasync.2.html
+///
+/// 将文件数据冲刷到磁盘（类似 fsync，但不强制刷新元数据）。
+/// 当前内核不区分数据/元数据同步，语义与 fsync 相同。
+pub fn sys_fdatasync(fd: usize) -> SyscallRet {
+    sys_fsync(fd)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/sync_file_range.2.html
+///
+/// 将文件指定范围内的数据冲刷到磁盘。
+///
+/// # 参数
+/// - `fd`: 文件描述符
+/// - `offset`: 起始偏移（字节）
+/// - `nbytes`: 同步字节数（0 表示从 offset 到文件末尾）
+/// - `flags`: SYNC_FILE_RANGE_WAIT_BEFORE / SYNC_FILE_RANGE_WRITE / SYNC_FILE_RANGE_WAIT_AFTER 的组合
+///
+/// # 返回值
+/// 成功返回 0。
+pub fn sys_sync_file_range(fd: i32, offset: i64, nbytes: i64, flags: u32) -> SyscallRet {
+    // 参考 https://man7.org/linux/man-pages/man2/sync_file_range.2.html
+    const SYNC_FILE_RANGE_WAIT_BEFORE: u32 = 1;
+    const SYNC_FILE_RANGE_WRITE: u32 = 2;
+    const SYNC_FILE_RANGE_WAIT_AFTER: u32 = 4;
+    const VALID_FLAGS: u32 =
+        SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER;
+
+    // EINVAL: flags 包含未定义的位，或同时指定 WAIT_BEFORE 和 WAIT_AFTER 但未指定 WRITE
+    if flags & !VALID_FLAGS != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // EBADF: fd 无效
+    if fd < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+    let fd = fd as usize;
+
+    // ESPIPE: fd 指向管道、FIFO 或 socket
+    // EINVAL: offset < 0 或 nbytes < 0
+    if offset < 0 || nbytes < 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let inner = task.process.inner_lock();
+
+    if fd >= inner.fd_table.len() || inner.fd_table.try_get(fd).is_none() {
+        return Err(SysErrNo::EBADF);
+    }
+
+    // nbytes == 0 表示从 offset 同步到文件末尾（语义等价于 fsync）
+    if nbytes == 0 {
+        let file = inner.fd_table.get(fd)?.file()?;
+        file.inode.sync();
+        return Ok(0);
+    }
+
+    // 非零 nbytes：同步指定范围的数据
+    let file = inner.fd_table.get(fd)?.file()?;
+    // 检查 fd 不是管道（管道不支持 sync_file_range）
+    // ESPIPE 留给后续细化；当前直接执行 sync
+    file.inode.sync();
+    Ok(0)
+}
+
 /// fat32文件系统可以使用此调用
 /// ext4文件系统暂不支持将offset设置在超过文件大小
 /// 参考 https://man7.org/linux/man-pages/man2/copy_file_range.2.html

@@ -90,7 +90,6 @@ pub fn sys_acct(filename: *const u8) -> SyscallRet {
     if !osfile.inode.types().is_file() {
         return Err(SysErrNo::EACCES);
     }
-
     // 存储记账文件
     *ACCT_FILE.lock() = Some(osfile);
     debug!("[sys_acct] accounting enabled, file = {}", abs_path);

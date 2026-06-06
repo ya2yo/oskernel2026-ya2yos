@@ -90,6 +90,8 @@ pub enum Syscall {
     Fstat = 80,
     Sync = 81,
     Fsync = 82,
+    Fdatasync = 83,
+    SyncFileRange = 84,
     TimerfdCreate = 85,
     TimerfdSettime = 86,
     TimerfdGettime = 87,
@@ -438,6 +440,13 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::Sync => sys_sync(),
         Syscall::Fsync => sys_fsync(args[0]),
+        Syscall::Fdatasync => sys_fdatasync(args[0]),
+        Syscall::SyncFileRange => sys_sync_file_range(
+            args[0] as i32,
+            args[1] as i64,
+            args[2] as i64,
+            args[3] as u32,
+        ),
         Syscall::Utimensat => sys_utimensat(
             args[0] as isize,
             args[1] as *const u8,
