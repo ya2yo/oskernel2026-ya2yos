@@ -330,10 +330,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             // 扩展 owner 类型（TID/PID/PGRP），暂不支持
             return Err(SysErrNo::EINVAL);
         }
-
-        // -------------------------------------------------------------------
-        // 文件租约（file lease）
-        // -------------------------------------------------------------------
+        // 文件租约（file lease）-
         FcntlCmd::F_SETLEASE => {
             // 简化实现：始终返回 EAGAIN（无冲突打开时可成功，但当前不做跟踪）
             // 正确实现需要跟踪每个文件的所有打开 fd，此处作为 stub
@@ -343,17 +340,11 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             // 返回当前租约类型，F_UNLCK 表示无租约
             return Ok(F_UNLCK as usize);
         }
-
-        // -------------------------------------------------------------------
         // 目录变动通知
-        // -------------------------------------------------------------------
         FcntlCmd::F_NOTIFY => {
             return Err(SysErrNo::EINVAL);
         }
-
-        // -------------------------------------------------------------------
         // DUPFD_QUERY — 查询 F_DUPFD 将分配的 fd 编号（不实际分配）
-        // -------------------------------------------------------------------
         FcntlCmd::F_DUPFD_QUERY => {
             let fd_table = &proc_inner.fd_table;
             let soft_limit = fd_table.get_soft_limit();
@@ -571,10 +562,6 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
 
     Ok(0)
 }
-
-// ---------------------------------------------------------------------------
-// openat2(437)
-// ---------------------------------------------------------------------------
 
 /// 参考 https://man7.org/linux/man-pages/man2/openat2.2.html
 ///

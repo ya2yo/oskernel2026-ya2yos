@@ -3,6 +3,7 @@ mod event;
 mod fcntl;
 mod fd_ops;
 mod file_lock;
+mod handle;
 mod io;
 mod mount;
 mod mqueue;
@@ -29,7 +30,7 @@ const IN_CLOEXEC: u32 = OpenFlags::O_CLOEXEC.bits();
 const IN_NONBLOCK: u32 = OpenFlags::O_NONBLOCK.bits();
 
 pub use self::{
-    ctl::*, event::*, fcntl::*, fd_ops::*, io::*, mount::*, mqueue::*,
+    ctl::*, event::*, fcntl::*, fd_ops::*, handle::*, io::*, mount::*, mqueue::*,
     pipe::*, stat::*, xattr::*,
 };
 

@@ -226,6 +226,8 @@ pub enum Syscall {
     Wait4 = 260,
     Prlimit = 261,
     FanotifyInit = 262,
+    NameToHandleAt = 264,
+    OpenByHandleAt = 265,
     ClockAdjtime = 266,
     Kcmp = 272,
     Renameat2 = 276,
@@ -726,6 +728,18 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
 
         // dummy fds
         Syscall::FanotifyInit => sys_fanotify_init(args[0] as u32, args[1] as u32),
+        Syscall::NameToHandleAt => sys_name_to_handle_at(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as *mut u8,
+            args[3] as *mut i32,
+            args[4] as u32,
+        ),
+        Syscall::OpenByHandleAt => sys_open_by_handle_at(
+            args[0] as i32,
+            args[1] as *mut u8,
+            args[2] as u32,
+        ),
         Syscall::MemfdCreate => sys_memfd_create(args[0] as *const u8, args[1] as u32),
         Syscall::Bpf => sys_bpf(args[0] as i32, args[1] as *mut u8, args[2] as u32),
         Syscall::UserFaultfd => sys_user_faultfd(args[0] as u32),
