@@ -141,7 +141,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
         && trap_cx.get_a0() == SysErrNo::ERESTART as usize
     {
         // 我们的内核是不可抢占的，因此理论上这不会发生
-        panic!("SysErrNo::ERESTART should not happen: this kernel is non-preemptive!");
+        warn!("SysErrNo::ERESTART should not happen: this kernel is non-preemptive!");
         // and if `SA_RESTART` is set
         if sig_action.act.sa_flags.contains(SigActionFlags::SA_RESTART) {
             // debug!("[do_signal] syscall will restart after sigreturn");

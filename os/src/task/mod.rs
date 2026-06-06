@@ -144,10 +144,26 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
             }
             let mut alive_inner = alive_t.inner_lock();
             if alive_inner.task_status == TaskStatus::Blocked {
+                let futex_key = alive_inner.futex_key;
+                let futex_pa = alive_inner.futex_pa;
                 alive_inner.task_status = TaskStatus::Ready;
+                alive_inner.futex_key = 0;
+                alive_inner.futex_pa = 0;
+                drop(alive_inner);
+                // 从 futex 等待队列中移除，防止后续 futex_wake/handle_timer
+                // 根据已清理的 futex 字段错误地再次将本任务加入就绪队列
+                if futex_key != 0 {
+                    let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+                    if let Some(queue) = waitq.get_mut(&futex_pa) {
+                        if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
+                            queue.remove(idx);
+                        }
+                    }
+                }
                 ready_queue::add_task(&alive_t);
+            } else {
+                drop(alive_inner);
             }
-            drop(alive_inner);
         }
     }
     if sigtable.not_exited() {

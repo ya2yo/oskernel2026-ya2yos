@@ -296,7 +296,7 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> SyscallRet {
     }
 
     // EINVAL: 溢出检查
-    let end = match addr.checked_add(length) {
+    let _end = match addr.checked_add(length) {
         Some(v) => v,
         None => return Err(SysErrNo::EINVAL),
     };
