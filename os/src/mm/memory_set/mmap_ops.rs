@@ -21,9 +21,9 @@ use crate::arch::tlb::tlb_invalidate;
 use crate::fs::{File, OSFile, OpenFlags, SEEK_CUR, SEEK_SET};
 use crate::syscall::MmapFlags;
 use crate::trap::trap_types::*;
-use crate::utils::SyscallRet;
+use crate::utils::{SysErrNo, SyscallRet};
 use alloc::{string::String, sync::Arc, vec::Vec};
-use log::debug;
+use log::{debug, warn};
 
 impl MemorySetInner {
     pub fn shm(
@@ -56,8 +56,17 @@ impl MemorySetInner {
     ) -> usize {
         debug!("[mmap] addr={:x}, len={}, map_perm={:?}, flags={:?}", addr, len, map_perm, flags);
         if flags.contains(MmapFlags::MAP_FIXED) {
+            // 检查 addr + len 是否溢出
+            let end_addr = match addr.checked_add(len) {
+                Some(v) => v,
+                None => return 0,
+            };
+            // 如果 end_addr 比 addr 还小，说明发生了回绕，拒绝
+            if end_addr < addr {
+                return 0;
+            }
             let start_vpn = VirtAddr::from(addr).floor();
-            let end_vpn = VirtAddr::from(addr + len).ceil();
+            let end_vpn = VirtAddr::from(end_addr).ceil();
             let need_split = self.areas.iter().any(|area| {
                 let (l, r) = area.vpn_range.range();
                 if l <= start_vpn && end_vpn <= r {
@@ -70,7 +79,7 @@ impl MemorySetInner {
                 self.mprotect(start_vpn, end_vpn, map_perm, file, off, true);
             } else {
                 self.push_lazily(MapArea::new_mmap(
-                    VirtAddr::from(addr), VirtAddr::from(addr + len),
+                    VirtAddr::from(addr), VirtAddr::from(end_addr),
                     MapType::Framed, map_perm, MapAreaType::Mmap,
                     file, off, flags,
                 ));
@@ -110,8 +119,13 @@ impl MemorySetInner {
     /// munmap
     pub fn munmap(&mut self, addr: usize, len: usize) -> SyscallRet {
         debug!("[munmap] addr={:x}, len={}", addr, len);
+        // 检查 addr + len 是否溢出
+        let end_addr = match addr.checked_add(len) {
+            Some(v) => v,
+            None => return Err(SysErrNo::EINVAL),
+        };
         let start_vpn = VirtPageNum::from(VirtAddr::from(addr));
-        let end_vpn = VirtPageNum::from(VirtAddr::from(addr + len));
+        let end_vpn = VirtPageNum::from(VirtAddr::from(end_addr));
         while let Some((idx, area)) = self
             .areas
             .iter_mut()
@@ -190,6 +204,11 @@ impl MemorySetInner {
         offset: usize,
         if_mmap: bool,
     ) {
+        // 防御性检查：如果范围无效则直接返回
+        if start_vpn >= end_vpn {
+            warn!("[mprotect] invalid range: start_vpn={:?} >= end_vpn={:?}", start_vpn, end_vpn);
+            return;
+        }
         let mut new_areas = Vec::new();
         for area in self.areas.iter_mut() {
             let (start, end) = area.vpn_range.range();

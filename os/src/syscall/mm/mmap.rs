@@ -140,11 +140,16 @@ pub fn sys_mremap(
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_write();
+    // 检查 old_addr + old_size 是否溢出
+    let old_end = match old_addr.checked_add(old_size) {
+        Some(v) => v,
+        None => return Err(SysErrNo::EINVAL),
+    };
     let old_area = memory_set
         .get_mut()
         .find_area_by_range(
             VirtAddr::from(old_addr).floor(),
-            VirtAddr::from(old_addr + old_size - 1).ceil(),
+            VirtAddr::from(old_end.saturating_sub(1)).ceil(),
         )
         .unwrap();
     if old_area.area_type != MapAreaType::Mmap {
@@ -200,6 +205,11 @@ pub fn sys_mprotect(addr: usize, len: usize, prot: u32) -> SyscallRet {
         println!("sys_mprotect: not align");
         return Err(SysErrNo::EINVAL);
     }
+    // 检查 addr + len 是否溢出
+    let end_addr = match addr.checked_add(len) {
+        Some(v) => v,
+        None => return Err(SysErrNo::EINVAL),
+    };
     let map_perm: MapPermission = MmapProt::from_bits(prot).unwrap().into();
 
     // debug!(
@@ -211,7 +221,7 @@ pub fn sys_mprotect(addr: usize, len: usize, prot: u32) -> SyscallRet {
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_write();
     let start_vpn = VirtAddr::from(addr).floor();
-    let end_vpn = VirtAddr::from(addr + len).ceil();
+    let end_vpn = VirtAddr::from(end_addr).ceil();
     //修改各段的mappermission
     memory_set.mprotect(start_vpn, end_vpn, map_perm);
     Ok(0)
@@ -295,11 +305,10 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> SyscallRet {
         return Ok(0);
     }
 
-    // EINVAL: 溢出检查
-    let _end = match addr.checked_add(length) {
-        Some(v) => v,
-        None => return Err(SysErrNo::EINVAL),
-    };
+    // EINVAL: 溢出检查，addr + length 不能溢出
+    if addr.checked_add(length).is_none() {
+        return Err(SysErrNo::EINVAL);
+    }
 
     let task = current_task().unwrap();
     let proc = task.process.inner_lock();
