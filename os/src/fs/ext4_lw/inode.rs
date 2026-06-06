@@ -249,7 +249,13 @@ impl Inode for Ext4Inode {
     /// 获取文件状态信息
     fn fstat(&self) -> Kstat {
         let file = &mut self.inner.get_unchecked_mut().f;
-        let stat = file.fstat().unwrap();
+        let stat = match file.fstat() {
+            Ok(s) => s,
+            Err(rc) => {
+                warn!("Ext4Inode::fstat: ext4_stat_get failed rc={}, path={:?}", rc, file.path());
+                return Kstat::default();
+            }
+        };
         let mut tmp_stat = stat; // ext4_inode_stat
 
         // 兼容性修补，处理时间戳高位。

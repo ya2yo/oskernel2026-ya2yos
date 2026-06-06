@@ -455,7 +455,15 @@ pub fn sys_renameat2(
     let old_abs_path = proc_inner.get_abs_path(olddirfd, &oldpath)?;
     let osfile = open(&old_abs_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
     let new_abs_path = proc_inner.get_abs_path(newdirfd, &newpath)?;
-    osfile.inode.rename(&old_abs_path, &new_abs_path)
+    let ret = osfile.inode.rename(&old_abs_path, &new_abs_path);
+    // rename 成功后，旧路径的文件已移到新路径，需要更新/清理 FsIndex 缓存，
+    // 否则后续对旧路径的访问会命中缓存中的过期 inode，导致 fstat 等操作
+    // 因底层 ext4_stat_get 找不到原路径而返回 ENOENT → panic。
+    if ret.is_ok() {
+        FsIndex::remove_inode_idx(&old_abs_path);
+        FsIndex::remove_inode_idx(&new_abs_path);
+    }
+    ret
 }
 
 pub fn sys_fchownat(
