@@ -148,13 +148,15 @@ pub fn sys_mremap(
         Some(v) => v,
         None => return Err(SysErrNo::EINVAL),
     };
-    let old_area = memory_set
+    let old_area = match memory_set
         .get_mut()
         .find_area_by_range(
             VirtAddr::from(old_addr).floor(),
             VirtAddr::from(old_end.saturating_sub(1)).ceil(),
-        )
-        .unwrap();
+        ) {
+        Some(area) => area,
+        None => return Err(SysErrNo::EFAULT),
+    };
     if old_area.area_type != MapAreaType::Mmap {
         debug!("old_area.area_type != MapAreaType::Mmap");
         return Err(SysErrNo::EINVAL);
