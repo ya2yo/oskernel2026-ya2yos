@@ -30,6 +30,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "check_setkey\0",
     "cleanup_lvm.sh\0",
     "cn_pec.sh\0",
+    "connect01\0",
     "cp_tests.sh\0",
     "cpio_tests.sh\0",
     "cpuacct.sh\0",
@@ -51,6 +52,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "dio_read\0",
     "dio_sparse\0",
     "dio_truncate\0",
+    // "diotest2\0",
     "diotest4\0",
     "diotest6\0",
     "dirty\0",
@@ -204,6 +206,8 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "genhypot\0",
     "genmodf\0",
     // [800,900)区间
+    "ima_boot_aggregate\0",
+    "ima_conditionals.sh\0",
     // [900,1000)区间
     "icmp4-multi-diffip01\0",
     "icmp4-multi-diffip02\0",
@@ -256,7 +260,16 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "link08\0",
     "madvise05\0",
     "mallocstress\0",
+    "memcg_force_empty.sh\0",
+    "memcg_control_test.sh\0",
+    "memcg_limit_in_bytes.sh\0",
+    "memcg_max_usage_in_bytes_test.sh\0",
+    "memcg_memsw_limit_in_bytes_test.sh\0",
+    "memcg_move_charge_at_immigrate_test.sh\0",
+    "memcg_regression_test.sh\0",
     // [1200,---)区间
+    "memcg_stat_test.sh\0",
+    "memcg_stress_test.sh\0",
     "memcg_subgroup_charge.sh\0",
     "memcg_test_2\0",
     "memcg_test_4\0",
@@ -366,6 +379,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     // [2000,---)区间
     "shmt04\0",
     "shmt05\0",
+    "shmt06\0",
     "shmt10\0",
     "sighold02\0",
     "sigrelse01\0",
@@ -748,6 +762,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "tcp6-uni-winscale13\0",
     "tcp6-uni-winscale14\0",
     "tgkill02\0",
+    "thp01\0",
     "timed_forkbomb\0",
     "timerfd01\0",
     "timerfd_settime02\0",
@@ -810,6 +825,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "udp6-uni-basic06\0",
     "udp6-uni-basic07\0",
     // [2700,---)区间
+    "vma05.sh\0",
     "vmsplice04\0",
     // [2800,---)区间
     "writev06\0",

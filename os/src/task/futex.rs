@@ -219,7 +219,7 @@ pub fn sys_futex(
     val: i32,
     timeout: *const Timespec,
     uaddr2: *mut u32,
-    _val3: i32,
+    val3: i32,
 ) -> SyscallRet {
     let cmd = FutexCmd::try_from(futex_op & 0x7f).map_err(|_| SysErrNo::EINVAL)?;
     let opt = FutexOpt::from_bits_truncate(futex_op);
@@ -284,10 +284,38 @@ pub fn sys_futex(
     );
 
     // 在释放锁之前检查 futex 值（Wait/WaitBitset 需要原子性检查）
+    // 同时检查 robust mutex 的 owner 是否已死：
+    //   如果 futex word 中的 owner TID 对应的任务已退出（无论 OWNER_DIED 是否已设置），
+    //   则清空 futex word 为 0（相当于在退出路径已完成 pthread_mutex_consistent 恢复），
+    //   用户空间随后可直接 CAS 0→self_tid 取得锁。
+    //   参考: https://www.kernel.org/doc/html/latest/locking/robust-futexes.html
     if matches!(cmd, FutexCmd::Wait | FutexCmd::WaitBitset) {
         let current_val: i32 = copy_from_user_val(&memory_set, uaddr)?;
         if current_val != val {
             return Err(SysErrNo::EAGAIN);
+        }
+        let current_u32 = current_val as u32;
+        let futex_tid = current_u32 & FUTEX_TID_MASK;
+        // 如果 owner TID 不为 0 且对应任务已不存在，
+        // 将该 futex 重置为 0（解锁），让调用者可以正常获取锁。
+        // 注意：这意味着 robust-mutex 恢复通知（OWNER_DIED）被隐式完成；
+        // 应用程序不会看到 EOWNERDEAD，但不会死锁。
+        if futex_tid != 0
+            && tid_to_task::tid2task(futex_tid as usize).is_none()
+        {
+            debug!(
+                "[sys_futex] dead owner detected: futex owned by dead TID {}, clearing to 0",
+                futex_tid
+            );
+            let _ = copy_to_user_val(&memory_set, uaddr, &0i32);
+            drop(memory_set);
+            drop(task_inner);
+            drop(process);
+            // 唤醒可能在同一个 futex 上睡眠的其他等待者
+            futex_wake_up(pa, core::i32::MAX);
+            // 返回 Ok(0) 表示“futex 值已改变”，
+            // 用户空间重新读取后发现 0 即可 CAS 获取锁
+            return Ok(0);
         }
     }
 
@@ -299,7 +327,7 @@ pub fn sys_futex(
             let bitset = if cmd == FutexCmd::Wait {
                 u32::MAX
             } else {
-                _val3 as u32
+                val3 as u32
             };
             futex_wait_bitset(pa, task, bitset, timeout_opt)
         }
@@ -308,7 +336,7 @@ pub fn sys_futex(
             let bitset = if cmd == FutexCmd::Wake {
                 u32::MAX
             } else {
-                _val3 as u32
+                val3 as u32
             };
             Ok(futex_wake_up_bitset(pa, val, bitset))
         }
