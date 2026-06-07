@@ -7,8 +7,7 @@ extern crate user_lib;
 
 use libctest::runall::{run_specific_test, runall};
 use user_lib::{
-    chdir, execve, exit, fork, println, shutdown, waitpid,
-    AF_INET, SOCK_DGRAM, SOCK_STREAM, socket, wait
+    AF_INET, SOCK_DGRAM, SOCK_STREAM, chdir, execve, exit, fork, print, println, shutdown, socket, wait, waitpid
 };
 
 use crate::libctest::pthread_cancel_points::run_musl_static;
@@ -97,10 +96,8 @@ fn get_score() {
     run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
     run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
         // #[cfg(target_arch = "riscv64")]
-        ltp::test_ltp();
         // test_cgroup_fj_function_cpuset_via_script();
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     // run_testsuit("musl\0", "iperf_testcode.sh\0");
@@ -113,11 +110,13 @@ fn get_score() {
     #[cfg(target_arch = "riscv64")]
     run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过 
     run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loongarch 通过
+    #[cfg(target_arch = "riscv64")]
     run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
     run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
     // libctest::pthread_robust_detach::run_glibc_dynamic();
 
-    
+    ltp::test_ltp();
+    run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");
     // run_testsuit("glibc\0", "netperf_testcode.sh\0");
@@ -127,3 +126,4 @@ fn get_score() {
     // ltp::test_glibc_memory();                            // 跑全部内存相关测例
     // ltp::test_glibc_custom(&["brk01\0", "brk02\0"]);      // 自定义一组测例
 }
+

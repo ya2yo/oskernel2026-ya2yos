@@ -10,6 +10,7 @@ use spin::{Lazy, Mutex, RwLock};
 
 const PAGE_SIZE: usize = 4096;
 pub const PAGE_MASK: usize = !0xfff;
+const MAX_CACHED_FILE_SIZE: usize = 0x10_0000; // 1 MiB
 
 fn aligned_down(addr: usize) -> usize {
     addr & PAGE_MASK
@@ -258,73 +259,77 @@ impl Ext4File {
         Ok(EOK as usize)
     }
 
-    //检查是否在cache表中，没有则添加
+    // 检查是否值得建立文件缓存。大文件直接走 ext4，避免一次性占用大量堆。
     fn check_cached(&mut self, file_path: String) {
-        if !if_cache(file_path.clone()) {
-            insert_fifo(file_path.clone());
-            let cache = Arc::new(RwLock::new(VFileCache::new()));
-            let mut cache_writer = cache.write();
-            debug!("initialize cache! {}", file_path);
-            let c_path = CString::new(file_path.as_str()).expect("CString::new failed");
-            let c_path = c_path.into_raw();
-            let c_flags = Ext4File::flags_to_cstring(2).into_raw();
-
-            //重新打开文件获得最新的文件信息
-            unsafe { ext4_fopen(&mut self.file_desc, c_path, c_flags) };
-            unsafe {
-                // deallocate the CString
-                drop(CString::from_raw(c_path));
-                drop(CString::from_raw(c_flags));
-            }
-
-            let size = unsafe { ext4_fsize(&mut self.file_desc) as usize };
-            //debug!("initialize size={}", size);
-            let aligned_size = aligned_down(size) + PAGE_SIZE;
-            cache_writer.data = Vec::with_capacity(aligned_size);
-            let data = &mut cache_writer.data;
-            unsafe {
-                data.set_len(aligned_size);
-            }
-            cache_writer.size = size;
-            if size == 0 {
-                insert_cache(file_path.clone(), &cache);
-                return;
-            }
-            unsafe { ext4_fseek(&mut self.file_desc, 0, 0) };
-            let mut rw_count = 0;
-            unsafe {
-                ext4_fread(
-                    &mut self.file_desc,
-                    cache_writer.data.as_mut_ptr() as _,
-                    size,
-                    &mut rw_count,
-                )
-            };
-            insert_cache(file_path.clone(), &cache);
+        if if_cache(file_path.clone()) {
+            return;
         }
+
+        debug!("initialize cache! {}", file_path);
+        let c_path = CString::new(file_path.as_str()).expect("CString::new failed");
+        let c_path = c_path.into_raw();
+        let c_flags = Ext4File::flags_to_cstring(2).into_raw();
+
+        // 重新打开文件获得最新的文件信息
+        unsafe { ext4_fopen(&mut self.file_desc, c_path, c_flags) };
+        unsafe {
+            drop(CString::from_raw(c_path));
+            drop(CString::from_raw(c_flags));
+        }
+
+        let size = unsafe { ext4_fsize(&mut self.file_desc) as usize };
+        if size > MAX_CACHED_FILE_SIZE {
+            return;
+        }
+
+        insert_fifo(file_path.clone());
+        let cache = Arc::new(RwLock::new(VFileCache::new()));
+        let mut cache_writer = cache.write();
+        let aligned_size = aligned_down(size) + PAGE_SIZE;
+        cache_writer.data = Vec::with_capacity(aligned_size);
+        let data = &mut cache_writer.data;
+        unsafe {
+            data.set_len(aligned_size);
+        }
+        cache_writer.size = size;
+        if size == 0 {
+            insert_cache(file_path.clone(), &cache);
+            return;
+        }
+        unsafe { ext4_fseek(&mut self.file_desc, 0, SEEK_SET) };
+        let mut rw_count = 0;
+        unsafe {
+            ext4_fread(
+                &mut self.file_desc,
+                cache_writer.data.as_mut_ptr() as _,
+                size,
+                &mut rw_count,
+            )
+        };
+        insert_cache(file_path.clone(), &cache);
     }
 
     pub fn file_seek(&mut self, offset: i64, seek_type: u32) -> Result<usize, i32> {
         if self.this_type != InodeTypes::EXT4_DE_DIR {
-            //如果是目录文件不用cache
             let path = String::from((*self.file_path).to_str().unwrap());
             self.check_cached(path.clone());
 
-            let cache = get_cache(path.clone());
-            let mut cache_writer = cache.write();
+            if if_cache(path.clone()) {
+                let cache = get_cache(path.clone());
+                let mut cache_writer = cache.write();
 
-            let mut offset = offset as usize;
-            if offset > cache_writer.size {
-                warn!(
-                    "Seek beyond the end of the file,path is {},offset is {} while size is {}",
-                    path, offset, cache_writer.size
-                );
-                offset = cache_writer.size;
+                let mut offset = offset as usize;
+                if offset > cache_writer.size {
+                    warn!(
+                        "Seek beyond the end of the file,path is {},offset is {} while size is {}",
+                        path, offset, cache_writer.size
+                    );
+                    offset = cache_writer.size;
+                }
+
+                cache_writer.offset = offset;
+                return Ok(EOK as usize);
             }
-
-            cache_writer.offset = offset as usize;
-            //debug!("offset change to {:x}", offset);
-            return Ok(EOK as usize);
         }
 
         let mut offset = offset;
@@ -410,28 +415,22 @@ impl Ext4File {
     pub fn file_write(&mut self, buf: &[u8]) -> Result<usize, i32> {
         let path = String::from((*self.file_path).to_str().unwrap());
         if if_cache(path.clone()) {
-            //找到cache直接写cache
+            // 找到 cache 直接写 cache；一旦文件膨胀到阈值以上，立即回退到底层 ext4。
             let cache = get_cache(path.clone());
             let mut cache_writer = cache.write();
-            let len = cache_writer.writebuf(buf);
-
-            /*
-            debug!(
-                "file write at {} with size={} offset={}",
-                path,
-                buf.len(),
-                cache_writer.offset
-            );
-            */
-
-            //debug!("len is {} now", len);
-            if len > 5_100_000 {
-                debug!("len is {} out of mem", len);
-                //write_back_cache(path.clone());
+            let next_size = cache_writer.offset + buf.len();
+            if next_size > MAX_CACHED_FILE_SIZE {
+                drop(cache_writer);
+                write_back_cache(path.clone());
                 remove_cache(path.clone());
-                return Err(ENOMEM as i32);
+                remove_fifo_set(path.clone());
+                unsafe {
+                    ext4_fseek(&mut self.file_desc, next_size.saturating_sub(buf.len()) as i64, SEEK_SET)
+                };
+            } else {
+                cache_writer.writebuf(buf);
+                return Ok(buf.len());
             }
-            return Ok(buf.len());
         }
 
         let mut rw_count = 0;

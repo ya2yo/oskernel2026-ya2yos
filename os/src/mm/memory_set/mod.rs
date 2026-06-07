@@ -16,13 +16,13 @@ mod mmap_ops;
 use super::group::GROUP_SHARE;
 use super::map_area::MapType;
 use super::{
-    read_user_bytes_direct, user_buffer_from_kernel, FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer,
-    VPNRange, VirtAddr, VirtPageNum,
+    read_user_bytes_direct_into, user_buffer_from_kernel, FrameTracker, MapArea, MapAreaType,
+    MapPermission, PhysAddr, UserBuffer, VPNRange, VirtAddr, VirtPageNum,
 };
 use crate::arch::memory_layout::{KERNEL_ADDR_OFFSET, MMAP_TOP, PAGE_SIZE, USER_HEAP_SIZE};
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
-use crate::fs::{File, OSFile};
+use crate::fs::{File, OSFile, SEEK_CUR, SEEK_SET};
 use crate::mm::PhysPageNum;
 use crate::sync::SyncUnsafeCell;
 use crate::syscall::MmapFlags;
@@ -30,6 +30,7 @@ use crate::trap::trap_types::*;
 use crate::utils::SyscallRet;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use alloc::vec;
 use log;
 use spin::{Lazy, Mutex};
 
@@ -41,6 +42,8 @@ pub use mmap_ops::*;
 /// a memory set instance through lazy_static! managing kernel space
 pub static KERNEL_SPACE: Lazy<Mutex<MemorySetInner>> =
     Lazy::new(|| Mutex::new(MemorySetInner::new_kernel()));
+
+const MMAP_WRITEBACK_CHUNK_SIZE: usize = 0x10000; // 64KB
 
 pub struct MemorySet {
     pub inner: SyncUnsafeCell<MemorySetInner>,
@@ -492,14 +495,29 @@ impl MemorySetInner {
                             .filter(|vpn| area.data_frames.contains_key(&vpn))
                             .count()
                             * PAGE_SIZE;
-                        if let Some(mut kernel_buf) = read_user_bytes_direct(
-                            self.page_table.token(),
-                            addr.0 as usize,
-                            mapped_len,
-                        ) {
+                        let off = file.lseek(0, SEEK_CUR)?;
+                        let mut written = 0;
+                        while written < mapped_len {
+                            let chunk_len = MMAP_WRITEBACK_CHUNK_SIZE.min(mapped_len - written);
+                            let mut kernel_buf = vec![0u8; chunk_len];
+                            if read_user_bytes_direct_into(
+                                self.page_table.token(),
+                                addr.0 as usize + written,
+                                &mut kernel_buf,
+                            )
+                            .is_none()
+                            {
+                                break;
+                            }
                             let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-                            file.write(buf)?;
+                            file.lseek((area.mmap_file.offset + written) as isize, SEEK_SET)?;
+                            let ret = file.write(buf)?;
+                            if ret == 0 {
+                                break;
+                            }
+                            written += ret;
                         }
+                        file.lseek(off as isize, SEEK_SET)?;
                     }
                 }
             }

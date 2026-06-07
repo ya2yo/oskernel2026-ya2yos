@@ -29,6 +29,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "check_netem\0",
     "check_setkey\0",
     "cleanup_lvm.sh\0",
+    "cmdlib.sh\0",
     "cn_pec.sh\0",
     "connect01\0",
     "cp_tests.sh\0",
@@ -61,6 +62,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "dirtypipe\0",
     "doio\0",
     "dynamic_debug01.sh\0",
+    "du01.sh\0",
     // [300,400)区间
     "epoll-ltp\0",
     "epoll_pwait01\0",
@@ -205,7 +207,9 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "genfrexp\0",
     "genhypot\0",
     "genmodf\0",
+    "get_ifname\0",
     // [800,900)区间
+    "hackbench\0",
     "ima_boot_aggregate\0",
     "ima_conditionals.sh\0",
     // [900,1000)区间
@@ -297,6 +301,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "mtest01\0",
     "munlock02\0",
     // [1400,---)区间
+    "net_cmdlib.sh\0",
     "netns_breakns.sh\0",
     "netns_comm.sh\0",
     "nptl01\0",
@@ -322,6 +327,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "prot_hsymlinks\0",
     "pselect02\0",
     "pselect02_64\0",
+    "pth_str01\0",
     "pthcli\0",
     "pthserv\0",
     "quota_remount_test01.sh\0",

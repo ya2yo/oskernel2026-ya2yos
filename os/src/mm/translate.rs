@@ -247,16 +247,20 @@ pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, 
 // Internal helpers for mm-crate use (pages guaranteed mapped)
 // ---------------------------------------------------------------------------
 
-/// Internal: read bytes from user memory via page table.
+/// Internal: read bytes from user memory via page table into an existing buffer.
 /// Pages must already be mapped (used in writeback scenarios).
-pub(crate) fn read_user_bytes_direct(token: usize, src: usize, len: usize) -> Option<Vec<u8>> {
+pub(crate) fn read_user_bytes_direct_into(
+    token: usize,
+    src: usize,
+    dst: &mut [u8],
+) -> Option<()> {
+    let len = dst.len();
     if len == 0 {
-        return Some(Vec::new());
+        return Some(());
     }
     let page_table = PageTable::from_token(token);
-    let mut buf = vec![0u8; len];
     let mut cur_src = src;
-    let end = src + len;
+    let end = src.checked_add(len)?;
     let mut cur_dst = 0;
     while cur_src < end {
         let start_va = VirtAddr::try_from(cur_src)?;
@@ -266,10 +270,21 @@ pub(crate) fn read_user_bytes_direct(token: usize, src: usize, len: usize) -> Op
         let copy_len = (end - cur_src).min(next_page_va - cur_src);
         let src_slice =
             &ppn.bytes_array()[start_va.page_offset()..start_va.page_offset() + copy_len];
-        buf[cur_dst..cur_dst + copy_len].copy_from_slice(src_slice);
+        dst[cur_dst..cur_dst + copy_len].copy_from_slice(src_slice);
         cur_src += copy_len;
         cur_dst += copy_len;
     }
+    Some(())
+}
+
+/// Internal: read bytes from user memory via page table.
+/// Pages must already be mapped (used in writeback scenarios).
+pub(crate) fn read_user_bytes_direct(token: usize, src: usize, len: usize) -> Option<Vec<u8>> {
+    if len == 0 {
+        return Some(Vec::new());
+    }
+    let mut buf = vec![0u8; len];
+    read_user_bytes_direct_into(token, src, &mut buf)?;
     Some(buf)
 }
 

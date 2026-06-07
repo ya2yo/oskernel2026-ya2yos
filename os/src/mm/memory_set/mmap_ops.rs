@@ -12,8 +12,8 @@ use crate::mm::page_fault_handler::{
     cow_page_fault, lazy_page_fault, mmap_read_page_fault, mmap_write_page_fault,
 };
 use super::{
-    read_user_bytes_direct, user_buffer_from_kernel, FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer,
-    VPNRange, VirtAddr, VirtPageNum,
+    read_user_bytes_direct_into, user_buffer_from_kernel, FrameTracker, MapArea, MapAreaType,
+    MapPermission, PhysAddr, UserBuffer, VPNRange, VirtAddr, VirtPageNum,
 };
 use crate::arch::memory_layout::{MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS};
 use crate::arch::page_table::PageTable;
@@ -23,7 +23,10 @@ use crate::syscall::MmapFlags;
 use crate::trap::trap_types::*;
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::vec;
 use log::{debug, warn};
+
+const MMAP_WRITEBACK_CHUNK_SIZE: usize = 0x10000; // 64KB
 
 impl MemorySetInner {
     pub fn shm(
@@ -171,20 +174,38 @@ impl MemorySetInner {
                     });
                 let file = area.mmap_file.file.clone().unwrap();
                 let off = file.lseek(0, SEEK_CUR).unwrap();
-                wb_range.into_iter().for_each(|(start_vpn, end_vpn)| {
+                let map_base: usize = VirtAddr::from(area.vpn_range.start()).into();
+                let file_base = area.mmap_file.offset;
+                for (start_vpn, end_vpn) in wb_range {
                     let start_addr: usize = VirtAddr::from(start_vpn).into();
                     let mapped_len: usize = (end_vpn.0 - start_vpn.0) * PAGE_SIZE;
-                    if let Some(mut kernel_buf) = read_user_bytes_direct(
-                        self.page_table.token(),
-                        start_addr,
-                        mapped_len,
-                    ) {
+                    let mut written = 0;
+                    while written < mapped_len {
+                        let chunk_len = MMAP_WRITEBACK_CHUNK_SIZE.min(mapped_len - written);
+                        let mut kernel_buf = vec![0u8; chunk_len];
+                        if read_user_bytes_direct_into(
+                            self.page_table.token(),
+                            start_addr + written,
+                            &mut kernel_buf,
+                        )
+                        .is_none()
+                        {
+                            break;
+                        }
                         let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-                        file.lseek((start_addr - addr) as isize, SEEK_SET);
-                        file.write(buf);
+                        file.lseek(
+                            (file_base + (start_addr - map_base) + written) as isize,
+                            SEEK_SET,
+                        )
+                        .unwrap();
+                        let ret = file.write(buf).unwrap();
+                        if ret == 0 {
+                            break;
+                        }
+                        written += ret;
                     }
-                });
-                file.lseek(off as isize, SEEK_SET);
+                }
+                file.lseek(off as isize, SEEK_SET).unwrap();
             }
             for vpn in VPNRange::new(start_vpn, end_vpn) {
                 area.unmap_one(&mut self.page_table, vpn);
