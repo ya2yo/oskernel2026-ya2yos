@@ -91,7 +91,7 @@ pub fn run_ltp_tests_musl_separately(tests: &[&str], blacklist: &[&str]) {
 }
 
 #[allow(unused)]
-pub fn test_ltp() {
+pub fn test_musl_ltp() {
     let test = &FILELIST;
     run_ltp_tests_musl_separately(test, MUSL_LTP_BLACKLIST);
 }
@@ -149,6 +149,12 @@ pub const LTP_MEMORY_TESTS: &[&str] = &[
     "mlock04\0",
     "munlock01\0",
 ];
+
+#[allow(unused)]
+pub fn test_glibc_ltp() {
+    let test = &FILELIST;
+    run_ltp_tests_glibc(test, GLIBC_LTP_BLACKLIST);
+}
 
 #[allow(unused)]
 pub fn run_ltp_tests_glibc(tests: &[&str], blacklist: &[&str]) {

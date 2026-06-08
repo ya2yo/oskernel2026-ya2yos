@@ -1,0 +1,182 @@
+#### OS COMP TEST GROUP START basic-musl ####
+Testing brk :
+========== START test_brk ==========
+Before alloc,heap pos: 1431670784
+After alloc,heap pos: 1431670784
+Alloc again,heap pos: 1431670784
+========== END test_brk ==========
+Testing chdir :
+========== START test_chdir ==========
+chdir ret: 0
+  current working dir :
+========== END test_chdir ==========
+Testing clone :
+========== START test_clone ==========
+  Child says successfully!
+clone process successfully.
+pid:108
+========== END test_clone ==========
+Testing close :
+========== START test_close ==========
+  close 3 success.
+========== END test_close ==========
+Testing dup2 :
+========== START test_dup2 ==========
+  from fd 100
+========== END test_dup2 ==========
+Testing dup :
+========== START test_dup ==========
+  new fd is 3.
+========== END test_dup ==========
+Testing execve :
+========== START test_execve ==========
+  I am test_echo.
+execve success.
+========== END main ==========
+Testing exit :
+========== START test_exit ==========
+exit OK.
+========== END test_exit ==========
+Testing fork :
+========== START test_fork ==========
+  child process.
+  parent process. wstatus:0
+========== END test_fork ==========
+Testing fstat :
+========== START test_fstat ==========
+fstat ret: 0
+fstat: dev: 2096, inode: 164859, mode: 33188, nlink: 1, size: 52, atime: 1778205286, mtime: 1749913918, ctime: 1778205315
+========== END test_fstat ==========
+Testing getcwd :
+========== START test_getcwd ==========
+getcwd: /workplace/musl/basic successfully!
+========== END test_getcwd ==========
+Testing getdents :
+========== START test_getdents ==========
+open fd:3
+getdents fd:512
+getdents success.
+openat
+
+========== END test_getdents ==========
+Testing getpid :
+========== START test_getpid ==========
+getpid success.
+pid = 133
+========== END test_getpid ==========
+Testing getppid :
+========== START test_getppid ==========
+  getppid success. ppid : 101
+========== END test_getppid ==========
+Testing gettimeofday :
+========== START test_gettimeofday ==========
+gettimeofday success.
+start:35869023, end:35869052
+interval: 29
+========== END test_gettimeofday ==========
+Testing mkdir_ :
+========== START test_mkdir ==========
+mkdir ret: 0
+  mkdir success.
+========== END test_mkdir ==========
+Testing mmap :
+========== START test_mmap ==========
+file len: 27
+mmap content:   Hello, mmap successfully!
+========== END test_mmap ==========
+Testing mount :
+========== START test_mount ==========
+Mounting dev:/dev/vda2 to ./mnt
+mount return: -1
+
+ --- Assert Fatal ! ---
+Testing munmap :
+========== START test_munmap ==========
+file len: 27
+munmap return: 0
+munmap successfully!
+========== END test_munmap ==========
+Testing openat :
+========== START test_openat ==========
+open dir fd: 3
+openat fd: 4
+openat success.
+========== END test_openat ==========
+Testing open :
+========== START test_open ==========
+Hi, this is a text file.
+syscalls testing success!
+
+========== END test_open ==========
+Testing pipe :
+========== START test_pipe ==========
+cpid: cpid: 0153
+
+  Write to pipe successfully.
+
+========== END test_pipe ==========
+Testing read :
+========== START test_read ==========
+Hi, this is a text file.
+syscalls testing success!
+
+========== END test_read ==========
+Testing sleep :
+========== START test_sleep ==========
+sleep success.
+========== END test_sleep ==========
+Testing times :
+========== START test_times ==========
+mytimes success
+{tms_utime:0, tms_stime:0, tms_cutime:0, tms_cstime:0}
+========== END test_times ==========
+Testing umount :
+========== START test_umount ==========
+Mounting dev:/dev/vda2 to ./mnt
+mount return: -1
+========== END test_umount ==========
+Testing uname :
+========== START test_uname ==========
+Uname: Linux 319e0403ac33 6.6.87.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun  5 18:30:46 UTC 2025 riscv64 localdomain
+========== END test_uname ==========
+Testing unlink :
+========== START test_unlink ==========
+  unlink success!
+========== END test_unlink ==========
+Testing wait :
+========== START test_wait ==========
+This is child process
+wait child success.
+wstatus: 0
+========== END test_wait ==========
+Testing waitpid :
+========== START test_waitpid ==========
+This is child process
+waitpid successfully.
+wstatus: 3
+========== END test_waitpid ==========
+Testing write :
+========== START test_write ==========
+Hello operating system contest.
+========== END test_write ==========
+Testing yield :
+========== START test_yield ==========
+  I am child process: 179. iteration 0.
+  I am child process: 179. iteration 0.
+  I am child process: 179. iteration 0.
+  I am child process: 179. iteration 0.
+  I am child process: 179. iteration 0.
+  I am child process: 181  I am child process: . iteration 1.
+  I am child process: 181. iteration 1.
+  I am child process: 181. iteration 1.
+  I am child process: 181. iteration 1.
+  I am child process: 181. iteration 1.
+183. iteration 2.
+  I am child process: 183. iteration 2.
+  I am child process: 183. iteration 2.
+  I am child process: 183. iteration 2.
+  I am child process: 183. iteration 2.
+========== END test_yield ==========
+#### OS COMP TEST GROUP END basic-musl ####
+
+

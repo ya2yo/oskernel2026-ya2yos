@@ -90,40 +90,42 @@ fn main() -> i32 {
 
 #[allow(unused)]
 fn get_score() {
-    // musl
+    // basic
     run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    run_testsuit("glibc\0", "basic_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // busybox
     run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // lua
     run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // libc
+    run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
+    // iozone 目前报错 Seek beyond the end of the file
     run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过 
+    // lmbench
     run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
+    run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
+    // libcbench
+    run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
+    run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loongarch 通过
+    // ltp
+    ltp::test_musl_ltp();
+    // ltp::test_glibc_ltp();
+
         // #[cfg(target_arch = "riscv64")]
         // test_cgroup_fj_function_cpuset_via_script();
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     // run_testsuit("musl\0", "iperf_testcode.sh\0");
     // run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
 
-    // glibc
-    run_testsuit("glibc\0", "basic_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    #[cfg(target_arch = "riscv64")]
-    run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过 
-    run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loongarch 通过
-    #[cfg(target_arch = "riscv64")]
-    run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
-    run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
     // libctest::pthread_robust_detach::run_glibc_dynamic();
 
-    ltp::test_ltp();
-    run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");
     // run_testsuit("glibc\0", "netperf_testcode.sh\0");
 
-    // --- glibc LTP 逐个测例调试 (brk/mmap/munmap 排查) ---
-    // ltp::test_glibc_single("brk01\0");                   // 单测 brk01 (注意：测例名必须带 \0)
-    // ltp::test_glibc_memory();                            // 跑全部内存相关测例
-    // ltp::test_glibc_custom(&["brk01\0", "brk02\0"]);      // 自定义一组测例
 }
 
