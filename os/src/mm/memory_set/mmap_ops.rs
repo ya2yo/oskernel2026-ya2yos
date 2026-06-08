@@ -198,7 +198,7 @@ impl MemorySetInner {
                             SEEK_SET,
                         )
                         .unwrap();
-                        let ret = file.write(buf).unwrap();
+                        let ret = file.write(buf)?;
                         if ret == 0 {
                             break;
                         }
