@@ -34,7 +34,7 @@ pub use crate::arch::context::TaskContext;
 use crate::{
     arch::cpu::hart_id,
     fs::{NONE_MODE, OpenFlags, open, remove_proc_dir_and_file},
-    mm::{MapAreaType, VirtAddr, activate_kernel_space, copy_to_user},
+    mm::{MapAreaType, VirtAddr, activate_kernel_space, copy_to_user, copy_to_user_val},
     signal::{SigSet, send_signal_to_thread_group},
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
 };
@@ -210,7 +210,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // CLONE_CHILD_CLEARTID
     if curr_task_inner.clear_child_tid != 0 {
         let memory_set = curr_proc.get_locked_memory_set_read();
-        let _ = copy_to_user(&memory_set, curr_task_inner.clear_child_tid as usize, &[0]);
+        let _ = copy_to_user_val(
+            &memory_set,
+            curr_task_inner.clear_child_tid as *mut u32,
+            &0u32,
+        );
         // 唤醒等待在 child_tid 的进程
         // 线程的 clear_child_tid 可能已被用户态 munmap 释放，
         // translate_va 会返回 None，此时跳过 futex_wake 即可。
@@ -253,6 +257,12 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     curr_task_inner.task_status = TaskStatus::Zombie;
     let curr_tid = curr_task.tid();
     drop(curr_task_inner);
+
+    curr_task.process.meta_lock().tasks.retain(|weak| {
+        weak.upgrade()
+            .map(|task| task.tid() != curr_tid)
+            .unwrap_or(false)
+    });
 
     // 唤醒被阻塞的兄弟线程，防止它们因等待本线程清理资源而永久死锁
     {

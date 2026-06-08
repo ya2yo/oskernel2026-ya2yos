@@ -10,7 +10,7 @@ use spin::{Lazy, Mutex, RwLock};
 
 const PAGE_SIZE: usize = 4096;
 pub const PAGE_MASK: usize = !0xfff;
-const MAX_CACHED_FILE_SIZE: usize = 0x10_0000; // 1 MiB
+const MAX_CACHED_FILE_SIZE: usize = 0x100_0000; // 16 MiB
 
 fn aligned_down(addr: usize) -> usize {
     addr & PAGE_MASK
@@ -317,18 +317,20 @@ impl Ext4File {
             if if_cache(path.clone()) {
                 let cache = get_cache(path.clone());
                 let mut cache_writer = cache.write();
-                cache_writer.offset = offset as usize;
+                cache_writer.offset =
+                    seek_pos(cache_writer.offset, cache_writer.size, offset, seek_type)?;
                 return Ok(EOK as usize);
             }
         }
 
-        let r = unsafe { ext4_fseek(&mut self.file_desc, offset, seek_type) };
-        if r != EOK as i32 {
-            error!("ext4_fseek: rc = {}", r);
-            return Err(r);
-        }
+        self.file_desc.fpos = seek_pos(
+            self.file_desc.fpos as usize,
+            self.file_desc.fsize as usize,
+            offset,
+            seek_type,
+        )? as u64;
 
-        Ok(r as usize)
+        Ok(EOK as usize)
     }
 
     pub fn file_read(&mut self, buff: &mut [u8]) -> Result<usize, i32> {
@@ -402,13 +404,12 @@ impl Ext4File {
             let mut cache_writer = cache.write();
             let next_size = cache_writer.offset + buf.len();
             if next_size > MAX_CACHED_FILE_SIZE {
+                let write_offset = cache_writer.offset;
                 drop(cache_writer);
-                write_back_cache(path.clone());
+                write_back_cache(path.clone())?;
                 remove_cache(path.clone());
                 remove_fifo_set(path.clone());
-                unsafe {
-                    ext4_fseek(&mut self.file_desc, next_size.saturating_sub(buf.len()) as i64, SEEK_SET)
-                };
+                self.file_desc.fpos = write_offset as u64;
             } else {
                 cache_writer.writebuf(buf);
                 return Ok(buf.len());
@@ -473,12 +474,10 @@ impl Ext4File {
     }
 
     pub fn file_cache_flush(&mut self) -> Result<usize, i32> {
-        /*
         let path = String::from((*self.file_path).to_str().unwrap());
         if if_cache(path.clone()) {
-            write_back_cache(path.clone());
+            write_back_cache(path.clone())?;
         }
-        */
 
         let c_path = self.file_path.clone();
         let c_path = c_path.into_raw();
@@ -928,7 +927,7 @@ pub fn insert_fifo(file_path: String) {
     if fifo.len() == FIFO_SIZE {
         //替换并可能写回
         let path = fifo.pop_front().unwrap();
-        write_back_cache(path.clone());
+        let _ = write_back_cache(path.clone());
         if if_cache(path.clone()) {
             remove_cache(path.clone());
             remove_fifo_set(path.clone());
@@ -958,7 +957,7 @@ pub fn remove_fifo_set(file_path: String) {
     FIFO_SET.lock().remove(&file_path);
 }
 
-pub fn write_back_cache(path: String) {
+pub fn write_back_cache(path: String) -> Result<usize, i32> {
     if if_cache(path.clone()) {
         //如果在缓存中有，表明未被删除
         let cache = get_cache(path.clone());
@@ -976,15 +975,20 @@ pub fn write_back_cache(path: String) {
                 fsize: 0,
                 fpos: 0,
             };
-            unsafe { ext4_fopen(&mut file_desc, c_path, flags) };
+            let r = unsafe { ext4_fopen(&mut file_desc, c_path, flags) };
             unsafe {
                 // deallocate the CString
                 drop(CString::from_raw(c_path));
                 drop(CString::from_raw(flags));
             }
-            unsafe { ext4_fseek(&mut file_desc, 0, 0) };
+            if r != EOK as i32 {
+                error!("write_back_cache ext4_fopen: {}, rc = {}", path, r);
+                return Err(r);
+            }
+
+            file_desc.fpos = 0;
             let mut rw_count = 0;
-            unsafe {
+            let r = unsafe {
                 ext4_fwrite(
                     &mut file_desc,
                     cache_writer.data.as_ptr() as _,
@@ -992,9 +996,47 @@ pub fn write_back_cache(path: String) {
                     &mut rw_count,
                 )
             };
-            unsafe {
-                ext4_fclose(&mut file_desc);
+            if r != EOK as i32 {
+                error!("write_back_cache ext4_fwrite: {}, rc = {}", path, r);
+                unsafe {
+                    ext4_fclose(&mut file_desc);
+                }
+                return Err(r);
+            }
+            let r = unsafe { ext4_fclose(&mut file_desc) };
+            if r != EOK as i32 {
+                error!("write_back_cache ext4_fclose: {}, rc = {}", path, r);
+                return Err(r);
+            }
+            return Ok(rw_count);
+        }
+    }
+    Ok(0)
+}
+
+fn seek_pos(current: usize, size: usize, offset: i64, seek_type: u32) -> Result<usize, i32> {
+    match seek_type {
+        SEEK_SET => {
+            if offset < 0 {
+                Err(EINVAL as i32)
+            } else {
+                Ok(offset as usize)
             }
         }
+        SEEK_CUR => {
+            if offset < 0 {
+                current.checked_sub((-offset) as usize).ok_or(EINVAL as i32)
+            } else {
+                current.checked_add(offset as usize).ok_or(EINVAL as i32)
+            }
+        }
+        SEEK_END => {
+            if offset < 0 {
+                size.checked_sub((-offset) as usize).ok_or(EINVAL as i32)
+            } else {
+                size.checked_add(offset as usize).ok_or(EINVAL as i32)
+            }
+        }
+        _ => Err(EINVAL as i32),
     }
 }

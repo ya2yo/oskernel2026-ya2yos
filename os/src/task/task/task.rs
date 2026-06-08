@@ -561,7 +561,11 @@ impl TaskControlBlock {
         });
 
         // 将子进程/线程注册到进程的任务列表
-        child.process.meta_lock().tasks.push(Arc::downgrade(&child));
+        {
+            let mut child_meta = child.process.meta_lock();
+            child_meta.tasks.retain(|weak| weak.upgrade().is_some());
+            child_meta.tasks.push(Arc::downgrade(&child));
+        }
 
         let mut child_inner = child.inner_lock();
 
@@ -628,8 +632,8 @@ impl TaskControlBlock {
             );
         }
 
-        // 为子进程创建 /proc/<pid>/stat 和 /proc/<pid>/maps
-        {
+        // Threads share the process, so /proc/<pid> is only created for a new process.
+        if !flags.contains(CloneFlags::CLONE_THREAD) {
             let child_proc = child.process.inner_lock();
             let child_mm = child_proc.get_locked_memory_set_read();
             create_proc_dir_and_file(child_pid, child_ppid, &child_mm);
