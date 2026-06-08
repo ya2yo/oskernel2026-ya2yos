@@ -317,27 +317,9 @@ impl Ext4File {
             if if_cache(path.clone()) {
                 let cache = get_cache(path.clone());
                 let mut cache_writer = cache.write();
-
-                let mut offset = offset as usize;
-                if offset > cache_writer.size {
-                    warn!(
-                        "Seek beyond the end of the file,path is {},offset is {} while size is {}",
-                        path, offset, cache_writer.size
-                    );
-                    offset = cache_writer.size;
-                }
-
-                cache_writer.offset = offset;
+                cache_writer.offset = offset as usize;
                 return Ok(EOK as usize);
             }
-        }
-
-        let mut offset = offset;
-        let size = self.file_size() as i64;
-
-        if offset > size {
-            warn!("Seek beyond the end of the file");
-            offset = size;
         }
 
         let r = unsafe { ext4_fseek(&mut self.file_desc, offset, seek_type) };

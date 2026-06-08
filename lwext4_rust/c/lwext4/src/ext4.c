@@ -1690,6 +1690,12 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 	/*Sync file size*/
 	file->fsize = ext4_inode_get_size(sb, ref.inode);
 
+	/* Past-EOF read: return 0 (EOF) */
+	if (file->fpos >= file->fsize) {
+		r = EOK;
+		goto Finish;
+	}
+
 	block_size = ext4_sb_get_block_size(sb);
 	size = ((uint64_t)size > (file->fsize - file->fpos))
 		   ? ((size_t)(file->fsize - file->fpos))
@@ -2003,24 +2009,22 @@ int ext4_fseek(ext4_file *file, int64_t offset, uint32_t origin)
 {
 	switch (origin) {
 	case SEEK_SET:
-		if (offset < 0 || (uint64_t)offset > file->fsize)
+		if (offset < 0)
 			return EINVAL;
 
 		file->fpos = offset;
 		return EOK;
 	case SEEK_CUR:
-		if ((offset < 0 && (uint64_t)(-offset) > file->fpos) ||
-		    (offset > 0 &&
-		     (uint64_t)offset > (file->fsize - file->fpos)))
+		if (offset < 0 && (uint64_t)(-offset) > file->fpos)
 			return EINVAL;
 
 		file->fpos += offset;
 		return EOK;
 	case SEEK_END:
-		if (offset < 0 || (uint64_t)offset > file->fsize)
+		if ((offset < 0 && (uint64_t)(-offset) > file->fsize))
 			return EINVAL;
 
-		file->fpos = file->fsize - offset;
+		file->fpos = file->fsize + offset;
 		return EOK;
 	}
 	return EINVAL;
