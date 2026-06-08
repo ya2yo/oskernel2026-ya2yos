@@ -12,11 +12,7 @@ use crate::{
 };
 
 fn is_elf(data: &[u8]) -> bool {
-    data.len() >= 4
-        && data[0] == 0x7F
-        && data[1] == b'E'
-        && data[2] == b'L'
-        && data[3] == b'F'
+    data.len() >= 4 && data[0] == 0x7F && data[1] == b'E' && data[2] == b'L' && data[3] == b'F'
 }
 
 /// 从文件头解析 shebang（`#!` 行），语义对齐 Linux `fs/binfmt_script.c`。
@@ -84,7 +80,10 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     if !argv.is_null() {
         let mut argv_ptr: usize = 0;
         copy_from_user(&memory_set, argv as usize, unsafe {
-            core::slice::from_raw_parts_mut(&mut argv_ptr as *mut usize as *mut u8, core::mem::size_of::<usize>())
+            core::slice::from_raw_parts_mut(
+                &mut argv_ptr as *mut usize as *mut u8,
+                core::mem::size_of::<usize>(),
+            )
         })?;
         if argv_ptr != 0 {
             argv_vec.push(path.clone());
@@ -99,7 +98,10 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         }
         let mut argv_ptr: usize = 0;
         copy_from_user(&memory_set, argv as usize, unsafe {
-            core::slice::from_raw_parts_mut(&mut argv_ptr as *mut usize as *mut u8, core::mem::size_of::<usize>())
+            core::slice::from_raw_parts_mut(
+                &mut argv_ptr as *mut usize as *mut u8,
+                core::mem::size_of::<usize>(),
+            )
         })?;
         if argv_ptr == 0 {
             break;
@@ -143,7 +145,10 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         loop {
             let mut envp_ptr: usize = 0;
             copy_from_user(&memory_set, envp as usize, unsafe {
-                core::slice::from_raw_parts_mut(&mut envp_ptr as *mut usize as *mut u8, core::mem::size_of::<usize>())
+                core::slice::from_raw_parts_mut(
+                    &mut envp_ptr as *mut usize as *mut u8,
+                    core::mem::size_of::<usize>(),
+                )
             })?;
             if envp_ptr == 0 {
                 break;

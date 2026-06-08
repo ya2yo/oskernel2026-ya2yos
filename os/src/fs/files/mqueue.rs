@@ -13,7 +13,6 @@ use crate::mm::UserBuffer;
 use crate::syscall::PollEvents;
 use crate::utils::{SysErrNo, SysResult, SyscallRet};
 
-
 /// 消息结构
 struct MqMessage {
     data: Vec<u8>,
@@ -151,10 +150,10 @@ impl Mqueue {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MqAttr {
-    pub mq_flags: i64,    // 标志: 0 或 O_NONBLOCK
-    pub mq_maxmsg: u64,   // 最大消息数
-    pub mq_msgsize: u64,  // 每条消息最大字节数
-    pub mq_curmsgs: u64,  // 当前队列中消息数
+    pub mq_flags: i64,   // 标志: 0 或 O_NONBLOCK
+    pub mq_maxmsg: u64,  // 最大消息数
+    pub mq_msgsize: u64, // 每条消息最大字节数
+    pub mq_curmsgs: u64, // 当前队列中消息数
 }
 
 pub const O_NONBLOCK: i64 = 2048;

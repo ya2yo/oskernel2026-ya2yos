@@ -1,11 +1,24 @@
-use linux_raw_sys::{general::{_LINUX_CAPABILITY_VERSION_1, _LINUX_CAPABILITY_VERSION_2, _LINUX_CAPABILITY_VERSION_3}, prctl::{PR_CAP_AMBIENT, PR_CAPBSET_DROP, PR_GET_NO_NEW_PRIVS, PR_GET_PDEATHSIG, PR_GET_SPECULATION_CTRL, PR_GET_THP_DISABLE, PR_SET_DUMPABLE, PR_SET_NAME, PR_SET_NO_NEW_PRIVS, PR_SET_PDEATHSIG, PR_SET_SECCOMP, PR_SET_SECUREBITS, PR_SET_THP_DISABLE, PR_SET_TIMING}};
+use linux_raw_sys::{
+    general::{
+        _LINUX_CAPABILITY_VERSION_1, _LINUX_CAPABILITY_VERSION_2, _LINUX_CAPABILITY_VERSION_3,
+    },
+    prctl::{
+        PR_CAPBSET_DROP, PR_CAP_AMBIENT, PR_GET_NO_NEW_PRIVS, PR_GET_PDEATHSIG,
+        PR_GET_SPECULATION_CTRL, PR_GET_THP_DISABLE, PR_SET_DUMPABLE, PR_SET_NAME,
+        PR_SET_NO_NEW_PRIVS, PR_SET_PDEATHSIG, PR_SET_SECCOMP, PR_SET_SECUREBITS,
+        PR_SET_THP_DISABLE, PR_SET_TIMING,
+    },
+};
 use log::{debug, warn};
 
 use crate::{
-    fs::{InodeType, NONE_MODE, OpenFlags, open, open_device_file},
-    mm::{UserBuffer, copy_from_user, copy_to_user, if_bad_address, read_user_cstr, user_buffer_from_kernel},
+    fs::{open, open_device_file, InodeType, OpenFlags, NONE_MODE},
+    mm::{
+        copy_from_user, copy_to_user, if_bad_address, read_user_cstr, user_buffer_from_kernel,
+        UserBuffer,
+    },
     syscall::Utsname,
-    task::{Sysinfo, current_task, tid_to_task},
+    task::{current_task, tid_to_task, Sysinfo},
     timer::get_time_ms,
     utils::{SysErrNo, SyscallRet},
 };
@@ -260,8 +273,7 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> SyscallRet {
     let (new_r, new_e, new_s) = compute_resuid(cur_r, cur_e, cur_s, ruid, euid, suid);
 
     let privileged = inner.user_id == 0 || inner.effective_uid == 0;
-    if !privileged
-        && !setresuid_allowed(cur_r, cur_e, cur_s, new_r, new_e, new_s, ruid, euid, suid)
+    if !privileged && !setresuid_allowed(cur_r, cur_e, cur_s, new_r, new_e, new_s, ruid, euid, suid)
     {
         return Err(SysErrNo::EPERM);
     }
@@ -292,7 +304,10 @@ pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> SyscallR
             return Err(SysErrNo::EFAULT);
         }
         copy_to_user(&memory_set, ptr as usize, unsafe {
-            core::slice::from_raw_parts(&value as *const u32 as *const u8, core::mem::size_of::<u32>())
+            core::slice::from_raw_parts(
+                &value as *const u32 as *const u8,
+                core::mem::size_of::<u32>(),
+            )
         })?;
     }
     Ok(0)
@@ -431,8 +446,7 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> SyscallRet {
     let (new_r, new_e, new_s) = compute_resgid(cur_r, cur_e, cur_s, rgid, egid, sgid);
 
     let privileged = inner.user_id == 0 || inner.effective_gid == 0;
-    if !privileged
-        && !setresgid_allowed(cur_r, cur_e, cur_s, new_r, new_e, new_s, rgid, egid, sgid)
+    if !privileged && !setresgid_allowed(cur_r, cur_e, cur_s, new_r, new_e, new_s, rgid, egid, sgid)
     {
         return Err(SysErrNo::EPERM);
     }
@@ -462,7 +476,10 @@ pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> SyscallR
             return Err(SysErrNo::EFAULT);
         }
         copy_to_user(&memory_set, ptr as usize, unsafe {
-            core::slice::from_raw_parts(&value as *const u32 as *const u8, core::mem::size_of::<u32>())
+            core::slice::from_raw_parts(
+                &value as *const u32 as *const u8,
+                core::mem::size_of::<u32>(),
+            )
         })?;
     }
     Ok(0)
@@ -487,7 +504,10 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
     copy_to_user(&memory_set, buf as usize, unsafe {
-        core::slice::from_raw_parts(&uname as *const Utsname as *const u8, core::mem::size_of::<Utsname>())
+        core::slice::from_raw_parts(
+            &uname as *const Utsname as *const u8,
+            core::mem::size_of::<Utsname>(),
+        )
     })?;
     Ok(0)
 }
@@ -499,7 +519,10 @@ pub fn sys_sysinfo(info: *const u8) -> SyscallRet {
     let memory_set = proc_inner.get_locked_memory_set_read();
     let sysinfo = Sysinfo::new(get_time_ms() / 1000, 1 << 56, tid_to_task::task_num());
     copy_to_user(&memory_set, info as usize, unsafe {
-        core::slice::from_raw_parts(&sysinfo as *const Sysinfo as *const u8, core::mem::size_of::<Sysinfo>())
+        core::slice::from_raw_parts(
+            &sysinfo as *const Sysinfo as *const u8,
+            core::mem::size_of::<Sysinfo>(),
+        )
     })?;
     // debug!("[sys_sysinfo] ourinfo is {:?}", ourinfo);
     Ok(0)
@@ -574,7 +597,10 @@ pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallR
 
     let mut hdr = CapUserHeader::default();
     copy_from_user(&memory_set, hdrp as usize, unsafe {
-        core::slice::from_raw_parts_mut(&mut hdr as *mut CapUserHeader as *mut u8, core::mem::size_of::<CapUserHeader>())
+        core::slice::from_raw_parts_mut(
+            &mut hdr as *mut CapUserHeader as *mut u8,
+            core::mem::size_of::<CapUserHeader>(),
+        )
     })?;
     debug!("[capget] version=0x{:x}, pid={}", hdr.version, hdr.pid);
 
@@ -598,7 +624,10 @@ pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallR
     if !supported {
         hdr.version = _LINUX_CAPABILITY_VERSION_3;
         copy_to_user(&memory_set, hdrp as usize, unsafe {
-            core::slice::from_raw_parts(&hdr as *const CapUserHeader as *const u8, core::mem::size_of::<CapUserHeader>())
+            core::slice::from_raw_parts(
+                &hdr as *const CapUserHeader as *const u8,
+                core::mem::size_of::<CapUserHeader>(),
+            )
         })?;
         debug!("[capget] unsupported version -> fallback to V3");
         return Err(SysErrNo::EINVAL);
@@ -611,7 +640,10 @@ pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallR
         inheritable: 0,
     };
     copy_to_user(&memory_set, datap as usize, unsafe {
-        core::slice::from_raw_parts(&data as *const CapUserData as *const u8, core::mem::size_of::<CapUserData>())
+        core::slice::from_raw_parts(
+            &data as *const CapUserData as *const u8,
+            core::mem::size_of::<CapUserData>(),
+        )
     })?;
     debug!("[capget] success, version=0x{:x}", hdr.version);
     Ok(0)
@@ -635,11 +667,9 @@ pub fn sys_capset(hdrp: *mut CapUserHeader, datap: *const CapUserData) -> Syscal
     let hdr_ptr = &mut hdr as *mut CapUserHeader as *mut u8;
     let hdr_size = core::mem::size_of::<CapUserHeader>();
 
-    copy_from_user(
-        &memory_set, 
-        hdrp as usize, 
-        unsafe { core::slice::from_raw_parts_mut(hdr_ptr, hdr_size) }
-    )?;
+    copy_from_user(&memory_set, hdrp as usize, unsafe {
+        core::slice::from_raw_parts_mut(hdr_ptr, hdr_size)
+    })?;
     debug!("[capset] version=0x{:x}, pid={}", hdr.version, hdr.pid);
 
     // EPERM: 非 root 不能设置 capabilities
@@ -655,13 +685,7 @@ pub fn sys_capset(hdrp: *mut CapUserHeader, datap: *const CapUserData) -> Syscal
 // ---------------------------------------------------------------------------
 
 /// 参考 https://man7.org/linux/man-pages/man2/prctl.2.html
-pub fn sys_prctl(
-    option: u32,
-    arg2: usize,
-    arg3: usize,
-    arg4: usize,
-    arg5: usize,
-) -> SyscallRet {
+pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> SyscallRet {
     debug!(
         "[prctl] option={}, arg2=0x{:x}, arg3=0x{:x}, arg4=0x{:x}, arg5=0x{:x}",
         option, arg2, arg3, arg4, arg5
@@ -688,7 +712,10 @@ pub fn sys_prctl(
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 let sig_val = sig as i32;
                 copy_to_user(&memory_set, arg2, unsafe {
-                    core::slice::from_raw_parts(&sig_val as *const i32 as *const u8, core::mem::size_of::<i32>())
+                    core::slice::from_raw_parts(
+                        &sig_val as *const i32 as *const u8,
+                        core::mem::size_of::<i32>(),
+                    )
                 })?;
             }
             debug!("[prctl] get pdeath_signal={}", sig);
@@ -931,7 +958,11 @@ pub fn sys_setdomainname(name: *const u8, len: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/init_module.2.html
 ///
 /// 加载内核模块。当前内核不支持模块加载。
-pub fn sys_init_module(_module_image: *const u8, _len: usize, _param_values: *const u8) -> SyscallRet {
+pub fn sys_init_module(
+    _module_image: *const u8,
+    _len: usize,
+    _param_values: *const u8,
+) -> SyscallRet {
     warn!("[init_module] kernel module loading not supported");
     Err(SysErrNo::EPERM)
 }

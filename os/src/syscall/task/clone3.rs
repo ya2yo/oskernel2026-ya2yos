@@ -14,7 +14,10 @@ use super::clone::sys_clone;
 /// clone3() 是 clone() 的增强版本，通过 `clone_args` 结构体传递参数。
 /// 当前实现将 clone_args 翻译为 legacy clone 参数后交由 sys_clone 处理。
 pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
-    debug!("[sys_clone3] cl_args=0x{:x}, size={}", cl_args as usize, size);
+    debug!(
+        "[sys_clone3] cl_args=0x{:x}, size={}",
+        cl_args as usize, size
+    );
 
     // Validate that the userspace pointer is not null and is accessible.
     if cl_args.is_null() {
@@ -38,16 +41,12 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
 
     // Read the entire clone_args structure from userspace.
     let mut cargs: clone_args = unsafe { core::mem::zeroed() };
-    copy_from_user(
-        &memory_set,
-        cl_args as usize,
-        unsafe {
-            core::slice::from_raw_parts_mut(
-                &mut cargs as *mut clone_args as *mut u8,
-                core::mem::size_of::<clone_args>(),
-            )
-        },
-    )?;
+    copy_from_user(&memory_set, cl_args as usize, unsafe {
+        core::slice::from_raw_parts_mut(
+            &mut cargs as *mut clone_args as *mut u8,
+            core::mem::size_of::<clone_args>(),
+        )
+    })?;
 
     // Extract the exit_signal from clone_args and fold it into flags.
     // In clone3, exit_signal is a separate field (only the low 8 bits

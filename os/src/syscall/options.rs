@@ -1,6 +1,10 @@
 /// 存放系统调用的各种Option
 use crate::mm::MapPermission;
-use linux_raw_sys::general::{MAP_ANONYMOUS, MAP_DENYWRITE, MAP_EXECUTABLE, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN, MAP_NORESERVE, MAP_POPULATE, MAP_PRIVATE, MAP_SHARED, MAP_STACK, WCONTINUED, WNOHANG, WNOWAIT, WUNTRACED};
+use linux_raw_sys::general::{
+    MAP_ANONYMOUS, MAP_DENYWRITE, MAP_EXECUTABLE, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN,
+    MAP_NORESERVE, MAP_POPULATE, MAP_PRIVATE, MAP_SHARED, MAP_STACK, WCONTINUED, WNOHANG, WNOWAIT,
+    WUNTRACED,
+};
 use num_enum::FromPrimitive;
 
 /// 可以打开文件的最大数量
@@ -70,7 +74,7 @@ bitflags! {
         const MAP_DENYWRITE = MAP_DENYWRITE;
         /// 栈，自动延伸
         const MAP_STACK = MAP_STACK;
-        const MAP_NORESERVE = MAP_NORESERVE;   
+        const MAP_NORESERVE = MAP_NORESERVE;
         /// 预先填充页表（MAP_POPULATE），我们作为 no-op 接受
         const MAP_POPULATE = MAP_POPULATE;
         /// MAP_FIXED_NOREPLACE: 类似 MAP_FIXED，但如果地址已被映射则返回 EEXIST 而不是替换

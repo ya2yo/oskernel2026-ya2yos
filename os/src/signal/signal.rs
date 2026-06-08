@@ -1,6 +1,10 @@
 use log::warn;
 
-use crate::{signal::SIG_MAX_NUM, task::exit_current_and_run_next, utils::{SysErrNo, SysResult}};
+use crate::{
+    signal::SIG_MAX_NUM,
+    task::exit_current_and_run_next,
+    utils::{SysErrNo, SysResult},
+};
 
 /// 仿照Linux signal实现
 pub const SIGHUP: usize = 1; /* Hangup.  */

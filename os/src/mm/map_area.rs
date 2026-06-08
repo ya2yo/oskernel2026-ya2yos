@@ -116,11 +116,7 @@ impl MapArea {
         // 打印调试信息
         for b in ppn.bytes_array().iter() {
             if *b != 0 {
-                error!(
-                    "new page not zero! vpn={:?} ppn={:?}",
-                    vpn,
-                    ppn
-                );
+                error!("new page not zero! vpn={:?} ppn={:?}", vpn, ppn);
                 break;
             }
         }

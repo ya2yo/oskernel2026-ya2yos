@@ -4,12 +4,10 @@ use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_FOLLOW};
 use log::{debug, warn};
 
 use crate::fs::{
-    open, superblock_root_inode, superblock_sync, File, FsIndex, InodeType, OpenFlags, MAX_PATH_LEN,
-    NONE_MODE, SEEK_CUR, SEEK_SET,
+    open, superblock_root_inode, superblock_sync, File, FsIndex, InodeType, OpenFlags,
+    MAX_PATH_LEN, NONE_MODE, SEEK_CUR, SEEK_SET,
 };
-use crate::mm::{
-    copy_from_user, copy_to_user, if_bad_address, read_user_cstr,
-};
+use crate::mm::{copy_from_user, copy_to_user, if_bad_address, read_user_cstr};
 use crate::syscall::FaccessatFileMode;
 use crate::task::current_task;
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
@@ -326,11 +324,17 @@ pub fn sys_utimensat(
     } else {
         let mut atime = Timespec::new(0, 0);
         copy_from_user(&memory_set, times as usize, unsafe {
-            core::slice::from_raw_parts_mut(&mut atime as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+            core::slice::from_raw_parts_mut(
+                &mut atime as *mut Timespec as *mut u8,
+                core::mem::size_of::<Timespec>(),
+            )
         })?;
         let mut mtime = Timespec::new(0, 0);
         copy_from_user(&memory_set, unsafe { times.add(1) } as usize, unsafe {
-            core::slice::from_raw_parts_mut(&mut mtime as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+            core::slice::from_raw_parts_mut(
+                &mut mtime as *mut Timespec as *mut u8,
+                core::mem::size_of::<Timespec>(),
+            )
         })?;
         match atime.tv_nsec {
             UTIME_NOW => atime_sec = Some(nowtime),

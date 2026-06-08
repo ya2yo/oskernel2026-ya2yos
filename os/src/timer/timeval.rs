@@ -21,7 +21,10 @@ pub struct TimeVal {
 
 impl TimeVal {
     pub fn new(sec: usize, usec: usize) -> Self {
-        Self { tv_sec: sec, tv_usec: usec }
+        Self {
+            tv_sec: sec,
+            tv_usec: usec,
+        }
     }
 
     /// 返回表示当前开机时间的 TimeVal
@@ -51,6 +54,10 @@ impl Add for TimeVal {
 
 impl PartialOrd for TimeVal {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.tv_sec.cmp(&other.tv_sec).then_with(|| self.tv_usec.cmp(&other.tv_usec)))
+        Some(
+            self.tv_sec
+                .cmp(&other.tv_sec)
+                .then_with(|| self.tv_usec.cmp(&other.tv_usec)),
+        )
     }
 }

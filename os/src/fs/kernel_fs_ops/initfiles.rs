@@ -43,7 +43,8 @@ fn flush_libgcc_s() {
         "/glibc/lib",
         OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
         DEFAULT_DIR_MODE,
-    ).ok();
+    )
+    .ok();
 
     let file = open(
         "/glibc/lib/libgcc_s.so.1",
@@ -54,9 +55,7 @@ fn flush_libgcc_s() {
     .file()
     .unwrap();
     let mut v = Vec::new();
-    v.push(unsafe {
-        core::slice::from_raw_parts_mut(libgcc_s_start as *mut u8, size)
-    });
+    v.push(unsafe { core::slice::from_raw_parts_mut(libgcc_s_start as *mut u8, size) });
     file.write(UserBuffer::new(v));
 }
 
@@ -320,24 +319,24 @@ pub fn create_init_files() -> GeneralRet {
         "/bin/basename", // 如果不加这个，ltp_testcode.sh会无法使用basename
         "/bin/bc",
         "/bin/bzip2",
-        "/bin/cat",      // ltp的cgroup_regression_3_2.sh需要它
+        "/bin/cat", // ltp的cgroup_regression_3_2.sh需要它
         "/bin/chmod",
-        "/bin/cp",       // 通用文件操作
+        "/bin/cp", // 通用文件操作
         "/bin/cut",
         "/bin/dd",
         "/bin/gdb",
-        "/bin/grep",     // ltp的cgroup_fj_proc需要
+        "/bin/grep", // ltp的cgroup_fj_proc需要
         "/bin/gunzip",
         "/bin/gzip",
         "/bin/killall",
         "/bin/id",
         "/bin/ip",
         "/bin/ln",
-        "/bin/ls",       // which ls 需要它
+        "/bin/ls", // which ls 需要它
         "/bin/locale",
-        "/bin/mkdir",    // ltp的cgroup_regression_3_1.sh需要它
+        "/bin/mkdir", // ltp的cgroup_regression_3_1.sh需要它
         "/bin/mktemp",
-        "/bin/rmdir",    // ltp的cgroup_regression_3_1.sh需要它
+        "/bin/rmdir", // ltp的cgroup_regression_3_1.sh需要它
         "/bin/rsh",
         "/bin/sed",
         "/bin/sleep",
@@ -346,7 +345,7 @@ pub fn create_init_files() -> GeneralRet {
         "/bin/touch",
         "/bin/mount",
         "/bin/umount",
-        "/bin/rm",       // fs_bind 清理需要
+        "/bin/rm", // fs_bind 清理需要
         "/bin/mv",
     ] {
         let _ = superblock_root_inode().unlink(path);
@@ -359,27 +358,57 @@ pub fn create_init_files() -> GeneralRet {
     // tst_sleep: 将 LTP 的 "100ms" 格式转为 busybox sleep 支持的 "0.100" 秒格式
     {
         let mut content = String::from("#!/bin/sh\n# LTP tst_sleep wrapper: converts 100ms -> 0.100\narg=\"$1\"\ncase \"$arg\" in\n    *ms) /bin/sleep \"0.${arg%ms}\" ;;\n    *) /bin/sleep \"$arg\" ;;\nesac\n");
-        let file = open("/bin/tst_sleep", OpenFlags::O_CREATE | OpenFlags::O_RDWR, DEFAULT_FILE_MODE)?.file()?;
+        let file = open(
+            "/bin/tst_sleep",
+            OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+            DEFAULT_FILE_MODE,
+        )?
+        .file()?;
         let mut v = Vec::new();
-        unsafe { v.push(core::slice::from_raw_parts_mut(content.as_bytes_mut().as_mut_ptr(), content.len())); }
+        unsafe {
+            v.push(core::slice::from_raw_parts_mut(
+                content.as_bytes_mut().as_mut_ptr(),
+                content.len(),
+            ));
+        }
         file.write(UserBuffer::new(v))?;
         file.inode.sync();
     }
     // tst_timeout_kill: 发送 SIGTERM + SIGKILL 终止超时 watchdog
     {
         let mut content = String::from("#!/bin/sh\n# LTP tst_timeout_kill wrapper\npid=\"$1\"\nif [ -n \"$pid\" ] && [ \"$pid\" -gt 0 ] 2>/dev/null; then\n    kill -TERM \"$pid\" 2>/dev/null\n    /bin/sleep 0.1\n    kill -KILL \"$pid\" 2>/dev/null\nfi\n");
-        let file = open("/bin/tst_timeout_kill", OpenFlags::O_CREATE | OpenFlags::O_RDWR, DEFAULT_FILE_MODE)?.file()?;
+        let file = open(
+            "/bin/tst_timeout_kill",
+            OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+            DEFAULT_FILE_MODE,
+        )?
+        .file()?;
         let mut v = Vec::new();
-        unsafe { v.push(core::slice::from_raw_parts_mut(content.as_bytes_mut().as_mut_ptr(), content.len())); }
+        unsafe {
+            v.push(core::slice::from_raw_parts_mut(
+                content.as_bytes_mut().as_mut_ptr(),
+                content.len(),
+            ));
+        }
         file.write(UserBuffer::new(v))?;
         file.inode.sync();
     }
     // tst_rod: LTP "remove old directory" → rm -rf
     {
         let mut content = String::from("#!/bin/sh\n# LTP tst_rod wrapper\n/bin/rm -rf \"$@\"\n");
-        let file = open("/bin/tst_rod", OpenFlags::O_CREATE | OpenFlags::O_RDWR, DEFAULT_FILE_MODE)?.file()?;
+        let file = open(
+            "/bin/tst_rod",
+            OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+            DEFAULT_FILE_MODE,
+        )?
+        .file()?;
         let mut v = Vec::new();
-        unsafe { v.push(core::slice::from_raw_parts_mut(content.as_bytes_mut().as_mut_ptr(), content.len())); }
+        unsafe {
+            v.push(core::slice::from_raw_parts_mut(
+                content.as_bytes_mut().as_mut_ptr(),
+                content.len(),
+            ));
+        }
         file.write(UserBuffer::new(v))?;
         file.inode.sync();
     }

@@ -6,9 +6,9 @@ mod mount;
 // pub use files::{make_socket, make_socketpair, OSFile};
 mod stat;
 mod vfs;
-pub use crate::fs::files::*;
 #[cfg(feature = "net")]
 pub use crate::fs::files::Socket;
+pub use crate::fs::files::*;
 use crate::mm::UserBuffer;
 // use crate::syscall::FaccessatFileMode;
 use crate::utils::{GeneralRet, SysErrNo};
@@ -21,11 +21,11 @@ pub use files::devfs::*;
 pub use fs_info::*;
 pub use fstruct::*;
 // pub mod socket_defs;
+pub use files::pipe::{make_pipe, Pipe};
+pub use files::stdio::{Stdin, Stdout};
 use log::debug;
 pub use mount::MNT_TABLE;
-pub use files::pipe::{make_pipe, Pipe};
 pub use stat::*;
-pub use files::stdio::{Stdin, Stdout};
 pub use vfs::*;
 mod kernel_fs_ops;
 pub use kernel_fs_ops::{

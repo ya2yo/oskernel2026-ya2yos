@@ -172,7 +172,10 @@ pub fn sys_setrlimit(resource: i32, rlim: usize) -> SyscallRet {
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
 
-    let mut limit = RLimit { rlim_cur: 0, rlim_max: 0 };
+    let mut limit = RLimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
     copy_from_user(&memory_set, rlim, unsafe {
         core::slice::from_raw_parts_mut(
             &mut limit as *mut RLimit as *mut u8,

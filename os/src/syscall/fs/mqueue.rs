@@ -13,12 +13,7 @@ use crate::utils::{SysErrNo, SyscallRet};
 // ---------------------------------------------------------------------------
 
 /// https://man7.org/linux/man-pages/man3/mq_open.3.html
-pub fn sys_mq_open(
-    name: *const u8,
-    oflag: i32,
-    _mode: u32,
-    attr: *const u8,
-) -> SyscallRet {
+pub fn sys_mq_open(name: *const u8, oflag: i32, _mode: u32, attr: *const u8) -> SyscallRet {
     let flags = OpenFlags::from_bits_truncate(oflag as u32);
     let create = flags.contains(OpenFlags::O_CREATE);
     let exclusive = flags.contains(OpenFlags::O_EXCL);
@@ -43,8 +38,12 @@ pub fn sys_mq_open(
             copy_from_user(&memory_set, (attr as usize).wrapping_add(16), &mut buf[8..])?;
             let maxmsg_val = i64::from_ne_bytes(buf[..8].try_into().unwrap());
             let msgsize_val = i64::from_ne_bytes(buf[8..].try_into().unwrap());
-            if maxmsg_val > 0 { maxmsg = maxmsg_val as usize; }
-            if msgsize_val > 0 { msgsize = msgsize_val as usize; }
+            if maxmsg_val > 0 {
+                maxmsg = maxmsg_val as usize;
+            }
+            if msgsize_val > 0 {
+                msgsize = msgsize_val as usize;
+            }
         }
         (name_str, maxmsg, msgsize)
     };

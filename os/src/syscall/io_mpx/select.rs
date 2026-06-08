@@ -4,7 +4,10 @@ use crate::{
     fs::File,
     mm::{copy_from_user, copy_to_user},
     signal::SigSet,
-    syscall::{options::{FdSet, FD_SET_LEN}, PollEvents},
+    syscall::{
+        options::{FdSet, FD_SET_LEN},
+        PollEvents,
+    },
     task::{current_task, suspend_current_and_run_next},
     timer::{get_time_ms, Timespec},
     utils::SyscallRet,
@@ -29,7 +32,10 @@ pub fn sys_pselect6(
     if sigmask != 0 {
         let mut sigset = SigSet::default();
         copy_from_user(&memory_set, sigmask, unsafe {
-            core::slice::from_raw_parts_mut(&mut sigset as *mut SigSet as *mut u8, core::mem::size_of::<SigSet>())
+            core::slice::from_raw_parts_mut(
+                &mut sigset as *mut SigSet as *mut u8,
+                core::mem::size_of::<SigSet>(),
+            )
         })?;
         inner.sig_mask = sigset;
     }
@@ -37,27 +43,42 @@ pub fn sys_pselect6(
     let nfds = min(nfds, proc_inner.fd_table.get_soft_limit());
 
     let mut using_readfds = if readfds != 0 {
-        let mut fdset = FdSet { fds_bits: [0; FD_SET_LEN] };
+        let mut fdset = FdSet {
+            fds_bits: [0; FD_SET_LEN],
+        };
         copy_from_user(&memory_set, readfds, unsafe {
-            core::slice::from_raw_parts_mut(&mut fdset as *mut FdSet as *mut u8, core::mem::size_of::<FdSet>())
+            core::slice::from_raw_parts_mut(
+                &mut fdset as *mut FdSet as *mut u8,
+                core::mem::size_of::<FdSet>(),
+            )
         })?;
         Some(fdset)
     } else {
         None
     };
     let mut using_writefds = if writefds != 0 {
-        let mut fdset = FdSet { fds_bits: [0; FD_SET_LEN] };
+        let mut fdset = FdSet {
+            fds_bits: [0; FD_SET_LEN],
+        };
         copy_from_user(&memory_set, writefds, unsafe {
-            core::slice::from_raw_parts_mut(&mut fdset as *mut FdSet as *mut u8, core::mem::size_of::<FdSet>())
+            core::slice::from_raw_parts_mut(
+                &mut fdset as *mut FdSet as *mut u8,
+                core::mem::size_of::<FdSet>(),
+            )
         })?;
         Some(fdset)
     } else {
         None
     };
     let mut using_exceptfds = if exceptfds != 0 {
-        let mut fdset = FdSet { fds_bits: [0; FD_SET_LEN] };
+        let mut fdset = FdSet {
+            fds_bits: [0; FD_SET_LEN],
+        };
         copy_from_user(&memory_set, exceptfds, unsafe {
-            core::slice::from_raw_parts_mut(&mut fdset as *mut FdSet as *mut u8, core::mem::size_of::<FdSet>())
+            core::slice::from_raw_parts_mut(
+                &mut fdset as *mut FdSet as *mut u8,
+                core::mem::size_of::<FdSet>(),
+            )
         })?;
         Some(fdset)
     } else {
@@ -70,7 +91,10 @@ pub fn sys_pselect6(
     } else {
         let mut timespec = Timespec::new(0, 0);
         copy_from_user(&memory_set, timeout, unsafe {
-            core::slice::from_raw_parts_mut(&mut timespec as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+            core::slice::from_raw_parts_mut(
+                &mut timespec as *mut Timespec as *mut u8,
+                core::mem::size_of::<Timespec>(),
+            )
         })?;
         (timespec.tv_sec * 1_000_000_000 + timespec.tv_nsec) as isize
     };
@@ -149,17 +173,26 @@ pub fn sys_pselect6(
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 if let Some(using_readfds) = using_readfds {
                     copy_to_user(&memory_set, readfds, unsafe {
-                        core::slice::from_raw_parts(&using_readfds as *const FdSet as *const u8, core::mem::size_of::<FdSet>())
+                        core::slice::from_raw_parts(
+                            &using_readfds as *const FdSet as *const u8,
+                            core::mem::size_of::<FdSet>(),
+                        )
                     })?;
                 }
                 if let Some(using_writefds) = using_writefds {
                     copy_to_user(&memory_set, writefds, unsafe {
-                        core::slice::from_raw_parts(&using_writefds as *const FdSet as *const u8, core::mem::size_of::<FdSet>())
+                        core::slice::from_raw_parts(
+                            &using_writefds as *const FdSet as *const u8,
+                            core::mem::size_of::<FdSet>(),
+                        )
                     })?;
                 }
                 if let Some(using_exceptfds) = using_exceptfds {
                     copy_to_user(&memory_set, exceptfds, unsafe {
-                        core::slice::from_raw_parts(&using_exceptfds as *const FdSet as *const u8, core::mem::size_of::<FdSet>())
+                        core::slice::from_raw_parts(
+                            &using_exceptfds as *const FdSet as *const u8,
+                            core::mem::size_of::<FdSet>(),
+                        )
                     })?;
                 }
             }

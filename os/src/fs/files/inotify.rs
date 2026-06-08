@@ -15,8 +15,8 @@
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use spin::{Lazy, Mutex};
@@ -199,13 +199,7 @@ impl InotifyFd {
     /// 分配一个 watch descriptor 并存入监视列表。
     pub fn add_watch(&self, path: String, mask: u32) -> SyscallRet {
         let wd = self.next_wd.fetch_add(1, Ordering::Relaxed);
-        self.watches.lock().insert(
-            wd,
-            WatchEntry {
-                path,
-                mask,
-            },
-        );
+        self.watches.lock().insert(wd, WatchEntry { path, mask });
         Ok(wd as usize)
     }
 

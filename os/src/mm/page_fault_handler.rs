@@ -10,7 +10,7 @@ use crate::{
 };
 
 use super::group::GROUP_SHARE;
-use super::{write_user_bytes_direct, user_buffer_from_kernel, MapArea, UserBuffer, VirtAddr};
+use super::{user_buffer_from_kernel, write_user_bytes_direct, MapArea, UserBuffer, VirtAddr};
 use crate::arch::page_table::PageTable;
 
 ///mmap写触发的lazy alocation，直接新分配帧
@@ -36,7 +36,8 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
     .expect("mmap_write_page_fault should not fail");
     let mut kernel_buf = vec![0u8; PAGE_SIZE];
     let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-    file.read(buf).expect("mmap_write_page_fault should not fail");
+    file.read(buf)
+        .expect("mmap_write_page_fault should not fail");
     write_user_bytes_direct(page_table.token(), va as usize, &kernel_buf);
     file.lseek(old_offset as isize, SEEK_SET)
         .expect("mmap_write_page_fault should not fail");

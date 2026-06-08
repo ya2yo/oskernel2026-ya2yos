@@ -79,17 +79,28 @@ impl Timex {
     /// 创建填充了合理默认值的 Timex (modes=0 读取时返回)
     pub fn defaults() -> Self {
         Self {
-            modes: 0, _pad0: 0,
-            offset: 0, freq: 0,
+            modes: 0,
+            _pad0: 0,
+            offset: 0,
+            freq: 0,
             maxerror: 500_000,
             esterror: 500_000,
-            status: 0, _pad1: 0,
-            constant: 2, precision: 1,
+            status: 0,
+            _pad1: 0,
+            constant: 2,
+            precision: 1,
             tolerance: 32_768_000,
             time: TimeVal::now(),
             tick: 10_000, // 10ms (100Hz)
-            ppsfreq: 0, jitter: 0, shift: 0, _pad2: 0,
-            stabil: 0, jitcnt: 0, calcnt: 0, errcnt: 0, stbcnt: 0,
+            ppsfreq: 0,
+            jitter: 0,
+            shift: 0,
+            _pad2: 0,
+            stabil: 0,
+            jitcnt: 0,
+            calcnt: 0,
+            errcnt: 0,
+            stbcnt: 0,
             tai: 0,
             _padding: [0; 11],
         }
@@ -129,12 +140,24 @@ pub fn timex_apply(tx: &Timex, privileged: bool) -> Result<usize, crate::utils::
 
     let mut state = REALTIME_TIMEX.lock();
 
-    if tx.modes & ADJ_OFFSET != 0     { state.offset = tx.offset; }
-    if tx.modes & ADJ_FREQUENCY != 0  { state.freq = tx.freq; }
-    if tx.modes & ADJ_MAXERROR != 0   { state.maxerror = tx.maxerror; }
-    if tx.modes & ADJ_ESTERROR != 0   { state.esterror = tx.esterror; }
-    if tx.modes & ADJ_STATUS != 0     { state.status = tx.status; }
-    if tx.modes & ADJ_TIMECONST != 0  { state.constant = tx.constant; }
+    if tx.modes & ADJ_OFFSET != 0 {
+        state.offset = tx.offset;
+    }
+    if tx.modes & ADJ_FREQUENCY != 0 {
+        state.freq = tx.freq;
+    }
+    if tx.modes & ADJ_MAXERROR != 0 {
+        state.maxerror = tx.maxerror;
+    }
+    if tx.modes & ADJ_ESTERROR != 0 {
+        state.esterror = tx.esterror;
+    }
+    if tx.modes & ADJ_STATUS != 0 {
+        state.status = tx.status;
+    }
+    if tx.modes & ADJ_TIMECONST != 0 {
+        state.constant = tx.constant;
+    }
 
     if tx.modes & ADJ_TICK != 0 {
         let min_tick = 900_000 / USER_HZ;
@@ -145,8 +168,12 @@ pub fn timex_apply(tx: &Timex, privileged: bool) -> Result<usize, crate::utils::
         state.tick = tx.tick;
     }
 
-    if tx.modes & ADJ_MICRO != 0 { state.status &= !STA_NANO; }
-    if tx.modes & ADJ_NANO != 0  { state.status |= STA_NANO; }
+    if tx.modes & ADJ_MICRO != 0 {
+        state.status &= !STA_NANO;
+    }
+    if tx.modes & ADJ_NANO != 0 {
+        state.status |= STA_NANO;
+    }
 
     state.status = 0; // 标记为 TIME_OK
     Ok(TIME_OK)

@@ -1,12 +1,15 @@
 use crate::fs::map_library_path;
-use crate::task::current_task;
 use crate::syscall::FaccessatFileMode;
+use crate::task::current_task;
 
 use super::*;
 use alloc::sync::Arc;
 use log::{debug, warn};
 fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
-    debug!("[create_file] abs_path={}, flags={:?}, mode={:o}", abs_path, flags, mode);
+    debug!(
+        "[create_file] abs_path={}, flags={:?}, mode={:o}",
+        abs_path, flags, mode
+    );
     // 检查父目录的写入和执行权限
     // 参考 faccessat 的权限检查逻辑
     if let Some(parent_path) = {
@@ -48,8 +51,11 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
                 let task_inner = task.inner_lock();
                 debug!(
                     "[create_file] uid={} euid={} gid={} egid={} parent_mode={:o}",
-                    task_inner.user_id, task_inner.effective_uid,
-                    task_inner.real_gid, task_inner.effective_gid, parent_fmode & 0xfff
+                    task_inner.user_id,
+                    task_inner.effective_uid,
+                    task_inner.real_gid,
+                    task_inner.effective_gid,
+                    parent_fmode & 0xfff
                 );
                 // root (euid 0) 绕过权限检查
                 // 使用 effective_uid，因为 Linux 文件权限检查基于 effective uid
@@ -84,7 +90,10 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
                         )
                     };
 
-                    debug!("[create_file] has_write={} has_exec={}", has_write, has_exec);
+                    debug!(
+                        "[create_file] has_write={} has_exec={}",
+                        has_write, has_exec
+                    );
                     if !has_exec {
                         debug!("[create_file] EACCES: no exec permission on parent");
                         return Err(SysErrNo::EACCES);
@@ -195,7 +204,11 @@ pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, Sy
 
                     debug!(
                         "[open] file mode={:o} owner_uid={} owner_gid={} my_uid={} my_gid={}",
-                        file_fmode & 0xfff, owner_uid, owner_gid, my_uid, my_gid
+                        file_fmode & 0xfff,
+                        owner_uid,
+                        owner_gid,
+                        my_uid,
+                        my_gid
                     );
 
                     let has_write = if my_uid == owner_uid {
@@ -224,7 +237,10 @@ pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, Sy
 
     // 节点不存在
     if flags.contains(OpenFlags::O_CREATE) {
-        debug!("[open] file not found, calling create_file for {}", abs_path);
+        debug!(
+            "[open] file not found, calling create_file for {}",
+            abs_path
+        );
         return create_file(abs_path, flags, mode);
     }
     Err(SysErrNo::ENOENT)

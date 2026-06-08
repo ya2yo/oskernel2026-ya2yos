@@ -29,14 +29,23 @@ pub fn sys_prlimit(
                 rlim_max: fd_table.get_hard_limit(),
             };
             copy_to_user(&memory_set, old_limit as usize, unsafe {
-                core::slice::from_raw_parts(&limit as *const RLimit as *const u8, core::mem::size_of::<RLimit>())
+                core::slice::from_raw_parts(
+                    &limit as *const RLimit as *const u8,
+                    core::mem::size_of::<RLimit>(),
+                )
             })?;
         }
         if !new_limit.is_null() {
             // 说明是set
-            let mut limit = RLimit { rlim_cur: 0, rlim_max: 0 };
+            let mut limit = RLimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
             copy_from_user(&memory_set, new_limit as usize, unsafe {
-                core::slice::from_raw_parts_mut(&mut limit as *mut RLimit as *mut u8, core::mem::size_of::<RLimit>())
+                core::slice::from_raw_parts_mut(
+                    &mut limit as *mut RLimit as *mut u8,
+                    core::mem::size_of::<RLimit>(),
+                )
             })?;
             fd_table.set_limit(limit.rlim_cur, limit.rlim_max);
         }

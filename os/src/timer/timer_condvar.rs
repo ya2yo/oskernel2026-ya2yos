@@ -24,7 +24,7 @@ use alloc::{
 use core::cmp::Ordering;
 use spin::{Lazy, Mutex};
 
-use crate::task::{TaskControlBlock, handle_sigtimedwait_timer, handle_timer};
+use crate::task::{handle_sigtimedwait_timer, handle_timer, TaskControlBlock};
 
 use super::{get_time_spec, Timespec};
 

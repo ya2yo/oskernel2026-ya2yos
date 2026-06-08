@@ -75,7 +75,10 @@ pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
     let file = proc_inner.fd_table.get(fd)?.any();
     let kst_data = file.fstat();
     copy_to_user(&memory_set, kst as usize, unsafe {
-        core::slice::from_raw_parts(&kst_data as *const Kstat as *const u8, core::mem::size_of::<Kstat>())
+        core::slice::from_raw_parts(
+            &kst_data as *const Kstat as *const u8,
+            core::mem::size_of::<Kstat>(),
+        )
     })?;
     Ok(0)
 }
@@ -98,7 +101,10 @@ pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, _flags: usize
     let file = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.any();
     let kst_data = file.fstat();
     copy_to_user(memory_set, kst as usize, unsafe {
-        core::slice::from_raw_parts(&kst_data as *const Kstat as *const u8, core::mem::size_of::<Kstat>())
+        core::slice::from_raw_parts(
+            &kst_data as *const Kstat as *const u8,
+            core::mem::size_of::<Kstat>(),
+        )
     })?;
     return Ok(0);
 }
@@ -170,7 +176,10 @@ pub fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
     let memory_set = proc_inner.get_locked_memory_set_read();
     let stat = superblock_fs_stat();
     copy_to_user(&memory_set, statfs as usize, unsafe {
-        core::slice::from_raw_parts(&stat as *const Statfs as *const u8, core::mem::size_of::<Statfs>())
+        core::slice::from_raw_parts(
+            &stat as *const Statfs as *const u8,
+            core::mem::size_of::<Statfs>(),
+        )
     })?;
     Ok(0)
 }

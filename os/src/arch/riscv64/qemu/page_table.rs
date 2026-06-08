@@ -295,7 +295,7 @@ impl PageTable {
             Some(f) => Arc::strong_count(f),
             None => 2, // no tracker → force copy path
         };
-        debug!("---> refcnt={}",refcnt);
+        debug!("---> refcnt={}", refcnt);
         // 只有一个引用：无需复制物理页，直接调整权限即可
         if refcnt == 1 {
             let mut flags = pte.get_flags();

@@ -23,8 +23,7 @@ use log::{debug, error, warn};
 /// 全局进程记账文件
 /// acct(2) 系统调用用于开启/关闭进程记账。
 /// 开启时把生成的记账记录写入指定文件；关闭时传入 NULL。
-static ACCT_FILE: Lazy<Mutex<Option<Arc<crate::fs::OSFile>>>> =
-    Lazy::new(|| Mutex::new(None));
+static ACCT_FILE: Lazy<Mutex<Option<Arc<crate::fs::OSFile>>>> = Lazy::new(|| Mutex::new(None));
 
 /// 参考 https://man7.org/linux/man-pages/man2/acct.2.html
 pub fn sys_acct(filename: *const u8) -> SyscallRet {

@@ -29,8 +29,8 @@ use crate::syscall::MmapFlags;
 use crate::trap::trap_types::*;
 use crate::utils::SyscallRet;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use log;
 use spin::{Lazy, Mutex};
 
@@ -244,7 +244,8 @@ impl MemorySetInner {
         self.push(
             MapArea::new(start_va, end_va, MapType::Framed, permission, area_type),
             None,
-        ).ok(); // OOM is unlikely here; if it happens the area is simply not mapped
+        )
+        .ok(); // OOM is unlikely here; if it happens the area is simply not mapped
     }
     pub fn lazy_insert_framed_area(
         &mut self,
@@ -359,7 +360,7 @@ impl MemorySetInner {
             .find(|area| area.area_type == MapAreaType::Brk)
             .unwrap();
         let new_addr: usize = user_heappoint + grow_size as usize; // 生长后的地址
-         let new_vpn: VirtPageNum = VirtAddr::from(new_addr).ceil();
+        let new_vpn: VirtPageNum = VirtAddr::from(new_addr).ceil();
         if grow_size > 0 {
             let user_vpn_top: VirtPageNum = ((user_heapbottom + USER_HEAP_SIZE) / PAGE_SIZE).into();
             if new_vpn >= user_vpn_top {
@@ -454,7 +455,12 @@ impl MemorySetInner {
         Ok(())
     }
     /// Push a MapArea with eager frame allocation and data offset. Returns Err(()) on OOM.
-    pub(crate) fn push_with_offset(&mut self, mut map_area: MapArea, offset: usize, data: Option<&[u8]>) -> Result<(), ()> {
+    pub(crate) fn push_with_offset(
+        &mut self,
+        mut map_area: MapArea,
+        offset: usize,
+        data: Option<&[u8]>,
+    ) -> Result<(), ()> {
         map_area.map(&mut self.page_table)?;
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data, offset);
@@ -462,7 +468,11 @@ impl MemorySetInner {
         self.areas.push(map_area);
         Ok(())
     }
-    pub(crate) fn push_with_given_frames(&mut self, mut map_area: MapArea, frames: Vec<Arc<FrameTracker>>) {
+    pub(crate) fn push_with_given_frames(
+        &mut self,
+        mut map_area: MapArea,
+        frames: Vec<Arc<FrameTracker>>,
+    ) {
         map_area.map_given_frames(&mut self.page_table, frames);
         self.areas.push(map_area);
     }

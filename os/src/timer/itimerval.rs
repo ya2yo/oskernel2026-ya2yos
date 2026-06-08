@@ -17,8 +17,8 @@
 //! - `last_time`: 上次设置定时器时的墙上时钟，用于计算剩余时间
 //! - `once`: 是否单次触发
 
-use crate::sync::SyncUnsafeCell;
 use super::timeval::TimeVal;
+use crate::sync::SyncUnsafeCell;
 
 /// 以实际（挂钟）时间倒计时，到期发送 SIGALRM
 pub const ITIMER_REAL: usize = 0;
@@ -35,7 +35,9 @@ pub struct Itimerval {
 }
 
 impl Default for Itimerval {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Itimerval {
@@ -59,7 +61,9 @@ pub struct TimerInner {
 }
 
 impl Default for TimerInner {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TimerInner {
@@ -73,7 +77,9 @@ impl TimerInner {
 }
 
 impl Default for Timer {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Timer {

@@ -4,14 +4,16 @@ use linux_raw_sys::general::{
     CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_THREAD_CPUTIME_ID,
     TIMER_ABSTIME,
 };
-use log::{debug};
+use log::debug;
 
 use crate::{
     arch::time::get_clock_freq,
     mm::{copy_from_user, copy_to_user, if_bad_address},
     signal::check_if_any_sig_for_current_task,
     task::{current_task, suspend_current_and_run_next},
-    timer::{NANOS_PER_SEC, MSEC_PER_SEC, Timespec, calculate_left_timespec, get_time_ms, get_time_spec},
+    timer::{
+        calculate_left_timespec, get_time_ms, get_time_spec, Timespec, MSEC_PER_SEC, NANOS_PER_SEC,
+    },
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -28,7 +30,10 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
     let memory_set = process.get_locked_memory_set_read();
     let mut req_val = Timespec::new(0, 0);
     copy_from_user(&memory_set, req as usize, unsafe {
-        core::slice::from_raw_parts_mut(&mut req_val as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+        core::slice::from_raw_parts_mut(
+            &mut req_val as *mut Timespec as *mut u8,
+            core::mem::size_of::<Timespec>(),
+        )
     })?;
     drop(memory_set);
     drop(process);
@@ -39,7 +44,7 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
     }
 
     let waittime = req.tv_sec * (NANOS_PER_SEC as usize) + req.tv_nsec;
-    let begin = get_time_ms() * ( NANOS_PER_SEC as usize / MSEC_PER_SEC );
+    let begin = get_time_ms() * (NANOS_PER_SEC as usize / MSEC_PER_SEC);
     let endtime = get_time_spec() + req;
 
     debug!(
@@ -48,22 +53,23 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
     );
 
     while get_time_ms() * 1_000_000usize - begin < waittime {
-        if check_if_any_sig_for_current_task().is_some()
-            || {
-                let mut task_inner = task.inner_lock();
-                let eintr = task_inner.sig_eintr;
-                if eintr {
-                    task_inner.sig_eintr = false;
-                }
-                eintr
+        if check_if_any_sig_for_current_task().is_some() || {
+            let mut task_inner = task.inner_lock();
+            let eintr = task_inner.sig_eintr;
+            if eintr {
+                task_inner.sig_eintr = false;
             }
-        {
+            eintr
+        } {
             if rem as usize != 0 {
                 let process = task.process.inner_lock();
                 let memory_set = process.get_locked_memory_set_read();
                 let left = calculate_left_timespec(endtime);
                 copy_to_user(&memory_set, rem as usize, unsafe {
-                    core::slice::from_raw_parts(&left as *const Timespec as *const u8, core::mem::size_of::<Timespec>())
+                    core::slice::from_raw_parts(
+                        &left as *const Timespec as *const u8,
+                        core::mem::size_of::<Timespec>(),
+                    )
                 })?;
             }
             return Err(SysErrNo::EINTR);
@@ -127,9 +133,7 @@ pub fn sys_clock_nanosleep(
     // Linux 仅支持 CLOCK_REALTIME / CLOCK_MONOTONIC
     // CLOCK_PROCESS_CPUTIME_ID / CLOCK_THREAD_CPUTIME_ID → EOPNOTSUPP
     // 其他 clockid → EINVAL
-    if clockid == CLOCK_PROCESS_CPUTIME_ID as usize
-        || clockid == CLOCK_THREAD_CPUTIME_ID as usize
-    {
+    if clockid == CLOCK_PROCESS_CPUTIME_ID as usize || clockid == CLOCK_THREAD_CPUTIME_ID as usize {
         return Err(SysErrNo::EOPNOTSUPP);
     }
     if clockid != CLOCK_REALTIME as usize && clockid != CLOCK_MONOTONIC as usize {
@@ -148,10 +152,16 @@ pub fn sys_clock_nanosleep(
     let memory_set = process.get_locked_memory_set_read();
     let mut t_val = Timespec::new(0, 0);
     copy_from_user(&memory_set, t as usize, unsafe {
-        core::slice::from_raw_parts_mut(&mut t_val as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+        core::slice::from_raw_parts_mut(
+            &mut t_val as *mut Timespec as *mut u8,
+            core::mem::size_of::<Timespec>(),
+        )
     })?;
     let t = t_val;
-    debug!("[sys_clock_nanosleep] clock_id={clockid}, flags={flags}, t={:?}", t);
+    debug!(
+        "[sys_clock_nanosleep] clock_id={clockid}, flags={flags}, t={:?}",
+        t
+    );
     drop(memory_set);
     drop(process);
     // tv_nsec 必须在 [0, 10^9) 范围内
@@ -200,22 +210,23 @@ pub fn sys_clock_nanosleep(
         }
 
         // 检查信号：pending 信号或已被 trap handler 拦截的信号
-        if check_if_any_sig_for_current_task().is_some()
-            || {
-                let mut task_inner = task.inner_lock();
-                let eintr = task_inner.sig_eintr;
-                if eintr {
-                    task_inner.sig_eintr = false;
-                }
-                eintr
+        if check_if_any_sig_for_current_task().is_some() || {
+            let mut task_inner = task.inner_lock();
+            let eintr = task_inner.sig_eintr;
+            if eintr {
+                task_inner.sig_eintr = false;
             }
-        {
+            eintr
+        } {
             if !remain.is_null() {
                 let process = task.process.inner_lock();
                 let memory_set = process.get_locked_memory_set_read();
                 let left = calculate_left_timespec(endtime);
                 copy_to_user(&memory_set, remain as usize, unsafe {
-                    core::slice::from_raw_parts(&left as *const Timespec as *const u8, core::mem::size_of::<Timespec>())
+                    core::slice::from_raw_parts(
+                        &left as *const Timespec as *const u8,
+                        core::mem::size_of::<Timespec>(),
+                    )
                 })?;
             }
             return Err(SysErrNo::EINTR);
@@ -231,9 +242,9 @@ pub fn sys_clock_nanosleep(
 /// 策略: 0=SCHED_OTHER, 1=SCHED_FIFO, 2=SCHED_RR
 pub fn sys_sched_get_priority_max(policy: i32) -> SyscallRet {
     match policy {
-        0 => Ok(0),    // SCHED_OTHER: 仅一个优先级
-        1 => Ok(99),   // SCHED_FIFO
-        2 => Ok(99),   // SCHED_RR
+        0 => Ok(0),  // SCHED_OTHER: 仅一个优先级
+        1 => Ok(99), // SCHED_FIFO
+        2 => Ok(99), // SCHED_RR
         _ => Err(SysErrNo::EINVAL),
     }
 }
@@ -242,9 +253,9 @@ pub fn sys_sched_get_priority_max(policy: i32) -> SyscallRet {
 /// 返回指定调度策略的最小静态优先级。
 pub fn sys_sched_get_priority_min(policy: i32) -> SyscallRet {
     match policy {
-        0 => Ok(0),    // SCHED_OTHER: 仅一个优先级
-        1 => Ok(1),    // SCHED_FIFO
-        2 => Ok(1),    // SCHED_RR
+        0 => Ok(0), // SCHED_OTHER: 仅一个优先级
+        1 => Ok(1), // SCHED_FIFO
+        2 => Ok(1), // SCHED_RR
         _ => Err(SysErrNo::EINVAL),
     }
 }

@@ -42,7 +42,10 @@ pub fn sys_epoll_create1(flags: u32) -> SyscallRet {
 
 /// https://www.man7.org/linux/man-pages/man2/epoll_ctl.2.html
 pub fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event_ptr: usize) -> SyscallRet {
-    debug!("[sys_epoll_ctl] epfd={}, op={}, fd={}, event_ptr={}", epfd, op, fd, event_ptr);
+    debug!(
+        "[sys_epoll_ctl] epfd={}, op={}, fd={}, event_ptr={}",
+        epfd, op, fd, event_ptr
+    );
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_read();
@@ -64,7 +67,10 @@ pub fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event_ptr: usize) -> Sys
             }
             let mut event: epoll_event = unsafe { core::mem::zeroed() };
             copy_from_user(&memory_set, event_ptr, unsafe {
-                core::slice::from_raw_parts_mut(&mut event as *mut epoll_event as *mut u8, core::mem::size_of::<epoll_event>())
+                core::slice::from_raw_parts_mut(
+                    &mut event as *mut epoll_event as *mut u8,
+                    core::mem::size_of::<epoll_event>(),
+                )
             })?;
             debug!(
                 "[sys_epoll_ctl] ADD epfd={}, fd={}, events=0x{:x}, data=0x{:x}",
@@ -81,7 +87,10 @@ pub fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event_ptr: usize) -> Sys
             }
             let mut event: epoll_event = unsafe { core::mem::zeroed() };
             copy_from_user(&memory_set, event_ptr, unsafe {
-                core::slice::from_raw_parts_mut(&mut event as *mut epoll_event as *mut u8, core::mem::size_of::<epoll_event>())
+                core::slice::from_raw_parts_mut(
+                    &mut event as *mut epoll_event as *mut u8,
+                    core::mem::size_of::<epoll_event>(),
+                )
             })?;
             debug!(
                 "[sys_epoll_ctl] MOD epfd={}, fd={}, events=0x{:x}, data=0x{:x}",
@@ -166,9 +175,16 @@ fn epoll_wait_once(epfd: usize, events_ptr: usize, maxevents: usize) -> SyscallR
             events: ev.events,
             data: ev.data,
         };
-        copy_to_user(&memory_set, events_ptr + i * core::mem::size_of::<epoll_event>(), unsafe {
-            core::slice::from_raw_parts(&user_event as *const epoll_event as *const u8, core::mem::size_of::<epoll_event>())
-        })?;
+        copy_to_user(
+            &memory_set,
+            events_ptr + i * core::mem::size_of::<epoll_event>(),
+            unsafe {
+                core::slice::from_raw_parts(
+                    &user_event as *const epoll_event as *const u8,
+                    core::mem::size_of::<epoll_event>(),
+                )
+            },
+        )?;
     }
     Ok(ready.len())
 }

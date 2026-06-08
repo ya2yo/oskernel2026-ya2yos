@@ -52,10 +52,10 @@ pub fn map_library_path(requested_path: &str) -> Option<&str> {
         // add by tuji
         "/lib/ld-musl-riscv64.so.1" => Some("/musl/lib/libc.so"), // ltp
         "/lib/ld-musl-riscv64-sf.so.1" => Some("/musl/lib/libc.so"), // libctest
-        "/usr/lib/libm.so.6" => Some("/glibc/lib/libm.so.6"),    // libctest
-        "/lib/libm.so.6" => Some("/glibc/lib/libm.so.6"),        // 动态链接器搜索路径
+        "/usr/lib/libm.so.6" => Some("/glibc/lib/libm.so.6"),     // libctest
+        "/lib/libm.so.6" => Some("/glibc/lib/libm.so.6"),         // 动态链接器搜索路径
         "/lib/riscv64-linux-gnu/libm.so.6" => Some("/glibc/lib/libm.so.6"),
-        "/usr/lib/libc.so.6" => Some("/glibc/lib/libc.so"),      // libctest
+        "/usr/lib/libc.so.6" => Some("/glibc/lib/libc.so"), // libctest
         "/lib/libgcc_s.so.1" => Some("/glibc/lib/libgcc_s.so.1"), // libctest (pthread)
         "/usr/lib/libgcc_s.so.1" => Some("/glibc/lib/libgcc_s.so.1"),
         "/usr/lib/riscv64-linux-gnu/libgcc_s.so.1" => Some("/glibc/lib/libgcc_s.so.1"),

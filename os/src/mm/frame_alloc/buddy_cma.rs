@@ -60,8 +60,8 @@ pub fn cma_alloc(pages: usize) -> Option<PhysAddr> {
     match layout_opt {
         Some(layout) => {
             let mut locked = CMA_ALLOCATOR.lock();
-            let ptr_result = match locked.alloc(layout){
-                Ok(ptr)=>ptr,
+            let ptr_result = match locked.alloc(layout) {
+                Ok(ptr) => ptr,
                 Err(_) => return None,
             };
             let ptr = ptr_result.as_ptr() as usize;

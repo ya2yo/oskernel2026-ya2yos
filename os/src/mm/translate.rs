@@ -6,7 +6,10 @@ use crate::{
     arch::{
         memory_layout::{PAGE_SIZE, PAGE_SIZE_BITS},
         time::get_ticks,
-    }, fs::MAX_PATH_LEN, mm::{PhysPageNum, VirtPageNum}, utils::{SysErrNo, SyscallRet}
+    },
+    fs::MAX_PATH_LEN,
+    mm::{PhysPageNum, VirtPageNum},
+    utils::{SysErrNo, SyscallRet},
 };
 
 use super::{MemorySet, StepByOne, VirtAddr};
@@ -62,7 +65,11 @@ pub fn copy_from_user_val<T: Sized>(memory_set: &MemorySet, src: *const T) -> Re
 ///
 /// 底层调用 `copy_to_user`，自动处理跨页、延迟页分配等。
 /// 成功返回 `Ok(())`，失败返回 `Err(EFAULT)`。
-pub fn copy_to_user_val<T: Sized>(memory_set: &MemorySet, dst: *mut T, val: &T) -> Result<(), SysErrNo> {
+pub fn copy_to_user_val<T: Sized>(
+    memory_set: &MemorySet,
+    dst: *mut T,
+    val: &T,
+) -> Result<(), SysErrNo> {
     let src_slice = unsafe {
         core::slice::from_raw_parts(val as *const T as *const u8, core::mem::size_of::<T>())
     };
@@ -169,10 +176,7 @@ pub fn copy_to_user(memory_set: &MemorySet, dst: usize, src: &[u8]) -> SyscallRe
 /// 遵循内核设计原则：先通过 `copy_from_user` 触发延迟页分配，
 /// 确保页面已映射后再进行 VA→PA 转换。避免在未分配页面上直接
 /// 调用 `translate_va` 导致 panic 或遗漏延迟分配。
-pub fn translate_user_va_safe(
-    memory_set: &MemorySet,
-    va: VirtAddr,
-) -> Result<usize, SysErrNo> {
+pub fn translate_user_va_safe(memory_set: &MemorySet, va: VirtAddr) -> Result<usize, SysErrNo> {
     let page_table = PageTable::from_token(memory_set.token());
     let vpn = va.floor();
     // 页面未映射时，通过 copy_from_user 触发延迟页分配
@@ -216,7 +220,13 @@ pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, 
         let chunk_size = core::cmp::min(page_end - current_addr, MAX_PATH_LEN - pos);
 
         // 尝试从用户空间复制这一块
-        if copy_from_user(memory_set, current_addr, &mut dst_str[pos..pos + chunk_size]).is_err() {
+        if copy_from_user(
+            memory_set,
+            current_addr,
+            &mut dst_str[pos..pos + chunk_size],
+        )
+        .is_err()
+        {
             // 该块无法读取：检查已经读取的部分是否已包含完整字符串
             if let Some(null_pos) = dst_str[..pos].iter().position(|&b| b == 0) {
                 return Ok(String::from(
@@ -238,9 +248,7 @@ pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, 
     }
 
     // 读取了 MAX_PATH_LEN 均未遇到 '\0'
-    Ok(String::from(
-        core::str::from_utf8(&dst_str).unwrap_or(""),
-    ))
+    Ok(String::from(core::str::from_utf8(&dst_str).unwrap_or("")))
 }
 
 // ---------------------------------------------------------------------------
@@ -249,11 +257,7 @@ pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, 
 
 /// Internal: read bytes from user memory via page table into an existing buffer.
 /// Pages must already be mapped (used in writeback scenarios).
-pub(crate) fn read_user_bytes_direct_into(
-    token: usize,
-    src: usize,
-    dst: &mut [u8],
-) -> Option<()> {
+pub(crate) fn read_user_bytes_direct_into(token: usize, src: usize, dst: &mut [u8]) -> Option<()> {
     let len = dst.len();
     if len == 0 {
         return Some(());

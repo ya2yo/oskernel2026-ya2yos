@@ -168,8 +168,12 @@ fn iovecs_to_buf_and_ub(iovs: &[iovec]) -> SysResult<(Vec<u8>, UserBuffer)> {
         if iov.iov_base.is_null() {
             return Err(SysErrNo::EFAULT);
         }
-        copy_from_user(&memory_set, iov.iov_base as usize, &mut kernel_buf[offset..offset + len])
-            .map(|_| ())?;
+        copy_from_user(
+            &memory_set,
+            iov.iov_base as usize,
+            &mut kernel_buf[offset..offset + len],
+        )
+        .map(|_| ())?;
         offset += len;
     }
     let ub = unsafe { user_buffer_from_kernel(&mut kernel_buf) };

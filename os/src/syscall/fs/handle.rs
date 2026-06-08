@@ -43,11 +43,10 @@ pub fn sys_name_to_handle_at(
 /// - `flags`: 打开标志（O_RDONLY, O_WRONLY, O_RDWR 等）
 ///
 /// 与 name_to_handle_at 配对使用，当前返回 ENOSYS。
-pub fn sys_open_by_handle_at(
-    mount_fd: i32,
-    handle: *mut u8,
-    flags: u32,
-) -> SyscallRet {
-    warn!("[sys_open_by_handle_at] not implement! mount_fd={}, handle={:#X}, flags={}", mount_fd, handle as usize, flags);
+pub fn sys_open_by_handle_at(mount_fd: i32, handle: *mut u8, flags: u32) -> SyscallRet {
+    warn!(
+        "[sys_open_by_handle_at] not implement! mount_fd={}, handle={:#X}, flags={}",
+        mount_fd, handle as usize, flags
+    );
     Ok(0)
 }

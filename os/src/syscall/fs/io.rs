@@ -2,10 +2,8 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use log::{debug, warn};
 
 use crate::{
-    fs::{DummyFd, FdTable, File, FileDescriptor, OpenFlags, SEEK_CUR, SEEK_SET},
-    mm::{
-        UserBuffer, copy_from_user, copy_to_user, user_buffer_from_kernel,
-    },
+    fs::{superblock_fs_stat, DummyFd, FdTable, File, FileDescriptor, OpenFlags, SEEK_CUR, SEEK_SET},
+    mm::{UserBuffer, copy_from_user, copy_to_user, user_buffer_from_kernel},
     syscall::{fs::dummyfd_create, options::Iovec},
     task::current_task,
     timer::get_time_ms,
@@ -15,6 +13,9 @@ use crate::{
 /// 单次 write() 最多分配的内核缓冲区大小 (64KB)。
 /// 超过此大小的写操作将被切分为多次 write，避免内核堆 OOM。
 const IO_CHUNK_SIZE: usize = 0x10000; // 64KB
+
+const FALLOC_FL_KEEP_SIZE: u32 = 0x01;
+const FALLOC_SUPPORTED_FLAGS: u32 = FALLOC_FL_KEEP_SIZE;
 
 /// 参考 https://man7.org/linux/man-pages/man2/write.2.html
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
@@ -654,8 +655,58 @@ pub fn sys_copy_file_range(
 }
 
 /// https://www.man7.org/linux/man-pages/man2/fallocate.2.html
-pub fn sys_fallocate(_fd: usize, _mode: u32, _offset: usize, _len: usize) -> SyscallRet {
-    warn!("[sys_fallocate] not implement!");
+pub fn sys_fallocate(fd: usize, mode: u32, offset: usize, len: usize) -> SyscallRet {
+    let offset = offset as isize;
+    let len = len as isize;
+
+    if offset < 0 || len <= 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    if mode & !FALLOC_SUPPORTED_FLAGS != 0 {
+        return Err(SysErrNo::EOPNOTSUPP);
+    }
+
+    let end = (offset as usize)
+        .checked_add(len as usize)
+        .ok_or(SysErrNo::EFBIG)?;
+    if end > isize::MAX as usize {
+        return Err(SysErrNo::EFBIG);
+    }
+
+    let file = {
+        let task = current_task().unwrap();
+        let inner = task.process.inner_lock();
+        if fd >= inner.fd_table.len() {
+            return Err(SysErrNo::EBADF);
+        }
+        let file = inner.fd_table.try_get(fd).ok_or(SysErrNo::EBADF)?.file()?;
+        if !file.writable() {
+            return Err(SysErrNo::EBADF);
+        }
+        file
+    };
+
+    if !file.inode.types().is_file() {
+        return Err(SysErrNo::ENODEV);
+    }
+
+    let stat = superblock_fs_stat();
+    let block_size = stat.f_bsize.max(1) as usize;
+    let current_size = file.inode.size();
+    let reserve_len = if mode & FALLOC_FL_KEEP_SIZE != 0 {
+        len as usize
+    } else {
+        end.saturating_sub(current_size)
+    };
+    let needed_blocks = reserve_len.saturating_add(block_size - 1) / block_size;
+    if needed_blocks > stat.f_bavail.max(0) as usize {
+        return Err(SysErrNo::ENOSPC);
+    }
+
+    if mode & FALLOC_FL_KEEP_SIZE == 0 && end > current_size {
+        file.inode.truncate(end)?;
+    }
+
     Ok(0)
 }
 
@@ -670,4 +721,3 @@ pub fn sys_user_faultfd(_flags: u32) -> SyscallRet {
     warn!("[sys_fanotify_init] not implement!");
     dummyfd_create()
 }
-

@@ -10,7 +10,7 @@ use spin::{Lazy, Mutex, RwLock};
 
 const PAGE_SIZE: usize = 4096;
 pub const PAGE_MASK: usize = !0xfff;
-const MAX_CACHED_FILE_SIZE: usize = 0x100_0000; // 16 MiB
+const MAX_CACHED_FILE_SIZE: usize = 0x10_0000; // 1 MiB
 
 fn aligned_down(addr: usize) -> usize {
     addr & PAGE_MASK
@@ -286,7 +286,10 @@ impl Ext4File {
         let cache = Arc::new(RwLock::new(VFileCache::new()));
         let mut cache_writer = cache.write();
         let aligned_size = aligned_down(size) + PAGE_SIZE;
-        cache_writer.data = Vec::with_capacity(aligned_size);
+        cache_writer.data = Vec::new();
+        if cache_writer.data.try_reserve_exact(aligned_size).is_err() {
+            return;
+        }
         let data = &mut cache_writer.data;
         unsafe {
             data.set_len(aligned_size);
@@ -411,7 +414,7 @@ impl Ext4File {
                 remove_fifo_set(path.clone());
                 self.file_desc.fpos = write_offset as u64;
             } else {
-                cache_writer.writebuf(buf);
+                cache_writer.writebuf(buf)?;
                 return Ok(buf.len());
             }
         }
@@ -442,7 +445,7 @@ impl Ext4File {
         if if_cache(path.clone()) {
             let cache = get_cache(path.clone());
             let mut cache_writer = cache.write();
-            cache_writer.truncate(size as usize);
+            cache_writer.truncate(size as usize)?;
         }
 
         let r = unsafe { ext4_ftruncate(&mut self.file_desc, size) };
@@ -854,13 +857,19 @@ impl VFileCache {
         &self.data.as_slice()[..]
     }
 
-    pub fn writebuf(&mut self, buf: &[u8]) -> usize {
+    pub fn writebuf(&mut self, buf: &[u8]) -> Result<usize, i32> {
         let length = buf.len();
         if self.offset + length > self.size {
             self.size = self.offset + length;
         }
         if self.offset + length > self.data.len() {
             let aligned_size = aligned_down(self.offset + length) + PAGE_SIZE;
+            let additional = aligned_size.saturating_sub(self.data.capacity());
+            if additional > 0 {
+                self.data
+                    .try_reserve_exact(additional)
+                    .map_err(|_| ENOMEM as i32)?;
+            }
             self.data.resize(aligned_size, 0);
         }
         if length <= 10 {
@@ -879,17 +888,24 @@ impl VFileCache {
             self.data.len()
         );
         */
-        return self.data.len();
+        Ok(self.data.len())
     }
 
-    pub fn truncate(&mut self, new_size: usize) {
+    pub fn truncate(&mut self, new_size: usize) -> Result<(), i32> {
         let aligned_size = aligned_down(new_size) + PAGE_SIZE;
+        let additional = aligned_size.saturating_sub(self.data.capacity());
+        if additional > 0 {
+            self.data
+                .try_reserve_exact(additional)
+                .map_err(|_| ENOMEM as i32)?;
+        }
         self.data.resize(aligned_size, 0);
         let length = self.data.len();
         if new_size < length {
             self.data[new_size..length].fill(0);
         }
         self.size = new_size;
+        Ok(())
     }
 }
 

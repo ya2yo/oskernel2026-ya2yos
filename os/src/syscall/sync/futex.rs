@@ -2,7 +2,7 @@ use log::{debug, warn};
 
 use crate::{
     mm::copy_to_user,
-    task::{RobustListHead, current_task, tid_to_task},
+    task::{current_task, tid_to_task, RobustListHead},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -30,11 +30,17 @@ pub fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut usize
         let memory_set = proc_inner.get_locked_memory_set_read();
         let head_val = task_inner.robust_list.list;
         copy_to_user(&memory_set, head_ptr as usize, unsafe {
-            core::slice::from_raw_parts(&head_val as *const usize as *const u8, core::mem::size_of::<usize>())
+            core::slice::from_raw_parts(
+                &head_val as *const usize as *const u8,
+                core::mem::size_of::<usize>(),
+            )
         })?;
         let len_val = core::mem::size_of::<RobustListHead>();
         copy_to_user(&memory_set, len_ptr as usize, unsafe {
-            core::slice::from_raw_parts(&len_val as *const usize as *const u8, core::mem::size_of::<usize>())
+            core::slice::from_raw_parts(
+                &len_val as *const usize as *const u8,
+                core::mem::size_of::<usize>(),
+            )
         })?;
         Ok(0)
     } else {

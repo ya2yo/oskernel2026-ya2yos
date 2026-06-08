@@ -33,9 +33,9 @@ mod tid;
 pub use crate::arch::context::TaskContext;
 use crate::{
     arch::cpu::hart_id,
-    fs::{NONE_MODE, OpenFlags, open, remove_proc_dir_and_file},
-    mm::{MapAreaType, VirtAddr, activate_kernel_space, copy_to_user, copy_to_user_val},
-    signal::{SigSet, send_signal_to_thread_group},
+    fs::{open, remove_proc_dir_and_file, OpenFlags, NONE_MODE},
+    mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
+    signal::{send_signal_to_thread_group, SigSet},
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
@@ -218,19 +218,14 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         // 唤醒等待在 child_tid 的进程
         // 线程的 clear_child_tid 可能已被用户态 munmap 释放，
         // translate_va 会返回 None，此时跳过 futex_wake 即可。
-        if let Some(pa) = memory_set.translate_va(VirtAddr::from(curr_task_inner.clear_child_tid))
-        {
+        if let Some(pa) = memory_set.translate_va(VirtAddr::from(curr_task_inner.clear_child_tid)) {
             futex_wake_up(pa.0, 1);
         }
     }
     // 释放futex (必须用 tid 而非 pid，因为 futex word 低 30 位存的是 TID)
     {
         let futex_mem = curr_proc.get_locked_memory_set_read();
-        handle_futex_when_exit(
-            &curr_task_inner.robust_list,
-            &*futex_mem,
-            curr_task.tid(),
-        );
+        handle_futex_when_exit(&curr_task_inner.robust_list, &*futex_mem, curr_task.tid());
     }
     // debug!("exit_current_and_run_next: futex released");
 
@@ -308,7 +303,10 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             .iter()
             .all(|bro_task| bro_task.inner_lock().is_zombie())
         {
-            debug!("[exit] pid {}: all tasks zombie, calling exit_and_reparent", curr_task.pid());
+            debug!(
+                "[exit] pid {}: all tasks zombie, calling exit_and_reparent",
+                curr_task.pid()
+            );
             if Arc::strong_count(&curr_proc.memory_set) == 1 {
                 memory_set.recycle_data_pages();
             }
@@ -334,7 +332,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
                 parent.meta_lock().child_exit_event.wake();
             }
         } else {
-            debug!("[exit] pid {}: NOT all tasks zombie, bro_tasks count: {}", curr_task.pid(), bro_tasks.len());
+            debug!(
+                "[exit] pid {}: NOT all tasks zombie, bro_tasks count: {}",
+                curr_task.pid(),
+                bro_tasks.len()
+            );
         }
     }
     // 安全地切换内核栈

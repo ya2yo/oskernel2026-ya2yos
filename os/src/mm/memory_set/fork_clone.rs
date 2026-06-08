@@ -11,7 +11,7 @@ use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::PAGE_SIZE;
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
-use crate::mm::{MemorySet, page_fault_handler};
+use crate::mm::{page_fault_handler, MemorySet};
 use crate::syscall::MmapFlags;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -82,12 +82,7 @@ impl MemorySetInner {
                     area.data_frames.keys().copied().collect()
                 };
                 for vpn in vpns {
-                    if user_space
-                        .get_mut()
-                        .page_table
-                        .translate(vpn)
-                        .is_some()
-                    {
+                    if user_space.get_mut().page_table.translate(vpn).is_some() {
                         user_space
                             .get_mut()
                             .page_table

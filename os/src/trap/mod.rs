@@ -240,7 +240,7 @@ pub fn trap_from_kernel() -> ! {
     let cause = get_trap_cause();
     let stval_val = stval::read();
     let sepc_val = sepc::read(); // 发生异常的那条指令的地址
-    
+
     // 获取崩溃时的 ra 和 sp
     let ra: usize;
     let sp: usize;
@@ -252,8 +252,8 @@ pub fn trap_from_kernel() -> ! {
     println!("Cause: {:?}", cause);
     println!("stval: {:#x}", stval_val);
     println!("sepc : {:#x}", sepc_val); // 如果 sepc 是 0，那就是跳到了空地址
-    println!("ra   : {:#x}", ra);       // 这个 ra 往往指向崩溃函数的调用者
-    println!("sp   : {:#x}", sp);       // 查看 sp 是否在合法的内核栈范围内
+    println!("ra   : {:#x}", ra); // 这个 ra 往往指向崩溃函数的调用者
+    println!("sp   : {:#x}", sp); // 查看 sp 是否在合法的内核栈范围内
     println!("--------------------------------\n");
     if cause == Trap::Interrupt(Interrupt::Timer) {
         // 中断返回？

@@ -15,9 +15,10 @@ use crate::{
         memory_layout::{self, USER_STACK_SIZE},
         trap_interface::get_trap_cause,
     },
-    mm::{VirtAddr, copy_to_user, copy_from_user_val, copy_to_user_val},
+    mm::{copy_from_user_val, copy_to_user, copy_to_user_val, VirtAddr},
     task::{
-        Process, TaskControlBlock, TaskStatus, current_task, exit_current_and_run_next, ready_queue, tid_to_task
+        current_task, exit_current_and_run_next, ready_queue, tid_to_task, Process,
+        TaskControlBlock, TaskStatus,
     },
     trap::trap_types::{Exception, Trap},
     utils::{SysErrNo, SyscallRet},
@@ -88,9 +89,14 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
     let proc_inner = task.process.inner_lock();
     // SA_RESETHAND: 在调用信号处理函数之前将 handler 重置为 SIG_DFL
     // 这样信号处理函数仅在第一次收到信号时被调用
-    if sig_action.act.sa_flags.contains(SigActionFlags::SA_RESETHAND) {
-        proc_inner.get_locked_sigtable()
-        .set_action(signo, KSigAction::new(signo, false));
+    if sig_action
+        .act
+        .sa_flags
+        .contains(SigActionFlags::SA_RESETHAND)
+    {
+        proc_inner
+            .get_locked_sigtable()
+            .set_action(signo, KSigAction::new(signo, false));
     }
 
     let mut task_inner = task.inner_lock();
@@ -101,10 +107,13 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
     // 这对 mmap 分配的线程栈也能正确工作。
     let memory_set = proc_inner.get_locked_memory_set_read();
     let sp_vpn = VirtAddr::from(user_sp).floor();
-    let stack_bottom = memory_set.get_ref().areas.iter().find(|area|{
-        area.vpn_range.start() <= sp_vpn && sp_vpn < area.vpn_range.end()
-    }).map(|area| VirtAddr::from(area.vpn_range.start()).0)
-    .unwrap_or_else(||user_sp.saturating_sub(USER_STACK_SIZE));
+    let stack_bottom = memory_set
+        .get_ref()
+        .areas
+        .iter()
+        .find(|area| area.vpn_range.start() <= sp_vpn && sp_vpn < area.vpn_range.end())
+        .map(|area| VirtAddr::from(area.vpn_range.start()).0)
+        .unwrap_or_else(|| user_sp.saturating_sub(USER_STACK_SIZE));
 
     let min_frame_size = if sig_action.act.sa_flags.contains(SigActionFlags::SA_SIGINFO) {
         size_of::<UserContext>() + size_of::<SigInfo>() + size_of::<usize>() // uctx + siginfo + magic
@@ -148,9 +157,11 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
             // 保存 Trap 上下文
             user_sp = user_sp - size_of::<MachineContext>();
             let mctx = trap_cx.as_mctx();
-            let ret = copy_to_user(&memory_set, user_sp as usize, unsafe{
-                core::slice::from_raw_parts(&mctx as *const MachineContext as *const _, 
-                    core::mem::size_of::<MachineContext>())
+            let ret = copy_to_user(&memory_set, user_sp as usize, unsafe {
+                core::slice::from_raw_parts(
+                    &mctx as *const MachineContext as *const _,
+                    core::mem::size_of::<MachineContext>(),
+                )
             });
             if ret.is_err() {
                 error!("[setup_frame] save MachineContext should not cause error!");
@@ -160,9 +171,11 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
             // signal mask
             user_sp = user_sp - size_of::<SigSet>();
             let sigset = task_inner.sig_mask;
-            let ret = copy_to_user(&memory_set, user_sp, unsafe{
-                core::slice::from_raw_parts(&sigset as *const SigSet as *const _, 
-                core::mem::size_of::<SigSet>())
+            let ret = copy_to_user(&memory_set, user_sp, unsafe {
+                core::slice::from_raw_parts(
+                    &sigset as *const SigSet as *const _,
+                    core::mem::size_of::<SigSet>(),
+                )
             });
             if ret.is_err() {
                 error!("[setup_frame] save signal mask should not cause error!");
@@ -171,7 +184,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
 
             // 不是 sigInfo
             user_sp = user_sp - size_of::<usize>();
-            let ret = copy_to_user(&memory_set, user_sp, &[0u8;core::mem::size_of::<usize>()]);
+            let ret = copy_to_user(&memory_set, user_sp, &[0u8; core::mem::size_of::<usize>()]);
             if ret.is_err() {
                 error!("[setup_frame] save others should not cause error!");
                 panic!()
@@ -185,16 +198,18 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
             // debug!("sig_size={:#x}", sig_size);
             // debug!("save: uctx_addr = {:#x}", uctx_addr);
             let uctx = UserContext {
-                    flags: 0,
-                    link: 0,
-                    stack: SignalStack::new(sig_sp, sig_size),
-                    sigmask: task_inner.sig_mask,
-                    __pad: [0u8; 128],
-                    mcontext: trap_cx.as_mctx(),
-                };
-            let ret = copy_to_user(&memory_set, uctx_addr, unsafe{
-                core::slice::from_raw_parts(&uctx as *const UserContext as *const _, 
-                core::mem::size_of::<UserContext>())
+                flags: 0,
+                link: 0,
+                stack: SignalStack::new(sig_sp, sig_size),
+                sigmask: task_inner.sig_mask,
+                __pad: [0u8; 128],
+                mcontext: trap_cx.as_mctx(),
+            };
+            let ret = copy_to_user(&memory_set, uctx_addr, unsafe {
+                core::slice::from_raw_parts(
+                    &uctx as *const UserContext as *const _,
+                    core::mem::size_of::<UserContext>(),
+                )
             });
             if ret.is_err() {
                 error!("[setup_frame] save uctx should not cause error!");
@@ -202,12 +217,13 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
             }
             // a2
             trap_cx.set_a2(uctx_addr);
-            
+
             copy_to_user_val(
                 &*memory_set,
                 siginfo_addr as *mut SigInfo,
                 &SigInfo::new(signo as u32, 0, (-6 as i32) as u32, task.pid() as u32),
-            ).unwrap();
+            )
+            .unwrap();
             // a1
             trap_cx.set_a1(siginfo_addr);
 
@@ -287,7 +303,8 @@ pub fn restore_frame() -> SyscallRet {
     } else {
         let uctx_addr = user_sp as usize + size_of::<SigInfo>();
         // debug!("load: uctx_addr = {:#x}", uctx_addr);
-        let uctx: UserContext = copy_from_user_val(&*memory_set, uctx_addr as *const UserContext).unwrap();
+        let uctx: UserContext =
+            copy_from_user_val(&*memory_set, uctx_addr as *const UserContext).unwrap();
         task_inner.sig_mask = uctx.sigmask;
         let mctx = uctx.mcontext;
         trap_cx.copy_from_mctx(mctx);

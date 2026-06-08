@@ -58,7 +58,7 @@ pub enum Syscall {
     Mount = 40,
     PivotRoot = 41,
     StatFs = 43,
-    FstatFs  =44,
+    FstatFs = 44,
     Ftruncate = 46,
     Fallocate = 47,
     Faccessat = 48,
@@ -289,7 +289,8 @@ use mm::*;
 #[cfg(feature = "net")]
 use net::*;
 pub use options::{
-    FutexCmd, FutexOpt, MmapFlags, MmapProt, PollEvents, RLimit, SignalMaskFlag, Utsname,FaccessatFileMode
+    FaccessatFileMode, FutexCmd, FutexOpt, MmapFlags, MmapProt, PollEvents, RLimit, SignalMaskFlag,
+    Utsname,
 };
 use resource::*;
 use signal::*;
@@ -334,7 +335,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::TimerfdGettime => sys_timerfd_gettime(args[0] as u32, args[1] as *mut u8),
         Syscall::InotifyInit1 => sys_inotify_init1(args[0] as u32),
-        Syscall::InotifyAddWatch => sys_inotify_add_watch(args[0] as i32, args[1] as *const u8, args[2] as u32),
+        Syscall::InotifyAddWatch => {
+            sys_inotify_add_watch(args[0] as i32, args[1] as *const u8, args[2] as u32)
+        }
         Syscall::InotifyRmWatch => sys_inotify_rm_watch(args[0] as i32, args[1] as i32),
 
         Syscall::Dup => sys_dup(args[0]),
@@ -498,9 +501,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[3] as *mut Timespec,
         ),
         Syscall::SysLog => sys_syslog(args[0] as isize, args[1] as *const u8, args[2]),
-        Syscall::InitModule => {
-            sys_init_module(args[0] as *const u8, args[1], args[2] as *const u8)
-        }
+        Syscall::InitModule => sys_init_module(args[0] as *const u8, args[1], args[2] as *const u8),
         Syscall::DeleteModule => sys_delete_module(args[0] as *const u8, args[1] as u32),
         Syscall::TimerCreate => {
             sys_timer_create(args[0] as i32, args[1] as *const u8, args[2] as *mut u32)
@@ -541,11 +542,19 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Setreuid => sys_setreuid(args[0], args[1]),
         Syscall::Setuid => sys_setuid(args[0] as usize),
         Syscall::Setresuid => sys_setresuid(args[0] as u32, args[1] as u32, args[2] as u32),
-        Syscall::GetResuid => sys_getresuid(args[0] as *mut u32, args[1] as *mut u32, args[2] as *mut u32),
+        Syscall::GetResuid => sys_getresuid(
+            args[0] as *mut u32,
+            args[1] as *mut u32,
+            args[2] as *mut u32,
+        ),
         Syscall::Setregid => sys_setregid(args[0], args[1]),
         Syscall::Setgid => sys_setgid(args[0]),
         Syscall::SetResgid => sys_setresgid(args[0] as u32, args[1] as u32, args[2] as u32),
-        Syscall::GetResgid => sys_getresgid(args[0] as *mut u32, args[1] as *mut u32, args[2] as *mut u32),
+        Syscall::GetResgid => sys_getresgid(
+            args[0] as *mut u32,
+            args[1] as *mut u32,
+            args[2] as *mut u32,
+        ),
         Syscall::Times => sys_times(args[0] as *mut Tms),
         Syscall::SetPGid => sys_setpgid(args[0] as u32, args[1] as u32),
         Syscall::GetPGid => sys_getpgid(),
@@ -553,15 +562,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::GetGroup => sys_getgroups(args[0], args[1] as *mut u32),
         Syscall::SetGroup => sys_setgroups(args[0], args[1] as *const u32),
         Syscall::GetRusage => sys_getrusage(args[0] as isize, args[1] as *mut Rusage),
-        Syscall::GetCpu => sys_getcpu(
-            args[0] as *mut u32,
-            args[1] as *mut u32,
-            args[2] as *mut u8,
-        ),
+        Syscall::GetCpu => sys_getcpu(args[0] as *mut u32, args[1] as *mut u32, args[2] as *mut u8),
         Syscall::GetTimeOfDay => sys_gettimeofday(args[0] as *mut Timespec, args[1] as usize),
-        Syscall::SetTimeOfDay => {
-            sys_settimeofday(args[0] as *const TimeVal, args[1] as *const u8)
-        }
+        Syscall::SetTimeOfDay => sys_settimeofday(args[0] as *const TimeVal, args[1] as *const u8),
         Syscall::Adjtimex => sys_adjtimex(args[0] as *mut Timex),
         Syscall::ClockAdjtime => sys_clock_adjtime(args[0] as u32, args[1] as *mut Timex),
         Syscall::Uname => sys_uname(args[0] as *mut u8),
@@ -574,14 +577,42 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::GetEGid => sys_getegid(),
         Syscall::GetTid => sys_gettid(),
         Syscall::SysInfo => sys_sysinfo(args[0] as *const u8),
-        Syscall::MqOpen => sys_mq_open(args[0] as *const u8, args[1] as i32, args[2] as u32, args[3] as *const u8),
+        Syscall::MqOpen => sys_mq_open(
+            args[0] as *const u8,
+            args[1] as i32,
+            args[2] as u32,
+            args[3] as *const u8,
+        ),
         Syscall::MqUnlink => sys_mq_unlink(args[0] as *const u8),
-        Syscall::MqTimedSend => sys_mq_timedsend(args[0] as usize, args[1] as *const u8, args[2], args[3] as u32, args[4] as *const u8),
-        Syscall::MqTimedReceive => sys_mq_timedreceive(args[0] as usize, args[1] as *mut u8, args[2], args[3] as *mut u32, args[4] as *const u8),
+        Syscall::MqTimedSend => sys_mq_timedsend(
+            args[0] as usize,
+            args[1] as *const u8,
+            args[2],
+            args[3] as u32,
+            args[4] as *const u8,
+        ),
+        Syscall::MqTimedReceive => sys_mq_timedreceive(
+            args[0] as usize,
+            args[1] as *mut u8,
+            args[2],
+            args[3] as *mut u32,
+            args[4] as *const u8,
+        ),
         Syscall::MqNotify => sys_mq_notify(args[0] as usize, args[1] as *const u8),
         Syscall::MsgGet => sys_msgget(args[0] as i32, args[1] as i32),
-        Syscall::MsgSnd => sys_msgsnd(args[0] as i32, args[1] as *const u8, args[2], args[3] as i32),
-        Syscall::MsgRcv => sys_msgrcv(args[0] as i32, args[1] as *mut u8, args[2], args[3] as i64, args[4] as i32),
+        Syscall::MsgSnd => sys_msgsnd(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2],
+            args[3] as i32,
+        ),
+        Syscall::MsgRcv => sys_msgrcv(
+            args[0] as i32,
+            args[1] as *mut u8,
+            args[2],
+            args[3] as i64,
+            args[4] as i32,
+        ),
         Syscall::MsgCtl => sys_msgctl(args[0] as i32, args[1] as i32, args[2] as *mut u8),
         Syscall::Shmget => sys_shmget(args[0] as i32, args[1], args[2] as i32),
         Syscall::Shmctl => sys_shmctl(args[0] as i32, args[1] as i32, args[2]),
@@ -668,8 +699,19 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::Munmap => sys_munmap(args[0], args[1]),
         Syscall::Mremap => sys_mremap(args[0], args[1], args[2], args[3] as i32, args[4]),
-        Syscall::AddKey => sys_add_key(args[0] as *const u8, args[1] as *const u8, args[2] as *const u8, args[3], args[4] as isize),
-        Syscall::RequestKey => sys_request_key(args[0] as *const u8, args[1] as *const u8, args[2] as *const u8, args[3] as isize),
+        Syscall::AddKey => sys_add_key(
+            args[0] as *const u8,
+            args[1] as *const u8,
+            args[2] as *const u8,
+            args[3],
+            args[4] as isize,
+        ),
+        Syscall::RequestKey => sys_request_key(
+            args[0] as *const u8,
+            args[1] as *const u8,
+            args[2] as *const u8,
+            args[3] as isize,
+        ),
         Syscall::Keyctl => sys_keyctl(args[0], args[1], args[2], args[3], args[4]),
         Syscall::Mprotect => sys_mprotect(args[0], args[1], args[2] as u32),
         Syscall::Mlock => sys_mlock(args[0], args[1]),
@@ -725,7 +767,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         // pidfd
         Syscall::PidfdOpen => sys_pidfd_open(args[0] as u32, args[1] as u32),
         Syscall::PidfdGetfd => sys_pidfd_getfd(args[0] as i32, args[1] as i32, args[2] as u32),
-        Syscall::MountSetattr => sys_mount_setattr(args[0] as i32, args[1] as *const u8, args[2] as u32, args[3] as usize),
+        Syscall::MountSetattr => sys_mount_setattr(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as u32,
+            args[3] as usize,
+        ),
 
         // dummy fds
         Syscall::FanotifyInit => sys_fanotify_init(args[0] as u32, args[1] as u32),
@@ -736,26 +783,36 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[3] as *mut i32,
             args[4] as u32,
         ),
-        Syscall::OpenByHandleAt => sys_open_by_handle_at(
-            args[0] as i32,
-            args[1] as *mut u8,
-            args[2] as u32,
-        ),
+        Syscall::OpenByHandleAt => {
+            sys_open_by_handle_at(args[0] as i32, args[1] as *mut u8, args[2] as u32)
+        }
         Syscall::MemfdCreate => sys_memfd_create(args[0] as *const u8, args[1] as u32),
         Syscall::Bpf => sys_bpf(args[0] as i32, args[1] as *mut u8, args[2] as u32),
         Syscall::UserFaultfd => sys_user_faultfd(args[0] as u32),
         Syscall::PerfEventOpen => sys_perf_event_open(
-            args[0] as *mut u8, 
-            args[1] as u32, 
-            args[2] as i32, 
-            args[3] as i32, 
-            args[4] as u32
+            args[0] as *mut u8,
+            args[1] as u32,
+            args[2] as i32,
+            args[3] as i32,
+            args[4] as u32,
         ),
         Syscall::IoUringSetup => sys_io_uring_setup(args[0] as u32, args[1] as *mut u8),
         Syscall::OpenTree => sys_open_tree(args[0] as i32, args[1] as *const u8, args[2] as u32),
-        Syscall::MoveMount => sys_move_mount(args[0] as i32, args[1] as *const u8, args[2] as i32, args[3] as *const u8, args[4] as u32),
+        Syscall::MoveMount => sys_move_mount(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as i32,
+            args[3] as *const u8,
+            args[4] as u32,
+        ),
         Syscall::Fsopen => sys_fsopen(args[0] as *const u8, args[1] as u32),
-        Syscall::Fsconfig => sys_fsconfig(args[0] as i32, args[1] as u32, args[2], args[3], args[4] as i32),
+        Syscall::Fsconfig => sys_fsconfig(
+            args[0] as i32,
+            args[1] as u32,
+            args[2],
+            args[3],
+            args[4] as i32,
+        ),
         Syscall::FsMount => sys_fsmount(args[0] as i32, args[1] as u32, args[2] as u32),
         Syscall::Fspick => sys_fspick(args[0] as i32, args[1] as *mut u8, args[2] as u32),
         Syscall::MemfdSecret => sys_memfd_secret(args[0] as u32),
@@ -767,10 +824,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Vhangup => sys_vhangup(),
         Syscall::Prctl => sys_prctl(args[0] as u32, args[1], args[2], args[3], args[4]),
         _ => {
-            warn!(
-                "Unsupported syscall_id: {}!",
-                id
-            );
+            warn!("Unsupported syscall_id: {}!", id);
             // sys_memfd_secret(args[0] as u32)
             return Err(SysErrNo::ENOSYS);
         }

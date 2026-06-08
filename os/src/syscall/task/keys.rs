@@ -15,13 +15,8 @@
 //!   - KEYCTL_UNLINK (9)
 //!   - KEYCTL_INVALIDATE (21)
 
-use alloc::{
-    collections::btree_map::BTreeMap,
-    format,
-    string::String,
-    vec::Vec,
-};
 use alloc::vec;
+use alloc::{collections::btree_map::BTreeMap, format, string::String, vec::Vec};
 use log::{debug, warn};
 use spin::{Lazy, Mutex};
 
@@ -72,8 +67,7 @@ struct KeyEntry {
 }
 
 /// 全局密钥数据库: 序列号 → 密钥条目
-static KEY_STORE: Lazy<Mutex<BTreeMap<i32, KeyEntry>>> =
-    Lazy::new(|| Mutex::new(BTreeMap::new()));
+static KEY_STORE: Lazy<Mutex<BTreeMap<i32, KeyEntry>>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
 
 /// 全局密钥序列号计数器，从 100 开始（避免与特殊值冲突）
 static NEXT_SERIAL: Lazy<Mutex<i32>> = Lazy::new(|| Mutex::new(100));
@@ -180,8 +174,8 @@ pub fn sys_add_key(
             }
             32767
         }
-        "logon" | "big_key" | "asymmetric" | "cifs.idmap" | "cifs.spnego"
-        | "pkcs7_test" | "rxrpc" | "rxrpc_s" => {
+        "logon" | "big_key" | "asymmetric" | "cifs.idmap" | "cifs.spnego" | "pkcs7_test"
+        | "rxrpc" | "rxrpc_s" => {
             debug!("[add_key] unsupported key type '{}' -> ENODEV", type_str);
             return Err(SysErrNo::ENODEV);
         }
@@ -245,13 +239,7 @@ pub fn sys_request_key(
 // ===========================================================================
 
 /// 参考 https://man7.org/linux/man-pages/man2/keyctl.2.html
-pub fn sys_keyctl(
-    option: usize,
-    arg2: usize,
-    arg3: usize,
-    arg4: usize,
-    arg5: usize,
-) -> SyscallRet {
+pub fn sys_keyctl(option: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> SyscallRet {
     debug!(
         "[keyctl] option={}, arg2={}, arg3={}, arg4={}, arg5={}",
         option, arg2, arg3, arg4, arg5
@@ -362,10 +350,7 @@ pub fn sys_keyctl(
             let mut store = KEY_STORE.lock();
             match store.remove(&key_id) {
                 Some(_) => {
-                    debug!(
-                        "[keyctl] UNLINK key={} from ring={}",
-                        key_id, ring_id
-                    );
+                    debug!("[keyctl] UNLINK key={} from ring={}", key_id, ring_id);
                     Ok(0)
                 }
                 None => {
@@ -401,11 +386,7 @@ pub fn sys_keyctl(
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 crate::mm::copy_to_user(&memory_set, buf_addr, &data[..copy_len])?;
             }
-            debug!(
-                "[keyctl] READ key={} len={}",
-                key_id,
-                entry.payload.len()
-            );
+            debug!("[keyctl] READ key={} len={}", key_id, entry.payload.len());
             Ok(entry.payload.len())
         }
 

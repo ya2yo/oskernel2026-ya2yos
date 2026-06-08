@@ -13,14 +13,14 @@ use core::cmp::Ordering;
 use core::ops::Add;
 use core::time::Duration;
 
-use crate::arch::time::get_clock_freq;
 use super::NANOS_PER_SEC;
+use crate::arch::time::get_clock_freq;
 
 const NSEC_PER_SEC: usize = 1_000_000_000;
 const MSEC_PER_SEC: usize = 1_000;
 
 #[repr(C)]
-#[derive(Default,Debug, Ord, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Ord, Clone, Copy, PartialEq, Eq)]
 pub struct Timespec {
     pub tv_sec: usize,
     pub tv_nsec: usize,
@@ -60,7 +60,10 @@ impl Add<Duration> for Timespec {
 
 impl Timespec {
     pub fn new(sec: usize, nsec: usize) -> Self {
-        Self { tv_sec: sec, tv_nsec: nsec }
+        Self {
+            tv_sec: sec,
+            tv_nsec: nsec,
+        }
     }
 
     /// 转为 tick 数 (用于定时器堆比较)
@@ -101,6 +104,10 @@ impl Add for Timespec {
 
 impl PartialOrd for Timespec {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.tv_sec.cmp(&other.tv_sec).then_with(|| self.tv_nsec.cmp(&other.tv_nsec)))
+        Some(
+            self.tv_sec
+                .cmp(&other.tv_sec)
+                .then_with(|| self.tv_nsec.cmp(&other.tv_nsec)),
+        )
     }
 }

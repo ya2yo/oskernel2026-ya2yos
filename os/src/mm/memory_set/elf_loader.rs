@@ -5,10 +5,10 @@
 //! linker / INTERP handling.
 
 use super::super::map_area::MapType;
-use crate::mm::memory_set::MemorySetInner;
 use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::{DL_INTERP_OFFSET, PAGE_SIZE, USER_HEAP_SIZE};
 use crate::fs::{map_dynamic_link_file_directly_map, open, File, OpenFlags, NONE_MODE};
+use crate::mm::memory_set::MemorySetInner;
 use crate::task::{Aux, AuxType};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -70,17 +70,27 @@ impl MemorySetInner {
                 }
                 let mut map_perm = MapPermission::U;
                 let ph_flags = ph.flags();
-                if ph_flags.is_read() { map_perm |= MapPermission::R; }
-                if ph_flags.is_write() { map_perm |= MapPermission::W; }
-                if ph_flags.is_execute() { map_perm |= MapPermission::X; }
+                if ph_flags.is_read() {
+                    map_perm |= MapPermission::R;
+                }
+                if ph_flags.is_write() {
+                    map_perm |= MapPermission::W;
+                }
+                if ph_flags.is_execute() {
+                    map_perm |= MapPermission::X;
+                }
                 let map_area = MapArea::new(
-                    start_va, end_va,
-                    MapType::Framed, map_perm, MapAreaType::Elf,
+                    start_va,
+                    end_va,
+                    MapType::Framed,
+                    map_perm,
+                    MapAreaType::Elf,
                 );
                 let data_offset = start_va.0 - start_va.floor().0 * PAGE_SIZE;
                 max_end_vpn = map_area.vpn_range.end();
                 self.push_with_offset(
-                    map_area, data_offset,
+                    map_area,
+                    data_offset,
                     Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
                 )?;
             }
@@ -101,7 +111,10 @@ impl MemorySetInner {
         let ph_count = elf_header.pt2.ph_count();
         let mut entry_point = elf.header.pt2.entry_point() as usize;
 
-        auxv.push(Aux::new(AuxType::PHENT, elf.header.pt2.ph_entry_size() as usize));
+        auxv.push(Aux::new(
+            AuxType::PHENT,
+            elf.header.pt2.ph_entry_size() as usize,
+        ));
         auxv.push(Aux::new(AuxType::PHNUM, ph_count as usize));
         auxv.push(Aux::new(AuxType::PAGESZ, PAGE_SIZE as usize));
         if let Some(interp_entry_point) = memory_set.load_dl_interp_if_needed(&elf) {
@@ -111,7 +124,10 @@ impl MemorySetInner {
             auxv.push(Aux::new(AuxType::BASE, 0));
         }
         auxv.push(Aux::new(AuxType::FLAGS, 0 as usize));
-        auxv.push(Aux::new(AuxType::ENTRY, elf.header.pt2.entry_point() as usize));
+        auxv.push(Aux::new(
+            AuxType::ENTRY,
+            elf.header.pt2.entry_point() as usize,
+        ));
         auxv.push(Aux::new(AuxType::UID, 0 as usize));
         auxv.push(Aux::new(AuxType::EUID, 0 as usize));
         auxv.push(Aux::new(AuxType::GID, 0 as usize));
@@ -125,14 +141,19 @@ impl MemorySetInner {
         let (max_end_vpn, head_va) = memory_set.map_elf(&elf, VirtAddr(0))?;
 
         let ph_head_addr = head_va.0 + elf.header.pt2.ph_offset() as usize;
-        auxv.push(Aux { aux_type: AuxType::PHDR, value: ph_head_addr as usize });
+        auxv.push(Aux {
+            aux_type: AuxType::PHDR,
+            value: ph_head_addr as usize,
+        });
         let max_end_va: VirtAddr = max_end_vpn.into();
         let mut user_heap_bottom: usize = max_end_va.into();
         user_heap_bottom += PAGE_SIZE; // guard page
         let user_heap_top: usize = user_heap_bottom;
         memory_set.push_lazily(MapArea::new(
-            user_heap_bottom.into(), user_heap_top.into(),
-            MapType::Framed, MapPermission::R | MapPermission::W | MapPermission::U,
+            user_heap_bottom.into(),
+            user_heap_top.into(),
+            MapType::Framed,
+            MapPermission::R | MapPermission::W | MapPermission::U,
             MapAreaType::Brk,
         ));
 

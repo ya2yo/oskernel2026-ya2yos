@@ -1,10 +1,13 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    mm::{MemorySet, VirtAddr, copy_from_user, copy_from_user_val, copy_to_user_val, translate_user_va_safe, try_copy_from_user_val},
+    mm::{
+        copy_from_user, copy_from_user_val, copy_to_user_val, translate_user_va_safe,
+        try_copy_from_user_val, MemorySet, VirtAddr,
+    },
     syscall::{FutexCmd, FutexOpt},
-    task::{RobustListHead, tid_to_task},
-    timer::{Timespec, add_futex_timer, get_time_spec},
+    task::{tid_to_task, RobustListHead},
+    timer::{add_futex_timer, get_time_spec, Timespec},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -239,7 +242,10 @@ pub fn sys_futex(
     let pa = translate_user_va_safe(&memory_set, VirtAddr::from(uaddr as usize))?;
     // 仅在 Requeue 操作时才需要翻译 uaddr2
     let pa2 = if cmd == FutexCmd::Requeue {
-        Some(translate_user_va_safe(&memory_set, VirtAddr::from(uaddr2 as usize))?)
+        Some(translate_user_va_safe(
+            &memory_set,
+            VirtAddr::from(uaddr2 as usize),
+        )?)
     } else {
         None
     };
@@ -255,9 +261,11 @@ pub fn sys_futex(
             return Err(SysErrNo::EINVAL);
         }
         let mut real_timeout = Timespec::default();
-        copy_from_user(&memory_set, timeout as usize, unsafe{
-            core::slice::from_raw_parts_mut(&mut real_timeout as *mut Timespec as *mut _,
-            core::mem::size_of::<Timespec>())
+        copy_from_user(&memory_set, timeout as usize, unsafe {
+            core::slice::from_raw_parts_mut(
+                &mut real_timeout as *mut Timespec as *mut _,
+                core::mem::size_of::<Timespec>(),
+            )
         })?;
         if opt.contains(FutexOpt::FUTEX_CLOCK_REALTIME) {
             // 此时的timeout是相对于1970年的时间，而非时间间隔
@@ -300,9 +308,7 @@ pub fn sys_futex(
         // 将该 futex 重置为 0（解锁），让调用者可以正常获取锁。
         // 注意：这意味着 robust-mutex 恢复通知（OWNER_DIED）被隐式完成；
         // 应用程序不会看到 EOWNERDEAD，但不会死锁。
-        if futex_tid != 0
-            && tid_to_task::tid2task(futex_tid as usize).is_none()
-        {
+        if futex_tid != 0 && tid_to_task::tid2task(futex_tid as usize).is_none() {
             debug!(
                 "[sys_futex] dead owner detected: futex owned by dead TID {}, clearing to 0",
                 futex_tid
@@ -378,7 +384,10 @@ fn handle_futex_death_entry(uaddr: usize, memory_set: &MemorySet, pid: usize) ->
         let uval: u32 = match try_copy_from_user_val(memory_set, uaddr as *const u32) {
             Some(v) => v,
             None => {
-                debug!("[handle_futex_death_entry] uaddr {:#x} is unmapped, skip", uaddr);
+                debug!(
+                    "[handle_futex_death_entry] uaddr {:#x} is unmapped, skip",
+                    uaddr
+                );
                 return false;
             }
         };
@@ -394,7 +403,10 @@ fn handle_futex_death_entry(uaddr: usize, memory_set: &MemorySet, pid: usize) ->
         let after: u32 = match try_copy_from_user_val(memory_set, uaddr as *const u32) {
             Some(v) => v,
             None => {
-                debug!("[handle_futex_death_entry] uaddr {:#x} became unmapped, skip", uaddr);
+                debug!(
+                    "[handle_futex_death_entry] uaddr {:#x} became unmapped, skip",
+                    uaddr
+                );
                 return false;
             }
         };
@@ -428,7 +440,7 @@ fn handle_futex_death_entry(uaddr: usize, memory_set: &MemorySet, pid: usize) ->
 /// * `token`       – page-table token of the exiting process.
 /// * `pid`         – TID of the exiting thread (used as futex owner id).
 pub fn handle_futex_when_exit(robust_list: &RobustListHead, memory_set: &MemorySet, pid: usize) {
-    let head: usize = robust_list.list;// User-space base address of robust_list_head
+    let head: usize = robust_list.list; // User-space base address of robust_list_head
     if head == 0 {
         debug!("[handle_futex_when_exit] robust_list.list is 0, nothing to do");
         return;
@@ -448,20 +460,21 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, memory_set: &MemoryS
             return;
         }
     };
-    let list_op_pending: usize = match try_copy_from_user_val(memory_set, (head + 16) as *const usize) {
-        Some(v) => v,
-        None => {
-            debug!("[handle_futex_when_exit] head+16 unmapped, stopping");
-            return;
-        }
-    };
+    let list_op_pending: usize =
+        match try_copy_from_user_val(memory_set, (head + 16) as *const usize) {
+            Some(v) => v,
+            None => {
+                debug!("[handle_futex_when_exit] head+16 unmapped, stopping");
+                return;
+            }
+        };
     debug!(
         "[handle_futex_when_exit] head={:#x}, futex_offset={}, list_op_pending={:#x}, pid={}",
         head, futex_offset, list_op_pending, pid,
     );
     // ---- 1. Handle the *pending* entry (list_op_pending) first ----
     if list_op_pending != 0 {
-        let futex_word_addr = (list_op_pending as isize).wrapping_add(futex_offset) as usize;// virtaddr
+        let futex_word_addr = (list_op_pending as isize).wrapping_add(futex_offset) as usize; // virtaddr
         debug!(
             "[handle_futex_when_exit] processing pending entry at {:#x}, futex_word={:#x}",
             list_op_pending, futex_word_addr,
@@ -523,9 +536,7 @@ pub fn handle_timer(task: Arc<TaskControlBlock>, futex_key: usize) {
     let futex_pa = inner.futex_pa;
     drop(inner);
     // 从链表中取下这次Wait
-    let queue = waitq
-        .get_mut(&futex_pa)
-        .expect("How could get_mut fail?");
+    let queue = waitq.get_mut(&futex_pa).expect("How could get_mut fail?");
 
     let idx = queue.iter().position(|x| x.futex_key == futex_key);
     if let Some(idx) = idx {

@@ -12,14 +12,14 @@ mod stat;
 mod xattr;
 
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use linux_raw_sys::ctypes::c_int;
 use log::warn;
 
 use crate::{
-    fs::{DummyFd, FileDescriptor, FileClass, InotifyFd, OpenFlags, File},
-    mm::{UserBuffer, copy_from_user, read_user_cstr},
+    fs::{DummyFd, File, FileClass, FileDescriptor, InotifyFd, OpenFlags},
+    mm::{copy_from_user, read_user_cstr, UserBuffer},
     syscall::options::Iovec,
     task::current_task,
     utils::{SysErrNo, SyscallRet},
@@ -30,8 +30,8 @@ const IN_CLOEXEC: u32 = OpenFlags::O_CLOEXEC.bits();
 const IN_NONBLOCK: u32 = OpenFlags::O_NONBLOCK.bits();
 
 pub use self::{
-    ctl::*, event::*, fcntl::*, fd_ops::*, handle::*, io::*, mount::*, mqueue::*,
-    pipe::*, stat::*, xattr::*,
+    ctl::*, event::*, fcntl::*, fd_ops::*, handle::*, io::*, mount::*, mqueue::*, pipe::*, stat::*,
+    xattr::*,
 };
 
 fn dummyfd_create() -> SyscallRet {
@@ -39,8 +39,10 @@ fn dummyfd_create() -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let newfd = proc_inner.fd_table.alloc_fd()?;
-    proc_inner.fd_table
-        .set(newfd, FileDescriptor::new(OpenFlags::empty(), crate::fs::FileClass::Abs(dummy_file)));
+    proc_inner.fd_table.set(
+        newfd,
+        FileDescriptor::new(OpenFlags::empty(), crate::fs::FileClass::Abs(dummy_file)),
+    );
     Ok(newfd)
 }
 
@@ -68,8 +70,10 @@ pub fn sys_inotify_init1(flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let fd = proc_inner.fd_table.alloc_fd()?;
-    proc_inner.fd_table
-        .set(fd, FileDescriptor::new(open_flags, FileClass::Abs(inotify_file.clone())))?;
+    proc_inner.fd_table.set(
+        fd,
+        FileDescriptor::new(open_flags, FileClass::Abs(inotify_file.clone())),
+    )?;
     // 注册到全局表，供 add_watch / rm_watch 查找
     InotifyFd::register_fd(fd, &inotify_file);
     Ok(fd)
@@ -114,13 +118,13 @@ pub fn sys_bpf(_cmd: i32, _attr: *mut u8, _size: u32) -> SyscallRet {
 }
 
 /// https://man7.org/linux/man-pages/man2/io_uring_setup.2.html
-pub fn sys_io_uring_setup(_entriers: u32, _params: *mut u8)->SyscallRet {
+pub fn sys_io_uring_setup(_entriers: u32, _params: *mut u8) -> SyscallRet {
     warn!("[sys_io_uring_setup] not implement!");
     dummyfd_create()
 }
 
 /// https://man7.org/linux/man-pages/man2/memfd_create.2.html
-pub fn sys_memfd_create(_name: *const u8, _flags: u32)->SyscallRet {
+pub fn sys_memfd_create(_name: *const u8, _flags: u32) -> SyscallRet {
     warn!("[sys_memfd_create] not implement!");
     dummyfd_create()
 }
@@ -132,7 +136,13 @@ pub fn sys_memfd_secret(_flags: u32) -> SyscallRet {
 }
 
 /// https://man7.org/linux/man-pages/man2/perf_event_open.2.html
-pub fn sys_perf_event_open(_attr: *mut u8, _pid: u32, _cpu: c_int, _group_fd: c_int, _flags: u32) -> SyscallRet {
+pub fn sys_perf_event_open(
+    _attr: *mut u8,
+    _pid: u32,
+    _cpu: c_int,
+    _group_fd: c_int,
+    _flags: u32,
+) -> SyscallRet {
     warn!("[sys_perf_event_open] not implement!");
     dummyfd_create()
 }
@@ -219,7 +229,7 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
     let mut kernel_buf: Vec<u8> = Vec::new();
 
     for i in 0..nr_segs as usize {
-        let current =  (iov as usize) + iovec_size * i ;
+        let current = (iov as usize) + iovec_size * i;
         let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
         copy_from_user(&memory_set, current, &mut iov_buf)?;
         let iovinfo: Iovec = unsafe { core::mem::transmute(iov_buf) };
@@ -228,7 +238,11 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
         }
         let offset = kernel_buf.len();
         kernel_buf.resize(offset + iovinfo.iov_len, 0);
-        copy_from_user(&memory_set, iovinfo.iov_base as usize, &mut kernel_buf[offset..])?;
+        copy_from_user(
+            &memory_set,
+            iovinfo.iov_base as usize,
+            &mut kernel_buf[offset..],
+        )?;
     }
 
     // 释放锁，避免 pipe write 阻塞时死锁

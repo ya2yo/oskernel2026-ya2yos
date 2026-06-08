@@ -12,7 +12,6 @@ const MPOL_INTERLEAVE: i32 = 3;
 const MPOL_LOCAL: i32 = 4;
 const MPOL_PREFERRED_MANY: i32 = 5;
 
-
 /// 参考 https://man7.org/linux/man-pages/man2/umask.2.html
 ///
 /// 设置进程的文件模式创建掩码为 `mask & 0777`，返回旧的掩码。
@@ -72,6 +71,9 @@ pub fn sys_get_mempolicy(
 }
 /// https://www.man7.org/linux/man-pages/man2/set_mempolicy.2.html
 pub fn sys_set_mempolicy(mode: i32, nodemask: usize, maxnode: usize) -> SyscallRet {
-    warn!("[sys_set_mempolicy] mode={}, nodemask={}, maxnode={}", mode, nodemask, maxnode);
+    warn!(
+        "[sys_set_mempolicy] mode={}, nodemask={}, maxnode={}",
+        mode, nodemask, maxnode
+    );
     Ok(0)
 }

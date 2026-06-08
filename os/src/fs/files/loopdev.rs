@@ -1,16 +1,16 @@
 use crate::{
-    fs::{File, Kstat, stat::StMode},
-    mm::{MemorySet, UserBuffer, copy_from_user, copy_to_user},
+    fs::{stat::StMode, File, Kstat},
+    mm::{copy_from_user, copy_to_user, MemorySet, UserBuffer},
     syscall::PollEvents,
     utils::{SysErrNo, SyscallRet},
 };
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::mem::size_of;
+use linux_raw_sys::ioctl::BLKGETSIZE64;
 use linux_raw_sys::loop_device::{
     loop_info, loop_info64, LOOP_CLR_FD, LOOP_CTL_ADD, LOOP_CTL_GET_FREE, LOOP_CTL_REMOVE,
     LOOP_GET_STATUS, LOOP_GET_STATUS64, LOOP_SET_FD, LOOP_SET_STATUS, LOOP_SET_STATUS64,
 };
-use linux_raw_sys::ioctl::BLKGETSIZE64;
 use spin::{Lazy, Mutex};
 
 const LOOP_COUNT: usize = 256;
@@ -107,13 +107,9 @@ impl File for DevLoopControl {
                     }
                 }
                 let nr = free_nr.ok_or(SysErrNo::EOPNOTSUPP)?;
-                copy_to_user(
-                    memory_set,
-                    arg,
-                    unsafe {
-                        core::slice::from_raw_parts(&nr as *const u32 as *const u8, size_of::<u32>())
-                    },
-                )?;
+                copy_to_user(memory_set, arg, unsafe {
+                    core::slice::from_raw_parts(&nr as *const u32 as *const u8, size_of::<u32>())
+                })?;
                 Ok(0)
             }
             LOOP_CTL_ADD => {
@@ -202,16 +198,12 @@ impl File for DevLoop {
                 }
                 let mut info = state.info;
                 info.lo_number = self.number;
-                copy_to_user(
-                    memory_set,
-                    arg,
-                    unsafe {
-                        core::slice::from_raw_parts(
-                            &info as *const loop_info64 as *const u8,
-                            size_of::<loop_info64>(),
-                        )
-                    },
-                )?;
+                copy_to_user(memory_set, arg, unsafe {
+                    core::slice::from_raw_parts(
+                        &info as *const loop_info64 as *const u8,
+                        size_of::<loop_info64>(),
+                    )
+                })?;
                 Ok(0)
             }
             LOOP_SET_FD => {
@@ -228,16 +220,12 @@ impl File for DevLoop {
             }
             LOOP_SET_STATUS64 => {
                 let mut info: loop_info64 = unsafe { core::mem::zeroed() };
-                copy_from_user(
-                    memory_set,
-                    arg,
-                    unsafe {
-                        core::slice::from_raw_parts_mut(
-                            &mut info as *mut loop_info64 as *mut u8,
-                            size_of::<loop_info64>(),
-                        )
-                    },
-                )?;
+                copy_from_user(memory_set, arg, unsafe {
+                    core::slice::from_raw_parts_mut(
+                        &mut info as *mut loop_info64 as *mut u8,
+                        size_of::<loop_info64>(),
+                    )
+                })?;
                 let mut state = LOOP_TABLE[idx].lock();
                 state.info = info;
                 state.info.lo_number = self.number;
@@ -246,16 +234,12 @@ impl File for DevLoop {
             // 兼容 32 位 loop_info (LOOP_SET_STATUS / LOOP_GET_STATUS)
             LOOP_SET_STATUS => {
                 let mut li: loop_info = unsafe { core::mem::zeroed() };
-                copy_from_user(
-                    memory_set,
-                    arg,
-                    unsafe {
-                        core::slice::from_raw_parts_mut(
-                            &mut li as *mut loop_info as *mut u8,
-                            size_of::<loop_info>(),
-                        )
-                    },
-                )?;
+                copy_from_user(memory_set, arg, unsafe {
+                    core::slice::from_raw_parts_mut(
+                        &mut li as *mut loop_info as *mut u8,
+                        size_of::<loop_info>(),
+                    )
+                })?;
                 let mut state = LOOP_TABLE[idx].lock();
                 state.info = loop_info_to_info64(&li);
                 state.info.lo_number = self.number;
@@ -267,30 +251,19 @@ impl File for DevLoop {
                     return Err(SysErrNo::ENXIO);
                 }
                 let li = info64_to_loop_info(&state.info, self.number);
-                copy_to_user(
-                    memory_set,
-                    arg,
-                    unsafe {
-                        core::slice::from_raw_parts(
-                            &li as *const loop_info as *const u8,
-                            size_of::<loop_info>(),
-                        )
-                    },
-                )?;
+                copy_to_user(memory_set, arg, unsafe {
+                    core::slice::from_raw_parts(
+                        &li as *const loop_info as *const u8,
+                        size_of::<loop_info>(),
+                    )
+                })?;
                 Ok(0)
             }
             BLKGETSIZE64 => {
                 let size: u64 = LOOP_TABLE[idx].lock().info.lo_sizelimit;
-                copy_to_user(
-                    memory_set,
-                    arg,
-                    unsafe {
-                        core::slice::from_raw_parts(
-                            &size as *const u64 as *const u8,
-                            size_of::<u64>(),
-                        )
-                    },
-                )?;
+                copy_to_user(memory_set, arg, unsafe {
+                    core::slice::from_raw_parts(&size as *const u64 as *const u8, size_of::<u64>())
+                })?;
                 Ok(0)
             }
             _ => Err(SysErrNo::ENOTTY),
@@ -306,10 +279,9 @@ fn loop_info_to_info64(li: &loop_info) -> loop_info64 {
     info.lo_encrypt_type = li.lo_encrypt_type as u32;
     info.lo_encrypt_key_size = li.lo_encrypt_key_size as u32;
     info.lo_flags = li.lo_flags as u32;
-    info.lo_file_name[..li.lo_name.len()]
-        .copy_from_slice(unsafe {
-            core::slice::from_raw_parts(li.lo_name.as_ptr() as *const u8, li.lo_name.len())
-        }); // c_char→u8: 目标 lo_file_name 固定是 [u8]，强转安全
+    info.lo_file_name[..li.lo_name.len()].copy_from_slice(unsafe {
+        core::slice::from_raw_parts(li.lo_name.as_ptr() as *const u8, li.lo_name.len())
+    }); // c_char→u8: 目标 lo_file_name 固定是 [u8]，强转安全
     info.lo_encrypt_key.copy_from_slice(&li.lo_encrypt_key);
     info.lo_init[0] = li.lo_init[0] as u64;
     info.lo_init[1] = li.lo_init[1] as u64;
@@ -324,13 +296,12 @@ fn info64_to_loop_info(info: &loop_info64, number: u32) -> loop_info {
     li.lo_encrypt_type = info.lo_encrypt_type as i32;
     li.lo_encrypt_key_size = info.lo_encrypt_key_size as i32;
     li.lo_flags = info.lo_flags as i32;
-    li.lo_name[..info.lo_file_name.len()]
-        .copy_from_slice(unsafe {
-            core::slice::from_raw_parts(
-                info.lo_file_name.as_ptr() as *const _, // c_char 在 riscv64 是 u8, loongarch64 是 i8
-                info.lo_file_name.len(),
-            )
-        });
+    li.lo_name[..info.lo_file_name.len()].copy_from_slice(unsafe {
+        core::slice::from_raw_parts(
+            info.lo_file_name.as_ptr() as *const _, // c_char 在 riscv64 是 u8, loongarch64 是 i8
+            info.lo_file_name.len(),
+        )
+    });
     li.lo_encrypt_key.copy_from_slice(&info.lo_encrypt_key);
     li.lo_init[0] = info.lo_init[0] as u64;
     li.lo_init[1] = info.lo_init[1] as u64;

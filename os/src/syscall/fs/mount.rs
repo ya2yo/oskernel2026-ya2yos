@@ -3,7 +3,7 @@ use log::{debug, warn};
 
 use crate::{
     fs::{MAX_PATH_LEN, MNT_TABLE},
-    mm::{MemorySet, copy_from_user, translate::read_user_cstr},
+    mm::{copy_from_user, translate::read_user_cstr, MemorySet},
     syscall::fs::dummyfd_create,
     task::{current_task, current_token},
     utils::{SysErrNo, SyscallRet},
@@ -28,7 +28,7 @@ pub fn sys_pivot_root(_new_root: usize, _put_old: usize) -> SyscallRet {
        ENOTDIR
               new_root or put_old is not a directory.
        EPERM  The calling process does not have the CAP_SYS_ADMIN
-              capability. 
+              capability.
     */
     Ok(0)
 }
@@ -249,12 +249,7 @@ pub fn sys_fspick(_dirfd: i32, _path: *mut u8, _flags: u32) -> SyscallRet {
 /// - `path`: 挂载点路径
 /// - `flags`: AT_* 标志
 /// - `attr`: 指向 mount_attr 结构的指针
-pub fn sys_mount_setattr(
-    _dirfd: i32,
-    _path: *const u8,
-    _flags: u32,
-    _attr: usize,
-) -> SyscallRet {
+pub fn sys_mount_setattr(_dirfd: i32, _path: *const u8, _flags: u32, _attr: usize) -> SyscallRet {
     warn!("[sys_mount_setattr] not implement!");
     Ok(0)
 }

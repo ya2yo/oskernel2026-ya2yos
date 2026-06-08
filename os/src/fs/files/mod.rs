@@ -8,18 +8,18 @@ pub mod pipe;
 pub mod stdio;
 #[cfg(feature = "net")]
 pub use net::*;
-mod os_file;
+mod dummyfd;
 mod epoll;
 mod events;
-mod signalfd;
-mod dummyfd;
 mod inotify;
 pub mod mqueue;
+mod os_file;
+mod signalfd;
 pub use {
     dummyfd::DummyFd,
-    events::EventFd,
     epoll::{EpollCreateFlags, EpollFile, EpollReady},
-    os_file::OSFile,
+    events::EventFd,
     inotify::{InotifyFd, InotifyMask},
-    mqueue::{Mqueue, MqAttr},
+    mqueue::{MqAttr, Mqueue},
+    os_file::OSFile,
 };

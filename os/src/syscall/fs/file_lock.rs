@@ -52,12 +52,12 @@ impl Flock {
             l_whence: i16::from_ne_bytes([bytes[2], bytes[3]]),
             // bytes[4..8] 为 padding，跳过
             l_start: i64::from_ne_bytes([
-                bytes[8], bytes[9], bytes[10], bytes[11],
-                bytes[12], bytes[13], bytes[14], bytes[15],
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
             ]),
             l_len: i64::from_ne_bytes([
-                bytes[16], bytes[17], bytes[18], bytes[19],
-                bytes[20], bytes[21], bytes[22], bytes[23],
+                bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22],
+                bytes[23],
             ]),
             l_pid: i32::from_ne_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
         })
@@ -169,9 +169,7 @@ pub fn setlk(path: &str, fl: &Flock, file_size: i64) -> SyscallRet {
     if fl.l_type == F_UNLCK {
         // 释放匹配的锁：遍历找到同一进程、同一区间的锁并移除
         entry.retain(|existing| {
-            !(existing.l_pid == fl.l_pid
-                && existing.l_start == start
-                && existing.l_end == end)
+            !(existing.l_pid == fl.l_pid && existing.l_start == start && existing.l_end == end)
         });
     } else {
         // 尝试获取锁：先检查冲突
@@ -263,10 +261,12 @@ static FLOCK_TABLE: Lazy<RwLock<BTreeMap<String, FlockInodeState>>> =
 /// 同一文件描述已有锁时自动进行锁类型转换（先移除旧锁）。
 pub fn flock_try_lock(path: &str, file_ptr: usize, lock_type: i32) -> Result<(), SysErrNo> {
     let mut table = FLOCK_TABLE.write();
-    let state = table.entry(String::from(path)).or_insert_with(|| FlockInodeState {
-        locks: Vec::new(),
-        waker: AtomicWaker::new(),
-    });
+    let state = table
+        .entry(String::from(path))
+        .or_insert_with(|| FlockInodeState {
+            locks: Vec::new(),
+            waker: AtomicWaker::new(),
+        });
 
     // 先移除同一文件描述持有的旧锁（锁类型转换）
     state.locks.retain(|e| e.file_ptr != file_ptr);
@@ -281,7 +281,10 @@ pub fn flock_try_lock(path: &str, file_ptr: usize, lock_type: i32) -> Result<(),
     }
 
     // 无冲突，添加新锁
-    state.locks.push(FlockOwner { lock_type, file_ptr });
+    state.locks.push(FlockOwner {
+        lock_type,
+        file_ptr,
+    });
     Ok(())
 }
 

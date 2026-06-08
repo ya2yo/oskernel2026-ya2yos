@@ -42,28 +42,26 @@
 //! - **`timex_get_realtime()`** → 读取当前 timex (modes=0)
 //! - **`timex_apply()`** → 应用 timex 调整 (modes≠0)
 
+mod itimerval;
+mod rusage;
+mod timedata;
+mod timer_condvar;
 mod timespec;
 mod timeval;
-mod tms;
-mod timedata;
-mod itimerval;
 mod timex;
-mod rusage;
-mod timer_condvar;
+mod tms;
 
-pub use timespec::Timespec;
-pub use timeval::TimeVal;
-pub use tms::Tms;
-pub use timedata::TimeData;
 pub use itimerval::{Itimerval, Timer, TimerInner, ITIMER_PROF, ITIMER_REAL, ITIMER_VIRTUAL};
-pub use timex::{
-    timex_apply, timex_get_realtime, Timex, TIME_OK,
-};
 pub use rusage::Rusage;
+pub use timedata::TimeData;
 pub use timer_condvar::{
     add_futex_timer, add_sigtimedwait_timer, add_stopped_task_timer, check_futex_timer,
     TimerCondVar, TimerType, TIMERS,
 };
+pub use timespec::Timespec;
+pub use timeval::TimeVal;
+pub use timex::{timex_apply, timex_get_realtime, Timex, TIME_OK};
+pub use tms::Tms;
 
 use crate::arch::time::{get_clock_freq, get_ticks, set_oneshot_timer};
 use spin::{Lazy, Mutex};

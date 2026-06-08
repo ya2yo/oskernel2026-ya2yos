@@ -1,7 +1,3 @@
-use alloc::{sync::Arc, vec::Vec};
-use log::debug;
-use alloc::vec;
-use core::cmp::min;
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_to_user},
@@ -10,6 +6,10 @@ use crate::{
     timer::{get_time_ms, Timespec},
     utils::{SysErrNo, SyscallRet},
 };
+use alloc::vec;
+use alloc::{sync::Arc, vec::Vec};
+use core::cmp::min;
+use log::debug;
 
 /// 参考 https://man7.org/linux/man-pages/man2/ppoll.2.html
 pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> SyscallRet {
@@ -40,7 +40,10 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
     } else {
         let mut timespec = Timespec::new(0, 0);
         copy_from_user(&memory_set, tmo_p, unsafe {
-            core::slice::from_raw_parts_mut(&mut timespec as *mut Timespec as *mut u8, core::mem::size_of::<Timespec>())
+            core::slice::from_raw_parts_mut(
+                &mut timespec as *mut Timespec as *mut u8,
+                core::mem::size_of::<Timespec>(),
+            )
         })?;
         (timespec.tv_sec * 1000000000 + timespec.tv_nsec) as isize
     };

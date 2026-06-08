@@ -9,8 +9,8 @@ use crate::{
     fs::File,
     mm::{
         copy_to_user, if_bad_address, insert_bad_address, remove_bad_address, shm_attach,
-        shm_create, shm_drop, shm_find, MapArea, MapAreaType, MapPermission, MremapFlags,
-        ShmFlags, VirtAddr, VirtPageNum,
+        shm_create, shm_drop, shm_find, MapArea, MapAreaType, MapPermission, MremapFlags, ShmFlags,
+        VirtAddr, VirtPageNum,
     },
     task::{self, current_task},
     utils::{page_round_up, SysErrNo, SyscallRet},
@@ -139,7 +139,7 @@ pub fn sys_mremap(
     let dont_unmap = flags_bitmap.contains(MremapFlags::DONTUNMAP);
     if dont_unmap {
         warn!("sys_munmap for DONTUNMAP unimplemented!");
-        return Err(SysErrNo::ENOSYS)
+        return Err(SysErrNo::ENOSYS);
     }
     if fixed && !may_move {
         return Err(SysErrNo::EINVAL);
@@ -152,12 +152,10 @@ pub fn sys_mremap(
         Some(v) => v,
         None => return Err(SysErrNo::EINVAL),
     };
-    let old_area = match memory_set
-        .get_mut()
-        .find_area_by_range(
-            VirtAddr::from(old_addr).floor(),
-            VirtAddr::from(old_end.saturating_sub(1)).ceil(),
-        ) {
+    let old_area = match memory_set.get_mut().find_area_by_range(
+        VirtAddr::from(old_addr).floor(),
+        VirtAddr::from(old_end.saturating_sub(1)).ceil(),
+    ) {
         Some(area) => area,
         None => return Err(SysErrNo::EFAULT),
     };
@@ -171,7 +169,7 @@ pub fn sys_mremap(
 
     if fixed {
         warn!("fixed not implement");
-        return Err(SysErrNo::ENOSYS)
+        return Err(SysErrNo::ENOSYS);
     } else if may_move {
         // sys_munmap(old_addr, old_size);
         // debug!("[sys_munmap] addr={:#x}, len={:#x}", addr, len);
@@ -205,7 +203,7 @@ pub fn sys_mremap(
         return Ok(rv);
     } else {
         // fixed == may_move == 0
-        return Err(SysErrNo::ENOSYS)
+        return Err(SysErrNo::ENOSYS);
     }
 }
 

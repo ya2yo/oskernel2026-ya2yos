@@ -1,8 +1,12 @@
-use core::{future::poll_fn, sync::atomic::{AtomicI32, Ordering}, task::Poll};
+use core::{
+    future::poll_fn,
+    sync::atomic::{AtomicI32, Ordering},
+    task::Poll,
+};
 
 use super::fcntl::*;
 use super::file_lock::{self, Flock};
-use crate::fs::{open, FileDescriptor, FsIndex, OpenFlags, map_dynamic_link_file};
+use crate::fs::{map_dynamic_link_file, open, FileDescriptor, FsIndex, OpenFlags};
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::{options::FcntlCmd, Syscall};
 use crate::task::{block_on, current_task, interruptible};
@@ -384,7 +388,10 @@ static TMP_FILE_COUNTER: AtomicI32 = AtomicI32::new(0);
 
 /// 参考 https://man7.org/linux/man-pages/man2/openat.2.html
 pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> SyscallRet {
-    debug!("[sys_openat] dirfd={}, path={:x}, flags={:x}, mode={}", dirfd, path as u64, flags, mode);
+    debug!(
+        "[sys_openat] dirfd={}, path={:x}, flags={:x}, mode={}",
+        dirfd, path as u64, flags, mode
+    );
     if path as usize == 0 {
         return Err(SysErrNo::ENOENT);
     }
@@ -496,10 +503,13 @@ bitflags! {
 /// 参考 https://man7.org/linux/man-pages/man2/close_range.2.html
 pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
     if first > last {
-        return Err(SysErrNo::EINVAL)
+        return Err(SysErrNo::EINVAL);
     }
     let flags = CloseRangeFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
-    debug!("[sys_close_range] first={}, last={}, flags={:?}", first, last, flags);
+    debug!(
+        "[sys_close_range] first={}, last={}, flags={:?}",
+        first, last, flags
+    );
 
     // TODO: UNSHARE flag support
     // UNSHARE (1 << 1): Copy-on-write on all file descriptors in the range
@@ -535,7 +545,8 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
             }
 
             // Get inode path for FsIndex cache eviction before closing
-            let inode_path = proc_inner.fd_table
+            let inode_path = proc_inner
+                .fd_table
                 .try_get(fd as usize)
                 .and_then(|desc| desc.file().ok())
                 .map(|osfile| osfile.inode.path());
@@ -576,7 +587,12 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
 /// struct open_how { __u64 flags; __u64 mode; __u64 resolve; }
 ///
 /// 当前实现忽略 resolve 字段，直接委托给 sys_openat。
-pub fn sys_openat2(dirfd: isize, path: *const u8, how: *const open_how, usize: usize) -> SyscallRet {
+pub fn sys_openat2(
+    dirfd: isize,
+    path: *const u8,
+    how: *const open_how,
+    usize: usize,
+) -> SyscallRet {
     debug!(
         "[sys_openat2] dirfd={}, path={:x}, how={:x}, usize={}",
         dirfd, path as usize, how as usize, usize
@@ -634,6 +650,10 @@ pub fn sys_openat2(dirfd: isize, path: *const u8, how: *const open_how, usize: u
     }
 
     // 委托给 sys_openat
-    sys_openat(dirfd, path, open_how_val.flags as u32, open_how_val.mode as u32)
+    sys_openat(
+        dirfd,
+        path,
+        open_how_val.flags as u32,
+        open_how_val.mode as u32,
+    )
 }
-

@@ -252,7 +252,11 @@ impl Inode for Ext4Inode {
         let stat = match file.fstat() {
             Ok(s) => s,
             Err(rc) => {
-                warn!("Ext4Inode::fstat: ext4_stat_get failed rc={}, path={:?}", rc, file.path());
+                warn!(
+                    "Ext4Inode::fstat: ext4_stat_get failed rc={}, path={:?}",
+                    rc,
+                    file.path()
+                );
                 return Kstat::default();
             }
         };

@@ -18,8 +18,8 @@ use crate::{
         DEFAULT_FILE_MODE,
     },
     mm::{
-        copy_to_user, copy_to_user_val,
-        MapAreaType, MapPermission, MemorySet, MemorySetInner, PhysPageNum, VirtAddr,
+        copy_to_user, copy_to_user_val, MapAreaType, MapPermission, MemorySet, MemorySetInner,
+        PhysPageNum, VirtAddr,
     },
     signal::{SigSet, SigTable, SIGCHLD},
     syscall::CloneFlags,
@@ -48,16 +48,16 @@ use spin::{rwlock::RwLock, Mutex, MutexGuard};
 /// 对应 linux 的 robust_list_head
 #[derive(Clone, Copy, Debug)]
 pub struct RobustListHead {
-    pub list: usize, //robust_list(robust_list *) 用户空间的虚拟地址 0 if empty
-    pub futex_offset: isize, // relative offset
-    pub list_op_pending: usize,// robust_list_ptr(** robust_list) first set this field when change 
+    pub list: usize,            //robust_list(robust_list *) 用户空间的虚拟地址 0 if empty
+    pub futex_offset: isize,    // relative offset
+    pub list_op_pending: usize, // robust_list_ptr(** robust_list) first set this field when change
 }
 
 impl Default for RobustListHead {
     fn default() -> Self {
         RobustListHead {
             // 暂时设为 0，因为 Default 函数无法知道对象未来的内存地址
-            list: 0, 
+            list: 0,
             futex_offset: 0,
             list_op_pending: 0,
         }
@@ -120,18 +120,18 @@ pub struct TaskControlBlockInner {
     ///   - root（euid=0）绕过所有权限检查
     ///
     /// setresuid(-1, uid, -1)：只改 effective uid，real uid 保持 root → 非 root 权限
-    pub user_id: usize,        // real uid（实际用户 ID）
-    pub effective_uid: u32,    // effective uid（有效用户 ID，权限检查用）
-    pub saved_uid: u32,        // saved set-user-ID（setuid 保存值）
-    pub real_gid: u32,         // real gid（实际组 ID）
-    pub effective_gid: u32,    // effective gid（有效组 ID，权限检查用）
-    pub saved_gid: u32,        // saved set-group-ID（setgid 保存值）
+    pub user_id: usize, // real uid（实际用户 ID）
+    pub effective_uid: u32, // effective uid（有效用户 ID，权限检查用）
+    pub saved_uid: u32,     // saved set-user-ID（setuid 保存值）
+    pub real_gid: u32,      // real gid（实际组 ID）
+    pub effective_gid: u32, // effective gid（有效组 ID，权限检查用）
+    pub saved_gid: u32,     // saved set-group-ID（setgid 保存值）
     /// PR_SET_PDEATHSIG 设置的父进程死亡信号 (0 表示未设置)
     pub pdeath_signal: u8,
 
     // 用于futex
-    pub futex_pa: usize,  // 当前正在等待的pa
-    pub futex_key: usize, // 当前正在等待的Wait的版本号
+    pub futex_pa: usize,      // 当前正在等待的pa
+    pub futex_key: usize,     // 当前正在等待的Wait的版本号
     pub futex_timedout: bool, // 本次 futex wait 因超时而唤醒
     /// 信号已交付但被透明处理（setup_frame），可中断 syscall 应返回 EINTR
     pub sig_eintr: bool,
@@ -230,8 +230,7 @@ impl TaskControlBlock {
         let ustack_top = arc_task.alloc_user_res(&mut task_inner);
         // prepare TrapContext in user space
         let trap_cx = task_inner.trap_cx();
-        *trap_cx =
-            TrapContext::app_init_context(entry_point, ustack_top, kernel_stack_top);
+        *trap_cx = TrapContext::app_init_context(entry_point, ustack_top, kernel_stack_top);
         drop(task_inner);
         arc_task
     }
@@ -241,8 +240,8 @@ impl TaskControlBlock {
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
         debug!("exec: goto from_elf");
-        let (memory_set, user_hp, entry_point, mut auxv) =
-            MemorySetInner::from_elf(elf_data).map_err(|_| {
+        let (memory_set, user_hp, entry_point, mut auxv) = MemorySetInner::from_elf(elf_data)
+            .map_err(|_| {
                 error!("exec: OOM during ELF load");
             })?;
         debug!("exec: return from from_elf");
@@ -359,7 +358,12 @@ impl TaskControlBlock {
             // println!("{:?}", aux);
             user_sp -= size_of::<Aux>();
             copy_to_user_val(&*proc_mem, user_sp as *mut usize, &(aux.aux_type as usize)).unwrap();
-            copy_to_user_val(&*proc_mem, (user_sp + size_of::<usize>()) as *mut usize, &aux.value).unwrap();
+            copy_to_user_val(
+                &*proc_mem,
+                (user_sp + size_of::<usize>()) as *mut usize,
+                &aux.value,
+            )
+            .unwrap();
         }
 
         //将环境变量指针数组放入栈中
@@ -371,7 +375,8 @@ impl TaskControlBlock {
                 &*proc_mem,
                 (user_sp + i * size_of::<usize>()) as *mut usize,
                 data,
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         // println!("arg pointers:");
@@ -383,7 +388,8 @@ impl TaskControlBlock {
                 &*proc_mem,
                 (user_sp + i * size_of::<usize>()) as *mut usize,
                 &data,
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         //将argc放入栈中
@@ -427,12 +433,27 @@ impl TaskControlBlock {
 
         // ==================== Phase 1: 在父进程锁内提取数据 ====================
         let (
-            child_memory_set_arc, child_fs_info, child_fd_table, child_sig_table,
-            child_pid, child_ppid, child_timer, child_sig_mask, process_arc,
-            clear_child_tid, parent_memory_set_arc,
-            parent_trap_cx, parent_heappoint, parent_heapbottom,
-            parent_user_id, parent_euid, parent_suid,
-            parent_rgid, parent_egid, parent_sgid, parent_nice,
+            child_memory_set_arc,
+            child_fs_info,
+            child_fd_table,
+            child_sig_table,
+            child_pid,
+            child_ppid,
+            child_timer,
+            child_sig_mask,
+            process_arc,
+            clear_child_tid,
+            parent_memory_set_arc,
+            parent_trap_cx,
+            parent_heappoint,
+            parent_heapbottom,
+            parent_user_id,
+            parent_euid,
+            parent_suid,
+            parent_rgid,
+            parent_egid,
+            parent_sgid,
+            parent_nice,
         );
         {
             let parent_inner = self.inner.lock();
@@ -613,8 +634,7 @@ impl TaskControlBlock {
         // CLONE_CHILD_SETTID: 写入子进程地址空间
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
             let child_proc_inner = child.process.inner_lock();
-            let child_mem = child_proc_inner
-                .get_locked_memory_set_read();
+            let child_mem = child_proc_inner.get_locked_memory_set_read();
             copy_to_user_val(&*child_mem, child_tid, &(child.tid() as u32)).unwrap();
         }
 

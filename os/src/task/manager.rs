@@ -40,7 +40,10 @@ pub mod ready_queue {
         let mut queue = READY_QUEUE.lock();
         // debug!("{:?}", queue);
         if task_in_queue(&queue, task) {
-            warn!("add_task: task tid={} already in queue, skipping", task.tid());
+            warn!(
+                "add_task: task tid={} already in queue, skipping",
+                task.tid()
+            );
             return;
         }
         queue.push_back(Arc::downgrade(&task));

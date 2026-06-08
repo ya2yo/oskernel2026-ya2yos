@@ -383,8 +383,7 @@ impl PageTable {
             // From<MapPermission> 已包含 VALID | MAT_CC | P，故只需保留
             // 正交的结构性标志（DIRTY, COW, GLOBAL）。
             let new_flags = LAPTEFlags::from(add_flags);
-            let preserved =
-                old_flags & (LAPTEFlags::DIRTY | LAPTEFlags::COW | LAPTEFlags::GLOBAL);
+            let preserved = old_flags & (LAPTEFlags::DIRTY | LAPTEFlags::COW | LAPTEFlags::GLOBAL);
             pte.set_flags(new_flags | preserved);
         }
     }

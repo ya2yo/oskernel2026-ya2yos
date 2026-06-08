@@ -88,10 +88,7 @@ fn estat_to_trap(value: estat::Trap) -> Trap {
             }
             #[allow(unreachable_patterns)]
             _ => {
-                error!(
-                    "Fail to convert LoongArch estat({:?}) to Trap type!",
-                    value
-                );
+                error!("Fail to convert LoongArch estat({:?}) to Trap type!", value);
                 Trap::Unknown
             }
         },

@@ -19,4 +19,3 @@ pub fn sys_setpgid(_pid: u32, _pgid: u32) -> SyscallRet {
     warn!("[sys_setpgid] unimplement!");
     Ok(0)
 }
-

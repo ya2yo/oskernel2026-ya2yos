@@ -34,11 +34,20 @@ impl Rusage {
         Self {
             ru_utime: TimeVal::new(utime / 1000, (utime % 1000) * 1000),
             ru_stime: TimeVal::new(stime / 1000, (stime % 1000) * 1000),
-            ru_maxrss: 0, ru_ixrss: 0, ru_idrss: 0, ru_isrss: 0,
-            ru_minflt: 0, ru_majflt: 0, ru_nswap: 0,
-            ru_inblock: 0, ru_oublock: 0,
-            ru_msgsnd: 0, ru_msgrcv: 0,
-            ru_nsignals: 0, ru_nvcsw: 0, ru_nivcsw: 0,
+            ru_maxrss: 0,
+            ru_ixrss: 0,
+            ru_idrss: 0,
+            ru_isrss: 0,
+            ru_minflt: 0,
+            ru_majflt: 0,
+            ru_nswap: 0,
+            ru_inblock: 0,
+            ru_oublock: 0,
+            ru_msgsnd: 0,
+            ru_msgrcv: 0,
+            ru_nsignals: 0,
+            ru_nvcsw: 0,
+            ru_nivcsw: 0,
         }
     }
 }
