@@ -676,3 +676,108 @@ AI 通过调试日志（`sys_waitpid: my children (pid, exit_sig, all_exited): [
 
 - 代码：`os/src/mm/translate.rs`、`os/src/task/task/task.rs`、`os/src/task/futex.rs`、`os/src/task/mod.rs`、`os/src/signal/mod.rs`、`os/src/syscall/signal.rs`、`os/src/syscall/task/wait.rs`、`os/src/syscall/sys.rs`、`os/src/syscall/net/io.rs`、`os/src/syscall/fs/*.rs`、`os/src/syscall/io_mpx/*.rs`、`os/src/syscall/net/*.rs`、`os/src/mm/memory_set/*.rs`、`os/src/mm/page_fault_handler.rs`、`os/src/fs/files/net.rs`
 - 文档：`Docs/初赛文档/开发日志.md`、`Docs/初赛文档/problem/pthread-robust-detach.md`、`Docs/初赛文档/problem/README.md`
+
+---
+
+## 2026-06-07: LTP 收尾 — robust futex 死锁与完整功能性提交
+
+### 问题发现
+
+继续跑 LTP 后，ltp-shm/robust mutex 相关测例会卡死。表现为线程/进程等待 futex，但 futex word 中记录的 owner TID 已经退出，内核没有在进入睡眠前处理这种“死 owner”状态。
+
+### 根因分析
+
+AI 对照 robust futex 语义和当前 `sys_futex` 路径后确认：
+
+1. `FUTEX_WAIT` / `FUTEX_WAIT_BITSET` 在实际睡眠前只比较用户态 futex word 是否等于 `val`。
+2. 如果 futex word 中的 TID 已经不存在，当前实现仍会把任务挂入等待队列。
+3. 退出路径不一定能覆盖共享内存 robust futex 的所有清理场景，导致后续等待者没有唤醒来源。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/futex.rs` | 在 `sys_futex` 睡眠前读取 futex word，提取 owner TID；若 TID 非 0 且 `tid2task()` 不存在，则将 futex word 清 0 并唤醒等待队列 |
+| `user/src/bin/ltp/blacklist.rs` | 补充 LTP 黑名单，跳过 cgroup/memcg/网络等当前不支持或会卡死的脚本 |
+| `user/src/bin/ltp/mod.rs` | 调整 LTP 分段运行范围 |
+| `user/src/bin/initproc.rs` | 开启最终评分相关测试入口 |
+
+### 说明
+
+该实现偏向“避免死锁”的简化恢复：不会完整向用户态暴露 `OWNER_DIED` / `EOWNERDEAD` 恢复语义，而是将 futex word 清 0，让用户态重新 CAS 获取锁。对当前测例目标更实用，后续若要完整兼容 pthread robust mutex，可再补 owner-died 状态传播。
+
+---
+
+## 2026-06-08: LoongArch 内存写回、lwext4 seek/read 与 libcbench-musl
+
+### 问题发现
+
+6.8 主要处理双架构最终测试中的三个问题：
+
+1. LoongArch 下内存分配/文件映射写回存在大块缓冲和 panic 风险。
+2. iozone 触发 lwext4 "Seek beyond the end of the file" 相关警告。
+3. musl libcbench 在 pthread 高频创建测试中卡顿或卡死。
+
+### 根因分析
+
+AI 与人工分析后得到以下结论：
+
+1. mmap 写回一次性按映射长度分配内核缓冲，遇到大映射会增加内存压力；部分路径中仍有 unwrap panic。
+2. Linux 允许 seek 到 EOF 之后，后续 read 应返回 0 表示 EOF；原 lwext4 封装把 beyond EOF seek 当成错误或强行截断。
+3. libcbench 中 pthread_create_serial 类测试会高频创建线程。此前 clone 线程时仍重复创建 `/proc/<pid>/stat`、`/proc/<pid>/maps`，并且 `process.meta.tasks` 中失效 weak 引用未及时清理，导致任务列表膨胀和文件系统路径开销放大。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/mm/translate.rs` | 新增 `read_user_bytes_direct_into()`，允许调用方复用外部缓冲区读取用户页 |
+| `os/src/mm/memory_set/mod.rs` / `mmap_ops.rs` | mmap 写回按 64KB 分块处理，并修正写回 offset / lseek 恢复 |
+| `lwext4_rust/c/lwext4/src/ext4.c` | past-EOF read 返回 0；`ext4_fseek` 允许 SEEK_SET/SEEK_CUR/SEEK_END 到 EOF 之后 |
+| `lwext4_rust/src/file.rs` | Rust 封装中改用本地 `seek_pos()`，缓存写回返回 Result，扩大缓存上限并修正写回后的文件位置 |
+| `os/src/task/task/task.rs` | 线程 clone 时清理失效 weak 引用；`CLONE_THREAD` 不重复创建 `/proc/<pid>` 文件 |
+| `os/src/task/mod.rs` | `CLONE_CHILD_CLEARTID` 退出时写 4 字节 `u32 0`；线程退出后从进程任务列表移除当前 TCB weak 记录 |
+
+### 文档
+
+新增/补充 `Docs/初赛文档/problem/libcbench-musl修复过程.md`，记录 GPT-5.5 辅助定位 libcbench-musl 卡顿的过程。
+
+---
+
+## 2026-06-09: 最终入口整理、遗留问题记录与 clock_getres
+
+### 问题发现
+
+6.9 主要做三类收尾：
+
+1. 记录仍未彻底解决的测试问题：LoongArch `iozone-musl` 卡死、LoongArch `libctest-glibc` 大量 StorePageFault。
+2. 调整最终测试入口、LTP 黑名单与日志分析脚本。
+3. 当前会话中实现 `clock_getres`。原函数把 `clockid` 当 `usize`，导致负数 `clockid_t` 分支不可达，并且 `idx >= 0` 之类判断在 Rust 中对无符号值恒成立。
+
+### clock_getres 根因分析
+
+Linux 的 `clockid_t` 是有符号 int，负数空间用于 CPU clock 和动态 fd clock 编码：
+
+1. 固定 clock：`CLOCK_REALTIME`、`CLOCK_MONOTONIC`、`CLOCK_PROCESS_CPUTIME_ID` 等为非负编号。
+2. 负数 CPU clock：低位编码 clock 类型和 per-thread 标志。
+3. 动态 fd clock：满足 `(clockid & CLOCKFD_MASK) == CLOCKFD`。
+
+原实现用 `usize` 接收 `clockid`，无法正确区分 `-1`、`-5` 等非法/动态编码，也无法表达 CPU clock 编码语义。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `Docs/初赛文档/problem/(todo)iozone-musl龙芯卡死.md` | 记录 LoongArch iozone-musl 卡死遗留问题 |
+| `Docs/初赛文档/problem/(todo)libctest-glibc.md` | 记录 LoongArch libctest-glibc StorePageFault 遗留问题 |
+| `analyze_logs.py` | 新增并改进日志分析脚本 |
+| `user/src/bin/initproc.rs` | 调整最终测试入口；LoongArch 暂时跳过 `iozone-musl` |
+| `user/src/bin/ltp/blacklist.rs` / `mod.rs` | 统一 LTP 黑名单，补充 `fallocate05` 等跳过项，切换 glibc/musl LTP 入口 |
+| `os/src/syscall/time.rs` | `sys_clock_getres(clockid: isize, res: usize)`；支持固定 clock 和负数 CPU clock 编码；动态 fd clock / 非法 clock 返回 `EINVAL`；`res == NULL` 成功；返回 1ms 分辨率 |
+| `os/src/syscall/mod.rs` | 分发表将 `clock_getres` 第一个参数按 `isize` 传入 |
+
+### 验证
+
+1. `cargo fmt` 通过。
+2. 顶层 `make` 通过，RISC-V kernel 构建成功。
+3. `timeout 90s make run` 可启动内核并运行完整 LTP 列表；当前配置为全量 glibc LTP，超时前尚未跑到 `clock_getres01`。
+4. 在宿主 Linux 上用 syscall 快速核对 clockid 有效性：`-8..-6`、`-4..-2`、`0..9`、`11` 可用；`-5`、`-1`、`10`、`12` 返回 `EINVAL`。当前实现的有效性轮廓与 Linux 基本一致。
