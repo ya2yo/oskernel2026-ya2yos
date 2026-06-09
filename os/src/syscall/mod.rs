@@ -63,6 +63,7 @@ pub enum Syscall {
     Fallocate = 47,
     Faccessat = 48,
     Chdir = 49,
+    Chroot = 51,
     Fchmod = 52,
     Fchmodat = 53,
     Fchownat = 54,
@@ -147,7 +148,8 @@ pub enum Syscall {
     GetResuid = 148,
     SetResgid = 149,
     GetResgid = 150,
-    Chroot = 151,
+    Setfsuid = 151,
+    Setfsgid = 152,
     Times = 153,
     SetPGid = 154,
     GetPGid = 155,
@@ -772,6 +774,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[1] as *const u8,
             args[2] as u32,
             args[3] as usize,
+            args[4],
         ),
 
         // dummy fds

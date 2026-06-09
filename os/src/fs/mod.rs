@@ -106,6 +106,8 @@ pub enum FileClass {
     #[cfg(feature = "net")]
     Socket(Arc<Socket>),
     Abs(Arc<dyn File>),
+    FsContext(Arc<FsContextFd>),
+    DetachedMount(Arc<DetachedMountFd>),
 }
 
 impl FileClass {
@@ -115,6 +117,8 @@ impl FileClass {
             #[cfg(feature = "net")]
             FileClass::Socket(_) => Err(SysErrNo::EINVAL),
             FileClass::Abs(_) => Err(SysErrNo::EINVAL),
+            FileClass::FsContext(_) => Err(SysErrNo::EINVAL),
+            FileClass::DetachedMount(_) => Err(SysErrNo::EINVAL),
         }
     }
     #[cfg(feature = "net")]
@@ -123,6 +127,8 @@ impl FileClass {
             FileClass::File(_) => Err(SysErrNo::ENOTSOCK),
             FileClass::Socket(f) => Ok(f.clone()),
             FileClass::Abs(_) => Err(SysErrNo::ENOTSOCK),
+            FileClass::FsContext(_) => Err(SysErrNo::ENOTSOCK),
+            FileClass::DetachedMount(_) => Err(SysErrNo::ENOTSOCK),
         }
     }
     pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {
@@ -131,6 +137,20 @@ impl FileClass {
             #[cfg(feature = "net")]
             FileClass::Socket(_) => Err(SysErrNo::EINVAL),
             FileClass::Abs(f) => Ok(f.clone()),
+            FileClass::FsContext(_) => Err(SysErrNo::EINVAL),
+            FileClass::DetachedMount(_) => Err(SysErrNo::EINVAL),
+        }
+    }
+    pub fn fs_context(&self) -> Result<Arc<FsContextFd>, SysErrNo> {
+        match self {
+            FileClass::FsContext(f) => Ok(f.clone()),
+            _ => Err(SysErrNo::EINVAL),
+        }
+    }
+    pub fn detached_mount(&self) -> Result<Arc<DetachedMountFd>, SysErrNo> {
+        match self {
+            FileClass::DetachedMount(f) => Ok(f.clone()),
+            _ => Err(SysErrNo::EINVAL),
         }
     }
     pub fn any(&self) -> Arc<dyn File> {
@@ -139,6 +159,8 @@ impl FileClass {
             #[cfg(feature = "net")]
             FileClass::Socket(s) => s.clone(),
             FileClass::Abs(f) => f.clone(),
+            FileClass::FsContext(f) => f.clone(),
+            FileClass::DetachedMount(f) => f.clone(),
         }
     }
 }

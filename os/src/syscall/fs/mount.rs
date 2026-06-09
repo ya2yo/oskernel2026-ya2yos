@@ -1,13 +1,33 @@
-use alloc::string::String;
+use alloc::{string::String, vec::Vec};
+use linux_raw_sys::general::{
+    mount_attr, AT_EMPTY_PATH, AT_FDCWD, AT_NO_AUTOMOUNT, AT_RECURSIVE, AT_SYMLINK_NOFOLLOW,
+    FSMOUNT_CLOEXEC, FSOPEN_CLOEXEC, FSPICK_CLOEXEC, FSPICK_EMPTY_PATH, FSPICK_NO_AUTOMOUNT,
+    FSPICK_SYMLINK_NOFOLLOW, MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_NODEV,
+    MOUNT_ATTR_NODIRATIME, MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOSUID, MOUNT_ATTR_NOSYMFOLLOW,
+    MOUNT_ATTR_RDONLY, MOUNT_ATTR_SIZE_VER0, MOUNT_ATTR_STRICTATIME, MOVE_MOUNT_F_EMPTY_PATH,
+    MOVE_MOUNT_T_EMPTY_PATH, MOVE_MOUNT__MASK, OPEN_TREE_CLOEXEC, OPEN_TREE_CLONE,
+};
 use log::{debug, warn};
 
 use crate::{
-    fs::{MAX_PATH_LEN, MNT_TABLE},
-    mm::{copy_from_user, translate::read_user_cstr, MemorySet},
-    syscall::fs::dummyfd_create,
-    task::{current_task, current_token},
-    utils::{SysErrNo, SyscallRet},
+    fs::{
+        open, DetachedMountFd, FileClass, FileDescriptor, FsConfigOption, FsConfigValue,
+        FsContextFd, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE,
+    },
+    mm::{copy_from_user, translate::read_user_cstr},
+    task::current_task,
+    utils::{SysErrNo, SysResult, SyscallRet},
 };
+
+const FSCONFIG_SET_FLAG: u32 = 0;
+const FSCONFIG_SET_STRING: u32 = 1;
+const FSCONFIG_SET_BINARY: u32 = 2;
+const FSCONFIG_SET_PATH: u32 = 3;
+const FSCONFIG_SET_PATH_EMPTY: u32 = 4;
+const FSCONFIG_SET_FD: u32 = 5;
+const FSCONFIG_CMD_CREATE: u32 = 6;
+const FSCONFIG_CMD_RECONFIGURE: u32 = 7;
+const FSCONFIG_CMD_CREATE_EXCL: u32 = 8;
 
 /// 参考 https://man7.org/linux/man-pages/man2/pivot_root.2.html
 pub fn sys_pivot_root(_new_root: usize, _put_old: usize) -> SyscallRet {
@@ -83,9 +103,38 @@ pub fn sys_mount(
 }
 
 /// https://man7.org/linux/man-pages/man2/open_tree.2.html
-pub fn sys_open_tree(_dirfd: i32, _path: *const u8, _flags: u32) -> SyscallRet {
-    warn!("[sys_open_tree] not implement!");
-    Ok(0)
+pub fn sys_open_tree(dirfd: i32, path: *const u8, flags: u32) -> SyscallRet {
+    let valid_flags =
+        OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC | AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_RECURSIVE;
+    if flags & !valid_flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let abs_path = {
+        let task = current_task().unwrap();
+        let proc_inner = task.process.inner_lock();
+        let memory_set = proc_inner.get_locked_memory_set_read();
+        let path = read_user_cstr(&memory_set, path)?;
+        if path.is_empty() && flags & AT_EMPTY_PATH == 0 {
+            return Err(SysErrNo::ENOENT);
+        }
+        if path.len() > MAX_PATH_LEN {
+            return Err(SysErrNo::ENAMETOOLONG);
+        }
+        let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
+        open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
+        abs_path
+    };
+
+    alloc_new_mount_fd(
+        FileClass::DetachedMount(DetachedMountFd::new(
+            String::from(""),
+            Some(abs_path),
+            flags,
+            0,
+        )),
+        flags & OPEN_TREE_CLOEXEC != 0,
+    )
 }
 
 /// https://man7.org/linux/man-pages/man2/move_mount.2.html
@@ -99,20 +148,86 @@ pub fn sys_open_tree(_dirfd: i32, _path: *const u8, _flags: u32) -> SyscallRet {
 /// - `to_path`: 目标挂载点路径
 /// - `flags`: 移动标志 (MOVE_MOUNT_F_*)
 pub fn sys_move_mount(
-    _from_dirfd: i32,
-    _from_path: *const u8,
-    _to_dirfd: i32,
-    _to_path: *const u8,
-    _flags: u32,
+    from_dirfd: i32,
+    from_path: *const u8,
+    to_dirfd: i32,
+    to_path: *const u8,
+    flags: u32,
 ) -> SyscallRet {
-    warn!("[sys_move_mount] not implement!");
+    if flags & !MOVE_MOUNT__MASK != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let from_path = read_user_cstr(&memory_set, from_path)?;
+    let to_path = read_user_cstr(&memory_set, to_path)?;
+    if from_path.len() > MAX_PATH_LEN || to_path.len() > MAX_PATH_LEN {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+
+    let to_abs_path = proc_inner.get_abs_path(to_dirfd as isize, &to_path)?;
+    if let Ok(detached) = proc_inner
+        .fd_table
+        .get(from_dirfd as usize)
+        .and_then(|fd| fd.detached_mount())
+    {
+        if flags & MOVE_MOUNT_F_EMPTY_PATH == 0 || !from_path.is_empty() {
+            return Err(SysErrNo::EINVAL);
+        }
+        let source = detached
+            .source
+            .clone()
+            .unwrap_or_else(|| String::from("none"));
+        let fstype = if detached.fsname.is_empty() {
+            String::from("none")
+        } else {
+            detached.fsname.clone()
+        };
+        let mount_flags = detached.attr_flags;
+        let ret =
+            MNT_TABLE
+                .lock()
+                .mount(source, to_abs_path, fstype, mount_flags, String::from(""));
+        if ret == -1 {
+            return Err(SysErrNo::ENOSPC);
+        }
+        return Ok(0);
+    }
+
+    let from_abs_path = proc_inner.get_abs_path(from_dirfd as isize, &from_path)?;
+    open(&from_abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
+    open(&to_abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
+    if flags & (MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH) != 0 {
+        debug!("[sys_move_mount] path based move with empty-path flags is treated as no-op");
+    }
     Ok(0)
 }
 
 /// https://man7.org/linux/man-pages/man2/fsopen.2.html
-pub fn sys_fsopen(_fsname: *const u8, _flags: u32) -> SyscallRet {
-    warn!("[sys_fsopen] not implement!");
-    dummyfd_create()
+pub fn sys_fsopen(fsname: *const u8, flags: u32) -> SyscallRet {
+    if flags & !FSOPEN_CLOEXEC != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    let fsname = {
+        let task = current_task().unwrap();
+        let proc_inner = task.process.inner_lock();
+        let memory_set = proc_inner.get_locked_memory_set_read();
+        let fsname = read_user_cstr(&memory_set, fsname)?;
+        if fsname.is_empty() || fsname.len() > MAX_PATH_LEN {
+            return Err(SysErrNo::EINVAL);
+        }
+        if !is_known_fs(&fsname) {
+            return Err(SysErrNo::ENODEV);
+        }
+        fsname
+    };
+
+    alloc_new_mount_fd(
+        FileClass::FsContext(FsContextFd::new(fsname)),
+        flags & FSOPEN_CLOEXEC != 0,
+    )
 }
 
 /// https://www.man7.org/linux/man-pages/man2/fsconfig.2.html
@@ -129,92 +244,149 @@ pub fn sys_fsopen(_fsname: *const u8, _flags: u32) -> SyscallRet {
 /// - FSCONFIG_CMD_CREATE  (6): 创建文件系统/superblock
 /// - FSCONFIG_CMD_RECONFIGURE (7): 重新配置文件系统参数
 pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> SyscallRet {
-    const FSCONFIG_SET_FLAG: u32 = 0;
-    const FSCONFIG_SET_STRING: u32 = 1;
-    const FSCONFIG_SET_BINARY: u32 = 2;
-    const FSCONFIG_SET_PATH: u32 = 3;
-    const FSCONFIG_SET_PATH_EMPTY: u32 = 4;
-    const FSCONFIG_SET_FD: u32 = 5;
-    const FSCONFIG_CMD_CREATE: u32 = 6;
-    const FSCONFIG_CMD_RECONFIGURE: u32 = 7;
-
-    // EBADF: fd 无效
     if fd < 0 {
         return Err(SysErrNo::EBADF);
     }
+    fsconfig_check(cmd, key, value, aux)?;
 
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
-
-    // 验证 fd 存在（fsopen/fspick 返回的 dummy fd）
-    let _ = proc_inner.fd_table.get(fd as usize)?;
+    let fsctx = proc_inner.fd_table.get(fd as usize)?.fs_context()?;
 
     match cmd {
         FSCONFIG_SET_FLAG => {
-            // key 是标志名（字符串），value 忽略
-            if key != 0 {
-                let _key_str = read_user_cstr(&memory_set, key as *const u8)?;
-            }
+            let key = read_user_cstr(&memory_set, key as *const u8)?;
+            fsctx.with_inner(|ctx| {
+                ctx.options.push(FsConfigOption {
+                    key,
+                    value: FsConfigValue::Flag,
+                });
+            });
             Ok(0)
         }
         FSCONFIG_SET_STRING => {
-            // key 是选项名，value 是选项值（字符串）
-            if key != 0 {
-                let _key_str = read_user_cstr(&memory_set, key as *const u8)?;
-            }
-            if value != 0 {
-                let _val_str = read_user_cstr(&memory_set, value as *const u8)?;
-            }
+            let key = read_user_cstr(&memory_set, key as *const u8)?;
+            let value = read_user_cstr(&memory_set, value as *const u8)?;
+            fsctx.with_inner(|ctx| {
+                if key == "source" {
+                    ctx.source = Some(value.clone());
+                }
+                ctx.options.push(FsConfigOption {
+                    key,
+                    value: FsConfigValue::String(value),
+                });
+            });
             Ok(0)
         }
         FSCONFIG_SET_BINARY => {
-            // key 是选项名，value 是二进制数据（aux 字节长度）
-            if key != 0 {
-                let _key_str = read_user_cstr(&memory_set, key as *const u8)?;
-            }
-            if value != 0 && aux > 0 {
-                // 通过 copy_from_user 验证用户空间内存可读
-                let len = core::cmp::min(aux as usize, 256);
-                let mut _buf = alloc::vec![0u8; len];
-                copy_from_user(&memory_set, value, &mut _buf[..])?;
-            }
+            let key = read_user_cstr(&memory_set, key as *const u8)?;
+            let mut buf = Vec::new();
+            buf.resize(aux as usize, 0);
+            copy_from_user(&memory_set, value, &mut buf[..])?;
+            fsctx.with_inner(|ctx| {
+                ctx.options.push(FsConfigOption {
+                    key,
+                    value: FsConfigValue::Binary(buf),
+                });
+            });
             Ok(0)
         }
         FSCONFIG_SET_PATH | FSCONFIG_SET_PATH_EMPTY => {
-            // key 是选项名，value 是路径字符串
-            if key != 0 {
-                let _key_str = read_user_cstr(&memory_set, key as *const u8)?;
+            let key = read_user_cstr(&memory_set, key as *const u8)?;
+            let path = read_user_cstr(&memory_set, value as *const u8)?;
+            if cmd == FSCONFIG_SET_PATH && path.is_empty() {
+                return Err(SysErrNo::ENOENT);
             }
-            if value != 0 {
-                let _path = read_user_cstr(&memory_set, value as *const u8)?;
+            if path.len() > MAX_PATH_LEN {
+                return Err(SysErrNo::ENAMETOOLONG);
             }
+            let _ = proc_inner.get_abs_path(aux as isize, &path)?;
+            fsctx.with_inner(|ctx| {
+                if key == "source" {
+                    ctx.source = Some(path.clone());
+                }
+                ctx.options.push(FsConfigOption {
+                    key,
+                    value: FsConfigValue::Path { path, dirfd: aux },
+                });
+            });
             Ok(0)
         }
         FSCONFIG_SET_FD => {
-            // key 是选项名，value 是需要传入的 fd 编号
-            if key != 0 {
-                let _key_str = read_user_cstr(&memory_set, key as *const u8)?;
-            }
-            let target_fd = value;
-            // 验证传入的 fd 有效
-            let _ = proc_inner.fd_table.get(target_fd)?;
+            let key = read_user_cstr(&memory_set, key as *const u8)?;
+            let _ = proc_inner.fd_table.get(aux as usize)?;
+            fsctx.with_inner(|ctx| {
+                ctx.options.push(FsConfigOption {
+                    key,
+                    value: FsConfigValue::Fd(aux),
+                });
+            });
             Ok(0)
         }
-        FSCONFIG_CMD_CREATE => {
-            // 在完整实现中，这里会使用累积的配置创建 superblock
-            // 当前简化实现直接返回成功
-            debug!("[sys_fsconfig] FSCONFIG_CMD_CREATE: mount commit (stub)");
+        FSCONFIG_CMD_CREATE | FSCONFIG_CMD_CREATE_EXCL => {
+            fsctx.with_inner(|ctx| {
+                ctx.created = true;
+                ctx.exclusive = cmd == FSCONFIG_CMD_CREATE_EXCL;
+            });
+            debug!("[sys_fsconfig] fs context created");
             Ok(0)
         }
         FSCONFIG_CMD_RECONFIGURE => {
-            debug!("[sys_fsconfig] FSCONFIG_CMD_RECONFIGURE (stub)");
+            fsctx.with_inner(|ctx| {
+                ctx.reconfigure = true;
+            });
+            debug!("[sys_fsconfig] fs context reconfigure requested");
             Ok(0)
         }
-        _ => {
-            // 无效命令
-            Err(SysErrNo::EINVAL)
+        _ => Err(SysErrNo::EOPNOTSUPP),
+    }
+}
+fn fsconfig_check(cmd: u32, key: usize, value: usize, aux: i32) -> SysResult {
+    match cmd {
+        FSCONFIG_SET_FLAG => {
+            if key == 0 || value != 0 || aux != 0 {
+                Err(SysErrNo::EINVAL)
+            } else {
+                Ok(())
+            }
         }
+        FSCONFIG_SET_STRING => {
+            if key == 0 || value == 0 || aux != 0 {
+                Err(SysErrNo::EINVAL)
+            } else {
+                Ok(())
+            }
+        }
+        FSCONFIG_SET_BINARY => {
+            if key == 0 || value == 0 || aux <= 0 || aux > 1024 * 1024 {
+                Err(SysErrNo::EINVAL)
+            } else {
+                Ok(())
+            }
+        }
+        FSCONFIG_SET_PATH | FSCONFIG_SET_PATH_EMPTY => {
+            if key == 0 || value == 0 || (aux != AT_FDCWD && aux < 0) {
+                Err(SysErrNo::EINVAL)
+            } else {
+                Ok(())
+            }
+        }
+        FSCONFIG_SET_FD => {
+            if key == 0 || value != 0 || aux < 0 {
+                Err(SysErrNo::EINVAL)
+            } else {
+                Ok(())
+            }
+        }
+        FSCONFIG_CMD_CREATE | FSCONFIG_CMD_CREATE_EXCL | FSCONFIG_CMD_RECONFIGURE => {
+            if key != 0 || value != 0 || aux != 0 {
+                Err(SysErrNo::EINVAL)
+            } else {
+                Ok(())
+            }
+        }
+        _ => Err(SysErrNo::EOPNOTSUPP),
     }
 }
 
@@ -229,15 +401,60 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
 ///
 /// # 返回
 /// 成功返回 0，失败返回 -1 并设置 errno。
-pub fn sys_fsmount(_fd: i32, _flags: u32, _attr_flags: u32) -> SyscallRet {
-    warn!("[sys_fsmount] not implement!");
-    Ok(0)
+pub fn sys_fsmount(fd: i32, flags: u32, attr_flags: u32) -> SyscallRet {
+    if fd < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+    if flags & !FSMOUNT_CLOEXEC != 0 || attr_flags & !valid_mount_attr_bits() != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let (fsname, source) = {
+        let task = current_task().unwrap();
+        let proc_inner = task.process.inner_lock();
+        let fsctx = proc_inner.fd_table.get(fd as usize)?.fs_context()?;
+        fsctx.with_inner(|ctx| {
+            if !ctx.created {
+                return Err(SysErrNo::EINVAL);
+            }
+            Ok((ctx.fsname.clone(), ctx.source.clone()))
+        })?
+    };
+
+    alloc_new_mount_fd(
+        FileClass::DetachedMount(DetachedMountFd::new(fsname, source, flags, attr_flags)),
+        flags & FSMOUNT_CLOEXEC != 0,
+    )
 }
 
 /// https://man7.org/linux/man-pages/man2/fspick.2.html
-pub fn sys_fspick(_dirfd: i32, _path: *mut u8, _flags: u32) -> SyscallRet {
-    warn!("[sys_fspick] not implement!");
-    dummyfd_create()
+pub fn sys_fspick(dirfd: i32, path: *mut u8, flags: u32) -> SyscallRet {
+    let valid_flags =
+        FSPICK_CLOEXEC | FSPICK_SYMLINK_NOFOLLOW | FSPICK_NO_AUTOMOUNT | FSPICK_EMPTY_PATH;
+    if flags & !valid_flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let abs_path = {
+        let task = current_task().unwrap();
+        let proc_inner = task.process.inner_lock();
+        let memory_set = proc_inner.get_locked_memory_set_read();
+        let path = read_user_cstr(&memory_set, path)?;
+        if path.is_empty() && flags & FSPICK_EMPTY_PATH == 0 {
+            return Err(SysErrNo::ENOENT);
+        }
+        if path.len() > MAX_PATH_LEN {
+            return Err(SysErrNo::ENAMETOOLONG);
+        }
+        let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
+        open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
+        abs_path
+    };
+
+    alloc_new_mount_fd(
+        FileClass::FsContext(FsContextFd::picked(abs_path)),
+        flags & FSPICK_CLOEXEC != 0,
+    )
 }
 
 /// https://man7.org/linux/man-pages/man2/mount_setattr.2.html
@@ -249,7 +466,118 @@ pub fn sys_fspick(_dirfd: i32, _path: *mut u8, _flags: u32) -> SyscallRet {
 /// - `path`: 挂载点路径
 /// - `flags`: AT_* 标志
 /// - `attr`: 指向 mount_attr 结构的指针
-pub fn sys_mount_setattr(_dirfd: i32, _path: *const u8, _flags: u32, _attr: usize) -> SyscallRet {
-    warn!("[sys_mount_setattr] not implement!");
+pub fn sys_mount_setattr(
+    dirfd: i32,
+    path: *const u8,
+    flags: u32,
+    attr: usize,
+    size: usize,
+) -> SyscallRet {
+    let valid_flags = AT_EMPTY_PATH | AT_RECURSIVE | AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT;
+    if flags & !valid_flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    if attr == 0 {
+        return Err(SysErrNo::EFAULT);
+    }
+    if size < MOUNT_ATTR_SIZE_VER0 as usize {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let mut mount_attr_data = mount_attr {
+        attr_set: 0,
+        attr_clr: 0,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    let copy_len = core::cmp::min(size, core::mem::size_of::<mount_attr>());
+    let attr_bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            &mut mount_attr_data as *mut mount_attr as *mut u8,
+            core::mem::size_of::<mount_attr>(),
+        )
+    };
+    copy_from_user(&memory_set, attr, &mut attr_bytes[..copy_len])?;
+
+    let valid_attrs = valid_mount_attr_bits() as u64;
+    if mount_attr_data.attr_set & !valid_attrs != 0
+        || mount_attr_data.attr_clr & !valid_attrs != 0
+        || mount_attr_data.attr_set & mount_attr_data.attr_clr != 0
+    {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if path.is_null() {
+        if flags & AT_EMPTY_PATH == 0 || dirfd == AT_FDCWD {
+            return Err(SysErrNo::EFAULT);
+        }
+        let _ = proc_inner.fd_table.get(dirfd as usize)?;
+        return Ok(0);
+    }
+
+    let path = read_user_cstr(&memory_set, path)?;
+    if path.len() > MAX_PATH_LEN {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+    if path.is_empty() && flags & AT_EMPTY_PATH == 0 {
+        return Err(SysErrNo::ENOENT);
+    }
+    let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
+    open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
     Ok(0)
+}
+
+fn alloc_new_mount_fd(file: FileClass, cloexec: bool) -> SyscallRet {
+    // Callers must not hold process.inner_lock(): this helper allocates in the
+    // current fd table and therefore takes that lock itself.
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let fd = proc_inner.fd_table.alloc_fd()?;
+    let flags = if cloexec {
+        OpenFlags::O_CLOEXEC
+    } else {
+        OpenFlags::empty()
+    };
+    proc_inner
+        .fd_table
+        .set(fd, FileDescriptor::new(flags, file))?;
+    Ok(fd)
+}
+
+fn is_known_fs(fsname: &str) -> bool {
+    matches!(
+        fsname,
+        "ext4"
+            | "proc"
+            | "tmpfs"
+            | "devtmpfs"
+            | "devpts"
+            | "sysfs"
+            | "rootfs"
+            | "ramfs"
+            | "bpf"
+            | "cgroup"
+            | "cgroup2"
+            | "overlay"
+            | "squashfs"
+            | "vfat"
+            | "fat"
+            | "fuse"
+            | "fuseblk"
+    )
+}
+
+fn valid_mount_attr_bits() -> u32 {
+    MOUNT_ATTR_RDONLY
+        | MOUNT_ATTR_NOSUID
+        | MOUNT_ATTR_NODEV
+        | MOUNT_ATTR_NOEXEC
+        | MOUNT_ATTR_NOATIME
+        | MOUNT_ATTR_STRICTATIME
+        | MOUNT_ATTR_NODIRATIME
+        | MOUNT_ATTR_IDMAP
+        | MOUNT_ATTR_NOSYMFOLLOW
 }

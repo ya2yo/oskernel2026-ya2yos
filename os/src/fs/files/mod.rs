@@ -12,6 +12,7 @@ mod dummyfd;
 mod epoll;
 mod events;
 mod inotify;
+mod mountfd;
 pub mod mqueue;
 mod os_file;
 mod signalfd;
@@ -20,6 +21,7 @@ pub use {
     epoll::{EpollCreateFlags, EpollFile, EpollReady},
     events::EventFd,
     inotify::{InotifyFd, InotifyMask},
+    mountfd::{DetachedMountFd, FsConfigOption, FsConfigValue, FsContext, FsContextFd},
     mqueue::{MqAttr, Mqueue},
     os_file::OSFile,
 };

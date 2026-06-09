@@ -9,7 +9,7 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use log::debug;
 use spin::rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use super::{File, FileClass, OpenFlags, Stdin, Stdout};
+use super::{DetachedMountFd, File, FileClass, FsContextFd, OpenFlags, Stdin, Stdout};
 pub struct FdTable {
     inner: RwLock<FdTableInner>,
 }
@@ -38,6 +38,12 @@ impl FileDescriptor {
     }
     pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {
         self.file.abs()
+    }
+    pub fn fs_context(&self) -> Result<Arc<FsContextFd>, SysErrNo> {
+        self.file.fs_context()
+    }
+    pub fn detached_mount(&self) -> Result<Arc<DetachedMountFd>, SysErrNo> {
+        self.file.detached_mount()
     }
     pub fn socket(&self) -> Result<Arc<Socket>, SysErrNo> {
         self.file.socket()
