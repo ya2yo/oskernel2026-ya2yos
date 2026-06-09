@@ -2,8 +2,10 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use log::{debug, warn};
 
 use crate::{
-    fs::{superblock_fs_stat, DummyFd, FdTable, File, FileDescriptor, OpenFlags, SEEK_CUR, SEEK_SET},
-    mm::{UserBuffer, copy_from_user, copy_to_user, user_buffer_from_kernel},
+    fs::{
+        superblock_fs_stat, DummyFd, FdTable, File, FileDescriptor, OpenFlags, SEEK_CUR, SEEK_SET,
+    },
+    mm::{copy_from_user, copy_to_user, user_buffer_from_kernel, UserBuffer},
     syscall::{fs::dummyfd_create, options::Iovec},
     task::current_task,
     timer::get_time_ms,
@@ -286,7 +288,10 @@ pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) 
         let memory_set = inner.get_locked_memory_set_read();
         let mut off: isize = 0;
         copy_from_user(&memory_set, offset_ptr, unsafe {
-            core::slice::from_raw_parts_mut(&mut off as *mut isize as *mut u8, core::mem::size_of::<isize>())
+            core::slice::from_raw_parts_mut(
+                &mut off as *mut isize as *mut u8,
+                core::mem::size_of::<isize>(),
+            )
         })?;
         off
     } else {
@@ -543,7 +548,10 @@ pub fn sys_copy_file_range(
         let in_off = if off_in != 0 {
             let mut off: isize = 0;
             copy_from_user(&memory_set, off_in, unsafe {
-                core::slice::from_raw_parts_mut(&mut off as *mut isize as *mut u8, core::mem::size_of::<isize>())
+                core::slice::from_raw_parts_mut(
+                    &mut off as *mut isize as *mut u8,
+                    core::mem::size_of::<isize>(),
+                )
             })?;
             off
         } else {
@@ -552,7 +560,10 @@ pub fn sys_copy_file_range(
         let out_off = if off_out != 0 {
             let mut off: isize = 0;
             copy_from_user(&memory_set, off_out, unsafe {
-                core::slice::from_raw_parts_mut(&mut off as *mut isize as *mut u8, core::mem::size_of::<isize>())
+                core::slice::from_raw_parts_mut(
+                    &mut off as *mut isize as *mut u8,
+                    core::mem::size_of::<isize>(),
+                )
             })?;
             off
         } else {
@@ -630,11 +641,17 @@ pub fn sys_copy_file_range(
         let memory_set = inner.get_locked_memory_set_read();
         let mut cur_off: isize = 0;
         copy_from_user(&memory_set, off_in, unsafe {
-            core::slice::from_raw_parts_mut(&mut cur_off as *mut isize as *mut u8, core::mem::size_of::<isize>())
+            core::slice::from_raw_parts_mut(
+                &mut cur_off as *mut isize as *mut u8,
+                core::mem::size_of::<isize>(),
+            )
         })?;
         cur_off += writecount as isize;
         copy_to_user(&memory_set, off_in, unsafe {
-            core::slice::from_raw_parts(&cur_off as *const isize as *const u8, core::mem::size_of::<isize>())
+            core::slice::from_raw_parts(
+                &cur_off as *const isize as *const u8,
+                core::mem::size_of::<isize>(),
+            )
         })?;
     }
     if off_out != 0 {
@@ -643,11 +660,17 @@ pub fn sys_copy_file_range(
         let memory_set = inner.get_locked_memory_set_read();
         let mut cur_off: isize = 0;
         copy_from_user(&memory_set, off_out, unsafe {
-            core::slice::from_raw_parts_mut(&mut cur_off as *mut isize as *mut u8, core::mem::size_of::<isize>())
+            core::slice::from_raw_parts_mut(
+                &mut cur_off as *mut isize as *mut u8,
+                core::mem::size_of::<isize>(),
+            )
         })?;
         cur_off += writecount as isize;
         copy_to_user(&memory_set, off_out, unsafe {
-            core::slice::from_raw_parts(&cur_off as *const isize as *const u8, core::mem::size_of::<isize>())
+            core::slice::from_raw_parts(
+                &cur_off as *const isize as *const u8,
+                core::mem::size_of::<isize>(),
+            )
         })?;
     }
 
