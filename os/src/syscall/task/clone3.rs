@@ -3,11 +3,14 @@ use log::debug;
 
 use crate::{
     mm::copy_from_user,
+    signal::SIG_MAX_NUM,
     task::current_task,
     utils::{SysErrNo, SyscallRet},
 };
 
-use super::clone::sys_clone;
+use super::clone::{sys_clone, CloneFlags};
+
+const CLONE_ARGS_SIZE_VER0: usize = 64;
 
 /// 参考 https://man7.org/linux/man-pages/man2/clone3.2.html
 ///
@@ -27,11 +30,9 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
         return Err(SysErrNo::EFAULT);
     }
 
-    // The kernel uses `size` to determine which fields of clone_args
-    // are valid.  At minimum, `size` must be >= sizeof(clone_args) for
-    // all fields we care about, or the caller is using an older ABI
-    // that we don't support.
-    if size < core::mem::size_of::<clone_args>() {
+    // Linux accepts older clone_args versions.  Version 0 contains fields up
+    // through tls (64 bytes); later fields are treated as zero if absent.
+    if size < CLONE_ARGS_SIZE_VER0 {
         return Err(SysErrNo::EINVAL);
     }
 
@@ -41,20 +42,30 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
 
     // Read the entire clone_args structure from userspace.
     let mut cargs: clone_args = unsafe { core::mem::zeroed() };
+    let copy_len = size.min(core::mem::size_of::<clone_args>());
     copy_from_user(&memory_set, cl_args as usize, unsafe {
-        core::slice::from_raw_parts_mut(
-            &mut cargs as *mut clone_args as *mut u8,
-            core::mem::size_of::<clone_args>(),
-        )
+        core::slice::from_raw_parts_mut(&mut cargs as *mut clone_args as *mut u8, copy_len)
     })?;
 
+    if cargs.set_tid_size != 0 || cargs.set_tid != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if cargs.flags & 0xff != 0 || cargs.exit_signal as usize > SIG_MAX_NUM {
+        return Err(SysErrNo::EINVAL);
+    }
+
     // Extract the exit_signal from clone_args and fold it into flags.
-    // In clone3, exit_signal is a separate field (only the low 8 bits
-    // are significant); in legacy clone, it was ORed into the flags.
+    // In clone3, exit_signal is a separate field; in legacy clone, it was
+    // ORed into the low CSIGNAL bits of flags.
     let mut flags = cargs.flags;
-    let exit_signal = (cargs.exit_signal & 0xff) as u64;
+    let exit_signal = cargs.exit_signal;
     if exit_signal != 0 {
         flags |= exit_signal;
+    }
+    if cargs.pidfd != 0 && !CloneFlags::from_bits_truncate(flags).contains(CloneFlags::CLONE_PIDFD)
+    {
+        return Err(SysErrNo::EINVAL);
     }
     drop(memory_set);
     drop(proc_inner);
@@ -62,7 +73,7 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
     // Delegate to the existing legacy clone implementation.
     // The parameter order differs between architectures (see sys_clone
     // signature in clone.rs), so we use cfg‑gated calls.
-    // pidfd, set_tid, cgroup fields are silently ignored.
+    // pidfd/cgroup are rejected by sys_clone flag validation when requested.
     #[cfg(not(target_arch = "loongarch64"))]
     {
         sys_clone(

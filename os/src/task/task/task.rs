@@ -21,7 +21,7 @@ use crate::{
         copy_to_user, copy_to_user_val, MapAreaType, MapPermission, MemorySet, MemorySetInner,
         PhysPageNum, VirtAddr,
     },
-    signal::{SigSet, SigTable, SIGCHLD},
+    signal::{SigSet, SigTable},
     syscall::CloneFlags,
     task::{futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid},
     timer::{TimeData, TimeVal, Timer},
@@ -421,6 +421,7 @@ impl TaskControlBlock {
     pub fn clone_process(
         self: &Arc<TaskControlBlock>,
         flags: CloneFlags,
+        exit_signal: i32,
         stack: usize,
         parent_tid: *mut u32,
         tls: usize,
@@ -486,6 +487,8 @@ impl TaskControlBlock {
             };
             child_sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
                 parent_proc_inner.sig_table.clone()
+            } else if flags.contains(CloneFlags::CLONE_CLEAR_SIGHAND) {
+                Arc::new(Mutex::new(SigTable::new()))
             } else {
                 Arc::new(Mutex::new(SigTable::from_another(
                     &parent_proc_inner.get_locked_sigtable(),
@@ -495,7 +498,7 @@ impl TaskControlBlock {
             // CLONE_PARENT_SETTID: 写入父进程地址空间
             if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
                 let parent_mem = parent_proc_inner.get_locked_memory_set_read();
-                copy_to_user_val(&*parent_mem, parent_tid, &(tid_handle.0 as u32)).unwrap();
+                copy_to_user_val(&*parent_mem, parent_tid, &(tid_handle.0 as u32))?;
             }
 
             clear_child_tid = if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) {
@@ -509,7 +512,7 @@ impl TaskControlBlock {
                 child_pid = self.pid();
                 child_ppid = self.ppid();
                 child_timer = Arc::clone(&parent_inner.timer);
-                child_sig_mask = SigSet::empty();
+                child_sig_mask = parent_inner.sig_mask;
                 process_arc = self.process.clone();
             } else {
                 child_pid = tid_handle.0;
@@ -519,7 +522,7 @@ impl TaskControlBlock {
                     self.pid()
                 };
                 child_timer = Arc::new(Timer::new());
-                child_sig_mask = SigSet::empty();
+                child_sig_mask = parent_inner.sig_mask;
                 process_arc = Process::new(
                     child_memory_set_arc.clone(),
                     child_sig_table.clone(),
@@ -635,17 +638,13 @@ impl TaskControlBlock {
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
             let child_proc_inner = child.process.inner_lock();
             let child_mem = child_proc_inner.get_locked_memory_set_read();
-            copy_to_user_val(&*child_mem, child_tid, &(child.tid() as u32)).unwrap();
+            copy_to_user_val(&*child_mem, child_tid, &(child.tid() as u32))?;
         }
 
         // exit_signal: 仅 fork（非线程）才设置，线程共享进程不能覆盖已有值
         if !flags.contains(CloneFlags::CLONE_THREAD) {
             let mut child_meta = child.process.meta_lock();
-            child_meta.exit_signal = if flags.contains(CloneFlags::SIGCHLD) {
-                SIGCHLD as i32
-            } else {
-                -1
-            };
+            child_meta.exit_signal = exit_signal;
             debug!(
                 "[clone_process] fork pid={}, flags={:?}, exit_signal={}",
                 child_pid, flags, child_meta.exit_signal

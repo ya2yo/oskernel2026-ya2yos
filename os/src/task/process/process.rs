@@ -316,8 +316,9 @@ pub struct ProcessMeta {
     /// 子进程退出事件，用于唤醒等待中的父进程
     pub child_exit_event: AtomicWaker,
     /// 进程退出时发送给父进程的信号（对应 Linux task_struct.exit_signal）
-    /// - 普通 fork (SIGCHLD): 值为 17 (SIGCHLD)，退出时通知父进程
-    /// - clone/thread (无 SIGCHLD): 值为 -1，退出时不发送信号
+    /// - 普通 fork: 通常为 17 (SIGCHLD)，退出时通知父进程
+    /// - clone 可指定其他退出信号；0 表示不发送信号，这里存为 -1
+    /// - 线程共享进程元数据，不覆盖线程组原有 exit_signal
     /// 用于 waitpid 的 __WALL/__WCLONE 过滤以及退出时是否发送信号给父进程
     pub exit_signal: i32,
 }

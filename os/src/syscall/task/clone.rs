@@ -4,9 +4,12 @@ use bitflags::bitflags;
 use log::debug;
 
 use crate::{
+    signal::SIG_MAX_NUM,
     task::{current_task, ready_queue},
-    utils::SyscallRet,
+    utils::{SysErrNo, SyscallRet},
 };
+
+const CSIGNAL: u64 = 0xff;
 
 bitflags! {
     /// 手册上clone_args的第一个字段，关于flags
@@ -75,10 +78,63 @@ bitflags! {
         const CLONE_INTO_CGROUP = 1u64 << 33;
     }
 }
-impl CloneFlags {
-    pub fn is_fork(&self) -> bool {
-        self.contains(CloneFlags::SIGCHLD)
+fn parse_clone_flags(raw_flags: usize) -> Result<(CloneFlags, i32), SysErrNo> {
+    let exit_signal = (raw_flags as u64) & CSIGNAL;
+    if exit_signal as usize > SIG_MAX_NUM {
+        return Err(SysErrNo::EINVAL);
     }
+
+    let flags = CloneFlags::from_bits((raw_flags as u64) & !CSIGNAL).ok_or(SysErrNo::EINVAL)?;
+    validate_clone_flags(flags, exit_signal)?;
+
+    Ok((
+        flags,
+        if exit_signal == 0 {
+            -1
+        } else {
+            exit_signal as i32
+        },
+    ))
+}
+
+fn validate_clone_flags(flags: CloneFlags, exit_signal: u64) -> Result<(), SysErrNo> {
+    if flags.contains(CloneFlags::CLONE_THREAD) {
+        if !flags.contains(CloneFlags::CLONE_SIGHAND) || !flags.contains(CloneFlags::CLONE_VM) {
+            return Err(SysErrNo::EINVAL);
+        }
+        if exit_signal != 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+    }
+
+    if flags.contains(CloneFlags::CLONE_SIGHAND) && !flags.contains(CloneFlags::CLONE_VM) {
+        return Err(SysErrNo::EINVAL);
+    }
+    if flags.contains(CloneFlags::CLONE_CLEAR_SIGHAND) && flags.contains(CloneFlags::CLONE_SIGHAND)
+    {
+        return Err(SysErrNo::EINVAL);
+    }
+    if flags.contains(CloneFlags::CLONE_PIDFD) && flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
+        return Err(SysErrNo::EINVAL);
+    }
+    if flags.intersects(
+        CloneFlags::CLONE_PIDFD
+            | CloneFlags::CLONE_NEWCGROUP
+            | CloneFlags::CLONE_NEWIPC
+            | CloneFlags::CLONE_NEWNET
+            | CloneFlags::CLONE_NEWNS
+            | CloneFlags::CLONE_NEWPID
+            | CloneFlags::CLONE_NEWUSER
+            | CloneFlags::CLONE_NEWUTS
+            | CloneFlags::CLONE_INTO_CGROUP,
+    ) {
+        return Err(SysErrNo::EINVAL);
+    }
+    if flags.contains(CloneFlags::CLONE_NEWNS) && flags.contains(CloneFlags::CLONE_FS) {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    Ok(())
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/clone.2.html
@@ -91,7 +147,7 @@ pub fn sys_clone(
     tls_ptr: usize,
     #[cfg(not(target_arch = "loongarch64"))] child_tid_ptr: usize,
 ) -> SyscallRet {
-    let flags = CloneFlags::from_bits_truncate(flags as u64);
+    let (flags, exit_signal) = parse_clone_flags(flags)?;
     debug!(
         "[sys_clone] flags={:?},stack:{:#x},parent_tid_ptr:{:#x},child_tid_ptr:{:#x},tls_ptr:{:#x}",
         flags, stack_ptr, parent_tid_ptr, child_tid_ptr, tls_ptr
@@ -100,13 +156,10 @@ pub fn sys_clone(
     //     return Ok(current_task().unwrap().tid());
     // }
 
-    if flags.contains(CloneFlags::CLONE_THREAD) {
-        assert!(flags.contains(CloneFlags::CLONE_SIGHAND));
-        assert!(flags.contains(CloneFlags::CLONE_VM));
-    }
     let task = current_task().unwrap();
     let new_task = task.clone_process(
         flags,
+        exit_signal,
         stack_ptr,
         parent_tid_ptr as *mut u32,
         tls_ptr,
