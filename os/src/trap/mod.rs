@@ -62,12 +62,12 @@ pub fn trap_handler() {
     set_kernel_trap_entry();
     let cause = get_trap_cause();
     let stval = get_trap_virt_addr();
-    debug!(
-        "### [trap_handler]: scause={:?}, stval={:#x}, sepc={:#x}",
-        cause,
-        stval,
-        current_trap_cx().get_sepc()
-    );
+    // debug!(
+    //     "### [trap_handler]: scause={:?}, stval={:#x}, sepc={:#x}",
+    //     cause,
+    //     stval,
+    //     current_trap_cx().get_sepc()
+    // );
     match cause {
         Trap::Exception(Exception::Syscall) => {
             // jump to next instruction anyway
@@ -193,7 +193,7 @@ pub fn trap_handler() {
 pub fn trap_return() {
     //检查信号
     if let Some(signo) = check_if_any_sig_for_current_task() {
-        debug!("found signo in trap_return");
+        // debug!("found signo in trap_return");
         handle_signal(signo);
     }
     set_user_trap_entry();
@@ -213,13 +213,13 @@ pub fn trap_return() {
         // 方便调试进入__return_to_user
         let trap_cx = current_trap_cx();
         let ptr = (trap_cx as *mut TrapContext) as usize;
-        debug!(
-            "### [return_to_user], trap_cx.sepc={:#x}, sp={:#x}, kstack={:#x}, trap_cx={:#x}",
-            trap_cx.get_sepc(),
-            trap_cx.get_sp(),
-            trap_cx.kernel_stack,
-            ptr
-        );
+        // debug!(
+        //     "### [return_to_user], trap_cx.sepc={:#x}, sp={:#x}, kstack={:#x}, trap_cx={:#x}",
+        //     trap_cx.get_sepc(),
+        //     trap_cx.get_sp(),
+        //     trap_cx.kernel_stack,
+        //     ptr
+        // );
         __return_to_user(trap_cx as *mut TrapContext);
     }
     panic!("You should not return from __return_to_user!");
