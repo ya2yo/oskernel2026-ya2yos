@@ -493,7 +493,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::ClockSetTime => sys_clock_settime(args[0] as u32, args[1] as *const Timespec),
         Syscall::ClockGettime => sys_clock_gettime(args[0], args[1] as *mut Timespec),
-        Syscall::ClockGetres => sys_clock_getres(args[0] as usize, args[1]),
+        Syscall::ClockGetres => sys_clock_getres(args[0] as isize, args[1]),
         Syscall::ClockNanosleep => sys_clock_nanosleep(
             args[0],
             args[1] as u32,

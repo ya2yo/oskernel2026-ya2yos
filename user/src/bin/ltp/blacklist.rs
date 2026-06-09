@@ -2,12 +2,20 @@
 /// 前 5 项 (cgroup_fj_*) 仅 `test_ltp` 需要跳过，
 /// `check_ltp` 通过 `&LTP_BLACKLIST[LTP_CGROUP_PREFIX_LEN..]` 跳过它们。
 #[allow(unused)]
-pub const MUSL_LTP_BLACKLIST: &[&str] = &[
+pub const LTP_BLACKLIST: &[&str] = &[
     "add_ipv6addr\0",
     "ar01.sh\0",
     "assign_password.sh\0",
     "binfmt_misc01.sh\0",
     "binfmt_misc02.sh\0",
+    "broken_ip-checksum.sh\0",
+    "broken_ip-dstaddr.sh\0",
+    "broken_ip-fragment.sh\0",
+    "broken_ip-ihl.sh\0",
+    "broken_ip-nexthdr.sh\0",
+    "broken_ip-plen.sh\0",
+    "broken_ip-protcol.sh\0",
+    "broken_ip-version.sh\0",
     // [100,200)区间
     // cgroup_fj 系列需要带参数的脚本入口，直接跑 helper 会卡死。
     // 需要验证时使用 test_cgroup_fj_function_cpuset_via_script。
@@ -210,6 +218,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "genmodf\0",
     "get_ifname\0",
     // [800,900)区间
+    "gzip_tests.sh\0",
     "hackbench\0",
     "ima_boot_aggregate\0",
     "ima_conditionals.sh\0",

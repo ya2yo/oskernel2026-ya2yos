@@ -2,14 +2,15 @@ use crate::mm::{copy_from_user, copy_to_user, if_bad_address};
 use crate::task::current_task;
 use crate::timer::{
     get_time_ms, get_time_spec, timex_apply, timex_get_realtime, Itimerval, Rusage, TimeVal,
-    Timespec, Timex, Tms, CLOCK_REALTIME_OFFSET, ITIMER_REAL, NANOS_PER_SEC, NOW_TIME_STAMP,
-    TIME_OK,
+    Timespec, Timex, Tms, CLOCKFD, CLOCKFD_MASK, CLOCK_REALTIME_OFFSET, CPUCLOCK_CLOCK_MASK,
+    CPUCLOCK_MAX, ITIMER_REAL, NANOS_PER_SEC, NOW_TIME_STAMP, TIME_OK,
 };
 use crate::utils::{SysErrNo, SyscallRet};
 use linux_raw_sys::general::CLOCK_REALTIME;
-use log::{debug, error};
+use log::debug;
 
 const MAX_CLOCKS: usize = 12;
+const CLOCK_RES_NSEC: usize = 1_000_000;
 
 /// 参考 https://man7.org/linux/man-pages/man2/gettimeofday.2.html
 pub fn sys_gettimeofday(ts: *mut Timespec, tz: usize) -> SyscallRet {
@@ -213,30 +214,48 @@ pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/clock_getres.2.html
-pub fn sys_clock_getres(clockid: usize, res: usize) -> SyscallRet {
+pub fn sys_clock_getres(clockid: isize, res: usize) -> SyscallRet {
     // debug!(
     //     "[sys_clock_getres] clockid is {}, res is {:x}",
     //     clockid, res as usize
     // );
 
-    if (clockid as isize) < 0 {
+    if !is_supported_clockid(clockid) {
         return Err(SysErrNo::EINVAL);
+    }
+
+    if res == 0 {
+        return Ok(0);
+    }
+    if (res as isize) < 0 || if_bad_address(res) {
+        return Err(SysErrNo::EFAULT);
     }
 
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
-
-    //assert!(clockid == 1, "other clockid not supported!");
-    let restime = Timespec::new(0, 1);
+    let restime = Timespec::new(0, CLOCK_RES_NSEC);
     copy_to_user(&memory_set, res, unsafe {
         core::slice::from_raw_parts(
             &restime as *const Timespec as *const _,
             core::mem::size_of::<Timespec>(),
         )
     })?;
+    Ok(0)
+}
 
-    Ok(0) // 返回成功
+fn is_supported_clockid(clockid: isize) -> bool {
+    if clockid >= 0 {
+        let clockid = clockid as usize;
+        return clockid < MAX_CLOCKS && clockid != 10;
+    }
+
+    let encoded = clockid as i32;
+    if encoded & CLOCKFD_MASK == CLOCKFD {
+        return false;
+    }
+
+    encoded & CPUCLOCK_CLOCK_MASK < CPUCLOCK_MAX
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/adjtimex.2.html

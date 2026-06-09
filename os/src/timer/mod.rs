@@ -84,6 +84,16 @@ pub const NANOS_PER_MICROS: u64 = 1_000_000;
 //// 2026-05-31 00:00:00 UTC
 pub const NOW_TIME_STAMP: usize = 1_777_593_600;
 
+// include/linux/posix-timer_types.h
+pub const CPUCLOCK_PERTHREAD_MASK: i32 = 4;
+pub const CPUCLOCK_CLOCK_MASK: i32 = 3;
+pub const CPUCLOCK_PROF: i32 = 0;
+pub const CPUCLOCK_VIRT: i32 = 1;
+pub const CPUCLOCK_SCHED: i32 = 2;
+pub const CPUCLOCK_MAX: i32 = 3;
+pub const CLOCKFD: i32 = CPUCLOCK_MAX;
+pub const CLOCKFD_MASK: i32 = CPUCLOCK_PERTHREAD_MASK | CPUCLOCK_CLOCK_MASK;
+
 // ---------------------------------------------------------------------------
 // 墙上时钟偏移 (clock_settime / adjtimex 修改)
 // ---------------------------------------------------------------------------
