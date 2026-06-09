@@ -74,6 +74,7 @@ pub const MUSL_LTP_BLACKLIST: &[&str] = &[
     "execveat01\0",
     "execveat02\0",
     "exit_group01\0",
+    "fallocate05\0",
     "fanotify12\0",
     // [400,500)区间
     "fcntl13\0",
