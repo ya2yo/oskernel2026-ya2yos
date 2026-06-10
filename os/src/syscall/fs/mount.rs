@@ -10,11 +10,12 @@ use linux_raw_sys::general::{
 use log::{debug, warn};
 
 use crate::{
+    arch::memory_layout::PAGE_SIZE,
     fs::{
-        open, DetachedMountFd, FileClass, FileDescriptor, FsConfigOption, FsConfigValue,
+        open, DetachedMountFd, File, FileClass, FileDescriptor, FsConfigOption, FsConfigValue,
         FsContextFd, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE,
     },
-    mm::{copy_from_user, translate::read_user_cstr},
+    mm::{copy_from_user, translate::read_user_cstr, UserBuffer},
     task::current_task,
     utils::{SysErrNo, SysResult, SyscallRet},
 };
@@ -28,6 +29,28 @@ const FSCONFIG_SET_FD: u32 = 5;
 const FSCONFIG_CMD_CREATE: u32 = 6;
 const FSCONFIG_CMD_RECONFIGURE: u32 = 7;
 const FSCONFIG_CMD_CREATE_EXCL: u32 = 8;
+
+fn refresh_proc_mounts() {
+    let mut content = MNT_TABLE.lock().proc_mounts_content();
+    let Ok(file) = open(
+        "/proc/mounts",
+        OpenFlags::O_RDWR | OpenFlags::O_TRUNC,
+        NONE_MODE,
+    )
+    .and_then(|file| file.file()) else {
+        return;
+    };
+    let mut buffers = Vec::new();
+    unsafe {
+        let bytes = content.as_bytes_mut();
+        buffers.push(core::slice::from_raw_parts_mut(
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        ));
+    }
+    let _ = file.write(UserBuffer::new(buffers));
+    file.inode.sync();
+}
 
 /// 参考 https://man7.org/linux/man-pages/man2/pivot_root.2.html
 pub fn sys_pivot_root(_new_root: usize, _put_old: usize) -> SyscallRet {
@@ -59,9 +82,11 @@ pub fn sys_umount2(special: *const u8, flags: u32) -> SyscallRet {
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
     let special = read_user_cstr(&memory_set, special)?;
+    let special = proc_inner.get_abs_path(AT_FDCWD as isize, &special)?;
 
     let ret = MNT_TABLE.lock().umount(special, flags);
     if ret != -1 {
+        refresh_proc_mounts();
         Ok(0)
     } else {
         Err(SysErrNo::EINVAL)
@@ -86,6 +111,7 @@ pub fn sys_mount(
         let data = read_user_cstr(&memory_set, data)?;
         let ret = MNT_TABLE.lock().mount(special, dir, ftype, flags, data);
         if ret != -1 {
+            refresh_proc_mounts();
             Ok(0)
         } else {
             Err(SysErrNo::ENOSPC)
@@ -95,6 +121,7 @@ pub fn sys_mount(
             .lock()
             .mount(special, dir, ftype, flags, String::from(""));
         if ret != -1 {
+            refresh_proc_mounts();
             Ok(0)
         } else {
             Err(SysErrNo::ENOSPC)
@@ -193,6 +220,7 @@ pub fn sys_move_mount(
         if ret == -1 {
             return Err(SysErrNo::ENOSPC);
         }
+        refresh_proc_mounts();
         return Ok(0);
     }
 
@@ -245,7 +273,7 @@ pub fn sys_fsopen(fsname: *const u8, flags: u32) -> SyscallRet {
 /// - FSCONFIG_CMD_RECONFIGURE (7): 重新配置文件系统参数
 pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> SyscallRet {
     if fd < 0 {
-        return Err(SysErrNo::EBADF);
+        return Err(SysErrNo::EINVAL);
     }
     fsconfig_check(cmd, key, value, aux)?;
 
@@ -269,6 +297,11 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
             let key = read_user_cstr(&memory_set, key as *const u8)?;
             let value = read_user_cstr(&memory_set, value as *const u8)?;
             fsctx.with_inner(|ctx| {
+                let new_len = ctx.legacy_data_len + value.len() + 3;
+                if new_len > PAGE_SIZE {
+                    return Err(SysErrNo::EINVAL);
+                }
+                ctx.legacy_data_len += value.len() + 2;
                 if key == "source" {
                     ctx.source = Some(value.clone());
                 }
@@ -276,8 +309,8 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
                     key,
                     value: FsConfigValue::String(value),
                 });
-            });
-            Ok(0)
+                Ok(0)
+            })
         }
         FSCONFIG_SET_BINARY => {
             let key = read_user_cstr(&memory_set, key as *const u8)?;
@@ -551,6 +584,8 @@ fn is_known_fs(fsname: &str) -> bool {
     matches!(
         fsname,
         "ext4"
+            | "ext3"
+            | "ext2"
             | "proc"
             | "tmpfs"
             | "devtmpfs"
@@ -563,8 +598,13 @@ fn is_known_fs(fsname: &str) -> bool {
             | "cgroup2"
             | "overlay"
             | "squashfs"
+            | "xfs"
+            | "btrfs"
+            | "bcachefs"
             | "vfat"
             | "fat"
+            | "exfat"
+            | "ntfs"
             | "fuse"
             | "fuseblk"
     )

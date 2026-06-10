@@ -1,4 +1,4 @@
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{format, string::String, sync::Arc, vec::Vec};
 use log::debug;
 use spin::{Lazy, Mutex};
 
@@ -63,6 +63,16 @@ impl MountTable {
         }
         None
     }
+
+    pub fn proc_mounts_content(&self) -> String {
+        let mut content = String::from(" ext4 / ext rw 0 0\n");
+        for (special, dir, fstype, flags) in &self.mnt_list {
+            let opts = if flags & 1 != 0 { "ro" } else { "rw" };
+            content.push_str(&format!("{} {} {} {} 0 0\n", special, dir, fstype, opts));
+        }
+        content
+    }
+
     /// 执行卸载操作
     ///
     /// # 参数

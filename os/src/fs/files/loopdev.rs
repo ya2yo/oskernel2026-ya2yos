@@ -213,6 +213,9 @@ impl File for DevLoop {
             }
             LOOP_CLR_FD => {
                 let mut state = LOOP_TABLE[idx].lock();
+                if state.backing_fd.is_none() {
+                    return Err(SysErrNo::ENXIO);
+                }
                 state.backing_fd = None;
                 state.info = unsafe { core::mem::zeroed() };
                 state.info.lo_number = self.number;

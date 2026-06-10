@@ -28,7 +28,7 @@ pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
     let mut cwd_with_null = vec![0u8; cwd_len_with_null];
     cwd_with_null[..cwd_bytes.len()].copy_from_slice(cwd_bytes);
     copy_to_user(&memory_set, buf as usize, &cwd_with_null)?;
-    Ok(buf as usize)
+    Ok(cwd_len_with_null)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/ioctl.2.html
@@ -388,6 +388,9 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     let mut linkbuf = vec![0u8; bufsize];
     let file = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
+    if !file.inode.types().is_symlink() {
+        return Err(SysErrNo::EINVAL);
+    }
     let readcnt = file.inode.read_link(&mut linkbuf, bufsize)?;
     let mem = proc_inner.get_locked_memory_set_read();
     copy_to_user(&*mem, buf as usize, &linkbuf[..readcnt])?;
