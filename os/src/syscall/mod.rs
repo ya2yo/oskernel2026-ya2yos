@@ -59,6 +59,7 @@ pub enum Syscall {
     PivotRoot = 41,
     StatFs = 43,
     FstatFs = 44,
+    Truncate = 45,
     Ftruncate = 46,
     Fallocate = 47,
     Faccessat = 48,

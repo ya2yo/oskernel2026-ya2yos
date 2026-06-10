@@ -41,6 +41,7 @@ use core::{
     task::Poll,
 };
 use futures_util::task::AtomicWaker;
+use linux_raw_sys::general::CAP_LAST_CAP;
 use log::{debug, error};
 use spin::{rwlock::RwLock, Mutex, MutexGuard};
 
@@ -60,6 +61,42 @@ impl Default for RobustListHead {
             list: 0,
             futex_offset: 0,
             list_op_pending: 0,
+        }
+    }
+}
+
+pub const CAPABILITY_U32S: usize = 2;
+
+const fn capability_full_mask_word(word: usize) -> u32 {
+    let first_cap = (word as u32) * 32;
+    if CAP_LAST_CAP < first_cap {
+        0
+    } else {
+        let bits = CAP_LAST_CAP - first_cap + 1;
+        if bits >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << bits) - 1
+        }
+    }
+}
+
+pub const CAPABILITY_FULL_MASK: [u32; CAPABILITY_U32S] =
+    [capability_full_mask_word(0), capability_full_mask_word(1)];
+
+#[derive(Clone, Copy, Debug)]
+pub struct CapabilitySets {
+    pub effective: [u32; CAPABILITY_U32S],
+    pub permitted: [u32; CAPABILITY_U32S],
+    pub inheritable: [u32; CAPABILITY_U32S],
+}
+
+impl CapabilitySets {
+    pub const fn full() -> Self {
+        Self {
+            effective: CAPABILITY_FULL_MASK,
+            permitted: CAPABILITY_FULL_MASK,
+            inheritable: [0; CAPABILITY_U32S],
         }
     }
 }
@@ -126,6 +163,8 @@ pub struct TaskControlBlockInner {
     pub real_gid: u32,      // real gid（实际组 ID）
     pub effective_gid: u32, // effective gid（有效组 ID，权限检查用）
     pub saved_gid: u32,     // saved set-group-ID（setgid 保存值）
+    /// POSIX capabilities。当前只维护 V3 ABI 需要的两个 32-bit 槽。
+    pub capabilities: CapabilitySets,
     /// PR_SET_PDEATHSIG 设置的父进程死亡信号 (0 表示未设置)
     pub pdeath_signal: u8,
 
@@ -215,6 +254,7 @@ impl TaskControlBlock {
                 real_gid: 0,
                 effective_gid: 0,
                 saved_gid: 0,
+                capabilities: CapabilitySets::full(),
                 pdeath_signal: 0,
                 futex_pa: 0,
                 futex_key: 0,
@@ -454,6 +494,7 @@ impl TaskControlBlock {
             parent_rgid,
             parent_egid,
             parent_sgid,
+            parent_capabilities,
             parent_nice,
         );
         {
@@ -543,6 +584,7 @@ impl TaskControlBlock {
             parent_rgid = parent_inner.real_gid;
             parent_egid = parent_inner.effective_gid;
             parent_sgid = parent_inner.saved_gid;
+            parent_capabilities = parent_inner.capabilities;
             parent_nice = parent_inner.nice;
         } // parent_inner, parent_proc_inner 在此释放
 
@@ -574,6 +616,7 @@ impl TaskControlBlock {
                 real_gid: parent_rgid,
                 effective_gid: parent_egid,
                 saved_gid: parent_sgid,
+                capabilities: parent_capabilities,
                 pdeath_signal: 0,
                 futex_pa: 0,
                 futex_key: 0,
