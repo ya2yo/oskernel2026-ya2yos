@@ -60,6 +60,20 @@ VmRSS:\t{:8} kB\n",
     )
 }
 
+fn format_stat(pid: usize, ppid: usize, state: char, memory_set: &MemorySet) -> String {
+    let vsize = memory_set.virtual_size_kb() * 1024;
+    let rss_pages = memory_set.resident_size_kb() * 1024 / PAGE_SIZE;
+    format!(
+        "{} (busybox) {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+        pid,
+        state,
+        ppid,
+        get_ticks(),
+        vsize,
+        rss_pages
+    )
+}
+
 pub fn create_proc_dir_and_file(
     pid: usize,
     ppid: usize,
@@ -77,17 +91,12 @@ pub fn create_proc_dir_and_file(
     //创建进程状态文件/proc/<pid>/stat
     let statfile = open(
         format!("/proc/{}/stat", pid).as_str(),
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_TRUNC,
         DEFAULT_FILE_MODE,
     )
     .unwrap()
     .file()?;
-    let mut statinfo = format!(
-        "{} (busybox) S {} 0 0 0 0 0 0 0 0 0 {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
-        pid,
-        ppid,
-        get_ticks()
-    );
+    let mut statinfo = format_stat(pid, ppid, 'S', memory_set);
     write_kernel_file(statfile.as_ref(), &mut statinfo)?;
     statfile.inode.sync();
 
@@ -131,7 +140,29 @@ pub fn create_proc_dir_and_file(
     Ok(())
 }
 
-pub fn refresh_proc_status(pid: usize, ppid: usize, memory_set: &MemorySet) -> Result<(), SysErrNo> {
+pub fn refresh_proc_stat(
+    pid: usize,
+    ppid: usize,
+    state: char,
+    memory_set: &MemorySet,
+) -> Result<(), SysErrNo> {
+    let statfile = open(
+        format!("/proc/{}/stat", pid).as_str(),
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_TRUNC,
+        DEFAULT_FILE_MODE,
+    )?
+    .file()?;
+    let mut statinfo = format_stat(pid, ppid, state, memory_set);
+    write_kernel_file(statfile.as_ref(), &mut statinfo)?;
+    statfile.inode.sync();
+    Ok(())
+}
+
+pub fn refresh_proc_status(
+    pid: usize,
+    ppid: usize,
+    memory_set: &MemorySet,
+) -> Result<(), SysErrNo> {
     let statusfile = open(
         format!("/proc/{}/status", pid).as_str(),
         OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_TRUNC,

@@ -5,7 +5,7 @@ use crate::config::THREAD_MAX_NUM;
 // 物理内存的起始地址
 pub const PHYSICAL_MEMORY_START: usize = 0x8000_0000;
 // 物理内存大小 TODO:修改了qemu MEM参数，也要修改这里
-pub const PHYSICAL_MEMORY_SIZE: usize = 0x2000_0000; //512MB
+pub const PHYSICAL_MEMORY_SIZE: usize = 0x4000_0000; // 1GB
 
 pub const PAGE_SIZE: usize = 0x1000; // 4KB
 pub const PAGE_SIZE_BITS: usize = 12;

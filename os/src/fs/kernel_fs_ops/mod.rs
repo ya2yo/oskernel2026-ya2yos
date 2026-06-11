@@ -14,4 +14,6 @@ use crate::utils::SysErrNo;
 pub use fsidx::FsIndex;
 pub use initfiles::create_init_files;
 pub use open::open;
-pub use proc_file::{create_proc_dir_and_file, refresh_proc_status, remove_proc_dir_and_file};
+pub use proc_file::{
+    create_proc_dir_and_file, refresh_proc_stat, refresh_proc_status, remove_proc_dir_and_file,
+};

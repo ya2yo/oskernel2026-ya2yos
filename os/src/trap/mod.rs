@@ -23,8 +23,8 @@ use crate::{
     },
     syscall::{syscall, Syscall},
     task::{
-        current_task, current_token, current_trap_cx, exit_current_and_run_next,
-        suspend_current_and_run_next,
+        check_all_task_timers, current_task, current_token, current_trap_cx,
+        exit_current_and_run_next, suspend_current_and_run_next,
     },
     timer::{check_futex_timer, set_next_trigger},
     utils::backtrace,
@@ -162,6 +162,7 @@ pub fn trap_handler() {
         }
 
         Trap::Interrupt(Interrupt::Timer) => {
+            check_all_task_timers();
             // 检查futex操作是否超时
             check_futex_timer();
             set_next_trigger();

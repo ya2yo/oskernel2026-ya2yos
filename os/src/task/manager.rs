@@ -86,6 +86,12 @@ pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
     ready_queue::add_task(&task);
 }
 
+pub fn check_all_task_timers() {
+    for (_, task) in tid_to_task::get_all_tasks() {
+        task.check_timer();
+    }
+}
+
 pub mod tid_to_task {
     use log::debug;
 

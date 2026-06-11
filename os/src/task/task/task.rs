@@ -21,7 +21,7 @@ use crate::{
         copy_to_user, copy_to_user_val, MapAreaType, MapPermission, MemorySet, MemorySetInner,
         PhysPageNum, VirtAddr,
     },
-    signal::{SigSet, SigTable},
+    signal::{send_signal_to_thread, SigSet, SigTable},
     syscall::CloneFlags,
     task::{futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid},
     timer::{TimeData, TimeVal, Timer},
@@ -734,23 +734,31 @@ impl TaskControlBlock {
     }
     /// 检查计时器
     pub fn check_timer(&self) {
-        let mut task_inner = self.inner_lock();
-        let timer = task_inner.timer.clone();
-        let now = TimeVal::now();
-        if timer.trigger_once() {
-            // 只触发一次,单次计时器
-            if now > timer.last_time() + timer.timer().it_value {
-                // log::info!("Timer Alarm Once");
-                task_inner.sig_pending |= SigSet::SIGALRM;
-                timer.set_trigger_once(false);
-                timer.set_last_time(now);
+        let mut should_alarm = false;
+        {
+            let task_inner = self.inner_lock();
+            let timer = task_inner.timer.clone();
+            let now = TimeVal::now();
+            if timer.trigger_once() {
+                // 只触发一次,单次计时器
+                if now > timer.last_time() + timer.timer().it_value {
+                    timer.set_trigger_once(false);
+                    timer.set_last_time(now);
+                    should_alarm = true;
+                }
+            } else if !timer.timer().it_interval.is_empty() {
+                //间隔触发
+                if now > timer.last_time() + timer.timer().it_interval {
+                    timer.set_last_time(now);
+                    should_alarm = true;
+                }
             }
-        } else if !timer.timer().it_interval.is_empty() {
-            //间隔触发
-            if now > timer.last_time() + timer.timer().it_interval {
-                // log::info!("Timer Alarm!");
-                task_inner.sig_pending |= SigSet::SIGALRM;
-                timer.set_last_time(now);
+        }
+        if should_alarm {
+            let was_blocked = self.inner_lock().task_status == TaskStatus::Blocked;
+            send_signal_to_thread(self.tid(), SigSet::SIGALRM);
+            if was_blocked {
+                self.interrupt();
             }
         }
     }

@@ -7,11 +7,12 @@ use core::{
 use super::fcntl::*;
 use super::file_lock::{self, Flock};
 use crate::fs::{
-    map_dynamic_link_file, open, refresh_proc_status, FileDescriptor, FsIndex, OpenFlags,
+    map_dynamic_link_file, open, refresh_proc_stat, refresh_proc_status, FileDescriptor, FsIndex,
+    OpenFlags,
 };
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::{options::FcntlCmd, Syscall};
-use crate::task::{block_on, current_task, interruptible};
+use crate::task::{block_on, current_task, interruptible, Process};
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::{
     format,
@@ -388,6 +389,13 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
 
 static TMP_FILE_COUNTER: AtomicI32 = AtomicI32::new(0);
 
+fn parse_proc_pid_file(path: &str, name: &str) -> Option<usize> {
+    let rest = path.strip_prefix("/proc/")?;
+    let pid = rest.strip_suffix(name)?;
+    let pid = pid.strip_suffix('/')?;
+    pid.parse::<usize>().ok()
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/openat.2.html
 pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> SyscallRet {
     debug!(
@@ -449,6 +457,22 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
         let memory_set = proc_inner.get_locked_memory_set_read();
         refresh_proc_status(task.pid(), task.ppid(), &memory_set)?;
         abs_path = format!("/proc/{}/status", task.pid());
+    }
+    if let Some(pid) = parse_proc_pid_file(&abs_path, "stat") {
+        if let Some(process) = Process::get_process_arc_by_pid(pid) {
+            let ppid = process.ppid();
+            let state = if process.all_tasks_exited() { 'Z' } else { 'S' };
+            let proc_inner = process.inner_lock();
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            refresh_proc_stat(pid, ppid, state, &memory_set)?;
+        }
+    }
+    if let Some(pid) = parse_proc_pid_file(&abs_path, "status") {
+        if let Some(process) = Process::get_process_arc_by_pid(pid) {
+            let proc_inner = process.inner_lock();
+            let memory_set = proc_inner.get_locked_memory_set_read();
+            refresh_proc_status(pid, process.ppid(), &memory_set)?;
+        }
     }
 
     // 动态库路径重定向：将动态链接器请求的标准路径映射到实际文件位置

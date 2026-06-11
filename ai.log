@@ -930,3 +930,67 @@ getrusage03.c:84: TPASS: child.children ~= 300MB
 ### 提交
 
 - `a2fe943 fix: support getrusage03 rusage accounting`
+
+---
+
+## 2026-06-12: getrusage03 zombie stat 与 timeout 卡死修复
+
+### 问题发现
+
+继续单跑 glibc LTP `getrusage03` 时，前序 ru_maxrss / RUSAGE_CHILDREN 修复后测例仍会卡住。日志推进情况为：
+
+```text
+getrusage03.c:43: TPASS: initial.self ~= child.self
+getrusage03.c:57: TPASS: initial.children ~= 100MB
+getrusage03.c:66: TPASS: child.children == 0
+getrusage03.c:84: TPASS: child.children ~= 300MB
+getrusage03.c:104: TPASS: initial.children ~= pre_wait.children
+getrusage03.c:112: TPASS: post_wait.children ~= 400MB
+```
+
+随后进入 `getrusage03_child consume 500`，外层 `timeout` 之前内核不会主动结束。
+
+### 分析过程
+
+1. 通过反汇编和字符串确认 `getrusage03_child consume 500` 会执行 `mlockall(MCL_CURRENT|MCL_FUTURE)`、`malloc(500MiB)`、`memset`，然后读取 `/proc/self/status` 检查 RSS。
+2. 发现前一处死循环是父进程轮询 `/proc/<pid>/stat` 等待 zombie 状态，但 stat 文件创建后内容固定，子进程退出后仍显示 `S`，永远不会变成 `Z`。
+3. 修复 stat 刷新后测例推进到 6 项 TPASS，但 500MiB 阶段仍触发 LTP 默认 30 秒 timeout。
+4. 继续检查 LTP timeout，发现 `setitimer(ITIMER_REAL)` 只在当前任务运行/返回用户态时检查。LTP 主进程阻塞在 `waitpid` 时，SIGALRM 不会被检查和唤醒，因此表现为直接卡死。
+5. 临时日志确认 500MiB 阶段是一次约 `524292096` 字节匿名 mmap，未被 mmap 上限拒绝；剩余问题更可能是 500MiB lazy page fault 性能、内存回收或 CMA/页表路径退化。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/proc_file.rs` | 新增 `format_stat()` 与 `refresh_proc_stat()`，按进程状态刷新 `/proc/<pid>/stat` |
+| `os/src/syscall/fs/fd_ops.rs` | 打开 `/proc/<pid>/stat` / `/proc/<pid>/status` 时解析目标 pid 并刷新目标进程信息 |
+| `os/src/task/manager.rs` | 新增 `check_all_task_timers()` 扫描所有任务 itimer |
+| `os/src/trap/mod.rs` | timer interrupt 中调用 `check_all_task_timers()` |
+| `os/src/task/task/task.rs` | itimer 到期时投递 SIGALRM；目标任务 blocked 时调用 `interrupt()` 唤醒 `block_on(interruptible(...))` |
+| `make_scripts/riscv64.mk` / `os/src/arch/riscv64/qemu/memory_layout.rs` | RISC-V QEMU 与内核物理内存同步提升到 1GiB |
+| `Docs/初赛文档/problem/getrusage03-rusage-proc-status.md` | 追加本轮 zombie stat、timer timeout 与 500MiB 剩余问题复盘 |
+
+### 验证
+
+1. `cargo fmt --manifest-path os/Cargo.toml` 通过。
+2. `make all` 通过。
+3. `timeout 150s make run` 单跑 `getrusage03`，结果不再硬卡，LTP timeout 能正常触发并关机：
+
+```text
+getrusage03.c:43: TPASS: initial.self ~= child.self
+getrusage03.c:57: TPASS: initial.children ~= 100MB
+getrusage03.c:66: TPASS: child.children == 0
+getrusage03.c:84: TPASS: child.children ~= 300MB
+getrusage03.c:104: TPASS: initial.children ~= pre_wait.children
+getrusage03.c:112: TPASS: post_wait.children ~= 400MB
+Test timeouted, sending SIGKILL!
+tst_test.c:1654: TBROK: waitpid(...) failed: EINTR (4)
+Summary:
+passed   6
+failed   0
+broken   1
+```
+
+### 结论
+
+本轮修复了 `getrusage03` 的“直接卡死不会自动结束”问题，但测例尚未完整 PASS。剩余问题集中在 `consume 500` 的 500MiB 匿名 mmap/lazy page fault 阶段，需要后续继续判断是性能瓶颈、内存未释放还是 CMA/页表路径退化。

@@ -147,3 +147,102 @@ getrusage03.c:84: TPASS: child.children ~= 300MB
 ```
 
 `timeout` 最终结束 QEMU，因此命令退出码为 124；在超时前测例四项检查均已 TPASS，未再出现 `/proc/self/status` TBROK 或 StorePageFault。
+
+## 后续：zombie 轮询卡死与 LTP timeout 唤醒
+
+### 新现象
+
+继续单跑 `getrusage03` 时，前 4 项 TPASS 后仍会卡住。进一步修复 `/proc/<pid>/stat` 后，测例推进到：
+
+```text
+getrusage03.c:43: TPASS: initial.self ~= child.self
+getrusage03.c:57: TPASS: initial.children ~= 100MB
+getrusage03.c:66: TPASS: child.children == 0
+getrusage03.c:84: TPASS: child.children ~= 300MB
+getrusage03.c:104: TPASS: initial.children ~= pre_wait.children
+getrusage03.c:112: TPASS: post_wait.children ~= 400MB
+```
+
+随后进入 `getrusage03_child consume 500` 阶段。此阶段会一次匿名 `mmap` 约 500MiB 并真实 `memset` 触页，在当前单核 QEMU 下没有在 LTP 默认 30 秒 timeout 内完成。
+
+### 根因
+
+本轮定位到两个新的卡死原因：
+
+| 问题 | 根因 |
+|------|------|
+| 父进程轮询 zombie 永远等不到 `Z` | `/proc/<pid>/stat` 创建后内容固定，子进程退出后仍显示 `S`，`getrusage03` 等待 stat 第三个字段变成 `Z` 时死循环 |
+| LTP timeout 不自动结束 | `setitimer(ITIMER_REAL)` 只在当前运行任务 trap 返回路径检查；LTP 主进程阻塞在 `waitpid` 时，其 SIGALRM 不会触发，也不会唤醒 `interruptible` 等待 |
+
+此外，后续 500MiB 场景超过了原 512MiB 物理内存配置的有效可用空间。调试中曾出现 CMA OOM，因此 RISC-V QEMU 运行内存与内核物理内存布局进一步提升到 1GiB。
+
+### 修复
+
+#### 1. 动态刷新 `/proc/<pid>/stat`
+
+`os/src/fs/kernel_fs_ops/proc_file.rs`：
+
+- 新增 `format_stat()`，统一生成 stat 内容
+- 新增 `refresh_proc_stat(pid, ppid, state, memory_set)`
+- stat 文件使用 `O_TRUNC` 刷新，避免旧内容残留
+
+`os/src/syscall/fs/fd_ops.rs`：
+
+- 打开 `/proc/<pid>/stat` 时查找目标进程
+- 若 `process.all_tasks_exited()`，刷新 state 为 `Z`
+- 否则刷新 state 为 `S`
+- 同时补充 `/proc/<pid>/status` 的目标进程刷新，而不仅限 `/proc/self/status`
+
+#### 2. 阻塞任务的 real timer 检查
+
+原实现只在当前任务运行时调用 `check_timer()`。当 LTP 主进程阻塞在 `waitpid` 时，它的 `setitimer` 不会被检查。
+
+修复为：
+
+- `os/src/task/manager.rs` 新增 `check_all_task_timers()`
+- `os/src/trap/mod.rs` 在每次 timer interrupt 中扫描所有任务 timer
+- `TaskControlBlock::check_timer()` 到期后通过 `send_signal_to_thread(tid, SIGALRM)` 投递信号
+- 若目标任务当时处于 `Blocked`，额外调用 `interrupt()` 唤醒 `block_on(interruptible(...))`
+
+这样 LTP 的 timeout handler 能在主进程阻塞时执行，避免外层 QEMU 永久卡死。
+
+#### 3. RISC-V 内存提升到 1GiB
+
+`getrusage03` 后续阶段会真实触碰 500MiB。512MiB 配置在扣除内核和前序运行开销后余量不足，因此调整：
+
+- `make_scripts/riscv64.mk`：`MEMORY_SIZE := 1G`
+- `os/src/arch/riscv64/qemu/memory_layout.rs`：`PHYSICAL_MEMORY_SIZE = 0x4000_0000`
+
+### 验证结果
+
+最终验证命令：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+make all
+timeout 150s make run
+```
+
+结果：
+
+```text
+getrusage03.c:43: TPASS: initial.self ~= child.self
+getrusage03.c:57: TPASS: initial.children ~= 100MB
+getrusage03.c:66: TPASS: child.children == 0
+getrusage03.c:84: TPASS: child.children ~= 300MB
+getrusage03.c:104: TPASS: initial.children ~= pre_wait.children
+getrusage03.c:112: TPASS: post_wait.children ~= 400MB
+Test timeouted, sending SIGKILL!
+tst_test.c:1654: TBROK: waitpid(...) failed: EINTR (4)
+Summary:
+passed   6
+failed   0
+broken   1
+```
+
+结论：
+
+- 原来的 zombie 轮询死循环已修复
+- LTP timeout 现在能触发，测例不会再把 QEMU 直接卡死
+- `getrusage03` 仍未完整 PASS，剩余问题是 500MiB 匿名 mmap 触页阶段未在 LTP 默认 30 秒内完成
+- 后续若继续追求 PASS，应优先确认 500MiB 阶段是 lazy page fault 性能问题、内存回收泄漏，还是 CMA/页表路径退化

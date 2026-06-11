@@ -443,3 +443,10 @@
 - **场景**：Bug 分析与定位、代码修复、文档完善
 - **描述**：用户提供 `log.ans`，要求根据日志修复 glibc LTP `getrusage03`，并根据此前 `fsconfig` 修复过程补文档。AI 分析日志定位 `/proc/self/status` 缺失、`waitpid` 未累计 `RUSAGE_CHILDREN`、进程退出过早删除 `/proc/<pid>`、`ru_maxrss` 始终为 0、256MiB 物理内存不足以支撑 300MiB 触页等问题。第一轮修复后仍有 `Expected 1 conversions got 0 FILE '/proc/self/status'`，AI 通过 `debugfs` 从测试镜像导出 `getrusage03` 并用 `strings` 确认 LTP 实际扫描 `VmSwap: %lu`，随后补 `VmSwap: 0 kB`。最终 RISC-V 单跑 `getrusage03` 四项 TPASS。详见 `ai.log` 2026-06-11 条目、[problem/getrusage03-rusage-proc-status.md](./problem/getrusage03-rusage-proc-status.md) 与 [problem/fsconfig-syscall.md](./problem/fsconfig-syscall.md)。
 - **关联 commit**：`a2fe943`
+
+#### getrusage03 zombie stat 与 timeout 卡死修复（6.12）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、代码修复、文档完善
+- **描述**：用户继续反馈 `getrusage03` 根据 `log.ans` 直接卡死不会自动结束。AI 复现并定位到两处后续问题：1) `/proc/<pid>/stat` 创建后状态固定为 `S`，父进程轮询等待 zombie `Z` 时会死循环；2) LTP 通过 `setitimer(ITIMER_REAL)` 设置的 SIGALRM 只在当前运行任务路径检查，主进程阻塞在 `waitpid` 时 timeout 不会触发。AI 增加 `/proc/<pid>/stat` 动态刷新，timer interrupt 扫描所有任务 itimer，并在阻塞任务 SIGALRM 到期时唤醒 `interruptible` 等待。随后测例可推进到 6 项 TPASS，LTP timeout 能自行发 SIGKILL、打印 summary 并 shutdown；剩余 `consume 500` 的 500MiB 匿名 mmap 触页未在 30 秒内完成，记录为后续待查。详见 `ai.log` 2026-06-12 条目与 [problem/getrusage03-rusage-proc-status.md](./problem/getrusage03-rusage-proc-status.md)。
+- **关联 commit**：本次提交
