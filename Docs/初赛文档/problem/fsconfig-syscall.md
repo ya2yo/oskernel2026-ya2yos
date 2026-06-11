@@ -1,8 +1,10 @@
-# fsconfig / fsopen / fsmount 基础实现
+# Linux 新挂载 API 基础实现
 
 ### 背景
 
-LTP 中 `fsconfig01`、`fsconfig02`、`fsconfig03` 会覆盖 Linux 新挂载 API 的基础参数检查与 fd 类型行为。此前内核缺少 `fsopen(2)` / `fsconfig(2)` / `fsmount(2)` / `fspick(2)` 相关实现，测试会因 ENOSYS、错误 fd 类型或参数校验不符合预期失败。
+2026-06-10 的提交 `c4d2e34 feat: Using the gpt5.5 to implement the new filesystem mount api` 使用 GPT-5.5 生成 Linux 新挂载 API 主体代码，并人工集成到内核。LTP 中 `fsconfig01`、`fsconfig02`、`fsconfig03` 会覆盖新挂载 API 的基础参数检查与 fd 类型行为，其他挂载相关用例也会触达 `open_tree(2)`、`move_mount(2)`、`mount_setattr(2)` 的存在性和基础 errno。
+
+此前内核缺少 `fsopen(2)` / `fsconfig(2)` / `fsmount(2)` / `fspick(2)` / `open_tree(2)` / `move_mount(2)` / `mount_setattr(2)` 相关实现，测试会因 ENOSYS、错误 fd 类型或参数校验不符合预期失败。
 
 ### 目标
 
@@ -14,6 +16,7 @@ LTP 中 `fsconfig01`、`fsconfig02`、`fsconfig03` 会覆盖 Linux 新挂载 API
 - `FSCONFIG_CMD_CREATE` / `FSCONFIG_CMD_RECONFIGURE` 记录状态并成功返回
 - `fsmount()` 将 fs context fd 转成 detached mount fd
 - `fspick()` 可从现有路径构造 fs context
+- `open_tree()` / `move_mount()` / `mount_setattr()` 提供基础 flags、路径、size 校验和兼容返回
 
 ### 根因分析
 
@@ -133,7 +136,9 @@ proc_inner.fd_table.get(fd as usize)?.fs_context()?
 |------|----------|
 | `os/src/fs/files/mountfd.rs` | 新增 fs context fd、detached mount fd 与 fsconfig option 数据结构 |
 | `os/src/fs/files/mod.rs` | 导出 mount fd 类型 |
-| `os/src/syscall/fs/mount.rs` | 实现 `fsopen/fsconfig/fsmount/fspick/move_mount` 基础逻辑 |
+| `os/src/fs/fstruct.rs` | 扩展 fd 表访问能力，支持 fs context / detached mount 类型取出 |
+| `os/src/fs/mod.rs` | 补充新挂载 API 所需导出与辅助逻辑 |
+| `os/src/syscall/fs/mount.rs` | 实现 `fsopen/fsconfig/fsmount/fspick/open_tree/move_mount/mount_setattr` 基础逻辑 |
 | `os/src/syscall/mod.rs` | syscall 分发接入新挂载 API |
 
 ### 实现取舍
@@ -144,15 +149,17 @@ proc_inner.fd_table.get(fd as usize)?.fs_context()?
 - 不真正修改全局 mount namespace
 - `CMD_CREATE` / `CMD_RECONFIGURE` 仅记录状态
 - `fsmount` 返回 detached mount fd，但实际挂载语义仍是简化实现
+- `open_tree`、`move_mount`、`mount_setattr` 主要覆盖 flags、路径和参数大小校验
 
 这样做的原因是竞赛测试主要检查 syscall 是否存在、参数校验是否合理、fd 类型链路是否正确；完整 VFS mount namespace 成本较高，且会牵涉大量无关文件系统重构。
 
 ### 验证
 
-当时作为批量 syscall 实现的一部分集成，记录见 `ai.log` 2026-06-05 条目：
+提交 `c4d2e34` 将新挂载 API 主体实现集成进内核；提交信息记录 GPT-5.5 生成主要代码。后续文档补充见 `ai.log` 2026-06-10 与 2026-06-11 条目。
 
 ```text
-6. sys_fsconfig：文件系统配置
+[AI Usage]
+Using the gpt5.5 to generate the main code
 ```
 
 后续若单独验证，可在 `user/src/bin/initproc.rs` 中单跑：

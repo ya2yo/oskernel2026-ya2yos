@@ -429,3 +429,17 @@
   5. 人工确认所有修改逻辑正确，测试通过。
   过程详见根目录 `ai.log` 2026-06-06 条目。
 - **关联 commit**：`87f6933`、`b694ea6`、`27e3e6b`、`3afbf09`
+
+#### 新挂载 API 基础实现与 LTP 黑名单整理（6.10）
+
+- **工具/模型**：GPT-5.5
+- **场景**：代码生成、系统调用兼容实现、测试列表维护
+- **描述**：根据 2026-06-10 git 日志，用户使用 GPT-5.5 生成 Linux 新挂载 API 的主体实现，并人工集成提交 `c4d2e34`。该实现新增 `FsContextFd`、`DetachedMountFd`、`FsContext`、`FsConfigOption` 等结构，接入 `fsopen/fsconfig/fsmount/fspick/open_tree/move_mount/mount_setattr`，补齐 fd 类型区分、flags 校验、`FSCONFIG_*` 命令参数校验和简化状态记录。后续提交 `bdecf26` 追加 30 项 LTP 黑名单，覆盖重型压力、网络接口/Geneve、IMA、memcg、ftest 等当前内核尚不支持或不适合全量跑测的用例。详见 [problem/fsconfig-syscall.md](./problem/fsconfig-syscall.md)。
+- **关联 commit**：`c4d2e34`、`bdecf26`
+
+#### getrusage03 ru_maxrss / RUSAGE_CHILDREN 修复与文档补充（6.11）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、代码修复、文档完善
+- **描述**：用户提供 `log.ans`，要求根据日志修复 glibc LTP `getrusage03`，并根据此前 `fsconfig` 修复过程补文档。AI 分析日志定位 `/proc/self/status` 缺失、`waitpid` 未累计 `RUSAGE_CHILDREN`、进程退出过早删除 `/proc/<pid>`、`ru_maxrss` 始终为 0、256MiB 物理内存不足以支撑 300MiB 触页等问题。第一轮修复后仍有 `Expected 1 conversions got 0 FILE '/proc/self/status'`，AI 通过 `debugfs` 从测试镜像导出 `getrusage03` 并用 `strings` 确认 LTP 实际扫描 `VmSwap: %lu`，随后补 `VmSwap: 0 kB`。最终 RISC-V 单跑 `getrusage03` 四项 TPASS。详见 `ai.log` 2026-06-11 条目、[problem/getrusage03-rusage-proc-status.md](./problem/getrusage03-rusage-proc-status.md) 与 [problem/fsconfig-syscall.md](./problem/fsconfig-syscall.md)。
+- **关联 commit**：`a2fe943`

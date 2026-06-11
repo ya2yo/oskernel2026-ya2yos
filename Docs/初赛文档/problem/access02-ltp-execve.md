@@ -60,5 +60,3 @@ LoongArch QEMU 单跑 `access02`（`LTP_TEST_START=7`）：全部 TPASS，退出
 | fork 子进程 trap 未初始化 LoadPageFault | fork 时复制父进程 `trap_cx` |
 | 子进程退出后父进程 StorePageFault | 进程退出时按 `memory_set` 引用计数回收 |
 | 符号链接相对路径 + 缺 `/bin/sh` | `ext4_lw/inode.rs` 相对 symlink 解析；`initfiles.rs` 创建 `/bin/sh` symlink |
-
-上述已在更早迭代中完成；本次 LoongArch 回归失败仅因 shebang 未实现。

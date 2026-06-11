@@ -781,3 +781,152 @@ Linux 的 `clockid_t` 是有符号 int，负数空间用于 CPU clock 和动态 
 2. 顶层 `make` 通过，RISC-V kernel 构建成功。
 3. `timeout 90s make run` 可启动内核并运行完整 LTP 列表；当前配置为全量 glibc LTP，超时前尚未跑到 `clock_getres01`。
 4. 在宿主 Linux 上用 syscall 快速核对 clockid 有效性：`-8..-6`、`-4..-2`、`0..9`、`11` 可用；`-5`、`-1`、`10`、`12` 返回 `EINVAL`。当前实现的有效性轮廓与 Linux 基本一致。
+
+---
+
+## 2026-06-10: GPT-5.5 生成新挂载 API 主体实现与 LTP 黑名单整理
+
+### git 日志依据
+
+当天有两个相关提交：
+
+1. `c4d2e34 feat: Using the gpt5.5 to implement the new filesystem mount api`
+   - commit message 明确记录：
+
+```text
+[AI Usage]
+Using the gpt5.5 to generate the main code
+```
+
+2. `bdecf26 fix: 添加更多的黑名单`
+   - 追加 30 项 LTP 黑名单。
+
+### 新挂载 API 实现
+
+GPT-5.5 生成的主体代码围绕 Linux 新挂载 API 做基础兼容：
+
+| 文件 | 主要变化 |
+|------|----------|
+| `os/src/fs/files/mountfd.rs` | 新增 `FsContextFd`、`DetachedMountFd`、`FsConfigOption`、`FsConfigValue`、`FsContext` |
+| `os/src/fs/files/mod.rs` | 新增 `FileClass::FsContext`、`FileClass::DetachedMount` 相关接入 |
+| `os/src/fs/fstruct.rs` | 扩展 fd 表访问能力，便于区分 fs context 与 detached mount |
+| `os/src/fs/mod.rs` | 补充新挂载 API 所需的基础导出与辅助逻辑 |
+| `os/src/syscall/fs/mount.rs` | 实现 `open_tree`、`move_mount`、`fsopen`、`fsconfig`、`fsmount`、`fspick`、`mount_setattr` 基础逻辑 |
+| `os/src/syscall/mod.rs` | 将新挂载 API 接入 syscall 分发 |
+
+核心行为：
+
+1. `fsopen()` 校验 `FSOPEN_CLOEXEC`，读取文件系统名，支持 `ext4/proc/tmpfs/devtmpfs/devpts/sysfs/rootfs/ramfs/bpf/cgroup/cgroup2/overlay/squashfs/vfat/fat/fuse/fuseblk` 等已知名称，并返回 fs context fd。
+2. `fspick()` 从路径构造 picked fs context，处理空路径与 flags 组合。
+3. `fsconfig()` 校验 fd 必须是 fs context，并按 `FSCONFIG_SET_FLAG/SET_STRING/SET_BINARY/SET_PATH/SET_PATH_EMPTY/SET_FD/CMD_CREATE/CMD_CREATE_EXCL/CMD_RECONFIGURE` 做参数组合检查和状态记录。
+4. `fsmount()` 将 fs context 封装成 detached mount fd，满足 `fsopen -> fsconfig -> fsmount` 链路。
+5. `open_tree()`、`move_mount()`、`mount_setattr()` 做 flags、路径和 size 等基础校验，提供当前测试需要的兼容返回。
+
+该实现目标是通过 LTP 对新挂载 API 的存在性、errno、fd 类型和基础链路检查，不完整实现 Linux VFS superblock 或 mount namespace。
+
+### LTP 黑名单整理
+
+提交 `bdecf26` 追加黑名单，避免全量跑测被当前内核尚不支持或成本过高的用例阻塞，主要包括：
+
+- 压力/长时间用例：`ebizzy`、`ftest01` 到 `ftest08`
+- 网络和隧道脚本：`geneve01.sh`、`geneve02.sh`、`if-addr-adddel.sh`、`if-route-addlarge.sh`、`if-updown.sh` 等
+- IMA/TPM/SELinux 相关：`ima_boot_aggregate`、`ima_conditionals.sh`、`ima_kexec.sh`、`ima_mmap`、`ima_selinux.sh`、`ima_setup.sh`、`ima_tpm.sh`
+- memcg 完整语义相关：`memcg_test_1`、`memcg_test_3`、`memcg_test_4.sh`、`memcg_usage_in_bytes_test.sh`
+
+### 文档关联
+
+后续已补充问题复盘文档：
+
+- `Docs/初赛文档/problem/fsconfig-syscall.md`
+
+该文档记录新挂载 API 的 fd 类型设计、`fsconfig` 参数校验、`fsmount/fspick/open_tree/move_mount/mount_setattr` 基础兼容和实现取舍。
+
+---
+
+## 2026-06-11: getrusage03 修复与 fsconfig/getrusage03 文档补充
+
+### 问题发现
+
+用户提供 `log.ans`，单跑 glibc LTP `getrusage03`。日志显示：
+
+```text
+getrusage03.h:25: TBROK: Failed to open FILE '/proc/self/status' for reading: ENOENT (2)
+getrusage03.c:59: TFAIL: initial.children = 0, expected 102400
+StorePageFault ... sending SIGSEGV
+getrusage03.c:86: TFAIL: child.children = 0, expected 307200
+getrusage03.c:101: TBROK: Failed to open FILE '/proc/5/stat' for reading: ENOENT (2)
+```
+
+同时用户要求根据此前 `fsconfig` 修复过程补文档。实际仓库中 `.claude/skills` 目录不存在，仅有 `.claude/settings.local.json`，因此按 `Docs/初赛文档/problem/*.md` 既有问题复盘格式补充。
+
+### 交互与分析过程
+
+AI 首先检查 `log.ans`、`sys_getrusage`、proc 文件创建路径和 wait 回收逻辑，定位到多处问题：
+
+1. `/proc/self/status` 未实现，`openat` 只重定向了 `/proc/self/stat` 和 `/proc/self/maps`。
+2. `getrusage(RUSAGE_CHILDREN)` 只读取当前线程 `cutime/cstime`，但 `waitpid` 回收子进程时没有累计子进程资源。
+3. 进程退出时立即删除 `/proc/<pid>`，父进程 wait 前读取 zombie 的 `/proc/<pid>/stat` 会失败。
+4. `Rusage` 结构中 `ru_maxrss` 始终为 0，无法满足 `getrusage03` 对 100MiB/300MiB RSS 的检查。
+5. 当前 QEMU 与内核物理内存为 256MiB，且 `mmap` 单次限制为 64MiB，无法真实触碰 300MiB 测试页。
+
+第一轮修复后 `RUSAGE_CHILDREN` 已通过，但仍出现：
+
+```text
+getrusage03.h:25: TBROK: Expected 1 conversions got 0 FILE '/proc/self/status'
+```
+
+AI 使用 `debugfs` 从 ext4 测试镜像导出 `/glibc/ltp/testcases/bin/getrusage03`，再用 `strings` 确认 `getrusage03.h` 实际扫描的是：
+
+```text
+VmSwap: %lu
+/proc/self/status
+VmSwap is not zero
+```
+
+因此 `/proc/self/status` 还必须提供 `VmSwap: 0 kB` 字段。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/proc_file.rs` | 新增 `/proc/<pid>/status` 生成与刷新；输出 `VmSwap`、`VmHWM`、`VmRSS`、`VmSize`；删除 proc 文件时同步删除 status |
+| `os/src/syscall/fs/fd_ops.rs` | 支持 `/proc/self/status` 重定向到 `/proc/<pid>/status`，打开前刷新当前 RSS |
+| `os/src/mm/memory_set/mod.rs` | 新增 `resident_size_kb()` 和 `virtual_size_kb()` |
+| `os/src/timer/rusage.rs` / `os/src/syscall/time.rs` | `getrusage` 填充 `ru_maxrss` |
+| `os/src/timer/timedata.rs` | 新增 `cmaxrss` 保存已 wait 子进程最大 RSS |
+| `os/src/task/process/process.rs` | 新增 `ProcessUsage` 退出快照；wait 回收时删除 proc 文件 |
+| `os/src/task/mod.rs` | 最后一个线程退出时冻结自身与已 wait 子进程资源 |
+| `os/src/syscall/task/wait.rs` | wait 成功后累计子进程 `utime/stime/cutime/cstime/cmaxrss`；按 pid 删除 children 记录 |
+| `make_scripts/*.mk` / `memory_layout.rs` | QEMU 与内核物理内存调整到 512MiB，brk/mmap/heap 上限同步放宽 |
+| `os/src/syscall/mm/mmap.rs` | 去掉 64MiB 单次限制，改为按总 mmap 上限判断 |
+
+### 文档补充
+
+新增：
+
+- `Docs/初赛文档/problem/getrusage03-rusage-proc-status.md`
+- `Docs/初赛文档/problem/fsconfig-syscall.md`
+
+并更新：
+
+- `Docs/初赛文档/problem/README.md`
+- `Docs/初赛文档/开发日志.md`
+- `Docs/初赛文档/AI_INTERACTION.md`
+
+`fsconfig-syscall.md` 根据 `ai.log` 2026-06-05 “批量 syscall 实现”记录和当前 `mount.rs` / `mountfd.rs` 代码，复盘 `fsopen/fsconfig/fsmount/fspick` 的基础实现、fd 类型、参数校验和实现取舍。
+
+### 验证
+
+1. `make all` 通过。
+2. `timeout 150s make run` 单跑 glibc LTP `getrusage03`，超时终止 QEMU 前已输出：
+
+```text
+getrusage03.c:43: TPASS: initial.self ~= child.self
+getrusage03.c:57: TPASS: initial.children ~= 100MB
+getrusage03.c:66: TPASS: child.children == 0
+getrusage03.c:84: TPASS: child.children ~= 300MB
+```
+
+### 提交
+
+- `a2fe943 fix: support getrusage03 rusage accounting`
