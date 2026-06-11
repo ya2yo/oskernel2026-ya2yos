@@ -140,6 +140,14 @@ impl MemorySet {
         self.inner.get_unchecked_mut().recycle_data_pages()
     }
     #[inline(always)]
+    pub fn resident_size_kb(&self) -> usize {
+        self.inner.get_unchecked_ref().resident_size_kb()
+    }
+    #[inline(always)]
+    pub fn virtual_size_kb(&self) -> usize {
+        self.inner.get_unchecked_ref().virtual_size_kb()
+    }
+    #[inline(always)]
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PhysPageNum> {
         self.inner.get_unchecked_mut().translate(vpn)
     }
@@ -232,6 +240,21 @@ impl MemorySetInner {
     }
     pub fn page_table_mut(self: &mut MemorySetInner) -> &mut PageTable {
         &mut self.page_table
+    }
+    pub fn resident_size_kb(&self) -> usize {
+        self.areas
+            .iter()
+            .map(|area| area.data_frames.len() * PAGE_SIZE / 1024)
+            .sum()
+    }
+    pub fn virtual_size_kb(&self) -> usize {
+        self.areas
+            .iter()
+            .map(|area| {
+                let (start, end) = area.vpn_range.range();
+                (end.0 - start.0) * PAGE_SIZE / 1024
+            })
+            .sum()
     }
     /// Assume that no conflicts.
     pub fn insert_framed_area(

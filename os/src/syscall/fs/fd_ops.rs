@@ -6,7 +6,9 @@ use core::{
 
 use super::fcntl::*;
 use super::file_lock::{self, Flock};
-use crate::fs::{map_dynamic_link_file, open, FileDescriptor, FsIndex, OpenFlags};
+use crate::fs::{
+    map_dynamic_link_file, open, refresh_proc_status, FileDescriptor, FsIndex, OpenFlags,
+};
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::{options::FcntlCmd, Syscall};
 use crate::task::{block_on, current_task, interruptible};
@@ -441,6 +443,12 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     }
     if abs_path == "/proc/self/maps" {
         abs_path = format!("/proc/{}/maps", task.pid());
+    }
+    if abs_path == "/proc/self/status" {
+        let proc_inner = task.process.inner_lock();
+        let memory_set = proc_inner.get_locked_memory_set_read();
+        refresh_proc_status(task.pid(), task.ppid(), &memory_set)?;
+        abs_path = format!("/proc/{}/status", task.pid());
     }
 
     // 动态库路径重定向：将动态链接器请求的标准路径映射到实际文件位置

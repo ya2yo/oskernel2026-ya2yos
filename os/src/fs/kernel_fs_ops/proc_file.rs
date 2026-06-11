@@ -28,6 +28,38 @@ fn format_map_perm(perm: MapPermission) -> String {
     s
 }
 
+fn write_kernel_file(file: &dyn File, data: &mut String) -> Result<usize, SysErrNo> {
+    let mut vec = Vec::new();
+    unsafe {
+        let bytes = data.as_bytes_mut();
+        vec.push(core::slice::from_raw_parts_mut(
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        ));
+    }
+    file.write(UserBuffer::new(vec))
+}
+
+fn format_status(pid: usize, ppid: usize, memory_set: &MemorySet) -> String {
+    let vm_size = memory_set.virtual_size_kb();
+    let vm_rss = memory_set.resident_size_kb();
+    format!(
+        "VmSwap:\t       0 kB\n\
+VmHWM:\t{:8} kB\n\
+VmRSS:\t{:8} kB\n\
+Name:\tbusybox\n\
+State:\tS (sleeping)\n\
+Tgid:\t{}\n\
+Pid:\t{}\n\
+PPid:\t{}\n\
+VmPeak:\t{:8} kB\n\
+VmSize:\t{:8} kB\n\
+VmHWM:\t{:8} kB\n\
+VmRSS:\t{:8} kB\n",
+        vm_rss, vm_rss, pid, pid, ppid, vm_size, vm_size, vm_rss, vm_rss
+    )
+}
+
 pub fn create_proc_dir_and_file(
     pid: usize,
     ppid: usize,
@@ -56,17 +88,19 @@ pub fn create_proc_dir_and_file(
         ppid,
         get_ticks()
     );
-    let mut statvec = Vec::new();
-    unsafe {
-        let stat = statinfo.as_bytes_mut();
-        statvec.push(core::slice::from_raw_parts_mut(
-            stat.as_mut_ptr(),
-            stat.len(),
-        ));
-    }
-    let statbuf = UserBuffer::new(statvec);
-    statfile.write(statbuf)?;
+    write_kernel_file(statfile.as_ref(), &mut statinfo)?;
     statfile.inode.sync();
+
+    //创建进程状态文件/proc/<pid>/status
+    let statusfile = open(
+        format!("/proc/{}/status", pid).as_str(),
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_TRUNC,
+        DEFAULT_FILE_MODE,
+    )?
+    .file()?;
+    let mut statusinfo = format_status(pid, ppid, memory_set);
+    write_kernel_file(statusfile.as_ref(), &mut statusinfo)?;
+    statusfile.inode.sync();
 
     //创建进程内存映射文件/proc/<pid>/maps
     let mapsfile = open(
@@ -91,24 +125,30 @@ pub fn create_proc_dir_and_file(
             start, end, perm, offset, pathname
         ));
     }
-    let mut mapsvec = Vec::new();
-    unsafe {
-        let maps = mapsinfo.as_bytes_mut();
-        mapsvec.push(core::slice::from_raw_parts_mut(
-            maps.as_mut_ptr(),
-            maps.len(),
-        ));
-    }
-    let mapsbuf = UserBuffer::new(mapsvec);
-    mapsfile.write(mapsbuf)?;
+    write_kernel_file(mapsfile.as_ref(), &mut mapsinfo)?;
     mapsfile.inode.sync();
 
+    Ok(())
+}
+
+pub fn refresh_proc_status(pid: usize, ppid: usize, memory_set: &MemorySet) -> Result<(), SysErrNo> {
+    let statusfile = open(
+        format!("/proc/{}/status", pid).as_str(),
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_TRUNC,
+        DEFAULT_FILE_MODE,
+    )?
+    .file()?;
+    let mut statusinfo = format_status(pid, ppid, memory_set);
+    write_kernel_file(statusfile.as_ref(), &mut statusinfo)?;
+    statusfile.inode.sync();
     Ok(())
 }
 
 pub fn remove_proc_dir_and_file(pid: usize) {
     superblock_root_inode().unlink(format!("/proc/{}/maps", pid).as_str());
     FsIndex::remove_inode_idx(format!("/proc/{}/maps", pid).as_str());
+    superblock_root_inode().unlink(format!("/proc/{}/status", pid).as_str());
+    FsIndex::remove_inode_idx(format!("/proc/{}/status", pid).as_str());
     superblock_root_inode().unlink(format!("/proc/{}/stat", pid).as_str());
     FsIndex::remove_inode_idx(format!("/proc/{}/stat", pid).as_str());
     superblock_root_inode().unlink(format!("/proc/{}", pid).as_str());

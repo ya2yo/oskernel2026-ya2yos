@@ -1,5 +1,5 @@
 PLATFORM := qemu
-MEMORY_SIZE := 256M  # 内存地址同时在os中的memory_layout等多处都定义了，这里修改只是修改了qemu模拟的内存大小
+MEMORY_SIZE := 512M  # 内存地址同时在os中的memory_layout等多处都定义了，这里修改只是修改了qemu模拟的内存大小
 SMP := 1  # CPU核心数
 MODE := release
 

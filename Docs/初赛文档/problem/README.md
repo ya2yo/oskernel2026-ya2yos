@@ -16,6 +16,7 @@
 - [进程退出托孤 exit_and_reparent](./exit-reparent.md)
 - [线程信号栈检查错误与 futex 退出死锁](./thread-signal-stack-futex-deadlock.md)
 - [pthread_robust_detach：地址转换重构 + exit_signal 覆盖 + interrupted 残留](./pthread-robust-detach.md)
+- [getrusage03: ru_maxrss / RUSAGE_CHILDREN / proc status](./getrusage03-rusage-proc-status.md)
 
 ## 内存 / 页表
 
@@ -29,6 +30,7 @@
 - [龙芯架构 iozone-glibc 动态链接与缺页处理修复](./iozone-glibc.md)
 - [LTP creat04 open 权限检查](./creat04-open-permission.md)
 - [sys_linkat 硬链接实现与 lwext4 重构](./linkat-hardlink-refactor.md)
+- [fsconfig / fsopen / fsmount 基础实现](./fsconfig-syscall.md)
 
 ## 测例与驱动
 

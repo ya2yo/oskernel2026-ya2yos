@@ -33,7 +33,7 @@ mod tid;
 pub use crate::arch::context::TaskContext;
 use crate::{
     arch::cpu::hart_id,
-    fs::{open, remove_proc_dir_and_file, OpenFlags, NONE_MODE},
+    fs::{open, OpenFlags, NONE_MODE},
     mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
     signal::{send_signal_to_thread_group, SigSet},
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
@@ -307,6 +307,25 @@ pub fn exit_current_and_run_next(exit_code: i32) {
                 "[exit] pid {}: all tasks zombie, calling exit_and_reparent",
                 curr_task.pid()
             );
+            let mut usage = ProcessUsage {
+                maxrss: memory_set.resident_size_kb(),
+                ..ProcessUsage::default()
+            };
+            let time_data = curr_task.inner_lock().time_data.clone();
+            usage.utime += time_data.utime;
+            usage.stime += time_data.stime;
+            usage.cutime += time_data.cutime;
+            usage.cstime += time_data.cstime;
+            usage.cmaxrss = usage.cmaxrss.max(time_data.cmaxrss);
+            for task in &bro_tasks {
+                let time_data = task.inner_lock().time_data.clone();
+                usage.utime += time_data.utime;
+                usage.stime += time_data.stime;
+                usage.cutime += time_data.cutime;
+                usage.cstime += time_data.cstime;
+                usage.cmaxrss = usage.cmaxrss.max(time_data.cmaxrss);
+            }
+            curr_task.process.meta_lock().usage = usage;
             if Arc::strong_count(&curr_proc.memory_set) == 1 {
                 memory_set.recycle_data_pages();
             }
@@ -318,7 +337,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
                 sigtable.set_exit_code(exit_code);
             }
             curr_task.process.exit_and_reparent();
-            remove_proc_dir_and_file(curr_task.pid());
             // 仅当创建时指定了 SIGCHLD 才通知父进程（对应 Linux exit_signal）
             let exit_signal = curr_task.process.meta_lock().exit_signal;
             if exit_signal >= 0 {

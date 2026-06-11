@@ -8,6 +8,7 @@
 //! - `stime`  : 内核态 CPU 时间累计 (ms)
 //! - `cutime` : 已等待子进程的用户态 CPU 时间累计 (ms)
 //! - `cstime` : 已等待子进程的内核态 CPU 时间累计 (ms)
+//! - `cmaxrss`: 已等待子进程中的最大 RSS (KiB)
 //! - `lasttime`: 上次采样时刻 (开机毫秒)，用于增量更新
 
 use crate::timer::get_time_ms;
@@ -18,6 +19,7 @@ pub struct TimeData {
     pub stime: isize,
     pub cutime: isize,
     pub cstime: isize,
+    pub cmaxrss: usize,
     pub lasttime: isize,
 }
 
@@ -35,6 +37,7 @@ impl TimeData {
             stime: 0,
             cutime: 0,
             cstime: 0,
+            cmaxrss: 0,
             lasttime: now,
         }
     }
@@ -60,6 +63,7 @@ impl TimeData {
         self.stime = 0;
         self.cutime = 0;
         self.cstime = 0;
+        self.cmaxrss = 0;
         self.lasttime = now;
     }
 }

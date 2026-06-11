@@ -184,9 +184,10 @@ pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
 
     match who {
         RUSAGESELF => {
-            let gotusage = Rusage::new_from_ms(
+            let gotusage = Rusage::new_from_ms_with_maxrss(
                 inner.time_data.utime as usize,
                 inner.time_data.stime as usize,
+                memory_set.resident_size_kb(),
             );
             copy_to_user(&memory_set, usage as usize, unsafe {
                 core::slice::from_raw_parts(
@@ -197,9 +198,10 @@ pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
             Ok(0)
         }
         RUSAGECHILDEN => {
-            let gotusage = Rusage::new_from_ms(
+            let gotusage = Rusage::new_from_ms_with_maxrss(
                 inner.time_data.cutime as usize,
                 inner.time_data.cstime as usize,
+                inner.time_data.cmaxrss,
             );
             copy_to_user(&memory_set, usage as usize, unsafe {
                 core::slice::from_raw_parts(

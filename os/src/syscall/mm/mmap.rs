@@ -39,16 +39,8 @@ pub fn sys_mmap(
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_write();
     let len = page_round_up(len);
-    // Reject unreasonably large single mmap requests.
-    // Glibc on our char-device stdin probes available memory by
-    // mmap'ing exponentially-growing anonymous regions.  Without a
-    // per-request limit a 134 MiB mmap succeeds (virtual address
-    // space is cheap) but touching its pages triggers page faults
-    // that exhaust physical CMA frames before the caller can munmap.
-    // CMA has ~78 MiB free after kernel/initproc allocations.
-    // A single request larger than 64 MiB risks touching all its
-    // pages and exhausting physical frames (as glibc probing does).
-    if len > MAX_MMAP_SIZE / 4 {
+    // Reject requests beyond the configured per-process mmap budget.
+    if len > MAX_MMAP_SIZE {
         return Err(SysErrNo::ENOMEM);
     }
     if fd == usize::MAX {

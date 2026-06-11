@@ -29,7 +29,8 @@ pub use stat::*;
 pub use vfs::*;
 mod kernel_fs_ops;
 pub use kernel_fs_ops::{
-    create_init_files, create_proc_dir_and_file, open, remove_proc_dir_and_file, FsIndex,
+    create_init_files, create_proc_dir_and_file, open, refresh_proc_status,
+    remove_proc_dir_and_file, FsIndex,
 };
 mod map_dynamic_link;
 pub use map_dynamic_link::{

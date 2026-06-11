@@ -31,10 +31,15 @@ pub struct Rusage {
 impl Rusage {
     /// 从毫秒精度的用户态/内核态时间构造 Rusage
     pub fn new_from_ms(utime: usize, stime: usize) -> Self {
+        Self::new_from_ms_with_maxrss(utime, stime, 0)
+    }
+
+    /// 从毫秒精度的用户态/内核态时间和 KiB 单位最大 RSS 构造 Rusage
+    pub fn new_from_ms_with_maxrss(utime: usize, stime: usize, maxrss: usize) -> Self {
         Self {
             ru_utime: TimeVal::new(utime / 1000, (utime % 1000) * 1000),
             ru_stime: TimeVal::new(stime / 1000, (stime % 1000) * 1000),
-            ru_maxrss: 0,
+            ru_maxrss: maxrss as isize,
             ru_ixrss: 0,
             ru_idrss: 0,
             ru_isrss: 0,

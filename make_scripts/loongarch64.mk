@@ -1,5 +1,5 @@
 PLATFORM := qemu
-MEMORY_SIZE := 256M  # 0x1000_0000
+MEMORY_SIZE := 512M  # 0x2000_0000
 SMP := 1  # CPU核心数
 MODE := release
 

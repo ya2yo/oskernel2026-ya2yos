@@ -13,7 +13,7 @@ use spin::{
 };
 
 use crate::{
-    fs::{FSInfo, FdTable},
+    fs::{remove_proc_dir_and_file, FSInfo, FdTable},
     mm::{MemorySet, MemorySetInner},
     signal::{send_signal_to_thread_group, SigSet, SigTable},
     syscall::CloneFlags,
@@ -118,6 +118,7 @@ impl Process {
                 parent_pid,
                 child_exit_event: AtomicWaker::new(),
                 exit_signal: -1,
+                usage: ProcessUsage::default(),
             }),
         });
         if parent_pid != 0 {
@@ -187,6 +188,7 @@ impl Process {
 
     /// Process被Wait4时会调用这个
     pub fn remove_from_global_map(pid: usize) {
+        remove_proc_dir_and_file(pid);
         let ret = PID_2_PROCESS_ARC
             .try_lock()
             .expect("fail to get pid2process mapper")
@@ -300,6 +302,16 @@ impl ProcessInner {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct ProcessUsage {
+    pub utime: isize,
+    pub stime: isize,
+    pub cutime: isize,
+    pub cstime: isize,
+    pub maxrss: usize,
+    pub cmaxrss: usize,
+}
+
 pub struct ProcessMeta {
     /// 该进程有哪些线程
     /// 由task负责维护
@@ -321,6 +333,8 @@ pub struct ProcessMeta {
     /// - 线程共享进程元数据，不覆盖线程组原有 exit_signal
     /// 用于 waitpid 的 __WALL/__WCLONE 过滤以及退出时是否发送信号给父进程
     pub exit_signal: i32,
+    /// 进程退出时冻结的资源使用快照，供父进程 wait 后累计 RUSAGE_CHILDREN。
+    pub usage: ProcessUsage,
 }
 
 static PID_2_PROCESS_ARC: Lazy<Mutex<BTreeMap<usize, Arc<Process>>>> =

@@ -115,15 +115,15 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
 
         let pair = children
             .iter()
-            .enumerate()
-            .find(|(_, child)| child.all_tasks_exited())
-            .map(|(idx, child)| (idx, Arc::clone(child)));
+            .find(|child| child.all_tasks_exited())
+            .map(|child| Arc::clone(child));
 
         drop(children);
 
-        if let Some((idx, child)) = pair {
+        if let Some(child) = pair {
             let found_pid = child.pid;
             let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
+            let child_usage = child.meta_lock().usage;
 
             if !wstatus.is_null() {
                 let proc_inner = task.process.inner_lock();
@@ -146,7 +146,24 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
             }
 
             if !options.contains(WaitOption::WNOWAIT) {
-                process_meta.children.remove(idx);
+                {
+                    let mut task_inner = task.inner_lock();
+                    task_inner.time_data.cutime += child_usage.utime + child_usage.cutime;
+                    task_inner.time_data.cstime += child_usage.stime + child_usage.cstime;
+                    task_inner.time_data.cmaxrss = task_inner
+                        .time_data
+                        .cmaxrss
+                        .max(child_usage.maxrss)
+                        .max(child_usage.cmaxrss);
+                }
+                if let Some(idx) = process_meta.children.iter().position(|child| {
+                    child
+                        .upgrade()
+                        .map(|child| child.pid == found_pid)
+                        .unwrap_or(false)
+                }) {
+                    process_meta.children.remove(idx);
+                }
                 drop(child);
                 Process::remove_from_global_map(found_pid);
             }
