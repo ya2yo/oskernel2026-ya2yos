@@ -365,7 +365,7 @@ impl MemorySetInner {
     }
 
     pub fn lazy_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
-        debug!("[lazy_page_fault] vpn={:?} scause={:?}", vpn, scause);
+        // debug!("[lazy_page_fault] vpn={:?} scause={:?}", vpn, scause);
         let ppn = self.page_table.translate(vpn);
         if !ppn.is_none() {
             return false;
@@ -407,7 +407,7 @@ impl MemorySetInner {
     }
 
     pub fn cow_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
-        debug!("[cow_page_fault] vpn={:?}, scause={:?}", vpn, scause);
+        // debug!("[cow_page_fault] vpn={:?}, scause={:?}", vpn, scause);
         if scause == Trap::Exception(Exception::LoadPageFault)
             || scause == Trap::Exception(Exception::FetchInstructionPageFault)
         {

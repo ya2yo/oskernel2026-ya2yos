@@ -1,12 +1,10 @@
 use crate::*;
 mod blacklist;
 mod filelist;
-pub use blacklist::{LTP_BLACKLIST, LTP_CGROUP_PREFIX_LEN};
+pub use blacklist::LTP_BLACKLIST;
 pub use filelist::FILELIST;
 
-// ---------------------------------------------------------------------------
 // 通用工具
-// ---------------------------------------------------------------------------
 #[allow(unused)]
 fn trim_trailing_nul(s: &str) -> &str {
     let bytes = s.as_bytes();
@@ -17,30 +15,12 @@ fn trim_trailing_nul(s: &str) -> &str {
     unsafe { core::str::from_utf8_unchecked(&bytes[..end]) }
 }
 
-// ---------------------------------------------------------------------------
 // musl
-// ---------------------------------------------------------------------------
-
 #[allow(unused)]
 pub fn run_ltp_tests_musl(tests: &[&str], blacklist: &[&str]) {
     println!("#### OS COMP TEST GROUP START ltp-musl ####");
     for &test in tests {
         if blacklist.contains(&test) {
-            continue;
-        }
-        println!("RUN LTP CASE {}", test);
-
-        let r = fork_and_run("/musl/ltp/testcases/bin\0", &[test]);
-        println!("FAIL LTP CASE {} : {}", test, r); // 这不是表示失败了，这只是告诉外界程序返回值是多少而已
-    }
-    println!("#### OS COMP TEST GROUP END ltp-musl ####");
-}
-
-#[allow(unused)]
-pub fn check_ltp_tests_musl(tests: &[&str], blacklist: &[&str]) {
-    println!("#### OS COMP TEST GROUP START ltp-musl ####");
-    for &test in tests {
-        if !blacklist.contains(&test) {
             continue;
         }
         println!("RUN LTP CASE {}", test);
@@ -95,17 +75,14 @@ pub fn test_musl_ltp() {
     let test = &FILELIST;
     run_ltp_tests_musl_separately(test, LTP_BLACKLIST);
 }
-
 #[allow(unused)]
-pub fn check_ltp() {
-    let test = &FILELIST[..];
-    check_ltp_tests_musl(test, &LTP_BLACKLIST[LTP_CGROUP_PREFIX_LEN..]);
+pub fn test_musl_single(test_name: &str) {
+    println!("RUN MUSL LTP SINGLE CASE {}", test_name);
+    let r = fork_and_run("/glibc/ltp/testcases/bin\0", &[test_name]);
+    println!("RESULT MUSL LTP SINGLE CASE {} : {}", test_name, r);
 }
 
-// ---------------------------------------------------------------------------
 // glibc
-// ---------------------------------------------------------------------------
-
 #[allow(unused)]
 pub fn test_glibc_ltp() {
     let test = &FILELIST;
