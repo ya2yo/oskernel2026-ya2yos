@@ -43,6 +43,9 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
         .expect("mmap_write_page_fault should not fail");
     //设置为cow
     let vpn = VirtAddr::from(va).floor();
+    #[cfg(target_arch = "loongarch64")]
+    page_table.handle_mmap_write_page_fault(vpn, vma.map_perm, vma.mmap_flags);
+    #[cfg(not(target_arch = "loongarch64"))]
     page_table.handle_mmap_write_page_fault(vpn, vma.map_perm);
     true
 }
@@ -58,6 +61,9 @@ pub fn mmap_read_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut 
         vma.data_frames.insert(vpn, frame);
 
         // page_table.map(vpn, ppn, pte_flags);
+        #[cfg(target_arch = "loongarch64")]
+        page_table.handle_mmap_read_page_fault(vpn, ppn, vma.map_perm, vma.mmap_flags);
+        #[cfg(not(target_arch = "loongarch64"))]
         page_table.handle_mmap_read_page_fault(vpn, ppn, vma.map_perm);
         return true;
     }

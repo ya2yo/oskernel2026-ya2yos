@@ -9,6 +9,7 @@ use crate::{
     mm::{
         address::*, cma_alloc, FrameTracker, MapArea, MapPermission, MemorySetInner, KERNEL_SPACE,
     },
+    syscall::MmapFlags,
 };
 use alloc::{sync::Arc, vec, vec::Vec};
 use bitflags::*;
@@ -393,6 +394,16 @@ impl PageTable {
             Some(pte) => pte,
             None => return false,
         };
+        let mut flags = pte.get_flags();
+        if !flags.contains(LAPTEFlags::COW) {
+            if flags.contains(LAPTEFlags::WRITEABLE) {
+                flags.insert(LAPTEFlags::DIRTY);
+                pte.set_flags(flags);
+                tlb_invalidate();
+                return true;
+            }
+            return false;
+        }
 
         // 必须有对应的 frame（ELF 段用 data_frames 跟踪）
         // fork 子进程的 Brk 区域可能存在无 data_frames 条目的 COW PTE；
@@ -495,10 +506,14 @@ impl PageTable {
         vpn: VirtPageNum,
         ppn: PhysPageNum,
         vma_flags: MapPermission,
+        mmap_flags: MmapFlags,
     ) {
         let mut pte_flags = LAPTEFlags::from(vma_flags);
-        //可写的才需要cow
-        if pte_flags.contains(LAPTEFlags::WRITEABLE) {
+        if mmap_flags.contains(MmapFlags::MAP_SHARED) {
+            if pte_flags.contains(LAPTEFlags::WRITEABLE) {
+                pte_flags.insert(LAPTEFlags::DIRTY);
+            }
+        } else if pte_flags.contains(LAPTEFlags::WRITEABLE) {
             pte_flags &= !LAPTEFlags::WRITEABLE;
             pte_flags &= !LAPTEFlags::DIRTY;
             pte_flags |= LAPTEFlags::COW;
@@ -506,11 +521,19 @@ impl PageTable {
 
         self.map_by_pte_flags(vpn, ppn, pte_flags);
     }
-    pub fn handle_mmap_write_page_fault(&self, vpn: VirtPageNum, vma_flags: MapPermission) {
+    pub fn handle_mmap_write_page_fault(
+        &self,
+        vpn: VirtPageNum,
+        vma_flags: MapPermission,
+        mmap_flags: MmapFlags,
+    ) {
         let mut pte_flags = LAPTEFlags::from(vma_flags);
 
-        //可写的才需要cow
-        if pte_flags.contains(LAPTEFlags::WRITEABLE) {
+        if mmap_flags.contains(MmapFlags::MAP_SHARED) {
+            if pte_flags.contains(LAPTEFlags::WRITEABLE) {
+                pte_flags.insert(LAPTEFlags::DIRTY);
+            }
+        } else if pte_flags.contains(LAPTEFlags::WRITEABLE) {
             pte_flags &= !LAPTEFlags::WRITEABLE;
             pte_flags &= !LAPTEFlags::DIRTY;
             pte_flags |= LAPTEFlags::COW;
