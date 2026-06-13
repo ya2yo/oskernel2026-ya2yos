@@ -68,8 +68,16 @@ def sync_targets() -> None:
     if not skills:
         raise SystemExit(f"no skills found in {SHARED}; seed it with --init-from first")
 
+    expected_roots = {path.name for path in root_files(SHARED)}
+    expected_skills = {path.name for path in skills}
+
     for target in TARGETS:
         target.mkdir(parents=True, exist_ok=True)
+        for item in sorted(target.iterdir()):
+            if item.is_dir() and (item / "SKILL.md").is_file() and item.name not in expected_skills:
+                shutil.rmtree(item)
+            elif item.is_file() and item.name not in expected_roots:
+                item.unlink()
         for item in root_files(SHARED):
             copy_file_replace(item, target / item.name)
         for skill in skills:
@@ -110,6 +118,18 @@ def check_targets() -> int:
         if not target.exists():
             problems.append(f"missing target directory: {target}")
             continue
+
+        target_roots = {path.name for path in root_files(target)}
+        target_skills = {
+            path.name
+            for path in target.iterdir()
+            if path.is_dir() and (path / "SKILL.md").is_file()
+        }
+
+        for name in sorted(target_roots - expected_roots):
+            problems.append(f"extra in {target}: {name}")
+        for name in sorted(target_skills - expected_skills):
+            problems.append(f"extra in {target}: {name}")
 
         for name in sorted(expected_roots):
             src = SHARED / name
