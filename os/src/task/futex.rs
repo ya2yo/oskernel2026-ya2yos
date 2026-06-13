@@ -6,7 +6,7 @@ use crate::{
         try_copy_from_user_val, MemorySet, VirtAddr,
     },
     syscall::{FutexCmd, FutexOpt},
-    task::{tid_to_task, RobustListHead},
+    task::RobustListHead,
     timer::{add_futex_timer, get_time_spec, Timespec},
     utils::{SysErrNo, SyscallRet},
 };
@@ -46,6 +46,15 @@ pub static FUTEX_QUEUE_BITMAP: Lazy<Mutex<BTreeMap<usize, BitsetWaitQueue>>> =
 pub fn futex_wake_up(pa: usize, max_num: i32) -> usize {
     // 重定向需求
     return futex_wake_up_bitset(pa, max_num, u32::MAX);
+}
+
+fn futex_wake_robust_user_addr(memory_set: &MemorySet, uaddr: usize, max_num: i32) -> usize {
+    let mut woken = 0;
+    if let Ok(pa) = translate_user_va_safe(memory_set, VirtAddr::from(uaddr)) {
+        woken += futex_wake_up_bitset(pa, max_num, u32::MAX);
+    }
+    woken += futex_wake_up_bitset(memory_set.token() ^ uaddr, max_num, u32::MAX);
+    woken
 }
 
 fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32) -> usize {
@@ -215,6 +224,47 @@ fn new_futex_key() -> usize {
     FUTEX_KEY_COUNTER.fetch_add(1, Ordering::Relaxed) + 1
 }
 
+fn futex_queue_key(opt: FutexOpt, memory_token: usize, uaddr: usize, pa: usize) -> usize {
+    if opt.contains(FutexOpt::FUTEX_PRIVATE_FLAG) {
+        memory_token ^ uaddr
+    } else {
+        pa
+    }
+}
+
+fn futex_owner_alive_in_current_process(task: &TaskControlBlock, tid: usize) -> bool {
+    task.process
+        .meta_lock()
+        .tasks
+        .iter()
+        .filter_map(|task| task.upgrade())
+        .any(|task| task.tid() == tid && !task.inner_lock().is_zombie())
+}
+
+fn try_recover_owner_died_futex(
+    opt: FutexOpt,
+    task: &TaskControlBlock,
+    memory_set: &MemorySet,
+    uaddr: *mut i32,
+    current_u32: u32,
+    queue_key: usize,
+) -> bool {
+    if !opt.contains(FutexOpt::FUTEX_PRIVATE_FLAG) || current_u32 & FUTEX_OWNER_DIED == 0 {
+        return false;
+    }
+    let futex_tid = current_u32 & FUTEX_TID_MASK;
+    if futex_tid != 0 && futex_owner_alive_in_current_process(task, futex_tid as usize) {
+        return false;
+    }
+    debug!(
+        "[sys_futex] owner-died futex detected: tid={}, val={:#x}, clearing to 0",
+        futex_tid, current_u32
+    );
+    let _ = copy_to_user_val(memory_set, uaddr, &0i32);
+    futex_wake_up_bitset(queue_key, core::i32::MAX, u32::MAX);
+    true
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/futex.2.html
 pub fn sys_futex(
     uaddr: *mut i32, // point to the futex word, always four-bytes
@@ -241,11 +291,14 @@ pub fn sys_futex(
     // 确保页面已映射后再查询页表，避免在未分配页面上 panic
     let pa = translate_user_va_safe(&memory_set, VirtAddr::from(uaddr as usize))?;
     // 仅在 Requeue 操作时才需要翻译 uaddr2
-    let pa2 = if cmd == FutexCmd::Requeue {
-        Some(translate_user_va_safe(
-            &memory_set,
-            VirtAddr::from(uaddr2 as usize),
-        )?)
+    let queue_key2 = if cmd == FutexCmd::Requeue {
+        let pa2 = translate_user_va_safe(&memory_set, VirtAddr::from(uaddr2 as usize))?;
+        Some(futex_queue_key(
+            opt,
+            memory_set.token(),
+            uaddr2 as usize,
+            pa2,
+        ))
     } else {
         None
     };
@@ -290,37 +343,22 @@ pub fn sys_futex(
         val,
         opt
     );
+    let queue_key = futex_queue_key(opt, memory_set.token(), uaddr as usize, pa);
 
     // 在释放锁之前检查 futex 值（Wait/WaitBitset 需要原子性检查）
-    // 同时检查 robust mutex 的 owner 是否已死：
-    //   如果 futex word 中的 owner TID 对应的任务已退出（无论 OWNER_DIED 是否已设置），
-    //   则清空 futex word 为 0（相当于在退出路径已完成 pthread_mutex_consistent 恢复），
-    //   用户空间随后可直接 CAS 0→self_tid 取得锁。
-    //   参考: https://www.kernel.org/doc/html/latest/locking/robust-futexes.html
+    // 只恢复已经由退出路径标记 OWNER_DIED 的 robust futex。
+    // 普通 FUTEX_WAIT 的 val 可能是任意条件值，不能把低 30 位误当 owner TID；
+    // accept02 中 val=2 曾被误判成“死 owner tid=2”，导致线程同步提前完成。
     if matches!(cmd, FutexCmd::Wait | FutexCmd::WaitBitset) {
         let current_val: i32 = copy_from_user_val(&memory_set, uaddr)?;
         if current_val != val {
             return Err(SysErrNo::EAGAIN);
         }
         let current_u32 = current_val as u32;
-        let futex_tid = current_u32 & FUTEX_TID_MASK;
-        // 如果 owner TID 不为 0 且对应任务已不存在，
-        // 将该 futex 重置为 0（解锁），让调用者可以正常获取锁。
-        // 注意：这意味着 robust-mutex 恢复通知（OWNER_DIED）被隐式完成；
-        // 应用程序不会看到 EOWNERDEAD，但不会死锁。
-        if futex_tid != 0 && tid_to_task::tid2task(futex_tid as usize).is_none() {
-            debug!(
-                "[sys_futex] dead owner detected: futex owned by dead TID {}, clearing to 0",
-                futex_tid
-            );
-            let _ = copy_to_user_val(&memory_set, uaddr, &0i32);
+        if try_recover_owner_died_futex(opt, &task, &memory_set, uaddr, current_u32, queue_key) {
             drop(memory_set);
             drop(task_inner);
             drop(process);
-            // 唤醒可能在同一个 futex 上睡眠的其他等待者
-            futex_wake_up(pa, core::i32::MAX);
-            // 返回 Ok(0) 表示“futex 值已改变”，
-            // 用户空间重新读取后发现 0 即可 CAS 获取锁
             return Ok(0);
         }
     }
@@ -335,7 +373,7 @@ pub fn sys_futex(
             } else {
                 val3 as u32
             };
-            futex_wait_bitset(pa, task, bitset, timeout_opt)
+            futex_wait_bitset(queue_key, task, bitset, timeout_opt)
         }
         FutexCmd::Wake | FutexCmd::WakeBitset => {
             drop(task);
@@ -344,12 +382,12 @@ pub fn sys_futex(
             } else {
                 val3 as u32
             };
-            Ok(futex_wake_up_bitset(pa, val, bitset))
+            Ok(futex_wake_up_bitset(queue_key, val, bitset))
         }
         FutexCmd::Requeue => {
             drop(task);
-            if let Some(pa2) = pa2 {
-                return Ok(futex_requeue(pa, val, pa2, timeout as i32));
+            if let Some(queue_key2) = queue_key2 {
+                return Ok(futex_requeue(queue_key, val, queue_key2, timeout as i32));
             } else {
                 return Err(SysErrNo::EINVAL);
             }
@@ -416,9 +454,7 @@ fn handle_futex_death_entry(uaddr: usize, memory_set: &MemorySet, pid: usize) ->
         }
         // ---- wake one waiter if there were any ----
         if uval & FUTEX_WAITERS != 0 {
-            if let Ok(pa) = translate_user_va_safe(memory_set, VirtAddr::from(uaddr)) {
-                futex_wake_up(pa, 1);
-            }
+            futex_wake_robust_user_addr(memory_set, uaddr, 1);
         }
 
         return true;

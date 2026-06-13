@@ -12,6 +12,9 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 
+#[cfg(target_arch = "loongarch64")]
+use crate::mm::MapPermission;
+
 use super::{MemorySet, StepByOne, VirtAddr};
 use alloc::{string::String, vec, vec::Vec};
 
@@ -46,6 +49,74 @@ fn translated_user_page(
             page_table.translate(vpn)
         }
     }
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn user_range_has_perm(
+    memory_set: &MemorySet,
+    start: usize,
+    len: usize,
+    wanted: MapPermission,
+) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let end = match start.checked_add(len) {
+        Some(end) => end,
+        None => return false,
+    };
+    let mut current = match VirtAddr::try_from(start) {
+        Some(va) => va.floor().0,
+        None => return false,
+    };
+    let end_vpn = match VirtAddr::try_from(end - 1) {
+        Some(va) => va.floor().0,
+        None => return false,
+    };
+
+    let memory_set = memory_set.get_ref();
+    while current <= end_vpn {
+        let Some(area) = memory_set.areas.iter().find(|area| {
+            let (start, end) = area.vpn_range.range();
+            start.0 <= current && current < end.0
+        }) else {
+            return false;
+        };
+        if !area.map_perm.contains(wanted) {
+            return false;
+        }
+        let (_, area_end) = area.vpn_range.range();
+        current = area_end.0;
+    }
+    true
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn translated_user_page_for_write(
+    memory_set: &MemorySet,
+    page_table: &PageTable,
+    vpn: VirtPageNum,
+) -> Option<PhysPageNum> {
+    let fault = Trap::Exception(Exception::StorePageFault);
+    if page_table.translate(vpn).is_none() && !memory_set.lazy_page_fault(vpn, fault) {
+        return None;
+    }
+    memory_set.cow_page_fault(vpn, fault);
+    page_table.translate(vpn)
+}
+
+#[cfg(not(target_arch = "loongarch64"))]
+fn translated_user_page_for_write(
+    memory_set: &MemorySet,
+    page_table: &PageTable,
+    vpn: VirtPageNum,
+) -> Option<PhysPageNum> {
+    translated_user_page(
+        memory_set,
+        page_table,
+        vpn,
+        Trap::Exception(Exception::StorePageFault),
+    )
 }
 
 /// 安全地从用户空间复制任意类型 T 的值到内核空间。
@@ -98,6 +169,10 @@ pub fn copy_from_user(memory_set: &MemorySet, src: usize, dst: &mut [u8]) -> Sys
         return Ok(0);
     }
     let end = checked_user_range(src, len)?;
+    #[cfg(target_arch = "loongarch64")]
+    if !user_range_has_perm(memory_set, src, len, MapPermission::R) {
+        return Err(SysErrNo::EFAULT);
+    }
 
     let page_table = PageTable::from_token(memory_set.token());
     let mut cur_src = src;
@@ -141,6 +216,10 @@ pub fn copy_to_user(memory_set: &MemorySet, dst: usize, src: &[u8]) -> SyscallRe
         return Ok(0);
     }
     let end = checked_user_range(dst, len)?;
+    #[cfg(target_arch = "loongarch64")]
+    if !user_range_has_perm(memory_set, dst, len, MapPermission::W) {
+        return Err(SysErrNo::EFAULT);
+    }
     let page_table = PageTable::from_token(memory_set.token());
     let mut cur_dst = dst;
     let mut cur_src = 0;
@@ -148,13 +227,8 @@ pub fn copy_to_user(memory_set: &MemorySet, dst: usize, src: &[u8]) -> SyscallRe
     while cur_dst < end {
         let start_va = VirtAddr::try_from(cur_dst).ok_or(SysErrNo::EFAULT)?;
         let vpn = start_va.floor();
-        let ppn = translated_user_page(
-            memory_set,
-            &page_table,
-            vpn,
-            Trap::Exception(Exception::StorePageFault),
-        )
-        .ok_or(SysErrNo::EFAULT)?;
+        let ppn =
+            translated_user_page_for_write(memory_set, &page_table, vpn).ok_or(SysErrNo::EFAULT)?;
 
         // 本页内可复制的字节数：从当前偏移到页末，或到 end
         let next_page_va = ((vpn.0 + 1) << PAGE_SIZE_BITS) as usize;

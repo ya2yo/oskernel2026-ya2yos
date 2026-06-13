@@ -130,13 +130,18 @@ pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) ->
             how, mask, old_set as usize
         );
 
-        // let mut blocked = &mut task_inner.sig_mask;
+        mask.remove(SigSet::SIGKILL | SigSet::SIGSTOP);
         match how {
             SignalMaskFlag::SIG_BLOCK => task_inner.sig_mask |= mask,
             SignalMaskFlag::SIG_UNBLOCK => task_inner.sig_mask &= !mask,
-            SignalMaskFlag::SIG_SETMASK => task_inner.sig_mask = mask,
+            SignalMaskFlag::SIG_SETMASK => {
+                task_inner.sig_mask = mask;
+            }
             _ => return Err(SysErrNo::EINVAL),
         }
+        task_inner
+            .sig_mask
+            .remove(SigSet::SIGKILL | SigSet::SIGSTOP);
     }
     Ok(0)
 }
@@ -278,7 +283,8 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
             core::mem::size_of::<SigSet>(),
         )
     })?;
-    let mask = mask_val;
+    let mut mask = mask_val;
+    mask.remove(SigSet::SIGKILL | SigSet::SIGSTOP);
     let old_mask = task_inner.sig_mask;
     task_inner.sig_mask = mask;
     drop(task_inner);

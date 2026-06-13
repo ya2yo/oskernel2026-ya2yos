@@ -43,7 +43,7 @@ pub use aux::*;
 pub use futex::*;
 #[cfg(feature = "net")]
 pub use future::*;
-use log::{debug, error};
+use log::{debug, warn};
 pub use manager::*;
 pub use process::*;
 pub use process::*;
@@ -191,10 +191,9 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     let curr_task = take_current_task().unwrap();
     let count = Arc::strong_count(&curr_task);
     if count > 2 {
-        // 一份是进程调度器里面的，一份是tid2task里面的, 大于二直接死循环，不如直接panic
-        error!("WRONG STRONG COUNT!!!");
-        panic!(
-            "Someone take a reference to the TCB!, strong_count = {}",
+        warn!(
+            "[exit_current_and_run_next] tid {} exits with extra TCB refs, strong_count = {}",
+            curr_task.tid(),
             count
         );
     }

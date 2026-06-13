@@ -94,6 +94,15 @@ pub fn sys_munmap(addr: usize, len: usize) -> SyscallRet {
     if addr % PAGE_SIZE != 0 {
         return Err(SysErrNo::EINVAL);
     }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        let len = page_round_up(len);
+        let end = addr.checked_add(len).ok_or(SysErrNo::EINVAL)?;
+        if VirtAddr::try_from(addr).is_none() || (len != 0 && VirtAddr::try_from(end - 1).is_none())
+        {
+            return Err(SysErrNo::EINVAL);
+        }
+    }
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_write();

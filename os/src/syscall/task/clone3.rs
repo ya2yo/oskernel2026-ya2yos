@@ -46,6 +46,26 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
     copy_from_user(&memory_set, cl_args as usize, unsafe {
         core::slice::from_raw_parts_mut(&mut cargs as *mut clone_args as *mut u8, copy_len)
     })?;
+    #[cfg(target_arch = "loongarch64")]
+    {
+        if size > core::mem::size_of::<clone_args>() {
+            let extra_len = size - core::mem::size_of::<clone_args>();
+            let mut extra = [0u8; 32];
+            let mut copied = 0;
+            while copied < extra_len {
+                let chunk_len = extra.len().min(extra_len - copied);
+                copy_from_user(
+                    &memory_set,
+                    cl_args as usize + core::mem::size_of::<clone_args>() + copied,
+                    &mut extra[..chunk_len],
+                )?;
+                if extra[..chunk_len].iter().any(|byte| *byte != 0) {
+                    return Err(SysErrNo::E2BIG);
+                }
+                copied += chunk_len;
+            }
+        }
+    }
 
     if cargs.set_tid_size != 0 || cargs.set_tid != 0 {
         return Err(SysErrNo::EINVAL);
@@ -67,6 +87,30 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
     {
         return Err(SysErrNo::EINVAL);
     }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        if CloneFlags::from_bits_truncate(flags).contains(CloneFlags::CLONE_PIDFD) {
+            let mut pidfd_probe = [0u8; core::mem::size_of::<u32>()];
+            copy_from_user(&memory_set, cargs.pidfd as usize, &mut pidfd_probe)?;
+            return Err(SysErrNo::EINVAL);
+        }
+    }
+    #[cfg(target_arch = "loongarch64")]
+    let stack = if cargs.stack == 0 {
+        if cargs.stack_size != 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+        0
+    } else {
+        if cargs.stack_size == 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+        (cargs.stack as usize)
+            .checked_add(cargs.stack_size as usize)
+            .ok_or(SysErrNo::EINVAL)?
+    };
+    #[cfg(not(target_arch = "loongarch64"))]
+    let stack = cargs.stack as usize;
     drop(memory_set);
     drop(proc_inner);
     drop(task);
@@ -78,7 +122,7 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
     {
         sys_clone(
             flags as usize,
-            cargs.stack as usize,
+            stack,
             cargs.parent_tid as usize,
             cargs.tls as usize,
             cargs.child_tid as usize,
@@ -88,7 +132,7 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
     {
         sys_clone(
             flags as usize,
-            cargs.stack as usize,
+            stack,
             cargs.parent_tid as usize,
             cargs.child_tid as usize,
             cargs.tls as usize,

@@ -78,7 +78,7 @@ pub fn test_musl_ltp() {
 #[allow(unused)]
 pub fn test_musl_single(test_name: &str) {
     println!("RUN MUSL LTP SINGLE CASE {}", test_name);
-    let r = fork_and_run("/glibc/ltp/testcases/bin\0", &[test_name]);
+    let r = fork_and_run("/musl/ltp/testcases/bin\0", &[test_name]);
     println!("RESULT MUSL LTP SINGLE CASE {} : {}", test_name, r);
 }
 

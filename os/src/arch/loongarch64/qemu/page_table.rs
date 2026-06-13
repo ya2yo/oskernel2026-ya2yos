@@ -463,6 +463,7 @@ impl PageTable {
             pte_flags |= LAPTEFlags::COW;
         }
         pte.set_flags(pte_flags);
+        tlb_invalidate();
         memory_set
             .page_table
             .map_by_pte_flags(vpn, src_ppn, pte_flags);
@@ -542,6 +543,7 @@ impl PageTable {
         if let Some(pte) = self.find_valid_pte(vpn) {
             let old_flag = pte.get_flags();
             pte.set_flags(pte_flags | old_flag);
+            tlb_invalidate();
         } else {
             panic!("found not(pfh)");
             self.map_by_pte_flags(vpn, 0.into(), pte_flags);

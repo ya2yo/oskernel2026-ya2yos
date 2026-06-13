@@ -97,14 +97,32 @@ pub fn trap_handler() {
         | Trap::Exception(Exception::FetchInstructionPageFault) => {
             //debug!("{:?},bad addr = {:#x}", scause.cause(), stval);
             // page fault
+            #[cfg(target_arch = "loongarch64")]
+            let fault_va = match VirtAddr::try_from(stval) {
+                Some(va) => va,
+                None => {
+                    let tid = current_task().unwrap().tid();
+                    warn!(
+                        "[kernel] hart {} {:?} in application, non-canonical bad addr = {:#x}, bad instruction = {:#x}, sending SIGSEGV.",
+                        hartid,
+                        cause,
+                        stval,
+                        current_trap_cx().get_sepc(),
+                    );
+                    send_signal_to_thread(tid, SigSet::SIGSEGV);
+                    return;
+                }
+            };
+            #[cfg(not(target_arch = "loongarch64"))]
+            let fault_va = VirtAddr::from(stval);
             let mut ok;
             {
                 let task = current_task().unwrap();
                 let process = task.process.inner_lock();
                 let memory_set = process.get_locked_memory_set_read();
-                ok = memory_set.lazy_page_fault(VirtAddr::from(stval).floor(), cause); // ok表示是否是lazy_page_fault，如果不是返回 false
+                ok = memory_set.lazy_page_fault(fault_va.floor(), cause); // ok表示是否是lazy_page_fault，如果不是返回 false
                 if !ok {
-                    ok = memory_set.cow_page_fault(VirtAddr::from(stval).floor(), cause);
+                    ok = memory_set.cow_page_fault(fault_va.floor(), cause);
                 }
                 // drop task inner and task to avoid deadlock and exit exception
             }
@@ -136,12 +154,26 @@ pub fn trap_handler() {
             panic!("You should not return from exit_current_and_run_next");
         }
         Trap::Exception(Exception::PageModifyFault) => {
+            #[cfg(target_arch = "loongarch64")]
+            let Some(fault_va) = VirtAddr::try_from(stval) else {
+                let tid = current_task().unwrap().tid();
+                warn!(
+                    "[kernel] hart {} PageModifyFault in application, non-canonical bad addr = {:#x}, bad instruction = {:#x}, sending SIGSEGV.",
+                    hartid,
+                    stval,
+                    current_trap_cx().get_sepc(),
+                );
+                send_signal_to_thread(tid, SigSet::SIGSEGV);
+                return;
+            };
+            #[cfg(not(target_arch = "loongarch64"))]
+            let fault_va = VirtAddr::from(stval);
             let ok;
             {
                 let task = current_task().unwrap();
                 let process = task.process.inner_lock();
                 let memory_set = process.get_locked_memory_set_read();
-                ok = memory_set.cow_page_fault(VirtAddr::from(stval).floor(), cause);
+                ok = memory_set.cow_page_fault(fault_va.floor(), cause);
             }
             if !ok {
                 tlb_page_modify_handler();
