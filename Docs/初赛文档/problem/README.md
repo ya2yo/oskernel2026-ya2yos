@@ -22,6 +22,7 @@
 
 - [龙芯架构 busy_box 测试失败](./loongarch-busybox-cow.md)
 - [内核堆碎片化：全量测例运行 OOM](./fsindex-oom.md)
+- [LoongArch getrusage03 与 QEMU virt 分段内存](./loongarch-getrusage03-split-ram.md)
 
 ## 文件系统 / 动态链接
 

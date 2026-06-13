@@ -3,7 +3,9 @@
 use crate::config::THREAD_MAX_NUM;
 
 pub const PHYSICAL_MEMORY_START: usize = 0; // la64的物理内存从0开始，而riscv的物理内存从0x8000_0000开始
-pub const PHYSICAL_MEMORY_SIZE: usize = 0x2000_0000; // 512MB
+pub const PHYSICAL_MEMORY_SIZE: usize = 0x4000_0000; // 1GB total: low 256MB + high 768MB
+pub const PHYSICAL_MEMORY_RANGES: &[(usize, usize)] =
+    &[(0x0000_0000, 0x1000_0000), (0x8000_0000, 0x3000_0000)];
 
 pub const PAGE_SIZE: usize = 0x1000; // 4KB
 pub const PAGE_SIZE_BITS: usize = 12;
@@ -46,8 +48,11 @@ pub const DL_INTERP_OFFSET: usize = 0x15_0000_0000;
 // Kernel stack top (high address)
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 
-// 内核虚拟地址空间中对应的内存结束地址
-pub const MEMORY_END: usize = KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_START + PHYSICAL_MEMORY_SIZE;
+// 内核虚拟地址空间中对应的低端连续内存结束地址。
+// LoongArch QEMU virt 的 1G RAM 被 PCI/MMIO hole 切成两段，完整 RAM 见
+// PHYSICAL_MEMORY_RANGES。
+pub const MEMORY_END: usize =
+    KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_RANGES[0].0 + PHYSICAL_MEMORY_RANGES[0].1;
 
 // la64的MMIO相关
 // 当entry.asm中启用了la64CPU的0x9000_...的直接映射窗口后，物理地址0x_0000_xxxx_xxxx_xxxx将被映射到虚拟地址0x9000_xxxx_xxxx_xxxx

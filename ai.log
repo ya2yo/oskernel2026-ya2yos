@@ -994,3 +994,81 @@ broken   1
 ### 结论
 
 本轮修复了 `getrusage03` 的“直接卡死不会自动结束”问题，但测例尚未完整 PASS。剩余问题集中在 `consume 500` 的 500MiB 匿名 mmap/lazy page fault 阶段，需要后续继续判断是性能瓶颈、内存未释放还是 CMA/页表路径退化。
+
+---
+
+## 2026-06-13: LoongArch getrusage03 分段物理内存适配
+
+### 问题发现
+
+用户继续单跑 LoongArch `getrusage03`，`log.ans` 显示测例推进到：
+
+```text
+getrusage03.c:43: TPASS: initial.self ~= child.self
+getrusage03.c:57: TPASS: initial.children ~= 100MB
+getrusage03.c:66: TPASS: child.children == 0
+```
+
+随后卡住。启动日志显示旧配置下 `MEMORY_END = 0x9000000020000000`，CMA 从 `ekernel` 一直初始化到 `0x9000000020000000`，等价于把 LoongArch 物理地址 `0..512MiB` 当作连续 RAM 使用。
+
+用户指出：RISC-V 的修复记录不能直接照搬，因为 RISC-V 和 LoongArch 的 QEMU 参数、内存布局不同。
+
+### 根因分析
+
+AI 重新检查 RISC-V 修复记录 `0dc1f49`，确认其核心是：
+
+- `make_scripts/riscv64.mk`：`MEMORY_SIZE` 从 512MiB 提升到 1GiB
+- `os/src/arch/riscv64/qemu/memory_layout.rs`：`PHYSICAL_MEMORY_SIZE` 提升到 1GiB
+
+该方案在 RISC-V 上成立，是因为 RISC-V QEMU `virt` 的 RAM 从 `0x80000000` 开始连续增长。
+
+随后检查 LoongArch QEMU `virt` 设备树，确认 LoongArch 的 RAM 是分段的：
+
+| QEMU 参数 | 低端 RAM | 高端 RAM |
+|-----------|----------|----------|
+| `-m 512M` | `0x00000000..0x10000000` | `0x80000000..0x90000000` |
+| `-m 1G` | `0x00000000..0x10000000` | `0x80000000..0xb0000000` |
+
+因此 LoongArch 不能使用连续 `[0, 1GiB)`，否则中间 PCI/MMIO hole 会被页帧分配器错误管理。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `make_scripts/loongarch64.mk` | 将 QEMU `MEMORY_SIZE` 调整为 `1G` |
+| `os/src/arch/loongarch64/qemu/memory_layout.rs` | 新增 `PHYSICAL_MEMORY_RANGES`，描述低 256MiB + 高 768MiB 两段 RAM |
+| `os/src/mm/frame_alloc/buddy_cma.rs` | LoongArch 按 range 多次 `add_to_heap` 初始化 CMA；非 LoongArch 保持原连续 `init(left, size)` 路径 |
+
+### 交互要点
+
+第一版曾考虑给 RISC-V 也增加等价的 `PHYSICAL_MEMORY_RANGES` 抽象，用户提醒“不要改动原来 RISC-V 正常代码”。随后 AI 将 RISC-V 相关 diff 撤回，只在共享 CMA 里使用 `#[cfg(target_arch = "loongarch64")]` 分支，保证 RISC-V 继续走原有连续内存逻辑。
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+git diff --check
+make riscv64-build
+make loongarch64-build
+```
+
+结果：
+
+- `cargo fmt` 通过
+- `git diff --check` 通过
+- `make riscv64-build` 通过
+- `make loongarch64-build` 走到最终内核编译阶段，失败于宿主环境缺少 `/opt/gcc-13.2.0-loongarch64-linux-gnu/loongarch64-linux-gnu/lib64/libgcc_s.so.1`，不是本次代码改动引入的 Rust 编译错误
+
+### 文档
+
+新增问题复盘：
+
+- `Docs/初赛文档/problem/loongarch-getrusage03-split-ram.md`
+
+并更新：
+
+- `Docs/初赛文档/problem/README.md`
+- `Docs/初赛文档/开发日志.md`
+- `Docs/初赛文档/AI_INTERACTION.md`

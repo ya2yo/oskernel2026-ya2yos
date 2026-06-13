@@ -450,3 +450,10 @@
 - **场景**：Bug 分析与定位、代码修复、文档完善
 - **描述**：用户继续反馈 `getrusage03` 根据 `log.ans` 直接卡死不会自动结束。AI 复现并定位到两处后续问题：1) `/proc/<pid>/stat` 创建后状态固定为 `S`，父进程轮询等待 zombie `Z` 时会死循环；2) LTP 通过 `setitimer(ITIMER_REAL)` 设置的 SIGALRM 只在当前运行任务路径检查，主进程阻塞在 `waitpid` 时 timeout 不会触发。AI 增加 `/proc/<pid>/stat` 动态刷新，timer interrupt 扫描所有任务 itimer，并在阻塞任务 SIGALRM 到期时唤醒 `interruptible` 等待。随后测例可推进到 6 项 TPASS，LTP timeout 能自行发 SIGKILL、打印 summary 并 shutdown；剩余 `consume 500` 的 500MiB 匿名 mmap 触页未在 30 秒内完成，记录为后续待查。详见 `ai.log` 2026-06-12 条目与 [problem/getrusage03-rusage-proc-status.md](./problem/getrusage03-rusage-proc-status.md)。
 - **关联 commit**：本次提交
+
+#### LoongArch getrusage03 分段物理内存适配（6.13）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、架构适配、文档完善
+- **描述**：用户提供新的 LoongArch `log.ans` 并指出 RISC-V 的 QEMU 参数修复不能直接套用到 LoongArch。AI 复查 RISC-V 修复记录，确认 RISC-V 1GiB RAM 仍是连续区间；随后根据 LoongArch QEMU `virt` 设备树分析出 `-m 1G` 实际为低端 256MiB + 高端 768MiB 两段 RAM。人工审核后采纳 LoongArch 专用分段修复：QEMU 内存提升到 1GiB，`memory_layout.rs` 增加 `PHYSICAL_MEMORY_RANGES`，CMA 在 LoongArch 下按 range 初始化，RISC-V 保持原连续内存代码路径。详见 `ai.log` 2026-06-13 条目与 [problem/loongarch-getrusage03-split-ram.md](./problem/loongarch-getrusage03-split-ram.md)。
+- **关联 commit**：本次提交
