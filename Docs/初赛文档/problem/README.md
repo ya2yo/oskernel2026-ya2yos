@@ -36,6 +36,7 @@
 ## 测例与驱动
 
 - [lmbench](./lmbench.md)
+- [LTP 包装层 Summary 汇总](./ltp-summary-wrapper.md)
 - [龙芯架构 libcbench_testcode](./loongarch-libcbench.md)
 - [龙芯架构添加网络模块后卡在汇编阶段](./loongarch-net-init-hang.md)
 

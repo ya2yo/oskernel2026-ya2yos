@@ -457,3 +457,10 @@
 - **场景**：Bug 分析与定位、架构适配、文档完善
 - **描述**：用户提供新的 LoongArch `log.ans` 并指出 RISC-V 的 QEMU 参数修复不能直接套用到 LoongArch。AI 复查 RISC-V 修复记录，确认 RISC-V 1GiB RAM 仍是连续区间；随后根据 LoongArch QEMU `virt` 设备树分析出 `-m 1G` 实际为低端 256MiB + 高端 768MiB 两段 RAM。人工审核后采纳 LoongArch 专用分段修复：QEMU 内存提升到 1GiB，`memory_layout.rs` 增加 `PHYSICAL_MEMORY_RANGES`，CMA 在 LoongArch 下按 range 初始化，RISC-V 保持原连续内存代码路径。详见 `ai.log` 2026-06-13 条目与 [problem/loongarch-getrusage03-split-ram.md](./problem/loongarch-getrusage03-split-ram.md)。
 - **关联 commit**：本次提交
+
+#### LTP 包装层 Summary 缺失修复（6.13）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、测试输出适配、文档完善
+- **描述**：用户反馈 musl LTP `munmap01` 没有正常输出 Summary，并指出最终跑分会运行 `test_musl_ltp()` 等批量入口。AI 检查 `log.ans` 后确认测例实际已 TPASS，`munmap` 后的 StorePageFault 是测试预期，SIGSEGV handler 正常执行并退出 0；问题在 LTP 包装层只打印 wait status，旧式 LTP 输出不会自动生成统一 Summary。AI 修改 `run_ltp_tests_musl*()` / `run_ltp_tests_glibc()`，按 LTP 退出类型累计 passed/failed/broken/skipped/warnings，并去掉测试名末尾 NUL。`make` 与 `timeout 90s make run` 通过，munmap01 输出 TPASS 后出现 Summary。详见 `ai.log` 2026-06-13 条目与 [problem/ltp-summary-wrapper.md](./problem/ltp-summary-wrapper.md)。
+- **关联 commit**：本次提交

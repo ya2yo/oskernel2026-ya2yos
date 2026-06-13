@@ -913,6 +913,56 @@ VmSwap is not zero
 - `Docs/初赛文档/开发日志.md`
 - `Docs/初赛文档/AI_INTERACTION.md`
 
+---
+
+## 2026-06-13: LTP 包装层 Summary 缺失修复
+
+### 用户输入
+
+用户要求修复 `munmap01` 测例没有正常输出 Summary 的 bug；随后指出只改 `test_musl_single()` 没有意义，最终跑分会运行 `test_musl_ltp()` 等批量入口，需要根据 LTP 类型输出 Summary。
+
+### 分析路径
+
+AI 先检查 `log.ans`，确认 `munmap01` 已输出旧式 TPASS：
+
+```text
+munmap01    1  TPASS  :  Functionality of munmap() successful
+```
+
+日志显示 `munmap` 后访问已解除映射地址触发 StorePageFault，这是测例预期行为；SIGSEGV handler 正常执行，后续 cleanup 完成，进程以 `exit_code: 0` 退出。因此问题不是 `munmap` 失败或信号恢复失败。
+
+随后检查 `user/src/bin/ltp/mod.rs`，确认批量入口 `run_ltp_tests_musl*()` / `run_ltp_tests_glibc()` 只打印 wait status，不会为旧式 LTP 输出补 Summary；同时测试名以 `\0` 结尾，直接打印会把 NUL 写入日志。AI 还用 `debugfs` 从测试镜像导出 `munmap01` 并用 `strings` 确认二进制包含旧式 LTP 输出路径。
+
+### 修改内容
+
+- `user/src/bin/ltp/mod.rs`
+  - 新增 `LtpSummary`，按 LTP 退出码 bit 累计 passed/failed/broken/skipped/warnings。
+  - `run_ltp_tests_musl()`、`run_ltp_tests_musl_separately()`、`run_ltp_tests_glibc()` 在 group 结束时输出 Summary。
+  - `test_musl_single()` / `test_glibc_single()` 复用同一套统计逻辑。
+  - 日志中的测试名改用 `trim_trailing_nul()`。
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 90s make run
+```
+
+结果：`munmap01` 输出 TPASS 后追加：
+
+```text
+Summary:
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+`make run` 正常 shutdown，退出码 0。
+
 `fsconfig-syscall.md` 根据 `ai.log` 2026-06-05 “批量 syscall 实现”记录和当前 `mount.rs` / `mountfd.rs` 代码，复盘 `fsopen/fsconfig/fsmount/fspick` 的基础实现、fd 类型、参数校验和实现取舍。
 
 ### 验证
