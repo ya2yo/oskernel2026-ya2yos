@@ -115,7 +115,7 @@ fn get_score() {
     run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loongarch 通过
     // ltp
     ltp::test_musl_ltp();
-    // ltp::test_glibc_ltp();
+    ltp::test_glibc_ltp();
 
         // #[cfg(target_arch = "riscv64")]
         // test_cgroup_fj_function_cpuset_via_script();
