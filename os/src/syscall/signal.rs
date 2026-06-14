@@ -7,8 +7,8 @@ use crate::{
     mm::{copy_from_user, copy_to_user},
     signal::{
         restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group,
-        send_signal_to_thread_of_proc, KSigAction, SigAction, SigInfo, SigSet, SIGKILL, SIGSTOP,
-        SIG_MAX_NUM,
+        send_signal_to_thread_of_proc, KSigAction, SigAction, SigInfo, SigSet, SIGCONT, SIGKILL,
+        SIGSTOP, SIG_MAX_NUM,
     },
     syscall::SignalMaskFlag,
     task::{block_on, current_task, exit_current_and_run_next, suspend_current_and_run_next},
@@ -326,7 +326,14 @@ pub fn sys_kill(pid: isize, signo: usize) -> SyscallRet {
         -1 => send_access_signal(current_task().unwrap().tid(), sig),
         _ => send_signal_to_thread_group(-pid as usize, sig),
     };
-    ret
+
+    // SIGCONT 恢复停止态任务后，让出一次 CPU，使被恢复的任务有机会先处理
+    // pending SIGCONT 并继续运行；否则父进程可能马上执行后续同步操作。
+    let resumed = ret?;
+    if signo == SIGCONT && resumed > 0 {
+        suspend_current_and_run_next();
+    }
+    Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/tkill.2.html

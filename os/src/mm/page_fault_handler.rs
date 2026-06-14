@@ -41,12 +41,8 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
     write_user_bytes_direct(page_table.token(), va as usize, &kernel_buf);
     file.lseek(old_offset as isize, SEEK_SET)
         .expect("mmap_write_page_fault should not fail");
-    //设置为cow
     let vpn = VirtAddr::from(va).floor();
-    #[cfg(target_arch = "loongarch64")]
     page_table.handle_mmap_write_page_fault(vpn, vma.map_perm, vma.mmap_flags);
-    #[cfg(not(target_arch = "loongarch64"))]
-    page_table.handle_mmap_write_page_fault(vpn, vma.map_perm);
     true
 }
 ///mmap读触发的lazy alocation，查看是否有共享页可直接用，没有再直接分配
@@ -61,10 +57,7 @@ pub fn mmap_read_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut 
         vma.data_frames.insert(vpn, frame);
 
         // page_table.map(vpn, ppn, pte_flags);
-        #[cfg(target_arch = "loongarch64")]
         page_table.handle_mmap_read_page_fault(vpn, ppn, vma.map_perm, vma.mmap_flags);
-        #[cfg(not(target_arch = "loongarch64"))]
-        page_table.handle_mmap_read_page_fault(vpn, ppn, vma.map_perm);
         return true;
     }
     //第一次读，分配页面

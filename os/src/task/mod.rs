@@ -107,6 +107,17 @@ pub fn block_current_and_run_next() {
     schedule(task_cx_ptr);
 }
 
+pub fn stop_current_and_run_next() {
+    debug!("[stop_current_and_run_next()] BEGIN!");
+    let task = take_current_task().unwrap();
+    let mut task_inner = task.inner_lock();
+    let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
+    task_inner.task_status = TaskStatus::Stopped;
+    drop(task_inner);
+    drop(task);
+    schedule(task_cx_ptr);
+}
+
 pub fn schedule_blocked_current(task_cx_ptr: *mut TaskContext) {
     // 等待队列已经把当前任务置为 Blocked，这里只负责切回调度器。
     let task = take_current_task().unwrap();

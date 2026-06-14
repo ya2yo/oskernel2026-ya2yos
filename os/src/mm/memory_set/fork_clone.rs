@@ -59,8 +59,10 @@ impl MemorySetInner {
             }
             let mut new_area = MapArea::from_another(area);
             if area.area_type == MapAreaType::Mmap
-                && !area.mmap_flags.contains(MmapFlags::MAP_SHARED)
+                && area.mmap_flags.contains(MmapFlags::MAP_SHARED)
             {
+                // 子进程继承 MAP_SHARED 的 groupid，增加引用计数后才允许
+                // 父子在后续 lazy fault 中从 GROUP_SHARE 找到同一共享帧。
                 GROUP_SHARE.lock().add_area(new_area.groupid);
             }
             // Mmap and brk are lazy allocation

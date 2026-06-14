@@ -1340,3 +1340,66 @@ broken   0
 skipped  0
 warnings 0
 ```
+
+---
+
+## 2026-06-14: waitid07 WSTOPPED / SIGCONT checkpoint 超时修复
+
+### 用户需求
+
+用户提供 `log.ans`，要求分析日志并修复 bug。此前已要求实现 `waitid`，并要求新代码补注释。
+
+### 分析
+
+AI 先按 `log.ans` 定位到 `waitid07.c:26: TBROK: tst_checkpoint_wait(0, 10000) failed: ETIMEDOUT (110)`。结合 LTP `waitid07.c`，该用例要求子进程 `SIGSTOP` 后父进程通过 `waitid(P_PID, child, ..., WSTOPPED | WNOWAIT)` 观察 `CLD_STOPPED`，然后 `SIGCONT` 子进程并用 checkpoint futex 同步。
+
+第一阶段定位到内核默认信号处理把 `SigOp::Stop` 当作忽略，且 `sys_waitid()` 只处理退出事件，因此补齐停止状态和 `WSTOPPED` 后，`waitid07` 前 5 项 TPASS 通过，但 checkpoint 仍超时。
+
+随后 AI 用临时 futex 日志确认父子 futex 物理地址和 key 一致，父进程已执行 `FUTEX_WAKE`，但子进程被唤醒后又第二次 `FUTEX_WAIT`。查 LTP `tst_checkpoint_wait()` 源码确认只有 `EINTR` 会重试 futex wait。根因是 `trap_return()` 每次只处理一个 pending signal：子进程处理 `SIGSTOP` 后被 `SIGCONT` 恢复，但 pending `SIGCONT` 未在回用户态前被默认消费，导致后续 futex 返回 `EINTR`。
+
+排查过程中还发现 `MAP_SHARED` 的 `GROUP_SHARE` 条件写反，以及 RISC-V mmap shared fault 仍可能走 COW，影响共享 mmap / checkpoint 类场景，一并修复。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/task/task.rs` | 增加 `TaskStatus::Stopped` |
+| `os/src/task/mod.rs` / `os/src/task/processor.rs` | 增加停止当前任务并调度的路径，避免 stopped 任务被重新入队 |
+| `os/src/task/process/process.rs` | 增加 `stopped_signal` 记录停止原因 |
+| `os/src/signal/mod.rs` | 默认停止信号进入 stopped 状态，通知父进程；`SIGCONT/SIGKILL` 可恢复 stopped 任务，并返回恢复计数 |
+| `os/src/syscall/signal.rs` | `kill(SIGCONT)` 恢复停止任务后让出一次调度，用户态返回值仍为 0 |
+| `os/src/syscall/task/wait.rs` | `waitid(WSTOPPED)` 返回 `SIGCHLD / CLD_STOPPED / si_status = stop_signal`，支持 `WNOWAIT` |
+| `os/src/trap/mod.rs` | `trap_return()` 连续消费默认信号，遇到用户自定义 handler 时停止以运行 handler |
+| `os/src/mm/map_area.rs` / `os/src/mm/memory_set/fork_clone.rs` | 修正 `MAP_SHARED` groupid 分配与 fork 引用计数 |
+| `os/src/mm/page_fault_handler.rs` / `os/src/arch/riscv64/qemu/page_table.rs` | RISC-V mmap shared fault 保持共享可写页，不转 COW |
+| `Docs/初赛文档/problem/waitid07-stopped-sigcont.md` | 新增问题复盘 |
+| `Docs/初赛文档/开发日志.md` / `Docs/初赛文档/problem/README.md` / `Docs/初赛文档/AI_INTERACTION.md` | 更新文档索引与 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 150s make run
+```
+
+结果：
+
+- `make` 通过。
+- `waitid07` 通过 5 项断言：
+
+```text
+waitid07.c:31: TPASS: waitid(P_PID, pid_child, infop, WSTOPPED | WNOWAIT) passed
+waitid07.c:33: TPASS: infop->si_pid == pid_child (4)
+waitid07.c:34: TPASS: infop->si_status == SIGSTOP (19)
+waitid07.c:35: TPASS: infop->si_signo == SIGCHLD (17)
+waitid07.c:36: TPASS: infop->si_code == CLD_STOPPED (5)
+
+Summary:
+passed   5
+failed   0
+broken   0
+skipped  0
+warnings 0
+```

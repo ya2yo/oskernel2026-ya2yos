@@ -846,6 +846,8 @@ pub enum TaskStatus {
     Running,
     Zombie,
     Blocked,
+    /// Stopped by SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU until a SIGCONT arrives.
+    Stopped,
     /// VFORK: parent is suspended until child execs or exits.
     VforkBlocked,
 }

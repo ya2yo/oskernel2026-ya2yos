@@ -5,6 +5,7 @@ use super::{
 use crate::mm::{
     address::*, translate, FrameTracker, MapArea, MapPermission, MemorySetInner, KERNEL_SPACE,
 };
+use crate::syscall::MmapFlags;
 use alloc::{sync::Arc, vec, vec::Vec};
 use bitflags::*;
 use riscv::register::satp;
@@ -390,10 +391,14 @@ impl PageTable {
         vpn: VirtPageNum,
         ppn: PhysPageNum,
         vma_flags: MapPermission,
+        mmap_flags: MmapFlags,
     ) {
         let mut pte_flags = RVPTEFlags::from(vma_flags);
-        //可写的才需要cow
-        if pte_flags.contains(RVPTEFlags::WRITEABLE) {
+        if mmap_flags.contains(MmapFlags::MAP_SHARED) {
+            if pte_flags.contains(RVPTEFlags::WRITEABLE) {
+                pte_flags.insert(RVPTEFlags::DIRTY);
+            }
+        } else if pte_flags.contains(RVPTEFlags::WRITEABLE) {
             pte_flags &= !RVPTEFlags::WRITEABLE;
             pte_flags &= !RVPTEFlags::DIRTY;
             pte_flags |= RVPTEFlags::COW;
@@ -401,11 +406,19 @@ impl PageTable {
 
         self.map_by_pte_flags(vpn, ppn, pte_flags);
     }
-    pub fn handle_mmap_write_page_fault(&self, vpn: VirtPageNum, vma_flags: MapPermission) {
+    pub fn handle_mmap_write_page_fault(
+        &self,
+        vpn: VirtPageNum,
+        vma_flags: MapPermission,
+        mmap_flags: MmapFlags,
+    ) {
         let mut pte_flags = RVPTEFlags::from(vma_flags);
 
-        //可写的才需要cow
-        if pte_flags.contains(RVPTEFlags::WRITEABLE) {
+        if mmap_flags.contains(MmapFlags::MAP_SHARED) {
+            if pte_flags.contains(RVPTEFlags::WRITEABLE) {
+                pte_flags.insert(RVPTEFlags::DIRTY);
+            }
+        } else if pte_flags.contains(RVPTEFlags::WRITEABLE) {
             pte_flags &= !RVPTEFlags::WRITEABLE;
             pte_flags &= !RVPTEFlags::DIRTY;
             pte_flags |= RVPTEFlags::COW;

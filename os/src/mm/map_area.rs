@@ -66,10 +66,12 @@ impl MapArea {
         let end_vpn: VirtPageNum = end_va.ceil();
         let groupid;
         if mmap_flags.contains(MmapFlags::MAP_SHARED) {
-            groupid = 0;
-        } else {
+            // MAP_SHARED 的延迟分配页需要通过 groupid 在 fork 后复用同一物理帧；
+            // MAP_PRIVATE 不进入 GROUP_SHARE，保持按进程私有/COW 的语义。
             groupid = GROUP_SHARE.lock().alloc_id();
             GROUP_SHARE.lock().add_area(groupid);
+        } else {
+            groupid = 0;
         }
         Self {
             vpn_range: VPNRange::new(start_vpn, end_vpn),

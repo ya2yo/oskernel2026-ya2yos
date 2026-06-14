@@ -118,6 +118,7 @@ impl Process {
                 parent_pid,
                 child_exit_event: AtomicWaker::new(),
                 exit_signal: -1,
+                stopped_signal: None,
                 usage: ProcessUsage::default(),
             }),
         });
@@ -333,6 +334,8 @@ pub struct ProcessMeta {
     /// - 线程共享进程元数据，不覆盖线程组原有 exit_signal
     /// 用于 waitpid 的 __WALL/__WCLONE 过滤以及退出时是否发送信号给父进程
     pub exit_signal: i32,
+    /// 最近一次导致该进程停止的信号，用于 waitid(WSTOPPED) 返回 CLD_STOPPED。
+    pub stopped_signal: Option<usize>,
     /// 进程退出时冻结的资源使用快照，供父进程 wait 后累计 RUSAGE_CHILDREN。
     pub usage: ProcessUsage,
 }

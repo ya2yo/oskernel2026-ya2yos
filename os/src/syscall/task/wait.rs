@@ -1,7 +1,7 @@
 use core::{future::poll_fn, task::Poll};
 
 use alloc::{sync::Arc, vec::Vec};
-use linux_raw_sys::general::{CLD_EXITED, P_ALL, P_PGID, P_PID, P_PIDFD};
+use linux_raw_sys::general::{CLD_EXITED, CLD_STOPPED, P_ALL, P_PGID, P_PID, P_PIDFD};
 use log::debug;
 
 use crate::{
@@ -294,9 +294,18 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
             return Poll::Ready(Err(SysErrNo::ECHILD));
         }
 
-        // 当前内核没有 stopped/continued 状态机，因此只有请求 WEXITED 时
-        // 才可能找到可返回的 child。
-        let pair = if options.contains(WaitOption::WEXITED) {
+        let stopped = if options.contains(WaitOption::WSTOPPED) {
+            children.iter().find_map(|child| {
+                child
+                    .meta_lock()
+                    .stopped_signal
+                    .map(|signo| (Arc::clone(child), signo))
+            })
+        } else {
+            None
+        };
+
+        let pair = if stopped.is_none() && options.contains(WaitOption::WEXITED) {
             children
                 .iter()
                 .find(|child| child.all_tasks_exited())
@@ -307,7 +316,39 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
 
         drop(children);
 
-        if let Some(child) = pair {
+        if let Some((child, stop_signal)) = stopped {
+            let found_pid = child.pid;
+            if !infop.is_null() {
+                let sig_info = SigInfo::new_child(
+                    SIGCHLD as u32,
+                    CLD_STOPPED,
+                    found_pid as u32,
+                    stop_signal as u32,
+                );
+                let proc_inner = task.process.inner_lock();
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                if copy_to_user(&memory_set, infop as usize, unsafe {
+                    core::slice::from_raw_parts(
+                        &sig_info as *const SigInfo as *const u8,
+                        core::mem::size_of::<SigInfo>(),
+                    )
+                })
+                .is_err()
+                {
+                    return Poll::Ready(Err(SysErrNo::EFAULT));
+                }
+            }
+
+            if !options.contains(WaitOption::WNOWAIT) {
+                child.meta_lock().stopped_signal = None;
+            }
+
+            if infop.is_null() {
+                Poll::Ready(Ok(found_pid))
+            } else {
+                Poll::Ready(Ok(0))
+            }
+        } else if let Some(child) = pair {
             let found_pid = child.pid;
             let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
             let child_usage = child.meta_lock().usage;

@@ -225,9 +225,20 @@ pub fn trap_handler() {
 #[no_mangle]
 pub fn trap_return() {
     //检查信号
-    if let Some(signo) = check_if_any_sig_for_current_task() {
-        // debug!("found signo in trap_return");
+    while let Some(signo) = check_if_any_sig_for_current_task() {
+        // 默认信号可以连续消费；遇到用户自定义 handler 时需要立刻返回用户态，
+        // 让用户 handler 先运行，避免在同一个 trap_return 中覆盖信号栈帧。
+        let customed = current_task()
+            .unwrap()
+            .process
+            .inner_lock()
+            .get_locked_sigtable()
+            .action(signo)
+            .customed;
         handle_signal(signo);
+        if customed {
+            break;
+        }
     }
     set_user_trap_entry();
     extern "C" {

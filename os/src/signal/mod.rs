@@ -17,8 +17,8 @@ use crate::{
     },
     mm::{copy_from_user_val, copy_to_user, copy_to_user_val, VirtAddr},
     task::{
-        current_task, exit_current_and_run_next, ready_queue, tid_to_task, Process,
-        TaskControlBlock, TaskStatus,
+        current_task, exit_current_and_run_next, ready_queue, stop_current_and_run_next,
+        tid_to_task, Process, TaskControlBlock, TaskStatus,
     },
     trap::trap_types::{Exception, Trap},
     utils::{SysErrNo, SyscallRet},
@@ -68,15 +68,39 @@ pub fn handle_signal(signo: usize) {
         let task = current_task().unwrap();
         task.inner_lock().sig_eintr = true;
     } else {
-        // 默认信号处理：
-        // - sa_handler == 1 (SIG_IGN) → 忽略信号（SIGCHLD/SIGURG/SIGWINCH等）
-        // - sa_handler == exit_current_and_run_next → 终止进程（SIGTERM/SIGINT等）
-        // - 其它值也按终止处理，避免信号被静默忽略导致死循环
-        if sig_action.act.sa_handler == 1 {
-            debug!("handle_signal: ignore (SIG_IGN), signo={}", signo);
-        } else {
-            debug!("handle_signal: terminate, signo={}", signo);
-            exit_current_and_run_next((signo + 128) as i32);
+        match SigSet::from_sig(signo).default_op() {
+            SigOp::Ignore => {
+                debug!("handle_signal: ignore (SIG_IGN), signo={}", signo);
+            }
+            SigOp::Stop => {
+                debug!("handle_signal: stop, signo={}", signo);
+                let task = current_task().unwrap();
+                let parent_pid = task.ppid();
+                task.process.meta_lock().stopped_signal = Some(signo);
+                if let Some(parent) = Process::get_process_arc_by_pid(parent_pid) {
+                    parent.meta_lock().child_exit_event.wake();
+                    let no_cld_stop = parent
+                        .inner_lock()
+                        .get_locked_sigtable()
+                        .action(SIGCHLD)
+                        .act
+                        .sa_flags
+                        .contains(SigActionFlags::SA_NOCLDSTOP);
+                    if !no_cld_stop {
+                        let _ = send_signal_to_thread_group(parent_pid, SigSet::SIGCHLD);
+                    }
+                }
+                drop(task);
+                stop_current_and_run_next();
+            }
+            SigOp::Continue => {
+                debug!("handle_signal: continue, signo={}", signo);
+                current_task().unwrap().process.meta_lock().stopped_signal = None;
+            }
+            SigOp::Terminate | SigOp::CoreDump => {
+                debug!("handle_signal: terminate, signo={}", signo);
+                exit_current_and_run_next((signo + 128) as i32);
+            }
         }
     }
 }
@@ -313,12 +337,24 @@ pub fn restore_frame() -> SyscallRet {
     Ok(trap_cx.get_a0())
 }
 
-/// 向task的inner的sig_pending按位或一个signal
-/// 对于阻塞态的线程，每次向他发送信号，都需要唤醒相应的线程进行处理
-fn add_signal(task: &TaskControlBlock, signal: SigSet) {
+/// 向 task 挂起信号，并按信号语义把可唤醒的任务放回 ready queue。
+///
+/// 返回值表示本次投递是否把 `Stopped` 任务恢复为 `Ready`。`kill(SIGCONT)`
+/// 需要用这个结果决定是否主动调度一次，让刚恢复的子进程先处理 SIGCONT。
+fn add_signal(task: &TaskControlBlock, signal: SigSet) -> bool {
     let mut task_inner = task.inner_lock();
     // debug!("add signal: tid {}, signal: {}", task.tid(), signal.bits());
     task_inner.sig_pending |= signal;
+    if task_inner.task_status == TaskStatus::Stopped
+        && signal.intersects(SigSet::SIGCONT | SigSet::SIGKILL)
+    {
+        task_inner.task_status = TaskStatus::Ready;
+        drop(task_inner);
+        if let Some(task) = tid_to_task::tid2task(task.tid()) {
+            ready_queue::add_task(&task);
+        }
+        return true;
+    }
     if task_inner.task_status == TaskStatus::Blocked {
         // SIGKILL 等信号必须把任务从 pipe/futex 等等待中唤醒，
         // 这样任务才能回到 trap 返回路径处理 pending signal。
@@ -328,21 +364,28 @@ fn add_signal(task: &TaskControlBlock, signal: SigSet) {
             ready_queue::add_task(&task);
         }
     }
+    false
 }
 
 /// 向进程/线程组发信号
-/// 如果未找到这个进程/线程组，会return
+/// 如果未找到这个进程/线程组，会 return。
+///
+/// 成功时返回被本次信号从 `Stopped` 唤醒的线程数；syscall 层仍需把
+/// `kill(2)` 的用户可见返回值规整为 0。
 pub fn send_signal_to_thread_group(pid: usize, sig: SigSet) -> Result<usize, SysErrNo> {
     let process = Process::get_process_arc_by_pid(pid);
     if let Some(proc) = process {
         // debug!("{} receive signal, my parent is {}", pid, proc.ppid());
         let tasks = &proc.meta_lock().tasks;
+        let mut resumed = 0;
         for task in tasks.iter() {
             if let Some(task) = task.upgrade() {
-                add_signal(&task, sig);
+                if add_signal(&task, sig) {
+                    resumed += 1;
+                }
             }
         }
-        return Ok(0);
+        return Ok(resumed);
     } else {
         // No such process
         return Err(SysErrNo::ESRCH);
