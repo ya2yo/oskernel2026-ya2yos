@@ -154,6 +154,9 @@ pub fn test_musl_ltp() {
 }
 #[allow(unused)]
 pub fn test_musl_single(test_name: &str) {
+    println!(
+            "#### OS COMP TEST GROUP START ltp-musl ####"
+        );
     println!("RUN MUSL LTP SINGLE CASE {}", trim_trailing_nul(test_name));
     let r = fork_and_run("/musl/ltp/testcases/bin\0", &[test_name]);
     println!(
@@ -164,6 +167,9 @@ pub fn test_musl_single(test_name: &str) {
     let mut summary = LtpSummary::default();
     summary.record_wait_status(r);
     summary.print();
+    println!(
+            "#### OS COMP TEST GROUP END ltp-musl ####"
+        );
 }
 
 // glibc
