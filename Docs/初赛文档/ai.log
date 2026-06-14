@@ -1233,3 +1233,56 @@ warnings 0
 ```
 
 不再出现 `/proc/sys/kernel/pid_max` 的 `ENOENT` / `TBROK`。
+
+---
+
+## 2026-06-14: wait403 wait4(INT_MIN) ESRCH 修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复 bug。日志显示：
+
+```text
+wait403.c:31: TFAIL: wait4 fails with ESRCH expected ESRCH: ECHILD (10)
+```
+
+### 分析
+
+AI 先扫描 `log.ans`，确认失败测例为 `wait403`，实际返回 `ECHILD`，期望 `ESRCH`。随后检查 `os/src/syscall/task/wait.rs`，发现 `sys_waitpid()` 对 `pid <= -2` 统一执行 `(-pid) as u32` 并作为进程组等待处理。
+
+当 LTP 传入 `i32::MIN` 时，`-pid` 在 `i32` 范围内不可表示。release 构建下该值绕回后被转换成假的 pgid；当前进程组匹配路径不匹配任何 child，于是返回 `ECHILD`。Linux 对这个非法 selector 期望直接返回 `ESRCH`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/wait.rs` | 在解析 wait selector 前对 `pid == i32::MIN` 返回 `ESRCH` |
+| `Docs/初赛文档/problem/wait403-int-min-esrch.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.14 开发日志 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加 AI 交互摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 90s make run
+```
+
+结果：
+
+- `make` 通过。
+- `timeout 90s make run` 单跑 `wait403` 通过：
+
+```text
+wait403.c:31: TPASS: wait4 fails with ESRCH : ESRCH (3)
+
+Summary:
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```

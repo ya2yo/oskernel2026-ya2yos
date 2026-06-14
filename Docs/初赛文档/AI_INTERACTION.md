@@ -478,3 +478,10 @@
 - **场景**：Bug 分析与定位、proc 兼容节点补齐、文档完善
 - **描述**：用户提供 `log.ans`，其中 `wait402` 在读取 `/proc/sys/kernel/pid_max` 时因 `ENOENT` 直接 `TBROK`。AI 检查日志和 proc 初始化代码后确认 `/proc/sys/kernel` 已存在，但只创建了 `tainted`，缺少 `pid_max` 兼容节点。修复在启动初始化中创建 `/proc/sys/kernel/pid_max` 并写入 Linux 常见值 `4194304`；随后 `make` 通过，`timeout 90s make run` 单跑 `wait402` 输出 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `ai.log` 2026-06-14 条目与 [problem/wait402-pid-max-proc.md](./problem/wait402-pid-max-proc.md)。
 - **关联 commit**：本次提交
+
+#### wait403 wait4(INT_MIN) ESRCH 修复（6.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、wait4 errno 兼容修复、文档完善
+- **描述**：用户提供新的 `log.ans`，其中 `wait403` 期望 `wait4` 返回 `ESRCH`，但 Ya2yOS 返回 `ECHILD`。AI 检查 `sys_waitpid()` 后确认 `pid <= -2` 会统一取反为 pgid，遇到 `i32::MIN` 时不可表示的 `-pid` 被 release 构建绕回，随后落入普通进程组等待并返回 `ECHILD`。修复为解析 wait selector 前对 `pid == i32::MIN` 直接返回 `ESRCH`。`make` 通过，`timeout 90s make run` 单跑 `wait403` 输出 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `ai.log` 2026-06-14 条目与 [problem/wait403-int-min-esrch.md](./problem/wait403-int-min-esrch.md)。
+- **关联 commit**：本次提交

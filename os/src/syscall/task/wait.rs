@@ -47,6 +47,10 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
     let options = WaitOption::from_bits_truncate(options);
     debug!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
+    if pid == i32::MIN {
+        return Err(SysErrNo::ESRCH);
+    }
+
     // Interpret the `pid` argument per POSIX waitpid() semantics:
     //
     //   pid > 0   : wait for the specific child with that PID.
