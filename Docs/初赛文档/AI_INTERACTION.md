@@ -464,3 +464,10 @@
 - **场景**：Bug 分析与定位、测试输出适配、文档完善
 - **描述**：用户反馈 musl LTP `munmap01` 没有正常输出 Summary，并指出最终跑分会运行 `test_musl_ltp()` 等批量入口。AI 检查 `log.ans` 后确认测例实际已 TPASS，`munmap` 后的 StorePageFault 是测试预期，SIGSEGV handler 正常执行并退出 0；问题在 LTP 包装层只打印 wait status，旧式 LTP 输出不会自动生成统一 Summary。AI 修改 `run_ltp_tests_musl*()` / `run_ltp_tests_glibc()`，按 LTP 退出类型累计 passed/failed/broken/skipped/warnings，并去掉测试名末尾 NUL。`make` 与 `timeout 90s make run` 通过，munmap01 输出 TPASS 后出现 Summary。详见 `ai.log` 2026-06-13 条目与 [problem/ltp-summary-wrapper.md](./problem/ltp-summary-wrapper.md)。
 - **关联 commit**：本次提交
+
+#### LTP Summary 按输出 TPASS 数量统计（6.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、测试输出适配、文档完善
+- **描述**：用户指出 Summary 的 `passed` 不应由返回值决定，而应按 LTP 输出中的 `TPASS` 数量统计。AI 检查包装层后确认旧逻辑只能从 wait status 得知测例是否整体 exit 0，无法反映一个测例内多条断言结果。AI 将 LTP 子进程 stdout/stderr 接入 pipe，由父进程边转发日志边扫描 `TPASS/TFAIL/TBROK/TCONF/TWARN` token，Summary 优先按输出 token 数累计，只有无 token 时才退回 wait status。`make` 通过；`timeout 90s make run` 验证 abort01 两条 TPASS 汇总为 `passed 2`，后续 mixed TPASS/TFAIL/TWARN 测例也按输出数量递增。详见 `ai.log` 2026-06-14 条目与 [problem/ltp-summary-wrapper.md](./problem/ltp-summary-wrapper.md)。
+- **关联 commit**：本次提交

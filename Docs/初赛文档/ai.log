@@ -1122,3 +1122,57 @@ make loongarch64-build
 - `Docs/初赛文档/problem/README.md`
 - `Docs/初赛文档/开发日志.md`
 - `Docs/初赛文档/AI_INTERACTION.md`
+
+---
+
+## 2026-06-14: LTP Summary 按输出 TPASS 数量统计
+
+### 用户需求
+
+用户指出当前 Summary 打印时是根据返回值决定 `passed` 数量，希望改为根据输出中的 `TPASS` 数量进行输出。
+
+### 分析
+
+AI 检查 `user/src/bin/ltp/mod.rs`，确认上一版 `LtpSummary::record_wait_status()` 只根据 wait status 还原 LTP exit code：
+
+- `exit_code == 0` 计 1 个 `passed`
+- `TFAIL/TBROK/TCONF/TWARN` bit 分别计 failed/broken/skipped/warnings
+
+该逻辑能补齐旧式 LTP Summary，但不能表达一个测例内多条断言结果。例如 `abort01` 会输出 2 条 `TPASS`，旧统计只会累计 1 个 passed。
+
+父进程原先只调用 `fork_and_run()`，拿到 wait status，无法直接知道子进程打印了多少条 `TPASS`。因此修复点必须在 LTP 包装层捕获子进程 stdout/stderr。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `user/src/bin/ltp/mod.rs` | 新增 `fork_run_ltp_and_collect()`，通过 pipe 捕获 LTP 子进程 stdout/stderr，父进程原样回写 stdout 并扫描输出 token |
+| `user/src/bin/ltp/mod.rs` | 新增 `LtpOutputScanner` / `LtpOutputCounts`，流式统计 `TPASS/TFAIL/TBROK/TCONF/TWARN`，支持 token 跨 read chunk |
+| `user/src/bin/ltp/mod.rs` | `LtpSummary::record_run_result()` 优先按输出 token 数累计，只有没捕获到 token 时才退回 wait status 统计 |
+| `Docs/初赛文档/problem/ltp-summary-wrapper.md` | 补充统计口径修正说明和验证摘录 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.14 开发日志 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加 AI 交互摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 90s make run
+```
+
+结果：
+
+- `make` 通过。
+- `timeout 90s make run` 因全量 LTP 未跑完被外部 timeout 结束，但已验证 Summary 按输出 token 累计：
+
+```text
+abort01.c:62: TPASS: abort() dumped core
+abort01.c:65: TPASS: abort() raised SIGIOT
+
+Summary:
+passed   2
+```
+
+随后 `accept01` 输出 5 条 `TPASS` 后累计 `passed` 从 2 增加到 7；`access04` 输出 9 条 `TPASS`、3 条 `TFAIL` 和 1 条 `TWARN` 后，累计 Summary 对应增加。
