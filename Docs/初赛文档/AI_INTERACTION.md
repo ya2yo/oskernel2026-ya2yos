@@ -471,3 +471,10 @@
 - **场景**：Bug 分析与定位、测试输出适配、文档完善
 - **描述**：用户指出 Summary 的 `passed` 不应由返回值决定，而应按 LTP 输出中的 `TPASS` 数量统计。AI 检查包装层后确认旧逻辑只能从 wait status 得知测例是否整体 exit 0，无法反映一个测例内多条断言结果。AI 将 LTP 子进程 stdout/stderr 接入 pipe，由父进程边转发日志边扫描 `TPASS/TFAIL/TBROK/TCONF/TWARN` token，Summary 优先按输出 token 数累计，只有无 token 时才退回 wait status。`make` 通过；`timeout 90s make run` 验证 abort01 两条 TPASS 汇总为 `passed 2`，后续 mixed TPASS/TFAIL/TWARN 测例也按输出数量递增。详见 `ai.log` 2026-06-14 条目与 [problem/ltp-summary-wrapper.md](./problem/ltp-summary-wrapper.md)。
 - **关联 commit**：本次提交
+
+#### wait402 /proc/sys/kernel/pid_max 缺失修复（6.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、proc 兼容节点补齐、文档完善
+- **描述**：用户提供 `log.ans`，其中 `wait402` 在读取 `/proc/sys/kernel/pid_max` 时因 `ENOENT` 直接 `TBROK`。AI 检查日志和 proc 初始化代码后确认 `/proc/sys/kernel` 已存在，但只创建了 `tainted`，缺少 `pid_max` 兼容节点。修复在启动初始化中创建 `/proc/sys/kernel/pid_max` 并写入 Linux 常见值 `4194304`；随后 `make` 通过，`timeout 90s make run` 单跑 `wait402` 输出 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `ai.log` 2026-06-14 条目与 [problem/wait402-pid-max-proc.md](./problem/wait402-pid-max-proc.md)。
+- **关联 commit**：本次提交

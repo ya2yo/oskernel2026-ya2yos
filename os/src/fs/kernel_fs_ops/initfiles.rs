@@ -109,6 +109,7 @@ const ADJTIME: &str = "0.000000 0.000000 UTC\n";
 const LOCALTIME: &str =
     "lrwxrwxrwx 1 root root 33 11月 18  2023 /etc/localtime -> /usr/share/zoneinfo/Asia/Shanghai\n";
 const PRELOAD: &str = "";
+const PID_MAX: &str = "4194304\n";
 
 pub fn create_init_files() -> GeneralRet {
     // 写入预先加载内容
@@ -181,6 +182,21 @@ pub fn create_init_files() -> GeneralRet {
     }
     let taintedbuf = UserBuffer::new(taintedvec);
     taintedfile.write(taintedbuf)?;
+    //创建/proc/sys/kernel/pid_max 进程号上限
+    let pid_maxfile = open(
+        "/proc/sys/kernel/pid_max",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+        DEFAULT_FILE_MODE,
+    )?
+    .file()?;
+    let mut pid_max = String::from(PID_MAX);
+    let mut pid_maxvec = Vec::new();
+    unsafe {
+        let p = pid_max.as_bytes_mut();
+        pid_maxvec.push(core::slice::from_raw_parts_mut(p.as_mut_ptr(), p.len()));
+    }
+    let pid_maxbuf = UserBuffer::new(pid_maxvec);
+    pid_maxfile.write(pid_maxbuf)?;
     //创建/dev文件夹
     open(
         "/dev",

@@ -1176,3 +1176,60 @@ passed   2
 ```
 
 随后 `accept01` 输出 5 条 `TPASS` 后累计 `passed` 从 2 增加到 7；`access04` 输出 9 条 `TPASS`、3 条 `TFAIL` 和 1 条 `TWARN` 后，累计 Summary 对应增加。
+
+---
+
+## 2026-06-14: wait402 /proc/sys/kernel/pid_max 缺失修复
+
+### 用户需求
+
+用户提供 `log.ans` 中的报错：
+
+```text
+wait402.c:30: TBROK: Failed to open FILE '/proc/sys/kernel/pid_max' for reading: ENOENT (2)
+```
+
+要求分析原因并修复。
+
+### 分析
+
+AI 按 `fix-bug` 流程先检查 `log.ans`，确认 `wait402` 在 `open("/proc/sys/kernel/pid_max")` 阶段返回 `ENOENT`，尚未进入 `wait4()` 语义断言。随后检查 proc 初始化代码，发现 `create_init_files()` 已创建 `/proc/sys/kernel` 和 `/proc/sys/kernel/tainted`，但没有创建 `/proc/sys/kernel/pid_max`。
+
+`wait402` 只需要读取一个合法整数，用来调用 `wait4(pid_max + 1, ...)` 并期望 `ECHILD`，不依赖动态 sysctl 写入。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | 新增 `PID_MAX = "4194304\n"`，启动初始化时创建并写入 `/proc/sys/kernel/pid_max` |
+| `Docs/初赛文档/problem/wait402-pid-max-proc.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.14 开发日志 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加 AI 交互摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 90s make run
+```
+
+结果：
+
+- `make` 通过。
+- `timeout 90s make run` 单跑 `wait402` 通过：
+
+```text
+wait402.c:25: TPASS: wait4(pid_max + 1, &status, 0, &rusage) : ECHILD (10)
+
+Summary:
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+不再出现 `/proc/sys/kernel/pid_max` 的 `ENOENT` / `TBROK`。

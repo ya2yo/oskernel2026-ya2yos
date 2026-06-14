@@ -32,6 +32,7 @@
 - [LTP creat04 open 权限检查](./creat04-open-permission.md)
 - [sys_linkat 硬链接实现与 lwext4 重构](./linkat-hardlink-refactor.md)
 - [fsconfig / fsopen / fsmount 基础实现](./fsconfig-syscall.md)
+- [wait402: /proc/sys/kernel/pid_max 缺失](./wait402-pid-max-proc.md)
 
 ## 测例与驱动
 
