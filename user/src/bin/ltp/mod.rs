@@ -138,7 +138,6 @@ pub fn run_ltp_tests_musl_separately(tests: &[&str], blacklist: &[&str]) {
             println!("FAIL LTP CASE {} : {}", trim_trailing_nul(test), r);
             j += 1;
         }
-        summary.print();
         println!(
             "#### OS COMP TEST GROUP END ltp-musl ####"
         );
@@ -157,16 +156,12 @@ pub fn test_musl_single(test_name: &str) {
     println!(
             "#### OS COMP TEST GROUP START ltp-musl ####"
         );
-    println!("RUN MUSL LTP SINGLE CASE {}", trim_trailing_nul(test_name));
+    println!("RUN LTP CASE {}", trim_trailing_nul(test_name));
     let r = fork_and_run("/musl/ltp/testcases/bin\0", &[test_name]);
-    println!(
-        "RESULT MUSL LTP SINGLE CASE {} : {}",
-        trim_trailing_nul(test_name),
-        r
-    );
-    // let mut summary = LtpSummary::default();
-    // summary.record_wait_status(r);
-    // summary.print();
+    println!("FAIL LTP CASE {} : {}", trim_trailing_nul(test_name), r);
+    let mut summary = LtpSummary::default();
+    summary.record_wait_status(r);
+    summary.print();
     println!(
             "#### OS COMP TEST GROUP END ltp-musl ####"
         );
