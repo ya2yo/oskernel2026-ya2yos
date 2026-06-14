@@ -164,9 +164,9 @@ pub fn test_musl_single(test_name: &str) {
         trim_trailing_nul(test_name),
         r
     );
-    let mut summary = LtpSummary::default();
-    summary.record_wait_status(r);
-    summary.print();
+    // let mut summary = LtpSummary::default();
+    // summary.record_wait_status(r);
+    // summary.print();
     println!(
             "#### OS COMP TEST GROUP END ltp-musl ####"
         );
