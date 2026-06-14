@@ -1,9 +1,7 @@
 /// 存放系统调用的各种Option
 use crate::mm::MapPermission;
 use linux_raw_sys::general::{
-    MAP_ANONYMOUS, MAP_DENYWRITE, MAP_EXECUTABLE, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN,
-    MAP_NORESERVE, MAP_POPULATE, MAP_PRIVATE, MAP_SHARED, MAP_STACK, WCONTINUED, WNOHANG, WNOWAIT,
-    WUNTRACED,
+    MAP_ANONYMOUS, MAP_DENYWRITE, MAP_EXECUTABLE, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN, MAP_NORESERVE, MAP_POPULATE, MAP_PRIVATE, MAP_SHARED, MAP_STACK, P_ALL, P_PGID, P_PID, P_PIDFD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WSTOPPED, WUNTRACED
 };
 use num_enum::FromPrimitive;
 
@@ -15,12 +13,24 @@ bitflags! {
         const DEFAULT = 0;
         const WNOHANG = WNOHANG;
         const WUNTRACED = WUNTRACED;
+        const WSTOPPED = WSTOPPED;
+        const WEXITED = WEXITED;
         const WCONTINUED = WCONTINUED;
         const WNOWAIT = WNOWAIT;
+        /// Don't wait on children of other threads in this group
+        const __WONTHREAD = 0x20000000;
         /// Wait for all children regardless of exit_signal type (SIGCHLD or clone)
         const __WALL = 0x40000000;
         /// Wait for clone children only (those created without SIGCHLD, exit_signal == -1)
         const __WCLONE = 0x80000000;
+    }
+}
+bitflags! {
+    pub struct IdType: u32 {
+        const P_ALL = P_ALL;
+        const P_PID = P_PID;
+        const P_PGID = P_PGID;
+        const P_PIDFD =	P_PIDFD;
     }
 }
 

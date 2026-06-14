@@ -485,3 +485,10 @@
 - **场景**：Bug 分析与定位、wait4 errno 兼容修复、文档完善
 - **描述**：用户提供新的 `log.ans`，其中 `wait403` 期望 `wait4` 返回 `ESRCH`，但 Ya2yOS 返回 `ECHILD`。AI 检查 `sys_waitpid()` 后确认 `pid <= -2` 会统一取反为 pgid，遇到 `i32::MIN` 时不可表示的 `-pid` 被 release 构建绕回，随后落入普通进程组等待并返回 `ECHILD`。修复为解析 wait selector 前对 `pid == i32::MIN` 直接返回 `ESRCH`。`make` 通过，`timeout 90s make run` 单跑 `wait403` 输出 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `ai.log` 2026-06-14 条目与 [problem/wait403-int-min-esrch.md](./problem/wait403-int-min-esrch.md)。
 - **关联 commit**：本次提交
+
+#### waitid 系统调用实现（6.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：系统调用实现、LTP 兼容修复、文档完善
+- **描述**：用户要求实现 `waitid` syscall。AI 检查 syscall 表后确认 `WaitId = 95` 已接入但 `sys_waitid()` 未完成；随后参考现有 `sys_waitpid()` 实现等待、信号中断、`WNOHANG`、`WNOWAIT` 和回收路径，并补齐 `SigInfo` 中 Linux/musl `SIGCHLD` 所需的 `si_status` 布局。`make` 通过，`timeout 150s make run` 单跑 `waitid01` 输出 5 项 TPASS。详见 `ai.log` 2026-06-14 条目与 [problem/waitid-syscall.md](./problem/waitid-syscall.md)。
+- **关联 commit**：本次提交

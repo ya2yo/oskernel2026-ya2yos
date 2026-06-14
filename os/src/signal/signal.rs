@@ -263,13 +263,15 @@ impl SignalStack {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SigInfo {
-    si_signo: u32, // 偏移量：0
-    si_errno: u32, // 偏移量：4
-    si_code: u32,  // 偏移量：8
-    si_12: u32,    // 含义未知
-    si_16: u32,    // pid
+    si_signo: u32,  // 偏移量：0
+    si_errno: u32,  // 偏移量：4
+    si_code: u32,   // 偏移量：8
+    si_12: u32,     // 64-bit Linux aligns the siginfo union to offset 16.
+    si_pid: u32,    // 偏移量：16
+    si_uid: u32,    // 偏移量：20
+    si_status: u32, // 偏移量：24
     // unsupported fields
-    __pad: [u8; 128 - 5 * core::mem::size_of::<u32>()],
+    __pad: [u8; 128 - 7 * core::mem::size_of::<u32>()],
 }
 
 impl SigInfo {
@@ -279,8 +281,28 @@ impl SigInfo {
             si_errno: si_errno as u32,
             si_code: si_code as u32,
             si_12: 0,
-            si_16,
-            __pad: [0; 128 - 5 * core::mem::size_of::<u32>()],
+            si_pid: si_16,
+            si_uid: 0,
+            si_status: 0,
+            __pad: [0; 128 - 7 * core::mem::size_of::<u32>()],
+        }
+    }
+
+    /// 构造 waitid()/SIGCHLD 使用的 siginfo_t。
+    ///
+    /// Linux/musl 在 SIGCHLD 场景下会从 siginfo union 的 child 分支读取
+    /// si_pid 和 si_status；普通 `new()` 保持兼容旧调用，这个构造函数专门
+    /// 用来填 waitid 需要返回给用户态的子进程退出信息。
+    pub fn new_child(si_signo: u32, si_code: u32, pid: u32, status: u32) -> Self {
+        Self {
+            si_signo,
+            si_errno: 0,
+            si_code,
+            si_12: 0,
+            si_pid: pid,
+            si_uid: 0,
+            si_status: status,
+            __pad: [0; 128 - 7 * core::mem::size_of::<u32>()],
         }
     }
 }

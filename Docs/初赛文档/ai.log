@@ -1286,3 +1286,57 @@ broken   0
 skipped  0
 warnings 0
 ```
+
+---
+
+## 2026-06-14: waitid 系统调用实现
+
+### 用户需求
+
+用户要求实现 `waitid` syscall。
+
+### 分析
+
+AI 按 syscall 新功能流程检查现有代码，确认 `os/src/syscall/mod.rs` 已有 `WaitId = 95` 和分发入口，但 `os/src/syscall/task/wait.rs` 中 `sys_waitid()` 只有未完成的参数校验和残缺 `match`。现有 `sys_waitpid()` 已具备子进程等待、`WNOHANG`、`WNOWAIT`、信号中断和资源回收逻辑，可以作为 waitid 的主体参考。
+
+同时检查 `SigInfo` 布局后发现当前结构只覆盖到 offset 16 的 pid 字段，无法填写 LTP `waitid01` 检查的 `si_status`。结合 Linux/musl `SIGCHLD` siginfo 布局，补齐 offset 20 的 uid 和 offset 24 的 status 字段。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/signal/signal.rs` | 补齐 `SigInfo` 的 `si_pid/si_uid/si_status` 布局，新增 `SigInfo::new_child()` |
+| `os/src/syscall/task/wait.rs` | 完成 `sys_waitid()`，支持 selector、options 校验、siginfo 填充、`WNOHANG`、`WNOWAIT` 和回收 |
+| `Docs/初赛文档/problem/waitid-syscall.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.14 开发日志 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加 AI 交互摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 150s make run
+```
+
+结果：
+
+- `make` 通过。
+- `waitid01` 通过 5 项断言：
+
+```text
+waitid01.c:28: TPASS: waitid(P_ALL, 0, infop, WEXITED) passed
+waitid01.c:29: TPASS: infop->si_pid == pidchild (4)
+waitid01.c:30: TPASS: infop->si_status == 123 (123)
+waitid01.c:31: TPASS: infop->si_signo == SIGCHLD (17)
+waitid01.c:32: TPASS: infop->si_code == CLD_EXITED (1)
+
+Summary:
+passed   5
+failed   0
+broken   0
+skipped  0
+warnings 0
+```

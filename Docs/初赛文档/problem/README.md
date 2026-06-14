@@ -13,6 +13,7 @@
 - [单独运行cgroup_fj_proc 卡死](./cgroup-fj-proc.md)
 - [futex 信号中断后残留 Waiter 导致重复唤醒 panic](./futex-waiter-panic.md)
 - [wait4 阻塞未处理信号导致死循环](./wait4-signal.md)
+- [waitid 系统调用实现](./waitid-syscall.md)
 - [wait403: wait4(INT_MIN) errno](./wait403-int-min-esrch.md)
 - [进程退出托孤 exit_and_reparent](./exit-reparent.md)
 - [线程信号栈检查错误与 futex 退出死锁](./thread-signal-stack-futex-deadlock.md)

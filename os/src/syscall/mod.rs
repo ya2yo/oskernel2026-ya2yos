@@ -54,6 +54,7 @@ pub enum Syscall {
     Unlinkat = 35,
     Symlinkat = 36,
     Linkat = 37,
+    Renameat = 38,
     Umount2 = 39,
     Mount = 40,
     PivotRoot = 41,
@@ -306,11 +307,11 @@ use time::*;
 pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
     let id = syscall_id;
     let syscall_id: Syscall = Syscall::from(syscall_id);
-    // log::debug!(
-    //     "[syscall begin] {:?} sepc = {:#x}",
-    //     syscall_id,
-    //     current_task().unwrap().inner_lock().trap_cx().get_sepc()
-    // );
+    log::debug!(
+        "[syscall begin] {:?} sepc = {:#x}",
+        syscall_id,
+        current_task().unwrap().inner_lock().trap_cx().get_sepc()
+    );
     match syscall_id {
         // Xattr
         Syscall::Setxattr => sys_setxattr(args[0], args[1], args[2], args[3], args[4]),
@@ -361,6 +362,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[3] as *const u8,
             args[4] as u32,
         ),
+        Syscall::Renameat => sys_renameat2(args[0] as isize, args[1] as *const u8, args[2] as isize, args[3] as *const u8, 0u32),
         Syscall::Umount2 => sys_umount2(args[0] as *const u8, args[1] as u32),
         Syscall::Mount => sys_mount(
             args[0] as *const u8,
@@ -725,6 +727,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Mincore => sys_mincore(args[0], args[1], args[2] as *mut u8),
         Syscall::MSync => Ok(0),
         Syscall::Madvise => sys_madvise(args[0], args[1], args[2]),
+        Syscall::WaitId => sys_waitid(args[0] as i32, args[1] as i32, args[2] as *mut SigInfo, args[3] as i32),
         Syscall::Wait4 => sys_waitpid(args[0] as i32, args[1] as *mut i32, args[2] as u32),
 
         Syscall::Renameat2 => sys_renameat2(

@@ -1,11 +1,14 @@
 use core::{future::poll_fn, task::Poll};
 
 use alloc::{sync::Arc, vec::Vec};
+use linux_raw_sys::general::{CLD_EXITED, P_ALL, P_PGID, P_PID, P_PIDFD};
 use log::debug;
 
 use crate::{
     mm::copy_to_user,
-    signal::{check_if_any_sig_for_current_task, SigActionFlags, SigOp, SigSet, SIGCHLD, SIG_IGN},
+    signal::{
+        check_if_any_sig_for_current_task, SigActionFlags, SigInfo, SigOp, SigSet, SIGCHLD, SIG_IGN,
+    },
     syscall::options::WaitOption,
     task::{block_on, current_task, interruptible, suspend_current_and_run_next, Process},
     utils::{SysErrNo, SyscallRet},
@@ -23,9 +26,17 @@ enum WaitPid {
     /// is added, `ProcessMeta` will carry a `pgid` field and this match arm
     /// will compare against it.
     Pgid(u32),
+    Tgid(u32),
+    Sid(u32),
+    Max,
 }
 
 impl WaitPid {
+    /// 判断一个子进程是否属于本次 wait 请求的目标集合。
+    ///
+    /// `sys_waitpid()` 会把 pid 参数、`sys_waitid()` 会把 idtype/id 参数
+    /// 先转换成 `WaitPid`，后续扫描 children 时统一调用这个函数过滤。
+    /// 这里暂时不能真正匹配进程组，因为当前内核还没有维护每个进程的 pgid。
     fn apply(&self, child: &Process) -> bool {
         match self {
             WaitPid::Any => true,
@@ -38,6 +49,7 @@ impl WaitPid {
                 // this to `child.pgid == *pgid`.
                 false
             }
+            _ => false,
         }
     }
 }
@@ -182,6 +194,199 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
             // Signals with a custom handler return EINTR (unless SA_RESTART
             // is set, in which case we consume the signal and continue).
             // Default Term/Core signals without a handler are left pending.
+            if let Some(signo) = check_if_any_sig_for_current_task() {
+                drop(process_meta);
+                let act = task
+                    .process
+                    .inner_lock()
+                    .get_locked_sigtable()
+                    .action(signo);
+                let ignorable = signo == SIGCHLD
+                    || act.act.sa_handler == SIG_IGN
+                    || (!act.customed && SigSet::from_sig(signo).default_op() == SigOp::Ignore);
+                if ignorable {
+                    task.inner_lock()
+                        .sig_pending
+                        .remove(SigSet::from_sig(signo));
+                    drop(task);
+                    return Poll::Pending;
+                }
+                if act.customed {
+                    if !act.act.sa_flags.contains(SigActionFlags::SA_RESTART) {
+                        drop(task);
+                        return Poll::Ready(Err(SysErrNo::EINTR));
+                    }
+                    task.inner_lock()
+                        .sig_pending
+                        .remove(SigSet::from_sig(signo));
+                    drop(task);
+                    return Poll::Pending;
+                }
+                drop(task);
+                return Poll::Pending;
+            }
+
+            process_meta.child_exit_event.register(cx.waker());
+            drop(process_meta);
+            drop(task);
+            Poll::Pending
+        }
+    })))?
+}
+
+/// https://www.man7.org/linux/man-pages/man2/wait.2.html
+pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> SyscallRet {
+    // waitid 的 options 只能包含 WaitOption 已知位。至少要指定一种
+    // 可等待事件；当前内核只真正产生 WEXITED 事件，WSTOPPED/WCONTINUED
+    // 先按 Linux 参数校验规则接受。
+    let options = WaitOption::from_bits(options as u32).ok_or(SysErrNo::EINVAL)?;
+    if !(options.contains(WaitOption::WEXITED)
+        || options.contains(WaitOption::WSTOPPED)
+        || options.contains(WaitOption::WCONTINUED))
+    {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // idtype 是枚举值，不是 bitflags，不能用 from_bits_truncate。
+    // 先把 Linux selector 转成本文件复用的 WaitPid，后续扫描 children
+    // 时与 waitpid 共用一套过滤逻辑。
+    let wait_pid = match idtype as u32 {
+        P_ALL => WaitPid::Any,
+        P_PID if id > 0 => WaitPid::Pid(id as usize),
+        P_PID => return Err(SysErrNo::EINVAL),
+        // Process groups are not tracked yet.  Keep id == 0 compatible with
+        // the waitpid(0) behavior in this kernel and reject nonzero pgids by
+        // making the filter match no children.
+        P_PGID if id == 0 => WaitPid::Any,
+        P_PGID if id > 0 => WaitPid::Pgid(id as u32),
+        P_PGID => return Err(SysErrNo::EINVAL),
+        P_PIDFD => return Err(SysErrNo::EBADF),
+        _ => return Err(SysErrNo::EINVAL),
+    };
+
+    debug!("sys_waitid <= idtype: {idtype:?}, id: {id:?}, options: {options:?}");
+
+    block_on(interruptible(poll_fn(|cx| {
+        let task = current_task().unwrap();
+        let mut process_meta = task.process.meta_lock();
+
+        // 先按 selector 与 __W* clone 过滤出本次 waitid 可以观察的子进程。
+        // 如果一个都没有，说明调用者没有符合条件的 child，返回 ECHILD。
+        let children: Vec<Arc<Process>> = process_meta
+            .children
+            .iter()
+            .filter_map(|w| w.upgrade())
+            .filter(|child| wait_pid.apply(child))
+            .filter(|child| {
+                if options.contains(WaitOption::__WALL) {
+                    return true;
+                }
+                let child_exit_signal = child.meta_lock().exit_signal;
+                if options.contains(WaitOption::__WCLONE) {
+                    child_exit_signal == -1
+                } else {
+                    child_exit_signal == SIGCHLD as i32
+                }
+            })
+            .collect();
+
+        if children.is_empty() {
+            return Poll::Ready(Err(SysErrNo::ECHILD));
+        }
+
+        // 当前内核没有 stopped/continued 状态机，因此只有请求 WEXITED 时
+        // 才可能找到可返回的 child。
+        let pair = if options.contains(WaitOption::WEXITED) {
+            children
+                .iter()
+                .find(|child| child.all_tasks_exited())
+                .map(Arc::clone)
+        } else {
+            None
+        };
+
+        drop(children);
+
+        if let Some(child) = pair {
+            let found_pid = child.pid;
+            let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
+            let child_usage = child.meta_lock().usage;
+
+            // waitid 成功时返回值是 0，具体结果写入 siginfo_t。
+            // 正常 exit 事件使用 SIGCHLD + CLD_EXITED，si_status 保存未左移的退出码。
+            if !infop.is_null() {
+                let sig_info = SigInfo::new_child(
+                    SIGCHLD as u32,
+                    CLD_EXITED,
+                    found_pid as u32,
+                    exit_code as u32,
+                );
+                let proc_inner = task.process.inner_lock();
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                if copy_to_user(&memory_set, infop as usize, unsafe {
+                    core::slice::from_raw_parts(
+                        &sig_info as *const SigInfo as *const u8,
+                        core::mem::size_of::<SigInfo>(),
+                    )
+                })
+                .is_err()
+                {
+                    return Poll::Ready(Err(SysErrNo::EFAULT));
+                }
+            }
+
+            // WNOWAIT 表示只观察，不回收 zombie。否则与 waitpid 一样累计
+            // RUSAGE_CHILDREN 相关时间/RSS，并从父进程 children 与全局 pid map 中移除。
+            if !options.contains(WaitOption::WNOWAIT) {
+                {
+                    let mut task_inner = task.inner_lock();
+                    task_inner.time_data.cutime += child_usage.utime + child_usage.cutime;
+                    task_inner.time_data.cstime += child_usage.stime + child_usage.cstime;
+                    task_inner.time_data.cmaxrss = task_inner
+                        .time_data
+                        .cmaxrss
+                        .max(child_usage.maxrss)
+                        .max(child_usage.cmaxrss);
+                }
+                if let Some(idx) = process_meta.children.iter().position(|child| {
+                    child
+                        .upgrade()
+                        .map(|child| child.pid == found_pid)
+                        .unwrap_or(false)
+                }) {
+                    process_meta.children.remove(idx);
+                }
+                drop(child);
+                Process::remove_from_global_map(found_pid);
+            }
+
+            if infop.is_null() {
+                Poll::Ready(Ok(found_pid))
+            } else {
+                Poll::Ready(Ok(0))
+            }
+        } else if options.contains(WaitOption::WNOHANG) {
+            // Linux 规定 WNOHANG 且无可返回 child 时成功返回 0。
+            // 为避免用户态读到旧内容，这里也把 infop 清零。
+            if !infop.is_null() {
+                let sig_info = SigInfo::new(0, 0, 0, 0);
+                let proc_inner = task.process.inner_lock();
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                if copy_to_user(&memory_set, infop as usize, unsafe {
+                    core::slice::from_raw_parts(
+                        &sig_info as *const SigInfo as *const u8,
+                        core::mem::size_of::<SigInfo>(),
+                    )
+                })
+                .is_err()
+                {
+                    return Poll::Ready(Err(SysErrNo::EFAULT));
+                }
+            }
+            Poll::Ready(Ok(0))
+        } else {
+            // 没有可返回 child 且允许阻塞时，先按 waitpid 相同规则处理待决信号；
+            // 再把当前任务注册到父进程的 child_exit_event，等待子进程退出唤醒。
             if let Some(signo) = check_if_any_sig_for_current_task() {
                 drop(process_meta);
                 let act = task
