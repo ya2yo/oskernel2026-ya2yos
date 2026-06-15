@@ -506,3 +506,10 @@
 - **场景**：Bug 分析与定位、waitid 信号语义修复、文档完善
 - **描述**：用户提供 `log.ans`，其中 `waitid10` 在 `SIGFPE` 触发 core dump 场景下得到 `si_status=136` 和 `si_code=CLD_EXITED`，而 LTP 期望 `si_status=SIGFPE` 和 `si_code=CLD_DUMPED`。AI 定位到默认信号终止路径只保存 `128 + signo` exit code，`waitid()` 无法区分普通退出和 core dump 信号终止。修复在 `ProcessMeta` 记录默认信号终止原因，`waitid()` 根据信号记录返回 `CLD_KILLED/CLD_DUMPED` 与原始信号号。`make` 通过，`timeout 90s make run` 单跑 `waitid10` 输出 5 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitid10-core-dumped.md](./problem/waitid10-core-dumped.md)。
 - **关联 commit**：本次提交
+
+#### waitid08 WCONTINUED 事件修复（6.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、waitid continued 事件语义修复、文档完善
+- **描述**：用户提供新的 `log.ans`，其中 `waitid08` 的 `WSTOPPED` 部分已经 TPASS，但父进程进入 `waitid(WCONTINUED)` 后阻塞，子进程 checkpoint futex 超时。AI 定位到 `SIGCONT` 只恢复 stopped task，没有记录可由 `waitid(WCONTINUED)` 观察的 continued event。修复在 `ProcessMeta` 新增 `continued_signal`，`SIGCONT` 实际恢复 stopped task 时记录事件并唤醒父进程，`waitid()` 返回 `SIGCHLD / CLD_CONTINUED / SIGCONT`。`make` 通过，`timeout 90s make run` 单跑 `waitid08` 输出 10 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitid08-wcontinued.md](./problem/waitid08-wcontinued.md)。
+- **关联 commit**：本次提交

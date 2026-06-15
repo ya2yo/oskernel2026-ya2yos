@@ -378,13 +378,19 @@ pub fn send_signal_to_thread_group(pid: usize, sig: SigSet) -> Result<usize, Sys
     let process = Process::get_process_arc_by_pid(pid);
     if let Some(proc) = process {
         // debug!("{} receive signal, my parent is {}", pid, proc.ppid());
-        let tasks = &proc.meta_lock().tasks;
+        let tasks = proc.meta_lock().tasks.clone();
         let mut resumed = 0;
         for task in tasks.iter() {
             if let Some(task) = task.upgrade() {
                 if add_signal(&task, sig) {
                     resumed += 1;
                 }
+            }
+        }
+        if resumed > 0 && sig.contains(SigSet::SIGCONT) {
+            proc.meta_lock().continued_signal = Some(SIGCONT);
+            if let Some(parent) = Process::get_process_arc_by_pid(proc.ppid()) {
+                parent.meta_lock().child_exit_event.wake();
             }
         }
         return Ok(resumed);

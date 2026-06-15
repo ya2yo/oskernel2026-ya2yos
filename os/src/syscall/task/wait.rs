@@ -2,7 +2,8 @@ use core::{future::poll_fn, task::Poll};
 
 use alloc::{sync::Arc, vec::Vec};
 use linux_raw_sys::general::{
-    CLD_DUMPED, CLD_EXITED, CLD_KILLED, CLD_STOPPED, P_ALL, P_PGID, P_PID, P_PIDFD,
+    CLD_CONTINUED, CLD_DUMPED, CLD_EXITED, CLD_KILLED, CLD_STOPPED, P_ALL, P_PGID, P_PID,
+    P_PIDFD,
 };
 use log::debug;
 
@@ -307,7 +308,18 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
             None
         };
 
-        let pair = if stopped.is_none() && options.contains(WaitOption::WEXITED) {
+        let continued = if stopped.is_none() && options.contains(WaitOption::WCONTINUED) {
+            children.iter().find_map(|child| {
+                child
+                    .meta_lock()
+                    .continued_signal
+                    .map(|signo| (Arc::clone(child), signo))
+            })
+        } else {
+            None
+        };
+
+        let pair = if stopped.is_none() && continued.is_none() && options.contains(WaitOption::WEXITED) {
             children
                 .iter()
                 .find(|child| child.all_tasks_exited())
@@ -343,6 +355,38 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
 
             if !options.contains(WaitOption::WNOWAIT) {
                 child.meta_lock().stopped_signal = None;
+            }
+
+            if infop.is_null() {
+                Poll::Ready(Ok(found_pid))
+            } else {
+                Poll::Ready(Ok(0))
+            }
+        } else if let Some((child, cont_signal)) = continued {
+            let found_pid = child.pid;
+            if !infop.is_null() {
+                let sig_info = SigInfo::new_child(
+                    SIGCHLD as u32,
+                    CLD_CONTINUED,
+                    found_pid as u32,
+                    cont_signal as u32,
+                );
+                let proc_inner = task.process.inner_lock();
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                if copy_to_user(&memory_set, infop as usize, unsafe {
+                    core::slice::from_raw_parts(
+                        &sig_info as *const SigInfo as *const u8,
+                        core::mem::size_of::<SigInfo>(),
+                    )
+                })
+                .is_err()
+                {
+                    return Poll::Ready(Err(SysErrNo::EFAULT));
+                }
+            }
+
+            if !options.contains(WaitOption::WNOWAIT) {
+                child.meta_lock().continued_signal = None;
             }
 
             if infop.is_null() {

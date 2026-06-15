@@ -15,6 +15,7 @@
 - [wait4 阻塞未处理信号导致死循环](./wait4-signal.md)
 - [waitid 系统调用实现](./waitid-syscall.md)
 - [waitid07: WSTOPPED 与 SIGCONT 后 checkpoint 超时](./waitid07-stopped-sigcont.md)
+- [waitid08: WCONTINUED 事件缺失](./waitid08-wcontinued.md)
 - [waitid10: core dump 信号终止状态](./waitid10-core-dumped.md)
 - [wait403: wait4(INT_MIN) errno](./wait403-int-min-esrch.md)
 - [进程退出托孤 exit_and_reparent](./exit-reparent.md)

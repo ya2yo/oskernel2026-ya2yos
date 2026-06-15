@@ -1458,3 +1458,68 @@ broken   0
 skipped  0
 warnings 0
 ```
+
+---
+
+## 2026-06-15: waitid08 WCONTINUED 事件修复
+
+### 用户需求
+
+用户提供新的 `log.ans`，要求根据日志修复 bug。
+
+### 分析
+
+AI 按 `fix-bug` 流程扫描日志关键字，确认本次失败为 LTP `waitid08`。日志显示 `WSTOPPED` 阶段已全部 TPASS，随后父进程打印：
+
+```text
+waitid08.c:42: TINFO: filter child by WCONTINUED
+```
+
+并进入 `waitid(P_PID, pid_child, infop, WCONTINUED)` 阻塞。子进程已被 `SIGCONT` 恢复并进入 checkpoint futex wait，最终：
+
+```text
+waitid08.c:26: TBROK: tst_checkpoint_wait(0, 10000) failed: ETIMEDOUT (110)
+```
+
+结合 `sys_waitid()` 和信号路径确认，当前内核已有 `stopped_signal` 和 `WSTOPPED -> CLD_STOPPED`，也能用 `SIGCONT` 恢复 stopped task，但没有记录可供父进程 `waitid(WCONTINUED)` 观察的 continued event，导致父进程阻塞。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/process/process.rs` | `ProcessMeta` 新增 `continued_signal` |
+| `os/src/signal/mod.rs` | `SIGCONT` 实际恢复 stopped task 时记录 continued event 并唤醒父进程；遍历 tasks 前 clone weak list 避免自锁 |
+| `os/src/syscall/task/wait.rs` | 支持 `WCONTINUED`，返回 `SIGCHLD / CLD_CONTINUED / SIGCONT`，非 `WNOWAIT` 时消费事件 |
+| `Docs/初赛文档/problem/waitid08-wcontinued.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` / `Docs/初赛文档/开发日志.md` / `Docs/初赛文档/AI_INTERACTION.md` | 更新索引和 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 90s make run
+```
+
+结果：
+
+```text
+waitid08.c:33: TPASS: waitid(P_PID, pid_child, infop, WSTOPPED) passed
+waitid08.c:35: TPASS: infop->si_pid == pid_child (4)
+waitid08.c:36: TPASS: infop->si_status == SIGSTOP (19)
+waitid08.c:37: TPASS: infop->si_signo == SIGCHLD (17)
+waitid08.c:38: TPASS: infop->si_code == CLD_STOPPED (5)
+waitid08.c:45: TPASS: waitid(P_PID, pid_child, infop, WCONTINUED) passed
+waitid08.c:47: TPASS: infop->si_pid == pid_child (4)
+waitid08.c:48: TPASS: infop->si_status == SIGCONT (18)
+waitid08.c:49: TPASS: infop->si_signo == SIGCHLD (17)
+waitid08.c:50: TPASS: infop->si_code == CLD_CONTINUED (6)
+
+Summary:
+passed   10
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
