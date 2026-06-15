@@ -29,6 +29,10 @@ impl Deref for TidHandle {
 
 impl Drop for TidHandle {
     fn drop(&mut self) {
-        GLOBAL_ID_ALLOCATOR.lock().dealloc(self.0);
+        // A process ID must remain reserved while the exited process is a
+        // zombie waiting to be reaped.  This kernel currently uses one shared
+        // allocator for process IDs and thread IDs, so immediate TCB drop based
+        // recycling can reuse a zombie PID and overwrite the global process map
+        // before waitpid() observes it.
     }
 }

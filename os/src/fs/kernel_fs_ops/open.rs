@@ -6,10 +6,10 @@ use super::*;
 use alloc::sync::Arc;
 use log::{debug, warn};
 fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
-    debug!(
-        "[create_file] abs_path={}, flags={:?}, mode={:o}",
-        abs_path, flags, mode
-    );
+    // debug!(
+    //     "[create_file] abs_path={}, flags={:?}, mode={:o}",
+    //     abs_path, flags, mode
+    // );
     // 检查父目录的写入和执行权限
     // 参考 faccessat 的权限检查逻辑
     if let Some(parent_path) = {
@@ -25,7 +25,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
             }
         }
     } {
-        debug!("[create_file] parent_path={}", parent_path);
+        // debug!("[create_file] parent_path={}", parent_path);
         // 查找父目录的 inode
         let parent_inode_opt = if FsIndex::has_inode(parent_path) {
             FsIndex::find_inode_idx(parent_path)
@@ -36,7 +36,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
                     Some(inode)
                 }
                 Err(e) => {
-                    debug!("[create_file] parent inode not found: {:?}", e);
+                    // debug!("[create_file] parent inode not found: {:?}", e);
                     None
                 }
             }
@@ -49,14 +49,14 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
 
             if let Some(task) = current_task() {
                 let task_inner = task.inner_lock();
-                debug!(
-                    "[create_file] uid={} euid={} gid={} egid={} parent_mode={:o}",
-                    task_inner.user_id,
-                    task_inner.effective_uid,
-                    task_inner.real_gid,
-                    task_inner.effective_gid,
-                    parent_fmode & 0xfff
-                );
+                // debug!(
+                //     "[create_file] uid={} euid={} gid={} egid={} parent_mode={:o}",
+                //     task_inner.user_id,
+                //     task_inner.effective_uid,
+                //     task_inner.real_gid,
+                //     task_inner.effective_gid,
+                //     parent_fmode & 0xfff
+                // );
                 // root (euid 0) 绕过权限检查
                 // 使用 effective_uid，因为 Linux 文件权限检查基于 effective uid
                 if task_inner.effective_uid != 0 {
@@ -67,10 +67,10 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
                     let my_uid = task_inner.effective_uid;
                     let my_gid = task_inner.effective_gid;
 
-                    debug!(
-                        "[create_file] owner_uid={} owner_gid={} my_uid={} my_gid={}",
-                        owner_uid, owner_gid, my_uid, my_gid
-                    );
+                    // debug!(
+                    //     "[create_file] owner_uid={} owner_gid={} my_uid={} my_gid={}",
+                    //     owner_uid, owner_gid, my_uid, my_gid
+                    // );
 
                     // 确定进程属于 owner / group / other 哪一类
                     let (has_write, has_exec) = if my_uid == owner_uid {
@@ -90,10 +90,10 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
                         )
                     };
 
-                    debug!(
-                        "[create_file] has_write={} has_exec={}",
-                        has_write, has_exec
-                    );
+                    // debug!(
+                    //     "[create_file] has_write={} has_exec={}",
+                    //     has_write, has_exec
+                    // );
                     if !has_exec {
                         debug!("[create_file] EACCES: no exec permission on parent");
                         return Err(SysErrNo::EACCES);
@@ -127,10 +127,10 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
         None => 0o022,
     };
     let effective_mode = mode & !umask;
-    debug!(
-        "[create_file] mode={:o} umask={:o} → effective={:o}",
-        mode, umask, effective_mode
-    );
+    // debug!(
+    //     "[create_file] mode={:o} umask={:o} → effective={:o}",
+    //     mode, umask, effective_mode
+    // );
     inode.fmode_set(effective_mode);
     FsIndex::insert_inode_idx(abs_path, inode.clone());
     let osinode = OSFile::new(readable, writable, inode);

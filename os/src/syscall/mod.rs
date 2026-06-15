@@ -562,7 +562,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::Times => sys_times(args[0] as *mut Tms),
         Syscall::SetPGid => sys_setpgid(args[0] as u32, args[1] as u32),
-        Syscall::GetPGid => sys_getpgid(),
+        Syscall::GetPGid => sys_getpgid(args[0] as u32),
         Syscall::SetSid => sys_setsid(),
         Syscall::GetGroup => sys_getgroups(args[0], args[1] as *mut u32),
         Syscall::SetGroup => sys_setgroups(args[0], args[1] as *const u32),

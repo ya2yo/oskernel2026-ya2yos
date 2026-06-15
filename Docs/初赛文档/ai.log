@@ -1343,6 +1343,72 @@ warnings 0
 
 ---
 
+## 2026-06-15: waitpid10 zombie PID 复用与进程组等待修复
+
+### 用户需求
+
+用户提供新的 `log.ans`，要求根据日志修复 waitpid 相关 bug，并给出 LTP waitpid 测例源码路径。
+
+### 分析
+
+AI 先按 `fix-bug` 流程读取 `log.ans` 和 `waitpid10.c` / `waitpid_common.h`。日志中的直接失败为：
+
+```text
+waitpid_common.h:166: TFAIL: Pid 8 not reaped
+waitpid10.c:97: TINFO: reap_children(fork_pid, 0, &fork_pid, 1) failed
+```
+
+继续向前追日志发现 fork 路径反复出现：
+
+```text
+inserting process 8
+expected replacement? 8
+sys_waitpid <= pid: 8
+sys_waitpid: my children ... []
+```
+
+由此确认 PID 8 的 zombie 尚未被父进程 wait 回收时，TCB drop 已经释放了 `TidHandle`，后续 fork 复用 PID 8 并覆盖 `PID_2_PROCESS_ARC`，导致旧 zombie 丢失、新父进程也可能 wait 不到自己的 child。
+
+AI 同时注意到日志中 `sys_setpgid` 仍为 stub，且 `sys_waitpid()` 注释说明 `pid == 0` 被当作 any、`pid < -1` 不匹配任何子进程。结合 waitpid 语义，补齐基础 pgid 是本次 waitpid 系列修复的一部分。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/tid.rs` | `TidHandle::drop()` 不再立即把共享 TID/PID 放回 allocator，避免 zombie wait 前 PID 复用 |
+| `os/src/task/process/process.rs` | `ProcessMeta` 新增 `pgid`，新进程继承父进程 pgid |
+| `os/src/syscall/task/job.rs` | 实现基础 `setpgid/getpgid/setsid` |
+| `os/src/syscall/task/wait.rs` | `waitpid(0)`、`waitpid(<-1)`、`waitid(P_PGID)` 按 pgid 过滤 |
+| `os/src/syscall/mod.rs` | `getpgid` 分发传入 pid 参数 |
+| `Docs/初赛文档/problem/waitpid10-pid-reuse-pgid.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` / `Docs/初赛文档/开发日志.md` / `Docs/初赛文档/AI_INTERACTION.md` | 更新索引和 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 90s make run
+```
+
+结果：
+
+```text
+waitpid10.c:62: TPASS: Test PASSED
+
+Summary:
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+`make log` 因既有 fingerprint 目录归属 `nobody:nogroup` 导致权限拒绝，未能重建 debug kernel；release `make` 和单测运行均已通过。
+
+---
+
 ## 2026-06-14: waitid07 WSTOPPED / SIGCONT checkpoint 超时修复
 
 ### 用户需求

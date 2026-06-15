@@ -18,6 +18,7 @@
 - [waitid08: WCONTINUED 事件缺失](./waitid08-wcontinued.md)
 - [waitid10: core dump 信号终止状态](./waitid10-core-dumped.md)
 - [waitid11: SIGKILL 终止状态](./waitid11-sigkill-killed.md)
+- [waitpid10: zombie PID 复用与进程组等待](./waitpid10-pid-reuse-pgid.md)
 - [wait403: wait4(INT_MIN) errno](./wait403-int-min-esrch.md)
 - [进程退出托孤 exit_and_reparent](./exit-reparent.md)
 - [线程信号栈检查错误与 futex 退出死锁](./thread-signal-stack-futex-deadlock.md)

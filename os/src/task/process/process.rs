@@ -103,6 +103,13 @@ impl Process {
         parent_pid: usize,
     ) -> Arc<Self> {
         let id = pid;
+        let pgid = if parent_pid == 0 {
+            pid
+        } else {
+            Self::get_process_arc_by_pid(parent_pid)
+                .map(|parent| parent.meta_lock().pgid)
+                .unwrap_or(pid)
+        };
         let ret = Arc::new(Self {
             inner: Mutex::new(ProcessInner {
                 memory_set,
@@ -116,6 +123,7 @@ impl Process {
                 tasks: Vec::new(),
                 children: Vec::new(),
                 parent_pid,
+                pgid,
                 child_exit_event: AtomicWaker::new(),
                 exit_signal: -1,
                 stopped_signal: None,
@@ -154,6 +162,10 @@ impl Process {
     /// 获取父进程的 pid（0 表示无父进程，例如 initproc）
     pub fn ppid(&self) -> usize {
         self.meta_lock().parent_pid
+    }
+    /// 获取进程组 ID
+    pub fn pgid(&self) -> usize {
+        self.meta_lock().pgid
     }
     /// 改变内存映射关系和信号表
     pub fn change_memory_set_and_sigtable(
@@ -328,6 +340,8 @@ pub struct ProcessMeta {
     pub children: Vec<Weak<Process>>,
     /// 父进程 pid；0 表示无父进程
     pub parent_pid: usize,
+    /// 进程组 ID，用于 waitpid(0)、waitpid(<-1)、setpgid/getpgid。
+    pub pgid: usize,
     /// 子进程退出事件，用于唤醒等待中的父进程
     pub child_exit_event: AtomicWaker,
     /// 进程退出时发送给父进程的信号（对应 Linux task_struct.exit_signal）

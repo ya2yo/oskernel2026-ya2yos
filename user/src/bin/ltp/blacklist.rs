@@ -2365,7 +2365,7 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "vxlan03.sh\0",
     "vxlan04.sh\0",
     // "waitid11\0",
-    "waitpid10\0",
+    // "waitpid10\0",
     "waitpid11\0",
     "waitpid12\0",
     "waitpid13\0",

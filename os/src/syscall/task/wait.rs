@@ -23,11 +23,7 @@ enum WaitPid {
     Any,
     /// Wait for the child whose process ID is equal to the value (pid > 0).
     Pid(usize),
-    /// Wait for any child whose process group ID equals the absolute value
-    /// of pid (pid < -1).  Since the kernel does not yet track per‑process
-    /// pgid, this filter currently accepts no children.  Once full job‑control
-    /// is added, `ProcessMeta` will carry a `pgid` field and this match arm
-    /// will compare against it.
+    /// Wait for any child whose process group ID equals this value.
     Pgid(u32),
     Tgid(u32),
     Sid(u32),
@@ -39,19 +35,11 @@ impl WaitPid {
     ///
     /// `sys_waitpid()` 会把 pid 参数、`sys_waitid()` 会把 idtype/id 参数
     /// 先转换成 `WaitPid`，后续扫描 children 时统一调用这个函数过滤。
-    /// 这里暂时不能真正匹配进程组，因为当前内核还没有维护每个进程的 pgid。
     fn apply(&self, child: &Process) -> bool {
         match self {
             WaitPid::Any => true,
             WaitPid::Pid(pid) => child.pid == *pid,
-            // TODO: when ProcessMeta gains a pgid field, compare child.pgid
-            // against `*pgid` here.
-            WaitPid::Pgid(_pgid) => {
-                // No child currently carries a process‑group ID, so this
-                // filter never matches.  When pgid support is added, change
-                // this to `child.pgid == *pgid`.
-                false
-            }
+            WaitPid::Pgid(pgid) => child.pgid() == *pgid as usize,
             _ => false,
         }
     }
@@ -73,14 +61,10 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
     //   pid == -1 : wait for any child (most common).
     //   pid < -1  : wait for any child whose process group ID equals -pid.
     //
-    // Because this kernel does not yet implement proper process‑group
-    // tracking (getpgid / setpgid / setsid are stubs), pid == 0 is treated
-    // identically to pid == -1.  pid < -1 uses the Pgid filter which
-    // currently never matches, so callers passing a negative value other
-    // than -1 will receive ECHILD.
     let wait_pid = match pid {
         ..=-2 => WaitPid::Pgid((-pid) as u32),
-        -1 | 0 => WaitPid::Any,
+        -1 => WaitPid::Any,
+        0 => WaitPid::Pgid(current_task().ok_or(SysErrNo::ESRCH)?.process.pgid() as u32),
         1.. => WaitPid::Pid(pid as usize),
     };
 
@@ -257,10 +241,9 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
         P_ALL => WaitPid::Any,
         P_PID if id > 0 => WaitPid::Pid(id as usize),
         P_PID => return Err(SysErrNo::EINVAL),
-        // Process groups are not tracked yet.  Keep id == 0 compatible with
-        // the waitpid(0) behavior in this kernel and reject nonzero pgids by
-        // making the filter match no children.
-        P_PGID if id == 0 => WaitPid::Any,
+        P_PGID if id == 0 => {
+            WaitPid::Pgid(current_task().ok_or(SysErrNo::ESRCH)?.process.pgid() as u32)
+        }
         P_PGID if id > 0 => WaitPid::Pgid(id as u32),
         P_PGID => return Err(SysErrNo::EINVAL),
         P_PIDFD => return Err(SysErrNo::EBADF),
