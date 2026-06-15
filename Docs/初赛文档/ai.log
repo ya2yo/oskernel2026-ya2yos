@@ -1523,3 +1523,58 @@ broken   0
 skipped  0
 warnings 0
 ```
+
+---
+
+## 2026-06-15: waitid11 SIGKILL 终止状态修复
+
+### 用户需求
+
+用户要求继续修复 `waitid11` 的 bug。
+
+### 分析
+
+AI 先检查当前 `initproc.rs`，确认已单跑 `waitid11`，并从 `log.ans` 定位失败：
+
+```text
+waitid11.c:35: TFAIL: infop->si_status (0) != SIGKILL (9)
+waitid11.c:37: TFAIL: infop->si_code (1) != CLD_KILLED (2)
+```
+
+随后用上游 LTP `waitid11.c` 确认测试语义：子进程 `pause()`，父进程 `kill(child, SIGKILL)`，再用 `waitid(WEXITED)` 检查 `CLD_KILLED / SIGKILL`。
+
+已有 `waitid10` 修复只在 `handle_signal()` 默认 `Terminate/CoreDump` 分支记录 `termination_signal`。但 `waitid11` 的子进程阻塞在 `pause()`，被 `SIGKILL` 唤醒后可能从阻塞 syscall / future 路径直接退出，未经过记录分支，导致 `waitid()` 只能看到普通退出状态。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/signal/mod.rs` | `send_signal_to_thread_group()` 投递默认 `Terminate/CoreDump` 信号时立即记录 `termination_signal`，覆盖阻塞任务被信号终止的路径 |
+| `Docs/初赛文档/problem/waitid11-sigkill-killed.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` / `Docs/初赛文档/开发日志.md` / `Docs/初赛文档/AI_INTERACTION.md` | 更新索引和 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 90s make run
+```
+
+结果：
+
+```text
+waitid11.c:33: TPASS: waitid(P_ALL, 0, infop, WEXITED) passed
+waitid11.c:34: TPASS: infop->si_pid == pidchild (4)
+waitid11.c:35: TPASS: infop->si_status == SIGKILL (9)
+waitid11.c:36: TPASS: infop->si_signo == SIGCHLD (17)
+waitid11.c:37: TPASS: infop->si_code == CLD_KILLED (2)
+
+Summary:
+passed   5
+failed   0
+broken   0
+skipped  0
+warnings 0
+```

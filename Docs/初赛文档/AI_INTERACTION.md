@@ -513,3 +513,10 @@
 - **场景**：Bug 分析与定位、waitid continued 事件语义修复、文档完善
 - **描述**：用户提供新的 `log.ans`，其中 `waitid08` 的 `WSTOPPED` 部分已经 TPASS，但父进程进入 `waitid(WCONTINUED)` 后阻塞，子进程 checkpoint futex 超时。AI 定位到 `SIGCONT` 只恢复 stopped task，没有记录可由 `waitid(WCONTINUED)` 观察的 continued event。修复在 `ProcessMeta` 新增 `continued_signal`，`SIGCONT` 实际恢复 stopped task 时记录事件并唤醒父进程，`waitid()` 返回 `SIGCHLD / CLD_CONTINUED / SIGCONT`。`make` 通过，`timeout 90s make run` 单跑 `waitid08` 输出 10 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitid08-wcontinued.md](./problem/waitid08-wcontinued.md)。
 - **关联 commit**：本次提交
+
+#### waitid11 SIGKILL 终止状态修复（6.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、waitid killed 事件语义修复、文档完善
+- **描述**：用户要求继续修复 `waitid11`。AI 检查日志后确认子进程被 `SIGKILL` 杀死后，`waitid(WEXITED)` 返回 `si_status=0` 和 `CLD_EXITED`，而 LTP 期望 `SIGKILL / CLD_KILLED`。根因是子进程阻塞在 `pause()`，被 `SIGKILL` 唤醒后可能从阻塞 syscall 路径退出，未经过 `handle_signal()` 中记录 `termination_signal` 的默认信号处理分支。修复在进程级信号投递时对默认 `Terminate/CoreDump` 信号立即记录 termination event。`make` 通过，`timeout 90s make run` 单跑 `waitid11` 输出 5 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitid11-sigkill-killed.md](./problem/waitid11-sigkill-killed.md)。
+- **关联 commit**：本次提交
