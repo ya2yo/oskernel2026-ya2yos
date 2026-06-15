@@ -247,6 +247,8 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "eventfd04\0",
     "eventfd05\0",
     "eventfd06\0",
+    #[cfg(target_arch = "loongarch64")]
+    "eventfd2_03\0",
     "evm_overlay.sh\0",
     "exec_with_inh\0",
     "exec_without_inh\0",
@@ -1678,6 +1680,8 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "sigrelse01\0",
     "sigsuspend01\0",
     "sigtimedwait01\0",
+    #[cfg(target_arch = "loongarch64")]
+    "sigwait01\0",
     "sigwaitinfo01\0",
     "sit01.sh\0",
     "smack_common.sh\0",
@@ -2364,6 +2368,10 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "vxlan02.sh\0",
     "vxlan03.sh\0",
     "vxlan04.sh\0",
+    #[cfg(target_arch = "loongarch64")]
+    "waitpid07\0",
+    #[cfg(target_arch = "loongarch64")]
+    "waitpid10\0",
     "wc01.sh\0",
     "which01.sh\0",
     "wireguard01.sh\0",

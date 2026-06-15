@@ -340,13 +340,13 @@ pub fn run_ltp_tests_glibc(tests: &[&str], blacklist: &[&str]) {
         println!("RUN LTP CASE {}", trim_trailing_nul(test));
         let result = fork_run_ltp_and_collect("/glibc/ltp/testcases/bin\0", &[test]);
         summary.record_run_result(&result);
+        summary.print();
         println!(
             "FAIL LTP CASE {} : {}",
             trim_trailing_nul(test),
             result.wait_status
         );
     }
-    summary.print();
     println!("#### OS COMP TEST GROUP END ltp-glibc ####");
 }
 

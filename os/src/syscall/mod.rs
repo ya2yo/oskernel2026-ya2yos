@@ -255,6 +255,7 @@ pub enum Syscall {
     CloseRange = 436,
     Openat2 = 437,
     PidfdGetfd = 438,
+    Faccessat2 = 439,
     EpollPwait2 = 441,
     MountSetattr = 442,
     MemfdSecret = 447,
