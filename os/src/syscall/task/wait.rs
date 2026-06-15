@@ -1,7 +1,9 @@
 use core::{future::poll_fn, task::Poll};
 
 use alloc::{sync::Arc, vec::Vec};
-use linux_raw_sys::general::{CLD_EXITED, CLD_STOPPED, P_ALL, P_PGID, P_PID, P_PIDFD};
+use linux_raw_sys::general::{
+    CLD_DUMPED, CLD_EXITED, CLD_KILLED, CLD_STOPPED, P_ALL, P_PGID, P_PID, P_PIDFD,
+};
 use log::debug;
 
 use crate::{
@@ -351,16 +353,29 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
         } else if let Some(child) = pair {
             let found_pid = child.pid;
             let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
-            let child_usage = child.meta_lock().usage;
+            let (child_usage, termination_signal) = {
+                let child_meta = child.meta_lock();
+                (child_meta.usage, child_meta.termination_signal)
+            };
 
             // waitid 成功时返回值是 0，具体结果写入 siginfo_t。
             // 正常 exit 事件使用 SIGCHLD + CLD_EXITED，si_status 保存未左移的退出码。
+            // 信号终止事件则返回原始信号号，并区分 CLD_KILLED / CLD_DUMPED。
             if !infop.is_null() {
+                let (si_code, si_status) =
+                    if let Some((signo, dumped_core)) = termination_signal {
+                        (
+                            if dumped_core { CLD_DUMPED } else { CLD_KILLED },
+                            signo as u32,
+                        )
+                    } else {
+                        (CLD_EXITED, exit_code as u32)
+                    };
                 let sig_info = SigInfo::new_child(
                     SIGCHLD as u32,
-                    CLD_EXITED,
+                    si_code,
                     found_pid as u32,
-                    exit_code as u32,
+                    si_status,
                 );
                 let proc_inner = task.process.inner_lock();
                 let memory_set = proc_inner.get_locked_memory_set_read();

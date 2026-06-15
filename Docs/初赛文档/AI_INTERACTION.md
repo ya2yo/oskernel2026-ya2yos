@@ -499,3 +499,10 @@
 - **场景**：Bug 分析与定位、信号语义修复、文档完善
 - **描述**：用户提供 `log.ans`，其中 `waitid07` 在 `TST_CHECKPOINT_WAIT` 超时。AI 先补齐默认停止信号、`TaskStatus::Stopped`、`waitid(WSTOPPED)` 和 `CLD_STOPPED` 返回，使前 5 项断言通过；随后用临时 futex 日志确认父子 futex key 一致但子进程因 pending `SIGCONT` 返回 `EINTR` 后二次等待。最终修复 `trap_return()` 只处理一个 pending signal 的问题，使默认 `SIGCONT` 在回用户态前被消费；同时修正 `MAP_SHARED` groupid 条件和 RISC-V shared mmap fault 权限。`make` 通过，`timeout 150s make run` 单跑 `waitid07` 输出 5 项 TPASS。详见 `ai.log` 2026-06-14 条目与 [problem/waitid07-stopped-sigcont.md](./problem/waitid07-stopped-sigcont.md)。
 - **关联 commit**：本次提交
+
+#### waitid10 core dump 信号终止状态修复（6.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、waitid 信号语义修复、文档完善
+- **描述**：用户提供 `log.ans`，其中 `waitid10` 在 `SIGFPE` 触发 core dump 场景下得到 `si_status=136` 和 `si_code=CLD_EXITED`，而 LTP 期望 `si_status=SIGFPE` 和 `si_code=CLD_DUMPED`。AI 定位到默认信号终止路径只保存 `128 + signo` exit code，`waitid()` 无法区分普通退出和 core dump 信号终止。修复在 `ProcessMeta` 记录默认信号终止原因，`waitid()` 根据信号记录返回 `CLD_KILLED/CLD_DUMPED` 与原始信号号。`make` 通过，`timeout 90s make run` 单跑 `waitid10` 输出 5 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitid10-core-dumped.md](./problem/waitid10-core-dumped.md)。
+- **关联 commit**：本次提交

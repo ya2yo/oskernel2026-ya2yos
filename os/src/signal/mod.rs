@@ -97,8 +97,10 @@ pub fn handle_signal(signo: usize) {
                 debug!("handle_signal: continue, signo={}", signo);
                 current_task().unwrap().process.meta_lock().stopped_signal = None;
             }
-            SigOp::Terminate | SigOp::CoreDump => {
+            op @ (SigOp::Terminate | SigOp::CoreDump) => {
                 debug!("handle_signal: terminate, signo={}", signo);
+                current_task().unwrap().process.meta_lock().termination_signal =
+                    Some((signo, op == SigOp::CoreDump));
                 exit_current_and_run_next((signo + 128) as i32);
             }
         }

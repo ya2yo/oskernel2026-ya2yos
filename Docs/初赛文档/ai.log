@@ -1403,3 +1403,58 @@ broken   0
 skipped  0
 warnings 0
 ```
+
+---
+
+## 2026-06-15: waitid10 core dump 信号终止状态修复
+
+### 用户需求
+
+用户提供 `log.ans`，要求检查失败原因并修复。
+
+### 分析
+
+AI 按 `fix-bug` 流程先扫描 `log.ans` 中的 `TFAIL/TBROK/panic/Summary`，定位失败用例为 LTP `waitid10`：
+
+```text
+waitid10.c:38: TFAIL: infop->si_status (136) != SIGFPE (8)
+waitid10.c:42: TFAIL: infop->si_code (1) != CLD_DUMPED (3)
+```
+
+`136 == 128 + SIGFPE`，说明当前默认信号终止路径把 `SIGFPE` 折叠成 shell 风格 exit code。继续检查 `signal/mod.rs` 和 `syscall/task/wait.rs` 后确认，默认 `SigOp::CoreDump` 直接调用 `exit_current_and_run_next(128 + signo)`，而 `sys_waitid()` 对所有退出事件都固定填 `CLD_EXITED` 与 `exit_code`。因此 waitid 无法区分普通 exit 和 core dump 信号终止。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/process/process.rs` | `ProcessMeta` 新增 `termination_signal: Option<(usize, bool)>`，记录默认信号终止原因 |
+| `os/src/signal/mod.rs` | 默认 `Terminate/CoreDump` 信号退出前记录 `(signo, dumped_core)` |
+| `os/src/syscall/task/wait.rs` | `waitid()` 对信号终止事件返回原始信号号，并按 `dumped_core` 区分 `CLD_KILLED/CLD_DUMPED` |
+| `Docs/初赛文档/problem/waitid10-core-dumped.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` / `Docs/初赛文档/开发日志.md` / `Docs/初赛文档/AI_INTERACTION.md` | 更新索引和 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 90s make run
+```
+
+结果：
+
+```text
+waitid10.c:36: TPASS: waitid(P_ALL, 0, infop, WEXITED) passed
+waitid10.c:37: TPASS: infop->si_pid == pidchild (4)
+waitid10.c:38: TPASS: infop->si_status == SIGFPE (8)
+waitid10.c:39: TPASS: infop->si_signo == SIGCHLD (17)
+waitid10.c:42: TPASS: infop->si_code == CLD_DUMPED (3)
+
+Summary:
+passed   5
+failed   0
+broken   0
+skipped  0
+warnings 0
+```

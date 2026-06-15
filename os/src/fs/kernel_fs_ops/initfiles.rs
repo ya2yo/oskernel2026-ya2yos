@@ -110,6 +110,7 @@ const LOCALTIME: &str =
     "lrwxrwxrwx 1 root root 33 11月 18  2023 /etc/localtime -> /usr/share/zoneinfo/Asia/Shanghai\n";
 const PRELOAD: &str = "";
 const PID_MAX: &str = "4194304\n";
+const CORE_PATTERN: &str = "core\n";
 
 pub fn create_init_files() -> GeneralRet {
     // 写入预先加载内容
@@ -197,6 +198,22 @@ pub fn create_init_files() -> GeneralRet {
     }
     let pid_maxbuf = UserBuffer::new(pid_maxvec);
     pid_maxfile.write(pid_maxbuf)?;
+    // 创建/proc/sys/kernel/core_pattern
+    let core_pattern_file = open(
+        "/proc/sys/kernel/core_pattern",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+        DEFAULT_FILE_MODE,
+    )?
+    .file()?;
+    let mut core_pattern = String::from(CORE_PATTERN);
+    let mut core_pattern_vec = Vec::new();
+    unsafe {
+        let c = core_pattern.as_bytes_mut();
+        core_pattern_vec.push(core::slice::from_raw_parts_mut(c.as_mut_ptr(), c.len()));
+    }
+    let core_pattern_buf = UserBuffer::new(core_pattern_vec);
+    core_pattern_file.write(core_pattern_buf)?;
+
     //创建/dev文件夹
     open(
         "/dev",
