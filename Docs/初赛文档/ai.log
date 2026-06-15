@@ -1699,3 +1699,57 @@ broken   0
 skipped  0
 warnings 0
 ```
+
+---
+
+## 2026-06-15: access01 权限判断与 cleanup 卡死修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 卡住的原因并修复。
+
+### 分析
+
+AI 先按 `fix-bug` 流程检查 `log.ans` 中的 `TFAIL/TBROK/Summary`，定位到当前单跑测例为 LTP `access01`。原日志在测例 Summary 前有 20 项 `TFAIL`，集中在 nobody 身份下的 `access()` 权限判断。
+
+第一轮修复后，`access01` 内部 Summary 已变为 `passed 199 failed 0`，但外层 wrapper 仍不打印 `GROUP END`，说明卡点转移到 LTP cleanup/退出路径。AI 加临时日志缩小范围：`access01` 主体进程已经 `exit_group(0)`，父层 cleanup 删除 `/dev/shm/ltp_access01_2` 后进入 `munmap(0x2a23446000, 0x1000)` 不返回。继续在 `munmap` 内部追踪，确认卡在 MAP_SHARED|PROT_WRITE 映射写回：backing file 已经被 unlink，当前 ext4/lwext4 写回无目录项临时文件会卡死。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/stat.rs` | `faccessat` 改用 real uid/gid，并按 `st_uid/st_gid` 选择 owner/group/other 权限位；父目录和目标只读打开 |
+| `os/src/syscall/fs/ctl.rs` | `unlinkat` 校验 `AT_REMOVEDIR`，用 `O_RDONLY` 打开目标，并用绝对路径判断是否仍有 fd |
+| `os/src/fs/ext4_lw/inode.rs` | 目录删除走 `dir_rm()`，普通文件删除走 `file_remove()` |
+| `os/src/mm/memory_set/mmap_ops.rs` | MAP_SHARED 写回前检查 backing inode 链接数，已 unlink 的映射跳过写回，避免 `munmap` 卡死 |
+| `Docs/初赛文档/problem/access01-permission-cleanup.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` / `Docs/初赛文档/开发日志.md` / `Docs/初赛文档/AI_INTERACTION.md` | 更新索引和 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run
+```
+
+结果：
+
+```text
+Summary:
+passed   199
+failed   0
+broken   0
+skipped  0
+warnings 0
+FAIL LTP CASE access01 : 0
+Summary:
+passed   199
+failed   0
+broken   0
+skipped  0
+warnings 0
+#### OS COMP TEST GROUP END ltp-musl ####
+shutdown!
+```

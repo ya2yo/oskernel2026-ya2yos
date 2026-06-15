@@ -929,6 +929,21 @@ pub fn remove_cache(file_path: String) {
     CACHE_TABLE.lock().remove(&file_path);
 }
 
+fn is_proc_task_runtime_file(path: &str) -> bool {
+    let rest = match path.strip_prefix("/proc/") {
+        Some(rest) => rest,
+        None => return false,
+    };
+    let (pid, name) = match rest.split_once('/') {
+        Some(parts) => parts,
+        None => return false,
+    };
+
+    !pid.is_empty()
+        && pid.as_bytes().iter().all(|b| matches!(*b, b'0'..=b'9'))
+        && matches!(name, "stat" | "status" | "maps")
+}
+
 const FIFO_SIZE: usize = 10;
 //采用先进先出策略
 static FIFO_TABLE: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
@@ -998,6 +1013,12 @@ pub fn write_back_cache(path: String) -> Result<usize, i32> {
                 drop(CString::from_raw(flags));
             }
             if r != EOK as i32 {
+                if r == ENOENT as i32 && is_proc_task_runtime_file(&path) {
+                    drop(cache_writer);
+                    remove_cache(path.clone());
+                    remove_fifo_set(path);
+                    return Ok(0);
+                }
                 error!("write_back_cache ext4_fopen: {}, rc = {}", path, r);
                 return Err(r);
             }

@@ -534,3 +534,10 @@
 - **场景**：Bug 分析与定位、waitpid 停止态语义修复、文档完善
 - **描述**：用户提供新的 `log.ans`，其中 `waitpid13` 没有打印 LTP failure，而是 QEMU timeout；日志显示父进程阻塞在 `waitpid(..., WUNTRACED)`，子进程均已处理 `SIGSTOP`。AI 确认 stopped event 只接入了 `waitid(WSTOPPED)`，`sys_waitpid()` 未处理 `WUNTRACED`，因此父进程无法向 stopped child 发送 `SIGCONT`。修复后 `waitpid()` 返回 stopped child 并写入 `WIFSTOPPED/WSTOPSIG` 所需 status。`make` 通过，`timeout 90s make run` 单跑 `waitpid13` 输出 1 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitpid13-wuntraced-stopped.md](./problem/waitpid13-wuntraced-stopped.md)。
 - **关联 commit**：本次提交
+
+#### access01 权限判断与 cleanup 卡死修复（6.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、文件权限语义修复、mmap cleanup 修复、文档完善
+- **描述**：用户要求分析 `log.ans` 卡住原因并修复。AI 先定位 `access01` 的 20 项 `TFAIL` 来自 `faccessat` 未按 real uid/gid 和 owner/group/other 分类权限判断；修复后测例内部 199 项 TPASS，但 Summary 后仍卡住。进一步用临时日志确认卡点在 cleanup 删除 `/dev/shm/ltp_access01_2` 后的 `munmap`，MAP_SHARED 写回已 unlink backing file 时进入 ext4 写路径不返回。最终修复 `faccessat` 权限判断、`unlinkat` cleanup 语义、lwext4 目录删除和 unlinked shared mmap 的 `munmap` 写回路径。`make` 通过，`timeout 120s make run` 输出 `passed 199 failed 0`、`GROUP END` 和 `shutdown!`。详见 `ai.log` 2026-06-15 条目与 [problem/access01-permission-cleanup.md](./problem/access01-permission-cleanup.md)。
+- **关联 commit**：本次提交

@@ -176,58 +176,65 @@ impl MemorySetInner {
                 && area.map_perm.contains(MapPermission::W)
                 && area.mmap_file.file.is_some()
             {
-                let mut wb_range: Vec<(VirtPageNum, VirtPageNum)> = Vec::new();
-                VPNRange::new(start_vpn, end_vpn)
-                    .into_iter()
-                    .for_each(|vpn| {
-                        if area.data_frames.contains_key(&vpn) {
-                            if wb_range.is_empty() {
-                                wb_range.push((vpn, VirtPageNum(vpn.0 + 1)));
-                            } else {
-                                let end_range = wb_range.pop().unwrap();
-                                if end_range.1 == vpn {
-                                    wb_range.push((end_range.0, VirtPageNum(vpn.0 + 1)));
-                                } else {
-                                    wb_range.push(end_range);
+                let file = area.mmap_file.file.clone().unwrap();
+                if file.inode.link_cnt()? > 0 {
+                    let mut wb_range: Vec<(VirtPageNum, VirtPageNum)> = Vec::new();
+                    VPNRange::new(start_vpn, end_vpn)
+                        .into_iter()
+                        .for_each(|vpn| {
+                            if area.data_frames.contains_key(&vpn) {
+                                if wb_range.is_empty() {
                                     wb_range.push((vpn, VirtPageNum(vpn.0 + 1)));
+                                } else {
+                                    let end_range = wb_range.pop().unwrap();
+                                    if end_range.1 == vpn {
+                                        wb_range.push((end_range.0, VirtPageNum(vpn.0 + 1)));
+                                    } else {
+                                        wb_range.push(end_range);
+                                        wb_range.push((vpn, VirtPageNum(vpn.0 + 1)));
+                                    }
                                 }
                             }
+                        });
+                    let off = file.lseek(0, SEEK_CUR).unwrap();
+                    let map_base: usize = VirtAddr::from(area.vpn_range.start()).into();
+                    let file_base = area.mmap_file.offset;
+                    for (start_vpn, end_vpn) in wb_range {
+                        let start_addr: usize = VirtAddr::from(start_vpn).into();
+                        let mapped_len: usize = (end_vpn.0 - start_vpn.0) * PAGE_SIZE;
+                        let mut written = 0;
+                        while written < mapped_len {
+                            let chunk_len = MMAP_WRITEBACK_CHUNK_SIZE.min(mapped_len - written);
+                            let mut kernel_buf = vec![0u8; chunk_len];
+                            if read_user_bytes_direct_into(
+                                self.page_table.token(),
+                                start_addr + written,
+                                &mut kernel_buf,
+                            )
+                            .is_none()
+                            {
+                                break;
+                            }
+                            let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+                            file.lseek(
+                                (file_base + (start_addr - map_base) + written) as isize,
+                                SEEK_SET,
+                            )
+                            .unwrap();
+                            let ret = file.write(buf)?;
+                            if ret == 0 {
+                                break;
+                            }
+                            written += ret;
                         }
-                    });
-                let file = area.mmap_file.file.clone().unwrap();
-                let off = file.lseek(0, SEEK_CUR).unwrap();
-                let map_base: usize = VirtAddr::from(area.vpn_range.start()).into();
-                let file_base = area.mmap_file.offset;
-                for (start_vpn, end_vpn) in wb_range {
-                    let start_addr: usize = VirtAddr::from(start_vpn).into();
-                    let mapped_len: usize = (end_vpn.0 - start_vpn.0) * PAGE_SIZE;
-                    let mut written = 0;
-                    while written < mapped_len {
-                        let chunk_len = MMAP_WRITEBACK_CHUNK_SIZE.min(mapped_len - written);
-                        let mut kernel_buf = vec![0u8; chunk_len];
-                        if read_user_bytes_direct_into(
-                            self.page_table.token(),
-                            start_addr + written,
-                            &mut kernel_buf,
-                        )
-                        .is_none()
-                        {
-                            break;
-                        }
-                        let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-                        file.lseek(
-                            (file_base + (start_addr - map_base) + written) as isize,
-                            SEEK_SET,
-                        )
-                        .unwrap();
-                        let ret = file.write(buf)?;
-                        if ret == 0 {
-                            break;
-                        }
-                        written += ret;
                     }
+                    file.lseek(off as isize, SEEK_SET).unwrap();
+                } else {
+                    debug!(
+                        "[munmap] skip writeback for unlinked shared mapping: {}",
+                        file.inode.path()
+                    );
                 }
-                file.lseek(off as isize, SEEK_SET).unwrap();
             }
             for vpn in VPNRange::new(start_vpn, end_vpn) {
                 area.unmap_one(&mut self.page_table, vpn);

@@ -328,7 +328,11 @@ impl Inode for Ext4Inode {
 
     fn unlink(&self, path: &str) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
-        file.file_remove(path).map_err(SysErrNo::from)
+        if self.types() == InodeType::Dir {
+            file.dir_rm(path).map_err(SysErrNo::from)
+        } else {
+            file.file_remove(path).map_err(SysErrNo::from)
+        }
     }
 
     fn path(&self) -> String {

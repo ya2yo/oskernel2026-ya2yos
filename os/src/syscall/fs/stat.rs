@@ -15,6 +15,24 @@ use crate::{
     utils::{rsplit_once, trim_start_slash, SysErrNo, SyscallRet},
 };
 
+fn mode_allows(
+    file_mode: FaccessatFileMode,
+    stat: &Kstat,
+    uid: u32,
+    gid: u32,
+    owner_bit: FaccessatFileMode,
+    group_bit: FaccessatFileMode,
+    other_bit: FaccessatFileMode,
+) -> bool {
+    if uid == stat.st_uid {
+        file_mode.contains(owner_bit)
+    } else if gid == stat.st_gid {
+        file_mode.contains(group_bit)
+    } else {
+        file_mode.contains(other_bit)
+    }
+}
+
 fn kstat_to_statx(kst: &Kstat, _mask: u32) -> statx {
     statx {
         stx_mask: STATX_BASIC_STATS,
@@ -213,7 +231,8 @@ pub fn sys_fstatfs(fd: i32, buf: usize) -> SyscallRet {
 pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.inner_lock();
-    let user_id = inner.user_id;
+    let uid = inner.user_id as u32;
+    let gid = inner.real_gid;
     drop(inner);
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
@@ -255,43 +274,77 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> S
 
     let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
     let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
-    let parent_inode = open(&parent_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
+    let parent_inode = open(&parent_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     let parent_mode = parent_inode.inode.fmode()? & 0xfff;
     let parent_mode = FaccessatFileMode::from_bits_truncate(parent_mode);
     if parent_inode.inode.types() != InodeType::Dir {
         return Err(SysErrNo::ENOTDIR);
     }
-    if user_id != 0
-        && !(parent_mode.contains(FaccessatFileMode::S_IXUSR)
-            || parent_mode.contains(FaccessatFileMode::S_IXGRP)
-            || parent_mode.contains(FaccessatFileMode::S_IXOTH))
+    let parent_stat = parent_inode.inode.fstat();
+    if uid != 0
+        && !mode_allows(
+            parent_mode,
+            &parent_stat,
+            uid,
+            gid,
+            FaccessatFileMode::S_IXUSR,
+            FaccessatFileMode::S_IXGRP,
+            FaccessatFileMode::S_IXOTH,
+        )
     {
         //父目录必须有可以执行的权限
         return Err(SysErrNo::EACCES);
     }
-    let inode = open(&abs_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
+    let inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     let file_mode = inode.inode.fmode()? & 0xfff;
     let file_mode = FaccessatFileMode::from_bits_truncate(file_mode);
+    let file_stat = inode.inode.fstat();
     if mode.contains(FaccessatMode::R_OK)
-        && user_id != 0
-        && !(file_mode.contains(FaccessatFileMode::S_IRUSR)
-            || file_mode.contains(FaccessatFileMode::S_IRGRP)
-            || file_mode.contains(FaccessatFileMode::S_IROTH))
+        && uid != 0
+        && !mode_allows(
+            file_mode,
+            &file_stat,
+            uid,
+            gid,
+            FaccessatFileMode::S_IRUSR,
+            FaccessatFileMode::S_IRGRP,
+            FaccessatFileMode::S_IROTH,
+        )
     {
         return Err(SysErrNo::EACCES);
     }
     if mode.contains(FaccessatMode::W_OK)
-        && user_id != 0
-        && !(file_mode.contains(FaccessatFileMode::S_IWUSR)
-            || file_mode.contains(FaccessatFileMode::S_IWGRP)
-            || file_mode.contains(FaccessatFileMode::S_IWOTH))
+        && uid != 0
+        && !mode_allows(
+            file_mode,
+            &file_stat,
+            uid,
+            gid,
+            FaccessatFileMode::S_IWUSR,
+            FaccessatFileMode::S_IWGRP,
+            FaccessatFileMode::S_IWOTH,
+        )
     {
         return Err(SysErrNo::EACCES);
     }
     if mode.contains(FaccessatMode::X_OK)
-        && !(file_mode.contains(FaccessatFileMode::S_IXUSR)
-            || file_mode.contains(FaccessatFileMode::S_IXGRP)
-            || file_mode.contains(FaccessatFileMode::S_IXOTH))
+        && !if uid == 0 {
+            file_mode.intersects(
+                FaccessatFileMode::S_IXUSR
+                    | FaccessatFileMode::S_IXGRP
+                    | FaccessatFileMode::S_IXOTH,
+            )
+        } else {
+            mode_allows(
+                file_mode,
+                &file_stat,
+                uid,
+                gid,
+                FaccessatFileMode::S_IXUSR,
+                FaccessatFileMode::S_IXGRP,
+                FaccessatFileMode::S_IXOTH,
+            )
+        }
     {
         return Err(SysErrNo::EACCES);
     }

@@ -1,7 +1,7 @@
 use alloc::string::String;
 use alloc::vec;
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_FOLLOW};
-use log::{debug, warn};
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_REMOVEDIR, AT_SYMLINK_FOLLOW};
+use log::debug;
 
 use crate::fs::{
     open, superblock_root_inode, superblock_sync, File, FsIndex, InodeType, OpenFlags,
@@ -251,9 +251,11 @@ pub fn sys_linkat(
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/unlinkat.2.html
-/// 这个函数可能存在严重的问题
-pub fn sys_unlinkat(dirfd: isize, path: *const u8, _flags: u32) -> SyscallRet {
-    // assert!(flags != AT_REMOVEDIR, "not support yet");
+pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
+    if flags & !(AT_REMOVEDIR as u32) != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
@@ -264,7 +266,13 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, _flags: u32) -> SyscallRet {
     // 如果是File但尚有对应的fd未关闭,等到close时unlink
     // 如果是符号链接,直接移除
     // 如果是socket, FIFO, or device,移除但现有的fd可继续使用
-    let osfile = open(&abs_path, OpenFlags::O_UNLINK, NONE_MODE)?.file()?;
+    let osfile = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+
+    let is_dir = osfile.inode.types() == InodeType::Dir;
+    let remove_dir = flags & (AT_REMOVEDIR as u32) != 0;
+    if !is_dir && remove_dir {
+        return Err(SysErrNo::ENOTDIR);
+    }
 
     let locked_fs_info = &proc_inner.fs_info;
 
@@ -275,7 +283,9 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, _flags: u32) -> SyscallRet {
     //     locked_fs_info.has_fd(&abs_path)
     // );
     // TODO: HXC: 我怀疑这里的has_fd是有问题的
-    if osfile.inode.link_cnt()? == 1 && locked_fs_info.has_fd(&path) {
+    let link_cnt = osfile.inode.link_cnt()?;
+    let has_fd = locked_fs_info.has_fd(&abs_path);
+    if link_cnt == 1 && has_fd {
         osfile.inode.delay();
         FsIndex::remove_inode_idx(&abs_path);
     } else {
