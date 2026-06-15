@@ -527,3 +527,10 @@
 - **场景**：Bug 分析与定位、waitpid 语义修复、文档完善
 - **描述**：用户提供新的 `log.ans` 和 LTP waitpid 源码路径，要求修复 `waitpid10`。AI 定位到 `Pid 8 not reaped` 的根因是 TCB drop 立即释放共享 TID/PID，zombie 进程尚未被父进程 wait 回收时 PID 8 被新 fork 复用并覆盖全局进程表；同时补齐基础 `pgid`、`setpgid/getpgid` 和 `waitpid(0)`/`waitpid(<-1)` 进程组过滤语义。`make` 通过，`timeout 90s make run` 单跑 `waitpid10` 输出 1 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitpid10-pid-reuse-pgid.md](./problem/waitpid10-pid-reuse-pgid.md)。
 - **关联 commit**：本次提交
+
+#### waitpid13 WUNTRACED stopped child 修复（6.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、waitpid 停止态语义修复、文档完善
+- **描述**：用户提供新的 `log.ans`，其中 `waitpid13` 没有打印 LTP failure，而是 QEMU timeout；日志显示父进程阻塞在 `waitpid(..., WUNTRACED)`，子进程均已处理 `SIGSTOP`。AI 确认 stopped event 只接入了 `waitid(WSTOPPED)`，`sys_waitpid()` 未处理 `WUNTRACED`，因此父进程无法向 stopped child 发送 `SIGCONT`。修复后 `waitpid()` 返回 stopped child 并写入 `WIFSTOPPED/WSTOPSIG` 所需 status。`make` 通过，`timeout 90s make run` 单跑 `waitpid13` 输出 1 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitpid13-wuntraced-stopped.md](./problem/waitpid13-wuntraced-stopped.md)。
+- **关联 commit**：本次提交

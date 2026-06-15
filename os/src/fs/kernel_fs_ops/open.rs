@@ -36,7 +36,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
                     Some(inode)
                 }
                 Err(e) => {
-                    // debug!("[create_file] parent inode not found: {:?}", e);
+                    debug!("[create_file] parent inode not found: {:?}", e);
                     None
                 }
             }

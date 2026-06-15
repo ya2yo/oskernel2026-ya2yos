@@ -116,14 +116,50 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
             return Poll::Ready(Err(SysErrNo::ECHILD));
         }
 
-        let pair = children
-            .iter()
-            .find(|child| child.all_tasks_exited())
-            .map(|child| Arc::clone(child));
+        let stopped = if options.intersects(WaitOption::WUNTRACED | WaitOption::WSTOPPED) {
+            children.iter().find_map(|child| {
+                child
+                    .meta_lock()
+                    .stopped_signal
+                    .map(|signo| (Arc::clone(child), signo))
+            })
+        } else {
+            None
+        };
+
+        let pair = if stopped.is_none() {
+            children
+                .iter()
+                .find(|child| child.all_tasks_exited())
+                .map(|child| Arc::clone(child))
+        } else {
+            None
+        };
 
         drop(children);
 
-        if let Some(child) = pair {
+        if let Some((child, stop_signal)) = stopped {
+            let found_pid = child.pid;
+
+            if !wstatus.is_null() {
+                let proc_inner = task.process.inner_lock();
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                let value = ((stop_signal as i32) << 8) | 0x7f;
+                if copy_to_user(&memory_set, wstatus as usize, unsafe {
+                    core::slice::from_raw_parts(
+                        &value as *const i32 as *const u8,
+                        core::mem::size_of::<i32>(),
+                    )
+                })
+                .is_err()
+                {
+                    return Poll::Ready(Err(SysErrNo::EFAULT));
+                }
+            }
+
+            child.meta_lock().stopped_signal = None;
+            Poll::Ready(Ok(found_pid))
+        } else if let Some(child) = pair {
             let found_pid = child.pid;
             let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
             let child_usage = child.meta_lock().usage;
