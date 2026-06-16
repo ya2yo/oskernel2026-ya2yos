@@ -99,6 +99,9 @@ fn get_score() {
     // lua
     run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // cyclictest
+    run_testsuit("musl\0", "cyclictest_testcode.sh\0");
+    run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
     // libc
     run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
@@ -118,13 +121,9 @@ fn get_score() {
 
         // #[cfg(target_arch = "riscv64")]
         // test_cgroup_fj_function_cpuset_via_script();
-    // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     // run_testsuit("musl\0", "iperf_testcode.sh\0");
     // run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
 
-    // libctest::pthread_robust_detach::run_glibc_dynamic();
-
-    // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
     // run_testsuit("glibc\0", "iperf_testcode.sh\0");
     // run_testsuit("glibc\0", "netperf_testcode.sh\0");
 
