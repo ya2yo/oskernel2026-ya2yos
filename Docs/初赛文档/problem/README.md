@@ -36,6 +36,7 @@
 
 - [LTP access02 execve shebang 脚本](./access02-ltp-execve.md)
 - [LTP access01 权限判断与 cleanup 卡死](./access01-permission-cleanup.md)
+- [basic umount 相对挂载点路径不匹配](./basic-umount-relative-mountpoint.md)
 - [LTP access04 mount / loop 设备修复](./access04-ltp-musl.md)
 - [龙芯架构 iozone-glibc 动态链接与缺页处理修复](./iozone-glibc.md)
 - [LTP creat04 open 权限检查](./creat04-open-permission.md)

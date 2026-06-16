@@ -541,3 +541,10 @@
 - **场景**：Bug 分析与定位、文件权限语义修复、mmap cleanup 修复、文档完善
 - **描述**：用户要求分析 `log.ans` 卡住原因并修复。AI 先定位 `access01` 的 20 项 `TFAIL` 来自 `faccessat` 未按 real uid/gid 和 owner/group/other 分类权限判断；修复后测例内部 199 项 TPASS，但 Summary 后仍卡住。进一步用临时日志确认卡点在 cleanup 删除 `/dev/shm/ltp_access01_2` 后的 `munmap`，MAP_SHARED 写回已 unlink backing file 时进入 ext4 写路径不返回。最终修复 `faccessat` 权限判断、`unlinkat` cleanup 语义、lwext4 目录删除和 unlinked shared mmap 的 `munmap` 写回路径。`make` 通过，`timeout 120s make run` 输出 `passed 199 failed 0`、`GROUP END` 和 `shutdown!`。详见 `ai.log` 2026-06-15 条目与 [problem/access01-permission-cleanup.md](./problem/access01-permission-cleanup.md)。
 - **关联 commit**：本次提交
+
+#### basic umount 相对挂载点路径修复（6.16）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、mount/umount 路径语义修复、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复 basic 测试 `umount` 失败。AI 定位到 `mount("./mnt")` 成功后 `umount("./mnt")` 返回 `-22`，根因是 `sys_mount()` 将挂载点原样保存为相对路径，而 `sys_umount2()` 查表前会把同一参数解析为绝对路径。修复为 `sys_mount()` 写入挂载表前规范化目标挂载点，source 保持原样。`make` 通过，`timeout 120s make run` 中 basic-musl/basic-glibc 的 `test_mount` 与 `test_umount` 均返回 0。详见 `ai.log` 2026-06-16 条目与 [problem/basic-umount-relative-mountpoint.md](./problem/basic-umount-relative-mountpoint.md)。
+- **关联 commit**：本次提交

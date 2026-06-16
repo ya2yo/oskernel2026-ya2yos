@@ -107,6 +107,7 @@ pub fn sys_mount(
     let special = read_user_cstr(&memory_set, special)?;
     let dir = read_user_cstr(&memory_set, dir)?;
     let ftype = read_user_cstr(&memory_set, ftype)?;
+    let dir = proc_inner.get_abs_path(AT_FDCWD as isize, &dir)?;
     if !data.is_null() {
         let data = read_user_cstr(&memory_set, data)?;
         let ret = MNT_TABLE.lock().mount(special, dir, ftype, flags, data);

@@ -37,13 +37,13 @@ use core::sync::atomic::{AtomicBool, Ordering};
 static DOMAIN_NAME: spin::Mutex<[u8; 65]> = spin::Mutex::new([0; 65]);
 static DOMAIN_NAME_INIT: AtomicBool = AtomicBool::new(false);
 
-/// 获取动态 domainname 的字节数组 (未设置则返回默认值 "TrustOS")
+/// 获取动态 domainname 的字节数组 (未设置则返回默认值 "Ya2yOS")
 fn get_domainname_bytes() -> [u8; 65] {
     if DOMAIN_NAME_INIT.load(Ordering::Relaxed) {
         *DOMAIN_NAME.lock()
     } else {
         let mut b = [0; 65];
-        let default = b"TrustOS";
+        let default = b"Ya2yOS";
         let copy_len = default.len().min(65);
         b[..copy_len].copy_from_slice(&default[..copy_len]);
         b
@@ -510,8 +510,8 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
         b
     }
     let uname = Utsname {
-        sysname: str2u8("TrustOS"),
-        nodename: str2u8("TrustOS"),
+        sysname: str2u8("Ya2yOS"),
+        nodename: str2u8("Ya2yOS"),
         release: str2u8("5.0.0"),
         version: str2u8("5.0.0"),
         machine: str2u8("RISC-V64"),

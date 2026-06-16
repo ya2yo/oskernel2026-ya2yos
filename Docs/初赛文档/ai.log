@@ -1753,3 +1753,42 @@ warnings 0
 #### OS COMP TEST GROUP END ltp-musl ####
 shutdown!
 ```
+
+---
+
+## 2026-06-16: basic umount 相对挂载点路径修复
+
+### 用户需求
+
+用户要求分析 `log.ans`，修复当前 basic 测试中 `umount` 失败的问题。
+
+### 分析
+
+AI 先按 `fix-bug` 流程检查 `log.ans`，定位到 basic-musl 和 basic-glibc 都在 `test_mount` 中出现：
+
+```text
+mount return: 0
+mount successfully
+umount return: -22
+```
+
+独立 `test_umount` 中，`mount("./mnt")` 成功后直接触发 `Assert Fatal`。继续检查 `sys_mount()`、`sys_umount2()` 和 `MNT_TABLE.umount()`，确认挂载表支持按 source 或挂载点字符串删除，但 `sys_mount()` 保存用户传入的相对路径 `./mnt`，而 `sys_umount2()` 会先把同一个参数转成绝对路径，例如 `/musl/basic/mnt`，因此查表失败并返回 `EINVAL`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/mount.rs` | `sys_mount()` 读取 `dir` 后调用 `get_abs_path(AT_FDCWD, &dir)`，将挂载点规范化为绝对路径后写入挂载表 |
+| `Docs/初赛文档/problem/basic-umount-relative-mountpoint.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` / `Docs/初赛文档/开发日志.md` / `Docs/初赛文档/AI_INTERACTION.md` | 更新索引和 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run
+```
+
+结果：basic-musl 和 basic-glibc 的 `test_mount` 均输出 `umount return: 0`，独立 `test_umount` 均输出 `umount success.` 和 `return: 0`，最终打印 `shutdown!`。
