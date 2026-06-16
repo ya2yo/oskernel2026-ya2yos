@@ -177,7 +177,8 @@ impl MemorySetInner {
                 && area.mmap_file.file.is_some()
             {
                 let file = area.mmap_file.file.clone().unwrap();
-                if file.inode.link_cnt()? > 0 { // 将修改的内容写回文件
+                if file.inode.link_cnt()? > 0 {
+                    // 将修改的内容写回文件
                     let mut wb_range: Vec<(VirtPageNum, VirtPageNum)> = Vec::new();
                     VPNRange::new(start_vpn, end_vpn)
                         .into_iter()
@@ -187,9 +188,11 @@ impl MemorySetInner {
                                     wb_range.push((vpn, VirtPageNum(vpn.0 + 1)));
                                 } else {
                                     let end_range = wb_range.pop().unwrap();
-                                    if end_range.1 == vpn { // 说明可以拼接起来
+                                    if end_range.1 == vpn {
+                                        // 说明可以拼接起来
                                         wb_range.push((end_range.0, VirtPageNum(vpn.0 + 1)));
-                                    } else { // 分开的页面
+                                    } else {
+                                        // 分开的页面
                                         wb_range.push(end_range);
                                         wb_range.push((vpn, VirtPageNum(vpn.0 + 1)));
                                     }

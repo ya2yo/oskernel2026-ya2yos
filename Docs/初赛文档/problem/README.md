@@ -22,6 +22,7 @@
 - [waitpid13: WUNTRACED stopped child](./waitpid13-wuntraced-stopped.md)
 - [wait403: wait4(INT_MIN) errno](./wait403-int-min-esrch.md)
 - [cyclictest glibc: affinity / mlock / clone3 兼容修复](./cyclictest-glibc-affinity-clone3.md)
+- [cyclictest musl: LoongArch scheduler stub 兼容修复](./cyclictest-musl-sched-stub.md)
 - [进程退出托孤 exit_and_reparent](./exit-reparent.md)
 - [线程信号栈检查错误与 futex 退出死锁](./thread-signal-stack-futex-deadlock.md)
 - [pthread_robust_detach：地址转换重构 + exit_signal 覆盖 + interrupted 残留](./pthread-robust-detach.md)

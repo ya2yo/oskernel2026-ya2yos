@@ -262,9 +262,7 @@ pub fn run_ltp_tests_musl_separately(tests: &[&str], blacklist: &[&str]) {
             group_end = tests.len();
         }
 
-        println!(
-            "#### OS COMP TEST GROUP START ltp-musl ####"
-        );
+        println!("#### OS COMP TEST GROUP START ltp-musl ####");
 
         let mut summary = LtpSummary::default();
         let mut j = group_start;
@@ -287,9 +285,7 @@ pub fn run_ltp_tests_musl_separately(tests: &[&str], blacklist: &[&str]) {
             );
             j += 1;
         }
-        println!(
-            "#### OS COMP TEST GROUP END ltp-musl ####"
-        );
+        println!("#### OS COMP TEST GROUP END ltp-musl ####");
         group += 1;
         i = group_end;
     }
@@ -302,9 +298,7 @@ pub fn test_musl_ltp() {
 }
 #[allow(unused)]
 pub fn test_musl_single(test_name: &str) {
-    println!(
-            "#### OS COMP TEST GROUP START ltp-musl ####"
-        );
+    println!("#### OS COMP TEST GROUP START ltp-musl ####");
     println!("RUN LTP CASE {}", trim_trailing_nul(test_name));
     let result = fork_run_ltp_and_collect("/musl/ltp/testcases/bin\0", &[test_name]);
     println!(
@@ -315,9 +309,7 @@ pub fn test_musl_single(test_name: &str) {
     let mut summary = LtpSummary::default();
     summary.record_run_result(&result);
     summary.print();
-    println!(
-            "#### OS COMP TEST GROUP END ltp-musl ####"
-        );
+    println!("#### OS COMP TEST GROUP END ltp-musl ####");
 }
 
 // glibc
@@ -368,12 +360,14 @@ pub fn test_glibc_single(test_name: &str) {
     summary.print();
 }
 
-
 /// 单独运行 glibc 版本下指定的一组测例（自定义列表）
 /// 用法：ltp::test_glibc_custom(&["brk01\0", "brk02\0", "mmap01\0"])
 #[allow(unused)]
 pub fn test_glibc_custom() {
     println!("===== GLIBC LTP CUSTOM TESTS START =====");
-    run_ltp_tests_glibc(&ltp::FILELIST[LTP_TEST_START..LTP_TEST_START+LTP_TESTS_PER_GROUP], LTP_BLACKLIST);
+    run_ltp_tests_glibc(
+        &ltp::FILELIST[LTP_TEST_START..LTP_TEST_START + LTP_TESTS_PER_GROUP],
+        LTP_BLACKLIST,
+    );
     println!("===== GLIBC LTP CUSTOM TESTS END =====");
 }

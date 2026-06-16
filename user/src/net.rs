@@ -7,4 +7,3 @@ pub const SOCK_DGRAM: isize = 2;
 pub fn socket(domain: isize, tp: isize, proto: isize) -> isize {
     sys_socket(domain, tp, proto)
 }
-

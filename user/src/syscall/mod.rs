@@ -51,7 +51,7 @@ const SYSCALL_GETTIMEOFDAY: usize = 169;
 const SYSCALL_GETPID: usize = 172;
 const SYSCALL_GETPPID: usize = 173;
 const SYSCALL_SYSINFO: usize = 179;
-const SYSCALL_SOCKET:usize = 198;
+const SYSCALL_SOCKET: usize = 198;
 const SYSCALL_CLONE: usize = 220;
 const SYSCALL_EXECVE: usize = 221;
 const SYSCALL_WAIT4: usize = 260;
@@ -392,14 +392,28 @@ pub fn sys_clock_gettime(clockid: usize, tp: &mut [u8]) -> isize {
 pub fn sys_sched_getaffinity(pid: usize, mask: *mut usize) -> isize {
     syscall(
         SYSCALL_SCHED_GETAFFINITY,
-        [pid as isize, 0, mask as isize, 0, 0, 0],
+        [
+            pid as isize,
+            core::mem::size_of::<usize>() as isize,
+            mask as isize,
+            0,
+            0,
+            0,
+        ],
     )
 }
 
 pub fn sys_sched_setaffinity(pid: usize, mask: *const usize) -> isize {
     syscall(
         SYSCALL_SCHED_SETAFFINITY,
-        [pid as isize, 0, mask as isize, 0, 0, 0],
+        [
+            pid as isize,
+            core::mem::size_of::<usize>() as isize,
+            mask as isize,
+            0,
+            0,
+            0,
+        ],
     )
 }
 

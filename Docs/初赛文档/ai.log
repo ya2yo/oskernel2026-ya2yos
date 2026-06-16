@@ -1933,3 +1933,67 @@ STRESS_P8 end: success
 ```
 
 日志未再出现原始 mask 分配错误、`mlock Bad address`、线程创建 `FATAL` 或 `Clone3 ret = Invalid argument`。
+
+---
+
+## 2026-06-16: cyclictest musl scheduler stub 兼容修复
+
+### 用户需求
+
+用户要求修复 cyclictest 中 `sched_getparam(0, &old_param)` 返回非 0 导致的：
+
+```text
+unable to get scheduler parameters
+```
+
+随后澄清目标是 `cyclibctest` / cyclictest，而不是 iozone。
+
+### 分析
+
+AI 按 `fix-bug` 流程检查 `log.ans` 和 `/tmp/cyclictest-sched-fix.log`。日志中失败前可见 `SchedGetaffinity ret = 8`，但没有 `SchedGetParam` syscall 进入内核。将 `sched_getaffinity` 临时改为返回 0 后，cyclictest 退回到：
+
+```text
+request to allocate mask for invalid number: Invalid argument
+```
+
+因此确认 `sched_getaffinity` 裸 syscall 返回 `sizeof(usize)` 是当前 musl/libnuma 所需语义，不能改成 libc 层的 0。
+
+随后从测试 ext4 镜像中用 `debugfs` 提取 `/musl/cyclictest` 与 `/musl/lib/libc.so`，用 LoongArch objdump 反汇编：
+
+- `cyclictest` 的 `check_privs()` 会调用 `sched_getscheduler(0)`；若不是实时策略，再调用 `sched_getparam(0, &old_param)`。
+- LoongArch musl `libc.so` 内 `sched_getparam`、`sched_getscheduler`、`sched_setparam`、`sched_setscheduler` 都是直接返回 `-ENOSYS` 的 stub，未执行 syscall。
+
+根因不是内核 `sys_sched_getparam()` 返回错误，而是该 musl libc wrapper 根本没有发 syscall。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/map_dynamic_link.rs` | 新增 LoongArch `/musl/lib/libc.so` scheduler stub 字节补丁，返回给用户态的动态库内容中修复相关 wrapper |
+| `os/src/fs/ext4_lw/inode.rs` | `read_at` / `read_all` 返回动态库内容前调用补丁 helper，覆盖动态链接器直接加载和 mmap 懒加载 |
+| `os/src/fs/mod.rs` | 导出 `patch_dynamic_link_file_bytes` |
+| `os/src/syscall/task/schedule.rs` | 补齐真实 `sched_getparam` syscall：校验 PID/TID 和用户指针，写回 `sched_priority = 0` |
+| `os/src/syscall/mod.rs` | `sched_getparam` 分发表参数改为可写指针 |
+| `user/src/syscall/mod.rs` | affinity wrapper 传入 `sizeof(usize)` 作为 `cpusetsize` |
+| `Docs/初赛文档/problem/cyclictest-musl-sched-stub.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` / `Docs/初赛文档/开发日志.md` / `Docs/初赛文档/AI_INTERACTION.md` | 更新索引和 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > /tmp/cyclictest-sched-fix.log 2>&1
+```
+
+结果：当前 LoongArch musl cyclictest 四个子项均 success：
+
+```text
+====== cyclictest NO_STRESS_P1 end: success ======
+====== cyclictest NO_STRESS_P8 end: success ======
+====== cyclictest STRESS_P1 end: success ======
+====== cyclictest STRESS_P8 end: success ======
+#### OS COMP TEST GROUP END cyclictest-musl ####
+shutdown!
+```

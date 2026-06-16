@@ -363,7 +363,13 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[3] as *const u8,
             args[4] as u32,
         ),
-        Syscall::Renameat => sys_renameat2(args[0] as isize, args[1] as *const u8, args[2] as isize, args[3] as *const u8, 0u32),
+        Syscall::Renameat => sys_renameat2(
+            args[0] as isize,
+            args[1] as *const u8,
+            args[2] as isize,
+            args[3] as *const u8,
+            0u32,
+        ),
         Syscall::Umount2 => sys_umount2(args[0] as *const u8, args[1] as u32),
         Syscall::Mount => sys_mount(
             args[0] as *const u8,
@@ -517,7 +523,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             sys_sched_setscheduler(args[0], args[1], args[2] as *const u8)
         }
         Syscall::SchedGetScheduler => sys_sched_getscheduler(args[0]),
-        Syscall::SchedGetParam => sys_sched_getparam(args[0], args[1] as *const u8),
+        Syscall::SchedGetParam => sys_sched_getparam(args[0], args[1] as *mut u8),
         Syscall::SchedSetaffinity => sys_sched_setaffinity(args[0], args[1], args[2]),
         Syscall::SchedGetaffinity => sys_sched_getaffinity(args[0], args[1], args[2]),
         Syscall::SchedYield => sys_sched_yield(),
@@ -728,7 +734,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Mincore => sys_mincore(args[0], args[1], args[2] as *mut u8),
         Syscall::MSync => Ok(0),
         Syscall::Madvise => sys_madvise(args[0], args[1], args[2]),
-        Syscall::WaitId => sys_waitid(args[0] as i32, args[1] as i32, args[2] as *mut SigInfo, args[3] as i32),
+        Syscall::WaitId => sys_waitid(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as *mut SigInfo,
+            args[3] as i32,
+        ),
         Syscall::Wait4 => sys_waitpid(args[0] as i32, args[1] as *mut i32, args[2] as u32),
 
         Syscall::Renameat2 => sys_renameat2(

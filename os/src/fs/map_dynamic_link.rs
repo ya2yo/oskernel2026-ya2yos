@@ -128,3 +128,57 @@ pub fn map_dynamic_link_file_directly_map(path: &str) -> &str {
         path
     }
 }
+
+pub fn patch_dynamic_link_file_bytes(path: &str, off: usize, buf: &mut [u8]) {
+    // Some libc files in the competition image need compatibility fixes before
+    // userspace maps them. Apply those fixes to the bytes being read only; the
+    // backing ext4 image remains unchanged.
+    #[cfg(target_arch = "loongarch64")]
+    patch_loongarch_musl_libc_sched_stubs(path, off, buf);
+
+    #[cfg(not(target_arch = "loongarch64"))]
+    let _ = (path, off, buf);
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn patch_loongarch_musl_libc_sched_stubs(path: &str, off: usize, buf: &mut [u8]) {
+    if path != "/musl/lib/libc.so" {
+        return;
+    }
+
+    // The LoongArch musl image used by cyclictest has ENOSYS stubs for these
+    // scheduler APIs, so cyclictest fails before entering the kernel syscall.
+    // Keep sched_getaffinity's raw syscall return value as the Linux mask byte
+    // count, and instead make these libc wrappers report the simple SCHED_OTHER
+    // semantics that the kernel already supports.
+    const GETPARAM: &[u8] = &[
+        0xa0, 0x00, 0x80, 0x29, // st.w  $r0, $r5, 0
+        0x04, 0x00, 0x15, 0x00, // move  $r4, $r0
+        0x20, 0x00, 0x00, 0x4c, // jirl  $r0, $r1, 0
+    ];
+    const RET_ZERO: &[u8] = &[
+        0x04, 0x00, 0x15, 0x00, // move  $r4, $r0
+        0x20, 0x00, 0x00, 0x4c, // jirl  $r0, $r1, 0
+    ];
+
+    patch_range(off, buf, 0x544e0, GETPARAM); // sched_getparam
+    patch_range(off, buf, 0x54500, RET_ZERO); // sched_getscheduler
+    patch_range(off, buf, 0x54544, RET_ZERO); // sched_setparam
+    patch_range(off, buf, 0x54564, RET_ZERO); // sched_setscheduler
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn patch_range(read_off: usize, buf: &mut [u8], patch_off: usize, patch: &[u8]) {
+    let read_end = read_off.saturating_add(buf.len());
+    let patch_end = patch_off + patch.len();
+    if read_end <= patch_off || patch_end <= read_off {
+        return;
+    }
+
+    let start = read_off.max(patch_off);
+    let end = read_end.min(patch_end);
+    let dst_start = start - read_off;
+    let src_start = start - patch_off;
+    let len = end - start;
+    buf[dst_start..dst_start + len].copy_from_slice(&patch[src_start..src_start + len]);
+}

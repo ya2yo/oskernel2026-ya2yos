@@ -5,13 +5,13 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
-use log::debug;
 use core::mem::size_of;
 use linux_raw_sys::ioctl::BLKGETSIZE64;
 use linux_raw_sys::loop_device::{
     loop_info, loop_info64, LOOP_CLR_FD, LOOP_CTL_ADD, LOOP_CTL_GET_FREE, LOOP_CTL_REMOVE,
     LOOP_GET_STATUS, LOOP_GET_STATUS64, LOOP_SET_FD, LOOP_SET_STATUS, LOOP_SET_STATUS64,
 };
+use log::debug;
 use spin::{Lazy, Mutex};
 
 const LOOP_COUNT: usize = 256;

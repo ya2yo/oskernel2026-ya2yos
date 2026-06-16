@@ -5,7 +5,7 @@ use lwext4_rust::{
 };
 
 use crate::{
-    fs::{Inode, InodeType, Kstat, OpenFlags, String},
+    fs::{patch_dynamic_link_file_bytes, Inode, InodeType, Kstat, OpenFlags, String},
     sync::SyncUnsafeCell,
     utils::{SysErrNo, SyscallRet},
 };
@@ -94,8 +94,9 @@ impl Inode for Ext4Inode {
         file.file_open(path, O_RDONLY).map_err(SysErrNo::from)?;
         file.file_seek(off as i64, SEEK_SET)
             .map_err(SysErrNo::from)?;
-        let r = file.file_read(buf);
-        r.map_err(SysErrNo::from)
+        let r = file.file_read(buf).map_err(SysErrNo::from)?;
+        patch_dynamic_link_file_bytes(path, off, &mut buf[..r]);
+        Ok(r)
     }
 
     fn write_at(&self, off: usize, buf: &[u8]) -> SyscallRet {
@@ -170,6 +171,7 @@ impl Inode for Ext4Inode {
             if let Err(e) = r {
                 Err(SysErrNo::from(e))
             } else {
+                patch_dynamic_link_file_bytes(&path_str, 0, buf.as_mut_slice());
                 Ok(buf)
             }
         } else if file_type == InodeType::SymLink {

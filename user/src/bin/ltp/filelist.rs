@@ -99,7 +99,7 @@ pub static FILELIST: [&str; 2820] = [
     "capset01\0",
     "capset02\0",
     "capset03\0",
-    "capset04\0",// 100
+    "capset04\0", // 100
     "cfs_bandwidth01\0",
     "cgroup_core01\0",
     "cgroup_core02\0",
@@ -200,7 +200,7 @@ pub static FILELIST: [&str; 2820] = [
     "cpuctl_fj_simple_echo\0",
     "cpuctl_latency_check_task\0",
     "cpuctl_latency_test\0", // 200
-    "cpuctl_test01\0", 
+    "cpuctl_test01\0",
     "cpuctl_test02\0",
     "cpuctl_test03\0",
     "cpuctl_test04\0",

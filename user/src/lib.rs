@@ -6,8 +6,8 @@
 pub mod console;
 mod arch;
 mod lang_items;
-mod syscall;
 mod net;
+mod syscall;
 pub use net::*;
 
 extern crate alloc;

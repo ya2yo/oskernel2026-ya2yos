@@ -1,11 +1,5 @@
 use core::sync::atomic::AtomicU32;
 
-use linux_raw_sys::general::{
-    CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_THREAD_CPUTIME_ID,
-    TIMER_ABSTIME,
-};
-use log::debug;
-
 use crate::{
     arch::time::get_clock_freq,
     mm::{copy_from_user, copy_to_user, if_bad_address},
@@ -16,6 +10,11 @@ use crate::{
     },
     utils::{SysErrNo, SyscallRet},
 };
+use linux_raw_sys::general::{
+    CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_THREAD_CPUTIME_ID,
+    TIMER_ABSTIME,
+};
+use log::debug;
 
 /// 参考 https://man7.org/linux/man-pages/man2/sched_yield.2.html
 pub fn sys_sched_yield() -> SyscallRet {
@@ -85,7 +84,7 @@ pub fn sys_sched_setaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
     if cpusetsize < mask_bytes {
         return Err(SysErrNo::EINVAL);
     }
-    if mask == 0 || (mask as isize) <= 0 || if_bad_address(mask) {
+    if mask == 0 || if_bad_address(mask) {
         return Err(SysErrNo::EFAULT);
     }
 
@@ -110,7 +109,7 @@ pub fn sys_sched_getaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
     if cpusetsize < mask_bytes {
         return Err(SysErrNo::EINVAL);
     }
-    if mask == 0 || (mask as isize) <= 0 || if_bad_address(mask) {
+    if mask == 0 || if_bad_address(mask) {
         return Err(SysErrNo::EFAULT);
     }
 
@@ -146,12 +145,25 @@ pub fn sys_sched_getscheduler(_pid: usize) -> SyscallRet {
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/sched_getparam.2.html
-pub fn sys_sched_getparam(_pid: usize, _param: *const u8) -> SyscallRet {
+pub fn sys_sched_getparam(pid: usize, param: *mut u8) -> SyscallRet {
     // debug!(
     //     "[sys_sched_getparam] pid is {}, param is {:x}",
     //     pid, param as usize
     // );
-    //由于使用的是标准的时间片调度算法，param参数需要被忽略
+    if param.is_null() || if_bad_address(param as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+    if pid != 0
+        && Process::get_process_arc_by_pid(pid).is_none()
+        && tid_to_task::tid2task(pid).is_none()
+    {
+        return Err(SysErrNo::ESRCH);
+    }
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    let sched_priority = 0i32.to_ne_bytes();
+    copy_to_user(&memory_set, param as usize, &sched_priority)?;
     Ok(0)
 }
 

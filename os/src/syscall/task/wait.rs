@@ -2,8 +2,7 @@ use core::{future::poll_fn, task::Poll};
 
 use alloc::{sync::Arc, vec::Vec};
 use linux_raw_sys::general::{
-    CLD_CONTINUED, CLD_DUMPED, CLD_EXITED, CLD_KILLED, CLD_STOPPED, P_ALL, P_PGID, P_PID,
-    P_PIDFD,
+    CLD_CONTINUED, CLD_DUMPED, CLD_EXITED, CLD_KILLED, CLD_STOPPED, P_ALL, P_PGID, P_PID, P_PIDFD,
 };
 use log::debug;
 
@@ -338,14 +337,15 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
             None
         };
 
-        let pair = if stopped.is_none() && continued.is_none() && options.contains(WaitOption::WEXITED) {
-            children
-                .iter()
-                .find(|child| child.all_tasks_exited())
-                .map(Arc::clone)
-        } else {
-            None
-        };
+        let pair =
+            if stopped.is_none() && continued.is_none() && options.contains(WaitOption::WEXITED) {
+                children
+                    .iter()
+                    .find(|child| child.all_tasks_exited())
+                    .map(Arc::clone)
+            } else {
+                None
+            };
 
         drop(children);
 
@@ -425,21 +425,16 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
             // 正常 exit 事件使用 SIGCHLD + CLD_EXITED，si_status 保存未左移的退出码。
             // 信号终止事件则返回原始信号号，并区分 CLD_KILLED / CLD_DUMPED。
             if !infop.is_null() {
-                let (si_code, si_status) =
-                    if let Some((signo, dumped_core)) = termination_signal {
-                        (
-                            if dumped_core { CLD_DUMPED } else { CLD_KILLED },
-                            signo as u32,
-                        )
-                    } else {
-                        (CLD_EXITED, exit_code as u32)
-                    };
-                let sig_info = SigInfo::new_child(
-                    SIGCHLD as u32,
-                    si_code,
-                    found_pid as u32,
-                    si_status,
-                );
+                let (si_code, si_status) = if let Some((signo, dumped_core)) = termination_signal {
+                    (
+                        if dumped_core { CLD_DUMPED } else { CLD_KILLED },
+                        signo as u32,
+                    )
+                } else {
+                    (CLD_EXITED, exit_code as u32)
+                };
+                let sig_info =
+                    SigInfo::new_child(SIGCHLD as u32, si_code, found_pid as u32, si_status);
                 let proc_inner = task.process.inner_lock();
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 if copy_to_user(&memory_set, infop as usize, unsafe {
