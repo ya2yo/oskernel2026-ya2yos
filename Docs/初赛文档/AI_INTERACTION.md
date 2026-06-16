@@ -555,3 +555,10 @@
 - **场景**：Bug 分析与定位、内存权限语义修复、文档完善
 - **描述**：用户要求根据 `log.ans` 修复 busybox-glibc 的 `Fatal glibc error: malloc.c:2589 (sysmalloc)`。AI 复查日志和 `mprotect` 路径，定位到 `MemorySetInner::mprotect()` 的 VMA 拆分使用 `[start_vpn, end_vpn)`，但 PTE 权限更新使用 `..=end_vpn`，会额外修改相邻页权限并破坏 glibc 堆相关页属性。修复为按右开区间更新 PTE。`make log` 通过，`timeout 120s make run` 中 busybox-glibc 输出 GROUP END 和 `shutdown!`，未再出现 malloc fatal。详见 `Docs/初赛文档/ai.log` 2026-06-16 条目与 [problem/loongarch-busybox-mprotect-range.md](./problem/loongarch-busybox-mprotect-range.md)。
 - **关联 commit**：本次提交
+
+#### utime03 LOOP_CTL_GET_FREE 返回语义修复（6.16）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、loop-control ioctl 兼容修复、文档完善
+- **描述**：用户要求分析 `log.ans` 中 `utime03` 失败。AI 定位到 `/dev/loop-control` 的 `ioctl(LOOP_CTL_GET_FREE)` 返回 `EFAULT`，随后 LTP 打印 `Couldn't find free loop device` 和 `TBROK: Failed to acquire device`。根因是内核把 ioctl 第三个参数误当作输出指针，而 Linux 语义要求该命令直接以 ioctl 返回值返回空闲 loop 号。修复后 `make` 通过，`timeout 120s make run` 单跑 `utime03` 输出 1 项 TPASS，Summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-16 条目与 [problem/utime03-loop-ctl-get-free.md](./problem/utime03-loop-ctl-get-free.md)。
+- **关联 commit**：本次提交

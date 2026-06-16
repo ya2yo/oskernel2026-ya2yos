@@ -5,6 +5,7 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
+use log::debug;
 use core::mem::size_of;
 use linux_raw_sys::ioctl::BLKGETSIZE64;
 use linux_raw_sys::loop_device::{
@@ -96,7 +97,7 @@ impl File for DevLoopControl {
         }
         revents
     }
-    fn ioctl(&self, cmd: u32, arg: usize, memory_set: &MemorySet) -> SyscallRet {
+    fn ioctl(&self, cmd: u32, arg: usize, _memory_set: &MemorySet) -> SyscallRet {
         match cmd {
             LOOP_CTL_GET_FREE => {
                 let mut free_nr = None;
@@ -107,10 +108,7 @@ impl File for DevLoopControl {
                     }
                 }
                 let nr = free_nr.ok_or(SysErrNo::EOPNOTSUPP)?;
-                copy_to_user(memory_set, arg, unsafe {
-                    core::slice::from_raw_parts(&nr as *const u32 as *const u8, size_of::<u32>())
-                })?;
-                Ok(0)
+                Ok(nr as usize)
             }
             LOOP_CTL_ADD => {
                 if arg >= LOOP_COUNT as usize {
@@ -189,6 +187,7 @@ impl File for DevLoop {
         revents
     }
     fn ioctl(&self, cmd: u32, arg: usize, memory_set: &MemorySet) -> SyscallRet {
+        // debug!("loopdev's ioctl: cmd={}, arg={}", cmd, arg);
         let idx = self.number as usize;
         match cmd {
             LOOP_GET_STATUS64 => {

@@ -48,6 +48,7 @@
 ## 测例与驱动
 
 - [lmbench](./lmbench.md)
+- [LTP utime03: LOOP_CTL_GET_FREE 返回语义](./utime03-loop-ctl-get-free.md)
 - [LTP 包装层 Summary 汇总](./ltp-summary-wrapper.md)
 - [龙芯架构 libcbench_testcode](./loongarch-libcbench.md)
 - [龙芯架构添加网络模块后卡在汇编阶段](./loongarch-net-init-hang.md)
