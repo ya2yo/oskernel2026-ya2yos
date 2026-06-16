@@ -92,48 +92,6 @@ bitflags! {
     }
 }
 
-#[repr(usize)]
-#[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq, FromPrimitive)]
-pub enum IoctlCommand {
-    // For struct termios
-    /// Gets the current serial port settings.
-    TCGETS = 0x5401,
-    /// Sets the serial port settings immediately.
-    TCSETS = 0x5402,
-    /// Sets the serial port settings after allowing the input and output buffers to drain/empty.
-    TCSETSW = 0x5403,
-    /// Sets the serial port settings after flushing the input and output buffers.
-    TCSETSF = 0x5404,
-    /// For struct termio
-    /// Gets the current serial port settings.
-    TCGETA = 0x5405,
-    /// Sets the serial port settings immediately.
-    TCSETA = 0x5406,
-    /// Sets the serial port settings after allowing the input and output buffers to drain/empty.
-    TCSETAW = 0x5407,
-    /// Sets the serial port settings after flushing the input and output buffers.
-    TCSETAF = 0x5408,
-    /// Get the process group ID of the foreground process group on this terminal.
-    TIOCGPGRP = 0x540F,
-    /// Set the foreground process group ID of this terminal.
-    TIOCSPGRP = 0x5410,
-    /// Get window size.
-    TIOCGWINSZ = 0x5413,
-    /// Set window size.
-    TIOCSWINSZ = 0x5414,
-    /// Non-cloexec
-    FIONCLEX = 0x5450,
-    /// Cloexec
-    FIOCLEX = 0x5451,
-    /// rustc using pipe and ioctl pipe file with this request id
-    /// for non-blocking/blocking IO control setting
-    FIONBIO = 0x5421,
-    /// Read time
-    RTC_RD_TIME = 0x80247009,
-    #[num_enum(default)]
-    Default = 0,
-}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]

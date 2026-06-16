@@ -45,6 +45,32 @@ def analyze_log(file_path):
     """Parse the log file and print syscall sequences + LTP test output."""
 
     pid_syscall: dict[int, str] = {}   # pid -> pending syscall name from last begin
+    pid_user_out: dict[int, list[str]] = {}  # pid -> accumulated user-mode output
+    user_mode = False  # True once we see the first syscall (boot phase over)
+
+    def _show_user_out(pid: int) -> str:
+        """Return the reconstructed user-mode output for *pid* as an
+        escaped string, or '' if there is none."""
+        parts = pid_user_out.get(pid)
+        if not parts:
+            return ""
+        text = "".join(parts)
+        # Escape actual control characters for safe terminal display.
+        out = []
+        for ch in text:
+            if ch == "\n":
+                out.append("\\n")
+            elif ch == "\r":
+                out.append("\\r")
+            elif ch == "\t":
+                out.append("\\t")
+            elif ch == "\0":
+                out.append("\\0")
+            elif ord(ch) < 32 or ord(ch) == 127:
+                out.append(f"\\x{ord(ch):02x}")
+            else:
+                out.append(ch)
+        return "".join(out)
 
     try:
         with open(file_path, "r", errors="replace") as f:
@@ -54,8 +80,9 @@ def analyze_log(file_path):
                     continue
 
                 # -- Try kernel log line --
-                m = LINE_RE.match(clean)
+                m = LINE_RE.search(clean)
                 if m:
+                    raw_prefix = clean[:m.start()]  # user output before [LEVEL]
                     pid = int(m.group("pid"))
                     msg = m.group("msg")
 
@@ -64,21 +91,35 @@ def analyze_log(file_path):
                     if s_begin:
                         sc_name = s_begin.group(1)
                         pid_syscall[pid] = sc_name
-                        continue   # don't print begin -- wait for ret
+                        # Reset per-PID user output on Execve
+                        if sc_name == "Execve":
+                            pid_user_out.pop(pid, None)
+                        user_mode = True
+                        continue
 
-                    # Print syscall ret paired with its begin name
+                    # Print syscall ret
                     s_ret = SYSCALL_RET_RE.search(msg)
                     if s_ret:
+                        user_mode = True
                         status = s_ret.group(1)
                         rest = s_ret.group(2).strip()
                         sc_name = pid_syscall.pop(pid, "?")
                         color = "\033[32m" if status == "OK" else "\033[31m"
-                        print(f"  L{line_no:>6d} [PID {pid:>3}] "
-                              f"\033[36m{sc_name:20s}\033[0m "
-                              f"{color}=> {status}  {rest}\033[0m")
+
+                        if raw_prefix:
+                            pid_user_out.setdefault(pid, []).append(raw_prefix)
+
+                        user_str = _show_user_out(pid)
+
+                        line = (f"  L{line_no:>6d} [PID {pid:>3}] "
+                                f"\033[36m{sc_name:20s}\033[0m "
+                                f"{color}=> {status}  {rest}\033[0m")
+                        if user_str:
+                            line += f"  \033[37m|\033[0m \033[37m{user_str}\033[0m"
+                        print(line)
                         continue
 
-                    # Skip everything else (DEBUG traces, file ops, etc.)
+                    # Non-syscall kernel lines (DEBUG, INFO, etc.) – skip
                     continue
 
                 # -- Try LTP test output line --
@@ -88,21 +129,24 @@ def analyze_log(file_path):
                     lineno = t.group(2)
                     tag = t.group(3)
                     message = t.group(4)
-                    # Color-code by tag severity
                     tag_colors = {
-                        "TPASS": "\033[32m",   # green
-                        "TFAIL": "\033[31m",   # red
-                        "TBROK": "\033[31m",   # red
-                        "TINFO": "\033[36m",   # cyan
-                        "TWARN": "\033[33m",   # yellow
-                        "TCONF": "\033[33m",   # yellow
+                        "TPASS": "\033[32m",
+                        "TFAIL": "\033[31m",
+                        "TBROK": "\033[31m",
+                        "TINFO": "\033[36m",
+                        "TWARN": "\033[33m",
+                        "TCONF": "\033[33m",
                     }
                     c = tag_colors.get(tag, "\033[0m")
                     print(f"  L{line_no:>6d} {filename}:{lineno}: "
                           f"{c}{tag}\033[0m: {message}")
                     continue
 
-                # Everything else is ignored
+                # -- Unmatched line --
+                if user_mode:
+                    # After first syscall, unmatched lines are user-mode output
+                    print(f"  L{line_no:>6d} \033[37m{clean}\033[0m")
+                # else: boot messages before first syscall – silently skip
 
     except FileNotFoundError:
         print(f"error: file not found: {file_path}", file=sys.stderr)

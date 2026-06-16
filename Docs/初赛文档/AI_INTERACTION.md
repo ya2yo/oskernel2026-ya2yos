@@ -562,3 +562,10 @@
 - **场景**：Bug 分析与定位、loop-control ioctl 兼容修复、文档完善
 - **描述**：用户要求分析 `log.ans` 中 `utime03` 失败。AI 定位到 `/dev/loop-control` 的 `ioctl(LOOP_CTL_GET_FREE)` 返回 `EFAULT`，随后 LTP 打印 `Couldn't find free loop device` 和 `TBROK: Failed to acquire device`。根因是内核把 ioctl 第三个参数误当作输出指针，而 Linux 语义要求该命令直接以 ioctl 返回值返回空闲 loop 号。修复后 `make` 通过，`timeout 120s make run` 单跑 `utime03` 输出 1 项 TPASS，Summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-16 条目与 [problem/utime03-loop-ctl-get-free.md](./problem/utime03-loop-ctl-get-free.md)。
 - **关联 commit**：本次提交
+
+#### cyclictest glibc affinity / mlock / clone3 修复（6.16）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、调度/内存/线程 syscall 兼容修复、文档完善
+- **描述**：用户要求分析并修复 `cyclictest_testcode.sh` 失败。AI 先定位到 `sched_getaffinity()` 成功返回 0 且未写用户 mask，导致 libnuma/cyclictest 报 `request to allocate mask for invalid number`；修复后继续推进，依次处理 no-op `mlock` 过强映射校验导致的 `Bad address`，以及 `clone3` 在未设置 `CLONE_PIDFD` 时误校验 `pidfd` 字段导致 glibc pthread 创建失败。最终 `make` 通过，`timeout 120s make run` 中 `NO_STRESS_P1/NO_STRESS_P8/STRESS_P1/STRESS_P8` 四项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-16 条目与 [problem/cyclictest-glibc-affinity-clone3.md](./problem/cyclictest-glibc-affinity-clone3.md)。
+- **关联 commit**：本次提交

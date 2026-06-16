@@ -9,9 +9,7 @@
 //! - <https://www.man7.org/linux/man-pages/man2/mlockall.2.html>
 
 use crate::{
-    arch::memory_layout::PAGE_SIZE,
-    mm::{MapPermission, VirtAddr},
-    task::current_task,
+    mm::if_bad_address,
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -27,29 +25,15 @@ const MLOCK_ONFAULT: i32 = 1;
 
 // ---- 辅助函数 ----
 
-/// 校验用户地址范围 [addr, addr+len) 是否有效（页对齐 + 范围存在）
+/// 校验用户地址范围 [addr, addr+len) 是否适合 no-op mlock。
 fn validate_addr_range(addr: usize, len: usize) -> Result<(), SysErrNo> {
-    // 地址必须页对齐
-    if addr % PAGE_SIZE != 0 {
-        return Err(SysErrNo::EINVAL);
-    }
-
     // 长度为 0 是合法的 no-op
     if len == 0 {
         return Ok(());
     }
 
-    // 检查是否溢出
-    if addr.checked_add(len).is_none() {
-        return Err(SysErrNo::EINVAL);
-    }
-
-    // EFAULT: 范围必须完全在用户地址空间已有映射内
-    let task = current_task().unwrap();
-    let proc = task.process.inner_lock();
-    let memory_set = proc.get_locked_memory_set_read();
-
-    if !memory_set.check_user_range(addr, len, MapPermission::R) {
+    let end = addr.checked_add(len).ok_or(SysErrNo::EINVAL)?;
+    if if_bad_address(addr) || if_bad_address(end - 1) {
         return Err(SysErrNo::EFAULT);
     }
 

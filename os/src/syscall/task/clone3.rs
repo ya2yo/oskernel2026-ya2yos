@@ -83,10 +83,6 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
     if exit_signal != 0 {
         flags |= exit_signal;
     }
-    if cargs.pidfd != 0 && !CloneFlags::from_bits_truncate(flags).contains(CloneFlags::CLONE_PIDFD)
-    {
-        return Err(SysErrNo::EINVAL);
-    }
     #[cfg(target_arch = "loongarch64")]
     {
         if CloneFlags::from_bits_truncate(flags).contains(CloneFlags::CLONE_PIDFD) {

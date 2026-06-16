@@ -10,7 +10,7 @@ use crate::{
     arch::time::get_clock_freq,
     mm::{copy_from_user, copy_to_user, if_bad_address},
     signal::check_if_any_sig_for_current_task,
-    task::{current_task, suspend_current_and_run_next},
+    task::{current_task, suspend_current_and_run_next, tid_to_task, Process},
     timer::{
         calculate_left_timespec, get_time_ms, get_time_spec, Timespec, MSEC_PER_SEC, NANOS_PER_SEC,
     },
@@ -80,21 +80,53 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/sched_setaffinity.2.html
-pub fn sys_sched_setaffinity(_pid: usize, _cpusetsize: usize, _mask: usize) -> SyscallRet {
-    // debug!(
-    //     "[sys_sched_setaffinity] pid is {}, cpusetsize is {}, mask is {}",
-    //     pid, cpusetsize, mask
-    // );
+pub fn sys_sched_setaffinity(pid: usize, cpusetsize: usize, mask: usize) -> SyscallRet {
+    let mask_bytes = core::mem::size_of::<usize>();
+    if cpusetsize < mask_bytes {
+        return Err(SysErrNo::EINVAL);
+    }
+    if mask == 0 || (mask as isize) <= 0 || if_bad_address(mask) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    if pid != 0
+        && Process::get_process_arc_by_pid(pid).is_none()
+        && tid_to_task::tid2task(pid).is_none()
+    {
+        return Err(SysErrNo::ESRCH);
+    }
+
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    let mut raw_mask = [0u8; core::mem::size_of::<usize>()];
+    copy_from_user(&memory_set, mask, &mut raw_mask)?;
     Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/sched_getaffinity.2.html
-pub fn sys_sched_getaffinity(_pid: usize, _cpusetsize: usize, _mask: usize) -> SyscallRet {
-    // debug!(
-    //     "[sys_sched_getaffinity] pid is {}, cpusetsize is {}, mask is {}",
-    //     pid, cpusetsize, mask
-    // );
-    Ok(0)
+pub fn sys_sched_getaffinity(pid: usize, cpusetsize: usize, mask: usize) -> SyscallRet {
+    let mask_bytes = core::mem::size_of::<usize>();
+    if cpusetsize < mask_bytes {
+        return Err(SysErrNo::EINVAL);
+    }
+    if mask == 0 || (mask as isize) <= 0 || if_bad_address(mask) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    if pid != 0
+        && Process::get_process_arc_by_pid(pid).is_none()
+        && tid_to_task::tid2task(pid).is_none()
+    {
+        return Err(SysErrNo::ESRCH);
+    }
+
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    let cpu0_mask = 1usize.to_ne_bytes();
+    copy_to_user(&memory_set, mask, &cpu0_mask)?;
+    Ok(mask_bytes)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/sched_setscheduler.2.html
