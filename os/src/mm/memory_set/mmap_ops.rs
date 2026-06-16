@@ -365,7 +365,7 @@ impl MemorySetInner {
         for area in new_areas {
             self.areas.push(area);
         }
-        for vpn in start_vpn.0..=end_vpn.0 {
+        for vpn in start_vpn.0..end_vpn.0 {
             self.page_table.handle_mprotect(vpn.into(), map_perm);
         }
         tlb_invalidate();

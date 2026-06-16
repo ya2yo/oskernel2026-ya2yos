@@ -29,6 +29,7 @@
 ## 内存 / 页表
 
 - [龙芯架构 busy_box 测试失败](./loongarch-busybox-cow.md)
+- [LoongArch busybox-glibc mprotect 越界改权限](./loongarch-busybox-mprotect-range.md)
 - [内核堆碎片化：全量测例运行 OOM](./fsindex-oom.md)
 - [LoongArch getrusage03 与 QEMU virt 分段内存](./loongarch-getrusage03-split-ram.md)
 

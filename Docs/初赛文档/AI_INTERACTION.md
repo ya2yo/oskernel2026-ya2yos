@@ -548,3 +548,10 @@
 - **场景**：Bug 分析与定位、mount/umount 路径语义修复、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复 basic 测试 `umount` 失败。AI 定位到 `mount("./mnt")` 成功后 `umount("./mnt")` 返回 `-22`，根因是 `sys_mount()` 将挂载点原样保存为相对路径，而 `sys_umount2()` 查表前会把同一参数解析为绝对路径。修复为 `sys_mount()` 写入挂载表前规范化目标挂载点，source 保持原样。`make` 通过，`timeout 120s make run` 中 basic-musl/basic-glibc 的 `test_mount` 与 `test_umount` 均返回 0。详见 `ai.log` 2026-06-16 条目与 [problem/basic-umount-relative-mountpoint.md](./problem/basic-umount-relative-mountpoint.md)。
 - **关联 commit**：本次提交
+
+#### LoongArch busybox-glibc mprotect 越界改权限修复（6.16）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、内存权限语义修复、文档完善
+- **描述**：用户要求根据 `log.ans` 修复 busybox-glibc 的 `Fatal glibc error: malloc.c:2589 (sysmalloc)`。AI 复查日志和 `mprotect` 路径，定位到 `MemorySetInner::mprotect()` 的 VMA 拆分使用 `[start_vpn, end_vpn)`，但 PTE 权限更新使用 `..=end_vpn`，会额外修改相邻页权限并破坏 glibc 堆相关页属性。修复为按右开区间更新 PTE。`make log` 通过，`timeout 120s make run` 中 busybox-glibc 输出 GROUP END 和 `shutdown!`，未再出现 malloc fatal。详见 `Docs/初赛文档/ai.log` 2026-06-16 条目与 [problem/loongarch-busybox-mprotect-range.md](./problem/loongarch-busybox-mprotect-range.md)。
+- **关联 commit**：本次提交

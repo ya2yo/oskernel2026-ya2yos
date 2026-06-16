@@ -1792,3 +1792,53 @@ timeout 120s make run
 ```
 
 结果：basic-musl 和 basic-glibc 的 `test_mount` 均输出 `umount return: 0`，独立 `test_umount` 均输出 `umount success.` 和 `return: 0`，最终打印 `shutdown!`。
+
+---
+
+## 2026-06-16: LoongArch busybox-glibc mprotect 越界改权限修复
+
+### 用户需求
+
+用户要求根据当前 `log.ans` 修复 busybox-glibc 运行时出现的 malloc 断言崩溃。
+
+### 分析
+
+AI 按 `fix-bug` 流程检查 `log.ans`，确认失败信号为：
+
+```text
+Fatal glibc error: malloc.c:2589 (sysmalloc): assertion failed
+```
+
+日志显示 busybox shell 在进入 GROUP START 后，fork 管道子进程期间触发 fatal。进一步检查 syscall 序列可见 busybox/glibc 初始化时先扩展 `brk`，随后调用 `mprotect`，fatal 出现在后续 `writev` 路径。
+
+AI 先排查 COW、fork 后 brk 页和 `copy_to_user` 写 COW 页路径，并用临时日志确认这些方向不能解释 fatal。随后检查 `sys_mprotect()` 到 `MemorySetInner::mprotect()` 的区间语义，发现 `sys_mprotect()` 传入的 `end_vpn` 是右开端点，`MapArea` / `VPNRange` 注释和拆分逻辑也都按 `[start, end)` 处理；但最终 PTE 权限更新使用 `start_vpn.0..=end_vpn.0`，会额外修改后一页权限。
+
+该越界页如果正好已映射，就会被错误赋予同一组 mprotect 权限，破坏相邻页的真实访问属性。busybox-glibc 场景中该错误发生在 brk/mprotect 初始化后，最终表现为 glibc malloc top chunk 状态断言失败。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/mm/memory_set/mmap_ops.rs` | `mprotect()` 页表权限更新从 `..=end_vpn` 改为 `..end_vpn`，与 VMA 右开区间一致 |
+| `Docs/初赛文档/problem/loongarch-busybox-mprotect-range.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` / `Docs/初赛文档/开发日志.md` / `Docs/初赛文档/AI_INTERACTION.md` | 更新索引和 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+make log
+timeout 120s make run
+```
+
+结果：`log.ans` 不再出现 `Fatal glibc`、`malloc.c`、`panic`、`TFAIL`、`TBROK`，busybox-glibc 输出：
+
+```text
+#### OS COMP TEST GROUP START busybox-glibc ####
+...
+#### OS COMP TEST GROUP END busybox-glibc ####
+shutdown!
+```
+
+日志中仍有 `testcase busybox hwclock fail`，属于单个 busybox 命令兼容性输出，不是本次修复的 malloc abort。
