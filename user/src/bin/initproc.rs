@@ -102,10 +102,8 @@ fn get_score() {
     // libc
     run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
-    // iozone 目前报错 Seek beyond the end of the file
-    #[cfg(target_arch = "riscv64")]
+    // iozone
     run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    #[cfg(target_arch = "riscv64")]
     run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过
     // lmbench
     run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
