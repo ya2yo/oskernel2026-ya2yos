@@ -264,9 +264,9 @@ pub fn run_ltp_tests_musl_separately(tests: &[&str], blacklist: &[&str]) {
 
         println!("#### OS COMP TEST GROUP START ltp-musl ####");
 
-        let mut summary = LtpSummary::default();
         let mut j = group_start;
         while j < group_end {
+            let mut summary = LtpSummary::default();
             let test = tests[j];
             if blacklist.contains(&test) {
                 println!("SKIP LTP CASE {}", trim_trailing_nul(test));
@@ -322,8 +322,8 @@ pub fn test_glibc_ltp() {
 #[allow(unused)]
 pub fn run_ltp_tests_glibc(tests: &[&str], blacklist: &[&str]) {
     println!("#### OS COMP TEST GROUP START ltp-glibc ####");
-    let mut summary = LtpSummary::default();
     for &test in tests {
+        let mut summary = LtpSummary::default();
         if blacklist.contains(&test) {
             println!("SKIP LTP CASE {}", trim_trailing_nul(test));
             summary.record_skipped();
