@@ -209,6 +209,24 @@ pub fn sys_mremap(
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/mprotect.2.html
+///
+/// 修改调用进程虚拟地址空间 `[addr, addr+len)` 范围内的访问权限。
+///
+/// # 参数校验
+/// - `addr` 和 `len` 必须按页对齐，否则返回 `EINVAL`。
+/// - 检查 `addr + len` 是否溢出，溢出返回 `EINVAL`。
+///
+/// # 权限转换
+/// 将用户传入的 `prot` 位掩码（来自 `MmapProt`）转换为内核内部的 `MapPermission`。
+///
+/// # 执行流程
+/// 1. 根据 `addr`/`len` 计算虚拟页号范围 `[start_vpn, end_vpn)`。
+/// 2. 调用 `MemorySet::mprotect` 修改逻辑段（MapArea）权限并更新硬件页表项。
+/// 3. 跨 area 边界的情况由 `MemorySetInner::mprotect` 内部的拆分逻辑处理。
+///
+/// # 注意
+/// - 目前为简化实现，不检查范围是否全部落在已映射区域内（Linux 对此返回 `ENOMEM`）。
+/// - `prot` 中不被支持的位会被 `from_bits_truncate` 静默丢弃。
 pub fn sys_mprotect(addr: usize, len: usize, prot: u32) -> SyscallRet {
     if (addr % PAGE_SIZE != 0) || (len % PAGE_SIZE != 0) {
         println!("sys_mprotect: not align");
@@ -219,19 +237,15 @@ pub fn sys_mprotect(addr: usize, len: usize, prot: u32) -> SyscallRet {
         Some(v) => v,
         None => return Err(SysErrNo::EINVAL),
     };
+    // 将 POSIX prot 标志转换为内核内部的 MapPermission
     let map_perm: MapPermission = MmapProt::from_bits_truncate(prot).into();
-
-    // debug!(
-    //     "[sys_mprotect] addr is {:x}, len is {:#x}, map_perm is {:?}",
-    //     addr, len, map_perm
-    // );
 
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = process.get_locked_memory_set_write();
     let start_vpn = VirtAddr::from(addr).floor();
     let end_vpn = VirtAddr::from(end_addr).ceil();
-    //修改各段的mappermission
+    // 修改各逻辑段的权限并更新页表
     memory_set.mprotect(start_vpn, end_vpn, map_perm);
     Ok(0)
 }

@@ -120,6 +120,11 @@ impl MemorySet {
     pub fn cow_page_fault(&self, vpn: VirtPageNum, scause: Trap) -> bool {
         self.inner.get_unchecked_mut().cow_page_fault(vpn, scause)
     }
+    /// 修改虚拟地址空间的访问权限（MemorySet 层封装）。
+    ///
+    /// 将 `if_mmap=false` 透传给内部 `MemorySetInner::mprotect`，
+    /// 因此不会修改 file/offset 相关字段（仅改权限）。
+    /// 真正的 area 拆分和页表操作参见 [`MemorySetInner::mprotect`]。
     #[inline(always)]
     pub fn mprotect(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) {
         self.inner.get_unchecked_mut().mprotect(

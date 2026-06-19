@@ -325,9 +325,7 @@ pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, 
     Ok(String::from(core::str::from_utf8(&dst_str).unwrap_or("")))
 }
 
-// ---------------------------------------------------------------------------
 // Internal helpers for mm-crate use (pages guaranteed mapped)
-// ---------------------------------------------------------------------------
 
 /// Internal: read bytes from user memory via page table into an existing buffer.
 /// Pages must already be mapped (used in writeback scenarios).

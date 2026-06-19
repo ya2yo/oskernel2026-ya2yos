@@ -275,7 +275,17 @@ impl PageTable {
 /// 将和页表相关的函数实现到PageTable上，目的是由页表维护页表一致性，且出问题方面排查
 /// 这里尽量使用上面的pub接口
 impl PageTable {
-    /// param: param add_flags: 需要添加的权限
+    /// 修改指定虚拟页的硬件页表项权限位（mprotect 的页表层）。
+    ///
+    /// 内部调用 `find_pte_create`（如 PTE 不存在则自动创建后修改），
+    /// 将 `add_flags` 指定的权限位"添加"到已有标志上（位或操作）。
+    ///
+    /// # 注意
+    /// - `find_pte_create` 会为懒分配尚未映射的页创建新的页表项，这可能导致
+    ///   未实际分配物理页的 VPN 也获得页表项。loongarch 架构的实现不同：
+    ///   使用 `find_valid_pte` 仅对已映射的页表项修改权限。
+    /// - 新旧标志做位或(`|`)而非替换，因此当前实现不会移除已有权限。
+    ///   这可能导致"只降不升"的语义偏差（真正的 mprotect 应完全替换权限）。
     pub fn handle_mprotect(&mut self, vpn: VirtPageNum, add_flags: MapPermission) {
         let pte = self.find_pte_create(vpn).unwrap();
         let old_flags = pte.get_flags();
