@@ -1997,3 +1997,41 @@ timeout 120s make run > /tmp/cyclictest-sched-fix.log 2>&1
 #### OS COMP TEST GROUP END cyclictest-musl ####
 shutdown!
 ```
+
+---
+
+## 2026-06-20: overview UML 当前项目结构更新
+
+### 用户需求
+
+用户要求读取 `Docs/uml/01_overview/01_overview.iuml`，并根据当前项目进行修改。
+
+### 分析
+
+AI 对照 `os/src/main.rs`、`os/Cargo.toml`、`Makefile` 和 `os/src` 下的模块结构检查原 UML。确认原图的大体分层仍成立，但有几处已不匹配当前项目：
+
+- `id_allocator` 已归入 `utils`，不再作为独立核心层模块展示。
+- 当前支持 `riscv64` 与 `loongarch64` 的 QEMU 平台实现，LoongArch 路径不应继续按旧图写成 UEFI 引导。
+- `syscall` 已拆分为 `task/mm/fs/net/signal/sync/time/io_mpx/resource/sys/options` 等子模块。
+- `drivers`、`fs`、`timer`、`net`、`task` 的子结构比旧图更细，需要补充 VirtIO PCI/MMIO、VFS 抽象文件、定时器数据结构、网络路由/Service、任务 future 等当前实现。
+- 外部依赖需要补充 `event-listener`、`futures-util`、`smallvec`、`kspin`、`kernel_guard`、`num_enum`、`cfg-if` 等当前 `Cargo.toml` 中使用的 crate。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `Docs/uml/01_overview/01_overview.iuml` | 重写 overview PlantUML：按当前内核源码更新外部依赖、平台、基础层、架构抽象层、核心服务层、领域服务层、系统调用层、陷入层和启动入口，并修正依赖箭头与图例说明 |
+| `Docs/初赛文档/ai.log` | 追加本次 AI 辅助文档更新记录 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助文档更新摘要 |
+
+### 验证
+
+已执行静态检查：
+
+```text
+sed -n '1,260p' Docs/uml/01_overview/01_overview.iuml
+sed -n '261,560p' Docs/uml/01_overview/01_overview.iuml
+rg -n ' as [A-Za-z0-9_]+|-->|note |package |component |legend|@startuml|@enduml' Docs/uml/01_overview/01_overview.iuml
+```
+
+结果：UML 文件首尾完整，组件别名和依赖节点均能在文件内对应。当前环境未安装 `plantuml` 可执行程序，因此未生成图片做渲染验证。

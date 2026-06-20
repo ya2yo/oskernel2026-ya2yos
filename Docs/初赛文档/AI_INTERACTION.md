@@ -576,3 +576,10 @@
 - **场景**：Bug 分析与定位、动态链接兼容补丁、调度 syscall 语义修复、文档完善
 - **描述**：用户要求修复 cyclictest 中 `unable to get scheduler parameters`。AI 先排除 `sched_getaffinity` 返回值误判，确认返回 0 会导致 libnuma CPU mask 推断失败；随后从测试镜像提取并反汇编 `/musl/cyclictest` 与 `/musl/lib/libc.so`，定位到 LoongArch musl libc 的 `sched_getparam/getscheduler/setparam/setscheduler` wrapper 是直接返回 `ENOSYS` 的 stub，内核 syscall 根本未被调用。修复为读取 `/musl/lib/libc.so` 时对相关 stub 做内存态兼容补丁，并补齐内核 `sched_getparam` 写回语义。`make` 通过，`timeout 120s make run` 中 musl cyclictest 四个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-16 条目与 [problem/cyclictest-musl-sched-stub.md](./problem/cyclictest-musl-sched-stub.md)。
 - **关联 commit**：本次提交
+
+#### overview UML 当前项目结构更新（6.20）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：架构文档同步、PlantUML 结构图更新
+- **描述**：用户要求根据当前项目修改 `Docs/uml/01_overview/01_overview.iuml`。AI 对照 `os/src/main.rs`、`os/Cargo.toml`、`Makefile` 和 `os/src` 模块结构，更新外部依赖、QEMU 双架构平台、基础/架构/核心/领域/系统调用/陷入各层模块说明，修正 `id_allocator` 归属、LoongArch 平台说明、`syscall` 子模块和启动流程。已完成文本静态检查；当前环境未安装 `plantuml`，未进行图片渲染验证。详见 `Docs/初赛文档/ai.log` 2026-06-20 条目。
+- **关联 commit**：本次未提交
