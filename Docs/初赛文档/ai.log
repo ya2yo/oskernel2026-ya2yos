@@ -2035,3 +2035,37 @@ rg -n ' as [A-Za-z0-9_]+|-->|note |package |component |legend|@startuml|@enduml'
 ```
 
 结果：UML 文件首尾完整，组件别名和依赖节点均能在文件内对应。当前环境未安装 `plantuml` 可执行程序，因此未生成图片做渲染验证。
+
+---
+
+## 2026-06-20: 内存管理 UML 建模补充
+
+### 用户需求
+
+用户指出当前内核内存管理文档缺少 UML 图，要求围绕 `MemorySet` 核心结构，以及 `mmap`、`munmap`、`mprotect` 等核心 syscall 进行建模。
+
+### 分析
+
+AI 对照 `Docs/ya2yos/03 内存管理.md`、`Docs/uml/03_mm_mana/03_mm_mana.iuml` 和内存管理相关源码进行梳理。确认当前内存管理核心由 `MemorySet`/`MemorySetInner` 持有页表与 `MapArea` 列表，`MapArea` 通过 `data_frames` 管理物理帧生命周期和 COW 引用计数，`PageTable` 维护硬件可见映射；`mmap`、`munmap`、`mprotect` 的主体实现位于 `os/src/mm/memory_set/mmap_ops.rs`，系统调用入口位于 `os/src/syscall/mm/mmap.rs`，缺页实际分配和 COW 处理由 `os/src/mm/page_fault_handler.rs` 与架构页表方法协作完成。`MAP_SHARED` mmap 额外通过 `GROUP_SHARE` 以 groupid 管理跨进程共享帧。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `Docs/uml/03_mm_mana/03_mm_mana.iuml` | 新增内存管理核心结构设计类图、mmap 系统顺序图、munmap 活动图、mprotect 活动图、缺页处理交互图 |
+| `Docs/ya2yos/03 内存管理.md` | 在章节开头新增 UML 建模索引，说明各图覆盖的结构与操作 |
+| `Docs/初赛文档/ai.log` | 追加本次 AI 辅助文档建模记录 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助文档更新摘要 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.20 文档更新简记 |
+
+### 验证
+
+已执行静态检查：
+
+```text
+sed -n '1,260p' Docs/uml/03_mm_mana/03_mm_mana.iuml
+rg -n '@startuml|@enduml' Docs/uml/03_mm_mana/03_mm_mana.iuml
+sed -n '1,80p' 'Docs/ya2yos/03 内存管理.md'
+```
+
+结果：UML 源文件包含 5 个 `@startuml` / `@enduml` 图块，文档索引已引用对应 UML 源文件。当前环境未安装 `plantuml`，仓库内也未发现 PlantUML jar，因此未生成 PNG 渲染图。

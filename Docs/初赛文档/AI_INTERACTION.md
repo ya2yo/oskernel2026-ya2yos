@@ -583,3 +583,10 @@
 - **场景**：架构文档同步、PlantUML 结构图更新
 - **描述**：用户要求根据当前项目修改 `Docs/uml/01_overview/01_overview.iuml`。AI 对照 `os/src/main.rs`、`os/Cargo.toml`、`Makefile` 和 `os/src` 模块结构，更新外部依赖、QEMU 双架构平台、基础/架构/核心/领域/系统调用/陷入各层模块说明，修正 `id_allocator` 归属、LoongArch 平台说明、`syscall` 子模块和启动流程。已完成文本静态检查；当前环境未安装 `plantuml`，未进行图片渲染验证。详见 `Docs/初赛文档/ai.log` 2026-06-20 条目。
 - **关联 commit**：本次未提交
+
+#### 内存管理 UML 建模补充（6.20）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：内存管理文档同步、PlantUML 结构图与流程图补充
+- **描述**：用户要求补齐内核内存管理文档中的 UML 图，重点围绕 `MemorySet` 核心结构和 `mmap`、`munmap`、`mprotect` syscall 建模。AI 对照 `os/src/mm/memory_set/`、`os/src/mm/map_area.rs`、`os/src/mm/page_fault_handler.rs`、`os/src/mm/group.rs` 和 `os/src/syscall/mm/mmap.rs`，在 `Docs/uml/03_mm_mana/03_mm_mana.iuml` 中补充核心结构设计类图、mmap 系统顺序图、munmap 活动图、mprotect 活动图和缺页处理交互图，并在 `Docs/ya2yos/03 内存管理.md` 增加 UML 建模索引。当前环境未安装 `plantuml`，未进行 PNG 渲染验证。详见 `Docs/初赛文档/ai.log` 2026-06-20 条目。
+- **关联 commit**：本次未提交
