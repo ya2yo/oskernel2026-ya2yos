@@ -2,13 +2,6 @@
 //! From StarryOS
 extern crate alloc;
 
-// #[cfg(feature = "fxmac")]
-// /// fxmac driver for PhytiumPi
-// pub mod fxmac;
-// #[cfg(feature = "ixgbe")]
-// /// ixgbe NIC device driver.
-// pub mod ixgbe;
-
 #[doc(no_inline)]
 pub use super::{BaseDriver, DevError, DevResult, DeviceType};
 

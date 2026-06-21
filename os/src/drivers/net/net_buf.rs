@@ -1,4 +1,5 @@
 //! 网络传输过程中的缓冲区类型
+//! 参考 StarryOS
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::ptr::NonNull;
 
