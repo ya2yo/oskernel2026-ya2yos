@@ -3,7 +3,7 @@
 来自TatlinOS的[使用指南](./使用指南.md)详细说明了项目的构建方法
 
 [初赛文档](./初赛文档/)里面记录了初赛开发过程中的日志、AI 使用说明，以及按主题拆分的问题复盘（[problem/](./初赛文档/problem/)）。
-
+[tatlinos](https://gitlab.eduxiji.net/T202510487995221/tatlin-os/-/tree/fix/2025_submit/Docs)原tatlinos的文档。
 [ya2yos](./ya2yos/)里面介绍了修改后的新内核的架构。
 
 ![乱码](./img/乱码.png)如图问题，需要切换到utf8格式。
