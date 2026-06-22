@@ -7,6 +7,8 @@ target
 os/src/link_app.S
 os/src/linker.ld
 os/.gdb_history
+os/.cargo/
+user/.cargo/
 user/build
 user/target/*
 pre_ctests/build/*
@@ -24,5 +26,6 @@ kernel-la
 *.dtb
 *.dts
 *.txt
+!crates/lwext4_rust/**/CMakeLists.txt
 !os/vendor/**
 *.ans

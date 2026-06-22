@@ -5,6 +5,12 @@
     "rust-analyzer.diagnostics.disabled": [
         "unresolved-proc-macro"
     ],
+    "rust-analyzer.linkedProjects": [
+        "os/Cargo.toml",
+        "user/Cargo.toml",
+        "crates/cty/Cargo.toml",
+        "crates/lwext4_rust/Cargo.toml"
+    ],
     "rust-analyzer.cargo.allTargets": false,
     "rust-analyzer.checkOnSave": true
 }
