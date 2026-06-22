@@ -2,9 +2,7 @@
 name = "os"
 version = "0.1.0"
 authors = [
-    "Maoyang Zheng <925349624@qq.com>",
-    "Zheyu Weng <windflower_weng@qq.com>",
-    "Chenhao Zhang <934111946@qq.com>",
+    "Xiaojie Rao <202430691179@mail.scut.edu.cn>",
 ]
 edition = "2021"
 
