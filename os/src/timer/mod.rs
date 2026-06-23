@@ -38,14 +38,13 @@
 //!   `clock_settime(CLOCK_REALTIME)` / `settimeofday()` 造成的秒级修正。
 //! - **注意**：realtime 可以跳变，不能拿它作为相对等待或 CPU 计时基准。
 //!
-//! ## 4. 原始模拟墙上时间 helper
+//! ## 4. 子系统流逝时间 helper
 //!
-//! - **接口**：`wall_time()`、`wall_time_nanos()`。
-//! - **语义**：当前代码中只计算 `uptime + NOW_TIME_STAMP`，不叠加
-//!   `CLOCK_REALTIME_OFFSET`。
-//! - **用途**：主要给网络协议栈和异步 `TimerFuture` 提供一个近似 wall clock。
-//! - **注意**：如果调用者需要严格 POSIX `CLOCK_REALTIME` 语义，应使用
-//!   `clock_gettime(CLOCK_REALTIME)` 路径或显式叠加 `CLOCK_REALTIME_OFFSET`。
+//! - **接口**：网络协议栈和异步 `TimerFuture` 直接使用 `get_time_ns()` /
+//!   `get_time_spec()`。
+//! - **语义**：这些子系统需要 elapsed time，不需要日历时间。
+//! - **注意**：不要为了这类 timeout 引入 `NOW_TIME_STAMP` 或
+//!   `CLOCK_REALTIME_OFFSET`，否则命名上容易和日历时间混淆，也可能被调时影响。
 //!
 //! ## 5. 线程 / 进程 CPU 时间
 //!
@@ -109,9 +108,7 @@ pub use tms::Tms;
 use crate::arch::time::{get_clock_freq, get_ticks, set_oneshot_timer};
 use spin::{Lazy, Mutex};
 
-// ---------------------------------------------------------------------------
-// 时间常量
-// ---------------------------------------------------------------------------
+//* 时间常量
 
 /// 系统 tick 频率 (100Hz)，每 10ms 一个时钟滴答
 const TICKS_PER_SEC: usize = 100;
@@ -138,13 +135,13 @@ pub const CLOCKFD: i32 = CPUCLOCK_MAX;
 pub const CLOCKFD_MASK: i32 = CPUCLOCK_PERTHREAD_MASK | CPUCLOCK_CLOCK_MASK;
 
 
-// 墙上时钟偏移 (clock_settime / settimeofday 修改)
+//* 墙上时钟偏移 (clock_settime / settimeofday 修改)
 
 /// `clock_settime(CLOCK_REALTIME)` 对系统 REALTIME 的运行时偏移量 (秒)。
 /// 初始为 0。通过 `clock_settime` / `settimeofday` 调整，在读取 REALTIME 时叠加。
 pub static CLOCK_REALTIME_OFFSET: Lazy<Mutex<i64>> = Lazy::new(|| Mutex::new(0));
 
-// 时间获取函数
+//* 时间获取函数
 
 /// 获取自系统开机以来的毫秒数
 pub fn get_time_ms() -> usize {
@@ -156,15 +153,26 @@ pub fn get_time_ns() -> usize {
     (get_ticks() as u128 * NANOS_PER_SEC as u128 / get_clock_freq() as u128) as usize
 }
 
-/// 获取当前的墙上时钟纳秒数 (开机时间 + NOW_TIME_STAMP)
-pub fn wall_time_nanos() -> u64 {
-    // get_time_ns() 单位是纳秒，NOW_TIME_STAMP 单位是秒，需要先把秒转换成纳秒再相加
-    get_time_ns() as u64 + NOW_TIME_STAMP as u64 * NANOS_PER_SEC
+/// 获取当前日历时间纳秒数，即 POSIX `CLOCK_REALTIME`。
+///
+/// Linux 直接维护已经调时后的 timekeeper wall time；当前内核用
+/// `NOW_TIME_STAMP + CLOCK_REALTIME_OFFSET` 叠加在 uptime 上模拟同一语义。
+pub fn realtime_nanos() -> u64 {
+    let nanos = get_time_ns() as i128
+        + NOW_TIME_STAMP as i128 * NANOS_PER_SEC as i128
+        + *CLOCK_REALTIME_OFFSET.lock() as i128 * NANOS_PER_SEC as i128;
+    if nanos <= 0 {
+        0
+    } else if nanos > u64::MAX as i128 {
+        u64::MAX
+    } else {
+        nanos as u64
+    }
 }
 
-/// 获取当前墙上时钟 Timespec (开机时间 + NOW_TIME_STAMP)
-pub fn wall_time() -> Timespec {
-    Timespec::from_nanos(wall_time_nanos())
+/// 获取当前日历时间 `Timespec`，即 POSIX `CLOCK_REALTIME`。
+pub fn realtime() -> Timespec {
+    Timespec::from_nanos(realtime_nanos())
 }
 
 /// 获取当前时间的 Timespec 表示 (开机时间，不含 NOW_TIME_STAMP)

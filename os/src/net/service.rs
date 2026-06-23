@@ -1,5 +1,5 @@
 use crate::task::sleep_until;
-use crate::timer::{wall_time_nanos, Timespec, NANOS_PER_MICROS};
+use crate::timer::{get_time_ns, Timespec, NANOS_PER_MICROS};
 use alloc::boxed::Box;
 use core::{
     future::Future,
@@ -14,9 +14,9 @@ use smoltcp::{
 
 use super::{router::Router, SOCKET_SET};
 /// 获取当前系统的 Instant 时间（smoltcp 专用格式）
-/// 将系统墙上时间（纳秒）转换为 smoltcp 的微秒单位
+/// 使用单调 uptime，避免系统日历时间调整影响 TCP 重传等协议定时器。
 fn now() -> Instant {
-    Instant::from_micros_const((wall_time_nanos() / NANOS_PER_MICROS) as i64)
+    Instant::from_micros_const((get_time_ns() as u64 / NANOS_PER_MICROS) as i64)
 }
 /// 网络服务核心结构体
 pub struct Service {

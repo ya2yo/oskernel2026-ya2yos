@@ -1,7 +1,7 @@
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address};
 use crate::task::current_task;
 use crate::timer::{
-    get_time_ms, get_time_spec, timex_apply, timex_get_realtime, Itimerval, Rusage, TimeVal,
+    get_time_ms, get_time_spec, realtime, timex_apply, timex_get_realtime, Itimerval, Rusage, TimeVal,
     Timespec, Timex, Tms, CLOCKFD, CLOCKFD_MASK, CLOCK_REALTIME_OFFSET, CPUCLOCK_CLOCK_MASK,
     CPUCLOCK_MAX, ITIMER_REAL, NANOS_PER_SEC, NOW_TIME_STAMP, TIME_OK,
 };
@@ -27,9 +27,8 @@ pub fn sys_gettimeofday(tv: *mut TimeVal, tz: usize) -> SyscallRet {
         return Err(SysErrNo::EFAULT);
     }
     if !tv.is_null() {
-        let mut now = TimeVal::now();
-        now.tv_sec += NOW_TIME_STAMP;
-        now.tv_sec = (now.tv_sec as i64 + *CLOCK_REALTIME_OFFSET.lock()) as usize;
+        let now_spec = realtime();
+        let now = TimeVal::new(now_spec.tv_sec, now_spec.tv_nsec / 1000);
         copy_to_user(&memory_set, tv as usize, unsafe {
             core::slice::from_raw_parts(
                 &now as *const TimeVal as *const u8,
@@ -136,14 +135,11 @@ pub fn sys_clock_gettime(clockid: usize, tp: *mut Timespec) -> SyscallRet {
 
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
-    let mut time = get_time_spec();
-
-    if clockid == 1 {
-        // monotonic: do nothing
+    let time = if clockid == 1 {
+        get_time_spec()
     } else {
-        time.tv_sec += NOW_TIME_STAMP;
-        time.tv_sec = (time.tv_sec as i64 + *CLOCK_REALTIME_OFFSET.lock()) as usize;
-    }
+        realtime()
+    };
 
     if (tp as isize) <= 0 || if_bad_address(tp as usize) {
         return Err(SysErrNo::EFAULT);

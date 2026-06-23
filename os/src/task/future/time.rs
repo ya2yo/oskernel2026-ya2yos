@@ -1,5 +1,5 @@
-use crate::timer::Timespec;
-use crate::{timer::wall_time, utils::SysErrNo};
+use crate::timer::{get_time_spec, Timespec};
+use crate::utils::SysErrNo;
 use alloc::collections::BTreeMap;
 use core::{
     fmt,
@@ -31,7 +31,7 @@ impl TimerRuntime {
     }
 
     fn add(&mut self, deadline: Timespec) -> Option<TimerKey> {
-        if deadline <= wall_time() {
+        if deadline <= get_time_spec() {
             return None;
         }
 
@@ -63,7 +63,7 @@ impl TimerRuntime {
             return;
         }
 
-        let now = wall_time();
+        let now = get_time_spec();
 
         let pending = self.wheel.split_off(&TimerKey {
             deadline: now,
@@ -142,7 +142,7 @@ pub async fn timeout<F: IntoFuture>(
     duration: Option<Duration>,
     f: F,
 ) -> Result<F::Output, Elapsed> {
-    timeout_at(duration.and_then(|x| x.checked_add(wall_time().into())), f).await
+    timeout_at(duration.and_then(|x| x.checked_add(get_time_spec().into())), f).await
 }
 
 /// Requires a `Future` to complete before the specified deadline.

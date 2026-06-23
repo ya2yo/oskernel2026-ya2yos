@@ -222,7 +222,7 @@ pub fn sys_clock_nanosleep(
     let total_us = if flags == TIMER_ABSTIME {
         // 绝对时间: CLOCK_REALTIME 用墙上时钟, CLOCK_MONOTONIC 用开机时间
         let now = if clockid == CLOCK_REALTIME as usize {
-            crate::timer::wall_time()
+            crate::timer::realtime()
         } else {
             get_time_spec()
         };
