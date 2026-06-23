@@ -590,3 +590,10 @@
 - **场景**：内存管理文档同步、PlantUML 结构图与流程图补充
 - **描述**：用户要求补齐内核内存管理文档中的 UML 图，重点围绕 `MemorySet` 核心结构和 `mmap`、`munmap`、`mprotect` syscall 建模。AI 对照 `os/src/mm/memory_set/`、`os/src/mm/map_area.rs`、`os/src/mm/page_fault_handler.rs`、`os/src/mm/group.rs` 和 `os/src/syscall/mm/mmap.rs`，在 `Docs/uml/03_mm_mana/03_mm_mana.iuml` 中补充核心结构设计类图、mmap 系统顺序图、munmap 活动图、mprotect 活动图和缺页处理交互图，并在 `Docs/ya2yos/03 内存管理.md` 增加 UML 建模索引。当前环境未安装 `plantuml`，未进行 PNG 渲染验证。详见 `Docs/初赛文档/ai.log` 2026-06-20 条目。
 - **关联 commit**：本次未提交
+
+#### gettimeofday timeval 微秒字段修复（6.23）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、时间 syscall 语义修复、文档完善
+- **描述**：用户反馈 `tvsub(struct timeval *)` 中 `assert(tdiff->tv_usec >= 0)` 失败，失败前调用了 `GetTimeOfDay` 和 `GetRusage`。AI 检查时间 syscall 后确认 `getrusage` 返回的是微秒 `TimeVal`，而 `sys_gettimeofday()` 错误按 `Timespec` 写回纳秒字段，导致用户态 `timeval.tv_usec` 可能远大于 `1000000`。修复将 `GetTimeOfDay` 改为写回 `TimeVal`，并补齐 `tv == NULL` 与 timezone 指针处理。`make` 通过；`timeout 120s make run` 在当前 glibc lmbench 配置中未再出现时间断言或 panic，但外层 timeout 截断，未验证整套完整 PASS。详见 `Docs/初赛文档/ai.log` 2026-06-23 条目与 [problem/gettimeofday-timeval-usec.md](./problem/gettimeofday-timeval-usec.md)。
+- **关联 commit**：本次未提交

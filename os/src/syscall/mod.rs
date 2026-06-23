@@ -575,7 +575,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::SetGroup => sys_setgroups(args[0], args[1] as *const u32),
         Syscall::GetRusage => sys_getrusage(args[0] as isize, args[1] as *mut Rusage),
         Syscall::GetCpu => sys_getcpu(args[0] as *mut u32, args[1] as *mut u32, args[2] as *mut u8),
-        Syscall::GetTimeOfDay => sys_gettimeofday(args[0] as *mut Timespec, args[1] as usize),
+        Syscall::GetTimeOfDay => sys_gettimeofday(args[0] as *mut TimeVal, args[1] as usize),
         Syscall::SetTimeOfDay => sys_settimeofday(args[0] as *const TimeVal, args[1] as *const u8),
         Syscall::Adjtimex => sys_adjtimex(args[0] as *mut Timex),
         Syscall::ClockAdjtime => sys_clock_adjtime(args[0] as u32, args[1] as *mut Timex),

@@ -2069,3 +2069,46 @@ sed -n '1,80p' 'Docs/ya2yos/03 内存管理.md'
 ```
 
 结果：UML 源文件包含 5 个 `@startuml` / `@enduml` 图块，文档索引已引用对应 UML 源文件。当前环境未安装 `plantuml`，仓库内也未发现 PlantUML jar，因此未生成 PNG 渲染图。
+
+---
+
+## 2026-06-23: gettimeofday timeval 微秒字段修复
+
+### 用户需求
+
+用户反馈一段 `tvsub(struct timeval *)` 测试代码中的 `assert(tdiff->tv_usec >= 0)` 失败，失败前调用了 `GetTimeOfDay` 和 `GetRusage`，怀疑二者实现存在问题。
+
+### 分析
+
+AI 检查 `os/src/syscall/time.rs`、`os/src/timer/rusage.rs`、`os/src/timer/timeval.rs` 与 syscall 分发表。`getrusage` 的 CPU 时间由毫秒转换为 `TimeVal`，`tv_usec = (ms % 1000) * 1000`，字段范围正确。
+
+根因在 `sys_gettimeofday()`：旧实现把用户指针声明为 `*mut Timespec`，并把 `get_time_spec()` 的 `tv_nsec` 拷贝给用户态。libc 的 `gettimeofday` 实际按 `struct timeval` 读取该内存，于是 `tv_usec` 收到纳秒值，可能远大于 `1000000`。当测试再与 `getrusage` 的微秒时间做差时，一次借位只加 `1000000`，无法修正纳秒/微秒量纲不一致，从而触发断言。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/time.rs` | `sys_gettimeofday()` 改为写回 `TimeVal`，保证 `tv_usec` 是微秒字段；叠加 `NOW_TIME_STAMP` 和 `CLOCK_REALTIME_OFFSET`；补齐 `tv == NULL` 与 timezone 指针处理 |
+| `os/src/syscall/mod.rs` | `GetTimeOfDay` syscall 分发改为传入 `*mut TimeVal` |
+| `Docs/初赛文档/problem/gettimeofday-timeval-usec.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 新增索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.23 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：LoongArch64 当前目标编译通过。
+
+已执行：
+
+```text
+timeout 120s make run
+```
+
+结果：当前工作区配置运行 glibc lmbench，推进到 fork/shell/文件带宽阶段，未出现 `tvsub` 断言、panic 或时间相关失败；外层 120 秒 timeout 截断 QEMU，因此未验证整套 lmbench 完整 PASS。

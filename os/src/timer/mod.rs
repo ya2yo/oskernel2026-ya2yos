@@ -94,17 +94,14 @@ pub const CPUCLOCK_MAX: i32 = 3;
 pub const CLOCKFD: i32 = CPUCLOCK_MAX;
 pub const CLOCKFD_MASK: i32 = CPUCLOCK_PERTHREAD_MASK | CPUCLOCK_CLOCK_MASK;
 
-// ---------------------------------------------------------------------------
+
 // 墙上时钟偏移 (clock_settime / adjtimex 修改)
-// ---------------------------------------------------------------------------
 
 /// `clock_settime(CLOCK_REALTIME)` 对系统 REALTIME 的运行时偏移量 (秒)。
 /// 初始为 0。通过 `clock_settime` 调整，在 `clock_gettime(CLOCK_REALTIME)` 读取时叠加。
 pub static CLOCK_REALTIME_OFFSET: Lazy<Mutex<i64>> = Lazy::new(|| Mutex::new(0));
 
-// ---------------------------------------------------------------------------
 // 时间获取函数
-// ---------------------------------------------------------------------------
 
 /// 获取自系统开机以来的毫秒数
 pub fn get_time_ms() -> usize {

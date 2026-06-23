@@ -13,26 +13,34 @@ const MAX_CLOCKS: usize = 12;
 const CLOCK_RES_NSEC: usize = 1_000_000;
 
 /// 参考 https://man7.org/linux/man-pages/man2/gettimeofday.2.html
-pub fn sys_gettimeofday(ts: *mut Timespec, tz: usize) -> SyscallRet {
+/// tz 参数通常为0
+pub fn sys_gettimeofday(tv: *mut TimeVal, tz: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
 
-    if (ts as isize) < 0 || if_bad_address(ts as usize) {
+    if !tv.is_null() && ((tv as isize) < 0 || if_bad_address(tv as usize)) {
         return Err(SysErrNo::EFAULT);
     }
 
-    if (tz as isize) < 0 || if_bad_address(tz as usize) {
+    if tz != 0 && ((tz as isize) < 0 || if_bad_address(tz)) {
         return Err(SysErrNo::EFAULT);
     }
-    let mut time = get_time_spec();
-    time.tv_sec += NOW_TIME_STAMP;
-    copy_to_user(&memory_set, ts as usize, unsafe {
-        core::slice::from_raw_parts(
-            &time as *const Timespec as *const u8,
-            core::mem::size_of::<Timespec>(),
-        )
-    })?;
+    if !tv.is_null() {
+        let mut now = TimeVal::now();
+        now.tv_sec += NOW_TIME_STAMP;
+        now.tv_sec = (now.tv_sec as i64 + *CLOCK_REALTIME_OFFSET.lock()) as usize;
+        copy_to_user(&memory_set, tv as usize, unsafe {
+            core::slice::from_raw_parts(
+                &now as *const TimeVal as *const u8,
+                core::mem::size_of::<TimeVal>(),
+            )
+        })?;
+    }
+    if tz != 0 {
+        let timezone = [0u8; 8];
+        copy_to_user(&memory_set, tz, &timezone)?;
+    }
     Ok(0)
 }
 
