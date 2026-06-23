@@ -278,7 +278,7 @@
 - **工具/模型**：Cursor (Composer)
 - **场景**：Bug 分析、代码生成、日志分析
 - **描述**：多轮 `log.ans` 分析：IGMP 源地址（IP 注册顺序）、组播以太网发送、router 断言、virtio token；对照 LTP accept02 与 `tcp.rs` 确认 socket 层语义正确，定位 `sys_setsockopt` 未传播 `EADDRNOTAVAIL`。AI 辅助实现组播 MAC 映射与 JoinGroup/LeaveGroup。过程详见 `ai.log` 2026-05-29 条目。
-- **关联 commit**：`e5d1b07`, `4a9b73c`, `5f90be8`；`opt.rs` `?` 修复待提交
+- **关联 commit**：`e5d1b07`, `4a9b73c`, `5f90be8`
 
 #### 项目 Agent 技能与文档规范（5.29）
 
@@ -292,34 +292,35 @@
 - **工具/模型**：Cursor (Composer)
 - **场景**：日志分析、Bug 修复、代码生成
 - **描述**：多轮 `log.ans` 排查 LTP access04：mount 缺页 panic → `copy_from_user`；LoongArch TBROK → 实现 loop 块设备与 `/dev/loop-control`；tmpfs `special=NULL` EFAULT → 空指针转空串；LA `handle_mprotect` 懒分配页修复。用户验证 LoongArch musl 通过后补文档。过程详见 `ai.log` 2026-05-30 条目与 [problem/access04-ltp-musl.md](./problem/access04-ltp-musl.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`7741ee6`
 
 #### LTP access02 execve shebang（5.30）
 
 - **工具/模型**：Cursor (Composer)
 - **场景**：日志分析、Bug 修复
 - **描述**：提供 LoongArch `log.ans`，`access02` 在 X_OK 执行验证阶段 4× TFAIL；对照 LTP 源码确认 `file_x` 为 `#!/bin/sh` 脚本；定位 `sys_execve` 对非 ELF 直接 `ENOEXEC`。AI 实现 shebang 解析与解释器 argv 重建，用户验证通过后补文档。详见 `ai.log` 2026-05-30 access02 条目与 [problem/access02-ltp-execve.md](./problem/access02-ltp-execve.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`6a77ff0`, `dedc633`
 
 #### setresgid(149) 系统调用（5.31）
 
 - **工具/模型**：Cursor (Composer)
 - **场景**：代码生成、测例验证
 - **描述**：按 syscall-implementation skill 实现 `setresgid`/`getresgid`：TCB 维护 GID 三元组、Linux 级联语义与非特权 EPERM 检查；修正 `GetResgid` 编号 148→150。RISC-V `setresgid01` 5× TPASS。详见 `ai.log` 2026-05-31 条目与 [problem/setresgid-syscall.md](./problem/setresgid-syscall.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`a7b9a9f`
 
 #### clone03 MAP_SHARED fork 帧共享修复（5.31）
 
 - **工具/模型**：Cursor (Composer)
 - **场景**：Bug 分析与定位
 - **描述**：提供 `log.ans`，AI 分析 clone03 失败日志，定位 `from_existed_user` 中 MAP_SHARED 懒分配区域 fork 后父子各自独立分配物理帧，破坏共享语义。同时定位 `recycle_data_pages` 中 `MAP_ANONYMOUS` 区域 `unwrap() None` panic。实现预 fault pass（MAP_ANONYMOUS 零页 / 文件支撑读文件），并增加 `is_some()` 检查。详见 `ai.log` 与 [problem/clone-mmap-shared-fork.md](./problem/clone-mmap-shared-fork.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`5a308d4`, `9e67097`
 
 #### clone05 CLONE_VFORK 挂起机制（5.31）
 
 - **工具/模型**：Cursor (Composer)
 - **场景**：Bug 分析与定位
 - **描述**：提供 `log.ans`，AI 分析 clone05 测试失败原因：内核完全未实现 CLONE_VFORK 挂起。第一轮修复后持续失败，对比两轮日志定位三处调度路径（suspend_current_and_run_next 无条件 Ready、run_tasks 无差别入队、空队列 keep-running）绕过 VforkBlocked。逐一修复后测试通过。详见 `ai.log` 2026-05-31 条目与 [problem/clone05-vfork.md](./problem/clone05-vfork.md)。
+- **关联 commit**：`9110e7e`, `bb0d7d0`
 
 #### LTP creat04 open 权限检查修复（6.2）
 
@@ -340,14 +341,14 @@
 - **工具/模型**：Claude Code (Claude Opus 4.7)
 - **场景**：代码理解与注释
 - **描述**：用户询问 Task 中 6 个 uid/gid 字段的用途，AI 添加注释块说明 POSIX 凭证三元组的区别（real/effective/saved）及各自在文件权限检查中的用途。详见 `ai.log` 2026-06-03 条目。
-- **关联 commit**：待提交
+- **关联 commit**：`0d4205b`
 
 #### 批量 syscall 实现：mincore/mlock/flock/mknodat/xattr/inotify 等（6.4-6.5）
 
 - **工具/模型**：DeepSeek
 - **场景**：代码生成
 - **描述**：用户使用 deepseek 批量生成多个系统调用的基础代码框架，包括 mincore、mlock 系列、flock、mknodat、xattr、setreuid/setregid、inotify、sys_fsconfig、priority/rlimit 等。人工审核后集成到内核。详见 `ai.log` 2026-06-04 和 2026-06-05 条目。
-- **关联 commit**：多个
+- **关联 commit**：`b80e7e8`, `303b7a6`, `8b0b4c9`, `737f540`, `9d380f5`, `801e530`, `1442d36`, `663df8a`, `a13ec6c`
 
 #### getpeername01 bug 修复（6.5）
 
@@ -361,7 +362,7 @@
 - **工具/模型**：DeepSeek
 - **场景**：代码生成
 - **描述**：用户使用 deepseek 批量生成 20+ 系统调用的基础代码，包括 setgid(144)、personality、msg 系列、mq 系列、clone3、unshare、memopolicy、umask、fdatasync、sync_file_range 等。ext4 符号链接读取也通过 deepseek 辅助完成。人工审核修改后合入。详见 `ai.log` 2026-06-06 条目。
-- **关联 commit**：多个
+- **关联 commit**：`8a63423`, `65b0571`, `5050b18`, `029bf8e`, `2a80f7a`, `7e1d309`, `ae9642c`, `9ebdfcb`, `a36c048`, `2e1ef32`, `ead5c9e`
 
 #### futex 退出处理机制 bug 修复（6.6）
 
@@ -375,7 +376,7 @@
 - **工具/模型**：Claude Code (Claude Opus 4.7)
 - **场景**：Bug 分析与定位、代码生成
 - **描述**：用户提供 pthread_cancel_points.c 测试代码和 log.ans。AI 逐场景追踪 7 个测试场景的 TID 调用序列、futex 事件和 Tgkill 信号传递，定位到：1) cancel 信号在 PTHREAD_CANCEL_DISABLE 时被过早消费；2) sys_rt_sigtimedwait 为伪实现（始终返回假信号 0）破坏 glibc 取消机制。AI 实现了完整的 sigtimedwait（解析 sigset+timeout → 定时器超时 → 循环检查 pending 信号 → 消耗信号/返回 signo）。用户确认修复后 crash 消失，仅剩 glibc 调度竞态导致的 "non-blocking pthread_join" 1 个失败。详见 `ai.log` 2026-06-06 条目。
-- **关联 commit**：待提交
+- **关联 commit**：`cdb1c9e`
 
 ---
 
@@ -449,151 +450,151 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、代码修复、文档完善
 - **描述**：用户继续反馈 `getrusage03` 根据 `log.ans` 直接卡死不会自动结束。AI 复现并定位到两处后续问题：1) `/proc/<pid>/stat` 创建后状态固定为 `S`，父进程轮询等待 zombie `Z` 时会死循环；2) LTP 通过 `setitimer(ITIMER_REAL)` 设置的 SIGALRM 只在当前运行任务路径检查，主进程阻塞在 `waitpid` 时 timeout 不会触发。AI 增加 `/proc/<pid>/stat` 动态刷新，timer interrupt 扫描所有任务 itimer，并在阻塞任务 SIGALRM 到期时唤醒 `interruptible` 等待。随后测例可推进到 6 项 TPASS，LTP timeout 能自行发 SIGKILL、打印 summary 并 shutdown；剩余 `consume 500` 的 500MiB 匿名 mmap 触页未在 30 秒内完成，记录为后续待查。详见 `ai.log` 2026-06-12 条目与 [problem/getrusage03-rusage-proc-status.md](./problem/getrusage03-rusage-proc-status.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`0dc1f49`
 
 #### LoongArch getrusage03 分段物理内存适配（6.13）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、架构适配、文档完善
 - **描述**：用户提供新的 LoongArch `log.ans` 并指出 RISC-V 的 QEMU 参数修复不能直接套用到 LoongArch。AI 复查 RISC-V 修复记录，确认 RISC-V 1GiB RAM 仍是连续区间；随后根据 LoongArch QEMU `virt` 设备树分析出 `-m 1G` 实际为低端 256MiB + 高端 768MiB 两段 RAM。人工审核后采纳 LoongArch 专用分段修复：QEMU 内存提升到 1GiB，`memory_layout.rs` 增加 `PHYSICAL_MEMORY_RANGES`，CMA 在 LoongArch 下按 range 初始化，RISC-V 保持原连续内存代码路径。详见 `ai.log` 2026-06-13 条目与 [problem/loongarch-getrusage03-split-ram.md](./problem/loongarch-getrusage03-split-ram.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`018cbd3`
 
 #### LTP 包装层 Summary 缺失修复（6.13）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、测试输出适配、文档完善
 - **描述**：用户反馈 musl LTP `munmap01` 没有正常输出 Summary，并指出最终跑分会运行 `test_musl_ltp()` 等批量入口。AI 检查 `log.ans` 后确认测例实际已 TPASS，`munmap` 后的 StorePageFault 是测试预期，SIGSEGV handler 正常执行并退出 0；问题在 LTP 包装层只打印 wait status，旧式 LTP 输出不会自动生成统一 Summary。AI 修改 `run_ltp_tests_musl*()` / `run_ltp_tests_glibc()`，按 LTP 退出类型累计 passed/failed/broken/skipped/warnings，并去掉测试名末尾 NUL。`make` 与 `timeout 90s make run` 通过，munmap01 输出 TPASS 后出现 Summary。详见 `ai.log` 2026-06-13 条目与 [problem/ltp-summary-wrapper.md](./problem/ltp-summary-wrapper.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`3efa213`
 
 #### LTP Summary 按输出 TPASS 数量统计（6.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、测试输出适配、文档完善
 - **描述**：用户指出 Summary 的 `passed` 不应由返回值决定，而应按 LTP 输出中的 `TPASS` 数量统计。AI 检查包装层后确认旧逻辑只能从 wait status 得知测例是否整体 exit 0，无法反映一个测例内多条断言结果。AI 将 LTP 子进程 stdout/stderr 接入 pipe，由父进程边转发日志边扫描 `TPASS/TFAIL/TBROK/TCONF/TWARN` token，Summary 优先按输出 token 数累计，只有无 token 时才退回 wait status。`make` 通过；`timeout 90s make run` 验证 abort01 两条 TPASS 汇总为 `passed 2`，后续 mixed TPASS/TFAIL/TWARN 测例也按输出数量递增。详见 `ai.log` 2026-06-14 条目与 [problem/ltp-summary-wrapper.md](./problem/ltp-summary-wrapper.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`cea92bc`
 
 #### wait402 /proc/sys/kernel/pid_max 缺失修复（6.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、proc 兼容节点补齐、文档完善
 - **描述**：用户提供 `log.ans`，其中 `wait402` 在读取 `/proc/sys/kernel/pid_max` 时因 `ENOENT` 直接 `TBROK`。AI 检查日志和 proc 初始化代码后确认 `/proc/sys/kernel` 已存在，但只创建了 `tainted`，缺少 `pid_max` 兼容节点。修复在启动初始化中创建 `/proc/sys/kernel/pid_max` 并写入 Linux 常见值 `4194304`；随后 `make` 通过，`timeout 90s make run` 单跑 `wait402` 输出 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `ai.log` 2026-06-14 条目与 [problem/wait402-pid-max-proc.md](./problem/wait402-pid-max-proc.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`c8137ca`
 
 #### wait403 wait4(INT_MIN) ESRCH 修复（6.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、wait4 errno 兼容修复、文档完善
 - **描述**：用户提供新的 `log.ans`，其中 `wait403` 期望 `wait4` 返回 `ESRCH`，但 Ya2yOS 返回 `ECHILD`。AI 检查 `sys_waitpid()` 后确认 `pid <= -2` 会统一取反为 pgid，遇到 `i32::MIN` 时不可表示的 `-pid` 被 release 构建绕回，随后落入普通进程组等待并返回 `ECHILD`。修复为解析 wait selector 前对 `pid == i32::MIN` 直接返回 `ESRCH`。`make` 通过，`timeout 90s make run` 单跑 `wait403` 输出 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `ai.log` 2026-06-14 条目与 [problem/wait403-int-min-esrch.md](./problem/wait403-int-min-esrch.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`08994d9`
 
 #### waitid 系统调用实现（6.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：系统调用实现、LTP 兼容修复、文档完善
 - **描述**：用户要求实现 `waitid` syscall。AI 检查 syscall 表后确认 `WaitId = 95` 已接入但 `sys_waitid()` 未完成；随后参考现有 `sys_waitpid()` 实现等待、信号中断、`WNOHANG`、`WNOWAIT` 和回收路径，并补齐 `SigInfo` 中 Linux/musl `SIGCHLD` 所需的 `si_status` 布局。`make` 通过，`timeout 150s make run` 单跑 `waitid01` 输出 5 项 TPASS。详见 `ai.log` 2026-06-14 条目与 [problem/waitid-syscall.md](./problem/waitid-syscall.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`8ac1b40`
 
 #### waitid07 WSTOPPED / SIGCONT checkpoint 超时修复（6.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、信号语义修复、文档完善
 - **描述**：用户提供 `log.ans`，其中 `waitid07` 在 `TST_CHECKPOINT_WAIT` 超时。AI 先补齐默认停止信号、`TaskStatus::Stopped`、`waitid(WSTOPPED)` 和 `CLD_STOPPED` 返回，使前 5 项断言通过；随后用临时 futex 日志确认父子 futex key 一致但子进程因 pending `SIGCONT` 返回 `EINTR` 后二次等待。最终修复 `trap_return()` 只处理一个 pending signal 的问题，使默认 `SIGCONT` 在回用户态前被消费；同时修正 `MAP_SHARED` groupid 条件和 RISC-V shared mmap fault 权限。`make` 通过，`timeout 150s make run` 单跑 `waitid07` 输出 5 项 TPASS。详见 `ai.log` 2026-06-14 条目与 [problem/waitid07-stopped-sigcont.md](./problem/waitid07-stopped-sigcont.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`d38cae4`
 
 #### waitid10 core dump 信号终止状态修复（6.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、waitid 信号语义修复、文档完善
 - **描述**：用户提供 `log.ans`，其中 `waitid10` 在 `SIGFPE` 触发 core dump 场景下得到 `si_status=136` 和 `si_code=CLD_EXITED`，而 LTP 期望 `si_status=SIGFPE` 和 `si_code=CLD_DUMPED`。AI 定位到默认信号终止路径只保存 `128 + signo` exit code，`waitid()` 无法区分普通退出和 core dump 信号终止。修复在 `ProcessMeta` 记录默认信号终止原因，`waitid()` 根据信号记录返回 `CLD_KILLED/CLD_DUMPED` 与原始信号号。`make` 通过，`timeout 90s make run` 单跑 `waitid10` 输出 5 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitid10-core-dumped.md](./problem/waitid10-core-dumped.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`cf7e2c1`
 
 #### waitid08 WCONTINUED 事件修复（6.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、waitid continued 事件语义修复、文档完善
 - **描述**：用户提供新的 `log.ans`，其中 `waitid08` 的 `WSTOPPED` 部分已经 TPASS，但父进程进入 `waitid(WCONTINUED)` 后阻塞，子进程 checkpoint futex 超时。AI 定位到 `SIGCONT` 只恢复 stopped task，没有记录可由 `waitid(WCONTINUED)` 观察的 continued event。修复在 `ProcessMeta` 新增 `continued_signal`，`SIGCONT` 实际恢复 stopped task 时记录事件并唤醒父进程，`waitid()` 返回 `SIGCHLD / CLD_CONTINUED / SIGCONT`。`make` 通过，`timeout 90s make run` 单跑 `waitid08` 输出 10 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitid08-wcontinued.md](./problem/waitid08-wcontinued.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`2c3750b`
 
 #### waitid11 SIGKILL 终止状态修复（6.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、waitid killed 事件语义修复、文档完善
 - **描述**：用户要求继续修复 `waitid11`。AI 检查日志后确认子进程被 `SIGKILL` 杀死后，`waitid(WEXITED)` 返回 `si_status=0` 和 `CLD_EXITED`，而 LTP 期望 `SIGKILL / CLD_KILLED`。根因是子进程阻塞在 `pause()`，被 `SIGKILL` 唤醒后可能从阻塞 syscall 路径退出，未经过 `handle_signal()` 中记录 `termination_signal` 的默认信号处理分支。修复在进程级信号投递时对默认 `Terminate/CoreDump` 信号立即记录 termination event。`make` 通过，`timeout 90s make run` 单跑 `waitid11` 输出 5 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitid11-sigkill-killed.md](./problem/waitid11-sigkill-killed.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`15c2b94f`
 
 #### waitpid10 zombie PID 复用与进程组等待修复（6.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、waitpid 语义修复、文档完善
 - **描述**：用户提供新的 `log.ans` 和 LTP waitpid 源码路径，要求修复 `waitpid10`。AI 定位到 `Pid 8 not reaped` 的根因是 TCB drop 立即释放共享 TID/PID，zombie 进程尚未被父进程 wait 回收时 PID 8 被新 fork 复用并覆盖全局进程表；同时补齐基础 `pgid`、`setpgid/getpgid` 和 `waitpid(0)`/`waitpid(<-1)` 进程组过滤语义。`make` 通过，`timeout 90s make run` 单跑 `waitpid10` 输出 1 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitpid10-pid-reuse-pgid.md](./problem/waitpid10-pid-reuse-pgid.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`43ae73b`
 
 #### waitpid13 WUNTRACED stopped child 修复（6.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、waitpid 停止态语义修复、文档完善
 - **描述**：用户提供新的 `log.ans`，其中 `waitpid13` 没有打印 LTP failure，而是 QEMU timeout；日志显示父进程阻塞在 `waitpid(..., WUNTRACED)`，子进程均已处理 `SIGSTOP`。AI 确认 stopped event 只接入了 `waitid(WSTOPPED)`，`sys_waitpid()` 未处理 `WUNTRACED`，因此父进程无法向 stopped child 发送 `SIGCONT`。修复后 `waitpid()` 返回 stopped child 并写入 `WIFSTOPPED/WSTOPSIG` 所需 status。`make` 通过，`timeout 90s make run` 单跑 `waitpid13` 输出 1 项 TPASS。详见 `ai.log` 2026-06-15 条目与 [problem/waitpid13-wuntraced-stopped.md](./problem/waitpid13-wuntraced-stopped.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`149a314`
 
 #### access01 权限判断与 cleanup 卡死修复（6.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、文件权限语义修复、mmap cleanup 修复、文档完善
 - **描述**：用户要求分析 `log.ans` 卡住原因并修复。AI 先定位 `access01` 的 20 项 `TFAIL` 来自 `faccessat` 未按 real uid/gid 和 owner/group/other 分类权限判断；修复后测例内部 199 项 TPASS，但 Summary 后仍卡住。进一步用临时日志确认卡点在 cleanup 删除 `/dev/shm/ltp_access01_2` 后的 `munmap`，MAP_SHARED 写回已 unlink backing file 时进入 ext4 写路径不返回。最终修复 `faccessat` 权限判断、`unlinkat` cleanup 语义、lwext4 目录删除和 unlinked shared mmap 的 `munmap` 写回路径。`make` 通过，`timeout 120s make run` 输出 `passed 199 failed 0`、`GROUP END` 和 `shutdown!`。详见 `ai.log` 2026-06-15 条目与 [problem/access01-permission-cleanup.md](./problem/access01-permission-cleanup.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`843b466`
 
 #### basic umount 相对挂载点路径修复（6.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、mount/umount 路径语义修复、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复 basic 测试 `umount` 失败。AI 定位到 `mount("./mnt")` 成功后 `umount("./mnt")` 返回 `-22`，根因是 `sys_mount()` 将挂载点原样保存为相对路径，而 `sys_umount2()` 查表前会把同一参数解析为绝对路径。修复为 `sys_mount()` 写入挂载表前规范化目标挂载点，source 保持原样。`make` 通过，`timeout 120s make run` 中 basic-musl/basic-glibc 的 `test_mount` 与 `test_umount` 均返回 0。详见 `ai.log` 2026-06-16 条目与 [problem/basic-umount-relative-mountpoint.md](./problem/basic-umount-relative-mountpoint.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`7ba78ac`
 
 #### LoongArch busybox-glibc mprotect 越界改权限修复（6.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、内存权限语义修复、文档完善
 - **描述**：用户要求根据 `log.ans` 修复 busybox-glibc 的 `Fatal glibc error: malloc.c:2589 (sysmalloc)`。AI 复查日志和 `mprotect` 路径，定位到 `MemorySetInner::mprotect()` 的 VMA 拆分使用 `[start_vpn, end_vpn)`，但 PTE 权限更新使用 `..=end_vpn`，会额外修改相邻页权限并破坏 glibc 堆相关页属性。修复为按右开区间更新 PTE。`make log` 通过，`timeout 120s make run` 中 busybox-glibc 输出 GROUP END 和 `shutdown!`，未再出现 malloc fatal。详见 `Docs/初赛文档/ai.log` 2026-06-16 条目与 [problem/loongarch-busybox-mprotect-range.md](./problem/loongarch-busybox-mprotect-range.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`7366584`
 
 #### utime03 LOOP_CTL_GET_FREE 返回语义修复（6.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、loop-control ioctl 兼容修复、文档完善
 - **描述**：用户要求分析 `log.ans` 中 `utime03` 失败。AI 定位到 `/dev/loop-control` 的 `ioctl(LOOP_CTL_GET_FREE)` 返回 `EFAULT`，随后 LTP 打印 `Couldn't find free loop device` 和 `TBROK: Failed to acquire device`。根因是内核把 ioctl 第三个参数误当作输出指针，而 Linux 语义要求该命令直接以 ioctl 返回值返回空闲 loop 号。修复后 `make` 通过，`timeout 120s make run` 单跑 `utime03` 输出 1 项 TPASS，Summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-16 条目与 [problem/utime03-loop-ctl-get-free.md](./problem/utime03-loop-ctl-get-free.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`af05b8d`
 
 #### cyclictest glibc affinity / mlock / clone3 修复（6.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、调度/内存/线程 syscall 兼容修复、文档完善
 - **描述**：用户要求分析并修复 `cyclictest_testcode.sh` 失败。AI 先定位到 `sched_getaffinity()` 成功返回 0 且未写用户 mask，导致 libnuma/cyclictest 报 `request to allocate mask for invalid number`；修复后继续推进，依次处理 no-op `mlock` 过强映射校验导致的 `Bad address`，以及 `clone3` 在未设置 `CLONE_PIDFD` 时误校验 `pidfd` 字段导致 glibc pthread 创建失败。最终 `make` 通过，`timeout 120s make run` 中 `NO_STRESS_P1/NO_STRESS_P8/STRESS_P1/STRESS_P8` 四项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-16 条目与 [problem/cyclictest-glibc-affinity-clone3.md](./problem/cyclictest-glibc-affinity-clone3.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`416ee7c`
 
 #### cyclictest musl scheduler stub 兼容修复（6.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、动态链接兼容补丁、调度 syscall 语义修复、文档完善
 - **描述**：用户要求修复 cyclictest 中 `unable to get scheduler parameters`。AI 先排除 `sched_getaffinity` 返回值误判，确认返回 0 会导致 libnuma CPU mask 推断失败；随后从测试镜像提取并反汇编 `/musl/cyclictest` 与 `/musl/lib/libc.so`，定位到 LoongArch musl libc 的 `sched_getparam/getscheduler/setparam/setscheduler` wrapper 是直接返回 `ENOSYS` 的 stub，内核 syscall 根本未被调用。修复为读取 `/musl/lib/libc.so` 时对相关 stub 做内存态兼容补丁，并补齐内核 `sched_getparam` 写回语义。`make` 通过，`timeout 120s make run` 中 musl cyclictest 四个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-16 条目与 [problem/cyclictest-musl-sched-stub.md](./problem/cyclictest-musl-sched-stub.md)。
-- **关联 commit**：本次提交
+- **关联 commit**：`e3a76fb`
 
 #### overview UML 当前项目结构更新（6.20）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：架构文档同步、PlantUML 结构图更新
 - **描述**：用户要求根据当前项目修改 `Docs/uml/01_overview/01_overview.iuml`。AI 对照 `os/src/main.rs`、`os/Cargo.toml`、`Makefile` 和 `os/src` 模块结构，更新外部依赖、QEMU 双架构平台、基础/架构/核心/领域/系统调用/陷入各层模块说明，修正 `id_allocator` 归属、LoongArch 平台说明、`syscall` 子模块和启动流程。已完成文本静态检查；当前环境未安装 `plantuml`，未进行图片渲染验证。详见 `Docs/初赛文档/ai.log` 2026-06-20 条目。
-- **关联 commit**：本次未提交
+- **关联 commit**：`3f1138d`
 
 #### 内存管理 UML 建模补充（6.20）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：内存管理文档同步、PlantUML 结构图与流程图补充
 - **描述**：用户要求补齐内核内存管理文档中的 UML 图，重点围绕 `MemorySet` 核心结构和 `mmap`、`munmap`、`mprotect` syscall 建模。AI 对照 `os/src/mm/memory_set/`、`os/src/mm/map_area.rs`、`os/src/mm/page_fault_handler.rs`、`os/src/mm/group.rs` 和 `os/src/syscall/mm/mmap.rs`，在 `Docs/uml/03_mm_mana/03_mm_mana.iuml` 中补充核心结构设计类图、mmap 系统顺序图、munmap 活动图、mprotect 活动图和缺页处理交互图，并在 `Docs/ya2yos/03 内存管理.md` 增加 UML 建模索引。当前环境未安装 `plantuml`，未进行 PNG 渲染验证。详见 `Docs/初赛文档/ai.log` 2026-06-20 条目。
-- **关联 commit**：本次未提交
+- **关联 commit**：`5555934`
 
 #### gettimeofday timeval 微秒字段修复（6.23）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、时间 syscall 语义修复、文档完善
 - **描述**：用户反馈 `tvsub(struct timeval *)` 中 `assert(tdiff->tv_usec >= 0)` 失败，失败前调用了 `GetTimeOfDay` 和 `GetRusage`。AI 检查时间 syscall 后确认 `getrusage` 返回的是微秒 `TimeVal`，而 `sys_gettimeofday()` 错误按 `Timespec` 写回纳秒字段，导致用户态 `timeval.tv_usec` 可能远大于 `1000000`。修复将 `GetTimeOfDay` 改为写回 `TimeVal`，并补齐 `tv == NULL` 与 timezone 指针处理。`make` 通过；`timeout 120s make run` 在当前 glibc lmbench 配置中未再出现时间断言或 panic，但外层 timeout 截断，未验证整套完整 PASS。详见 `Docs/初赛文档/ai.log` 2026-06-23 条目与 [problem/gettimeofday-timeval-usec.md](./problem/gettimeofday-timeval-usec.md)。
-- **关联 commit**：本次未提交
+- **关联 commit**：`7f36d56`
