@@ -1,46 +1,89 @@
 //! 系统时间管理模块
 //!
-//! 本模块管理 OS 内核中的所有时间相关数据结构和功能，按数据结构
-//! 拆分为独立子文件。
+//! 本模块管理内核中所有时间相关数据结构和 helper。当前 Ya2yOS 没有
+//! Linux 那样完整的 `timekeeper`，因此需要明确区分不同时间语义，避免把
+//! uptime、realtime、CPU time 和 timeout deadline 混用。
 //!
-//! # 时间变量一览
+//! # 当前内核需要维护的时间
 //!
-//! ## 硬件时钟层
-//! - **`get_ticks()`** → RISC-V `mtime` 寄存器原始 tick 数，单调递增
-//! - **`get_clock_freq()`** → CPU 时钟频率 (Hz)，如 10MHz
+//! ## 1. 硬件计数时间
 //!
-//! ## 内核时间原语 (本模块)
-//! - **`get_time_ms()`** → 自开机以来的毫秒数 (基于 tick 换算)
-//! - **`get_time_ns()`** → 自开机以来的纳秒数
-//! - **`get_time_spec()`** → 返回 `Timespec`，tv_sec = 开机秒数，tv_nsec = 亚秒纳秒
+//! - **来源**：架构层 `get_ticks()` 与 `get_clock_freq()`。
+//! - **语义**：硬件 tick 单调递增，是所有软件时间的根。
+//! - **用途**：换算出开机后经过的毫秒/纳秒，并驱动下一次 timer interrupt。
+//! - **注意**：这不是 POSIX 可见时间，不能被 `settimeofday()` 修改。
 //!
-//! ## 墙上时钟 (real-time clock)
-//! - **`NOW_TIME_STAMP`** → 编译期硬编码的 UNIX 时间戳偏移 (1758325855 ≈ 2025-09)，加到
-//!   开机时间上模拟真实墙上时钟
-//! - **`CLOCK_REALTIME_OFFSET`** → 运行时通过 `clock_settime(2)` 调整的偏移量 (秒)，
-//!   用于 NTP / adjtimex / clock_settime 对 REALTIME 的修正
-//! - **`wall_time()`** / **`wall_time_nanos()`** → 开机时间 + NOW_TIME_STAMP = 模拟墙上时钟
+//! ## 2. 开机单调时间 / uptime
 //!
-//! ## 定时器
-//! - **`TICKS_PER_SEC`** → 系统 tick 频率 (100Hz)，即每 10ms 一次时钟中断
-//! - **`set_next_trigger()`** → 设置 mtimecmp 寄存器触发下一次时钟中断
-//! - **`TIMERS`** → 全局定时器堆 (`BinaryHeap<TimerCondVar>`)，用于 futex 超时等
-//! - **`Timer` / `TimerInner`** → 每线程的 itimer (setitimer/getitimer)
+//! - **接口**：`get_time_ms()`、`get_time_ns()`、`get_time_spec()`、
+//!   `TimeVal::now()`。
+//! - **语义**：从内核启动到现在经过的时间，单调递增，不包含 UNIX epoch。
+//! - **用途**：
+//!   - `CLOCK_MONOTONIC` / 相对睡眠 / `poll` / `select` / `epoll` timeout。
+//!   - futex、sigtimedwait、stopped task 等内核阻塞超时 deadline。
+//!   - `TimeData` 更新时作为 CPU time 采样基准。
+//! - **注意**：所有相对 timeout 都应该优先使用 uptime，不能受用户调系统时间影响。
 //!
-//! ## POSIX 时间结构体
-//! - **`Timespec`** → `{tv_sec: usize, tv_nsec: usize}`，纳秒精度，用于 clock_gettime 等
-//! - **`TimeVal`** → `{tv_sec: usize, tv_usec: usize}`，微秒精度，用于 gettimeofday 等旧接口
+//! ## 3. 墙上时间 / `CLOCK_REALTIME`
 //!
-//! ## 进程时间统计
-//! - **`TimeData`** → 每线程的 CPU 时间统计 (utime/stime/cutime/cstime)
-//! - **`Tms`** → `times(2)` 系统调用返回的格式
-//! - **`Rusage`** → `getrusage(2)` 系统调用返回的资源使用统计
+//! - **接口**：`clock_gettime(CLOCK_REALTIME)`、`gettimeofday()`、文件时间戳等。
+//! - **语义**：用户可见的 UNIX 时间，等价于 Linux 中已经被 timekeeper 调整后的
+//!   `tk->xtime_sec` / `xtime_nsec`。
+//! - **当前实现**：
+//!   `CLOCK_REALTIME = uptime + NOW_TIME_STAMP + CLOCK_REALTIME_OFFSET`。
+//! - **`NOW_TIME_STAMP`**：启动时的固定 UNIX epoch 基准。它把“开机 0 秒”
+//!   转成一个近似墙上时间。
+//! - **`CLOCK_REALTIME_OFFSET`**：Ya2yOS 的简化 timekeeper 偏移。Linux 没有
+//!   这个同名变量，因为 Linux 会直接维护已调整的 wall time；本内核暂时用它记录
+//!   `clock_settime(CLOCK_REALTIME)` / `settimeofday()` 造成的秒级修正。
+//! - **注意**：realtime 可以跳变，不能拿它作为相对等待或 CPU 计时基准。
 //!
-//! ## NTP 时间调整
-//! - **`Timex`** → `struct timex`，用于 adjtimex(2) / clock_adjtime(2)
-//! - **`REALTIME_TIMEX`** → 全局 NTP 状态缓存
-//! - **`timex_get_realtime()`** → 读取当前 timex (modes=0)
-//! - **`timex_apply()`** → 应用 timex 调整 (modes≠0)
+//! ## 4. 原始模拟墙上时间 helper
+//!
+//! - **接口**：`wall_time()`、`wall_time_nanos()`。
+//! - **语义**：当前代码中只计算 `uptime + NOW_TIME_STAMP`，不叠加
+//!   `CLOCK_REALTIME_OFFSET`。
+//! - **用途**：主要给网络协议栈和异步 `TimerFuture` 提供一个近似 wall clock。
+//! - **注意**：如果调用者需要严格 POSIX `CLOCK_REALTIME` 语义，应使用
+//!   `clock_gettime(CLOCK_REALTIME)` 路径或显式叠加 `CLOCK_REALTIME_OFFSET`。
+//!
+//! ## 5. 线程 / 进程 CPU 时间
+//!
+//! - **结构**：`TimeData`、`Tms`、`Rusage`。
+//! - **字段**：`utime`、`stime`、`cutime`、`cstime`，当前以毫秒累计。
+//! - **语义**：任务实际消耗的用户态/内核态 CPU 时间，以及已 wait 子进程累计值。
+//! - **用途**：`times(2)`、`getrusage(2)`、`wait4()`/`waitid()` rusage。
+//! - **注意**：CPU time 不是墙上时间；阻塞等待期间不应累计为当前任务 CPU time。
+//!
+//! ## 6. 内核阻塞 deadline 定时器
+//!
+//! - **结构**：`TIMERS`、`TimerCondVar`、`TimerType`。
+//! - **语义**：以 uptime `Timespec` 表示的绝对 deadline。
+//! - **用途**：futex timeout、sigtimedwait timeout、stopped task timeout 等。
+//! - **注意**：deadline 应该基于单调 uptime，避免 `settimeofday()` 导致等待时间跳变。
+//!
+//! ## 7. 每线程 interval timer
+//!
+//! - **结构**：`Timer`、`TimerInner`、`Itimerval`。
+//! - **接口**：`setitimer(2)` / `getitimer(2)`。
+//! - **语义**：每个线程持有一个 itimer，记录 interval、当前 value、last_time
+//!   和一次性/周期性触发状态。
+//! - **用途**：当前主要支持 `ITIMER_REAL`，到期后投递 SIGALRM，并用于 LTP timeout。
+//!
+//! ## 8. NTP / timex 状态
+//!
+//! - **结构**：`Timex`、`REALTIME_TIMEX`。
+//! - **接口**：`adjtimex(2)` / `clock_adjtime(2)`。
+//! - **语义**：保存用户设置的 NTP/timex 参数，向用户返回兼容结构。
+//! - **注意**：当前实现主要是状态缓存和兼容返回，尚未实现 Linux 那种持续 slew
+//!   或 frequency discipline；因此它不是驱动 `CLOCK_REALTIME` 前进的主时钟。
+//!
+//! # POSIX 时间结构
+//!
+//! - **`Timespec`**：`{ tv_sec, tv_nsec }`，纳秒精度，用于 `clock_gettime`、
+//!   `clock_nanosleep` 等。
+//! - **`TimeVal`**：`{ tv_sec, tv_usec }`，微秒精度，用于 `gettimeofday`、
+//!   `setitimer`、`getrusage` 等旧接口。
 
 mod itimerval;
 mod rusage;
@@ -78,10 +121,10 @@ pub const MSEC_PER_SEC: usize = 1000;
 pub const USEC_PER_SEC: u64 = 1_000_000;
 /// 每秒钟的纳秒数
 pub const NANOS_PER_SEC: u64 = 1_000_000_000;
-/// 没毫秒的纳秒数
+/// 每毫秒的纳秒数
 pub const NANOS_PER_MICROS: u64 = 1_000_000;
 /// 开机时间到 UNIX 纪元 (1970-01-01) 的固定偏移量 (秒)
-//// 2026-05-31 00:00:00 UTC
+/// 2026-05-31 00:00:00 UTC
 pub const NOW_TIME_STAMP: usize = 1_777_593_600;
 
 // include/linux/posix-timer_types.h
@@ -95,10 +138,10 @@ pub const CLOCKFD: i32 = CPUCLOCK_MAX;
 pub const CLOCKFD_MASK: i32 = CPUCLOCK_PERTHREAD_MASK | CPUCLOCK_CLOCK_MASK;
 
 
-// 墙上时钟偏移 (clock_settime / adjtimex 修改)
+// 墙上时钟偏移 (clock_settime / settimeofday 修改)
 
 /// `clock_settime(CLOCK_REALTIME)` 对系统 REALTIME 的运行时偏移量 (秒)。
-/// 初始为 0。通过 `clock_settime` 调整，在 `clock_gettime(CLOCK_REALTIME)` 读取时叠加。
+/// 初始为 0。通过 `clock_settime` / `settimeofday` 调整，在读取 REALTIME 时叠加。
 pub static CLOCK_REALTIME_OFFSET: Lazy<Mutex<i64>> = Lazy::new(|| Mutex::new(0));
 
 // 时间获取函数

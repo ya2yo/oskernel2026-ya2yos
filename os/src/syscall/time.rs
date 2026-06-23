@@ -372,10 +372,6 @@ pub fn sys_clock_adjtime(clock_id: u32, buf: *mut Timex) -> SyscallRet {
     Ok(ret)
 }
 
-// ---------------------------------------------------------------------------
-// clock_settime(112)
-// ---------------------------------------------------------------------------
-
 /// 参考 https://man7.org/linux/man-pages/man2/clock_settime.2.html
 pub fn sys_clock_settime(clock_id: u32, tp: *const Timespec) -> SyscallRet {
     // 仅 CLOCK_REALTIME 可设置
@@ -417,10 +413,6 @@ pub fn sys_clock_settime(clock_id: u32, tp: *const Timespec) -> SyscallRet {
     );
     Ok(0)
 }
-
-// ---------------------------------------------------------------------------
-// settimeofday(170)
-// ---------------------------------------------------------------------------
 
 /// 参考 https://man7.org/linux/man-pages/man2/settimeofday.2.html
 ///
@@ -473,10 +465,6 @@ pub fn sys_settimeofday(tv: *const TimeVal, tz: *const u8) -> SyscallRet {
     );
     Ok(0)
 }
-
-// ---------------------------------------------------------------------------
-// POSIX per‑process timers: timer_create(107) / timer_delete(111)
-// ---------------------------------------------------------------------------
 
 /// 参考 https://man7.org/linux/man-pages/man2/timer_create.2.html
 ///
