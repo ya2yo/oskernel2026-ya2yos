@@ -42,6 +42,7 @@
 - [basic umount 相对挂载点路径不匹配](./basic-umount-relative-mountpoint.md)
 - [LTP access04 mount / loop 设备修复](./access04-ltp-musl.md)
 - [龙芯架构 iozone-glibc 动态链接与缺页处理修复](./iozone-glibc.md)
+- [iozone 文件 I/O 性能优化](./iozone-io-performance.md)
 - [LTP creat04 open 权限检查](./creat04-open-permission.md)
 - [sys_linkat 硬链接实现与 lwext4 重构](./linkat-hardlink-refactor.md)
 - [fsconfig / fsopen / fsmount 基础实现](./fsconfig-syscall.md)

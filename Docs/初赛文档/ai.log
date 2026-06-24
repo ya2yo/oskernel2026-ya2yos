@@ -2112,3 +2112,50 @@ timeout 120s make run
 ```
 
 结果：当前工作区配置运行 glibc lmbench，推进到 fork/shell/文件带宽阶段，未出现 `tvsub` 断言、panic 或时间相关失败；外层 120 秒 timeout 截断 QEMU，因此未验证整套 lmbench 完整 PASS。
+
+---
+
+## 2026-06-24: iozone 文件 I/O 性能优化
+
+### 用户需求
+
+用户要求提高当前内核 iozone 得分并进行优化。
+
+### 分析
+
+AI 检查 iozone 测试入口、lwext4 适配层、VFS 文件读写和 virtio block 路径。确认当前 `initproc.rs` 单跑 `musl/iozone_testcode.sh`，iozone 负载以 1KiB record 为主。
+
+主要性能点：
+
+- `os/src/fs/ext4_lw/sb.rs` 的 `KernelDevOp::read/write` 会循环调用 `Disk::read_one/write_one`。
+- 旧版 `Disk::read_one/write_one` 即使 buffer 是 512B 对齐且长度大于一个块，也只提交一个 512B block，造成连续 I/O 被拆成大量 virtio 请求。
+- `crates/lwext4_rust/src/file.rs` 的 VFileCache 阈值为 1MiB，只覆盖 iozone `-s 1m` 吞吐子项，覆盖不到 `iozone -a -s 4m` 自动测试文件。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/drivers/disk.rs` | 对 512B 对齐且长度足够的读写，一次提交多个连续块到 `read_block/write_block` |
+| `crates/lwext4_rust/src/file.rs` | 将 `MAX_CACHED_FILE_SIZE` 从 1MiB 提高到 4MiB，覆盖 iozone 自动测试文件 |
+| `Docs/初赛文档/problem/iozone-io-performance.md` | 新增性能优化复盘 |
+| `Docs/初赛文档/problem/README.md` | 新增索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.24 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助优化摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：LoongArch64 release 构建通过。
+
+已执行：
+
+```text
+timeout 180s make run
+```
+
+结果：`iozone-musl` 完整输出 `GROUP END` 和 `shutdown!`。本轮 `iozone -a -r 1k -s 4m` 自动测试首行显示多项吞吐提升，例如 `rewrite 31532 kB/sec`、`read 9488 kB/sec`、`random write 20146 kB/sec`、`fwrite 24006 kB/sec`。

@@ -10,7 +10,8 @@ use spin::{Lazy, Mutex, RwLock};
 
 const PAGE_SIZE: usize = 4096;
 pub const PAGE_MASK: usize = !0xfff;
-const MAX_CACHED_FILE_SIZE: usize = 0x10_0000; // 1 MiB
+// Covers iozone -s 4m while still avoiding large test artifacts.
+const MAX_CACHED_FILE_SIZE: usize = 4 * 0x10_0000; // 4 MiB
 
 fn aligned_down(addr: usize) -> usize {
     addr & PAGE_MASK

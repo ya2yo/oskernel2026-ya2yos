@@ -598,3 +598,10 @@
 - **场景**：Bug 分析与定位、时间 syscall 语义修复、文档完善
 - **描述**：用户反馈 `tvsub(struct timeval *)` 中 `assert(tdiff->tv_usec >= 0)` 失败，失败前调用了 `GetTimeOfDay` 和 `GetRusage`。AI 检查时间 syscall 后确认 `getrusage` 返回的是微秒 `TimeVal`，而 `sys_gettimeofday()` 错误按 `Timespec` 写回纳秒字段，导致用户态 `timeval.tv_usec` 可能远大于 `1000000`。修复将 `GetTimeOfDay` 改为写回 `TimeVal`，并补齐 `tv == NULL` 与 timezone 指针处理。`make` 通过；`timeout 120s make run` 在当前 glibc lmbench 配置中未再出现时间断言或 panic，但外层 timeout 截断，未验证整套完整 PASS。详见 `Docs/初赛文档/ai.log` 2026-06-23 条目与 [problem/gettimeofday-timeval-usec.md](./problem/gettimeofday-timeval-usec.md)。
 - **关联 commit**：`7f36d56`
+
+#### iozone 文件 I/O 性能优化（6.24）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：文件系统与块设备性能优化、iozone 验证、文档完善
+- **描述**：用户要求提高当前内核 iozone 得分。AI 检查 lwext4、VFS 和 virtio block 路径，定位到 Disk 层对连续 512B 对齐 I/O 仍逐块提交，以及 lwext4 小文件 cache 阈值 1MiB 无法覆盖 `iozone -a -s 4m`。修复为 Disk 层批量提交连续块，并将 VFileCache 阈值提高到 4MiB。`make` 通过；`timeout 180s make run` 单跑 `iozone-musl` 输出 GROUP END 和 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-06-24 条目与 [problem/iozone-io-performance.md](./problem/iozone-io-performance.md)。
+- **关联 commit**：待提交
