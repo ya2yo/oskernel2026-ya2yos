@@ -605,3 +605,10 @@
 - **场景**：文件系统与块设备性能优化、iozone 验证、文档完善
 - **描述**：用户要求提高当前内核 iozone 得分。AI 检查 lwext4、VFS 和 virtio block 路径，定位到 Disk 层对连续 512B 对齐 I/O 仍逐块提交，以及 lwext4 小文件 cache 阈值 1MiB 无法覆盖 `iozone -a -s 4m`。修复为 Disk 层批量提交连续块，并将 VFileCache 阈值提高到 4MiB。`make` 通过；`timeout 180s make run` 单跑 `iozone-musl` 输出 GROUP END 和 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-06-24 条目与 [problem/iozone-io-performance.md](./problem/iozone-io-performance.md)。
 - **关联 commit**：待提交
+
+#### signal01 SIGKILL/SIGSTOP 与 pause/ppoll 修复（6.25）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、信号 syscall 语义修复、文档完善
+- **描述**：用户要求检查 `log.ans` 调用路径，并解释为什么 `make` 与 `make log` 生成的 kernel 行为不同。AI 定位到两处根因：`rt_sigaction(SIGKILL, act, old_act)` 在 `act.sa_handler == SIG_DFL` 时被错误放行，导致 `signal(SIGKILL, ...)` 返回成功并触发 LTP `TFAIL`；glibc `pause()` 进入的 `ppoll(NULL, 0, NULL, NULL)` 路径未被正确支持，也不能在 pending signal 到来时返回 `EINTR`，因此 warn 构建下会卡在等待路径。`make log` 只是 debug 日志改变了调度时序并掩盖问题。修复后 `make`、`make log` 通过，单跑 `signal01` 输出 6 项 TPASS，Summary 为 `passed 6 failed 0`。详见 `Docs/初赛文档/ai.log` 2026-06-25 条目与 [problem/signal01-sigkill-sigaction.md](./problem/signal01-sigkill-sigaction.md)。
+- **关联 commit**：待提交

@@ -31,23 +31,10 @@ pub fn sys_rt_sigaction(
         error!("invalid signo: {}", signo);
         return Err(SysErrNo::EINVAL);
     }
-    // SIGKILL 和 SIGSTOP 不可被捕获或忽略 (POSIX.1-2001)
+    // SIGKILL 和 SIGSTOP 不可被捕获、忽略或重设；只允许 act == NULL 查询旧 action。
     if (signo == SIGKILL || signo == SIGSTOP) && act as usize != 0 {
-        let task = current_task().unwrap();
-        let process = task.process.inner_lock();
-        let memory_set = process.get_locked_memory_set_read();
-        let mut new_act: SigAction = unsafe { core::mem::zeroed() };
-        copy_from_user(&memory_set, act as usize, unsafe {
-            core::slice::from_raw_parts_mut(
-                &mut new_act as *mut SigAction as *mut u8,
-                core::mem::size_of::<SigAction>(),
-            )
-        })?;
-        if new_act.sa_handler != 0 {
-            // 不允许修改 SIGKILL/SIGSTOP 的 handler（SIG_DFL 除外）
-            debug!("[sys_rt_sigaction] attempt to change SIGKILL/SIGSTOP handler");
-            return Err(SysErrNo::EINVAL);
-        }
+        debug!("[sys_rt_sigaction] attempt to change SIGKILL/SIGSTOP action");
+        return Err(SysErrNo::EINVAL);
     }
     let task = current_task().unwrap();
     let process = task.process.inner_lock();

@@ -2159,3 +2159,56 @@ timeout 180s make run
 ```
 
 结果：`iozone-musl` 完整输出 `GROUP END` 和 `shutdown!`。本轮 `iozone -a -r 1k -s 4m` 自动测试首行显示多项吞吐提升，例如 `rewrite 31532 kB/sec`、`read 9488 kB/sec`、`random write 20146 kB/sec`、`fwrite 24006 kB/sec`。
+
+---
+
+## 2026-06-25: signal01 SIGKILL/SIGSTOP 与 pause/ppoll 修复
+
+### 用户需求
+
+用户要求检查 `log.ans` 里的调用路径，指出当前测例在集体测试中会卡死，而单独测试路径需要确认。
+
+### 分析
+
+AI 先检查 `log.ans` 中的 `TFAIL`、Summary 和尾部调用链，确认当前关注测例是 glibc LTP `signal01`。日志显示 `signal01` 在部分子进程中调用 `rt_sigaction(SIGKILL, act, old_act)` 后，内核返回成功：
+
+```text
+[sys_rt_sigaction] signo is 9, sig is SIGKILL, act is SigAction { sa_handler: 0, ... }
+[syscall ret --- OK] SigAction ret = 0
+signal01.c:56: TFAIL: (long)signal(SIGKILL, tc->sighandler) invalid retval ...: SUCCESS (0)
+```
+
+随后检查 `os/src/syscall/signal.rs`，定位到原实现只拒绝 `SIGKILL/SIGSTOP` 的非零 handler，允许 `sa_handler == SIG_DFL` 的 action 写入信号表。但 Linux 语义下 `SIGKILL/SIGSTOP` 不能被捕获、忽略或重设；只要 `act != NULL` 就应返回 `EINVAL`。
+
+继续对比 `make` 与 `make log` 的运行差异：顶层 `make` 构建 warn 日志级别 kernel，`make log` 构建 debug 日志级别 kernel，二者在 `logger.rs` 中只影响日志过滤。`make log` 运行正常是 debug 输出改变了调度时序，掩盖了后 3 组 `pause()` 测试中的等待问题。glibc 的 `pause()` 会进入空 fd 集合等待路径，等价于 `ppoll(NULL, 0, NULL, NULL)`；原 `sys_ppoll()` 不允许 `fds_ptr == NULL`，且等待循环不检查 pending signal 并返回 `EINTR`，导致 warn kernel 下子进程收到 `SIGKILL` 后仍可能卡在等待路径。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/signal.rs` | `rt_sigaction` 对 `SIGKILL/SIGSTOP` 且 `act != NULL` 的调用直接返回 `EINVAL`，不再按 `sa_handler` 放行 `SIG_DFL` |
+| `os/src/syscall/io_mpx/poll.rs` | 允许 `ppoll(NULL, 0, ...)`，空 fd 集合不执行用户态拷贝；等待循环检测 pending signal 并返回 `EINTR`；移除会与信号检查重入冲突的任务内锁 |
+| `Docs/初赛文档/problem/signal01-sigkill-sigaction.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 新增索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.25 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+make log
+timeout 120s make run
+```
+
+结果：`make log` 生成的 debug kernel 和 `make` 生成的 warn kernel 分别单跑 `signal01`，均完成并 `shutdown!`。两种构建均输出 6 项 TPASS，Summary 为：
+
+```text
+passed   6
+failed   0
+broken   0
+skipped  0
+warnings 0
+```

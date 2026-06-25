@@ -1,6 +1,7 @@
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_to_user},
+    signal::check_if_any_sig_for_current_task,
     syscall::{options::PollFd, PollEvents},
     task::{current_task, suspend_current_and_run_next},
     timer::{get_time_ms, Timespec},
@@ -9,16 +10,14 @@ use crate::{
 use alloc::vec;
 use alloc::{sync::Arc, vec::Vec};
 use core::cmp::min;
-use log::debug;
 
 /// 参考 https://man7.org/linux/man-pages/man2/ppoll.2.html
 pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.inner_lock();
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
 
-    if fds_ptr == 0 {
+    if fds_ptr == 0 && nfds != 0 {
         return Err(SysErrNo::EINVAL);
     }
 
@@ -30,7 +29,9 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
     let pollfd_size = core::mem::size_of::<PollFd>();
     let total_size = nfds * pollfd_size;
     let mut kernel_fds = vec![0u8; total_size];
-    copy_from_user(&memory_set, user_fds_ptr, &mut kernel_fds)?;
+    if nfds != 0 {
+        copy_from_user(&memory_set, user_fds_ptr, &mut kernel_fds)?;
+    }
 
     let fds_ptr = kernel_fds.as_mut_ptr() as *mut PollFd;
 
@@ -55,13 +56,11 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
 
     //由于每次循环结束需要让出cpu，因此需要在每次循环时重新获得锁
     drop(memory_set);
-    drop(inner);
     drop(proc_inner);
 
     loop {
         let task = current_task().unwrap();
         let proc_inner = task.process.inner_lock();
-        let inner = task.inner_lock();
         let mut resnum = 0;
         for i in 0..nfds {
             let pfd = unsafe { &mut *fds_ptr.add(i) };
@@ -90,7 +89,9 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
         if waittime > 0 && get_time_ms() * 1000000 - begin >= waittime as usize {
             return Ok(0);
         }
-        drop(inner);
+        if check_if_any_sig_for_current_task().is_some() {
+            return Err(SysErrNo::EINTR);
+        }
         drop(proc_inner);
         drop(task);
         suspend_current_and_run_next();
