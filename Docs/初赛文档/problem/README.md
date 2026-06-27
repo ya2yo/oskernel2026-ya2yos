@@ -22,6 +22,7 @@
 - [waitpid13: WUNTRACED stopped child](./waitpid13-wuntraced-stopped.md)
 - [wait403: wait4(INT_MIN) errno](./wait403-int-min-esrch.md)
 - [signal01: SIGKILL/SIGSTOP sigaction 与 pause/ppoll 等待](./signal01-sigkill-sigaction.md)
+- [RISC-V rt_sigaction restorer 丢失导致取指 0 地址](./riscv-sigaction-restorer-fetch-fault.md)
 - [cyclictest glibc: affinity / mlock / clone3 兼容修复](./cyclictest-glibc-affinity-clone3.md)
 - [cyclictest musl: LoongArch scheduler stub 兼容修复](./cyclictest-musl-sched-stub.md)
 - [进程退出托孤 exit_and_reparent](./exit-reparent.md)

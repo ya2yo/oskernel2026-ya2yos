@@ -288,8 +288,17 @@ const SA_NODEFER: usize = 0x40000000; /* Don't automatically block the signal wh
                                       :usize                 its handler is being executed.  */
 const SA_RESETHAND: usize = 0x80000000; /* Reset to SIG_DFL on entry to handler.  */
 
-/// rt_sigaction syscall 使用的 raw kernel sigaction ABI 布局：
-/// handler, flags, mask[2], unused。
+/// rt_sigaction syscall 使用的 raw kernel sigaction ABI 布局。
+#[cfg(target_arch = "riscv64")]
+#[repr(C)]
+pub struct RawSigAction {
+    pub sa_handler: usize,
+    pub sa_flags: usize,
+    pub sa_restore: usize,
+    pub sa_mask: [u32; 2],
+}
+
+#[cfg(not(target_arch = "riscv64"))]
 #[repr(C)]
 pub struct RawSigAction {
     pub sa_handler: usize,
@@ -303,7 +312,10 @@ impl RawSigAction {
         Self {
             sa_handler,
             sa_flags,
+            #[cfg(target_arch = "riscv64")]
+            sa_restore: _sa_restore,
             sa_mask: [sa_mask as u32, (sa_mask >> 32) as u32],
+            #[cfg(not(target_arch = "riscv64"))]
             unused: 0,
         }
     }

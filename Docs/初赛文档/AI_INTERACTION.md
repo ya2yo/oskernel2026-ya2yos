@@ -640,3 +640,10 @@
 - **场景**：Bug 分析与定位、`pselect6`/`rt_sigaction` ABI 修复、mmap fault 权限语义修复、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复 iperf 优化后 lmbench 死循环。AI 先定位到 `lat_sig catch` 中父进程因 `pselect6` timeout 未回写 fd_set，误把旧 `exceptfds` bit 当作 pipe 异常并 cleanup；同时修复 raw `pselect6` sigmask 参数和 `rt_sigaction` raw ABI。继续验证后发现 `lat_sig prot` 卡住，根因是 mmap lazy fault 对 `PROT_READ` 映射的 store fault 未检查 `MapPermission::W`，错误补页导致收不到 `SIGSEGV`。修复后 `make`、`make log` 通过，`timeout 300s make run` 输出 `#### OS COMP TEST GROUP END lmbench-musl ####` 和 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/lmbench.md](./problem/lmbench.md)。
 - **关联 commit**：待提交
+
+#### RISC-V rt_sigaction restorer 取指 0 地址修复（6.27）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、RISC-V signal ABI 修复、文档完善
+- **描述**：用户要求优先处理 RISC-V 运行后在 `basic-musl` 处反复 `FetchInstructionPageFault bad addr=0x0` 的问题。AI 通过临时 trap/clone/exec/signal 诊断确认 PID 2 fork 与 exec busybox 均正常，真正跳到 0 发生在 SIGCHLD handler 返回后；根因是 RISC-V 用户态 `rt_sigaction` raw ABI 带 `sa_restorer`，而内核按 LoongArch 路径解析为 `handler, flags, mask[2], unused`，导致 `SA_RESTORER` handler 的返回地址 `ra` 被设为 0。修复后 `make` 通过，`timeout 80s make run` 已越过 basic/busybox/lua/iperf/cyclictest，未再出现该取指 fault。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/riscv-sigaction-restorer-fetch-fault.md](./problem/riscv-sigaction-restorer-fetch-fault.md)。
+- **关联 commit**：待提交

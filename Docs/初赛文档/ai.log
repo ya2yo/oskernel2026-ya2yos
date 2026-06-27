@@ -2429,3 +2429,64 @@ shutdown!
 ```
 
 - `lat_sig prot` 日志中出现预期 `Exception(StorePageFault) ... sending SIGSEGV`，说明写只读 mmap 页已经通过信号路径交给用户态 handler。
+
+---
+
+## 2026-06-27: RISC-V rt_sigaction restorer 丢失导致 FetchInstructionPageFault
+
+### 用户需求
+
+用户要求暂停前一个 wait/pselect6 方向的修改，当前最高优先级改为处理 RISC-V 架构运行后直接反复 `FetchInstructionPageFault` 的问题，具体输出在 `log.ans`。
+
+### 分析
+
+AI 先扫描 `log.ans`，确认错误发生在：
+
+```text
+#### OS COMP TEST GROUP START basic-musl ####
+Exception(FetchInstructionPageFault) ... bad addr = 0x0 ... bad instruction = 0x0
+```
+
+其中 trap 日志中的 `bad instruction` 实际是当前 `sepc`，说明 PID 2 正在从 PC 0 取指。由于 fault 发生在 `initproc` fork 后的 PID 2，AI 先检查 `initproc` 的 `fork_and_run()`、用户库 `fork/execve` wrapper、`sys_execve()`、`TaskControlBlock::exec()`、RISC-V `TrapContext` 和 trap 汇编保存/恢复布局。
+
+临时诊断显示：
+
+- PID 2 fork 后 `sepc` 非 0。
+- PID 2 成功进入 `execve("busybox")`，busybox entry 为 `0x10148`。
+- busybox 已经运行到 `basic-musl` 输出，说明 ELF loader 和 exec 初始化不是根因。
+- 取指 0 之前，PID 2 被设置为运行 `sepc=0x7fa78` 且 `ra=0`。
+
+继续检查 signal 路径后发现，PID 2 注册 SIGCHLD handler 时 raw action 为：
+
+```text
+raw_handler=0x7fa78 raw_flags=0x4000000
+```
+
+`0x4000000` 是 `SA_RESTORER`。但内核的 raw `rt_sigaction` 结构没有解析 RISC-V 的 `sa_restorer` 字段，导致内部 `SigAction.sa_restore=0`。SIGCHLD 到来后 `setup_frame()` 看到 `SA_RESTORER`，把 handler 的返回地址 `ra` 设置成 0。handler 执行完 `ret` 后跳到 0，引发持续 `FetchInstructionPageFault`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/signal.rs` | 按架构拆分 raw `rt_sigaction` ABI；RISC-V 使用 `handler, flags, restorer, mask` 并保留 `sa_restore`，非 RISC-V 保持 `handler, flags, mask[2], unused` |
+| `user/src/lib.rs` | 同步 RISC-V 用户库 `RawSigAction` 布局，增加 `sa_restore` 字段；非 RISC-V 保持原布局 |
+| `Docs/初赛文档/problem/riscv-sigaction-restorer-fetch-fault.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.27 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 80s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过。
+- 修复后 80 秒运行未再出现 `FetchInstructionPageFault` 或 `bad addr = 0x0`。
+- 日志已越过原始卡点，basic、busybox、lua、iperf、cyclictest 相关组均输出 `GROUP END`，运行推进到 `libctest-musl` 后被 timeout 截断。
+- 尚未执行完整不限时全量 `make run` 自然结束验证。

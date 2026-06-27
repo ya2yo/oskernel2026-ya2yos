@@ -18,6 +18,17 @@ use crate::{
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg(target_arch = "riscv64")]
+struct RawSigAction {
+    handler: usize,
+    flags: usize,
+    restorer: usize,
+    mask: [u32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[cfg(not(target_arch = "riscv64"))]
 struct RawSigAction {
     handler: usize,
     flags: usize,
@@ -31,7 +42,10 @@ impl RawSigAction {
         Self {
             handler: act.sa_handler,
             flags: act.sa_flags.bits() as usize,
+            #[cfg(target_arch = "riscv64")]
+            restorer: act.sa_restore,
             mask: [mask as u32, (mask >> 32) as u32],
+            #[cfg(not(target_arch = "riscv64"))]
             unused: 0,
         }
     }
@@ -41,6 +55,9 @@ impl RawSigAction {
         SigAction {
             sa_handler: self.handler,
             sa_flags: SigActionFlags::from_bits_truncate(self.flags as u32),
+            #[cfg(target_arch = "riscv64")]
+            sa_restore: self.restorer,
+            #[cfg(not(target_arch = "riscv64"))]
             sa_restore: 0,
             sa_mask: SigSet::from_bits_truncate(mask),
         }
