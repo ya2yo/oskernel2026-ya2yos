@@ -2271,3 +2271,58 @@ shutdown!
 ```
 
 日志中 TCP 项仍出现 `iperf3: getsockopt - Protocol not available`，但当前 iperf 测试组判定通过；该 TCP option 可后续单独补齐。
+
+---
+
+## 2026-06-27: iperf-glibc daemon fstatat 与 /dev/null 修复
+
+### 用户需求
+
+用户要求检查新的 `log.ans` 并修复 bug。当前测试入口为 glibc `iperf_testcode.sh`。
+
+### 分析
+
+AI 先扫描 `log.ans`，确认没有 panic/LTP 失败，主要失败信号是：
+
+```text
+iperf3: error - unable to become a daemon: Invalid argument
+```
+
+因为服务端 `iperf3 -s -p 5001 -D` 没有启动，后续 BASIC/PARALLEL/REVERSE UDP/TCP 客户端全部 `Connection refused`。
+
+AI 从镜像中读取 `/glibc/iperf_testcode.sh`，确认脚本确实先执行 `./iperf3 -s -p 5001 -D`。随后导出 `/glibc/iperf3` 并反汇编，定位 glibc `daemon()` 路径为 `fork -> setsid -> open("/dev/null", O_RDWR) -> fstat -> dup2 -> chdir("/")`。其中 glibc RISC-V 的 `fstat(fd)` wrapper 实际调用 `fstatat(fd, "", buf, AT_EMPTY_PATH)`。
+
+检查内核 `sys_fstatat()` 后发现原实现忽略 `AT_EMPTY_PATH`：空路径会继续走路径解析，并在 `dirfd` 指向 `/dev/null` 这种抽象 devfs 文件时尝试取普通 inode，返回 `EINVAL`，对应用户态 `Invalid argument`。同时 glibc `daemon()` 还要求 `/dev/null` 是字符设备且 `st_rdev == makedev(1,3)`，而原 `DevNull::fstat()` 使用内部动态设备号作为 `st_rdev`，下一步也会被 daemon 判为非法。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/stat.rs` | `sys_fstatat()` 支持空路径 + `AT_EMPTY_PATH`，可按 fd 返回 `file.fstat()`；补齐 stat buffer 指针校验 |
+| `os/src/fs/files/devfs.rs` | `/dev/null` 的 `st_rdev` 固定返回 Linux `makedev(1,3)=259` |
+| `Docs/初赛文档/problem/iperf-glibc-daemon-fstatat-devnull.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 新增索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.27 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：`make` 通过；`make run` 正常退出，`iperf-glibc` 六项均 success：
+
+```text
+====== iperf BASIC_UDP end: success ======
+====== iperf BASIC_TCP end: success ======
+====== iperf PARALLEL_UDP end: success ======
+====== iperf PARALLEL_TCP end: success ======
+====== iperf REVERSE_UDP end: success ======
+====== iperf REVERSE_TCP end: success ======
+#### OS COMP TEST GROUP END iperf-glibc ####
+shutdown!
+```

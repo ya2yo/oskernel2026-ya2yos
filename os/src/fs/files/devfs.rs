@@ -36,6 +36,8 @@ pub static DEVICES: Lazy<Mutex<BTreeMap<String, usize>>> =
 //从1起算，0为其他抽象文件
 static mut DEV_NO: usize = 1;
 
+const DEV_NULL_RDEV: usize = (1 << 8) | 3;
+
 pub fn register_device(abs_path: &str) {
     unsafe {
         DEVICES.lock().insert(abs_path.to_string(), DEV_NO);
@@ -158,7 +160,7 @@ impl File for DevNull {
         Kstat {
             st_dev: devno,
             st_mode: StMode::FCHR.bits(),
-            st_rdev: devno,
+            st_rdev: DEV_NULL_RDEV,
             st_nlink: 1,
             ..Kstat::default()
         }

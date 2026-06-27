@@ -619,3 +619,10 @@
 - **场景**：Bug 分析与定位、网络 syscall/UDP 分发语义修复、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复 iperf 测试。AI 先根据日志修复 RISC-V 非规范用户 fault panic、`/dev/urandom` 缺失、`select/pselect6` fdset 和 ready 计数错误、`UserBuffer::read()` 造成的 TCP cookie 短写语义错误，以及 `SO_SNDBUF/SO_RCVBUF` 和 `getsockopt` ABI 问题。随后定位最终 `PARALLEL_UDP` timeout：smoltcp UDP ingress 只按本地端口投递到第一个 socket，而 Ya2yOS 上层 connected UDP recv 会按远端过滤，导致 `iperf -u -P 5` 多流数据进入错误队列。修复为底层 UDP socket 记录 remote endpoint，ingress 先匹配 connected 四元组，再退回普通监听 socket。`make` 通过，`timeout 300s make run` 中 `iperf-musl` 六个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/iperf-musl-network-fixes.md](./problem/iperf-musl-network-fixes.md)。
 - **关联 commit**：待提交
+
+#### iperf-glibc daemon fstatat 与 /dev/null 修复（6.27）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、glibc daemon 兼容修复、文档完善
+- **描述**：用户提供新的 `log.ans`，其中 `iperf3 -s -D` 输出 `unable to become a daemon: Invalid argument`，导致后续客户端全部 `Connection refused`。AI 读取镜像脚本并反汇编 glibc 静态 `iperf3`，确认 `daemon()` 通过 `fstatat(fd, "", ..., AT_EMPTY_PATH)` 检查 `/dev/null`。根因是内核 `sys_fstatat()` 不支持 `AT_EMPTY_PATH` 空路径 fd 查询，且 `/dev/null` 的 `st_rdev` 不是 glibc 期望的 Linux `makedev(1,3)=259`。修复后 `make` 通过，`timeout 120s make run` 中 `iperf-glibc` 六个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/iperf-glibc-daemon-fstatat-devnull.md](./problem/iperf-glibc-daemon-fstatat-devnull.md)。
+- **关联 commit**：待提交

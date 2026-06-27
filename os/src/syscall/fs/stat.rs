@@ -102,21 +102,40 @@ pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/fstatat64.2.html
-pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, _flags: usize) -> SyscallRet {
+pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, flags: usize) -> SyscallRet {
     let task = current_task().unwrap();
 
     let proc_inner = task.process.inner_lock();
     let memory_set = &proc_inner.get_locked_memory_set_read();
+
+    if (kst as isize) <= 0 || if_bad_address(kst as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+
     let path = read_user_cstr(memory_set, path)?;
     let path = trim_start_slash(path);
 
-    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    let file = if path.is_empty() {
+        if flags & AT_EMPTY_PATH as usize == 0 {
+            return Err(SysErrNo::ENOENT);
+        }
+        if dirfd == AT_FDCWD as isize {
+            let cwd = proc_inner.fs_info.get_cwd();
+            open(&cwd, OpenFlags::O_RDONLY, NONE_MODE)?.any()
+        } else if dirfd < 0 {
+            return Err(SysErrNo::EBADF);
+        } else {
+            proc_inner.fd_table.get(dirfd as usize)?.any()
+        }
+    } else {
+        let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
 
-    if abs_path == "/ls" || abs_path == "/xargs" || abs_path == "/sleep" {
-        open(&abs_path, OpenFlags::O_CREATE, NONE_MODE);
-    }
+        if abs_path == "/ls" || abs_path == "/xargs" || abs_path == "/sleep" {
+            open(&abs_path, OpenFlags::O_CREATE, NONE_MODE);
+        }
 
-    let file = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.any();
+        open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.any()
+    };
     let kst_data = file.fstat();
     copy_to_user(memory_set, kst as usize, unsafe {
         core::slice::from_raw_parts(
