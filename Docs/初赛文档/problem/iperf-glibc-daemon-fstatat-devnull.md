@@ -2,7 +2,7 @@
 
 ## 背景
 
-RISC-V 当前测试入口单跑 glibc `iperf_testcode.sh`。脚本先执行：
+RISC-V / LoongArch 当前测试入口单跑 glibc `iperf_testcode.sh`。脚本先执行：
 
 ```text
 ./iperf3 -s -p 5001 -D
@@ -12,13 +12,21 @@ RISC-V 当前测试入口单跑 glibc `iperf_testcode.sh`。脚本先执行：
 
 ## 现象
 
-`log.ans` 中服务端启动阶段直接失败：
+RISC-V `log.ans` 中服务端启动阶段直接失败：
 
 ```text
 iperf3: error - unable to become a daemon: Invalid argument
 ```
 
 服务端没有监听 5001 端口，后续六个客户端子项全部报 `Connection refused` 并判定 fail。
+
+LoongArch 后续复测时，服务端同样没有启动，但错误变为：
+
+```text
+iperf3: error - unable to become a daemon: No such device
+```
+
+这说明 `fstat()` 已经返回到用户态，但 glibc `daemon()` 对 `/dev/null` 的设备类型或设备号校验没有通过。
 
 ## 分析
 
@@ -35,10 +43,13 @@ glibc RISC-V 的 `fstat(fd)` 并不调用内核 `fstat(80)`，而是调用 `fsta
 
 继续检查 `daemon()` 的下一步可知，即使 `fstatat` 成功，glibc 还会检查 `/dev/null` 的 `st_rdev`。原 devfs 为每个设备分配内部递增编号，`/dev/null` 的 `st_rdev` 不是 Linux 兼容的 `makedev(1, 3)=259`，会导致 daemon 把设备判为非法。
 
+LoongArch glibc 的 `fstat(fd)` 路径与 RISC-V 不同：它会调用 `statx(291)`，再由 glibc 把 `struct statx` 转换成用户态 `struct stat`。内核已经让 `DevNull::fstat()` 返回 `st_rdev=259`，但 `kstat_to_statx()` 原先将这个已经编码过的 `dev_t` 直接写入 `stx_rdev_minor`，并把 `stx_rdev_major` 固定为 0。glibc 再按 Linux `gnu_dev_makedev()` 组合 major/minor 后，得到的 `st_rdev` 不再等于 259，因此 `daemon()` 设置 `errno=ENODEV`。
+
 ## 根因
 
 - `sys_fstatat()` 缺少 `AT_EMPTY_PATH` 支持，不能处理 glibc `fstat(fd)` wrapper 使用的 `fstatat(fd, "", ...)`。
 - `DevNull::fstat()` 返回内部动态设备号作为 `st_rdev`，不符合 glibc `daemon()` 对 `/dev/null` 的 Linux 设备号检查。
+- `kstat_to_statx()` 没有把 `Kstat.st_rdev` / `st_dev` 从 Linux 编码 `dev_t` 拆成 `statx` 所需的 major/minor 字段，LoongArch glibc 经 `statx -> stat` 转换后观察到错误的 `/dev/null` 设备号。
 
 ## 修复
 
@@ -51,6 +62,10 @@ glibc RISC-V 的 `fstat(fd)` 并不调用内核 `fstat(80)`，而是调用 `fsta
   - `/dev/null` 的 `st_rdev` 固定返回 `(1 << 8) | 3`，即 Linux `makedev(1, 3)=259`。
   - 保留 `st_dev` 使用内部设备表编号，不影响读写行为。
 
+- `os/src/syscall/fs/stat.rs`
+  - `kstat_to_statx()` 新增 Linux `dev_t` major/minor 拆分逻辑。
+  - `stx_rdev_major/stx_rdev_minor` 和 `stx_dev_major/stx_dev_minor` 按拆分结果填写，不再把编码后的设备号整体塞进 minor 字段。
+
 ## 验证
 
 已执行：
@@ -58,11 +73,14 @@ glibc RISC-V 的 `fstat(fd)` 并不调用内核 `fstat(80)`，而是调用 `fsta
 ```text
 make
 timeout 120s make run > log.ans 2>&1
+make TARGET_ARCH=loongarch64
+timeout 120s make run > log.ans 2>&1
 ```
 
 结果：
 
 - `make` 通过。
+- `make TARGET_ARCH=loongarch64` 通过。
 - `iperf3 -s -D` 不再输出 `unable to become a daemon`。
 - `iperf-glibc` 六个子项全部 success：
 

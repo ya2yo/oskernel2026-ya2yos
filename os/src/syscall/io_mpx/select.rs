@@ -48,7 +48,7 @@ pub fn sys_pselect6(
 
     let nfds = min(nfds, proc_inner.fd_table.get_soft_limit());
 
-    let mut using_readfds = if readfds != 0 {
+    let using_readfds = if readfds != 0 {
         let mut fdset = empty_fdset();
         copy_from_user(&memory_set, readfds, unsafe {
             core::slice::from_raw_parts_mut(
@@ -60,7 +60,7 @@ pub fn sys_pselect6(
     } else {
         None
     };
-    let mut using_writefds = if writefds != 0 {
+    let using_writefds = if writefds != 0 {
         let mut fdset = empty_fdset();
         copy_from_user(&memory_set, writefds, unsafe {
             core::slice::from_raw_parts_mut(

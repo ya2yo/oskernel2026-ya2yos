@@ -626,3 +626,10 @@
 - **场景**：Bug 分析与定位、glibc daemon 兼容修复、文档完善
 - **描述**：用户提供新的 `log.ans`，其中 `iperf3 -s -D` 输出 `unable to become a daemon: Invalid argument`，导致后续客户端全部 `Connection refused`。AI 读取镜像脚本并反汇编 glibc 静态 `iperf3`，确认 `daemon()` 通过 `fstatat(fd, "", ..., AT_EMPTY_PATH)` 检查 `/dev/null`。根因是内核 `sys_fstatat()` 不支持 `AT_EMPTY_PATH` 空路径 fd 查询，且 `/dev/null` 的 `st_rdev` 不是 glibc 期望的 Linux `makedev(1,3)=259`。修复后 `make` 通过，`timeout 120s make run` 中 `iperf-glibc` 六个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/iperf-glibc-daemon-fstatat-devnull.md](./problem/iperf-glibc-daemon-fstatat-devnull.md)。
 - **关联 commit**：待提交
+
+#### LoongArch iperf-glibc statx 设备号修复（6.27）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、LoongArch glibc `statx` 兼容修复、文档完善
+- **描述**：用户要求根据新的 `log.ans` 修复 LoongArch 的 iperf 测试。AI 扫描日志确认 `iperf3 -s -D` 失败为 `unable to become a daemon: No such device`，随后反汇编 LoongArch 静态 `iperf3`，确认该架构 glibc 的 `fstat(fd)` wrapper 走 `statx(291)` 并由 glibc 将 `statx` major/minor 转回 `struct stat.st_rdev`。根因是内核 `kstat_to_statx()` 把已经编码的 `st_rdev=259` 直接放入 `stx_rdev_minor`，导致 glibc 重新组合后不等于 `/dev/null` 的 Linux `makedev(1,3)`。修复后 `make TARGET_ARCH=loongarch64` 通过，`timeout 120s make run` 中 `iperf-glibc` 六个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/iperf-glibc-daemon-fstatat-devnull.md](./problem/iperf-glibc-daemon-fstatat-devnull.md)。
+- **关联 commit**：待提交

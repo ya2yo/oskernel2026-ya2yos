@@ -2326,3 +2326,54 @@ timeout 120s make run > log.ans 2>&1
 #### OS COMP TEST GROUP END iperf-glibc ####
 shutdown!
 ```
+
+---
+
+## 2026-06-27: LoongArch iperf-glibc statx 设备号修复
+
+### 用户需求
+
+用户要求根据 `log.ans` 修复 LoongArch 的 iperf 测试。当前测试入口为 glibc `iperf_testcode.sh`。
+
+### 分析
+
+AI 扫描新的 `log.ans` 后确认 LoongArch 启动阶段能进入 iperf 组，但服务端 `iperf3 -s -p 5001 -D` 输出：
+
+```text
+iperf3: error - unable to become a daemon: No such device
+```
+
+随后所有客户端连接 `127.0.0.1:5001` 均 `Connection refused`。这与前一轮 RISC-V 的 `Invalid argument` 不同，说明 `fstat()` 已经返回到 glibc，但 `daemon()` 对 `/dev/null` 的设备校验失败。
+
+AI 从 LoongArch 测试镜像导出 `/glibc/iperf3` 并反汇编，确认 LoongArch glibc 的 `fstat(fd)` wrapper 调用 `statx(291)`，再把 `struct statx` 转换为 `struct stat`。`daemon()` 检查 `st_mode` 为字符设备，并检查 `st_rdev == makedev(1,3) == 259`。内核 `DevNull::fstat()` 已返回 `st_rdev=259`，但 `kstat_to_statx()` 把这个编码后的 `dev_t` 直接写入 `stx_rdev_minor`，`stx_rdev_major` 固定为 0。glibc 按 major/minor 重新组合后得到的 `st_rdev` 不再是 259，因此返回 `ENODEV`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/stat.rs` | 新增 Linux `dev_t` major/minor 拆分函数，并让 `kstat_to_statx()` 按拆分结果填写 `stx_rdev_major/stx_rdev_minor` 与 `stx_dev_major/stx_dev_minor` |
+| `Docs/初赛文档/problem/iperf-glibc-daemon-fstatat-devnull.md` | 补充 LoongArch `statx` 设备号分支分析、根因、修复和验证 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.27 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make TARGET_ARCH=loongarch64
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：LoongArch 编译通过；`make run` 正常退出，`iperf-glibc` 六项均 success：
+
+```text
+====== iperf BASIC_UDP end: success ======
+====== iperf BASIC_TCP end: success ======
+====== iperf PARALLEL_UDP end: success ======
+====== iperf PARALLEL_TCP end: success ======
+====== iperf REVERSE_UDP end: success ======
+====== iperf REVERSE_TCP end: success ======
+#### OS COMP TEST GROUP END iperf-glibc ####
+shutdown!
+```

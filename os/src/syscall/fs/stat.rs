@@ -33,6 +33,14 @@ fn mode_allows(
     }
 }
 
+fn linux_dev_major(dev: usize) -> u32 {
+    (((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff)) as u32
+}
+
+fn linux_dev_minor(dev: usize) -> u32 {
+    ((dev & 0xff) | ((dev >> 12) & !0xff)) as u32
+}
+
 fn kstat_to_statx(kst: &Kstat, _mask: u32) -> statx {
     statx {
         stx_mask: STATX_BASIC_STATS,
@@ -51,10 +59,10 @@ fn kstat_to_statx(kst: &Kstat, _mask: u32) -> statx {
         stx_btime: statx_time(0, 0),
         stx_ctime: statx_time(kst.st_ctime, kst.st_ctime_nsec),
         stx_mtime: statx_time(kst.st_mtime, kst.st_mtime_nsec),
-        stx_rdev_major: 0,
-        stx_rdev_minor: kst.st_rdev as u32,
-        stx_dev_major: 0,
-        stx_dev_minor: kst.st_dev as u32,
+        stx_rdev_major: linux_dev_major(kst.st_rdev),
+        stx_rdev_minor: linux_dev_minor(kst.st_rdev),
+        stx_dev_major: linux_dev_major(kst.st_dev),
+        stx_dev_minor: linux_dev_minor(kst.st_dev),
         stx_mnt_id: 0,
         stx_dio_mem_align: 0,
         stx_dio_offset_align: 0,
