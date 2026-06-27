@@ -19,7 +19,9 @@ use super::loopdev;
 pub struct DevZero;
 pub struct DevNull;
 pub struct DevRtc;
-pub struct DevRandom;
+pub struct DevRandom {
+    path: String,
+}
 
 pub struct DevTty;
 
@@ -67,7 +69,7 @@ pub fn open_device_file(abs_path: &str) -> Result<Arc<dyn File>, SysErrNo> {
         "/dev/zero" => Ok(Arc::new(DevZero::new())),
         "/dev/null" => Ok(Arc::new(DevNull::new())),
         "/dev/rtc" | "/dev/rtc0" | "/dev/misc/rtc" => Ok(Arc::new(DevRtc::new())),
-        "/dev/random" => Ok(Arc::new(DevRandom::new())),
+        "/dev/random" | "/dev/urandom" => Ok(Arc::new(DevRandom::new(abs_path))),
         "/dev/tty" => Ok(Arc::new(DevTty::new())),
         "/dev/cpu_dma_latency" => Ok(Arc::new(DevCpuDmaLatency::new())),
         _ => Err(SysErrNo::ENOENT),
@@ -261,14 +263,16 @@ impl File for DevRtc {
 
 impl Default for DevRandom {
     fn default() -> Self {
-        Self::new()
+        Self::new("/dev/random")
     }
 }
 
 /// 随机数设备
 impl DevRandom {
-    pub fn new() -> Self {
-        Self
+    pub fn new(path: &str) -> Self {
+        Self {
+            path: path.to_string(),
+        }
     }
 }
 
@@ -287,7 +291,7 @@ impl File for DevRandom {
         Ok(user_buf.len())
     }
     fn fstat(&self) -> Kstat {
-        let devno = get_devno("/dev/random");
+        let devno = get_devno(&self.path);
         Kstat {
             st_dev: devno,
             st_mode: StMode::FCHR.bits(),

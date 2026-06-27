@@ -226,6 +226,7 @@ impl SocketOps for UdpSocket {
         let remote_addr = IpEndpoint::from(remote_addr);
         let src = get_service().get_source_address(&remote_addr.addr);
         *guard = Some((remote_addr, src));
+        self.with_smol_socket(|socket| socket.set_remote_endpoint(Some(remote_addr)));
         // debug!("UDP socket {}: connected to {}", self.handle, remote_addr);
         Ok(())
     }
@@ -370,6 +371,7 @@ impl SocketOps for UdpSocket {
             // debug!("UDP socket {}: shutting down", self.handle);
             socket.close();
         });
+        *self.peer_addr.write() = None;
         Ok(())
     }
 }

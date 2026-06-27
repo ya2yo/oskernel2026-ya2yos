@@ -97,7 +97,6 @@ pub fn trap_handler() {
         | Trap::Exception(Exception::FetchInstructionPageFault) => {
             //debug!("{:?},bad addr = {:#x}", scause.cause(), stval);
             // page fault
-            #[cfg(target_arch = "loongarch64")]
             let fault_va = match VirtAddr::try_from(stval) {
                 Some(va) => va,
                 None => {
@@ -113,8 +112,6 @@ pub fn trap_handler() {
                     return;
                 }
             };
-            #[cfg(not(target_arch = "loongarch64"))]
-            let fault_va = VirtAddr::from(stval);
             let mut ok;
             {
                 let task = current_task().unwrap();
@@ -154,7 +151,6 @@ pub fn trap_handler() {
             panic!("You should not return from exit_current_and_run_next");
         }
         Trap::Exception(Exception::PageModifyFault) => {
-            #[cfg(target_arch = "loongarch64")]
             let Some(fault_va) = VirtAddr::try_from(stval) else {
                 let tid = current_task().unwrap().tid();
                 warn!(
@@ -166,8 +162,6 @@ pub fn trap_handler() {
                 send_signal_to_thread(tid, SigSet::SIGSEGV);
                 return;
             };
-            #[cfg(not(target_arch = "loongarch64"))]
-            let fault_va = VirtAddr::from(stval);
             let ok;
             {
                 let task = current_task().unwrap();

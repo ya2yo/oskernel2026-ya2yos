@@ -2212,3 +2212,62 @@ broken   0
 skipped  0
 warnings 0
 ```
+
+---
+
+## 2026-06-27: iperf-musl 网络兼容修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 并修复当前 bug。当前测试入口为 musl `iperf_testcode.sh`。
+
+### 分析
+
+AI 先扫描 `log.ans` 中的 `panic/error/fail/success/iperf` 等关键字，确认最终阻塞点是 `PARALLEL_UDP` 外层 timeout。在此之前，日志和逐轮验证还暴露了多个前置问题：RISC-V 非规范用户 fault address 触发内核 panic，`/dev/urandom` 缺失，`select/pselect6` 误报 fd ready，iperf cookie 发送出现 `Bad address`，以及 `setsockopt(SO_SNDBUF/SO_RCVBUF)` 与 `getsockopt` ABI 不兼容。
+
+前置修复后，`BASIC_UDP` 和 `BASIC_TCP` 均 success，但 `PARALLEL_UDP` 卡住。AI 继续检查 `os/src/net/udp.rs`、vendored smoltcp 的 `iface/interface/udp.rs` 和 `socket/udp.rs`，定位到 Ya2yOS 上层 `UdpSocket::recv()` 按 connected peer 过滤，而 smoltcp ingress 只按本地端口选择第一个匹配 UDP socket。`iperf -u -P 5` 会创建多条共享 server 端口的 UDP stream，不同源端口的数据可能进入错误 socket 队列，导致正确 socket 饥饿并反复等待。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/trap/mod.rs` | RISC-V page fault 也用 `VirtAddr::try_from(stval)`，非法地址发送 `SIGSEGV` 而不是 panic |
+| `os/src/fs/files/devfs.rs` | 支持 `/dev/urandom`，`DevRandom` 记录路径用于 `fstat` devno |
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | 注册 `/dev/random` 和 `/dev/urandom` |
+| `os/src/syscall/options.rs` | 修正 fdset word bit 数，`got_fd()` 改为只读 |
+| `os/src/syscall/io_mpx/select.rs` | `pselect6` 构造新 ready fdset，仅返回实际 ready fd |
+| `os/src/mm/translate.rs` | `UserBuffer::read()` 夹紧到实际用户缓冲区长度 |
+| `os/src/syscall/fs/io.rs` | `write()` 在部分进展后遇到错误返回短写，并夹紧底层返回长度 |
+| `os/src/syscall/net/opt.rs` | `SO_SNDBUF/SO_RCVBUF` 按 4 字节 `int` 解析；实现 `getsockopt` 写回 |
+| `os/src/syscall/mod.rs` | `getsockopt` 第五参数按 `socklen_t *` 分发 |
+| `os/src/net/udp.rs` | UDP `connect()` 同步底层 remote endpoint，`shutdown()` 清理 peer |
+| `os/vendor/smoltcp/src/socket/udp.rs` | UDP socket 增加 optional remote endpoint 和 connected 匹配 |
+| `os/vendor/smoltcp/src/iface/interface/udp.rs` | UDP ingress 优先投递到 connected 精确匹配 socket |
+| `Docs/初赛文档/problem/iperf-musl-network-fixes.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 新增索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.27 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 300s make run
+```
+
+结果：`make` 通过；`make run` 在 300 秒内正常退出，`iperf-musl` 六项均 success：
+
+```text
+====== iperf BASIC_UDP end: success ======
+====== iperf BASIC_TCP end: success ======
+====== iperf PARALLEL_UDP end: success ======
+====== iperf PARALLEL_TCP end: success ======
+====== iperf REVERSE_UDP end: success ======
+====== iperf REVERSE_TCP end: success ======
+#### OS COMP TEST GROUP END iperf-musl ####
+shutdown!
+```
+
+日志中 TCP 项仍出现 `iperf3: getsockopt - Protocol not available`，但当前 iperf 测试组判定通过；该 TCP option 可后续单独补齐。

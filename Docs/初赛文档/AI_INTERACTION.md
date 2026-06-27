@@ -612,3 +612,10 @@
 - **场景**：Bug 分析与定位、信号 syscall 语义修复、文档完善
 - **描述**：用户要求检查 `log.ans` 调用路径，并解释为什么 `make` 与 `make log` 生成的 kernel 行为不同。AI 定位到两处根因：`rt_sigaction(SIGKILL, act, old_act)` 在 `act.sa_handler == SIG_DFL` 时被错误放行，导致 `signal(SIGKILL, ...)` 返回成功并触发 LTP `TFAIL`；glibc `pause()` 进入的 `ppoll(NULL, 0, NULL, NULL)` 路径未被正确支持，也不能在 pending signal 到来时返回 `EINTR`，因此 warn 构建下会卡在等待路径。`make log` 只是 debug 日志改变了调度时序并掩盖问题。修复后 `make`、`make log` 通过，单跑 `signal01` 输出 6 项 TPASS，Summary 为 `passed 6 failed 0`。详见 `Docs/初赛文档/ai.log` 2026-06-25 条目与 [problem/signal01-sigkill-sigaction.md](./problem/signal01-sigkill-sigaction.md)。
 - **关联 commit**：待提交
+
+#### iperf-musl 网络兼容修复（6.27）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、网络 syscall/UDP 分发语义修复、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复 iperf 测试。AI 先根据日志修复 RISC-V 非规范用户 fault panic、`/dev/urandom` 缺失、`select/pselect6` fdset 和 ready 计数错误、`UserBuffer::read()` 造成的 TCP cookie 短写语义错误，以及 `SO_SNDBUF/SO_RCVBUF` 和 `getsockopt` ABI 问题。随后定位最终 `PARALLEL_UDP` timeout：smoltcp UDP ingress 只按本地端口投递到第一个 socket，而 Ya2yOS 上层 connected UDP recv 会按远端过滤，导致 `iperf -u -P 5` 多流数据进入错误队列。修复为底层 UDP socket 记录 remote endpoint，ingress 先匹配 connected 四元组，再退回普通监听 socket。`make` 通过，`timeout 300s make run` 中 `iperf-musl` 六个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/iperf-musl-network-fixes.md](./problem/iperf-musl-network-fixes.md)。
+- **关联 commit**：待提交

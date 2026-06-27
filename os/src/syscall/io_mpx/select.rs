@@ -14,6 +14,12 @@ use crate::{
 };
 use core::cmp::min;
 
+fn empty_fdset() -> FdSet {
+    FdSet {
+        fds_bits: [0; FD_SET_LEN],
+    }
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/pselect6.2.html
 pub fn sys_pselect6(
     nfds: usize,
@@ -43,9 +49,7 @@ pub fn sys_pselect6(
     let nfds = min(nfds, proc_inner.fd_table.get_soft_limit());
 
     let mut using_readfds = if readfds != 0 {
-        let mut fdset = FdSet {
-            fds_bits: [0; FD_SET_LEN],
-        };
+        let mut fdset = empty_fdset();
         copy_from_user(&memory_set, readfds, unsafe {
             core::slice::from_raw_parts_mut(
                 &mut fdset as *mut FdSet as *mut u8,
@@ -57,9 +61,7 @@ pub fn sys_pselect6(
         None
     };
     let mut using_writefds = if writefds != 0 {
-        let mut fdset = FdSet {
-            fds_bits: [0; FD_SET_LEN],
-        };
+        let mut fdset = empty_fdset();
         copy_from_user(&memory_set, writefds, unsafe {
             core::slice::from_raw_parts_mut(
                 &mut fdset as *mut FdSet as *mut u8,
@@ -71,9 +73,7 @@ pub fn sys_pselect6(
         None
     };
     let mut using_exceptfds = if exceptfds != 0 {
-        let mut fdset = FdSet {
-            fds_bits: [0; FD_SET_LEN],
-        };
+        let mut fdset = empty_fdset();
         copy_from_user(&memory_set, exceptfds, unsafe {
             core::slice::from_raw_parts_mut(
                 &mut fdset as *mut FdSet as *mut u8,
@@ -112,55 +112,52 @@ pub fn sys_pselect6(
         let proc_inner = task.process.inner_lock();
         let mut inner = task.inner_lock();
         let mut num = 0;
+        let mut ready_readfds = using_readfds.as_ref().map(|_| empty_fdset());
+        let mut ready_writefds = using_writefds.as_ref().map(|_| empty_fdset());
+        let mut ready_exceptfds = using_exceptfds.as_ref().map(|_| empty_fdset());
 
         // 如果设置了监视是否可读的 fd
-        if let Some(readfds) = using_readfds.as_mut() {
+        if let Some(readfds) = using_readfds.as_ref() {
             for i in 0..nfds {
                 if readfds.got_fd(i) {
                     if let Some(file) = proc_inner.fd_table.try_get(i) {
                         let file: Arc<dyn File> = file.any();
                         let event = file.poll(PollEvents::IN);
-                        if !event.contains(PollEvents::IN) {
-                            readfds.mark_fd(i, false);
+                        if event.contains(PollEvents::IN) {
+                            ready_readfds.as_mut().unwrap().mark_fd(i, true);
+                            num += 1;
                         }
-                        num += 1;
-                    } else {
-                        readfds.mark_fd(i, false);
                     }
                 }
             }
         }
         // 如果设置了监视是否可写的 fd
-        if let Some(writefds) = using_writefds.as_mut() {
+        if let Some(writefds) = using_writefds.as_ref() {
             for i in 0..nfds {
                 if writefds.got_fd(i) {
                     if let Some(file) = proc_inner.fd_table.try_get(i) {
                         let file: Arc<dyn File> = file.any();
                         let event = file.poll(PollEvents::OUT);
-                        if !event.contains(PollEvents::OUT) {
-                            writefds.mark_fd(i, false);
+                        if event.contains(PollEvents::OUT) {
+                            ready_writefds.as_mut().unwrap().mark_fd(i, true);
+                            num += 1;
                         }
-                        num += 1;
-                    } else {
-                        writefds.mark_fd(i, false);
                     }
                 }
             }
         }
 
         // 如果设置了监视异常的 fd
-        if let Some(exceptfds) = using_exceptfds.as_mut() {
+        if let Some(exceptfds) = using_exceptfds.as_ref() {
             for i in 0..nfds {
                 if exceptfds.got_fd(i) {
                     if let Some(file) = proc_inner.fd_table.try_get(i) {
                         let file: Arc<dyn File> = file.any();
                         let event = file.poll(PollEvents::ERR | PollEvents::HUP);
-                        if !event.contains(PollEvents::ERR) && !event.contains(PollEvents::HUP) {
-                            exceptfds.mark_fd(i, false);
+                        if event.intersects(PollEvents::ERR | PollEvents::HUP) {
+                            ready_exceptfds.as_mut().unwrap().mark_fd(i, true);
+                            num += 1;
                         }
-                        num += 1;
-                    } else {
-                        exceptfds.mark_fd(i, false);
                     }
                 }
             }
@@ -171,26 +168,26 @@ pub fn sys_pselect6(
             // 重新获取 memory_set 以写回结果
             {
                 let memory_set = proc_inner.get_locked_memory_set_read();
-                if let Some(using_readfds) = using_readfds {
+                if let Some(ready_readfds) = ready_readfds {
                     copy_to_user(&memory_set, readfds, unsafe {
                         core::slice::from_raw_parts(
-                            &using_readfds as *const FdSet as *const u8,
+                            &ready_readfds as *const FdSet as *const u8,
                             core::mem::size_of::<FdSet>(),
                         )
                     })?;
                 }
-                if let Some(using_writefds) = using_writefds {
+                if let Some(ready_writefds) = ready_writefds {
                     copy_to_user(&memory_set, writefds, unsafe {
                         core::slice::from_raw_parts(
-                            &using_writefds as *const FdSet as *const u8,
+                            &ready_writefds as *const FdSet as *const u8,
                             core::mem::size_of::<FdSet>(),
                         )
                     })?;
                 }
-                if let Some(using_exceptfds) = using_exceptfds {
+                if let Some(ready_exceptfds) = ready_exceptfds {
                     copy_to_user(&memory_set, exceptfds, unsafe {
                         core::slice::from_raw_parts(
-                            &using_exceptfds as *const FdSet as *const u8,
+                            &ready_exceptfds as *const FdSet as *const u8,
                             core::mem::size_of::<FdSet>(),
                         )
                     })?;

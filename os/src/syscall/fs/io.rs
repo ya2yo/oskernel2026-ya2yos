@@ -60,11 +60,26 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
             let task = current_task().unwrap();
             let proc_inner = task.process.inner_lock();
             let memory_set = proc_inner.get_locked_memory_set_read();
-            copy_from_user(&*memory_set, user_ptr, &mut kernel_buf)?;
+            if let Err(err) = copy_from_user(&*memory_set, user_ptr, &mut kernel_buf) {
+                return if total_written > 0 {
+                    Ok(total_written)
+                } else {
+                    Err(err)
+                };
+            }
         }
 
         let ub = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-        let written = f.write(ub)?;
+        let written = match f.write(ub) {
+            Ok(written) => written.min(chunk_len),
+            Err(err) => {
+                return if total_written > 0 {
+                    Ok(total_written)
+                } else {
+                    Err(err)
+                };
+            }
+        };
         total_written += written;
         user_ptr += written;
 

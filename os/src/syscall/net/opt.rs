@@ -1,17 +1,17 @@
 use super::consts::*;
 use crate::{
     fs::Socket,
-    mm::copy_from_user,
+    mm::{copy_from_user, copy_to_user},
     net::options::{Configurable, GetSocketOption, SetSocketOption},
     task::{current_task, tid_to_task::task_num},
     utils::{SysErrNo, SysResult, SyscallRet},
 };
 use alloc::sync::Arc;
-use alloc::vec;
+use alloc::{vec, vec::Vec};
 use linux_raw_sys::net::{
     group_req, group_source_req, IP_MSFILTER, IP_MULTICAST_IF, IP_RETOPTS, IP_TTL,
     MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP, SOL_SOCKET, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO,
-    SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, TCP_NODELAY,
+    SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, TCP_NODELAY, socklen_t,
 };
 use log::{debug, error, warn};
 
@@ -200,12 +200,20 @@ pub fn sys_setsockopt(
                 sock.set_option(opt)
             }
             SO_SNDBUF => {
-                let val = parse(&kern_optval)?;
+                let val: i32 = parse(&kern_optval)?;
+                if val < 0 {
+                    return Err(SysErrNo::EINVAL);
+                }
+                let val = val as usize;
                 let opt = SetSocketOption::SendBuffer(&val);
                 sock.set_option(opt)
             }
             SO_RCVBUF => {
-                let val = parse(&kern_optval)?;
+                let val: i32 = parse(&kern_optval)?;
+                if val < 0 {
+                    return Err(SysErrNo::EINVAL);
+                }
+                let val = val as usize;
                 let opt = SetSocketOption::ReceiveBuffer(&val);
                 sock.set_option(opt)
             }
@@ -284,64 +292,98 @@ pub fn sys_setsockopt(
 
 /// 参考 https://man7.org/linux/man-pages/man2/setsockopt.2.html
 pub fn sys_getsockopt(
-    sockfd: usize,           // 文件描述符
-    level: u32,              // 协议，level 都会设为 SOL_SOCKET
-    optname: u32,            // 设定或取出的套接字选项
-    _user_optval: *const u8, // 指向缓冲区的指针，用来指定或者返回选项的值
-    optlen: u32,             // 由 optval 所指向的缓冲区空间大小（字节数）
+    sockfd: usize,             // 文件描述符
+    level: u32,                // 协议，level 都会设为 SOL_SOCKET
+    optname: u32,              // 设定或取出的套接字选项
+    user_optval: *mut u8,      // 指向缓冲区的指针，用来指定或者返回选项的值
+    user_optlen: *mut socklen_t, // 指向 optval 缓冲区长度的 value-result 指针
 ) -> SyscallRet {
-    // debug!(
-    //     "[getsockopt]syscall sockfd: {}, level: {}, optname: {}, user_optval: {}, optlen: {}",
-    //     sockfd, level, optname, user_optval as usize, optlen
-    // );
+    if user_optval.is_null() || user_optlen.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+
     let task = current_task().unwrap();
-    let fd_table = task.process.inner_lock().fd_table.clone();
+    let process = task.process.inner_lock();
+    let fd_table = process.fd_table.clone();
+    let optlen = {
+        let memory_set = process.get_locked_memory_set_read();
+        let mut optlen_bytes = [0u8; core::mem::size_of::<socklen_t>()];
+        copy_from_user(&memory_set, user_optlen as usize, &mut optlen_bytes)?;
+        socklen_t::from_ne_bytes(optlen_bytes)
+    };
+    drop(process);
     drop(task);
-    let sock = fd_table.get(sockfd)?.socket()?;
-    if optlen > 1024 {
+
+    if optlen as usize > 1024 {
         return Err(SysErrNo::EINVAL);
     }
-    let mut kern_opt = vec![0; optlen as usize];
-    match level {
+
+    let sock = fd_table.get(sockfd)?.socket()?;
+
+    let mut kern_opt = Vec::new();
+    let get_result: SysResult = match level {
         SOL_SOCKET => match optname {
             SO_REUSEADDR => {
-                let mut val = parse(&kern_opt)?;
+                let mut val = false;
                 let opt = GetSocketOption::ReuseAddress(&mut val);
-                sock.get_option(opt)
+                sock.get_option(opt)?;
+                let val: i32 = if val { 1 } else { 0 };
+                kern_opt.extend_from_slice(&val.to_ne_bytes());
+                Ok(())
             }
             SO_SNDBUF => {
-                let mut val = parse(&kern_opt)?;
+                let mut val = 0usize;
                 let opt = GetSocketOption::SendBuffer(&mut val);
-                sock.get_option(opt)
+                sock.get_option(opt)?;
+                kern_opt.extend_from_slice(&(val as i32).to_ne_bytes());
+                Ok(())
             }
             SO_RCVBUF => {
-                let mut val = parse(&kern_opt)?;
+                let mut val = 0usize;
                 let opt = GetSocketOption::ReceiveBuffer(&mut val);
-                sock.get_option(opt)
+                sock.get_option(opt)?;
+                kern_opt.extend_from_slice(&(val as i32).to_ne_bytes());
+                Ok(())
             }
             SO_KEEPALIVE => {
-                let mut val = parse(&kern_opt)?;
+                let mut val = false;
                 let opt = GetSocketOption::KeepAlive(&mut val);
-                sock.get_option(opt)
+                sock.get_option(opt)?;
+                let val: i32 = if val { 1 } else { 0 };
+                kern_opt.extend_from_slice(&val.to_ne_bytes());
+                Ok(())
             }
             SO_RCVTIMEO => {
-                let mut val = parse(&kern_opt)?;
+                let mut val = Duration::from_secs(0);
                 let opt = GetSocketOption::ReceiveTimeout(&mut val);
-                sock.get_option(opt)
+                sock.get_option(opt)?;
+                let sec = val.as_secs();
+                let usec = val.subsec_micros() as u64;
+                kern_opt.extend_from_slice(&sec.to_ne_bytes());
+                kern_opt.extend_from_slice(&usec.to_ne_bytes());
+                Ok(())
             }
             SO_SNDTIMEO => {
-                let mut val = parse(&kern_opt)?;
+                let mut val = Duration::from_secs(0);
                 let opt = GetSocketOption::SendTimeout(&mut val);
-                sock.get_option(opt)
+                sock.get_option(opt)?;
+                let sec = val.as_secs();
+                let usec = val.subsec_micros() as u64;
+                kern_opt.extend_from_slice(&sec.to_ne_bytes());
+                kern_opt.extend_from_slice(&usec.to_ne_bytes());
+                Ok(())
             }
             _ => return Err(SysErrNo::ENOPROTOOPT),
         },
         // IP 级
         IPPROTO_IP => {
             if optname == IP_TTL {
-                let mut val = kern_opt[0];
+                let mut val = 0u8;
                 let opt = GetSocketOption::Ttl(&mut val);
-                sock.get_option(opt)
+                sock.get_option(opt)?;
+                let val = val as i32;
+                kern_opt.extend_from_slice(&val.to_ne_bytes());
+                Ok(())
             } else {
                 return Err(SysErrNo::ENOPROTOOPT);
             }
@@ -349,15 +391,31 @@ pub fn sys_getsockopt(
         // TCP 级
         IPPROTO_TCP => {
             if optname == TCP_NODELAY {
-                let mut val = parse(&mut kern_opt)?;
+                let mut val = false;
                 let opt = GetSocketOption::NoDelay(&mut val);
-                sock.get_option(opt)
+                sock.get_option(opt)?;
+                let val: i32 = if val { 1 } else { 0 };
+                kern_opt.extend_from_slice(&val.to_ne_bytes());
+                Ok(())
             } else {
                 return Err(SysErrNo::ENOPROTOOPT);
             }
         }
         _ => return Err(SysErrNo::ENOPROTOOPT),
-    }?;
+    };
+    get_result?;
+
+    let copy_len = (optlen as usize).min(kern_opt.len());
+    let task = current_task().unwrap();
+    let process = task.process.inner_lock();
+    let memory_set = process.get_locked_memory_set_read();
+    copy_to_user(&memory_set, user_optval as usize, &kern_opt[..copy_len])?;
+    let actual_len = kern_opt.len() as socklen_t;
+    copy_to_user(
+        &memory_set,
+        user_optlen as usize,
+        &actual_len.to_ne_bytes(),
+    )?;
 
     Ok(0)
 }

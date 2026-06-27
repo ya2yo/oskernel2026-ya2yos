@@ -119,6 +119,7 @@ impl std::error::Error for RecvError {}
 #[derive(Debug)]
 pub struct Socket<'a> {
     endpoint: IpListenEndpoint,
+    remote_endpoint: Option<IpEndpoint>,
     rx_buffer: PacketBuffer<'a>,
     tx_buffer: PacketBuffer<'a>,
     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
@@ -134,6 +135,7 @@ impl<'a> Socket<'a> {
     pub fn new(rx_buffer: PacketBuffer<'a>, tx_buffer: PacketBuffer<'a>) -> Socket<'a> {
         Socket {
             endpoint: IpListenEndpoint::default(),
+            remote_endpoint: None,
             rx_buffer,
             tx_buffer,
             hop_limit: None,
@@ -183,6 +185,18 @@ impl<'a> Socket<'a> {
     #[inline]
     pub fn endpoint(&self) -> IpListenEndpoint {
         self.endpoint
+    }
+
+    /// Return the connected remote endpoint, if any.
+    #[inline]
+    pub fn remote_endpoint(&self) -> Option<IpEndpoint> {
+        self.remote_endpoint
+    }
+
+    /// Set the connected remote endpoint used to filter incoming datagrams.
+    #[inline]
+    pub fn set_remote_endpoint(&mut self, endpoint: Option<IpEndpoint>) {
+        self.remote_endpoint = endpoint;
     }
 
     /// Return the time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
@@ -242,6 +256,7 @@ impl<'a> Socket<'a> {
     pub fn close(&mut self) {
         // Clear the bound endpoint of the socket.
         self.endpoint = IpListenEndpoint::default();
+        self.remote_endpoint = None;
 
         // Reset the RX and TX buffers of the socket.
         self.tx_buffer.reset();
@@ -477,7 +492,7 @@ impl<'a> Socket<'a> {
         self.rx_buffer.payload_bytes_count()
     }
 
-    pub(crate) fn accepts(&self, cx: &mut Context, ip_repr: &IpRepr, repr: &UdpRepr) -> bool {
+    fn accepts_local_endpoint(&self, cx: &mut Context, ip_repr: &IpRepr, repr: &UdpRepr) -> bool {
         if self.endpoint.port != repr.dst_port {
             return false;
         }
@@ -490,6 +505,26 @@ impl<'a> Socket<'a> {
         }
 
         true
+    }
+
+    pub(crate) fn accepts_connected(
+        &self,
+        cx: &mut Context,
+        ip_repr: &IpRepr,
+        repr: &UdpRepr,
+    ) -> bool {
+        self.remote_endpoint.is_some() && self.accepts(cx, ip_repr, repr)
+    }
+
+    pub(crate) fn accepts(&self, cx: &mut Context, ip_repr: &IpRepr, repr: &UdpRepr) -> bool {
+        if !self.accepts_local_endpoint(cx, ip_repr, repr) {
+            return false;
+        }
+
+        match self.remote_endpoint {
+            Some(remote) => remote.addr == ip_repr.src_addr() && remote.port == repr.src_port,
+            None => true,
+        }
     }
 
     pub(crate) fn process(

@@ -421,7 +421,11 @@ impl UserBuffer {
     }
     /// 将内容数组返回
     pub fn read(&mut self, len: usize) -> Vec<u8> {
+        let len = self.len().min(len);
         let mut bytes = vec![0; len];
+        if len == 0 {
+            return bytes;
+        }
         let mut current = 0;
         for sub_buff in self.buffers.iter_mut() {
             let mut sblen = (*sub_buff).len();
@@ -434,6 +438,7 @@ impl UserBuffer {
                 return bytes;
             }
         }
+        bytes.truncate(current);
         bytes
     }
     /// 直接读取内容到传入的缓冲区中，返回实际读取的长度

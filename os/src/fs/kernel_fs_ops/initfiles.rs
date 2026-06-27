@@ -229,6 +229,9 @@ pub fn create_init_files() -> GeneralRet {
     register_device("/dev/zero");
     //注册设备/dev/numm
     register_device("/dev/null");
+    //注册随机数设备
+    register_device("/dev/random");
+    register_device("/dev/urandom");
     //注册设备/dev/cpu_dma_latency
     register_device("/dev/cpu_dma_latency");
     //创建./dev/misc文件夹

@@ -218,6 +218,7 @@ bitflags! {
 
 pub const FD_SET_SIZE: usize = 1024;
 pub const FD_SET_LEN: usize = FD_SET_SIZE / (8 * core::mem::size_of::<usize>());
+const FD_SET_BITS_PER_WORD: usize = 8 * core::mem::size_of::<usize>();
 
 /// FdSet为大小为1024的位图，分装在16个大小为usize的fds_bits子位图中，每一个位都代表一个文件描述符
 #[derive(Debug, Copy, Clone)]
@@ -230,20 +231,20 @@ impl FdSet {
     pub fn clear_all(&mut self) {
         self.fds_bits.fill(0);
     }
-    pub fn got_fd(&mut self, fd: usize) -> bool {
+    pub fn got_fd(&self, fd: usize) -> bool {
         assert!(fd < FD_SET_SIZE);
-        let offset = fd % FD_SET_LEN;
-        (self.fds_bits[fd / FD_SET_LEN] & (1 << offset)) != 0
+        let offset = fd % FD_SET_BITS_PER_WORD;
+        (self.fds_bits[fd / FD_SET_BITS_PER_WORD] & (1 << offset)) != 0
     }
     pub fn mark_fd(&mut self, fd: usize, value: bool) {
         if fd >= FD_SET_SIZE {
             return;
         }
-        let offset = fd % FD_SET_LEN;
+        let offset = fd % FD_SET_BITS_PER_WORD;
         if value {
-            self.fds_bits[fd / FD_SET_LEN] |= 1 << offset;
+            self.fds_bits[fd / FD_SET_BITS_PER_WORD] |= 1 << offset;
         } else {
-            self.fds_bits[fd / FD_SET_LEN] &= !(1 << offset);
+            self.fds_bits[fd / FD_SET_BITS_PER_WORD] &= !(1 << offset);
         }
     }
 }
