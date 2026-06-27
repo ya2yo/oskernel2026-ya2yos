@@ -4,17 +4,48 @@ use alloc::sync::Arc;
 use log::{debug, error};
 
 use crate::{
-    mm::{copy_from_user, copy_to_user},
+    mm::{copy_from_user, copy_from_user_val, copy_to_user, copy_to_user_val},
     signal::{
         restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group,
-        send_signal_to_thread_of_proc, KSigAction, SigAction, SigInfo, SigSet, SIGCONT, SIGKILL,
-        SIGSTOP, SIG_MAX_NUM,
+        send_signal_to_thread_of_proc, KSigAction, SigAction, SigActionFlags, SigInfo, SigSet,
+        SIGCONT, SIGKILL, SIGSTOP, SIG_MAX_NUM,
     },
     syscall::SignalMaskFlag,
     task::{block_on, current_task, exit_current_and_run_next, suspend_current_and_run_next},
     timer::{add_sigtimedwait_timer, get_time_spec, Timespec},
     utils::{SysErrNo, SyscallRet},
 };
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawSigAction {
+    handler: usize,
+    flags: usize,
+    mask: [u32; 2],
+    unused: usize,
+}
+
+impl RawSigAction {
+    fn from_sigaction(act: SigAction) -> Self {
+        let mask = act.sa_mask.bits();
+        Self {
+            handler: act.sa_handler,
+            flags: act.sa_flags.bits() as usize,
+            mask: [mask as u32, (mask >> 32) as u32],
+            unused: 0,
+        }
+    }
+
+    fn into_sigaction(self) -> SigAction {
+        let mask = self.mask[0] as usize | ((self.mask[1] as usize) << 32);
+        SigAction {
+            sa_handler: self.handler,
+            sa_flags: SigActionFlags::from_bits_truncate(self.flags as u32),
+            sa_restore: 0,
+            sa_mask: SigSet::from_bits_truncate(mask),
+        }
+    }
+}
 
 /// 参考 https://man7.org/linux/man-pages/man2/rt_sigaction.2.html
 pub fn sys_rt_sigaction(
@@ -42,21 +73,13 @@ pub fn sys_rt_sigaction(
     let memory_set = process.get_locked_memory_set_read();
     if old_act as usize != 0 {
         let sig_act = sigtable.action(signo).act;
-        copy_to_user(&memory_set, old_act as usize, unsafe {
-            core::slice::from_raw_parts(
-                &sig_act as *const SigAction as *const u8,
-                core::mem::size_of::<SigAction>(),
-            )
-        })?;
+        let raw = RawSigAction::from_sigaction(sig_act);
+        copy_to_user_val(&memory_set, old_act as *mut RawSigAction, &raw)?;
     }
     if act as usize != 0 {
-        let mut new_act: SigAction = unsafe { core::mem::zeroed() };
-        copy_from_user(&memory_set, act as usize, unsafe {
-            core::slice::from_raw_parts_mut(
-                &mut new_act as *mut SigAction as *mut u8,
-                core::mem::size_of::<SigAction>(),
-            )
-        })?;
+        let raw: RawSigAction = copy_from_user_val(&memory_set, act as *const RawSigAction)?;
+        let mut new_act = raw.into_sigaction();
+        new_act.sa_mask.remove(SigSet::SIGKILL | SigSet::SIGSTOP);
         debug!(
             "[sys_rt_sigaction] signo is {}, sig is {:?}, act is {:?}",
             signo,

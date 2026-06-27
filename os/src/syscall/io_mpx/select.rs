@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use crate::{
     fs::File,
-    mm::{copy_from_user, copy_to_user},
+    mm::{copy_from_user, copy_from_user_val, copy_to_user},
     signal::SigSet,
     syscall::{
         options::{FdSet, FD_SET_LEN},
@@ -10,9 +10,16 @@ use crate::{
     },
     task::{current_task, suspend_current_and_run_next},
     timer::{get_time_ms, Timespec},
-    utils::SyscallRet,
+    utils::{SysErrNo, SyscallRet},
 };
 use core::cmp::min;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Pselect6SigMask {
+    ss: usize,
+    ss_len: usize,
+}
 
 fn empty_fdset() -> FdSet {
     FdSet {
@@ -30,21 +37,33 @@ pub fn sys_pselect6(
     sigmask: usize,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let mut inner = task.inner_lock();
     let proc_inner = task.process.inner_lock();
     let memory_set = proc_inner.get_locked_memory_set_read();
 
-    let old_mask = inner.sig_mask;
-    if sigmask != 0 {
-        let mut sigset = SigSet::default();
-        copy_from_user(&memory_set, sigmask, unsafe {
-            core::slice::from_raw_parts_mut(
-                &mut sigset as *mut SigSet as *mut u8,
-                core::mem::size_of::<SigSet>(),
-            )
-        })?;
-        inner.sig_mask = sigset;
-    }
+    let new_mask = if sigmask != 0 {
+        // Linux raw pselect6 passes a pointer to { sigset_t *ss, size_t ss_len },
+        // not a direct sigset_t pointer.
+        let arg: Pselect6SigMask =
+            copy_from_user_val(&memory_set, sigmask as *const Pselect6SigMask)?;
+        if arg.ss != 0 {
+            if arg.ss_len != core::mem::size_of::<SigSet>() {
+                return Err(SysErrNo::EINVAL);
+            }
+            let mut sigset = SigSet::default();
+            copy_from_user(&memory_set, arg.ss, unsafe {
+                core::slice::from_raw_parts_mut(
+                    &mut sigset as *mut SigSet as *mut u8,
+                    core::mem::size_of::<SigSet>(),
+                )
+            })?;
+            sigset.remove(SigSet::SIGKILL | SigSet::SIGSTOP);
+            Some(sigset)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let nfds = min(nfds, proc_inner.fd_table.get_soft_limit());
 
@@ -72,7 +91,7 @@ pub fn sys_pselect6(
     } else {
         None
     };
-    let mut using_exceptfds = if exceptfds != 0 {
+    let using_exceptfds = if exceptfds != 0 {
         let mut fdset = empty_fdset();
         copy_from_user(&memory_set, exceptfds, unsafe {
             core::slice::from_raw_parts_mut(
@@ -99,12 +118,21 @@ pub fn sys_pselect6(
         (timespec.tv_sec * 1_000_000_000 + timespec.tv_nsec) as isize
     };
 
+    let old_mask = {
+        let mut inner = task.inner_lock();
+        let old_mask = inner.sig_mask;
+        if let Some(sigset) = new_mask {
+            inner.sig_mask = sigset;
+        }
+        old_mask
+    };
+    let mask_changed = new_mask.is_some();
+
     let begin = get_time_ms() * 1_000_000;
 
     //由于每次循环结束需要让出cpu，因此需要在每次循环时重新获得锁
     drop(memory_set);
     drop(proc_inner);
-    drop(inner);
     drop(task);
 
     loop {
@@ -169,31 +197,46 @@ pub fn sys_pselect6(
             {
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 if let Some(ready_readfds) = ready_readfds {
-                    copy_to_user(&memory_set, readfds, unsafe {
+                    if let Err(errno) = copy_to_user(&memory_set, readfds, unsafe {
                         core::slice::from_raw_parts(
                             &ready_readfds as *const FdSet as *const u8,
                             core::mem::size_of::<FdSet>(),
                         )
-                    })?;
+                    }) {
+                        if mask_changed {
+                            inner.sig_mask = old_mask;
+                        }
+                        return Err(errno);
+                    }
                 }
                 if let Some(ready_writefds) = ready_writefds {
-                    copy_to_user(&memory_set, writefds, unsafe {
+                    if let Err(errno) = copy_to_user(&memory_set, writefds, unsafe {
                         core::slice::from_raw_parts(
                             &ready_writefds as *const FdSet as *const u8,
                             core::mem::size_of::<FdSet>(),
                         )
-                    })?;
+                    }) {
+                        if mask_changed {
+                            inner.sig_mask = old_mask;
+                        }
+                        return Err(errno);
+                    }
                 }
                 if let Some(ready_exceptfds) = ready_exceptfds {
-                    copy_to_user(&memory_set, exceptfds, unsafe {
+                    if let Err(errno) = copy_to_user(&memory_set, exceptfds, unsafe {
                         core::slice::from_raw_parts(
                             &ready_exceptfds as *const FdSet as *const u8,
                             core::mem::size_of::<FdSet>(),
                         )
-                    })?;
+                    }) {
+                        if mask_changed {
+                            inner.sig_mask = old_mask;
+                        }
+                        return Err(errno);
+                    }
                 }
             }
-            if sigmask != 0 {
+            if mask_changed {
                 inner.sig_mask = old_mask;
             }
             return Ok(num);
@@ -201,10 +244,63 @@ pub fn sys_pselect6(
 
         //或者时间到了也可以返回
         if waittime > 0 && get_time_ms() * 1000000 - begin >= waittime as usize {
-            if sigmask != 0 {
+            {
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                if let Some(ready_readfds) = ready_readfds {
+                    if let Err(errno) = copy_to_user(&memory_set, readfds, unsafe {
+                        core::slice::from_raw_parts(
+                            &ready_readfds as *const FdSet as *const u8,
+                            core::mem::size_of::<FdSet>(),
+                        )
+                    }) {
+                        if mask_changed {
+                            inner.sig_mask = old_mask;
+                        }
+                        return Err(errno);
+                    }
+                }
+                if let Some(ready_writefds) = ready_writefds {
+                    if let Err(errno) = copy_to_user(&memory_set, writefds, unsafe {
+                        core::slice::from_raw_parts(
+                            &ready_writefds as *const FdSet as *const u8,
+                            core::mem::size_of::<FdSet>(),
+                        )
+                    }) {
+                        if mask_changed {
+                            inner.sig_mask = old_mask;
+                        }
+                        return Err(errno);
+                    }
+                }
+                if let Some(ready_exceptfds) = ready_exceptfds {
+                    if let Err(errno) = copy_to_user(&memory_set, exceptfds, unsafe {
+                        core::slice::from_raw_parts(
+                            &ready_exceptfds as *const FdSet as *const u8,
+                            core::mem::size_of::<FdSet>(),
+                        )
+                    }) {
+                        if mask_changed {
+                            inner.sig_mask = old_mask;
+                        }
+                        return Err(errno);
+                    }
+                }
+            }
+            if mask_changed {
                 inner.sig_mask = old_mask;
             }
             return Ok(0);
+        }
+        if inner
+            .sig_pending
+            .difference(inner.sig_mask)
+            .peek_front()
+            .is_some()
+        {
+            if mask_changed {
+                inner.sig_mask = old_mask;
+            }
+            return Err(SysErrNo::EINTR);
         }
         drop(inner);
         drop(proc_inner);

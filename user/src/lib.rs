@@ -288,29 +288,30 @@ const SA_NODEFER: usize = 0x40000000; /* Don't automatically block the signal wh
                                       :usize                 its handler is being executed.  */
 const SA_RESETHAND: usize = 0x80000000; /* Reset to SIG_DFL on entry to handler.  */
 
-/// sigaction 结构体，字段顺序必须与 C struct sigaction 和内核 SigAction 一致：
-/// sa_handler, sa_flags, sa_restorer, sa_mask
-/// https://man7.org/linux/man-pages/man2/sigaction.2.html
+/// rt_sigaction syscall 使用的 raw kernel sigaction ABI 布局：
+/// handler, flags, mask[2], unused。
 #[repr(C)]
-pub struct SigAction {
+pub struct RawSigAction {
     pub sa_handler: usize,
     pub sa_flags: usize,
-    pub sa_restore: usize,
-    pub sa_mask: usize,
+    pub sa_mask: [u32; 2],
+    pub unused: usize,
 }
 
-impl SigAction {
-    pub fn new(sa_handler: usize, sa_flags: usize, sa_restore: usize, sa_mask: usize) -> Self {
+impl RawSigAction {
+    pub fn new(sa_handler: usize, sa_flags: usize, _sa_restore: usize, sa_mask: usize) -> Self {
         Self {
             sa_handler,
             sa_flags,
-            sa_restore,
-            sa_mask,
+            sa_mask: [sa_mask as u32, (sa_mask >> 32) as u32],
+            unused: 0,
         }
     }
 }
 
-pub fn sigaction(signum: usize, act: &SigAction, oldact: &mut SigAction) -> isize {
+pub type SigAction = RawSigAction;
+
+pub fn sigaction(signum: usize, act: &RawSigAction, oldact: &mut RawSigAction) -> isize {
     sys_sigaction(signum, act as *const _ as usize, oldact as *mut _ as usize)
 }
 

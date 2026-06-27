@@ -465,12 +465,19 @@ impl MemorySetInner {
                 start <= vpn && vpn < end
             })
         {
-            let ok = if scause == Trap::Exception(Exception::LoadPageFault)
-                || scause == Trap::Exception(Exception::FetchInstructionPageFault)
-            {
-                mmap_read_page_fault(vpn.into(), &mut self.page_table, area)
-            } else {
-                mmap_write_page_fault(vpn.into(), &mut self.page_table, area)
+            let ok = match scause {
+                Trap::Exception(Exception::LoadPageFault) => {
+                    area.map_perm.contains(MapPermission::R)
+                        && mmap_read_page_fault(vpn.into(), &mut self.page_table, area)
+                }
+                Trap::Exception(Exception::FetchInstructionPageFault) => {
+                    area.map_perm.contains(MapPermission::X)
+                        && mmap_read_page_fault(vpn.into(), &mut self.page_table, area)
+                }
+                _ => {
+                    area.map_perm.contains(MapPermission::W)
+                        && mmap_write_page_fault(vpn.into(), &mut self.page_table, area)
+                }
             };
             return ok; // false on OOM → SIGSEGV in trap handler
         }

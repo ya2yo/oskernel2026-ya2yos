@@ -81,7 +81,7 @@ run:
 	@rm -f disk.img
 	@ln -s $(DISK_IMG) ./disk.img
 	@-$(QEMU_CMD)
-	@rm disk.img
+	@rm -f disk.img
 
 clean:
 	@cd ./os && $(MAKE) clean
@@ -113,9 +113,9 @@ set_env:
 	@(rustup target list | grep "${TARGET} (installed)") || rustup target add $(TARGET)
 	@rustup component add rust-src
 	@rustup component add llvm-tools-preview
-# 下面这个命令要求你的docker image里面有一个名字叫my-os-dev-env:latest
+# 下面这个命令要求你的docker image里面有一个名字叫 zhouzhouyi/os-contest:20260510
 docker:
-	docker run --rm -it -v $(PROJECT_ROOT):/workplace -w /workplace my-os-dev-env:latest bash
+	docker run --rm -it -v $(PROJECT_ROOT):/workplace -w /workplace zhouzhouyi/os-contest:20260510 bash
 
 .PHONY: all all-arch riscv64-build loongarch64-build build-arch set_env_arch \
         run log clean objdump gdbserver gdbclient setup_cargo cleanup_cargo set_env

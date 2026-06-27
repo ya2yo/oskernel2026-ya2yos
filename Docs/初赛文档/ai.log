@@ -2377,3 +2377,55 @@ timeout 120s make run > log.ans 2>&1
 #### OS COMP TEST GROUP END iperf-glibc ####
 shutdown!
 ```
+
+---
+
+## 2026-06-27: lmbench-musl lat_sig 死循环修复
+
+### 用户需求
+
+用户要求分析 `log.ans`，找出 iperf 优化后 lmbench 死循环的原因，并进行修复。已知优化 iperf 前 lmbench 能正常运行。
+
+### 分析
+
+AI 先扫描 `log.ans` 中 `lat_sig`、`pselect6`、信号处理和 `wait4` 相关日志，确认 `lat_select file` 已正常结束，第一处真实卡点是 `./lmbench_all lat_sig -P 1 catch`。日志显示父进程在 `pselect6` 超时后误入错误清理路径，向子进程发送 `SIGTERM` 并等待；子进程收到信号后继续在 `SIGUSR1` / `pselect6` 循环中运行。
+
+继续对照 lmbench 行为后，定位到 `pselect6` timeout 返回 0 时没有把 fd_set 写回用户态。lmbench 父进程传入的 `exceptfds` 保留旧 bit，`FD_ISSET(response, &fds_error)` 误判为 pipe 异常，触发 cleanup。排查过程中同时发现 raw Linux `pselect6` 第六参数应为 `{ sigset_t *ss, size_t ss_len }`，而内核原先按直接 `sigset_t *` 读取；`rt_sigaction` 也将用户 ABI 与内部 `SigAction` 结构混用，导致 musl 的 `sa_mask` 解析不可靠。
+
+修复后重新运行，`lat_sig catch` 已通过，后续暴露 `lat_sig prot` 卡住。AI 查看 lmbench `lat_sig.c` 行为：该测试把 `/musl/lat_sig` 以 `MAP_SHARED | PROT_READ` 映射后故意写入，期望收到 `SIGSEGV` / `SIGBUS`。新日志中子进程没有收到对应信号，只反复执行 `getrusage/clock_gettime/getppid`。检查 mmap lazy fault 路径后确认，`MemorySetInner::lazy_page_fault()` 对 mmap store fault 没有检查 VMA 是否包含 `MapPermission::W`，写只读页时仍分配并映射页面，导致写访问不触发用户态 handler。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/io_mpx/select.rs` | 按 raw ABI 解析 `pselect6` sigmask 参数；应用临时 mask 前完成用户参数复制；ready/timeout/copy 失败路径恢复旧 mask；等待中遇到未屏蔽 pending signal 返回 `EINTR`；timeout 返回 0 时也写回 fd_set |
+| `os/src/syscall/signal.rs` | 增加 `RawSigAction`，按 `handler, flags, mask[2], unused` 与用户态交换，再转换为内部 `SigAction` |
+| `user/src/lib.rs` | 同步用户库 `SigAction` syscall ABI 布局 |
+| `os/src/mm/memory_set/mmap_ops.rs` | mmap lazy fault 按访问类型检查 VMA 权限，store fault 必须具备 `MapPermission::W`，否则返回 false 由 trap 层发送 `SIGSEGV` |
+| `Docs/初赛文档/problem/lmbench.md` | 追加本轮 lmbench 死循环复盘 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.27 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+make log
+timeout 120s make run > log.ans 2>&1
+timeout 300s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make`、`make log` 均通过。
+- 120 秒运行已越过原始 `lat_sig catch` 和后续 `lat_sig prot`，超时位置推进到 `lat_fs` 正常文件系统压力项。
+- 300 秒运行正常退出，日志包含：
+
+```text
+#### OS COMP TEST GROUP END lmbench-musl ####
+shutdown!
+```
+
+- `lat_sig prot` 日志中出现预期 `Exception(StorePageFault) ... sending SIGSEGV`，说明写只读 mmap 页已经通过信号路径交给用户态 handler。
