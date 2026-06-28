@@ -2676,3 +2676,46 @@ timeout 300s make run > log.ans 2>&1
 ```
 
 - 新 `log.ans` 中未出现 `recv_response_timed_n`、`errno 9`、`errno 92`、`errno 4`、`Protocol not available`、`panic` 或 `ERROR`。
+
+---
+
+## 2026-06-28: pipe pselect6 register panic 修复
+
+### 用户需求
+
+用户提供 GDB backtrace，显示 `sys_pselect6()` 监听 pipe fd 时在 `os::fs::vfs::File::register<os::fs::files::pipe::Pipe>()` 触发 panic，要求修复。
+
+### 分析
+
+AI 从回溯定位到 `select.rs::register_watch_entries()` 对所有 watch fd 调用 `file.register(cx, interests)`。`Pipe` 只实现了 `poll()`，没有实现 `File::register()`，因此落到 `vfs.rs` 中的默认 `unimplemented!("File::register")`。
+
+继续检查 pipe 实现后确认，pipe 内部已有同步阻塞 `read_waiters/write_waiters` 队列，但没有 `PollSet` waker；而 `pselect6` 阻塞化后需要 fd 在状态变化时唤醒 future。另一个相关语义是 pipe 端点关闭：`Pipe::poll()` 已经会返回 `HUP/ERR`，所以最后一个读端或写端关闭时也必须唤醒对端的 pselect 等待者。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/pipe.rs` | 为 `PipeRingBuffer` 增加 `read_poll/write_poll` |
+| `os/src/fs/files/pipe.rs` | `read()/write()` 在状态变化后唤醒同步 waiters 和 poll waker |
+| `os/src/fs/files/pipe.rs` | 实现 `File::register()`，支持 pipe 的 `IN/OUT/HUP/ERR` 等待 |
+| `os/src/fs/files/pipe.rs` | `Drop for Pipe` 在端点关闭时唤醒对端等待者 |
+| `os/src/fs/files/pipe.rs` | 写端在读端全部关闭时返回 `EPIPE` |
+| `Docs/初赛文档/problem/pipe-pselect-register-panic.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.28 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过。
+- `timeout 120s make run` 跑到 lmbench `Pipe latency` 后被外部 timeout 终止。
+- `rg -a -n "panic|panicked|File::register|unimplemented|src/fs/vfs.rs:163|select.rs:147" log.ans` 无匹配，原 panic 未再出现。

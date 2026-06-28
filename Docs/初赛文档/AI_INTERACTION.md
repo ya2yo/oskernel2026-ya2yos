@@ -668,3 +668,10 @@
 - **场景**：系统调用语义增强、I/O 复用阻塞等待、waker/timer 调度修复、netperf 回归验证、文档完善
 - **描述**：用户要求根据 `wait4` 的实现，将仍在轮询的 `pselect6` 改为可阻塞等待。AI 将 `sys_pselect6` 改为 `block_on(poll_fn(...))` 模式：先 poll fd，就绪则回写 fdset；未就绪时处理 pending signal、注册 fd waker，并用 timeout future 处理超时。实现过程中修复了 `MyWaker` 对 Running 任务重复入队导致的 TCB 锁重入，并为 pselect 等待增加 `skip_blocked_itimer_check`，避免它被 TCP_CRR 兼容用的 blocked itimer 扫描提前投递 SIGALRM。`make` 通过，`timeout 300s make run` 中 netperf 五个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-28 条目与 [problem/pselect6-blocking-wait.md](./problem/pselect6-blocking-wait.md)。
 - **关联 commit**：待提交
+
+#### pipe pselect6 register panic 修复（6.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、pipe poll/waker 语义修复、文档完善
+- **描述**：用户提供 GDB backtrace，显示 `sys_pselect6()` 在监听 pipe fd 时调用 `File::register< Pipe >()` 并落到默认 `unimplemented!`。AI 检查 `Pipe` 与已有 eventfd/socket register 实现，定位到 pipe 只有同步阻塞 waiter 队列，没有 future-waker 路径。修复为在 pipe ring buffer 中增加读写 `PollSet`，实现 `File::register()`，在读写状态变化和端点关闭时唤醒等待者，并让读端全部关闭后的写入返回 `EPIPE`。`make` 通过，`timeout 120s make run` 未再出现原 `File::register` panic。详见 `Docs/初赛文档/ai.log` 2026-06-28 条目与 [problem/pipe-pselect-register-panic.md](./problem/pipe-pselect-register-panic.md)。
+- **关联 commit**：待提交

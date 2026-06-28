@@ -119,13 +119,8 @@ fn get_score() {
     run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loongarch 通过
     // ltp
     ltp::test_musl_ltp();
-    // ltp::test_musl_single("waitpid13\0");
     ltp::test_glibc_ltp();
-
-        // #[cfg(target_arch = "riscv64")]
-        // test_cgroup_fj_function_cpuset_via_script();
-    // run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
-
-    // run_testsuit("glibc\0", "netperf_testcode.sh\0");
-
+    // netperf
+    run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
+    run_testsuit("glibc\0", "netperf_testcode.sh\0");
 }

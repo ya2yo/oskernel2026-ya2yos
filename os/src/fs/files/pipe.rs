@@ -7,13 +7,14 @@ use crate::signal::check_if_any_sig_for_current_task;
 use crate::task::{
     current_task, ready_queue, schedule_blocked_current, TaskControlBlock, TaskStatus,
 };
-use crate::utils::SysErrNo;
+use crate::utils::{PollSet, SysErrNo};
 use crate::{mm::UserBuffer, syscall::PollEvents, utils::SyscallRet};
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::min;
+use core::task::Context;
 use spin::{Mutex, MutexGuard};
 
 pub struct Pipe {
@@ -74,6 +75,8 @@ struct PipeRingBuffer {
     read_end: Option<Weak<Pipe>>,
     read_waiters: VecDeque<Weak<TaskControlBlock>>,
     write_waiters: VecDeque<Weak<TaskControlBlock>>,
+    read_poll: PollSet,
+    write_poll: PollSet,
 }
 
 impl PipeRingBuffer {
@@ -88,6 +91,8 @@ impl PipeRingBuffer {
             read_end: None,
             read_waiters: VecDeque::new(),
             write_waiters: VecDeque::new(),
+            read_poll: PollSet::new(),
+            write_poll: PollSet::new(),
         }
     }
     pub fn set_write_end(&mut self, write_end: &Arc<Pipe>) {
@@ -203,33 +208,42 @@ impl PipeRingBuffer {
             self.write_waiters.push_back(Arc::downgrade(task));
         }
     }
-    fn wake_reader(&mut self) {
-        // pipe 每次写入只需要唤醒一个阻塞读者即可继续推进。
-        while let Some(waiter) = self.read_waiters.pop_front() {
+    fn wake_waiters(waiters: &mut VecDeque<Weak<TaskControlBlock>>, wake_one: bool) {
+        while let Some(waiter) = waiters.pop_front() {
             if let Some(task) = waiter.upgrade() {
                 let mut inner = task.inner_lock();
                 if inner.task_status == TaskStatus::Blocked {
                     inner.task_status = TaskStatus::Ready;
                     drop(inner);
                     ready_queue::add_task(&task);
-                    break;
+                    if wake_one {
+                        break;
+                    }
                 }
             }
         }
     }
+
+    fn wake_reader(&mut self) {
+        // pipe 每次写入只需要唤醒一个阻塞读者即可继续推进。
+        Self::wake_waiters(&mut self.read_waiters, true);
+        self.read_poll.wake();
+    }
+
     fn wake_writer(&mut self) {
         // pipe 每次读取释放空间后，只唤醒一个阻塞写者。
-        while let Some(waiter) = self.write_waiters.pop_front() {
-            if let Some(task) = waiter.upgrade() {
-                let mut inner = task.inner_lock();
-                if inner.task_status == TaskStatus::Blocked {
-                    inner.task_status = TaskStatus::Ready;
-                    drop(inner);
-                    ready_queue::add_task(&task);
-                    break;
-                }
-            }
-        }
+        Self::wake_waiters(&mut self.write_waiters, true);
+        self.write_poll.wake();
+    }
+
+    fn wake_all_readers(&mut self) {
+        Self::wake_waiters(&mut self.read_waiters, false);
+        self.read_poll.wake();
+    }
+
+    fn wake_all_writers(&mut self) {
+        Self::wake_waiters(&mut self.write_waiters, false);
+        self.write_poll.wake();
     }
 }
 
@@ -319,6 +333,9 @@ impl File for Pipe {
         let mut loop_write;
         loop {
             let ring_buffer = self.inner_lock();
+            if ring_buffer.all_read_ends_closed() {
+                return Err(SysErrNo::EPIPE);
+            }
             loop_write = ring_buffer.available_write();
             if loop_write == 0 {
                 drop(ring_buffer);
@@ -333,6 +350,11 @@ impl File for Pipe {
                     &mut task_inner.task_cx as *mut _
                 };
                 let mut ring_buffer = self.inner_lock();
+                if ring_buffer.all_read_ends_closed() {
+                    let mut task_inner = task.inner_lock();
+                    task_inner.task_status = TaskStatus::Running;
+                    return Err(SysErrNo::EPIPE);
+                }
                 if ring_buffer.available_write() > 0 {
                     // 入队前已有读者释放空间，恢复 Running 并直接重试写入。
                     let mut task_inner = task.inner_lock();
@@ -390,5 +412,26 @@ impl File for Pipe {
             revents |= PollEvents::ERR;
         }
         revents
+    }
+    fn register(&self, context: &mut Context<'_>, events: PollEvents) {
+        let ring_buffer = self.inner_lock();
+        if self.readable && events.intersects(PollEvents::IN | PollEvents::HUP) {
+            ring_buffer.read_poll.register(context.waker());
+        }
+        if self.writable && events.intersects(PollEvents::OUT | PollEvents::ERR) {
+            ring_buffer.write_poll.register(context.waker());
+        }
+    }
+}
+
+impl Drop for Pipe {
+    fn drop(&mut self) {
+        let mut ring_buffer = self.inner_lock();
+        if self.readable {
+            ring_buffer.wake_all_writers();
+        }
+        if self.writable {
+            ring_buffer.wake_all_readers();
+        }
     }
 }
