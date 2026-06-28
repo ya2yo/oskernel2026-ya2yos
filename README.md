@@ -27,6 +27,8 @@
 [bug修复文档](./Docs/初赛文档/problem/)
 ...
 
+主要开发分支在nightly, release分支只记录可以在评测机正常跑分的版本。
+
 参考项目及书籍:
 
 + [rCore-Tutorial-Book-v3](https://rcore-os.cn/rCore-Tutorial-Book-v3/index.html)
