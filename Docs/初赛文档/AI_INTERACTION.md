@@ -647,3 +647,10 @@
 - **场景**：Bug 分析与定位、RISC-V signal ABI 修复、文档完善
 - **描述**：用户要求优先处理 RISC-V 运行后在 `basic-musl` 处反复 `FetchInstructionPageFault bad addr=0x0` 的问题。AI 通过临时 trap/clone/exec/signal 诊断确认 PID 2 fork 与 exec busybox 均正常，真正跳到 0 发生在 SIGCHLD handler 返回后；根因是 RISC-V 用户态 `rt_sigaction` raw ABI 带 `sa_restorer`，而内核按 LoongArch 路径解析为 `handler, flags, mask[2], unused`，导致 `SA_RESTORER` handler 的返回地址 `ra` 被设为 0。修复后 `make` 通过，`timeout 80s make run` 已越过 basic/busybox/lua/iperf/cyclictest，未再出现该取指 fault。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/riscv-sigaction-restorer-fetch-fault.md](./problem/riscv-sigaction-restorer-fetch-fault.md)。
 - **关联 commit**：待提交
+
+#### netperf-musl select/SIGCHLD EINTR 修复（6.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`pselect6/ppoll` 信号语义修复、网络 poll 锁重入修复、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复 netperf 失败。AI 定位到 `UDP_STREAM` 成功后 `netserver` 因 `accept_connections: select failure: Interrupted system call` 退出，后续子项控制连接失败；根因是 `pselect6/ppoll` 将默认忽略的 `SIGCHLD` pending signal 直接返回为 `EINTR`。修复为消费忽略类信号后继续等待。随后用户提供 GDB backtrace，确认 `sys_pselect6` 持有 task inner 锁调用 TCP `file.poll()`，loopback wake 路径再锁当前 TCB 导致重入 panic；修复为 fd poll 阶段不持有 task inner 锁。`make` 通过，单跑 netperf 前四项 success，剩余 `TCP_CRR` 的 `errno 9` 失败为后续问题。详见 `Docs/初赛文档/ai.log` 2026-06-28 条目与 [problem/netperf-select-sigchld-eintr.md](./problem/netperf-select-sigchld-eintr.md)。
+- **关联 commit**：待提交

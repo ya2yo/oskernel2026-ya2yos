@@ -2490,3 +2490,70 @@ timeout 80s make run > log.ans 2>&1
 - 修复后 80 秒运行未再出现 `FetchInstructionPageFault` 或 `bad addr = 0x0`。
 - 日志已越过原始卡点，basic、busybox、lua、iperf、cyclictest 相关组均输出 `GROUP END`，运行推进到 `libctest-musl` 后被 timeout 截断。
 - 尚未执行完整不限时全量 `make run` 自然结束验证。
+
+---
+
+## 2026-06-28: netperf-musl select/SIGCHLD EINTR 修复
+
+### 用户需求
+
+用户要求分析当前 `log.ans` 并修复问题。
+
+### 分析
+
+AI 先扫描 `log.ans`，确认原始失败链路为：
+
+```text
+====== netperf UDP_STREAM end: success ======
+accept_connections: select failure: Interrupted system call (errno 4)
+====== netperf TCP_STREAM end: fail ======
+====== netperf UDP_RR end: fail ======
+====== netperf TCP_RR end: fail ======
+====== netperf TCP_CRR end: fail ======
+```
+
+`UDP_STREAM` 已经成功，真正导致后续全失败的是 `netserver` 在 `accept_connections` 中因 `select()` 返回 `EINTR` 退出。检查 `sys_pselect6()` 后发现，它在等待循环中只要看到未屏蔽 pending signal 就直接返回 `EINTR`，没有区分默认忽略或显式忽略的信号。netperf 子进程退出留下的 `SIGCHLD` 默认动作是 Ignore，应该被消费后继续等待，而不是打断服务端 `select`。
+
+继续验证时 `TCP_CRR` 压力段触发 `TaskControlBlock::inner_lock()` panic。用户提供 GDB backtrace，显示调用链为：
+
+```text
+sys_pselect6 -> file.poll(TCP) -> loopback.send -> PollSet::wake
+-> MyWaker::wake_by_ref -> task.inner_lock()
+```
+
+根因是 `sys_pselect6()` 在持有当前 task inner 锁时调用 `file.poll()`，而 loopback poll/wake 路径会唤醒当前任务并再次锁同一个 TCB。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/io_mpx/select.rs` | 默认忽略/显式忽略信号不再返回 `EINTR`；fd polling 阶段不持有 task inner 锁 |
+| `os/src/syscall/io_mpx/poll.rs` | 与 `pselect6` 一致，消费忽略类 pending signal 后继续等待 |
+| `os/src/task/task/task.rs` | `check_timer()` 显式释放读取 task status 的锁后再投递 `SIGALRM` |
+| `Docs/初赛文档/problem/netperf-select-sigchld-eintr.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.28 简记 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 300s make run > /tmp/netperf-after-real-select-fix.log 2>&1
+```
+
+结果：
+
+- `make` 通过。
+- 原始 `accept_connections: select failure: Interrupted system call` 消失。
+- `netperf-musl` 前四项为 success：
+
+```text
+====== netperf UDP_STREAM end: success ======
+====== netperf TCP_STREAM end: success ======
+====== netperf UDP_RR end: success ======
+====== netperf TCP_RR end: success ======
+```
+
+- `TCP_CRR` 仍失败，日志为 `recv_response_timed_n: no response received. errno 9 counter 0`，并出现 LoongArch `Unknown` trap 日志。该问题是修复原始 netserver 提前退出后暴露的后续问题，尚未在本次处理。

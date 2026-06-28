@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_from_user_val, copy_to_user},
-    signal::SigSet,
+    signal::{SigOp, SigSet, SIGCHLD, SIG_IGN},
     syscall::{
         options::{FdSet, FD_SET_LEN},
         PollEvents,
@@ -138,7 +138,6 @@ pub fn sys_pselect6(
     loop {
         let task = current_task().unwrap();
         let proc_inner = task.process.inner_lock();
-        let mut inner = task.inner_lock();
         let mut num = 0;
         let mut ready_readfds = using_readfds.as_ref().map(|_| empty_fdset());
         let mut ready_writefds = using_writefds.as_ref().map(|_| empty_fdset());
@@ -204,7 +203,7 @@ pub fn sys_pselect6(
                         )
                     }) {
                         if mask_changed {
-                            inner.sig_mask = old_mask;
+                            task.inner_lock().sig_mask = old_mask;
                         }
                         return Err(errno);
                     }
@@ -217,7 +216,7 @@ pub fn sys_pselect6(
                         )
                     }) {
                         if mask_changed {
-                            inner.sig_mask = old_mask;
+                            task.inner_lock().sig_mask = old_mask;
                         }
                         return Err(errno);
                     }
@@ -230,14 +229,14 @@ pub fn sys_pselect6(
                         )
                     }) {
                         if mask_changed {
-                            inner.sig_mask = old_mask;
+                            task.inner_lock().sig_mask = old_mask;
                         }
                         return Err(errno);
                     }
                 }
             }
             if mask_changed {
-                inner.sig_mask = old_mask;
+                task.inner_lock().sig_mask = old_mask;
             }
             return Ok(num);
         }
@@ -254,7 +253,7 @@ pub fn sys_pselect6(
                         )
                     }) {
                         if mask_changed {
-                            inner.sig_mask = old_mask;
+                            task.inner_lock().sig_mask = old_mask;
                         }
                         return Err(errno);
                     }
@@ -267,7 +266,7 @@ pub fn sys_pselect6(
                         )
                     }) {
                         if mask_changed {
-                            inner.sig_mask = old_mask;
+                            task.inner_lock().sig_mask = old_mask;
                         }
                         return Err(errno);
                     }
@@ -280,29 +279,35 @@ pub fn sys_pselect6(
                         )
                     }) {
                         if mask_changed {
-                            inner.sig_mask = old_mask;
+                            task.inner_lock().sig_mask = old_mask;
                         }
                         return Err(errno);
                     }
                 }
             }
             if mask_changed {
-                inner.sig_mask = old_mask;
+                task.inner_lock().sig_mask = old_mask;
             }
             return Ok(0);
         }
-        if inner
-            .sig_pending
-            .difference(inner.sig_mask)
-            .peek_front()
-            .is_some()
         {
-            if mask_changed {
-                inner.sig_mask = old_mask;
+            let mut inner = task.inner_lock();
+            if let Some(signo) = inner.sig_pending.difference(inner.sig_mask).peek_front() {
+                let signal = SigSet::from_sig(signo);
+                let sig_action = proc_inner.get_locked_sigtable().action(signo);
+                let ignorable = signo == SIGCHLD
+                    || sig_action.act.sa_handler == SIG_IGN
+                    || (!sig_action.customed && signal.default_op() == SigOp::Ignore);
+                if ignorable {
+                    inner.sig_pending.remove(signal);
+                } else {
+                    if mask_changed {
+                        inner.sig_mask = old_mask;
+                    }
+                    return Err(SysErrNo::EINTR);
+                }
             }
-            return Err(SysErrNo::EINTR);
         }
-        drop(inner);
         drop(proc_inner);
         drop(task);
         suspend_current_and_run_next();

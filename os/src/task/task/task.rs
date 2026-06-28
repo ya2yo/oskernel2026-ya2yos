@@ -755,7 +755,10 @@ impl TaskControlBlock {
             }
         }
         if should_alarm {
-            let was_blocked = self.inner_lock().task_status == TaskStatus::Blocked;
+            let was_blocked = {
+                let task_inner = self.inner_lock();
+                task_inner.task_status == TaskStatus::Blocked
+            };
             send_signal_to_thread(self.tid(), SigSet::SIGALRM);
             if was_blocked {
                 self.interrupt();

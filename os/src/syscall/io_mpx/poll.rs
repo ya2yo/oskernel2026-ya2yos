@@ -1,7 +1,7 @@
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_to_user},
-    signal::check_if_any_sig_for_current_task,
+    signal::{SigOp, SigSet, SIGCHLD, SIG_IGN},
     syscall::{options::PollFd, PollEvents},
     task::{current_task, suspend_current_and_run_next},
     timer::{get_time_ms, Timespec},
@@ -89,8 +89,24 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
         if waittime > 0 && get_time_ms() * 1000000 - begin >= waittime as usize {
             return Ok(0);
         }
-        if check_if_any_sig_for_current_task().is_some() {
-            return Err(SysErrNo::EINTR);
+        {
+            let mut task_inner = task.inner_lock();
+            if let Some(signo) = task_inner
+                .sig_pending
+                .difference(task_inner.sig_mask)
+                .peek_front()
+            {
+                let signal = SigSet::from_sig(signo);
+                let sig_action = proc_inner.get_locked_sigtable().action(signo);
+                let ignorable = signo == SIGCHLD
+                    || sig_action.act.sa_handler == SIG_IGN
+                    || (!sig_action.customed && signal.default_op() == SigOp::Ignore);
+                if ignorable {
+                    task_inner.sig_pending.remove(signal);
+                } else {
+                    return Err(SysErrNo::EINTR);
+                }
+            }
         }
         drop(proc_inner);
         drop(task);
