@@ -61,9 +61,11 @@ impl Wake for MyWaker {
         if let Some(task) = self.task.upgrade() {
             // 标记已唤醒
             *self.woke.lock() = true;
-            // 调用调度器接口，取消任务的阻塞状态
+            // 只把真正睡眠的任务放回 ready queue。poll/register 过程中可能
+            // 同步 wake 当前 Running 任务；若把 Running 任务也入队，会造成
+            // 同一 TCB 被重复调度并触发 inner_lock 重入。
             let mut inner = task.inner_lock();
-            if inner.task_status != TaskStatus::Ready {
+            if inner.task_status == TaskStatus::Blocked {
                 inner.task_status = TaskStatus::Ready;
                 drop(inner);
                 ready_queue::add_task(&task);

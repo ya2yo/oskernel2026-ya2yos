@@ -172,6 +172,14 @@ pub struct TaskControlBlockInner {
     pub futex_pa: usize,      // 当前正在等待的pa
     pub futex_key: usize,     // 当前正在等待的Wait的版本号
     pub futex_timedout: bool, // 本次 futex wait 因超时而唤醒
+    /// 内核兼容性补扫 blocked task itimer 时跳过本任务。
+    ///
+    /// 这不是 Linux ABI，也不是 Linux task_struct 字段。Linux 的 pselect6
+    /// 通过 waitqueue、hrtimer 和 signal pending 直接完成组合等待；Ya2yOS
+    /// 这里是为了和当前 `check_blocked_task_timers()` 兼容：pselect6 自身
+    /// 有独立的 fd/timeout/signal 唤醒逻辑，若调度循环额外扫描它的
+    /// ITIMER_REAL，会改变 netperf 这类测试的 SIGALRM 交付时机。
+    pub skip_blocked_itimer_check: bool,
     /// 信号已交付但被透明处理（setup_frame），可中断 syscall 应返回 EINTR
     pub sig_eintr: bool,
     /// sigtimedwait 因超时而唤醒
@@ -259,6 +267,7 @@ impl TaskControlBlock {
                 futex_pa: 0,
                 futex_key: 0,
                 futex_timedout: false,
+                skip_blocked_itimer_check: false,
                 sig_eintr: false,
                 sigtimedwait_timedout: false,
                 nice: 0,
@@ -610,6 +619,7 @@ impl TaskControlBlock {
                 sig_pending: SigSet::empty(),
                 timer: child_timer,
                 robust_list: RobustListHead::default(),
+                skip_blocked_itimer_check: false,
                 user_id: parent_user_id,
                 effective_uid: parent_euid,
                 saved_uid: parent_suid,

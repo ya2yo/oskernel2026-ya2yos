@@ -2,7 +2,8 @@
 use core::cell::SyncUnsafeCell;
 
 use super::{
-    __abandon, check_blocked_task_timers, ready_queue, TaskContext, TaskControlBlock, TaskStatus,
+    __abandon, check_blocked_task_timers, check_timer_events, ready_queue, TaskContext,
+    TaskControlBlock, TaskStatus,
 };
 use crate::arch::cpu::hart_id;
 
@@ -70,6 +71,7 @@ fn get_proc_by_hartid(hartid: usize) -> &'static mut Processor {
 ///Loop `fetch_task` to get the process that needs to run, and switch the process through `__switch`
 pub fn run_tasks() {
     loop {
+        check_timer_events();
         check_blocked_task_timers();
         check_futex_timer();
         let processor = get_proc_by_hartid(hart_id());

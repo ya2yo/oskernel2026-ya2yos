@@ -661,3 +661,10 @@
 - **场景**：Bug 分析与定位、调度与 `setitimer` 唤醒修复、netperf 验证、文档完善
 - **描述**：用户说明 `errno 92` 已消失，要求继续修复最后一个 `TCP_CRR` 失败。AI 根据 `log.ans` 定位到最后一次数据连接已完成，但客户端控制连接 `pselect6` 先超时，服务端阻塞在下一次 `accept` 的线程稍后才被 `SIGALRM` 打断并发送 656 字节结果。根因是内核态自愿调度期间没有检查 blocked task 的 itimer，导致 blocked `accept` 的 `SIGALRM` 唤醒滞后。修复为调度主循环只检查 `TaskStatus::Blocked` 任务的 timer，避免改变 running/ready 线程自身 `SIGALRM` 交付时机。`make` 通过，`timeout 300s make run` 中 netperf 五个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-28 条目与 [problem/netperf-tcp-crr-blocked-itimer.md](./problem/netperf-tcp-crr-blocked-itimer.md)。
 - **关联 commit**：待提交
+
+#### pselect6 阻塞化实现（6.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：系统调用语义增强、I/O 复用阻塞等待、waker/timer 调度修复、netperf 回归验证、文档完善
+- **描述**：用户要求根据 `wait4` 的实现，将仍在轮询的 `pselect6` 改为可阻塞等待。AI 将 `sys_pselect6` 改为 `block_on(poll_fn(...))` 模式：先 poll fd，就绪则回写 fdset；未就绪时处理 pending signal、注册 fd waker，并用 timeout future 处理超时。实现过程中修复了 `MyWaker` 对 Running 任务重复入队导致的 TCB 锁重入，并为 pselect 等待增加 `skip_blocked_itimer_check`，避免它被 TCP_CRR 兼容用的 blocked itimer 扫描提前投递 SIGALRM。`make` 通过，`timeout 300s make run` 中 netperf 五个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-28 条目与 [problem/pselect6-blocking-wait.md](./problem/pselect6-blocking-wait.md)。
+- **关联 commit**：待提交

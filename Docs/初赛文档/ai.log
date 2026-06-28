@@ -2613,3 +2613,66 @@ timeout 300s make run > log.ans 2>&1
 ```
 
 - 新 `log.ans` 中未再出现 `recv_response_timed_n`、`errno 9`、`errno 92` 或 `Protocol not available`。
+
+---
+
+## 2026-06-28: pselect6 阻塞化实现
+
+### 用户需求
+
+用户在提交前一轮 TCP_CRR 修复后，要求根据 `wait4` 的实现方式，将当前仍在轮询的 `pselect6` 改为可以阻塞等待。
+
+### 分析
+
+AI 对照 `sys_waitpid()` / `sys_waitid()` 中的 `block_on(poll_fn(...))` 模式，检查当前 `sys_pselect6()`。原实现每轮重新扫描 fd，未就绪时调用 `suspend_current_and_run_next()`，不会调用 `File::register()`，因此仍是轮询。
+
+实现方向为：
+
+- 保留 syscall 层的 raw `pselect6` sigmask 解析、fdset 复制和 timeout 参数处理。
+- 将 fd 扫描拆成 `collect_watch_entries()` 与 `poll_ready()`，避免持有 task inner 锁调用 `file.poll()`。
+- 未就绪时先按既有 pselect 语义处理 pending signal；忽略类信号消费后继续，其它可见信号返回 `EINTR`。
+- Pending 前调用 `file.register(cx, interests)` 注册 waker，再二次 poll 防止丢失竞态。
+- timeout 使用已有 `timeout()` / `TimerFuture`，并把 `check_timer_events()` 接入 timer interrupt 和调度主循环。
+
+验证中先遇到 `TaskControlBlock::inner_lock()` panic。原因是 `MyWaker::wake_by_ref()` 对所有非 Ready 状态任务都入队，网络 poll 同步 wake 当前 Running 任务时会把当前 TCB 重复放入 ready queue。修复为只对 `TaskStatus::Blocked` 任务入队。
+
+随后 `TCP_STREAM` 出现 `recv_response_timed_n errno 4`，而移除 blocked itimer 扫描又会让 `TCP_CRR` 卡住。AI 最终区分两类 blocked task：pselect 自身使用 fd/timeout/signal waker，不参与调度循环的 blocked itimer 兼容扫描；server blocked `accept` 仍由该扫描触发 `SIGALRM`。为此增加 `skip_blocked_itimer_check` 标志，并在 `pselect6` 阻塞期间置位、返回前清理。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/io_mpx/select.rs` | `pselect6` 改为阻塞式 poll future，注册 fd waker，使用 timeout future，返回前恢复 sigmask/清理标志 |
+| `os/src/task/future/mod.rs` | waker 只把 blocked task 放回 ready queue |
+| `os/src/task/task/task.rs` | 增加 `skip_blocked_itimer_check` 标志 |
+| `os/src/task/manager.rs` | blocked itimer 扫描跳过 pselect 标记任务 |
+| `os/src/task/processor.rs` | 调度循环检查 async timer future |
+| `os/src/trap/mod.rs` | timer interrupt 检查 async timer future |
+| `Docs/初赛文档/problem/pselect6-blocking-wait.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.28 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 300s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过。
+- `netperf-musl` 五个子项均 success：
+
+```text
+====== netperf UDP_STREAM end: success ======
+====== netperf TCP_STREAM end: success ======
+====== netperf UDP_RR end: success ======
+====== netperf TCP_RR end: success ======
+====== netperf TCP_CRR end: success ======
+```
+
+- 新 `log.ans` 中未出现 `recv_response_timed_n`、`errno 9`、`errno 92`、`errno 4`、`Protocol not available`、`panic` 或 `ERROR`。
