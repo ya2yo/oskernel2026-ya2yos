@@ -2557,3 +2557,59 @@ timeout 300s make run > /tmp/netperf-after-real-select-fix.log 2>&1
 ```
 
 - `TCP_CRR` 仍失败，日志为 `recv_response_timed_n: no response received. errno 9 counter 0`，并出现 LoongArch `Unknown` trap 日志。该问题是修复原始 netserver 提前退出后暴露的后续问题，尚未在本次处理。
+
+---
+
+## 2026-06-28: netperf TCP_CRR blocked itimer 修复
+
+### 用户需求
+
+用户说明 `errno 92` 已消失，要求继续处理最后一个 `TCP_CRR` 测例失败。
+
+### 分析
+
+AI 重新扫描当前 `log.ans`，确认 `Protocol not available` 不再出现，失败变为：
+
+```text
+recv_response_timed_n: no response received. errno 9 counter 0
+====== netperf TCP_CRR end: fail ======
+```
+
+末尾 syscall 时序显示最后一次 TCP connect/request/response 已完成，客户端关闭数据连接后进入控制连接 `pselect6` 等待结果；服务端仍阻塞在下一次 `accept`，直到客户端 `pselect6` 超时退出后才被 `SIGALRM` 打断并发送 656 字节控制响应。
+
+检查 `setitimer` 与调度路径后，AI 定位到 blocked task timer 只在用户态 timer interrupt trap 中通过 `check_all_task_timers()` 扫描。`TCP_CRR` 结束阶段客户端在 `sys_pselect6()` 内部循环等待控制 fd，期间通过 `suspend_current_and_run_next()` 在内核态自愿调度，服务端 blocked `accept` 的 itimer 没有被及时检查。直接在调度循环扫描所有 task timer 会让 `TCP_CRR` 通过，但会改变 running/ready 线程的 `SIGALRM` 交付时机并导致 `TCP_STREAM` 变为 `errno 4`，因此最终收窄为只检查 `TaskStatus::Blocked` 的任务。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/manager.rs` | 新增 `check_blocked_task_timers()`，只对 blocked task 调用 `check_timer()` |
+| `os/src/task/processor.rs` | `run_tasks()` 每轮先检查 blocked task timer，再检查 futex timer |
+| `Docs/初赛文档/problem/netperf-tcp-crr-blocked-itimer.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.28 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 300s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过。
+- `netperf-musl` 五个子项均 success：
+
+```text
+====== netperf UDP_STREAM end: success ======
+====== netperf TCP_STREAM end: success ======
+====== netperf UDP_RR end: success ======
+====== netperf TCP_RR end: success ======
+====== netperf TCP_CRR end: success ======
+```
+
+- 新 `log.ans` 中未再出现 `recv_response_timed_n`、`errno 9`、`errno 92` 或 `Protocol not available`。

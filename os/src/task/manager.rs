@@ -92,6 +92,15 @@ pub fn check_all_task_timers() {
     }
 }
 
+pub fn check_blocked_task_timers() {
+    for (_, task) in tid_to_task::get_all_tasks() {
+        let blocked = task.inner_lock().task_status == TaskStatus::Blocked;
+        if blocked {
+            task.check_timer();
+        }
+    }
+}
+
 pub mod tid_to_task {
     use log::debug;
 

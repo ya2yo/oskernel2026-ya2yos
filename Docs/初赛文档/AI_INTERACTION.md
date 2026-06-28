@@ -654,3 +654,10 @@
 - **场景**：Bug 分析与定位、`pselect6/ppoll` 信号语义修复、网络 poll 锁重入修复、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复 netperf 失败。AI 定位到 `UDP_STREAM` 成功后 `netserver` 因 `accept_connections: select failure: Interrupted system call` 退出，后续子项控制连接失败；根因是 `pselect6/ppoll` 将默认忽略的 `SIGCHLD` pending signal 直接返回为 `EINTR`。修复为消费忽略类信号后继续等待。随后用户提供 GDB backtrace，确认 `sys_pselect6` 持有 task inner 锁调用 TCP `file.poll()`，loopback wake 路径再锁当前 TCB 导致重入 panic；修复为 fd poll 阶段不持有 task inner 锁。`make` 通过，单跑 netperf 前四项 success，剩余 `TCP_CRR` 的 `errno 9` 失败为后续问题。详见 `Docs/初赛文档/ai.log` 2026-06-28 条目与 [problem/netperf-select-sigchld-eintr.md](./problem/netperf-select-sigchld-eintr.md)。
 - **关联 commit**：待提交
+
+#### netperf TCP_CRR blocked itimer 修复（6.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、调度与 `setitimer` 唤醒修复、netperf 验证、文档完善
+- **描述**：用户说明 `errno 92` 已消失，要求继续修复最后一个 `TCP_CRR` 失败。AI 根据 `log.ans` 定位到最后一次数据连接已完成，但客户端控制连接 `pselect6` 先超时，服务端阻塞在下一次 `accept` 的线程稍后才被 `SIGALRM` 打断并发送 656 字节结果。根因是内核态自愿调度期间没有检查 blocked task 的 itimer，导致 blocked `accept` 的 `SIGALRM` 唤醒滞后。修复为调度主循环只检查 `TaskStatus::Blocked` 任务的 timer，避免改变 running/ready 线程自身 `SIGALRM` 交付时机。`make` 通过，`timeout 300s make run` 中 netperf 五个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-28 条目与 [problem/netperf-tcp-crr-blocked-itimer.md](./problem/netperf-tcp-crr-blocked-itimer.md)。
+- **关联 commit**：待提交

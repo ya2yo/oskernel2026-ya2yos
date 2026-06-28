@@ -1,7 +1,9 @@
 //!Implementation of [`Processor`] and Intersection of control flow
 use core::cell::SyncUnsafeCell;
 
-use super::{__abandon, ready_queue, TaskContext, TaskControlBlock, TaskStatus};
+use super::{
+    __abandon, check_blocked_task_timers, ready_queue, TaskContext, TaskControlBlock, TaskStatus,
+};
 use crate::arch::cpu::hart_id;
 
 use crate::arch::context::TrapContext;
@@ -68,6 +70,7 @@ fn get_proc_by_hartid(hartid: usize) -> &'static mut Processor {
 ///Loop `fetch_task` to get the process that needs to run, and switch the process through `__switch`
 pub fn run_tasks() {
     loop {
+        check_blocked_task_timers();
         check_futex_timer();
         let processor = get_proc_by_hartid(hart_id());
         let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();

@@ -26,6 +26,9 @@ pub(crate) struct GeneralOptions {
     nonblock: AtomicBool,
     /// 地址重用标志
     reuse_address: AtomicBool,
+    /// Do not route through gateways. The current stack has only direct local
+    /// routing, so this is stored for ABI compatibility.
+    dont_route: AtomicBool,
     /// 发送超时时间
     send_timeout_nanos: AtomicU64,
     /// 接收超时时间
@@ -44,6 +47,7 @@ impl GeneralOptions {
         Self {
             nonblock: AtomicBool::new(false),
             reuse_address: AtomicBool::new(false),
+            dont_route: AtomicBool::new(false),
 
             send_timeout_nanos: AtomicU64::new(0),
             recv_timeout_nanos: AtomicU64::new(0),
@@ -125,6 +129,9 @@ impl Configurable for GeneralOptions {
             O::ReuseAddress(reuse) => {
                 **reuse = self.reuse_address();
             }
+            O::DontRoute(dont_route) => {
+                **dont_route = self.dont_route.load(Ordering::Relaxed);
+            }
             O::SendTimeout(timeout) => {
                 **timeout = Duration::from_nanos(self.send_timeout_nanos.load(Ordering::Relaxed));
             }
@@ -145,6 +152,9 @@ impl Configurable for GeneralOptions {
             }
             O::ReuseAddress(reuse) => {
                 self.reuse_address.store(*reuse, Ordering::Relaxed);
+            }
+            O::DontRoute(dont_route) => {
+                self.dont_route.store(*dont_route, Ordering::Relaxed);
             }
             O::SendTimeout(timeout) => {
                 self.send_timeout_nanos

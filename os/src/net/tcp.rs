@@ -198,8 +198,24 @@ impl Configurable for TcpSocket {
             O::ReceiveBuffer(size) => {
                 **size = TCP_RX_BUF_LEN;
             }
-            O::TcpInfo(_) => {
-                // TODO(mivik): implement TCP_INFO
+            O::TcpInfo(info) => {
+                let info = &mut **info;
+                info.tcpi_state = match self.state() {
+                    State::Connected => 1,  // TCP_ESTABLISHED
+                    State::Connecting => 2, // TCP_SYN_SENT
+                    State::Listening => 10, // TCP_LISTEN
+                    State::Closed => 7,     // TCP_CLOSE
+                    State::Idle | State::Busy => 7,
+                };
+                info.tcpi_snd_mss = 1460;
+                info.tcpi_rcv_mss = 1460;
+                info.tcpi_pmtu = 1500;
+                info.tcpi_advmss = 1460;
+                info.tcpi_snd_cwnd = 10;
+                info.tcpi_reordering = 3;
+                info.tcpi_rcv_space = TCP_RX_BUF_LEN as u32;
+                info.tcpi_snd_wnd = TCP_TX_BUF_LEN as u32;
+                info.tcpi_rcv_wnd = TCP_RX_BUF_LEN as u32;
             }
             _ => return Ok(false),
         }

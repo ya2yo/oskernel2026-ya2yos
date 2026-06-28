@@ -9,9 +9,10 @@ use crate::{
 use alloc::sync::Arc;
 use alloc::{vec, vec::Vec};
 use linux_raw_sys::net::{
-    group_req, group_source_req, IP_MSFILTER, IP_MULTICAST_IF, IP_RETOPTS, IP_TTL,
-    MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP, SOL_SOCKET, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO,
-    SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, TCP_NODELAY, socklen_t,
+    group_req, group_source_req, IP_MSFILTER, IP_MTU, IP_MTU_DISCOVER, IP_MULTICAST_IF,
+    IP_RECVERR, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP, SOL_SOCKET,
+    SO_DONTROUTE, SO_ERROR, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR, SO_SNDBUF,
+    SO_SNDTIMEO, TCP_INFO, TCP_MAXSEG, TCP_NODELAY, socklen_t, tcp_info,
 };
 use log::{debug, error, warn};
 
@@ -222,6 +223,11 @@ pub fn sys_setsockopt(
                 let opt = SetSocketOption::KeepAlive(&val);
                 sock.set_option(opt)
             }
+            SO_DONTROUTE => {
+                let val = parse(&kern_optval)?;
+                let opt = SetSocketOption::DontRoute(&val);
+                sock.set_option(opt)
+            }
             SO_RCVTIMEO => {
                 let val = parse(&kern_optval)?;
                 let opt = SetSocketOption::ReceiveTimeout(&val);
@@ -245,6 +251,7 @@ pub fn sys_setsockopt(
                 let opt = SetSocketOption::Ttl(&val);
                 sock.set_option(opt)
             }
+            IP_RECVERR | IP_MTU_DISCOVER => Ok(()),
             MCAST_JOIN_GROUP => {
                 let val: group_req = parse(&kern_optval)?;
                 let opt = SetSocketOption::JoinGroup(&val);
@@ -353,6 +360,21 @@ pub fn sys_getsockopt(
                 kern_opt.extend_from_slice(&val.to_ne_bytes());
                 Ok(())
             }
+            SO_ERROR => {
+                let mut val = 0i32;
+                let opt = GetSocketOption::Error(&mut val);
+                sock.get_option(opt)?;
+                kern_opt.extend_from_slice(&val.to_ne_bytes());
+                Ok(())
+            }
+            SO_DONTROUTE => {
+                let mut val = false;
+                let opt = GetSocketOption::DontRoute(&mut val);
+                sock.get_option(opt)?;
+                let val: i32 = if val { 1 } else { 0 };
+                kern_opt.extend_from_slice(&val.to_ne_bytes());
+                Ok(())
+            }
             SO_RCVTIMEO => {
                 let mut val = Duration::from_secs(0);
                 let opt = GetSocketOption::ReceiveTimeout(&mut val);
@@ -384,6 +406,14 @@ pub fn sys_getsockopt(
                 let val = val as i32;
                 kern_opt.extend_from_slice(&val.to_ne_bytes());
                 Ok(())
+            } else if optname == IP_RECVERR || optname == IP_MTU_DISCOVER {
+                let val: i32 = 0;
+                kern_opt.extend_from_slice(&val.to_ne_bytes());
+                Ok(())
+            } else if optname == IP_MTU {
+                let val: i32 = 1500;
+                kern_opt.extend_from_slice(&val.to_ne_bytes());
+                Ok(())
             } else {
                 return Err(SysErrNo::ENOPROTOOPT);
             }
@@ -396,6 +426,24 @@ pub fn sys_getsockopt(
                 sock.get_option(opt)?;
                 let val: i32 = if val { 1 } else { 0 };
                 kern_opt.extend_from_slice(&val.to_ne_bytes());
+                Ok(())
+            } else if optname == TCP_MAXSEG {
+                let mut val = 0usize;
+                let opt = GetSocketOption::MaxSegment(&mut val);
+                sock.get_option(opt)?;
+                kern_opt.extend_from_slice(&(val as i32).to_ne_bytes());
+                Ok(())
+            } else if optname == TCP_INFO {
+                let mut val: tcp_info = unsafe { core::mem::zeroed() };
+                let opt = GetSocketOption::TcpInfo(&mut val);
+                sock.get_option(opt)?;
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        &val as *const tcp_info as *const u8,
+                        core::mem::size_of::<tcp_info>(),
+                    )
+                };
+                kern_opt.extend_from_slice(bytes);
                 Ok(())
             } else {
                 return Err(SysErrNo::ENOPROTOOPT);

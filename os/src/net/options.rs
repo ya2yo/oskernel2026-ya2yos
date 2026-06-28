@@ -1,6 +1,6 @@
 use crate::utils::{SysErrNo, SysResult};
 use core::time::Duration;
-use linux_raw_sys::net::group_req;
+use linux_raw_sys::net::{group_req, tcp_info};
 
 /// 优雅处理后面不同的选项
 macro_rules! define_options {
@@ -67,7 +67,7 @@ define_options! {
     // --- TCP level options (TCP_*) ----
     NoDelay(bool),
     MaxSegment(usize),
-    TcpInfo(()),
+    TcpInfo(tcp_info),
 
     // ---- IP level options (IP_*) ----
     Ttl(u8),
