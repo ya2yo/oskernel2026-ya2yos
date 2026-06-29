@@ -293,39 +293,41 @@ pub fn sys_pselect6(
     drop(proc_inner);
     drop(task);
 
+    // pselect6 is a hot path for netperf/lmbench. Collect and validate the
+    // watched files once, then reuse the Arc-backed entries across wakeups
+    // instead of locking the fd table and allocating a new Vec on every poll.
+    let entries = match collect_watch_entries(
+        nfds,
+        using_readfds.as_ref(),
+        using_writefds.as_ref(),
+        using_exceptfds.as_ref(),
+    ) {
+        Ok(entries) => entries,
+        Err(errno) => {
+            if mask_changed {
+                current_task().unwrap().inner_lock().sig_mask = old_mask;
+            }
+            return Err(errno);
+        }
+    };
+
     let may_block = !wait_duration.map(|d| d.is_zero()).unwrap_or(false);
     let _pselect_itimer_guard =
         may_block.then(|| enter_pselect_itimer_wait(&current_task().unwrap()));
 
-    let select_once = || -> Result<SelectResult, SysErrNo> {
-        let entries = collect_watch_entries(
-            nfds,
-            using_readfds.as_ref(),
-            using_writefds.as_ref(),
-            using_exceptfds.as_ref(),
-        )?;
-        Ok(poll_ready(
+    let select_once = || -> SelectResult {
+        poll_ready(
             &entries,
             using_readfds.as_ref(),
             using_writefds.as_ref(),
             using_exceptfds.as_ref(),
-        ))
+        )
     };
 
     let select_result = if wait_duration.map(|d| d.is_zero()).unwrap_or(false) {
-        select_once()
+        Ok(select_once())
     } else {
         let select_future = poll_fn(|cx| {
-            let entries = match collect_watch_entries(
-                nfds,
-                using_readfds.as_ref(),
-                using_writefds.as_ref(),
-                using_exceptfds.as_ref(),
-            ) {
-                Ok(entries) => entries,
-                Err(errno) => return Poll::Ready(Err(errno)),
-            };
-
             let ready = poll_ready(
                 &entries,
                 using_readfds.as_ref(),
