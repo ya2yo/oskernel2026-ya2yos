@@ -155,7 +155,7 @@ impl From<Interrupted> for SysErrNo {
 pub async fn interruptible<F: core::future::Future>(f: F) -> Result<F::Output, Interrupted> {
     let mut f = pin!(f);
     let curr = Arc::downgrade(&current_task().unwrap());
-    poll_fn(move |cx| {
+    let result = poll_fn(move |cx| {
         if let Some(task) = curr.upgrade() {
             if task.poll_interrupt(cx).is_ready() {
                 return Poll::Ready(Err(Interrupted));
@@ -165,5 +165,7 @@ pub async fn interruptible<F: core::future::Future>(f: F) -> Result<F::Output, I
         }
         f.as_mut().poll(cx).map(Ok)
     })
-    .await
+    .await;
+    current_task().unwrap().clear_interrupt_waiter();
+    result
 }

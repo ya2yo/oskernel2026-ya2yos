@@ -3,7 +3,7 @@ use alloc::{sync::Arc, vec::Vec};
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_from_user_val, copy_to_user},
-    signal::{SigOp, SigSet, SIGCHLD, SIG_IGN},
+    signal::{enter_pselect_itimer_wait, SigOp, SigSet, SIGCHLD, SIG_IGN},
     syscall::{
         options::{FdSet, FD_SET_LEN},
         PollEvents,
@@ -294,21 +294,8 @@ pub fn sys_pselect6(
     drop(task);
 
     let may_block = !wait_duration.map(|d| d.is_zero()).unwrap_or(false);
-    if may_block {
-        // Linux 没有这个字段。Linux 的 pselect6 直接睡在 fd waitqueue /
-        // hrtimer / signal 组合等待上，不需要调度循环额外扫描 blocked task
-        // 的 ITIMER_REAL。
-        //
-        // Ya2yOS 当前仍保留一条兼容路径：调度循环会补扫 blocked task 的
-        // setitimer，用来唤醒 netperf server 里阻塞的 accept。pselect6
-        // 自己已经有 fd/timeout/signal 唤醒逻辑，若也被这条兼容扫描命中，
-        // netperf client 的 SIGALRM 交付时机会提前，TCP_STREAM 会回退为
-        // EINTR。因此 pselect6 阻塞期间临时跳过该兼容扫描。
-        current_task()
-            .unwrap()
-            .inner_lock()
-            .skip_blocked_itimer_check = true;
-    }
+    let _pselect_itimer_guard =
+        may_block.then(|| enter_pselect_itimer_wait(&current_task().unwrap()));
 
     let select_once = || -> Result<SelectResult, SysErrNo> {
         let entries = collect_watch_entries(
@@ -366,6 +353,18 @@ pub fn sys_pselect6(
                     if ignorable {
                         inner.sig_pending.remove(signal);
                     } else {
+                        drop(inner);
+                        drop(proc_inner);
+                        drop(task);
+                        let ready = poll_ready(
+                            &entries,
+                            using_readfds.as_ref(),
+                            using_writefds.as_ref(),
+                            using_exceptfds.as_ref(),
+                        );
+                        if ready.num > 0 {
+                            return Poll::Ready(Ok(ready));
+                        }
                         return Poll::Ready(Err(SysErrNo::EINTR));
                     }
                 }
@@ -405,13 +404,6 @@ pub fn sys_pselect6(
     if mask_changed {
         current_task().unwrap().inner_lock().sig_mask = old_mask;
     }
-    if may_block {
-        current_task()
-            .unwrap()
-            .inner_lock()
-            .skip_blocked_itimer_check = false;
-    }
-
     let select_result = select_result?;
     write_result_to_user(&select_result, readfds, writefds, exceptfds)
 }

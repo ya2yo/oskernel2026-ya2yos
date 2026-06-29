@@ -2798,3 +2798,67 @@ timeout 120s make run > log.ans 2>&1
 - `make` 双架构通过。
 - `timeout 120s make run` 已经过 `basic-musl`、`basic-glibc`、`busybox-musl`、`busybox-glibc`、`lua`、`iperf`、`cyclictest` 和 `libctest-musl` 的部分测试，最终由外层 timeout 终止。
 - `rg -a -n "panic|panicked|TFAIL|TBROK|ERROR|WARN|Summary|GROUP END|StorePageFault|LoadPageFault|FetchInstructionPageFault|PageModifyFault|SIGSEGV" log.ans` 未出现 panic、page fault 或 SIGSEGV 关键错误。
+
+---
+
+## 2026-06-29: signal/itimer 职责重构
+
+### 用户需求
+
+用户要求重构内核信号处理逻辑，移除此前为 `pselect6` 修复引入的 `TaskControlBlockInner::skip_blocked_itimer_check` 字段，并将信号处理机制从 TCB 移交给 timer 和 signal 模块。
+
+### 分析
+
+AI 检查 `sys_pselect6()`、`TaskControlBlock::check_timer()`、`check_blocked_task_timers()`、`sys_settimer()` 和 trap timer 路径后确认：`skip_blocked_itimer_check` 是为了避免 `pselect6` 阻塞等待被 blocked task itimer 补扫提前打断的临时兼容字段，不属于 Linux ABI。更深层问题是 TCB 侧 `check_timer()` 同时负责 itimer 到期判断、周期 timer 重装、`SIGALRM` 投递和 blocked task 唤醒，导致 syscall 特判只能继续塞进 TCB。
+
+本次重构将 itimer 状态推进收敛到 `timer::Timer`，将到期后的 `SIGALRM` 投递收敛到 `signal::deliver_itimer_signal()`。task manager 和 trap 层只调用 signal 模块入口，不再直接处理 timer 细节。
+
+随后用户要求继续分析最新 `log.ans`。日志显示 `TCP_STREAM` 中服务端已经 `SendTo ret = 656`，客户端却在控制连接 `pselect6` 处返回 `Interrupted system call`，并打印 `recv_response_timed_n: no response received. errno 4 counter -1`。继续追踪 `poll_io()` / `interruptible()` 后确认，前一次 socket `RecvFrom` 正常或错误完成时没有清理 `interrupt_waker`，后续 `pselect6` 阻塞期间被 blocked itimer 补扫误判为仍存在可中断 waiter，从而投递 `SIGALRM`。最终修复为让 `interruptible()` 返回前清理 interrupt waiter，并同步修正 `sigtimedwait` 超时路径。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/timer/itimerval.rs` | 移除 `once` 和分散 setter，新增 `set_itimer()` / `take_expired_signal()`；周期 timer 保持既有 `it_interval` cadence，避免改变 netperf SIGALRM 时序 |
+| `os/src/signal/mod.rs` | 新增 `deliver_itimer_signal(task)` / `deliver_blocked_itimer_signal(task)`，timer 到期后在 signal 模块投递 `SIGALRM`，并只唤醒存在 interruptible waiter 的 blocked task |
+| `os/src/task/task/task.rs` | 删除 `skip_blocked_itimer_check` 字段和 `TaskControlBlock::check_timer()`，新增 interrupt waiter 查询、唤醒和清理接口 |
+| `os/src/task/future/mod.rs` | `interruptible()` 返回前清理本次注册的 interrupt waker，避免污染后续 syscall |
+| `os/src/syscall/signal.rs` | `sigtimedwait` 超时路径清理 interrupt waiter |
+| `os/src/task/manager.rs` | blocked task itimer 补扫改为调用 signal 模块，任务管理器只筛选 blocked task |
+| `os/src/trap/mod.rs` | timer interrupt 返回路径改为调用 `deliver_itimer_signal()` |
+| `os/src/syscall/time.rs` | `setitimer()` 调用 `Timer::set_itimer(new_timer, now)` 安装 timer |
+| `os/src/syscall/io_mpx/select.rs` | 删除 `pselect6()` 对 `skip_blocked_itimer_check` 的设置和清理，改用 signal 模块的 pselect itimer guard |
+| `Docs/初赛文档/problem/signal-itimer-refactor.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/problem/pselect6-blocking-wait.md` | 标注旧 TCB 标志已由本次重构移除 |
+| `Docs/初赛文档/problem/netperf-tcp-crr-blocked-itimer.md` | 标注旧 `check_timer()` 路径已由 signal/timer 模块接管 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.29 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助重构摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+make log
+timeout 300s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过。
+- 当前配置单跑 `netperf-musl`，五个子项均 success：
+
+```text
+====== netperf UDP_STREAM end: success ======
+====== netperf TCP_STREAM end: success ======
+====== netperf UDP_RR end: success ======
+====== netperf TCP_RR end: success ======
+====== netperf TCP_CRR end: success ======
+#### OS COMP TEST GROUP END netperf-musl ####
+shutdown!
+```
+
+- 关键字扫描未发现 `panic`、`panicked`、`TFAIL`、`TBROK`、`ERROR`、`recv_response_timed_n`、`errno 4`、`errno 9`、`errno 92`、`select failure` 或 `Connection refused`。
+- `GetSockOpt ret = Protocol not available` 仍会作为 netperf TCP option 探测结果出现，但不影响测试判定。

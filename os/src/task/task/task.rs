@@ -21,10 +21,10 @@ use crate::{
         copy_to_user, copy_to_user_val, MapAreaType, MapPermission, MemorySet, MemorySetInner,
         PhysPageNum, VirtAddr,
     },
-    signal::{send_signal_to_thread, SigSet, SigTable},
+    signal::{SigSet, SigTable},
     syscall::CloneFlags,
     task::{futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid},
-    timer::{TimeData, TimeVal, Timer},
+    timer::{TimeData, Timer},
     trap::trap_types::{Exception, Trap},
     utils::{get_abs_path, is_abs_path, SysErrNo},
 };
@@ -36,10 +36,7 @@ use alloc::{
 };
 use core::fmt::Debug;
 use core::mem::size_of;
-use core::{
-    sync::atomic::{AtomicBool, Ordering},
-    task::Poll,
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 use futures_util::task::AtomicWaker;
 use linux_raw_sys::general::CAP_LAST_CAP;
 use log::{debug, error};
@@ -172,14 +169,6 @@ pub struct TaskControlBlockInner {
     pub futex_pa: usize,      // 当前正在等待的pa
     pub futex_key: usize,     // 当前正在等待的Wait的版本号
     pub futex_timedout: bool, // 本次 futex wait 因超时而唤醒
-    /// 内核兼容性补扫 blocked task itimer 时跳过本任务。
-    ///
-    /// 这不是 Linux ABI，也不是 Linux task_struct 字段。Linux 的 pselect6
-    /// 通过 waitqueue、hrtimer 和 signal pending 直接完成组合等待；Ya2yOS
-    /// 这里是为了和当前 `check_blocked_task_timers()` 兼容：pselect6 自身
-    /// 有独立的 fd/timeout/signal 唤醒逻辑，若调度循环额外扫描它的
-    /// ITIMER_REAL，会改变 netperf 这类测试的 SIGALRM 交付时机。
-    pub skip_blocked_itimer_check: bool,
     /// 信号已交付但被透明处理（setup_frame），可中断 syscall 应返回 EINTR
     pub sig_eintr: bool,
     /// sigtimedwait 因超时而唤醒
@@ -267,7 +256,6 @@ impl TaskControlBlock {
                 futex_pa: 0,
                 futex_key: 0,
                 futex_timedout: false,
-                skip_blocked_itimer_check: false,
                 sig_eintr: false,
                 sigtimedwait_timedout: false,
                 nice: 0,
@@ -619,7 +607,6 @@ impl TaskControlBlock {
                 sig_pending: SigSet::empty(),
                 timer: child_timer,
                 robust_list: RobustListHead::default(),
-                skip_blocked_itimer_check: false,
                 user_id: parent_user_id,
                 effective_uid: parent_euid,
                 saved_uid: parent_suid,
@@ -742,58 +729,48 @@ impl TaskControlBlock {
         inner.user_heappoint = ret;
         ret
     }
-    /// 检查计时器
-    pub fn check_timer(&self) {
-        let mut should_alarm = false;
-        {
-            let task_inner = self.inner_lock();
-            let timer = task_inner.timer.clone();
-            let now = TimeVal::now();
-            if timer.trigger_once() {
-                // 只触发一次,单次计时器
-                if now > timer.last_time() + timer.timer().it_value {
-                    timer.set_trigger_once(false);
-                    timer.set_last_time(now);
-                    should_alarm = true;
-                }
-            } else if !timer.timer().it_interval.is_empty() {
-                //间隔触发
-                if now > timer.last_time() + timer.timer().it_interval {
-                    timer.set_last_time(now);
-                    should_alarm = true;
-                }
-            }
-        }
-        if should_alarm {
-            let was_blocked = {
-                let task_inner = self.inner_lock();
-                task_inner.task_status == TaskStatus::Blocked
-            };
-            send_signal_to_thread(self.tid(), SigSet::SIGALRM);
-            if was_blocked {
-                self.interrupt();
-            }
-        }
-    }
     pub fn set_status(&self, status: TaskStatus) {
         let mut task_inner = self.inner_lock();
         task_inner.task_status = status;
         drop(task_inner);
     }
-    pub fn poll_interrupt(&self, cx: &mut core::task::Context) -> Poll<()> {
+    pub fn poll_interrupt(&self, cx: &mut core::task::Context) -> core::task::Poll<()> {
         if self.interrupted.swap(false, Ordering::AcqRel) {
-            Poll::Ready(())
+            core::task::Poll::Ready(())
         } else {
             self.interrupt_waker.register(cx.waker());
-            Poll::Pending
+            core::task::Poll::Pending
         }
     }
     pub fn clear_interrupt(&self) {
         self.interrupted.store(false, Ordering::Release);
     }
+    pub fn clear_interrupt_waiter(&self) {
+        self.interrupted.store(false, Ordering::Release);
+        self.interrupt_waker.take();
+    }
     pub fn interrupt(&self) {
         self.interrupted.store(true, Ordering::Release);
         self.interrupt_waker.wake();
+    }
+    /// Wake a task that is sleeping in an interruptible kernel wait.
+    pub fn wake_interruptible(&self) -> bool {
+        if let Some(waker) = self.interrupt_waker.take() {
+            self.interrupted.store(true, Ordering::Release);
+            waker.wake();
+            true
+        } else {
+            false
+        }
+    }
+    /// Return whether the task has an interruptible wait registered.
+    pub fn has_interruptible_waiter(&self) -> bool {
+        if let Some(waker) = self.interrupt_waker.take() {
+            self.interrupt_waker.register(&waker);
+            true
+        } else {
+            false
+        }
     }
     /// 分配用户栈和 trap context 区域，并返回用户栈顶地址
     fn alloc_user_res(&self, task_inner: &mut TaskControlBlockInner) -> usize {

@@ -250,7 +250,9 @@ pub fn sys_rt_sigtimedwait(
         // 检查是否因超时被唤醒
         if task_inner.sigtimedwait_timedout {
             task_inner.sigtimedwait_timedout = false;
-            task.clear_interrupt(); // 清除 timer 设置的 interrupted 标志，避免污染后续 syscall
+            // 清除 timer 设置的 interrupted 标志和本次等待注册的 waker，
+            // 避免污染后续 syscall。
+            task.clear_interrupt_waiter();
             drop(task_inner);
             return Poll::Ready(Err(SysErrNo::EAGAIN));
         }

@@ -19,12 +19,13 @@ use crate::{
     arch::{cpu::hart_id, page_table::PageTable, trap_interface::tlb_page_modify_handler},
     mm::{VirtAddr, VirtPageNum},
     signal::{
-        check_if_any_sig_for_current_task, handle_signal, send_signal_to_thread, SigSet, SIGSEGV,
+        check_if_any_sig_for_current_task, deliver_itimer_signal, handle_signal,
+        send_signal_to_thread, SigSet, SIGSEGV,
     },
     syscall::{syscall, Syscall},
     task::{
-        check_all_task_timers, check_timer_events, current_task, current_token, current_trap_cx,
-        exit_current_and_run_next, suspend_current_and_run_next,
+        check_timer_events, current_task, current_token, current_trap_cx, exit_current_and_run_next,
+        suspend_current_and_run_next,
     },
     timer::{check_futex_timer, set_next_trigger},
     utils::backtrace,
@@ -186,7 +187,7 @@ pub fn trap_handler() {
 
         Trap::Interrupt(Interrupt::Timer) => {
             check_timer_events();
-            check_all_task_timers();
+            deliver_itimer_signal(&current_task().unwrap());
             // 检查futex操作是否超时
             check_futex_timer();
             set_next_trigger();
@@ -204,7 +205,7 @@ pub fn trap_handler() {
         }
     }
     //检查定时器
-    current_task().unwrap().check_timer();
+    deliver_itimer_signal(&current_task().unwrap());
 
     //记录内核空间花费CPU时间，同时准备用户空间花费CPU时间
     current_task()

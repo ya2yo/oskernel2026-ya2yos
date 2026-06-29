@@ -1,5 +1,6 @@
 //!Implementation of [`TaskManager`]
 use super::{current_task, TaskControlBlock, TaskStatus, INITPROC};
+use crate::signal::deliver_blocked_itimer_signal;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -86,23 +87,17 @@ pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
     ready_queue::add_task(&task);
 }
 
-pub fn check_all_task_timers() {
-    for (_, task) in tid_to_task::get_all_tasks() {
-        task.check_timer();
-    }
-}
-
 pub fn check_blocked_task_timers() {
     for (_, task) in tid_to_task::get_all_tasks() {
         // 这条补扫主要服务于阻塞在 accept/recv 等路径中的任务，避免它们在
-        // 内核态调度循环中错过 ITIMER_REAL。pselect6 已经有自己的
-        // fd/timeout/signal 组合等待，所以用内部标志排除。
+        // 内核态调度循环中错过 ITIMER_REAL。具体到期判断和 SIGALRM 投递由
+        // timer/signal 模块负责，任务管理器只负责遍历候选任务。
         let should_check = {
             let inner = task.inner_lock();
-            inner.task_status == TaskStatus::Blocked && !inner.skip_blocked_itimer_check
+            inner.task_status == TaskStatus::Blocked
         };
         if should_check {
-            task.check_timer();
+            deliver_blocked_itimer_signal(&task);
         }
     }
 }

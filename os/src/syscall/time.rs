@@ -111,15 +111,7 @@ pub fn sys_settimer(
             )
         })?;
         // debug!("[sys_settimer] new_timer={:?}", new_timer);
-        task_inner.timer.set_timer(new_timer);
-        task_inner.timer.set_last_time(TimeVal::now());
-        if new_timer.it_interval.is_empty() {
-            if !new_timer.it_value.is_empty() {
-                task_inner.timer.set_trigger_once(true);
-            }
-        } else {
-            task_inner.timer.set_trigger_once(false);
-        }
+        task_inner.timer.set_itimer(new_timer, TimeVal::now());
     }
     Ok(0)
 }

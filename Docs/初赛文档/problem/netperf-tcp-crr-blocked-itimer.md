@@ -44,6 +44,10 @@ RecvFrom ret = 64
 
 这样可以让 blocked `accept` 的 `ITIMER_REAL` 在内核态调度循环中及时唤醒，同时不提前扫描 running/ready 线程的普通测试定时器，避免扩大 `SIGALRM` 交付时机。
 
+后续 6.29 的 signal/itimer 重构已删除 `TaskControlBlock::check_timer()`。当前 `check_blocked_task_timers()` 仍保留 blocked task 补扫，但只负责筛选候选任务，实际到期判断由 `Timer::take_expired_signal()` 完成，`SIGALRM` 投递由 `signal::deliver_itimer_signal()` 完成。详见 [signal-itimer-refactor.md](./signal-itimer-refactor.md)。
+
+同次重构还修复了一个后续回退：`interruptible()` 正常完成后若不清理 `interrupt_waker`，下一个 `pselect6()` 可能继承前一次 socket wait 的残留 waker，被 blocked itimer 补扫误唤醒并返回 `EINTR`。当前代码在 `interruptible()` 和 `sigtimedwait` 退出路径清理 interrupt waiter，避免重新引入 `TCP_STREAM errno 4`。
+
 涉及文件：
 
 | 文件 | 修改 |
@@ -70,4 +74,4 @@ timeout 300s make run > log.ans 2>&1
 ====== netperf TCP_CRR end: success ======
 ```
 
-新的 `log.ans` 中未再出现 `recv_response_timed_n`、`errno 9`、`errno 92` 或 `Protocol not available`。
+新的 `log.ans` 中未再出现 `recv_response_timed_n`、`errno 4`、`errno 9` 或 `errno 92`。`GetSockOpt ret = Protocol not available` 仍可能作为 netperf TCP option 探测结果出现，不影响本问题的通过判定。

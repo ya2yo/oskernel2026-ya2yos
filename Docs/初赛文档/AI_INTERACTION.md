@@ -688,4 +688,11 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：缺页处理路径重构、命名语义修正、双架构构建验证、文档完善
 - **描述**：用户指出 `valid PTE` 的写权限 fault 进入 `handle_cow_page_fault()` 容易造成语义误解，建议统一 page fault 入口。AI 将 trap 层和用户指针路径统一改为调用 `MemorySet::handle_page_fault()`，内部拆分为 not-present fault 与 present PTE write-protect fault；同时将外层 `cow_page_fault()` 和双架构页表 `handle_cow_page_fault()` 改名为 write-protect 语义，保持实际 PTE flags、refcnt、复制与 TLB 刷新逻辑不变。`make` 双架构通过，`timeout 120s make run` 未出现 page fault / SIGSEGV / panic 关键错误。详见 `Docs/初赛文档/ai.log` 2026-06-29 条目与 [problem/page-fault-unified-handler.md](./problem/page-fault-unified-handler.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`44e3291`
+
+#### signal/itimer 职责重构（6.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：信号与 timer 模块边界重构、`pselect6` 兼容字段移除、netperf 回归修复、文档完善
+- **描述**：用户要求移除此前为 `pselect6` 修复引入的 `TaskControlBlockInner::skip_blocked_itimer_check`，并将信号处理职责从 TCB 移交给 timer 和 signal 模块。AI 将 itimer 到期推进放入 `Timer::take_expired_signal()`，将 `SIGALRM` 投递放入 `signal::deliver_itimer_signal()` / `deliver_blocked_itimer_signal()`，删除 TCB 字段和 `TaskControlBlock::check_timer()`；根据最新 `log.ans` 继续定位 `TCP_STREAM errno 4` 回退，确认根因是 `interruptible()` 正常完成后残留 `interrupt_waker`，导致后续 `pselect6` 被 blocked itimer 补扫误唤醒。修复后 `make` 通过，单跑 `netperf-musl` 五个子项均 success，未再出现 `recv_response_timed_n` 或 `errno 4/9/92`。详见 `Docs/初赛文档/ai.log` 2026-06-29 条目与 [problem/signal-itimer-refactor.md](./problem/signal-itimer-refactor.md)。
+- **关联 commit**：`0d302b4`

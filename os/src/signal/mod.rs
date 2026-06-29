@@ -3,11 +3,12 @@ pub mod signal;
 
 use core::mem::size_of;
 
-use alloc::{slice, sync::Arc};
+use alloc::{collections::BTreeSet, slice, sync::Arc};
 use linux_raw_sys::general::SIGEV_MAX_SIZE;
 use log::{debug, error, warn};
 pub use sigact::*;
 pub use signal::*;
+use spin::Lazy;
 
 use crate::{
     arch::{
@@ -20,6 +21,7 @@ use crate::{
         current_task, exit_current_and_run_next, ready_queue, stop_current_and_run_next,
         tid_to_task, Process, TaskControlBlock, TaskStatus,
     },
+    timer::TimeVal,
     trap::trap_types::{Exception, Trap},
     utils::{SysErrNo, SyscallRet},
 };
@@ -28,6 +30,19 @@ pub const SIG_MAX_NUM: usize = SIGEV_MAX_SIZE as usize;
 pub const SIG_ERR: usize = usize::MAX;
 pub const SIG_DFL: usize = 0;
 pub const SIG_IGN: usize = 1;
+
+static PSELECT_ITIMER_WAITERS: Lazy<kspin::SpinNoIrq<BTreeSet<usize>>> =
+    Lazy::new(|| kspin::SpinNoIrq::new(BTreeSet::new()));
+
+pub struct PselectItimerGuard {
+    tid: usize,
+}
+
+impl Drop for PselectItimerGuard {
+    fn drop(&mut self) {
+        PSELECT_ITIMER_WAITERS.lock().remove(&self.tid);
+    }
+}
 
 extern "C" {
     pub fn sigreturn_trampoline();
@@ -413,6 +428,79 @@ pub fn send_signal_to_thread_group(pid: usize, sig: SigSet) -> Result<usize, Sys
 pub fn send_signal_to_thread(tid: usize, sig: SigSet) {
     if let Some(task) = tid_to_task::tid2task(tid) {
         add_signal(&task, sig);
+    }
+}
+
+pub fn enter_pselect_itimer_wait(task: &TaskControlBlock) -> PselectItimerGuard {
+    PSELECT_ITIMER_WAITERS.lock().insert(task.tid());
+    PselectItimerGuard { tid: task.tid() }
+}
+
+fn is_pselect_itimer_waiter(task: &TaskControlBlock) -> bool {
+    PSELECT_ITIMER_WAITERS.lock().contains(&task.tid())
+}
+
+fn add_itimer_signal(task: &TaskControlBlock) {
+    let mut task_inner = task.inner_lock();
+    task_inner.sig_pending |= SigSet::SIGALRM;
+    let should_ready = task_inner.task_status == TaskStatus::Blocked;
+    if should_ready {
+        task_inner.task_status = TaskStatus::Ready;
+    }
+    drop(task_inner);
+
+    if should_ready {
+        if let Some(task) = tid_to_task::tid2task(task.tid()) {
+            ready_queue::add_task(&task);
+        }
+    }
+}
+
+fn add_blocked_itimer_signal(task: &TaskControlBlock) {
+    let task_inner = task.inner_lock();
+    let should_wake = task_inner.task_status == TaskStatus::Blocked;
+    drop(task_inner);
+
+    if should_wake && task.wake_interruptible() {
+        let mut task_inner = task.inner_lock();
+        task_inner.sig_pending |= SigSet::SIGALRM;
+        if task_inner.task_status == TaskStatus::Blocked {
+            task_inner.task_status = TaskStatus::Ready;
+            drop(task_inner);
+            if let Some(task) = tid_to_task::tid2task(task.tid()) {
+                ready_queue::add_task(&task);
+            }
+        }
+    }
+}
+
+/// Check a task's interval timer and deliver SIGALRM when it expires.
+pub fn deliver_itimer_signal(task: &TaskControlBlock) {
+    if is_pselect_itimer_waiter(task) {
+        return;
+    }
+
+    let timer = {
+        let task_inner = task.inner_lock();
+        task_inner.timer.clone()
+    };
+    if timer.take_expired_signal(TimeVal::now()) {
+        add_itimer_signal(task);
+    }
+}
+
+/// Deliver expired ITIMER_REAL only to interruptible blocked waits.
+pub fn deliver_blocked_itimer_signal(task: &TaskControlBlock) {
+    if !task.has_interruptible_waiter() {
+        return;
+    }
+
+    let timer = {
+        let task_inner = task.inner_lock();
+        task_inner.timer.clone()
+    };
+    if timer.take_expired_signal(TimeVal::now()) {
+        add_blocked_itimer_signal(task);
     }
 }
 

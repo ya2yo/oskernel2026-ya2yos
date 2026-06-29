@@ -15,7 +15,6 @@
 //! 每个线程持有一个 `Timer` (通过 `Arc<Timer>`)，用于 `setitimer(2)`/`getitimer(2)`:
 //! - `timer`: 当前 itimerval 值
 //! - `last_time`: 上次设置定时器时的墙上时钟，用于计算剩余时间
-//! - `once`: 是否单次触发
 
 use super::timeval::TimeVal;
 use crate::sync::SyncUnsafeCell;
@@ -57,7 +56,6 @@ pub struct Timer {
 pub struct TimerInner {
     pub timer: Itimerval,
     pub last_time: TimeVal,
-    pub once: bool,
 }
 
 impl Default for TimerInner {
@@ -71,7 +69,6 @@ impl TimerInner {
         Self {
             timer: Itimerval::new(),
             last_time: TimeVal::new(0, 0),
-            once: false,
         }
     }
 }
@@ -89,30 +86,41 @@ impl Timer {
         }
     }
 
-    pub fn set_timer(&self, new: Itimerval) {
-        let inner = self.inner.get_unchecked_mut();
-        inner.timer = new;
-        inner.once = false;
-        inner.last_time = TimeVal::new(0, 0);
-    }
-
-    pub fn set_last_time(&self, last_time: TimeVal) {
-        self.inner.get_unchecked_mut().last_time = last_time;
-    }
-
-    pub fn set_trigger_once(&self, once: bool) {
-        self.inner.get_unchecked_mut().once = once;
-    }
-
-    pub fn trigger_once(&self) -> bool {
-        self.inner.get_unchecked_ref().once
-    }
-
-    pub fn last_time(&self) -> TimeVal {
-        self.inner.get_unchecked_ref().last_time
-    }
-
     pub fn timer(&self) -> Itimerval {
         self.inner.get_unchecked_ref().timer
+    }
+
+    /// Install a POSIX interval timer and arm its first expiration.
+    pub fn set_itimer(&self, new: Itimerval, now: TimeVal) {
+        let inner = self.inner.get_unchecked_mut();
+        inner.timer = new;
+        inner.last_time = now;
+    }
+
+    /// Consume one expired ITIMER_REAL event.
+    ///
+    /// Single-shot timers expire after `it_value`. Periodic timers keep the
+    /// kernel's historical cadence and advance by `it_interval`.
+    pub fn take_expired_signal(&self, now: TimeVal) -> bool {
+        let inner = self.inner.get_unchecked_mut();
+        if inner.timer.it_value.is_empty() {
+            return false;
+        }
+
+        let duration = if inner.timer.it_interval.is_empty() {
+            inner.timer.it_value
+        } else {
+            inner.timer.it_interval
+        };
+        if now <= inner.last_time + duration {
+            return false;
+        }
+
+        if inner.timer.it_interval.is_empty() {
+            inner.timer.it_value = TimeVal::new(0, 0);
+        } else {
+            inner.last_time = now;
+        }
+        true
     }
 }
