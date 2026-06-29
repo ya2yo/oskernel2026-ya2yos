@@ -1,6 +1,7 @@
 # Ya2yOS
 
 ![alt text](Docs/img/华南理工大学.png)
+项目成员：饶晓杰
 
 本项目主要基于2025年塔特林设计局的参赛作品[TatlinOS](https://gitlab.eduxiji.net/educg-group-36002-2710490/T202510487995221-883)的2025-tatlin分支。
 
@@ -23,9 +24,12 @@
 
 食用指南参考[使用指南](./Docs/使用指南.md)
 项目文档和开发日志均位于 [Docs](./Docs/) 目录下。
-[内核设计文档](./Docs/ya2yos/)
+[PPT](Docs/pre_slides.pdf) 可以帮助你迅速了解这个项目的情况。
+整个内核详细的设计文档请参考[内核设计文档](./Docs/ya2yos/)，里面包含了对AI总体使用情况的说明。
+在引入skills后，AI的每一次修改均会在Docs/初赛文档/AI_INTERACTION.md 和 Docs/初赛文档/ai.log 这两个文件中记录。前者注重人机交互过程，后者注重AI的修改范围。与AI的主要交互方式是让AI通过输出日志进行修改，本人只做最后的原因分析和验收。
 [bug修复文档](./Docs/初赛文档/problem/)
-...
+文档中的图均在[uml](./Docs/uml/)目录下。
+[演示视频](https://1839796361.share.123pan.cn/123pan/ihR2Td-F5MpH?pwd=ya2y#)
 
 主要开发分支在nightly, release分支只记录可以在评测机正常跑分的版本。
 
