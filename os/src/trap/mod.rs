@@ -112,15 +112,12 @@ pub fn trap_handler() {
                     return;
                 }
             };
-            let mut ok;
+            let ok;
             {
                 let task = current_task().unwrap();
                 let process = task.process.inner_lock();
                 let memory_set = process.get_locked_memory_set_read();
-                ok = memory_set.lazy_page_fault(fault_va.floor(), cause); // ok表示是否是lazy_page_fault，如果不是返回 false
-                if !ok {
-                    ok = memory_set.cow_page_fault(fault_va.floor(), cause);
-                }
+                ok = memory_set.handle_page_fault(fault_va.floor(), cause);
                 // drop task inner and task to avoid deadlock and exit exception
             }
             if !ok {
@@ -167,7 +164,7 @@ pub fn trap_handler() {
                 let task = current_task().unwrap();
                 let process = task.process.inner_lock();
                 let memory_set = process.get_locked_memory_set_read();
-                ok = memory_set.cow_page_fault(fault_va.floor(), cause);
+                ok = memory_set.handle_page_fault(fault_va.floor(), cause);
             }
             if !ok {
                 tlb_page_modify_handler();

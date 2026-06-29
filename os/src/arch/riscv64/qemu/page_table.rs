@@ -291,9 +291,9 @@ impl PageTable {
         let old_flags = pte.get_flags();
         pte.set_flags(RVPTEFlags::from_bits_truncate(add_flags.bits() as usize) | old_flags);
     }
-    /// return: 若成功处理了页错误（COW 写错误 / ELF 段权限升级），返回true，否则返回false
-    pub fn handle_cow_page_fault(&mut self, va: VirtAddr, vma: &mut MapArea) -> bool {
-        debug!("[handle_cow_page_fault] va={:?}", va);
+    /// return: 若成功处理了 present PTE 的写保护页错误，返回true，否则返回false
+    pub fn handle_write_protect_page_fault(&mut self, va: VirtAddr, vma: &mut MapArea) -> bool {
+        debug!("[handle_write_protect_page_fault] va={:?}", va);
         let pte = match self.find_valid_pte(va.floor()) {
             Some(pte) => pte,
             None => return false,

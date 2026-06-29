@@ -45,7 +45,7 @@ fn translated_user_page(
     match page_table.translate(vpn) {
         Some(ppn) => Some(ppn),
         None => {
-            memory_set.lazy_page_fault(vpn, fault);
+            memory_set.handle_page_fault(vpn, fault);
             page_table.translate(vpn)
         }
     }
@@ -98,10 +98,10 @@ fn translated_user_page_for_write(
     vpn: VirtPageNum,
 ) -> Option<PhysPageNum> {
     let fault = Trap::Exception(Exception::StorePageFault);
-    if page_table.translate(vpn).is_none() && !memory_set.lazy_page_fault(vpn, fault) {
+    if page_table.translate(vpn).is_none() && !memory_set.handle_page_fault(vpn, fault) {
         return None;
     }
-    memory_set.cow_page_fault(vpn, fault);
+    memory_set.handle_page_fault(vpn, fault);
     page_table.translate(vpn)
 }
 

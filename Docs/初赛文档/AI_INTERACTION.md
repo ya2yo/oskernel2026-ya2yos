@@ -682,3 +682,10 @@
 - **场景**：项目文档润色、AI 使用情况总结
 - **描述**：用户要求润色 `Docs/ya2yos` 第八章。AI 对照相邻章节风格，将 `Docs/ya2yos/08 AI的使用情况.md` 从简短口语化说明整理为“使用概况、主要工作成果、使用中的不足、个人反思”四节，并补齐 `第八章`、`8.1` 至 `8.4` 的章节编号。本次仅修改文档，未涉及内核代码和测试运行。详见 `Docs/初赛文档/ai.log` 2026-06-29 条目。
 - **关联 commit**：`d5f465`
+
+#### page fault 统一入口重构（6.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：缺页处理路径重构、命名语义修正、双架构构建验证、文档完善
+- **描述**：用户指出 `valid PTE` 的写权限 fault 进入 `handle_cow_page_fault()` 容易造成语义误解，建议统一 page fault 入口。AI 将 trap 层和用户指针路径统一改为调用 `MemorySet::handle_page_fault()`，内部拆分为 not-present fault 与 present PTE write-protect fault；同时将外层 `cow_page_fault()` 和双架构页表 `handle_cow_page_fault()` 改名为 write-protect 语义，保持实际 PTE flags、refcnt、复制与 TLB 刷新逻辑不变。`make` 双架构通过，`timeout 120s make run` 未出现 page fault / SIGSEGV / panic 关键错误。详见 `Docs/初赛文档/ai.log` 2026-06-29 条目与 [problem/page-fault-unified-handler.md](./problem/page-fault-unified-handler.md)。
+- **关联 commit**：待提交

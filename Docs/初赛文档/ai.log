@@ -2753,3 +2753,48 @@ nl -ba 'Docs/ya2yos/08 AI的使用情况.md'
 
 - 第八章标题和小节编号为 `第八章`、`8.1` 至 `8.4`，与相邻章节风格一致。
 - 本次为文档润色，未运行内核构建或测试。
+
+---
+
+## 2026-06-29: page fault 统一入口重构
+
+### 用户需求
+
+用户在分析 `pthread_cancel_points` 相关 problem 文档时指出：valid PTE 为什么会进入 `handle_cow_page_fault()` 的语义不直观，建议将缺页处理统一收敛到 `handle_page_fault()`，避免 lazy / COW 命名造成误解。
+
+### 分析
+
+AI 检查 `trap/mod.rs`、`mmap_ops.rs`、`translate.rs` 和双架构 `page_table.rs` 后确认：原 trap 层直接编排 `lazy_page_fault()` 与 `cow_page_fault()`，其中 `cow_page_fault()` 名字过窄，实际处理的是 present PTE 上的 store/write-protect fault，既包括 COW，也包括可按 VMA 语义恢复写权限或复制页面的非 COW 场景。
+
+本次选择做行为保持型重构：统一入口由 `MemorySet::handle_page_fault()` 暴露，内部仍按原顺序先处理 not-present fault，再处理 write-protect fault；架构页表层只改名，不改变实际 PTE flags、refcnt、复制和 TLB 刷新逻辑。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/mm/memory_set/mod.rs` | 暴露统一 `handle_page_fault()`，移除对外 `lazy_page_fault()` / `cow_page_fault()` 封装 |
+| `os/src/mm/memory_set/mmap_ops.rs` | 新增统一入口，内部拆为 `handle_not_present_page_fault()` 和 `handle_write_protect_page_fault()` |
+| `os/src/mm/page_fault_handler.rs` | 将 `cow_page_fault()` 改名为 `write_protect_page_fault()` |
+| `os/src/arch/riscv64/qemu/page_table.rs` | 将 `handle_cow_page_fault()` 改名为 `handle_write_protect_page_fault()` |
+| `os/src/arch/loongarch64/qemu/page_table.rs` | 同步改名 |
+| `os/src/trap/mod.rs` | page fault / PageModifyFault 统一调用 `handle_page_fault()` |
+| `os/src/mm/translate.rs` | 用户指针路径统一调用 `handle_page_fault()` |
+| `Docs/初赛文档/problem/page-fault-unified-handler.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.29 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助重构摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 双架构通过。
+- `timeout 120s make run` 已经过 `basic-musl`、`basic-glibc`、`busybox-musl`、`busybox-glibc`、`lua`、`iperf`、`cyclictest` 和 `libctest-musl` 的部分测试，最终由外层 timeout 终止。
+- `rg -a -n "panic|panicked|TFAIL|TBROK|ERROR|WARN|Summary|GROUP END|StorePageFault|LoadPageFault|FetchInstructionPageFault|PageModifyFault|SIGSEGV" log.ans` 未出现 panic、page fault 或 SIGSEGV 关键错误。

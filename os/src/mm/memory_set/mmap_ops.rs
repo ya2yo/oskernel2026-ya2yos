@@ -17,7 +17,7 @@ use crate::mm::group::GROUP_SHARE;
 use crate::mm::map_area::MapType;
 use crate::mm::memory_set::MemorySetInner;
 use crate::mm::page_fault_handler::{
-    cow_page_fault, lazy_page_fault, mmap_read_page_fault, mmap_write_page_fault,
+    lazy_page_fault, mmap_read_page_fault, mmap_write_page_fault, write_protect_page_fault,
 };
 use crate::syscall::MmapFlags;
 use crate::trap::trap_types::*;
@@ -449,7 +449,14 @@ impl MemorySetInner {
         // 刷新 TLB 使新权限立即生效
         tlb_invalidate();
     }
-    pub fn lazy_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
+    pub fn handle_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
+        if self.handle_not_present_page_fault(vpn, scause) {
+            return true;
+        }
+        self.handle_write_protect_page_fault(vpn, scause)
+    }
+
+    fn handle_not_present_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
         // debug!("[lazy_page_fault] vpn={:?} scause={:?}", vpn, scause);
         let ppn = self.page_table.translate(vpn);
         if !ppn.is_none() {
@@ -498,8 +505,9 @@ impl MemorySetInner {
         false
     }
 
-    pub fn cow_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
-        // debug!("[cow_page_fault] vpn={:?}, scause={:?}", vpn, scause);
+    fn handle_write_protect_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
+        // Only store/page-modify faults can be fixed by COW or write permission
+        // restoration. Load/fetch permission faults must remain SIGSEGV.
         if scause == Trap::Exception(Exception::LoadPageFault)
             || scause == Trap::Exception(Exception::FetchInstructionPageFault)
         {
@@ -519,7 +527,7 @@ impl MemorySetInner {
                 start <= vpn && vpn < end
             })
         {
-            if cow_page_fault(vpn.into(), &mut self.page_table, area) {
+            if write_protect_page_fault(vpn.into(), &mut self.page_table, area) {
                 return true;
             }
         }

@@ -80,7 +80,14 @@ pub fn lazy_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapAr
     vma.map_one(page_table, va.into()).is_some()
 }
 
-///copy on write
-pub fn cow_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
-    page_table.handle_cow_page_fault(va, vma)
+/// Handle a store fault on a present PTE.
+///
+/// This covers both real COW pages and other write-protected pages that can be
+/// made writable according to the owning [`MapArea`].
+pub fn write_protect_page_fault(
+    va: VirtAddr,
+    page_table: &mut PageTable,
+    vma: &mut MapArea,
+) -> bool {
+    page_table.handle_write_protect_page_fault(va, vma)
 }

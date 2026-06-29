@@ -113,12 +113,8 @@ impl MemorySet {
         self.inner.get_unchecked_mut().munmap(addr, len)
     }
     #[inline(always)]
-    pub fn lazy_page_fault(&self, vpn: VirtPageNum, scause: Trap) -> bool {
-        self.inner.get_unchecked_mut().lazy_page_fault(vpn, scause)
-    }
-    #[inline(always)]
-    pub fn cow_page_fault(&self, vpn: VirtPageNum, scause: Trap) -> bool {
-        self.inner.get_unchecked_mut().cow_page_fault(vpn, scause)
+    pub fn handle_page_fault(&self, vpn: VirtPageNum, scause: Trap) -> bool {
+        self.inner.get_unchecked_mut().handle_page_fault(vpn, scause)
     }
     /// 修改虚拟地址空间的访问权限（MemorySet 层封装）。
     ///

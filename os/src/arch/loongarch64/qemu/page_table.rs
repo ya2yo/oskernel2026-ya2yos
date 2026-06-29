@@ -388,8 +388,8 @@ impl PageTable {
             pte.set_flags(new_flags | preserved);
         }
     }
-    /// return: 若成功处理了页错误（COW 写错误 / ELF 段权限升级），返回true，否则返回false
-    pub fn handle_cow_page_fault(&mut self, va: VirtAddr, vma: &mut MapArea) -> bool {
+    /// return: 若成功处理了 present PTE 的写保护页错误，返回true，否则返回false
+    pub fn handle_write_protect_page_fault(&mut self, va: VirtAddr, vma: &mut MapArea) -> bool {
         let pte = match self.find_valid_pte(va.floor()) {
             Some(pte) => pte,
             None => return false,
