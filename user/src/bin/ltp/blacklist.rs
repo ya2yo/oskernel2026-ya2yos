@@ -10,9 +10,7 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "cgroup_fj_proc\0",
     "cgroup_fj_stress.sh\0",
     "cgroup_lib.sh\0",
-    // [0,100)区间
-    "abs01\0",
-    "acct02\0",
+    // [0,100)区间    
     "acct02_helper\0",
     "acl1\0",
     "add_ipv6addr\0",

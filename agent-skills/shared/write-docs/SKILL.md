@@ -2,7 +2,7 @@
 name: write-docs
 description: >-
   Ya2yOS 文档记录。用于写或更新开发日志、Docs/初赛文档/problem/ 问题复盘、
-  ai.log、Docs/初赛文档/AI_INTERACTION.md，尤其是完成功能、syscall 或 bug 修复后的记录。
+  Docs/初赛文档/ai.log、Docs/初赛文档/AI_INTERACTION.md，尤其是完成功能、syscall 或 bug 修复后的记录。
 ---
 
 # 写文档
@@ -63,7 +63,7 @@ description: >-
 
 ## ai.log
 
-文件：`ai.log`
+文件：`Docs/初赛文档/ai.log`
 
 - 只有用了 AI 才写。
 - 记录用户输入、AI 分析路径、采纳的结论、修改文件和验证结果。

@@ -111,6 +111,31 @@ const LOCALTIME: &str =
 const PRELOAD: &str = "";
 const PID_MAX: &str = "4194304\n";
 const CORE_PATTERN: &str = "core\n";
+const KERNEL_CONFIG: &str = "\
+CONFIG_BSD_PROCESS_ACCT=y
+# CONFIG_BSD_PROCESS_ACCT_V3 is not set
+";
+
+fn write_init_file(path: &str, content: &str) -> GeneralRet {
+    let file = open(
+        path,
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+        DEFAULT_FILE_MODE,
+    )?
+    .file()?;
+    let mut content = String::from(content);
+    let mut buffers = Vec::new();
+    unsafe {
+        let bytes = content.as_bytes_mut();
+        buffers.push(core::slice::from_raw_parts_mut(
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        ));
+    }
+    file.write(UserBuffer::new(buffers))?;
+    file.inode.sync();
+    Ok(())
+}
 
 pub fn create_init_files() -> GeneralRet {
     // 写入预先加载内容
@@ -213,6 +238,15 @@ pub fn create_init_files() -> GeneralRet {
     }
     let core_pattern_buf = UserBuffer::new(core_pattern_vec);
     core_pattern_file.write(core_pattern_buf)?;
+
+    // LTP tst_kconfig 会按 uname release 探测 /boot/config-<release>。
+    // 提供最小配置，声明 acct(2) 可用但不启用 v3 accounting 记录格式。
+    open(
+        "/boot",
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
+        DEFAULT_DIR_MODE,
+    )?;
+    write_init_file("/boot/config-5.0.0", KERNEL_CONFIG)?;
 
     //创建/dev文件夹
     open(

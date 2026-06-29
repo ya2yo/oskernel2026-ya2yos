@@ -36,6 +36,7 @@ use crate::{
     fs::{open, OpenFlags, NONE_MODE},
     mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
     signal::{send_signal_to_thread_group, SigSet},
+    syscall::write_process_acct_record,
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
@@ -335,6 +336,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
                 usage.cstime += time_data.cstime;
                 usage.cmaxrss = usage.cmaxrss.max(time_data.cmaxrss);
             }
+            write_process_acct_record(&curr_task, exit_code, &usage);
             curr_task.process.meta_lock().usage = usage;
             if Arc::strong_count(&curr_proc.memory_set) == 1 {
                 memory_set.recycle_data_pages();

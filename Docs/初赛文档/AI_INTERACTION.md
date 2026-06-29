@@ -696,3 +696,10 @@
 - **场景**：信号与 timer 模块边界重构、`pselect6` 兼容字段移除、netperf 回归修复、文档完善
 - **描述**：用户要求移除此前为 `pselect6` 修复引入的 `TaskControlBlockInner::skip_blocked_itimer_check`，并将信号处理职责从 TCB 移交给 timer 和 signal 模块。AI 将 itimer 到期推进放入 `Timer::take_expired_signal()`，将 `SIGALRM` 投递放入 `signal::deliver_itimer_signal()` / `deliver_blocked_itimer_signal()`，删除 TCB 字段和 `TaskControlBlock::check_timer()`；根据最新 `log.ans` 继续定位 `TCP_STREAM errno 4` 回退，确认根因是 `interruptible()` 正常完成后残留 `interrupt_waker`，导致后续 `pselect6` 被 blocked itimer 补扫误唤醒。修复后 `make` 通过，单跑 `netperf-musl` 五个子项均 success，未再出现 `recv_response_timed_n` 或 `errno 4/9/92`。详见 `Docs/初赛文档/ai.log` 2026-06-29 条目与 [problem/signal-itimer-refactor.md](./problem/signal-itimer-refactor.md)。
 - **关联 commit**：`d44f2dd`
+
+#### acct02 process accounting 修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、LTP `acct02` 兼容修复、文档完善
+- **描述**：用户要求分析 `log.ans` 失败原因并修复内核。AI 根据日志确认 `acct02` 首先因缺少可读取的 kernel config 在 `tst_kconfig` 阶段 `TBROK`，随后结合 LTP 源码确认测例还会验证 `acct(2)` 写出的旧版 `struct acct` 记录。修复补齐 `/boot/config-5.0.0`、实现进程退出时写 accounting 记录、维护进程 `comm`，并避免正常 `exit_group()` 的内部 SIGKILL 覆盖真实终止原因。`make` 通过，LoongArch musl 单跑 `acct02` 输出 1 项 TPASS。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/acct02-process-accounting.md](./problem/acct02-process-accounting.md)。
+- **关联 commit**：待提交

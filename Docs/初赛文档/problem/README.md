@@ -20,6 +20,7 @@
 - [waitpid10: zombie PID 复用与进程组等待](./waitpid10-pid-reuse-pgid.md)
 - [waitpid13: WUNTRACED stopped child](./waitpid13-wuntraced-stopped.md)
 - [wait403: wait4(INT_MIN) errno](./wait403-int-min-esrch.md)
+- [acct02: process accounting 记录缺失与内核配置缺失](./acct02-process-accounting.md)
 - [signal01: SIGKILL/SIGSTOP sigaction 与 pause/ppoll 等待](./signal01-sigkill-sigaction.md)
 - [信号与 itimer 职责重构](./signal-itimer-refactor.md)
 - [RISC-V rt_sigaction restorer 丢失导致取指 0 地址](./riscv-sigaction-restorer-fetch-fault.md)

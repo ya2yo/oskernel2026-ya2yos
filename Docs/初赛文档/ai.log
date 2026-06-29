@@ -2862,3 +2862,68 @@ shutdown!
 
 - 关键字扫描未发现 `panic`、`panicked`、`TFAIL`、`TBROK`、`ERROR`、`recv_response_timed_n`、`errno 4`、`errno 9`、`errno 92`、`select failure` 或 `Connection refused`。
 - `GetSockOpt ret = Protocol not available` 仍会作为 netperf TCP option 探测结果出现，但不影响测试判定。
+
+---
+
+## 2026-06-30: acct02 process accounting 修复
+
+### 用户需求
+
+用户要求继续完善内核，分析当前 `log.ans` 为什么失败并进行修复。
+
+### 分析
+
+AI 首先扫描 `log.ans`，确认当前失败用例为 LoongArch musl LTP `acct02`。最初失败停在 `tst_kconfig`：
+
+```text
+tst_kconfig.c:71: TINFO: Couldn't locate kernel config!
+tst_kconfig.c:207: TBROK: Cannot parse kernel .config
+```
+
+日志显示 LTP 根据 `uname.release=5.0.0` 探测 `/proc/config.gz`、`/lib/modules/5.0.0/...`、`/boot/config-5.0.0` 等路径，但内核没有提供这些文件。
+
+继续查看 LTP `acct02` 源码后确认，测例不只是检查 kconfig，还会开启 `acct(2)`、运行返回 128 的 `acct02_helper`，再读取 accounting 文件并校验旧版 `struct acct` 内容。原内核 `sys_acct()` 只保存目标文件句柄，进程退出时没有写记录；补上记录后又发现正常 `exit_group()` 内部使用的 `SIGKILL` 会覆盖 `ProcessMeta::termination_signal`，导致 `ac_exitcode` 被误记为 9。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | 创建 `/boot/config-5.0.0`，写入 `CONFIG_BSD_PROCESS_ACCT=y` 和禁用 v3 accounting 的最小配置 |
+| `os/src/syscall/task/acct.rs` | 实现旧版 64 字节 `struct acct` 记录构造、`comp_t` 时间编码和 accounting 文件追加写入 |
+| `os/src/task/process/process.rs` | 在 `ProcessMeta` 中保存 Linux `comm` 短命令名 |
+| `os/src/task/task/task.rs` | `exec()` 更新 `comm`，fork/clone 创建新进程时继承父进程 `comm` |
+| `os/src/task/mod.rs` | 在最后一个线程退出并完成 usage 快照后写 process accounting 记录 |
+| `os/src/signal/mod.rs` | 进程已有 group exit code 时，不再用后续内部信号覆盖 `termination_signal` |
+| `Docs/初赛文档/problem/acct02-process-accounting.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+make log
+timeout 300s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过。
+- 当前配置单跑 LoongArch musl `acct02`，输出 1 项 TPASS：
+
+```text
+acct02.c:63: TINFO: CONFIG_BSD_PROCESS_ACCT_V3=n
+acct02.c:243: TINFO: Verifying using 'struct acct'
+acct02.c:193: TINFO: == entry 1 ==
+acct02.c:204: TINFO: Number of accounting file entries tested: 1
+acct02.c:210: TPASS: acct() wrote correct file contents!
+Summary:
+passed 1
+failed 0
+broken 0
+```
+
+- `log.ans` 尾部仍有 `FAIL LTP CASE acct02 : 0`，这是 initproc 当前打印格式；退出码为 0，实际 LTP Summary 为通过。

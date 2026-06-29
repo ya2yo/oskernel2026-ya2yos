@@ -130,6 +130,7 @@ impl Process {
                 continued_signal: None,
                 termination_signal: None,
                 usage: ProcessUsage::default(),
+                comm: String::from("initproc"),
             }),
         });
         if parent_pid != 0 {
@@ -358,6 +359,8 @@ pub struct ProcessMeta {
     pub termination_signal: Option<(usize, bool)>,
     /// 进程退出时冻结的资源使用快照，供父进程 wait 后累计 RUSAGE_CHILDREN。
     pub usage: ProcessUsage,
+    /// Linux task comm，供 /proc 与 process accounting 等只需要短命令名的路径使用。
+    pub comm: String,
 }
 
 static PID_2_PROCESS_ARC: Lazy<Mutex<BTreeMap<usize, Arc<Process>>>> =

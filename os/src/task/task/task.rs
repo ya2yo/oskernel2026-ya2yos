@@ -187,6 +187,23 @@ impl TaskControlBlockInner {
     }
 }
 
+fn task_comm_from_argv0(argv0: &str) -> String {
+    let name = argv0
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(argv0);
+    let mut comm = String::new();
+    for ch in name.chars().take(16) {
+        comm.push(ch);
+    }
+    if comm.is_empty() {
+        String::from("?")
+    } else {
+        comm
+    }
+}
+
 impl TaskControlBlock {
     pub fn inner_lock(&self) -> MutexGuard<'_, TaskControlBlockInner> {
         self.inner.try_lock().expect("fail to get task inner")
@@ -448,6 +465,9 @@ impl TaskControlBlock {
         *task_inner.trap_cx() = trap_cx;
         task_inner.user_heappoint = user_hp;
         task_inner.user_heapbottom = user_hp;
+        if let Some(argv0) = argv.first() {
+            self.process.meta_lock().comm = task_comm_from_argv0(argv0);
+        }
         Ok(())
     }
     /// 复制进程，注意这里需要实现 fork 的主要逻辑
@@ -493,6 +513,7 @@ impl TaskControlBlock {
             parent_sgid,
             parent_capabilities,
             parent_nice,
+            parent_comm,
         );
         {
             let parent_inner = self.inner.lock();
@@ -583,9 +604,11 @@ impl TaskControlBlock {
             parent_sgid = parent_inner.saved_gid;
             parent_capabilities = parent_inner.capabilities;
             parent_nice = parent_inner.nice;
+            parent_comm = self.process.meta_lock().comm.clone();
         } // parent_inner, parent_proc_inner 在此释放
 
         // ==================== Phase 2: 构造子进程（不持有父进程锁）====================
+        process_arc.meta_lock().comm = parent_comm;
 
         let child = Arc::new(TaskControlBlock {
             tid: tid_handle,
