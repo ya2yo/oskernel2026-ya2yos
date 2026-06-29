@@ -24,6 +24,7 @@ use spin::Mutex;
 use spin::RwLock;
 
 use super::{
+    check_privileged_port_bind,
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
     general::GeneralOptions,
     get_service,
@@ -184,6 +185,7 @@ impl SocketOps for UdpSocket {
         if local_addr.port() == 0 {
             local_addr.set_port(get_ephemeral_port()?);
         }
+        check_privileged_port_bind(local_addr.port())?;
         if guard.is_some() {
             return Err(SysErrNo::EINVAL);
         }

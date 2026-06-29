@@ -703,3 +703,10 @@
 - **场景**：Bug 分析与定位、LTP `acct02` 兼容修复、文档完善
 - **描述**：用户要求分析 `log.ans` 失败原因并修复内核。AI 根据日志确认 `acct02` 首先因缺少可读取的 kernel config 在 `tst_kconfig` 阶段 `TBROK`，随后结合 LTP 源码确认测例还会验证 `acct(2)` 写出的旧版 `struct acct` 记录。修复补齐 `/boot/config-5.0.0`、实现进程退出时写 accounting 记录、维护进程 `comm`，并避免正常 `exit_group()` 的内部 SIGKILL 覆盖真实终止原因。`make` 通过，LoongArch musl 单跑 `acct02` 输出 1 项 TPASS。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/acct02-process-accounting.md](./problem/acct02-process-accounting.md)。
 - **关联 commit**：待提交
+
+#### bind02 getgrgid 与特权端口修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、LTP `bind02` 兼容修复、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复失败。AI 根据日志确认 musl/glibc `bind02` 均在 setup 阶段因 `getgrgid(0)` 返回 `ENOENT` 而 `TBROK`；结合 LTP 源码和 `initfiles` 确认 `/etc/passwd` 中 `nobody` 的 gid 为 0，但系统未创建 `/etc/group`。继续检查 `bind()` 语义后发现 TCP/UDP 缺少 1024 以下特权端口权限检查。修复补齐最小 `/etc/group`，并让非 root 绑定特权端口返回 `EACCES`。`make`、`make log` 通过，LoongArch 单跑 musl/glibc `bind02` 均输出 `TPASS: bind() : EACCES (13)`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/bind02-privileged-port.md](./problem/bind02-privileged-port.md)。
+- **关联 commit**：待提交

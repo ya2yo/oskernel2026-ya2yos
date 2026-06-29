@@ -2927,3 +2927,67 @@ broken 0
 ```
 
 - `log.ans` 尾部仍有 `FAIL LTP CASE acct02 : 0`，这是 initproc 当前打印格式；退出码为 0，实际 LTP Summary 为通过。
+
+---
+
+## 2026-06-30: bind02 getgrgid 与特权端口修复
+
+### 用户需求
+
+用户要求分析当前 `log.ans` 并修复失败。
+
+### 分析
+
+AI 首先扫描 `log.ans`，确认 musl 和 glibc `bind02` 都在测试 setup 阶段 `TBROK`：
+
+```text
+bind02.c:50: TBROK: getgrgid(0) failed: ENOENT (2)
+Summary:
+passed   0
+failed   0
+broken   1
+```
+
+随后查看 LTP `bind02.c`，确认测试会先读取 `nobody` 用户，再通过 `pw_gid` 调用 `getgrgid()` 获取组名，最后切换到非 root 身份绑定 463 端口并期望 `EACCES`。内核 `initfiles` 已写 `/etc/passwd`，其中 `nobody:x:1:0:...` 指向 gid 0，但没有创建 `/etc/group`，因此 libc 无法解析 gid 0。
+
+继续检查网络 `bind()` 路径发现，补齐 `/etc/group` 后测试会进入真正断言，而 Ya2yOS TCP/UDP bind 只检查端口占用和 socket 状态，没有实现 `port < 1024` 的特权端口限制。若不补该语义，`bind02` 会从 `TBROK` 变为 `TFAIL`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | 增加最小 `/etc/group`，包含 `root:x:0:` 与 `nobody:x:1:`，并在初始化时写入 |
+| `os/src/net/mod.rs` | 增加 `check_privileged_port_bind()`，对 1024 以下端口按 `effective_uid == 0` 做简化权限判断 |
+| `os/src/net/tcp.rs` | TCP `bind()` 在端口确定后调用特权端口检查 |
+| `os/src/net/udp.rs` | UDP `bind()` 在端口确定后调用特权端口检查 |
+| `Docs/初赛文档/problem/bind02-privileged-port.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+make log
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- `make log` 通过。
+- 当前配置单跑 musl/glibc `bind02`，两者均通过：
+
+```text
+bind02.c:52: TINFO: Switching credentials to user: nobody, group: root
+bind02.c:39: TPASS: bind() : EACCES (13)
+Summary:
+passed   1
+failed   0
+broken   0
+```
+
+- 新 `log.ans` 未再出现 `getgrgid(0) failed`。

@@ -24,6 +24,7 @@ use smoltcp::{
 use spin::{Mutex, RwLock};
 
 use super::{
+    check_privileged_port_bind,
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
     general::GeneralOptions,
     get_service,
@@ -309,6 +310,7 @@ impl SocketOps for TcpSocket {
                 if local_addr.port() == 0 {
                     local_addr.set_port(get_ephemeral_port()?);
                 }
+                check_privileged_port_bind(local_addr.port())?;
                 // 检查端口是否被占用
                 if !self.general.reuse_address() {
                     SOCKET_SET.bind_check(local_addr.ip().into(), local_addr.port())?;

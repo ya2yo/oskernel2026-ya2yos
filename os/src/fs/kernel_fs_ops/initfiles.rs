@@ -61,6 +61,7 @@ fn flush_libgcc_s() {
 
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobody:/bin/bash\n";
+const GROUP: &str = "root:x:0:\nnobody:x:1:\n";
 const MEMINFO: &str = r"
 MemTotal:         944564 kB
 MemFree:          835248 kB
@@ -351,6 +352,9 @@ pub fn create_init_files() -> GeneralRet {
     let passwdbuf = UserBuffer::new(passwdvec);
     let passwdsize = passwdfile.write(passwdbuf)?;
     debug!("create /etc/passwd with {} sizes", passwdsize);
+
+    write_init_file("/etc/group", GROUP)?;
+    debug!("create /etc/group");
 
     //创建/etc/ld.so.preload记录用户信息
     let preloadfile = open(

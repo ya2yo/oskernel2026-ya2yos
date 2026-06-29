@@ -41,6 +41,7 @@ use self::{
     wrapper::SocketSetWrapper,
 };
 use crate::drivers::{BaseDriver, DeviceContainer, NetDeviceImpl, NetDriverOps};
+use crate::task::current_task;
 use crate::utils::{SysErrNo, SysResult};
 use alloc::{borrow::ToOwned, boxed::Box};
 use linux_raw_sys::net::{__kernel_sockaddr_storage, AF_INET, AF_INET6};
@@ -64,6 +65,16 @@ fn get_service() -> spin::MutexGuard<'static, Service> {
         .get()
         .expect("Network service not initialized")
         .lock()
+}
+
+fn check_privileged_port_bind(port: u16) -> SysResult {
+    if port < 1024 {
+        let task = current_task().ok_or(SysErrNo::ESRCH)?;
+        if task.inner_lock().effective_uid != 0 {
+            return Err(SysErrNo::EACCES);
+        }
+    }
+    Ok(())
 }
 
 /// 初始化网络子系统。
