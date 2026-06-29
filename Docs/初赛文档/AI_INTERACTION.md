@@ -604,74 +604,81 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：文件系统与块设备性能优化、iozone 验证、文档完善
 - **描述**：用户要求提高当前内核 iozone 得分。AI 检查 lwext4、VFS 和 virtio block 路径，定位到 Disk 层对连续 512B 对齐 I/O 仍逐块提交，以及 lwext4 小文件 cache 阈值 1MiB 无法覆盖 `iozone -a -s 4m`。修复为 Disk 层批量提交连续块，并将 VFileCache 阈值提高到 4MiB。`make` 通过；`timeout 180s make run` 单跑 `iozone-musl` 输出 GROUP END 和 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-06-24 条目与 [problem/iozone-io-performance.md](./problem/iozone-io-performance.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`d076bb6`
 
 #### signal01 SIGKILL/SIGSTOP 与 pause/ppoll 修复（6.25）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、信号 syscall 语义修复、文档完善
 - **描述**：用户要求检查 `log.ans` 调用路径，并解释为什么 `make` 与 `make log` 生成的 kernel 行为不同。AI 定位到两处根因：`rt_sigaction(SIGKILL, act, old_act)` 在 `act.sa_handler == SIG_DFL` 时被错误放行，导致 `signal(SIGKILL, ...)` 返回成功并触发 LTP `TFAIL`；glibc `pause()` 进入的 `ppoll(NULL, 0, NULL, NULL)` 路径未被正确支持，也不能在 pending signal 到来时返回 `EINTR`，因此 warn 构建下会卡在等待路径。`make log` 只是 debug 日志改变了调度时序并掩盖问题。修复后 `make`、`make log` 通过，单跑 `signal01` 输出 6 项 TPASS，Summary 为 `passed 6 failed 0`。详见 `Docs/初赛文档/ai.log` 2026-06-25 条目与 [problem/signal01-sigkill-sigaction.md](./problem/signal01-sigkill-sigaction.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`09d1b35`
 
 #### iperf-musl 网络兼容修复（6.27）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、网络 syscall/UDP 分发语义修复、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复 iperf 测试。AI 先根据日志修复 RISC-V 非规范用户 fault panic、`/dev/urandom` 缺失、`select/pselect6` fdset 和 ready 计数错误、`UserBuffer::read()` 造成的 TCP cookie 短写语义错误，以及 `SO_SNDBUF/SO_RCVBUF` 和 `getsockopt` ABI 问题。随后定位最终 `PARALLEL_UDP` timeout：smoltcp UDP ingress 只按本地端口投递到第一个 socket，而 Ya2yOS 上层 connected UDP recv 会按远端过滤，导致 `iperf -u -P 5` 多流数据进入错误队列。修复为底层 UDP socket 记录 remote endpoint，ingress 先匹配 connected 四元组，再退回普通监听 socket。`make` 通过，`timeout 300s make run` 中 `iperf-musl` 六个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/iperf-musl-network-fixes.md](./problem/iperf-musl-network-fixes.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`a5ebace`
 
 #### iperf-glibc daemon fstatat 与 /dev/null 修复（6.27）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、glibc daemon 兼容修复、文档完善
 - **描述**：用户提供新的 `log.ans`，其中 `iperf3 -s -D` 输出 `unable to become a daemon: Invalid argument`，导致后续客户端全部 `Connection refused`。AI 读取镜像脚本并反汇编 glibc 静态 `iperf3`，确认 `daemon()` 通过 `fstatat(fd, "", ..., AT_EMPTY_PATH)` 检查 `/dev/null`。根因是内核 `sys_fstatat()` 不支持 `AT_EMPTY_PATH` 空路径 fd 查询，且 `/dev/null` 的 `st_rdev` 不是 glibc 期望的 Linux `makedev(1,3)=259`。修复后 `make` 通过，`timeout 120s make run` 中 `iperf-glibc` 六个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/iperf-glibc-daemon-fstatat-devnull.md](./problem/iperf-glibc-daemon-fstatat-devnull.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`faf995e`
 
 #### LoongArch iperf-glibc statx 设备号修复（6.27）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、LoongArch glibc `statx` 兼容修复、文档完善
 - **描述**：用户要求根据新的 `log.ans` 修复 LoongArch 的 iperf 测试。AI 扫描日志确认 `iperf3 -s -D` 失败为 `unable to become a daemon: No such device`，随后反汇编 LoongArch 静态 `iperf3`，确认该架构 glibc 的 `fstat(fd)` wrapper 走 `statx(291)` 并由 glibc 将 `statx` major/minor 转回 `struct stat.st_rdev`。根因是内核 `kstat_to_statx()` 把已经编码的 `st_rdev=259` 直接放入 `stx_rdev_minor`，导致 glibc 重新组合后不等于 `/dev/null` 的 Linux `makedev(1,3)`。修复后 `make TARGET_ARCH=loongarch64` 通过，`timeout 120s make run` 中 `iperf-glibc` 六个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/iperf-glibc-daemon-fstatat-devnull.md](./problem/iperf-glibc-daemon-fstatat-devnull.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`b7221de`
 
 #### lmbench-musl lat_sig 死循环修复（6.27）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、`pselect6`/`rt_sigaction` ABI 修复、mmap fault 权限语义修复、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复 iperf 优化后 lmbench 死循环。AI 先定位到 `lat_sig catch` 中父进程因 `pselect6` timeout 未回写 fd_set，误把旧 `exceptfds` bit 当作 pipe 异常并 cleanup；同时修复 raw `pselect6` sigmask 参数和 `rt_sigaction` raw ABI。继续验证后发现 `lat_sig prot` 卡住，根因是 mmap lazy fault 对 `PROT_READ` 映射的 store fault 未检查 `MapPermission::W`，错误补页导致收不到 `SIGSEGV`。修复后 `make`、`make log` 通过，`timeout 300s make run` 输出 `#### OS COMP TEST GROUP END lmbench-musl ####` 和 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/lmbench.md](./problem/lmbench.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`6ababad`
 
 #### RISC-V rt_sigaction restorer 取指 0 地址修复（6.27）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、RISC-V signal ABI 修复、文档完善
 - **描述**：用户要求优先处理 RISC-V 运行后在 `basic-musl` 处反复 `FetchInstructionPageFault bad addr=0x0` 的问题。AI 通过临时 trap/clone/exec/signal 诊断确认 PID 2 fork 与 exec busybox 均正常，真正跳到 0 发生在 SIGCHLD handler 返回后；根因是 RISC-V 用户态 `rt_sigaction` raw ABI 带 `sa_restorer`，而内核按 LoongArch 路径解析为 `handler, flags, mask[2], unused`，导致 `SA_RESTORER` handler 的返回地址 `ra` 被设为 0。修复后 `make` 通过，`timeout 80s make run` 已越过 basic/busybox/lua/iperf/cyclictest，未再出现该取指 fault。详见 `Docs/初赛文档/ai.log` 2026-06-27 条目与 [problem/riscv-sigaction-restorer-fetch-fault.md](./problem/riscv-sigaction-restorer-fetch-fault.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`966a1a8`
 
 #### netperf-musl select/SIGCHLD EINTR 修复（6.28）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、`pselect6/ppoll` 信号语义修复、网络 poll 锁重入修复、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复 netperf 失败。AI 定位到 `UDP_STREAM` 成功后 `netserver` 因 `accept_connections: select failure: Interrupted system call` 退出，后续子项控制连接失败；根因是 `pselect6/ppoll` 将默认忽略的 `SIGCHLD` pending signal 直接返回为 `EINTR`。修复为消费忽略类信号后继续等待。随后用户提供 GDB backtrace，确认 `sys_pselect6` 持有 task inner 锁调用 TCP `file.poll()`，loopback wake 路径再锁当前 TCB 导致重入 panic；修复为 fd poll 阶段不持有 task inner 锁。`make` 通过，单跑 netperf 前四项 success，剩余 `TCP_CRR` 的 `errno 9` 失败为后续问题。详见 `Docs/初赛文档/ai.log` 2026-06-28 条目与 [problem/netperf-select-sigchld-eintr.md](./problem/netperf-select-sigchld-eintr.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`8b90e3a`
 
 #### netperf TCP_CRR blocked itimer 修复（6.28）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、调度与 `setitimer` 唤醒修复、netperf 验证、文档完善
 - **描述**：用户说明 `errno 92` 已消失，要求继续修复最后一个 `TCP_CRR` 失败。AI 根据 `log.ans` 定位到最后一次数据连接已完成，但客户端控制连接 `pselect6` 先超时，服务端阻塞在下一次 `accept` 的线程稍后才被 `SIGALRM` 打断并发送 656 字节结果。根因是内核态自愿调度期间没有检查 blocked task 的 itimer，导致 blocked `accept` 的 `SIGALRM` 唤醒滞后。修复为调度主循环只检查 `TaskStatus::Blocked` 任务的 timer，避免改变 running/ready 线程自身 `SIGALRM` 交付时机。`make` 通过，`timeout 300s make run` 中 netperf 五个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-28 条目与 [problem/netperf-tcp-crr-blocked-itimer.md](./problem/netperf-tcp-crr-blocked-itimer.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`1a394cb`
 
 #### pselect6 阻塞化实现（6.28）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：系统调用语义增强、I/O 复用阻塞等待、waker/timer 调度修复、netperf 回归验证、文档完善
 - **描述**：用户要求根据 `wait4` 的实现，将仍在轮询的 `pselect6` 改为可阻塞等待。AI 将 `sys_pselect6` 改为 `block_on(poll_fn(...))` 模式：先 poll fd，就绪则回写 fdset；未就绪时处理 pending signal、注册 fd waker，并用 timeout future 处理超时。实现过程中修复了 `MyWaker` 对 Running 任务重复入队导致的 TCB 锁重入，并为 pselect 等待增加 `skip_blocked_itimer_check`，避免它被 TCP_CRR 兼容用的 blocked itimer 扫描提前投递 SIGALRM。`make` 通过，`timeout 300s make run` 中 netperf 五个子项均 success。详见 `Docs/初赛文档/ai.log` 2026-06-28 条目与 [problem/pselect6-blocking-wait.md](./problem/pselect6-blocking-wait.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`d6b2549`
 
 #### pipe pselect6 register panic 修复（6.28）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、pipe poll/waker 语义修复、文档完善
 - **描述**：用户提供 GDB backtrace，显示 `sys_pselect6()` 在监听 pipe fd 时调用 `File::register< Pipe >()` 并落到默认 `unimplemented!`。AI 检查 `Pipe` 与已有 eventfd/socket register 实现，定位到 pipe 只有同步阻塞 waiter 队列，没有 future-waker 路径。修复为在 pipe ring buffer 中增加读写 `PollSet`，实现 `File::register()`，在读写状态变化和端点关闭时唤醒等待者，并让读端全部关闭后的写入返回 `EPIPE`。`make` 通过，`timeout 120s make run` 未再出现原 `File::register` panic。详见 `Docs/初赛文档/ai.log` 2026-06-28 条目与 [problem/pipe-pselect-register-panic.md](./problem/pipe-pselect-register-panic.md)。
+- **关联 commit**：`1af1639`
+
+#### ya2yos 第八章 AI 使用情况文档润色（6.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：项目文档润色、AI 使用情况总结
+- **描述**：用户要求润色 `Docs/ya2yos` 第八章。AI 对照相邻章节风格，将 `Docs/ya2yos/08 AI的使用情况.md` 从简短口语化说明整理为“使用概况、主要工作成果、使用中的不足、个人反思”四节，并补齐 `第八章`、`8.1` 至 `8.4` 的章节编号。本次仅修改文档，未涉及内核代码和测试运行。详见 `Docs/初赛文档/ai.log` 2026-06-29 条目。
 - **关联 commit**：待提交

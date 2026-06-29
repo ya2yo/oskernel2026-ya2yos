@@ -1,4 +1,5 @@
 //! Interrupt request (IRQ) handling.
+//! TODO: 目前还未实现 irq 功能
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 mod handler_table;

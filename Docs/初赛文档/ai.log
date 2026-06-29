@@ -2719,3 +2719,37 @@ timeout 120s make run > log.ans 2>&1
 - `make` 通过。
 - `timeout 120s make run` 跑到 lmbench `Pipe latency` 后被外部 timeout 终止。
 - `rg -a -n "panic|panicked|File::register|unimplemented|src/fs/vfs.rs:163|select.rs:147" log.ans` 无匹配，原 panic 未再出现。
+
+---
+
+## 2026-06-29: ya2yos 第八章 AI 使用情况文档润色
+
+### 用户需求
+
+用户要求润色 `Docs/ya2yos` 中的第八章文档。
+
+### 分析
+
+AI 检查了 `Docs/ya2yos/08 AI的使用情况.md` 以及相邻章节的标题和编号风格，确认当前第八章内容偏口语化，且未使用“第八章 / 8.x”形式的章节结构。仓库中同时存在章节重排产生的未跟踪/删除状态，因此本次只修改第八章正文，不处理其他文件的重命名或 git 状态。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `Docs/ya2yos/08 AI的使用情况.md` | 将原有简短说明扩写并润色为“使用概况、主要工作成果、使用中的不足、个人反思”四节 |
+| `Docs/初赛文档/ai.log` | 追加本次 AI 辅助文档修改记录 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助文档修改摘要 |
+
+### 验证
+
+已检查：
+
+```text
+rg -n '^#{1,4} ' 'Docs/ya2yos/08 AI的使用情况.md'
+nl -ba 'Docs/ya2yos/08 AI的使用情况.md'
+```
+
+结果：
+
+- 第八章标题和小节编号为 `第八章`、`8.1` 至 `8.4`，与相邻章节风格一致。
+- 本次为文档润色，未运行内核构建或测试。

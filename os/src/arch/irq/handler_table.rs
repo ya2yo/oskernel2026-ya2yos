@@ -1,3 +1,5 @@
+//! 部分参考StarryOS
+//! TODO
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// The type of an event handler.
