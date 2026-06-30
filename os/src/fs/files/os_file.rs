@@ -63,6 +63,10 @@ impl OSFile {
     pub fn is_write_open_path(path: &str) -> bool {
         WRITE_OPEN_COUNTS.lock().get(path).copied().unwrap_or(0) != 0
     }
+
+    pub fn set_offset(&self, offset: usize) {
+        self.inner.lock().offset = offset;
+    }
 }
 
 impl Drop for OSFile {

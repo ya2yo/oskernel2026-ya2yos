@@ -850,3 +850,10 @@
 - **场景**：Bug 分析与定位、`O_PATH` fd 操作限制、musl `/proc/self/fd/<fd>` 包装兼容、LTP 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认当前失败为 `open13`：`O_PATH` fd 在 `read/write/fchmod/fchown/fgetxattr` 上没有按 Linux 语义返回 `EBADF`。修复为在 fd 操作入口检查 `OpenFlags::O_PATH` 并返回 `EBADF`，接入独立 `Fchown` syscall 入口，并识别 musl 通过 `/proc/self/fd/<fd>` 调用 `fchmodat/fchownat` 的包装路径。`make` 通过，LoongArch 单跑 musl/glibc `open13` 均输出 5 项 `TPASS`，Summary 为 `passed 5 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/open13-o-path-fd-operations.md](./problem/open13-o-path-fd-operations.md)。
 - **关联 commit**：待提交
+
+#### getdents01 目录流 offset 更新错误修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、LTP getdents 测例源码分析、目录流 offset 语义修复、文档完善
+- **描述**：用户要求继续分析 `log.ans`/`ana.ans` 并先读 `getdents01` 测例源码。AI 确认该用例要求 `getdents/getdents64` 返回 `.`, `..`, `dir`, `file`, `symlink`；结合日志中 `read_dentry finish` 后 syscall 仍返回 `EINVAL`，定位到 `sys_getdents64()` 成功读取目录项后用普通文件 `lseek(SEEK_SET)` 保存目录流 `d_off`。由于 `d_off` 是目录 stream cookie，不是普通文件 byte offset，普通 `lseek` 校验会错误返回 `EINVAL`。修复为增加 `OSFile::set_offset()` 并在 `getdents64` 成功后直接更新目录 fd offset，同时收紧目录 fd 检查、首条记录缓冲区检查和 `read_dir_from()` 目录/对齐处理。`make` 通过，维护者最新 `log.ans` 显示 `getdents01` Summary 为 `passed 2 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/getdents01-directory-offset.md](./problem/getdents01-directory-offset.md)。
+- **关联 commit**：待提交

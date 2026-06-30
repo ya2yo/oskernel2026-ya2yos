@@ -61,6 +61,7 @@
 - [LTP open07 O_NOFOLLOW 与符号链接路径解析](./open07-o-nofollow-symlink.md)
 - [LTP open10 chown 与 setgid 目录 GID 继承](./open10-chown-setgid-inherit.md)
 - [LTP open13 O_PATH fd 操作 EBADF 语义](./open13-o-path-fd-operations.md)
+- [LTP getdents01 目录流 offset 更新错误](./getdents01-directory-offset.md)
 - [preadv2/pwritev2 系统调用实现](./preadv2-pwritev2-syscalls.md)
 - [basic umount 相对挂载点路径不匹配](./basic-umount-relative-mountpoint.md)
 - [LTP access04 mount / loop 设备修复](./access04-ltp-musl.md)

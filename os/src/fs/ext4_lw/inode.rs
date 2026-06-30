@@ -301,6 +301,9 @@ impl Inode for Ext4Inode {
         let (mut res, mut f_off) = (0usize, off);
         for entry in entries {
             if res + entry.len() > len {
+                if res == 0 {
+                    return Err(SysErrNo::EINVAL);
+                }
                 break;
             }
             res += entry.len();

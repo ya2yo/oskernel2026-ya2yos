@@ -176,21 +176,19 @@ pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let process = task.process.inner_lock();
     let memory_set = &*process.get_locked_memory_set_read();
-
-    // debug!(
-    //     "[sys_getdents64] fd is {}, buf addr  is {:x}, len is {}",
-    //     fd, buf as usize, len
-    // );
-
-    if fd >= process.fd_table.len() || process.fd_table.try_get(fd).is_none() {
-        return Err(SysErrNo::EINVAL);
-    }
+    debug!(
+        "[sys_getdents64] fd is {}, buf addr  is {:x}, len is {}",
+        fd, buf as usize, len
+    );
 
     let file = process.fd_table.get(fd)?.file()?;
+    if !file.inode.types().is_dir() {
+        return Err(SysErrNo::ENOTDIR);
+    }
     let off = file.lseek(0, SEEK_CUR)?;
     let (de, off) = file.inode.read_dentry(off, len)?;
     copy_to_user(&memory_set, buf as usize, de.as_slice())?;
-    let _ = file.lseek(off as isize, SEEK_SET)?;
+    file.set_offset(off as usize);
     return Ok(de.len());
 }
 

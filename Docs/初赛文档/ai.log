@@ -4152,3 +4152,53 @@ git diff --check
 - `log.ans` 中 glibc `open13` 五个子项均为 `TPASS`，Summary 为 `passed 5 failed 0 broken 0`。
 - `git diff --check` 无输出。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: getdents01 目录流 offset 更新错误修复
+
+### 用户需求
+
+用户要求继续分析 `log.ans` 和 `ana.ans`，先读测例源码再修改；随后根据新的日志确认 `read_dentry finish` 正常输出，要求重新判断失败点。用户最终确认最新 `log.ans` 已无 failed，要求开始写文档。
+
+### 分析
+
+AI 读取 LTP `getdents01.c` 和 `getdents.h` 后确认，该用例会在临时目录中创建 `dir`、`file`、`symlink`，然后通过 raw `getdents/getdents64` 和 libc 包装接口读取目录项，要求返回缓冲区包含 `.`, `..`, `dir`, `file`, `symlink`，否则报告 `TFAIL`。
+
+早期判断曾怀疑 `read_dir_from()`，但新日志显示 `read_dentry finish` 已在 syscall 返回 `EINVAL` 前出现：
+
+```text
+[sys_getdents64] fd is 3, buf addr is ..., len is 512
+read_dentry finish
+[syscall ret --- Err] Getdents64 ret = Invalid argument
+```
+
+因此错误不在目录项生成本身，而在 `sys_getdents64()` 后半段。继续检查发现 `copy_to_user()` 后调用了 `file.lseek(off as isize, SEEK_SET)?` 保存下一次目录读取位置。`getdents64` 的 `d_off` 是目录流 cookie，不是普通文件字节 offset；用普通文件 `lseek` 校验它会返回 `EINVAL`，并通过 `?` 传播成 syscall 失败。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/os_file.rs` | 增加 `OSFile::set_offset()`，用于直接更新 fd offset |
+| `os/src/syscall/fs/ctl.rs` | `sys_getdents64()` 先校验目录 fd，成功读取并写回目录项后用 `set_offset()` 保存目录流 cookie，不再调用普通 `lseek(SEEK_SET)` |
+| `os/src/fs/ext4_lw/inode.rs` | `read_dentry()` 在首条目录项也无法放入用户缓冲区时返回 `EINVAL` |
+| `crates/lwext4_rust/src/file.rs` | `read_dir_from()` 按路径校验目录类型，检查 `ext4_dir_open()` 返回值，并修正 `d_reclen` 8 字节对齐 |
+| `Docs/初赛文档/problem/getdents01-directory-offset.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=loongarch64`，构建通过。
+- 维护者提供的最新 `log.ans` / `ana.ans` 显示 `getdents01` 能找到 `.`, `..`, `dir`, `file`, `symlink`，并输出 `TPASS: All entries found`。
+- `log.ans` 中 `getdents01` Summary 为 `passed 2 failed 0 broken 0`。
+- 未运行 `riscv64`。
