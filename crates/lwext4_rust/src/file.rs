@@ -174,11 +174,26 @@ impl Ext4File {
         let buf_c_char = buf.as_mut_ptr() as *mut c_char;
         let mut rcnt = 0usize;
         let r = unsafe { ext4_readlink(c_path, buf_c_char, bufsize, &mut rcnt) };
+        unsafe {
+            drop(CString::from_raw(c_path));
+        }
         if r != EOK as i32 {
             error!("ext4_readlink error: rc = {}", r);
             return Err(r);
         }
         Ok(rcnt)
+    }
+
+    pub fn is_symlink(&mut self, path: &str) -> bool {
+        let c_path = CString::new(path).expect("CString::new failed");
+        let c_path = c_path.into_raw();
+        let mut buf = [0 as c_char; 1];
+        let mut rcnt = 0usize;
+        let r = unsafe { ext4_readlink(c_path, buf.as_mut_ptr(), buf.len(), &mut rcnt) };
+        unsafe {
+            drop(CString::from_raw(c_path));
+        }
+        r == EOK as i32
     }
 
     //ext4_fsymlink(const char *target, const char *path)

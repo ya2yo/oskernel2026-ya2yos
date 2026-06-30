@@ -4,26 +4,58 @@ use crate::task::current_task;
 
 use super::*;
 use alloc::sync::Arc;
+use alloc::{format, string::String};
 use log::{debug, warn};
+
+fn split_parent_child(abs_path: &str) -> Option<(&str, &str)> {
+    let abs_path = abs_path.trim_end_matches('/');
+    if abs_path.is_empty() || abs_path == "/" {
+        return None;
+    }
+
+    let idx = abs_path.rfind('/').unwrap_or(0);
+    let parent = if idx == 0 { "/" } else { &abs_path[..idx] };
+    Some((parent, &abs_path[idx + 1..]))
+}
+
+fn join_parent_child(parent: &str, child: &str) -> String {
+    if parent == "/" {
+        format!("/{}", child)
+    } else {
+        format!("{}/{}", parent, child)
+    }
+}
+
+fn resolve_create_path(abs_path: &str) -> Result<String, SysErrNo> {
+    let Some((parent_path, child_name)) = split_parent_child(abs_path) else {
+        return Err(SysErrNo::ENOENT);
+    };
+
+    let parent_inode = if FsIndex::has_inode(parent_path) {
+        FsIndex::find_inode_idx(parent_path).ok_or(SysErrNo::ENOENT)?
+    } else {
+        let inode = superblock_root_inode().find(parent_path, OpenFlags::O_DIRECTORY, 0)?;
+        FsIndex::insert_inode_idx(parent_path, inode.clone());
+        inode
+    };
+
+    if !parent_inode.types().is_dir() {
+        return Err(SysErrNo::ENOTDIR);
+    }
+
+    Ok(join_parent_child(&parent_inode.path(), child_name))
+}
+
 fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
-    // debug!(
-    //     "[create_file] abs_path={}, flags={:?}, mode={:o}",
-    //     abs_path, flags, mode
-    // );
+    debug!(
+        "[create_file] abs_path={}, flags={:?}, mode={:o}",
+        abs_path, flags, mode
+    );
+    let create_path = resolve_create_path(abs_path)?;
     // 检查父目录的写入和执行权限
     // 参考 faccessat 的权限检查逻辑
     if let Some(parent_path) = {
-        let abs_path = abs_path.trim_end_matches('/');
-        if abs_path.is_empty() || abs_path == "/" {
-            None // 根目录没有父目录
-        } else {
-            let idx = abs_path.rfind('/').unwrap_or(0);
-            if idx == 0 {
-                Some("/")
-            } else {
-                Some(&abs_path[..idx])
-            }
-        }
+        split_parent_child(&create_path).map(|(parent_path, _)| parent_path)
     } {
         // debug!("[create_file] parent_path={}", parent_path);
         // 查找父目录的 inode
@@ -114,7 +146,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
     // 一定能找到,因为除了RootInode外都有父结点
     let parent_dir = superblock_root_inode();
     let (readable, writable) = flags.read_write();
-    let inode = parent_dir.create(abs_path, flags.node_type())?;
+    let inode = parent_dir.create(&create_path, flags.node_type())?;
     // Apply the process umask to the requested file mode.
     // umask specifies which permission bits to *clear* from the mode.
     // During early boot (fs::init) there is no current task, so we
@@ -132,7 +164,10 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
     //     mode, umask, effective_mode
     // );
     inode.fmode_set(effective_mode);
-    FsIndex::insert_inode_idx(abs_path, inode.clone());
+    FsIndex::insert_inode_idx(&create_path, inode.clone());
+    if create_path != abs_path {
+        FsIndex::insert_inode_idx(abs_path, inode.clone());
+    }
     let osinode = OSFile::new(
         readable,
         writable,
@@ -162,7 +197,7 @@ pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, Sy
 
     let mut inode: Option<Arc<dyn Inode>> = None;
     // 同一个路径对应一个Inode
-    if FsIndex::has_inode(abs_path) {
+    if !flags.contains(OpenFlags::O_NOFOLLOW) && FsIndex::has_inode(abs_path) {
         inode = FsIndex::find_inode_idx(abs_path);
     } else {
         let found_res = superblock_root_inode().find(abs_path, flags, 0);
@@ -175,6 +210,15 @@ pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, Sy
         if let Ok(t) = found_res {
             FsIndex::insert_inode_idx(abs_path, t.clone());
             inode = Some(t);
+        } else if let Ok(resolved_path) = resolve_create_path(abs_path) {
+            if resolved_path != abs_path {
+                let found_res = superblock_root_inode().find(&resolved_path, flags, 0);
+                if let Ok(t) = found_res {
+                    FsIndex::insert_inode_idx(&resolved_path, t.clone());
+                    FsIndex::insert_inode_idx(abs_path, t.clone());
+                    inode = Some(t);
+                }
+            }
         } else {
             // warn!(
             //     "Unexpected error in root_inode().find({},{:?},0):{:?}",

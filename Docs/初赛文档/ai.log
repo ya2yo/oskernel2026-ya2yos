@@ -3997,3 +3997,56 @@ timeout 300s make run > riscv.ans 2>&1
 - 两轮都从 `Starting netserver with host '127.0.0.1' port '12865'` 开始。
 - musl 与 glibc 各自的 `UDP_STREAM`、`TCP_STREAM`、`UDP_RR`、`TCP_RR`、`TCP_CRR` 全部输出 `end: success`。
 - 日志末尾输出 `#### OS COMP TEST GROUP END netperf-glibc ####` 和 `shutdown!`，未再出现 `socket already listening on port 12865`。
+
+---
+
+## 2026-06-30: open07 O_NOFOLLOW 与符号链接路径解析修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 并修复当前失败。
+
+### 分析
+
+AI 首先用 `rg -a -n "TPASS|TFAIL|TBROK|panic|ERROR|WARN|Summary" log.ans` 和 `strings log.ans | tail` 过滤日志，确认失败来自 LTP `open07`。原始失败为：
+
+```text
+open07.c:51: TBROK: creat(symdir1/testfile,0644) failed: ENOENT (2)
+```
+
+读取 LTP `open07.c` 后确认，setup 会创建 `symdir1 -> testdir`，然后通过 `creat("symdir1/testfile", 0644)` 在 symlink 目录下创建文件；测试阶段还要求最终分量为 symlink 的 `open(O_NOFOLLOW)` 返回 `ELOOP`，而 `symdir1/testfile` 这种中间分量 symlink 路径应打开成功。
+
+AI 检查 `open()`、`create_file()` 和 `Ext4Inode::find()` 后定位到三类问题：
+
+1. `create_file()` 直接把包含 symlink 父目录的原始路径交给 lwext4 创建，底层不会为创建父目录解析中间 symlink，导致 `ENOENT`。
+2. `Ext4Inode::find()` 遇到 symlink 时默认递归跟随，缺少 `O_NOFOLLOW` 对最终分量返回 `ELOOP` 的语义。
+3. lwext4 的 `ext4_inode_exist(path, EXT4_DE_DIR)` 会把 symlink-to-dir 当目录打开；同时 `FsIndex` 可能缓存 `symdir1 -> testdir inode`，使 `O_NOFOLLOW` 直接命中缓存并绕过最终 symlink 检查。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/open.rs` | 新增父路径解析辅助逻辑，创建文件前先解析父目录真实路径；普通打开在原路径失败后用解析后的父目录路径重查；`O_NOFOLLOW` 打开跳过 `FsIndex` 快路径 |
+| `os/src/fs/ext4_lw/inode.rs` | `find()` 在最终路径分量为 symlink 且设置 `O_NOFOLLOW` 时返回 `ELOOP` |
+| `crates/lwext4_rust/src/file.rs` | 新增 `Ext4File::is_symlink()` 用 `ext4_readlink()` 判断最终分量 symlink；修复 `file_readlink()` 中 `CString::into_raw()` 后未释放的问题 |
+| `Docs/初赛文档/problem/open07-o-nofollow-symlink.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=loongarch64`，构建通过。
+- `log.ans` 中 musl `open07` 五个子项均为 `TPASS`，Summary 为 `passed 5 failed 0 broken 0`。
+- `log.ans` 中 glibc `open07` 五个子项均为 `TPASS`，Summary 为 `passed 5 failed 0 broken 0`。
+- 包装层仍打印 `FAIL LTP CASE open07 : 10` 和 `RESULT GLIBC LTP SINGLE CASE open07 : 10`，但 LTP Summary 显示 failed 为 0，按项目规则以 `TPASS`/`Summary` 为准。
+- 未运行 `riscv64`。

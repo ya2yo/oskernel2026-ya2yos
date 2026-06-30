@@ -209,6 +209,9 @@ impl Inode for Ext4Inode {
     ) -> Result<Arc<dyn Inode>, SysErrNo> {
         // log::info!("[Inode.find] origin path={}", path);
         let file = &mut self.inner.get_unchecked_mut().f;
+        if flags.contains(OpenFlags::O_NOFOLLOW) && file.is_symlink(path) {
+            return Err(SysErrNo::ELOOP);
+        }
         if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
             Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)))
         } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_REG_FILE) {
@@ -219,6 +222,9 @@ impl Inode for Ext4Inode {
         } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_SYMLINK) {
             if flags.contains(OpenFlags::O_UNLINK) {
                 return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK)));
+            }
+            if flags.contains(OpenFlags::O_NOFOLLOW) {
+                return Err(SysErrNo::ELOOP);
             }
             if loop_times >= MAX_LOOPTIMES {
                 debug!("error ELOOP!");

@@ -829,3 +829,10 @@
 - **场景**：Bug 分析与定位、进程退出 socket 清理修复、netperf full run 验证、文档完善
 - **描述**：用户说明 full run 最后的 `netperf-glibc` 报 `socket already listening on port 12865`，并要求不要依赖运行时改脚本或换端口。AI 对比历史可用版本和当前 `riscv.ans`，确认临时改到 `12866` 只是绕过，真实问题是进程退出清 fd 时监听 socket 释放过度依赖最后一个 `Arc<Socket>` drop；若仍有临时引用，`LISTEN_TABLE` 中的 12865 监听项会短暂残留。最终修复为 `FdTable::clear()` 在进程退出清理 fd 前主动对 socket 调用 `shutdown(Shutdown::Both)`，并恢复 `initproc` 使用原始 `netperf_testcode.sh`。`make` 通过，`riscv.ans` 显示 musl/glibc 两轮原始 netperf 均使用 12865 且十个子项全部 success，日志正常 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/netperf-glibc-port-reuse.md](./problem/netperf-glibc-port-reuse.md)。
 - **关联 commit**：待提交
+
+#### open07 O_NOFOLLOW 与符号链接路径解析修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、VFS symlink 解析语义修复、LTP open 回归验证、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复。AI 确认当前失败为 `open07`：setup 阶段 `creat(symdir1/testfile)` 因中间 symlink 目录未解析返回 `ENOENT`，修复后又暴露最终分量 symlink 在 `O_NOFOLLOW` 下未返回 `ELOOP` 的语义问题。修复为创建和普通打开路径先解析父目录 symlink，`O_NOFOLLOW` 打开跳过可能已解析 symlink 的 `FsIndex` 缓存，并通过 `ext4_readlink()` 判断最终分量 symlink-to-dir。`make` 通过，LoongArch 单跑 musl/glibc `open07` 均输出 5 项 `TPASS`，Summary 为 `passed 5 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/open07-o-nofollow-symlink.md](./problem/open07-o-nofollow-symlink.md)。
+- **关联 commit**：待提交
