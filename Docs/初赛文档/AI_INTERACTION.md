@@ -836,3 +836,10 @@
 - **场景**：Bug 分析与定位、VFS symlink 解析语义修复、LTP open 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复。AI 确认当前失败为 `open07`：setup 阶段 `creat(symdir1/testfile)` 因中间 symlink 目录未解析返回 `ENOENT`，修复后又暴露最终分量 symlink 在 `O_NOFOLLOW` 下未返回 `ELOOP` 的语义问题。修复为创建和普通打开路径先解析父目录 symlink，`O_NOFOLLOW` 打开跳过可能已解析 symlink 的 `FsIndex` 缓存，并通过 `ext4_readlink()` 判断最终分量 symlink-to-dir。`make` 通过，LoongArch 单跑 musl/glibc `open07` 均输出 5 项 `TPASS`，Summary 为 `passed 5 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/open07-o-nofollow-symlink.md](./problem/open07-o-nofollow-symlink.md)。
 - **关联 commit**：待提交
+
+#### open10 chown 与 setgid 目录 GID 继承修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`fchownat/chown` owner 语义实现、setgid 目录新建文件 gid 继承、LTP open 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认当前失败为 `open10`：`SAFE_CHOWN(DIR_A, nobody_uid, free_gid)` 后 `stat(DIR_A)` 仍返回 gid 0。根因是 `sys_fchownat()` 是伪实现直接成功，且 `create_file()` 新建 inode 时没有设置 uid/gid，也没有按父目录 `S_ISGID` 继承 gid。修复为封装 lwext4 `ext4_owner_set()`，实现 VFS `owner_set()` 与 `sys_fchownat()`，并在新建 inode 后设置 owner/group。`make` 通过，LoongArch 单跑 musl/glibc `open10` 均输出 9 项 `TPASS`，Summary 为 `passed 9 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/open10-chown-setgid-inherit.md](./problem/open10-chown-setgid-inherit.md)。
+- **关联 commit**：待提交

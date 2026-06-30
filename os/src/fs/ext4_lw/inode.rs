@@ -7,7 +7,7 @@ use lwext4_rust::{
 use crate::{
     fs::{patch_dynamic_link_file_bytes, Inode, InodeType, Kstat, OpenFlags, String},
     sync::SyncUnsafeCell,
-    utils::{SysErrNo, SyscallRet},
+    utils::{SysErrNo, SysResult, SyscallRet},
 };
 
 use alloc::{format, string::ToString, vec};
@@ -369,6 +369,12 @@ impl Inode for Ext4Inode {
         };
         let mode = mode_type | (mode & 0o7777);
         file.file_mode_set(mode).map_err(SysErrNo::from)
+    }
+
+    fn owner_set(&self, uid: u32, gid: u32) -> SyscallRet {
+        // Keep owner updates in the filesystem layer so stat and permission checks agree.
+        let file = &mut self.inner.get_unchecked_mut().f;
+        file.file_owner_set(uid, gid).map_err(SysErrNo::from)
     }
 }
 

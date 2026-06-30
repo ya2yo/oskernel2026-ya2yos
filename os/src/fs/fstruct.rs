@@ -3,7 +3,7 @@ use crate::{
     mm::UserBuffer,
     net::{Shutdown, SocketOps},
     syscall::Syscall,
-    utils::{GeneralRet, SysErrNo, SyscallRet},
+    utils::{SysErrNo, SysResult, SyscallRet},
 };
 use alloc::{sync::Arc, vec, vec::Vec};
 
@@ -206,7 +206,7 @@ impl FdTable {
         self.len() != 0
     }
     /// 修改fd表的大小
-    pub fn resize(&self, size: usize) -> GeneralRet {
+    pub fn resize(&self, size: usize) -> SysResult {
         let mut inner = self.get_mut();
         let soft_limit = inner.soft_limit;
         let fd_table = &mut inner.files;

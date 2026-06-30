@@ -55,9 +55,8 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     let create_path = resolve_create_path(abs_path)?;
     // 检查父目录的写入和执行权限
     // 参考 faccessat 的权限检查逻辑
-    if let Some(parent_path) = {
-        split_parent_child(&create_path).map(|(parent_path, _)| parent_path)
-    } {
+    if let Some(parent_path) = split_parent_child(&create_path).map(|(parent_path, _)| parent_path)
+    {
         // debug!("[create_file] parent_path={}", parent_path);
         // 查找父目录的 inode
         let parent_inode_opt = if FsIndex::has_inode(parent_path) {
@@ -165,6 +164,33 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     //     mode, umask, effective_mode
     // );
     inode.fmode_set(effective_mode);
+    if let Some(task) = current_task() {
+        let task_inner = task.inner_lock();
+        // Linux assigns new inode gid from the parent directory when S_ISGID is set.
+        let (uid, gid) = if let Some((parent_path, _)) = split_parent_child(&create_path) {
+            let parent_inode = FsIndex::find_inode_idx(parent_path)
+                .or_else(|| {
+                    superblock_root_inode()
+                        .find(parent_path, OpenFlags::O_DIRECTORY, 0)
+                        .ok()
+                });
+            if let Some(parent_inode) = parent_inode {
+                let parent_stat = parent_inode.fstat();
+                let parent_mode = parent_inode.fmode()? & 0o7777;
+                let gid = if parent_mode & 0o2000 != 0 {
+                    parent_stat.st_gid
+                } else {
+                    task_inner.effective_gid
+                };
+                (task_inner.effective_uid, gid)
+            } else {
+                (task_inner.effective_uid, task_inner.effective_gid)
+            }
+        } else {
+            (task_inner.effective_uid, task_inner.effective_gid)
+        };
+        inode.owner_set(uid, gid)?;
+    }
     FsIndex::insert_inode_idx(&create_path, inode.clone());
     if create_path != abs_path {
         FsIndex::insert_inode_idx(abs_path, inode.clone());

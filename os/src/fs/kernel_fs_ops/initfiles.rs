@@ -2,7 +2,7 @@ use alloc::{string::String, vec::Vec};
 use log::debug;
 
 use super::*;
-use crate::{mm::UserBuffer, utils::GeneralRet};
+use crate::{mm::UserBuffer, utils::SysResult};
 
 fn flush_preload() {
     extern "C" {
@@ -117,7 +117,7 @@ CONFIG_BSD_PROCESS_ACCT=y
 # CONFIG_BSD_PROCESS_ACCT_V3 is not set
 ";
 
-fn write_init_file(path: &str, content: &str) -> GeneralRet {
+fn write_init_file(path: &str, content: &str) -> SysResult {
     let file = open(
         path,
         OpenFlags::O_CREATE | OpenFlags::O_RDWR,
@@ -138,7 +138,7 @@ fn write_init_file(path: &str, content: &str) -> GeneralRet {
     Ok(())
 }
 
-fn write_executable_init_file(path: &str, content: &str) -> GeneralRet {
+fn write_executable_init_file(path: &str, content: &str) -> SysResult {
     if let Ok(file) = open(path, OpenFlags::O_UNLINK, 0) {
         file.file()?.inode.unlink(path)?;
     }
@@ -159,7 +159,7 @@ fn write_executable_init_file(path: &str, content: &str) -> GeneralRet {
     Ok(())
 }
 
-pub fn create_init_files() -> GeneralRet {
+pub fn create_init_files() -> SysResult {
     // 写入预先加载内容
     flush_preload();
     // 写入内嵌的 libgcc_s.so.1（解决 glibc pthread 测试依赖问题）

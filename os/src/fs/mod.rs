@@ -11,7 +11,7 @@ pub use crate::fs::files::Socket;
 pub use crate::fs::files::*;
 use crate::mm::UserBuffer;
 // use crate::syscall::FaccessatFileMode;
-use crate::utils::{GeneralRet, SysErrNo};
+use crate::utils::{SysErrNo, SysResult};
 
 use alloc::string::String;
 use alloc::vec;

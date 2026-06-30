@@ -110,6 +110,10 @@ pub trait Inode: Send + Sync {
     fn fmode_set(&self, _mode: u32) -> SyscallRet {
         unimplemented!("Inode::fmode_set")
     }
+    /// Update inode uid/gid as visible through stat/fstat.
+    fn owner_set(&self, _uid: u32, _gid: u32) -> SyscallRet {
+        unimplemented!("Inode::owner_set")
+    }
 }
 
 /// 文件接口

@@ -1,6 +1,8 @@
 use alloc::string::String;
 use alloc::vec;
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_REMOVEDIR, AT_SYMLINK_FOLLOW};
+use linux_raw_sys::general::{
+    AT_EMPTY_PATH, AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW,
+};
 use log::debug;
 
 use crate::fs::{
@@ -474,14 +476,71 @@ pub fn sys_renameat2(
     ret
 }
 
+/// https://www.man7.org/linux/man-pages/man2/fchownat.2.html
 pub fn sys_fchownat(
-    _dirfd: isize,
-    _pathname: *const u8,
-    _owner: usize,
-    _group: usize,
-    _flags: u32,
+    dirfd: isize,
+    pathname: *const u8,
+    owner: usize,
+    group: usize,
+    flags: u32,
 ) -> SyscallRet {
-    //伪实现
+    // chown/fchown wrappers reach this syscall; do not report success without
+    // updating the inode owner, or stat() observes stale uid/gid.
+    let valid_flags = (AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) as u32;
+    if flags & !valid_flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let path = read_user_cstr(&memory_set, pathname)?;
+
+    let inode = if path.is_empty() {
+        if flags & AT_EMPTY_PATH as u32 == 0 {
+            return Err(SysErrNo::ENOENT);
+        }
+        if dirfd < 0 {
+            return Err(SysErrNo::EBADF);
+        }
+        proc_inner.fd_table.get(dirfd as usize)?.file()?.inode.clone()
+    } else {
+        let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+        let open_flags = if flags & AT_SYMLINK_NOFOLLOW as u32 != 0 {
+            OpenFlags::O_NOFOLLOW
+        } else {
+            OpenFlags::empty()
+        };
+        open(&abs_path, open_flags, NONE_MODE)?.file()?.inode.clone()
+    };
+
+    {
+        let task_inner = task.inner_lock();
+        if task_inner.effective_uid != 0 {
+            return Err(SysErrNo::EPERM);
+        }
+    }
+
+    let stat = inode.fstat();
+    // POSIX uses (uid_t)-1/(gid_t)-1 to mean "leave this field unchanged".
+    let uid = if owner == usize::MAX {
+        stat.st_uid
+    } else {
+        if owner > u32::MAX as usize {
+            return Err(SysErrNo::EINVAL);
+        }
+        owner as u32
+    };
+    let gid = if group == usize::MAX {
+        stat.st_gid
+    } else {
+        if group > u32::MAX as usize {
+            return Err(SysErrNo::EINVAL);
+        }
+        group as u32
+    };
+
+    inode.owner_set(uid, gid)?;
     Ok(0)
 }
 

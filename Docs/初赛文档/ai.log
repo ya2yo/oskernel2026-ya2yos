@@ -4050,3 +4050,59 @@ timeout 120s make run > log.ans 2>&1
 - `log.ans` 中 glibc `open07` 五个子项均为 `TPASS`，Summary 为 `passed 5 failed 0 broken 0`。
 - 包装层仍打印 `FAIL LTP CASE open07 : 10` 和 `RESULT GLIBC LTP SINGLE CASE open07 : 10`，但 LTP Summary 显示 failed 为 0，按项目规则以 `TPASS`/`Summary` 为准。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: open10 chown 与 setgid 目录 GID 继承修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复当前失败。
+
+### 分析
+
+AI 首先过滤 `log.ans`，确认新的失败来自 LTP `open10`：
+
+```text
+open10.c:87: TBROK: dir_a: Incorrect group, 0 != 2
+```
+
+读取 `open10.c` 后确认，测试会 `mkdir(DIR_A)`、`chown(DIR_A, nobody_uid, free_gid)`，随后 `stat(DIR_A)` 要求 `st_gid == free_gid`。继续检查内核发现 `sys_fchownat()` 是伪实现，直接返回 `Ok(0)`，没有更新 ext4 inode owner，所以 `stat()` 仍看到 gid 0。
+
+进一步分析测试后续流程后确认，还需要处理 setgid 目录中新建文件的 gid 继承：普通目录中新建文件应使用进程 effective gid，setgid 目录中新建文件应继承父目录 gid。原 `create_file()` 只设置 mode，没有设置 uid/gid，也没有读取父目录 `S_ISGID`。
+
+修复过程中 `make` 还暴露当前工作区已有 `GeneralRet` 旧别名引用与 `SysResult` 新别名不一致的问题，导致构建失败；AI 将相关 fs 文件改为使用当前已有的 `SysResult`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `crates/lwext4_rust/src/file.rs` | 封装 `ext4_owner_set()` 为 `Ext4File::file_owner_set()` |
+| `os/src/fs/vfs.rs` | 为 `Inode` 增加 `owner_set(uid, gid)` |
+| `os/src/fs/ext4_lw/inode.rs` | 实现 `Ext4Inode::owner_set()`；补齐 `SysResult` 导入 |
+| `os/src/syscall/fs/ctl.rs` | 实现 `sys_fchownat()` 基本语义，支持 `AT_EMPTY_PATH`、`AT_SYMLINK_NOFOLLOW`、`-1` 保持原 owner/group |
+| `os/src/fs/kernel_fs_ops/open.rs` | 新建 inode 后设置 uid/gid；父目录有 `S_ISGID` 时继承父目录 gid |
+| `os/src/fs/mod.rs`、`os/src/fs/fstruct.rs`、`os/src/fs/kernel_fs_ops/initfiles.rs` | 将旧 `GeneralRet` 引用调整为当前 `SysResult`，解除构建阻塞 |
+| `Docs/初赛文档/problem/open10-chown-setgid-inherit.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > log.ans 2>&1
+git diff --check
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=loongarch64`，构建通过。
+- `log.ans` 中 musl `open10` 九个子项均为 `TPASS`，Summary 为 `passed 9 failed 0 broken 0`。
+- `log.ans` 中 glibc `open10` 九个子项均为 `TPASS`，Summary 为 `passed 9 failed 0 broken 0`。
+- `git diff --check` 无输出。
+- 包装层仍打印 `FAIL LTP CASE open10 : 10` 和 `RESULT GLIBC LTP SINGLE CASE open10 : 10`，但 LTP Summary 显示 failed 为 0，按项目规则以 `TPASS`/`Summary` 为准。
+- 未运行 `riscv64`。

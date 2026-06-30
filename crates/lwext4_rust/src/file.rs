@@ -636,6 +636,21 @@ impl Ext4File {
         Ok(EOK as usize)
     }
 
+    pub fn file_owner_set(&mut self, uid: u32, gid: u32) -> Result<usize, i32> {
+        // chown/fchownat need the on-disk inode owner, not just cached stat data.
+        let c_path = self.file_path.clone();
+        let c_path = c_path.into_raw();
+        let r = unsafe { ext4_owner_set(c_path, uid, gid) };
+        unsafe {
+            drop(CString::from_raw(c_path));
+        }
+        if r != EOK as i32 {
+            error!("ext4_owner_set: rc = {}", r);
+            return Err(r);
+        }
+        Ok(EOK as usize)
+    }
+
     pub fn file_type(&mut self) -> InodeTypes {
         let mode = self.file_mode();
         if mode.is_err() {
