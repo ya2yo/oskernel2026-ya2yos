@@ -44,6 +44,14 @@ impl WaitPid {
     }
 }
 
+fn wait_status_from_exit_code(exit_code: i32, termination_signal: Option<(usize, bool)>) -> i32 {
+    if let Some((signo, dumped_core)) = termination_signal {
+        signo as i32 | if dumped_core { 0x80 } else { 0 }
+    } else {
+        exit_code << 8
+    }
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/waitpid.2.html
 pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
     let options = WaitOption::from_bits_truncate(options);
@@ -161,16 +169,15 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
         } else if let Some(child) = pair {
             let found_pid = child.pid;
             let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
-            let child_usage = child.meta_lock().usage;
+            let (child_usage, termination_signal) = {
+                let child_meta = child.meta_lock();
+                (child_meta.usage, child_meta.termination_signal)
+            };
 
             if !wstatus.is_null() {
                 let proc_inner = task.process.inner_lock();
                 let memory_set = proc_inner.get_locked_memory_set_read();
-                let value = if exit_code >= 128 && exit_code <= 255 {
-                    exit_code
-                } else {
-                    exit_code << 8
-                };
+                let value = wait_status_from_exit_code(exit_code, termination_signal);
                 if copy_to_user(&memory_set, wstatus as usize, unsafe {
                     core::slice::from_raw_parts(
                         &value as *const i32 as *const u8,

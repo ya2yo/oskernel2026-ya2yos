@@ -3176,6 +3176,66 @@ broken   0
 
 ---
 
+## 2026-06-30: kill11 wait status core dump bit 修复
+
+### 用户需求
+
+用户要求分析 `log.ans`，进行修复。
+
+### 分析
+
+AI 扫描 `log.ans` 后确认当前失败为 LTP `kill11`，musl 和 glibc 均有 13 个失败：
+
+```text
+kill11.c:88: TFAIL: core dump bit set for SIGHUP
+kill11.c:88: TFAIL: core dump bit set for SIGINT
+kill11.c:88: TFAIL: core dump bit set for SIGKILL
+...
+Summary:
+passed   11
+failed   13
+broken   0
+```
+
+读取 LTP `kill11.c` 后确认，该测试向 `pause()` 子进程发送不同信号，并用 `wait()` 检查 `WTERMSIG(status)` 与 `WCOREDUMP(status)`。继续检查内核信号默认动作表，确认 `SigOp::Terminate` / `SigOp::CoreDump` 分类正确；问题出在 `sys_waitpid()` 写回 `wstatus` 时只按内部 `exit_code = signo + 128` 返回。该内部编码会无条件带上 0x80，使用户态 `WCOREDUMP(status)` 对所有信号终止都为真。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/wait.rs` | 新增 wait status 编码 helper；`waitpid` 回收信号终止子进程时使用 `termination_signal=(signo, dumped_core)` 生成 `signo | core_bit` |
+| `Docs/初赛文档/problem/kill11-wait-core-status.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/syscall/task/wait.rs
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- 当前配置单跑 musl/glibc `kill11`，两者 LTP Summary 均通过：
+
+```text
+Summary:
+passed   24
+failed   0
+broken   0
+```
+
+- 新 `log.ans` 未再出现 `core dump bit set for ...`。
+- 外层仍打印 `FAIL LTP CASE kill11 : 10` / `RESULT GLIBC ... : 10`，但按项目日志规则以 LTP `TPASS/TFAIL/Summary` 为准，本次断言已通过。
+
+---
+
 ## 2026-06-30: execve04 ETXTBSY 修复
 
 ### 用户需求
