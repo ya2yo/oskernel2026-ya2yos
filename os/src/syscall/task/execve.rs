@@ -5,7 +5,7 @@ use alloc::{
 use log::debug;
 
 use crate::{
-    fs::{open, OpenFlags, NONE_MODE},
+    fs::{open, OSFile, OpenFlags, NONE_MODE},
     mm::{copy_from_user, read_user_cstr},
     syscall::FaccessatFileMode,
     task::current_task,
@@ -41,6 +41,14 @@ fn check_exec_permission(file_mode: u32, owner_uid: u32, owner_gid: u32) -> Sysc
         Ok(0)
     } else {
         Err(SysErrNo::EACCES)
+    }
+}
+
+fn check_not_write_open(path: &str) -> SyscallRet {
+    if OSFile::is_write_open_path(path) {
+        Err(SysErrNo::ETXTBSY)
+    } else {
+        Ok(0)
     }
 }
 
@@ -209,6 +217,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     let app_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     let app_stat = app_inode.inode.fstat();
     check_exec_permission(app_inode.inode.fmode()?, app_stat.st_uid, app_stat.st_gid)?;
+    check_not_write_open(&app_inode.inode.path())?;
 
     let mut elf_data = app_inode.inode.read_all()?;
     if !is_elf(&elf_data) {
@@ -240,6 +249,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
                 interp_stat.st_uid,
                 interp_stat.st_gid,
             )?;
+            check_not_write_open(&interp_inode.inode.path())?;
             elf_data = interp_inode.inode.read_all()?;
             if !is_elf(&elf_data) {
                 return Err(SysErrNo::ENOEXEC);

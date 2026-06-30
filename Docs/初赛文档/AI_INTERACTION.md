@@ -724,3 +724,10 @@
 - **场景**：Bug 分析与定位、`execve` 权限语义修复、LTP execve 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 中 `execve_child.c:27: TFAIL: execve_child shouldn't be executed`。AI 读取 LTP `execve02.c` 确认测试将 `execve_child` 改成 `0700` 后切换到 `nobody` 执行，期望 `execve()` 返回 `EACCES`；检查内核发现 `sys_execve()` 只用 `O_RDONLY` 打开并读取 ELF，缺少基于 effective uid/gid 的执行位检查。修复后 `execve` 在读取目标 ELF 前检查 `S_IXUSR/S_IXGRP/S_IXOTH`，shebang 解释器也走同一检查。`make` 通过，LoongArch 单跑 musl/glibc `execve02` 均输出 `TPASS: execve() failed expectedly: EACCES (13)`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/execve02-exec-permission.md](./problem/execve02-exec-permission.md)。
 - **关联 commit**：待提交
+
+#### execve04 ETXTBSY 修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`execve`/普通文件写打开语义修复、LTP execve 回归验证、文档完善
+- **描述**：用户提供新的 `log.ans`，要求继续修复 `execve_child.c:27: TFAIL: execve_child shouldn't be executed`。AI 确认新失败为 `execve04`，读取 LTP 源码后定位到该用例要求目标可执行文件被另一个进程 `O_WRONLY` 打开时，`execve()` 返回 `ETXTBSY`。根因是内核没有跨进程记录普通文件写打开状态，`sys_execve()` 无法发现子进程持有的写 fd。修复为在 `OSFile` 生命周期中维护 inode path 写打开计数，并在 `execve` 读取 ELF 前返回 `ETXTBSY`。`make` 通过，LoongArch 单跑 musl/glibc `execve04` 均输出 `TPASS: execve failed as expected: ETXTBSY (26)`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/execve04-etxtbsy.md](./problem/execve04-etxtbsy.md)。
+- **关联 commit**：待提交

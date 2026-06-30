@@ -3112,3 +3112,60 @@ broken   0
 ```
 
 - 新 `log.ans` 未再出现 `execve_child shouldn't be executed`。
+
+---
+
+## 2026-06-30: execve04 ETXTBSY 修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans`，继续修复 `execve_child.c:27: TFAIL: execve_child shouldn't be executed`。
+
+### 分析
+
+AI 扫描新的 `log.ans` 后确认失败已经从 `execve02` 转到 `execve04`：
+
+```text
+RUN LTP CASE execve04
+execve_child.c:27: TFAIL: execve_child shouldn't be executed
+```
+
+随后读取 LTP `execve04.c`，确认测试会先在子进程中 `SAFE_OPEN(TEST_APP, O_WRONLY)` 并保持 fd 打开，再让父进程 `execve(TEST_APP)`。测试期望内核返回 `ETXTBSY`，因为目标可执行文件正被写模式打开。
+
+继续检查内核后确认，`OSFile` 只记录单个文件对象是否 readable/writable，没有全局写打开计数；`sys_execve()` 也没有检查目标 inode 是否被其他进程以写模式打开。因此父进程继续读取并加载 ELF，进入不应执行的 `execve_child`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/os_file.rs` | 增加全局写打开计数表，writable `OSFile` 创建时加计数，最后一个 `Arc<OSFile>` drop 时减计数 |
+| `os/src/syscall/task/execve.rs` | 在读取目标 ELF 前检查 inode path 是否正被写打开，命中返回 `ETXTBSY`；shebang 解释器也走同一检查 |
+| `Docs/初赛文档/problem/execve04-etxtbsy.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/fs/files/os_file.rs os/src/syscall/task/execve.rs
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- 当前配置单跑 musl/glibc `execve04`，两者均通过：
+
+```text
+execve04.c:52: TPASS: execve failed as expected: ETXTBSY (26)
+Summary:
+passed   1
+failed   0
+broken   0
+```
+
+- 新 `log.ans` 未再出现 `execve_child shouldn't be executed`。

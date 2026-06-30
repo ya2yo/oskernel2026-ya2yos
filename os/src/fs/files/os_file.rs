@@ -6,8 +6,26 @@ use crate::{
 };
 
 use super::super::{File, Inode};
-use alloc::sync::Arc;
-use spin::Mutex;
+use alloc::{collections::BTreeMap, string::String, sync::Arc};
+use spin::{Lazy, Mutex};
+
+static WRITE_OPEN_COUNTS: Lazy<Mutex<BTreeMap<String, usize>>> =
+    Lazy::new(|| Mutex::new(BTreeMap::new()));
+
+fn register_write_open(path: &str) {
+    let mut counts = WRITE_OPEN_COUNTS.lock();
+    *counts.entry(String::from(path)).or_insert(0) += 1;
+}
+
+fn unregister_write_open(path: &str) {
+    let mut counts = WRITE_OPEN_COUNTS.lock();
+    if let Some(count) = counts.get_mut(path) {
+        *count -= 1;
+        if *count == 0 {
+            counts.remove(path);
+        }
+    }
+}
 
 /// “普通”的文件类
 /// 区别于管道、设备、套接字等特殊文件
@@ -15,6 +33,7 @@ pub struct OSFile {
     readable: bool, // 该文件是否允许通过 sys_read 进行读
     writable: bool, // 该文件是否允许通过 sys_write 进行写
     pub inode: Arc<dyn Inode>,
+    write_path: Option<String>,
     inner: Mutex<OSFileInner>,
 }
 struct OSFileInner {
@@ -23,11 +42,31 @@ struct OSFileInner {
 
 impl OSFile {
     pub fn new(readable: bool, writable: bool, inode: Arc<dyn Inode>) -> Self {
+        let write_path = if writable {
+            let path = inode.path();
+            register_write_open(&path);
+            Some(path)
+        } else {
+            None
+        };
         Self {
             readable,
             writable,
             inode,
+            write_path,
             inner: Mutex::new(OSFileInner { offset: 0 }),
+        }
+    }
+
+    pub fn is_write_open_path(path: &str) -> bool {
+        WRITE_OPEN_COUNTS.lock().get(path).copied().unwrap_or(0) != 0
+    }
+}
+
+impl Drop for OSFile {
+    fn drop(&mut self) {
+        if let Some(path) = self.write_path.as_deref() {
+            unregister_write_open(path);
         }
     }
 }
