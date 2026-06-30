@@ -102,13 +102,13 @@ pub fn sys_setpriority(which: i32, who: usize, prio: i32) -> SyscallRet {
 // getrlimit(163) / setrlimit(164)
 // ---------------------------------------------------------------------------
 
-const RLIMIT_NOFILE: i32 = 7;
-const RLIMIT_STACK: i32 = 3;
+pub const RLIMIT_NOFILE: i32 = 7;
+pub const RLIMIT_STACK: i32 = 3;
 /// 表示"无限制"的特殊值（与 Linux RLIM64_INFINITY 一致）
-const RLIM_INFINITY: usize = usize::MAX;
+pub const RLIM_INFINITY: usize = usize::MAX;
 
 /// 根据资源类型返回默认的 rlimit 值
-fn default_rlimit(resource: i32) -> RLimit {
+pub fn default_rlimit(resource: i32) -> RLimit {
     match resource {
         RLIMIT_NOFILE => RLimit {
             rlim_cur: 128,

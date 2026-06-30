@@ -3883,3 +3883,59 @@ make
 - 当前默认 `TARGET_ARCH=loongarch64`，构建通过。
 - `make run` 未重新执行；用户明确说明 `log.ans` 是运行结果，本次以该日志为失败分析依据。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: getrlimit03 prlimit64 默认 rlimit 修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修改。完成代码修改后，用户说明无需继续跑 QEMU，直接写文档，且验证已经通过。
+
+### 分析
+
+AI 过滤 `log.ans` 后确认当前只运行了 `ltp-musl/getrlimit03`，失败为 `prlimit64()` 与 `getrlimit()` 对同一 resource 返回的 `rlim_cur` 不一致：
+
+```text
+getrlimit03.c:117: TFAIL: __NR_prlimit64(0) had rlim_cur = 5 but __NR_getrlimit(0) had rlim_cur = ffffffffffffffff
+getrlimit03.c:117: TFAIL: __NR_prlimit64(3) had rlim_cur = 5 but __NR_getrlimit(3) had rlim_cur = 800000
+getrlimit03.c:117: TFAIL: __NR_prlimit64(8) had rlim_cur = 80 but __NR_getrlimit(8) had rlim_cur = ffffffffffffffff
+Summary:
+passed   1
+failed   15
+broken   0
+skipped  0
+warnings 0
+```
+
+读取 LTP `getrlimit03.c` 后确认，该用例调用 `prlimit64(pid=0, resource, NULL, &rlim_u64)` 和 `getrlimit(resource, &rlim_ul)` 并比较结果。检查内核后发现：
+
+- `sys_getrlimit()` 对 `RLIMIT_NOFILE` 返回 fd table 限制，对 `RLIMIT_STACK` 返回 8MiB，其它 resource 返回 `RLIM_INFINITY`。
+- `sys_prlimit()` 原先只处理 `RLIMIT_NOFILE`，对其它 resource 直接 `return Ok(0)`，没有向非空 `old_limit` 写入任何内容。
+
+因此 LTP 看到的 `prlimit64` 结果其实是用户态未初始化栈值，表现为 `5` 或 `80`；resource 7 通过是因为它正好是 `RLIMIT_NOFILE`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/resource.rs` | 导出 `RLIMIT_NOFILE`、`RLIMIT_STACK`、`RLIM_INFINITY` 和 `default_rlimit()`，供 `prlimit64` 复用 |
+| `os/src/syscall/resource.rs` | `prlimit64(pid=0, old_limit)` 对所有 resource 写回与 `getrlimit()` 一致的 rlimit；`pid != 0` 返回 `ESRCH`；设置新 limit 时校验 `rlim_cur <= rlim_max` |
+| `Docs/初赛文档/problem/getrlimit03-prlimit-defaults.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=loongarch64`，构建通过。
+- AI 环境中 `make run` 因 QEMU 写 `/var/tmp` 被沙箱阻止，未能继续运行。
+- 维护者确认单跑验证通过。
+- 未运行 `riscv64`。

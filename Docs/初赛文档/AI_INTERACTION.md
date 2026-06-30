@@ -815,3 +815,10 @@
 - **场景**：Bug 分析与定位、ext4 mode 类型位修复、LTP mkdir 并发用例日志分析、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复，且说明该文件是运行结果。AI 确认失败集中在 `mkdir09` 的 `mkdir(..., 07770)` 返回 `EEXIST` 与 `rmdir()` 返回 `ENOTDIR`，并伴随 `Unknown inode mode type 4e00`。读取 LTP 源码和 lwext4 封装后定位到 `file_type()` 用 `mode & !0o777` 提取类型位，未清除 `0o7000` 特殊权限位，导致 `S_IFDIR | 07770` 被识别成未知类型并退化为普通文件。修复为使用 `0o170000` 类型掩码，并让 `Ext4Inode::fmode_set()` 在只传权限位的调用中补齐当前 inode 类型。`make` 在当前默认 LoongArch 配置下通过。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/mkdir09-mode-type-mask.md](./problem/mkdir09-mode-type-mask.md)。
 - **关联 commit**：待提交
+
+#### getrlimit03 prlimit64 默认 rlimit 修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`prlimit64/getrlimit` rlimit 语义对齐、LTP getrlimit 回归验证协作、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修改。AI 确认当前失败为 `getrlimit03`：`prlimit64(pid=0, old_limit)` 对非 `RLIMIT_NOFILE` resource 返回成功但没有写回 `old_limit`，导致用户态读到未初始化的 `rlim_cur=5/80`，而 `getrlimit()` 返回 `RLIM_INFINITY` 或 stack 8MiB 默认值。修复为让 `prlimit64` 复用 `getrlimit` 的默认 rlimit 逻辑，对所有 resource 写回 old limit，并对 `pid != 0` 返回 `ESRCH`、对非法 `cur > max` 返回 `EINVAL`。`make` 在当前默认 LoongArch 配置下通过，维护者确认单跑验证通过。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/getrlimit03-prlimit-defaults.md](./problem/getrlimit03-prlimit-defaults.md)。
+- **关联 commit**：待提交
