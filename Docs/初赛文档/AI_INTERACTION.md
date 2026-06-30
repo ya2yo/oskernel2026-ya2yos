@@ -731,3 +731,10 @@
 - **场景**：Bug 分析与定位、`execve`/普通文件写打开语义修复、LTP execve 回归验证、文档完善
 - **描述**：用户提供新的 `log.ans`，要求继续修复 `execve_child.c:27: TFAIL: execve_child shouldn't be executed`。AI 确认新失败为 `execve04`，读取 LTP 源码后定位到该用例要求目标可执行文件被另一个进程 `O_WRONLY` 打开时，`execve()` 返回 `ETXTBSY`。根因是内核没有跨进程记录普通文件写打开状态，`sys_execve()` 无法发现子进程持有的写 fd。修复为在 `OSFile` 生命周期中维护 inode path 写打开计数，并在 `execve` 读取 ELF 前返回 `ETXTBSY`。`make` 通过，LoongArch 单跑 musl/glibc `execve04` 均输出 `TPASS: execve failed as expected: ETXTBSY (26)`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/execve04-etxtbsy.md](./problem/execve04-etxtbsy.md)。
 - **关联 commit**：待提交
+
+#### execve06 空 argv 修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`execve` argv 兼容语义修复、LTP execve 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认当前失败为 `execve06`：musl 子进程因空 argv 触发 SIGSEGV，glibc 子程序报告 `argc is 0, expected 1`。读取 LTP 源码后确认测试传入 `argv = { NULL }`，要求内核补充 dummy `argv[0]`。根因是 `sys_execve()` 在 `argv[0] == NULL` 时保持 `argv_vec` 为空，导致新程序得到 `argc=0`。修复为 argv 解析后若为空则补充空字符串作为 `argv[0]`。`make` 通过，LoongArch 单跑 musl/glibc `execve06` 均输出 `TPASS: argv[0] was filled in by kernel`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/execve06-empty-argv.md](./problem/execve06-empty-argv.md)。
+- **关联 commit**：待提交

@@ -148,6 +148,9 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
             argv = argv.add(1);
         }
     }
+    if argv_vec.is_empty() {
+        argv_vec.push(String::new());
+    }
 
     // 这个还得留着，因为busybox真的会试图exec这样的文件
     // 以后也许可以改成检测Shebang

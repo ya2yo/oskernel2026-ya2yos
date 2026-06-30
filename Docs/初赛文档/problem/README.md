@@ -45,6 +45,7 @@
 - [LTP access02 execve shebang 脚本](./access02-ltp-execve.md)
 - [LTP execve02 执行权限检查](./execve02-exec-permission.md)
 - [LTP execve04 写打开文件执行 ETXTBSY](./execve04-etxtbsy.md)
+- [LTP execve06 空 argv 补充 argv[0]](./execve06-empty-argv.md)
 - [LTP access01 权限判断与 cleanup 卡死](./access01-permission-cleanup.md)
 - [pipe pselect6 register panic](./pipe-pselect-register-panic.md)
 - [basic umount 相对挂载点路径不匹配](./basic-umount-relative-mountpoint.md)

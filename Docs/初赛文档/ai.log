@@ -3115,6 +3115,67 @@ broken   0
 
 ---
 
+## 2026-06-30: execve06 空 argv 修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans`，进行修复。
+
+### 分析
+
+AI 扫描新的 `log.ans` 后确认当前失败为 `execve06`：
+
+```text
+RUN LTP CASE execve06
+Exception(LoadPageFault) in application, bad addr = 0x0, sending SIGSEGV.
+tst_test.c:391: TBROK: Child (4) killed by signal SIGSEGV
+```
+
+glibc 单测则进入子程序并报告：
+
+```text
+execve06_child.c:15: TFAIL: argc is 0, expected 1
+```
+
+随后读取 LTP `execve06.c` 和 `execve06_child.c`，确认测试传入 `argv = { NULL }`，要求内核补充 dummy `argv[0]`，使新程序看到 `argc == 1` 且 `argv[0] != NULL`。继续检查 `sys_execve()` 后发现，当前 argv 解析在 `argv[0] == NULL` 时保持 `argv_vec` 为空，最终 `TaskControlBlock::exec()` 写入 `argc=0`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/execve.rs` | argv 解析后若 `argv_vec` 为空，补充空字符串作为 dummy `argv[0]` |
+| `Docs/初赛文档/problem/execve06-empty-argv.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/syscall/task/execve.rs
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- 当前配置单跑 musl/glibc `execve06`，两者均通过：
+
+```text
+execve06_child.c:24: TPASS: argv[0] was filled in by kernel
+Summary:
+passed   1
+failed   0
+broken   0
+```
+
+- 新 `log.ans` 未再出现 `argc is 0, expected 1` 或 `Child killed by signal SIGSEGV`。
+
+---
+
 ## 2026-06-30: execve04 ETXTBSY 修复
 
 ### 用户需求
