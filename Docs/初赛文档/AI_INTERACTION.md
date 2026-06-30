@@ -843,3 +843,10 @@
 - **场景**：Bug 分析与定位、`fchownat/chown` owner 语义实现、setgid 目录新建文件 gid 继承、LTP open 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认当前失败为 `open10`：`SAFE_CHOWN(DIR_A, nobody_uid, free_gid)` 后 `stat(DIR_A)` 仍返回 gid 0。根因是 `sys_fchownat()` 是伪实现直接成功，且 `create_file()` 新建 inode 时没有设置 uid/gid，也没有按父目录 `S_ISGID` 继承 gid。修复为封装 lwext4 `ext4_owner_set()`，实现 VFS `owner_set()` 与 `sys_fchownat()`，并在新建 inode 后设置 owner/group。`make` 通过，LoongArch 单跑 musl/glibc `open10` 均输出 9 项 `TPASS`，Summary 为 `passed 9 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/open10-chown-setgid-inherit.md](./problem/open10-chown-setgid-inherit.md)。
 - **关联 commit**：待提交
+
+#### open13 O_PATH fd 操作 EBADF 语义修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`O_PATH` fd 操作限制、musl `/proc/self/fd/<fd>` 包装兼容、LTP 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认当前失败为 `open13`：`O_PATH` fd 在 `read/write/fchmod/fchown/fgetxattr` 上没有按 Linux 语义返回 `EBADF`。修复为在 fd 操作入口检查 `OpenFlags::O_PATH` 并返回 `EBADF`，接入独立 `Fchown` syscall 入口，并识别 musl 通过 `/proc/self/fd/<fd>` 调用 `fchmodat/fchownat` 的包装路径。`make` 通过，LoongArch 单跑 musl/glibc `open13` 均输出 5 项 `TPASS`，Summary 为 `passed 5 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/open13-o-path-fd-operations.md](./problem/open13-o-path-fd-operations.md)。
+- **关联 commit**：待提交

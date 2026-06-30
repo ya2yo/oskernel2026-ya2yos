@@ -4106,3 +4106,49 @@ git diff --check
 - `git diff --check` 无输出。
 - 包装层仍打印 `FAIL LTP CASE open10 : 10` 和 `RESULT GLIBC LTP SINGLE CASE open10 : 10`，但 LTP Summary 显示 failed 为 0，按项目规则以 `TPASS`/`Summary` 为准。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: open13 O_PATH fd 操作 EBADF 语义修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复当前失败。
+
+### 分析
+
+AI 过滤 `log.ans` 后确认当前失败为 LTP `open13`：测试以 `O_RDWR | O_PATH` 打开 `testfile`，随后要求 `read(2)`、`write(2)`、`fchmod(2)`、`fchown(2)`、`fgetxattr(2)` 都返回 `EBADF`。原内核没有在这些 syscall 入口检查 fd 的 `O_PATH` 标志，导致读写和修改类接口把该 fd 当成普通打开文件处理。
+
+第一次修复后，glibc `open13` 已全部通过，但 musl 仍在 `fchmod/fchown` 上返回 `ENOENT`。AI 加临时日志确认 musl 会把 fd 操作包装成 `/proc/self/fd/<fd>` 路径形式调用 `fchmodat/fchownat`；当前内核没有将该 procfd 路径映射回 fd 表，所以落到普通路径查找并返回 `ENOENT`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/fstruct.rs` | 为 `FileDescriptor` 增加 `is_path_only()`，集中判断 `OpenFlags::O_PATH` |
+| `os/src/syscall/fs/io.rs` | `sys_read()` / `sys_write()` 对 `O_PATH` fd 返回 `EBADF` |
+| `os/src/syscall/fs/ctl.rs` | `sys_fchmod()` / `sys_fchown()` / `sys_fchownat(AT_EMPTY_PATH)` 拒绝 `O_PATH` fd；抽出 `chown_inode()`；识别 `/proc/self/fd/<fd>` 并按 fd 语义处理 musl 包装路径 |
+| `os/src/syscall/fs/xattr.rs` | `sys_fgetxattr()` 先校验 fd，并对 `O_PATH` 返回 `EBADF` |
+| `os/src/syscall/mod.rs` | 接入独立 `Fchown` syscall 分发，避免复用无 `AT_EMPTY_PATH` 的 `fchownat` 空路径分支 |
+| `Docs/初赛文档/problem/open13-o-path-fd-operations.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > log.ans 2>&1
+git diff --check
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=loongarch64`，构建通过。
+- `log.ans` 中 musl `open13` 五个子项均为 `TPASS`，Summary 为 `passed 5 failed 0 broken 0`。
+- `log.ans` 中 glibc `open13` 五个子项均为 `TPASS`，Summary 为 `passed 5 failed 0 broken 0`。
+- `git diff --check` 无输出。
+- 未运行 `riscv64`。

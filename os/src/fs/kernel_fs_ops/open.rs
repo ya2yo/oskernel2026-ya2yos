@@ -168,12 +168,11 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
         let task_inner = task.inner_lock();
         // Linux assigns new inode gid from the parent directory when S_ISGID is set.
         let (uid, gid) = if let Some((parent_path, _)) = split_parent_child(&create_path) {
-            let parent_inode = FsIndex::find_inode_idx(parent_path)
-                .or_else(|| {
-                    superblock_root_inode()
-                        .find(parent_path, OpenFlags::O_DIRECTORY, 0)
-                        .ok()
-                });
+            let parent_inode = FsIndex::find_inode_idx(parent_path).or_else(|| {
+                superblock_root_inode()
+                    .find(parent_path, OpenFlags::O_DIRECTORY, 0)
+                    .ok()
+            });
             if let Some(parent_inode) = parent_inode {
                 let parent_stat = parent_inode.fstat();
                 let parent_mode = parent_inode.fmode()? & 0o7777;

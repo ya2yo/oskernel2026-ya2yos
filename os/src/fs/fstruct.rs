@@ -34,6 +34,9 @@ impl FileDescriptor {
     pub fn flags(&self) -> u32 {
         self.flags.bits()
     }
+    pub fn is_path_only(&self) -> bool {
+        self.flags.contains(OpenFlags::O_PATH)
+    }
     pub fn file(&self) -> Result<Arc<OSFile>, SysErrNo> {
         self.file.file()
     }

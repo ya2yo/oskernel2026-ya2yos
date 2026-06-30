@@ -1,5 +1,6 @@
 use log::debug;
 
+use crate::task::current_task;
 use crate::utils::{SysErrNo, SyscallRet};
 
 /// 参考 https://www.man7.org/linux/man-pages/man2/fsetxattr.2.html
@@ -65,6 +66,13 @@ pub fn sys_fgetxattr(fd: usize, name: usize, value: usize, size: usize) -> Sysca
         "[sys_fgetxattr] path={}, name={}, value={}, size={}",
         fd, name, value, size
     );
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let proc_inner = task.process.inner_lock();
+    let fd_desc = proc_inner.fd_table.get(fd)?;
+    // O_PATH fd 没有打开文件内容，fgetxattr(2) 不能在其上执行。
+    if fd_desc.is_path_only() {
+        return Err(SysErrNo::EBADF);
+    }
     Ok(0)
 }
 

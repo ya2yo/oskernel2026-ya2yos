@@ -114,13 +114,18 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
             warn!("write EBADF: fd out of range");
             return Err(SysErrNo::EBADF);
         }
-        let f = match proc_inner.fd_table.try_get_file(fd) {
+        let file_desc = match proc_inner.fd_table.try_get(fd) {
             Some(f) => f,
             None => {
                 warn!("write EBADF: fd not exist");
                 return Err(SysErrNo::EBADF);
             }
         };
+        // O_PATH 只获得路径句柄，不打开文件数据流，不能用于 write(2)。
+        if file_desc.is_path_only() {
+            return Err(SysErrNo::EBADF);
+        }
+        let f = file_desc.any();
         if !f.writable() {
             return Err(SysErrNo::EBADF);
         }
@@ -189,6 +194,10 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
             Some(f) => f,
             None => return Err(SysErrNo::EBADF),
         };
+        // O_PATH fd 只能做 fd 级别操作，read(2) 必须按 Linux 语义返回 EBADF。
+        if file_desc.is_path_only() {
+            return Err(SysErrNo::EBADF);
+        }
         let file = file_desc.any();
         if !file.readable() {
             return Err(SysErrNo::EACCES);

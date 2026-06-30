@@ -69,6 +69,7 @@ pub enum Syscall {
     Fchmod = 52,
     Fchmodat = 53,
     Fchownat = 54,
+    Fchown = 55,
     Openat = 56,
     Close = 57,
     Vhangup = 58,
@@ -414,6 +415,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[3] as usize,
             args[4] as u32,
         ),
+        Syscall::Fchown => sys_fchown(args[0], args[1], args[2]),
         Syscall::Openat => sys_openat(
             args[0] as isize,
             args[1] as *const u8,

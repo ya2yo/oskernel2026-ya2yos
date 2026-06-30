@@ -1,12 +1,11 @@
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec;
-use linux_raw_sys::general::{
-    AT_EMPTY_PATH, AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW,
-};
+use linux_raw_sys::general::{AT_EMPTY_PATH, AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW};
 use log::debug;
 
 use crate::fs::{
-    open, superblock_root_inode, superblock_sync, File, FsIndex, InodeType, OpenFlags,
+    open, superblock_root_inode, superblock_sync, File, FsIndex, Inode, InodeType, OpenFlags,
     MAX_PATH_LEN, NONE_MODE, SEEK_CUR, SEEK_SET,
 };
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, read_user_cstr};
@@ -477,43 +476,8 @@ pub fn sys_renameat2(
 }
 
 /// https://www.man7.org/linux/man-pages/man2/fchownat.2.html
-pub fn sys_fchownat(
-    dirfd: isize,
-    pathname: *const u8,
-    owner: usize,
-    group: usize,
-    flags: u32,
-) -> SyscallRet {
-    // chown/fchown wrappers reach this syscall; do not report success without
-    // updating the inode owner, or stat() observes stale uid/gid.
-    let valid_flags = (AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) as u32;
-    if flags & !valid_flags != 0 {
-        return Err(SysErrNo::EINVAL);
-    }
-
+fn chown_inode(inode: Arc<dyn Inode>, owner: usize, group: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
-    let memory_set = proc_inner.get_locked_memory_set_read();
-    let path = read_user_cstr(&memory_set, pathname)?;
-
-    let inode = if path.is_empty() {
-        if flags & AT_EMPTY_PATH as u32 == 0 {
-            return Err(SysErrNo::ENOENT);
-        }
-        if dirfd < 0 {
-            return Err(SysErrNo::EBADF);
-        }
-        proc_inner.fd_table.get(dirfd as usize)?.file()?.inode.clone()
-    } else {
-        let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
-        let open_flags = if flags & AT_SYMLINK_NOFOLLOW as u32 != 0 {
-            OpenFlags::O_NOFOLLOW
-        } else {
-            OpenFlags::empty()
-        };
-        open(&abs_path, open_flags, NONE_MODE)?.file()?.inode.clone()
-    };
-
     {
         let task_inner = task.inner_lock();
         if task_inner.effective_uid != 0 {
@@ -544,6 +508,82 @@ pub fn sys_fchownat(
     Ok(0)
 }
 
+fn parse_proc_self_fd(path: &str) -> Option<usize> {
+    path.strip_prefix("/proc/self/fd/")
+        .and_then(|fd| fd.parse::<usize>().ok())
+}
+
+pub fn sys_fchownat(
+    dirfd: isize,
+    pathname: *const u8,
+    owner: usize,
+    group: usize,
+    flags: u32,
+) -> SyscallRet {
+    // chown/fchown wrappers reach this syscall; do not report success without
+    // updating the inode owner, or stat() observes stale uid/gid.
+    let valid_flags = (AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) as u32;
+    if flags & !valid_flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let memory_set = proc_inner.get_locked_memory_set_read();
+    let path = read_user_cstr(&memory_set, pathname)?;
+
+    let inode = if path.is_empty() {
+        if flags & AT_EMPTY_PATH as u32 == 0 {
+            return Err(SysErrNo::ENOENT);
+        }
+        if dirfd < 0 {
+            return Err(SysErrNo::EBADF);
+        }
+        let fd_desc = proc_inner.fd_table.get(dirfd as usize)?;
+        // fchown(fd, ...) operates on file contents; an O_PATH fd is only a path handle.
+        if fd_desc.is_path_only() {
+            return Err(SysErrNo::EBADF);
+        }
+        fd_desc.file()?.inode.clone()
+    } else {
+        let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+        if let Some(fd) = parse_proc_self_fd(&abs_path) {
+            let fd_desc = proc_inner.fd_table.get(fd)?;
+            // musl may implement fchown(fd, ...) through /proc/self/fd/<fd>.
+            // Preserve fd semantics so O_PATH still fails with EBADF.
+            if fd_desc.is_path_only() {
+                return Err(SysErrNo::EBADF);
+            }
+            fd_desc.file()?.inode.clone()
+        } else {
+            let open_flags = if flags & AT_SYMLINK_NOFOLLOW as u32 != 0 {
+                OpenFlags::O_NOFOLLOW
+            } else {
+                OpenFlags::empty()
+            };
+            open(&abs_path, open_flags, NONE_MODE)?
+                .file()?
+                .inode
+                .clone()
+        }
+    };
+
+    chown_inode(inode, owner, group)
+}
+
+pub fn sys_fchown(fd: usize, owner: usize, group: usize) -> SyscallRet {
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+    let fd_desc = proc_inner.fd_table.get(fd)?;
+    // fchown(2) 修改已打开文件；O_PATH fd 只是路径句柄，Linux 返回 EBADF。
+    if fd_desc.is_path_only() {
+        return Err(SysErrNo::EBADF);
+    }
+    let inode = fd_desc.file()?.inode.clone();
+    drop(proc_inner);
+    chown_inode(inode, owner, group)
+}
+
 pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = task.process.inner_lock();
@@ -554,7 +594,12 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
 
     // debug!("[sys_fchmod] fd is {},new mode is {:o}", fd, mode);
 
-    let file = proc_inner.fd_table.get(fd)?.file()?;
+    let fd_desc = proc_inner.fd_table.get(fd)?;
+    // O_PATH fd 不代表已打开文件，fchmod(2) 需要返回 EBADF。
+    if fd_desc.is_path_only() {
+        return Err(SysErrNo::EBADF);
+    }
+    let file = fd_desc.file()?;
     file.inode.fmode_set(mode);
     Ok(0)
 }
@@ -582,11 +627,36 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
         return Err(SysErrNo::ENAMETOOLONG);
     }
 
-    if path.len() == 0 {
+    if path.len() == 0 && flags & AT_EMPTY_PATH as u32 == 0 {
         return Err(SysErrNo::ENOENT);
     }
 
+    if path.len() == 0 {
+        if dirfd < 0 {
+            return Err(SysErrNo::EBADF);
+        }
+        let fd_desc = proc_inner.fd_table.get(dirfd as usize)?;
+        // fchmodat(fd, "", ..., AT_EMPTY_PATH) 与 fchmod(fd, ...) 一样拒绝 O_PATH。
+        if fd_desc.is_path_only() {
+            return Err(SysErrNo::EBADF);
+        }
+        let file = fd_desc.file()?;
+        file.inode.fmode_set(mode)?;
+        return Ok(0);
+    }
+
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    if let Some(fd) = parse_proc_self_fd(&abs_path) {
+        let fd_desc = proc_inner.fd_table.get(fd)?;
+        // musl may implement fchmod(fd, ...) through /proc/self/fd/<fd>.
+        // Preserve fd semantics so O_PATH still fails with EBADF.
+        if fd_desc.is_path_only() {
+            return Err(SysErrNo::EBADF);
+        }
+        let file = fd_desc.file()?;
+        file.inode.fmode_set(mode)?;
+        return Ok(0);
+    }
 
     debug!(
         "[sys_fchmodat] path is {}, flags is {}, new mode is {:o}",
