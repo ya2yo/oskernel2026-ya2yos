@@ -10,7 +10,7 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "cgroup_fj_proc\0",
     "cgroup_fj_stress.sh\0",
     "cgroup_lib.sh\0",
-    // [0,100)区间    
+    // [0,100)区间
     "acct02_helper\0",
     "acl1\0",
     "add_ipv6addr\0",
@@ -2364,7 +2364,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "wireguard01.sh\0",
     "wireguard02.sh\0",
     "wireguard_lib.sh\0",
-    "wqueue01\0",
     "wqueue02\0",
     "wqueue03\0",
     "wqueue04\0",

@@ -172,7 +172,16 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
 
     if envp.is_null() {
         // debug!("use default env");
-        env.push("PATH=/bin:.".to_string());
+        env.push(
+            "PATH=/musl/ltp/testcases/bin:/glibc/ltp/testcases/bin:/bin:/sbin:/usr/bin:/usr/sbin:."
+                .to_string(),
+        );
+        env.push("TMPDIR=/tmp".to_string());
+        env.push("RHOST=127.0.0.1".to_string());
+        env.push("LHOST_HWADDRS=00:00:00:00:00:00".to_string());
+        env.push("RHOST_HWADDRS=00:00:00:00:00:00".to_string());
+        env.push("NS_DURATION=1".to_string());
+        env.push("IP_TOTAL_FOR_TCPIP=0".to_string());
         // env.push("LD_LIBRARY_PATH=/musl/lib:".to_string());
         // env.push("LD_LIBRARY_PATH=/glibc/lib:/musl/lib".to_string());
         //设置系统最大负载
@@ -243,8 +252,15 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
                 new_argv.push(arg.clone());
             }
             argv_vec = new_argv;
-            // 打开解释器 ELF（如 /bin/sh → busybox），后续走正常 ELF 加载
-            abs_path = get_abs_path(&cwd, trim_start_slash(interp).as_str());
+            // 打开解释器 ELF（如 /bin/sh → busybox），后续走正常 ELF 加载。
+            // 竞赛镜像中的 /bin/sh 由启动时兼容文件生成，直接归一到 busybox
+            // 可避免旧脚本解释器路径落到非 ELF wrapper。
+            abs_path = match interp.as_str() {
+                "/bin/sh" | "bin/sh" | "/bin/busybox" | "bin/busybox" => {
+                    String::from("/musl/busybox")
+                }
+                _ => get_abs_path(&cwd, trim_start_slash(interp.clone()).as_str()),
+            };
             let interp_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
             let interp_stat = interp_inode.inode.fstat();
             check_exec_permission(

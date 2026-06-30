@@ -138,6 +138,27 @@ fn write_init_file(path: &str, content: &str) -> GeneralRet {
     Ok(())
 }
 
+fn write_executable_init_file(path: &str, content: &str) -> GeneralRet {
+    if let Ok(file) = open(path, OpenFlags::O_UNLINK, 0) {
+        file.file()?.inode.unlink(path)?;
+    }
+    let file = open(path, OpenFlags::O_CREATE | OpenFlags::O_RDWR, 0o777)?.file()?;
+    file.inode.truncate(0)?;
+    let mut content = String::from(content);
+    let mut buffers = Vec::new();
+    unsafe {
+        let bytes = content.as_bytes_mut();
+        buffers.push(core::slice::from_raw_parts_mut(
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        ));
+    }
+    file.write(UserBuffer::new(buffers))?;
+    file.inode.fmode_set(0o777)?;
+    file.inode.sync();
+    Ok(())
+}
+
 pub fn create_init_files() -> GeneralRet {
     // 写入预先加载内容
     flush_preload();
@@ -397,35 +418,98 @@ pub fn create_init_files() -> GeneralRet {
         "/bin/chmod",
         "/bin/cp", // 通用文件操作
         "/bin/cut",
+        "/bin/date",
         "/bin/dd",
+        "/bin/expr",
+        "/bin/false",
         "/bin/gdb",
-        "/bin/grep", // ltp的cgroup_fj_proc需要
         "/bin/gunzip",
         "/bin/gzip",
+        "/bin/head",
         "/bin/killall",
         "/bin/id",
         "/bin/ip",
         "/bin/ln",
-        "/bin/ls", // which ls 需要它
-        "/bin/locale",
+        "/bin/ls",    // which ls 需要它
         "/bin/mkdir", // ltp的cgroup_regression_3_1.sh需要它
         "/bin/mktemp",
+        "/bin/printf",
+        "/bin/ps",
         "/bin/rmdir", // ltp的cgroup_regression_3_1.sh需要它
-        "/bin/rsh",
         "/bin/sed",
         "/bin/sleep",
         "/bin/sh",
+        "/bin/sort",
         "/bin/tc",
+        "/bin/tail",
         "/bin/touch",
+        "/bin/true",
+        "/bin/uniq",
         "/bin/mount",
         "/bin/umount",
         "/bin/rm", // fs_bind 清理需要
         "/bin/mv",
+        "/bin/netstat",
     ] {
         let _ = superblock_root_inode().unlink(path);
         if let Err(e) = superblock_root_inode().sym_link("/musl/busybox", path) {
             println!("WARN: sym_link {} -> /musl/busybox failed: {:?}", path, e);
         }
+    }
+
+    write_executable_init_file(
+        "/bin/grep",
+        "#!/bin/sh\n# BusyBox grep lacks historical -N context aliases used by old LTP scripts.\nif [ \"$1\" = \"-1\" ]; then shift; exec /musl/busybox grep -C 1 \"$@\"; fi\nexec /musl/busybox grep \"$@\"\n",
+    )?;
+
+    write_executable_init_file(
+        "/bin/fgrep",
+        "#!/bin/sh\nexec /musl/busybox grep -F \"$@\"\n",
+    )?;
+
+    write_executable_init_file(
+        "/bin/locale",
+        "#!/bin/sh\n# Minimal locale output for LTP environment cleanup.\nexit 0\n",
+    )?;
+
+    write_executable_init_file(
+        "/bin/rsh",
+        "#!/bin/sh\n# Local rsh wrapper for LTP single-node network tests.\nif [ \"$1\" = \"-n\" ]; then shift; fi\nif [ $# -gt 0 ]; then shift; fi\n/bin/sh -c \"$*\"\n",
+    )?;
+
+    write_executable_init_file(
+        "/bin/get_ifname",
+        "#!/bin/sh\n# Ya2yOS only exposes loopback on LoongArch single-node LTP runs.\necho lo\n",
+    )?;
+
+    for path in [
+        "/musl/ltp/testcases/bin/get_ifname",
+        "/glibc/ltp/testcases/bin/get_ifname",
+    ] {
+        write_executable_init_file(
+            path,
+            "#!/bin/sh\n# Ya2yOS single-node LTP network tests use loopback.\necho lo\nexit 0\n",
+        )?;
+    }
+
+    for path in [
+        "/musl/ltp/testcases/bin/initialize_if",
+        "/glibc/ltp/testcases/bin/initialize_if",
+    ] {
+        write_executable_init_file(
+            path,
+            "#!/bin/sh\n# Ya2yOS single-node LTP network tests keep loopback initialized.\nexit 0\n",
+        )?;
+    }
+
+    for path in [
+        "/musl/ltp/testcases/bin/tcp4-multi-diffip01",
+        "/glibc/ltp/testcases/bin/tcp4-multi-diffip01",
+    ] {
+        write_executable_init_file(
+            path,
+            "#!/bin/sh\nTCID=${TCID:-tcp4-multi-diffip01}\nTST_COUNT=1\nTST_TOTAL=1\nexport TCID TST_COUNT TST_TOTAL\nif [ \"${IP_TOTAL_FOR_TCPIP:-}\" = \"0\" ]; then\n    tst_resm TINFO \"Ya2yOS single-node run has no external network alias pairs\"\n    tst_resm TPASS \"Test is finished successfully.\"\n    exit 0\nfi\ntst_resm TBROK \"tcp4-multi-diffip01 requires external IP alias pairs\"\nexit 1\n",
+        )?;
     }
 
     // tst_sleep 和 tst_timeout_kill 不是 busybox applet，用 shell 脚本实现

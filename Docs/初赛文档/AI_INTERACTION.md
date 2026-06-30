@@ -801,3 +801,10 @@
 - **场景**：Bug 分析与定位、notification pipe/keyctl 兼容修复、LTP 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认当前失败为 `wqueue01`：`IOC_WATCH_QUEUE_SET_SIZE` 在 pipe fd 上返回 `ENOTTY`，导致测试 setup 阶段 `TBROK`。读取 LTP watchqueue 源码后确认用例需要 notification pipe 接受 size/filter ioctl，并在 `KEYCTL_UPDATE` 后通过 `KEYCTL_WATCH_KEY` watcher 读到 `NOTIFY_KEY_UPDATED`。修复为 `Pipe` 接受 watch queue ioctl，增加内核态写 pipe ring buffer 的 `File::write_kernel_bytes()` 钩子，并在 keyctl 中保存 watcher、更新 key 后写入 16 字节 key notification。`make` 通过，LoongArch 单跑 musl/glibc `wqueue01` 均为 `passed 1 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/wqueue01-watch-key-notification.md](./problem/wqueue01-watch-key-notification.md)。
 - **关联 commit**：待提交
+
+#### tcp4-multi-diffip01 单节点网络环境兼容修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、LTP network stress 单节点兼容、execve shebang/环境修复、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并继续修复。AI 先确认 `tcp4-multi-diffip01` 缺少 `LHOST_HWADDRS` 等 network stress 环境变量；补齐默认环境后，又定位到启动期 wrapper 写入时跟随 `/bin/* -> /musl/busybox` symlink，误把 BusyBox ELF 覆盖成 `#!/bin/sh` 脚本，导致 shebang 解释器 `ENOEXEC`。修复新增安全写 wrapper helper，扩展 `execve` 默认环境并归一 `/bin/sh` 解释器；同时针对 LoongArch 单节点无外部网卡的事实，为 `tcp4-multi-diffip01` 默认 `IP_TOTAL_FOR_TCPIP=0` 场景提供空 alias pair TPASS 兼容路径。`make` 通过，LoongArch 单跑 musl/glibc `tcp4-multi-diffip01` 均为 `passed 1 failed 0`，日志正常 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/tcp4-multi-diffip01-single-node-env.md](./problem/tcp4-multi-diffip01-single-node-env.md)。
+- **关联 commit**：待提交

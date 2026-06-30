@@ -78,6 +78,7 @@
 ## 网络
 
 - [bind02: getgrgid 失败与特权端口权限](./bind02-privileged-port.md)
+- [tcp4-multi-diffip01: 单节点网络环境兼容](./tcp4-multi-diffip01-single-node-env.md)
 - [accept02 组播与 setsockopt 错误传播](./accept02-mcast-setsockopt.md)
 - [iperf-musl: UDP 多流分发与 socket 兼容修复](./iperf-musl-network-fixes.md)
 - [iperf-glibc: daemon fstatat 与 /dev/null 设备号](./iperf-glibc-daemon-fstatat-devnull.md)
