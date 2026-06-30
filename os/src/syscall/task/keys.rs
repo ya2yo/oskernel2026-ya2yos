@@ -16,10 +16,11 @@
 //!   - KEYCTL_INVALIDATE (21)
 
 use alloc::vec;
-use alloc::{collections::btree_map::BTreeMap, format, string::String, vec::Vec};
+use alloc::{collections::btree_map::BTreeMap, format, string::String, sync::Arc, vec::Vec};
 use log::{debug, warn};
 use spin::{Lazy, Mutex};
 
+use crate::fs::File;
 use crate::mm::read_user_cstr;
 use crate::task::current_task;
 use crate::utils::{SysErrNo, SyscallRet};
@@ -38,6 +39,11 @@ const KEYCTL_READ: usize = 11;
 const KEYCTL_SET_REQKEY_KEYRING: usize = 14;
 const KEYCTL_SET_TIMEOUT: usize = 15;
 const KEYCTL_INVALIDATE: usize = 21;
+const KEYCTL_WATCH_KEY: usize = 32;
+
+const WATCH_TYPE_KEY_NOTIFY: u32 = 1;
+const NOTIFY_KEY_UPDATED: u8 = 1;
+const KEY_NOTIFICATION_LEN: u32 = 16;
 
 // KEY_SPEC 特殊值
 const KEY_SPEC_THREAD_KEYRING: i32 = -1;
@@ -66,8 +72,18 @@ struct KeyEntry {
     invalidated: bool,
 }
 
+#[derive(Clone)]
+struct KeyWatcher {
+    watch_id: u8,
+    file: Arc<dyn File>,
+}
+
 /// 全局密钥数据库: 序列号 → 密钥条目
 static KEY_STORE: Lazy<Mutex<BTreeMap<i32, KeyEntry>>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
+
+/// key serial → notification pipe watchers.
+static KEY_WATCHERS: Lazy<Mutex<BTreeMap<i32, Vec<KeyWatcher>>>> =
+    Lazy::new(|| Mutex::new(BTreeMap::new()));
 
 /// 全局密钥序列号计数器，从 100 开始（避免与特殊值冲突）
 static NEXT_SERIAL: Lazy<Mutex<i32>> = Lazy::new(|| Mutex::new(100));
@@ -115,6 +131,34 @@ fn resolve_keyring(id: i32) -> i32 {
         | KEY_SPEC_USER_KEYRING
         | KEY_SPEC_USER_SESSION_KEYRING => ensure_keyring(id),
         _ => id,
+    }
+}
+
+fn emit_key_notification(key_id: i32, subtype: u8) {
+    let watchers = {
+        let watchers = KEY_WATCHERS.lock();
+        watchers.get(&key_id).cloned().unwrap_or_default()
+    };
+
+    if watchers.is_empty() {
+        return;
+    }
+
+    for watcher in watchers {
+        let mut record = [0u8; KEY_NOTIFICATION_LEN as usize];
+        let type_subtype = WATCH_TYPE_KEY_NOTIFY | ((subtype as u32) << 24);
+        let info = KEY_NOTIFICATION_LEN | ((watcher.watch_id as u32) << 8);
+        record[0..4].copy_from_slice(&type_subtype.to_le_bytes());
+        record[4..8].copy_from_slice(&info.to_le_bytes());
+        record[8..12].copy_from_slice(&(key_id as u32).to_le_bytes());
+        record[12..16].copy_from_slice(&0u32.to_le_bytes());
+
+        if let Err(err) = watcher.file.write_kernel_bytes(&record) {
+            warn!(
+                "[keyctl] failed to emit watch notification key={} err={:?}",
+                key_id, err
+            );
+        }
     }
 }
 
@@ -290,6 +334,38 @@ pub fn sys_keyctl(option: usize, arg2: usize, arg3: usize, arg4: usize, arg5: us
                 entry.payload.clear();
             }
             debug!("[keyctl] UPDATE key={} plen={}", key_id, plen);
+            drop(store);
+            emit_key_notification(key_id, NOTIFY_KEY_UPDATED);
+            Ok(0)
+        }
+
+        KEYCTL_WATCH_KEY => {
+            let key_id = resolve_keyring(arg2 as i32);
+            let fd = arg3;
+            let watch_id = arg4 as u8;
+
+            {
+                let store = KEY_STORE.lock();
+                if !store.contains_key(&key_id) {
+                    debug!("[keyctl] WATCH_KEY key={} -> ENOKEY", key_id);
+                    return Err(SysErrNo::ENOKEY);
+                }
+            }
+
+            let task = current_task().unwrap();
+            let proc_inner = task.process.inner_lock();
+            let file = proc_inner.fd_table.get(fd)?.any();
+            drop(proc_inner);
+
+            let mut watchers = KEY_WATCHERS.lock();
+            watchers
+                .entry(key_id)
+                .or_default()
+                .push(KeyWatcher { watch_id, file });
+            debug!(
+                "[keyctl] WATCH_KEY key={} fd={} watch_id={}",
+                key_id, fd, watch_id
+            );
             Ok(0)
         }
 

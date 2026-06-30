@@ -130,6 +130,10 @@ pub trait File: Send + Sync {
     fn write(&self, _buf: UserBuffer) -> SyscallRet {
         unimplemented!("File::wirte")
     }
+    /// 内核内部向抽象文件注入数据，默认不支持。
+    fn write_kernel_bytes(&self, _buf: &[u8]) -> SyscallRet {
+        Err(SysErrNo::EOPNOTSUPP)
+    }
     /// 获得文件信息
     fn fstat(&self) -> Kstat {
         unimplemented!("File::fstate")

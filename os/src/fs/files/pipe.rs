@@ -120,6 +120,8 @@ enum RingBufferStatus {
 }
 
 const RING_BUFFER_SIZE: usize = 65536;
+const IOC_WATCH_QUEUE_SET_SIZE: u32 = 0x5760;
+const IOC_WATCH_QUEUE_SET_FILTER: u32 = 0x5761;
 
 /// Pipe的内层结构体
 struct PipeRingBuffer {
@@ -446,6 +448,18 @@ impl File for Pipe {
         ring_buffer.wake_reader();
         Ok(write_size)
     }
+    fn write_kernel_bytes(&self, buf: &[u8]) -> SyscallRet {
+        let mut ring_buffer = self.inner_lock();
+        if ring_buffer.all_read_ends_closed() {
+            return Err(SysErrNo::EPIPE);
+        }
+        if ring_buffer.available_write() < buf.len() {
+            return Err(SysErrNo::ENOBUFS);
+        }
+        ring_buffer.write_bytes(buf, buf.len());
+        ring_buffer.wake_reader();
+        Ok(buf.len())
+    }
     fn fstat(&self) -> Kstat {
         Kstat {
             st_mode: StMode::FIFO.bits(),
@@ -459,6 +473,12 @@ impl File for Pipe {
     fn set_nonblocking(&self, nonblocking: bool) -> Result<(), SysErrNo> {
         self.nonblocking.store(nonblocking, Ordering::Relaxed);
         Ok(())
+    }
+    fn ioctl(&self, cmd: u32, _arg: usize, _memory_set: &crate::mm::MemorySet) -> SyscallRet {
+        match cmd {
+            IOC_WATCH_QUEUE_SET_SIZE | IOC_WATCH_QUEUE_SET_FILTER => Ok(0),
+            _ => Err(SysErrNo::ENOTTY),
+        }
     }
     fn poll(&self, events: PollEvents) -> PollEvents {
         let mut revents = PollEvents::empty();

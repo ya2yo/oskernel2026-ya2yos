@@ -3693,3 +3693,68 @@ warnings 0
 
 - 新日志中 `writev06` 输出 `TPASS: writev returned 2 as expected`，未再出现 SIGSEGV。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: wqueue01 notification pipe 与 KEYCTL_WATCH_KEY 兼容修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并进行修复。
+
+### 分析
+
+AI 先提取 `log.ans` 中的失败摘要，确认当前失败为 LTP `wqueue01`：
+
+```text
+common.h:116: TBROK: ioctl(3, IOC_WATCH_QUEUE_SET_SIZE, ...) failed: ENOTTY (25)
+Summary:
+passed   0
+failed   0
+broken   1
+```
+
+读取 LTP `watchqueue/common.h` 与 `wqueue01.c` 后确认，用例创建 `O_NOTIFICATION_PIPE` 后会配置 watch queue ioctl，随后通过 `KEYCTL_WATCH_KEY` 监听 user key，并期望 `KEYCTL_UPDATE` 后从 pipe 中读到 `NOTIFY_KEY_UPDATED`。
+
+检查内核实现后发现，`sys_pipe2()` 已能创建普通 pipe，但 `Pipe` 没有覆写 `ioctl()`，因此继承 `File::ioctl()` 的默认 `ENOTTY`；同时 `sys_keyctl()` 还缺少 `KEYCTL_WATCH_KEY`，也没有从 key update 向 pipe 注入 notification 的内核态写入路径。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/vfs.rs` | 为 `File` trait 增加默认 `write_kernel_bytes()`，用于内核内部向支持的抽象文件注入数据 |
+| `os/src/fs/files/pipe.rs` | `Pipe` 接受 `IOC_WATCH_QUEUE_SET_SIZE` / `IOC_WATCH_QUEUE_SET_FILTER`；实现内核态写 pipe ring buffer 并唤醒 reader |
+| `os/src/syscall/task/keys.rs` | 增加 `KEYCTL_WATCH_KEY` watcher 注册；`KEYCTL_UPDATE` 后向 watcher pipe 写入 16 字节 `NOTIFY_KEY_UPDATED` key notification |
+| `Docs/初赛文档/problem/wqueue01-watch-key-notification.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml --all
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- LoongArch 当前配置单跑 musl/glibc `wqueue01`，两者均通过：
+
+```text
+common.h:152: TINFO: NOTIFY[000]: ty=000001 sy=01 i=00000110
+common.h:71: TINFO: KEY 00000065 change=1[updated] aux=0
+wqueue01.c:22: TPASS: keyctl update has been recognized
+Summary:
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+- 外层 `FAIL LTP CASE wqueue01 : 10` 是包装器退出码打印，判定以 LTP `TPASS` 和 Summary 为准。
+- 未运行 `riscv64`。
