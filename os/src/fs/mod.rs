@@ -187,6 +187,20 @@ pub enum InodeType {
 }
 
 impl InodeType {
+    /// Returns the Linux stat mode type bits for this inode type.
+    pub const fn mode_bits(self) -> u32 {
+        match self {
+            Self::Fifo => StMode::FIFO.bits(),
+            Self::CharDevice => StMode::FCHR.bits(),
+            Self::Dir => StMode::FDIR.bits(),
+            Self::BlockDevice => StMode::FBLK.bits(),
+            Self::File => StMode::FREG.bits(),
+            Self::SymLink => StMode::FLINK.bits(),
+            Self::Socket => StMode::FSOCK.bits(),
+            Self::Unknown => 0,
+        }
+    }
+
     /// Tests whether this node type represents a regular file.
     pub const fn is_file(self) -> bool {
         matches!(self, Self::File)

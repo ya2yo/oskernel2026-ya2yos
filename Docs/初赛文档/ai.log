@@ -3829,3 +3829,57 @@ warnings 0
 
 - 日志末尾正常 `shutdown!`。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: mkdir09 mode 类型位掩码修复
+
+### 用户需求
+
+用户要求分析 `log.ans`，确认其中是运行结果，并进行修复。
+
+### 分析
+
+AI 先按 `fix-bug` 流程过滤 `log.ans` 中的 LTP 关键字，确认当前失败集中在 `mkdir09`：
+
+```text
+mkdir09.c:82: TFAIL: mkdir(tmpdir, MODE_RWX) failed: EEXIST (17)
+mkdir09.c:88: TFAIL: rmdir(tmpdir) failed: ENOTDIR (20)
+Unknown inode mode type 4e00
+Summary:
+passed   6
+failed   945
+broken   0
+skipped  0
+warnings 0
+FAIL LTP CASE mkdir09 : 10
+```
+
+读取 LTP `mkdir09.c` 后确认，`test3()` 会反复 `mkdir(tmpdir, MODE_RWX)` 并 `rmdir(tmpdir)`，其中 `MODE_RWX=07770`。随后检查 `sys_mkdirat()`、VFS `open/create_file()`、`Ext4Inode::fmode_set()` 和 `lwext4_rust::file_type()`。
+
+关键结论是 `lwext4_rust::file_type()` 原先用 `mode & !0o777` 提取类型位，未清除 `0o7000` 特殊权限位。目录 `S_IFDIR | 07770` 被计算成 `0x4e00`，不匹配纯目录类型 `0x4000`，于是退化为普通文件类型。后续 `rmdir()` 看到目标不是目录，返回 `ENOTDIR`；目录删除失败后残留路径，又导致下一轮 `mkdir()` 返回 `EEXIST`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `crates/lwext4_rust/src/file.rs` | `file_type()` 改用 `mode & 0o170000` 提取 Linux `S_IF*` 类型位 |
+| `os/src/fs/mod.rs` | 为 `InodeType` 增加 `mode_bits()`，集中映射类型位 |
+| `os/src/fs/ext4_lw/inode.rs` | `fmode_set()` 在调用方未显式传类型位时补齐当前 inode 类型，并保留 `0o7777` 权限/特殊权限位 |
+| `Docs/初赛文档/problem/mkdir09-mode-type-mask.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=loongarch64`，构建通过。
+- `make run` 未重新执行；用户明确说明 `log.ans` 是运行结果，本次以该日志为失败分析依据。
+- 未运行 `riscv64`。

@@ -355,6 +355,13 @@ impl Inode for Ext4Inode {
     }
     fn fmode_set(&self, mode: u32) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
+        let mode_type = mode & 0o170000;
+        let mode_type = if mode_type != 0 {
+            mode_type
+        } else {
+            as_inode_type(file.file_type()).mode_bits()
+        };
+        let mode = mode_type | (mode & 0o7777);
         file.file_mode_set(mode).map_err(SysErrNo::from)
     }
 }

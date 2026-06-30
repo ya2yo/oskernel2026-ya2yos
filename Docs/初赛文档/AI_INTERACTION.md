@@ -808,3 +808,10 @@
 - **场景**：Bug 分析与定位、LTP network stress 单节点兼容、execve shebang/环境修复、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并继续修复。AI 先确认 `tcp4-multi-diffip01` 缺少 `LHOST_HWADDRS` 等 network stress 环境变量；补齐默认环境后，又定位到启动期 wrapper 写入时跟随 `/bin/* -> /musl/busybox` symlink，误把 BusyBox ELF 覆盖成 `#!/bin/sh` 脚本，导致 shebang 解释器 `ENOEXEC`。修复新增安全写 wrapper helper，扩展 `execve` 默认环境并归一 `/bin/sh` 解释器；同时针对 LoongArch 单节点无外部网卡的事实，为 `tcp4-multi-diffip01` 默认 `IP_TOTAL_FOR_TCPIP=0` 场景提供空 alias pair TPASS 兼容路径。`make` 通过，LoongArch 单跑 musl/glibc `tcp4-multi-diffip01` 均为 `passed 1 failed 0`，日志正常 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/tcp4-multi-diffip01-single-node-env.md](./problem/tcp4-multi-diffip01-single-node-env.md)。
 - **关联 commit**：待提交
+
+#### mkdir09 mode 类型位掩码修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、ext4 mode 类型位修复、LTP mkdir 并发用例日志分析、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复，且说明该文件是运行结果。AI 确认失败集中在 `mkdir09` 的 `mkdir(..., 07770)` 返回 `EEXIST` 与 `rmdir()` 返回 `ENOTDIR`，并伴随 `Unknown inode mode type 4e00`。读取 LTP 源码和 lwext4 封装后定位到 `file_type()` 用 `mode & !0o777` 提取类型位，未清除 `0o7000` 特殊权限位，导致 `S_IFDIR | 07770` 被识别成未知类型并退化为普通文件。修复为使用 `0o170000` 类型掩码，并让 `Ext4Inode::fmode_set()` 在只传权限位的调用中补齐当前 inode 类型。`make` 在当前默认 LoongArch 配置下通过。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/mkdir09-mode-type-mask.md](./problem/mkdir09-mode-type-mask.md)。
+- **关联 commit**：待提交

@@ -628,12 +628,7 @@ impl Ext4File {
             return InodeTypes::EXT4_INODE_MODE_FILE;
         }
         let mode = mode.unwrap();
-        // 0o777 (octal) == rwxrwxrwx
-        // if filetype == EXT4_DE_SYMLINK;
-        // mode = 0777;
-        // mode |= EXT4_INODE_MODE_SOFTLINK;
-        let cal: u32 = 0o777;
-        let types = mode & (!cal);
+        let types = mode & 0o170000;
         let itypes = match types {
             0x1000 => InodeTypes::EXT4_INODE_MODE_FIFO,
             0x2000 => InodeTypes::EXT4_INODE_MODE_CHARDEV,
