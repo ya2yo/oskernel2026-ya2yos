@@ -1,4 +1,4 @@
-use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::btree_map::BTreeMap, string::String, sync::Arc, vec::Vec};
 use spin::{Lazy, Mutex};
 
 use super::{FrameTracker, VirtPageNum};
@@ -24,12 +24,14 @@ impl GroupInner {
 pub struct GroupManager {
     unused_id: Vec<usize>,
     groups: BTreeMap<usize, GroupInner>,
+    shared_file_frames: BTreeMap<(String, usize), Arc<FrameTracker>>,
 }
 impl GroupManager {
     pub fn new() -> GroupManager {
         Self {
             unused_id: (1..GROUP_SIZE).collect(),
             groups: BTreeMap::new(),
+            shared_file_frames: BTreeMap::new(),
         }
     }
     //分配一个groupID
@@ -84,5 +86,15 @@ impl GroupManager {
         } else {
             None
         }
+    }
+
+    pub fn add_file_frame(&mut self, path: String, page_index: usize, frame: Arc<FrameTracker>) {
+        self.shared_file_frames
+            .entry((path, page_index))
+            .or_insert(frame);
+    }
+
+    pub fn find_file_frame(&self, path: String, page_index: usize) -> Option<Arc<FrameTracker>> {
+        self.shared_file_frames.get(&(path, page_index)).cloned()
     }
 }

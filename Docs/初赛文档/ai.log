@@ -2991,3 +2991,64 @@ broken   0
 ```
 
 - 新 `log.ans` 未再出现 `getgrgid(0) failed`。
+
+---
+
+## 2026-06-30: execv01 MAP_SHARED 文件映射修复
+
+### 用户需求
+
+用户要求分析 `log.ans`，修复 `tst_test.c:1449: TBROK: Test haven't reported results!`。
+
+### 分析
+
+AI 扫描 `log.ans` 后确认失败集中在 musl/glibc LTP `execv01`：
+
+```text
+execv01_child.c:23: TPASS: ./execv01_child executed
+tst_test.c:1449: TBROK: Test haven't reported results!
+Summary:
+passed   0
+failed   0
+broken   1
+```
+
+随后读取 LTP `execv01.c`、`execv01_child.c` 和 `tst_test.c`。`execv01` 的父进程只 `fork()`，子进程 `execv(execv01_child)`；子程序调用 `tst_reinit()` 后通过 `LTP_IPC_PATH` 重新打开同一个结果文件并 `mmap(MAP_SHARED)`。子程序已经打印 `TPASS`，但父框架比较 `results` 计数时没有看到变化，说明失败不是 `execv()`，而是共享结果页没有跨 exec 后重新 mmap 生效。
+
+继续检查内核 `mmap` 和缺页路径，确认 Ya2yOS 原先的 `MAP_SHARED` 共享只依赖 `MapArea.groupid`。该机制能覆盖 `fork()` 继承同一 `MapArea` 的场景，但 `execv01_child` 在 `execve()` 后重新 `open + mmap()`，会得到新的 `MapArea` 和新的 `groupid`，因此子进程写入的是另一页物理内存。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/mm/group.rs` | 为 `GROUP_SHARE` 增加按 `(path, page_index)` 索引的 `shared_file_frames` 文件页缓存 |
+| `os/src/mm/page_fault_handler.rs` | `MAP_SHARED` 文件映射缺页时先复用文件页缓存，未命中时读文件并登记新帧 |
+| `Docs/初赛文档/problem/execv01-mmap-shared-reinit.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- 在 `initproc` 指向 `execv01` 的复现配置下，单跑 musl/glibc `execv01`，两者均通过：
+
+```text
+execv01_child.c:23: TPASS: ./execv01_child executed
+Summary:
+passed   1
+failed   0
+broken   0
+```
+
+- 最后按当前工作树重新写回 `log.ans` 时，`initproc` 已指向同类 `execve01`，`log.ans` 中同样不再出现 `tst_test.c:1449: TBROK: Test haven't reported results!`。

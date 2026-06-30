@@ -710,3 +710,10 @@
 - **场景**：Bug 分析与定位、LTP `bind02` 兼容修复、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复失败。AI 根据日志确认 musl/glibc `bind02` 均在 setup 阶段因 `getgrgid(0)` 返回 `ENOENT` 而 `TBROK`；结合 LTP 源码和 `initfiles` 确认 `/etc/passwd` 中 `nobody` 的 gid 为 0，但系统未创建 `/etc/group`。继续检查 `bind()` 语义后发现 TCP/UDP 缺少 1024 以下特权端口权限检查。修复补齐最小 `/etc/group`，并让非 root 绑定特权端口返回 `EACCES`。`make`、`make log` 通过，LoongArch 单跑 musl/glibc `bind02` 均输出 `TPASS: bind() : EACCES (13)`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/bind02-privileged-port.md](./problem/bind02-privileged-port.md)。
 - **关联 commit**：待提交
+
+#### execv01 MAP_SHARED 文件页共享修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、mmap `MAP_SHARED` 语义修复、LTP execv 回归验证、文档完善
+- **描述**：用户要求分析 `log.ans` 中 `tst_test.c:1449: TBROK: Test haven't reported results!`。AI 根据日志确认 `execv01_child` 已打印 `TPASS`，但父 LTP 框架的共享结果计数没有变化；结合 LTP `tst_reinit()` 逻辑确认 exec 后子程序会重新打开 `LTP_IPC_PATH` 并 `mmap(MAP_SHARED)` 同一结果文件。根因是 Ya2yOS 原 `MAP_SHARED` 仅按 fork 继承的 `MapArea.groupid` 共享，没有按文件页共享，导致 exec 后重新 mmap 的结果页与父进程分裂。修复为在 `GROUP_SHARE` 中增加 `(path, page_index)` 文件页缓存，文件 `MAP_SHARED` 缺页时复用同一 `FrameTracker`。`make` 通过，LoongArch 单跑 musl/glibc `execv01` 均输出 `passed 1 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/execv01-mmap-shared-reinit.md](./problem/execv01-mmap-shared-reinit.md)。
+- **关联 commit**：待提交

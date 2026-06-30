@@ -255,7 +255,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "execle01_child\0",
     "execlp01\0",
     "execlp01_child\0",
-    "execv01\0",
     "execv01_child\0",
     "execve01\0",
     "execve01_child\0",

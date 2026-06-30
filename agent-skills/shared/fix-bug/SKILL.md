@@ -69,4 +69,4 @@ make TARGET_ARCH=loongarch64
 ## 收尾
 
 - 修通测例、panic、语义 bug：使用 `write-docs` 写开发日志和 problem；用 AI 辅助时同时写 `ai.log` 与 `AI_INTERACTION.md`。
-- 最终回复说明根因、修改点和验证结果；没跑的验证要明确说。
+- 写完文档不需要再重新运行，直接回复说明根因、修改点和验证结果；没跑的验证要明确说。
