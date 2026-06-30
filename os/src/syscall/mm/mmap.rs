@@ -8,9 +8,9 @@ use crate::{
     arch::memory_layout::{MAX_MMAP_SIZE, PAGE_SIZE},
     fs::File,
     mm::{
-        copy_to_user, if_bad_address, insert_bad_address, remove_bad_address, shm_attach,
-        shm_create, shm_drop, shm_find, MapArea, MapAreaType, MapPermission, MremapFlags, ShmFlags,
-        VirtAddr, VirtPageNum,
+        copy_to_user, if_bad_address, remove_bad_address, shm_attach, shm_create, shm_drop,
+        shm_find, MapArea, MapAreaType, MapPermission, MremapFlags, ShmFlags, VirtAddr,
+        VirtPageNum,
     },
     task::{self, current_task},
     utils::{page_round_up, SysErrNo, SyscallRet},
@@ -43,10 +43,7 @@ pub fn sys_mmap(
     if len > MAX_MMAP_SIZE {
         return Err(SysErrNo::ENOMEM);
     }
-    if fd == usize::MAX {
-        if !flags.contains(MmapFlags::MAP_ANONYMOUS) {
-            return Err(SysErrNo::EBADF);
-        }
+    if flags.contains(MmapFlags::MAP_ANONYMOUS) {
         let rv = memory_set.mmap(addr, len, map_perm, flags, None, usize::MAX);
         if rv == 0 {
             if flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
@@ -56,15 +53,9 @@ pub fn sys_mmap(
         }
         return Ok(rv);
     }
-    if flags.contains(MmapFlags::MAP_ANONYMOUS) {
-        //映射1字节没有任何权限的地址
-        let rv = memory_set.mmap(0, 1, MapPermission::empty(), flags, None, usize::MAX);
-        if rv == 0 {
-            return Err(SysErrNo::ENOMEM);
-        }
-        insert_bad_address(rv);
-        log::info!("bad address is 0x{:x}", rv);
-        return Ok(rv);
+
+    if fd == usize::MAX {
+        return Err(SysErrNo::EBADF);
     }
     // check fd and map_permission
     let file = process.fd_table.get(fd)?.file()?;

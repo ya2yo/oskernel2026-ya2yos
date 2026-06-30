@@ -3635,3 +3635,61 @@ warnings 0
 
 - 新日志中 `writetest` 的写入和校验均为 `TPASS`。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: writev06 MAP_ANONYMOUS fd 兼容修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并进行修复。
+
+### 分析
+
+AI 先提取日志中的失败摘要，确认当前失败为 LTP `writev06`：
+
+```text
+[kernel] hart 0 Exception(StorePageFault) in application, bad addr = ...
+writev06    1  TBROK  :  tst_sig.c:232: unexpected signal SIGSEGV(11) received
+writev06    2  TBROK  :  tst_sig.c:232: Remaining cases broken
+```
+
+读取 LTP `writev06.c` 后确认，测试用 `mmap(..., MAP_PRIVATE | MAP_ANONYMOUS, 0, 0)` 分别创建 `PROT_NONE` guard page 和 `PROT_READ | PROT_WRITE` 数据页，并在数据页上 `memset()` 后把页尾 1 字节交给 `writev()`。Linux 对 `MAP_ANONYMOUS` 会忽略 fd 参数，因此 fd=0 的匿名映射应按请求权限正常创建。
+
+检查 `sys_mmap()` 后发现，当前实现只有 `fd == -1 && MAP_ANONYMOUS` 才正常匿名映射；当 `MAP_ANONYMOUS` 搭配 fd=0 时，会错误映射 1 字节 `PROT_NONE` 并登记 bad address。于是 `writev06` 中本应可写的 `good_addr` 实际不可写，测试在 setup 的 `memset()` 阶段触发 StorePageFault。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/mm/mmap.rs` | `MAP_ANONYMOUS` 分支提前并忽略 fd，按请求 `addr/len/prot/flags` 创建匿名映射；删除 fd=0 匿名映射 1 字节 `PROT_NONE` 的特殊分支 |
+| `Docs/初赛文档/problem/writev06-anonymous-mmap-fd.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml --all
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- LoongArch 当前配置单跑 musl/glibc `writev06`，两者均通过：
+
+```text
+Summary:
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+- 新日志中 `writev06` 输出 `TPASS: writev returned 2 as expected`，未再出现 SIGSEGV。
+- 未运行 `riscv64`。

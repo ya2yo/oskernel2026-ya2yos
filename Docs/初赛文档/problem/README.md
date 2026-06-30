@@ -37,6 +37,7 @@
 - [龙芯架构 busy_box 测试失败](./loongarch-busybox-cow.md)
 - [page fault 统一入口重构](./page-fault-unified-handler.md)
 - [execv01: MAP_SHARED 文件映射未跨 exec 共享](./execv01-mmap-shared-reinit.md)
+- [writev06: MAP_ANONYMOUS 忽略 fd 语义错误](./writev06-anonymous-mmap-fd.md)
 - [LoongArch busybox-glibc mprotect 越界改权限](./loongarch-busybox-mprotect-range.md)
 - [内核堆碎片化：全量测例运行 OOM](./fsindex-oom.md)
 - [LoongArch getrusage03 与 QEMU virt 分段内存](./loongarch-getrusage03-split-ram.md)

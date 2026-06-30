@@ -787,3 +787,10 @@
 - **场景**：Bug 分析与定位、普通文件分片 read 语义修复、LTP 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认当前失败为 `writetest`：1MiB 写入成功，但验证阶段 `read(fd, buf, 1MiB)` 返回短读，测试报告 `Verify: Failure` 和 `Total mismatches: -1 bytes`。根因是 `sys_read()` 为限制内核缓冲区只执行一次 64KiB 读并直接返回，而普通文件仍有后续数据可读。修复后 `sys_read()` 对普通 `OSFile` 按 64KiB 分片循环读取并逐段写回用户缓冲区，pipe/socket 等非普通 fd 保持一次读返回。`make` 通过，LoongArch 单跑 musl/glibc `writetest` 均为 `passed 2 failed 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/writetest-large-read.md](./problem/writetest-large-read.md)。
 - **关联 commit**：待提交
+
+#### writev06 MAP_ANONYMOUS fd 兼容修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、匿名 mmap 兼容语义修复、LTP 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认当前失败为 `writev06`：测试 setup 阶段发生用户态 StorePageFault，LTP 报告 unexpected `SIGSEGV`。读取 LTP 源码后确认测试使用 `MAP_PRIVATE | MAP_ANONYMOUS` 且 fd 参数为 0 创建 `PROT_NONE` guard page 与 `PROT_READ|PROT_WRITE` 数据页；Linux 对匿名映射会忽略 fd。根因是 `sys_mmap()` 只有 fd=-1 的匿名映射走正常路径，fd=0 时错误返回 1 字节 `PROT_NONE` 映射。修复后 `MAP_ANONYMOUS` 分支提前并忽略 fd，按请求长度和权限创建匿名映射。`make` 通过，LoongArch 单跑 musl/glibc `writev06` 均为 `passed 1 failed 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/writev06-anonymous-mmap-fd.md](./problem/writev06-anonymous-mmap-fd.md)。
+- **关联 commit**：待提交

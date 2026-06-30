@@ -2375,8 +2375,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "wqueue08\0",
     "wqueue09\0",
     "write_freezing.sh\0",
-    "writev02\0",
-    "writev05\0",
     "writev06\0",
     "writev07\0",
     "zram01.sh\0",
