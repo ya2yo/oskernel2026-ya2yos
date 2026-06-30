@@ -752,3 +752,10 @@
 - **场景**：Bug 分析与定位、`lseek` 错误码语义修复、VFS 特殊节点类型兼容、LTP 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并继续修复。AI 确认当前失败为 `lseek02`：无效 fd 返回了 `EINVAL` 而非 `EBADF`，匿名 pipe 返回 `EINVAL` 而非 `ESPIPE`，命名 FIFO 被错误允许 seek。修复为 `sys_lseek()` 先通过 fd 表返回 `EBADF`，`File::lseek()` 默认返回 `ESPIPE`，并在 `FsIndex` 中登记 `mknodat()` 创建的特殊节点类型，使命名 FIFO 在 `OSFile::lseek()` 中返回 `ESPIPE`。`make` 通过，LoongArch 单跑 musl/glibc `lseek02` 的 LTP Summary 均为 `passed 15 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/lseek02-fd-espipe-fifo.md](./problem/lseek02-fd-espipe-fifo.md)。
 - **关联 commit**：待提交
+
+#### pread02 pipe/目录错误码修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`pread64/pwrite64` 错误码语义修复、LTP 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并继续修复。AI 确认当前失败为 `pread02`：pipe fd 的 `pread()` 返回 `EINVAL` 而非 `ESPIPE`，目录 fd 的 `pread()` 错误成功。修复为 `sys_pread64()` 通过通用 fd 对象调用 `lseek` 判定不可 seek fd，并对目录 fd 显式返回 `EISDIR`；同时同步修正同源 `sys_pwrite64()` 的无效 fd、只读 fd 和不可 seek fd 错误码顺序。`make` 通过，LoongArch 单跑 musl/glibc `pread02` 的 LTP Summary 均为 `passed 3 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/pread02-pipe-dir-errors.md](./problem/pread02-pipe-dir-errors.md)。
+- **关联 commit**：待提交

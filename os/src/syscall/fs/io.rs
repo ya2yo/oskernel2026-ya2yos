@@ -3,7 +3,8 @@ use log::{debug, warn};
 
 use crate::{
     fs::{
-        superblock_fs_stat, DummyFd, FdTable, File, FileDescriptor, OpenFlags, SEEK_CUR, SEEK_SET,
+        superblock_fs_stat, DummyFd, FdTable, File, FileDescriptor, OpenFlags, StMode, SEEK_CUR,
+        SEEK_SET,
     },
     mm::{copy_from_user, copy_to_user, user_buffer_from_kernel, UserBuffer},
     syscall::{fs::dummyfd_create, options::Iovec},
@@ -363,33 +364,37 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
     let task = current_task().unwrap();
     let inner = task.process.inner_lock();
 
-    if offset < 0 || fd >= inner.fd_table.len() {
+    let file = inner.fd_table.get(fd)?.any();
+    if offset < 0 {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = inner.fd_table.try_get(fd) {
-        let file = file.file()?;
-        if !file.writable() {
-            return Err(SysErrNo::EACCES);
-        }
-        let file = file.clone();
-        let chunk_count = IO_CHUNK_SIZE.min(count);
-        let mut kernel_buf = {
-            let memory_set = inner.get_locked_memory_set_read();
-            let mut kb = vec![0u8; chunk_count];
-            copy_from_user(&memory_set, buf as usize, &mut kb)?;
-            kb
-        };
-        let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-        // release current task TCB manually to avoid multi-borrow
-        drop(inner);
-        drop(task);
-        let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
-        file.lseek(offset, SEEK_SET)?;
-        let ret = file.write(buffer)?;
-        file.lseek(cur_offset, SEEK_SET)?;
-        return Ok(ret);
+    if !file.writable() {
+        return Err(SysErrNo::EBADF);
     }
-    Err(SysErrNo::EBADF)
+
+    let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
+    file.lseek(offset, SEEK_SET)?;
+
+    let chunk_count = IO_CHUNK_SIZE.min(count);
+    let mut kernel_buf = {
+        let memory_set = inner.get_locked_memory_set_read();
+        let mut kb = vec![0u8; chunk_count];
+        if let Err(err) = copy_from_user(&memory_set, buf as usize, &mut kb) {
+            let _ = file.lseek(cur_offset, SEEK_SET);
+            return Err(err);
+        }
+        kb
+    };
+    let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+    // release current task TCB manually to avoid multi-borrow
+    drop(inner);
+    drop(task);
+
+    let ret = file.write(buffer);
+    let restore = file.lseek(cur_offset, SEEK_SET);
+    let ret = ret?;
+    restore?;
+    Ok(ret)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/pread64.2.html
@@ -398,27 +403,29 @@ pub fn sys_pread64(fd: usize, buf: *const u8, count: usize, offset: isize) -> Sy
     let proc_inner = task.process.inner_lock();
     let memory_set = &*&proc_inner.get_locked_memory_set_read();
 
-    if offset < 0 || fd >= proc_inner.fd_table.len() {
+    let file = proc_inner.fd_table.get(fd)?.any();
+    if offset < 0 {
         return Err(SysErrNo::EINVAL);
     }
-    if let Some(file) = proc_inner.fd_table.try_get(fd) {
-        let file = file.file()?;
-        if !file.readable() {
-            return Err(SysErrNo::EACCES);
-        }
-        // release current task TCB manually to avoid multi-borrow
-        let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
-        file.lseek(offset, SEEK_SET)?;
-        let chunk_count = IO_CHUNK_SIZE.min(count);
-        let mut kernel_buf = vec![0u8; chunk_count];
-        let ub = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-        let ret = file.read(ub)?;
-        copy_to_user(memory_set, buf as usize, &kernel_buf[..ret])?;
-        file.lseek(cur_offset, SEEK_SET)?;
-        Ok(ret)
-    } else {
-        Err(SysErrNo::EBADF)
+    if !file.readable() {
+        return Err(SysErrNo::EBADF);
     }
+
+    // release current task TCB manually to avoid multi-borrow
+    let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
+    if file.fstat().st_mode & 0o170000 == StMode::FDIR.bits() {
+        return Err(SysErrNo::EISDIR);
+    }
+    file.lseek(offset, SEEK_SET)?;
+    let chunk_count = IO_CHUNK_SIZE.min(count);
+    let mut kernel_buf = vec![0u8; chunk_count];
+    let ub = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+    let ret = file.read(ub);
+    let restore = file.lseek(cur_offset, SEEK_SET);
+    let ret = ret?;
+    restore?;
+    copy_to_user(memory_set, buf as usize, &kernel_buf[..ret])?;
+    Ok(ret)
 }
 
 // Linux的实现与手册有差异或未实现该调用

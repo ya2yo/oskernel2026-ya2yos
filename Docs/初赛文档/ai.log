@@ -3351,3 +3351,61 @@ broken   0
 
 - 新 `log.ans` 中所有 `lseek02.c` 断言均为 `TPASS`，未再出现 `TFAIL`。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: pread02 pipe/目录错误码修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans`，继续修复当前 LTP 失败。
+
+### 分析
+
+AI 扫描 `log.ans` 后确认当前失败为 `pread02`，musl/glibc 均出现：
+
+```text
+pread02.c:44: TFAIL: pread(3, 1024, 0) file descriptor is a PIPE or FIFO expected ESPIPE: EINVAL (22)
+pread02.c:44: TPASS: pread(5, 1024, -1) specified offset is negative : EINVAL (22)
+pread02.c:44: TFAIL: pread(6, 1024, 0) file descriptor is a directory succeeded
+```
+
+读取 LTP `pread02.c` 后确认测试要求 pipe/FIFO 返回 `ESPIPE`、负 offset 返回 `EINVAL`、目录 fd 返回 `EISDIR`。检查内核发现 `sys_pread64()` 通过 `FileDescriptor::file()` 只接受 `OSFile`，匿名 pipe 作为抽象文件被错误转换成 `EINVAL`；目录 fd 则走普通 `OSFile` 的 `lseek + read` 路径，因目录 size 为 0 返回成功。
+
+同时检查 `pwrite02.c` 和 `sys_pwrite64()`，发现其结构与 `pread64` 同源，也存在 pipe 错误码、无效 fd 错误码和只读 fd 错误码不兼容风险，因此一并同步修正。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/io.rs` | `sys_pread64()` 改用 `fd_table.get(fd)?.any()`，通过 `lseek` 判定不可 seek fd 的 `ESPIPE`，目录 fd 返回 `EISDIR`，不可读 fd 返回 `EBADF` |
+| `os/src/syscall/fs/io.rs` | `sys_pwrite64()` 同步修正无效 fd、只读 fd、不可 seek fd 的错误码顺序，并在失败路径尽量恢复原 offset |
+| `Docs/初赛文档/problem/pread02-pipe-dir-errors.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/syscall/fs/io.rs
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- 当前配置单跑 musl/glibc `pread02`，两者 LTP Summary 均通过：
+
+```text
+Summary:
+passed   3
+failed   0
+broken   0
+```
+
+- 新 `log.ans` 中所有 `pread02.c` 断言均为 `TPASS`，未再出现 `TFAIL`。
+- 曾临时切换 `initproc.rs` 尝试验证 `pwrite02`，但未重建用户镜像，实际仍运行 `pread02`；最终已恢复 `initproc.rs` 到本轮开始时的 `pread02` 配置。因此 `pwrite64` 本轮只做了编译验证。
+- 未运行 `riscv64`。
