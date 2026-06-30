@@ -3052,3 +3052,63 @@ broken   0
 ```
 
 - 最后按当前工作树重新写回 `log.ans` 时，`initproc` 已指向同类 `execve01`，`log.ans` 中同样不再出现 `tst_test.c:1449: TBROK: Test haven't reported results!`。
+
+---
+
+## 2026-06-30: execve02 执行权限检查修复
+
+### 用户需求
+
+用户要求分析 `log.ans`，修复 `execve_child.c:27: TFAIL: execve_child shouldn't be executed`。
+
+### 分析
+
+AI 先扫描 `log.ans`，确认 musl `execve02` 直接执行了不应执行的 `execve_child`：
+
+```text
+execve_child.c:27: TFAIL: execve_child shouldn't be executed
+```
+
+glibc 路径同样进入 child，只是后续因动态链接库路径缺失报：
+
+```text
+execve_child: error while loading shared libraries: libc.so.6: cannot open shared object file: No such file or directory
+tst_test.c:405: TBROK: Invalid child (11) exit value 127
+```
+
+随后读取 LTP `execve02.c` 和 `execve_child.c`，确认测试会先把 `execve_child` 改成 `0700`，再 `seteuid(nobody)` 后调用 `execve()`，期望返回 `EACCES`。继续检查内核 `sys_execve()`，发现执行路径用 `open(..., O_RDONLY)` 读取 ELF，而通用 `open()` 只在写模式和创建路径做权限检查；`execve()` 自身没有检查执行位。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/execve.rs` | 新增按 effective uid/gid 判断执行权限的 helper，并在读取目标 ELF 前检查执行位；shebang 解释器 ELF 也走同一检查 |
+| `Docs/初赛文档/problem/execve02-exec-permission.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 追加本次 AI 辅助修复摘要 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml --all
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- 当前配置单跑 musl/glibc `execve02`，两者均通过：
+
+```text
+execve02.c:54: TPASS: execve() failed expectedly: EACCES (13)
+Summary:
+passed   1
+failed   0
+broken   0
+```
+
+- 新 `log.ans` 未再出现 `execve_child shouldn't be executed`。

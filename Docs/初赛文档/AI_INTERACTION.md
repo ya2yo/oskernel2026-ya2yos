@@ -717,3 +717,10 @@
 - **场景**：Bug 分析与定位、mmap `MAP_SHARED` 语义修复、LTP execv 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 中 `tst_test.c:1449: TBROK: Test haven't reported results!`。AI 根据日志确认 `execv01_child` 已打印 `TPASS`，但父 LTP 框架的共享结果计数没有变化；结合 LTP `tst_reinit()` 逻辑确认 exec 后子程序会重新打开 `LTP_IPC_PATH` 并 `mmap(MAP_SHARED)` 同一结果文件。根因是 Ya2yOS 原 `MAP_SHARED` 仅按 fork 继承的 `MapArea.groupid` 共享，没有按文件页共享，导致 exec 后重新 mmap 的结果页与父进程分裂。修复为在 `GROUP_SHARE` 中增加 `(path, page_index)` 文件页缓存，文件 `MAP_SHARED` 缺页时复用同一 `FrameTracker`。`make` 通过，LoongArch 单跑 musl/glibc `execv01` 均输出 `passed 1 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/execv01-mmap-shared-reinit.md](./problem/execv01-mmap-shared-reinit.md)。
 - **关联 commit**：待提交
+
+#### execve02 执行权限检查修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`execve` 权限语义修复、LTP execve 回归验证、文档完善
+- **描述**：用户要求分析 `log.ans` 中 `execve_child.c:27: TFAIL: execve_child shouldn't be executed`。AI 读取 LTP `execve02.c` 确认测试将 `execve_child` 改成 `0700` 后切换到 `nobody` 执行，期望 `execve()` 返回 `EACCES`；检查内核发现 `sys_execve()` 只用 `O_RDONLY` 打开并读取 ELF，缺少基于 effective uid/gid 的执行位检查。修复后 `execve` 在读取目标 ELF 前检查 `S_IXUSR/S_IXGRP/S_IXOTH`，shebang 解释器也走同一检查。`make` 通过，LoongArch 单跑 musl/glibc `execve02` 均输出 `TPASS: execve() failed expectedly: EACCES (13)`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/execve02-exec-permission.md](./problem/execve02-exec-permission.md)。
+- **关联 commit**：待提交

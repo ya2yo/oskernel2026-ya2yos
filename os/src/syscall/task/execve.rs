@@ -7,12 +7,41 @@ use log::debug;
 use crate::{
     fs::{open, OpenFlags, NONE_MODE},
     mm::{copy_from_user, read_user_cstr},
+    syscall::FaccessatFileMode,
     task::current_task,
     utils::{get_abs_path, strip_color, trim_start_slash, SysErrNo, SyscallRet},
 };
 
 fn is_elf(data: &[u8]) -> bool {
     data.len() >= 4 && data[0] == 0x7F && data[1] == b'E' && data[2] == b'L' && data[3] == b'F'
+}
+
+fn current_task_can_exec(file_mode: u32, owner_uid: u32, owner_gid: u32) -> bool {
+    let task = current_task().unwrap();
+    let task_inner = task.inner_lock();
+    let file_mode = FaccessatFileMode::from_bits_truncate(file_mode & 0xfff);
+
+    if task_inner.effective_uid == 0 {
+        return file_mode.intersects(
+            FaccessatFileMode::S_IXUSR | FaccessatFileMode::S_IXGRP | FaccessatFileMode::S_IXOTH,
+        );
+    }
+
+    if task_inner.effective_uid == owner_uid {
+        file_mode.contains(FaccessatFileMode::S_IXUSR)
+    } else if task_inner.effective_gid == owner_gid {
+        file_mode.contains(FaccessatFileMode::S_IXGRP)
+    } else {
+        file_mode.contains(FaccessatFileMode::S_IXOTH)
+    }
+}
+
+fn check_exec_permission(file_mode: u32, owner_uid: u32, owner_gid: u32) -> SyscallRet {
+    if current_task_can_exec(file_mode, owner_uid, owner_gid) {
+        Ok(0)
+    } else {
+        Err(SysErrNo::EACCES)
+    }
 }
 
 /// 从文件头解析 shebang（`#!` 行），语义对齐 Linux `fs/binfmt_script.c`。
@@ -178,6 +207,8 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     // debug!("The real abs_path is {}", abs_path);
     let script_abs_path = abs_path.clone();
     let app_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+    let app_stat = app_inode.inode.fstat();
+    check_exec_permission(app_inode.inode.fmode()?, app_stat.st_uid, app_stat.st_gid)?;
 
     let mut elf_data = app_inode.inode.read_all()?;
     if !is_elf(&elf_data) {
@@ -203,6 +234,12 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
             // 打开解释器 ELF（如 /bin/sh → busybox），后续走正常 ELF 加载
             abs_path = get_abs_path(&cwd, trim_start_slash(interp).as_str());
             let interp_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+            let interp_stat = interp_inode.inode.fstat();
+            check_exec_permission(
+                interp_inode.inode.fmode()?,
+                interp_stat.st_uid,
+                interp_stat.st_gid,
+            )?;
             elf_data = interp_inode.inode.read_all()?;
             if !is_elf(&elf_data) {
                 return Err(SysErrNo::ENOEXEC);
