@@ -102,6 +102,9 @@ fn get_score() {
     // iperf
     run_testsuit("musl\0", "iperf_testcode.sh\0");
     run_testsuit("glibc\0", "iperf_testcode.sh\0");
+     // netperf
+    run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
+    run_testsuit("glibc\0", "netperf_testcode.sh\0");
     // cyclictest
     run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
@@ -120,7 +123,4 @@ fn get_score() {
     // ltp
     ltp::test_musl_ltp();
     ltp::test_glibc_ltp();
-    // netperf
-    run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
-    run_testsuit("glibc\0", "netperf_testcode.sh\0");
 }

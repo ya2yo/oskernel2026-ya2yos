@@ -1,6 +1,7 @@
 use crate::{
     fs::{files::OSFile, Socket},
     mm::UserBuffer,
+    net::{Shutdown, SocketOps},
     syscall::Syscall,
     utils::{GeneralRet, SysErrNo, SyscallRet},
 };
@@ -50,6 +51,12 @@ impl FileDescriptor {
     }
     pub fn any(&self) -> Arc<dyn File> {
         self.file.any()
+    }
+
+    fn close_on_process_exit(&self) {
+        if let FileClass::Socket(socket) = &self.file {
+            let _ = socket.0.shutdown(Shutdown::Both);
+        }
     }
 
     pub fn unset_cloexec(&mut self) {
@@ -136,7 +143,11 @@ impl FdTable {
     }
     /// 清空fd_table
     pub fn clear(&self) {
-        self.get_mut().files.clear();
+        let mut inner = self.get_mut();
+        for desc in inner.files.iter().flatten() {
+            desc.close_on_process_exit();
+        }
+        inner.files.clear();
     }
     /// 分配一个新的最小可用fd
     pub fn alloc_fd(&self) -> SyscallRet {

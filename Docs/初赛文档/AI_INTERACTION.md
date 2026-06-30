@@ -822,3 +822,10 @@
 - **场景**：Bug 分析与定位、`prlimit64/getrlimit` rlimit 语义对齐、LTP getrlimit 回归验证协作、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修改。AI 确认当前失败为 `getrlimit03`：`prlimit64(pid=0, old_limit)` 对非 `RLIMIT_NOFILE` resource 返回成功但没有写回 `old_limit`，导致用户态读到未初始化的 `rlim_cur=5/80`，而 `getrlimit()` 返回 `RLIM_INFINITY` 或 stack 8MiB 默认值。修复为让 `prlimit64` 复用 `getrlimit` 的默认 rlimit 逻辑，对所有 resource 写回 old limit，并对 `pid != 0` 返回 `ESRCH`、对非法 `cur > max` 返回 `EINVAL`。`make` 在当前默认 LoongArch 配置下通过，维护者确认单跑验证通过。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/getrlimit03-prlimit-defaults.md](./problem/getrlimit03-prlimit-defaults.md)。
 - **关联 commit**：待提交
+
+#### netperf-glibc 12865 端口残留监听修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、进程退出 socket 清理修复、netperf full run 验证、文档完善
+- **描述**：用户说明 full run 最后的 `netperf-glibc` 报 `socket already listening on port 12865`，并要求不要依赖运行时改脚本或换端口。AI 对比历史可用版本和当前 `riscv.ans`，确认临时改到 `12866` 只是绕过，真实问题是进程退出清 fd 时监听 socket 释放过度依赖最后一个 `Arc<Socket>` drop；若仍有临时引用，`LISTEN_TABLE` 中的 12865 监听项会短暂残留。最终修复为 `FdTable::clear()` 在进程退出清理 fd 前主动对 socket 调用 `shutdown(Shutdown::Both)`，并恢复 `initproc` 使用原始 `netperf_testcode.sh`。`make` 通过，`riscv.ans` 显示 musl/glibc 两轮原始 netperf 均使用 12865 且十个子项全部 success，日志正常 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/netperf-glibc-port-reuse.md](./problem/netperf-glibc-port-reuse.md)。
+- **关联 commit**：待提交

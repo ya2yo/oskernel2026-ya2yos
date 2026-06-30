@@ -3939,3 +3939,61 @@ make
 - AI 环境中 `make run` 因 QEMU 写 `/var/tmp` 被沙箱阻止，未能继续运行。
 - 维护者确认单跑验证通过。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: netperf-glibc 12865 端口残留监听修复
+
+### 用户需求
+
+用户要求分析 full run 最后测试失败，并指出 `netperf-glibc` 报错：
+
+```text
+socket already listening on port 12865
+```
+
+随后用户说明新的输出在 `riscv.ans`，并指出临时把 glibc netperf 改到 `12866` 虽然可行，但历史可用版本 `eea9a5916a71e57ca15227451c7a8708d81459bb` 不依赖自定义脚本也能正常跑分，因此需要继续修内核，让 netperf 使用原始脚本和固定端口。
+
+### 分析
+
+`socket already listening on port 12865` 来自 `ListenTable::listen()`，表示全局 TCP 监听表里 12865 端口仍有监听项。`netperf_testcode.sh` 固定使用：
+
+```sh
+./netserver -D -L $ip -p $port &
+server_pid=$!
+...
+kill -9 $server_pid
+```
+
+AI 先观察 `riscv.ans`：临时将 glibc 脚本端口替换为 `12866` 后，`netperf-glibc` 能继续运行，说明网络数据路径不是根因；问题集中在 musl 组结束后复用 `12865`。日志同时显示 musl 版 netserver 收到 `kill -9` 后进入退出路径并被 wait 回收，因此问题不是简单的脚本未执行 kill。
+
+继续检查内核关闭路径后确认，监听端口释放依赖 `TcpSocket::Drop -> shutdown(Shutdown::Both) -> LISTEN_TABLE.unlisten()`。进程退出时 `FdTable::clear()` 只是清空 fd 表中的 `FileDescriptor`，如果 socket 还有 fd 表副本、poll/select 临时对象或其它 `Arc` 引用，最后一个 `Arc<Socket>` 不会立刻 drop，监听表项就可能短暂长于进程 fd 生命周期。下一轮原始 glibc netserver 立即绑定同一个 12865 端口时，便会遇到 `EADDRINUSE`。
+
+因此最终修复不能依赖 `killall/sleep` 或运行时改脚本，而应在进程退出清 fd 时主动关闭 socket，使 listening socket 立即从 `LISTEN_TABLE` 释放。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/fstruct.rs` | `FdTable::clear()` 清理 fd 前遍历 socket fd，主动调用 `shutdown(Shutdown::Both)`，确保 listening socket 立即释放端口 |
+| `user/src/bin/initproc.rs` | 撤销 `12866` 临时脚本路径，恢复 `netperf-musl` 与 `netperf-glibc` 都直接运行原始 `netperf_testcode.sh` |
+| `Docs/初赛文档/problem/netperf-glibc-port-reuse.md` | 更新问题复盘为最终内核修复方案 |
+| `Docs/初赛文档/开发日志.md` | 更新 6.30 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 更新 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 300s make run > riscv.ans 2>&1
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=riscv64`，构建通过。
+- `riscv.ans` 中 `netperf-musl` 与 `netperf-glibc` 都使用原始 `netperf_testcode.sh`，没有生成或运行 `12866` 自定义脚本。
+- 两轮都从 `Starting netserver with host '127.0.0.1' port '12865'` 开始。
+- musl 与 glibc 各自的 `UDP_STREAM`、`TCP_STREAM`、`UDP_RR`、`TCP_RR`、`TCP_CRR` 全部输出 `end: success`。
+- 日志末尾输出 `#### OS COMP TEST GROUP END netperf-glibc ####` 和 `shutdown!`，未再出现 `socket already listening on port 12865`。

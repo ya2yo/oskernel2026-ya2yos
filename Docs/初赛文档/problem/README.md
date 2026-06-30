@@ -86,4 +86,5 @@
 - [iperf-glibc: daemon fstatat 与 /dev/null 设备号](./iperf-glibc-daemon-fstatat-devnull.md)
 - [netperf: select 误被 SIGCHLD 打断](./netperf-select-sigchld-eintr.md)
 - [netperf TCP_CRR: blocked accept 的 itimer 唤醒滞后](./netperf-tcp-crr-blocked-itimer.md)
+- [netperf glibc: 12865 控制端口残留监听](./netperf-glibc-port-reuse.md)
 - [pselect6: 从轮询等待改为 waker 阻塞](./pselect6-blocking-wait.md)
