@@ -99,8 +99,9 @@ pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> Syscall
         return Err(SysErrNo::EEXIST);
     }
 
-    let perm = (mode & 0o777) as u32;
-    let type_bits = ((mode & 0o170000) >> 12) as u8;
+    let perm = mode & 0o777;
+    let type_mode = mode & 0o170000;
+    let type_bits = (type_mode >> 12) as u8;
 
     let inode_type = match type_bits {
         0o1 => InodeType::Fifo,
@@ -118,7 +119,7 @@ pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> Syscall
         return match open(
             &abs_path,
             OpenFlags::O_CREATE | OpenFlags::O_EXCL | OpenFlags::O_RDWR,
-            perm,
+            perm as u32,
         ) {
             Ok(_) => Ok(0),
             Err(_) => Err(SysErrNo::ENOENT),
@@ -133,8 +134,9 @@ pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> Syscall
     // FIFO / 设备 / 套接字：直接通过 inode 创建
     let root = superblock_root_inode();
     let inode = root.create(&abs_path, inode_type)?;
-    inode.fmode_set(perm)?;
+    inode.fmode_set((type_mode | perm) as u32)?;
     FsIndex::insert_inode_idx(&abs_path, inode);
+    FsIndex::insert_special_node_type(&abs_path, inode_type);
     Ok(0)
 }
 

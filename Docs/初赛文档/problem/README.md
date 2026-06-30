@@ -49,6 +49,7 @@
 - [LTP execve06 空 argv 补充 argv[0]](./execve06-empty-argv.md)
 - [LTP access01 权限判断与 cleanup 卡死](./access01-permission-cleanup.md)
 - [pipe pselect6 register panic](./pipe-pselect-register-panic.md)
+- [LTP lseek02 fd 错误码与 FIFO ESPIPE](./lseek02-fd-espipe-fifo.md)
 - [basic umount 相对挂载点路径不匹配](./basic-umount-relative-mountpoint.md)
 - [LTP access04 mount / loop 设备修复](./access04-ltp-musl.md)
 - [龙芯架构 iozone-glibc 动态链接与缺页处理修复](./iozone-glibc.md)

@@ -140,7 +140,7 @@ pub trait File: Send + Sync {
     }
     /// 设置偏移量,并非所有文件都支持
     fn lseek(&self, _offset: isize, _whence: usize) -> SyscallRet {
-        unimplemented!("File::lseek");
+        Err(SysErrNo::ESPIPE)
     }
     /// 是否是非阻塞的
     fn nonblocking(&self) -> bool {

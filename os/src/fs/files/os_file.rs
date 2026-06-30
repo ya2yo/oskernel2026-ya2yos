@@ -1,5 +1,5 @@
 use crate::{
-    fs::{Kstat, SEEK_CUR, SEEK_END, SEEK_SET},
+    fs::{FsIndex, Kstat, SEEK_CUR, SEEK_END, SEEK_SET},
     mm::UserBuffer,
     syscall::PollEvents,
     utils::{SysErrNo, SyscallRet},
@@ -132,8 +132,16 @@ impl File for OSFile {
         if whence > 2 {
             return Err(SysErrNo::EINVAL);
         }
+        let inode_type =
+            FsIndex::special_node_type(&self.inode.path()).unwrap_or_else(|| self.inode.types());
+        if inode_type.is_fifo() || inode_type.is_socket() {
+            return Err(SysErrNo::ESPIPE);
+        }
         let mut inner = self.inner.lock();
         if whence == SEEK_SET {
+            if offset < 0 {
+                return Err(SysErrNo::EINVAL);
+            }
             inner.offset = offset as usize;
         } else if whence == SEEK_CUR {
             let newoff = inner.offset as isize + offset;

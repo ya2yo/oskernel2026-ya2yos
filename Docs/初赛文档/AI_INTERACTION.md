@@ -745,3 +745,10 @@
 - **场景**：Bug 分析与定位、wait/waitpid 信号终止状态修复、LTP kill 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复。AI 确认当前失败为 `kill11`：非 core dump 的默认终止信号也被用户态 `WCOREDUMP(status)` 识别为 core dump。读取 LTP 源码和内核信号路径后定位到 `sys_waitpid()` 直接返回内部 `exit_code = signo + 128`，该值无条件带 0x80；内核已有 `termination_signal=(signo, dumped_core)` 元数据但 waitpid 未使用。修复为 wait status 按 `signo | (dumped_core ? 0x80 : 0)` 编码，普通 exit 仍左移退出码。`make` 通过，LoongArch 单跑 musl/glibc `kill11` 的 LTP Summary 均为 `passed 24 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/kill11-wait-core-status.md](./problem/kill11-wait-core-status.md)。
 - **关联 commit**：待提交
+
+#### lseek02 fd 错误码与 FIFO ESPIPE 修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`lseek` 错误码语义修复、VFS 特殊节点类型兼容、LTP 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并继续修复。AI 确认当前失败为 `lseek02`：无效 fd 返回了 `EINVAL` 而非 `EBADF`，匿名 pipe 返回 `EINVAL` 而非 `ESPIPE`，命名 FIFO 被错误允许 seek。修复为 `sys_lseek()` 先通过 fd 表返回 `EBADF`，`File::lseek()` 默认返回 `ESPIPE`，并在 `FsIndex` 中登记 `mknodat()` 创建的特殊节点类型，使命名 FIFO 在 `OSFile::lseek()` 中返回 `ESPIPE`。`make` 通过，LoongArch 单跑 musl/glibc `lseek02` 的 LTP Summary 均为 `passed 15 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/lseek02-fd-espipe-fifo.md](./problem/lseek02-fd-espipe-fifo.md)。
+- **关联 commit**：待提交

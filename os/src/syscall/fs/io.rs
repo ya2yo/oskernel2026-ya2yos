@@ -268,10 +268,7 @@ pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
     //     fd, offset, whence
     // );
 
-    if fd >= inner.fd_table.len() || inner.fd_table.try_get(fd).is_none() {
-        return Err(SysErrNo::EINVAL);
-    }
-    let file = inner.fd_table.get(fd)?.file()?;
+    let file = inner.fd_table.get(fd)?.any();
     file.lseek(offset, whence)
 }
 

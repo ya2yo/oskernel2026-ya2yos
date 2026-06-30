@@ -3290,3 +3290,64 @@ broken   0
 ```
 
 - 新 `log.ans` 未再出现 `execve_child shouldn't be executed`。
+
+---
+
+## 2026-06-30: lseek02 fd 错误码与 FIFO ESPIPE 修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans`，继续修复当前 LTP 失败。
+
+### 分析
+
+AI 扫描 `log.ans` 后确认当前失败为 `lseek02`，musl/glibc 均出现：
+
+```text
+lseek02.c:67: TFAIL: lseek(-1, 1, 0) failed unexpectedly, expected EBADF: EINVAL (22)
+lseek02.c:58: TFAIL: lseek(4, 1, 0) succeeded unexpectedly
+lseek02.c:67: TFAIL: lseek(5, 1, 0) failed unexpectedly, expected ESPIPE: EINVAL (22)
+lseek02.c:58: TFAIL: lseek(7, 1, 0) succeeded unexpectedly
+```
+
+读取 LTP `lseek02.c` 后确认测试要求：无效 fd 返回 `EBADF`，非法 `whence` 返回 `EINVAL`，pipe/FIFO 返回 `ESPIPE`。检查内核发现 `sys_lseek()` 对不存在 fd 手写返回 `EINVAL`，并且只通过 `FileDescriptor::file()` 获取普通 `OSFile`，没有给 pipe/socket/抽象文件统一不可 seek 错误。
+
+进一步验证发现匿名 pipe 修复后，命名 FIFO 仍被当成普通文件。临时日志显示 `tfifo1/tfifo2` 的 mode 仍是 `S_IFREG`，说明当前 ext4 特殊节点创建不能真正保留 FIFO 类型。因此最终在 VFS 的 `FsIndex` 中增加特殊节点路径类型登记，由 `mknodat()` 登记、`unlink` 清理，`OSFile::lseek()` 查询该类型后返回 `ESPIPE`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/io.rs` | `sys_lseek()` 改用 `fd_table.get(fd)?` 返回 `EBADF`，并通过 `FileClass::any()` 调用 trait `lseek` |
+| `os/src/fs/vfs.rs` | `File::lseek()` 默认返回 `ESPIPE` |
+| `os/src/fs/files/os_file.rs` | `OSFile::lseek()` 识别 FIFO/socket 特殊节点并返回 `ESPIPE`，同时拒绝 `SEEK_SET` 负 offset |
+| `os/src/syscall/fs/ctl.rs` | `mknodat()` 创建特殊节点时保留 `S_IF*` 类型位，并登记路径类型 |
+| `os/src/fs/kernel_fs_ops/fsidx.rs` | 增加特殊节点类型表，并在 remove 时同步清理 |
+| `Docs/初赛文档/problem/lseek02-fd-espipe-fifo.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/fs/kernel_fs_ops/fsidx.rs os/src/syscall/fs/ctl.rs os/src/fs/files/os_file.rs os/src/syscall/fs/io.rs os/src/fs/vfs.rs
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- 当前配置单跑 musl/glibc `lseek02`，两者 LTP Summary 均通过：
+
+```text
+Summary:
+passed   15
+failed   0
+broken   0
+```
+
+- 新 `log.ans` 中所有 `lseek02.c` 断言均为 `TPASS`，未再出现 `TFAIL`。
+- 未运行 `riscv64`。
