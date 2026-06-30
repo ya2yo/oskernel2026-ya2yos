@@ -759,3 +759,10 @@
 - **场景**：Bug 分析与定位、`pread64/pwrite64` 错误码语义修复、LTP 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并继续修复。AI 确认当前失败为 `pread02`：pipe fd 的 `pread()` 返回 `EINVAL` 而非 `ESPIPE`，目录 fd 的 `pread()` 错误成功。修复为 `sys_pread64()` 通过通用 fd 对象调用 `lseek` 判定不可 seek fd，并对目录 fd 显式返回 `EISDIR`；同时同步修正同源 `sys_pwrite64()` 的无效 fd、只读 fd 和不可 seek fd 错误码顺序。`make` 通过，LoongArch 单跑 musl/glibc `pread02` 的 LTP Summary 均为 `passed 3 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/pread02-pipe-dir-errors.md](./problem/pread02-pipe-dir-errors.md)。
 - **关联 commit**：待提交
+
+#### preadv2/pwritev2 系统调用实现（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：系统调用实现、raw ABI 参数处理、iovec 读写语义、LTP 回归验证、文档完善
+- **描述**：用户要求实现 `pwritev2` 和 `preadv2`。AI 对照 LTP wrapper 与用例，确认 raw ABI 需要合并 `pos_l/pos_h` 并独立处理 flags，且旧号 `preadv/pwritev` 也需要复用 flags=0 的后端。修复实现了 `offset=-1` 使用当前 offset、显式 offset 不改变当前 offset、iovec 数量/长度/总长度校验、64KiB 分片搬运和非零 flags 返回 `EOPNOTSUPP`；同时新增无副作用 `probe_user_write()`，避免读入前探测用户缓冲区时污染数据。`make` 在 LoongArch 通过，临时单跑 musl/glibc `preadv201/202`、`pwritev201/202` 均为 `failed 0`，恢复测试入口后 `make` 再次通过，`make TARGET_ARCH=riscv64` 编译通过。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/preadv2-pwritev2-syscalls.md](./problem/preadv2-pwritev2-syscalls.md)。
+- **关联 commit**：待提交

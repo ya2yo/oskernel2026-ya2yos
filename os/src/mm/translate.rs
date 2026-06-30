@@ -245,6 +245,32 @@ pub fn copy_to_user(memory_set: &MemorySet, dst: usize, src: &[u8]) -> SyscallRe
     Ok(len)
 }
 
+/// 检查用户写缓冲区是否可访问，但不修改缓冲区内容。
+pub fn probe_user_write(memory_set: &MemorySet, dst: usize, len: usize) -> SyscallRet {
+    if len == 0 {
+        return Ok(0);
+    }
+    let end = checked_user_range(dst, len)?;
+    #[cfg(target_arch = "loongarch64")]
+    if !user_range_has_perm(memory_set, dst, len, MapPermission::W) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    let page_table = PageTable::from_token(memory_set.token());
+    let mut cur_dst = dst;
+
+    while cur_dst < end {
+        let start_va = VirtAddr::try_from(cur_dst).ok_or(SysErrNo::EFAULT)?;
+        let vpn = start_va.floor();
+        translated_user_page_for_write(memory_set, &page_table, vpn).ok_or(SysErrNo::EFAULT)?;
+
+        let next_page_va = ((vpn.0 + 1) << PAGE_SIZE_BITS) as usize;
+        cur_dst += (end - cur_dst).min(next_page_va - cur_dst);
+    }
+
+    Ok(len)
+}
+
 /// 安全地将用户虚拟地址转换为物理地址。
 ///
 /// 遵循内核设计原则：先通过 `copy_from_user` 触发延迟页分配，

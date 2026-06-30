@@ -51,6 +51,7 @@
 - [pipe pselect6 register panic](./pipe-pselect-register-panic.md)
 - [LTP lseek02 fd 错误码与 FIFO ESPIPE](./lseek02-fd-espipe-fifo.md)
 - [LTP pread02 pipe/目录错误码](./pread02-pipe-dir-errors.md)
+- [preadv2/pwritev2 系统调用实现](./preadv2-pwritev2-syscalls.md)
 - [basic umount 相对挂载点路径不匹配](./basic-umount-relative-mountpoint.md)
 - [LTP access04 mount / loop 设备修复](./access04-ltp-musl.md)
 - [龙芯架构 iozone-glibc 动态链接与缺页处理修复](./iozone-glibc.md)

@@ -3409,3 +3409,66 @@ broken   0
 - 新 `log.ans` 中所有 `pread02.c` 断言均为 `TPASS`，未再出现 `TFAIL`。
 - 曾临时切换 `initproc.rs` 尝试验证 `pwrite02`，但未重建用户镜像，实际仍运行 `pread02`；最终已恢复 `initproc.rs` 到本轮开始时的 `pread02` 配置。因此 `pwrite64` 本轮只做了编译验证。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: preadv2/pwritev2 系统调用实现
+
+### 用户需求
+
+用户要求实现 `pwritev2` 和 `preadv2` 两个 syscall，并说明 `os/src/syscall/fs/io.rs` 中已有样板代码。
+
+### 分析
+
+AI 先读取项目 syscall 分发与 `io.rs` 中现有 `readv/writev/pread64/pwrite64` 实现，再对照 LTP 的 `preadv201/preadv202/pwritev201/pwritev202` 源码和 `lapi/preadv2.h`、`lapi/pwritev2.h`。确认 LTP wrapper 以 raw syscall ABI 传递参数：
+
+```text
+fd, iov, iovcnt, pos_l, pos_h, flags
+```
+
+因此内核不能把 offset 当作单个参数处理，而要合并 `args[3]` 与 `args[4]`，并把 `args[5]` 作为 flags。进一步检查发现样板 `pwritev2` 误调用了读路径，且没有处理 `offset == -1` 使用并更新当前文件偏移、显式 offset 不改变当前文件偏移、非零 flags 返回 `EOPNOTSUPP`、pipe 返回 `ESPIPE`、目录读返回 `EISDIR` 等 Linux 可见语义。
+
+实现过程中还发现两个边界点：
+
+- libc/LTP 在 flags 为 0 时可能使用旧号 `preadv(69)` / `pwritev(70)`，因此旧号也需要接入同一后端。
+- `preadv2` 需要在读文件前确认用户目标缓冲区可写；如果用 `copy_to_user(..., &[0])` 探测，会污染用户缓冲区首字节。因此在 `mm::translate` 增加无副作用的 `probe_user_write()`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/mod.rs` | 接入 `Preadv/Pwritev/Preadv2/Pwritev2` 分发；`preadv2/pwritev2` 使用 6 参数 raw ABI，`preadv/pwritev` 以 flags=0 复用后端 |
+| `os/src/syscall/fs/io.rs` | 实现 offset 合并、flags 校验、iovec 数量/长度/总长度校验、`offset=-1` 与显式 offset 语义、分片读写和错误路径 offset 恢复 |
+| `os/src/syscall/fs/io.rs` | 同步修正 `pwrite64` 对 fd access mode 的写权限判断 |
+| `os/src/mm/translate.rs` | 新增 `probe_user_write()`，只检查用户写缓冲区映射/权限，不修改内容 |
+| `Docs/初赛文档/problem/preadv2-pwritev2-syscalls.md` | 新增实现复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/syscall/fs/io.rs os/src/syscall/mod.rs os/src/mm/translate.rs
+make
+timeout 120s make run > /tmp/preadv2-pwritev2.log 2>&1
+make
+make TARGET_ARCH=riscv64
+```
+
+结果：
+
+- `make` 在当前默认 `TARGET_ARCH=loongarch64` 下通过。
+- 临时切换 `initproc.rs` 单跑 musl/glibc `preadv201`、`preadv202`、`pwritev201`、`pwritev202`，LTP 内部结果全部为 `failed 0`：
+  - `preadv201`: passed 6 failed 0
+  - `preadv202`: passed 8 failed 0
+  - `pwritev201`: passed 6 failed 0
+  - `pwritev202`: passed 7 failed 0
+- 测试结束后已恢复 `initproc.rs` 到本轮开始时的 `pread02` 单测配置，并再次运行 `make` 通过。
+- `make TARGET_ARCH=riscv64` 编译通过。
+- 日志中仍有既有 LoongArch trap 转换与 ext4 `write_back_cache` 噪声，但上述 LTP Summary 均未失败。
+
+### 限制
+
+当前未实现各类 `RWF_*` flags 的具体行为；非零 flags 统一返回 `EOPNOTSUPP`。

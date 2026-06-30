@@ -6,7 +6,7 @@ use crate::{
         superblock_fs_stat, DummyFd, FdTable, File, FileDescriptor, OpenFlags, StMode, SEEK_CUR,
         SEEK_SET,
     },
-    mm::{copy_from_user, copy_to_user, user_buffer_from_kernel, UserBuffer},
+    mm::{copy_from_user, copy_to_user, probe_user_write, user_buffer_from_kernel, UserBuffer},
     syscall::{fs::dummyfd_create, options::Iovec},
     task::current_task,
     timer::get_time_ms,
@@ -16,9 +16,88 @@ use crate::{
 /// 单次 write() 最多分配的内核缓冲区大小 (64KB)。
 /// 超过此大小的写操作将被切分为多次 write，避免内核堆 OOM。
 const IO_CHUNK_SIZE: usize = 0x10000; // 64KB
+const IOV_MAX: usize = 1024;
+const RWF_SUPPORTED_FLAGS: u32 = 0;
 
 const FALLOC_FL_KEEP_SIZE: u32 = 0x01;
 const FALLOC_SUPPORTED_FLAGS: u32 = FALLOC_FL_KEEP_SIZE;
+
+fn split_offset_to_i64(pos_l: usize, pos_h: usize) -> i64 {
+    let raw = ((pos_h as u64) << 32) | (pos_l as u32 as u64);
+    raw as i64
+}
+
+fn validate_preadv2_offset(pos_l: usize, pos_h: usize) -> Result<Option<isize>, SysErrNo> {
+    let offset = split_offset_to_i64(pos_l, pos_h);
+    if offset == -1 {
+        Ok(None)
+    } else if offset < 0 || offset > isize::MAX as i64 {
+        Err(SysErrNo::EINVAL)
+    } else {
+        Ok(Some(offset as isize))
+    }
+}
+
+fn check_rw_flags(flags: u32) -> Result<(), SysErrNo> {
+    if flags & !RWF_SUPPORTED_FLAGS != 0 {
+        Err(SysErrNo::EOPNOTSUPP)
+    } else {
+        Ok(())
+    }
+}
+
+fn fd_allows_write(flags: u32) -> bool {
+    flags & OpenFlags::O_ACCMODE.bits() != OpenFlags::O_RDONLY.bits()
+}
+
+fn read_iovec(
+    memory_set: &crate::mm::MemorySet,
+    iov: *const u8,
+    index: usize,
+) -> Result<Iovec, SysErrNo> {
+    let iovec_size = core::mem::size_of::<Iovec>();
+    let iov_ptr = (iov as usize) + iovec_size * index;
+    let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
+    copy_from_user(memory_set, iov_ptr, &mut iov_buf)?;
+    Ok(unsafe { core::mem::transmute(iov_buf) })
+}
+
+fn validate_iovcnt(iovcnt: usize) -> Result<(), SysErrNo> {
+    if iovcnt > IOV_MAX {
+        Err(SysErrNo::EINVAL)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_iov_len(len: usize) -> Result<(), SysErrNo> {
+    if len > isize::MAX as usize {
+        Err(SysErrNo::EINVAL)
+    } else {
+        Ok(())
+    }
+}
+
+fn read_iovecs(
+    memory_set: &crate::mm::MemorySet,
+    iov: *const u8,
+    iovcnt: usize,
+) -> Result<Vec<Iovec>, SysErrNo> {
+    let mut total = 0usize;
+    let mut iovecs = Vec::with_capacity(iovcnt);
+
+    for i in 0..iovcnt {
+        let iovinfo = read_iovec(memory_set, iov, i)?;
+        validate_iov_len(iovinfo.iov_len)?;
+        total = total.checked_add(iovinfo.iov_len).ok_or(SysErrNo::EINVAL)?;
+        if total > isize::MAX as usize {
+            return Err(SysErrNo::EINVAL);
+        }
+        iovecs.push(iovinfo);
+    }
+
+    Ok(iovecs)
+}
 
 /// 参考 https://man7.org/linux/man-pages/man2/write.2.html
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
@@ -364,15 +443,16 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
     let task = current_task().unwrap();
     let inner = task.process.inner_lock();
 
-    let file = inner.fd_table.get(fd)?.any();
+    let file_desc = inner.fd_table.get(fd)?;
+    let file = file_desc.any();
     if offset < 0 {
         return Err(SysErrNo::EINVAL);
     }
-    if !file.writable() {
-        return Err(SysErrNo::EBADF);
-    }
 
     let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
+    if !fd_allows_write(file_desc.flags()) || !file.writable() {
+        return Err(SysErrNo::EBADF);
+    }
     file.lseek(offset, SEEK_SET)?;
 
     let chunk_count = IO_CHUNK_SIZE.min(count);
@@ -426,6 +506,217 @@ pub fn sys_pread64(fd: usize, buf: *const u8, count: usize, offset: isize) -> Sy
     restore?;
     copy_to_user(memory_set, buf as usize, &kernel_buf[..ret])?;
     Ok(ret)
+}
+
+/// https://www.man7.org/linux/man-pages/man2/preadv2.2.html
+pub fn sys_pwritev2(
+    fd: usize,
+    iov: *const u8,
+    iovcnt: usize,
+    pos_l: usize,
+    pos_h: usize,
+    flags: u32,
+) -> SyscallRet {
+    validate_iovcnt(iovcnt)?;
+    if iovcnt == 0 {
+        return Ok(0);
+    }
+    check_rw_flags(flags)?;
+    let offset = validate_preadv2_offset(pos_l, pos_h)?;
+
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+
+    let file_desc = proc_inner.fd_table.get(fd)?;
+    let file = file_desc.any();
+    let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
+    if !fd_allows_write(file_desc.flags()) || !file.writable() {
+        return Err(SysErrNo::EBADF);
+    }
+    if let Some(offset) = offset {
+        file.lseek(offset, SEEK_SET)?;
+    }
+
+    let iovecs = {
+        let memory_set = proc_inner.get_locked_memory_set_read();
+        match read_iovecs(&memory_set, iov, iovcnt) {
+            Ok(iovecs) => iovecs,
+            Err(err) => {
+                if offset.is_some() {
+                    let _ = file.lseek(cur_offset, SEEK_SET);
+                }
+                return Err(err);
+            }
+        }
+    };
+
+    drop(proc_inner);
+    drop(task);
+
+    let mut total = 0usize;
+    for iovinfo in iovecs {
+        let mut copied = 0usize;
+        while copied < iovinfo.iov_len {
+            let chunk_len = IO_CHUNK_SIZE.min(iovinfo.iov_len - copied);
+            let mut kernel_buf = vec![0u8; chunk_len];
+
+            {
+                let task = current_task().unwrap();
+                let proc_inner = task.process.inner_lock();
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                let src = iovinfo.iov_base + copied;
+                if let Err(err) = copy_from_user(&memory_set, src, &mut kernel_buf) {
+                    if offset.is_some() {
+                        let _ = file.lseek(cur_offset, SEEK_SET);
+                    }
+                    return if total > 0 { Ok(total) } else { Err(err) };
+                }
+            }
+
+            let written = {
+                let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+                match file.write(buffer) {
+                    Ok(written) => written,
+                    Err(err) => {
+                        if offset.is_some() {
+                            let _ = file.lseek(cur_offset, SEEK_SET);
+                        }
+                        return if total > 0 { Ok(total) } else { Err(err) };
+                    }
+                }
+            };
+
+            total += written;
+            if written < chunk_len {
+                if offset.is_some() {
+                    file.lseek(cur_offset, SEEK_SET)?;
+                }
+                return Ok(total);
+            }
+            copied += written;
+        }
+    }
+
+    if offset.is_some() {
+        file.lseek(cur_offset, SEEK_SET)?;
+    }
+    Ok(total)
+}
+
+/// https://www.man7.org/linux/man-pages/man2/preadv2.2.html
+pub fn sys_preadv2(
+    fd: usize,
+    iov: *const u8,
+    iovcnt: usize,
+    pos_l: usize,
+    pos_h: usize,
+    flags: u32,
+) -> SyscallRet {
+    validate_iovcnt(iovcnt)?;
+    if iovcnt == 0 {
+        return Ok(0);
+    }
+    check_rw_flags(flags)?;
+    let offset = validate_preadv2_offset(pos_l, pos_h)?;
+
+    let task = current_task().unwrap();
+    let proc_inner = task.process.inner_lock();
+
+    let file = proc_inner.fd_table.get(fd)?.any();
+    let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
+    if !file.readable() {
+        return Err(SysErrNo::EBADF);
+    }
+    if file.fstat().st_mode & 0o170000 == StMode::FDIR.bits() {
+        return Err(SysErrNo::EISDIR);
+    }
+    if let Some(offset) = offset {
+        file.lseek(offset, SEEK_SET)?;
+    }
+
+    let iovecs = {
+        let memory_set = proc_inner.get_locked_memory_set_read();
+        match read_iovecs(&memory_set, iov, iovcnt) {
+            Ok(iovecs) => iovecs,
+            Err(err) => {
+                if offset.is_some() {
+                    let _ = file.lseek(cur_offset, SEEK_SET);
+                }
+                return Err(err);
+            }
+        }
+    };
+
+    drop(proc_inner);
+    drop(task);
+
+    let mut total = 0usize;
+    for iovinfo in iovecs {
+        let mut copied = 0usize;
+        while copied < iovinfo.iov_len {
+            let chunk_len = IO_CHUNK_SIZE.min(iovinfo.iov_len - copied);
+            let iov_base = iovinfo.iov_base + copied;
+
+            {
+                let task = current_task().unwrap();
+                let proc_inner = task.process.inner_lock();
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                if let Err(err) = probe_user_write(&memory_set, iov_base, chunk_len) {
+                    if offset.is_some() {
+                        let _ = file.lseek(cur_offset, SEEK_SET);
+                    }
+                    return if total > 0 { Ok(total) } else { Err(err) };
+                }
+            }
+
+            let mut kernel_buf = vec![0u8; chunk_len];
+            let read_ret = {
+                let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+                match file.read(buffer) {
+                    Ok(read_ret) => read_ret,
+                    Err(err) => {
+                        if offset.is_some() {
+                            let _ = file.lseek(cur_offset, SEEK_SET);
+                        }
+                        return if total > 0 { Ok(total) } else { Err(err) };
+                    }
+                }
+            };
+
+            if read_ret == 0 {
+                if offset.is_some() {
+                    file.lseek(cur_offset, SEEK_SET)?;
+                }
+                return Ok(total);
+            }
+
+            {
+                let task = current_task().unwrap();
+                let proc_inner = task.process.inner_lock();
+                let memory_set = proc_inner.get_locked_memory_set_read();
+                if let Err(err) = copy_to_user(&memory_set, iov_base, &kernel_buf[..read_ret]) {
+                    if offset.is_some() {
+                        let _ = file.lseek(cur_offset, SEEK_SET);
+                    }
+                    return if total > 0 { Ok(total) } else { Err(err) };
+                }
+            }
+
+            total += read_ret;
+            if read_ret < chunk_len {
+                if offset.is_some() {
+                    file.lseek(cur_offset, SEEK_SET)?;
+                }
+                return Ok(total);
+            }
+            copied += read_ret;
+        }
+    }
+
+    if offset.is_some() {
+        file.lseek(cur_offset, SEEK_SET)?;
+    }
+    Ok(total)
 }
 
 // Linux的实现与手册有差异或未实现该调用
