@@ -780,3 +780,10 @@
 - **场景**：Bug 分析与定位、`O_APPEND` 文件写入语义修复、LTP 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并继续修复。AI 确认当前失败为 `write06`：以 `O_APPEND` 打开文件后再 `lseek()` 到文件中间，后续 `write()` 错误覆盖原内容，offset 和文件大小停在 2048 而非 3072。根因是内核只在 `open(O_APPEND)` 时一次性 seek 到 EOF，没有把 append 模式保存在 `OSFile` 并应用到每次写入。修复后 `OSFile::write()` 在持有 offset 锁时按当前 `inode.size()` 重新定位 EOF，再执行写入。`make` 通过，LoongArch 单跑 musl/glibc `write06` 均为 `passed 2 failed 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/write06-o-append.md](./problem/write06-o-append.md)。
 - **关联 commit**：待提交
+
+#### writetest 普通文件大块 read 修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、普通文件分片 read 语义修复、LTP 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认当前失败为 `writetest`：1MiB 写入成功，但验证阶段 `read(fd, buf, 1MiB)` 返回短读，测试报告 `Verify: Failure` 和 `Total mismatches: -1 bytes`。根因是 `sys_read()` 为限制内核缓冲区只执行一次 64KiB 读并直接返回，而普通文件仍有后续数据可读。修复后 `sys_read()` 对普通 `OSFile` 按 64KiB 分片循环读取并逐段写回用户缓冲区，pipe/socket 等非普通 fd 保持一次读返回。`make` 通过，LoongArch 单跑 musl/glibc `writetest` 均为 `passed 2 failed 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/writetest-large-read.md](./problem/writetest-large-read.md)。
+- **关联 commit**：待提交

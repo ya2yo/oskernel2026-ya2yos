@@ -3577,3 +3577,61 @@ warnings 0
 
 - 新日志中 `write06.c` 两个断言均为 `TPASS`；外层 `FAIL LTP CASE write06 : 10` 是包装器噪声，不作为失败依据。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: writetest 普通文件大块 read 修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并进行修复。
+
+### 分析
+
+AI 先提取日志中的失败摘要，确认当前失败为 LTP `writetest`：
+
+```text
+writetest    1  TPASS  :  Write: Success
+writetest    2  TFAIL  :  writetest.c:253: Verify: Failure
+writetest    0  TINFO  :  Total mismatches: -1 bytes
+```
+
+读取 LTP `writetest.c` 后确认，测试默认写入 1 个 1MiB block，随后重新打开文件，用一次 `read(fd, buf, 1MiB)` 读回并校验。若 `read()` 返回值不是 1MiB，测试直接返回 `-1`，因此日志中的 `Total mismatches: -1 bytes` 表示读回长度不符合预期，而不是逐字节比较发现 `-1` 个错误。
+
+检查内核 `sys_write()` 与 `sys_read()` 后发现，写路径已经按 `IO_CHUNK_SIZE=64KiB` 循环分片，因此 1MiB 写入能成功；读路径为了限制内核缓冲区也只读 64KiB，但没有继续循环读取普通文件后续数据，直接把 64KiB 短读返回给用户态。由于 pipe/socket 等非普通 fd 不能强行读满请求长度，修复需要只针对普通文件。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/io.rs` | `sys_read()` 改为先判断 fd 是否为普通 `OSFile`；普通文件按 64KiB 分片循环读取并逐段 `copy_to_user()`，非普通 fd 保持一次读返回 |
+| `Docs/初赛文档/problem/writetest-large-read.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml --all
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- LoongArch 当前配置单跑 musl/glibc `writetest`，两者均通过：
+
+```text
+Summary:
+passed   2
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+- 新日志中 `writetest` 的写入和校验均为 `TPASS`。
+- 未运行 `riscv64`。

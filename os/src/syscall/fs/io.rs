@@ -177,40 +177,66 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     if len == 0 {
         return Ok(0);
     }
-    // 内核缓冲区上界：避免因 len 过大导致内核堆 OOM。
-    // POSIX 允许 read() 返回少于请求的字节数，调用者必须处理短读。
-    let chunk_len = IO_CHUNK_SIZE.min(len);
 
     // ---- 阶段 0: 校验 fd、取出文件引用、检查可读 ----
-    let file = {
+    let (file, is_regular_file) = {
         let task = current_task().unwrap();
         let proc_inner = task.process.inner_lock();
         if fd >= proc_inner.fd_table.len() {
             return Err(SysErrNo::EINVAL);
         }
-        let file = match proc_inner.fd_table.try_get_file(fd) {
+        let file_desc = match proc_inner.fd_table.try_get(fd) {
             Some(f) => f,
             None => return Err(SysErrNo::EBADF),
         };
+        let file = file_desc.any();
         if !file.readable() {
             return Err(SysErrNo::EACCES);
         }
-        file
+        (file, file_desc.file().is_ok())
     }; // 锁在此处释放
 
-    // ---- 阶段 1: 单次无锁读 ----
-    let mut kernel_buf = vec![0u8; chunk_len];
-    let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-    let ret = file.read(buffer)?;
+    let mut total_read = 0usize;
+    let mut user_ptr = buf as usize;
 
-    // ---- 阶段 2: 持锁写回用户空间 ----
-    if ret > 0 {
-        let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
-        let mem = proc_inner.get_locked_memory_set_read();
-        copy_to_user(&*mem, buf as usize, &kernel_buf[..ret])?;
+    loop {
+        // 内核缓冲区上界：避免因 len 过大导致内核堆 OOM。
+        let chunk_len = IO_CHUNK_SIZE.min(len - total_read);
+        let mut kernel_buf = vec![0u8; chunk_len];
+        let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+        let ret = match file.read(buffer) {
+            Ok(ret) => ret.min(chunk_len),
+            Err(err) => {
+                return if total_read > 0 {
+                    Ok(total_read)
+                } else {
+                    Err(err)
+                };
+            }
+        };
+
+        if ret > 0 {
+            let task = current_task().unwrap();
+            let proc_inner = task.process.inner_lock();
+            let mem = proc_inner.get_locked_memory_set_read();
+            if let Err(err) = copy_to_user(&*mem, user_ptr, &kernel_buf[..ret]) {
+                return if total_read > 0 {
+                    Ok(total_read)
+                } else {
+                    Err(err)
+                };
+            }
+        }
+
+        total_read += ret;
+        user_ptr += ret;
+
+        if ret == 0 || total_read == len || ret < chunk_len || !is_regular_file {
+            break;
+        }
     }
-    Ok(ret)
+
+    Ok(total_read)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/writev.2.html
