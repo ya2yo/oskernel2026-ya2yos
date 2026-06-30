@@ -766,3 +766,10 @@
 - **场景**：系统调用实现、raw ABI 参数处理、iovec 读写语义、LTP 回归验证、文档完善
 - **描述**：用户要求实现 `pwritev2` 和 `preadv2`。AI 对照 LTP wrapper 与用例，确认 raw ABI 需要合并 `pos_l/pos_h` 并独立处理 flags，且旧号 `preadv/pwritev` 也需要复用 flags=0 的后端。修复实现了 `offset=-1` 使用当前 offset、显式 offset 不改变当前 offset、iovec 数量/长度/总长度校验、64KiB 分片搬运和非零 flags 返回 `EOPNOTSUPP`；同时新增无副作用 `probe_user_write()`，避免读入前探测用户缓冲区时污染数据。`make` 在 LoongArch 通过，临时单跑 musl/glibc `preadv201/202`、`pwritev201/202` 均为 `failed 0`，恢复测试入口后 `make` 再次通过，`make TARGET_ARCH=riscv64` 编译通过。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/preadv2-pwritev2-syscalls.md](./problem/preadv2-pwritev2-syscalls.md)。
 - **关联 commit**：待提交
+
+#### write04 FIFO 非阻塞写语义修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、FIFO/pipe 非阻塞语义修复、LTP 回归验证协作、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复 `write04.c:31: TFAIL: write(...) succeeded`。AI 读取 LTP `write04.c` 后确认该用例要求命名 FIFO 在 `O_NONBLOCK` 且缓冲区满时返回 `EAGAIN`；检查内核发现 `mknodat(S_IFIFO)` 只保留了特殊节点类型，`openat()` 仍把 FIFO 作为普通 `OSFile` 打开，且 `Pipe` 缺少 `O_NONBLOCK` 读写语义。修复新增按路径共享的 FIFO pipe 缓冲区，`openat()` 遇到 FIFO 返回共享 pipe 端点，并让 pipe/FIFO 满缓冲非阻塞写返回 `EAGAIN`。`make` 通过；AI 环境中 `make run` 受 `/var/tmp` 沙箱限制未能启动 QEMU，维护者随后本地复现确认 `write04` 通过。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/write04-fifo-nonblock.md](./problem/write04-fifo-nonblock.md)。
+- **关联 commit**：待提交

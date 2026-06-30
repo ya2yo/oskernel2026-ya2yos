@@ -1,7 +1,7 @@
 // 该文件定义了一组特殊的文件：Pipe
 // 它实现了File trait
 // 它的特点是
-use super::super::{File, StMode};
+use super::super::{File, OpenFlags, StMode};
 use crate::fs::Kstat;
 use crate::signal::check_if_any_sig_for_current_task;
 use crate::task::{
@@ -9,17 +9,21 @@ use crate::task::{
 };
 use crate::utils::{PollSet, SysErrNo};
 use crate::{mm::UserBuffer, syscall::PollEvents, utils::SyscallRet};
+use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
+use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::min;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Context;
-use spin::{Mutex, MutexGuard};
+use spin::{Lazy, Mutex, MutexGuard};
 
 pub struct Pipe {
     readable: bool,
     writable: bool,
+    nonblocking: AtomicBool,
     buffer: Arc<Mutex<PipeRingBuffer>>,
 }
 
@@ -29,19 +33,48 @@ impl Pipe {
     }
     /// 创建管道的读端
     fn read_end_with_buffer(buffer: Arc<Mutex<PipeRingBuffer>>) -> Self {
-        Self {
-            readable: true,
-            writable: false,
-            buffer,
-        }
+        Self::with_buffer(true, false, buffer)
     }
     /// 创建管道的写端
     fn write_end_with_buffer(buffer: Arc<Mutex<PipeRingBuffer>>) -> Self {
-        Self {
-            readable: false,
-            writable: true,
+        Self::with_buffer(false, true, buffer)
+    }
+    fn with_buffer(readable: bool, writable: bool, buffer: Arc<Mutex<PipeRingBuffer>>) -> Self {
+        let pipe = Self {
+            readable,
+            writable,
+            nonblocking: AtomicBool::new(false),
             buffer,
+        };
+        {
+            let mut ring_buffer = pipe.inner_lock();
+            if readable {
+                ring_buffer.read_end_count += 1;
+            }
+            if writable {
+                ring_buffer.write_end_count += 1;
+            }
         }
+        pipe
+    }
+    fn fifo_end_with_buffer(
+        buffer: Arc<Mutex<PipeRingBuffer>>,
+        flags: OpenFlags,
+    ) -> Result<Self, SysErrNo> {
+        let (readable, writable) = flags.read_write();
+        if !readable && !writable {
+            return Err(SysErrNo::EINVAL);
+        }
+        let pipe = Self::with_buffer(readable, writable, buffer);
+        if flags.contains(OpenFlags::O_NONBLOCK) {
+            pipe.set_nonblocking(true)?;
+        }
+        Ok(pipe)
+    }
+    /// 创建同时可读写的 FIFO 端
+    #[allow(dead_code)]
+    fn read_write_end_with_buffer(buffer: Arc<Mutex<PipeRingBuffer>>) -> Self {
+        Self::with_buffer(true, true, buffer)
     }
     /// 获取管道中剩余可读长度
     /// 该函数的意义是套壳，将PipeRingBuffer对外隐藏起来
@@ -53,6 +86,29 @@ impl Pipe {
     pub fn available_write(&self) -> usize {
         return self.inner_lock().available_write();
     }
+}
+
+pub fn open_fifo(path: &str, flags: OpenFlags) -> Result<Arc<Pipe>, SysErrNo> {
+    let mut table = FIFO_BUFFERS.lock();
+    let buffer = match table.get(path).and_then(|buffer| buffer.upgrade()) {
+        Some(buffer) => buffer,
+        None => {
+            let buffer = Arc::new(Mutex::new(PipeRingBuffer::new()));
+            table.insert(path.to_string(), Arc::downgrade(&buffer));
+            buffer
+        }
+    };
+
+    let (readable, writable) = flags.read_write();
+    if writable
+        && !readable
+        && flags.contains(OpenFlags::O_NONBLOCK)
+        && buffer.lock().all_read_ends_closed()
+    {
+        return Err(SysErrNo::ENXIO);
+    }
+
+    Ok(Arc::new(Pipe::fifo_end_with_buffer(buffer, flags)?))
 }
 
 /// 管道缓冲区状态
@@ -71,13 +127,16 @@ struct PipeRingBuffer {
     head: usize,
     tail: usize,
     status: RingBufferStatus,
-    write_end: Option<Weak<Pipe>>,
-    read_end: Option<Weak<Pipe>>,
+    write_end_count: usize,
+    read_end_count: usize,
     read_waiters: VecDeque<Weak<TaskControlBlock>>,
     write_waiters: VecDeque<Weak<TaskControlBlock>>,
     read_poll: PollSet,
     write_poll: PollSet,
 }
+
+static FIFO_BUFFERS: Lazy<Mutex<BTreeMap<String, Weak<Mutex<PipeRingBuffer>>>>> =
+    Lazy::new(|| Mutex::new(BTreeMap::new()));
 
 impl PipeRingBuffer {
     pub fn new() -> Self {
@@ -87,19 +146,13 @@ impl PipeRingBuffer {
             head: 0,
             tail: 0,
             status: RingBufferStatus::Empty,
-            write_end: None,
-            read_end: None,
+            write_end_count: 0,
+            read_end_count: 0,
             read_waiters: VecDeque::new(),
             write_waiters: VecDeque::new(),
             read_poll: PollSet::new(),
             write_poll: PollSet::new(),
         }
-    }
-    pub fn set_write_end(&mut self, write_end: &Arc<Pipe>) {
-        self.write_end = Some(Arc::downgrade(write_end));
-    }
-    pub fn set_read_end(&mut self, read_end: &Arc<Pipe>) {
-        self.read_end = Some(Arc::downgrade(read_end));
     }
     /// 写一个字节到管道尾
     pub fn write_byte(&mut self, byte: u8) {
@@ -182,11 +235,11 @@ impl PipeRingBuffer {
     }
     /// 通过管道缓冲区读端弱指针判断管道的所有读端都被关闭
     pub fn all_read_ends_closed(&self) -> bool {
-        self.read_end.as_ref().unwrap().upgrade().is_none()
+        self.read_end_count == 0
     }
     /// 通过管道缓冲区写端弱指针判断管道的所有写端都被关闭
     pub fn all_write_ends_closed(&self) -> bool {
-        self.write_end.as_ref().unwrap().upgrade().is_none()
+        self.write_end_count == 0
     }
     fn push_reader(&mut self, task: &Arc<TaskControlBlock>) {
         // 空管道读需要真正睡眠等待写者；只 yield 会让 lmbench lat_pipe 在内核里空转。
@@ -252,8 +305,6 @@ pub fn make_pipe() -> (Arc<Pipe>, Arc<Pipe>) {
     let buffer = Arc::new(Mutex::new(PipeRingBuffer::new()));
     let read_end = Arc::new(Pipe::read_end_with_buffer(buffer.clone()));
     let write_end = Arc::new(Pipe::write_end_with_buffer(buffer.clone()));
-    buffer.lock().set_read_end(&read_end);
-    buffer.lock().set_write_end(&write_end);
     (read_end, write_end)
 }
 
@@ -277,6 +328,9 @@ impl File for Pipe {
                 if ring_buffer.all_write_ends_closed() {
                     // 写者全部关闭，不会有数据了，直接返回
                     return Ok(read_size);
+                }
+                if self.nonblocking() {
+                    return Err(SysErrNo::EAGAIN);
                 }
                 drop(ring_buffer);
                 if check_if_any_sig_for_current_task().is_some() {
@@ -338,6 +392,9 @@ impl File for Pipe {
             }
             loop_write = ring_buffer.available_write();
             if loop_write == 0 {
+                if self.nonblocking() {
+                    return Err(SysErrNo::EAGAIN);
+                }
                 drop(ring_buffer);
                 if check_if_any_sig_for_current_task().is_some() {
                     return Err(SysErrNo::EINTR);
@@ -396,6 +453,13 @@ impl File for Pipe {
             ..Kstat::default()
         }
     }
+    fn nonblocking(&self) -> bool {
+        self.nonblocking.load(Ordering::Relaxed)
+    }
+    fn set_nonblocking(&self, nonblocking: bool) -> Result<(), SysErrNo> {
+        self.nonblocking.store(nonblocking, Ordering::Relaxed);
+        Ok(())
+    }
     fn poll(&self, events: PollEvents) -> PollEvents {
         let mut revents = PollEvents::empty();
         let ring_buffer = self.inner_lock();
@@ -428,9 +492,11 @@ impl Drop for Pipe {
     fn drop(&mut self) {
         let mut ring_buffer = self.inner_lock();
         if self.readable {
+            ring_buffer.read_end_count = ring_buffer.read_end_count.saturating_sub(1);
             ring_buffer.wake_all_writers();
         }
         if self.writable {
+            ring_buffer.write_end_count = ring_buffer.write_end_count.saturating_sub(1);
             ring_buffer.wake_all_readers();
         }
     }

@@ -2374,8 +2374,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     // [2800,2820)区间
     "wqueue08\0",
     "wqueue09\0",
-    "write01\0",
-    "write03\0",
     "write04\0",
     "write06\0",
     "write_freezing.sh\0",

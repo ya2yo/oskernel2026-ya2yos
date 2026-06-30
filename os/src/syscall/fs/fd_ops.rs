@@ -7,8 +7,8 @@ use core::{
 use super::fcntl::*;
 use super::file_lock::{self, Flock};
 use crate::fs::{
-    map_dynamic_link_file, open, refresh_proc_stat, refresh_proc_status, FileDescriptor, FsIndex,
-    OpenFlags,
+    map_dynamic_link_file, open, open_fifo, refresh_proc_stat, refresh_proc_status, FileClass,
+    FileDescriptor, FsIndex, OpenFlags,
 };
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::{options::FcntlCmd, Syscall};
@@ -479,6 +479,18 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     let abs_path = map_dynamic_link_file(&abs_path).to_string();
 
     let inode = open(&abs_path, flags, mode)?;
+    let inode = match inode {
+        FileClass::File(osfile) => {
+            let inode_type =
+                FsIndex::special_node_type(&abs_path).unwrap_or_else(|| osfile.inode.types());
+            if inode_type.is_fifo() {
+                FileClass::Abs(open_fifo(&abs_path, flags)?)
+            } else {
+                FileClass::File(osfile)
+            }
+        }
+        other => other,
+    };
     let new_fd = fd_table.alloc_fd()?;
     fd_table.set(new_fd, FileDescriptor::new(flags, inode));
 

@@ -21,7 +21,7 @@ pub use files::devfs::*;
 pub use fs_info::*;
 pub use fstruct::*;
 // pub mod socket_defs;
-pub use files::pipe::{make_pipe, Pipe};
+pub use files::pipe::{make_pipe, open_fifo, Pipe};
 pub use files::stdio::{Stdin, Stdout};
 use log::debug;
 pub use mount::MNT_TABLE;

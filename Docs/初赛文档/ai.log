@@ -3472,3 +3472,50 @@ make TARGET_ARCH=riscv64
 ### 限制
 
 当前未实现各类 `RWF_*` flags 的具体行为；非零 flags 统一返回 `EOPNOTSUPP`。
+
+---
+
+## 2026-06-30: write04 FIFO 非阻塞写语义修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 并修复 bug。日志显示当前单跑 LTP `write04`。
+
+### 分析
+
+AI 先从 `log.ans` 提取 `TPASS/TFAIL/TBROK/panic/ERROR/Summary`，确认 musl/glibc 均在同一断言失败：
+
+```text
+write04.c:31: TFAIL: write(wfd, wbuf, sizeof(wbuf)) succeeded
+```
+
+读取 LTP `write04.c` 后确认，测试通过 `mknod(S_IFIFO)` 创建命名 FIFO，以 `O_RDONLY | O_NONBLOCK` 打开读端、以 `O_WRONLY | O_NONBLOCK` 打开写端，先写入 17 页数据，再验证后续 8 页写入应因 FIFO 满返回 `EAGAIN`。
+
+继续检查内核 `sys_openat()`、`mknodat()`、`FsIndex`、`OSFile` 和 `Pipe` 实现，发现命名 FIFO 的类型虽然已登记到 `FsIndex`，但 `openat()` 仍把 FIFO 包装为普通 `OSFile`，导致 `write()` 落入 ext4 普通文件写路径。与此同时，`Pipe` 原实现没有保存 fd 的 `O_NONBLOCK` 状态，端点关闭判断也依赖创建匿名 pipe 时的一对弱引用，不适合命名 FIFO 多次打开。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/pipe.rs` | 新增按路径共享的 FIFO 缓冲区表和 `open_fifo()`；`Pipe` 增加 `nonblocking` 状态、读/写端计数和 `EAGAIN/ENXIO` 非阻塞语义 |
+| `os/src/fs/mod.rs` | 导出 `open_fifo()` |
+| `os/src/syscall/fs/fd_ops.rs` | `sys_openat()` 识别 FIFO 节点并返回共享 pipe 端点，避免走普通 `OSFile` |
+| `Docs/初赛文档/problem/write04-fifo-nonblock.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml --all
+make
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- AI 环境中尝试 `make run` 时，QEMU 因沙箱 `/var/tmp` 只读无法创建临时文件，未能完成运行验证。
+- 维护者随后在本地完成复现配置运行，并确认 `write04` 已通过。
+- 未运行 `riscv64`。
