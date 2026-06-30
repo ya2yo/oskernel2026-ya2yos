@@ -91,9 +91,8 @@ def analyze_log(file_path):
                     if s_begin:
                         sc_name = s_begin.group(1)
                         pid_syscall[pid] = sc_name
-                        # Reset per-PID user output on Execve
-                        if sc_name == "Execve":
-                            pid_user_out.pop(pid, None)
+                        # Clear accumulated user output for each new syscall
+                        pid_user_out.pop(pid, None)
                         user_mode = True
                         continue
 
