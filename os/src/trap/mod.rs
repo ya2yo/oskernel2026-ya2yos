@@ -24,8 +24,8 @@ use crate::{
     },
     syscall::{syscall, Syscall},
     task::{
-        check_timer_events, current_task, current_token, current_trap_cx, exit_current_and_run_next,
-        suspend_current_and_run_next,
+        check_timer_events, current_task, current_token, current_trap_cx,
+        exit_current_and_run_next, suspend_current_and_run_next,
     },
     timer::{check_futex_timer, set_next_trigger},
     utils::backtrace,

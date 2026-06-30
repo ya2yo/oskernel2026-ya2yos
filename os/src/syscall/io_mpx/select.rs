@@ -128,7 +128,8 @@ fn poll_ready(
             result.writefds.as_mut().unwrap().mark_fd(entry.fd, true);
             result.num += 1;
         }
-        if fdset_contains(exceptfds, entry.fd) && events.intersects(PollEvents::ERR | PollEvents::HUP)
+        if fdset_contains(exceptfds, entry.fd)
+            && events.intersects(PollEvents::ERR | PollEvents::HUP)
         {
             result.exceptfds.as_mut().unwrap().mark_fd(entry.fd, true);
             result.num += 1;
@@ -276,7 +277,10 @@ pub fn sys_pselect6(
         if timespec.tv_nsec >= 1_000_000_000 {
             return Err(SysErrNo::EINVAL);
         }
-        Some(Duration::new(timespec.tv_sec as u64, timespec.tv_nsec as u32))
+        Some(Duration::new(
+            timespec.tv_sec as u64,
+            timespec.tv_nsec as u32,
+        ))
     };
 
     let old_mask = {

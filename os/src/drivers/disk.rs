@@ -45,8 +45,7 @@ impl Disk {
         // info!("block id: {}", self.block_id);
         let read_size = if self.offset == 0 && buf.len() >= BLOCK_SIZE {
             let read_size = buf.len() / BLOCK_SIZE * BLOCK_SIZE;
-            self.dev
-                .read_block(self.block_id, &mut buf[0..read_size])?;
+            self.dev.read_block(self.block_id, &mut buf[0..read_size])?;
             self.block_id += read_size / BLOCK_SIZE;
             read_size
         } else {

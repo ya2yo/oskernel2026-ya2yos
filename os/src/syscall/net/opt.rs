@@ -9,10 +9,10 @@ use crate::{
 use alloc::sync::Arc;
 use alloc::{vec, vec::Vec};
 use linux_raw_sys::net::{
-    group_req, group_source_req, IP_MSFILTER, IP_MTU, IP_MTU_DISCOVER, IP_MULTICAST_IF,
-    IP_RECVERR, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP, SOL_SOCKET,
-    SO_DONTROUTE, SO_ERROR, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR, SO_SNDBUF,
-    SO_SNDTIMEO, TCP_INFO, TCP_MAXSEG, TCP_NODELAY, socklen_t, tcp_info,
+    group_req, group_source_req, socklen_t, tcp_info, IP_MSFILTER, IP_MTU, IP_MTU_DISCOVER,
+    IP_MULTICAST_IF, IP_RECVERR, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP,
+    SOL_SOCKET, SO_DONTROUTE, SO_ERROR, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR,
+    SO_SNDBUF, SO_SNDTIMEO, TCP_INFO, TCP_MAXSEG, TCP_NODELAY,
 };
 use log::{debug, error, warn};
 
@@ -299,10 +299,10 @@ pub fn sys_setsockopt(
 
 /// 参考 https://man7.org/linux/man-pages/man2/setsockopt.2.html
 pub fn sys_getsockopt(
-    sockfd: usize,             // 文件描述符
-    level: u32,                // 协议，level 都会设为 SOL_SOCKET
-    optname: u32,              // 设定或取出的套接字选项
-    user_optval: *mut u8,      // 指向缓冲区的指针，用来指定或者返回选项的值
+    sockfd: usize,               // 文件描述符
+    level: u32,                  // 协议，level 都会设为 SOL_SOCKET
+    optname: u32,                // 设定或取出的套接字选项
+    user_optval: *mut u8,        // 指向缓冲区的指针，用来指定或者返回选项的值
     user_optlen: *mut socklen_t, // 指向 optval 缓冲区长度的 value-result 指针
 ) -> SyscallRet {
     if user_optval.is_null() || user_optlen.is_null() {
@@ -459,11 +459,7 @@ pub fn sys_getsockopt(
     let memory_set = process.get_locked_memory_set_read();
     copy_to_user(&memory_set, user_optval as usize, &kern_opt[..copy_len])?;
     let actual_len = kern_opt.len() as socklen_t;
-    copy_to_user(
-        &memory_set,
-        user_optlen as usize,
-        &actual_len.to_ne_bytes(),
-    )?;
+    copy_to_user(&memory_set, user_optlen as usize, &actual_len.to_ne_bytes())?;
 
     Ok(0)
 }

@@ -114,7 +114,9 @@ impl MemorySet {
     }
     #[inline(always)]
     pub fn handle_page_fault(&self, vpn: VirtPageNum, scause: Trap) -> bool {
-        self.inner.get_unchecked_mut().handle_page_fault(vpn, scause)
+        self.inner
+            .get_unchecked_mut()
+            .handle_page_fault(vpn, scause)
     }
     /// 修改虚拟地址空间的访问权限（MemorySet 层封装）。
     ///

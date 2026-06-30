@@ -132,10 +132,7 @@ fn ms_to_user_ticks(ms: isize) -> u64 {
     }
 }
 
-fn wait_status_from_exit_code(
-    exit_code: i32,
-    termination_signal: Option<(usize, bool)>,
-) -> u32 {
+fn wait_status_from_exit_code(exit_code: i32, termination_signal: Option<(usize, bool)>) -> u32 {
     if let Some((signo, dumped_core)) = termination_signal {
         signo as u32 | if dumped_core { 0x80 } else { 0 }
     } else if exit_code >= 128 && exit_code <= 255 {
@@ -190,11 +187,7 @@ fn build_acct_record(task: &TaskControlBlock, exit_code: i32, usage: &ProcessUsa
     }
 }
 
-pub fn write_process_acct_record(
-    task: &TaskControlBlock,
-    exit_code: i32,
-    usage: &ProcessUsage,
-) {
+pub fn write_process_acct_record(task: &TaskControlBlock, exit_code: i32, usage: &ProcessUsage) {
     let acct_file = ACCT_FILE.lock().clone();
     let Some(file) = acct_file else {
         return;

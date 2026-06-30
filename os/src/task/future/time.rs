@@ -142,7 +142,11 @@ pub async fn timeout<F: IntoFuture>(
     duration: Option<Duration>,
     f: F,
 ) -> Result<F::Output, Elapsed> {
-    timeout_at(duration.and_then(|x| x.checked_add(get_time_spec().into())), f).await
+    timeout_at(
+        duration.and_then(|x| x.checked_add(get_time_spec().into())),
+        f,
+    )
+    .await
 }
 
 /// Requires a `Future` to complete before the specified deadline.
