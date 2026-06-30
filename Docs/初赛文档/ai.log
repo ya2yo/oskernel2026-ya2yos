@@ -3519,3 +3519,61 @@ make
 - AI 环境中尝试 `make run` 时，QEMU 因沙箱 `/var/tmp` 只读无法创建临时文件，未能完成运行验证。
 - 维护者随后在本地完成复现配置运行，并确认 `write04` 已通过。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-06-30: write06 O_APPEND 每次写入追加语义修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并继续修复。
+
+### 分析
+
+AI 先提取日志中的失败摘要，确认当前失败为 LTP `write06`：
+
+```text
+write06.c:57: TFAIL: Wrong offset after write 2048 expected 3072
+write06.c:63: TFAIL: Wrong file size after append 2048 expected 3072
+```
+
+读取 LTP `write06.c` 后确认，该用例先写入 2KiB 文件，再以 `O_RDWR | O_APPEND` 重新打开，随后显式 `lseek(fd, 1KiB, SEEK_SET)`，再写入 1KiB，期望 `O_APPEND` 让本次写入仍发生在文件末尾，最终 offset 和文件大小都为 3KiB。
+
+检查内核发现，原 `open()` 只在看到 `O_APPEND` 时对新 `OSFile` 执行一次 `lseek(0, SEEK_END)`。如果用户之后调用 `lseek()`，后续 `OSFile::write()` 仍使用被用户改过的 offset，导致覆盖写入而不是追加写入。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/os_file.rs` | `OSFile` 增加 `append` 字段；`write()` 在持有 offset 锁后按 `inode.size()` 重新定位 EOF 再写 |
+| `os/src/fs/kernel_fs_ops/open.rs` | 创建 `OSFile` 时传入 `O_APPEND` 标志，移除 open 阶段一次性 `lseek(SEEK_END)` |
+| `Docs/初赛文档/problem/write06-o-append.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 6.30 简记 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml --all
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：
+
+- `make` 通过，当前默认 `TARGET_ARCH=loongarch64`。
+- LoongArch 当前配置单跑 musl/glibc `write06`，两者均通过：
+
+```text
+Summary:
+passed   2
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+- 新日志中 `write06.c` 两个断言均为 `TPASS`；外层 `FAIL LTP CASE write06 : 10` 是包装器噪声，不作为失败依据。
+- 未运行 `riscv64`。

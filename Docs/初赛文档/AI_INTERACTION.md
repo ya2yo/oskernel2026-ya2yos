@@ -773,3 +773,10 @@
 - **场景**：Bug 分析与定位、FIFO/pipe 非阻塞语义修复、LTP 回归验证协作、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复 `write04.c:31: TFAIL: write(...) succeeded`。AI 读取 LTP `write04.c` 后确认该用例要求命名 FIFO 在 `O_NONBLOCK` 且缓冲区满时返回 `EAGAIN`；检查内核发现 `mknodat(S_IFIFO)` 只保留了特殊节点类型，`openat()` 仍把 FIFO 作为普通 `OSFile` 打开，且 `Pipe` 缺少 `O_NONBLOCK` 读写语义。修复新增按路径共享的 FIFO pipe 缓冲区，`openat()` 遇到 FIFO 返回共享 pipe 端点，并让 pipe/FIFO 满缓冲非阻塞写返回 `EAGAIN`。`make` 通过；AI 环境中 `make run` 受 `/var/tmp` 沙箱限制未能启动 QEMU，维护者随后本地复现确认 `write04` 通过。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/write04-fifo-nonblock.md](./problem/write04-fifo-nonblock.md)。
 - **关联 commit**：待提交
+
+#### write06 O_APPEND 追加语义修复（6.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`O_APPEND` 文件写入语义修复、LTP 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并继续修复。AI 确认当前失败为 `write06`：以 `O_APPEND` 打开文件后再 `lseek()` 到文件中间，后续 `write()` 错误覆盖原内容，offset 和文件大小停在 2048 而非 3072。根因是内核只在 `open(O_APPEND)` 时一次性 seek 到 EOF，没有把 append 模式保存在 `OSFile` 并应用到每次写入。修复后 `OSFile::write()` 在持有 offset 锁时按当前 `inode.size()` 重新定位 EOF，再执行写入。`make` 通过，LoongArch 单跑 musl/glibc `write06` 均为 `passed 2 failed 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/write06-o-append.md](./problem/write06-o-append.md)。
+- **关联 commit**：待提交

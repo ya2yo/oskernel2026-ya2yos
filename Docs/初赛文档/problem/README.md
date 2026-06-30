@@ -52,6 +52,7 @@
 - [LTP lseek02 fd 错误码与 FIFO ESPIPE](./lseek02-fd-espipe-fifo.md)
 - [LTP pread02 pipe/目录错误码](./pread02-pipe-dir-errors.md)
 - [LTP write04 FIFO 非阻塞写满返回 EAGAIN](./write04-fifo-nonblock.md)
+- [LTP write06 O_APPEND 每次写入追加语义](./write06-o-append.md)
 - [preadv2/pwritev2 系统调用实现](./preadv2-pwritev2-syscalls.md)
 - [basic umount 相对挂载点路径不匹配](./basic-umount-relative-mountpoint.md)
 - [LTP access04 mount / loop 设备修复](./access04-ltp-musl.md)

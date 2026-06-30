@@ -32,6 +32,7 @@ fn unregister_write_open(path: &str) {
 pub struct OSFile {
     readable: bool, // 该文件是否允许通过 sys_read 进行读
     writable: bool, // 该文件是否允许通过 sys_write 进行写
+    append: bool,   // O_APPEND: 每次 write 前都定位到文件末尾
     pub inode: Arc<dyn Inode>,
     write_path: Option<String>,
     inner: Mutex<OSFileInner>,
@@ -41,7 +42,7 @@ struct OSFileInner {
 }
 
 impl OSFile {
-    pub fn new(readable: bool, writable: bool, inode: Arc<dyn Inode>) -> Self {
+    pub fn new(readable: bool, writable: bool, append: bool, inode: Arc<dyn Inode>) -> Self {
         let write_path = if writable {
             let path = inode.path();
             register_write_open(&path);
@@ -52,6 +53,7 @@ impl OSFile {
         Self {
             readable,
             writable,
+            append,
             inode,
             write_path,
             inner: Mutex::new(OSFileInner { offset: 0 }),
@@ -104,6 +106,9 @@ impl File for OSFile {
 
     fn write(&self, buf: UserBuffer) -> SyscallRet {
         let mut inner = self.inner.lock();
+        if self.append {
+            inner.offset = self.inode.size();
+        }
         let mut total_write_size = 0usize;
         for slice in buf.buffers.iter() {
             let write_size = self.inode.write_at(inner.offset, *slice)?;

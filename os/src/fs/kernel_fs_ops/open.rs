@@ -133,7 +133,12 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
     // );
     inode.fmode_set(effective_mode);
     FsIndex::insert_inode_idx(abs_path, inode.clone());
-    let osinode = OSFile::new(readable, writable, inode);
+    let osinode = OSFile::new(
+        readable,
+        writable,
+        flags.contains(OpenFlags::O_APPEND),
+        inode,
+    );
     Ok(FileClass::File(Arc::new(osinode)))
 }
 pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
@@ -225,10 +230,12 @@ pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, Sy
                 }
             }
         }
-        let osfile = OSFile::new(readable, writable, inode);
-        if flags.contains(OpenFlags::O_APPEND) {
-            osfile.lseek(0, SEEK_END)?;
-        }
+        let osfile = OSFile::new(
+            readable,
+            writable,
+            flags.contains(OpenFlags::O_APPEND),
+            inode,
+        );
         if flags.contains(OpenFlags::O_TRUNC) {
             osfile.inode.truncate(0)?;
         }
