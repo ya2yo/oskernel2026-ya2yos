@@ -1208,7 +1208,7 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "oom04\0",
     "oom05\0",
     // "open06\0",
-    "open07\0",
+    // "open07\0",
     "open10\0",
     "open12\0",
     "open12_child\0",

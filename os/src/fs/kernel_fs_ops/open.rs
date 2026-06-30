@@ -1,6 +1,7 @@
 use crate::fs::map_library_path;
 use crate::syscall::FaccessatFileMode;
 use crate::task::current_task;
+use crate::utils::SysResult;
 
 use super::*;
 use alloc::sync::Arc;
@@ -26,7 +27,7 @@ fn join_parent_child(parent: &str, child: &str) -> String {
     }
 }
 
-fn resolve_create_path(abs_path: &str) -> Result<String, SysErrNo> {
+fn resolve_create_path(abs_path: &str) -> SysResult<String> {
     let Some((parent_path, child_name)) = split_parent_child(abs_path) else {
         return Err(SysErrNo::ENOENT);
     };
@@ -46,7 +47,7 @@ fn resolve_create_path(abs_path: &str) -> Result<String, SysErrNo> {
     Ok(join_parent_child(&parent_inode.path(), child_name))
 }
 
-fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
+fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
     debug!(
         "[create_file] abs_path={}, flags={:?}, mode={:o}",
         abs_path, flags, mode
@@ -176,7 +177,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass,
     );
     Ok(FileClass::File(Arc::new(osinode)))
 }
-pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> Result<FileClass, SysErrNo> {
+pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
     debug!("open({},{:?},{})", abs_path, flags, mode);
     // log::info!("[open] abs_path={}", abs_path);
     //判断是否是设备文件

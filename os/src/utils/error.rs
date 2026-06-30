@@ -425,5 +425,4 @@ impl SysErrNo {
 }
 
 pub type SyscallRet = Result<usize, SysErrNo>;
-pub type GeneralRet = Result<(), SysErrNo>;
 pub type SysResult<T = ()> = Result<T, SysErrNo>;

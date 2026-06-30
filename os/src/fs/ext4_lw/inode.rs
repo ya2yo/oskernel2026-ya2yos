@@ -294,7 +294,7 @@ impl Inode for Ext4Inode {
         }
     }
     /// 读取目录项内容
-    fn read_dentry(&self, off: usize, len: usize) -> Result<(Vec<u8>, isize), SysErrNo> {
+    fn read_dentry(&self, off: usize, len: usize) -> SysResult<(Vec<u8>, isize)> {
         let file = &mut self.inner.get_unchecked_mut().f;
         let entries = file.read_dir_from(off as u64).map_err(SysErrNo::from)?;
         let mut de: Vec<u8> = Vec::new();
@@ -311,7 +311,7 @@ impl Inode for Ext4Inode {
         Ok((de, f_off as isize))
     }
 
-    fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SyscallRet {
+    fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SysResult<usize> {
         let file = &mut self.inner.get_unchecked_mut().f;
         file.file_readlink(buf, bufsize).map_err(SysErrNo::from)
     }
