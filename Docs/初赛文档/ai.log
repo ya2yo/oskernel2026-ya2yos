@@ -4249,3 +4249,60 @@ make
 - 维护者提供的最新 `log.ans` 显示 glibc `open14` 三个子项均为 `TPASS`，Summary 为 `passed 3 failed 0 broken 0`。
 - 日志中的 `FAIL LTP CASE open14 : 0` 是当前 initproc 包装层打印格式，按 LTP Summary 判断 failed 为 0。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-07-02: copy_file_range02 错误路径语义修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 中 `copy_file_range02` 怎样才能正常进行，并说明最新运行结果已经在 `log.ans` 中。
+
+### 分析
+
+AI 先按 LTP 输出关键字检查 `log.ans`，确认最初测试没有进入 `copy_file_range()` 断言阶段，而是在 LTP 准备阶段输出：
+
+```text
+TCONF: Couldn't find 'mkfs.ext2' in $PATH
+```
+
+这说明当前问题首先不是 syscall errno，而是 `format_device` 无法找到 ext2 格式化工具。补齐 busybox applet 入口后，测试继续推进到 `mkfs.ext2`，但又因为 loop 块设备缺少 seek/容量兼容而失败：
+
+```text
+mkfs.ext2: lseek(0, 2): Invalid seek
+TBROK: mkfs.ext2 failed with exit code 1
+```
+
+补齐 loop 设备基本块设备行为后，测试进入真正的 `copy_file_range02` 断言。对照 LTP 用例语义，AI 确认该测试覆盖的是错误路径 errno：readonly/closed fd 应返回 `EBADF`，输出目录应返回 `EISDIR`，`O_APPEND` 输出 fd 应返回 `EBADF`，无效 flags 和同文件重叠区间应返回 `EINVAL`，特殊文件应返回 `EINVAL`，超大 length 应返回 `EOVERFLOW`，目标范围溢出应返回 `EFBIG`。
+
+最新 `log.ans` 中 musl/glibc 两轮均显示 24 项通过、0 failed、0 broken；`FAIL LTP CASE copy_file_range02 : 10` / `RESULT GLIBC LTP SINGLE CASE copy_file_range02 : 10` 是包装层打印行，按项目规则不作为失败依据。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | 增加 `/bin/mkfs.ext2` 和 `/bin/mke2fs` 到 busybox applet symlink 列表 |
+| `os/src/fs/files/loopdev.rs` | 为 loop 设备补齐 per-open offset、默认容量、扇区大小、`read/write/lseek/fstat` 和 `BLKGETSIZE64` / `BLKGETSIZE` / `BLKSSZGET` |
+| `os/src/syscall/fs/io.rs` | 为 `sys_copy_file_range()` 补齐 fd 权限、文件类型、`O_APPEND`、flags、offset、范围溢出和重叠区间等错误路径校验 |
+| `Docs/初赛文档/problem/copy-file-range02-error-semantics.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make TARGET_ARCH=loongarch64
+```
+
+结果：构建通过。
+
+维护者提供的最新 `log.ans` 显示：
+
+- musl `copy_file_range02` Summary：`passed 24 failed 0 broken 0 skipped 14 warnings 0`
+- glibc `copy_file_range02` Summary：`passed 24 failed 0 broken 0 skipped 14 warnings 0`
+- readonly、directory、append、closed fd、invalid flags、overlap、block/char/fifo/pipe、max length、max file size 等错误路径均输出 `TPASS`
+
+未运行 `riscv64`。

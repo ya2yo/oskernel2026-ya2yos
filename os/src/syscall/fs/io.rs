@@ -50,6 +50,23 @@ fn fd_allows_write(flags: u32) -> bool {
     flags & OpenFlags::O_ACCMODE.bits() != OpenFlags::O_RDONLY.bits()
 }
 
+fn fd_allows_read(flags: u32) -> bool {
+    flags & OpenFlags::O_ACCMODE.bits() != OpenFlags::O_WRONLY.bits()
+}
+
+fn stat_file_type(mode: u32) -> u32 {
+    mode & 0o170000
+}
+
+fn ranges_overlap(a_start: usize, a_len: usize, b_start: usize, b_len: usize) -> bool {
+    if a_len == 0 || b_len == 0 {
+        return false;
+    }
+    let a_end = a_start.saturating_add(a_len);
+    let b_end = b_start.saturating_add(b_len);
+    a_start < b_end && b_start < a_end
+}
+
 fn read_iovec(
     memory_set: &crate::mm::MemorySet,
     iov: *const u8,
@@ -864,28 +881,57 @@ pub fn sys_copy_file_range(
     outfd: usize,
     off_out: usize,
     count: usize,
-    _flags: u32,
+    flags: u32,
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.process.inner_lock();
 
-    if outfd >= inner.fd_table.len()
-        || inner.fd_table.try_get(outfd).is_none()
-        || infd >= inner.fd_table.len()
-        || inner.fd_table.try_get(infd).is_none()
-    {
+    // Linux 当前不接受非零 flags；LTP copy_file_range02 会专门检查 EINVAL。
+    if flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    // 返回值类型是 ssize_t，超过 SSIZE_MAX 的 count 应在复制前直接拒绝。
+    if count > isize::MAX as usize {
+        return Err(SysErrNo::EOVERFLOW);
+    }
+    if count == 0 {
+        return Ok(0);
+    }
+
+    let in_desc = inner.fd_table.get(infd)?;
+    let out_desc = inner.fd_table.get(outfd)?;
+    let in_any = in_desc.any();
+    let out_any = out_desc.any();
+
+    // 先用通用 File::fstat() 判断类型，保证目录输出返回 EISDIR，
+    // block/char/fifo/pipe 等特殊文件返回 EINVAL。
+    let out_type = stat_file_type(out_any.fstat().st_mode);
+    if out_type == StMode::FDIR.bits() {
+        return Err(SysErrNo::EISDIR);
+    }
+    if out_type != StMode::FREG.bits() {
         return Err(SysErrNo::EINVAL);
     }
 
-    let outfile = inner.fd_table.get(outfd)?.file()?;
-    if !outfile.writable() {
-        return Err(SysErrNo::EACCES);
+    let in_type = stat_file_type(in_any.fstat().st_mode);
+    if in_type != StMode::FREG.bits() {
+        return Err(SysErrNo::EINVAL);
     }
 
-    let infile = inner.fd_table.get(infd)?.file()?;
-    if !infile.readable() {
-        return Err(SysErrNo::EACCES);
+    // copy_file_range 既要求 fd access mode 允许读/写，也要求底层对象可读/可写。
+    // O_APPEND 输出 fd 在 Linux 上按 EBADF 处理，不能退化成普通追加写。
+    if !fd_allows_read(in_desc.flags()) || !in_any.readable() {
+        return Err(SysErrNo::EBADF);
     }
+    if !fd_allows_write(out_desc.flags())
+        || out_desc.flags() & OpenFlags::O_APPEND.bits() != 0
+        || !out_any.writable()
+    {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let infile = in_desc.file()?;
+    let outfile = out_desc.file()?;
 
     // 在释放锁之前读取用户空间的 offset
     let (in_offset, out_offset) = {
@@ -917,6 +963,33 @@ pub fn sys_copy_file_range(
         (in_off, out_off)
     };
 
+    if in_offset < 0 || out_offset < 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    // off_in/off_out 为 NULL 时使用并推进文件当前 offset；非 NULL 时使用用户传入 offset，
+    // 成功后只回写用户 offset，不改变文件当前 offset。
+    let in_start = if off_in == 0 {
+        infile.lseek(0, SEEK_CUR)?
+    } else {
+        in_offset as usize
+    };
+    let out_start = if off_out == 0 {
+        outfile.lseek(0, SEEK_CUR)?
+    } else {
+        out_offset as usize
+    };
+    if out_start.checked_add(count).is_none() || out_start + count > isize::MAX as usize {
+        return Err(SysErrNo::EFBIG);
+    }
+
+    // 同一文件内复制时，源区间和目标区间不能重叠；Linux 对该场景返回 EINVAL。
+    if infile.inode.path() == outfile.inode.path()
+        && ranges_overlap(in_start, count, out_start, count)
+    {
+        return Err(SysErrNo::EINVAL);
+    }
+
     drop(inner);
     drop(task);
 
@@ -939,9 +1012,6 @@ pub fn sys_copy_file_range(
     if off_in == 0 {
         readcount = infile.read(inbuffer)?;
     } else {
-        if in_offset < 0 {
-            return Err(SysErrNo::EINVAL);
-        }
         let cur_in_offset = infile.lseek(0, SEEK_CUR)?;
         infile.lseek(in_offset, SEEK_SET)?;
         readcount = infile.read(inbuffer)?;
@@ -968,9 +1038,6 @@ pub fn sys_copy_file_range(
     if off_out == 0 {
         writecount = outfile.write(outbuffer)?;
     } else {
-        if out_offset < 0 {
-            return Err(SysErrNo::EINVAL);
-        }
         let cur_out_offset = outfile.lseek(0, SEEK_CUR)?;
         outfile.lseek(out_offset, SEEK_SET)?;
         writecount = outfile.write(outbuffer)?;

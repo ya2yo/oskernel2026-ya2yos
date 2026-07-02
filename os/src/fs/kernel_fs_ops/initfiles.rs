@@ -432,6 +432,8 @@ pub fn create_init_files() -> SysResult {
         "/bin/ln",
         "/bin/ls",    // which ls 需要它
         "/bin/mkdir", // ltp的cgroup_regression_3_1.sh需要它
+        "/bin/mkfs.ext2", // LTP format_device 需要通过 PATH 找到 ext2 格式化工具
+        "/bin/mke2fs",
         "/bin/mktemp",
         "/bin/printf",
         "/bin/ps",

@@ -63,6 +63,7 @@
 - [LTP open13 O_PATH fd 操作 EBADF 语义](./open13-o-path-fd-operations.md)
 - [LTP open14 O_TMPFILE 匿名临时文件语义](./open14-o-tmpfile-anonymous.md)
 - [LTP getdents01 目录流 offset 更新错误](./getdents01-directory-offset.md)
+- [LTP copy_file_range02 错误路径语义](./copy-file-range02-error-semantics.md)
 - [preadv2/pwritev2 系统调用实现](./preadv2-pwritev2-syscalls.md)
 - [basic umount 相对挂载点路径不匹配](./basic-umount-relative-mountpoint.md)
 - [LTP access04 mount / loop 设备修复](./access04-ltp-musl.md)

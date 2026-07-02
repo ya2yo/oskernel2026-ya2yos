@@ -864,3 +864,10 @@
 - **场景**：Bug 分析与定位、`O_TMPFILE` 匿名文件语义修复、procfd `readlink/linkat` 兼容、LTP 回归验证协作、文档完善
 - **描述**：用户要求分析 `log.ans` 中 `open14` 为什么期望目录参数而不是普通文件，并在通过后写清楚 tmpfile 语义。AI 确认 `O_TMPFILE` 的 path 参数应为目录，但返回 fd 指向未链接的普通文件；原实现把它简化成目录下的真实 `N.tmp` 文件，导致 `readdir()` 看到临时文件。修复新增内存态匿名 `TmpFile`，`openat(O_TMPFILE)` 只校验目录并返回未链接 fd，补齐 `/proc/self/fd/<fd>` 的 `readlinkat()` 与 `linkat()` 物化路径，并修正空目录 `getdents64` EOF 处理。维护者最新 `log.ans` 显示 musl/glibc `open14` 均为 `passed 3 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-07-02 条目与 [problem/open14-o-tmpfile-anonymous.md](./problem/open14-o-tmpfile-anonymous.md)。
 - **关联 commit**：待提交
+
+#### copy_file_range02 错误路径语义修复（7.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、LTP `format_device` 环境补齐、loop 块设备兼容、`copy_file_range` errno 语义修复、文档完善
+- **描述**：用户要求分析 `log.ans` 中 `copy_file_range02` 怎样才能正常进行，并随后提供最新运行结果。AI 先定位到测例在准备阶段因 `$PATH` 中缺少 `mkfs.ext2` 被 `TCONF/skipped`，补齐 busybox applet 链接后又发现 `DevLoop` 缺少 block device `lseek(SEEK_END)` 和容量信息导致 `mkfs.ext2` `TBROK`。补齐 loop seek/容量后，测试进入真正断言阶段，进一步修复 `sys_copy_file_range()` 对 readonly、目录、`O_APPEND`、无效 fd、flags、重叠区间、特殊文件、超大 length、目标范围溢出的 errno。最新 `log.ans` 显示 musl/glibc `copy_file_range02` 均为 `passed 24 failed 0 broken 0 skipped 14`。详见 `Docs/初赛文档/ai.log` 2026-07-02 条目与 [problem/copy-file-range02-error-semantics.md](./problem/copy-file-range02-error-semantics.md)。
+- **关联 commit**：待提交

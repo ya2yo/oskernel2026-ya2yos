@@ -1,12 +1,12 @@
 use crate::{
-    fs::{stat::StMode, File, Kstat},
+    fs::{stat::StMode, File, Kstat, SEEK_CUR, SEEK_END, SEEK_SET},
     mm::{copy_from_user, copy_to_user, MemorySet, UserBuffer},
     syscall::PollEvents,
     utils::{SysErrNo, SyscallRet},
 };
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::mem::size_of;
-use linux_raw_sys::ioctl::BLKGETSIZE64;
+use linux_raw_sys::ioctl::{BLKGETSIZE, BLKGETSIZE64, BLKSSZGET};
 use linux_raw_sys::loop_device::{
     loop_info, loop_info64, LOOP_CLR_FD, LOOP_CTL_ADD, LOOP_CTL_GET_FREE, LOOP_CTL_REMOVE,
     LOOP_GET_STATUS, LOOP_GET_STATUS64, LOOP_SET_FD, LOOP_SET_STATUS, LOOP_SET_STATUS64,
@@ -15,6 +15,8 @@ use log::debug;
 use spin::{Lazy, Mutex};
 
 const LOOP_COUNT: usize = 256;
+const LOOP_DEFAULT_CAPACITY: usize = 64 * 1024 * 1024;
+const LOOP_SECTOR_SIZE: usize = 512;
 
 struct LoopState {
     backing_fd: Option<usize>,
@@ -39,6 +41,14 @@ static LOOP_TABLE: Lazy<Vec<Mutex<LoopState>>> = Lazy::new(|| {
     }
     v
 });
+
+fn loop_capacity(state: &LoopState) -> usize {
+    if state.info.lo_sizelimit != 0 {
+        state.info.lo_sizelimit as usize
+    } else {
+        LOOP_DEFAULT_CAPACITY
+    }
+}
 
 /// 解析 loop 设备路径：/dev/loopN、/dev/loop/N、/dev/block/loopN
 pub fn parse_loop_device(path: &str) -> Option<u32> {
@@ -133,6 +143,7 @@ impl File for DevLoopControl {
 pub struct DevLoop {
     number: u32,
     path: String,
+    offset: Mutex<usize>,
 }
 
 impl DevLoop {
@@ -140,6 +151,7 @@ impl DevLoop {
         Self {
             number,
             path: String::from(path),
+            offset: Mutex::new(0),
         }
     }
 
@@ -155,26 +167,66 @@ impl File for DevLoop {
     fn writable(&self) -> bool {
         true
     }
-    fn read(&self, _buf: UserBuffer) -> SyscallRet {
-        // loop 块设备，暂不实现数据中转到 backing file
-        Ok(0)
+    fn read(&self, mut buf: UserBuffer) -> SyscallRet {
+        let capacity = loop_capacity(&LOOP_TABLE[self.number as usize].lock());
+        let mut offset = self.offset.lock();
+        if *offset >= capacity {
+            return Ok(0);
+        }
+        let len = buf.len().min(capacity - *offset);
+        if len == buf.len() {
+            buf.fill0();
+        } else {
+            let mut zeros = Vec::new();
+            zeros.resize(len, 0);
+            buf.write(&zeros);
+        }
+        *offset += len;
+        Ok(len)
     }
     fn write(&self, buf: UserBuffer) -> SyscallRet {
-        // 吞掉所有写入，避免 unimplemented! panic
-        Ok(buf.len())
+        // 当前 loop 设备用于 LTP 临时格式化/挂载路径，暂不持久化 backing file 数据。
+        let capacity = loop_capacity(&LOOP_TABLE[self.number as usize].lock());
+        let mut offset = self.offset.lock();
+        if *offset >= capacity {
+            return Err(SysErrNo::ENOSPC);
+        }
+        let len = buf.len().min(capacity - *offset);
+        *offset += len;
+        Ok(len)
     }
     fn fstat(&self) -> Kstat {
         let devno = 0x700 + self.number as usize;
+        let capacity = loop_capacity(&LOOP_TABLE[self.number as usize].lock());
         Kstat {
             st_dev: devno,
             st_mode: StMode::FBLK.bits(),
             st_rdev: devno,
             st_nlink: 1,
+            st_size: capacity as isize,
+            st_blksize: LOOP_SECTOR_SIZE as i32,
+            st_blocks: (capacity / LOOP_SECTOR_SIZE) as isize,
             ..Kstat::default()
         }
     }
     fn path(&self) -> Cow<'_, str> {
         Cow::Borrowed(&self.path)
+    }
+    fn lseek(&self, offset: isize, whence: usize) -> SyscallRet {
+        let capacity = loop_capacity(&LOOP_TABLE[self.number as usize].lock());
+        let mut cur = self.offset.lock();
+        let base = match whence {
+            SEEK_SET => 0isize,
+            SEEK_CUR => *cur as isize,
+            SEEK_END => capacity as isize,
+            _ => return Err(SysErrNo::EINVAL),
+        };
+        let new_offset = base.checked_add(offset).ok_or(SysErrNo::EINVAL)?;
+        if new_offset < 0 || new_offset as usize > capacity {
+            return Err(SysErrNo::EINVAL);
+        }
+        *cur = new_offset as usize;
+        Ok(*cur)
     }
     fn poll(&self, events: PollEvents) -> PollEvents {
         let mut revents = PollEvents::empty();
@@ -208,6 +260,7 @@ impl File for DevLoop {
             LOOP_SET_FD => {
                 let mut state = LOOP_TABLE[idx].lock();
                 state.backing_fd = Some(arg);
+                *self.offset.lock() = 0;
                 Ok(0)
             }
             LOOP_CLR_FD => {
@@ -218,6 +271,7 @@ impl File for DevLoop {
                 state.backing_fd = None;
                 state.info = unsafe { core::mem::zeroed() };
                 state.info.lo_number = self.number;
+                *self.offset.lock() = 0;
                 Ok(0)
             }
             LOOP_SET_STATUS64 => {
@@ -262,9 +316,29 @@ impl File for DevLoop {
                 Ok(0)
             }
             BLKGETSIZE64 => {
-                let size: u64 = LOOP_TABLE[idx].lock().info.lo_sizelimit;
+                let size = loop_capacity(&LOOP_TABLE[idx].lock()) as u64;
                 copy_to_user(memory_set, arg, unsafe {
                     core::slice::from_raw_parts(&size as *const u64 as *const u8, size_of::<u64>())
+                })?;
+                Ok(0)
+            }
+            BLKGETSIZE => {
+                let sectors = loop_capacity(&LOOP_TABLE[idx].lock()) / LOOP_SECTOR_SIZE;
+                copy_to_user(memory_set, arg, unsafe {
+                    core::slice::from_raw_parts(
+                        &sectors as *const usize as *const u8,
+                        size_of::<usize>(),
+                    )
+                })?;
+                Ok(0)
+            }
+            BLKSSZGET => {
+                let sector_size = LOOP_SECTOR_SIZE as u32;
+                copy_to_user(memory_set, arg, unsafe {
+                    core::slice::from_raw_parts(
+                        &sector_size as *const u32 as *const u8,
+                        size_of::<u32>(),
+                    )
                 })?;
                 Ok(0)
             }
