@@ -1,0 +1,353 @@
+## 2026-07-02: open14 O_TMPFILE 匿名临时文件语义修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 中 `open14` 为什么“期待的是目录而不是文件”，并在修复后补充文档，重点写清楚 `tmpfile` 这种第一次遇到的文件类型。
+
+### 分析
+
+AI 对照 LTP `open14` 行为和运行日志确认，`O_TMPFILE` 的 `openat()` 路径参数应指向目录，但返回的 fd 指向一个未命名、未链接的普通文件。目录只用于决定匿名 inode 所在的文件系统和权限上下文，匿名文件在 `linkat()` 前不应出现在 `getdents64()` / `readdir()` 结果中。
+
+原实现把 `O_TMPFILE` 简化成在目标目录下创建 `${counter}.tmp`，所以测试第一阶段读取目录时能看到 `0.tmp`，直接违反匿名临时文件语义。后续修复又暴露出 `getdents64` 空目录 EOF 被转换成 `EINVAL`、`readlink(/proc/self/fd/<fd>)` 缺失、`linkat(/proc/self/fd/<fd>, ...)` 无法物化匿名文件，以及 `O_TMPFILE` 分支复用高层 `open()` 导致当前进程锁重入 panic 的问题。
+
+最后一次用户提供的 `log.ans` 曾出现大量重复 `Chdir ret = 0` / `Unlinkat ret = 0`，AI 判断不是死循环，而是 `open14` 第二个子项创建并从深到浅删除 100 层嵌套目录；维护者延长运行后确认测试通过。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/tmp_file.rs` | 新增内存态匿名 `TmpFile`，支持 `read/write/lseek/fstat/poll`，`fstat()` 返回普通文件类型、`st_nlink=0` |
+| `os/src/fs/files/mod.rs` | 导出 `TmpFile` |
+| `os/src/syscall/fs/fd_ops.rs` | `O_TMPFILE` 分支改为校验目录后创建匿名 `TmpFile` fd，不再创建真实 `N.tmp` 文件；登记合成 procfd 路径 |
+| `os/src/fs/fs_info.rs` | 增加 `fd_path(fd)`，供 `/proc/self/fd/<fd>` readlink 使用 |
+| `os/src/syscall/fs/ctl.rs` | `readlinkat()` 支持 `/proc/self/fd/<fd>`；`linkat()` 支持从 procfd 源 fd 复制数据并物化为目标普通文件；`getdents64()` 修复 EOF offset 处理 |
+| `os/src/fs/files/os_file.rs` | 增加读取目录 fd offset 的接口，避免 EOF cookie 经普通 `lseek` 转成 `EINVAL` |
+| `Docs/初赛文档/problem/open14-o-tmpfile-anonymous.md` | 新增问题复盘，详细说明 `O_TMPFILE` 匿名文件语义 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=loongarch64`，构建通过。
+- 维护者提供的最新 `log.ans` 显示 musl `open14` 三个子项均为 `TPASS`，Summary 为 `passed 3 failed 0 broken 0`。
+- 维护者提供的最新 `log.ans` 显示 glibc `open14` 三个子项均为 `TPASS`，Summary 为 `passed 3 failed 0 broken 0`。
+- 日志中的 `FAIL LTP CASE open14 : 0` 是当前 initproc 包装层打印格式，按 LTP Summary 判断 failed 为 0。
+- 未运行 `riscv64`。
+
+---
+
+## 2026-07-02: copy_file_range02 错误路径语义修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 中 `copy_file_range02` 怎样才能正常进行，并说明最新运行结果已经在 `log.ans` 中。
+
+### 分析
+
+AI 先按 LTP 输出关键字检查 `log.ans`，确认最初测试没有进入 `copy_file_range()` 断言阶段，而是在 LTP 准备阶段输出：
+
+```text
+TCONF: Couldn't find 'mkfs.ext2' in $PATH
+```
+
+这说明当前问题首先不是 syscall errno，而是 `format_device` 无法找到 ext2 格式化工具。补齐 busybox applet 入口后，测试继续推进到 `mkfs.ext2`，但又因为 loop 块设备缺少 seek/容量兼容而失败：
+
+```text
+mkfs.ext2: lseek(0, 2): Invalid seek
+TBROK: mkfs.ext2 failed with exit code 1
+```
+
+补齐 loop 设备基本块设备行为后，测试进入真正的 `copy_file_range02` 断言。对照 LTP 用例语义，AI 确认该测试覆盖的是错误路径 errno：readonly/closed fd 应返回 `EBADF`，输出目录应返回 `EISDIR`，`O_APPEND` 输出 fd 应返回 `EBADF`，无效 flags 和同文件重叠区间应返回 `EINVAL`，特殊文件应返回 `EINVAL`，超大 length 应返回 `EOVERFLOW`，目标范围溢出应返回 `EFBIG`。
+
+最新 `log.ans` 中 musl/glibc 两轮均显示 24 项通过、0 failed、0 broken；`FAIL LTP CASE copy_file_range02 : 10` / `RESULT GLIBC LTP SINGLE CASE copy_file_range02 : 10` 是包装层打印行，按项目规则不作为失败依据。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | 增加 `/bin/mkfs.ext2` 和 `/bin/mke2fs` 到 busybox applet symlink 列表 |
+| `os/src/fs/files/loopdev.rs` | 为 loop 设备补齐 per-open offset、默认容量、扇区大小、`read/write/lseek/fstat` 和 `BLKGETSIZE64` / `BLKGETSIZE` / `BLKSSZGET` |
+| `os/src/syscall/fs/io.rs` | 为 `sys_copy_file_range()` 补齐 fd 权限、文件类型、`O_APPEND`、flags、offset、范围溢出和重叠区间等错误路径校验 |
+| `Docs/初赛文档/problem/copy-file-range02-error-semantics.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make TARGET_ARCH=loongarch64
+```
+
+结果：构建通过。
+
+维护者提供的最新 `log.ans` 显示：
+
+- musl `copy_file_range02` Summary：`passed 24 failed 0 broken 0 skipped 14 warnings 0`
+- glibc `copy_file_range02` Summary：`passed 24 failed 0 broken 0 skipped 14 warnings 0`
+- readonly、directory、append、closed fd、invalid flags、overlap、block/char/fifo/pipe、max length、max file size 等错误路径均输出 `TPASS`
+
+未运行 `riscv64`。
+
+---
+
+## 2026-07-02: copy_file_range02 immutable 与 overlap 后续修复
+
+### 用户需求
+
+用户提供新的 `log.ans`，要求继续分析并修复；随后提供 GDB 回溯，指出 `copy_file_range()` 调用 `File::path()` 在 `EventFd` 上 panic。
+
+### 分析
+
+新的 `log.ans` 表明测试已经不再卡在 `mkfs.ext2` 准备阶段，而是进入 `copy_file_range02` 断言。由于 `/bin/chattr`、`/bin/mkswap`、`/bin/swapon`、`/bin/swapoff` 被补齐，之前 skipped 的 immutable/swapfile setup 开始执行。真实失败为 musl/glibc 两轮中的四个 `TFAIL`：
+
+```text
+copy_file_range02.c:149: TFAIL: copy_file_range returned wrong value: 32
+copy_file_range02.c:149: TFAIL: copy_file_range returned wrong value: 16
+```
+
+对应场景是 immutable file 和 overlapping range。immutable 失败的直接原因是 busybox `chattr` 通过 `FS_IOC_GETFLAGS` / `FS_IOC_SETFLAGS` 设置 `FS_IMMUTABLE_FL`，但 `OSFile` 原先没有实现该 ioctl，也没有在写路径检查 immutable 标志，因此 `copy_file_range()` 仍然成功写入。overlap 失败的原因是同一文件判断只比较 `inode.path()` 字符串，不能稳定覆盖不同 fd/path 缓存下的同 inode 场景。
+
+第一次补 immutable 检查时，AI 在 `copy_file_range()` 中对通用 `dyn File` 调用了 `path()`。用户提供的回溯显示，block/char/fifo/pipe 等特殊 fd 场景会落到 `EventFd` 的默认 `File::path()`，导致内核 panic：
+
+```text
+Panicked at src/fs/vfs.rs:147 not implemented: File::path
+os::syscall::fs::io::sys_copy_file_range ... at src/syscall/fs/io.rs:938
+```
+
+因此最终改为：先通过 `fstat()` 判断类型，确认输出是普通文件后再取得 `OSFile`，用 `outfile.inode.path()` 做 immutable 检查，避免触碰抽象 fd 的默认 `path()`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | 增加 `/bin/chattr`、`/bin/mkswap`、`/bin/swapon`、`/bin/swapoff` applet 入口 |
+| `os/src/fs/files/os_file.rs` | 增加路径级 ext2 flags 映射，支持 `FS_IOC_GETFLAGS` / `FS_IOC_SETFLAGS` 及 32 位变体；普通文件 `write()` 对 `FS_IMMUTABLE_FL` 返回 `EPERM` |
+| `os/src/syscall/fs/io.rs` | `copy_file_range()` 对 immutable 输出返回 `EPERM`；同文件重叠判断改为 `st_dev/st_ino`；避免对通用 `dyn File` 调用默认 `path()` |
+| `Docs/初赛文档/problem/copy-file-range02-error-semantics.md` | 更新后续失败、panic 分析和最终验证 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 后续修复简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 更新 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make TARGET_ARCH=loongarch64
+make TARGET_ARCH=riscv64
+timeout 120s make run > log.ans 2>&1
+git diff --check
+```
+
+结果：
+
+- LoongArch 构建通过。
+- RISC-V 构建通过。
+- LoongArch `make run` 正常 `shutdown!`。
+- `log.ans` 中 musl `copy_file_range02` Summary 为 `passed 26 failed 0 broken 0 skipped 6 warnings 0`。
+- `log.ans` 中 glibc `copy_file_range02` Summary 为 `passed 26 failed 0 broken 0 skipped 6 warnings 0`。
+- immutable file 输出 `TPASS: copy_file_range failed as expected: EPERM (1)`。
+- overlapping range 输出 `TPASS: copy_file_range failed as expected: EINVAL (22)`。
+- `git diff --check` 无输出。
+
+---
+
+## 2026-07-02: copy_file_range03 时间戳更新修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans`，说明为什么 glibc 版的 `copy_file_range03` 没能正确更新时间戳，并继续修复。
+
+### 分析
+
+AI 先按 `copy_file_range03`、`TPASS/TFAIL`、Summary 等关键字过滤 `log.ans`，确认真实失败点不是所有 glibc 调用都失败：
+
+- musl 的 libc wrapper 和 raw syscall 两个 variant 都通过。
+- glibc 的 libc wrapper variant 通过。
+- glibc 的 `Testing __NR_copy_file_range syscall` raw syscall variant 失败：
+
+```text
+copy_file_range03.c:52: TFAIL: diff_us = 0, copy_file_range might not update timestamp
+```
+
+读取上游 LTP `copy_file_range03.c` 后确认，该用例通过 `fstat(fd_dest).st_mtim` 比较复制前后的目标文件修改时间，先等待 `usleep(1500000)`，再复制 32 字节，要求时间差在 1 秒到 30 秒之间。它不是通过 `statx` 做最终断言。
+
+随后追踪 Ya2yOS 实现：
+
+- `Ext4Inode::fstat()` 当前只返回秒级 `st_mtime/st_ctime/st_atime`，纳秒字段走 `Kstat::default()`，因此用户态看到的 `st_mtim.tv_nsec` 为 0。
+- `sys_copy_file_range()` 写入后只调用 `set_timestamps(None, Some(get_time_ms()/1000), None)`，没有更新 `ctime`，也没有检查返回值。
+- `clock_nanosleep()` 的 elapsed tick 到微秒换算写成 `(elapsed_ticks * 1_000_000) / (get_clock_freq() / 1000)`，实际会让 1.5 秒 sleep 提前约 1000 倍返回。
+
+第一次尝试把 `copy_file_range()` 时间戳改为 `realtime()` epoch 秒后，LTP 看到 `diff_us = 1777593602000000`，超过 30 秒上限。由此确认当前 ext4 文件时间对 `fstat()` 暴露的仍是开机秒语义，修复应在现有时间基准下保证单调推进，而不是局部切到 epoch 秒。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/schedule.rs` | 修正 `clock_nanosleep()` 中 elapsed ticks 到微秒的换算公式，恢复相对 sleep 的真实等待时长 |
+| `os/src/syscall/fs/io.rs` | `copy_file_range()` 写成功后用当前开机秒与旧 `mtime + 1` 取较大值，同时更新 `mtime/ctime`，并用 `?` 传播 `set_timestamps()` 错误 |
+| `Docs/初赛文档/problem/copy-file-range03-timestamp.md` | 新增问题复盘，记录日志现象、LTP 源码断言、根因和验证 |
+| `Docs/初赛文档/problem/README.md` | 增加问题索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make TARGET_ARCH=loongarch64
+timeout 120s make run > log.ans 2>&1
+git diff --check
+```
+
+结果：
+
+- LoongArch64 构建通过。
+- `make run` 正常 `shutdown!`。
+- musl `copy_file_range03` 两个 variant 均 `TPASS`，Summary 为 `passed 2 failed 0 broken 0 skipped 0 warnings 0`。
+- glibc `copy_file_range03` 两个 variant 均 `TPASS`，Summary 为 `passed 2 failed 0 broken 0 skipped 0 warnings 0`。
+- `git diff --check` 无输出。
+
+日志中仍有包装层输出 `FAIL LTP CASE copy_file_range03 : 10` / `RESULT GLIBC LTP SINGLE CASE copy_file_range03 : 10`，但按项目规则以 LTP Summary 为准；本次 Summary failed 为 0。日志里 glibc 启动过程中仍可见 `Fail to convert LoongArch Unknown to Trap type! 0x0`，但未造成该用例 TFAIL/TBROK。
+
+未运行 RISC-V。
+
+---
+
+## 2026-07-02: clone02 CLONE_SIGHAND 退出状态修复
+
+### 用户需求
+
+用户说明 `log.ans` 里发生死锁/卡死，并提供 GDB 回溯。回溯显示 `sys_exit_group()` 进入 `exit_current_and_run_next()` 后，在 `send_signal_to_thread_group()` 内调用 `ProcessInner::get_locked_sigtable()` 触发 `try_lock().expect()` panic。
+
+### 分析
+
+AI 先过滤 `log.ans`，确认原始现象发生在 `RUN LTP CASE clone02` 后：
+
+```text
+panic
+[kernel] Panicked at src/task/process/process.rs:295 You should not fail to get lock in a 1 HART system!
+```
+
+随后按回溯追踪退出路径：
+
+- `exit_current_group_and_run_next()` 处理 `exit_group()`。
+- `exit_current_and_run_next()` 在最后一个线程退出时写入 `sigtable.group_exit_code`。
+- 同一段清理逻辑随后根据 `exit_signal` 向父进程发送 `SIGCHLD`。
+- `send_signal_to_thread_group(parent_pid, SIGCHLD)` 会锁目标进程的 `sig_table`，判断目标进程是否已经退出。
+
+`clone02` 覆盖 `CLONE_VM | CLONE_SIGHAND | SIGCHLD` 这类组合。它创建的是独立子进程，不是 `CLONE_THREAD` 线程；父子共享 signal action 表，但不应共享退出码。原实现把 `group_exit_code` 放在 `SigTable` 中，导致 `CLONE_SIGHAND` 父子进程共享同一个 `Arc<Mutex<SigTable>>`。子进程退出时持有这把锁写退出码，又在通知父进程时尝试锁同一把 `sig_table`，于是 `try_lock()` 失败并 panic。
+
+更深层的语义问题是：即使在发送 `SIGCHLD` 前释放锁，子进程写入共享 `SigTable.group_exit_code` 也会污染父进程的退出状态。因此修复方向是拆分状态，而不是只调整 drop 顺序。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/signal/sigact.rs` | 移除 `SigTable` 中的 `group_exit_code` 及 `is_exited/exit_code/set_exit_code` 等接口 |
+| `os/src/task/process/process.rs` | 在 `ProcessMeta` 中新增进程私有 `group_exit_code`，增加 `is_group_exiting()`、`group_exit_code()`、`set_group_exit_code_once()` |
+| `os/src/task/mod.rs` | `suspend_current_and_run_next()`、`exit_current_group_and_run_next()`、`exit_current_and_run_next()` 改用进程级退出状态 |
+| `os/src/signal/mod.rs` | `send_signal_to_thread_group()` 不再通过 `sig_table` 判断目标进程退出状态 |
+| `os/src/syscall/task/wait.rs` | `waitpid()/waitid()` 改从 child 进程状态读取退出码 |
+| `Docs/初赛文档/problem/clone02-shared-sighand-exit-code.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加问题索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：当前默认 LoongArch64 构建通过。
+
+最新 `log.ans` 显示 `clone02` 已不再 panic，musl/glibc 两轮 Summary 均为：
+
+```text
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+日志中仍有包装层输出 `FAIL LTP CASE clone02 : 12` / `RESULT GLIBC LTP SINGLE CASE clone02 : 12`，但按项目规则以 LTP Summary 为准。
+
+未运行 RISC-V。
+
+---
+
+## 2026-07-02: PCB 与 MemorySet 锁边界重构
+
+### 用户需求
+
+用户指出 `ProcessInner` 已经有 PCB 锁保护，内部成员不应再各自套锁；已经自带同步的成员应放到 `inner` 外部。同时要求尽量把 `MemorySet` 的锁放进 `MemorySet` 自身，降低 PCB 与地址空间实现的耦合。后续用户补充 `personality` 完全可以放到 `ProcessMeta`。
+
+### 分析
+
+AI 先检查 `Process`、`TaskControlBlock`、`MemorySet`、fork/exec/exit 路径和 `log.ans` 中的锁相关信息。原结构把 `memory_set: Arc<RwLock<MemorySet>>`、`sig_table: Arc<Mutex<SigTable>>`、`fd_table`、`fs_info`、`personality` 都放在 `ProcessInner` 中，导致调用者必须先拿 PCB inner，再拿地址空间或信号表锁。这个结构把“资源 Arc 指针替换”和“资源内部同步”混在同一层，容易形成不必要的锁顺序依赖。
+
+重构方向：
+
+- `MemorySet` 自己持有 `RwLock<MemorySetInner>`，对外暴露 `get_ref()`、`get_mut()`、`with_ref()`、`with_mut()`。
+- `Process` 直接持有 `memory_set`、`sig_table`、`fd_table`、`fs_info`；其中 `memory_set` / `sig_table` 外层 `Mutex` 只保护 exec 时替换 Arc 指针。
+- `ProcessInner` 空壳移除，保留 `inner_lock()` 作为兼容入口，返回 `ProcessResources` 快照，避免一次性改动所有旧调用点。
+- `personality` 属于进程级元数据，移入 `ProcessMeta`，`sys_personality()` 通过 `Process::personality()` / `set_personality()` 访问。
+- 持有 `MemorySet` 写锁时不得再调用会重新加锁的 `MemorySet` wrapper，因此同步改写 `alloc_user_res()`、`alloc_trap_context_only()`、`growproc()`、`sys_mremap()` 和 fork 地址空间复制中的相关访问。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/process/process.rs` | 移除 `ProcessInner`，新增 `ProcessResources` 兼容快照；自带同步的资源移到 `Process` 外层；`personality` 移入 `ProcessMeta` |
+| `os/src/mm/memory_set/mod.rs` | `MemorySet` 内部改为 `RwLock<MemorySetInner>`，提供读写 guard 和闭包式访问 API |
+| `os/src/mm/memory_set/fork_clone.rs` | fork 复制地址空间时通过 `MemorySet::with_mut()` 持有父地址空间写锁，避免反复外部取锁 |
+| `os/src/task/task/task.rs` | 进程创建/fork/clone 改用 `Arc<MemorySet>`；用户栈和 trap context 分配改为单次 `with_mut()` 内完成 |
+| `os/src/task/mod.rs` | 退出路径使用资源快照中的 Arc，并按本地 clone 后的引用数判断地址空间是否可回收 |
+| `os/src/syscall/mm/mmap.rs` | `mremap` 先在读锁内复制旧 VMA 元数据，再执行 `munmap/mmap`，避免持有 area 引用时重入锁 |
+| `os/src/syscall/task/ctl.rs` | `sys_personality()` 改为访问 `ProcessMeta` 中的进程级字段 |
+| `os/src/syscall/fs/mod.rs` | 清理 `sys_splice()` 未使用变量 warning，并维持未实现时返回 `EINVAL` 的既有注释语义 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children --check os/src/syscall/fs/mod.rs
+git diff --check -- os/src/syscall/fs/mod.rs
+make
+```
+
+中途也对本次主要改动文件执行过：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children --check ...
+git diff --check -- ...
+make
+```
+
+结果：
+
+- 当前默认 LoongArch64 `make` 构建通过。
+- `sys_splice` 的 `memort_set` / `fd_in` / `fd_out` unused warnings 已消除。
+- 构建输出中仍有 vendor `smoltcp` 自身 warning，与本次改动无关。
+- 沙箱内 `make run` 未真正启动 QEMU，原因是 QEMU 无法在只读 `/var/tmp` 创建临时文件；外部 QEMU 验证申请后被用户中断，因此未得到有效运行日志。
+
+未运行 RISC-V。
