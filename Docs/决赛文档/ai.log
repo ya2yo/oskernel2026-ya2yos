@@ -610,3 +610,55 @@ git diff --check
 
 ---
 
+## 2026-07-02: pipe PipeBuf 片段队列与 splice/tee 引用路径
+
+### 用户需求
+
+用户指出当前 `splice` 没有实现零拷贝，要求按前面建议把 `os/src/fs/files/pipe.rs` 中的 `PipeRingBuffer` 从字节环改成 `PipeBuf` 片段队列，并让 pipe -> pipe `splice` 和 `tee()` 走引用移动/引用复制。
+
+### 分析
+
+AI 检查当前 `sys_splice()`、`Pipe` 和 `OSFile` 路径后确认：
+
+- 原 pipe 底层是 `Vec<u8>` + `head/tail/status` 的固定字节环，普通 `read/write` 和 `splice(pipe, pipe)` 都必须复制字节内容。
+- 当前普通文件路径仍只有 `File::read()` / `File::write()` 与 `Inode::read_at()` / `write_at()`，还没有真正文件页缓存引用，暂不适合直接做 file -> pipe 页缓存零拷贝。
+- 更稳妥的第一步是先让 pipe 能承载片段引用：普通 pipe `read/write` 保持对用户态的字节语义，pipe 专用的 `splice` / `tee` 再使用片段移动或克隆。
+
+设计取舍：
+
+- 新增私有 `PipeBuf { data: Arc<Vec<u8>>, offset, len }`，作为后续扩展 Page/FilePage 的占位模型。
+- `PipeRingBuffer` 改为 `VecDeque<PipeBuf>` + `bytes` 计数，`available_read/write` 语义保持不变。
+- `Pipe::splice_to_pipe()` 消耗输入 pipe 中的 `PipeBuf` 片段并移动到输出 pipe，不复制底层数据内容。
+- `Pipe::tee_to_pipe()` 克隆 `PipeBuf` 的 `Arc<Vec<u8>>` 引用并压入输出 pipe，不消耗输入 pipe。
+- file -> pipe、pipe -> file 路径仍保留原内核缓冲区兼容搬运，避免同时扩大到 VFS/页缓存一致性问题。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/pipe.rs` | 将 `PipeRingBuffer` 从字节环改为 `PipeBuf` 片段队列，保留普通 `read/write/write_kernel_bytes/poll` 行为；新增 `splice_to_pipe()` 和 `tee_to_pipe()` |
+| `os/src/syscall/io_mpx/splice.rs` | `sys_splice()` 在两端都是 pipe 时走 `Pipe::splice_to_pipe()`；实现 `sys_tee()` 的 pipe fd 校验、flag 校验和 `Pipe::tee_to_pipe()` 调用 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/决赛文档/ai.log` | 追加本轮 AI 协作记录 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 追加本轮 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children os/src/fs/files/pipe.rs os/src/syscall/io_mpx/splice.rs
+make
+timeout 120s make run > /tmp/splice-pipebuf-run.log 2>&1
+```
+
+结果：
+
+- 默认 LoongArch64 `make` 构建通过。
+- 构建仍有 vendor `smoltcp` warning，与本次修改无关。
+- 首次沙箱内 `make run` 因 QEMU 需要在 `/var/tmp` 创建临时文件失败；外部重跑成功进入测试。
+- 当前工作树中的 `user/src/bin/initproc.rs` 已被改为运行 `splice05`，不是 `splice01`。`splice05` musl/glibc 均失败于 `splice error: ENOTCONN (107)`，说明当前 socket splice 语义仍有缺口；这不是本次 pipe -> pipe `PipeBuf` 引用路径的直接验证结果，后续需要单独处理 socket splice。
+
+未运行 RISC-V。本轮未新增 problem 文件：这是结构/性能路径优化，未修通新的 LTP 测例；`splice05` 失败作为后续问题处理。
+
+---

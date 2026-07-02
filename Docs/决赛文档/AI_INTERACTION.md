@@ -67,3 +67,10 @@
 - **场景**：`vmsplice` 语义收敛、pipe fd 分类调整、`FileClass::Pipe` 接入、构建验证、决赛文档补充
 - **描述**：用户指出 `Pipe` 也是文件，当前匿名 pipe 分配逻辑放入 `FileClass::Abs`，没有体现 pipe 是独立文件类别。AI 将 `pipe2()` 创建的读写端改为 `FileClass::Pipe`，修正 `FileClass::pipe()` / `FileDescriptor::pipe()` 访问路径，并让 `sys_vmsplice()` 通过 pipe 类型入口校验目标 fd 后写入。默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-02 条目。
 - **关联 commit**：待提交
+
+#### PipeBuf 片段队列与 splice/tee 引用路径（7.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：pipe 内部缓冲结构优化、`splice(pipe, pipe)` 引用移动、`tee()` 引用复制、构建与运行验证、决赛文档补充
+- **描述**：用户要求继续优化 `splice` 的零拷贝能力。AI 将 `PipeRingBuffer` 从固定字节环改为 `PipeBuf` 片段队列，普通 pipe `read/write` 仍保持字节语义；两端都是 pipe 的 `splice()` 改为移动 `PipeBuf` 引用，`tee()` 改为克隆 `PipeBuf` 引用而不消耗输入 pipe。默认 LoongArch64 `make` 通过；当前 `initproc` 运行的是 `splice05`，仍失败于 socket splice `ENOTCONN`，该 socket 语义缺口需后续单独处理。详见 `Docs/决赛文档/ai.log` 2026-07-02 条目。
+- **关联 commit**：待提交

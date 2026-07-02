@@ -13,7 +13,6 @@ use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
-use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::min;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -92,6 +91,152 @@ impl Pipe {
     pub fn all_write_ends_closed(&self) -> bool {
         self.inner_lock().all_write_ends_closed()
     }
+    pub fn splice_to_pipe(&self, output: &Pipe, len: usize, nonblock: bool) -> SyscallRet {
+        if !self.readable() || !output.writable() {
+            return Err(SysErrNo::EBADF);
+        }
+        if Arc::ptr_eq(&self.buffer, &output.buffer) {
+            return Err(SysErrNo::EINVAL);
+        }
+        self.wait_readable(nonblock)?;
+        if self.available_read() == 0 {
+            return Ok(0);
+        }
+        output.wait_writable(nonblock)?;
+
+        let moved = self.with_ordered_buffers(output, |input, output| {
+            if output.all_read_ends_closed() {
+                return Err(SysErrNo::EPIPE);
+            }
+            let len = len
+                .min(input.available_read())
+                .min(output.available_write());
+            if len == 0 {
+                return Ok(0);
+            }
+            let bufs = input.pop_bufs(len);
+            output.push_bufs(bufs);
+            input.wake_writer();
+            output.wake_reader();
+            Ok(len)
+        })?;
+        Ok(moved)
+    }
+    pub fn tee_to_pipe(&self, output: &Pipe, len: usize, nonblock: bool) -> SyscallRet {
+        if !self.readable() || !output.writable() {
+            return Err(SysErrNo::EBADF);
+        }
+        if Arc::ptr_eq(&self.buffer, &output.buffer) {
+            return Err(SysErrNo::EINVAL);
+        }
+        self.wait_readable(nonblock)?;
+        if self.available_read() == 0 {
+            return Ok(0);
+        }
+        output.wait_writable(nonblock)?;
+
+        let copied = self.with_ordered_buffers(output, |input, output| {
+            if output.all_read_ends_closed() {
+                return Err(SysErrNo::EPIPE);
+            }
+            let len = len
+                .min(input.available_read())
+                .min(output.available_write());
+            if len == 0 {
+                return Ok(0);
+            }
+            let bufs = input.clone_bufs(len);
+            output.push_bufs(bufs);
+            output.wake_reader();
+            Ok(len)
+        })?;
+        Ok(copied)
+    }
+    fn wait_readable(&self, nonblock: bool) -> Result<(), SysErrNo> {
+        loop {
+            let ring_buffer = self.inner_lock();
+            if ring_buffer.available_read() > 0 || ring_buffer.all_write_ends_closed() {
+                return Ok(());
+            }
+            if nonblock || self.nonblocking() {
+                return Err(SysErrNo::EAGAIN);
+            }
+            drop(ring_buffer);
+            if check_if_any_sig_for_current_task().is_some() {
+                return Err(SysErrNo::EINTR);
+            }
+            let task = current_task().ok_or(SysErrNo::ESRCH)?;
+            let task_cx_ptr = {
+                let mut task_inner = task.inner_lock();
+                task_inner.task_status = TaskStatus::Blocked;
+                &mut task_inner.task_cx as *mut _
+            };
+            let mut ring_buffer = self.inner_lock();
+            if ring_buffer.available_read() > 0 || ring_buffer.all_write_ends_closed() {
+                let mut task_inner = task.inner_lock();
+                task_inner.task_status = TaskStatus::Running;
+                continue;
+            }
+            ring_buffer.push_reader(&task);
+            drop(ring_buffer);
+            schedule_blocked_current(task_cx_ptr);
+        }
+    }
+    fn wait_writable(&self, nonblock: bool) -> Result<(), SysErrNo> {
+        loop {
+            let ring_buffer = self.inner_lock();
+            if ring_buffer.all_read_ends_closed() {
+                return Err(SysErrNo::EPIPE);
+            }
+            if ring_buffer.available_write() > 0 {
+                return Ok(());
+            }
+            if nonblock || self.nonblocking() {
+                return Err(SysErrNo::EAGAIN);
+            }
+            drop(ring_buffer);
+            if check_if_any_sig_for_current_task().is_some() {
+                return Err(SysErrNo::EINTR);
+            }
+            let task = current_task().ok_or(SysErrNo::ESRCH)?;
+            let task_cx_ptr = {
+                let mut task_inner = task.inner_lock();
+                task_inner.task_status = TaskStatus::Blocked;
+                &mut task_inner.task_cx as *mut _
+            };
+            let mut ring_buffer = self.inner_lock();
+            if ring_buffer.all_read_ends_closed() {
+                let mut task_inner = task.inner_lock();
+                task_inner.task_status = TaskStatus::Running;
+                return Err(SysErrNo::EPIPE);
+            }
+            if ring_buffer.available_write() > 0 {
+                let mut task_inner = task.inner_lock();
+                task_inner.task_status = TaskStatus::Running;
+                continue;
+            }
+            ring_buffer.push_writer(&task);
+            drop(ring_buffer);
+            schedule_blocked_current(task_cx_ptr);
+        }
+    }
+    fn with_ordered_buffers<T>(
+        &self,
+        other: &Pipe,
+        f: impl FnOnce(&mut PipeRingBuffer, &mut PipeRingBuffer) -> Result<T, SysErrNo>,
+    ) -> Result<T, SysErrNo> {
+        let self_addr = Arc::as_ptr(&self.buffer) as usize;
+        let other_addr = Arc::as_ptr(&other.buffer) as usize;
+        if self_addr < other_addr {
+            let mut first = self.inner_lock();
+            let mut second = other.inner_lock();
+            f(&mut first, &mut second)
+        } else {
+            let mut first = other.inner_lock();
+            let mut second = self.inner_lock();
+            f(&mut second, &mut first)
+        }
+    }
 }
 
 pub fn open_fifo(path: &str, flags: OpenFlags) -> Result<Arc<Pipe>, SysErrNo> {
@@ -117,24 +262,46 @@ pub fn open_fifo(path: &str, flags: OpenFlags) -> Result<Arc<Pipe>, SysErrNo> {
     Ok(Arc::new(Pipe::fifo_end_with_buffer(buffer, flags)?))
 }
 
-/// 管道缓冲区状态
-#[derive(Copy, Clone, PartialEq)]
-enum RingBufferStatus {
-    Full,
-    Empty,
-    Normal,
-}
-
 const RING_BUFFER_SIZE: usize = 65536;
 const IOC_WATCH_QUEUE_SET_SIZE: u32 = 0x5760;
 const IOC_WATCH_QUEUE_SET_FILTER: u32 = 0x5761;
 
+#[derive(Clone)]
+struct PipeBuf {
+    data: Arc<Vec<u8>>,
+    offset: usize,
+    len: usize,
+}
+
+impl PipeBuf {
+    fn new(bytes: Vec<u8>) -> Self {
+        let len = bytes.len();
+        Self {
+            data: Arc::new(bytes),
+            offset: 0,
+            len,
+        }
+    }
+    fn split_to(&mut self, len: usize) -> Self {
+        let len = len.min(self.len);
+        let buf = Self {
+            data: self.data.clone(),
+            offset: self.offset,
+            len,
+        };
+        self.offset += len;
+        self.len -= len;
+        buf
+    }
+    fn as_slice(&self) -> &[u8] {
+        &self.data[self.offset..self.offset + self.len]
+    }
+}
+
 /// Pipe的内层结构体
 struct PipeRingBuffer {
-    arr: Vec<u8>,
-    head: usize,
-    tail: usize,
-    status: RingBufferStatus,
+    bufs: VecDeque<PipeBuf>,
+    bytes: usize,
     write_end_count: usize,
     read_end_count: usize,
     read_waiters: VecDeque<Weak<TaskControlBlock>>,
@@ -149,11 +316,8 @@ static FIFO_BUFFERS: Lazy<Mutex<BTreeMap<String, Weak<Mutex<PipeRingBuffer>>>>> 
 impl PipeRingBuffer {
     pub fn new() -> Self {
         Self {
-            // arr: [0; RING_BUFFER_SIZE],
-            arr: vec![0u8; RING_BUFFER_SIZE],
-            head: 0,
-            tail: 0,
-            status: RingBufferStatus::Empty,
+            bufs: VecDeque::new(),
+            bytes: 0,
             write_end_count: 0,
             read_end_count: 0,
             read_waiters: VecDeque::new(),
@@ -164,82 +328,84 @@ impl PipeRingBuffer {
     }
     /// 写一个字节到管道尾
     pub fn write_byte(&mut self, byte: u8) {
-        self.status = RingBufferStatus::Normal;
-        self.arr[self.tail] = byte;
-        self.tail = (self.tail + 1) % RING_BUFFER_SIZE;
-        if self.tail == self.head {
-            self.status = RingBufferStatus::Full;
-        }
+        self.write_bytes(&[byte], 1);
     }
     /// 写n个字节到管道尾
     pub fn write_bytes(&mut self, bytes: &[u8], len: usize) {
-        assert!(
-            len <= RING_BUFFER_SIZE,
-            "len must less than RING_BUFFER_SIZE"
-        );
-        self.status = RingBufferStatus::Normal;
-        if self.tail + len <= RING_BUFFER_SIZE {
-            self.arr[self.tail..self.tail + len].copy_from_slice(bytes);
-        } else {
-            let form_len = RING_BUFFER_SIZE - self.tail;
-            let late_len = len - form_len;
-            self.arr[self.tail..RING_BUFFER_SIZE].copy_from_slice(&bytes[..form_len]);
-            self.arr[..late_len].copy_from_slice(&bytes[form_len..len]);
+        assert!(len <= self.available_write(), "pipe buffer overflow");
+        let len = len.min(bytes.len());
+        if len == 0 {
+            return;
         }
-        self.tail = (self.tail + len) % RING_BUFFER_SIZE;
-        if self.tail == self.head {
-            self.status = RingBufferStatus::Full;
-        }
+        self.bufs.push_back(PipeBuf::new(bytes[..len].to_vec()));
+        self.bytes += len;
     }
     /// 从管道头读一个字节
     pub fn read_byte(&mut self) -> u8 {
-        self.status = RingBufferStatus::Normal;
-        let c = self.arr[self.head];
-        self.head = (self.head + 1) % RING_BUFFER_SIZE;
-        if self.head == self.tail {
-            self.status = RingBufferStatus::Empty;
-        }
-        c
+        self.read_bytes(1)[0]
     }
     /// 从管道头读n个字节
     pub fn read_bytes(&mut self, len: usize) -> Vec<u8> {
-        assert!(
-            len <= RING_BUFFER_SIZE,
-            "len must less than RING_BUFFER_SIZE"
-        );
-        self.status = RingBufferStatus::Normal;
-        let mut bytes = vec![0; len];
-        if self.head + len <= RING_BUFFER_SIZE {
-            bytes[..].copy_from_slice(&self.arr[self.head..self.head + len]);
-        } else {
-            let form_len = RING_BUFFER_SIZE - self.head;
-            let late_len = len - form_len;
-            bytes[..form_len].copy_from_slice(&self.arr[self.head..RING_BUFFER_SIZE]);
-            bytes[form_len..].copy_from_slice(&self.arr[..late_len]);
-        }
-        self.head = (self.head + len) % RING_BUFFER_SIZE;
-        if self.head == self.tail {
-            self.status = RingBufferStatus::Empty;
+        let len = len.min(self.available_read());
+        let mut bytes = Vec::with_capacity(len);
+        for buf in self.pop_bufs(len) {
+            bytes.extend_from_slice(buf.as_slice());
         }
         bytes
     }
     /// 获取管道中剩余可读长度
     pub fn available_read(&self) -> usize {
-        if self.status == RingBufferStatus::Empty {
-            0
-        } else if self.tail > self.head {
-            self.tail - self.head
-        } else {
-            self.tail + RING_BUFFER_SIZE - self.head
-        }
+        self.bytes
     }
     /// 获取管道中剩余可写长度
     pub fn available_write(&self) -> usize {
-        if self.status == RingBufferStatus::Full {
-            0
-        } else {
-            RING_BUFFER_SIZE - self.available_read()
+        RING_BUFFER_SIZE - self.bytes
+    }
+    fn push_bufs(&mut self, bufs: Vec<PipeBuf>) {
+        let len = bufs.iter().map(|buf| buf.len).sum::<usize>();
+        assert!(len <= self.available_write(), "pipe buffer overflow");
+        for buf in bufs {
+            if buf.len > 0 {
+                self.bufs.push_back(buf);
+            }
         }
+        self.bytes += len;
+    }
+    fn pop_bufs(&mut self, len: usize) -> Vec<PipeBuf> {
+        let mut remaining = len.min(self.available_read());
+        let mut bufs = Vec::new();
+        while remaining > 0 {
+            let mut front = self.bufs.pop_front().unwrap();
+            if front.len <= remaining {
+                remaining -= front.len;
+                self.bytes -= front.len;
+                bufs.push(front);
+            } else {
+                let head = front.split_to(remaining);
+                self.bytes -= remaining;
+                remaining = 0;
+                self.bufs.push_front(front);
+                bufs.push(head);
+            }
+        }
+        bufs
+    }
+    fn clone_bufs(&self, len: usize) -> Vec<PipeBuf> {
+        let mut remaining = len.min(self.available_read());
+        let mut bufs = Vec::new();
+        for buf in self.bufs.iter() {
+            if remaining == 0 {
+                break;
+            }
+            let copy_len = remaining.min(buf.len);
+            bufs.push(PipeBuf {
+                data: buf.data.clone(),
+                offset: buf.offset,
+                len: copy_len,
+            });
+            remaining -= copy_len;
+        }
+        bufs
     }
     /// 通过管道缓冲区读端弱指针判断管道的所有读端都被关闭
     pub fn all_read_ends_closed(&self) -> bool {

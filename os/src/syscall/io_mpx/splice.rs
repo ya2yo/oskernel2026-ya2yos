@@ -110,7 +110,7 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
 /// 参考 https://man7.org/linux/man-pages/man2/splice.2.html
 ///
 /// 在两个文件描述符之间传输数据（至少一个必须是管道）。
-/// 当前实现通过内核缓冲区搬运数据，不提供零拷贝优化。
+/// pipe -> pipe 通过 PipeBuf 引用移动；其他路径仍通过内核缓冲区兼容搬运。
 pub fn sys_splice(
     fd_in: i32,
     off_in: *mut i64,
@@ -173,6 +173,15 @@ pub fn sys_splice(
     }
     if !out_is_pipe && fd_out.flags() & OpenFlags::O_APPEND.bits() != 0 {
         return Err(SysErrNo::EINVAL);
+    }
+
+    if let (Some(input), Some(output)) = (in_pipe.as_ref(), out_pipe.as_ref()) {
+        drop(task);
+        return input.splice_to_pipe(
+            output,
+            len.min(isize::MAX as usize),
+            flags & SPLICE_F_NONBLOCK != 0,
+        );
     }
 
     let in_file = fd_in.any();
@@ -359,8 +368,43 @@ fn rewind_splice_input(
 /// 参考 https://man7.org/linux/man-pages/man2/tee.2.html
 ///
 /// 在两个管道之间复制数据而不消耗数据。
-/// 当前内核未实现零拷贝 tee 机制，始终返回 EINVAL。
-pub fn sys_tee(_fd_in: i32, _fd_out: i32, _len: usize, _flags: u32) -> SyscallRet {
-    log::debug!("[sys_tee] not implemented");
-    Err(SysErrNo::EINVAL)
+/// 通过 PipeBuf 引用复制实现，不复制底层数据内容。
+pub fn sys_tee(fd_in: i32, fd_out: i32, len: usize, flags: u32) -> SyscallRet {
+    log::debug!(
+        "[sys_tee] fd_in={}, fd_out={}, len={}, flags={}.",
+        fd_in,
+        fd_out,
+        len,
+        flags
+    );
+    if len == 0 {
+        return Ok(0);
+    }
+    let valid_flags = SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE | SPLICE_F_GIFT;
+    if flags & !valid_flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    if fd_in < 0 || fd_out < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let task = current_task().unwrap();
+    let proc = &task.process;
+    let fd_table = proc.fd_table_arc();
+    let fd_in = fd_table.get(fd_in as usize)?;
+    let fd_out = fd_table.get(fd_out as usize)?;
+
+    if fd_in.is_path_only() || fd_out.is_path_only() {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let input = fd_in.pipe().map_err(|_| SysErrNo::EINVAL)?;
+    let output = fd_out.pipe().map_err(|_| SysErrNo::EINVAL)?;
+    drop(task);
+
+    input.tee_to_pipe(
+        &output,
+        len.min(isize::MAX as usize),
+        flags & SPLICE_F_NONBLOCK != 0,
+    )
 }
