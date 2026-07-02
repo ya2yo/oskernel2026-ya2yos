@@ -1,5 +1,6 @@
 mod error;
 mod id_allocator;
+mod resource_slot;
 pub mod simple_range;
 mod string;
 use core::arch::asm;
@@ -11,6 +12,7 @@ use crate::mm::VirtAddr;
 pub use error::*;
 pub use id_allocator::*;
 use log::warn;
+pub use resource_slot::*;
 pub use string::*;
 
 /// 跟踪函数的调用栈

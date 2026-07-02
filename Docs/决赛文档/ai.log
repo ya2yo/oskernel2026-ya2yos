@@ -404,3 +404,55 @@ make
 - 当前默认 LoongArch64 `make` 构建通过，输出中仍有 vendor `smoltcp` warning，与本次重构无关。
 
 未运行 `make run`：本轮文档补充前的沙箱内 QEMU 运行因 `/var/tmp` 只读未真正启动，外部运行申请后被用户中断，未取得有效运行日志。未运行 RISC-V。
+
+---
+
+## 2026-07-02: ResourceSlot 进程资源槽抽象
+
+### 用户需求
+
+用户在确认 `MemorySet` 指针槽不能直接删除后，要求在 `os/src/utils` 目录新增资源槽类型的数据结构，并调整 PCB 字段，让公共资源放在 `inner` 外部的同时保持清晰的指针替换边界。
+
+### 分析
+
+AI 复查 `Process.memory_set` / `sig_table` 的实际使用路径，确认外层锁保护的是“当前进程指向哪个 `Arc` 资源对象”，而不是保护资源内部内容。`MemorySet` 内部已经有 `RwLock<MemorySetInner>`，`SigTable` 仍由内层 `Mutex<SigTable>` 保护动作表内容；但 `execve()` 会整体替换当前地址空间和信号动作表，所以 `Process` 仍需要一个可替换资源槽。
+
+重构方向：
+
+- 新增通用 `ResourceSlot<T>`，封装 `Mutex<Arc<T>>`。
+- `ResourceSlot` 只提供 `get()`、`replace()`、`replace_with()`、`strong_count()`，不暴露内部锁。
+- `Process.memory_set` 改为 `ResourceSlot<MemorySet>`，`Process.sig_table` 改为 `ResourceSlot<Mutex<SigTable>>`，并设为私有字段。
+- 既有 `memory_set_arc()`、`sig_table_arc()`、`get_locked_memory_set_*()`、`change_memory_set_and_sigtable()` 作为 PCB 对外接口保持不变，避免 syscall/fs/signal 等路径依赖 PCB 内部布局。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/utils/resource_slot.rs` | 新增 `ResourceSlot<T>`，用于保护可替换 `Arc<T>` 指针槽 |
+| `os/src/utils/mod.rs` | 导出 `ResourceSlot` |
+| `os/src/task/process/process.rs` | `memory_set` / `sig_table` 改为私有 `ResourceSlot` 字段，替换逻辑改走槽接口 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/决赛文档/ai.log` | 追加本轮 AI 协作记录 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 追加本轮 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children --check os/src/utils/resource_slot.rs os/src/utils/mod.rs os/src/task/process/process.rs
+git diff --check -- os/src/utils/resource_slot.rs os/src/utils/mod.rs os/src/task/process/process.rs
+rg -n "pub memory_set|pub sig_table|Mutex<Arc<MemorySet>>|Mutex<Arc<Mutex<SigTable>>>|ResourceSlot" os/src/task/process/process.rs os/src/utils
+make
+timeout 120s make run > /tmp/resource-slot.log 2>&1
+```
+
+结果：
+
+- `rustfmt --check` 通过。
+- `git diff --check` 通过。
+- 搜索确认 `Process` 不再暴露 `pub memory_set` / `pub sig_table`，裸 `Mutex<Arc<...>>` 已收敛到 `ResourceSlot`。
+- 当前默认 LoongArch64 `make` 构建通过，输出中仍有 vendor `smoltcp` warning，与本次重构无关。
+- 沙箱内 `make run` 因 QEMU 无法在只读 `/var/tmp` 创建临时文件未有效运行；申请外部运行后，`/tmp/resource-slot.log` 显示 basic musl/glibc 跑完并 `shutdown!`，未发现 `panic` / `TFAIL` / `TBROK`。
+
+未运行 RISC-V。

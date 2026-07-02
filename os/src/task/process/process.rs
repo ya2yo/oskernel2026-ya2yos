@@ -14,18 +14,18 @@ use crate::{
     mm::MemorySet,
     signal::{SigSet, SigTable, send_signal_to_thread_group},
     task::{TaskControlBlock, TidHandle},
-    utils::{SysErrNo, get_abs_path, is_abs_path},
+    utils::{ResourceSlot, SysErrNo, get_abs_path, is_abs_path},
 };
 
 /// 进程/线程组 类
 /// 它的Arc是TCB
 pub struct Process {
-    /// 当前地址空间。`MemorySet` 内部自带锁；这里的 Mutex 只保护 exec 时
-    /// 替换整份地址空间的 Arc 指针。
-    pub memory_set: Mutex<Arc<MemorySet>>,
-    /// 当前信号动作表。SigTable 自身带锁；这里的 Mutex 只保护 exec/clone 时
-    /// 替换整张表的 Arc 指针。
-    pub sig_table: Mutex<Arc<Mutex<SigTable>>>,
+    /// 当前地址空间。`MemorySet` 内部自带锁；槽位只保护 exec 时替换
+    /// 整份地址空间的 Arc 指针。
+    memory_set: ResourceSlot<MemorySet>,
+    /// 当前信号动作表。内层 Mutex 保护 `SigTable` 内容；槽位只保护
+    /// exec/clone 后重置信号表时替换整张表的 Arc 指针。
+    sig_table: ResourceSlot<Mutex<SigTable>>,
     /// 进程打开的文件描述符表。本身带锁，不再放入 PCB 内部锁。
     pub fd_table: Arc<FdTable>,
     /// 文件系统上下文。本身带锁，不再放入 PCB 内部锁。
@@ -105,8 +105,8 @@ impl Process {
                 .unwrap_or(pid)
         };
         let ret = Arc::new(Self {
-            memory_set: Mutex::new(memory_set),
-            sig_table: Mutex::new(sig_table),
+            memory_set: ResourceSlot::new(memory_set),
+            sig_table: ResourceSlot::new(sig_table),
             fd_table,
             fs_info,
             pid,
@@ -167,23 +167,13 @@ impl Process {
         old
     }
     pub fn memory_set_arc(&self) -> Arc<MemorySet> {
-        self.memory_set
-            .try_lock()
-            .expect("fail to get proc.memory_set lock")
-            .clone()
+        self.memory_set.get()
     }
     pub fn sig_table_arc(&self) -> Arc<Mutex<SigTable>> {
-        self.sig_table
-            .try_lock()
-            .expect("fail to get proc.sig_table lock")
-            .clone()
+        self.sig_table.get()
     }
     pub fn memory_set_strong_count(&self) -> usize {
-        let memory_set = self
-            .memory_set
-            .try_lock()
-            .expect("fail to get proc.memory_set lock");
-        Arc::strong_count(&memory_set)
+        self.memory_set.strong_count()
     }
     /// 获取当前地址空间。`MemorySet` 自身负责读写同步。
     pub fn get_locked_memory_set_read(&self) -> Arc<MemorySet> {
@@ -248,8 +238,8 @@ impl Process {
         new_memory_set: MemorySet,
         new_sigtable: SigTable,
     ) {
-        *self.memory_set.try_lock().expect("lock fail") = Arc::new(new_memory_set);
-        *self.sig_table.try_lock().expect("lock fail") = Arc::new(Mutex::new(new_sigtable));
+        self.memory_set.replace_with(new_memory_set);
+        self.sig_table.replace_with(Mutex::new(new_sigtable));
     }
     /// 通过pid获取对应的进程
     pub fn get_process_arc_by_pid(pid: usize) -> Option<Arc<Process>> {

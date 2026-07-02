@@ -46,3 +46,10 @@
 - **场景**：PCB 访问接口收敛、`ProcessResources` 兼容层移除、调用点机械迁移、构建验证、决赛文档补充
 - **描述**：用户要求继续重构并移除 `inner_lock`。AI 删除 `Process::inner_lock()` 与 `ProcessResources`，在 `Process` 上保留直接资源访问方法，并把 fs、signal、task、io_mpx、net、futex、time 等调用点改成直接访问 `Process` 的地址空间、信号表、fd 表和 fs 上下文；`TaskControlBlock::inner_lock()` 仍保留用于线程级状态。`make` 通过，代码搜索未发现 `Process::inner_lock()` 残留。详见 `Docs/决赛文档/ai.log` 2026-07-02 条目。
 - **关联 commit**：待提交
+
+#### ResourceSlot 进程资源槽抽象（7.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：PCB 字段封装、可替换资源槽抽象、地址空间/信号表指针替换边界收敛、构建与 QEMU 基础验证、决赛文档补充
+- **描述**：用户在讨论 `memory_set: Mutex<Arc<MemorySet>>` 是否能删除后，要求新增资源槽类型并调整 PCB 字段。AI 在 `os/src/utils` 新增 `ResourceSlot<T>` 封装 `Mutex<Arc<T>>` 指针槽，将 `Process.memory_set` 和 `Process.sig_table` 改为私有 `ResourceSlot` 字段，保留既有 PCB 访问方法作为稳定接口。`make` 通过，外部 LoongArch64 `make run` 基础测试跑到 `shutdown!`。详见 `Docs/决赛文档/ai.log` 2026-07-02 条目。
+- **关联 commit**：待提交
