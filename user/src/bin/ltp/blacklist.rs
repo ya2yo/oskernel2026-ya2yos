@@ -128,7 +128,7 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "connect01\0",
     "connect02\0",
     // "copy_file_range02\0",
-    "copy_file_range03\0",
+    // "copy_file_range03\0",
     "cp_tests.sh\0",
     "cpio_tests.sh\0",
     "cpuacct.sh\0",

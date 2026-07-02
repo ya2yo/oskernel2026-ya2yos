@@ -4430,3 +4430,69 @@ git diff --check
 日志中仍有包装层输出 `FAIL LTP CASE copy_file_range03 : 10` / `RESULT GLIBC LTP SINGLE CASE copy_file_range03 : 10`，但按项目规则以 LTP Summary 为准；本次 Summary failed 为 0。日志里 glibc 启动过程中仍可见 `Fail to convert LoongArch Unknown to Trap type! 0x0`，但未造成该用例 TFAIL/TBROK。
 
 未运行 RISC-V。
+
+---
+
+## 2026-07-02: clone02 CLONE_SIGHAND 退出状态修复
+
+### 用户需求
+
+用户说明 `log.ans` 里发生死锁/卡死，并提供 GDB 回溯。回溯显示 `sys_exit_group()` 进入 `exit_current_and_run_next()` 后，在 `send_signal_to_thread_group()` 内调用 `ProcessInner::get_locked_sigtable()` 触发 `try_lock().expect()` panic。
+
+### 分析
+
+AI 先过滤 `log.ans`，确认原始现象发生在 `RUN LTP CASE clone02` 后：
+
+```text
+panic
+[kernel] Panicked at src/task/process/process.rs:295 You should not fail to get lock in a 1 HART system!
+```
+
+随后按回溯追踪退出路径：
+
+- `exit_current_group_and_run_next()` 处理 `exit_group()`。
+- `exit_current_and_run_next()` 在最后一个线程退出时写入 `sigtable.group_exit_code`。
+- 同一段清理逻辑随后根据 `exit_signal` 向父进程发送 `SIGCHLD`。
+- `send_signal_to_thread_group(parent_pid, SIGCHLD)` 会锁目标进程的 `sig_table`，判断目标进程是否已经退出。
+
+`clone02` 覆盖 `CLONE_VM | CLONE_SIGHAND | SIGCHLD` 这类组合。它创建的是独立子进程，不是 `CLONE_THREAD` 线程；父子共享 signal action 表，但不应共享退出码。原实现把 `group_exit_code` 放在 `SigTable` 中，导致 `CLONE_SIGHAND` 父子进程共享同一个 `Arc<Mutex<SigTable>>`。子进程退出时持有这把锁写退出码，又在通知父进程时尝试锁同一把 `sig_table`，于是 `try_lock()` 失败并 panic。
+
+更深层的语义问题是：即使在发送 `SIGCHLD` 前释放锁，子进程写入共享 `SigTable.group_exit_code` 也会污染父进程的退出状态。因此修复方向是拆分状态，而不是只调整 drop 顺序。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/signal/sigact.rs` | 移除 `SigTable` 中的 `group_exit_code` 及 `is_exited/exit_code/set_exit_code` 等接口 |
+| `os/src/task/process/process.rs` | 在 `ProcessMeta` 中新增进程私有 `group_exit_code`，增加 `is_group_exiting()`、`group_exit_code()`、`set_group_exit_code_once()` |
+| `os/src/task/mod.rs` | `suspend_current_and_run_next()`、`exit_current_group_and_run_next()`、`exit_current_and_run_next()` 改用进程级退出状态 |
+| `os/src/signal/mod.rs` | `send_signal_to_thread_group()` 不再通过 `sig_table` 判断目标进程退出状态 |
+| `os/src/syscall/task/wait.rs` | `waitpid()/waitid()` 改从 child 进程状态读取退出码 |
+| `Docs/初赛文档/problem/clone02-shared-sighand-exit-code.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加问题索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：当前默认 LoongArch64 构建通过。
+
+最新 `log.ans` 显示 `clone02` 已不再 panic，musl/glibc 两轮 Summary 均为：
+
+```text
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+日志中仍有包装层输出 `FAIL LTP CASE clone02 : 12` / `RESULT GLIBC LTP SINGLE CASE clone02 : 12`，但按项目规则以 LTP Summary 为准。
+
+未运行 RISC-V。

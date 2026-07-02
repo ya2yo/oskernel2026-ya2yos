@@ -396,7 +396,7 @@ pub fn send_signal_to_thread_group(pid: usize, sig: SigSet) -> Result<usize, Sys
     let process = Process::get_process_arc_by_pid(pid);
     if let Some(proc) = process {
         // debug!("{} receive signal, my parent is {}", pid, proc.ppid());
-        let group_exiting = proc.inner_lock().get_locked_sigtable().is_exited();
+        let group_exiting = proc.is_group_exiting();
         if !group_exiting {
             if let Some(signo) = sig.peek_front() {
                 match SigSet::from_sig(signo).default_op() {

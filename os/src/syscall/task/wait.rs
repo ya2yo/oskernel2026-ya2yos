@@ -168,7 +168,7 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
             Poll::Ready(Ok(found_pid))
         } else if let Some(child) = pair {
             let found_pid = child.pid;
-            let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
+            let exit_code = child.group_exit_code();
             let (child_usage, termination_signal) = {
                 let child_meta = child.meta_lock();
                 (child_meta.usage, child_meta.termination_signal)
@@ -422,7 +422,7 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
             }
         } else if let Some(child) = pair {
             let found_pid = child.pid;
-            let exit_code = child.inner_lock().get_locked_sigtable().exit_code();
+            let exit_code = child.group_exit_code();
             let (child_usage, termination_signal) = {
                 let child_meta = child.meta_lock();
                 (child_meta.usage, child_meta.termination_signal)

@@ -69,14 +69,10 @@ pub fn suspend_current_and_run_next() {
     //     Arc::strong_count(&task)
     // );
     let mut task_inner = task.inner_lock();
-    let exited = {
-        let proc_inner = task.process.inner_lock();
-        let sig_table = proc_inner.get_locked_sigtable();
-        sig_table.is_exited()
-    };
+    let exited = task.process.is_group_exiting();
 
     if exited {
-        let exit_code = task.process.inner_lock().get_locked_sigtable().exit_code();
+        let exit_code = task.process.group_exit_code();
         drop(task_inner);
         drop(task);
         exit_current_and_run_next(exit_code);
@@ -146,8 +142,6 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
     let mut exit_code = exit_code;
-    let process = task.process.inner_lock();
-    let sigtable = process.get_locked_sigtable();
 
     for bro_tasks in &task.process.meta_lock().tasks {
         if let Some(alive_t) = bro_tasks.upgrade() {
@@ -178,20 +172,15 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
             }
         }
     }
-    if sigtable.not_exited() {
+    if task.process.set_group_exit_code_once(exit_code) {
         // 第一个调用的线程
-        //设置进程的SIGNAL_GROUP_EXIT标志并把终止代号放到current->signal->group_exit_code字段
-        sigtable.set_exit_code(exit_code);
+        // 设置线程组退出标志并保存终止代号。
         let pid = task.pid();
-        drop(sigtable);
-        drop(process);
         drop(task_inner);
         drop(task);
         send_signal_to_thread_group(pid, SigSet::SIGKILL);
     } else {
-        exit_code = sigtable.exit_code();
-        drop(sigtable);
-        drop(process);
+        exit_code = task.process.group_exit_code();
         drop(task_inner);
         drop(task);
     }
@@ -344,10 +333,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             curr_proc.fd_table.clear();
             curr_proc.fs_info.clear();
 
-            let sigtable = curr_proc.get_locked_sigtable();
-            if !sigtable.is_exited() {
-                sigtable.set_exit_code(exit_code);
-            }
+            curr_task.process.set_group_exit_code_once(exit_code);
             curr_task.process.exit_and_reparent();
             // 仅当创建时指定了 SIGCHLD 才通知父进程（对应 Linux exit_signal）
             let exit_signal = curr_task.process.meta_lock().exit_signal;

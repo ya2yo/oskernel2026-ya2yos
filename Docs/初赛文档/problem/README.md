@@ -5,6 +5,7 @@
 ## 进程 / 线程 / 信号
 
 - [setresgid(149) 系统调用](./setresgid-syscall.md)
+- [clone02: CLONE_SIGHAND 共享 SigTable 导致退出路径重入锁](./clone02-shared-sighand-exit-code.md)
 - [clone03: fork 后 MAP_SHARED 帧未共享与 recycle panic](./clone-mmap-shared-fork.md)
 - [clone04: 缺页未发 SIGSEGV 与 _Fork 语义](./clone04-fork-sigsegv.md)
 - [clone05: CLONE_VFORK 挂起机制](./clone05-vfork.md)

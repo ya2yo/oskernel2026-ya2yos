@@ -126,6 +126,7 @@ impl Process {
                 pgid,
                 child_exit_event: AtomicWaker::new(),
                 exit_signal: -1,
+                group_exit_code: None,
                 stopped_signal: None,
                 continued_signal: None,
                 termination_signal: None,
@@ -168,6 +169,26 @@ impl Process {
     pub fn pgid(&self) -> usize {
         self.meta_lock().pgid
     }
+    /// 线程组是否已经进入退出流程。
+    pub fn is_group_exiting(&self) -> bool {
+        self.meta_lock().group_exit_code.is_some()
+    }
+    /// 获取线程组退出码。
+    pub fn group_exit_code(&self) -> i32 {
+        self.meta_lock()
+            .group_exit_code
+            .expect("process exit code should have been set")
+    }
+    /// 首次设置线程组退出码；返回 false 表示已有其他线程设置过。
+    pub fn set_group_exit_code_once(&self, exit_code: i32) -> bool {
+        let mut meta = self.meta_lock();
+        if meta.group_exit_code.is_some() {
+            false
+        } else {
+            meta.group_exit_code = Some(exit_code);
+            true
+        }
+    }
     /// 改变内存映射关系和信号表
     pub fn change_memory_set_and_sigtable(
         &self,
@@ -190,7 +211,7 @@ impl Process {
 
     /// 如果一个线程调用了ExitGroup，或者最后一个线程Exit，那么这个就会为true
     pub fn basically_exited(&self) -> bool {
-        self.inner_lock().sig_table.try_lock().unwrap().is_exited()
+        self.is_group_exiting()
     }
 
     /// 是否已经退出
@@ -351,6 +372,8 @@ pub struct ProcessMeta {
     /// - 线程共享进程元数据，不覆盖线程组原有 exit_signal
     /// 用于 waitpid 的 __WALL/__WCLONE 过滤以及退出时是否发送信号给父进程
     pub exit_signal: i32,
+    /// 线程组退出码；属于进程/线程组状态，不能放在 CLONE_SIGHAND 共享的 SigTable 中。
+    pub group_exit_code: Option<i32>,
     /// 最近一次导致该进程停止的信号，用于 waitid(WSTOPPED) 返回 CLD_STOPPED。
     pub stopped_signal: Option<usize>,
     /// 最近一次 SIGCONT 恢复 stopped 进程的事件，用于 waitid(WCONTINUED)。
