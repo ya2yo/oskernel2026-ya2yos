@@ -1,7 +1,7 @@
-// 该模块实现匿名 pipe 和 FIFO 端点。
-// Pipe 对外表现为 File trait，内部用按字节计数的 PipeBuf 片段队列保存数据。
-// 普通 write 会拷贝用户数据生成 Bytes 片段；splice/tee 和 file page cache 路径可以通过
-// 移动或克隆 PipeBuf 引用来减少跨 pipe 复制。
+//! 该模块实现匿名 pipe 和 FIFO 端点。
+//! Pipe 对外表现为 File trait，内部用按字节计数的 PipeBuf 片段队列保存数据。
+//! 普通 write 会拷贝用户数据生成 Bytes 片段；splice/tee 和 file page cache 路径可以通过
+//! 移动或克隆 PipeBuf 引用来减少跨 pipe 复制。
 
 mod buffer;
 mod fifo;
