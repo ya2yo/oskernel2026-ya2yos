@@ -92,7 +92,7 @@ impl CMsg {
                     }
 
                     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-                    let proc_inner = task.process.inner_lock();
+                    let proc_inner = &task.process;
                     let f = proc_inner.fd_table.get(fd as usize)?.any();
                     fds.push(f);
                 }

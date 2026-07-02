@@ -102,7 +102,7 @@ fn parse_shebang(data: &[u8]) -> Option<(String, Option<String>)> {
 /// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
 pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
 
     let memory_set = proc_inner.get_locked_memory_set_read();
     let mut path = trim_start_slash(read_user_cstr(&memory_set, path)?);
@@ -280,7 +280,6 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     }
     locked_fs_info.set_exe(abs_path);
     drop(memory_set);
-    drop(proc_inner);
 
     // 不用切换页表，因为return_to_user会切换
     task.exec(&elf_data, &argv_vec, &mut env)

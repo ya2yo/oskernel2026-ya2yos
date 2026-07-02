@@ -3,10 +3,10 @@ use log::{debug, warn};
 
 use crate::{
     fs::{
-        superblock_fs_stat, DummyFd, FdTable, File, FileDescriptor, OSFile, OpenFlags, StMode,
-        SEEK_CUR, SEEK_SET,
+        DummyFd, FdTable, File, FileDescriptor, OSFile, OpenFlags, SEEK_CUR, SEEK_SET, StMode,
+        superblock_fs_stat,
     },
-    mm::{copy_from_user, copy_to_user, probe_user_write, user_buffer_from_kernel, UserBuffer},
+    mm::{UserBuffer, copy_from_user, copy_to_user, probe_user_write, user_buffer_from_kernel},
     syscall::{fs::dummyfd_create, options::Iovec},
     task::current_task,
     timer::get_time_ms,
@@ -129,7 +129,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     // ---- 阶段 0: 校验 fd、取出文件引用、检查可写 ----
     let f = {
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
 
         if fd >= proc_inner.fd_table.len() {
             warn!("write EBADF: fd out of range");
@@ -164,7 +164,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         // 持锁：从用户空间拷贝当前分片到内核缓冲区
         {
             let task = current_task().unwrap();
-            let proc_inner = task.process.inner_lock();
+            let proc_inner = &task.process;
             let memory_set = proc_inner.get_locked_memory_set_read();
             if let Err(err) = copy_from_user(&*memory_set, user_ptr, &mut kernel_buf) {
                 return if total_written > 0 {
@@ -207,7 +207,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     // ---- 阶段 0: 校验 fd、取出文件引用、检查可读 ----
     let (file, is_regular_file) = {
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         if fd >= proc_inner.fd_table.len() {
             return Err(SysErrNo::EINVAL);
         }
@@ -247,7 +247,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
 
         if ret > 0 {
             let task = current_task().unwrap();
-            let proc_inner = task.process.inner_lock();
+            let proc_inner = &task.process;
             let mem = proc_inner.get_locked_memory_set_read();
             if let Err(err) = copy_to_user(&*mem, user_ptr, &kernel_buf[..ret]) {
                 return if total_read > 0 {
@@ -278,7 +278,7 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
 
     debug!(
         "[sys_writev] fd is {}, iov is {:x}, iovcnt is {}",
@@ -315,7 +315,6 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
             bufs.push(ub);
         }
     }
-    drop(proc_inner);
     drop(task);
     let mut ret: usize = 0;
     for buf in bufs {
@@ -333,7 +332,7 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
 
     if fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EINVAL);
@@ -397,7 +396,7 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/lseek.2.html
 pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock();
+    let inner = &task.process;
 
     // debug!(
     //     "[sys_lseek] fd is {}, offset is {}, whence is {}",
@@ -411,7 +410,7 @@ pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/sendfile.2.html
 pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock();
+    let inner = &task.process;
 
     if outfd >= inner.fd_table.len()
         || inner.fd_table.try_get(outfd).is_none()
@@ -446,7 +445,6 @@ pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) 
         0
     };
 
-    drop(inner);
     drop(task);
 
     // 内核缓冲区上界：防止 count 过大导致 OOM
@@ -497,7 +495,7 @@ pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) 
 /// 参考 https://man7.org/linux/man-pages/man2/pwrite64.2.html
 pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock();
+    let inner = &task.process;
 
     let file_desc = inner.fd_table.get(fd)?;
     let file = file_desc.any();
@@ -523,7 +521,6 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
     };
     let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
     // release current task TCB manually to avoid multi-borrow
-    drop(inner);
     drop(task);
 
     let ret = file.write(buffer);
@@ -536,7 +533,7 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
 /// 参考 https://man7.org/linux/man-pages/man2/pread64.2.html
 pub fn sys_pread64(fd: usize, buf: *const u8, count: usize, offset: isize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = &*&proc_inner.get_locked_memory_set_read();
 
     let file = proc_inner.fd_table.get(fd)?.any();
@@ -581,7 +578,7 @@ pub fn sys_pwritev2(
     let offset = validate_preadv2_offset(pos_l, pos_h)?;
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
 
     let file_desc = proc_inner.fd_table.get(fd)?;
     let file = file_desc.any();
@@ -606,7 +603,6 @@ pub fn sys_pwritev2(
         }
     };
 
-    drop(proc_inner);
     drop(task);
 
     let mut total = 0usize;
@@ -618,7 +614,7 @@ pub fn sys_pwritev2(
 
             {
                 let task = current_task().unwrap();
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 let src = iovinfo.iov_base + copied;
                 if let Err(err) = copy_from_user(&memory_set, src, &mut kernel_buf) {
@@ -676,7 +672,7 @@ pub fn sys_preadv2(
     let offset = validate_preadv2_offset(pos_l, pos_h)?;
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
 
     let file = proc_inner.fd_table.get(fd)?.any();
     let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
@@ -703,7 +699,6 @@ pub fn sys_preadv2(
         }
     };
 
-    drop(proc_inner);
     drop(task);
 
     let mut total = 0usize;
@@ -715,7 +710,7 @@ pub fn sys_preadv2(
 
             {
                 let task = current_task().unwrap();
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 if let Err(err) = probe_user_write(&memory_set, iov_base, chunk_len) {
                     if offset.is_some() {
@@ -748,7 +743,7 @@ pub fn sys_preadv2(
 
             {
                 let task = current_task().unwrap();
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 if let Err(err) = copy_to_user(&memory_set, iov_base, &kernel_buf[..read_ret]) {
                     if offset.is_some() {
@@ -778,7 +773,7 @@ pub fn sys_preadv2(
 // Linux的实现与手册有差异或未实现该调用
 pub fn sys_ftruncate(fd: usize, length: i32) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock();
+    let inner = &task.process;
 
     if fd >= inner.fd_table.len() || (fd as isize) < 0 {
         return Err(SysErrNo::EBADF);
@@ -798,7 +793,7 @@ pub fn sys_ftruncate(fd: usize, length: i32) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/fsync.2.html
 pub fn sys_fsync(fd: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock();
+    let inner = &task.process;
 
     if fd >= inner.fd_table.len() || inner.fd_table.try_get(fd).is_none() {
         return Err(SysErrNo::EINVAL);
@@ -855,7 +850,7 @@ pub fn sys_sync_file_range(fd: i32, offset: i64, nbytes: i64, flags: u32) -> Sys
     }
 
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock();
+    let inner = &task.process;
 
     if fd >= inner.fd_table.len() || inner.fd_table.try_get(fd).is_none() {
         return Err(SysErrNo::EBADF);
@@ -888,7 +883,7 @@ pub fn sys_copy_file_range(
     flags: u32,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock();
+    let inner = &task.process;
 
     // Linux 当前不接受非零 flags；LTP copy_file_range02 会专门检查 EINVAL。
     if flags != 0 {
@@ -993,13 +988,16 @@ pub fn sys_copy_file_range(
     }
 
     // 同一文件内复制时，源区间和目标区间不能重叠；Linux 对该场景返回 EINVAL。
-    if same_file_by_stat(in_stat.st_dev, in_stat.st_ino, out_stat.st_dev, out_stat.st_ino)
-        && ranges_overlap(in_start, count, out_start, count)
+    if same_file_by_stat(
+        in_stat.st_dev,
+        in_stat.st_ino,
+        out_stat.st_dev,
+        out_stat.st_ino,
+    ) && ranges_overlap(in_start, count, out_start, count)
     {
         return Err(SysErrNo::EINVAL);
     }
 
-    drop(inner);
     drop(task);
 
     // 内核缓冲区上界：防止 count 过大导致 OOM
@@ -1061,7 +1059,7 @@ pub fn sys_copy_file_range(
     //如果系统调用执行成功，*off_in和*off_out将会增加复制的长度
     if off_in != 0 {
         let task = current_task().unwrap();
-        let inner = task.process.inner_lock();
+        let inner = &task.process;
         let memory_set = inner.get_locked_memory_set_read();
         let mut cur_off: isize = 0;
         copy_from_user(&memory_set, off_in, unsafe {
@@ -1080,7 +1078,7 @@ pub fn sys_copy_file_range(
     }
     if off_out != 0 {
         let task = current_task().unwrap();
-        let inner = task.process.inner_lock();
+        let inner = &task.process;
         let memory_set = inner.get_locked_memory_set_read();
         let mut cur_off: isize = 0;
         copy_from_user(&memory_set, off_out, unsafe {
@@ -1122,7 +1120,7 @@ pub fn sys_fallocate(fd: usize, mode: u32, offset: usize, len: usize) -> Syscall
 
     let file = {
         let task = current_task().unwrap();
-        let inner = task.process.inner_lock();
+        let inner = &task.process;
         if fd >= inner.fd_table.len() {
             return Err(SysErrNo::EBADF);
         }

@@ -283,7 +283,7 @@ pub fn sys_futex(
 
     let task = current_task().unwrap();
     // debug!("[sys_futex]: strong_count = {}", Arc::strong_count(&task));
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let task_inner = task.inner_lock();
 
@@ -358,14 +358,12 @@ pub fn sys_futex(
         if try_recover_owner_died_futex(opt, &task, &memory_set, uaddr, current_u32, queue_key) {
             drop(memory_set);
             drop(task_inner);
-            drop(process);
             return Ok(0);
         }
     }
 
     drop(memory_set);
     drop(task_inner);
-    drop(process);
     match cmd {
         FutexCmd::Wait | FutexCmd::WaitBitset => {
             let bitset = if cmd == FutexCmd::Wait {

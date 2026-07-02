@@ -37,7 +37,7 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     // Read the entire clone_args structure from userspace.
@@ -108,7 +108,6 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
     #[cfg(not(target_arch = "loongarch64"))]
     let stack = cargs.stack as usize;
     drop(memory_set);
-    drop(proc_inner);
     drop(task);
     // Delegate to the existing legacy clone implementation.
     // The parameter order differs between architectures (see sys_clone

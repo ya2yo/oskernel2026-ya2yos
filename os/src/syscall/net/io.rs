@@ -27,7 +27,7 @@ fn copy_msghdr_from_user(ptr: *const msghdr) -> SysResult<msghdr> {
         return Err(SysErrNo::EFAULT);
     }
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let mut bytes = vec![0u8; size_of::<msghdr>()];
     copy_from_user(&memory_set, ptr as usize, &mut bytes).map(|_| ())?;
@@ -39,7 +39,7 @@ fn copy_msghdr_to_user(ptr: *mut msghdr, msg: &msghdr) -> SysResult {
         return Err(SysErrNo::EFAULT);
     }
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let bytes = unsafe {
         core::slice::from_raw_parts(msg as *const msghdr as *const u8, size_of::<msghdr>())
@@ -52,7 +52,7 @@ fn copy_iovec_from_user(ptr: *const iovec) -> SysResult<iovec> {
         return Err(SysErrNo::EFAULT);
     }
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let mut bytes = vec![0u8; size_of::<iovec>()];
     copy_from_user(&memory_set, ptr as usize, &mut bytes).map(|_| ())?;
@@ -64,7 +64,7 @@ fn copy_socklen_from_user(ptr: *const socklen_t) -> SysResult<socklen_t> {
         return Err(SysErrNo::EFAULT);
     }
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let mut bytes = [0u8; size_of::<socklen_t>()];
     copy_from_user(&memory_set, ptr as usize, &mut bytes).map(|_| ())?;
@@ -76,7 +76,7 @@ fn copy_socklen_to_user(ptr: *mut socklen_t, value: socklen_t) -> SysResult {
         return Err(SysErrNo::EFAULT);
     }
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     copy_to_user(&memory_set, ptr as usize, &value.to_ne_bytes()).map(|_| ())
 }
@@ -155,7 +155,7 @@ fn read_iovecs(msg: &msghdr) -> SysResult<Vec<iovec>> {
 
 fn iovecs_to_buf_and_ub(iovs: &[iovec]) -> SysResult<(Vec<u8>, UserBuffer)> {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let total_len: usize = iovs.iter().map(|i| i.iov_len as usize).sum();
     let mut kernel_buf = vec![0u8; total_len];
@@ -185,7 +185,7 @@ fn parse_cmsgs(msg: &msghdr) -> SysResult<Vec<CMsgData>> {
         return Ok(Vec::new());
     }
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let mut control = vec![0u8; msg.msg_controllen as usize];
     copy_from_user(&memory_set, msg.msg_control as usize, &mut control).map(|_| ())?;
@@ -229,13 +229,12 @@ pub fn sys_sendto(
     addrlen: u32,
 ) -> SyscallRet {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let mut kernel_buf = vec![0u8; len];
     copy_from_user(&memory_set, buf as usize, &mut kernel_buf)?;
     let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
     drop(memory_set);
-    drop(process);
     let ret = send_impl(sockfd, buffer, flags, dest_addr, addrlen, Vec::new());
     drop(kernel_buf);
     ret
@@ -311,7 +310,7 @@ pub fn sys_recvfrom(
     let recv = recv_impl(sockfd, buffer, flags, src_addr, addrlen.as_mut())?;
     // Write received data back to user space
     {
-        let process = task.process.inner_lock();
+        let process = &task.process;
         let memory_set = process.get_locked_memory_set_read();
         copy_to_user(&memory_set, buf as usize, &kernel_buf[..recv])?;
     }

@@ -88,7 +88,7 @@ fn statx_time(sec: usize, nsec: usize) -> statx_timestamp {
 /// 参考 https://man7.org/linux/man-pages/man2/fstat.2.html
 pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     if (kst as isize) <= 0 || if_bad_address(kst as usize) {
@@ -113,7 +113,7 @@ pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
 pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, flags: usize) -> SyscallRet {
     let task = current_task().unwrap();
 
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = &proc_inner.get_locked_memory_set_read();
 
     if (kst as isize) <= 0 || if_bad_address(kst as usize) {
@@ -170,7 +170,7 @@ pub fn sys_statx(
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let kstat = if path.is_null() {
         // path 为 nullptr，且设置了 AT_EMPTY_PATH，表示获取 dirfd 指向文件的信息
@@ -217,7 +217,7 @@ pub fn sys_statx(
 /// 参考 https://man7.org/linux/man-pages/man2/statfs.2.html
 pub fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let stat = superblock_fs_stat();
     copy_to_user(&memory_set, statfs as usize, unsafe {
@@ -235,7 +235,7 @@ pub fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
 /// 当前内核仅有单一 ext4 文件系统，所有 fd 返回相同的 superblock 数据。
 pub fn sys_fstatfs(fd: i32, buf: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let fd = fd as usize;
 
     // 校验 fd 有效性
@@ -261,7 +261,7 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> S
     let uid = inner.user_id as u32;
     let gid = inner.real_gid;
     drop(inner);
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     if (path as isize) <= 0 {
         return Err(SysErrNo::EFAULT);

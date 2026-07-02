@@ -1,21 +1,22 @@
 use alloc::{string::String, vec::Vec};
 use linux_raw_sys::general::{
-    mount_attr, AT_EMPTY_PATH, AT_FDCWD, AT_NO_AUTOMOUNT, AT_RECURSIVE, AT_SYMLINK_NOFOLLOW,
-    FSMOUNT_CLOEXEC, FSOPEN_CLOEXEC, FSPICK_CLOEXEC, FSPICK_EMPTY_PATH, FSPICK_NO_AUTOMOUNT,
+    AT_EMPTY_PATH, AT_FDCWD, AT_NO_AUTOMOUNT, AT_RECURSIVE, AT_SYMLINK_NOFOLLOW, FSMOUNT_CLOEXEC,
+    FSOPEN_CLOEXEC, FSPICK_CLOEXEC, FSPICK_EMPTY_PATH, FSPICK_NO_AUTOMOUNT,
     FSPICK_SYMLINK_NOFOLLOW, MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_NODEV,
     MOUNT_ATTR_NODIRATIME, MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOSUID, MOUNT_ATTR_NOSYMFOLLOW,
-    MOUNT_ATTR_RDONLY, MOUNT_ATTR_SIZE_VER0, MOUNT_ATTR_STRICTATIME, MOVE_MOUNT_F_EMPTY_PATH,
-    MOVE_MOUNT_T_EMPTY_PATH, MOVE_MOUNT__MASK, OPEN_TREE_CLOEXEC, OPEN_TREE_CLONE,
+    MOUNT_ATTR_RDONLY, MOUNT_ATTR_SIZE_VER0, MOUNT_ATTR_STRICTATIME, MOVE_MOUNT__MASK,
+    MOVE_MOUNT_F_EMPTY_PATH, MOVE_MOUNT_T_EMPTY_PATH, OPEN_TREE_CLOEXEC, OPEN_TREE_CLONE,
+    mount_attr,
 };
 use log::{debug, warn};
 
 use crate::{
     arch::memory_layout::PAGE_SIZE,
     fs::{
-        open, DetachedMountFd, File, FileClass, FileDescriptor, FsConfigOption, FsConfigValue,
-        FsContextFd, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE,
+        DetachedMountFd, File, FileClass, FileDescriptor, FsConfigOption, FsConfigValue,
+        FsContextFd, MAX_PATH_LEN, MNT_TABLE, NONE_MODE, OpenFlags, open,
     },
-    mm::{copy_from_user, translate::read_user_cstr, UserBuffer},
+    mm::{UserBuffer, copy_from_user, translate::read_user_cstr},
     task::current_task,
     utils::{SysErrNo, SysResult, SyscallRet},
 };
@@ -79,7 +80,7 @@ pub fn sys_pivot_root(_new_root: usize, _put_old: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/umount2.2.html
 pub fn sys_umount2(special: *const u8, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let special = read_user_cstr(&memory_set, special)?;
     let special = proc_inner.get_abs_path(AT_FDCWD as isize, &special)?;
@@ -102,7 +103,7 @@ pub fn sys_mount(
     data: *const u8,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let special = read_user_cstr(&memory_set, special)?;
     let dir = read_user_cstr(&memory_set, dir)?;
@@ -140,7 +141,7 @@ pub fn sys_open_tree(dirfd: i32, path: *const u8, flags: u32) -> SyscallRet {
 
     let abs_path = {
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         let memory_set = proc_inner.get_locked_memory_set_read();
         let path = read_user_cstr(&memory_set, path)?;
         if path.is_empty() && flags & AT_EMPTY_PATH == 0 {
@@ -187,7 +188,7 @@ pub fn sys_move_mount(
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let from_path = read_user_cstr(&memory_set, from_path)?;
     let to_path = read_user_cstr(&memory_set, to_path)?;
@@ -241,7 +242,7 @@ pub fn sys_fsopen(fsname: *const u8, flags: u32) -> SyscallRet {
     }
     let fsname = {
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         let memory_set = proc_inner.get_locked_memory_set_read();
         let fsname = read_user_cstr(&memory_set, fsname)?;
         if fsname.is_empty() || fsname.len() > MAX_PATH_LEN {
@@ -279,7 +280,7 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
     fsconfig_check(cmd, key, value, aux)?;
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let fsctx = proc_inner.fd_table.get(fd as usize)?.fs_context()?;
 
@@ -445,7 +446,7 @@ pub fn sys_fsmount(fd: i32, flags: u32, attr_flags: u32) -> SyscallRet {
 
     let (fsname, source) = {
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         let fsctx = proc_inner.fd_table.get(fd as usize)?.fs_context()?;
         fsctx.with_inner(|ctx| {
             if !ctx.created {
@@ -471,7 +472,7 @@ pub fn sys_fspick(dirfd: i32, path: *mut u8, flags: u32) -> SyscallRet {
 
     let abs_path = {
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         let memory_set = proc_inner.get_locked_memory_set_read();
         let path = read_user_cstr(&memory_set, path)?;
         if path.is_empty() && flags & FSPICK_EMPTY_PATH == 0 {
@@ -519,7 +520,7 @@ pub fn sys_mount_setattr(
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let mut mount_attr_data = mount_attr {
         attr_set: 0,
@@ -565,10 +566,10 @@ pub fn sys_mount_setattr(
 }
 
 fn alloc_new_mount_fd(file: FileClass, cloexec: bool) -> SyscallRet {
-    // Callers must not hold process.inner_lock(): this helper allocates in the
-    // current fd table and therefore takes that lock itself.
+    // This helper allocates in the current fd table and therefore takes that
+    // table's internal lock itself.
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let fd = proc_inner.fd_table.alloc_fd()?;
     let flags = if cloexec {
         OpenFlags::O_CLOEXEC

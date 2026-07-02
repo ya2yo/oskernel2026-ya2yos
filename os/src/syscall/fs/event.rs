@@ -48,7 +48,7 @@ pub fn sys_eventfd2(initval: u32, flags: u32) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let fd = proc_inner.fd_table.alloc_fd()?;
     proc_inner.fd_table.set(
         fd,

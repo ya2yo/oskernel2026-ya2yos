@@ -19,10 +19,10 @@ use crate::{
     arch::{cpu::hart_id, page_table::PageTable, trap_interface::tlb_page_modify_handler},
     mm::{VirtAddr, VirtPageNum},
     signal::{
-        check_if_any_sig_for_current_task, deliver_itimer_signal, handle_signal,
-        send_signal_to_thread, SigSet, SIGSEGV,
+        SIGSEGV, SigSet, check_if_any_sig_for_current_task, deliver_itimer_signal, handle_signal,
+        send_signal_to_thread,
     },
-    syscall::{syscall, Syscall},
+    syscall::{Syscall, syscall},
     task::{
         check_timer_events, current_task, current_token, current_trap_cx,
         exit_current_and_run_next, suspend_current_and_run_next,
@@ -116,7 +116,7 @@ pub fn trap_handler() {
             let ok;
             {
                 let task = current_task().unwrap();
-                let process = task.process.inner_lock();
+                let process = &task.process;
                 let memory_set = process.get_locked_memory_set_read();
                 ok = memory_set.handle_page_fault(fault_va.floor(), cause);
                 // drop task inner and task to avoid deadlock and exit exception
@@ -163,7 +163,7 @@ pub fn trap_handler() {
             let ok;
             {
                 let task = current_task().unwrap();
-                let process = task.process.inner_lock();
+                let process = &task.process;
                 let memory_set = process.get_locked_memory_set_read();
                 ok = memory_set.handle_page_fault(fault_va.floor(), cause);
             }
@@ -224,10 +224,7 @@ pub fn trap_return() {
         let customed = current_task()
             .unwrap()
             .process
-            .inner_lock()
-            .get_locked_sigtable()
-            .action(signo)
-            .customed;
+            .with_sigtable(|sigtable| sigtable.action(signo).customed);
         handle_signal(signo);
         if customed {
             break;
@@ -242,7 +239,6 @@ pub fn trap_return() {
     current_task()
         .unwrap()
         .process
-        .inner_lock()
         .get_locked_memory_set_read()
         .activate();
 

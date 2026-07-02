@@ -44,7 +44,7 @@ pub fn sys_acct(filename: *const u8) -> SyscallRet {
         return Err(SysErrNo::EFAULT);
     }
 
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let path = read_user_cstr(&memory_set, filename)?;
 
@@ -57,7 +57,6 @@ pub fn sys_acct(filename: *const u8) -> SyscallRet {
     let abs_path = get_abs_path(&proc_inner.fs_info.get_cwd(), &path);
     debug!("[sys_acct] filename = {}, abs_path = {}", path, abs_path);
     drop(memory_set);
-    drop(proc_inner);
 
     // 尝试打开文件以验证路径有效
     let file_class = open(&abs_path, OpenFlags::O_WRONLY, NONE_MODE)?;

@@ -6,13 +6,13 @@ use log::{debug, error};
 use crate::{
     mm::{copy_from_user, copy_from_user_val, copy_to_user, copy_to_user_val},
     signal::{
-        restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group,
-        send_signal_to_thread_of_proc, KSigAction, SigAction, SigActionFlags, SigInfo, SigSet,
-        SIGCONT, SIGKILL, SIGSTOP, SIG_MAX_NUM,
+        KSigAction, SIG_MAX_NUM, SIGCONT, SIGKILL, SIGSTOP, SigAction, SigActionFlags, SigInfo,
+        SigSet, restore_frame, send_access_signal, send_signal_to_thread,
+        send_signal_to_thread_group, send_signal_to_thread_of_proc,
     },
     syscall::SignalMaskFlag,
     task::{block_on, current_task, exit_current_and_run_next, suspend_current_and_run_next},
-    timer::{add_sigtimedwait_timer, get_time_spec, Timespec},
+    timer::{Timespec, add_sigtimedwait_timer, get_time_spec},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -85,11 +85,10 @@ pub fn sys_rt_sigaction(
         return Err(SysErrNo::EINVAL);
     }
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
-    let sigtable = process.get_locked_sigtable();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     if old_act as usize != 0 {
-        let sig_act = sigtable.action(signo).act;
+        let sig_act = process.with_sigtable(|sigtable| sigtable.action(signo).act);
         let raw = RawSigAction::from_sigaction(sig_act);
         copy_to_user_val(&memory_set, old_act as *mut RawSigAction, &raw)?;
     }
@@ -117,7 +116,9 @@ pub fn sys_rt_sigaction(
                 customed,
             }
         };
-        sigtable.set_action(signo, new_sig);
+        process.with_sigtable(|sigtable| {
+            sigtable.set_action(signo, new_sig);
+        });
     }
     Ok(0)
 }
@@ -130,7 +131,7 @@ pub fn sys_rt_sigreturn() -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/rt_sigprocmask.2.html
 pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) -> SyscallRet {
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = &*process.get_locked_memory_set_read();
     let mut task_inner = task.inner_lock();
     let how = SignalMaskFlag::from_bits(how).ok_or(SysErrNo::EINVAL)?;
@@ -177,7 +178,7 @@ pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) ->
 pub fn sys_rt_sigpending(set: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let sig_pending = task_inner.sig_pending;
     copy_to_user(&memory_set, set, unsafe {
@@ -205,7 +206,7 @@ pub fn sys_rt_sigtimedwait(
     // 从用户空间拷贝信号集和超时参数（需要先获取 memory_set）
     let sigset = {
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         let memory_set = proc_inner.get_locked_memory_set_read();
 
         let mut sigset: SigSet = SigSet::default();
@@ -275,7 +276,7 @@ pub fn sys_rt_sigtimedwait(
                     (-1i32) as u32, // si_code: SI_QUEUE
                     task.pid() as u32,
                 );
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let mem_set = proc_inner.get_locked_memory_set_read();
                 copy_to_user(&mem_set, info_ptr as usize, unsafe {
                     core::slice::from_raw_parts(
@@ -303,7 +304,7 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
     // debug!("[sys_rt_sigsuspend] mask is {:?}", mask);
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let mut mask_val: SigSet = SigSet::default();
     copy_from_user(&memory_set, mask as usize, unsafe {

@@ -13,7 +13,7 @@ use crate::utils::{SysErrNo, SysResult, SyscallRet};
 /// 成功返回读取到的长度值，失败返回 EFAULT（指针无效）或 EINVAL（值为负数）
 fn read_addrlen_from_user(addrlen_ptr: usize) -> SysResult<u32> {
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let mut buf = [0u8; 4];
     copy_from_user(&memory_set, addrlen_ptr, &mut buf).map(|_| ())?;

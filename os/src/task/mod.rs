@@ -198,11 +198,10 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             count
         );
     }
-    let curr_proc = curr_task.process.inner_lock();
+    let curr_proc = &curr_task.process;
     let memory_set = curr_proc.get_locked_memory_set_read();
     let fd_table = Arc::clone(&curr_proc.fd_table);
     let fs_info = Arc::clone(&curr_proc.fs_info);
-    drop(curr_proc);
     let mut curr_task_inner = curr_task.inner_lock();
     // debug!(
     //     "[sys_exit] exit_current_and_run_next() -- thread {} exit, exit_code = {}",

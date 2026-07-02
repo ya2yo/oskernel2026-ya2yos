@@ -82,7 +82,7 @@ pub fn shm_attach(key: usize, addr: usize, map_perm: MapPermission) -> SyscallRe
     let manager = SHM_MANAGER.lock();
     if let Some(shm) = manager.map.get(&key) {
         let task = current_task().unwrap();
-        let proc = task.process.inner_lock();
+        let proc = &task.process;
         let mem = proc.get_locked_memory_set_read();
         let size = shm.pages.len() * PAGE_SIZE;
         let ret = mem.shm(addr, size, map_perm, shm.pages.clone());

@@ -32,7 +32,7 @@ impl Socket {
         Self: Sized + 'static,
     {
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         proc_inner.fd_table.get(fd)?.socket()
     }
 }

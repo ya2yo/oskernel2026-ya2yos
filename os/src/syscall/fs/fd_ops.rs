@@ -1,17 +1,14 @@
-use core::{
-    future::poll_fn,
-    task::Poll,
-};
+use core::{future::poll_fn, task::Poll};
 
 use super::fcntl::*;
 use super::file_lock::{self, Flock};
 use crate::fs::{
-    map_dynamic_link_file, open, open_fifo, refresh_proc_stat, refresh_proc_status,
-    superblock_root_inode, FileClass, FileDescriptor, FsIndex, OpenFlags, TmpFile,
+    FileClass, FileDescriptor, FsIndex, OpenFlags, TmpFile, map_dynamic_link_file, open, open_fifo,
+    refresh_proc_stat, refresh_proc_status, superblock_root_inode,
 };
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
-use crate::syscall::{options::FcntlCmd, Syscall};
-use crate::task::{block_on, current_task, interruptible, Process};
+use crate::syscall::{Syscall, options::FcntlCmd};
+use crate::task::{Process, block_on, current_task, interruptible};
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::{
     format,
@@ -45,7 +42,7 @@ pub fn sys_flock(fd: i32, op: i32) -> SyscallRet {
     }
 
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let fd_desc = proc_inner.fd_table.get(fd as usize)?;
 
     // flock 仅适用于普通文件（OSFile），非普通文件返回 EINVAL
@@ -75,7 +72,6 @@ pub fn sys_flock(fd: i32, op: i32) -> SyscallRet {
     // 阻塞等待（可被信号中断）
     // 参照 waitpid 的 block_on + interruptible + poll_fn 模式
     drop(fd_desc);
-    drop(proc_inner);
     drop(task);
     let path = inode_path; // String，移入闭包
     block_on(interruptible(poll_fn(move |cx| {
@@ -93,7 +89,7 @@ pub fn sys_flock(fd: i32, op: i32) -> SyscallRet {
 
 fn dup_fd(old_fd: usize, cloexec: bool) -> SyscallRet {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let mut new_desc = proc_inner.fd_table.get(old_fd)?;
     if cloexec {
         new_desc.set_cloexec();
@@ -118,7 +114,7 @@ pub fn sys_dup(fd: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/dup3.2.html
 pub fn sys_dup3(old: usize, new: usize, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
 
     // debug!(
     //     "[sys_dup3] : oldfd is {}, newfd is {}, flags is {}",
@@ -162,7 +158,7 @@ pub fn sys_dup3(old: usize, new: usize, flags: u32) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/fcntl.2.html
 pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
 
     // debug!("[sys_fcntl] fd is {}, cmd is {}, arg is {}", fd, cmd, arg);
 
@@ -404,7 +400,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let fd_table = proc_inner.fd_table.clone();
     let fs_info = proc_inner.fs_info.clone();
@@ -414,7 +410,6 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     let mut flags = OpenFlags::from_bits(flags).unwrap();
 
     let mut abs_path = proc_inner.get_abs_path(dirfd, &path)?;
-    drop(proc_inner);
     debug!(
         "[sys_openat] path is {}, flags is {:?}, mode is {:o}",
         &abs_path, flags, mode
@@ -449,18 +444,15 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
         let effective_mode = mode & !fs_info.get_umask();
         flags.remove(OpenFlags::O_TMPFILE);
         flags.remove(OpenFlags::O_DIRECTORY);
-        let file = FileClass::Abs(TmpFile::new(
-            readable,
-            writable,
-            effective_mode,
-            uid,
-            gid,
-        ));
+        let file = FileClass::Abs(TmpFile::new(readable, writable, effective_mode, uid, gid));
         let new_fd = fd_table.alloc_fd()?;
         fd_table.set(new_fd, FileDescriptor::new(flags, file));
         // Record a procfd target string for readlink(/proc/self/fd/<fd>). The
         // "(deleted)" suffix reflects that the tmpfile currently has no name.
-        fs_info.insert(format!("{}/#tmpfile-{} (deleted)", abs_path, new_fd), new_fd);
+        fs_info.insert(
+            format!("{}/#tmpfile-{} (deleted)", abs_path, new_fd),
+            new_fd,
+        );
         return Ok(new_fd);
     }
 
@@ -471,7 +463,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
         abs_path = format!("/proc/{}/maps", task.pid());
     }
     if abs_path == "/proc/self/status" {
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         let memory_set = proc_inner.get_locked_memory_set_read();
         refresh_proc_status(task.pid(), task.ppid(), &memory_set)?;
         abs_path = format!("/proc/{}/status", task.pid());
@@ -480,14 +472,14 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
         if let Some(process) = Process::get_process_arc_by_pid(pid) {
             let ppid = process.ppid();
             let state = if process.all_tasks_exited() { 'Z' } else { 'S' };
-            let proc_inner = process.inner_lock();
+            let proc_inner = &process;
             let memory_set = proc_inner.get_locked_memory_set_read();
             refresh_proc_stat(pid, ppid, state, &memory_set)?;
         }
     }
     if let Some(pid) = parse_proc_pid_file(&abs_path, "status") {
         if let Some(process) = Process::get_process_arc_by_pid(pid) {
-            let proc_inner = process.inner_lock();
+            let proc_inner = &process;
             let memory_set = proc_inner.get_locked_memory_set_read();
             refresh_proc_status(pid, process.ppid(), &memory_set)?;
         }
@@ -519,7 +511,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
 /// 参考 https://man7.org/linux/man-pages/man2/close.2.html
 pub fn sys_close(fd: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock(); // 拿到锁就不用调用get_fd_table了
+    let inner = &task.process; // 拿到锁就不用调用get_fd_table了
     let fd_table = inner.fd_table.clone();
     // debug!("[sys_close] fd is {}", fd);
 
@@ -586,7 +578,7 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
     // CLOEXEC (1 << 2): Close all file descriptors in the range on exec
     if flags.contains(CloseRangeFlags::CLOEXEC) {
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         for fd in first..=last {
             if fd as usize >= proc_inner.fd_table.len() {
                 continue;
@@ -599,7 +591,7 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
     } else {
         // Close all file descriptors in the range
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
 
         for fd in first..=last {
             if fd as usize >= proc_inner.fd_table.len() {
@@ -671,7 +663,7 @@ pub fn sys_openat2(
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     // 从用户空间读取 open_how 结构
@@ -689,7 +681,6 @@ pub fn sys_openat2(
 
     // 释放锁，委托给 sys_openat（它会重新获取自己的锁）
     drop(memory_set);
-    drop(proc_inner);
     drop(task);
 
     debug!(

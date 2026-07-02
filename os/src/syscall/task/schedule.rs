@@ -25,7 +25,7 @@ pub fn sys_sched_yield() -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/nanosleep.2.html
 pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let mut req_val = Timespec::new(0, 0);
     copy_from_user(&memory_set, req as usize, unsafe {
@@ -35,7 +35,6 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
         )
     })?;
     drop(memory_set);
-    drop(process);
     let req = req_val;
 
     if req.tv_nsec >= NANOS_PER_SEC as usize || (req.tv_sec as isize) < 0 {
@@ -61,7 +60,7 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
             eintr
         } {
             if rem as usize != 0 {
-                let process = task.process.inner_lock();
+                let process = &task.process;
                 let memory_set = process.get_locked_memory_set_read();
                 let left = calculate_left_timespec(endtime);
                 copy_to_user(&memory_set, rem as usize, unsafe {
@@ -96,7 +95,7 @@ pub fn sys_sched_setaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
         return Err(SysErrNo::ESRCH);
     }
 
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let mut raw_mask = [0u8; core::mem::size_of::<usize>()];
     copy_from_user(&memory_set, mask, &mut raw_mask)?;
@@ -121,7 +120,7 @@ pub fn sys_sched_getaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
         return Err(SysErrNo::ESRCH);
     }
 
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let cpu0_mask = 1usize.to_ne_bytes();
     copy_to_user(&memory_set, mask, &cpu0_mask)?;
@@ -160,7 +159,7 @@ pub fn sys_sched_getparam(pid: usize, param: *mut u8) -> SyscallRet {
         return Err(SysErrNo::ESRCH);
     }
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let sched_priority = 0i32.to_ne_bytes();
     copy_to_user(&memory_set, param as usize, &sched_priority)?;
@@ -192,7 +191,7 @@ pub fn sys_clock_nanosleep(
         return Err(SysErrNo::EFAULT);
     }
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let mut t_val = Timespec::new(0, 0);
     copy_from_user(&memory_set, t as usize, unsafe {
@@ -207,7 +206,6 @@ pub fn sys_clock_nanosleep(
         t
     );
     drop(memory_set);
-    drop(process);
     // tv_nsec 必须在 [0, 10^9) 范围内
     if t.tv_nsec >= 1_000_000_000 {
         return Err(SysErrNo::EINVAL);
@@ -263,7 +261,7 @@ pub fn sys_clock_nanosleep(
             eintr
         } {
             if !remain.is_null() {
-                let process = task.process.inner_lock();
+                let process = &task.process;
                 let memory_set = process.get_locked_memory_set_read();
                 let left = calculate_left_timespec(endtime);
                 copy_to_user(&memory_set, remain as usize, unsafe {

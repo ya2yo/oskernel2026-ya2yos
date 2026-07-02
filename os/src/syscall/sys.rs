@@ -135,7 +135,7 @@ pub fn sys_chroot(path: *const u8) -> SyscallRet {
     }
 
     let path_str = {
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         let memory_set = proc_inner.get_locked_memory_set_read();
         read_user_cstr(&memory_set, path)?
     };
@@ -146,7 +146,7 @@ pub fn sys_chroot(path: *const u8) -> SyscallRet {
         return Err(SysErrNo::ENOTDIR);
     }
 
-    task.process.inner_lock().fs_info.set_cwd(path_str);
+    task.process.fs_info.set_cwd(path_str);
     debug!("[chroot] success");
     Ok(0)
 }
@@ -304,7 +304,7 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/getresuid.2.html
 pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let inner = task.inner_lock();
     let real_uid = inner.user_id as u32;
@@ -477,7 +477,7 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/getresgid.2.html
 pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let inner = task.inner_lock();
 
@@ -518,7 +518,7 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
         domainname: get_domainname_bytes(),
     };
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     copy_to_user(&memory_set, buf as usize, unsafe {
         core::slice::from_raw_parts(
@@ -532,7 +532,7 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/sysinfo.2.html
 pub fn sys_sysinfo(info: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let sysinfo = Sysinfo::new(get_time_ms() / 1000, 1 << 56, tid_to_task::task_num());
     copy_to_user(&memory_set, info as usize, unsafe {
@@ -554,7 +554,7 @@ pub fn sys_syslog(_logtype: isize, _bufp: *const u8, _len: usize) -> SyscallRet 
 /// 参考 https://man7.org/linux/man-pages/man2/getrandom.2.html
 pub fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     if (flags as i32) < 0 {
@@ -692,7 +692,7 @@ fn cap_union_subset(
 /// 参考 https://man7.org/linux/man-pages/man2/capget.2.html
 pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     // EFAULT: 非法地址
@@ -733,7 +733,7 @@ pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallR
 /// 参考 https://man7.org/linux/man-pages/man2/capset.2.html
 pub fn sys_capset(hdrp: *mut CapUserHeader, datap: *const CapUserData) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     if (hdrp as isize) <= 0 || if_bad_address(hdrp as usize) {
@@ -816,7 +816,7 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
             let sig = inner.pdeath_signal;
             drop(inner);
             if arg2 != 0 {
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 let sig_val = sig as i32;
                 copy_to_user(&memory_set, arg2, unsafe {
@@ -917,7 +917,7 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
 /// 参考 https://man7.org/linux/man-pages/man2/getgroups.2.html
 pub fn sys_getgroups(size: usize, list: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     // 返回至少一个组 (root: gid=0)
@@ -973,7 +973,7 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> SyscallRet {
 /// 单核系统下始终返回 cpu=0, node=0。
 pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: *mut u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     // tcache must be NULL when called from userspace (used only by vDSO)
@@ -1027,7 +1027,7 @@ pub fn sys_setdomainname(name: *const u8, len: usize) -> SyscallRet {
         return Err(SysErrNo::EINVAL);
     }
 
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     if len > 0 {

@@ -153,7 +153,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     // fall back to the default umask 0o022.
     let umask = match current_task() {
         Some(task) => {
-            let proc_inner = task.process.inner_lock();
+            let proc_inner = &task.process;
             proc_inner.fs_info.get_umask()
         }
         None => 0o022,

@@ -19,7 +19,7 @@ const MPOL_PREFERRED_MANY: i32 = 5;
 /// 子进程继承父进程的 umask。
 pub fn sys_umask(mask: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let old_umask = proc_inner.fs_info.set_umask(mask);
     Ok(old_umask as usize)
 }
@@ -56,7 +56,7 @@ pub fn sys_get_mempolicy(
     // Write MPOL_DEFAULT (0) into the user's mode pointer if non-null.
     if mode != 0 {
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         let memory_set = proc_inner.get_locked_memory_set_read();
         let mpol_val: i32 = 0;
         copy_to_user(&memory_set, mode, unsafe {

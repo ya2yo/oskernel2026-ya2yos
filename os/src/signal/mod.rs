@@ -16,10 +16,10 @@ use crate::{
         memory_layout::{self, USER_STACK_SIZE},
         trap_interface::get_trap_cause,
     },
-    mm::{copy_from_user_val, copy_to_user, copy_to_user_val, VirtAddr},
+    mm::{VirtAddr, copy_from_user_val, copy_to_user, copy_to_user_val},
     task::{
-        current_task, exit_current_and_run_next, ready_queue, stop_current_and_run_next,
-        tid_to_task, Process, TaskControlBlock, TaskStatus,
+        Process, TaskControlBlock, TaskStatus, current_task, exit_current_and_run_next,
+        ready_queue, stop_current_and_run_next, tid_to_task,
     },
     timer::TimeVal,
     trap::trap_types::{Exception, Trap},
@@ -70,9 +70,7 @@ pub fn handle_signal(signo: usize) {
     );
     let sig_action = task
         .process
-        .inner_lock()
-        .get_locked_sigtable()
-        .action(signo);
+        .with_sigtable(|sigtable| sigtable.action(signo));
     task_inner.sig_pending.remove(signal);
     drop(task_inner);
     drop(task);
@@ -94,13 +92,13 @@ pub fn handle_signal(signo: usize) {
                 task.process.meta_lock().stopped_signal = Some(signo);
                 if let Some(parent) = Process::get_process_arc_by_pid(parent_pid) {
                     parent.meta_lock().child_exit_event.wake();
-                    let no_cld_stop = parent
-                        .inner_lock()
-                        .get_locked_sigtable()
-                        .action(SIGCHLD)
-                        .act
-                        .sa_flags
-                        .contains(SigActionFlags::SA_NOCLDSTOP);
+                    let no_cld_stop = parent.with_sigtable(|sigtable| {
+                        sigtable
+                            .action(SIGCHLD)
+                            .act
+                            .sa_flags
+                            .contains(SigActionFlags::SA_NOCLDSTOP)
+                    });
                     if !no_cld_stop {
                         let _ = send_signal_to_thread_group(parent_pid, SigSet::SIGCHLD);
                     }
@@ -130,7 +128,7 @@ pub fn handle_signal(signo: usize) {
 pub fn setup_frame(signo: usize, sig_action: KSigAction) {
     // debug!("customed sa_handler={:#x}", sig_action.act.sa_handler);
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     // SA_RESETHAND: 在调用信号处理函数之前将 handler 重置为 SIG_DFL
     // 这样信号处理函数仅在第一次收到信号时被调用
     if sig_action
@@ -138,9 +136,9 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
         .sa_flags
         .contains(SigActionFlags::SA_RESETHAND)
     {
-        proc_inner
-            .get_locked_sigtable()
-            .set_action(signo, KSigAction::new(signo, false));
+        proc_inner.with_sigtable(|sigtable| {
+            sigtable.set_action(signo, KSigAction::new(signo, false));
+        });
     }
 
     let mut task_inner = task.inner_lock();
@@ -172,7 +170,6 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
         );
         drop(task_inner);
         drop(memory_set);
-        drop(proc_inner);
         drop(task);
         exit_current_and_run_next((signo + 128) as i32);
     } else {
@@ -322,7 +319,7 @@ pub fn restore_frame() -> SyscallRet {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
 
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     let trap_cx = task_inner.trap_cx();

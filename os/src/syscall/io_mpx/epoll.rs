@@ -20,7 +20,7 @@ pub fn sys_epoll_create1(flags: u32) -> SyscallRet {
 
     let task = current_task().unwrap();
     let epoll_file = Arc::new(EpollFile::new());
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
 
     let open_flags = if eflags.contains(EpollCreateFlags::CLOEXEC) {
         OpenFlags::O_CLOEXEC
@@ -47,7 +47,7 @@ pub fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event_ptr: usize) -> Sys
         epfd, op, fd, event_ptr
     );
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let fd_table = &process.fd_table;
     let fd_i32 = fd as i32;
@@ -159,7 +159,7 @@ pub fn sys_epoll_pwait(
 /// 单次扫描：写用户 `epoll_event` 数组并返回就绪数量。
 fn epoll_wait_once(epfd: usize, events_ptr: usize, maxevents: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let epoll_file = EpollFile::lookup(epfd)?;
     let fd_table = &process.fd_table;

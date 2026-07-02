@@ -67,7 +67,7 @@ pub fn sys_fgetxattr(fd: usize, name: usize, value: usize, size: usize) -> Sysca
         fd, name, value, size
     );
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let fd_desc = proc_inner.fd_table.get(fd)?;
     // O_PATH fd 没有打开文件内容，fgetxattr(2) 不能在其上执行。
     if fd_desc.is_path_only() {

@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::{
-    task::{current_task, Process},
+    task::{Process, current_task},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -45,7 +45,7 @@ pub fn sys_kcmp(pid1: usize, pid2: usize, typ: i32, idx1: usize, idx2: usize) ->
     // 同一进程必然共享所有资源
     if pid1 == pid2 {
         if typ == KCMP_FILE {
-            let fd_exists = proc1.inner_lock().fd_table.try_get(idx1).is_some();
+            let fd_exists = proc1.fd_table.try_get(idx1).is_some();
             if !fd_exists {
                 return Ok(3);
             }
@@ -55,8 +55,8 @@ pub fn sys_kcmp(pid1: usize, pid2: usize, typ: i32, idx1: usize, idx2: usize) ->
 
     match typ {
         KCMP_VM => {
-            let mem1 = Arc::clone(&proc1.inner_lock().memory_set);
-            let mem2 = Arc::clone(&proc2.inner_lock().memory_set);
+            let mem1 = proc1.memory_set_arc();
+            let mem2 = proc2.memory_set_arc();
             if Arc::ptr_eq(&mem1, &mem2) {
                 Ok(0)
             } else {
@@ -64,8 +64,8 @@ pub fn sys_kcmp(pid1: usize, pid2: usize, typ: i32, idx1: usize, idx2: usize) ->
             }
         }
         KCMP_FILES => {
-            let fd1 = Arc::clone(&proc1.inner_lock().fd_table);
-            let fd2 = Arc::clone(&proc2.inner_lock().fd_table);
+            let fd1 = Arc::clone(&proc1.fd_table);
+            let fd2 = Arc::clone(&proc2.fd_table);
             if Arc::ptr_eq(&fd1, &fd2) {
                 Ok(0)
             } else {
@@ -73,8 +73,8 @@ pub fn sys_kcmp(pid1: usize, pid2: usize, typ: i32, idx1: usize, idx2: usize) ->
             }
         }
         KCMP_FS => {
-            let fs1 = Arc::clone(&proc1.inner_lock().fs_info);
-            let fs2 = Arc::clone(&proc2.inner_lock().fs_info);
+            let fs1 = Arc::clone(&proc1.fs_info);
+            let fs2 = Arc::clone(&proc2.fs_info);
             if Arc::ptr_eq(&fs1, &fs2) {
                 Ok(0)
             } else {
@@ -82,8 +82,8 @@ pub fn sys_kcmp(pid1: usize, pid2: usize, typ: i32, idx1: usize, idx2: usize) ->
             }
         }
         KCMP_SIGHAND => {
-            let sig1 = Arc::clone(&proc1.inner_lock().sig_table);
-            let sig2 = Arc::clone(&proc2.inner_lock().sig_table);
+            let sig1 = proc1.sig_table_arc();
+            let sig2 = proc2.sig_table_arc();
             if Arc::ptr_eq(&sig1, &sig2) {
                 Ok(0)
             } else {
@@ -92,8 +92,8 @@ pub fn sys_kcmp(pid1: usize, pid2: usize, typ: i32, idx1: usize, idx2: usize) ->
         }
         KCMP_FILE => {
             // 分别获取 fd，避免同时持有两把锁
-            let fd1 = proc1.inner_lock().fd_table.try_get(idx1);
-            let fd2 = proc2.inner_lock().fd_table.try_get(idx2);
+            let fd1 = proc1.fd_table.try_get(idx1);
+            let fd2 = proc2.fd_table.try_get(idx2);
 
             match (fd1, fd2) {
                 (None, _) | (_, None) => Ok(3),
@@ -101,11 +101,7 @@ pub fn sys_kcmp(pid1: usize, pid2: usize, typ: i32, idx1: usize, idx2: usize) ->
                     let f1 = file_desc1.any();
                     let f2 = file_desc2.any();
                     // Arc::ptr_eq 比较底层分配是否相同
-                    if Arc::ptr_eq(&f1, &f2) {
-                        Ok(0)
-                    } else {
-                        Ok(1)
-                    }
+                    if Arc::ptr_eq(&f1, &f2) { Ok(0) } else { Ok(1) }
                 }
             }
         }

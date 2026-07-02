@@ -22,7 +22,7 @@ pub fn sys_mq_open(name: *const u8, oflag: i32, _mode: u32, attr: *const u8) -> 
     // 读取用户空间字符串和属性（在锁内完成）
     let (name_str, maxmsg, msgsize) = {
         let task = current_task().unwrap();
-        let process = task.process.inner_lock();
+        let process = &task.process;
         let memory_set = process.get_locked_memory_set_read();
         let name_str = read_user_cstr(&memory_set, name)?;
 
@@ -75,7 +75,7 @@ pub fn sys_mq_open(name: *const u8, oflag: i32, _mode: u32, attr: *const u8) -> 
 
     // 分配 fd 并存入 fd 表
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let newfd = proc_inner.fd_table.alloc_fd()?;
     proc_inner.fd_table.set(
         newfd,
@@ -93,7 +93,7 @@ pub fn sys_mq_open(name: *const u8, oflag: i32, _mode: u32, attr: *const u8) -> 
 /// https://man7.org/linux/man-pages/man3/mq_unlink.3.html
 pub fn sys_mq_unlink(name: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let name_str = read_user_cstr(&memory_set, name)?;
     if !name_str.starts_with('/') {
@@ -128,7 +128,7 @@ pub fn sys_mq_timedsend(
     let mq = Mqueue::lookup(mqdes)?;
 
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     let mut buf = alloc::vec![0u8; msg_len];
     copy_from_user(&memory_set, msg_ptr as usize, &mut buf)?;
@@ -158,7 +158,7 @@ pub fn sys_mq_timedreceive(
     let mq = Mqueue::lookup(mqdes)?;
 
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_write();
 
     let mut buf = alloc::vec![0u8; msg_len];

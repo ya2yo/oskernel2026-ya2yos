@@ -322,8 +322,8 @@ AI 先检查 `Process`、`TaskControlBlock`、`MemorySet`、fork/exec/exit 路�
 | `os/src/syscall/mm/mmap.rs` | `mremap` 先在读锁内复制旧 VMA 元数据，再执行 `munmap/mmap`，避免持有 area 引用时重入锁 |
 | `os/src/syscall/task/ctl.rs` | `sys_personality()` 改为访问 `ProcessMeta` 中的进程级字段 |
 | `os/src/syscall/fs/mod.rs` | 清理 `sys_splice()` 未使用变量 warning，并维持未实现时返回 `EINVAL` 的既有注释语义 |
-| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
-| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
 
 ### 验证
 
@@ -351,3 +351,56 @@ make
 - 沙箱内 `make run` 未真正启动 QEMU，原因是 QEMU 无法在只读 `/var/tmp` 创建临时文件；外部 QEMU 验证申请后被用户中断，因此未得到有效运行日志。
 
 未运行 RISC-V。
+
+---
+
+## 2026-07-02: 移除 Process::inner_lock 兼容层
+
+### 用户需求
+
+用户在 PCB 与 `MemorySet` 锁边界重构后要求继续移除 `inner_lock`，让进程资源访问不再依赖旧的 `ProcessResources` 快照兼容层。
+
+### 分析
+
+AI 继续检查 `Process::inner_lock()` 的调用点，确认上一轮保留的 `ProcessResources` 只是在旧调用点和新资源布局之间做中转：调用者先构造快照，再访问 `memory_set`、`sig_table`、`fd_table`、`fs_info`。这会让 PCB 结构看起来仍有一个隐含的 inner 层，和“自带同步的资源直接放在 `Process` 上”的目标不一致。
+
+重构方向：
+
+- `Process` 直接暴露 `memory_set_arc()`、`sig_table_arc()`、`get_locked_memory_set_read()`、`get_locked_memory_set_write()`、`with_sigtable()` 等资源访问方法。
+- 删除 `ProcessResources` 和 `Process::inner_lock()`，旧调用点改成直接持有 `&task.process` 或 `Arc<Process>`。
+- `SigTable` 的访问统一通过 `with_sigtable()` 封装，避免外部依赖 `get_locked_sigtable()` 这类旧接口。
+- 只移除 `Process::inner_lock()`；`TaskControlBlock::inner_lock()` 仍负责保护线程级状态，本轮不动。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/process/process.rs` | 删除 `ProcessResources` 与 `Process::inner_lock()`，新增直接资源访问方法 |
+| `os/src/signal/mod.rs`、`os/src/syscall/signal.rs`、`os/src/trap/mod.rs` | 信号相关路径改用 `Process::with_sigtable()` 或直接进程资源访问 |
+| `os/src/task/mod.rs`、`os/src/task/task/task.rs` | 退出、fork/clone 和任务资源路径改为直接使用 `Process` 资源 |
+| `os/src/syscall/task/wait.rs`、`os/src/syscall/task/kcmp.rs` 等任务 syscall | 去掉 `ProcessResources` 快照，直接比较或读取 `Process` 上的资源 `Arc` |
+| `os/src/syscall/fs/*`、`os/src/syscall/io_mpx/*`、`os/src/syscall/net/*`、`os/src/syscall/sync/futex.rs`、`os/src/syscall/time.rs` | fd 表、fs 上下文和地址空间访问改为直接通过 `Process` 获取 |
+| `Docs/决赛文档/开发日志.md` | 按当前 `write-docs` skill 补充 7.2 简记 |
+| `Docs/决赛文档/ai.log` | 追加本轮 AI 协作记录 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 追加本轮 AI 使用记录 |
+| `Docs/初赛文档/开发日志.md` | 移除误追加到初赛目录的本轮简记 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children --check ...
+git diff --check -- ...
+rg -n "\.process\.inner_lock\(\)|process\.inner_lock\(\)|proc[12]\.inner_lock\(\)|get_locked_sigtable|ProcessResources|process\.inner_lock" os/src
+make
+```
+
+结果：
+
+- 主要改动文件的 `rustfmt --check` 通过。
+- `git diff --check` 通过。
+- `rg` 未发现残留 `Process::inner_lock()`、`ProcessResources` 或 `get_locked_sigtable` 调用。
+- 当前默认 LoongArch64 `make` 构建通过，输出中仍有 vendor `smoltcp` warning，与本次重构无关。
+
+未运行 `make run`：本轮文档补充前的沙箱内 QEMU 运行因 `/var/tmp` 只读未真正启动，外部运行申请后被用户中断，未取得有效运行日志。未运行 RISC-V。

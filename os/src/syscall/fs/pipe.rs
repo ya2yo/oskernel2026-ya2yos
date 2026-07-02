@@ -12,7 +12,7 @@ use crate::{
 /// 参考 https://man7.org/linux/man-pages/man2/pipe2.2.html
 pub fn sys_pipe2(fd: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let fd_table = proc_inner.fd_table.clone();
     let memory_set = proc_inner.get_locked_memory_set_write();
 

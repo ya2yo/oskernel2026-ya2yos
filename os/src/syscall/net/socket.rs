@@ -58,7 +58,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
     };
     let socket = Arc::new(Socket(socket_inner));
 
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let fd_table = proc_inner.fd_table.clone();
     let new_fd = fd_table.alloc_fd()?;
     let mut open_flags = OpenFlags::empty();
@@ -103,7 +103,7 @@ pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> S
     };
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let fd_table = proc_inner.fd_table.clone();
     let fd1 = fd_table.alloc_fd()?;
     let fd2 = fd_table.alloc_fd()?;
@@ -199,7 +199,7 @@ pub fn sys_accept4(sockfd: usize, addr: *mut u8, mut addrlen: u32, flags: u32) -
     debug!("[sys_accept] fd: {}, flags: {}", sockfd, flags);
     let task = current_task().unwrap();
     let listen_sock = {
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         let file = proc_inner.fd_table.get(sockfd)?;
         if file.flags() & OpenFlags::O_PATH.bits() != 0 {
             return Err(SysErrNo::EBADF);
@@ -212,7 +212,7 @@ pub fn sys_accept4(sockfd: usize, addr: *mut u8, mut addrlen: u32, flags: u32) -
         remote_addr.write_to_user(addr, &mut addrlen);
     }
     // 分配新的fd
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let fd = proc_inner.fd_table.alloc_fd()?;
     // 将新的fd连接到旧的上面
     let mut new_flags = OpenFlags::empty();

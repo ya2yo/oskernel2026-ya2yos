@@ -36,7 +36,7 @@ pub fn sys_mmap(
     // 不对啊，1<<14这一位没用啊？
 
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_write();
     let len = page_round_up(len);
     // Reject requests beyond the configured per-process mmap budget.
@@ -95,7 +95,7 @@ pub fn sys_munmap(addr: usize, len: usize) -> SyscallRet {
         }
     }
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_write();
     let len = page_round_up(len);
     if if_bad_address(addr) {
@@ -137,7 +137,7 @@ pub fn sys_mremap(
         return Err(SysErrNo::EINVAL);
     }
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_write();
     // 检查 old_addr + old_size 是否溢出
     let old_end = match old_addr.checked_add(old_size) {
@@ -238,7 +238,7 @@ pub fn sys_mprotect(addr: usize, len: usize, prot: u32) -> SyscallRet {
     let map_perm: MapPermission = MmapProt::from_bits_truncate(prot).into();
 
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_write();
     let start_vpn = VirtAddr::from(addr).floor();
     let end_vpn = VirtAddr::from(end_addr).ceil();
@@ -331,7 +331,7 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc = task.process.inner_lock();
+    let proc = &task.process;
     let memory_set = proc.get_locked_memory_set_read();
 
     // ENOMEM: 地址范围必须全部在已有映射内

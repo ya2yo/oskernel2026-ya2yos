@@ -1,10 +1,10 @@
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_to_user},
-    signal::{SigOp, SigSet, SIGCHLD, SIG_IGN},
-    syscall::{options::PollFd, PollEvents},
+    signal::{SIG_IGN, SIGCHLD, SigOp, SigSet},
+    syscall::{PollEvents, options::PollFd},
     task::{current_task, suspend_current_and_run_next},
-    timer::{get_time_ms, Timespec},
+    timer::{Timespec, get_time_ms},
     utils::{SysErrNo, SyscallRet},
 };
 use alloc::vec;
@@ -14,7 +14,7 @@ use core::cmp::min;
 /// 参考 https://man7.org/linux/man-pages/man2/ppoll.2.html
 pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     if fds_ptr == 0 && nfds != 0 {
@@ -56,11 +56,10 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
 
     //由于每次循环结束需要让出cpu，因此需要在每次循环时重新获得锁
     drop(memory_set);
-    drop(proc_inner);
 
     loop {
         let task = current_task().unwrap();
-        let proc_inner = task.process.inner_lock();
+        let proc_inner = &task.process;
         let mut resnum = 0;
         for i in 0..nfds {
             let pfd = unsafe { &mut *fds_ptr.add(i) };
@@ -97,7 +96,7 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
                 .peek_front()
             {
                 let signal = SigSet::from_sig(signo);
-                let sig_action = proc_inner.get_locked_sigtable().action(signo);
+                let sig_action = proc_inner.with_sigtable(|sigtable| sigtable.action(signo));
                 let ignorable = signo == SIGCHLD
                     || sig_action.act.sa_handler == SIG_IGN
                     || (!sig_action.customed && signal.default_op() == SigOp::Ignore);
@@ -108,7 +107,6 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
                 }
             }
         }
-        drop(proc_inner);
         drop(task);
         suspend_current_and_run_next();
     }

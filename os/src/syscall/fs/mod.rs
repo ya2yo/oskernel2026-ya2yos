@@ -37,7 +37,7 @@ pub use self::{
 fn dummyfd_create() -> SyscallRet {
     let dummy_file = DummyFd::new();
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let newfd = proc_inner.fd_table.alloc_fd()?;
     proc_inner.fd_table.set(
         newfd,
@@ -68,7 +68,7 @@ pub fn sys_inotify_init1(flags: u32) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let fd = proc_inner.fd_table.alloc_fd()?;
     proc_inner.fd_table.set(
         fd,
@@ -90,7 +90,7 @@ pub fn sys_inotify_add_watch(fd: c_int, path: *const u8, mask: u32) -> SyscallRe
     // 从用户空间读取路径字符串
     let path_str = {
         let task = current_task().unwrap();
-        let process = task.process.inner_lock();
+        let process = &task.process;
         let memory_set = process.get_locked_memory_set_read();
         read_user_cstr(&memory_set, path)?
     };
@@ -202,7 +202,7 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let fd_table = proc_inner.fd_table.clone();
     let fd = fd as usize;
@@ -247,7 +247,6 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
 
     // 释放锁，避免 pipe write 阻塞时死锁
     drop(memory_set);
-    drop(proc_inner);
     drop(task);
 
     let total_len = kernel_buf.len();

@@ -9,10 +9,10 @@ use log::debug;
 use crate::{
     mm::copy_to_user,
     signal::{
-        check_if_any_sig_for_current_task, SigActionFlags, SigInfo, SigOp, SigSet, SIGCHLD, SIG_IGN,
+        SIG_IGN, SIGCHLD, SigActionFlags, SigInfo, SigOp, SigSet, check_if_any_sig_for_current_task,
     },
     syscall::options::WaitOption,
-    task::{block_on, current_task, interruptible, suspend_current_and_run_next, Process},
+    task::{Process, block_on, current_task, interruptible, suspend_current_and_run_next},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -149,7 +149,7 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
             let found_pid = child.pid;
 
             if !wstatus.is_null() {
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 let value = ((stop_signal as i32) << 8) | 0x7f;
                 if copy_to_user(&memory_set, wstatus as usize, unsafe {
@@ -175,7 +175,7 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
             };
 
             if !wstatus.is_null() {
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 let value = wait_status_from_exit_code(exit_code, termination_signal);
                 if copy_to_user(&memory_set, wstatus as usize, unsafe {
@@ -227,9 +227,7 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
                 drop(process_meta);
                 let act = task
                     .process
-                    .inner_lock()
-                    .get_locked_sigtable()
-                    .action(signo);
+                    .with_sigtable(|sigtable| sigtable.action(signo));
                 let ignorable = signo == SIGCHLD
                     || act.act.sa_handler == SIG_IGN
                     || (!act.customed && SigSet::from_sig(signo).default_op() == SigOp::Ignore);
@@ -365,7 +363,7 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
                     found_pid as u32,
                     stop_signal as u32,
                 );
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 if copy_to_user(&memory_set, infop as usize, unsafe {
                     core::slice::from_raw_parts(
@@ -397,7 +395,7 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
                     found_pid as u32,
                     cont_signal as u32,
                 );
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 if copy_to_user(&memory_set, infop as usize, unsafe {
                     core::slice::from_raw_parts(
@@ -442,7 +440,7 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
                 };
                 let sig_info =
                     SigInfo::new_child(SIGCHLD as u32, si_code, found_pid as u32, si_status);
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 if copy_to_user(&memory_set, infop as usize, unsafe {
                     core::slice::from_raw_parts(
@@ -491,7 +489,7 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
             // 为避免用户态读到旧内容，这里也把 infop 清零。
             if !infop.is_null() {
                 let sig_info = SigInfo::new(0, 0, 0, 0);
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 if copy_to_user(&memory_set, infop as usize, unsafe {
                     core::slice::from_raw_parts(
@@ -512,9 +510,7 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
                 drop(process_meta);
                 let act = task
                     .process
-                    .inner_lock()
-                    .get_locked_sigtable()
-                    .action(signo);
+                    .with_sigtable(|sigtable| sigtable.action(signo));
                 let ignorable = signo == SIGCHLD
                     || act.act.sa_handler == SIG_IGN
                     || (!act.customed && SigSet::from_sig(signo).default_op() == SigOp::Ignore);

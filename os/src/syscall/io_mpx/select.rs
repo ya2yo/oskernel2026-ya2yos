@@ -3,10 +3,10 @@ use alloc::{sync::Arc, vec::Vec};
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_from_user_val, copy_to_user},
-    signal::{enter_pselect_itimer_wait, SigOp, SigSet, SIGCHLD, SIG_IGN},
+    signal::{SIG_IGN, SIGCHLD, SigOp, SigSet, enter_pselect_itimer_wait},
     syscall::{
-        options::{FdSet, FD_SET_LEN},
         PollEvents,
+        options::{FD_SET_LEN, FdSet},
     },
     task::{block_on, current_task, timeout as timeout_future},
     timer::Timespec,
@@ -72,7 +72,7 @@ fn collect_watch_entries(
     exceptfds: Option<&FdSet>,
 ) -> Result<Vec<WatchEntry>, SysErrNo> {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let mut entries = Vec::new();
 
     for fd in 0..nfds {
@@ -156,7 +156,7 @@ fn write_result_to_user(
     exceptfds: usize,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     if let Some(ready_readfds) = result.readfds.as_ref() {
@@ -197,7 +197,7 @@ pub fn sys_pselect6(
     sigmask: usize,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     let new_mask = if sigmask != 0 {
@@ -294,7 +294,6 @@ pub fn sys_pselect6(
     let mask_changed = new_mask.is_some();
 
     drop(memory_set);
-    drop(proc_inner);
     drop(task);
 
     // pselect6 is a hot path for netperf/lmbench. Collect and validate the
@@ -348,11 +347,11 @@ pub fn sys_pselect6(
                 // 使用 task::interruptible()，因为它只响应 task.interrupt()
                 // waker，不会替我们区分这些 pending signal 语义。
                 let task = current_task().unwrap();
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let mut inner = task.inner_lock();
                 if let Some(signo) = inner.sig_pending.difference(inner.sig_mask).peek_front() {
                     let signal = SigSet::from_sig(signo);
-                    let sig_action = proc_inner.get_locked_sigtable().action(signo);
+                    let sig_action = proc_inner.with_sigtable(|sigtable| sigtable.action(signo));
                     let ignorable = signo == SIGCHLD
                         || sig_action.act.sa_handler == SIG_IGN
                         || (!sig_action.customed && signal.default_op() == SigOp::Ignore);
@@ -360,7 +359,6 @@ pub fn sys_pselect6(
                         inner.sig_pending.remove(signal);
                     } else {
                         drop(inner);
-                        drop(proc_inner);
                         drop(task);
                         let ready = poll_ready(
                             &entries,

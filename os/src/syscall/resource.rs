@@ -20,7 +20,7 @@ pub fn sys_prlimit(
     }
 
     let task = current_task().unwrap();
-    let inner = task.process.inner_lock();
+    let inner = &task.process;
     let memory_set = inner.get_locked_memory_set_read();
     let fd_table = inner.fd_table.clone();
     if !old_limit.is_null() {

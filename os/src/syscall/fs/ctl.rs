@@ -20,7 +20,7 @@ use linux_raw_sys::loop_device::LOOP_SET_FD;
 /// 参考 https://man7.org/linux/man-pages/man2/getcwd.2.html
 pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let cwd = proc_inner.fs_info.get_cwd();
     let cwd_bytes = cwd.as_bytes();
     let cwd_len_with_null = cwd_bytes.len() + 1;
@@ -38,7 +38,7 @@ pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
 pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     debug!("[sys_ioctl] fd={}, cmd={}, arg={}", fd, cmd, arg);
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     if cmd as u32 == LOOP_SET_FD {
         proc_inner.fd_table.get(arg)?;
     }
@@ -50,7 +50,7 @@ pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/chdir.2.html
 pub fn sys_chdir(path: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     if (path as isize) <= 0 || if_bad_address(path as usize) {
@@ -85,7 +85,7 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
 /// 参考 mkdirat 的实现模式：路径解析 + open()/inode 创建。
 pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let fd_table = proc_inner.fd_table.clone();
     let path = read_user_cstr(&memory_set, path as *const u8)?;
@@ -96,7 +96,6 @@ pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> Syscall
     }
     let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
     drop(memory_set);
-    drop(proc_inner);
     // 已存在 → EEXIST
     if open(&abs_path, OpenFlags::O_RDWR, NONE_MODE).is_ok() {
         return Err(SysErrNo::EEXIST);
@@ -146,7 +145,7 @@ pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> Syscall
 /// 参考 https://man7.org/linux/man-pages/man2/mkdirat.2.html
 pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let path = read_user_cstr(&memory_set, path)?;
     drop(memory_set);
@@ -159,7 +158,6 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
-    drop(proc_inner);
     if let Ok(_) = open(&abs_path, OpenFlags::O_RDWR, NONE_MODE) {
         return Err(SysErrNo::EEXIST);
     }
@@ -176,7 +174,7 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/getdents64.2.html
 pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = &*process.get_locked_memory_set_read();
     debug!(
         "[sys_getdents64] fd is {}, buf addr  is {:x}, len is {}",
@@ -208,7 +206,7 @@ pub fn sys_linkat(
     flags: u32,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     let old_path_str = read_user_cstr(&memory_set, oldpath)?;
@@ -245,7 +243,6 @@ pub fn sys_linkat(
         // Creating the destination goes through the regular VFS path and may
         // re-enter process state, so release syscall-local process locks first.
         drop(memory_set);
-        drop(proc_inner);
 
         if open(&new_abs_path, OpenFlags::empty(), NONE_MODE).is_ok() {
             return Err(SysErrNo::EEXIST);
@@ -307,7 +304,7 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     let path = read_user_cstr(&memory_set, path)?;
@@ -361,7 +358,7 @@ pub fn sys_utimensat(
         return Err(SysErrNo::EBADF);
     }
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let path = if !path.is_null() {
         read_user_cstr(&memory_set, path)?
@@ -423,7 +420,7 @@ pub fn sys_sync() -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/readlinkat.2.html
 pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let path = read_user_cstr(&memory_set, path)?;
 
@@ -473,7 +470,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
 
 pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let target_path = read_user_cstr(&memory_set, target)?;
     let link_path = read_user_cstr(&memory_set, linkpath)?;
@@ -515,7 +512,7 @@ pub fn sys_renameat2(
     _flags: u32,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let oldpath = read_user_cstr(&memory_set, oldpath)?;
     let newpath = read_user_cstr(&memory_set, newpath)?;
@@ -587,7 +584,7 @@ pub fn sys_fchownat(
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let path = read_user_cstr(&memory_set, pathname)?;
 
@@ -632,20 +629,19 @@ pub fn sys_fchownat(
 
 pub fn sys_fchown(fd: usize, owner: usize, group: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let fd_desc = proc_inner.fd_table.get(fd)?;
     // fchown(2) 修改已打开文件；O_PATH fd 只是路径句柄，Linux 返回 EBADF。
     if fd_desc.is_path_only() {
         return Err(SysErrNo::EBADF);
     }
     let inode = fd_desc.file()?.inode.clone();
-    drop(proc_inner);
     chown_inode(inode, owner, group)
 }
 
 pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
 
     if (fd as isize) < 0 && fd >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EBADF);
@@ -665,7 +661,7 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
 
 pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     if (flags as isize) < 0 {

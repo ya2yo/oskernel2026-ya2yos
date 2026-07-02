@@ -332,7 +332,7 @@ impl TaskControlBlock {
         // 替换后在新地址空间中没有对应映射，退出时translate_va会panic
         // 因此必须在替换前，在旧地址空间中完成写0和futex_wake
         if task_inner.clear_child_tid != 0 {
-            let old_proc = self.process.inner_lock();
+            let old_proc = &self.process;
             let old_memory_set = old_proc.get_locked_memory_set_read();
             let _ = copy_to_user(
                 &old_memory_set,
@@ -354,13 +354,13 @@ impl TaskControlBlock {
         // 重新分配用户资源
         let ustack_top = self.alloc_user_res(&mut task_inner);
         {
-            self.process.inner_lock().fd_table.close_on_exec();
+            self.process.fd_table.close_on_exec();
         }
         task_inner.sig_mask = SigSet::empty();
         task_inner.sig_pending = SigSet::empty();
 
         // 获取新地址空间用于栈写入
-        let proc_inner = self.process.inner_lock();
+        let proc_inner = &self.process;
         let proc_mem = proc_inner.get_locked_memory_set_read();
 
         let mut user_sp = ustack_top;
@@ -518,14 +518,14 @@ impl TaskControlBlock {
         );
         {
             let parent_inner = self.inner.lock();
-            let parent_proc_inner = self.process.inner_lock();
+            let parent_proc_inner = &self.process;
 
             // 保存父进程 memory_set Arc（fork 时需要读取父进程页面来 clone_area）
-            parent_memory_set_arc = parent_proc_inner.memory_set.clone();
+            parent_memory_set_arc = parent_proc_inner.memory_set_arc();
 
             // 子进程 memory_set
             child_memory_set_arc = if flags.contains(CloneFlags::CLONE_VM) {
-                parent_proc_inner.memory_set.clone()
+                parent_proc_inner.memory_set_arc()
             } else {
                 let parent_memory_set = parent_proc_inner.get_locked_memory_set_read();
                 Arc::new(MemorySet::new(MemorySetInner::from_existed_user(
@@ -545,13 +545,13 @@ impl TaskControlBlock {
                 Arc::new(FdTable::from_another(&parent_proc_inner.fd_table))
             };
             child_sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
-                parent_proc_inner.sig_table.clone()
+                parent_proc_inner.sig_table_arc()
             } else if flags.contains(CloneFlags::CLONE_CLEAR_SIGHAND) {
                 Arc::new(Mutex::new(SigTable::new()))
             } else {
-                Arc::new(Mutex::new(SigTable::from_another(
-                    &parent_proc_inner.get_locked_sigtable(),
-                )))
+                Arc::new(Mutex::new(
+                    parent_proc_inner.with_sigtable(|sigtable| SigTable::from_another(sigtable)),
+                ))
             };
 
             // CLONE_PARENT_SETTID: 写入父进程地址空间
@@ -670,7 +670,7 @@ impl TaskControlBlock {
             child.alloc_user_res(&mut child_inner);
             *child_inner.trap_cx() = parent_trap_cx;
 
-            let child_proc = child.process.inner_lock();
+            let child_proc = &child.process;
             let child_mm = child_proc.get_locked_memory_set_read();
             let child_stack_bottom = child_mm
                 .get_ref()
@@ -698,7 +698,7 @@ impl TaskControlBlock {
 
         // CLONE_CHILD_SETTID: 写入子进程地址空间
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-            let child_proc_inner = child.process.inner_lock();
+            let child_proc_inner = &child.process;
             let child_mem = child_proc_inner.get_locked_memory_set_read();
             copy_to_user_val(&*child_mem, child_tid, &(child.tid() as u32))?;
         }
@@ -715,7 +715,7 @@ impl TaskControlBlock {
 
         // Threads share the process, so /proc/<pid> is only created for a new process.
         if !flags.contains(CloneFlags::CLONE_THREAD) {
-            let child_proc = child.process.inner_lock();
+            let child_proc = &child.process;
             let child_mm = child_proc.get_locked_memory_set_read();
             create_proc_dir_and_file(child_pid, child_ppid, &child_mm);
         }
@@ -737,7 +737,7 @@ impl TaskControlBlock {
     ///修改数据段大小，懒分配
     pub fn growproc(&self, grow_size: isize) -> usize {
         let mut inner = self.inner_lock();
-        let process = self.process.inner_lock();
+        let process = &self.process;
         let memory_set = process.get_locked_memory_set_write();
 
         if grow_size == 0 {
@@ -796,7 +796,7 @@ impl TaskControlBlock {
     /// 分配用户栈和 trap context 区域，并返回用户栈顶地址
     fn alloc_user_res(&self, task_inner: &mut TaskControlBlockInner) -> usize {
         let (ustack_top, trap_cx_bottom, trap_cx_ppn) = {
-            let proc_inner = self.process.inner_lock();
+            let proc_inner = &self.process;
             let memory_set = proc_inner.get_locked_memory_set_read();
             memory_set.with_mut(|ms| {
                 let (u_bottom, u_top) = ms.lazy_insert_framed_area_with_hint(
@@ -842,7 +842,7 @@ impl TaskControlBlock {
     /// 用于 CLONE_THREAD 且用户指定了栈地址的场景。
     fn alloc_trap_context_only(&self, task_inner: &mut TaskControlBlockInner) {
         let (trap_cx_bottom, trap_cx_ppn) = {
-            let proc_inner = self.process.inner_lock();
+            let proc_inner = &self.process;
             let memory_set = proc_inner.get_locked_memory_set_read();
             memory_set.with_mut(|ms| {
                 let (t_cx, _) = ms.insert_framed_area_with_hint(

@@ -175,7 +175,7 @@ pub fn sys_add_key(
     keyring: isize,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     let type_str = if !key_type.is_null() {
@@ -325,7 +325,7 @@ pub fn sys_keyctl(option: usize, arg2: usize, arg3: usize, arg4: usize, arg5: us
 
             if plen > 0 {
                 let task = current_task().unwrap();
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 let mut buf = vec![0u8; plen];
                 crate::mm::copy_from_user(&memory_set, arg3, &mut buf)?;
@@ -353,9 +353,8 @@ pub fn sys_keyctl(option: usize, arg2: usize, arg3: usize, arg4: usize, arg5: us
             }
 
             let task = current_task().unwrap();
-            let proc_inner = task.process.inner_lock();
+            let proc_inner = &task.process;
             let file = proc_inner.fd_table.get(fd)?.any();
-            drop(proc_inner);
 
             let mut watchers = KEY_WATCHERS.lock();
             watchers
@@ -458,7 +457,7 @@ pub fn sys_keyctl(option: usize, arg2: usize, arg3: usize, arg4: usize, arg5: us
             let copy_len = data.len().min(buf_len);
             if copy_len > 0 && buf_addr != 0 {
                 let task = current_task().unwrap();
-                let proc_inner = task.process.inner_lock();
+                let proc_inner = &task.process;
                 let memory_set = proc_inner.get_locked_memory_set_read();
                 crate::mm::copy_to_user(&memory_set, buf_addr, &data[..copy_len])?;
             }

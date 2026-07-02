@@ -6,16 +6,15 @@ use alloc::{
     vec::Vec,
 };
 use futures_util::task::AtomicWaker;
-use log::{debug, error, warn};
+use log::{debug, warn};
 use spin::{Lazy, Mutex, MutexGuard};
 
 use crate::{
     fs::{FSInfo, FdTable, remove_proc_dir_and_file},
     mm::MemorySet,
     signal::{SigSet, SigTable, send_signal_to_thread_group},
-    syscall::CloneFlags,
     task::{TaskControlBlock, TidHandle},
-    utils::{SysErrNo, SyscallRet, get_abs_path, is_abs_path},
+    utils::{SysErrNo, get_abs_path, is_abs_path},
 };
 
 /// 进程/线程组 类
@@ -37,16 +36,6 @@ pub struct Process {
 // 我们需要向编译器保证Process含有这样的特性……这样真的好吗？
 unsafe impl Send for Process {}
 unsafe impl Sync for Process {}
-
-/// 进程共享资源快照。
-///
-/// 进程级资源已经拆成各自的同步对象，这个结构只为既有调用点提供短期兼容入口。
-pub struct ProcessResources {
-    pub memory_set: Arc<MemorySet>,
-    pub sig_table: Arc<Mutex<SigTable>>,
-    pub fd_table: Arc<FdTable>,
-    pub fs_info: Arc<FSInfo>,
-}
 
 impl Process {
     /// 退出时把尚未 wait 的子进程挂到 initproc，避免子进程继续强引用已退出父进程。
@@ -152,18 +141,6 @@ impl Process {
         }
         ret
     }
-    /// 获取进程共享资源快照。
-    ///
-    /// 历史上这个接口返回 PCB 内部锁；现在资源已经各自带锁或不可变，
-    /// 因此这里只克隆 Arc，避免在访问 fd/sig/mm 时额外持有 PCB 锁。
-    pub fn inner_lock(&self) -> ProcessResources {
-        ProcessResources {
-            memory_set: self.memory_set_arc(),
-            sig_table: self.sig_table_arc(),
-            fd_table: Arc::clone(&self.fd_table),
-            fs_info: Arc::clone(&self.fs_info),
-        }
-    }
     /// 获取元数据的锁
     pub fn meta_lock(&self) -> MutexGuard<'_, ProcessMeta> {
         self.meta
@@ -207,6 +184,43 @@ impl Process {
             .try_lock()
             .expect("fail to get proc.memory_set lock");
         Arc::strong_count(&memory_set)
+    }
+    /// 获取当前地址空间。`MemorySet` 自身负责读写同步。
+    pub fn get_locked_memory_set_read(&self) -> Arc<MemorySet> {
+        self.memory_set_arc()
+    }
+    /// 获取当前地址空间。写访问由 `MemorySet` 内部锁保护。
+    pub fn get_locked_memory_set_write(&self) -> Arc<MemorySet> {
+        self.memory_set_arc()
+    }
+    /// 在当前信号表锁内执行操作。
+    pub fn with_sigtable<T>(&self, f: impl FnOnce(&mut SigTable) -> T) -> T {
+        let sig_table = self.sig_table_arc();
+        let mut sig_table = sig_table
+            .try_lock()
+            .expect("You should not fail to get sig_table lock in a 1 HART system!");
+        f(&mut sig_table)
+    }
+    /// 获取绝对路径
+    pub fn get_abs_path(&self, dirfd: isize, path: &str) -> Result<String, SysErrNo> {
+        if is_abs_path(path) {
+            Ok(get_abs_path("/", path))
+        } else if dirfd != -100 {
+            // AT_FDCWD=-100
+            let dirfd = dirfd as usize;
+            if let Some(file) = self.fd_table.try_get(dirfd) {
+                let base_path = file.file()?.inode.path();
+                if path.is_empty() {
+                    Ok(base_path)
+                } else {
+                    Ok(get_abs_path(&base_path, path))
+                }
+            } else {
+                Err(SysErrNo::EINVAL)
+            }
+        } else {
+            Ok(get_abs_path(&self.fs_info.get_cwd(), path))
+        }
     }
     /// 线程组是否已经进入退出流程。
     pub fn is_group_exiting(&self) -> bool {
@@ -308,68 +322,12 @@ impl Process {
             .filter(|t| t.upgrade().is_some())
             .count()
     }
-
-    // 只会在sys_fcntl里面调用的一些辅助函数
-
-    // pub fn do_fcntl_setfd(&self,fd:usize, cloexec:bool)->SyscallRet {
-    //     if cloexec {
-    //         self.inner_lock().fd_table.set_cloexec(fd)
-    //     }else{
-    //         self.inner_lock().fd_table.unset_cloexec(fd)
-    //     }
-    // }
-    // pub fn do_fcntl_setfl(&self, fd:usize, nonblock:bool)->SyscallRet {
-    //     if nonblock {
-    //         self.inner_lock().fd_table.set_nonblock(fd)
-    //     }else {
-    //         self.inner_lock().fd_table.unset_nonblock(fd)
-    //     }
-    // }
 }
 
 impl Drop for Process {
     fn drop(&mut self) {
         // PID_2_PROCESS_ARC.try_lock().unwrap().remove(&self.pid);
         debug!("proc {} is dropped", self.pid);
-    }
-}
-
-impl ProcessResources {
-    /// 内存相关的读锁
-    pub fn get_locked_memory_set_read(&self) -> Arc<MemorySet> {
-        Arc::clone(&self.memory_set)
-    }
-    /// 内存相关的写锁
-    pub fn get_locked_memory_set_write(&self) -> Arc<MemorySet> {
-        Arc::clone(&self.memory_set)
-    }
-    /// 信号表获取
-    pub fn get_locked_sigtable(&self) -> MutexGuard<'_, SigTable> {
-        self.sig_table
-            .try_lock()
-            .expect("You should not fail to get lock in a 1 HART system!")
-    }
-    /// 获取绝对路径
-    pub fn get_abs_path(&self, dirfd: isize, path: &str) -> Result<String, SysErrNo> {
-        if is_abs_path(path) {
-            Ok(get_abs_path("/", path))
-        } else if dirfd != -100 {
-            // AT_FDCWD=-100
-            let dirfd = dirfd as usize;
-            if let Some(file) = self.fd_table.try_get(dirfd) {
-                let base_path = file.file()?.inode.path();
-                // drop(proc_inner);
-                if path.is_empty() {
-                    Ok(base_path)
-                } else {
-                    Ok(get_abs_path(&base_path, path))
-                }
-            } else {
-                Err(SysErrNo::EINVAL)
-            }
-        } else {
-            Ok(get_abs_path(&self.fs_info.get_cwd(), path))
-        }
     }
 }
 

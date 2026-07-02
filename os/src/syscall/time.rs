@@ -16,7 +16,7 @@ const CLOCK_RES_NSEC: usize = 1_000_000;
 /// tz 参数通常为0
 pub fn sys_gettimeofday(tv: *mut TimeVal, tz: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     if !tv.is_null() && ((tv as isize) < 0 || if_bad_address(tv as usize)) {
@@ -47,7 +47,7 @@ pub fn sys_gettimeofday(tv: *mut TimeVal, tz: usize) -> SyscallRet {
 pub fn sys_times(tms: *mut Tms) -> SyscallRet {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let tms_data = Tms::new(&task_inner.time_data);
     copy_to_user(&memory_set, tms as usize, unsafe {
@@ -70,7 +70,7 @@ pub fn sys_gettimer(_which: i32, curr_value: usize) -> SyscallRet {
 
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     let timer = task_inner.timer.timer();
@@ -91,7 +91,7 @@ pub fn sys_settimer(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     if old_value as usize != 0 {
         let timer = task_inner.timer.timer();
@@ -125,7 +125,7 @@ pub fn sys_clock_gettime(clockid: usize, tp: *mut Timespec) -> SyscallRet {
     // }
     let task = current_task().unwrap();
 
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let time = if clockid == 1 {
         get_time_spec()
@@ -175,7 +175,7 @@ pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
 
     let task = current_task().unwrap();
     let inner = task.inner_lock();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     match who {
@@ -230,7 +230,7 @@ pub fn sys_clock_getres(clockid: isize, res: usize) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let restime = Timespec::new(0, CLOCK_RES_NSEC);
     copy_to_user(&memory_set, res, unsafe {
@@ -263,7 +263,7 @@ fn is_supported_clockid(clockid: isize) -> bool {
 /// - modes != 0: 应用 buf 中的设置，返回 TIME_OK (0)
 pub fn sys_adjtimex(buf: *mut Timex) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let privileged = task.inner_lock().effective_uid == 0;
 
@@ -320,7 +320,7 @@ pub fn sys_clock_adjtime(clock_id: u32, buf: *mut Timex) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let privileged = task.inner_lock().effective_uid == 0;
 
@@ -373,7 +373,7 @@ pub fn sys_clock_settime(clock_id: u32, tp: *const Timespec) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
     let mut ts = Timespec::new(0, 0);
     copy_from_user(&memory_set, tp as usize, unsafe {
@@ -424,7 +424,7 @@ pub fn sys_settimeofday(tv: *const TimeVal, tz: *const u8) -> SyscallRet {
         return Err(SysErrNo::EPERM);
     }
 
-    let proc_inner = task.process.inner_lock();
+    let proc_inner = &task.process;
     let memory_set = proc_inner.get_locked_memory_set_read();
 
     let mut timeval = TimeVal::new(0, 0);

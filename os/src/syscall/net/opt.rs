@@ -179,7 +179,7 @@ pub fn sys_setsockopt(
     // let compat: bool = false;// 目前只在64位上运行
     let task = current_task().unwrap();
     // debug!("strong count: {}", Arc::strong_count(&task));
-    let fd_table = task.process.inner_lock().fd_table.clone();
+    let fd_table = task.process.fd_table.clone();
     drop(task);
     let sock = fd_table.get(sockfd)?.socket()?;
     if optlen > 1024 {
@@ -187,11 +187,10 @@ pub fn sys_setsockopt(
     }
     let mut kern_optval = vec![0; optlen as usize];
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     copy_from_user(&memory_set, user_optval as usize, &mut kern_optval)?;
     drop(memory_set);
-    drop(process);
     drop(task);
     match level {
         SOL_SOCKET => match optname {
@@ -310,7 +309,7 @@ pub fn sys_getsockopt(
     }
 
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let fd_table = process.fd_table.clone();
     let optlen = {
         let memory_set = process.get_locked_memory_set_read();
@@ -318,7 +317,6 @@ pub fn sys_getsockopt(
         copy_from_user(&memory_set, user_optlen as usize, &mut optlen_bytes)?;
         socklen_t::from_ne_bytes(optlen_bytes)
     };
-    drop(process);
     drop(task);
 
     if optlen as usize > 1024 {
@@ -455,7 +453,7 @@ pub fn sys_getsockopt(
 
     let copy_len = (optlen as usize).min(kern_opt.len());
     let task = current_task().unwrap();
-    let process = task.process.inner_lock();
+    let process = &task.process;
     let memory_set = process.get_locked_memory_set_read();
     copy_to_user(&memory_set, user_optval as usize, &kern_opt[..copy_len])?;
     let actual_len = kern_opt.len() as socklen_t;
