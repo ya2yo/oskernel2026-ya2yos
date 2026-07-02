@@ -24,6 +24,7 @@ description: >-
 | 用户指针异常、随机 fault | 是否用了 `copy_from_user` / `copy_to_user` |
 | syscall 返回成功但测试期望失败 | 内部 `Result` 是否被吞掉，是否缺少 `?` |
 | accept/connect/pipe 卡住 | 阻塞路径是否能 wake，是否持有多余 `Arc` 或锁 |
+| 死锁、偶现卡住、`try_lock().expect()` panic | 是否违反 `os/src/task/mod.rs` 开头的 task/PCB 锁顺序 |
 | futex / signal 相关 panic | wait 被信号打断时是否清理等待队列 |
 | COW / page fault | 两架构 PTE flags、TLB 刷新、写时复制分裂 |
 | LTP 输出迷惑 | 以 `TPASS`/`TFAIL`/`Summary` 为准，`FAIL LTP CASE x : 0` 只是 initproc 打印退出码 |
@@ -34,6 +35,9 @@ description: >-
 
 - 只改与根因相关的代码。
 - 保持模块边界：syscall 层薄，语义在领域模块。
+- 严格遵守 `os/src/task/mod.rs` 开头记录的锁顺序；不按顺序获取锁的代码直接判定为 bug，即使当前日志还没有稳定复现死锁。
+- `ResourceSlot` 只保护可替换 `Arc<T>` 指针槽。只能短暂 `get` / `replace`，不能在槽锁内进入资源内部锁、用户内存访问、文件系统、网络、调度、futex 或信号发送路径。
+- 排查死锁或卡住时，优先画出实际锁链；如果出现反向锁顺序，修正锁边界或先 clone/copy 所需状态再释放锁，不要只延长 timeout 或绕过 `try_lock`。
 - 不用 `unwrap()` 处理用户输入或可失败内核路径。
 - 不在修 bug 时顺手重排大文件、改格式、改测试策略，除非这是修复必要条件。
 

@@ -14,6 +14,44 @@
 //!
 //! Be careful when you see `__switch` ASM function in `switch.S`. Control flow around this function
 //! might not be what you expect.
+//!
+//! # Lock ordering
+//!
+//! Task/process paths commonly touch PCB metadata, per-thread state, address
+//! spaces, signal tables, fd tables, filesystem context, futex queues, and
+//! scheduler queues. Code that acquires these locks out of order is considered a
+//! bug even if it has not yet reproduced as a deadlock.
+//!
+//! Resource slots such as `ResourceSlot<MemorySet>` protect only the current
+//! `Arc<T>` pointer stored in a process. They are intentionally short-lived:
+//! clone the `Arc` with the process accessor, then let the slot lock drop before
+//! acquiring any lock inside `T`. Do not expose or hold a resource-slot guard
+//! across user-memory access, filesystem/network I/O, signal delivery,
+//! scheduling, wakeups, or another resource lock.
+//!
+//! Normal lock acquisition order:
+//!
+//! 1. Global tables and scheduler queues.
+//! 2. `ProcessMeta`.
+//! 3. `TaskControlBlockInner`.
+//! 4. Instant resource-slot `get` / `replace` only; never hold it across the
+//!    next layers.
+//! 5. Resource-internal locks: `MemorySet`, `SigTable`, `FdTable`, `FSInfo`.
+//! 6. Child-resource locks such as inode, socket, pipe, futex bucket, and device
+//!    locks.
+//!
+//! Additional rules:
+//!
+//! - Do not access user memory while holding `ProcessMeta`, `TaskControlBlockInner`,
+//!   fd table, signal table, scheduler queue, or futex queue locks. Clone the
+//!   needed `Arc`, copy arguments/results, then acquire other locks.
+//! - Do not hold `MemorySet` internals while entering filesystem, network,
+//!   scheduler, futex, or signal-delivery paths.
+//! - If multiple processes or tasks must be locked at the same time, lock by
+//!   increasing pid/tid. Prefer cloning `Arc`s or copying scalar state and
+//!   releasing the first lock instead of holding multiple locks.
+//! - `SigTable` stores signal actions only. Thread-group exit state and wait
+//!   state belong to `ProcessMeta`, not to a shared signal-action table.
 
 #[allow(clippy::module_inception)]
 #[allow(rustdoc::private_intra_doc_links)]
