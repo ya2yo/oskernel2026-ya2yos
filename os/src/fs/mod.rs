@@ -21,7 +21,7 @@ pub use files::devfs::*;
 pub use fs_info::*;
 pub use fstruct::*;
 // pub mod socket_defs;
-pub use files::pipe::{make_pipe, open_fifo, Pipe};
+pub use files::pipe::{Pipe, make_pipe, open_fifo};
 pub use files::stdio::{Stdin, Stdout};
 use log::debug;
 pub use mount::MNT_TABLE;
@@ -29,8 +29,8 @@ pub use stat::*;
 pub use vfs::*;
 mod kernel_fs_ops;
 pub use kernel_fs_ops::{
-    create_init_files, create_proc_dir_and_file, open, refresh_proc_stat, refresh_proc_status,
-    remove_proc_dir_and_file, FsIndex,
+    FsIndex, create_init_files, create_proc_dir_and_file, open, refresh_proc_stat,
+    refresh_proc_status, remove_proc_dir_and_file,
 };
 mod map_dynamic_link;
 pub use map_dynamic_link::{
@@ -105,42 +105,38 @@ pub const NONE_MODE: u32 = 0;
 #[derive(Clone)]
 pub enum FileClass {
     File(Arc<OSFile>),
+    Pipe(Arc<Pipe>),
     #[cfg(feature = "net")]
     Socket(Arc<Socket>),
-    Abs(Arc<dyn File>),
     FsContext(Arc<FsContextFd>),
     DetachedMount(Arc<DetachedMountFd>),
+    Abs(Arc<dyn File>),
 }
 
 impl FileClass {
     pub fn file(&self) -> Result<Arc<OSFile>, SysErrNo> {
         match self {
             FileClass::File(f) => Ok(f.clone()),
-            #[cfg(feature = "net")]
-            FileClass::Socket(_) => Err(SysErrNo::EINVAL),
-            FileClass::Abs(_) => Err(SysErrNo::EINVAL),
-            FileClass::FsContext(_) => Err(SysErrNo::EINVAL),
-            FileClass::DetachedMount(_) => Err(SysErrNo::EINVAL),
+            _ => Err(SysErrNo::EINVAL),
+        }
+    }
+    pub fn pipe(&self) -> SysResult<Arc<Pipe>> {
+        match self {
+            FileClass::Pipe(p) => Ok(p.clone()),
+            _ => Err(SysErrNo::EINVAL),
         }
     }
     #[cfg(feature = "net")]
     pub fn socket(&self) -> Result<Arc<Socket>, SysErrNo> {
         match self {
-            FileClass::File(_) => Err(SysErrNo::ENOTSOCK),
             FileClass::Socket(f) => Ok(f.clone()),
-            FileClass::Abs(_) => Err(SysErrNo::ENOTSOCK),
-            FileClass::FsContext(_) => Err(SysErrNo::ENOTSOCK),
-            FileClass::DetachedMount(_) => Err(SysErrNo::ENOTSOCK),
+            _ => Err(SysErrNo::ENOTSOCK),
         }
     }
     pub fn abs(&self) -> Result<Arc<dyn File>, SysErrNo> {
         match self {
-            FileClass::File(_) => Err(SysErrNo::EINVAL),
-            #[cfg(feature = "net")]
-            FileClass::Socket(_) => Err(SysErrNo::EINVAL),
             FileClass::Abs(f) => Ok(f.clone()),
-            FileClass::FsContext(_) => Err(SysErrNo::EINVAL),
-            FileClass::DetachedMount(_) => Err(SysErrNo::EINVAL),
+            _ => Err(SysErrNo::EINVAL),
         }
     }
     pub fn fs_context(&self) -> Result<Arc<FsContextFd>, SysErrNo> {
@@ -158,6 +154,7 @@ impl FileClass {
     pub fn any(&self) -> Arc<dyn File> {
         match self {
             FileClass::File(f) => f.clone(),
+            FileClass::Pipe(p) => p.clone(),
             #[cfg(feature = "net")]
             FileClass::Socket(s) => s.clone(),
             FileClass::Abs(f) => f.clone(),

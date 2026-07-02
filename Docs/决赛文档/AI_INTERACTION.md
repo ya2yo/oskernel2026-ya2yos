@@ -60,3 +60,10 @@
 - **场景**：PCB 地址空间访问接口收敛、兼容方法移除、调用点机械替换、构建与 QEMU 基础验证、决赛文档补充
 - **描述**：用户要求删除 `get_locked_memory_set_read()` / `get_locked_memory_set_write()`。AI 将调用点统一改为 `memory_set_arc()`，删除两个误导性的兼容方法，保留 `ResourceSlot<MemorySet>` 负责地址空间指针槽同步、`MemorySet` 内部锁负责地址空间内容同步。`make` 通过，外部 LoongArch64 `make run` 基础测试跑到 `shutdown!`。详见 `Docs/决赛文档/ai.log` 2026-07-02 条目。
 - **关联 commit**：待提交
+
+#### vmsplice pipe 文件分类收敛（7.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`vmsplice` 语义收敛、pipe fd 分类调整、`FileClass::Pipe` 接入、构建验证、决赛文档补充
+- **描述**：用户指出 `Pipe` 也是文件，当前匿名 pipe 分配逻辑放入 `FileClass::Abs`，没有体现 pipe 是独立文件类别。AI 将 `pipe2()` 创建的读写端改为 `FileClass::Pipe`，修正 `FileClass::pipe()` / `FileDescriptor::pipe()` 访问路径，并让 `sys_vmsplice()` 通过 pipe 类型入口校验目标 fd 后写入。默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-02 条目。
+- **关联 commit**：待提交

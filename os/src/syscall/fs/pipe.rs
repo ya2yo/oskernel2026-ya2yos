@@ -2,7 +2,7 @@ use alloc::string::ToString;
 use log::{debug, warn};
 
 use crate::{
-    fs::{make_pipe, FileClass, FileDescriptor},
+    fs::{FileClass, FileDescriptor, make_pipe},
     mm::copy_to_user,
     syscall::fs::dummyfd_create,
     task::current_task,
@@ -20,11 +20,11 @@ pub fn sys_pipe2(fd: *mut u32) -> SyscallRet {
     let read_fd = fd_table.alloc_fd()?;
     proc_inner
         .fd_table
-        .set(read_fd, FileDescriptor::default(FileClass::Abs(read_pipe)));
+        .set(read_fd, FileDescriptor::default(FileClass::Pipe(read_pipe)));
     let write_fd = fd_table.alloc_fd()?;
     fd_table.set(
         write_fd,
-        FileDescriptor::default(FileClass::Abs(write_pipe)),
+        FileDescriptor::default(FileClass::Pipe(write_pipe)),
     );
     let locked_fs_info = proc_inner.fs_info.clone();
 

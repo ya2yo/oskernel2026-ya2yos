@@ -226,6 +226,49 @@ git diff --check
 
 ---
 
+## 2026-07-02: vmsplice pipe 文件分类收敛
+
+### 用户需求
+
+用户指出 `Pipe` 本身也是文件，当前 `pipe2()` 分配 pipe 时放入 `FileClass::Abs`，没有体现 pipe 是一种明确的文件类别，要求先修改 `os/src/syscall/io_mpx/splice.rs` 中的 `vmsplice` 相关逻辑，并将 pipe 放入 `FileClass` 统一管理。
+
+### 分析
+
+AI 检查 `FileClass`、`FileDescriptor`、`sys_pipe2()`、`Pipe` 和 `sys_vmsplice()` 路径后确认：
+
+- `FileClass` 中已经存在 `Pipe(Arc<Pipe>)` 分支，`any()` 也可把 pipe 作为 `dyn File` 使用。
+- `pipe2()` 仍将匿名 pipe 读写端存为 `FileClass::Abs`，导致 pipe 与其他抽象文件混在一起。
+- `sys_vmsplice()` 通过 `fd_entry.abs()` 获取目标 fd，实际是在接受任意 `Abs` 文件后依赖运行时写入能力，不能清晰表达 Linux 语义中 fd 必须是 pipe。
+- 现有 `FileClass::pipe()` 匹配分支写成未限定的 `Pipe(p)`，本身无法通过编译；`splice.rs` 中的未实现 `sys_splice()` 也残留变量拼写和占位调用问题。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/mod.rs` | 修正 `FileClass::pipe()` 为 `FileClass::Pipe(p) => Ok(p.clone())`，保留 `any()` 对 pipe 的统一 `File` trait 转换 |
+| `os/src/fs/fstruct.rs` | 为 `FileDescriptor` 暴露 `pipe()` 访问入口 |
+| `os/src/syscall/fs/pipe.rs` | `sys_pipe2()` 分配的读端/写端改为 `FileClass::Pipe` |
+| `os/src/syscall/io_mpx/splice.rs` | `sys_vmsplice()` 改为通过 `fd_entry.pipe()` 校验目标 fd 必须是 pipe，并导入 `File` trait 调用 `writable()` / `write()` |
+
+同时整理 `sys_splice()` 未实现 stub：保留 fd 与 offset 用户指针基础校验，去掉未定义变量和不存在的 `fstate()` 占位调用，仍按当前实现返回 `EINVAL`。
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：
+
+- 默认 LoongArch64 `make` 构建通过。
+- 输出中仍有 vendor `smoltcp` warning，与本次修改无关。
+
+未运行 `make run`：本次只收敛 pipe fd 分类并完成构建验证，未做运行路径回归。未运行 RISC-V。
+
+---
+
 ## 2026-07-02: clone02 CLONE_SIGHAND 退出状态修复
 
 ### 用户需求

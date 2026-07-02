@@ -170,6 +170,10 @@ impl Process {
     pub fn memory_set_arc(&self) -> Arc<MemorySet> {
         self.memory_set.get()
     }
+    /// 获取当前进程的文件描述表
+    pub fn fd_table_arc(&self) -> Arc<FdTable> {
+        self.fd_table.clone()
+    }
     pub fn sig_table_arc(&self) -> Arc<Mutex<SigTable>> {
         self.sig_table.get()
     }
