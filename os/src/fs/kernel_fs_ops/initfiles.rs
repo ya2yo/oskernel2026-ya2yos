@@ -1,3 +1,10 @@
+//! 启动期补齐竞赛镜像中内核依赖的伪文件、设备节点和测试 wrapper。
+//!
+//! 根文件系统来自固定测试镜像，但部分 LTP/libc/network 用例依赖 `/proc`、
+//! `/dev`、`/etc`、`/bin` 下的兼容文件或 busybox applet 链接。本模块在
+//! `fs::init()` 阶段集中创建这些启动资产，避免把测试环境补丁散落到 syscall
+//! 或 VFS 业务路径中。
+
 use alloc::{string::String, vec::Vec};
 use log::debug;
 
@@ -159,335 +166,168 @@ fn write_executable_init_file(path: &str, content: &str) -> SysResult {
     Ok(())
 }
 
-pub fn create_init_files() -> SysResult {
-    // 写入预先加载内容
-    flush_preload();
-    // 写入内嵌的 libgcc_s.so.1（解决 glibc pthread 测试依赖问题）
-    flush_libgcc_s();
-    //创建/proc文件夹
-    open(
-        "/proc",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    //创建/proc/mounts文件系统使用情况
-    let mountsfile = open(
-        "/proc/mounts",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_FILE_MODE,
-    )?
-    .file()?;
-    let mut mountsinfo = String::from(MOUNTS);
-    let mut mountsvec = Vec::new();
-    unsafe {
-        let mounts = mountsinfo.as_bytes_mut();
-        mountsvec.push(core::slice::from_raw_parts_mut(
-            mounts.as_mut_ptr(),
-            mounts.len(),
-        ));
-    }
-    let mountbuf = UserBuffer::new(mountsvec);
-    let mountssize = mountsfile.write(mountbuf)?;
-    debug!("create /proc/mounts with {} sizes", mountssize);
-    //创建/proc/meminfo系统内存使用情况
-    let memfile = open(
-        "/proc/meminfo",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_FILE_MODE,
-    )?
-    .file()?;
-    let mut meminfo = String::from(MEMINFO);
-    let mut memvec = Vec::new();
-    unsafe {
-        let mem = meminfo.as_bytes_mut();
-        memvec.push(core::slice::from_raw_parts_mut(mem.as_mut_ptr(), mem.len()));
-    }
-    let membuf = UserBuffer::new(memvec);
-    let memsize = memfile.write(membuf)?;
-    debug!("create /proc/meminfo with {} sizes", memsize);
-    //创建/proc/sys/kernel/tainted 内核污染标记
-    open(
-        "/proc/sys",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    open(
-        "/proc/sys/kernel",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    let taintedfile = open(
-        "/proc/sys/kernel/tainted",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_FILE_MODE,
-    )?
-    .file()?;
-    let mut tainted = String::from("0\n");
-    let mut taintedvec = Vec::new();
-    unsafe {
-        let t = tainted.as_bytes_mut();
-        taintedvec.push(core::slice::from_raw_parts_mut(t.as_mut_ptr(), t.len()));
-    }
-    let taintedbuf = UserBuffer::new(taintedvec);
-    taintedfile.write(taintedbuf)?;
-    //创建/proc/sys/kernel/pid_max 进程号上限
-    let pid_maxfile = open(
-        "/proc/sys/kernel/pid_max",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_FILE_MODE,
-    )?
-    .file()?;
-    let mut pid_max = String::from(PID_MAX);
-    let mut pid_maxvec = Vec::new();
-    unsafe {
-        let p = pid_max.as_bytes_mut();
-        pid_maxvec.push(core::slice::from_raw_parts_mut(p.as_mut_ptr(), p.len()));
-    }
-    let pid_maxbuf = UserBuffer::new(pid_maxvec);
-    pid_maxfile.write(pid_maxbuf)?;
-    // 创建/proc/sys/kernel/core_pattern
-    let core_pattern_file = open(
-        "/proc/sys/kernel/core_pattern",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_FILE_MODE,
-    )?
-    .file()?;
-    let mut core_pattern = String::from(CORE_PATTERN);
-    let mut core_pattern_vec = Vec::new();
-    unsafe {
-        let c = core_pattern.as_bytes_mut();
-        core_pattern_vec.push(core::slice::from_raw_parts_mut(c.as_mut_ptr(), c.len()));
-    }
-    let core_pattern_buf = UserBuffer::new(core_pattern_vec);
-    core_pattern_file.write(core_pattern_buf)?;
+const BUSYBOX_APPLETS: &[&str] = &[
+    "/bin/awk",
+    "/bin/basename", // 如果不加这个，ltp_testcode.sh会无法使用basename
+    "/bin/bc",
+    "/bin/bzip2",
+    "/bin/cat",    // ltp的cgroup_regression_3_2.sh需要它
+    "/bin/chattr", // copy_file_range
+    "/bin/chmod",
+    "/bin/cp", // 通用文件操作
+    "/bin/cut",
+    "/bin/date",
+    "/bin/dd",
+    "/bin/expr",
+    "/bin/false",
+    "/bin/gdb",
+    "/bin/gunzip",
+    "/bin/gzip",
+    "/bin/head",
+    "/bin/killall",
+    "/bin/id",
+    "/bin/ip",
+    "/bin/ln",
+    "/bin/ls",        // which ls 需要它
+    "/bin/mkdir",     // ltp的cgroup_regression_3_1.sh需要它
+    "/bin/mkfs.ext2", // LTP format_device 需要通过 PATH 找到 ext2 格式化工具
+    "/bin/mke2fs",
+    "/bin/mktemp",
+    "/bin/mkswap",
+    "/bin/printf",
+    "/bin/ps",
+    "/bin/rmdir", // ltp的cgroup_regression_3_1.sh需要它
+    "/bin/sed",
+    "/bin/sleep",
+    "/bin/sh",
+    "/bin/sort",
+    "/bin/swapoff",
+    "/bin/swapon",
+    "/bin/tc",
+    "/bin/tail",
+    "/bin/touch",
+    "/bin/true",
+    "/bin/uniq",
+    "/bin/mount",
+    "/bin/umount",
+    "/bin/rm", // fs_bind 清理需要
+    "/bin/mv",
+    "/bin/netstat",
+];
 
+fn create_dir(path: &str) -> SysResult {
+    open(
+        path,
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
+        DEFAULT_DIR_MODE,
+    )?;
+    Ok(())
+}
+
+fn create_proc_files() -> SysResult {
+    create_dir("/proc")?;
+    write_init_file("/proc/mounts", MOUNTS)?;
+    debug!("create /proc/mounts");
+    write_init_file("/proc/meminfo", MEMINFO)?;
+    debug!("create /proc/meminfo");
+
+    create_dir("/proc/sys")?;
+    create_dir("/proc/sys/kernel")?;
+    write_init_file("/proc/sys/kernel/tainted", "0\n")?;
+    write_init_file("/proc/sys/kernel/pid_max", PID_MAX)?;
+    write_init_file("/proc/sys/kernel/core_pattern", CORE_PATTERN)?;
+    Ok(())
+}
+
+fn create_boot_files() -> SysResult {
     // LTP tst_kconfig 会按 uname release 探测 /boot/config-<release>。
     // 提供最小配置，声明 acct(2) 可用但不启用 v3 accounting 记录格式。
-    open(
-        "/boot",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    write_init_file("/boot/config-5.0.0", KERNEL_CONFIG)?;
+    create_dir("/boot")?;
+    write_init_file("/boot/config-5.0.0", KERNEL_CONFIG)
+}
 
-    //创建/dev文件夹
-    open(
-        "/dev",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    //注册设备/dev/rtc和/dev/rtc0
-    register_device("/dev/rtc");
-    register_device("/dev/rtc0");
-    //注册设备/dev/tty
-    register_device("/dev/tty");
-    //注册设备/dev/zero
-    register_device("/dev/zero");
-    //注册设备/dev/numm
-    register_device("/dev/null");
-    //注册随机数设备
-    register_device("/dev/random");
-    register_device("/dev/urandom");
-    //注册设备/dev/cpu_dma_latency
-    register_device("/dev/cpu_dma_latency");
-    //创建./dev/misc文件夹
-    open(
-        "/dev/misc",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    //注册设备/dev/misc/rtc
+fn create_dev_files() -> SysResult {
+    create_dir("/dev")?;
+    for path in [
+        "/dev/rtc",
+        "/dev/rtc0",
+        "/dev/tty",
+        "/dev/zero",
+        "/dev/null",
+        "/dev/random",
+        "/dev/urandom",
+        "/dev/cpu_dma_latency",
+    ] {
+        register_device(path);
+    }
+
+    create_dir("/dev/misc")?;
     register_device("/dev/misc/rtc");
-    // loop 设备路径由 devfs 动态解析，此处仅创建常用目录
-    open(
-        "/dev/block",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    open(
-        "/dev/loop",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    open(
-        "/dev/shm",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    //创建/etc文件夹
-    open(
-        "/etc",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    //创建/etc/adjtime记录时间偏差
-    let adjtimefile = open(
-        "/etc/adjtime",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_FILE_MODE,
-    )?
-    .file()?;
-    let mut adjtime = String::from(ADJTIME);
-    let mut adjtimevec = Vec::new();
-    unsafe {
-        let adj = adjtime.as_bytes_mut();
-        adjtimevec.push(core::slice::from_raw_parts_mut(adj.as_mut_ptr(), adj.len()));
-    }
-    let adjtimebuf = UserBuffer::new(adjtimevec);
-    let adjtimesize = adjtimefile.write(adjtimebuf)?;
-    debug!("create /etc/adjtime with {} sizes", adjtimesize);
 
-    //创建./etc/localtime记录时区
-    let localtimefile = open(
-        "/etc/localtime",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_FILE_MODE,
-    )?
-    .file()?;
-    let mut localtime = String::from(LOCALTIME);
-    let mut localtimevec = Vec::new();
-    unsafe {
-        let local = localtime.as_bytes_mut();
-        localtimevec.push(core::slice::from_raw_parts_mut(
-            local.as_mut_ptr(),
-            local.len(),
-        ));
-    }
-    let localtimebuf = UserBuffer::new(localtimevec);
-    let localtimesize = localtimefile.write(localtimebuf)?;
-    debug!("create /etc/localtime with {} sizes", localtimesize);
+    // loop 设备路径由 devfs 动态解析，此处仅创建常用目录。
+    create_dir("/dev/block")?;
+    create_dir("/dev/loop")?;
+    create_dir("/dev/shm")?;
+    Ok(())
+}
 
-    //创建/etc/passwd记录用户信息
-    let passwdfile = open(
-        "/etc/passwd",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_FILE_MODE,
-    )?
-    .file()?;
-    let mut passwd = String::from(PASSWD);
-    let mut passwdvec = Vec::new();
-    unsafe {
-        let wd = passwd.as_bytes_mut();
-        passwdvec.push(core::slice::from_raw_parts_mut(wd.as_mut_ptr(), wd.len()));
-    }
-    let passwdbuf = UserBuffer::new(passwdvec);
-    let passwdsize = passwdfile.write(passwdbuf)?;
-    debug!("create /etc/passwd with {} sizes", passwdsize);
-
+fn create_etc_files() -> SysResult {
+    create_dir("/etc")?;
+    write_init_file("/etc/adjtime", ADJTIME)?;
+    debug!("create /etc/adjtime");
+    write_init_file("/etc/localtime", LOCALTIME)?;
+    debug!("create /etc/localtime");
+    write_init_file("/etc/passwd", PASSWD)?;
+    debug!("create /etc/passwd");
     write_init_file("/etc/group", GROUP)?;
     debug!("create /etc/group");
+    write_init_file("/etc/ld.so.preload", PRELOAD)?;
+    debug!("create /etc/ld.so.preload");
+    Ok(())
+}
 
-    //创建/etc/ld.so.preload记录用户信息
-    let preloadfile = open(
-        "/etc/ld.so.preload",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-        DEFAULT_FILE_MODE,
-    )?
-    .file()?;
-    let mut preload = String::from(PRELOAD);
-    let mut preloadvec = Vec::new();
-    unsafe {
-        let pre = preload.as_bytes_mut();
-        preloadvec.push(core::slice::from_raw_parts_mut(pre.as_mut_ptr(), pre.len()));
+fn link_busybox_applet(path: &str) {
+    // ext4_fsymlink 遇到已存在文件会静默失败；先删掉旧入口，避免覆盖镜像中
+    // 早期启动留下的 wrapper 或 symlink。
+    let _ = superblock_root_inode().unlink(path);
+    if let Err(e) = superblock_root_inode().sym_link("/musl/busybox", path) {
+        println!("WARN: sym_link {} -> /musl/busybox failed: {:?}", path, e);
     }
-    let preloadbuf = UserBuffer::new(preloadvec);
-    let preloadsize = preloadfile.write(preloadbuf)?;
-    debug!("create /etc/ld.so.preload with {} sizes", preloadsize);
+}
 
-    // 创建/tmp文件夹
-    open(
-        "/tmp",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-
-    // 创建/bin文件夹，这是为了应付测试集中的which ls
-    open(
-        "/bin",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    // 创建一系列符号链接指向busybox，这样就近似实现了bash
-    // 注意：ext4_fsymlink 遇到已存在文件会静默失败（返回Ok但不覆盖）
-    for path in [
-        "/bin/awk",
-        "/bin/basename", // 如果不加这个，ltp_testcode.sh会无法使用basename
-        "/bin/bc",
-        "/bin/bzip2",
-        "/bin/cat", // ltp的cgroup_regression_3_2.sh需要它
-        "/bin/chattr",// copy_file_range
-        "/bin/chmod",
-        "/bin/cp", // 通用文件操作
-        "/bin/cut",
-        "/bin/date",
-        "/bin/dd",
-        "/bin/expr",
-        "/bin/false",
-        "/bin/gdb",
-        "/bin/gunzip",
-        "/bin/gzip",
-        "/bin/head",
-        "/bin/killall",
-        "/bin/id",
-        "/bin/ip",
-        "/bin/ln",
-        "/bin/ls",    // which ls 需要它
-        "/bin/mkdir", // ltp的cgroup_regression_3_1.sh需要它
-        "/bin/mkfs.ext2", // LTP format_device 需要通过 PATH 找到 ext2 格式化工具
-        "/bin/mke2fs",
-        "/bin/mktemp",
-        "/bin/mkswap",
-        "/bin/printf",
-        "/bin/ps",
-        "/bin/rmdir", // ltp的cgroup_regression_3_1.sh需要它
-        "/bin/sed",
-        "/bin/sleep",
-        "/bin/sh",
-        "/bin/sort",
-        "/bin/swapoff",
-        "/bin/swapon",
-        "/bin/tc",
-        "/bin/tail",
-        "/bin/touch",
-        "/bin/true",
-        "/bin/uniq",
-        "/bin/mount",
-        "/bin/umount",
-        "/bin/rm", // fs_bind 清理需要
-        "/bin/mv",
-        "/bin/netstat",
-    ] {
-        let _ = superblock_root_inode().unlink(path);
-        if let Err(e) = superblock_root_inode().sym_link("/musl/busybox", path) {
-            println!("WARN: sym_link {} -> /musl/busybox failed: {:?}", path, e);
-        }
+fn create_busybox_links() -> SysResult {
+    create_dir("/bin")?;
+    for path in BUSYBOX_APPLETS {
+        link_busybox_applet(path);
     }
+    Ok(())
+}
 
+fn create_common_bin_wrappers() -> SysResult {
     write_executable_init_file(
         "/bin/grep",
         "#!/bin/sh\n# BusyBox grep lacks historical -N context aliases used by old LTP scripts.\nif [ \"$1\" = \"-1\" ]; then shift; exec /musl/busybox grep -C 1 \"$@\"; fi\nexec /musl/busybox grep \"$@\"\n",
     )?;
-
     write_executable_init_file(
         "/bin/fgrep",
         "#!/bin/sh\nexec /musl/busybox grep -F \"$@\"\n",
     )?;
-
     write_executable_init_file(
         "/bin/locale",
         "#!/bin/sh\n# Minimal locale output for LTP environment cleanup.\nexit 0\n",
     )?;
-
     write_executable_init_file(
         "/bin/rsh",
         "#!/bin/sh\n# Local rsh wrapper for LTP single-node network tests.\nif [ \"$1\" = \"-n\" ]; then shift; fi\nif [ $# -gt 0 ]; then shift; fi\n/bin/sh -c \"$*\"\n",
     )?;
-
     write_executable_init_file(
         "/bin/get_ifname",
         "#!/bin/sh\n# Ya2yOS only exposes loopback on LoongArch single-node LTP runs.\necho lo\n",
     )?;
+    Ok(())
+}
 
+fn create_network_test_wrappers() -> SysResult {
     for path in [
         "/musl/ltp/testcases/bin/get_ifname",
         "/glibc/ltp/testcases/bin/get_ifname",
@@ -517,69 +357,47 @@ pub fn create_init_files() -> SysResult {
             "#!/bin/sh\nTCID=${TCID:-tcp4-multi-diffip01}\nTST_COUNT=1\nTST_TOTAL=1\nexport TCID TST_COUNT TST_TOTAL\nif [ \"${IP_TOTAL_FOR_TCPIP:-}\" = \"0\" ]; then\n    tst_resm TINFO \"Ya2yOS single-node run has no external network alias pairs\"\n    tst_resm TPASS \"Test is finished successfully.\"\n    exit 0\nfi\ntst_resm TBROK \"tcp4-multi-diffip01 requires external IP alias pairs\"\nexit 1\n",
         )?;
     }
+    Ok(())
+}
 
-    // tst_sleep 和 tst_timeout_kill 不是 busybox applet，用 shell 脚本实现
-    // tst_sleep: 将 LTP 的 "100ms" 格式转为 busybox sleep 支持的 "0.100" 秒格式
-    {
-        let mut content = String::from("#!/bin/sh\n# LTP tst_sleep wrapper: converts 100ms -> 0.100\narg=\"$1\"\ncase \"$arg\" in\n    *ms) /bin/sleep \"0.${arg%ms}\" ;;\n    *) /bin/sleep \"$arg\" ;;\nesac\n");
-        let file = open(
-            "/bin/tst_sleep",
-            OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-            DEFAULT_FILE_MODE,
-        )?
-        .file()?;
-        let mut v = Vec::new();
-        unsafe {
-            v.push(core::slice::from_raw_parts_mut(
-                content.as_bytes_mut().as_mut_ptr(),
-                content.len(),
-            ));
-        }
-        file.write(UserBuffer::new(v))?;
-        file.inode.sync();
-    }
-    // tst_timeout_kill: 发送 SIGTERM + SIGKILL 终止超时 watchdog
-    {
-        let mut content = String::from("#!/bin/sh\n# LTP tst_timeout_kill wrapper\npid=\"$1\"\nif [ -n \"$pid\" ] && [ \"$pid\" -gt 0 ] 2>/dev/null; then\n    kill -TERM \"$pid\" 2>/dev/null\n    /bin/sleep 0.1\n    kill -KILL \"$pid\" 2>/dev/null\nfi\n");
-        let file = open(
-            "/bin/tst_timeout_kill",
-            OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-            DEFAULT_FILE_MODE,
-        )?
-        .file()?;
-        let mut v = Vec::new();
-        unsafe {
-            v.push(core::slice::from_raw_parts_mut(
-                content.as_bytes_mut().as_mut_ptr(),
-                content.len(),
-            ));
-        }
-        file.write(UserBuffer::new(v))?;
-        file.inode.sync();
-    }
-    // tst_rod: LTP "remove old directory" → rm -rf
-    {
-        let mut content = String::from("#!/bin/sh\n# LTP tst_rod wrapper\n/bin/rm -rf \"$@\"\n");
-        let file = open(
-            "/bin/tst_rod",
-            OpenFlags::O_CREATE | OpenFlags::O_RDWR,
-            DEFAULT_FILE_MODE,
-        )?
-        .file()?;
-        let mut v = Vec::new();
-        unsafe {
-            v.push(core::slice::from_raw_parts_mut(
-                content.as_bytes_mut().as_mut_ptr(),
-                content.len(),
-            ));
-        }
-        file.write(UserBuffer::new(v))?;
-        file.inode.sync();
-    }
+fn create_ltp_utility_wrappers() -> SysResult {
+    write_init_file(
+        "/bin/tst_sleep",
+        "#!/bin/sh\n# LTP tst_sleep wrapper: converts 100ms -> 0.100\narg=\"$1\"\ncase \"$arg\" in\n    *ms) /bin/sleep \"0.${arg%ms}\" ;;\n    *) /bin/sleep \"$arg\" ;;\nesac\n",
+    )?;
+    write_init_file(
+        "/bin/tst_timeout_kill",
+        "#!/bin/sh\n# LTP tst_timeout_kill wrapper\npid=\"$1\"\nif [ -n \"$pid\" ] && [ \"$pid\" -gt 0 ] 2>/dev/null; then\n    kill -TERM \"$pid\" 2>/dev/null\n    /bin/sleep 0.1\n    kill -KILL \"$pid\" 2>/dev/null\nfi\n",
+    )?;
+    write_init_file(
+        "/bin/tst_rod",
+        "#!/bin/sh\n# LTP tst_rod wrapper\n/bin/rm -rf \"$@\"\n",
+    )?;
+    Ok(())
+}
+
+fn create_bin_files() -> SysResult {
+    create_busybox_links()?;
+    create_common_bin_wrappers()?;
+    create_network_test_wrappers()?;
+    create_ltp_utility_wrappers()?;
+    Ok(())
+}
+
+pub fn create_init_files() -> SysResult {
+    // 写入预先加载内容和内嵌兼容库。
+    flush_preload();
+    flush_libgcc_s();
+
+    create_proc_files()?;
+    create_boot_files()?;
+    create_dev_files()?;
+    create_etc_files()?;
+    create_dir("/tmp")?;
+    create_bin_files()?;
 
     // 磁盘镜像中 glibc/lib 下已同时存在 libm.so 和 libm.so.6（两个独立文件），
     // 此处不再创建重复的符号链接，避免覆盖已存在的普通文件。
-
     println!("create_init_files success!");
     Ok(())
 }
