@@ -8,12 +8,12 @@ use crate::{
     arch::memory_layout::{MAX_MMAP_SIZE, PAGE_SIZE},
     fs::File,
     mm::{
-        MapArea, MapAreaType, MapPermission, MremapFlags, ShmFlags, VirtAddr, VirtPageNum,
         copy_to_user, if_bad_address, remove_bad_address, shm_attach, shm_create, shm_drop,
-        shm_find,
+        shm_find, MapArea, MapAreaType, MapPermission, MremapFlags, ShmFlags, VirtAddr,
+        VirtPageNum,
     },
     task::{self, current_task},
-    utils::{SysErrNo, SyscallRet, page_round_up},
+    utils::{page_round_up, SysErrNo, SyscallRet},
 };
 
 /// 参考 https://man7.org/linux/man-pages/man2/mmap.2.html

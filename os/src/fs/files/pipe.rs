@@ -5,7 +5,7 @@ use super::super::{File, OpenFlags, StMode};
 use crate::fs::Kstat;
 use crate::signal::check_if_any_sig_for_current_task;
 use crate::task::{
-    TaskControlBlock, TaskStatus, current_task, ready_queue, schedule_blocked_current,
+    current_task, ready_queue, schedule_blocked_current, TaskControlBlock, TaskStatus,
 };
 use crate::utils::{PollSet, SysErrNo};
 use crate::{mm::UserBuffer, syscall::PollEvents, utils::SyscallRet};

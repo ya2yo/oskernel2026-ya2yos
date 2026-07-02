@@ -264,8 +264,7 @@ pub fn sys_linkat(
             if read_len == 0 {
                 break;
             }
-            let write_len =
-                dst.write(unsafe { user_buffer_from_kernel(&mut buf[..read_len]) })?;
+            let write_len = dst.write(unsafe { user_buffer_from_kernel(&mut buf[..read_len]) })?;
             if write_len != read_len {
                 return Err(SysErrNo::EIO);
             }
@@ -447,10 +446,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
     // returns exactly the target bytes and does not append a trailing NUL.
     if let Some(fd) = parse_proc_self_fd(&abs_path) {
         proc_inner.fd_table.get(fd)?;
-        let target = proc_inner
-            .fs_info
-            .fd_path(fd)
-            .ok_or(SysErrNo::ENOENT)?;
+        let target = proc_inner.fs_info.fd_path(fd).ok_or(SysErrNo::ENOENT)?;
         let readcnt = target.len().min(bufsize);
         copy_to_user(&*memory_set, buf as usize, &target.as_bytes()[..readcnt])?;
         return Ok(readcnt);

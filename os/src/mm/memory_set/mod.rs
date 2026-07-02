@@ -16,8 +16,8 @@ mod mmap_ops;
 use super::group::GROUP_SHARE;
 use super::map_area::MapType;
 use super::{
-    FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer, VPNRange, VirtAddr,
-    VirtPageNum, read_user_bytes_direct_into, user_buffer_from_kernel,
+    read_user_bytes_direct_into, user_buffer_from_kernel, FrameTracker, MapArea, MapAreaType,
+    MapPermission, PhysAddr, UserBuffer, VPNRange, VirtAddr, VirtPageNum,
 };
 use crate::arch::memory_layout::{KERNEL_ADDR_OFFSET, MMAP_TOP, PAGE_SIZE, USER_HEAP_SIZE};
 use crate::arch::page_table::PageTable;
@@ -32,8 +32,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use log;
 use spin::{
-    Lazy, Mutex,
     rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard},
+    Lazy, Mutex,
 };
 
 pub use elf_loader::*;

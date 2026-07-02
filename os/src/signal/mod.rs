@@ -16,10 +16,10 @@ use crate::{
         memory_layout::{self, USER_STACK_SIZE},
         trap_interface::get_trap_cause,
     },
-    mm::{VirtAddr, copy_from_user_val, copy_to_user, copy_to_user_val},
+    mm::{copy_from_user_val, copy_to_user, copy_to_user_val, VirtAddr},
     task::{
-        Process, TaskControlBlock, TaskStatus, current_task, exit_current_and_run_next,
-        ready_queue, stop_current_and_run_next, tid_to_task,
+        current_task, exit_current_and_run_next, ready_queue, stop_current_and_run_next,
+        tid_to_task, Process, TaskControlBlock, TaskStatus,
     },
     timer::TimeVal,
     trap::trap_types::{Exception, Trap},

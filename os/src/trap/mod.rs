@@ -19,10 +19,10 @@ use crate::{
     arch::{cpu::hart_id, page_table::PageTable, trap_interface::tlb_page_modify_handler},
     mm::{VirtAddr, VirtPageNum},
     signal::{
-        SIGSEGV, SigSet, check_if_any_sig_for_current_task, deliver_itimer_signal, handle_signal,
-        send_signal_to_thread,
+        check_if_any_sig_for_current_task, deliver_itimer_signal, handle_signal,
+        send_signal_to_thread, SigSet, SIGSEGV,
     },
-    syscall::{Syscall, syscall},
+    syscall::{syscall, Syscall},
     task::{
         check_timer_events, current_task, current_token, current_trap_cx,
         exit_current_and_run_next, suspend_current_and_run_next,
@@ -236,11 +236,7 @@ pub fn trap_return() {
         fn __return_to_user(cx: *mut TrapContext);
     }
     // 启动任务的页表
-    current_task()
-        .unwrap()
-        .process
-        .memory_set_arc()
-        .activate();
+    current_task().unwrap().process.memory_set_arc().activate();
 
     unsafe {
         // 方便调试进入__return_to_user

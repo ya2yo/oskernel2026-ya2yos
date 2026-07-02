@@ -2,7 +2,7 @@ use alloc::string::ToString;
 use log::{debug, warn};
 
 use crate::{
-    fs::{FileClass, FileDescriptor, make_pipe},
+    fs::{make_pipe, FileClass, FileDescriptor},
     mm::copy_to_user,
     syscall::fs::dummyfd_create,
     task::current_task,

@@ -3,10 +3,10 @@ use alloc::{sync::Arc, vec::Vec};
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_from_user_val, copy_to_user},
-    signal::{SIG_IGN, SIGCHLD, SigOp, SigSet, enter_pselect_itimer_wait},
+    signal::{enter_pselect_itimer_wait, SigOp, SigSet, SIGCHLD, SIG_IGN},
     syscall::{
+        options::{FdSet, FD_SET_LEN},
         PollEvents,
-        options::{FD_SET_LEN, FdSet},
     },
     task::{block_on, current_task, timeout as timeout_future},
     timer::Timespec,

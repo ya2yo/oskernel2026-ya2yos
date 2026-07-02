@@ -3,6 +3,7 @@ mod files;
 mod fs_info;
 mod fstruct;
 mod mount;
+mod page_cache;
 // pub use files::{make_socket, make_socketpair, OSFile};
 mod stat;
 mod vfs;
@@ -21,16 +22,17 @@ pub use files::devfs::*;
 pub use fs_info::*;
 pub use fstruct::*;
 // pub mod socket_defs;
-pub use files::pipe::{Pipe, make_pipe, open_fifo};
+pub use files::pipe::{make_pipe, open_fifo, Pipe};
 pub use files::stdio::{Stdin, Stdout};
 use log::debug;
 pub use mount::MNT_TABLE;
+pub use page_cache::*;
 pub use stat::*;
 pub use vfs::*;
 mod kernel_fs_ops;
 pub use kernel_fs_ops::{
-    FsIndex, create_init_files, create_proc_dir_and_file, open, refresh_proc_stat,
-    refresh_proc_status, remove_proc_dir_and_file,
+    create_init_files, create_proc_dir_and_file, open, refresh_proc_stat, refresh_proc_status,
+    remove_proc_dir_and_file, FsIndex,
 };
 mod map_dynamic_link;
 pub use map_dynamic_link::{

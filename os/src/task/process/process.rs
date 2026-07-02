@@ -10,11 +10,11 @@ use log::{debug, warn};
 use spin::{Lazy, Mutex, MutexGuard};
 
 use crate::{
-    fs::{FSInfo, FdTable, remove_proc_dir_and_file},
+    fs::{remove_proc_dir_and_file, FSInfo, FdTable},
     mm::MemorySet,
-    signal::{SigSet, SigTable, send_signal_to_thread_group},
+    signal::{send_signal_to_thread_group, SigSet, SigTable},
     task::{TaskControlBlock, TidHandle},
-    utils::{ResourceSlot, SysErrNo, get_abs_path, is_abs_path},
+    utils::{get_abs_path, is_abs_path, ResourceSlot, SysErrNo},
 };
 
 /// 进程/线程组 类

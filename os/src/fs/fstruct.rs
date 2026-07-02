@@ -1,5 +1,5 @@
 use crate::{
-    fs::{Pipe, Socket, files::OSFile},
+    fs::{files::OSFile, Pipe, Socket},
     mm::UserBuffer,
     net::{Shutdown, SocketOps},
     syscall::Syscall,

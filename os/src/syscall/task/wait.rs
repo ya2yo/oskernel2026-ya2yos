@@ -9,10 +9,10 @@ use log::debug;
 use crate::{
     mm::copy_to_user,
     signal::{
-        SIG_IGN, SIGCHLD, SigActionFlags, SigInfo, SigOp, SigSet, check_if_any_sig_for_current_task,
+        check_if_any_sig_for_current_task, SigActionFlags, SigInfo, SigOp, SigSet, SIGCHLD, SIG_IGN,
     },
     syscall::options::WaitOption,
-    task::{Process, block_on, current_task, interruptible, suspend_current_and_run_next},
+    task::{block_on, current_task, interruptible, suspend_current_and_run_next, Process},
     utils::{SysErrNo, SyscallRet},
 };
 

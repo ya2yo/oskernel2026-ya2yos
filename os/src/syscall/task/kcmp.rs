@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::{
-    task::{Process, current_task},
+    task::{current_task, Process},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -101,7 +101,11 @@ pub fn sys_kcmp(pid1: usize, pid2: usize, typ: i32, idx1: usize, idx2: usize) ->
                     let f1 = file_desc1.any();
                     let f2 = file_desc2.any();
                     // Arc::ptr_eq 比较底层分配是否相同
-                    if Arc::ptr_eq(&f1, &f2) { Ok(0) } else { Ok(1) }
+                    if Arc::ptr_eq(&f1, &f2) {
+                        Ok(0)
+                    } else {
+                        Ok(1)
+                    }
                 }
             }
         }

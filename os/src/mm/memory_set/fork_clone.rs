@@ -11,7 +11,7 @@ use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::PAGE_SIZE;
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
-use crate::mm::{MemorySet, page_fault_handler};
+use crate::mm::{page_fault_handler, MemorySet};
 use crate::syscall::MmapFlags;
 use alloc::sync::Arc;
 use alloc::vec::Vec;

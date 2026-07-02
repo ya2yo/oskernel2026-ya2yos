@@ -1,10 +1,10 @@
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_to_user},
-    signal::{SIG_IGN, SIGCHLD, SigOp, SigSet},
-    syscall::{PollEvents, options::PollFd},
+    signal::{SigOp, SigSet, SIGCHLD, SIG_IGN},
+    syscall::{options::PollFd, PollEvents},
     task::{current_task, suspend_current_and_run_next},
-    timer::{Timespec, get_time_ms},
+    timer::{get_time_ms, Timespec},
     utils::{SysErrNo, SyscallRet},
 };
 use alloc::vec;

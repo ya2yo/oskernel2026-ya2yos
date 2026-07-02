@@ -71,9 +71,9 @@ mod tid;
 pub use crate::arch::context::TaskContext;
 use crate::{
     arch::cpu::hart_id,
-    fs::{NONE_MODE, OpenFlags, open},
-    mm::{MapAreaType, VirtAddr, activate_kernel_space, copy_to_user, copy_to_user_val},
-    signal::{SigSet, send_signal_to_thread_group},
+    fs::{open, OpenFlags, NONE_MODE},
+    mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
+    signal::{send_signal_to_thread_group, SigSet},
     syscall::write_process_acct_record,
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
 };
@@ -87,8 +87,8 @@ pub use manager::*;
 pub use process::*;
 pub use process::*;
 pub use processor::{
-    PROCESSORS, Processor, current_task, current_token, current_trap_cx, run_tasks, schedule,
-    take_current_task,
+    current_task, current_token, current_trap_cx, run_tasks, schedule, take_current_task,
+    Processor, PROCESSORS,
 };
 use spin::Lazy;
 use switch::__abandon;

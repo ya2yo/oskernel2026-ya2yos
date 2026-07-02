@@ -1,9 +1,8 @@
 //!Implementation of [`TaskControlBlock`]
 use super::super::process::Process;
 use super::super::{
-    TaskContext, TidHandle,
     aux::{Aux, AuxType},
-    tid_to_task,
+    tid_to_task, TaskContext, TidHandle,
 };
 use crate::{
     arch::{
@@ -15,19 +14,19 @@ use crate::{
         page_table::PageTable,
     },
     fs::{
-        DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, FSInfo, FdTable, OpenFlags, create_proc_dir_and_file,
-        open,
+        create_proc_dir_and_file, open, FSInfo, FdTable, OpenFlags, DEFAULT_DIR_MODE,
+        DEFAULT_FILE_MODE,
     },
     mm::{
-        MapAreaType, MapPermission, MemorySet, MemorySetInner, PhysPageNum, VirtAddr, copy_to_user,
-        copy_to_user_val,
+        copy_to_user, copy_to_user_val, MapAreaType, MapPermission, MemorySet, MemorySetInner,
+        PhysPageNum, VirtAddr,
     },
     signal::{SigSet, SigTable},
     syscall::CloneFlags,
     task::{futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid},
     timer::{TimeData, Timer},
     trap::trap_types::{Exception, Trap},
-    utils::{SysErrNo, get_abs_path, is_abs_path},
+    utils::{get_abs_path, is_abs_path, SysErrNo},
 };
 use alloc::{
     format,
