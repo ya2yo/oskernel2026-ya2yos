@@ -117,7 +117,7 @@ pub fn trap_handler() {
             {
                 let task = current_task().unwrap();
                 let process = &task.process;
-                let memory_set = process.get_locked_memory_set_read();
+                let memory_set = process.memory_set_arc();
                 ok = memory_set.handle_page_fault(fault_va.floor(), cause);
                 // drop task inner and task to avoid deadlock and exit exception
             }
@@ -164,7 +164,7 @@ pub fn trap_handler() {
             {
                 let task = current_task().unwrap();
                 let process = &task.process;
-                let memory_set = process.get_locked_memory_set_read();
+                let memory_set = process.memory_set_arc();
                 ok = memory_set.handle_page_fault(fault_va.floor(), cause);
             }
             if !ok {
@@ -239,7 +239,7 @@ pub fn trap_return() {
     current_task()
         .unwrap()
         .process
-        .get_locked_memory_set_read()
+        .memory_set_arc()
         .activate();
 
     unsafe {

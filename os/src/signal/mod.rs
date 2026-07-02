@@ -147,7 +147,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
 
     // 动态查找包含当前 sp 的 MapArea，以此确定栈的真实边界。
     // 这对 mmap 分配的线程栈也能正确工作。
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let sp_vpn = VirtAddr::from(user_sp).floor();
     let stack_bottom = memory_set
         .get_ref()
@@ -320,7 +320,7 @@ pub fn restore_frame() -> SyscallRet {
     let mut task_inner = task.inner_lock();
 
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     let trap_cx = task_inner.trap_cx();
     let mut user_sp = trap_cx.get_sp();

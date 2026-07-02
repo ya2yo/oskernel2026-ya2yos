@@ -132,7 +132,7 @@ pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> S
         fd_table.get(fd1)?.socket()?.set_nonblocking(true)?;
         fd_table.get(fd2)?.socket()?.set_nonblocking(true)?;
     }
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let fds = [fd1 as u32, fd2 as u32];
     let fds_bytes = unsafe {
         core::slice::from_raw_parts(fds.as_ptr() as *const u8, core::mem::size_of_val(&fds))

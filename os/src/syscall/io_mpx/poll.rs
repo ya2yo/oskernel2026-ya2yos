@@ -15,7 +15,7 @@ use core::cmp::min;
 pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     if fds_ptr == 0 && nfds != 0 {
         return Err(SysErrNo::EINVAL);
@@ -80,7 +80,7 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
         }
         //有响应了就可以返回
         if resnum > 0 {
-            let mem_set = proc_inner.get_locked_memory_set_read();
+            let mem_set = proc_inner.memory_set_arc();
             copy_to_user(&mem_set, user_fds_ptr, &kernel_fds)?;
             return Ok(resnum);
         }

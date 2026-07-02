@@ -27,7 +27,7 @@ pub fn sys_get_robust_list(pid: usize, head_ptr: *mut usize, len_ptr: *mut usize
     if let Some(task) = task {
         let task_inner = task.inner_lock();
         let proc_inner = &task.process;
-        let memory_set = proc_inner.get_locked_memory_set_read();
+        let memory_set = proc_inner.memory_set_arc();
         let head_val = task_inner.robust_list.list;
         copy_to_user(&memory_set, head_ptr as usize, unsafe {
             core::slice::from_raw_parts(

@@ -39,7 +39,7 @@ fn read_family(addr: *const u8, addrlen: u32) -> SysResult<u16> {
     }
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let mut buf = [0u8; size_of::<u16>()];
     copy_from_user(&memory_set, addr as usize, &mut buf).map(|_| ())?;
     Ok(u16::from_ne_bytes(buf))
@@ -51,7 +51,7 @@ fn fill_addr(addr: *mut u8, addrlen: &mut u32, data: &[u8]) -> SysResult<()> {
     let len = (*addrlen as usize).min(data.len());
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     copy_to_user(&memory_set, addr as usize, &data[..len]).map(|_| ())?;
     *addrlen = data.len() as _;
     Ok(())
@@ -88,7 +88,7 @@ impl SocketAddrExt for SocketAddrV4 {
         }
         let task = current_task().unwrap();
         let process = &task.process;
-        let memory_set = process.get_locked_memory_set_read();
+        let memory_set = process.memory_set_arc();
         let mut buf = [0u8; size_of::<sockaddr_in>()];
         copy_from_user(&memory_set, addr as usize, &mut buf).map(|_| ())?;
         let addr_in: sockaddr_in = unsafe { *buf.as_ptr().cast() };
@@ -126,7 +126,7 @@ impl SocketAddrExt for SocketAddrV6 {
         }
         let task = current_task().unwrap();
         let process = &task.process;
-        let memory_set = process.get_locked_memory_set_read();
+        let memory_set = process.memory_set_arc();
         let mut buf = [0u8; size_of::<sockaddr_in6>()];
         copy_from_user(&memory_set, addr as usize, &mut buf).map(|_| ())?;
         let addr_in6: sockaddr_in6 = unsafe { *buf.as_ptr().cast() };
@@ -199,7 +199,7 @@ impl SocketAddrExt for UnixSocketAddr {
 
         let task = current_task().unwrap();
         let process = &task.process;
-        let memory_set = process.get_locked_memory_set_read();
+        let memory_set = process.memory_set_arc();
         let mut path = [0u8; 108];
         copy_from_user(
             &memory_set,
@@ -247,7 +247,7 @@ impl SocketAddrExt for UnixSocketAddr {
         let copy_len = (*addrlen as usize).min(used);
         let task = current_task().unwrap();
         let process = &task.process;
-        let memory_set = process.get_locked_memory_set_read();
+        let memory_set = process.memory_set_arc();
         copy_to_user(&memory_set, addr as usize, &data[..copy_len]).map(|_| ())?;
         *addrlen = used as u32;
         Ok(())

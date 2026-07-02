@@ -333,7 +333,7 @@ impl TaskControlBlock {
         // 因此必须在替换前，在旧地址空间中完成写0和futex_wake
         if task_inner.clear_child_tid != 0 {
             let old_proc = &self.process;
-            let old_memory_set = old_proc.get_locked_memory_set_read();
+            let old_memory_set = old_proc.memory_set_arc();
             let _ = copy_to_user(
                 &old_memory_set,
                 task_inner.clear_child_tid as usize,
@@ -361,7 +361,7 @@ impl TaskControlBlock {
 
         // 获取新地址空间用于栈写入
         let proc_inner = &self.process;
-        let proc_mem = proc_inner.get_locked_memory_set_read();
+        let proc_mem = proc_inner.memory_set_arc();
 
         let mut user_sp = ustack_top;
 
@@ -527,7 +527,7 @@ impl TaskControlBlock {
             child_memory_set_arc = if flags.contains(CloneFlags::CLONE_VM) {
                 parent_proc_inner.memory_set_arc()
             } else {
-                let parent_memory_set = parent_proc_inner.get_locked_memory_set_read();
+                let parent_memory_set = parent_proc_inner.memory_set_arc();
                 Arc::new(MemorySet::new(MemorySetInner::from_existed_user(
                     &parent_memory_set,
                 )))
@@ -556,7 +556,7 @@ impl TaskControlBlock {
 
             // CLONE_PARENT_SETTID: 写入父进程地址空间
             if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
-                let parent_mem = parent_proc_inner.get_locked_memory_set_read();
+                let parent_mem = parent_proc_inner.memory_set_arc();
                 copy_to_user_val(&*parent_mem, parent_tid, &(tid_handle.0 as u32))?;
             }
 
@@ -671,7 +671,7 @@ impl TaskControlBlock {
             *child_inner.trap_cx() = parent_trap_cx;
 
             let child_proc = &child.process;
-            let child_mm = child_proc.get_locked_memory_set_read();
+            let child_mm = child_proc.memory_set_arc();
             let child_stack_bottom = child_mm
                 .get_ref()
                 .areas
@@ -699,7 +699,7 @@ impl TaskControlBlock {
         // CLONE_CHILD_SETTID: 写入子进程地址空间
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
             let child_proc_inner = &child.process;
-            let child_mem = child_proc_inner.get_locked_memory_set_read();
+            let child_mem = child_proc_inner.memory_set_arc();
             copy_to_user_val(&*child_mem, child_tid, &(child.tid() as u32))?;
         }
 
@@ -716,7 +716,7 @@ impl TaskControlBlock {
         // Threads share the process, so /proc/<pid> is only created for a new process.
         if !flags.contains(CloneFlags::CLONE_THREAD) {
             let child_proc = &child.process;
-            let child_mm = child_proc.get_locked_memory_set_read();
+            let child_mm = child_proc.memory_set_arc();
             create_proc_dir_and_file(child_pid, child_ppid, &child_mm);
         }
 
@@ -738,7 +738,7 @@ impl TaskControlBlock {
     pub fn growproc(&self, grow_size: isize) -> usize {
         let mut inner = self.inner_lock();
         let process = &self.process;
-        let memory_set = process.get_locked_memory_set_write();
+        let memory_set = process.memory_set_arc();
 
         if grow_size == 0 {
             return inner.user_heappoint;
@@ -797,7 +797,7 @@ impl TaskControlBlock {
     fn alloc_user_res(&self, task_inner: &mut TaskControlBlockInner) -> usize {
         let (ustack_top, trap_cx_bottom, trap_cx_ppn) = {
             let proc_inner = &self.process;
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             memory_set.with_mut(|ms| {
                 let (u_bottom, u_top) = ms.lazy_insert_framed_area_with_hint(
                     USER_STACK_TOP,
@@ -843,7 +843,7 @@ impl TaskControlBlock {
     fn alloc_trap_context_only(&self, task_inner: &mut TaskControlBlockInner) {
         let (trap_cx_bottom, trap_cx_ppn) = {
             let proc_inner = &self.process;
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             memory_set.with_mut(|ms| {
                 let (t_cx, _) = ms.insert_framed_area_with_hint(
                     USER_TRAP_CONTEXT_TOP,

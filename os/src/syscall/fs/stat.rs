@@ -89,7 +89,7 @@ fn statx_time(sec: usize, nsec: usize) -> statx_timestamp {
 pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     if (kst as isize) <= 0 || if_bad_address(kst as usize) {
         return Err(SysErrNo::EFAULT);
@@ -114,7 +114,7 @@ pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, flags: usize)
     let task = current_task().unwrap();
 
     let proc_inner = &task.process;
-    let memory_set = &proc_inner.get_locked_memory_set_read();
+    let memory_set = &proc_inner.memory_set_arc();
 
     if (kst as isize) <= 0 || if_bad_address(kst as usize) {
         return Err(SysErrNo::EFAULT);
@@ -171,7 +171,7 @@ pub fn sys_statx(
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let kstat = if path.is_null() {
         // path 为 nullptr，且设置了 AT_EMPTY_PATH，表示获取 dirfd 指向文件的信息
         if flags & AT_EMPTY_PATH as usize == 0 {
@@ -218,7 +218,7 @@ pub fn sys_statx(
 pub fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let stat = superblock_fs_stat();
     copy_to_user(&memory_set, statfs as usize, unsafe {
         core::slice::from_raw_parts(
@@ -250,7 +250,7 @@ pub fn sys_fstatfs(fd: i32, buf: usize) -> SyscallRet {
             core::mem::size_of::<Statfs>(),
         )
     };
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     copy_to_user(&memory_set, buf, bytes)
 }
 
@@ -262,7 +262,7 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> S
     let gid = inner.real_gid;
     drop(inner);
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     if (path as isize) <= 0 {
         return Err(SysErrNo::EFAULT);
     }

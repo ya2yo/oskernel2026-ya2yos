@@ -57,7 +57,7 @@ pub fn sys_get_mempolicy(
     if mode != 0 {
         let task = current_task().unwrap();
         let proc_inner = &task.process;
-        let memory_set = proc_inner.get_locked_memory_set_read();
+        let memory_set = proc_inner.memory_set_arc();
         let mpol_val: i32 = 0;
         copy_to_user(&memory_set, mode, unsafe {
             core::slice::from_raw_parts(

@@ -150,7 +150,7 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
 
             if !wstatus.is_null() {
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 let value = ((stop_signal as i32) << 8) | 0x7f;
                 if copy_to_user(&memory_set, wstatus as usize, unsafe {
                     core::slice::from_raw_parts(
@@ -176,7 +176,7 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
 
             if !wstatus.is_null() {
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 let value = wait_status_from_exit_code(exit_code, termination_signal);
                 if copy_to_user(&memory_set, wstatus as usize, unsafe {
                     core::slice::from_raw_parts(
@@ -364,7 +364,7 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
                     stop_signal as u32,
                 );
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 if copy_to_user(&memory_set, infop as usize, unsafe {
                     core::slice::from_raw_parts(
                         &sig_info as *const SigInfo as *const u8,
@@ -396,7 +396,7 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
                     cont_signal as u32,
                 );
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 if copy_to_user(&memory_set, infop as usize, unsafe {
                     core::slice::from_raw_parts(
                         &sig_info as *const SigInfo as *const u8,
@@ -441,7 +441,7 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
                 let sig_info =
                     SigInfo::new_child(SIGCHLD as u32, si_code, found_pid as u32, si_status);
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 if copy_to_user(&memory_set, infop as usize, unsafe {
                     core::slice::from_raw_parts(
                         &sig_info as *const SigInfo as *const u8,
@@ -490,7 +490,7 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
             if !infop.is_null() {
                 let sig_info = SigInfo::new(0, 0, 0, 0);
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 if copy_to_user(&memory_set, infop as usize, unsafe {
                     core::slice::from_raw_parts(
                         &sig_info as *const SigInfo as *const u8,

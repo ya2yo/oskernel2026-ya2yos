@@ -14,7 +14,7 @@ use crate::utils::{SysErrNo, SysResult, SyscallRet};
 fn read_addrlen_from_user(addrlen_ptr: usize) -> SysResult<u32> {
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let mut buf = [0u8; 4];
     copy_from_user(&memory_set, addrlen_ptr, &mut buf).map(|_| ())?;
     // 以 i32 读取以检测负数（Linux 中 socklen_t 为 unsigned int，

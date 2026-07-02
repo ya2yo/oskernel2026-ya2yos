@@ -26,7 +26,7 @@ pub fn sys_sched_yield() -> SyscallRet {
 pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let mut req_val = Timespec::new(0, 0);
     copy_from_user(&memory_set, req as usize, unsafe {
         core::slice::from_raw_parts_mut(
@@ -61,7 +61,7 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
         } {
             if rem as usize != 0 {
                 let process = &task.process;
-                let memory_set = process.get_locked_memory_set_read();
+                let memory_set = process.memory_set_arc();
                 let left = calculate_left_timespec(endtime);
                 copy_to_user(&memory_set, rem as usize, unsafe {
                     core::slice::from_raw_parts(
@@ -96,7 +96,7 @@ pub fn sys_sched_setaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
     }
 
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let mut raw_mask = [0u8; core::mem::size_of::<usize>()];
     copy_from_user(&memory_set, mask, &mut raw_mask)?;
     Ok(0)
@@ -121,7 +121,7 @@ pub fn sys_sched_getaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
     }
 
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let cpu0_mask = 1usize.to_ne_bytes();
     copy_to_user(&memory_set, mask, &cpu0_mask)?;
     Ok(mask_bytes)
@@ -160,7 +160,7 @@ pub fn sys_sched_getparam(pid: usize, param: *mut u8) -> SyscallRet {
     }
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let sched_priority = 0i32.to_ne_bytes();
     copy_to_user(&memory_set, param as usize, &sched_priority)?;
     Ok(0)
@@ -192,7 +192,7 @@ pub fn sys_clock_nanosleep(
     }
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let mut t_val = Timespec::new(0, 0);
     copy_from_user(&memory_set, t as usize, unsafe {
         core::slice::from_raw_parts_mut(
@@ -262,7 +262,7 @@ pub fn sys_clock_nanosleep(
         } {
             if !remain.is_null() {
                 let process = &task.process;
-                let memory_set = process.get_locked_memory_set_read();
+                let memory_set = process.memory_set_arc();
                 let left = calculate_left_timespec(endtime);
                 copy_to_user(&memory_set, remain as usize, unsafe {
                     core::slice::from_raw_parts(

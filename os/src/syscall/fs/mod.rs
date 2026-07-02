@@ -91,7 +91,7 @@ pub fn sys_inotify_add_watch(fd: c_int, path: *const u8, mask: u32) -> SyscallRe
     let path_str = {
         let task = current_task().unwrap();
         let process = &task.process;
-        let memory_set = process.get_locked_memory_set_read();
+        let memory_set = process.memory_set_arc();
         read_user_cstr(&memory_set, path)?
     };
 
@@ -203,7 +203,7 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let fd_table = proc_inner.fd_table.clone();
     let fd = fd as usize;
 

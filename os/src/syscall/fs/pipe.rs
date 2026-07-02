@@ -14,7 +14,7 @@ pub fn sys_pipe2(fd: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
     let fd_table = proc_inner.fd_table.clone();
-    let memory_set = proc_inner.get_locked_memory_set_write();
+    let memory_set = proc_inner.memory_set_arc();
 
     let (read_pipe, write_pipe) = make_pipe();
     let read_fd = fd_table.alloc_fd()?;

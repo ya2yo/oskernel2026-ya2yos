@@ -233,7 +233,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
                 (osfile.inode.path(), osfile.inode.size() as i64)
             };
 
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             let mut flock_bytes = [0u8; 32];
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
@@ -251,7 +251,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
                 (osfile.inode.path(), osfile.inode.size() as i64)
             };
 
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             let mut flock_bytes = [0u8; 32];
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
@@ -267,7 +267,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
                 (osfile.inode.path(), osfile.inode.size() as i64)
             };
 
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             let mut flock_bytes = [0u8; 32];
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
@@ -286,7 +286,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
                 (osfile.inode.path(), osfile.inode.size() as i64)
             };
 
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             let mut flock_bytes = [0u8; 32];
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
@@ -304,7 +304,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
                 (osfile.inode.path(), osfile.inode.size() as i64)
             };
 
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             let mut flock_bytes = [0u8; 32];
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
@@ -401,7 +401,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let fd_table = proc_inner.fd_table.clone();
     let fs_info = proc_inner.fs_info.clone();
     let path = read_user_cstr(&*memory_set, path)?;
@@ -464,7 +464,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     }
     if abs_path == "/proc/self/status" {
         let proc_inner = &task.process;
-        let memory_set = proc_inner.get_locked_memory_set_read();
+        let memory_set = proc_inner.memory_set_arc();
         refresh_proc_status(task.pid(), task.ppid(), &memory_set)?;
         abs_path = format!("/proc/{}/status", task.pid());
     }
@@ -473,14 +473,14 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
             let ppid = process.ppid();
             let state = if process.all_tasks_exited() { 'Z' } else { 'S' };
             let proc_inner = &process;
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             refresh_proc_stat(pid, ppid, state, &memory_set)?;
         }
     }
     if let Some(pid) = parse_proc_pid_file(&abs_path, "status") {
         if let Some(process) = Process::get_process_arc_by_pid(pid) {
             let proc_inner = &process;
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             refresh_proc_status(pid, process.ppid(), &memory_set)?;
         }
     }
@@ -664,7 +664,7 @@ pub fn sys_openat2(
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     // 从用户空间读取 open_how 结构
     let mut open_how_val = open_how {

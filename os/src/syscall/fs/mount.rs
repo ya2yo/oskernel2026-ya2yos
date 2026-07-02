@@ -81,7 +81,7 @@ pub fn sys_pivot_root(_new_root: usize, _put_old: usize) -> SyscallRet {
 pub fn sys_umount2(special: *const u8, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let special = read_user_cstr(&memory_set, special)?;
     let special = proc_inner.get_abs_path(AT_FDCWD as isize, &special)?;
 
@@ -104,7 +104,7 @@ pub fn sys_mount(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let special = read_user_cstr(&memory_set, special)?;
     let dir = read_user_cstr(&memory_set, dir)?;
     let ftype = read_user_cstr(&memory_set, ftype)?;
@@ -142,7 +142,7 @@ pub fn sys_open_tree(dirfd: i32, path: *const u8, flags: u32) -> SyscallRet {
     let abs_path = {
         let task = current_task().unwrap();
         let proc_inner = &task.process;
-        let memory_set = proc_inner.get_locked_memory_set_read();
+        let memory_set = proc_inner.memory_set_arc();
         let path = read_user_cstr(&memory_set, path)?;
         if path.is_empty() && flags & AT_EMPTY_PATH == 0 {
             return Err(SysErrNo::ENOENT);
@@ -189,7 +189,7 @@ pub fn sys_move_mount(
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let from_path = read_user_cstr(&memory_set, from_path)?;
     let to_path = read_user_cstr(&memory_set, to_path)?;
     if from_path.len() > MAX_PATH_LEN || to_path.len() > MAX_PATH_LEN {
@@ -243,7 +243,7 @@ pub fn sys_fsopen(fsname: *const u8, flags: u32) -> SyscallRet {
     let fsname = {
         let task = current_task().unwrap();
         let proc_inner = &task.process;
-        let memory_set = proc_inner.get_locked_memory_set_read();
+        let memory_set = proc_inner.memory_set_arc();
         let fsname = read_user_cstr(&memory_set, fsname)?;
         if fsname.is_empty() || fsname.len() > MAX_PATH_LEN {
             return Err(SysErrNo::EINVAL);
@@ -281,7 +281,7 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let fsctx = proc_inner.fd_table.get(fd as usize)?.fs_context()?;
 
     match cmd {
@@ -473,7 +473,7 @@ pub fn sys_fspick(dirfd: i32, path: *mut u8, flags: u32) -> SyscallRet {
     let abs_path = {
         let task = current_task().unwrap();
         let proc_inner = &task.process;
-        let memory_set = proc_inner.get_locked_memory_set_read();
+        let memory_set = proc_inner.memory_set_arc();
         let path = read_user_cstr(&memory_set, path)?;
         if path.is_empty() && flags & FSPICK_EMPTY_PATH == 0 {
             return Err(SysErrNo::ENOENT);
@@ -521,7 +521,7 @@ pub fn sys_mount_setattr(
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let mut mount_attr_data = mount_attr {
         attr_set: 0,
         attr_clr: 0,

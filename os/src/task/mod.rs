@@ -199,7 +199,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         );
     }
     let curr_proc = &curr_task.process;
-    let memory_set = curr_proc.get_locked_memory_set_read();
+    let memory_set = curr_proc.memory_set_arc();
     let fd_table = Arc::clone(&curr_proc.fd_table);
     let fs_info = Arc::clone(&curr_proc.fs_info);
     let mut curr_task_inner = curr_task.inner_lock();

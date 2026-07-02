@@ -37,7 +37,7 @@ pub fn sys_mmap(
 
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_write();
+    let memory_set = process.memory_set_arc();
     let len = page_round_up(len);
     // Reject requests beyond the configured per-process mmap budget.
     if len > MAX_MMAP_SIZE {
@@ -96,7 +96,7 @@ pub fn sys_munmap(addr: usize, len: usize) -> SyscallRet {
     }
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_write();
+    let memory_set = process.memory_set_arc();
     let len = page_round_up(len);
     if if_bad_address(addr) {
         remove_bad_address(addr);
@@ -138,7 +138,7 @@ pub fn sys_mremap(
     }
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_write();
+    let memory_set = process.memory_set_arc();
     // 检查 old_addr + old_size 是否溢出
     let old_end = match old_addr.checked_add(old_size) {
         Some(v) => v,
@@ -239,7 +239,7 @@ pub fn sys_mprotect(addr: usize, len: usize, prot: u32) -> SyscallRet {
 
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_write();
+    let memory_set = process.memory_set_arc();
     let start_vpn = VirtAddr::from(addr).floor();
     let end_vpn = VirtAddr::from(end_addr).ceil();
     // 修改各逻辑段的权限并更新页表
@@ -332,7 +332,7 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> SyscallRet {
 
     let task = current_task().unwrap();
     let proc = &task.process;
-    let memory_set = proc.get_locked_memory_set_read();
+    let memory_set = proc.memory_set_arc();
 
     // ENOMEM: 地址范围必须全部在已有映射内
     if !memory_set.check_user_range(addr, length, MapPermission::R) {

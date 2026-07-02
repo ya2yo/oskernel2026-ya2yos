@@ -17,7 +17,7 @@ const CLOCK_RES_NSEC: usize = 1_000_000;
 pub fn sys_gettimeofday(tv: *mut TimeVal, tz: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     if !tv.is_null() && ((tv as isize) < 0 || if_bad_address(tv as usize)) {
         return Err(SysErrNo::EFAULT);
@@ -48,7 +48,7 @@ pub fn sys_times(tms: *mut Tms) -> SyscallRet {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let tms_data = Tms::new(&task_inner.time_data);
     copy_to_user(&memory_set, tms as usize, unsafe {
         core::slice::from_raw_parts(
@@ -71,7 +71,7 @@ pub fn sys_gettimer(_which: i32, curr_value: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     let timer = task_inner.timer.timer();
     copy_to_user(&memory_set, curr_value, unsafe {
@@ -92,7 +92,7 @@ pub fn sys_settimer(
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     if old_value as usize != 0 {
         let timer = task_inner.timer.timer();
         copy_to_user(&memory_set, old_value as usize, unsafe {
@@ -126,7 +126,7 @@ pub fn sys_clock_gettime(clockid: usize, tp: *mut Timespec) -> SyscallRet {
     let task = current_task().unwrap();
 
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let time = if clockid == 1 {
         get_time_spec()
     } else {
@@ -176,7 +176,7 @@ pub fn sys_getrusage(who: isize, usage: *mut Rusage) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = task.inner_lock();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     match who {
         RUSAGESELF => {
@@ -231,7 +231,7 @@ pub fn sys_clock_getres(clockid: isize, res: usize) -> SyscallRet {
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let restime = Timespec::new(0, CLOCK_RES_NSEC);
     copy_to_user(&memory_set, res, unsafe {
         core::slice::from_raw_parts(
@@ -264,7 +264,7 @@ fn is_supported_clockid(clockid: isize) -> bool {
 pub fn sys_adjtimex(buf: *mut Timex) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let privileged = task.inner_lock().effective_uid == 0;
 
     if (buf as isize) <= 0 || if_bad_address(buf as usize) {
@@ -321,7 +321,7 @@ pub fn sys_clock_adjtime(clock_id: u32, buf: *mut Timex) -> SyscallRet {
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let privileged = task.inner_lock().effective_uid == 0;
 
     let mut tx = Timex::defaults();
@@ -374,7 +374,7 @@ pub fn sys_clock_settime(clock_id: u32, tp: *const Timespec) -> SyscallRet {
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let mut ts = Timespec::new(0, 0);
     copy_from_user(&memory_set, tp as usize, unsafe {
         core::slice::from_raw_parts_mut(
@@ -425,7 +425,7 @@ pub fn sys_settimeofday(tv: *const TimeVal, tz: *const u8) -> SyscallRet {
     }
 
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     let mut timeval = TimeVal::new(0, 0);
     copy_from_user(&memory_set, tv as usize, unsafe {

@@ -176,7 +176,7 @@ pub fn sys_add_key(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     let type_str = if !key_type.is_null() {
         read_user_cstr(&memory_set, key_type)?
@@ -326,7 +326,7 @@ pub fn sys_keyctl(option: usize, arg2: usize, arg3: usize, arg4: usize, arg5: us
             if plen > 0 {
                 let task = current_task().unwrap();
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 let mut buf = vec![0u8; plen];
                 crate::mm::copy_from_user(&memory_set, arg3, &mut buf)?;
                 entry.payload = buf;
@@ -458,7 +458,7 @@ pub fn sys_keyctl(option: usize, arg2: usize, arg3: usize, arg4: usize, arg5: us
             if copy_len > 0 && buf_addr != 0 {
                 let task = current_task().unwrap();
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 crate::mm::copy_to_user(&memory_set, buf_addr, &data[..copy_len])?;
             }
             debug!("[keyctl] READ key={} len={}", key_id, entry.payload.len());

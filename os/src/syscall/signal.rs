@@ -86,7 +86,7 @@ pub fn sys_rt_sigaction(
     }
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     if old_act as usize != 0 {
         let sig_act = process.with_sigtable(|sigtable| sigtable.action(signo).act);
         let raw = RawSigAction::from_sigaction(sig_act);
@@ -132,7 +132,7 @@ pub fn sys_rt_sigreturn() -> SyscallRet {
 pub fn sys_rt_sigprocmask(how: u32, set: *const SigSet, old_set: *mut SigSet) -> SyscallRet {
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = &*process.get_locked_memory_set_read();
+    let memory_set = &*process.memory_set_arc();
     let mut task_inner = task.inner_lock();
     let how = SignalMaskFlag::from_bits(how).ok_or(SysErrNo::EINVAL)?;
 
@@ -179,7 +179,7 @@ pub fn sys_rt_sigpending(set: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let sig_pending = task_inner.sig_pending;
     copy_to_user(&memory_set, set, unsafe {
         core::slice::from_raw_parts(
@@ -207,7 +207,7 @@ pub fn sys_rt_sigtimedwait(
     let sigset = {
         let task = current_task().unwrap();
         let proc_inner = &task.process;
-        let memory_set = proc_inner.get_locked_memory_set_read();
+        let memory_set = proc_inner.memory_set_arc();
 
         let mut sigset: SigSet = SigSet::default();
         if set_ptr as usize != 0 {
@@ -277,7 +277,7 @@ pub fn sys_rt_sigtimedwait(
                     task.pid() as u32,
                 );
                 let proc_inner = &task.process;
-                let mem_set = proc_inner.get_locked_memory_set_read();
+                let mem_set = proc_inner.memory_set_arc();
                 copy_to_user(&mem_set, info_ptr as usize, unsafe {
                     core::slice::from_raw_parts(
                         &sig_info as *const SigInfo as *const u8,
@@ -305,7 +305,7 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let mut mask_val: SigSet = SigSet::default();
     copy_from_user(&memory_set, mask as usize, unsafe {
         core::slice::from_raw_parts_mut(

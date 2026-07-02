@@ -366,7 +366,7 @@ AI 继续检查 `Process::inner_lock()` 的调用点，确认上一轮保留的 
 
 重构方向：
 
-- `Process` 直接暴露 `memory_set_arc()`、`sig_table_arc()`、`get_locked_memory_set_read()`、`get_locked_memory_set_write()`、`with_sigtable()` 等资源访问方法。
+- `Process` 直接暴露 `memory_set_arc()`、`sig_table_arc()`、`with_sigtable()` 等资源访问方法。
 - 删除 `ProcessResources` 和 `Process::inner_lock()`，旧调用点改成直接持有 `&task.process` 或 `Arc<Process>`。
 - `SigTable` 的访问统一通过 `with_sigtable()` 封装，避免外部依赖 `get_locked_sigtable()` 这类旧接口。
 - 只移除 `Process::inner_lock()`；`TaskControlBlock::inner_lock()` 仍负责保护线程级状态，本轮不动。
@@ -422,7 +422,7 @@ AI 复查 `Process.memory_set` / `sig_table` 的实际使用路径，确认外�
 - 新增通用 `ResourceSlot<T>`，封装 `Mutex<Arc<T>>`。
 - `ResourceSlot` 只提供 `get()`、`replace()`、`replace_with()`、`strong_count()`，不暴露内部锁。
 - `Process.memory_set` 改为 `ResourceSlot<MemorySet>`，`Process.sig_table` 改为 `ResourceSlot<Mutex<SigTable>>`，并设为私有字段。
-- 既有 `memory_set_arc()`、`sig_table_arc()`、`get_locked_memory_set_*()`、`change_memory_set_and_sigtable()` 作为 PCB 对外接口保持不变，避免 syscall/fs/signal 等路径依赖 PCB 内部布局。
+- 既有 `memory_set_arc()`、`sig_table_arc()`、`change_memory_set_and_sigtable()` 作为 PCB 对外接口保持不变，避免 syscall/fs/signal 等路径依赖 PCB 内部布局。
 
 ### 修改内容
 
@@ -454,5 +454,56 @@ timeout 120s make run > /tmp/resource-slot.log 2>&1
 - 搜索确认 `Process` 不再暴露 `pub memory_set` / `pub sig_table`，裸 `Mutex<Arc<...>>` 已收敛到 `ResourceSlot`。
 - 当前默认 LoongArch64 `make` 构建通过，输出中仍有 vendor `smoltcp` warning，与本次重构无关。
 - 沙箱内 `make run` 因 QEMU 无法在只读 `/var/tmp` 创建临时文件未有效运行；申请外部运行后，`/tmp/resource-slot.log` 显示 basic musl/glibc 跑完并 `shutdown!`，未发现 `panic` / `TFAIL` / `TBROK`。
+
+未运行 RISC-V。
+
+---
+
+## 2026-07-02: 删除 get_locked_memory_set_read/write 兼容接口
+
+### 用户需求
+
+用户要求继续 PCB 资源槽重构，删除 `get_locked_memory_set_read()` / `get_locked_memory_set_write()` 两个函数。
+
+### 分析
+
+AI 确认 `MemorySet` 的读写同步已经由 `MemorySet` 内部 `RwLock<MemorySetInner>` 负责，`Process` 层现在只通过 `ResourceSlot<MemorySet>` 提供当前地址空间的 `Arc`。因此 `get_locked_memory_set_read/write()` 这两个名字已经不准确：它们并不返回读写锁 guard，只是克隆当前 `Arc<MemorySet>`。继续保留会让调用者误解锁边界。
+
+重构方向：
+
+- 调用点统一改为 `memory_set_arc()`。
+- 删除 `Process::get_locked_memory_set_read()` 和 `Process::get_locked_memory_set_write()`。
+- 保持 `MemorySet` 内部同步和 `ResourceSlot` 指针槽同步不变，不改变运行语义。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/process/process.rs` | 删除 `get_locked_memory_set_read/write()`，为 `memory_set_arc()` 补充语义注释 |
+| `os/src/{signal,trap,mm,task,syscall}/**/*.rs` | 地址空间获取调用统一改为 `memory_set_arc()` |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/决赛文档/ai.log` | 追加本轮 AI 协作记录 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 追加本轮 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children --check os/src/task/process/process.rs
+git diff --check
+git diff --cached --check
+rg -n "get_locked_memory_set_(read|write)\(" os/src
+make
+timeout 120s make run > /tmp/resource-slot.log 2>&1
+```
+
+结果：
+
+- `rustfmt --check` 通过。
+- `git diff --check` 与 `git diff --cached --check` 通过。
+- `rg` 未发现 `get_locked_memory_set_read/write()` 残留。
+- 当前默认 LoongArch64 `make` 构建通过，输出中仍有 vendor `smoltcp` warning，与本次重构无关。
+- 外部 LoongArch64 `make run` 基础测试跑完，`/tmp/resource-slot.log` 到 `shutdown!`，未发现 `panic` / `TFAIL` / `TBROK`。
 
 未运行 RISC-V。

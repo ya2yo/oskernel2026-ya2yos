@@ -165,7 +165,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         {
             let task = current_task().unwrap();
             let proc_inner = &task.process;
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             if let Err(err) = copy_from_user(&*memory_set, user_ptr, &mut kernel_buf) {
                 return if total_written > 0 {
                     Ok(total_written)
@@ -248,7 +248,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         if ret > 0 {
             let task = current_task().unwrap();
             let proc_inner = &task.process;
-            let mem = proc_inner.get_locked_memory_set_read();
+            let mem = proc_inner.memory_set_arc();
             if let Err(err) = copy_to_user(&*mem, user_ptr, &kernel_buf[..ret]) {
                 return if total_read > 0 {
                     Ok(total_read)
@@ -300,7 +300,7 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     let mut kernel_bufs: Vec<Vec<u8>> = Vec::new();
     let mut bufs: Vec<UserBuffer> = Vec::new();
     {
-        let memory_set = proc_inner.get_locked_memory_set_read();
+        let memory_set = proc_inner.memory_set_arc();
         for i in 0..iovcnt {
             let current = (iov as usize) + iovec_size * i;
             let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
@@ -351,7 +351,7 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     for i in 0..iovcnt {
         // 阶段 1：持锁读取 iovec 元数据 + 分配内核缓冲区
         let (iov_base, iov_len, mut kernel_buf) = {
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             let iov_ptr = (iov as usize) + iovec_size * i;
 
             let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
@@ -384,7 +384,7 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
 
         // 阶段 3：持锁将内核缓冲区 → 用户空间
         {
-            let memory_set = proc_inner.get_locked_memory_set_read();
+            let memory_set = proc_inner.memory_set_arc();
             copy_to_user(&memory_set, iov_base, &kernel_buf[..read_ret])?;
         }
 
@@ -432,7 +432,7 @@ pub fn sys_sendfile(outfd: usize, infd: usize, offset_ptr: usize, count: usize) 
 
     // 在释放锁之前读取用户空间的 offset
     let user_offset = if offset_ptr != 0 {
-        let memory_set = inner.get_locked_memory_set_read();
+        let memory_set = inner.memory_set_arc();
         let mut off: isize = 0;
         copy_from_user(&memory_set, offset_ptr, unsafe {
             core::slice::from_raw_parts_mut(
@@ -511,7 +511,7 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
 
     let chunk_count = IO_CHUNK_SIZE.min(count);
     let mut kernel_buf = {
-        let memory_set = inner.get_locked_memory_set_read();
+        let memory_set = inner.memory_set_arc();
         let mut kb = vec![0u8; chunk_count];
         if let Err(err) = copy_from_user(&memory_set, buf as usize, &mut kb) {
             let _ = file.lseek(cur_offset, SEEK_SET);
@@ -534,7 +534,7 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
 pub fn sys_pread64(fd: usize, buf: *const u8, count: usize, offset: isize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = &*&proc_inner.get_locked_memory_set_read();
+    let memory_set = &*&proc_inner.memory_set_arc();
 
     let file = proc_inner.fd_table.get(fd)?.any();
     if offset < 0 {
@@ -591,7 +591,7 @@ pub fn sys_pwritev2(
     }
 
     let iovecs = {
-        let memory_set = proc_inner.get_locked_memory_set_read();
+        let memory_set = proc_inner.memory_set_arc();
         match read_iovecs(&memory_set, iov, iovcnt) {
             Ok(iovecs) => iovecs,
             Err(err) => {
@@ -615,7 +615,7 @@ pub fn sys_pwritev2(
             {
                 let task = current_task().unwrap();
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 let src = iovinfo.iov_base + copied;
                 if let Err(err) = copy_from_user(&memory_set, src, &mut kernel_buf) {
                     if offset.is_some() {
@@ -687,7 +687,7 @@ pub fn sys_preadv2(
     }
 
     let iovecs = {
-        let memory_set = proc_inner.get_locked_memory_set_read();
+        let memory_set = proc_inner.memory_set_arc();
         match read_iovecs(&memory_set, iov, iovcnt) {
             Ok(iovecs) => iovecs,
             Err(err) => {
@@ -711,7 +711,7 @@ pub fn sys_preadv2(
             {
                 let task = current_task().unwrap();
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 if let Err(err) = probe_user_write(&memory_set, iov_base, chunk_len) {
                     if offset.is_some() {
                         let _ = file.lseek(cur_offset, SEEK_SET);
@@ -744,7 +744,7 @@ pub fn sys_preadv2(
             {
                 let task = current_task().unwrap();
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 if let Err(err) = copy_to_user(&memory_set, iov_base, &kernel_buf[..read_ret]) {
                     if offset.is_some() {
                         let _ = file.lseek(cur_offset, SEEK_SET);
@@ -939,7 +939,7 @@ pub fn sys_copy_file_range(
 
     // 在释放锁之前读取用户空间的 offset
     let (in_offset, out_offset) = {
-        let memory_set = inner.get_locked_memory_set_read();
+        let memory_set = inner.memory_set_arc();
         let in_off = if off_in != 0 {
             let mut off: isize = 0;
             copy_from_user(&memory_set, off_in, unsafe {
@@ -1060,7 +1060,7 @@ pub fn sys_copy_file_range(
     if off_in != 0 {
         let task = current_task().unwrap();
         let inner = &task.process;
-        let memory_set = inner.get_locked_memory_set_read();
+        let memory_set = inner.memory_set_arc();
         let mut cur_off: isize = 0;
         copy_from_user(&memory_set, off_in, unsafe {
             core::slice::from_raw_parts_mut(
@@ -1079,7 +1079,7 @@ pub fn sys_copy_file_range(
     if off_out != 0 {
         let task = current_task().unwrap();
         let inner = &task.process;
-        let memory_set = inner.get_locked_memory_set_read();
+        let memory_set = inner.memory_set_arc();
         let mut cur_off: isize = 0;
         copy_from_user(&memory_set, off_out, unsafe {
             core::slice::from_raw_parts_mut(

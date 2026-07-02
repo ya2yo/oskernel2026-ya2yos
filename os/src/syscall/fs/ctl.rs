@@ -27,7 +27,7 @@ pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
     if size < cwd_len_with_null {
         return Err(SysErrNo::ERANGE);
     }
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let mut cwd_with_null = vec![0u8; cwd_len_with_null];
     cwd_with_null[..cwd_bytes.len()].copy_from_slice(cwd_bytes);
     copy_to_user(&memory_set, buf as usize, &cwd_with_null)?;
@@ -43,7 +43,7 @@ pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         proc_inner.fd_table.get(arg)?;
     }
     let file = proc_inner.fd_table.get(fd)?.any();
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     file.ioctl(cmd as u32, arg, &memory_set)
 }
 
@@ -51,7 +51,7 @@ pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
 pub fn sys_chdir(path: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     if (path as isize) <= 0 || if_bad_address(path as usize) {
         return Err(SysErrNo::EFAULT);
@@ -86,7 +86,7 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
 pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let fd_table = proc_inner.fd_table.clone();
     let path = read_user_cstr(&memory_set, path as *const u8)?;
 
@@ -146,7 +146,7 @@ pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> Syscall
 pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let path = read_user_cstr(&memory_set, path)?;
     drop(memory_set);
     // debug!(
@@ -175,7 +175,7 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
 pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = &*process.get_locked_memory_set_read();
+    let memory_set = &*process.memory_set_arc();
     debug!(
         "[sys_getdents64] fd is {}, buf addr  is {:x}, len is {}",
         fd, buf as usize, len
@@ -207,7 +207,7 @@ pub fn sys_linkat(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     let old_path_str = read_user_cstr(&memory_set, oldpath)?;
     let new_path_str = read_user_cstr(&memory_set, newpath)?;
@@ -305,7 +305,7 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     let path = read_user_cstr(&memory_set, path)?;
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
@@ -359,7 +359,7 @@ pub fn sys_utimensat(
     }
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let path = if !path.is_null() {
         read_user_cstr(&memory_set, path)?
     } else {
@@ -421,7 +421,7 @@ pub fn sys_sync() -> SyscallRet {
 pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let path = read_user_cstr(&memory_set, path)?;
 
     // debug!(
@@ -435,7 +435,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
         exe.push('\0');
 
         let res = exe.len();
-        let mem = proc_inner.get_locked_memory_set_read();
+        let mem = proc_inner.memory_set_arc();
         copy_to_user(&*mem, buf as usize, exe.as_bytes())?;
         return Ok(res);
     }
@@ -461,7 +461,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
         return Err(SysErrNo::EINVAL);
     }
     let readcnt = file.inode.read_link(&mut linkbuf, bufsize)?;
-    let mem = proc_inner.get_locked_memory_set_read();
+    let mem = proc_inner.memory_set_arc();
     copy_to_user(&*mem, buf as usize, &linkbuf[..readcnt])?;
     Ok(readcnt)
 
@@ -471,7 +471,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
 pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let target_path = read_user_cstr(&memory_set, target)?;
     let link_path = read_user_cstr(&memory_set, linkpath)?;
 
@@ -513,7 +513,7 @@ pub fn sys_renameat2(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let oldpath = read_user_cstr(&memory_set, oldpath)?;
     let newpath = read_user_cstr(&memory_set, newpath)?;
 
@@ -585,7 +585,7 @@ pub fn sys_fchownat(
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let path = read_user_cstr(&memory_set, pathname)?;
 
     let inode = if path.is_empty() {
@@ -662,7 +662,7 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
 pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     if (flags as isize) < 0 {
         return Err(SysErrNo::EINVAL);

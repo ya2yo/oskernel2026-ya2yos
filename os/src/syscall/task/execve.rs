@@ -104,7 +104,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     let task = current_task().unwrap();
     let proc_inner = &task.process;
 
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let mut path = trim_start_slash(read_user_cstr(&memory_set, path)?);
     if path.starts_with("ltp/testcases/bin/\u{1b}[1;32m") {
         //去除颜色

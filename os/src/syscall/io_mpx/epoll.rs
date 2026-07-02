@@ -48,7 +48,7 @@ pub fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event_ptr: usize) -> Sys
     );
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let fd_table = &process.fd_table;
     let fd_i32 = fd as i32;
     let epoll_file = EpollFile::lookup(epfd)?;
@@ -160,7 +160,7 @@ pub fn sys_epoll_pwait(
 fn epoll_wait_once(epfd: usize, events_ptr: usize, maxevents: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let epoll_file = EpollFile::lookup(epfd)?;
     let fd_table = &process.fd_table;
     let mut poll_one = |fd: i32, registered: u32| {

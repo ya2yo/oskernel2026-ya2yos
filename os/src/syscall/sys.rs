@@ -136,7 +136,7 @@ pub fn sys_chroot(path: *const u8) -> SyscallRet {
 
     let path_str = {
         let proc_inner = &task.process;
-        let memory_set = proc_inner.get_locked_memory_set_read();
+        let memory_set = proc_inner.memory_set_arc();
         read_user_cstr(&memory_set, path)?
     };
 
@@ -305,7 +305,7 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> SyscallRet {
 pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let inner = task.inner_lock();
     let real_uid = inner.user_id as u32;
 
@@ -478,7 +478,7 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> SyscallRet {
 pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let inner = task.inner_lock();
 
     for (ptr, value) in [
@@ -519,7 +519,7 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
     };
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     copy_to_user(&memory_set, buf as usize, unsafe {
         core::slice::from_raw_parts(
             &uname as *const Utsname as *const u8,
@@ -533,7 +533,7 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
 pub fn sys_sysinfo(info: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let sysinfo = Sysinfo::new(get_time_ms() / 1000, 1 << 56, tid_to_task::task_num());
     copy_to_user(&memory_set, info as usize, unsafe {
         core::slice::from_raw_parts(
@@ -555,7 +555,7 @@ pub fn sys_syslog(_logtype: isize, _bufp: *const u8, _len: usize) -> SyscallRet 
 pub fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     if (flags as i32) < 0 {
         return Err(SysErrNo::EINVAL);
@@ -693,7 +693,7 @@ fn cap_union_subset(
 pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     // EFAULT: 非法地址
     if (hdrp as isize) <= 0 || if_bad_address(hdrp as usize) {
@@ -734,7 +734,7 @@ pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallR
 pub fn sys_capset(hdrp: *mut CapUserHeader, datap: *const CapUserData) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     if (hdrp as isize) <= 0 || if_bad_address(hdrp as usize) {
         return Err(SysErrNo::EFAULT);
@@ -817,7 +817,7 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
             drop(inner);
             if arg2 != 0 {
                 let proc_inner = &task.process;
-                let memory_set = proc_inner.get_locked_memory_set_read();
+                let memory_set = proc_inner.memory_set_arc();
                 let sig_val = sig as i32;
                 copy_to_user(&memory_set, arg2, unsafe {
                     core::slice::from_raw_parts(
@@ -918,7 +918,7 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
 pub fn sys_getgroups(size: usize, list: *mut u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     // 返回至少一个组 (root: gid=0)
     let count = 1usize;
@@ -974,7 +974,7 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> SyscallRet {
 pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: *mut u8) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     // tcache must be NULL when called from userspace (used only by vDSO)
     // We ignore it for simplicity
@@ -1028,7 +1028,7 @@ pub fn sys_setdomainname(name: *const u8, len: usize) -> SyscallRet {
     }
 
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     if len > 0 {
         if name.is_null() || (name as isize) <= 0 || if_bad_address(name as usize) {

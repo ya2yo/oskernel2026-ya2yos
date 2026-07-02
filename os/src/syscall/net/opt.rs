@@ -188,7 +188,7 @@ pub fn sys_setsockopt(
     let mut kern_optval = vec![0; optlen as usize];
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     copy_from_user(&memory_set, user_optval as usize, &mut kern_optval)?;
     drop(memory_set);
     drop(task);
@@ -312,7 +312,7 @@ pub fn sys_getsockopt(
     let process = &task.process;
     let fd_table = process.fd_table.clone();
     let optlen = {
-        let memory_set = process.get_locked_memory_set_read();
+        let memory_set = process.memory_set_arc();
         let mut optlen_bytes = [0u8; core::mem::size_of::<socklen_t>()];
         copy_from_user(&memory_set, user_optlen as usize, &mut optlen_bytes)?;
         socklen_t::from_ne_bytes(optlen_bytes)
@@ -454,7 +454,7 @@ pub fn sys_getsockopt(
     let copy_len = (optlen as usize).min(kern_opt.len());
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     copy_to_user(&memory_set, user_optval as usize, &kern_opt[..copy_len])?;
     let actual_len = kern_opt.len() as socklen_t;
     copy_to_user(&memory_set, user_optlen as usize, &actual_len.to_ne_bytes())?;

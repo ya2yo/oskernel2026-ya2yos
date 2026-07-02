@@ -166,6 +166,7 @@ impl Process {
         meta.personality = persona;
         old
     }
+    /// 获取当前地址空间的资源指针。`MemorySet` 自身负责读写同步。
     pub fn memory_set_arc(&self) -> Arc<MemorySet> {
         self.memory_set.get()
     }
@@ -174,14 +175,6 @@ impl Process {
     }
     pub fn memory_set_strong_count(&self) -> usize {
         self.memory_set.strong_count()
-    }
-    /// 获取当前地址空间。`MemorySet` 自身负责读写同步。
-    pub fn get_locked_memory_set_read(&self) -> Arc<MemorySet> {
-        self.memory_set_arc()
-    }
-    /// 获取当前地址空间。写访问由 `MemorySet` 内部锁保护。
-    pub fn get_locked_memory_set_write(&self) -> Arc<MemorySet> {
-        self.memory_set_arc()
     }
     /// 在当前信号表锁内执行操作。
     pub fn with_sigtable<T>(&self, f: impl FnOnce(&mut SigTable) -> T) -> T {

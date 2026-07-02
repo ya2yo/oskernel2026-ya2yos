@@ -23,7 +23,7 @@ pub fn sys_mq_open(name: *const u8, oflag: i32, _mode: u32, attr: *const u8) -> 
     let (name_str, maxmsg, msgsize) = {
         let task = current_task().unwrap();
         let process = &task.process;
-        let memory_set = process.get_locked_memory_set_read();
+        let memory_set = process.memory_set_arc();
         let name_str = read_user_cstr(&memory_set, name)?;
 
         if !name_str.starts_with('/') {
@@ -94,7 +94,7 @@ pub fn sys_mq_open(name: *const u8, oflag: i32, _mode: u32, attr: *const u8) -> 
 pub fn sys_mq_unlink(name: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let name_str = read_user_cstr(&memory_set, name)?;
     if !name_str.starts_with('/') {
         return Err(SysErrNo::EINVAL);
@@ -129,7 +129,7 @@ pub fn sys_mq_timedsend(
 
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let mut buf = alloc::vec![0u8; msg_len];
     copy_from_user(&memory_set, msg_ptr as usize, &mut buf)?;
 
@@ -159,7 +159,7 @@ pub fn sys_mq_timedreceive(
 
     let task = current_task().unwrap();
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_write();
+    let memory_set = process.memory_set_arc();
 
     let mut buf = alloc::vec![0u8; msg_len];
     let received = mq.try_receive(&mut buf)?;

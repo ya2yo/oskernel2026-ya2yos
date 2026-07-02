@@ -21,7 +21,7 @@ pub fn sys_prlimit(
 
     let task = current_task().unwrap();
     let inner = &task.process;
-    let memory_set = inner.get_locked_memory_set_read();
+    let memory_set = inner.memory_set_arc();
     let fd_table = inner.fd_table.clone();
     if !old_limit.is_null() {
         let limit = if resource as i32 == RLIMIT_NOFILE {

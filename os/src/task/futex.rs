@@ -284,7 +284,7 @@ pub fn sys_futex(
     let task = current_task().unwrap();
     // debug!("[sys_futex]: strong_count = {}", Arc::strong_count(&task));
     let process = &task.process;
-    let memory_set = process.get_locked_memory_set_read();
+    let memory_set = process.memory_set_arc();
     let task_inner = task.inner_lock();
 
     // 安全地将用户 VA 转为 PA：先通过 copy_from_user 触发延迟页分配，

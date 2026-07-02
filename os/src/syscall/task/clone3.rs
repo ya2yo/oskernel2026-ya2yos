@@ -38,7 +38,7 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     // Read the entire clone_args structure from userspace.
     let mut cargs: clone_args = unsafe { core::mem::zeroed() };

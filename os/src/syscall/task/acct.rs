@@ -45,7 +45,7 @@ pub fn sys_acct(filename: *const u8) -> SyscallRet {
     }
 
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
     let path = read_user_cstr(&memory_set, filename)?;
 
     // 检查路径长度

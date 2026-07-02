@@ -137,7 +137,7 @@ pub fn sys_getrlimit(resource: i32, rlim: usize) -> SyscallRet {
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     let limit = if resource == RLIMIT_NOFILE {
         let fd_table = &proc_inner.fd_table;
@@ -170,7 +170,7 @@ pub fn sys_setrlimit(resource: i32, rlim: usize) -> SyscallRet {
 
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     let mut limit = RLimit {
         rlim_cur: 0,

@@ -157,7 +157,7 @@ fn write_result_to_user(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     if let Some(ready_readfds) = result.readfds.as_ref() {
         copy_to_user(&memory_set, readfds, unsafe {
@@ -198,7 +198,7 @@ pub fn sys_pselect6(
 ) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
-    let memory_set = proc_inner.get_locked_memory_set_read();
+    let memory_set = proc_inner.memory_set_arc();
 
     let new_mask = if sigmask != 0 {
         // Linux raw pselect6 passes a pointer to { sigset_t *ss, size_t ss_len },
