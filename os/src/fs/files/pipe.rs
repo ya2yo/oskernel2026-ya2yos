@@ -3,12 +3,16 @@
 // 它的特点是
 use super::super::{File, FilePage, OpenFlags, StMode};
 use crate::fs::Kstat;
-use crate::signal::check_if_any_sig_for_current_task;
+use crate::signal::{SigSet, check_if_any_sig_for_current_task, send_signal_to_thread};
 use crate::task::{
     TaskControlBlock, TaskStatus, current_task, ready_queue, schedule_blocked_current,
 };
 use crate::utils::{PollSet, SysErrNo};
-use crate::{mm::UserBuffer, syscall::PollEvents, utils::SyscallRet};
+use crate::{
+    mm::{UserBuffer, copy_to_user},
+    syscall::PollEvents,
+    utils::SyscallRet,
+};
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
@@ -91,6 +95,12 @@ impl Pipe {
     }
     pub fn all_write_ends_closed(&self) -> bool {
         self.inner_lock().all_write_ends_closed()
+    }
+    fn broken_pipe() -> SysErrNo {
+        if let Some(task) = current_task() {
+            send_signal_to_thread(task.tid(), SigSet::SIGPIPE);
+        }
+        SysErrNo::EPIPE
     }
     pub fn splice_to_pipe(&self, output: &Pipe, len: usize, nonblock: bool) -> SyscallRet {
         if !self.readable() || !output.writable() {
@@ -290,6 +300,7 @@ pub fn open_fifo(path: &str, flags: OpenFlags) -> Result<Arc<Pipe>, SysErrNo> {
 }
 
 const RING_BUFFER_SIZE: usize = 65536;
+const FIONREAD: u32 = 0x541B;
 const IOC_WATCH_QUEUE_SET_SIZE: u32 = 0x5760;
 const IOC_WATCH_QUEUE_SET_FILTER: u32 = 0x5761;
 
@@ -608,7 +619,8 @@ impl File for Pipe {
         loop {
             let ring_buffer = self.inner_lock();
             if ring_buffer.all_read_ends_closed() {
-                return Err(SysErrNo::EPIPE);
+                drop(ring_buffer);
+                return Err(Self::broken_pipe());
             }
             loop_write = ring_buffer.available_write();
             if loop_write == 0 {
@@ -630,7 +642,9 @@ impl File for Pipe {
                 if ring_buffer.all_read_ends_closed() {
                     let mut task_inner = task.inner_lock();
                     task_inner.task_status = TaskStatus::Running;
-                    return Err(SysErrNo::EPIPE);
+                    drop(task_inner);
+                    drop(ring_buffer);
+                    return Err(Self::broken_pipe());
                 }
                 if ring_buffer.available_write() > 0 {
                     // 入队前已有读者释放空间，恢复 Running 并直接重试写入。
@@ -669,7 +683,8 @@ impl File for Pipe {
     fn write_kernel_bytes(&self, buf: &[u8]) -> SyscallRet {
         let mut ring_buffer = self.inner_lock();
         if ring_buffer.all_read_ends_closed() {
-            return Err(SysErrNo::EPIPE);
+            drop(ring_buffer);
+            return Err(Self::broken_pipe());
         }
         if ring_buffer.available_write() < buf.len() {
             return Err(SysErrNo::ENOBUFS);
@@ -692,8 +707,13 @@ impl File for Pipe {
         self.nonblocking.store(nonblocking, Ordering::Relaxed);
         Ok(())
     }
-    fn ioctl(&self, cmd: u32, _arg: usize, _memory_set: &crate::mm::MemorySet) -> SyscallRet {
+    fn ioctl(&self, cmd: u32, arg: usize, memory_set: &crate::mm::MemorySet) -> SyscallRet {
         match cmd {
+            FIONREAD => {
+                let available = self.available_read() as i32;
+                copy_to_user(memory_set, arg, &available.to_ne_bytes())?;
+                Ok(0)
+            }
             IOC_WATCH_QUEUE_SET_SIZE | IOC_WATCH_QUEUE_SET_FILTER => Ok(0),
             _ => Err(SysErrNo::ENOTTY),
         }

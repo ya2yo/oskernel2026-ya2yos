@@ -713,3 +713,60 @@ timeout 120s make run > /tmp/splice-pipebuf-run.log 2>&1
 未运行 RISC-V。本轮未新增 problem 文件：这是页面缓存与 splice fast path 功能推进，未修通新的失败测例。
 
 ---
+
+## 2026-07-02: pipe SIGPIPE 与 FIONREAD 语义修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 中 pipe 实现是否存在问题，并在确认后修复。
+
+### 分析
+
+AI 按 `TPASS` / `TFAIL` / `TBROK` / `Summary` 过滤 `log.ans` 后确认：
+
+- `pipe02` 中 child 写无读端 pipe 后只得到 `EPIPE`，没有被默认 `SIGPIPE` 终止，输出 `TFAIL: Child wasn't killed by signal`。
+- `pipe08` 中测例安装 `SIGPIPE` handler 后写无读端 pipe，`write()` 返回 `EPIPE`，但 handler 未被调用，输出 `TFAIL: sigpipe_cnt (0) != 1 (1)`。
+- `pipe12` 中非阻塞满 pipe 已正确返回 `EAGAIN`，但 `ioctl(FIONREAD)` 返回 `ENOTTY`，输出 `TBROK: ioctl(4,(0x541B),...) failed: ENOTTY (25)`。
+- `pipe07` 失败于 `/proc/self/fd` 缺失，`pipe15` 失败于 `/proc/sys/fs/pipe-user-pages-soft` 缺失，二者不是 pipe 核心读写语义问题。
+
+根因：
+
+- `Pipe::write()` 在读端全部关闭时直接返回 `EPIPE`，没有向当前写线程投递 `SIGPIPE`。
+- `Pipe::ioctl()` 未实现 Linux `FIONREAD(0x541B)`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/pipe.rs` | 新增 `Pipe::broken_pipe()`，在无读端写入时向当前线程投递 `SIGPIPE` 后返回 `EPIPE`；实现 `ioctl(FIONREAD)`，将 `available_read()` 作为 `i32` 写回用户指针 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/决赛文档/problem/README.md` | 新增 problem 索引 |
+| `Docs/决赛文档/problem/pipe-sigpipe-fionread.md` | 新增 pipe SIGPIPE/FIONREAD 修复复盘 |
+| `Docs/决赛文档/ai.log` | 追加本轮 AI 协作记录 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 追加本轮 AI 使用记录 |
+
+实现时注意先释放 pipe/task 锁再投递 `SIGPIPE`，避免在持锁状态下进入信号路径。
+
+### 验证
+
+已执行：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children os/src/fs/files/pipe.rs
+make
+timeout 120s make run > /tmp/splice-pipebuf-run.log 2>&1
+```
+
+结果：
+
+- 默认 LoongArch64 `make` 构建通过。
+- 构建仍有 vendor `smoltcp` warning，与本次修改无关。
+- 当前 `initproc` 运行 pipe 相关 musl 单测：
+  - `pipe02.c:77: TPASS: Child killed by SIGPIPE`
+  - `pipe08.c:37: TPASS: sigpipe_cnt == 1 (1)`
+  - `pipe12` 中 6 个核心断言均 `TPASS`，不再出现 `FIONREAD` 的 `ENOTTY`。
+- `pipe07` 仍因 `/proc/self/fd` 缺失 `TBROK`，`pipe15` 仍因 `/proc/sys/fs/pipe-user-pages-soft` 缺失 `TBROK`，需后续按 procfs 能力单独修复。
+
+未运行 RISC-V。
+
+---

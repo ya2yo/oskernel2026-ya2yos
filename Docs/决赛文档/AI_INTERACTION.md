@@ -81,3 +81,10 @@
 - **场景**：文件页面缓存接入、`MAP_SHARED` mmap 共享文件页复用、`PipeBuf` 挂载 `FilePage`、`splice(file, pipe)` 缓存页引用 fast path、构建与运行验证、决赛文档补充
 - **描述**：用户已添加 `os/src/fs/page_cache.rs` 并要求继续修改。AI 将 `MAP_SHARED` 文件 mmap 缺页改为通过 `FILE_PAGE_CACHE` 加载并映射缓存页 frame，移除 `GROUP_SHARE` 中旧的文件页共享表；`PipeBuf` 扩展为 `Bytes/FilePage` storage，普通文件到 pipe 的 `splice()` 在输入为 `OSFile` 时将缓存页引用挂入 pipe。普通文件 `write()` 和 ext4 `truncate()` 增加缓存失效，避免读到旧页。默认 LoongArch64 `make` 通过；当前 `splice09` 入口因内核版本要求 `TCONF/skipped`，无 panic/TFAIL/TBROK 并跑到 `shutdown!`。详见 `Docs/决赛文档/ai.log` 2026-07-02 条目。
 - **关联 commit**：待提交
+
+#### pipe SIGPIPE 与 FIONREAD 语义修复（7.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、pipe Linux 语义修复、`SIGPIPE` 投递、`ioctl(FIONREAD)` 兼容、LTP pipe 回归验证、决赛文档补充
+- **描述**：用户要求分析 `log.ans` 中 pipe 实现是否有问题。AI 定位到 `pipe02`/`pipe08` 失败是无读端 pipe 写入只返回 `EPIPE` 而未投递 `SIGPIPE`，`pipe12` 失败是缺少 `FIONREAD(0x541B)`。修复为在无读端写入时释放相关锁后向当前线程投递 `SIGPIPE` 并返回 `EPIPE`，并让 `Pipe::ioctl()` 写回当前可读字节数。默认 LoongArch64 `make` 通过；当前 `pipe02`、`pipe08`、`pipe12` 核心断言均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-02 条目与 [problem/pipe-sigpipe-fionread.md](./problem/pipe-sigpipe-fionread.md)。
+- **关联 commit**：待提交
