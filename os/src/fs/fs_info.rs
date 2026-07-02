@@ -129,6 +129,10 @@ impl FSInfo {
     pub fn has_fd(&self, path: &str) -> bool {
         self.inner.read().fd2path.values().any(|v| v == path)
     }
+    /// 获取 fd 对应的路径字符串，用于 /proc/self/fd/<fd>。
+    pub fn fd_path(&self, fd: usize) -> Option<String> {
+        self.inner.read().fd2path.get(&fd).cloned()
+    }
     /// 关闭文件时移除映射
     pub fn remove(&self, fd: usize) {
         self.inner.write().fd2path.remove(&fd);

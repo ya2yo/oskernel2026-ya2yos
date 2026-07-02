@@ -16,6 +16,7 @@ mod mountfd;
 pub mod mqueue;
 mod os_file;
 mod signalfd;
+mod tmp_file;
 pub use {
     dummyfd::DummyFd,
     epoll::{EpollCreateFlags, EpollFile, EpollReady},
@@ -24,4 +25,5 @@ pub use {
     mountfd::{DetachedMountFd, FsConfigOption, FsConfigValue, FsContext, FsContextFd},
     mqueue::{MqAttr, Mqueue},
     os_file::OSFile,
+    tmp_file::TmpFile,
 };

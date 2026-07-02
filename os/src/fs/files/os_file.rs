@@ -67,6 +67,12 @@ impl OSFile {
     pub fn set_offset(&self, offset: usize) {
         self.inner.lock().offset = offset;
     }
+
+    /// Directory streams store opaque cookies here too, so callers such as
+    /// getdents64 must read it directly instead of routing through lseek().
+    pub fn offset(&self) -> usize {
+        self.inner.lock().offset
+    }
 }
 
 impl Drop for OSFile {

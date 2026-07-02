@@ -4202,3 +4202,50 @@ make
 - 维护者提供的最新 `log.ans` / `ana.ans` 显示 `getdents01` 能找到 `.`, `..`, `dir`, `file`, `symlink`，并输出 `TPASS: All entries found`。
 - `log.ans` 中 `getdents01` Summary 为 `passed 2 failed 0 broken 0`。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-07-02: open14 O_TMPFILE 匿名临时文件语义修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 中 `open14` 为什么“期待的是目录而不是文件”，并在修复后补充文档，重点写清楚 `tmpfile` 这种第一次遇到的文件类型。
+
+### 分析
+
+AI 对照 LTP `open14` 行为和运行日志确认，`O_TMPFILE` 的 `openat()` 路径参数应指向目录，但返回的 fd 指向一个未命名、未链接的普通文件。目录只用于决定匿名 inode 所在的文件系统和权限上下文，匿名文件在 `linkat()` 前不应出现在 `getdents64()` / `readdir()` 结果中。
+
+原实现把 `O_TMPFILE` 简化成在目标目录下创建 `${counter}.tmp`，所以测试第一阶段读取目录时能看到 `0.tmp`，直接违反匿名临时文件语义。后续修复又暴露出 `getdents64` 空目录 EOF 被转换成 `EINVAL`、`readlink(/proc/self/fd/<fd>)` 缺失、`linkat(/proc/self/fd/<fd>, ...)` 无法物化匿名文件，以及 `O_TMPFILE` 分支复用高层 `open()` 导致当前进程锁重入 panic 的问题。
+
+最后一次用户提供的 `log.ans` 曾出现大量重复 `Chdir ret = 0` / `Unlinkat ret = 0`，AI 判断不是死循环，而是 `open14` 第二个子项创建并从深到浅删除 100 层嵌套目录；维护者延长运行后确认测试通过。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/tmp_file.rs` | 新增内存态匿名 `TmpFile`，支持 `read/write/lseek/fstat/poll`，`fstat()` 返回普通文件类型、`st_nlink=0` |
+| `os/src/fs/files/mod.rs` | 导出 `TmpFile` |
+| `os/src/syscall/fs/fd_ops.rs` | `O_TMPFILE` 分支改为校验目录后创建匿名 `TmpFile` fd，不再创建真实 `N.tmp` 文件；登记合成 procfd 路径 |
+| `os/src/fs/fs_info.rs` | 增加 `fd_path(fd)`，供 `/proc/self/fd/<fd>` readlink 使用 |
+| `os/src/syscall/fs/ctl.rs` | `readlinkat()` 支持 `/proc/self/fd/<fd>`；`linkat()` 支持从 procfd 源 fd 复制数据并物化为目标普通文件；`getdents64()` 修复 EOF offset 处理 |
+| `os/src/fs/files/os_file.rs` | 增加读取目录 fd offset 的接口，避免 EOF cookie 经普通 `lseek` 转成 `EINVAL` |
+| `Docs/初赛文档/problem/open14-o-tmpfile-anonymous.md` | 新增问题复盘，详细说明 `O_TMPFILE` 匿名文件语义 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=loongarch64`，构建通过。
+- 维护者提供的最新 `log.ans` 显示 musl `open14` 三个子项均为 `TPASS`，Summary 为 `passed 3 failed 0 broken 0`。
+- 维护者提供的最新 `log.ans` 显示 glibc `open14` 三个子项均为 `TPASS`，Summary 为 `passed 3 failed 0 broken 0`。
+- 日志中的 `FAIL LTP CASE open14 : 0` 是当前 initproc 包装层打印格式，按 LTP Summary 判断 failed 为 0。
+- 未运行 `riscv64`。

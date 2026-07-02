@@ -8,7 +8,9 @@ use crate::fs::{
     open, superblock_root_inode, superblock_sync, File, FsIndex, Inode, InodeType, OpenFlags,
     MAX_PATH_LEN, NONE_MODE, SEEK_CUR, SEEK_SET,
 };
-use crate::mm::{copy_from_user, copy_to_user, if_bad_address, read_user_cstr};
+use crate::mm::{
+    copy_from_user, copy_to_user, if_bad_address, read_user_cstr, user_buffer_from_kernel,
+};
 use crate::syscall::FaccessatFileMode;
 use crate::task::current_task;
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
@@ -185,7 +187,12 @@ pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     if !file.inode.types().is_dir() {
         return Err(SysErrNo::ENOTDIR);
     }
-    let off = file.lseek(0, SEEK_CUR)?;
+    // read_dentry uses usize::MAX as the EOF cookie. It is not a byte offset,
+    // so feeding it back into lseek(SEEK_CUR) would turn a clean EOF into EINVAL.
+    let off = file.offset();
+    if off == usize::MAX {
+        return Ok(0);
+    }
     let (de, off) = file.inode.read_dentry(off, len)?;
     copy_to_user(&memory_set, buf as usize, de.as_slice())?;
     file.set_offset(off as usize);
@@ -229,6 +236,48 @@ pub fn sys_linkat(
     // 常规路径解析
     let old_abs_path = proc_inner.get_abs_path(oldfd, &old_path_str)?;
     let new_abs_path = proc_inner.get_abs_path(newfd, &new_path_str)?;
+
+    // LTP open14 links an O_TMPFILE fd through /proc/self/fd/<fd>. We do not
+    // have a full procfs link implementation here, so materialize the current
+    // fd contents into the destination path.
+    if let Some(fd) = parse_proc_self_fd(&old_abs_path) {
+        let src = proc_inner.fd_table.get(fd)?.any();
+        // Creating the destination goes through the regular VFS path and may
+        // re-enter process state, so release syscall-local process locks first.
+        drop(memory_set);
+        drop(proc_inner);
+
+        if open(&new_abs_path, OpenFlags::empty(), NONE_MODE).is_ok() {
+            return Err(SysErrNo::EEXIST);
+        }
+
+        let stat = src.fstat();
+        let dst = open(
+            &new_abs_path,
+            OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+            stat.st_mode & 0o7777,
+        )?
+        .file()?;
+        let old_offset = src.lseek(0, SEEK_CUR)?;
+        src.lseek(0, SEEK_SET)?;
+
+        loop {
+            let mut buf = vec![0u8; 4096];
+            let read_len = src.read(unsafe { user_buffer_from_kernel(&mut buf) })?;
+            if read_len == 0 {
+                break;
+            }
+            let write_len =
+                dst.write(unsafe { user_buffer_from_kernel(&mut buf[..read_len]) })?;
+            if write_len != read_len {
+                return Err(SysErrNo::EIO);
+            }
+        }
+
+        src.lseek(old_offset as isize, SEEK_SET)?;
+        FsIndex::insert_inode_idx(&new_abs_path, dst.inode.clone());
+        return Ok(0);
+    }
 
     // 打开原文件
     let osfile = open(&old_abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
@@ -397,6 +446,18 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
     let bufsize = core::cmp::min(bufsize, 4096usize);
     // debug!("[sys_read_linkat] got path : {}", inner.fs_info.get_cwd());
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    // Support the procfd spelling used to expose anonymous tmpfiles. readlink()
+    // returns exactly the target bytes and does not append a trailing NUL.
+    if let Some(fd) = parse_proc_self_fd(&abs_path) {
+        proc_inner.fd_table.get(fd)?;
+        let target = proc_inner
+            .fs_info
+            .fd_path(fd)
+            .ok_or(SysErrNo::ENOENT)?;
+        let readcnt = target.len().min(bufsize);
+        copy_to_user(&*memory_set, buf as usize, &target.as_bytes()[..readcnt])?;
+        return Ok(readcnt);
+    }
     let mut linkbuf = vec![0u8; bufsize];
     let file = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
     if !file.inode.types().is_symlink() {

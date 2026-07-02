@@ -1,14 +1,13 @@
 use core::{
     future::poll_fn,
-    sync::atomic::{AtomicI32, Ordering},
     task::Poll,
 };
 
 use super::fcntl::*;
 use super::file_lock::{self, Flock};
 use crate::fs::{
-    map_dynamic_link_file, open, open_fifo, refresh_proc_stat, refresh_proc_status, FileClass,
-    FileDescriptor, FsIndex, OpenFlags,
+    map_dynamic_link_file, open, open_fifo, refresh_proc_stat, refresh_proc_status,
+    superblock_root_inode, FileClass, FileDescriptor, FsIndex, OpenFlags, TmpFile,
 };
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::{options::FcntlCmd, Syscall};
@@ -387,8 +386,6 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     Ok(0)
 }
 
-static TMP_FILE_COUNTER: AtomicI32 = AtomicI32::new(0);
-
 fn parse_proc_pid_file(path: &str, name: &str) -> Option<usize> {
     let rest = path.strip_prefix("/proc/")?;
     let pid = rest.strip_suffix(name)?;
@@ -424,25 +421,46 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     );
 
     if flags.contains(OpenFlags::O_TMPFILE) {
-        // 当出现O_TMPFILE时，openat的含意是，
-        // dirfd+path指向的位置(abs_path)处是一个文件夹，
-        // 在此文件夹处创建一个匿名临时文件并返回临时文件
-        assert!(flags.contains(OpenFlags::O_DIRECTORY));
-        // 这里我们简化处理一下……我们创建一个真实文件，且永远不会删除它
-        flags.insert(OpenFlags::O_CREATE);
-        abs_path = {
-            let count = TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-            format!("{}/{}.tmp", abs_path, count)
+        // O_TMPFILE takes a directory path but returns an unnamed regular file
+        // fd. The file must not be inserted into the directory until a later
+        // linkat("/proc/self/fd/<fd>", ...) materializes it.
+        if flags.bits() & OpenFlags::O_ACCMODE.bits() == OpenFlags::O_RDONLY.bits() {
+            return Err(SysErrNo::EINVAL);
+        }
+        // Resolve the directory without calling high-level open(): sys_openat
+        // already holds process state, and open() can re-enter those locks.
+        let dir_inode = if FsIndex::has_inode(&abs_path) {
+            FsIndex::find_inode_idx(&abs_path).ok_or(SysErrNo::ENOENT)?
+        } else {
+            let inode = superblock_root_inode().find(&abs_path, OpenFlags::O_DIRECTORY, 0)?;
+            FsIndex::insert_inode_idx(&abs_path, inode.clone());
+            inode
         };
-        flags.remove(OpenFlags::O_TMPFILE); // 因为简化处理，TMP标志位在这里被拦截
-        flags.remove(OpenFlags::O_DIRECTORY); // 避免下面的open真的给咱创建一个目录
+        if !dir_inode.types().is_dir() {
+            return Err(SysErrNo::ENOTDIR);
+        }
 
-        // 剩下的就和普通open一样处理就行了
-        let abs_path = map_dynamic_link_file(&abs_path).to_string();
-        let inode = open(&abs_path, flags, mode)?;
+        let (readable, writable) = flags.read_write();
+        let task_inner = task.inner_lock();
+        let uid = task_inner.effective_uid;
+        let gid = task_inner.effective_gid;
+        drop(task_inner);
+
+        let effective_mode = mode & !fs_info.get_umask();
+        flags.remove(OpenFlags::O_TMPFILE);
+        flags.remove(OpenFlags::O_DIRECTORY);
+        let file = FileClass::Abs(TmpFile::new(
+            readable,
+            writable,
+            effective_mode,
+            uid,
+            gid,
+        ));
         let new_fd = fd_table.alloc_fd()?;
-        fd_table.set(new_fd, FileDescriptor::new(flags, inode));
-        fs_info.insert(abs_path, new_fd);
+        fd_table.set(new_fd, FileDescriptor::new(flags, file));
+        // Record a procfd target string for readlink(/proc/self/fd/<fd>). The
+        // "(deleted)" suffix reflects that the tmpfile currently has no name.
+        fs_info.insert(format!("{}/#tmpfile-{} (deleted)", abs_path, new_fd), new_fd);
         return Ok(new_fd);
     }
 

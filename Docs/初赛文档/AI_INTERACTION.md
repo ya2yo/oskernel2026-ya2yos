@@ -857,3 +857,10 @@
 - **场景**：Bug 分析与定位、LTP getdents 测例源码分析、目录流 offset 语义修复、文档完善
 - **描述**：用户要求继续分析 `log.ans`/`ana.ans` 并先读 `getdents01` 测例源码。AI 确认该用例要求 `getdents/getdents64` 返回 `.`, `..`, `dir`, `file`, `symlink`；结合日志中 `read_dentry finish` 后 syscall 仍返回 `EINVAL`，定位到 `sys_getdents64()` 成功读取目录项后用普通文件 `lseek(SEEK_SET)` 保存目录流 `d_off`。由于 `d_off` 是目录 stream cookie，不是普通文件 byte offset，普通 `lseek` 校验会错误返回 `EINVAL`。修复为增加 `OSFile::set_offset()` 并在 `getdents64` 成功后直接更新目录 fd offset，同时收紧目录 fd 检查、首条记录缓冲区检查和 `read_dir_from()` 目录/对齐处理。`make` 通过，维护者最新 `log.ans` 显示 `getdents01` Summary 为 `passed 2 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/getdents01-directory-offset.md](./problem/getdents01-directory-offset.md)。
 - **关联 commit**：待提交
+
+#### open14 O_TMPFILE 匿名临时文件语义修复（7.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`O_TMPFILE` 匿名文件语义修复、procfd `readlink/linkat` 兼容、LTP 回归验证协作、文档完善
+- **描述**：用户要求分析 `log.ans` 中 `open14` 为什么期望目录参数而不是普通文件，并在通过后写清楚 tmpfile 语义。AI 确认 `O_TMPFILE` 的 path 参数应为目录，但返回 fd 指向未链接的普通文件；原实现把它简化成目录下的真实 `N.tmp` 文件，导致 `readdir()` 看到临时文件。修复新增内存态匿名 `TmpFile`，`openat(O_TMPFILE)` 只校验目录并返回未链接 fd，补齐 `/proc/self/fd/<fd>` 的 `readlinkat()` 与 `linkat()` 物化路径，并修正空目录 `getdents64` EOF 处理。维护者最新 `log.ans` 显示 musl/glibc `open14` 均为 `passed 3 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-07-02 条目与 [problem/open14-o-tmpfile-anonymous.md](./problem/open14-o-tmpfile-anonymous.md)。
+- **关联 commit**：待提交
