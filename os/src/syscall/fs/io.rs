@@ -1052,9 +1052,12 @@ pub fn sys_copy_file_range(
         writecount = outfile.write(outbuffer)?;
         outfile.lseek(cur_out_offset as isize, SEEK_SET)?;
     }
+    let copied_at = (get_time_ms() / 1000) as u64;
+    let old_mtime = out_stat.st_mtime as u64;
+    let timestamp = copied_at.max(old_mtime.saturating_add(1));
     outfile
         .inode
-        .set_timestamps(None, Some((get_time_ms() / 1000) as u64), None);
+        .set_timestamps(None, Some(timestamp), Some(timestamp))?;
     //如果系统调用执行成功，*off_in和*off_out将会增加复制的长度
     if off_in != 0 {
         let task = current_task().unwrap();

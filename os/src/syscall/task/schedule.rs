@@ -248,7 +248,7 @@ pub fn sys_clock_nanosleep(
         let elapsed_ticks = now_ticks - begin_ticks;
 
         // 计算经过的微秒数
-        let elapsed_us = (elapsed_ticks * 1_000_000) / (get_clock_freq() / 1000);
+        let elapsed_us = elapsed_ticks * 1_000_000 / get_clock_freq();
         if elapsed_us >= total_us as usize {
             break;
         }

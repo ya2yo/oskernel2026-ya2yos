@@ -4367,3 +4367,66 @@ git diff --check
 - immutable file 输出 `TPASS: copy_file_range failed as expected: EPERM (1)`。
 - overlapping range 输出 `TPASS: copy_file_range failed as expected: EINVAL (22)`。
 - `git diff --check` 无输出。
+
+---
+
+## 2026-07-02: copy_file_range03 时间戳更新修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans`，说明为什么 glibc 版的 `copy_file_range03` 没能正确更新时间戳，并继续修复。
+
+### 分析
+
+AI 先按 `copy_file_range03`、`TPASS/TFAIL`、Summary 等关键字过滤 `log.ans`，确认真实失败点不是所有 glibc 调用都失败：
+
+- musl 的 libc wrapper 和 raw syscall 两个 variant 都通过。
+- glibc 的 libc wrapper variant 通过。
+- glibc 的 `Testing __NR_copy_file_range syscall` raw syscall variant 失败：
+
+```text
+copy_file_range03.c:52: TFAIL: diff_us = 0, copy_file_range might not update timestamp
+```
+
+读取上游 LTP `copy_file_range03.c` 后确认，该用例通过 `fstat(fd_dest).st_mtim` 比较复制前后的目标文件修改时间，先等待 `usleep(1500000)`，再复制 32 字节，要求时间差在 1 秒到 30 秒之间。它不是通过 `statx` 做最终断言。
+
+随后追踪 Ya2yOS 实现：
+
+- `Ext4Inode::fstat()` 当前只返回秒级 `st_mtime/st_ctime/st_atime`，纳秒字段走 `Kstat::default()`，因此用户态看到的 `st_mtim.tv_nsec` 为 0。
+- `sys_copy_file_range()` 写入后只调用 `set_timestamps(None, Some(get_time_ms()/1000), None)`，没有更新 `ctime`，也没有检查返回值。
+- `clock_nanosleep()` 的 elapsed tick 到微秒换算写成 `(elapsed_ticks * 1_000_000) / (get_clock_freq() / 1000)`，实际会让 1.5 秒 sleep 提前约 1000 倍返回。
+
+第一次尝试把 `copy_file_range()` 时间戳改为 `realtime()` epoch 秒后，LTP 看到 `diff_us = 1777593602000000`，超过 30 秒上限。由此确认当前 ext4 文件时间对 `fstat()` 暴露的仍是开机秒语义，修复应在现有时间基准下保证单调推进，而不是局部切到 epoch 秒。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/schedule.rs` | 修正 `clock_nanosleep()` 中 elapsed ticks 到微秒的换算公式，恢复相对 sleep 的真实等待时长 |
+| `os/src/syscall/fs/io.rs` | `copy_file_range()` 写成功后用当前开机秒与旧 `mtime + 1` 取较大值，同时更新 `mtime/ctime`，并用 `?` 传播 `set_timestamps()` 错误 |
+| `Docs/初赛文档/problem/copy-file-range03-timestamp.md` | 新增问题复盘，记录日志现象、LTP 源码断言、根因和验证 |
+| `Docs/初赛文档/problem/README.md` | 增加问题索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make TARGET_ARCH=loongarch64
+timeout 120s make run > log.ans 2>&1
+git diff --check
+```
+
+结果：
+
+- LoongArch64 构建通过。
+- `make run` 正常 `shutdown!`。
+- musl `copy_file_range03` 两个 variant 均 `TPASS`，Summary 为 `passed 2 failed 0 broken 0 skipped 0 warnings 0`。
+- glibc `copy_file_range03` 两个 variant 均 `TPASS`，Summary 为 `passed 2 failed 0 broken 0 skipped 0 warnings 0`。
+- `git diff --check` 无输出。
+
+日志中仍有包装层输出 `FAIL LTP CASE copy_file_range03 : 10` / `RESULT GLIBC LTP SINGLE CASE copy_file_range03 : 10`，但按项目规则以 LTP Summary 为准；本次 Summary failed 为 0。日志里 glibc 启动过程中仍可见 `Fail to convert LoongArch Unknown to Trap type! 0x0`，但未造成该用例 TFAIL/TBROK。
+
+未运行 RISC-V。

@@ -878,3 +878,10 @@
 - **场景**：Bug 分析与定位、ext2 flags ioctl 兼容、immutable 写保护、同 inode overlap 判断、panic 修复、LTP 回归验证、文档完善
 - **描述**：用户提供新的 `log.ans` 和 GDB 回溯，要求继续修复 `copy_file_range02`。AI 确认补齐 `chattr/mkswap/swapon/swapoff` applet 后，immutable file 和 overlapping range 不再 skipped，但 `copy_file_range()` 分别错误成功返回 32/16 字节。修复为在 `OSFile` 支持 `FS_IOC_GETFLAGS/SETFLAGS` 和 `FS_IMMUTABLE_FL` 写保护，并让 `copy_file_range()` 用 `st_dev/st_ino` 判断同一文件重叠范围。用户提供的回溯显示第一次 immutable 检查对通用 `dyn File` 调用默认 `path()` 导致 `EventFd` panic，最终改为确认输出是普通 `OSFile` 后用 `outfile.inode.path()` 检查。最新 `log.ans` 显示 musl/glibc `copy_file_range02` 均为 `passed 26 failed 0 broken 0 skipped 6`，LoongArch/RISC-V 构建均通过。详见 `Docs/初赛文档/ai.log` 2026-07-02 条目与 [problem/copy-file-range02-error-semantics.md](./problem/copy-file-range02-error-semantics.md)。
 - **关联 commit**：待提交
+
+#### copy_file_range03 时间戳更新修复（7.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`clock_nanosleep` 时间换算修复、`copy_file_range` 写后时间戳语义修复、LTP 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 中 glibc 版 `copy_file_range03` 为什么没有正确更新时间戳。AI 确认真实失败是 glibc 二进制的 `Testing __NR_copy_file_range syscall` raw syscall variant，而 libc wrapper variant 已通过；LTP 用例通过 `fstat(fd_dest).st_mtim` 比较写前写后时间。进一步定位到 `clock_nanosleep()` 将 ticks 换算为微秒时除以 `get_clock_freq()/1000`，导致 1.5 秒等待提前约 1000 倍返回；同时 `copy_file_range()` 写成功后只设置秒级 `mtime`，未保证相对旧值前进、未更新 `ctime` 且吞掉 `set_timestamps()` 错误。修复后 LoongArch 最新 `log.ans` 显示 musl/glibc `copy_file_range03` 均为 `passed 2 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-07-02 条目与 [problem/copy-file-range03-timestamp.md](./problem/copy-file-range03-timestamp.md)。
+- **关联 commit**：待提交
