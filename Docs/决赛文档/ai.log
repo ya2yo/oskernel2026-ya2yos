@@ -226,6 +226,48 @@ git diff --check
 
 ---
 
+## 2026-07-02: pipe 模块源码拆分重构
+
+### 用户需求
+
+用户要求将 `os/src/fs/files/pipe.rs` 按各部分功能重构拆分到 `os/src/fs/files/pipe/` 目录下。
+
+### 修改内容
+
+AI 将原单文件 pipe 实现拆分为多个子模块，并保持 `crate::fs::files::pipe::{Pipe, make_pipe, open_fifo}` 对外接口不变：
+
+| 文件 | 职责 |
+|------|------|
+| `os/src/fs/files/pipe/mod.rs` | `Pipe` 类型、基础构造、公共查询、`broken_pipe()`、`make_pipe()`、`Drop` |
+| `os/src/fs/files/pipe/buffer.rs` | `PipeBuf` 与 `PipeBufStorage`，承载 Bytes/FilePage 片段 |
+| `os/src/fs/files/pipe/ring_buffer.rs` | `PipeRingBuffer`、片段队列读写、waiter/poll 唤醒 |
+| `os/src/fs/files/pipe/fifo.rs` | FIFO 全局 buffer 表和 `open_fifo()` |
+| `os/src/fs/files/pipe/splice.rs` | `splice_to_pipe()`、`tee_to_pipe()`、`push_file_page()` |
+| `os/src/fs/files/pipe/wait.rs` | `wait_readable()`、`wait_writable()`、双 pipe 有序加锁 |
+| `os/src/fs/files/pipe/file_impl.rs` | `File for Pipe` 实现、`read/write/ioctl/poll/register` |
+
+重构过程中修正拆分后 trait 方法作用域问题，并将 `fifo_end_with_buffer()` 可见性收回到模块私有，避免 `private_interfaces` 编译告警。
+
+### 验证
+
+已执行：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children os/src/fs/files/pipe/*.rs
+make
+git diff --check
+```
+
+结果：
+
+- 默认 LoongArch64 `make` 构建通过。
+- pipe 拆分本身没有新增编译告警。
+- 构建输出仍包含 vendor `smoltcp` warning，以及 `.cargo/config` permission denied ignored 信息，均与本次重构无关。
+- 本轮是源码布局重构，未运行 QEMU 行为回归。
+- 未运行 RISC-V。
+
+---
+
 ## 2026-07-02: clone02 CLONE_SIGHAND 退出状态修复
 
 ### 用户需求
