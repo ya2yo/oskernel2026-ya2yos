@@ -218,6 +218,8 @@ pub enum Syscall {
     Execve = 221,
     Mmap = 222,
     Fadvise64 = 223,
+    Swapon = 224,
+    Swapoff = 225,
     Mprotect = 226,
     MSync = 227,
     Mlock = 228,

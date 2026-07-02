@@ -415,6 +415,7 @@ pub fn create_init_files() -> SysResult {
         "/bin/bc",
         "/bin/bzip2",
         "/bin/cat", // ltp的cgroup_regression_3_2.sh需要它
+        "/bin/chattr",// copy_file_range
         "/bin/chmod",
         "/bin/cp", // 通用文件操作
         "/bin/cut",
@@ -435,6 +436,7 @@ pub fn create_init_files() -> SysResult {
         "/bin/mkfs.ext2", // LTP format_device 需要通过 PATH 找到 ext2 格式化工具
         "/bin/mke2fs",
         "/bin/mktemp",
+        "/bin/mkswap",
         "/bin/printf",
         "/bin/ps",
         "/bin/rmdir", // ltp的cgroup_regression_3_1.sh需要它
@@ -442,6 +444,8 @@ pub fn create_init_files() -> SysResult {
         "/bin/sleep",
         "/bin/sh",
         "/bin/sort",
+        "/bin/swapoff",
+        "/bin/swapon",
         "/bin/tc",
         "/bin/tail",
         "/bin/touch",

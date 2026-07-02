@@ -1,16 +1,21 @@
 use crate::{
     fs::{FsIndex, Kstat, SEEK_CUR, SEEK_END, SEEK_SET},
-    mm::UserBuffer,
+    mm::{copy_from_user, copy_to_user, MemorySet, UserBuffer},
     syscall::PollEvents,
     utils::{SysErrNo, SyscallRet},
 };
 
 use super::super::{File, Inode};
 use alloc::{collections::BTreeMap, string::String, sync::Arc};
+use linux_raw_sys::{
+    general::FS_IMMUTABLE_FL,
+    ioctl::{FS_IOC32_GETFLAGS, FS_IOC32_SETFLAGS, FS_IOC_GETFLAGS, FS_IOC_SETFLAGS},
+};
 use spin::{Lazy, Mutex};
 
 static WRITE_OPEN_COUNTS: Lazy<Mutex<BTreeMap<String, usize>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
+static FILE_FLAGS: Lazy<Mutex<BTreeMap<String, u32>>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
 
 fn register_write_open(path: &str) {
     let mut counts = WRITE_OPEN_COUNTS.lock();
@@ -25,6 +30,23 @@ fn unregister_write_open(path: &str) {
             counts.remove(path);
         }
     }
+}
+
+fn get_file_flags(path: &str) -> u32 {
+    FILE_FLAGS.lock().get(path).copied().unwrap_or(0)
+}
+
+fn set_file_flags(path: &str, flags: u32) {
+    let mut attrs = FILE_FLAGS.lock();
+    if flags == 0 {
+        attrs.remove(path);
+    } else {
+        attrs.insert(String::from(path), flags);
+    }
+}
+
+fn is_immutable_path(path: &str) -> bool {
+    get_file_flags(path) & FS_IMMUTABLE_FL != 0
 }
 
 /// “普通”的文件类
@@ -62,6 +84,10 @@ impl OSFile {
 
     pub fn is_write_open_path(path: &str) -> bool {
         WRITE_OPEN_COUNTS.lock().get(path).copied().unwrap_or(0) != 0
+    }
+
+    pub fn is_immutable_path(path: &str) -> bool {
+        is_immutable_path(path)
     }
 
     pub fn set_offset(&self, offset: usize) {
@@ -116,6 +142,9 @@ impl File for OSFile {
 
     fn write(&self, buf: UserBuffer) -> SyscallRet {
         let mut inner = self.inner.lock();
+        if is_immutable_path(&self.inode.path()) {
+            return Err(SysErrNo::EPERM);
+        }
         if self.append {
             inner.offset = self.inode.size();
         }
@@ -172,5 +201,32 @@ impl File for OSFile {
             inner.offset = newoff as usize;
         }
         Ok(inner.offset)
+    }
+
+    fn ioctl(&self, cmd: u32, arg: usize, memory_set: &MemorySet) -> SyscallRet {
+        match cmd {
+            FS_IOC_GETFLAGS | FS_IOC32_GETFLAGS => {
+                let flags = get_file_flags(&self.inode.path());
+                copy_to_user(memory_set, arg, unsafe {
+                    core::slice::from_raw_parts(
+                        &flags as *const u32 as *const u8,
+                        core::mem::size_of::<u32>(),
+                    )
+                })?;
+                Ok(0)
+            }
+            FS_IOC_SETFLAGS | FS_IOC32_SETFLAGS => {
+                let mut flags: u32 = 0;
+                copy_from_user(memory_set, arg, unsafe {
+                    core::slice::from_raw_parts_mut(
+                        &mut flags as *mut u32 as *mut u8,
+                        core::mem::size_of::<u32>(),
+                    )
+                })?;
+                set_file_flags(&self.inode.path(), flags);
+                Ok(0)
+            }
+            _ => Err(SysErrNo::ENOTTY),
+        }
     }
 }

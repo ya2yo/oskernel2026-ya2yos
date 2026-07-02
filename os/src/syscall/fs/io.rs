@@ -3,8 +3,8 @@ use log::{debug, warn};
 
 use crate::{
     fs::{
-        superblock_fs_stat, DummyFd, FdTable, File, FileDescriptor, OpenFlags, StMode, SEEK_CUR,
-        SEEK_SET,
+        superblock_fs_stat, DummyFd, FdTable, File, FileDescriptor, OSFile, OpenFlags, StMode,
+        SEEK_CUR, SEEK_SET,
     },
     mm::{copy_from_user, copy_to_user, probe_user_write, user_buffer_from_kernel, UserBuffer},
     syscall::{fs::dummyfd_create, options::Iovec},
@@ -65,6 +65,10 @@ fn ranges_overlap(a_start: usize, a_len: usize, b_start: usize, b_len: usize) ->
     let a_end = a_start.saturating_add(a_len);
     let b_end = b_start.saturating_add(b_len);
     a_start < b_end && b_start < a_end
+}
+
+fn same_file_by_stat(a_dev: usize, a_ino: usize, b_dev: usize, b_ino: usize) -> bool {
+    a_dev == b_dev && a_ino != 0 && a_ino == b_ino
 }
 
 fn read_iovec(
@@ -902,10 +906,12 @@ pub fn sys_copy_file_range(
     let out_desc = inner.fd_table.get(outfd)?;
     let in_any = in_desc.any();
     let out_any = out_desc.any();
+    let in_stat = in_any.fstat();
+    let out_stat = out_any.fstat();
 
     // 先用通用 File::fstat() 判断类型，保证目录输出返回 EISDIR，
     // block/char/fifo/pipe 等特殊文件返回 EINVAL。
-    let out_type = stat_file_type(out_any.fstat().st_mode);
+    let out_type = stat_file_type(out_stat.st_mode);
     if out_type == StMode::FDIR.bits() {
         return Err(SysErrNo::EISDIR);
     }
@@ -913,7 +919,7 @@ pub fn sys_copy_file_range(
         return Err(SysErrNo::EINVAL);
     }
 
-    let in_type = stat_file_type(in_any.fstat().st_mode);
+    let in_type = stat_file_type(in_stat.st_mode);
     if in_type != StMode::FREG.bits() {
         return Err(SysErrNo::EINVAL);
     }
@@ -932,6 +938,9 @@ pub fn sys_copy_file_range(
 
     let infile = in_desc.file()?;
     let outfile = out_desc.file()?;
+    if OSFile::is_immutable_path(&outfile.inode.path()) {
+        return Err(SysErrNo::EPERM);
+    }
 
     // 在释放锁之前读取用户空间的 offset
     let (in_offset, out_offset) = {
@@ -984,7 +993,7 @@ pub fn sys_copy_file_range(
     }
 
     // 同一文件内复制时，源区间和目标区间不能重叠；Linux 对该场景返回 EINVAL。
-    if infile.inode.path() == outfile.inode.path()
+    if same_file_by_stat(in_stat.st_dev, in_stat.st_ino, out_stat.st_dev, out_stat.st_ino)
         && ranges_overlap(in_start, count, out_start, count)
     {
         return Err(SysErrNo::EINVAL);

@@ -4306,3 +4306,64 @@ make TARGET_ARCH=loongarch64
 - readonly、directory、append、closed fd、invalid flags、overlap、block/char/fifo/pipe、max length、max file size 等错误路径均输出 `TPASS`
 
 未运行 `riscv64`。
+
+---
+
+## 2026-07-02: copy_file_range02 immutable 与 overlap 后续修复
+
+### 用户需求
+
+用户提供新的 `log.ans`，要求继续分析并修复；随后提供 GDB 回溯，指出 `copy_file_range()` 调用 `File::path()` 在 `EventFd` 上 panic。
+
+### 分析
+
+新的 `log.ans` 表明测试已经不再卡在 `mkfs.ext2` 准备阶段，而是进入 `copy_file_range02` 断言。由于 `/bin/chattr`、`/bin/mkswap`、`/bin/swapon`、`/bin/swapoff` 被补齐，之前 skipped 的 immutable/swapfile setup 开始执行。真实失败为 musl/glibc 两轮中的四个 `TFAIL`：
+
+```text
+copy_file_range02.c:149: TFAIL: copy_file_range returned wrong value: 32
+copy_file_range02.c:149: TFAIL: copy_file_range returned wrong value: 16
+```
+
+对应场景是 immutable file 和 overlapping range。immutable 失败的直接原因是 busybox `chattr` 通过 `FS_IOC_GETFLAGS` / `FS_IOC_SETFLAGS` 设置 `FS_IMMUTABLE_FL`，但 `OSFile` 原先没有实现该 ioctl，也没有在写路径检查 immutable 标志，因此 `copy_file_range()` 仍然成功写入。overlap 失败的原因是同一文件判断只比较 `inode.path()` 字符串，不能稳定覆盖不同 fd/path 缓存下的同 inode 场景。
+
+第一次补 immutable 检查时，AI 在 `copy_file_range()` 中对通用 `dyn File` 调用了 `path()`。用户提供的回溯显示，block/char/fifo/pipe 等特殊 fd 场景会落到 `EventFd` 的默认 `File::path()`，导致内核 panic：
+
+```text
+Panicked at src/fs/vfs.rs:147 not implemented: File::path
+os::syscall::fs::io::sys_copy_file_range ... at src/syscall/fs/io.rs:938
+```
+
+因此最终改为：先通过 `fstat()` 判断类型，确认输出是普通文件后再取得 `OSFile`，用 `outfile.inode.path()` 做 immutable 检查，避免触碰抽象 fd 的默认 `path()`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | 增加 `/bin/chattr`、`/bin/mkswap`、`/bin/swapon`、`/bin/swapoff` applet 入口 |
+| `os/src/fs/files/os_file.rs` | 增加路径级 ext2 flags 映射，支持 `FS_IOC_GETFLAGS` / `FS_IOC_SETFLAGS` 及 32 位变体；普通文件 `write()` 对 `FS_IMMUTABLE_FL` 返回 `EPERM` |
+| `os/src/syscall/fs/io.rs` | `copy_file_range()` 对 immutable 输出返回 `EPERM`；同文件重叠判断改为 `st_dev/st_ino`；避免对通用 `dyn File` 调用默认 `path()` |
+| `Docs/初赛文档/problem/copy-file-range02-error-semantics.md` | 更新后续失败、panic 分析和最终验证 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 后续修复简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 更新 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make TARGET_ARCH=loongarch64
+make TARGET_ARCH=riscv64
+timeout 120s make run > log.ans 2>&1
+git diff --check
+```
+
+结果：
+
+- LoongArch 构建通过。
+- RISC-V 构建通过。
+- LoongArch `make run` 正常 `shutdown!`。
+- `log.ans` 中 musl `copy_file_range02` Summary 为 `passed 26 failed 0 broken 0 skipped 6 warnings 0`。
+- `log.ans` 中 glibc `copy_file_range02` Summary 为 `passed 26 failed 0 broken 0 skipped 6 warnings 0`。
+- immutable file 输出 `TPASS: copy_file_range failed as expected: EPERM (1)`。
+- overlapping range 输出 `TPASS: copy_file_range failed as expected: EINVAL (22)`。
+- `git diff --check` 无输出。
