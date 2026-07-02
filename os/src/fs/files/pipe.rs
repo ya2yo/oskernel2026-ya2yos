@@ -1,6 +1,7 @@
-// 该文件定义了一组特殊的文件：Pipe
-// 它实现了File trait
-// 它的特点是
+// 该文件实现匿名 pipe 和 FIFO 端点。
+// Pipe 对外表现为 File trait，内部用按字节计数的 PipeBuf 片段队列保存数据。
+// 普通 write 会拷贝用户数据生成 Bytes 片段；splice/tee 和 file page cache 路径可以通过
+// 移动或克隆 PipeBuf 引用来减少跨 pipe 复制。
 use super::super::{File, FilePage, OpenFlags, StMode};
 use crate::fs::Kstat;
 use crate::signal::{SigSet, check_if_any_sig_for_current_task, send_signal_to_thread};
@@ -96,12 +97,17 @@ impl Pipe {
     pub fn all_write_ends_closed(&self) -> bool {
         self.inner_lock().all_write_ends_closed()
     }
+    /// Linux pipe 写入无读端时需要同时发送 SIGPIPE，并把 syscall 结果报告为 EPIPE。
+    /// 调用该函数前不要持有 pipe/task 锁，避免 signal 路径和调度路径形成锁嵌套。
     fn broken_pipe() -> SysErrNo {
         if let Some(task) = current_task() {
             send_signal_to_thread(task.tid(), SigSet::SIGPIPE);
         }
         SysErrNo::EPIPE
     }
+    /// pipe -> pipe 的 splice 快路径。
+    /// 这里移动 PipeBuf 片段本身：Bytes 片段移动 Arc<Vec<u8>>，FilePage 片段移动 Arc<FilePage>，
+    /// 因此两个 pipe 之间不需要重新复制片段里的实际数据。
     pub fn splice_to_pipe(&self, output: &Pipe, len: usize, nonblock: bool) -> SyscallRet {
         if !self.readable() || !output.writable() {
             return Err(SysErrNo::EBADF);
@@ -133,6 +139,8 @@ impl Pipe {
         })?;
         Ok(moved)
     }
+    /// tee 的语义是复制 pipe 数据到另一个 pipe，但不消费输入 pipe。
+    /// clone_bufs 只克隆 PipeBuf 的引用和 offset/len 元数据，不复制底层字节。
     pub fn tee_to_pipe(&self, output: &Pipe, len: usize, nonblock: bool) -> SyscallRet {
         if !self.readable() || !output.writable() {
             return Err(SysErrNo::EBADF);
@@ -163,6 +171,8 @@ impl Pipe {
         })?;
         Ok(copied)
     }
+    /// splice(file, pipe) 使用的入口：把页缓存中的 FilePage 作为 PipeBuf 挂到 pipe 上。
+    /// 读 pipe 时再从 FilePage 映射出的页内容拷贝到用户缓冲区，避免 file -> pipe 阶段复制数据。
     pub fn push_file_page(
         &self,
         page: Arc<FilePage>,
@@ -189,6 +199,8 @@ impl Pipe {
         ring_buffer.wake_reader();
         Ok(len)
     }
+    /// 等待 pipe 变为可读。阻塞前先把当前任务置为 Blocked，再重新检查条件并入队，
+    /// 这样可以覆盖“解锁后、入队前”写者唤醒造成的竞态窗口。
     fn wait_readable(&self, nonblock: bool) -> Result<(), SysErrNo> {
         loop {
             let ring_buffer = self.inner_lock();
@@ -219,6 +231,7 @@ impl Pipe {
             schedule_blocked_current(task_cx_ptr);
         }
     }
+    /// 等待 pipe 变为可写。逻辑与 wait_readable 对称，同时需要处理所有读端关闭时的 EPIPE。
     fn wait_writable(&self, nonblock: bool) -> Result<(), SysErrNo> {
         loop {
             let ring_buffer = self.inner_lock();
@@ -257,6 +270,8 @@ impl Pipe {
             schedule_blocked_current(task_cx_ptr);
         }
     }
+    /// 同时锁两个 pipe buffer 时按 Arc 地址排序，保证所有调用点使用一致锁顺序。
+    /// splice/tee 需要同时观察输入和输出 pipe，固定锁顺序可以避免两个方向并发操作时死锁。
     fn with_ordered_buffers<T>(
         &self,
         other: &Pipe,
@@ -304,6 +319,8 @@ const FIONREAD: u32 = 0x541B;
 const IOC_WATCH_QUEUE_SET_SIZE: u32 = 0x5760;
 const IOC_WATCH_QUEUE_SET_FILTER: u32 = 0x5761;
 
+/// pipe 中的一个连续数据片段。
+/// offset/len 描述当前片段在底层存储中的窗口，split_to 可以只切出头部而不复制数据。
 #[derive(Clone)]
 struct PipeBuf {
     storage: PipeBufStorage,
@@ -311,6 +328,8 @@ struct PipeBuf {
     len: usize,
 }
 
+/// PipeBuf 的底层存储来源。
+/// Bytes 来自普通 write，FilePage 来自 page cache；二者都通过 Arc 支持 splice/tee 的引用移动/复制。
 #[derive(Clone)]
 enum PipeBufStorage {
     Bytes(Arc<Vec<u8>>),
@@ -344,6 +363,7 @@ impl PipeBuf {
         self.len -= len;
         buf
     }
+    /// 读 pipe 时统一把片段转换成字节切片；FilePage 分支直接访问页帧内容。
     fn as_slice(&self) -> &[u8] {
         match &self.storage {
             PipeBufStorage::Bytes(data) => &data[self.offset..self.offset + self.len],
@@ -355,7 +375,8 @@ impl PipeBuf {
     }
 }
 
-/// Pipe的内层结构体
+/// Pipe 的内层共享缓冲区。
+/// 名称保留 RingBuffer，但实际已经是按字节容量限制的 PipeBuf 片段队列。
 struct PipeRingBuffer {
     bufs: VecDeque<PipeBuf>,
     bytes: usize,
@@ -418,6 +439,7 @@ impl PipeRingBuffer {
     pub fn available_write(&self) -> usize {
         RING_BUFFER_SIZE - self.bytes
     }
+    /// 追加一组片段，通常用于 splice/tee/file page cache 快路径。
     fn push_bufs(&mut self, bufs: Vec<PipeBuf>) {
         let len = bufs.iter().map(|buf| buf.len).sum::<usize>();
         assert!(len <= self.available_write(), "pipe buffer overflow");
@@ -428,6 +450,7 @@ impl PipeRingBuffer {
         }
         self.bytes += len;
     }
+    /// 从队头移出最多 len 字节的片段；必要时只切出队头片段的一部分。
     fn pop_bufs(&mut self, len: usize) -> Vec<PipeBuf> {
         let mut remaining = len.min(self.available_read());
         let mut bufs = Vec::new();
@@ -447,6 +470,7 @@ impl PipeRingBuffer {
         }
         bufs
     }
+    /// 克隆队头最多 len 字节的片段元数据，用于 tee 保留输入 pipe 数据。
     fn clone_bufs(&self, len: usize) -> Vec<PipeBuf> {
         let mut remaining = len.min(self.available_read());
         let mut bufs = Vec::new();
@@ -710,6 +734,7 @@ impl File for Pipe {
     fn ioctl(&self, cmd: u32, arg: usize, memory_set: &crate::mm::MemorySet) -> SyscallRet {
         match cmd {
             FIONREAD => {
+                // Linux FIONREAD 返回当前可读字节数，类型为 int。
                 let available = self.available_read() as i32;
                 copy_to_user(memory_set, arg, &available.to_ne_bytes())?;
                 Ok(0)
