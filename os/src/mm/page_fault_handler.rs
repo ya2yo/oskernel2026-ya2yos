@@ -1,45 +1,42 @@
 // Page Fault Handler 回调
 
-use alloc::sync::Arc;
 use alloc::vec;
-use log::{debug, warn};
 
-use crate::{
-    arch::{memory_layout::PAGE_SIZE, tlb::tlb_invalidate},
-    fs::{File, SEEK_CUR, SEEK_SET},
-};
+use crate::{arch::memory_layout::PAGE_SIZE, fs::FILE_PAGE_CACHE};
 
 use super::group::GROUP_SHARE;
-use super::{
-    user_buffer_from_kernel, write_user_bytes_direct, MapArea, UserBuffer, VirtAddr, VirtPageNum,
-};
+use super::{MapArea, VirtAddr, VirtPageNum};
 use crate::arch::page_table::PageTable;
 
-fn shared_file_page_key(vma: &MapArea, va: VirtAddr) -> Option<(alloc::string::String, usize)> {
+fn shared_file_page_index(vma: &MapArea, va: VirtAddr) -> Option<usize> {
     if !vma
         .mmap_flags
         .contains(crate::syscall::MmapFlags::MAP_SHARED)
     {
         return None;
     }
-    let file = vma.mmap_file.file.as_ref()?;
+    vma.mmap_file.file.as_ref()?;
     let start_addr: VirtAddr = vma.vpn_range.start().into();
     let page_index = (va.0 - start_addr.0 + vma.mmap_file.offset) / PAGE_SIZE;
-    Some((file.inode.path(), page_index))
+    Some(page_index)
 }
 
-fn map_cached_shared_file_page(
+fn map_shared_file_page_from_cache(
     va: VirtAddr,
     page_table: &mut PageTable,
     vma: &mut MapArea,
 ) -> bool {
-    let Some((path, page_index)) = shared_file_page_key(vma, va) else {
+    let Some(page_index) = shared_file_page_index(vma, va) else {
         return false;
     };
-    let Some(frame) = GROUP_SHARE.lock().find_file_frame(path, page_index) else {
+    let Some(file) = vma.mmap_file.file.as_ref() else {
+        return false;
+    };
+    let Ok(page) = FILE_PAGE_CACHE.get_or_load(file.inode.clone(), page_index) else {
         return false;
     };
     let vpn: VirtPageNum = va.into();
+    let frame = page.frame.clone();
     let ppn = frame.ppn;
     vma.data_frames.insert(vpn, frame);
     page_table.handle_mmap_read_page_fault(vpn, ppn, vma.map_perm, vma.mmap_flags);
@@ -50,7 +47,7 @@ fn map_cached_shared_file_page(
 /// Returns true on success, false if OOM (caller should SIGSEGV).
 pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
     // debug!("[mmap_write_page_fault] va={:?}", va);
-    if map_cached_shared_file_page(va, page_table, vma) {
+    if map_shared_file_page_from_cache(va, page_table, vma) {
         return true;
     }
 
@@ -62,28 +59,14 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
         return true;
     }
     let file = vma.mmap_file.file.clone().unwrap();
-    let old_offset = file.lseek(0, SEEK_CUR).unwrap();
     let start_addr: VirtAddr = vma.vpn_range.start().into();
     let va = va.0;
-
-    file.lseek(
-        (va - start_addr.0 + vma.mmap_file.offset) as isize,
-        SEEK_SET,
-    )
-    .expect("mmap_write_page_fault should not fail");
     let mut kernel_buf = vec![0u8; PAGE_SIZE];
-    let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-    file.read(buf)
+    file.inode
+        .read_at(va - start_addr.0 + vma.mmap_file.offset, &mut kernel_buf)
         .expect("mmap_write_page_fault should not fail");
-    write_user_bytes_direct(page_table.token(), va as usize, &kernel_buf);
-    file.lseek(old_offset as isize, SEEK_SET)
-        .expect("mmap_write_page_fault should not fail");
+    crate::mm::write_user_bytes_direct(page_table.token(), va as usize, &kernel_buf);
     let vpn = VirtAddr::from(va).floor();
-    if let Some((path, page_index)) = shared_file_page_key(vma, VirtAddr::from(va)) {
-        if let Some(frame) = vma.data_frames.get(&vpn).cloned() {
-            GROUP_SHARE.lock().add_file_frame(path, page_index, frame);
-        }
-    }
     page_table.handle_mmap_write_page_fault(vpn, vma.map_perm, vma.mmap_flags);
     true
 }

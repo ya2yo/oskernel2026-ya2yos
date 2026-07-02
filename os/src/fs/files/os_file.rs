@@ -1,6 +1,6 @@
 use crate::{
-    fs::{FsIndex, Kstat, SEEK_CUR, SEEK_END, SEEK_SET},
-    mm::{copy_from_user, copy_to_user, MemorySet, UserBuffer},
+    fs::{FILE_PAGE_CACHE, FsIndex, Kstat, SEEK_CUR, SEEK_END, SEEK_SET},
+    mm::{MemorySet, UserBuffer, copy_from_user, copy_to_user},
     syscall::PollEvents,
     utils::{SysErrNo, SyscallRet},
 };
@@ -9,7 +9,7 @@ use super::super::{File, Inode};
 use alloc::{collections::BTreeMap, string::String, sync::Arc};
 use linux_raw_sys::{
     general::FS_IMMUTABLE_FL,
-    ioctl::{FS_IOC32_GETFLAGS, FS_IOC32_SETFLAGS, FS_IOC_GETFLAGS, FS_IOC_SETFLAGS},
+    ioctl::{FS_IOC_GETFLAGS, FS_IOC_SETFLAGS, FS_IOC32_GETFLAGS, FS_IOC32_SETFLAGS},
 };
 use spin::{Lazy, Mutex};
 
@@ -150,8 +150,10 @@ impl File for OSFile {
         }
         let mut total_write_size = 0usize;
         for slice in buf.buffers.iter() {
+            let write_offset = inner.offset;
             let write_size = self.inode.write_at(inner.offset, *slice)?;
             assert_eq!(write_size, slice.len());
+            FILE_PAGE_CACHE.invalidate_path_range(&self.inode.path(), write_offset, write_size);
             inner.offset += write_size;
             total_write_size += write_size;
         }

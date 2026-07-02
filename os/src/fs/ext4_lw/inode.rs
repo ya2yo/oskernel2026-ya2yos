@@ -1,11 +1,13 @@
 use log::{debug, warn};
 use lwext4_rust::{
-    bindings::{O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
     Ext4File, InodeTypes,
+    bindings::{O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
 };
 
 use crate::{
-    fs::{patch_dynamic_link_file_bytes, Inode, InodeType, Kstat, OpenFlags, String},
+    fs::{
+        FILE_PAGE_CACHE, Inode, InodeType, Kstat, OpenFlags, String, patch_dynamic_link_file_bytes,
+    },
     sync::SyncUnsafeCell,
     utils::{SysErrNo, SysResult, SyscallRet},
 };
@@ -119,7 +121,11 @@ impl Inode for Ext4Inode {
             .map_err(SysErrNo::from)?;
 
         let t = file.file_truncate(size as u64);
-        t.map_err(SysErrNo::from)
+        let ret = t.map_err(SysErrNo::from);
+        if ret.is_ok() {
+            FILE_PAGE_CACHE.invalidate_path(path);
+        }
+        ret
     }
 
     fn rename(&self, path: &str, new_path: &str) -> SyscallRet {

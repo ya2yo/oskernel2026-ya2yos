@@ -1,11 +1,11 @@
 // 该文件定义了一组特殊的文件：Pipe
 // 它实现了File trait
 // 它的特点是
-use super::super::{File, OpenFlags, StMode};
+use super::super::{File, FilePage, OpenFlags, StMode};
 use crate::fs::Kstat;
 use crate::signal::check_if_any_sig_for_current_task;
 use crate::task::{
-    current_task, ready_queue, schedule_blocked_current, TaskControlBlock, TaskStatus,
+    TaskControlBlock, TaskStatus, current_task, ready_queue, schedule_blocked_current,
 };
 use crate::utils::{PollSet, SysErrNo};
 use crate::{mm::UserBuffer, syscall::PollEvents, utils::SyscallRet};
@@ -13,6 +13,7 @@ use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
+use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::min;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -152,6 +153,32 @@ impl Pipe {
         })?;
         Ok(copied)
     }
+    pub fn push_file_page(
+        &self,
+        page: Arc<FilePage>,
+        page_offset: usize,
+        len: usize,
+        nonblock: bool,
+    ) -> SyscallRet {
+        if !self.writable() {
+            return Err(SysErrNo::EBADF);
+        }
+        if len == 0 {
+            return Ok(0);
+        }
+        self.wait_writable(nonblock)?;
+        let mut ring_buffer = self.inner_lock();
+        if ring_buffer.all_read_ends_closed() {
+            return Err(SysErrNo::EPIPE);
+        }
+        let len = len.min(ring_buffer.available_write());
+        if len == 0 {
+            return Ok(0);
+        }
+        ring_buffer.push_bufs(vec![PipeBuf::from_file_page(page, page_offset, len)]);
+        ring_buffer.wake_reader();
+        Ok(len)
+    }
     fn wait_readable(&self, nonblock: bool) -> Result<(), SysErrNo> {
         loop {
             let ring_buffer = self.inner_lock();
@@ -268,24 +295,37 @@ const IOC_WATCH_QUEUE_SET_FILTER: u32 = 0x5761;
 
 #[derive(Clone)]
 struct PipeBuf {
-    data: Arc<Vec<u8>>,
+    storage: PipeBufStorage,
     offset: usize,
     len: usize,
+}
+
+#[derive(Clone)]
+enum PipeBufStorage {
+    Bytes(Arc<Vec<u8>>),
+    FilePage(Arc<FilePage>),
 }
 
 impl PipeBuf {
     fn new(bytes: Vec<u8>) -> Self {
         let len = bytes.len();
         Self {
-            data: Arc::new(bytes),
+            storage: PipeBufStorage::Bytes(Arc::new(bytes)),
             offset: 0,
+            len,
+        }
+    }
+    fn from_file_page(page: Arc<FilePage>, offset: usize, len: usize) -> Self {
+        Self {
+            storage: PipeBufStorage::FilePage(page),
+            offset,
             len,
         }
     }
     fn split_to(&mut self, len: usize) -> Self {
         let len = len.min(self.len);
         let buf = Self {
-            data: self.data.clone(),
+            storage: self.storage.clone(),
             offset: self.offset,
             len,
         };
@@ -294,7 +334,13 @@ impl PipeBuf {
         buf
     }
     fn as_slice(&self) -> &[u8] {
-        &self.data[self.offset..self.offset + self.len]
+        match &self.storage {
+            PipeBufStorage::Bytes(data) => &data[self.offset..self.offset + self.len],
+            PipeBufStorage::FilePage(page) => {
+                let bytes = page.frame.ppn.bytes_array();
+                &bytes[self.offset..self.offset + self.len]
+            }
+        }
     }
 }
 
@@ -399,7 +445,7 @@ impl PipeRingBuffer {
             }
             let copy_len = remaining.min(buf.len);
             bufs.push(PipeBuf {
-                data: buf.data.clone(),
+                storage: buf.storage.clone(),
                 offset: buf.offset,
                 len: copy_len,
             });

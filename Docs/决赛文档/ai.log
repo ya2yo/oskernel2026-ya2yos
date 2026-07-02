@@ -662,3 +662,54 @@ timeout 120s make run > /tmp/splice-pipebuf-run.log 2>&1
 未运行 RISC-V。本轮未新增 problem 文件：这是结构/性能路径优化，未修通新的 LTP 测例；`splice05` 失败作为后续问题处理。
 
 ---
+
+## 2026-07-02: 文件页面缓存接入 splice file->pipe fast path
+
+### 用户需求
+
+用户已经添加 `os/src/fs/page_cache.rs`，要求直接继续修改，把页面缓存接入后续路径。
+
+### 分析
+
+AI 检查新增 `FILE_PAGE_CACHE`、`GROUP_SHARE.shared_file_frames`、`mmap` 缺页处理、`PipeBuf` 和 `sys_splice()` 后确认：
+
+- `os/src/fs/page_cache.rs` 已经提供 `FilePageCache`、`FilePage`、`FilePageKey` 和 `get_or_load()`，并已在 `fs/mod.rs` 中导出。
+- `GROUP_SHARE` 中旧的 `shared_file_frames` 与新 `FILE_PAGE_CACHE` 功能重叠，应移除，文件页共享统一走 `FILE_PAGE_CACHE`。
+- `MAP_SHARED` 文件 mmap 缺页可以直接映射 `FilePage.frame`，避免再通过临时 `kernel_buf` 拷贝到新 frame。
+- `PipeBuf` 已经是片段队列，可以扩展 storage，使其既能持有普通 `Bytes`，也能持有 `FilePage` 引用。
+- `splice(file, pipe)` 可在输入 fd 是 `OSFile`、输出 fd 是 pipe 时走缓存页 fast path；其他路径保留原兼容搬运。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/page_cache.rs` | 补插入时复查，避免并发重复加载覆盖；新增 `invalidate_path()`，并让范围失效使用饱和加法 |
+| `os/src/mm/page_fault_handler.rs` | `MAP_SHARED` 文件缺页改为 `FILE_PAGE_CACHE.get_or_load()` 并直接映射缓存页 frame；保留非共享文件 mmap 的原拷贝加载路径 |
+| `os/src/mm/group.rs` | 移除旧 `shared_file_frames`、`add_file_frame()`、`find_file_frame()` |
+| `os/src/fs/files/pipe.rs` | `PipeBuf` 改为 `Bytes/FilePage` storage；新增 `Pipe::push_file_page()`，支持把缓存文件页引用挂入 pipe |
+| `os/src/syscall/io_mpx/splice.rs` | `splice(file, pipe)` 在输入为普通 `OSFile` 时走 `FILE_PAGE_CACHE` + `Pipe::push_file_page()` fast path；其他路径继续 fallback 到原逻辑 |
+| `os/src/fs/files/os_file.rs` | 普通文件 `write()` 成功后失效对应文件缓存页范围 |
+| `os/src/fs/ext4_lw/inode.rs` | `truncate()` 成功后失效对应文件全部缓存页 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/决赛文档/ai.log` | 追加本轮 AI 协作记录 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 追加本轮 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children os/src/fs/page_cache.rs os/src/mm/page_fault_handler.rs os/src/mm/group.rs os/src/fs/files/pipe.rs os/src/syscall/io_mpx/splice.rs os/src/fs/files/os_file.rs os/src/fs/ext4_lw/inode.rs
+make
+timeout 120s make run > /tmp/splice-pipebuf-run.log 2>&1
+```
+
+结果：
+
+- 默认 LoongArch64 `make` 构建通过。
+- 构建仍有 vendor `smoltcp` warning，与本次修改无关。
+- 当前工作树中的 `initproc` 运行 `splice09`；musl/glibc 均输出 `TCONF: The test requires kernel 6.7 or newer`，summary 为 `skipped 1`，无 `panic` / `TFAIL` / `TBROK`，系统跑到 `shutdown!`。
+
+未运行 RISC-V。本轮未新增 problem 文件：这是页面缓存与 splice fast path 功能推进，未修通新的失败测例。
+
+---

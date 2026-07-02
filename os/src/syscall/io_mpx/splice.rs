@@ -1,9 +1,10 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use crate::{
-    fs::{File, OpenFlags, SEEK_CUR, SEEK_SET},
+    arch::memory_layout::PAGE_SIZE,
+    fs::{FILE_PAGE_CACHE, File, OSFile, OpenFlags, Pipe, SEEK_CUR, SEEK_SET},
     mm::{
-        copy_from_user, copy_from_user_val, copy_to_user_val, user_buffer_from_kernel, UserBuffer,
+        UserBuffer, copy_from_user, copy_from_user_val, copy_to_user_val, user_buffer_from_kernel,
     },
     syscall::options::Iovec,
     task::current_task,
@@ -189,10 +190,30 @@ pub fn sys_splice(
     if !in_file.readable() || !out_file.writable() {
         return Err(SysErrNo::EBADF);
     }
+    let cached_file_to_pipe = if !in_is_pipe && out_is_pipe {
+        fd_in
+            .file()
+            .ok()
+            .map(|input| (input, out_pipe.as_ref().unwrap().clone()))
+    } else {
+        None
+    };
 
     let mut in_offset = read_splice_offset(&memory_set, off_in)?;
     let mut out_offset = read_splice_offset(&memory_set, off_out)?;
     drop(task);
+
+    if let Some((input, output)) = cached_file_to_pipe {
+        let written = splice_file_to_pipe_cached(
+            &input,
+            &output,
+            &mut in_offset,
+            len.min(isize::MAX as usize),
+            flags & SPLICE_F_NONBLOCK != 0,
+        )?;
+        write_splice_offset(&memory_set, off_in, in_offset)?;
+        return Ok(written);
+    }
 
     let mut total = 0usize;
     let mut remaining = len.min(isize::MAX as usize);
@@ -293,6 +314,72 @@ pub fn sys_splice(
 
     write_splice_offset(&memory_set, off_in, in_offset)?;
     write_splice_offset(&memory_set, off_out, out_offset)?;
+    Ok(total)
+}
+
+fn splice_file_to_pipe_cached(
+    input: &Arc<OSFile>,
+    output: &Arc<Pipe>,
+    offset: &mut Option<i64>,
+    len: usize,
+    nonblock: bool,
+) -> SyscallRet {
+    let mut file_offset = match offset {
+        Some(offset) => *offset as usize,
+        None => input.offset(),
+    };
+    let file_size = input.inode.size();
+    if file_offset >= file_size {
+        return Ok(0);
+    }
+
+    let mut total = 0usize;
+    let mut remaining = len.min(file_size - file_offset);
+    while remaining > 0 {
+        let page_index = file_offset / PAGE_SIZE;
+        let page_offset = file_offset % PAGE_SIZE;
+        let page = match FILE_PAGE_CACHE.get_or_load(input.inode.clone(), page_index) {
+            Ok(page) => page,
+            Err(err) => {
+                if total > 0 {
+                    break;
+                }
+                return Err(err);
+            }
+        };
+        let valid_len = page.valid_len.saturating_sub(page_offset);
+        if valid_len == 0 {
+            break;
+        }
+        let chunk_len = remaining.min(valid_len).min(PAGE_SIZE - page_offset);
+        let written = match output.push_file_page(page, page_offset, chunk_len, nonblock) {
+            Ok(written) => written,
+            Err(err) => {
+                if total > 0 {
+                    break;
+                }
+                return Err(err);
+            }
+        };
+        if written == 0 {
+            break;
+        }
+
+        file_offset += written;
+        total += written;
+        remaining -= written;
+        if written < chunk_len {
+            break;
+        }
+    }
+
+    if total > 0 {
+        if let Some(offset) = offset.as_mut() {
+            *offset = offset.checked_add(total as i64).ok_or(SysErrNo::EINVAL)?;
+        } else {
+            input.set_offset(file_offset);
+        }
+    }
     Ok(total)
 }
 

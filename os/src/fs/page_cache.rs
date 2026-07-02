@@ -2,12 +2,7 @@ use alloc::{collections::BTreeMap, string::String, sync::Arc};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
-use crate::{
-    arch::memory_layout::PAGE_SIZE,
-    fs::Inode,
-    mm::FrameTracker,
-    utils::{SysErrNo, SyscallRet},
-};
+use crate::{arch::memory_layout::PAGE_SIZE, fs::Inode, mm::FrameTracker, utils::SysErrNo};
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct FilePageKey {
@@ -83,13 +78,21 @@ impl FilePageCache {
             dirty: AtomicBool::new(false),
         });
 
-        self.pages.lock().insert(key, page.clone());
+        let mut pages = self.pages.lock();
+        if let Some(existing) = pages.get(&key).cloned() {
+            return Ok(existing);
+        }
+        pages.insert(key, page.clone());
         Ok(page)
     }
 
     pub fn invalidate_path_range(&self, path: &str, start: usize, len: usize) {
+        if len == 0 {
+            return;
+        }
         let first = start / PAGE_SIZE;
-        let last = (start + len + PAGE_SIZE - 1) / PAGE_SIZE;
+        let end = start.saturating_add(len);
+        let last = end.saturating_add(PAGE_SIZE - 1) / PAGE_SIZE;
         let mut pages = self.pages.lock();
         for page_index in first..last {
             pages.remove(&FilePageKey {
@@ -97,6 +100,10 @@ impl FilePageCache {
                 page_index,
             });
         }
+    }
+
+    pub fn invalidate_path(&self, path: &str) {
+        self.pages.lock().retain(|key, _| key.path != path);
     }
 }
 
