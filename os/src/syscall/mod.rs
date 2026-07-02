@@ -468,9 +468,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Vmsplice => sys_vmsplice(args[0] as i32, args[1], args[2] as u32, args[3] as u32),
         Syscall::Splice => sys_splice(
             args[0] as i32,
-            args[1] as *const i64,
+            args[1] as *mut i64,
             args[2] as i32,
-            args[3] as *const i64,
+            args[3] as *mut i64,
             args[4],
             args[5] as u32,
         ),

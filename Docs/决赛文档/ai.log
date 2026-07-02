@@ -226,49 +226,6 @@ git diff --check
 
 ---
 
-## 2026-07-02: vmsplice pipe 文件分类收敛
-
-### 用户需求
-
-用户指出 `Pipe` 本身也是文件，当前 `pipe2()` 分配 pipe 时放入 `FileClass::Abs`，没有体现 pipe 是一种明确的文件类别，要求先修改 `os/src/syscall/io_mpx/splice.rs` 中的 `vmsplice` 相关逻辑，并将 pipe 放入 `FileClass` 统一管理。
-
-### 分析
-
-AI 检查 `FileClass`、`FileDescriptor`、`sys_pipe2()`、`Pipe` 和 `sys_vmsplice()` 路径后确认：
-
-- `FileClass` 中已经存在 `Pipe(Arc<Pipe>)` 分支，`any()` 也可把 pipe 作为 `dyn File` 使用。
-- `pipe2()` 仍将匿名 pipe 读写端存为 `FileClass::Abs`，导致 pipe 与其他抽象文件混在一起。
-- `sys_vmsplice()` 通过 `fd_entry.abs()` 获取目标 fd，实际是在接受任意 `Abs` 文件后依赖运行时写入能力，不能清晰表达 Linux 语义中 fd 必须是 pipe。
-- 现有 `FileClass::pipe()` 匹配分支写成未限定的 `Pipe(p)`，本身无法通过编译；`splice.rs` 中的未实现 `sys_splice()` 也残留变量拼写和占位调用问题。
-
-### 修改内容
-
-| 文件 | 修改 |
-|------|------|
-| `os/src/fs/mod.rs` | 修正 `FileClass::pipe()` 为 `FileClass::Pipe(p) => Ok(p.clone())`，保留 `any()` 对 pipe 的统一 `File` trait 转换 |
-| `os/src/fs/fstruct.rs` | 为 `FileDescriptor` 暴露 `pipe()` 访问入口 |
-| `os/src/syscall/fs/pipe.rs` | `sys_pipe2()` 分配的读端/写端改为 `FileClass::Pipe` |
-| `os/src/syscall/io_mpx/splice.rs` | `sys_vmsplice()` 改为通过 `fd_entry.pipe()` 校验目标 fd 必须是 pipe，并导入 `File` trait 调用 `writable()` / `write()` |
-
-同时整理 `sys_splice()` 未实现 stub：保留 fd 与 offset 用户指针基础校验，去掉未定义变量和不存在的 `fstate()` 占位调用，仍按当前实现返回 `EINVAL`。
-
-### 验证
-
-已执行：
-
-```text
-make
-```
-
-结果：
-
-- 默认 LoongArch64 `make` 构建通过。
-- 输出中仍有 vendor `smoltcp` warning，与本次修改无关。
-
-未运行 `make run`：本次只收敛 pipe fd 分类并完成构建验证，未做运行路径回归。未运行 RISC-V。
-
----
-
 ## 2026-07-02: clone02 CLONE_SIGHAND 退出状态修复
 
 ### 用户需求
@@ -501,7 +458,6 @@ timeout 120s make run > /tmp/resource-slot.log 2>&1
 未运行 RISC-V。
 
 ---
-
 ## 2026-07-02: 删除 get_locked_memory_set_read/write 兼容接口
 
 ### 用户需求
@@ -550,3 +506,107 @@ timeout 120s make run > /tmp/resource-slot.log 2>&1
 - 外部 LoongArch64 `make run` 基础测试跑完，`/tmp/resource-slot.log` 到 `shutdown!`，未发现 `panic` / `TFAIL` / `TBROK`。
 
 未运行 RISC-V。
+
+---
+## 2026-07-02: vmsplice pipe 文件分类收敛
+
+### 用户需求
+
+用户指出 `Pipe` 本身也是文件，当前 `pipe2()` 分配 pipe 时放入 `FileClass::Abs`，没有体现 pipe 是一种明确的文件类别，要求先修改 `os/src/syscall/io_mpx/splice.rs` 中的 `vmsplice` 相关逻辑，并将 pipe 放入 `FileClass` 统一管理。
+
+### 分析
+
+AI 检查 `FileClass`、`FileDescriptor`、`sys_pipe2()`、`Pipe` 和 `sys_vmsplice()` 路径后确认：
+
+- `FileClass` 中已经存在 `Pipe(Arc<Pipe>)` 分支，`any()` 也可把 pipe 作为 `dyn File` 使用。
+- `pipe2()` 仍将匿名 pipe 读写端存为 `FileClass::Abs`，导致 pipe 与其他抽象文件混在一起。
+- `sys_vmsplice()` 通过 `fd_entry.abs()` 获取目标 fd，实际是在接受任意 `Abs` 文件后依赖运行时写入能力，不能清晰表达 Linux 语义中 fd 必须是 pipe。
+- 现有 `FileClass::pipe()` 匹配分支写成未限定的 `Pipe(p)`，本身无法通过编译；`splice.rs` 中的未实现 `sys_splice()` 也残留变量拼写和占位调用问题。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/mod.rs` | 修正 `FileClass::pipe()` 为 `FileClass::Pipe(p) => Ok(p.clone())`，保留 `any()` 对 pipe 的统一 `File` trait 转换 |
+| `os/src/fs/fstruct.rs` | 为 `FileDescriptor` 暴露 `pipe()` 访问入口 |
+| `os/src/syscall/fs/pipe.rs` | `sys_pipe2()` 分配的读端/写端改为 `FileClass::Pipe` |
+| `os/src/syscall/io_mpx/splice.rs` | `sys_vmsplice()` 改为通过 `fd_entry.pipe()` 校验目标 fd 必须是 pipe，并导入 `File` trait 调用 `writable()` / `write()` |
+
+同时整理 `sys_splice()` 未实现 stub：保留 fd 与 offset 用户指针基础校验，去掉未定义变量和不存在的 `fstate()` 占位调用，仍按当前实现返回 `EINVAL`。
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：
+
+- 默认 LoongArch64 `make` 构建通过。
+- 输出中仍有 vendor `smoltcp` warning，与本次修改无关。
+
+未运行 `make run`：本次只收敛 pipe fd 分类并完成构建验证，未做运行路径回归。未运行 RISC-V。
+
+---
+
+## 2026-07-02: splice syscall 兼容实现
+
+### 用户需求
+
+用户要求“实现splice”，需要把已有 syscall 号 76 对应的 `sys_splice()` 从占位/未完成状态补成可用实现，并验证 `splice01`。
+
+### 分析
+
+AI 检查现有 `sys_vmsplice()`、`FileClass::Pipe`、`File` trait、`OSFile::read/write/lseek()`、`Pipe` ring buffer 与当前 `initproc`，确认：
+
+- `Syscall::Splice = 76` 已在分发层接入，但 `sys_splice()` 仍是占位实现。
+- 当前工作树中的 `sys_splice()` 还有未完成的 `let ibuf = in_pipe.` 片段，必须先恢复可编译状态。
+- Ya2yOS 当前没有页缓存级零拷贝管线，但已有 `File::read()` / `File::write()` 与 `UserBuffer`，可以先实现 Linux 可见语义兼容的内核缓冲区搬运。
+- `splice01` 重点验证 regular file -> pipe -> regular file 的数据搬运；其他常见测例还会关注无 pipe 参与、pipe offset、`O_APPEND` 输出 fd 和 pipe->pipe。
+
+设计取舍：
+
+- 不新增底层零拷贝机制，使用 64KiB 内核缓冲区分片搬运。
+- syscall 层负责 fd 获取、权限/flag/offset 校验、用户 offset 读写；实际读写仍走现有 `File` 抽象。
+- 带 offset 的普通文件路径通过临时 `lseek()` 到用户 offset、读写后恢复原 fd offset 的方式模拟 Linux `splice` offset 指针语义。
+- `SPLICE_F_NONBLOCK` 只对 pipe 的空/满状态做基础兼容，避免空 pipe 或满 pipe 阻塞。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/io_mpx/splice.rs` | 实现 `sys_splice()`，支持 file->pipe、pipe->file、pipe->pipe 的内核缓冲区搬运，补齐 flags、offset、pipe、`O_APPEND`、短读短写和非阻塞处理 |
+| `os/src/syscall/mod.rs` | `splice` 分发层把 `off_in/off_out` 作为可写用户指针传入 |
+| `os/src/fs/files/pipe.rs` | 暴露 pipe 读端/写端关闭状态查询，供 splice 判断 EOF/EPIPE |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/决赛文档/problem/README.md` | 新增 problem 索引 |
+| `Docs/决赛文档/problem/splice-syscall.md` | 新增 splice 实现复盘 |
+| `Docs/决赛文档/ai.log` | 追加本轮 AI 协作记录 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 追加本轮 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children os/src/syscall/io_mpx/splice.rs os/src/syscall/mod.rs os/src/fs/files/pipe.rs
+make
+make TARGET_ARCH=riscv64
+timeout 120s make run > /tmp/splice-run.log 2>&1
+git diff --check
+```
+
+结果：
+
+- 默认 LoongArch64 `make` 构建通过。
+- `make TARGET_ARCH=riscv64` 构建通过。
+- LoongArch64 `make run` 跑当前 `initproc` 中的 `splice01`，musl/glibc 均输出 `splice01.c:48: TPASS: Written data has been read back correctly`，summary 均为 `passed 1 failed 0 broken 0 skipped 0 warnings 0`，系统跑到 `shutdown!`。
+- 构建仍有 vendor `smoltcp` warning，与本次修改无关。
+- 运行日志中 glibc `splice01` 前仍有一行 `Fail to convert LoongArch Unknown to Trap type! 0x0`，但没有 `TFAIL` / `TBROK` / panic，测试 summary 通过。
+
+未运行 RISC-V QEMU。
+
+---
+

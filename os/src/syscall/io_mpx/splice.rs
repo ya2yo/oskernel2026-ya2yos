@@ -1,8 +1,10 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec, vec::Vec};
 
 use crate::{
-    fs::File,
-    mm::{UserBuffer, copy_from_user, copy_from_user_val},
+    fs::{File, OpenFlags, SEEK_CUR, SEEK_SET},
+    mm::{
+        UserBuffer, copy_from_user, copy_from_user_val, copy_to_user_val, user_buffer_from_kernel,
+    },
     syscall::options::Iovec,
     task::current_task,
     utils::{SysErrNo, SyscallRet},
@@ -12,6 +14,7 @@ const SPLICE_F_MOVE: u32 = 0x01;
 const SPLICE_F_NONBLOCK: u32 = 0x02;
 const SPLICE_F_MORE: u32 = 0x04;
 const SPLICE_F_GIFT: u32 = 0x08;
+const SPLICE_CHUNK_SIZE: usize = 0x10000;
 
 /// 参考 https://man7.org/linux/man-pages/man2/vmsplice.2.html
 ///
@@ -106,13 +109,13 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
 
 /// 参考 https://man7.org/linux/man-pages/man2/splice.2.html
 ///
-/// 在两个文件描述符之间零拷贝传输数据（至少一个必须是管道）。
-/// 当前内核未实现零拷贝 splice 机制，始终返回 EINVAL。
+/// 在两个文件描述符之间传输数据（至少一个必须是管道）。
+/// 当前实现通过内核缓冲区搬运数据，不提供零拷贝优化。
 pub fn sys_splice(
     fd_in: i32,
-    off_in: *const i64,
+    off_in: *mut i64,
     fd_out: i32,
-    off_out: *const i64,
+    off_out: *mut i64,
     len: usize,
     flags: u32,
 ) -> SyscallRet {
@@ -128,6 +131,15 @@ pub fn sys_splice(
     if len == 0 {
         return Ok(0);
     }
+    let valid_flags = SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE;
+    if flags & !valid_flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if fd_in < 0 || fd_out < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+
     let task = current_task().unwrap();
     let proc = &task.process;
     let fd_table = proc.fd_table_arc();
@@ -135,17 +147,213 @@ pub fn sys_splice(
     let fd_in = fd_table.get(fd_in as usize)?;
     let fd_out = fd_table.get(fd_out as usize)?;
 
-    // 当前 splice 仍未实现零拷贝搬运；保留基础 fd / offset 参数校验后返回 EINVAL。
-    if !off_in.is_null() {
-        let _ = copy_from_user_val(&memory_set, off_in)?;
+    if fd_in.is_path_only() || fd_out.is_path_only() {
+        return Err(SysErrNo::EBADF);
     }
-    if !off_out.is_null() {
-        let _ = copy_from_user_val(&memory_set, off_out)?;
-    }
-    let _ = fd_in;
-    let _ = fd_out;
 
-    Err(SysErrNo::EINVAL)
+    let in_pipe = fd_in.pipe().ok();
+    let out_pipe = fd_out.pipe().ok();
+    let in_is_pipe = in_pipe.is_some();
+    let out_is_pipe = out_pipe.is_some();
+
+    if !in_is_pipe && !out_is_pipe {
+        return Err(SysErrNo::EINVAL);
+    }
+    if in_is_pipe && !off_in.is_null() {
+        return Err(SysErrNo::ESPIPE);
+    }
+    if out_is_pipe && !off_out.is_null() {
+        return Err(SysErrNo::ESPIPE);
+    }
+    if in_is_pipe
+        && out_is_pipe
+        && Arc::ptr_eq(in_pipe.as_ref().unwrap(), out_pipe.as_ref().unwrap())
+    {
+        return Err(SysErrNo::EINVAL);
+    }
+    if !out_is_pipe && fd_out.flags() & OpenFlags::O_APPEND.bits() != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let in_file = fd_in.any();
+    let out_file = fd_out.any();
+    if !in_file.readable() || !out_file.writable() {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let mut in_offset = read_splice_offset(&memory_set, off_in)?;
+    let mut out_offset = read_splice_offset(&memory_set, off_out)?;
+    drop(task);
+
+    let mut total = 0usize;
+    let mut remaining = len.min(isize::MAX as usize);
+
+    while remaining > 0 {
+        let mut chunk_len = remaining.min(SPLICE_CHUNK_SIZE);
+
+        if let Some(pipe) = in_pipe.as_ref() {
+            let readable = pipe.available_read();
+            if readable == 0 {
+                if pipe.all_write_ends_closed() {
+                    break;
+                }
+                if flags & SPLICE_F_NONBLOCK != 0 {
+                    if total > 0 {
+                        break;
+                    }
+                    return Err(SysErrNo::EAGAIN);
+                }
+            } else {
+                chunk_len = chunk_len.min(readable);
+            }
+        }
+
+        if let Some(pipe) = out_pipe.as_ref() {
+            let writable = pipe.available_write();
+            if writable == 0 {
+                if pipe.all_read_ends_closed() {
+                    if total > 0 {
+                        break;
+                    }
+                    return Err(SysErrNo::EPIPE);
+                }
+                if flags & SPLICE_F_NONBLOCK != 0 {
+                    if total > 0 {
+                        break;
+                    }
+                    return Err(SysErrNo::EAGAIN);
+                }
+                // Avoid consuming a large input chunk before a blocking pipe write can proceed.
+                chunk_len = chunk_len.min(1);
+            } else {
+                chunk_len = chunk_len.min(writable);
+            }
+        }
+
+        if chunk_len == 0 {
+            break;
+        }
+
+        let mut buf = vec![0u8; chunk_len];
+        let read_len = match splice_read(&in_file, in_offset, &mut buf) {
+            Ok(read_len) => read_len,
+            Err(err) => {
+                if total > 0 {
+                    break;
+                }
+                return Err(err);
+            }
+        };
+        if read_len == 0 {
+            break;
+        }
+
+        let written = match splice_write(&out_file, out_offset, &mut buf[..read_len]) {
+            Ok(written) => written.min(read_len),
+            Err(err) => {
+                rewind_splice_input(&in_file, in_is_pipe, in_offset, read_len, 0);
+                if total > 0 {
+                    break;
+                }
+                return Err(err);
+            }
+        };
+        if written == 0 {
+            rewind_splice_input(&in_file, in_is_pipe, in_offset, read_len, 0);
+            break;
+        }
+
+        if written < read_len {
+            rewind_splice_input(&in_file, in_is_pipe, in_offset, read_len, written);
+        }
+
+        if let Some(offset) = in_offset.as_mut() {
+            *offset = offset.checked_add(written as i64).ok_or(SysErrNo::EINVAL)?;
+        }
+        if let Some(offset) = out_offset.as_mut() {
+            *offset = offset.checked_add(written as i64).ok_or(SysErrNo::EINVAL)?;
+        }
+
+        total += written;
+        remaining -= written;
+
+        if read_len < chunk_len || written < read_len {
+            break;
+        }
+    }
+
+    write_splice_offset(&memory_set, off_in, in_offset)?;
+    write_splice_offset(&memory_set, off_out, out_offset)?;
+    Ok(total)
+}
+
+fn read_splice_offset(
+    memory_set: &crate::mm::MemorySet,
+    ptr: *mut i64,
+) -> Result<Option<i64>, SysErrNo> {
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    let offset = copy_from_user_val(memory_set, ptr as *const i64)?;
+    if offset < 0 || offset > isize::MAX as i64 {
+        return Err(SysErrNo::EINVAL);
+    }
+    Ok(Some(offset))
+}
+
+fn write_splice_offset(
+    memory_set: &crate::mm::MemorySet,
+    ptr: *mut i64,
+    offset: Option<i64>,
+) -> Result<(), SysErrNo> {
+    if let Some(offset) = offset {
+        copy_to_user_val(memory_set, ptr, &offset)?;
+    }
+    Ok(())
+}
+
+fn splice_read(file: &Arc<dyn File>, offset: Option<i64>, buf: &mut [u8]) -> SyscallRet {
+    if let Some(offset) = offset {
+        let old_offset = file.lseek(0, SEEK_CUR)?;
+        file.lseek(offset as isize, SEEK_SET)?;
+        let ret = file.read(unsafe { user_buffer_from_kernel(buf) });
+        let restore = file.lseek(old_offset as isize, SEEK_SET);
+        let ret = ret?;
+        restore?;
+        Ok(ret)
+    } else {
+        file.read(unsafe { user_buffer_from_kernel(buf) })
+    }
+}
+
+fn splice_write(file: &Arc<dyn File>, offset: Option<i64>, buf: &mut [u8]) -> SyscallRet {
+    if let Some(offset) = offset {
+        let old_offset = file.lseek(0, SEEK_CUR)?;
+        file.lseek(offset as isize, SEEK_SET)?;
+        let ret = file.write(unsafe { user_buffer_from_kernel(buf) });
+        let restore = file.lseek(old_offset as isize, SEEK_SET);
+        let ret = ret?;
+        restore?;
+        Ok(ret)
+    } else {
+        file.write(unsafe { user_buffer_from_kernel(buf) })
+    }
+}
+
+fn rewind_splice_input(
+    file: &Arc<dyn File>,
+    is_pipe: bool,
+    offset: Option<i64>,
+    read_len: usize,
+    written: usize,
+) {
+    if is_pipe || offset.is_some() || written >= read_len {
+        return;
+    }
+    let unread = read_len - written;
+    if unread <= isize::MAX as usize {
+        let _ = file.lseek(-(unread as isize), SEEK_CUR);
+    }
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/tee.2.html

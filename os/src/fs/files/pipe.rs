@@ -5,7 +5,7 @@ use super::super::{File, OpenFlags, StMode};
 use crate::fs::Kstat;
 use crate::signal::check_if_any_sig_for_current_task;
 use crate::task::{
-    current_task, ready_queue, schedule_blocked_current, TaskControlBlock, TaskStatus,
+    TaskControlBlock, TaskStatus, current_task, ready_queue, schedule_blocked_current,
 };
 use crate::utils::{PollSet, SysErrNo};
 use crate::{mm::UserBuffer, syscall::PollEvents, utils::SyscallRet};
@@ -85,6 +85,12 @@ impl Pipe {
     /// 该函数的意义是套壳，将PipeRingBuffer对外隐藏起来
     pub fn available_write(&self) -> usize {
         return self.inner_lock().available_write();
+    }
+    pub fn all_read_ends_closed(&self) -> bool {
+        self.inner_lock().all_read_ends_closed()
+    }
+    pub fn all_write_ends_closed(&self) -> bool {
+        self.inner_lock().all_write_ends_closed()
     }
 }
 
