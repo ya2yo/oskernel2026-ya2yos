@@ -892,3 +892,10 @@
 - **场景**：GDB 回溯分析、进程退出/信号共享状态修复、LTP clone 回归验证、文档完善
 - **描述**：用户提供 `clone02` 退出路径的 GDB 回溯，显示 `exit_current_and_run_next()` 向父进程发送 `SIGCHLD` 时在 `send_signal_to_thread_group()` 内重入 `ProcessInner::get_locked_sigtable()` 并 panic。AI 定位到根因是 `SigTable` 同时保存 signal action 与 `group_exit_code`；`CLONE_SIGHAND` 父子进程共享 signal action 是正确的，但共享线程组退出码会污染父进程状态，并在子进程退出通知父进程时重入同一把 `sig_table` 锁。修复为把 `group_exit_code` 移入 `ProcessMeta`，`SigTable` 只保留信号处理动作。`make` 通过，最新 `log.ans` 显示 musl/glibc `clone02` 均为 `passed 1 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-07-02 条目与 [problem/clone02-shared-sighand-exit-code.md](./problem/clone02-shared-sighand-exit-code.md)。
 - **关联 commit**：待提交
+
+#### PCB 与 MemorySet 锁边界重构（7.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：PCB 结构重构、地址空间锁内聚、锁耦合降低、构建验证、文档完善
+- **描述**：用户要求把已经自带同步的 `MemorySet`、`SigTable`、`FdTable`、`FSInfo` 从 `ProcessInner` 中移出，并让 `MemorySet` 自己持有内部锁；后续指出 `personality` 应放入 `ProcessMeta`。AI 将 `MemorySet` 改为内部 `RwLock<MemorySetInner>`，`Process` 改为直接持有自同步资源和可替换 Arc 指针，移除空壳 `ProcessInner`，保留 `inner_lock()` 作为兼容资源快照入口，并重写 fork/exec/exit、用户栈分配、`mremap` 等会触发 `MemorySet` 重入锁的路径。`make` 通过；QEMU 运行验证因沙箱 `/var/tmp` 只读且外部运行被中断，未取得有效运行结果。详见 `Docs/初赛文档/ai.log` 2026-07-02 条目。
+- **关联 commit**：待提交

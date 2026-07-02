@@ -4496,3 +4496,65 @@ warnings 0
 日志中仍有包装层输出 `FAIL LTP CASE clone02 : 12` / `RESULT GLIBC LTP SINGLE CASE clone02 : 12`，但按项目规则以 LTP Summary 为准。
 
 未运行 RISC-V。
+
+---
+
+## 2026-07-02: PCB 与 MemorySet 锁边界重构
+
+### 用户需求
+
+用户指出 `ProcessInner` 已经有 PCB 锁保护，内部成员不应再各自套锁；已经自带同步的成员应放到 `inner` 外部。同时要求尽量把 `MemorySet` 的锁放进 `MemorySet` 自身，降低 PCB 与地址空间实现的耦合。后续用户补充 `personality` 完全可以放到 `ProcessMeta`。
+
+### 分析
+
+AI 先检查 `Process`、`TaskControlBlock`、`MemorySet`、fork/exec/exit 路径和 `log.ans` 中的锁相关信息。原结构把 `memory_set: Arc<RwLock<MemorySet>>`、`sig_table: Arc<Mutex<SigTable>>`、`fd_table`、`fs_info`、`personality` 都放在 `ProcessInner` 中，导致调用者必须先拿 PCB inner，再拿地址空间或信号表锁。这个结构把“资源 Arc 指针替换”和“资源内部同步”混在同一层，容易形成不必要的锁顺序依赖。
+
+重构方向：
+
+- `MemorySet` 自己持有 `RwLock<MemorySetInner>`，对外暴露 `get_ref()`、`get_mut()`、`with_ref()`、`with_mut()`。
+- `Process` 直接持有 `memory_set`、`sig_table`、`fd_table`、`fs_info`；其中 `memory_set` / `sig_table` 外层 `Mutex` 只保护 exec 时替换 Arc 指针。
+- `ProcessInner` 空壳移除，保留 `inner_lock()` 作为兼容入口，返回 `ProcessResources` 快照，避免一次性改动所有旧调用点。
+- `personality` 属于进程级元数据，移入 `ProcessMeta`，`sys_personality()` 通过 `Process::personality()` / `set_personality()` 访问。
+- 持有 `MemorySet` 写锁时不得再调用会重新加锁的 `MemorySet` wrapper，因此同步改写 `alloc_user_res()`、`alloc_trap_context_only()`、`growproc()`、`sys_mremap()` 和 fork 地址空间复制中的相关访问。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/process/process.rs` | 移除 `ProcessInner`，新增 `ProcessResources` 兼容快照；自带同步的资源移到 `Process` 外层；`personality` 移入 `ProcessMeta` |
+| `os/src/mm/memory_set/mod.rs` | `MemorySet` 内部改为 `RwLock<MemorySetInner>`，提供读写 guard 和闭包式访问 API |
+| `os/src/mm/memory_set/fork_clone.rs` | fork 复制地址空间时通过 `MemorySet::with_mut()` 持有父地址空间写锁，避免反复外部取锁 |
+| `os/src/task/task/task.rs` | 进程创建/fork/clone 改用 `Arc<MemorySet>`；用户栈和 trap context 分配改为单次 `with_mut()` 内完成 |
+| `os/src/task/mod.rs` | 退出路径使用资源快照中的 Arc，并按本地 clone 后的引用数判断地址空间是否可回收 |
+| `os/src/syscall/mm/mmap.rs` | `mremap` 先在读锁内复制旧 VMA 元数据，再执行 `munmap/mmap`，避免持有 area 引用时重入锁 |
+| `os/src/syscall/task/ctl.rs` | `sys_personality()` 改为访问 `ProcessMeta` 中的进程级字段 |
+| `os/src/syscall/fs/mod.rs` | 清理 `sys_splice()` 未使用变量 warning，并维持未实现时返回 `EINVAL` 的既有注释语义 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children --check os/src/syscall/fs/mod.rs
+git diff --check -- os/src/syscall/fs/mod.rs
+make
+```
+
+中途也对本次主要改动文件执行过：
+
+```text
+rustfmt --edition 2024 --unstable-features --skip-children --check ...
+git diff --check -- ...
+make
+```
+
+结果：
+
+- 当前默认 LoongArch64 `make` 构建通过。
+- `sys_splice` 的 `memort_set` / `fd_in` / `fd_out` unused warnings 已消除。
+- 构建输出中仍有 vendor `smoltcp` 自身 warning，与本次改动无关。
+- 沙箱内 `make run` 未真正启动 QEMU，原因是 QEMU 无法在只读 `/var/tmp` 创建临时文件；外部 QEMU 验证申请后被用户中断，因此未得到有效运行日志。
+
+未运行 RISC-V。

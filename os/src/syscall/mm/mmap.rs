@@ -8,12 +8,12 @@ use crate::{
     arch::memory_layout::{MAX_MMAP_SIZE, PAGE_SIZE},
     fs::File,
     mm::{
+        MapArea, MapAreaType, MapPermission, MremapFlags, ShmFlags, VirtAddr, VirtPageNum,
         copy_to_user, if_bad_address, remove_bad_address, shm_attach, shm_create, shm_drop,
-        shm_find, MapArea, MapAreaType, MapPermission, MremapFlags, ShmFlags, VirtAddr,
-        VirtPageNum,
+        shm_find,
     },
     task::{self, current_task},
-    utils::{page_round_up, SysErrNo, SyscallRet},
+    utils::{SysErrNo, SyscallRet, page_round_up},
 };
 
 /// 参考 https://man7.org/linux/man-pages/man2/mmap.2.html
@@ -144,20 +144,26 @@ pub fn sys_mremap(
         Some(v) => v,
         None => return Err(SysErrNo::EINVAL),
     };
-    let old_area = match memory_set.get_mut().find_area_by_range(
+    let old_range = (
         VirtAddr::from(old_addr).floor(),
         VirtAddr::from(old_end.saturating_sub(1)).ceil(),
-    ) {
-        Some(area) => area,
-        None => return Err(SysErrNo::EFAULT),
-    };
-    if old_area.area_type != MapAreaType::Mmap {
-        debug!("old_area.area_type != MapAreaType::Mmap");
-        return Err(SysErrNo::EINVAL);
-    }
-    let old_flag = old_area.mmap_flags;
-    let old_file = &old_area.mmap_file;
-    let old_perm = old_area.map_perm;
+    );
+    let (old_flag, old_file, old_perm) = memory_set.with_ref(|ms| {
+        let old_area = ms
+            .areas
+            .iter()
+            .find(|area| area.vpn_range.range() == old_range)
+            .ok_or(SysErrNo::EFAULT)?;
+        if old_area.area_type != MapAreaType::Mmap {
+            debug!("old_area.area_type != MapAreaType::Mmap");
+            return Err(SysErrNo::EINVAL);
+        }
+        Ok((
+            old_area.mmap_flags,
+            old_area.mmap_file.clone(),
+            old_area.map_perm,
+        ))
+    })?;
 
     if fixed {
         warn!("fixed not implement");

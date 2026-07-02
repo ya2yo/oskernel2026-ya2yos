@@ -33,9 +33,9 @@ mod tid;
 pub use crate::arch::context::TaskContext;
 use crate::{
     arch::cpu::hart_id,
-    fs::{open, OpenFlags, NONE_MODE},
-    mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
-    signal::{send_signal_to_thread_group, SigSet},
+    fs::{NONE_MODE, OpenFlags, open},
+    mm::{MapAreaType, VirtAddr, activate_kernel_space, copy_to_user, copy_to_user_val},
+    signal::{SigSet, send_signal_to_thread_group},
     syscall::write_process_acct_record,
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
 };
@@ -49,8 +49,8 @@ pub use manager::*;
 pub use process::*;
 pub use process::*;
 pub use processor::{
-    current_task, current_token, current_trap_cx, run_tasks, schedule, take_current_task,
-    Processor, PROCESSORS,
+    PROCESSORS, Processor, current_task, current_token, current_trap_cx, run_tasks, schedule,
+    take_current_task,
 };
 use spin::Lazy;
 use switch::__abandon;
@@ -200,6 +200,9 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     }
     let curr_proc = curr_task.process.inner_lock();
     let memory_set = curr_proc.get_locked_memory_set_read();
+    let fd_table = Arc::clone(&curr_proc.fd_table);
+    let fs_info = Arc::clone(&curr_proc.fs_info);
+    drop(curr_proc);
     let mut curr_task_inner = curr_task.inner_lock();
     // debug!(
     //     "[sys_exit] exit_current_and_run_next() -- thread {} exit, exit_code = {}",
@@ -209,7 +212,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     // CLONE_CHILD_CLEARTID
     if curr_task_inner.clear_child_tid != 0 {
-        let memory_set = curr_proc.get_locked_memory_set_read();
         let _ = copy_to_user_val(
             &memory_set,
             curr_task_inner.clear_child_tid as *mut u32,
@@ -224,8 +226,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     }
     // 释放futex (必须用 tid 而非 pid，因为 futex word 低 30 位存的是 TID)
     {
-        let futex_mem = curr_proc.get_locked_memory_set_read();
-        handle_futex_when_exit(&curr_task_inner.robust_list, &*futex_mem, curr_task.tid());
+        handle_futex_when_exit(&curr_task_inner.robust_list, &memory_set, curr_task.tid());
     }
     // debug!("exit_current_and_run_next: futex released");
 
@@ -327,11 +328,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             }
             write_process_acct_record(&curr_task, exit_code, &usage);
             curr_task.process.meta_lock().usage = usage;
-            if Arc::strong_count(&curr_proc.memory_set) == 1 {
+            if Arc::strong_count(&memory_set) == 2 {
                 memory_set.recycle_data_pages();
             }
-            curr_proc.fd_table.clear();
-            curr_proc.fs_info.clear();
+            fd_table.clear();
+            fs_info.clear();
 
             curr_task.process.set_group_exit_code_once(exit_code);
             curr_task.process.exit_and_reparent();
@@ -358,7 +359,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // 安全地切换内核栈
     let tid = curr_task.tid();
     drop(memory_set);
-    drop(curr_proc);
     drop(curr_task);
     // 启用内核页表，避免task的页表释放后控制流使用不存在的页表
     activate_kernel_space();

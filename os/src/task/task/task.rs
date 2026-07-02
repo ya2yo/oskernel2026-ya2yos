@@ -1,8 +1,9 @@
 //!Implementation of [`TaskControlBlock`]
 use super::super::process::Process;
 use super::super::{
+    TaskContext, TidHandle,
     aux::{Aux, AuxType},
-    tid_to_task, TaskContext, TidHandle,
+    tid_to_task,
 };
 use crate::{
     arch::{
@@ -14,19 +15,19 @@ use crate::{
         page_table::PageTable,
     },
     fs::{
-        create_proc_dir_and_file, open, FSInfo, FdTable, OpenFlags, DEFAULT_DIR_MODE,
-        DEFAULT_FILE_MODE,
+        DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, FSInfo, FdTable, OpenFlags, create_proc_dir_and_file,
+        open,
     },
     mm::{
-        copy_to_user, copy_to_user_val, MapAreaType, MapPermission, MemorySet, MemorySetInner,
-        PhysPageNum, VirtAddr,
+        MapAreaType, MapPermission, MemorySet, MemorySetInner, PhysPageNum, VirtAddr, copy_to_user,
+        copy_to_user_val,
     },
     signal::{SigSet, SigTable},
     syscall::CloneFlags,
     task::{futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid},
     timer::{TimeData, Timer},
     trap::trap_types::{Exception, Trap},
-    utils::{get_abs_path, is_abs_path, SysErrNo},
+    utils::{SysErrNo, get_abs_path, is_abs_path},
 };
 use alloc::{
     format,
@@ -40,7 +41,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use futures_util::task::AtomicWaker;
 use linux_raw_sys::general::CAP_LAST_CAP;
 use log::{debug, error};
-use spin::{rwlock::RwLock, Mutex, MutexGuard};
+use spin::{Mutex, MutexGuard};
 
 #[repr(C)]
 /// 对应 linux 的 robust_list_head
@@ -230,7 +231,7 @@ impl TaskControlBlock {
         let kernel_stack = KernelStackOnHeap::new();
         let kernel_stack_top = kernel_stack.top();
         debug!("TCB::new kstack top = {:#x}", kernel_stack_top);
-        let memory_set = Arc::new(RwLock::new(MemorySet::new(memory_set)));
+        let memory_set = Arc::new(MemorySet::new(memory_set));
         let sig_table = Arc::new(Mutex::new(SigTable::new()));
         let process = Process::new(
             memory_set.clone(),
@@ -526,10 +527,9 @@ impl TaskControlBlock {
             child_memory_set_arc = if flags.contains(CloneFlags::CLONE_VM) {
                 parent_proc_inner.memory_set.clone()
             } else {
-                Arc::new(RwLock::new(MemorySet::new(
-                    MemorySetInner::from_existed_user(
-                        &parent_proc_inner.get_locked_memory_set_read(),
-                    ),
+                let parent_memory_set = parent_proc_inner.get_locked_memory_set_read();
+                Arc::new(MemorySet::new(MemorySetInner::from_existed_user(
+                    &parent_memory_set,
                 )))
             };
 
@@ -666,8 +666,7 @@ impl TaskControlBlock {
             child_inner.trap_cx().set_a0(0);
         } else {
             // fork: 从父进程复制内存
-            let parent_mem = parent_memory_set_arc.read();
-            let parent_ref = parent_mem.get_ref();
+            let parent_ref = parent_memory_set_arc.get_ref();
             child.alloc_user_res(&mut child_inner);
             *child_inner.trap_cx() = parent_trap_cx;
 
@@ -680,10 +679,10 @@ impl TaskControlBlock {
                 .find(|area| area.area_type == MapAreaType::Stack)
                 .map(|area| area.vpn_range.start())
                 .expect("fork: child has no Stack area");
-            child_mm.lazy_clone_area(child_stack_bottom, parent_ref);
+            child_mm.lazy_clone_area(child_stack_bottom, &parent_ref);
             child_mm.clone_area(
                 VirtAddr::from(child_inner.trap_cx_bottom).floor(),
-                parent_ref,
+                &parent_ref,
             );
             child_inner.trap_cx().set_a0(0);
         }
@@ -746,8 +745,7 @@ impl TaskControlBlock {
         }
 
         let ret = memory_set
-            .get_mut()
-            .grow(grow_size, inner.user_heappoint, inner.user_heapbottom);
+            .with_mut(|ms| ms.grow(grow_size, inner.user_heappoint, inner.user_heapbottom));
 
         inner.user_heappoint = ret;
         ret
@@ -800,34 +798,41 @@ impl TaskControlBlock {
         let (ustack_top, trap_cx_bottom, trap_cx_ppn) = {
             let proc_inner = self.process.inner_lock();
             let memory_set = proc_inner.get_locked_memory_set_read();
-            let (u_bottom, u_top) = memory_set.lazy_insert_framed_area_with_hint(
-                USER_STACK_TOP,
-                USER_STACK_SIZE,
-                MapPermission::R | MapPermission::W | MapPermission::U,
-                MapAreaType::Stack,
-            );
-            let (t_cx, _) = memory_set.insert_framed_area_with_hint(
-                USER_TRAP_CONTEXT_TOP,
-                PAGE_SIZE,
-                MapPermission::R | MapPermission::W,
-                MapAreaType::Trap,
-            );
-            let t_cx_ppn = memory_set.translate(VirtAddr::from(t_cx).floor()).unwrap();
-            // 预分配页
-            let area = memory_set
-                .get_mut()
-                .find_area_by_range(
+            memory_set.with_mut(|ms| {
+                let (u_bottom, u_top) = ms.lazy_insert_framed_area_with_hint(
+                    USER_STACK_TOP,
+                    USER_STACK_SIZE,
+                    MapPermission::R | MapPermission::W | MapPermission::U,
+                    MapAreaType::Stack,
+                );
+                let (t_cx, _) = ms.insert_framed_area_with_hint(
+                    USER_TRAP_CONTEXT_TOP,
+                    PAGE_SIZE,
+                    MapPermission::R | MapPermission::W,
+                    MapAreaType::Trap,
+                );
+                let t_cx_ppn = ms.translate(VirtAddr::from(t_cx).floor()).unwrap();
+
+                let stack_range = (
                     VirtAddr::from(u_bottom).floor(),
                     VirtAddr::from(u_top).floor(),
-                )
-                .unwrap();
-            for i in 1..=PRE_ALLOC_PAGES {
-                let vpn = (area.vpn_range.end().0 - i).into();
-                if memory_set.translate(vpn).is_none() {
-                    area.map_one(&mut memory_set.get_mut().page_table, vpn);
+                );
+                let area_idx = ms
+                    .areas
+                    .iter()
+                    .position(|area| area.vpn_range.range() == stack_range)
+                    .unwrap();
+                let stack_end = ms.areas[area_idx].vpn_range.end().0;
+                for i in 1..=PRE_ALLOC_PAGES {
+                    let vpn = (stack_end - i).into();
+                    if ms.page_table.translate(vpn).is_none() {
+                        let page_table = &mut ms.page_table;
+                        let area = &mut ms.areas[area_idx];
+                        area.map_one(page_table, vpn);
+                    }
                 }
-            }
-            (u_top, t_cx, t_cx_ppn)
+                (u_top, t_cx, t_cx_ppn)
+            })
         };
         task_inner.trap_cx_ppn = trap_cx_ppn;
         task_inner.trap_cx_bottom = trap_cx_bottom;
@@ -839,14 +844,16 @@ impl TaskControlBlock {
         let (trap_cx_bottom, trap_cx_ppn) = {
             let proc_inner = self.process.inner_lock();
             let memory_set = proc_inner.get_locked_memory_set_read();
-            let (t_cx, _) = memory_set.insert_framed_area_with_hint(
-                USER_TRAP_CONTEXT_TOP,
-                PAGE_SIZE,
-                MapPermission::R | MapPermission::W,
-                MapAreaType::Trap,
-            );
-            let t_cx_ppn = memory_set.translate(VirtAddr::from(t_cx).floor()).unwrap();
-            (t_cx, t_cx_ppn)
+            memory_set.with_mut(|ms| {
+                let (t_cx, _) = ms.insert_framed_area_with_hint(
+                    USER_TRAP_CONTEXT_TOP,
+                    PAGE_SIZE,
+                    MapPermission::R | MapPermission::W,
+                    MapAreaType::Trap,
+                );
+                let t_cx_ppn = ms.translate(VirtAddr::from(t_cx).floor()).unwrap();
+                (t_cx, t_cx_ppn)
+            })
         };
         task_inner.trap_cx_ppn = trap_cx_ppn;
         task_inner.trap_cx_bottom = trap_cx_bottom;

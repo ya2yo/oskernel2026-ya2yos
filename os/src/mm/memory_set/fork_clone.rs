@@ -11,7 +11,7 @@ use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::PAGE_SIZE;
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
-use crate::mm::{page_fault_handler, MemorySet};
+use crate::mm::{MemorySet, page_fault_handler};
 use crate::syscall::MmapFlags;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -21,12 +21,11 @@ impl MemorySetInner {
     pub fn from_existed_user(user_space: &MemorySet) -> MemorySetInner {
         let mut memory_set = Self::new_from_kernel();
 
-        // Pre-fault MAP_SHARED areas: lazy mmap pages need backing frames
-        // allocated before forking, otherwise parent and child would each
-        // independently allocate their own frames on page fault, breaking
-        // MAP_SHARED semantics.
-        {
-            let u = user_space.get_mut();
+        user_space.with_mut(|u| {
+            // Pre-fault MAP_SHARED areas: lazy mmap pages need backing frames
+            // allocated before forking, otherwise parent and child would each
+            // independently allocate their own frames on page fault, breaking
+            // MAP_SHARED semantics.
             let areas_ptr: *mut Vec<MapArea> = &mut u.areas;
             let pt_ptr: *mut PageTable = &mut u.page_table;
             for area in unsafe { &mut *areas_ptr }.iter_mut() {
@@ -50,81 +49,77 @@ impl MemorySetInner {
                     }
                 }
             }
-        }
 
-        for area in user_space.get_mut().areas.iter_mut() {
-            // don't copy stack and trap
-            if area.area_type == MapAreaType::Stack || area.area_type == MapAreaType::Trap {
-                continue;
-            }
-            let mut new_area = MapArea::from_another(area);
-            if area.area_type == MapAreaType::Mmap
-                && area.mmap_flags.contains(MmapFlags::MAP_SHARED)
-            {
-                // 子进程继承 MAP_SHARED 的 groupid，增加引用计数后才允许
-                // 父子在后续 lazy fault 中从 GROUP_SHARE 找到同一共享帧。
-                GROUP_SHARE.lock().add_area(new_area.groupid);
-            }
-            // Mmap and brk are lazy allocation
-            if area.area_type == MapAreaType::Mmap || area.area_type == MapAreaType::Brk {
-                if area.mmap_flags.contains(MmapFlags::MAP_SHARED) {
+            for area in u.areas.iter_mut() {
+                // don't copy stack and trap
+                if area.area_type == MapAreaType::Stack || area.area_type == MapAreaType::Trap {
+                    continue;
+                }
+                let mut new_area = MapArea::from_another(area);
+                if area.area_type == MapAreaType::Mmap
+                    && area.mmap_flags.contains(MmapFlags::MAP_SHARED)
+                {
+                    // 子进程继承 MAP_SHARED 的 groupid，增加引用计数后才允许
+                    // 父子在后续 lazy fault 中从 GROUP_SHARE 找到同一共享帧。
+                    GROUP_SHARE.lock().add_area(new_area.groupid);
+                }
+                // Mmap and brk are lazy allocation
+                if area.area_type == MapAreaType::Mmap || area.area_type == MapAreaType::Brk {
+                    if area.mmap_flags.contains(MmapFlags::MAP_SHARED) {
+                        let frames = area.data_frames.values().cloned().collect();
+                        memory_set.push_with_given_frames(new_area, frames);
+                        continue;
+                    }
+                    new_area.data_frames = area.data_frames.clone();
+                    // Iterate the full vpn_range for Brk areas: the parent may have
+                    // PTEs for VPNs not tracked in data_frames (e.g. after brk
+                    // shrink→grow cycles).  For each such VPN we must create a child
+                    // COW PTE so the child sees the parent's heap data instead of
+                    // a zero page from a subsequent lazy fault.
+                    let vpns: Vec<_> = if area.area_type == MapAreaType::Brk {
+                        area.vpn_range.into_iter().collect()
+                    } else {
+                        area.data_frames.keys().copied().collect()
+                    };
+                    for vpn in vpns {
+                        if u.page_table.translate(vpn).is_some() {
+                            u.page_table
+                                .handle_cow_mapping_from_exited_user(vpn, &mut memory_set);
+                        }
+                    }
+                    memory_set.push_lazily(new_area);
+                    continue;
+                }
+                // ELF always COW
+                if area.area_type == MapAreaType::Elf {
+                    for vpn in area.vpn_range {
+                        u.page_table
+                            .handle_cow_mapping_from_exited_user(vpn, &mut memory_set);
+                    }
+                    new_area.data_frames = area.data_frames.clone();
+                    memory_set.push_lazily(new_area);
+                    continue;
+                }
+                // Map the same frames for Shm
+                if area.area_type == MapAreaType::Shm {
                     let frames = area.data_frames.values().cloned().collect();
                     memory_set.push_with_given_frames(new_area, frames);
                     continue;
                 }
-                new_area.data_frames = area.data_frames.clone();
-                // Iterate the full vpn_range for Brk areas: the parent may have
-                // PTEs for VPNs not tracked in data_frames (e.g. after brk
-                // shrink→grow cycles).  For each such VPN we must create a child
-                // COW PTE so the child sees the parent's heap data instead of
-                // a zero page from a subsequent lazy fault.
-                let vpns: Vec<_> = if area.area_type == MapAreaType::Brk {
-                    area.vpn_range.into_iter().collect()
-                } else {
-                    area.data_frames.keys().copied().collect()
-                };
-                for vpn in vpns {
-                    if user_space.get_mut().page_table.translate(vpn).is_some() {
-                        user_space
-                            .get_mut()
-                            .page_table
-                            .handle_cow_mapping_from_exited_user(vpn, &mut memory_set);
-                    }
-                }
-                memory_set.push_lazily(new_area);
-                continue;
-            }
-            // ELF always COW
-            if area.area_type == MapAreaType::Elf {
+
+                // neither COW nor mmap nor shm
+                memory_set.push(new_area, None).ok();
+
+                // copy data from another space
                 for vpn in area.vpn_range {
-                    user_space
-                        .get_mut()
-                        .page_table
-                        .handle_cow_mapping_from_exited_user(vpn, &mut memory_set);
+                    let src_ppn = u.page_table.translate(vpn).unwrap();
+                    let dst_ppn = memory_set.translate(vpn).unwrap();
+                    dst_ppn
+                        .bytes_array_mut()
+                        .copy_from_slice(src_ppn.bytes_array_mut());
                 }
-                new_area.data_frames = area.data_frames.clone();
-                memory_set.push_lazily(new_area);
-                continue;
             }
-            // Map the same frames for Shm
-            if area.area_type == MapAreaType::Shm {
-                let frames = area.data_frames.values().cloned().collect();
-                memory_set.push_with_given_frames(new_area, frames);
-                continue;
-            }
-
-            // neither COW nor mmap nor shm
-            memory_set.push(new_area, None).ok();
-
-            // copy data from another space
-            for vpn in area.vpn_range {
-                let src_ppn = user_space.translate(vpn).unwrap();
-                let dst_ppn = memory_set.translate(vpn).unwrap();
-                dst_ppn
-                    .bytes_array_mut()
-                    .copy_from_slice(src_ppn.bytes_array_mut());
-            }
-        }
+        });
         tlb_invalidate();
         memory_set
     }

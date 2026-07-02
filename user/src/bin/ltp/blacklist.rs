@@ -118,7 +118,7 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "clock_nanosleep02\0",
     "clock_nanosleep03\0",
     "clock_settime03\0",
-    "clone02\0",
+    // "clone02\0",
     "clone09\0",
     "clone301\0",
     "clone303\0",

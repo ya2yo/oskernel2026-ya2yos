@@ -19,7 +19,7 @@ use log::warn;
 
 use crate::{
     fs::{DummyFd, File, FileClass, FileDescriptor, InotifyFd, OpenFlags},
-    mm::{copy_from_user, read_user_cstr, UserBuffer},
+    mm::{UserBuffer, copy_from_user, read_user_cstr},
     syscall::options::Iovec,
     task::current_task,
     utils::{SysErrNo, SyscallRet},
@@ -275,14 +275,22 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
 /// 在两个文件描述符之间零拷贝传输数据（至少一个必须是管道）。
 /// 当前内核未实现零拷贝 splice 机制，始终返回 EINVAL。
 pub fn sys_splice(
-    _fd_in: i32,
-    _off_in: *const i64,
-    _fd_out: i32,
-    _off_out: *const i64,
-    _len: usize,
-    _flags: u32,
+    fd_in: i32,
+    off_in: *const i64,
+    fd_out: i32,
+    off_out: *const i64,
+    len: usize,
+    flags: u32,
 ) -> SyscallRet {
-    log::debug!("[sys_splice] not implemented");
+    log::debug!(
+        "[sys_splice] fd_in={}, off_in={:?}, fd_out={}, off_out={:?}, len={}, flags={}.",
+        fd_in,
+        off_in,
+        fd_out,
+        off_out,
+        len,
+        flags
+    );
     Err(SysErrNo::EINVAL)
 }
 

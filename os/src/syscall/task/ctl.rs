@@ -36,12 +36,11 @@ pub fn sys_personality(persona: u32) -> SyscallRet {
     const READ_ONLY: u32 = 0xffffffff;
 
     let task = current_task().unwrap();
-    let mut process = task.process.inner_lock();
-    let old = process.personality;
-
-    if persona != READ_ONLY {
-        process.personality = persona;
-    }
+    let old = if persona == READ_ONLY {
+        task.process.personality()
+    } else {
+        task.process.set_personality(persona)
+    };
 
     Ok(old as usize)
 }

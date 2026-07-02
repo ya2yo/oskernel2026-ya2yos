@@ -16,15 +16,14 @@ mod mmap_ops;
 use super::group::GROUP_SHARE;
 use super::map_area::MapType;
 use super::{
-    read_user_bytes_direct_into, user_buffer_from_kernel, FrameTracker, MapArea, MapAreaType,
-    MapPermission, PhysAddr, UserBuffer, VPNRange, VirtAddr, VirtPageNum,
+    FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer, VPNRange, VirtAddr,
+    VirtPageNum, read_user_bytes_direct_into, user_buffer_from_kernel,
 };
 use crate::arch::memory_layout::{KERNEL_ADDR_OFFSET, MMAP_TOP, PAGE_SIZE, USER_HEAP_SIZE};
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
 use crate::fs::{File, OSFile, SEEK_CUR, SEEK_SET};
 use crate::mm::PhysPageNum;
-use crate::sync::SyncUnsafeCell;
 use crate::syscall::MmapFlags;
 use crate::trap::trap_types::*;
 use crate::utils::SyscallRet;
@@ -32,7 +31,10 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use log;
-use spin::{Lazy, Mutex};
+use spin::{
+    Lazy, Mutex,
+    rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
 
 pub use elf_loader::*;
 pub use fork_clone::*;
@@ -46,25 +48,37 @@ pub static KERNEL_SPACE: Lazy<Mutex<MemorySetInner>> =
 const MMAP_WRITEBACK_CHUNK_SIZE: usize = 0x10000; // 64KB
 
 pub struct MemorySet {
-    pub inner: SyncUnsafeCell<MemorySetInner>,
+    inner: RwLock<MemorySetInner>,
 }
 
 impl MemorySet {
     pub fn new(memory_set: MemorySetInner) -> Self {
         Self {
-            inner: SyncUnsafeCell::new(memory_set),
+            inner: RwLock::new(memory_set),
         }
     }
-    pub fn get_mut(&self) -> &mut MemorySetInner {
-        self.inner.get_unchecked_mut()
+    pub fn get_mut(&self) -> RwLockWriteGuard<'_, MemorySetInner> {
+        self.inner
+            .try_write()
+            .expect("You should not fail to get memory_set write lock in a 1 HART system!")
     }
-    pub fn get_ref(&self) -> &MemorySetInner {
-        self.inner.get_unchecked_ref()
+    pub fn get_ref(&self) -> RwLockReadGuard<'_, MemorySetInner> {
+        self.inner
+            .try_read()
+            .expect("You should not fail to get memory_set read lock in a 1 HART system!")
+    }
+    pub fn with_mut<T>(&self, f: impl FnOnce(&mut MemorySetInner) -> T) -> T {
+        let mut inner = self.get_mut();
+        f(&mut inner)
+    }
+    pub fn with_ref<T>(&self, f: impl FnOnce(&MemorySetInner) -> T) -> T {
+        let inner = self.get_ref();
+        f(&inner)
     }
     // 对MemorySetInner封装
     #[inline(always)]
     pub fn token(&self) -> usize {
-        self.inner.get_unchecked_mut().token()
+        self.get_ref().token()
     }
     #[inline(always)]
     pub fn insert_framed_area(
@@ -74,15 +88,12 @@ impl MemorySet {
         permission: MapPermission,
         area_type: MapAreaType,
     ) {
-        self.inner
-            .get_unchecked_mut()
+        self.get_mut()
             .insert_framed_area(start_va, end_va, permission, area_type)
     }
     #[inline(always)]
     pub fn remove_area_with_start_vpn(&self, start_vpn: VirtPageNum) {
-        self.inner
-            .get_unchecked_mut()
-            .remove_area_with_start_vpn(start_vpn);
+        self.get_mut().remove_area_with_start_vpn(start_vpn);
     }
     #[inline(always)]
     pub fn mmap(
@@ -94,9 +105,7 @@ impl MemorySet {
         file: Option<Arc<OSFile>>,
         off: usize,
     ) -> usize {
-        self.inner
-            .get_unchecked_mut()
-            .mmap(addr, len, map_perm, flags, file, off)
+        self.get_mut().mmap(addr, len, map_perm, flags, file, off)
     }
     #[inline(always)]
     pub fn shm(
@@ -110,13 +119,11 @@ impl MemorySet {
     }
     #[inline(always)]
     pub fn munmap(&self, addr: usize, len: usize) -> SyscallRet {
-        self.inner.get_unchecked_mut().munmap(addr, len)
+        self.get_mut().munmap(addr, len)
     }
     #[inline(always)]
     pub fn handle_page_fault(&self, vpn: VirtPageNum, scause: Trap) -> bool {
-        self.inner
-            .get_unchecked_mut()
-            .handle_page_fault(vpn, scause)
+        self.get_mut().handle_page_fault(vpn, scause)
     }
     /// 修改虚拟地址空间的访问权限（MemorySet 层封装）。
     ///
@@ -125,34 +132,28 @@ impl MemorySet {
     /// 真正的 area 拆分和页表操作参见 [`MemorySetInner::mprotect`]。
     #[inline(always)]
     pub fn mprotect(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) {
-        self.inner.get_unchecked_mut().mprotect(
-            start_vpn,
-            end_vpn,
-            map_perm,
-            None,
-            usize::MAX,
-            false,
-        );
+        self.get_mut()
+            .mprotect(start_vpn, end_vpn, map_perm, None, usize::MAX, false);
     }
     #[inline(always)]
     pub fn activate(&self) {
-        self.inner.get_unchecked_mut().activate();
+        self.get_ref().activate();
     }
     #[inline(always)]
     pub fn recycle_data_pages(&self) -> SyscallRet {
-        self.inner.get_unchecked_mut().recycle_data_pages()
+        self.get_mut().recycle_data_pages()
     }
     #[inline(always)]
     pub fn resident_size_kb(&self) -> usize {
-        self.inner.get_unchecked_ref().resident_size_kb()
+        self.get_ref().resident_size_kb()
     }
     #[inline(always)]
     pub fn virtual_size_kb(&self) -> usize {
-        self.inner.get_unchecked_ref().virtual_size_kb()
+        self.get_ref().virtual_size_kb()
     }
     #[inline(always)]
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PhysPageNum> {
-        self.inner.get_unchecked_mut().translate(vpn)
+        self.get_ref().translate(vpn)
     }
     #[inline(always)]
     pub fn insert_framed_area_with_hint(
@@ -185,7 +186,7 @@ impl MemorySet {
         self.get_mut().lazy_clone_area(start_vpn, another)
     }
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
-        self.get_mut().page_table.translate_va(va)
+        self.get_ref().page_table.translate_va(va)
     }
     pub fn check_user_range(&self, start: usize, len: usize, wanted_perm: MapPermission) -> bool {
         if len == 0 {
@@ -200,13 +201,8 @@ impl MemorySet {
         let start_vpn = VirtAddr::from(start).floor();
         let end_vpn = VirtAddr::from(end - 1).ceil();
 
-        unsafe {
-            self.inner
-                .get()
-                .as_ref() // 变成 Option<&MemorySetInner>
-                .unwrap() // 假设你确定指针不为空
-                .check_user_range(VPNRange::new(start_vpn, end_vpn), wanted_perm)
-        }
+        self.get_ref()
+            .check_user_range(VPNRange::new(start_vpn, end_vpn), wanted_perm)
     }
 }
 
@@ -594,11 +590,11 @@ impl MemorySetInner {
             // 权限不满足
             if !area.map_perm.contains(wanted_map_perm) {
                 log::error!(
-                "[check_valid_user_vpn_range] vpn {:#x} has wrong map permission: {:?}, wanted: {:?}",
-                current_vpn.0,
-                area.map_perm,
-                wanted_map_perm
-            );
+                    "[check_valid_user_vpn_range] vpn {:#x} has wrong map permission: {:?}, wanted: {:?}",
+                    current_vpn.0,
+                    area.map_perm,
+                    wanted_map_perm
+                );
                 // return Err(Errno::EFAULT);
                 return false;
             }

@@ -7,24 +7,30 @@ use alloc::{
 };
 use futures_util::task::AtomicWaker;
 use log::{debug, error, warn};
-use spin::{
-    rwlock::{RwLock, RwLockWriteGuard},
-    Lazy, Mutex, MutexGuard, RwLockReadGuard,
-};
+use spin::{Lazy, Mutex, MutexGuard};
 
 use crate::{
-    fs::{remove_proc_dir_and_file, FSInfo, FdTable},
-    mm::{MemorySet, MemorySetInner},
-    signal::{send_signal_to_thread_group, SigSet, SigTable},
+    fs::{FSInfo, FdTable, remove_proc_dir_and_file},
+    mm::MemorySet,
+    signal::{SigSet, SigTable, send_signal_to_thread_group},
     syscall::CloneFlags,
     task::{TaskControlBlock, TidHandle},
-    utils::{get_abs_path, is_abs_path, SysErrNo, SyscallRet},
+    utils::{SysErrNo, SyscallRet, get_abs_path, is_abs_path},
 };
 
 /// 进程/线程组 类
 /// 它的Arc是TCB
 pub struct Process {
-    pub inner: Mutex<ProcessInner>,
+    /// 当前地址空间。`MemorySet` 内部自带锁；这里的 Mutex 只保护 exec 时
+    /// 替换整份地址空间的 Arc 指针。
+    pub memory_set: Mutex<Arc<MemorySet>>,
+    /// 当前信号动作表。SigTable 自身带锁；这里的 Mutex 只保护 exec/clone 时
+    /// 替换整张表的 Arc 指针。
+    pub sig_table: Mutex<Arc<Mutex<SigTable>>>,
+    /// 进程打开的文件描述符表。本身带锁，不再放入 PCB 内部锁。
+    pub fd_table: Arc<FdTable>,
+    /// 文件系统上下文。本身带锁，不再放入 PCB 内部锁。
+    pub fs_info: Arc<FSInfo>,
     pub pid: usize,
     pub meta: Mutex<ProcessMeta>,
 }
@@ -32,15 +38,14 @@ pub struct Process {
 unsafe impl Send for Process {}
 unsafe impl Sync for Process {}
 
-/// 进程可变部分
-pub struct ProcessInner {
-    pub memory_set: Arc<RwLock<MemorySet>>,
+/// 进程共享资源快照。
+///
+/// 进程级资源已经拆成各自的同步对象，这个结构只为既有调用点提供短期兼容入口。
+pub struct ProcessResources {
+    pub memory_set: Arc<MemorySet>,
     pub sig_table: Arc<Mutex<SigTable>>,
-    /// 进程打开的文件描述符表
     pub fd_table: Arc<FdTable>,
     pub fs_info: Arc<FSInfo>,
-    /// personality(2) — PER_LINUX = 0
-    pub personality: u32,
 }
 
 impl Process {
@@ -95,7 +100,7 @@ impl Process {
     }
     /// 创建新进程
     pub fn new(
-        memory_set: Arc<RwLock<MemorySet>>,
+        memory_set: Arc<MemorySet>,
         sig_table: Arc<Mutex<SigTable>>,
         fd_table: Arc<FdTable>,
         fs_info: Arc<FSInfo>,
@@ -111,13 +116,10 @@ impl Process {
                 .unwrap_or(pid)
         };
         let ret = Arc::new(Self {
-            inner: Mutex::new(ProcessInner {
-                memory_set,
-                sig_table,
-                fd_table,
-                fs_info,
-                personality: 0,
-            }),
+            memory_set: Mutex::new(memory_set),
+            sig_table: Mutex::new(sig_table),
+            fd_table,
+            fs_info,
             pid,
             meta: Mutex::new(ProcessMeta {
                 tasks: Vec::new(),
@@ -132,6 +134,7 @@ impl Process {
                 termination_signal: None,
                 usage: ProcessUsage::default(),
                 comm: String::from("initproc"),
+                personality: 0,
             }),
         });
         if parent_pid != 0 {
@@ -149,11 +152,17 @@ impl Process {
         }
         ret
     }
-    /// 获取inner的锁
-    pub fn inner_lock(&self) -> MutexGuard<'_, ProcessInner> {
-        self.inner
-            .try_lock()
-            .expect(&format!("fail to get proc lock({})", self.pid))
+    /// 获取进程共享资源快照。
+    ///
+    /// 历史上这个接口返回 PCB 内部锁；现在资源已经各自带锁或不可变，
+    /// 因此这里只克隆 Arc，避免在访问 fd/sig/mm 时额外持有 PCB 锁。
+    pub fn inner_lock(&self) -> ProcessResources {
+        ProcessResources {
+            memory_set: self.memory_set_arc(),
+            sig_table: self.sig_table_arc(),
+            fd_table: Arc::clone(&self.fd_table),
+            fs_info: Arc::clone(&self.fs_info),
+        }
     }
     /// 获取元数据的锁
     pub fn meta_lock(&self) -> MutexGuard<'_, ProcessMeta> {
@@ -168,6 +177,36 @@ impl Process {
     /// 获取进程组 ID
     pub fn pgid(&self) -> usize {
         self.meta_lock().pgid
+    }
+    /// 获取 personality(2) 执行域。
+    pub fn personality(&self) -> u32 {
+        self.meta_lock().personality
+    }
+    /// 设置 personality(2) 执行域，返回旧值。
+    pub fn set_personality(&self, persona: u32) -> u32 {
+        let mut meta = self.meta_lock();
+        let old = meta.personality;
+        meta.personality = persona;
+        old
+    }
+    pub fn memory_set_arc(&self) -> Arc<MemorySet> {
+        self.memory_set
+            .try_lock()
+            .expect("fail to get proc.memory_set lock")
+            .clone()
+    }
+    pub fn sig_table_arc(&self) -> Arc<Mutex<SigTable>> {
+        self.sig_table
+            .try_lock()
+            .expect("fail to get proc.sig_table lock")
+            .clone()
+    }
+    pub fn memory_set_strong_count(&self) -> usize {
+        let memory_set = self
+            .memory_set
+            .try_lock()
+            .expect("fail to get proc.memory_set lock");
+        Arc::strong_count(&memory_set)
     }
     /// 线程组是否已经进入退出流程。
     pub fn is_group_exiting(&self) -> bool {
@@ -195,9 +234,8 @@ impl Process {
         new_memory_set: MemorySet,
         new_sigtable: SigTable,
     ) {
-        let mut inner_lock = self.inner.try_lock().expect("lock fail");
-        inner_lock.memory_set = Arc::new(RwLock::new(new_memory_set));
-        inner_lock.sig_table = Arc::new(Mutex::new(new_sigtable));
+        *self.memory_set.try_lock().expect("lock fail") = Arc::new(new_memory_set);
+        *self.sig_table.try_lock().expect("lock fail") = Arc::new(Mutex::new(new_sigtable));
     }
     /// 通过pid获取对应的进程
     pub fn get_process_arc_by_pid(pid: usize) -> Option<Arc<Process>> {
@@ -296,18 +334,14 @@ impl Drop for Process {
     }
 }
 
-impl ProcessInner {
+impl ProcessResources {
     /// 内存相关的读锁
-    pub fn get_locked_memory_set_read(&self) -> RwLockReadGuard<'_, MemorySet> {
-        self.memory_set
-            .try_read()
-            .expect("You should not fail to get lock in a 1 HART system!")
+    pub fn get_locked_memory_set_read(&self) -> Arc<MemorySet> {
+        Arc::clone(&self.memory_set)
     }
     /// 内存相关的写锁
-    pub fn get_locked_memory_set_write(&self) -> RwLockWriteGuard<'_, MemorySet> {
-        self.memory_set
-            .try_write()
-            .expect("You should not fail to get lock in a 1 HART system!")
+    pub fn get_locked_memory_set_write(&self) -> Arc<MemorySet> {
+        Arc::clone(&self.memory_set)
     }
     /// 信号表获取
     pub fn get_locked_sigtable(&self) -> MutexGuard<'_, SigTable> {
@@ -384,6 +418,8 @@ pub struct ProcessMeta {
     pub usage: ProcessUsage,
     /// Linux task comm，供 /proc 与 process accounting 等只需要短命令名的路径使用。
     pub comm: String,
+    /// personality(2) 执行域，属于进程级元数据。
+    pub personality: u32,
 }
 
 static PID_2_PROCESS_ARC: Lazy<Mutex<BTreeMap<usize, Arc<Process>>>> =
