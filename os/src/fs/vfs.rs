@@ -58,6 +58,11 @@ pub trait Inode: Send + Sync {
     fn read_dentry(&self, _off: usize, _len: usize) -> Result<(Vec<u8>, isize), SysErrNo> {
         unimplemented!("Inode::read_dentry")
     }
+    /// 判断目录是否为空。用于 rmdir/unlinkat(AT_REMOVEDIR) 在调用底层删除前保持
+    /// Linux 语义，避免文件系统后端执行递归删除。
+    fn is_dir_empty(&self) -> Result<bool, SysErrNo> {
+        unimplemented!("Inode::is_dir_empty")
+    }
     /// 截断文件到指定大小
     fn truncate(&self, _size: usize) -> SyscallRet {
         unimplemented!("Inode::truncate")

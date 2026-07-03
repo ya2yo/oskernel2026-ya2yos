@@ -14,7 +14,6 @@ use crate::{
     arch::{
         context::{MachineContext, UserContext},
         memory_layout::{self, USER_STACK_SIZE},
-        trap_interface::get_trap_cause,
     },
     mm::{copy_from_user_val, copy_to_user, copy_to_user_val, VirtAddr},
     task::{
@@ -22,7 +21,6 @@ use crate::{
         tid_to_task, Process, TaskControlBlock, TaskStatus,
     },
     timer::TimeVal,
-    trap::trap_types::{Exception, Trap},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -175,11 +173,12 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
     } else {
         // if this syscall wants to restart
         let restart_errno = -(SysErrNo::ERESTART as isize) as usize;
-        if get_trap_cause() == Trap::Exception(Exception::Syscall)
-            && trap_cx.get_a0() == restart_errno
-        {
-            // 我们的内核是不可抢占的，因此理论上这不会发生
-            warn!("SysErrNo::ERESTART should not happen: this kernel is non-preemptive!");
+        if trap_cx.get_a0() == restart_errno {
+            // ERESTART 是 wait/select 等阻塞 syscall 与信号分发之间的内核内部状态。
+            // signal frame 在 trap_return 阶段构造，不能再依赖当前 CSR trap cause
+            // 判断是否来自 syscall；只要 trap context 中仍保留 -ERESTART，就必须
+            // 在保存用户 mcontext 前把它转换成重启或 EINTR 语义，避免 errno 85
+            // 暴露给用户态。
             // and if `SA_RESTART` is set
             if sig_action.act.sa_flags.contains(SigActionFlags::SA_RESTART) {
                 // debug!("[do_signal] syscall will restart after sigreturn");

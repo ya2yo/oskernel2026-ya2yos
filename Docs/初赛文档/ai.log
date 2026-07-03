@@ -4204,3 +4204,65 @@ make
 - 未运行 `riscv64`。
 
 ---
+
+## 2026-07-03: access01 wait4 ERESTART 与非空目录 rmdir 语义修复
+
+### 用户需求
+
+用户先要求分析 `log.ans`，修复：
+
+```text
+access01.c:281: TBROK: Failed to chmod file 'accessfile_w': ENOENT (2)
+```
+
+随后指出问题没有真正修好：`log.ans` 仍有 broken，尾部死循环，`ana.ans` 中有 syscall 调用过程。
+
+### 分析
+
+AI 先按 `fix-bug` 流程筛选 `log.ans` 中的 `access01/accessfile_w/TBROK` 关键行。旧日志显示子进程已通过 `openat(O_CREAT)` 成功创建 `/tmp/LTP_accBlJbnI/accessfile_w` 并返回 fd 3；但在子进程 close 后、再次 `fchmodat()` 之前，父进程对 `/tmp/LTP_accBlJbnI` 执行 `unlinkat(..., AT_REMOVEDIR)` 并获得成功，随后子进程按路径 chmod 时父目录已不存在，最终得到 `ENOENT`。
+
+继续阅读 `sys_unlinkat()` 与 ext4 inode 删除路径后确认，当前 syscall 层没有检查目录是否为空，目录 unlink 直接委托到 lwext4 的 `dir_rm()`。该后端接口是递归删除目录，语义比 Linux `rmdir` 更宽松；Linux `unlinkat(AT_REMOVEDIR)` 对非空目录应返回 `ENOTEMPTY`。
+
+用户补充 `ana.ans` 后，AI 重新分析完整失败链路。`ana.ans` 显示真正导致 broken 的首个错误是：
+
+```text
+[PID 3] SigKill ret = 0
+[PID 2] Wait4 ret = Interrupted system call should be restarted
+[PID 2] SigReturn ret = -85
+tst_test.c:1654: TBROK: waitpid(...) failed: ERESTART (85)
+```
+
+`ERESTART` 是内核内部 errno，不能暴露给用户态。`sys_waitpid()` 在收到带 `SA_RESTART` 的用户信号时返回内部 `ERESTART`，期望 signal frame 在 `sigreturn` 后重启原 syscall。但 `setup_frame()` 依赖 `get_trap_cause() == Syscall` 才处理 `-ERESTART`；signal frame 实际在 `trap_return()` 阶段构造，此时 trap cause 不可靠，导致保存的用户 `MachineContext` 仍带 `a0=-ERESTART`。另外 syscall trap 入口没有保存原始 `a0`，即使进入重启分支也无法恢复 wait4 的原始参数。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/trap/mod.rs` | syscall trap 入口保存 `origin_a0`，用于 `SA_RESTART` 恢复原 syscall 参数 |
+| `os/src/signal/mod.rs` | `setup_frame()` 只以 trap context 中的 `a0 == -ERESTART` 判断内部 restart 状态，不再依赖当前 trap cause；保存用户 mcontext 前完成 syscall restart 或 `EINTR` 转换 |
+| `os/src/fs/vfs.rs` | 为 `Inode` 增加 `is_dir_empty()` 接口 |
+| `os/src/fs/ext4_lw/inode.rs` | 用 `read_dir_from(0)` 遍历目录项，忽略 `.`/`..` 后判断目录是否非空 |
+| `os/src/syscall/fs/ctl.rs` | `unlinkat` 删除目录前检查 `AT_REMOVEDIR` 与非空目录；非空目录返回 `ENOTEMPTY`，目录无 `AT_REMOVEDIR` 返回 `EISDIR` |
+| `Docs/初赛文档/problem/access01-rmdir-nonempty.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > /tmp/access01-wait-restart.log 2>&1
+```
+
+结果：
+
+- 默认 `riscv64` 构建通过。
+- 沙箱外 `make run` 正常退出，未超时。
+- `/tmp/access01-wait-restart.log` 中 `access01` 输出 `passed 199 failed 0 broken 0 skipped 0 warnings 0`，随后打印 `#### OS COMP TEST GROUP END ltp-musl ####` 和 `shutdown!`。
+- 未再出现 `waitpid(... ) failed: ERESTART`、`accessfile_rwx ... ENOENT`、`Failed to chmod file 'accessfile_w'` 或 cleanup 死循环。
+- wrapper 仍打印 `FAIL LTP CASE access01 : 10`，但 LTP Summary 显示 `failed 0 broken 0`，按项目规则以 `TPASS`/`Summary` 为准。
+
+---

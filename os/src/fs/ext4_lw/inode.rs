@@ -367,6 +367,29 @@ impl Inode for Ext4Inode {
         Ok((de, f_off as isize))
     }
 
+    fn is_dir_empty(&self) -> Result<bool, SysErrNo> {
+        let inner = self.inner.get_unchecked_mut();
+        let _ = Self::live_path(inner);
+        let file = &mut inner.f;
+        if as_inode_type(file.file_type()) != InodeType::Dir {
+            return Err(SysErrNo::ENOTDIR);
+        }
+
+        let entries = file.read_dir_from(0).map_err(SysErrNo::from)?;
+        for entry in entries {
+            let name_end = entry
+                .d_name
+                .iter()
+                .position(|ch| *ch == 0)
+                .unwrap_or(entry.d_name.len());
+            let name = &entry.d_name[..name_end];
+            if name != b"." && name != b".." {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SysResult<usize> {
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);

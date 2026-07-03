@@ -144,8 +144,8 @@ fn get_score() -> i32 {
     // run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
     // run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loongarch 通过
     // // ltp
-    // ltp::test_musl_ltp();
-    ltp::test_musl_single("abort01\0");
+    ltp::test_musl_ltp();
+    // ltp::test_musl_single("access01\0");
     // ltp::test_glibc_ltp();
 
     shutdown();

@@ -857,3 +857,10 @@
 - **场景**：Bug 分析与定位、LTP getdents 测例源码分析、目录流 offset 语义修复、文档完善
 - **描述**：用户要求继续分析 `log.ans`/`ana.ans` 并先读 `getdents01` 测例源码。AI 确认该用例要求 `getdents/getdents64` 返回 `.`, `..`, `dir`, `file`, `symlink`；结合日志中 `read_dentry finish` 后 syscall 仍返回 `EINVAL`，定位到 `sys_getdents64()` 成功读取目录项后用普通文件 `lseek(SEEK_SET)` 保存目录流 `d_off`。由于 `d_off` 是目录 stream cookie，不是普通文件 byte offset，普通 `lseek` 校验会错误返回 `EINVAL`。修复为增加 `OSFile::set_offset()` 并在 `getdents64` 成功后直接更新目录 fd offset，同时收紧目录 fd 检查、首条记录缓冲区检查和 `read_dir_from()` 目录/对齐处理。`make` 通过，维护者最新 `log.ans` 显示 `getdents01` Summary 为 `passed 2 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/getdents01-directory-offset.md](./problem/getdents01-directory-offset.md)。
 - **关联 commit**：待提交
+
+#### access01 wait4 restart 与 rmdir 语义修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`wait4`/signal restart 语义修复、`unlinkat(AT_REMOVEDIR)` 目录删除语义修复、LTP access01 运行日志分析、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复 `access01.c:281: TBROK: Failed to chmod file 'accessfile_w': ENOENT (2)`，随后指出仍有 broken 和尾部死循环，要求结合 `ana.ans` 的 syscall 调用过程继续分析。AI 确认完整根因有两段：一是 `wait4` 被带 `SA_RESTART` 的用户信号打断后，`setup_frame()` 未可靠处理内部 `ERESTART`，`sigreturn` 将 errno 85 暴露给 LTP，导致主体提前 broken；二是 cleanup 与未结束子进程并发时，`unlinkat(AT_REMOVEDIR)` 还需要拒绝非空目录，避免透传 lwext4 递归 `dir_rm()`。修复为 syscall 入口保存 `origin_a0`，signal frame 仅按 trap context 的 `a0 == -ERESTART` 执行 syscall restart/EINTR 转换，并增加 VFS `is_dir_empty()` 与 `ENOTEMPTY` 检查。`make` 通过，沙箱外 `make run` 中 `access01` Summary 为 `passed 199 failed 0 broken 0`，正常打印 `GROUP END` 和 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/access01-rmdir-nonempty.md](./problem/access01-rmdir-nonempty.md)。
+- **关联 commit**：待提交

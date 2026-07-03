@@ -319,6 +319,12 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     if !is_dir && remove_dir {
         return Err(SysErrNo::ENOTDIR);
     }
+    if is_dir && !remove_dir {
+        return Err(SysErrNo::EISDIR);
+    }
+    if is_dir && !osfile.inode.is_dir_empty()? {
+        return Err(SysErrNo::ENOTEMPTY);
+    }
 
     let locked_fs_info = &proc_inner.fs_info;
 

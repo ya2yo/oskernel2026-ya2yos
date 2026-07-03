@@ -73,6 +73,7 @@ pub fn trap_handler() {
         Trap::Exception(Exception::Syscall) => {
             // jump to next instruction anyway
             let mut cx = current_trap_cx();
+            cx.origin_a0 = cx.get_a0();
             cx.sepc_step(4);
             let syscall_id = Syscall::from(cx.get_syscall_id());
             // get system call return value

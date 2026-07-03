@@ -51,6 +51,7 @@
 - [LTP execve04 写打开文件执行 ETXTBSY](./execve04-etxtbsy.md)
 - [LTP execve06 空 argv 补充 argv[0]](./execve06-empty-argv.md)
 - [LTP access01 权限判断与 cleanup 卡死](./access01-permission-cleanup.md)
+- [LTP access01 wait4 ERESTART 与非空目录 rmdir 语义](./access01-rmdir-nonempty.md)
 - [pipe pselect6 register panic](./pipe-pselect-register-panic.md)
 - [LTP lseek02 fd 错误码与 FIFO ESPIPE](./lseek02-fd-espipe-fifo.md)
 - [LTP pread02 pipe/目录错误码](./pread02-pipe-dir-errors.md)
