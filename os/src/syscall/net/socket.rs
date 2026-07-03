@@ -105,8 +105,6 @@ pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> S
     let task = current_task().unwrap();
     let proc_inner = &task.process;
     let fd_table = proc_inner.fd_table.clone();
-    let fd1 = fd_table.alloc_fd()?;
-    let fd2 = fd_table.alloc_fd()?;
     let mut open_flags = OpenFlags::empty();
     if stype & OpenFlags::O_CLOEXEC.bits() != 0 {
         open_flags |= OpenFlags::O_CLOEXEC;
@@ -114,6 +112,7 @@ pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> S
     if stype & OpenFlags::O_NONBLOCK.bits() != 0 {
         open_flags |= OpenFlags::O_NONBLOCK;
     }
+    let fd1 = fd_table.alloc_fd()?;
     fd_table.set(
         fd1,
         FileDescriptor::new(
@@ -121,6 +120,13 @@ pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> S
             FileClass::Socket(Arc::new(Socket(SocketInner::Unix(sock1)))),
         ),
     )?;
+    let fd2 = match fd_table.alloc_fd() {
+        Ok(fd) => fd,
+        Err(err) => {
+            fd_table.close(fd1);
+            return Err(err);
+        }
+    };
     fd_table.set(
         fd2,
         FileDescriptor::new(
@@ -137,7 +143,11 @@ pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> S
     let fds_bytes = unsafe {
         core::slice::from_raw_parts(fds.as_ptr() as *const u8, core::mem::size_of_val(&fds))
     };
-    copy_to_user(&memory_set, sv as usize, fds_bytes)?;
+    if let Err(err) = copy_to_user(&memory_set, sv as usize, fds_bytes) {
+        fd_table.close(fd1);
+        fd_table.close(fd2);
+        return Err(err);
+    }
     Ok(0)
 }
 

@@ -16,8 +16,8 @@ use crate::{
         RecvFlags, RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
     },
     syscall::PollEvents,
-    task::current_task,
-    utils::{SysErrNo, SysResult},
+    task::{block_on, current_task, poll_io},
+    utils::{PollSet, SysErrNo, SysResult},
 };
 
 const UNIX_BUF_SIZE: usize = 64 * 1024;
@@ -53,6 +53,8 @@ struct UnixSocketInner {
     peer: Mutex<Option<Weak<UnixSocketInner>>>,
     recv_queue: Mutex<VecDeque<UnixMessage>>,
     pending: Mutex<VecDeque<Arc<UnixSocketInner>>>,
+    recv_poll: PollSet,
+    accept_poll: PollSet,
     listening: Mutex<bool>,
     nonblocking: Mutex<bool>,
     recv_closed: Mutex<bool>,
@@ -69,6 +71,8 @@ impl UnixSocketInner {
             peer: Mutex::new(None),
             recv_queue: Mutex::new(VecDeque::new()),
             pending: Mutex::new(VecDeque::new()),
+            recv_poll: PollSet::new(),
+            accept_poll: PollSet::new(),
             listening: Mutex::new(false),
             nonblocking: Mutex::new(false),
             recv_closed: Mutex::new(false),
@@ -130,6 +134,14 @@ impl UnixSocket {
             .as_ref()
             .and_then(Weak::upgrade)
             .ok_or(SysErrNo::ENOTCONN)
+    }
+
+    fn peer_closed(&self) -> bool {
+        self.inner
+            .peer
+            .lock()
+            .as_ref()
+            .is_some_and(|peer| peer.upgrade().is_none())
     }
 
     fn bound_peer(addr: &UnixSocketAddr) -> SysResult<Arc<UnixSocketInner>> {
@@ -214,6 +226,7 @@ impl SocketOps for UnixSocket {
                 *self.inner.peer.lock() = Some(Arc::downgrade(&server));
                 *self.inner.peer_addr.lock() = remote_addr;
                 remote.pending.lock().push_back(server);
+                remote.accept_poll.wake();
             }
             UnixSocketKind::Dgram => {
                 *self.inner.peer.lock() = Some(Arc::downgrade(&remote));
@@ -238,12 +251,18 @@ impl SocketOps for UnixSocket {
         if self.kind() != UnixSocketKind::Stream || !*self.inner.listening.lock() {
             return Err(SysErrNo::EINVAL);
         }
-        let accepted = self
-            .inner
-            .pending
-            .lock()
-            .pop_front()
-            .ok_or(SysErrNo::EAGAIN)?;
+        let accepted = block_on(poll_io(
+            self,
+            PollEvents::IN,
+            *self.inner.nonblocking.lock(),
+            || {
+                self.inner
+                    .pending
+                    .lock()
+                    .pop_front()
+                    .ok_or(SysErrNo::EAGAIN)
+            },
+        ))?;
         Ok(Socket::Unix(UnixSocket { inner: accepted }))
     }
 
@@ -271,28 +290,43 @@ impl SocketOps for UnixSocket {
             .recv_queue
             .lock()
             .push_back(UnixMessage { data, sender });
+        target.recv_poll.wake();
         Ok(len)
     }
 
-    fn recv(&self, mut dst: UserBuffer, options: RecvOptions<'_>) -> SysResult<usize> {
+    fn recv(&self, mut dst: UserBuffer, mut options: RecvOptions<'_>) -> SysResult<usize> {
         if *self.inner.recv_closed.lock() {
             return Ok(0);
         }
-        let mut queue = self.inner.recv_queue.lock();
-        let mut message = queue.pop_front().ok_or(SysErrNo::EAGAIN)?;
-        let written = dst.write(&message.data);
-        if self.kind() == UnixSocketKind::Stream && written < message.data.len() {
-            message.data = message.data[written..].to_vec();
-            queue.push_front(message);
-        } else {
-            if let Some(from) = options.from {
-                *from = SocketAddrEx::Unix(message.sender);
+        let nonblocking = *self.inner.nonblocking.lock() || options.flags.contains(RecvFlags::DONTWAIT);
+        block_on(poll_io(self, PollEvents::IN, nonblocking, || {
+            if *self.inner.recv_closed.lock() {
+                return Ok(0);
             }
-            if options.flags.contains(RecvFlags::TRUNCATE) {
-                return Ok(message.data.len());
+            let mut queue = self.inner.recv_queue.lock();
+            let mut message = match queue.pop_front() {
+                Some(message) => message,
+                None => {
+                    if self.kind() == UnixSocketKind::Stream && self.peer_closed() {
+                        return Ok(0);
+                    }
+                    return Err(SysErrNo::EAGAIN);
+                }
+            };
+            let written = dst.write(&message.data);
+            if self.kind() == UnixSocketKind::Stream && written < message.data.len() {
+                message.data = message.data[written..].to_vec();
+                queue.push_front(message);
+            } else {
+                if let Some(from) = options.from.as_deref_mut() {
+                    *from = SocketAddrEx::Unix(message.sender);
+                }
+                if options.flags.contains(RecvFlags::TRUNCATE) {
+                    return Ok(message.data.len());
+                }
             }
-        }
-        Ok(written)
+            Ok(written)
+        }))
     }
 
     fn local_addr(&self) -> SysResult<SocketAddrEx> {
@@ -313,9 +347,13 @@ impl SocketOps for UnixSocket {
     fn shutdown(&self, how: Shutdown) -> SysResult {
         if how.has_read() {
             *self.inner.recv_closed.lock() = true;
+            self.inner.recv_poll.wake();
         }
         if how.has_write() {
             *self.inner.send_closed.lock() = true;
+            if let Ok(peer) = self.peer() {
+                peer.recv_poll.wake();
+            }
         }
         Ok(())
     }
@@ -324,17 +362,31 @@ impl SocketOps for UnixSocket {
 impl crate::fs::File for UnixSocket {
     fn poll(&self, _events: PollEvents) -> PollEvents {
         let mut events = PollEvents::OUT | PollEvents::WRNORM;
-        if !self.inner.recv_queue.lock().is_empty() || !self.inner.pending.lock().is_empty() {
+        let readable = !self.inner.recv_queue.lock().is_empty()
+            || !self.inner.pending.lock().is_empty()
+            || *self.inner.recv_closed.lock()
+            || (self.kind() == UnixSocketKind::Stream && self.peer_closed());
+        if readable {
             events |= PollEvents::IN | PollEvents::RDNORM;
         }
         events
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: PollEvents) {}
+    fn register(&self, context: &mut Context<'_>, events: PollEvents) {
+        if events.intersects(PollEvents::IN | PollEvents::RDNORM) {
+            self.inner.recv_poll.register(context.waker());
+            self.inner.accept_poll.register(context.waker());
+        }
+    }
 }
 
 impl Drop for UnixSocket {
     fn drop(&mut self) {
+        if let Ok(peer) = self.peer() {
+            peer.recv_poll.wake();
+        }
+        self.inner.recv_poll.wake();
+        self.inner.accept_poll.wake();
         let local = self.inner.local_addr.lock().clone();
         if !matches!(local, UnixSocketAddr::Unnamed) {
             let mut binds = UNIX_BINDS.lock();

@@ -881,3 +881,10 @@
 - **场景**：Bug 分析与定位、fd table/socket 生命周期语义修复、netperf 回归验证、文档完善
 - **描述**：用户说明 `9fa9699d2580a7de85e41baf2e49c3e51000d6f0` 之后内核大规模重构导致许多旧测试回归，要求先修复 `netperf`，并在文档中突出本次修改。AI 根据详细 `log.ans` 确认控制连接已 `connect/accept` 成功，但 `netserver` 父进程 fork 后关闭 accepted fd 时，重构后的 `FdTable::close()` 只检查同表 alias，误把子进程继承的同一 `Arc<Socket>` 提前 `shutdown()`，导致客户端读到 0 字节响应。初版修复保护了 fork 继承连接，但又削弱进程退出释放 listener 的旧修复，使 `netperf-glibc` 回退为 12865 端口残留。最终将普通 `close(fd)` 与进程退出 `FdTable::clear()` 的 socket 语义拆开：前者仅在最后一个 `Arc` 时 shutdown，后者仍主动 shutdown 释放监听端口；同时补齐 `recvmsg` iovec 回拷和 `accept4` peer address 写回语义。`make` 通过，`timeout 300s make run > log.ans 2>&1` 中 musl/glibc 两轮 netperf 十项均 success。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/netperf-glibc-port-reuse.md](./problem/netperf-glibc-port-reuse.md)。
 - **关联 commit**：待提交
+
+#### cyclictest STRESS_P1 socketpair fd 分配回归修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、fd table 重构后 socketpair 语义修复、AF_UNIX 阻塞等待补齐、cyclictest 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans`，其中 `cyclictest STRESS_P1` 出现大量 `CLIENT: ready write (error: Broken pipe)`。AI 确认错误来自 STRESS 模式后台 `hackbench` 的 worker ready 同步通道，而不是 cyclictest 定时器本身。根因是 fd table 重构后 `alloc_fd()` 不再自动占位，`sys_socketpair()` 连续两次分配 fd 且中间未 `set()`，导致两个 socketpair 端点复用同一个 fd，第二端覆盖第一端。修复为分配 `fd1` 后立即安装，再分配 `fd2`，并补齐失败清理；同时为 AF_UNIX socket 增加阻塞 `recv/accept` 的 poll/waker 语义。`make` 通过，`timeout 300s make run > log.ans 2>&1` 中 musl/glibc cyclictest 四项均 success，未再出现 ready 阶段 Broken pipe。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/cyclictest-socketpair-fd-allocation.md](./problem/cyclictest-socketpair-fd-allocation.md)。
+- **关联 commit**：待提交

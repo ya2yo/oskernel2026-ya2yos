@@ -4488,3 +4488,66 @@ timeout 300s make run > log.ans 2>&1
 - 最终修复后，`log.ans` 中 `netperf-glibc` 也能使用原始 `12865` 端口启动 netserver，五项全部 success。
 - 日志末尾输出 `#### OS COMP TEST GROUP END netperf-glibc ####` 和 `shutdown!`。
 - 未再出现 `recv_response: partial response received: 0 bytes`、`socket already listening on port 12865`、`Unable to start netserver`、panic 或 QEMU 异常退出。
+
+---
+
+## 2026-07-03: cyclictest STRESS_P1 hackbench socketpair fd 分配回归修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans`：`cyclictest` 的 `STRESS_P1` 阶段出现大量：
+
+```text
+CLIENT: ready write (error: Broken pipe)
+```
+
+并要求修复。
+
+### 分析
+
+AI 按 `fix-bug` 流程先筛选 `cyclictest`、`STRESS_P1`、`Broken pipe` 和 panic/TFAIL 关键字。日志显示 `cyclictest` 主程序最终仍输出 `STRESS_P1 end: success`，但 `hackbench` 压力进程在 worker ready 阶段大量失败。结合赛题文档确认，STRESS 模式会后台启动 `./hackbench -l 100000000`，`hackbench` 使用 `AF_UNIX socketpair()` 作为父进程与 worker 的同步通道。
+
+进一步检查详细 trace，worker 在启动后关闭一个 fd，再写 ready fd；第一个错误为 `Socket not connected` 或 `Transport endpoint is not connected`，后续大量变为 `Broken pipe`。这说明同步通道从创建阶段就不是正常的两个连接端点。
+
+读取 `sys_socketpair()` 后确认，fd table 重构后暴露了旧代码的隐含假设：
+
+```rust
+let fd1 = fd_table.alloc_fd()?;
+let fd2 = fd_table.alloc_fd()?;
+```
+
+重构后的 `alloc_fd()` 只返回当前最小空闲 fd，不会自动占位。连续两次调用且中间没有 `set()`，会拿到同一个 fd。随后第二个 socket 端点覆盖第一个端点，用户态收到的两个 fd 实际相同，`hackbench` 按 socketpair 两端使用时立刻断开 ready 通道。
+
+排查中还发现 AF_UNIX socket 的 `recv()` / `accept()` 队列为空时直接返回 `EAGAIN`，缺少阻塞 socket 的等待与 wake 语义。修正 fd 分配后，为保证 `hackbench` 父进程可以阻塞等待 worker ready，也一并补齐该语义。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/net/socket.rs` | `sys_socketpair()` 改为分配 `fd1` 后立即 `set()` 占位，再分配 `fd2`；第二次分配或用户数组写回失败时关闭已安装 fd，避免半初始化泄漏 |
+| `os/src/net/unix.rs` | 为 AF_UNIX socket 增加 `recv_poll/accept_poll`，`recv()` 与 `accept()` 通过 `poll_io()` 支持阻塞等待；`send/connect/shutdown/drop` 唤醒对应等待者 |
+| `Docs/初赛文档/problem/cyclictest-socketpair-fd-allocation.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 300s make run > log.ans 2>&1
+git diff --check
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=riscv64`，构建通过。
+- 第一次仅补 AF_UNIX 阻塞语义后，`CLIENT: ready write` 仍存在，说明根因不在等待语义本身。
+- 修复 `sys_socketpair()` fd 分配覆盖后，`log.ans` 中不再出现 `CLIENT: ready write`。
+- `cyclictest-musl` 与 `cyclictest-glibc` 的 `NO_STRESS_P1/NO_STRESS_P8/STRESS_P1/STRESS_P8` 均 success。
+- musl/glibc 两轮均输出 `====== kill hackbench: success ======`。
+- 未再出现 `Socket not connected`、`Transport endpoint is not connected`、ready 阶段 `Broken pipe` 或 kernel panic，日志末尾正常 `shutdown!`。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与修复在当前默认 RISC-V 配置下完成。
