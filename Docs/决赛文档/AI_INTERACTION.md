@@ -211,4 +211,5 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：LTP 源码分析、`O_TMPFILE`/`mkdirat`/`linkat`/`unlinkat` 路径性能定位、深层目录慢路径修复、open14 回归验证、文档完善
 - **描述**：用户要求分析 `open14` 源码并修复运行到 `creating a file with O_TMPFILE flag` 后超过 5 分钟无输出的问题。AI 对照 LTP 源码确认测例会构造 100 层 `tst02_*` 与 `tst03_*` 目录；临时阶段日志证明内核并非死锁，而是在深层路径循环中缓慢推进。修复为补齐 `O_CREAT|O_EXCL` 存在性语义，令 `mkdirat` 和 tmpfile `linkat` materialize 使用单次独占创建，ext4 create(existing) 返回 `EEXIST`，目录 `rmdir` 跳过普通文件延迟删除检查，并让 `open(".", O_TMPFILE)` 复用已验证 cwd。`make` 通过，`timeout 600s make run` 单跑 `open14` 显示 3 项 TPASS，summary 为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/open14-otmpfile-path-slow.md](./problem/open14-otmpfile-path-slow.md)。
+- **补充**：用户继续要求 `open()` 使用已经缓存的父目录。AI 在 `open_inner()` 的完整路径 cache miss 后增加缓存父目录查找路径，并让 `create_file()` 复用同一个父 inode 做权限检查、gid 继承和创建；同时让 `Ext4Inode::types()` 返回构造时缓存的类型，避免目录类型判断再次触发路径查询。`make` 与 `timeout 600s make run` 单跑 `open14` 均通过，summary 仍为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 `LTP open14 父目录缓存路径优化` 条目。
 - **关联 commit**：未提交

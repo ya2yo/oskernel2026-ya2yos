@@ -92,7 +92,11 @@ fn bind_path_abs(path: &str) -> SysResult<String> {
     let cwd = task.process.fs_info.get_cwd();
     let abs_path = get_abs_path(&cwd, path);
     let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
-    open(parent_path, OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY, NONE_MODE)?;
+    open(
+        parent_path,
+        OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY,
+        NONE_MODE,
+    )?;
     Ok(abs_path)
 }
 
@@ -149,7 +153,10 @@ impl UnixSocket {
     }
 
     fn is_connection_oriented(&self) -> bool {
-        matches!(self.kind(), UnixSocketKind::Stream | UnixSocketKind::SeqPacket)
+        matches!(
+            self.kind(),
+            UnixSocketKind::Stream | UnixSocketKind::SeqPacket
+        )
     }
 
     fn new_pair(kind: UnixSocketKind) -> (Self, Self) {

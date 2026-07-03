@@ -1,5 +1,5 @@
 use super::buffer::PipeBuf;
-use crate::task::{TaskControlBlock, TaskStatus, ready_queue};
+use crate::task::{ready_queue, TaskControlBlock, TaskStatus};
 use crate::utils::PollSet;
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};

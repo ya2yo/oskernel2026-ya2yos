@@ -14,7 +14,7 @@ pub use fifo::open_fifo;
 
 use self::ring_buffer::PipeRingBuffer;
 use crate::fs::File;
-use crate::signal::{SigSet, send_signal_to_thread};
+use crate::signal::{send_signal_to_thread, SigSet};
 use crate::task::current_task;
 use crate::utils::SysErrNo;
 use alloc::sync::Arc;

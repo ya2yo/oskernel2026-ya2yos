@@ -83,7 +83,9 @@ impl MemorySetInner {
             self.map_elf(&interp_elf, DL_INTERP_OFFSET.into())?;
 
             // 动态链接程序的第一条用户态指令应来自解释器入口。
-            Ok(Some(interp_elf.header.pt2.entry_point() as usize + DL_INTERP_OFFSET))
+            Ok(Some(
+                interp_elf.header.pt2.entry_point() as usize + DL_INTERP_OFFSET,
+            ))
         } else {
             Ok(None)
         }

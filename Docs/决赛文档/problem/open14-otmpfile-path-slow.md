@@ -51,6 +51,19 @@ open14      0  TINFO  :  creating a file with O_TMPFILE flag
 - `os/src/syscall/fs/ctl.rs`
 - `os/src/syscall/fs/fd_ops.rs`
 
+## 进一步优化
+
+初版修复后 `open14` 已能通过，但深层目录下仍有大量 `open()` 会在完整路径 cache miss 后从根 inode 重新查找父目录；`create_file()` 也会为了权限检查、`S_ISGID` gid 继承和最终创建重复解析父路径。
+
+本次继续收窄 `open` 热路径：
+
+- 新增 `resolve_parent_path()`，一次性解析并返回父目录 inode 与规范化 create path。
+- `create_file()` 复用同一个父目录 inode 完成写/执行权限检查、`S_ISGID` gid 继承和 `parent_inode.create()`，避免每个阶段重新查找父目录。
+- `open_inner()` 在完整路径 cache miss 时先尝试 `find_from_cached_parent()`：如果父路径已在 `FsIndex` 中，直接用缓存父 inode 拼接真实父路径查找 child，并把 child 的规范化路径和调用路径都写回 inode cache。
+- `Ext4Inode::types()` 改为读取 inode 对象构造时已有的类型，不再为了 `is_dir()` / `O_DIRECTORY` 判断调用 `live_path()` 和底层 `file_type()` 路径查询。
+
+需要注意的是，当前 `lwext4_rust` wrapper 暴露的是 `check_inode_exist(path, type)` / `file_open(path, flags)` 这类路径接口，没有可直接从父目录句柄查相对子项的安全封装。因此这次优化复用了 VFS 层已缓存父 inode，减少父目录重复解析和元数据路径查询；底层 ext4 对 child 的存在性判断仍然是路径式 API。
+
 ## 验证
 
 已执行：
@@ -84,3 +97,27 @@ FAIL LTP CASE open14 : 0
 该行中的退出码为 0，且 LTP summary 为 `failed 0 broken 0`，按本仓库判读规则以 `TPASS/TFAIL/TBROK/Summary` 为准。
 
 本次验证基于当前默认 RISC-V 配置；未额外执行 `TARGET_ARCH=loongarch64`。
+
+进一步优化后再次执行：
+
+```text
+make
+timeout 600s make run
+```
+
+结果仍为：
+
+```text
+open14      1  TPASS  :  single file tests passed
+open14      2  TPASS  :  multiple files tests passed
+open14      3  TPASS  :  file permission tests passed
+
+Summary:
+passed   3
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+本轮只验证默认 RISC-V；未额外执行 `TARGET_ARCH=loongarch64`。

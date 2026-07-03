@@ -1,5 +1,5 @@
-use super::Pipe;
 use super::ring_buffer::PipeRingBuffer;
+use super::Pipe;
 use crate::fs::OpenFlags;
 use crate::utils::SysErrNo;
 use alloc::collections::BTreeMap;

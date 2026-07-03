@@ -101,11 +101,7 @@ fn wait_pending_signal_errno(task: &TaskControlBlock, signo: usize) -> Option<Sy
     if ignorable {
         task.inner_lock().sig_pending.remove(signal);
         None
-    } else if sig_action
-        .act
-        .sa_flags
-        .contains(SigActionFlags::SA_RESTART)
-    {
+    } else if sig_action.act.sa_flags.contains(SigActionFlags::SA_RESTART) {
         Some(SysErrNo::ERESTART)
     } else {
         Some(SysErrNo::EINTR)

@@ -27,7 +27,12 @@ fn join_parent_child(parent: &str, child: &str) -> String {
     }
 }
 
-fn resolve_create_path(abs_path: &str) -> SysResult<String> {
+struct ParentPath {
+    parent_inode: Arc<dyn Inode>,
+    create_path: String,
+}
+
+fn resolve_parent_path(abs_path: &str) -> SysResult<ParentPath> {
     let Some((parent_path, child_name)) = split_parent_child(abs_path) else {
         return Err(SysErrNo::ENOENT);
     };
@@ -43,7 +48,31 @@ fn resolve_create_path(abs_path: &str) -> SysResult<String> {
         return Err(SysErrNo::ENOTDIR);
     }
 
-    Ok(join_parent_child(&parent_inode.path(), child_name))
+    Ok(ParentPath {
+        create_path: join_parent_child(&parent_inode.path(), child_name),
+        parent_inode,
+    })
+}
+
+fn resolve_create_path(abs_path: &str) -> SysResult<String> {
+    resolve_parent_path(abs_path).map(|target| target.create_path)
+}
+
+fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult<Arc<dyn Inode>>> {
+    let (parent_path, child_name) = split_parent_child(abs_path)?;
+    let parent_inode = FsIndex::find_inode_idx(parent_path)?;
+    if !parent_inode.types().is_dir() {
+        return Some(Err(SysErrNo::ENOTDIR));
+    }
+
+    let lookup_path = join_parent_child(&parent_inode.path(), child_name);
+    Some(parent_inode.find(&lookup_path, flags, 0).map(|inode| {
+        let inode = FsIndex::insert_inode_idx(&lookup_path, inode);
+        if lookup_path != abs_path {
+            FsIndex::insert_inode_idx(abs_path, inode.clone());
+        }
+        inode
+    }))
 }
 
 fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
@@ -51,98 +80,60 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
         "[create_file] abs_path={}, flags={:?}, mode={:o}",
         abs_path, flags, mode
     );
-    let create_path = resolve_create_path(abs_path)?;
+    let target = resolve_parent_path(abs_path)?;
+    let create_path = target.create_path;
+    let parent_inode = target.parent_inode;
     // 检查父目录的写入和执行权限
     // 参考 faccessat 的权限检查逻辑
-    if let Some(parent_path) = split_parent_child(&create_path).map(|(parent_path, _)| parent_path)
-    {
-        // debug!("[create_file] parent_path={}", parent_path);
-        // 查找父目录的 inode
-        let parent_inode_opt = if FsIndex::has_inode(parent_path) {
-            FsIndex::find_inode_idx(parent_path)
-        } else {
-            match superblock_root_inode().find(parent_path, OpenFlags::empty(), 0) {
-                Ok(inode) => Some(FsIndex::insert_inode_idx(parent_path, inode)),
-                Err(e) => {
-                    debug!("[create_file] parent inode not found: {:?}", e);
-                    None
-                }
+    let parent_fmode = parent_inode.fmode()?;
+    let parent_mode = parent_fmode & 0xfff;
+    let parent_mode = FaccessatFileMode::from_bits_truncate(parent_mode);
+
+    if let Some(task) = current_task() {
+        let task_inner = task.inner_lock();
+        // root (euid 0) 绕过权限检查
+        // 使用 effective_uid，因为 Linux 文件权限检查基于 effective uid
+        if task_inner.effective_uid != 0 {
+            // 获取父目录的 owner uid/gid，用于判断进程是 owner/group/other
+            let pstat = parent_inode.fstat();
+            let owner_uid = pstat.st_uid;
+            let owner_gid = pstat.st_gid;
+            let my_uid = task_inner.effective_uid;
+            let my_gid = task_inner.effective_gid;
+
+            // 确定进程属于 owner / group / other 哪一类
+            let (has_write, has_exec) = if my_uid == owner_uid {
+                (
+                    parent_mode.contains(FaccessatFileMode::S_IWUSR),
+                    parent_mode.contains(FaccessatFileMode::S_IXUSR),
+                )
+            } else if my_gid == owner_gid {
+                (
+                    parent_mode.contains(FaccessatFileMode::S_IWGRP),
+                    parent_mode.contains(FaccessatFileMode::S_IXGRP),
+                )
+            } else {
+                (
+                    parent_mode.contains(FaccessatFileMode::S_IWOTH),
+                    parent_mode.contains(FaccessatFileMode::S_IXOTH),
+                )
+            };
+
+            if !has_exec {
+                debug!("[create_file] EACCES: no exec permission on parent");
+                return Err(SysErrNo::EACCES);
             }
-        };
-
-        if let Some(parent_inode) = parent_inode_opt {
-            let parent_fmode = parent_inode.fmode()?;
-            let parent_mode = parent_fmode & 0xfff;
-            let parent_mode = FaccessatFileMode::from_bits_truncate(parent_mode);
-
-            if let Some(task) = current_task() {
-                let task_inner = task.inner_lock();
-                // debug!(
-                //     "[create_file] uid={} euid={} gid={} egid={} parent_mode={:o}",
-                //     task_inner.user_id,
-                //     task_inner.effective_uid,
-                //     task_inner.real_gid,
-                //     task_inner.effective_gid,
-                //     parent_fmode & 0xfff
-                // );
-                // root (euid 0) 绕过权限检查
-                // 使用 effective_uid，因为 Linux 文件权限检查基于 effective uid
-                if task_inner.effective_uid != 0 {
-                    // 获取父目录的 owner uid/gid，用于判断进程是 owner/group/other
-                    let pstat = parent_inode.fstat();
-                    let owner_uid = pstat.st_uid;
-                    let owner_gid = pstat.st_gid;
-                    let my_uid = task_inner.effective_uid;
-                    let my_gid = task_inner.effective_gid;
-
-                    // debug!(
-                    //     "[create_file] owner_uid={} owner_gid={} my_uid={} my_gid={}",
-                    //     owner_uid, owner_gid, my_uid, my_gid
-                    // );
-
-                    // 确定进程属于 owner / group / other 哪一类
-                    let (has_write, has_exec) = if my_uid == owner_uid {
-                        (
-                            parent_mode.contains(FaccessatFileMode::S_IWUSR),
-                            parent_mode.contains(FaccessatFileMode::S_IXUSR),
-                        )
-                    } else if my_gid == owner_gid {
-                        (
-                            parent_mode.contains(FaccessatFileMode::S_IWGRP),
-                            parent_mode.contains(FaccessatFileMode::S_IXGRP),
-                        )
-                    } else {
-                        (
-                            parent_mode.contains(FaccessatFileMode::S_IWOTH),
-                            parent_mode.contains(FaccessatFileMode::S_IXOTH),
-                        )
-                    };
-
-                    // debug!(
-                    //     "[create_file] has_write={} has_exec={}",
-                    //     has_write, has_exec
-                    // );
-                    if !has_exec {
-                        debug!("[create_file] EACCES: no exec permission on parent");
-                        return Err(SysErrNo::EACCES);
-                    }
-                    if !has_write {
-                        debug!("[create_file] EACCES: no write permission on parent");
-                        return Err(SysErrNo::EACCES);
-                    }
-                } else {
-                    debug!("[create_file] root user, bypass permission check");
-                }
+            if !has_write {
+                debug!("[create_file] EACCES: no write permission on parent");
+                return Err(SysErrNo::EACCES);
             }
         } else {
-            debug!("[create_file] parent inode not found, skip permission check");
+            debug!("[create_file] root user, bypass permission check");
         }
     }
 
-    // 一定能找到,因为除了RootInode外都有父结点
-    let parent_dir = superblock_root_inode();
     let (readable, writable) = flags.read_write();
-    let inode = parent_dir.create(&create_path, flags.node_type())?;
+    let inode = parent_inode.create(&create_path, flags.node_type())?;
     // Apply the process umask to the requested file mode.
     // umask specifies which permission bits to *clear* from the mode.
     // During early boot (fs::init) there is no current task, so we
@@ -163,27 +154,14 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     if let Some(task) = current_task() {
         let task_inner = task.inner_lock();
         // Linux assigns new inode gid from the parent directory when S_ISGID is set.
-        let (uid, gid) = if let Some((parent_path, _)) = split_parent_child(&create_path) {
-            let parent_inode = FsIndex::find_inode_idx(parent_path).or_else(|| {
-                superblock_root_inode()
-                    .find(parent_path, OpenFlags::O_DIRECTORY, 0)
-                    .ok()
-            });
-            if let Some(parent_inode) = parent_inode {
-                let parent_stat = parent_inode.fstat();
-                let parent_mode = parent_inode.fmode()? & 0o7777;
-                let gid = if parent_mode & 0o2000 != 0 {
-                    parent_stat.st_gid
-                } else {
-                    task_inner.effective_gid
-                };
-                (task_inner.effective_uid, gid)
-            } else {
-                (task_inner.effective_uid, task_inner.effective_gid)
-            }
+        let parent_stat = parent_inode.fstat();
+        let parent_mode = parent_inode.fmode()? & 0o7777;
+        let gid = if parent_mode & 0o2000 != 0 {
+            parent_stat.st_gid
         } else {
-            (task_inner.effective_uid, task_inner.effective_gid)
+            task_inner.effective_gid
         };
+        let (uid, gid) = (task_inner.effective_uid, gid);
         inode.owner_set(uid, gid)?;
     }
     let inode = FsIndex::insert_inode_idx(&create_path, inode);
@@ -233,31 +211,35 @@ fn open_inner(
     if !flags.contains(OpenFlags::O_NOFOLLOW) && FsIndex::has_inode(abs_path) {
         inode = FsIndex::find_inode_idx(abs_path);
     } else {
-        let found_res = superblock_root_inode().find(abs_path, flags, 0);
-        if found_res.clone().err() == Some(SysErrNo::ENOTDIR) {
-            return Err(SysErrNo::ENOTDIR);
-        }
-        if found_res.clone().err() == Some(SysErrNo::ELOOP) {
-            return Err(SysErrNo::ELOOP);
-        }
-        if let Ok(t) = found_res {
-            inode = Some(FsIndex::insert_inode_idx(abs_path, t));
-        } else if let Ok(resolved_path) = resolve_create_path(abs_path) {
-            if resolved_path != abs_path {
-                let found_res = superblock_root_inode().find(&resolved_path, flags, 0);
-                if let Ok(t) = found_res {
-                    let t = FsIndex::insert_inode_idx(&resolved_path, t);
-                    FsIndex::insert_inode_idx(abs_path, t.clone());
-                    inode = Some(t);
+        let found_res = find_from_cached_parent(abs_path, flags)
+            .unwrap_or_else(|| superblock_root_inode().find(abs_path, flags, 0));
+        match found_res {
+            Ok(t) => {
+                inode = Some(FsIndex::insert_inode_idx(abs_path, t));
+            }
+            Err(SysErrNo::ENOTDIR) => return Err(SysErrNo::ENOTDIR),
+            Err(SysErrNo::ELOOP) => return Err(SysErrNo::ELOOP),
+            Err(_) => {
+                if let Ok(resolved_path) = resolve_create_path(abs_path) {
+                    if resolved_path != abs_path {
+                        let found_res = find_from_cached_parent(&resolved_path, flags)
+                            .unwrap_or_else(|| {
+                                superblock_root_inode().find(&resolved_path, flags, 0)
+                            });
+                        if let Ok(t) = found_res {
+                            let t = FsIndex::insert_inode_idx(&resolved_path, t);
+                            FsIndex::insert_inode_idx(abs_path, t.clone());
+                            inode = Some(t);
+                        }
+                    }
+                } else {
+                    // warn!(
+                    //     "Unexpected error in root_inode().find({},{:?},0)",
+                    //     abs_path,
+                    //     flags,
+                    // );
                 }
             }
-        } else {
-            // warn!(
-            //     "Unexpected error in root_inode().find({},{:?},0):{:?}",
-            //     abs_path,
-            //     flags,
-            //     found_res.clone().err().unwrap()
-            // );
         }
     }
     if let Some(inode) = inode {

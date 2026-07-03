@@ -1,5 +1,5 @@
-use super::Pipe;
 use super::buffer::PipeBuf;
+use super::Pipe;
 use crate::fs::{File, FilePage};
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::sync::Arc;

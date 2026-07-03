@@ -1,12 +1,12 @@
 use log::{debug, warn};
 use lwext4_rust::{
-    Ext4File, InodeTypes,
     bindings::{O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
+    Ext4File, InodeTypes,
 };
 
 use crate::{
     fs::{
-        FILE_PAGE_CACHE, Inode, InodeType, Kstat, OpenFlags, String, patch_dynamic_link_file_bytes,
+        patch_dynamic_link_file_bytes, Inode, InodeType, Kstat, OpenFlags, String, FILE_PAGE_CACHE,
     },
     sync::SyncUnsafeCell,
     utils::{SysErrNo, SysResult, SyscallRet},
@@ -114,9 +114,7 @@ impl Inode for Ext4Inode {
     }
 
     fn types(&self) -> InodeType {
-        let inner = self.inner.get_unchecked_mut();
-        let _ = Self::live_path(inner);
-        as_inode_type(inner.f.file_type())
+        as_inode_type(self.inner.get_unchecked_mut().f.types())
     }
 
     /// 从指定偏移量读取数据到缓冲区

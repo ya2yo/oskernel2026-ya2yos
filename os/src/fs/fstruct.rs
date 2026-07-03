@@ -77,9 +77,9 @@ impl FileDescriptor {
         let FileClass::Socket(socket) = &self.file else {
             return false;
         };
-        files.iter().flatten().any(|desc| {
-            matches!(&desc.file, FileClass::Socket(other) if Arc::ptr_eq(socket, other))
-        })
+        files.iter().flatten().any(
+            |desc| matches!(&desc.file, FileClass::Socket(other) if Arc::ptr_eq(socket, other)),
+        )
     }
 
     pub fn unset_cloexec(&mut self) {

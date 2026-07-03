@@ -364,7 +364,9 @@ fn add_signal(task: &TaskControlBlock, signal: SigSet) -> bool {
     task_inner.sig_pending |= signal;
     let interrupt_wait = signal.peek_front().is_some_and(|signo| {
         if signo == SIGCHLD {
-            return task.process.with_sigtable(|sigtable| sigtable.action(SIGCHLD).customed);
+            return task
+                .process
+                .with_sigtable(|sigtable| sigtable.action(SIGCHLD).customed);
         }
         task.process.with_sigtable(|sigtable| {
             let action = sigtable.action(signo);

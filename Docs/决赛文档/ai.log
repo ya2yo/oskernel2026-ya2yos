@@ -1438,6 +1438,53 @@ warnings 0
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置。
 
+## 2026-07-03: LTP open14 父目录缓存路径优化
+
+### 用户需求
+
+用户在 `open14` 初步修通后追问：当前内核已有缓存机制，为什么还需要大量长路径查找，并要求进一步优化速度，使 `open()` 能够使用已经缓存的父目录。
+
+### 分析
+
+AI 复查 `open14` 热路径后确认，已有 `FsIndex` 可以缓存 inode，但初版修复后的 `open_inner()` 在目标完整路径 cache miss 时仍优先从根 inode 对完整绝对路径执行查找；`create_file()` 也会分别为了父目录权限、gid 继承和真正创建多次拆分并查找父路径。对于 `open14` 这种 100 层目录循环，父目录通常刚由 `mkdir/chdir/open` 访问过，继续从根开始查找会浪费已有父目录 cache。
+
+同时检查 `lwext4_rust` wrapper，当前只暴露 `check_inode_exist(path, type)`、`file_open(path, flags)` 等路径接口，没有直接基于父目录句柄查相对子项的安全封装。因此本轮选择在 VFS 层复用缓存父 inode，减少父目录重复解析和元数据路径查询，不扩大到底层 C binding 改造。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/open.rs` | 增加 `resolve_parent_path()` / `find_from_cached_parent()`；`create_file()` 复用父 inode 做权限检查、gid 继承和创建；`open_inner()` 在完整路径 miss 后先尝试缓存父目录查找 child |
+| `os/src/fs/ext4_lw/inode.rs` | `Ext4Inode::types()` 改为返回构造时缓存的文件类型，避免类型判断再次触发路径式 `file_type()` 查询 |
+| `Docs/决赛文档/problem/open14-otmpfile-path-slow.md` | 补充父目录缓存优化分析、限制和验证结果 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次优化记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 600s make run
+```
+
+结果：默认 RISC-V 构建通过；`open14` 单跑 3 项均 `TPASS`：
+
+```text
+open14      1  TPASS  :  single file tests passed
+open14      2  TPASS  :  multiple files tests passed
+open14      3  TPASS  :  file permission tests passed
+
+Summary:
+passed   3
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次优化和验证基于当前默认 RISC-V 配置。
+
 ## 2026-07-03: LTP splice07 文件类型校验与空 pipe 卡死修复
 
 ### 用户需求

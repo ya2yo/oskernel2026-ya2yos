@@ -3,12 +3,12 @@ use core::{future::poll_fn, task::Poll};
 use super::fcntl::*;
 use super::file_lock::{self, Flock};
 use crate::fs::{
-    FileClass, FileDescriptor, FsIndex, OpenFlags, TmpFile, map_dynamic_link_file, open, open_fifo,
-    refresh_proc_stat, refresh_proc_status, superblock_root_inode,
+    map_dynamic_link_file, open, open_fifo, refresh_proc_stat, refresh_proc_status,
+    superblock_root_inode, FileClass, FileDescriptor, FsIndex, OpenFlags, TmpFile,
 };
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
-use crate::syscall::{Syscall, options::FcntlCmd};
-use crate::task::{Process, block_on, current_task, interruptible};
+use crate::syscall::{options::FcntlCmd, Syscall};
+use crate::task::{block_on, current_task, interruptible, Process};
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::{
     format,
