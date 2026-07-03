@@ -127,13 +127,13 @@ pub fn trap_handler() {
                 // - custom handler → setup_frame, jump to user handler
                 // - default action  → terminate (128 + signo)
                 let tid = current_task().unwrap().tid();
-                warn!(
-                    "[kernel] hart {} {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, sending SIGSEGV.",
-                    hartid,
-                    cause,
-                    stval,
-                    current_trap_cx().get_sepc(),
-                );
+                // warn!(
+                //     "[kernel] hart {} {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, sending SIGSEGV.",
+                //     hartid,
+                //     cause,
+                //     stval,
+                //     current_trap_cx().get_sepc(),
+                // );
                 send_signal_to_thread(tid, SigSet::SIGSEGV);
                 return;
             }
