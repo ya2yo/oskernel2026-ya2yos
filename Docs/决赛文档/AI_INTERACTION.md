@@ -215,3 +215,10 @@
 - **补充**：用户要求在 `os/src/fs/dcache.rs` 实现 dentry cache。AI 新增父 inode + child name 的 positive/negative dentry cache，让 `find_from_cached_parent()` 在底层 ext4 查找前先命中 child inode 或 `ENOENT`，并在 create/link/unlink/symlink/rename 成功后回填或失效目录项。`make` 与 `timeout 600s make run` 单跑 `open14` 均通过，summary 为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 `VFS dentry cache 接入 open 父目录缓存路径` 条目。
 - **补充**：用户要求按性能定位优先级继续实现优化。AI 用临时低噪声埋点确认 `openat(O_TMPFILE)` 本身不是瓶颈，主要耗时来自 `FsIndex`/dentry positive cache 使用 `Weak` 导致 inode 生命周期过短，以及 `Ext4Inode::live_path()` 每次元数据操作都重复 `check_inode_exist()`。修复为将 `FsIndex` 与 dentry positive cache 改为可显式失效的 strong `Arc` cache，`live_path()` 热路径直接使用当前 path、失败后再 alias 恢复，并合并 `create_file()` 父目录元数据读取。`make` 通过，`timeout 600s make run` 单跑 `open14` 耗时从约 223.35s 降到 65.94s，summary 为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 `LTP open14 缓存生命周期与 live_path 性能优化` 条目。
 - **关联 commit**：未提交
+
+#### LTP tst_virt /proc/cpuinfo 缺失修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、启动期 `/proc` 兼容文件补齐、LTP `tst_virt` 回归验证、文档完善
+- **描述**：用户要求分析并修复 `tst_virt.c:37: TBROK: fopen(/proc/cpuinfo,r) failed: ENOENT (2)`。AI 确认失败发生在 LTP 公共虚拟化探测库读取 `/proc/cpuinfo` 阶段；Ya2yOS 启动期已有 `/proc/mounts` 和 `/proc/meminfo` 等兼容文件，但缺少 `/proc/cpuinfo`，导致 `openat("/proc/cpuinfo")` 走普通 ext4 查找并返回 `ENOENT`。修复为在 `create_proc_files()` 中写入 RISC-V/LoongArch64 最小 `CPUINFO` 文本，并刻意不包含 `QEMU Virtual CPU`，避免改变 LTP 对 KVM 的判断。`make` 通过，用户确认最新 `log.ans` 已通过，summary 为 `passed 7 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/proc-cpuinfo-tst-virt.md](./problem/proc-cpuinfo-tst-virt.md)。
+- **关联 commit**：未提交

@@ -18,3 +18,4 @@
 - [bind01 bind 非本地地址与 AF_UNIX 路径前缀语义](./bind01-bind-address-path.md)
 - [bind04 AF_UNIX SEQPACKET 与 sockaddr_storage 长度兼容](./bind04-unix-seqpacket-sockaddr.md)
 - [open14 O_TMPFILE 深层路径超时](./open14-otmpfile-path-slow.md)
+- [tst_virt /proc/cpuinfo 缺失导致 TBROK](./proc-cpuinfo-tst-virt.md)

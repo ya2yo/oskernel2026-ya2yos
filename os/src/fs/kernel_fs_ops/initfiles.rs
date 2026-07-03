@@ -74,6 +74,24 @@ fn flush_libgcc_s() {
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobody:/bin/bash\n";
 const GROUP: &str = "root:x:0:\nnobody:x:1:\n";
+#[cfg(target_arch = "riscv64")]
+const CPUINFO: &str = "\
+processor\t: 0
+hart\t\t: 0
+isa\t\t: rv64imafdch
+mmu\t\t: sv39
+uarch\t\t: ya2yos
+
+";
+#[cfg(target_arch = "loongarch64")]
+const CPUINFO: &str = "\
+processor\t: 0
+cpu family\t: LoongArch
+model name\t: LoongArch64
+CPU Revision\t: 0x00
+FPU\t\t: yes
+
+";
 const MEMINFO: &str = r"
 MemTotal:         944564 kB
 MemFree:          835248 kB
@@ -233,6 +251,8 @@ fn create_proc_files() -> SysResult {
     create_dir("/proc")?;
     write_init_file("/proc/mounts", MOUNTS)?;
     debug!("create /proc/mounts");
+    write_init_file("/proc/cpuinfo", CPUINFO)?;
+    debug!("create /proc/cpuinfo");
     write_init_file("/proc/meminfo", MEMINFO)?;
     debug!("create /proc/meminfo");
 

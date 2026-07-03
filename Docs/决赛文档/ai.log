@@ -1878,6 +1878,77 @@ warnings 0
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
 
+## 2026-07-03: LTP tst_virt /proc/cpuinfo 缺失修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 并修复：
+
+```text
+tst_virt.c:37: TBROK: fopen(/proc/cpuinfo,r) failed: ENOENT (2)
+```
+
+修复后用户确认最新输出已在 `log.ans` 且测试已经通过，要求补充文档。
+
+### 分析
+
+AI 按仓库 `fix-bug` 流程先过滤 `log.ans` 中的 `TPASS/TFAIL/TBROK/Summary/panic` 关键行，确认失败点不是具体测试断言，而是 LTP 公共虚拟化探测库 `lib/tst_virt.c` 在启动阶段读取 `/proc/cpuinfo` 失败：
+
+```text
+[sys_openat] path is /proc/cpuinfo, flags is O_LARGEFILE, mode is 666
+open(/proc/cpuinfo,O_LARGEFILE,438)
+abs_path is /proc/cpuinfo
+tst_virt.c:37: TBROK: fopen(/proc/cpuinfo,r) failed: ENOENT (2)
+```
+
+随后检查 LTP 源码，确认 `tst_virt.c` 只需要打开 `/proc/cpuinfo` 并逐行扫描 `QEMU Virtual CPU` 字符串，用于判断是否为 KVM。它不依赖完整 CPU 拓扑或精确硬件信息。
+
+继续检查 Ya2yOS 的 proc 兼容文件初始化路径，发现 `os/src/fs/kernel_fs_ops/initfiles.rs` 启动期已经创建 `/proc/mounts`、`/proc/meminfo` 和 `/proc/sys/kernel/*`，但没有创建 `/proc/cpuinfo`。因此 `openat("/proc/cpuinfo")` 最终走普通 ext4 查找并返回 `ENOENT`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | 新增 RISC-V/LoongArch64 架构条件的最小 `CPUINFO` 文本，并在 `create_proc_files()` 中写入 `/proc/cpuinfo` |
+| `Docs/决赛文档/problem/proc-cpuinfo-tst-virt.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+实现中没有写入 `QEMU Virtual CPU`，避免 LTP `tst_virt.c` 把当前环境识别为 KVM，从而改变依赖虚拟化判断的测试分支。
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：默认 RISC-V 构建通过，仅有既有 warning。
+
+AI 曾尝试在沙箱内运行：
+
+```text
+timeout 120s make run > /tmp/cpuinfo-fix.log 2>&1
+```
+
+QEMU 因沙箱内 `/var/tmp` 只读无法创建临时文件而未启动：
+
+```text
+qemu-system-riscv64: ... Could not open temporary file '/var/tmp/...': Read-only file system
+```
+
+随后用户在可运行环境中完成验证并确认已通过。AI 读取最新 `log.ans`，未再出现原先的 `tst_virt.c:37` `TBROK` 或 `/proc/cpuinfo` `ENOENT`，summary 为：
+
+```text
+Summary:
+passed   7
+failed   0
+broken   0
+```
+
+未执行 `TARGET_ARCH=loongarch64` 构建或运行验证；本次验证基于默认 RISC-V 构建和用户提供的最新 `log.ans`。
+
 ## 2026-07-03: LTP acct02 accounting exit(128) 状态编码修复
 
 ### 用户需求
