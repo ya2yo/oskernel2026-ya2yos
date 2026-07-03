@@ -94,6 +94,34 @@ timeout 25s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-shell-start.log 2>&1
 - QEMU 日志出现 `initproc launching interactive shell......` 和 `/ #` 提示符。
 - 日志中没有 `Panicked`、`Exception`、`FetchInstructionPageFault`、`SIGSEGV`、`shutdown` 或 fallback exec 失败信息。
 
+### 后续 stdin 回显调整
+
+用户确认当前内核已经可以读取输入并运行 `vi`，随后要求让 shell 显示用户输入。AI 检查后确认当前没有完整 TTY/termios 行规程，串口输入只通过 `Stdin::read()` 传给用户进程，QEMU 侧不会自动本地回显，因此 shell 能读取命令但输入字符不可见。
+
+修复为在 `Stdin::read()` 中加入基础控制台回显：普通字符通过 `console_putchar()` 显示，`\r`/`\n` 显示为 CRLF，Backspace/DEL 显示擦除序列并从本次读取缓冲中删除一个字符。
+
+修改文件：
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/stdio.rs` | stdin 读取路径增加 `echo_input()`，对普通字符、回车和退格执行基础串口回显 |
+| `Docs/初赛文档/problem/riscv-alpine-initfiles-dynamic-link.md` | 补充 stdin 回显分析和验证 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 补充 AI 使用记录 |
+
+验证：
+
+```text
+make TARGET_ARCH=riscv64
+{ sleep 5; printf 'echo SHELL_ECHO_OK\n'; sleep 2; } | timeout 20s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-shell-echo-delayed.log 2>&1
+```
+
+结果：
+
+- RISC-V 构建通过。
+- QEMU 日志显示 `/ # echo SHELL_ECHO_OK` 和 `SHELL_ECHO_OK`，说明 shell 输入字符可见且命令正常执行。
+- 一次无延迟管道输入曾显示 `/ # cho SHELL_ECHO_OK`，判断为命令在 shell 完全就绪前注入导致首字符被启动期读调用消耗；延迟到 prompt 后注入未复现该问题。
+
 ## 2026-05-27: 内核堆碎片化 — 全量测例 OOM
 
 ### 问题发现

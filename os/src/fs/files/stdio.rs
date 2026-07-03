@@ -4,13 +4,32 @@
 use super::super::{File, Kstat, StMode};
 use crate::utils::{SysErrNo, SyscallRet};
 use crate::{
-    arch::console::console_getchar, mm::UserBuffer, syscall::PollEvents,
+    arch::console::{console_getchar, console_putchar},
+    mm::UserBuffer,
+    syscall::PollEvents,
     task::suspend_current_and_run_next,
 };
 use alloc::vec::Vec;
 
-const LF: usize = 0x0a;
-const CR: usize = 0x0d;
+const LF: u8 = 0x0a;
+const CR: u8 = 0x0d;
+const BS: u8 = 0x08;
+const DEL: u8 = 0x7f;
+
+fn echo_input(c: u8) {
+    match c {
+        LF | CR => {
+            console_putchar(b'\r');
+            console_putchar(b'\n');
+        }
+        BS | DEL => {
+            console_putchar(BS);
+            console_putchar(b' ');
+            console_putchar(BS);
+        }
+        _ => console_putchar(c),
+    }
+}
 
 pub struct Stdin;
 
@@ -37,16 +56,26 @@ impl File for Stdin {
                 }
                 Some(c) => match c {
                     b'\r' => {
+                        echo_input(c);
                         buf.push(b'\n');
                         count += 1;
                         break;
                     }
                     b'\n' => {
+                        echo_input(c);
                         buf.push(b'\n');
                         count += 1;
                         break;
                     }
+                    BS | DEL => {
+                        if count > 0 {
+                            echo_input(c);
+                            buf.pop();
+                            count -= 1;
+                        }
+                    }
                     _ => {
+                        echo_input(c);
                         buf.push(c);
                         count += 1;
                     }
