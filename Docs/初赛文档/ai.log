@@ -122,6 +122,38 @@ make TARGET_ARCH=riscv64
 - QEMU 日志显示 `/ # echo SHELL_ECHO_OK` 和 `SHELL_ECHO_OK`，说明 shell 输入字符可见且命令正常执行。
 - 一次无延迟管道输入曾显示 `/ # cho SHELL_ECHO_OK`，判断为命令在 shell 完全就绪前注入导致首字符被启动期读调用消耗；延迟到 prompt 后注入未复现该问题。
 
+### 后续 vi 双回显修复
+
+用户反馈 `vi` 运行时 `:` 模式输入一个字符会显示两个，其他功能正常。AI 判断根因是上一阶段为了 shell 可见性在 `Stdin::read()` 中做了强制回显，而 `vi` 在命令行模式中也会自行绘制输入字符，导致内核和用户程序各显示一次。
+
+Linux 的正确模型是 TTY/termios 控制回显：shell 默认 `ECHO` 开启，`vi` 进入 raw/cbreak 模式时通过 `tcsetattr()` 关闭 `ECHO` 和 `ICANON`。当前内核没有 stdio termios ioctl，因此 `vi` 关闭回显的请求无法生效。
+
+修复为给 stdio 文件补充最小 termios 支持：实现 `TCGETS`、`TCSETS`、`TCSETSW`、`TCSETSF`，保存 `c_lflag` 中的 `ECHO/ICANON` 状态；`Stdin::read()` 只在 `ECHO` 开启时回显，`ICANON` 关闭时按单个原始字符返回。同时实现 `TIOCGWINSZ` 返回 24x80，满足全屏程序查询窗口大小的基础需求。
+
+修改文件：
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/stdio.rs` | 增加最小 `RawTermios`/`RawWinSize`、`terminal_ioctl()`、ECHO/ICANON 状态控制，stdin 回显改为 termios 控制 |
+| `Docs/初赛文档/problem/riscv-alpine-initfiles-dynamic-link.md` | 补充 `vi` 双回显根因、修复和验证 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 补充 AI 使用记录 |
+
+验证：
+
+```text
+make TARGET_ARCH=riscv64
+{ sleep 5; printf 'echo ECHO_ON_OK\n'; printf 'stty -echo\n'; printf 'echo HIDDEN_INPUT_OK\n'; printf 'stty echo\n'; printf 'echo ECHO_RESTORED_OK\n'; sleep 2; } | timeout 25s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-termios-echo.log 2>&1
+git diff --check
+```
+
+结果：
+
+- RISC-V 构建通过。
+- QEMU 日志中 `stty -echo` 后，输入命令 `echo HIDDEN_INPUT_OK` 不再作为输入行回显，但命令输出 `HIDDEN_INPUT_OK` 正常出现。
+- `stty echo` 后，输入 `echo ECHO_RESTORED_OK` 的命令行和输出均正常显示。
+- `git diff --check` 无输出。
+
 ## 2026-05-27: 内核堆碎片化 — 全量测例 OOM
 
 ### 问题发现

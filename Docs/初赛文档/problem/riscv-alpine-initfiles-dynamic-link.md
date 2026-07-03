@@ -52,6 +52,7 @@ Exception(FetchInstructionPageFault) in application, bad addr = 0xffffffffffffff
 - `initproc` 默认执行 `/bin/sh -i`，让内核启动后直接进入交互 shell；若失败则回退尝试 `/musl/busybox sh -i`。
 - `execve` 默认环境补充 `TERM=xterm`、`HOME=/root`、`SHELL=/bin/sh`、`USER=root`，改善 shell 和后续 `vi/vim` 等交互程序的运行环境。
 - `Stdin::read()` 对控制台输入执行基础回显：普通字符直接显示，回车统一显示换行，退格/DEL 显示擦除序列，使启动后的 shell 命令输入可见。
+- stdio 文件补充最小 termios ioctl：支持 `TCGETS`、`TCSETS`、`TCSETSW`、`TCSETSF` 和 `TIOCGWINSZ`。回显改为受 `c_lflag & ECHO` 控制，`ICANON` 关闭时按原始字符返回，避免 `vi` 进入 `:` 模式后内核和 `vi` 各显示一次输入字符。
 - 新增 `open_direct()`，允许内核按精确路径打开文件而不经过动态库兼容映射。
 - `elf_loader` 打开动态解释器时先尝试兼容映射路径；如果映射路径不存在且不同于 ELF 原始 `.interp`，则用 `open_direct()` 回退打开原始路径。
 - `load_dl_interp_if_needed()` 改为返回 `Result<Option<usize>, ()>`，区分“静态 ELF 无解释器”和“动态 ELF 解释器加载失败”，避免加载失败后继续以错误入口返回用户态。
@@ -84,3 +85,4 @@ timeout 25s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-riscv-start.log 2>&1
 - 修复 `open_direct()` 与解释器失败错误传播后，25 秒 QEMU 日志中不再出现 `Panicked`、`Exception`、`FetchInstructionPageFault`、`SIGSEGV` 或 `exec /bin/sh failed`；QEMU 由 `timeout` 终止，说明系统已越过原动态解释器取指 fault。
 - 调整 `initproc` 后，25 秒 QEMU 日志出现 `/ #` shell 提示符，并提示 `/bin/sh: can't access tty; job control turned off`。该提示表示没有完整 TTY/job control，但基本命令输入输出可用。
 - 补充 stdin 回显后，延迟到 shell prompt 出现再输入 `echo SHELL_ECHO_OK`，日志显示 `/ # echo SHELL_ECHO_OK` 和 `SHELL_ECHO_OK`，说明用户输入已可见且命令执行正常。直接在 QEMU 启动初期向 stdin 管道写入命令可能被 shell 启动前的读调用消耗首字符，自动验证时应等待 prompt 后再注入输入。
+- 接入 termios ECHO 开关后，执行 `stty -echo` 再输入 `echo HIDDEN_INPUT_OK`，日志只出现命令输出 `HIDDEN_INPUT_OK`，不再出现输入命令本身；随后 `stty echo` 后输入 `echo ECHO_RESTORED_OK` 又能显示输入和输出。该路径覆盖 `vi` 关闭 ECHO 后避免 `:` 模式双回显的核心行为。
