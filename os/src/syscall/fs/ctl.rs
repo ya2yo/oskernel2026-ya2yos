@@ -464,6 +464,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
     // Ok(res)
 }
 
+/// https://www.man7.org/linux/man-pages/man2/symlink.2.html
 pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
@@ -565,6 +566,7 @@ fn parse_proc_self_fd(path: &str) -> Option<usize> {
         .and_then(|fd| fd.parse::<usize>().ok())
 }
 
+/// https://www.man7.org/linux/man-pages/man2/fchownat.2.html
 pub fn sys_fchownat(
     dirfd: isize,
     pathname: *const u8,
@@ -622,7 +624,7 @@ pub fn sys_fchownat(
 
     chown_inode(inode, owner, group)
 }
-
+/// https://www.man7.org/linux/man-pages/man2/fchownat.2.html
 pub fn sys_fchown(fd: usize, owner: usize, group: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
@@ -634,7 +636,7 @@ pub fn sys_fchown(fd: usize, owner: usize, group: usize) -> SyscallRet {
     let inode = fd_desc.file()?.inode.clone();
     chown_inode(inode, owner, group)
 }
-
+/// https://www.man7.org/linux/man-pages/man2/fchmodat.2.html
 pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
@@ -654,7 +656,7 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
     file.inode.fmode_set(mode);
     Ok(0)
 }
-
+/// https://www.man7.org/linux/man-pages/man2/fchmodat.2.html
 pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
