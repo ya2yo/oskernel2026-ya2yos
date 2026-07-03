@@ -49,6 +49,8 @@ Exception(FetchInstructionPageFault) in application, bad addr = 0xffffffffffffff
 
 - `flush_libgcc_s()` 改为只在 `/glibc/lib` 存在时写入 `libgcc_s.so.1`，并移除可失败路径上的 `unwrap()`。
 - `create_bin_files()` 增加 `/musl/busybox` 探测；只有竞赛测试镜像存在该文件时才创建 `/bin` applet 链接和 LTP wrapper。Alpine 镜像保留原生 `/bin/sh`。
+- `initproc` 默认执行 `/bin/sh -i`，让内核启动后直接进入交互 shell；若失败则回退尝试 `/musl/busybox sh -i`。
+- `execve` 默认环境补充 `TERM=xterm`、`HOME=/root`、`SHELL=/bin/sh`、`USER=root`，改善 shell 和后续 `vi/vim` 等交互程序的运行环境。
 - 新增 `open_direct()`，允许内核按精确路径打开文件而不经过动态库兼容映射。
 - `elf_loader` 打开动态解释器时先尝试兼容映射路径；如果映射路径不存在且不同于 ELF 原始 `.interp`，则用 `open_direct()` 回退打开原始路径。
 - `load_dl_interp_if_needed()` 改为返回 `Result<Option<usize>, ()>`，区分“静态 ELF 无解释器”和“动态 ELF 解释器加载失败”，避免加载失败后继续以错误入口返回用户态。
@@ -60,6 +62,8 @@ Exception(FetchInstructionPageFault) in application, bad addr = 0xffffffffffffff
 - `os/src/fs/kernel_fs_ops/mod.rs`
 - `os/src/fs/mod.rs`
 - `os/src/mm/memory_set/elf_loader.rs`
+- `os/src/syscall/task/execve.rs`
+- `user/src/bin/initproc.rs`
 
 ## 验证
 
@@ -76,3 +80,4 @@ timeout 25s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-riscv-start.log 2>&1
 - QEMU 日志显示 `fs::init...create_init_files success!`，原 `initfiles.rs:61 libgcc_s ENOENT` panic 消失。
 - `/bin/sh` 不再以 `exec /bin/sh failed: -2` 返回，说明 `/bin/sh` 没有再被覆盖到不存在的 `/musl/busybox`。
 - 修复 `open_direct()` 与解释器失败错误传播后，25 秒 QEMU 日志中不再出现 `Panicked`、`Exception`、`FetchInstructionPageFault`、`SIGSEGV` 或 `exec /bin/sh failed`；QEMU 由 `timeout` 终止，说明系统已越过原动态解释器取指 fault。
+- 调整 `initproc` 后，25 秒 QEMU 日志出现 `/ #` shell 提示符，并提示 `/bin/sh: can't access tty; job control turned off`。该提示表示没有完整 TTY/job control，但基本命令输入输出可用。

@@ -77,6 +77,23 @@ timeout 25s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-riscv-start.log 2>&1
 - `/bin/sh` 不再返回 `exec /bin/sh failed: -2`。
 - 修复 `open_direct()` 与解释器加载失败错误传播后，25 秒 QEMU 日志中不再出现 `Panicked`、`Exception`、`FetchInstructionPageFault`、`SIGSEGV` 或 `exec /bin/sh failed`；QEMU 由 timeout 终止。
 
+### 后续交互入口调整
+
+用户进一步询问如何让内核启动后自动运行 shell、提升人机交互体验。AI 将 `initproc` 的 RISC-V 与 LoongArch 入口统一改为执行 `/bin/sh -i`，失败后回退 `/musl/busybox sh -i`，并在 `execve` 默认环境中补充 `TERM=xterm`、`HOME=/root`、`SHELL=/bin/sh`、`USER=root`。
+
+已执行：
+
+```text
+make TARGET_ARCH=riscv64
+timeout 25s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-shell-start.log 2>&1
+```
+
+结果：
+
+- RISC-V 构建通过。
+- QEMU 日志出现 `initproc launching interactive shell......` 和 `/ #` 提示符。
+- 日志中没有 `Panicked`、`Exception`、`FetchInstructionPageFault`、`SIGSEGV`、`shutdown` 或 fallback exec 失败信息。
+
 ## 2026-05-27: 内核堆碎片化 — 全量测例 OOM
 
 ### 问题发现

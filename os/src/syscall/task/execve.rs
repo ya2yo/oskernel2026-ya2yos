@@ -189,6 +189,10 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         // 尝试强制设置环境变量满足clocale
         env.push("LANG=C".to_string());
         env.push("LC_CTYPE=C".to_string());
+        env.push("TERM=xterm".to_string());
+        env.push("HOME=/root".to_string());
+        env.push("SHELL=/bin/sh".to_string());
+        env.push("USER=root".to_string());
     } else {
         // debug!("use assigned env");
         loop {

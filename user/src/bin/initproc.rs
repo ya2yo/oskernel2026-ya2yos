@@ -65,26 +65,31 @@ fn test_cgroup_fj_function_cpuset_via_script() {
 // Entry points
 // ---------------------------------------------------------------------------
 
+fn run_interactive_shell() -> i32 {
+    println!("initproc launching interactive shell......");
+
+    let args = ["/bin/sh\0", "-i\0"];
+    let ret = execve(&args);
+    println!("exec /bin/sh -i failed: {}", ret);
+
+    let args = ["/musl/busybox\0", "sh\0", "-i\0"];
+    let ret = execve(&args);
+    println!("exec /musl/busybox sh -i failed: {}", ret);
+
+    shutdown();
+    ret as i32
+}
+
 #[no_mangle]
 #[cfg(target_arch = "loongarch64")]
 fn main() -> i32 {
-    println!("initproc running......");
-    // get_score();
-    let args = ["/bin/sh\0"];
-    shutdown();
-    0
+    run_interactive_shell()
 }
 
 #[no_mangle]
 #[cfg(target_arch = "riscv64")]
 fn main() -> i32 {
-    println!("initproc running......");
-    // get_score();
-    let args = ["/bin/sh\0"];
-    let ret = execve(&args);
-    println!("exec /bin/sh failed: {}", ret);
-    shutdown();
-    0
+    run_interactive_shell()
 }
 
 // ---------------------------------------------------------------------------

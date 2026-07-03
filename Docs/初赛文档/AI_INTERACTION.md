@@ -863,4 +863,5 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、RISC-V Alpine 镜像启动兼容、动态解释器路径回退、文档完善
 - **描述**：用户在尝试运行当前内核上的 vim/shell 时遇到 `initfiles.rs:61` 对 `/glibc/lib/libgcc_s.so.1` 的 `ENOENT` panic，并询问 RISC-V 场景是否有必要把该链接库放入内核。AI 确认该库只用于竞赛 glibc 测试镜像，不是 Alpine/musl 根文件系统必需；修复为仅在 `/glibc/lib` 存在时写入，同时仅在 `/musl/busybox` 存在时创建测试镜像 `/bin` applet 和 LTP wrapper，避免覆盖 Alpine 原生 `/bin/sh`。后续根据 `log.ans` 中 `FetchInstructionPageFault bad addr = 0xfffffffffffffffe`，继续修复动态解释器回退仍被通用 `open()` 二次映射的问题，新增 `open_direct()` 并让 ELF loader 区分“无解释器”和“解释器加载失败”。`make TARGET_ARCH=riscv64` 通过，25 秒 QEMU 日志未再出现原 ENOENT panic、`exec /bin/sh failed` 或取指 fault。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/riscv-alpine-initfiles-dynamic-link.md](./problem/riscv-alpine-initfiles-dynamic-link.md)。
+- **补充**：随后用户要求提升启动后人机交互体验。AI 将 `initproc` 改为默认执行 `/bin/sh -i`，失败时回退 `/musl/busybox sh -i`，并补充 `TERM/HOME/SHELL/USER` 默认环境变量。`make TARGET_ARCH=riscv64` 通过，25 秒 QEMU 日志出现 `/ #` 提示符。
 - **关联 commit**：待提交
