@@ -22,10 +22,10 @@ AI 对照 LTP `open14` 行为和运行日志确认，`O_TMPFILE` 的 `openat()` 
 | `os/src/fs/fs_info.rs` | 增加 `fd_path(fd)`，供 `/proc/self/fd/<fd>` readlink 使用 |
 | `os/src/syscall/fs/ctl.rs` | `readlinkat()` 支持 `/proc/self/fd/<fd>`；`linkat()` 支持从 procfd 源 fd 复制数据并物化为目标普通文件；`getdents64()` 修复 EOF offset 处理 |
 | `os/src/fs/files/os_file.rs` | 增加读取目录 fd offset 的接口，避免 EOF cookie 经普通 `lseek` 转成 `EINVAL` |
-| `Docs/初赛文档/problem/open14-o-tmpfile-anonymous.md` | 新增问题复盘，详细说明 `O_TMPFILE` 匿名文件语义 |
-| `Docs/初赛文档/problem/README.md` | 增加索引 |
-| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
-| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+| `Docs/决赛文档/problem/open14-o-tmpfile-anonymous.md` | 新增问题复盘，详细说明 `O_TMPFILE` 匿名文件语义 |
+| `Docs/决赛文档/problem/README.md` | 增加索引 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
 
 ### 验证
 
@@ -77,10 +77,10 @@ TBROK: mkfs.ext2 failed with exit code 1
 | `os/src/fs/kernel_fs_ops/initfiles.rs` | 增加 `/bin/mkfs.ext2` 和 `/bin/mke2fs` 到 busybox applet symlink 列表 |
 | `os/src/fs/files/loopdev.rs` | 为 loop 设备补齐 per-open offset、默认容量、扇区大小、`read/write/lseek/fstat` 和 `BLKGETSIZE64` / `BLKGETSIZE` / `BLKSSZGET` |
 | `os/src/syscall/fs/io.rs` | 为 `sys_copy_file_range()` 补齐 fd 权限、文件类型、`O_APPEND`、flags、offset、范围溢出和重叠区间等错误路径校验 |
-| `Docs/初赛文档/problem/copy-file-range02-error-semantics.md` | 新增问题复盘 |
-| `Docs/初赛文档/problem/README.md` | 增加索引 |
-| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
-| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+| `Docs/决赛文档/problem/copy-file-range02-error-semantics.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加索引 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
 
 ### 验证
 
@@ -135,9 +135,9 @@ os::syscall::fs::io::sys_copy_file_range ... at src/syscall/fs/io.rs:938
 | `os/src/fs/kernel_fs_ops/initfiles.rs` | 增加 `/bin/chattr`、`/bin/mkswap`、`/bin/swapon`、`/bin/swapoff` applet 入口 |
 | `os/src/fs/files/os_file.rs` | 增加路径级 ext2 flags 映射，支持 `FS_IOC_GETFLAGS` / `FS_IOC_SETFLAGS` 及 32 位变体；普通文件 `write()` 对 `FS_IMMUTABLE_FL` 返回 `EPERM` |
 | `os/src/syscall/fs/io.rs` | `copy_file_range()` 对 immutable 输出返回 `EPERM`；同文件重叠判断改为 `st_dev/st_ino`；避免对通用 `dyn File` 调用默认 `path()` |
-| `Docs/初赛文档/problem/copy-file-range02-error-semantics.md` | 更新后续失败、panic 分析和最终验证 |
-| `Docs/初赛文档/开发日志.md` | 追加 7.2 后续修复简记 |
-| `Docs/初赛文档/AI_INTERACTION.md` | 更新 AI 使用记录 |
+| `Docs/决赛文档/problem/copy-file-range02-error-semantics.md` | 更新后续失败、panic 分析和最终验证 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 后续修复简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 更新 AI 使用记录 |
 
 ### 验证
 
@@ -197,10 +197,10 @@ copy_file_range03.c:52: TFAIL: diff_us = 0, copy_file_range might not update tim
 |------|------|
 | `os/src/syscall/task/schedule.rs` | 修正 `clock_nanosleep()` 中 elapsed ticks 到微秒的换算公式，恢复相对 sleep 的真实等待时长 |
 | `os/src/syscall/fs/io.rs` | `copy_file_range()` 写成功后用当前开机秒与旧 `mtime + 1` 取较大值，同时更新 `mtime/ctime`，并用 `?` 传播 `set_timestamps()` 错误 |
-| `Docs/初赛文档/problem/copy-file-range03-timestamp.md` | 新增问题复盘，记录日志现象、LTP 源码断言、根因和验证 |
-| `Docs/初赛文档/problem/README.md` | 增加问题索引 |
-| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
-| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+| `Docs/决赛文档/problem/copy-file-range03-timestamp.md` | 新增问题复盘，记录日志现象、LTP 源码断言、根因和验证 |
+| `Docs/决赛文档/problem/README.md` | 增加问题索引 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
 
 ### 验证
 
@@ -303,10 +303,10 @@ panic
 | `os/src/task/mod.rs` | `suspend_current_and_run_next()`、`exit_current_group_and_run_next()`、`exit_current_and_run_next()` 改用进程级退出状态 |
 | `os/src/signal/mod.rs` | `send_signal_to_thread_group()` 不再通过 `sig_table` 判断目标进程退出状态 |
 | `os/src/syscall/task/wait.rs` | `waitpid()/waitid()` 改从 child 进程状态读取退出码 |
-| `Docs/初赛文档/problem/clone02-shared-sighand-exit-code.md` | 新增问题复盘 |
-| `Docs/初赛文档/problem/README.md` | 增加问题索引 |
-| `Docs/初赛文档/开发日志.md` | 追加 7.2 简记 |
-| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+| `Docs/决赛文档/problem/clone02-shared-sighand-exit-code.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加问题索引 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.2 简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
 
 ### 验证
 
@@ -425,7 +425,7 @@ AI 继续检查 `Process::inner_lock()` 的调用点，确认上一轮保留的 
 | `Docs/决赛文档/开发日志.md` | 按当前 `write-docs` skill 补充 7.2 简记 |
 | `Docs/决赛文档/ai.log` | 追加本轮 AI 协作记录 |
 | `Docs/决赛文档/AI_INTERACTION.md` | 追加本轮 AI 使用记录 |
-| `Docs/初赛文档/开发日志.md` | 移除误追加到初赛目录的本轮简记 |
+| `Docs/决赛文档/开发日志.md` | 移除误追加到初赛目录的本轮简记 |
 
 ### 验证
 
@@ -874,3 +874,411 @@ cat /tmp/ic_c
 三次 `cat` 均输出 `cache-ok`，覆盖 hard link 复用、删除原路径后通过别名读取、rename 后读取。退出时出现一条既有 `exit_current_and_run_next` TCB 引用 warning，未见 panic。
 
 本轮未新增 problem 文件：这是 VFS inode cache 功能改造，不是修复某个具体 LTP 失败测例。
+
+---
+
+## 2026-07-03: iperf 5001 端口复用、daemon 残留与 glibc TCGETS 栈破坏修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 中最新输出，指出上一轮修复失败：`iperf-musl` 通过后，`iperf-glibc` 仍显示端口冲突。随后用户强调测例运行必须继续使用标准 `run_testsuit(root, script)`，不能使用自定义 iperf runner。
+
+### 分析
+
+AI 首先确认失败集中在 iperf 固定端口 `5001`，不是 netperf 的 `12865`：
+
+```text
+socket already listening on port 5001
+*** stack smashing detected ***: terminated
+```
+
+参考 netperf 复盘后，确认端口复用的正确方向仍是 fd/进程退出时主动 `shutdown(Shutdown::Both)`，不能依赖 `Arc<Socket>` 最后一次 drop 才释放 `LISTEN_TABLE`。上一轮尝试把 `SO_REUSEADDR` 做成“新 listener 覆盖旧监听表项”后虽然去掉了 `EADDRINUSE`，但引入 `accept before listen`，说明旧 server 与监听表状态被拆裂，该实验应撤销。
+
+继续检查 iperf 脚本发现，`iperf_testcode.sh` 使用 `$iperf -s -p 5001 -D` 启动 daemon，但脚本结束时没有 kill。`run_testsuit()` 只等待脚本进程退出；daemon 脱离脚本后被 init 收养，仍然监听 `5001`。因此最新 `log.ans` 中 `iperf-glibc` 虽然六项显示 success，但 glibc server 的 `listen(5001)` 实际失败，后续 client 是连接到了上一轮 musl daemon，这是 false positive。
+
+同时，早期修复中还定位到 glibc iperf 的 `*** stack smashing detected ***`。AI 运行 `make log`，通过 syscall trace 把崩溃点缩小到：
+
+```text
+[sys_ioctl] fd=1, cmd=21505
+[syscall ret --- OK] Ioctl ret = 0
+[sys_writev] fd is 2 ...
+*** stack smashing detected ***: terminated
+```
+
+`21505 == 0x5401`，即 `TCGETS`。检查 `os/src/fs/files/stdio.rs` 后确认，当前 `RawTermios` 含 `c_cc[32]`、padding、`c_ispeed/c_ospeed`，总计 60 字节；但 Linux `TCGETS` 使用 old kernel termios 布局，RISC-V 上只应写 36 字节。多写的 24 字节覆盖 glibc 栈 canary，导致 iperf3 打印结果前进入 `__stack_chk_fail`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/net/listen_table.rs` | 撤销 `SO_REUSEADDR` 覆盖 listener 的实验，已有监听端口继续返回 `EADDRINUSE` |
+| `os/src/net/tcp.rs` | 恢复 `LISTEN_TABLE.listen(bound_endpoint)` 调用 |
+| `os/src/fs/fstruct.rs` | fd clear/close/close_on_exec 主动 shutdown socket，并通过 fd alias 判断避免 dup 场景过早关闭 |
+| `os/src/syscall/fs/fd_ops.rs` | `sys_close()` / `sys_close_range()` 改用 `FdTable::close()`；刷新 `/proc` 时写入真实 comm |
+| `os/src/fs/kernel_fs_ops/proc_file.rs` | `/proc/<pid>/stat/status` 使用 `ProcessMeta.comm`，不再硬编码 `busybox` |
+| `os/src/task/task/task.rs` | 创建 `/proc/<pid>` 时传入当前进程 comm |
+| `os/src/fs/files/stdio.rs` | `TCGETS/TCSETS*` 使用 Linux old termios 36 字节布局，`c_cc` 改为 19 字节，移除 speed 字段 |
+| `os/src/signal/mod.rs` | blocked 任务收到可终止信号时通过 interrupt waker 唤醒，确保 kill 能打断阻塞中的 daemon |
+| `os/src/signal/mod.rs` | `kill(-1, sig)` 路径跳过 pid 1，避免误伤 init |
+| `user/src/syscall/mod.rs` | `sys_kill` 用户态包装改为支持负 pid |
+| `user/src/lib.rs` | 新增 `kill_processes(isize, signum)`，保留原 `kill(usize, signum)` 兼容调用 |
+| `user/src/bin/initproc.rs` | 保持 iperf 使用标准 `run_testsuit(root, script)`；在通用 `run_testsuit()` 收尾阶段 `kill_processes(-1, SIGKILL)` 并循环 `wait()` 回收被 init 收养的残留子进程 |
+| `Docs/决赛文档/problem/iperf-port-reuse-termios-stack-smash.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加索引 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+make log
+timeout 180s make run > /tmp/iperf-debug-syscall.log 2>&1
+make
+timeout 180s make run > /tmp/iperf-termios-fix.log 2>&1
+make
+timeout 180s make run > /tmp/iperf-generic-cleanup.log 2>&1
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=riscv64`，构建通过。
+- debug 日志确认 glibc 栈保护失败发生在 `ioctl(fd=1, cmd=0x5401 /* TCGETS */)` 之后。
+- 沙箱内直接 `make run` 因 QEMU 写 `/var/tmp/vl.*` 失败；已在非沙箱环境完成同一命令验证。
+- `/tmp/iperf-generic-cleanup.log` 中 `iperf-musl` 六项均为 `success`。
+- `/tmp/iperf-generic-cleanup.log` 中 `iperf-glibc` 六项均为 `success`。
+- `iperf-glibc` 组开始后直接进入 `====== iperf BASIC_UDP begin ======`，未再出现 `socket already listening on port 5001`。
+- 日志中未再出现 `replace reusable listening socket`、`accept before listen`、`Connection refused`、`*** stack smashing detected ***` 或 kernel panic，最后正常 `shutdown!`。
+
+---
+
+## 2026-07-03: netperf fd table 重构后 socket 生命周期回归修复
+
+### 用户需求
+
+用户指出从 `9fa9699d2580a7de85e41baf2e49c3e51000d6f0` 以来，内核经历大规模重构，很多以前正常的测试无法通过；要求分析 `log.ans`，先修复 `netperf`。随后用户提供更详细的 `log.ans`，并指出第一轮修复后 `glibc` 又出现与 `musl` 的 12865 端口冲突，要求在文档中突出本次修改，以及内核重构后为何原本通过的测试无法通过。
+
+### 分析
+
+最初 `log.ans` 中 `netperf-musl` 从第一项 `UDP_STREAM` 就失败：
+
+```text
+recv_response: partial response received: 0 bytes
+```
+
+后续 `TCP_STREAM`、`UDP_RR`、`TCP_RR`、`TCP_CRR` 都无法建立控制连接。AI 先排查 `recvmsg()` 用户 iovec 回拷和 `accept4()` 地址写回语义，补充了两个兼容修复，但用户复测显示失败形态没有变化。
+
+用户随后提供带 syscall trace 的 `log.ans`。AI 根据 PID 4/5/6 的调用链确认，控制连接实际已经建立：
+
+```text
+[PID 5] TCP connection from 127.0.0.1:49152 to 127.0.0.1:12865
+[PID 5] Connect ret = 0
+[PID 4] Pselect6 ret = 1
+[PID 4] Accept ret = 4
+```
+
+`netserver` 父进程 PID 4 fork 出子进程 PID 6 后关闭自己的 accepted fd，并继续监听。客户端 PID 5 发送 656 字节请求后，`pselect6()` 立即返回可读，但 `recvfrom()` 返回 0：
+
+```text
+[PID 5] SendTo ret = 656
+[PID 5] Pselect6 ret = 1
+[PID 5] RecvFrom ret = 0
+recv_response: partial response received: 0 bytes
+```
+
+这说明不是连接未建立或 pselect 超时，而是控制连接被对端提前关闭。
+
+检查重构后的 `FdTable` 后确认，fd close 路径通过同一张 fd table 内的 alias 判断决定是否主动 `shutdown()` socket：
+
+```rust
+let should_close = !desc.has_fd_alias(&inner.files);
+```
+
+该判断只能覆盖 `dup()` 产生的同表 alias，无法看到 `fork()` 后父子进程不同 fd table 中共享的同一个 `Arc<Socket>`。于是 PID 4 关闭自己的 accepted fd 时，内核误以为该 socket 没有其它引用，主动 `shutdown(Shutdown::Both)`，导致 PID 6 继承到的 fd 指向已关闭的 TCP 连接，客户端读到 EOF。
+
+第一版修复将 `close()` 收窄为只有 `Arc::strong_count(socket) == 1` 时才 `shutdown()`，使 `netperf-musl` 五项恢复 success。但这又削弱了 6.30 的端口残留修复：进程退出 `FdTable::clear()` 也不再主动关闭存在临时引用的 listening socket，`LISTEN_TABLE` 中 12865 残留，`netperf-glibc` 启动时报：
+
+```text
+socket already listening on port 12865
+Unable to start netserver with  '127.0.0.1' port '12865'
+```
+
+最终结论是，重构后把两种 fd 生命周期语义混在了一起：
+
+- 普通 `close(fd)` 只能释放当前 fd 引用，不能关闭 fork 后其它进程仍持有的 socket。
+- 进程退出 `FdTable::clear()` 必须主动关闭本进程持有的 socket，尤其是 listening socket，保证全局监听端口立即释放。
+
+这正是大规模内核重构后“原来能过的 netperf 无法通过”的根因：fd table 独立化后，socket 主动关闭逻辑缺少跨进程引用边界，既可能过早关闭控制连接，也可能过晚释放监听端口。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/fstruct.rs` | 将 socket fd 关闭拆成 `close_socket_if_last_ref()` 与 `shutdown_socket()`；`close()` / `set()` 只在 `Arc::strong_count == 1` 时主动 shutdown，保护 fork 继承的 accepted socket；`clear()` 在进程退出时仍无条件 shutdown，释放 listening socket |
+| `os/src/syscall/net/io.rs` | `sys_recvmsg()` 改为使用空内核缓冲接收，并按实际接收长度回拷到用户 iovec |
+| `os/src/syscall/net/socket.rs` | `accept4()` 写回 `peer_addr()`，并传播用户地址写回和 fd table set 错误 |
+| `Docs/决赛文档/problem/netperf-glibc-port-reuse.md` | 增补“2026-07-03 重构后回归”分析与验证 |
+| `Docs/决赛文档/开发日志.md` | 追加本次简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 300s make run > log.ans 2>&1
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=riscv64`，构建通过。
+- 初版修复后复测确认 `netperf-musl` 五项均 success，但 `netperf-glibc` 回退为 `socket already listening on port 12865`。
+- 最终修复后，`log.ans` 中 `netperf-musl` 五项全部 success。
+- 最终修复后，`log.ans` 中 `netperf-glibc` 也能使用原始 `12865` 端口启动 netserver，五项全部 success。
+- 日志末尾输出 `#### OS COMP TEST GROUP END netperf-glibc ####` 和 `shutdown!`。
+- 未再出现 `recv_response: partial response received: 0 bytes`、`socket already listening on port 12865`、`Unable to start netserver`、panic 或 QEMU 异常退出。
+
+---
+
+## 2026-07-03: cyclictest STRESS_P1 hackbench socketpair fd 分配回归修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans`：`cyclictest` 的 `STRESS_P1` 阶段出现大量：
+
+```text
+CLIENT: ready write (error: Broken pipe)
+```
+
+并要求修复。
+
+### 分析
+
+AI 按 `fix-bug` 流程先筛选 `cyclictest`、`STRESS_P1`、`Broken pipe` 和 panic/TFAIL 关键字。日志显示 `cyclictest` 主程序最终仍输出 `STRESS_P1 end: success`，但 `hackbench` 压力进程在 worker ready 阶段大量失败。结合赛题文档确认，STRESS 模式会后台启动 `./hackbench -l 100000000`，`hackbench` 使用 `AF_UNIX socketpair()` 作为父进程与 worker 的同步通道。
+
+进一步检查详细 trace，worker 在启动后关闭一个 fd，再写 ready fd；第一个错误为 `Socket not connected` 或 `Transport endpoint is not connected`，后续大量变为 `Broken pipe`。这说明同步通道从创建阶段就不是正常的两个连接端点。
+
+读取 `sys_socketpair()` 后确认，fd table 重构后暴露了旧代码的隐含假设：
+
+```rust
+let fd1 = fd_table.alloc_fd()?;
+let fd2 = fd_table.alloc_fd()?;
+```
+
+重构后的 `alloc_fd()` 只返回当前最小空闲 fd，不会自动占位。连续两次调用且中间没有 `set()`，会拿到同一个 fd。随后第二个 socket 端点覆盖第一个端点，用户态收到的两个 fd 实际相同，`hackbench` 按 socketpair 两端使用时立刻断开 ready 通道。
+
+排查中还发现 AF_UNIX socket 的 `recv()` / `accept()` 队列为空时直接返回 `EAGAIN`，缺少阻塞 socket 的等待与 wake 语义。修正 fd 分配后，为保证 `hackbench` 父进程可以阻塞等待 worker ready，也一并补齐该语义。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/net/socket.rs` | `sys_socketpair()` 改为分配 `fd1` 后立即 `set()` 占位，再分配 `fd2`；第二次分配或用户数组写回失败时关闭已安装 fd，避免半初始化泄漏 |
+| `os/src/net/unix.rs` | 为 AF_UNIX socket 增加 `recv_poll/accept_poll`，`recv()` 与 `accept()` 通过 `poll_io()` 支持阻塞等待；`send/connect/shutdown/drop` 唤醒对应等待者 |
+| `Docs/决赛文档/problem/cyclictest-socketpair-fd-allocation.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加索引 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 300s make run > log.ans 2>&1
+git diff --check
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=riscv64`，构建通过。
+- 第一次仅补 AF_UNIX 阻塞语义后，`CLIENT: ready write` 仍存在，说明根因不在等待语义本身。
+- 修复 `sys_socketpair()` fd 分配覆盖后，`log.ans` 中不再出现 `CLIENT: ready write`。
+- `cyclictest-musl` 与 `cyclictest-glibc` 的 `NO_STRESS_P1/NO_STRESS_P8/STRESS_P1/STRESS_P8` 均 success。
+- musl/glibc 两轮均输出 `====== kill hackbench: success ======`。
+- 未再出现 `Socket not connected`、`Transport endpoint is not connected`、ready 阶段 `Broken pipe` 或 kernel panic，日志末尾正常 `shutdown!`。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与修复在当前默认 RISC-V 配置下完成。
+
+---
+
+## 2026-07-03: libctest clocale sigtimedwait 残留 interrupted 修复
+
+### 用户需求
+
+用户要求分析 `clocale.ans` 并修复，说明 libctest 的所有测例都报错 `Interrupted system call`。
+
+### 分析
+
+AI 按 `fix-bug` 流程先筛选 `clocale.ans` 中的 `Interrupted system call`、`waitpid failed`、`Wait4 ret` 等关键字。日志显示 `entry-static.exe clocale_mbfuncs` 子进程已经 `exit_group(0)`，父进程 PID 2 先通过 `rt_sigtimedwait()` 成功收到 `SIGCHLD`：
+
+```text
+SigTimedWait ret = 17
+```
+
+随后父进程立刻调用 `wait4(pid=3)`，但内核返回：
+
+```text
+Wait4 ret = Interrupted system call
+src/common/runtest.c:91: clocale_mbfuncs waitpid failed: Interrupted system call
+```
+
+这说明问题不在子进程执行结果，而在 `runtest.exe` 的 `sigtimedwait(SIGCHLD)` 与 `waitpid()` 交接路径。
+
+检查 `sys_rt_sigtimedwait()` 与 `TaskControlBlock::interrupt()/wake_interruptible()` 后确认：子进程退出投递 `SIGCHLD` 时，父进程因为设置了自定义 `SIGCHLD` handler，`add_signal()` 会通过 `wake_interruptible()` 唤醒阻塞的 `sigtimedwait`，并设置内部 `interrupted = true`。`sys_rt_sigtimedwait()` 成功匹配并消费 pending `SIGCHLD` 后返回 `Ok(17)`，但没有清理本次等待留下的 `interrupt_waker/interrupted`。后续 `wait4()` 外层的 `interruptible()` 先于 child 扫描调用 `poll_interrupt()`，读到残留标志后直接返回 `EINTR`。
+
+该问题与历史 `sigtimedwait` 超时路径残留 `interrupted` 类似，但本次发生在成功消费信号的路径。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/signal.rs` | `sys_rt_sigtimedwait()` 在成功消费匹配信号后调用 `task.clear_interrupt_waiter()`，清理本次内部唤醒状态，避免污染后续 `wait4/select` 等 interruptible syscall |
+| `Docs/决赛文档/problem/libctest-sigtimedwait-eintr.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加索引 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > /tmp/clocale-sigtimedwait-fix.log 2>&1
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=riscv64`，构建通过。
+- 第一次 `make run` 在沙箱内因 QEMU 需要写 `/var/tmp` 临时文件失败；按权限流程重新运行后通过。
+- `/tmp/clocale-sigtimedwait-fix.log` 输出 `Pass!`，并正常 `shutdown!`。
+- 过滤日志未再出现 `Interrupted system call`、`waitpid failed`、`FAIL` 或 panic。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与修复在当前默认 RISC-V 配置下完成。
+
+---
+
+## 2026-07-03: RISC-V Alpine 镜像 initfiles 与动态解释器路径兼容
+
+### 用户需求
+
+用户询问 RISC-V 运行 Alpine/vim 场景下，启动期在 `src/fs/kernel_fs_ops/initfiles.rs:61` 因 `libgcc_s.so.1` 写入 `/glibc/lib` 报 `ENOENT` panic，是否有必要将该链接库放入内核，并要求直接修改。
+
+### 分析
+
+AI 对比 `pre_tests/sdcard-rv.img` 与 `onsite-2026/alpine-linux-riscv64-ext4fs.img` 的根目录布局，确认前者包含 `/musl`、`/glibc`，后者是 Alpine 根文件系统，仅包含 `/bin`、`/lib`、`/usr` 等普通目录。`libgcc_s.so.1` 的内嵌和写入是为了补竞赛 glibc 测试镜像缺库，不是内核运行或 Alpine/musl 用户态的必要条件。
+
+继续运行验证后发现两个后续兼容问题：
+
+- `create_bin_files()` 无条件将 `/bin/sh` 等 applet 重建为 `/musl/busybox` symlink，破坏 Alpine 原生 `/bin/sh -> /bin/busybox`。
+- ELF loader 会把 Alpine `.interp` 中的 `/lib/ld-musl-riscv64.so.1` 映射到测试镜像路径 `/musl/lib/libc.so`，在 Alpine 镜像下需要回退到原始解释器路径。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | `flush_libgcc_s()` 只在 `/glibc/lib` 存在时写入内嵌 `libgcc_s.so.1`，移除启动期 `unwrap()` panic；`create_bin_files()` 只在 `/musl/busybox` 存在时创建测试镜像 applet 与 LTP wrapper |
+| `os/src/fs/kernel_fs_ops/open.rs` | 新增 `open_direct()`，用于内核按精确路径打开动态解释器，不经过动态库兼容映射 |
+| `os/src/fs/kernel_fs_ops/mod.rs` / `os/src/fs/mod.rs` | 导出 `open_direct()` |
+| `os/src/mm/memory_set/elf_loader.rs` | 动态解释器加载先尝试兼容映射路径，失败且不同于原 `.interp` 时用 `open_direct()` 回退打开原始路径；解释器加载失败返回 `Err` 而不是静默当作静态 ELF |
+| `Docs/决赛文档/problem/riscv-alpine-initfiles-dynamic-link.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加索引 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.3 简记 |
+
+### 验证
+
+已执行：
+
+```text
+make TARGET_ARCH=riscv64
+timeout 25s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-riscv-start.log 2>&1
+```
+
+结果：
+
+- RISC-V 构建通过。
+- QEMU 日志显示 `fs::init...create_init_files success!`，原 `initfiles.rs:61 libgcc_s ENOENT` panic 消失。
+- `/bin/sh` 不再返回 `exec /bin/sh failed: -2`。
+- 修复 `open_direct()` 与解释器加载失败错误传播后，25 秒 QEMU 日志中不再出现 `Panicked`、`Exception`、`FetchInstructionPageFault`、`SIGSEGV` 或 `exec /bin/sh failed`；QEMU 由 timeout 终止。
+
+### 后续交互入口调整
+
+用户进一步询问如何让内核启动后自动运行 shell、提升人机交互体验。AI 将 `initproc` 的 RISC-V 与 LoongArch 入口统一改为执行 `/bin/sh -i`，失败后回退 `/musl/busybox sh -i`，并在 `execve` 默认环境中补充 `TERM=xterm`、`HOME=/root`、`SHELL=/bin/sh`、`USER=root`。
+
+已执行：
+
+```text
+make TARGET_ARCH=riscv64
+timeout 25s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-shell-start.log 2>&1
+```
+
+结果：
+
+- RISC-V 构建通过。
+- QEMU 日志出现 `initproc launching interactive shell......` 和 `/ #` 提示符。
+- 日志中没有 `Panicked`、`Exception`、`FetchInstructionPageFault`、`SIGSEGV`、`shutdown` 或 fallback exec 失败信息。
+
+### 后续 stdin 回显调整
+
+用户确认当前内核已经可以读取输入并运行 `vi`，随后要求让 shell 显示用户输入。AI 检查后确认当前没有完整 TTY/termios 行规程，串口输入只通过 `Stdin::read()` 传给用户进程，QEMU 侧不会自动本地回显，因此 shell 能读取命令但输入字符不可见。
+
+修复为在 `Stdin::read()` 中加入基础控制台回显：普通字符通过 `console_putchar()` 显示，`\r`/`\n` 显示为 CRLF，Backspace/DEL 显示擦除序列并从本次读取缓冲中删除一个字符。
+
+修改文件：
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/stdio.rs` | stdin 读取路径增加 `echo_input()`，对普通字符、回车和退格执行基础串口回显 |
+| `Docs/决赛文档/problem/riscv-alpine-initfiles-dynamic-link.md` | 补充 stdin 回显分析和验证 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 补充 AI 使用记录 |
+
+验证：
+
+```text
+make TARGET_ARCH=riscv64
+{ sleep 5; printf 'echo SHELL_ECHO_OK\n'; sleep 2; } | timeout 20s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-shell-echo-delayed.log 2>&1
+```
+
+结果：
+
+- RISC-V 构建通过。
+- QEMU 日志显示 `/ # echo SHELL_ECHO_OK` 和 `SHELL_ECHO_OK`，说明 shell 输入字符可见且命令正常执行。
+- 一次无延迟管道输入曾显示 `/ # cho SHELL_ECHO_OK`，判断为命令在 shell 完全就绪前注入导致首字符被启动期读调用消耗；延迟到 prompt 后注入未复现该问题。
+
+### 后续 vi 双回显修复
+
+用户反馈 `vi` 运行时 `:` 模式输入一个字符会显示两个，其他功能正常。AI 判断根因是上一阶段为了 shell 可见性在 `Stdin::read()` 中做了强制回显，而 `vi` 在命令行模式中也会自行绘制输入字符，导致内核和用户程序各显示一次。
+
+Linux 的正确模型是 TTY/termios 控制回显：shell 默认 `ECHO` 开启，`vi` 进入 raw/cbreak 模式时通过 `tcsetattr()` 关闭 `ECHO` 和 `ICANON`。当前内核没有 stdio termios ioctl，因此 `vi` 关闭回显的请求无法生效。
+
+修复为给 stdio 文件补充最小 termios 支持：实现 `TCGETS`、`TCSETS`、`TCSETSW`、`TCSETSF`，保存 `c_lflag` 中的 `ECHO/ICANON` 状态；`Stdin::read()` 只在 `ECHO` 开启时回显，`ICANON` 关闭时按单个原始字符返回。同时实现 `TIOCGWINSZ` 返回 24x80，满足全屏程序查询窗口大小的基础需求。
+
+修改文件：
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/stdio.rs` | 增加最小 `RawTermios`/`RawWinSize`、`terminal_ioctl()`、ECHO/ICANON 状态控制，stdin 回显改为 termios 控制 |
+| `Docs/决赛文档/problem/riscv-alpine-initfiles-dynamic-link.md` | 补充 `vi` 双回显根因、修复和验证 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 补充 AI 使用记录 |
+
+验证：
+
+```text
+make TARGET_ARCH=riscv64
+{ sleep 5; printf 'echo ECHO_ON_OK\n'; printf 'stty -echo\n'; printf 'echo HIDDEN_INPUT_OK\n'; printf 'stty echo\n'; printf 'echo ECHO_RESTORED_OK\n'; sleep 2; } | timeout 25s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-termios-echo.log 2>&1
+git diff --check
+```
+
+结果：
+
+- RISC-V 构建通过。
+- QEMU 日志中 `stty -echo` 后，输入命令 `echo HIDDEN_INPUT_OK` 不再作为输入行回显，但命令输出 `HIDDEN_INPUT_OK` 正常出现。
+- `stty echo` 后，输入 `echo ECHO_RESTORED_OK` 的命令行和输出均正常显示。
+- `git diff --check` 无输出。

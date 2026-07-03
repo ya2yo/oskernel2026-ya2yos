@@ -827,7 +827,7 @@
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、进程退出 socket 清理修复、netperf full run 验证、文档完善
-- **描述**：用户说明 full run 最后的 `netperf-glibc` 报 `socket already listening on port 12865`，并要求不要依赖运行时改脚本或换端口。AI 对比历史可用版本和当前 `riscv.ans`，确认临时改到 `12866` 只是绕过，真实问题是进程退出清 fd 时监听 socket 释放过度依赖最后一个 `Arc<Socket>` drop；若仍有临时引用，`LISTEN_TABLE` 中的 12865 监听项会短暂残留。最终修复为 `FdTable::clear()` 在进程退出清理 fd 前主动对 socket 调用 `shutdown(Shutdown::Both)`，并恢复 `initproc` 使用原始 `netperf_testcode.sh`。`make` 通过，`riscv.ans` 显示 musl/glibc 两轮原始 netperf 均使用 12865 且十个子项全部 success，日志正常 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/netperf-glibc-port-reuse.md](./problem/netperf-glibc-port-reuse.md)。
+- **描述**：用户说明 full run 最后的 `netperf-glibc` 报 `socket already listening on port 12865`，并要求不要依赖运行时改脚本或换端口。AI 对比历史可用版本和当前 `riscv.ans`，确认临时改到 `12866` 只是绕过，真实问题是进程退出清 fd 时监听 socket 释放过度依赖最后一个 `Arc<Socket>` drop；若仍有临时引用，`LISTEN_TABLE` 中的 12865 监听项会短暂残留。最终修复为 `FdTable::clear()` 在进程退出清理 fd 前主动对 socket 调用 `shutdown(Shutdown::Both)`，并恢复 `initproc` 使用原始 `netperf_testcode.sh`。`make` 通过，`riscv.ans` 显示 musl/glibc 两轮原始 netperf 均使用 12865 且十个子项全部 success，日志正常 `shutdown!`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/netperf-glibc-port-reuse.md](../决赛文档/problem/netperf-glibc-port-reuse.md)。
 - **关联 commit**：待提交
 
 #### open07 O_NOFOLLOW 与符号链接路径解析修复（6.30）
@@ -856,42 +856,4 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、LTP getdents 测例源码分析、目录流 offset 语义修复、文档完善
 - **描述**：用户要求继续分析 `log.ans`/`ana.ans` 并先读 `getdents01` 测例源码。AI 确认该用例要求 `getdents/getdents64` 返回 `.`, `..`, `dir`, `file`, `symlink`；结合日志中 `read_dentry finish` 后 syscall 仍返回 `EINVAL`，定位到 `sys_getdents64()` 成功读取目录项后用普通文件 `lseek(SEEK_SET)` 保存目录流 `d_off`。由于 `d_off` 是目录 stream cookie，不是普通文件 byte offset，普通 `lseek` 校验会错误返回 `EINVAL`。修复为增加 `OSFile::set_offset()` 并在 `getdents64` 成功后直接更新目录 fd offset，同时收紧目录 fd 检查、首条记录缓冲区检查和 `read_dir_from()` 目录/对齐处理。`make` 通过，维护者最新 `log.ans` 显示 `getdents01` Summary 为 `passed 2 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/getdents01-directory-offset.md](./problem/getdents01-directory-offset.md)。
-- **关联 commit**：待提交
-
-#### RISC-V Alpine initfiles 与动态链接路径兼容（7.3）
-
-- **工具/模型**：Codex (GPT-5)
-- **场景**：Bug 分析与定位、RISC-V Alpine 镜像启动兼容、动态解释器路径回退、文档完善
-- **描述**：用户在尝试运行当前内核上的 vim/shell 时遇到 `initfiles.rs:61` 对 `/glibc/lib/libgcc_s.so.1` 的 `ENOENT` panic，并询问 RISC-V 场景是否有必要把该链接库放入内核。AI 确认该库只用于竞赛 glibc 测试镜像，不是 Alpine/musl 根文件系统必需；修复为仅在 `/glibc/lib` 存在时写入，同时仅在 `/musl/busybox` 存在时创建测试镜像 `/bin` applet 和 LTP wrapper，避免覆盖 Alpine 原生 `/bin/sh`。后续根据 `log.ans` 中 `FetchInstructionPageFault bad addr = 0xfffffffffffffffe`，继续修复动态解释器回退仍被通用 `open()` 二次映射的问题，新增 `open_direct()` 并让 ELF loader 区分“无解释器”和“解释器加载失败”。`make TARGET_ARCH=riscv64` 通过，25 秒 QEMU 日志未再出现原 ENOENT panic、`exec /bin/sh failed` 或取指 fault。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/riscv-alpine-initfiles-dynamic-link.md](./problem/riscv-alpine-initfiles-dynamic-link.md)。
-- **补充**：随后用户要求提升启动后人机交互体验。AI 将 `initproc` 改为默认执行 `/bin/sh -i`，失败时回退 `/musl/busybox sh -i`，并补充 `TERM/HOME/SHELL/USER` 默认环境变量。`make TARGET_ARCH=riscv64` 通过，25 秒 QEMU 日志出现 `/ #` 提示符。
-- **补充**：用户确认输入可读且 `vi` 可运行后，要求 shell 显示用户输入。AI 在 `Stdin::read()` 中加入基础控制台回显，覆盖普通字符、回车和退格；`make TARGET_ARCH=riscv64` 通过，延迟到 prompt 后输入 `echo SHELL_ECHO_OK` 的 QEMU 日志显示命令本身和执行结果。
-- **补充**：用户反馈 `vi` 的 `:` 模式输入一个字符显示两个。AI 将 stdio 强制回显改为最小 termios 模型，支持 `TCGETS/TCSETS*`、`TIOCGWINSZ`，并用 `ECHO/ICANON` 控制 stdin 回显和原始字符读取。`make TARGET_ARCH=riscv64` 通过，QEMU 中 `stty -echo` 后输入命令不再回显，`stty echo` 后恢复。
-- **关联 commit**：待提交
-
-#### iperf 5001 端口复用、daemon 残留与 glibc TCGETS 栈破坏修复（7.3）
-
-- **工具/模型**：Codex (GPT-5)
-- **场景**：Bug 分析与定位、网络 daemon 生命周期清理、termios ioctl 栈破坏修复、回归验证、文档完善
-- **描述**：用户要求根据最新 `log.ans` 继续修复 iperf，并强调测例入口必须使用标准 `run_testsuit(root, script)`。AI 确认 `iperf-musl` 后 `iperf-glibc` 固定复用 5001；`iperf3 -s -D` 在脚本退出后被 init 收养并继续监听，导致 glibc server `listen(5001)` 失败，而 glibc client 连接到上一轮 musl daemon 后形成 false positive success。最终保持 iperf 调用走标准 `run_testsuit()`，在通用 testsuit 收尾阶段用 `kill_processes(-1, SIGKILL)` 清理并 `wait()` 回收残留后台子进程；同时保留 fd close/exit 主动 shutdown socket 与 glibc `TCGETS` old termios 36 字节布局修复。`make` 通过，`/tmp/iperf-generic-cleanup.log` 中 musl/glibc 两轮 iperf 六项均 success，未再出现 `socket already listening on port 5001`。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/iperf-port-reuse-termios-stack-smash.md](./problem/iperf-port-reuse-termios-stack-smash.md)。
-- **关联 commit**：待提交
-
-#### netperf fd table 重构后 socket 生命周期回归修复（7.3）
-
-- **工具/模型**：Codex (GPT-5)
-- **场景**：Bug 分析与定位、fd table/socket 生命周期语义修复、netperf 回归验证、文档完善
-- **描述**：用户说明 `9fa9699d2580a7de85e41baf2e49c3e51000d6f0` 之后内核大规模重构导致许多旧测试回归，要求先修复 `netperf`，并在文档中突出本次修改。AI 根据详细 `log.ans` 确认控制连接已 `connect/accept` 成功，但 `netserver` 父进程 fork 后关闭 accepted fd 时，重构后的 `FdTable::close()` 只检查同表 alias，误把子进程继承的同一 `Arc<Socket>` 提前 `shutdown()`，导致客户端读到 0 字节响应。初版修复保护了 fork 继承连接，但又削弱进程退出释放 listener 的旧修复，使 `netperf-glibc` 回退为 12865 端口残留。最终将普通 `close(fd)` 与进程退出 `FdTable::clear()` 的 socket 语义拆开：前者仅在最后一个 `Arc` 时 shutdown，后者仍主动 shutdown 释放监听端口；同时补齐 `recvmsg` iovec 回拷和 `accept4` peer address 写回语义。`make` 通过，`timeout 300s make run > log.ans 2>&1` 中 musl/glibc 两轮 netperf 十项均 success。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/netperf-glibc-port-reuse.md](./problem/netperf-glibc-port-reuse.md)。
-- **关联 commit**：待提交
-
-#### cyclictest STRESS_P1 socketpair fd 分配回归修复（7.3）
-
-- **工具/模型**：Codex (GPT-5)
-- **场景**：Bug 分析与定位、fd table 重构后 socketpair 语义修复、AF_UNIX 阻塞等待补齐、cyclictest 回归验证、文档完善
-- **描述**：用户要求分析新的 `log.ans`，其中 `cyclictest STRESS_P1` 出现大量 `CLIENT: ready write (error: Broken pipe)`。AI 确认错误来自 STRESS 模式后台 `hackbench` 的 worker ready 同步通道，而不是 cyclictest 定时器本身。根因是 fd table 重构后 `alloc_fd()` 不再自动占位，`sys_socketpair()` 连续两次分配 fd 且中间未 `set()`，导致两个 socketpair 端点复用同一个 fd，第二端覆盖第一端。修复为分配 `fd1` 后立即安装，再分配 `fd2`，并补齐失败清理；同时为 AF_UNIX socket 增加阻塞 `recv/accept` 的 poll/waker 语义。`make` 通过，`timeout 300s make run > log.ans 2>&1` 中 musl/glibc cyclictest 四项均 success，未再出现 ready 阶段 Broken pipe。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/cyclictest-socketpair-fd-allocation.md](./problem/cyclictest-socketpair-fd-allocation.md)。
-- **关联 commit**：待提交
-
-#### libctest sigtimedwait 残留 interrupted 修复（7.3）
-
-- **工具/模型**：Codex (GPT-5)
-- **场景**：Bug 分析与定位、`sigtimedwait/wait4` 信号交接语义修复、libctest clocale 回归验证、文档完善
-- **描述**：用户要求分析 `clocale.ans`，其中 libctest 包装器在所有测例上报 `Interrupted system call`。AI 确认 `runtest.exe` 先通过 `sigtimedwait(SIGCHLD)` 成功消费子进程退出信号，随后 `wait4(pid)` 却被 `interruptible()` 看到残留内部 `interrupted` 标志而误返回 `EINTR`。修复为 `sys_rt_sigtimedwait()` 在成功匹配并消费 pending signal 后调用 `clear_interrupt_waiter()`，清理本次内部唤醒状态，不再污染后续 `wait4/select` 等 syscall。`make` 通过，`timeout 120s make run > /tmp/clocale-sigtimedwait-fix.log 2>&1` 中 `clocale_mbfuncs` 输出 `Pass!`。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/libctest-sigtimedwait-eintr.md](./problem/libctest-sigtimedwait-eintr.md)。
 - **关联 commit**：待提交
