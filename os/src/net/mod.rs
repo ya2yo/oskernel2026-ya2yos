@@ -46,7 +46,7 @@ use crate::utils::{SysErrNo, SysResult};
 use alloc::{borrow::ToOwned, boxed::Box};
 use linux_raw_sys::net::{__kernel_sockaddr_storage, AF_INET, AF_INET6};
 use log::{info, warn};
-use smoltcp::wire::{EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr};
+use smoltcp::wire::{EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr};
 use spin::Mutex;
 use spin::{Lazy, Once};
 pub use unix::*;
@@ -92,6 +92,9 @@ fn check_local_bind_address(addr: IpAddress) -> SysResult {
             (IpAddress::Ipv4(local), IpAddress::Ipv4(bind)) if local.is_loopback() => {
                 bind.is_loopback() && cidr.contains_addr(&addr)
             }
+            (IpAddress::Ipv4(local), IpAddress::Ipv6(bind)) if local.is_loopback() => {
+                bind.is_loopback()
+            }
             _ => false,
         }
     });
@@ -121,11 +124,18 @@ pub fn init_network(mut net_devs: DeviceContainer<NetDeviceImpl>) {
     let lo_dev = router.add_device(Box::new(LoopbackDevice::new()));
     // 配置环回loopback接口
     let lo_ip = Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8);
+    let lo_ip6 = Ipv6Cidr::new(Ipv6Address::LOCALHOST, 128);
     router.add_rule(Rule::new(
         lo_ip.into(),
         None,
         lo_dev,
         lo_ip.address().into(),
+    ));
+    router.add_rule(Rule::new(
+        lo_ip6.into(),
+        None,
+        lo_dev,
+        lo_ip6.address().into(),
     ));
     // 配置以太网物理接口
     let eth0_ip = if let Some(dev) = net_devs.take_one() {
@@ -162,6 +172,7 @@ pub fn init_network(mut net_devs: DeviceContainer<NetDeviceImpl>) {
     }
     // 构造并启动服务
     let mut service = Service::new(router);
+    service.iface.set_any_ip(true);
     service.iface.update_ip_addrs(|ip_addrs| {
         if let Some(eth0_ip) = eth0_ip {
             ip_addrs.push(eth0_ip.into()).unwrap();

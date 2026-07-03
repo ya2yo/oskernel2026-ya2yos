@@ -13,7 +13,7 @@ use crate::{
 use alloc::sync::Arc;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
 use linux_raw_sys::net::{
-    AF_INET, AF_UNIX, AF_VSOCK, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_SEQPACKET,
+    AF_INET, AF_INET6, AF_UNIX, AF_VSOCK, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_SEQPACKET,
     SOCK_STREAM,
 };
 use log::{debug, warn};
@@ -25,13 +25,13 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
     let ty = raw_ty & 0xFF;
     let task = current_task().unwrap();
     let socket_inner = match (domain, ty) {
-        (AF_INET, SOCK_STREAM) => {
-            if proto != 0 && proto != IPPROTO_TCP as _ {
+        (AF_INET | AF_INET6, SOCK_STREAM) => {
+            if proto != 0 && proto != IPPROTO_TCP && proto != IPPROTO_SCTP {
                 return Err(SysErrNo::EPROTONOSUPPORT);
             }
             SocketInner::Tcp(TcpSocket::new())
         }
-        (AF_INET, SOCK_DGRAM) => {
+        (AF_INET | AF_INET6, SOCK_DGRAM) => {
             if proto != 0 && proto != IPPROTO_UDP as _ {
                 return Err(SysErrNo::EPROTONOSUPPORT);
             }
@@ -55,7 +55,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
             }
             SocketInner::Unix(UnixSocket::new_seqpacket())
         }
-        (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
+        (AF_INET, _) | (AF_INET6, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
             return Err(SysErrNo::ESOCKTNOSUPPORT);
         }

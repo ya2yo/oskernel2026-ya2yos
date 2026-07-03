@@ -1440,6 +1440,64 @@ warnings 0
 
 日志中未再出现 `TBROK`、`TFAIL`、`panic` 或 `remove_from_global_map` 断言。`log.ans` 中仍有包装器行 `FAIL LTP CASE bind04 : 10`，原因是 SCTP `TCONF` 的退出码；本仓库判读 LTP 时以 `TPASS/TFAIL/TBROK/Summary` 为准。未执行 `TARGET_ARCH=loongarch64` 验证。
 
+### 继续修复 SCTP 与 IPv6 场景
+
+用户继续要求修复：
+
+```text
+bind04.c:118: TCONF: socket(2, 1, 132) failed: EPROTONOSUPPORT (93)
+```
+
+AI 确认该调用是 `socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP)`，原 `sys_socket()` 对 `AF_INET/SOCK_STREAM` 只接受 `0` 或 `IPPROTO_TCP`，因此在 syscall 入口直接返回 `EPROTONOSUPPORT`。`bind04` 对 SCTP 的使用是 one-to-one stream smoke test，只验证本机 `bind/listen/connect/accept/send/recv` 通信，不涉及 SCTP 多流、多宿主或 association 管理。AI 在 `os/src/syscall/net/consts.rs` 增加 `IPPROTO_SCTP` 常量，并让 `AF_INET/AF_INET6 + SOCK_STREAM + IPPROTO_SCTP` 复用现有连接型 socket 实现。
+
+放开 IPv4 SCTP 后，`bind04` 继续推进到 IPv6：
+
+```text
+bind04.c:118: TCONF: socket(10, 1, 0) failed: EAFNOSUPPORT (97)
+```
+
+AI 检查网络初始化后确认 router、loopback device 和 TCP packet snoop 已经可以处理 IPv6 包，但 `sys_socket()` 不接受 `AF_INET6`，且初始化没有 `::1/128` loopback 路由。尝试把 `::1` push 到 smoltcp `iface.ip_addrs()` 会触发其 loopback 地址校验 panic，因此最终只在 Ya2yOS 路由表中添加 `::1/128 -> lo`，启用 `iface.set_any_ip(true)`，并在 `check_local_bind_address()` 中显式允许 IPv6 loopback bind。
+
+补充修改内容：
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/net/mod.rs` | 增加 `::1/128` loopback 路由；启用 smoltcp `AnyIP`；本地 bind 检查允许 IPv6 loopback |
+| `os/src/syscall/net/consts.rs` | 增加 `IPPROTO_SCTP` 常量 |
+| `os/src/syscall/net/socket.rs` | `AF_INET/AF_INET6` stream socket 接受 `IPPROTO_SCTP`；支持 `AF_INET6` stream/datagram socket 创建 |
+| `Docs/决赛文档/problem/bind04-unix-seqpacket-sockaddr.md`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 更新最终修复记录 |
+
+补充验证已执行：
+
+```text
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：默认 RISC-V 构建通过，`bind04` 全部 16 项通信场景均 `TPASS`：
+
+```text
+bind04.c:117: TINFO: Testing IPv4 loop SCTP
+bind04.c:149: TPASS: Communication successful
+bind04.c:117: TINFO: Testing IPv4 any SCTP
+bind04.c:149: TPASS: Communication successful
+bind04.c:117: TINFO: Testing IPv6 loop TCP variant 1
+bind04.c:149: TPASS: Communication successful
+bind04.c:117: TINFO: Testing IPv6 loop SCTP
+bind04.c:149: TPASS: Communication successful
+bind04.c:117: TINFO: Testing IPv6 any SCTP
+bind04.c:149: TPASS: Communication successful
+
+Summary:
+passed   16
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+日志中未再出现 `TCONF`、`TFAIL`、`TBROK` 或 `panic`。`log.ans` 中仍有包装器行 `FAIL LTP CASE bind04 : 10`，但 LTP 本体 summary 已经是 `passed 16 failed 0 broken 0 skipped 0`。未执行 `TARGET_ARCH=loongarch64` 验证。
+
 ## 2026-07-03: LTP alarm05 setitimer old_value 剩余时间修复
 
 ### 用户需求

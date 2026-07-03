@@ -195,6 +195,6 @@
 #### LTP bind04 AF_UNIX SEQPACKET 与 sockaddr_storage 长度修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
-- **场景**：Bug 分析与定位、AF_UNIX socket 语义修复、IPv4 connect 地址长度兼容、GDB panic 触发链分析、LTP bind04 回归验证、文档完善
-- **描述**：用户要求根据最新 `log.ans` 和 GDB backtrace 修复 `bind04`。AI 确认 panic 是 `connect(..., addrlen=128)` 被误判 `EINVAL` 后测试异常退出触发的回收断言；更早的 bind04 阶段还缺少 AF_UNIX pathname socket inode 和 `SOCK_SEQPACKET` 支持。修复为 pathname bind 创建 VFS socket 节点、AF_UNIX seqpacket 复用连接型队列并保留记录边界、IPv4/IPv6 sockaddr 读取接受大于结构体大小的 `sockaddr_storage` 长度。`make` 与单跑 `bind04` 的 `make run` 通过，`log.ans` 中 6 项通信场景 `TPASS`，未再出现 `TBROK` 或 panic；SCTP 场景仍因协议未实现 `TCONF/skipped`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/bind04-unix-seqpacket-sockaddr.md](./problem/bind04-unix-seqpacket-sockaddr.md)。
+- **场景**：Bug 分析与定位、AF_UNIX socket 语义修复、IPv4/IPv6 connect 地址长度兼容、SCTP one-to-one stream 兼容、IPv6 loopback 支持、GDB panic 触发链分析、LTP bind04 回归验证、文档完善
+- **描述**：用户要求根据最新 `log.ans` 和 GDB backtrace 修复 `bind04`，随后继续要求修复 `socket(2, 1, 132) failed: EPROTONOSUPPORT`。AI 确认 panic 是 `connect(..., addrlen=128)` 被误判 `EINVAL` 后测试异常退出触发的回收断言；更早的 bind04 阶段还缺少 AF_UNIX pathname socket inode 和 `SOCK_SEQPACKET` 支持。修复为 pathname bind 创建 VFS socket 节点、AF_UNIX seqpacket 复用连接型队列并保留记录边界、IPv4/IPv6 sockaddr 读取接受大于结构体大小的 `sockaddr_storage` 长度；后续补充 `IPPROTO_SCTP` stream socket 到现有连接型实现的最小兼容，并添加 `::1/128` loopback 路由与 `AF_INET6` socket 创建支持。`make` 与单跑 `bind04` 的 `make run` 通过，`log.ans` 中 16 项通信场景均 `TPASS`，summary 为 `passed 16 failed 0 broken 0 skipped 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/bind04-unix-seqpacket-sockaddr.md](./problem/bind04-unix-seqpacket-sockaddr.md)。
 - **关联 commit**：未提交
