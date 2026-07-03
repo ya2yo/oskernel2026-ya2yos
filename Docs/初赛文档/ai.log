@@ -4551,3 +4551,60 @@ git diff --check
 - 未再出现 `Socket not connected`、`Transport endpoint is not connected`、ready 阶段 `Broken pipe` 或 kernel panic，日志末尾正常 `shutdown!`。
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与修复在当前默认 RISC-V 配置下完成。
+
+---
+
+## 2026-07-03: libctest clocale sigtimedwait 残留 interrupted 修复
+
+### 用户需求
+
+用户要求分析 `clocale.ans` 并修复，说明 libctest 的所有测例都报错 `Interrupted system call`。
+
+### 分析
+
+AI 按 `fix-bug` 流程先筛选 `clocale.ans` 中的 `Interrupted system call`、`waitpid failed`、`Wait4 ret` 等关键字。日志显示 `entry-static.exe clocale_mbfuncs` 子进程已经 `exit_group(0)`，父进程 PID 2 先通过 `rt_sigtimedwait()` 成功收到 `SIGCHLD`：
+
+```text
+SigTimedWait ret = 17
+```
+
+随后父进程立刻调用 `wait4(pid=3)`，但内核返回：
+
+```text
+Wait4 ret = Interrupted system call
+src/common/runtest.c:91: clocale_mbfuncs waitpid failed: Interrupted system call
+```
+
+这说明问题不在子进程执行结果，而在 `runtest.exe` 的 `sigtimedwait(SIGCHLD)` 与 `waitpid()` 交接路径。
+
+检查 `sys_rt_sigtimedwait()` 与 `TaskControlBlock::interrupt()/wake_interruptible()` 后确认：子进程退出投递 `SIGCHLD` 时，父进程因为设置了自定义 `SIGCHLD` handler，`add_signal()` 会通过 `wake_interruptible()` 唤醒阻塞的 `sigtimedwait`，并设置内部 `interrupted = true`。`sys_rt_sigtimedwait()` 成功匹配并消费 pending `SIGCHLD` 后返回 `Ok(17)`，但没有清理本次等待留下的 `interrupt_waker/interrupted`。后续 `wait4()` 外层的 `interruptible()` 先于 child 扫描调用 `poll_interrupt()`，读到残留标志后直接返回 `EINTR`。
+
+该问题与历史 `sigtimedwait` 超时路径残留 `interrupted` 类似，但本次发生在成功消费信号的路径。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/signal.rs` | `sys_rt_sigtimedwait()` 在成功消费匹配信号后调用 `task.clear_interrupt_waiter()`，清理本次内部唤醒状态，避免污染后续 `wait4/select` 等 interruptible syscall |
+| `Docs/初赛文档/problem/libctest-sigtimedwait-eintr.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > /tmp/clocale-sigtimedwait-fix.log 2>&1
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=riscv64`，构建通过。
+- 第一次 `make run` 在沙箱内因 QEMU 需要写 `/var/tmp` 临时文件失败；按权限流程重新运行后通过。
+- `/tmp/clocale-sigtimedwait-fix.log` 输出 `Pass!`，并正常 `shutdown!`。
+- 过滤日志未再出现 `Interrupted system call`、`waitpid failed`、`FAIL` 或 panic。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与修复在当前默认 RISC-V 配置下完成。

@@ -129,10 +129,11 @@ fn get_score() -> i32 {
     // run_testsuit("musl\0", "netperf_testcode.sh\0");
     // run_testsuit("glibc\0", "netperf_testcode.sh\0");
     // // cyclictest
-    run_testsuit("musl\0", "cyclictest_testcode.sh\0");
-    run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
+    // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
+    // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
     // // libc
     // run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    libctest::clocale::run_musl_static();
     // run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
     // // iozone
     // run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic

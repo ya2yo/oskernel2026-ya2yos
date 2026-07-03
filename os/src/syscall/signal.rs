@@ -268,6 +268,11 @@ pub fn sys_rt_sigtimedwait(
             let signal = SigSet::from_sig(signo);
             // 从 pending 集合中消耗该信号
             task_inner.sig_pending.remove(signal);
+            // 本次 sigtimedwait 可能是被 add_signal() 通过
+            // wake_interruptible() 唤醒的；成功消费信号后必须清掉内部
+            // interrupted 标志，否则后续 wait4/select 等 interruptible
+            // syscall 会误返回 EINTR。
+            task.clear_interrupt_waiter();
             // 填充 siginfo
             if info_ptr as usize != 0 {
                 let sig_info = SigInfo::new(

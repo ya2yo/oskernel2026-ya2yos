@@ -888,3 +888,10 @@
 - **场景**：Bug 分析与定位、fd table 重构后 socketpair 语义修复、AF_UNIX 阻塞等待补齐、cyclictest 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans`，其中 `cyclictest STRESS_P1` 出现大量 `CLIENT: ready write (error: Broken pipe)`。AI 确认错误来自 STRESS 模式后台 `hackbench` 的 worker ready 同步通道，而不是 cyclictest 定时器本身。根因是 fd table 重构后 `alloc_fd()` 不再自动占位，`sys_socketpair()` 连续两次分配 fd 且中间未 `set()`，导致两个 socketpair 端点复用同一个 fd，第二端覆盖第一端。修复为分配 `fd1` 后立即安装，再分配 `fd2`，并补齐失败清理；同时为 AF_UNIX socket 增加阻塞 `recv/accept` 的 poll/waker 语义。`make` 通过，`timeout 300s make run > log.ans 2>&1` 中 musl/glibc cyclictest 四项均 success，未再出现 ready 阶段 Broken pipe。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/cyclictest-socketpair-fd-allocation.md](./problem/cyclictest-socketpair-fd-allocation.md)。
 - **关联 commit**：待提交
+
+#### libctest sigtimedwait 残留 interrupted 修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`sigtimedwait/wait4` 信号交接语义修复、libctest clocale 回归验证、文档完善
+- **描述**：用户要求分析 `clocale.ans`，其中 libctest 包装器在所有测例上报 `Interrupted system call`。AI 确认 `runtest.exe` 先通过 `sigtimedwait(SIGCHLD)` 成功消费子进程退出信号，随后 `wait4(pid)` 却被 `interruptible()` 看到残留内部 `interrupted` 标志而误返回 `EINTR`。修复为 `sys_rt_sigtimedwait()` 在成功匹配并消费 pending signal 后调用 `clear_interrupt_waiter()`，清理本次内部唤醒状态，不再污染后续 `wait4/select` 等 syscall。`make` 通过，`timeout 120s make run > /tmp/clocale-sigtimedwait-fix.log 2>&1` 中 `clocale_mbfuncs` 输出 `Pass!`。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/libctest-sigtimedwait-eintr.md](./problem/libctest-sigtimedwait-eintr.md)。
+- **关联 commit**：待提交

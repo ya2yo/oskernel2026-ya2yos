@@ -31,6 +31,7 @@
 - [进程退出托孤 exit_and_reparent](./exit-reparent.md)
 - [线程信号栈检查错误与 futex 退出死锁](./thread-signal-stack-futex-deadlock.md)
 - [pthread_robust_detach：地址转换重构 + exit_signal 覆盖 + interrupted 残留](./pthread-robust-detach.md)
+- [libctest: sigtimedwait 后 wait4 误返回 EINTR](./libctest-sigtimedwait-eintr.md)
 - [getrusage03: ru_maxrss / RUSAGE_CHILDREN / proc status](./getrusage03-rusage-proc-status.md)
 - [getrlimit03: prlimit64 与 getrlimit 返回不一致](./getrlimit03-prlimit-defaults.md)
 
