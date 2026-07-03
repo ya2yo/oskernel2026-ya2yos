@@ -67,6 +67,7 @@
 - [LTP copy_file_range02 错误路径语义](./copy-file-range02-error-semantics.md)
 - [LTP copy_file_range03 时间戳更新](./copy-file-range03-timestamp.md)
 - [preadv2/pwritev2 系统调用实现](./preadv2-pwritev2-syscalls.md)
+- [RISC-V Alpine initfiles 与动态链接路径兼容](./riscv-alpine-initfiles-dynamic-link.md)
 - [basic umount 相对挂载点路径不匹配](./basic-umount-relative-mountpoint.md)
 - [LTP access04 mount / loop 设备修复](./access04-ltp-musl.md)
 - [龙芯架构 iozone-glibc 动态链接与缺页处理修复](./iozone-glibc.md)

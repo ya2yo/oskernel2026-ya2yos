@@ -45,25 +45,30 @@ fn flush_libgcc_s() {
         return;
     }
 
-    // 确保 /glibc/lib 目录存在
-    open(
+    // libgcc_s 只用于竞赛 glibc 测试镜像；Alpine 等根文件系统没有 /glibc。
+    // 若父目录不存在，说明当前镜像不需要这个补丁，直接跳过。
+    let glibc_lib = open(
         "/glibc/lib",
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )
-    .ok();
+        OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY,
+        0,
+    );
+    if glibc_lib.is_err() {
+        return;
+    }
 
-    let file = open(
+    let Ok(file) = open(
         "/glibc/lib/libgcc_s.so.1",
-        OpenFlags::O_CREATE,
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
         DEFAULT_FILE_MODE,
-    )
-    .unwrap()
-    .file()
-    .unwrap();
+    ) else {
+        return;
+    };
+    let Ok(file) = file.file() else {
+        return;
+    };
     let mut v = Vec::new();
     v.push(unsafe { core::slice::from_raw_parts_mut(libgcc_s_start as *mut u8, size) });
-    file.write(UserBuffer::new(v));
+    let _ = file.write(UserBuffer::new(v));
 }
 
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
@@ -376,7 +381,17 @@ fn create_ltp_utility_wrappers() -> SysResult {
     Ok(())
 }
 
+fn has_musl_busybox() -> bool {
+    open("/musl/busybox", OpenFlags::O_RDONLY, 0).is_ok()
+}
+
 fn create_bin_files() -> SysResult {
+    // 这些 wrapper 是给竞赛测试镜像补 `/musl/busybox` applet 的。
+    // Alpine 根文件系统已有 `/bin/busybox` 与 `/bin/sh`，不能覆盖成 `/musl/busybox`。
+    if !has_musl_busybox() {
+        return Ok(());
+    }
+
     create_busybox_links()?;
     create_common_bin_wrappers()?;
     create_network_test_wrappers()?;

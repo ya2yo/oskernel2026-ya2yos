@@ -69,8 +69,8 @@ fn test_cgroup_fj_function_cpuset_via_script() {
 #[cfg(target_arch = "loongarch64")]
 fn main() -> i32 {
     println!("initproc running......");
-    // run_testsuit("musl\0", "busybox_testcode.sh\0");
-    get_score();
+    // get_score();
+    let args = ["/bin/sh\0"];
     shutdown();
     0
 }
@@ -79,7 +79,10 @@ fn main() -> i32 {
 #[cfg(target_arch = "riscv64")]
 fn main() -> i32 {
     println!("initproc running......");
-    get_score();
+    // get_score();
+    let args = ["/bin/sh\0"];
+    let ret = execve(&args);
+    println!("exec /bin/sh failed: {}", ret);
     shutdown();
     0
 }

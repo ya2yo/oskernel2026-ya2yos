@@ -33,15 +33,21 @@ impl MemorySetInner {
             let mut interp = String::from_utf8(section.raw_data(&elf).to_vec()).unwrap();
             interp = interp.strip_suffix("\0").unwrap_or(&interp).to_string();
 
-            let interp = map_dynamic_link_file_directly_map(&interp);
-
-            let interp_inode = open(&interp, OpenFlags::O_RDONLY, NONE_MODE)
-                .unwrap()
-                .file()
-                .ok();
-            let interp_file = interp_inode.unwrap();
-            let interp_elf_data = interp_file.inode.read_all().unwrap();
-            let interp_elf = xmas_elf::ElfFile::new(&interp_elf_data).unwrap();
+            let mapped_interp = map_dynamic_link_file_directly_map(&interp);
+            let interp_file = open(mapped_interp, OpenFlags::O_RDONLY, NONE_MODE)
+                .ok()
+                .and_then(|file| file.file().ok())
+                .or_else(|| {
+                    if mapped_interp == interp {
+                        None
+                    } else {
+                        open(&interp, OpenFlags::O_RDONLY, NONE_MODE)
+                            .ok()
+                            .and_then(|file| file.file().ok())
+                    }
+                })?;
+            let interp_elf_data = interp_file.inode.read_all().ok()?;
+            let interp_elf = xmas_elf::ElfFile::new(&interp_elf_data).ok()?;
             self.map_elf(&interp_elf, DL_INTERP_OFFSET.into()).ok()?;
 
             Some(interp_elf.header.pt2.entry_point() as usize + DL_INTERP_OFFSET)

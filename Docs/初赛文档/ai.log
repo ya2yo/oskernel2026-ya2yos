@@ -34,6 +34,47 @@
 
 ---
 
+## 2026-07-03: RISC-V Alpine 镜像 initfiles 与动态解释器路径兼容
+
+### 用户需求
+
+用户询问 RISC-V 运行 Alpine/vim 场景下，启动期在 `src/fs/kernel_fs_ops/initfiles.rs:61` 因 `libgcc_s.so.1` 写入 `/glibc/lib` 报 `ENOENT` panic，是否有必要将该链接库放入内核，并要求直接修改。
+
+### 分析
+
+AI 对比 `pre_tests/sdcard-rv.img` 与 `onsite-2026/alpine-linux-riscv64-ext4fs.img` 的根目录布局，确认前者包含 `/musl`、`/glibc`，后者是 Alpine 根文件系统，仅包含 `/bin`、`/lib`、`/usr` 等普通目录。`libgcc_s.so.1` 的内嵌和写入是为了补竞赛 glibc 测试镜像缺库，不是内核运行或 Alpine/musl 用户态的必要条件。
+
+继续运行验证后发现两个后续兼容问题：
+
+- `create_bin_files()` 无条件将 `/bin/sh` 等 applet 重建为 `/musl/busybox` symlink，破坏 Alpine 原生 `/bin/sh -> /bin/busybox`。
+- ELF loader 会把 Alpine `.interp` 中的 `/lib/ld-musl-riscv64.so.1` 映射到测试镜像路径 `/musl/lib/libc.so`，在 Alpine 镜像下需要回退到原始解释器路径。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | `flush_libgcc_s()` 只在 `/glibc/lib` 存在时写入内嵌 `libgcc_s.so.1`，移除启动期 `unwrap()` panic；`create_bin_files()` 只在 `/musl/busybox` 存在时创建测试镜像 applet 与 LTP wrapper |
+| `os/src/mm/memory_set/elf_loader.rs` | 动态解释器加载先尝试兼容映射路径，失败且不同于原 `.interp` 时回退打开原始路径 |
+| `Docs/初赛文档/problem/riscv-alpine-initfiles-dynamic-link.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.3 简记 |
+
+### 验证
+
+已执行：
+
+```text
+make TARGET_ARCH=riscv64
+timeout 25s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-riscv-start.log 2>&1
+```
+
+结果：
+
+- RISC-V 构建通过。
+- QEMU 日志显示 `fs::init...create_init_files success!`，原 `initfiles.rs:61 libgcc_s ENOENT` panic 消失。
+- `/bin/sh` 不再返回 `exec /bin/sh failed: -2`。
+- Alpine `/bin/sh` 后续仍触发 `FetchInstructionPageFault bad addr = 0xfffffffffffffffe`，说明后续还需要继续分析动态程序用户态入口、auxv 或初始栈问题。
+
 ## 2026-05-27: 内核堆碎片化 — 全量测例 OOM
 
 ### 问题发现

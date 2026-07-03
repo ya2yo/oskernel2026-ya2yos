@@ -857,3 +857,10 @@
 - **场景**：Bug 分析与定位、LTP getdents 测例源码分析、目录流 offset 语义修复、文档完善
 - **描述**：用户要求继续分析 `log.ans`/`ana.ans` 并先读 `getdents01` 测例源码。AI 确认该用例要求 `getdents/getdents64` 返回 `.`, `..`, `dir`, `file`, `symlink`；结合日志中 `read_dentry finish` 后 syscall 仍返回 `EINVAL`，定位到 `sys_getdents64()` 成功读取目录项后用普通文件 `lseek(SEEK_SET)` 保存目录流 `d_off`。由于 `d_off` 是目录 stream cookie，不是普通文件 byte offset，普通 `lseek` 校验会错误返回 `EINVAL`。修复为增加 `OSFile::set_offset()` 并在 `getdents64` 成功后直接更新目录 fd offset，同时收紧目录 fd 检查、首条记录缓冲区检查和 `read_dir_from()` 目录/对齐处理。`make` 通过，维护者最新 `log.ans` 显示 `getdents01` Summary 为 `passed 2 failed 0 broken 0`。详见 `Docs/初赛文档/ai.log` 2026-06-30 条目与 [problem/getdents01-directory-offset.md](./problem/getdents01-directory-offset.md)。
 - **关联 commit**：待提交
+
+#### RISC-V Alpine initfiles 与动态链接路径兼容（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、RISC-V Alpine 镜像启动兼容、动态解释器路径回退、文档完善
+- **描述**：用户在尝试运行当前内核上的 vim/shell 时遇到 `initfiles.rs:61` 对 `/glibc/lib/libgcc_s.so.1` 的 `ENOENT` panic，并询问 RISC-V 场景是否有必要把该链接库放入内核。AI 确认该库只用于竞赛 glibc 测试镜像，不是 Alpine/musl 根文件系统必需；修复为仅在 `/glibc/lib` 存在时写入，同时仅在 `/musl/busybox` 存在时创建测试镜像 `/bin` applet 和 LTP wrapper，避免覆盖 Alpine 原生 `/bin/sh`。后续又为 ELF loader 增加动态解释器映射失败后的原始 `.interp` 路径回退。`make TARGET_ARCH=riscv64` 通过，QEMU 已越过原启动期 panic；Alpine `/bin/sh` 仍有用户态 `FetchInstructionPageFault`，需后续单独分析。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/riscv-alpine-initfiles-dynamic-link.md](./problem/riscv-alpine-initfiles-dynamic-link.md)。
+- **关联 commit**：待提交
