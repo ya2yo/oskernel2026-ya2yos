@@ -191,3 +191,10 @@
 - **场景**：`log.ans` 分析、TCP/UDP `bind(2)` 本机地址检查、AF_UNIX pathname 父目录校验、LTP bind01 回归验证、文档完善
 - **描述**：用户要求分析并修复 `bind01`，随后确认最新 `log.ans` 已通过。AI 确认原实现用路由表判断 bind 地址，默认路由导致非本地地址也能绑定成功；同时 AF_UNIX pathname bind 只登记内存表，没有校验路径前缀，导致中间分量非目录时也成功。修复为在 TCP/UDP bind 前检查地址是否为 wildcard、接口地址或 loopback `127/8`，否则返回 `EADDRNOTAVAIL`；AF_UNIX pathname bind 前通过 VFS 打开父目录，复用 `ENOTDIR/ENOENT` 语义。`make` 通过，最新 `log.ans` 中 `bind01` 7 项核心断言均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/bind01-bind-address-path.md](./problem/bind01-bind-address-path.md)。
 - **关联 commit**：未提交
+
+#### LTP bind04 AF_UNIX SEQPACKET 与 sockaddr_storage 长度修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、AF_UNIX socket 语义修复、IPv4 connect 地址长度兼容、GDB panic 触发链分析、LTP bind04 回归验证、文档完善
+- **描述**：用户要求根据最新 `log.ans` 和 GDB backtrace 修复 `bind04`。AI 确认 panic 是 `connect(..., addrlen=128)` 被误判 `EINVAL` 后测试异常退出触发的回收断言；更早的 bind04 阶段还缺少 AF_UNIX pathname socket inode 和 `SOCK_SEQPACKET` 支持。修复为 pathname bind 创建 VFS socket 节点、AF_UNIX seqpacket 复用连接型队列并保留记录边界、IPv4/IPv6 sockaddr 读取接受大于结构体大小的 `sockaddr_storage` 长度。`make` 与单跑 `bind04` 的 `make run` 通过，`log.ans` 中 6 项通信场景 `TPASS`，未再出现 `TBROK` 或 panic；SCTP 场景仍因协议未实现 `TCONF/skipped`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/bind04-unix-seqpacket-sockaddr.md](./problem/bind04-unix-seqpacket-sockaddr.md)。
+- **关联 commit**：未提交

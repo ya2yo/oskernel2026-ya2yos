@@ -10,7 +10,7 @@ use hashbrown::HashMap;
 use spin::{Lazy, Mutex};
 
 use crate::{
-    fs::{open, OpenFlags, NONE_MODE},
+    fs::{open, superblock_root_inode, FsIndex, InodeType, OpenFlags, NONE_MODE},
     mm::UserBuffer,
     net::{
         options::{Configurable, GetSocketOption, SetSocketOption, UnixCredentials},
@@ -40,6 +40,7 @@ impl Default for UnixSocketAddr {
 pub enum UnixSocketKind {
     Stream,
     Dgram,
+    SeqPacket,
 }
 
 struct UnixMessage {
@@ -86,12 +87,27 @@ impl UnixSocketInner {
 static UNIX_BINDS: Lazy<Mutex<HashMap<UnixSocketAddr, Arc<UnixSocketInner>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-fn check_path_parent(path: &str) -> SysResult {
+fn bind_path_abs(path: &str) -> SysResult<String> {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
     let cwd = task.process.fs_info.get_cwd();
     let abs_path = get_abs_path(&cwd, path);
     let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
     open(parent_path, OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY, NONE_MODE)?;
+    Ok(abs_path)
+}
+
+fn create_path_socket_node(path: &str) -> SysResult {
+    let abs_path = bind_path_abs(path)?;
+    match open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE) {
+        Ok(_) => return Err(SysErrNo::EADDRINUSE),
+        Err(SysErrNo::ENOENT) => {}
+        Err(err) => return Err(err),
+    }
+
+    let inode = superblock_root_inode().create(&abs_path, InodeType::Socket)?;
+    inode.fmode_set(InodeType::Socket.mode_bits() | 0o777)?;
+    FsIndex::insert_inode_idx(&abs_path, inode);
+    FsIndex::insert_special_node_type(&abs_path, InodeType::Socket);
     Ok(())
 }
 
@@ -116,12 +132,24 @@ impl UnixSocket {
         Self::new(UnixSocketKind::Dgram)
     }
 
+    pub fn new_seqpacket() -> Self {
+        Self::new(UnixSocketKind::SeqPacket)
+    }
+
     pub fn new_stream_pair() -> (Self, Self) {
         Self::new_pair(UnixSocketKind::Stream)
     }
 
     pub fn new_dgram_pair() -> (Self, Self) {
         Self::new_pair(UnixSocketKind::Dgram)
+    }
+
+    pub fn new_seqpacket_pair() -> (Self, Self) {
+        Self::new_pair(UnixSocketKind::SeqPacket)
+    }
+
+    fn is_connection_oriented(&self) -> bool {
+        matches!(self.kind(), UnixSocketKind::Stream | UnixSocketKind::SeqPacket)
     }
 
     fn new_pair(kind: UnixSocketKind) -> (Self, Self) {
@@ -199,14 +227,17 @@ impl SocketOps for UnixSocket {
         if matches!(local_addr, UnixSocketAddr::Unnamed) {
             return Err(SysErrNo::EINVAL);
         }
-        if let UnixSocketAddr::Path(path) = &local_addr {
-            check_path_parent(path)?;
-        }
         let mut current = self.inner.local_addr.lock();
         if !matches!(*current, UnixSocketAddr::Unnamed) {
             return Err(SysErrNo::EINVAL);
         }
 
+        if UNIX_BINDS.lock().contains_key(&local_addr) {
+            return Err(SysErrNo::EADDRINUSE);
+        }
+        if let UnixSocketAddr::Path(path) = &local_addr {
+            create_path_socket_node(path)?;
+        }
         let mut binds = UNIX_BINDS.lock();
         if binds.contains_key(&local_addr) {
             return Err(SysErrNo::EADDRINUSE);
@@ -227,11 +258,11 @@ impl SocketOps for UnixSocket {
         }
 
         match self.kind() {
-            UnixSocketKind::Stream => {
+            UnixSocketKind::Stream | UnixSocketKind::SeqPacket => {
                 if !*remote.listening.lock() {
                     return Err(SysErrNo::ECONNREFUSED);
                 }
-                let server = Arc::new(UnixSocketInner::new(UnixSocketKind::Stream, remote.pid));
+                let server = Arc::new(UnixSocketInner::new(self.kind(), remote.pid));
                 let local = self.inner.local_addr.lock().clone();
                 *server.local_addr.lock() = remote_addr.clone();
                 *server.peer_addr.lock() = local.clone();
@@ -250,7 +281,7 @@ impl SocketOps for UnixSocket {
     }
 
     fn listen(&self) -> SysResult {
-        if self.kind() != UnixSocketKind::Stream {
+        if !self.is_connection_oriented() {
             return Err(SysErrNo::EOPNOTSUPP);
         }
         if matches!(*self.inner.local_addr.lock(), UnixSocketAddr::Unnamed) {
@@ -261,7 +292,7 @@ impl SocketOps for UnixSocket {
     }
 
     fn accept(&self) -> SysResult<Socket> {
-        if self.kind() != UnixSocketKind::Stream || !*self.inner.listening.lock() {
+        if !self.is_connection_oriented() || !*self.inner.listening.lock() {
             return Err(SysErrNo::EINVAL);
         }
         let accepted = block_on(poll_io(
@@ -311,7 +342,8 @@ impl SocketOps for UnixSocket {
         if *self.inner.recv_closed.lock() {
             return Ok(0);
         }
-        let nonblocking = *self.inner.nonblocking.lock() || options.flags.contains(RecvFlags::DONTWAIT);
+        let nonblocking =
+            *self.inner.nonblocking.lock() || options.flags.contains(RecvFlags::DONTWAIT);
         block_on(poll_io(self, PollEvents::IN, nonblocking, || {
             if *self.inner.recv_closed.lock() {
                 return Ok(0);
@@ -320,7 +352,7 @@ impl SocketOps for UnixSocket {
             let mut message = match queue.pop_front() {
                 Some(message) => message,
                 None => {
-                    if self.kind() == UnixSocketKind::Stream && self.peer_closed() {
+                    if self.is_connection_oriented() && self.peer_closed() {
                         return Ok(0);
                     }
                     return Err(SysErrNo::EAGAIN);
@@ -378,7 +410,7 @@ impl crate::fs::File for UnixSocket {
         let readable = !self.inner.recv_queue.lock().is_empty()
             || !self.inner.pending.lock().is_empty()
             || *self.inner.recv_closed.lock()
-            || (self.kind() == UnixSocketKind::Stream && self.peer_closed());
+            || (self.is_connection_oriented() && self.peer_closed());
         if readable {
             events |= PollEvents::IN | PollEvents::RDNORM;
         }

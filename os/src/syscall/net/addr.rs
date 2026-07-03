@@ -83,7 +83,7 @@ impl SocketAddrExt for SocketAddr {
 
 impl SocketAddrExt for SocketAddrV4 {
     fn read_from_user(addr: *const u8, addrlen: u32) -> SysResult<Self> {
-        if addrlen != size_of::<sockaddr_in>() as u32 {
+        if addrlen < size_of::<sockaddr_in>() as u32 {
             return Err(SysErrNo::EINVAL);
         }
         let task = current_task().unwrap();
@@ -121,7 +121,7 @@ impl SocketAddrExt for SocketAddrV4 {
 
 impl SocketAddrExt for SocketAddrV6 {
     fn read_from_user(addr: *const u8, addrlen: u32) -> SysResult<Self> {
-        if addrlen != size_of::<sockaddr_in6>() as u32 {
+        if addrlen < size_of::<sockaddr_in6>() as u32 {
             return Err(SysErrNo::EINVAL);
         }
         let task = current_task().unwrap();

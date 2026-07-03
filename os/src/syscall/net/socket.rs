@@ -13,7 +13,8 @@ use crate::{
 use alloc::sync::Arc;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
 use linux_raw_sys::net::{
-    AF_INET, AF_UNIX, AF_VSOCK, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_STREAM,
+    AF_INET, AF_UNIX, AF_VSOCK, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_SEQPACKET,
+    SOCK_STREAM,
 };
 use log::{debug, warn};
 
@@ -47,6 +48,12 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
                 return Err(SysErrNo::EPROTONOSUPPORT);
             }
             SocketInner::Unix(UnixSocket::new_dgram())
+        }
+        (AF_UNIX, SOCK_SEQPACKET) => {
+            if proto != 0 {
+                return Err(SysErrNo::EPROTONOSUPPORT);
+            }
+            SocketInner::Unix(UnixSocket::new_seqpacket())
         }
         (AF_INET, _) | (AF_UNIX, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
@@ -99,6 +106,7 @@ pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> S
     let (sock1, sock2) = match ty {
         SOCK_STREAM => UnixSocket::new_stream_pair(),
         SOCK_DGRAM => UnixSocket::new_dgram_pair(),
+        SOCK_SEQPACKET => UnixSocket::new_seqpacket_pair(),
         _ => return Err(SysErrNo::ESOCKTNOSUPPORT),
     };
 

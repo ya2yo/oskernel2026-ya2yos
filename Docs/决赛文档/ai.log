@@ -1365,6 +1365,81 @@ warnings 0
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
 
+## 2026-07-03: LTP bind04 AF_UNIX SEQPACKET 与 sockaddr_storage 长度修复
+
+### 用户需求
+
+用户要求继续分析新的 `log.ans` 并修复 `bind04`。后续用户提供 GDB backtrace，显示 panic 发生在 `Process::remove_from_global_map(pid=3)`，调用链来自 `sys_waitpid()` 回收子进程。
+
+### 分析
+
+AI 按仓库 `fix-bug` 流程过滤 `log.ans` 中的 `TPASS/TFAIL/TBROK/panic/Summary` 关键行，确认 `bind04` 的失败分阶段出现：
+
+```text
+bind04.c:149: TPASS: Communication successful
+bind04.c:92: TBROK: connect(4, 127.0.0.1:49152, 128) failed: EINVAL (22)
+panic
+[kernel] Panicked at src/task/process/process.rs:290 process[3] removed but still refed! refcnt=2
+```
+
+前序日志还显示 AF_UNIX pathname stream 通信成功后 cleanup `unlink(test.sock)` 返回 `ENOENT`，以及 AF_UNIX `SOCK_SEQPACKET` 创建返回 `ESOCKTNOSUPPORT`。AI 检查 `os/src/net/unix.rs` 后确认 pathname bind 只登记 `UNIX_BINDS` 内存表，没有创建 VFS socket inode；检查 `os/src/syscall/net/socket.rs` 后确认 `AF_UNIX/SOCK_SEQPACKET` 缺少分支。
+
+用户提供的 GDB 栈中 panic 发生在 wait 回收阶段，但前置触发点是 IPv4 TCP `connect()` 返回 `EINVAL`。AI 检查 `os/src/syscall/net/addr.rs`，确认 `SocketAddrV4::read_from_user()` 要求 `addrlen == sizeof(sockaddr_in)`，而 LTP 传入的是 `sockaddr_storage` 长度 `128`。Linux 兼容语义应允许大于结构体大小的地址长度，只拒绝过短长度。IPv6 地址读取也有相同精确长度限制。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/net/unix.rs` | AF_UNIX pathname bind 创建 VFS socket inode；新增 `UnixSocketKind::SeqPacket`，连接型路径支持 seqpacket，`recv()` 保留记录边界 |
+| `os/src/syscall/net/socket.rs` | `sys_socket()` 与 `sys_socketpair()` 支持 AF_UNIX `SOCK_SEQPACKET` |
+| `os/src/syscall/net/addr.rs` | IPv4/IPv6 sockaddr 输入长度从精确相等改为下界检查，允许 `sockaddr_storage` |
+| `user/src/bin/initproc.rs` | 临时改为单跑 `bind04` 便于验证 |
+| `Docs/决赛文档/problem/bind04-unix-seqpacket-sockaddr.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：默认 RISC-V 构建通过，`make run` 完成并写入 `log.ans`。最新 `log.ans` 中 `bind04` 6 项通信场景均 `TPASS`：
+
+```text
+bind04.c:117: TINFO: Testing AF_UNIX pathname stream
+bind04.c:149: TPASS: Communication successful
+bind04.c:117: TINFO: Testing AF_UNIX pathname seqpacket
+bind04.c:149: TPASS: Communication successful
+bind04.c:117: TINFO: Testing AF_UNIX abstract stream
+bind04.c:149: TPASS: Communication successful
+bind04.c:117: TINFO: Testing AF_UNIX abstract seqpacket
+bind04.c:149: TPASS: Communication successful
+bind04.c:117: TINFO: Testing IPv4 loop TCP variant 1
+bind04.c:149: TPASS: Communication successful
+bind04.c:117: TINFO: Testing IPv4 loop TCP variant 2
+bind04.c:149: TPASS: Communication successful
+```
+
+SCTP 场景因协议未实现被 LTP 标记为跳过：
+
+```text
+bind04.c:117: TINFO: Testing IPv4 loop SCTP
+bind04.c:118: TCONF: socket(2, 1, 132) failed: EPROTONOSUPPORT (93)
+
+Summary:
+passed   6
+failed   0
+broken   0
+skipped  1
+warnings 0
+```
+
+日志中未再出现 `TBROK`、`TFAIL`、`panic` 或 `remove_from_global_map` 断言。`log.ans` 中仍有包装器行 `FAIL LTP CASE bind04 : 10`，原因是 SCTP `TCONF` 的退出码；本仓库判读 LTP 时以 `TPASS/TFAIL/TBROK/Summary` 为准。未执行 `TARGET_ARCH=loongarch64` 验证。
+
 ## 2026-07-03: LTP alarm05 setitimer old_value 剩余时间修复
 
 ### 用户需求
