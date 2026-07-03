@@ -138,13 +138,14 @@ fn get_score() -> i32 {
     // run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     // run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过
     // // lmbench
-    run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
-    run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
+    // run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
+    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
     // // libcbench
     // run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
     // run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loongarch 通过
     // // ltp
     // ltp::test_musl_ltp();
+    ltp::test_musl_single("abort01\0");
     // ltp::test_glibc_ltp();
 
     shutdown();

@@ -1,3 +1,5 @@
+# 决赛文档说明
+
 #### open14 O_TMPFILE 匿名临时文件语义修复（7.2）
 
 - **工具/模型**：Codex (GPT-5)
@@ -140,3 +142,10 @@
 - **补充**：用户确认输入可读且 `vi` 可运行后，要求 shell 显示用户输入。AI 在 `Stdin::read()` 中加入基础控制台回显，覆盖普通字符、回车和退格；`make TARGET_ARCH=riscv64` 通过，延迟到 prompt 后输入 `echo SHELL_ECHO_OK` 的 QEMU 日志显示命令本身和执行结果。
 - **补充**：用户反馈 `vi` 的 `:` 模式输入一个字符显示两个。AI 将 stdio 强制回显改为最小 termios 模型，支持 `TCGETS/TCSETS*`、`TIOCGWINSZ`，并用 `ECHO/ICANON` 控制 stdin 回显和原始字符读取。`make TARGET_ARCH=riscv64` 通过，QEMU 中 `stty -echo` 后输入命令不再回显，`stty echo` 后恢复。
 - **关联 commit**：`6cf88d1`, `275d3a5`, `d9fb6e8`, `0a8403a`
+
+#### LTP abort01 waitpid SA_RESTART EINTR 修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、`waitpid/waitid` 信号打断语义修复、syscall restart 路径修正、LTP abort01 回归验证、文档完善
+- **描述**：用户要求分析 `log.ans` 中 `tst_test.c:1654: TBROK: waitpid(3,...,0) failed: EINTR (4)`。AI 确认 `abort01` 的 LTP harness 为 `SIGUSR1` 安装了带 `SA_RESTART` 的 handler；原 `waitpid/waitid` 外层通用 `interruptible()` 在 wait 内部检查 pending signal 前就把 `wake_interruptible()` 状态转成 `EINTR`，绕过了 `SA_RESTART` 语义。修复为 wait 自己处理 pending signal：可忽略信号继续等待，不带 `SA_RESTART` 返回 `EINTR`，带 `SA_RESTART` 返回内部 `ERESTART`；同时修正 `setup_frame()` 对负 errno 形式 `ERESTART` 的识别。`make` 通过，最新 `log.ans` 中 `abort01` 为 `passed 2 failed 0 broken 0`，未再出现原 `TBROK`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/waitpid-sa-restart-eintr.md](./problem/waitpid-sa-restart-eintr.md)。
+- **关联 commit**：未提交

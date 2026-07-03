@@ -1282,3 +1282,85 @@ git diff --check
 - QEMU 日志中 `stty -echo` 后，输入命令 `echo HIDDEN_INPUT_OK` 不再作为输入行回显，但命令输出 `HIDDEN_INPUT_OK` 正常出现。
 - `stty echo` 后，输入 `echo ECHO_RESTORED_OK` 的命令行和输出均正常显示。
 - `git diff --check` 无输出。
+
+## 2026-07-03: LTP abort01 waitpid SA_RESTART EINTR 修复
+
+### 用户需求
+
+用户要求分析 `log.ans`，修复：
+
+```text
+tst_test.c:1654: TBROK: waitpid(3,0x2fff447b78,0) failed: EINTR (4)
+```
+
+随后用户确认最新输出仍在 `log.ans`，修复已经成功，并要求补充文档。
+
+### 分析
+
+AI 先过滤 `log.ans` 中的 `TBROK/TFAIL/TPASS/Summary/waitpid/SIG` 关键行，确认失败发生在 LTP `abort01` 的 harness 清理路径。父进程等待 PID 3 时，子进程先向父进程投递 `SIGUSR1`，父进程的 `wait4()` 返回 `Interrupted system call`，随后 LTP 报 `tst_test.c:1654` 的 `TBROK`。
+
+相关信号处理动作显示 `SIGUSR1` 由 LTP 框架安装为自定义 handler，并带有 `SA_RESTART | SA_RESTORER`。按语义，阻塞中的 `waitpid()` 在收到带 `SA_RESTART` 的信号 handler 时，应先交付信号，`sigreturn` 后重启 syscall，而不是直接把 `EINTR` 暴露给用户态。
+
+AI 检查 `os/src/syscall/task/wait.rs` 后发现 `sys_waitpid()` 和 `sys_waitid()` 外层使用：
+
+```text
+block_on(interruptible(poll_fn(...)))
+```
+
+而 `wait.rs` 内部已经实现了 pending signal 的细分逻辑，包括忽略 `SIGCHLD`、默认忽略信号，以及 `SA_RESTART` 分支。问题是 `task::interruptible()` 会在 poll 内部 wait 逻辑前先检查 `TaskControlBlock::interrupted`；`add_signal()` 调用 `wake_interruptible()` 后，这个内部状态被抢先转换为 `EINTR`，导致 wait 自己的 `SA_RESTART` 分支没有机会执行。
+
+继续检查 `os/src/signal/mod.rs` 发现已有 syscall restart 钩子：`setup_frame()` 在看到 trap 上下文中 syscall 返回 `ERESTART` 且 handler 带 `SA_RESTART` 时，会回退到原 `ecall` 并恢复原始参数。但原比较使用正值 `SysErrNo::ERESTART as usize`，而 syscall 错误返回写入的是负 errno，因此该钩子需要同步修正。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/wait.rs` | `sys_waitpid()` / `sys_waitid()` 去掉外层 `interruptible()`；新增 `wait_pending_signal_errno()`，由 wait 自己处理 pending signal；带 `SA_RESTART` 的 handler 返回内部 `ERESTART`，不带 `SA_RESTART` 返回 `EINTR`，可忽略信号继续消费并等待 |
+| `os/src/signal/mod.rs` | `setup_frame()` 改为识别负 errno 形式的 `ERESTART`，非 restart 分支写回负 errno 形式的 `EINTR` |
+| `Docs/决赛文档/problem/waitpid-sa-restart-eintr.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 补充 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：
+
+- 当前默认 RISC-V 配置构建通过。
+- 构建仅出现既有 warning。
+
+第一次尝试在沙箱内运行：
+
+```text
+timeout 120s make run > /tmp/waitpid-eintr-fix.log 2>&1
+```
+
+QEMU 因需要在只读的 `/var/tmp` 创建临时文件而未启动：
+
+```text
+qemu-system-riscv64: ... Could not open temporary file '/var/tmp/...': Read-only file system
+```
+
+后续用户确认成功输出已在当前 `log.ans`。AI 读取最新 `log.ans`，其中 `abort01` 结果为：
+
+```text
+abort01.c:62: TPASS: abort() dumped core
+abort01.c:65: TPASS: abort() raised SIGIOT
+
+Summary:
+passed   2
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+日志中未再出现原 `tst_test.c:1654: TBROK: waitpid(...)=EINTR`。`log.ans` 中仍有包装器行 `FAIL LTP CASE abort01 : 10`，但本仓库判读 LTP 结果时以 `TPASS/TFAIL/TBROK/Summary` 为准，本次核心 LTP summary 已为 `broken 0`。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。

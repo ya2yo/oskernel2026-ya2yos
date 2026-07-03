@@ -174,8 +174,9 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
         exit_current_and_run_next((signo + 128) as i32);
     } else {
         // if this syscall wants to restart
+        let restart_errno = -(SysErrNo::ERESTART as isize) as usize;
         if get_trap_cause() == Trap::Exception(Exception::Syscall)
-            && trap_cx.get_a0() == SysErrNo::ERESTART as usize
+            && trap_cx.get_a0() == restart_errno
         {
             // 我们的内核是不可抢占的，因此理论上这不会发生
             warn!("SysErrNo::ERESTART should not happen: this kernel is non-preemptive!");
@@ -189,7 +190,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
             } else {
                 // debug!("[do_signal] syscall was interrupted");
                 // will return EINTR after sigreturn
-                trap_cx.set_a0(SysErrNo::EINTR as usize);
+                trap_cx.set_a0(-(SysErrNo::EINTR as isize) as usize);
             }
         }
 
