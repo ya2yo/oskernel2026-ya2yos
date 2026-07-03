@@ -59,10 +59,19 @@ impl FileDescriptor {
         self.file.any()
     }
 
-    fn close_on_process_exit(&self) {
+    fn close_socket(&self) {
         if let FileClass::Socket(socket) = &self.file {
             let _ = socket.0.shutdown(Shutdown::Both);
         }
+    }
+
+    fn has_fd_alias(&self, files: &[Option<FileDescriptor>]) -> bool {
+        let FileClass::Socket(socket) = &self.file else {
+            return false;
+        };
+        files.iter().flatten().any(|desc| {
+            matches!(&desc.file, FileClass::Socket(other) if Arc::ptr_eq(socket, other))
+        })
     }
 
     pub fn unset_cloexec(&mut self) {
@@ -149,11 +158,13 @@ impl FdTable {
     }
     /// 清空fd_table
     pub fn clear(&self) {
-        let mut inner = self.get_mut();
-        for desc in inner.files.iter().flatten() {
-            desc.close_on_process_exit();
+        let files = {
+            let mut inner = self.get_mut();
+            core::mem::take(&mut inner.files)
+        };
+        for desc in files.into_iter().flatten() {
+            desc.close_socket();
         }
-        inner.files.clear();
     }
     /// 分配一个新的最小可用fd
     pub fn alloc_fd(&self) -> SyscallRet {
@@ -196,11 +207,21 @@ impl FdTable {
     }
     /// 对fd表中权限位有O_CLOEXEC进行关闭
     pub fn close_on_exec(&self) {
-        let fd_table = &mut self.get_mut().files;
-        for fd in fd_table {
-            if fd.is_some() && fd.as_ref().unwrap().flags.contains(OpenFlags::O_CLOEXEC) {
-                fd.take();
-            }
+        let fds = {
+            let inner = self.get_ref();
+            inner
+                .files
+                .iter()
+                .enumerate()
+                .filter_map(|(fd, desc)| {
+                    desc.as_ref()
+                        .filter(|desc| desc.flags.contains(OpenFlags::O_CLOEXEC))
+                        .map(|_| fd)
+                })
+                .collect::<Vec<_>>()
+        };
+        for fd in fds {
+            self.close(fd);
         }
     }
     /// 返回fd表的长度
@@ -307,24 +328,46 @@ impl FdTable {
     }
 
     pub fn set(&self, fd: usize, file: FileDescriptor) -> Result<(), SysErrNo> {
-        let mut inner = self.get_mut();
-        if fd >= inner.soft_limit {
-            return Err(SysErrNo::EMFILE);
+        let old = {
+            let mut inner = self.get_mut();
+            if fd >= inner.soft_limit {
+                return Err(SysErrNo::EMFILE);
+            }
+            if fd >= inner.files.len() {
+                inner.files.resize(fd + 1, None);
+            }
+            let old = inner.files[fd].replace(file);
+            old.map(|desc| {
+                let should_close = !desc.has_fd_alias(&inner.files);
+                (desc, should_close)
+            })
+        };
+        if let Some((desc, true)) = old {
+            desc.close_socket();
         }
-        if fd >= inner.files.len() {
-            inner.files.resize(fd + 1, None);
-        }
-        inner.files[fd] = Some(file);
         Ok(())
     }
     /// 修改文件描述符
     pub fn set_flags(&self, fd: usize, file: FileDescriptor) {
-        self.get_mut().files[fd] = Some(file);
+        let _ = self.set(fd, file);
     }
 
     pub fn take(&self, fd: usize) -> Option<FileDescriptor> {
         let mut inner = self.get_mut();
         inner.files.get_mut(fd).and_then(|slot| slot.take())
+    }
+
+    pub fn close(&self, fd: usize) -> Option<FileDescriptor> {
+        let closed = {
+            let mut inner = self.get_mut();
+            let desc = inner.files.get_mut(fd).and_then(|slot| slot.take())?;
+            let should_close = !desc.has_fd_alias(&inner.files);
+            (desc, should_close)
+        };
+        if closed.1 {
+            closed.0.close_socket();
+        }
+        Some(closed.0)
     }
 
     fn get_mut(&self) -> RwLockWriteGuard<'_, FdTableInner> {

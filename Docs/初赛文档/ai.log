@@ -4322,3 +4322,80 @@ make
 - 维护者提供的最新 `log.ans` / `ana.ans` 显示 `getdents01` 能找到 `.`, `..`, `dir`, `file`, `symlink`，并输出 `TPASS: All entries found`。
 - `log.ans` 中 `getdents01` Summary 为 `passed 2 failed 0 broken 0`。
 - 未运行 `riscv64`。
+
+---
+
+## 2026-07-03: iperf 5001 端口复用、daemon 残留与 glibc TCGETS 栈破坏修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 中最新输出，指出上一轮修复失败：`iperf-musl` 通过后，`iperf-glibc` 仍显示端口冲突。随后用户强调测例运行必须继续使用标准 `run_testsuit(root, script)`，不能使用自定义 iperf runner。
+
+### 分析
+
+AI 首先确认失败集中在 iperf 固定端口 `5001`，不是 netperf 的 `12865`：
+
+```text
+socket already listening on port 5001
+*** stack smashing detected ***: terminated
+```
+
+参考 netperf 复盘后，确认端口复用的正确方向仍是 fd/进程退出时主动 `shutdown(Shutdown::Both)`，不能依赖 `Arc<Socket>` 最后一次 drop 才释放 `LISTEN_TABLE`。上一轮尝试把 `SO_REUSEADDR` 做成“新 listener 覆盖旧监听表项”后虽然去掉了 `EADDRINUSE`，但引入 `accept before listen`，说明旧 server 与监听表状态被拆裂，该实验应撤销。
+
+继续检查 iperf 脚本发现，`iperf_testcode.sh` 使用 `$iperf -s -p 5001 -D` 启动 daemon，但脚本结束时没有 kill。`run_testsuit()` 只等待脚本进程退出；daemon 脱离脚本后被 init 收养，仍然监听 `5001`。因此最新 `log.ans` 中 `iperf-glibc` 虽然六项显示 success，但 glibc server 的 `listen(5001)` 实际失败，后续 client 是连接到了上一轮 musl daemon，这是 false positive。
+
+同时，早期修复中还定位到 glibc iperf 的 `*** stack smashing detected ***`。AI 运行 `make log`，通过 syscall trace 把崩溃点缩小到：
+
+```text
+[sys_ioctl] fd=1, cmd=21505
+[syscall ret --- OK] Ioctl ret = 0
+[sys_writev] fd is 2 ...
+*** stack smashing detected ***: terminated
+```
+
+`21505 == 0x5401`，即 `TCGETS`。检查 `os/src/fs/files/stdio.rs` 后确认，当前 `RawTermios` 含 `c_cc[32]`、padding、`c_ispeed/c_ospeed`，总计 60 字节；但 Linux `TCGETS` 使用 old kernel termios 布局，RISC-V 上只应写 36 字节。多写的 24 字节覆盖 glibc 栈 canary，导致 iperf3 打印结果前进入 `__stack_chk_fail`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/net/listen_table.rs` | 撤销 `SO_REUSEADDR` 覆盖 listener 的实验，已有监听端口继续返回 `EADDRINUSE` |
+| `os/src/net/tcp.rs` | 恢复 `LISTEN_TABLE.listen(bound_endpoint)` 调用 |
+| `os/src/fs/fstruct.rs` | fd clear/close/close_on_exec 主动 shutdown socket，并通过 fd alias 判断避免 dup 场景过早关闭 |
+| `os/src/syscall/fs/fd_ops.rs` | `sys_close()` / `sys_close_range()` 改用 `FdTable::close()`；刷新 `/proc` 时写入真实 comm |
+| `os/src/fs/kernel_fs_ops/proc_file.rs` | `/proc/<pid>/stat/status` 使用 `ProcessMeta.comm`，不再硬编码 `busybox` |
+| `os/src/task/task/task.rs` | 创建 `/proc/<pid>` 时传入当前进程 comm |
+| `os/src/fs/files/stdio.rs` | `TCGETS/TCSETS*` 使用 Linux old termios 36 字节布局，`c_cc` 改为 19 字节，移除 speed 字段 |
+| `os/src/signal/mod.rs` | blocked 任务收到可终止信号时通过 interrupt waker 唤醒，确保 kill 能打断阻塞中的 daemon |
+| `os/src/signal/mod.rs` | `kill(-1, sig)` 路径跳过 pid 1，避免误伤 init |
+| `user/src/syscall/mod.rs` | `sys_kill` 用户态包装改为支持负 pid |
+| `user/src/lib.rs` | 新增 `kill_processes(isize, signum)`，保留原 `kill(usize, signum)` 兼容调用 |
+| `user/src/bin/initproc.rs` | 保持 iperf 使用标准 `run_testsuit(root, script)`；在通用 `run_testsuit()` 收尾阶段 `kill_processes(-1, SIGKILL)` 并循环 `wait()` 回收被 init 收养的残留子进程 |
+| `Docs/初赛文档/problem/iperf-port-reuse-termios-stack-smash.md` | 新增问题复盘 |
+| `Docs/初赛文档/problem/README.md` | 增加索引 |
+| `Docs/初赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/初赛文档/AI_INTERACTION.md` | 增加 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+make log
+timeout 180s make run > /tmp/iperf-debug-syscall.log 2>&1
+make
+timeout 180s make run > /tmp/iperf-termios-fix.log 2>&1
+make
+timeout 180s make run > /tmp/iperf-generic-cleanup.log 2>&1
+```
+
+结果：
+
+- 当前默认 `TARGET_ARCH=riscv64`，构建通过。
+- debug 日志确认 glibc 栈保护失败发生在 `ioctl(fd=1, cmd=0x5401 /* TCGETS */)` 之后。
+- 沙箱内直接 `make run` 因 QEMU 写 `/var/tmp/vl.*` 失败；已在非沙箱环境完成同一命令验证。
+- `/tmp/iperf-generic-cleanup.log` 中 `iperf-musl` 六项均为 `success`。
+- `/tmp/iperf-generic-cleanup.log` 中 `iperf-glibc` 六项均为 `success`。
+- `iperf-glibc` 组开始后直接进入 `====== iperf BASIC_UDP begin ======`，未再出现 `socket already listening on port 5001`。
+- 日志中未再出现 `replace reusable listening socket`、`accept before listen`、`Connection refused`、`*** stack smashing detected ***` 或 kernel panic，最后正常 `shutdown!`。

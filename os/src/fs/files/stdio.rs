@@ -26,6 +26,7 @@ const TCSETS: u32 = 0x5402;
 const TCSETSW: u32 = 0x5403;
 const TCSETSF: u32 = 0x5404;
 const TIOCGWINSZ: u32 = 0x5413;
+const NCCS: usize = 19;
 
 const ISIG: u32 = 0x00001;
 const ICANON: u32 = 0x00002;
@@ -46,15 +47,12 @@ struct RawTermios {
     c_cflag: u32,
     c_lflag: u32,
     c_line: u8,
-    c_cc: [u8; 32],
-    c_pad: [u8; 3],
-    c_ispeed: u32,
-    c_ospeed: u32,
+    c_cc: [u8; NCCS],
 }
 
 impl RawTermios {
     fn current() -> Self {
-        let mut c_cc = [0u8; 32];
+        let mut c_cc = [0u8; NCCS];
         c_cc[2] = DEL;
         c_cc[4] = 4;
         c_cc[5] = 0;
@@ -67,9 +65,6 @@ impl RawTermios {
             c_lflag: TERMINAL_LFLAG.load(Ordering::Relaxed),
             c_line: 0,
             c_cc,
-            c_pad: [0; 3],
-            c_ispeed: 0,
-            c_ospeed: 0,
         }
     }
 

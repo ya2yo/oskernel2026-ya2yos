@@ -7,7 +7,8 @@ extern crate user_lib;
 
 use libctest::runall::{run_specific_test, runall};
 use user_lib::{
-    AF_INET, SOCK_DGRAM, SOCK_STREAM, chdir, execve, exit, fork, print, println, shutdown, socket, wait, waitpid
+    AF_INET, SOCK_DGRAM, SOCK_STREAM, chdir, execve, exit, fork, kill_processes, print, println,
+    shutdown, socket, wait, waitpid,
 };
 
 use crate::libctest::pthread_cancel_points::run_musl_static;
@@ -27,6 +28,18 @@ mod lua;
 fn run_testsuit(root: &str, script: &str) {
     let args = ["busybox\0", "sh\0", script];
     fork_and_run(root, &args);
+    cleanup_testsuit_children();
+}
+
+fn cleanup_testsuit_children() {
+    const SIGKILL: usize = 9;
+    let _ = kill_processes(-1, SIGKILL);
+    loop {
+        let mut exit_code: i32 = 0;
+        if wait(&mut exit_code) <= 0 {
+            break;
+        }
+    }
 }
 
 pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
@@ -89,7 +102,8 @@ fn main() -> i32 {
 #[no_mangle]
 #[cfg(target_arch = "riscv64")]
 fn main() -> i32 {
-    run_interactive_shell()
+    // run_interactive_shell()
+    get_score()
 }
 
 // ---------------------------------------------------------------------------
@@ -97,38 +111,42 @@ fn main() -> i32 {
 // ---------------------------------------------------------------------------
 
 #[allow(unused)]
-fn get_score() {
+fn get_score() -> i32 {
+    println!("get_score start!");
     // basic
-    run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("glibc\0", "basic_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    // busybox
-    run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    // lua
-    run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
-    // iperf
+    // run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "basic_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // // busybox
+    // run_testsuit("musl\0", "busybox_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "busybox_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // // lua
+    // run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
+    // // iperf
     run_testsuit("musl\0", "iperf_testcode.sh\0");
     run_testsuit("glibc\0", "iperf_testcode.sh\0");
-     // netperf
-    run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
-    run_testsuit("glibc\0", "netperf_testcode.sh\0");
-    // cyclictest
-    run_testsuit("musl\0", "cyclictest_testcode.sh\0");
-    run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
-    // libc
-    run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
-    // iozone
-    run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
-    run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过
-    // lmbench
-    run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
-    run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
-    // libcbench
-    run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
-    run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loongarch 通过
-    // ltp
-    ltp::test_musl_ltp();
-    ltp::test_glibc_ltp();
+    //  // netperf
+    // run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
+    // run_testsuit("glibc\0", "netperf_testcode.sh\0");
+    // // cyclictest
+    // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
+    // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
+    // // libc
+    // run_testsuit("musl\0", "libctest_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
+    // // iozone
+    // run_testsuit("musl\0", "iozone_testcode.sh\0");//龙芯 riscv 不会死循环或panic
+    // run_testsuit("glibc\0", "iozone_testcode.sh\0");// riscv 通过
+    // // lmbench
+    // run_testsuit("musl\0", "lmbench_testcode.sh\0");// 双架构通过
+    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");// riscv loogarch 通过
+    // // libcbench
+    // run_testsuit("musl\0", "libcbench_testcode.sh\0");// 龙芯 riscv 通过
+    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");// riscv loongarch 通过
+    // // ltp
+    // ltp::test_musl_ltp();
+    // ltp::test_glibc_ltp();
+
+    shutdown();
+    0
 }

@@ -359,8 +359,15 @@ impl Ext4File {
             let cache = get_cache(path.clone());
             let cache_read = cache.read();
             let data = cache_read.get_data_slice();
+            if cache_read.offset >= cache_read.size {
+                return Ok(0);
+            }
             let length = buff.len();
-            let end = (cache_read.offset + length).min(cache_read.size);
+            let end = cache_read
+                .offset
+                .checked_add(length)
+                .ok_or(EINVAL as i32)?
+                .min(cache_read.size);
             let r_sz = end - cache_read.offset;
             //debug!("data.len={:x},end={:x}", data.len(), end);
             if length <= 10 {
@@ -421,7 +428,10 @@ impl Ext4File {
             // 找到 cache 直接写 cache；一旦文件膨胀到阈值以上，立即回退到底层 ext4。
             let cache = get_cache(path.clone());
             let mut cache_writer = cache.write();
-            let next_size = cache_writer.offset + buf.len();
+            let next_size = cache_writer
+                .offset
+                .checked_add(buf.len())
+                .ok_or(EINVAL as i32)?;
             if next_size > MAX_CACHED_FILE_SIZE {
                 let write_offset = cache_writer.offset;
                 drop(cache_writer);
@@ -885,11 +895,14 @@ impl VFileCache {
 
     pub fn writebuf(&mut self, buf: &[u8]) -> Result<usize, i32> {
         let length = buf.len();
-        if self.offset + length > self.size {
-            self.size = self.offset + length;
+        let end = self.offset.checked_add(length).ok_or(EINVAL as i32)?;
+        if end > self.size {
+            self.size = end;
         }
-        if self.offset + length > self.data.len() {
-            let aligned_size = aligned_down(self.offset + length) + PAGE_SIZE;
+        if end > self.data.len() {
+            let aligned_size = aligned_down(end)
+                .checked_add(PAGE_SIZE)
+                .ok_or(ENOMEM as i32)?;
             let additional = aligned_size.saturating_sub(self.data.capacity());
             if additional > 0 {
                 self.data
@@ -903,7 +916,7 @@ impl VFileCache {
                 self.data[self.offset + i] = buf[i];
             }
         } else {
-            self.data[self.offset..self.offset + length].copy_from_slice(buf);
+            self.data[self.offset..end].copy_from_slice(buf);
         }
         self.modified = true;
         /*

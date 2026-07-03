@@ -464,7 +464,8 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     if abs_path == "/proc/self/status" {
         let proc_inner = &task.process;
         let memory_set = proc_inner.memory_set_arc();
-        refresh_proc_status(task.pid(), task.ppid(), &memory_set)?;
+        let comm = proc_inner.meta_lock().comm.clone();
+        refresh_proc_status(task.pid(), task.ppid(), &comm, &memory_set)?;
         abs_path = format!("/proc/{}/status", task.pid());
     }
     if let Some(pid) = parse_proc_pid_file(&abs_path, "stat") {
@@ -473,14 +474,16 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
             let state = if process.all_tasks_exited() { 'Z' } else { 'S' };
             let proc_inner = &process;
             let memory_set = proc_inner.memory_set_arc();
-            refresh_proc_stat(pid, ppid, state, &memory_set)?;
+            let comm = proc_inner.meta_lock().comm.clone();
+            refresh_proc_stat(pid, ppid, state, &comm, &memory_set)?;
         }
     }
     if let Some(pid) = parse_proc_pid_file(&abs_path, "status") {
         if let Some(process) = Process::get_process_arc_by_pid(pid) {
             let proc_inner = &process;
             let memory_set = proc_inner.memory_set_arc();
-            refresh_proc_status(pid, process.ppid(), &memory_set)?;
+            let comm = proc_inner.meta_lock().comm.clone();
+            refresh_proc_status(pid, process.ppid(), &comm, &memory_set)?;
         }
     }
 
@@ -522,7 +525,7 @@ pub fn sys_close(fd: usize) -> SyscallRet {
         return Ok(0);
     }
 
-    fd_table.take(fd);
+    fd_table.close(fd);
     inner.fs_info.remove(fd);
 
     Ok(0)
@@ -580,7 +583,7 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
             }
 
             // Remove from fd_table
-            if let Some(_) = proc_inner.fd_table.take(fd as usize) {
+            if let Some(_) = proc_inner.fd_table.close(fd as usize) {
                 // Remove from fs_info
                 proc_inner.fs_info.remove(fd as usize);
             }

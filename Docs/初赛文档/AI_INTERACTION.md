@@ -867,3 +867,10 @@
 - **补充**：用户确认输入可读且 `vi` 可运行后，要求 shell 显示用户输入。AI 在 `Stdin::read()` 中加入基础控制台回显，覆盖普通字符、回车和退格；`make TARGET_ARCH=riscv64` 通过，延迟到 prompt 后输入 `echo SHELL_ECHO_OK` 的 QEMU 日志显示命令本身和执行结果。
 - **补充**：用户反馈 `vi` 的 `:` 模式输入一个字符显示两个。AI 将 stdio 强制回显改为最小 termios 模型，支持 `TCGETS/TCSETS*`、`TIOCGWINSZ`，并用 `ECHO/ICANON` 控制 stdin 回显和原始字符读取。`make TARGET_ARCH=riscv64` 通过，QEMU 中 `stty -echo` 后输入命令不再回显，`stty echo` 后恢复。
 - **关联 commit**：待提交
+
+#### iperf 5001 端口复用、daemon 残留与 glibc TCGETS 栈破坏修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、网络 daemon 生命周期清理、termios ioctl 栈破坏修复、回归验证、文档完善
+- **描述**：用户要求根据最新 `log.ans` 继续修复 iperf，并强调测例入口必须使用标准 `run_testsuit(root, script)`。AI 确认 `iperf-musl` 后 `iperf-glibc` 固定复用 5001；`iperf3 -s -D` 在脚本退出后被 init 收养并继续监听，导致 glibc server `listen(5001)` 失败，而 glibc client 连接到上一轮 musl daemon 后形成 false positive success。最终保持 iperf 调用走标准 `run_testsuit()`，在通用 testsuit 收尾阶段用 `kill_processes(-1, SIGKILL)` 清理并 `wait()` 回收残留后台子进程；同时保留 fd close/exit 主动 shutdown socket 与 glibc `TCGETS` old termios 36 字节布局修复。`make` 通过，`/tmp/iperf-generic-cleanup.log` 中 musl/glibc 两轮 iperf 六项均 success，未再出现 `socket already listening on port 5001`。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/iperf-port-reuse-termios-stack-smash.md](./problem/iperf-port-reuse-termios-stack-smash.md)。
+- **关联 commit**：待提交

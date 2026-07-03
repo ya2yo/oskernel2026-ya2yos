@@ -716,7 +716,8 @@ impl TaskControlBlock {
         if !flags.contains(CloneFlags::CLONE_THREAD) {
             let child_proc = &child.process;
             let child_mm = child_proc.memory_set_arc();
-            create_proc_dir_and_file(child_pid, child_ppid, &child_mm);
+            let child_comm = child_proc.meta_lock().comm.clone();
+            create_proc_dir_and_file(child_pid, child_ppid, &child_comm, &child_mm);
         }
 
         // VFORK: 挂起父进程直到子进程 exec 或退出

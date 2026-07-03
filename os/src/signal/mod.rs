@@ -362,6 +362,16 @@ fn add_signal(task: &TaskControlBlock, signal: SigSet) -> bool {
     let mut task_inner = task.inner_lock();
     // debug!("add signal: tid {}, signal: {}", task.tid(), signal.bits());
     task_inner.sig_pending |= signal;
+    let interrupt_wait = signal.peek_front().is_some_and(|signo| {
+        if signo == SIGCHLD {
+            return task.process.with_sigtable(|sigtable| sigtable.action(SIGCHLD).customed);
+        }
+        task.process.with_sigtable(|sigtable| {
+            let action = sigtable.action(signo);
+            action.act.sa_handler != SIG_IGN
+                && (action.customed || SigSet::from_sig(signo).default_op() != SigOp::Ignore)
+        })
+    });
     if task_inner.task_status == TaskStatus::Stopped
         && signal.intersects(SigSet::SIGCONT | SigSet::SIGKILL)
     {
@@ -373,12 +383,20 @@ fn add_signal(task: &TaskControlBlock, signal: SigSet) -> bool {
         return true;
     }
     if task_inner.task_status == TaskStatus::Blocked {
-        // SIGKILL 等信号必须把任务从 pipe/futex 等等待中唤醒，
-        // 这样任务才能回到 trap 返回路径处理 pending signal。
-        task_inner.task_status = TaskStatus::Ready;
+        // 可中断等待必须通过 interrupt_waker 唤醒，设置 interrupted 标志；
+        // 否则 block_on 会重新 poll 并继续睡眠，SIGTERM 等终止信号无法
+        // 打断 accept/recv/futex 等阻塞 syscall。默认 SIGCHLD 等可忽略信号
+        // 只唤醒任务，由 waitpid/select 等 syscall 内部按语义继续等待。
         drop(task_inner);
-        if let Some(task) = tid_to_task::tid2task(task.tid()) {
-            ready_queue::add_task(&task);
+        if !(interrupt_wait && task.wake_interruptible()) {
+            let mut task_inner = task.inner_lock();
+            if task_inner.task_status == TaskStatus::Blocked {
+                task_inner.task_status = TaskStatus::Ready;
+                drop(task_inner);
+                if let Some(task) = tid_to_task::tid2task(task.tid()) {
+                    ready_queue::add_task(&task);
+                }
+            }
         }
     }
     false
@@ -523,7 +541,7 @@ pub fn send_signal_to_process_group(_pid: usize, _sig: SigSet) {
 pub fn send_access_signal(self_tid: usize, sig: SigSet) -> Result<usize, SysErrNo> {
     let all_tasks = tid_to_task::get_all_tasks();
     for (tid, task) in all_tasks {
-        if tid != self_tid {
+        if tid != self_tid && task.pid() != 1 {
             add_signal(&task, sig);
         }
     }

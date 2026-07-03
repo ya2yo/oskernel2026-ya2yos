@@ -40,14 +40,14 @@ fn write_kernel_file(file: &dyn File, data: &mut String) -> Result<usize, SysErr
     file.write(UserBuffer::new(vec))
 }
 
-fn format_status(pid: usize, ppid: usize, memory_set: &MemorySet) -> String {
+fn format_status(pid: usize, ppid: usize, comm: &str, memory_set: &MemorySet) -> String {
     let vm_size = memory_set.virtual_size_kb();
     let vm_rss = memory_set.resident_size_kb();
     format!(
         "VmSwap:\t       0 kB\n\
 VmHWM:\t{:8} kB\n\
 VmRSS:\t{:8} kB\n\
-Name:\tbusybox\n\
+Name:\t{}\n\
 State:\tS (sleeping)\n\
 Tgid:\t{}\n\
 Pid:\t{}\n\
@@ -56,16 +56,17 @@ VmPeak:\t{:8} kB\n\
 VmSize:\t{:8} kB\n\
 VmHWM:\t{:8} kB\n\
 VmRSS:\t{:8} kB\n",
-        vm_rss, vm_rss, pid, pid, ppid, vm_size, vm_size, vm_rss, vm_rss
+        vm_rss, vm_rss, comm, pid, pid, ppid, vm_size, vm_size, vm_rss, vm_rss
     )
 }
 
-fn format_stat(pid: usize, ppid: usize, state: char, memory_set: &MemorySet) -> String {
+fn format_stat(pid: usize, ppid: usize, state: char, comm: &str, memory_set: &MemorySet) -> String {
     let vsize = memory_set.virtual_size_kb() * 1024;
     let rss_pages = memory_set.resident_size_kb() * 1024 / PAGE_SIZE;
     format!(
-        "{} (busybox) {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+        "{} ({}) {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
         pid,
+        comm,
         state,
         ppid,
         get_ticks(),
@@ -77,6 +78,7 @@ fn format_stat(pid: usize, ppid: usize, state: char, memory_set: &MemorySet) -> 
 pub fn create_proc_dir_and_file(
     pid: usize,
     ppid: usize,
+    comm: &str,
     memory_set: &MemorySet,
 ) -> Result<(), SysErrNo> {
     let procdir = open(
@@ -96,7 +98,7 @@ pub fn create_proc_dir_and_file(
     )
     .unwrap()
     .file()?;
-    let mut statinfo = format_stat(pid, ppid, 'S', memory_set);
+    let mut statinfo = format_stat(pid, ppid, 'S', comm, memory_set);
     write_kernel_file(statfile.as_ref(), &mut statinfo)?;
     statfile.inode.sync();
 
@@ -107,7 +109,7 @@ pub fn create_proc_dir_and_file(
         DEFAULT_FILE_MODE,
     )?
     .file()?;
-    let mut statusinfo = format_status(pid, ppid, memory_set);
+    let mut statusinfo = format_status(pid, ppid, comm, memory_set);
     write_kernel_file(statusfile.as_ref(), &mut statusinfo)?;
     statusfile.inode.sync();
 
@@ -144,6 +146,7 @@ pub fn refresh_proc_stat(
     pid: usize,
     ppid: usize,
     state: char,
+    comm: &str,
     memory_set: &MemorySet,
 ) -> Result<(), SysErrNo> {
     let statfile = open(
@@ -152,7 +155,7 @@ pub fn refresh_proc_stat(
         DEFAULT_FILE_MODE,
     )?
     .file()?;
-    let mut statinfo = format_stat(pid, ppid, state, memory_set);
+    let mut statinfo = format_stat(pid, ppid, state, comm, memory_set);
     write_kernel_file(statfile.as_ref(), &mut statinfo)?;
     statfile.inode.sync();
     Ok(())
@@ -161,6 +164,7 @@ pub fn refresh_proc_stat(
 pub fn refresh_proc_status(
     pid: usize,
     ppid: usize,
+    comm: &str,
     memory_set: &MemorySet,
 ) -> Result<(), SysErrNo> {
     let statusfile = open(
@@ -169,7 +173,7 @@ pub fn refresh_proc_status(
         DEFAULT_FILE_MODE,
     )?
     .file()?;
-    let mut statusinfo = format_status(pid, ppid, memory_set);
+    let mut statusinfo = format_status(pid, ppid, comm, memory_set);
     write_kernel_file(statusfile.as_ref(), &mut statusinfo)?;
     statusfile.inode.sync();
     Ok(())

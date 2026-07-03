@@ -432,8 +432,8 @@ pub fn sys_sigreturn() -> isize {
     syscall(SYSCALL_SIGRETURN, [0, 0, 0, 0, 0, 0])
 }
 
-pub fn sys_kill(pid: usize, signum: usize) -> isize {
-    syscall(SYSCALL_KILL, [pid as isize, signum as isize, 0, 0, 0, 0])
+pub fn sys_kill(pid: isize, signum: usize) -> isize {
+    syscall(SYSCALL_KILL, [pid, signum as isize, 0, 0, 0, 0])
 }
 
 pub fn sys_fstatat(dirfd: isize, path: &str, kst: &mut [u8], flags: usize) -> isize {

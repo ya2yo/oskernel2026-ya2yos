@@ -332,6 +332,10 @@ pub fn sigreturn() -> isize {
 }
 
 pub fn kill(pid: usize, signum: usize) -> isize {
+    sys_kill(pid as isize, signum)
+}
+
+pub fn kill_processes(pid: isize, signum: usize) -> isize {
     sys_kill(pid, signum)
 }
 

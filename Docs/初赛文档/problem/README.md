@@ -93,6 +93,7 @@
 - [accept02 组播与 setsockopt 错误传播](./accept02-mcast-setsockopt.md)
 - [iperf-musl: UDP 多流分发与 socket 兼容修复](./iperf-musl-network-fixes.md)
 - [iperf-glibc: daemon fstatat 与 /dev/null 设备号](./iperf-glibc-daemon-fstatat-devnull.md)
+- [iperf: 5001 端口复用与 glibc TCGETS 栈破坏](./iperf-port-reuse-termios-stack-smash.md)
 - [netperf: select 误被 SIGCHLD 打断](./netperf-select-sigchld-eintr.md)
 - [netperf TCP_CRR: blocked accept 的 itimer 唤醒滞后](./netperf-tcp-crr-blocked-itimer.md)
 - [netperf glibc: 12865 控制端口残留监听](./netperf-glibc-port-reuse.md)
