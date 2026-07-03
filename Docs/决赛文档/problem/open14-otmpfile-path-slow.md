@@ -69,13 +69,67 @@ open14      0  TINFO  :  creating a file with O_TMPFILE flag
 在父目录 inode 已经缓存后，继续从底层 ext4 路径接口查 child 仍会产生重复目录项查询。为进一步利用已缓存父目录，本次在 `os/src/fs/dcache.rs` 实现 VFS dentry cache：
 
 - cache key 使用“父 inode 对象地址 + child name”，命中时不需要额外 `fstat()` 或 `path()` 计算 key，避免把 cache hit 变成新的元数据查询。
-- positive dentry 保存 `Weak<dyn Inode>`，不会因为 dentry cache 自身额外延长 inode 生命周期；weak 失效后自动删除该项并回退到底层查找。
+- positive dentry 最初保存 `Weak<dyn Inode>`，避免缓存自身额外延长 inode 生命周期；后续性能复测确认这会让 `open14` 深层目录场景中父目录 inode 很快失效，因此改为由 VFS cache/dentry cache 持有可显式失效的 strong `Arc`，依赖 create/link/unlink/rename 路径维护失效。
 - negative dentry 只在非 `O_CREAT` 路径上使用，避免 create-if-not-exist 场景被旧的不存在缓存误导。
 - `find_from_cached_parent()` 先查 dentry cache：positive 命中直接返回 child inode，negative 命中直接返回 `ENOENT`，miss 才调用底层 `parent_inode.find()`。
 - `create_file()` 成功后回填 positive dentry；直接 `mknod`、`linkat`、`O_TMPFILE` materialize 也在插入 `FsIndex` 后回填。
 - `unlinkat`、`symlinkat`、`renameat2` 成功后失效对应 dentry，避免 stale positive/negative 影响后续 `open()` 语义。
 
 该实现仍然保留前一节提到的限制：底层 lwext4 没有暴露真正的“父目录句柄 + child name”相对查找接口，所以 dentry miss 时仍会走路径式 API；但 dentry hit 可以直接绕过这一步。
+
+## 性能复测与缓存生命周期修复
+
+在语义通过后继续做性能复测，单跑 `open14` 的默认 RISC-V 基线为：
+
+```text
+elapsed=223.35s
+passed   3
+failed   0
+broken   0
+```
+
+临时低噪声埋点显示 `openat(O_TMPFILE)` 本身不是瓶颈：206 次 `sys_openat` 总计只有约 31 ms。主要开销来自围绕 100 层目录的 `mkdirat/chdir/linkat/unlinkat`，并集中落在 VFS `open_inner/create_file` 与 ext4 元数据路径：
+
+```text
+sys_mkdirat   201 次，总计约 77.0s
+sys_linkat    101 次，总计约 53.7s
+sys_unlinkat  303 次，总计约 43.4s
+sys_chdir     402 次，总计约 26.3s
+open_inner   1174 次，总计约 154.0s
+create_file   345 次，总计约 110.3s
+ext4_live_path 6320 次，总计约 99.6s
+```
+
+进一步对照实验确认两个主要原因：
+
+- `FsIndex` 与 dentry cache 的 positive 项都保存 `Weak<dyn Inode>`。`open14` 的 `mkdir/chdir/open/unlink` 循环中，目录 inode 经常只被临时 `OSFile` 持有，fd 关闭后 `Weak` 无法 upgrade，导致下一次仍从 ext4 路径接口重新查找。临时改为 strong cache 后，`ext4_find` 从 1257 次降到 55 次，墙钟从 223.35s 降到约 137.85s。
+- `Ext4Inode::live_path()` 每次 `fstat/fmode/path` 都先 `check_inode_exist()` 当前路径，再扫描 alias。对于未 rename 的普通热路径，这些检查都是重复路径查询。临时跳过每次重查后，墙钟进一步降到约 76.36s。
+
+最终修复按上述优先级落地：
+
+- `FsIndex` 的 inode cache 从 `Weak<dyn Inode>` 改为 strong `Arc<dyn Inode>`，路径索引仍保存 `(st_dev, st_ino)` 或 path key，并通过现有 `remove_inode_idx()` 在 unlink/rename/proc 清理路径显式失效。
+- dentry positive cache 从 `Weak` 改为 strong `Arc`，继续由 create/link/unlink/symlink/rename 路径回填或失效，避免父目录刚被缓存后子项 dentry 立即失效。
+- `Ext4Inode::live_path()` 改为常规路径直接返回当前 path；原来的 alias 存活检查保留为 `recover_live_path()`，仅在 `fstat/fmode/fmode_set/owner_set` 的底层操作失败后再触发。
+- `rename()` 成功后把当前 `Ext4File` 切换到新路径，减少 rename 后首次元数据操作依赖 alias 恢复的概率。
+- `create_file()` 合并父目录权限检查与 `S_ISGID` gid 继承所需的元数据读取，用一次父目录 `fstat()` 替代原来的多次 `fmode()/fstat()`。
+
+修复后单跑 `open14`：
+
+```text
+elapsed=65.94s
+open14      1  TPASS  :  single file tests passed
+open14      2  TPASS  :  multiple files tests passed
+open14      3  TPASS  :  file permission tests passed
+
+Summary:
+passed   3
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+相比 223.35s 基线，耗时下降约 70.5%。
 
 ## 验证
 

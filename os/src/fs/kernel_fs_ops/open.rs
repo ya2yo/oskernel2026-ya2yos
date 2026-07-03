@@ -135,25 +135,21 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     let parent_inode = target.parent_inode;
     let child_name = target.child_name;
     invalidate_dentry(&parent_inode, &child_name);
-    // 检查父目录的写入和执行权限
-    // 参考 faccessat 的权限检查逻辑
-    let parent_fmode = parent_inode.fmode()?;
-    let parent_mode = parent_fmode & 0xfff;
-    let parent_mode = FaccessatFileMode::from_bits_truncate(parent_mode);
-
-    if let Some(task) = current_task() {
+    let task_ids = current_task().map(|task| {
         let task_inner = task.inner_lock();
-        // root (euid 0) 绕过权限检查
-        // 使用 effective_uid，因为 Linux 文件权限检查基于 effective uid
-        if task_inner.effective_uid != 0 {
-            // 获取父目录的 owner uid/gid，用于判断进程是 owner/group/other
-            let pstat = parent_inode.fstat();
+        (task_inner.effective_uid, task_inner.effective_gid)
+    });
+    let parent_stat = task_ids.map(|_| parent_inode.fstat());
+
+    if let Some((my_uid, my_gid)) = task_ids {
+        // root (euid 0) 绕过权限检查；Linux 文件权限检查基于 effective uid。
+        if my_uid != 0 {
+            let pstat = parent_stat.as_ref().ok_or(SysErrNo::EACCES)?;
+            let parent_mode = FaccessatFileMode::from_bits_truncate((pstat.st_mode & 0xfff) as u32);
             let owner_uid = pstat.st_uid;
             let owner_gid = pstat.st_gid;
-            let my_uid = task_inner.effective_uid;
-            let my_gid = task_inner.effective_gid;
 
-            // 确定进程属于 owner / group / other 哪一类
+            // 确定进程属于 owner / group / other 哪一类。
             let (has_write, has_exec) = if my_uid == owner_uid {
                 (
                     parent_mode.contains(FaccessatFileMode::S_IWUSR),
@@ -203,17 +199,15 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     //     mode, umask, effective_mode
     // );
     inode.fmode_set(effective_mode);
-    if let Some(task) = current_task() {
-        let task_inner = task.inner_lock();
+    if let Some((uid, effective_gid)) = task_ids {
         // Linux assigns new inode gid from the parent directory when S_ISGID is set.
-        let parent_stat = parent_inode.fstat();
-        let parent_mode = parent_inode.fmode()? & 0o7777;
+        let parent_stat = parent_stat.as_ref().ok_or(SysErrNo::EACCES)?;
+        let parent_mode = parent_stat.st_mode & 0o7777;
         let gid = if parent_mode & 0o2000 != 0 {
             parent_stat.st_gid
         } else {
-            task_inner.effective_gid
+            effective_gid
         };
-        let (uid, gid) = (task_inner.effective_uid, gid);
         inode.owner_set(uid, gid)?;
     }
     let inode = FsIndex::insert_inode_idx(&create_path, inode);

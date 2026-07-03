@@ -1,6 +1,6 @@
 use alloc::{
     string::{String, ToString},
-    sync::{Arc, Weak},
+    sync::Arc,
 };
 use hashbrown::HashMap;
 use spin::{Lazy, RwLock};
@@ -19,7 +19,7 @@ enum InodeCacheKey {
 
 static PATH_INDEX: Lazy<RwLock<HashMap<String, InodeCacheKey>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
-static INODE_CACHE: Lazy<RwLock<HashMap<InodeCacheKey, Weak<dyn Inode>>>> =
+static INODE_CACHE: Lazy<RwLock<HashMap<InodeCacheKey, Arc<dyn Inode>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 static SPECIAL_NODE_TYPES: Lazy<RwLock<HashMap<String, InodeType>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
@@ -33,27 +33,21 @@ impl FsIndex {
 
     pub fn find_inode_idx(path: &str) -> Option<Arc<dyn Inode>> {
         let key = PATH_INDEX.read().get(path).cloned()?;
-        let inode = INODE_CACHE.read().get(&key).and_then(Weak::upgrade);
-        if let Some(inode) = inode {
-            inode.cache_path_alias(path);
-            Some(inode)
-        } else {
-            PATH_INDEX.write().remove(path);
-            INODE_CACHE.write().remove(&key);
-            None
-        }
+        let inode = INODE_CACHE.read().get(&key).cloned()?;
+        inode.cache_path_alias(path);
+        Some(inode)
     }
 
     pub fn insert_inode_idx(path: &str, inode: Arc<dyn Inode>) -> Arc<dyn Inode> {
         let key = Self::cache_key(path, &inode);
         let canonical = {
             let mut cache = INODE_CACHE.write();
-            if let Some(existing) = cache.get(&key).and_then(Weak::upgrade) {
+            if let Some(existing) = cache.get(&key).cloned() {
                 existing.cache_path_alias(path);
                 existing
             } else {
                 inode.cache_path_alias(path);
-                cache.insert(key.clone(), Arc::downgrade(&inode));
+                cache.insert(key.clone(), inode.clone());
                 inode
             }
         };

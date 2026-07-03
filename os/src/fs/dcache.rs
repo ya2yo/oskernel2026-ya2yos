@@ -1,6 +1,6 @@
 use alloc::{
     string::{String, ToString},
-    sync::{Arc, Weak},
+    sync::Arc,
 };
 use hashbrown::HashMap;
 use spin::{Lazy, RwLock};
@@ -14,7 +14,7 @@ struct DentryKey {
 }
 
 enum DentryValue {
-    Positive { inode: Weak<dyn Inode> },
+    Positive { inode: Arc<dyn Inode> },
     Negative,
 }
 
@@ -36,31 +36,18 @@ impl DentryCache {
 
     pub fn lookup(&self, parent: &Arc<dyn Inode>, name: &str) -> Option<DentryLookup> {
         let key = Self::key(parent, name);
-        let stale_positive = {
-            let entries = self.entries.read();
-            match entries.get(&key) {
-                Some(DentryValue::Positive { inode }) => match inode.upgrade() {
-                    Some(inode) => return Some(DentryLookup::Positive(inode)),
-                    None => true,
-                },
-                Some(DentryValue::Negative) => return Some(DentryLookup::Negative),
-                None => return None,
-            }
-        };
-
-        if stale_positive {
-            self.entries.write().remove(&key);
+        let entries = self.entries.read();
+        match entries.get(&key) {
+            Some(DentryValue::Positive { inode }) => Some(DentryLookup::Positive(inode.clone())),
+            Some(DentryValue::Negative) => Some(DentryLookup::Negative),
+            None => None,
         }
-        None
     }
 
     pub fn insert_positive(&self, parent: &Arc<dyn Inode>, name: &str, inode: Arc<dyn Inode>) {
-        self.entries.write().insert(
-            Self::key(parent, name),
-            DentryValue::Positive {
-                inode: Arc::downgrade(&inode),
-            },
-        );
+        self.entries
+            .write()
+            .insert(Self::key(parent, name), DentryValue::Positive { inode });
     }
 
     pub fn insert_negative(&self, parent: &Arc<dyn Inode>, name: &str) {

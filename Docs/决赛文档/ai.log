@@ -1365,6 +1365,92 @@ warnings 0
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
 
+## 2026-07-03: LTP open14 缓存生命周期与 live_path 性能优化
+
+### 用户需求
+
+用户要求继续按此前定位的性能优先级实现优化：先解决 `open14` 中缓存生命周期过短，再收窄 `Ext4Inode::live_path()` 的重复路径检查，最后精简 `create_file()` 的元数据读取。
+
+### 分析
+
+AI 先用临时低噪声埋点复测 `open14`。无最终代码残留的基线单跑结果为：
+
+```text
+elapsed=223.35
+open14      1  TPASS  :  single file tests passed
+open14      2  TPASS  :  multiple files tests passed
+open14      3  TPASS  :  file permission tests passed
+
+Summary:
+passed   3
+failed   0
+broken   0
+```
+
+埋点显示 `sys_openat(O_TMPFILE)` 本身不是瓶颈，206 次总计约 31 ms；主要耗时来自 100 层深目录循环中的 `mkdirat/chdir/linkat/unlinkat`：
+
+```text
+sys_mkdirat    201 次，总计约 77.0s
+sys_linkat     101 次，总计约 53.7s
+sys_unlinkat   303 次，总计约 43.4s
+sys_chdir      402 次，总计约 26.3s
+open_inner    1174 次，总计约 154.0s
+create_file    345 次，总计约 110.3s
+ext4_live_path 6320 次，总计约 99.6s
+```
+
+进一步对照实验确认：
+
+- `FsIndex` 与 dentry positive cache 保存 `Weak<dyn Inode>`，而 `open14` 的目录 inode 经常只由临时 fd 持有，关闭后 cache 失效。临时改 strong cache 后，`ext4_find` 从 1257 次降到 55 次，墙钟降到约 137.85s。
+- `Ext4Inode::live_path()` 每次元数据操作都先 `check_inode_exist()` 当前路径并扫描 alias。临时跳过重复检查后，墙钟继续降到约 76.36s。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/fsidx.rs` | `INODE_CACHE` 从 `Weak<dyn Inode>` 改为 strong `Arc<dyn Inode>`，路径索引仍保存 inode/path key，依赖现有 `remove_inode_idx()` 显式失效 |
+| `os/src/fs/dcache.rs` | dentry positive cache 从 `Weak` 改为 strong `Arc`，继续由 create/link/unlink/symlink/rename 路径回填或失效 |
+| `os/src/fs/ext4_lw/inode.rs` | `live_path()` 热路径直接返回当前 path，原 alias 检查改为 `recover_live_path()` 并只在 `fstat/fmode/fmode_set/owner_set` 底层失败后触发；`rename()` 成功后切换当前 `Ext4File` 到新路径 |
+| `os/src/fs/kernel_fs_ops/open.rs` | `create_file()` 用一次父目录 `fstat()` 同时服务权限检查与 `S_ISGID` gid 继承，避免重复 `fmode()/fstat()` |
+| `Docs/决赛文档/problem/open14-otmpfile-path-slow.md` | 补充性能复测、根因、修复与验证结果 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本轮 AI 辅助优化记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 600s make run
+```
+
+结果：默认 RISC-V 构建通过；单跑 `open14` 通过并降至约 65.94s：
+
+```text
+open14      1  TPASS  :  single file tests passed
+open14      2  TPASS  :  multiple files tests passed
+open14      3  TPASS  :  file permission tests passed
+
+Summary:
+passed   3
+failed   0
+broken   0
+skipped  0
+warnings 0
+
+elapsed=65.94
+```
+
+`make run` 中仍有包装器行：
+
+```text
+FAIL LTP CASE open14 : 0
+```
+
+该行退出码为 0，真实 LTP summary 为 `failed 0 broken 0`，按本仓库规则以 `TPASS/TFAIL/TBROK/Summary` 为准。
+
+未执行 `TARGET_ARCH=loongarch64`；本轮性能复测与验证基于当前默认 RISC-V 配置。
+
 ## 2026-07-03: LTP open14 O_TMPFILE 深层路径超时修复
 
 ### 用户需求

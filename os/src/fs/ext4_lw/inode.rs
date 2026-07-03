@@ -58,6 +58,10 @@ impl Ext4Inode {
     }
 
     fn live_path(inner: &mut Ext4InodeInner) -> String {
+        inner.f.path().into_string().unwrap()
+    }
+
+    fn recover_live_path(inner: &mut Ext4InodeInner) -> String {
         let current = inner.f.path().into_string().unwrap();
         let types = inner.f.types();
         if inner.f.check_inode_exist(&current, types.clone()) {
@@ -158,12 +162,18 @@ impl Inode for Ext4Inode {
     }
 
     fn rename(&self, path: &str, new_path: &str) -> SyscallRet {
-        let file = &mut self.inner.get_unchecked_mut().f;
-        let ret = file
+        let inner = self.inner.get_unchecked_mut();
+        let types = inner.f.types();
+        let ret = inner
+            .f
             .file_rename(path, new_path)
             .map_or(Err(SysErrNo::ENOENT), |_| Ok(0));
         if ret.is_ok() {
-            self.add_alias_path(new_path);
+            if inner.aliases.iter().all(|alias| alias != new_path) {
+                inner.aliases.push(new_path.to_string());
+            }
+            let _ = inner.f.file_close();
+            inner.f = Ext4File::new(new_path, types);
         }
         ret
     }
@@ -306,17 +316,21 @@ impl Inode for Ext4Inode {
     /// 获取文件状态信息
     fn fstat(&self) -> Kstat {
         let inner = self.inner.get_unchecked_mut();
-        let _ = Self::live_path(inner);
-        let file = &mut inner.f;
-        let stat = match file.fstat() {
+        let stat = match inner.f.fstat() {
             Ok(s) => s,
             Err(rc) => {
-                warn!(
-                    "Ext4Inode::fstat: ext4_stat_get failed rc={}, path={:?}",
-                    rc,
-                    file.path()
-                );
-                return Kstat::default();
+                let _ = Self::recover_live_path(inner);
+                match inner.f.fstat() {
+                    Ok(s) => s,
+                    Err(_) => {
+                        warn!(
+                            "Ext4Inode::fstat: ext4_stat_get failed rc={}, path={:?}",
+                            rc,
+                            inner.f.path()
+                        );
+                        return Kstat::default();
+                    }
+                }
             }
         };
         let mut tmp_stat = stat; // ext4_inode_stat
@@ -440,30 +454,42 @@ impl Inode for Ext4Inode {
 
     fn fmode(&self) -> Result<u32, SysErrNo> {
         let inner = self.inner.get_unchecked_mut();
-        let _ = Self::live_path(inner);
-        let file = &mut inner.f;
-        file.file_mode().map_err(SysErrNo::from)
+        match inner.f.file_mode() {
+            Ok(mode) => Ok(mode),
+            Err(_) => {
+                let _ = Self::recover_live_path(inner);
+                inner.f.file_mode().map_err(SysErrNo::from)
+            }
+        }
     }
     fn fmode_set(&self, mode: u32) -> SyscallRet {
         let inner = self.inner.get_unchecked_mut();
-        let _ = Self::live_path(inner);
-        let file = &mut inner.f;
         let mode_type = mode & 0o170000;
         let mode_type = if mode_type != 0 {
             mode_type
         } else {
-            as_inode_type(file.file_type()).mode_bits()
+            as_inode_type(inner.f.file_type()).mode_bits()
         };
         let mode = mode_type | (mode & 0o7777);
-        file.file_mode_set(mode).map_err(SysErrNo::from)
+        match inner.f.file_mode_set(mode) {
+            Ok(ret) => Ok(ret),
+            Err(_) => {
+                let _ = Self::recover_live_path(inner);
+                inner.f.file_mode_set(mode).map_err(SysErrNo::from)
+            }
+        }
     }
 
     fn owner_set(&self, uid: u32, gid: u32) -> SyscallRet {
         // Keep owner updates in the filesystem layer so stat and permission checks agree.
         let inner = self.inner.get_unchecked_mut();
-        let _ = Self::live_path(inner);
-        let file = &mut inner.f;
-        file.file_owner_set(uid, gid).map_err(SysErrNo::from)
+        match inner.f.file_owner_set(uid, gid) {
+            Ok(ret) => Ok(ret),
+            Err(_) => {
+                let _ = Self::recover_live_path(inner);
+                inner.f.file_owner_set(uid, gid).map_err(SysErrNo::from)
+            }
+        }
     }
 }
 
