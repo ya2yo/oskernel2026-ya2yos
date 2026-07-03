@@ -140,11 +140,40 @@ pub fn patch_dynamic_link_file_bytes(path: &str, off: usize, buf: &mut [u8]) {
     // Some libc files in the competition image need compatibility fixes before
     // userspace maps them. Apply those fixes to the bytes being read only; the
     // backing ext4 image remains unchanged.
+    #[cfg(target_arch = "riscv64")]
+    patch_riscv64_musl_libc_epoll_create(path, off, buf);
+
     #[cfg(target_arch = "loongarch64")]
     patch_loongarch_musl_libc_sched_stubs(path, off, buf);
 
-    #[cfg(not(target_arch = "loongarch64"))]
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
     let _ = (path, off, buf);
+}
+
+#[cfg(target_arch = "riscv64")]
+fn patch_riscv64_musl_libc_epoll_create(path: &str, off: usize, buf: &mut [u8]) {
+    if path != "/musl/lib/libc.so" {
+        return;
+    }
+
+    // The riscv64 musl libc in the pre-test image implements epoll_create(size)
+    // as epoll_create1(0) without checking size <= 0. Patch only the read bytes
+    // so old epoll_create keeps Linux's EINVAL semantics while epoll_create1(0)
+    // still succeeds.
+    const EPOLL_CREATE_ENTRY: &[u8] = &[
+        0x6f, 0x10, 0xc5, 0x63, // j 0x72c30
+        0x13, 0x00, 0x00, 0x00, // nop
+    ];
+    const EPOLL_CREATE_TRAMPOLINE: &[u8] = &[
+        0x63, 0x56, 0xa0, 0x00, // blez a0, invalid
+        0x13, 0x05, 0x00, 0x00, // li a0, 0
+        0x6f, 0xe0, 0x5a, 0x99, // j epoll_create1
+        0x13, 0x05, 0xa0, 0xfe, // invalid: li a0, -EINVAL
+        0x6f, 0xd0, 0x8a, 0xe8, // j __syscall_ret
+    ];
+
+    patch_range(off, buf, 0x215f4, EPOLL_CREATE_ENTRY);
+    patch_range(off, buf, 0x72c30, EPOLL_CREATE_TRAMPOLINE);
 }
 
 #[cfg(target_arch = "loongarch64")]
@@ -174,7 +203,7 @@ fn patch_loongarch_musl_libc_sched_stubs(path: &str, off: usize, buf: &mut [u8])
     patch_range(off, buf, 0x54564, RET_ZERO); // sched_setscheduler
 }
 
-#[cfg(target_arch = "loongarch64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 fn patch_range(read_off: usize, buf: &mut [u8], patch_off: usize, patch: &[u8]) {
     let read_end = read_off.saturating_add(buf.len());
     let patch_end = patch_off + patch.len();

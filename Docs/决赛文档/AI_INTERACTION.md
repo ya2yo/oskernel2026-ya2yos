@@ -222,3 +222,10 @@
 - **场景**：`log.ans` 分析、启动期 `/proc` 兼容文件补齐、LTP `tst_virt` 回归验证、文档完善
 - **描述**：用户要求分析并修复 `tst_virt.c:37: TBROK: fopen(/proc/cpuinfo,r) failed: ENOENT (2)`。AI 确认失败发生在 LTP 公共虚拟化探测库读取 `/proc/cpuinfo` 阶段；Ya2yOS 启动期已有 `/proc/mounts` 和 `/proc/meminfo` 等兼容文件，但缺少 `/proc/cpuinfo`，导致 `openat("/proc/cpuinfo")` 走普通 ext4 查找并返回 `ENOENT`。修复为在 `create_proc_files()` 中写入 RISC-V/LoongArch64 最小 `CPUINFO` 文本，并刻意不包含 `QEMU Virtual CPU`，避免改变 LTP 对 KVM 的判断。`make` 通过，用户确认最新 `log.ans` 已通过，summary 为 `passed 7 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/proc-cpuinfo-tst-virt.md](./problem/proc-cpuinfo-tst-virt.md)。
 - **关联 commit**：未提交
+
+#### LTP epoll_create02 RISC-V musl libc 包装语义修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、RISC-V 预赛 musl libc 包装函数反汇编、动态库只读兼容补丁、LTP `epoll_create02` 回归验证、文档完善
+- **描述**：用户要求修复 `epoll_create(0) invalid retval 3: SUCCESS`。AI 确认内核 `epoll_create1(0)` 本身必须成功，不能在 syscall 层改语义；失败来自 RISC-V 预赛镜像 `/musl/lib/libc.so` 的 `epoll_create(size)` 包装函数直接 `li a0,0; j epoll_create1`，没有检查 `size <= 0`。修复为在动态库读取路径中仅对 RISC-V `/musl/lib/libc.so` 做只读 patch：旧 `epoll_create(size)` 非法 size 返回 `EINVAL`，合法 size 仍转 `epoll_create1(0)`，不影响 `epoll_create1(0)`。`make TARGET_ARCH=riscv64` 通过，临时单跑 `epoll_create02` 的 libc 变体两项均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/epoll-create02-riscv-musl-libc.md](./problem/epoll-create02-riscv-musl-libc.md)。
+- **关联 commit**：未提交
