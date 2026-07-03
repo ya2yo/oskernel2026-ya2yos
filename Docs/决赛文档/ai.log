@@ -1365,6 +1365,68 @@ warnings 0
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
 
+## 2026-07-03: LTP alarm05 setitimer old_value 剩余时间修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 并修复 bug。修复后用户确认最新输出已在 `log.ans` 且测例成功通过，要求开始写文档，并询问为什么计时器模块会出问题。
+
+### 分析
+
+AI 按仓库 `fix-bug` 流程先过滤 `log.ans` 中的 `TPASS/TFAIL/TBROK/Summary/panic` 关键行，确认失败来自 LTP `alarm05`：
+
+```text
+alarm05.c:28: TPASS: alarm(10) passed
+alarm05.c:30: TFAIL: alarm(1) retval 10 != 9: SUCCESS (0)
+alarm05.c:32: TPASS: alarms_fired == 1 (1)
+```
+
+日志时序显示测试先调用 `alarm(10)`，睡眠约 1 秒后调用 `alarm(1)` 替换旧闹钟。Linux `alarm()` 返回值应是旧闹钟剩余秒数，因此期望约 9 秒；Ya2yOS 返回 10，说明旧 timer 查询路径返回了原始设置值。
+
+AI 检查 `os/src/timer/itimerval.rs` 和 `os/src/syscall/time.rs` 后确认，`Timer` 内部保存 `timer` 与 `last_time`，到期投递路径会用时间差判断是否发送 `SIGALRM`，但 `Timer::timer()` 直接返回内部保存的 `Itimerval`。因此 timer delivery 基本正常，问题只暴露在 `getitimer()` / `setitimer(old_value)` / libc `alarm()` 返回值语义上。
+
+同时发现周期 timer 的到期判断在 `it_interval` 非空时直接用 interval 作为 duration，容易让首次到期时间不按 `it_value` 计算。修复时一并改为“当前 `it_value` 表示本轮剩余/持续时间，到期后再把下一轮 `it_value` 设为 `it_interval`”。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/timer/timeval.rs` | 增加 `USEC_PER_SEC` 和 `TimeVal::saturating_sub()`，用于安全计算经过时间和剩余时间 |
+| `os/src/timer/itimerval.rs` | `Timer::timer(now)` 返回实时剩余 `it_value`；周期 timer 到期后将 `it_value` 推进为 `it_interval` |
+| `os/src/syscall/time.rs` | `getitimer` 与 `setitimer(old_value)` 使用实时剩余 timer；`setitimer` 的 old_value 读取和新 timer 安装共用同一 `now` |
+| `Docs/决赛文档/problem/alarm05-itimer-remaining.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：默认 RISC-V 构建通过，仅有既有 warning。
+
+AI 曾尝试在沙箱内运行 QEMU，因 `/var/tmp` 只读无法创建 QEMU 临时文件而未启动；随后用户确认外部运行成功输出已在 `log.ans`。AI 读取最新 `log.ans`，其中 `alarm05` 3 项核心断言均 `TPASS`：
+
+```text
+alarm05.c:28: TPASS: alarm(10) passed
+alarm05.c:30: TPASS: alarm(1) passed
+alarm05.c:32: TPASS: alarms_fired == 1 (1)
+
+Summary:
+passed   3
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+`log.ans` 中仍有包装器行 `FAIL LTP CASE alarm05 : 10`，但本仓库判读 LTP 时以 `TPASS/TFAIL/TBROK/Summary` 为准。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
+
 ## 2026-07-03: LTP acct02 accounting exit(128) 状态编码修复
 
 ### 用户需求

@@ -86,8 +86,14 @@ impl Timer {
         }
     }
 
-    pub fn timer(&self) -> Itimerval {
-        self.inner.get_unchecked_ref().timer
+    pub fn timer(&self, now: TimeVal) -> Itimerval {
+        let inner = self.inner.get_unchecked_ref();
+        let mut timer = inner.timer;
+        if !timer.it_value.is_empty() {
+            let elapsed = now.saturating_sub(inner.last_time);
+            timer.it_value = timer.it_value.saturating_sub(elapsed);
+        }
+        timer
     }
 
     /// Install a POSIX interval timer and arm its first expiration.
@@ -107,18 +113,14 @@ impl Timer {
             return false;
         }
 
-        let duration = if inner.timer.it_interval.is_empty() {
-            inner.timer.it_value
-        } else {
-            inner.timer.it_interval
-        };
-        if now <= inner.last_time + duration {
+        if now <= inner.last_time + inner.timer.it_value {
             return false;
         }
 
         if inner.timer.it_interval.is_empty() {
             inner.timer.it_value = TimeVal::new(0, 0);
         } else {
+            inner.timer.it_value = inner.timer.it_interval;
             inner.last_time = now;
         }
         true

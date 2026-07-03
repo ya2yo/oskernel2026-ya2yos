@@ -12,6 +12,8 @@ use core::ops::Add;
 
 use crate::timer::get_time_ms;
 
+const USEC_PER_SEC: usize = 1_000_000;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimeVal {
@@ -39,6 +41,21 @@ impl TimeVal {
     pub fn is_empty(&self) -> bool {
         self.tv_sec == 0 && self.tv_usec == 0
     }
+
+    pub fn saturating_sub(self, rhs: Self) -> Self {
+        if self <= rhs {
+            return Self::new(0, 0);
+        }
+
+        if self.tv_usec >= rhs.tv_usec {
+            Self::new(self.tv_sec - rhs.tv_sec, self.tv_usec - rhs.tv_usec)
+        } else {
+            Self::new(
+                self.tv_sec - rhs.tv_sec - 1,
+                self.tv_usec + USEC_PER_SEC - rhs.tv_usec,
+            )
+        }
+    }
 }
 
 impl Add for TimeVal {
@@ -46,8 +63,8 @@ impl Add for TimeVal {
     fn add(self, rhs: Self) -> Self::Output {
         let usec = self.tv_usec + rhs.tv_usec;
         Self {
-            tv_sec: self.tv_sec + rhs.tv_sec + usec / 1_000_000,
-            tv_usec: usec % 1_000_000,
+            tv_sec: self.tv_sec + rhs.tv_sec + usec / USEC_PER_SEC,
+            tv_usec: usec % USEC_PER_SEC,
         }
     }
 }

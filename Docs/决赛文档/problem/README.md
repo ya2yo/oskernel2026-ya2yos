@@ -13,3 +13,4 @@
 - [access04 faccessat ENAMETOOLONG 与 EROFS 语义](./access04-faccessat-name-rofs.md)
 - [acct01 acct errno 语义修复](./acct01-sys-acct-errno.md)
 - [acct02 accounting exit(128) 状态编码](./acct02-exitcode-128.md)
+- [alarm05 setitimer old_value 剩余时间语义](./alarm05-itimer-remaining.md)

@@ -73,7 +73,7 @@ pub fn sys_gettimer(_which: i32, curr_value: usize) -> SyscallRet {
     let proc_inner = &task.process;
     let memory_set = proc_inner.memory_set_arc();
 
-    let timer = task_inner.timer.timer();
+    let timer = task_inner.timer.timer(TimeVal::now());
     copy_to_user(&memory_set, curr_value, unsafe {
         core::slice::from_raw_parts(
             &timer as *const Itimerval as *const u8,
@@ -93,8 +93,9 @@ pub fn sys_settimer(
     let task_inner = task.inner_lock();
     let proc_inner = &task.process;
     let memory_set = proc_inner.memory_set_arc();
+    let now = TimeVal::now();
     if old_value as usize != 0 {
-        let timer = task_inner.timer.timer();
+        let timer = task_inner.timer.timer(now);
         copy_to_user(&memory_set, old_value as usize, unsafe {
             core::slice::from_raw_parts(
                 &timer as *const Itimerval as *const _,
@@ -111,7 +112,7 @@ pub fn sys_settimer(
             )
         })?;
         // debug!("[sys_settimer] new_timer={:?}", new_timer);
-        task_inner.timer.set_itimer(new_timer, TimeVal::now());
+        task_inner.timer.set_itimer(new_timer, now);
     }
     Ok(0)
 }

@@ -177,3 +177,10 @@
 - **场景**：`log.ans` 分析、process accounting `ac_exitcode` 编码修复、LTP acct02 回归验证、文档完善
 - **描述**：用户要求分析并修复 `acct02`。AI 确认失败来自 accounting 记录已写出但 `ac_exitcode` 为 0；`acct02_helper` 正常 `exit(128)`，LTP 期望 wait status `128 << 8 = 32768`。根因是 `acct.rs` 中 `wait_status_from_exit_code()` 对普通退出码 `128..255` 做了错误归零处理，和 `wait4` 的普通退出编码不一致。修复为删除该特殊分支，普通退出统一写 `exit_code << 8`，信号终止仍按 `termination_signal` 编码。`make` 通过，`make run` 单跑 `acct02` 后 `log.ans` 显示 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/acct02-exitcode-128.md](./problem/acct02-exitcode-128.md)。
 - **关联 commit**：未提交
+
+#### LTP alarm05 setitimer 剩余时间语义修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、`alarm(2)`/`setitimer(2)` old_value 剩余时间语义修复、周期 timer 推进语义修正、LTP alarm05 回归验证、文档完善
+- **描述**：用户要求分析并修复 `alarm05`，随后确认最新 `log.ans` 已通过，并询问为什么看似标准的计时器模块仍有问题。AI 确认原实现能按 `last_time` 驱动 `SIGALRM` 投递，但 `Timer::timer()` 直接返回原始 `it_value`，导致 `alarm(10)` 经过约 1 秒后被 `alarm(1)` 替换时仍返回 10，而不是旧闹钟剩余约 9 秒。修复为用 `now - last_time` 折算 `getitimer/setitimer(old_value)` 返回的剩余 `it_value`，并让周期 timer 到期后把下一轮 `it_value` 设为 `it_interval`。`make` 通过，最新 `log.ans` 中 `alarm05` 3 项核心断言均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/alarm05-itimer-remaining.md](./problem/alarm05-itimer-remaining.md)。
+- **关联 commit**：未提交
