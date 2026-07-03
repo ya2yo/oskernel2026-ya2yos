@@ -1,4 +1,4 @@
-use crate::fs::map_library_path;
+use crate::fs::{map_library_path, DentryLookup, DENTRY_CACHE};
 use crate::syscall::FaccessatFileMode;
 use crate::task::current_task;
 use crate::utils::SysResult;
@@ -30,6 +30,7 @@ fn join_parent_child(parent: &str, child: &str) -> String {
 struct ParentPath {
     parent_inode: Arc<dyn Inode>,
     create_path: String,
+    child_name: String,
 }
 
 fn resolve_parent_path(abs_path: &str) -> SysResult<ParentPath> {
@@ -51,6 +52,7 @@ fn resolve_parent_path(abs_path: &str) -> SysResult<ParentPath> {
     Ok(ParentPath {
         create_path: join_parent_child(&parent_inode.path(), child_name),
         parent_inode,
+        child_name: String::from(child_name),
     })
 }
 
@@ -65,14 +67,62 @@ fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult
         return Some(Err(SysErrNo::ENOTDIR));
     }
 
+    if !flags.contains(OpenFlags::O_NOFOLLOW) {
+        match DENTRY_CACHE.lookup(&parent_inode, child_name) {
+            Some(DentryLookup::Positive(inode)) => return Some(Ok(inode)),
+            Some(DentryLookup::Negative) if !flags.contains(OpenFlags::O_CREATE) => {
+                return Some(Err(SysErrNo::ENOENT));
+            }
+            _ => {}
+        }
+    }
+
     let lookup_path = join_parent_child(&parent_inode.path(), child_name);
-    Some(parent_inode.find(&lookup_path, flags, 0).map(|inode| {
+    let found = parent_inode.find(&lookup_path, flags, 0).map(|inode| {
         let inode = FsIndex::insert_inode_idx(&lookup_path, inode);
         if lookup_path != abs_path {
             FsIndex::insert_inode_idx(abs_path, inode.clone());
         }
+        if !flags.contains(OpenFlags::O_NOFOLLOW) {
+            DENTRY_CACHE.insert_positive(&parent_inode, child_name, inode.clone());
+        }
         inode
-    }))
+    });
+    if found.as_ref().err() == Some(&SysErrNo::ENOENT)
+        && !flags.contains(OpenFlags::O_NOFOLLOW)
+        && !flags.contains(OpenFlags::O_CREATE)
+    {
+        DENTRY_CACHE.insert_negative(&parent_inode, child_name);
+    }
+    Some(found)
+}
+
+fn cache_created_dentry(parent_inode: &Arc<dyn Inode>, child_name: &str, inode: Arc<dyn Inode>) {
+    if !child_name.is_empty() {
+        DENTRY_CACHE.insert_positive(parent_inode, child_name, inode);
+    }
+}
+
+fn invalidate_dentry(parent_inode: &Arc<dyn Inode>, child_name: &str) {
+    if !child_name.is_empty() {
+        DENTRY_CACHE.invalidate(parent_inode, child_name);
+    }
+}
+
+pub fn invalidate_dentry_path(abs_path: &str) {
+    if let Some((parent_path, child_name)) = split_parent_child(abs_path) {
+        if let Some(parent_inode) = FsIndex::find_inode_idx(parent_path) {
+            invalidate_dentry(&parent_inode, child_name);
+        }
+    }
+}
+
+pub fn cache_positive_dentry_path(abs_path: &str, inode: Arc<dyn Inode>) {
+    if let Some((parent_path, child_name)) = split_parent_child(abs_path) {
+        if let Some(parent_inode) = FsIndex::find_inode_idx(parent_path) {
+            cache_created_dentry(&parent_inode, child_name, inode);
+        }
+    }
 }
 
 fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
@@ -83,6 +133,8 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     let target = resolve_parent_path(abs_path)?;
     let create_path = target.create_path;
     let parent_inode = target.parent_inode;
+    let child_name = target.child_name;
+    invalidate_dentry(&parent_inode, &child_name);
     // 检查父目录的写入和执行权限
     // 参考 faccessat 的权限检查逻辑
     let parent_fmode = parent_inode.fmode()?;
@@ -168,6 +220,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     if create_path != abs_path {
         FsIndex::insert_inode_idx(abs_path, inode.clone());
     }
+    cache_created_dentry(&parent_inode, &child_name, inode.clone());
     let osinode = OSFile::new(
         readable,
         writable,

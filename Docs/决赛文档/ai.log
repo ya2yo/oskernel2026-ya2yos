@@ -1485,6 +1485,56 @@ warnings 0
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次优化和验证基于当前默认 RISC-V 配置。
 
+## 2026-07-03: VFS dentry cache 接入 open 父目录缓存路径
+
+### 用户需求
+
+用户要求在 `os/src/fs/dcache.rs` 当前文件中实现 dentry cache 机制，用于后续让 `open()` 使用已缓存父目录下的目录项结果，减少频繁磁盘读写和路径式查找。
+
+### 分析
+
+AI 复查当前文件系统缓存层后确认，已有 `FILE_PAGE_CACHE` 缓存 regular file 页，`FsIndex` 缓存路径到 inode 身份，但缺少 `(parent, name) -> child` 这一层目录项缓存。`open14` 深层路径中，父目录 inode 通常已经由前序 `mkdir/chdir/open` 缓存；如果 child 名称也能在 VFS 层命中，就可以直接返回 child inode 或 `ENOENT`，避免再次进入 lwext4 的路径式 `check_inode_exist()`。
+
+为避免 dentry cache 命中时又触发 `fstat()` 或 `path()` 元数据查询，AI 采用父 inode 对象地址加 child name 作为 key。positive 项保存 `Weak<dyn Inode>`，不额外延长 inode 生命周期；negative 项只在非 `O_CREAT` 查找中使用，降低 create-if-not-exist 场景 stale negative 的风险。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/dcache.rs` | 新增 `DentryCache`、`DentryLookup` 和全局 `DENTRY_CACHE`，支持 positive/negative lookup、插入、失效和父目录批量失效 |
+| `os/src/fs/mod.rs` | 导出 dentry cache，并导出 dentry 路径失效/回填辅助函数 |
+| `os/src/fs/kernel_fs_ops/open.rs` | `find_from_cached_parent()` 先查 dentry cache，miss 后再查底层；创建成功后回填 positive；新增 `invalidate_dentry_path()` 和 `cache_positive_dentry_path()` |
+| `os/src/fs/kernel_fs_ops/mod.rs` | 对外导出 dentry 路径辅助函数 |
+| `os/src/syscall/fs/ctl.rs` | 在 `mknod/linkat/O_TMPFILE materialize` 成功后回填 dentry；在 `unlinkat/symlinkat/renameat2` 成功后失效相关 dentry |
+| `Docs/决赛文档/problem/open14-otmpfile-path-slow.md` | 补充 dentry cache 设计、限制和验证结果 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次优化记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 600s make run
+```
+
+结果：默认 RISC-V 构建通过；`open14` 单跑 3 项均 `TPASS`：
+
+```text
+open14      1  TPASS  :  single file tests passed
+open14      2  TPASS  :  multiple files tests passed
+open14      3  TPASS  :  file permission tests passed
+
+Summary:
+passed   3
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次优化和验证基于当前默认 RISC-V 配置。
+
 ## 2026-07-03: LTP splice07 文件类型校验与空 pipe 卡死修复
 
 ### 用户需求

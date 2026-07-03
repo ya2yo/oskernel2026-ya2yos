@@ -5,8 +5,9 @@ use linux_raw_sys::general::{AT_EMPTY_PATH, AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_
 use log::debug;
 
 use crate::fs::{
-    open, superblock_root_inode, superblock_sync, File, FsIndex, Inode, InodeType, OpenFlags,
-    MAX_PATH_LEN, NONE_MODE, SEEK_CUR, SEEK_SET,
+    cache_positive_dentry_path, invalidate_dentry_path, open, superblock_root_inode,
+    superblock_sync, File, FsIndex, Inode, InodeType, OpenFlags, MAX_PATH_LEN, NONE_MODE, SEEK_CUR,
+    SEEK_SET,
 };
 use crate::mm::{
     copy_from_user, copy_to_user, if_bad_address, read_user_cstr, user_buffer_from_kernel,
@@ -137,7 +138,8 @@ pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> Syscall
     let root = superblock_root_inode();
     let inode = root.create(&abs_path, inode_type)?;
     inode.fmode_set((type_mode | perm) as u32)?;
-    FsIndex::insert_inode_idx(&abs_path, inode);
+    let inode = FsIndex::insert_inode_idx(&abs_path, inode);
+    cache_positive_dentry_path(&abs_path, inode);
     FsIndex::insert_special_node_type(&abs_path, inode_type);
     Ok(0)
 }
@@ -222,7 +224,8 @@ pub fn sys_linkat(
         let old_file = proc_inner.fd_table.get(oldfd as usize)?.file()?;
         let old_path = old_file.inode.path();
         old_file.inode.hard_link(&old_path, &new_abs_path)?;
-        FsIndex::insert_inode_idx(&new_abs_path, old_file.inode.clone());
+        let inode = FsIndex::insert_inode_idx(&new_abs_path, old_file.inode.clone());
+        cache_positive_dentry_path(&new_abs_path, inode);
         return Ok(0);
     }
 
@@ -262,7 +265,8 @@ pub fn sys_linkat(
         }
 
         src.lseek(old_offset as isize, SEEK_SET)?;
-        FsIndex::insert_inode_idx(&new_abs_path, dst.inode.clone());
+        let inode = FsIndex::insert_inode_idx(&new_abs_path, dst.inode.clone());
+        cache_positive_dentry_path(&new_abs_path, inode);
         return Ok(0);
     }
 
@@ -282,7 +286,8 @@ pub fn sys_linkat(
     // 在文件系统层面创建硬链接
     osfile.inode.hard_link(&old_abs_path, &new_abs_path)?;
     // 更新目录索引：新路径与旧路径共享同一个 inode
-    FsIndex::insert_inode_idx(&new_abs_path, osfile.inode.clone());
+    let inode = FsIndex::insert_inode_idx(&new_abs_path, osfile.inode.clone());
+    cache_positive_dentry_path(&new_abs_path, inode);
 
     Ok(0)
 }
@@ -318,6 +323,7 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     }
     if is_dir {
         osfile.inode.unlink(&abs_path)?;
+        invalidate_dentry_path(&abs_path);
         FsIndex::remove_inode_idx(&abs_path);
         return Ok(0);
     }
@@ -334,9 +340,11 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     let has_fd = locked_fs_info.has_fd(&abs_path);
     if has_fd && osfile.inode.link_cnt()? == 1 {
         osfile.inode.delay();
+        invalidate_dentry_path(&abs_path);
         FsIndex::remove_inode_idx(&abs_path);
     } else {
         osfile.inode.unlink(&abs_path)?;
+        invalidate_dentry_path(&abs_path);
         FsIndex::remove_inode_idx(&abs_path);
     }
 
@@ -494,6 +502,7 @@ pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) ->
     new_file
         .inode
         .sym_link(target_path.as_str(), abs_link_path.as_str())?;
+    invalidate_dentry_path(&abs_link_path);
     Ok(0)
 }
 
@@ -523,6 +532,8 @@ pub fn sys_renameat2(
     // 否则后续对旧路径的访问会命中缓存中的过期 inode，导致 fstat 等操作
     // 因底层 ext4_stat_get 找不到原路径而返回 ENOENT → panic。
     if ret.is_ok() {
+        invalidate_dentry_path(&old_abs_path);
+        invalidate_dentry_path(&new_abs_path);
         FsIndex::remove_inode_idx(&old_abs_path);
         FsIndex::remove_inode_idx(&new_abs_path);
     }

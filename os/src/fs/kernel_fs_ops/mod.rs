@@ -13,7 +13,7 @@ use super::{
 use crate::utils::SysErrNo;
 pub use fsidx::FsIndex;
 pub use initfiles::create_init_files;
-pub use open::{open, open_direct};
+pub use open::{cache_positive_dentry_path, invalidate_dentry_path, open, open_direct};
 pub use proc_file::{
     create_proc_dir_and_file, refresh_proc_stat, refresh_proc_status, remove_proc_dir_and_file,
 };

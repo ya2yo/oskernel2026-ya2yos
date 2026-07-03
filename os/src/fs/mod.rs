@@ -1,3 +1,4 @@
+mod dcache;
 mod ext4_lw;
 mod files;
 mod fs_info;
@@ -22,6 +23,7 @@ pub use files::devfs::*;
 pub use fs_info::*;
 pub use fstruct::*;
 // pub mod socket_defs;
+pub use dcache::*;
 pub use files::pipe::{make_pipe, open_fifo, Pipe};
 pub use files::stdio::{Stdin, Stdout};
 use log::debug;
@@ -31,8 +33,9 @@ pub use stat::*;
 pub use vfs::*;
 mod kernel_fs_ops;
 pub use kernel_fs_ops::{
-    create_init_files, create_proc_dir_and_file, open, open_direct, refresh_proc_stat,
-    refresh_proc_status, remove_proc_dir_and_file, FsIndex,
+    cache_positive_dentry_path, create_init_files, create_proc_dir_and_file,
+    invalidate_dentry_path, open, open_direct, refresh_proc_stat, refresh_proc_status,
+    remove_proc_dir_and_file, FsIndex,
 };
 mod map_dynamic_link;
 pub use map_dynamic_link::{

@@ -64,6 +64,19 @@ open14      0  TINFO  :  creating a file with O_TMPFILE flag
 
 需要注意的是，当前 `lwext4_rust` wrapper 暴露的是 `check_inode_exist(path, type)` / `file_open(path, flags)` 这类路径接口，没有可直接从父目录句柄查相对子项的安全封装。因此这次优化复用了 VFS 层已缓存父 inode，减少父目录重复解析和元数据路径查询；底层 ext4 对 child 的存在性判断仍然是路径式 API。
 
+## Dentry cache 优化
+
+在父目录 inode 已经缓存后，继续从底层 ext4 路径接口查 child 仍会产生重复目录项查询。为进一步利用已缓存父目录，本次在 `os/src/fs/dcache.rs` 实现 VFS dentry cache：
+
+- cache key 使用“父 inode 对象地址 + child name”，命中时不需要额外 `fstat()` 或 `path()` 计算 key，避免把 cache hit 变成新的元数据查询。
+- positive dentry 保存 `Weak<dyn Inode>`，不会因为 dentry cache 自身额外延长 inode 生命周期；weak 失效后自动删除该项并回退到底层查找。
+- negative dentry 只在非 `O_CREAT` 路径上使用，避免 create-if-not-exist 场景被旧的不存在缓存误导。
+- `find_from_cached_parent()` 先查 dentry cache：positive 命中直接返回 child inode，negative 命中直接返回 `ENOENT`，miss 才调用底层 `parent_inode.find()`。
+- `create_file()` 成功后回填 positive dentry；直接 `mknod`、`linkat`、`O_TMPFILE` materialize 也在插入 `FsIndex` 后回填。
+- `unlinkat`、`symlinkat`、`renameat2` 成功后失效对应 dentry，避免 stale positive/negative 影响后续 `open()` 语义。
+
+该实现仍然保留前一节提到的限制：底层 lwext4 没有暴露真正的“父目录句柄 + child name”相对查找接口，所以 dentry miss 时仍会走路径式 API；但 dentry hit 可以直接绕过这一步。
+
 ## 验证
 
 已执行：
@@ -99,6 +112,30 @@ FAIL LTP CASE open14 : 0
 本次验证基于当前默认 RISC-V 配置；未额外执行 `TARGET_ARCH=loongarch64`。
 
 进一步优化后再次执行：
+
+```text
+make
+timeout 600s make run
+```
+
+结果仍为：
+
+```text
+open14      1  TPASS  :  single file tests passed
+open14      2  TPASS  :  multiple files tests passed
+open14      3  TPASS  :  file permission tests passed
+
+Summary:
+passed   3
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+本轮只验证默认 RISC-V；未额外执行 `TARGET_ARCH=loongarch64`。
+
+Dentry cache 接入后再次执行：
 
 ```text
 make
