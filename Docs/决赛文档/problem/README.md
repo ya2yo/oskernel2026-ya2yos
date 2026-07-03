@@ -12,3 +12,4 @@
 - [access02 CLONE_VM panic 与 O_RDONLY 权限误判](./access02-ltp-execve.md)
 - [access04 faccessat ENAMETOOLONG 与 EROFS 语义](./access04-faccessat-name-rofs.md)
 - [acct01 acct errno 语义修复](./acct01-sys-acct-errno.md)
+- [acct02 accounting exit(128) 状态编码](./acct02-exitcode-128.md)

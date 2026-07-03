@@ -168,10 +168,6 @@ fn ms_to_user_ticks(ms: isize) -> u64 {
 fn wait_status_from_exit_code(exit_code: i32, termination_signal: Option<(usize, bool)>) -> u32 {
     if let Some((signo, dumped_core)) = termination_signal {
         signo as u32 | if dumped_core { 0x80 } else { 0 }
-    } else if exit_code >= 128 && exit_code <= 255 {
-        // 当前 wait4 路径会把 128..255 当作已编码状态返回；
-        // acct02 也按用户态可见的 WEXITSTATUS(status) << 8 比对。
-        0
     } else {
         (exit_code as u32) << 8
     }

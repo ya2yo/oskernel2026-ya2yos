@@ -170,3 +170,10 @@
 - **场景**：`log.ans` 分析、`acct(2)` Linux errno 语义修复、effective uid 权限判断、只读挂载与路径边界检查、LTP acct01 回归验证、文档完善
 - **描述**：用户要求分析并修复 `acct01`。AI 确认失败来自 `sys_acct()` 错误优先级和凭证判断：尾随 `/` 被路径规范化吞掉，非特权场景只改 effective uid 但原实现检查 real uid，`open(O_WRONLY)` 的 `EACCES` 覆盖了 `EPERM`，256 字节文件名分量缺少 `NAME_MAX=255` 检查，只读挂载点未返回 `EROFS`。修复为用 effective uid 判断 `CAP_SYS_PACCT`，补齐空路径、文件名分量、尾随 `/` 和只读挂载检查，并先只读验证路径类型、最后再用 `O_WRONLY` 保存 accounting 文件。`make` 通过，最新 `log.ans` 中 `acct01` 9 项核心断言均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/acct01-sys-acct-errno.md](./problem/acct01-sys-acct-errno.md)。
 - **关联 commit**：未提交
+
+#### LTP acct02 accounting exit(128) 状态编码修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、process accounting `ac_exitcode` 编码修复、LTP acct02 回归验证、文档完善
+- **描述**：用户要求分析并修复 `acct02`。AI 确认失败来自 accounting 记录已写出但 `ac_exitcode` 为 0；`acct02_helper` 正常 `exit(128)`，LTP 期望 wait status `128 << 8 = 32768`。根因是 `acct.rs` 中 `wait_status_from_exit_code()` 对普通退出码 `128..255` 做了错误归零处理，和 `wait4` 的普通退出编码不一致。修复为删除该特殊分支，普通退出统一写 `exit_code << 8`，信号终止仍按 `termination_signal` 编码。`make` 通过，`make run` 单跑 `acct02` 后 `log.ans` 显示 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/acct02-exitcode-128.md](./problem/acct02-exitcode-128.md)。
+- **关联 commit**：未提交

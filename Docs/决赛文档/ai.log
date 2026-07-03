@@ -1365,6 +1365,59 @@ warnings 0
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
 
+## 2026-07-03: LTP acct02 accounting exit(128) 状态编码修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 并进行修复。
+
+### 分析
+
+AI 按 `fix-bug` 流程先过滤 `log.ans` 中的 `TPASS/TFAIL/TBROK/panic/Summary`，确认真实失败来自：
+
+```text
+acct02.c:133: TINFO: ac_exitcode != 32768 (0)
+acct02.c:183: TFAIL: end of file reached
+```
+
+日志显示 `acct02_helper` 正常执行 `exit_group(128)`，accounting 文件已有一条 64 字节记录，但 `ac_exitcode` 被写成 0。继续检查 `os/src/syscall/task/acct.rs` 和 `os/src/syscall/task/wait.rs` 后发现，`wait4` 对普通退出统一编码为 `exit_code << 8`，而 accounting 记录构造函数对 `128..255` 做了错误特殊处理并返回 0，导致 `exit(128)` 没有写成 LTP 期望的 wait status `32768`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/acct.rs` | 删除 `wait_status_from_exit_code()` 中 `128..255` 普通退出码归零分支，使 accounting 和 `wait4` 使用一致的普通退出状态编码 |
+| `Docs/决赛文档/problem/acct02-exitcode-128.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+保留用户已有的 `user/src/bin/initproc.rs` 单跑入口改动，不在本次修复中回退。
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：默认 RISC-V 构建通过，仅有既有 warning。`make run` 单跑 `acct02` 后，新的 `log.ans` 显示：
+
+```text
+acct02.c:210: TPASS: acct() wrote correct file contents!
+Summary:
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+日志中仍有包装器行 `FAIL LTP CASE acct02 : 10`，但 LTP 本体 summary 为通过；本仓库判读 LTP 时以 `TPASS/TFAIL/TBROK/Summary` 为准。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现和验证基于当前默认 RISC-V 配置。
+
 ## 2026-07-03: LTP acct01 acct errno 语义修复
 
 ### 用户需求
