@@ -95,3 +95,10 @@
 - **场景**：pipe 源码布局重构、模块边界收敛、构建验证、决赛文档补充
 - **描述**：用户要求将 `os/src/fs/files/pipe.rs` 按功能拆分到 `os/src/fs/files/pipe/`。AI 保持 `Pipe`、`make_pipe()`、`open_fifo()` 对外路径不变，将片段缓冲、共享缓冲区、FIFO 表、splice/tee、阻塞等待和 `File` trait 实现拆到独立子模块，并修正拆分后的 trait 作用域与可见性告警。默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-02 条目。
 - **关联 commit**：待提交
+
+#### VFS inode cache 实现（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：VFS inode cache 设计与实现、路径索引与 inode 身份归并、hard link/rename 兼容、双架构构建和 QEMU 交互验证、决赛文档补充
+- **描述**：用户询问当前内核是否实现 inode cache，并要求进一步实现真正的 VFS inode cache。AI 确认旧 `FsIndex` 只是 `path -> Arc<dyn Inode>` 强引用表，无法按 inode 身份归并 hard link，也依赖 close 时 `Arc::strong_count()` 手动淘汰。修改为 `path -> InodeCacheKey` 与 `(st_dev, st_ino) -> Weak<dyn Inode>` 的两级缓存，`insert_inode_idx()` 返回 canonical inode；同时为 path-based 的 `Ext4Inode` 增加路径别名和 `live_path()`，避免同一 inode 复用后仍固定使用 stale path。RISC-V / LoongArch64 构建通过，RISC-V QEMU 交互验证 hard link、unlink 原路径、rename 后读取均正常。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目。
+- **关联 commit**：待提交

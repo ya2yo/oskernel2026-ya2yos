@@ -27,6 +27,8 @@ pub struct Ext4Inode {
 
 pub struct Ext4InodeInner {
     f: Ext4File,
+    /// 指向同一 inode 的路径别名，用于 hard link / rename 后继续找到可用路径。
+    aliases: Vec<String>,
     /// 延迟删除标志。如果为 true，在该 Inode 被 Drop 时会从磁盘删除对应文件
     delay: bool,
 }
@@ -42,21 +44,46 @@ impl Ext4Inode {
         Ext4Inode {
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
+                aliases: vec![path.to_string()],
                 delay: false,
             }),
         }
+    }
+
+    fn add_alias_path(&self, path: &str) {
+        let inner = self.inner.get_unchecked_mut();
+        if inner.aliases.iter().all(|alias| alias != path) {
+            inner.aliases.push(path.to_string());
+        }
+    }
+
+    fn live_path(inner: &mut Ext4InodeInner) -> String {
+        let current = inner.f.path().into_string().unwrap();
+        let types = inner.f.types();
+        if inner.f.check_inode_exist(&current, types.clone()) {
+            return current;
+        }
+
+        for alias in inner.aliases.clone() {
+            if inner.f.check_inode_exist(&alias, types.clone()) {
+                let _ = inner.f.file_close();
+                inner.f = Ext4File::new(&alias, types.clone());
+                return alias;
+            }
+        }
+        current
     }
 }
 
 impl Inode for Ext4Inode {
     /// 获取文件大小
     fn size(&self) -> usize {
-        let file = &mut self.inner.get_unchecked_mut().f;
-        let types = as_inode_type(file.file_type());
+        let inner = self.inner.get_unchecked_mut();
+        let path = Self::live_path(inner);
+        let types = as_inode_type(inner.f.file_type());
         if types == InodeType::File {
-            let path = file.path();
-            let path = path.to_str().unwrap();
-            file.file_open(path, O_RDONLY);
+            let file = &mut inner.f;
+            file.file_open(&path, O_RDONLY);
             let fsize = file.file_size();
             fsize as usize
         } else {
@@ -85,27 +112,29 @@ impl Inode for Ext4Inode {
     }
 
     fn types(&self) -> InodeType {
-        as_inode_type(self.inner.get_unchecked_mut().f.file_type())
+        let inner = self.inner.get_unchecked_mut();
+        let _ = Self::live_path(inner);
+        as_inode_type(inner.f.file_type())
     }
 
     /// 从指定偏移量读取数据到缓冲区
     fn read_at(&self, off: usize, buf: &mut [u8]) -> SyscallRet {
-        let file = &mut self.inner.get_unchecked_mut().f;
-        let path = file.path();
-        let path = path.to_str().unwrap();
-        file.file_open(path, O_RDONLY).map_err(SysErrNo::from)?;
+        let inner = self.inner.get_unchecked_mut();
+        let path = Self::live_path(inner);
+        let file = &mut inner.f;
+        file.file_open(&path, O_RDONLY).map_err(SysErrNo::from)?;
         file.file_seek(off as i64, SEEK_SET)
             .map_err(SysErrNo::from)?;
         let r = file.file_read(buf).map_err(SysErrNo::from)?;
-        patch_dynamic_link_file_bytes(path, off, &mut buf[..r]);
+        patch_dynamic_link_file_bytes(&path, off, &mut buf[..r]);
         Ok(r)
     }
 
     fn write_at(&self, off: usize, buf: &[u8]) -> SyscallRet {
-        let file = &mut self.inner.get_unchecked_mut().f;
-        let path = file.path();
-        let path = path.to_str().unwrap();
-        file.file_open(path, O_RDWR).map_err(SysErrNo::from)?;
+        let inner = self.inner.get_unchecked_mut();
+        let path = Self::live_path(inner);
+        let file = &mut inner.f;
+        file.file_open(&path, O_RDWR).map_err(SysErrNo::from)?;
         file.file_seek(off as i64, SEEK_SET)
             .map_err(SysErrNo::from)?;
         let r = file.file_write(buf);
@@ -114,31 +143,41 @@ impl Inode for Ext4Inode {
 
     /// 截断文件到指定长度
     fn truncate(&self, size: usize) -> SyscallRet {
-        let file = &mut self.inner.get_unchecked_mut().f;
-        let path = file.path();
-        let path = path.to_str().unwrap();
-        file.file_open(path, O_RDWR | O_CREAT | O_TRUNC)
+        let inner = self.inner.get_unchecked_mut();
+        let path = Self::live_path(inner);
+        let file = &mut inner.f;
+        file.file_open(&path, O_RDWR | O_CREAT | O_TRUNC)
             .map_err(SysErrNo::from)?;
 
         let t = file.file_truncate(size as u64);
         let ret = t.map_err(SysErrNo::from);
         if ret.is_ok() {
-            FILE_PAGE_CACHE.invalidate_path(path);
+            FILE_PAGE_CACHE.invalidate_path(&path);
         }
         ret
     }
 
     fn rename(&self, path: &str, new_path: &str) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
-        file.file_rename(path, new_path)
-            .map_or(Err(SysErrNo::ENOENT), |_| Ok(0))
+        let ret = file
+            .file_rename(path, new_path)
+            .map_or(Err(SysErrNo::ENOENT), |_| Ok(0));
+        if ret.is_ok() {
+            self.add_alias_path(new_path);
+        }
+        ret
     }
 
     /// 创建硬链接：hardlink_path 指向 old_path 相同的 inode
     fn hard_link(&self, old_path: &str, new_path: &str) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
-        file.file_hardlink(old_path, new_path)
-            .map_or(Err(SysErrNo::ENOENT), |_| Ok(0))
+        let ret = file
+            .file_hardlink(old_path, new_path)
+            .map_or(Err(SysErrNo::ENOENT), |_| Ok(0));
+        if ret.is_ok() {
+            self.add_alias_path(new_path);
+        }
+        ret
     }
 
     fn set_timestamps(
@@ -147,22 +186,26 @@ impl Inode for Ext4Inode {
         mtime: Option<u64>,
         ctime: Option<u64>,
     ) -> SyscallRet {
-        let file = &mut self.inner.get_unchecked_mut().f;
+        let inner = self.inner.get_unchecked_mut();
+        let _ = Self::live_path(inner);
+        let file = &mut inner.f;
         file.set_time(atime, mtime, ctime).map_err(SysErrNo::from)
     }
 
     /// 将文件缓存刷新到磁盘
     fn sync(&self) {
-        self.inner.get_unchecked_mut().f.file_cache_flush();
+        let inner = self.inner.get_unchecked_mut();
+        let _ = Self::live_path(inner);
+        inner.f.file_cache_flush();
     }
 
     /// 一次性读取整个文件内容
     fn read_all(&self) -> Result<Vec<u8>, SysErrNo> {
         // 先提取 path 和类型，避免后续访问 self.inner 时产生重叠借用
         let (file_type, path_str) = {
-            let file = &mut self.inner.get_unchecked_mut().f;
-            let file_type = as_inode_type(file.types());
-            let path = file.path().to_str().unwrap().to_string();
+            let inner = self.inner.get_unchecked_mut();
+            let path = Self::live_path(inner);
+            let file_type = as_inode_type(inner.f.types());
             (file_type, path)
         };
 
@@ -262,7 +305,9 @@ impl Inode for Ext4Inode {
     }
     /// 获取文件状态信息
     fn fstat(&self) -> Kstat {
-        let file = &mut self.inner.get_unchecked_mut().f;
+        let inner = self.inner.get_unchecked_mut();
+        let _ = Self::live_path(inner);
+        let file = &mut inner.f;
         let stat = match file.fstat() {
             Ok(s) => s,
             Err(rc) => {
@@ -301,7 +346,9 @@ impl Inode for Ext4Inode {
     }
     /// 读取目录项内容
     fn read_dentry(&self, off: usize, len: usize) -> SysResult<(Vec<u8>, isize)> {
-        let file = &mut self.inner.get_unchecked_mut().f;
+        let inner = self.inner.get_unchecked_mut();
+        let _ = Self::live_path(inner);
+        let file = &mut inner.f;
         let entries = file.read_dir_from(off as u64).map_err(SysErrNo::from)?;
         let mut de: Vec<u8> = Vec::new();
         let (mut res, mut f_off) = (0usize, off);
@@ -321,7 +368,9 @@ impl Inode for Ext4Inode {
     }
 
     fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SysResult<usize> {
-        let file = &mut self.inner.get_unchecked_mut().f;
+        let inner = self.inner.get_unchecked_mut();
+        let _ = Self::live_path(inner);
+        let file = &mut inner.f;
         file.file_readlink(buf, bufsize).map_err(SysErrNo::from)
     }
 
@@ -331,7 +380,9 @@ impl Inode for Ext4Inode {
     }
     /// 获取硬链接计数
     fn link_cnt(&self) -> SyscallRet {
-        let file = &mut self.inner.get_unchecked_mut().f;
+        let inner = self.inner.get_unchecked_mut();
+        let _ = Self::live_path(inner);
+        let file = &mut inner.f;
         let r = file.links_cnt();
         if let Err(e) = r {
             if e == 2 {
@@ -353,23 +404,27 @@ impl Inode for Ext4Inode {
     }
 
     fn path(&self) -> String {
-        self.inner
-            .get_unchecked_ref()
-            .f
-            .path()
-            .into_string()
-            .unwrap()
+        let inner = self.inner.get_unchecked_mut();
+        Self::live_path(inner)
+    }
+
+    fn cache_path_alias(&self, path: &str) {
+        self.add_alias_path(path);
     }
     fn delay(&self) {
         self.inner.get_unchecked_mut().delay = true;
     }
 
     fn fmode(&self) -> Result<u32, SysErrNo> {
-        let file = &mut self.inner.get_unchecked_mut().f;
+        let inner = self.inner.get_unchecked_mut();
+        let _ = Self::live_path(inner);
+        let file = &mut inner.f;
         file.file_mode().map_err(SysErrNo::from)
     }
     fn fmode_set(&self, mode: u32) -> SyscallRet {
-        let file = &mut self.inner.get_unchecked_mut().f;
+        let inner = self.inner.get_unchecked_mut();
+        let _ = Self::live_path(inner);
+        let file = &mut inner.f;
         let mode_type = mode & 0o170000;
         let mode_type = if mode_type != 0 {
             mode_type
@@ -382,7 +437,9 @@ impl Inode for Ext4Inode {
 
     fn owner_set(&self, uid: u32, gid: u32) -> SyscallRet {
         // Keep owner updates in the filesystem layer so stat and permission checks agree.
-        let file = &mut self.inner.get_unchecked_mut().f;
+        let inner = self.inner.get_unchecked_mut();
+        let _ = Self::live_path(inner);
+        let file = &mut inner.f;
         file.file_owner_set(uid, gid).map_err(SysErrNo::from)
     }
 }

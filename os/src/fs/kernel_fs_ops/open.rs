@@ -36,8 +36,7 @@ fn resolve_create_path(abs_path: &str) -> SysResult<String> {
         FsIndex::find_inode_idx(parent_path).ok_or(SysErrNo::ENOENT)?
     } else {
         let inode = superblock_root_inode().find(parent_path, OpenFlags::O_DIRECTORY, 0)?;
-        FsIndex::insert_inode_idx(parent_path, inode.clone());
-        inode
+        FsIndex::insert_inode_idx(parent_path, inode)
     };
 
     if !parent_inode.types().is_dir() {
@@ -63,10 +62,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
             FsIndex::find_inode_idx(parent_path)
         } else {
             match superblock_root_inode().find(parent_path, OpenFlags::empty(), 0) {
-                Ok(inode) => {
-                    FsIndex::insert_inode_idx(parent_path, inode.clone());
-                    Some(inode)
-                }
+                Ok(inode) => Some(FsIndex::insert_inode_idx(parent_path, inode)),
                 Err(e) => {
                     debug!("[create_file] parent inode not found: {:?}", e);
                     None
@@ -190,7 +186,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
         };
         inode.owner_set(uid, gid)?;
     }
-    FsIndex::insert_inode_idx(&create_path, inode.clone());
+    let inode = FsIndex::insert_inode_idx(&create_path, inode);
     if create_path != abs_path {
         FsIndex::insert_inode_idx(abs_path, inode.clone());
     }
@@ -202,7 +198,12 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     );
     Ok(FileClass::File(Arc::new(osinode)))
 }
-fn open_inner(abs_path: &str, flags: OpenFlags, mode: u32, map_dynamic: bool) -> SysResult<FileClass> {
+fn open_inner(
+    abs_path: &str,
+    flags: OpenFlags,
+    mode: u32,
+    map_dynamic: bool,
+) -> SysResult<FileClass> {
     debug!("open({},{:?},{})", abs_path, flags, mode);
     // log::info!("[open] abs_path={}", abs_path);
     //判断是否是设备文件
@@ -236,13 +237,12 @@ fn open_inner(abs_path: &str, flags: OpenFlags, mode: u32, map_dynamic: bool) ->
             return Err(SysErrNo::ELOOP);
         }
         if let Ok(t) = found_res {
-            FsIndex::insert_inode_idx(abs_path, t.clone());
-            inode = Some(t);
+            inode = Some(FsIndex::insert_inode_idx(abs_path, t));
         } else if let Ok(resolved_path) = resolve_create_path(abs_path) {
             if resolved_path != abs_path {
                 let found_res = superblock_root_inode().find(&resolved_path, flags, 0);
                 if let Ok(t) = found_res {
-                    FsIndex::insert_inode_idx(&resolved_path, t.clone());
+                    let t = FsIndex::insert_inode_idx(&resolved_path, t);
                     FsIndex::insert_inode_idx(abs_path, t.clone());
                     inode = Some(t);
                 }

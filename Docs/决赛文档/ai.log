@@ -812,3 +812,65 @@ timeout 120s make run > /tmp/splice-pipebuf-run.log 2>&1
 未运行 RISC-V。
 
 ---
+
+## 2026-07-03: VFS inode cache 实现
+
+### 用户需求
+
+用户询问当前内核是否实现 inode cache，并要求基于 `FsIndex`、文件页缓存和路径索引现状实现真正的 VFS inode cache。
+
+### 分析
+
+AI 先检查 `os/src/fs/kernel_fs_ops/fsidx.rs`、`os/src/fs/ext4_lw/inode.rs`、`os/src/fs/kernel_fs_ops/open.rs`、`os/src/syscall/fs/fd_ops.rs` 等路径，确认原实现只有 `path -> Arc<dyn Inode>` 的强引用路径表：
+
+- 同一路径可以复用 inode 对象，但 hard link、rename、unlink 等场景无法基于 inode 身份自然归并。
+- `Ext4Inode::find()` 每次命中底层文件后都会 `Arc::new(Ext4Inode::new(path, ...))`，没有按 `st_dev/st_ino` 查找 canonical inode。
+- close 路径依赖 `Arc::strong_count()` 手动淘汰 `FsIndex`，这与后续 `Weak` inode cache 模型冲突。
+- `lwext4_rust::Ext4File` 内部保存 `file_path`，`file_open(path, flags)` 不会更新该字段，而 `fstat()` 固定使用内部路径；因此如果多个路径复用同一个 `Ext4Inode`，必须额外维护路径别名，否则 rename/unlink 后容易使用过期路径。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/fsidx.rs` | 将 `FsIndex` 改为 `PATH_INDEX: path -> InodeCacheKey` 与 `INODE_CACHE: InodeCacheKey -> Weak<dyn Inode>`；正常文件使用 `(st_dev, st_ino)` 作为 inode 身份，无法取得有效 inode 号时退回路径 key；`insert_inode_idx()` 返回 canonical inode |
+| `os/src/fs/vfs.rs` | 为 `Inode` trait 增加默认空实现的 `cache_path_alias()` 钩子 |
+| `os/src/fs/ext4_lw/inode.rs` | 为 `Ext4Inode` 增加路径别名列表和 `live_path()`，在 stat/read/write/truncate/readlink/mode/owner 等路径敏感操作前选择仍存在的路径；hard link / rename 成功后记录新别名 |
+| `os/src/fs/kernel_fs_ops/open.rs` | open/create 路径使用 `FsIndex::insert_inode_idx()` 返回的 canonical inode，避免继续持有临时 inode |
+| `os/src/syscall/fs/fd_ops.rs` | `O_TMPFILE` 目录解析使用 canonical inode；删除 close/close_range 中基于 `Arc::strong_count()` 的手动路径缓存淘汰，由 `Weak` cache 自动释放对象 |
+| `Docs/决赛文档/开发日志.md` | 追加 7.3 简记 |
+| `Docs/决赛文档/ai.log` | 追加本轮 AI 协作记录 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 追加本轮 AI 使用记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > /tmp/vfs-inode-cache.log 2>&1
+make run
+make TARGET_ARCH=loongarch64
+```
+
+结果：
+
+- 默认 RISC-V `make` 构建通过；构建仅保留 vendor `smoltcp` 既有 warning。
+- LoongArch64 `make TARGET_ARCH=loongarch64` 构建通过；构建仅保留 vendor `smoltcp` 既有 warning。
+- 第一次沙箱内 `make run` 因 QEMU 需要在 `/var/tmp` 创建临时文件失败；按规则改为非沙箱运行。
+- RISC-V `timeout 120s make run` 成功启动到交互 shell，无 `panic` / `TFAIL` / `TBROK`，最后由 timeout 结束。
+- RISC-V 交互式 QEMU 中执行：
+
+```text
+rm -f /tmp/ic_a /tmp/ic_b /tmp/ic_c
+echo cache-ok > /tmp/ic_a
+ln /tmp/ic_a /tmp/ic_b
+cat /tmp/ic_b
+rm /tmp/ic_a
+cat /tmp/ic_b
+mv /tmp/ic_b /tmp/ic_c
+cat /tmp/ic_c
+```
+
+三次 `cat` 均输出 `cache-ok`，覆盖 hard link 复用、删除原路径后通过别名读取、rename 后读取。退出时出现一条既有 `exit_current_and_run_next` TCB 引用 warning，未见 panic。
+
+本轮未新增 problem 文件：这是 VFS inode cache 功能改造，不是修复某个具体 LTP 失败测例。

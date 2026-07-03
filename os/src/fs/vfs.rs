@@ -103,6 +103,11 @@ pub trait Inode: Send + Sync {
     fn path(&self) -> String {
         unimplemented!("Inode::path");
     }
+    /// 记录该 inode 的一个可用路径别名。
+    ///
+    /// 真正的 inode cache 会让硬链接等多个路径复用同一个 inode 对象。
+    /// 默认实现为空，路径敏感的具体文件系统可以用它维护底层路径别名。
+    fn cache_path_alias(&self, _path: &str) {}
     ///获取文件的mode，遇到需要文件访问权限的需要使用，暂时放在这里
     fn fmode(&self) -> Result<u32, SysErrNo> {
         unimplemented!("Inode:;fmode");

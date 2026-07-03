@@ -3,12 +3,12 @@ use core::{future::poll_fn, task::Poll};
 use super::fcntl::*;
 use super::file_lock::{self, Flock};
 use crate::fs::{
-    map_dynamic_link_file, open, open_fifo, refresh_proc_stat, refresh_proc_status,
-    superblock_root_inode, FileClass, FileDescriptor, FsIndex, OpenFlags, TmpFile,
+    FileClass, FileDescriptor, FsIndex, OpenFlags, TmpFile, map_dynamic_link_file, open, open_fifo,
+    refresh_proc_stat, refresh_proc_status, superblock_root_inode,
 };
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
-use crate::syscall::{options::FcntlCmd, Syscall};
-use crate::task::{block_on, current_task, interruptible, Process};
+use crate::syscall::{Syscall, options::FcntlCmd};
+use crate::task::{Process, block_on, current_task, interruptible};
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::{
     format,
@@ -428,8 +428,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
             FsIndex::find_inode_idx(&abs_path).ok_or(SysErrNo::ENOENT)?
         } else {
             let inode = superblock_root_inode().find(&abs_path, OpenFlags::O_DIRECTORY, 0)?;
-            FsIndex::insert_inode_idx(&abs_path, inode.clone());
-            inode
+            FsIndex::insert_inode_idx(&abs_path, inode)
         };
         if !dir_inode.types().is_dir() {
             return Err(SysErrNo::ENOTDIR);
@@ -519,30 +518,12 @@ pub fn sys_close(fd: usize) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
 
-    // 在关闭前获取 inode 路径，用于 FsIndex 缓存淘汰
-    let inode_path = fd_table
-        .try_get(fd)
-        .and_then(|desc| desc.file().ok())
-        .map(|osfile| osfile.inode.path());
-
     if fd_table.try_get(fd).is_none() {
         return Ok(0);
     }
 
     fd_table.take(fd);
     inner.fs_info.remove(fd);
-
-    // 若该 inode 仅被全局缓存持有，则淘汰以释放堆内存
-    if let Some(path) = inode_path {
-        if !path.is_empty() && !path.starts_with("/proc") {
-            if let Some(inode) = FsIndex::find_inode_idx(&path) {
-                // FsIndex 持有一份引用，find_inode_idx 返回的 clone 是第二份
-                if Arc::strong_count(&inode) <= 2 {
-                    FsIndex::remove_inode_idx(&path);
-                }
-            }
-        }
-    }
 
     Ok(0)
 }
@@ -598,29 +579,10 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
                 continue;
             }
 
-            // Get inode path for FsIndex cache eviction before closing
-            let inode_path = proc_inner
-                .fd_table
-                .try_get(fd as usize)
-                .and_then(|desc| desc.file().ok())
-                .map(|osfile| osfile.inode.path());
-
             // Remove from fd_table
             if let Some(_) = proc_inner.fd_table.take(fd as usize) {
                 // Remove from fs_info
                 proc_inner.fs_info.remove(fd as usize);
-            }
-
-            // Evict inode from FsIndex cache if it's no longer referenced
-            if let Some(path) = inode_path {
-                if !path.is_empty() && !path.starts_with("/proc") {
-                    if let Some(inode) = FsIndex::find_inode_idx(&path) {
-                        // FsIndex holds one reference, find_inode_idx returns clone as second reference
-                        if Arc::strong_count(&inode) <= 2 {
-                            FsIndex::remove_inode_idx(&path);
-                        }
-                    }
-                }
             }
         }
     }
