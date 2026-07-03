@@ -862,5 +862,5 @@
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、RISC-V Alpine 镜像启动兼容、动态解释器路径回退、文档完善
-- **描述**：用户在尝试运行当前内核上的 vim/shell 时遇到 `initfiles.rs:61` 对 `/glibc/lib/libgcc_s.so.1` 的 `ENOENT` panic，并询问 RISC-V 场景是否有必要把该链接库放入内核。AI 确认该库只用于竞赛 glibc 测试镜像，不是 Alpine/musl 根文件系统必需；修复为仅在 `/glibc/lib` 存在时写入，同时仅在 `/musl/busybox` 存在时创建测试镜像 `/bin` applet 和 LTP wrapper，避免覆盖 Alpine 原生 `/bin/sh`。后续又为 ELF loader 增加动态解释器映射失败后的原始 `.interp` 路径回退。`make TARGET_ARCH=riscv64` 通过，QEMU 已越过原启动期 panic；Alpine `/bin/sh` 仍有用户态 `FetchInstructionPageFault`，需后续单独分析。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/riscv-alpine-initfiles-dynamic-link.md](./problem/riscv-alpine-initfiles-dynamic-link.md)。
+- **描述**：用户在尝试运行当前内核上的 vim/shell 时遇到 `initfiles.rs:61` 对 `/glibc/lib/libgcc_s.so.1` 的 `ENOENT` panic，并询问 RISC-V 场景是否有必要把该链接库放入内核。AI 确认该库只用于竞赛 glibc 测试镜像，不是 Alpine/musl 根文件系统必需；修复为仅在 `/glibc/lib` 存在时写入，同时仅在 `/musl/busybox` 存在时创建测试镜像 `/bin` applet 和 LTP wrapper，避免覆盖 Alpine 原生 `/bin/sh`。后续根据 `log.ans` 中 `FetchInstructionPageFault bad addr = 0xfffffffffffffffe`，继续修复动态解释器回退仍被通用 `open()` 二次映射的问题，新增 `open_direct()` 并让 ELF loader 区分“无解释器”和“解释器加载失败”。`make TARGET_ARCH=riscv64` 通过，25 秒 QEMU 日志未再出现原 ENOENT panic、`exec /bin/sh failed` 或取指 fault。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/riscv-alpine-initfiles-dynamic-link.md](./problem/riscv-alpine-initfiles-dynamic-link.md)。
 - **关联 commit**：待提交

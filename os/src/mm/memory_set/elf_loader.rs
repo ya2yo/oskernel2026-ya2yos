@@ -7,7 +7,7 @@
 use super::super::map_area::MapType;
 use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::{DL_INTERP_OFFSET, PAGE_SIZE, USER_HEAP_SIZE};
-use crate::fs::{map_dynamic_link_file_directly_map, open, File, OpenFlags, NONE_MODE};
+use crate::fs::{map_dynamic_link_file_directly_map, open_direct, File, OpenFlags, NONE_MODE};
 use crate::mm::memory_set::MemorySetInner;
 use crate::task::{Aux, AuxType};
 use alloc::string::{String, ToString};
@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use xmas_elf::ElfFile;
 
 impl MemorySetInner {
-    fn load_dl_interp_if_needed(&mut self, elf: &ElfFile) -> Option<usize> {
+    fn load_dl_interp_if_needed(&mut self, elf: &ElfFile) -> Result<Option<usize>, ()> {
         let elf_header = elf.header;
         let ph_count = elf_header.pt2.ph_count();
 
@@ -34,25 +34,26 @@ impl MemorySetInner {
             interp = interp.strip_suffix("\0").unwrap_or(&interp).to_string();
 
             let mapped_interp = map_dynamic_link_file_directly_map(&interp);
-            let interp_file = open(mapped_interp, OpenFlags::O_RDONLY, NONE_MODE)
+            let interp_file = open_direct(mapped_interp, OpenFlags::O_RDONLY, NONE_MODE)
                 .ok()
                 .and_then(|file| file.file().ok())
                 .or_else(|| {
                     if mapped_interp == interp {
                         None
                     } else {
-                        open(&interp, OpenFlags::O_RDONLY, NONE_MODE)
+                        open_direct(&interp, OpenFlags::O_RDONLY, NONE_MODE)
                             .ok()
                             .and_then(|file| file.file().ok())
                     }
-                })?;
-            let interp_elf_data = interp_file.inode.read_all().ok()?;
-            let interp_elf = xmas_elf::ElfFile::new(&interp_elf_data).ok()?;
-            self.map_elf(&interp_elf, DL_INTERP_OFFSET.into()).ok()?;
+                })
+                .ok_or(())?;
+            let interp_elf_data = interp_file.inode.read_all().map_err(|_| ())?;
+            let interp_elf = xmas_elf::ElfFile::new(&interp_elf_data).map_err(|_| ())?;
+            self.map_elf(&interp_elf, DL_INTERP_OFFSET.into())?;
 
-            Some(interp_elf.header.pt2.entry_point() as usize + DL_INTERP_OFFSET)
+            Ok(Some(interp_elf.header.pt2.entry_point() as usize + DL_INTERP_OFFSET))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -123,7 +124,7 @@ impl MemorySetInner {
         ));
         auxv.push(Aux::new(AuxType::PHNUM, ph_count as usize));
         auxv.push(Aux::new(AuxType::PAGESZ, PAGE_SIZE as usize));
-        if let Some(interp_entry_point) = memory_set.load_dl_interp_if_needed(&elf) {
+        if let Some(interp_entry_point) = memory_set.load_dl_interp_if_needed(&elf)? {
             auxv.push(Aux::new(AuxType::BASE, DL_INTERP_OFFSET));
             entry_point = interp_entry_point;
         } else {

@@ -54,7 +54,9 @@ AI 对比 `pre_tests/sdcard-rv.img` 与 `onsite-2026/alpine-linux-riscv64-ext4fs
 | 文件 | 修改 |
 |------|------|
 | `os/src/fs/kernel_fs_ops/initfiles.rs` | `flush_libgcc_s()` 只在 `/glibc/lib` 存在时写入内嵌 `libgcc_s.so.1`，移除启动期 `unwrap()` panic；`create_bin_files()` 只在 `/musl/busybox` 存在时创建测试镜像 applet 与 LTP wrapper |
-| `os/src/mm/memory_set/elf_loader.rs` | 动态解释器加载先尝试兼容映射路径，失败且不同于原 `.interp` 时回退打开原始路径 |
+| `os/src/fs/kernel_fs_ops/open.rs` | 新增 `open_direct()`，用于内核按精确路径打开动态解释器，不经过动态库兼容映射 |
+| `os/src/fs/kernel_fs_ops/mod.rs` / `os/src/fs/mod.rs` | 导出 `open_direct()` |
+| `os/src/mm/memory_set/elf_loader.rs` | 动态解释器加载先尝试兼容映射路径，失败且不同于原 `.interp` 时用 `open_direct()` 回退打开原始路径；解释器加载失败返回 `Err` 而不是静默当作静态 ELF |
 | `Docs/初赛文档/problem/riscv-alpine-initfiles-dynamic-link.md` | 新增问题复盘 |
 | `Docs/初赛文档/problem/README.md` | 增加索引 |
 | `Docs/初赛文档/开发日志.md` | 追加 7.3 简记 |
@@ -73,7 +75,7 @@ timeout 25s make run TARGET_ARCH=riscv64 > /tmp/ya2yos-riscv-start.log 2>&1
 - RISC-V 构建通过。
 - QEMU 日志显示 `fs::init...create_init_files success!`，原 `initfiles.rs:61 libgcc_s ENOENT` panic 消失。
 - `/bin/sh` 不再返回 `exec /bin/sh failed: -2`。
-- Alpine `/bin/sh` 后续仍触发 `FetchInstructionPageFault bad addr = 0xfffffffffffffffe`，说明后续还需要继续分析动态程序用户态入口、auxv 或初始栈问题。
+- 修复 `open_direct()` 与解释器加载失败错误传播后，25 秒 QEMU 日志中不再出现 `Panicked`、`Exception`、`FetchInstructionPageFault`、`SIGSEGV` 或 `exec /bin/sh failed`；QEMU 由 timeout 终止。
 
 ## 2026-05-27: 内核堆碎片化 — 全量测例 OOM
 

@@ -202,7 +202,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     );
     Ok(FileClass::File(Arc::new(osinode)))
 }
-pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
+fn open_inner(abs_path: &str, flags: OpenFlags, mode: u32, map_dynamic: bool) -> SysResult<FileClass> {
     debug!("open({},{:?},{})", abs_path, flags, mode);
     // log::info!("[open] abs_path={}", abs_path);
     //判断是否是设备文件
@@ -216,9 +216,11 @@ pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass>
     // 也许以后可以改成符号链接实现这种映射？
     debug!("abs_path is {}", abs_path);
     let mut abs_path: &str = abs_path;
-    if let Some(newpath) = map_library_path(abs_path) {
-        debug!("new path is {}", newpath);
-        abs_path = newpath;
+    if map_dynamic {
+        if let Some(newpath) = map_library_path(abs_path) {
+            debug!("new path is {}", newpath);
+            abs_path = newpath;
+        }
     }
 
     let mut inode: Option<Arc<dyn Inode>> = None;
@@ -321,4 +323,12 @@ pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass>
         return create_file(abs_path, flags, mode);
     }
     Err(SysErrNo::ENOENT)
+}
+
+pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
+    open_inner(abs_path, flags, mode, true)
+}
+
+pub fn open_direct(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
+    open_inner(abs_path, flags, mode, false)
 }
