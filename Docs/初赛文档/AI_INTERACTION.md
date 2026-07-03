@@ -874,3 +874,10 @@
 - **场景**：Bug 分析与定位、网络 daemon 生命周期清理、termios ioctl 栈破坏修复、回归验证、文档完善
 - **描述**：用户要求根据最新 `log.ans` 继续修复 iperf，并强调测例入口必须使用标准 `run_testsuit(root, script)`。AI 确认 `iperf-musl` 后 `iperf-glibc` 固定复用 5001；`iperf3 -s -D` 在脚本退出后被 init 收养并继续监听，导致 glibc server `listen(5001)` 失败，而 glibc client 连接到上一轮 musl daemon 后形成 false positive success。最终保持 iperf 调用走标准 `run_testsuit()`，在通用 testsuit 收尾阶段用 `kill_processes(-1, SIGKILL)` 清理并 `wait()` 回收残留后台子进程；同时保留 fd close/exit 主动 shutdown socket 与 glibc `TCGETS` old termios 36 字节布局修复。`make` 通过，`/tmp/iperf-generic-cleanup.log` 中 musl/glibc 两轮 iperf 六项均 success，未再出现 `socket already listening on port 5001`。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/iperf-port-reuse-termios-stack-smash.md](./problem/iperf-port-reuse-termios-stack-smash.md)。
 - **关联 commit**：待提交
+
+#### netperf fd table 重构后 socket 生命周期回归修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、fd table/socket 生命周期语义修复、netperf 回归验证、文档完善
+- **描述**：用户说明 `9fa9699d2580a7de85e41baf2e49c3e51000d6f0` 之后内核大规模重构导致许多旧测试回归，要求先修复 `netperf`，并在文档中突出本次修改。AI 根据详细 `log.ans` 确认控制连接已 `connect/accept` 成功，但 `netserver` 父进程 fork 后关闭 accepted fd 时，重构后的 `FdTable::close()` 只检查同表 alias，误把子进程继承的同一 `Arc<Socket>` 提前 `shutdown()`，导致客户端读到 0 字节响应。初版修复保护了 fork 继承连接，但又削弱进程退出释放 listener 的旧修复，使 `netperf-glibc` 回退为 12865 端口残留。最终将普通 `close(fd)` 与进程退出 `FdTable::clear()` 的 socket 语义拆开：前者仅在最后一个 `Arc` 时 shutdown，后者仍主动 shutdown 释放监听端口；同时补齐 `recvmsg` iovec 回拷和 `accept4` peer address 写回语义。`make` 通过，`timeout 300s make run > log.ans 2>&1` 中 musl/glibc 两轮 netperf 十项均 success。详见 `Docs/初赛文档/ai.log` 2026-07-03 条目与 [problem/netperf-glibc-port-reuse.md](./problem/netperf-glibc-port-reuse.md)。
+- **关联 commit**：待提交

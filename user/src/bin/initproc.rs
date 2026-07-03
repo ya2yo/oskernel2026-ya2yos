@@ -123,11 +123,11 @@ fn get_score() -> i32 {
     // run_testsuit("musl\0", "lua_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     // run_testsuit("glibc\0", "lua_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
     // // iperf
-    run_testsuit("musl\0", "iperf_testcode.sh\0");
-    run_testsuit("glibc\0", "iperf_testcode.sh\0");
+    // run_testsuit("musl\0", "iperf_testcode.sh\0");
+    // run_testsuit("glibc\0", "iperf_testcode.sh\0");
     //  // netperf
-    // run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
-    // run_testsuit("glibc\0", "netperf_testcode.sh\0");
+    run_testsuit("musl\0", "netperf_testcode.sh\0");// FAIL
+    run_testsuit("glibc\0", "netperf_testcode.sh\0");
     // // cyclictest
     // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
     // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");

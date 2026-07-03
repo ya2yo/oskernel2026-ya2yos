@@ -59,7 +59,15 @@ impl FileDescriptor {
         self.file.any()
     }
 
-    fn close_socket(&self) {
+    fn close_socket_if_last_ref(&self) {
+        if let FileClass::Socket(socket) = &self.file {
+            if Arc::strong_count(socket) == 1 {
+                let _ = socket.0.shutdown(Shutdown::Both);
+            }
+        }
+    }
+
+    fn shutdown_socket(&self) {
         if let FileClass::Socket(socket) = &self.file {
             let _ = socket.0.shutdown(Shutdown::Both);
         }
@@ -163,7 +171,7 @@ impl FdTable {
             core::mem::take(&mut inner.files)
         };
         for desc in files.into_iter().flatten() {
-            desc.close_socket();
+            desc.shutdown_socket();
         }
     }
     /// 分配一个新的最小可用fd
@@ -343,7 +351,7 @@ impl FdTable {
             })
         };
         if let Some((desc, true)) = old {
-            desc.close_socket();
+            desc.close_socket_if_last_ref();
         }
         Ok(())
     }
@@ -365,7 +373,7 @@ impl FdTable {
             (desc, should_close)
         };
         if closed.1 {
-            closed.0.close_socket();
+            closed.0.close_socket_if_last_ref();
         }
         Some(closed.0)
     }

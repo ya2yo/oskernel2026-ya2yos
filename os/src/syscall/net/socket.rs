@@ -207,9 +207,9 @@ pub fn sys_accept4(sockfd: usize, addr: *mut u8, mut addrlen: u32, flags: u32) -
         file.socket()?
     }; // 释放锁后再 accept（可能阻塞）
     let sock = Socket(listen_sock.accept()?);
-    let remote_addr = sock.local_addr()?;
+    let remote_addr = sock.peer_addr()?;
     if !addr.is_null() {
-        remote_addr.write_to_user(addr, &mut addrlen);
+        remote_addr.write_to_user(addr, &mut addrlen)?;
     }
     // 分配新的fd
     let proc_inner = &task.process;
@@ -227,7 +227,7 @@ pub fn sys_accept4(sockfd: usize, addr: *mut u8, mut addrlen: u32, flags: u32) -
     proc_inner.fd_table.set(
         fd,
         FileDescriptor::new(new_flags, FileClass::Socket(Arc::new(sock))),
-    );
+    )?;
 
     Ok(fd)
 }

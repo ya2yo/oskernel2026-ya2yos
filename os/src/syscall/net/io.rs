@@ -180,6 +180,47 @@ fn iovecs_to_buf_and_ub(iovs: &[iovec]) -> SysResult<(Vec<u8>, UserBuffer)> {
     Ok((kernel_buf, ub))
 }
 
+fn iovecs_to_empty_buf_and_ub(iovs: &[iovec]) -> SysResult<(Vec<u8>, UserBuffer)> {
+    let total_len: usize = iovs.iter().map(|i| i.iov_len as usize).sum();
+    for iov in iovs {
+        if iov.iov_len != 0 && iov.iov_base.is_null() {
+            return Err(SysErrNo::EFAULT);
+        }
+    }
+    let mut kernel_buf = vec![0u8; total_len];
+    let ub = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+    Ok((kernel_buf, ub))
+}
+
+fn copy_kernel_buf_to_iovecs(iovs: &[iovec], src: &[u8]) -> SysResult<()> {
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let process = &task.process;
+    let memory_set = process.memory_set_arc();
+    let mut copied = 0;
+
+    for iov in iovs {
+        if copied == src.len() {
+            break;
+        }
+        let len = (iov.iov_len as usize).min(src.len() - copied);
+        if len == 0 {
+            continue;
+        }
+        if iov.iov_base.is_null() {
+            return Err(SysErrNo::EFAULT);
+        }
+        copy_to_user(
+            &memory_set,
+            iov.iov_base as usize,
+            &src[copied..copied + len],
+        )
+        .map(|_| ())?;
+        copied += len;
+    }
+
+    Ok(())
+}
+
 fn parse_cmsgs(msg: &msghdr) -> SysResult<Vec<CMsgData>> {
     if msg.msg_control.is_null() || msg.msg_controllen == 0 {
         return Ok(Vec::new());
@@ -323,7 +364,8 @@ pub fn sys_recvfrom(
 /// 参考 https://man7.org/linux/man-pages/man2/recvmsg.2.html
 pub fn sys_recvmsg(sockfd: usize, msg_ptr: *mut msghdr, flags: u32) -> SyscallRet {
     let mut msg = copy_msghdr_from_user(msg_ptr as *const msghdr)?;
-    let (_kernel_buf, user_buffer) = iovecs_to_buf_and_ub(&read_iovecs(&msg)?)?;
+    let iovs = read_iovecs(&msg)?;
+    let (kernel_buf, user_buffer) = iovecs_to_empty_buf_and_ub(&iovs)?;
 
     let mut msg_namelen = if msg.msg_name.is_null() {
         0
@@ -341,6 +383,7 @@ pub fn sys_recvmsg(sockfd: usize, msg_ptr: *mut msghdr, flags: u32) -> SyscallRe
     msg.msg_namelen = msg_namelen as _;
     msg.msg_controllen = 0;
     msg.msg_flags = 0;
+    copy_kernel_buf_to_iovecs(&iovs, &kernel_buf[..recv])?;
     copy_msghdr_to_user(msg_ptr, &msg)?;
 
     Ok(recv)
