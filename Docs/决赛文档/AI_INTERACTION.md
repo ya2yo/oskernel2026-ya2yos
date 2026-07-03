@@ -184,3 +184,10 @@
 - **场景**：`log.ans` 分析、`alarm(2)`/`setitimer(2)` old_value 剩余时间语义修复、周期 timer 推进语义修正、LTP alarm05 回归验证、文档完善
 - **描述**：用户要求分析并修复 `alarm05`，随后确认最新 `log.ans` 已通过，并询问为什么看似标准的计时器模块仍有问题。AI 确认原实现能按 `last_time` 驱动 `SIGALRM` 投递，但 `Timer::timer()` 直接返回原始 `it_value`，导致 `alarm(10)` 经过约 1 秒后被 `alarm(1)` 替换时仍返回 10，而不是旧闹钟剩余约 9 秒。修复为用 `now - last_time` 折算 `getitimer/setitimer(old_value)` 返回的剩余 `it_value`，并让周期 timer 到期后把下一轮 `it_value` 设为 `it_interval`。`make` 通过，最新 `log.ans` 中 `alarm05` 3 项核心断言均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/alarm05-itimer-remaining.md](./problem/alarm05-itimer-remaining.md)。
 - **关联 commit**：未提交
+
+#### LTP bind01 bind 地址与 AF_UNIX 路径语义修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、TCP/UDP `bind(2)` 本机地址检查、AF_UNIX pathname 父目录校验、LTP bind01 回归验证、文档完善
+- **描述**：用户要求分析并修复 `bind01`，随后确认最新 `log.ans` 已通过。AI 确认原实现用路由表判断 bind 地址，默认路由导致非本地地址也能绑定成功；同时 AF_UNIX pathname bind 只登记内存表，没有校验路径前缀，导致中间分量非目录时也成功。修复为在 TCP/UDP bind 前检查地址是否为 wildcard、接口地址或 loopback `127/8`，否则返回 `EADDRNOTAVAIL`；AF_UNIX pathname bind 前通过 VFS 打开父目录，复用 `ENOTDIR/ENOENT` 语义。`make` 通过，最新 `log.ans` 中 `bind01` 7 项核心断言均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/bind01-bind-address-path.md](./problem/bind01-bind-address-path.md)。
+- **关联 commit**：未提交

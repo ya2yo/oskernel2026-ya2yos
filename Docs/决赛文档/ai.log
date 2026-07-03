@@ -1687,3 +1687,74 @@ warnings 0
 最终总 summary 为 `passed 12 failed 0 broken 0 skipped 0 warnings 1`，其中 warning 来自 LTP cleanup 删除循环 symlink 的 `ELOOP`，不影响核心断言。`log.ans` 中仍有包装器行 `FAIL LTP CASE access04 : 10`，但本仓库判读 LTP 时以 `TPASS/TFAIL/TBROK/Summary` 为准。
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
+
+## 2026-07-03: LTP bind01 非本地地址与 AF_UNIX 路径前缀修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复 `bind01` 问题。修复后用户确认最新输出已在 `log.ans` 且测例成功通过。
+
+### 分析
+
+AI 按仓库 `fix-bug` 流程过滤 `log.ans` 中的 `TPASS/TFAIL/TBROK/Summary/panic` 关键行，确认 `bind01` 有 2 个真实失败：
+
+```text
+bind01.c:60: TFAIL: non-local address succeeded
+bind01.c:60: TFAIL: a component of addr prefix is not a directory succeeded
+
+Summary:
+passed   5
+failed   2
+broken   0
+skipped  0
+warnings 0
+```
+
+第一个失败来自 IPv4 socket 绑定非本地地址。AI 检查 `os/src/net/tcp.rs`、`os/src/net/udp.rs` 和 `os/src/net/service.rs` 后确认，原 bind 路径只通过路由表选择设备。由于网络初始化存在默认路由，非本地地址也能匹配到设备，导致 `bind()` 错误成功。Linux 语义要求具体 bind 地址必须属于本机接口，除 wildcard 地址外，非本地地址应返回 `EADDRNOTAVAIL`。
+
+第二个失败来自 AF_UNIX pathname socket。AI 检查 `os/src/net/unix.rs` 后发现，原 bind 只把 pathname 放入 `UNIX_BINDS` 内存表，没有校验路径前缀是否存在、是否为目录。于是 `/tmp/file/child` 这类中间分量为普通文件的地址也被接受，而 Linux 应返回 `ENOTDIR`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/net/mod.rs` | 新增 `check_local_bind_address()`，允许 wildcard、接口精确地址和 loopback `127/8`，其他地址返回 `EADDRNOTAVAIL` |
+| `os/src/net/tcp.rs` | TCP `bind()` 在端口与占用检查前调用本机地址归属检查 |
+| `os/src/net/udp.rs` | UDP `bind()` 在端口与占用检查前调用本机地址归属检查 |
+| `os/src/net/unix.rs` | AF_UNIX pathname bind 前根据当前 cwd 解析父目录，并通过 `open(parent, O_DIRECTORY)` 复用 VFS `ENOTDIR/ENOENT` 语义 |
+| `Docs/决赛文档/problem/bind01-bind-address-path.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：默认 RISC-V 构建通过，仅有既有 warning。
+
+AI 曾尝试在沙箱内运行 QEMU，因 `/var/tmp` 只读无法创建 QEMU 临时文件而未启动；随后用户确认外部运行成功输出已在 `log.ans`。AI 读取最新 `log.ans`，其中 `bind01` 7 项核心断言均 `TPASS`：
+
+```text
+bind01.c:60: TPASS: invalid salen : EINVAL (22)
+bind01.c:60: TPASS: invalid socket : ENOTSOCK (88)
+bind01.c:63: TPASS: INADDR_ANYPORT passed
+bind01.c:60: TPASS: UNIX-domain of current directory : EAFNOSUPPORT (97)
+bind01.c:60: TPASS: non-local address : EADDRNOTAVAIL (99)
+bind01.c:60: TPASS: sockfd is not a valid file descriptor : EBADF (9)
+bind01.c:60: TPASS: a component of addr prefix is not a directory : ENOTDIR (20)
+
+Summary:
+passed   7
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+`log.ans` 中仍有包装器行 `FAIL LTP CASE bind01 : 10`，但本仓库判读 LTP 时以 `TPASS/TFAIL/TBROK/Summary` 为准。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。

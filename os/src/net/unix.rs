@@ -10,6 +10,7 @@ use hashbrown::HashMap;
 use spin::{Lazy, Mutex};
 
 use crate::{
+    fs::{open, OpenFlags, NONE_MODE},
     mm::UserBuffer,
     net::{
         options::{Configurable, GetSocketOption, SetSocketOption, UnixCredentials},
@@ -17,7 +18,7 @@ use crate::{
     },
     syscall::PollEvents,
     task::{block_on, current_task, poll_io},
-    utils::{PollSet, SysErrNo, SysResult},
+    utils::{get_abs_path, rsplit_once, PollSet, SysErrNo, SysResult},
 };
 
 const UNIX_BUF_SIZE: usize = 64 * 1024;
@@ -84,6 +85,15 @@ impl UnixSocketInner {
 
 static UNIX_BINDS: Lazy<Mutex<HashMap<UnixSocketAddr, Arc<UnixSocketInner>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn check_path_parent(path: &str) -> SysResult {
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let cwd = task.process.fs_info.get_cwd();
+    let abs_path = get_abs_path(&cwd, path);
+    let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
+    open(parent_path, OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY, NONE_MODE)?;
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct UnixSocket {
@@ -188,6 +198,9 @@ impl SocketOps for UnixSocket {
         let local_addr = local_addr.into_unix()?;
         if matches!(local_addr, UnixSocketAddr::Unnamed) {
             return Err(SysErrNo::EINVAL);
+        }
+        if let UnixSocketAddr::Path(path) = &local_addr {
+            check_path_parent(path)?;
         }
         let mut current = self.inner.local_addr.lock();
         if !matches!(*current, UnixSocketAddr::Unnamed) {

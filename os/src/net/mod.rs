@@ -77,6 +77,32 @@ fn check_privileged_port_bind(port: u16) -> SysResult {
     Ok(())
 }
 
+fn check_local_bind_address(addr: IpAddress) -> SysResult {
+    if addr.is_unspecified() {
+        return Ok(());
+    }
+
+    let service = get_service();
+    let is_local = service.iface.ip_addrs().iter().any(|cidr| {
+        if cidr.address() == addr {
+            return true;
+        }
+
+        match (cidr.address(), addr) {
+            (IpAddress::Ipv4(local), IpAddress::Ipv4(bind)) if local.is_loopback() => {
+                bind.is_loopback() && cidr.contains_addr(&addr)
+            }
+            _ => false,
+        }
+    });
+
+    if is_local {
+        Ok(())
+    } else {
+        Err(SysErrNo::EADDRNOTAVAIL)
+    }
+}
+
 /// 初始化网络子系统。
 ///
 /// 该函数执行以下操作：

@@ -14,3 +14,4 @@
 - [acct01 acct errno 语义修复](./acct01-sys-acct-errno.md)
 - [acct02 accounting exit(128) 状态编码](./acct02-exitcode-128.md)
 - [alarm05 setitimer old_value 剩余时间语义](./alarm05-itimer-remaining.md)
+- [bind01 bind 非本地地址与 AF_UNIX 路径前缀语义](./bind01-bind-address-path.md)
