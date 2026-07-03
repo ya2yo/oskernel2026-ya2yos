@@ -1,3 +1,9 @@
+//! VFS dentry cache。
+//!
+//! 这一层缓存的是“已缓存父目录 inode + 子项名称”到子 inode 的映射，用来避免
+//! `open()` 等热路径在父目录已经命中 `FsIndex` 后，仍反复进入底层 ext4 路径查找。
+//! cache 只维护 VFS 层的目录项关系；真正的目录项增删仍由文件系统操作完成。
+
 use alloc::{
     string::{String, ToString},
     sync::Arc,
@@ -7,64 +13,103 @@ use spin::{Lazy, RwLock};
 
 use super::Inode;
 
+/// 目录项缓存键。
+///
+/// `parent` 使用父目录 `Arc<dyn Inode>` 的对象地址作为身份，避免为了构造 cache key
+/// 再调用 `path()` 或 `fstat()`，否则缓存命中本身也会触发额外元数据查询。
+/// `name` 是父目录下的单个子项名，不是完整路径。
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct DentryKey {
     parent: usize,
     name: String,
 }
 
+/// 单个 dentry cache 项。
+///
+/// Positive 表示子项存在，并直接保存子 inode；Negative 表示已经确认子项不存在。
+/// Negative cache 主要服务非 `O_CREAT` 查找路径，创建路径应绕过或失效旧的 negative 项。
 enum DentryValue {
     Positive { inode: Arc<dyn Inode> },
     Negative,
 }
 
+/// 对外暴露的 dentry 查找结果。
+///
+/// 调用者只需要区分“命中存在的 inode”和“命中不存在”，不需要知道内部缓存项格式。
 pub enum DentryLookup {
     Positive(Arc<dyn Inode>),
     Negative,
 }
 
+/// 全局 VFS dentry cache。
+///
+/// 当前内核是单机竞赛场景，没有实现完整 Linux dcache shrinker 或 LRU；因此这里采用
+/// 简单 `HashMap + RwLock`，并依赖 create/link/unlink/symlink/rename 等路径显式回填
+/// 或失效条目，避免 stale dentry 影响后续路径语义。
 pub struct DentryCache {
     entries: RwLock<HashMap<DentryKey, DentryValue>>,
 }
 
 impl DentryCache {
+    /// 创建空的 dentry cache。
     pub fn new() -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
         }
     }
 
+    /// 查找父目录下的子项缓存。
+    ///
+    /// 返回 `None` 表示 cache miss，调用者需要继续走底层文件系统查找；
+    /// 返回 `Positive` 可直接复用 inode，返回 `Negative` 可直接按不存在处理。
     pub fn lookup(&self, parent: &Arc<dyn Inode>, name: &str) -> Option<DentryLookup> {
         let key = Self::key(parent, name);
         let entries = self.entries.read();
         match entries.get(&key) {
+            // Positive cache 保存 strong Arc，使刚创建/刚查到的目录项能跨 fd 关闭继续复用。
             Some(DentryValue::Positive { inode }) => Some(DentryLookup::Positive(inode.clone())),
+            // Negative cache 让重复的“确认不存在”查询不用再次进入 ext4。
             Some(DentryValue::Negative) => Some(DentryLookup::Negative),
             None => None,
         }
     }
 
+    /// 插入存在的子项缓存。
+    ///
+    /// 通常在 `open()` 查找成功、`create_file()` 创建成功、`linkat()` 物化成功后调用。
     pub fn insert_positive(&self, parent: &Arc<dyn Inode>, name: &str, inode: Arc<dyn Inode>) {
         self.entries
             .write()
             .insert(Self::key(parent, name), DentryValue::Positive { inode });
     }
 
+    /// 插入不存在的子项缓存。
+    ///
+    /// 只适合非创建路径的 `ENOENT` 结果；创建、link、rename 等可能改变目录项的操作
+    /// 必须先失效或覆盖对应缓存。
     pub fn insert_negative(&self, parent: &Arc<dyn Inode>, name: &str) {
         self.entries
             .write()
             .insert(Self::key(parent, name), DentryValue::Negative);
     }
 
+    /// 失效父目录下的单个子项缓存。
+    ///
+    /// 用于 unlink、rename、symlink、link 或 create 前后，确保后续查找不会命中旧结果。
     pub fn invalidate(&self, parent: &Arc<dyn Inode>, name: &str) {
         self.entries.write().remove(&Self::key(parent, name));
     }
 
+    /// 失效某个父目录下的所有子项缓存。
+    ///
+    /// 当无法精确知道哪个 child 发生变化，或父目录整体状态发生变化时使用。
     pub fn invalidate_parent(&self, parent: &Arc<dyn Inode>) {
         let parent = Self::parent_key(parent);
+        // 只删除指定父目录的目录项，避免一次目录变化冲掉整个全局 cache。
         self.entries.write().retain(|key, _| key.parent != parent);
     }
 
+    /// 构造 `(parent inode identity, child name)` 形式的 dentry key。
     fn key(parent: &Arc<dyn Inode>, name: &str) -> DentryKey {
         DentryKey {
             parent: Self::parent_key(parent),
@@ -72,9 +117,14 @@ impl DentryCache {
         }
     }
 
+    /// 获取父 inode 的 VFS 对象身份。
+    ///
+    /// 这里使用 trait object 的 data pointer 地址作为 key，要求同一个底层 inode 先经过
+    /// `FsIndex` 归一化；否则不同 `Arc` 对象会被视为不同父目录。
     fn parent_key(parent: &Arc<dyn Inode>) -> usize {
         Arc::as_ptr(parent) as *const () as usize
     }
 }
 
+/// 全局 dentry cache 实例。
 pub static DENTRY_CACHE: Lazy<DentryCache> = Lazy::new(DentryCache::new);

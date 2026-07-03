@@ -1,3 +1,10 @@
+//! EXT4 inode adapter.
+//!
+//! 本文件把 `lwext4_rust::Ext4File` 适配为 Ya2yOS VFS [`Inode`] trait。
+//! lwext4 wrapper 主要暴露路径式 API，因此 `Ext4Inode` 除了保存底层
+//! `Ext4File` 外，还维护同一 inode 的路径别名，用于 hard link / rename 后继续
+//! 找到一个可用路径。
+
 use log::{debug, warn};
 use lwext4_rust::{
     bindings::{O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
@@ -17,19 +24,28 @@ use alloc::{sync::Arc, vec::Vec};
 
 use lwext4_rust::file::OsDirent;
 
-/// 防止符号链接死循环的最大跳转次数
+/// 防止符号链接死循环的最大跳转次数。
 const MAX_LOOPTIMES: usize = 5;
 
-/// Ext4Inode 是对底层 Ext4File 的封装，实现了 VFS 的 Inode 接口
+/// EXT4 inode 的 VFS 包装。
+///
+/// `Ext4Inode` 是 VFS 层看到的 inode 对象，内部用 `Ext4File` 调用 lwext4。
+/// 由于底层接口以 path 为主，不是以稳定 inode handle 为主，因此这里还保存路径
+/// alias，并在必要时重新打开到仍然存在的路径。
 pub struct Ext4Inode {
     inner: SyncUnsafeCell<Ext4InodeInner>,
 }
 
+/// `Ext4Inode` 的可变内部状态。
+///
+/// `SyncUnsafeCell` 包住该结构后，外部方法可以在 `&self` 下调用 lwext4 的可变接口。
+/// 这要求调用方遵守文件系统层的锁/单核执行假设，不要并发修改同一个 inode 状态。
 pub struct Ext4InodeInner {
+    /// lwext4 wrapper 的文件/目录句柄。
     f: Ext4File,
     /// 指向同一 inode 的路径别名，用于 hard link / rename 后继续找到可用路径。
     aliases: Vec<String>,
-    /// 延迟删除标志。如果为 true，在该 Inode 被 Drop 时会从磁盘删除对应文件
+    /// 延迟删除标志。如果为 true，在该 inode 被 Drop 时会从磁盘删除对应文件。
     delay: bool,
 }
 
@@ -37,7 +53,8 @@ unsafe impl Send for Ext4Inode {}
 unsafe impl Sync for Ext4Inode {}
 
 impl Ext4Inode {
-    /// 创建一个新的 Ext4Inode 实例
+    /// 创建一个新的 `Ext4Inode` 实例。
+    ///
     /// - `path`: 文件在 EXT4 内部的路径
     /// - `types`: 文件类型（文件、目录、链接等）
     pub fn new(path: &str, types: InodeTypes) -> Self {
@@ -50,6 +67,10 @@ impl Ext4Inode {
         }
     }
 
+    /// 记录一个仍可指向当前 inode 的路径别名。
+    ///
+    /// hard link / rename 之后，原始路径可能失效，但 fd 仍应能继续访问同一个文件。
+    /// alias 列表供 `recover_live_path()` 在底层 path 操作失败时兜底。
     fn add_alias_path(&self, path: &str) {
         let inner = self.inner.get_unchecked_mut();
         if inner.aliases.iter().all(|alias| alias != path) {
@@ -57,10 +78,18 @@ impl Ext4Inode {
         }
     }
 
+    /// 返回当前 `Ext4File` 记录的路径。
+    ///
+    /// 热路径上不主动调用 `check_inode_exist()`，避免每次 `fstat/fmode/path` 都触发
+    /// 底层目录项查找；如果后续 lwext4 操作失败，再由 `recover_live_path()` 扫 alias。
     fn live_path(inner: &mut Ext4InodeInner) -> String {
         inner.f.path().into_string().unwrap()
     }
 
+    /// 在当前路径失效后尝试从 alias 列表恢复一个可用路径。
+    ///
+    /// 这是 rename/hard link 后 fd 继续可用的兜底路径。只有底层元数据操作失败时才调用，
+    /// 避免把普通热路径变成重复的 ext4 路径存在性检查。
     fn recover_live_path(inner: &mut Ext4InodeInner) -> String {
         let current = inner.f.path().into_string().unwrap();
         let types = inner.f.types();
@@ -80,7 +109,9 @@ impl Ext4Inode {
 }
 
 impl Inode for Ext4Inode {
-    /// 获取文件大小
+    /// 获取普通文件大小。
+    ///
+    /// 目录和其他非普通文件当前返回 0；普通文件需要按 lwext4 API 重新打开后读取 size。
     fn size(&self) -> usize {
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
@@ -94,7 +125,11 @@ impl Inode for Ext4Inode {
             0
         }
     }
-    /// Ext4Inode创建必须使用绝对路径
+    /// 在当前文件系统中创建一个新 inode。
+    ///
+    /// `path` 必须是绝对路径。目录通过 `dir_mk()` 创建，普通文件通过
+    /// `file_open(O_CREAT|O_TRUNC)` 创建后立即关闭。目标已存在时返回 `EEXIST`，
+    /// 用于承载 Linux `O_CREAT|O_EXCL` 语义。
     fn create(&self, path: &str, ty: InodeType) -> Result<Arc<dyn Inode>, SysErrNo> {
         let types = as_ext4_de_type(ty);
         let file = &mut self.inner.get_unchecked_mut().f;
@@ -117,11 +152,17 @@ impl Inode for Ext4Inode {
         Ok(Arc::new(nf))
     }
 
+    /// 返回 inode 类型。
+    ///
+    /// 类型来自 `Ext4File` 构造时记录的 lwext4 类型，避免为了类型判断再次走路径查询。
     fn types(&self) -> InodeType {
         as_inode_type(self.inner.get_unchecked_mut().f.types())
     }
 
-    /// 从指定偏移量读取数据到缓冲区
+    /// 从指定偏移量读取数据到缓冲区。
+    ///
+    /// 动态链接文件可能需要按路径 patch 内容，因此读取完成后会调用
+    /// `patch_dynamic_link_file_bytes()` 做兼容修补。
     fn read_at(&self, off: usize, buf: &mut [u8]) -> SyscallRet {
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
@@ -134,6 +175,7 @@ impl Inode for Ext4Inode {
         Ok(r)
     }
 
+    /// 从指定偏移量写入数据。
     fn write_at(&self, off: usize, buf: &[u8]) -> SyscallRet {
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
@@ -145,7 +187,9 @@ impl Inode for Ext4Inode {
         r.map_err(SysErrNo::from)
     }
 
-    /// 截断文件到指定长度
+    /// 截断文件到指定长度。
+    ///
+    /// 成功后失效文件页缓存，避免 mmap/page cache 继续暴露旧大小或旧内容。
     fn truncate(&self, size: usize) -> SyscallRet {
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
@@ -161,6 +205,10 @@ impl Inode for Ext4Inode {
         ret
     }
 
+    /// 重命名当前 inode 对应的路径。
+    ///
+    /// 成功后把新路径加入 alias，并将内部 `Ext4File` 切换到新路径，减少后续元数据操作
+    /// 依赖 fallback 恢复路径的次数。
     fn rename(&self, path: &str, new_path: &str) -> SyscallRet {
         let inner = self.inner.get_unchecked_mut();
         let types = inner.f.types();
@@ -178,7 +226,9 @@ impl Inode for Ext4Inode {
         ret
     }
 
-    /// 创建硬链接：hardlink_path 指向 old_path 相同的 inode
+    /// 创建硬链接：`new_path` 指向 `old_path` 相同的 inode。
+    ///
+    /// 成功后把新路径加入 alias，以便原路径 unlink 后已打开 fd 仍有可用路径。
     fn hard_link(&self, old_path: &str, new_path: &str) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
         let ret = file
@@ -190,6 +240,7 @@ impl Inode for Ext4Inode {
         ret
     }
 
+    /// 设置 inode 时间戳。
     fn set_timestamps(
         &self,
         atime: Option<u64>,
@@ -202,14 +253,16 @@ impl Inode for Ext4Inode {
         file.set_time(atime, mtime, ctime).map_err(SysErrNo::from)
     }
 
-    /// 将文件缓存刷新到磁盘
+    /// 将 lwext4 文件缓存刷新到磁盘。
     fn sync(&self) {
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         inner.f.file_cache_flush();
     }
 
-    /// 一次性读取整个文件内容
+    /// 一次性读取整个文件内容。
+    ///
+    /// 普通文件直接读取全部字节；符号链接会先解析链接目标，再递归读取真实文件。
     fn read_all(&self) -> Result<Vec<u8>, SysErrNo> {
         // 先提取 path 和类型，避免后续访问 self.inner 时产生重叠借用
         let (file_type, path_str) = {
@@ -259,7 +312,11 @@ impl Inode for Ext4Inode {
         }
     }
 
-    /// 在路径中查找节点，支持递归解析符号链接
+    /// 在路径中查找节点，支持递归解析符号链接。
+    ///
+    /// lwext4 没有暴露当前父目录句柄下的相对子项查找接口，因此这里仍使用 path-based
+    /// `check_inode_exist()`。`O_NOFOLLOW`、`O_DIRECTORY` 和内部 `O_UNLINK` 会影响
+    /// symlink/目录的返回语义。
     fn find(
         &self,
         path: &str,
@@ -313,7 +370,10 @@ impl Inode for Ext4Inode {
             Err(SysErrNo::ENOENT)
         }
     }
-    /// 获取文件状态信息
+    /// 获取文件状态信息。
+    ///
+    /// 正常情况下直接用当前路径对应的 lwext4 句柄查询；如果路径因 rename/unlink 失效，
+    /// 再尝试 `recover_live_path()`，从已记录 alias 中恢复一个仍存在的路径。
     fn fstat(&self) -> Kstat {
         let inner = self.inner.get_unchecked_mut();
         let stat = match inner.f.fstat() {
@@ -358,7 +418,9 @@ impl Inode for Ext4Inode {
             ..Kstat::default()
         }
     }
-    /// 读取目录项内容
+    /// 读取目录项内容。
+    ///
+    /// `off` 是 lwext4 目录读取 cookie，不一定等价于普通字节偏移。
     fn read_dentry(&self, off: usize, len: usize) -> SysResult<(Vec<u8>, isize)> {
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
@@ -381,6 +443,9 @@ impl Inode for Ext4Inode {
         Ok((de, f_off as isize))
     }
 
+    /// 判断目录是否为空。
+    ///
+    /// 只要出现除 `.` 和 `..` 之外的目录项，就认为目录非空。
     fn is_dir_empty(&self) -> Result<bool, SysErrNo> {
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
@@ -404,6 +469,7 @@ impl Inode for Ext4Inode {
         Ok(true)
     }
 
+    /// 读取符号链接目标路径。
     fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SysResult<usize> {
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
@@ -411,11 +477,14 @@ impl Inode for Ext4Inode {
         file.file_readlink(buf, bufsize).map_err(SysErrNo::from)
     }
 
+    /// 创建符号链接。
     fn sym_link(&self, target: &str, path: &str) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
         file.file_fsymlink(target, path).map_err(SysErrNo::from)
     }
-    /// 获取硬链接计数
+    /// 获取硬链接计数。
+    ///
+    /// lwext4 在路径已不存在时可能返回 `ENOENT`，这里按 0 个 link 兼容延迟删除路径。
     fn link_cnt(&self) -> SyscallRet {
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
@@ -431,6 +500,9 @@ impl Inode for Ext4Inode {
         Ok(r.unwrap() as usize)
     }
 
+    /// 删除指定路径的目录项。
+    ///
+    /// 目录走 `dir_rm()`，普通文件和其他文件类型走 `file_remove()`。
     fn unlink(&self, path: &str) -> SyscallRet {
         let file = &mut self.inner.get_unchecked_mut().f;
         if self.types() == InodeType::Dir {
@@ -440,18 +512,28 @@ impl Inode for Ext4Inode {
         }
     }
 
+    /// 返回当前可用于 lwext4 path-based API 的路径。
     fn path(&self) -> String {
         let inner = self.inner.get_unchecked_mut();
         Self::live_path(inner)
     }
 
+    /// 从 VFS inode cache 记录新的路径别名。
     fn cache_path_alias(&self, path: &str) {
         self.add_alias_path(path);
     }
+
+    /// 标记为延迟删除。
+    ///
+    /// 当文件已经 unlink 但仍有 fd 持有 inode 时，先标记延迟删除，等最后一个
+    /// `Arc<Ext4Inode>` drop 时再真正移除磁盘文件。
     fn delay(&self) {
         self.inner.get_unchecked_mut().delay = true;
     }
 
+    /// 读取文件 mode bits。
+    ///
+    /// 当前路径失败时会尝试从 alias 恢复，兼容 rename/hard link 后的已打开 fd。
     fn fmode(&self) -> Result<u32, SysErrNo> {
         let inner = self.inner.get_unchecked_mut();
         match inner.f.file_mode() {
@@ -462,6 +544,10 @@ impl Inode for Ext4Inode {
             }
         }
     }
+    /// 设置文件 mode bits。
+    ///
+    /// 如果传入 mode 未带文件类型位，则沿用当前 inode 类型，避免 chmod 类操作把
+    /// regular/dir/symlink 类型位清掉。
     fn fmode_set(&self, mode: u32) -> SyscallRet {
         let inner = self.inner.get_unchecked_mut();
         let mode_type = mode & 0o170000;
@@ -480,6 +566,7 @@ impl Inode for Ext4Inode {
         }
     }
 
+    /// 设置 inode owner uid/gid。
     fn owner_set(&self, uid: u32, gid: u32) -> SyscallRet {
         // Keep owner updates in the filesystem layer so stat and permission checks agree.
         let inner = self.inner.get_unchecked_mut();
@@ -493,12 +580,12 @@ impl Inode for Ext4Inode {
     }
 }
 
-/// 当 Ext4Inode 声明周期结束时，确保关闭底层文件句柄
+/// 当 `Ext4Inode` 生命周期结束时，确保关闭底层文件句柄。
 impl Drop for Ext4Inode {
     fn drop(&mut self) {
         let path = self.path();
         let inner = self.inner.get_unchecked_mut();
-        // 如果标记了延时删除，则在关闭前移除文件
+        // 如果标记了延时删除，则在关闭前移除文件。
         if inner.delay {
             debug!("Ext4Inode delays unlink {:?}", path);
             inner.f.file_remove(&path);
@@ -509,7 +596,7 @@ impl Drop for Ext4Inode {
 
 // --- 类型转换辅助函数 ---
 
-/// 将内核 VFS 的 InodeType 转换为 EXT4 磁盘目录项类型
+/// 将内核 VFS 的 [`InodeType`] 转换为 EXT4 磁盘目录项类型。
 fn as_ext4_de_type(types: InodeType) -> InodeTypes {
     match types {
         InodeType::BlockDevice => InodeTypes::EXT4_DE_BLKDEV,
@@ -523,7 +610,7 @@ fn as_ext4_de_type(types: InodeType) -> InodeTypes {
     }
 }
 
-/// 将底层磁盘读取到的类型转换为内核通用 InodeType
+/// 将 lwext4 返回的 inode/目录项类型转换为内核通用 [`InodeType`]。
 fn as_inode_type(types: InodeTypes) -> InodeType {
     match types {
         InodeTypes::EXT4_INODE_MODE_FIFO | InodeTypes::EXT4_DE_FIFO => InodeType::Fifo,
@@ -539,7 +626,10 @@ fn as_inode_type(types: InodeTypes) -> InodeType {
         }
     }
 }
-/// 路径规范函数
+/// 规范化相对符号链接路径。
+///
+/// `base` 是当前 symlink 所在路径，`rel` 是 symlink 中保存的相对目标。
+/// 该 helper 处理 `.`、`..` 和空分量，并返回绝对路径。
 fn join_path(base: &str, rel: &str) -> String {
     let mut comps = Vec::new();
 
