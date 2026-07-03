@@ -1365,6 +1365,88 @@ warnings 0
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
 
+## 2026-07-03: LTP acct01 acct errno 语义修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复问题；修复后用户确认运行结果在 `log.ans`，且 `acct01` 已成功通过。
+
+### 分析
+
+AI 先过滤 `log.ans` 中的 `TPASS/TFAIL/TBROK/Summary/panic` 关键行，确认真实失败来自 LTP `acct01` 的 5 个断言：
+
+```text
+acct01.c:115: TFAIL: acct(./tmpfile/) succeeded
+acct01.c:115: TFAIL: acct(./tmpfile) expected EPERM: EACCES (13)
+acct01.c:115: TFAIL: acct(NULL) succeeded
+acct01.c:115: TFAIL: acct(aaaa...) expected ENAMETOOLONG: ENOENT (2)
+acct01.c:115: TFAIL: acct(ro_mntpoint/file) succeeded
+```
+
+查看 syscall 轨迹后确认：
+
+- `acct(./tmpfile/)` 被路径规范化成 `/tmp/.../tmpfile`，尾随 `/` 丢失，普通文件被误接受。
+- 测例通过 `setresuid(-1, nobody, -1)` 只改变 effective uid；原 `sys_acct()` 检查 real uid，随后由 `open(O_WRONLY)` 返回 `EACCES`，覆盖了 `acct(2)` 自身应返回的 `EPERM`。
+- `acct(NULL)` 在降 effective uid 后仍因 real uid 为 root 被错误允许关闭 accounting。
+- 256 字节文件名分量缺少 `NAME_MAX=255` 检查，最终返回 `ENOENT`。
+- 只读 `tmpfs` 挂载点上的 accounting 文件未根据 mount 只读标志返回 `EROFS`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/task/acct.rs` | `sys_acct()` 改用 effective uid 判断特权；补齐空路径、`NAME_MAX`、尾随 `/` 和只读挂载检查；先只读验证路径和类型，再最终用 `O_WRONLY` 打开并保存 accounting 文件 |
+| `Docs/决赛文档/problem/acct01-sys-acct-errno.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：默认 RISC-V 构建通过，仅有既有 warning。
+
+AI 曾尝试在沙箱内运行：
+
+```text
+timeout 120s make run > /tmp/acct01-fix.log 2>&1
+```
+
+QEMU 因需要在只读的 `/var/tmp` 创建临时文件而未启动：
+
+```text
+qemu-system-riscv64: ... Could not open temporary file '/var/tmp/...': Read-only file system
+```
+
+随后用户确认外部运行成功输出已在 `log.ans`。AI 读取最新 `log.ans`，其中 `acct01` 9 项核心断言均 `TPASS`：
+
+```text
+acct01.c:115: TPASS: acct(.) : EISDIR (21)
+acct01.c:115: TPASS: acct(/dev/null) : EACCES (13)
+acct01.c:115: TPASS: acct(/tmp/does/not/exist) : ENOENT (2)
+acct01.c:115: TPASS: acct(./tmpfile/) : ENOTDIR (20)
+acct01.c:115: TPASS: acct(./tmpfile) : EPERM (1)
+acct01.c:115: TPASS: acct(NULL) : EPERM (1)
+acct01.c:115: TPASS: acct(test_file_eloop1) : ELOOP (40)
+acct01.c:115: TPASS: acct(aaaa...) : ENAMETOOLONG (36)
+acct01.c:115: TPASS: acct(ro_mntpoint/file) : EROFS (30)
+
+Summary:
+passed   9
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+最终总 summary 为 `passed 9 failed 0 broken 0 skipped 0 warnings 1`，其中 warning 来自 LTP cleanup 删除循环 symlink 的 `ELOOP`，不影响核心断言。`log.ans` 中仍有包装器行 `FAIL LTP CASE acct01 : 10`，但本仓库判读 LTP 时以 `TPASS/TFAIL/TBROK/Summary` 为准。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
+
 ## 2026-07-03: LTP access02 CLONE_VM panic 与 OpenFlags 权限误判修复
 
 ### 用户需求

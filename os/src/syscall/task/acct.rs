@@ -1,5 +1,7 @@
 use crate::{
-    fs::{open, File, FileClass, InodeType, OpenFlags, MAX_PATH_LEN, NONE_MODE, SEEK_END},
+    fs::{
+        open, File, FileClass, InodeType, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE, SEEK_END,
+    },
     mm::{if_bad_address, read_user_cstr},
     task::{current_task, ProcessUsage, TaskControlBlock},
     timer::realtime,
@@ -16,17 +18,24 @@ use log::{debug, warn};
 /// 开启时把生成的记账记录写入指定文件；关闭时传入 NULL。
 static ACCT_FILE: Lazy<Mutex<Option<Arc<crate::fs::OSFile>>>> = Lazy::new(|| Mutex::new(None));
 
+const MAX_FILE_NAME_LEN: usize = 255;
+
+fn has_too_long_path_component(path: &str) -> bool {
+    path.split('/')
+        .any(|component| component.len() > MAX_FILE_NAME_LEN)
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/acct.2.html
 pub fn sys_acct(filename: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let uid = task_inner.user_id;
+    let effective_uid = task_inner.effective_uid;
     drop(task_inner);
 
     // NULL 表示关闭记账
     if filename.is_null() {
         // 非 root 用户无权关闭记账
-        if uid != 0 {
+        if effective_uid != 0 {
             return Err(SysErrNo::EPERM);
         }
         *ACCT_FILE.lock() = None;
@@ -35,7 +44,7 @@ pub fn sys_acct(filename: *const u8) -> SyscallRet {
     }
 
     // 只有 root 用户可以开启记账
-    if uid != 0 {
+    if effective_uid != 0 {
         return Err(SysErrNo::EPERM);
     }
 
@@ -48,8 +57,15 @@ pub fn sys_acct(filename: *const u8) -> SyscallRet {
     let memory_set = proc_inner.memory_set_arc();
     let path = read_user_cstr(&memory_set, filename)?;
 
+    if path.is_empty() {
+        return Err(SysErrNo::ENOENT);
+    }
+
     // 检查路径长度
     if path.len() > MAX_PATH_LEN {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+    if has_too_long_path_component(&path) {
         return Err(SysErrNo::ENAMETOOLONG);
     }
 
@@ -58,8 +74,17 @@ pub fn sys_acct(filename: *const u8) -> SyscallRet {
     debug!("[sys_acct] filename = {}, abs_path = {}", path, abs_path);
     drop(memory_set);
 
-    // 尝试打开文件以验证路径有效
-    let file_class = open(&abs_path, OpenFlags::O_WRONLY, NONE_MODE)?;
+    if path.ends_with('/') && path != "/" {
+        open(
+            &abs_path,
+            OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY,
+            NONE_MODE,
+        )?;
+        return Err(SysErrNo::EISDIR);
+    }
+
+    // 先只读打开以验证路径和类型，避免写权限检查覆盖 acct 自身的 errno 语义。
+    let file_class = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
 
     // 必须为普通文件，不能为设备、socket 等
     let osfile = match &file_class {
@@ -79,6 +104,15 @@ pub fn sys_acct(filename: *const u8) -> SyscallRet {
     if !osfile.inode.types().is_file() {
         return Err(SysErrNo::EACCES);
     }
+
+    if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(&abs_path) {
+        if mountflags & 1 != 0 {
+            return Err(SysErrNo::EROFS);
+        }
+    }
+
+    let osfile = open(&abs_path, OpenFlags::O_WRONLY, NONE_MODE)?.file()?;
+
     // 存储记账文件
     *ACCT_FILE.lock() = Some(osfile);
     debug!("[sys_acct] accounting enabled, file = {}", abs_path);
