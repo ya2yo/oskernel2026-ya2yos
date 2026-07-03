@@ -1364,3 +1364,56 @@ warnings 0
 日志中未再出现原 `tst_test.c:1654: TBROK: waitpid(...)=EINTR`。`log.ans` 中仍有包装器行 `FAIL LTP CASE abort01 : 10`，但本仓库判读 LTP 结果时以 `TPASS/TFAIL/TBROK/Summary` 为准，本次核心 LTP summary 已为 `broken 0`。
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
+
+## 2026-07-03: LTP access02 CLONE_VM panic 与 OpenFlags 权限误判修复
+
+### 用户需求
+
+用户要求继续分析 `log.ans`，指出前次修复后 `access02` 不仅仍有 broken，而且最后曾死循环；随后提供 GDB backtrace：
+
+```text
+MemorySet::get_mut
+TaskControlBlock::alloc_user_res
+TaskControlBlock::clone_process
+sys_clone
+```
+
+在 panic 修复后，用户再次确认运行结果在 `log.ans`，仍有 4 个失败；最后用户确认最新 `log.ans` 已经通过，并要求说明修改内容、把上次文档移动到决赛文档目录。
+
+### 分析
+
+AI 首先从 GDB backtrace 定位到 `clone_process()` 中 `CLONE_VM` 共享地址空间路径处理错误。原代码只把 `CLONE_THREAD` 当作共享地址空间处理，遗漏 `CLONE_VM | CLONE_VFORK | SIGCHLD` 这类非线程 clone，导致 child 共享父 `MemorySet` 时仍进入 fork 分支调用 `alloc_user_res()`，最终在 `MemorySet::get_mut().expect()` 处 panic。
+
+修复 panic 后，`log.ans` 显示 `access02` 剩余 4 个失败：
+
+```text
+open file_r with O_RDONLY as nobody failed: EACCES (13)
+/bin/sh: can't open '/tmp/.../file_x': Permission denied
+```
+
+AI 对比 `access(file_r, R_OK)` 已经 TPASS、`access(file_x, X_OK)` 已经 TPASS，判断问题不在 `faccessat` 和 shebang 解析本身，而在后续真正只读打开文件时。继续检查 `OpenFlags::read_write()` 后发现旧实现只在 flags 完全为空时识别 `O_RDONLY`；一旦用户态传入 `O_RDONLY | O_CLOEXEC` 或 `O_RDONLY | O_LARGEFILE`，就会被误判为读写打开，继而触发写权限检查，使只读文件对 nobody 返回 `EACCES`。busybox `/bin/sh` 读取 `file_x` 脚本也走同一路径，因此打印 `Permission denied`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/task/task.rs` | `clone_process()` 改为按 `CLONE_VM` 选择共享地址空间路径；用户提供 child stack 时只分配 trap context，不再复制 fork 用户资源 |
+| `os/src/fs/mod.rs` | `OpenFlags::read_write()` 改为按 `O_ACCMODE` 解析 `O_RDONLY/O_WRONLY/O_RDWR`，并将 `O_PATH` 视为不可读写 |
+| `Docs/决赛文档/problem/access02-ltp-execve.md` | 从初赛目录移动到决赛目录，并改写为覆盖本次 CLONE_VM panic 和 O_RDONLY 权限误判 |
+| `Docs/决赛文档/problem/access01-rmdir-nonempty.md` | 将上次 access01 复盘从初赛目录移动到决赛目录 |
+| `Docs/决赛文档/problem/README.md`、`Docs/初赛文档/problem/README.md` | 同步 problem 索引，避免移动后断链 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：默认 RISC-V 构建通过，仅有既有 warning。
+
+AI 曾尝试在沙箱内运行 QEMU，因 `/var/tmp` 只读无法创建 QEMU 临时文件而未启动；随后用户提供的最新 `log.ans` 已显示 `access02` 全部 16 个核心断言均 `TPASS`，未再出现 `TFAIL`、`TBROK`、panic 或死循环，并正常 `shutdown!`。
+
+`log.ans` 中仍有包装器行 `FAIL LTP CASE access02 : 10`，但本仓库判读 LTP 时以 `TPASS/TFAIL/TBROK/Summary` 为准，本次核心断言已全部通过。

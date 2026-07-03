@@ -655,7 +655,7 @@ impl TaskControlBlock {
 
         let mut child_inner = child.inner_lock();
 
-        if flags.contains(CloneFlags::CLONE_THREAD) {
+        if flags.contains(CloneFlags::CLONE_VM) {
             if stack != 0 {
                 child.alloc_trap_context_only(&mut child_inner);
             } else {
@@ -665,7 +665,6 @@ impl TaskControlBlock {
             child_inner.trap_cx().set_a0(0);
         } else {
             // fork: 从父进程复制内存
-            let parent_ref = parent_memory_set_arc.get_ref();
             child.alloc_user_res(&mut child_inner);
             *child_inner.trap_cx() = parent_trap_cx;
 
@@ -678,6 +677,7 @@ impl TaskControlBlock {
                 .find(|area| area.area_type == MapAreaType::Stack)
                 .map(|area| area.vpn_range.start())
                 .expect("fork: child has no Stack area");
+            let parent_ref = parent_memory_set_arc.get_ref();
             child_mm.lazy_clone_area(child_stack_bottom, &parent_ref);
             child_mm.clone_area(
                 VirtAddr::from(child_inner.trap_cx_bottom).floor(),

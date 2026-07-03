@@ -149,3 +149,10 @@
 - **场景**：Bug 分析与定位、`waitpid/waitid` 信号打断语义修复、syscall restart 路径修正、LTP abort01 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 中 `tst_test.c:1654: TBROK: waitpid(3,...,0) failed: EINTR (4)`。AI 确认 `abort01` 的 LTP harness 为 `SIGUSR1` 安装了带 `SA_RESTART` 的 handler；原 `waitpid/waitid` 外层通用 `interruptible()` 在 wait 内部检查 pending signal 前就把 `wake_interruptible()` 状态转成 `EINTR`，绕过了 `SA_RESTART` 语义。修复为 wait 自己处理 pending signal：可忽略信号继续等待，不带 `SA_RESTART` 返回 `EINTR`，带 `SA_RESTART` 返回内部 `ERESTART`；同时修正 `setup_frame()` 对负 errno 形式 `ERESTART` 的识别。`make` 通过，最新 `log.ans` 中 `abort01` 为 `passed 2 failed 0 broken 0`，未再出现原 `TBROK`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/waitpid-sa-restart-eintr.md](./problem/waitpid-sa-restart-eintr.md)。
 - **关联 commit**：未提交
+
+#### LTP access02 CLONE_VM panic 与 O_RDONLY 权限误判修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Bug 分析与定位、GDB backtrace 解释、clone/vfork 资源分配修复、open flags 权限语义修复、LTP access02 回归验证、文档迁移到决赛目录
+- **描述**：用户要求继续分析 `access02`，提供 `clone_process -> alloc_user_res -> MemorySet::get_mut()` panic backtrace，并指出后续 `log.ans` 仍有 4 个失败。AI 确认 `clone_process()` 只按 `CLONE_THREAD` 进入共享地址空间路径，遗漏非线程 `CLONE_VM`，导致 vfork/clone 类路径共享 `MemorySet` 时仍分配 fork 用户资源；随后定位 4 个失败来自 `OpenFlags::read_write()` 只在 flags 为空时识别 `O_RDONLY`，把 `O_RDONLY|O_CLOEXEC/O_LARGEFILE` 误判成读写打开并触发写权限检查。修复后 `make` 通过，最新 `log.ans` 中 `access02` 16 项核心断言均 `TPASS`，未再出现 panic、`TFAIL`、`TBROK` 或死循环。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/access02-ltp-execve.md](./problem/access02-ltp-execve.md)。
+- **关联 commit**：未提交

@@ -73,12 +73,14 @@ bitflags! {
 
 impl OpenFlags {
     pub fn read_write(&self) -> (bool, bool) {
-        if self.is_empty() {
-            (true, false)
-        } else if self.contains(Self::O_WRONLY) {
-            (false, true)
-        } else {
-            (true, true)
+        if self.contains(Self::O_PATH) {
+            return (false, false);
+        }
+        match self.bits() & Self::O_ACCMODE.bits() {
+            x if x == Self::O_RDONLY.bits() => (true, false),
+            x if x == Self::O_WRONLY.bits() => (false, true),
+            x if x == Self::O_RDWR.bits() => (true, true),
+            _ => (false, false),
         }
     }
 

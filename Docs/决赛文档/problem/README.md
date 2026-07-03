@@ -8,3 +8,5 @@
 - [cyclictest STRESS_P1: socketpair fd 分配覆盖导致 hackbench ready Broken pipe](./cyclictest-socketpair-fd-allocation.md)
 - [libctest: sigtimedwait 后 wait4 误返回 EINTR](./libctest-sigtimedwait-eintr.md)
 - [waitpid SA_RESTART 信号打断语义修复](./waitpid-sa-restart-eintr.md)
+- [access01 wait4 ERESTART 与非空目录 rmdir 语义](./access01-rmdir-nonempty.md)
+- [access02 CLONE_VM panic 与 O_RDONLY 权限误判](./access02-ltp-execve.md)

@@ -16,7 +16,7 @@ commands, paths, and errors in their original language.
 - `user/`: user-space programs and test entry points.
 - `make_scripts/`: architecture-specific build and QEMU settings.
 - `Docs/`: project documentation, development logs, and problem writeups.
-- `Docs/初赛文档/problem/`: detailed bug and testcase analysis records.
+- `Docs/决赛文档/problem/`: detailed bug and testcase analysis records.
 - `agent-skills/shared/`: source of truth for repo-specific agent skills.
 - `.codex/skills/` and `.claude/skills/`: generated skill directories. Do not
   edit generated skill files directly.
@@ -116,12 +116,12 @@ strings log.ans | tail -80
 ## Documentation Rules
 
 - Project documentation lives under `Docs/`.
-- Use `Docs/初赛文档/开发日志.md` for short chronological development notes.
-- Use one file per issue in `Docs/初赛文档/problem/` for non-trivial bugs,
+- Use `Docs/决赛文档/开发日志.md` for short chronological development notes.
+- Use one file per issue in `Docs/决赛文档/problem/` for non-trivial bugs,
   testcase fixes, panic analysis, or syscall behavior investigations.
-- Update `Docs/初赛文档/problem/README.md` when adding a new problem writeup.
+- Update `Docs/决赛文档/problem/README.md` when adding a new problem writeup.
 - When AI assistance is used for a substantive code/debugging change, update
-  both `Docs/初赛文档/ai.log` and `Docs/初赛文档/AI_INTERACTION.md`, following the
+  both `Docs/决赛文档/ai.log` and `Docs/决赛文档/AI_INTERACTION.md`, following the
   existing style.
 - For trivial typo, formatting, or project-guidance-only edits, keep the final
   response clear about what was changed and avoid unnecessary log noise unless
