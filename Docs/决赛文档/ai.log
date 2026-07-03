@@ -1365,6 +1365,79 @@ warnings 0
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
 
+## 2026-07-03: LTP open14 O_TMPFILE 深层路径超时修复
+
+### 用户需求
+
+用户要求分析 LTP `open14` 源码并修改内核。当前内核运行 `open14` 时最后输出停在：
+
+```text
+open14      0  TINFO  :  creating a file with O_TMPFILE flag
+```
+
+超过 5 分钟没有任何输出。
+
+### 分析
+
+AI 按仓库 `fix-bug` 流程先阅读 LTP 源码 `testcases/kernel/syscalls/open/open14.c`，确认该测例包含三段：
+
+- `test01()`：创建一个 `O_TMPFILE` fd，写 4 KiB，确认目录中不可见，再通过 `/proc/self/fd/<fd>` link 成 `tmpfile`。
+- `test02()`：创建 100 层目录，每层打开一个 `O_TMPFILE` fd，然后从叶子向根删除目录，最后对所有匿名 fd 写读并关闭。
+- `test03()`：创建 100 层目录，每层打开/写读/link 一个 tmpfile，并检查 link 后权限位。
+
+AI 先加临时阶段日志确认内核没有卡在单个 `O_TMPFILE` 分支：`test01` 能通过，`test02/test03` 在深层目录循环中缓慢推进。由于 LTP 在这些长循环中没有持续打印进度，串口表现为长时间停在第一条 TINFO。
+
+继续沿 `sys_openat -> open -> ext4 create`、`sys_mkdirat`、`sys_linkat`、`sys_unlinkat` 路径排查后确认慢点来自重复路径解析：
+
+- `mkdirat` 对预期不存在的深层目录先 open 预查，再 open 创建；
+- `open` 缺少 `O_CREAT|O_EXCL` 存在性语义，导致 syscall 层无法用单次独占创建表达 mkdir/link 需求；
+- ext4 `create()` 对同类型已有目标返回成功而不是 `EEXIST`；
+- tmpfile link materialize 也先查新路径再创建；
+- rmdir 进入普通文件延迟删除路径，做不必要的 link count 与 fd path 扫描；
+- `open(".", O_TMPFILE)` 重复解析已由 cwd/chdir 验证过的目录。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/open.rs` | 支持 `O_CREATE|O_EXCL`：目标存在返回 `EEXIST`，独占创建直接进入 `create_file()` |
+| `os/src/fs/ext4_lw/inode.rs` | `Ext4Inode::create()` 对同类型目标已存在返回 `EEXIST` |
+| `os/src/syscall/fs/ctl.rs` | `mkdirat` 与 tmpfile `linkat` materialize 改为单次 `O_CREATE|O_EXCL`；目录 rmdir 直接 unlink；普通文件仅在有打开 fd 时查询 link count |
+| `os/src/syscall/fs/fd_ops.rs` | `AT_FDCWD + "." + O_TMPFILE` 跳过重复目录 inode 解析 |
+| `Docs/决赛文档/problem/open14-otmpfile-path-slow.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 600s make run
+```
+
+`make` 默认 RISC-V 构建通过，仅有既有 warning。
+
+`timeout 600s make run` 单跑 `open14` 完成，核心结果：
+
+```text
+open14      1  TPASS  :  single file tests passed
+open14      2  TPASS  :  multiple files tests passed
+open14      3  TPASS  :  file permission tests passed
+
+Summary:
+passed   3
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+`make run` 中仍有包装器行 `FAIL LTP CASE open14 : 0`，但退出码为 0，且 LTP summary 为 `failed 0 broken 0`；按仓库规则以 `TPASS/TFAIL/TBROK/Summary` 为准。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置。
+
 ## 2026-07-03: LTP splice07 文件类型校验与空 pipe 卡死修复
 
 ### 用户需求

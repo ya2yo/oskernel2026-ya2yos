@@ -224,6 +224,10 @@ fn open_inner(
         }
     }
 
+    if flags.contains(OpenFlags::O_CREATE) && flags.contains(OpenFlags::O_EXCL) {
+        return create_file(abs_path, flags, mode);
+    }
+
     let mut inode: Option<Arc<dyn Inode>> = None;
     // 同一个路径对应一个Inode
     if !flags.contains(OpenFlags::O_NOFOLLOW) && FsIndex::has_inode(abs_path) {
@@ -257,6 +261,9 @@ fn open_inner(
         }
     }
     if let Some(inode) = inode {
+        if flags.contains(OpenFlags::O_CREATE) && flags.contains(OpenFlags::O_EXCL) {
+            return Err(SysErrNo::EEXIST);
+        }
         if flags.contains(OpenFlags::O_DIRECTORY) && inode.types() != InodeType::Dir {
             return Err(SysErrNo::ENOTDIR);
         }

@@ -205,3 +205,10 @@
 - **场景**：`log.ans` 分析、`splice(2)` 非 pipe 端文件类型准入修复、未实现 fd 占位对象 panic 修复、LTP splice07 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复最后 `splice07` 卡死。AI 确认原实现只检查 `readable()/writable()`，缺少非 pipe 端 `st_mode` 准入，导致 `directory -> pipe write end` 错误成功，并在 `pipe read end -> /dev/zero` 时把字符设备输出端当作可 splice 目标，随后空 pipe 读阻塞。修复为非 pipe 输入只允许 `FREG/FCHR`，非 pipe 输出只允许 `FREG`，在真正读 pipe 前返回 `EINVAL`；同时为 `DummyFd` 补默认 `fstat()`，避免 signalfd/timerfd 等未实现 fd 的错误路径 panic。`make` 通过，`make run` 单跑 `splice07` summary 为 `passed 566 failed 0 broken 0 skipped 25 warnings 0`，系统跑到 `shutdown!`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/splice07-file-type-validation.md](./problem/splice07-file-type-validation.md)。
 - **关联 commit**：未提交
+
+#### LTP open14 O_TMPFILE 深层路径超时修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：LTP 源码分析、`O_TMPFILE`/`mkdirat`/`linkat`/`unlinkat` 路径性能定位、深层目录慢路径修复、open14 回归验证、文档完善
+- **描述**：用户要求分析 `open14` 源码并修复运行到 `creating a file with O_TMPFILE flag` 后超过 5 分钟无输出的问题。AI 对照 LTP 源码确认测例会构造 100 层 `tst02_*` 与 `tst03_*` 目录；临时阶段日志证明内核并非死锁，而是在深层路径循环中缓慢推进。修复为补齐 `O_CREAT|O_EXCL` 存在性语义，令 `mkdirat` 和 tmpfile `linkat` materialize 使用单次独占创建，ext4 create(existing) 返回 `EEXIST`，目录 `rmdir` 跳过普通文件延迟删除检查，并让 `open(".", O_TMPFILE)` 复用已验证 cwd。`make` 通过，`timeout 600s make run` 单跑 `open14` 显示 3 项 TPASS，summary 为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/open14-otmpfile-path-slow.md](./problem/open14-otmpfile-path-slow.md)。
+- **关联 commit**：未提交

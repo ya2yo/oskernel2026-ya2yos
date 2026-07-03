@@ -158,17 +158,12 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
-    if let Ok(_) = open(&abs_path, OpenFlags::O_RDWR, NONE_MODE) {
-        return Err(SysErrNo::EEXIST);
-    }
-    if let Ok(_) = open(
+    open(
         &abs_path,
-        OpenFlags::O_RDWR | OpenFlags::O_CREATE | OpenFlags::O_DIRECTORY,
+        OpenFlags::O_RDWR | OpenFlags::O_CREATE | OpenFlags::O_EXCL | OpenFlags::O_DIRECTORY,
         mode,
-    ) {
-        return Ok(0);
-    }
-    return Err(SysErrNo::ENOENT);
+    )?;
+    Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/getdents64.2.html
@@ -244,14 +239,10 @@ pub fn sys_linkat(
         // re-enter process state, so release syscall-local process locks first.
         drop(memory_set);
 
-        if open(&new_abs_path, OpenFlags::empty(), NONE_MODE).is_ok() {
-            return Err(SysErrNo::EEXIST);
-        }
-
         let stat = src.fstat();
         let dst = open(
             &new_abs_path,
-            OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+            OpenFlags::O_CREATE | OpenFlags::O_EXCL | OpenFlags::O_RDWR,
             stat.st_mode & 0o7777,
         )?
         .file()?;
@@ -325,6 +316,11 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     if is_dir && !osfile.inode.is_dir_empty()? {
         return Err(SysErrNo::ENOTEMPTY);
     }
+    if is_dir {
+        osfile.inode.unlink(&abs_path)?;
+        FsIndex::remove_inode_idx(&abs_path);
+        return Ok(0);
+    }
 
     let locked_fs_info = &proc_inner.fs_info;
 
@@ -335,9 +331,8 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     //     locked_fs_info.has_fd(&abs_path)
     // );
     // TODO: HXC: 我怀疑这里的has_fd是有问题的
-    let link_cnt = osfile.inode.link_cnt()?;
     let has_fd = locked_fs_info.has_fd(&abs_path);
-    if link_cnt == 1 && has_fd {
+    if has_fd && osfile.inode.link_cnt()? == 1 {
         osfile.inode.delay();
         FsIndex::remove_inode_idx(&abs_path);
     } else {

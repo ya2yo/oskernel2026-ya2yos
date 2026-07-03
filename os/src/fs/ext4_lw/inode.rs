@@ -96,17 +96,19 @@ impl Inode for Ext4Inode {
         let file = &mut self.inner.get_unchecked_mut().f;
         let nf = Ext4Inode::new(path, types.clone());
 
-        if !file.check_inode_exist(path, types.clone()) {
-            let nfile = &mut nf.inner.get_unchecked_mut().f;
-            if types == InodeTypes::EXT4_DE_DIR {
-                if let Err(e) = nfile.dir_mk(path) {
-                    return Err(SysErrNo::from(e));
-                }
-            } else if let Err(e) = nfile.file_open(path, O_RDWR | O_CREAT | O_TRUNC) {
+        if file.check_inode_exist(path, types.clone()) {
+            return Err(SysErrNo::EEXIST);
+        }
+
+        let nfile = &mut nf.inner.get_unchecked_mut().f;
+        if types == InodeTypes::EXT4_DE_DIR {
+            if let Err(e) = nfile.dir_mk(path) {
                 return Err(SysErrNo::from(e));
-            } else {
-                nfile.file_close()?;
             }
+        } else if let Err(e) = nfile.file_open(path, O_RDWR | O_CREAT | O_TRUNC) {
+            return Err(SysErrNo::from(e));
+        } else {
+            nfile.file_close()?;
         }
         Ok(Arc::new(nf))
     }

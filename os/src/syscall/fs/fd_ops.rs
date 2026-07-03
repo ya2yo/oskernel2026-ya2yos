@@ -422,16 +422,18 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
         if flags.bits() & OpenFlags::O_ACCMODE.bits() == OpenFlags::O_RDONLY.bits() {
             return Err(SysErrNo::EINVAL);
         }
-        // Resolve the directory without calling high-level open(): sys_openat
-        // already holds process state, and open() can re-enter those locks.
-        let dir_inode = if FsIndex::has_inode(&abs_path) {
-            FsIndex::find_inode_idx(&abs_path).ok_or(SysErrNo::ENOENT)?
-        } else {
-            let inode = superblock_root_inode().find(&abs_path, OpenFlags::O_DIRECTORY, 0)?;
-            FsIndex::insert_inode_idx(&abs_path, inode)
-        };
-        if !dir_inode.types().is_dir() {
-            return Err(SysErrNo::ENOTDIR);
+        if !(dirfd == -100 && path == ".") {
+            // Resolve the directory without calling high-level open(): sys_openat
+            // already holds process state, and open() can re-enter those locks.
+            let dir_inode = if FsIndex::has_inode(&abs_path) {
+                FsIndex::find_inode_idx(&abs_path).ok_or(SysErrNo::ENOENT)?
+            } else {
+                let inode = superblock_root_inode().find(&abs_path, OpenFlags::O_DIRECTORY, 0)?;
+                FsIndex::insert_inode_idx(&abs_path, inode)
+            };
+            if !dir_inode.types().is_dir() {
+                return Err(SysErrNo::ENOTDIR);
+            }
         }
 
         let (readable, writable) = flags.read_write();
