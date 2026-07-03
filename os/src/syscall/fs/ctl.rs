@@ -150,6 +150,9 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     let proc_inner = &task.process;
     let memory_set = proc_inner.memory_set_arc();
     let path = read_user_cstr(&memory_set, path)?;
+    if path.is_empty() {
+        return Err(SysErrNo::ENOENT);
+    }
     drop(memory_set);
     // debug!(
     //     "[sys_mkdirat] dirfd is {},path is {},mode is {}",
@@ -160,6 +163,9 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    if abs_path.bytes().all(|b| b == b'/') {
+        return Err(SysErrNo::EEXIST);
+    }
     open(
         &abs_path,
         OpenFlags::O_RDWR | OpenFlags::O_CREATE | OpenFlags::O_EXCL | OpenFlags::O_DIRECTORY,
