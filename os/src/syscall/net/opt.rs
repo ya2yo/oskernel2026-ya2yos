@@ -11,8 +11,8 @@ use alloc::{vec, vec::Vec};
 use linux_raw_sys::net::{
     group_req, group_source_req, socklen_t, tcp_info, IP_MSFILTER, IP_MTU, IP_MTU_DISCOVER,
     IP_MULTICAST_IF, IP_RECVERR, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP,
-    SOL_SOCKET, SO_DONTROUTE, SO_ERROR, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO, SO_REUSEADDR,
-    SO_SNDBUF, SO_SNDTIMEO, TCP_INFO, TCP_MAXSEG, TCP_NODELAY,
+    IPV6_V6ONLY, SOL_SOCKET, SO_DONTROUTE, SO_ERROR, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO,
+    SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, TCP_INFO, TCP_MAXSEG, TCP_NODELAY,
 };
 use log::{debug, error, warn};
 
@@ -270,6 +270,19 @@ pub fn sys_setsockopt(
                 return Err(SysErrNo::ENOPROTOOPT);
             }
         },
+        IPPROTO_IPV6 => match optname {
+            IPV6_V6ONLY => {
+                let _val: bool = parse(&kern_optval)?;
+                Ok(())
+            }
+            _ => {
+                warn!(
+                    "[sys_setsockopt] not available IPV6 protocol! level = {}, optname = {}",
+                    level, optname
+                );
+                return Err(SysErrNo::ENOPROTOOPT);
+            }
+        },
         // TCP 级
         IPPROTO_TCP => match optname {
             TCP_NODELAY => {
@@ -410,6 +423,15 @@ pub fn sys_getsockopt(
                 Ok(())
             } else if optname == IP_MTU {
                 let val: i32 = 1500;
+                kern_opt.extend_from_slice(&val.to_ne_bytes());
+                Ok(())
+            } else {
+                return Err(SysErrNo::ENOPROTOOPT);
+            }
+        }
+        IPPROTO_IPV6 => {
+            if optname == IPV6_V6ONLY {
+                let val: i32 = 0;
                 kern_opt.extend_from_slice(&val.to_ne_bytes());
                 Ok(())
             } else {

@@ -2364,3 +2364,57 @@ warnings 0
 验证后 AI 恢复 `initproc` 原入口，并重新执行 `make TARGET_ARCH=riscv64`，保持源码与构建产物一致。
 
 未执行 LoongArch64 QEMU 验证；本次运行和失败日志均为 RISC-V，且代码补丁只在 `#[cfg(target_arch = "riscv64")]` 下生效。
+
+## 2026-07-03: iperf IPPROTO_IPV6/IPV6_V6ONLY 兼容修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 并修复 iperf 失败。
+
+### 分析
+
+AI 按 `fix-bug` 流程过滤 `log.ans`，确认 musl/glibc 两组 iperf 都在 server 启动后立即失败：
+
+```text
+[WARN] [sys_setsockopt] unknown protocol! level = 41, optname = 26
+iperf3: error - unable to connect to server ...: Connection refused
+```
+
+`level=41` 对应 Linux `IPPROTO_IPV6`，`optname=26` 对应 `IPV6_V6ONLY`。AI 对照 iperf 源码 `iperf_tcp.c`，确认 server 在 `AF_INET6` listener bind 前会设置 `IPV6_V6ONLY`；如果该 `setsockopt` 失败，iperf 会关闭 socket 并退出，因此后续客户端全部 `Connection refused`。
+
+随后 AI 检查 Ya2yOS 的 socket 路径：`sys_socket()` 已接受 `AF_INET6` 并复用 TCP/UDP 实现，`sockaddr_in6` 也能解析；但 `sys_setsockopt()` 仅处理 `SOL_SOCKET`、`IPPROTO_IP`、`IPPROTO_TCP`，缺少 `IPPROTO_IPV6` 分支。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/net/consts.rs` | 新增 `IPPROTO_IPV6` 常量 |
+| `os/src/syscall/net/opt.rs` | `setsockopt/getsockopt` 增加 `IPPROTO_IPV6/IPV6_V6ONLY` 最小兼容 |
+| `Docs/决赛文档/problem/iperf-ipv6-v6only.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+`IPV6_V6ONLY` 当前按 no-op 接受，`getsockopt` 返回默认 `0`。这是和现有网络栈能力匹配的最小兼容：本次 iperf 需要的是 `IPV6_V6ONLY=0` 不失败，而内核尚未维护完整 IPv6-only 过滤状态。
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：默认 RISC-V 构建通过，仅有既有 warning。
+
+直接 `make run` 在当前沙箱中因 QEMU `-snapshot` 尝试写只读 `/var/tmp` 失败。AI 使用 `/tmp` qcow2 overlay 指向原始 raw 测试镜像后直接运行 QEMU：
+
+```text
+qemu-img create -f qcow2 -F raw -b .../sdcard-rv.img /tmp/iperf-sdcard-rv-overlay.qcow2
+timeout 180s qemu-system-riscv64 ... \
+  -drive file=/tmp/iperf-sdcard-rv-overlay.qcow2,if=none,format=qcow2,id=x0 \
+  ... > /tmp/iperf-ipv6-v6only-fix.log 2>&1
+```
+
+关键结果：musl/glibc 两组 `BASIC_UDP`、`BASIC_TCP`、`PARALLEL_UDP`、`PARALLEL_TCP`、`REVERSE_UDP`、`REVERSE_TCP` 全部 `success`，系统跑到 `shutdown!`，日志中未再出现 `unknown protocol`、`Connection refused`、panic、`TFAIL` 或 `TBROK`。
+
+未执行 LoongArch64 QEMU 验证；本次失败日志与验证路径均为当前默认 RISC-V iperf 测试镜像。

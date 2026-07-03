@@ -229,3 +229,10 @@
 - **场景**：`log.ans` 分析、RISC-V 预赛 musl libc 包装函数反汇编、动态库只读兼容补丁、LTP `epoll_create02` 回归验证、文档完善
 - **描述**：用户要求修复 `epoll_create(0) invalid retval 3: SUCCESS`。AI 确认内核 `epoll_create1(0)` 本身必须成功，不能在 syscall 层改语义；失败来自 RISC-V 预赛镜像 `/musl/lib/libc.so` 的 `epoll_create(size)` 包装函数直接 `li a0,0; j epoll_create1`，没有检查 `size <= 0`。修复为在动态库读取路径中仅对 RISC-V `/musl/lib/libc.so` 做只读 patch：旧 `epoll_create(size)` 非法 size 返回 `EINVAL`，合法 size 仍转 `epoll_create1(0)`，不影响 `epoll_create1(0)`。`make TARGET_ARCH=riscv64` 通过，临时单跑 `epoll_create02` 的 libc 变体两项均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/epoll-create02-riscv-musl-libc.md](./problem/epoll-create02-riscv-musl-libc.md)。
 - **关联 commit**：未提交
+
+#### iperf IPPROTO_IPV6/IPV6_V6ONLY 兼容修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、iperf server 启动失败定位、IPv6 socket option 最小兼容、RISC-V QEMU 回归验证、文档完善
+- **描述**：用户要求分析并修复 iperf 失败。AI 确认 `log.ans` 中 `sys_setsockopt unknown protocol level=41 optname=26` 对应 Linux `IPPROTO_IPV6/IPV6_V6ONLY`，该错误使 iperf3 server 在 bind/listen 前关闭 socket 并退出，后续客户端全部 `Connection refused`。修复为在 socket option 层承认 `IPPROTO_IPV6`，对 `IPV6_V6ONLY` 解析参数并返回成功，`getsockopt` 返回默认 `0`。`make` 通过，使用 `/tmp` qcow2 overlay 绕过当前沙箱 `/var/tmp` 只读限制后运行 RISC-V QEMU，musl/glibc 两组 iperf 六项均 `success`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/iperf-ipv6-v6only.md](./problem/iperf-ipv6-v6only.md)。
+- **关联 commit**：未提交
