@@ -7,12 +7,102 @@
 use super::super::map_area::MapType;
 use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::{DL_INTERP_OFFSET, PAGE_SIZE, USER_HEAP_SIZE};
-use crate::fs::{map_dynamic_link_file_directly_map, open_direct, File, OpenFlags, NONE_MODE};
+use crate::fs::{
+    map_dynamic_link_file_directly_map, open_direct, File, Inode, OpenFlags, NONE_MODE,
+};
 use crate::mm::memory_set::MemorySetInner;
 use crate::task::{Aux, AuxType};
+use crate::utils::SysErrNo;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use xmas_elf::ElfFile;
+
+const ELF_PROBE_SIZE: usize = 256;
+
+fn read_inode_prefix(inode: &Arc<dyn Inode>, len: usize) -> Result<Vec<u8>, SysErrNo> {
+    let read_len = len.min(inode.size());
+    let mut data = alloc::vec![0u8; read_len];
+    let mut done = 0;
+    while done < read_len {
+        let read = inode.read_at(done, &mut data[done..])?;
+        if read == 0 {
+            break;
+        }
+        done += read;
+    }
+    data.truncate(done);
+    Ok(data)
+}
+
+fn program_headers_end(elf: &ElfFile) -> Result<usize, SysErrNo> {
+    let ph_offset = elf.header.pt2.ph_offset() as usize;
+    let ph_count = elf.header.pt2.ph_count() as usize;
+    let ph_entry_size = elf.header.pt2.ph_entry_size() as usize;
+    ph_entry_size
+        .checked_mul(ph_count)
+        .and_then(|size| ph_offset.checked_add(size))
+        .ok_or(SysErrNo::ENOEXEC)
+}
+
+fn needed_elf_prefix_len(elf_data: &[u8]) -> Result<usize, SysErrNo> {
+    let elf = ElfFile::new(elf_data).map_err(|_| SysErrNo::ENOEXEC)?;
+    let ph_end = program_headers_end(&elf)?;
+    if elf_data.len() < ph_end {
+        return Err(SysErrNo::ENOEXEC);
+    }
+
+    let mut needed = ph_end;
+    for idx in 0..elf.header.pt2.ph_count() {
+        let ph = elf.program_header(idx).map_err(|_| SysErrNo::ENOEXEC)?;
+        let ph_type = ph.get_type().map_err(|_| SysErrNo::ENOEXEC)?;
+        if matches!(
+            ph_type,
+            xmas_elf::program::Type::Load | xmas_elf::program::Type::Interp
+        ) {
+            let end = (ph.offset() as usize)
+                .checked_add(ph.file_size() as usize)
+                .ok_or(SysErrNo::ENOEXEC)?;
+            needed = needed.max(end);
+        }
+    }
+    Ok(needed)
+}
+
+/// Read only the ELF bytes required by the loader.
+///
+/// Contest images may contain large static binaries with debug sections after
+/// the loadable segments. `execve` only needs the ELF header, program headers,
+/// PT_INTERP bytes, and PT_LOAD file ranges, so avoid copying the whole file
+/// into the kernel heap.
+pub(crate) fn read_elf_load_image(inode: &Arc<dyn Inode>) -> Result<Vec<u8>, SysErrNo> {
+    let head = read_inode_prefix(inode, ELF_PROBE_SIZE)?;
+    if head.len() < 4 || head[0] != 0x7f || head[1] != b'E' || head[2] != b'L' || head[3] != b'F' {
+        return Err(SysErrNo::ENOEXEC);
+    }
+
+    let header_elf = ElfFile::new(&head).map_err(|_| SysErrNo::ENOEXEC)?;
+    let ph_end = program_headers_end(&header_elf)?;
+    let ph_data = if head.len() < ph_end {
+        read_inode_prefix(inode, ph_end)?
+    } else {
+        head
+    };
+    if ph_data.len() < ph_end {
+        return Err(SysErrNo::ENOEXEC);
+    }
+
+    let needed = needed_elf_prefix_len(&ph_data)?;
+    let image = if ph_data.len() < needed {
+        read_inode_prefix(inode, needed)?
+    } else {
+        ph_data
+    };
+    if image.len() < needed {
+        return Err(SysErrNo::ENOEXEC);
+    }
+    Ok(image)
+}
 
 impl MemorySetInner {
     /// 如果当前 ELF 是动态链接程序，则加载它声明的动态解释器。
@@ -43,22 +133,24 @@ impl MemorySetInner {
 
         // 先扫描 program header。`PT_INTERP` 是动态链接 ELF 的标志；
         // 没有这个 header 时，主程序可以直接从自己的 entry point 启动。
-        let mut is_dl = false;
+        let mut interp = None;
         for i in 0..ph_count {
             let ph = elf.program_header(i).unwrap();
             if ph.get_type().unwrap() == xmas_elf::program::Type::Interp {
-                is_dl = true;
+                let start = ph.offset() as usize;
+                let end = start.checked_add(ph.file_size() as usize).ok_or(())?;
+                if end > elf.input.len() {
+                    return Err(());
+                }
+                let raw = &elf.input[start..end];
+                let path_len = raw.iter().position(|v| *v == 0).unwrap_or(raw.len());
+                let path = core::str::from_utf8(&raw[..path_len]).map_err(|_| ())?;
+                interp = Some(path.to_string());
                 break;
             }
         }
 
-        if is_dl {
-            // `.interp` section 保存动态解释器路径，末尾通常带一个 NUL 字节。
-            // 例如 Alpine RISC-V 中常见值是 `/lib/ld-musl-riscv64.so.1\0`。
-            let section = elf.find_section_by_name(".interp").unwrap();
-            let mut interp = String::from_utf8(section.raw_data(&elf).to_vec()).unwrap();
-            interp = interp.strip_suffix("\0").unwrap_or(&interp).to_string();
-
+        if let Some(interp) = interp {
             // 先按竞赛测试镜像的兼容规则映射动态链接器路径；如果映射路径
             // 不存在，再按 ELF 原始 `.interp` 路径打开，兼容 Alpine 等标准布局。
             let mapped_interp = map_dynamic_link_file_directly_map(&interp);
@@ -78,7 +170,7 @@ impl MemorySetInner {
                 .ok_or(())?;
             // 动态解释器本身也是一个 ELF。读入并解析后复用 `map_elf()`，
             // 只是在地址空间中整体平移到 `DL_INTERP_OFFSET`。
-            let interp_elf_data = interp_file.inode.read_all().map_err(|_| ())?;
+            let interp_elf_data = read_elf_load_image(&interp_file.inode).map_err(|_| ())?;
             let interp_elf = xmas_elf::ElfFile::new(&interp_elf_data).map_err(|_| ())?;
             self.map_elf(&interp_elf, DL_INTERP_OFFSET.into())?;
 

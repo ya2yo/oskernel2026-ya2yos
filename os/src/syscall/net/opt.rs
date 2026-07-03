@@ -9,9 +9,9 @@ use crate::{
 use alloc::sync::Arc;
 use alloc::{vec, vec::Vec};
 use linux_raw_sys::net::{
-    group_req, group_source_req, socklen_t, tcp_info, IP_MSFILTER, IP_MTU, IP_MTU_DISCOVER,
-    IP_MULTICAST_IF, IP_RECVERR, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP,
-    IPV6_V6ONLY, SOL_SOCKET, SO_DONTROUTE, SO_ERROR, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO,
+    group_req, group_source_req, socklen_t, tcp_info, IPV6_V6ONLY, IP_MSFILTER, IP_MTU,
+    IP_MTU_DISCOVER, IP_MULTICAST_IF, IP_RECVERR, IP_RETOPTS, IP_TTL, MCAST_JOIN_GROUP,
+    MCAST_LEAVE_GROUP, SOL_SOCKET, SO_DONTROUTE, SO_ERROR, SO_KEEPALIVE, SO_RCVBUF, SO_RCVTIMEO,
     SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, TCP_INFO, TCP_MAXSEG, TCP_NODELAY,
 };
 use log::{debug, error, warn};

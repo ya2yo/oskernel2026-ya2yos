@@ -1,19 +1,37 @@
 use alloc::{
     string::{String, ToString},
+    sync::Arc,
     vec::Vec,
 };
 use log::debug;
 
 use crate::{
-    fs::{open, OSFile, OpenFlags, NONE_MODE},
-    mm::{copy_from_user, read_user_cstr},
+    fs::{open, Inode, OSFile, OpenFlags, NONE_MODE},
+    mm::{copy_from_user, read_elf_load_image, read_user_cstr},
     syscall::FaccessatFileMode,
     task::current_task,
     utils::{get_abs_path, strip_color, trim_start_slash, SysErrNo, SyscallRet},
 };
 
+const EXEC_PROBE_SIZE: usize = 256;
+
 fn is_elf(data: &[u8]) -> bool {
     data.len() >= 4 && data[0] == 0x7F && data[1] == b'E' && data[2] == b'L' && data[3] == b'F'
+}
+
+fn read_exec_probe(inode: &Arc<dyn Inode>) -> Result<Vec<u8>, SysErrNo> {
+    let read_len = EXEC_PROBE_SIZE.min(inode.size());
+    let mut data = alloc::vec![0u8; read_len];
+    let mut done = 0;
+    while done < read_len {
+        let read = inode.read_at(done, &mut data[done..])?;
+        if read == 0 {
+            break;
+        }
+        done += read;
+    }
+    data.truncate(done);
+    Ok(data)
 }
 
 fn current_task_can_exec(file_mode: u32, owner_uid: u32, owner_gid: u32) -> bool {
@@ -235,8 +253,10 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     check_exec_permission(app_inode.inode.fmode()?, app_stat.st_uid, app_stat.st_gid)?;
     check_not_write_open(&app_inode.inode.path())?;
 
-    let mut elf_data = app_inode.inode.read_all()?;
-    if !is_elf(&elf_data) {
+    let mut elf_data = read_exec_probe(&app_inode.inode)?;
+    if is_elf(&elf_data) {
+        elf_data = read_elf_load_image(&app_inode.inode)?;
+    } else {
         // 非 ELF：尝试按 shebang 脚本处理（如 #!/bin/sh）。
         // Linux 内核不会把脚本当最终可执行体，而是转去 exec 解释器。
         if let Some((interp, shebang_arg)) = parse_shebang(&elf_data) {
@@ -273,8 +293,10 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
                 interp_stat.st_gid,
             )?;
             check_not_write_open(&interp_inode.inode.path())?;
-            elf_data = interp_inode.inode.read_all()?;
-            if !is_elf(&elf_data) {
+            elf_data = read_exec_probe(&interp_inode.inode)?;
+            if is_elf(&elf_data) {
+                elf_data = read_elf_load_image(&interp_inode.inode)?;
+            } else {
                 return Err(SysErrNo::ENOEXEC);
             }
         } else {
