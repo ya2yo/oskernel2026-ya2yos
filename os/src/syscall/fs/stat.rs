@@ -33,6 +33,13 @@ fn mode_allows(
     }
 }
 
+const MAX_FILE_NAME_LEN: usize = 255;
+
+fn has_too_long_path_component(path: &str) -> bool {
+    path.split('/')
+        .any(|component| component.len() > MAX_FILE_NAME_LEN)
+}
+
 fn linux_dev_major(dev: usize) -> u32 {
     (((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff)) as u32
 }
@@ -279,25 +286,20 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> S
         return Err(SysErrNo::ENAMETOOLONG);
     }
 
+    if has_too_long_path_component(&path) {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+
     if dirfd != AT_FDCWD && dirfd as usize >= proc_inner.fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
 
-    let mode = FaccessatMode::from_bits(mode).unwrap();
+    let mode = FaccessatMode::from_bits(mode).ok_or(SysErrNo::EINVAL)?;
 
     debug!(
         "[sys_faccessat] dirfd is {} and path is {} and mode is {:?}",
         dirfd, path, mode
     );
-
-    if mode.contains(FaccessatMode::W_OK) {
-        if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().got_mount(path.clone()) {
-            if mountflags & 1 != 0 {
-                //挂载点只读
-                return Err(SysErrNo::EROFS);
-            }
-        }
-    }
 
     let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
     let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
@@ -323,6 +325,13 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: u32, _flags: usize) -> S
         return Err(SysErrNo::EACCES);
     }
     let inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+    if mode.contains(FaccessatMode::W_OK) {
+        if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(&abs_path) {
+            if mountflags & 1 != 0 {
+                return Err(SysErrNo::EROFS);
+            }
+        }
+    }
     let file_mode = inode.inode.fmode()? & 0xfff;
     let file_mode = FaccessatFileMode::from_bits_truncate(file_mode);
     let file_stat = inode.inode.fstat();

@@ -64,6 +64,23 @@ impl MountTable {
         None
     }
 
+    pub fn mount_for_path(&self, path: &str) -> Option<(String, String, String, u32)> {
+        self.mnt_list
+            .iter()
+            .filter(|(_, dir, _, _)| {
+                if dir == "/" {
+                    path.starts_with('/')
+                } else {
+                    path == dir.as_str()
+                        || path
+                            .strip_prefix(dir.as_str())
+                            .map_or(false, |rest| rest.starts_with('/'))
+                }
+            })
+            .max_by_key(|(_, dir, _, _)| dir.len())
+            .cloned()
+    }
+
     pub fn proc_mounts_content(&self) -> String {
         let mut content = String::from(" ext4 / ext rw 0 0\n");
         for (special, dir, fstype, flags) in &self.mnt_list {

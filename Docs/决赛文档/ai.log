@@ -1417,3 +1417,76 @@ make
 AI 曾尝试在沙箱内运行 QEMU，因 `/var/tmp` 只读无法创建 QEMU 临时文件而未启动；随后用户提供的最新 `log.ans` 已显示 `access02` 全部 16 个核心断言均 `TPASS`，未再出现 `TFAIL`、`TBROK`、panic 或死循环，并正常 `shutdown!`。
 
 `log.ans` 中仍有包装器行 `FAIL LTP CASE access02 : 10`，但本仓库判读 LTP 时以 `TPASS/TFAIL/TBROK/Summary` 为准，本次核心断言已全部通过。
+
+## 2026-07-03: LTP access04 faccessat ENAMETOOLONG 与 EROFS 修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 并修复，随后确认最新输出已在 `log.ans` 且 `access04` 已成功通过，要求开始写文档。
+
+### 分析
+
+AI 先按仓库 `fix-bug` 流程过滤 `log.ans` 中的 `TPASS/TFAIL/TBROK/Summary/panic` 关键行，确认真实失败来自 LTP `access04` 的 4 个断言：
+
+```text
+access04.c:68: TFAIL: access as root expected ENAMETOOLONG: ENOENT (2)
+access04.c:68: TFAIL: access as nobody expected ENAMETOOLONG: ENOENT (2)
+access04.c:68: TFAIL: access as root succeeded
+access04.c:68: TFAIL: access as nobody expected EROFS: EACCES (13)
+```
+
+AI 检查 `os/src/syscall/fs/stat.rs` 后发现 `sys_faccessat()` 只用 `path.len() > MAX_PATH_LEN` 判断超长路径，但该用例实际测试单个文件名分量超过 Linux `NAME_MAX=255`；256 字节文件名未触发现有检查，随后打开不存在路径并返回 `ENOENT`。
+
+继续检查只读挂载逻辑后发现，原代码在 `W_OK` 分支中用 `MNT_TABLE.lock().got_mount(path.clone())` 判断只读挂载。这里的 `path` 仍可能是相对路径 `mntpoint`，而挂载表记录的是绝对路径 `/tmp/LTP.../mntpoint`；同时 `got_mount()` 只做精确匹配，无法按挂载点前缀识别目标路径所属的只读 mount。结果 root 的 `W_OK` 被错误放行，nobody 则进入普通权限位检查并返回 `EACCES`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/stat.rs` | `faccessat` 增加 `NAME_MAX=255` 路径分量检查；非法 mode 从 `unwrap()` 改为返回 `EINVAL`；`W_OK` 基于解析后的绝对路径查询只读挂载并返回 `EROFS` |
+| `os/src/fs/mount.rs` | 新增 `MountTable::mount_for_path()`，按最长挂载点前缀查找目标路径所属 mount |
+| `Docs/决赛文档/problem/access04-faccessat-name-rofs.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：默认 RISC-V 构建通过，仅有既有 warning。
+
+AI 曾尝试在沙箱内运行：
+
+```text
+timeout 120s make run > /tmp/access04-faccessat.log 2>&1
+```
+
+QEMU 因需要在只读的 `/var/tmp` 创建临时文件而未启动：
+
+```text
+qemu-system-riscv64: ... Could not open temporary file '/var/tmp/...': Read-only file system
+```
+
+随后用户确认外部运行成功输出已在 `log.ans`。AI 读取最新 `log.ans`，其中 `access04` 12 项核心断言均 `TPASS`，关键修复点已经返回预期 errno：
+
+```text
+access04.c:68: TPASS: access as root : ENAMETOOLONG (36)
+access04.c:68: TPASS: access as nobody : ENAMETOOLONG (36)
+access04.c:68: TPASS: access as root : EROFS (30)
+access04.c:68: TPASS: access as nobody : EROFS (30)
+
+Summary:
+passed   12
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+最终总 summary 为 `passed 12 failed 0 broken 0 skipped 0 warnings 1`，其中 warning 来自 LTP cleanup 删除循环 symlink 的 `ELOOP`，不影响核心断言。`log.ans` 中仍有包装器行 `FAIL LTP CASE access04 : 10`，但本仓库判读 LTP 时以 `TPASS/TFAIL/TBROK/Summary` 为准。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。

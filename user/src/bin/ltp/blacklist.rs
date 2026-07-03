@@ -644,7 +644,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "getresuid03\0",
     "getresuid03_16\0",
     "getrlimit02\0",
-    #[cfg(target_arch = "loongarch64")]
     "getrusage03\0",
     "getrusage03_child\0",
     "getrusage04\0",

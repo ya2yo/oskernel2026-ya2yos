@@ -10,3 +10,4 @@
 - [waitpid SA_RESTART 信号打断语义修复](./waitpid-sa-restart-eintr.md)
 - [access01 wait4 ERESTART 与非空目录 rmdir 语义](./access01-rmdir-nonempty.md)
 - [access02 CLONE_VM panic 与 O_RDONLY 权限误判](./access02-ltp-execve.md)
+- [access04 faccessat ENAMETOOLONG 与 EROFS 语义](./access04-faccessat-name-rofs.md)

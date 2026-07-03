@@ -156,3 +156,10 @@
 - **场景**：Bug 分析与定位、GDB backtrace 解释、clone/vfork 资源分配修复、open flags 权限语义修复、LTP access02 回归验证、文档迁移到决赛目录
 - **描述**：用户要求继续分析 `access02`，提供 `clone_process -> alloc_user_res -> MemorySet::get_mut()` panic backtrace，并指出后续 `log.ans` 仍有 4 个失败。AI 确认 `clone_process()` 只按 `CLONE_THREAD` 进入共享地址空间路径，遗漏非线程 `CLONE_VM`，导致 vfork/clone 类路径共享 `MemorySet` 时仍分配 fork 用户资源；随后定位 4 个失败来自 `OpenFlags::read_write()` 只在 flags 为空时识别 `O_RDONLY`，把 `O_RDONLY|O_CLOEXEC/O_LARGEFILE` 误判成读写打开并触发写权限检查。修复后 `make` 通过，最新 `log.ans` 中 `access02` 16 项核心断言均 `TPASS`，未再出现 panic、`TFAIL`、`TBROK` 或死循环。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/access02-ltp-execve.md](./problem/access02-ltp-execve.md)。
 - **关联 commit**：未提交
+
+#### LTP access04 faccessat errno 语义修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、`faccessat` Linux errno 语义修复、只读挂载路径匹配修复、LTP access04 回归验证、文档完善
+- **描述**：用户要求分析并修复 `access04`。AI 确认失败来自两个 errno 优先级问题：256 字节文件名分量应按 `NAME_MAX=255` 返回 `ENAMETOOLONG`，但原实现只检查整条路径长度并最终返回 `ENOENT`；`W_OK` 检查只读 `tmpfs` 挂载点时，原实现用相对输入路径精确匹配挂载表，导致 root 错误成功、nobody 返回 `EACCES`。修复为在 `sys_faccessat()` 中检查每个路径分量长度，并用解析后的绝对路径按最长挂载点前缀查询只读 mount 后返回 `EROFS`。`make` 通过，最新 `log.ans` 中 `access04` 12 项核心断言均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/access04-faccessat-name-rofs.md](./problem/access04-faccessat-name-rofs.md)。
+- **关联 commit**：未提交
