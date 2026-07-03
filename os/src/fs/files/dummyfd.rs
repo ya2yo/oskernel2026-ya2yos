@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 
-use super::super::File;
+use super::super::{File, Kstat};
 use crate::mm::UserBuffer;
 use crate::syscall::PollEvents;
 use crate::utils::{SysErrNo, SyscallRet};
@@ -30,6 +30,10 @@ impl File for DummyFd {
 
     fn write(&self, _buf: UserBuffer) -> SyscallRet {
         Err(SysErrNo::EINVAL)
+    }
+
+    fn fstat(&self) -> Kstat {
+        Kstat::default()
     }
 
     fn poll(&self, _events: PollEvents) -> PollEvents {

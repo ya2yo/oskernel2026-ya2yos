@@ -1365,6 +1365,68 @@ warnings 0
 
 未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置和用户提供的最新 `log.ans`。
 
+## 2026-07-03: LTP splice07 文件类型校验与空 pipe 卡死修复
+
+### 用户需求
+
+用户要求分析 `log.ans`，修复最后 `splice07` 卡死问题。
+
+### 分析
+
+AI 按 `fix-bug` 流程过滤 `log.ans` 中的 `TPASS/TFAIL/TBROK/panic/Summary`，确认 `splice07` 已执行到中段，但存在两个核心异常：
+
+```text
+splice07.c:56: TFAIL: splice() on directory -> pipe write end succeeded
+...
+[sys_splice] fd_in=0, fd_out=4, len=1
+QEMU: Terminated
+```
+
+最后卡死发生在 `pipe read end -> /dev/zero`。`/dev/zero` 的 `File` 实现可写，原 `sys_splice()` 在确认至少一端为 pipe 后直接进入通用 `read()` -> `write()` 搬运路径；输入 pipe 为空且写端未关闭，于是 `Pipe::read()` 阻塞，测试无法继续。前面的 `directory -> pipe write end` 误成功同样来自缺少非 pipe 端文件类型准入，只靠 `readable()/writable()` 不足以表达 Linux `splice` 支持范围。
+
+首次修复后，`splice07` 继续跑到 `pipe read end -> signalfd`，但 panic 于 `File::fstate` 默认实现。AI 确认未实现的 signalfd/timerfd/pidfd 等由 `DummyFd` 占位，`DummyFd` 没有 `fstat()`；新增类型检查读取 `st_mode` 时触发默认 trait panic。该类 fd 应返回 `EINVAL`，因此需要给 `DummyFd` 补默认零类型 `fstat()`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/io_mpx/splice.rs` | 新增 `validate_splice_file_types()`，非 pipe 输入只允许 `FREG/FCHR`，非 pipe 输出只允许 `FREG`，在真正读 pipe 前返回 `EINVAL` |
+| `os/src/fs/files/dummyfd.rs` | 为未实现 fd 占位对象补 `fstat() -> Kstat::default()` |
+| `Docs/决赛文档/problem/splice07-file-type-validation.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > /tmp/splice07-fix.log 2>&1
+```
+
+结果：默认 RISC-V 构建通过；首次沙箱内 `make run` 因 QEMU 需要在只读 `/var/tmp` 创建临时文件失败，改为获批后在非沙箱环境运行成功。
+
+最终 `/tmp/splice07-fix.log` 中关键断言均通过：
+
+```text
+splice07.c:56: TPASS: splice() on directory -> pipe write end : EINVAL (22)
+splice07.c:56: TPASS: splice() on pipe read end -> /dev/zero : EINVAL (22)
+splice07.c:56: TPASS: splice() on pipe read end -> signalfd : EINVAL (22)
+splice07.c:56: TPASS: splice() on pipe read end -> timerfd : EINVAL (22)
+
+Summary:
+passed   566
+failed   0
+broken   0
+skipped  25
+warnings 0
+```
+
+日志跑到 `shutdown!`，未再出现卡死或 panic。包装器仍打印 `FAIL LTP CASE splice07 : 10`，但本仓库判读 LTP 时以 `TPASS/TFAIL/TBROK/Summary` 为准。
+
+未执行 `TARGET_ARCH=loongarch64` 验证；本次复现与验证基于当前默认 RISC-V 配置。
+
 ## 2026-07-03: LTP bind04 AF_UNIX SEQPACKET 与 sockaddr_storage 长度修复
 
 ### 用户需求

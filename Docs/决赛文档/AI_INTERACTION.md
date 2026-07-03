@@ -198,3 +198,10 @@
 - **场景**：Bug 分析与定位、AF_UNIX socket 语义修复、IPv4/IPv6 connect 地址长度兼容、SCTP one-to-one stream 兼容、IPv6 loopback 支持、GDB panic 触发链分析、LTP bind04 回归验证、文档完善
 - **描述**：用户要求根据最新 `log.ans` 和 GDB backtrace 修复 `bind04`，随后继续要求修复 `socket(2, 1, 132) failed: EPROTONOSUPPORT`。AI 确认 panic 是 `connect(..., addrlen=128)` 被误判 `EINVAL` 后测试异常退出触发的回收断言；更早的 bind04 阶段还缺少 AF_UNIX pathname socket inode 和 `SOCK_SEQPACKET` 支持。修复为 pathname bind 创建 VFS socket 节点、AF_UNIX seqpacket 复用连接型队列并保留记录边界、IPv4/IPv6 sockaddr 读取接受大于结构体大小的 `sockaddr_storage` 长度；后续补充 `IPPROTO_SCTP` stream socket 到现有连接型实现的最小兼容，并添加 `::1/128` loopback 路由与 `AF_INET6` socket 创建支持。`make` 与单跑 `bind04` 的 `make run` 通过，`log.ans` 中 16 项通信场景均 `TPASS`，summary 为 `passed 16 failed 0 broken 0 skipped 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/bind04-unix-seqpacket-sockaddr.md](./problem/bind04-unix-seqpacket-sockaddr.md)。
 - **关联 commit**：未提交
+
+#### LTP splice07 文件类型校验与空 pipe 卡死修复（7.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、`splice(2)` 非 pipe 端文件类型准入修复、未实现 fd 占位对象 panic 修复、LTP splice07 回归验证、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复最后 `splice07` 卡死。AI 确认原实现只检查 `readable()/writable()`，缺少非 pipe 端 `st_mode` 准入，导致 `directory -> pipe write end` 错误成功，并在 `pipe read end -> /dev/zero` 时把字符设备输出端当作可 splice 目标，随后空 pipe 读阻塞。修复为非 pipe 输入只允许 `FREG/FCHR`，非 pipe 输出只允许 `FREG`，在真正读 pipe 前返回 `EINVAL`；同时为 `DummyFd` 补默认 `fstat()`，避免 signalfd/timerfd 等未实现 fd 的错误路径 panic。`make` 通过，`make run` 单跑 `splice07` summary 为 `passed 566 failed 0 broken 0 skipped 25 warnings 0`，系统跑到 `shutdown!`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/splice07-file-type-validation.md](./problem/splice07-file-type-validation.md)。
+- **关联 commit**：未提交

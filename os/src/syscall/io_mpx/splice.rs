@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec, vec::Vec};
 
 use crate::{
     arch::memory_layout::PAGE_SIZE,
-    fs::{FILE_PAGE_CACHE, File, OSFile, OpenFlags, Pipe, SEEK_CUR, SEEK_SET},
+    fs::{FILE_PAGE_CACHE, File, OSFile, OpenFlags, Pipe, SEEK_CUR, SEEK_SET, StMode},
     mm::{
         UserBuffer, copy_from_user, copy_from_user_val, copy_to_user_val, user_buffer_from_kernel,
     },
@@ -190,6 +190,7 @@ pub fn sys_splice(
     if !in_file.readable() || !out_file.writable() {
         return Err(SysErrNo::EBADF);
     }
+    validate_splice_file_types(&in_file, in_is_pipe, &out_file, out_is_pipe)?;
     let cached_file_to_pipe = if !in_is_pipe && out_is_pipe {
         fd_in
             .file()
@@ -315,6 +316,34 @@ pub fn sys_splice(
     write_splice_offset(&memory_set, off_in, in_offset)?;
     write_splice_offset(&memory_set, off_out, out_offset)?;
     Ok(total)
+}
+
+fn validate_splice_file_types(
+    input: &Arc<dyn File>,
+    in_is_pipe: bool,
+    output: &Arc<dyn File>,
+    out_is_pipe: bool,
+) -> Result<(), SysErrNo> {
+    if !in_is_pipe && !splice_input_supported(input) {
+        return Err(SysErrNo::EINVAL);
+    }
+    if !out_is_pipe && !splice_output_supported(output) {
+        return Err(SysErrNo::EINVAL);
+    }
+    Ok(())
+}
+
+fn splice_input_supported(file: &Arc<dyn File>) -> bool {
+    let mode = stat_file_type(file.fstat().st_mode);
+    mode == StMode::FREG.bits() || mode == StMode::FCHR.bits()
+}
+
+fn splice_output_supported(file: &Arc<dyn File>) -> bool {
+    stat_file_type(file.fstat().st_mode) == StMode::FREG.bits()
+}
+
+fn stat_file_type(mode: u32) -> u32 {
+    mode & 0o170000
 }
 
 fn splice_file_to_pipe_cached(
