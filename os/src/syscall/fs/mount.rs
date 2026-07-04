@@ -5,7 +5,7 @@ use linux_raw_sys::general::{
     FSPICK_SYMLINK_NOFOLLOW, MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_NODEV,
     MOUNT_ATTR_NODIRATIME, MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOSUID, MOUNT_ATTR_NOSYMFOLLOW,
     MOUNT_ATTR_RDONLY, MOUNT_ATTR_SIZE_VER0, MOUNT_ATTR_STRICTATIME, MOVE_MOUNT_F_EMPTY_PATH,
-    MOVE_MOUNT_T_EMPTY_PATH, MOVE_MOUNT__MASK, OPEN_TREE_CLOEXEC, OPEN_TREE_CLONE,
+    MOVE_MOUNT_T_EMPTY_PATH, MOVE_MOUNT__MASK, MS_REMOUNT, OPEN_TREE_CLOEXEC, OPEN_TREE_CLONE,
 };
 use log::{debug, warn};
 
@@ -53,6 +53,13 @@ fn refresh_proc_mounts() {
     file.inode.sync();
 }
 
+/// Extract child names from the serialized `OsDirent` buffer returned by
+/// `Inode::read_dentry()`.
+///
+/// This parser deliberately keeps only names needed by mountpoint cleanup and
+/// filters out `.` / `..`. The field offsets mirror
+/// `crates/lwext4_rust/src/file.rs::OsDirent`; if that layout changes, this
+/// helper must be updated with it.
 fn parse_dirent_names(buf: &[u8]) -> Vec<String> {
     const D_RECLEN_OFF: usize = 16;
     const D_NAME_OFF: usize = 19;
@@ -83,6 +90,13 @@ fn parse_dirent_names(buf: &[u8]) -> Vec<String> {
     names
 }
 
+/// Remove all children under `abs_dir` without removing `abs_dir` itself.
+///
+/// This is a compatibility helper for the current simplified mount model. A
+/// full VFS mount implementation should hide the underlying mountpoint with a
+/// separate mounted root inode instead of deleting mountpoint contents. Until
+/// that exists, fresh tmpfs mounts use this helper so LTP observes an empty
+/// tmpfs root rather than files left by a previous filesystem test round.
 fn purge_dir_contents(abs_dir: &str) -> SysResult {
     let dir = open(
         abs_dir,
@@ -183,7 +197,12 @@ pub fn sys_mount(
     let dir = read_user_cstr(&memory_set, dir)?;
     let ftype = read_user_cstr(&memory_set, ftype)?;
     let dir = proc_inner.get_abs_path(AT_FDCWD as isize, &dir)?;
-    if ftype == "tmpfs" && flags & 32 == 0 {
+    // Fresh tmpfs mounts should expose an empty root. Because `MNT_TABLE`
+    // currently records mount metadata but path lookup still uses the
+    // underlying ext4 directory, purge the mountpoint before recording the
+    // tmpfs mount. Do not run this for `MS_REMOUNT`: remount changes mount
+    // attributes and must not reset filesystem contents.
+    if ftype == "tmpfs" && flags & MS_REMOUNT == 0 {
         if let Err(err) = purge_dir_contents(&dir) {
             warn!(
                 "[sys_mount] failed to purge tmpfs mountpoint {}: {:?}",
