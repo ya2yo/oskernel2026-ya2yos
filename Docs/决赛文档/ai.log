@@ -2418,3 +2418,92 @@ timeout 180s qemu-system-riscv64 ... \
 关键结果：musl/glibc 两组 `BASIC_UDP`、`BASIC_TCP`、`PARALLEL_UDP`、`PARALLEL_TCP`、`REVERSE_UDP`、`REVERSE_TCP` 全部 `success`，系统跑到 `shutdown!`，日志中未再出现 `unknown protocol`、`Connection refused`、panic、`TFAIL` 或 `TBROK`。
 
 未执行 LoongArch64 QEMU 验证；本次失败日志与验证路径均为当前默认 RISC-V iperf 测试镜像。
+
+## 2026-07-04: LTP mkdir09 LoongArch MAP_STACK 懒分配与 tmpfs 挂载隔离修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 和 `ana.ans` 并进行修复。当前工作树中 `Makefile` 已切到 LoongArch64，`initproc` 已单跑 glibc LTP `mkdir09`；这些属于既有改动，AI 未回退。
+
+### 分析
+
+AI 按 `fix-bug` 流程先过滤日志关键字。`log.ans` 没有 LTP summary，卡在 ext2 挂载后：
+
+```text
+RUN GLIBC LTP SINGLE CASE mkdir09
+tst_test.c:1120: TINFO: Mounting /dev/loop0 to /tmp/LTP_.../mntpoint fstyp=ext2 flags=0
+[WARN] ... PagePrivilegeIllegal in application, bad addr = 0x2a21c404b0, bad instruction = 0x2a232dacb8, sending SIGSEGV.
+QEMU: Terminated
+```
+
+`ana.ans` 末尾显示失败前同一进程正在通过 pthread/clone3 创建线程：
+
+```text
+Mmap ret = 180955127808
+Mprotect ret = 0
+Clone3 ret = 24
+```
+
+AI 读取 LTP `mkdir09.c`，确认测试会创建 6 个 pthread 并在同一挂载目录中并发 `mkdir/rmdir`。随后检查 `sys_clone3()`、`clone_process()`、LoongArch trap context、`sys_mmap()`、`sys_mprotect()` 和 `MemorySetInner::handle_page_fault()`。
+
+为避免猜测，AI 临时加入 `clone3/mmap/mprotect/fault` warn 日志并重新构建运行。临时日志显示 glibc pthread stack 的典型序列：
+
+```text
+mmap(addr=0, len=0x801000, prot=0, flags=0x20022)
+mprotect(addr=base+0x1000, len=0x800000, prot=0x3)
+clone3(flags=0x3d0f00, stack=base, stack_size=0x7ffa60, tls=...)
+```
+
+触发 fault 的 `0x2a21c404b0` 位于第三个 `MAP_STACK` 区域中已被 `mprotect()` 改为 RW 的页内，而不是 guard page。该页尚未实际分配，应该走 stack lazy allocation。根因是 LoongArch 把这类未映射访问报告为 `PagePrivilegeIllegal`，原 `trap` 分支直接发 `SIGSEGV`，没有进入统一缺页处理。
+
+AI 同时注意到 `Stack/Brk` 懒分配原先不检查 VMA 权限。如果简单把 `PagePrivilegeIllegal` 交给 lazy handler，会把 `PROT_NONE` guard page 也映射出来，因此修复必须同时补权限判断。
+
+修复后第一次回归，ext2 阶段 6 个线程全部 `TPASS`，但 tmpfs 阶段暴露：
+
+```text
+mkdir09.c:134: TBROK: mkdir(mntpoint/X.0, 7770) failed: EEXIST (17)
+```
+
+AI 继续读取 LTP `run_tcases_per_fs()`，确认每个 filesystem 轮次都会 `mount -> fork_testrun -> umount`。日志中没有 `umount` warning，说明失败不是 umount syscall 直接报错。检查 Ya2yOS mount 实现后确认当前 mount 仅维护 `MNT_TABLE`，文件操作仍落在同一个底层 ext4 目录；ext2 轮次创建的 `mntpoint/X.*` 在 tmpfs 轮次仍可见。Linux tmpfs 应提供空根目录视图，当前简化模型没有这一层隔离。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/trap/mod.rs` | `PagePrivilegeIllegal` 先尝试 `memory_set.handle_page_fault()`，不可修复时再发 `SIGSEGV` |
+| `os/src/mm/memory_set/mmap_ops.rs` | 为 `PagePrivilegeIllegal` 的 mmap/brk/stack lazy fault 增加 VMA 权限判断，避免 `PROT_NONE` 被错误映射 |
+| `os/src/syscall/fs/mount.rs` | `tmpfs` 非 remount 挂载前清空挂载点目录内容，模拟 tmpfs 空根目录，避免 LTP filesystem 轮次间污染 |
+| `Docs/决赛文档/problem/mkdir09-loongarch-map-stack-tmpfs.md` | 新增问题复盘 |
+| `Docs/决赛文档/problem/README.md` | 增加 problem 索引 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次修复记录 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+make TARGET_ARCH=loongarch64
+timeout 120s make run
+```
+
+结果：
+
+- `make TARGET_ARCH=loongarch64` 构建通过，仅有既有 warning。
+- `make run` 当前入口单跑 glibc LTP `mkdir09`，ext2/tmpfs 两轮均通过。
+
+关键 summary：
+
+```text
+Summary:
+passed   12
+failed   0
+broken   0
+skipped  0
+warnings 0
+shutdown!
+```
+
+未再出现原始 `PagePrivilegeIllegal bad addr = 0x2a21c404b0`，也未再出现 tmpfs 阶段 `mkdir(mntpoint/X.0) failed: EEXIST`。
+
+未执行 RISC-V 验证；本次日志、触发路径和修复验证均为 LoongArch64 `mkdir09` 单测。

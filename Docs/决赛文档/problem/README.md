@@ -21,3 +21,4 @@
 - [tst_virt /proc/cpuinfo 缺失导致 TBROK](./proc-cpuinfo-tst-virt.md)
 - [epoll_create02 RISC-V musl libc 包装语义](./epoll-create02-riscv-musl-libc.md)
 - [iperf IPPROTO_IPV6/IPV6_V6ONLY 兼容](./iperf-ipv6-v6only.md)
+- [mkdir09 LoongArch mmap 栈缺页与 tmpfs 挂载隔离](./mkdir09-loongarch-map-stack-tmpfs.md)

@@ -173,8 +173,26 @@ pub fn trap_handler() {
             }
         }
         Trap::Exception(Exception::PagePrivilegeIllegal) => {
-            // 页面存在但权限不足（如用户态访问内核页、写只读页等）
-            // 这不是 lazy page fault 或 COW 能修复的，直接发送 SIGSEGV
+            {
+                let Some(fault_va) = VirtAddr::try_from(stval) else {
+                    let tid = current_task().unwrap().tid();
+                    warn!(
+                        "[kernel] hart {} PagePrivilegeIllegal in application, non-canonical bad addr = {:#x}, bad instruction = {:#x}, sending SIGSEGV.",
+                        hartid,
+                        stval,
+                        current_trap_cx().get_sepc(),
+                    );
+                    send_signal_to_thread(tid, SigSet::SIGSEGV);
+                    return;
+                };
+                let task = current_task().unwrap();
+                let process = &task.process;
+                let memory_set = process.memory_set_arc();
+                if memory_set.handle_page_fault(fault_va.floor(), cause) {
+                    return;
+                }
+            }
+            // 页面权限不足且无法通过 lazy/COW 处理，发送 SIGSEGV。
             let tid = current_task().unwrap().tid();
             warn!(
                 "[kernel] hart {} PagePrivilegeIllegal in application, bad addr = {:#x}, bad instruction = {:#x}, sending SIGSEGV.",

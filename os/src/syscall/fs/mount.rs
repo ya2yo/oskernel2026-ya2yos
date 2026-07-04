@@ -11,9 +11,10 @@ use log::{debug, warn};
 
 use crate::{
     arch::memory_layout::PAGE_SIZE,
+    fs::invalidate_dentry_path,
     fs::{
         open, DetachedMountFd, File, FileClass, FileDescriptor, FsConfigOption, FsConfigValue,
-        FsContextFd, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE,
+        FsContextFd, FsIndex, InodeType, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE,
     },
     mm::{copy_from_user, translate::read_user_cstr, UserBuffer},
     task::current_task,
@@ -50,6 +51,80 @@ fn refresh_proc_mounts() {
     }
     let _ = file.write(UserBuffer::new(buffers));
     file.inode.sync();
+}
+
+fn parse_dirent_names(buf: &[u8]) -> Vec<String> {
+    const D_RECLEN_OFF: usize = 16;
+    const D_NAME_OFF: usize = 19;
+
+    let mut names = Vec::new();
+    let mut pos = 0usize;
+    while pos + D_NAME_OFF <= buf.len() {
+        let reclen =
+            u16::from_ne_bytes([buf[pos + D_RECLEN_OFF], buf[pos + D_RECLEN_OFF + 1]]) as usize;
+        if reclen == 0 || pos + reclen > buf.len() || reclen < D_NAME_OFF {
+            break;
+        }
+
+        let name_bytes = &buf[pos + D_NAME_OFF..pos + reclen];
+        let name_len = name_bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(name_bytes.len());
+        if name_len > 0 {
+            if let Ok(name) = core::str::from_utf8(&name_bytes[..name_len]) {
+                if name != "." && name != ".." {
+                    names.push(String::from(name));
+                }
+            }
+        }
+        pos += reclen;
+    }
+    names
+}
+
+fn purge_dir_contents(abs_dir: &str) -> SysResult {
+    let dir = open(
+        abs_dir,
+        OpenFlags::O_DIRECTORY | OpenFlags::O_RDONLY,
+        NONE_MODE,
+    )?
+    .file()?;
+    let mut names = Vec::new();
+    let mut off = 0usize;
+    loop {
+        let (buf, next_off) = dir.inode.read_dentry(off, PAGE_SIZE * 4)?;
+        if buf.is_empty() {
+            break;
+        }
+        names.extend(parse_dirent_names(&buf));
+        if next_off <= off as isize {
+            break;
+        }
+        off = next_off as usize;
+    }
+
+    for name in names {
+        let child_path = if abs_dir == "/" {
+            alloc::format!("/{}", name)
+        } else {
+            alloc::format!("{}/{}", abs_dir.trim_end_matches('/'), name)
+        };
+        let Ok(child) = open(&child_path, OpenFlags::O_RDONLY, NONE_MODE).and_then(|f| f.file())
+        else {
+            continue;
+        };
+        if child.inode.types() == InodeType::Dir {
+            purge_dir_contents(&child_path)?;
+            if !child.inode.is_dir_empty()? {
+                return Err(SysErrNo::ENOTEMPTY);
+            }
+        }
+        child.inode.unlink(&child_path)?;
+        invalidate_dentry_path(&child_path);
+        FsIndex::remove_inode_idx(&child_path);
+    }
+    Ok(())
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/pivot_root.2.html
@@ -108,6 +183,14 @@ pub fn sys_mount(
     let dir = read_user_cstr(&memory_set, dir)?;
     let ftype = read_user_cstr(&memory_set, ftype)?;
     let dir = proc_inner.get_abs_path(AT_FDCWD as isize, &dir)?;
+    if ftype == "tmpfs" && flags & 32 == 0 {
+        if let Err(err) = purge_dir_contents(&dir) {
+            warn!(
+                "[sys_mount] failed to purge tmpfs mountpoint {}: {:?}",
+                dir, err
+            );
+        }
+    }
     if !data.is_null() {
         let data = read_user_cstr(&memory_set, data)?;
         let ret = MNT_TABLE.lock().mount(special, dir, ftype, flags, data);

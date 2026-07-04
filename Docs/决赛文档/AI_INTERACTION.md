@@ -236,3 +236,10 @@
 - **场景**：`log.ans` 分析、iperf server 启动失败定位、IPv6 socket option 最小兼容、RISC-V QEMU 回归验证、文档完善
 - **描述**：用户要求分析并修复 iperf 失败。AI 确认 `log.ans` 中 `sys_setsockopt unknown protocol level=41 optname=26` 对应 Linux `IPPROTO_IPV6/IPV6_V6ONLY`，该错误使 iperf3 server 在 bind/listen 前关闭 socket 并退出，后续客户端全部 `Connection refused`。修复为在 socket option 层承认 `IPPROTO_IPV6`，对 `IPV6_V6ONLY` 解析参数并返回成功，`getsockopt` 返回默认 `0`。`make` 通过，使用 `/tmp` qcow2 overlay 绕过当前沙箱 `/var/tmp` 只读限制后运行 RISC-V QEMU，musl/glibc 两组 iperf 六项均 `success`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/iperf-ipv6-v6only.md](./problem/iperf-ipv6-v6only.md)。
 - **关联 commit**：未提交
+
+#### LTP mkdir09 LoongArch MAP_STACK 与 tmpfs 隔离修复（7.4）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans`/`ana.ans` 分析、LoongArch `PagePrivilegeIllegal` 缺页路径修复、`MAP_STACK` 懒分配权限修复、tmpfs 挂载隔离兼容、LTP mkdir09 回归验证、文档完善
+- **描述**：用户要求分析 `log.ans` 和 `ana.ans` 并修复。AI 确认原始失败不是旧的 `mkdir09` mode 类型位问题，而是 LoongArch glibc pthread 创建第三个 `MAP_STACK` 时，访问已 `mprotect(PROT_READ|PROT_WRITE)` 的懒分配栈页被报告为 `PagePrivilegeIllegal`，原 trap 分支直接发送 `SIGSEGV`。修复为 `PagePrivilegeIllegal` 先尝试统一缺页处理，并让 mmap/brk/stack lazy fault 按 VMA 权限判断，避免 `PROT_NONE` guard page 被错误映射。随后 tmpfs 轮次暴露 `mkdir(mntpoint/X.0) failed: EEXIST`，AI 定位到当前 mount 只维护表项、没有真实 tmpfs 空根目录视图，补充 tmpfs 挂载前清空挂载点内容以隔离 LTP filesystem 轮次。`make TARGET_ARCH=loongarch64` 通过，单跑 `mkdir09` summary 为 `passed 12 failed 0 broken 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-04 条目与 [problem/mkdir09-loongarch-map-stack-tmpfs.md](./problem/mkdir09-loongarch-map-stack-tmpfs.md)。
+- **关联 commit**：未提交

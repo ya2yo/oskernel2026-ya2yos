@@ -481,6 +481,17 @@ impl MemorySetInner {
                     area.map_perm.contains(MapPermission::X)
                         && mmap_read_page_fault(vpn.into(), &mut self.page_table, area)
                 }
+                Trap::Exception(Exception::PagePrivilegeIllegal) => {
+                    if area
+                        .map_perm
+                        .intersects(MapPermission::R | MapPermission::X)
+                    {
+                        mmap_read_page_fault(vpn.into(), &mut self.page_table, area)
+                    } else {
+                        area.map_perm.contains(MapPermission::W)
+                            && mmap_write_page_fault(vpn.into(), &mut self.page_table, area)
+                    }
+                }
                 _ => {
                     area.map_perm.contains(MapPermission::W)
                         && mmap_write_page_fault(vpn.into(), &mut self.page_table, area)
@@ -500,7 +511,19 @@ impl MemorySetInner {
                 start <= vpn && vpn < end
             })
         {
-            return lazy_page_fault(vpn.into(), &mut self.page_table, area); // false on OOM → SIGSEGV
+            let allowed = match scause {
+                Trap::Exception(Exception::LoadPageFault) => {
+                    area.map_perm.contains(MapPermission::R)
+                }
+                Trap::Exception(Exception::FetchInstructionPageFault) => {
+                    area.map_perm.contains(MapPermission::X)
+                }
+                Trap::Exception(Exception::PagePrivilegeIllegal) => area
+                    .map_perm
+                    .intersects(MapPermission::R | MapPermission::W | MapPermission::X),
+                _ => area.map_perm.contains(MapPermission::W),
+            };
+            return allowed && lazy_page_fault(vpn.into(), &mut self.page_table, area);
         }
         false
     }
