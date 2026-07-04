@@ -161,7 +161,8 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "cpuhotplug_report_proc_interrupts\0",
     "cpuhotplug_testsuite.sh\0",
     "cpuset01\0",
-    // "crash01\0",
+    #[cfg(target_arch = "loongarch64")]
+    "crash01\0",
     "crash02\0",
     "creat07\0",
     "creat07_child\0",
