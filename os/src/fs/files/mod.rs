@@ -22,7 +22,10 @@ pub use {
     dummyfd::DummyFd,
     epoll::{EpollCreateFlags, EpollFile, EpollReady},
     events::EventFd,
-    fanotify::FanotifyFd,
+    fanotify::{
+        fanotify_events_suppressed, notify_path_event, suppress_fanotify_events, FanotifyFd,
+        FAN_ACCESS, FAN_CLOSE_NOWRITE, FAN_CLOSE_WRITE, FAN_MODIFY, FAN_OPEN,
+    },
     inotify::{InotifyFd, InotifyMask},
     mountfd::{DetachedMountFd, FsConfigOption, FsConfigValue, FsContext, FsContextFd},
     mqueue::{MqAttr, Mqueue},

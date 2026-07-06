@@ -1,5 +1,9 @@
 use crate::{
-    fs::{FsIndex, Kstat, FILE_PAGE_CACHE, SEEK_CUR, SEEK_END, SEEK_SET},
+    fs::{
+        fanotify_events_suppressed, notify_path_event, FsIndex, Kstat, FAN_ACCESS,
+        FAN_CLOSE_NOWRITE, FAN_CLOSE_WRITE, FAN_MODIFY, FILE_PAGE_CACHE, SEEK_CUR, SEEK_END,
+        SEEK_SET,
+    },
     mm::{copy_from_user, copy_to_user, MemorySet, UserBuffer},
     syscall::PollEvents,
     utils::{SysErrNo, SyscallRet},
@@ -57,6 +61,7 @@ pub struct OSFile {
     append: bool,   // O_APPEND: 每次 write 前都定位到文件末尾
     pub inode: Arc<dyn Inode>,
     write_path: Option<String>,
+    suppress_fanotify: bool,
     inner: Mutex<OSFileInner>,
 }
 struct OSFileInner {
@@ -78,6 +83,28 @@ impl OSFile {
             append,
             inode,
             write_path,
+            suppress_fanotify: false,
+            inner: Mutex::new(OSFileInner { offset: 0 }),
+        }
+    }
+
+    /// 创建 fanotify 事件中返回给用户态的目标 fd。
+    ///
+    /// 该 fd 的读写关闭不应再次生成 fanotify 事件，否则会污染原 notification
+    /// group 的事件队列。
+    pub fn new_fanotify_event(
+        readable: bool,
+        writable: bool,
+        append: bool,
+        inode: Arc<dyn Inode>,
+    ) -> Self {
+        Self {
+            readable,
+            writable,
+            append,
+            inode,
+            write_path: None,
+            suppress_fanotify: true,
             inner: Mutex::new(OSFileInner { offset: 0 }),
         }
     }
@@ -105,6 +132,14 @@ impl Drop for OSFile {
     fn drop(&mut self) {
         if let Some(path) = self.write_path.as_deref() {
             unregister_write_open(path);
+        }
+        if !self.suppress_fanotify && !fanotify_events_suppressed() {
+            let mask = if self.writable {
+                FAN_CLOSE_WRITE
+            } else {
+                FAN_CLOSE_NOWRITE
+            };
+            notify_path_event(&self.inode.path(), mask);
         }
     }
 }
@@ -137,6 +172,9 @@ impl File for OSFile {
             inner.offset += read_size;
             total_read_size += read_size;
         }
+        if total_read_size > 0 && !self.suppress_fanotify && !fanotify_events_suppressed() {
+            notify_path_event(&self.inode.path(), FAN_ACCESS);
+        }
         Ok(total_read_size)
     }
 
@@ -156,6 +194,9 @@ impl File for OSFile {
             FILE_PAGE_CACHE.invalidate_path_range(&self.inode.path(), write_offset, write_size);
             inner.offset += write_size;
             total_write_size += write_size;
+        }
+        if total_write_size > 0 && !self.suppress_fanotify && !fanotify_events_suppressed() {
+            notify_path_event(&self.inode.path(), FAN_MODIFY);
         }
         Ok(total_write_size)
     }

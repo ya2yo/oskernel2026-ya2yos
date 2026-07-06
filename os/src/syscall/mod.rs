@@ -830,6 +830,13 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
 
         // dummy fds
         Syscall::FanotifyInit => sys_fanotify_init(args[0] as u32, args[1] as u32),
+        Syscall::FanotifyMark => sys_fanotify_mark(
+            args[0] as i32,
+            args[1] as u32,
+            args[2] as u64,
+            args[3] as i32,
+            args[4] as *const u8,
+        ),
         Syscall::NameToHandleAt => sys_name_to_handle_at(
             args[0] as i32,
             args[1] as *const u8,

@@ -3,8 +3,9 @@ use core::{future::poll_fn, task::Poll};
 use super::fcntl::*;
 use super::file_lock::{self, Flock};
 use crate::fs::{
-    map_dynamic_link_file, open, open_fifo, refresh_proc_stat, refresh_proc_status,
-    superblock_root_inode, FileClass, FileDescriptor, FsIndex, OpenFlags, TmpFile,
+    map_dynamic_link_file, notify_path_event, open, open_fifo, refresh_proc_stat,
+    refresh_proc_status, superblock_root_inode, FileClass, FileDescriptor, FsIndex, OpenFlags,
+    TmpFile, FAN_OPEN,
 };
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::{options::FcntlCmd, Syscall};
@@ -508,6 +509,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     let new_fd = fd_table.alloc_fd()?;
     fd_table.set(new_fd, FileDescriptor::new(flags, inode));
 
+    notify_path_event(&abs_path, FAN_OPEN);
     fs_info.insert(abs_path, new_fd);
     return Ok(new_fd);
 }
