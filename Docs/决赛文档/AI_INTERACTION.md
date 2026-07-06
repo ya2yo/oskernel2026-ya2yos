@@ -264,3 +264,10 @@
 - **场景**：新增 `fanotify_mark(263)`、fanotify mark 表与事件队列、VFS open/read/write/close 基础事件投递、LTP `fanotify01` 回归验证、文档完善
 - **描述**：用户要求实现 `FanotifyMark` syscall，并指出 `log.ans` 中 `fanotify01` 未通过。AI 先接入 263 号分发和 `sys_fanotify_mark()`，补 fanotify fd registry、mark add/remove/flush 和 ignore mask；随后根据 `EAGAIN` 日志继续补 `FanotifyFd::read()` 事件队列和 fanotify metadata 序列化，并在 `sys_openat()`、`OSFile::read/write/drop` 投递 `FAN_OPEN/FAN_ACCESS/FAN_MODIFY/FAN_CLOSE_*`。针对多余 close 事件，AI 增加 fanotify 内部 suppress guard，避免 mark 目标检查和事件 fd 构造产生用户可见事件。`make` 通过，`make run > log.ans` 单跑 musl/glibc `fanotify01` summary 均为 `passed 156 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fanotify01-mark-events.md](./problem/fanotify01-mark-events.md)。
 - **关联 commit**：未提交
+
+#### syscall/sys.rs 职责拆分重构（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：syscall 杂项模块结构重构、身份/capability/prctl/system/fs 子模块拆分、构建验证
+- **描述**：用户要求重构 `os/src/syscall/sys.rs` 以提高子模块内聚度。AI 将原大文件按职责拆成 `os/src/syscall/sys/identity.rs`、`capability.rs`、`prctl.rs`、`system.rs`、`fs.rs`，并用 `sys/mod.rs` 统一 re-export，保持 `os/src/syscall/mod.rs` 的 `use sys::*` 接口不变。本次未修改 syscall 分发、函数签名或用户可见语义；`cargo fmt --manifest-path os/Cargo.toml` 和当前默认 LoongArch64 `make` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
+- **关联 commit**：未提交

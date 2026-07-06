@@ -2697,3 +2697,47 @@ RESULT GLIBC LTP SINGLE CASE fanotify01 : 10
 但 LTP 内部全部关键断言为 `TPASS`，summary 为 `passed 156 failed 0 broken 0`；按项目规则不以 wrapper 行判断测例结果。
 
 未执行 RISC-V 验证；本次构建和运行验证基于当前默认 LoongArch64。
+
+
+## 2026-07-06: 重构 syscall/sys.rs 模块边界
+
+### 用户需求
+
+用户要求重构 `os/src/syscall/sys.rs`，提高各个子模块的内聚度。
+
+### 分析
+
+AI 检查 `sys.rs` 后确认该文件同时承载了多类 syscall：
+
+- uid/gid/groups 身份管理；
+- capability `capget/capset`；
+- `prctl(2)`；
+- `uname/sysinfo/syslog/getrandom/getcpu/setdomainname/init_module/delete_module/vhangup` 等系统信息或杂项系统调用；
+- `chroot(2)` 文件系统相关调用。
+
+这些逻辑共享同一个大文件，导致导入范围过宽、局部 helper 和 syscall 入口混杂。重构策略是不改变 syscall 分发和函数签名，只把原函数体按职责拆到 `os/src/syscall/sys/` 子模块，再由 `sys/mod.rs` 统一 re-export，保持 `os/src/syscall/mod.rs` 中 `use sys::*` 的外部接口不变。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/sys/mod.rs` | 新增 sys 模块入口，声明并 re-export 子模块 |
+| `os/src/syscall/sys/identity.rs` | 迁移 uid/gid、setreuid/setresuid、setregid/setresgid、getgroups/setgroups 相关实现 |
+| `os/src/syscall/sys/capability.rs` | 迁移 `CapUserHeader`、`CapUserData`、`sys_capget()`、`sys_capset()` 及 capability helper |
+| `os/src/syscall/sys/prctl.rs` | 迁移 `sys_prctl()` |
+| `os/src/syscall/sys/system.rs` | 迁移 domainname、`uname/sysinfo/syslog/getrandom/getcpu/setdomainname/init_module/delete_module/vhangup` |
+| `os/src/syscall/sys/fs.rs` | 迁移 `sys_chroot()` |
+| `os/src/syscall/sys.rs` | 删除旧的大文件，改由 Rust 模块系统解析 `sys/mod.rs` |
+
+本次是结构性重构，没有修改 syscall 号、分发 match、函数签名或预期返回语义。
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+make
+```
+
+结果：当前默认 LoongArch64 构建通过，仅有既有 warning。未运行 `make run`，因为本次只做模块拆分，无用户可见行为改动。
