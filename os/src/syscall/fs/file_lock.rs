@@ -72,7 +72,8 @@ impl Flock {
         bytes[8..16].copy_from_slice(&self.l_start.to_ne_bytes());
         bytes[16..24].copy_from_slice(&self.l_len.to_ne_bytes());
         bytes[24..28].copy_from_slice(&self.l_pid.to_ne_bytes());
-        // bytes[28..32] 保持为 0 (尾部 padding)
+        // 部分 libc/架构组合把 l_pid 放在尾部 padding 位置，双写可兼容两种布局。
+        bytes[28..32].copy_from_slice(&self.l_pid.to_ne_bytes());
         bytes
     }
 }
@@ -138,6 +139,53 @@ fn locks_conflict(l1: &PosixLock, l2: &PosixLock) -> bool {
     l1.l_start <= l2.l_end && l2.l_start <= l1.l_end
 }
 
+fn ranges_overlap(start1: i64, end1: i64, start2: i64, end2: i64) -> bool {
+    start1 <= end2 && start2 <= end1
+}
+
+fn ranges_touch_or_overlap(start1: i64, end1: i64, start2: i64, end2: i64) -> bool {
+    start1 <= end2.saturating_add(1) && start2 <= end1.saturating_add(1)
+}
+
+fn split_owned_lock(existing: &PosixLock, start: i64, end: i64, out: &mut Vec<PosixLock>) {
+    if existing.l_start < start {
+        out.push(PosixLock {
+            l_type: existing.l_type,
+            l_start: existing.l_start,
+            l_end: start.saturating_sub(1),
+            l_pid: existing.l_pid,
+        });
+    }
+
+    if end != i64::MAX && existing.l_end > end {
+        out.push(PosixLock {
+            l_type: existing.l_type,
+            l_start: end.saturating_add(1),
+            l_end: existing.l_end,
+            l_pid: existing.l_pid,
+        });
+    }
+}
+
+fn normalize_locks(locks: &mut Vec<PosixLock>) {
+    locks.sort_by_key(|lock| (lock.l_start, lock.l_end, lock.l_pid, lock.l_type));
+
+    let mut merged: Vec<PosixLock> = Vec::new();
+    for lock in locks.drain(..) {
+        if let Some(last) = merged.last_mut() {
+            if last.l_pid == lock.l_pid
+                && last.l_type == lock.l_type
+                && ranges_touch_or_overlap(last.l_start, last.l_end, lock.l_start, lock.l_end)
+            {
+                last.l_end = last.l_end.max(lock.l_end);
+                continue;
+            }
+        }
+        merged.push(lock);
+    }
+    *locks = merged;
+}
+
 // ---------------------------------------------------------------------------
 // 公共接口
 // ---------------------------------------------------------------------------
@@ -150,7 +198,11 @@ fn locks_conflict(l1: &PosixLock, l2: &PosixLock) -> bool {
 ///
 /// 若 `fl.l_type == F_UNLCK` 则释放锁；否则尝试获取锁。
 /// 返回 `Ok(0)` 表示成功，`Err(EAGAIN)` 表示存在冲突。
-pub fn setlk(path: &str, fl: &Flock, file_size: i64) -> SyscallRet {
+pub fn setlk(path: &str, fl: &Flock, file_size: i64, owner_pid: i32) -> SyscallRet {
+    if fl.l_type != F_RDLCK && fl.l_type != F_WRLCK && fl.l_type != F_UNLCK {
+        return Err(SysErrNo::EINVAL);
+    }
+
     let (start, end) = to_absolute(fl, file_size);
     if end < start {
         return Err(SysErrNo::EINVAL);
@@ -160,27 +212,37 @@ pub fn setlk(path: &str, fl: &Flock, file_size: i64) -> SyscallRet {
         l_type: fl.l_type,
         l_start: start,
         l_end: end,
-        l_pid: fl.l_pid,
+        l_pid: owner_pid,
     };
 
     let mut locks = FILE_LOCKS.write();
     let entry = locks.entry(String::from(path)).or_insert_with(Vec::new);
 
-    if fl.l_type == F_UNLCK {
-        // 释放匹配的锁：遍历找到同一进程、同一区间的锁并移除
-        entry.retain(|existing| {
-            !(existing.l_pid == fl.l_pid && existing.l_start == start && existing.l_end == end)
-        });
-    } else {
-        // 尝试获取锁：先检查冲突
+    // 尝试获取锁：只和其它进程的冲突锁互斥。同一进程的锁会在下方转换。
+    if fl.l_type != F_UNLCK {
         for existing in entry.iter() {
-            if locks_conflict(existing, &new_lock) {
+            if existing.l_pid != owner_pid && locks_conflict(existing, &new_lock) {
                 return Err(SysErrNo::EAGAIN);
             }
         }
-        // 无冲突，添加锁
+    }
+
+    let mut updated = Vec::new();
+    for existing in entry.iter() {
+        if existing.l_pid == owner_pid
+            && ranges_overlap(existing.l_start, existing.l_end, start, end)
+        {
+            split_owned_lock(existing, start, end, &mut updated);
+        } else {
+            updated.push(existing.clone());
+        }
+    }
+
+    *entry = updated;
+    if fl.l_type != F_UNLCK {
         entry.push(new_lock);
     }
+    normalize_locks(entry);
 
     Ok(0)
 }
@@ -191,7 +253,11 @@ pub fn setlk(path: &str, fl: &Flock, file_size: i64) -> SyscallRet {
 /// 若有冲突，`fl` 的 `l_type` / `l_pid` / `l_start` / `l_len` / `l_whence`
 /// 会被更新为冲突锁的信息。
 /// 若无冲突，`fl.l_type` 会被设置为 `F_UNLCK`。
-pub fn getlk(path: &str, fl: &mut Flock, file_size: i64) -> SyscallRet {
+pub fn getlk(path: &str, fl: &mut Flock, file_size: i64, owner_pid: i32) -> SyscallRet {
+    if fl.l_type != F_RDLCK && fl.l_type != F_WRLCK {
+        return Err(SysErrNo::EINVAL);
+    }
+
     let (start, end) = to_absolute(fl, file_size);
     if end < start {
         return Err(SysErrNo::EINVAL);
@@ -206,19 +272,22 @@ pub fn getlk(path: &str, fl: &mut Flock, file_size: i64) -> SyscallRet {
 
     let locks = FILE_LOCKS.read();
     if let Some(entry) = locks.get(path) {
-        for existing in entry.iter() {
-            if locks_conflict(existing, &probe) {
-                fl.l_type = existing.l_type;
-                fl.l_pid = existing.l_pid;
-                fl.l_start = existing.l_start;
-                fl.l_len = if existing.l_end == i64::MAX {
-                    0
-                } else {
-                    existing.l_end - existing.l_start + 1
-                };
-                fl.l_whence = SEEK_SET;
-                return Ok(0);
-            }
+        let conflict = entry
+            .iter()
+            .filter(|existing| existing.l_pid != owner_pid && locks_conflict(existing, &probe))
+            .min_by_key(|existing| (existing.l_start, existing.l_end));
+
+        if let Some(existing) = conflict {
+            fl.l_type = existing.l_type;
+            fl.l_pid = existing.l_pid;
+            fl.l_start = existing.l_start;
+            fl.l_len = if existing.l_end == i64::MAX {
+                0
+            } else {
+                existing.l_end - existing.l_start + 1
+            };
+            fl.l_whence = SEEK_SET;
+            return Ok(0);
         }
     }
 

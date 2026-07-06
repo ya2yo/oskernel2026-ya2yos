@@ -327,3 +327,10 @@
 - **场景**：`fcntl(2)` 基础命令语义梳理、`F_DUPFD*` fd descriptor flag 修复、pipe size 命令实现、构建验证、文档完善
 - **描述**：用户要求继续完善 `fcntl` syscall。AI 对照现有实现和 LTP fcntl/pipe 用例，修正关闭 fd 槽错误码、`F_DUPFD` 不继承 `FD_CLOEXEC`、`F_DUPFD_CLOEXEC` 设置 `FD_CLOEXEC`、`arg >= RLIMIT_NOFILE` 返回 `EINVAL`、fd 表满返回 `EMFILE` 等语义；同时将 pipe 容量从固定常量改为 per-pipe 字段，支持 `F_GETPIPE_SZ/F_SETPIPE_SZ`、按页取整、`EBUSY/EPERM` 错误和 `/proc/sys/fs/pipe-max-size`。`cargo fmt` 与默认 LoongArch64 `make` 通过；`make run` 在根文件系统 ext4 mount 阶段 panic，未进入 LTP。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl-dupfd-pipe-size.md](./problem/fcntl-dupfd-pipe-size.md)。
 - **关联 commit**：待提交
+
+#### LTP fcntl11 POSIX record lock 区间语义修复（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `fcntl11` 源码对照、POSIX record lock owner 与区间转换修复、LoongArch64 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fcntl11` 失败来自 record lock 实现过于简化：锁 owner 使用用户结构中的 `l_pid` 而非当前进程 pid，同进程重叠锁被当成冲突返回 `EAGAIN`，`F_GETLK` 按插入顺序返回后面的写锁而不是最靠前的冲突锁。修复为 `sys_fcntl()` 传入当前 pid，`file_lock::setlk()` 对同 owner 锁执行覆盖、拆分、合并，`getlk()` 忽略同 owner 锁并按起始偏移选择冲突锁，同时兼容写回 `struct flock.l_pid`。`make` 通过，最新 `log.ans` 中 musl/glibc `fcntl11` 均 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl11-record-lock.md](./problem/fcntl11-record-lock.md)。
+- **关联 commit**：待提交

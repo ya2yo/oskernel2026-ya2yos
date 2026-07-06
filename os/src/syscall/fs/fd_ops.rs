@@ -160,6 +160,7 @@ pub fn sys_dup3(old: usize, new: usize, flags: u32) -> SyscallRet {
 pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
+    let owner_pid = task.pid() as i32;
 
     // debug!("[sys_fcntl] fd is {}, cmd is {}, arg is {}", fd, cmd, arg);
 
@@ -225,7 +226,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            file_lock::getlk(&inode_path, &mut flock, file_size)?;
+            file_lock::getlk(&inode_path, &mut flock, file_size, owner_pid)?;
 
             let result_bytes = flock.to_bytes();
             copy_to_user(&memory_set, arg, &result_bytes)?;
@@ -243,7 +244,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            file_lock::setlk(&inode_path, &flock, file_size)?;
+            file_lock::setlk(&inode_path, &flock, file_size, owner_pid)?;
             return Ok(0);
         }
         FcntlCmd::F_SETLKW | FcntlCmd::F_SETLKW64 => {
@@ -259,7 +260,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            file_lock::setlk(&inode_path, &flock, file_size)?;
+            file_lock::setlk(&inode_path, &flock, file_size, owner_pid)?;
             return Ok(0);
         }
         // OFD（Open File Description）锁 — 简化委托给 POSIX 锁逻辑
@@ -275,7 +276,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            file_lock::getlk(&inode_path, &mut flock, file_size)?;
+            file_lock::getlk(&inode_path, &mut flock, file_size, owner_pid)?;
 
             let result_bytes = flock.to_bytes();
             copy_to_user(&memory_set, arg, &result_bytes)?;
@@ -293,7 +294,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            file_lock::setlk(&inode_path, &flock, file_size)?;
+            file_lock::setlk(&inode_path, &flock, file_size, owner_pid)?;
             return Ok(0);
         }
         // 文件 owner / 信号（主要用于套接字）

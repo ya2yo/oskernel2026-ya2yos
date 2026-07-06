@@ -3118,3 +3118,43 @@ Panicked at crates/lwext4_rust/src/blockdev.rs:103 Failed to mount the ext4 file
 ```
 
 因此本次未获得运行时 fcntl 用例 summary。
+
+
+## 2026-07-06: 修复 fcntl11 POSIX record lock 区间语义
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复。
+
+### 分析
+
+AI 过滤 `log.ans` 后确认失败集中在 LTP `fcntl11`，musl/glibc 两轮均有大量 `TFAIL`，包括锁类型、起始位置、长度和 pid 不匹配，以及同一进程后续设置重叠锁时 `F_SETLK` 返回 `EAGAIN`。对照 `fcntl11.c` 后确认，该用例依赖 POSIX record lock 的同进程锁转换语义：同一进程设置的新锁应覆盖已有锁的重叠区间，必要时把旧锁拆成左右两段；`F_GETLK` 由子进程查询时应返回父进程持有的最靠前冲突锁。
+
+原 `file_lock.rs` 把用户传入的 `fl.l_pid` 当 owner 保存，导致 owner pid 错误；同时没有区分同进程锁和其它进程锁，也没有区间拆分/合并，`F_GETLK` 还按插入顺序返回冲突锁。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/fd_ops.rs` | record lock 分支将当前进程 pid 传入 `file_lock::setlk/getlk` |
+| `os/src/syscall/fs/file_lock.rs` | `setlk()` 支持同 owner 区间覆盖、拆分、合并；`getlk()` 忽略同 owner 锁并返回最靠前冲突锁；`to_bytes()` 兼容写入 `l_pid` |
+| `Docs/决赛文档/problem/fcntl11-record-lock.md` | 新增问题复盘 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：默认 LoongArch64 构建通过；最新 `log.ans` 中 musl/glibc 两轮 `fcntl11` 均为：
+
+```text
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
