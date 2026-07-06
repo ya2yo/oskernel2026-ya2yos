@@ -205,20 +205,15 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         }
         FcntlCmd::F_GETFL => {
             let file = proc_inner.fd_table.get(fd)?;
-            let mut res = OpenFlags::O_RDWR.bits() as usize;
-            if file.non_block() {
-                res |= OpenFlags::O_NONBLOCK.bits() as usize;
-            }
-            return Ok(res);
+            return Ok(file.getfl_flags() as usize);
         }
         FcntlCmd::F_SETFL => {
             let file = proc_inner.fd_table.get(fd)?;
             let flags = OpenFlags::from_bits_truncate(arg as u32);
+            proc_inner.fd_table.set_status_flags(fd, flags)?;
             if flags.contains(OpenFlags::O_NONBLOCK) {
-                proc_inner.fd_table.set_nonblock(fd)?;
                 file.any().set_nonblocking(true)?;
             } else {
-                proc_inner.fd_table.unset_nonblock(fd)?;
                 file.any().set_nonblocking(false)?;
             }
         }

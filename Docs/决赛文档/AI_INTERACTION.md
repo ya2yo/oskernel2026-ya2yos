@@ -313,3 +313,10 @@
 - **场景**：`log.ans` 分析、`chown(2)` 路径 errno 优先级修复、父目录 search 权限检查、只读挂载检查、LoongArch64 LTP 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `chown04` 失败来自三个路径级 errno 被非 root `EPERM` 或普通查找 `ENOENT` 覆盖：无搜索权限父目录应返回 `EACCES`，超长路径应返回 `ENAMETOOLONG`，只读 tmpfs 挂载点应返回 `EROFS`。修复为在 `fchownat()` 中补路径长度和 `NAME_MAX=255` 检查，普通路径打开目标前检查父目录 execute/search 权限，并让 `chown_inode()` 在权限检查前根据目标路径检查只读挂载点。`make` 通过，LoongArch64 单跑 musl/glibc `chown04` 均 8 项 `TPASS`，summary 为 `passed 8 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/chown04-chown-errno.md](./problem/chown04-chown-errno.md)。
 - **关联 commit**：待提交
+
+#### LTP fcntl01 F_GETFL/F_SETFL 状态标志修复（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、`fcntl(2)` `F_GETFL/F_SETFL` 语义修复、fd 文件状态标志保存、构建与日志验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fcntl01` 失败是 `F_GETFL` 硬编码返回 `O_RDWR`，导致以 `O_WRONLY` 打开的文件也读到 `0x2`；同时 `F_SETFL(O_APPEND)` 只处理 nonblock，未保存 append 状态。修复为让 `FileDescriptor` 暴露 `F_GETFL` 可见的真实访问模式和状态位，并让 `F_SETFL` 更新 `O_APPEND/O_NONBLOCK/O_ASYNC/O_DIRECT/O_NOATIME` 等可修改状态位，同时继续同步底层文件 nonblocking 状态。`make` 通过，用户提供的最新 `log.ans` 中 musl/glibc `fcntl01` 均 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl01-f-getfl-setfl.md](./problem/fcntl01-f-getfl-setfl.md)。
+- **关联 commit**：待提交

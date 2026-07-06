@@ -3026,3 +3026,54 @@ warnings 0
 ```
 
 cleanup 阶段清理符号链接环仍有 `tst_rmdir ... ELOOP` warning，不影响核心测试结论。日志中的 wrapper 行 `FAIL LTP CASE chown04 : 10` / `RESULT GLIBC LTP SINGLE CASE chown04 : 10` 不作为失败依据。
+
+
+## 2026-07-06: 修复 fcntl01 F_GETFL/F_SETFL 状态标志
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复；后续说明修复后的输出结果在 `log.ans`。
+
+### 分析
+
+AI 过滤 `log.ans` 后确认失败来自 LTP `fcntl01`：
+
+```text
+fcntl01.c:99: unexpected flag 0x2, expected 0x1
+fcntl01.c:117: unexpected flag ox2, expected 0x401
+fcntl01.c:136: unexpected flag 0x2, expected 0x1
+```
+
+对照 LTP `fcntl01.c` 后确认，测试以 `O_WRONLY | O_CREAT` 打开文件，随后用 `F_GETFL` 检查访问模式，再用 `F_SETFL` 设置 `O_NDELAY/O_APPEND` 并重新读取。原 `sys_fcntl(F_GETFL)` 硬编码返回 `O_RDWR`，没有读取 `FileDescriptor` 中保存的打开 flags；`F_SETFL` 也只更新 nonblock，没有保存 `O_APPEND`，因此所有检查都看到 `0x2`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/fstruct.rs` | 新增 `FileDescriptor::getfl_flags()` 和 fd 状态位更新接口，保存 `F_SETFL` 可修改的 `O_APPEND/O_NONBLOCK/O_ASYNC/O_DIRECT/O_NOATIME` |
+| `os/src/syscall/fs/fd_ops.rs` | `F_GETFL` 改为返回真实 fd flags；`F_SETFL` 改为更新 fd 状态位并同步底层文件 nonblocking 状态 |
+| `Docs/决赛文档/problem/fcntl01-f-getfl-setfl.md` | 新增问题复盘 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/problem/README.md`、`Docs/决赛文档/AI_INTERACTION.md` | 追加索引与 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+make
+```
+
+结果：默认 LoongArch64 构建通过。
+
+用户随后提供更新后的 `log.ans`，AI 复查确认 musl/glibc 两轮 `fcntl01` 均为：
+
+```text
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+本次未重新运行 QEMU；以用户更新后的 `log.ans` 为运行验证依据。

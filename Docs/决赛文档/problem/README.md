@@ -25,5 +25,6 @@
 - [mkdir09 LoongArch mmap 栈缺页与 tmpfs 挂载隔离](./mkdir09-loongarch-map-stack-tmpfs.md)
 - [fanotify01 mark 与基础事件投递](./fanotify01-mark-events.md)
 - [fanotify02 目录子项事件与 remove mask 语义](./fanotify02-event-on-child.md)
+- [fcntl01 F_GETFL/F_SETFL 文件状态标志修复](./fcntl01-f-getfl-setfl.md)
 - [fchmod02 /etc/group 缺少 users/daemon 导致 TBROK](./fchmod02-group-database.md)
 - [fchmod05 chmod S_ISGID 清除语义](./fchmod05-chmod-setgid.md)
