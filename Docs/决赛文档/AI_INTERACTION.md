@@ -148,63 +148,63 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、`waitpid/waitid` 信号打断语义修复、syscall restart 路径修正、LTP abort01 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 中 `tst_test.c:1654: TBROK: waitpid(3,...,0) failed: EINTR (4)`。AI 确认 `abort01` 的 LTP harness 为 `SIGUSR1` 安装了带 `SA_RESTART` 的 handler；原 `waitpid/waitid` 外层通用 `interruptible()` 在 wait 内部检查 pending signal 前就把 `wake_interruptible()` 状态转成 `EINTR`，绕过了 `SA_RESTART` 语义。修复为 wait 自己处理 pending signal：可忽略信号继续等待，不带 `SA_RESTART` 返回 `EINTR`，带 `SA_RESTART` 返回内部 `ERESTART`；同时修正 `setup_frame()` 对负 errno 形式 `ERESTART` 的识别。`make` 通过，最新 `log.ans` 中 `abort01` 为 `passed 2 failed 0 broken 0`，未再出现原 `TBROK`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/waitpid-sa-restart-eintr.md](./problem/waitpid-sa-restart-eintr.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`4ba8915`
 
 #### LTP access02 CLONE_VM panic 与 O_RDONLY 权限误判修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、GDB backtrace 解释、clone/vfork 资源分配修复、open flags 权限语义修复、LTP access02 回归验证、文档迁移到决赛目录
 - **描述**：用户要求继续分析 `access02`，提供 `clone_process -> alloc_user_res -> MemorySet::get_mut()` panic backtrace，并指出后续 `log.ans` 仍有 4 个失败。AI 确认 `clone_process()` 只按 `CLONE_THREAD` 进入共享地址空间路径，遗漏非线程 `CLONE_VM`，导致 vfork/clone 类路径共享 `MemorySet` 时仍分配 fork 用户资源；随后定位 4 个失败来自 `OpenFlags::read_write()` 只在 flags 为空时识别 `O_RDONLY`，把 `O_RDONLY|O_CLOEXEC/O_LARGEFILE` 误判成读写打开并触发写权限检查。修复后 `make` 通过，最新 `log.ans` 中 `access02` 16 项核心断言均 `TPASS`，未再出现 panic、`TFAIL`、`TBROK` 或死循环。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/access02-ltp-execve.md](./problem/access02-ltp-execve.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`d224638`
 
 #### LTP access04 faccessat errno 语义修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、`faccessat` Linux errno 语义修复、只读挂载路径匹配修复、LTP access04 回归验证、文档完善
 - **描述**：用户要求分析并修复 `access04`。AI 确认失败来自两个 errno 优先级问题：256 字节文件名分量应按 `NAME_MAX=255` 返回 `ENAMETOOLONG`，但原实现只检查整条路径长度并最终返回 `ENOENT`；`W_OK` 检查只读 `tmpfs` 挂载点时，原实现用相对输入路径精确匹配挂载表，导致 root 错误成功、nobody 返回 `EACCES`。修复为在 `sys_faccessat()` 中检查每个路径分量长度，并用解析后的绝对路径按最长挂载点前缀查询只读 mount 后返回 `EROFS`。`make` 通过，最新 `log.ans` 中 `access04` 12 项核心断言均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/access04-faccessat-name-rofs.md](./problem/access04-faccessat-name-rofs.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`0a7c44a`
 
 #### LTP acct01 acct errno 语义修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、`acct(2)` Linux errno 语义修复、effective uid 权限判断、只读挂载与路径边界检查、LTP acct01 回归验证、文档完善
 - **描述**：用户要求分析并修复 `acct01`。AI 确认失败来自 `sys_acct()` 错误优先级和凭证判断：尾随 `/` 被路径规范化吞掉，非特权场景只改 effective uid 但原实现检查 real uid，`open(O_WRONLY)` 的 `EACCES` 覆盖了 `EPERM`，256 字节文件名分量缺少 `NAME_MAX=255` 检查，只读挂载点未返回 `EROFS`。修复为用 effective uid 判断 `CAP_SYS_PACCT`，补齐空路径、文件名分量、尾随 `/` 和只读挂载检查，并先只读验证路径类型、最后再用 `O_WRONLY` 保存 accounting 文件。`make` 通过，最新 `log.ans` 中 `acct01` 9 项核心断言均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/acct01-sys-acct-errno.md](./problem/acct01-sys-acct-errno.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`0ce79d6`
 
 #### LTP acct02 accounting exit(128) 状态编码修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、process accounting `ac_exitcode` 编码修复、LTP acct02 回归验证、文档完善
 - **描述**：用户要求分析并修复 `acct02`。AI 确认失败来自 accounting 记录已写出但 `ac_exitcode` 为 0；`acct02_helper` 正常 `exit(128)`，LTP 期望 wait status `128 << 8 = 32768`。根因是 `acct.rs` 中 `wait_status_from_exit_code()` 对普通退出码 `128..255` 做了错误归零处理，和 `wait4` 的普通退出编码不一致。修复为删除该特殊分支，普通退出统一写 `exit_code << 8`，信号终止仍按 `termination_signal` 编码。`make` 通过，`make run` 单跑 `acct02` 后 `log.ans` 显示 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/acct02-exitcode-128.md](./problem/acct02-exitcode-128.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`ff0db8d`
 
 #### LTP alarm05 setitimer 剩余时间语义修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、`alarm(2)`/`setitimer(2)` old_value 剩余时间语义修复、周期 timer 推进语义修正、LTP alarm05 回归验证、文档完善
 - **描述**：用户要求分析并修复 `alarm05`，随后确认最新 `log.ans` 已通过，并询问为什么看似标准的计时器模块仍有问题。AI 确认原实现能按 `last_time` 驱动 `SIGALRM` 投递，但 `Timer::timer()` 直接返回原始 `it_value`，导致 `alarm(10)` 经过约 1 秒后被 `alarm(1)` 替换时仍返回 10，而不是旧闹钟剩余约 9 秒。修复为用 `now - last_time` 折算 `getitimer/setitimer(old_value)` 返回的剩余 `it_value`，并让周期 timer 到期后把下一轮 `it_value` 设为 `it_interval`。`make` 通过，最新 `log.ans` 中 `alarm05` 3 项核心断言均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/alarm05-itimer-remaining.md](./problem/alarm05-itimer-remaining.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`d5f1222`
 
 #### LTP bind01 bind 地址与 AF_UNIX 路径语义修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、TCP/UDP `bind(2)` 本机地址检查、AF_UNIX pathname 父目录校验、LTP bind01 回归验证、文档完善
 - **描述**：用户要求分析并修复 `bind01`，随后确认最新 `log.ans` 已通过。AI 确认原实现用路由表判断 bind 地址，默认路由导致非本地地址也能绑定成功；同时 AF_UNIX pathname bind 只登记内存表，没有校验路径前缀，导致中间分量非目录时也成功。修复为在 TCP/UDP bind 前检查地址是否为 wildcard、接口地址或 loopback `127/8`，否则返回 `EADDRNOTAVAIL`；AF_UNIX pathname bind 前通过 VFS 打开父目录，复用 `ENOTDIR/ENOENT` 语义。`make` 通过，最新 `log.ans` 中 `bind01` 7 项核心断言均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/bind01-bind-address-path.md](./problem/bind01-bind-address-path.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`a176235`
 
 #### LTP bind04 AF_UNIX SEQPACKET 与 sockaddr_storage 长度修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Bug 分析与定位、AF_UNIX socket 语义修复、IPv4/IPv6 connect 地址长度兼容、SCTP one-to-one stream 兼容、IPv6 loopback 支持、GDB panic 触发链分析、LTP bind04 回归验证、文档完善
 - **描述**：用户要求根据最新 `log.ans` 和 GDB backtrace 修复 `bind04`，随后继续要求修复 `socket(2, 1, 132) failed: EPROTONOSUPPORT`。AI 确认 panic 是 `connect(..., addrlen=128)` 被误判 `EINVAL` 后测试异常退出触发的回收断言；更早的 bind04 阶段还缺少 AF_UNIX pathname socket inode 和 `SOCK_SEQPACKET` 支持。修复为 pathname bind 创建 VFS socket 节点、AF_UNIX seqpacket 复用连接型队列并保留记录边界、IPv4/IPv6 sockaddr 读取接受大于结构体大小的 `sockaddr_storage` 长度；后续补充 `IPPROTO_SCTP` stream socket 到现有连接型实现的最小兼容，并添加 `::1/128` loopback 路由与 `AF_INET6` socket 创建支持。`make` 与单跑 `bind04` 的 `make run` 通过，`log.ans` 中 16 项通信场景均 `TPASS`，summary 为 `passed 16 failed 0 broken 0 skipped 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/bind04-unix-seqpacket-sockaddr.md](./problem/bind04-unix-seqpacket-sockaddr.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`727774a`, `a3215d2`
 
 #### LTP splice07 文件类型校验与空 pipe 卡死修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、`splice(2)` 非 pipe 端文件类型准入修复、未实现 fd 占位对象 panic 修复、LTP splice07 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复最后 `splice07` 卡死。AI 确认原实现只检查 `readable()/writable()`，缺少非 pipe 端 `st_mode` 准入，导致 `directory -> pipe write end` 错误成功，并在 `pipe read end -> /dev/zero` 时把字符设备输出端当作可 splice 目标，随后空 pipe 读阻塞。修复为非 pipe 输入只允许 `FREG/FCHR`，非 pipe 输出只允许 `FREG`，在真正读 pipe 前返回 `EINVAL`；同时为 `DummyFd` 补默认 `fstat()`，避免 signalfd/timerfd 等未实现 fd 的错误路径 panic。`make` 通过，`make run` 单跑 `splice07` summary 为 `passed 566 failed 0 broken 0 skipped 25 warnings 0`，系统跑到 `shutdown!`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/splice07-file-type-validation.md](./problem/splice07-file-type-validation.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`9e9bebe`
 
 #### LTP open14 O_TMPFILE 深层路径超时修复（7.3）
 
@@ -214,74 +214,74 @@
 - **补充**：用户继续要求 `open()` 使用已经缓存的父目录。AI 在 `open_inner()` 的完整路径 cache miss 后增加缓存父目录查找路径，并让 `create_file()` 复用同一个父 inode 做权限检查、gid 继承和创建；同时让 `Ext4Inode::types()` 返回构造时缓存的类型，避免目录类型判断再次触发路径查询。`make` 与 `timeout 600s make run` 单跑 `open14` 均通过，summary 仍为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 `LTP open14 父目录缓存路径优化` 条目。
 - **补充**：用户要求在 `os/src/fs/dcache.rs` 实现 dentry cache。AI 新增父 inode + child name 的 positive/negative dentry cache，让 `find_from_cached_parent()` 在底层 ext4 查找前先命中 child inode 或 `ENOENT`，并在 create/link/unlink/symlink/rename 成功后回填或失效目录项。`make` 与 `timeout 600s make run` 单跑 `open14` 均通过，summary 为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 `VFS dentry cache 接入 open 父目录缓存路径` 条目。
 - **补充**：用户要求按性能定位优先级继续实现优化。AI 用临时低噪声埋点确认 `openat(O_TMPFILE)` 本身不是瓶颈，主要耗时来自 `FsIndex`/dentry positive cache 使用 `Weak` 导致 inode 生命周期过短，以及 `Ext4Inode::live_path()` 每次元数据操作都重复 `check_inode_exist()`。修复为将 `FsIndex` 与 dentry positive cache 改为可显式失效的 strong `Arc` cache，`live_path()` 热路径直接使用当前 path、失败后再 alias 恢复，并合并 `create_file()` 父目录元数据读取。`make` 通过，`timeout 600s make run` 单跑 `open14` 耗时从约 223.35s 降到 65.94s，summary 为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 `LTP open14 缓存生命周期与 live_path 性能优化` 条目。
-- **关联 commit**：未提交
+- **关联 commit**：`c608399`, `6cfdfc7`, `7815eeb`, `adc18ab`
 
 #### LTP tst_virt /proc/cpuinfo 缺失修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、启动期 `/proc` 兼容文件补齐、LTP `tst_virt` 回归验证、文档完善
 - **描述**：用户要求分析并修复 `tst_virt.c:37: TBROK: fopen(/proc/cpuinfo,r) failed: ENOENT (2)`。AI 确认失败发生在 LTP 公共虚拟化探测库读取 `/proc/cpuinfo` 阶段；Ya2yOS 启动期已有 `/proc/mounts` 和 `/proc/meminfo` 等兼容文件，但缺少 `/proc/cpuinfo`，导致 `openat("/proc/cpuinfo")` 走普通 ext4 查找并返回 `ENOENT`。修复为在 `create_proc_files()` 中写入 RISC-V/LoongArch64 最小 `CPUINFO` 文本，并刻意不包含 `QEMU Virtual CPU`，避免改变 LTP 对 KVM 的判断。`make` 通过，用户确认最新 `log.ans` 已通过，summary 为 `passed 7 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/proc-cpuinfo-tst-virt.md](./problem/proc-cpuinfo-tst-virt.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`8046c48`
 
 #### LTP epoll_create02 RISC-V musl libc 包装语义修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、RISC-V 预赛 musl libc 包装函数反汇编、动态库只读兼容补丁、LTP `epoll_create02` 回归验证、文档完善
 - **描述**：用户要求修复 `epoll_create(0) invalid retval 3: SUCCESS`。AI 确认内核 `epoll_create1(0)` 本身必须成功，不能在 syscall 层改语义；失败来自 RISC-V 预赛镜像 `/musl/lib/libc.so` 的 `epoll_create(size)` 包装函数直接 `li a0,0; j epoll_create1`，没有检查 `size <= 0`。修复为在动态库读取路径中仅对 RISC-V `/musl/lib/libc.so` 做只读 patch：旧 `epoll_create(size)` 非法 size 返回 `EINVAL`，合法 size 仍转 `epoll_create1(0)`，不影响 `epoll_create1(0)`。`make TARGET_ARCH=riscv64` 通过，临时单跑 `epoll_create02` 的 libc 变体两项均 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/epoll-create02-riscv-musl-libc.md](./problem/epoll-create02-riscv-musl-libc.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`4220200`
 
 #### iperf IPPROTO_IPV6/IPV6_V6ONLY 兼容修复（7.3）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、iperf server 启动失败定位、IPv6 socket option 最小兼容、RISC-V QEMU 回归验证、文档完善
 - **描述**：用户要求分析并修复 iperf 失败。AI 确认 `log.ans` 中 `sys_setsockopt unknown protocol level=41 optname=26` 对应 Linux `IPPROTO_IPV6/IPV6_V6ONLY`，该错误使 iperf3 server 在 bind/listen 前关闭 socket 并退出，后续客户端全部 `Connection refused`。修复为在 socket option 层承认 `IPPROTO_IPV6`，对 `IPV6_V6ONLY` 解析参数并返回成功，`getsockopt` 返回默认 `0`。`make` 通过，使用 `/tmp` qcow2 overlay 绕过当前沙箱 `/var/tmp` 只读限制后运行 RISC-V QEMU，musl/glibc 两组 iperf 六项均 `success`。详见 `Docs/决赛文档/ai.log` 2026-07-03 条目与 [problem/iperf-ipv6-v6only.md](./problem/iperf-ipv6-v6only.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`1361a4c`
 
 #### LTP mkdir09 LoongArch MAP_STACK 与 tmpfs 隔离修复（7.4）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans`/`ana.ans` 分析、LoongArch `PagePrivilegeIllegal` 缺页路径修复、`MAP_STACK` 懒分配权限修复、tmpfs 挂载隔离兼容、LTP mkdir09 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 和 `ana.ans` 并修复。AI 确认原始失败不是旧的 `mkdir09` mode 类型位问题，而是 LoongArch glibc pthread 创建第三个 `MAP_STACK` 时，访问已 `mprotect(PROT_READ|PROT_WRITE)` 的懒分配栈页被报告为 `PagePrivilegeIllegal`，原 trap 分支直接发送 `SIGSEGV`。修复为 `PagePrivilegeIllegal` 先尝试统一缺页处理，并让 mmap/brk/stack lazy fault 按 VMA 权限判断，避免 `PROT_NONE` guard page 被错误映射。随后 tmpfs 轮次暴露 `mkdir(mntpoint/X.0) failed: EEXIST`，AI 定位到当前 mount 只维护表项、没有真实 tmpfs 空根目录视图，补充 tmpfs 挂载前清空挂载点内容以隔离 LTP filesystem 轮次。`make TARGET_ARCH=loongarch64` 通过，单跑 `mkdir09` summary 为 `passed 12 failed 0 broken 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-04 条目与 [problem/mkdir09-loongarch-map-stack-tmpfs.md](./problem/mkdir09-loongarch-map-stack-tmpfs.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`c3d0ff4`
 
 #### faccessat2 syscall 实现（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：新增 Linux syscall、`faccessat` 逻辑复用、LTP `faccessat201/202` 回归验证、文档完善
 - **描述**：用户要求实现 `faccessat2(439)`。AI 确认 syscall 枚举已有 439 号但缺少分发和实现；现有 `sys_faccessat()` 已有 real uid/gid 权限检查、父目录 execute 检查、路径长度与只读挂载处理。修复为抽出共用 `do_faccessat()`，新增 `sys_faccessat2()`，校验 `AT_EACCESS/AT_SYMLINK_NOFOLLOW/AT_EMPTY_PATH` flags，`AT_EACCESS` 下使用 effective uid/gid，并修正绝对路径忽略坏 `dirfd` 的语义。`make` 通过，RISC-V 单跑 musl/glibc `faccessat201` 均 7 项 `TPASS`，`faccessat202` 均 6 项 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
-- **关联 commit**：未提交
+- **关联 commit**：`dd0c8ad`
 
 #### fanotify_init 基础 fd 实现（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：新增 fanotify fd 文件对象、`fanotify_init(262)` 参数校验与 fd 分配、LoongArch64 构建和运行验证、文档完善
 - **描述**：用户要求实现 `sys_fanotify_init`。AI 确认 syscall 262 已分发，但原实现返回 `Ok(0)`，会把 stdin 误当作 fanotify fd。修复为新增 `FanotifyFd`，让 `sys_fanotify_init()` 校验 fanotify init flags、class bits、`FAN_REPORT_*` 依赖关系和 event fd flags，按 `FAN_CLOEXEC/FAN_NONBLOCK` 设置 fd flags，并返回新分配 fd。`make` 在当前默认 LoongArch64 下通过；`make run` 中 `fanotify01` 已推进到 `fanotify_mark(263)`，并因 263 号尚未实现而 `TBROK/ENOSYS`，说明完整 fanotify 事件系统仍需后续实现。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
-- **关联 commit**：未提交
+- **关联 commit**：`1be11fd`
 
 #### fanotify_mark 与 fanotify01 基础事件实现（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：新增 `fanotify_mark(263)`、fanotify mark 表与事件队列、VFS open/read/write/close 基础事件投递、LTP `fanotify01` 回归验证、文档完善
 - **描述**：用户要求实现 `FanotifyMark` syscall，并指出 `log.ans` 中 `fanotify01` 未通过。AI 先接入 263 号分发和 `sys_fanotify_mark()`，补 fanotify fd registry、mark add/remove/flush 和 ignore mask；随后根据 `EAGAIN` 日志继续补 `FanotifyFd::read()` 事件队列和 fanotify metadata 序列化，并在 `sys_openat()`、`OSFile::read/write/drop` 投递 `FAN_OPEN/FAN_ACCESS/FAN_MODIFY/FAN_CLOSE_*`。针对多余 close 事件，AI 增加 fanotify 内部 suppress guard，避免 mark 目标检查和事件 fd 构造产生用户可见事件。`make` 通过，`make run > log.ans` 单跑 musl/glibc `fanotify01` summary 均为 `passed 156 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fanotify01-mark-events.md](./problem/fanotify01-mark-events.md)。
-- **关联 commit**：未提交
+- **关联 commit**：`0307575`
 
 #### syscall/sys.rs 职责拆分重构（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：syscall 杂项模块结构重构、身份/capability/prctl/system/fs 子模块拆分、构建验证
 - **描述**：用户要求重构 `os/src/syscall/sys.rs` 以提高子模块内聚度。AI 将原大文件按职责拆成 `os/src/syscall/sys/identity.rs`、`capability.rs`、`prctl.rs`、`system.rs`、`fs.rs`，并用 `sys/mod.rs` 统一 re-export，保持 `os/src/syscall/mod.rs` 的 `use sys::*` 接口不变。本次未修改 syscall 分发、函数签名或用户可见语义；`cargo fmt --manifest-path os/Cargo.toml` 和当前默认 LoongArch64 `make` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
-- **关联 commit**：未提交
+- **关联 commit**：`b6dff41`
 
 #### syscall 与 task 模块边界收敛（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：syscall 模块设计分析、反向依赖消除、fs syscall 门面拆分、构建验证、文档完善
 - **描述**：用户要求分析 syscall 模块是否满足高内聚、低耦合并修改。AI 确认主要问题是 `task` 反向依赖 `syscall::write_process_acct_record`、`CloneFlags` 放在 syscall clone 文件但被 task 核心使用、`fs/mod.rs` 混入 inotify 具体实现，以及若干子模块绕根 re-export 回取 helper/type。重构为将 process accounting 核心移到 `os/src/task/acct.rs`，将 `CloneFlags` 移到 `os/src/task/clone_flags.rs`，把 inotify syscall 拆到 `os/src/syscall/fs/inotify.rs`，并收窄 syscall 根模块对 `task::*` 的公开 re-export。本次保持 syscall 号、分发和用户可见语义不变；`cargo fmt` 与当前默认 LoongArch64 `make` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
-- **关联 commit**：未提交
+- **关联 commit**：`c000d8b`
 
 #### syscall/fs/path.rs 路径 syscall 聚合（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：syscall 文件系统路径模块重构、`chroot/getcwd/chdir/readlinkat/faccessat` 迁移、构建验证、文档完善
 - **描述**：用户要求新建 `path.rs` 放置 `sys_chroot`，并把其他相关 syscall 一起移动进去。AI 新增 `os/src/syscall/fs/path.rs`，迁入 `getcwd/chdir/chroot/readlinkat/faccessat/faccessat2` 及其路径/procfd/access helper；`ctl.rs` 回到目录项控制、ioctl、sync、chmod/chown 等职责，`stat.rs` 回到 stat/statx/statfs 职责，并移除 `sys` 下的 chroot 子模块。本次未改 syscall 号、分发或用户可见语义；`cargo fmt` 和当前默认 LoongArch64 `make` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
-- **关联 commit**：未提交
+- **关联 commit**：`82bf10a`

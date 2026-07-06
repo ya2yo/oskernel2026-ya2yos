@@ -1,3 +1,11 @@
+//! 文件系统控制类 syscall。
+//!
+//! 本模块承载会创建、删除、重命名目录项，或修改 inode 元数据/文件描述符
+//! 控制状态的接口，例如 `ioctl`、`mknodat`、`mkdirat`、`linkat`、
+//! `unlinkat`、`symlinkat`、`renameat2`、`utimensat`、`chown/chmod`
+//! 和 `sync`。纯路径上下文接口放在 `path.rs`，状态查询接口放在
+//! `stat.rs`，避免路径解析、元数据查询和控制操作混在同一个文件中。
+
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
