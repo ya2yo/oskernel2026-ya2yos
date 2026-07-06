@@ -74,10 +74,8 @@ fn test_cgroup_fj_function_cpuset_via_script() {
     println!("#### OS COMP TEST GROUP END ltp-musl-cgroup-fj-cpuset ####");
 }
 
-// ---------------------------------------------------------------------------
 // Entry points
-// ---------------------------------------------------------------------------
-
+#[allow(unused)]
 fn run_interactive_shell() -> i32 {
     println!("initproc launching interactive shell......");
 
@@ -95,14 +93,11 @@ fn run_interactive_shell() -> i32 {
 
 #[no_mangle]
 fn main() -> i32 {
-    run_interactive_shell()
-    // get_score()
+    // run_interactive_shell()
+    get_score()
 }
 
-// ---------------------------------------------------------------------------
-// Unused helpers (kept for ad-hoc testing)
-// ---------------------------------------------------------------------------
-
+// Score helpers (kept for ad-hoc testing)
 #[allow(unused)]
 fn get_score() -> i32 {
     println!("get_score start!");
