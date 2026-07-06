@@ -2874,3 +2874,52 @@ broken   0
 ```
 
 日志中的 `FAIL LTP CASE fchmod02 : 10` 和 `RESULT GLIBC LTP SINGLE CASE fchmod02 : 10` 是 wrapper 退出码打印；本次按项目规则以 `TPASS` 与 Summary 判断，核心测试已通过。
+
+
+## 2026-07-06: 修复 fchmod05 chmod S_ISGID 清除语义
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复。
+
+### 分析
+
+AI 过滤 `log.ans` 后确认失败来自 `fchmod05`：
+
+```text
+fchmod05.c:57: TINFO: Found unused GID 3: SUCCESS (0)
+fchmod05.c:43: TFAIL: testdir: Incorrect modes 041777, Expected 043777
+```
+
+对照 LTP `fchmod05.c` 后确认，该用例让非 root 的目录 owner 调用 `fchmod(fd, 043777)`，但该进程 effective gid 与 supplementary groups 不匹配目录 gid。Linux 语义要求 `fchmod()` 返回成功，但最终 mode 静默清除 `S_ISGID`。原实现直接 `inode.fmode_set(mode)`，没有执行 chmod 权限检查、只读挂载检查，也没有清除 `S_ISGID`，因此保留了调用者请求的 setgid 位。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/ctl.rs` | 新增 `chmod_inode()`，统一处理只读挂载 `EROFS`、非 owner `EPERM`、非 root 且 gid 不匹配时清除 `S_ISGID`，并传播 `fmode_set()` 错误 |
+| `Docs/决赛文档/problem/fchmod05-chmod-setgid.md` | 新增问题复盘 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/problem/README.md`、`Docs/决赛文档/AI_INTERACTION.md` | 追加索引与 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：默认 LoongArch64 构建通过。
+
+沙箱内 `make run` 因 QEMU 需要写 `/var/tmp` 临时文件失败；用户随后说明输出结果在 `log.ans`。AI 复查最新 `log.ans` 后确认 musl/glibc 两轮 `fchmod05` 均出现：
+
+```text
+fchmod05.c:46: TPASS: Functionality of fchmod(3, 043777) successful
+
+Summary:
+passed   1
+failed   0
+broken   0
+```
+
+日志中的 wrapper 行 `FAIL LTP CASE fchmod05 : 10` / `RESULT GLIBC LTP SINGLE CASE fchmod05 : 10` 不作为失败依据。

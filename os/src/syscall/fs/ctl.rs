@@ -15,8 +15,8 @@ use log::debug;
 use super::path::parse_proc_self_fd;
 use crate::fs::{
     cache_positive_dentry_path, invalidate_dentry_path, open, superblock_root_inode,
-    superblock_sync, File, FsIndex, Inode, InodeType, OpenFlags, MAX_PATH_LEN, NONE_MODE, SEEK_CUR,
-    SEEK_SET,
+    superblock_sync, File, FsIndex, Inode, InodeType, OpenFlags, MAX_PATH_LEN, MNT_TABLE,
+    NONE_MODE, SEEK_CUR, SEEK_SET,
 };
 use crate::mm::{
     copy_from_user, copy_to_user, if_bad_address, read_user_cstr, user_buffer_from_kernel,
@@ -27,6 +27,10 @@ use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
 use crate::utils::{rsplit_once, SysErrNo, SyscallRet};
 use linux_raw_sys::loop_device::LOOP_SET_FD;
 
+/// 处理 `ioctl(2)` 文件控制请求。
+///
+/// 根据 `fd` 取得目标文件对象，并把命令号和用户参数转发给具体 `File::ioctl`
+/// 实现。`LOOP_SET_FD` 需要额外校验参数 fd 存在，避免 loop 设备绑定坏 fd。
 /// 参考 https://man7.org/linux/man-pages/man2/ioctl.2.html
 pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     debug!("[sys_ioctl] fd={}, cmd={}, arg={}", fd, cmd, arg);
@@ -40,10 +44,12 @@ pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     file.ioctl(cmd as u32, arg, &memory_set)
 }
 
-/// 参考 https://www.man7.org/linux/man-pages/man2/mknod.2.html
+/// 实现 `mknodat(2)`，在指定目录下创建 FIFO、设备、socket 或普通文件节点。
 ///
-/// 在 dirfd 指定的目录下创建文件系统节点（常规文件 / FIFO / 设备文件等）。
-/// 参考 mkdirat 的实现模式：路径解析 + open()/inode 创建。
+/// 该函数解析用户路径和 mode 类型位：普通文件复用 `open(O_CREAT|O_EXCL)` 路径以
+/// 获得一致的权限和缓存行为；目录类型要求调用 `mkdirat(2)`；FIFO/设备/socket 等
+/// 由底层 inode 创建后登记到 inode cache 和 special node 表。
+/// 参考 https://www.man7.org/linux/man-pages/man2/mknod.2.html
 pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
@@ -104,6 +110,10 @@ pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> Syscall
     Ok(0)
 }
 
+/// 实现 `mkdirat(2)`，按 dirfd 和用户路径创建目录。
+///
+/// 该函数负责读取用户路径、解析绝对路径、拒绝空路径和根目录重复创建，并最终通过
+/// `open(O_CREATE|O_EXCL|O_DIRECTORY)` 走统一的目录创建路径。
 /// 参考 https://man7.org/linux/man-pages/man2/mkdirat.2.html
 pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
@@ -134,6 +144,10 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     Ok(0)
 }
 
+/// 实现 `getdents64(2)`，从目录 fd 读取目录项并拷贝到用户缓冲区。
+///
+/// 仅允许目录文件描述符；读取完成后把目录流 offset 更新为底层 `read_dentry`
+/// 返回的新 cookie。`usize::MAX` 被用作 EOF cookie，此时直接返回 0。
 /// 参考 https://man7.org/linux/man-pages/man2/getdents64.2.html
 pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     let task = current_task().unwrap();
@@ -160,6 +174,11 @@ pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     return Ok(de.len());
 }
 
+/// 实现 `linkat(2)`，为已有文件创建新的硬链接。
+///
+/// 支持普通路径硬链接和 `AT_EMPTY_PATH`/`/proc/self/fd/<fd>` 兼容路径；后者用于把
+/// `O_TMPFILE` 风格的匿名文件 materialize 到目标路径。成功后更新 inode cache 和
+/// dentry cache，保证新路径能复用原 inode。
 /// 参考 https://man7.org/linux/man-pages/man2/linkat.2.html
 pub fn sys_linkat(
     oldfd: isize,
@@ -258,6 +277,11 @@ pub fn sys_linkat(
     Ok(0)
 }
 
+/// 实现 `unlinkat(2)`，删除普通目录项或按 `AT_REMOVEDIR` 删除空目录。
+///
+/// 该函数区分文件和目录错误码，目录删除前检查是否为空；普通文件若仍被 fd 持有且
+/// link count 为 1，则标记延迟删除，等待最后一个 inode 引用释放后再由底层清理。
+/// 成功删除或延迟删除后会失效 dentry 和 inode cache。
 /// 参考 https://man7.org/linux/man-pages/man2/unlinkat.2.html
 pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     if flags & !(AT_REMOVEDIR as u32) != 0 {
@@ -317,6 +341,10 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     Ok(0)
 }
 
+/// 实现 `utimensat(2)`，更新文件访问时间和修改时间。
+///
+/// 该函数读取可选的两个 `Timespec`，支持 `UTIME_NOW` 和 `UTIME_OMIT`，再把解析后的
+/// atime/mtime 传给 inode。`path == NULL` 时使用空路径语义交给 dirfd 解析。
 /// 参考 https://man7.org/linux/man-pages/man2/utimensat.2.html
 pub fn sys_utimensat(
     dirfd: isize,
@@ -385,13 +413,20 @@ pub fn sys_utimensat(
     return Ok(0);
 }
 
+/// 实现 `sync(2)`，请求底层超级块同步文件系统状态。
+///
+/// 当前实现调用全局 superblock sync 后返回成功，不等待具体设备错误上报。
 /// 参考 https://man7.org/linux/man-pages/man2/sync.2.html
 pub fn sys_sync() -> SyscallRet {
     superblock_sync();
     Ok(0)
 }
 
-/// https://www.man7.org/linux/man-pages/man2/symlink.2.html
+/// 实现 `symlinkat(2)`，在指定目录下创建一个符号链接。
+///
+/// 该函数读取目标字符串和 linkpath，解析 linkpath 所在目录，拒绝覆盖已存在路径，
+/// 然后调用父目录 inode 创建 symlink。创建后失效对应 dentry cache。
+/// 参考 https://www.man7.org/linux/man-pages/man2/symlink.2.html
 pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
@@ -424,10 +459,11 @@ pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) ->
     Ok(0)
 }
 
-/// If newpath already exists, replace it.
-/// If oldpath and newpath are existing hard links referring to the same inode, then return a success.
-/// If newpath exists but operation failed (for some reason, rename() failed), leave an instance of newpath in place (which means you should keep the backup of newpath if it exist).
-/// If oldpath can specify a directory, then newpath should be a blank directory or not exist.
+/// 实现 `renameat2(2)` 的基础重命名路径。
+///
+/// 当前实现忽略高级 rename flags，把 old path 和 new path 解析后交给 inode 层执行
+/// rename。成功后清理旧路径和新路径的 dentry/inode cache，避免后续访问命中过期
+/// 路径别名。
 /// 参考 https://man7.org/linux/man-pages/man2/renameat2.2.html
 pub fn sys_renameat2(
     olddirfd: isize,
@@ -458,7 +494,11 @@ pub fn sys_renameat2(
     ret
 }
 
-/// https://www.man7.org/linux/man-pages/man2/fchownat.2.html
+/// 修改 inode 的 uid/gid 元数据，是 `chown` 系列 syscall 的公共实现。
+///
+/// 只有 effective uid 为 0 的任务可修改 owner/group；`usize::MAX` 表示 Linux
+/// ABI 中的 `(uid_t)-1` 或 `(gid_t)-1`，即保持对应字段不变。
+/// 参考 https://www.man7.org/linux/man-pages/man2/fchownat.2.html
 fn chown_inode(inode: Arc<dyn Inode>, owner: usize, group: usize) -> SyscallRet {
     let task = current_task().unwrap();
     {
@@ -491,7 +531,45 @@ fn chown_inode(inode: Arc<dyn Inode>, owner: usize, group: usize) -> SyscallRet 
     Ok(0)
 }
 
-/// https://www.man7.org/linux/man-pages/man2/fchownat.2.html
+/// 修改 inode 的权限 mode，是 `chmod` 系列 syscall 的公共实现。
+///
+/// 该 helper 处理 chmod 的共享语义：已知路径位于只读挂载点时返回 `EROFS`，非 root
+/// 且非 inode owner 时返回 `EPERM`；非 root 且 effective gid 不匹配 inode gid 时
+/// 按 Linux 语义静默清除请求中的 `S_ISGID`。最终错误由底层 `fmode_set()` 传播。
+fn chmod_inode(inode: Arc<dyn Inode>, path: Option<&str>, mode: u32) -> SyscallRet {
+    if let Some(path) = path {
+        if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(path) {
+            if mountflags & 1 != 0 {
+                return Err(SysErrNo::EROFS);
+            }
+        }
+    }
+
+    let stat = inode.fstat();
+    let task = current_task().unwrap();
+    let task_inner = task.inner_lock();
+    let euid = task_inner.effective_uid;
+    let egid = task_inner.effective_gid;
+    drop(task_inner);
+
+    if euid != 0 && euid != stat.st_uid {
+        return Err(SysErrNo::EPERM);
+    }
+
+    let mut new_mode = mode;
+    if euid != 0 && egid != stat.st_gid {
+        new_mode &= !0o2000;
+    }
+
+    inode.fmode_set(new_mode)
+}
+
+/// 实现 `fchownat(2)`，按路径、fd 或 `AT_EMPTY_PATH` 修改文件 uid/gid。
+///
+/// 空路径需要 `AT_EMPTY_PATH` 并以 dirfd 指向的已打开文件为目标；`/proc/self/fd/<fd>`
+/// 路径按 fd 语义处理，以保持 O_PATH fd 返回 `EBADF` 的行为；普通路径可按 flags
+/// 选择是否跟随符号链接。
+/// 参考 https://www.man7.org/linux/man-pages/man2/fchownat.2.html
 pub fn sys_fchownat(
     dirfd: isize,
     pathname: *const u8,
@@ -549,7 +627,11 @@ pub fn sys_fchownat(
 
     chown_inode(inode, owner, group)
 }
-/// https://www.man7.org/linux/man-pages/man2/fchownat.2.html
+/// 实现 `fchown(2)`，通过已打开文件描述符修改文件 uid/gid。
+///
+/// `O_PATH` fd 只作为路径句柄，不代表可修改的已打开文件，因此返回 `EBADF`；其余
+/// 语义委托给 `chown_inode()`。
+/// 参考 https://www.man7.org/linux/man-pages/man2/fchown.2.html
 pub fn sys_fchown(fd: usize, owner: usize, group: usize) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
@@ -561,7 +643,11 @@ pub fn sys_fchown(fd: usize, owner: usize, group: usize) -> SyscallRet {
     let inode = fd_desc.file()?.inode.clone();
     chown_inode(inode, owner, group)
 }
-/// https://www.man7.org/linux/man-pages/man2/fchmodat.2.html
+/// 实现 `fchmod(2)`，通过已打开文件描述符修改文件权限位。
+///
+/// `O_PATH` fd 返回 `EBADF`；普通 fd 解析出 inode 和路径后交给 `chmod_inode()` 处理
+/// owner/root 权限检查、只读挂载检查和 `S_ISGID` 清除规则。
+/// 参考 https://www.man7.org/linux/man-pages/man2/fchmod.2.html
 pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
@@ -578,10 +664,14 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
     let file = fd_desc.file()?;
-    file.inode.fmode_set(mode);
-    Ok(0)
+    let path = file.inode.path();
+    chmod_inode(file.inode.clone(), Some(&path), mode)
 }
-/// https://www.man7.org/linux/man-pages/man2/fchmodat.2.html
+/// 实现 `fchmodat(2)`，按 dirfd/path/flags 修改文件权限位。
+///
+/// 支持 `AT_EMPTY_PATH` 的 fd 目标、`/proc/self/fd/<fd>` 兼容路径和普通路径目标；
+/// 各路径最终统一调用 `chmod_inode()`，保证和 `fchmod(2)` 一致的权限及 setgid 语义。
+/// 参考 https://www.man7.org/linux/man-pages/man2/fchmodat.2.html
 pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
@@ -619,8 +709,8 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
             return Err(SysErrNo::EBADF);
         }
         let file = fd_desc.file()?;
-        file.inode.fmode_set(mode)?;
-        return Ok(0);
+        let path = file.inode.path();
+        return chmod_inode(file.inode.clone(), Some(&path), mode);
     }
 
     let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
@@ -632,8 +722,8 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
             return Err(SysErrNo::EBADF);
         }
         let file = fd_desc.file()?;
-        file.inode.fmode_set(mode)?;
-        return Ok(0);
+        let path = file.inode.path();
+        return chmod_inode(file.inode.clone(), Some(&path), mode);
     }
 
     debug!(
@@ -654,6 +744,5 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
     );
 
     let inode = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
-    inode.inode.fmode_set(mode);
-    Ok(0)
+    chmod_inode(inode.inode.clone(), Some(&abs_path), mode)
 }

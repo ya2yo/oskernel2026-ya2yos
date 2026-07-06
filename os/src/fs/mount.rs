@@ -9,18 +9,14 @@ pub struct MountTable {
 }
 
 impl MountTable {
-    /// 执行挂载操作
+    /// 记录一个挂载项，或在 `MS_REMOUNT` 场景更新已有挂载项。
     ///
-    /// # 参数
-    /// - `special`: 源设备路径（如 "/dev/sdc1" 或 "none"）
-    /// - `dir`: 目标挂载点（如 "/mnt"）
-    /// - `fstype`: 文件系统类型（如 "vfat", "ext2"）
-    /// - `flags`: 挂载标志位（如只读、重新挂载等）
-    /// - `data`: 挂载所需的额外参数字符串（通常由具体文件系统解析）
+    /// 当前挂载表只保存源路径、目标目录、文件系统类型和挂载标志，不建立真正的
+    /// VFS mount root 视图。若目标目录已经存在且 flags 带 `MS_REMOUNT`，则更新
+    /// 该项的 source/fstype/flags；若目标目录已经存在但不是 remount，保持原项并
+    /// 返回成功。
     ///
-    /// # 返回值
-    /// - `0`: 成功
-    /// - `-1`: 挂载表已满或失败
+    /// 返回 `0` 表示记录成功或已有挂载项可复用，返回 `-1` 表示挂载表已满。
     pub fn mount(
         &mut self,
         special: String,
@@ -53,10 +49,9 @@ impl MountTable {
         self.mnt_list.push((special, dir, fstype, flags));
         0
     }
-    /// 查询某个目录是否是挂载点
+    /// 查询指定目录是否正好是一个挂载点。
     ///
-    /// # 返回
-    /// 如果该目录已挂载，返回该项信息的克隆，否则返回 None
+    /// 命中时返回挂载项 `(special, dir, fstype, flags)` 的克隆；未命中返回 `None`。
     pub fn got_mount(&mut self, dir: String) -> Option<(String, String, String, u32)> {
         if let Some(mount) = self.mnt_list.iter().find(|&(_, d, _, _)| *d == dir) {
             return Some((*mount).clone());
@@ -64,6 +59,10 @@ impl MountTable {
         None
     }
 
+    /// 查找覆盖指定路径的最深挂载项。
+    ///
+    /// 该函数按 Linux 路径前缀语义匹配挂载点：`/mnt` 覆盖 `/mnt` 及其子路径，
+    /// 但不会匹配 `/mnt2`。若多个挂载点都覆盖该路径，返回目标目录最长的一项。
     pub fn mount_for_path(&self, path: &str) -> Option<(String, String, String, u32)> {
         self.mnt_list
             .iter()
@@ -81,6 +80,10 @@ impl MountTable {
             .cloned()
     }
 
+    /// 生成 `/proc/mounts` 的文本内容。
+    ///
+    /// 输出包含根文件系统的固定 ext4 记录，以及当前挂载表中的每个挂载项；挂载标志
+    /// bit0 被解释为只读 `ro`，否则输出 `rw`。
     pub fn proc_mounts_content(&self) -> String {
         let mut content = String::from(" ext4 / ext rw 0 0\n");
         for (special, dir, fstype, flags) in &self.mnt_list {
@@ -90,11 +93,11 @@ impl MountTable {
         content
     }
 
-    /// 执行卸载操作
+    /// 从挂载表中移除一个挂载项。
     ///
-    /// # 参数
-    /// - `special`: 在标准 Linux 中通常是路径，但此实现中可能是设备名或挂载点路径
-    /// - `flags`: 卸载标志（如 MNT_FORCE 等）
+    /// 当前实现仅删除表项，不执行 busy 检查或 VFS 视图恢复。为了兼容现有测试，
+    /// `special` 可以匹配源设备字段，也可以匹配目标挂载点字段；`flags` 目前保留但
+    /// 不参与判断。成功移除返回 `0`，未找到返回 `-1`。
     pub fn umount(&mut self, special: String, flags: u32) -> isize {
         let len = self.mnt_list.len();
 

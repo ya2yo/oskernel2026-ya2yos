@@ -292,3 +292,10 @@
 - **场景**：`log.ans` 分析、LTP `fchmod02` setup 前置条件定位、启动期 `/etc/group` 兼容文件修复、构建与日志验证、文档完善
 - **描述**：用户要求分析 `Log.ans` 失败原因并修复。AI 确认实际日志为 `log.ans`，失败点是 `SAFE_GETGRNAM_FALLBACK("users", "daemon")` 中 `users` 与 `daemon` 均不存在，导致 `TBROK`，测试尚未进入 `fchmod(2)` 语义断言。修复为在启动期 `/etc/group` 模板中补齐 `daemon:x:2:` 与 `users:x:100:`，并保持原有 `nobody:x:1:` 不变。`make` 通过，最新 `log.ans` 中 musl/glibc `fchmod02` 均 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fchmod02-group-database.md](./problem/fchmod02-group-database.md)。
 - **关联 commit**：待提交
+
+#### LTP fchmod05 chmod S_ISGID 语义修复（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `fchmod05` chmod 语义定位、`S_ISGID` 清除规则修复、构建与日志验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fchmod05` 失败是非 root 目录 owner 在 gid 不匹配目标目录时仍成功保留 `S_ISGID`；Linux 语义要求 `fchmod()` 成功但静默清掉 setgid 位。修复为新增 `chmod_inode()` 并让 `fchmod/fchmodat` 共用，补齐只读挂载 `EROFS`、非 owner `EPERM`、gid 不匹配清除 `S_ISGID`，同时传播 `fmode_set()` 错误。`make` 通过，最新 `log.ans` 中 musl/glibc `fchmod05` 均 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fchmod05-chmod-setgid.md](./problem/fchmod05-chmod-setgid.md)。
+- **关联 commit**：待提交
