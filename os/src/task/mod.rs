@@ -76,6 +76,7 @@ use crate::{
     fs::{open, OpenFlags, NONE_MODE},
     mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
     signal::{send_signal_to_thread_group, SigSet},
+    syscall::fs::file_lock,
     task::acct::write_process_acct_record,
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
 };
@@ -372,6 +373,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             if Arc::strong_count(&memory_set) == 2 {
                 memory_set.recycle_data_pages();
             }
+            file_lock::release_posix_locks_by_owner(curr_task.pid() as i32);
             fd_table.clear();
             fs_info.clear();
 

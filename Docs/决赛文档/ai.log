@@ -3195,3 +3195,37 @@ broken   0
 skipped  0
 warnings 0
 ```
+
+
+## 2026-07-06: 修复 fcntl14 POSIX record lock SEEK_CUR 与阻塞语义
+
+### 用户需求
+
+用户要求根据 `log.ans` 继续修复 `fcntl14`，随后确认 `fcntl14` 已通过并要求补充文档。
+
+### 分析
+
+AI 先从旧 `log.ans` 过滤 `TFAIL/TBROK/Summary`，确认 `fcntl14` 前 36 个普通区间用例已有改善，但第 37 起涉及 `SEEK_CUR`、负 `l_start` 和负 `l_len` 的用例仍失败；negative whence 用例也出现“应失败却成功”。对照 LTP `fcntl14.c` 后确认测试先 `lseek(fd, 5, SEEK_SET)`，再用 `l_whence = SEEK_CUR` 表示相对当前 fd offset 的记录锁区间。
+
+原 `file_lock::to_absolute()` 遇到 `SEEK_CUR` 时退化为 `SEEK_SET`，负 `l_len` 直接返回 `EINVAL`，非法 `l_whence` 也没有按 Linux 语义返回 `EINVAL`。同时 `F_SETLKW` 仍是非阻塞行为，record lock 也没有在 close/exit 时释放，导致阻塞锁和后续用例容易失败。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/file_lock.rs` | `to_absolute()` 支持 `SEEK_CUR`、负 `l_len` 反向区间和非法 `l_whence=EINVAL`；新增 POSIX lock 等待 waker、等待图死锁检测、按 owner/path 释放接口 |
+| `os/src/syscall/fs/fd_ops.rs` | record lock 分支读取当前 fd offset 并传给锁层；`F_SETLKW` 冲突时阻塞等待，等待环返回 `EDEADLK`；`close/close_range` 释放当前进程在对应 inode 上的 record locks |
+| `os/src/syscall/fs/mod.rs`、`os/src/syscall/mod.rs` | 收窄暴露 `file_lock` 给 task 退出清理路径使用 |
+| `os/src/task/mod.rs` | 进程最终退出时释放该 pid 的所有 POSIX record locks |
+| `Docs/决赛文档/problem/fcntl14-record-lock-seekcur-len.md` | 新增问题复盘 |
+
+### 验证
+
+已执行：
+
+```text
+make TARGET_ARCH=riscv64
+make
+```
+
+结果：RISC-V 和默认 LoongArch64 构建均通过。维护者随后确认 `fcntl14` 已通过。当前仓库中的最新 `log.ans` 已切换到后续 `fcntl23` 起的测试输出，不再包含 `fcntl14` 段，因此本条记录不引用当前 `log.ans` 作为 `fcntl14` 的直接日志来源。

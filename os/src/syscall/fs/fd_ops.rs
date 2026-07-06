@@ -4,8 +4,8 @@ use super::fcntl::*;
 use super::file_lock::{self, Flock};
 use crate::fs::{
     map_dynamic_link_file, notify_path_event, open, open_fifo, refresh_proc_stat,
-    refresh_proc_status, superblock_root_inode, FileClass, FileDescriptor, FsIndex, OpenFlags,
-    TmpFile, FAN_OPEN,
+    refresh_proc_status, superblock_root_inode, File, FileClass, FileDescriptor, FsIndex, OpenFlags,
+    TmpFile, FAN_OPEN, SEEK_CUR as FS_SEEK_CUR,
 };
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::{options::FcntlCmd, Syscall};
@@ -86,6 +86,58 @@ pub fn sys_flock(fd: i32, op: i32) -> SyscallRet {
             Err(e) => Poll::Ready(Err(e)),
         }
     })))?
+}
+
+fn setlk_blocking(
+    path: String,
+    flock: Flock,
+    file_size: i64,
+    current_offset: i64,
+    owner_pid: i32,
+) -> SyscallRet {
+    let result = block_on(interruptible(poll_fn(move |cx| {
+        match file_lock::setlk(&path, &flock, file_size, current_offset, owner_pid) {
+            Ok(ret) => {
+                file_lock::clear_wait(owner_pid);
+                Poll::Ready(Ok(ret))
+            }
+            Err(SysErrNo::EAGAIN) => {
+                let owners = file_lock::conflicting_owners(
+                    &path,
+                    &flock,
+                    file_size,
+                    current_offset,
+                    owner_pid,
+                );
+                if file_lock::would_deadlock(owner_pid, &owners) {
+                    file_lock::clear_wait(owner_pid);
+                    return Poll::Ready(Err(SysErrNo::EDEADLK));
+                }
+                file_lock::record_wait(owner_pid, &owners);
+                file_lock::register_posix_waker(&path, cx.waker());
+                match file_lock::setlk(&path, &flock, file_size, current_offset, owner_pid) {
+                    Ok(ret) => {
+                        file_lock::clear_wait(owner_pid);
+                        Poll::Ready(Ok(ret))
+                    }
+                    Err(SysErrNo::EAGAIN) => Poll::Pending,
+                    Err(e) => {
+                        file_lock::clear_wait(owner_pid);
+                        Poll::Ready(Err(e))
+                    }
+                }
+            }
+            Err(e) => {
+                file_lock::clear_wait(owner_pid);
+                Poll::Ready(Err(e))
+            }
+        }
+    })));
+    file_lock::clear_wait(owner_pid);
+    match result {
+        Ok(ret) => ret,
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn dup_fd(old_fd: usize, cloexec: bool) -> SyscallRet {
@@ -220,13 +272,23 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            let (inode_path, file_size) = {
+            let (inode_path, file_size, current_offset) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
-                (osfile.inode.path(), osfile.inode.size() as i64)
+                (
+                    osfile.inode.path(),
+                    osfile.inode.size() as i64,
+                    osfile.lseek(0, FS_SEEK_CUR)? as i64,
+                )
             };
 
-            file_lock::getlk(&inode_path, &mut flock, file_size, owner_pid)?;
+            file_lock::getlk(
+                &inode_path,
+                &mut flock,
+                file_size,
+                current_offset,
+                owner_pid,
+            )?;
 
             let result_bytes = flock.to_bytes();
             copy_to_user(&memory_set, arg, &result_bytes)?;
@@ -238,30 +300,36 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            let (inode_path, file_size) = {
+            let (inode_path, file_size, current_offset) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
-                (osfile.inode.path(), osfile.inode.size() as i64)
+                (
+                    osfile.inode.path(),
+                    osfile.inode.size() as i64,
+                    osfile.lseek(0, FS_SEEK_CUR)? as i64,
+                )
             };
 
-            file_lock::setlk(&inode_path, &flock, file_size, owner_pid)?;
+            file_lock::setlk(&inode_path, &flock, file_size, current_offset, owner_pid)?;
             return Ok(0);
         }
         FcntlCmd::F_SETLKW | FcntlCmd::F_SETLKW64 => {
-            // F_SETLKW 应阻塞等待直到锁可用；当前简化为非阻塞行为
             let memory_set = proc_inner.memory_set_arc();
             let mut flock_bytes = [0u8; 32];
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            let (inode_path, file_size) = {
+            let (inode_path, file_size, current_offset) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
-                (osfile.inode.path(), osfile.inode.size() as i64)
+                (
+                    osfile.inode.path(),
+                    osfile.inode.size() as i64,
+                    osfile.lseek(0, FS_SEEK_CUR)? as i64,
+                )
             };
 
-            file_lock::setlk(&inode_path, &flock, file_size, owner_pid)?;
-            return Ok(0);
+            return setlk_blocking(inode_path, flock, file_size, current_offset, owner_pid);
         }
         // OFD（Open File Description）锁 — 简化委托给 POSIX 锁逻辑
         FcntlCmd::F_OFD_GETLK => {
@@ -270,13 +338,23 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            let (inode_path, file_size) = {
+            let (inode_path, file_size, current_offset) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
-                (osfile.inode.path(), osfile.inode.size() as i64)
+                (
+                    osfile.inode.path(),
+                    osfile.inode.size() as i64,
+                    osfile.lseek(0, FS_SEEK_CUR)? as i64,
+                )
             };
 
-            file_lock::getlk(&inode_path, &mut flock, file_size, owner_pid)?;
+            file_lock::getlk(
+                &inode_path,
+                &mut flock,
+                file_size,
+                current_offset,
+                owner_pid,
+            )?;
 
             let result_bytes = flock.to_bytes();
             copy_to_user(&memory_set, arg, &result_bytes)?;
@@ -288,13 +366,17 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            let (inode_path, file_size) = {
+            let (inode_path, file_size, current_offset) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
-                (osfile.inode.path(), osfile.inode.size() as i64)
+                (
+                    osfile.inode.path(),
+                    osfile.inode.size() as i64,
+                    osfile.lseek(0, FS_SEEK_CUR)? as i64,
+                )
             };
 
-            file_lock::setlk(&inode_path, &flock, file_size, owner_pid)?;
+            file_lock::setlk(&inode_path, &flock, file_size, current_offset, owner_pid)?;
             return Ok(0);
         }
         // 文件 owner / 信号（主要用于套接字）
@@ -498,6 +580,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
 /// 参考 https://man7.org/linux/man-pages/man2/close.2.html
 pub fn sys_close(fd: usize) -> SyscallRet {
     let task = current_task().unwrap();
+    let owner_pid = task.pid() as i32;
     let inner = &task.process; // 拿到锁就不用调用get_fd_table了
     let fd_table = inner.fd_table.clone();
     // debug!("[sys_close] fd is {}", fd);
@@ -510,8 +593,12 @@ pub fn sys_close(fd: usize) -> SyscallRet {
         return Ok(0);
     }
 
-    fd_table.close(fd);
-    inner.fs_info.remove(fd);
+    if let Some(desc) = fd_table.close(fd) {
+        if let Ok(osfile) = desc.file() {
+            file_lock::release_posix_locks(&osfile.inode.path(), owner_pid);
+        }
+        inner.fs_info.remove(fd);
+    }
 
     Ok(0)
 }
@@ -560,6 +647,7 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
     } else {
         // Close all file descriptors in the range
         let task = current_task().unwrap();
+        let owner_pid = task.pid() as i32;
         let proc_inner = &task.process;
 
         for fd in first..=last {
@@ -568,7 +656,10 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
             }
 
             // Remove from fd_table
-            if let Some(_) = proc_inner.fd_table.close(fd as usize) {
+            if let Some(desc) = proc_inner.fd_table.close(fd as usize) {
+                if let Ok(osfile) = desc.file() {
+                    file_lock::release_posix_locks(&osfile.inode.path(), owner_pid);
+                }
                 // Remove from fs_info
                 proc_inner.fs_info.remove(fd as usize);
             }

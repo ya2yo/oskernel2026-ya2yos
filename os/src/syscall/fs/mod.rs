@@ -3,7 +3,7 @@ mod event;
 mod fanotify;
 mod fcntl;
 mod fd_ops;
-mod file_lock;
+pub(crate) mod file_lock;
 mod handle;
 mod inotify;
 mod misc;

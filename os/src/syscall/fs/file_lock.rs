@@ -8,7 +8,9 @@
 //! 当前实现为简化的全局锁表，按 inode 路径管理锁列表，
 //! 支持 F_SETLK / F_SETLKW / F_GETLK 的基本语义。
 
-use super::fcntl::{F_RDLCK, F_UNLCK, F_WRLCK, LOCK_EX, LOCK_SH, LOCK_UN, SEEK_END, SEEK_SET};
+use super::fcntl::{
+    F_RDLCK, F_UNLCK, F_WRLCK, LOCK_EX, LOCK_SH, LOCK_UN, SEEK_CUR, SEEK_END, SEEK_SET,
+};
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -97,36 +99,41 @@ struct PosixLock {
 use spin::Lazy;
 static FILE_LOCKS: Lazy<RwLock<BTreeMap<String, Vec<PosixLock>>>> =
     Lazy::new(|| RwLock::new(BTreeMap::new()));
+static POSIX_LOCK_WAITERS: Lazy<RwLock<BTreeMap<String, AtomicWaker>>> =
+    Lazy::new(|| RwLock::new(BTreeMap::new()));
+static POSIX_LOCK_WAITS: Lazy<RwLock<BTreeMap<i32, Vec<i32>>>> =
+    Lazy::new(|| RwLock::new(BTreeMap::new()));
 
 // ---------------------------------------------------------------------------
 // 辅助函数
 // ---------------------------------------------------------------------------
 
 /// 将 flock 中的相对/基于 whence 的偏移转换为绝对字节区间
-fn to_absolute(fl: &Flock, file_size: i64) -> (i64, i64) {
+fn to_absolute(fl: &Flock, file_size: i64, current_offset: i64) -> Result<(i64, i64), SysErrNo> {
     let start = match fl.l_whence {
         SEEK_SET => fl.l_start,
+        SEEK_CUR => current_offset.saturating_add(fl.l_start),
         SEEK_END => file_size.saturating_add(fl.l_start),
-        _ => {
-            // SEEK_CUR 需要当前文件偏移量，当前实现暂不支持
-            // 按 SEEK_SET 处理作为退化行为
-            fl.l_start
-        }
+        _ => return Err(SysErrNo::EINVAL),
     };
 
     if start < 0 {
-        return (0, -1); // 无效区间
+        return Err(SysErrNo::EINVAL);
     }
 
-    let end = if fl.l_len == 0 {
-        i64::MAX // 直到 EOF
+    let (start, end) = if fl.l_len == 0 {
+        (start, i64::MAX) // 直到 EOF
     } else if fl.l_len < 0 {
-        return (0, -1); // 无效区间
+        let lock_start = start.saturating_add(fl.l_len).saturating_add(1);
+        if lock_start < 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+        (lock_start, start)
     } else {
-        start.saturating_add(fl.l_len).saturating_sub(1)
+        (start, start.saturating_add(fl.l_len).saturating_sub(1))
     };
 
-    (start, end)
+    Ok((start, end))
 }
 
 /// 检测两个锁是否冲突
@@ -186,6 +193,141 @@ fn normalize_locks(locks: &mut Vec<PosixLock>) {
     *locks = merged;
 }
 
+fn conflicting_owners_locked(entry: &[PosixLock], new_lock: &PosixLock) -> Vec<i32> {
+    let mut owners = Vec::new();
+    for existing in entry.iter() {
+        if existing.l_pid != new_lock.l_pid && locks_conflict(existing, new_lock) {
+            if !owners.contains(&existing.l_pid) {
+                owners.push(existing.l_pid);
+            }
+        }
+    }
+    owners
+}
+
+pub fn conflicting_owners(
+    path: &str,
+    fl: &Flock,
+    file_size: i64,
+    current_offset: i64,
+    owner_pid: i32,
+) -> Vec<i32> {
+    if fl.l_type == F_UNLCK {
+        return Vec::new();
+    }
+    let Ok((start, end)) = to_absolute(fl, file_size, current_offset) else {
+        return Vec::new();
+    };
+    let new_lock = PosixLock {
+        l_type: fl.l_type,
+        l_start: start,
+        l_end: end,
+        l_pid: owner_pid,
+    };
+
+    let locks = FILE_LOCKS.read();
+    locks
+        .get(path)
+        .map(|entry| conflicting_owners_locked(entry, &new_lock))
+        .unwrap_or_default()
+}
+
+fn wait_path_reaches(
+    graph: &BTreeMap<i32, Vec<i32>>,
+    current: i32,
+    target: i32,
+    visited: &mut Vec<i32>,
+) -> bool {
+    if current == target {
+        return true;
+    }
+    if visited.contains(&current) {
+        return false;
+    }
+    visited.push(current);
+
+    graph
+        .get(&current)
+        .map(|next| {
+            next.iter()
+                .any(|pid| wait_path_reaches(graph, *pid, target, visited))
+        })
+        .unwrap_or(false)
+}
+
+pub fn would_deadlock(owner_pid: i32, waiting_for: &[i32]) -> bool {
+    let graph = POSIX_LOCK_WAITS.read();
+    waiting_for.iter().any(|pid| {
+        let mut visited = Vec::new();
+        wait_path_reaches(&graph, *pid, owner_pid, &mut visited)
+    })
+}
+
+pub fn record_wait(owner_pid: i32, waiting_for: &[i32]) {
+    let mut graph = POSIX_LOCK_WAITS.write();
+    if waiting_for.is_empty() {
+        graph.remove(&owner_pid);
+    } else {
+        graph.insert(owner_pid, waiting_for.to_vec());
+    }
+}
+
+pub fn clear_wait(owner_pid: i32) {
+    POSIX_LOCK_WAITS.write().remove(&owner_pid);
+}
+
+fn wake_posix_waiters(path: &str) {
+    if let Some(waker) = POSIX_LOCK_WAITERS.read().get(path) {
+        waker.wake();
+    }
+}
+
+pub fn register_posix_waker(path: &str, waker: &Waker) {
+    let mut waiters = POSIX_LOCK_WAITERS.write();
+    waiters
+        .entry(String::from(path))
+        .or_insert_with(AtomicWaker::new)
+        .register(waker);
+}
+
+pub fn release_posix_locks(path: &str, owner_pid: i32) {
+    let mut changed = false;
+    {
+        let mut locks = FILE_LOCKS.write();
+        if let Some(entry) = locks.get_mut(path) {
+            let before = entry.len();
+            entry.retain(|lock| lock.l_pid != owner_pid);
+            changed = entry.len() != before;
+            if entry.is_empty() {
+                locks.remove(path);
+            }
+        }
+    }
+    clear_wait(owner_pid);
+    if changed {
+        wake_posix_waiters(path);
+    }
+}
+
+pub fn release_posix_locks_by_owner(owner_pid: i32) {
+    let mut changed_paths = Vec::new();
+    {
+        let mut locks = FILE_LOCKS.write();
+        for (path, entry) in locks.iter_mut() {
+            let before = entry.len();
+            entry.retain(|lock| lock.l_pid != owner_pid);
+            if entry.len() != before {
+                changed_paths.push(path.clone());
+            }
+        }
+        locks.retain(|_, entry| !entry.is_empty());
+    }
+    clear_wait(owner_pid);
+    for path in changed_paths {
+        wake_posix_waiters(&path);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 公共接口
 // ---------------------------------------------------------------------------
@@ -198,15 +340,18 @@ fn normalize_locks(locks: &mut Vec<PosixLock>) {
 ///
 /// 若 `fl.l_type == F_UNLCK` 则释放锁；否则尝试获取锁。
 /// 返回 `Ok(0)` 表示成功，`Err(EAGAIN)` 表示存在冲突。
-pub fn setlk(path: &str, fl: &Flock, file_size: i64, owner_pid: i32) -> SyscallRet {
+pub fn setlk(
+    path: &str,
+    fl: &Flock,
+    file_size: i64,
+    current_offset: i64,
+    owner_pid: i32,
+) -> SyscallRet {
     if fl.l_type != F_RDLCK && fl.l_type != F_WRLCK && fl.l_type != F_UNLCK {
         return Err(SysErrNo::EINVAL);
     }
 
-    let (start, end) = to_absolute(fl, file_size);
-    if end < start {
-        return Err(SysErrNo::EINVAL);
-    }
+    let (start, end) = to_absolute(fl, file_size, current_offset)?;
 
     let new_lock = PosixLock {
         l_type: fl.l_type,
@@ -243,6 +388,9 @@ pub fn setlk(path: &str, fl: &Flock, file_size: i64, owner_pid: i32) -> SyscallR
         entry.push(new_lock);
     }
     normalize_locks(entry);
+    drop(locks);
+
+    wake_posix_waiters(path);
 
     Ok(0)
 }
@@ -253,15 +401,18 @@ pub fn setlk(path: &str, fl: &Flock, file_size: i64, owner_pid: i32) -> SyscallR
 /// 若有冲突，`fl` 的 `l_type` / `l_pid` / `l_start` / `l_len` / `l_whence`
 /// 会被更新为冲突锁的信息。
 /// 若无冲突，`fl.l_type` 会被设置为 `F_UNLCK`。
-pub fn getlk(path: &str, fl: &mut Flock, file_size: i64, owner_pid: i32) -> SyscallRet {
+pub fn getlk(
+    path: &str,
+    fl: &mut Flock,
+    file_size: i64,
+    current_offset: i64,
+    owner_pid: i32,
+) -> SyscallRet {
     if fl.l_type != F_RDLCK && fl.l_type != F_WRLCK {
         return Err(SysErrNo::EINVAL);
     }
 
-    let (start, end) = to_absolute(fl, file_size);
-    if end < start {
-        return Err(SysErrNo::EINVAL);
-    }
+    let (start, end) = to_absolute(fl, file_size, current_offset)?;
 
     let probe = PosixLock {
         l_type: fl.l_type,

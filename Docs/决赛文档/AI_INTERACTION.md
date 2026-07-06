@@ -341,3 +341,10 @@
 - **场景**：`log.ans` 分析、LTP `fcntl13` 源码对照、`fcntl(F_SETLK)` 坏用户指针错误优先级修复、LoongArch64 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并继续修复。AI 确认 `fcntl13` 失败是 `fcntl(1, F_SETLK, bad_flock)` 期望 `EFAULT` 却返回 `EINVAL`；原因是 record lock 分支先把 `fd=1` 的 stdout 当普通文件解析，非 `OSFile` 先返回 `EINVAL`，遮蔽了坏 `struct flock *`。修复为 `F_GETLK/F_SETLK/F_SETLKW` 以及 OFD lock 分支先 `copy_from_user()` 读取用户 `flock`，再解析普通文件对象。`make` 通过，最新 `log.ans` 中 musl/glibc `fcntl13` 均 `passed 4 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl13-lock-efault-priority.md](./problem/fcntl13-lock-efault-priority.md)。
 - **关联 commit**：待提交
+
+#### LTP fcntl14 record lock SEEK_CUR 与阻塞语义修复（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `fcntl14` 源码对照、POSIX record lock `SEEK_CUR`/负 `l_len`/`F_SETLKW` 语义修复、构建验证、文档完善
+- **描述**：用户要求根据 `log.ans` 继续修复，并在确认 `fcntl14` 已通过后补文档。AI 确认剩余失败集中在 `fcntl14` 第 37 起的 `SEEK_CUR` 与负长度区间，以及非法 `l_whence` 和阻塞锁路径；修复为 syscall 层读取当前 fd offset，锁层支持 `SEEK_CUR`、负 `l_len` 反向区间、非法 whence 返回 `EINVAL`，并补 `F_SETLKW` 阻塞等待、等待环 `EDEADLK` 和 close/exit 释放 record locks。`make TARGET_ARCH=riscv64` 与默认 LoongArch64 `make` 均通过，维护者确认后续运行中 `fcntl14` 已通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl14-record-lock-seekcur-len.md](./problem/fcntl14-record-lock-seekcur-len.md)。
+- **关联 commit**：待提交

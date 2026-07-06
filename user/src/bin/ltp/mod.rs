@@ -227,8 +227,8 @@ fn ltp_exit_code(wait_status: i32) -> i32 {
 #[allow(unused)]
 pub fn run_ltp_tests_musl(tests: &[&str], blacklist: &[&str]) {
     println!("#### OS COMP TEST GROUP START ltp-musl ####");
-    let mut summary = LtpSummary::default();
     for &test in tests {
+        let mut summary = LtpSummary::default();
         if blacklist.contains(&test) {
             println!("SKIP LTP CASE {}", trim_trailing_nul(test));
             summary.record_skipped();
@@ -238,13 +238,13 @@ pub fn run_ltp_tests_musl(tests: &[&str], blacklist: &[&str]) {
 
         let result = fork_run_ltp_and_collect("/musl/ltp/testcases/bin\0", &[test]);
         summary.record_run_result(&result);
+        summary.print();
         println!(
             "FAIL LTP CASE {} : {}",
             trim_trailing_nul(test),
             result.wait_status
         );
     }
-    summary.print();
     println!("#### OS COMP TEST GROUP END ltp-musl ####");
 }
 

@@ -274,7 +274,7 @@ pub enum Syscall {
     Default = 9999,
 }
 
-mod fs;
+pub(crate) mod fs;
 mod io_mpx;
 mod mm;
 #[cfg(feature = "net")]
