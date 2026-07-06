@@ -22,21 +22,40 @@ const RWF_SUPPORTED_FLAGS: u32 = 0;
 const FALLOC_FL_KEEP_SIZE: u32 = 0x01;
 const FALLOC_SUPPORTED_FLAGS: u32 = FALLOC_FL_KEEP_SIZE;
 
+/// 创建 fanotify fd 时设置 close-on-exec。
 const FAN_CLOEXEC: u32 = 0x0000_0001;
+/// 创建 fanotify fd 时启用非阻塞读。
 const FAN_NONBLOCK: u32 = 0x0000_0002;
+/// 普通通知类 fanotify group，不拦截文件访问。
 const FAN_CLASS_NOTIF: u32 = 0x0000_0000;
+/// 内容类 fanotify group，可用于权限事件。
 const FAN_CLASS_CONTENT: u32 = 0x0000_0004;
+/// 预内容类 fanotify group，优先级高于 `FAN_CLASS_CONTENT`。
 const FAN_CLASS_PRE_CONTENT: u32 = 0x0000_0008;
+/// fanotify class 位掩码。三个 class 互斥，`FAN_CLASS_NOTIF` 的值为 0。
 const FAN_CLASS_BITS: u32 = FAN_CLASS_CONTENT | FAN_CLASS_PRE_CONTENT;
+/// 请求不限制事件队列长度；当前只做参数兼容。
 const FAN_UNLIMITED_QUEUE: u32 = 0x0000_0010;
+/// 请求不限制 mark 数量；当前只做参数兼容。
 const FAN_UNLIMITED_MARKS: u32 = 0x0000_0020;
+/// 请求审计集成；当前只做参数兼容。
 const FAN_ENABLE_AUDIT: u32 = 0x0000_0040;
+/// 事件携带 pidfd 信息。
 const FAN_REPORT_PIDFD: u32 = 0x0000_0080;
+/// 事件按线程 ID 报告。
 const FAN_REPORT_TID: u32 = 0x0000_0100;
+/// 事件使用 file handle 形式报告目标。
 const FAN_REPORT_FID: u32 = 0x0000_0200;
+/// 事件报告父目录 file handle。
 const FAN_REPORT_DIR_FID: u32 = 0x0000_0400;
+/// 事件报告目录项名称；Linux 要求同时设置 `FAN_REPORT_DIR_FID`。
 const FAN_REPORT_NAME: u32 = 0x0000_0800;
+/// rename 等事件报告目标 file handle；Linux 要求依赖 FID、DIR_FID 和 NAME。
 const FAN_REPORT_TARGET_FID: u32 = 0x0000_1000;
+/// 当前 `fanotify_init` 接受的 init flags 集合。
+///
+/// 这些 flag 已经足够创建 fanotify fd 并让 LTP 能进入后续 `fanotify_mark`
+/// 探测；真实事件投递仍需要后续实现 mark 表和 VFS hook。
 const FANOTIFY_INIT_SUPPORTED_FLAGS: u32 = FAN_CLOEXEC
     | FAN_NONBLOCK
     | FAN_CLASS_BITS
@@ -49,6 +68,10 @@ const FANOTIFY_INIT_SUPPORTED_FLAGS: u32 = FAN_CLOEXEC
     | FAN_REPORT_DIR_FID
     | FAN_REPORT_NAME
     | FAN_REPORT_TARGET_FID;
+/// `event_f_flags` 当前接受的 open flags。
+///
+/// Linux 会用这些 flags 打开事件中返回的对象 fd；当前内核尚未生成事件 fd，
+/// 但这里先按 ABI 做基本校验，避免非法参数被接受。
 const FANOTIFY_EVENT_F_FLAGS_SUPPORTED: u32 =
     OpenFlags::O_ACCMODE.bits() | OpenFlags::O_LARGEFILE.bits() | OpenFlags::O_CLOEXEC.bits();
 
@@ -1185,7 +1208,18 @@ pub fn sys_fallocate(fd: usize, mode: u32, offset: usize, len: usize) -> Syscall
     Ok(0)
 }
 
-/// https://www.man7.org/linux/man-pages/man2/fanotify_init.2.html
+/// 创建 fanotify notification group。
+///
+/// 当前实现覆盖 `fanotify_init(2)` 的 fd 创建和参数校验：
+/// - 校验 init flags、class bits 和 `FAN_REPORT_*` 依赖关系；
+/// - 校验 `event_f_flags` 的访问模式和受支持附加 flags；
+/// - 将 `FAN_CLOEXEC/FAN_NONBLOCK` 转换为 fd 表中的 `OpenFlags`；
+/// - 返回一个独立的 `FanotifyFd`。
+///
+/// 注意：完整 fanotify 还需要 `fanotify_mark(2)`、mark 表、事件队列和 VFS
+/// 事件投递路径；这些不在本函数内完成。
+///
+/// 参考 https://www.man7.org/linux/man-pages/man2/fanotify_init.2.html
 pub fn sys_fanotify_init(flags: u32, event_f_flags: u32) -> SyscallRet {
     if flags & !FANOTIFY_INIT_SUPPORTED_FLAGS != 0 {
         return Err(SysErrNo::EINVAL);
