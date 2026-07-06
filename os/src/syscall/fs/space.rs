@@ -1,8 +1,13 @@
 use alloc::sync::Arc;
 
 use crate::{
-    fs::{File, OpenFlags, open, superblock_fs_stat}, mm::read_user_cstr, task::current_task, utils::{SysErrNo, SyscallRet}
+    fs::{open, superblock_fs_stat, File, OpenFlags},
+    mm::read_user_cstr,
+    syscall::fs::file_lock,
+    task::current_task,
+    utils::{SysErrNo, SyscallRet},
 };
+use linux_raw_sys::general::AT_FDCWD;
 
 const FALLOC_FL_KEEP_SIZE: u32 = 0x01;
 const FALLOC_SUPPORTED_FLAGS: u32 = FALLOC_FL_KEEP_SIZE;
@@ -13,6 +18,7 @@ pub fn sys_truncate(path: usize, length: usize) -> SyscallRet {
     let proc = Arc::clone(&task.process);
     let memory_set = proc.memory_set_arc();
     let path = read_user_cstr(&memory_set, path as *const u8)?;
+    let path = proc.get_abs_path(AT_FDCWD as isize, &path)?;
     let f = open(&path, OpenFlags::O_WRONLY, 0)?;
     f.file()?.inode.truncate(length)
 }
@@ -32,6 +38,7 @@ pub fn sys_ftruncate(fd: usize, length: i32) -> SyscallRet {
 
     if let Some(file) = inner.fd_table.try_get(fd) {
         let file = file.file()?;
+        file_lock::notify_file_lease_break(&file.inode.path(), task.pid() as i32, true);
         return file.inode.truncate(length as usize);
     }
     Err(SysErrNo::EBADF)

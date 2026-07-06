@@ -1,5 +1,5 @@
 use crate::fs::{map_library_path, DentryLookup, DENTRY_CACHE};
-use crate::syscall::FaccessatFileMode;
+use crate::syscall::{fs::file_lock, FaccessatFileMode};
 use crate::task::current_task;
 use crate::utils::SysResult;
 
@@ -337,6 +337,12 @@ fn open_inner(
                     }
                 }
             }
+        }
+        if inode.types().is_file() {
+            let requester_pid = current_task()
+                .map(|task| task.pid() as i32)
+                .unwrap_or_default();
+            file_lock::notify_file_lease_break(&inode.path(), requester_pid, writable);
         }
         let osfile = OSFile::new(
             readable,

@@ -191,21 +191,26 @@ impl Process {
     /// 获取绝对路径
     pub fn get_abs_path(&self, dirfd: isize, path: &str) -> Result<String, SysErrNo> {
         if is_abs_path(path) {
+            // 绝对路径不受 dirfd/cwd 影响，统一从根目录解析。
             Ok(get_abs_path("/", path))
         } else if dirfd != -100 {
-            // AT_FDCWD=-100
+            // 相对路径且 dirfd 不是 AT_FDCWD(-100)：以 dirfd 指向的目录或文件路径为基准。
             let dirfd = dirfd as usize;
             if let Some(file) = self.fd_table.try_get(dirfd) {
                 let base_path = file.file()?.inode.path();
                 if path.is_empty() {
+                    // 空路径用于部分 *at syscall 的 AT_EMPTY_PATH 语义，直接返回 dirfd 对应路径。
                     Ok(base_path)
                 } else {
+                    // 非空相对路径拼到 dirfd 对应路径下，再规范化成绝对路径。
                     Ok(get_abs_path(&base_path, path))
                 }
             } else {
+                // 显式 dirfd 无效时，路径解析失败。
                 Err(SysErrNo::EINVAL)
             }
         } else {
+            // 相对路径且 dirfd 为 AT_FDCWD(-100)：以当前进程 cwd 为基准。
             Ok(get_abs_path(&self.fs_info.get_cwd(), path))
         }
     }

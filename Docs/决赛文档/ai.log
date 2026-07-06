@@ -3417,3 +3417,40 @@ make
 ```
 
 结果：默认 LoongArch64 构建通过。构建中仍有既有 `smoltcp` vendor warning，与本次重构无关。
+
+
+## 2026-07-06: 修复 fcntl33 文件租约 break SIGIO 通知
+
+### 用户需求
+
+用户要求分析 `log.ans` 并进行修复。
+
+### 分析
+
+AI 先筛选 `log.ans` 中的 `TFAIL/TBROK/Summary`，确认当前只运行 `fcntl33`。musl 轮次在 setup 阶段因 `/proc/sys/fs/lease-break-time` 缺失返回 `ENOENT` 而 `TBROK`；glibc 轮次进入主体后，冲突 `open/truncate` 虽然能返回，但 holder 在 `sigtimedwait(SIGIO)` 中一直超时，说明现有 `F_SETLEASE/F_GETLEASE` 只保存 lease 状态，没有实现 lease break 信号通知。
+
+AI 对照 LTP `fcntl33.c` 后确认测试还要求写 lease 被只读 open 打断时允许降级为读 lease，但被写打开、读写打开或 truncate 打断时不能降级，必须释放 lease。第一次补信号后出现 `fcntl() downgraded lease when not read-only`，进一步证明 lease 表需要记录本次 break 是否来自写访问。随后出现测试结束时 `Test killed by SIGIO/SIGPOLL`，定位到 `send_signal_to_thread_group(SIGIO)` 会按 SIGIO 默认终止语义写入进程级 termination 标记，而 `sigtimedwait()` 只消费线程 pending 位，不能清理该标记。因此 lease break 通知改为只向 holder 主线程投递 pending `SIGIO`。
+
+同时，`truncate(file, 0)` 早期出现 `ENOENT`，根因是 `sys_truncate()` 直接将用户字符串传给底层 `open()`，没有按 `AT_FDCWD` 解析相对路径。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | 启动期创建 `/proc/sys/fs/lease-break-time`，默认值 `45` |
+| `os/src/syscall/fs/file_lock/lease.rs` | 为 file lease 增加 `break_write_requested/break_notified` 状态和 `notify_file_lease_break()`；冲突时投递 pending `SIGIO`；写访问 break 下禁止写 lease 降级为读 lease |
+| `os/src/syscall/fs/file_lock/mod.rs` | 导出 lease break 通知接口 |
+| `os/src/fs/kernel_fs_ops/open.rs` | 普通文件 `open()` 通过基础权限检查后按访问模式触发 lease break 通知 |
+| `os/src/syscall/fs/space.rs` | `sys_truncate()` 按 `AT_FDCWD` 解析相对路径；`sys_ftruncate()` truncate 前通知 lease holder |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/syscall/fs/file_lock/lease.rs os/src/syscall/fs/file_lock/mod.rs os/src/fs/kernel_fs_ops/open.rs os/src/syscall/fs/space.rs os/src/fs/kernel_fs_ops/initfiles.rs
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：默认 LoongArch64 构建通过；最新 `log.ans` 中 musl 与 glibc `fcntl33` 均 7 项 `TPASS`，Summary 均为 `passed 7 failed 0 broken 0`。构建中仍有既有 `smoltcp` vendor warning，与本次修复无关。详见 [problem/fcntl33-lease-break-sigio.md](./problem/fcntl33-lease-break-sigio.md)。

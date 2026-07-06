@@ -383,3 +383,10 @@
 - **场景**：`fcntl(2)` syscall 代码组织重构、`fd_ops.rs` 职责收敛、构建验证、文档完善
 - **描述**：用户要求将 `fcntl` syscall 实现代码放入 `os/src/syscall/fs/fcntl.rs`。AI 将 `sys_fcntl()`、record lock 阻塞 helper `setlk_blocking()` 和 `struct f_owner_ex` 编解码从 `fd_ops.rs` 迁入 `fcntl.rs`，保留 `fcntl` 常量与实现同文件维护；`fd_ops.rs` 回到 `flock/dup/open/close/openat2` 等通用 fd 操作。本次不改变 syscall 分发或用户可见语义；默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
 - **关联 commit**：待提交
+
+#### LTP fcntl33 文件租约 break SIGIO 通知修复（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `fcntl33` 源码对照、file lease break 通知与降级语义修复、LoongArch64 回归验证、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复。AI 确认 `fcntl33` 失败包含 `/proc/sys/fs/lease-break-time` 缺失、冲突 `open/truncate` 未向 lease holder 投递 `SIGIO`、写访问 break 下错误允许写 lease 降级为读 lease，以及 `truncate("file")` 未按当前工作目录解析。修复为启动期补齐 lease sysctl 文件，file lease 表记录 break 通知状态和写访问标志，普通文件 `open/truncate` 冲突时向 holder 主线程投递 pending `SIGIO`，并修正 `sys_truncate()` 相对路径。`make` 通过，最新 `log.ans` 中 musl/glibc `fcntl33` 均 7 项 `TPASS`，summary 为 `passed 7 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl33-lease-break-sigio.md](./problem/fcntl33-lease-break-sigio.md)。
+- **关联 commit**：待提交

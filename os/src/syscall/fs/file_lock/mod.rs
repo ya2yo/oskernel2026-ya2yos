@@ -15,7 +15,8 @@ mod types;
 
 pub use self::bsd_flock::{flock_register_waker, flock_try_lock, flock_unlock};
 pub use self::lease::{
-    get_file_lease, release_file_leases, release_file_leases_by_owner, set_file_lease,
+    get_file_lease, notify_file_lease_break, release_file_leases, release_file_leases_by_owner,
+    set_file_lease,
 };
 pub use self::posix::{
     clear_wait, conflicting_owners, getlk, record_wait, register_posix_waker, release_posix_locks,

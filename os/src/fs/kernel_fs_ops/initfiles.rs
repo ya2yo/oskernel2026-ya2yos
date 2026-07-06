@@ -266,6 +266,7 @@ fn create_proc_files() -> SysResult {
         "/proc/sys/fs/pipe-max-size",
         &format!("{}\n", PIPE_MAX_SIZE),
     )?;
+    write_init_file("/proc/sys/fs/lease-break-time", "45\n")?;
     Ok(())
 }
 

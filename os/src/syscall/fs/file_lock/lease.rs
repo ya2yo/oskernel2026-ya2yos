@@ -1,8 +1,9 @@
 //! `fcntl(F_SETLEASE/F_GETLEASE)` 文件租约的简化实现。
 //!
-//! Linux 的 lease 还涉及异步通知、break lease 等复杂机制；当前仅维护
-//! 对测试可见的基本互斥状态。
+//! Linux 的 lease 还涉及异步通知、break lease 等复杂机制；当前维护
+//! 对测试可见的基本互斥状态和 lease break 信号通知。
 
+use crate::signal::{send_signal_to_thread, SigSet};
 use crate::syscall::fs::fcntl::{F_RDLCK, F_UNLCK, F_WRLCK};
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::collections::BTreeMap;
@@ -14,6 +15,8 @@ use spin::{Lazy, RwLock};
 struct FileLease {
     l_type: i16,
     l_pid: i32,
+    break_write_requested: bool,
+    break_notified: bool,
 }
 
 static FILE_LEASES: Lazy<RwLock<BTreeMap<String, Vec<FileLease>>>> =
@@ -23,6 +26,45 @@ static FILE_LEASES: Lazy<RwLock<BTreeMap<String, Vec<FileLease>>>> =
 /// 是写 lease 就冲突，多个读 lease 可共存。
 fn file_leases_conflict(existing: &FileLease, new_lease: &FileLease) -> bool {
     existing.l_pid != new_lease.l_pid && (existing.l_type == F_WRLCK || new_lease.l_type == F_WRLCK)
+}
+
+fn lease_breaks_on_access(lease_type: i16, write_access: bool) -> bool {
+    lease_type == F_WRLCK || write_access
+}
+
+/// 通知持有冲突 lease 的进程。当前模型不阻塞 breaker，只投递 Linux 默认
+/// lease break 信号 SIGIO，让 holder 有机会降级或释放 lease。
+pub fn notify_file_lease_break(path: &str, requester_pid: i32, write_access: bool) {
+    let holders = {
+        let mut leases = FILE_LEASES.write();
+        leases
+            .get_mut(path)
+            .map(|entry| {
+                entry
+                    .iter_mut()
+                    .filter_map(|lease| {
+                        if lease.l_pid == requester_pid
+                            || !lease_breaks_on_access(lease.l_type, write_access)
+                        {
+                            return None;
+                        }
+                        lease.break_write_requested |= write_access;
+                        if lease.break_notified {
+                            return None;
+                        }
+                        lease.break_notified = true;
+                        Some(lease.l_pid)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+
+    for pid in holders {
+        if pid > 0 {
+            send_signal_to_thread(pid as usize, SigSet::SIGIO);
+        }
+    }
 }
 
 /// 设置或释放文件 lease。
@@ -54,6 +96,8 @@ pub fn set_file_lease(
     let new_lease = FileLease {
         l_type: lease_type,
         l_pid: owner_pid,
+        break_write_requested: false,
+        break_notified: false,
     };
     if entry
         .iter()
@@ -63,7 +107,12 @@ pub fn set_file_lease(
     }
 
     if let Some(existing) = entry.iter_mut().find(|lease| lease.l_pid == owner_pid) {
+        if existing.l_type == F_WRLCK && lease_type == F_RDLCK && existing.break_write_requested {
+            return Err(SysErrNo::EAGAIN);
+        }
         existing.l_type = lease_type;
+        existing.break_write_requested = false;
+        existing.break_notified = false;
     } else {
         entry.push(new_lease);
     }
