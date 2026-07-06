@@ -1,13 +1,23 @@
+use alloc::sync::Arc;
+
 use crate::{
-    fs::{superblock_fs_stat, File},
-    task::current_task,
-    utils::{SysErrNo, SyscallRet},
+    fs::{File, OpenFlags, open, superblock_fs_stat}, mm::read_user_cstr, task::current_task, utils::{SysErrNo, SyscallRet}
 };
 
 const FALLOC_FL_KEEP_SIZE: u32 = 0x01;
 const FALLOC_SUPPORTED_FLAGS: u32 = FALLOC_FL_KEEP_SIZE;
 
-// Linux的实现与手册有差异或未实现该调用
+/// https://www.man7.org/linux/man-pages/man2/truncate.2.html
+pub fn sys_truncate(path: usize, length: usize) -> SyscallRet {
+    let task = current_task().unwrap();
+    let proc = Arc::clone(&task.process);
+    let memory_set = proc.memory_set_arc();
+    let path = read_user_cstr(&memory_set, path as *const u8)?;
+    let f = open(&path, OpenFlags::O_WRONLY, 0)?;
+    f.file()?.inode.truncate(length)
+}
+
+/// https://www.man7.org/linux/man-pages/man2/ftruncate.2.html
 pub fn sys_ftruncate(fd: usize, length: i32) -> SyscallRet {
     let task = current_task().unwrap();
     let inner = &task.process;

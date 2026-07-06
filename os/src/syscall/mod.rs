@@ -389,6 +389,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
 
         Syscall::StatFs => sys_statfs(args[0] as *const u8, args[1] as *mut Statfs),
         Syscall::FstatFs => sys_fstatfs(args[0] as i32, args[1]),
+        Syscall::Truncate => sys_truncate(args[0], args[1]),
         Syscall::Ftruncate => sys_ftruncate(args[0], args[1] as i32),
         Syscall::Fallocate => sys_fallocate(
             args[0] as usize,
