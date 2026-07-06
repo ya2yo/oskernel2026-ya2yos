@@ -215,16 +215,16 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         // 文件记录锁（F_GETLK / F_SETLK / F_SETLKW）
         // 按 inode 路径在全局锁表中管理 POSIX advisory record lock
         FcntlCmd::F_GETLK | FcntlCmd::F_GETLK64 => {
+            let memory_set = proc_inner.memory_set_arc();
+            let mut flock_bytes = [0u8; 32];
+            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
+            let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
+
             let (inode_path, file_size) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
                 (osfile.inode.path(), osfile.inode.size() as i64)
             };
-
-            let memory_set = proc_inner.memory_set_arc();
-            let mut flock_bytes = [0u8; 32];
-            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
-            let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
             file_lock::getlk(&inode_path, &mut flock, file_size, owner_pid)?;
 
@@ -233,48 +233,48 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             return Ok(0);
         }
         FcntlCmd::F_SETLK | FcntlCmd::F_SETLK64 => {
+            let memory_set = proc_inner.memory_set_arc();
+            let mut flock_bytes = [0u8; 32];
+            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
+            let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
+
             let (inode_path, file_size) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
                 (osfile.inode.path(), osfile.inode.size() as i64)
             };
-
-            let memory_set = proc_inner.memory_set_arc();
-            let mut flock_bytes = [0u8; 32];
-            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
-            let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
             file_lock::setlk(&inode_path, &flock, file_size, owner_pid)?;
             return Ok(0);
         }
         FcntlCmd::F_SETLKW | FcntlCmd::F_SETLKW64 => {
             // F_SETLKW 应阻塞等待直到锁可用；当前简化为非阻塞行为
+            let memory_set = proc_inner.memory_set_arc();
+            let mut flock_bytes = [0u8; 32];
+            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
+            let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
+
             let (inode_path, file_size) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
                 (osfile.inode.path(), osfile.inode.size() as i64)
             };
-
-            let memory_set = proc_inner.memory_set_arc();
-            let mut flock_bytes = [0u8; 32];
-            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
-            let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
             file_lock::setlk(&inode_path, &flock, file_size, owner_pid)?;
             return Ok(0);
         }
         // OFD（Open File Description）锁 — 简化委托给 POSIX 锁逻辑
         FcntlCmd::F_OFD_GETLK => {
+            let memory_set = proc_inner.memory_set_arc();
+            let mut flock_bytes = [0u8; 32];
+            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
+            let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
+
             let (inode_path, file_size) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
                 (osfile.inode.path(), osfile.inode.size() as i64)
             };
-
-            let memory_set = proc_inner.memory_set_arc();
-            let mut flock_bytes = [0u8; 32];
-            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
-            let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
             file_lock::getlk(&inode_path, &mut flock, file_size, owner_pid)?;
 
@@ -283,16 +283,16 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             return Ok(0);
         }
         FcntlCmd::F_OFD_SETLK | FcntlCmd::F_OFD_SETLKW => {
+            let memory_set = proc_inner.memory_set_arc();
+            let mut flock_bytes = [0u8; 32];
+            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
+            let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
+
             let (inode_path, file_size) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
                 (osfile.inode.path(), osfile.inode.size() as i64)
             };
-
-            let memory_set = proc_inner.memory_set_arc();
-            let mut flock_bytes = [0u8; 32];
-            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
-            let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
             file_lock::setlk(&inode_path, &flock, file_size, owner_pid)?;
             return Ok(0);

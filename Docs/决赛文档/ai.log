@@ -3158,3 +3158,40 @@ broken   0
 skipped  0
 warnings 0
 ```
+
+
+## 2026-07-06: 修复 fcntl13 record lock EFAULT 优先级
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并继续修复。
+
+### 分析
+
+AI 过滤 `log.ans` 后确认失败集中在 LTP `fcntl13` 第一项：`fcntl(1, F_SETLK, bad_flock)` 期望 `EFAULT`，实际返回 `EINVAL`。对照 `fcntl13.c` 后确认测试使用 `tst_get_bad_addr()` 构造不可访问的 `struct flock *`。原 `sys_fcntl()` 的 record lock 分支先用 `fd=1` 解析普通文件对象；stdout 不是 `OSFile`，因此在触碰用户指针前就返回 `EINVAL`，错误优先级不符合测试预期。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/fd_ops.rs` | `F_GETLK/F_SETLK/F_SETLKW` 和 OFD lock 分支先 `copy_from_user()` 读取 `struct flock`，再解析普通文件对象 |
+| `Docs/决赛文档/problem/fcntl13-lock-efault-priority.md` | 新增问题复盘 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：默认 LoongArch64 构建通过；最新 `log.ans` 中 musl/glibc 两轮 `fcntl13` 均为：
+
+```text
+passed   4
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
