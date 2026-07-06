@@ -4,6 +4,7 @@ use alloc::vec;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW};
 use log::debug;
 
+use super::path::parse_proc_self_fd;
 use crate::fs::{
     cache_positive_dentry_path, invalidate_dentry_path, open, superblock_root_inode,
     superblock_sync, File, FsIndex, Inode, InodeType, OpenFlags, MAX_PATH_LEN, NONE_MODE, SEEK_CUR,
@@ -15,25 +16,8 @@ use crate::mm::{
 use crate::syscall::options::FaccessatFileMode;
 use crate::task::current_task;
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
-use crate::utils::{get_abs_path, rsplit_once, SysErrNo, SyscallRet};
+use crate::utils::{rsplit_once, SysErrNo, SyscallRet};
 use linux_raw_sys::loop_device::LOOP_SET_FD;
-
-/// 参考 https://man7.org/linux/man-pages/man2/getcwd.2.html
-pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
-    let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let cwd = proc_inner.fs_info.get_cwd();
-    let cwd_bytes = cwd.as_bytes();
-    let cwd_len_with_null = cwd_bytes.len() + 1;
-    if size < cwd_len_with_null {
-        return Err(SysErrNo::ERANGE);
-    }
-    let memory_set = proc_inner.memory_set_arc();
-    let mut cwd_with_null = vec![0u8; cwd_len_with_null];
-    cwd_with_null[..cwd_bytes.len()].copy_from_slice(cwd_bytes);
-    copy_to_user(&memory_set, buf as usize, &cwd_with_null)?;
-    Ok(cwd_len_with_null)
-}
 
 /// 参考 https://man7.org/linux/man-pages/man2/ioctl.2.html
 pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
@@ -46,38 +30,6 @@ pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     let file = proc_inner.fd_table.get(fd)?.any();
     let memory_set = proc_inner.memory_set_arc();
     file.ioctl(cmd as u32, arg, &memory_set)
-}
-
-/// 参考 https://man7.org/linux/man-pages/man2/chdir.2.html
-pub fn sys_chdir(path: *const u8) -> SyscallRet {
-    let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
-
-    if (path as isize) <= 0 || if_bad_address(path as usize) {
-        return Err(SysErrNo::EFAULT);
-    }
-
-    let path = read_user_cstr(&memory_set, path)?;
-
-    if path.len() > MAX_PATH_LEN {
-        return Err(SysErrNo::ENAMETOOLONG);
-    }
-
-    // debug!("[sys_chdir] path is {}", path);
-
-    let locked_fs_info = &proc_inner.fs_info;
-
-    let abs_path = get_abs_path(&locked_fs_info.get_cwd(), &path);
-
-    // debug!("[sys_chdir] abs_path is {}", abs_path);
-    let osfile = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
-    if !osfile.inode.types().is_dir() {
-        return Err(SysErrNo::ENOTDIR);
-    }
-    locked_fs_info.set_cwd(abs_path);
-
-    Ok(0)
 }
 
 /// 参考 https://www.man7.org/linux/man-pages/man2/mknod.2.html
@@ -431,54 +383,6 @@ pub fn sys_sync() -> SyscallRet {
     Ok(0)
 }
 
-/// 参考 https://man7.org/linux/man-pages/man2/readlinkat.2.html
-pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: usize) -> SyscallRet {
-    let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
-    let path = read_user_cstr(&memory_set, path)?;
-
-    // debug!(
-    //     "[sys_readlinkat] dirfd is {}, path is {}, buf is {:x}, bufsize is {}",
-    //     dirfd, path, buf as usize, bufsize
-    // );
-
-    // assert!(path == "/proc/self/exe", "unsupported other path!");
-    if path == "/proc/self/exe" {
-        let mut exe: String = proc_inner.fs_info.get_exe();
-        exe.push('\0');
-
-        let res = exe.len();
-        let mem = proc_inner.memory_set_arc();
-        copy_to_user(&*mem, buf as usize, exe.as_bytes())?;
-        return Ok(res);
-    }
-    // 限制 bufsize 防止恶意巨量内存分配（参考 Linux PATH_MAX = 4096）
-    let bufsize = core::cmp::min(bufsize, 4096usize);
-    // debug!("[sys_read_linkat] got path : {}", inner.fs_info.get_cwd());
-    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
-    // Support the procfd spelling used to expose anonymous tmpfiles. readlink()
-    // returns exactly the target bytes and does not append a trailing NUL.
-    if let Some(fd) = parse_proc_self_fd(&abs_path) {
-        proc_inner.fd_table.get(fd)?;
-        let target = proc_inner.fs_info.fd_path(fd).ok_or(SysErrNo::ENOENT)?;
-        let readcnt = target.len().min(bufsize);
-        copy_to_user(&*memory_set, buf as usize, &target.as_bytes()[..readcnt])?;
-        return Ok(readcnt);
-    }
-    let mut linkbuf = vec![0u8; bufsize];
-    let file = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
-    if !file.inode.types().is_symlink() {
-        return Err(SysErrNo::EINVAL);
-    }
-    let readcnt = file.inode.read_link(&mut linkbuf, bufsize)?;
-    let mem = proc_inner.memory_set_arc();
-    copy_to_user(&*mem, buf as usize, &linkbuf[..readcnt])?;
-    Ok(readcnt)
-
-    // Ok(res)
-}
-
 /// https://www.man7.org/linux/man-pages/man2/symlink.2.html
 pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
@@ -577,11 +481,6 @@ fn chown_inode(inode: Arc<dyn Inode>, owner: usize, group: usize) -> SyscallRet 
 
     inode.owner_set(uid, gid)?;
     Ok(0)
-}
-
-fn parse_proc_self_fd(path: &str) -> Option<usize> {
-    path.strip_prefix("/proc/self/fd/")
-        .and_then(|fd| fd.parse::<usize>().ok())
 }
 
 /// https://www.man7.org/linux/man-pages/man2/fchownat.2.html
@@ -748,39 +647,5 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
 
     let inode = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
     inode.inode.fmode_set(mode);
-    Ok(0)
-}
-
-/// 参考 https://man7.org/linux/man-pages/man2/chroot.2.html
-pub fn sys_chroot(path: *const u8) -> SyscallRet {
-    debug!("[chroot] path=0x{:x}", path as usize);
-
-    let task = current_task().unwrap();
-
-    if path.is_null() {
-        return Err(SysErrNo::EINVAL);
-    }
-    if (path as isize) <= 0 || if_bad_address(path as usize) {
-        return Err(SysErrNo::EFAULT);
-    }
-
-    if task.inner_lock().user_id != 0 {
-        return Err(SysErrNo::EPERM);
-    }
-
-    let path_str = {
-        let proc_inner = &task.process;
-        let memory_set = proc_inner.memory_set_arc();
-        read_user_cstr(&memory_set, path)?
-    };
-
-    let file = open(&path_str, OpenFlags::O_RDONLY, NONE_MODE)?;
-    let osfile = file.file()?;
-    if osfile.inode.types() != InodeType::Dir {
-        return Err(SysErrNo::ENOTDIR);
-    }
-
-    task.process.fs_info.set_cwd(path_str);
-    debug!("[chroot] success");
     Ok(0)
 }

@@ -278,3 +278,10 @@
 - **场景**：syscall 模块设计分析、反向依赖消除、fs syscall 门面拆分、构建验证、文档完善
 - **描述**：用户要求分析 syscall 模块是否满足高内聚、低耦合并修改。AI 确认主要问题是 `task` 反向依赖 `syscall::write_process_acct_record`、`CloneFlags` 放在 syscall clone 文件但被 task 核心使用、`fs/mod.rs` 混入 inotify 具体实现，以及若干子模块绕根 re-export 回取 helper/type。重构为将 process accounting 核心移到 `os/src/task/acct.rs`，将 `CloneFlags` 移到 `os/src/task/clone_flags.rs`，把 inotify syscall 拆到 `os/src/syscall/fs/inotify.rs`，并收窄 syscall 根模块对 `task::*` 的公开 re-export。本次保持 syscall 号、分发和用户可见语义不变；`cargo fmt` 与当前默认 LoongArch64 `make` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
 - **关联 commit**：未提交
+
+#### syscall/fs/path.rs 路径 syscall 聚合（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：syscall 文件系统路径模块重构、`chroot/getcwd/chdir/readlinkat/faccessat` 迁移、构建验证、文档完善
+- **描述**：用户要求新建 `path.rs` 放置 `sys_chroot`，并把其他相关 syscall 一起移动进去。AI 新增 `os/src/syscall/fs/path.rs`，迁入 `getcwd/chdir/chroot/readlinkat/faccessat/faccessat2` 及其路径/procfd/access helper；`ctl.rs` 回到目录项控制、ioctl、sync、chmod/chown 等职责，`stat.rs` 回到 stat/statx/statfs 职责，并移除 `sys` 下的 chroot 子模块。本次未改 syscall 号、分发或用户可见语义；`cargo fmt` 和当前默认 LoongArch64 `make` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
+- **关联 commit**：未提交

@@ -9,6 +9,7 @@ mod inotify;
 mod misc;
 mod mount;
 mod mqueue;
+mod path;
 mod pipe;
 mod space;
 mod stat;
@@ -25,7 +26,7 @@ use crate::{
 
 pub use self::{
     ctl::*, event::*, fanotify::*, fcntl::*, fd_ops::*, handle::*, inotify::*, misc::*, mount::*,
-    mqueue::*, pipe::*, space::*, stat::*, xattr::*,
+    mqueue::*, path::*, pipe::*, space::*, stat::*, xattr::*,
 };
 
 fn dummyfd_create() -> SyscallRet {

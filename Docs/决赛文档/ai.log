@@ -2784,3 +2784,44 @@ make
 ```
 
 结果：当前默认 LoongArch64 构建通过。未运行 `make run`，因为本次是模块边界重构，没有修改用户可见 syscall 行为；未执行 RISC-V 验证。
+
+
+## 2026-07-06: 新增 syscall/fs/path.rs 聚合路径 syscall
+
+### 用户需求
+
+用户指出 `sys_chroot` 应新建 `path.rs` 放入其中，并将其他相关 syscall 一起移动进去。
+
+### 分析
+
+AI 确认 `chroot(2)` 不是系统杂项能力，而是进程文件系统上下文与路径解析相关 syscall；同类逻辑还包括：
+
+- `getcwd(2)`：读取进程 cwd；
+- `chdir(2)`：解析路径并更新 cwd；
+- `readlinkat(2)`：解析路径并读取 symlink/procfd 目标；
+- `faccessat(2)/faccessat2(2)`：读取用户路径，按 dirfd/flags 解析路径并执行访问权限检查。
+
+这些函数放在 `ctl.rs` 或 `stat.rs` 中会让文件控制、状态查询与路径上下文逻辑混杂；将其聚合到 `fs/path.rs` 更符合高内聚。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/path.rs` | 新增路径 syscall 模块，迁入 `sys_getcwd()`、`sys_chdir()`、`sys_chroot()`、`sys_readlinkat()`、`sys_faccessat()`、`sys_faccessat2()`，以及 `parse_proc_self_fd()` 和 faccessat 权限检查 helper |
+| `os/src/syscall/fs/mod.rs` | 增加 `mod path;` 并 re-export `path::*` |
+| `os/src/syscall/fs/ctl.rs` | 移除 `getcwd/chdir/readlinkat` 旧实现，保留目录项变更、ioctl、sync、chmod/chown 等控制类 syscall；改为使用 `path::parse_proc_self_fd()` |
+| `os/src/syscall/fs/stat.rs` | 移除 `faccessat/faccessat2` 及其 helper，使该文件回到 stat/statx/statfs 职责 |
+| `os/src/syscall/sys/mod.rs`、`os/src/syscall/sys/fs.rs` | 移除 `sys` 下的 fs 子模块与旧 `sys_chroot()` 位置 |
+
+本次未修改 syscall 号、`os/src/syscall/mod.rs` 分发、函数签名或用户可见语义，只调整模块归属。
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt
+make
+```
+
+结果：当前默认 LoongArch64 构建通过。未运行 `make run`，因为本次是结构迁移，不改变 syscall 行为；未执行 RISC-V 验证。
