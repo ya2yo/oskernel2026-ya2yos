@@ -390,3 +390,10 @@
 - **场景**：`log.ans` 分析、LTP `fcntl33` 源码对照、file lease break 通知与降级语义修复、LoongArch64 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复。AI 确认 `fcntl33` 失败包含 `/proc/sys/fs/lease-break-time` 缺失、冲突 `open/truncate` 未向 lease holder 投递 `SIGIO`、写访问 break 下错误允许写 lease 降级为读 lease，以及 `truncate("file")` 未按当前工作目录解析。修复为启动期补齐 lease sysctl 文件，file lease 表记录 break 通知状态和写访问标志，普通文件 `open/truncate` 冲突时向 holder 主线程投递 pending `SIGIO`，并修正 `sys_truncate()` 相对路径。`make` 通过，最新 `log.ans` 中 musl/glibc `fcntl33` 均 7 项 `TPASS`，summary 为 `passed 7 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl33-lease-break-sigio.md](./problem/fcntl33-lease-break-sigio.md)。
 - **关联 commit**：待提交
+
+#### LTP fcntl34 OFD lock owner 语义修复（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `fcntl34` 源码对照、OFD lock owner 与 `F_OFD_SETLKW` 阻塞语义修复、LoongArch64 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fcntl34` 失败来自 OFD lock owner 错误复用进程 pid：同一进程内多个线程分别 `open()` 的 fd 被锁层视作同一 owner，无法互斥保护 `lseek(SEEK_END)+write()`，导致文件写入覆盖和校验阶段提前 EOF。修复为每个 `OSFile` 分配 open file description 级负数 owner，OFD fcntl 分支改用该 owner，`F_OFD_SETLKW` 走阻塞等待，并在最后一个 fd 关闭时释放 OFD 锁。`make` 通过，最新 `log.ans` 中 musl/glibc `fcntl34` 均 `TPASS`，summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl34-ofd-lock-owner.md](./problem/fcntl34-ofd-lock-owner.md)。
+- **关联 commit**：待提交

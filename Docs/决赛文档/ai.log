@@ -3454,3 +3454,36 @@ timeout 120s make run > log.ans 2>&1
 ```
 
 结果：默认 LoongArch64 构建通过；最新 `log.ans` 中 musl 与 glibc `fcntl33` 均 7 项 `TPASS`，Summary 均为 `passed 7 failed 0 broken 0`。构建中仍有既有 `smoltcp` vendor warning，与本次修复无关。详见 [problem/fcntl33-lease-break-sigio.md](./problem/fcntl33-lease-break-sigio.md)。
+
+
+## 2026-07-06: 修复 fcntl34 OFD lock owner 语义
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并进行修复。
+
+### 分析
+
+AI 筛选 `log.ans` 后确认本轮失败为 LTP `fcntl34`：musl/glibc 都在多线程写入后的校验阶段 `read()` 提前返回 0，Summary 为 `passed 0 failed 0 broken 1`。对照 `fcntl34.c` 后确认，测试每个线程独立 `open("tst_ofd_locks", O_RDWR)`，使用 `F_OFD_SETLKW` 锁住字节 0 后执行 `lseek(SEEK_END)+write(4096)`。如果 OFD lock 正确互斥，最终文件应包含每个线程固定次数写入的完整块。
+
+AI 检查 `sys_fcntl()` 后发现 OFD lock 分支只是委托给 POSIX record lock 逻辑，并继续使用当前进程 pid 作为 owner。同一进程内多个线程 owner 相同，锁层会把它们视作同一 owner 而不互斥，导致多个 fd 的 `lseek(SEEK_END)` 和 `write()` 交错覆盖，最终文件提前 EOF。进一步确认 `F_OFD_SETLKW` 也没有走阻塞等待路径，而是和 `F_OFD_SETLK` 一样调用非阻塞 `setlk()`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/os_file.rs` | 为每个 `OSFile` 分配稳定的负数 `ofd_lock_owner`，同一 `Arc<OSFile>` 的 dup fd 共享该 owner |
+| `os/src/syscall/fs/fcntl.rs` | `F_OFD_GETLK/F_OFD_SETLK/F_OFD_SETLKW` 改用 open file description owner；`F_OFD_SETLKW` 接入阻塞等待；`F_OFD_GETLK` 冲突时写回 `l_pid=-1` |
+| `os/src/syscall/fs/fd_ops.rs` | `close/close_range` 在最后一个 fd 引用关闭时释放对应 OFD owner 的锁 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/fs/files/os_file.rs os/src/syscall/fs/fcntl.rs os/src/syscall/fs/fd_ops.rs
+make
+timeout 120s make run > log.ans 2>&1
+```
+
+结果：默认 LoongArch64 构建通过；最新 `log.ans` 中 musl 与 glibc `fcntl34` 均 `TPASS`，Summary 均为 `passed 1 failed 0 broken 0`。构建中仍有既有 `smoltcp` vendor warning，与本次修复无关。详见 [problem/fcntl34-ofd-lock-owner.md](./problem/fcntl34-ofd-lock-owner.md)。

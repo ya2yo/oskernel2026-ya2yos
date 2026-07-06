@@ -308,6 +308,9 @@ pub fn sys_close(fd: usize) -> SyscallRet {
             let path = osfile.inode.path();
             file_lock::release_posix_locks(&path, owner_pid);
             file_lock::release_file_leases(&path, owner_pid);
+            if Arc::strong_count(&osfile) <= 2 {
+                file_lock::release_posix_locks(&path, osfile.ofd_lock_owner());
+            }
         }
         inner.fs_info.remove(fd);
     }
@@ -373,6 +376,9 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
                     let path = osfile.inode.path();
                     file_lock::release_posix_locks(&path, owner_pid);
                     file_lock::release_file_leases(&path, owner_pid);
+                    if Arc::strong_count(&osfile) <= 2 {
+                        file_lock::release_posix_locks(&path, osfile.ofd_lock_owner());
+                    }
                 }
                 // Remove from fs_info
                 proc_inner.fs_info.remove(fd as usize);

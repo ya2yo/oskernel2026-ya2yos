@@ -279,13 +279,14 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let mut flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            let (inode_path, file_size, current_offset) = {
+            let (inode_path, file_size, current_offset, ofd_owner) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
                 (
                     osfile.inode.path(),
                     osfile.inode.size() as i64,
                     osfile.lseek(0, FS_SEEK_CUR)? as i64,
+                    osfile.ofd_lock_owner(),
                 )
             };
 
@@ -294,31 +295,54 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
                 &mut flock,
                 file_size,
                 current_offset,
-                owner_pid,
+                ofd_owner,
             )?;
+            if flock.l_type != F_UNLCK {
+                flock.l_pid = -1;
+            }
 
             let result_bytes = flock.to_bytes();
             copy_to_user(&memory_set, arg, &result_bytes)?;
             return Ok(0);
         }
-        FcntlCmd::F_OFD_SETLK | FcntlCmd::F_OFD_SETLKW => {
+        FcntlCmd::F_OFD_SETLK => {
             let memory_set = proc_inner.memory_set_arc();
             let mut flock_bytes = [0u8; 32];
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
             let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
 
-            let (inode_path, file_size, current_offset) = {
+            let (inode_path, file_size, current_offset, ofd_owner) = {
                 let file = proc_inner.fd_table.get(fd)?;
                 let osfile = file.file()?;
                 (
                     osfile.inode.path(),
                     osfile.inode.size() as i64,
                     osfile.lseek(0, FS_SEEK_CUR)? as i64,
+                    osfile.ofd_lock_owner(),
                 )
             };
 
-            file_lock::setlk(&inode_path, &flock, file_size, current_offset, owner_pid)?;
+            file_lock::setlk(&inode_path, &flock, file_size, current_offset, ofd_owner)?;
             return Ok(0);
+        }
+        FcntlCmd::F_OFD_SETLKW => {
+            let memory_set = proc_inner.memory_set_arc();
+            let mut flock_bytes = [0u8; 32];
+            copy_from_user(&memory_set, arg, &mut flock_bytes)?;
+            let flock = Flock::from_bytes(&flock_bytes).ok_or(SysErrNo::EINVAL)?;
+
+            let (inode_path, file_size, current_offset, ofd_owner) = {
+                let file = proc_inner.fd_table.get(fd)?;
+                let osfile = file.file()?;
+                (
+                    osfile.inode.path(),
+                    osfile.inode.size() as i64,
+                    osfile.lseek(0, FS_SEEK_CUR)? as i64,
+                    osfile.ofd_lock_owner(),
+                )
+            };
+
+            return setlk_blocking(inode_path, flock, file_size, current_offset, ofd_owner);
         }
         // 文件 owner / 信号（主要用于套接字）
         FcntlCmd::F_GETOWN => {

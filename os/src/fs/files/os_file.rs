@@ -11,6 +11,7 @@ use crate::{
 
 use super::super::{File, Inode};
 use alloc::{collections::BTreeMap, string::String, sync::Arc};
+use core::sync::atomic::{AtomicI32, Ordering};
 use linux_raw_sys::{
     general::FS_IMMUTABLE_FL,
     ioctl::{FS_IOC32_GETFLAGS, FS_IOC32_SETFLAGS, FS_IOC_GETFLAGS, FS_IOC_SETFLAGS},
@@ -20,6 +21,11 @@ use spin::{Lazy, Mutex};
 static WRITE_OPEN_COUNTS: Lazy<Mutex<BTreeMap<String, usize>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
 static FILE_FLAGS: Lazy<Mutex<BTreeMap<String, u32>>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
+static NEXT_OFD_LOCK_OWNER: AtomicI32 = AtomicI32::new(1);
+
+fn alloc_ofd_lock_owner() -> i32 {
+    -NEXT_OFD_LOCK_OWNER.fetch_add(1, Ordering::Relaxed)
+}
 
 fn register_write_open(path: &str) {
     let mut counts = WRITE_OPEN_COUNTS.lock();
@@ -62,6 +68,7 @@ pub struct OSFile {
     pub inode: Arc<dyn Inode>,
     write_path: Option<String>,
     suppress_fanotify: bool,
+    ofd_lock_owner: i32,
     inner: Mutex<OSFileInner>,
 }
 struct OSFileInner {
@@ -84,6 +91,7 @@ impl OSFile {
             inode,
             write_path,
             suppress_fanotify: false,
+            ofd_lock_owner: alloc_ofd_lock_owner(),
             inner: Mutex::new(OSFileInner { offset: 0 }),
         }
     }
@@ -105,6 +113,7 @@ impl OSFile {
             inode,
             write_path: None,
             suppress_fanotify: true,
+            ofd_lock_owner: alloc_ofd_lock_owner(),
             inner: Mutex::new(OSFileInner { offset: 0 }),
         }
     }
@@ -125,6 +134,10 @@ impl OSFile {
     /// getdents64 must read it directly instead of routing through lseek().
     pub fn offset(&self) -> usize {
         self.inner.lock().offset
+    }
+
+    pub fn ofd_lock_owner(&self) -> i32 {
+        self.ofd_lock_owner
     }
 }
 
