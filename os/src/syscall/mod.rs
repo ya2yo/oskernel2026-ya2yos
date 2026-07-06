@@ -307,7 +307,7 @@ pub use options::{
 use signal::*;
 use sync::*;
 use sys::*;
-pub use task::*;
+use task::*;
 use time::*;
 
 /// handle syscall exception with `syscall_id` and other arguments

@@ -271,3 +271,10 @@
 - **场景**：syscall 杂项模块结构重构、身份/capability/prctl/system/fs 子模块拆分、构建验证
 - **描述**：用户要求重构 `os/src/syscall/sys.rs` 以提高子模块内聚度。AI 将原大文件按职责拆成 `os/src/syscall/sys/identity.rs`、`capability.rs`、`prctl.rs`、`system.rs`、`fs.rs`，并用 `sys/mod.rs` 统一 re-export，保持 `os/src/syscall/mod.rs` 的 `use sys::*` 接口不变。本次未修改 syscall 分发、函数签名或用户可见语义；`cargo fmt --manifest-path os/Cargo.toml` 和当前默认 LoongArch64 `make` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
 - **关联 commit**：未提交
+
+#### syscall 与 task 模块边界收敛（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：syscall 模块设计分析、反向依赖消除、fs syscall 门面拆分、构建验证、文档完善
+- **描述**：用户要求分析 syscall 模块是否满足高内聚、低耦合并修改。AI 确认主要问题是 `task` 反向依赖 `syscall::write_process_acct_record`、`CloneFlags` 放在 syscall clone 文件但被 task 核心使用、`fs/mod.rs` 混入 inotify 具体实现，以及若干子模块绕根 re-export 回取 helper/type。重构为将 process accounting 核心移到 `os/src/task/acct.rs`，将 `CloneFlags` 移到 `os/src/task/clone_flags.rs`，把 inotify syscall 拆到 `os/src/syscall/fs/inotify.rs`，并收窄 syscall 根模块对 `task::*` 的公开 re-export。本次保持 syscall 号、分发和用户可见语义不变；`cargo fmt` 与当前默认 LoongArch64 `make` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
+- **关联 commit**：未提交

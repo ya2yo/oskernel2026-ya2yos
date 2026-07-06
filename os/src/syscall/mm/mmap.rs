@@ -3,7 +3,6 @@
 use alloc::format;
 use log::{debug, warn};
 
-use super::super::{MmapFlags, MmapProt};
 use crate::{
     arch::memory_layout::{MAX_MMAP_SIZE, PAGE_SIZE},
     fs::File,
@@ -12,6 +11,7 @@ use crate::{
         shm_find, MapArea, MapAreaType, MapPermission, MremapFlags, ShmFlags, VirtAddr,
         VirtPageNum,
     },
+    syscall::options::{MmapFlags, MmapProt},
     task::{self, current_task},
     utils::{page_round_up, SysErrNo, SyscallRet},
 };

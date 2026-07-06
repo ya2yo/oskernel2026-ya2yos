@@ -5,6 +5,7 @@ mod fcntl;
 mod fd_ops;
 mod file_lock;
 mod handle;
+mod inotify;
 mod misc;
 mod mount;
 mod mqueue;
@@ -13,27 +14,18 @@ mod space;
 mod stat;
 mod xattr;
 
-use alloc::string::String;
-use alloc::vec;
-use alloc::vec::Vec;
 use linux_raw_sys::ctypes::c_int;
 use log::warn;
 
 use crate::{
-    fs::{DummyFd, File, FileClass, FileDescriptor, InotifyFd, OpenFlags},
-    mm::{copy_from_user, read_user_cstr, UserBuffer},
-    syscall::options::Iovec,
+    fs::{DummyFd, FileClass, FileDescriptor, OpenFlags},
     task::current_task,
-    utils::{SysErrNo, SyscallRet},
+    utils::SyscallRet,
 };
 
-// inotify_init1 标志 — 与 O_CLOEXEC / O_NONBLOCK 值相同
-const IN_CLOEXEC: u32 = OpenFlags::O_CLOEXEC.bits();
-const IN_NONBLOCK: u32 = OpenFlags::O_NONBLOCK.bits();
-
 pub use self::{
-    ctl::*, event::*, fanotify::*, fcntl::*, fd_ops::*, handle::*, misc::*, mount::*, mqueue::*,
-    pipe::*, space::*, stat::*, xattr::*,
+    ctl::*, event::*, fanotify::*, fcntl::*, fd_ops::*, handle::*, inotify::*, misc::*, mount::*,
+    mqueue::*, pipe::*, space::*, stat::*, xattr::*,
 };
 
 fn dummyfd_create() -> SyscallRet {
@@ -46,71 +38,6 @@ fn dummyfd_create() -> SyscallRet {
         FileDescriptor::new(OpenFlags::empty(), crate::fs::FileClass::Abs(dummy_file)),
     );
     Ok(newfd)
-}
-
-/// https://man7.org/linux/man-pages/man2/inotify_init1.2.html
-pub fn sys_inotify_init1(flags: u32) -> SyscallRet {
-    // 只允许 IN_CLOEXEC 和 IN_NONBLOCK 两个标志
-    let valid_flags = IN_CLOEXEC | IN_NONBLOCK;
-    if flags & !valid_flags != 0 {
-        return Err(SysErrNo::EINVAL);
-    }
-
-    let inotify_file = InotifyFd::new();
-    if flags & IN_NONBLOCK != 0 {
-        inotify_file.set_nonblocking(true)?;
-    }
-
-    let mut open_flags = OpenFlags::O_RDWR;
-    if flags & IN_CLOEXEC != 0 {
-        open_flags |= OpenFlags::O_CLOEXEC;
-    }
-    if flags & IN_NONBLOCK != 0 {
-        open_flags |= OpenFlags::O_NONBLOCK;
-    }
-
-    let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let fd = proc_inner.fd_table.alloc_fd()?;
-    proc_inner.fd_table.set(
-        fd,
-        FileDescriptor::new(open_flags, FileClass::Abs(inotify_file.clone())),
-    )?;
-    // 注册到全局表，供 add_watch / rm_watch 查找
-    InotifyFd::register_fd(fd, &inotify_file);
-    Ok(fd)
-}
-
-/// https://man7.org/linux/man-pages/man2/inotify_add_watch.2.html
-pub fn sys_inotify_add_watch(fd: c_int, path: *const u8, mask: u32) -> SyscallRet {
-    if fd < 0 {
-        return Err(SysErrNo::EBADF);
-    }
-    let fd = fd as usize;
-    let inotify = InotifyFd::lookup(fd)?;
-
-    // 从用户空间读取路径字符串
-    let path_str = {
-        let task = current_task().unwrap();
-        let process = &task.process;
-        let memory_set = process.memory_set_arc();
-        read_user_cstr(&memory_set, path)?
-    };
-
-    if mask == 0 {
-        return Err(SysErrNo::EINVAL);
-    }
-
-    inotify.add_watch(path_str, mask)
-}
-
-pub fn sys_inotify_rm_watch(fd: c_int, wd: c_int) -> SyscallRet {
-    if fd < 0 {
-        return Err(SysErrNo::EBADF);
-    }
-    let fd = fd as usize;
-    let inotify = InotifyFd::lookup(fd)?;
-    inotify.rm_watch(wd)
 }
 
 /// https://man7.org/linux/man-pages/man2/bpf.2.html

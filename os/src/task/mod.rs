@@ -55,7 +55,9 @@
 
 #[allow(clippy::module_inception)]
 #[allow(rustdoc::private_intra_doc_links)]
+mod acct;
 mod aux;
+mod clone_flags;
 mod futex;
 #[cfg(feature = "net")]
 mod future;
@@ -74,11 +76,13 @@ use crate::{
     fs::{open, OpenFlags, NONE_MODE},
     mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
     signal::{send_signal_to_thread_group, SigSet},
-    syscall::write_process_acct_record,
+    task::acct::write_process_acct_record,
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
 };
+pub(crate) use acct::set_process_acct_file;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 pub use aux::*;
+pub use clone_flags::CloneFlags;
 pub use futex::*;
 #[cfg(feature = "net")]
 pub use future::*;

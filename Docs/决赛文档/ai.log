@@ -2741,3 +2741,46 @@ make
 ```
 
 结果：当前默认 LoongArch64 构建通过，仅有既有 warning。未运行 `make run`，因为本次只做模块拆分，无用户可见行为改动。
+
+
+## 2026-07-06: 收敛 syscall 与 task 模块耦合
+
+### 用户需求
+
+用户要求分析 syscall 模块设计，检查不满足高内聚、低耦合的地方并进行修改。
+
+### 分析
+
+AI 检查 `os/src/syscall` 后确认当前结构已经按 fs/task/mm/net/io_mpx 等领域拆分，但仍有几处边界不清：
+
+- `os/src/task` 通过 `crate::syscall::write_process_acct_record` 反向依赖 syscall 层，导致进程退出记账这种 task 生命周期逻辑挂在 syscall 子模块下。
+- `CloneFlags` 定义在 `os/src/syscall/task/clone.rs`，但核心 `TaskControlBlock::clone_process()` 也直接使用该类型，使 task 创建逻辑依赖 syscall 根模块 re-export。
+- `os/src/syscall/fs/mod.rs` 同时承担模块汇总和 inotify 具体 syscall 实现，门面模块内聚度偏低。
+- 部分 syscall 子模块通过 `crate::syscall` 根模块 re-export 回取同层选项或 helper，形成不必要的绕路依赖。
+
+本次重构原则是不修改 syscall 号、分发语义和函数签名，只调整职责归属与导入边界。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/acct.rs` | 新增 process accounting 核心状态、记录编码和退出写记录逻辑 |
+| `os/src/syscall/task/acct.rs` | 保留 `acct(2)` 用户指针、权限、路径和打开文件处理，启停记账改为调用 task 层接口 |
+| `os/src/task/clone_flags.rs` | 新增 `CloneFlags`，供 task 核心和 clone/clone3 syscall 共享 |
+| `os/src/syscall/task/clone.rs`、`clone3.rs` | 改为引用 `crate::task::CloneFlags`，syscall 层只解析用户参数并调用 task API |
+| `os/src/task/mod.rs`、`os/src/task/task/task.rs` | task 内部直接使用 task 子模块的 accounting 与 clone flags |
+| `os/src/syscall/fs/inotify.rs` | 新增 inotify syscall 文件，迁移 `sys_inotify_init1/add_watch/rm_watch` |
+| `os/src/syscall/fs/mod.rs` | 收敛为 fs syscall 模块门面和共享 dummy fd helper，移除 inotify 具体实现 |
+| `os/src/syscall/mod.rs` | `task::*` 从公开 re-export 收窄为 syscall 根模块内部导入 |
+| `os/src/syscall/fs/ctl.rs`、`fs/misc.rs`、`fs/pipe.rs`、`mm/mmap.rs` | 改用直接 sibling/helper/options 路径，减少绕 root re-export 的依赖 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt
+make
+```
+
+结果：当前默认 LoongArch64 构建通过。未运行 `make run`，因为本次是模块边界重构，没有修改用户可见 syscall 行为；未执行 RISC-V 验证。

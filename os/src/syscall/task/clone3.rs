@@ -4,11 +4,11 @@ use log::debug;
 use crate::{
     mm::copy_from_user,
     signal::SIG_MAX_NUM,
-    task::current_task,
+    task::{current_task, CloneFlags},
     utils::{SysErrNo, SyscallRet},
 };
 
-use super::clone::{sys_clone, CloneFlags};
+use super::clone::sys_clone;
 
 const CLONE_ARGS_SIZE_VER0: usize = 64;
 

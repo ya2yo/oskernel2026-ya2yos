@@ -1,10 +1,10 @@
 use alloc::string::ToString;
 use log::{debug, warn};
 
+use super::dummyfd_create;
 use crate::{
     fs::{make_pipe, FileClass, FileDescriptor},
     mm::copy_to_user,
-    syscall::fs::dummyfd_create,
     task::current_task,
     utils::SyscallRet,
 };
