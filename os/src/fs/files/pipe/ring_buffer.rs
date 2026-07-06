@@ -1,17 +1,17 @@
 use super::buffer::PipeBuf;
+use super::PIPE_DEFAULT_SIZE;
 use crate::task::{ready_queue, TaskControlBlock, TaskStatus};
 use crate::utils::PollSet;
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
-const RING_BUFFER_SIZE: usize = 65536;
-
 /// Pipe 的内层共享缓冲区。
 /// 名称保留 RingBuffer，但实际已经是按字节容量限制的 PipeBuf 片段队列。
 pub(super) struct PipeRingBuffer {
     bufs: VecDeque<PipeBuf>,
     bytes: usize,
+    capacity: usize,
     pub(super) write_end_count: usize,
     pub(super) read_end_count: usize,
     read_waiters: VecDeque<Weak<TaskControlBlock>>,
@@ -25,6 +25,7 @@ impl PipeRingBuffer {
         Self {
             bufs: VecDeque::new(),
             bytes: 0,
+            capacity: PIPE_DEFAULT_SIZE,
             write_end_count: 0,
             read_end_count: 0,
             read_waiters: VecDeque::new(),
@@ -70,9 +71,19 @@ impl PipeRingBuffer {
         self.bytes
     }
 
+    /// 获取 pipe 当前容量。
+    pub(super) fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// 设置 pipe 当前容量。
+    pub(super) fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity;
+    }
+
     /// 获取管道中剩余可写长度
     pub(super) fn available_write(&self) -> usize {
-        RING_BUFFER_SIZE - self.bytes
+        self.capacity - self.bytes
     }
 
     /// 追加一组片段，通常用于 splice/tee/file page cache 快路径。

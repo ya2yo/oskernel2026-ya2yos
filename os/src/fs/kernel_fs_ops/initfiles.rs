@@ -5,11 +5,11 @@
 //! `fs::init()` 阶段集中创建这些启动资产，避免把测试环境补丁散落到 syscall
 //! 或 VFS 业务路径中。
 
-use alloc::{string::String, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use log::debug;
 
 use super::*;
-use crate::{mm::UserBuffer, utils::SysResult};
+use crate::{fs::PIPE_MAX_SIZE, mm::UserBuffer, utils::SysResult};
 
 fn flush_preload() {
     extern "C" {
@@ -261,6 +261,11 @@ fn create_proc_files() -> SysResult {
     write_init_file("/proc/sys/kernel/tainted", "0\n")?;
     write_init_file("/proc/sys/kernel/pid_max", PID_MAX)?;
     write_init_file("/proc/sys/kernel/core_pattern", CORE_PATTERN)?;
+    create_dir("/proc/sys/fs")?;
+    write_init_file(
+        "/proc/sys/fs/pipe-max-size",
+        &format!("{}\n", PIPE_MAX_SIZE),
+    )?;
     Ok(())
 }
 

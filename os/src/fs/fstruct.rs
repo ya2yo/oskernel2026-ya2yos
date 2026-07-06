@@ -272,21 +272,22 @@ impl FdTable {
         let soft_limit = inner.soft_limit;
         let fd_table = &mut inner.files;
 
-        if arg > soft_limit {
-            return Err(SysErrNo::EMFILE);
-        }
-        if fd_table.len() + 1 > soft_limit {
-            return Err(SysErrNo::EMFILE);
+        if arg >= soft_limit {
+            return Err(SysErrNo::EINVAL);
         }
         if fd_table.len() < arg {
             fd_table.resize(arg, None);
         }
         if let Some(fd) = fd_table.iter().skip(arg).position(|slot| slot.is_none()) {
-            Ok(fd + arg)
-        } else {
-            fd_table.push(None);
-            Ok(fd_table.len() - 1)
+            return Ok(fd + arg);
         }
+
+        if fd_table.len() >= soft_limit {
+            return Err(SysErrNo::EMFILE);
+        }
+
+        fd_table.push(None);
+        Ok(fd_table.len() - 1)
     }
 
     /// 执行 exec 时关闭所有带 `O_CLOEXEC` 的 fd。

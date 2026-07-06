@@ -3077,3 +3077,44 @@ warnings 0
 ```
 
 本次未重新运行 QEMU；以用户更新后的 `log.ans` 为运行验证依据。
+
+
+## 2026-07-06: fcntl DUPFD 与 pipe size 兼容性完善
+
+### 用户需求
+
+用户要求继续完善 `fcntl` syscall。
+
+### 分析
+
+AI 对照当前 `sys_fcntl()`、`FdTable` 和 LTP fcntl/pipe 相关源码后确认，`F_GETFL/F_SETFL` 之外仍存在基础兼容性缺口：关闭 fd 槽被错误映射为 `EINVAL`，`F_DUPFD` 会继承源 fd 的 `FD_CLOEXEC`，`alloc_fd_larger_than()` 没有区分 `arg >= RLIMIT_NOFILE` 的 `EINVAL` 与 fd 表已满的 `EMFILE`，并且 pipe size 命令仍是固定值/stub。LTP `fcntl30/fcntl37` 还会读取 `/proc/sys/fs/pipe-max-size`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/fstruct.rs` | 修正 `alloc_fd_larger_than()` 的 limit 边界、空槽复用和 errno |
+| `os/src/syscall/fs/fd_ops.rs` | `sys_fcntl()` 使用 `fd_table.get()` 返回 `EBADF`；修正 `F_DUPFD/F_DUPFD_CLOEXEC` 的 close-on-exec 语义；实现 pipe size 命令 |
+| `os/src/fs/files/pipe/mod.rs`、`os/src/fs/files/pipe/ring_buffer.rs` | pipe 缓冲区容量改为 per-pipe 字段，支持按页调整容量和 `EBUSY/EPERM` 错误 |
+| `os/src/fs/mod.rs` | 导出 `PIPE_MAX_SIZE` |
+| `os/src/fs/kernel_fs_ops/initfiles.rs` | 启动期创建 `/proc/sys/fs/pipe-max-size` |
+| `Docs/决赛文档/problem/fcntl-dupfd-pipe-size.md` | 新增问题复盘 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+make
+/bin/bash -lc 'timeout 120s make run > /tmp/fcntl-improve.log 2>&1'
+```
+
+结果：默认 LoongArch64 构建通过。`make run` 在进入 LTP 前于根文件系统 ext4 mount 阶段失败：
+
+```text
+ext4_mount: rc = 95
+Panicked at crates/lwext4_rust/src/blockdev.rs:103 Failed to mount the ext4 file system
+```
+
+因此本次未获得运行时 fcntl 用例 summary。

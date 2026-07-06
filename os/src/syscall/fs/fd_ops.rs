@@ -163,19 +163,13 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
 
     // debug!("[sys_fcntl] fd is {}, cmd is {}, arg is {}", fd, cmd, arg);
 
-    if fd >= proc_inner.fd_table.len() || (fd as isize) < 0 {
-        return Err(SysErrNo::EBADF);
-    }
-
-    if proc_inner.fd_table.try_get(fd).is_none() {
-        return Err(SysErrNo::EINVAL);
-    }
-
+    proc_inner.fd_table.get(fd)?;
     let cmd = FcntlCmd::from_bits(cmd).ok_or(SysErrNo::EINVAL)?;
 
     match cmd {
         FcntlCmd::F_DUPFD => {
-            let file = proc_inner.fd_table.get(fd)?;
+            let mut file = proc_inner.fd_table.get(fd)?;
+            file.unset_cloexec();
             let fd_new = proc_inner.fd_table.alloc_fd_larger_than(arg)?;
             proc_inner.fd_table.set(fd_new, file);
             proc_inner.fs_info.dup_fd_path(fd, fd_new);
@@ -217,11 +211,8 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
                 file.any().set_nonblocking(false)?;
             }
         }
-
-        // -------------------------------------------------------------------
         // 文件记录锁（F_GETLK / F_SETLK / F_SETLKW）
         // 按 inode 路径在全局锁表中管理 POSIX advisory record lock
-        // -------------------------------------------------------------------
         FcntlCmd::F_GETLK | FcntlCmd::F_GETLK64 => {
             let (inode_path, file_size) = {
                 let file = proc_inner.fd_table.get(fd)?;
@@ -271,10 +262,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             file_lock::setlk(&inode_path, &flock, file_size)?;
             return Ok(0);
         }
-
-        // -------------------------------------------------------------------
         // OFD（Open File Description）锁 — 简化委托给 POSIX 锁逻辑
-        // -------------------------------------------------------------------
         FcntlCmd::F_OFD_GETLK => {
             let (inode_path, file_size) = {
                 let file = proc_inner.fd_table.get(fd)?;
@@ -308,10 +296,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             file_lock::setlk(&inode_path, &flock, file_size)?;
             return Ok(0);
         }
-
-        // -------------------------------------------------------------------
         // 文件 owner / 信号（主要用于套接字）
-        // -------------------------------------------------------------------
         FcntlCmd::F_GETOWN => {
             // 返回接收 SIGIO/SIGURG 的进程 ID；-1 表示无 owner
             return Ok((-1i32) as usize);
@@ -358,17 +343,17 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             }
             return Err(SysErrNo::EMFILE);
         }
-
-        // -------------------------------------------------------------------
         // pipe 大小
-        // -------------------------------------------------------------------
         FcntlCmd::F_SETPIPE_SZ => {
-            // 暂不支持动态调整 pipe 大小
-            return Err(SysErrNo::EINVAL);
+            let pipe = proc_inner.fd_table.get(fd)?.pipe()?;
+            if arg > (1usize << 31) {
+                return Err(SysErrNo::EINVAL);
+            }
+            return Ok(pipe.set_capacity(arg)?);
         }
         FcntlCmd::F_GETPIPE_SZ => {
-            // 默认 Linux pipe 容量为 16 页（64 KiB）
-            return Ok(65536);
+            let pipe = proc_inner.fd_table.get(fd)?.pipe()?;
+            return Ok(pipe.capacity());
         }
 
         _ => {

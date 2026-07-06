@@ -320,3 +320,10 @@
 - **场景**：`log.ans` 分析、`fcntl(2)` `F_GETFL/F_SETFL` 语义修复、fd 文件状态标志保存、构建与日志验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fcntl01` 失败是 `F_GETFL` 硬编码返回 `O_RDWR`，导致以 `O_WRONLY` 打开的文件也读到 `0x2`；同时 `F_SETFL(O_APPEND)` 只处理 nonblock，未保存 append 状态。修复为让 `FileDescriptor` 暴露 `F_GETFL` 可见的真实访问模式和状态位，并让 `F_SETFL` 更新 `O_APPEND/O_NONBLOCK/O_ASYNC/O_DIRECT/O_NOATIME` 等可修改状态位，同时继续同步底层文件 nonblocking 状态。`make` 通过，用户提供的最新 `log.ans` 中 musl/glibc `fcntl01` 均 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl01-f-getfl-setfl.md](./problem/fcntl01-f-getfl-setfl.md)。
 - **关联 commit**：待提交
+
+#### fcntl DUPFD 与 pipe size 兼容性完善（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`fcntl(2)` 基础命令语义梳理、`F_DUPFD*` fd descriptor flag 修复、pipe size 命令实现、构建验证、文档完善
+- **描述**：用户要求继续完善 `fcntl` syscall。AI 对照现有实现和 LTP fcntl/pipe 用例，修正关闭 fd 槽错误码、`F_DUPFD` 不继承 `FD_CLOEXEC`、`F_DUPFD_CLOEXEC` 设置 `FD_CLOEXEC`、`arg >= RLIMIT_NOFILE` 返回 `EINVAL`、fd 表满返回 `EMFILE` 等语义；同时将 pipe 容量从固定常量改为 per-pipe 字段，支持 `F_GETPIPE_SZ/F_SETPIPE_SZ`、按页取整、`EBUSY/EPERM` 错误和 `/proc/sys/fs/pipe-max-size`。`cargo fmt` 与默认 LoongArch64 `make` 通过；`make run` 在根文件系统 ext4 mount 阶段 panic，未进入 LTP。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl-dupfd-pipe-size.md](./problem/fcntl-dupfd-pipe-size.md)。
+- **关联 commit**：待提交

@@ -13,13 +13,17 @@ mod wait;
 pub use fifo::open_fifo;
 
 use self::ring_buffer::PipeRingBuffer;
+use crate::arch::memory_layout::PAGE_SIZE;
 use crate::fs::File;
 use crate::signal::{send_signal_to_thread, SigSet};
 use crate::task::current_task;
-use crate::utils::SysErrNo;
+use crate::utils::{page_round_up, SysErrNo};
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::{Mutex, MutexGuard};
+
+pub const PIPE_DEFAULT_SIZE: usize = 65536;
+pub const PIPE_MAX_SIZE: usize = 65536;
 
 pub struct Pipe {
     readable: bool,
@@ -93,6 +97,29 @@ impl Pipe {
     /// 该函数的意义是套壳，将PipeRingBuffer对外隐藏起来
     pub fn available_write(&self) -> usize {
         return self.inner_lock().available_write();
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.inner_lock().capacity()
+    }
+
+    pub fn set_capacity(&self, requested: usize) -> Result<usize, SysErrNo> {
+        let capacity = if requested == 0 {
+            PAGE_SIZE
+        } else {
+            page_round_up(requested)
+        };
+        if capacity > PIPE_MAX_SIZE {
+            return Err(SysErrNo::EPERM);
+        }
+
+        let mut ring_buffer = self.inner_lock();
+        if capacity < ring_buffer.available_read() {
+            return Err(SysErrNo::EBUSY);
+        }
+        ring_buffer.set_capacity(capacity);
+        ring_buffer.wake_all_writers();
+        Ok(capacity)
     }
 
     pub fn all_read_ends_closed(&self) -> bool {
