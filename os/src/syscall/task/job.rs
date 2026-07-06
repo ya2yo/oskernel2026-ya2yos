@@ -477,13 +477,33 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> SyscallRet {
     Ok(0)
 }
 
+/// https://www.man7.org/linux/man-pages/man2/getsid.2.html
+pub fn sys_getsid(pid: u32) -> SyscallRet {
+    let target = if pid == 0 {
+        // pid 为 0 时返回调用进程的 session ID。
+        current_task().ok_or(SysErrNo::ESRCH)?.process.clone()
+    } else {
+        Process::get_process_arc_by_pid(pid as usize).ok_or(SysErrNo::ESRCH)?
+    };
+    Ok(target.sid())
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/setsid.2.html
 pub fn sys_setsid() -> SyscallRet {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
     let mut meta = task.process.meta_lock();
+    if meta.pgid == task.pid() {
+        return Err(SysErrNo::EPERM);
+    }
+    meta.sid = task.pid();
     meta.pgid = task.pid();
-    debug!("[sys_setsid] pid {} new pgid {}", task.pid(), meta.pgid);
-    Ok(meta.pgid)
+    debug!(
+        "[sys_setsid] pid {} new sid {} pgid {}",
+        task.pid(),
+        meta.sid,
+        meta.pgid
+    );
+    Ok(meta.sid)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/getpgid.2.html
@@ -502,11 +522,18 @@ pub fn sys_setpgid(pid: u32, pgid: u32) -> SyscallRet {
     let target_pid = if pid == 0 { task.pid() } else { pid as usize };
     let new_pgid = if pgid == 0 { target_pid } else { pgid as usize };
     let target = Process::get_process_arc_by_pid(target_pid).ok_or(SysErrNo::ESRCH)?;
-    let parent_pid = target.meta_lock().parent_pid;
-    if target_pid != task.pid() && parent_pid != task.pid() {
+    let current_sid = task.process.sid();
+    let mut target_meta = target.meta_lock();
+    if target_pid != task.pid() && target_meta.parent_pid != task.pid() {
         return Err(SysErrNo::ESRCH);
     }
-    target.meta_lock().pgid = new_pgid;
-    debug!("[sys_setpgid] pid {} pgid {}", target_pid, new_pgid);
+    if target_meta.sid != current_sid || target_meta.sid == target_pid {
+        return Err(SysErrNo::EPERM);
+    }
+    target_meta.pgid = new_pgid;
+    debug!(
+        "[sys_setpgid] pid {} pgid {} sid {}",
+        target_pid, new_pgid, target_meta.sid
+    );
     Ok(0)
 }

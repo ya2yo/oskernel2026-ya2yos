@@ -95,15 +95,10 @@ impl Process {
         fs_info: Arc<FSInfo>,
         pid: usize,
         parent_pid: usize,
+        pgid: usize,
+        sid: usize,
     ) -> Arc<Self> {
         let id = pid;
-        let pgid = if parent_pid == 0 {
-            pid
-        } else {
-            Self::get_process_arc_by_pid(parent_pid)
-                .map(|parent| parent.meta_lock().pgid)
-                .unwrap_or(pid)
-        };
         let ret = Arc::new(Self {
             memory_set: ResourceSlot::new(memory_set),
             sig_table: ResourceSlot::new(sig_table),
@@ -115,6 +110,7 @@ impl Process {
                 children: Vec::new(),
                 parent_pid,
                 pgid,
+                sid,
                 child_exit_event: AtomicWaker::new(),
                 exit_signal: -1,
                 group_exit_code: None,
@@ -154,6 +150,10 @@ impl Process {
     /// 获取进程组 ID
     pub fn pgid(&self) -> usize {
         self.meta_lock().pgid
+    }
+    /// 获取会话 ID
+    pub fn sid(&self) -> usize {
+        self.meta_lock().sid
     }
     /// 获取 personality(2) 执行域。
     pub fn personality(&self) -> u32 {
@@ -343,6 +343,8 @@ pub struct ProcessMeta {
     pub parent_pid: usize,
     /// 进程组 ID，用于 waitpid(0)、waitpid(<-1)、setpgid/getpgid。
     pub pgid: usize,
+    /// 会话 ID，用于 getsid/setsid 和进程组会话边界检查。
+    pub sid: usize,
     /// 子进程退出事件，用于唤醒等待中的父进程
     pub child_exit_event: AtomicWaker,
     /// 进程退出时发送给父进程的信号（对应 Linux task_struct.exit_signal）

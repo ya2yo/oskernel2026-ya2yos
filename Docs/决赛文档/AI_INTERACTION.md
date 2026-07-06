@@ -362,3 +362,10 @@
 - **场景**：文件锁模块职责拆分、POSIX record lock/file lease/BSD flock 子模块化、双架构构建验证、文档完善
 - **描述**：用户指出 `os/src/syscall/fs/file_lock.rs` 功能不够单一，要求重构以提高内聚度。AI 将单体文件替换为 `file_lock/` 模块目录：`mod.rs` 作为门面保留原 `file_lock::...` API，`types.rs` 保存 `Flock` ABI，`posix.rs` 保存 POSIX record lock 与等待图，`lease.rs` 保存 file lease，`bsd_flock.rs` 保存 `flock(2)` 整文件锁。本次不改变 syscall 分发、函数签名或用户可见语义；`make` 和 `make TARGET_ARCH=riscv64` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
 - **关联 commit**：待提交
+
+#### session ID 独立字段与 getsid/setsid 语义完善（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：进程元数据 session ID 字段新增、`getsid/setsid/setpgid` 语义调整、syscall 分发接入、双架构构建验证、文档完善
+- **描述**：用户询问当前 session id 对应字段后，要求增加 `sid` 字段并同步调整内核。AI 确认原实现把 session ID 混用为 `ProcessMeta::pgid`，且 `GetSid` 枚举未接入分发；修复为新增 `ProcessMeta::sid`，initproc 设 `sid=pid`，fork/clone 继承调用者 `pgid/sid`，`getsid()` 返回目标进程 `sid`，`setsid()` 设置 `sid=pid` 与 `pgid=pid` 并拒绝进程组 leader，`setpgid()` 只修改 `pgid` 并保留 session 边界检查。`make` 和 `make TARGET_ARCH=riscv64` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
+- **关联 commit**：待提交

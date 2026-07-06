@@ -238,6 +238,8 @@ impl TaskControlBlock {
             Arc::new(FSInfo::new_initproc()),
             tid_handle.0,
             0,
+            tid_handle.0,
+            tid_handle.0,
         );
         let task = Self {
             tid: tid_handle,
@@ -513,10 +515,17 @@ impl TaskControlBlock {
             parent_capabilities,
             parent_nice,
             parent_comm,
+            parent_pgid,
+            parent_sid,
         );
         {
             let parent_inner = self.inner.lock();
             let parent_proc_inner = &self.process;
+            let parent_meta = parent_proc_inner.meta_lock();
+            parent_pgid = parent_meta.pgid;
+            parent_sid = parent_meta.sid;
+            parent_comm = parent_meta.comm.clone();
+            drop(parent_meta);
 
             // 保存父进程 memory_set Arc（fork 时需要读取父进程页面来 clone_area）
             parent_memory_set_arc = parent_proc_inner.memory_set_arc();
@@ -587,6 +596,8 @@ impl TaskControlBlock {
                     child_fs_info,
                     child_pid,
                     child_ppid,
+                    parent_pgid,
+                    parent_sid,
                 );
             }
 
@@ -602,7 +613,6 @@ impl TaskControlBlock {
             parent_sgid = parent_inner.saved_gid;
             parent_capabilities = parent_inner.capabilities;
             parent_nice = parent_inner.nice;
-            parent_comm = self.process.meta_lock().comm.clone();
         } // parent_inner, parent_proc_inner 在此释放
 
         // ==================== Phase 2: 构造子进程（不持有父进程锁）====================

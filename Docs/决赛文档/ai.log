@@ -3307,3 +3307,35 @@ make TARGET_ARCH=riscv64
 ```
 
 结果：默认 LoongArch64 构建通过；RISC-V 构建通过。构建中仍有既有 `smoltcp` vendor warning，与本次重构无关。
+
+
+## 2026-07-06: 增加独立 session ID 字段并修正 getsid/setsid
+
+### 用户需求
+
+用户询问当前内核 session id 对应哪个字段后，要求增加 `sid` 字段，并同步调整内核其他部分。
+
+### 分析
+
+AI 检查 `ProcessMeta`、`sys_getsid()`、`sys_setsid()`、`sys_setpgid()` 和 syscall 分发表后确认：当前内核只有 `pgid` 字段，`getsid()` 初版实现直接返回 `meta.pgid`，`setsid()` 也只设置 `pgid = pid`，因此 session ID 与 process group ID 被混用。同时 `GetSid = 156` 枚举已存在，但 syscall 分发尚未接入 `sys_getsid()`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/task/process/process.rs` | `ProcessMeta` 新增独立 `sid` 字段和 `Process::sid()` getter；`Process::new()` 改为显式接收 `pgid/sid` |
+| `os/src/task/task/task.rs` | initproc 初始化 `sid=pid`；非线程 clone/fork 继承调用者的 `pgid/sid`，避免 `CLONE_PARENT` 时从新父进程错误反推会话属性 |
+| `os/src/syscall/task/job.rs` | `sys_getsid()` 改查目标 `Process::sid()`；`sys_setsid()` 同时设置 `sid=pid` 与 `pgid=pid`，并拒绝进程组 leader；`sys_setpgid()` 仅修改 `pgid`，并增加 session leader/跨 session 检查 |
+| `os/src/syscall/mod.rs` | 接入 `Syscall::GetSid => sys_getsid(args[0])` 分发 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/task/process/process.rs os/src/task/task/task.rs os/src/syscall/task/job.rs os/src/syscall/mod.rs
+make
+make TARGET_ARCH=riscv64
+```
+
+结果：默认 LoongArch64 构建通过；RISC-V 构建通过。构建中仍有既有 `smoltcp` vendor warning，与本次修改无关。
