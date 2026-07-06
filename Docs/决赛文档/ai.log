@@ -3487,3 +3487,35 @@ timeout 120s make run > log.ans 2>&1
 ```
 
 结果：默认 LoongArch64 构建通过；最新 `log.ans` 中 musl 与 glibc `fcntl34` 均 `TPASS`，Summary 均为 `passed 1 failed 0 broken 0`。构建中仍有既有 `smoltcp` vendor warning，与本次修复无关。详见 [problem/fcntl34-ofd-lock-owner.md](./problem/fcntl34-ofd-lock-owner.md)。
+
+
+## 2026-07-06: 修复 fcntl35 pipe-max-size 初始容量限制
+
+### 用户需求
+
+用户要求分析 `log.ans` 并进行修复。
+
+### 分析
+
+AI 先筛选 `log.ans` 中的 `TFAIL/TBROK/Summary`，确认当前失败为 LTP `fcntl35`：非特权用户在测试把 `/proc/sys/fs/pipe-max-size` 写为 `4096` 后，新建 pipe 的 `F_GETPIPE_SZ` 仍返回 `65536`，而特权用户返回 `65536` 是正确行为。对照 LTP `fcntl35.c` 后确认，测试要求 `pipe-max-size` 限制非特权用户的新 pipe 初始容量，但不限制具备 `CAP_SYS_RESOURCE` 的任务。
+
+AI 检查 pipe 与 fcntl 实现后发现，`/proc/sys/fs/pipe-max-size` 只是启动期创建的普通文件，写入不会更新内核 pipe 策略；`make_pipe()` 也始终按固定默认容量创建 ring buffer。第一次补写入 hook 后，glibc 轮次通过但 musl 轮次在 `fclose()` 报 `EINVAL`，进一步定位为 stdio/writev flush 可能传入空 slice，sysctl 解析不应把空写当作非法输入。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/pipe/mod.rs` | 增加 `PIPE_MAX_SIZE_SYSCTL`、`pipe_max_size()`、`set_pipe_max_size()` 和 `CAP_SYS_RESOURCE` 判断；非特权任务创建 pipe 时按当前 sysctl 限制初始容量；`F_SETPIPE_SZ` 对非特权任务使用当前 sysctl 上限 |
+| `os/src/fs/files/pipe/ring_buffer.rs` | 增加 `PipeRingBuffer::with_capacity()`，支持创建 pipe 时传入初始容量 |
+| `os/src/fs/files/os_file.rs` | 普通文件写入 `/proc/sys/fs/pipe-max-size` 时同步更新 pipe sysctl；忽略空写 slice，兼容 musl stdio flush |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run
+```
+
+结果：默认 LoongArch64 构建通过；单跑 musl/glibc `fcntl35` 均 2 项 `TPASS`，Summary 均为 `passed 2 failed 0 broken 0`。构建中仍有既有 `smoltcp` vendor warning，与本次修复无关。详见 [problem/fcntl35-pipe-max-size-init.md](./problem/fcntl35-pipe-max-size-init.md)。

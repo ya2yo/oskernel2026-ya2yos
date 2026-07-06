@@ -24,10 +24,14 @@ pub(super) struct PipeRingBuffer {
 
 impl PipeRingBuffer {
     pub(super) fn new() -> Self {
+        Self::with_capacity(PIPE_DEFAULT_SIZE)
+    }
+
+    pub(super) fn with_capacity(capacity: usize) -> Self {
         Self {
             bufs: VecDeque::new(),
             bytes: 0,
-            capacity: PIPE_DEFAULT_SIZE,
+            capacity,
             write_end_count: 0,
             read_end_count: 0,
             read_waiters: VecDeque::new(),

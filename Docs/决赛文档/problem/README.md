@@ -27,6 +27,7 @@
 - [fanotify02 目录子项事件与 remove mask 语义](./fanotify02-event-on-child.md)
 - [fcntl01 F_GETFL/F_SETFL 文件状态标志修复](./fcntl01-f-getfl-setfl.md)
 - [fcntl DUPFD 与 pipe size 兼容性完善](./fcntl-dupfd-pipe-size.md)
+- [fcntl35 pipe-max-size 限制初始 pipe 容量](./fcntl35-pipe-max-size-init.md)
 - [fcntl11 POSIX record lock 区间语义修复](./fcntl11-record-lock.md)
 - [fcntl13 record lock EFAULT 优先级修复](./fcntl13-lock-efault-priority.md)
 - [fcntl14 POSIX record lock SEEK_CUR 与阻塞语义修复](./fcntl14-record-lock-seekcur-len.md)

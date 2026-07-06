@@ -397,3 +397,10 @@
 - **场景**：`log.ans` 分析、LTP `fcntl34` 源码对照、OFD lock owner 与 `F_OFD_SETLKW` 阻塞语义修复、LoongArch64 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fcntl34` 失败来自 OFD lock owner 错误复用进程 pid：同一进程内多个线程分别 `open()` 的 fd 被锁层视作同一 owner，无法互斥保护 `lseek(SEEK_END)+write()`，导致文件写入覆盖和校验阶段提前 EOF。修复为每个 `OSFile` 分配 open file description 级负数 owner，OFD fcntl 分支改用该 owner，`F_OFD_SETLKW` 走阻塞等待，并在最后一个 fd 关闭时释放 OFD 锁。`make` 通过，最新 `log.ans` 中 musl/glibc `fcntl34` 均 `TPASS`，summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl34-ofd-lock-owner.md](./problem/fcntl34-ofd-lock-owner.md)。
 - **关联 commit**：待提交
+
+#### LTP fcntl35 pipe-max-size 初始容量限制修复（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `fcntl35` 源码对照、pipe sysctl 状态同步、非特权 pipe 初始容量修复、LoongArch64 回归验证、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复。AI 确认 `fcntl35` 失败是 `/proc/sys/fs/pipe-max-size` 写入后只改变普通文件内容，pipe 子系统仍用固定 `65536` 初始容量，导致 `nobody` 新建 pipe 未被限制到 `4096`。修复为新增 pipe sysctl 原子状态，在 `/proc/sys/fs/pipe-max-size` 写入时同步更新；`make_pipe()` 根据当前任务是否具备 `CAP_SYS_RESOURCE` 决定是否应用 sysctl 上限，并让 `F_SETPIPE_SZ` 对非特权任务也使用当前上限。`make` 通过，LoongArch64 单跑 musl/glibc `fcntl35` 均 `passed 2 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl35-pipe-max-size-init.md](./problem/fcntl35-pipe-max-size-init.md)。
+- **关联 commit**：待提交

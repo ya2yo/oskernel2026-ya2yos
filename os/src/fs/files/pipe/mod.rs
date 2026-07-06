@@ -21,11 +21,37 @@ use crate::signal::{
 use crate::task::current_task;
 use crate::utils::{page_round_up, SysErrNo};
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use linux_raw_sys::general::CAP_SYS_RESOURCE;
 use spin::{Mutex, MutexGuard};
 
 pub const PIPE_DEFAULT_SIZE: usize = 65536;
 pub const PIPE_MAX_SIZE: usize = 65536;
+
+static PIPE_MAX_SIZE_SYSCTL: AtomicUsize = AtomicUsize::new(PIPE_MAX_SIZE);
+
+fn has_cap_sys_resource() -> bool {
+    current_task().map_or(false, |task| {
+        let inner = task.inner_lock();
+        let cap = CAP_SYS_RESOURCE as usize;
+        let word = cap / 32;
+        let bit = cap % 32;
+        word < inner.capabilities.effective.len()
+            && (inner.capabilities.effective[word] & (1u32 << bit)) != 0
+    })
+}
+
+pub fn pipe_max_size() -> usize {
+    PIPE_MAX_SIZE_SYSCTL.load(Ordering::Relaxed)
+}
+
+pub fn set_pipe_max_size(value: usize) -> Result<(), SysErrNo> {
+    if value < PAGE_SIZE || value > PIPE_MAX_SIZE {
+        return Err(SysErrNo::EINVAL);
+    }
+    PIPE_MAX_SIZE_SYSCTL.store(page_round_up(value), Ordering::Relaxed);
+    Ok(())
+}
 
 pub struct Pipe {
     readable: bool,
@@ -111,7 +137,7 @@ impl Pipe {
         } else {
             page_round_up(requested)
         };
-        if capacity > PIPE_MAX_SIZE {
+        if capacity > PIPE_MAX_SIZE || (!has_cap_sys_resource() && capacity > pipe_max_size()) {
             return Err(SysErrNo::EPERM);
         }
 
@@ -172,7 +198,12 @@ impl Pipe {
 
 /// 创建一个管道并返回管道的读端和写端 (read_end, write_end)
 pub fn make_pipe() -> (Arc<Pipe>, Arc<Pipe>) {
-    let buffer = Arc::new(Mutex::new(PipeRingBuffer::new()));
+    let capacity = if has_cap_sys_resource() {
+        PIPE_DEFAULT_SIZE
+    } else {
+        PIPE_DEFAULT_SIZE.min(pipe_max_size())
+    };
+    let buffer = Arc::new(Mutex::new(PipeRingBuffer::with_capacity(capacity)));
     let read_end = Arc::new(Pipe::read_end_with_buffer(buffer.clone()));
     let write_end = Arc::new(Pipe::write_end_with_buffer(buffer.clone()));
     (read_end, write_end)

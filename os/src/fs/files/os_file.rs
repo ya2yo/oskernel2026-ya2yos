@@ -9,7 +9,10 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 
-use super::super::{File, Inode};
+use super::{
+    super::{File, Inode},
+    pipe::set_pipe_max_size,
+};
 use alloc::{collections::BTreeMap, string::String, sync::Arc};
 use core::sync::atomic::{AtomicI32, Ordering};
 use linux_raw_sys::{
@@ -22,6 +25,7 @@ static WRITE_OPEN_COUNTS: Lazy<Mutex<BTreeMap<String, usize>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
 static FILE_FLAGS: Lazy<Mutex<BTreeMap<String, u32>>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
 static NEXT_OFD_LOCK_OWNER: AtomicI32 = AtomicI32::new(1);
+const PIPE_MAX_SIZE_PATH: &str = "/proc/sys/fs/pipe-max-size";
 
 fn alloc_ofd_lock_owner() -> i32 {
     -NEXT_OFD_LOCK_OWNER.fetch_add(1, Ordering::Relaxed)
@@ -53,6 +57,30 @@ fn set_file_flags(path: &str, flags: u32) {
     } else {
         attrs.insert(String::from(path), flags);
     }
+}
+
+fn sync_pipe_max_size_sysctl(path: &str, bytes: &[u8]) -> Result<(), SysErrNo> {
+    if path != PIPE_MAX_SIZE_PATH {
+        return Ok(());
+    }
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let end = bytes
+        .iter()
+        .position(|b| !b.is_ascii_digit())
+        .unwrap_or(bytes.len());
+    if end == 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    let mut value = 0usize;
+    for &byte in &bytes[..end] {
+        value = value
+            .checked_mul(10)
+            .and_then(|value| value.checked_add((byte - b'0') as usize))
+            .ok_or(SysErrNo::EINVAL)?;
+    }
+    set_pipe_max_size(value)
 }
 
 fn is_immutable_path(path: &str) -> bool {
@@ -193,7 +221,8 @@ impl File for OSFile {
 
     fn write(&self, buf: UserBuffer) -> SyscallRet {
         let mut inner = self.inner.lock();
-        if is_immutable_path(&self.inode.path()) {
+        let path = self.inode.path();
+        if is_immutable_path(&path) {
             return Err(SysErrNo::EPERM);
         }
         if self.append {
@@ -201,15 +230,16 @@ impl File for OSFile {
         }
         let mut total_write_size = 0usize;
         for slice in buf.buffers.iter() {
+            sync_pipe_max_size_sysctl(&path, slice)?;
             let write_offset = inner.offset;
             let write_size = self.inode.write_at(inner.offset, *slice)?;
             assert_eq!(write_size, slice.len());
-            FILE_PAGE_CACHE.invalidate_path_range(&self.inode.path(), write_offset, write_size);
+            FILE_PAGE_CACHE.invalidate_path_range(&path, write_offset, write_size);
             inner.offset += write_size;
             total_write_size += write_size;
         }
         if total_write_size > 0 && !self.suppress_fanotify && !fanotify_events_suppressed() {
-            notify_path_event(&self.inode.path(), FAN_MODIFY);
+            notify_path_event(&path, FAN_MODIFY);
         }
         Ok(total_write_size)
     }
