@@ -355,3 +355,10 @@
 - **场景**：`log.ans` 分析、LTP `fcntl23` 源码对照、`F_SETLEASE/F_GETLEASE` 基础租约状态实现、LoongArch64 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fcntl23` 失败来自 `F_SETLEASE` stub 固定返回 `EAGAIN`，导致只读普通文件上的无冲突读租约无法建立。修复为在 `file_lock` 层新增按 path/pid 管理的最小 file lease 表，支持 `F_RDLCK/F_WRLCK/F_UNLCK` 设置、`F_GETLEASE` 查询、读租约可写 fd 的 `EAGAIN` 校验，以及 close/close_range/exit 清理。`make` 通过，LoongArch64 单跑 musl/glibc `fcntl23` 均 `TPASS`，summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl23-file-lease.md](./problem/fcntl23-file-lease.md)。
 - **关联 commit**：待提交
+
+#### file_lock 模块高内聚重构（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：文件锁模块职责拆分、POSIX record lock/file lease/BSD flock 子模块化、双架构构建验证、文档完善
+- **描述**：用户指出 `os/src/syscall/fs/file_lock.rs` 功能不够单一，要求重构以提高内聚度。AI 将单体文件替换为 `file_lock/` 模块目录：`mod.rs` 作为门面保留原 `file_lock::...` API，`types.rs` 保存 `Flock` ABI，`posix.rs` 保存 POSIX record lock 与等待图，`lease.rs` 保存 file lease，`bsd_flock.rs` 保存 `flock(2)` 整文件锁。本次不改变 syscall 分发、函数签名或用户可见语义；`make` 和 `make TARGET_ARCH=riscv64` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
+- **关联 commit**：待提交

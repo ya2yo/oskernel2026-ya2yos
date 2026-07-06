@@ -3271,3 +3271,39 @@ broken   0
 skipped  0
 warnings 0
 ```
+
+
+## 2026-07-06: 重构 file_lock 模块以提高内聚度
+
+### 用户需求
+
+用户指出 `os/src/syscall/fs/file_lock.rs` 当前功能不够单一，要求进行重构，实现高内聚。
+
+### 分析
+
+AI 检查 `file_lock.rs` 和调用点后确认，该文件同时承载四类职责：用户态 `struct flock` ABI 编解码、POSIX record lock 的区间/等待/死锁逻辑、`F_SETLEASE/F_GETLEASE` 文件租约状态，以及 BSD `flock(2)` 整文件锁。外部调用集中在 `fd_ops.rs` 与 `task/mod.rs`，均通过 `file_lock::...` 门面访问，因此可以在不改 syscall 调用方的情况下拆分内部实现。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/file_lock.rs` | 删除单体实现，替换为 `file_lock/` 模块目录 |
+| `os/src/syscall/fs/file_lock/mod.rs` | 新增门面模块，统一 re-export 原有对外 API |
+| `os/src/syscall/fs/file_lock/types.rs` | 放置 `Flock` ABI 类型和用户态字节转换 |
+| `os/src/syscall/fs/file_lock/posix.rs` | 放置 POSIX record lock、等待图、阻塞 waker 和 close/exit 清理逻辑 |
+| `os/src/syscall/fs/file_lock/lease.rs` | 放置 file lease 状态表、设置/查询/释放接口 |
+| `os/src/syscall/fs/file_lock/bsd_flock.rs` | 放置 `flock(2)` 整文件锁状态表和 waker |
+
+本次为结构重构，保持 `file_lock::setlk/getlk/conflicting_owners/...`、`set_file_lease/get_file_lease/...`、`flock_try_lock/flock_unlock/...` 等外部函数名不变，不改变 syscall 号、参数解析或用户可见语义。
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/syscall/fs/file_lock/mod.rs os/src/syscall/fs/file_lock/types.rs os/src/syscall/fs/file_lock/posix.rs os/src/syscall/fs/file_lock/lease.rs os/src/syscall/fs/file_lock/bsd_flock.rs
+make
+make TARGET_ARCH=riscv64
+```
+
+结果：默认 LoongArch64 构建通过；RISC-V 构建通过。构建中仍有既有 `smoltcp` vendor warning，与本次重构无关。

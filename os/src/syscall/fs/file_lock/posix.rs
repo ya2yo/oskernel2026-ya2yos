@@ -1,4 +1,4 @@
-//! POSIX 文件记录锁（advisory record locking）实现
+//! POSIX 文件记录锁（advisory record locking）实现。
 //!
 //! 参考:
 //! - linux-7.0/fs/locks.c
@@ -8,82 +8,21 @@
 //! 当前实现为简化的全局锁表，按 inode 路径管理锁列表，
 //! 支持 F_SETLK / F_SETLKW / F_GETLK 的基本语义。
 
-use super::fcntl::{
-    F_RDLCK, F_UNLCK, F_WRLCK, LOCK_EX, LOCK_SH, LOCK_UN, SEEK_CUR, SEEK_END, SEEK_SET,
-};
+use super::types::Flock;
+use crate::syscall::fs::fcntl::{F_RDLCK, F_UNLCK, F_WRLCK, SEEK_CUR, SEEK_END, SEEK_SET};
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::task::Waker;
 use futures_util::task::AtomicWaker;
-use spin::RwLock;
+use spin::{Lazy, RwLock};
 
-/// 与 Linux struct flock 布局兼容（64 位平台）
-///
-/// C 布局:
-/// ```c
-/// struct flock {
-///     short l_type;     // offset 0
-///     short l_whence;   // offset 2
-///     off_t l_start;    // offset 8  (padding after l_whence)
-///     off_t l_len;      // offset 16
-///     pid_t l_pid;      // offset 24
-/// };
-/// ```
-/// 总大小 = 32 字节（尾部 padding 到 8 字节对齐）
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Flock {
-    pub l_type: i16,
-    pub l_whence: i16,
-    pub l_start: i64,
-    pub l_len: i64,
-    pub l_pid: i32,
-}
-
-impl Flock {
-    /// 从原始字节构造（从用户空间拷贝后使用）
-    /// 期望 28 字节（不含尾部 padding）
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 28 {
-            return None;
-        }
-        Some(Flock {
-            l_type: i16::from_ne_bytes([bytes[0], bytes[1]]),
-            l_whence: i16::from_ne_bytes([bytes[2], bytes[3]]),
-            // bytes[4..8] 为 padding，跳过
-            l_start: i64::from_ne_bytes([
-                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
-                bytes[15],
-            ]),
-            l_len: i64::from_ne_bytes([
-                bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22],
-                bytes[23],
-            ]),
-            l_pid: i32::from_ne_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
-        })
-    }
-
-    /// 将自身写入字节数组（用于 copy_to_user）
-    pub fn to_bytes(&self) -> [u8; 32] {
-        let mut bytes = [0u8; 32];
-        bytes[0..2].copy_from_slice(&self.l_type.to_ne_bytes());
-        bytes[2..4].copy_from_slice(&self.l_whence.to_ne_bytes());
-        // bytes[4..8] 保持为 0 (padding)
-        bytes[8..16].copy_from_slice(&self.l_start.to_ne_bytes());
-        bytes[16..24].copy_from_slice(&self.l_len.to_ne_bytes());
-        bytes[24..28].copy_from_slice(&self.l_pid.to_ne_bytes());
-        // 部分 libc/架构组合把 l_pid 放在尾部 padding 位置，双写可兼容两种布局。
-        bytes[28..32].copy_from_slice(&self.l_pid.to_ne_bytes());
-        bytes
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 内部锁结构（使用绝对坐标）
-// ---------------------------------------------------------------------------
-
+// 内部 POSIX 记录锁条目。
+//
+// 用户态 flock 的 l_start/l_len 可能依赖 SEEK_CUR/SEEK_END，也允许负长度。
+// 进入全局锁表前统一转换为 [l_start, l_end] 闭区间，便于后续冲突检测、
+// 裁剪和合并。l_pid 使用进程 pid，表示 POSIX record lock 的拥有者。
 #[derive(Debug, Clone)]
 struct PosixLock {
     l_type: i16,
@@ -92,31 +31,23 @@ struct PosixLock {
     l_pid: i32,
 }
 
-#[derive(Debug, Clone)]
-struct FileLease {
-    l_type: i16,
-    l_pid: i32,
-}
-
-// ---------------------------------------------------------------------------
-// 全局文件锁注册表
-// ---------------------------------------------------------------------------
-
-use spin::Lazy;
+// 全局 POSIX 记录锁注册表。
+//
+// 当前 Ya2yOS 没有完整 inode 对象级锁管理，这里用 inode path 作为稳定键：
+// - FILE_LOCKS: fcntl(F_SETLK/F_SETLKW/F_GETLK) 的字节范围锁。
+// - POSIX_LOCK_WAITERS: 每个文件一个 waker，用于唤醒阻塞的 F_SETLKW。
+// - POSIX_LOCK_WAITS: owner_pid -> 正在等待的持锁 pid 列表，用于死锁检测。
 static FILE_LOCKS: Lazy<RwLock<BTreeMap<String, Vec<PosixLock>>>> =
-    Lazy::new(|| RwLock::new(BTreeMap::new()));
-static FILE_LEASES: Lazy<RwLock<BTreeMap<String, Vec<FileLease>>>> =
     Lazy::new(|| RwLock::new(BTreeMap::new()));
 static POSIX_LOCK_WAITERS: Lazy<RwLock<BTreeMap<String, AtomicWaker>>> =
     Lazy::new(|| RwLock::new(BTreeMap::new()));
 static POSIX_LOCK_WAITS: Lazy<RwLock<BTreeMap<i32, Vec<i32>>>> =
     Lazy::new(|| RwLock::new(BTreeMap::new()));
 
-// ---------------------------------------------------------------------------
-// 辅助函数
-// ---------------------------------------------------------------------------
-
 /// 将 flock 中的相对/基于 whence 的偏移转换为绝对字节区间
+///
+/// Linux 语义中 l_len == 0 表示从起点一直到 EOF；l_len < 0 表示锁区间
+/// 反向延伸到起点之前。返回值统一为闭区间，右端为 i64::MAX 时表示 EOF。
 fn to_absolute(fl: &Flock, file_size: i64, current_offset: i64) -> Result<(i64, i64), SysErrNo> {
     let start = match fl.l_whence {
         SEEK_SET => fl.l_start,
@@ -162,6 +93,10 @@ fn ranges_touch_or_overlap(start1: i64, end1: i64, start2: i64, end2: i64) -> bo
     start1 <= end2.saturating_add(1) && start2 <= end1.saturating_add(1)
 }
 
+/// 从同一 owner 已有锁中裁掉 [start, end] 区间。
+///
+/// POSIX 记录锁允许同一进程重复设置、转换或释放部分区间。设置新锁前先把
+/// 与目标区间重叠的旧锁切成左右两段，之后再追加新锁或完成解锁。
 fn split_owned_lock(existing: &PosixLock, start: i64, end: i64, out: &mut Vec<PosixLock>) {
     if existing.l_start < start {
         out.push(PosixLock {
@@ -182,6 +117,10 @@ fn split_owned_lock(existing: &PosixLock, start: i64, end: i64, out: &mut Vec<Po
     }
 }
 
+/// 归一化同一文件上的锁列表。
+///
+/// 拆分/追加后可能出现同一 owner、同一类型的相邻区间；合并它们可以保持
+/// 锁表紧凑，也让后续 F_GETLK 返回更接近 Linux 的最小冲突区间。
 fn normalize_locks(locks: &mut Vec<PosixLock>) {
     locks.sort_by_key(|lock| (lock.l_start, lock.l_end, lock.l_pid, lock.l_type));
 
@@ -201,6 +140,7 @@ fn normalize_locks(locks: &mut Vec<PosixLock>) {
     *locks = merged;
 }
 
+/// 在已持有 FILE_LOCKS 读/写锁时查找 new_lock 会等待的其它 owner。
 fn conflicting_owners_locked(entry: &[PosixLock], new_lock: &PosixLock) -> Vec<i32> {
     let mut owners = Vec::new();
     for existing in entry.iter() {
@@ -213,6 +153,10 @@ fn conflicting_owners_locked(entry: &[PosixLock], new_lock: &PosixLock) -> Vec<i
     owners
 }
 
+/// 查询指定 flock 请求当前会被哪些进程阻塞。
+///
+/// F_SETLKW 的阻塞路径先用该结果构造等待图，再判断是否形成环路。
+/// 非法 flock 区间在这里按“无可记录阻塞者”处理，实际错误仍由 setlk 返回。
 pub fn conflicting_owners(
     path: &str,
     fl: &Flock,
@@ -240,6 +184,10 @@ pub fn conflicting_owners(
         .unwrap_or_default()
 }
 
+/// 在等待图中检查 current 是否能沿等待边到达 target。
+///
+/// 若 owner_pid 等待 A，而 A 又直接或间接等待 owner_pid，则 F_SETLKW
+/// 应返回 EDEADLK，而不是进入永久等待。
 fn wait_path_reaches(
     graph: &BTreeMap<i32, Vec<i32>>,
     current: i32,
@@ -263,6 +211,7 @@ fn wait_path_reaches(
         .unwrap_or(false)
 }
 
+/// 判断 owner_pid 等待 waiting_for 中任意进程时是否会形成死锁环。
 pub fn would_deadlock(owner_pid: i32, waiting_for: &[i32]) -> bool {
     let graph = POSIX_LOCK_WAITS.read();
     waiting_for.iter().any(|pid| {
@@ -271,6 +220,7 @@ pub fn would_deadlock(owner_pid: i32, waiting_for: &[i32]) -> bool {
     })
 }
 
+/// 更新一个 owner 当前等待的持锁者集合。
 pub fn record_wait(owner_pid: i32, waiting_for: &[i32]) {
     let mut graph = POSIX_LOCK_WAITS.write();
     if waiting_for.is_empty() {
@@ -280,16 +230,25 @@ pub fn record_wait(owner_pid: i32, waiting_for: &[i32]) {
     }
 }
 
+/// 清理 owner 的等待图边。
+///
+/// 加锁成功、加锁失败退出、文件关闭或进程退出时都需要调用，避免旧等待边
+/// 误导后续死锁检测。
 pub fn clear_wait(owner_pid: i32) {
     POSIX_LOCK_WAITS.write().remove(&owner_pid);
 }
 
+/// 唤醒等待某个 inode path 的阻塞 POSIX 锁请求。
 fn wake_posix_waiters(path: &str) {
     if let Some(waker) = POSIX_LOCK_WAITERS.read().get(path) {
         waker.wake();
     }
 }
 
+/// 注册 F_SETLKW 当前 task 的 waker。
+///
+/// AtomicWaker 只保留最近一次注册的 waker；这符合当前简化模型，释放锁时
+/// 唤醒等待者重新进入 setlk 尝试。
 pub fn register_posix_waker(path: &str, waker: &Waker) {
     let mut waiters = POSIX_LOCK_WAITERS.write();
     waiters
@@ -298,6 +257,9 @@ pub fn register_posix_waker(path: &str, waker: &Waker) {
         .register(waker);
 }
 
+/// 释放指定文件上 owner_pid 持有的全部 POSIX 记录锁。
+///
+/// 用于关闭 fd 时的清理。若实际移除了锁，唤醒同一文件上的阻塞加锁者。
 pub fn release_posix_locks(path: &str, owner_pid: i32) {
     let mut changed = false;
     {
@@ -317,16 +279,9 @@ pub fn release_posix_locks(path: &str, owner_pid: i32) {
     }
 }
 
-pub fn release_file_leases(path: &str, owner_pid: i32) {
-    let mut leases = FILE_LEASES.write();
-    if let Some(entry) = leases.get_mut(path) {
-        entry.retain(|lease| lease.l_pid != owner_pid);
-        if entry.is_empty() {
-            leases.remove(path);
-        }
-    }
-}
-
+/// 释放 owner_pid 在所有文件上持有的 POSIX 记录锁。
+///
+/// 用于进程退出路径；需要记录发生变化的 path，锁表写锁释放后再逐一唤醒。
 pub fn release_posix_locks_by_owner(owner_pid: i32) {
     let mut changed_paths = Vec::new();
     {
@@ -345,76 +300,6 @@ pub fn release_posix_locks_by_owner(owner_pid: i32) {
         wake_posix_waiters(&path);
     }
 }
-
-pub fn release_file_leases_by_owner(owner_pid: i32) {
-    let mut leases = FILE_LEASES.write();
-    for entry in leases.values_mut() {
-        entry.retain(|lease| lease.l_pid != owner_pid);
-    }
-    leases.retain(|_, entry| !entry.is_empty());
-}
-
-fn file_leases_conflict(existing: &FileLease, new_lease: &FileLease) -> bool {
-    existing.l_pid != new_lease.l_pid && (existing.l_type == F_WRLCK || new_lease.l_type == F_WRLCK)
-}
-
-pub fn set_file_lease(
-    path: &str,
-    lease_type: i16,
-    owner_pid: i32,
-    fd_opened_for_write: bool,
-) -> SyscallRet {
-    if lease_type != F_RDLCK && lease_type != F_WRLCK && lease_type != F_UNLCK {
-        return Err(SysErrNo::EINVAL);
-    }
-
-    if lease_type == F_RDLCK && fd_opened_for_write {
-        return Err(SysErrNo::EAGAIN);
-    }
-
-    let mut leases = FILE_LEASES.write();
-    let entry = leases.entry(String::from(path)).or_insert_with(Vec::new);
-
-    if lease_type == F_UNLCK {
-        entry.retain(|lease| lease.l_pid != owner_pid);
-        if entry.is_empty() {
-            leases.remove(path);
-        }
-        return Ok(0);
-    }
-
-    let new_lease = FileLease {
-        l_type: lease_type,
-        l_pid: owner_pid,
-    };
-    if entry
-        .iter()
-        .any(|existing| file_leases_conflict(existing, &new_lease))
-    {
-        return Err(SysErrNo::EAGAIN);
-    }
-
-    if let Some(existing) = entry.iter_mut().find(|lease| lease.l_pid == owner_pid) {
-        existing.l_type = lease_type;
-    } else {
-        entry.push(new_lease);
-    }
-
-    Ok(0)
-}
-
-pub fn get_file_lease(path: &str, owner_pid: i32) -> i16 {
-    let leases = FILE_LEASES.read();
-    leases
-        .get(path)
-        .and_then(|entry| entry.iter().find(|lease| lease.l_pid == owner_pid))
-        .map(|lease| lease.l_type)
-        .unwrap_or(F_UNLCK)
-}
-
-// ---------------------------------------------------------------------------
-// 公共接口
-// ---------------------------------------------------------------------------
 
 /// F_SETLK / F_SETLKW 的处理核心
 ///
@@ -456,6 +341,8 @@ pub fn setlk(
         }
     }
 
+    // 同一进程设置新锁或解锁时，目标区间会覆盖原有区间。先把重叠旧锁裁掉，
+    // 再根据 l_type 决定是追加新锁还是保持裁剪结果作为解锁结果。
     let mut updated = Vec::new();
     for existing in entry.iter() {
         if existing.l_pid == owner_pid
@@ -471,9 +358,11 @@ pub fn setlk(
     if fl.l_type != F_UNLCK {
         entry.push(new_lock);
     }
+    // 裁剪和追加后合并相邻同类区间，避免锁表碎片化。
     normalize_locks(entry);
     drop(locks);
 
+    // 成功设置/释放锁后，阻塞等待者需要重新检查冲突状态。
     wake_posix_waiters(path);
 
     Ok(0)
@@ -507,12 +396,14 @@ pub fn getlk(
 
     let locks = FILE_LOCKS.read();
     if let Some(entry) = locks.get(path) {
+        // F_GETLK 只报告会阻塞当前请求的其它 owner；当前 owner 自己的锁不冲突。
         let conflict = entry
             .iter()
             .filter(|existing| existing.l_pid != owner_pid && locks_conflict(existing, &probe))
             .min_by_key(|existing| (existing.l_start, existing.l_end));
 
         if let Some(existing) = conflict {
+            // 返回值使用 SEEK_SET 坐标，让用户态拿到绝对冲突区间。
             fl.l_type = existing.l_type;
             fl.l_pid = existing.l_pid;
             fl.l_start = existing.l_start;
@@ -529,86 +420,4 @@ pub fn getlk(
     // 无冲突锁
     fl.l_type = F_UNLCK;
     Ok(0)
-}
-
-// ---------------------------------------------------------------------------
-// flock() 锁实现
-//
-// 与 fcntl 记录锁不同，flock 锁：
-// - 作用于整个文件（非字节范围）
-// - 与打开的文件描述关联（非进程）
-// - 同一文件描述的重复加锁会进行锁转换
-// - LOCK_NB 未设置时阻塞等待直到锁可用
-// - 文件关闭时自动释放（当前简化实现未自动释放）
-// ---------------------------------------------------------------------------
-
-/// flock 锁条目：记录锁类型与持有者（打开的文件描述）
-#[derive(Debug, Clone)]
-struct FlockOwner {
-    lock_type: i32,
-    file_ptr: usize, // Arc<OSFile> 数据指针，唯一标识打开的文件描述
-}
-
-/// 每个 inode 的 flock 锁状态
-struct FlockInodeState {
-    locks: Vec<FlockOwner>,
-    waker: AtomicWaker, // 唤醒阻塞等待的 flock 调用者
-}
-
-/// 全局 flock 锁表，按 inode 路径索引
-static FLOCK_TABLE: Lazy<RwLock<BTreeMap<String, FlockInodeState>>> =
-    Lazy::new(|| RwLock::new(BTreeMap::new()));
-
-/// 非阻塞尝试获取 flock 锁
-///
-/// 若成功则返回 `Ok(())`；若存在冲突锁则返回 `Err(EAGAIN)`。
-/// 同一文件描述已有锁时自动进行锁类型转换（先移除旧锁）。
-pub fn flock_try_lock(path: &str, file_ptr: usize, lock_type: i32) -> Result<(), SysErrNo> {
-    let mut table = FLOCK_TABLE.write();
-    let state = table
-        .entry(String::from(path))
-        .or_insert_with(|| FlockInodeState {
-            locks: Vec::new(),
-            waker: AtomicWaker::new(),
-        });
-
-    // 先移除同一文件描述持有的旧锁（锁类型转换）
-    state.locks.retain(|e| e.file_ptr != file_ptr);
-
-    // 冲突检测：
-    // - LOCK_EX 与任何已有锁冲突
-    // - LOCK_SH 仅与已有 LOCK_EX 冲突
-    for existing in state.locks.iter() {
-        if existing.lock_type == LOCK_EX || lock_type == LOCK_EX {
-            return Err(SysErrNo::EAGAIN);
-        }
-    }
-
-    // 无冲突，添加新锁
-    state.locks.push(FlockOwner {
-        lock_type,
-        file_ptr,
-    });
-    Ok(())
-}
-
-/// 释放 flock 锁并唤醒阻塞等待者
-///
-/// 移除该文件描述在此 inode 上持有的所有锁，然后唤醒可能阻塞的 waiter。
-pub fn flock_unlock(path: &str, file_ptr: usize) {
-    let mut table = FLOCK_TABLE.write();
-    if let Some(state) = table.get_mut(path) {
-        state.locks.retain(|e| e.file_ptr != file_ptr);
-        state.waker.wake();
-    }
-}
-
-/// 为指定 inode 注册 waker（由阻塞等待的 poll_fn 调用）
-///
-/// 在 `flock_try_lock` 返回 `EAGAIN` 后调用，确保在锁释放时能被唤醒。
-pub fn flock_register_waker(path: &str, waker: &Waker) {
-    let table = FLOCK_TABLE.read();
-    if let Some(state) = table.get(path) {
-        state.waker.register(waker);
-    }
 }
