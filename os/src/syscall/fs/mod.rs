@@ -1,13 +1,15 @@
 mod ctl;
 mod event;
+mod fanotify;
 mod fcntl;
 mod fd_ops;
 mod file_lock;
 mod handle;
-mod io;
+mod misc;
 mod mount;
 mod mqueue;
 mod pipe;
+mod space;
 mod stat;
 mod xattr;
 
@@ -30,8 +32,8 @@ const IN_CLOEXEC: u32 = OpenFlags::O_CLOEXEC.bits();
 const IN_NONBLOCK: u32 = OpenFlags::O_NONBLOCK.bits();
 
 pub use self::{
-    ctl::*, event::*, fcntl::*, fd_ops::*, handle::*, io::*, mount::*, mqueue::*, pipe::*, stat::*,
-    xattr::*,
+    ctl::*, event::*, fanotify::*, fcntl::*, fd_ops::*, handle::*, misc::*, mount::*, mqueue::*,
+    pipe::*, space::*, stat::*, xattr::*,
 };
 
 fn dummyfd_create() -> SyscallRet {
