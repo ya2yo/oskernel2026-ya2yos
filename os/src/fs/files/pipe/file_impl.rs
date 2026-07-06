@@ -1,5 +1,5 @@
 use super::Pipe;
-use crate::fs::{File, Kstat, StMode};
+use crate::fs::{FasyncOwner, File, Kstat, StMode};
 use crate::mm::{copy_to_user, UserBuffer};
 use crate::signal::check_if_any_sig_for_current_task;
 use crate::syscall::PollEvents;
@@ -154,7 +154,12 @@ impl File for Pipe {
             write_size = min(loop_write, length);
             ring_buffer.write_bytes(&buf.read(write_size), write_size);
         }
+        let async_owner = ring_buffer.async_owner;
         ring_buffer.wake_reader();
+        drop(ring_buffer);
+        if write_size > 0 {
+            self.notify_async_read_ready(async_owner);
+        }
         Ok(write_size)
     }
 
@@ -168,7 +173,12 @@ impl File for Pipe {
             return Err(SysErrNo::ENOBUFS);
         }
         ring_buffer.write_bytes(buf, buf.len());
+        let async_owner = ring_buffer.async_owner;
         ring_buffer.wake_reader();
+        drop(ring_buffer);
+        if !buf.is_empty() {
+            self.notify_async_read_ready(async_owner);
+        }
         Ok(buf.len())
     }
 
@@ -187,6 +197,15 @@ impl File for Pipe {
     fn set_nonblocking(&self, nonblocking: bool) -> Result<(), SysErrNo> {
         self.nonblocking.store(nonblocking, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn set_fasync_owner(&self, owner: FasyncOwner) -> Result<(), SysErrNo> {
+        self.set_async_owner(owner);
+        Ok(())
+    }
+
+    fn fasync_owner(&self) -> FasyncOwner {
+        self.async_owner()
     }
 
     fn ioctl(&self, cmd: u32, arg: usize, memory_set: &crate::mm::MemorySet) -> SyscallRet {

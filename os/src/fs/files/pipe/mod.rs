@@ -14,8 +14,10 @@ pub use fifo::open_fifo;
 
 use self::ring_buffer::PipeRingBuffer;
 use crate::arch::memory_layout::PAGE_SIZE;
-use crate::fs::File;
-use crate::signal::{send_signal_to_thread, SigSet};
+use crate::fs::{FasyncOwner, File};
+use crate::signal::{
+    send_signal_to_process_group, send_signal_to_thread, send_signal_to_thread_group, SigSet, SIGIO,
+};
 use crate::task::current_task;
 use crate::utils::{page_round_up, SysErrNo};
 use alloc::sync::Arc;
@@ -128,6 +130,34 @@ impl Pipe {
 
     pub fn all_write_ends_closed(&self) -> bool {
         self.inner_lock().all_write_ends_closed()
+    }
+
+    pub(super) fn set_async_owner(&self, owner: FasyncOwner) {
+        self.inner_lock().async_owner = owner;
+    }
+
+    pub(super) fn async_owner(&self) -> FasyncOwner {
+        self.inner_lock().async_owner
+    }
+
+    pub(super) fn notify_async_read_ready(&self, owner: FasyncOwner) {
+        if owner.pid <= 0 {
+            return;
+        }
+        let signo = if owner.signal == 0 {
+            SIGIO
+        } else {
+            owner.signal as usize
+        };
+        let sig = SigSet::from_sig(signo);
+        match owner.owner_type {
+            0 => send_signal_to_thread(owner.pid as usize, sig),
+            1 => {
+                let _ = send_signal_to_thread_group(owner.pid as usize, sig);
+            }
+            2 => send_signal_to_process_group(owner.pid as usize, sig),
+            _ => {}
+        }
     }
 
     /// Linux pipe 写入无读端时需要同时发送 SIGPIPE，并把 syscall 结果报告为 EPIPE。

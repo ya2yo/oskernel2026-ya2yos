@@ -3273,6 +3273,53 @@ warnings 0
 ```
 
 
+## 2026-07-06: 修复 fcntl31 async I/O owner 与信号通知
+
+### 用户需求
+
+用户要求分析 `log.ans` 并修改；修复后用户说明新的结果已写入 `log.ans`，要求开始写文档。
+
+### 分析
+
+AI 过滤 `log.ans` 后确认真实失败集中在 LTP `fcntl31`：musl 与 glibc 两轮均在 `fcntl(test_fd, F_GETOWN_EX, &orig_own_ex)` 返回 `EINVAL`，Summary 为 `passed 0 failed 1 broken 0`。
+
+对照 LTP `fcntl31.c` 后确认，该用例不仅要求 `F_GETOWN_EX/F_SETOWN_EX` 成功，还会在 pipe 读端设置 `O_ASYNC`、owner 和 `F_SETSIG(SIGUSR1)`，随后由子进程写 pipe，父进程通过 `sigtimedwait()` 校验收到的是 `SIGUSR1` 而不是默认 `SIGIO`。原内核对 `F_SETOWN_EX/F_GETOWN_EX` 直接返回 `EINVAL`，`F_SETOWN/F_SETSIG` 也没有保存状态，pipe 写入时只唤醒 reader，不投递 async I/O 信号。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/vfs.rs` | 新增 `FasyncOwner` 和 `File` trait 的 async owner 读写接口 |
+| `os/src/fs/files/pipe/ring_buffer.rs` | 在 pipe 共享 buffer 中保存 async owner/signal |
+| `os/src/fs/files/pipe/mod.rs` | 增加 pipe async owner 访问和 read-ready 信号投递逻辑 |
+| `os/src/fs/files/pipe/file_impl.rs` | pipe 写入数据并唤醒 reader 后按 owner 投递配置的信号；实现 `File::set_fasync_owner/fasync_owner` |
+| `os/src/signal/mod.rs` | 实现 `send_signal_to_process_group()`，支持 `F_OWNER_PGRP` |
+| `os/src/syscall/fs/fd_ops.rs` | 实现 `F_GETOWN/F_SETOWN/F_GETOWN_EX/F_SETOWN_EX/F_GETSIG/F_SETSIG` 的最小状态读写和用户态 `struct f_owner_ex` 拷贝 |
+| `Docs/决赛文档/problem/fcntl31-fasync-owner-signal.md` | 新增问题复盘 |
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：默认 LoongArch64 构建通过。
+
+用户随后运行 `make run` 并更新 `log.ans`。最新 `log.ans` 中 musl/glibc 两轮 `fcntl31` 均为：
+
+```text
+passed   5
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+五个断言分别覆盖 `F_SETOWN` 的 PID/PGRP owner，以及 `F_SETOWN_EX` 的 TID/PID/PGRP owner。日志中的 `FAIL LTP CASE fcntl31 : 10` 是 initproc 包装层退出码打印，判断结果以 LTP 内部 `TPASS` 和 `Summary` 为准。
+
+
 ## 2026-07-06: 重构 file_lock 模块以提高内聚度
 
 ### 用户需求

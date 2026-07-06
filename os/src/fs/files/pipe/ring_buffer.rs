@@ -1,5 +1,6 @@
 use super::buffer::PipeBuf;
 use super::PIPE_DEFAULT_SIZE;
+use crate::fs::FasyncOwner;
 use crate::task::{ready_queue, TaskControlBlock, TaskStatus};
 use crate::utils::PollSet;
 use alloc::collections::VecDeque;
@@ -18,6 +19,7 @@ pub(super) struct PipeRingBuffer {
     write_waiters: VecDeque<Weak<TaskControlBlock>>,
     pub(super) read_poll: PollSet,
     pub(super) write_poll: PollSet,
+    pub(super) async_owner: FasyncOwner,
 }
 
 impl PipeRingBuffer {
@@ -32,6 +34,7 @@ impl PipeRingBuffer {
             write_waiters: VecDeque::new(),
             read_poll: PollSet::new(),
             write_poll: PollSet::new(),
+            async_owner: FasyncOwner::default(),
         }
     }
 

@@ -11,6 +11,24 @@ use crate::{
 };
 use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 
+/// fcntl(F_SETOWN/F_SETOWN_EX/F_SETSIG) 使用的异步 I/O 信号目标。
+#[derive(Clone, Copy, Debug)]
+pub struct FasyncOwner {
+    pub owner_type: i32,
+    pub pid: i32,
+    pub signal: i32,
+}
+
+impl Default for FasyncOwner {
+    fn default() -> Self {
+        Self {
+            owner_type: 1,
+            pid: 0,
+            signal: 0,
+        }
+    }
+}
+
 /// 超级块抽象
 pub trait SuperBlock: Send + Sync {
     fn root_inode(&self) -> Arc<dyn Inode>;
@@ -179,5 +197,13 @@ pub trait File: Send + Sync {
     /// Registers wakers for I/O events.
     fn register(&self, _context: &mut Context<'_>, _events: PollEvents) {
         unimplemented!("File::register");
+    }
+    /// 设置异步 I/O 信号 owner。默认实现接受但不保存，具体文件可覆写。
+    fn set_fasync_owner(&self, _owner: FasyncOwner) -> SysResult {
+        Ok(())
+    }
+    /// 获取异步 I/O 信号 owner。默认无 owner。
+    fn fasync_owner(&self) -> FasyncOwner {
+        FasyncOwner::default()
     }
 }

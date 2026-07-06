@@ -532,9 +532,13 @@ pub fn send_signal_to_thread_of_proc(pid: usize, tid: usize, sig: SigSet) {
     }
 }
 
-// 目前的进程组只是一个进程的所有子进程的集合
-pub fn send_signal_to_process_group(_pid: usize, _sig: SigSet) {
-    todo!()
+pub fn send_signal_to_process_group(pgid: usize, sig: SigSet) {
+    let mut sent = BTreeSet::new();
+    for (_, task) in tid_to_task::get_all_tasks() {
+        if task.process.pgid() == pgid && sent.insert(task.pid()) {
+            let _ = send_signal_to_thread_group(task.pid(), sig);
+        }
+    }
 }
 
 /// 向除自身以及 `init` 进程之外的所有进程发送信号

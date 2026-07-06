@@ -21,6 +21,31 @@ use alloc::{
 use linux_raw_sys::general::open_how;
 use log::{debug, error, warn};
 
+#[derive(Debug, Clone, Copy)]
+struct FOwnerEx {
+    owner_type: i32,
+    pid: i32,
+}
+
+impl FOwnerEx {
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 8 {
+            return None;
+        }
+        Some(Self {
+            owner_type: i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            pid: i32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        })
+    }
+
+    fn to_bytes(self) -> [u8; 8] {
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&self.owner_type.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&self.pid.to_ne_bytes());
+        bytes
+    }
+}
+
 /// https://man7.org/linux/man-pages/man2/flock.2.html
 ///
 /// 对 fd 指定的文件应用或释放 advisory lock。
@@ -381,22 +406,66 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         }
         // 文件 owner / 信号（主要用于套接字）
         FcntlCmd::F_GETOWN => {
-            // 返回接收 SIGIO/SIGURG 的进程 ID；-1 表示无 owner
-            return Ok((-1i32) as usize);
+            let owner = fd_desc.any().fasync_owner();
+            let pid = if owner.owner_type == F_OWNER_PGRP {
+                -owner.pid
+            } else {
+                owner.pid
+            };
+            return Ok(pid as usize);
         }
         FcntlCmd::F_SETOWN => {
-            // 设置 owner，当前静默成功（仅对 socket fd 有意义）
+            let mut owner = fd_desc.any().fasync_owner();
+            let pid = arg as isize as i32;
+            if pid < 0 {
+                owner.owner_type = F_OWNER_PGRP;
+                owner.pid = pid.saturating_neg();
+            } else {
+                owner.owner_type = F_OWNER_PID;
+                owner.pid = pid;
+            }
+            fd_desc.any().set_fasync_owner(owner)?;
         }
         FcntlCmd::F_SETSIG => {
-            // 设置信号，静默成功
+            let signal = arg as i32;
+            if signal < 0 || signal as usize > crate::signal::SIG_MAX_NUM {
+                return Err(SysErrNo::EINVAL);
+            }
+            let mut owner = fd_desc.any().fasync_owner();
+            owner.signal = signal;
+            fd_desc.any().set_fasync_owner(owner)?;
         }
         FcntlCmd::F_GETSIG => {
-            // 0 表示默认行为（SIGIO）
-            return Ok(0);
+            return Ok(fd_desc.any().fasync_owner().signal as usize);
         }
-        FcntlCmd::F_SETOWN_EX | FcntlCmd::F_GETOWN_EX => {
-            // 扩展 owner 类型（TID/PID/PGRP），暂不支持
-            return Err(SysErrNo::EINVAL);
+        FcntlCmd::F_SETOWN_EX => {
+            let memory_set = proc_inner.memory_set_arc();
+            let mut owner_bytes = [0u8; 8];
+            copy_from_user(&memory_set, arg, &mut owner_bytes)?;
+            let owner_ex = FOwnerEx::from_bytes(&owner_bytes).ok_or(SysErrNo::EINVAL)?;
+            if owner_ex.owner_type != F_OWNER_TID
+                && owner_ex.owner_type != F_OWNER_PID
+                && owner_ex.owner_type != F_OWNER_PGRP
+            {
+                return Err(SysErrNo::EINVAL);
+            }
+            if owner_ex.pid < 0 {
+                return Err(SysErrNo::EINVAL);
+            }
+            let mut owner = fd_desc.any().fasync_owner();
+            owner.owner_type = owner_ex.owner_type;
+            owner.pid = owner_ex.pid;
+            fd_desc.any().set_fasync_owner(owner)?;
+        }
+        FcntlCmd::F_GETOWN_EX => {
+            let memory_set = proc_inner.memory_set_arc();
+            let owner = fd_desc.any().fasync_owner();
+            let owner_ex = FOwnerEx {
+                owner_type: owner.owner_type,
+                pid: owner.pid,
+            };
+            copy_to_user(&memory_set, arg, &owner_ex.to_bytes())?;
+            return Ok(0);
         }
         // 文件租约（file lease）-
         FcntlCmd::F_SETLEASE => {

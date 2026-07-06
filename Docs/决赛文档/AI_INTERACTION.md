@@ -356,6 +356,13 @@
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fcntl23` 失败来自 `F_SETLEASE` stub 固定返回 `EAGAIN`，导致只读普通文件上的无冲突读租约无法建立。修复为在 `file_lock` 层新增按 path/pid 管理的最小 file lease 表，支持 `F_RDLCK/F_WRLCK/F_UNLCK` 设置、`F_GETLEASE` 查询、读租约可写 fd 的 `EAGAIN` 校验，以及 close/close_range/exit 清理。`make` 通过，LoongArch64 单跑 musl/glibc `fcntl23` 均 `TPASS`，summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl23-file-lease.md](./problem/fcntl23-file-lease.md)。
 - **关联 commit**：待提交
 
+#### LTP fcntl31 async I/O owner 与信号通知修复（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `fcntl31` 源码对照、`F_SETOWN_EX/F_GETOWN_EX/F_SETSIG` 语义补齐、pipe async I/O 信号投递、构建与日志验证、文档完善
+- **描述**：用户要求分析 `log.ans` 并修改。AI 确认 `fcntl31` 失败是 `F_GETOWN_EX` 直接返回 `EINVAL`，并进一步确认测试还要求 pipe 写入时根据 `F_SETOWN/F_SETOWN_EX` 和 `F_SETSIG(SIGUSR1)` 向 TID/PID/PGRP owner 投递异步 I/O 信号。修复为新增 `FasyncOwner`，在 pipe 共享 buffer 中保存 async owner/signal，实现相关 fcntl 命令，并实现按进程组投递信号。`make` 通过，用户提供的最新 `log.ans` 中 musl/glibc 两轮 `fcntl31` 均 5 项 `TPASS`，summary 为 `passed 5 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl31-fasync-owner-signal.md](./problem/fcntl31-fasync-owner-signal.md)。
+- **关联 commit**：待提交
+
 #### file_lock 模块高内聚重构（7.6）
 
 - **工具/模型**：Codex (GPT-5)
