@@ -280,7 +280,6 @@ mod mm;
 #[cfg(feature = "net")]
 mod net;
 mod options;
-mod resource;
 mod signal;
 mod sync;
 mod sys;
@@ -305,7 +304,6 @@ pub use options::{
     FaccessatFileMode, FutexCmd, FutexOpt, MmapFlags, MmapProt, PollEvents, RLimit, SignalMaskFlag,
     Utsname,
 };
-use resource::*;
 use signal::*;
 use sync::*;
 use sys::*;
