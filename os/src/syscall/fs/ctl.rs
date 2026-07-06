@@ -12,7 +12,7 @@ use alloc::vec;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW};
 use log::debug;
 
-use super::path::parse_proc_self_fd;
+use super::path::{mode_allows, parse_proc_self_fd};
 use crate::fs::{
     cache_positive_dentry_path, invalidate_dentry_path, open, superblock_root_inode,
     superblock_sync, File, FsIndex, Inode, InodeType, OpenFlags, MAX_PATH_LEN, MNT_TABLE,
@@ -26,6 +26,13 @@ use crate::task::current_task;
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
 use crate::utils::{rsplit_once, SysErrNo, SyscallRet};
 use linux_raw_sys::loop_device::LOOP_SET_FD;
+
+const MAX_FILE_NAME_LEN: usize = 255;
+
+fn has_too_long_path_component(path: &str) -> bool {
+    path.split('/')
+        .any(|component| component.len() > MAX_FILE_NAME_LEN)
+}
 
 /// 处理 `ioctl(2)` 文件控制请求。
 ///
@@ -494,12 +501,56 @@ pub fn sys_renameat2(
     ret
 }
 
+fn check_parent_search_permission(parent_path: &str) -> SyscallRet {
+    let parent = open(parent_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+    if parent.inode.types() != InodeType::Dir {
+        return Err(SysErrNo::ENOTDIR);
+    }
+
+    let task = current_task().unwrap();
+    let task_inner = task.inner_lock();
+    let uid = task_inner.effective_uid;
+    let gid = task_inner.effective_gid;
+    drop(task_inner);
+    if uid == 0 {
+        return Ok(0);
+    }
+
+    let parent_stat = parent.inode.fstat();
+    let parent_mode = FaccessatFileMode::from_bits_truncate(parent.inode.fmode()? & 0xfff);
+    if !mode_allows(
+        parent_mode,
+        &parent_stat,
+        uid,
+        gid,
+        FaccessatFileMode::S_IXUSR,
+        FaccessatFileMode::S_IXGRP,
+        FaccessatFileMode::S_IXOTH,
+    ) {
+        return Err(SysErrNo::EACCES);
+    }
+    Ok(0)
+}
+
 /// 修改 inode 的 uid/gid 元数据，是 `chown` 系列 syscall 的公共实现。
 ///
 /// 只有 effective uid 为 0 的任务可修改 owner/group；`usize::MAX` 表示 Linux
 /// ABI 中的 `(uid_t)-1` 或 `(gid_t)-1`，即保持对应字段不变。
 /// 参考 https://www.man7.org/linux/man-pages/man2/fchownat.2.html
-fn chown_inode(inode: Arc<dyn Inode>, owner: usize, group: usize) -> SyscallRet {
+fn chown_inode(
+    inode: Arc<dyn Inode>,
+    path: Option<&str>,
+    owner: usize,
+    group: usize,
+) -> SyscallRet {
+    if let Some(path) = path {
+        if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(path) {
+            if mountflags & 1 != 0 {
+                return Err(SysErrNo::EROFS);
+            }
+        }
+    }
+
     let task = current_task().unwrap();
     {
         let task_inner = task.inner_lock();
@@ -588,8 +639,11 @@ pub fn sys_fchownat(
     let proc_inner = &task.process;
     let memory_set = proc_inner.memory_set_arc();
     let path = read_user_cstr(&memory_set, pathname)?;
+    if path.len() > MAX_PATH_LEN || has_too_long_path_component(&path) {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
 
-    let inode = if path.is_empty() {
+    let (inode, resolved_path) = if path.is_empty() {
         if flags & AT_EMPTY_PATH as u32 == 0 {
             return Err(SysErrNo::ENOENT);
         }
@@ -601,7 +655,9 @@ pub fn sys_fchownat(
         if fd_desc.is_path_only() {
             return Err(SysErrNo::EBADF);
         }
-        fd_desc.file()?.inode.clone()
+        let file = fd_desc.file()?;
+        let path = file.inode.path();
+        (file.inode.clone(), Some(path))
     } else {
         let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
         if let Some(fd) = parse_proc_self_fd(&abs_path) {
@@ -611,21 +667,23 @@ pub fn sys_fchownat(
             if fd_desc.is_path_only() {
                 return Err(SysErrNo::EBADF);
             }
-            fd_desc.file()?.inode.clone()
+            let file = fd_desc.file()?;
+            let path = file.inode.path();
+            (file.inode.clone(), Some(path))
         } else {
+            let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
+            check_parent_search_permission(&parent_path)?;
             let open_flags = if flags & AT_SYMLINK_NOFOLLOW as u32 != 0 {
                 OpenFlags::O_NOFOLLOW
             } else {
                 OpenFlags::empty()
             };
-            open(&abs_path, open_flags, NONE_MODE)?
-                .file()?
-                .inode
-                .clone()
+            let file = open(&abs_path, open_flags, NONE_MODE)?.file()?;
+            (file.inode.clone(), Some(abs_path))
         }
     };
 
-    chown_inode(inode, owner, group)
+    chown_inode(inode, resolved_path.as_deref(), owner, group)
 }
 /// 实现 `fchown(2)`，通过已打开文件描述符修改文件 uid/gid。
 ///
@@ -640,8 +698,9 @@ pub fn sys_fchown(fd: usize, owner: usize, group: usize) -> SyscallRet {
     if fd_desc.is_path_only() {
         return Err(SysErrNo::EBADF);
     }
-    let inode = fd_desc.file()?.inode.clone();
-    chown_inode(inode, owner, group)
+    let file = fd_desc.file()?;
+    let path = file.inode.path();
+    chown_inode(file.inode.clone(), Some(&path), owner, group)
 }
 /// 实现 `fchmod(2)`，通过已打开文件描述符修改文件权限位。
 ///

@@ -135,7 +135,7 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
 }
 
 /// 按 POSIX owner/group/other 顺序检查一个权限位是否允许当前凭据访问。
-fn mode_allows(
+pub(super) fn mode_allows(
     file_mode: FaccessatFileMode,
     stat: &Kstat,
     uid: u32,

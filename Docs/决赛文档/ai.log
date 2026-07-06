@@ -2977,3 +2977,52 @@ warnings 0
 ```
 
 日志中的 wrapper 行 `FAIL LTP CASE fanotify02 : 10` / `RESULT GLIBC LTP SINGLE CASE fanotify02 : 10` 不作为失败依据。
+
+
+## 2026-07-06: 修复 chown04 chown errno 语义
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复。
+
+### 分析
+
+AI 过滤 `log.ans` 后确认失败来自 LTP `chown04`，musl/glibc 两轮均有 3 项 errno 不匹配：
+
+```text
+chown04.c:77: TFAIL: chown() without full permissions of the path prefix expected EACCES: EPERM (1)
+chown04.c:77: TFAIL: chown() when pathname is too long expected ENAMETOOLONG: ENOENT (2)
+chown04.c:77: TFAIL: chown() when the named file resides on a read-only filesystem expected EROFS: EPERM (1)
+```
+
+对照 LTP `chown04.c` 后确认：测试切到 `nobody` 用户后，分别访问无搜索权限父目录下的文件、超长单分量路径和只读 tmpfs 挂载点。原 `sys_fchownat()` 先解析并打开目标，再调用 `chown_inode()`；`chown_inode()` 对非 root 直接返回 `EPERM`，覆盖了父目录搜索权限和只读挂载错误。同时 chown 路径缺少 `MAX_PATH_LEN/NAME_MAX` 检查，超长路径走普通查找后返回 `ENOENT`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/ctl.rs` | `fchownat()` 增加路径长度和单分量长度检查；普通路径打开目标前检查父目录 search 权限；`chown_inode()` 增加可选路径参数并优先检查只读挂载点 |
+| `Docs/决赛文档/problem/chown04-chown-errno.md` | 新增问题复盘 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/problem/README.md`、`Docs/决赛文档/AI_INTERACTION.md` | 追加索引与 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+make
+/bin/bash -lc 'timeout 120s make run > /tmp/chown04-after-fix.log 2>&1'
+```
+
+结果：默认 LoongArch64 构建通过；提升权限运行 QEMU 后，`/tmp/chown04-after-fix.log` 中 musl/glibc 两轮 `chown04` 均 8 项 `TPASS`，summary 均为：
+
+```text
+passed   8
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+cleanup 阶段清理符号链接环仍有 `tst_rmdir ... ELOOP` warning，不影响核心测试结论。日志中的 wrapper 行 `FAIL LTP CASE chown04 : 10` / `RESULT GLIBC LTP SINGLE CASE chown04 : 10` 不作为失败依据。

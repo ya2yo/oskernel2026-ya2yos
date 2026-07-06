@@ -306,3 +306,10 @@
 - **场景**：`log.ans` 卡死分析、fanotify 目录 child event 匹配、`fanotify_mark(FAN_MARK_REMOVE)` mask 语义修复、LoongArch64 LTP 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 最后卡死并修改。AI 确认卡死在 `fanotify02` 的 `read(fd_notify)`，原因是目录 `"."` mark 带 `FAN_EVENT_ON_CHILD`，但内核只按路径精确相等匹配，子文件 open/write/close 事件未入队。修复为让 fanotify 目录 mark 匹配直接子项路径，并收紧路径分隔符边界；随后修正 `FAN_MARK_REMOVE` 单独移除 `FAN_EVENT_ON_CHILD/FAN_ONDIR` 被误判 `EINVAL` 的问题。`make` 通过，LoongArch64 单跑 musl/glibc `fanotify02` 均 8 项 `TPASS`，summary 为 `passed 8 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fanotify02-event-on-child.md](./problem/fanotify02-event-on-child.md)。
 - **关联 commit**：待提交
+
+#### LTP chown04 chown errno 语义修复（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、`chown(2)` 路径 errno 优先级修复、父目录 search 权限检查、只读挂载检查、LoongArch64 LTP 回归验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `chown04` 失败来自三个路径级 errno 被非 root `EPERM` 或普通查找 `ENOENT` 覆盖：无搜索权限父目录应返回 `EACCES`，超长路径应返回 `ENAMETOOLONG`，只读 tmpfs 挂载点应返回 `EROFS`。修复为在 `fchownat()` 中补路径长度和 `NAME_MAX=255` 检查，普通路径打开目标前检查父目录 execute/search 权限，并让 `chown_inode()` 在权限检查前根据目标路径检查只读挂载点。`make` 通过，LoongArch64 单跑 musl/glibc `chown04` 均 8 项 `TPASS`，summary 为 `passed 8 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/chown04-chown-errno.md](./problem/chown04-chown-errno.md)。
+- **关联 commit**：待提交
