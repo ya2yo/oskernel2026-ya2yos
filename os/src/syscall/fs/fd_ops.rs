@@ -4,8 +4,8 @@ use super::fcntl::*;
 use super::file_lock::{self, Flock};
 use crate::fs::{
     map_dynamic_link_file, notify_path_event, open, open_fifo, refresh_proc_stat,
-    refresh_proc_status, superblock_root_inode, File, FileClass, FileDescriptor, FsIndex, OpenFlags,
-    TmpFile, FAN_OPEN, SEEK_CUR as FS_SEEK_CUR,
+    refresh_proc_status, superblock_root_inode, File, FileClass, FileDescriptor, FsIndex,
+    OpenFlags, TmpFile, FAN_OPEN, SEEK_CUR as FS_SEEK_CUR,
 };
 use crate::mm::{copy_from_user, copy_to_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::{options::FcntlCmd, Syscall};
@@ -216,7 +216,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
 
     // debug!("[sys_fcntl] fd is {}, cmd is {}, arg is {}", fd, cmd, arg);
 
-    proc_inner.fd_table.get(fd)?;
+    let fd_desc = proc_inner.fd_table.get(fd)?;
     let cmd = FcntlCmd::from_bits(cmd).ok_or(SysErrNo::EINVAL)?;
 
     match cmd {
@@ -400,13 +400,19 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         }
         // 文件租约（file lease）-
         FcntlCmd::F_SETLEASE => {
-            // 简化实现：始终返回 EAGAIN（无冲突打开时可成功，但当前不做跟踪）
-            // 正确实现需要跟踪每个文件的所有打开 fd，此处作为 stub
-            return Err(SysErrNo::EAGAIN);
+            let osfile = fd_desc.file()?;
+            let flags = OpenFlags::from_bits_truncate(fd_desc.flags());
+            let (_, fd_opened_for_write) = flags.read_write();
+            return file_lock::set_file_lease(
+                &osfile.inode.path(),
+                arg as i16,
+                owner_pid,
+                fd_opened_for_write,
+            );
         }
         FcntlCmd::F_GETLEASE => {
-            // 返回当前租约类型，F_UNLCK 表示无租约
-            return Ok(F_UNLCK as usize);
+            let osfile = fd_desc.file()?;
+            return Ok(file_lock::get_file_lease(&osfile.inode.path(), owner_pid) as usize);
         }
         // 目录变动通知
         FcntlCmd::F_NOTIFY => {
@@ -595,7 +601,9 @@ pub fn sys_close(fd: usize) -> SyscallRet {
 
     if let Some(desc) = fd_table.close(fd) {
         if let Ok(osfile) = desc.file() {
-            file_lock::release_posix_locks(&osfile.inode.path(), owner_pid);
+            let path = osfile.inode.path();
+            file_lock::release_posix_locks(&path, owner_pid);
+            file_lock::release_file_leases(&path, owner_pid);
         }
         inner.fs_info.remove(fd);
     }
@@ -658,7 +666,9 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
             // Remove from fd_table
             if let Some(desc) = proc_inner.fd_table.close(fd as usize) {
                 if let Ok(osfile) = desc.file() {
-                    file_lock::release_posix_locks(&osfile.inode.path(), owner_pid);
+                    let path = osfile.inode.path();
+                    file_lock::release_posix_locks(&path, owner_pid);
+                    file_lock::release_file_leases(&path, owner_pid);
                 }
                 // Remove from fs_info
                 proc_inner.fs_info.remove(fd as usize);

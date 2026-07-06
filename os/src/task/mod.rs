@@ -374,6 +374,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
                 memory_set.recycle_data_pages();
             }
             file_lock::release_posix_locks_by_owner(curr_task.pid() as i32);
+            file_lock::release_file_leases_by_owner(curr_task.pid() as i32);
             fd_table.clear();
             fs_info.clear();
 

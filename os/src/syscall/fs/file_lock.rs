@@ -92,12 +92,20 @@ struct PosixLock {
     l_pid: i32,
 }
 
+#[derive(Debug, Clone)]
+struct FileLease {
+    l_type: i16,
+    l_pid: i32,
+}
+
 // ---------------------------------------------------------------------------
 // 全局文件锁注册表
 // ---------------------------------------------------------------------------
 
 use spin::Lazy;
 static FILE_LOCKS: Lazy<RwLock<BTreeMap<String, Vec<PosixLock>>>> =
+    Lazy::new(|| RwLock::new(BTreeMap::new()));
+static FILE_LEASES: Lazy<RwLock<BTreeMap<String, Vec<FileLease>>>> =
     Lazy::new(|| RwLock::new(BTreeMap::new()));
 static POSIX_LOCK_WAITERS: Lazy<RwLock<BTreeMap<String, AtomicWaker>>> =
     Lazy::new(|| RwLock::new(BTreeMap::new()));
@@ -309,6 +317,16 @@ pub fn release_posix_locks(path: &str, owner_pid: i32) {
     }
 }
 
+pub fn release_file_leases(path: &str, owner_pid: i32) {
+    let mut leases = FILE_LEASES.write();
+    if let Some(entry) = leases.get_mut(path) {
+        entry.retain(|lease| lease.l_pid != owner_pid);
+        if entry.is_empty() {
+            leases.remove(path);
+        }
+    }
+}
+
 pub fn release_posix_locks_by_owner(owner_pid: i32) {
     let mut changed_paths = Vec::new();
     {
@@ -326,6 +344,72 @@ pub fn release_posix_locks_by_owner(owner_pid: i32) {
     for path in changed_paths {
         wake_posix_waiters(&path);
     }
+}
+
+pub fn release_file_leases_by_owner(owner_pid: i32) {
+    let mut leases = FILE_LEASES.write();
+    for entry in leases.values_mut() {
+        entry.retain(|lease| lease.l_pid != owner_pid);
+    }
+    leases.retain(|_, entry| !entry.is_empty());
+}
+
+fn file_leases_conflict(existing: &FileLease, new_lease: &FileLease) -> bool {
+    existing.l_pid != new_lease.l_pid && (existing.l_type == F_WRLCK || new_lease.l_type == F_WRLCK)
+}
+
+pub fn set_file_lease(
+    path: &str,
+    lease_type: i16,
+    owner_pid: i32,
+    fd_opened_for_write: bool,
+) -> SyscallRet {
+    if lease_type != F_RDLCK && lease_type != F_WRLCK && lease_type != F_UNLCK {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if lease_type == F_RDLCK && fd_opened_for_write {
+        return Err(SysErrNo::EAGAIN);
+    }
+
+    let mut leases = FILE_LEASES.write();
+    let entry = leases.entry(String::from(path)).or_insert_with(Vec::new);
+
+    if lease_type == F_UNLCK {
+        entry.retain(|lease| lease.l_pid != owner_pid);
+        if entry.is_empty() {
+            leases.remove(path);
+        }
+        return Ok(0);
+    }
+
+    let new_lease = FileLease {
+        l_type: lease_type,
+        l_pid: owner_pid,
+    };
+    if entry
+        .iter()
+        .any(|existing| file_leases_conflict(existing, &new_lease))
+    {
+        return Err(SysErrNo::EAGAIN);
+    }
+
+    if let Some(existing) = entry.iter_mut().find(|lease| lease.l_pid == owner_pid) {
+        existing.l_type = lease_type;
+    } else {
+        entry.push(new_lease);
+    }
+
+    Ok(0)
+}
+
+pub fn get_file_lease(path: &str, owner_pid: i32) -> i16 {
+    let leases = FILE_LEASES.read();
+    leases
+        .get(path)
+        .and_then(|entry| entry.iter().find(|lease| lease.l_pid == owner_pid))
+        .map(|lease| lease.l_type)
+        .unwrap_or(F_UNLCK)
 }
 
 // ---------------------------------------------------------------------------

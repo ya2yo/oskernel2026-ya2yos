@@ -30,5 +30,6 @@
 - [fcntl11 POSIX record lock 区间语义修复](./fcntl11-record-lock.md)
 - [fcntl13 record lock EFAULT 优先级修复](./fcntl13-lock-efault-priority.md)
 - [fcntl14 POSIX record lock SEEK_CUR 与阻塞语义修复](./fcntl14-record-lock-seekcur-len.md)
+- [fcntl23 文件租约 F_SETLEASE/F_GETLEASE 修复](./fcntl23-file-lease.md)
 - [fchmod02 /etc/group 缺少 users/daemon 导致 TBROK](./fchmod02-group-database.md)
 - [fchmod05 chmod S_ISGID 清除语义](./fchmod05-chmod-setgid.md)

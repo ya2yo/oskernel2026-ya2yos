@@ -3229,3 +3229,45 @@ make
 ```
 
 结果：RISC-V 和默认 LoongArch64 构建均通过。维护者随后确认 `fcntl14` 已通过。当前仓库中的最新 `log.ans` 已切换到后续 `fcntl23` 起的测试输出，不再包含 `fcntl14` 段，因此本条记录不引用当前 `log.ans` 作为 `fcntl14` 的直接日志来源。
+
+
+## 2026-07-06: 修复 fcntl23 文件租约基础语义
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复 bug。
+
+### 分析
+
+AI 过滤 `log.ans` 后确认真实失败集中在 LTP `fcntl23`：musl 与 glibc 两轮均在 `fcntl(fd, F_SETLEASE, F_RDLCK)` 返回 `EAGAIN`，Summary 为 `passed 0 failed 1 broken 0`，没有 panic 或 `TBROK`。
+
+对照 LTP `fcntl23.c`，该测试用 `O_RDONLY | O_CREAT` 打开普通文件后设置读租约，随后用 `F_GETLEASE` 校验返回 `F_RDLCK`，最后用 `F_UNLCK` 释放。当前 `sys_fcntl()` 对 `F_SETLEASE/F_GETLEASE` 仍是 stub：前者固定返回 `EAGAIN`，后者固定返回 `F_UNLCK`，因此无冲突基础租约场景必然失败。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/file_lock.rs` | 新增按 path/pid 保存的 `FILE_LEASES` 表，实现 `set_file_lease/get_file_lease` 以及 close/exit 清理接口 |
+| `os/src/syscall/fs/fd_ops.rs` | `F_SETLEASE/F_GETLEASE` 分支解析普通文件 fd 和打开模式后委托租约表；`close/close_range` 释放当前进程在对应 inode 上的租约 |
+| `os/src/task/mod.rs` | 进程最终退出时释放该 pid 的所有 file leases |
+| `Docs/决赛文档/problem/fcntl23-file-lease.md` | 新增问题复盘 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+make
+timeout 120s make run > /tmp/fcntl23-lease-fix.log 2>&1
+```
+
+结果：默认 LoongArch64 构建通过；首次沙箱内 `make run` 因 QEMU 需要写 `/var/tmp` 临时文件失败，非沙箱重跑成功。验证日志中 musl/glibc 两轮 `fcntl23` 均为：
+
+```text
+passed   1
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
