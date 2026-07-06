@@ -51,6 +51,8 @@ pub const FAN_CLOSE_WRITE: u64 = 0x0000_0008;
 pub const FAN_CLOSE_NOWRITE: u64 = 0x0000_0010;
 /// 文件被打开。
 pub const FAN_OPEN: u64 = 0x0000_0020;
+/// 目录 mark 同时接收直接子项事件。
+const FAN_EVENT_ON_CHILD: u64 = 0x0800_0000;
 
 /// 单个 fanotify mark 的内核侧记录。
 struct FanotifyMark {
@@ -320,12 +322,38 @@ impl FanotifyFd {
         Ok(written)
     }
 
+    fn path_matches_mark(marked_path: &str, path: &str, mark_mask: u64) -> bool {
+        if marked_path == path {
+            return true;
+        }
+
+        if mark_mask & FAN_EVENT_ON_CHILD == 0 {
+            return false;
+        }
+
+        let child = if marked_path == "/" {
+            let Some(rest) = path.strip_prefix('/') else {
+                return false;
+            };
+            rest
+        } else {
+            let Some(rest) = path.strip_prefix(marked_path) else {
+                return false;
+            };
+            let Some(rest) = rest.strip_prefix('/') else {
+                return false;
+            };
+            rest
+        };
+        !child.is_empty() && !child.contains('/')
+    }
+
     fn push_if_marked(&self, path: &str, mask: u64, pid: i32) {
         let mut should_push = false;
         {
             let mut marks = self.marks.lock();
             for ((_, marked_path), mark) in marks.iter_mut() {
-                if marked_path != path {
+                if !Self::path_matches_mark(marked_path, path, mark.mask) {
                     continue;
                 }
                 if mask == FAN_MODIFY {

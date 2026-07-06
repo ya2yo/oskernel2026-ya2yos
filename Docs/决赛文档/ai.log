@@ -2923,3 +2923,57 @@ broken   0
 ```
 
 日志中的 wrapper 行 `FAIL LTP CASE fchmod05 : 10` / `RESULT GLIBC LTP SINGLE CASE fchmod05 : 10` 不作为失败依据。
+
+
+## 2026-07-06: 修复 fanotify02 FAN_EVENT_ON_CHILD 卡死
+
+### 用户需求
+
+用户要求分析 `log.ans` 最后的卡死并修改。
+
+### 分析
+
+AI 过滤 `log.ans` 尾部后确认最后停在 LTP `fanotify02`：测试进程 `FanotifyInit -> FanotifyMark -> open/write/close` 后，对 fanotify fd 执行 `read()`，内核进入 `block_current_and_run_next()` 后没有事件唤醒。对照 LTP `fanotify02.c` 后确认测例在当前临时目录 `"."` 上添加 `FAN_EVENT_ON_CHILD | FAN_ONDIR`，随后对子文件 `fname_$pid` 触发事件。
+
+原 `FanotifyFd::push_if_marked()` 只支持 `marked_path == path` 精确匹配，目录 mark 无法匹配直接子项路径，所以事件队列为空并导致 read 阻塞。
+
+第一次修复后测例推进到 `FAN_MARK_REMOVE` 阶段，日志出现：
+
+```text
+fanotify02.c:99: TBROK: fanotify_mark(3, 0x2, 0x8000000, ..., .) failed: EINVAL (22)
+```
+
+AI 确认这是 `FAN_MARK_REMOVE` 单独移除 `FAN_EVENT_ON_CHILD`，当前 mask 校验错误地把纯事件修饰位在 remove 场景下也拒绝了。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/fanotify.rs` | 增加 `FAN_EVENT_ON_CHILD` 直接子项路径匹配，保留精确路径匹配，并避免路径前缀误匹配 |
+| `os/src/syscall/fs/fanotify.rs` | 调整 mask 校验：仅 `FAN_MARK_ADD` 拒绝纯 `FAN_EVENT_ON_CHILD/FAN_ONDIR`，`FAN_MARK_REMOVE` 允许单独移除这些修饰位 |
+| `Docs/决赛文档/problem/fanotify02-event-on-child.md` | 新增问题复盘 |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/problem/README.md`、`Docs/决赛文档/AI_INTERACTION.md` | 追加索引与 AI 记录 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+make
+/bin/bash -lc 'timeout 120s make run > /tmp/fanotify02-after-fix.log 2>&1'
+```
+
+结果：默认 LoongArch64 构建通过。`make run` 首次在沙箱内因 QEMU 需要写 `/var/tmp` 临时文件失败，提升权限后验证通过。
+
+`/tmp/fanotify02-after-fix.log` 中 musl/glibc 两轮 `fanotify02` 均出现 8 项 `TPASS`，summary 均为：
+
+```text
+passed   8
+failed   0
+broken   0
+skipped  0
+warnings 0
+```
+
+日志中的 wrapper 行 `FAIL LTP CASE fanotify02 : 10` / `RESULT GLIBC LTP SINGLE CASE fanotify02 : 10` 不作为失败依据。

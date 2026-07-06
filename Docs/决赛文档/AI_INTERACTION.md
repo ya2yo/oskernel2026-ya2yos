@@ -299,3 +299,10 @@
 - **场景**：`log.ans` 分析、LTP `fchmod05` chmod 语义定位、`S_ISGID` 清除规则修复、构建与日志验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fchmod05` 失败是非 root 目录 owner 在 gid 不匹配目标目录时仍成功保留 `S_ISGID`；Linux 语义要求 `fchmod()` 成功但静默清掉 setgid 位。修复为新增 `chmod_inode()` 并让 `fchmod/fchmodat` 共用，补齐只读挂载 `EROFS`、非 owner `EPERM`、gid 不匹配清除 `S_ISGID`，同时传播 `fmode_set()` 错误。`make` 通过，最新 `log.ans` 中 musl/glibc `fchmod05` 均 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fchmod05-chmod-setgid.md](./problem/fchmod05-chmod-setgid.md)。
 - **关联 commit**：待提交
+
+#### LTP fanotify02 FAN_EVENT_ON_CHILD 卡死修复（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 卡死分析、fanotify 目录 child event 匹配、`fanotify_mark(FAN_MARK_REMOVE)` mask 语义修复、LoongArch64 LTP 回归验证、文档完善
+- **描述**：用户要求分析 `log.ans` 最后卡死并修改。AI 确认卡死在 `fanotify02` 的 `read(fd_notify)`，原因是目录 `"."` mark 带 `FAN_EVENT_ON_CHILD`，但内核只按路径精确相等匹配，子文件 open/write/close 事件未入队。修复为让 fanotify 目录 mark 匹配直接子项路径，并收紧路径分隔符边界；随后修正 `FAN_MARK_REMOVE` 单独移除 `FAN_EVENT_ON_CHILD/FAN_ONDIR` 被误判 `EINVAL` 的问题。`make` 通过，LoongArch64 单跑 musl/glibc `fanotify02` 均 8 项 `TPASS`，summary 为 `passed 8 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fanotify02-event-on-child.md](./problem/fanotify02-event-on-child.md)。
+- **关联 commit**：待提交

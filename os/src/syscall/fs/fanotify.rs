@@ -182,7 +182,10 @@ fn validate_fanotify_mark_mask(flags: u32, mask: u64) -> Result<(), SysErrNo> {
     if mask & FAN_PERMISSION_EVENTS != 0 {
         return Err(SysErrNo::EINVAL);
     }
-    if flags & FAN_MARK_IGNORED_MASK == 0 && flags & FAN_MARK_IGNORE == 0 {
+    if flags & FAN_MARK_ADD != 0
+        && flags & FAN_MARK_IGNORED_MASK == 0
+        && flags & FAN_MARK_IGNORE == 0
+    {
         let event_only_flags = FAN_EVENT_ON_CHILD | FAN_ONDIR;
         if mask & !event_only_flags == 0 {
             return Err(SysErrNo::EINVAL);
