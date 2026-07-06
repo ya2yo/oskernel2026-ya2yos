@@ -2507,3 +2507,63 @@ shutdown!
 未再出现原始 `PagePrivilegeIllegal bad addr = 0x2a21c404b0`，也未再出现 tmpfs 阶段 `mkdir(mntpoint/X.0) failed: EEXIST`。
 
 未执行 RISC-V 验证；本次日志、触发路径和修复验证均为 LoongArch64 `mkdir09` 单测。
+
+## 2026-07-06: 实现 faccessat2 syscall
+
+### 用户需求
+
+用户要求在当前内核实现 `faccessat2` syscall。
+
+### 分析
+
+AI 按 `add-syscall-feature` 流程检查现有 syscall 表和文件系统实现。`Syscall` 枚举中已经有 `Faccessat2 = 439`，但总分发没有接入；`os/src/syscall/fs/stat.rs` 已有 `sys_faccessat()`，包含 real uid/gid 下的 `R_OK/W_OK/X_OK` 权限检查、父目录 execute 权限检查、`NAME_MAX` 分量长度检查和只读挂载 `EROFS` 处理。
+
+AI 对照 Linux `faccessat2(dirfd, pathname, mode, flags)` 语义和 LTP `faccessat201/202` 源码，确认本次需要覆盖：
+
+- `flags` 只接受 `AT_EACCESS`、`AT_SYMLINK_NOFOLLOW`、`AT_EMPTY_PATH`，非法值返回 `EINVAL`。
+- `mode` 只接受 `F_OK/R_OK/W_OK/X_OK` 组合，非法值返回 `EINVAL`。
+- `AT_EACCESS` 使用 effective uid/gid 做权限检查；未设置时保持 `access/faccessat` 的 real uid/gid 语义。
+- 绝对路径应忽略 `dirfd`，即 `dirfd = -1` 且 pathname 为绝对路径时仍应成功。
+- 相对路径配合坏 fd 返回 `EBADF`，配合指向普通文件的 fd 返回 `ENOTDIR`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/mod.rs` | 为 `Syscall::Faccessat2` 增加 439 号分发，参数映射为 `dirfd/path/mode/flags` |
+| `os/src/syscall/fs/stat.rs` | 将 `faccessat` 权限判断抽成 `do_faccessat()` 与 `check_faccessat_access()`；新增 `sys_faccessat2()`；支持 `AT_EACCESS` 凭据选择、flags 校验、`AT_EMPTY_PATH` 空路径 fd 检查、`AT_SYMLINK_NOFOLLOW` 最小兼容；修正绝对路径忽略坏 `dirfd` |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次实现记录 |
+
+本次是新增 syscall 与既有 `faccessat` 逻辑复用，没有独立新增 `problem/` 复盘文件。
+
+### 验证
+
+已执行：
+
+```text
+make
+```
+
+结果：默认 RISC-V 构建通过，仅有既有 warning。
+
+随后使用当前 `initproc.rs` 单测入口验证：
+
+```text
+timeout 120s make run
+```
+
+`faccessat201` 结果：
+
+```text
+musl:  passed 7 failed 0 broken 0
+glibc: passed 7 failed 0 broken 0
+```
+
+临时将单测入口改为 `faccessat202` 后重新执行 `make` 和 `timeout 120s make run`，验证完成后恢复入口到原 `faccessat201`：
+
+```text
+musl:  passed 6 failed 0 broken 0
+glibc: passed 6 failed 0 broken 0
+```
+
+未执行 LoongArch64 验证；本次实现和验证基于当前默认 RISC-V 架构。

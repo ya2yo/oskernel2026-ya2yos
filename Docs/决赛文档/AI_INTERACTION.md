@@ -243,3 +243,10 @@
 - **场景**：`log.ans`/`ana.ans` 分析、LoongArch `PagePrivilegeIllegal` 缺页路径修复、`MAP_STACK` 懒分配权限修复、tmpfs 挂载隔离兼容、LTP mkdir09 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 和 `ana.ans` 并修复。AI 确认原始失败不是旧的 `mkdir09` mode 类型位问题，而是 LoongArch glibc pthread 创建第三个 `MAP_STACK` 时，访问已 `mprotect(PROT_READ|PROT_WRITE)` 的懒分配栈页被报告为 `PagePrivilegeIllegal`，原 trap 分支直接发送 `SIGSEGV`。修复为 `PagePrivilegeIllegal` 先尝试统一缺页处理，并让 mmap/brk/stack lazy fault 按 VMA 权限判断，避免 `PROT_NONE` guard page 被错误映射。随后 tmpfs 轮次暴露 `mkdir(mntpoint/X.0) failed: EEXIST`，AI 定位到当前 mount 只维护表项、没有真实 tmpfs 空根目录视图，补充 tmpfs 挂载前清空挂载点内容以隔离 LTP filesystem 轮次。`make TARGET_ARCH=loongarch64` 通过，单跑 `mkdir09` summary 为 `passed 12 failed 0 broken 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-04 条目与 [problem/mkdir09-loongarch-map-stack-tmpfs.md](./problem/mkdir09-loongarch-map-stack-tmpfs.md)。
 - **关联 commit**：未提交
+
+#### faccessat2 syscall 实现（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：新增 Linux syscall、`faccessat` 逻辑复用、LTP `faccessat201/202` 回归验证、文档完善
+- **描述**：用户要求实现 `faccessat2(439)`。AI 确认 syscall 枚举已有 439 号但缺少分发和实现；现有 `sys_faccessat()` 已有 real uid/gid 权限检查、父目录 execute 检查、路径长度与只读挂载处理。修复为抽出共用 `do_faccessat()`，新增 `sys_faccessat2()`，校验 `AT_EACCESS/AT_SYMLINK_NOFOLLOW/AT_EMPTY_PATH` flags，`AT_EACCESS` 下使用 effective uid/gid，并修正绝对路径忽略坏 `dirfd` 的语义。`make` 通过，RISC-V 单跑 musl/glibc `faccessat201` 均 7 项 `TPASS`，`faccessat202` 均 6 项 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
+- **关联 commit**：未提交

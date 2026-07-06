@@ -402,6 +402,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[2] as u32,
             args[3],
         ),
+        Syscall::Faccessat2 => sys_faccessat2(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as u32,
+            args[3],
+        ),
         Syscall::Chdir => sys_chdir(args[0] as *const u8),
         Syscall::Fchmod => sys_fchmod(args[0] as usize, args[1] as u32),
         Syscall::Fchmodat => sys_fchmodat(
