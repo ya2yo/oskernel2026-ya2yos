@@ -3386,3 +3386,34 @@ make TARGET_ARCH=riscv64
 ```
 
 结果：默认 LoongArch64 构建通过；RISC-V 构建通过。构建中仍有既有 `smoltcp` vendor warning，与本次修改无关。
+
+
+## 2026-07-06: 将 fcntl syscall 实现迁入 fcntl.rs
+
+### 用户需求
+
+用户要求将 `fcntl` syscall 实现相关代码放进 `os/src/syscall/fs/fcntl.rs`。
+
+### 分析
+
+AI 检查 `fd_ops.rs` 和 `fcntl.rs` 后确认：`fcntl.rs` 原本只保存 Linux fcntl 常量，而 `sys_fcntl()`、POSIX record lock 阻塞 helper `setlk_blocking()`、`struct f_owner_ex` 字节编解码等实现代码仍集中在 `fd_ops.rs` 中。这样 `fd_ops.rs` 同时承担 `flock/dup/open/close/fcntl` 多类职责，不利于按 syscall 维护。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/fcntl.rs` | 迁入 `sys_fcntl()`、`setlk_blocking()` 和 `FOwnerEx`，补齐所需 imports |
+| `os/src/syscall/fs/fd_ops.rs` | 删除 fcntl syscall 实现和专用 helper，仅保留 `flock/dup/open/close/openat2` 等 fd 操作 |
+
+本次为代码位置重构，保持 `syscall/mod.rs` 中 `Syscall::Fcntl => sys_fcntl(...)` 分发不变；`fs/mod.rs` 仍通过 `fcntl::*` 和 `fd_ops::*` re-export 对外函数，因此不改变用户可见语义。
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/syscall/fs/fcntl.rs os/src/syscall/fs/fd_ops.rs
+make
+```
+
+结果：默认 LoongArch64 构建通过。构建中仍有既有 `smoltcp` vendor warning，与本次重构无关。

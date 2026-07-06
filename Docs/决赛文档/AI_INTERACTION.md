@@ -376,3 +376,10 @@
 - **场景**：进程元数据 session ID 字段新增、`getsid/setsid/setpgid` 语义调整、syscall 分发接入、双架构构建验证、文档完善
 - **描述**：用户询问当前 session id 对应字段后，要求增加 `sid` 字段并同步调整内核。AI 确认原实现把 session ID 混用为 `ProcessMeta::pgid`，且 `GetSid` 枚举未接入分发；修复为新增 `ProcessMeta::sid`，initproc 设 `sid=pid`，fork/clone 继承调用者 `pgid/sid`，`getsid()` 返回目标进程 `sid`，`setsid()` 设置 `sid=pid` 与 `pgid=pid` 并拒绝进程组 leader，`setpgid()` 只修改 `pgid` 并保留 session 边界检查。`make` 和 `make TARGET_ARCH=riscv64` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
 - **关联 commit**：待提交
+
+#### fcntl syscall 实现位置收敛（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`fcntl(2)` syscall 代码组织重构、`fd_ops.rs` 职责收敛、构建验证、文档完善
+- **描述**：用户要求将 `fcntl` syscall 实现代码放入 `os/src/syscall/fs/fcntl.rs`。AI 将 `sys_fcntl()`、record lock 阻塞 helper `setlk_blocking()` 和 `struct f_owner_ex` 编解码从 `fd_ops.rs` 迁入 `fcntl.rs`，保留 `fcntl` 常量与实现同文件维护；`fd_ops.rs` 回到 `flock/dup/open/close/openat2` 等通用 fd 操作。本次不改变 syscall 分发或用户可见语义；默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
+- **关联 commit**：待提交
