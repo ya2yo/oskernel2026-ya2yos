@@ -285,3 +285,10 @@
 - **场景**：syscall 文件系统路径模块重构、`chroot/getcwd/chdir/readlinkat/faccessat` 迁移、构建验证、文档完善
 - **描述**：用户要求新建 `path.rs` 放置 `sys_chroot`，并把其他相关 syscall 一起移动进去。AI 新增 `os/src/syscall/fs/path.rs`，迁入 `getcwd/chdir/chroot/readlinkat/faccessat/faccessat2` 及其路径/procfd/access helper；`ctl.rs` 回到目录项控制、ioctl、sync、chmod/chown 等职责，`stat.rs` 回到 stat/statx/statfs 职责，并移除 `sys` 下的 chroot 子模块。本次未改 syscall 号、分发或用户可见语义；`cargo fmt` 和当前默认 LoongArch64 `make` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
 - **关联 commit**：`82bf10a`
+
+#### LTP fchmod02 /etc/group 前置组缺失修复（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `fchmod02` setup 前置条件定位、启动期 `/etc/group` 兼容文件修复、构建与日志验证、文档完善
+- **描述**：用户要求分析 `Log.ans` 失败原因并修复。AI 确认实际日志为 `log.ans`，失败点是 `SAFE_GETGRNAM_FALLBACK("users", "daemon")` 中 `users` 与 `daemon` 均不存在，导致 `TBROK`，测试尚未进入 `fchmod(2)` 语义断言。修复为在启动期 `/etc/group` 模板中补齐 `daemon:x:2:` 与 `users:x:100:`，并保持原有 `nobody:x:1:` 不变。`make` 通过，最新 `log.ans` 中 musl/glibc `fchmod02` 均 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fchmod02-group-database.md](./problem/fchmod02-group-database.md)。
+- **关联 commit**：待提交

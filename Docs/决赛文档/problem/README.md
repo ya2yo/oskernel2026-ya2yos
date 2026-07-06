@@ -23,3 +23,4 @@
 - [iperf IPPROTO_IPV6/IPV6_V6ONLY 兼容](./iperf-ipv6-v6only.md)
 - [mkdir09 LoongArch mmap 栈缺页与 tmpfs 挂载隔离](./mkdir09-loongarch-map-stack-tmpfs.md)
 - [fanotify01 mark 与基础事件投递](./fanotify01-mark-events.md)
+- [fchmod02 /etc/group 缺少 users/daemon 导致 TBROK](./fchmod02-group-database.md)
