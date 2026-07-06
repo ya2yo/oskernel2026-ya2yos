@@ -3,8 +3,8 @@ use log::{debug, warn};
 
 use crate::{
     fs::{
-        superblock_fs_stat, DummyFd, FdTable, File, FileDescriptor, OSFile, OpenFlags, StMode,
-        SEEK_CUR, SEEK_SET,
+        superblock_fs_stat, DummyFd, FanotifyFd, FdTable, File, FileClass, FileDescriptor, OSFile,
+        OpenFlags, StMode, SEEK_CUR, SEEK_SET,
     },
     mm::{copy_from_user, copy_to_user, probe_user_write, user_buffer_from_kernel, UserBuffer},
     syscall::{fs::dummyfd_create, options::Iovec},
@@ -21,6 +21,36 @@ const RWF_SUPPORTED_FLAGS: u32 = 0;
 
 const FALLOC_FL_KEEP_SIZE: u32 = 0x01;
 const FALLOC_SUPPORTED_FLAGS: u32 = FALLOC_FL_KEEP_SIZE;
+
+const FAN_CLOEXEC: u32 = 0x0000_0001;
+const FAN_NONBLOCK: u32 = 0x0000_0002;
+const FAN_CLASS_NOTIF: u32 = 0x0000_0000;
+const FAN_CLASS_CONTENT: u32 = 0x0000_0004;
+const FAN_CLASS_PRE_CONTENT: u32 = 0x0000_0008;
+const FAN_CLASS_BITS: u32 = FAN_CLASS_CONTENT | FAN_CLASS_PRE_CONTENT;
+const FAN_UNLIMITED_QUEUE: u32 = 0x0000_0010;
+const FAN_UNLIMITED_MARKS: u32 = 0x0000_0020;
+const FAN_ENABLE_AUDIT: u32 = 0x0000_0040;
+const FAN_REPORT_PIDFD: u32 = 0x0000_0080;
+const FAN_REPORT_TID: u32 = 0x0000_0100;
+const FAN_REPORT_FID: u32 = 0x0000_0200;
+const FAN_REPORT_DIR_FID: u32 = 0x0000_0400;
+const FAN_REPORT_NAME: u32 = 0x0000_0800;
+const FAN_REPORT_TARGET_FID: u32 = 0x0000_1000;
+const FANOTIFY_INIT_SUPPORTED_FLAGS: u32 = FAN_CLOEXEC
+    | FAN_NONBLOCK
+    | FAN_CLASS_BITS
+    | FAN_UNLIMITED_QUEUE
+    | FAN_UNLIMITED_MARKS
+    | FAN_ENABLE_AUDIT
+    | FAN_REPORT_PIDFD
+    | FAN_REPORT_TID
+    | FAN_REPORT_FID
+    | FAN_REPORT_DIR_FID
+    | FAN_REPORT_NAME
+    | FAN_REPORT_TARGET_FID;
+const FANOTIFY_EVENT_F_FLAGS_SUPPORTED: u32 =
+    OpenFlags::O_ACCMODE.bits() | OpenFlags::O_LARGEFILE.bits() | OpenFlags::O_CLOEXEC.bits();
 
 fn split_offset_to_i64(pos_l: usize, pos_h: usize) -> i64 {
     let raw = ((pos_h as u64) << 32) | (pos_l as u32 as u64);
@@ -1156,9 +1186,53 @@ pub fn sys_fallocate(fd: usize, mode: u32, offset: usize, len: usize) -> Syscall
 }
 
 /// https://www.man7.org/linux/man-pages/man2/fanotify_init.2.html
-pub fn sys_fanotify_init(_flags: u32, _event_f_flags: u32) -> SyscallRet {
-    warn!("[sys_fanotify_init] not implement!");
-    Ok(0)
+pub fn sys_fanotify_init(flags: u32, event_f_flags: u32) -> SyscallRet {
+    if flags & !FANOTIFY_INIT_SUPPORTED_FLAGS != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    match flags & FAN_CLASS_BITS {
+        FAN_CLASS_NOTIF | FAN_CLASS_CONTENT | FAN_CLASS_PRE_CONTENT => {}
+        _ => return Err(SysErrNo::EINVAL),
+    }
+
+    if flags & FAN_REPORT_NAME != 0 && flags & FAN_REPORT_DIR_FID == 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    if flags & FAN_REPORT_TARGET_FID != 0
+        && (flags & (FAN_REPORT_FID | FAN_REPORT_DIR_FID | FAN_REPORT_NAME))
+            != (FAN_REPORT_FID | FAN_REPORT_DIR_FID | FAN_REPORT_NAME)
+    {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if event_f_flags & !FANOTIFY_EVENT_F_FLAGS_SUPPORTED != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    match event_f_flags & OpenFlags::O_ACCMODE.bits() {
+        bits if bits == OpenFlags::O_RDONLY.bits()
+            || bits == OpenFlags::O_WRONLY.bits()
+            || bits == OpenFlags::O_RDWR.bits() => {}
+        _ => return Err(SysErrNo::EINVAL),
+    }
+
+    let fanotify_file = FanotifyFd::new(flags, event_f_flags, flags & FAN_NONBLOCK != 0);
+    let mut open_flags = OpenFlags::O_RDONLY;
+    if flags & FAN_CLOEXEC != 0 {
+        open_flags |= OpenFlags::O_CLOEXEC;
+    }
+    if flags & FAN_NONBLOCK != 0 {
+        open_flags |= OpenFlags::O_NONBLOCK;
+    }
+
+    let task = current_task().unwrap();
+    let proc_inner = &task.process;
+    let fd = proc_inner.fd_table.alloc_fd()?;
+    proc_inner.fd_table.set(
+        fd,
+        FileDescriptor::new(open_flags, FileClass::Abs(fanotify_file)),
+    )?;
+    Ok(fd)
 }
 
 /// https://man7.org/linux/man-pages/man2/userfaultfd.2.html

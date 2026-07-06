@@ -11,6 +11,7 @@ pub use net::*;
 mod dummyfd;
 mod epoll;
 mod events;
+mod fanotify;
 mod inotify;
 mod mountfd;
 pub mod mqueue;
@@ -21,6 +22,7 @@ pub use {
     dummyfd::DummyFd,
     epoll::{EpollCreateFlags, EpollFile, EpollReady},
     events::EventFd,
+    fanotify::FanotifyFd,
     inotify::{InotifyFd, InotifyMask},
     mountfd::{DetachedMountFd, FsConfigOption, FsConfigValue, FsContext, FsContextFd},
     mqueue::{MqAttr, Mqueue},

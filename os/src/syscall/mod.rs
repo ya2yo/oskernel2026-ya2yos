@@ -235,6 +235,7 @@ pub enum Syscall {
     Wait4 = 260,
     Prlimit = 261,
     FanotifyInit = 262,
+    FanotifyMark = 263,
     NameToHandleAt = 264,
     OpenByHandleAt = 265,
     ClockAdjtime = 266,

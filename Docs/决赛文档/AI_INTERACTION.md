@@ -250,3 +250,10 @@
 - **场景**：新增 Linux syscall、`faccessat` 逻辑复用、LTP `faccessat201/202` 回归验证、文档完善
 - **描述**：用户要求实现 `faccessat2(439)`。AI 确认 syscall 枚举已有 439 号但缺少分发和实现；现有 `sys_faccessat()` 已有 real uid/gid 权限检查、父目录 execute 检查、路径长度与只读挂载处理。修复为抽出共用 `do_faccessat()`，新增 `sys_faccessat2()`，校验 `AT_EACCESS/AT_SYMLINK_NOFOLLOW/AT_EMPTY_PATH` flags，`AT_EACCESS` 下使用 effective uid/gid，并修正绝对路径忽略坏 `dirfd` 的语义。`make` 通过，RISC-V 单跑 musl/glibc `faccessat201` 均 7 项 `TPASS`，`faccessat202` 均 6 项 `TPASS`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
 - **关联 commit**：未提交
+
+#### fanotify_init 基础 fd 实现（7.6）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：新增 fanotify fd 文件对象、`fanotify_init(262)` 参数校验与 fd 分配、LoongArch64 构建和运行验证、文档完善
+- **描述**：用户要求实现 `sys_fanotify_init`。AI 确认 syscall 262 已分发，但原实现返回 `Ok(0)`，会把 stdin 误当作 fanotify fd。修复为新增 `FanotifyFd`，让 `sys_fanotify_init()` 校验 fanotify init flags、class bits、`FAN_REPORT_*` 依赖关系和 event fd flags，按 `FAN_CLOEXEC/FAN_NONBLOCK` 设置 fd flags，并返回新分配 fd。`make` 在当前默认 LoongArch64 下通过；`make run` 中 `fanotify01` 已推进到 `fanotify_mark(263)`，并因 263 号尚未实现而 `TBROK/ENOSYS`，说明完整 fanotify 事件系统仍需后续实现。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
+- **关联 commit**：未提交

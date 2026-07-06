@@ -2567,3 +2567,54 @@ glibc: passed 6 failed 0 broken 0
 ```
 
 未执行 LoongArch64 验证；本次实现和验证基于当前默认 RISC-V 架构。
+
+## 2026-07-06: 实现 fanotify_init 基础 fd
+
+### 用户需求
+
+用户询问 `sys_fanotify_init` 如何实现，并要求在当前内核中实现。
+
+### 分析
+
+AI 按 `add-syscall-feature` 流程检查现有 syscall 表和文件对象。`Syscall::FanotifyInit = 262` 已经存在，`syscall()` 也已分发到 `sys_fanotify_init(args[0], args[1])`，但 `os/src/syscall/fs/io.rs` 中原实现只是 `warn!` 后返回 `Ok(0)`。这会把用户态看到的 fanotify fd 固定成 0，实际等价于 stdin，后续 `fanotify_mark()` 或 `read()` 都会错用 fd。
+
+AI 读取 LTP `fanotify01` 与 `fanotify.h` 后确认：完整通过 `fanotify01` 需要实现 `fanotify_mark(263)`、mark 表、VFS open/read/write/close 事件投递、事件队列读取以及 ignore mask 语义。本次用户点名的是 `fanotify_init`，因此实现范围收敛为：创建可区分的 fanotify fd、校验 Linux init flags 与 event fd flags、正确设置 `FAN_CLOEXEC/FAN_NONBLOCK` 对应 fd 属性，为后续 `fanotify_mark` 和事件队列接入保留文件对象。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/files/fanotify.rs` | 新增 `FanotifyFd` 文件对象，保存 init flags 与 event fd flags；当前无事件时 `read()` 返回 `EAGAIN`，`write()` 返回 `EINVAL`，`poll()` 返回空 |
+| `os/src/fs/files/mod.rs` | 注册并导出 `FanotifyFd` |
+| `os/src/syscall/fs/io.rs` | `sys_fanotify_init()` 从 stub 改为真实 fd 分配；校验支持的 fanotify init flags、class bits、`FAN_REPORT_*` 依赖关系和 event fd flags；设置 `O_CLOEXEC/O_NONBLOCK` |
+| `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`、`Docs/决赛文档/ai.log` | 补充本次实现记录 |
+
+本次没有新增 `problem/` 复盘文件，因为它是单 syscall 基础实现，不是完整 LTP bug 修复。
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+make
+```
+
+结果：当前默认 LoongArch64 构建通过，仅有既有 warning。
+
+随后执行：
+
+```text
+timeout 80s make run
+```
+
+当前 `initproc.rs` 单跑 musl/glibc `fanotify01`。运行结果显示 `fanotify_init()` 已成功返回真实 fd（日志中后续 `fanotify_mark (3, ...)` 使用 fd 3），系统继续推进到 `fanotify_mark(263)`，随后因 263 号 syscall 尚未实现而 `TBROK`：
+
+```text
+Unsupported syscall_id: 263!
+fanotify.h:189: TBROK: fanotify_mark (3, FAN_MARK_ADD | 0, 1, AT_FDCWD, fs_mnt/tfile_22) failed: ENOSYS (38)
+```
+
+glibc 轮次同样停在 `fanotify_mark(263)`，系统最终跑到 `shutdown!`。这符合本次范围：`fanotify_init` 基础 fd 已接入，完整 `fanotify01` 仍需后续实现 `fanotify_mark` 与事件投递。
+
+未执行 RISC-V 验证；本次构建和运行验证基于当前默认 LoongArch64。
