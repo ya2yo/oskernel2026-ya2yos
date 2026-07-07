@@ -3733,3 +3733,37 @@ make TARGET_ARCH=riscv64
 ```
 
 结果：LoongArch64 构建通过；LoongArch64 单跑 musl/glibc `kill12` 均 `TPASS`，Summary 均为 `passed 1 failed 0 broken 0`；RISC-V 构建通过。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/kill12-sigign-wait-status.md](./problem/kill12-sigign-wait-status.md)。
+
+
+## 2026-07-07: 修复 LTP link04 linkat errno 与权限语义
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复。
+
+### 分析
+
+AI 提取 `log.ans` 后确认，musl/glibc `link04` 都失败 6 项：空旧路径返回 `EPERM`、空新路径返回 `EEXIST`、超长旧/新路径返回 `ENOENT`，以及缺少写权限或搜索权限的目录下 `link()` 错误成功。
+
+对照 LTP `link04.c` 后确认，该用例要求空路径在非 `AT_EMPTY_PATH` 语义下返回 `ENOENT`，pathname 过长返回 `ENAMETOOLONG`，非 root 在新路径父目录缺写权限或路径父目录缺搜索权限时返回 `EACCES`。继续追踪 `sys_linkat()` 发现当前实现直接把空相对路径交给 `get_abs_path()`，会被解析为当前工作目录；超长路径没有在 syscall 入口处理；普通 hard link 分支也没有检查父目录权限，直接调用底层 `hard_link()`。
+
+### 采纳结论
+
+需要在 `sys_linkat()` 入口补齐路径参数预检，并在创建 hard link 前按当前 effective uid/gid 检查旧路径父目录搜索权限和新路径父目录写/搜索权限，避免底层查找结果覆盖 Linux 期望 errno。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/ctl.rs` | 新增 `check_link_path()`、`parent_path_of()`，并将父目录 search/write 检查收敛到 `check_parent_permission()`；`sys_linkat()` 在普通路径和 `AT_EMPTY_PATH` 分支中补齐路径长度、空路径和父目录权限检查 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > /tmp/link04-after-fix.log 2>&1
+```
+
+结果：默认 LoongArch64 构建通过；LoongArch64 单跑 musl/glibc `link04` 均 14 项 `TPASS`，Summary 均为 `passed 14 failed 0 broken 0`。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/link04-linkat-errno-permission.md](./problem/link04-linkat-errno-permission.md)。

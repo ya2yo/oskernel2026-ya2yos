@@ -34,6 +34,30 @@ fn has_too_long_path_component(path: &str) -> bool {
         .any(|component| component.len() > MAX_FILE_NAME_LEN)
 }
 
+/// `linkat(2)` 需要在路径解析前处理空路径和超长路径，否则空相对路径会被
+/// `get_abs_path()` 解释成 cwd，超长路径也会落到底层查找并错误返回 `ENOENT`。
+fn check_link_path(path: &str, allow_empty: bool) -> SyscallRet {
+    if path.is_empty() {
+        return if allow_empty {
+            Ok(0)
+        } else {
+            Err(SysErrNo::ENOENT)
+        };
+    }
+    if path.len() >= MAX_PATH_LEN || has_too_long_path_component(path) {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+    Ok(0)
+}
+
+/// 返回目标路径的父目录；hard link 创建权限检查发生在父目录上。
+fn parent_path_of(abs_path: &str) -> Result<&str, SysErrNo> {
+    if abs_path.is_empty() || abs_path == "/" {
+        return Err(SysErrNo::ENOENT);
+    }
+    Ok(rsplit_once(abs_path.trim_end_matches('/'), "/").0)
+}
+
 /// 处理 `ioctl(2)` 文件控制请求。
 ///
 /// 根据 `fd` 取得目标文件对象，并把命令号和用户参数转发给具体 `File::ioctl`
@@ -201,13 +225,16 @@ pub fn sys_linkat(
     let old_path_str = read_user_cstr(&memory_set, oldpath)?;
     let new_path_str = read_user_cstr(&memory_set, newpath)?;
 
+    check_link_path(
+        &old_path_str,
+        flags & AT_EMPTY_PATH as u32 != 0 && old_path_str.is_empty(),
+    )?;
+    check_link_path(&new_path_str, false)?;
+
     // 处理 AT_EMPTY_PATH：若 oldpath 为空字符串，则使用 oldfd 对应的已打开文件
     if flags & AT_EMPTY_PATH as u32 != 0 && old_path_str.is_empty() {
-        // newpath 不能为空
-        if new_path_str.is_empty() {
-            return Err(SysErrNo::ENOENT);
-        }
         let new_abs_path = proc_inner.get_abs_path(newfd, &new_path_str)?;
+        check_parent_permission(parent_path_of(&new_abs_path)?, true)?;
         // 新路径不能已存在
         if open(&new_abs_path, OpenFlags::empty(), NONE_MODE).is_ok() {
             return Err(SysErrNo::EEXIST);
@@ -224,6 +251,8 @@ pub fn sys_linkat(
     // 常规路径解析
     let old_abs_path = proc_inner.get_abs_path(oldfd, &old_path_str)?;
     let new_abs_path = proc_inner.get_abs_path(newfd, &new_path_str)?;
+    check_parent_permission(parent_path_of(&old_abs_path)?, false)?;
+    check_parent_permission(parent_path_of(&new_abs_path)?, true)?;
 
     // LTP open14 links an O_TMPFILE fd through /proc/self/fd/<fd>. We do not
     // have a full procfs link implementation here, so materialize the current
@@ -501,7 +530,8 @@ pub fn sys_renameat2(
     ret
 }
 
-fn check_parent_search_permission(parent_path: &str) -> SyscallRet {
+/// 检查目录权限：路径遍历需要 search；创建目录项时还需要 write。
+fn check_parent_permission(parent_path: &str, need_write: bool) -> SyscallRet {
     let parent = open(parent_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     if parent.inode.types() != InodeType::Dir {
         return Err(SysErrNo::ENOTDIR);
@@ -518,7 +548,7 @@ fn check_parent_search_permission(parent_path: &str) -> SyscallRet {
 
     let parent_stat = parent.inode.fstat();
     let parent_mode = FaccessatFileMode::from_bits_truncate(parent.inode.fmode()? & 0xfff);
-    if !mode_allows(
+    let has_exec = mode_allows(
         parent_mode,
         &parent_stat,
         uid,
@@ -526,7 +556,18 @@ fn check_parent_search_permission(parent_path: &str) -> SyscallRet {
         FaccessatFileMode::S_IXUSR,
         FaccessatFileMode::S_IXGRP,
         FaccessatFileMode::S_IXOTH,
-    ) {
+    );
+    let has_write = !need_write
+        || mode_allows(
+            parent_mode,
+            &parent_stat,
+            uid,
+            gid,
+            FaccessatFileMode::S_IWUSR,
+            FaccessatFileMode::S_IWGRP,
+            FaccessatFileMode::S_IWOTH,
+        );
+    if !has_exec || !has_write {
         return Err(SysErrNo::EACCES);
     }
     Ok(0)
@@ -672,7 +713,7 @@ pub fn sys_fchownat(
             (file.inode.clone(), Some(path))
         } else {
             let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
-            check_parent_search_permission(&parent_path)?;
+            check_parent_permission(parent_path, false)?;
             let open_flags = if flags & AT_SYMLINK_NOFOLLOW as u32 != 0 {
                 OpenFlags::O_NOFOLLOW
             } else {
