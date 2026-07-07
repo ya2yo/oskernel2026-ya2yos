@@ -3696,3 +3696,40 @@ make TARGET_ARCH=riscv64
 ```
 
 结果：LoongArch64 构建通过；LoongArch64 单跑 musl/glibc `kill10` 均 `TPASS`，Summary 均为 `passed 1 failed 0 broken 0`；RISC-V 构建通过。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/kill10-siginfo-sender.md](./problem/kill10-siginfo-sender.md)。
+
+
+## 2026-07-07: 修复 LTP kill12 SIG_IGN wait status
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复 bug。
+
+### 分析
+
+AI 提取 `log.ans` 后确认，musl/glibc `kill12` 都在 `kill12.c:191` 失败，日志连续打印 `wait error: unexpected signal returned`，status 为 `1/2/10/12/13/131...`。对照 LTP `kill12.c` 可知，子进程对 `1..13` 号信号逐个设置 `SIG_IGN`，除 `SIGKILL` 外应忽略父进程发送的信号，并最终由 `SIGCHLD` handler 唤醒后 `exit(1)`；父进程不应看到信号终止 status。
+
+AI 先检查 `sys_rt_sigaction()` 和 `handle_signal()`，发现 action table 中显式 `SIG_IGN` 没有在 pending signal 分发中优先处理，非 custom 分支直接按信号默认动作执行。修复后临时日志进一步显示 `handler=0x1` 已被正确安装，但 wait status 仍被编码成信号终止。继续追踪发现 `deliver_signal_to_thread_group()` 在投递阶段根据默认动作提前写入 `ProcessMeta::termination_signal`，即使后续信号被忽略，该字段也会污染 `sys_waitpid()` 的 status 编码。
+
+### 采纳结论
+
+`termination_signal` 只能在实际执行默认终止动作时记录，不能在投递阶段根据默认动作预写；`handle_signal()` 也必须识别显式 `SIG_IGN`。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/signal/pending.rs` | 非 custom signal 分支优先识别显式 `SIG_IGN`，直接忽略并返回；实际默认 terminate/core dump 时才记录 `termination_signal` |
+| `os/src/signal/delivery.rs` | 删除投递阶段根据默认动作预设 `termination_signal` 的逻辑 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/signal/pending.rs os/src/signal/delivery.rs
+make
+timeout 120s make run > /tmp/kill12-final.log 2>&1
+make TARGET_ARCH=riscv64
+```
+
+结果：LoongArch64 构建通过；LoongArch64 单跑 musl/glibc `kill12` 均 `TPASS`，Summary 均为 `passed 1 failed 0 broken 0`；RISC-V 构建通过。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/kill12-sigign-wait-status.md](./problem/kill12-sigign-wait-status.md)。

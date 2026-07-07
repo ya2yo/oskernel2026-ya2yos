@@ -158,16 +158,6 @@ fn deliver_signal_to_thread_group(proc: &Process, sig: SigSet, siginfo: Option<S
     }
 
     // debug!("{} receive signal, my parent is {}", proc.pid, proc.ppid());
-    let group_exiting = proc.is_group_exiting();
-    if !group_exiting {
-        if let Some(signo) = sig.peek_front() {
-            match SigSet::from_sig(signo).default_op() {
-                SigOp::Terminate => proc.meta_lock().termination_signal = Some((signo, false)),
-                SigOp::CoreDump => proc.meta_lock().termination_signal = Some((signo, true)),
-                _ => {}
-            }
-        }
-    }
     let tasks = proc.meta_lock().tasks.clone();
     let mut resumed = 0;
     for task in tasks.iter() {

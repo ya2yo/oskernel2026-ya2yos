@@ -39,3 +39,4 @@
 - [fchmod05 chmod S_ISGID 清除语义](./fchmod05-chmod-setgid.md)
 - [kill05 kill 权限检查与进程组语义](./kill05-kill-permission.md)
 - [kill10 SA_SIGINFO 发送者 siginfo 修复](./kill10-siginfo-sender.md)
+- [kill12 SIG_IGN 与 wait status 修复](./kill12-sigign-wait-status.md)
