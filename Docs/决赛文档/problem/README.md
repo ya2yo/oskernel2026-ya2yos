@@ -42,3 +42,4 @@
 - [kill12 SIG_IGN 与 wait status 修复](./kill12-sigign-wait-status.md)
 - [link04 linkat errno 与父目录权限修复](./link04-linkat-errno-permission.md)
 - [link08 linkat mount/rofs/ELOOP 语义修复](./link08-linkat-mount-rofs-eloop.md)
+- [linkat02 hard link 上限与 unlink symlink 语义修复](./linkat02-hardlink-emlink-unlink-symlink.md)

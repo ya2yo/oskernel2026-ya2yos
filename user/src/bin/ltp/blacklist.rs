@@ -808,9 +808,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     // [1100,1200)区间
     "lgetxattr02\0",
     "libcgroup_freezer\0",
-    // "link08\0",
-    "linkat01\0",
-    "linkat02\0",
     "linktest.sh\0",
     "listen01\0",
     "listxattr01\0",

@@ -28,6 +28,9 @@ use crate::utils::{get_abs_path as normalize_abs_path, rsplit_once, SysErrNo, Sy
 use linux_raw_sys::loop_device::LOOP_SET_FD;
 
 const MAX_FILE_NAME_LEN: usize = 255;
+// Keep the exposed hard-link limit finite so LTP hard-link limit probes can
+// terminate quickly. POSIX only requires LINK_MAX to be at least 8.
+const MAX_HARD_LINKS: u32 = 1024;
 
 fn has_too_long_path_component(path: &str) -> bool {
     path.split('/')
@@ -121,6 +124,14 @@ fn has_self_referential_symlink_prefix(abs_path: &str) -> bool {
         }
     }
     false
+}
+
+/// 在创建新 hard link 前检查源 inode 的链接数上限，达到上限时返回 `EMLINK`。
+fn check_hard_link_limit(inode: &Arc<dyn Inode>) -> SyscallRet {
+    if inode.fstat().st_nlink >= MAX_HARD_LINKS {
+        return Err(SysErrNo::EMLINK);
+    }
+    Ok(0)
 }
 
 /// 处理 `ioctl(2)` 文件控制请求。
@@ -309,6 +320,7 @@ pub fn sys_linkat(
         // 通过 oldfd 获取原始 inode
         let old_file = proc_inner.fd_table.get(oldfd as usize)?.file()?;
         let old_path = old_file.inode.path();
+        check_hard_link_limit(&old_file.inode)?;
         old_file.inode.hard_link(&old_path, &new_abs_path)?;
         let inode = FsIndex::insert_inode_idx(&new_abs_path, old_file.inode.clone());
         cache_positive_dentry_path(&new_abs_path, inode);
@@ -381,6 +393,8 @@ pub fn sys_linkat(
         return Err(SysErrNo::EEXIST);
     }
 
+    check_hard_link_limit(&osfile.inode)?;
+
     // 在文件系统层面创建硬链接
     osfile.inode.hard_link(&old_abs_path, &new_abs_path)?;
     // 更新目录索引：新路径与旧路径共享同一个 inode
@@ -411,7 +425,7 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     // 如果是File但尚有对应的fd未关闭,等到close时unlink
     // 如果是符号链接,直接移除
     // 如果是socket, FIFO, or device,移除但现有的fd可继续使用
-    let osfile = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+    let osfile = open(&abs_path, OpenFlags::O_RDONLY | OpenFlags::O_UNLINK, NONE_MODE)?.file()?;
 
     let is_dir = osfile.inode.types() == InodeType::Dir;
     let remove_dir = flags & (AT_REMOVEDIR as u32) != 0;

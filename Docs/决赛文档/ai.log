@@ -3801,3 +3801,37 @@ timeout 120s make run > /tmp/link08-after-eloop2.log 2>&1
 ```
 
 结果：默认 LoongArch64 构建通过；LoongArch64 单跑 musl/glibc `link08` 均 4 项 `TPASS`，Summary 均为 `passed 4 failed 0 broken 0`。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/link08-linkat-mount-rofs-eloop.md](./problem/link08-linkat-mount-rofs-eloop.md)。
+
+
+## 2026-07-07: 修复 LTP linkat02 hard link 上限卡死
+
+### 用户需求
+
+用户指出 `linkat02\0` 测例当前会直接卡死，要求分析并修复。
+
+### 分析
+
+AI 对照 LTP `linkat02.c` 后确认，测试在进入 7 个负向断言前，会在 `setup()` 中调用 `tst_fs_fill_hardlinks(cleanup, "emlink_dir")`。该 helper 会不断为同一个文件创建 hard link，直到 `link()` 返回 `EMLINK`；如果一直成功，则最多尝试 65535 次，在 QEMU 中表现为长时间无输出。
+
+追踪 `sys_linkat()` 后发现，当前 hard link 创建路径没有检查源 inode 的 `st_nlink`，因此不会主动返回 `EMLINK`。第一次修复后断言均 `TPASS`，但 cleanup 阶段 `unlink(testeloop)` 返回 `ELOOP`，原因是 `sys_unlinkat()` 普通打开目标时跟随最终 symlink；而 unlink 语义应删除 symlink 本身。
+
+### 采纳结论
+
+需要为 hard link 增加有限链接数上限并返回 `EMLINK`，让 LTP hard link 上限探测可收敛；同时 `unlinkat` 删除普通路径时不能跟随最终 symlink。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/ctl.rs` | 新增 `MAX_HARD_LINKS = 1024` 和 `check_hard_link_limit()`，在 `linkat` hard link 创建前返回 `EMLINK`；`sys_unlinkat()` 打开目标时使用 `O_UNLINK`，删除最终 symlink 本身 |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 180s make run > /tmp/linkat02-unlink-symlink.log 2>&1
+```
+
+结果：默认 LoongArch64 构建通过；LoongArch64 单跑 musl/glibc `linkat02` 均 7 项 `TPASS`，Summary 均为 `passed 7 failed 0 broken 0 warnings 0`，wrapper 退出码均为 0。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/linkat02-hardlink-emlink-unlink-symlink.md](./problem/linkat02-hardlink-emlink-unlink-symlink.md)。
