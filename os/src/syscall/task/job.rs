@@ -10,6 +10,7 @@ use crate::{
 pub fn sys_getuid() -> SyscallRet {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
+    // debug!("[sys_getuid] uid={}", task_inner.user_id);
     Ok(task_inner.user_id)
 }
 
@@ -17,6 +18,7 @@ pub fn sys_getuid() -> SyscallRet {
 pub fn sys_geteuid() -> SyscallRet {
     let task = current_task().unwrap();
     let uid = task.inner_lock().effective_uid as usize;
+    // debug!("[sys_geteuid] uid={uid}");
     Ok(uid)
 }
 
@@ -88,28 +90,9 @@ fn compute_resuid(
     euid: u32,
     suid: u32,
 ) -> (u32, u32, u32) {
-    let mut new_r = cur_r;
-    let mut new_e = cur_e;
-    let mut new_s = cur_s;
-
-    if ruid != UID_UNCHANGED {
-        new_r = ruid;
-        if euid == UID_UNCHANGED {
-            new_e = ruid;
-        }
-        if suid == UID_UNCHANGED {
-            new_s = ruid;
-        }
-    }
-    if euid != UID_UNCHANGED {
-        new_e = euid;
-        if suid == UID_UNCHANGED {
-            new_s = euid;
-        }
-    }
-    if suid != UID_UNCHANGED {
-        new_s = suid;
-    }
+    let new_r = if ruid == UID_UNCHANGED { cur_r } else { ruid };
+    let new_e = if euid == UID_UNCHANGED { cur_e } else { euid };
+    let new_s = if suid == UID_UNCHANGED { cur_s } else { suid };
 
     (new_r, new_e, new_s)
 }
@@ -121,9 +104,6 @@ fn setresuid_allowed(
     new_r: u32,
     new_e: u32,
     new_s: u32,
-    ruid: u32,
-    euid: u32,
-    suid: u32,
 ) -> bool {
     let allowed = [cur_r, cur_e, cur_s];
     if new_r != cur_r && !allowed.contains(&new_r) {
@@ -136,10 +116,7 @@ fn setresuid_allowed(
         return false;
     }
 
-    let explicit = (ruid != UID_UNCHANGED) as u32
-        + (euid != UID_UNCHANGED) as u32
-        + (suid != UID_UNCHANGED) as u32;
-    explicit <= 1
+    true
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/setreuid.2.html
@@ -208,11 +185,11 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> SyscallRet {
     let cur_r = inner.user_id as u32;
     let cur_e = inner.effective_uid;
     let cur_s = inner.saved_uid;
+    // debug!("[sys_setresuid] r_uid={}, e_uid={}, s_uid={}", cur_r, cur_e,cur_s);
     let (new_r, new_e, new_s) = compute_resuid(cur_r, cur_e, cur_s, ruid, euid, suid);
 
     let privileged = inner.user_id == 0 || inner.effective_uid == 0;
-    if !privileged && !setresuid_allowed(cur_r, cur_e, cur_s, new_r, new_e, new_s, ruid, euid, suid)
-    {
+    if !privileged && !setresuid_allowed(cur_r, cur_e, cur_s, new_r, new_e, new_s) {
         return Err(SysErrNo::EPERM);
     }
 
@@ -236,6 +213,7 @@ pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> SyscallR
         (euid, inner.effective_uid),
         (suid, inner.saved_uid),
     ] {
+        // debug!("[sys_getresuid] value={value}");
         if ptr.is_null() {
             continue;
         }
