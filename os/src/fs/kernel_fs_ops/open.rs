@@ -181,7 +181,8 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     }
 
     let (readable, writable) = flags.read_write();
-    let inode = parent_inode.create(&create_path, flags.node_type())?;
+    let node_type = flags.node_type();
+    let inode = parent_inode.create(&create_path, node_type)?;
     // Apply the process umask to the requested file mode.
     // umask specifies which permission bits to *clear* from the mode.
     // During early boot (fs::init) there is no current task, so we
@@ -193,12 +194,19 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
         }
         None => 0o022,
     };
-    let effective_mode = mode & !umask;
+    let mut effective_mode = mode & !umask;
+    if node_type == InodeType::Dir {
+        if let Some(parent_stat) = parent_stat.as_ref() {
+            if parent_stat.st_mode & 0o2000 != 0 {
+                effective_mode |= 0o2000;
+            }
+        }
+    }
     // debug!(
     //     "[create_file] mode={:o} umask={:o} → effective={:o}",
     //     mode, umask, effective_mode
     // );
-    inode.fmode_set(effective_mode);
+    inode.fmode_set(effective_mode)?;
     if let Some((uid, effective_gid)) = task_ids {
         // Linux assigns new inode gid from the parent directory when S_ISGID is set.
         let parent_stat = parent_stat.as_ref().ok_or(SysErrNo::EACCES)?;

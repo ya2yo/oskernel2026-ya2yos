@@ -23,6 +23,7 @@
 - [epoll_create02 RISC-V musl libc 包装语义](./epoll-create02-riscv-musl-libc.md)
 - [iperf IPPROTO_IPV6/IPV6_V6ONLY 兼容](./iperf-ipv6-v6only.md)
 - [mkdir09 LoongArch mmap 栈缺页与 tmpfs 挂载隔离](./mkdir09-loongarch-map-stack-tmpfs.md)
+- [mkdir02 目录 S_ISGID 继承语义修复](./mkdir02-setgid-inherit.md)
 - [fanotify01 mark 与基础事件投递](./fanotify01-mark-events.md)
 - [fanotify02 目录子项事件与 remove mask 语义](./fanotify02-event-on-child.md)
 - [fcntl01 F_GETFL/F_SETFL 文件状态标志修复](./fcntl01-f-getfl-setfl.md)

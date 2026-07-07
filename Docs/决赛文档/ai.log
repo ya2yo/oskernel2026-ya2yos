@@ -3835,3 +3835,37 @@ timeout 180s make run > /tmp/linkat02-unlink-symlink.log 2>&1
 ```
 
 结果：默认 LoongArch64 构建通过；LoongArch64 单跑 musl/glibc `linkat02` 均 7 项 `TPASS`，Summary 均为 `passed 7 failed 0 broken 0 warnings 0`，wrapper 退出码均为 0。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/linkat02-hardlink-emlink-unlink-symlink.md](./problem/linkat02-hardlink-emlink-unlink-symlink.md)。
+
+
+## 2026-07-07: 修复 LTP mkdir02 目录 S_ISGID 继承语义
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复。
+
+### 分析
+
+AI 提取 `log.ans` 后确认，musl/glibc `mkdir02` 都失败在 `New dir FAILED to inherit S_ISGID`，Summary 为 `passed 0 failed 1 broken 0`。对照 LTP `mkdir02.c` 后确认，测试先将父目录设置为 `0777 | S_ISGID` 并 chown 到空闲 gid，再切换为 nobody 创建子目录，期望新目录同时继承父目录 gid 和 `S_ISGID` mode 位。
+
+继续追踪 `sys_mkdirat()` 发现，它通过 `open(O_CREATE|O_EXCL|O_DIRECTORY)` 进入 `create_file()`。该路径已经在 owner 设置阶段根据父目录 `0o2000` 选择父目录 gid，因此日志没有报告 gid 继承失败；但 mode 设置阶段只做 `mode & !umask`，没有在新建目录时继承父目录 `S_ISGID` 位。
+
+### 采纳结论
+
+目录创建公共路径需要在应用 `umask` 后判断父目录是否带 `S_ISGID`，并仅对新建目录补上 `0o2000`；普通文件保持现有只继承 gid、不继承 mode 位的行为。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/open.rs` | `create_file()` 保存 `node_type`，新建目录且父目录带 `S_ISGID` 时为 `effective_mode` 补 `0o2000`；同时传播 `fmode_set()` 错误 |
+
+### 验证
+
+已执行：
+
+```text
+make
+make run
+```
+
+结果：默认 LoongArch64 构建通过；LoongArch64 `make run` 中 musl/glibc `mkdir02` 均输出 `TPASS: New dir inherited GID and S_ISGID`，Summary 均为 `passed 1 failed 0 broken 0`。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/mkdir02-setgid-inherit.md](./problem/mkdir02-setgid-inherit.md)。

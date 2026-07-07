@@ -467,3 +467,10 @@
 - **场景**：`linkat02` 卡死分析、LTP hard link 上限探测源码对照、`linkat(2)` `EMLINK` 语义修复、`unlinkat(2)` symlink 删除语义修复、LoongArch64 运行验证、文档完善
 - **描述**：用户指出 `linkat02\0` 当前直接卡死。AI 确认卡死发生在 `tst_fs_fill_hardlinks()` setup 阶段：内核没有 hard link 上限，测试会持续创建同一 inode 的 hard link。修复为在 `linkat` 创建 hard link 前检查 `st_nlink >= 1024` 并返回 `EMLINK`；随后又修正 `unlinkat` 不跟随最终 symlink，避免 cleanup 删除 symlink 环时报 `ELOOP` warning。LoongArch64 单跑 musl/glibc `linkat02` 均 `passed 7 failed 0 broken 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/linkat02-hardlink-emlink-unlink-symlink.md](./problem/linkat02-hardlink-emlink-unlink-symlink.md)。
 - **关联 commit**：待提交
+
+#### LTP mkdir02 目录 S_ISGID 继承语义修复（7.7）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `mkdir02` 源码对照、目录创建 mode 继承语义修复、LoongArch64 构建和运行验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `mkdir02` 失败来自新建目录继承了父目录 gid，但没有继承父目录 `S_ISGID` mode 位；根因是 `create_file()` 在 `mkdirat` 复用的 `O_DIRECTORY|O_CREATE` 路径中只应用 `umask`，没有对目录补父目录 `0o2000`。修复为新建目录且父目录带 `S_ISGID` 时为 `effective_mode` 补 `0o2000`，并传播 `fmode_set()` 错误。LoongArch64 `make run` 中 musl/glibc `mkdir02` 均 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/mkdir02-setgid-inherit.md](./problem/mkdir02-setgid-inherit.md)。
+- **关联 commit**：待提交
