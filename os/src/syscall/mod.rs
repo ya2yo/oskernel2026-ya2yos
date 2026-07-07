@@ -665,6 +665,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Shmget => sys_shmget(args[0] as i32, args[1], args[2] as i32),
         Syscall::Shmctl => sys_shmctl(args[0] as i32, args[1] as i32, args[2]),
         Syscall::Shmat => sys_shmat(args[0] as i32, args[1], args[2] as i32),
+        Syscall::Shmdt => sys_shmdt(args[0]),
         #[cfg(feature = "net")]
         Syscall::Socket => sys_socket(args[0] as u32, args[1] as u32, args[2] as u32),
         #[cfg(feature = "net")]

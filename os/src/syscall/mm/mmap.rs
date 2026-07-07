@@ -7,8 +7,8 @@ use crate::{
     arch::memory_layout::{MAX_MMAP_SIZE, PAGE_SIZE},
     fs::File,
     mm::{
-        copy_to_user, if_bad_address, remove_bad_address, MapArea, MapAreaType, MapPermission, MremapFlags, VirtAddr,
-        VirtPageNum,
+        copy_to_user, if_bad_address, remove_bad_address, MapArea, MapAreaType, MapPermission,
+        MremapFlags, VirtAddr, VirtPageNum,
     },
     syscall::options::{MmapFlags, MmapProt},
     task::{self, current_task},
@@ -256,8 +256,6 @@ pub fn sys_madvise(_addr: usize, _len: usize, _advice: usize) -> SyscallRet {
     Ok(0)
 }
 
-
-
 /// 参考 https://man7.org/linux/man-pages/man2/mincore.2.html
 ///
 /// 查询地址范围内各页是否驻留在物理内存中。
@@ -312,8 +310,6 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> SyscallRet {
 
     Ok(0)
 }
-
-
 
 // System V 消息队列 (msgget/msgsnd/msgrcv/msgctl) — 桩实现
 /// https://man7.org/linux/man-pages/man2/msgget.2.html

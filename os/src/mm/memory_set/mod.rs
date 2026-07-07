@@ -118,6 +118,10 @@ impl MemorySet {
         self.get_mut().shm(addr, size, map_perm, pages)
     }
     #[inline(always)]
+    pub fn shm_detach(&self, addr: usize) -> SyscallRet {
+        self.get_mut().shm_detach(addr)
+    }
+    #[inline(always)]
     pub fn munmap(&self, addr: usize, len: usize) -> SyscallRet {
         self.get_mut().munmap(addr, len)
     }

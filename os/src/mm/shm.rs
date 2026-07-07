@@ -92,6 +92,11 @@ pub fn shm_attach(key: usize, addr: usize, map_perm: MapPermission) -> SyscallRe
     }
 }
 
+pub fn shm_detach(addr: usize) -> SyscallRet {
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    task.process.memory_set_arc().shm_detach(addr)
+}
+
 pub fn shm_drop(key: usize) {
     SHM_MANAGER.lock().map.remove(&key);
 }

@@ -53,6 +53,23 @@ impl MemorySetInner {
         panic!("[shm_attach] unimplement attach addr");
     }
 
+    /// Detach a SysV shared memory mapping from the current address space.
+    pub fn shm_detach(&mut self, addr: usize) -> SyscallRet {
+        if addr % PAGE_SIZE != 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+        let start_vpn = VirtAddr::from(addr).floor();
+        let Some(idx) = self.areas.iter().position(|area| {
+            area.area_type == MapAreaType::Shm && area.vpn_range.start() == start_vpn
+        }) else {
+            return Err(SysErrNo::EINVAL);
+        };
+        let mut area = self.areas.remove(idx);
+        area.unmap(&mut self.page_table);
+        tlb_invalidate();
+        Ok(0)
+    }
+
     /// mmap
     pub fn mmap(
         &mut self,

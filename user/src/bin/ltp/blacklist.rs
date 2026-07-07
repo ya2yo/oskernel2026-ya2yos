@@ -782,7 +782,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "keyctl07\0",
     "keyctl08\0",
     "keyctl09\0",
-    "kill07\0",
     "kill08\0",
     "kill09\0",
     "kill10\0",

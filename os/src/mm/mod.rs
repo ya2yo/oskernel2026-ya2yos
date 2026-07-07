@@ -35,7 +35,7 @@ pub mod translate;
 pub use translate::*;
 
 pub use heap_allocator::ContinuousPages;
-pub use shm::{shm_attach, shm_create, shm_drop, shm_find, ShmFlags};
+pub use shm::{shm_attach, shm_create, shm_detach, shm_drop, shm_find, ShmFlags};
 
 // 这一步会执行切换页表操作
 pub fn activate_kernel_space() {

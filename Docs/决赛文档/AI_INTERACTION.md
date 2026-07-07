@@ -418,3 +418,10 @@
 - **场景**：`os/src/signal` 模块内聚度重构、signal frame/投递/timer/default action 职责拆分、LoongArch64 构建验证、文档完善
 - **描述**：用户指出 `os/src/signal` 整体内聚度太低，要求继续重构。AI 将原本集中在 `mod.rs` 的多类逻辑拆分为 `frame.rs`、`pending.rs`、`delivery.rs`、`timer.rs`，并把原 `sigact.rs`/`signal.rs` 改名为职责更清晰的 `action_table.rs`/`types.rs`；`mod.rs` 只承担门面导出和全局 signal 常量定义。重构保持 `crate::signal::...` 对外函数名不变，默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目。
 - **关联 commit**：待提交
+
+#### shmdt 基础 detach 语义实现（7.7）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：SysV shared memory `shmdt(197)` 分发接入、当前进程 shm mapping 解除、LoongArch64 构建验证、文档完善
+- **描述**：用户要求实现 `shm_detach`。AI 检查现有 `shmget/shmat/shmctl` 后确认 `shmdt` 只有空 stub 且 syscall 分发未接入；实现为 `sys_shmdt()` 委托 mm 层，在当前进程地址空间中查找起始地址匹配且类型为 `MapAreaType::Shm` 的映射，成功时解除整段映射并刷新 TLB，地址未页对齐或未 attach 返回 `EINVAL`。默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目。
+- **关联 commit**：待提交

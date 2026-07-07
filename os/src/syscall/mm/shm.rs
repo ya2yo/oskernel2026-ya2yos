@@ -1,7 +1,9 @@
 use log::warn;
 
-use crate::{mm::{MapPermission, ShmFlags, shm_attach, shm_create, shm_drop, shm_find}, utils::{SysErrNo, SyscallRet}};
-
+use crate::{
+    mm::{shm_attach, shm_create, shm_detach, shm_drop, shm_find, MapPermission, ShmFlags},
+    utils::{SysErrNo, SyscallRet},
+};
 
 /// 参考 https://man7.org/linux/man-pages/man2/shmget.2.html
 pub fn sys_shmget(key: i32, size: usize, shmflag: i32) -> SyscallRet {
@@ -29,6 +31,21 @@ pub fn sys_shmget(key: i32, size: usize, shmflag: i32) -> SyscallRet {
     }
 }
 
+/// 参考 https://man7.org/linux/man-pages/man2/shmctl.2.html
+pub fn sys_shmctl(shmid: i32, cmd: i32, _buf: usize) -> SyscallRet {
+    const IPC_RMID: i32 = 0;
+    match cmd {
+        IPC_RMID => {
+            shm_drop(shmid as usize);
+            Ok(0)
+        }
+        _ => {
+            warn!("[sys_shmctl] unsupport cmd");
+            Err(SysErrNo::ENOSYS)
+        }
+    }
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/shmat.2.html
 pub fn sys_shmat(shmid: i32, shmaddr: usize, shmflag: i32) -> SyscallRet {
     let mut permission = MapPermission::U | MapPermission::R;
@@ -50,17 +67,7 @@ pub fn sys_shmat(shmid: i32, shmaddr: usize, shmflag: i32) -> SyscallRet {
     }
 }
 
-/// 参考 https://man7.org/linux/man-pages/man2/shmctl.2.html
-pub fn sys_shmctl(shmid: i32, cmd: i32, _buf: usize) -> SyscallRet {
-    const IPC_RMID: i32 = 0;
-    match cmd {
-        IPC_RMID => {
-            shm_drop(shmid as usize);
-            Ok(0)
-        }
-        _ => {
-            warn!("[sys_shmctl] unsupport cmd");
-            Err(SysErrNo::ENOSYS)
-        }
-    }
+/// https://www.man7.org/linux/man-pages/man2/shmdt.2.html
+pub fn sys_shmdt(shmaddr: usize) -> SyscallRet {
+    shm_detach(shmaddr)
 }

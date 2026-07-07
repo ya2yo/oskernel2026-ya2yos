@@ -3586,3 +3586,38 @@ make
 ```
 
 结果：默认 LoongArch64 构建通过，只有既有 `smoltcp` vendor warning。本次为结构重构，未改变 signal syscall 对外函数签名。
+
+
+## 2026-07-07: 实现 shmdt 基础 detach 语义
+
+### 用户需求
+
+用户要求实现 `shm_detach`。
+
+### 分析
+
+AI 检查当前 SysV shared memory 实现后确认，`shmget/shmat/shmctl(IPC_RMID)` 已有基础代码，但 `shmdt` 只有空 stub，`Syscall::Shmdt = 197` 也未接入 syscall 分发。现有 `shmat` 会通过 `MemorySetInner::shm()` 创建 `MapAreaType::Shm` 映射，并把共享段物理页以 `Arc<FrameTracker>` 形式挂到当前进程地址空间。
+
+Linux `shmdt(2)` 的核心可见语义是：`shmaddr` 必须页对齐，并且必须是当前进程某个已 attach shared memory segment 的起始地址；成功时只解除当前进程映射，不删除全局 shm segment。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/mm/memory_set/mmap_ops.rs` | 新增 `MemorySetInner::shm_detach()`，查找起始 VPN 匹配且类型为 `MapAreaType::Shm` 的 area，解除映射并刷新 TLB；未找到或地址未页对齐返回 `EINVAL` |
+| `os/src/mm/memory_set/mod.rs` | 增加 `MemorySet::shm_detach()` 封装 |
+| `os/src/mm/shm.rs` | 实现 `shm_detach()`，从当前任务取地址空间并委托 memory set；不持有全局 `SHM_MANAGER` 锁 |
+| `os/src/mm/mod.rs` | 导出 `shm_detach` |
+| `os/src/syscall/mm/shm.rs` | `sys_shmdt()` 调用 `shm_detach()` |
+| `os/src/syscall/mod.rs` | 接入 `Syscall::Shmdt` 分发 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/mm/memory_set/mod.rs os/src/mm/memory_set/mmap_ops.rs os/src/mm/shm.rs os/src/mm/mod.rs os/src/syscall/mm/shm.rs os/src/syscall/mod.rs
+make
+```
+
+结果：默认 LoongArch64 构建通过，只有既有 `smoltcp` vendor warning。当前未改动用户态测试入口；运行态 LTP `shmdt01/shmdt02` 尚未单跑。
