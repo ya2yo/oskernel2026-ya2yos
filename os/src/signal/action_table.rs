@@ -1,3 +1,8 @@
+//! 进程级 signal action 表。
+//!
+//! `SigTable` 只保存每个信号当前安装的 handler/action。线程组退出状态、
+//! stop/continue 状态和等待事件属于 `ProcessMeta`，不要放入这个共享表。
+
 use core::array::from_fn;
 
 use crate::sync::SyncUnsafeCell;

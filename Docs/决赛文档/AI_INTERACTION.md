@@ -411,3 +411,10 @@
 - **场景**：`log.ans` 分析、LTP `kill05` 源码对照、`kill(2)` uid 权限与进程组语义修复、LoongArch64 构建和日志验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `kill05` 失败来自 `kill(pid, SIGKILL)` 在不同普通 uid 之间错误成功；根因是 `sys_kill()` 直接调用内部信号投递 helper，只检查目标存在性，不检查发送者 real/effective uid 与目标 real/saved uid，也未正确处理 `pid == 0`、`pid < -1` 和 `signo == 0`。修复为新增用户态 `kill(2)` 专用 wrapper，保留内部信号投递路径不受权限检查影响。`make` 通过，最新 `log.ans` 中 musl/glibc `kill05` 均 `TPASS`，summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/kill05-kill-permission.md](./problem/kill05-kill-permission.md)。
 - **关联 commit**：待提交
+
+#### signal 模块职责边界重构（7.7）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`os/src/signal` 模块内聚度重构、signal frame/投递/timer/default action 职责拆分、LoongArch64 构建验证、文档完善
+- **描述**：用户指出 `os/src/signal` 整体内聚度太低，要求继续重构。AI 将原本集中在 `mod.rs` 的多类逻辑拆分为 `frame.rs`、`pending.rs`、`delivery.rs`、`timer.rs`，并把原 `sigact.rs`/`signal.rs` 改名为职责更清晰的 `action_table.rs`/`types.rs`；`mod.rs` 只承担门面导出和全局 signal 常量定义。重构保持 `crate::signal::...` 对外函数名不变，默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目。
+- **关联 commit**：待提交

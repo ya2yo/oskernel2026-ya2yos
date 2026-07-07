@@ -1,3 +1,9 @@
+//! Linux signal ABI 基础类型和常量。
+//!
+//! 本模块只定义用户态可见或跨模块共享的 signal 编号、`SigSet`、
+//! `sigaction`、`siginfo_t` 和 alt-stack 结构；实际投递、默认动作处理
+//! 和 signal frame 构造分别放在 `delivery`、`pending`、`frame` 模块。
+
 use log::warn;
 
 use crate::{

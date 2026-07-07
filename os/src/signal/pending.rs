@@ -1,0 +1,85 @@
+//! pending signal 选择与默认动作分发。
+//!
+//! 本模块负责检查当前任务是否有未屏蔽 pending signal，并在 trap 返回前
+//! 决定是构造用户 handler frame，还是执行 ignore/stop/continue/terminate
+//! 等默认动作。
+
+use log::debug;
+
+use super::{send_signal_to_thread_group, setup_frame, SigActionFlags, SigOp, SigSet, SIGCHLD};
+use crate::task::{current_task, exit_current_and_run_next, stop_current_and_run_next, Process};
+
+pub fn check_if_any_sig_for_current_task() -> Option<usize> {
+    let task = current_task().unwrap();
+    let task_inner = task.inner_lock();
+
+    task_inner
+        .sig_pending
+        .difference(task_inner.sig_mask)
+        .peek_front()
+}
+
+pub fn handle_signal(signo: usize) {
+    let task = current_task().unwrap();
+    let mut task_inner = task.inner_lock();
+    let signal = SigSet::from_sig(signo);
+    debug!(
+        "[handle_signal] signo={},handle signal {:?}, sepc={:#x}",
+        signo,
+        signal,
+        task_inner.trap_cx().get_sepc()
+    );
+    let sig_action = task
+        .process
+        .with_sigtable(|sigtable| sigtable.action(signo));
+    task_inner.sig_pending.remove(signal);
+    drop(task_inner);
+    drop(task);
+    if sig_action.customed {
+        // debug!("handle_signal: setup_frame!");
+        setup_frame(signo, sig_action);
+        // 标记信号已拦截：可中断 syscall 应返回 EINTR
+        let task = current_task().unwrap();
+        task.inner_lock().sig_eintr = true;
+    } else {
+        match SigSet::from_sig(signo).default_op() {
+            SigOp::Ignore => {
+                debug!("handle_signal: ignore (SIG_IGN), signo={}", signo);
+            }
+            SigOp::Stop => {
+                debug!("handle_signal: stop, signo={}", signo);
+                let task = current_task().unwrap();
+                let parent_pid = task.ppid();
+                task.process.meta_lock().stopped_signal = Some(signo);
+                if let Some(parent) = Process::get_process_arc_by_pid(parent_pid) {
+                    parent.meta_lock().child_exit_event.wake();
+                    let no_cld_stop = parent.with_sigtable(|sigtable| {
+                        sigtable
+                            .action(SIGCHLD)
+                            .act
+                            .sa_flags
+                            .contains(SigActionFlags::SA_NOCLDSTOP)
+                    });
+                    if !no_cld_stop {
+                        let _ = send_signal_to_thread_group(parent_pid, SigSet::SIGCHLD);
+                    }
+                }
+                drop(task);
+                stop_current_and_run_next();
+            }
+            SigOp::Continue => {
+                debug!("handle_signal: continue, signo={}", signo);
+                current_task().unwrap().process.meta_lock().stopped_signal = None;
+            }
+            op @ (SigOp::Terminate | SigOp::CoreDump) => {
+                debug!("handle_signal: terminate, signo={}", signo);
+                current_task()
+                    .unwrap()
+                    .process
+                    .meta_lock()
+                    .termination_signal = Some((signo, op == SigOp::CoreDump));
+                exit_current_and_run_next((signo + 128) as i32);
+            }
+        }
+    }
+}

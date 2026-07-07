@@ -3550,3 +3550,39 @@ make
 ```
 
 结果：默认 LoongArch64 构建通过，只有既有 `smoltcp` vendor warning。用户提供的最新 `log.ans` 中 musl/glibc `kill05` 均显示 `TPASS: kill failed with EPERM`，Summary 均为 `passed 1 failed 0 broken 0`。详见 [problem/kill05-kill-permission.md](./problem/kill05-kill-permission.md)。
+
+
+## 2026-07-07: 重构 signal 模块职责边界
+
+### 用户需求
+
+用户指出 `os/src/signal` 整个模块内聚度太低，要求继续重构，而不是只处理 `mod.rs` 中局部 helper。
+
+### 分析
+
+AI 检查 `os/src/signal/mod.rs` 后确认，该文件同时承担多类职责：pending signal 检查和默认动作分发、用户栈 signal frame 构造/恢复、向 task/thread group 投递信号、用户态 `kill(2)` 权限检查、itimer/pselect 相关 SIGALRM 投递。虽然这些代码都属于 signal 子系统，但集中在单个 `mod.rs` 中会导致后续维护 `kill(2)`、`rt_sigreturn`、timer signal 时互相干扰。
+
+本次重构按行为边界拆分文件，并保持 `crate::signal::...` 的既有导出不变，避免改动 syscall/task/fs 调用方。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/signal/mod.rs` | 收敛为门面模块，只保留子模块声明、公共 re-export 和 `SIG_MAX_NUM/SIG_ERR/SIG_DFL/SIG_IGN` 常量 |
+| `os/src/signal/action_table.rs` | 由原 `sigact.rs` 改名而来，承载进程级 `SigTable`/`SigTableInner` |
+| `os/src/signal/types.rs` | 由原 `signal.rs` 改名而来，承载 signal 编号、`SigSet`、`SigAction`、`SigInfo`、alt-stack 等 ABI 类型 |
+| `os/src/signal/frame.rs` | 承载 `setup_frame()`、`restore_frame()` 和 `sigreturn_trampoline` 声明 |
+| `os/src/signal/pending.rs` | 承载 `check_if_any_sig_for_current_task()` 和 `handle_signal()`，聚焦 pending signal 选择与默认动作分发 |
+| `os/src/signal/delivery.rs` | 承载 `add_signal()`、线程/线程组/进程组投递 helper，以及用户态 `kill(2)` 权限 wrapper |
+| `os/src/signal/timer.rs` | 承载 pselect itimer guard、`deliver_itimer_signal()` 和 `deliver_blocked_itimer_signal()` |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/signal/mod.rs os/src/signal/action_table.rs os/src/signal/types.rs os/src/signal/pending.rs os/src/signal/frame.rs os/src/signal/delivery.rs os/src/signal/timer.rs
+make
+```
+
+结果：默认 LoongArch64 构建通过，只有既有 `smoltcp` vendor warning。本次为结构重构，未改变 signal syscall 对外函数签名。
