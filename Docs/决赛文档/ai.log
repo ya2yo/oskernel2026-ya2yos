@@ -3621,3 +3621,37 @@ make
 ```
 
 结果：默认 LoongArch64 构建通过，只有既有 `smoltcp` vendor warning。当前未改动用户态测试入口；运行态 LTP `shmdt01/shmdt02` 尚未单跑。
+
+
+## 2026-07-07: 重构 memory_set 模块职责边界
+
+### 用户需求
+
+用户指出 `os/src/mm/memory_set/mod.rs` 内部部分方法注释不清楚，不方便判断职责，并要求继续重构、按功能细分。
+
+### 分析
+
+AI 检查 `os/src/mm/memory_set` 后确认，`mod.rs` 同时包含 `MemorySet` 锁封装、`MemorySetInner` 数据结构、基础 VMA 插入/删除/增长/复制、页表访问、RSS/VSS 统计、用户地址范围检查和进程退出回收逻辑；而 ELF loader、fork clone、kernel init、mmap/shm 已经有部分子模块。该组织方式使得 `mod.rs` 既是门面又承载大量实现细节，后续修改 brk、mmap、fork 或页表 helper 时容易互相干扰。
+
+本次重构按职责把旧 `mod.rs` 中的实现拆分出去，并保持 `crate::mm::MemorySet`、`MemorySetInner`、`KERNEL_SPACE` 等对外路径不变。重构过程中补回旧有 `MemorySetInner::page_table_mut()`，避免因为当前未使用而意外删除公开辅助接口；同时移除中间重构阶段引入的非必要 `MemorySet::page_table_from_token()`，避免扩大 API。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/mm/memory_set/mod.rs` | 收敛为门面模块，只保留子模块声明、必要内部导入、公共 re-export、`KERNEL_SPACE` 和 `remap_test()` wrapper，并补充模块职责说明 |
+| `os/src/mm/memory_set/types.rs` | 新增 `MemorySetInner` 定义与字段文档，说明 page table、VMA 列表和 mmap accounting 的职责 |
+| `os/src/mm/memory_set/handle.rs` | 新增 `MemorySet` 锁封装与对外转发方法，补充锁持有边界、mmap/shm、mprotect、translate、range check 等方法说明 |
+| `os/src/mm/memory_set/area_ops.rs` | 新增基础 `MapArea` 管理方法：构造、插入/删除、hint 地址查找、brk grow、area clone 和 push helper |
+| `os/src/mm/memory_set/accessors.rs` | 新增 page-table token/activate/translate、RSS/VSS 统计、`page_table_mut()`、用户范围检查和进程退出回收 helper |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/mm/memory_set/mod.rs os/src/mm/memory_set/types.rs os/src/mm/memory_set/handle.rs os/src/mm/memory_set/area_ops.rs os/src/mm/memory_set/accessors.rs
+make
+```
+
+结果：默认 LoongArch64 构建通过，只有既有 `smoltcp` vendor warning。本次为结构重构和注释补充，未单跑 LTP。

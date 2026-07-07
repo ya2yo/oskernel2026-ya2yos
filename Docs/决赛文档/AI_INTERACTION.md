@@ -425,3 +425,10 @@
 - **场景**：SysV shared memory `shmdt(197)` 分发接入、当前进程 shm mapping 解除、LoongArch64 构建验证、文档完善
 - **描述**：用户要求实现 `shm_detach`。AI 检查现有 `shmget/shmat/shmctl` 后确认 `shmdt` 只有空 stub 且 syscall 分发未接入；实现为 `sys_shmdt()` 委托 mm 层，在当前进程地址空间中查找起始地址匹配且类型为 `MapAreaType::Shm` 的映射，成功时解除整段映射并刷新 TLB，地址未页对齐或未 attach 返回 `EINVAL`。默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目。
 - **关联 commit**：待提交
+
+#### memory_set 模块职责边界重构（7.7）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`os/src/mm/memory_set` 高内聚重构、`mod.rs` 门面化、基础 VMA/page-table helper 拆分、方法文档补充、LoongArch64 构建验证、文档完善
+- **描述**：用户指出 `os/src/mm/memory_set/mod.rs` 方法注释不清且文件职责过重。AI 将原 `mod.rs` 中的 `MemorySetInner` 类型定义、`MemorySet` 锁封装、基础 `MapArea` 操作、页表访问/统计/回收 helper 分别拆入 `types.rs`、`handle.rs`、`area_ops.rs`、`accessors.rs`，让 `mod.rs` 只承担门面导出、`KERNEL_SPACE` 和 `remap_test()` wrapper；对外 `crate::mm::MemorySet`、`MemorySetInner`、`KERNEL_SPACE` 路径保持不变。默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目。
+- **关联 commit**：待提交
