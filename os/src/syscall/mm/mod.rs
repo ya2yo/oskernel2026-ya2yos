@@ -1,4 +1,5 @@
 mod brk;
 mod mlock;
 mod mmap;
-pub use {brk::*, mlock::*, mmap::*};
+mod shm;
+pub use {brk::*, mlock::*, mmap::*, shm::*};
