@@ -6,9 +6,10 @@ use log::{debug, error};
 use crate::{
     mm::{copy_from_user, copy_from_user_val, copy_to_user, copy_to_user_val},
     signal::{
-        restore_frame, send_access_signal, send_signal_to_thread, send_signal_to_thread_group,
-        send_signal_to_thread_of_proc, KSigAction, SigAction, SigActionFlags, SigInfo, SigSet,
-        SIGCONT, SIGKILL, SIGSTOP, SIG_MAX_NUM,
+        restore_frame, send_signal_to_thread, send_signal_to_thread_group,
+        send_signal_to_thread_of_proc, send_user_signal_to_accessible_processes,
+        send_user_signal_to_process_group, send_user_signal_to_thread_group, KSigAction, SigAction,
+        SigActionFlags, SigInfo, SigSet, SIGCONT, SIGKILL, SIGSTOP, SIG_MAX_NUM,
     },
     syscall::SignalMaskFlag,
     task::{block_on, current_task, exit_current_and_run_next, suspend_current_and_run_next},
@@ -345,21 +346,22 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
 /// pid < -1 the sig is sent to every process in process group whose ID is -pid
 /// 参考 https://man7.org/linux/man-pages/man2/kill.2.html
 pub fn sys_kill(pid: isize, signo: usize) -> SyscallRet {
-    if signo == 0 {
-        return Ok(0);
-    }
     if signo > SIG_MAX_NUM {
         return Err(SysErrNo::EINVAL);
     }
-    let sig = SigSet::from_sig(signo);
+    let sig = if signo == 0 {
+        SigSet::empty()
+    } else {
+        SigSet::from_sig(signo)
+    };
 
     // debug!("[sys_kill] pid is {}, sig is {:?}", pid, sig);
 
     let ret = match pid {
-        _ if pid > 0 => send_signal_to_thread_group(pid as usize, sig),
-        0 => send_signal_to_thread_group(current_task().unwrap().pid(), sig),
-        -1 => send_access_signal(current_task().unwrap().tid(), sig),
-        _ => send_signal_to_thread_group(-pid as usize, sig),
+        _ if pid > 0 => send_user_signal_to_thread_group(pid as usize, sig, signo),
+        0 => send_user_signal_to_process_group(current_task().unwrap().process.pgid(), sig, signo),
+        -1 => send_user_signal_to_accessible_processes(sig, signo),
+        _ => send_user_signal_to_process_group((-pid) as usize, sig, signo),
     };
 
     // SIGCONT 恢复停止态任务后，让出一次 CPU，使被恢复的任务有机会先处理

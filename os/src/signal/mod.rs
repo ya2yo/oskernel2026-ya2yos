@@ -32,6 +32,14 @@ pub const SIG_IGN: usize = 1;
 static PSELECT_ITIMER_WAITERS: Lazy<kspin::SpinNoIrq<BTreeSet<usize>>> =
     Lazy::new(|| kspin::SpinNoIrq::new(BTreeSet::new()));
 
+#[derive(Clone, Copy)]
+struct SignalCred {
+    real_uid: u32,
+    effective_uid: u32,
+    saved_uid: u32,
+    sid: usize,
+}
+
 pub struct PselectItimerGuard {
     tid: usize,
 }
@@ -404,45 +412,193 @@ fn add_signal(task: &TaskControlBlock, signal: SigSet) -> bool {
     false
 }
 
+fn signal_cred_from_task(task: &TaskControlBlock) -> SignalCred {
+    let sid = task.process.sid();
+    let inner = task.inner_lock();
+    SignalCred {
+        real_uid: inner.user_id as u32,
+        effective_uid: inner.effective_uid,
+        saved_uid: inner.saved_uid,
+        sid,
+    }
+}
+
+fn signal_cred_from_process(proc: &Process) -> Option<SignalCred> {
+    let (sid, tasks) = {
+        let meta = proc.meta_lock();
+        (meta.sid, meta.tasks.clone())
+    };
+    let task = tasks.iter().find_map(|task| task.upgrade())?;
+    let inner = task.inner_lock();
+    Some(SignalCred {
+        real_uid: inner.user_id as u32,
+        effective_uid: inner.effective_uid,
+        saved_uid: inner.saved_uid,
+        sid,
+    })
+}
+
+fn can_send_signal(sender: SignalCred, target: SignalCred, signo: usize) -> bool {
+    if sender.effective_uid == 0 {
+        return true;
+    }
+    if signo == SIGCONT && sender.sid == target.sid {
+        return true;
+    }
+    sender.real_uid == target.real_uid
+        || sender.real_uid == target.saved_uid
+        || sender.effective_uid == target.real_uid
+        || sender.effective_uid == target.saved_uid
+}
+
+fn deliver_signal_to_thread_group(proc: &Process, sig: SigSet) -> usize {
+    if sig.is_empty() {
+        return 0;
+    }
+
+    // debug!("{} receive signal, my parent is {}", proc.pid, proc.ppid());
+    let group_exiting = proc.is_group_exiting();
+    if !group_exiting {
+        if let Some(signo) = sig.peek_front() {
+            match SigSet::from_sig(signo).default_op() {
+                SigOp::Terminate => proc.meta_lock().termination_signal = Some((signo, false)),
+                SigOp::CoreDump => proc.meta_lock().termination_signal = Some((signo, true)),
+                _ => {}
+            }
+        }
+    }
+    let tasks = proc.meta_lock().tasks.clone();
+    let mut resumed = 0;
+    for task in tasks.iter() {
+        if let Some(task) = task.upgrade() {
+            if add_signal(&task, sig) {
+                resumed += 1;
+            }
+        }
+    }
+    if resumed > 0 && sig.contains(SigSet::SIGCONT) {
+        proc.meta_lock().continued_signal = Some(SIGCONT);
+        if let Some(parent) = Process::get_process_arc_by_pid(proc.ppid()) {
+            parent.meta_lock().child_exit_event.wake();
+        }
+    }
+    resumed
+}
+
+fn send_permitted_signal_to_process(
+    sender: SignalCred,
+    proc: &Process,
+    sig: SigSet,
+    signo: usize,
+) -> Result<usize, SysErrNo> {
+    let target = signal_cred_from_process(proc).ok_or(SysErrNo::ESRCH)?;
+    if !can_send_signal(sender, target, signo) {
+        return Err(SysErrNo::EPERM);
+    }
+    Ok(deliver_signal_to_thread_group(proc, sig))
+}
+
+fn current_signal_cred() -> Result<SignalCred, SysErrNo> {
+    let current = current_task().ok_or(SysErrNo::ESRCH)?;
+    Ok(signal_cred_from_task(&current))
+}
+
+/// `kill(2)` 路径：按 Linux 权限规则向单个进程发送信号。
+pub fn send_user_signal_to_thread_group(
+    pid: usize,
+    sig: SigSet,
+    signo: usize,
+) -> Result<usize, SysErrNo> {
+    let sender = current_signal_cred()?;
+    let proc = Process::get_process_arc_by_pid(pid).ok_or(SysErrNo::ESRCH)?;
+    send_permitted_signal_to_process(sender, &proc, sig, signo)
+}
+
+/// `kill(2)` 路径：按 Linux 权限规则向整个进程组发送信号。
+pub fn send_user_signal_to_process_group(
+    pgid: usize,
+    sig: SigSet,
+    signo: usize,
+) -> Result<usize, SysErrNo> {
+    let sender = current_signal_cred()?;
+    let mut seen = BTreeSet::new();
+    let mut found = false;
+    let mut permitted = false;
+    let mut resumed = 0;
+
+    for (_, task) in tid_to_task::get_all_tasks() {
+        let proc = &task.process;
+        if proc.pgid() != pgid || !seen.insert(proc.pid) {
+            continue;
+        }
+        found = true;
+        match send_permitted_signal_to_process(sender, proc, sig, signo) {
+            Ok(count) => {
+                permitted = true;
+                resumed += count;
+            }
+            Err(SysErrNo::EPERM) => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    if !found {
+        Err(SysErrNo::ESRCH)
+    } else if !permitted {
+        Err(SysErrNo::EPERM)
+    } else {
+        Ok(resumed)
+    }
+}
+
+/// `kill(-1, sig)` 路径：向除 init 和自身之外的可访问进程发送信号。
+pub fn send_user_signal_to_accessible_processes(
+    sig: SigSet,
+    signo: usize,
+) -> Result<usize, SysErrNo> {
+    let current = current_task().ok_or(SysErrNo::ESRCH)?;
+    let sender = signal_cred_from_task(&current);
+    let self_pid = current.pid();
+    drop(current);
+
+    let mut seen = BTreeSet::new();
+    let mut found = false;
+    let mut permitted = false;
+    let mut resumed = 0;
+
+    for (_, task) in tid_to_task::get_all_tasks() {
+        let proc = &task.process;
+        if proc.pid == 1 || proc.pid == self_pid || !seen.insert(proc.pid) {
+            continue;
+        }
+        found = true;
+        match send_permitted_signal_to_process(sender, proc, sig, signo) {
+            Ok(count) => {
+                permitted = true;
+                resumed += count;
+            }
+            Err(SysErrNo::EPERM) => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    if !found {
+        Err(SysErrNo::ESRCH)
+    } else if !permitted {
+        Err(SysErrNo::EPERM)
+    } else {
+        Ok(resumed)
+    }
+}
+
 /// 向进程/线程组发信号
-/// 如果未找到这个进程/线程组，会 return。
+/// 如果未找到这个进程/线程组，返回 ESRCH。
 ///
 /// 成功时返回被本次信号从 `Stopped` 唤醒的线程数；syscall 层仍需把
 /// `kill(2)` 的用户可见返回值规整为 0。
 pub fn send_signal_to_thread_group(pid: usize, sig: SigSet) -> Result<usize, SysErrNo> {
-    let process = Process::get_process_arc_by_pid(pid);
-    if let Some(proc) = process {
-        // debug!("{} receive signal, my parent is {}", pid, proc.ppid());
-        let group_exiting = proc.is_group_exiting();
-        if !group_exiting {
-            if let Some(signo) = sig.peek_front() {
-                match SigSet::from_sig(signo).default_op() {
-                    SigOp::Terminate => proc.meta_lock().termination_signal = Some((signo, false)),
-                    SigOp::CoreDump => proc.meta_lock().termination_signal = Some((signo, true)),
-                    _ => {}
-                }
-            }
-        }
-        let tasks = proc.meta_lock().tasks.clone();
-        let mut resumed = 0;
-        for task in tasks.iter() {
-            if let Some(task) = task.upgrade() {
-                if add_signal(&task, sig) {
-                    resumed += 1;
-                }
-            }
-        }
-        if resumed > 0 && sig.contains(SigSet::SIGCONT) {
-            proc.meta_lock().continued_signal = Some(SIGCONT);
-            if let Some(parent) = Process::get_process_arc_by_pid(proc.ppid()) {
-                parent.meta_lock().child_exit_event.wake();
-            }
-        }
-        return Ok(resumed);
-    } else {
-        // No such process
-        return Err(SysErrNo::ESRCH);
-    }
+    let proc = Process::get_process_arc_by_pid(pid).ok_or(SysErrNo::ESRCH)?;
+    Ok(deliver_signal_to_thread_group(&proc, sig))
 }
 
 pub fn send_signal_to_thread(tid: usize, sig: SigSet) {

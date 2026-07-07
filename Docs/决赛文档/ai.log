@@ -3519,3 +3519,34 @@ timeout 120s make run
 ```
 
 结果：默认 LoongArch64 构建通过；单跑 musl/glibc `fcntl35` 均 2 项 `TPASS`，Summary 均为 `passed 2 failed 0 broken 0`。构建中仍有既有 `smoltcp` vendor warning，与本次修复无关。详见 [problem/fcntl35-pipe-max-size-init.md](./problem/fcntl35-pipe-max-size-init.md)。
+
+
+## 2026-07-07: 修复 kill05 kill 权限检查
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并进行修复；修复后用户说明输出结果已写入 `log.ans`。
+
+### 分析
+
+AI 筛选 `log.ans` 后确认当前失败为 LTP `kill05`：musl/glibc 两轮均出现 `kill05.c:66: TFAIL: kill succeeded unexpectedly`，随后子进程异常退出导致 `TBROK`。对照 LTP `kill05.c` 后确认，测试在 root 启动后 fork 子进程，并让两个进程分别 `setreuid()` 到不同普通 uid；普通 uid 进程向另一个 uid 拥有的进程发送 `SIGKILL` 应失败并返回 `EPERM`。
+
+AI 检查 `sys_kill()` 与 `send_signal_to_thread_group()` 后发现，当前 syscall 层只检查信号编号和目标存在性，没有按 Linux 规则比较发送者 real/effective uid 与目标 real/saved uid；同时 `pid == 0`、`pid < -1` 仍按单个 pid 投递，`signo == 0` 直接返回成功，都会绕过 `kill(2)` 应有的存在性与权限检查。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/signal/mod.rs` | 新增用户态 `kill(2)` 专用权限检查和进程组/全局投递 wrapper，保留原内部投递 helper 供内核路径使用 |
+| `os/src/syscall/signal.rs` | `sys_kill()` 改用用户态 wrapper，补齐 `signo == 0` 检查、`pid == 0` 当前进程组语义和 `pid < -1` 指定进程组语义 |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/signal/mod.rs os/src/syscall/signal.rs
+make
+```
+
+结果：默认 LoongArch64 构建通过，只有既有 `smoltcp` vendor warning。用户提供的最新 `log.ans` 中 musl/glibc `kill05` 均显示 `TPASS: kill failed with EPERM`，Summary 均为 `passed 1 failed 0 broken 0`。详见 [problem/kill05-kill-permission.md](./problem/kill05-kill-permission.md)。

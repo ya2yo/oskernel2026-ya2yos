@@ -37,3 +37,4 @@
 - [fcntl34 OFD lock owner 语义修复](./fcntl34-ofd-lock-owner.md)
 - [fchmod02 /etc/group 缺少 users/daemon 导致 TBROK](./fchmod02-group-database.md)
 - [fchmod05 chmod S_ISGID 清除语义](./fchmod05-chmod-setgid.md)
+- [kill05 kill 权限检查与进程组语义](./kill05-kill-permission.md)
