@@ -38,3 +38,4 @@
 - [fchmod02 /etc/group 缺少 users/daemon 导致 TBROK](./fchmod02-group-database.md)
 - [fchmod05 chmod S_ISGID 清除语义](./fchmod05-chmod-setgid.md)
 - [kill05 kill 权限检查与进程组语义](./kill05-kill-permission.md)
+- [kill10 SA_SIGINFO 发送者 siginfo 修复](./kill10-siginfo-sender.md)

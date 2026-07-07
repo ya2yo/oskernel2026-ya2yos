@@ -432,3 +432,10 @@
 - **场景**：`os/src/mm/memory_set` 高内聚重构、`mod.rs` 门面化、基础 VMA/page-table helper 拆分、方法文档补充、LoongArch64 构建验证、文档完善
 - **描述**：用户指出 `os/src/mm/memory_set/mod.rs` 方法注释不清且文件职责过重。AI 将原 `mod.rs` 中的 `MemorySetInner` 类型定义、`MemorySet` 锁封装、基础 `MapArea` 操作、页表访问/统计/回收 helper 分别拆入 `types.rs`、`handle.rs`、`area_ops.rs`、`accessors.rs`，让 `mod.rs` 只承担门面导出、`KERNEL_SPACE` 和 `remap_test()` wrapper；对外 `crate::mm::MemorySet`、`MemorySetInner`、`KERNEL_SPACE` 路径保持不变。默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目。
 - **关联 commit**：待提交
+
+#### LTP kill10 SA_SIGINFO 发送者信息修复（7.7）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `kill10` 源码对照、pending signal `siginfo_t` 保存与传递、LoongArch64 运行验证、双架构构建验证、文档完善
+- **描述**：用户要求分析 `log.ans` 并修复。AI 确认 `kill10` 持续打印 `received unexpected signal 10 from 2` 的原因是 `SA_SIGINFO` handler 读取到的 `si_pid` 被内核填成接收者 pid，而不是发送者 pid；根因是 pending signal 只有 `SigSet` 位图，未保存发送者 siginfo。修复为 task 级 pending signal 增加并行 `sig_pending_info`，用户态 `kill/tkill/tgkill` 投递时记录发送者 pid/uid，`handle_signal()` 和 `rt_sigtimedwait()` 消费时取出该 siginfo。LoongArch64 单跑 musl/glibc `kill10` 均 `TPASS`，LoongArch64 与 RISC-V 构建通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/kill10-siginfo-sender.md](./problem/kill10-siginfo-sender.md)。
+- **关联 commit**：待提交

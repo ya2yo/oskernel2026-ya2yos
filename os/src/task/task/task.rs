@@ -21,7 +21,7 @@ use crate::{
         copy_to_user, copy_to_user_val, MapAreaType, MapPermission, MemorySet, MemorySetInner,
         PhysPageNum, VirtAddr,
     },
-    signal::{SigSet, SigTable},
+    signal::{SigInfo, SigSet, SigTable, SIG_MAX_NUM},
     task::{futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid, CloneFlags},
     timer::{TimeData, Timer},
     trap::trap_types::{Exception, Trap},
@@ -137,6 +137,8 @@ pub struct TaskControlBlockInner {
     pub sig_mask: SigSet,
     /// 待处理信号集合
     pub sig_pending: SigSet,
+    /// 与 sig_pending 位图并行保存的 siginfo_t；标准信号不排队，每个信号保留一份。
+    pub sig_pending_info: [Option<SigInfo>; SIG_MAX_NUM + 1],
     pub timer: Arc<Timer>,
     pub robust_list: RobustListHead,
     /// POSIX 进程凭证（Credentials）
@@ -261,6 +263,7 @@ impl TaskControlBlock {
                 vfork_wait_child: 0,
                 sig_mask: SigSet::empty(),
                 sig_pending: SigSet::empty(),
+                sig_pending_info: [None; SIG_MAX_NUM + 1],
                 timer: Arc::new(Timer::new()),
                 robust_list: RobustListHead::default(),
                 user_id: 0,
@@ -358,6 +361,7 @@ impl TaskControlBlock {
         }
         task_inner.sig_mask = SigSet::empty();
         task_inner.sig_pending = SigSet::empty();
+        task_inner.sig_pending_info = [None; SIG_MAX_NUM + 1];
 
         // 获取新地址空间用于栈写入
         let proc_inner = &self.process;
@@ -636,6 +640,7 @@ impl TaskControlBlock {
                 vfork_wait_child: 0,
                 sig_mask: child_sig_mask,
                 sig_pending: SigSet::empty(),
+                sig_pending_info: [None; SIG_MAX_NUM + 1],
                 timer: child_timer,
                 robust_list: RobustListHead::default(),
                 user_id: parent_user_id,

@@ -33,11 +33,12 @@ pub fn handle_signal(signo: usize) {
         .process
         .with_sigtable(|sigtable| sigtable.action(signo));
     task_inner.sig_pending.remove(signal);
+    let siginfo = task_inner.sig_pending_info[signo].take();
     drop(task_inner);
     drop(task);
     if sig_action.customed {
         // debug!("handle_signal: setup_frame!");
-        setup_frame(signo, sig_action);
+        setup_frame(signo, sig_action, siginfo);
         // 标记信号已拦截：可中断 syscall 应返回 EINTR
         let task = current_task().unwrap();
         task.inner_lock().sig_eintr = true;

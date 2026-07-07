@@ -6,10 +6,10 @@ use log::{debug, error};
 use crate::{
     mm::{copy_from_user, copy_from_user_val, copy_to_user, copy_to_user_val},
     signal::{
-        restore_frame, send_signal_to_thread, send_signal_to_thread_group,
-        send_signal_to_thread_of_proc, send_user_signal_to_accessible_processes,
-        send_user_signal_to_process_group, send_user_signal_to_thread_group, KSigAction, SigAction,
-        SigActionFlags, SigInfo, SigSet, SIGCONT, SIGKILL, SIGSTOP, SIG_MAX_NUM,
+        restore_frame, send_signal_to_thread_group, send_user_signal_to_accessible_processes,
+        send_user_signal_to_process_group, send_user_signal_to_thread,
+        send_user_signal_to_thread_group, send_user_signal_to_thread_of_proc, KSigAction,
+        SigAction, SigActionFlags, SigInfo, SigSet, SIGCONT, SIGKILL, SIGSTOP, SIG_MAX_NUM,
     },
     syscall::SignalMaskFlag,
     task::{block_on, current_task, exit_current_and_run_next, suspend_current_and_run_next},
@@ -269,6 +269,9 @@ pub fn sys_rt_sigtimedwait(
             let signal = SigSet::from_sig(signo);
             // 从 pending 集合中消耗该信号
             task_inner.sig_pending.remove(signal);
+            let sig_info = task_inner.sig_pending_info[signo]
+                .take()
+                .unwrap_or_else(|| SigInfo::new(signo as u32, 0, 0, 0));
             // 本次 sigtimedwait 可能是被 add_signal() 通过
             // wake_interruptible() 唤醒的；成功消费信号后必须清掉内部
             // interrupted 标志，否则后续 wait4/select 等 interruptible
@@ -276,12 +279,6 @@ pub fn sys_rt_sigtimedwait(
             task.clear_interrupt_waiter();
             // 填充 siginfo
             if info_ptr as usize != 0 {
-                let sig_info = SigInfo::new(
-                    signo as u32,
-                    0,
-                    (-1i32) as u32, // si_code: SI_QUEUE
-                    task.pid() as u32,
-                );
                 let proc_inner = &task.process;
                 let mem_set = proc_inner.memory_set_arc();
                 copy_to_user(&mem_set, info_ptr as usize, unsafe {
@@ -383,7 +380,7 @@ pub fn sys_tkill(tid: usize, signo: usize) -> SyscallRet {
     }
     let sig = SigSet::from_sig(signo);
     // debug!("[sys_tkill] thread {} receive signal {:?}", tid, sig);
-    send_signal_to_thread(tid, sig);
+    send_user_signal_to_thread(tid, sig, signo);
     Ok(0)
 }
 
@@ -402,6 +399,6 @@ pub fn sys_tgkill(tgid: usize, tid: usize, signo: usize) -> SyscallRet {
     //     tgid, tid, sig
     // );
 
-    send_signal_to_thread_of_proc(tgid, tid, sig);
+    send_user_signal_to_thread_of_proc(tgid, tid, sig, signo);
     Ok(0)
 }

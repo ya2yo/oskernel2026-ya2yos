@@ -27,7 +27,7 @@ extern "C" {
 ///
 /// 构建这个帧的目的就是为了执行完信号处理程序后返回到内核态，
 /// 并恢复原来内核栈的内容。
-pub fn setup_frame(signo: usize, sig_action: KSigAction) {
+pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo>) {
     // debug!("customed sa_handler={:#x}", sig_action.act.sa_handler);
     let task = current_task().unwrap();
     let proc_inner = &task.process;
@@ -166,7 +166,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction) {
             copy_to_user_val(
                 &*memory_set,
                 siginfo_addr as *mut SigInfo,
-                &SigInfo::new(signo as u32, 0, (-6 as i32) as u32, task.pid() as u32),
+                &siginfo.unwrap_or_else(|| SigInfo::new(signo as u32, 0, 0, 0)),
             )
             .unwrap();
             // a1

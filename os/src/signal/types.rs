@@ -294,6 +294,20 @@ impl SigInfo {
         }
     }
 
+    /// 构造 kill(2)/tkill(2)/tgkill(2) 这类用户态发送信号的 siginfo_t。
+    pub fn new_user(si_signo: u32, pid: u32, uid: u32) -> Self {
+        Self {
+            si_signo,
+            si_errno: 0,
+            si_code: 0, // SI_USER
+            si_12: 0,
+            si_pid: pid,
+            si_uid: uid,
+            si_status: 0,
+            __pad: [0; 128 - 7 * core::mem::size_of::<u32>()],
+        }
+    }
+
     /// 构造 waitid()/SIGCHLD 使用的 siginfo_t。
     ///
     /// Linux/musl 在 SIGCHLD 场景下会从 siginfo union 的 child 分支读取

@@ -6,7 +6,7 @@
 
 use alloc::collections::BTreeSet;
 
-use super::{SigOp, SigSet, SIGCHLD, SIGCONT, SIGKILL, SIG_IGN};
+use super::{SigInfo, SigOp, SigSet, SIGCHLD, SIGCONT, SIGKILL, SIG_IGN};
 use crate::{
     task::{current_task, ready_queue, tid_to_task, Process, TaskControlBlock, TaskStatus},
     utils::SysErrNo,
@@ -14,6 +14,7 @@ use crate::{
 
 #[derive(Clone, Copy)]
 struct SignalCred {
+    pid: usize,
     real_uid: u32,
     effective_uid: u32,
     saved_uid: u32,
@@ -25,8 +26,27 @@ struct SignalCred {
 /// 返回值表示本次投递是否把 `Stopped` 任务恢复为 `Ready`。`kill(SIGCONT)`
 /// 需要用这个结果决定是否主动调度一次，让刚恢复的子进程先处理 SIGCONT。
 pub(super) fn add_signal(task: &TaskControlBlock, signal: SigSet) -> bool {
+    add_signal_with_info(task, signal, None)
+}
+
+/// 向 task 挂起信号，并可携带用户态可见的 `siginfo_t`。
+///
+/// 标准信号在当前实现中不排队：如果同一个 signal 已经处于 pending 状态，
+/// 后续重复投递只保留 pending 位，不覆盖第一次记录的 `siginfo_t`。这样可
+/// 保持 `kill(2)`/`tkill(2)`/`tgkill(2)` 的 `SA_SIGINFO` handler 能看到
+/// 最初触发该 pending signal 的发送者信息。
+pub(super) fn add_signal_with_info(
+    task: &TaskControlBlock,
+    signal: SigSet,
+    siginfo: Option<SigInfo>,
+) -> bool {
     let mut task_inner = task.inner_lock();
     // debug!("add signal: tid {}, signal: {}", task.tid(), signal.bits());
+    if let Some(signo) = signal.peek_front() {
+        if !task_inner.sig_pending.contains(signal) {
+            task_inner.sig_pending_info[signo] = siginfo;
+        }
+    }
     task_inner.sig_pending |= signal;
     let interrupt_wait = signal.peek_front().is_some_and(|signo| {
         if signo == SIGCHLD {
@@ -74,6 +94,7 @@ fn signal_cred_from_task(task: &TaskControlBlock) -> SignalCred {
     let sid = task.process.sid();
     let inner = task.inner_lock();
     SignalCred {
+        pid: task.pid(),
         real_uid: inner.user_id as u32,
         effective_uid: inner.effective_uid,
         saved_uid: inner.saved_uid,
@@ -89,6 +110,7 @@ fn signal_cred_from_process(proc: &Process) -> Option<SignalCred> {
     let task = tasks.iter().find_map(|task| task.upgrade())?;
     let inner = task.inner_lock();
     Some(SignalCred {
+        pid: task.pid(),
         real_uid: inner.user_id as u32,
         effective_uid: inner.effective_uid,
         saved_uid: inner.saved_uid,
@@ -109,7 +131,28 @@ fn can_send_signal(sender: SignalCred, target: SignalCred, signo: usize) -> bool
         || sender.effective_uid == target.saved_uid
 }
 
-fn deliver_signal_to_thread_group(proc: &Process, sig: SigSet) -> usize {
+/// 根据发送者凭证构造用户态信号的 `siginfo_t`。
+///
+/// `signo == 0` 是 `kill(pid, 0)` 权限/存在性探测，不会真正投递信号，
+/// 因此不需要生成 `siginfo_t`。
+fn siginfo_from_sender(sender: SignalCred, signo: usize) -> Option<SigInfo> {
+    if signo == 0 {
+        None
+    } else {
+        Some(SigInfo::new_user(
+            signo as u32,
+            sender.pid as u32,
+            sender.real_uid,
+        ))
+    }
+}
+
+/// 向一个进程的线程组投递信号。
+///
+/// `siginfo` 为 `None` 时表示内核内部投递路径，用户态 `SA_SIGINFO`
+/// handler 会得到空的 fallback siginfo；用户态 `kill(2)` 等路径会传入
+/// 已填好发送者 pid/uid 的 siginfo。
+fn deliver_signal_to_thread_group(proc: &Process, sig: SigSet, siginfo: Option<SigInfo>) -> usize {
     if sig.is_empty() {
         return 0;
     }
@@ -129,7 +172,7 @@ fn deliver_signal_to_thread_group(proc: &Process, sig: SigSet) -> usize {
     let mut resumed = 0;
     for task in tasks.iter() {
         if let Some(task) = task.upgrade() {
-            if add_signal(&task, sig) {
+            if add_signal_with_info(&task, sig, siginfo) {
                 resumed += 1;
             }
         }
@@ -153,7 +196,11 @@ fn send_permitted_signal_to_process(
     if !can_send_signal(sender, target, signo) {
         return Err(SysErrNo::EPERM);
     }
-    Ok(deliver_signal_to_thread_group(proc, sig))
+    Ok(deliver_signal_to_thread_group(
+        proc,
+        sig,
+        siginfo_from_sender(sender, signo),
+    ))
 }
 
 fn current_signal_cred() -> Result<SignalCred, SysErrNo> {
@@ -255,7 +302,7 @@ pub fn send_user_signal_to_accessible_processes(
 /// `kill(2)` 的用户可见返回值规整为 0。
 pub fn send_signal_to_thread_group(pid: usize, sig: SigSet) -> Result<usize, SysErrNo> {
     let proc = Process::get_process_arc_by_pid(pid).ok_or(SysErrNo::ESRCH)?;
-    Ok(deliver_signal_to_thread_group(&proc, sig))
+    Ok(deliver_signal_to_thread_group(&proc, sig, None))
 }
 
 pub fn send_signal_to_thread(tid: usize, sig: SigSet) {
@@ -264,10 +311,30 @@ pub fn send_signal_to_thread(tid: usize, sig: SigSet) {
     }
 }
 
-pub fn send_signal_to_thread_of_proc(pid: usize, tid: usize, sig: SigSet) {
+/// 用户态 `tkill(2)` 路径：向指定 tid 投递信号并记录当前任务为发送者。
+///
+/// 该 helper 不做权限检查，保持原 `tkill(2)` 简化语义；与内部
+/// `send_signal_to_thread()` 的区别是会为 `SA_SIGINFO` 保存发送者 siginfo。
+pub fn send_user_signal_to_thread(tid: usize, sig: SigSet, signo: usize) {
+    if let Some(task) = tid_to_task::tid2task(tid) {
+        let siginfo = current_signal_cred()
+            .ok()
+            .and_then(|sender| siginfo_from_sender(sender, signo));
+        add_signal_with_info(&task, sig, siginfo);
+    }
+}
+
+/// 用户态 `tgkill(2)` 路径：仅当 tid 属于指定 tgid/pid 时投递信号。
+///
+/// 和 `send_user_signal_to_thread()` 一样，该路径会保存发送者 siginfo，
+/// 供后续 `SA_SIGINFO` handler 或 `rt_sigtimedwait()` 消费。
+pub fn send_user_signal_to_thread_of_proc(pid: usize, tid: usize, sig: SigSet, signo: usize) {
     if let Some(task) = tid_to_task::tid2task(tid) {
         if task.pid() == pid {
-            add_signal(&task, sig);
+            let siginfo = current_signal_cred()
+                .ok()
+                .and_then(|sender| siginfo_from_sender(sender, signo));
+            add_signal_with_info(&task, sig, siginfo);
         }
     }
 }
@@ -279,17 +346,4 @@ pub fn send_signal_to_process_group(pgid: usize, sig: SigSet) {
             let _ = send_signal_to_thread_group(task.pid(), sig);
         }
     }
-}
-
-/// 向除自身以及 `init` 进程之外的所有进程发送信号。
-///
-/// 总是返回 Ok(0)。调用者负责向该函数提供 self tid。
-pub fn send_access_signal(self_tid: usize, sig: SigSet) -> Result<usize, SysErrNo> {
-    let all_tasks = tid_to_task::get_all_tasks();
-    for (tid, task) in all_tasks {
-        if tid != self_tid && task.pid() != 1 {
-            add_signal(&task, sig);
-        }
-    }
-    Ok(0)
 }

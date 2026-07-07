@@ -3655,3 +3655,44 @@ make
 ```
 
 结果：默认 LoongArch64 构建通过，只有既有 `smoltcp` vendor warning。本次为结构重构和注释补充，未单跑 LTP。
+
+
+## 2026-07-07: 修复 LTP kill10 SA_SIGINFO 发送者信息
+
+### 用户需求
+
+用户要求分析 `log.ans` 并修复 bug。
+
+### 分析
+
+AI 先按 `fix-bug` 流程提取 `log.ans` 关键输出，发现没有 `TFAIL/TBROK/panic`，而是在 LoongArch64 `ltp-musl kill10` 中持续打印 `received unexpected signal 10 from 2`。随后对照 LTP `kill10.c`，确认该测试的 `SA_SIGINFO` handler 会用 `siginfo_t.si_pid` 匹配 manager/child checklist；`from 2` 表示 handler 看到的是接收者 master pid，而不是实际发送信号的 manager pid。
+
+继续追踪 `os/src/signal` 后确认，当前 pending signal 只保存 `SigSet` 位图，`setup_frame()` 构造 `SA_SIGINFO` 用户栈时用 `task.pid()` 临时填充 `si_pid`，因此所有用户态 `kill(2)` 信号都会把接收者 pid 暴露给 handler。
+
+### 采纳结论
+
+需要在投递信号时保存发送者 `siginfo_t`，并在 signal handler frame 构造时使用该信息；同时 `rt_sigtimedwait()` 消费 pending 信号也应复用同一份 siginfo。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/signal/types.rs` | 新增 `SigInfo::new_user()`，填充用户态发送信号的 `si_pid/si_uid/SI_USER` |
+| `os/src/task/task/task.rs` | 为 task 增加 `sig_pending_info`，并在 init/clone/exec 路径初始化或清空 |
+| `os/src/signal/delivery.rs` | 用户态 `kill/tkill/tgkill` 投递时记录当前任务作为发送者 siginfo |
+| `os/src/signal/pending.rs` | `handle_signal()` 消费 pending 信号时取出对应 siginfo |
+| `os/src/signal/frame.rs` | `setup_frame()` 接收并写入真实 siginfo |
+| `os/src/syscall/signal.rs` | `rt_sigtimedwait()` 和 `tkill/tgkill` 路径接入 pending siginfo |
+
+### 验证
+
+已执行：
+
+```text
+rustfmt os/src/signal/types.rs os/src/task/task/task.rs os/src/signal/delivery.rs os/src/signal/pending.rs os/src/signal/frame.rs os/src/syscall/signal.rs
+make
+timeout 120s make run > /tmp/kill10-siginfo.log 2>&1
+make TARGET_ARCH=riscv64
+```
+
+结果：LoongArch64 构建通过；LoongArch64 单跑 musl/glibc `kill10` 均 `TPASS`，Summary 均为 `passed 1 failed 0 broken 0`；RISC-V 构建通过。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/kill10-siginfo-sender.md](./problem/kill10-siginfo-sender.md)。
