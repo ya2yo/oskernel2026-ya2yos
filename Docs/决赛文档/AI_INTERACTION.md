@@ -453,3 +453,10 @@
 - **场景**：`log.ans` 分析、LTP `link04` 源码对照、`linkat(2)` 空路径/超长路径 errno 和父目录权限检查修复、LoongArch64 运行验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `link04` 失败来自 `sys_linkat()` 缺少路径参数预检和 hard link 父目录权限检查：空路径被解析为当前工作目录，超长路径落到底层查找 `ENOENT`，非 root 在缺写或缺搜索权限目录下仍能创建 hard link。修复为在 `linkat` 入口校验空路径和长度，并在普通路径分支检查旧路径父目录搜索权限、新路径父目录写/搜索权限；`AT_EMPTY_PATH` 分支也检查新路径父目录权限。LoongArch64 单跑 musl/glibc `link04` 均 `passed 14 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/link04-linkat-errno-permission.md](./problem/link04-linkat-errno-permission.md)。
 - **关联 commit**：待提交
+
+#### LTP link08 linkat mount/rofs/ELOOP 语义修复（7.7）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `link08` 源码对照、`linkat(2)` 跨挂载点、只读挂载和 symlink loop errno 修复、LoongArch64 运行验证、文档完善
+- **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `link08` 失败来自 `sys_linkat()` 未检查 hard link 两端的 mount 身份和只读挂载标志，且旧路径长度预检过早返回 `ENAMETOOLONG`，遮蔽中间 symlink loop 的 `ELOOP`。修复为新增 `check_link_mounts()` 返回 `EXDEV/EROFS`，并在旧路径达到读取上限时优先扫描 symlink 前缀识别自引用环。LoongArch64 单跑 musl/glibc `link08` 均 `passed 4 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/link08-linkat-mount-rofs-eloop.md](./problem/link08-linkat-mount-rofs-eloop.md)。
+- **关联 commit**：待提交

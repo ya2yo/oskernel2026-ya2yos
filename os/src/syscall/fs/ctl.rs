@@ -24,7 +24,7 @@ use crate::mm::{
 use crate::syscall::options::FaccessatFileMode;
 use crate::task::current_task;
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
-use crate::utils::{rsplit_once, SysErrNo, SyscallRet};
+use crate::utils::{get_abs_path as normalize_abs_path, rsplit_once, SysErrNo, SyscallRet};
 use linux_raw_sys::loop_device::LOOP_SET_FD;
 
 const MAX_FILE_NAME_LEN: usize = 255;
@@ -36,7 +36,7 @@ fn has_too_long_path_component(path: &str) -> bool {
 
 /// `linkat(2)` 需要在路径解析前处理空路径和超长路径，否则空相对路径会被
 /// `get_abs_path()` 解释成 cwd，超长路径也会落到底层查找并错误返回 `ENOENT`。
-fn check_link_path(path: &str, allow_empty: bool) -> SyscallRet {
+fn check_link_path(path: &str, allow_empty: bool, check_length: bool) -> SyscallRet {
     if path.is_empty() {
         return if allow_empty {
             Ok(0)
@@ -44,7 +44,7 @@ fn check_link_path(path: &str, allow_empty: bool) -> SyscallRet {
             Err(SysErrNo::ENOENT)
         };
     }
-    if path.len() >= MAX_PATH_LEN || has_too_long_path_component(path) {
+    if check_length && (path.len() >= MAX_PATH_LEN || has_too_long_path_component(path)) {
         return Err(SysErrNo::ENAMETOOLONG);
     }
     Ok(0)
@@ -56,6 +56,71 @@ fn parent_path_of(abs_path: &str) -> Result<&str, SysErrNo> {
         return Err(SysErrNo::ENOENT);
     }
     Ok(rsplit_once(abs_path.trim_end_matches('/'), "/").0)
+}
+
+/// hard link 不能跨挂载点创建；在只读挂载点内创建新目录项也应返回 `EROFS`。
+fn check_link_mounts(old_abs_path: &str, new_abs_path: &str) -> SyscallRet {
+    let mnt_table = MNT_TABLE.lock();
+    let old_mount = mnt_table.mount_for_path(old_abs_path);
+    let new_mount = mnt_table.mount_for_path(new_abs_path);
+    drop(mnt_table);
+
+    let old_mount_dir = old_mount.as_ref().map(|(_, dir, _, _)| dir);
+    let new_mount_dir = new_mount.as_ref().map(|(_, dir, _, _)| dir);
+    if old_mount_dir != new_mount_dir {
+        return Err(SysErrNo::EXDEV);
+    }
+
+    if let Some((_, _, _, mountflags)) = new_mount.or(old_mount) {
+        if mountflags & 1 != 0 {
+            return Err(SysErrNo::EROFS);
+        }
+    }
+    Ok(0)
+}
+
+/// 判断 `path` 是否位于 `ancestor` 子树内，用于识别 symlink 目标回指祖先目录。
+fn path_is_same_or_ancestor(ancestor: &str, path: &str) -> bool {
+    path == ancestor
+        || path
+            .strip_prefix(ancestor)
+            .map_or(false, |rest| rest.starts_with('/'))
+}
+
+/// 旧路径达到读取上限时，先扫描路径前缀里的 symlink，避免自引用环被误报为
+/// `ENAMETOOLONG`。这里只处理 `link08` 覆盖的相对目标回指祖先目录场景。
+fn has_self_referential_symlink_prefix(abs_path: &str) -> bool {
+    let mut prefix = String::new();
+    for component in abs_path.split('/').filter(|component| !component.is_empty()) {
+        prefix.push('/');
+        prefix.push_str(component);
+
+        let Ok(file) = open(&prefix, OpenFlags::O_RDONLY | OpenFlags::O_UNLINK, NONE_MODE) else {
+            continue;
+        };
+        let Ok(file) = file.file() else {
+            continue;
+        };
+        if file.inode.types() != InodeType::SymLink {
+            continue;
+        }
+
+        let mut link_buf = [0u8; MAX_PATH_LEN];
+        let Ok(len) = file.inode.read_link(&mut link_buf, MAX_PATH_LEN) else {
+            continue;
+        };
+        let Ok(target) = core::str::from_utf8(&link_buf[..len]) else {
+            continue;
+        };
+        let Ok(parent_path) = parent_path_of(&prefix) else {
+            continue;
+        };
+        let target_abs = normalize_abs_path(parent_path, target);
+        if path_is_same_or_ancestor(&target_abs, &prefix) {
+            return true;
+        }
+    }
+    false
 }
 
 /// 处理 `ioctl(2)` 文件控制请求。
@@ -228,12 +293,14 @@ pub fn sys_linkat(
     check_link_path(
         &old_path_str,
         flags & AT_EMPTY_PATH as u32 != 0 && old_path_str.is_empty(),
+        false,
     )?;
-    check_link_path(&new_path_str, false)?;
+    check_link_path(&new_path_str, false, true)?;
 
     // 处理 AT_EMPTY_PATH：若 oldpath 为空字符串，则使用 oldfd 对应的已打开文件
     if flags & AT_EMPTY_PATH as u32 != 0 && old_path_str.is_empty() {
         let new_abs_path = proc_inner.get_abs_path(newfd, &new_path_str)?;
+        check_link_mounts(&new_abs_path, &new_abs_path)?;
         check_parent_permission(parent_path_of(&new_abs_path)?, true)?;
         // 新路径不能已存在
         if open(&new_abs_path, OpenFlags::empty(), NONE_MODE).is_ok() {
@@ -251,6 +318,16 @@ pub fn sys_linkat(
     // 常规路径解析
     let old_abs_path = proc_inner.get_abs_path(oldfd, &old_path_str)?;
     let new_abs_path = proc_inner.get_abs_path(newfd, &new_path_str)?;
+    if old_path_str.len() >= MAX_PATH_LEN || has_too_long_path_component(&old_path_str) {
+        if has_self_referential_symlink_prefix(&old_abs_path) {
+            return Err(SysErrNo::ELOOP);
+        }
+        if open(&old_abs_path, OpenFlags::empty(), NONE_MODE).err() == Some(SysErrNo::ELOOP) {
+            return Err(SysErrNo::ELOOP);
+        }
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+    check_link_mounts(&old_abs_path, &new_abs_path)?;
     check_parent_permission(parent_path_of(&old_abs_path)?, false)?;
     check_parent_permission(parent_path_of(&new_abs_path)?, true)?;
 

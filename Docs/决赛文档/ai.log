@@ -3767,3 +3767,37 @@ timeout 120s make run > /tmp/link04-after-fix.log 2>&1
 ```
 
 结果：默认 LoongArch64 构建通过；LoongArch64 单跑 musl/glibc `link04` 均 14 项 `TPASS`，Summary 均为 `passed 14 failed 0 broken 0`。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/link04-linkat-errno-permission.md](./problem/link04-linkat-errno-permission.md)。
+
+
+## 2026-07-07: 修复 LTP link08 linkat mount/rofs/ELOOP 语义
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复。
+
+### 分析
+
+AI 提取 `log.ans` 后确认，musl/glibc `link08` 都失败 3 项：跨挂载点 hard link 错误成功，只读挂载点内 hard link 错误成功，符号链接环返回 `ENAMETOOLONG` 而不是 `ELOOP`。
+
+对照 LTP `link08.c` 后确认，该用例要求旧路径为目录返回 `EPERM`，旧路径和新路径不在同一挂载点返回 `EXDEV`，只读文件系统内创建目录项返回 `EROFS`，解析路径遇到过多符号链接返回 `ELOOP`。继续追踪 `sys_linkat()` 发现当前普通分支没有检查 `MNT_TABLE` 中的挂载点边界和只读标志；另外此前为 `link04` 增加的旧路径长度预检会在解析 symlink 前返回 `ENAMETOOLONG`，遮蔽 `ELOOP`。
+
+### 采纳结论
+
+`linkat` 创建 hard link 前需要先检查旧路径和新路径的 mount 身份；同一只读挂载内创建目录项应返回 `EROFS`。旧路径达到内核读取上限时，不能无条件返回 `ENAMETOOLONG`，应优先识别中间 symlink loop。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/syscall/fs/ctl.rs` | 新增 `check_link_mounts()` 处理 `EXDEV/EROFS`；旧路径长度检查延后，并新增 `has_self_referential_symlink_prefix()` 在超长旧路径中优先识别自引用 symlink loop |
+
+### 验证
+
+已执行：
+
+```text
+make
+timeout 120s make run > /tmp/link08-after-eloop2.log 2>&1
+```
+
+结果：默认 LoongArch64 构建通过；LoongArch64 单跑 musl/glibc `link08` 均 4 项 `TPASS`，Summary 均为 `passed 4 failed 0 broken 0`。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/link08-linkat-mount-rofs-eloop.md](./problem/link08-linkat-mount-rofs-eloop.md)。
