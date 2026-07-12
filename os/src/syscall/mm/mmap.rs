@@ -5,7 +5,7 @@ use log::{debug, warn};
 
 use crate::{
     arch::memory_layout::{MAX_MMAP_SIZE, PAGE_SIZE},
-    fs::File,
+    fs::{get_devno, File},
     mm::{
         copy_to_user, if_bad_address, remove_bad_address, MapArea, MapAreaType, MapPermission,
         MremapFlags, VirtAddr, VirtPageNum,
@@ -56,17 +56,35 @@ pub fn sys_mmap(
     if fd == usize::MAX {
         return Err(SysErrNo::EBADF);
     }
-    // check fd and map_permission
-    let file = process.fd_table.get(fd)?.file()?;
-    // 读写权限
-    if map_perm.contains(MapPermission::R) && !file.readable()
-        || flags.contains(MmapFlags::MAP_SHARED)
-            && map_perm.contains(MapPermission::W)
-            && !file.writable()
-    {
-        return Err(SysErrNo::EACCES);
-    }
-    let rv = memory_set.mmap(addr, len, map_perm, flags, Some(file), off);
+    let descriptor = process.fd_table.get(fd)?;
+    let file = match descriptor.file() {
+        Ok(file) => {
+            if map_perm.contains(MapPermission::R) && !file.readable()
+                || flags.contains(MmapFlags::MAP_SHARED)
+                    && map_perm.contains(MapPermission::W)
+                    && !file.writable()
+            {
+                return Err(SysErrNo::EACCES);
+            }
+            Some(file)
+        }
+        Err(SysErrNo::EINVAL) => {
+            let device = descriptor.abs()?;
+            if device.fstat().st_rdev != get_devno("/dev/zero") {
+                return Err(SysErrNo::EINVAL);
+            }
+            if map_perm.contains(MapPermission::R) && !device.readable()
+                || flags.contains(MmapFlags::MAP_SHARED)
+                    && map_perm.contains(MapPermission::W)
+                    && !device.writable()
+            {
+                return Err(SysErrNo::EACCES);
+            }
+            None
+        }
+        Err(err) => return Err(err),
+    };
+    let rv = memory_set.mmap(addr, len, map_perm, flags, file, off);
     debug!("[sys_mmap] alloc addr={:#x}", rv);
     if rv == 0 {
         if flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
