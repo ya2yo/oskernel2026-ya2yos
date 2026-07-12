@@ -488,3 +488,10 @@
 - **场景**：procfs pagemap 文件实现、页表 PFN 导出、LTP `mmap12` 日志验证、文档完善
 - **描述**：用户要求补齐 `/proc/self/pagemap`。AI 对照现有 proc 文件刷新模型和 `mmap12` 源码，新增 `/proc/<pid>/pagemap` 的创建、刷新与退出清理，`openat` 支持 self 到当前 PID 的解析，并在页表读锁内采集已建立 PTE 的 present/PFN 条目。实现以稀疏 VFS 文件表示未映射页，避免高地址 VMA 的零填充。最新 `log.ans` 显示 LoongArch64 musl/glibc `mmap12` 均 `TPASS: File mapped properly`，Summary 均为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-12 条目与 [problem/proc-self-pagemap-mmap12.md](./problem/proc-self-pagemap-mmap12.md)。
 - **关联 commit**：待提交
+
+#### LTP mmap13 文件映射 EOF SIGBUS 修复（7.12）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `mmap13` 源码对照、mmap 缺页/信号/ext4 长度一致性修复、LoongArch64 运行验证、文档完善
+- **描述**：用户持续要求依据最新日志修复 `mmap13`。AI 确认初始问题是文件映射完整 EOF 外页被错误建立为零页；补充 SIGBUS 后又通过运行日志确认 LTP 框架 unlink 后的共享映射因 ext4 `ftruncate` 后错误报告长度 0 而被误杀。修复为 VMA 保存 mmap 时文件长度快照，mmap fault 和 trap 层将完整 EOF 外页判定为 `SIGBUS`，并让 `Ext4Inode` 维护成功 truncate/write 后的长度，保证 `size()`、`fstat()` 和页缓存一致。LoongArch64 单跑 musl/glibc `mmap13` 均输出 `TPASS: Received SIGBUS signal as expected`，Summary 均为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-12 条目与 [problem/mmap13-sigbus-eof.md](./problem/mmap13-sigbus-eof.md)。
+- **关联 commit**：待提交

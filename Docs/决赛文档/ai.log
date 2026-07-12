@@ -3946,3 +3946,53 @@ AI 对照现有 `/proc/<pid>/{stat,status,maps}` 生命周期和 LTP `mmap12.c`�
 默认 LoongArch64 `make` 通过。最新 `log.ans` 显示 musl/glibc `mmap12` 均输出
 `TPASS: File mapped properly`，Summary 均为 `passed 1 failed 0 broken 0 skipped 0 warnings 0`。
 日志中的 `not present` 行为 `TINFO`，不计为失败。未运行 RISC-V QEMU。
+
+---
+
+## 2026-07-12: 修复 LTP mmap13 文件映射 EOF SIGBUS 语义
+
+### 用户需求
+
+用户持续要求分析最新 `log.ans` 并修复 LTP `mmap13` 失败，且要求补齐本轮文档。
+
+### 分析与采纳结论
+
+AI 对照 `mmap13.c` 确认，半页文件映射两个页后访问第二页必须产生可捕获 `SIGBUS`。初始
+fault handler 会把 EOF 外页当作零页。第一次补充 SIGBUS 后，日志显示 LTP 框架的
+`/dev/shm/ltp_mmap13_<pid>` 在 unlink 后被错误判为长度 0，进程在安装测试 handler 前以
+135 退出。临时精确日志进一步确认 `ftruncate(4096)` 成功后 ext4 `fstat` 仍报告 0。
+
+采用的修复为：在 VMA 中保存建图时的文件长度，缺页前判定完整 EOF 外页；trap 层将此类
+fault 映射为 `SIGBUS`，其他不可处理 fault 保持 `SIGSEGV`；`Ext4Inode` 保存成功 truncate
+和 write 后的长度，供 `size()`/`fstat()`/页面缓存一致使用。
+
+`mmap_ops.rs` 的 `MAP_FIXED` 覆盖路径会通过 `mprotect()` 拆分 VMA。原实现只直接替换
+`mmap_file.file`，可能保留旧 `offset` 或长度快照；现统一调用
+`area.mmap_file.replace(file.clone(), offset)`，让文件、偏移和 `mapped_file_size` 一并更新。
+
+### 修改内容
+
+| 文件 | 修改 |
+|---|---|
+| `os/src/fs/ext4_lw/inode.rs` | 新增已知文件长度，修复 truncate/write 后 size/fstat 一致性 |
+| `os/src/mm/map_area.rs` | VMA 保存 mmap 时文件长度快照 |
+| `os/src/mm/page_fault_handler.rs` | 区分完整 EOF 外页，禁止为其分配零页 |
+| `os/src/mm/memory_set/{handle.rs,mmap_ops.rs}` | 暴露 EOF 查询并提前拒绝 fault；MAP_FIXED VMA 拆分时用 `MmapFile::replace()` 同步文件、偏移和长度快照 |
+| `os/src/trap/mod.rs` | EOF 文件页 fault 投递 `SIGBUS`，其余失败投递 `SIGSEGV` |
+| `Docs/决赛文档/problem/mmap13-sigbus-eof.md` | 新增问题复盘 |
+
+### 验证
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml --all
+git diff --check
+make log
+timeout 120s make run > /tmp/mmap13-known-size.log 2>&1
+```
+
+默认 LoongArch64 构建通过。运行日志中 musl/glibc `mmap13` 都输出
+`TPASS: Received SIGBUS signal as expected`，Summary 均为
+`passed 1 failed 0 broken 0 skipped 0 warnings 0`；仅保留既有 `smoltcp` vendor warning。
+未运行 RISC-V QEMU。

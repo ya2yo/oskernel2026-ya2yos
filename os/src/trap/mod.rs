@@ -20,7 +20,7 @@ use crate::{
     mm::{VirtAddr, VirtPageNum},
     signal::{
         check_if_any_sig_for_current_task, deliver_itimer_signal, handle_signal,
-        send_signal_to_thread, SigSet, SIGSEGV,
+        send_signal_to_thread, SigSet,
     },
     syscall::{syscall, Syscall},
     task::{
@@ -114,27 +114,25 @@ pub fn trap_handler() {
                     return;
                 }
             };
-            let ok;
+            let signal;
             {
                 let task = current_task().unwrap();
                 let process = &task.process;
                 let memory_set = process.memory_set_arc();
-                ok = memory_set.handle_page_fault(fault_va.floor(), cause);
+                signal = if memory_set.mmap_file_page_beyond_eof(fault_va.floor()) {
+                    Some(SigSet::SIGBUS)
+                } else if memory_set.handle_page_fault(fault_va.floor(), cause) {
+                    None
+                } else {
+                    Some(SigSet::SIGSEGV)
+                };
                 // drop task inner and task to avoid deadlock and exit exception
             }
-            if !ok {
-                // Always send SIGSEGV and let the signal mechanism decide:
-                // - custom handler → setup_frame, jump to user handler
-                // - default action  → terminate (128 + signo)
+            if let Some(signal) = signal {
+                // The VMA/EOF distinction determines SIGBUS versus SIGSEGV;
+                // signal delivery then invokes a custom handler or terminates.
                 let tid = current_task().unwrap().tid();
-                // warn!(
-                //     "[kernel] hart {} {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, sending SIGSEGV.",
-                //     hartid,
-                //     cause,
-                //     stval,
-                //     current_trap_cx().get_sepc(),
-                // );
-                send_signal_to_thread(tid, SigSet::SIGSEGV);
+                send_signal_to_thread(tid, signal);
                 return;
             }
         }
@@ -173,6 +171,7 @@ pub fn trap_handler() {
             }
         }
         Trap::Exception(Exception::PagePrivilegeIllegal) => {
+            let signal;
             {
                 let Some(fault_va) = VirtAddr::try_from(stval) else {
                     let tid = current_task().unwrap().tid();
@@ -188,20 +187,28 @@ pub fn trap_handler() {
                 let task = current_task().unwrap();
                 let process = &task.process;
                 let memory_set = process.memory_set_arc();
-                if memory_set.handle_page_fault(fault_va.floor(), cause) {
-                    return;
-                }
+                signal = if memory_set.mmap_file_page_beyond_eof(fault_va.floor()) {
+                    Some(SigSet::SIGBUS)
+                } else if memory_set.handle_page_fault(fault_va.floor(), cause) {
+                    None
+                } else {
+                    Some(SigSet::SIGSEGV)
+                };
             }
-            // 页面权限不足且无法通过 lazy/COW 处理，发送 SIGSEGV。
-            let tid = current_task().unwrap().tid();
-            warn!(
-                "[kernel] hart {} PagePrivilegeIllegal in application, bad addr = {:#x}, bad instruction = {:#x}, sending SIGSEGV.",
-                hartid,
-                stval,
-                current_trap_cx().get_sepc(),
-            );
-            send_signal_to_thread(tid, SigSet::SIGSEGV);
-            return;
+            if let Some(signal) = signal {
+                // Page permission faults can also be the first access to a
+                // beyond-EOF file page on LoongArch, which requires SIGBUS.
+                let tid = current_task().unwrap().tid();
+                warn!(
+                    "[kernel] hart {} PagePrivilegeIllegal in application, bad addr = {:#x}, bad instruction = {:#x}, sending {:?}.",
+                    hartid,
+                    stval,
+                    current_trap_cx().get_sepc(),
+                    signal,
+                );
+                send_signal_to_thread(tid, signal);
+                return;
+            }
         }
 
         Trap::Interrupt(Interrupt::Timer) => {

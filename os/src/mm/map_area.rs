@@ -5,7 +5,7 @@ use crate::arch::memory_layout::{MMIO_MAP_OFFSET, PAGE_SIZE_BITS};
 use crate::{
     arch::memory_layout::{KERNEL_PGNUM_OFFSET, PAGE_SIZE},
     arch::page_table::PageTable,
-    fs::OSFile,
+    fs::{File, OSFile},
     syscall::MmapFlags,
 };
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
@@ -230,6 +230,12 @@ pub enum MapAreaType {
 pub struct MmapFile {
     pub file: Option<Arc<OSFile>>,
     pub offset: usize,
+    /// File length observed when this VMA acquired its backing file.
+    ///
+    /// The ext4 adapter is path-based, so an unlinked-but-still-mapped file
+    /// can no longer report its size through the original pathname. Keeping
+    /// this value preserves the Linux lifetime semantics for such mappings.
+    pub mapped_file_size: Option<usize>,
 }
 
 impl MmapFile {
@@ -237,10 +243,27 @@ impl MmapFile {
         Self {
             file: None,
             offset: 0,
+            mapped_file_size: None,
         }
     }
 
     pub fn new(file: Option<Arc<OSFile>>, offset: usize) -> Self {
-        Self { file, offset }
+        // Take the length from the opened file description.  Calling
+        // `inode.size()` here reopens the path in the ext4 adapter, which can
+        // observe stale metadata and cannot describe a subsequently unlinked
+        // mapping.  The VMA keeps this mapping-time snapshot for SIGBUS checks.
+        let mapped_file_size = file
+            .as_ref()
+            .map(|file| file.fstat().st_size.max(0) as usize);
+        Self {
+            file,
+            offset,
+            mapped_file_size,
+        }
+    }
+
+    /// Replace a VMA's file backing and refresh the associated EOF snapshot.
+    pub fn replace(&mut self, file: Option<Arc<OSFile>>, offset: usize) {
+        *self = Self::new(file, offset);
     }
 }

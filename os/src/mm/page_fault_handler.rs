@@ -21,6 +21,29 @@ fn shared_file_page_index(vma: &MapArea, va: VirtAddr) -> Option<usize> {
     Some(page_index)
 }
 
+/// Return whether `va` addresses a file page wholly beyond the backing file.
+///
+/// Linux permits a file mapping to extend beyond EOF, and zero-fills the tail
+/// of its final partial page. A fault whose page *starts* at or after EOF is
+/// different: it must raise SIGBUS instead of materializing a zero page.
+pub fn mmap_file_page_beyond_eof(va: VirtAddr, vma: &MapArea) -> bool {
+    let Some(file) = vma.mmap_file.file.as_ref() else {
+        return false;
+    };
+    let start_addr: VirtAddr = vma.vpn_range.start().into();
+    let Some(file_offset) =
+        va.0.checked_sub(start_addr.0)
+            .and_then(|offset| offset.checked_add(vma.mmap_file.offset))
+    else {
+        return true;
+    };
+    file_offset
+        >= vma
+            .mmap_file
+            .mapped_file_size
+            .unwrap_or_else(|| file.inode.size())
+}
+
 fn map_shared_file_page_from_cache(
     va: VirtAddr,
     page_table: &mut PageTable,
@@ -47,6 +70,9 @@ fn map_shared_file_page_from_cache(
 /// Returns true on success, false if OOM (caller should SIGSEGV).
 pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
     // debug!("[mmap_write_page_fault] va={:?}", va);
+    if mmap_file_page_beyond_eof(va, vma) {
+        return false;
+    }
     if map_shared_file_page_from_cache(va, page_table, vma) {
         return true;
     }
@@ -74,6 +100,9 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
 /// Returns true on success, false if OOM.
 pub fn mmap_read_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
     // debug!("[mmap_read_page_fault] va={:?}", va);
+    if mmap_file_page_beyond_eof(va, vma) {
+        return false;
+    }
     let frame = GROUP_SHARE.lock().find(vma.groupid, va.into());
     if let Some(frame) = frame {
         //有现成的，直接clone,需要是cow的

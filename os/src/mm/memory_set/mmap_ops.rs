@@ -17,7 +17,8 @@ use crate::mm::group::GROUP_SHARE;
 use crate::mm::map_area::MapType;
 use crate::mm::memory_set::MemorySetInner;
 use crate::mm::page_fault_handler::{
-    lazy_page_fault, mmap_read_page_fault, mmap_write_page_fault, write_protect_page_fault,
+    lazy_page_fault, mmap_file_page_beyond_eof, mmap_read_page_fault, mmap_write_page_fault,
+    write_protect_page_fault,
 };
 use crate::syscall::MmapFlags;
 use crate::trap::trap_types::*;
@@ -29,6 +30,15 @@ use log::{debug, warn};
 const MMAP_WRITEBACK_CHUNK_SIZE: usize = 0x10000; // 64KB
 
 impl MemorySetInner {
+    /// Check the Linux SIGBUS condition for a file-backed mmap fault.
+    pub fn mmap_file_page_beyond_eof(&self, vpn: VirtPageNum) -> bool {
+        self.areas
+            .iter()
+            .filter(|area| area.area_type == MapAreaType::Mmap)
+            .find(|area| area.vpn_range.contains_vpn(vpn))
+            .is_some_and(|area| mmap_file_page_beyond_eof(vpn.into(), area))
+    }
+
     pub fn shm(
         &mut self,
         addr: usize,
@@ -345,13 +355,10 @@ impl MemorySetInner {
             if start >= start_vpn && end <= end_vpn {
                 area.map_perm = map_perm;
                 if mmap_flags.is_some() {
-                    area.mmap_file.file = file.clone();
+                    area.mmap_file.replace(file.clone(), offset);
                 }
                 if let Some(flags) = mmap_flags {
                     area.mmap_flags = flags;
-                }
-                if offset != usize::MAX {
-                    area.mmap_file.offset = offset as usize;
                 }
                 continue;
             // 情况2：area 左侧在范围外，右侧在范围内
@@ -362,13 +369,10 @@ impl MemorySetInner {
                 new_area.map_perm = map_perm;
                 new_area.vpn_range = VPNRange::new(start_vpn, end);
                 if mmap_flags.is_some() {
-                    new_area.mmap_file.file = file.clone();
+                    new_area.mmap_file.replace(file.clone(), offset);
                 }
                 if let Some(flags) = mmap_flags {
                     new_area.mmap_flags = flags;
-                }
-                if offset != usize::MAX {
-                    new_area.mmap_file.offset = offset as usize;
                 }
                 // area: 左半部，保持原权限，收缩范围
                 area.vpn_range = VPNRange::new(start, start_vpn);
@@ -394,13 +398,10 @@ impl MemorySetInner {
                 new_area.map_perm = map_perm;
                 new_area.vpn_range = VPNRange::new(start, end_vpn);
                 if mmap_flags.is_some() {
-                    new_area.mmap_file.file = file.clone();
+                    new_area.mmap_file.replace(file.clone(), offset);
                 }
                 if let Some(flags) = mmap_flags {
                     new_area.mmap_flags = flags;
-                }
-                if offset != usize::MAX {
-                    new_area.mmap_file.offset = offset as usize;
                 }
                 // area: 右半部，保持原权限，收缩范围
                 area.vpn_range = VPNRange::new(end_vpn, end);
@@ -432,13 +433,10 @@ impl MemorySetInner {
                 back_area.vpn_range = VPNRange::new(end_vpn, end); // 后部，原权限
                 area.vpn_range = VPNRange::new(start_vpn, end_vpn); // 中部，新权限
                 if mmap_flags.is_some() {
-                    area.mmap_file.file = file.clone();
+                    area.mmap_file.replace(file.clone(), offset);
                 }
                 if let Some(flags) = mmap_flags {
                     area.mmap_flags = flags;
-                }
-                if offset != usize::MAX {
-                    area.mmap_file.offset = offset as usize;
                 }
                 // 注册到共享内存组
                 GROUP_SHARE.lock().add_area(front_area.groupid);
@@ -501,6 +499,11 @@ impl MemorySetInner {
                 start <= vpn && vpn < end
             })
         {
+            // A file VMA may legally cover bytes past EOF, but faulting a
+            // complete page beyond EOF is SIGBUS, never a demand-zero page.
+            if mmap_file_page_beyond_eof(vpn.into(), area) {
+                return false;
+            }
             let ok = match scause {
                 Trap::Exception(Exception::LoadPageFault) => {
                     area.map_perm.contains(MapPermission::R)

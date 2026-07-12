@@ -130,6 +130,14 @@ impl MemorySet {
         self.get_mut().handle_page_fault(vpn, scause)
     }
 
+    /// Whether a faulting VPN lies in a file mapping beyond that file's EOF.
+    ///
+    /// The trap layer uses this to distinguish Linux SIGBUS from ordinary
+    /// unmapped/protection faults, which result in SIGSEGV.
+    pub fn mmap_file_page_beyond_eof(&self, vpn: VirtPageNum) -> bool {
+        self.get_ref().mmap_file_page_beyond_eof(vpn)
+    }
+
     /// Change permissions for a virtual page range.
     ///
     /// This wrapper passes `if_mmap=false`, so file/offset metadata is left

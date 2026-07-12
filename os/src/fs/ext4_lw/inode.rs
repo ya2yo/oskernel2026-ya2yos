@@ -43,6 +43,12 @@ pub struct Ext4Inode {
 pub struct Ext4InodeInner {
     /// lwext4 wrapper 的文件/目录句柄。
     f: Ext4File,
+    /// 已由当前 VFS inode 成功更新的普通文件长度。
+    ///
+    /// lwext4 的 `ext4_ftruncate()` 在扩展空文件后可能暂时不能通过
+    /// path-based stat 查询到新长度。保留该值可使同一 inode 的 fstat、
+    /// 文件页缓存和 mmap 使用一致的 EOF。
+    known_size: Option<usize>,
     /// 指向同一 inode 的路径别名，用于 hard link / rename 后继续找到可用路径。
     aliases: Vec<String>,
     /// 延迟删除标志。如果为 true，在该 inode 被 Drop 时会从磁盘删除对应文件。
@@ -61,6 +67,7 @@ impl Ext4Inode {
         Ext4Inode {
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
+                known_size: None,
                 aliases: vec![path.to_string()],
                 delay: false,
             }),
@@ -117,10 +124,15 @@ impl Inode for Ext4Inode {
         let path = Self::live_path(inner);
         let types = as_inode_type(inner.f.file_type());
         if types == InodeType::File {
+            if let Some(size) = inner.known_size {
+                return size;
+            }
             let file = &mut inner.f;
             file.file_open(&path, O_RDONLY);
             let fsize = file.file_size();
-            fsize as usize
+            let size = fsize as usize;
+            inner.known_size = Some(size);
+            size
         } else {
             0
         }
@@ -181,10 +193,15 @@ impl Inode for Ext4Inode {
         let path = Self::live_path(inner);
         let file = &mut inner.f;
         file.file_open(&path, O_RDWR).map_err(SysErrNo::from)?;
+        let current_size = inner
+            .known_size
+            .unwrap_or_else(|| file.file_size() as usize);
         file.file_seek(off as i64, SEEK_SET)
             .map_err(SysErrNo::from)?;
-        let r = file.file_write(buf);
-        r.map_err(SysErrNo::from)
+        let written = file.file_write(buf).map_err(SysErrNo::from)?;
+        let end = off.checked_add(written).ok_or(SysErrNo::EFBIG)?;
+        inner.known_size = Some(current_size.max(end));
+        Ok(written)
     }
 
     /// 截断文件到指定长度。
@@ -197,12 +214,10 @@ impl Inode for Ext4Inode {
         file.file_open(&path, O_RDWR | O_CREAT | O_TRUNC)
             .map_err(SysErrNo::from)?;
 
-        let t = file.file_truncate(size as u64);
-        let ret = t.map_err(SysErrNo::from);
-        if ret.is_ok() {
-            FILE_PAGE_CACHE.invalidate_path(&path);
-        }
-        ret
+        file.file_truncate(size as u64).map_err(SysErrNo::from)?;
+        inner.known_size = Some(size);
+        FILE_PAGE_CACHE.invalidate_path(&path);
+        Ok(0)
     }
 
     /// 重命名当前 inode 对应的路径。
@@ -376,6 +391,7 @@ impl Inode for Ext4Inode {
     /// 再尝试 `recover_live_path()`，从已记录 alias 中恢复一个仍存在的路径。
     fn fstat(&self) -> Kstat {
         let inner = self.inner.get_unchecked_mut();
+        let known_size = inner.known_size;
         let stat = match inner.f.fstat() {
             Ok(s) => s,
             Err(rc) => {
@@ -402,7 +418,7 @@ impl Inode for Ext4Inode {
             tmp_stat.st_atime &= 0xFFFF_FFFF;
             tmp_stat.st_mtime &= 0xFFFF_FFFF;
         }
-        Kstat {
+        let mut kstat = Kstat {
             st_dev: stat.st_dev,
             st_ino: stat.st_ino,
             st_mode: stat.st_mode,
@@ -416,7 +432,11 @@ impl Inode for Ext4Inode {
             st_ctime: tmp_stat.st_ctime,
             st_mtime: tmp_stat.st_mtime,
             ..Kstat::default()
+        };
+        if let Some(size) = known_size {
+            kstat.st_size = size as isize;
         }
+        kstat
     }
     /// 读取目录项内容。
     ///
