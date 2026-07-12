@@ -4,8 +4,8 @@ use super::fcntl::*;
 use super::file_lock;
 use crate::fs::{
     map_dynamic_link_file, notify_path_event, open, open_fifo, refresh_proc_maps,
-    refresh_proc_stat, refresh_proc_status, superblock_root_inode, File, FileClass, FileDescriptor,
-    FsIndex, OpenFlags, TmpFile, FAN_OPEN,
+    refresh_proc_pagemap, refresh_proc_stat, refresh_proc_status, superblock_root_inode, File,
+    FileClass, FileDescriptor, FsIndex, OpenFlags, TmpFile, FAN_OPEN,
 };
 use crate::mm::{copy_from_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::Syscall;
@@ -237,6 +237,9 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     if abs_path == "/proc/self/maps" {
         abs_path = format!("/proc/{}/maps", task.pid());
     }
+    if abs_path == "/proc/self/pagemap" {
+        abs_path = format!("/proc/{}/pagemap", task.pid());
+    }
     if abs_path == "/proc/self/status" {
         let proc_inner = &task.process;
         let memory_set = proc_inner.memory_set_arc();
@@ -266,6 +269,12 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
         if let Some(process) = Process::get_process_arc_by_pid(pid) {
             let memory_set = process.memory_set_arc();
             refresh_proc_maps(pid, &memory_set)?;
+        }
+    }
+    if let Some(pid) = parse_proc_pid_file(&abs_path, "pagemap") {
+        if let Some(process) = Process::get_process_arc_by_pid(pid) {
+            let memory_set = process.memory_set_arc();
+            refresh_proc_pagemap(pid, &memory_set)?;
         }
     }
 

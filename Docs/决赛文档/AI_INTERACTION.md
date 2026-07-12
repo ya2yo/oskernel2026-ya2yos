@@ -481,3 +481,10 @@
 - **场景**：`log.ans` 分析、LTP `mmap04` 源码对照、procfs maps/VMA 元数据修复、LoongArch64 运行与双架构构建验证、文档完善
 - **描述**：用户要求补充 `/proc/self/maps`。AI 确认 maps 仅在进程创建时生成、动态 `mmap` 后内容过期，固定 16 位地址格式又不符合 Linux maps 文本格式；`MAP_FIXED` 的 VMA 拆分还没有更新共享/私有属性。修复为在打开 `/proc/self/maps` 或 `/proc/<pid>/maps` 时按当前 VMA 重建内容，使用无前导零地址和 `p/s` 后缀，并在 `MAP_FIXED` 拆分时更新 flags。LoongArch64 单跑 musl/glibc `mmap04` 各 14 项 `TPASS`，LoongArch64 与 RISC-V 构建通过。详见 `Docs/决赛文档/ai.log` 2026-07-12 条目与 [problem/proc-self-maps-mmap04.md](./problem/proc-self-maps-mmap04.md)。
 - **关联 commit**：待提交
+
+#### LTP mmap12 `/proc/self/pagemap` 缺失修复（7.12）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：procfs pagemap 文件实现、页表 PFN 导出、LTP `mmap12` 日志验证、文档完善
+- **描述**：用户要求补齐 `/proc/self/pagemap`。AI 对照现有 proc 文件刷新模型和 `mmap12` 源码，新增 `/proc/<pid>/pagemap` 的创建、刷新与退出清理，`openat` 支持 self 到当前 PID 的解析，并在页表读锁内采集已建立 PTE 的 present/PFN 条目。实现以稀疏 VFS 文件表示未映射页，避免高地址 VMA 的零填充。最新 `log.ans` 显示 LoongArch64 musl/glibc `mmap12` 均 `TPASS: File mapped properly`，Summary 均为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-12 条目与 [problem/proc-self-pagemap-mmap12.md](./problem/proc-self-pagemap-mmap12.md)。
+- **关联 commit**：待提交

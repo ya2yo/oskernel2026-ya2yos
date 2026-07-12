@@ -45,3 +45,4 @@
 - [link08 linkat mount/rofs/ELOOP 语义修复](./link08-linkat-mount-rofs-eloop.md)
 - [linkat02 hard link 上限与 unlink symlink 语义修复](./linkat02-hardlink-emlink-unlink-symlink.md)
 - [LTP mmap04 /proc/self/maps 动态映射与格式修复](./proc-self-maps-mmap04.md)
+- [LTP mmap12 /proc/self/pagemap 缺失修复](./proc-self-pagemap-mmap12.md)

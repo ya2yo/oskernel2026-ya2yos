@@ -3913,3 +3913,36 @@ make TARGET_ARCH=riscv64
 结果：默认 LoongArch64 `mmap04` 的 musl/glibc 两轮均为 14 个 `TPASS`，summary 均为
 `passed 14 failed 0 broken 0 skipped 0 warnings 0`；默认 LoongArch64 与 RISC-V 构建均通过。
 构建输出仅含既有 `smoltcp` vendor warning。详见 [problem/proc-self-maps-mmap04.md](./problem/proc-self-maps-mmap04.md)。
+
+---
+
+## 2026-07-12: `/proc/self/pagemap` 实现与 mmap12 验证
+
+### 用户需求
+
+用户指出当前内核缺少 `/proc/self/pagemap`，要求补充文件创建和修改逻辑；随后要求说明
+`refresh_proc_pagemap()` 的内部逻辑并补注释，最后要求记录本轮修复且以 `log.ans` 通过结果为准。
+
+### 分析与采纳结论
+
+AI 对照现有 `/proc/<pid>/{stat,status,maps}` 生命周期和 LTP `mmap12.c`，确认 pagemap
+必须由 `openat()` 将 self 路径解析到真实 PID，再按 `vpn * 8` 读取二进制 `u64` 条目。
+地址空间页表可通过 `translate(vpn)` 查询 PFN。采用 bit 63 present 与 bits 0-54 PFN 的
+最小 Linux-compatible 格式；swap、soft-dirty、UFFD-WP、exclusive 等当前内核未维护的
+状态保持零。为避免高地址 VMA 生成大量零写入，先截断为逻辑长度，只写连续 present 页。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/proc_file.rs` | 新增 `refresh_proc_pagemap()`、创建/清理路径及内部注释 |
+| `os/src/syscall/fs/fd_ops.rs` | 支持 self 路径重写与 pid pagemap 打开前刷新 |
+| `os/src/task/task/task.rs` | 初始化 initproc 的 proc 文件 |
+| `os/src/fs/{mod.rs,kernel_fs_ops/mod.rs}` | 导出刷新接口 |
+| `Docs/决赛文档/problem/proc-self-pagemap-mmap12.md` | 新增问题复盘 |
+
+### 验证
+
+默认 LoongArch64 `make` 通过。最新 `log.ans` 显示 musl/glibc `mmap12` 均输出
+`TPASS: File mapped properly`，Summary 均为 `passed 1 failed 0 broken 0 skipped 0 warnings 0`。
+日志中的 `not present` 行为 `TINFO`，不计为失败。未运行 RISC-V QEMU。

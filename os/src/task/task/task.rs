@@ -290,6 +290,8 @@ impl TaskControlBlock {
         let trap_cx = task_inner.trap_cx();
         *trap_cx = TrapContext::app_init_context(entry_point, ustack_top, kernel_stack_top);
         drop(task_inner);
+        create_proc_dir_and_file(process.pid, 0, "initproc", &memory_set)
+            .expect("create initproc proc files");
         arc_task
     }
     /// exec的主逻辑

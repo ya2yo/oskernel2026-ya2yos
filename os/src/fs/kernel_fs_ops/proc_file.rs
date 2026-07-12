@@ -2,11 +2,16 @@ use crate::{
     arch::{memory_layout::PAGE_SIZE, time::get_ticks},
     mm::{MapPermission, MemorySet, UserBuffer},
     syscall::MmapFlags,
+    utils::SysErrNo,
 };
 
 // 该文件创建形如/proc/xxx的文件
 use super::*;
 use alloc::{format, string::String, vec::Vec};
+
+const PAGEMAP_ENTRY_SIZE: usize = core::mem::size_of::<u64>();
+const PAGEMAP_PFN_MASK: u64 = (1u64 << 55) - 1;
+const PAGEMAP_PRESENT: u64 = 1u64 << 63;
 
 fn format_map_perm(perm: MapPermission, flags: MmapFlags) -> String {
     let mut s = String::with_capacity(4);
@@ -119,6 +124,7 @@ pub fn create_proc_dir_and_file(
     statusfile.inode.sync();
 
     refresh_proc_maps(pid, memory_set)?;
+    refresh_proc_pagemap(pid, memory_set)?;
 
     Ok(())
 }
@@ -171,6 +177,79 @@ pub fn refresh_proc_maps(pid: usize, memory_set: &MemorySet) -> Result<(), SysEr
     Ok(())
 }
 
+/// Rebuild `/proc/<pid>/pagemap` from the current hardware page table.
+///
+/// Each entry is a native-endian Linux pagemap u64. Ya2yOS does not implement
+/// swap, soft-dirty, userfaultfd write-protect, or page exclusivity tracking,
+/// so only the present bit (63) and PFN bits (0-54) are populated. The file is
+/// sparse: holes represent unmapped pages and read back as zero.
+pub fn refresh_proc_pagemap(pid: usize, memory_set: &MemorySet) -> Result<(), SysErrNo> {
+    // Snapshot page-table state before entering VFS. In particular, do not hold
+    // the address-space lock while open/truncate/write_at can touch the FS.
+    let (file_size, present_runs) = {
+        let memory_set = memory_set.get_ref();
+        let mut highest_vpn = 0usize;
+        let mut present_runs = Vec::new();
+
+        for area in memory_set.areas.iter() {
+            // pagemap offset is vpn * sizeof(u64); the logical file must cover
+            // every VMA even when a lazy page has not faulted in yet.
+            highest_vpn = highest_vpn.max(area.vpn_range.end().0);
+
+            let mut run_start = None;
+            let mut run = Vec::new();
+            for vpn in area.vpn_range {
+                match memory_set.page_table.translate(vpn) {
+                    Some(ppn) => {
+                        if run_start.is_none() {
+                            run_start = Some(vpn.0);
+                        }
+                        // Present pages expose their PFN. Unsupported Linux
+                        // pagemap flags deliberately remain zero.
+                        let entry = PAGEMAP_PRESENT | (ppn.0 as u64 & PAGEMAP_PFN_MASK);
+                        run.extend_from_slice(&entry.to_ne_bytes());
+                    }
+                    None if let Some(start) = run_start.take() => {
+                        // Emit adjacent present entries in one VFS write. A
+                        // following hole is left unwritten and reads as zero.
+                        present_runs.push((start, run));
+                        run = Vec::new();
+                    }
+                    None => {}
+                }
+            }
+            if let Some(start) = run_start {
+                present_runs.push((start, run));
+            }
+        }
+
+        let file_size = highest_vpn
+            .checked_mul(PAGEMAP_ENTRY_SIZE)
+            .ok_or(SysErrNo::EFBIG)?;
+        (file_size, present_runs)
+    };
+
+    let pagemapfile = open(
+        format!("/proc/{}/pagemap", pid).as_str(),
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_TRUNC,
+        DEFAULT_FILE_MODE,
+    )?
+    .file()?;
+    // truncate establishes the Linux-visible pagemap length without filling
+    // high virtual-address ranges with explicit zero bytes.
+    pagemapfile.inode.truncate(file_size)?;
+
+    for (start_vpn, entries) in present_runs {
+        // A pagemap entry is addressed by virtual page number, not by its PFN.
+        let offset = start_vpn
+            .checked_mul(PAGEMAP_ENTRY_SIZE)
+            .ok_or(SysErrNo::EFBIG)?;
+        pagemapfile.inode.write_at(offset, &entries)?;
+    }
+    pagemapfile.inode.sync();
+    Ok(())
+}
+
 pub fn refresh_proc_stat(
     pid: usize,
     ppid: usize,
@@ -209,6 +288,8 @@ pub fn refresh_proc_status(
 }
 
 pub fn remove_proc_dir_and_file(pid: usize) {
+    superblock_root_inode().unlink(format!("/proc/{}/pagemap", pid).as_str());
+    FsIndex::remove_inode_idx(format!("/proc/{}/pagemap", pid).as_str());
     superblock_root_inode().unlink(format!("/proc/{}/maps", pid).as_str());
     FsIndex::remove_inode_idx(format!("/proc/{}/maps", pid).as_str());
     superblock_root_inode().unlink(format!("/proc/{}/status", pid).as_str());
