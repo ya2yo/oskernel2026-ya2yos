@@ -474,3 +474,10 @@
 - **场景**：`log.ans` 分析、LTP `mkdir02` 源码对照、目录创建 mode 继承语义修复、LoongArch64 构建和运行验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `mkdir02` 失败来自新建目录继承了父目录 gid，但没有继承父目录 `S_ISGID` mode 位；根因是 `create_file()` 在 `mkdirat` 复用的 `O_DIRECTORY|O_CREATE` 路径中只应用 `umask`，没有对目录补父目录 `0o2000`。修复为新建目录且父目录带 `S_ISGID` 时为 `effective_mode` 补 `0o2000`，并传播 `fmode_set()` 错误。LoongArch64 `make run` 中 musl/glibc `mkdir02` 均 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/mkdir02-setgid-inherit.md](./problem/mkdir02-setgid-inherit.md)。
 - **关联 commit**：待提交
+
+#### LTP mmap04 /proc/self/maps 动态映射修复（7.12）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `mmap04` 源码对照、procfs maps/VMA 元数据修复、LoongArch64 运行与双架构构建验证、文档完善
+- **描述**：用户要求补充 `/proc/self/maps`。AI 确认 maps 仅在进程创建时生成、动态 `mmap` 后内容过期，固定 16 位地址格式又不符合 Linux maps 文本格式；`MAP_FIXED` 的 VMA 拆分还没有更新共享/私有属性。修复为在打开 `/proc/self/maps` 或 `/proc/<pid>/maps` 时按当前 VMA 重建内容，使用无前导零地址和 `p/s` 后缀，并在 `MAP_FIXED` 拆分时更新 flags。LoongArch64 单跑 musl/glibc `mmap04` 各 14 项 `TPASS`，LoongArch64 与 RISC-V 构建通过。详见 `Docs/决赛文档/ai.log` 2026-07-12 条目与 [problem/proc-self-maps-mmap04.md](./problem/proc-self-maps-mmap04.md)。
+- **关联 commit**：待提交

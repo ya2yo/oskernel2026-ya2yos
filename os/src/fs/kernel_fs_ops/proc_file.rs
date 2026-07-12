@@ -1,13 +1,14 @@
 use crate::{
     arch::{memory_layout::PAGE_SIZE, time::get_ticks},
     mm::{MapPermission, MemorySet, UserBuffer},
+    syscall::MmapFlags,
 };
 
 // 该文件创建形如/proc/xxx的文件
 use super::*;
 use alloc::{format, string::String, vec::Vec};
 
-fn format_map_perm(perm: MapPermission) -> String {
+fn format_map_perm(perm: MapPermission, flags: MmapFlags) -> String {
     let mut s = String::with_capacity(4);
     s.push(if perm.contains(MapPermission::R) {
         'r'
@@ -24,7 +25,11 @@ fn format_map_perm(perm: MapPermission) -> String {
     } else {
         '-'
     });
-    s.push('p');
+    s.push(if flags.contains(MmapFlags::MAP_SHARED) {
+        's'
+    } else {
+        'p'
+    });
     s
 }
 
@@ -113,32 +118,56 @@ pub fn create_proc_dir_and_file(
     write_kernel_file(statusfile.as_ref(), &mut statusinfo)?;
     statusfile.inode.sync();
 
-    //创建进程内存映射文件/proc/<pid>/maps
+    refresh_proc_maps(pid, memory_set)?;
+
+    Ok(())
+}
+
+/// Rebuild `/proc/<pid>/maps` from the process's current VMA metadata.
+///
+/// Proc files are regular VFS files in Ya2yOS, so their contents must be
+/// refreshed before every open instead of being treated as a creation-time
+/// snapshot. Copy VMA metadata before entering the filesystem to avoid
+/// holding the address-space lock across VFS operations.
+pub fn refresh_proc_maps(pid: usize, memory_set: &MemorySet) -> Result<(), SysErrNo> {
+    let areas = {
+        let memory_set = memory_set.get_ref();
+        memory_set
+            .areas
+            .iter()
+            .map(|area| {
+                (
+                    area.vpn_range.start().0 * PAGE_SIZE,
+                    area.vpn_range.end().0 * PAGE_SIZE,
+                    area.map_perm,
+                    area.mmap_flags,
+                    area.mmap_file.offset,
+                    area.mmap_file.file.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
     let mapsfile = open(
         format!("/proc/{}/maps", pid).as_str(),
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_TRUNC,
         DEFAULT_FILE_MODE,
     )?
     .file()?;
     let mut mapsinfo = String::new();
-    for area in &memory_set.get_ref().areas {
-        let start = area.vpn_range.start().0 * PAGE_SIZE;
-        let end = area.vpn_range.end().0 * PAGE_SIZE;
-        let perm = format_map_perm(area.map_perm);
-        let offset = area.mmap_file.offset;
-        let pathname = if let Some(ref file) = area.mmap_file.file {
-            file.inode.path()
-        } else {
-            String::new()
-        };
+    for (start, end, perm, flags, offset, file) in areas {
+        let pathname = file.map(|file| file.inode.path()).unwrap_or_default();
         mapsinfo.push_str(&format!(
-            "{:016x}-{:016x} {} {:08x} 00:00 0 {}\n",
-            start, end, perm, offset, pathname
+            "{:x}-{:x} {} {:08x} 00:00 0 {}\n",
+            start,
+            end,
+            format_map_perm(perm, flags),
+            offset,
+            pathname
         ));
     }
     write_kernel_file(mapsfile.as_ref(), &mut mapsinfo)?;
     mapsfile.inode.sync();
-
     Ok(())
 }
 

@@ -119,7 +119,7 @@ impl MemorySetInner {
                 }
             });
             if need_split {
-                self.mprotect(start_vpn, end_vpn, map_perm, file, off, true);
+                self.mprotect(start_vpn, end_vpn, map_perm, file, off, Some(flags));
             } else {
                 self.push_lazily(MapArea::new_mmap(
                     VirtAddr::from(addr),
@@ -326,7 +326,7 @@ impl MemorySetInner {
         map_perm: MapPermission,
         file: Option<Arc<OSFile>>,
         offset: usize,
-        if_mmap: bool,
+        mmap_flags: Option<MmapFlags>,
     ) {
         // 防御性检查：如果范围无效（start >= end）则直接返回
         if start_vpn >= end_vpn {
@@ -344,8 +344,11 @@ impl MemorySetInner {
             // 例: area=[4,8) 被 [3,10) 覆盖 → 整个 area 改权限
             if start >= start_vpn && end <= end_vpn {
                 area.map_perm = map_perm;
-                if if_mmap {
+                if mmap_flags.is_some() {
                     area.mmap_file.file = file.clone();
+                }
+                if let Some(flags) = mmap_flags {
+                    area.mmap_flags = flags;
                 }
                 if offset != usize::MAX {
                     area.mmap_file.offset = offset as usize;
@@ -358,8 +361,11 @@ impl MemorySetInner {
                 let mut new_area = MapArea::from_another(area);
                 new_area.map_perm = map_perm;
                 new_area.vpn_range = VPNRange::new(start_vpn, end);
-                if if_mmap {
+                if mmap_flags.is_some() {
                     new_area.mmap_file.file = file.clone();
+                }
+                if let Some(flags) = mmap_flags {
+                    new_area.mmap_flags = flags;
                 }
                 if offset != usize::MAX {
                     new_area.mmap_file.offset = offset as usize;
@@ -387,8 +393,11 @@ impl MemorySetInner {
                 let mut new_area = MapArea::from_another(area);
                 new_area.map_perm = map_perm;
                 new_area.vpn_range = VPNRange::new(start, end_vpn);
-                if if_mmap {
+                if mmap_flags.is_some() {
                     new_area.mmap_file.file = file.clone();
+                }
+                if let Some(flags) = mmap_flags {
+                    new_area.mmap_flags = flags;
                 }
                 if offset != usize::MAX {
                     new_area.mmap_file.offset = offset as usize;
@@ -422,8 +431,11 @@ impl MemorySetInner {
                 front_area.vpn_range = VPNRange::new(start, start_vpn); // 前部，原权限
                 back_area.vpn_range = VPNRange::new(end_vpn, end); // 后部，原权限
                 area.vpn_range = VPNRange::new(start_vpn, end_vpn); // 中部，新权限
-                if if_mmap {
+                if mmap_flags.is_some() {
                     area.mmap_file.file = file.clone();
+                }
+                if let Some(flags) = mmap_flags {
+                    area.mmap_flags = flags;
                 }
                 if offset != usize::MAX {
                     area.mmap_file.offset = offset as usize;

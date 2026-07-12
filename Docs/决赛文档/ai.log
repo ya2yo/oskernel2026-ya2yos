@@ -3869,3 +3869,47 @@ make run
 ```
 
 结果：默认 LoongArch64 构建通过；LoongArch64 `make run` 中 musl/glibc `mkdir02` 均输出 `TPASS: New dir inherited GID and S_ISGID`，Summary 均为 `passed 1 failed 0 broken 0`。构建输出仅包含既有 `smoltcp` vendor warning。详见 [problem/mkdir02-setgid-inherit.md](./problem/mkdir02-setgid-inherit.md)。
+
+
+## 2026-07-12: 修复 LTP mmap04 /proc/self/maps 语义
+
+### 用户需求
+
+用户要求分析 `log.ans`，补充 `/proc/self/maps` 文件。
+
+### 分析
+
+AI 从 `log.ans` 确认 musl/glibc `mmap04` 均报 `Expected 1 conversions got 0 FILE '/proc/self/maps'`。
+对照 `mmap04.c` 后确认，测试在每次 `mmap(MAP_FIXED)` 后按映射起始地址扫描 maps，并校验
+`rwx[p|s]`。原实现仅在创建 `/proc/<pid>` 时写 maps，无法反映动态 VMA。调试运行进一步
+确认 maps 文件已有内容，但固定 16 位前导零地址不符合测试按无前导零地址构造的 `scanf` 格式。
+同时发现 `MAP_FIXED` 拆分路径未更新 VMA 的 `mmap_flags`，会使共享映射错误显示为私有。
+
+### 采纳结论
+
+在打开 `/proc/<pid>/maps` 时刷新其文本内容，并在 `MAP_FIXED` 覆盖时同步新的共享/私有 flags；
+输出采用 Linux 兼容的可变宽十六进制地址和 `p/s` 权限后缀。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/fs/kernel_fs_ops/proc_file.rs` | 新增 `refresh_proc_maps()`，复制 VMA 快照后以 `O_TRUNC` 重建 maps，输出可变宽地址和 `p/s` 后缀 |
+| `os/src/syscall/fs/fd_ops.rs` | `openat` 打开 `/proc/self/maps` 或 `/proc/<pid>/maps` 时刷新目标进程的 maps |
+| `os/src/mm/memory_set/mmap_ops.rs` | `MAP_FIXED` 经 VMA 拆分时更新目标区间 `mmap_flags` |
+| `os/src/mm/memory_set/handle.rs`、`os/src/fs/{mod.rs,kernel_fs_ops/mod.rs}` | 传递可选 mmap flags 并导出 maps 刷新接口 |
+
+### 验证
+
+已执行：
+
+```text
+make
+make log
+timeout 120s make run > /tmp/proc-self-maps-final.log 2>&1
+make TARGET_ARCH=riscv64
+```
+
+结果：默认 LoongArch64 `mmap04` 的 musl/glibc 两轮均为 14 个 `TPASS`，summary 均为
+`passed 14 failed 0 broken 0 skipped 0 warnings 0`；默认 LoongArch64 与 RISC-V 构建均通过。
+构建输出仅含既有 `smoltcp` vendor warning。详见 [problem/proc-self-maps-mmap04.md](./problem/proc-self-maps-mmap04.md)。

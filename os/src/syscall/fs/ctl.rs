@@ -94,11 +94,18 @@ fn path_is_same_or_ancestor(ancestor: &str, path: &str) -> bool {
 /// `ENAMETOOLONG`。这里只处理 `link08` 覆盖的相对目标回指祖先目录场景。
 fn has_self_referential_symlink_prefix(abs_path: &str) -> bool {
     let mut prefix = String::new();
-    for component in abs_path.split('/').filter(|component| !component.is_empty()) {
+    for component in abs_path
+        .split('/')
+        .filter(|component| !component.is_empty())
+    {
         prefix.push('/');
         prefix.push_str(component);
 
-        let Ok(file) = open(&prefix, OpenFlags::O_RDONLY | OpenFlags::O_UNLINK, NONE_MODE) else {
+        let Ok(file) = open(
+            &prefix,
+            OpenFlags::O_RDONLY | OpenFlags::O_UNLINK,
+            NONE_MODE,
+        ) else {
             continue;
         };
         let Ok(file) = file.file() else {
@@ -425,7 +432,12 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     // 如果是File但尚有对应的fd未关闭,等到close时unlink
     // 如果是符号链接,直接移除
     // 如果是socket, FIFO, or device,移除但现有的fd可继续使用
-    let osfile = open(&abs_path, OpenFlags::O_RDONLY | OpenFlags::O_UNLINK, NONE_MODE)?.file()?;
+    let osfile = open(
+        &abs_path,
+        OpenFlags::O_RDONLY | OpenFlags::O_UNLINK,
+        NONE_MODE,
+    )?
+    .file()?;
 
     let is_dir = osfile.inode.types() == InodeType::Dir;
     let remove_dir = flags & (AT_REMOVEDIR as u32) != 0;

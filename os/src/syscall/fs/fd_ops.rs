@@ -3,9 +3,9 @@ use core::{future::poll_fn, task::Poll};
 use super::fcntl::*;
 use super::file_lock;
 use crate::fs::{
-    map_dynamic_link_file, notify_path_event, open, open_fifo, refresh_proc_stat,
-    refresh_proc_status, superblock_root_inode, File, FileClass, FileDescriptor, FsIndex,
-    OpenFlags, TmpFile, FAN_OPEN,
+    map_dynamic_link_file, notify_path_event, open, open_fifo, refresh_proc_maps,
+    refresh_proc_stat, refresh_proc_status, superblock_root_inode, File, FileClass, FileDescriptor,
+    FsIndex, OpenFlags, TmpFile, FAN_OPEN,
 };
 use crate::mm::{copy_from_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::Syscall;
@@ -260,6 +260,12 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
             let memory_set = proc_inner.memory_set_arc();
             let comm = proc_inner.meta_lock().comm.clone();
             refresh_proc_status(pid, process.ppid(), &comm, &memory_set)?;
+        }
+    }
+    if let Some(pid) = parse_proc_pid_file(&abs_path, "maps") {
+        if let Some(process) = Process::get_process_arc_by_pid(pid) {
+            let memory_set = process.memory_set_arc();
+            refresh_proc_maps(pid, &memory_set)?;
         }
     }
 
