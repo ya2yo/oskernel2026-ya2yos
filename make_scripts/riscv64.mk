@@ -1,5 +1,5 @@
 PLATFORM := qemu
-MEMORY_SIZE := 1G  # 内存地址同时在os中的memory_layout等多处都定义了，这里修改只是修改了qemu模拟的内存大小
+MEMORY_SIZE := 2G  # 修改时同步 os/src/arch/riscv64/qemu/memory_layout.rs
 SMP := 1  # CPU核心数
 MODE := release
 

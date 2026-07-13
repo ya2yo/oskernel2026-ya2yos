@@ -523,3 +523,10 @@
 - **场景**：`loongarch.ans` panic 分析、QEMU DTB 内存布局验证、GDB 内核堆 OOM 回溯、AF_UNIX socket 背压修复、LoongArch64 QEMU 回归、文档完善
 - **描述**：用户要求根治 LoongArch `Heap allocation error`，并升级到 2GiB RAM。AI 确认 QEMU 的 2GiB RAM 物理上为低端 256MiB 与高端 1792MiB，两段已经由同一个 CMA allocator 逻辑合并，中间 PCI/MMIO hole 不能作为 RAM 使用。GDB 确认 OOM 来自 `UnixSocket::send()` 无界增长的 `VecDeque<UnixMessage>`，而不是 CMA。修复为 AF_UNIX 接收队列实行 64KiB 上限，满队列下阻塞写端或在非阻塞模式返回 `EAGAIN`，接收和 shutdown 唤醒写端；并将 LoongArch QEMU/RAM 表更新到 2GiB、静态内核堆提升至 128MiB。LoongArch64 musl/glibc cyclictest 八个阶段与两个 hackbench 清理均 success，无 OOM 或 panic。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/loongarch-unix-queue-oom.md](./problem/loongarch-unix-queue-oom.md)。
 - **关联 commit**：待提交
+
+#### RISC-V 连续 2GiB RAM 与 CMA 启动期映射修复（7.13）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：RISC-V 2GiB 配置影响分析、QEMU DTB/启动日志验证、CMA 初始化停滞修复、Sv39 直接映射优化
+- **描述**：维护者要求 RISC-V 也改为 2GiB。AI 确认 QEMU virt 的 2GiB RAM 是连续 `0x80000000..0x100000000`，但 bootstrap 页表只映射第一个 GiB；buddy CMA 把 free-list 元数据写进第二个 GiB 会在 `init_cma()` 阶段访问未映射地址。修复为启动早期先加入首 GiB 中内核后的页，完整页表激活后加入第二个 GiB，最终仍为一个 CMA；内核物理直接映射使用 Sv39 1GiB/2MiB leaf PTE。同步修正 AF_UNIX 接收与 `SHUT_RD` 的队列计账竞态。RISC-V 2GiB QEMU 已通过 CMA 扩展、remap_test、initproc、busybox/Lua 两组和 iperf-musl 六项；无 CMA OOM、heap allocation error 或 panic。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/loongarch-unix-queue-oom.md](./problem/loongarch-unix-queue-oom.md)。
+- **关联 commit**：待提交

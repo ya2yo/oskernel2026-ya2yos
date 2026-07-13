@@ -12,6 +12,9 @@ use riscv::register::satp;
 
 use log::debug;
 
+const MEGA_PAGE_NUM: usize = 1 << (21 - PAGE_SIZE_BITS);
+const GIGA_PAGE_NUM: usize = 1 << (30 - PAGE_SIZE_BITS);
+
 #[inline(always)]
 pub fn get_token_from_regs() -> usize {
     satp::read().bits() & ((1 << 44) - 1)
@@ -187,6 +190,46 @@ impl PageTable {
         );
         *pte = PageTableEntry::new(ppn, pte_flags | RVPTEFlags::VALID);
     }
+
+    fn map_mega_page(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, pte_flags: RVPTEFlags) {
+        assert_eq!(vpn.0 % MEGA_PAGE_NUM, 0);
+        assert_eq!(ppn.0 % MEGA_PAGE_NUM, 0);
+
+        let indexes = vpn.indexes();
+        let root_pte = &mut self.root_ppn.as_array::<PageTableEntry>()[indexes[0]];
+        if !root_pte.get_flags().contains(RVPTEFlags::VALID) {
+            let frame = FrameTracker::alloc().unwrap();
+            *root_pte = PageTableEntry::new(frame.ppn, RVPTEFlags::VALID);
+            self.frames.push(frame);
+        }
+        assert!(
+            !root_pte
+                .get_flags()
+                .intersects(RVPTEFlags::READABLE | RVPTEFlags::WRITEABLE | RVPTEFlags::EXECUTABLE),
+            "cannot place a 2MiB leaf below a 1GiB leaf"
+        );
+
+        let pte = &mut root_pte.get_ppn().as_array::<PageTableEntry>()[indexes[1]];
+        assert!(
+            !pte.get_flags().contains(RVPTEFlags::VALID),
+            "vpn {:?} is mapped before mapping",
+            vpn
+        );
+        *pte = PageTableEntry::new(ppn, pte_flags | RVPTEFlags::VALID);
+    }
+
+    fn map_giga_page(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, pte_flags: RVPTEFlags) {
+        assert_eq!(vpn.0 % GIGA_PAGE_NUM, 0);
+        assert_eq!(ppn.0 % GIGA_PAGE_NUM, 0);
+
+        let pte = &mut self.root_ppn.as_array::<PageTableEntry>()[vpn.indexes()[0]];
+        assert!(
+            !pte.get_flags().contains(RVPTEFlags::VALID),
+            "vpn {:?} is mapped before mapping",
+            vpn
+        );
+        *pte = PageTableEntry::new(ppn, pte_flags | RVPTEFlags::VALID);
+    }
 }
 
 impl Default for PageTable {
@@ -236,6 +279,31 @@ impl PageTable {
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission) {
         self.map_by_pte_flags(vpn, ppn, RVPTEFlags::from(flags));
     }
+    /// Direct-map an aligned kernel physical range with the largest Sv39 leaves
+    /// possible. This is only used for the kernel's immutable direct map.
+    pub fn map_direct_range(
+        &mut self,
+        start_vpn: VirtPageNum,
+        end_vpn: VirtPageNum,
+        flags: MapPermission,
+    ) {
+        let pte_flags = RVPTEFlags::from(flags);
+        let mut vpn = start_vpn;
+        while vpn < end_vpn {
+            let remaining = end_vpn.0 - vpn.0;
+            let ppn = PhysPageNum(vpn.0 - KERNEL_PGNUM_OFFSET);
+            if vpn.0 % GIGA_PAGE_NUM == 0 && remaining >= GIGA_PAGE_NUM {
+                self.map_giga_page(vpn, ppn, pte_flags);
+                vpn.0 += GIGA_PAGE_NUM;
+            } else if vpn.0 % MEGA_PAGE_NUM == 0 && remaining >= MEGA_PAGE_NUM {
+                self.map_mega_page(vpn, ppn, pte_flags);
+                vpn.0 += MEGA_PAGE_NUM;
+            } else {
+                self.map_by_pte_flags(vpn, ppn, pte_flags);
+                vpn.0 += 1;
+            }
+        }
+    }
     /// Delete a mapping form `vpn`
     pub fn unmap(&mut self, vpn: VirtPageNum) {
         // 如果不存在,即lazy allocation,跳过即可
@@ -247,9 +315,24 @@ impl PageTable {
     }
     /// return: vpn对应的有效ppn，页表项无效和不存在返回None
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PhysPageNum> {
-        self.find_pte(vpn)
-            .filter(|pte| pte.get_flags().contains(RVPTEFlags::VALID))
-            .map(|pte| pte.get_ppn())
+        let indexes = vpn.indexes();
+        let mut table_ppn = self.root_ppn;
+        for (level, index) in indexes.iter().enumerate() {
+            let pte = &table_ppn.as_array::<PageTableEntry>()[*index];
+            let flags = pte.get_flags();
+            if !flags.contains(RVPTEFlags::VALID) {
+                return None;
+            }
+            if flags
+                .intersects(RVPTEFlags::READABLE | RVPTEFlags::WRITEABLE | RVPTEFlags::EXECUTABLE)
+            {
+                let lower_vpn_bits = (2 - level) * 9;
+                let lower_vpn = vpn.0 & ((1 << lower_vpn_bits) - 1);
+                return Some(PhysPageNum(pte.get_ppn().0 + lower_vpn));
+            }
+            table_ppn = pte.get_ppn();
+        }
+        None
     }
     /// Translate `VirtAddr` to `PhysAddr`，页表项无效和不存在返回None
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {

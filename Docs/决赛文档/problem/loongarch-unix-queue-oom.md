@@ -1,10 +1,11 @@
-# LoongArch AF_UNIX 无界队列导致内核堆 OOM
+# LoongArch AF_UNIX 无界队列 OOM 与 RISC-V 2GiB 启动
 
 ## 背景
 
 `loongarch.ans` 在完整测试序列的 `cyclictest-glibc` 压力阶段停止：后台
 `hackbench` 以 400 个 task 和 AF_UNIX `socketpair()` 持续交换 100-byte 消息。维护者同时要求
-将 LoongArch QEMU 内存上限调整为 2GiB，并确认分段内存能否合并。
+将 LoongArch QEMU 内存上限调整为 2GiB，并确认分段内存能否合并；随后要求 RISC-V QEMU
+也调整为 2GiB。
 
 ## 现象
 
@@ -56,12 +57,21 @@ os::syscall::io_mpx::file::sys_write
 全局内核堆 `HEAP_ALLOCATOR` 使用独立的 48MiB 静态 BSS，不属于 CMA。因此即使 CMA 尚有
 可用页，AF_UNIX 元数据的无界增长仍会耗尽或碎片化全局堆并 panic。
 
+RISC-V QEMU `virt` 在 `-m 2G` 时的 DTB 是一段连续 RAM：
+`[0x80000000, 0x100000000)`。但 RISC-V `entry.asm` 的 bootstrap 页表只有一个 1GiB leaf，
+在切换 `satp` 前仅直接映射 `[0x80000000, 0xc0000000)`。`buddy_system_allocator::add_to_heap()`
+会在被管理的空闲块中写入链表节点，若启动早期直接把第二个 GiB 加进 CMA，会访问未映射的
+`KERNEL_ADDR_OFFSET + PA`，导致内核停在 `init_cma()`。此外，逐页建立 2GiB 直接映射会产生
+大量页表操作；RISC-V Sv39 支持 2MiB 和 1GiB leaf PTE，适合仅用于不可变的内核物理直接映射。
+
 ## 根因
 
 1. AF_UNIX 接收队列没有执行 socket buffer 上限，也没有满队列时的写端阻塞/唤醒机制。
 2. LoongArch 的 QEMU RAM 被硬件地址洞分段；此前 1GiB 配置正确避开了该洞，但容量不足以覆盖
    当前高并发压力的余量。
 3. 48MiB 静态内核堆对于 2GiB 配置下的正常任务、页表和文件系统元数据余量过小。
+4. RISC-V 不能只把 QEMU `-m` 和 `PHYSICAL_MEMORY_SIZE` 改为 2GiB：CMA 的自引用元数据必须在
+   bootstrap 直接映射可见范围内初始化，第二个 GiB 须延后加入。
 
 ## 修复
 
@@ -85,12 +95,28 @@ os::syscall::io_mpx::file::sys_write
 - `recv()` 在同一把队列锁内完成取消息、用户缓冲拷贝、字节计数更新和 stream 剩余数据回插，
   避免并发 `SHUT_RD` 清空队列后发生 `queued_bytes` 下溢。
 
+### RISC-V 连续 2GiB 与两阶段 CMA
+
+- `make_scripts/riscv64.mk` 和 RISC-V 内存布局同步到 QEMU `virt` 的
+  `[0x80000000, 0x100000000)` 连续 2GiB RAM。
+- 启动早期 CMA 只加入内核镜像之后到 `0xc0000000` 的可见范围；建立并激活完整内核页表后，
+  再将 `[0xc0000000, 0x100000000)` 通过同一个 `CMA_ALLOCATOR.add_to_heap()` 纳入。因此最终
+  仍是一个总计 2GiB 的连续物理页分配池，而不是两套 allocator。
+- RISC-V 的内核物理直接映射使用最大可对齐的 Sv39 1GiB、2MiB leaf PTE；`translate()` 同时
+  识别 4KiB、2MiB 和 1GiB leaf。用户页、ELF、COW 和普通 mmap 仍走原有的 4KiB 映射路径。
+- RISC-V 静态 `KERNEL_HEAP_SIZE` 仍为 48MiB。增加物理内存会增加 CMA 可用页，但不会自动扩大
+  全局 BSS 堆；本问题中的无界全局堆增长由 AF_UNIX 队列上限单独消除。
+
 ## 涉及文件
 
 | 文件 | 修改 |
 | --- | --- |
 | `make_scripts/loongarch64.mk` | LoongArch QEMU 内存上限改为 2GiB |
 | `os/src/arch/loongarch64/qemu/memory_layout.rs` | 更新真实分段 RAM 表，总物理内存和静态内核堆大小 |
+| `make_scripts/riscv64.mk` | RISC-V QEMU 内存上限改为 2GiB |
+| `os/src/arch/riscv64/qemu/memory_layout.rs` | RISC-V 连续 2GiB RAM 与 1GiB bootstrap 映射边界 |
+| `os/src/arch/riscv64/qemu/page_table.rs`、`os/src/mm/map_area.rs` | 内核物理直接映射的 Sv39 2MiB/1GiB leaf PTE |
+| `os/src/mm/frame_alloc/buddy_cma.rs`、`os/src/mm/mod.rs` | RISC-V CMA 启动早期/页表激活后的两阶段初始化 |
 | `os/src/net/unix.rs` | AF_UNIX 接收队列字节计费、满队列背压和可写 waker |
 
 ## 验证
@@ -118,5 +144,22 @@ to:   0x90000000f0000000
 `Heap allocation error`、`CMA OOM` 或 panic。确认目标路径后停止了无关的后续长时 libctest/LTP
 执行，因此未将完整全量回归视为本次验证结果。
 
-`make TARGET_ARCH=riscv64` 也已通过。RISC-V QEMU 运行回归尚未执行；本次行为触发和运行验证
-集中在 LoongArch64。
+`make TARGET_ARCH=riscv64` 和 `make TARGET_ARCH=loongarch64` 均通过，只有既有的 `smoltcp`
+vendor warnings。RISC-V 2GiB QEMU 启动日志确认 CMA 分两阶段初始化：
+
+```text
+from: 0xffffffc0833d3000
+to:   0xffffffc0c0000000
+mm:kernel pagetable activated
+init_cma_late:
+from: 0xffffffc0c0000000
+to:   0xffffffc100000000
+mm:remap_test complete, mm_init is finished
+task::add_initproc
+```
+
+该运行完成 busybox/Lua 的 musl、glibc 两组，完成 iperf-musl 六项并在 iperf-glibc 的前四项
+成功后到达外部 60 秒限制；日志没有 `Heap allocation error`、`CMA OOM` 或 kernel panic。本轮最后
+一次 LoongArch 2GiB 启动完成 busybox、Lua、iperf 的 musl/glibc 全部基础项，未出现上述错误，
+但 QEMU 在进入 cyclictest 前结束；因此完整 cyclictest/hackbench 结论仍以先前的 480 秒压力日志
+为准，而不是把该次短运行记作完整压力回归。

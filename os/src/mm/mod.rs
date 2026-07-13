@@ -51,6 +51,8 @@ pub fn init() {
     println!("mm:cma inited");
     activate_kernel_space();
     println!("mm:kernel pagetable activated");
+    frame_alloc::init_cma_late();
+    println!("mm:cma late range inited");
     memory_set::remap_test();
     println!("mm:remap_test complete, mm_init is finished");
 }

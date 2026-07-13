@@ -2,6 +2,8 @@ use core::{alloc::Layout, ptr::NonNull};
 
 use buddy_system_allocator::LockedHeap;
 
+#[cfg(target_arch = "riscv64")]
+use crate::arch::memory_layout::BOOTSTRAP_PHYSICAL_MEMORY_SIZE;
 #[cfg(target_arch = "loongarch64")]
 use crate::arch::memory_layout::PHYSICAL_MEMORY_RANGES;
 use crate::{
@@ -67,11 +69,14 @@ fn init_cma_heap(ekernel_va: usize) -> usize {
     total
 }
 
-#[cfg(not(target_arch = "loongarch64"))]
+#[cfg(target_arch = "riscv64")]
 fn init_cma_heap(ekernel_va: usize) -> usize {
-    // kernel使用的空间大小+kernel之前为MMIO保留的空间大小
+    // entry.asm only maps the first 1GiB before mm::activate_kernel_space().
+    // Buddy free-list nodes are stored in the managed range itself, so adding
+    // the second GiB here would touch an address that is not mapped yet.
     let used_physical_memory = (ekernel_va - PHYSICAL_MEMORY_START) - KERNEL_ADDR_OFFSET;
-    let size = PHYSICAL_MEMORY_SIZE - used_physical_memory;
+    assert!(used_physical_memory < BOOTSTRAP_PHYSICAL_MEMORY_SIZE);
+    let size = BOOTSTRAP_PHYSICAL_MEMORY_SIZE - used_physical_memory;
     let left = KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_START + used_physical_memory;
     println!("from: {:#x}", left);
     println!("size: {:#x}", size);
@@ -84,6 +89,27 @@ fn init_cma_heap(ekernel_va: usize) -> usize {
     }
     size
 }
+
+/// Add RISC-V RAM that is inaccessible through the bootstrap page table.
+///
+/// This must run only after `activate_kernel_space()` has installed the full
+/// direct map, because `add_to_heap()` writes free-list links into this range.
+#[cfg(target_arch = "riscv64")]
+pub fn init_cma_late() {
+    assert!(BOOTSTRAP_PHYSICAL_MEMORY_SIZE <= PHYSICAL_MEMORY_SIZE);
+    let start = KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_START + BOOTSTRAP_PHYSICAL_MEMORY_SIZE;
+    let end = KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_START + PHYSICAL_MEMORY_SIZE;
+    println!("init_cma_late:");
+    println!("from: {:#x}", start);
+    println!("size: {:#x}", end - start);
+    println!("to:   {:#x}", end);
+    unsafe {
+        CMA_ALLOCATOR.lock().add_to_heap(start, end);
+    }
+}
+
+#[cfg(not(target_arch = "riscv64"))]
+pub fn init_cma_late() {}
 
 /// 分配连续物理内存页（返回起始物理地址）
 pub fn cma_alloc(pages: usize) -> Option<PhysAddr> {

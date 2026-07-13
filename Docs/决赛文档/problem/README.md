@@ -7,7 +7,7 @@
 - [iperf: 5001 端口复用与 glibc TCGETS 栈破坏](./iperf-port-reuse-termios-stack-smash.md)
 - [netperf glibc: 12865 控制端口残留监听](./netperf-glibc-port-reuse.md)
 - [cyclictest STRESS_P1: socketpair fd 分配覆盖导致 hackbench ready Broken pipe](./cyclictest-socketpair-fd-allocation.md)
-- [LoongArch AF_UNIX 无界队列导致内核堆 OOM](./loongarch-unix-queue-oom.md)
+- [LoongArch AF_UNIX 无界队列 OOM 与 RISC-V 2GiB 启动](./loongarch-unix-queue-oom.md)
 - [libctest: sigtimedwait 后 wait4 误返回 EINTR](./libctest-sigtimedwait-eintr.md)
 - [waitpid SA_RESTART 信号打断语义修复](./waitpid-sa-restart-eintr.md)
 - [access01 wait4 ERESTART 与非空目录 rmdir 语义](./access01-rmdir-nonempty.md)

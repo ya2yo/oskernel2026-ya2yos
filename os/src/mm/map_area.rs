@@ -132,6 +132,15 @@ impl MapArea {
         page_table.unmap(vpn);
     }
     pub fn map(&mut self, page_table: &mut PageTable) -> Result<(), ()> {
+        #[cfg(target_arch = "riscv64")]
+        if self.map_type == MapType::Direct && self.area_type == MapAreaType::Physical {
+            page_table.map_direct_range(
+                self.vpn_range.start(),
+                self.vpn_range.end(),
+                self.map_perm,
+            );
+            return Ok(());
+        }
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn).ok_or(())?;
         }

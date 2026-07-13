@@ -4166,3 +4166,22 @@ PCI/MMIO hole，不能当作连续 RAM。GDB 在 `handle_alloc_error` 断点取�
 高端 CMA 区间为 `0x80000000..0xf0000000`，并且 musl/glibc cyclictest 各四个阶段和两个
 `kill hackbench` 均 success，无 `Heap allocation error`、`CMA OOM` 或 panic。达到目标路径后
 停止无关的后续长时 libctest/LTP。`make TARGET_ARCH=riscv64` 也通过；未运行 RISC-V QEMU。
+
+### RISC-V 2GiB 追加修复与验证
+
+用户随后要求将 RISC-V 内存配置也调整为 2GiB，并说明影响。QEMU `virt` DTB 证明 RISC-V RAM
+为连续 `[0x80000000, 0x100000000)`，不同于 LoongArch 的 PCI/MMIO 分段布局。首次启动停在
+`init_cma()`：bootstrap 页表只含第一个 1GiB 的直接映射，而 buddy CMA 在添加第二个 GiB 时须在
+该物理区间写 free-list 链表节点。修复为早期仅管理第一个 GiB 内内核结束后的页面，建好完整
+内核页表并启用 `satp` 后才将第二个 GiB 加入同一个 CMA；同时使用 Sv39 1GiB/2MiB leaf PTE
+建立内核物理直接映射，避免 2GiB 映射逐 4KiB 建表。
+
+补充检查发现 AF_UNIX `recv()` 曾在弹出消息和更新 `queued_bytes` 之间释放队列锁；并发
+`SHUT_RD` 清队列可导致计数下溢。改为在同一把锁内完成弹出、拷贝、计费和 stream 回插。
+
+`make TARGET_ARCH=riscv64` 与 `make TARGET_ARCH=loongarch64` 均通过。`timeout 60s make run
+TARGET_ARCH=riscv64` 依次打印早期 CMA、`mm:kernel pagetable activated`、第二阶段 CMA、
+`remap_test passed!` 和 `task::add_initproc`，随后完成 busybox/Lua 的 musl、glibc 两组及
+iperf-musl 六项；iperf-glibc 前四项成功后到达 60 秒限制，无 CMA OOM、heap allocation error
+或 panic。最后一次 LoongArch 运行完成基础及 iperf 的 musl/glibc 组且无上述错误，但在 cyclictest
+前结束；完整 cyclictest/hackbench 的历史通过结果保留在前节，不将这次短运行夸大为压力回归。
