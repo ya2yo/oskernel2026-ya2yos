@@ -4,8 +4,8 @@ use super::fcntl::*;
 use super::file_lock;
 use crate::fs::{
     map_dynamic_link_file, notify_path_event, open, open_fifo, refresh_proc_maps,
-    refresh_proc_pagemap, refresh_proc_stat, refresh_proc_status, superblock_root_inode, File,
-    FileClass, FileDescriptor, FsIndex, OpenFlags, TmpFile, FAN_OPEN,
+    refresh_proc_stat, refresh_proc_status, superblock_root_inode, File, FileClass, FileDescriptor,
+    FsIndex, OpenFlags, PagemapFile, TmpFile, FAN_OPEN,
 };
 use crate::mm::{copy_from_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::Syscall;
@@ -272,10 +272,22 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
         }
     }
     if let Some(pid) = parse_proc_pid_file(&abs_path, "pagemap") {
-        if let Some(process) = Process::get_process_arc_by_pid(pid) {
-            let memory_set = process.memory_set_arc();
-            refresh_proc_pagemap(pid, &memory_set)?;
+        if flags.read_write().1 {
+            return Err(SysErrNo::EACCES);
         }
+        if flags.contains(OpenFlags::O_CREATE) && flags.contains(OpenFlags::O_EXCL) {
+            return Err(SysErrNo::EEXIST);
+        }
+        let process = Process::get_process_arc_by_pid(pid).ok_or(SysErrNo::ENOENT)?;
+        let file = FileClass::Abs(PagemapFile::open(
+            process.memory_set_arc(),
+            abs_path.clone(),
+        ));
+        let new_fd = fd_table.alloc_fd()?;
+        fd_table.set(new_fd, FileDescriptor::new(flags, file));
+        notify_path_event(&abs_path, FAN_OPEN);
+        fs_info.insert(abs_path, new_fd);
+        return Ok(new_fd);
     }
 
     // 动态库路径重定向：将动态链接器请求的标准路径映射到实际文件位置

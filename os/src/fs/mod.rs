@@ -34,8 +34,8 @@ pub use vfs::*;
 mod kernel_fs_ops;
 pub use kernel_fs_ops::{
     cache_positive_dentry_path, create_init_files, create_proc_dir_and_file,
-    invalidate_dentry_path, open, open_direct, refresh_proc_maps, refresh_proc_pagemap,
-    refresh_proc_stat, refresh_proc_status, remove_proc_dir_and_file, FsIndex,
+    invalidate_dentry_path, open, open_direct, refresh_proc_maps, refresh_proc_stat,
+    refresh_proc_status, remove_proc_dir_and_file, FsIndex,
 };
 mod map_dynamic_link;
 pub use map_dynamic_link::{

@@ -16,6 +16,7 @@ mod inotify;
 mod mountfd;
 pub mod mqueue;
 mod os_file;
+mod pagemap;
 mod signalfd;
 mod tmp_file;
 pub use {
@@ -30,5 +31,6 @@ pub use {
     mountfd::{DetachedMountFd, FsConfigOption, FsConfigValue, FsContext, FsContextFd},
     mqueue::{MqAttr, Mqueue},
     os_file::OSFile,
+    pagemap::PagemapFile,
     tmp_file::TmpFile,
 };

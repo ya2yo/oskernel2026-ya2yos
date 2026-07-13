@@ -509,3 +509,10 @@
 - **场景**：LoongArch PCI VirtIO-net 用户态分层测试、SLIRP DNS 往返、VirtQueue 描述符回收压力、双架构 QEMU 验证、文档完善
 - **描述**：用户要求编写多个用例判断网卡驱动是否正常。AI 将 loopback 明确限定为协议栈基线，新增经 `eth0` 访问 `10.0.2.3:53` 的单次 DNS 往返、超过 128-entry VirtQueue 容量的 160 次连续往返，以及带截止时间的无响应路径；同时补齐无 libc 用户程序所需的 `sockaddr_in` 与 `bind/sendto/recvfrom` 包装。LoongArch64 和 RISC-V QEMU 均输出四项 `TPASS`、`Summary: netdev passed 4 failed 0`，无 panic/fault/VirtQueue 状态错误。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/loongarch-pci-virtio-net-bootstrap-corruption.md](./problem/loongarch-pci-virtio-net-bootstrap-corruption.md)。
 - **关联 commit**：待提交
+
+#### `/proc/pagemap` 截断导致 fork 停滞修复（7.13）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：LoongArch64 BusyBox/basic 启动停滞、`execve` A/B 排除、procfs pagemap 动态文件实现、LTP mmap12 回归
+- **描述**：用户怀疑 `execve` 修改使内核停在 BusyBox 参数打印处。AI 按要求恢复该改动验证后确认现象不变；单个 glibc basic 的 debug 日志显示 `sys_execve` 已返回成功，随后 PID 3 在创建 `/proc/3/pagemap` 时执行 `file_truncate to 402653184`。根因是每个 fork 都把高地址 VMA 对应的 pagemap 逻辑长度作为 ext4 普通文件截断，lwext4 不具备该路径所需的廉价稀疏扩容。修复为动态只读 `PagemapFile`：按当前页表生成 present/PFN 条目，支持 Linux 的 offset/read/seek/stat 语义，进程创建只留下零大小目录项。LoongArch64 glibc basic 完整结束，glibc `mmap12` 为 `passed 1 failed 0 broken 0`，LoongArch64 和 RISC-V 构建通过。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/proc-pagemap-fork-allocation.md](./problem/proc-pagemap-fork-allocation.md)。
+- **关联 commit**：待提交

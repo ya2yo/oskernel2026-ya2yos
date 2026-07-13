@@ -207,7 +207,7 @@ fn run_case(name: &str, test: fn() -> TestResult, passed: &mut usize, failed: &m
         }
     }
 }
-
+#[allow(unused)]
 pub fn run_all() -> i32 {
     let mut passed = 0;
     let mut failed = 0;
