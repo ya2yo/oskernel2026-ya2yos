@@ -1,3 +1,30 @@
+//! In-kernel implementation of AF_UNIX sockets.
+//!
+//! The module supports `SOCK_STREAM`, `SOCK_DGRAM`, and `SOCK_SEQPACKET` with
+//! unnamed, abstract, and pathname addresses. Pathname bindings are recorded
+//! in [`UNIX_BINDS`] and create a VFS socket node; abstract bindings exist only
+//! in the in-kernel binding table. `socketpair()` creates directly connected
+//! unnamed endpoints.
+//!
+//! ## Receive queues and back pressure
+//!
+//! Each endpoint owns a [`UnixRecvQueue`] capped at [`UNIX_BUF_SIZE`] bytes.
+//! `queued_bytes` is always the sum of queued message payload lengths. Stream
+//! writes may enqueue only the available prefix; datagram and seqpacket writes
+//! preserve message boundaries. A full queue blocks a blocking sender through
+//! `write_poll`, while `O_NONBLOCK` and `MSG_DONTWAIT` return `EAGAIN`.
+//!
+//! A receiver, `SHUT_RD`, and socket destruction wake queue-space waiters.
+//! Queue removal, byte accounting, and partial-stream-message reinsertion are
+//! performed while holding `recv_queue`, so a concurrent read shutdown cannot
+//! invalidate the accounting invariant.
+//!
+//! ## Scope
+//!
+//! This is a minimal AF_UNIX implementation. It does not implement ancillary
+//! data transfer such as `SCM_RIGHTS` or `SCM_CREDENTIALS`; `SO_PASSCRED` is
+//! accepted as a compatibility option only.
+
 use alloc::{
     collections::VecDeque,
     string::{String, ToString},
@@ -24,9 +51,14 @@ use crate::{
 const UNIX_BUF_SIZE: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Address used by an AF_UNIX socket.
 pub enum UnixSocketAddr {
+    /// No externally bindable address, used by newly created sockets and
+    /// `socketpair()` endpoints.
     Unnamed,
+    /// An abstract namespace address, held only in the kernel binding table.
     Abstract(Vec<u8>),
+    /// A pathname address with a corresponding VFS socket node.
     Path(String),
 }
 
@@ -37,9 +69,13 @@ impl Default for UnixSocketAddr {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Transport semantics selected when an AF_UNIX socket is created.
 pub enum UnixSocketKind {
+    /// Byte-stream, connection-oriented transport.
     Stream,
+    /// Connectionless, message-oriented transport.
     Dgram,
+    /// Connection-oriented transport that preserves message boundaries.
     SeqPacket,
 }
 
@@ -192,11 +228,13 @@ fn create_path_socket_node(path: &str) -> SysResult {
 }
 
 #[derive(Clone)]
+/// An AF_UNIX socket endpoint backed by an [`Arc`] to its shared state.
 pub struct UnixSocket {
     inner: Arc<UnixSocketInner>,
 }
 
 impl UnixSocket {
+    /// Create an AF_UNIX endpoint with the requested transport semantics.
     pub fn new(kind: UnixSocketKind) -> Self {
         let pid = current_task().map_or(0, |task| task.pid() as u32);
         Self {
@@ -204,26 +242,32 @@ impl UnixSocket {
         }
     }
 
+    /// Create a byte-stream AF_UNIX endpoint.
     pub fn new_stream() -> Self {
         Self::new(UnixSocketKind::Stream)
     }
 
+    /// Create a datagram AF_UNIX endpoint.
     pub fn new_dgram() -> Self {
         Self::new(UnixSocketKind::Dgram)
     }
 
+    /// Create a sequenced-packet AF_UNIX endpoint.
     pub fn new_seqpacket() -> Self {
         Self::new(UnixSocketKind::SeqPacket)
     }
 
+    /// Create two directly connected byte-stream endpoints.
     pub fn new_stream_pair() -> (Self, Self) {
         Self::new_pair(UnixSocketKind::Stream)
     }
 
+    /// Create two directly connected datagram endpoints.
     pub fn new_dgram_pair() -> (Self, Self) {
         Self::new_pair(UnixSocketKind::Dgram)
     }
 
+    /// Create two directly connected sequenced-packet endpoints.
     pub fn new_seqpacket_pair() -> (Self, Self) {
         Self::new_pair(UnixSocketKind::SeqPacket)
     }
