@@ -516,3 +516,10 @@
 - **场景**：LoongArch64 BusyBox/basic 启动停滞、`execve` A/B 排除、procfs pagemap 动态文件实现、LTP mmap12 回归
 - **描述**：用户怀疑 `execve` 修改使内核停在 BusyBox 参数打印处。AI 按要求恢复该改动验证后确认现象不变；单个 glibc basic 的 debug 日志显示 `sys_execve` 已返回成功，随后 PID 3 在创建 `/proc/3/pagemap` 时执行 `file_truncate to 402653184`。根因是每个 fork 都把高地址 VMA 对应的 pagemap 逻辑长度作为 ext4 普通文件截断，lwext4 不具备该路径所需的廉价稀疏扩容。修复为动态只读 `PagemapFile`：按当前页表生成 present/PFN 条目，支持 Linux 的 offset/read/seek/stat 语义，进程创建只留下零大小目录项。LoongArch64 glibc basic 完整结束，glibc `mmap12` 为 `passed 1 failed 0 broken 0`，LoongArch64 和 RISC-V 构建通过。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/proc-pagemap-fork-allocation.md](./problem/proc-pagemap-fork-allocation.md)。
 - **关联 commit**：待提交
+
+#### LoongArch AF_UNIX 无界队列 OOM 与 2GiB 内存布局修复（7.13）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`loongarch.ans` panic 分析、QEMU DTB 内存布局验证、GDB 内核堆 OOM 回溯、AF_UNIX socket 背压修复、LoongArch64 QEMU 回归、文档完善
+- **描述**：用户要求根治 LoongArch `Heap allocation error`，并升级到 2GiB RAM。AI 确认 QEMU 的 2GiB RAM 物理上为低端 256MiB 与高端 1792MiB，两段已经由同一个 CMA allocator 逻辑合并，中间 PCI/MMIO hole 不能作为 RAM 使用。GDB 确认 OOM 来自 `UnixSocket::send()` 无界增长的 `VecDeque<UnixMessage>`，而不是 CMA。修复为 AF_UNIX 接收队列实行 64KiB 上限，满队列下阻塞写端或在非阻塞模式返回 `EAGAIN`，接收和 shutdown 唤醒写端；并将 LoongArch QEMU/RAM 表更新到 2GiB、静态内核堆提升至 128MiB。LoongArch64 musl/glibc cyclictest 八个阶段与两个 hackbench 清理均 success，无 OOM 或 panic。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/loongarch-unix-queue-oom.md](./problem/loongarch-unix-queue-oom.md)。
+- **关联 commit**：待提交

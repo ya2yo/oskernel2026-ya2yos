@@ -10,7 +10,7 @@ use hashbrown::HashMap;
 use spin::{Lazy, Mutex};
 
 use crate::{
-    fs::{open, superblock_root_inode, FsIndex, InodeType, OpenFlags, NONE_MODE},
+    fs::{open, superblock_root_inode, File, FsIndex, InodeType, OpenFlags, NONE_MODE},
     mm::UserBuffer,
     net::{
         options::{Configurable, GetSocketOption, SetSocketOption, UnixCredentials},
@@ -48,18 +48,41 @@ struct UnixMessage {
     sender: UnixSocketAddr,
 }
 
+struct UnixRecvQueue {
+    messages: VecDeque<UnixMessage>,
+    queued_bytes: usize,
+    closed: bool,
+}
+
+impl UnixRecvQueue {
+    fn new() -> Self {
+        Self {
+            messages: VecDeque::new(),
+            queued_bytes: 0,
+            closed: false,
+        }
+    }
+}
+
+enum QueuePushError {
+    Closed,
+    Full,
+}
+
+struct UnixSocketWriteWaiter(Arc<UnixSocketInner>);
+
 struct UnixSocketInner {
     kind: UnixSocketKind,
     local_addr: Mutex<UnixSocketAddr>,
     peer_addr: Mutex<UnixSocketAddr>,
     peer: Mutex<Option<Weak<UnixSocketInner>>>,
-    recv_queue: Mutex<VecDeque<UnixMessage>>,
+    recv_queue: Mutex<UnixRecvQueue>,
     pending: Mutex<VecDeque<Arc<UnixSocketInner>>>,
     recv_poll: PollSet,
+    write_poll: PollSet,
     accept_poll: PollSet,
     listening: Mutex<bool>,
     nonblocking: Mutex<bool>,
-    recv_closed: Mutex<bool>,
     send_closed: Mutex<bool>,
     pid: u32,
 }
@@ -71,15 +94,68 @@ impl UnixSocketInner {
             local_addr: Mutex::new(UnixSocketAddr::Unnamed),
             peer_addr: Mutex::new(UnixSocketAddr::Unnamed),
             peer: Mutex::new(None),
-            recv_queue: Mutex::new(VecDeque::new()),
+            recv_queue: Mutex::new(UnixRecvQueue::new()),
             pending: Mutex::new(VecDeque::new()),
             recv_poll: PollSet::new(),
+            write_poll: PollSet::new(),
             accept_poll: PollSet::new(),
             listening: Mutex::new(false),
             nonblocking: Mutex::new(false),
-            recv_closed: Mutex::new(false),
             send_closed: Mutex::new(false),
             pid,
+        }
+    }
+
+    fn try_enqueue(&self, message: UnixMessage) -> Result<(), QueuePushError> {
+        let mut queue = self.recv_queue.lock();
+        if queue.closed {
+            return Err(QueuePushError::Closed);
+        }
+        if message.data.len() > UNIX_BUF_SIZE - queue.queued_bytes {
+            return Err(QueuePushError::Full);
+        }
+        queue.queued_bytes += message.data.len();
+        queue.messages.push_back(message);
+        Ok(())
+    }
+
+    fn available_write_bytes(&self) -> Result<usize, QueuePushError> {
+        let queue = self.recv_queue.lock();
+        if queue.closed {
+            return Err(QueuePushError::Closed);
+        }
+        Ok(UNIX_BUF_SIZE - queue.queued_bytes)
+    }
+
+    fn recv_closed(&self) -> bool {
+        self.recv_queue.lock().closed
+    }
+
+    fn close_recv(&self) {
+        let dropped = {
+            let mut queue = self.recv_queue.lock();
+            queue.closed = true;
+            queue.queued_bytes = 0;
+            core::mem::take(&mut queue.messages)
+        };
+        drop(dropped);
+        self.recv_poll.wake();
+        self.write_poll.wake();
+    }
+}
+
+impl File for UnixSocketWriteWaiter {
+    fn poll(&self, _events: PollEvents) -> PollEvents {
+        if self.0.available_write_bytes().is_ok_and(|space| space != 0) {
+            PollEvents::OUT | PollEvents::WRNORM
+        } else {
+            PollEvents::empty()
+        }
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: PollEvents) {
+        if events.intersects(PollEvents::OUT | PollEvents::WRNORM) {
+            self.0.write_poll.register(context.waker());
         }
     }
 }
@@ -322,7 +398,6 @@ impl SocketOps for UnixSocket {
             return Err(SysErrNo::EPIPE);
         }
         let len = src.len();
-        let data = src.read(len);
         let target = if let Some(addr) = options.to {
             let addr = addr.into_unix()?;
             let remote = Self::bound_peer(&addr)?;
@@ -333,30 +408,64 @@ impl SocketOps for UnixSocket {
         } else {
             self.peer()?
         };
-        if *target.recv_closed.lock() {
-            return Err(SysErrNo::EPIPE);
-        }
         let sender = self.inner.local_addr.lock().clone();
-        target
-            .recv_queue
-            .lock()
-            .push_back(UnixMessage { data, sender });
+        let nonblocking = *self.inner.nonblocking.lock()
+            || options.flags.contains(crate::net::SendFlags::DONTWAIT);
+        let write_waiter = UnixSocketWriteWaiter(target.clone());
+
+        let sent = block_on(poll_io(&write_waiter, PollEvents::OUT, nonblocking, || {
+            if *self.inner.send_closed.lock() {
+                return Err(SysErrNo::EPIPE);
+            }
+            let available = match target.available_write_bytes() {
+                Ok(available) => available,
+                Err(QueuePushError::Closed) => return Err(SysErrNo::EPIPE),
+                Err(QueuePushError::Full) => unreachable!(),
+            };
+            if len == 0 {
+                return Ok(0);
+            }
+            let write_len = match self.kind() {
+                UnixSocketKind::Stream => len.min(available),
+                UnixSocketKind::Dgram | UnixSocketKind::SeqPacket => {
+                    if len > UNIX_BUF_SIZE {
+                        return Err(SysErrNo::EMSGSIZE);
+                    }
+                    if len > available {
+                        return Err(SysErrNo::EAGAIN);
+                    }
+                    len
+                }
+            };
+            if write_len == 0 {
+                return Err(SysErrNo::EAGAIN);
+            }
+            let message = UnixMessage {
+                data: src.read(write_len),
+                sender: sender.clone(),
+            };
+            match target.try_enqueue(message) {
+                Ok(()) => Ok(write_len),
+                Err(QueuePushError::Closed) => Err(SysErrNo::EPIPE),
+                Err(QueuePushError::Full) => Err(SysErrNo::EAGAIN),
+            }
+        }))?;
         target.recv_poll.wake();
-        Ok(len)
+        Ok(sent)
     }
 
     fn recv(&self, mut dst: UserBuffer, mut options: RecvOptions<'_>) -> SysResult<usize> {
-        if *self.inner.recv_closed.lock() {
+        if self.inner.recv_closed() {
             return Ok(0);
         }
         let nonblocking =
             *self.inner.nonblocking.lock() || options.flags.contains(RecvFlags::DONTWAIT);
-        block_on(poll_io(self, PollEvents::IN, nonblocking, || {
-            if *self.inner.recv_closed.lock() {
+        let received = block_on(poll_io(self, PollEvents::IN, nonblocking, || {
+            let mut queue = self.inner.recv_queue.lock();
+            if queue.closed {
                 return Ok(0);
             }
-            let mut queue = self.inner.recv_queue.lock();
-            let mut message = match queue.pop_front() {
+            let mut message = match queue.messages.pop_front() {
                 Some(message) => message,
                 None => {
                     if self.is_connection_oriented() && self.peer_closed() {
@@ -365,20 +474,29 @@ impl SocketOps for UnixSocket {
                     return Err(SysErrNo::EAGAIN);
                 }
             };
+            let message_len = message.data.len();
             let written = dst.write(&message.data);
-            if self.kind() == UnixSocketKind::Stream && written < message.data.len() {
+            let remaining = if self.kind() == UnixSocketKind::Stream && written < message_len {
                 message.data = message.data[written..].to_vec();
-                queue.push_front(message);
+                message.data.len()
             } else {
                 if let Some(from) = options.from.as_deref_mut() {
-                    *from = SocketAddrEx::Unix(message.sender);
+                    *from = SocketAddrEx::Unix(message.sender.clone());
                 }
                 if options.flags.contains(RecvFlags::TRUNCATE) {
-                    return Ok(message.data.len());
+                    queue.queued_bytes -= message_len;
+                    return Ok(message_len);
                 }
+                0
+            };
+            queue.queued_bytes -= message_len - remaining;
+            if remaining != 0 {
+                queue.messages.push_front(message);
             }
             Ok(written)
-        }))
+        }))?;
+        self.inner.write_poll.wake();
+        Ok(received)
     }
 
     fn local_addr(&self) -> SysResult<SocketAddrEx> {
@@ -398,8 +516,7 @@ impl SocketOps for UnixSocket {
 
     fn shutdown(&self, how: Shutdown) -> SysResult {
         if how.has_read() {
-            *self.inner.recv_closed.lock() = true;
-            self.inner.recv_poll.wake();
+            self.inner.close_recv();
         }
         if how.has_write() {
             *self.inner.send_closed.lock() = true;
@@ -413,13 +530,22 @@ impl SocketOps for UnixSocket {
 
 impl crate::fs::File for UnixSocket {
     fn poll(&self, _events: PollEvents) -> PollEvents {
-        let mut events = PollEvents::OUT | PollEvents::WRNORM;
-        let readable = !self.inner.recv_queue.lock().is_empty()
+        let queue = self.inner.recv_queue.lock();
+        let readable = !queue.messages.is_empty()
             || !self.inner.pending.lock().is_empty()
-            || *self.inner.recv_closed.lock()
+            || queue.closed
             || (self.is_connection_oriented() && self.peer_closed());
+        drop(queue);
+        let writable = !*self.inner.send_closed.lock()
+            && self.peer().map_or(true, |peer| {
+                peer.available_write_bytes().is_ok_and(|space| space != 0)
+            });
+        let mut events = PollEvents::empty();
         if readable {
             events |= PollEvents::IN | PollEvents::RDNORM;
+        }
+        if writable {
+            events |= PollEvents::OUT | PollEvents::WRNORM;
         }
         events
     }
@@ -429,6 +555,11 @@ impl crate::fs::File for UnixSocket {
             self.inner.recv_poll.register(context.waker());
             self.inner.accept_poll.register(context.waker());
         }
+        if events.intersects(PollEvents::OUT | PollEvents::WRNORM) {
+            if let Ok(peer) = self.peer() {
+                peer.write_poll.register(context.waker());
+            }
+        }
     }
 }
 
@@ -436,8 +567,10 @@ impl Drop for UnixSocket {
     fn drop(&mut self) {
         if let Ok(peer) = self.peer() {
             peer.recv_poll.wake();
+            peer.write_poll.wake();
         }
         self.inner.recv_poll.wake();
+        self.inner.write_poll.wake();
         self.inner.accept_poll.wake();
         let local = self.inner.local_addr.lock().clone();
         if !matches!(local, UnixSocketAddr::Unnamed) {

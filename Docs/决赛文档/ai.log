@@ -4128,3 +4128,41 @@ LoongArch64 `make` 通过；`timeout 120s make run` 中维护者配置的 glibc 
 `#### OS COMP TEST GROUP END basic-glibc ####` 和 `shutdown!`。临时追加 glibc `mmap12` 回归后，
 输出 `TPASS: File mapped properly`，Summary 为 `passed 1 failed 0 broken 0 skipped 0 warnings 0`；
 临时测试调用已删除。`make TARGET_ARCH=riscv64` 通过。RISC-V QEMU 未在本轮重新执行。
+
+---
+
+## 2026-07-13: LoongArch AF_UNIX 队列 OOM 与 2GiB RAM 修复
+
+### 用户需求
+
+用户要求分析 `loongarch.ans` 中 `Heap allocation error` panic，根本修复 LoongArch 运行时
+内存问题，并将内存上限调整到 2GiB；同时询问分段物理内存能否合并。
+
+### 分析与采纳结论
+
+AI 先检查 panic 前的 CMA 初始化，确认旧的 1GiB 两段 RAM 已都加入同一个 CMA allocator，
+并非高端段未使用。通过 QEMU 2GiB DTB 确认真实 RAM 是低端 256MiB 加高端 1792MiB，中间为
+PCI/MMIO hole，不能当作连续 RAM。GDB 在 `handle_alloc_error` 断点取得回溯，896KiB 申请来自
+`VecDeque<UnixMessage>::grow_one`，调用链为 `UnixSocket::send -> sys_write`；根因是 AF_UNIX
+接收队列无上限增长，`UNIX_BUF_SIZE` 只被 `getsockopt()` 报告而未实际执行。48MiB 全局静态
+内核堆与 CMA 相互独立，故 CMA 尚有空间时仍会 panic。
+
+采纳的修复是：将 QEMU 和 range 表同步到真实 2GiB 两段 RAM，保持它们在一个 CMA `LockedHeap`
+中逻辑合并；LoongArch 静态堆提升至 128MiB；AF_UNIX 队列改为 64KiB 字节上限，满时按阻塞/
+非阻塞 socket 语义等待或返回 `EAGAIN`，由接收和 `SHUT_RD` 唤醒写端。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `make_scripts/loongarch64.mk` | QEMU 内存上限从 1GiB 改为 2GiB |
+| `os/src/arch/loongarch64/qemu/memory_layout.rs` | 2GiB 分段 RAM 表与 128MiB LoongArch 静态堆 |
+| `os/src/net/unix.rs` | AF_UNIX 有界队列、阻塞写端和 `write_poll` 唤醒 |
+| `Docs/决赛文档/problem/loongarch-unix-queue-oom.md` | 根因、物理布局和验证复盘 |
+
+### 验证
+
+`make TARGET_ARCH=loongarch64` 通过。`timeout 480s make run TARGET_ARCH=loongarch64` 的日志确认
+高端 CMA 区间为 `0x80000000..0xf0000000`，并且 musl/glibc cyclictest 各四个阶段和两个
+`kill hackbench` 均 success，无 `Heap allocation error`、`CMA OOM` 或 panic。达到目标路径后
+停止无关的后续长时 libctest/LTP。`make TARGET_ARCH=riscv64` 也通过；未运行 RISC-V QEMU。

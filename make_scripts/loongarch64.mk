@@ -1,5 +1,5 @@
 PLATFORM := qemu
-MEMORY_SIZE := 1G  # low 256M + high 768M on QEMU loongarch64 virt
+MEMORY_SIZE := 2G  # low 256M + high 1792M on QEMU loongarch64 virt
 SMP := 1  # CPU核心数
 MODE := release
 
