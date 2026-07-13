@@ -120,9 +120,9 @@ fn parse_shebang(data: &[u8]) -> Option<(String, Option<String>)> {
 /// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
 pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
+    let proc = &task.process;
 
-    let memory_set = proc_inner.memory_set_arc();
+    let memory_set = proc.memory_set_arc();
     let mut path = trim_start_slash(read_user_cstr(&memory_set, path)?);
     if path.starts_with("ltp/testcases/bin/\u{1b}[1;32m") {
         //去除颜色
@@ -132,21 +132,6 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
 
     //处理argv参数
     let mut argv_vec = Vec::<String>::new();
-    if !argv.is_null() {
-        let mut argv_ptr: usize = 0;
-        copy_from_user(&memory_set, argv as usize, unsafe {
-            core::slice::from_raw_parts_mut(
-                &mut argv_ptr as *mut usize as *mut u8,
-                core::mem::size_of::<usize>(),
-            )
-        })?;
-        if argv_ptr != 0 {
-            argv_vec.push(path.clone());
-            unsafe {
-                argv = argv.add(1);
-            }
-        }
-    }
     loop {
         if argv.is_null() {
             break;
@@ -161,6 +146,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         if argv_ptr == 0 {
             break;
         }
+        // `argv[0]` 由调用者定义，不能用待执行文件路径覆盖。
         argv_vec.push(read_user_cstr(&memory_set, argv_ptr as *const u8)?);
         unsafe {
             argv = argv.add(1);
@@ -187,7 +173,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
 
     debug!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     let mut env = Vec::<String>::new();
-
+    // 处理运行环境，如果为空，加载默认的运行环境
     if envp.is_null() {
         // debug!("use default env");
         env.push(
@@ -233,13 +219,11 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
 
     // debug!("[sys_execve] env is {:?}", env);
 
-    let locked_fs_info = &proc_inner.fs_info;
-    let cwd = locked_fs_info.get_cwd();
-    let exe = locked_fs_info.get_exe();
+    let fs_info = &proc.fs_info;
+    let cwd = fs_info.get_cwd();
+    let exe = fs_info.get_exe();
     let mut abs_path = get_abs_path(&cwd, &path);
-    // HXC:
     // 如果是/proc/self/exe，特殊处理
-    // 这个实现有点将就，只会重构文件系统的时候再想想怎么处理吧
     if abs_path == "/proc/self/exe" {
         abs_path = exe.clone().into();
         if argv_vec[0] == "/proc/self/exe" {
@@ -304,7 +288,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
             return Err(SysErrNo::ENOEXEC);
         }
     }
-    locked_fs_info.set_exe(abs_path);
+    fs_info.set_exe(abs_path);
     drop(memory_set);
 
     // 不用切换页表，因为return_to_user会切换
