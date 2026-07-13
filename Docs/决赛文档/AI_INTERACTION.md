@@ -502,3 +502,10 @@
 - **场景**：`log.ans` 分析、LoongArch PCI VirtIO-net 启动卡死定位、启动栈/ECAM/DMA 修复、双架构回归和文档完善
 - **描述**：用户要求分析 LoongArch PCI 网卡严重故障。AI 通过日志、符号地址和 release 反汇编确认主因是每 hart 仅 4 KiB 的早期启动栈无法容纳 `rust_main` 与 `net::init_network` 的大 Rust 栈帧，覆盖了 UART 和 ext4 cache 静态数据。修复为 256 KiB/ hart 启动栈；同时把 PCI 配置读写改为对齐 volatile 访问，并清零 CMA 返回的 VirtQueue DMA 页面。LoongArch64 QEMU 已发现网卡、完成网络初始化、启动 initproc 并执行 `shutdown!`，RISC-V 构建和启动日志未出现 panic/fault。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/loongarch-pci-virtio-net-bootstrap-corruption.md](./problem/loongarch-pci-virtio-net-bootstrap-corruption.md)。
 - **关联 commit**：待提交
+
+#### VirtIO-net 真实 TX/RX 回归用例（7.13）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：LoongArch PCI VirtIO-net 用户态分层测试、SLIRP DNS 往返、VirtQueue 描述符回收压力、双架构 QEMU 验证、文档完善
+- **描述**：用户要求编写多个用例判断网卡驱动是否正常。AI 将 loopback 明确限定为协议栈基线，新增经 `eth0` 访问 `10.0.2.3:53` 的单次 DNS 往返、超过 128-entry VirtQueue 容量的 160 次连续往返，以及带截止时间的无响应路径；同时补齐无 libc 用户程序所需的 `sockaddr_in` 与 `bind/sendto/recvfrom` 包装。LoongArch64 和 RISC-V QEMU 均输出四项 `TPASS`、`Summary: netdev passed 4 failed 0`，无 panic/fault/VirtQueue 状态错误。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/loongarch-pci-virtio-net-bootstrap-corruption.md](./problem/loongarch-pci-virtio-net-bootstrap-corruption.md)。
+- **关联 commit**：待提交
