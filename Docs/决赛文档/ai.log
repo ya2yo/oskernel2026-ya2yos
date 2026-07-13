@@ -3996,3 +3996,58 @@ timeout 120s make run > /tmp/mmap13-known-size.log 2>&1
 `TPASS: Received SIGBUS signal as expected`，Summary 均为
 `passed 1 failed 0 broken 0 skipped 0 warnings 0`；仅保留既有 `smoltcp` vendor warning。
 未运行 RISC-V QEMU。
+
+---
+
+## 2026-07-13: 修复 LoongArch PCI VirtIO-net 启动期内存破坏
+
+### 用户需求
+
+用户要求分析 `log.ans`，确认当前 LoongArch 内核在 PCI 总线上启用网卡后存在严重 bug，
+并尝试修复。
+
+### 分析与采纳结论
+
+AI 先从原始日志确认故障停在 `Found VirtIO network device at bus=0, device=2, func=0`。
+GDB 和符号地址显示启动栈下方紧邻 `.data` 的 UART `COM1` 与
+`lwext4_rust::file::CACHE_TABLE`；原先每 hart 只有 4 KiB，而 release `rust_main` 和
+`net::init_network` 的嵌套栈帧分别约为 `0x7c60` 和 `0x5c60`。启用含 VirtQueue/Buffer
+数组的实际网卡对象后，栈帧会写入这些区域，导致 UART 地址清零、Lazy 中毒和 initproc
+读取异常等不稳定表象。
+
+将栈先扩大到 64 KiB 后系统能走过 VirtIO 初始化但仍会在后续网络/文件系统路径失效；扩大
+到 256 KiB/ hart 后，LoongArch 稳定完成网络注册、initproc 和用户态启动。因此采纳“早期
+启动栈越界”为主根因，而不是把 `CACHE_TABLE` 异常误修为 ext4 问题。
+
+同时审查 PCI 和 VirtIO HAL：本地 capability 扫描对非对齐 offset 做普通 `u32` 解引用，
+违反 MMIO volatile 和对齐要求；CMA DMA 页面没有按 `virtio_drivers::Hal` 要求清零，可能
+让设备读取残留 avail/used ring。因此一并修正这两项确定的驱动层缺陷。
+
+### 修改内容
+
+| 文件 | 修改 |
+|------|------|
+| `os/src/arch/loongarch64/qemu/asms/entry.asm` | 以常量定义 256 KiB/ hart 的早期启动栈和 16 hart 总容量 |
+| `os/src/drivers/virtio/loongarch/pci.rs` | 对齐 `read_volatile/write_volatile` ECAM 访问，修正 VirtIO capability 调试字段偏移 |
+| `os/src/drivers/virtio/mod.rs` | CMA DMA 分配返回前清零全部页面，满足 VirtIO HAL 契约 |
+| `Docs/决赛文档/problem/loongarch-pci-virtio-net-bootstrap-corruption.md` | 新增根因、修复和验证复盘 |
+
+### 验证
+
+已执行：
+
+```text
+make log TARGET_ARCH=loongarch64
+make TARGET_ARCH=loongarch64
+timeout 120s make run TARGET_ARCH=loongarch64 \
+  > /tmp/loongarch-pci-virtio-net-final.log 2>&1
+make TARGET_ARCH=riscv64
+timeout 120s make run TARGET_ARCH=riscv64 \
+  > /tmp/riscv-virtio-dma-zero-regression.log 2>&1
+git diff --check
+```
+
+LoongArch64 输出确认发现 PCI VirtIO-net、完成网络初始化、创建 initproc 并进入用户态执行
+`shutdown!`，错误关键词扫描为空。RISC-V 构建通过，运行日志到达 `shutdown!` 且无 panic/fault；
+该 QEMU 进程由 timeout 回收。构建仅保留既有 `smoltcp` vendor warnings。未运行真实
+iperf/netperf 流量回归，因为当前 initproc 配置为启动后直接关机。

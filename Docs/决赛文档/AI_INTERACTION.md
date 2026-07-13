@@ -495,3 +495,10 @@
 - **场景**：`log.ans` 分析、LTP `mmap13` 源码对照、mmap 缺页/信号/ext4 长度一致性修复、LoongArch64 运行验证、文档完善
 - **描述**：用户持续要求依据最新日志修复 `mmap13`。AI 确认初始问题是文件映射完整 EOF 外页被错误建立为零页；补充 SIGBUS 后又通过运行日志确认 LTP 框架 unlink 后的共享映射因 ext4 `ftruncate` 后错误报告长度 0 而被误杀。修复为 VMA 保存 mmap 时文件长度快照，mmap fault 和 trap 层将完整 EOF 外页判定为 `SIGBUS`，并让 `Ext4Inode` 维护成功 truncate/write 后的长度，保证 `size()`、`fstat()` 和页缓存一致。LoongArch64 单跑 musl/glibc `mmap13` 均输出 `TPASS: Received SIGBUS signal as expected`，Summary 均为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-12 条目与 [problem/mmap13-sigbus-eof.md](./problem/mmap13-sigbus-eof.md)。
 - **关联 commit**：待提交
+
+#### LoongArch PCI VirtIO-net 启动期内存破坏修复（7.13）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LoongArch PCI VirtIO-net 启动卡死定位、启动栈/ECAM/DMA 修复、双架构回归和文档完善
+- **描述**：用户要求分析 LoongArch PCI 网卡严重故障。AI 通过日志、符号地址和 release 反汇编确认主因是每 hart 仅 4 KiB 的早期启动栈无法容纳 `rust_main` 与 `net::init_network` 的大 Rust 栈帧，覆盖了 UART 和 ext4 cache 静态数据。修复为 256 KiB/ hart 启动栈；同时把 PCI 配置读写改为对齐 volatile 访问，并清零 CMA 返回的 VirtQueue DMA 页面。LoongArch64 QEMU 已发现网卡、完成网络初始化、启动 initproc 并执行 `shutdown!`，RISC-V 构建和启动日志未出现 panic/fault。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/loongarch-pci-virtio-net-bootstrap-corruption.md](./problem/loongarch-pci-virtio-net-bootstrap-corruption.md)。
+- **关联 commit**：待提交

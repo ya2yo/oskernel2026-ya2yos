@@ -68,9 +68,18 @@ unsafe impl Hal for VirtIoHalCMAImpl {
         match cma_alloc(pages) {
             Some(paddr_val) => {
                 let paddr = paddr_val.0;
-                // 计算虚拟地址。假设你的内核有固定偏移
                 let vaddr_val = paddr + KERNEL_ADDR_OFFSET;
                 let vaddr_ptr = NonNull::new(vaddr_val as *mut u8).expect("vaddr is null");
+
+                // `virtio_drivers::Hal` requires DMA regions to start zeroed. In
+                // particular, a non-zero virtqueue avail/used index makes the device
+                // consume stale descriptors before the driver has submitted one.
+                let bytes = pages
+                    .checked_mul(crate::arch::memory_layout::PAGE_SIZE)
+                    .expect("DMA allocation size overflow");
+                unsafe {
+                    core::ptr::write_bytes(vaddr_ptr.as_ptr(), 0, bytes);
+                }
 
                 (paddr, vaddr_ptr)
             }

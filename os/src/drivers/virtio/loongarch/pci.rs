@@ -33,26 +33,27 @@ const DEVICE: u8 = 1;
 /// * `offset`: 配置空间的偏移量
 fn pci_config_read(bus: u8, device: u8, func: u8, offset: u8) -> u32 {
     let ecam_base: usize = 0x20000000 + KERNEL_ADDR_OFFSET;
+    let aligned_offset = offset & !0x3;
     let addr: usize = ecam_base
         + ((bus as usize) << 20
             | (device as usize) << 15
             | (func as usize) << 12
-            | (offset as usize));
-    let addr = addr as *mut u32;
+            | (aligned_offset as usize));
+    let word = unsafe { core::ptr::read_volatile(addr as *const u32) };
 
-    unsafe { *addr }
+    word >> (usize::from(offset & 0x3) * 8)
 }
 /// 同上，不过是往对应寄存器存 val
 fn pci_config_write(bus: u8, device: u8, func: u8, offset: u8, val: u32) {
+    assert_eq!(offset & 0x3, 0, "PCI config writes must be dword aligned");
     let ecam_base: usize = 0x20000000 + KERNEL_ADDR_OFFSET;
     let addr: usize = ecam_base
         + ((bus as usize) << 20
             | (device as usize) << 15
             | (func as usize) << 12
             | (offset as usize));
-    let addr = addr as *mut u32;
 
-    unsafe { *addr = val };
+    unsafe { core::ptr::write_volatile(addr as *mut u32, val) };
 }
 
 fn read_status() -> u16 {
@@ -131,8 +132,8 @@ impl<H: Hal> VirtIoBlkDev2<H> {
 
                     if cap_id == 0x09 {
                         // VirtIO PCI Capability
-                        let cfg_type = pci_config_read(0, DEVICE, 0, offset + 2) & 0xFF;
-                        let bar_index = pci_config_read(0, DEVICE, 0, offset + 3) & 0xFF;
+                        let cfg_type = pci_config_read(0, DEVICE, 0, offset + 3) & 0xFF;
+                        let bar_index = pci_config_read(0, DEVICE, 0, offset + 4) & 0xFF;
                         debug!(
                             "Found VirtIO Capability in BAR{}, cfg_type={}",
                             bar_index, cfg_type

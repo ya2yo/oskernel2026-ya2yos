@@ -47,3 +47,4 @@
 - [LTP mmap04 /proc/self/maps 动态映射与格式修复](./proc-self-maps-mmap04.md)
 - [LTP mmap12 /proc/self/pagemap 缺失修复](./proc-self-pagemap-mmap12.md)
 - [LTP mmap13 文件映射 EOF 外页 SIGBUS 修复](./mmap13-sigbus-eof.md)
+- [LoongArch PCI VirtIO-net 早期启动内存破坏修复](./loongarch-pci-virtio-net-bootstrap-corruption.md)

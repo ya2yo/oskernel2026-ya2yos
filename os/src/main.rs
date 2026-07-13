@@ -166,7 +166,7 @@ pub fn rust_main(hartid: usize) -> ! {
 
         print!("net::init...");
         #[cfg(all(feature = "net", target_arch = "loongarch64"))]
-        let net_devices = DeviceContainer::default();
+        let net_devices = DeviceContainer::from_one(NetDeviceImpl::new_device());
         #[cfg(all(feature = "net", target_arch = "riscv64"))]
         let net_devices = match NetDeviceImpl::try_new_device() {
             Some(device) => DeviceContainer::from_one(device),
