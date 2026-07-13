@@ -18,6 +18,8 @@ mod libctest;
 mod lmbench;
 mod ltp;
 mod lua;
+#[path = "netdev_test/cases.rs"]
+mod netdev_test_cases;
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -101,6 +103,7 @@ fn main() -> i32 {
 #[allow(unused)]
 fn get_score() -> i32 {
     println!("get_score start!");
+    let netdev_status = netdev_test_cases::run_all();
     // basic
     run_testsuit("musl\0", "basic_testcode.sh\0");//龙芯 riscv 不会死循环或panic
     run_testsuit("glibc\0", "basic_testcode.sh\0");// 龙芯 riscv 不会死循环或panic
@@ -136,5 +139,5 @@ fn get_score() -> i32 {
     ltp::test_glibc_ltp();
 
     shutdown();
-    0
+    netdev_status
 }
