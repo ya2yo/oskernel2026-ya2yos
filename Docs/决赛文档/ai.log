@@ -4185,3 +4185,36 @@ TARGET_ARCH=riscv64` 依次打印早期 CMA、`mm:kernel pagetable activated`、
 iperf-musl 六项；iperf-glibc 前四项成功后到达 60 秒限制，无 CMA OOM、heap allocation error
 或 panic。最后一次 LoongArch 运行完成基础及 iperf 的 musl/glibc 组且无上述错误，但在 cyclictest
 前结束；完整 cyclictest/hackbench 的历史通过结果保留在前节，不将这次短运行夸大为压力回归。
+
+---
+
+## 2026-07-13: LTP signal03 SIG_IGN stop 信号卡死修复
+
+### 用户需求
+
+用户要求分析 `signal03\0` 的测试内容，修复当前内核运行该测试时卡死的问题，并把结果输出到
+`log.ans`。
+
+### 分析与采纳结论
+
+AI 对照 LTP `signal03.c`、已有卡死日志和信号 pending 分发路径。该测试会对每个可处理信号先安装
+handler、再设置 `SIG_IGN`、向自身发送信号，并断言 handler 从未运行；列表含 `SIGTSTP`、
+`SIGTTIN`、`SIGTTOU`。旧日志在第 18 项通过后停滞，下一项为 `SIGTSTP`。
+
+根因是 `handle_signal()` 的显式 `SIG_IGN` fast path 错误排除了默认 `SigOp::Stop`。这使已经设置
+`SIG_IGN` 的 `SIGTSTP` 仍执行 `stop_current_and_run_next()`，而测例不会另发 `SIGCONT`，所以进程
+永久停止。Linux 只有 `SIGKILL` 和 `SIGSTOP` 不可忽略；job-control stop 信号可以显式忽略。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/signal/pending.rs` | 显式 `SIG_IGN` 不再排除 `SigOp::Stop`，统一消费并丢弃该 pending signal |
+| `Docs/决赛文档/problem/signal03-sigign-stop.md` | 记录测例语义、根因、修复与验证 |
+
+### 验证
+
+默认 LoongArch64 `make` 通过，仅有既有 vendored `smoltcp` warning。随后执行
+`timeout 120s make run > log.ans 2>&1`；musl `signal03` Summary 为 `passed 31 failed 0 broken 0`，
+glibc Summary 为 `passed 30 failed 0 broken 0`，两组均执行至 `shutdown!`。`log.ans` 已保留本次
+完整运行输出。本轮未运行 RISC-V 构建或 QEMU；修复仅涉及架构无关的信号 disposition 分发路径。

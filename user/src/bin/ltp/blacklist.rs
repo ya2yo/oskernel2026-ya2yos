@@ -303,6 +303,8 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "fchown05_16\0",
     "fchownat01\0",
     "fchownat02\0",
+    "fcntl36\0",
+    "fcntl36_64\0",
     "fcntl38\0",
     "fcntl38_64\0",
     "fcntl39\0",

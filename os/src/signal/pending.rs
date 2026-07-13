@@ -46,7 +46,10 @@ pub fn handle_signal(signo: usize) {
         task.inner_lock().sig_eintr = true;
     } else {
         let default_op = SigSet::from_sig(signo).default_op();
-        if sig_action.act.sa_handler == SIG_IGN && default_op != SigOp::Stop {
+        // 除 SIGKILL/SIGSTOP 外，SIG_IGN 都必须覆盖信号的默认动作，
+        // 包括默认会停止进程的 SIGTSTP/SIGTTIN/SIGTTOU。否则进程将
+        // 在已经显式忽略 SIGTSTP 后仍被停止，且没有 SIGCONT 时无法恢复。
+        if sig_action.act.sa_handler == SIG_IGN {
             debug!("handle_signal: ignore (SIG_IGN), signo={}", signo);
             return;
         }
