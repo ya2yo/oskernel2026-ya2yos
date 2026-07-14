@@ -4218,3 +4218,93 @@ handler、再设置 `SIG_IGN`、向自身发送信号，并断言 handler 从未
 `timeout 120s make run > log.ans 2>&1`；musl `signal03` Summary 为 `passed 31 failed 0 broken 0`，
 glibc Summary 为 `passed 30 failed 0 broken 0`，两组均执行至 `shutdown!`。`log.ans` 已保留本次
 完整运行输出。本轮未运行 RISC-V 构建或 QEMU；修复仅涉及架构无关的信号 disposition 分发路径。
+
+---
+
+## 2026-07-14: 使用 Typst 重构内核设计文档
+
+### 用户需求
+
+用户要求使用 Typst 重构当前内核的设计文档。
+
+### 分析与采纳结论
+
+AI 检查了 `Docs/ya2yos/` 既有九篇 Markdown、内核模块结构、启动顺序、双架构目录和本机 Typst
+工具链。原设计资料按主题分散且没有可编译的统一入口；部分叙述来自历史版本。采纳方案是在不删除
+历史 Markdown 的前提下，新建单入口 Typst 工程，以当前 `os/src/` 模块边界为准组织系统概览、启动与
+架构、内存、任务与信号、syscall/VFS、网络与设备、工程验证及当前边界八章。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `Docs/ya2yos/typst/main.typ` | 新增封面、目录、A4 排版与八章统一入口 |
+| `Docs/ya2yos/typst/chapters/*.typ` | 新增按当前代码结构编写的设计说明 |
+| `Docs/ya2yos/typst/README.md`、`.gitignore` | 说明构建命令并忽略本地 PDF 产物 |
+| `Docs/README.md`、`README.md` | 更新设计文档入口与生成方式 |
+
+### 验证
+
+本机 `typst 0.15.0` 执行 `typst compile main.typ ya2yos-kernel-design.pdf` 成功；生成文件为 PDF
+1.7、10 页、279 KiB。随后以独立临时输出再次执行 `typst compile Docs/ya2yos/typst/main.typ
+/tmp/ya2yos-kernel-design-check.pdf` 成功。仅为文档变更，未执行内核构建或 QEMU 运行。
+
+---
+
+## 2026-07-14: Typst 设计报告外部发布规范与排版优化
+
+### 用户需求
+
+用户要求继续优化 Typst 类型的设计文档，并规定今后面向外部、科研性较强的设计文本使用 Typst 编写。
+
+### 分析与采纳结论
+
+AI 将该要求固化为仓库协作规则：外部设计/架构/技术报告使用单入口 Typst 工程，Markdown 限于
+README、日志、问题复盘和轻量索引。为使现有文档达到可发布标准，补充了固定版本与代码快照、摘要、
+文档范围、可追溯性索引、原生图表样式、外部参考文献和 PDF/A-2u 构建命令；同时通过 PNG 视觉检查
+发现 Markdown 管线表格在 Typst 中被原样显示，已全部替换为 `#table` 原生表格。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `AGENTS.md` | 增加外部科研/设计文档优先 Typst 的长期规则与发布要求 |
+| `Docs/ya2yos/typst/main.typ` | 增加报告元数据、摘要、前言、页眉页脚、追溯索引、参考文献与 PDF/A 支持 |
+| `Docs/ya2yos/typst/references.bib` | 新增 RISC-V、LoongArch、Rust、Linux 和 smoltcp 的参考文献数据 |
+| `Docs/ya2yos/typst/chapters/*.typ` | 替换原样输出的 Markdown 表格，补充实现追溯、图注和正文引用 |
+| `Docs/ya2yos/typst/README.md`、`Docs/README.md` | 明确 Typst 的适用范围与对外构建方式 |
+
+### 验证
+
+`typst compile --pdf-standard a-2u Docs/ya2yos/typst/main.typ
+/tmp/ya2yos-kernel-design-final-a2u.pdf` 成功，产物为 PDF 1.7、13 页。使用 Typst PNG 导出并人工检查
+封面、摘要/版本页和目录，确认中文字体、层级、callout 与原生表格均正确显示；`rg '^\\|'` 确认 Typst
+源中不存在遗留 Markdown 管线表格。未执行内核构建或 QEMU，因为变更仅涉及文档和协作规范。
+
+---
+
+## 2026-07-14: Typst 内核设计文档学术字体与版式优化
+
+### 用户需求
+
+用户要求修改字体，并以学术论文风格优化内核设计文档。
+
+### 分析与采纳结论
+
+AI 通过 `typst fonts` 和 fontconfig 检查本机字体，确认没有宋体、思源宋体或 Noto Serif CJK，
+只有 `WenQuanYi Zen Hei` 可稳定覆盖中文。为不引入无法复现的外部字体依赖，采用
+`Libertinus Serif` 作为西文正文、`WenQuanYi Zen Hei` 作为中文回退、`DejaVu Sans Mono` 作为代码、
+`New Computer Modern` 作为封面英文标题的组合。版式改为黑灰色、标准论文页边距、10.5pt 正文、
+约 1.5 倍行距、简洁页眉与阿拉伯页码，减少原有强调色；同时保留适度的灰色范围提示框和细线表格。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `Docs/ya2yos/typst/main.typ` | 调整字体栈、正文/标题/代码字号、页边距、行距、页眉页脚、配色、封面字体与 callout 样式 |
+
+### 验证
+
+`typst compile --pdf-standard a-2u Docs/ya2yos/typst/main.typ /tmp/ya2yos-academic.pdf` 成功，
+产物为 PDF 1.7、13 页。导出封面、摘要/版本页和正文页 PNG 并人工检查：西文衬线正文、中文回退、
+等宽代码、表格和页码均正常；未执行内核构建或 QEMU，因为没有修改内核代码。

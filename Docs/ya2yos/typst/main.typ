@@ -1,0 +1,124 @@
+// Ya2yOS 内核设计文档（Typst 入口）
+// 对外发布建议：typst compile --pdf-standard a-2u main.typ ya2yos-kernel-design.pdf
+
+#let doc-version = "0.2"
+#let doc-date = datetime(year: 2026, month: 7, day: 14)
+#let source-snapshot = "工作树快照（2026-07-14）"
+#let ink = rgb("161616")
+#let muted = rgb("555555")
+#let line = rgb("9a9a9a")
+#let paper-gray = rgb("f4f4f4")
+
+#set document(
+  title: "Ya2yOS 内核设计文档",
+  author: "Ya2yOS 项目组",
+  date: doc-date,
+  keywords: ("Ya2yOS", "Rust", "kernel", "RISC-V", "LoongArch"),
+)
+#set page(
+  paper: "a4",
+  margin: (top: 2.54cm, bottom: 2.3cm, x: 2.54cm),
+  header: align(right, text(font: "Libertinus Serif", size: 8pt, fill: muted)[Ya2yOS Kernel Design · #doc-version]),
+  footer: context align(center, text(font: "Libertinus Serif", size: 8pt, fill: muted)[#counter(page).display("1")]),
+  numbering: "1",
+)
+#set text(font: ("Libertinus Serif", "WenQuanYi Zen Hei"), size: 10.5pt, fill: ink, lang: "zh")
+#set par(justify: true, leading: 0.55em, first-line-indent: 2em)
+#set heading(numbering: "1.1")
+#show heading.where(level: 1): it => [#pagebreak(weak: true)#it]
+#show heading: set text(font: ("Libertinus Serif", "WenQuanYi Zen Hei"), fill: ink, weight: "bold")
+#show raw: set text(font: "DejaVu Sans Mono", size: 8.6pt)
+#set raw(block: true, lang: "en")
+#show link: set text(fill: ink)
+#set table(stroke: line, inset: 6pt)
+#show figure.caption: set text(size: 8.6pt, fill: muted)
+#set figure(supplement: [图])
+
+#let callout(title, body) = block(
+  inset: 9pt,
+  radius: 3pt,
+  fill: paper-gray,
+  stroke: (left: 1.2pt + ink),
+  [*#title*\ #body],
+)
+
+#let source(path) = text(size: 8.5pt, fill: muted)[实现追溯：`#path`]
+
+#align(center)[
+  #v(3.6cm)
+  #text(font: "New Computer Modern", size: 29pt, weight: "bold")[Ya2yOS]
+  #v(0.7cm)
+  #text(font: "WenQuanYi Zen Hei", size: 20pt, weight: "bold")[内核设计文档]
+  #v(1.5cm)
+  #text(size: 11pt)[面向外部读者的实现级设计报告]
+  #v(0.5cm)
+  #text(font: "Libertinus Serif", size: 10.5pt)[Rust · RISC-V 64 · LoongArch64]
+  #v(2.7cm)
+  #text(size: 9.5pt)[版本：#doc-version]
+  #v(0.25cm)
+  #text(size: 9.5pt)[代码快照：#source-snapshot]
+  #v(0.25cm)
+  #text(size: 9.5pt)[发布日期：#doc-date.display("[year]-[month]-[day]")]
+]
+
+#pagebreak()
+#align(center)[
+  #text(font: "WenQuanYi Zen Hei", size: 16pt, weight: "bold")[摘要]
+]
+
+Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作系统内核，当前支持 RISC-V 64 与 LoongArch64 QEMU 平台。本文档从可复核的实现视角阐述内核的启动与异常入口、地址空间和页面生命周期、进程线程与信号、Linux 风格系统调用与 VFS、网络栈和 VirtIO 设备接入，并给出模块边界、关键不变量、验证约定和已知边界。设计描述以当前源代码为准；对未完成能力使用明确的边界表述，避免将规划误作已实现功能。
+
+#v(0.5em)
+*关键词*：操作系统内核；Rust；Linux ABI；虚拟内存；VFS；RISC-V；LoongArch
+
+#v(1.2em)
+#callout([文档范围], [本文面向评审、协作者和后续维护者。其描述对应 #source-snapshot；源代码变更后，应同步核对受影响章节。测试故障的逐案证据不在本文展开，而位于 `Docs/决赛文档/problem/`。])
+
+#v(1em)
+#text(font: "WenQuanYi Zen Hei", size: 15pt, weight: "bold")[版本与阅读约定]
+
+#table(
+  columns: (5.2em, 1fr),
+  table.header([*项目*], [*说明*]),
+  [文档版本], [#doc-version],
+  [适用范围], [Ya2yOS 当前工作树的内核实现；不将规划能力视为既有功能],
+  [主体源码], [`os/src/`；构建入口为仓库根目录 `Makefile`],
+  [术语约定], [代码标识符、Linux ABI 名称和路径保持原文；其他叙述使用中文],
+  [可追溯性], [各章给出关键目录；末章提供源码—章节索引与外部参考文献],
+)
+
+#pagebreak()
+#outline(title: [目录], depth: 2)
+#pagebreak()
+
+#include "chapters/01-overview.typ"
+#include "chapters/02-boot-arch.typ"
+#include "chapters/03-memory.typ"
+#include "chapters/04-task-signal.typ"
+#include "chapters/05-syscall-fs.typ"
+#include "chapters/06-network-device.typ"
+#include "chapters/07-engineering.typ"
+#include "chapters/08-boundaries.typ"
+
+#pagebreak()
+= 实现追溯与参考资料
+
+== 源码—章节索引
+
+#table(
+  columns: (1fr, 1.5fr, 4.8em),
+  table.header([*主题*], [*主要实现位置*], [*本文位置*]),
+  [内核入口与初始化], [`os/src/main.rs`], [第 2 章],
+  [架构实现], [`os/src/arch/riscv64/`、`os/src/arch/loongarch64/`], [第 2 章],
+  [页表、VMA 与用户复制], [`os/src/mm/`], [第 3 章],
+  [进程、调度与 futex], [`os/src/task/`], [第 4 章],
+  [信号动作、pending 与 frame], [`os/src/signal/`], [第 4 章],
+  [syscall ABI 与实现分发], [`os/src/syscall/`], [第 5 章],
+  [VFS、ext4、proc 与 pipe], [`os/src/fs/`], [第 5 章],
+  [socket 和协议栈封装], [`os/src/net/`], [第 6 章],
+  [VirtIO 与平台设备], [`os/src/drivers/`], [第 6 章],
+)
+
+== 参考资料
+
+#bibliography("references.bib", title: none, style: "ieee")

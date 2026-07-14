@@ -116,6 +116,16 @@ strings log.ans | tail -80
 ## Documentation Rules
 
 - Project documentation lives under `Docs/`.
+- Use Typst for externally facing, long-lived, or research/engineering design
+  documents (for example, kernel designs, architecture proposals, technical
+  reports, and presentation manuscripts). Commit the `.typ` source with one
+  `main.typ` entry point and a reproducible PDF build command. Use Markdown for
+  READMEs, development logs, problem writeups, lightweight indexes, and
+  collaboration notes; do not use it as the main body of a formal design report.
+- A formal Typst document must state its version, applicable source snapshot,
+  intended readers, and implemented-versus-planned boundaries. Use accessible
+  native Typst diagrams or traceable assets, and cite external material. PDFs
+  are build artifacts and should not be committed unless the maintainer asks.
 - Use `Docs/决赛文档/开发日志.md` for short chronological development notes.
 - Use one file per issue in `Docs/决赛文档/problem/` for non-trivial bugs,
   testcase fixes, panic analysis, or syscall behavior investigations.

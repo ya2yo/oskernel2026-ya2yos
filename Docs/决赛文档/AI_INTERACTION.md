@@ -537,3 +537,24 @@
 - **场景**：`signal03` LTP 源码/`log.ans` 对照、signal pending disposition 分发分析、LoongArch64 构建与 QEMU 回归、文档完善
 - **描述**：用户要求分析 `signal03\0` 并修复卡死。AI 确认测试会把 `SIGTSTP`、`SIGTTIN`、`SIGTTOU` 等可处理 signal 依次设为 `SIG_IGN` 后发送给自身；内核 `handle_signal()` 却错误地将默认 stop 信号排除在显式忽略 fast path 外，令 `SIGTSTP` 把测例永久置为 stopped。修复为显式 `SIG_IGN` 统一直接消费 pending signal，而 `SIGKILL`/`SIGSTOP` 仍由 `rt_sigaction` 拒绝设置 action。LoongArch64 `make` 通过，新的 `log.ans` 中 musl/glibc Summary 分别为 `passed 31`/`passed 30`，均无 failed/broken 并完成 `shutdown!`。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/signal03-sigign-stop.md](./problem/signal03-sigign-stop.md)。
 - **关联 commit**：待提交
+
+#### Typst 内核设计文档重构（7.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：内核设计文档结构重组、当前源码模块核对、Typst 排版与本地 PDF 编译验证
+- **描述**：用户要求使用 Typst 重构当前内核设计文档。AI 基于 `os/src/` 当前模块边界新建单入口 Typst 工程，按系统概览、启动与架构、内存、任务与信号、syscall/VFS、网络与设备、工程验证、当前边界组织八章；保留原 Markdown 作为历史材料，并在仓库文档入口处链接新的可编译源文件。`typst 0.15.0` 已成功生成 10 页 PDF。详见 `Docs/决赛文档/ai.log` 的 2026-07-14 条目。
+- **关联 commit**：待提交
+
+#### Typst 设计报告外部发布规范与排版优化（7.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：对外技术报告排版、文档可追溯性、PDF/A 归档验证、仓库文档格式规范完善
+- **描述**：用户要求后续面向外部、科研性较强的设计文档一律使用 Typst。AI 将该规则写入 `AGENTS.md`，并将现有内核设计文档提升为可发布报告：补充版本/代码快照、摘要、范围说明、页眉页脚、源码—章节追溯、参考文献、PDF/A-2u 命令和原生 Typst 图表。视觉检查发现 Markdown 表格会被 Typst 原样显示，已全部改为原生 `#table`。PDF/A-2u 编译成功并完成封面、摘要页、目录的 PNG 检查。详见 `Docs/决赛文档/ai.log` 2026-07-14 追加条目。
+- **关联 commit**：待提交
+
+#### Typst 内核设计文档学术字体与版式优化（7.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：本机字体盘点、学术论文式 Typst 排版、PDF/A 编译与视觉检查
+- **描述**：用户要求将设计文档改为学术论文风格。AI 依据本机字体可用性，使用 Libertinus Serif 西文正文、WenQuanYi Zen Hei 中文回退、DejaVu Sans Mono 代码和 New Computer Modern 封面英文标题；同步采用黑灰配色、论文页边距、正文行距、克制页眉页脚和细线表格。PDF/A-2u 编译成功，并人工检查封面、摘要/版本页和正文页的 PNG 输出。详见 `Docs/决赛文档/ai.log` 2026-07-14 追加条目。
+- **关联 commit**：待提交
