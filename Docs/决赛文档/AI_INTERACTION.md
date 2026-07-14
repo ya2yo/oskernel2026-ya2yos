@@ -291,312 +291,312 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `fchmod02` setup 前置条件定位、启动期 `/etc/group` 兼容文件修复、构建与日志验证、文档完善
 - **描述**：用户要求分析 `Log.ans` 失败原因并修复。AI 确认实际日志为 `log.ans`，失败点是 `SAFE_GETGRNAM_FALLBACK("users", "daemon")` 中 `users` 与 `daemon` 均不存在，导致 `TBROK`，测试尚未进入 `fchmod(2)` 语义断言。修复为在启动期 `/etc/group` 模板中补齐 `daemon:x:2:` 与 `users:x:100:`，并保持原有 `nobody:x:1:` 不变。`make` 通过，最新 `log.ans` 中 musl/glibc `fchmod02` 均 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fchmod02-group-database.md](./problem/fchmod02-group-database.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`2ba51c5`
 
 #### LTP fchmod05 chmod S_ISGID 语义修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `fchmod05` chmod 语义定位、`S_ISGID` 清除规则修复、构建与日志验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fchmod05` 失败是非 root 目录 owner 在 gid 不匹配目标目录时仍成功保留 `S_ISGID`；Linux 语义要求 `fchmod()` 成功但静默清掉 setgid 位。修复为新增 `chmod_inode()` 并让 `fchmod/fchmodat` 共用，补齐只读挂载 `EROFS`、非 owner `EPERM`、gid 不匹配清除 `S_ISGID`，同时传播 `fmode_set()` 错误。`make` 通过，最新 `log.ans` 中 musl/glibc `fchmod05` 均 `TPASS`，Summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fchmod05-chmod-setgid.md](./problem/fchmod05-chmod-setgid.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`a69c9bc`
 
 #### LTP fanotify02 FAN_EVENT_ON_CHILD 卡死修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 卡死分析、fanotify 目录 child event 匹配、`fanotify_mark(FAN_MARK_REMOVE)` mask 语义修复、LoongArch64 LTP 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 最后卡死并修改。AI 确认卡死在 `fanotify02` 的 `read(fd_notify)`，原因是目录 `"."` mark 带 `FAN_EVENT_ON_CHILD`，但内核只按路径精确相等匹配，子文件 open/write/close 事件未入队。修复为让 fanotify 目录 mark 匹配直接子项路径，并收紧路径分隔符边界；随后修正 `FAN_MARK_REMOVE` 单独移除 `FAN_EVENT_ON_CHILD/FAN_ONDIR` 被误判 `EINVAL` 的问题。`make` 通过，LoongArch64 单跑 musl/glibc `fanotify02` 均 8 项 `TPASS`，summary 为 `passed 8 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fanotify02-event-on-child.md](./problem/fanotify02-event-on-child.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`c0f47f5`
 
 #### LTP chown04 chown errno 语义修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、`chown(2)` 路径 errno 优先级修复、父目录 search 权限检查、只读挂载检查、LoongArch64 LTP 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `chown04` 失败来自三个路径级 errno 被非 root `EPERM` 或普通查找 `ENOENT` 覆盖：无搜索权限父目录应返回 `EACCES`，超长路径应返回 `ENAMETOOLONG`，只读 tmpfs 挂载点应返回 `EROFS`。修复为在 `fchownat()` 中补路径长度和 `NAME_MAX=255` 检查，普通路径打开目标前检查父目录 execute/search 权限，并让 `chown_inode()` 在权限检查前根据目标路径检查只读挂载点。`make` 通过，LoongArch64 单跑 musl/glibc `chown04` 均 8 项 `TPASS`，summary 为 `passed 8 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/chown04-chown-errno.md](./problem/chown04-chown-errno.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`11ac84f`
 
 #### LTP fcntl01 F_GETFL/F_SETFL 状态标志修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、`fcntl(2)` `F_GETFL/F_SETFL` 语义修复、fd 文件状态标志保存、构建与日志验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fcntl01` 失败是 `F_GETFL` 硬编码返回 `O_RDWR`，导致以 `O_WRONLY` 打开的文件也读到 `0x2`；同时 `F_SETFL(O_APPEND)` 只处理 nonblock，未保存 append 状态。修复为让 `FileDescriptor` 暴露 `F_GETFL` 可见的真实访问模式和状态位，并让 `F_SETFL` 更新 `O_APPEND/O_NONBLOCK/O_ASYNC/O_DIRECT/O_NOATIME` 等可修改状态位，同时继续同步底层文件 nonblocking 状态。`make` 通过，用户提供的最新 `log.ans` 中 musl/glibc `fcntl01` 均 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl01-f-getfl-setfl.md](./problem/fcntl01-f-getfl-setfl.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`b4df223`
 
 #### fcntl DUPFD 与 pipe size 兼容性完善（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`fcntl(2)` 基础命令语义梳理、`F_DUPFD*` fd descriptor flag 修复、pipe size 命令实现、构建验证、文档完善
 - **描述**：用户要求继续完善 `fcntl` syscall。AI 对照现有实现和 LTP fcntl/pipe 用例，修正关闭 fd 槽错误码、`F_DUPFD` 不继承 `FD_CLOEXEC`、`F_DUPFD_CLOEXEC` 设置 `FD_CLOEXEC`、`arg >= RLIMIT_NOFILE` 返回 `EINVAL`、fd 表满返回 `EMFILE` 等语义；同时将 pipe 容量从固定常量改为 per-pipe 字段，支持 `F_GETPIPE_SZ/F_SETPIPE_SZ`、按页取整、`EBUSY/EPERM` 错误和 `/proc/sys/fs/pipe-max-size`。`cargo fmt` 与默认 LoongArch64 `make` 通过；`make run` 在根文件系统 ext4 mount 阶段 panic，未进入 LTP。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl-dupfd-pipe-size.md](./problem/fcntl-dupfd-pipe-size.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`668deaa`
 
 #### LTP fcntl11 POSIX record lock 区间语义修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `fcntl11` 源码对照、POSIX record lock owner 与区间转换修复、LoongArch64 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fcntl11` 失败来自 record lock 实现过于简化：锁 owner 使用用户结构中的 `l_pid` 而非当前进程 pid，同进程重叠锁被当成冲突返回 `EAGAIN`，`F_GETLK` 按插入顺序返回后面的写锁而不是最靠前的冲突锁。修复为 `sys_fcntl()` 传入当前 pid，`file_lock::setlk()` 对同 owner 锁执行覆盖、拆分、合并，`getlk()` 忽略同 owner 锁并按起始偏移选择冲突锁，同时兼容写回 `struct flock.l_pid`。`make` 通过，最新 `log.ans` 中 musl/glibc `fcntl11` 均 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl11-record-lock.md](./problem/fcntl11-record-lock.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`5aa4988`
 
 #### LTP fcntl13 record lock EFAULT 优先级修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `fcntl13` 源码对照、`fcntl(F_SETLK)` 坏用户指针错误优先级修复、LoongArch64 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并继续修复。AI 确认 `fcntl13` 失败是 `fcntl(1, F_SETLK, bad_flock)` 期望 `EFAULT` 却返回 `EINVAL`；原因是 record lock 分支先把 `fd=1` 的 stdout 当普通文件解析，非 `OSFile` 先返回 `EINVAL`，遮蔽了坏 `struct flock *`。修复为 `F_GETLK/F_SETLK/F_SETLKW` 以及 OFD lock 分支先 `copy_from_user()` 读取用户 `flock`，再解析普通文件对象。`make` 通过，最新 `log.ans` 中 musl/glibc `fcntl13` 均 `passed 4 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl13-lock-efault-priority.md](./problem/fcntl13-lock-efault-priority.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`708e271`
 
 #### LTP fcntl14 record lock SEEK_CUR 与阻塞语义修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `fcntl14` 源码对照、POSIX record lock `SEEK_CUR`/负 `l_len`/`F_SETLKW` 语义修复、构建验证、文档完善
 - **描述**：用户要求根据 `log.ans` 继续修复，并在确认 `fcntl14` 已通过后补文档。AI 确认剩余失败集中在 `fcntl14` 第 37 起的 `SEEK_CUR` 与负长度区间，以及非法 `l_whence` 和阻塞锁路径；修复为 syscall 层读取当前 fd offset，锁层支持 `SEEK_CUR`、负 `l_len` 反向区间、非法 whence 返回 `EINVAL`，并补 `F_SETLKW` 阻塞等待、等待环 `EDEADLK` 和 close/exit 释放 record locks。`make TARGET_ARCH=riscv64` 与默认 LoongArch64 `make` 均通过，维护者确认后续运行中 `fcntl14` 已通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl14-record-lock-seekcur-len.md](./problem/fcntl14-record-lock-seekcur-len.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`0fa55a6`
 
 #### LTP fcntl23 文件租约基础语义修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `fcntl23` 源码对照、`F_SETLEASE/F_GETLEASE` 基础租约状态实现、LoongArch64 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fcntl23` 失败来自 `F_SETLEASE` stub 固定返回 `EAGAIN`，导致只读普通文件上的无冲突读租约无法建立。修复为在 `file_lock` 层新增按 path/pid 管理的最小 file lease 表，支持 `F_RDLCK/F_WRLCK/F_UNLCK` 设置、`F_GETLEASE` 查询、读租约可写 fd 的 `EAGAIN` 校验，以及 close/close_range/exit 清理。`make` 通过，LoongArch64 单跑 musl/glibc `fcntl23` 均 `TPASS`，summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl23-file-lease.md](./problem/fcntl23-file-lease.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`002c98a`
 
 #### LTP fcntl31 async I/O owner 与信号通知修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `fcntl31` 源码对照、`F_SETOWN_EX/F_GETOWN_EX/F_SETSIG` 语义补齐、pipe async I/O 信号投递、构建与日志验证、文档完善
 - **描述**：用户要求分析 `log.ans` 并修改。AI 确认 `fcntl31` 失败是 `F_GETOWN_EX` 直接返回 `EINVAL`，并进一步确认测试还要求 pipe 写入时根据 `F_SETOWN/F_SETOWN_EX` 和 `F_SETSIG(SIGUSR1)` 向 TID/PID/PGRP owner 投递异步 I/O 信号。修复为新增 `FasyncOwner`，在 pipe 共享 buffer 中保存 async owner/signal，实现相关 fcntl 命令，并实现按进程组投递信号。`make` 通过，用户提供的最新 `log.ans` 中 musl/glibc 两轮 `fcntl31` 均 5 项 `TPASS`，summary 为 `passed 5 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl31-fasync-owner-signal.md](./problem/fcntl31-fasync-owner-signal.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`79c68ca`
 
 #### file_lock 模块高内聚重构（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：文件锁模块职责拆分、POSIX record lock/file lease/BSD flock 子模块化、双架构构建验证、文档完善
 - **描述**：用户指出 `os/src/syscall/fs/file_lock.rs` 功能不够单一，要求重构以提高内聚度。AI 将单体文件替换为 `file_lock/` 模块目录：`mod.rs` 作为门面保留原 `file_lock::...` API，`types.rs` 保存 `Flock` ABI，`posix.rs` 保存 POSIX record lock 与等待图，`lease.rs` 保存 file lease，`bsd_flock.rs` 保存 `flock(2)` 整文件锁。本次不改变 syscall 分发、函数签名或用户可见语义；`make` 和 `make TARGET_ARCH=riscv64` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
-- **关联 commit**：待提交
+- **关联 commit**：`de61243`
 
 #### session ID 独立字段与 getsid/setsid 语义完善（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：进程元数据 session ID 字段新增、`getsid/setsid/setpgid` 语义调整、syscall 分发接入、双架构构建验证、文档完善
 - **描述**：用户询问当前 session id 对应字段后，要求增加 `sid` 字段并同步调整内核。AI 确认原实现把 session ID 混用为 `ProcessMeta::pgid`，且 `GetSid` 枚举未接入分发；修复为新增 `ProcessMeta::sid`，initproc 设 `sid=pid`，fork/clone 继承调用者 `pgid/sid`，`getsid()` 返回目标进程 `sid`，`setsid()` 设置 `sid=pid` 与 `pgid=pid` 并拒绝进程组 leader，`setpgid()` 只修改 `pgid` 并保留 session 边界检查。`make` 和 `make TARGET_ARCH=riscv64` 均通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
-- **关联 commit**：待提交
+- **关联 commit**：`d90aa49`
 
 #### fcntl syscall 实现位置收敛（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`fcntl(2)` syscall 代码组织重构、`fd_ops.rs` 职责收敛、构建验证、文档完善
 - **描述**：用户要求将 `fcntl` syscall 实现代码放入 `os/src/syscall/fs/fcntl.rs`。AI 将 `sys_fcntl()`、record lock 阻塞 helper `setlk_blocking()` 和 `struct f_owner_ex` 编解码从 `fd_ops.rs` 迁入 `fcntl.rs`，保留 `fcntl` 常量与实现同文件维护；`fd_ops.rs` 回到 `flock/dup/open/close/openat2` 等通用 fd 操作。本次不改变 syscall 分发或用户可见语义；默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目。
-- **关联 commit**：待提交
+- **关联 commit**：`a905efe`
 
 #### LTP fcntl33 文件租约 break SIGIO 通知修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `fcntl33` 源码对照、file lease break 通知与降级语义修复、LoongArch64 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复。AI 确认 `fcntl33` 失败包含 `/proc/sys/fs/lease-break-time` 缺失、冲突 `open/truncate` 未向 lease holder 投递 `SIGIO`、写访问 break 下错误允许写 lease 降级为读 lease，以及 `truncate("file")` 未按当前工作目录解析。修复为启动期补齐 lease sysctl 文件，file lease 表记录 break 通知状态和写访问标志，普通文件 `open/truncate` 冲突时向 holder 主线程投递 pending `SIGIO`，并修正 `sys_truncate()` 相对路径。`make` 通过，最新 `log.ans` 中 musl/glibc `fcntl33` 均 7 项 `TPASS`，summary 为 `passed 7 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl33-lease-break-sigio.md](./problem/fcntl33-lease-break-sigio.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`d8db7a6`
 
 #### LTP fcntl34 OFD lock owner 语义修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `fcntl34` 源码对照、OFD lock owner 与 `F_OFD_SETLKW` 阻塞语义修复、LoongArch64 回归验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `fcntl34` 失败来自 OFD lock owner 错误复用进程 pid：同一进程内多个线程分别 `open()` 的 fd 被锁层视作同一 owner，无法互斥保护 `lseek(SEEK_END)+write()`，导致文件写入覆盖和校验阶段提前 EOF。修复为每个 `OSFile` 分配 open file description 级负数 owner，OFD fcntl 分支改用该 owner，`F_OFD_SETLKW` 走阻塞等待，并在最后一个 fd 关闭时释放 OFD 锁。`make` 通过，最新 `log.ans` 中 musl/glibc `fcntl34` 均 `TPASS`，summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl34-ofd-lock-owner.md](./problem/fcntl34-ofd-lock-owner.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`c4587c0`
 
 #### LTP fcntl35 pipe-max-size 初始容量限制修复（7.6）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `fcntl35` 源码对照、pipe sysctl 状态同步、非特权 pipe 初始容量修复、LoongArch64 回归验证、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复。AI 确认 `fcntl35` 失败是 `/proc/sys/fs/pipe-max-size` 写入后只改变普通文件内容，pipe 子系统仍用固定 `65536` 初始容量，导致 `nobody` 新建 pipe 未被限制到 `4096`。修复为新增 pipe sysctl 原子状态，在 `/proc/sys/fs/pipe-max-size` 写入时同步更新；`make_pipe()` 根据当前任务是否具备 `CAP_SYS_RESOURCE` 决定是否应用 sysctl 上限，并让 `F_SETPIPE_SZ` 对非特权任务也使用当前上限。`make` 通过，LoongArch64 单跑 musl/glibc `fcntl35` 均 `passed 2 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-06 条目与 [problem/fcntl35-pipe-max-size-init.md](./problem/fcntl35-pipe-max-size-init.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`bc5733c`
 
 #### LTP kill05 kill 权限检查修复（7.7）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `kill05` 源码对照、`kill(2)` uid 权限与进程组语义修复、LoongArch64 构建和日志验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `kill05` 失败来自 `kill(pid, SIGKILL)` 在不同普通 uid 之间错误成功；根因是 `sys_kill()` 直接调用内部信号投递 helper，只检查目标存在性，不检查发送者 real/effective uid 与目标 real/saved uid，也未正确处理 `pid == 0`、`pid < -1` 和 `signo == 0`。修复为新增用户态 `kill(2)` 专用 wrapper，保留内部信号投递路径不受权限检查影响。`make` 通过，最新 `log.ans` 中 musl/glibc `kill05` 均 `TPASS`，summary 为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/kill05-kill-permission.md](./problem/kill05-kill-permission.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`4fc944e`
 
 #### signal 模块职责边界重构（7.7）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`os/src/signal` 模块内聚度重构、signal frame/投递/timer/default action 职责拆分、LoongArch64 构建验证、文档完善
 - **描述**：用户指出 `os/src/signal` 整体内聚度太低，要求继续重构。AI 将原本集中在 `mod.rs` 的多类逻辑拆分为 `frame.rs`、`pending.rs`、`delivery.rs`、`timer.rs`，并把原 `sigact.rs`/`signal.rs` 改名为职责更清晰的 `action_table.rs`/`types.rs`；`mod.rs` 只承担门面导出和全局 signal 常量定义。重构保持 `crate::signal::...` 对外函数名不变，默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目。
-- **关联 commit**：待提交
+- **关联 commit**：`dee2f0a`
 
 #### shmdt 基础 detach 语义实现（7.7）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：SysV shared memory `shmdt(197)` 分发接入、当前进程 shm mapping 解除、LoongArch64 构建验证、文档完善
 - **描述**：用户要求实现 `shm_detach`。AI 检查现有 `shmget/shmat/shmctl` 后确认 `shmdt` 只有空 stub 且 syscall 分发未接入；实现为 `sys_shmdt()` 委托 mm 层，在当前进程地址空间中查找起始地址匹配且类型为 `MapAreaType::Shm` 的映射，成功时解除整段映射并刷新 TLB，地址未页对齐或未 attach 返回 `EINVAL`。默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目。
-- **关联 commit**：待提交
+- **关联 commit**：`e047fea`
 
 #### memory_set 模块职责边界重构（7.7）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`os/src/mm/memory_set` 高内聚重构、`mod.rs` 门面化、基础 VMA/page-table helper 拆分、方法文档补充、LoongArch64 构建验证、文档完善
 - **描述**：用户指出 `os/src/mm/memory_set/mod.rs` 方法注释不清且文件职责过重。AI 将原 `mod.rs` 中的 `MemorySetInner` 类型定义、`MemorySet` 锁封装、基础 `MapArea` 操作、页表访问/统计/回收 helper 分别拆入 `types.rs`、`handle.rs`、`area_ops.rs`、`accessors.rs`，让 `mod.rs` 只承担门面导出、`KERNEL_SPACE` 和 `remap_test()` wrapper；对外 `crate::mm::MemorySet`、`MemorySetInner`、`KERNEL_SPACE` 路径保持不变。默认 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目。
-- **关联 commit**：待提交
+- **关联 commit**：`39812f8`
 
 #### LTP kill10 SA_SIGINFO 发送者信息修复（7.7）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `kill10` 源码对照、pending signal `siginfo_t` 保存与传递、LoongArch64 运行验证、双架构构建验证、文档完善
 - **描述**：用户要求分析 `log.ans` 并修复。AI 确认 `kill10` 持续打印 `received unexpected signal 10 from 2` 的原因是 `SA_SIGINFO` handler 读取到的 `si_pid` 被内核填成接收者 pid，而不是发送者 pid；根因是 pending signal 只有 `SigSet` 位图，未保存发送者 siginfo。修复为 task 级 pending signal 增加并行 `sig_pending_info`，用户态 `kill/tkill/tgkill` 投递时记录发送者 pid/uid，`handle_signal()` 和 `rt_sigtimedwait()` 消费时取出该 siginfo。LoongArch64 单跑 musl/glibc `kill10` 均 `TPASS`，LoongArch64 与 RISC-V 构建通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/kill10-siginfo-sender.md](./problem/kill10-siginfo-sender.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`adaa967`
 
 #### LTP kill12 SIG_IGN wait status 修复（7.7）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `kill12` 源码对照、显式 `SIG_IGN` 分发语义修复、`waitpid()` status 污染排查、LoongArch64 运行验证、双架构构建验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `kill12` 失败是父进程对已设置 `SIG_IGN` 的子进程发送信号后，`waitpid()` 仍返回信号终止 status。根因有两处：`handle_signal()` 非 custom 分支没有优先识别显式 `SIG_IGN`；`deliver_signal_to_thread_group()` 又在投递阶段按默认动作提前写入 `termination_signal`，即使信号之后被忽略也会污染 wait status。修复为显式忽略信号直接消费返回，并只在实际默认终止路径中记录 `termination_signal`。LoongArch64 单跑 musl/glibc `kill12` 均 `TPASS`，LoongArch64 与 RISC-V 构建通过。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/kill12-sigign-wait-status.md](./problem/kill12-sigign-wait-status.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`2e8ca7c`
 
 #### LTP link04 linkat errno 与权限语义修复（7.7）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `link04` 源码对照、`linkat(2)` 空路径/超长路径 errno 和父目录权限检查修复、LoongArch64 运行验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `link04` 失败来自 `sys_linkat()` 缺少路径参数预检和 hard link 父目录权限检查：空路径被解析为当前工作目录，超长路径落到底层查找 `ENOENT`，非 root 在缺写或缺搜索权限目录下仍能创建 hard link。修复为在 `linkat` 入口校验空路径和长度，并在普通路径分支检查旧路径父目录搜索权限、新路径父目录写/搜索权限；`AT_EMPTY_PATH` 分支也检查新路径父目录权限。LoongArch64 单跑 musl/glibc `link04` 均 `passed 14 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/link04-linkat-errno-permission.md](./problem/link04-linkat-errno-permission.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`56737cb`
 
 #### LTP link08 linkat mount/rofs/ELOOP 语义修复（7.7）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `link08` 源码对照、`linkat(2)` 跨挂载点、只读挂载和 symlink loop errno 修复、LoongArch64 运行验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `link08` 失败来自 `sys_linkat()` 未检查 hard link 两端的 mount 身份和只读挂载标志，且旧路径长度预检过早返回 `ENAMETOOLONG`，遮蔽中间 symlink loop 的 `ELOOP`。修复为新增 `check_link_mounts()` 返回 `EXDEV/EROFS`，并在旧路径达到读取上限时优先扫描 symlink 前缀识别自引用环。LoongArch64 单跑 musl/glibc `link08` 均 `passed 4 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/link08-linkat-mount-rofs-eloop.md](./problem/link08-linkat-mount-rofs-eloop.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`6dbfb70`
 
 #### LTP linkat02 hard link 上限卡死修复（7.7）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`linkat02` 卡死分析、LTP hard link 上限探测源码对照、`linkat(2)` `EMLINK` 语义修复、`unlinkat(2)` symlink 删除语义修复、LoongArch64 运行验证、文档完善
 - **描述**：用户指出 `linkat02\0` 当前直接卡死。AI 确认卡死发生在 `tst_fs_fill_hardlinks()` setup 阶段：内核没有 hard link 上限，测试会持续创建同一 inode 的 hard link。修复为在 `linkat` 创建 hard link 前检查 `st_nlink >= 1024` 并返回 `EMLINK`；随后又修正 `unlinkat` 不跟随最终 symlink，避免 cleanup 删除 symlink 环时报 `ELOOP` warning。LoongArch64 单跑 musl/glibc `linkat02` 均 `passed 7 failed 0 broken 0 warnings 0`。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/linkat02-hardlink-emlink-unlink-symlink.md](./problem/linkat02-hardlink-emlink-unlink-symlink.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`30089ba`
 
 #### LTP mkdir02 目录 S_ISGID 继承语义修复（7.7）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `mkdir02` 源码对照、目录创建 mode 继承语义修复、LoongArch64 构建和运行验证、文档完善
 - **描述**：用户要求分析新的 `log.ans` 并修复。AI 确认 `mkdir02` 失败来自新建目录继承了父目录 gid，但没有继承父目录 `S_ISGID` mode 位；根因是 `create_file()` 在 `mkdirat` 复用的 `O_DIRECTORY|O_CREATE` 路径中只应用 `umask`，没有对目录补父目录 `0o2000`。修复为新建目录且父目录带 `S_ISGID` 时为 `effective_mode` 补 `0o2000`，并传播 `fmode_set()` 错误。LoongArch64 `make run` 中 musl/glibc `mkdir02` 均 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-07 条目与 [problem/mkdir02-setgid-inherit.md](./problem/mkdir02-setgid-inherit.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`740852f`
 
 #### LTP mmap04 /proc/self/maps 动态映射修复（7.12）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `mmap04` 源码对照、procfs maps/VMA 元数据修复、LoongArch64 运行与双架构构建验证、文档完善
 - **描述**：用户要求补充 `/proc/self/maps`。AI 确认 maps 仅在进程创建时生成、动态 `mmap` 后内容过期，固定 16 位地址格式又不符合 Linux maps 文本格式；`MAP_FIXED` 的 VMA 拆分还没有更新共享/私有属性。修复为在打开 `/proc/self/maps` 或 `/proc/<pid>/maps` 时按当前 VMA 重建内容，使用无前导零地址和 `p/s` 后缀，并在 `MAP_FIXED` 拆分时更新 flags。LoongArch64 单跑 musl/glibc `mmap04` 各 14 项 `TPASS`，LoongArch64 与 RISC-V 构建通过。详见 `Docs/决赛文档/ai.log` 2026-07-12 条目与 [problem/proc-self-maps-mmap04.md](./problem/proc-self-maps-mmap04.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`15452b2`
 
 #### LTP mmap12 `/proc/self/pagemap` 缺失修复（7.12）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：procfs pagemap 文件实现、页表 PFN 导出、LTP `mmap12` 日志验证、文档完善
 - **描述**：用户要求补齐 `/proc/self/pagemap`。AI 对照现有 proc 文件刷新模型和 `mmap12` 源码，新增 `/proc/<pid>/pagemap` 的创建、刷新与退出清理，`openat` 支持 self 到当前 PID 的解析，并在页表读锁内采集已建立 PTE 的 present/PFN 条目。实现以稀疏 VFS 文件表示未映射页，避免高地址 VMA 的零填充。最新 `log.ans` 显示 LoongArch64 musl/glibc `mmap12` 均 `TPASS: File mapped properly`，Summary 均为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-12 条目与 [problem/proc-self-pagemap-mmap12.md](./problem/proc-self-pagemap-mmap12.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`7aa9518`
 
 #### LTP mmap13 文件映射 EOF SIGBUS 修复（7.12）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `mmap13` 源码对照、mmap 缺页/信号/ext4 长度一致性修复、LoongArch64 运行验证、文档完善
 - **描述**：用户持续要求依据最新日志修复 `mmap13`。AI 确认初始问题是文件映射完整 EOF 外页被错误建立为零页；补充 SIGBUS 后又通过运行日志确认 LTP 框架 unlink 后的共享映射因 ext4 `ftruncate` 后错误报告长度 0 而被误杀。修复为 VMA 保存 mmap 时文件长度快照，mmap fault 和 trap 层将完整 EOF 外页判定为 `SIGBUS`，并让 `Ext4Inode` 维护成功 truncate/write 后的长度，保证 `size()`、`fstat()` 和页缓存一致。LoongArch64 单跑 musl/glibc `mmap13` 均输出 `TPASS: Received SIGBUS signal as expected`，Summary 均为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-12 条目与 [problem/mmap13-sigbus-eof.md](./problem/mmap13-sigbus-eof.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`da824d1`
 
 #### LoongArch PCI VirtIO-net 启动期内存破坏修复（7.13）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LoongArch PCI VirtIO-net 启动卡死定位、启动栈/ECAM/DMA 修复、双架构回归和文档完善
 - **描述**：用户要求分析 LoongArch PCI 网卡严重故障。AI 通过日志、符号地址和 release 反汇编确认主因是每 hart 仅 4 KiB 的早期启动栈无法容纳 `rust_main` 与 `net::init_network` 的大 Rust 栈帧，覆盖了 UART 和 ext4 cache 静态数据。修复为 256 KiB/ hart 启动栈；同时把 PCI 配置读写改为对齐 volatile 访问，并清零 CMA 返回的 VirtQueue DMA 页面。LoongArch64 QEMU 已发现网卡、完成网络初始化、启动 initproc 并执行 `shutdown!`，RISC-V 构建和启动日志未出现 panic/fault。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/loongarch-pci-virtio-net-bootstrap-corruption.md](./problem/loongarch-pci-virtio-net-bootstrap-corruption.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`33cd214`
 
 #### VirtIO-net 真实 TX/RX 回归用例（7.13）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：LoongArch PCI VirtIO-net 用户态分层测试、SLIRP DNS 往返、VirtQueue 描述符回收压力、双架构 QEMU 验证、文档完善
 - **描述**：用户要求编写多个用例判断网卡驱动是否正常。AI 将 loopback 明确限定为协议栈基线，新增经 `eth0` 访问 `10.0.2.3:53` 的单次 DNS 往返、超过 128-entry VirtQueue 容量的 160 次连续往返，以及带截止时间的无响应路径；同时补齐无 libc 用户程序所需的 `sockaddr_in` 与 `bind/sendto/recvfrom` 包装。LoongArch64 和 RISC-V QEMU 均输出四项 `TPASS`、`Summary: netdev passed 4 failed 0`，无 panic/fault/VirtQueue 状态错误。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/loongarch-pci-virtio-net-bootstrap-corruption.md](./problem/loongarch-pci-virtio-net-bootstrap-corruption.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`c3fb49f`
 
 #### `/proc/pagemap` 截断导致 fork 停滞修复（7.13）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：LoongArch64 BusyBox/basic 启动停滞、`execve` A/B 排除、procfs pagemap 动态文件实现、LTP mmap12 回归
 - **描述**：用户怀疑 `execve` 修改使内核停在 BusyBox 参数打印处。AI 按要求恢复该改动验证后确认现象不变；单个 glibc basic 的 debug 日志显示 `sys_execve` 已返回成功，随后 PID 3 在创建 `/proc/3/pagemap` 时执行 `file_truncate to 402653184`。根因是每个 fork 都把高地址 VMA 对应的 pagemap 逻辑长度作为 ext4 普通文件截断，lwext4 不具备该路径所需的廉价稀疏扩容。修复为动态只读 `PagemapFile`：按当前页表生成 present/PFN 条目，支持 Linux 的 offset/read/seek/stat 语义，进程创建只留下零大小目录项。LoongArch64 glibc basic 完整结束，glibc `mmap12` 为 `passed 1 failed 0 broken 0`，LoongArch64 和 RISC-V 构建通过。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/proc-pagemap-fork-allocation.md](./problem/proc-pagemap-fork-allocation.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`7ce94ad`
 
 #### LoongArch AF_UNIX 无界队列 OOM 与 2GiB 内存布局修复（7.13）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`loongarch.ans` panic 分析、QEMU DTB 内存布局验证、GDB 内核堆 OOM 回溯、AF_UNIX socket 背压修复、LoongArch64 QEMU 回归、文档完善
 - **描述**：用户要求根治 LoongArch `Heap allocation error`，并升级到 2GiB RAM。AI 确认 QEMU 的 2GiB RAM 物理上为低端 256MiB 与高端 1792MiB，两段已经由同一个 CMA allocator 逻辑合并，中间 PCI/MMIO hole 不能作为 RAM 使用。GDB 确认 OOM 来自 `UnixSocket::send()` 无界增长的 `VecDeque<UnixMessage>`，而不是 CMA。修复为 AF_UNIX 接收队列实行 64KiB 上限，满队列下阻塞写端或在非阻塞模式返回 `EAGAIN`，接收和 shutdown 唤醒写端；并将 LoongArch QEMU/RAM 表更新到 2GiB、静态内核堆提升至 128MiB。LoongArch64 musl/glibc cyclictest 八个阶段与两个 hackbench 清理均 success，无 OOM 或 panic。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/loongarch-unix-queue-oom.md](./problem/loongarch-unix-queue-oom.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`82c66f3`
 
 #### RISC-V 连续 2GiB RAM 与 CMA 启动期映射修复（7.13）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：RISC-V 2GiB 配置影响分析、QEMU DTB/启动日志验证、CMA 初始化停滞修复、Sv39 直接映射优化
 - **描述**：维护者要求 RISC-V 也改为 2GiB。AI 确认 QEMU virt 的 2GiB RAM 是连续 `0x80000000..0x100000000`，但 bootstrap 页表只映射第一个 GiB；buddy CMA 把 free-list 元数据写进第二个 GiB 会在 `init_cma()` 阶段访问未映射地址。修复为启动早期先加入首 GiB 中内核后的页，完整页表激活后加入第二个 GiB，最终仍为一个 CMA；内核物理直接映射使用 Sv39 1GiB/2MiB leaf PTE。同步修正 AF_UNIX 接收与 `SHUT_RD` 的队列计账竞态。RISC-V 2GiB QEMU 已通过 CMA 扩展、remap_test、initproc、busybox/Lua 两组和 iperf-musl 六项；无 CMA OOM、heap allocation error 或 panic。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/loongarch-unix-queue-oom.md](./problem/loongarch-unix-queue-oom.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`e0f08fa`
 
 #### LTP signal03 SIG_IGN stop 信号卡死修复（7.13）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`signal03` LTP 源码/`log.ans` 对照、signal pending disposition 分发分析、LoongArch64 构建与 QEMU 回归、文档完善
 - **描述**：用户要求分析 `signal03\0` 并修复卡死。AI 确认测试会把 `SIGTSTP`、`SIGTTIN`、`SIGTTOU` 等可处理 signal 依次设为 `SIG_IGN` 后发送给自身；内核 `handle_signal()` 却错误地将默认 stop 信号排除在显式忽略 fast path 外，令 `SIGTSTP` 把测例永久置为 stopped。修复为显式 `SIG_IGN` 统一直接消费 pending signal，而 `SIGKILL`/`SIGSTOP` 仍由 `rt_sigaction` 拒绝设置 action。LoongArch64 `make` 通过，新的 `log.ans` 中 musl/glibc Summary 分别为 `passed 31`/`passed 30`，均无 failed/broken 并完成 `shutdown!`。详见 `Docs/决赛文档/ai.log` 2026-07-13 条目与 [problem/signal03-sigign-stop.md](./problem/signal03-sigign-stop.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`b31376b`
 
 #### Typst 内核设计文档重构（7.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：内核设计文档结构重组、当前源码模块核对、Typst 排版与本地 PDF 编译验证
 - **描述**：用户要求使用 Typst 重构当前内核设计文档。AI 基于 `os/src/` 当前模块边界新建单入口 Typst 工程，按系统概览、启动与架构、内存、任务与信号、syscall/VFS、网络与设备、工程验证、当前边界组织八章；保留原 Markdown 作为历史材料，并在仓库文档入口处链接新的可编译源文件。`typst 0.15.0` 已成功生成 10 页 PDF。详见 `Docs/决赛文档/ai.log` 的 2026-07-14 条目。
-- **关联 commit**：待提交
+- **关联 commit**：`fa06918`
 
 #### Typst 设计报告外部发布规范与排版优化（7.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：对外技术报告排版、文档可追溯性、PDF/A 归档验证、仓库文档格式规范完善
 - **描述**：用户要求后续面向外部、科研性较强的设计文档一律使用 Typst。AI 将该规则写入 `AGENTS.md`，并将现有内核设计文档提升为可发布报告：补充版本/代码快照、摘要、范围说明、页眉页脚、源码—章节追溯、参考文献、PDF/A-2u 命令和原生 Typst 图表。视觉检查发现 Markdown 表格会被 Typst 原样显示，已全部改为原生 `#table`。PDF/A-2u 编译成功并完成封面、摘要页、目录的 PNG 检查。详见 `Docs/决赛文档/ai.log` 2026-07-14 追加条目。
-- **关联 commit**：待提交
+- **关联 commit**：`fa06918`
 
 #### Typst 内核设计文档学术字体与版式优化（7.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：本机字体盘点、学术论文式 Typst 排版、PDF/A 编译与视觉检查
 - **描述**：用户要求将设计文档改为学术论文风格。AI 依据本机字体可用性，使用 Libertinus Serif 西文正文、WenQuanYi Zen Hei 中文回退、DejaVu Sans Mono 代码和 New Computer Modern 封面英文标题；同步采用黑灰配色、论文页边距、正文行距、克制页眉页脚和细线表格。PDF/A-2u 编译成功，并人工检查封面、摘要/版本页和正文页的 PNG 输出。详见 `Docs/决赛文档/ai.log` 2026-07-14 追加条目。
-- **关联 commit**：待提交
+- **关联 commit**：`fa06918`
 
 #### Markdown 设计文档完整迁移至 Typst（7.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：九篇设计 Markdown 的结构化迁移、UML 图示接入、Typst PDF/A 全文编译与视觉检查
 - **描述**：用户要求将现有 Markdown 设计文档 1:1 填充进 Typst，并允许保留第二章既有扩展。AI 在没有 pandoc 的环境中实现结构化迁移：保留段落、代码、列表、表格及 UML 图片，将标题、强调、表格、图片转换为 Typst 原生语法；保留启动/架构第二章并追加完整进程管理内容，新增第九章总结与展望。构建改为 `--root .` 以加载 `Docs/uml/`，并将不兼容 PDF/A 字体的状态 emoji 替换为“是/否”。最终生成 82 页 PDF/A-2u 并抽查 UML 图页。详见 `Docs/决赛文档/ai.log` 2026-07-14 追加条目。
-- **关联 commit**：待提交
+- **关联 commit**：`d08af5a`
 
 #### Typst 原生图形替换 UML 图片（7.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：UML 图片删除后的设计文档图示重建、Typst 原生图形组件与 PDF/A 验证
 - **描述**：用户要求以 Typst 原生画图替换已删除 UML 图片。AI 新增可复用的流程、关系和交互图组件，并替换文档中的 19 个图片引用；图示改为可编辑的 Typst `block`、`stack`、`table` 结构，不再依赖 `Docs/uml/`。全文 PDF/A-2u 编译成功，且检查确认没有遗留图片或 UML 路径引用。详见 `Docs/决赛文档/ai.log` 2026-07-14 追加条目。
-- **关联 commit**：待提交
+- **关联 commit**：`047b4e9`
 
 #### 进程、线程与程序映像章节实现校准（7.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：Typst 进程管理章节与当前任务、syscall、ELF loader 源码对照及全文编译验证
 - **描述**：维护者要求按当前内核实现调整 `03-process-import.typ`。AI 重核 `Process`/`TaskControlBlock`/`ProcessMeta`、全局 FIFO ready queue、时钟触发的 `suspend_current_and_run_next()`、`clone`/受限 `clone3`、`execve`、exit/reparent 与 `waitpid`/`waitid` 路径，重写章节以删除过期字段和过度承诺。文档明确：调度具有时钟驱动轮转但尚无 CFS/负载均衡，TID/PID 当前不回收，`clone3` 是 legacy clone 适配层，ELF 动态解释器映射后的重定位仍在用户态完成。详见 `Docs/决赛文档/ai.log` 2026-07-14 追加条目。
-- **关联 commit**：待提交
+- **关联 commit**：`f62ac0d`
 
 #### LTP splice07 匿名挂载 fd 阻塞修复（7.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 尾部卡死分析、fsopen/fspick/open_tree 匿名 fd I/O 能力校正、双架构构建和 LTP 回归记录
 - **描述**：维护者要求修复 `splice07` 最后卡死。AI 确认 `FsContextFd`/`DetachedMountFd` 虽以 `S_IFREG` 报告 stat，却是 mount API 控制 fd；两者继承 `File` trait 的默认可读写能力，令空 pipe 到 fsopen 的 `splice` 先阻塞读取而无法到达输出错误路径。修复为显式声明二者不可读、不可写，使 syscall 在 I/O 前返回 `EBADF`。RISC-V 与 LoongArch64 构建通过；维护者提供的最新 `log.ans` 显示 musl/glibc `splice07` 均为 `passed 566 failed 0 broken 0`，并结束于 `shutdown!`。详见 `Docs/决赛文档/ai.log` 2026-07-14 条目与 [problem/splice07-mount-context-fd-block.md](./problem/splice07-mount-context-fd-block.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`3a386d0`
 
 #### LTP pipe2_01 flags ABI 丢失修复（7.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` pipe2 flags 失败分析、syscall ABI 参数传递、fd status/descriptor flag 初始化、双架构构建与 RISC-V QEMU 回归
 - **描述**：维护者要求修复新的 `pipe2_01` 失败。AI 确认 `Pipe2` 分发层丢弃了第二个 flags 参数，handler 又总以空 flags 创建 pipe fd，导致 `O_CLOEXEC`、`O_DIRECT`、`O_NONBLOCK` 的 `F_GETFD/F_GETFL` 结果均为零。修复为校验并传播三个 Linux 支持 flag，令 `O_NONBLOCK` 同步启用两个 Pipe 端点，`O_DIRECT` 按 Linux 仅在写端可见。RISC-V 与 LoongArch64 构建通过；RISC-V QEMU 中 musl/glibc `pipe2_01` 均 `passed 7 failed 0 broken 0` 并正常关机。完整 packet-mode framing 仍未实现，详见 `Docs/决赛文档/ai.log` 2026-07-14 条目与 [problem/pipe2-flags-propagation.md](./problem/pipe2-flags-propagation.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`1a9f6fe`
 
 #### LTP open02 O_NOATIME 权限修复（7.14）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：LoongArch64 `log.ans` 的 open02 失败分析、VFS open flags 权限检查、capability 锁边界、双架构构建与 QEMU 回归
 - **描述**：维护者要求修复非特权 `O_NOATIME` 打开成功。AI 确认既有 inode 的 `open_inner()` 路径没有执行 Linux 要求的 owner/`CAP_FOWNER` 检查；`seteuid(nobody)` 会移除 effective capabilities，因此 root 创建文件必须返回 `EPERM`。修复为在构造 `OSFile` 前检查 euid 是否等于 inode owner 或有效 capability 集是否有 `CAP_FOWNER`，并在 inode `fstat()` 前释放 task lock。RISC-V 与 LoongArch64 构建通过；LoongArch64 QEMU 中 musl/glibc `open02` 均 `passed 2 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 2026-07-14 条目与 [problem/open02-noatime-permission.md](./problem/open02-noatime-permission.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`6e9d989`
