@@ -4420,3 +4420,29 @@ AI 对照 LTP `pipe2_01.c` 与 syscall 分发确认，`Syscall::Pipe2` 调用 `s
 ### 验证
 
 执行 `rustfmt --edition 2021 --check os/src/syscall/fs/pipe.rs os/src/syscall/mod.rs`、`make` 和 `timeout 180s make run > /tmp/pipe2_01-fix.log 2>&1`。`make` 通过 RISC-V 与 LoongArch64 构建；RISC-V QEMU 下 musl/glibc `pipe2_01` 均为 `passed 7 failed 0 broken 0 skipped 0 warnings 0`，所有 `O_CLOEXEC`、写端 `O_DIRECT` 和双端 `O_NONBLOCK` 断言均 `TPASS`，最后正常 `shutdown!`。
+
+---
+
+## 2026-07-14: LTP open02 O_NOATIME 权限修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并修复失败。LoongArch64 musl/glibc `open02` 都显示非特权 `O_RDONLY | O_NOATIME` 打开 root 创建文件错误成功。
+
+### 分析与采纳结论
+
+AI 对照 `open02.c`、`sys_openat()` 与 `fs::open_inner()` 确认，系统调用已经正确将 flags 传入 VFS，问题在既有 inode 的打开路径没有处理 `O_NOATIME` 权限。LTP 调用 `seteuid(nobody)` 后，task 的 effective capability 集会被清零；目标文件 owner 是 root，因此既不满足 owner 条件，也没有 `CAP_FOWNER`，Linux 必须返回 `EPERM`。
+
+采纳的修复是在 VFS 的既有 inode 路径增加局部 `check_noatime_permission()`。helper 先在 task 锁内复制 euid 和 `CAP_FOWNER` 位，释放 task 锁后读取 inode stat，避免 task/inode 锁嵌套。只有 `O_NOATIME` 进入检查，启动期无 current task 的内部打开保持不变。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/fs/kernel_fs_ops/open.rs` | 增加 `O_NOATIME` owner/`CAP_FOWNER` 授权检查，并在创建 `OSFile` 前调用 |
+| `Docs/决赛文档/problem/open02-noatime-permission.md` | 记录根因、锁边界和验证结果 |
+| `Docs/决赛文档/problem/README.md`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md` | 补充索引、开发与 AI 使用记录 |
+
+### 验证
+
+执行 `rustfmt --edition 2021 --check os/src/fs/kernel_fs_ops/open.rs`、`make` 和 `timeout 180s make run > /tmp/open02-noatime-fix.log 2>&1`。RISC-V 与 LoongArch64 构建通过；LoongArch64 QEMU 中 musl/glibc `open02` 均为 `passed 2 failed 0 broken 0 skipped 0 warnings 0`，非特权 `O_NOATIME` 断言均返回 `EPERM`，最后正常 `shutdown!`。

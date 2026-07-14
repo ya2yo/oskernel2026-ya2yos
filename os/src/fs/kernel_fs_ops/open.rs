@@ -6,6 +6,7 @@ use crate::utils::SysResult;
 use super::*;
 use alloc::sync::Arc;
 use alloc::{format, string::String};
+use linux_raw_sys::general::CAP_FOWNER;
 use log::{debug, warn};
 
 fn split_parent_child(abs_path: &str) -> Option<(&str, &str)> {
@@ -58,6 +59,33 @@ fn resolve_parent_path(abs_path: &str) -> SysResult<ParentPath> {
 
 fn resolve_create_path(abs_path: &str) -> SysResult<String> {
     resolve_parent_path(abs_path).map(|target| target.create_path)
+}
+
+fn check_noatime_permission(inode: &Arc<dyn Inode>, flags: OpenFlags) -> SysResult {
+    if !flags.contains(OpenFlags::O_NOATIME) {
+        return Ok(());
+    }
+
+    let Some(task) = current_task() else {
+        return Ok(());
+    };
+    let (euid, has_cap_fowner) = {
+        let task_inner = task.inner_lock();
+        let cap = CAP_FOWNER as usize;
+        let word = cap / 32;
+        let bit = cap % 32;
+        (
+            task_inner.effective_uid,
+            word < task_inner.capabilities.effective.len()
+                && (task_inner.capabilities.effective[word] & (1u32 << bit)) != 0,
+        )
+    };
+
+    if euid == inode.fstat().st_uid || has_cap_fowner {
+        Ok(())
+    } else {
+        Err(SysErrNo::EPERM)
+    }
 }
 
 fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult<Arc<dyn Inode>>> {
@@ -304,6 +332,7 @@ fn open_inner(
         if flags.contains(OpenFlags::O_DIRECTORY) && inode.types() != InodeType::Dir {
             return Err(SysErrNo::ENOTDIR);
         }
+        check_noatime_permission(&inode, flags)?;
         let (readable, writable) = flags.read_write();
         // 如果以写模式打开，检查文件的写权限
         if writable {

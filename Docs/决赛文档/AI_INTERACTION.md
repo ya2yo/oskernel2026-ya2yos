@@ -593,3 +593,10 @@
 - **场景**：`log.ans` pipe2 flags 失败分析、syscall ABI 参数传递、fd status/descriptor flag 初始化、双架构构建与 RISC-V QEMU 回归
 - **描述**：维护者要求修复新的 `pipe2_01` 失败。AI 确认 `Pipe2` 分发层丢弃了第二个 flags 参数，handler 又总以空 flags 创建 pipe fd，导致 `O_CLOEXEC`、`O_DIRECT`、`O_NONBLOCK` 的 `F_GETFD/F_GETFL` 结果均为零。修复为校验并传播三个 Linux 支持 flag，令 `O_NONBLOCK` 同步启用两个 Pipe 端点，`O_DIRECT` 按 Linux 仅在写端可见。RISC-V 与 LoongArch64 构建通过；RISC-V QEMU 中 musl/glibc `pipe2_01` 均 `passed 7 failed 0 broken 0` 并正常关机。完整 packet-mode framing 仍未实现，详见 `Docs/决赛文档/ai.log` 2026-07-14 条目与 [problem/pipe2-flags-propagation.md](./problem/pipe2-flags-propagation.md)。
 - **关联 commit**：待提交
+
+#### LTP open02 O_NOATIME 权限修复（7.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：LoongArch64 `log.ans` 的 open02 失败分析、VFS open flags 权限检查、capability 锁边界、双架构构建与 QEMU 回归
+- **描述**：维护者要求修复非特权 `O_NOATIME` 打开成功。AI 确认既有 inode 的 `open_inner()` 路径没有执行 Linux 要求的 owner/`CAP_FOWNER` 检查；`seteuid(nobody)` 会移除 effective capabilities，因此 root 创建文件必须返回 `EPERM`。修复为在构造 `OSFile` 前检查 euid 是否等于 inode owner 或有效 capability 集是否有 `CAP_FOWNER`，并在 inode `fstat()` 前释放 task lock。RISC-V 与 LoongArch64 构建通过；LoongArch64 QEMU 中 musl/glibc `open02` 均 `passed 2 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 2026-07-14 条目与 [problem/open02-noatime-permission.md](./problem/open02-noatime-permission.md)。
+- **关联 commit**：待提交
