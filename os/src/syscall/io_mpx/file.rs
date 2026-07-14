@@ -198,7 +198,6 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         return Ok(0);
     }
 
-    // ---- 阶段 0: 校验 fd、取出文件引用、检查可读 ----
     let (file, is_regular_file) = {
         let task = current_task().unwrap();
         let proc_inner = &task.process;
@@ -215,7 +214,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         }
         let file = file_desc.any();
         if !file.readable() {
-            return Err(SysErrNo::EACCES);
+            return Err(SysErrNo::EBADF);
         }
         (file, file_desc.file().is_ok())
     }; // 锁在此处释放
