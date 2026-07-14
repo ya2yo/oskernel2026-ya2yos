@@ -24,7 +24,7 @@
 )
 #set text(font: ("Libertinus Serif", "WenQuanYi Zen Hei"), size: 10.5pt, fill: ink, lang: "zh")
 #set par(justify: true, leading: 0.55em, first-line-indent: 2em)
-#let chinese-chapter = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
+#let chinese-chapter = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一")
 #set heading(numbering: (..nums) => {
   if nums.len() == 1 {
     [第#chinese-chapter.at(nums.at(0) - 1)章]
@@ -103,14 +103,14 @@ Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作
 
 #include "chapters/01-overview.typ"
 #include "chapters/02-boot-arch.typ"
-#include "chapters/02-process-import.typ"
-#include "chapters/03-memory.typ"
-#include "chapters/04-task-signal.typ"
-#include "chapters/05-syscall-fs.typ"
-#include "chapters/06-network-device.typ"
-#include "chapters/07-engineering.typ"
-#include "chapters/08-boundaries.typ"
-#include "chapters/09-conclusion.typ"
+#include "chapters/03-process-import.typ"
+#include "chapters/04-memory.typ"
+#include "chapters/05-task-signal.typ"
+#include "chapters/06-syscall-fs.typ"
+#include "chapters/07-network-device.typ"
+#include "chapters/08-engineering.typ"
+#include "chapters/09-boundaries.typ"
+#include "chapters/10-conclusion.typ"
 
 #pagebreak()
 = 实现追溯与参考资料

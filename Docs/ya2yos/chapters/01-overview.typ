@@ -139,11 +139,9 @@ Ya2yOS 实现了 200+ 个系统调用，涵盖以下类别（部分代表性系�
 
 - `make run`：在 QEMU 上以默认配置运行 RISC-V64 版本
 - `make run LOG=<level>`：指定日志输出等级（error/warn/info/debug/trace）
-- `make run ACC=1`：启用多核（SMP）启动
 - `make run FEATURES=net`：启用网络功能
 - `make build LOG=trace`：构建带 trace 日志输出的内核
 - `make gdb`：以 GDB 调试模式启动
-- `make justfile`：使用 just 工具进行更灵活的构建配置
 
 内核依赖的主要外部 crate 包括：
 

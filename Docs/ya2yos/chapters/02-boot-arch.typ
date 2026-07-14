@@ -39,4 +39,4 @@
 
 异常路径不能信任用户提供的地址、长度或结构体。所有跨地址空间读写使用内存模块的受检辅助函数，错误以 Linux errno 或适当信号反馈给用户程序。
 
-RISC-V 的特权级、异常和地址转换语义以 RISC-V 特权架构规范为准 #cite(<riscv-privileged>)；LoongArch 的平台差异遵循其基础架构手册 #cite(<loongarch-volume1>)。
+RISC-V 的特权级、异常和地址转换语义以《The RISC-V Instruction Set Manual, Volume II: Privileged Architecture》为准；LoongArch 的平台差异遵循《LoongArch Architecture Reference Manual, Volume 1: Basic Architecture》。完整报告的参考资料统一列于 `main.typ` 末尾。
