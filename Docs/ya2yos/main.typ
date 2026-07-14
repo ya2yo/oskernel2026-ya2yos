@@ -11,7 +11,7 @@
 
 #set document(
   title: "Ya2yOS 内核设计文档",
-  author: "Ya2yOS 项目组",
+  author: "饶晓杰",
   date: doc-date,
   keywords: ("Ya2yOS", "Rust", "kernel", "RISC-V", "LoongArch"),
 )
@@ -55,12 +55,15 @@
 #let source(path) = text(size: 8.5pt, fill: muted)[实现追溯：`#path`]
 
 #align(center)[
+  #image("../img/华南理工大学.png")
   #v(3.6cm)
   #text(font: "New Computer Modern", size: 29pt, weight: "bold")[Ya2yOS]
   #v(0.7cm)
   #text(font: "WenQuanYi Zen Hei", size: 20pt, weight: "bold")[内核设计文档]
   #v(1.5cm)
-  #text(size: 11pt)[面向外部读者的实现级设计报告]
+  #text(size: 20pt)[参赛队员：饶晓杰\ 指导老师：杨磊]
+  #v(0.3cm)
+  #text(size: 11pt)[面向外部人员的实现级设计报告]
   #v(0.5cm)
   #text(font: "Libertinus Serif", size: 10.5pt)[Rust · RISC-V 64 · LoongArch64]
   #v(2.7cm)
