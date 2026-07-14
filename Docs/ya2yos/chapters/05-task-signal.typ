@@ -1,3 +1,5 @@
+#import "../diagrams.typ": relation
+
 = 信号机制
 
 
@@ -7,7 +9,7 @@
 Ya2yOS 实现了 *Linux 兼容的 POSIX 信号机制*，支持 31 种标准信号（`SIGHUP`～`SIGSYS`）和实时信号。信号机制为内核提供了向进程通知异步事件的能力，包括硬件异常（如 SIGSEGV、SIGILL）、进程间通信（SIGUSR1/SIGUSR2、SIGKILL）、终端控制（SIGINT、SIGTSTP）、任务状态变化（SIGCHLD）等场景。
 
 整体结构一览:
-#figure(image("/Docs/uml/04_signal/信号机制核心结构设计类图.png", width: 88%), caption: [DCD])
+#figure(relation(([*SigSet / Pending*\待处理信号与掩码], [*SigTable / SigAction*\线程组处理动作], [*SignalFrame*\用户栈保存与 sigreturn 恢复])), caption: [信号机制核心对象关系。])
 
 
 == 信号数据定义

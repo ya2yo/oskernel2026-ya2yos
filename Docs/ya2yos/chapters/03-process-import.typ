@@ -1,3 +1,5 @@
+#import "../diagrams.typ": flow, relation, sequence
+
 = 进程管理
 
 进程管理子系统是 Ya2yOS 内核的核心模块，代码位于 `os/src/task/` 目录下，包含以下源文件：
@@ -125,7 +127,7 @@ pub struct TaskControlBlockInner {
 - `sigtimedwait_timedout: bool` — `sigtimedwait(2)` 超时标记，由 `handle_sigtimedwait_timer()` 设置并通过 `task.interrupt()` 唤醒 `block_on` 中的 `poll_fn`。
 - `nice: i32` — 调度优先级（-20..19，默认 0）。当前 FIFO 调度器未使用，为未来 CFS 预留。
 
-#figure(image("/Docs/uml/02_proc_mana/进程管理设计类图.png", width: 88%), caption: [进程管理设计类图])
+#figure(relation(([*Process*\资源：MemorySet、FdTable、FSInfo], [*TaskControlBlock*\执行：Context、KernelStack、Status], [*TaskManager / Processor*\调度：ready queue、current task])), caption: [进程管理核心对象关系。])
 
 
 === 任务状态
@@ -145,7 +147,7 @@ TCB 可以处于以下状态之一：
 )
 
 
-#figure(image("/Docs/uml/02_proc_mana/SSD-系统顺序图.png", width: 88%), caption: [SSD-系统顺序图])
+#figure(sequence((( [用户态], [syscall / trap 进入内核], [TaskControlBlock] ), ( [TaskControlBlock], [更新状态并进入 ready/block/exit 路径], [TaskManager] ), ( [TaskManager], [选择下一 ready 任务并切换上下文], [Processor] ))), caption: [任务调度主序列。])
 
 
 == 任务管理器与调度器
@@ -315,10 +317,10 @@ clone(flags, child_stack, parent_tid, child_tid, tls) -> tid
 释放所有父进程锁后，构造子进程 TCB，注册到进程任务列表，配置 TrapContext，处理 `CLONE_CHILD_SETTID`/`CLONE_VFORK` 等需要访问子进程或父进程的后置操作。此时可安全获取任意顺序的锁，因为不再存在"持有父锁 → 拿起子锁"的嵌套。
 这种两阶段模式避免了在持有父进程锁的情况下访问子进程的 `process.meta_lock()` 或 `inner`，消除了经典 fork 实现中因反向锁顺序导致的潜在死锁。从 GRASP 视角看，*Creator 的职责被明确赋予 `clone_process()`*，因为它拥有完成创建所需的全部上下文（flags、stack、tls），并且能够正确管理创建过程中的锁顺序约束。
 
-#figure(image("/Docs/uml/02_proc_mana/交互图-clone流程.png", width: 88%), caption: [交互图-clone流程])
+#figure(sequence((( [用户态], [clone flags、栈、TLS 等参数], [sys_clone] ), ( [sys_clone], [复制或共享 Process 资源，创建 TCB], [TaskManager] ), ( [TaskManager], [分配 tid 并加入 ready queue], [子任务] ))), caption: [clone 创建的关键交互。])
 
 
-#figure(image("/Docs/uml/02_proc_mana/活动图-clone创建流程.png", width: 88%), caption: [活动图-clone创建流程])
+#figure(flow(([*解析并校验 clone flags*], [*按 flags 共享或复制 Process 资源*], [*创建 TaskControlBlock、trap context 与内核栈*], [*分配 tid，登记并放入 ready queue*])), caption: [clone 创建活动流程。])
 
 
 === clone3 系统调用
@@ -345,20 +347,20 @@ clone(flags, child_stack, parent_tid, child_tid, tls) -> tid
 `execve` 的实现是两种 GRASP 模式协同运作的范例。`Process::change_memory_set_and_sigtable()` 通过将 `ProcessInner.memory_set` 替换为新 `Arc<RwLock<MemorySet>>` 实现地址空间的原子切换——这是一个*间接层*操作，旧地址空间的回收完全由 `Arc` 的引用计数自动管理，exec 代码无需显式释放旧页面。同时，地址空间的创建通过 `MemorySetInner::from_elf()` 封装，底层 ELF 解析、段映射、页权限设置的复杂性被*保护*在这一抽象之后。若未来支持新的可执行格式（如脚本文件通过 shebang 间接加载解释器 ELF，该机制已在 `parse_shebang()` 中实现），只需扩展 `from_elf` 或提供替代的构造器，exec 的主流程不变。
 `TCB::exec()` 在替换地址空间之前，必须在旧地址空间中完成 `CLONE_CHILD_CLEARTID` 的清理（向 `clear_child_tid` 写入 0 并调用 `futex_wake_up`），因为 exec 替换地址空间后该虚拟地址将不再有效。这一操作被放在 `exec()` 方法内部——它是唯一同时持有旧地址空间引用、`clear_child_tid` 值和 futex 唤醒知识的实体，自然成为这一清理职责的信息专家。
 
-#figure(image("/Docs/uml/02_proc_mana/交互图-execve流程.png", width: 88%), caption: [交互图-execve流程])
+#figure(sequence((( [用户态], [传入路径、argv、envp], [sys_execve] ), ( [sys_execve], [加载 ELF 并建立新的 MemorySet], [文件系统 / 内存管理] ), ( [sys_execve], [替换进程映像并恢复用户态], [TaskControlBlock] ))), caption: [execve 执行的关键交互。])
 
 
-#figure(image("/Docs/uml/02_proc_mana/活动图-execve流程.png", width: 88%), caption: [活动图-execve流程])
+#figure(flow(([*复制用户路径与参数*], [*打开并解析 ELF / 动态链接器*], [*构造新的地址空间、用户栈和 auxv*], [*原子替换进程映像并返回用户态*])), caption: [execve 活动流程。])
 
 
 == 进程退出：exit 系统调用
 
 
 总览exit过程进行工作:
-#figure(image("/Docs/uml/02_proc_mana/交互图-exit流程.png", width: 88%), caption: [exit_SSD])
+#figure(sequence((( [当前线程], [sys_exit / exit_group], [TaskControlBlock] ), ( [TaskControlBlock], [释放线程资源，更新线程组退出状态], [Process] ), ( [Process], [唤醒父进程等待者并移交调度], [TaskManager] ))), caption: [exit 的关键交互。])
 
 
-#figure(image("/Docs/uml/02_proc_mana/活动图-exit流程.png", width: 88%), caption: [活动图-exit流程])
+#figure(flow(([*记录退出码与终止信号*], [*清理线程资源；exit_group 同时终止兄弟线程*], [*形成 zombie / 可等待状态*], [*切换到下一可运行任务*])), caption: [exit 活动流程。])
 
 
 === exit 和 exit_group
@@ -462,10 +464,10 @@ futex 队列的 key 设计（PA vs token^uaddr）通过 `futex_queue_key()` 函�
 `waitpid` 和 `waitid` 共用同一个子进程扫描流水线，但通过 `WaitPid` 枚举实现 PID 选择策略的多态分发：`WaitPid::Any`（等待任意子进程）、`WaitPid::Pid(usize)`（等待特定 PID）、`WaitPid::Pgid(u32)`（等待同一进程组的子进程）。`apply()` 方法为每种变体提供了统一的过滤接口，使得 `waitpid` 的 `pid` 参数（支持 `>0`、`0`、`-1`、`<-1` 四种语义）和 `waitid` 的 `idtype` 参数（`P_ALL`、`P_PID`、`P_PGID`）通过各自的入口函数映射为 `WaitPid` 枚举后，复用完全相同的子进程扫描逻辑。此外，`WaitOption` bitflags 通过 `WUNTRACED`/`WSTOPPED`/`WCONTINUED`/`WEXITED` 控制事件类型过滤，进一步扩展了策略组合空间。
 `ProcessMeta` 是子进程等待的信息专家——它持有 `children: Vec<Weak<Process>>`（子进程列表）、`child_exit_event: AtomicWaker`（等待通知通道）、`stopped_signal`/`continued_signal`（子进程状态变化事件）、`exit_signal`（用于 `__WALL`/`__WCLONE` 过滤）——所有这些数据都属于"父子进程间状态协调"这一关注领域，自然应由 `ProcessMeta` 统一管理。
 
-#figure(image("/Docs/uml/02_proc_mana/交互图-wait4流程.png", width: 88%), caption: [交互图-wait4流程])
+#figure(sequence((( [父进程], [wait4 / waitid 请求], [sys_wait] ), ( [sys_wait], [检查子进程状态，必要时阻塞], [Process] ), ( [已退出子进程], [返回 pid 与 wait status，回收资源], [父进程] ))), caption: [wait4 的关键交互。])
 
 
-#figure(image("/Docs/uml/02_proc_mana/活动图-wait4流程.png", width: 88%), caption: [活动图-wait4流程])
+#figure(flow(([*按 pid / pgid 匹配子进程*], [*若有可报告状态则生成 wait status*], [*若仍有子进程则阻塞等待唤醒*], [*回收 zombie 并向用户返回结果*])), caption: [wait4 活动流程。])
 
 
 == PID/TID 分配、内核栈与系统信息
@@ -607,7 +609,7 @@ pub fn add_initproc() {
 
 initproc 作为孤儿进程的最终回收者，是进程关系清理的信息专家。`Process::exit_and_reparent()` 首先收集当前进程的所有孤儿 `children`，然后获取 pid=1 的 `initproc`，将孤儿的 `parent_pid` 修改为 1，并将孤儿链接到 initproc 的 `children` 列表中，最后向 initproc 发送 `SIGCHLD` 唤醒其 waitpid 循环。此逻辑被放在 `Process::exit_and_reparent()` 中而非分散在 exit 路径中，遵循了信息专家原则——`Process` 拥有 children 列表和修改 parent_pid 的权限，自然应承担孤儿转移的职责。
 
-#figure(image("/Docs/uml/02_proc_mana/操作契约.png", width: 88%), caption: [操作契约])
+#figure(relation(([*前置条件*\参数、用户地址和 flags 已校验], [*操作*\任务/进程状态与资源变更], [*后置条件*\errno 或 Linux ABI 可观察结果])), caption: [任务管理操作契约。])
 
 
 == 调度策略与未来展望

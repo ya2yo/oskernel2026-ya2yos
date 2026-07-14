@@ -1,3 +1,5 @@
+#import "../diagrams.typ": flow, relation, sequence
+
 = 内存管理
 
 
@@ -20,7 +22,7 @@
 )
 
 
-#figure(image("/Docs/uml/03_mm_mana/内存管理核心结构设计类图.png", width: 88%), caption: [内存管理设计类图])
+#figure(relation(([*MemorySet*\页表与 VMA 集合], [*MapArea*\范围、权限、映射类型], [*FrameTracker / CMA*\物理帧生命周期])), caption: [内存管理核心对象关系。])
 
 
 ---
@@ -612,7 +614,7 @@ pub fn mmap(&mut self, addr, len, map_perm, flags, file, off) -> usize {
 
 *`MAP_STACK` 标志处理*：带有 `MAP_STACK` 的映射会被标记为 `MapAreaType::Stack` 而非 `MapAreaType::Mmap`，使其在缺页处理时走栈/堆的分配路径（直接分配清零帧），而非 mmap 的复杂路径（GROUP_SHARE 查询/文件读取等）。
 
-#figure(image("/Docs/uml/03_mm_mana/mmap系统顺序图.png", width: 88%), caption: [mmap])
+#figure(sequence((( [用户态], [mmap(addr, len, prot, flags, fd)], [sys_mmap] ), ( [sys_mmap], [校验参数并委托 VMA 管理], [MemorySet] ), ( [MemorySet], [登记 MapArea；首访时按需建立页面], [页表 / 文件页] ))), caption: [mmap 的关键交互。])
 
 
 === munmap 与写回
@@ -627,7 +629,7 @@ pub fn mmap(&mut self, addr, len, map_perm, flags, file, off) -> usize {
 5. 若整个 area 被覆盖：从 `areas` 移除，从 `total_mmap_size` 减去其大小；若仅部分覆盖：收缩 area 的 `vpn_range`，调整 `total_mmap_size`；
 6. 执行 `tlb_invalidate()`。
 
-#figure(image("/Docs/uml/03_mm_mana/munmap活动图.png", width: 88%), caption: [munmap])
+#figure(flow(([*定位与目标区间相交的 VMA*], [*拆分保留区间，解除目标页映射*], [*必要时写回共享文件页*], [*刷新 TLB 并回收无人引用帧*])), caption: [munmap 活动流程。])
 
 
 === mprotect 与区域拆分
@@ -642,7 +644,7 @@ pub fn mmap(&mut self, addr, len, map_perm, flags, file, off) -> usize {
 
 拆分完成后，遍历 `[start_vpn, end_vpn)` 范围内的每个 VPN，调用 `page_table.handle_mprotect` 修改硬件页表项的权限位（位或操作），最后执行 `tlb_invalidate()`。注意当前 RISC-V 实现使用 `find_pte_create`（会为不存在的 PTE 创建中间页），而 LoongArch 使用 `find_valid_pte`（仅修改已有映射），行为存在差异。
 
-#figure(image("/Docs/uml/03_mm_mana/mprotect活动图.png", width: 88%), caption: [mprotect])
+#figure(flow(([*检查范围、对齐与权限组合*], [*按边界拆分 MapArea*], [*更新 VMA 与 PTE 权限位*], [*刷新 TLB，后续访问按新权限执行*])), caption: [mprotect 活动流程。])
 
 
 === mremap
@@ -806,7 +808,7 @@ scause 匹配:
 
 所有缺页处理函数（`map_one`、`mmap_write_page_fault` 等）在物理内存不足时返回 `false`。`trap_handler` 检测到 `false` 后发送 `SIGSEGV` 信号给进程。信号处理机制可能会调用用户注册的 SIGSEGV 处理器，或执行默认动作终止进程（exit code = 128 + 11）。
 
-#figure(image("/Docs/uml/03_mm_mana/缺页处理交互图.png", width: 88%), caption: [缺页异常处理])
+#figure(sequence((( [CPU / trap], [报告访问地址与访问类型], [MemorySet] ), ( [MemorySet], [匹配 VMA：懒分配、文件页或 COW], [页表 / CMA] ), ( [页表 / CMA], [建立映射或返回失败], [trap handler] ))), caption: [缺页异常处理的关键交互。])
 
 
 ---

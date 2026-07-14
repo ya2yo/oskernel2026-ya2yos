@@ -1,3 +1,5 @@
+#import "../diagrams.typ": flow
+
 = 概述
 
 == 项目背景
@@ -161,4 +163,7 @@ Ya2yOS 实现了 200+ 个系统调用，涵盖以下类别（部分代表性系�
 
 
 以下是内核各个模块的依赖关系：
-#figure(image("/Docs/uml/01_overview/Ya2yOS领域模型-模块依赖关系.png", width: 88%), caption: [各模块的依赖关系])
+#figure(
+  flow(([*用户态：应用、libc、测例*], [*系统调用与 trap：ABI 入口*], [*内核服务：任务、内存、信号、VFS、网络*], [*架构与驱动：页表、时钟、VirtIO*])),
+  caption: [Ya2yOS 模块依赖关系：上层经 ABI 使用内核服务，内核服务由架构和驱动支撑。],
+)

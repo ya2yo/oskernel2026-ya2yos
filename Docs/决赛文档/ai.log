@@ -4332,3 +4332,15 @@ AI 检查后确认本机没有 `pandoc`，因此实现受控的 Markdown→Typst
 ### 验证
 
 执行 `typst compile --root . --pdf-standard a-2u Docs/ya2yos/typst/main.typ Docs/ya2yos/typst/ya2yos-kernel-design.pdf` 成功，输出 PDF 1.7、82 页、5.9 MiB。初次 PDF/A 检查发现原 Markdown 的 `✅/❌` 不被可复现字体嵌入，已等价改为“是/否”。使用 PNG 导出抽查第 20 页的 clone 顺序图，图像和图注正常。`git diff --check` 通过；未执行内核构建或 QEMU，因为仅变更文档。
+
+---
+
+## 2026-07-14: 使用 Typst 原生图形替换已删除 UML 图片
+
+### 用户需求
+
+用户删除 UML 图后，要求使用 Typst 原生画图工具填充设计文档中的图片。
+
+### 修改内容与验证
+
+新增 `Docs/ya2yos/diagrams.typ`，以 Typst 的 `block`、`stack` 和 `table` 定义原生流程图、对象关系图和交互图组件；替换模块依赖图、进程管理 11 张图、内存管理 6 张图及信号机制对象关系图，共 19 个 `image()` 引用。图形以可编辑的结构化文本表达关键对象和调用路径，不再访问 `Docs/uml/`。`rg` 确认没有残留 `image(...)` 或 `/Docs/uml/` 引用；PDF/A-2u 编译成功。未运行内核构建或 QEMU。
