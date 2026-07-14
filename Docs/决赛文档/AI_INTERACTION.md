@@ -600,3 +600,10 @@
 - **场景**：LoongArch64 `log.ans` 的 open02 失败分析、VFS open flags 权限检查、capability 锁边界、双架构构建与 QEMU 回归
 - **描述**：维护者要求修复非特权 `O_NOATIME` 打开成功。AI 确认既有 inode 的 `open_inner()` 路径没有执行 Linux 要求的 owner/`CAP_FOWNER` 检查；`seteuid(nobody)` 会移除 effective capabilities，因此 root 创建文件必须返回 `EPERM`。修复为在构造 `OSFile` 前检查 euid 是否等于 inode owner 或有效 capability 集是否有 `CAP_FOWNER`，并在 inode `fstat()` 前释放 task lock。RISC-V 与 LoongArch64 构建通过；LoongArch64 QEMU 中 musl/glibc `open02` 均 `passed 2 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 2026-07-14 条目与 [problem/open02-noatime-permission.md](./problem/open02-noatime-permission.md)。
 - **关联 commit**：`6e9d989`
+
+#### LTP open11 目录 flags 语义修复（7.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、`open(2)` 目录与 `O_PATH` flag 语义校准、双架构构建与 QEMU 回归尝试、文档完善
+- **描述**：维护者要求分析 `open11` 的三个失败并按 Linux 真实语义完善 `open_inner()`。AI 确认 `O_WRONLY` 是 access mode 值而非 `O_RDWR` 的子 flag，原实现只拒绝 `O_RDWR` 目录；同时遗漏了已有目录上的 `O_CREAT`。修复改由 `read_write()` 判断真实写意图，并让非 `O_PATH` 的 `O_CREAT/O_TRUNC` 目录返回 `EISDIR`；`O_PATH` 不再触发创建、截断或 `O_NOATIME` 权限检查。`make` 的 RISC-V/LoongArch64 构建均通过；当前 RISC-V QEMU 的两个 `open11` 二进制在断言前 `IllegalInstruction` 退出，LoongArch64 QEMU 因沙箱 `/var/tmp` 只读未启动，运行回归待可用环境复测。详见 [problem/open11-directory-open-flags.md](./problem/open11-directory-open-flags.md)。
+- **关联 commit**：待提交

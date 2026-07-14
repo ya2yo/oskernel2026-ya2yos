@@ -4446,3 +4446,30 @@ AI 对照 `open02.c`、`sys_openat()` 与 `fs::open_inner()` 确认，系统调�
 ### 验证
 
 执行 `rustfmt --edition 2021 --check os/src/fs/kernel_fs_ops/open.rs`、`make` 和 `timeout 180s make run > /tmp/open02-noatime-fix.log 2>&1`。RISC-V 与 LoongArch64 构建通过；LoongArch64 QEMU 中 musl/glibc `open02` 均为 `passed 2 failed 0 broken 0 skipped 0 warnings 0`，非特权 `O_NOATIME` 断言均返回 `EPERM`，最后正常 `shutdown!`。
+
+---
+
+## 2026-07-14: LTP open11 目录打开 flags 语义修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 中 `open11` 的三个失败，并按 Linux 真实语义完善 `open_inner()` 在找到 inode 后的判断逻辑。
+
+### 分析与采纳结论
+
+AI 确认 musl/glibc 都是 `passed 25 failed 3 broken 0`，失败分别为目录（包括符号链接解析后的目录）以 `O_WRONLY` 和 `O_RDONLY | O_CREAT` 打开错误成功。根因是原实现仅用 `flags.contains(O_RDWR)` 拒绝目录；access mode 是枚举值，`O_WRONLY=1` 不包含 `O_RDWR=2`，而既有目录的 `O_CREAT` 也没有单独拒绝。
+
+不能将所有相关 flag 直接按位相交处理，因为 Linux `O_PATH` 是路径句柄模式，除 `O_CLOEXEC`、`O_DIRECTORY`、`O_NOFOLLOW` 外的 open flags 均应忽略。采纳方案为：以 `read_write()` 的 writable 结果代表真实写 access mode；目录遇到非 `O_PATH` 的 `O_CREAT` 或 `O_TRUNC` 时返回 `EISDIR`；`O_PATH` 不触发创建、排他创建、截断与 `O_NOATIME` 权限检查。`O_DIRECTORY` 对非目录的 `ENOTDIR` 检查以及 `O_TMPFILE`、`O_CREAT | O_EXCL` 的专用路径保持不变。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/fs/kernel_fs_ops/open.rs` | 增加 `O_PATH` 的有效创建语义，按真实写意图和既有目录上的 `O_CREAT` 返回 `EISDIR`，避免 `O_PATH` 触发截断和 atime 权限检查。 |
+| `os/src/syscall/fs/ctl.rs` | `sys_symlinkat()` 打开父目录改为只读目录 fd，实际创建权限仍由目录操作检查。 |
+| `Docs/决赛文档/problem/open11-directory-open-flags.md` | 记录 LTP 失败、根因、Linux 语义边界与验证状态。 |
+| `Docs/决赛文档/problem/README.md`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md` | 补充索引、开发与 AI 使用记录。 |
+
+### 验证
+
+执行 `cargo fmt --manifest-path os/Cargo.toml`、`git diff --check` 和 `make`。`make` 已完成 RISC-V/LoongArch64 构建，只有既有 vendored `smoltcp` warning。RISC-V `make run` 启动到用户态后，musl/glibc `open11` 均在 LTP 断言前以 `IllegalInstruction` 退出，不能作为本修复的有效回归结果；LoongArch64 `make TARGET_ARCH=loongarch64 run` 因沙箱 `/var/tmp` 只读而未启动 QEMU。需在可用 QEMU 环境复跑 `open11`。

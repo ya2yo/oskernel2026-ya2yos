@@ -10,7 +10,7 @@
 //! - [`sync`]: Wrap a static data structure inside it so that we are able to access it without any `unsafe`.
 //! - [`fs`]: Separate user from file system with some structures
 //! - [`net`]: Network from StarryOS
-//! - [`signal`]: Handle signals' transmission 
+//! - [`signal`]: Handle signals' transmission
 //!
 //! The operating system also starts in this module. Kernel code starts
 //! executing from `entry.asm`, after which [`rust_main()`] is called to

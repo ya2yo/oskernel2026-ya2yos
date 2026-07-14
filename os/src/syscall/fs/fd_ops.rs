@@ -8,8 +8,8 @@ use crate::fs::{
     FsIndex, OpenFlags, PagemapFile, TmpFile, FAN_OPEN,
 };
 use crate::mm::{copy_from_user, if_bad_address, translate::read_user_cstr};
-use crate::syscall::Syscall;
 use crate::syscall::fs::has_too_long_path_component;
+use crate::syscall::Syscall;
 use crate::task::{block_on, current_task, interruptible, Process};
 use crate::utils::{SysErrNo, SyscallRet};
 use alloc::{
@@ -181,7 +181,7 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     let fs_info = proc_inner.fs_info.clone();
     let path = read_user_cstr(&*memory_set, path)?;
     if has_too_long_path_component(&path) {
-        return Err(SysErrNo::ENAMETOOLONG)
+        return Err(SysErrNo::ENAMETOOLONG);
     }
     drop(memory_set);
 

@@ -321,7 +321,13 @@ fn open_inner(
         }
     }
 
-    if flags.contains(OpenFlags::O_CREATE) && flags.contains(OpenFlags::O_EXCL) {
+    // O_PATH creates a path-only descriptor. Linux ignores creation, truncation,
+    // access-mode, and atime-related flags in this mode.
+    let path_only = flags.contains(OpenFlags::O_PATH);
+    let create = !path_only && flags.contains(OpenFlags::O_CREATE);
+    let create_exclusive = create && flags.contains(OpenFlags::O_EXCL);
+
+    if create_exclusive {
         return create_file(abs_path, flags, mode);
     }
 
@@ -362,18 +368,22 @@ fn open_inner(
         }
     }
     if let Some(inode) = inode {
-        if flags.contains(OpenFlags::O_CREATE) && flags.contains(OpenFlags::O_EXCL) {
+        if create_exclusive {
             return Err(SysErrNo::EEXIST);
         }
         if flags.contains(OpenFlags::O_DIRECTORY) && inode.types() != InodeType::Dir {
             return Err(SysErrNo::ENOTDIR);
         }
-        if flags.contains(OpenFlags::O_RDWR) && inode.types() == InodeType::Dir {
-            return Err(SysErrNo::EISDIR)
+
+        let (readable, writable) = flags.read_write();
+        let directory_write_intent = writable || (!path_only && flags.contains(OpenFlags::O_TRUNC));
+        if inode.types().is_dir() && (directory_write_intent || create) {
+            return Err(SysErrNo::EISDIR);
         }
 
-        check_noatime_permission(&inode, flags)?;
-        let (readable, writable) = flags.read_write();
+        if !path_only {
+            check_noatime_permission(&inode, flags)?;
+        }
         // 如果以写模式打开，检查文件的写权限
         if writable {
             if let Some(task) = current_task() {
@@ -427,14 +437,14 @@ fn open_inner(
             flags.contains(OpenFlags::O_APPEND),
             inode,
         );
-        if flags.contains(OpenFlags::O_TRUNC) {
+        if !path_only && flags.contains(OpenFlags::O_TRUNC) {
             osfile.inode.truncate(0)?;
         }
         return Ok(FileClass::File(Arc::new(osfile)));
     }
 
     // 节点不存在
-    if flags.contains(OpenFlags::O_CREATE) {
+    if create {
         debug!(
             "[open] file not found, calling create_file for {}",
             abs_path

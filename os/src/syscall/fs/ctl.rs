@@ -149,12 +149,12 @@ fn check_hard_link_limit(inode: &Arc<dyn Inode>) -> SyscallRet {
 pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     debug!("[sys_ioctl] fd={}, cmd={}, arg={}", fd, cmd, arg);
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
+    let proc = &task.process;
     if cmd as u32 == LOOP_SET_FD {
-        proc_inner.fd_table.get(arg)?;
+        proc.fd_table.get(arg)?;
     }
-    let file = proc_inner.fd_table.get(fd)?.any();
-    let memory_set = proc_inner.memory_set_arc();
+    let file = proc.fd_table.get(fd)?.any();
+    let memory_set = proc.memory_set_arc();
     file.ioctl(cmd as u32, arg, &memory_set)
 }
 
@@ -231,8 +231,8 @@ pub fn sys_mknodat(dirfd: i32, path: usize, mode: usize, _dev: usize) -> Syscall
 /// 参考 https://man7.org/linux/man-pages/man2/mkdirat.2.html
 pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
     let path = read_user_cstr(&memory_set, path)?;
     if path.is_empty() {
         return Err(SysErrNo::ENOENT);
@@ -243,10 +243,10 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     //     dirfd, path, mode
     // );
 
-    if dirfd != -100 && dirfd as usize >= proc_inner.fd_table.len() {
+    if dirfd != -100 && dirfd as usize >= proc.fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
-    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    let abs_path = proc.get_abs_path(dirfd, &path)?;
     if abs_path.bytes().all(|b| b == b'/') {
         return Err(SysErrNo::EEXIST);
     }
@@ -302,8 +302,8 @@ pub fn sys_linkat(
     flags: u32,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
 
     let old_path_str = read_user_cstr(&memory_set, oldpath)?;
     let new_path_str = read_user_cstr(&memory_set, newpath)?;
@@ -317,7 +317,7 @@ pub fn sys_linkat(
 
     // 处理 AT_EMPTY_PATH：若 oldpath 为空字符串，则使用 oldfd 对应的已打开文件
     if flags & AT_EMPTY_PATH as u32 != 0 && old_path_str.is_empty() {
-        let new_abs_path = proc_inner.get_abs_path(newfd, &new_path_str)?;
+        let new_abs_path = proc.get_abs_path(newfd, &new_path_str)?;
         check_link_mounts(&new_abs_path, &new_abs_path)?;
         check_parent_permission(parent_path_of(&new_abs_path)?, true)?;
         // 新路径不能已存在
@@ -325,7 +325,7 @@ pub fn sys_linkat(
             return Err(SysErrNo::EEXIST);
         }
         // 通过 oldfd 获取原始 inode
-        let old_file = proc_inner.fd_table.get(oldfd as usize)?.file()?;
+        let old_file = proc.fd_table.get(oldfd as usize)?.file()?;
         let old_path = old_file.inode.path();
         check_hard_link_limit(&old_file.inode)?;
         old_file.inode.hard_link(&old_path, &new_abs_path)?;
@@ -335,8 +335,8 @@ pub fn sys_linkat(
     }
 
     // 常规路径解析
-    let old_abs_path = proc_inner.get_abs_path(oldfd, &old_path_str)?;
-    let new_abs_path = proc_inner.get_abs_path(newfd, &new_path_str)?;
+    let old_abs_path = proc.get_abs_path(oldfd, &old_path_str)?;
+    let new_abs_path = proc.get_abs_path(newfd, &new_path_str)?;
     if old_path_str.len() >= MAX_PATH_LEN || has_too_long_path_component(&old_path_str) {
         if has_self_referential_symlink_prefix(&old_abs_path) {
             return Err(SysErrNo::ELOOP);
@@ -354,7 +354,7 @@ pub fn sys_linkat(
     // have a full procfs link implementation here, so materialize the current
     // fd contents into the destination path.
     if let Some(fd) = parse_proc_self_fd(&old_abs_path) {
-        let src = proc_inner.fd_table.get(fd)?.any();
+        let src = proc.fd_table.get(fd)?.any();
         // Creating the destination goes through the regular VFS path and may
         // re-enter process state, so release syscall-local process locks first.
         drop(memory_set);
@@ -423,11 +423,11 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
 
     let path = read_user_cstr(&memory_set, path)?;
-    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    let abs_path = proc.get_abs_path(dirfd, &path)?;
     // TODO(ZMY) 支持符号链接,socket,FIFO,device
     // 如果是File但尚有对应的fd未关闭,等到close时unlink
     // 如果是符号链接,直接移除
@@ -457,7 +457,7 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
         return Ok(0);
     }
 
-    let locked_fs_info = &proc_inner.fs_info;
+    let locked_fs_info = &proc.fs_info;
 
     // debug!(
     //     "[sys_unlinkat] path={},link_cnt={},has_activate_fd={}",
@@ -499,8 +499,8 @@ pub fn sys_utimensat(
         return Err(SysErrNo::EBADF);
     }
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
     let path = if !path.is_null() {
         read_user_cstr(&memory_set, path)?
     } else {
@@ -546,7 +546,7 @@ pub fn sys_utimensat(
         };
     }
 
-    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    let abs_path = proc.get_abs_path(dirfd, &path)?;
     let osfile = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     osfile.inode.set_timestamps(atime_sec, mtime_sec, None)?;
     return Ok(0);
@@ -568,8 +568,8 @@ pub fn sys_sync() -> SyscallRet {
 /// 参考 https://www.man7.org/linux/man-pages/man2/symlink.2.html
 pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = Arc::clone(&task.process);
+    let memory_set = proc.memory_set_arc();
     let target_path = read_user_cstr(&memory_set, target)?;
     let link_path = read_user_cstr(&memory_set, linkpath)?;
 
@@ -578,7 +578,7 @@ pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) ->
     //     target_path, newdirfd, link_path
     // );
 
-    let abs_link_path = proc_inner.get_abs_path(newdirfd, &link_path)?;
+    let abs_link_path = proc.get_abs_path(newdirfd, &link_path)?;
     //检查linkpath是否已存在
     if let Ok(_) = open(&abs_link_path, OpenFlags::empty(), NONE_MODE) {
         return Err(SysErrNo::EEXIST);
@@ -587,7 +587,7 @@ pub fn sys_symlinkat(target: *const u8, newdirfd: isize, linkpath: *const u8) ->
     let (abs_link_dir, _) = rsplit_once(abs_link_path.as_str(), "/");
     let new_file = open(
         &abs_link_dir,
-        OpenFlags::O_DIRECTORY | OpenFlags::O_RDWR,
+        OpenFlags::O_DIRECTORY | OpenFlags::O_RDONLY,
         NONE_MODE,
     )?
     .file()?;
@@ -612,14 +612,14 @@ pub fn sys_renameat2(
     _flags: u32,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
     let oldpath = read_user_cstr(&memory_set, oldpath)?;
     let newpath = read_user_cstr(&memory_set, newpath)?;
 
-    let old_abs_path = proc_inner.get_abs_path(olddirfd, &oldpath)?;
+    let old_abs_path = proc.get_abs_path(olddirfd, &oldpath)?;
     let osfile = open(&old_abs_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
-    let new_abs_path = proc_inner.get_abs_path(newdirfd, &newpath)?;
+    let new_abs_path = proc.get_abs_path(newdirfd, &newpath)?;
     let ret = osfile.inode.rename(&old_abs_path, &new_abs_path);
     // rename 成功后，旧路径的文件已移到新路径，需要更新/清理 FsIndex 缓存，
     // 否则后续对旧路径的访问会命中缓存中的过期 inode，导致 fstat 等操作
@@ -780,8 +780,8 @@ pub fn sys_fchownat(
     }
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
     let path = read_user_cstr(&memory_set, pathname)?;
     if path.len() > MAX_PATH_LEN || has_too_long_path_component(&path) {
         return Err(SysErrNo::ENAMETOOLONG);
@@ -794,7 +794,7 @@ pub fn sys_fchownat(
         if dirfd < 0 {
             return Err(SysErrNo::EBADF);
         }
-        let fd_desc = proc_inner.fd_table.get(dirfd as usize)?;
+        let fd_desc = proc.fd_table.get(dirfd as usize)?;
         // fchown(fd, ...) operates on file contents; an O_PATH fd is only a path handle.
         if fd_desc.is_path_only() {
             return Err(SysErrNo::EBADF);
@@ -803,9 +803,9 @@ pub fn sys_fchownat(
         let path = file.inode.path();
         (file.inode.clone(), Some(path))
     } else {
-        let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+        let abs_path = proc.get_abs_path(dirfd, &path)?;
         if let Some(fd) = parse_proc_self_fd(&abs_path) {
-            let fd_desc = proc_inner.fd_table.get(fd)?;
+            let fd_desc = proc.fd_table.get(fd)?;
             // musl may implement fchown(fd, ...) through /proc/self/fd/<fd>.
             // Preserve fd semantics so O_PATH still fails with EBADF.
             if fd_desc.is_path_only() {
@@ -836,8 +836,8 @@ pub fn sys_fchownat(
 /// 参考 https://www.man7.org/linux/man-pages/man2/fchown.2.html
 pub fn sys_fchown(fd: usize, owner: usize, group: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let fd_desc = proc_inner.fd_table.get(fd)?;
+    let proc = &task.process;
+    let fd_desc = proc.fd_table.get(fd)?;
     // fchown(2) 修改已打开文件；O_PATH fd 只是路径句柄，Linux 返回 EBADF。
     if fd_desc.is_path_only() {
         return Err(SysErrNo::EBADF);
@@ -853,15 +853,15 @@ pub fn sys_fchown(fd: usize, owner: usize, group: usize) -> SyscallRet {
 /// 参考 https://www.man7.org/linux/man-pages/man2/fchmod.2.html
 pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
+    let proc = &task.process;
 
-    if (fd as isize) < 0 && fd >= proc_inner.fd_table.len() {
+    if (fd as isize) < 0 && fd >= proc.fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
 
     // debug!("[sys_fchmod] fd is {},new mode is {:o}", fd, mode);
 
-    let fd_desc = proc_inner.fd_table.get(fd)?;
+    let fd_desc = proc.fd_table.get(fd)?;
     // O_PATH fd 不代表已打开文件，fchmod(2) 需要返回 EBADF。
     if fd_desc.is_path_only() {
         return Err(SysErrNo::EBADF);
@@ -877,14 +877,14 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
 /// 参考 https://www.man7.org/linux/man-pages/man2/fchmodat.2.html
 pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
 
     if (flags as isize) < 0 {
         return Err(SysErrNo::EINVAL);
     }
 
-    if dirfd != -100 && dirfd as usize >= proc_inner.fd_table.len() {
+    if dirfd != -100 && dirfd as usize >= proc.fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
 
@@ -906,7 +906,7 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
         if dirfd < 0 {
             return Err(SysErrNo::EBADF);
         }
-        let fd_desc = proc_inner.fd_table.get(dirfd as usize)?;
+        let fd_desc = proc.fd_table.get(dirfd as usize)?;
         // fchmodat(fd, "", ..., AT_EMPTY_PATH) 与 fchmod(fd, ...) 一样拒绝 O_PATH。
         if fd_desc.is_path_only() {
             return Err(SysErrNo::EBADF);
@@ -916,9 +916,9 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
         return chmod_inode(file.inode.clone(), Some(&path), mode);
     }
 
-    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    let abs_path = proc.get_abs_path(dirfd, &path)?;
     if let Some(fd) = parse_proc_self_fd(&abs_path) {
-        let fd_desc = proc_inner.fd_table.get(fd)?;
+        let fd_desc = proc.fd_table.get(fd)?;
         // musl may implement fchmod(fd, ...) through /proc/self/fd/<fd>.
         // Preserve fd semantics so O_PATH still fails with EBADF.
         if fd_desc.is_path_only() {
