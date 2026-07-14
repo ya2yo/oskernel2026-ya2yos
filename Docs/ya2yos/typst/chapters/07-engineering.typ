@@ -1,45 +1,383 @@
-= 构建、验证与维护约定
+= 文件系统
 
-== 构建入口
 
-仓库根目录 Makefile 负责选择架构、准备 Cargo 配置和启动 QEMU。架构敏感的验证应显式指定目标：
+== 概述
 
-```sh
-make TARGET_ARCH=riscv64
-make TARGET_ARCH=loongarch64
-make log TARGET_ARCH=loongarch64
-make run TARGET_ARCH=loongarch64
+
+Ya2yOS 的文件系统以 VFS 为统一抽象层，将系统调用、普通文件、设备文件、管道、套接字、epoll/eventfd/inotify、消息队列等对象统一纳入文件描述符模型。底层磁盘文件系统采用 `lwext4_rust` 绑定的 lwext4，在 VirtIO 块设备之上提供 ext4 读写能力。
+
+当前文件系统的主要组成如下：
+
+- `vfs.rs` 定义 `SuperBlock`、`Inode`、`File` 三类核心 trait；
+- `ext4_lw/` 将 lwext4 封装为 `Ext4Inode` 与全局 superblock；
+- `kernel_fs_ops/` 实现 `open`、初始目录/文件创建、`/proc/<pid>` 文件刷新和动态链接路径映射；
+- `files/` 存放各种 `File` 实现，包括普通文件、管道、设备文件、loop 设备、epoll、eventfd、inotify、mqueue、挂载上下文 fd 等；
+- `fstruct.rs` 管理进程级文件描述符表；
+- `fs_info.rs` 维护进程的当前目录、可执行文件路径、fd 到路径映射和 `umask`；
+- `mount.rs` 维护简化的挂载记录，并同步 `/proc/mounts`。
+
+== VFS 抽象
+
+
+=== SuperBlock
+
+
+`SuperBlock` 表示一个文件系统实例的入口。当前实现主要由 ext4 superblock 提供：
+
+```rust
+pub trait SuperBlock: Send + Sync {
+    fn root_inode(&self) -> Arc<dyn Inode>;
+    fn sync(&self);
+    fn fs_stat(&self) -> Statfs;
+    fn ls(&self);
+}
 ```
 
-`make run` 会创建临时 `disk.img` 链接并在退出后清理。日志型验证关注 `TPASS`、`TFAIL`、`TBROK`、panic 和测试 summary，而不是仅凭测试包装器的退出行判断。
+系统通过 `superblock_root_inode()` 获取根 inode，通过 `superblock_fs_stat()` 服务 `statfs/fstatfs`，通过 `superblock_sync()` 将缓存写回磁盘。
 
-== 推荐验证矩阵
+=== Inode
 
-#table(
-  columns: (1.3fr, 1fr, 1.7fr),
-  table.header([*变更范围*], [*最低检查*], [*进一步检查*]),
-  [仅 Typst/文档], [`typst compile`], [链接、目录、PDF 视觉检查],
-  [架构无关内核逻辑], [默认 `make`], [两架构构建、对应 `make run` 回归],
-  [内存/信号/调度/VFS/网络], [两架构 `make`], [目标测例 `make log` 或 QEMU 运行],
-  [驱动或内存布局], [对应架构构建], [QEMU 启动、设备探测和真实 I/O 路径],
-)
 
-== 并发与错误处理
+`Inode` 表示目录树中的文件系统节点。它负责路径查找、目录项创建、普通读写、元数据和链接操作：
 
-内核高风险路径的共同原则如下：
-
-- 获取资源 `Arc` 后尽快释放外层 slot/table 锁；禁止持锁访问用户内存、文件系统、网络、信号投递或调度。
-- 多进程/多线程同时加锁时按 pid/tid 稳定排序，优先复制标量或克隆 `Arc` 而非长时间双持锁。
-- 用户指针均经 `copy_from_user` / `copy_to_user`；先检查空指针、长度和溢出。
-- 用 `Result`/errno 保留失败原因。只有 Linux 语义确实要求时才能把内部错误转换为成功或短读写。
-- 新增行为应在 `Docs/决赛文档/problem/` 记录非平凡问题的背景、根因、修复和验证；AI 协助的实质性修改同步更新 AI 记录。
-
-== 文档工程
-
-本目录中的 `main.typ` 是唯一的 PDF 入口，章节位于 `chapters/`。生成物 `ya2yos-kernel-design.pdf` 被忽略，不提交二进制；从本目录执行：
-
-```sh
-typst compile main.typ ya2yos-kernel-design.pdf
+```rust
+pub trait Inode: Send + Sync {
+    fn size(&self) -> usize;
+    fn types(&self) -> InodeType;
+    fn fstat(&self) -> Kstat;
+    fn create(&self, path: &str, ty: InodeType) -> Result<Arc<dyn Inode>, SysErrNo>;
+    fn find(&self, path: &str, flags: OpenFlags, loop_times: usize)
+        -> Result<Arc<dyn Inode>, SysErrNo>;
+    fn read_at(&self, off: usize, buf: &mut [u8]) -> SyscallRet;
+    fn write_at(&self, off: usize, buf: &[u8]) -> SyscallRet;
+    fn read_dentry(&self, off: usize, len: usize) -> Result<(Vec<u8>, isize), SysErrNo>;
+    fn truncate(&self, size: usize) -> SyscallRet;
+    fn sync(&self);
+    fn set_timestamps(&self, atime: Option<u64>, mtime: Option<u64>,
+                      ctime: Option<u64>) -> SyscallRet;
+    fn link_cnt(&self) -> SyscallRet;
+    fn unlink(&self, path: &str) -> SyscallRet;
+    fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SyscallRet;
+    fn sym_link(&self, target: &str, path: &str) -> SyscallRet;
+    fn rename(&self, path: &str, new_path: &str) -> SyscallRet;
+    fn hard_link(&self, old_path: &str, new_path: &str) -> SyscallRet;
+    fn read_all(&self) -> Result<Vec<u8>, SysErrNo>;
+    fn path(&self) -> String;
+    fn fmode(&self) -> Result<u32, SysErrNo>;
+    fn fmode_set(&self, mode: u32) -> SyscallRet;
+}
 ```
 
-章节文件只描述稳定的设计与当前代码边界。具体测试故障、日志和临时诊断归入 `Docs/决赛文档/problem/`，避免设计文档被一次性调试细节淹没。
+目前真正落到磁盘的 inode 实现是 `Ext4Inode`。部分内核生成文件会复用 ext4 普通文件承载内容，而设备、管道、事件对象等不经过 `Inode`，直接实现 `File`。
+
+=== File
+
+
+`File` 是系统调用层面对 fd 操作的统一接口。普通文件、pipe、socket、epoll、eventfd、inotify、mqueue、设备文件都实现该 trait：
+
+```rust
+pub trait File: Send + Sync {
+    fn readable(&self) -> bool;
+    fn writable(&self) -> bool;
+    fn read(&self, buf: UserBuffer) -> SyscallRet;
+    fn write(&self, buf: UserBuffer) -> SyscallRet;
+    fn fstat(&self) -> Kstat;
+    fn path(&self) -> Cow<'_, str>;
+    fn lseek(&self, offset: isize, whence: usize) -> SyscallRet;
+    fn nonblocking(&self) -> bool;
+    fn set_nonblocking(&self, nonblocking: bool) -> SysResult;
+    fn poll(&self, events: PollEvents) -> PollEvents;
+    fn ioctl(&self, cmd: u32, arg: usize, memory_set: &MemorySet) -> SyscallRet;
+    fn register(&self, context: &mut Context<'_>, events: PollEvents);
+}
+```
+
+`poll()` 和 `register()` 让普通 fd 可以接入 `poll/ppoll/select/epoll` 的事件等待模型；`ioctl()` 默认返回 `ENOTTY`，由设备文件或特殊对象按需覆写。
+
+== 文件描述符与进程文件上下文
+
+
+=== FdTable
+
+
+每个进程拥有一个 `FdTable`，内部通过读写锁保护：
+
+```rust
+pub struct FdTable {
+    inner: RwLock<FdTableInner>,
+}
+
+pub struct FdTableInner {
+    soft_limit: usize,
+    hard_limit: usize,
+    files: Vec<Option<FileDescriptor>>,
+}
+
+#[derive(Clone)]
+pub struct FileDescriptor {
+    flags: OpenFlags,
+    file: FileClass,
+}
+```
+
+默认 fd 表带有 `stdin/stdout/stderr` 三项，软上限为 128，硬上限为 256。`alloc_fd()` 使用最小可用编号策略；`dup`、`dup3`、`fcntl(F_DUPFD*)` 复制 `FileDescriptor`，共享底层 `Arc<File>`；`close_on_exec()` 会关闭带 `O_CLOEXEC` 的描述符。
+
+`FileClass` 区分不同 fd 类型：
+
+```rust
+pub enum FileClass {
+    File(Arc<OSFile>),
+    Socket(Arc<Socket>),
+    Abs(Arc<dyn File>),
+    FsContext(Arc<FsContextFd>),
+    DetachedMount(Arc<DetachedMountFd>),
+}
+```
+
+其中 `File` 用于普通 ext4 文件；`Abs` 用于管道、设备、epoll、eventfd、inotify、mqueue 等抽象文件；`FsContext` 和 `DetachedMount` 支撑 Linux 新挂载 API 的 fd 流程。
+
+=== FSInfo
+
+
+`FSInfo` 保存进程文件系统环境：
+
+```rust
+pub struct FSInfo {
+    inner: RwLock<FSInfoInner>,
+}
+
+struct FSInfoInner {
+    cwd: String,
+    exe: String,
+    fd2path: HashMap<usize, String>,
+    umask: u32,
+}
+```
+
+- `cwd` 用于相对路径解析；
+- `exe` 记录当前进程可执行文件路径；
+- `fd2path` 辅助 `/proc`、`dup` 和调试场景维护 fd 到路径的映射；
+- `umask` 默认 `0o022`，创建文件或目录时用 `mode & !umask` 计算最终权限。
+
+== 路径解析与打开文件
+
+
+`sys_openat()` 是用户态打开文件的主要入口。处理流程为：
+
+1. 从用户空间读取路径字符串；
+2. 根据 `dirfd` 和进程 `cwd` 生成绝对路径；
+3. 处理 `/proc/self/stat`、`/proc/self/maps`、`/proc/self/status` 等动态路径；
+4. 对动态链接器和共享库路径执行兼容性映射；
+5. 调用 `open(abs_path, flags, mode)` 查找或创建文件；
+6. 分配 fd，将 `FileDescriptor` 写入 `FdTable`，并更新 `FSInfo.fd2path`。
+
+`open()` 先判断路径是否是设备文件；设备文件直接返回 `FileClass::Abs`。普通路径会查 `FsIndex` inode 缓存，缓存未命中时从根 inode 调用 `find()`。若节点不存在且包含 `O_CREATE`，则创建文件或目录，并按父目录权限和 `umask` 检查/设置权限。
+
+符号链接由 `Ext4Inode::find()` 解析，当前最大递归深度为 5。`O_UNLINK` 用于内核内部识别 unlink 场景，使符号链接本身可以被删除而不是跟随到目标文件。
+
+`O_TMPFILE` 目前采用兼容性简化：在目标目录下生成真实的 `N.tmp` 文件，而不是 Linux 意义上的匿名未链接临时 inode。
+
+== ext4 与 lwext4 集成
+
+
+=== 块设备适配
+
+
+Ya2yOS 通过 `lwext4_rust` 将 lwext4 接入 Rust 内核。适配层向 lwext4 提供块设备接口：
+
+```rust
+pub trait BlockDevice {
+    fn read(&self, buf: &mut [u8]) -> Result<i32, SysErrNo>;
+    fn write(&self, buf: &[u8]) -> Result<i32, SysErrNo>;
+    fn seek(&self, pos: usize);
+    fn size(&self) -> usize;
+}
+```
+
+内核的 `Disk` 结构实现该接口，使 ext4 可以直接在 VirtIO 块设备上执行目录项、inode、数据块和元数据操作。
+
+=== Ext4Inode
+
+
+`Ext4Inode` 是 `Ext4File` 的 VFS 封装，主要能力包括：
+
+- `create()`：创建普通文件或目录，并返回新的 VFS inode；
+- `find()`：检查目录、普通文件和符号链接，符号链接支持绝对/相对目标；
+- `read_at()/write_at()`：打开底层 ext4 文件，seek 到指定偏移后读写；
+- `read_all()`：一次性读取普通文件内容，符号链接会递归读取目标；
+- `read_dentry()`：将 lwext4 目录项编码为 `getdents64` 可返回的数据；
+- `truncate()`：通过 lwext4 截断或扩展文件；
+- `rename()/hard_link()/sym_link()/unlink()`：提供重命名、硬链接、软链接和删除；
+- `fstat()/fmode()/fmode_set()`：返回和修改 Linux 兼容的元数据；
+- `sync()`：刷新文件缓存；
+- `delay()`：标记延迟删除，inode drop 时移除文件。
+
+`Ext4Inode::fstat()` 会将 lwext4 返回的元数据转换为内核 `Kstat`，并对部分时间戳高位进行兼容性修正。
+
+== 普通文件 IO
+
+
+`OSFile` 封装一个普通 ext4 inode，并维护当前文件偏移：
+
+```rust
+pub struct OSFile {
+    readable: bool,
+    writable: bool,
+    pub inode: Arc<dyn Inode>,
+    inner: Mutex<OSFileInner>,
+}
+
+struct OSFileInner {
+    offset: usize,
+}
+```
+
+`read()` 从当前 offset 调用 `inode.read_at()`，读到 EOF 返回 0，并推进 offset。`write()` 调用 `inode.write_at()` 写入每个用户缓冲片段并推进 offset。`lseek()` 支持 `SEEK_SET`、`SEEK_CUR`、`SEEK_END`，禁止负偏移结果。
+
+系统调用层为了避免超大用户请求导致内核堆 OOM，将 `read/write/readv/writev/pread64/pwrite64/sendfile/copy_file_range` 等操作按 64 KiB 上限分片或限制单次内核缓冲区大小。`fsync/fdatasync/sync_file_range` 最终调用 inode 的 `sync()`；当前不区分数据和元数据同步。
+
+`sendfile()` 和 `copy_file_range()` 当前通过内核缓冲区在两个 fd 之间转发数据，并支持显式 offset 指针的读写回填，不是真正的零拷贝实现。
+
+`fallocate()` 支持默认模式和 `FALLOC_FL_KEEP_SIZE`，会根据 `statfs` 的可用块数做空间检查；未支持的模式返回 `EOPNOTSUPP`。
+
+== 目录项与元数据
+
+
+`getdents64` 通过 `Inode::read_dentry(off, len)` 读取目录项。ext4 层从 lwext4 获取目录项列表，并按用户缓冲区容量逐项编码返回，同时返回新的目录偏移。
+
+`Kstat` 与 Linux `stat` 结构兼容：
+
+```rust
+pub struct Kstat {
+    pub st_dev: usize,
+    pub st_ino: usize,
+    pub st_mode: u32,
+    pub st_nlink: u32,
+    pub st_uid: u32,
+    pub st_gid: u32,
+    pub st_rdev: usize,
+    pub st_size: isize,
+    pub st_blksize: i32,
+    pub st_blocks: isize,
+    pub st_atime: usize,
+    pub st_atime_nsec: usize,
+    pub st_mtime: usize,
+    pub st_mtime_nsec: usize,
+    pub st_ctime: usize,
+    pub st_ctime_nsec: usize,
+    pub __unused: [u32; 2],
+}
+```
+
+`Statfs` 返回文件系统块数、inode 数、文件名长度、挂载标志等统计信息。`statfs()` 当前直接返回全局 ext4 superblock 数据；`fstatfs()` 对 fd 做有效性检查后同样返回全局统计。
+
+== 管道与特殊文件
+
+
+=== Pipe
+
+
+`Pipe` 使用共享环形缓冲区实现匿名管道：
+
+```rust
+pub struct Pipe {
+    readable: bool,
+    writable: bool,
+    buffer: Arc<Mutex<PipeRingBuffer>>,
+}
+```
+
+缓冲区大小为 64 KiB，维护 `head/tail/status`，并保存读端、写端的弱引用以判断 EOF 和断开状态。空管道读会阻塞到写入发生或写端关闭；满管道写会阻塞到读端释放空间；非阻塞模式返回 `EAGAIN`。等待者通过任务队列睡眠和唤醒，避免在管道压力测试中忙等。
+
+=== devfs 与 loop 设备
+
+
+`devfs` 维护一个设备路径到设备号的表，`open()` 识别设备路径后返回对应抽象文件。当前支持：
+
+- `/dev/null`：读返回 EOF，写丢弃数据；
+- `/dev/zero`：读返回全 0，写丢弃数据；
+- `/dev/random`：提供伪随机/兼容性数据；
+- `/dev/rtc`、`/dev/rtc0`、`/dev/misc/rtc`：返回简化 RTC 时间；
+- `/dev/tty`：复用标准输入输出；
+- `/dev/cpu_dma_latency`：记录 CPU 延迟配置；
+- `/dev/loop-control`、`/dev/loopN`、`/dev/loop/N`、`/dev/block/loopN`：提供 loop 设备 ioctl 兼容。
+
+loop 设备维护 256 项 `LoopState`，支持 `LOOP_CTL_GET_FREE`、`LOOP_SET_FD`、`LOOP_CLR_FD`、`LOOP_GET_STATUS*`、`LOOP_SET_STATUS*` 和 `BLKGETSIZE64` 等接口。当前 loop 块设备主要服务 LTP/BusyBox 兼容，尚未把数据读写真实转发到 backing file。
+
+=== proc 相关文件
+
+
+Ya2yOS 创建 `/proc`、`/proc/mounts`、`/proc/meminfo`、`/proc/sys/kernel/*` 等基础文件，并为每个进程创建 `/proc/<pid>/stat`、`/proc/<pid>/status`、`/proc/<pid>/maps`。这些文件的内容由内核生成后写入 ext4 文件；访问 `/proc/self/*` 或指定 pid 文件时会按需刷新。
+
+这不是完整的独立 procfs，而是一个以 ext4 文件承载内容的兼容实现，重点满足 libc、BusyBox 和 LTP 对常见 proc 节点的读取需求。
+
+== IO 多路复用与事件 fd
+
+
+=== poll/select/epoll
+
+
+普通文件、管道、设备、socket、eventfd、inotify 等对象通过 `File::poll()` 暴露就绪状态。`ppoll()` 和 `pselect6()` 线性扫描用户传入的 fd 集合；`epoll_create1()` 创建 `EpollFile`，`epoll_ctl()` 管理监听集合，`epoll_pwait()` 返回就绪事件或阻塞等待。
+
+epoll 文件对象内部维护：
+
+- `registry`：fd 到监听事件的映射；
+- `ready_list`：已触发的事件队列；
+- `PollSet`：用于唤醒等待中的任务。
+
+=== eventfd
+
+
+`eventfd2(initval, flags)` 创建一个 64 位计数器 fd，支持 `EFD_CLOEXEC`、`EFD_NONBLOCK`、`EFD_SEMAPHORE`：
+
+- 普通模式读返回计数器值并清零；
+- 信号量模式读返回 1 并将计数器减 1；
+- 写入会累加计数器，写入 `u64::MAX` 返回 `EINVAL`；
+- 计数器为 0 时阻塞读，计数器接近溢出时阻塞写；
+- `poll()` 在计数器大于 0 时报告可读，在未满时报告可写。
+
+=== inotify、mqueue 与相关 stub
+
+
+`inotify_init1()` 创建 inotify fd，`inotify_add_watch()` 和 `inotify_rm_watch()` 管理 watch descriptor。当前 watch 管理、事件队列、read/poll 框架已经具备，但文件系统变更事件的自动生成仍是后续工作。
+
+POSIX mqueue 通过全局名称表管理队列，`mq_open()` 创建或打开命名队列，`mq_timedsend()` 和 `mq_timedreceive()` 发送/接收消息，支持非阻塞语义。`mq_notify()` 当前返回 `ENOSYS`。
+
+`signalfd4`、`timerfd_create`、`io_uring_setup`、`memfd_create` 等接口当前主要返回 dummy fd 或兼容性成功值，用于避免用户程序在能力探测阶段直接失败，尚未提供完整语义。
+
+== 挂载接口
+
+
+`MNT_TABLE` 是一个简化挂载表，最多记录 16 条 `(special, dir, fstype, flags)`。`mount()` 添加或 remount 记录，`umount2()` 根据设备名或挂载点删除记录，并刷新 `/proc/mounts`。只读挂载会被部分权限检查用于返回 `EROFS`。
+
+需要注意的是，当前挂载表主要提供 Linux 兼容接口和 `/proc/mounts` 可见性，并没有真正构建多 superblock 的目录树，也不会在路径解析时切换到底层新文件系统。`fsopen/fsconfig/fsmount/fspick/open_tree/move_mount/mount_setattr` 等新挂载 API 已接入 fd 类型、flags 校验和状态记录；其中 `move_mount()` 可将 detached mount 的记录落入 `MNT_TABLE`。
+
+== 文件锁、fcntl 与 xattr
+
+
+`fcntl()` 支持 fd 复制、`FD_CLOEXEC`、`O_NONBLOCK` 查询/设置、pipe 大小查询、文件 owner 相关兼容返回，以及 POSIX record lock / OFD lock 的基本语义。
+
+文件锁实现分两类：
+
+- `flock()`：按 inode 路径维护整文件 advisory lock，支持共享锁、排他锁、非阻塞失败和阻塞等待唤醒；
+- `F_GETLK/F_SETLK/F_SETLKW`：按 inode 路径维护字节区间锁，支持冲突检测和查询。当前 `F_SETLKW` 简化为非阻塞尝试，OFD lock 也委托给同一套记录锁逻辑。
+
+扩展属性 syscall 已有入口，主要用于兼容测试：`setxattr/listxattr/removexattr` 系列大多静默成功，`getxattr` 对无数据场景返回 `ENODATA`。当前没有持久化 xattr 存储。
+
+== 动态链接支持
+
+
+`map_dynamic_link` 模块负责兼容用户程序期望的动态链接器和共享库路径。`open()` 和 `openat()` 会在进入 ext4 前做路径映射；`read_at()` 和 `read_all()` 会通过 `patch_dynamic_link_file_bytes()` 对部分动态链接文件内容做运行时修补。
+
+这套机制让固定镜像中的 musl/glibc 程序可以在内核统一的文件系统布局上运行，同时避免把所有路径兼容都硬编码到用户态。
+
+== 当前边界与后续方向
+
+
+1. *页缓存*：当前普通文件读写直接落到 lwext4 和块设备，尚未建立统一 page cache；文件 mmap、read/write 和回写还不能共享同一缓存页。
+2. *真实多文件系统挂载*：挂载表已经能服务常见 syscall 和 `/proc/mounts`，但还没有真正的 mount namespace、挂载点 inode 切换和多 superblock 树。
+3. *tmpfs/devtmpfs/procfs*：`/dev` 与 `/proc` 目前是兼容实现。后续可将它们提升为独立内存文件系统，减少对 ext4 承载虚拟文件内容的依赖。
+4. *loop 设备数据路径*：loop ioctl 状态管理已实现，但块读写尚未转发到 backing file。
+5. *inotify 事件生产*：watch 管理和 fd 读写框架已经具备，仍需在 create/unlink/rename/write/chmod 等 VFS 操作中插入事件生成钩子。
+6. *xattr 与锁语义补全*：xattr 需要真实存储；`F_SETLKW`、OFD lock、租约和 close 自动释放锁仍可继续贴近 Linux 行为。
+7. *异步 IO*：当前缺少完整 `io_uring`/AIO 数据路径，未来可结合统一缓存和 poll 唤醒机制继续扩展。

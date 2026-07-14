@@ -26,7 +26,8 @@
 项目文档和开发日志均位于 [Docs](./Docs/) 目录下。
 [PPT](Docs/pre_slides.pdf) 可以帮助你迅速了解这个项目的情况。
 整个内核详细的设计文档请参考[内核设计文档](./Docs/ya2yos/typst/main.typ)；在
-`Docs/ya2yos/typst/` 中执行 `typst compile main.typ ya2yos-kernel-design.pdf` 可生成 PDF。
+仓库根目录中执行 `typst compile --root . Docs/ya2yos/typst/main.typ
+Docs/ya2yos/typst/ya2yos-kernel-design.pdf` 可生成 PDF。
 原有 Markdown 设计材料保留在 [Docs/ya2yos/](./Docs/ya2yos/) 供追溯。
 在引入skills后，AI的每一次修改均会在Docs/初赛文档/AI_INTERACTION.md 和 Docs/初赛文档/ai.log 这两个文件中记录。前者注重人机交互过程，后者注重AI的修改范围。与AI的主要交互方式是让AI通过输出日志进行修改，本人只做最后的原因分析和验收。
 [bug修复文档](./Docs/初赛文档/problem/)

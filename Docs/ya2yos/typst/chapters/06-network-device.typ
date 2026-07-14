@@ -1,27 +1,221 @@
-= 网络与 I/O 设备
+= I/O 设备
 
-== 网络栈
 
-网络模块以 smoltcp 为协议栈基础 #cite(<smoltcp>)，围绕 `SocketSet`、监听表、路由器和网络服务循环组织。`net::init_network` 接收设备容器并建立 loopback 与可用以太网设备；套接字实现被包装为 VFS `File`，故 `socket` 创建的 fd 可以进入 read/write/poll 等通用路径。
+== 设备驱动架构
 
-当前实现覆盖 TCP、UDP 和 Unix domain socket，并提供 bind、listen、accept、connect、send/recv、地址查询、控制消息和部分 socket option 的系统调用编排。Unix socket 的接收队列有字节上限；阻塞/非阻塞发送根据队列容量等待或返回 `EAGAIN`，防止无界消息积压耗尽内核堆。
 
-== 数据收发路径
+Ya2yOS 的设备层位于 `os/src/drivers/`，主要服务块设备和网络设备。驱动接口分为基础设备 trait 与具体设备能力 trait：
 
-1. 用户调用 `send*`、`recv*` 或对 socket fd 读写；
-2. syscall/net 复制用户参数，定位 socket `File`；
-3. socket 类型实现将数据交给 smoltcp、Unix socket 队列或 loopback；
-4. `SERVICE`/设备轮询推进协议状态，事件接口唤醒等待者；
-5. 接收数据经受检用户内存复制返回调用方。
+```rust
+pub enum DeviceType {
+    Block,
+    Char,
+    Net,
+    Display,
+}
 
-真实网卡回归应区分 loopback 基线与经 `eth0` 的外部往返，因为只有后者覆盖 VirtIO RX/TX 和 QEMU 网络后端。
+pub trait BaseDriver: Send + Sync {
+    fn device_name(&self) -> &str;
+    fn device_type(&self) -> DeviceType;
+    fn irq_num(&self) -> Option<usize> { None }
+}
 
-== 驱动模型
+pub trait BlockDriver: BaseDriver {
+    fn num_blocks(&self) -> usize;
+    fn block_size(&self) -> usize;
+    fn read_block(&mut self, block_id: usize, buf: &mut [u8]) -> DevResult;
+    fn write_block(&mut self, block_id: usize, buf: &[u8]) -> DevResult;
+    fn flush(&mut self) -> DevResult;
+}
+```
 
-驱动目录提供设备容器、磁盘、控制台和网络设备抽象。VirtIO 块设备为 ext4 提供块读写；VirtIO-net 实现 `NetDriverOps` 所需的收发与缓冲区管理。RISC-V 使用 virt 平台接入，LoongArch 的 VirtIO 设备经 PCI 枚举和配置空间访问发现。
+网络设备还定义了 `NetDriverOps`，提供 MAC 地址、收发队列状态、收包、发包、TX buffer 分配与回收等接口。`DeviceContainer<D>` 用一个小型容器保存探测到的设备，网络初始化时从中取出一个设备作为 eth0。
 
-DMA 缓冲区、virtqueue 描述符和设备寄存器访问必须符合平台对齐与可见性要求。启动阶段的栈、静态堆、直接映射和 CMA 物理页范围也影响驱动可靠性，尤其在大内存及 PCI 平台下不能假定物理内存连续。
+== VirtIO 支持
 
-== 控制台、时钟与中断
 
-console/logger 提供早期输出和分级日志；架构时间模块设置时钟频率与下一次 tick。中断处理经 trap 进入后再交给设备或调度相关路径。轮询仍是网络服务推进的重要机制，设备中断优化不应破坏现有轮询的进度保证。
+=== 传输方式
+
+
+Ya2yOS 使用 `virtio-drivers` crate 驱动虚拟 IO 设备：
+
+- RISC-V64 使用 MMIO transport。块设备默认位于 `0x10001000 + KERNEL_ADDR_OFFSET`，网络设备默认位于 `0x10002000 + KERNEL_ADDR_OFFSET`；
+- LoongArch64 使用 PCI transport。内核枚举 PCI 配置空间，识别 VirtIO 设备并构造 `PciTransport`。
+
+当前实际使用的 VirtIO 设备包括 virtio-blk 和 virtio-net。
+
+=== HAL 与 DMA
+
+
+`VirtIoHalCMAImpl` 是提供给 `virtio-drivers` 的 HAL。它负责：
+
+- 通过 CMA 分配物理连续页作为 DMA 缓冲区；
+- 将物理地址转换为内核虚拟地址；
+- 在 `share/unshare` 中为设备可见缓冲区分配、拷贝和释放内存；
+- 在 LoongArch64 上修正 PCI BAR/MMIO 物理地址到 QEMU MMIO 窗口。
+
+这套 HAL 让 virtqueue 描述符可以指向设备可访问的物理内存。
+
+=== virtqueue 机制
+
+
+VirtIO 设备使用 virtqueue 与驱动交换请求。典型队列包含 descriptor table、available ring 和 used ring。驱动准备描述符、写入 available ring 并通知设备；设备处理后写入 used ring，驱动再回收请求。
+
+当前块设备读写直接调用 `virtio-drivers` 的同步接口；网络设备也通过 `virtio-drivers` 提供的 net raw 接口管理 RX/TX buffer。
+
+== 块设备
+
+
+=== VirtIO 块设备
+
+
+不同架构使用不同的块设备封装：
+
+```rust
+#[cfg(target_arch = "riscv64")]
+pub type BlockDeviceImpl = VirtIoBlkDev<VirtIoHalCMAImpl>;
+
+#[cfg(target_arch = "loongarch64")]
+pub type BlockDeviceImpl = VirtIoBlkDev2<VirtIoHalCMAImpl>;
+```
+
+RISC-V64 的 `VirtIoBlkDev` 包装 `VirtIOBlk<H, MmioTransport>`；LoongArch64 的 `VirtIoBlkDev2` 通过 PCI 枚举得到 transport。二者都实现 `BlockDriver`，块大小固定为 512 字节。`flush()` 当前是兼容性空操作。
+
+=== Disk 光标抽象
+
+
+`Disk` 在块设备之上提供按字节位置读写的光标：
+
+```rust
+pub struct Disk {
+    block_id: usize,
+    offset: usize,
+    dev: BlockDeviceImpl,
+}
+```
+
+`read_one()` 和 `write_one()` 每次最多处理一个块内的连续片段。若当前 offset 为 0 且缓冲区至少一个块，则直接整块读写；否则先读取整块到临时缓冲，再进行局部复制和写回。`set_position(pos)` 将字节偏移转换为 `block_id + offset`。
+
+=== 文件系统接入
+
+
+ext4 的 lwext4 适配层将 `Disk` 作为块设备后端，通过 `seek/read/write/size` 接口让 lwext4 在 VirtIO 磁盘镜像上读写文件系统。文件系统层不直接操作 virtqueue，而是通过 `Disk` 和 `BlockDriver` 间接访问块设备。
+
+== 网络设备
+
+
+=== NetDriverOps
+
+
+网络设备的底层驱动接口如下：
+
+```rust
+pub trait NetDriverOps: BaseDriver {
+    fn mac_address(&self) -> EthernetAddress;
+    fn can_transmit(&self) -> bool;
+    fn can_receive(&self) -> bool;
+    fn rx_queue_size(&self) -> usize;
+    fn tx_queue_size(&self) -> usize;
+    fn recycle_rx_buffer(&mut self, rx_buf: NetBufPtr) -> DevResult;
+    fn recycle_tx_buffers(&mut self) -> DevResult;
+    fn transmit(&mut self, tx_buf: NetBufPtr) -> DevResult;
+    fn receive(&mut self) -> DevResult<NetBufPtr>;
+    fn alloc_tx_buffer(&mut self, size: usize) -> DevResult<NetBufPtr>;
+}
+```
+
+网络层的 `EthernetDevice` 只依赖该 trait，因此可以在 VirtIO-net 之外继续扩展其他 NIC 后端。
+
+=== VirtIO-net
+
+
+```rust
+#[cfg(target_arch = "riscv64")]
+pub type NetDeviceImpl = VirtIoNetDev<VirtIoHalCMAImpl, MmioTransport, QUEUE_SIZE>;
+
+#[cfg(target_arch = "loongarch64")]
+pub type NetDeviceImpl = VirtIoNetDev<VirtIoHalCMAImpl, PciTransport, QUEUE_SIZE>;
+```
+
+`VirtIoNetDev` 包装 `VirtIONetRaw`，队列大小为 `QUEUE_SIZE = 128`。驱动维护一组 TX buffer 池，发送时分配 buffer、填充以太网帧并调用 `transmit()`；接收时从设备取出 RX buffer，交给上层处理后调用 `recycle_rx_buffer()` 归还。
+
+`receive()` 中会调用 `ack_interrupt()`，但当前网络栈主要由 `poll_interfaces()` 周期性轮询推进，而不是完整依赖外部中断。
+
+== 控制台与字符类设备
+
+
+内核控制台由 `console.rs` 和架构相关串口实现提供。`Stdin`、`Stdout` 是文件系统中的抽象文件，进程创建时默认占据 fd 0、1、2：
+
+- `Stdin::read()` 从控制台读取输入；
+- `Stdout::write()` 将用户输出写到控制台；
+- fd 2 当前同样指向 `Stdout`。
+
+`/dev` 下的字符设备由文件系统的 devfs 兼容层实现，而不是在 `drivers/` 下建立独立字符设备驱动框架。
+
+== LoongArch64 PCI
+
+
+LoongArch64 平台通过 `os/src/drivers/virtio/loongarch/pci.rs` 枚举 PCI 设备：
+
+1. 遍历 bus/device/function；
+2. 读取 vendor/device ID；
+3. 查找 VirtIO 块设备和 VirtIO 网络设备；
+4. 配置 BAR 空间；
+5. 创建 `PciTransport` 并交给对应 VirtIO 驱动。
+
+网络设备的 PCI 初始化会设置命令寄存器，配置 32 位或 64 位 BAR，并通过 `PciTransport::new` 创建 transport。
+
+== 中断与轮询策略
+
+
+当前 IO 路径偏同步和轮询：
+
+- virtio-blk 读写使用同步调用，系统调用或文件系统操作会等待设备请求完成；
+- virtio-net 的收发由 `poll_interfaces()` 推进，设备中断只做了部分 ack/waker 能力，尚未形成完整 NAPI 风格路径；
+- 控制台输入输出采用轮询式访问。
+
+这种设计便于在竞赛内核中保持实现简单和可调试，但在高吞吐或低延迟 IO 场景下会产生额外 CPU 开销。
+
+== `/dev` 兼容层
+
+
+设备文件由 `os/src/fs/files/devfs.rs` 注册和打开。当前常见路径包括：
+
+- `/dev/null`：读返回 EOF，写丢弃；
+- `/dev/zero`：读返回零，写丢弃；
+- `/dev/random`：提供兼容性随机数据；
+- `/dev/rtc`、`/dev/rtc0`、`/dev/misc/rtc`：简化 RTC；
+- `/dev/tty`：终端；
+- `/dev/cpu_dma_latency`：记录 CPU 延迟配置；
+- `/dev/loop-control`、`/dev/loopN`、`/dev/loop/N`、`/dev/block/loopN`：loop 设备兼容接口。
+
+这些路径由 `open()` 在进入 ext4 普通文件查找前识别，返回 `FileClass::Abs`。
+
+== Loop 设备
+
+
+Loop 设备当前是面向 Linux 工具和 LTP 的兼容实现。内部维护 256 个 `LoopState`：
+
+```rust
+struct LoopState {
+    backing_fd: Option<usize>,
+    info: loop_info64,
+}
+```
+
+支持的主要 ioctl：
+
+- `/dev/loop-control`：`LOOP_CTL_GET_FREE`、`LOOP_CTL_ADD`、`LOOP_CTL_REMOVE`；
+- `/dev/loopN`：`LOOP_SET_FD`、`LOOP_CLR_FD`、`LOOP_GET_STATUS*`、`LOOP_SET_STATUS*`、`BLKGETSIZE64`。
+
+当前实现只记录 backing fd 和 loop info，块设备的 `read()` 返回 0，`write()` 丢弃数据。因此它不能真正把普通文件映射为可读写块设备，也不能作为完整镜像挂载后端。
+
+== 当前边界与后续方向
+
+
+1. *中断驱动 IO*：完善 VirtIO 外部中断、waker 和网络收包路径，减少轮询开销。
+2. *页缓存与块缓存*：在文件系统和块设备之间加入统一缓存，减少重复磁盘访问。
+3. *真实 loop 数据路径*：将 loop 设备读写转发到 backing file，支持镜像类测试和真实挂载场景。
+4. *更多 VirtIO 设备*：继续接入 virtio-rng、virtio-input、virtio-gpu 等设备。
+5. *设备模型*：建立更统一的设备发现、注册、权限和 `/dev` 节点生成机制。
+6. *异步 IO*：结合 io_uring/AIO 和设备 waker，实现更完整的非阻塞 IO 能力。

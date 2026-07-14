@@ -1,51 +1,166 @@
-= 系统概览
+= 概述
 
-Ya2yOS 是一个以 Rust 编写、面向 Linux 用户态兼容性的实验性内核。它以 TatlinOS 为基础持续演进，当前同时支持 `riscv64` 与 `loongarch64` QEMU 平台。内核采用 `no_std`、静态链接和单地址空间内核运行方式；用户程序通过 Linux 风格系统调用进入内核。Rust 的语言和内存安全模型是本项目的工程基础 #cite(<rust-book>)。
+== 项目背景
 
-本文档以 `os/src/` 的当前代码为准，描述已经实现的职责边界和调用关系，而不把计划中的能力表述为既有功能。历史设计说明保留在上一级 Markdown 文件中，供追溯使用。
 
-#text(size: 8.5pt, fill: rgb("536471"))[_实现追溯：_ `os/src/main.rs`、`os/Cargo.toml`]
+Ya2yOS 是一个基于 Rust 语言开发的宏内核操作系统，支持 *RISC-V64* 和 *LoongArch64* 两种处理器架构。项目起源于 2025 年全国大学生系统能力大赛操作系统设计赛（内核实现赛道），以 TatlinOS 为基础进行持续演进。内核采用 SV39（RISC-V）/ LA64 分页机制，使用 Rust 语言实现内存安全与零成本抽象，整体架构参考了 Linux 内核的设计理念，同时借鉴了 xv6 和 rCore 等教学内核的简洁性。
 
 == 设计目标
 
-- 在两个 64 位架构上提供稳定的用户态启动、异常处理、内存隔离与系统调用入口。
-- 以 Linux syscall ABI 和常见 errno 语义为兼容边界，服务于竞赛测例和常见 Unix 用户程序。
-- 以 Rust 所有权、`Arc` 和受控同步原语承载内核对象生命周期，同时把硬件寄存器、页表和上下文切换封装在架构层。
-- 将进程、内存、VFS、网络和驱动拆为可独立演进的模块；系统调用层只做 ABI 适配和参数编排。
 
-== 源码组织
+Ya2yOS 的核心设计目标是提供一个 *Linux 兼容* 的综合型操作系统内核。具体而言：
+
+1. *系统调用兼容*：实现了 200+ 个 Linux 兼容的系统调用，能够运行 glibc libc-test 测试套件，支持 BusyBox 等复杂用户态程序；
+2. *完整的进程模型*：支持 fork/clone/clone3 多线程创建、execve 程序加载、完善的父子进程管理和 waitpid 机制；
+3. *现代虚拟内存管理*：SV39 三级页表，支持 mmap/munmap/mprotect/brk 等内存管理系统调用，实现写时复制（COW）、共享内存（SHM）、按需分页（Demand Paging）等特性；
+4. *POSIX 信号机制*：完整的 Linux 信号框架，支持自定义信号处理函数（sigaction）、信号栈帧（sigframe）、rt_sigreturn、signalfd 等高级特性；
+5. *TCP/IP 网络协议栈*：集成 smoltcp 协议栈，支持 TCP、UDP、Unix Domain Socket，通过 VirtIO 网络设备与外界通信；
+6. *ext4 文件系统支持*：通过 lwext4_rust 绑定，原生支持 ext4 文件系统，提供完整的 VFS 抽象层；
+7. *双架构支持*：内核通过条件编译和架构抽象层，同时支持 RISC-V64 和 LoongArch64 指令集架构。
+
+== 系统架构概览
+
+
+Ya2yOS 采用经典的 *宏内核（Monolithic Kernel）* 架构，所有核心子系统运行在内核态（S-Mode），共用一个地址空间。内核模块组织如下：
+
+```
+os/src/
+├── main.rs              # 内核入口，初始化各子系统
+├── config.rs            # 内核编译期常量配置
+├── arch/                # 架构相关代码
+│   ├── riscv64/         # RISC-V64 架构实现
+│   ├── loongarch64/     # LoongArch64 架构实现
+│   └── irq/             # 中断处理表
+├── trap/                # 陷入处理（Trap Handler）
+├── syscall/             # 系统调用分发与实现
+│   ├── task/            # 进程/线程管理类系统调用
+│   ├── mm/              # 内存管理类系统调用
+│   ├── fs/              # 文件系统类系统调用
+│   ├── net/             # 网络类系统调用
+│   ├── signal/          # 信号类系统调用
+│   ├── sync/            # 同步类系统调用（futex 等）
+│   ├── time/            # 时间类系统调用
+│   └── io_mpx/          # IO 多路复用（epoll/poll/select）
+├── task/                # 任务管理
+│   ├── task/            # TaskControlBlock（TCB）
+│   ├── process/         # Process（进程/线程组）
+│   ├── manager.rs       # 全局任务管理器
+│   ├── processor.rs     # 每核处理器调度器
+│   └── futex.rs         # 快速用户空间互斥锁
+├── mm/                  # 内存管理
+│   ├── memory_set/      # 内存集合（MemorySet）
+│   ├── frame_alloc/     # 物理帧分配器（CMA 伙伴系统）
+│   ├── map_area.rs      # 映射区域（MapArea）
+│   ├── translate.rs     # 地址转换与用户数据读写
+│   ├── page_fault_handler.rs  # 缺页异常处理
+│   └── shm.rs           # 共享内存
+├── fs/                  # 文件系统
+│   ├── ext4_lw/         # ext4 文件系统实现（基于 lwext4）
+│   ├── files/           # 各类文件实现（普通文件、管道、epoll 等）
+│   ├── vfs.rs           # 虚拟文件系统接口
+│   ├── mount.rs         # 挂载管理
+│   └── kernel_fs_ops/   # 内核文件操作
+├── net/                 # 网络协议栈
+│   ├── tcp.rs           # TCP 套接字
+│   ├── udp.rs           # UDP 套接字
+│   ├── unix.rs          # Unix Domain Socket
+│   ├── socket.rs        # 套接字抽象
+│   └── service.rs       # 网络服务轮询
+├── drivers/             # 设备驱动
+│   ├── virtio/          # VirtIO 总线驱动
+│   ├── disk.rs          # 块设备抽象
+│   ├── device.rs        # 驱动抽象接口
+│   └── net/             # 网络设备抽象
+├── signal/              # 信号机制
+│   ├── signal.rs        # 信号集与信号发送
+│   └── sigact.rs        # 信号表与信号动作
+├── timer/               # 定时器管理
+├── sync/                # 内核同步原语
+└── utils/               # 工具模块
+```
+
+== 内核启动流程
+
+
+内核启动过程分为以下几个步骤：
+
+1. *硬件初始化*：由 OpenSBI（RISC-V）或 UEFI（LoongArch）引导，跳转到内核入口 `_start`，完成 BSS 段清零和栈初始化；
+2. *trampoline*：对于 RISC-V64，内核镜像直接映射在虚拟地址高段（`0xffffffc000000000` 偏移），通过 trampoline 跳转到 `rust_main`；
+3. *`rust_main`（第一个 Hart）*：
+   - 清零 BSS 段
+   - 初始化时钟频率
+   - 初始化内存管理子系统（内核堆、CMA 物理帧分配器、内核页表激活）
+   - 初始化日志系统
+   - 初始化陷阱处理（设置 `stvec` 指向 `__alltraps`）
+   - 初始化任务管理器
+   - 初始化文件系统（挂载 ext4 根文件系统，创建 /proc 目录）
+   - 初始化网络子系统（探测 VirtIO 网络设备、配置 smoltcp 协议栈、添加路由规则）
+   - 从根文件系统加载 initproc ELF 可执行文件并加入就绪队列
+   - 使能时钟中断，开始调度执行
+4. *`rust_main`（其他 Hart）*：自旋等待初始化完成，然后初始化自己的陷阱处理和任务执行上下文，参与调度。
+5. *`run_tasks()`*：开始第一个用户态进程的执行。
+
+== 系统调用接口
+
+
+Ya2yOS 实现了 200+ 个系统调用，涵盖以下类别（部分代表性系统调用）：
 
 #table(
-  columns: (6em, 1.25fr, 2fr),
-  table.header([*模块*], [*主要目录*], [*责任*]),
-  [引导与架构], [`os/src/main.rs`、`os/src/arch/`], [入口汇编、寄存器上下文、页表/TLB、时钟、中断与平台差异],
-  [异常与 ABI], [`os/src/trap/`、`os/src/syscall/`], [trap 分发、系统调用号解析、用户参数与返回值],
-  [内存], [`os/src/mm/`], [物理页、页表、VMA、ELF、缺页、COW、用户内存访问],
-  [任务与信号], [`os/src/task/`、`os/src/signal/`], [进程/线程、调度、futex、等待、信号投递和返回帧],
-  [文件系统], [`os/src/fs/`], [VFS、fd 表、路径、ext4、proc/dev、管道与事件对象],
-  [网络与设备], [`os/src/net/`、`os/src/drivers/`], [smoltcp 封装、socket、VirtIO 块/网卡、控制台],
+  columns: 3,
+  table.header([*类别*], [*代表系统调用*], [*说明*]),
+  [进程管理], [`clone`, `clone3`, `execve`, `exit`, `exit_group`, `wait4`, `set_tid_address`], [线程创建、程序执行、进程终止与等待],
+  [内存管理], [`mmap`, `munmap`, `mprotect`, `brk`, `mremap`, `shmget`, `shmat`, `shmctl`], [虚拟内存映射、堆管理、共享内存],
+  [文件系统], [`openat`, `close`, `read`, `write`, `lseek`, `mkdirat`, `unlinkat`, `getdents64`, `statx`, `mount`, `fstat`, `renameat2`], [文件与目录的完整 CRUD 操作],
+  [信号机制], [`sigaction`, `sigprocmask`, `kill`, `tkill`, `tgkill`, `sigsuspend`, `sigreturn`, `signalfd4`], [信号处理全流程],
+  [网络], [`socket`, `bind`, `listen`, `accept`, `connect`, `sendto`, `recvfrom`, `sendmsg`, `recvmsg`, `setsockopt`], [BSD Socket 接口完整实现],
+  [同步], [`futex`, `set_robust_list`, `get_robust_list`], [用户态同步原语],
+  [时间], [`clock_gettime`, `nanosleep`, `timerfd_create`, `clock_nanosleep`, `gettimeofday`], [高精度定时],
+  [IO多路复用], [`epoll_create1`, `epoll_ctl`, `epoll_pwait`, `ppoll`, `pselect6`, `eventfd2`], [高性能 IO 事件通知],
 )
 
-== 运行时分层
 
-#figure(
-  align(center)[
-    #table(columns: 1, inset: 9pt,
-      [*用户态*：ELF、libc、BusyBox、测例程序],
-      [*Linux 风格 ABI*：`ecall` / trap / syscall 分发],
-      [*内核服务*：任务 · 信号 · 内存 · VFS · 网络],
-      [*平台抽象*：架构上下文 · 页表 · 定时器 · IRQ · 设备],
-      [*硬件/虚拟硬件*：CPU · UART · VirtIO · PCI（LoongArch）],
-    )
-  ],
-  caption: [Ya2yOS 的运行时分层。跨层交互仅通过受控的模块接口进行。],
-) <runtime-layers>
+系统调用的分发采用 Rust 的 `enum` 模式匹配，通过 `Syscall::from(syscall_id)` 将数字 ID 转换为枚举类型，然后在 `syscall()` 函数中通过 `match` 语句分发到对应的处理函数。RISC-V64 架构下，用户态通过 `ecall` 指令陷入内核，参数通过 a0-a5 寄存器传递，返回值通过 a0 返回。
 
-分层并不意味着服务之间完全没有关联。例如缺页处理需要查询 VMA 和文件页，`read`/`write` 要经过 fd 表找到 VFS 或 socket 对象，信号可中断阻塞的等待路径。实现上以短生命周期的锁和 `Arc` 克隆来降低这种交叉依赖的风险。
+== 关键技术与创新点
 
-== 关键对象与不变量
 
-- *地址空间*：每个进程持有 `MemorySet`；用户地址只能经翻译和范围校验后访问。
-- *线程组*：进程元数据管理线程集合、退出状态和共享资源；线程拥有各自 trap context 与调度状态。
-- *文件描述符*：`FdTable` 将整数 fd 映射到统一的 `File` 抽象，普通文件、管道、socket 和事件对象使用同一访问入口。
-- *锁*：任务模块定义了全局表 → 进程元数据 → 线程状态 → 资源内部锁的约束；不得跨阻塞点持有这些锁。
+1. *双架构抽象*：通过 `cfg_if` 和条件编译将架构相关代码隔离在 `arch/` 目录下，`trait` 接口定义了统一的上下文切换、页表操作、中断处理等抽象方法，实现了 RISC-V64 和 LoongArch64 两套架构的透明支持；
+2. *Rust 内存安全*：利用 Rust 的所有权系统、`Arc` 智能指针和 `Spin` 锁等机制，在内核中实现了内存安全的数据结构。通过 `SyncUnsafeCell` 等机制在保证性能的前提下实现了安全的内部可变性；
+3. *精细的 COW 实现*：fork 时父进程所有可写页被标记为只读并设置 COW 标志，子进程共享同一物理帧；仅在实际写入时触发缺页异常（StorePageFault）进行物理帧的深度复制；Brk 堆区域也支持 COW 按页分配；
+4. *Linux ABI 深度兼容*：实现了包括 `robust_list`、`clear_child_tid`、`CLONE_CHILD_CLEARTID`等在内的复杂 Linux 特性，使得 glibc 等标准库能近乎无修改运行，通过了 libc-test 的大量测试用例；
+5. *异步网络轮询*：smoltcp 协议栈的 `poll_interfaces` 机制集成在时钟中断处理路径中，结合 epoll 实现高效的网络 IO 事件通知；
+6. *基于 lwext4 的 ext4 文件系统*：通过 Rust FFI 绑定 C 语言的 lwext4 库，在内核态直接提供了完整的 ext4 文件系统支持。通过 `BlockDriver` trait 将 VirtIO 块设备抽象为 lwext4 所需的块设备接口，实现了从物理块设备到文件系统的完整 IO 栈；
+7. *Wait-Die 死锁预防*：在内存管理（mmap/munmap/mprotect 等操作）和文件系统操作中，对多级锁的获取采用确定的顺序，并结合 `try_lock` 与重试机制，避免了内核中的锁死锁。
+
+== 开发与构建
+
+
+项目使用 Makefile 组织构建流程，支持以下主要构建命令：
+
+- `make run`：在 QEMU 上以默认配置运行 RISC-V64 版本
+- `make run LOG=<level>`：指定日志输出等级（error/warn/info/debug/trace）
+- `make run ACC=1`：启用多核（SMP）启动
+- `make run FEATURES=net`：启用网络功能
+- `make build LOG=trace`：构建带 trace 日志输出的内核
+- `make gdb`：以 GDB 调试模式启动
+- `make justfile`：使用 just 工具进行更灵活的构建配置
+
+内核依赖的主要外部 crate 包括：
+
+#table(
+  columns: 2,
+  table.header([*Crate*], [*用途*]),
+  [`smoltcp`], [用户态 TCP/IP 协议栈],
+  [`virtio-drivers`], [VirtIO 总线与设备驱动框架],
+  [`lwext4_rust`], [ext4 文件系统的 Rust FFI 绑定],
+  [`linux-raw-sys`], [Linux 类型定义（信号、网络、文件等）],
+  [`buddy_system_allocator`], [伙伴系统物理内存分配器],
+  [`xmas-elf`], [ELF 可执行文件解析],
+  [`spin`], [自旋锁（内核态同步原语）],
+  [`hashbrown`], [高性能哈希表],
+  [`futures-util`], [异步编程工具],
+)
+
+
+以下是内核各个模块的依赖关系：
+#figure(image("/Docs/uml/01_overview/Ya2yOS领域模型-模块依赖关系.png", width: 88%), caption: [各模块的依赖关系])

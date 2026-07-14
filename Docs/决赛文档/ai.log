@@ -4308,3 +4308,27 @@ AI 通过 `typst fonts` 和 fontconfig 检查本机字体，确认没有宋体�
 `typst compile --pdf-standard a-2u Docs/ya2yos/typst/main.typ /tmp/ya2yos-academic.pdf` 成功，
 产物为 PDF 1.7、13 页。导出封面、摘要/版本页和正文页 PNG 并人工检查：西文衬线正文、中文回退、
 等宽代码、表格和页码均正常；未执行内核构建或 QEMU，因为没有修改内核代码。
+
+---
+
+## 2026-07-14: Markdown 设计文档完整迁移至 Typst
+
+### 用户需求
+
+用户要求将 `Docs/ya2yos/` 下的 Markdown 设计文档逐章、逐内容填充进 Typst 文档，允许保留并扩充现有 Typst 第二章。
+
+### 分析与采纳结论
+
+AI 检查后确认本机没有 `pandoc`，因此实现受控的 Markdown→Typst 迁移：保留全部段落、列表、代码块、标题、表格和 UML 图片；将 Markdown 标题的手写编号移除并交给 Typst 自动生成，`**强调**` 转为 Typst 的 `*强调*`，管线表格转为原生 `#table`，图片转为 `#figure(image(...))`。现有第二章“启动、架构与异常入口”保留，并追加原 `02 进程管理.md` 的完整内容；第九章新增“总结与展望”。为使 UML 资源在 Typst 沙箱中可访问，构建命令统一使用仓库根目录 `--root .`。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `Docs/ya2yos/typst/chapters/01-overview.typ` 至 `09-conclusion.typ` | 完整迁移九篇 Markdown 的文字、代码、表格与图示；新增进程管理导入章节及第九章 |
+| `Docs/ya2yos/typst/main.typ` | 纳入迁移章节、扩展中文章节序号至第十章参考资料 |
+| `Docs/ya2yos/typst/README.md`、`Docs/README.md`、`README.md` | 固化 `--root .` 的可复现构建命令 |
+
+### 验证
+
+执行 `typst compile --root . --pdf-standard a-2u Docs/ya2yos/typst/main.typ Docs/ya2yos/typst/ya2yos-kernel-design.pdf` 成功，输出 PDF 1.7、82 页、5.9 MiB。初次 PDF/A 检查发现原 Markdown 的 `✅/❌` 不被可复现字体嵌入，已等价改为“是/否”。使用 PNG 导出抽查第 20 页的 clone 顺序图，图像和图注正常。`git diff --check` 通过；未执行内核构建或 QEMU，因为仅变更文档。
