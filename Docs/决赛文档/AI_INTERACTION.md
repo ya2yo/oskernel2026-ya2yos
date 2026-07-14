@@ -579,3 +579,10 @@
 - **场景**：Typst 进程管理章节与当前任务、syscall、ELF loader 源码对照及全文编译验证
 - **描述**：维护者要求按当前内核实现调整 `03-process-import.typ`。AI 重核 `Process`/`TaskControlBlock`/`ProcessMeta`、全局 FIFO ready queue、时钟触发的 `suspend_current_and_run_next()`、`clone`/受限 `clone3`、`execve`、exit/reparent 与 `waitpid`/`waitid` 路径，重写章节以删除过期字段和过度承诺。文档明确：调度具有时钟驱动轮转但尚无 CFS/负载均衡，TID/PID 当前不回收，`clone3` 是 legacy clone 适配层，ELF 动态解释器映射后的重定位仍在用户态完成。详见 `Docs/决赛文档/ai.log` 2026-07-14 追加条目。
 - **关联 commit**：待提交
+
+#### LTP splice07 匿名挂载 fd 阻塞修复（7.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 尾部卡死分析、fsopen/fspick/open_tree 匿名 fd I/O 能力校正、双架构构建和 LTP 回归记录
+- **描述**：维护者要求修复 `splice07` 最后卡死。AI 确认 `FsContextFd`/`DetachedMountFd` 虽以 `S_IFREG` 报告 stat，却是 mount API 控制 fd；两者继承 `File` trait 的默认可读写能力，令空 pipe 到 fsopen 的 `splice` 先阻塞读取而无法到达输出错误路径。修复为显式声明二者不可读、不可写，使 syscall 在 I/O 前返回 `EBADF`。RISC-V 与 LoongArch64 构建通过；维护者提供的最新 `log.ans` 显示 musl/glibc `splice07` 均为 `passed 566 failed 0 broken 0`，并结束于 `shutdown!`。详见 `Docs/决赛文档/ai.log` 2026-07-14 条目与 [problem/splice07-mount-context-fd-block.md](./problem/splice07-mount-context-fd-block.md)。
+- **关联 commit**：待提交

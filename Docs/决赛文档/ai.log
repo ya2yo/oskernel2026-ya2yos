@@ -4367,3 +4367,29 @@ AI 核对了 `os/src/task/`、`os/src/syscall/task/` 和 ELF loader 的当前实
 ### 验证
 
 执行 `typst compile --root . --pdf-standard a-2u Docs/ya2yos/main.typ /tmp/ya2yos-process-doc-check.pdf` 成功，且 `git diff --check` 通过。未执行内核构建或 QEMU，因为本次仅修改设计文档。
+
+---
+
+## 2026-07-14: LTP splice07 fscontext 匿名 fd 阻塞修复
+
+### 用户需求
+
+用户要求分析 `log.ans` 最后卡死的原因并修复；完成后说明新的结果已经写入 `log.ans` 且测试通过。
+
+### 分析与采纳结论
+
+AI 从日志尾部定位到空 pipe 读端向 `fsopen()` 返回 fd 执行 `splice` 时停在 syscall 内部。`sys_splice()` 已有基于 `fstat().st_mode` 的非 pipe 类型过滤，但 `FsContextFd` 的 `fstat()` 有意报告 `S_IFREG | 0600`，所以仍被当作可写普通文件。进一步核对 `File` trait 默认实现后确认，`FsContextFd` 和 `DetachedMountFd` 都没有覆写 `readable()`/`writable()`，意外继承了 `true`；通用 splice 搬运路径于是先阻塞读取空 pipe，永远不会到达输出端 `write() -> EINVAL`。
+
+采纳的修复是在挂载控制型匿名 fd 上明确返回不可读、不可写。这样保留 stat 与专用 mount API 语义，同时令 splice 的现有权限检查提前返回 `EBADF`，避免依赖类型过滤来判断数据流 I/O 能力。`DetachedMountFd` 一并修复，覆盖 `open_tree()` 路径。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/fs/files/mountfd.rs` | 为 `FsContextFd` 和 `DetachedMountFd` 显式实现不可读、不可写 |
+| `Docs/决赛文档/problem/splice07-mount-context-fd-block.md` | 记录根因、修复边界和验证结果 |
+| `Docs/决赛文档/problem/README.md`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md` | 补充索引、开发记录和 AI 使用记录 |
+
+### 验证
+
+AI 执行 `make`，RISC-V 与 LoongArch64 均构建通过，仅有既有 vendored `smoltcp` warning。初次沙箱内 `make run` 因 QEMU 不能在只读 `/var/tmp` 创建临时锁文件而未启动内核，未将其作为验证结果。维护者随后运行并提供新的 `log.ans`：musl 与 glibc `splice07` 均为 `passed 566 failed 0 broken 0 skipped 25 warnings 0`，`pipe read end -> fsopen/fspick/open_tree` 均 `TPASS` 并返回 `EBADF`，最后打印 `shutdown!`，无 `TFAIL`、`TBROK`、panic 或 QEMU 超时终止。

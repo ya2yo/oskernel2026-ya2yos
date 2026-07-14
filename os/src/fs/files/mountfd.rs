@@ -82,6 +82,14 @@ impl FsContextFd {
 }
 
 impl File for FsContextFd {
+    fn readable(&self) -> bool {
+        false
+    }
+
+    fn writable(&self) -> bool {
+        false
+    }
+
     fn read(&self, _buf: UserBuffer) -> SyscallRet {
         Err(SysErrNo::EINVAL)
     }
@@ -122,6 +130,14 @@ impl DetachedMountFd {
 }
 
 impl File for DetachedMountFd {
+    fn readable(&self) -> bool {
+        false
+    }
+
+    fn writable(&self) -> bool {
+        false
+    }
+
     fn read(&self, _buf: UserBuffer) -> SyscallRet {
         Err(SysErrNo::EINVAL)
     }

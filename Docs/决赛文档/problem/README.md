@@ -2,6 +2,7 @@
 
 - [splice syscall 兼容实现](./splice-syscall.md)
 - [splice07 文件类型校验与空 pipe 卡死](./splice07-file-type-validation.md)
+- [splice07 匿名挂载 fd 默认可读写导致阻塞](./splice07-mount-context-fd-block.md)
 - [pipe SIGPIPE 与 FIONREAD 语义修复](./pipe-sigpipe-fionread.md)
 - [RISC-V Alpine initfiles 与动态链接路径兼容](./riscv-alpine-initfiles-dynamic-link.md)
 - [iperf: 5001 端口复用与 glibc TCGETS 栈破坏](./iperf-port-reuse-termios-stack-smash.md)
