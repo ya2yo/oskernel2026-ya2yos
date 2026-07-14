@@ -32,7 +32,7 @@ const MAX_FILE_NAME_LEN: usize = 255;
 // terminate quickly. POSIX only requires LINK_MAX to be at least 8.
 const MAX_HARD_LINKS: u32 = 1024;
 
-fn has_too_long_path_component(path: &str) -> bool {
+pub fn has_too_long_path_component(path: &str) -> bool {
     path.split('/')
         .any(|component| component.len() > MAX_FILE_NAME_LEN)
 }
@@ -935,7 +935,7 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
     );
 
     let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
-    let parent_inode = open(&parent_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
+    let parent_inode = open(&parent_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     if parent_inode.inode.types() != InodeType::Dir {
         return Err(SysErrNo::ENOTDIR);
     }

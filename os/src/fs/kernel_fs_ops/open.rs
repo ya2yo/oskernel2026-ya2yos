@@ -9,6 +9,9 @@ use alloc::{format, string::String};
 use linux_raw_sys::general::CAP_FOWNER;
 use log::{debug, warn};
 
+/// 将绝对路径拆分为父目录路径和末级名称。
+///
+/// 末尾斜杠会被忽略；根目录和空路径没有可创建或查找的末级名称，返回 `None`。
 fn split_parent_child(abs_path: &str) -> Option<(&str, &str)> {
     let abs_path = abs_path.trim_end_matches('/');
     if abs_path.is_empty() || abs_path == "/" {
@@ -20,6 +23,9 @@ fn split_parent_child(abs_path: &str) -> Option<(&str, &str)> {
     Some((parent, &abs_path[idx + 1..]))
 }
 
+/// 将父目录和末级名称拼接为规范的绝对路径。
+///
+/// 根目录需要特殊处理，以避免生成 `//<child>`。
 fn join_parent_child(parent: &str, child: &str) -> String {
     if parent == "/" {
         format!("/{}", child)
@@ -28,12 +34,16 @@ fn join_parent_child(parent: &str, child: &str) -> String {
     }
 }
 
+/// 创建目标的已解析父目录及其对应路径信息。
 struct ParentPath {
     parent_inode: Arc<dyn Inode>,
     create_path: String,
     child_name: String,
 }
 
+/// 解析创建目标的父目录，并构造由实际父 inode 路径派生的创建路径。
+///
+/// 父目录不存在时返回 `ENOENT`，父 inode 不是目录时返回 `ENOTDIR`。
 fn resolve_parent_path(abs_path: &str) -> SysResult<ParentPath> {
     let Some((parent_path, child_name)) = split_parent_child(abs_path) else {
         return Err(SysErrNo::ENOENT);
@@ -57,10 +67,15 @@ fn resolve_parent_path(abs_path: &str) -> SysResult<ParentPath> {
     })
 }
 
+/// 返回用于创建或重试查找的规范目标路径。
 fn resolve_create_path(abs_path: &str) -> SysResult<String> {
     resolve_parent_path(abs_path).map(|target| target.create_path)
 }
 
+/// 校验 `O_NOATIME` 的 Linux 权限要求。
+///
+/// 仅文件所有者或持有 `CAP_FOWNER` 的任务可以禁止该 inode 的 atime 更新；
+/// 内核早期没有当前任务时不施加该检查。
 fn check_noatime_permission(inode: &Arc<dyn Inode>, flags: OpenFlags) -> SysResult {
     if !flags.contains(OpenFlags::O_NOATIME) {
         return Ok(());
@@ -88,6 +103,10 @@ fn check_noatime_permission(inode: &Arc<dyn Inode>, flags: OpenFlags) -> SysResu
     }
 }
 
+/// 使用已缓存的父目录执行一次末级目录项查找。
+///
+/// 返回 `None` 表示父目录未缓存，调用者应退回到根 inode 的完整路径查找。
+/// `O_NOFOLLOW` 禁用目录项缓存，以保留底层路径解析对末级符号链接的处理。
 fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult<Arc<dyn Inode>>> {
     let (parent_path, child_name) = split_parent_child(abs_path)?;
     let parent_inode = FsIndex::find_inode_idx(parent_path)?;
@@ -125,18 +144,23 @@ fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult
     Some(found)
 }
 
+/// 在父目录下写入新建或已确认存在的正目录项缓存。
 fn cache_created_dentry(parent_inode: &Arc<dyn Inode>, child_name: &str, inode: Arc<dyn Inode>) {
     if !child_name.is_empty() {
         DENTRY_CACHE.insert_positive(parent_inode, child_name, inode);
     }
 }
 
+/// 使父目录下指定名称的目录项缓存失效。
 fn invalidate_dentry(parent_inode: &Arc<dyn Inode>, child_name: &str) {
     if !child_name.is_empty() {
         DENTRY_CACHE.invalidate(parent_inode, child_name);
     }
 }
 
+/// 使绝对路径对应的末级目录项缓存失效。
+///
+/// 父目录尚未进入 inode 索引时无需处理，后续路径解析会从文件系统重新查找。
 pub fn invalidate_dentry_path(abs_path: &str) {
     if let Some((parent_path, child_name)) = split_parent_child(abs_path) {
         if let Some(parent_inode) = FsIndex::find_inode_idx(parent_path) {
@@ -145,6 +169,9 @@ pub fn invalidate_dentry_path(abs_path: &str) {
     }
 }
 
+/// 将绝对路径对应 inode 写入其已缓存父目录的正目录项缓存。
+///
+/// 本函数不建立父目录 inode 索引，避免缓存更新路径隐式触发文件系统查找。
 pub fn cache_positive_dentry_path(abs_path: &str, inode: Arc<dyn Inode>) {
     if let Some((parent_path, child_name)) = split_parent_child(abs_path) {
         if let Some(parent_inode) = FsIndex::find_inode_idx(parent_path) {
@@ -153,6 +180,10 @@ pub fn cache_positive_dentry_path(abs_path: &str, inode: Arc<dyn Inode>) {
     }
 }
 
+/// 在 `abs_path` 创建节点，并返回与 `open(2)` 一致的文件对象。
+///
+/// 创建前检查父目录写和搜索权限，按进程 umask 修正权限位，并继承设有
+/// `S_ISGID` 父目录的组 ID 与 setgid 位。成功后同步 inode 索引和目录项缓存。
 fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
     debug!(
         "[create_file] abs_path={}, flags={:?}, mode={:o}",
@@ -259,6 +290,11 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     );
     Ok(FileClass::File(Arc::new(osinode)))
 }
+/// 实现打开文件的共享逻辑。
+///
+/// `map_dynamic` 为真时会映射动态库路径；普通用户态打开使用该模式，直接
+/// 打开入口则保留调用方提供的路径。该函数同时处理 inode/目录项缓存、
+/// 创建、`O_EXCL`、`O_DIRECTORY`、`O_NOATIME`、写权限、文件租约和 `O_TRUNC`。
 fn open_inner(
     abs_path: &str,
     flags: OpenFlags,
@@ -332,6 +368,10 @@ fn open_inner(
         if flags.contains(OpenFlags::O_DIRECTORY) && inode.types() != InodeType::Dir {
             return Err(SysErrNo::ENOTDIR);
         }
+        if flags.contains(OpenFlags::O_RDWR) && inode.types() == InodeType::Dir {
+            return Err(SysErrNo::EISDIR)
+        }
+
         check_noatime_permission(&inode, flags)?;
         let (readable, writable) = flags.read_write();
         // 如果以写模式打开，检查文件的写权限
@@ -404,10 +444,17 @@ fn open_inner(
     Err(SysErrNo::ENOENT)
 }
 
+/// 按常规用户态语义打开 `abs_path`。
+///
+/// 此入口会应用动态库路径映射；`mode` 仅在 `O_CREATE` 创建新节点时用于
+/// 计算初始权限，实际权限还会受当前进程 umask 影响。
 pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
     open_inner(abs_path, flags, mode, true)
 }
 
+/// 打开 `abs_path`，但不应用动态库路径映射。
+///
+/// 供内核内部需要精确访问调用方路径的场景使用，其余打开语义与 [`open`] 相同。
 pub fn open_direct(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
     open_inner(abs_path, flags, mode, false)
 }
