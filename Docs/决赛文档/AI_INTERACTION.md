@@ -572,3 +572,10 @@
 - **场景**：UML 图片删除后的设计文档图示重建、Typst 原生图形组件与 PDF/A 验证
 - **描述**：用户要求以 Typst 原生画图替换已删除 UML 图片。AI 新增可复用的流程、关系和交互图组件，并替换文档中的 19 个图片引用；图示改为可编辑的 Typst `block`、`stack`、`table` 结构，不再依赖 `Docs/uml/`。全文 PDF/A-2u 编译成功，且检查确认没有遗留图片或 UML 路径引用。详见 `Docs/决赛文档/ai.log` 2026-07-14 追加条目。
 - **关联 commit**：待提交
+
+#### 进程、线程与程序映像章节实现校准（7.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：Typst 进程管理章节与当前任务、syscall、ELF loader 源码对照及全文编译验证
+- **描述**：维护者要求按当前内核实现调整 `03-process-import.typ`。AI 重核 `Process`/`TaskControlBlock`/`ProcessMeta`、全局 FIFO ready queue、时钟触发的 `suspend_current_and_run_next()`、`clone`/受限 `clone3`、`execve`、exit/reparent 与 `waitpid`/`waitid` 路径，重写章节以删除过期字段和过度承诺。文档明确：调度具有时钟驱动轮转但尚无 CFS/负载均衡，TID/PID 当前不回收，`clone3` 是 legacy clone 适配层，ELF 动态解释器映射后的重定位仍在用户态完成。详见 `Docs/决赛文档/ai.log` 2026-07-14 追加条目。
+- **关联 commit**：待提交

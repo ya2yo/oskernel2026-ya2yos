@@ -4344,3 +4344,26 @@ AI 检查后确认本机没有 `pandoc`，因此实现受控的 Markdown→Typst
 ### 修改内容与验证
 
 新增 `Docs/ya2yos/diagrams.typ`，以 Typst 的 `block`、`stack` 和 `table` 定义原生流程图、对象关系图和交互图组件；替换模块依赖图、进程管理 11 张图、内存管理 6 张图及信号机制对象关系图，共 19 个 `image()` 引用。图形以可编辑的结构化文本表达关键对象和调用路径，不再访问 `Docs/uml/`。`rg` 确认没有残留 `image(...)` 或 `/Docs/uml/` 引用；PDF/A-2u 编译成功。未运行内核构建或 QEMU。
+
+---
+
+## 2026-07-14: 进程、线程与程序映像章节按当前内核实现校准
+
+### 用户需求
+
+用户要求根据当前内核的具体实现调整 `Docs/ya2yos/chapters/03-process-import.typ`。
+
+### 分析与采纳结论
+
+AI 核对了 `os/src/task/`、`os/src/syscall/task/` 和 ELF loader 的当前实现。旧章节包含已过期的 `ProcessInner` 资源布局，并将调度写为“FIFO 协作式”、将 `clone3` 表述为较完整实现，均与当前源码不符。当前实现以 `Process` 的 `ResourceSlot<MemorySet>` / `ResourceSlot<SigTable>`、TCB 线程私有状态和 `ProcessMeta` 为边界；时钟中断会进入 `suspend_current_and_run_next()`；`clone3` 只是受限的参数适配层；`TidHandle` 当前不归还 ID，避免 zombie 尚待 wait 时发生 PID/TID 重用。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `Docs/ya2yos/chapters/03-process-import.typ` | 重写进程、线程、调度、clone/clone3、execve、exit/wait 与 initproc 说明；按当前字段、控制流和 Linux ABI 行为更新图表，并新增已实现边界表。 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 追加本次 AI 文档校准记录。 |
+
+### 验证
+
+执行 `typst compile --root . --pdf-standard a-2u Docs/ya2yos/main.typ /tmp/ya2yos-process-doc-check.pdf` 成功，且 `git diff --check` 通过。未执行内核构建或 QEMU，因为本次仅修改设计文档。

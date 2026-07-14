@@ -12,12 +12,23 @@ use crate::{
     utils::SysErrNo,
 };
 
+/// 信号投递权限检查和发送者信息记录所需的最小凭据快照。
+///
+/// 该结构从发送任务或目标进程的一个存活线程提取，不替代完整的
+/// `TaskControlBlockInner` 凭据。`kill(2)` 路径使用 real/effective/saved UID
+/// 与会话 ID 判断是否允许投递；成功的用户态投递则使用 `pid` 和 `real_uid`
+/// 构造供 `SA_SIGINFO` handler 观察的 `siginfo_t`。
 #[derive(Clone, Copy)]
 struct SignalCred {
+    /// 进程 ID；作为用户态投递信号时 `siginfo_t.si_pid` 的来源。
     pid: usize,
+    /// Real UID；用于 Linux 风格的信号权限比较和 `siginfo_t.si_uid`。
     real_uid: u32,
+    /// Effective UID；root 发送者可绕过普通 UID 匹配规则。
     effective_uid: u32,
+    /// Saved set-user-ID；目标凭据允许与发送者 real/effective UID 匹配。
     saved_uid: u32,
+    /// 会话 ID；同一会话内的 `SIGCONT` 允许绕过普通 UID 匹配。
     sid: usize,
 }
 
