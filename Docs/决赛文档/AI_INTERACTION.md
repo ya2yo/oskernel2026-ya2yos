@@ -586,3 +586,10 @@
 - **场景**：`log.ans` 尾部卡死分析、fsopen/fspick/open_tree 匿名 fd I/O 能力校正、双架构构建和 LTP 回归记录
 - **描述**：维护者要求修复 `splice07` 最后卡死。AI 确认 `FsContextFd`/`DetachedMountFd` 虽以 `S_IFREG` 报告 stat，却是 mount API 控制 fd；两者继承 `File` trait 的默认可读写能力，令空 pipe 到 fsopen 的 `splice` 先阻塞读取而无法到达输出错误路径。修复为显式声明二者不可读、不可写，使 syscall 在 I/O 前返回 `EBADF`。RISC-V 与 LoongArch64 构建通过；维护者提供的最新 `log.ans` 显示 musl/glibc `splice07` 均为 `passed 566 failed 0 broken 0`，并结束于 `shutdown!`。详见 `Docs/决赛文档/ai.log` 2026-07-14 条目与 [problem/splice07-mount-context-fd-block.md](./problem/splice07-mount-context-fd-block.md)。
 - **关联 commit**：待提交
+
+#### LTP pipe2_01 flags ABI 丢失修复（7.14）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` pipe2 flags 失败分析、syscall ABI 参数传递、fd status/descriptor flag 初始化、双架构构建与 RISC-V QEMU 回归
+- **描述**：维护者要求修复新的 `pipe2_01` 失败。AI 确认 `Pipe2` 分发层丢弃了第二个 flags 参数，handler 又总以空 flags 创建 pipe fd，导致 `O_CLOEXEC`、`O_DIRECT`、`O_NONBLOCK` 的 `F_GETFD/F_GETFL` 结果均为零。修复为校验并传播三个 Linux 支持 flag，令 `O_NONBLOCK` 同步启用两个 Pipe 端点，`O_DIRECT` 按 Linux 仅在写端可见。RISC-V 与 LoongArch64 构建通过；RISC-V QEMU 中 musl/glibc `pipe2_01` 均 `passed 7 failed 0 broken 0` 并正常关机。完整 packet-mode framing 仍未实现，详见 `Docs/决赛文档/ai.log` 2026-07-14 条目与 [problem/pipe2-flags-propagation.md](./problem/pipe2-flags-propagation.md)。
+- **关联 commit**：待提交
