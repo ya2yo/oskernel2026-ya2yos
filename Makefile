@@ -76,6 +76,14 @@ log: set_env
 	@cd ./os && $(MAKE) build KERNEL_OUTPUT_LOG_LEVEL=debug
 	@$(MAKE) cleanup_cargo
 
+# 仅生成内核 crate 的 rustdoc；依赖仍会参与类型检查，但不生成其文档页面。
+doc: set_env_arch
+	@$(MAKE) setup_cargo
+	@echo "Generating os documentation for $(TARGET_ARCH) ($(TARGET))..."
+	@cd ./os && cargo doc --no-deps --target $(TARGET)
+	@$(MAKE) cleanup_cargo
+	@echo "os documentation: os/target/$(TARGET)/doc/os/index.html"
+
 # 注意，make run会创建一个临时软链接
 run:
 	@rm -f disk.img
@@ -118,6 +126,6 @@ docker:
 	docker run --rm -it -v $(PROJECT_ROOT):/workplace -w /workplace zhouzhouyi/os-contest:20260510 bash
 
 .PHONY: all all-arch riscv64-build loongarch64-build build-arch set_env_arch \
-        run log clean objdump gdbserver gdbclient setup_cargo cleanup_cargo set_env
+        run log doc clean objdump gdbserver gdbclient setup_cargo cleanup_cargo set_env
 
 .DEFAULT_GOAL := all
