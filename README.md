@@ -34,7 +34,7 @@ Docs/ya2yos/typst/ya2yos-kernel-design.pdf` 可生成 PDF。
 文档中的图均在[uml](./Docs/uml/)目录下。
 [演示视频](https://1839796361.share.123pan.cn/123pan/ihR2Td-F5MpH?pwd=ya2y#)
 
-主要开发分支在nightly, release分支只记录可以在评测机正常跑分的版本。
+主要开发分支在nightly, main分支只记录可以在评测机正常跑分的版本。
 
 参考项目及书籍:
 
