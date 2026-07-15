@@ -22,14 +22,14 @@ pub(super) fn parse_proc_self_fd(path: &str) -> Option<usize> {
 /// 参考 https://man7.org/linux/man-pages/man2/getcwd.2.html
 pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let cwd = proc_inner.fs_info.get_cwd();
+    let proc = &task.process;
+    let cwd = proc.fs_info.get_cwd();
     let cwd_bytes = cwd.as_bytes();
     let cwd_len_with_null = cwd_bytes.len() + 1;
     if size < cwd_len_with_null {
         return Err(SysErrNo::ERANGE);
     }
-    let memory_set = proc_inner.memory_set_arc();
+    let memory_set = proc.memory_set_arc();
     let mut cwd_with_null = vec![0u8; cwd_len_with_null];
     cwd_with_null[..cwd_bytes.len()].copy_from_slice(cwd_bytes);
     copy_to_user(&memory_set, buf as usize, &cwd_with_null)?;
@@ -39,8 +39,8 @@ pub fn sys_getcwd(buf: *const u8, size: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/chdir.2.html
 pub fn sys_chdir(path: *const u8) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
 
     if (path as isize) <= 0 || if_bad_address(path as usize) {
         return Err(SysErrNo::EFAULT);
@@ -52,13 +52,15 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
         return Err(SysErrNo::ENAMETOOLONG);
     }
 
-    let locked_fs_info = &proc_inner.fs_info;
+    let locked_fs_info = &proc.fs_info;
     let abs_path = get_abs_path(&locked_fs_info.get_cwd(), &path);
     let osfile = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     if !osfile.inode.types().is_dir() {
         return Err(SysErrNo::ENOTDIR);
     }
-    locked_fs_info.set_cwd(abs_path);
+    // `open()` follows the final symlink. Keep the resolved directory path so
+    // getcwd() reports the directory itself rather than the symlink alias.
+    locked_fs_info.set_cwd(osfile.inode.path());
 
     Ok(0)
 }
@@ -81,8 +83,8 @@ pub fn sys_chroot(path: *const u8) -> SyscallRet {
     }
 
     let path_str = {
-        let proc_inner = &task.process;
-        let memory_set = proc_inner.memory_set_arc();
+        let proc = &task.process;
+        let memory_set = proc.memory_set_arc();
         read_user_cstr(&memory_set, path)?
     };
 
@@ -100,36 +102,37 @@ pub fn sys_chroot(path: *const u8) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/readlinkat.2.html
 pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
     let path = read_user_cstr(&memory_set, path)?;
 
     if path == "/proc/self/exe" {
-        let mut exe: String = proc_inner.fs_info.get_exe();
+        let mut exe: String = proc.fs_info.get_exe();
         exe.push('\0');
 
         let res = exe.len();
-        let mem = proc_inner.memory_set_arc();
+        let mem = proc.memory_set_arc();
         copy_to_user(&*mem, buf as usize, exe.as_bytes())?;
         return Ok(res);
     }
 
     let bufsize = core::cmp::min(bufsize, 4096usize);
-    let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    let abs_path = proc.get_abs_path(dirfd, &path)?;
     if let Some(fd) = parse_proc_self_fd(&abs_path) {
-        proc_inner.fd_table.get(fd)?;
-        let target = proc_inner.fs_info.fd_path(fd).ok_or(SysErrNo::ENOENT)?;
+        proc.fd_table.get(fd)?;
+        let target = proc.fs_info.fd_path(fd).ok_or(SysErrNo::ENOENT)?;
         let readcnt = target.len().min(bufsize);
         copy_to_user(&*memory_set, buf as usize, &target.as_bytes()[..readcnt])?;
         return Ok(readcnt);
     }
     let mut linkbuf = vec![0u8; bufsize];
-    let file = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
+    // readlinkat() operates on the link itself instead of its target.
+    let file = open(&abs_path, OpenFlags::O_UNLINK, NONE_MODE)?.file()?;
     if !file.inode.types().is_symlink() {
         return Err(SysErrNo::EINVAL);
     }
     let readcnt = file.inode.read_link(&mut linkbuf, bufsize)?;
-    let mem = proc_inner.memory_set_arc();
+    let mem = proc.memory_set_arc();
     copy_to_user(&*mem, buf as usize, &linkbuf[..readcnt])?;
     Ok(readcnt)
 }
@@ -239,8 +242,8 @@ fn do_faccessat(dirfd: i32, path: *const u8, mode: u32, flags: usize) -> Syscall
         inner.real_gid
     };
     drop(inner);
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
 
     let mode = FaccessatMode::from_bits(mode).ok_or(SysErrNo::EINVAL)?;
     let path = if path.is_null() {
@@ -268,17 +271,17 @@ fn do_faccessat(dirfd: i32, path: *const u8, mode: u32, flags: usize) -> Syscall
         if dirfd < 0 {
             return Err(SysErrNo::EBADF);
         }
-        proc_inner.fd_table.get(dirfd as usize)?;
+        proc.fd_table.get(dirfd as usize)?;
     }
 
     if path.is_empty() {
         let file = if dirfd == AT_FDCWD {
-            let cwd = proc_inner.fs_info.get_cwd();
+            let cwd = proc.fs_info.get_cwd();
             open(&cwd, OpenFlags::O_RDONLY, NONE_MODE)?.any()
         } else if dirfd < 0 {
             return Err(SysErrNo::EBADF);
         } else {
-            proc_inner.fd_table.get(dirfd as usize)?.any()
+            proc.fd_table.get(dirfd as usize)?.any()
         };
         let file_stat = file.fstat();
         let file_mode = FaccessatFileMode::from_bits_truncate(file_stat.st_mode & 0xfff);
@@ -294,7 +297,7 @@ fn do_faccessat(dirfd: i32, path: *const u8, mode: u32, flags: usize) -> Syscall
         dirfd, path, mode, flags
     );
 
-    let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
+    let abs_path = proc.get_abs_path(dirfd as isize, &path)?;
     let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
     let parent_inode = open(&parent_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     let parent_mode = parent_inode.inode.fmode()? & 0xfff;

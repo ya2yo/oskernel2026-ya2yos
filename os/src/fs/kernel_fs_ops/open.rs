@@ -106,7 +106,7 @@ fn check_noatime_permission(inode: &Arc<dyn Inode>, flags: OpenFlags) -> SysResu
 /// 使用已缓存的父目录执行一次末级目录项查找。
 ///
 /// 返回 `None` 表示父目录未缓存，调用者应退回到根 inode 的完整路径查找。
-/// `O_NOFOLLOW` 禁用目录项缓存，以保留底层路径解析对末级符号链接的处理。
+/// `O_NOFOLLOW` 与内部 `O_UNLINK` 禁用目录项缓存，以保留末级符号链接本身的语义。
 fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult<Arc<dyn Inode>>> {
     let (parent_path, child_name) = split_parent_child(abs_path)?;
     let parent_inode = FsIndex::find_inode_idx(parent_path)?;
@@ -114,7 +114,8 @@ fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult
         return Some(Err(SysErrNo::ENOTDIR));
     }
 
-    if !flags.contains(OpenFlags::O_NOFOLLOW) {
+    let preserve_final_symlink = flags.intersects(OpenFlags::O_NOFOLLOW | OpenFlags::O_UNLINK);
+    if !preserve_final_symlink {
         match DENTRY_CACHE.lookup(&parent_inode, child_name) {
             Some(DentryLookup::Positive(inode)) => return Some(Ok(inode)),
             Some(DentryLookup::Negative) if !flags.contains(OpenFlags::O_CREATE) => {
@@ -130,13 +131,13 @@ fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult
         if lookup_path != abs_path {
             FsIndex::insert_inode_idx(abs_path, inode.clone());
         }
-        if !flags.contains(OpenFlags::O_NOFOLLOW) {
+        if !preserve_final_symlink {
             DENTRY_CACHE.insert_positive(&parent_inode, child_name, inode.clone());
         }
         inode
     });
     if found.as_ref().err() == Some(&SysErrNo::ENOENT)
-        && !flags.contains(OpenFlags::O_NOFOLLOW)
+        && !preserve_final_symlink
         && !flags.contains(OpenFlags::O_CREATE)
     {
         DENTRY_CACHE.insert_negative(&parent_inode, child_name);
@@ -341,7 +342,9 @@ fn open_inner(
 
     let mut inode: Option<Arc<dyn Inode>> = None;
     // 同一个路径对应一个Inode
-    if !flags.contains(OpenFlags::O_NOFOLLOW) && FsIndex::has_inode(abs_path) {
+    if !flags.intersects(OpenFlags::O_NOFOLLOW | OpenFlags::O_UNLINK)
+        && FsIndex::has_inode(abs_path)
+    {
         inode = FsIndex::find_inode_idx(abs_path);
     } else {
         let found_res = find_from_cached_parent(abs_path, flags)

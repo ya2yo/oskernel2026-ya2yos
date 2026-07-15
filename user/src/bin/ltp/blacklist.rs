@@ -552,7 +552,7 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "get_mempolicy02\0",
     "get_robust_list01\0",
     "getaddrinfo_01\0",
-    "getcwd03\0",
+    "getcwd04\0",
     "getdents02\0",
     "getegid01\0",
     "getegid01_16\0",

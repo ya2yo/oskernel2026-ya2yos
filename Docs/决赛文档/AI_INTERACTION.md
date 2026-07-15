@@ -656,3 +656,10 @@
 - **场景**：`log.ans` clone08 TBROK 分析、Linux clone/clone3 语义对照、双架构 QEMU 回归及 LoongArch musl 二进制诊断
 - **描述**：维护者要求继续修复 `clone08`。AI 确认内核错误地把 clone3 的 `CLONE_THREAD` exit signal 限制套用于 legacy `clone(2)`，使 LTP 的 `... | SIGCHLD` 调用返回 `EINVAL`。修复后 RISC-V musl/glibc 和 LoongArch glibc 的五项 clone08 断言全部通过，包含线程组 ID 和 `CLONE_CHILD_CLEARTID` futex 唤醒。LoongArch musl 的残余失败经 debug syscall 日志和镜像 `libc.so` 反汇编确认发生在用户态 wrapper，它以 `flags & 0x290000` 直接返回 `EINVAL`，没有进入内核；未修改测试镜像或伪造测例结果。详见 [problem/clone08-legacy-clone-thread-signal.md](./problem/clone08-legacy-clone-thread-signal.md)。
 - **关联 commit**：待提交
+
+#### LTP getcwd03 符号链接 cwd 与 readlink 语义修复（7.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 与 LTP getcwd03 源码对照、cwd/符号链接路径解析分析、VFS 缓存语义修复、双架构 QEMU 回归
+- **描述**：维护者要求修复 `getcwd03`。AI 确认 `chdir()` 虽经 `open()` 解析符号链接目标，却错误保存未解析的链接路径，令 `getcwd()` 返回别名；修复后测试继续暴露 `readlinkat()` 跟随末级链接并返回 `EINVAL`。最终令 `chdir` 保存目标 inode 路径，`readlinkat` 使用保留链接的内部查找，并让 `O_UNLINK/O_NOFOLLOW` 绕过已跟随链接的 inode/dentry cache。LoongArch64 和 RISC-V 的 musl/glibc `getcwd03` 均为 `passed 1 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/getcwd03-symlink-cwd-readlink-cache.md](./problem/getcwd03-symlink-cwd-readlink-cache.md)。
+- **关联 commit**：待提交

@@ -25,6 +25,7 @@
 - [bind04 AF_UNIX SEQPACKET 与 sockaddr_storage 长度兼容](./bind04-unix-seqpacket-sockaddr.md)
 - [LTP socket01 socket type errno 语义修复](./socket01-socket-type-errno.md)
 - [LTP socketpair01 协议 errno 与用户指针语义修复](./socketpair01-protocol-errno.md)
+- [LTP getcwd03 符号链接 cwd 与 readlink 语义修复](./getcwd03-symlink-cwd-readlink-cache.md)
 - [LTP clone02 共享资源退出清理修复](./clone02-shared-resource-exit.md)
 - [LTP clone08 legacy clone 线程退出信号兼容](./clone08-legacy-clone-thread-signal.md)
 - [chown04 chown errno 语义修复](./chown04-chown-errno.md)

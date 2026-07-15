@@ -4663,3 +4663,39 @@ LoongArch musl 仍失败，因此 AI 使用 debug 内核确认该分支没有 `C
 ### 验证
 
 执行 `cargo fmt --manifest-path os/Cargo.toml`、`make`、RISC-V/LoongArch64 QEMU 单测，以及 `make TARGET_ARCH=loongarch64 log` 的诊断回归。RISC-V musl/glibc 和 LoongArch glibc 均为 `passed 5 failed 0 broken 0 skipped 0 warnings 0` 并正常 `shutdown!`。LoongArch musl 为 `passed 3 failed 0 broken 1`，唯一 TBROK 是 libc wrapper 本地 `EINVAL`；debug 证实内核没有收到该请求。诊断后已恢复 release 双架构构建。
+
+---
+
+## 2026-07-15: LTP getcwd03 符号链接 cwd 与 readlink 语义修复
+
+### 用户需求
+
+维护者要求分析当前 `log.ans` 中的 `getcwd03` 失败并进行修复。
+
+### 分析与采纳结论
+
+AI 对照 LTP 源码、`sys_chdir()`、`sys_getcwd()` 和 ext4 symlink 查找，确认测例不涉及
+`CLONE_FS`：它要求通过真实目录和符号链接进入同一目录后得到相同 cwd。内核已经在
+`open()` 中跟随链接验证目标目录，但 `sys_chdir()` 把未解析的输入路径写入 `FSInfo.cwd`，
+令 `getcwd()` 返回链接别名。
+
+首次修复该 cwd 记录后，测试推进到 `readlink()` 并暴露 `TBROK EINVAL`。根因是
+`sys_readlinkat()` 用普通 `open()` 跟随了末级链接；同时 inode/dentry cache 可把链接名
+缓存成已解析目录，使内部 unlink 风格查找也丢失链接对象身份。采纳方案是 `chdir` 保存
+目标 inode 路径，`readlinkat` 使用内部 `O_UNLINK`，并让 `O_UNLINK/O_NOFOLLOW` 绕过相关
+缓存命中和回填。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/fs/path.rs` | `chdir` 保存解析后的 inode 路径；`readlinkat` 保留末级符号链接。 |
+| `os/src/fs/kernel_fs_ops/open.rs` | `O_UNLINK/O_NOFOLLOW` 不使用已跟随链接的 FsIndex/dentry 缓存。 |
+| `Docs/决赛文档/problem/getcwd03-symlink-cwd-readlink-cache.md` | 记录根因、修复与跨架构验证。 |
+
+### 验证
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check` 与 `make TARGET_ARCH=loongarch64` 通过；
+根 Makefile 同时完成 RISC-V 和 LoongArch64 构建，仅有既有 vendored `smoltcp` warning。
+LoongArch64 与 RISC-V QEMU 中，musl/glibc `getcwd03` 均为 `passed 1 failed 0 broken 0`
+并正常 `shutdown!`。
