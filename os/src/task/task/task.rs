@@ -747,6 +747,14 @@ impl TaskControlBlock {
 
         drop(child_inner);
         tid_to_task::insert(child.tid(), &child);
+        if !flags.contains(CloneFlags::CLONE_THREAD) {
+            if flags.contains(CloneFlags::CLONE_FILES) {
+                child.process.fd_table.acquire_owner();
+            }
+            if flags.contains(CloneFlags::CLONE_FS) {
+                child.process.fs_info.acquire_owner();
+            }
+        }
         Ok(child.clone())
     }
 

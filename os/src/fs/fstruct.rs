@@ -6,6 +6,7 @@ use crate::{
     utils::{SysErrNo, SysResult, SyscallRet},
 };
 use alloc::{sync::Arc, vec, vec::Vec};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use log::debug;
 use spin::rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -13,6 +14,10 @@ use spin::rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use super::{DetachedMountFd, File, FileClass, FsContextFd, OpenFlags, Stdin, Stdout};
 pub struct FdTable {
     inner: RwLock<FdTableInner>,
+    // Tracks live processes sharing this table.  Arc references can outlive a
+    // process while it remains a zombie for wait(2), so they cannot model fd
+    // table ownership.
+    owners: AtomicUsize,
 }
 
 #[derive(Clone)]
@@ -200,6 +205,7 @@ impl FdTable {
     fn new(fd_table: FdTableInner) -> Self {
         Self {
             inner: RwLock::new(fd_table),
+            owners: AtomicUsize::new(1),
         }
     }
 
@@ -234,6 +240,21 @@ impl FdTable {
                 hard_limit: other.hard_limit,
                 files: other.files.clone(),
             }),
+            owners: AtomicUsize::new(1),
+        }
+    }
+
+    /// Register one non-thread process created with CLONE_FILES.
+    pub fn acquire_owner(&self) {
+        self.owners.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Release one exiting process.  The last live owner closes all fds.
+    pub fn release_owner(&self) {
+        let previous = self.owners.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "fd table owner count underflow");
+        if previous == 1 {
+            self.clear();
         }
     }
 

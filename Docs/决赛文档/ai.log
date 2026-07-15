@@ -4608,3 +4608,31 @@ AI 以 `TPASS`、`TFAIL`、`TBROK` 和 panic 行定位，确认 musl LTP 的 `ki
 ### 验证
 
 执行 `rustfmt --edition 2021 os/src/signal/frame.rs`、`make TARGET_ARCH=loongarch64` 和 `timeout 120s make run > /tmp/kill10-aligned.log 2>&1`。根 `Makefile` 实际完成 RISC-V 与 LoongArch64 构建，只有既有 vendored `smoltcp` warning。LoongArch64 QEMU 中 musl/glibc `kill10` 均为 `passed 1 failed 0 broken 0`，并正常 `shutdown!`；日志无 `setup_frame` 错误或 panic。当前维护者未提交的 `initproc.rs` 只运行这两个单测，未重跑完整 glibc LTP，完整回归待恢复全量入口后执行。
+
+---
+
+## 2026-07-15: LTP clone02 共享资源退出清理修复
+
+### 用户需求
+
+维护者要求分析 `log.ans`，找出 `clone02` 问题并修复。
+
+### 分析与采纳结论
+
+AI 先以 LTP 的 `TPASS/TFAIL/TBROK` 和 Summary 检查原始日志，确认 musl/glibc 均以 wait status `1024` 退出。`1024 >> 8 == 4` 是 LTP `TWARN` 位，外层 `FAIL LTP CASE` 不是断言细节；glibc 的 `write EBADF` 指向 stdout/stderr 生命周期。对照 `clone02.c` 可知第一轮会以 `CLONE_FILES` 共享 fd table，子进程关闭测试 fd 后仍需由父进程继续写入 LTP 结果。
+
+AI 追踪到 `exit_current_and_run_next()` 无条件 `fd_table.clear()` / `fs_info.clear()`，确认共享子进程退出会关闭父进程的 pipe stdout/stderr。首次使用 `Arc::strong_count()` 阻止共享清理后，两条断言恢复为 `TPASS`，但 wrapper 因 zombie `Process` 在 reap 前保留 `Arc<FdTable>` 而收不到 EOF、QEMU 超时。采纳独立活跃进程所有者计数：非线程 `CLONE_FILES` / `CLONE_FS` 成功创建时加一，每个进程组退出时减一，最后一个活跃所有者才清理资源。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/fs/fstruct.rs` | 为 `FdTable` 增加活跃进程所有者计数和 acquire/release 接口。 |
+| `os/src/fs/fs_info.rs` | 为 `FSInfo` 增加同样的独立所有者计数。 |
+| `os/src/task/task/task.rs` | 成功创建非线程 `CLONE_FILES` / `CLONE_FS` 子进程后登记共享资源所有者。 |
+| `os/src/task/mod.rs` | 进程组退出时释放资源所有者，仅由最后一个活跃进程执行清理。 |
+| `Docs/决赛文档/problem/clone02-shared-resource-exit.md` | 记录根因、两阶段观察和验证边界。 |
+
+### 验证
+
+执行 `cargo fmt --manifest-path os/Cargo.toml`、`make`、`timeout 120s make run > /tmp/clone02-after-fix.log 2>&1` 和 `timeout 120s make TARGET_ARCH=loongarch64 run > /tmp/clone02-loongarch-after-fix.log 2>&1`。`make` 完成 RISC-V 与 LoongArch64 构建，只有既有 vendored `smoltcp` warning。两架构 QEMU 中 musl 与 glibc `clone02` 均输出两条 `TPASS`，Summary 均为 `passed 2 failed 0 broken 0 skipped 0 warnings 0`，返回状态为 0 并正常 `shutdown!`；LoongArch 启动期的 VirtIO 分配 WARN 为既有日志，测例期间没有 WARN、panic、TFAIL 或 TBROK。

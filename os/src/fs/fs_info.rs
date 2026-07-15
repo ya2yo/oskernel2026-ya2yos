@@ -1,5 +1,6 @@
 //! 文件系统的环境上下文
 use alloc::string::{String, ToString};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use hashbrown::HashMap;
 use log::debug;
 use spin::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -7,6 +8,9 @@ use spin::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 /// 文件相关信息
 pub struct FSInfo {
     inner: RwLock<FSInfoInner>,
+    // Process ownership is distinct from Arc lifetime because zombie
+    // processes retain their Process metadata until wait(2) reaps them.
+    owners: AtomicUsize,
 }
 
 struct FSInfoInner {
@@ -82,6 +86,7 @@ impl FSInfo {
     pub fn new_initproc() -> Self {
         Self {
             inner: RwLock::new(FSInfoInner::new_for_initproc()),
+            owners: AtomicUsize::new(1),
         }
     }
     /// 通过已有对象进行创建
@@ -89,6 +94,21 @@ impl FSInfo {
         let inner = another.inner.read();
         Self {
             inner: RwLock::new(FSInfoInner::from_another(&inner)),
+            owners: AtomicUsize::new(1),
+        }
+    }
+
+    /// Register one non-thread process created with CLONE_FS.
+    pub fn acquire_owner(&self) {
+        self.owners.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Release one exiting process and discard state after the last owner.
+    pub fn release_owner(&self) {
+        let previous = self.owners.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "fs info owner count underflow");
+        if previous == 1 {
+            self.clear();
         }
     }
     /// 清除自身

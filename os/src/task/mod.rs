@@ -375,8 +375,13 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             }
             file_lock::release_posix_locks_by_owner(curr_task.pid() as i32);
             file_lock::release_file_leases_by_owner(curr_task.pid() as i32);
-            fd_table.clear();
-            fs_info.clear();
+            // CLONE_FILES / CLONE_FS share these resources across processes.
+            // A zombie still keeps an Arc through its Process metadata, so
+            // Arc::strong_count cannot determine whether a live process
+            // remains.  The resource owner counts are decremented exactly
+            // once when each process group exits.
+            fd_table.release_owner();
+            fs_info.release_owner();
 
             curr_task.process.set_group_exit_code_once(exit_code);
             curr_task.process.exit_and_reparent();

@@ -642,3 +642,10 @@
 - **场景**：`loongarch.ans` panic 分析、LTP `kill10` 信号洪泛路径对照、signal frame 用户内存错误处理、双架构构建与 LoongArch64 QEMU 单测回归
 - **描述**：维护者报告 glibc 全量 LTP 的 `kill10` 在 `setup_frame` 保存 `MachineContext` 时 panic。AI 确认底层 `copy_to_user()` 是可失败的用户内存访问，原实现错误地以 `panic!()` 处理 `EFAULT`，并漏算一个 signal frame marker、让 `SA_SIGINFO` handler 的 LoongArch 栈失去 16 字节对齐，且在任务锁内访问用户内存。修复为完整 frame 范围预检、frame 顶端对齐填充、任务锁外进行 COW/懒分配和写入、成功后再提交 trap context；预检或写入失败仅终止当前任务为 `SIGSEGV`。RISC-V/LoongArch64 构建通过，LoongArch64 musl/glibc 单跑 `kill10` 均 `passed 1 failed 0 broken 0` 且无 panic；全量 LTP 待恢复全量入口复跑。详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/kill10-signal-frame-efault-panic.md](./problem/kill10-signal-frame-efault-panic.md)。
 - **关联 commit**：待提交
+
+#### LTP clone02 共享资源退出清理修复（7.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 的 clone02 失败分析、LTP 源码与共享资源生命周期对照、双架构构建及 RISC-V QEMU 回归
+- **描述**：维护者要求分析 `log.ans` 并修复 `clone02`。AI 确认原始 `1024` 是 LTP `TWARN` 退出位，根因是共享 `CLONE_FILES` 子进程退出时无条件清空 `FdTable`/`FSInfo`，关闭父进程仍在使用的 LTP 输出 pipe。仅按 `Arc` 计数跳过清理会被 zombie 的 `Process` 引用阻塞，令 pipe 永不 EOF。修复为 `FdTable`/`FSInfo` 维护独立的活跃进程所有者计数，非线程 `CLONE_FILES`/`CLONE_FS` 成功创建时登记，进程组退出时释放，最后一个活跃拥有者才清理。RISC-V 与 LoongArch64 QEMU 中 musl/glibc `clone02` 均为 `passed 2 failed 0 broken 0` 并正常关机。详见 [problem/clone02-shared-resource-exit.md](./problem/clone02-shared-resource-exit.md)。
+- **关联 commit**：待提交

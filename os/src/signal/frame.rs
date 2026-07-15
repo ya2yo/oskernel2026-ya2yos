@@ -67,6 +67,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
 
     let raw_frame_size = if sig_action.act.sa_flags.contains(SigActionFlags::SA_SIGINFO) {
         // 实时信号
+        // 上下文 + SigInfo + 返回地址 + 对齐占位
         size_of::<UserContext>() + size_of::<SigInfo>() + 2 * size_of::<usize>()
     } else {
         // 传统信号
