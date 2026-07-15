@@ -607,3 +607,10 @@
 - **场景**：`log.ans` 分析、`open(2)` 目录与 `O_PATH` flag 语义校准、双架构构建与 QEMU 回归尝试、文档完善
 - **描述**：维护者要求分析 `open11` 的三个失败并按 Linux 真实语义完善 `open_inner()`。AI 确认 `O_WRONLY` 是 access mode 值而非 `O_RDWR` 的子 flag，原实现只拒绝 `O_RDWR` 目录；同时遗漏了已有目录上的 `O_CREAT`。修复改由 `read_write()` 判断真实写意图，并让非 `O_PATH` 的 `O_CREAT/O_TRUNC` 目录返回 `EISDIR`；`O_PATH` 不再触发创建、截断或 `O_NOATIME` 权限检查。`make` 的 RISC-V/LoongArch64 构建均通过；当前 RISC-V QEMU 的两个 `open11` 二进制在断言前 `IllegalInstruction` 退出，LoongArch64 QEMU 因沙箱 `/var/tmp` 只读未启动，运行回归待可用环境复测。详见 [problem/open11-directory-open-flags.md](./problem/open11-directory-open-flags.md)。
 - **关联 commit**：待提交
+
+#### LTP openat201 openat2 resolve 与 ABI 修复（7.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 中 openat2 resolve 失败分析、`open_how` ABI 校验与路径约束实现、双架构构建及 RISC-V QEMU 回归记录
+- **描述**：维护者要求修复 `openat2`。AI 确认 `sys_openat2()` 仅接受 `RESOLVE_CACHED`，导致 LTP `openat201` 的五个基础 resolve 标志均过早返回 `EINVAL`。修复将普通 `openat` 内核路径打开抽为共享入口，并补齐 `open_how` 扩展尾部、未知 flags、mode、pathname、dirfd 和 resolve 的 ABI 校验；对当前 LTP 覆盖实现 `BENEATH`、`IN_ROOT`、`NO_XDEV`、`NO_MAGICLINKS` 与 `NO_SYMLINKS` 的最小约束。RISC-V 和 LoongArch64 构建通过；维护者提供的 `log.ans` 显示 RISC-V musl/glibc `openat201` 均 `passed 16 failed 0 broken 0` 并正常关机。`openat202/203` 尚未单独回归，详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/openat2-open-how-resolve.md](./problem/openat2-open-how-resolve.md)。
+- **关联 commit**：待提交

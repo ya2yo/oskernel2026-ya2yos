@@ -4473,3 +4473,29 @@ AI 确认 musl/glibc 都是 `passed 25 failed 3 broken 0`，失败分别为目�
 ### 验证
 
 执行 `cargo fmt --manifest-path os/Cargo.toml`、`git diff --check` 和 `make`。`make` 已完成 RISC-V/LoongArch64 构建，只有既有 vendored `smoltcp` warning。RISC-V `make run` 启动到用户态后，musl/glibc `open11` 均在 LTP 断言前以 `IllegalInstruction` 退出，不能作为本修复的有效回归结果；LoongArch64 `make TARGET_ARCH=loongarch64 run` 因沙箱 `/var/tmp` 只读而未启动 QEMU。需在可用 QEMU 环境复跑 `open11`。
+
+---
+
+## 2026-07-15: LTP openat201 openat2 resolve 与 ABI 修复
+
+### 用户需求
+
+用户要求根据 `log.ans` 修复 `openat2`。失败日志显示 RISC-V musl/glibc `openat201` 都是 `passed 6 failed 10 broken 0`，失败调用均携带基础 `resolve` 标志并返回 `EINVAL`。
+
+### 分析与采纳结论
+
+AI 对照 `openat201.c`、`openat202.c`、`openat203.c` 及 `sys_openat2()` 确认，现有实现只把 `RESOLVE_CACHED` 视作合法标志，其余 resolve 位在进入 VFS 前统一拒绝。因而 `openat201` 中并未触发越界、符号链接或跨挂载的安全相对路径也无法打开。
+
+进一步检查发现 `openat2` 还遗漏了 ABI 所需的扩展 `open_how` 尾部检查、未知 open flags、mode 与 `O_CREAT/O_TMPFILE` 的组合、空 pathname 和未知 resolve 位校验。采纳方案是将普通 `openat` 的内核路径打开部分抽出为 `sys_openat_path()`，让 `openat2` 先安全复制并校验 ABI，再施加最小 resolve 约束后复用同一 VFS 打开逻辑。`RESOLVE_NO_SYMLINKS` 使用已有 `O_NOFOLLOW`，其余 LTP 当前覆盖的约束在路径解析前返回对应的 `EXDEV` 或 `ELOOP`。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/fs/fd_ops.rs` | 抽取 `sys_openat_path()`；补齐 `open_how` 尾部、flags/mode/pathname/dirfd 校验和基础 resolve 约束。 |
+| `Docs/决赛文档/problem/openat2-open-how-resolve.md` | 记录失败、根因、实现范围和验证状态。 |
+| `Docs/决赛文档/problem/README.md`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md` | 补充索引、开发与 AI 使用记录。 |
+
+### 验证
+
+执行 `make TARGET_ARCH=riscv64`，实际完成 RISC-V 与 LoongArch64 两个构建。沙箱内的 `make run` 因 QEMU 不能在只读 `/var/tmp` 创建临时文件而未进入内核；维护者随后在可用环境运行并提供最新 `log.ans`。日志显示 RISC-V musl/glibc `openat201` 均为 `passed 16 failed 0 broken 0 skipped 0 warnings 0`，全部 16 个断言 `TPASS`，且正常 `shutdown!`。当前 `initproc` 只运行 `openat201`，`openat202/203` 尚待单独回归。

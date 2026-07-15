@@ -6,6 +6,7 @@
 - [pipe2 flags 丢失导致 F_GETFD/F_GETFL 失败](./pipe2-flags-propagation.md)
 - [open02 O_NOATIME 权限检查缺失](./open02-noatime-permission.md)
 - [open11 目录打开 flags 语义](./open11-directory-open-flags.md)
+- [openat2 open_how ABI 与 resolve 基础语义](./openat2-open-how-resolve.md)
 - [pipe SIGPIPE 与 FIONREAD 语义修复](./pipe-sigpipe-fionread.md)
 - [RISC-V Alpine initfiles 与动态链接路径兼容](./riscv-alpine-initfiles-dynamic-link.md)
 - [iperf: 5001 端口复用与 glibc TCGETS 栈破坏](./iperf-port-reuse-termios-stack-smash.md)

@@ -2,16 +2,17 @@ use core::{future::poll_fn, task::Poll};
 
 use super::fcntl::*;
 use super::file_lock;
+use crate::arch::memory_layout::PAGE_SIZE;
 use crate::fs::{
     map_dynamic_link_file, notify_path_event, open, open_fifo, refresh_proc_maps,
     refresh_proc_stat, refresh_proc_status, superblock_root_inode, File, FileClass, FileDescriptor,
-    FsIndex, OpenFlags, PagemapFile, TmpFile, FAN_OPEN,
+    FsIndex, OpenFlags, PagemapFile, TmpFile, FAN_OPEN, MNT_TABLE,
 };
 use crate::mm::{copy_from_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::fs::has_too_long_path_component;
 use crate::syscall::Syscall;
 use crate::task::{block_on, current_task, interruptible, Process};
-use crate::utils::{SysErrNo, SyscallRet};
+use crate::utils::{get_abs_path, is_abs_path, SysErrNo, SyscallRet};
 use alloc::{
     format,
     string::{String, ToString},
@@ -20,7 +21,7 @@ use alloc::{
     vec::Vec,
 };
 use linux_raw_sys::general::open_how;
-use log::{debug, error, warn};
+use log::{debug, error};
 
 /// https://man7.org/linux/man-pages/man2/flock.2.html
 ///
@@ -177,15 +178,25 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     let task = current_task().unwrap();
     let proc_inner = &task.process;
     let memory_set = proc_inner.memory_set_arc();
-    let fd_table = proc_inner.fd_table.clone();
-    let fs_info = proc_inner.fs_info.clone();
     let path = read_user_cstr(&*memory_set, path)?;
+    drop(memory_set);
+
+    sys_openat_path(dirfd, &path, flags, mode)
+}
+
+/// `openat` 的内核路径入口。用户指针解码保留在 [`sys_openat`]；`openat2` 完成
+/// 自己的 ABI 与 resolve 校验后也复用此处，避免两套打开语义发生偏差。
+fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRet {
     if has_too_long_path_component(&path) {
         return Err(SysErrNo::ENAMETOOLONG);
     }
-    drop(memory_set);
 
-    let mut flags = OpenFlags::from_bits(flags).unwrap();
+    let task = current_task().unwrap();
+    let proc_inner = &task.process;
+    let fd_table = proc_inner.fd_table.clone();
+    let fs_info = proc_inner.fs_info.clone();
+
+    let mut flags = OpenFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
 
     let mut abs_path = proc_inner.get_abs_path(dirfd, &path)?;
     debug!(
@@ -430,9 +441,105 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
 /// - `how`: 指向 struct open_how 的指针
 /// - `usize`: sizeof(struct open_how)，应 >= 24
 ///
-/// struct open_how { __u64 flags; __u64 mode; __u64 resolve; }
-///
-/// 当前实现忽略 resolve 字段，直接委托给 sys_openat。
+/// `struct open_how { __u64 flags; __u64 mode; __u64 resolve; }`
+/// 的 resolve 掩码。
+const RESOLVE_NO_XDEV: u64 = 0x01;
+const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+const RESOLVE_BENEATH: u64 = 0x08;
+const RESOLVE_IN_ROOT: u64 = 0x10;
+const RESOLVE_CACHED: u64 = 0x20;
+const RESOLVE_KNOWN: u64 = RESOLVE_NO_XDEV
+    | RESOLVE_NO_MAGICLINKS
+    | RESOLVE_NO_SYMLINKS
+    | RESOLVE_BENEATH
+    | RESOLVE_IN_ROOT
+    | RESOLVE_CACHED;
+
+/// 返回路径所在的挂载根。`/proc` 目前由 rootfs 内的伪文件模拟，但仍须作为
+/// `RESOLVE_NO_XDEV` 可见的独立挂载点处理。
+fn openat2_mount_root(path: &str) -> String {
+    if path == "/proc" || path.starts_with("/proc/") {
+        return String::from("/proc");
+    }
+
+    MNT_TABLE
+        .lock()
+        .mount_for_path(path)
+        .map(|(_, dir, _, _)| dir)
+        .unwrap_or_else(|| String::from("/"))
+}
+
+/// `RESOLVE_BENEATH` 只允许相对路径在起点之下移动；任何试图越过起点的
+/// `..` 都必须返回 `EXDEV`。
+fn openat2_escapes_beneath(path: &str) -> bool {
+    if is_abs_path(path) {
+        return true;
+    }
+
+    let mut depth = 0usize;
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." if depth == 0 => return true,
+            ".." => depth -= 1,
+            _ => depth += 1,
+        }
+    }
+    false
+}
+
+/// `RESOLVE_IN_ROOT` 将绝对路径和超出起点的 `..` 都限制在 dirfd 指向的根中。
+fn openat2_in_root_path(path: &str) -> String {
+    let mut components = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            _ => components.push(component),
+        }
+    }
+    components.join("/")
+}
+
+/// procfs 的这些入口并非普通 inode symlink，而是随进程状态动态解析的
+/// magic-link；`RESOLVE_NO_MAGICLINKS` 必须拒绝它们。
+fn openat2_is_magic_link(path: &str) -> bool {
+    let mut components = path.trim_start_matches('/').split('/');
+    if components.next() != Some("proc") {
+        return false;
+    }
+
+    let Some(pid) = components.next() else {
+        return false;
+    };
+    if pid != "self" && pid.parse::<usize>().is_err() {
+        return false;
+    }
+
+    match components.next() {
+        Some("exe" | "cwd" | "root") => true,
+        Some("fd") => components.next().is_some(),
+        _ => false,
+    }
+}
+
+/// 获取 `openat2` 路径解析的起点。普通 `openat` 在真正打开前也会做同样的
+/// dirfd 校验；这里提前取得它，以便 resolve 约束可以在进入 VFS 前生效。
+fn openat2_base_path(process: &Process, dirfd: isize) -> Result<String, SysErrNo> {
+    if dirfd == -100 {
+        Ok(process.fs_info.get_cwd())
+    } else {
+        process
+            .fd_table
+            .get(dirfd as usize)?
+            .file()
+            .map(|file| file.inode.path())
+    }
+}
+
 pub fn sys_openat2(
     dirfd: isize,
     path: *const u8,
@@ -444,8 +551,8 @@ pub fn sys_openat2(
         dirfd, path as usize, how as usize, usize
     );
 
-    // EINVAL: usize 必须至少为 sizeof(open_how)
-    if usize < core::mem::size_of::<open_how>() {
+    let how_size = core::mem::size_of::<open_how>();
+    if usize < how_size {
         return Err(SysErrNo::EINVAL);
     }
 
@@ -458,20 +565,75 @@ pub fn sys_openat2(
     let proc_inner = &task.process;
     let memory_set = proc_inner.memory_set_arc();
 
-    // 从用户空间读取 open_how 结构
+    // 从用户空间读取 open_how 结构。比已知 ABI 更长的全零尾部可以向前兼容；
+    // 不可读尾部返回 EFAULT，非零字段表示调用者需要更新的 ABI，返回 E2BIG。
     let mut open_how_val = open_how {
         flags: 0,
         mode: 0,
         resolve: 0,
     };
     copy_from_user(&memory_set, how as usize, unsafe {
-        core::slice::from_raw_parts_mut(
-            &mut open_how_val as *mut open_how as *mut u8,
-            core::mem::size_of::<open_how>(),
-        )
+        core::slice::from_raw_parts_mut(&mut open_how_val as *mut open_how as *mut u8, how_size)
     })?;
 
-    // 释放锁，委托给 sys_openat（它会重新获取自己的锁）
+    let extra_size = usize - how_size;
+    if extra_size > PAGE_SIZE {
+        return Err(SysErrNo::E2BIG);
+    }
+    let mut offset = how_size;
+    while offset < usize {
+        let chunk_len = (usize - offset).min(64);
+        let mut extra = [0u8; 64];
+        let extra_addr = (how as usize).checked_add(offset).ok_or(SysErrNo::EFAULT)?;
+        copy_from_user(&memory_set, extra_addr, &mut extra[..chunk_len])?;
+        if extra[..chunk_len].iter().any(|byte| *byte != 0) {
+            return Err(SysErrNo::E2BIG);
+        }
+        offset += chunk_len;
+    }
+
+    if path.is_null() || (path as isize) <= 0 || if_bad_address(path as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+    let path = read_user_cstr(&memory_set, path)?;
+    if has_too_long_path_component(&path) {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+
+    let allowed_open_flags = OpenFlags::all().bits() & !OpenFlags::O_UNLINK.bits();
+    if open_how_val.flags & !(allowed_open_flags as u64) != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    let flags = open_how_val.flags as u32;
+    let flags = OpenFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
+    let creates = flags.contains(OpenFlags::O_CREATE) || flags.contains(OpenFlags::O_TMPFILE);
+    if open_how_val.mode > 0o7777 || (!creates && open_how_val.mode != 0) {
+        return Err(SysErrNo::EINVAL);
+    }
+    if open_how_val.resolve & !RESOLVE_KNOWN != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let base_path = openat2_base_path(proc_inner, dirfd)?;
+    if open_how_val.resolve & RESOLVE_BENEATH != 0 && openat2_escapes_beneath(&path) {
+        return Err(SysErrNo::EXDEV);
+    }
+    let relative_path = if open_how_val.resolve & RESOLVE_IN_ROOT != 0 {
+        openat2_in_root_path(&path)
+    } else {
+        path.clone()
+    };
+    let resolved_path = get_abs_path(&base_path, &relative_path);
+    if open_how_val.resolve & RESOLVE_NO_XDEV != 0
+        && openat2_mount_root(&base_path) != openat2_mount_root(&resolved_path)
+    {
+        return Err(SysErrNo::EXDEV);
+    }
+    if open_how_val.resolve & RESOLVE_NO_MAGICLINKS != 0 && openat2_is_magic_link(&resolved_path) {
+        return Err(SysErrNo::ELOOP);
+    }
+
+    // 释放用户内存引用后复用普通 open 的内核路径入口。
     drop(memory_set);
     drop(task);
 
@@ -480,25 +642,17 @@ pub fn sys_openat2(
         open_how_val.flags, open_how_val.mode, open_how_val.resolve
     );
 
-    // 如果调用者明确要求了尚不支持的 resolve 特性，返回 EOPNOTSUPP
-    // resolve != 0 时，检查是否仅包含已知标志
-    if open_how_val.resolve != 0 {
-        // RESOLVE_CACHED (32) 是可接受的（仅用于 vfs 缓存提示）
-        if open_how_val.resolve & !32u64 != 0 {
-            warn!(
-                "[sys_openat2] unsupported resolve flags: 0x{:x}",
-                open_how_val.resolve
-            );
-            // 对于不支持的严格 resolve 标志，返回 EINVAL 而不是静默忽略
-            return Err(SysErrNo::EINVAL);
-        }
+    let mut open_flags = flags;
+    if open_how_val.resolve & RESOLVE_NO_SYMLINKS != 0 {
+        // 现有 VFS 的 O_NOFOLLOW 可准确拒绝末级 symlink，并绕开 dentry cache
+        // 以确保底层路径查询返回 ELOOP。
+        open_flags.insert(OpenFlags::O_NOFOLLOW);
     }
 
-    // 委托给 sys_openat
-    sys_openat(
-        dirfd,
-        path,
-        open_how_val.flags as u32,
+    sys_openat_path(
+        -100,
+        &resolved_path,
+        open_flags.bits(),
         open_how_val.mode as u32,
     )
 }
