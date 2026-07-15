@@ -6,9 +6,7 @@
 
 use log::debug;
 
-use super::{
-    send_signal_to_thread_group, setup_frame, SigActionFlags, SigOp, SigSet, SIGCHLD,
-};
+use super::{send_signal_to_thread_group, setup_frame, SigActionFlags, SigOp, SigSet, SIGCHLD};
 use crate::task::{current_task, exit_current_and_run_next, stop_current_and_run_next, Process};
 
 pub fn check_if_any_sig_for_current_task() -> Option<usize> {

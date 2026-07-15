@@ -1,4 +1,4 @@
-use crate::fs::{DENTRY_CACHE, DentryLookup, MNT_TABLE, map_library_path};
+use crate::fs::{map_library_path, DentryLookup, DENTRY_CACHE, MNT_TABLE};
 use crate::syscall::{fs::file_lock, FaccessatFileMode};
 use crate::task::current_task;
 use crate::utils::SysResult;
@@ -193,9 +193,9 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     let create_path = target.create_path;
     {
         let mnt_table = MNT_TABLE.lock();
-        if let Some((_,_,_,mount_flags)) = mnt_table.mount_for_path(&create_path) {
+        if let Some((_, _, _, mount_flags)) = mnt_table.mount_for_path(&create_path) {
             if mount_flags & MOUNT_ATTR_RDONLY != 0 {
-                return Err(SysErrNo::EROFS)
+                return Err(SysErrNo::EROFS);
             }
         }
     }

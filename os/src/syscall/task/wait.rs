@@ -26,9 +26,7 @@ use log::debug;
 
 use crate::{
     mm::copy_to_user,
-    signal::{
-        check_if_any_sig_for_current_task, SigActionFlags, SigInfo, SigOp, SigSet, SIGCHLD,
-    },
+    signal::{check_if_any_sig_for_current_task, SigActionFlags, SigInfo, SigOp, SigSet, SIGCHLD},
     syscall::options::WaitOption,
     task::{block_on, current_task, Process, TaskControlBlock},
     utils::{SysErrNo, SyscallRet},

@@ -29,14 +29,20 @@ pub fn sys_mmap(
         "[sysmap] addr={:#x},len={},prot={:#x},flags={:#x},fd={},off={}",
         addr, len, prot, flags, fd, off
     );
-    if len <=0 {// must be greater than 0
-        return Err(SysErrNo::EINVAL)
+    if len <= 0 {
+        // must be greater than 0
+        return Err(SysErrNo::EINVAL);
     }
     let map_perm: MapPermission = MmapProt::from_bits_truncate(prot).into();
     // 使用 from_bits_truncate 忽略未知标志位，与 Linux 内核行为一致
     let flags = MmapFlags::from_bits_truncate(flags);
-    if flags.intersection(MmapFlags::MAP_PRIVATE | MmapFlags::MAP_SHARED | MmapFlags::MAP_SHARED_VALIDATE).is_empty() {
-        return Err(SysErrNo::EINVAL)
+    if flags
+        .intersection(
+            MmapFlags::MAP_PRIVATE | MmapFlags::MAP_SHARED | MmapFlags::MAP_SHARED_VALIDATE,
+        )
+        .is_empty()
+    {
+        return Err(SysErrNo::EINVAL);
     }
     // flags=0x4022导致问题
     // 不对啊，1<<14这一位没用啊？
@@ -69,11 +75,11 @@ pub fn sys_mmap(
         Ok(file) => {
             // 访问权限检查
             if !file.readable() {
-                return Err(SysErrNo::EACCES)
+                return Err(SysErrNo::EACCES);
             }
             if flags.contains(MmapFlags::MAP_SHARED)
-                    && map_perm.contains(MapPermission::W)
-                    && !file.writable() 
+                && map_perm.contains(MapPermission::W)
+                && !file.writable()
             {
                 return Err(SysErrNo::EACCES);
             }

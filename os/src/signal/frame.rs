@@ -32,7 +32,7 @@ const SIGNAL_STACK_ALIGN: usize = 16;
 pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo>) {
     // debug!("handler sa_handler={:#x}", sig_action.act.sa_handler);
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
+    let proc = &task.process;
     // SA_RESETHAND: 在调用信号处理函数之前将 handler 重置为 SIG_DFL
     // 这样信号处理函数仅在第一次收到信号时被调用
     if sig_action
@@ -40,7 +40,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
         .sa_flags
         .contains(SigActionFlags::SA_RESETHAND)
     {
-        proc_inner.with_sigtable(|sigtable| {
+        proc.with_sigtable(|sigtable| {
             sigtable.set_action(signo, KSigAction::default_action());
         });
     }
@@ -55,7 +55,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
 
     // 动态查找包含当前 sp 的 MapArea，以此确定栈的真实边界。
     // 这对 mmap 分配的线程栈也能正确工作。
-    let memory_set = proc_inner.memory_set_arc();
+    let memory_set = proc.memory_set_arc();
     let sp_vpn = VirtAddr::from(user_sp).floor();
     let stack_bottom = memory_set
         .get_ref()
@@ -66,8 +66,10 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
         .unwrap_or_else(|| user_sp.saturating_sub(USER_STACK_SIZE));
 
     let raw_frame_size = if sig_action.act.sa_flags.contains(SigActionFlags::SA_SIGINFO) {
+        // 实时信号
         size_of::<UserContext>() + size_of::<SigInfo>() + 2 * size_of::<usize>()
     } else {
+        // 传统信号
         size_of::<MachineContext>() + size_of::<SigSet>() + 2 * size_of::<usize>()
     };
     let Some(raw_frame_start) = user_sp.checked_sub(raw_frame_size) else {
@@ -286,8 +288,8 @@ pub fn restore_frame() -> SyscallRet {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
 
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
 
     let trap_cx = task_inner.trap_cx();
     let mut user_sp = trap_cx.get_sp();

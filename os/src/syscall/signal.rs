@@ -9,7 +9,7 @@ use crate::{
         restore_frame, send_signal_to_thread_group, send_user_signal_to_accessible_processes,
         send_user_signal_to_process_group, send_user_signal_to_thread,
         send_user_signal_to_thread_group, send_user_signal_to_thread_of_proc, KSigAction,
-        SigAction, SigActionFlags, SigInfo, SigSet, SIGCONT, SIG_DFL, SIG_IGN, SIGKILL, SIGSTOP,
+        SigAction, SigActionFlags, SigInfo, SigSet, SIGCONT, SIGKILL, SIGSTOP, SIG_DFL, SIG_IGN,
         SIG_MAX_NUM,
     },
     syscall::SignalMaskFlag,
