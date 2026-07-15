@@ -7,7 +7,7 @@
 use log::debug;
 
 use super::{
-    send_signal_to_thread_group, setup_frame, SigActionFlags, SigOp, SigSet, SIGCHLD, SIG_IGN,
+    send_signal_to_thread_group, setup_frame, SigActionFlags, SigOp, SigSet, SIGCHLD,
 };
 use crate::task::{current_task, exit_current_and_run_next, stop_current_and_run_next, Process};
 
@@ -38,7 +38,7 @@ pub fn handle_signal(signo: usize) {
     let siginfo = task_inner.sig_pending_info[signo].take();
     drop(task_inner);
     drop(task);
-    if sig_action.customed {
+    if sig_action.is_handler() {
         // debug!("handle_signal: setup_frame!");
         setup_frame(signo, sig_action, siginfo);
         // 标记信号已拦截：可中断 syscall 应返回 EINTR
@@ -46,10 +46,7 @@ pub fn handle_signal(signo: usize) {
         task.inner_lock().sig_eintr = true;
     } else {
         let default_op = SigSet::from_sig(signo).default_op();
-        // 除 SIGKILL/SIGSTOP 外，SIG_IGN 都必须覆盖信号的默认动作，
-        // 包括默认会停止进程的 SIGTSTP/SIGTTIN/SIGTTOU。否则进程将
-        // 在已经显式忽略 SIGTSTP 后仍被停止，且没有 SIGCONT 时无法恢复。
-        if sig_action.act.sa_handler == SIG_IGN {
+        if sig_action.is_ignored() {
             debug!("handle_signal: ignore (SIG_IGN), signo={}", signo);
             return;
         }

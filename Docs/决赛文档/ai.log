@@ -4552,3 +4552,31 @@ AI 以 LTP Summary 为准确认 `socketpair01` 的 musl/glibc 均有六项 `TFAI
 ### 验证
 
 执行 `rustfmt --edition 2021 os/src/mm/translate.rs os/src/syscall/net/socket.rs`、`make` 和 `timeout 120s make TARGET_ARCH=riscv64 run > /tmp/socketpair01-riscv64.log 2>&1`。RISC-V 与 LoongArch64 均构建通过，RISC-V QEMU 中 musl/glibc `socketpair01` 两轮均为 `passed 10 failed 0 broken 0 skipped 0 warnings 0`，十项断言全部 `TPASS`，最后正常 `shutdown!`。
+
+---
+
+## 2026-07-15: signal 默认 disposition ABI 根本修复
+
+### 用户需求
+
+维护者指出 `b31376b` 已删除 `SIG_IGN && default_op != SigOp::Stop` 判断，要求按 Linux 原始语义根治本次 `waitid07` 卡死，而不是恢复旧的粗粒度 stop 例外。
+
+### 分析与采纳结论
+
+AI 对照 `b31376b`、`SigAction::new()`、`sys_rt_sigaction()` 和 `waitid07.c` 确认：`b31376b` 对可显式忽略的 `SIGTSTP/SIGTTIN/SIGTTOU` 的修复正确；根因是 action 表把默认 stop/ignore/continue 都编码成 `sa_handler == SIG_IGN`，因而不可忽略的默认 `SIGSTOP` 也被误当作显式忽略。默认 terminate 更错误地存成内核函数地址，使 `oldact` ABI 不正确。
+
+采纳方案是把默认 action 的用户 ABI 值统一为 `SIG_DFL`，并新增 `SigDisposition::{Default, Ignore, Handler}` 记录 action 来源。pending、trap return、信号投递、wait、pselect 和 ppoll 只通过 disposition helper 判断显式忽略或用户 handler；默认实际动作继续按 signal number 的 `default_op()` 处理。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/signal/types.rs` | 默认 action 改为 `SIG_DFL`，新增显式 disposition 与 helper。 |
+| `os/src/signal/action_table.rs`、`os/src/signal/frame.rs`、`os/src/syscall/signal.rs` | 新建、重置和 `rt_sigaction(SIG_DFL)` 统一使用 default action；用户 handler 不再与内核函数指针比较。 |
+| `os/src/signal/pending.rs`、`os/src/signal/delivery.rs`、`os/src/trap/mod.rs` | 改用 `is_ignored()` / `is_handler()` 分发和唤醒。 |
+| `os/src/syscall/task/wait.rs`、`os/src/syscall/io_mpx/select.rs`、`os/src/syscall/io_mpx/poll.rs` | 等待路径改用 disposition helper 处理可见/可忽略信号。 |
+| `Docs/决赛文档/problem/signal-disposition-default-abi.md` | 记录 ABI 根因、修复和验证。 |
+
+### 验证
+
+执行 `make TARGET_ARCH=loongarch64 log`、`make TARGET_ARCH=riscv64 log`，两个 debug 构建均通过，仅有既有 vendored `smoltcp` warning。随后分别运行两架构 QEMU：musl 与 glibc `waitid07` 均为 `passed 5 failed 0 broken 0`，`waitid(WSTOPPED | WNOWAIT)` 与四项 `siginfo_t` 字段断言均 `TPASS`，并正常 `shutdown!`。

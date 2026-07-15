@@ -9,10 +9,11 @@ use crate::{
         restore_frame, send_signal_to_thread_group, send_user_signal_to_accessible_processes,
         send_user_signal_to_process_group, send_user_signal_to_thread,
         send_user_signal_to_thread_group, send_user_signal_to_thread_of_proc, KSigAction,
-        SigAction, SigActionFlags, SigInfo, SigSet, SIGCONT, SIGKILL, SIGSTOP, SIG_MAX_NUM,
+        SigAction, SigActionFlags, SigInfo, SigSet, SIGCONT, SIG_DFL, SIG_IGN, SIGKILL, SIGSTOP,
+        SIG_MAX_NUM,
     },
     syscall::SignalMaskFlag,
-    task::{block_on, current_task, exit_current_and_run_next, suspend_current_and_run_next},
+    task::{block_on, current_task, suspend_current_and_run_next},
     timer::{add_sigtimedwait_timer, get_time_spec, Timespec},
     utils::{SysErrNo, SyscallRet},
 };
@@ -103,19 +104,15 @@ pub fn sys_rt_sigaction(
             SigSet::from_sig(signo),
             new_act
         );
-        let new_sig: KSigAction = if new_act.sa_handler == 0 {
+        let new_sig: KSigAction = if new_act.sa_handler == SIG_DFL {
             // SIG_DFL: 恢复默认行为
-            KSigAction::new(signo, false)
-        } else if new_act.sa_handler == 1 {
+            KSigAction::default_action()
+        } else if new_act.sa_handler == SIG_IGN {
             // SIG_IGN: 忽略信号
             KSigAction::ignore()
         } else {
             // 用户自定义处理函数
-            let customed = new_act.sa_handler != exit_current_and_run_next as *const () as usize;
-            KSigAction {
-                act: new_act,
-                customed,
-            }
+            KSigAction::handler(new_act)
         };
         process.with_sigtable(|sigtable| {
             sigtable.set_action(signo, new_sig);

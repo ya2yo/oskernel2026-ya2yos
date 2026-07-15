@@ -7,8 +7,7 @@
 use log::warn;
 
 use crate::{
-    signal::SIG_MAX_NUM,
-    task::exit_current_and_run_next,
+    signal::{SIG_DFL, SIG_IGN, SIG_MAX_NUM},
     utils::{SysErrNo, SysResult},
 };
 
@@ -160,20 +159,14 @@ pub struct SigAction {
 }
 
 impl SigAction {
-    pub fn new(signo: usize) -> Self {
-        let handler: usize = if signo == 0 {
-            1
-        } else {
-            match SigSet::from_sig(signo).default_op() {
-                SigOp::Continue | SigOp::Ignore => 1,
-                SigOp::Stop => 1, // TODO(ZMY): 添加Stop状态和相关函数
-                SigOp::Terminate | SigOp::CoreDump => {
-                    exit_current_and_run_next as *const () as usize
-                }
-            }
-        };
+    /// Linux `SIG_DFL` action exposed by `rt_sigaction()`.
+    ///
+    /// The default disposition is determined from the signal number when it
+    /// is delivered. It must not be encoded as `SIG_IGN` or a kernel function
+    /// pointer, since both values are user-visible parts of the sigaction ABI.
+    pub const fn default_action() -> Self {
         Self {
-            sa_handler: handler,
+            sa_handler: SIG_DFL,
             sa_flags: SigActionFlags::empty(),
             sa_restore: 0,
             sa_mask: SigSet::empty(),
@@ -181,29 +174,52 @@ impl SigAction {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SigDisposition {
+    Default,
+    Ignore,
+    Handler,
+}
+
 #[derive(Clone, Copy)]
 pub struct KSigAction {
     pub act: SigAction,
-    pub customed: bool,
+    disposition: SigDisposition,
 }
 
 impl KSigAction {
-    pub fn new(signo: usize, customed: bool) -> Self {
+    pub const fn default_action() -> Self {
         Self {
-            act: SigAction::new(signo),
-            customed,
+            act: SigAction::default_action(),
+            disposition: SigDisposition::Default,
         }
     }
-    pub fn ignore() -> Self {
+
+    pub const fn ignore() -> Self {
         Self {
             act: SigAction {
-                sa_handler: 1,
+                sa_handler: SIG_IGN,
                 sa_flags: SigActionFlags::empty(),
                 sa_restore: 0,
                 sa_mask: SigSet::empty(),
             },
-            customed: false,
+            disposition: SigDisposition::Ignore,
         }
+    }
+
+    pub const fn handler(act: SigAction) -> Self {
+        Self {
+            act,
+            disposition: SigDisposition::Handler,
+        }
+    }
+
+    pub const fn is_ignored(self) -> bool {
+        matches!(self.disposition, SigDisposition::Ignore)
+    }
+
+    pub const fn is_handler(self) -> bool {
+        matches!(self.disposition, SigDisposition::Handler)
     }
 }
 

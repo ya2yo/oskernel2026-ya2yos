@@ -3,7 +3,7 @@ use alloc::{sync::Arc, vec::Vec};
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_from_user_val, copy_to_user},
-    signal::{enter_pselect_itimer_wait, SigOp, SigSet, SIGCHLD, SIG_IGN},
+    signal::{enter_pselect_itimer_wait, SigOp, SigSet, SIGCHLD},
     syscall::{
         options::{FdSet, FD_SET_LEN},
         PollEvents,
@@ -353,8 +353,8 @@ pub fn sys_pselect6(
                     let signal = SigSet::from_sig(signo);
                     let sig_action = proc_inner.with_sigtable(|sigtable| sigtable.action(signo));
                     let ignorable = signo == SIGCHLD
-                        || sig_action.act.sa_handler == SIG_IGN
-                        || (!sig_action.customed && signal.default_op() == SigOp::Ignore);
+                        || sig_action.is_ignored()
+                        || (!sig_action.is_handler() && signal.default_op() == SigOp::Ignore);
                     if ignorable {
                         inner.sig_pending.remove(signal);
                     } else {

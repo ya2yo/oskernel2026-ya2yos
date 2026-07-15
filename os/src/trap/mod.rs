@@ -247,12 +247,12 @@ pub fn trap_return() {
     while let Some(signo) = check_if_any_sig_for_current_task() {
         // 默认信号可以连续消费；遇到用户自定义 handler 时需要立刻返回用户态，
         // 让用户 handler 先运行，避免在同一个 trap_return 中覆盖信号栈帧。
-        let customed = current_task()
+        let has_handler = current_task()
             .unwrap()
             .process
-            .with_sigtable(|sigtable| sigtable.action(signo).customed);
+            .with_sigtable(|sigtable| sigtable.action(signo).is_handler());
         handle_signal(signo);
-        if customed {
+        if has_handler {
             break;
         }
     }

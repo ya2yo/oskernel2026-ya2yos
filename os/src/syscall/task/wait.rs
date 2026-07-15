@@ -27,7 +27,7 @@ use log::debug;
 use crate::{
     mm::copy_to_user,
     signal::{
-        check_if_any_sig_for_current_task, SigActionFlags, SigInfo, SigOp, SigSet, SIGCHLD, SIG_IGN,
+        check_if_any_sig_for_current_task, SigActionFlags, SigInfo, SigOp, SigSet, SIGCHLD,
     },
     syscall::options::WaitOption,
     task::{block_on, current_task, Process, TaskControlBlock},
@@ -96,8 +96,8 @@ fn wait_pending_signal_errno(task: &TaskControlBlock, signo: usize) -> Option<Sy
         .process
         .with_sigtable(|sigtable| sigtable.action(signo));
     let ignorable = signo == SIGCHLD
-        || sig_action.act.sa_handler == SIG_IGN
-        || (!sig_action.customed && signal.default_op() == SigOp::Ignore);
+        || sig_action.is_ignored()
+        || (!sig_action.is_handler() && signal.default_op() == SigOp::Ignore);
     if ignorable {
         task.inner_lock().sig_pending.remove(signal);
         None

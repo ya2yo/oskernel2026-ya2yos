@@ -628,3 +628,10 @@
 - **场景**：`log.ans` 中 socketpair errno 失败和坏用户指针 `TBROK` 分析、Linux socketpair 创建路径对照、双架构构建与 RISC-V QEMU 回归
 - **描述**：维护者要求继续分析并修复新的 `log.ans`。AI 确认 `sys_socketpair()` 将所有非 AF_UNIX 请求过早返回 `EAFNOSUPPORT`，遗漏 TCP/UDP 创建成功但不能 pair 的 `EOPNOTSUPP` 与协议不匹配的 `EPROTONOSUPPORT`；修正后又定位 RISC-V `copy_to_user()` 未做 VMA 校验，错误把地址 7 按需映射。修复补齐 socketpair errno 分层，并将 LoongArch 已有的 user-copy VMA/权限校验推广至 RISC-V。RISC-V 与 LoongArch64 构建通过，RISC-V QEMU 中 musl/glibc `socketpair01` 均为 `passed 10 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/socketpair01-protocol-errno.md](./problem/socketpair01-protocol-errno.md)。
 - **关联 commit**：待提交
+
+#### signal 默认 disposition ABI 根本修复（7.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`waitid07` checkpoint 超时、`b31376b` 语义回溯、Linux `sigaction` ABI 对齐、双架构 QEMU 回归
+- **描述**：维护者要求以 Linux 原始语义根治 `SIGSTOP` 卡死。AI 确认此前 `signal03` 修复应保留：`SIGTSTP/SIGTTIN/SIGTTOU` 可显式设为 `SIG_IGN`；真正问题是 action 表把默认 stop/ignore/continue 全部编码为 `sa_handler == SIG_IGN`，使默认不可忽略的 `SIGSTOP` 被误消费。修复将默认 action 的 ABI 值统一为 `SIG_DFL`，用 `SigDisposition::{Default, Ignore, Handler}` 区分 action 来源，并让 pending、wait、poll、pselect、trap 与投递路径通过 helper 查询。LoongArch64 与 RISC-V QEMU 中 musl/glibc `waitid07` 均为 `passed 5 failed 0 broken 0`，所有 stopped `siginfo_t` 断言通过并正常关机。详见 [problem/signal-disposition-default-abi.md](./problem/signal-disposition-default-abi.md)。
+- **关联 commit**：待提交

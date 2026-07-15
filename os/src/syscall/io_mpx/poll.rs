@@ -1,7 +1,7 @@
 use crate::{
     fs::File,
     mm::{copy_from_user, copy_to_user},
-    signal::{SigOp, SigSet, SIGCHLD, SIG_IGN},
+    signal::{SigOp, SigSet, SIGCHLD},
     syscall::{options::PollFd, PollEvents},
     task::{current_task, suspend_current_and_run_next},
     timer::{get_time_ms, Timespec},
@@ -98,8 +98,8 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
                 let signal = SigSet::from_sig(signo);
                 let sig_action = proc_inner.with_sigtable(|sigtable| sigtable.action(signo));
                 let ignorable = signo == SIGCHLD
-                    || sig_action.act.sa_handler == SIG_IGN
-                    || (!sig_action.customed && signal.default_op() == SigOp::Ignore);
+                    || sig_action.is_ignored()
+                    || (!sig_action.is_handler() && signal.default_op() == SigOp::Ignore);
                 if ignorable {
                     task_inner.sig_pending.remove(signal);
                 } else {

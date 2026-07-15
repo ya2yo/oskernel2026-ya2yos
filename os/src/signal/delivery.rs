@@ -6,7 +6,7 @@
 
 use alloc::collections::BTreeSet;
 
-use super::{SigInfo, SigOp, SigSet, SIGCHLD, SIGCONT, SIGKILL, SIG_IGN};
+use super::{SigInfo, SigOp, SigSet, SIGCHLD, SIGCONT, SIGKILL};
 use crate::{
     task::{current_task, ready_queue, tid_to_task, Process, TaskControlBlock, TaskStatus},
     utils::SysErrNo,
@@ -63,12 +63,12 @@ pub(super) fn add_signal_with_info(
         if signo == SIGCHLD {
             return task
                 .process
-                .with_sigtable(|sigtable| sigtable.action(SIGCHLD).customed);
+                .with_sigtable(|sigtable| sigtable.action(SIGCHLD).is_handler());
         }
         task.process.with_sigtable(|sigtable| {
             let action = sigtable.action(signo);
-            action.act.sa_handler != SIG_IGN
-                && (action.customed || SigSet::from_sig(signo).default_op() != SigOp::Ignore)
+            !action.is_ignored()
+                && (action.is_handler() || SigSet::from_sig(signo).default_op() != SigOp::Ignore)
         })
     });
     if task_inner.task_status == TaskStatus::Stopped

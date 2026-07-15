@@ -46,7 +46,7 @@ pub struct SigTableInner {
 impl SigTableInner {
     pub fn new() -> Self {
         Self {
-            actions: from_fn(|signo| KSigAction::new(signo, false)),
+            actions: from_fn(|_| KSigAction::default_action()),
         }
     }
     pub fn from_another(other: &SigTableInner) -> Self {

@@ -28,7 +28,7 @@ extern "C" {
 /// 构建这个帧的目的就是为了执行完信号处理程序后返回到内核态，
 /// 并恢复原来内核栈的内容。
 pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo>) {
-    // debug!("customed sa_handler={:#x}", sig_action.act.sa_handler);
+    // debug!("handler sa_handler={:#x}", sig_action.act.sa_handler);
     let task = current_task().unwrap();
     let proc_inner = &task.process;
     // SA_RESETHAND: 在调用信号处理函数之前将 handler 重置为 SIG_DFL
@@ -39,7 +39,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
         .contains(SigActionFlags::SA_RESETHAND)
     {
         proc_inner.with_sigtable(|sigtable| {
-            sigtable.set_action(signo, KSigAction::new(signo, false));
+            sigtable.set_action(signo, KSigAction::default_action());
         });
     }
 
