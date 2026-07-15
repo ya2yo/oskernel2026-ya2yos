@@ -262,6 +262,11 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
         refresh_proc_status(task.pid(), task.ppid(), &comm, &memory_set)?;
         abs_path = format!("/proc/{}/status", task.pid());
     }
+    if abs_path == "/proc/self/exe" {
+        // `/proc/self/exe` is a procfs magic-link to the current executable.
+        // `sys_openat2` has already rejected it when RESOLVE_NO_MAGICLINKS is set.
+        abs_path = fs_info.get_exe();
+    }
     if let Some(pid) = parse_proc_pid_file(&abs_path, "stat") {
         if let Some(process) = Process::get_process_arc_by_pid(pid) {
             let ppid = process.ppid();
