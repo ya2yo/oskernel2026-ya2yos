@@ -177,23 +177,42 @@ pub fn sys_fork() -> isize {
 }
 
 pub fn sys_exec(path: &str) -> isize {
+    let path = c_string_bytes(path);
     syscall(SYSCALL_EXECVE, [path.as_ptr() as isize, 0, 0, 0, 0, 0])
 }
 
 pub fn sys_execve(args: &[&str]) -> isize {
-    let mut v: Vec<isize> = args.iter().map(|s| s.as_ptr() as isize).collect();
-    v.push(0);
+    if args.is_empty() {
+        return -1;
+    }
+
+    // Rust `&str` is not NUL-terminated. Keep owned buffers alive across the
+    // syscall so pathname and every argv entry satisfy the execve C ABI.
+    let mut c_args: Vec<Vec<u8>> = args.iter().map(|arg| c_string_bytes(arg)).collect();
+    let mut argv: Vec<isize> = c_args
+        .iter_mut()
+        .map(|arg| arg.as_mut_ptr() as isize)
+        .collect();
+    argv.push(0);
     syscall(
         SYSCALL_EXECVE,
         [
-            args[0].as_ptr() as isize,
-            v.as_mut_slice().as_ptr() as isize,
+            c_args[0].as_ptr() as isize,
+            argv.as_mut_ptr() as isize,
             0,
             0,
             0,
             0,
         ],
     )
+}
+
+fn c_string_bytes(value: &str) -> Vec<u8> {
+    let mut bytes = value.as_bytes().to_vec();
+    if bytes.last() != Some(&0) {
+        bytes.push(0);
+    }
+    bytes
 }
 // "busybox_testcode.sh\0".as_ptr() as isize,
 
