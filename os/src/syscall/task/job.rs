@@ -325,7 +325,7 @@ pub fn sys_setregid(rgid: usize, egid: usize) -> SyscallRet {
         return Ok(0);
     }
 
-    let privileged = inner.user_id == 0 || inner.effective_gid == 0;
+    let privileged = inner.effective_uid == 0;
 
     if !privileged {
         if rgid != GID_UNCHANGED && rgid != old_r && rgid != old_e {
@@ -362,7 +362,7 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> SyscallRet {
     let cur_s = inner.saved_gid;
     let (new_r, new_e, new_s) = compute_resgid(cur_r, cur_e, cur_s, rgid, egid, sgid);
 
-    let privileged = inner.user_id == 0 || inner.effective_gid == 0;
+    let privileged = inner.effective_uid == 0;
     if !privileged && !setresgid_allowed(cur_r, cur_e, cur_s, new_r, new_e, new_s, rgid, egid, sgid)
     {
         return Err(SysErrNo::EPERM);
