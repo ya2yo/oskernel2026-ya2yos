@@ -187,7 +187,7 @@ pub fn sys_rt_sigpending(set: usize) -> SyscallRet {
             &sig_pending as *const SigSet as *const _,
             core::mem::size_of::<SigSet>(),
         )
-    });
+    })?;
     Ok(0)
 }
 
