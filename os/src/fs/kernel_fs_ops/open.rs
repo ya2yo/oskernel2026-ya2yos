@@ -1,4 +1,4 @@
-use crate::fs::{map_library_path, DentryLookup, DENTRY_CACHE};
+use crate::fs::{DENTRY_CACHE, DentryLookup, MNT_TABLE, map_library_path};
 use crate::syscall::{fs::file_lock, FaccessatFileMode};
 use crate::task::current_task;
 use crate::utils::SysResult;
@@ -6,7 +6,7 @@ use crate::utils::SysResult;
 use super::*;
 use alloc::sync::Arc;
 use alloc::{format, string::String};
-use linux_raw_sys::general::CAP_FOWNER;
+use linux_raw_sys::general::{CAP_FOWNER, MOUNT_ATTR_RDONLY};
 use log::{debug, warn};
 
 /// 将绝对路径拆分为父目录路径和末级名称。
@@ -191,6 +191,14 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     );
     let target = resolve_parent_path(abs_path)?;
     let create_path = target.create_path;
+    {
+        let mnt_table = MNT_TABLE.lock();
+        if let Some((_,_,_,mount_flags)) = mnt_table.mount_for_path(&create_path) {
+            if mount_flags & MOUNT_ATTR_RDONLY != 0 {
+                return Err(SysErrNo::EROFS)
+            }
+        }
+    }
     let parent_inode = target.parent_inode;
     let child_name = target.child_name;
     invalidate_dentry(&parent_inode, &child_name);
