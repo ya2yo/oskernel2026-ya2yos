@@ -4499,3 +4499,56 @@ AI 对照 `openat201.c`、`openat202.c`、`openat203.c` 及 `sys_openat2()` 确�
 ### 验证
 
 执行 `make TARGET_ARCH=riscv64`，实际完成 RISC-V 与 LoongArch64 两个构建。沙箱内的 `make run` 因 QEMU 不能在只读 `/var/tmp` 创建临时文件而未进入内核；维护者随后在可用环境运行并提供最新 `log.ans`。日志显示 RISC-V musl/glibc `openat201` 均为 `passed 16 failed 0 broken 0 skipped 0 warnings 0`，全部 16 个断言 `TPASS`，且正常 `shutdown!`。当前 `initproc` 只运行 `openat201`，`openat202/203` 尚待单独回归。
+
+---
+
+## 2026-07-15: LTP socket01 socket type errno 修复
+
+### 用户需求
+
+用户要求分析最新 `log.ans` 并修复失败。
+
+### 分析与采纳结论
+
+AI 以 `TPASS`、`TFAIL` 和 Summary 为准确认只有 `socket01` 失败，musl 与 glibc 均为 `passed 7 failed 2 broken 0`。对照 `socket01.c` 和 `sys_socket()` 后确认，两项失败不是 socket 创建成功，而是 errno 映射过于粗粒度：`PF_INET, type=75` 错误返回 `ESOCKTNOSUPPORT`，`PF_INET, SOCK_RAW` 也错误返回相同 errno。
+
+Linux `__sock_create()` 会在协议族分发前检查 `type < SOCK_MAX`，故 `75` 应为 `EINVAL`。`SOCK_RAW` 是有效 type，但 Ya2yOS 没有 IPv4/IPv6 raw protocol 实现，采用 `EPROTONOSUPPORT` 表示协议不受支持，符合 LTP 期待。修复不扩展 raw socket 功能，也不改变 TCP、UDP 与 AF_UNIX 的已实现路径。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/net/socket.rs` | 在 socket type 分发前校验 Linux type 范围；AF_INET/AF_INET6 的 `SOCK_RAW` 显式返回 `EPROTONOSUPPORT`。 |
+| `Docs/决赛文档/problem/socket01-socket-type-errno.md` | 记录 LTP 现象、Linux errno 语义、修复边界与验证。 |
+| `Docs/决赛文档/problem/README.md`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md` | 补充索引、开发日志与 AI 使用记录。 |
+
+### 验证
+
+执行 `rustfmt --edition 2021 --check os/src/syscall/net/socket.rs` 和 `make`。格式检查通过；`make` 完成 RISC-V 与 LoongArch64 release 构建，只有既有 vendored `smoltcp` warning。沙箱内 RISC-V QEMU 不能在只读 `/var/tmp` 创建临时文件，未继续运行；维护者随后提供的最新 `log.ans` 显示 musl/glibc `socket01` 均为 `passed 9 failed 0 broken 0 skipped 0 warnings 0`，九项断言全部 `TPASS`，最后正常 `shutdown!`。其中 `FAIL LTP CASE socket01 : 0` 是包装层退出码打印，不代表 LTP 失败。
+
+---
+
+## 2026-07-15: LTP socketpair01 protocol errno 与 RISC-V user-copy 修复
+
+### 用户需求
+
+用户要求分析新的 `log.ans` 并继续修复。
+
+### 分析与采纳结论
+
+AI 以 LTP Summary 为准确认 `socketpair01` 的 musl/glibc 均有六项 `TFAIL`，所有失败都被 `sys_socketpair()` 的 `domain != AF_UNIX` 快速分支错误映射为 `EAFNOSUPPORT`。对照 LTP `socketpair01.c` 与 Linux `__sys_socketpair()` 后确认，Linux 会先创建协议 socket，再调用该协议族的 pair 操作：可创建的 TCP/UDP socket 到 pair 阶段返回 `EOPNOTSUPP`，type/protocol 不匹配与未实现 raw socket 返回 `EPROTONOSUPPORT`，非法 type 返回 `EINVAL`。
+
+首次修复 errno 后，RISC-V 回归在 `sv=(int *)7` 暴露 `TBROK`。根因是 `copy_to_user()` 的 `user_range_has_perm()` 仅在 LoongArch64 编译，RISC-V 会对地址 7 触发按需缺页并错误写入。采纳方案是将该已有 VMA 权限检查统一用于 RISC-V/LoongArch 的 `copy_from_user()`、`copy_to_user()` 和 `probe_user_write()`，不以对齐作为用户指针合法性的替代条件。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/net/socket.rs` | `socketpair()` 按 Linux 创建与 pair 操作层次返回 `EINVAL`、`EPROTONOSUPPORT` 或 `EOPNOTSUPP`。 |
+| `os/src/mm/translate.rs` | RISC-V user-copy 在按需缺页前校验 VMA 覆盖和访问权限，非法低地址返回 `EFAULT`。 |
+| `Docs/决赛文档/problem/socketpair01-protocol-errno.md` | 记录 errno 分层、坏指针根因、修复边界和验证。 |
+| `Docs/决赛文档/problem/README.md`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md` | 补充索引、开发日志与 AI 使用记录。 |
+
+### 验证
+
+执行 `rustfmt --edition 2021 os/src/mm/translate.rs os/src/syscall/net/socket.rs`、`make` 和 `timeout 120s make TARGET_ARCH=riscv64 run > /tmp/socketpair01-riscv64.log 2>&1`。RISC-V 与 LoongArch64 均构建通过，RISC-V QEMU 中 musl/glibc `socketpair01` 两轮均为 `passed 10 failed 0 broken 0 skipped 0 warnings 0`，十项断言全部 `TPASS`，最后正常 `shutdown!`。

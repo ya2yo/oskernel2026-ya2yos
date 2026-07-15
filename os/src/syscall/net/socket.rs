@@ -13,8 +13,8 @@ use crate::{
 use alloc::sync::Arc;
 use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
 use linux_raw_sys::net::{
-    AF_INET, AF_INET6, AF_UNIX, AF_VSOCK, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_SEQPACKET,
-    SOCK_STREAM,
+    AF_INET, AF_INET6, AF_UNIX, AF_VSOCK, SHUT_RD, SHUT_RDWR, SHUT_WR, SOCK_DGRAM, SOCK_RAW,
+    SOCK_SEQPACKET, SOCK_STREAM,
 };
 use log::{debug, warn};
 
@@ -23,6 +23,10 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
     // debug!("sys_socket <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
     // 提取 socket类型
     let ty = raw_ty & 0xFF;
+    // Linux validates the type range before dispatching to the protocol family.
+    if ty == 0 || ty >= 11 {
+        return Err(SysErrNo::EINVAL);
+    }
     let task = current_task().unwrap();
     let socket_inner = match (domain, ty) {
         (AF_INET | AF_INET6, SOCK_STREAM) => {
@@ -37,6 +41,8 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
             }
             SocketInner::Udp(UdpSocket::new())
         }
+        // The kernel has no raw IPv4/IPv6 protocol implementation.
+        (AF_INET | AF_INET6, SOCK_RAW) => return Err(SysErrNo::EPROTONOSUPPORT),
         (AF_UNIX, SOCK_STREAM) => {
             if proto != 0 {
                 return Err(SysErrNo::EPROTONOSUPPORT);
@@ -88,15 +94,26 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> SyscallRet {
 }
 
 /// 参考 https://www.man7.org/linux/man-pages/man2/socketpair.2.html
-/// socketpair()系统调用只能用在 UNIX domain 中，即domain 参数必须被指定为AF_UNIX。
-/// socket 的type 可以被指定为SOCK_DGRAM 或SOCK_STREAM。protocol 参数必须为0。sockfd
-/// 数组返回了引用这两个相互连接的 socket 的文件描述符。
 pub fn sys_socketpair(domain: u32, stype: u32, protocol: u32, sv: *mut u32) -> SyscallRet {
     // debug!(
     //     "[sys_socketpair] domain is {}, type is {}, protocol is {}, sv is {}",
     //     domain, stype, protocol, sv as usize
     // );
     let ty = stype & 0xff;
+    if ty == 0 || ty >= 11 {
+        return Err(SysErrNo::EINVAL);
+    }
+    if domain == AF_INET || domain == AF_INET6 {
+        // Linux creates the protocol sockets before invoking the family's
+        // socketpair operation. TCP/UDP can be created but cannot be paired.
+        return match (ty, protocol) {
+            (SOCK_STREAM, 0 | IPPROTO_TCP | IPPROTO_SCTP) | (SOCK_DGRAM, 0 | IPPROTO_UDP) => {
+                Err(SysErrNo::EOPNOTSUPP)
+            }
+            (SOCK_STREAM | SOCK_DGRAM | SOCK_RAW, _) => Err(SysErrNo::EPROTONOSUPPORT),
+            _ => Err(SysErrNo::ESOCKTNOSUPPORT),
+        };
+    }
     if domain != AF_UNIX {
         return Err(SysErrNo::EAFNOSUPPORT);
     }

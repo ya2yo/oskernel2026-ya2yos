@@ -614,3 +614,17 @@
 - **场景**：`log.ans` 中 openat2 resolve 失败分析、`open_how` ABI 校验与路径约束实现、双架构构建及 RISC-V QEMU 回归记录
 - **描述**：维护者要求修复 `openat2`。AI 确认 `sys_openat2()` 仅接受 `RESOLVE_CACHED`，导致 LTP `openat201` 的五个基础 resolve 标志均过早返回 `EINVAL`。修复将普通 `openat` 内核路径打开抽为共享入口，并补齐 `open_how` 扩展尾部、未知 flags、mode、pathname、dirfd 和 resolve 的 ABI 校验；对当前 LTP 覆盖实现 `BENEATH`、`IN_ROOT`、`NO_XDEV`、`NO_MAGICLINKS` 与 `NO_SYMLINKS` 的最小约束。RISC-V 和 LoongArch64 构建通过；维护者提供的 `log.ans` 显示 RISC-V musl/glibc `openat201` 均 `passed 16 failed 0 broken 0` 并正常关机。`openat202/203` 尚未单独回归，详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/openat2-open-how-resolve.md](./problem/openat2-open-how-resolve.md)。
 - **关联 commit**：待提交
+
+#### LTP socket01 socket type errno 修复（7.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 失败筛选、LTP `socket01.c` 与 Linux `socket(2)` type 校验语义对照、内核 errno 修复与回归记录
+- **描述**：维护者要求分析 `log.ans` 并修复。AI 确认 musl/glibc `socket01` 各有两项失败，根因是 `sys_socket()` 将非法 type 和有效但未实现的 raw type 一律映射成 `ESOCKTNOSUPPORT`。修复按 Linux 的 `SOCK_MAX` 边界先拒绝非法 type 为 `EINVAL`，并将 AF_INET/AF_INET6 的 `SOCK_RAW` 显式映射为 `EPROTONOSUPPORT`，不伪装为已实现 raw socket。`make` 已完成 RISC-V 与 LoongArch64 构建；维护者提供的最新 `log.ans` 显示 musl/glibc `socket01` 均为 `passed 9 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/socket01-socket-type-errno.md](./problem/socket01-socket-type-errno.md)。
+- **关联 commit**：待提交
+
+#### LTP socketpair01 protocol errno 与 RISC-V user-copy 修复（7.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 中 socketpair errno 失败和坏用户指针 `TBROK` 分析、Linux socketpair 创建路径对照、双架构构建与 RISC-V QEMU 回归
+- **描述**：维护者要求继续分析并修复新的 `log.ans`。AI 确认 `sys_socketpair()` 将所有非 AF_UNIX 请求过早返回 `EAFNOSUPPORT`，遗漏 TCP/UDP 创建成功但不能 pair 的 `EOPNOTSUPP` 与协议不匹配的 `EPROTONOSUPPORT`；修正后又定位 RISC-V `copy_to_user()` 未做 VMA 校验，错误把地址 7 按需映射。修复补齐 socketpair errno 分层，并将 LoongArch 已有的 user-copy VMA/权限校验推广至 RISC-V。RISC-V 与 LoongArch64 构建通过，RISC-V QEMU 中 musl/glibc `socketpair01` 均为 `passed 10 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/socketpair01-protocol-errno.md](./problem/socketpair01-protocol-errno.md)。
+- **关联 commit**：待提交

@@ -12,7 +12,6 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 
-#[cfg(target_arch = "loongarch64")]
 use crate::mm::MapPermission;
 
 use super::{MemorySet, StepByOne, VirtAddr};
@@ -51,7 +50,6 @@ fn translated_user_page(
     }
 }
 
-#[cfg(target_arch = "loongarch64")]
 fn user_range_has_perm(
     memory_set: &MemorySet,
     start: usize,
@@ -169,7 +167,6 @@ pub fn copy_from_user(memory_set: &MemorySet, src: usize, dst: &mut [u8]) -> Sys
         return Ok(0);
     }
     let end = checked_user_range(src, len)?;
-    #[cfg(target_arch = "loongarch64")]
     if !user_range_has_perm(memory_set, src, len, MapPermission::R) {
         return Err(SysErrNo::EFAULT);
     }
@@ -216,7 +213,6 @@ pub fn copy_to_user(memory_set: &MemorySet, dst: usize, src: &[u8]) -> SyscallRe
         return Ok(0);
     }
     let end = checked_user_range(dst, len)?;
-    #[cfg(target_arch = "loongarch64")]
     if !user_range_has_perm(memory_set, dst, len, MapPermission::W) {
         return Err(SysErrNo::EFAULT);
     }
@@ -251,7 +247,6 @@ pub fn probe_user_write(memory_set: &MemorySet, dst: usize, len: usize) -> Sysca
         return Ok(0);
     }
     let end = checked_user_range(dst, len)?;
-    #[cfg(target_arch = "loongarch64")]
     if !user_range_has_perm(memory_set, dst, len, MapPermission::W) {
         return Err(SysErrNo::EFAULT);
     }
