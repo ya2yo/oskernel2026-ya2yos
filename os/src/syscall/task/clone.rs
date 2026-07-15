@@ -17,7 +17,7 @@ fn parse_clone_flags(raw_flags: usize) -> Result<(CloneFlags, i32), SysErrNo> {
     }
 
     let flags = CloneFlags::from_bits((raw_flags as u64) & !CSIGNAL).ok_or(SysErrNo::EINVAL)?;
-    validate_clone_flags(flags, exit_signal)?;
+    validate_clone_flags(flags)?;
 
     Ok((
         flags,
@@ -29,14 +29,14 @@ fn parse_clone_flags(raw_flags: usize) -> Result<(CloneFlags, i32), SysErrNo> {
     ))
 }
 
-fn validate_clone_flags(flags: CloneFlags, exit_signal: u64) -> Result<(), SysErrNo> {
+fn validate_clone_flags(flags: CloneFlags) -> Result<(), SysErrNo> {
     if flags.contains(CloneFlags::CLONE_THREAD) {
         if !flags.contains(CloneFlags::CLONE_SIGHAND) || !flags.contains(CloneFlags::CLONE_VM) {
             return Err(SysErrNo::EINVAL);
         }
-        if exit_signal != 0 {
-            return Err(SysErrNo::EINVAL);
-        }
+        // Legacy clone(2) accepts CSIGNAL bits together with CLONE_THREAD
+        // and ignores the requested termination signal.  clone3(2) has a
+        // separate exit_signal field and rejects this combination there.
     }
 
     if flags.contains(CloneFlags::CLONE_SIGHAND) && !flags.contains(CloneFlags::CLONE_VM) {

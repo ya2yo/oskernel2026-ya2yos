@@ -4636,3 +4636,30 @@ AI 追踪到 `exit_current_and_run_next()` 无条件 `fd_table.clear()` / `fs_in
 ### 验证
 
 执行 `cargo fmt --manifest-path os/Cargo.toml`、`make`、`timeout 120s make run > /tmp/clone02-after-fix.log 2>&1` 和 `timeout 120s make TARGET_ARCH=loongarch64 run > /tmp/clone02-loongarch-after-fix.log 2>&1`。`make` 完成 RISC-V 与 LoongArch64 构建，只有既有 vendored `smoltcp` warning。两架构 QEMU 中 musl 与 glibc `clone02` 均输出两条 `TPASS`，Summary 均为 `passed 2 failed 0 broken 0 skipped 0 warnings 0`，返回状态为 0 并正常 `shutdown!`；LoongArch 启动期的 VirtIO 分配 WARN 为既有日志，测例期间没有 WARN、panic、TFAIL 或 TBROK。
+
+---
+
+## 2026-07-15: LTP clone08 legacy clone 线程退出信号兼容
+
+### 用户需求
+
+维护者要求继续分析新的 `log.ans` 并修复 `clone08`。
+
+### 分析与采纳结论
+
+AI 从两轮 `TBROK` 定位到最后一个 `CLONE_THREAD` 子项，前三个 clone flag 子项已通过。对照 `clone08.c` 和 Linux `kernel/fork.c`，确认 LTP 经旧式 `clone(2)` wrapper 传入 `CLONE_THREAD | CLONE_SIGHAND | CLONE_VM | CLONE_CHILD_CLEARTID | SIGCHLD`。Linux 对 clone3 的独立 `exit_signal` 有更严格限制，但 legacy clone 的低位 CSIGNAL 可与 `CLONE_THREAD` 并存并被线程路径忽略。内核此前错误地将该限制统一用于 legacy clone。
+
+采纳的内核修复是移除 `CLONE_THREAD && exit_signal != 0` 的拒绝，仅保留 `CLONE_SIGHAND` 和 `CLONE_VM` 前置条件。RISC-V musl/glibc 和 LoongArch glibc 均通过五项断言，证明线程组 ID 与 `CLONE_CHILD_CLEARTID` futex 唤醒均正确。
+
+LoongArch musl 仍失败，因此 AI 使用 debug 内核确认该分支没有 `Clone` 或 `Clone3` syscall；再只读导出镜像 `/musl/lib/libc.so` 并反汇编 `clone`，确认用户态 wrapper 对 `flags & 0x290000` 直接返回 `EINVAL`，其中含 `CLONE_THREAD` 和 `CLONE_CHILD_CLEARTID`。该限制发生在内核入口前，不能通过 syscall 修复；更新镜像内 musl runtime 需要维护者额外授权。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/task/clone.rs` | legacy `clone(2)` 不再错误拒绝带低位 CSIGNAL 的 `CLONE_THREAD`；保留 thread 必需的 VM/sighand 校验。 |
+| `Docs/决赛文档/problem/clone08-legacy-clone-thread-signal.md` | 记录内核语义修复、双架构验证和 LoongArch musl 用户态阻塞。 |
+
+### 验证
+
+执行 `cargo fmt --manifest-path os/Cargo.toml`、`make`、RISC-V/LoongArch64 QEMU 单测，以及 `make TARGET_ARCH=loongarch64 log` 的诊断回归。RISC-V musl/glibc 和 LoongArch glibc 均为 `passed 5 failed 0 broken 0 skipped 0 warnings 0` 并正常 `shutdown!`。LoongArch musl 为 `passed 3 failed 0 broken 1`，唯一 TBROK 是 libc wrapper 本地 `EINVAL`；debug 证实内核没有收到该请求。诊断后已恢复 release 双架构构建。

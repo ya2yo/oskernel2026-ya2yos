@@ -26,6 +26,7 @@
 - [LTP socket01 socket type errno 语义修复](./socket01-socket-type-errno.md)
 - [LTP socketpair01 协议 errno 与用户指针语义修复](./socketpair01-protocol-errno.md)
 - [LTP clone02 共享资源退出清理修复](./clone02-shared-resource-exit.md)
+- [LTP clone08 legacy clone 线程退出信号兼容](./clone08-legacy-clone-thread-signal.md)
 - [chown04 chown errno 语义修复](./chown04-chown-errno.md)
 - [open14 O_TMPFILE 深层路径超时](./open14-otmpfile-path-slow.md)
 - [tst_virt /proc/cpuinfo 缺失导致 TBROK](./proc-cpuinfo-tst-virt.md)

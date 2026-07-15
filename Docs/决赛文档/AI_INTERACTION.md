@@ -649,3 +649,10 @@
 - **场景**：`log.ans` 的 clone02 失败分析、LTP 源码与共享资源生命周期对照、双架构构建及 RISC-V QEMU 回归
 - **描述**：维护者要求分析 `log.ans` 并修复 `clone02`。AI 确认原始 `1024` 是 LTP `TWARN` 退出位，根因是共享 `CLONE_FILES` 子进程退出时无条件清空 `FdTable`/`FSInfo`，关闭父进程仍在使用的 LTP 输出 pipe。仅按 `Arc` 计数跳过清理会被 zombie 的 `Process` 引用阻塞，令 pipe 永不 EOF。修复为 `FdTable`/`FSInfo` 维护独立的活跃进程所有者计数，非线程 `CLONE_FILES`/`CLONE_FS` 成功创建时登记，进程组退出时释放，最后一个活跃拥有者才清理。RISC-V 与 LoongArch64 QEMU 中 musl/glibc `clone02` 均为 `passed 2 failed 0 broken 0` 并正常关机。详见 [problem/clone02-shared-resource-exit.md](./problem/clone02-shared-resource-exit.md)。
 - **关联 commit**：待提交
+
+#### LTP clone08 legacy clone 线程退出信号兼容（7.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` clone08 TBROK 分析、Linux clone/clone3 语义对照、双架构 QEMU 回归及 LoongArch musl 二进制诊断
+- **描述**：维护者要求继续修复 `clone08`。AI 确认内核错误地把 clone3 的 `CLONE_THREAD` exit signal 限制套用于 legacy `clone(2)`，使 LTP 的 `... | SIGCHLD` 调用返回 `EINVAL`。修复后 RISC-V musl/glibc 和 LoongArch glibc 的五项 clone08 断言全部通过，包含线程组 ID 和 `CLONE_CHILD_CLEARTID` futex 唤醒。LoongArch musl 的残余失败经 debug syscall 日志和镜像 `libc.so` 反汇编确认发生在用户态 wrapper，它以 `flags & 0x290000` 直接返回 `EINVAL`，没有进入内核；未修改测试镜像或伪造测例结果。详见 [problem/clone08-legacy-clone-thread-signal.md](./problem/clone08-legacy-clone-thread-signal.md)。
+- **关联 commit**：待提交
