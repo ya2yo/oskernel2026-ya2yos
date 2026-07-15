@@ -207,7 +207,7 @@ impl Process {
                 }
             } else {
                 // 显式 dirfd 无效时，路径解析失败。
-                Err(SysErrNo::EINVAL)
+                Err(SysErrNo::EBADF)
             }
         } else {
             // 相对路径且 dirfd 为 AT_FDCWD(-100)：以当前进程 cwd 为基准。
