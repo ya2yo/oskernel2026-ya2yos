@@ -635,3 +635,10 @@
 - **场景**：`waitid07` checkpoint 超时、`b31376b` 语义回溯、Linux `sigaction` ABI 对齐、双架构 QEMU 回归
 - **描述**：维护者要求以 Linux 原始语义根治 `SIGSTOP` 卡死。AI 确认此前 `signal03` 修复应保留：`SIGTSTP/SIGTTIN/SIGTTOU` 可显式设为 `SIG_IGN`；真正问题是 action 表把默认 stop/ignore/continue 全部编码为 `sa_handler == SIG_IGN`，使默认不可忽略的 `SIGSTOP` 被误消费。修复将默认 action 的 ABI 值统一为 `SIG_DFL`，用 `SigDisposition::{Default, Ignore, Handler}` 区分 action 来源，并让 pending、wait、poll、pselect、trap 与投递路径通过 helper 查询。LoongArch64 与 RISC-V QEMU 中 musl/glibc `waitid07` 均为 `passed 5 failed 0 broken 0`，所有 stopped `siginfo_t` 断言通过并正常关机。详见 [problem/signal-disposition-default-abi.md](./problem/signal-disposition-default-abi.md)。
 - **关联 commit**：待提交
+
+#### LoongArch64 LTP kill10 signal frame EFAULT panic 防护（7.15）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`loongarch.ans` panic 分析、LTP `kill10` 信号洪泛路径对照、signal frame 用户内存错误处理、双架构构建与 LoongArch64 QEMU 单测回归
+- **描述**：维护者报告 glibc 全量 LTP 的 `kill10` 在 `setup_frame` 保存 `MachineContext` 时 panic。AI 确认底层 `copy_to_user()` 是可失败的用户内存访问，原实现错误地以 `panic!()` 处理 `EFAULT`，并漏算一个 signal frame marker、让 `SA_SIGINFO` handler 的 LoongArch 栈失去 16 字节对齐，且在任务锁内访问用户内存。修复为完整 frame 范围预检、frame 顶端对齐填充、任务锁外进行 COW/懒分配和写入、成功后再提交 trap context；预检或写入失败仅终止当前任务为 `SIGSEGV`。RISC-V/LoongArch64 构建通过，LoongArch64 musl/glibc 单跑 `kill10` 均 `passed 1 failed 0 broken 0` 且无 panic；全量 LTP 待恢复全量入口复跑。详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/kill10-signal-frame-efault-panic.md](./problem/kill10-signal-frame-efault-panic.md)。
+- **关联 commit**：待提交

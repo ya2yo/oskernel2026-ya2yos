@@ -4580,3 +4580,31 @@ AI 对照 `b31376b`、`SigAction::new()`、`sys_rt_sigaction()` 和 `waitid07.c`
 ### 验证
 
 执行 `make TARGET_ARCH=loongarch64 log`、`make TARGET_ARCH=riscv64 log`，两个 debug 构建均通过，仅有既有 vendored `smoltcp` warning。随后分别运行两架构 QEMU：musl 与 glibc `waitid07` 均为 `passed 5 failed 0 broken 0`，`waitid(WSTOPPED | WNOWAIT)` 与四项 `siginfo_t` 字段断言均 `TPASS`，并正常 `shutdown!`。
+
+---
+
+## 2026-07-15: LoongArch64 全量 LTP kill10 signal frame EFAULT panic 防护
+
+### 用户需求
+
+用户反馈 LoongArch64 全量测试在 glibc `kill10` 发生 kernel panic，要求根据 `loongarch.ans` 尝试修复。
+
+### 分析与采纳结论
+
+AI 以 `TPASS`、`TFAIL`、`TBROK` 和 panic 行定位，确认 musl LTP 的 `kill10` 已通过，第二轮 glibc LTP 的 `kill10` 则在两个 manager 打印 “All 10 children reported in” 后，由 master `PID 9751` 触发 `setup_frame` 的 `save MachineContext` panic。对照 LTP `kill10.c` 与 `signal/frame.rs`，确认这是 signal flooding 下普通 handler frame 的用户栈写入失败，而非此前 `SA_SIGINFO.si_pid` 发送者信息问题。
+
+`copy_to_user()` 会因用户 VMA 权限、懒分配或 COW 未能完成而返回 `EFAULT`。旧代码把所有 signal frame 写入错误当作“不可能”并直接 `panic!()`，使单一用户进程错误破坏整个内核；日志未保留失败虚拟地址或页表状态，故没有把 EFAULT 的资源层原因作未经证实的结论。进一步检查发现原实现在持有 `TaskControlBlockInner` 锁时进行用户内存访问，且 frame 下界检查遗漏尾部 magic word。
+
+采纳方案是在提交 trap context 前计算完整 frame 大小、以 `checked_sub()` 和 `probe_user_write()` 预检整个写入范围，并在 frame 顶端加入不改变 `rt_sigreturn` 相对布局的填充，保证 LoongArch/RISC-V handler entry `sp` 为 16 字节对齐；把任务上下文与旧 mask 拷贝到局部变量后释放任务锁，完成 COW/懒分配和用户写入后才提交新上下文。所有预检或实际写入失败都记录目标地址并仅以 `SIGSEGV` 终止当前任务，绝不 panic 内核。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/signal/frame.rs` | 完整 signal frame 范围预检、失败路径任务级 `SIGSEGV`、逐次 copy 错误处理，以及移除 `TaskControlBlockInner` 锁跨用户内存访问。 |
+| `Docs/决赛文档/problem/kill10-signal-frame-efault-panic.md` | 记录全量日志现象、可确认根因、修复和验证边界。 |
+| `Docs/决赛文档/problem/README.md`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md` | 补充索引、开发日志和 AI 使用记录。 |
+
+### 验证
+
+执行 `rustfmt --edition 2021 os/src/signal/frame.rs`、`make TARGET_ARCH=loongarch64` 和 `timeout 120s make run > /tmp/kill10-aligned.log 2>&1`。根 `Makefile` 实际完成 RISC-V 与 LoongArch64 构建，只有既有 vendored `smoltcp` warning。LoongArch64 QEMU 中 musl/glibc `kill10` 均为 `passed 1 failed 0 broken 0`，并正常 `shutdown!`；日志无 `setup_frame` 错误或 panic。当前维护者未提交的 `initproc.rs` 只运行这两个单测，未重跑完整 glibc LTP，完整回归待恢复全量入口后执行。
