@@ -1,5 +1,7 @@
 bitflags! {
     pub struct StMode: u32 {
+        /// Linux `S_IFMT`，用于从 `st_mode` 中提取文件类型字段。
+        const FILE_TYPE_MASK = 0xF000;
         const FIFO= 0x1000; //管道设备文件
         const FCHR = 0x2000; //字符设备文件
         const FDIR = 0x4000; //目录文件

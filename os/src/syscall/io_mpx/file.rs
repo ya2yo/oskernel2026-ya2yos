@@ -49,7 +49,7 @@ fn fd_allows_read(flags: u32) -> bool {
 }
 
 fn stat_file_type(mode: u32) -> u32 {
-    mode & 0o170000
+    mode & StMode::FILE_TYPE_MASK.bits()
 }
 
 fn ranges_overlap(a_start: usize, a_len: usize, b_start: usize, b_len: usize) -> bool {
@@ -201,13 +201,8 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     let (file, is_regular_file) = {
         let task = current_task().unwrap();
         let proc = &task.process;
-        if fd >= proc.fd_table.len() {
-            return Err(SysErrNo::EINVAL);
-        }
-        let file_desc = match proc.fd_table.try_get(fd) {
-            Some(f) => f,
-            None => return Err(SysErrNo::EBADF),
-        };
+
+        let file_desc = proc.fd_table.get(fd)?;
         // O_PATH fd 只能做 fd 级别操作，read(2) 必须按 Linux 语义返回 EBADF。
         if file_desc.is_path_only() {
             return Err(SysErrNo::EBADF);
@@ -216,6 +211,10 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         if !file.readable() {
             return Err(SysErrNo::EBADF);
         }
+        if stat_file_type(file.fstat().st_mode) == StMode::FDIR.bits() {
+            return Err(SysErrNo::EISDIR);
+        }
+
         (file, file_desc.file().is_ok())
     }; // 锁在此处释放
 
@@ -345,7 +344,7 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
         return Ok(0);
     }
     validate_iovcnt(iovcnt)?;
-    if file.fstat().st_mode & 0o170000 == StMode::FDIR.bits() {
+    if stat_file_type(file.fstat().st_mode) == StMode::FDIR.bits() {
         return Err(SysErrNo::EISDIR);
     }
 
@@ -548,7 +547,7 @@ pub fn sys_pread64(fd: usize, buf: *const u8, count: usize, offset: isize) -> Sy
 
     // release current task TCB manually to avoid multi-borrow
     let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
-    if file.fstat().st_mode & 0o170000 == StMode::FDIR.bits() {
+    if stat_file_type(file.fstat().st_mode) == StMode::FDIR.bits() {
         return Err(SysErrNo::EISDIR);
     }
     file.lseek(offset, SEEK_SET)?;
@@ -681,7 +680,7 @@ pub fn sys_preadv2(
     if !file.readable() {
         return Err(SysErrNo::EBADF);
     }
-    if file.fstat().st_mode & 0o170000 == StMode::FDIR.bits() {
+    if stat_file_type(file.fstat().st_mode) == StMode::FDIR.bits() {
         return Err(SysErrNo::EISDIR);
     }
     if let Some(offset) = offset {
