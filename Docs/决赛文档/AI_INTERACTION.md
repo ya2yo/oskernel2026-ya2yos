@@ -670,9 +670,17 @@
 - **场景**：分析 `log.ans` 中 `writev01` 的 musl/glibc 失败项，追踪 `sys_writev()` 与 pipe 写路径并修复 Linux errno/空 iovec 语义。
 - **描述**：确认 fd 越界误返 `EINVAL`、`iovcnt == 0` 被误判为错误、零长度 NULL iovec 错误触发用户拷贝，导致关闭 pipe 的 `EPIPE` 路径未执行。修复后格式检查及 RISC-V/LoongArch64 构建通过，RISC-V musl/glibc `writev01` 均为 `passed 6 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/writev01-writev-errno.md](./problem/writev01-writev-errno.md)。
 - **关联 commit**：待提交
+
 #### LTP waitpid04 非法 options 错误码修复（7.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析新的 `log.ans`、追踪 `sys_waitpid()` options 解析和 child 筛选顺序、修复错误码优先级并执行双架构构建和 RISC-V 单测。
 - **描述**：确认 `from_bits_truncate()` 丢弃 `0xffffffff` 中的未知位，导致无 child 时错误返回 `ECHILD`；改为严格 `from_bits()` 后，RISC-V musl/glibc `waitpid04` 均为 `passed 4 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/waitpid04-invalid-options.md](./problem/waitpid04-invalid-options.md)。
+- **关联 commit**：待提交
+
+#### LTP vmsplice02 非 pipe fd 错误码修复（7.16）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析新的 `log.ans`、追踪 `sys_vmsplice()` 的 fd 类型检查和错误码映射、执行双架构构建及 RISC-V 单测。
+- **描述**：确认 `FileDescriptor::pipe()` 失败被统一映射为 `EINVAL`，导致有效非 pipe fd 未返回 Linux 要求的 `EBADF`。修复后 RISC-V musl/glibc `vmsplice02` 均为 `passed 3 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/vmsplice02-non-pipe-fd.md](./problem/vmsplice02-non-pipe-fd.md)。
 - **关联 commit**：待提交

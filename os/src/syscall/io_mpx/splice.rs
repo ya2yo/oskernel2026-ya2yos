@@ -57,7 +57,9 @@ pub fn sys_vmsplice(fd: i32, iov: usize, nr_segs: u32, flags: u32) -> SyscallRet
     };
 
     // vmsplice 要求 fd 必须是 pipe；Pipe 作为文件对象统一由 FileClass::Pipe 管理。
-    let file = fd_entry.pipe().map_err(|_| SysErrNo::EINVAL)?;
+    // vmsplice requires a pipe endpoint; a valid non-pipe fd has the same
+    // bad-descriptor error as an fd that does not exist.
+    let file = fd_entry.pipe().map_err(|_| SysErrNo::EBADF)?;
 
     if !file.writable() {
         return Err(SysErrNo::EBADF);
