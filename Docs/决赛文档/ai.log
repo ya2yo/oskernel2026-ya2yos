@@ -4739,3 +4739,16 @@ AI 确认 musl/glibc 的 `vmsplice02` 都只有有效非 pipe fd 这一项失败
 ### 修改与验证
 
 修改 `os/src/syscall/io_mpx/splice.rs`，新增 `Docs/决赛文档/problem/vmsplice02-non-pipe-fd.md` 并更新开发日志和问题索引。格式检查、RISC-V/LoongArch64 构建通过；RISC-V musl/glibc `vmsplice02` 均 `passed 3 failed 0 broken 0` 并正常关机。
+## 2026-07-16：LTP utimes01 权限、坏指针与只读挂载语义修复
+
+### 用户需求
+
+维护者要求分析新的 `log.ans` 并继续修复失败项。
+
+### 分析与采纳结论
+
+AI 对照 LTP `utimes01.c` 与 `sys_utimensat()`，确认架构上的 `utimes(2)` 复用该入口，但实现把 NULL pathname 解释为空路径，并且无条件设置 inode 时间戳。修复区分 `times == NULL` 的文件写权限语义与显式时间值的 owner 语义，增加 NULL pathname `EFAULT` 和只读挂载 `EROFS` 检查。
+
+### 修改与验证
+
+修改 `os/src/syscall/fs/ctl.rs`，新增 `Docs/决赛文档/problem/utimes01-permission-rofs.md` 并更新开发日志和问题索引。格式检查、RISC-V/LoongArch64 构建通过；两架构 musl/glibc `utimes01` 均 `passed 7 failed 0 broken 0` 并正常关机。

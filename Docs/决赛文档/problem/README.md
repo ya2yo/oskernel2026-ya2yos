@@ -29,6 +29,7 @@
 - [LTP writev01 writev 参数与管道错误码修复](./writev01-writev-errno.md)
 - [LTP waitpid04 非法 options 错误码修复](./waitpid04-invalid-options.md)
 - [LTP vmsplice02 非 pipe fd 错误码修复](./vmsplice02-non-pipe-fd.md)
+- [LTP utimes01 权限、坏指针与只读挂载语义修复](./utimes01-permission-rofs.md)
 - [LTP clone02 共享资源退出清理修复](./clone02-shared-resource-exit.md)
 - [LTP clone08 legacy clone 线程退出信号兼容](./clone08-legacy-clone-thread-signal.md)
 - [chown04 chown errno 语义修复](./chown04-chown-errno.md)

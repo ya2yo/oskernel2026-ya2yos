@@ -684,3 +684,9 @@
 - **场景**：分析新的 `log.ans`、追踪 `sys_vmsplice()` 的 fd 类型检查和错误码映射、执行双架构构建及 RISC-V 单测。
 - **描述**：确认 `FileDescriptor::pipe()` 失败被统一映射为 `EINVAL`，导致有效非 pipe fd 未返回 Linux 要求的 `EBADF`。修复后 RISC-V musl/glibc `vmsplice02` 均为 `passed 3 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/vmsplice02-non-pipe-fd.md](./problem/vmsplice02-non-pipe-fd.md)。
 - **关联 commit**：待提交
+#### LTP utimes01 权限、坏指针与只读挂载语义修复（7.16）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析新的 `log.ans`、对照 LTP `utimes01` 源码与 `sys_utimensat()` 路径、补齐 Linux 时间戳权限和只读挂载错误码并执行回归。
+- **描述**：确认 `sys_utimensat()` 无条件修改时间戳，遗漏 NULL pathname、owner/write 权限和只读挂载检查。修复后 RISC-V/LoongArch64 musl/glibc `utimes01` 均为 `passed 7 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/utimes01-permission-rofs.md](./problem/utimes01-permission-rofs.md)。
+- **关联 commit**：待提交
