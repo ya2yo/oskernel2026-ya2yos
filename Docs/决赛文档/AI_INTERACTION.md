@@ -663,3 +663,10 @@
 - **场景**：`log.ans` 与 LTP getcwd03 源码对照、cwd/符号链接路径解析分析、VFS 缓存语义修复、双架构 QEMU 回归
 - **描述**：维护者要求修复 `getcwd03`。AI 确认 `chdir()` 虽经 `open()` 解析符号链接目标，却错误保存未解析的链接路径，令 `getcwd()` 返回别名；修复后测试继续暴露 `readlinkat()` 跟随末级链接并返回 `EINVAL`。最终令 `chdir` 保存目标 inode 路径，`readlinkat` 使用保留链接的内部查找，并让 `O_UNLINK/O_NOFOLLOW` 绕过已跟随链接的 inode/dentry cache。LoongArch64 和 RISC-V 的 musl/glibc `getcwd03` 均为 `passed 1 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/getcwd03-symlink-cwd-readlink-cache.md](./problem/getcwd03-symlink-cwd-readlink-cache.md)。
 - **关联 commit**：待提交
+
+#### LTP writev01 writev 参数与管道错误码修复（7.16）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 中 `writev01` 的 musl/glibc 失败项，追踪 `sys_writev()` 与 pipe 写路径并修复 Linux errno/空 iovec 语义。
+- **描述**：确认 fd 越界误返 `EINVAL`、`iovcnt == 0` 被误判为错误、零长度 NULL iovec 错误触发用户拷贝，导致关闭 pipe 的 `EPIPE` 路径未执行。修复后格式检查及 RISC-V/LoongArch64 构建通过，RISC-V musl/glibc `writev01` 均为 `passed 6 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/writev01-writev-errno.md](./problem/writev01-writev-errno.md)。
+- **关联 commit**：待提交

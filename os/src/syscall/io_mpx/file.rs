@@ -123,13 +123,13 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     // ---- 阶段 0: 校验 fd、取出文件引用、检查可写 ----
     let f = {
         let task = current_task().unwrap();
-        let proc_inner = &task.process;
+        let proc = &task.process;
 
-        if fd >= proc_inner.fd_table.len() {
+        if fd >= proc.fd_table.len() {
             warn!("write EBADF: fd out of range");
             return Err(SysErrNo::EBADF);
         }
-        let file_desc = match proc_inner.fd_table.try_get(fd) {
+        let file_desc = match proc.fd_table.try_get(fd) {
             Some(f) => f,
             None => {
                 warn!("write EBADF: fd not exist");
@@ -158,8 +158,8 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         // 持锁：从用户空间拷贝当前分片到内核缓冲区
         {
             let task = current_task().unwrap();
-            let proc_inner = &task.process;
-            let memory_set = proc_inner.memory_set_arc();
+            let proc = &task.process;
+            let memory_set = proc.memory_set_arc();
             if let Err(err) = copy_from_user(&*memory_set, user_ptr, &mut kernel_buf) {
                 return if total_written > 0 {
                     Ok(total_written)
@@ -200,11 +200,11 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
 
     let (file, is_regular_file) = {
         let task = current_task().unwrap();
-        let proc_inner = &task.process;
-        if fd >= proc_inner.fd_table.len() {
+        let proc = &task.process;
+        if fd >= proc.fd_table.len() {
             return Err(SysErrNo::EINVAL);
         }
-        let file_desc = match proc_inner.fd_table.try_get(fd) {
+        let file_desc = match proc.fd_table.try_get(fd) {
             Some(f) => f,
             None => return Err(SysErrNo::EBADF),
         };
@@ -240,8 +240,8 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
 
         if ret > 0 {
             let task = current_task().unwrap();
-            let proc_inner = &task.process;
-            let mem = proc_inner.memory_set_arc();
+            let proc = &task.process;
+            let mem = proc.memory_set_arc();
             if let Err(err) = copy_to_user(&*mem, user_ptr, &kernel_buf[..ret]) {
                 return if total_read > 0 {
                     Ok(total_read)
@@ -264,24 +264,18 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/writev.2.html
 pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
-    // iovec 数量上限，防止遍历过多
-    const IOV_MAX: usize = 1024;
-    if iovcnt == 0 || iovcnt > IOV_MAX {
-        return Err(SysErrNo::EINVAL);
-    }
-
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
+    let proc = &task.process;
 
     debug!(
         "[sys_writev] fd is {}, iov is {:x}, iovcnt is {}",
         fd, iov as usize, iovcnt
     );
 
-    if fd >= proc_inner.fd_table.len() {
-        return Err(SysErrNo::EINVAL);
+    if fd >= proc.fd_table.len() {
+        return Err(SysErrNo::EBADF);
     }
-    let file = match proc_inner.fd_table.try_get(fd) {
+    let file = match proc.fd_table.try_get(fd) {
         Some(f) => f.any(),
         None => return Err(SysErrNo::EBADF),
     };
@@ -289,16 +283,29 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
         return Err(SysErrNo::EBADF);
     }
 
+    // Linux treats an empty iovec array as a successful no-op.  The fd is
+    // still checked above, so an invalid descriptor remains EBADF.
+    if iovcnt == 0 {
+        return Ok(0);
+    }
+    if iovcnt > IOV_MAX {
+        return Err(SysErrNo::EINVAL);
+    }
+
     let iovec_size = core::mem::size_of::<Iovec>();
     let mut kernel_bufs: Vec<Vec<u8>> = Vec::new();
     let mut bufs: Vec<UserBuffer> = Vec::new();
     {
-        let memory_set = proc_inner.memory_set_arc();
+        let memory_set = proc.memory_set_arc();
         for i in 0..iovcnt {
             let current = (iov as usize) + iovec_size * i;
             let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
             copy_from_user(&memory_set, current, &mut iov_buf)?;
             let iovinfo: Iovec = unsafe { core::mem::transmute(iov_buf) };
+            validate_iov_len(iovinfo.iov_len)?;
+            if iovinfo.iov_len == 0 {
+                continue;
+            }
             // 单个 iovec 的缓冲区上界：防止内核堆 OOM
             let copy_len = IO_CHUNK_SIZE.min(iovinfo.iov_len);
             let mut kb = vec![0u8; copy_len];
@@ -325,12 +332,12 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     }
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
+    let proc = &task.process;
 
-    if fd >= proc_inner.fd_table.len() {
+    if fd >= proc.fd_table.len() {
         return Err(SysErrNo::EINVAL);
     }
-    let file = match proc_inner.fd_table.try_get(fd) {
+    let file = match proc.fd_table.try_get(fd) {
         Some(f) => f.any(),
         None => return Err(SysErrNo::EBADF),
     };
@@ -344,7 +351,7 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     for i in 0..iovcnt {
         // 阶段 1：持锁读取 iovec 元数据 + 分配内核缓冲区
         let (iov_base, iov_len, mut kernel_buf) = {
-            let memory_set = proc_inner.memory_set_arc();
+            let memory_set = proc.memory_set_arc();
             let iov_ptr = (iov as usize) + iovec_size * i;
 
             let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
@@ -377,7 +384,7 @@ pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
 
         // 阶段 3：持锁将内核缓冲区 → 用户空间
         {
-            let memory_set = proc_inner.memory_set_arc();
+            let memory_set = proc.memory_set_arc();
             copy_to_user(&memory_set, iov_base, &kernel_buf[..read_ret])?;
         }
 
@@ -526,10 +533,10 @@ pub fn sys_pwrite64(fd: usize, buf: *const u8, count: usize, offset: isize) -> S
 /// 参考 https://man7.org/linux/man-pages/man2/pread64.2.html
 pub fn sys_pread64(fd: usize, buf: *const u8, count: usize, offset: isize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = &*&proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = &*&proc.memory_set_arc();
 
-    let file = proc_inner.fd_table.get(fd)?.any();
+    let file = proc.fd_table.get(fd)?.any();
     if offset < 0 {
         return Err(SysErrNo::EINVAL);
     }
@@ -571,9 +578,9 @@ pub fn sys_pwritev2(
     let offset = validate_preadv2_offset(pos_l, pos_h)?;
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
+    let proc = &task.process;
 
-    let file_desc = proc_inner.fd_table.get(fd)?;
+    let file_desc = proc.fd_table.get(fd)?;
     let file = file_desc.any();
     let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
     if !fd_allows_write(file_desc.flags()) || !file.writable() {
@@ -584,7 +591,7 @@ pub fn sys_pwritev2(
     }
 
     let iovecs = {
-        let memory_set = proc_inner.memory_set_arc();
+        let memory_set = proc.memory_set_arc();
         match read_iovecs(&memory_set, iov, iovcnt) {
             Ok(iovecs) => iovecs,
             Err(err) => {
@@ -607,8 +614,8 @@ pub fn sys_pwritev2(
 
             {
                 let task = current_task().unwrap();
-                let proc_inner = &task.process;
-                let memory_set = proc_inner.memory_set_arc();
+                let proc = &task.process;
+                let memory_set = proc.memory_set_arc();
                 let src = iovinfo.iov_base + copied;
                 if let Err(err) = copy_from_user(&memory_set, src, &mut kernel_buf) {
                     if offset.is_some() {
@@ -665,9 +672,9 @@ pub fn sys_preadv2(
     let offset = validate_preadv2_offset(pos_l, pos_h)?;
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
+    let proc = &task.process;
 
-    let file = proc_inner.fd_table.get(fd)?.any();
+    let file = proc.fd_table.get(fd)?.any();
     let cur_offset = file.lseek(0, SEEK_CUR)? as isize;
     if !file.readable() {
         return Err(SysErrNo::EBADF);
@@ -680,7 +687,7 @@ pub fn sys_preadv2(
     }
 
     let iovecs = {
-        let memory_set = proc_inner.memory_set_arc();
+        let memory_set = proc.memory_set_arc();
         match read_iovecs(&memory_set, iov, iovcnt) {
             Ok(iovecs) => iovecs,
             Err(err) => {
@@ -703,8 +710,8 @@ pub fn sys_preadv2(
 
             {
                 let task = current_task().unwrap();
-                let proc_inner = &task.process;
-                let memory_set = proc_inner.memory_set_arc();
+                let proc = &task.process;
+                let memory_set = proc.memory_set_arc();
                 if let Err(err) = probe_user_write(&memory_set, iov_base, chunk_len) {
                     if offset.is_some() {
                         let _ = file.lseek(cur_offset, SEEK_SET);
@@ -736,8 +743,8 @@ pub fn sys_preadv2(
 
             {
                 let task = current_task().unwrap();
-                let proc_inner = &task.process;
-                let memory_set = proc_inner.memory_set_arc();
+                let proc = &task.process;
+                let memory_set = proc.memory_set_arc();
                 if let Err(err) = copy_to_user(&memory_set, iov_base, &kernel_buf[..read_ret]) {
                     if offset.is_some() {
                         let _ = file.lseek(cur_offset, SEEK_SET);

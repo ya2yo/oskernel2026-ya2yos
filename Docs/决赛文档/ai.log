@@ -4699,3 +4699,17 @@ AI 对照 LTP 源码、`sys_chdir()`、`sys_getcwd()` 和 ext4 symlink 查找，
 根 Makefile 同时完成 RISC-V 和 LoongArch64 构建，仅有既有 vendored `smoltcp` warning。
 LoongArch64 与 RISC-V QEMU 中，musl/glibc `getcwd03` 均为 `passed 1 failed 0 broken 0`
 并正常 `shutdown!`。
+
+## 2026-07-16：LTP writev01 writev 参数与管道错误码修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并进行修复。
+
+### 分析与采纳结论
+
+AI 从 `TPASS/TFAIL` 汇总确认 musl/glibc 的 `writev01` 各失败四项。对照 `sys_writev()` 和 pipe `write()` 路径后确认，`iovcnt == 0` 被错误返回 `EINVAL`，fd 越界错误码错误，零长度 NULL iovec 被错误执行用户内存拷贝，导致 pipe 的 `EPIPE` 路径也被提前绕过。修复 fd 检查、空 iovec 返回值、零长度项处理和 `iov_len` 校验。
+
+### 修改与验证
+
+修改 `os/src/syscall/io_mpx/file.rs`，新增 `Docs/决赛文档/problem/writev01-writev-errno.md` 并更新开发日志和问题索引。`cargo fmt --manifest-path os/Cargo.toml -- --check` 通过，根目录 `make` 完成 RISC-V 与 LoongArch64 构建；`timeout 120s make run` 中 RISC-V musl/glibc 均为 `passed 6 failed 0 broken 0` 并正常关机。
