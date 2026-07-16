@@ -137,7 +137,10 @@ fn wait_pending_signal_errno(task: &TaskControlBlock, signo: usize) -> Option<Sy
 ///
 /// 阻塞行为参考 https://man7.org/linux/man-pages/man2/waitpid.2.html。
 pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
-    let options = WaitOption::from_bits_truncate(options);
+    // Unknown waitpid(2) option bits must be rejected before looking for
+    // children; otherwise truncation can turn an invalid request into a
+    // misleading ECHILD result.
+    let options = WaitOption::from_bits(options).ok_or(SysErrNo::EINVAL)?;
     debug!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
     if pid == i32::MIN {

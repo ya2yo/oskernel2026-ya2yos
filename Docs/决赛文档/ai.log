@@ -4713,3 +4713,16 @@ AI 从 `TPASS/TFAIL` 汇总确认 musl/glibc 的 `writev01` 各失败四项。�
 ### 修改与验证
 
 修改 `os/src/syscall/io_mpx/file.rs`，新增 `Docs/决赛文档/problem/writev01-writev-errno.md` 并更新开发日志和问题索引。`cargo fmt --manifest-path os/Cargo.toml -- --check` 通过，根目录 `make` 完成 RISC-V 与 LoongArch64 构建；`timeout 120s make run` 中 RISC-V musl/glibc 均为 `passed 6 failed 0 broken 0` 并正常关机。
+## 2026-07-16：LTP waitpid04 非法 options 错误码修复
+
+### 用户需求
+
+维护者要求继续分析新的 `log.ans` 并修复失败项。
+
+### 分析与采纳结论
+
+AI 确认 musl/glibc 的 `waitpid04` 都只有 `waitpid(-1, NULL, 0xffffffff)` 失败。根因是 `sys_waitpid()` 使用 `WaitOption::from_bits_truncate()`，未知 options 位被静默丢弃，之后因没有可等待 child 返回 `ECHILD`。修复为严格 `from_bits()` 校验，在 child 查找前返回 `EINVAL`。
+
+### 修改与验证
+
+修改 `os/src/syscall/task/wait.rs`，新增 `Docs/决赛文档/problem/waitpid04-invalid-options.md` 并更新开发日志和问题索引。格式检查、RISC-V/LoongArch64 构建通过；RISC-V musl/glibc `waitpid04` 均 `passed 4 failed 0 broken 0` 并正常关机。
