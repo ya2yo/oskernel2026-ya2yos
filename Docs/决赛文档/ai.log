@@ -4768,3 +4768,19 @@ AI 以 `TPASS/TFAIL` 与 Summary 为准，确认 musl/glibc 都只有空 pathnam
 ### 修改与验证
 
 修改 `os/src/syscall/fs/ctl.rs`，新增 `Docs/决赛文档/problem/unlink07-path-errno.md` 并更新问题索引、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml -- --check` 通过；根目录 `make` 完成 RISC-V 和 LoongArch64 构建，只有既有 vendored `smoltcp` warning。LoongArch64 QEMU 单跑中 musl/glibc `unlink07` 均为 `passed 6 failed 0 broken 0 skipped 0 warnings 0`，返回状态为 0 并正常关机；RISC-V QEMU 单测未运行。
+
+## 2026-07-16：LTP readv01 空 iovec 与参数校验修复
+
+### 用户需求
+
+维护者要求分析新的 `log.ans` 并继续修复失败项。
+
+### 分析与采纳结论
+
+AI 从 musl/glibc 的 Summary 确认两组都只有 `readv01` 首项失败。对照 `readv01.c`，该项以合法只读文件调用 `readv(fd, rd_iovec, 0)`，应作为 no-op 返回 0。`sys_readv()` 在 fd 校验之前将 `iovcnt == 0` 与超过 `IOV_MAX` 一并返回 `EINVAL`，因此与 Linux 和同文件已修复的 `writev()` 语义不一致。
+
+采纳 vectored I/O 参数校验收敛方案：先查 fd 和可读性，再接受零计数；超限继续 `EINVAL`。同时复用 `read_iovecs()` 检查单项及累计 `iov_len`，对每个非空输出段先验证用户写地址，再按已有 64 KiB 策略读取和复制。这样避免坏用户输出地址先消耗文件 offset，并补齐目录 `EISDIR`、无效或不可读 fd `EBADF` 的本地语义。
+
+### 修改与验证
+
+修改 `os/src/syscall/io_mpx/file.rs`，新增 `Docs/决赛文档/problem/readv01-iovec-semantics.md` 并更新问题索引、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml -- --check` 通过；根目录 `make` 完成 RISC-V 与 LoongArch64 构建，只有既有 vendored `smoltcp` warning。LoongArch64 QEMU 单跑中 musl/glibc `readv01` 均为 `passed 10 failed 0 broken 0 skipped 0 warnings 0`，返回状态为 0 并正常关机；RISC-V QEMU 和 `readv02` 未单独运行。

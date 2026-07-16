@@ -697,3 +697,10 @@
 - **场景**：`log.ans` 的 unlink07 失败分析、LTP 源码与 pathname 归一化路径对照、双架构构建和 LoongArch64 QEMU 回归。
 - **描述**：确认 `sys_unlinkat()` 在 pathname 校验前调用 `get_abs_path()`，把空相对路径解释为 cwd 后返回 `EISDIR`；同时用户 C string 达到 256 字节上限时未被 syscall 层识别，底层 ext4 查找误返 `ENOENT`。修复复用泛化后的私有路径参数校验，在归一化前让空路径返回 `ENOENT`、超长路径或分量返回 `ENAMETOOLONG`。LoongArch64 musl/glibc `unlink07` 均为 `passed 6 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/unlink07-path-errno.md](./problem/unlink07-path-errno.md)。
 - **关联 commit**：待提交
+
+#### LTP readv01 空 iovec 与参数校验修复（7.16）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：新 `log.ans` 的 readv01 失败分析、LTP readv 源码与 vectored I/O 参数校验路径对照、双架构构建和 LoongArch64 QEMU 回归。
+- **描述**：确认 `sys_readv()` 在 fd 校验前把 `iovcnt == 0` 错误映射为 `EINVAL`，但 Linux 应让合法 fd 的空 iovec 成功返回 0。修复将空数组处理移至 fd/可读性验证之后，并复用 iovec 长度/累计上限校验，在读取前检查用户输出缓冲区。LoongArch64 musl/glibc `readv01` 均为 `passed 10 failed 0 broken 0` 并正常关机；`readv02` 尚未单独回归。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/readv01-iovec-semantics.md](./problem/readv01-iovec-semantics.md)。
+- **关联 commit**：待提交

@@ -326,69 +326,71 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
 
 /// 参考 https://man7.org/linux/man-pages/man2/readv.2.html
 pub fn sys_readv(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
-    const IOV_MAX: usize = 1024;
-    if iovcnt == 0 || iovcnt > IOV_MAX {
-        return Err(SysErrNo::EINVAL);
-    }
-
     let task = current_task().unwrap();
     let proc = &task.process;
 
     if fd >= proc.fd_table.len() {
-        return Err(SysErrNo::EINVAL);
+        return Err(SysErrNo::EBADF);
     }
     let file = match proc.fd_table.try_get(fd) {
         Some(f) => f.any(),
         None => return Err(SysErrNo::EBADF),
     };
     if !file.readable() {
-        return Err(SysErrNo::EACCES);
+        return Err(SysErrNo::EBADF);
     }
 
-    let iovec_size = core::mem::size_of::<Iovec>();
-    let mut total: usize = 0;
+    // A zero-length iovec array is a successful no-op after fd validation.
+    if iovcnt == 0 {
+        return Ok(0);
+    }
+    validate_iovcnt(iovcnt)?;
+    if file.fstat().st_mode & 0o170000 == StMode::FDIR.bits() {
+        return Err(SysErrNo::EISDIR);
+    }
 
-    for i in 0..iovcnt {
-        // 阶段 1：持锁读取 iovec 元数据 + 分配内核缓冲区
-        let (iov_base, iov_len, mut kernel_buf) = {
+    let iovecs = {
+        let memory_set = proc.memory_set_arc();
+        read_iovecs(&memory_set, iov, iovcnt)?
+    };
+
+    let mut total = 0usize;
+    for iovinfo in iovecs {
+        let mut copied = 0usize;
+        while copied < iovinfo.iov_len {
+            let chunk_len = IO_CHUNK_SIZE.min(iovinfo.iov_len - copied);
+            let iov_base = iovinfo.iov_base + copied;
+
             let memory_set = proc.memory_set_arc();
-            let iov_ptr = (iov as usize) + iovec_size * i;
-
-            let mut iov_buf = [0u8; core::mem::size_of::<Iovec>()];
-            copy_from_user(&memory_set, iov_ptr, &mut iov_buf)?;
-            let iovinfo: Iovec = unsafe { core::mem::transmute(iov_buf) };
-
-            if iovinfo.iov_len == 0 {
-                (0, 0, Vec::new())
-            } else {
-                let buf_len = IO_CHUNK_SIZE.min(iovinfo.iov_len);
-                (iovinfo.iov_base, buf_len, vec![0u8; buf_len])
+            if let Err(err) = probe_user_write(&memory_set, iov_base, chunk_len) {
+                return if total > 0 { Ok(total) } else { Err(err) };
             }
-        };
+            drop(memory_set);
 
-        if iov_len == 0 {
-            continue;
-        }
+            let mut kernel_buf = vec![0u8; chunk_len];
+            let read_ret = {
+                let buffer = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+                match file.read(buffer) {
+                    Ok(read_ret) => read_ret,
+                    Err(err) => return if total > 0 { Ok(total) } else { Err(err) },
+                }
+            };
 
-        // 阶段 2：无锁读取文件 → 内核缓冲区（可能阻塞，不持锁）
-        let read_ret = {
-            let mut ub_v = Vec::with_capacity(1);
-            unsafe {
-                ub_v.push(core::slice::from_raw_parts_mut(
-                    kernel_buf.as_mut_ptr(),
-                    iov_len,
-                ));
+            if read_ret == 0 {
+                return Ok(total);
             }
-            file.read(UserBuffer::new(ub_v))?
-        };
 
-        // 阶段 3：持锁将内核缓冲区 → 用户空间
-        {
             let memory_set = proc.memory_set_arc();
-            copy_to_user(&memory_set, iov_base, &kernel_buf[..read_ret])?;
-        }
+            if let Err(err) = copy_to_user(&memory_set, iov_base, &kernel_buf[..read_ret]) {
+                return if total > 0 { Ok(total) } else { Err(err) };
+            }
 
-        total += read_ret as usize;
+            total += read_ret;
+            if read_ret < chunk_len {
+                return Ok(total);
+            }
+            copied += read_ret;
+        }
     }
     Ok(total)
 }
