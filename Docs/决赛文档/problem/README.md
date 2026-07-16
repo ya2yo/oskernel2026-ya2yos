@@ -34,6 +34,7 @@
 - [LTP clone08 legacy clone 线程退出信号兼容](./clone08-legacy-clone-thread-signal.md)
 - [chown04 chown errno 语义修复](./chown04-chown-errno.md)
 - [open14 O_TMPFILE 深层路径超时](./open14-otmpfile-path-slow.md)
+- [open14 procfd linkat 校验顺序与 fstat panic](./open14-procfd-linkat-cache.md)
 - [tst_virt /proc/cpuinfo 缺失导致 TBROK](./proc-cpuinfo-tst-virt.md)
 - [epoll_create02 RISC-V musl libc 包装语义](./epoll-create02-riscv-musl-libc.md)
 - [iperf IPPROTO_IPV6/IPV6_V6ONLY 兼容](./iperf-ipv6-v6only.md)

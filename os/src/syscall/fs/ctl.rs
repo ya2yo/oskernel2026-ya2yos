@@ -346,14 +346,20 @@ pub fn sys_linkat(
         }
         return Err(SysErrNo::ENAMETOOLONG);
     }
-    check_link_mounts(&old_abs_path, &new_abs_path)?;
-    check_parent_permission(parent_path_of(&old_abs_path)?, false)?;
-    check_parent_permission(parent_path_of(&new_abs_path)?, true)?;
 
     // LTP open14 links an O_TMPFILE fd through /proc/self/fd/<fd>. We do not
     // have a full procfs link implementation here, so materialize the current
-    // fd contents into the destination path.
+    // fd contents into the destination path. Do this before validating the
+    // procfs source parent: `/proc/self/fd` is a magic-link view rather than a
+    // directory that exists in the root filesystem.
     if let Some(fd) = parse_proc_self_fd(&old_abs_path) {
+        if flags & AT_SYMLINK_FOLLOW as u32 == 0 {
+            return Err(SysErrNo::ELOOP);
+        }
+        // The anonymous file has no source pathname or mount entry. Checking
+        // the target against itself still enforces a read-only destination.
+        check_link_mounts(&new_abs_path, &new_abs_path)?;
+        check_parent_permission(parent_path_of(&new_abs_path)?, true)?;
         let src = proc.fd_table.get(fd)?.any();
         // Creating the destination goes through the regular VFS path and may
         // re-enter process state, so release syscall-local process locks first.
@@ -386,6 +392,10 @@ pub fn sys_linkat(
         cache_positive_dentry_path(&new_abs_path, inode);
         return Ok(0);
     }
+
+    check_link_mounts(&old_abs_path, &new_abs_path)?;
+    check_parent_permission(parent_path_of(&old_abs_path)?, false)?;
+    check_parent_permission(parent_path_of(&new_abs_path)?, true)?;
 
     // 打开原文件
     let osfile = open(&old_abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;

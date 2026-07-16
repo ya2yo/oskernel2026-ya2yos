@@ -27,6 +27,7 @@ pub struct Ext4File {
 
     has_opened: bool,
     last_flags: u32,
+    pending_mode: Option<u32>,
 }
 
 impl Ext4File {
@@ -43,6 +44,7 @@ impl Ext4File {
             this_type: types,
             has_opened: false,
             last_flags: 0,
+            pending_mode: None,
         }
     }
 
@@ -301,6 +303,7 @@ impl Ext4File {
         insert_fifo(file_path.clone());
         let cache = Arc::new(RwLock::new(VFileCache::new()));
         let mut cache_writer = cache.write();
+        cache_writer.mode = self.pending_mode;
         let aligned_size = aligned_down(size) + PAGE_SIZE;
         cache_writer.data = Vec::new();
         if cache_writer.data.try_reserve_exact(aligned_size).is_err() {
@@ -569,12 +572,33 @@ impl Ext4File {
     //     Ok((atime, mtime, ctime))
     // }
     pub fn fstat(&mut self) -> Result<ext4_inode_stat, i32> {
+        let path = String::from((*self.file_path).to_str().unwrap());
         let c_path = self.file_path.clone();
         let c_path = c_path.into_raw();
         let mut stat = ext4_inode_stat::default();
         let r = unsafe { ext4_stat_get(c_path, &mut stat) };
 
-        let path = String::from((*self.file_path).to_str().unwrap());
+        unsafe {
+            drop(CString::from_raw(c_path));
+        }
+        if r != EOK as i32 {
+            // Small files can be visible only through the write-back cache
+            // until their first flush. Keep fstat usable for that transient
+            // state instead of reporting a spurious filesystem error.
+            if if_cache(path.clone()) {
+                let cache = get_cache(path);
+                let cache = cache.read();
+                stat.st_mode = cache.mode.unwrap_or(0o100000);
+                stat.st_nlink = 1;
+                stat.st_size = cache.size as isize;
+                stat.st_blksize = 512;
+                stat.st_blocks = ((cache.size + 511) / 512) as isize;
+                return Ok(stat);
+            }
+            error!("ext4_stat_get: rc = {}", r);
+            return Err(r);
+        }
+
         if if_cache(path.clone()) {
             //如果在缓存中，更新stat获得的大小
             let cache = get_cache(path.clone());
@@ -582,14 +606,6 @@ impl Ext4File {
             stat.st_size = cache_reader.size as isize;
             stat.st_blocks =
                 (stat.st_size - 1 + (stat.st_blksize as isize)) / (stat.st_blksize as isize);
-        }
-
-        unsafe {
-            drop(CString::from_raw(c_path));
-        }
-        if r != EOK as i32 {
-            error!("ext4_stat_get: rc = {}", r);
-            return Err(r);
         }
 
         // error!(
@@ -642,6 +658,11 @@ impl Ext4File {
         if r != EOK as i32 {
             error!("ext4_mode_set: rc = {}", r);
             return Err(r);
+        }
+        self.pending_mode = Some(mode);
+        let path = String::from((*self.file_path).to_str().unwrap());
+        if if_cache(path.clone()) {
+            get_cache(path).write().mode = Some(mode);
         }
         Ok(EOK as usize)
     }
@@ -877,6 +898,7 @@ pub struct VFileCache {
     offset: usize,
     modified: bool,
     size: usize,
+    mode: Option<u32>,
 }
 
 impl VFileCache {
@@ -886,6 +908,7 @@ impl VFileCache {
             offset: 0,
             modified: false,
             size: 0,
+            mode: None,
         }
     }
 
@@ -1045,11 +1068,41 @@ pub fn write_back_cache(path: String) -> Result<usize, i32> {
                 fsize: 0,
                 fpos: 0,
             };
-            let r = unsafe { ext4_fopen(&mut file_desc, c_path, flags) };
+            let mut r = unsafe { ext4_fopen(&mut file_desc, c_path, flags) };
             unsafe {
                 // deallocate the CString
                 drop(CString::from_raw(c_path));
                 drop(CString::from_raw(flags));
+            }
+            if r == ENOENT as i32 {
+                // A newly created file can remain only in the write-back cache
+                // until its first eviction. Materialize that cache entry and
+                // then flush the pending contents through the same descriptor.
+                file_desc = ext4_file {
+                    mp: core::ptr::null_mut(),
+                    inode: 0,
+                    flags: 0,
+                    fsize: 0,
+                    fpos: 0,
+                };
+                let c_path = CString::new(path.as_str()).expect("CString::new failed");
+                let c_path = c_path.into_raw();
+                let flags = Ext4File::flags_to_cstring(O_RDWR | O_CREAT | O_TRUNC).into_raw();
+                r = unsafe { ext4_fopen(&mut file_desc, c_path, flags) };
+                unsafe {
+                    drop(CString::from_raw(c_path));
+                    drop(CString::from_raw(flags));
+                }
+                if r == EOK as i32 {
+                    if let Some(mode) = cache_writer.mode {
+                        let c_path = CString::new(path.as_str()).expect("CString::new failed");
+                        let c_path = c_path.into_raw();
+                        r = unsafe { ext4_mode_set(c_path, mode) };
+                        unsafe {
+                            drop(CString::from_raw(c_path));
+                        }
+                    }
+                }
             }
             if r != EOK as i32 {
                 if r == ENOENT as i32 && is_proc_task_runtime_file(&path) {

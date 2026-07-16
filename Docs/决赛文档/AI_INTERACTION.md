@@ -704,3 +704,10 @@
 - **场景**：新 `log.ans` 的 readv01 失败分析、LTP readv 源码与 vectored I/O 参数校验路径对照、双架构构建和 LoongArch64 QEMU 回归。
 - **描述**：确认 `sys_readv()` 在 fd 校验前把 `iovcnt == 0` 错误映射为 `EINVAL`，但 Linux 应让合法 fd 的空 iovec 成功返回 0。修复将空数组处理移至 fd/可读性验证之后，并复用 iovec 长度/累计上限校验，在读取前检查用户输出缓冲区。LoongArch64 musl/glibc `readv01` 均为 `passed 10 failed 0 broken 0` 并正常关机；`readv02` 尚未单独回归。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/readv01-iovec-semantics.md](./problem/readv01-iovec-semantics.md)。
 - **关联 commit**：待提交
+
+#### LTP open14 procfd linkat 与 ext4 fstat panic 修复（7.16）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 中 musl/glibc `open14` 的 `TBROK` 与后续 glibc panic，追踪 procfd magic-link、linkat 物化和 lwext4 stat 路径，并执行双架构构建和 RISC-V QEMU 回归。
+- **描述**：确认 `sys_linkat()` 在识别 `/proc/self/fd/<fd>` 之前对不存在的真实 `/proc/self/fd` 父目录做权限检查，令 O_TMPFILE 的物化分支不可达并返回 `ENOENT`。修复前移 procfd 分支、保持目标目录的挂载与权限检查，并要求 `AT_SYMLINK_FOLLOW`。回归还暴露 `Ext4File::fstat()` 在 `ext4_stat_get()` 失败后先用零值 `st_blksize` 计算缓存块数的除零 panic，以及小文件缓存重建时丢失 mode 的问题；修复先检查返回码，并让缓存保存/恢复 mode。RISC-V QEMU 中 musl/glibc `open14` 均为 `passed 3 failed 0 broken 0`，最终日志无内核 `ERROR`。详见 [problem/open14-procfd-linkat-cache.md](./problem/open14-procfd-linkat-cache.md)。
+- **关联 commit**：待提交

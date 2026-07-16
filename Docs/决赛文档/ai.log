@@ -4784,3 +4784,37 @@ AI 从 musl/glibc 的 Summary 确认两组都只有 `readv01` 首项失败。对
 ### 修改与验证
 
 修改 `os/src/syscall/io_mpx/file.rs`，新增 `Docs/决赛文档/problem/readv01-iovec-semantics.md` 并更新问题索引、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml -- --check` 通过；根目录 `make` 完成 RISC-V 与 LoongArch64 构建，只有既有 vendored `smoltcp` warning。LoongArch64 QEMU 单跑中 musl/glibc `readv01` 均为 `passed 10 failed 0 broken 0 skipped 0 warnings 0`，返回状态为 0 并正常关机；RISC-V QEMU 和 `readv02` 未单独运行。
+
+## 2026-07-16：LTP open14 procfd linkat 与 ext4 fstat panic 修复
+
+### 用户需求
+
+维护者要求分析新的 `log.ans` 并进行修复。
+
+### 分析与采纳结论
+
+AI 以 LTP Summary 为准确认初始日志中 musl/glibc `open14` 都在
+`linkat(..., "/proc/self/fd/3", ..., AT_SYMLINK_FOLLOW)` 返回 `ENOENT`。追踪
+`sys_linkat()` 发现已有 O_TMPFILE 物化分支被前置的源父目录权限校验遮蔽：
+Ya2yOS 没有真实 `/proc/self/fd` 目录，procfd 只由 syscall 层解释为 magic-link。
+因此将 procfd 分支前移，保留目标只读挂载和写权限检查，并要求
+`AT_SYMLINK_FOLLOW`。
+
+首次修复后 glibc 暴露 `Ext4File::fstat()` 的整数除零 panic。`ext4_stat_get()`
+失败时其输出结构体仍为零值，但实现先按 `st_blksize` 更新缓存块数，后检查返回码。
+修复为先释放 C 字符串并检查错误。继续回归发现深层目录中的小文件写回缓存还会以
+`O_RDWR` 重开尚未物化的路径并反复打印 `ENOENT`；首次仅重建数据会丢失 `07777`
+等权限位。最终让 `VFileCache` 保存 mode，`file_mode_set()` 同步该值，写回重建后恢复
+mode 再写数据；缓存态 `fstat` 返回缓存长度与 mode，避免无意义的底层 stat 错误。
+
+### 修改与验证
+
+修改 `os/src/syscall/fs/ctl.rs` 和 `crates/lwext4_rust/src/file.rs`，新增
+`Docs/决赛文档/problem/open14-procfd-linkat-cache.md` 并更新问题索引、开发日志和
+AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml -- --check` 通过；
+`make build-arch TARGET_ARCH=riscv64` 与
+`make build-arch TARGET_ARCH=loongarch64` 完成两份 release 构建，仅有既有 vendored
+`smoltcp` warning。
+在允许 QEMU 写入 `/var/tmp` 的环境中，`timeout 300s make TARGET_ARCH=riscv64 run`
+正常完成，musl/glibc `open14` 均为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`
+并正常 `shutdown!`；最终 `log.ans` 无 `ERROR`、`panic`、`TFAIL` 或 `TBROK`。
