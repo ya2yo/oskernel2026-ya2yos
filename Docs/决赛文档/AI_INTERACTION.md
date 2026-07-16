@@ -690,3 +690,10 @@
 - **场景**：分析新的 `log.ans`、对照 LTP `utimes01` 源码与 `sys_utimensat()` 路径、补齐 Linux 时间戳权限和只读挂载错误码并执行回归。
 - **描述**：确认 `sys_utimensat()` 无条件修改时间戳，遗漏 NULL pathname、owner/write 权限和只读挂载检查。修复后 RISC-V/LoongArch64 musl/glibc `utimes01` 均为 `passed 7 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/utimes01-permission-rofs.md](./problem/utimes01-permission-rofs.md)。
 - **关联 commit**：待提交
+
+#### LTP unlink07 pathname 错误码修复（7.16）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 的 unlink07 失败分析、LTP 源码与 pathname 归一化路径对照、双架构构建和 LoongArch64 QEMU 回归。
+- **描述**：确认 `sys_unlinkat()` 在 pathname 校验前调用 `get_abs_path()`，把空相对路径解释为 cwd 后返回 `EISDIR`；同时用户 C string 达到 256 字节上限时未被 syscall 层识别，底层 ext4 查找误返 `ENOENT`。修复复用泛化后的私有路径参数校验，在归一化前让空路径返回 `ENOENT`、超长路径或分量返回 `ENAMETOOLONG`。LoongArch64 musl/glibc `unlink07` 均为 `passed 6 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/unlink07-path-errno.md](./problem/unlink07-path-errno.md)。
+- **关联 commit**：待提交

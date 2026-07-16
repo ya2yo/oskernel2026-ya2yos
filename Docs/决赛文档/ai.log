@@ -4752,3 +4752,19 @@ AI 对照 LTP `utimes01.c` 与 `sys_utimensat()`，确认架构上的 `utimes(2)
 ### 修改与验证
 
 修改 `os/src/syscall/fs/ctl.rs`，新增 `Docs/决赛文档/problem/utimes01-permission-rofs.md` 并更新开发日志和问题索引。格式检查、RISC-V/LoongArch64 构建通过；两架构 musl/glibc `utimes01` 均 `passed 7 failed 0 broken 0` 并正常关机。
+
+## 2026-07-16：LTP unlink07 pathname 错误码修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并修复失败项。
+
+### 分析与采纳结论
+
+AI 以 `TPASS/TFAIL` 与 Summary 为准，确认 musl/glibc 都只有空 pathname 和超长 pathname 两项失败。对照 `unlink07.c`，空字符串应返回 `ENOENT`，未终止的 `PATH_MAX + 2` 字节 pathname 应返回 `ENAMETOOLONG`。追踪 `sys_unlinkat()` 发现它在用户字符串读取后直接进入 `get_abs_path()`：空相对路径被归一化为 cwd，继而因 cwd 是目录返回 `EISDIR`；读取 helper 在 256 字节上限无 NUL 时返回该前缀，底层 ext4 查找又把超长路径报告成 `ENOENT`。
+
+采纳在 syscall 边界校验的方案。将 `ctl.rs` 中已有的 linkat 路径校验泛化为私有 `check_path_argument()`，并让 `sys_unlinkat()` 在路径归一化前以不允许空路径、启用长度检查的参数调用它。这保留 `linkat(AT_EMPTY_PATH)` 的既有特殊语义，也不会影响 `unlinkat(AT_REMOVEDIR)` 的目录删除逻辑。
+
+### 修改与验证
+
+修改 `os/src/syscall/fs/ctl.rs`，新增 `Docs/决赛文档/problem/unlink07-path-errno.md` 并更新问题索引、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml -- --check` 通过；根目录 `make` 完成 RISC-V 和 LoongArch64 构建，只有既有 vendored `smoltcp` warning。LoongArch64 QEMU 单跑中 musl/glibc `unlink07` 均为 `passed 6 failed 0 broken 0 skipped 0 warnings 0`，返回状态为 0 并正常关机；RISC-V QEMU 单测未运行。

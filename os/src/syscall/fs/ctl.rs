@@ -37,9 +37,9 @@ pub fn has_too_long_path_component(path: &str) -> bool {
         .any(|component| component.len() > MAX_FILE_NAME_LEN)
 }
 
-/// `linkat(2)` 需要在路径解析前处理空路径和超长路径，否则空相对路径会被
+/// 路径类 syscall 需要在路径解析前处理空路径和超长路径，否则空相对路径会被
 /// `get_abs_path()` 解释成 cwd，超长路径也会落到底层查找并错误返回 `ENOENT`。
-fn check_link_path(path: &str, allow_empty: bool, check_length: bool) -> SyscallRet {
+fn check_path_argument(path: &str, allow_empty: bool, check_length: bool) -> SyscallRet {
     if path.is_empty() {
         return if allow_empty {
             Ok(0)
@@ -308,12 +308,12 @@ pub fn sys_linkat(
     let old_path_str = read_user_cstr(&memory_set, oldpath)?;
     let new_path_str = read_user_cstr(&memory_set, newpath)?;
 
-    check_link_path(
+    check_path_argument(
         &old_path_str,
         flags & AT_EMPTY_PATH as u32 != 0 && old_path_str.is_empty(),
         false,
     )?;
-    check_link_path(&new_path_str, false, true)?;
+    check_path_argument(&new_path_str, false, true)?;
 
     // 处理 AT_EMPTY_PATH：若 oldpath 为空字符串，则使用 oldfd 对应的已打开文件
     if flags & AT_EMPTY_PATH as u32 != 0 && old_path_str.is_empty() {
@@ -427,6 +427,7 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     let memory_set = proc.memory_set_arc();
 
     let path = read_user_cstr(&memory_set, path)?;
+    check_path_argument(&path, false, true)?;
     let abs_path = proc.get_abs_path(dirfd, &path)?;
     // TODO(ZMY) 支持符号链接,socket,FIFO,device
     // 如果是File但尚有对应的fd未关闭,等到close时unlink
