@@ -1,12 +1,5 @@
-use alloc::{string::String, vec::Vec};
-use linux_raw_sys::general::{
-    mount_attr, AT_EMPTY_PATH, AT_FDCWD, AT_NO_AUTOMOUNT, AT_RECURSIVE, AT_SYMLINK_NOFOLLOW,
-    FSMOUNT_CLOEXEC, FSOPEN_CLOEXEC, FSPICK_CLOEXEC, FSPICK_EMPTY_PATH, FSPICK_NO_AUTOMOUNT,
-    FSPICK_SYMLINK_NOFOLLOW, MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_NODEV,
-    MOUNT_ATTR_NODIRATIME, MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOSUID, MOUNT_ATTR_NOSYMFOLLOW,
-    MOUNT_ATTR_RDONLY, MOUNT_ATTR_SIZE_VER0, MOUNT_ATTR_STRICTATIME, MOVE_MOUNT_F_EMPTY_PATH,
-    MOVE_MOUNT_T_EMPTY_PATH, MOVE_MOUNT__MASK, MS_REMOUNT, OPEN_TREE_CLOEXEC, OPEN_TREE_CLONE,
-};
+use alloc::{format, string::String, vec::Vec};
+use linux_raw_sys::general::*;
 use log::{debug, warn};
 
 use crate::{
@@ -21,15 +14,38 @@ use crate::{
     utils::{SysErrNo, SysResult, SyscallRet},
 };
 
-const FSCONFIG_SET_FLAG: u32 = 0;
-const FSCONFIG_SET_STRING: u32 = 1;
-const FSCONFIG_SET_BINARY: u32 = 2;
-const FSCONFIG_SET_PATH: u32 = 3;
-const FSCONFIG_SET_PATH_EMPTY: u32 = 4;
-const FSCONFIG_SET_FD: u32 = 5;
-const FSCONFIG_CMD_CREATE: u32 = 6;
-const FSCONFIG_CMD_RECONFIGURE: u32 = 7;
-const FSCONFIG_CMD_CREATE_EXCL: u32 = 8;
+fn fsconfig_command_from_raw(cmd: u32) -> SysResult<fsconfig_command> {
+    match cmd {
+        cmd if cmd == fsconfig_command::FSCONFIG_SET_FLAG as u32 => {
+            Ok(fsconfig_command::FSCONFIG_SET_FLAG)
+        }
+        cmd if cmd == fsconfig_command::FSCONFIG_SET_STRING as u32 => {
+            Ok(fsconfig_command::FSCONFIG_SET_STRING)
+        }
+        cmd if cmd == fsconfig_command::FSCONFIG_SET_BINARY as u32 => {
+            Ok(fsconfig_command::FSCONFIG_SET_BINARY)
+        }
+        cmd if cmd == fsconfig_command::FSCONFIG_SET_PATH as u32 => {
+            Ok(fsconfig_command::FSCONFIG_SET_PATH)
+        }
+        cmd if cmd == fsconfig_command::FSCONFIG_SET_PATH_EMPTY as u32 => {
+            Ok(fsconfig_command::FSCONFIG_SET_PATH_EMPTY)
+        }
+        cmd if cmd == fsconfig_command::FSCONFIG_SET_FD as u32 => {
+            Ok(fsconfig_command::FSCONFIG_SET_FD)
+        }
+        cmd if cmd == fsconfig_command::FSCONFIG_CMD_CREATE as u32 => {
+            Ok(fsconfig_command::FSCONFIG_CMD_CREATE)
+        }
+        cmd if cmd == fsconfig_command::FSCONFIG_CMD_RECONFIGURE as u32 => {
+            Ok(fsconfig_command::FSCONFIG_CMD_RECONFIGURE)
+        }
+        cmd if cmd == fsconfig_command::FSCONFIG_CMD_CREATE_EXCL as u32 => {
+            Ok(fsconfig_command::FSCONFIG_CMD_CREATE_EXCL)
+        }
+        _ => Err(SysErrNo::EOPNOTSUPP),
+    }
+}
 
 fn refresh_proc_mounts() {
     let mut content = MNT_TABLE.lock().proc_mounts_content();
@@ -141,6 +157,75 @@ fn purge_dir_contents(abs_dir: &str) -> SysResult {
     Ok(())
 }
 
+/// Mirrors a bind-mounted source directory into its pathname-based target.
+///
+/// The current VFS does not yet have distinct mount-root dentries.  Keeping
+/// the directory shape in sync is therefore necessary for bind propagation to
+/// be visible through normal path lookup.  fs_bind uses directory trees; for
+/// regular files a hard link preserves the shared inode semantics of a bind
+/// mount without buffering file content in the syscall layer.
+fn mirror_bind_tree(source: &str, target: &str) -> SysResult {
+    let source_file = open(source, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+    if source_file.inode.types() != InodeType::Dir {
+        if open(target, OpenFlags::O_RDONLY, NONE_MODE).is_err() {
+            source_file.inode.hard_link(source, target)?;
+            invalidate_dentry_path(target);
+        }
+        return Ok(());
+    }
+
+    let target_file = open(
+        target,
+        OpenFlags::O_DIRECTORY | OpenFlags::O_RDONLY,
+        NONE_MODE,
+    )
+    .or_else(|_| {
+        open(
+            target,
+            OpenFlags::O_DIRECTORY | OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+            0o755,
+        )
+    })?
+    .file()?;
+    if target_file.inode.types() != InodeType::Dir {
+        return Err(SysErrNo::ENOTDIR);
+    }
+
+    let mut names = Vec::new();
+    let mut off = 0usize;
+    loop {
+        let (buf, next_off) = source_file.inode.read_dentry(off, PAGE_SIZE * 4)?;
+        if buf.is_empty() {
+            break;
+        }
+        names.extend(parse_dirent_names(&buf));
+        if next_off <= off as isize {
+            break;
+        }
+        off = next_off as usize;
+    }
+
+    for name in names {
+        let source_child = format!("{}/{}", source.trim_end_matches('/'), name);
+        let target_child = format!("{}/{}", target.trim_end_matches('/'), name);
+        let child = open(&source_child, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+        if child.inode.types() == InodeType::Dir {
+            if open(&target_child, OpenFlags::O_RDONLY, NONE_MODE).is_err() {
+                open(
+                    &target_child,
+                    OpenFlags::O_DIRECTORY | OpenFlags::O_CREATE | OpenFlags::O_RDWR,
+                    0o755,
+                )?;
+            }
+            mirror_bind_tree(&source_child, &target_child)?;
+        } else if open(&target_child, OpenFlags::O_RDONLY, NONE_MODE).is_err() {
+            child.inode.hard_link(&source_child, &target_child)?;
+            invalidate_dentry_path(&target_child);
+        }
+    }
+    Ok(())
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/pivot_root.2.html
 pub fn sys_pivot_root(_new_root: usize, _put_old: usize) -> SyscallRet {
     warn!("[sys_pivot_root] not implement!");
@@ -197,6 +282,11 @@ pub fn sys_mount(
     let dir = read_user_cstr(&memory_set, dir)?;
     let ftype = read_user_cstr(&memory_set, ftype)?;
     let dir = proc_inner.get_abs_path(AT_FDCWD as isize, &dir)?;
+    let special = if flags & MS_BIND != 0 {
+        proc_inner.get_abs_path(AT_FDCWD as isize, &special)?
+    } else {
+        special
+    };
     // Fresh tmpfs mounts should expose an empty root. Because `MNT_TABLE`
     // currently records mount metadata but path lookup still uses the
     // underlying ext4 directory, purge the mountpoint before recording the
@@ -212,23 +302,25 @@ pub fn sys_mount(
     }
     if !data.is_null() {
         let data = read_user_cstr(&memory_set, data)?;
-        let ret = MNT_TABLE.lock().mount(special, dir, ftype, flags, data);
-        if ret != -1 {
-            refresh_proc_mounts();
-            Ok(0)
-        } else {
-            Err(SysErrNo::ENOSPC)
-        }
-    } else {
-        let ret = MNT_TABLE
+        let copies = MNT_TABLE
             .lock()
-            .mount(special, dir, ftype, flags, String::from(""));
-        if ret != -1 {
-            refresh_proc_mounts();
-            Ok(0)
-        } else {
-            Err(SysErrNo::ENOSPC)
+            .mount(special, dir, ftype, flags, data)
+            .map_err(|_| SysErrNo::ENOSPC)?;
+        for (source, target) in copies {
+            mirror_bind_tree(&source, &target)?;
         }
+        refresh_proc_mounts();
+        Ok(0)
+    } else {
+        let copies = MNT_TABLE
+            .lock()
+            .mount(special, dir, ftype, flags, String::from(""))
+            .map_err(|_| SysErrNo::ENOSPC)?;
+        for (source, target) in copies {
+            mirror_bind_tree(&source, &target)?;
+        }
+        refresh_proc_mounts();
+        Ok(0)
     }
 }
 
@@ -316,12 +408,12 @@ pub fn sys_move_mount(
             detached.fsname.clone()
         };
         let mount_flags = detached.attr_flags;
-        let ret =
-            MNT_TABLE
-                .lock()
-                .mount(source, to_abs_path, fstype, mount_flags, String::from(""));
-        if ret == -1 {
-            return Err(SysErrNo::ENOSPC);
+        let copies = MNT_TABLE
+            .lock()
+            .mount(source, to_abs_path, fstype, mount_flags, String::from(""))
+            .map_err(|_| SysErrNo::ENOSPC)?;
+        for (source, target) in copies {
+            mirror_bind_tree(&source, &target)?;
         }
         refresh_proc_mounts();
         return Ok(0);
@@ -378,6 +470,7 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
     if fd < 0 {
         return Err(SysErrNo::EINVAL);
     }
+    let cmd = fsconfig_command_from_raw(cmd)?;
     fsconfig_check(cmd, key, value, aux)?;
 
     let task = current_task().unwrap();
@@ -386,7 +479,7 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
     let fsctx = proc_inner.fd_table.get(fd as usize)?.fs_context()?;
 
     match cmd {
-        FSCONFIG_SET_FLAG => {
+        fsconfig_command::FSCONFIG_SET_FLAG => {
             let key = read_user_cstr(&memory_set, key as *const u8)?;
             fsctx.with_inner(|ctx| {
                 ctx.options.push(FsConfigOption {
@@ -396,7 +489,7 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
             });
             Ok(0)
         }
-        FSCONFIG_SET_STRING => {
+        fsconfig_command::FSCONFIG_SET_STRING => {
             let key = read_user_cstr(&memory_set, key as *const u8)?;
             let value = read_user_cstr(&memory_set, value as *const u8)?;
             fsctx.with_inner(|ctx| {
@@ -415,7 +508,7 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
                 Ok(0)
             })
         }
-        FSCONFIG_SET_BINARY => {
+        fsconfig_command::FSCONFIG_SET_BINARY => {
             let key = read_user_cstr(&memory_set, key as *const u8)?;
             let mut buf = Vec::new();
             buf.resize(aux as usize, 0);
@@ -428,10 +521,10 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
             });
             Ok(0)
         }
-        FSCONFIG_SET_PATH | FSCONFIG_SET_PATH_EMPTY => {
+        fsconfig_command::FSCONFIG_SET_PATH | fsconfig_command::FSCONFIG_SET_PATH_EMPTY => {
             let key = read_user_cstr(&memory_set, key as *const u8)?;
             let path = read_user_cstr(&memory_set, value as *const u8)?;
-            if cmd == FSCONFIG_SET_PATH && path.is_empty() {
+            if cmd == fsconfig_command::FSCONFIG_SET_PATH && path.is_empty() {
                 return Err(SysErrNo::ENOENT);
             }
             if path.len() > MAX_PATH_LEN {
@@ -449,7 +542,7 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
             });
             Ok(0)
         }
-        FSCONFIG_SET_FD => {
+        fsconfig_command::FSCONFIG_SET_FD => {
             let key = read_user_cstr(&memory_set, key as *const u8)?;
             let _ = proc_inner.fd_table.get(aux as usize)?;
             fsctx.with_inner(|ctx| {
@@ -460,15 +553,15 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
             });
             Ok(0)
         }
-        FSCONFIG_CMD_CREATE | FSCONFIG_CMD_CREATE_EXCL => {
+        fsconfig_command::FSCONFIG_CMD_CREATE | fsconfig_command::FSCONFIG_CMD_CREATE_EXCL => {
             fsctx.with_inner(|ctx| {
                 ctx.created = true;
-                ctx.exclusive = cmd == FSCONFIG_CMD_CREATE_EXCL;
+                ctx.exclusive = cmd == fsconfig_command::FSCONFIG_CMD_CREATE_EXCL;
             });
             debug!("[sys_fsconfig] fs context created");
             Ok(0)
         }
-        FSCONFIG_CMD_RECONFIGURE => {
+        fsconfig_command::FSCONFIG_CMD_RECONFIGURE => {
             fsctx.with_inner(|ctx| {
                 ctx.reconfigure = true;
             });
@@ -478,44 +571,46 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
         _ => Err(SysErrNo::EOPNOTSUPP),
     }
 }
-fn fsconfig_check(cmd: u32, key: usize, value: usize, aux: i32) -> SysResult {
+fn fsconfig_check(cmd: fsconfig_command, key: usize, value: usize, aux: i32) -> SysResult {
     match cmd {
-        FSCONFIG_SET_FLAG => {
+        fsconfig_command::FSCONFIG_SET_FLAG => {
             if key == 0 || value != 0 || aux != 0 {
                 Err(SysErrNo::EINVAL)
             } else {
                 Ok(())
             }
         }
-        FSCONFIG_SET_STRING => {
+        fsconfig_command::FSCONFIG_SET_STRING => {
             if key == 0 || value == 0 || aux != 0 {
                 Err(SysErrNo::EINVAL)
             } else {
                 Ok(())
             }
         }
-        FSCONFIG_SET_BINARY => {
+        fsconfig_command::FSCONFIG_SET_BINARY => {
             if key == 0 || value == 0 || aux <= 0 || aux > 1024 * 1024 {
                 Err(SysErrNo::EINVAL)
             } else {
                 Ok(())
             }
         }
-        FSCONFIG_SET_PATH | FSCONFIG_SET_PATH_EMPTY => {
+        fsconfig_command::FSCONFIG_SET_PATH | fsconfig_command::FSCONFIG_SET_PATH_EMPTY => {
             if key == 0 || value == 0 || (aux != AT_FDCWD && aux < 0) {
                 Err(SysErrNo::EINVAL)
             } else {
                 Ok(())
             }
         }
-        FSCONFIG_SET_FD => {
+        fsconfig_command::FSCONFIG_SET_FD => {
             if key == 0 || value != 0 || aux < 0 {
                 Err(SysErrNo::EINVAL)
             } else {
                 Ok(())
             }
         }
-        FSCONFIG_CMD_CREATE | FSCONFIG_CMD_CREATE_EXCL | FSCONFIG_CMD_RECONFIGURE => {
+        fsconfig_command::FSCONFIG_CMD_CREATE
+        | fsconfig_command::FSCONFIG_CMD_CREATE_EXCL
+        | fsconfig_command::FSCONFIG_CMD_RECONFIGURE => {
             if key != 0 || value != 0 || aux != 0 {
                 Err(SysErrNo::EINVAL)
             } else {

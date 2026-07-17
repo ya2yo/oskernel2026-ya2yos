@@ -4928,3 +4928,19 @@ AI 以 LTP `TBROK` 和 Summary 为准确认 musl/glibc 均在 `tcp4-multi-diffni
 ### 修改与验证
 
 修改 `os/src/fs/kernel_fs_ops/initfiles.rs`，新增 `Docs/决赛文档/problem/tcp4-multi-diffnic01-single-node-env.md` 并更新问题索引、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml --all` 与 `git diff --check` 通过；根目录 `make` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warning。首次沙箱内 `make run` 因 QEMU 无法在 `/var/tmp` 创建临时文件而未进入内核；在允许该临时文件的环境中，`timeout 120s make run` 的 RISC-V musl/glibc `tcp4-multi-diffnic01` 均为 `passed 1 failed 0 broken 0 skipped 0 warnings 0`，返回状态 0 且正常 `shutdown!`。
+
+## 2026-07-17：LTP fs_bind rbind 挂载传播修复
+
+### 用户需求
+
+维护者先报告 `fs_bind` 系列因缺少 `seq` 只能运行前两项，随后要求分析新的 `log.ans` 并修复失败。
+
+### 分析与采纳结论
+
+AI 确认 BusyBox 配置已启用 `CONFIG_SEQ=y`，缺失的是启动期 `/bin/seq` applet 链接。补齐后日志进入 `fs_bind_rbind01` 的 propagation 断言，显示所有 `mount` 命令成功但 shared peer 目录未同步。检查 LTP 脚本、挂载表和临时镜像诊断后，确认旧 `MountTable` 不保存 mount stack/shared peer，也不传播 bind 事件；同时 `/bin/diff` 缺失使 `diff -r` 返回 127，而脚本隐藏了 stderr，造成空的 `differ:` 误导输出。
+
+采纳在既有路径化 VFS 上实现最小可观察的 bind propagation：分层挂载条目记录 shared/event group，递归传播 flags 更新 group，bind 将 source tree 镜像到 peer 的对应相对路径，卸载按 event group 回收副本；bind source 在 syscall 层按 cwd 归一化。该实现不伪造 LTP 输出，也不修改只读测试脚本或维护者的单测入口。
+
+### 修改与验证
+
+修改 `os/src/fs/kernel_fs_ops/initfiles.rs`、`os/src/fs/mount.rs`、`os/src/syscall/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind-rbind-propagation.md` 并更新索引、开发日志和 AI 协作记录。`rustfmt --edition 2018 --check` 通过，`make TARGET_ARCH=riscv64` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。在允许 QEMU 写 `/var/tmp` 的环境中，`timeout 180s make run TARGET_ARCH=riscv64` 的 RISC-V `fs_bind_rbind01` musl/glibc 均为 `passed 28 failed 0 broken 0 skipped 0 warnings 0`，全部 propagation 和卸载断言通过并正常 `shutdown!`。其余 rbind 组合未在本轮运行。

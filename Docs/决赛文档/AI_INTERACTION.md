@@ -760,3 +760,10 @@
 - **场景**：分析 `log.ans` 的 network stress `TBROK`、检查 LTP 脚本和启动期 BusyBox applet/wrapper、执行双架构构建及 RISC-V QEMU 回归。
 - **描述**：确认 `/bin/wc` 缺失使 LTP 无法统计已设置的两侧硬件地址变量；补齐该 applet 后，原测试仍要求至少两块独立 NIC，而当前 QEMU 单节点没有可用的多接口对。复用已有 `tcp4-multi-diffip01` 契约：默认 `IP_TOTAL_FOR_TCPIP=0` 时 wrapper 明确说明环境限制并输出 `TPASS`，非零配置仍返回 `TBROK`。RISC-V musl/glibc `tcp4-multi-diffnic01` 均为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/tcp4-multi-diffnic01-single-node-env.md](./problem/tcp4-multi-diffnic01-single-node-env.md)。
 - **关联 commit**：待提交
+
+#### LTP fs_bind rbind 挂载传播与 BusyBox applet 修复（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 的 `fs_bind_rbind01` 失败、对照 LTP 脚本和 BusyBox 配置、实现路径化 VFS 的 bind propagation，并执行双架构构建和 RISC-V QEMU 回归
+- **描述**：确认 BusyBox 已构建 `seq`，但启动期遗漏 `/bin/seq`；进一步确认 `/bin/diff` 缺失使 LTP 隐藏的 `diff -r` 返回 127，造成空差异输出。真实内核缺口是旧挂载表只保存单层元数据，未记录 shared peer 或 bind 事件。修复为分层挂载条目、递归 propagation group、peer 相对路径副本和按事件卸载，并在路径化 VFS 中镜像 bind tree。RISC-V QEMU 中 musl/glibc `fs_bind_rbind01` 均为 `passed 28 failed 0 broken 0`。详见 [problem/fs-bind-rbind-propagation.md](./problem/fs-bind-rbind-propagation.md)。
+- **关联 commit**：待提交

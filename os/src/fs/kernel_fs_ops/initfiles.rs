@@ -201,6 +201,7 @@ const BUSYBOX_APPLETS: &[&str] = &[
     "/bin/cut",
     "/bin/date",
     "/bin/dd",
+    "/bin/diff", // fs_bind 通过 diff -r 校验 bind mount 传播
     "/bin/expr",
     "/bin/false",
     "/bin/gdb",
@@ -221,6 +222,7 @@ const BUSYBOX_APPLETS: &[&str] = &[
     "/bin/ps",
     "/bin/rmdir", // ltp的cgroup_regression_3_1.sh需要它
     "/bin/sed",
+    "/bin/seq", // fs_bind 系列测例需要它
     "/bin/sleep",
     "/bin/sh",
     "/bin/sort",
