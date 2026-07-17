@@ -4850,3 +4850,17 @@ AI 以 LTP Summary 为准确认 musl/glibc `linkat01` 都有四项失败：相�
 ### 修改与验证
 
 修改 `os/src/syscall/fs/ctl.rs`，新增 `Docs/决赛文档/problem/linkat01-dirfd-procfs-flags.md` 并更新问题索引、开发日志和 AI 协作记录。`rustfmt` 与 `git diff --check` 通过；根目录 `make` 完成 RISC-V 与 LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。RISC-V 和 LoongArch64 QEMU 单跑均显示 musl/glibc `linkat01` 为 `passed 22 failed 0 broken 0`，返回状态 0 并正常 `shutdown!`。
+
+## 2026-07-17：文件系统控制 syscall 模块拆分
+
+### 用户需求
+
+维护者要求重构 `os/src/syscall/fs/ctl.rs`，避免继续维护超过 1000 行的单文件，并将门面放入 `os/src/syscall/fs/ctl/mod.rs`。
+
+### 分析与采纳结论
+
+AI 按 syscall 职责和现有 helper 依赖划分连续代码段：目录项创建/遍历、hard link、unlink、时间同步、符号链接与重命名、uid/gid/mode 元数据、ioctl，以及路径/挂载/权限共享 helper。采用已有 `file_lock/` 的嵌套模块风格，保留 `ctl.rs` 作为门面，继续由 `fs/mod.rs` 的 `ctl::*` 导出原有公开函数，因此 syscall 分发和外部调用点不需变更。
+
+### 修改与验证
+
+`ctl/mod.rs` 从原 `ctl.rs` 的 1038 行实现缩减为 52 行门面，新增 `ctl/common.rs`、`directory.rs`、`ioctl.rs`、`link.rs`、`unlink.rs`、`time.rs`、`namespace.rs` 和 `metadata.rs`；只迁移实现和调整兄弟模块 helper 可见性，未修改函数体语义。`rustfmt` 与 `git diff --check` 通过；根目录 `make` 完成 RISC-V/LoongArch64 release 构建，只有既有 vendored `smoltcp` warnings。RISC-V QEMU `linkat01` 回归中 musl/glibc 均为 `passed 22 failed 0 broken 0` 并正常 `shutdown!`。

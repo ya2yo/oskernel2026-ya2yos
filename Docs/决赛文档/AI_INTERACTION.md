@@ -725,3 +725,10 @@
 - **场景**：`log.ans` 分析、LTP `linkat01.c` 参数矩阵对照、`linkat(2)` 路径解析与挂载边界修复、双架构 QEMU 回归
 - **描述**：确认四项失败分别来自非目录 dirfd 泄漏 `EINVAL`、root ext4 后端承载的 `/proc` compatibility namespace 未被视为独立 filesystem，以及未知 linkat flags 未校验。修复在 syscall 层校验相对 dirfd 为目录、限制 flags 为 `AT_SYMLINK_FOLLOW | AT_EMPTY_PATH`，并让 `/proc` 与普通路径间 hard link 返回 `EXDEV`，不改变通用路径 helper。RISC-V 与 LoongArch64 的 musl/glibc `linkat01` 均为 `passed 22 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-17 条目与 [problem/linkat01-dirfd-procfs-flags.md](./problem/linkat01-dirfd-procfs-flags.md)。
 - **关联 commit**：待提交
+
+#### 文件系统控制 syscall 模块拆分（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：大文件职责梳理、Rust 子模块可见性调整、公开 syscall 门面保持与双架构构建回归
+- **描述**：维护者要求将 1038 行 `os/src/syscall/fs/ctl.rs` 拆分，并将门面改为 `os/src/syscall/fs/ctl/mod.rs`。AI 依照目录项、链接、命名空间、元数据、时间、ioctl 和共享 helper 的职责迁移实现，保留 52 行门面及 `fs::ctl::*` 原公开接口；跨模块 helper 仅以 `pub(super)` 暴露，不扩散 API。RISC-V/LoongArch64 release 构建通过；RISC-V `linkat01` musl/glibc 均为 `passed 22 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-17 条目。
+- **关联 commit**：待提交
