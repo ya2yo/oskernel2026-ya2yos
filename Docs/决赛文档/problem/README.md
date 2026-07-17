@@ -67,6 +67,7 @@
 - [linkat02 hard link 上限与 unlink symlink 语义修复](./linkat02-hardlink-emlink-unlink-symlink.md)
 - [LTP unlink07 pathname 错误码修复](./unlink07-path-errno.md)
 - [LTP readv01 空 iovec 与参数校验修复](./readv01-iovec-semantics.md)
+- [LTP chdir01 目录 search 权限修复](./chdir01-search-permission.md)
 - [LTP mmap04 /proc/self/maps 动态映射与格式修复](./proc-self-maps-mmap04.md)
 - [LTP mmap08 文件映射 fd 错误优先级修复](./mmap08-fd-errno-priority.md)
 - [LTP mmap12 /proc/self/pagemap 缺失修复](./proc-self-pagemap-mmap12.md)

@@ -739,3 +739,10 @@
 - **场景**：分析 `log.ans` 的 mmap08 errno 失败，对照 LTP 源码与 `sys_mmap()` 校验顺序，执行 RISC-V QEMU 回归。
 - **描述**：确认测试的实际请求同时包含 `len == 0` 和非匿名映射 `fd == -1`；内核先检查长度而错误返回 `EINVAL`。修复让非匿名映射的无效 fd 在长度校验前返回 `EBADF`，匿名映射保留原有零长度 `EINVAL` 语义。RISC-V musl/glibc `mmap08` 均 `TPASS` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/mmap08-fd-errno-priority.md](./problem/mmap08-fd-errno-priority.md)。
 - **关联 commit**：待提交
+
+#### LTP chdir01 目录 search 权限修复（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 的 chdir01 权限失败，对照 LTP 用例与 `sys_chdir()` 路径，执行 RISC-V QEMU 和双架构构建回归。
+- **描述**：确认 `sys_chdir()` 仅验证目标为目录、未按 effective uid/gid 验证 directory search 权限，令 `nobody` 错误进入 root 创建的 `0644` 目录。修复对解析后路径的每个目录分量检查 owner/group/other 执行位，缺少 search 权限返回 `EACCES`，root 保持绕过。RISC-V musl/glibc 在 ext2、tmpfs 的 chdir01 均为 `passed 32 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/chdir01-search-permission.md](./problem/chdir01-search-permission.md)。
+- **关联 commit**：待提交

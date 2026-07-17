@@ -58,10 +58,52 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
     if !osfile.inode.types().is_dir() {
         return Err(SysErrNo::ENOTDIR);
     }
+
+    let (euid, egid) = {
+        let task_inner = task.inner_lock();
+        (task_inner.effective_uid, task_inner.effective_gid)
+    };
+    check_directory_search_permission(&osfile.inode.path(), euid, egid)?;
+
     // `open()` follows the final symlink. Keep the resolved directory path so
     // getcwd() reports the directory itself rather than the symlink alias.
     locked_fs_info.set_cwd(osfile.inode.path());
 
+    Ok(0)
+}
+
+/// `chdir(2)` requires search permission on every directory in the resolved
+/// path, including the destination directory itself.
+fn check_directory_search_permission(path: &str, uid: u32, gid: u32) -> SyscallRet {
+    if uid == 0 {
+        return Ok(0);
+    }
+
+    let mut current = String::from("/");
+    for component in path.split('/').filter(|component| !component.is_empty()) {
+        if current.len() > 1 {
+            current.push('/');
+        }
+        current.push_str(component);
+
+        let directory = open(&current, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+        if !directory.inode.types().is_dir() {
+            return Err(SysErrNo::ENOTDIR);
+        }
+        let stat = directory.inode.fstat();
+        let mode = FaccessatFileMode::from_bits_truncate(directory.inode.fmode()? & 0xfff);
+        if !mode_allows(
+            mode,
+            &stat,
+            uid,
+            gid,
+            FaccessatFileMode::S_IXUSR,
+            FaccessatFileMode::S_IXGRP,
+            FaccessatFileMode::S_IXOTH,
+        ) {
+            return Err(SysErrNo::EACCES);
+        }
+    }
     Ok(0)
 }
 

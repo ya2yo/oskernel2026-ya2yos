@@ -4880,3 +4880,19 @@ AI 以 musl/glibc 共用的 `TFAIL` 为起点，对照 `mmap08.c` 和 `sys_mmap(
 ### 修改与验证
 
 修改 `os/src/syscall/mm/mmap.rs`，新增 `Docs/决赛文档/problem/mmap08-fd-errno-priority.md` 并更新问题索引、开发日志和 AI 协作记录。`git diff --check` 通过；根目录 `make` 完成 RISC-V/LoongArch64 release 构建，`make log` 完成 RISC-V debug 构建，只有既有 vendored `smoltcp` warnings。在允许 QEMU 写入 `/var/tmp` 的环境中，`timeout 80s make run` 的 RISC-V musl/glibc `mmap08` 均 `TPASS`，关键 `len=0, fd=-1` 调用返回 `EBADF` 并正常 `shutdown!`；LoongArch64 单测未运行。
+
+## 2026-07-17：LTP chdir01 目录 search 权限修复
+
+### 用户需求
+
+维护者要求分析新的 `log.ans` 并修复失败项。
+
+### 分析与采纳结论
+
+AI 以 musl/glibc 在 ext2、tmpfs 中重复出现的 `nobody: chdir("keep_out")` 失败为起点，对照 `chdir01.c` 和 `sys_chdir()`。LTP 使用 `seteuid(nobody)` 后进入 root 创建的 `0644` 目录，要求 `EACCES`；内核实际返回成功。`sys_chdir()` 只经 `open()` 确认路径是目录便写入 cwd，而只读 `open()` 不负责目录搜索权限，故 effective uid/gid 从未参与判断。
+
+采纳在 chdir syscall 边界补齐 search 权限的方案。目标路径解析完成后，按 effective uid/gid 对已解析目录路径的每个分量使用既有 `mode_allows()` 检查 `S_IXUSR/S_IXGRP/S_IXOTH`。root 保持绕过，路径解析和最终 symlink 的既有行为不变；这样除修通 `keep_out` 外，也避免中间不可搜索目录被跳过。
+
+### 修改与验证
+
+修改 `os/src/syscall/fs/path.rs`，新增 `Docs/决赛文档/problem/chdir01-search-permission.md` 并更新问题索引、开发日志和 AI 协作记录。`git diff --check` 通过；`make log` 完成 RISC-V debug 构建，允许 QEMU 写 `/var/tmp` 时 `timeout 80s make run` 的 RISC-V musl/glibc 均在 ext2、tmpfs 得到 `passed 32 failed 0 broken 0 skipped 0 warnings 0`，共 64 条 `TPASS`，正常 `shutdown!`。根目录 `make` 完成 RISC-V/LoongArch64 release 构建，只有既有 vendored `smoltcp` warnings；LoongArch64 单测未运行。
