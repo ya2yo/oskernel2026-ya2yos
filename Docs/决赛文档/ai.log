@@ -4991,3 +4991,19 @@ AI 从 `fs_bind23` 前半段 shared child propagation 均为 `TPASS`、而 `moun
 ### 修改与验证
 
 修改 `os/src/fs/mount.rs`、`os/src/syscall/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind23-move-propagation.md` 并更新索引、开发日志和 AI 记录。`rustfmt --edition 2018 --check`、`git diff --check` 通过；根目录 `make` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。沙箱内首次 QEMU 因 `/var/tmp` 只读未启动；在允许写入该临时目录的环境中，`timeout 180s make run TARGET_ARCH=riscv64` 运行维护者现有 musl/glibc 单测入口，两者均为 `passed 20 failed 0 broken 0 skipped 0 warnings 0`，move 后传播和全部卸载均 `TPASS` 并正常 `shutdown!`。LoongArch64 LTP 单测未运行。
+
+## 2026-07-17：LTP fs_bind24 子目录 bind shared-slave 传播修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并进行修复。
+
+### 分析与采纳结论
+
+AI 以 musl/glibc 均出现的 `dir1/1/2/fs_bind_check` 缺少 `dir4/ls` 为失败信号，对照 `fs_bind24.sh`、`fs_bind_lib.sh` 与 `MountTable`。确认 `dir1/1/2` 是 `dir1` 挂载内部目录而非精确 mountpoint；代码在 unbindable 校验时使用覆盖 mount，却在复制 propagation state 时只查精确 mountpoint，导致 `dir2` 的 bind clone 丢失 source 状态。进一步确认 shared-slave 再执行 `--make-rslave` 会以自身 shared group 覆盖已有上游 master，切断后续 event；即使链路存在，通用相对路径映射还会把 event 错投为 `dir1/fs_bind_check`，漏掉 bind source 的 `1/2` 偏移。
+
+采纳在挂载表内完成最小修复：bind source 统一取覆盖路径的顶层 mount；slave 转换优先保留已有 master；event 从子目录 bind target 传到覆盖原 source 的 peer/slave 时，将 source 的相对偏移拼入 target。未改动 syscall ABI、目录镜像函数、只读 LTP 源码或维护者的 `initproc` 单测入口。
+
+### 修改与验证
+
+修改 `os/src/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind24-subtree-shared-slave-propagation.md` 并更新索引、开发日志与 AI 协作记录。`rustfmt --edition 2021 --check os/src/fs/mount.rs`、`git diff --check` 通过；`make TARGET_ARCH=riscv64` 完成 RISC-V/LoongArch64 release 构建，只有既有 vendored `smoltcp` warnings。在允许 QEMU 写 `/var/tmp` 的环境中，`timeout 180s make run TARGET_ARCH=riscv64` 的 RISC-V `fs_bind24` musl/glibc 均为 `passed 15 failed 0 broken 0 skipped 0 warnings 0`，propagation check 和 cleanup 全部 `TPASS` 并正常 `shutdown!`。LoongArch64 LTP 单测未运行。

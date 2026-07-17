@@ -80,3 +80,4 @@
 - [LTP fs_bind13 unbindable bind source 语义修复](./fs-bind13-unbindable-source.md)
 - [LTP fs_bind peer/slave 传播与同树 bind panic](./fs-bind-peer-slave-propagation.md)
 - [LTP fs_bind23 MS_MOVE 子树重定位与 shared peer 传播](./fs-bind23-move-propagation.md)
+- [LTP fs_bind24 子目录 bind 的 shared-slave 传播](./fs-bind24-subtree-shared-slave-propagation.md)

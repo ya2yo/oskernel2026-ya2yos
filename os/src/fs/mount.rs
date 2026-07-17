@@ -127,7 +127,10 @@ impl MountTable {
         } else if flags & MS_SLAVE != 0 {
             for idx in selected {
                 let mount = &mut self.mnt_list[idx];
-                mount.master_group = mount.shared_group.or(mount.master_group);
+                // A shared slave already has an upstream master. Dropping
+                // its shared status must retain that relationship instead of
+                // replacing it with the mount's own former peer group.
+                mount.master_group = mount.master_group.or(mount.shared_group);
                 mount.shared_group = None;
                 mount.unbindable = false;
             }
@@ -183,7 +186,32 @@ impl MountTable {
             }
 
             for receiver_idx in receivers {
-                let target = Self::append_relative(&self.mnt_list[receiver_idx].dir, relative);
+                let receiver = &self.mnt_list[receiver_idx];
+                // A bind mount may expose a subdirectory of a shared mount.
+                // When an event below that bind mount reaches the source
+                // mount's peer/slave, retain the source subdirectory offset.
+                // For example, an event below `dir2`, bound from
+                // `dir1/1/2`, maps to `dir1/1/2/<event>` rather than
+                // `dir1/<event>`.
+                let target = if mount.flags & MS_BIND != 0
+                    && Self::path_is_at_or_below(&mount.special, &receiver.dir)
+                {
+                    let source_relative = mount
+                        .special
+                        .strip_prefix(receiver.dir.as_str())
+                        .unwrap_or("")
+                        .trim_start_matches('/');
+                    let mapped_relative = if source_relative.is_empty() {
+                        String::from(relative)
+                    } else if relative.is_empty() {
+                        String::from(source_relative)
+                    } else {
+                        format!("{}/{}", source_relative, relative)
+                    };
+                    Self::append_relative(&receiver.dir, &mapped_relative)
+                } else {
+                    Self::append_relative(&receiver.dir, relative)
+                };
                 if !targets.iter().any(|(known, _)| known == &target) {
                     targets.push((target, receiver_idx));
                 }
@@ -295,8 +323,12 @@ impl MountTable {
             return Err(SysErrNo::EINVAL);
         }
 
+        // A bind source may name a directory inside a mounted tree rather
+        // than the mount root itself. Its propagation state comes from the
+        // visible mount covering that directory, just as the unbindable
+        // source validation above does.
         let source = (flags & MS_BIND != 0)
-            .then(|| self.top_mount_index_at_path(&special))
+            .then(|| self.top_mount_index_for_path(&special))
             .flatten()
             .map(|idx| self.mnt_list[idx].clone());
         let parent_idx = self.top_mount_index_for_path(&dir);

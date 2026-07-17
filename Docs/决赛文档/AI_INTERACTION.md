@@ -787,3 +787,10 @@
 - **场景**：分析 `log.ans` 的 fs_bind23 move 后路径缺失、对照 LTP 脚本和挂载表、实现 MS_MOVE 子树重定位并执行双架构构建与 RISC-V QEMU 回归。
 - **描述**：确认 `MS_MOVE` 被普通挂载分支错误处理，旧 `/mnt` subtree 未迁移到目标、`tmp1` 的 shared peer `tmp2` 未接收副本，且路径化 VFS 没有镜像目录视图，导致 move 后检查失败及 cleanup 残留。修复将 source subtree 原地重定位，并向 peer/slave 接收目标复制完整 subtree、保留 event group；source 同 bind 归一化为绝对路径，返回路径对复用目录镜像。RISC-V musl/glibc `fs_bind23` 均为 `passed 20 failed 0 broken 0`，所有 move propagation 与卸载断言通过。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/fs-bind23-move-propagation.md](./problem/fs-bind23-move-propagation.md)。
 - **关联 commit**：待提交
+
+#### LTP fs_bind24 子目录 bind shared-slave 传播修复（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 的 fs_bind24 propagation failure，对照 LTP 脚本和路径化挂载表，修复 shared-slave state 与子目录 bind 的路径映射，并执行双架构构建及 RISC-V QEMU 回归。
+- **描述**：确认 bind source 内部目录错误按精确 mountpoint 查找 state，且 shared-slave 再转 slave 时覆盖了上游 master；随后 event 路径还遗漏 source 子目录偏移。修复统一从覆盖 source 的顶层 mount 继承状态、保留既有 master，并在传播到 source peer/slave 时拼接 bind source 的相对偏移。RISC-V QEMU 中 musl/glibc `fs_bind24` 均为 `passed 15 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/fs-bind24-subtree-shared-slave-propagation.md](./problem/fs-bind24-subtree-shared-slave-propagation.md)。
+- **关联 commit**：待提交
