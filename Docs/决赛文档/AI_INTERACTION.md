@@ -780,3 +780,10 @@
 - **场景**：分析 `log.ans` 中 fs_bind shared/slave 传播失败和内核 panic，对照 LTP 脚本实现挂载状态修复，并执行双架构构建与 RISC-V QEMU 回归。
 - **描述**：确认挂载表只建模 shared peer、缺失 slave master 关系且只展开一层副本，导致 `fs_bind17` 至 `fs_bind21` 的后续子挂载传播失败；同树 bind 的目录镜像递归进入自身新建目标，触发 `StorePageFault`。修复后 RISC-V `fs_bind17` 至 `fs_bind21` 均 `failed 0`，`fs_bind22` panic 消除；其首次 parent-to-child 全树 diff 仍受路径化 VFS 不具备 mount-root dentry 的限制。详见 [problem/fs-bind-peer-slave-propagation.md](./problem/fs-bind-peer-slave-propagation.md)。
 - **关联 commit**：待提交
+
+#### LTP fs_bind23 MS_MOVE 子树重定位与 shared peer 传播修复（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 的 fs_bind23 move 后路径缺失、对照 LTP 脚本和挂载表、实现 MS_MOVE 子树重定位并执行双架构构建与 RISC-V QEMU 回归。
+- **描述**：确认 `MS_MOVE` 被普通挂载分支错误处理，旧 `/mnt` subtree 未迁移到目标、`tmp1` 的 shared peer `tmp2` 未接收副本，且路径化 VFS 没有镜像目录视图，导致 move 后检查失败及 cleanup 残留。修复将 source subtree 原地重定位，并向 peer/slave 接收目标复制完整 subtree、保留 event group；source 同 bind 归一化为绝对路径，返回路径对复用目录镜像。RISC-V musl/glibc `fs_bind23` 均为 `passed 20 failed 0 broken 0`，所有 move propagation 与卸载断言通过。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/fs-bind23-move-propagation.md](./problem/fs-bind23-move-propagation.md)。
+- **关联 commit**：待提交

@@ -4975,3 +4975,19 @@ AI 以 `fs_bind17` 的 shared 子挂载缺失、`fs_bind21` 的多级 slave 缺�
 ### 修改与验证
 
 修改 `os/src/fs/mount.rs`、`os/src/syscall/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind-peer-slave-propagation.md` 并更新索引、开发日志和 AI 记录。`cargo fmt --check` 与 `git diff --check` 通过；根目录 `make` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。RISC-V release QEMU 中 `fs_bind17` 至 `fs_bind21` 均为 `failed 0`，`fs_bind21` 为 `passed 33 failed 0 broken 0`，不再出现 panic。`fs_bind22` 不再 panic，但路径化 VFS 尚无真实独立 mount-root 视图，首次 parent-to-child 全树 diff 仍失败；详见 problem 复盘。
+
+## 2026-07-17：LTP fs_bind23 MS_MOVE 子树传播修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并修复失败项。
+
+### 分析与采纳结论
+
+AI 从 `fs_bind23` 前半段 shared child propagation 均为 `TPASS`、而 `mount --move mnt tmp1/3` 后 `tmp1/3/1/abc` 缺失的分界入手，对照 LTP `fs_bind23.sh` 与 `MountTable::mount()`。确认 `MS_MOVE` 未被单独处理，错误落入普通挂载分支：旧 `/mnt` subtree 条目未重定位、目标父挂载 `tmp1` 的 peer `tmp2` 未收到副本，syscall 层也没有任何目录镜像动作。旧条目因此在 cleanup 时残留在 `/proc/mounts`。
+
+采纳当前路径化 VFS 模型下的最小实现：新增 move subtree 操作，验证精确 source mountpoint，拒绝移动到自身子树，原地将 source subtree 改写到目标路径；使用既有递归 propagation target 计算向 peer/slave 接收目标克隆完整 subtree，保持各条目原有 event group，令后续任一副本 `umount` 仍按事件组回收。`MS_MOVE` source 同 bind 一样归一化为绝对路径，并向 syscall 层返回 `(source, target)` 复用目录镜像。该改动不宣称实现完整 Linux mount namespace 或独立 mount-root dentry。
+
+### 修改与验证
+
+修改 `os/src/fs/mount.rs`、`os/src/syscall/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind23-move-propagation.md` 并更新索引、开发日志和 AI 记录。`rustfmt --edition 2018 --check`、`git diff --check` 通过；根目录 `make` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。沙箱内首次 QEMU 因 `/var/tmp` 只读未启动；在允许写入该临时目录的环境中，`timeout 180s make run TARGET_ARCH=riscv64` 运行维护者现有 musl/glibc 单测入口，两者均为 `passed 20 failed 0 broken 0 skipped 0 warnings 0`，move 后传播和全部卸载均 `TPASS` 并正常 `shutdown!`。LoongArch64 LTP 单测未运行。
