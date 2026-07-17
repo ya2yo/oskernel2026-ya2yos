@@ -2,6 +2,8 @@ use alloc::{format, string::String, sync::Arc, vec::Vec};
 use linux_raw_sys::general::*;
 use spin::{Lazy, Mutex};
 
+use crate::utils::SysErrNo;
+
 const MNT_MAXLEN: usize = 256;
 
 // Linux mount(2) propagation flags. Keep these local because MountTable is
@@ -18,6 +20,8 @@ struct MountEntry {
     // Mounts in the same group receive new child mount events at matching
     // relative paths.
     shared_group: Option<u64>,
+    // Linux forbids bind-cloning an unbindable mount.
+    unbindable: bool,
     // All copies made for one mount event are removed together by umount.
     event_group: u64,
 }
@@ -28,12 +32,19 @@ pub struct MountTable {
 }
 
 impl MountTable {
+    /// 分配新的传播事件或 shared peer group 标识。
+    ///
+    /// 标识 0 保留为无效值；计数回绕时跳过 0，避免与未分组状态混淆。
     fn next_group(&mut self) -> u64 {
         let group = self.next_group;
         self.next_group = self.next_group.wrapping_add(1).max(1);
         group
     }
 
+    /// 判断 `path` 是否等于 `base`，或位于 `base` 的目录树下。
+    ///
+    /// 路径前缀必须落在目录边界上，因此 `/mnt` 不会覆盖 `/mnt2`；根目录覆盖
+    /// 所有绝对路径。
     fn path_is_at_or_below(path: &str, base: &str) -> bool {
         base == "/"
             || path == base
@@ -42,6 +53,9 @@ impl MountTable {
                 .map_or(false, |rest| rest.starts_with('/'))
     }
 
+    /// 将相对路径追加到挂载 peer 的根路径，生成对应的传播目标路径。
+    ///
+    /// 空相对路径表示 peer 根本身；根目录作为 base 时避免产生 `//`。
     fn append_relative(base: &str, relative: &str) -> String {
         if relative.is_empty() {
             return String::from(base);
@@ -53,6 +67,9 @@ impl MountTable {
         }
     }
 
+    /// 返回覆盖 `path` 的顶层挂载条目索引。
+    ///
+    /// 选择目标路径最长的条目；相同目标路径存在多层挂载时选择最后记录的可见层。
     fn top_mount_index_for_path(&self, path: &str) -> Option<usize> {
         self.mnt_list
             .iter()
@@ -62,6 +79,9 @@ impl MountTable {
             .map(|(idx, _)| idx)
     }
 
+    /// 返回恰好挂载在 `path` 上的顶层挂载条目索引。
+    ///
+    /// 与 [`Self::top_mount_index_for_path`] 不同，此方法不匹配祖先挂载点。
     fn top_mount_index_at_path(&self, path: &str) -> Option<usize> {
         self.mnt_list
             .iter()
@@ -70,20 +90,33 @@ impl MountTable {
             .find_map(|(idx, mount)| (mount.dir == path).then_some(idx))
     }
 
+    /// 修改挂载点及可选递归子树的 propagation type。
+    ///
+    /// `MS_SHARED` 创建新的 shared group；`MS_PRIVATE`、`MS_SLAVE` 和
+    /// `MS_UNBINDABLE` 清除 shared group。仅 `MS_UNBINDABLE` 保留不可 clone 标记。
     fn set_propagation(&mut self, dir: &str, flags: u32) {
         let recursive = flags & MS_REC != 0;
         let group = (flags & MS_SHARED != 0).then(|| self.next_group());
+        let unbindable = flags & MS_UNBINDABLE != 0;
         for mount in &mut self.mnt_list {
             if mount.dir == dir || (recursive && Self::path_is_at_or_below(&mount.dir, dir)) {
                 mount.shared_group = group;
+                mount.unbindable = unbindable;
             }
         }
     }
 
-    /// Records a mount and returns the physical tree copies required by the
-    /// current path-based VFS model. A full mount-root VFS is outside this
-    /// table; mirroring bind sources keeps mount propagation observable to
-    /// pathname lookup and LTP's directory comparisons.
+    /// 记录一次挂载，并返回路径化 VFS 需要执行的 bind tree 镜像动作。
+    ///
+    /// 对 propagation-only 操作更新挂载状态，对 remount 更新顶层属性；普通挂载
+    /// 创建一层新条目。目标父挂载属于 shared group 时，同一相对路径会在每个 peer
+    /// 上创建副本。返回的 `(source, target)` 仅适用于 `MS_BIND`，由 syscall 层在
+    /// 表锁外完成目录镜像。
+    ///
+    /// # Errors
+    ///
+    /// 返回 `EINVAL` 表示尝试 bind-clone unbindable source；返回 `ENOSPC` 表示挂载
+    /// 条目数量将超过 `MNT_MAXLEN`。在这两种错误下不会新增任何条目。
     pub fn mount(
         &mut self,
         special: String,
@@ -91,7 +124,7 @@ impl MountTable {
         fstype: String,
         flags: u32,
         data: String,
-    ) -> Result<Vec<(String, String)>, ()> {
+    ) -> Result<Vec<(String, String)>, SysErrNo> {
         _ = data;
 
         if flags & PROPAGATION_MASK != 0 && flags & (MS_BIND | MS_REMOUNT) == 0 {
@@ -107,6 +140,14 @@ impl MountTable {
                 mount.flags = flags;
             }
             return Ok(Vec::new());
+        }
+
+        if flags & MS_BIND != 0
+            && self
+                .top_mount_index_for_path(&special)
+                .is_some_and(|idx| self.mnt_list[idx].unbindable)
+        {
+            return Err(SysErrNo::EINVAL);
         }
 
         let source_group = self
@@ -144,7 +185,7 @@ impl MountTable {
         }
 
         if self.mnt_list.len() + targets.len() > MNT_MAXLEN {
-            return Err(());
+            return Err(SysErrNo::ENOSPC);
         }
         let event_group = self.next_group();
         for target in &targets {
@@ -154,6 +195,7 @@ impl MountTable {
                 fstype: fstype.clone(),
                 flags,
                 shared_group: inherited_group,
+                unbindable: false,
                 event_group,
             });
         }
@@ -168,7 +210,9 @@ impl MountTable {
             .collect())
     }
 
-    /// Queries an exact mount point, returning the visible (topmost) layer.
+    /// 查询精确挂载点的可见顶层，并复制返回 `(source, dir, fstype, flags)`。
+    ///
+    /// 若该路径没有挂载层，返回 `None`。更早叠加在同一路径上的挂载不会被返回。
     pub fn got_mount(&mut self, dir: String) -> Option<(String, String, String, u32)> {
         self.top_mount_index_at_path(&dir).map(|idx| {
             let mount = &self.mnt_list[idx];
@@ -181,7 +225,9 @@ impl MountTable {
         })
     }
 
-    /// Finds the topmost mount with the longest matching path prefix.
+    /// 查询覆盖 `path` 的可见顶层挂载，并复制返回其元数据。
+    ///
+    /// 在多层嵌套挂载中优先选择目标路径最长者；同一目标存在叠加层时选择最新层。
     pub fn mount_for_path(&self, path: &str) -> Option<(String, String, String, u32)> {
         self.top_mount_index_for_path(path).map(|idx| {
             let mount = &self.mnt_list[idx];
@@ -194,6 +240,10 @@ impl MountTable {
         })
     }
 
+    /// 序列化当前挂载表为 `/proc/mounts` 的兼容文本。
+    ///
+    /// 输出始终包含根 ext4 记录；每层挂载各输出一行。flags 的 bit 0 按 Linux
+    /// `MS_RDONLY` 显示为 `ro`，其余显示为 `rw`。
     pub fn proc_mounts_content(&self) -> String {
         let mut content = String::from(" ext4 / ext rw 0 0\n");
         for mount in &self.mnt_list {
@@ -206,8 +256,10 @@ impl MountTable {
         content
     }
 
-    /// Removes only the top layer and its peer copies created by the same
-    /// mount event. Earlier layers at a path become visible again.
+    /// 卸载 `dir` 的顶层及同一 mount event 创建的所有 peer 副本。
+    ///
+    /// 成功返回 0；路径没有顶层挂载时返回 -1。卸载后，保留在同一路径下的更早
+    /// 挂载层重新可见。`flags` 当前只保留 ABI 入口，尚不影响卸载策略。
     pub fn umount(&mut self, dir: String, flags: u32) -> isize {
         _ = flags;
         let Some(idx) = self.top_mount_index_at_path(&dir) else {

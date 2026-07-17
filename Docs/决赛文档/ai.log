@@ -4944,3 +4944,19 @@ AI 确认 BusyBox 配置已启用 `CONFIG_SEQ=y`，缺失的是启动期 `/bin/s
 ### 修改与验证
 
 修改 `os/src/fs/kernel_fs_ops/initfiles.rs`、`os/src/fs/mount.rs`、`os/src/syscall/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind-rbind-propagation.md` 并更新索引、开发日志和 AI 协作记录。`rustfmt --edition 2018 --check` 通过，`make TARGET_ARCH=riscv64` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。在允许 QEMU 写 `/var/tmp` 的环境中，`timeout 180s make run TARGET_ARCH=riscv64` 的 RISC-V `fs_bind_rbind01` musl/glibc 均为 `passed 28 failed 0 broken 0 skipped 0 warnings 0`，全部 propagation 和卸载断言通过并正常 `shutdown!`。其余 rbind 组合未在本轮运行。
+
+## 2026-07-17：LTP fs_bind13 unbindable source 修复
+
+### 用户需求
+
+维护者要求分析新的 `log.ans` 并修复 `fs_bind13` 失败。
+
+### 分析与采纳结论
+
+AI 确认 `fs_bind13` 的唯一真实失败是 `EXPECT_FAIL mount --bind parent1/child1 parent2/child2` 意外成功。`parent1/child1` 已由 `--make-runbindable` 标记，Linux 对 unbindable bind source 应返回 `EINVAL`。现有路径化挂载表仅以 `shared_group = None` 表示 private、slave 与 unbindable，导致类型信息丢失；非法 bind 在生成任何目标前未被拒绝，并留下传播副本。
+
+采纳最小修复：在 `MountEntry` 记录 `unbindable`，传播 type 变更同步更新，bind 在写表、生成 peer target 或镜像 source tree 前检查 source 顶层 mount。错误从挂载表以 `SysErrNo` 传回 syscall，保留 `ENOSPC` 并令非法 source 原样返回 `EINVAL`。
+
+### 修改与验证
+
+修改 `os/src/fs/mount.rs`、`os/src/syscall/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind13-unbindable-source.md` 并更新索引、开发日志和 AI 协作记录。`rustfmt`、`git diff --check` 通过；`make TARGET_ARCH=riscv64` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。在允许 QEMU 写 `/var/tmp` 的环境中，RISC-V `fs_bind13` musl/glibc 均为 `passed 24 failed 0 broken 0 skipped 0 warnings 0`，预期失败命令正确显示 `failed as expected`，正常 `shutdown!`。LoongArch64 单测未运行。

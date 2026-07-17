@@ -77,3 +77,4 @@
 - [LoongArch PCI VirtIO-net 早期启动内存破坏修复](./loongarch-pci-virtio-net-bootstrap-corruption.md)
 - [LTP tcp4-multi-diffnic01 单节点网络接口兼容](./tcp4-multi-diffnic01-single-node-env.md)
 - [LTP fs_bind rbind 挂载传播与 BusyBox applet 缺失修复](./fs-bind-rbind-propagation.md)
+- [LTP fs_bind13 unbindable bind source 语义修复](./fs-bind13-unbindable-source.md)

@@ -302,10 +302,7 @@ pub fn sys_mount(
     }
     if !data.is_null() {
         let data = read_user_cstr(&memory_set, data)?;
-        let copies = MNT_TABLE
-            .lock()
-            .mount(special, dir, ftype, flags, data)
-            .map_err(|_| SysErrNo::ENOSPC)?;
+        let copies = MNT_TABLE.lock().mount(special, dir, ftype, flags, data)?;
         for (source, target) in copies {
             mirror_bind_tree(&source, &target)?;
         }
@@ -314,8 +311,7 @@ pub fn sys_mount(
     } else {
         let copies = MNT_TABLE
             .lock()
-            .mount(special, dir, ftype, flags, String::from(""))
-            .map_err(|_| SysErrNo::ENOSPC)?;
+            .mount(special, dir, ftype, flags, String::from(""))?;
         for (source, target) in copies {
             mirror_bind_tree(&source, &target)?;
         }
@@ -408,10 +404,10 @@ pub fn sys_move_mount(
             detached.fsname.clone()
         };
         let mount_flags = detached.attr_flags;
-        let copies = MNT_TABLE
-            .lock()
-            .mount(source, to_abs_path, fstype, mount_flags, String::from(""))
-            .map_err(|_| SysErrNo::ENOSPC)?;
+        let copies =
+            MNT_TABLE
+                .lock()
+                .mount(source, to_abs_path, fstype, mount_flags, String::from(""))?;
         for (source, target) in copies {
             mirror_bind_tree(&source, &target)?;
         }

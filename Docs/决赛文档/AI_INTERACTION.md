@@ -767,3 +767,10 @@
 - **场景**：分析 `log.ans` 的 `fs_bind_rbind01` 失败、对照 LTP 脚本和 BusyBox 配置、实现路径化 VFS 的 bind propagation，并执行双架构构建和 RISC-V QEMU 回归
 - **描述**：确认 BusyBox 已构建 `seq`，但启动期遗漏 `/bin/seq`；进一步确认 `/bin/diff` 缺失使 LTP 隐藏的 `diff -r` 返回 127，造成空差异输出。真实内核缺口是旧挂载表只保存单层元数据，未记录 shared peer 或 bind 事件。修复为分层挂载条目、递归 propagation group、peer 相对路径副本和按事件卸载，并在路径化 VFS 中镜像 bind tree。RISC-V QEMU 中 musl/glibc `fs_bind_rbind01` 均为 `passed 28 failed 0 broken 0`。详见 [problem/fs-bind-rbind-propagation.md](./problem/fs-bind-rbind-propagation.md)。
 - **关联 commit**：待提交
+
+#### LTP fs_bind13 unbindable bind source 语义修复（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 的 fs_bind13 `EXPECT_FAIL` 失败、对照 Linux mount propagation 规则、修复挂载表状态并执行双架构构建和 RISC-V QEMU 回归
+- **描述**：确认 `--make-runbindable` 状态被路径化挂载表折叠为普通非 shared 状态，导致 Linux 要求 `EINVAL` 的 bind clone 误成功，并产生 cleanup 残留。修复为在每层挂载保存 unbindable 标志，在写表和传播前拒绝 unbindable source。RISC-V QEMU 的 musl/glibc `fs_bind13` 均为 `passed 24 failed 0 broken 0`。详见 [problem/fs-bind13-unbindable-source.md](./problem/fs-bind13-unbindable-source.md)。
+- **关联 commit**：待提交
