@@ -55,6 +55,7 @@
 - [fchmod02 /etc/group 缺少 users/daemon 导致 TBROK](./fchmod02-group-database.md)
 - [fchmod05 chmod S_ISGID 清除语义](./fchmod05-chmod-setgid.md)
 - [kill05 kill 权限检查与进程组语义](./kill05-kill-permission.md)
+- [kill02 默认忽略 SIGCHLD 打断 pipe 读导致 glibc TBROK](./kill02-ignored-sigchld-pipe-eintr.md)
 - [kill10 SA_SIGINFO 发送者 siginfo 修复](./kill10-siginfo-sender.md)
 - [kill10 信号帧 EFAULT 导致内核 panic](./kill10-signal-frame-efault-panic.md)
 - [kill12 SIG_IGN 与 wait status 修复](./kill12-sigign-wait-status.md)

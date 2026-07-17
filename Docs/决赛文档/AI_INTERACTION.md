@@ -711,3 +711,10 @@
 - **场景**：分析 `log.ans` 中 musl/glibc `open14` 的 `TBROK` 与后续 glibc panic，追踪 procfd magic-link、linkat 物化和 lwext4 stat 路径，并执行双架构构建和 RISC-V QEMU 回归。
 - **描述**：确认 `sys_linkat()` 在识别 `/proc/self/fd/<fd>` 之前对不存在的真实 `/proc/self/fd` 父目录做权限检查，令 O_TMPFILE 的物化分支不可达并返回 `ENOENT`。修复前移 procfd 分支、保持目标目录的挂载与权限检查，并要求 `AT_SYMLINK_FOLLOW`。回归还暴露 `Ext4File::fstat()` 在 `ext4_stat_get()` 失败后先用零值 `st_blksize` 计算缓存块数的除零 panic，以及小文件缓存重建时丢失 mode 的问题；修复先检查返回码，并让缓存保存/恢复 mode。RISC-V QEMU 中 musl/glibc `open14` 均为 `passed 3 failed 0 broken 0`，最终日志无内核 `ERROR`。详见 [problem/open14-procfd-linkat-cache.md](./problem/open14-procfd-linkat-cache.md)。
 - **关联 commit**：待提交
+
+#### LTP kill02 默认忽略 SIGCHLD 打断 pipe 读修复（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、glibc `kill02` TBROK 跟踪、pipe 阻塞等待与 signal disposition 语义修复、双架构 QEMU 回归
+- **描述**：确认 glibc 的退出状态 `512` 是 LTP `TBROK`，根因不是 `kill(2)` 的进程组投递，而是 initproc 在 pipe 阻塞读中将默认忽略的 `SIGCHLD` 误作为 `EINTR` 返回，导致输出读端提前关闭，测试写结果时触发 `EPIPE` 和 unexpected `SIGPIPE`。修复使 pipe 读、写和 readiness wait 消费默认或显式忽略的 pending signal，保留可见信号的原有中断语义。RISC-V 与 LoongArch64 的 musl/glibc `kill02` 均为 `passed 2 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-17 条目与 [problem/kill02-ignored-sigchld-pipe-eintr.md](./problem/kill02-ignored-sigchld-pipe-eintr.md)。
+- **关联 commit**：待提交

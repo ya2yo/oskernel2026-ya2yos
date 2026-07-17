@@ -19,6 +19,41 @@ pub fn check_if_any_sig_for_current_task() -> Option<usize> {
         .peek_front()
 }
 
+/// 消费当前任务最低编号的、不会中断阻塞 syscall 的 pending signal。
+///
+/// 默认忽略（例如 `SIGCHLD`）或显式 `SIG_IGN` 的信号不能让 `read(2)`、
+/// `write(2)` 等阻塞操作错误返回 `EINTR`。调用方消费后应重新检查等待条件；
+/// 可见信号则保留给 trap return 建立用户 handler frame。
+pub fn consume_ignorable_pending_signal_for_current_task() -> bool {
+    let task = current_task().unwrap();
+    let Some(signo) = ({
+        let task_inner = task.inner_lock();
+        task_inner
+            .sig_pending
+            .difference(task_inner.sig_mask)
+            .peek_front()
+    }) else {
+        return false;
+    };
+    let signal = SigSet::from_sig(signo);
+    let sig_action = task
+        .process
+        .with_sigtable(|sigtable| sigtable.action(signo));
+    let ignorable = sig_action.is_ignored()
+        || (!sig_action.is_handler() && signal.default_op() == SigOp::Ignore);
+    if !ignorable {
+        return false;
+    }
+
+    let mut task_inner = task.inner_lock();
+    if !task_inner.sig_pending.contains(signal) {
+        return false;
+    }
+    task_inner.sig_pending.remove(signal);
+    task_inner.sig_pending_info[signo] = None;
+    true
+}
+
 pub fn handle_signal(signo: usize) {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();

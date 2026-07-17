@@ -4818,3 +4818,19 @@ AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml -- --check` 通过；
 在允许 QEMU 写入 `/var/tmp` 的环境中，`timeout 300s make TARGET_ARCH=riscv64 run`
 正常完成，musl/glibc `open14` 均为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`
 并正常 `shutdown!`；最终 `log.ans` 无 `ERROR`、`panic`、`TFAIL` 或 `TBROK`。
+
+## 2026-07-17：LTP kill02 默认忽略 SIGCHLD 打断 pipe 读修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并修复 glibc `kill02` 失败。
+
+### 分析与采纳结论
+
+AI 以 LTP Summary 和退出状态为准，确认 musl 的包装行 `512` 不代表断言失败，而 glibc 的 `512` 对应测试进程 `exit(2)`，即 LTP `TBROK`。沿输出收集 pipe 和信号投递追踪后，排除了 `kill(0, SIGUSR1)` 进程组选择、glibc `sigaction` ABI 与 signal frame 问题。测试子进程退出向 initproc 投递默认忽略的 `SIGCHLD`；pipe 阻塞 read 将任意 pending signal 一律转成 `EINTR`，用户态收集器把它当 EOF 关闭读端。glibc 随后写结果收到 `EPIPE`/`SIGPIPE`，LTP 将 unexpected `SIGPIPE` 记为 `TBROK`。
+
+采纳按 disposition 消费不可见 pending signal 的方案：只消费显式 `SIG_IGN` 或默认 `SigOp::Ignore` 的未屏蔽信号，清除关联 siginfo 后继续检查等待条件；带用户 handler 或默认 stop/terminate 的信号保持 `EINTR` 和 trap return 路径。该处理覆盖 pipe 的读、写与 readiness wait，避免相同等待语义再次误报中断。
+
+### 修改与验证
+
+修改 `os/src/signal/pending.rs`、`os/src/fs/files/pipe/file_impl.rs` 和 `os/src/fs/files/pipe/wait.rs`，新增 `Docs/决赛文档/problem/kill02-ignored-sigchld-pipe-eintr.md` 并更新问题索引、开发日志和 AI 协作记录。`rustfmt` 和 `git diff --check` 通过；根目录 `make` 完成 RISC-V 与 LoongArch64 release 构建，只有既有 vendored `smoltcp` warning。RISC-V 和 LoongArch64 QEMU 单跑均显示 musl/glibc `kill02` 为 `passed 2 failed 0 broken 0`，返回状态 0 并正常 `shutdown!`。

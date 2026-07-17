@@ -1,7 +1,9 @@
 use super::Pipe;
 use crate::fs::{FasyncOwner, File, Kstat, StMode};
 use crate::mm::{copy_to_user, UserBuffer};
-use crate::signal::check_if_any_sig_for_current_task;
+use crate::signal::{
+    check_if_any_sig_for_current_task, consume_ignorable_pending_signal_for_current_task,
+};
 use crate::syscall::PollEvents;
 use crate::task::{current_task, schedule_blocked_current, TaskStatus};
 use crate::utils::{SysErrNo, SyscallRet};
@@ -40,6 +42,9 @@ impl File for Pipe {
                     return Err(SysErrNo::EAGAIN);
                 }
                 drop(ring_buffer);
+                if consume_ignorable_pending_signal_for_current_task() {
+                    continue;
+                }
                 if check_if_any_sig_for_current_task().is_some() {
                     // 一旦获取信号，必须中断系统调用
                     return Err(SysErrNo::EINTR);
@@ -105,6 +110,9 @@ impl File for Pipe {
                     return Err(SysErrNo::EAGAIN);
                 }
                 drop(ring_buffer);
+                if consume_ignorable_pending_signal_for_current_task() {
+                    continue;
+                }
                 if check_if_any_sig_for_current_task().is_some() {
                     return Err(SysErrNo::EINTR);
                 }

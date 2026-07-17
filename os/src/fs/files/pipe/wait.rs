@@ -1,7 +1,9 @@
 use super::ring_buffer::PipeRingBuffer;
 use super::Pipe;
 use crate::fs::File;
-use crate::signal::check_if_any_sig_for_current_task;
+use crate::signal::{
+    check_if_any_sig_for_current_task, consume_ignorable_pending_signal_for_current_task,
+};
 use crate::task::{current_task, schedule_blocked_current, TaskStatus};
 use crate::utils::SysErrNo;
 use alloc::sync::Arc;
@@ -19,6 +21,9 @@ impl Pipe {
                 return Err(SysErrNo::EAGAIN);
             }
             drop(ring_buffer);
+            if consume_ignorable_pending_signal_for_current_task() {
+                continue;
+            }
             if check_if_any_sig_for_current_task().is_some() {
                 return Err(SysErrNo::EINTR);
             }
@@ -54,6 +59,9 @@ impl Pipe {
                 return Err(SysErrNo::EAGAIN);
             }
             drop(ring_buffer);
+            if consume_ignorable_pending_signal_for_current_task() {
+                continue;
+            }
             if check_if_any_sig_for_current_task().is_some() {
                 return Err(SysErrNo::EINTR);
             }
