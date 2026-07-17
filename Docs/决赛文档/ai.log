@@ -5007,3 +5007,19 @@ AI 以 musl/glibc 均出现的 `dir1/1/2/fs_bind_check` 缺少 `dir4/ls` 为失�
 ### 修改与验证
 
 修改 `os/src/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind24-subtree-shared-slave-propagation.md` 并更新索引、开发日志与 AI 协作记录。`rustfmt --edition 2021 --check os/src/fs/mount.rs`、`git diff --check` 通过；`make TARGET_ARCH=riscv64` 完成 RISC-V/LoongArch64 release 构建，只有既有 vendored `smoltcp` warnings。在允许 QEMU 写 `/var/tmp` 的环境中，`timeout 180s make run TARGET_ARCH=riscv64` 的 RISC-V `fs_bind24` musl/glibc 均为 `passed 15 failed 0 broken 0 skipped 0 warnings 0`，propagation check 和 cleanup 全部 `TPASS` 并正常 `shutdown!`。LoongArch64 LTP 单测未运行。
+
+## 2026-07-17：LTP fs_bind_move05 private-to-shared 传播修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并进行修复。
+
+### 分析与采纳结论
+
+AI 以 `fs_bind_move05` 在 `mount --move dir parent2/child2` 后的两处 propagation failure 为起点，对照 LTP 脚本、已有 `MS_MOVE` 实现和挂载表。确认已有实现可以复制移动 subtree，却使移动根仍携带原 `dir` 的 private state；因此在该根下创建 `disk1` bind 时不会启动 shared 传播。进一步确认只恢复 shared group 仍不足：通用 target 计算会把 `grandchild` 直接附到 `share2`，漏掉移动根映射的 `child2` 偏移。
+
+采纳挂载表内的最小修复：移动 root 分别从每个目标接收端继承 shared/master/unbindable state；后续传播优先经过同一 `event_group` 的可见 moved peer root，使 event 相对路径保持为 `parent2/child2/<child>` 到 `share2/child2/<child>`。子挂载继续保留自身 propagation 属性，未修改 syscall ABI、目录镜像、只读 LTP 源码或维护者的复现入口。
+
+### 修改与验证
+
+修改 `os/src/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind-move05-private-shared-propagation.md` 并更新索引、开发日志与 AI 记录。`rustfmt --edition 2021 --check os/src/fs/mount.rs` 和 `git diff --check` 通过；`make TARGET_ARCH=riscv64` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。`timeout 180s make run TARGET_ARCH=riscv64` 的 RISC-V `fs_bind_move05` musl/glibc 均为 `passed 27 failed 0 broken 0 skipped 0 warnings 0`，propagation 与 cleanup 全部 `TPASS` 并正常 `shutdown!`；LoongArch64 LTP 单测未运行。

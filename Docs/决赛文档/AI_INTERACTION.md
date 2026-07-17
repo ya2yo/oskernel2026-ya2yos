@@ -794,3 +794,10 @@
 - **场景**：分析 `log.ans` 的 fs_bind24 propagation failure，对照 LTP 脚本和路径化挂载表，修复 shared-slave state 与子目录 bind 的路径映射，并执行双架构构建及 RISC-V QEMU 回归。
 - **描述**：确认 bind source 内部目录错误按精确 mountpoint 查找 state，且 shared-slave 再转 slave 时覆盖了上游 master；随后 event 路径还遗漏 source 子目录偏移。修复统一从覆盖 source 的顶层 mount 继承状态、保留既有 master，并在传播到 source peer/slave 时拼接 bind source 的相对偏移。RISC-V QEMU 中 musl/glibc `fs_bind24` 均为 `passed 15 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/fs-bind24-subtree-shared-slave-propagation.md](./problem/fs-bind24-subtree-shared-slave-propagation.md)。
 - **关联 commit**：待提交
+
+#### LTP fs_bind_move05 private-to-shared 传播修复（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 的 fs_bind_move05 传播与 cleanup 失败，对照 LTP 脚本和 `MS_MOVE` 路径化挂载表，实现移动根状态继承与 peer 路径映射，并执行双架构构建和 RISC-V QEMU 回归。
+- **描述**：确认 `MS_MOVE` 虽已重定位 subtree，却未使 private moved root 继承 shared parent 的传播状态；之后的 bind event 不能传播。即使恢复 group，事件映射也会遗漏 moved root 的 `child2` 路径偏移。修复令移动 root 按接收端继承 shared/master/unbindable state，并通过同一 move event 的 peer root 计算相对目标。RISC-V QEMU 中 musl/glibc `fs_bind_move05` 均为 `passed 27 failed 0 broken 0`，所有 propagation 和卸载断言通过。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/fs-bind-move05-private-shared-propagation.md](./problem/fs-bind-move05-private-shared-propagation.md)。
+- **关联 commit**：待提交
