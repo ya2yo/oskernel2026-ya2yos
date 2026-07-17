@@ -22,15 +22,18 @@ use crate::mm::{
     copy_from_user, copy_to_user, if_bad_address, read_user_cstr, user_buffer_from_kernel,
 };
 use crate::syscall::options::FaccessatFileMode;
-use crate::task::current_task;
+use crate::task::{current_task, Process};
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
-use crate::utils::{get_abs_path as normalize_abs_path, rsplit_once, SysErrNo, SyscallRet};
+use crate::utils::{
+    get_abs_path as normalize_abs_path, is_abs_path, rsplit_once, SysErrNo, SyscallRet,
+};
 use linux_raw_sys::loop_device::LOOP_SET_FD;
 
 const MAX_FILE_NAME_LEN: usize = 255;
 // Keep the exposed hard-link limit finite so LTP hard-link limit probes can
 // terminate quickly. POSIX only requires LINK_MAX to be at least 8.
 const MAX_HARD_LINKS: u32 = 1024;
+const LINKAT_VALID_FLAGS: u32 = (AT_EMPTY_PATH | AT_SYMLINK_FOLLOW) as u32;
 
 pub fn has_too_long_path_component(path: &str) -> bool {
     path.split('/')
@@ -63,6 +66,15 @@ fn parent_path_of(abs_path: &str) -> Result<&str, SysErrNo> {
 
 /// hard link 不能跨挂载点创建；在只读挂载点内创建新目录项也应返回 `EROFS`。
 fn check_link_mounts(old_abs_path: &str, new_abs_path: &str) -> SyscallRet {
+    // Ya2yOS currently exposes proc compatibility files through the root ext4
+    // backend. They still form a distinct Linux-visible pseudo-filesystem, so
+    // hard links between /proc and an ordinary path must fail with EXDEV.
+    let old_is_procfs = old_abs_path == "/proc" || old_abs_path.starts_with("/proc/");
+    let new_is_procfs = new_abs_path == "/proc" || new_abs_path.starts_with("/proc/");
+    if old_is_procfs != new_is_procfs {
+        return Err(SysErrNo::EXDEV);
+    }
+
     let mnt_table = MNT_TABLE.lock();
     let old_mount = mnt_table.mount_for_path(old_abs_path);
     let new_mount = mnt_table.mount_for_path(new_abs_path);
@@ -80,6 +92,29 @@ fn check_link_mounts(old_abs_path: &str, new_abs_path: &str) -> SyscallRet {
         }
     }
     Ok(0)
+}
+
+/// Resolve a linkat pathname while enforcing the Linux dirfd contract for a
+/// relative path. `Process::get_abs_path()` is intentionally generic and
+/// accepts any open file descriptor as a base; linkat requires that base to be
+/// a directory and reports ENOTDIR for stdin, pipes, sockets, and regular files.
+fn resolve_linkat_path(proc: &Process, dirfd: isize, path: &str) -> Result<String, SysErrNo> {
+    if is_abs_path(path) || dirfd == -100 {
+        return proc.get_abs_path(dirfd, path);
+    }
+    if dirfd < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let dir = proc
+        .fd_table
+        .get(dirfd as usize)?
+        .file()
+        .map_err(|_| SysErrNo::ENOTDIR)?;
+    if !dir.inode.types().is_dir() {
+        return Err(SysErrNo::ENOTDIR);
+    }
+    Ok(normalize_abs_path(&dir.inode.path(), path))
 }
 
 /// 判断 `path` 是否位于 `ancestor` 子树内，用于识别 symlink 目标回指祖先目录。
@@ -301,6 +336,11 @@ pub fn sys_linkat(
     newpath: *const u8,
     flags: u32,
 ) -> SyscallRet {
+    // 保留所有不在允许集合中的位；只要调用方传入未知 flag，linkat(2) 就返回 EINVAL。
+    if flags & !LINKAT_VALID_FLAGS != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
     let task = current_task().unwrap();
     let proc = &task.process;
     let memory_set = proc.memory_set_arc();
@@ -317,7 +357,7 @@ pub fn sys_linkat(
 
     // 处理 AT_EMPTY_PATH：若 oldpath 为空字符串，则使用 oldfd 对应的已打开文件
     if flags & AT_EMPTY_PATH as u32 != 0 && old_path_str.is_empty() {
-        let new_abs_path = proc.get_abs_path(newfd, &new_path_str)?;
+        let new_abs_path = resolve_linkat_path(proc, newfd, &new_path_str)?;
         check_link_mounts(&new_abs_path, &new_abs_path)?;
         check_parent_permission(parent_path_of(&new_abs_path)?, true)?;
         // 新路径不能已存在
@@ -335,8 +375,8 @@ pub fn sys_linkat(
     }
 
     // 常规路径解析
-    let old_abs_path = proc.get_abs_path(oldfd, &old_path_str)?;
-    let new_abs_path = proc.get_abs_path(newfd, &new_path_str)?;
+    let old_abs_path = resolve_linkat_path(proc, oldfd, &old_path_str)?;
+    let new_abs_path = resolve_linkat_path(proc, newfd, &new_path_str)?;
     if old_path_str.len() >= MAX_PATH_LEN || has_too_long_path_component(&old_path_str) {
         if has_self_referential_symlink_prefix(&old_abs_path) {
             return Err(SysErrNo::ELOOP);

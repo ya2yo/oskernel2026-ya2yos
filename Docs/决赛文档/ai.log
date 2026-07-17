@@ -4834,3 +4834,19 @@ AI 以 LTP Summary 和退出状态为准，确认 musl 的包装行 `512` 不代
 ### 修改与验证
 
 修改 `os/src/signal/pending.rs`、`os/src/fs/files/pipe/file_impl.rs` 和 `os/src/fs/files/pipe/wait.rs`，新增 `Docs/决赛文档/problem/kill02-ignored-sigchld-pipe-eintr.md` 并更新问题索引、开发日志和 AI 协作记录。`rustfmt` 和 `git diff --check` 通过；根目录 `make` 完成 RISC-V 与 LoongArch64 release 构建，只有既有 vendored `smoltcp` warning。RISC-V 和 LoongArch64 QEMU 单跑均显示 musl/glibc `kill02` 为 `passed 2 failed 0 broken 0`，返回状态 0 并正常 `shutdown!`。
+
+## 2026-07-17：LTP linkat01 dirfd、procfs 跨设备与 flags 修复
+
+### 用户需求
+
+维护者要求分析新的 `log.ans` 并进行修复。
+
+### 分析与采纳结论
+
+AI 以 LTP Summary 为准确认 musl/glibc `linkat01` 都有四项失败：相对源/目标路径以 stdin 作为 dirfd 时预期 `ENOTDIR` 但得到 `EINVAL`，`/proc/cpuinfo` 到普通目录的硬链接预期 `EXDEV` 却成功，未知 flags `1` 也错误成功。对照 `linkat01.c` 的参数矩阵和 `sys_linkat()` 后，确认通用 `Process::get_abs_path()` 不校验相对 dirfd 是否是目录，而 stdin 的 `FileDescriptor::file()` 类型转换将 `EINVAL` 泄漏给用户态；项目的 proc 兼容文件由 root ext4 后端承载，未被挂载表视为独立 filesystem；flags 没有白名单校验。
+
+采纳仅在 `linkat` 收敛语义的方案：绝对路径保持忽略 dirfd，非 `AT_FDCWD` 的相对路径则以目录 `OSFile` 为前提，普通非目录对象返回 `ENOTDIR`。新增合法 flags 集合，并在挂载表比较前将 `/proc` compatibility namespace 视为独立 pseudo-filesystem，使跨边界 hard link 返回 `EXDEV`。不修改通用路径 helper，避免波及其它 syscall。
+
+### 修改与验证
+
+修改 `os/src/syscall/fs/ctl.rs`，新增 `Docs/决赛文档/problem/linkat01-dirfd-procfs-flags.md` 并更新问题索引、开发日志和 AI 协作记录。`rustfmt` 与 `git diff --check` 通过；根目录 `make` 完成 RISC-V 与 LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。RISC-V 和 LoongArch64 QEMU 单跑均显示 musl/glibc `linkat01` 为 `passed 22 failed 0 broken 0`，返回状态 0 并正常 `shutdown!`。

@@ -718,3 +718,10 @@
 - **场景**：`log.ans` 分析、glibc `kill02` TBROK 跟踪、pipe 阻塞等待与 signal disposition 语义修复、双架构 QEMU 回归
 - **描述**：确认 glibc 的退出状态 `512` 是 LTP `TBROK`，根因不是 `kill(2)` 的进程组投递，而是 initproc 在 pipe 阻塞读中将默认忽略的 `SIGCHLD` 误作为 `EINTR` 返回，导致输出读端提前关闭，测试写结果时触发 `EPIPE` 和 unexpected `SIGPIPE`。修复使 pipe 读、写和 readiness wait 消费默认或显式忽略的 pending signal，保留可见信号的原有中断语义。RISC-V 与 LoongArch64 的 musl/glibc `kill02` 均为 `passed 2 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-17 条目与 [problem/kill02-ignored-sigchld-pipe-eintr.md](./problem/kill02-ignored-sigchld-pipe-eintr.md)。
 - **关联 commit**：待提交
+
+#### LTP linkat01 dirfd、procfs 跨设备与 flags 语义修复（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：`log.ans` 分析、LTP `linkat01.c` 参数矩阵对照、`linkat(2)` 路径解析与挂载边界修复、双架构 QEMU 回归
+- **描述**：确认四项失败分别来自非目录 dirfd 泄漏 `EINVAL`、root ext4 后端承载的 `/proc` compatibility namespace 未被视为独立 filesystem，以及未知 linkat flags 未校验。修复在 syscall 层校验相对 dirfd 为目录、限制 flags 为 `AT_SYMLINK_FOLLOW | AT_EMPTY_PATH`，并让 `/proc` 与普通路径间 hard link 返回 `EXDEV`，不改变通用路径 helper。RISC-V 与 LoongArch64 的 musl/glibc `linkat01` 均为 `passed 22 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-17 条目与 [problem/linkat01-dirfd-procfs-flags.md](./problem/linkat01-dirfd-procfs-flags.md)。
+- **关联 commit**：待提交
