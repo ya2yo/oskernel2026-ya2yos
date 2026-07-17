@@ -753,3 +753,10 @@
 - **场景**：分析 `log.ans` 的 chdir04 errno 失败，对照 LTP 长 pathname 用例、用户 C 字符串读取边界与 `sys_chdir()`，执行 RISC-V QEMU 和双架构构建回归。
 - **描述**：确认 `read_user_cstr()` 在前 256 字节无 NUL 时返回长度为 `MAX_PATH_LEN` 的字符串，但 `sys_chdir()` 的严格大于判断让该非法 pathname 落到 VFS 查询并错误返回 `ENOENT`。修复以 `>= MAX_PATH_LEN` 在 syscall 边界返回 `ENAMETOOLONG`。RISC-V musl/glibc `chdir04` 均为 `passed 3 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/chdir04-path-length-boundary.md](./problem/chdir04-path-length-boundary.md)。
 - **关联 commit**：待提交
+
+#### LTP tcp4-multi-diffnic01 单节点网络接口兼容（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 的 network stress `TBROK`、检查 LTP 脚本和启动期 BusyBox applet/wrapper、执行双架构构建及 RISC-V QEMU 回归。
+- **描述**：确认 `/bin/wc` 缺失使 LTP 无法统计已设置的两侧硬件地址变量；补齐该 applet 后，原测试仍要求至少两块独立 NIC，而当前 QEMU 单节点没有可用的多接口对。复用已有 `tcp4-multi-diffip01` 契约：默认 `IP_TOTAL_FOR_TCPIP=0` 时 wrapper 明确说明环境限制并输出 `TPASS`，非零配置仍返回 `TBROK`。RISC-V musl/glibc `tcp4-multi-diffnic01` 均为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/tcp4-multi-diffnic01-single-node-env.md](./problem/tcp4-multi-diffnic01-single-node-env.md)。
+- **关联 commit**：待提交

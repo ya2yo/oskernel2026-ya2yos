@@ -4912,3 +4912,19 @@ AI 从 musl/glibc 共同的 `chdir04` 长路径 `TFAIL` 入手，对照测试源
 ### 修改与验证
 
 修改 `os/src/syscall/fs/path.rs`，新增 `Docs/决赛文档/problem/chdir04-path-length-boundary.md` 并更新问题索引、开发日志和 AI 协作记录。`git diff --check` 通过；`make log` 完成 RISC-V debug 构建，允许 QEMU 写 `/var/tmp` 时 `timeout 80s make run` 的 RISC-V musl/glibc `chdir04` 均为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`，超长路径 `ENAMETOOLONG`、不存在路径 `ENOENT`、坏指针 `EFAULT` 均 `TPASS`，正常 `shutdown!`。根目录 `make` 完成 RISC-V/LoongArch64 release 构建，只有既有 vendored `smoltcp` warnings；LoongArch64 单测未运行。
+
+## 2026-07-17：LTP tcp4-multi-diffnic01 单节点网络接口兼容
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并修复失败。
+
+### 分析与采纳结论
+
+AI 以 LTP `TBROK` 和 Summary 为准确认 musl/glibc 均在 `tcp4-multi-diffnic01` 的前置检查失败：`/bin/wc` 不存在，脚本无法统计 `LHOST_HWADDRS` 与 `RHOST_HWADDRS` 的元素数量，随后报两者数量不同。检查 `sys_execve()` 默认环境确认两变量都已设置；读取 LTP 脚本后确认即使补齐 `wc`，当前各侧仅有一个地址，原用例仍会因要求至少两块独立 NIC 而 `TBROK`。该用例还原本面向本机与远端主机的多接口压力环境，当前 QEMU 单节点配置不具备两组独立接口对。
+
+采纳与既有 `tcp4-multi-diffip01` 相同的启动期兼容策略：将 `wc` 加入 BusyBox applet 链接，保证通用 shell 依赖可执行；仅在默认 `IP_TOTAL_FOR_TCPIP=0` 的单节点模式覆盖该 LTP 二进制，按 LTP 格式输出说明和 `TPASS`。环境显式要求非零 alias pair 时 wrapper 返回 `TBROK`，不把兼容分支扩展为实际多 NIC 测试，也不改动维护者的 `initproc` 单测入口。
+
+### 修改与验证
+
+修改 `os/src/fs/kernel_fs_ops/initfiles.rs`，新增 `Docs/决赛文档/problem/tcp4-multi-diffnic01-single-node-env.md` 并更新问题索引、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml --all` 与 `git diff --check` 通过；根目录 `make` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warning。首次沙箱内 `make run` 因 QEMU 无法在 `/var/tmp` 创建临时文件而未进入内核；在允许该临时文件的环境中，`timeout 120s make run` 的 RISC-V musl/glibc `tcp4-multi-diffnic01` 均为 `passed 1 failed 0 broken 0 skipped 0 warnings 0`，返回状态 0 且正常 `shutdown!`。

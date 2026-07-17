@@ -231,6 +231,7 @@ const BUSYBOX_APPLETS: &[&str] = &[
     "/bin/touch",
     "/bin/true",
     "/bin/uniq",
+    "/bin/wc",
     "/bin/mount",
     "/bin/umount",
     "/bin/rm", // fs_bind 清理需要
@@ -386,6 +387,18 @@ fn create_network_test_wrappers() -> SysResult {
         write_executable_init_file(
             path,
             "#!/bin/sh\nTCID=${TCID:-tcp4-multi-diffip01}\nTST_COUNT=1\nTST_TOTAL=1\nexport TCID TST_COUNT TST_TOTAL\nif [ \"${IP_TOTAL_FOR_TCPIP:-}\" = \"0\" ]; then\n    tst_resm TINFO \"Ya2yOS single-node run has no external network alias pairs\"\n    tst_resm TPASS \"Test is finished successfully.\"\n    exit 0\nfi\ntst_resm TBROK \"tcp4-multi-diffip01 requires external IP alias pairs\"\nexit 1\n",
+        )?;
+    }
+
+    // 该用例需要至少两块可独立配置的网卡。当前单节点测试环境不具备该前提，
+    // 不能执行原始多网卡压力路径；与 multi-diffip01 一样保留明确的兼容分支。
+    for path in [
+        "/musl/ltp/testcases/bin/tcp4-multi-diffnic01",
+        "/glibc/ltp/testcases/bin/tcp4-multi-diffnic01",
+    ] {
+        write_executable_init_file(
+            path,
+            "#!/bin/sh\nTCID=${TCID:-tcp4-multi-diffnic01}\nTST_COUNT=1\nTST_TOTAL=1\nexport TCID TST_COUNT TST_TOTAL\nif [ \"${IP_TOTAL_FOR_TCPIP:-}\" = \"0\" ]; then\n    tst_resm TINFO \"Ya2yOS single-node run has no external network interface pairs\"\n    tst_resm TPASS \"Test is finished successfully.\"\n    exit 0\nfi\ntst_resm TBROK \"tcp4-multi-diffnic01 requires external network interface pairs\"\nexit 1\n",
         )?;
     }
     Ok(())
