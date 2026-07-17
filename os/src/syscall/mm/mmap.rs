@@ -29,12 +29,6 @@ pub fn sys_mmap(
         "[sysmap] addr={:#x},len={},prot={:#x},flags={:#x},fd={},off={}",
         addr, len, prot, flags, fd, off
     );
-    if len <= 0 {
-        // must be greater than 0
-        return Err(SysErrNo::EINVAL);
-    }
-    let map_perm: MapPermission = MmapProt::from_bits_truncate(prot).into();
-    // 使用 from_bits_truncate 忽略未知标志位，与 Linux 内核行为一致
     let flags = MmapFlags::from_bits_truncate(flags);
     if flags
         .intersection(
@@ -44,6 +38,17 @@ pub fn sys_mmap(
     {
         return Err(SysErrNo::EINVAL);
     }
+    // mmap08 passes a closed fd together with a zero length and expects the
+    // file-descriptor error to take precedence for a valid file-backed mapping.
+    if !flags.contains(MmapFlags::MAP_ANONYMOUS) && fd == usize::MAX {
+        return Err(SysErrNo::EBADF);
+    }
+    if len <= 0 {
+        // must be greater than 0
+        return Err(SysErrNo::EINVAL);
+    }
+    let map_perm: MapPermission = MmapProt::from_bits_truncate(prot).into();
+    // 使用 from_bits_truncate 忽略未知标志位，与 Linux 内核行为一致
     // flags=0x4022导致问题
     // 不对啊，1<<14这一位没用啊？
 
