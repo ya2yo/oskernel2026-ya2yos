@@ -48,7 +48,9 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
 
     let path = read_user_cstr(&memory_set, path)?;
 
-    if path.len() > MAX_PATH_LEN {
+    // MAX_PATH_LEN includes the trailing NUL. read_user_cstr() returns a
+    // MAX_PATH_LEN-byte string when no terminator is found within the limit.
+    if path.len() >= MAX_PATH_LEN {
         return Err(SysErrNo::ENAMETOOLONG);
     }
 

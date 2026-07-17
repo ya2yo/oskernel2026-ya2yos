@@ -4896,3 +4896,19 @@ AI 以 musl/glibc 在 ext2、tmpfs 中重复出现的 `nobody: chdir("keep_out")
 ### 修改与验证
 
 修改 `os/src/syscall/fs/path.rs`，新增 `Docs/决赛文档/problem/chdir01-search-permission.md` 并更新问题索引、开发日志和 AI 协作记录。`git diff --check` 通过；`make log` 完成 RISC-V debug 构建，允许 QEMU 写 `/var/tmp` 时 `timeout 80s make run` 的 RISC-V musl/glibc 均在 ext2、tmpfs 得到 `passed 32 failed 0 broken 0 skipped 0 warnings 0`，共 64 条 `TPASS`，正常 `shutdown!`。根目录 `make` 完成 RISC-V/LoongArch64 release 构建，只有既有 vendored `smoltcp` warnings；LoongArch64 单测未运行。
+
+## 2026-07-17：LTP chdir04 pathname 长度边界修复
+
+### 用户需求
+
+维护者要求继续分析新的 `log.ans` 并修复失败项。
+
+### 分析与采纳结论
+
+AI 从 musl/glibc 共同的 `chdir04` 长路径 `TFAIL` 入手，对照测试源码与 `read_user_cstr()`。测试的 pathname 在前 256 字节中没有 NUL；该 helper 按设计返回长度为 `MAX_PATH_LEN` 的字符串，避免超限读取。`sys_chdir()` 却仅用 `>` 判断，因此把长度正好为 256 的非终止字符串继续交给 VFS 查找，得到无关的 `ENOENT`。
+
+采纳最小的 syscall 边界修复：将判断改为 `>= MAX_PATH_LEN`。这符合 Linux pathname 上限包含终止 NUL 的 ABI，直接返回 `ENAMETOOLONG`，并不改变短的不存在路径和坏地址的原有错误码。
+
+### 修改与验证
+
+修改 `os/src/syscall/fs/path.rs`，新增 `Docs/决赛文档/problem/chdir04-path-length-boundary.md` 并更新问题索引、开发日志和 AI 协作记录。`git diff --check` 通过；`make log` 完成 RISC-V debug 构建，允许 QEMU 写 `/var/tmp` 时 `timeout 80s make run` 的 RISC-V musl/glibc `chdir04` 均为 `passed 3 failed 0 broken 0 skipped 0 warnings 0`，超长路径 `ENAMETOOLONG`、不存在路径 `ENOENT`、坏指针 `EFAULT` 均 `TPASS`，正常 `shutdown!`。根目录 `make` 完成 RISC-V/LoongArch64 release 构建，只有既有 vendored `smoltcp` warnings；LoongArch64 单测未运行。

@@ -746,3 +746,10 @@
 - **场景**：分析 `log.ans` 的 chdir01 权限失败，对照 LTP 用例与 `sys_chdir()` 路径，执行 RISC-V QEMU 和双架构构建回归。
 - **描述**：确认 `sys_chdir()` 仅验证目标为目录、未按 effective uid/gid 验证 directory search 权限，令 `nobody` 错误进入 root 创建的 `0644` 目录。修复对解析后路径的每个目录分量检查 owner/group/other 执行位，缺少 search 权限返回 `EACCES`，root 保持绕过。RISC-V musl/glibc 在 ext2、tmpfs 的 chdir01 均为 `passed 32 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/chdir01-search-permission.md](./problem/chdir01-search-permission.md)。
 - **关联 commit**：待提交
+
+#### LTP chdir04 pathname 长度边界修复（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 的 chdir04 errno 失败，对照 LTP 长 pathname 用例、用户 C 字符串读取边界与 `sys_chdir()`，执行 RISC-V QEMU 和双架构构建回归。
+- **描述**：确认 `read_user_cstr()` 在前 256 字节无 NUL 时返回长度为 `MAX_PATH_LEN` 的字符串，但 `sys_chdir()` 的严格大于判断让该非法 pathname 落到 VFS 查询并错误返回 `ENOENT`。修复以 `>= MAX_PATH_LEN` 在 syscall 边界返回 `ENAMETOOLONG`。RISC-V musl/glibc `chdir04` 均为 `passed 3 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/chdir04-path-length-boundary.md](./problem/chdir04-path-length-boundary.md)。
+- **关联 commit**：待提交
