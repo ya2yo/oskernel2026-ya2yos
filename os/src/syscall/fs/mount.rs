@@ -208,6 +208,18 @@ fn mirror_bind_tree(source: &str, target: &str) -> SysResult {
     for name in names {
         let source_child = format!("{}/{}", source.trim_end_matches('/'), name);
         let target_child = format!("{}/{}", target.trim_end_matches('/'), name);
+        // A bind target inside its source (for example `parent` onto
+        // `parent/child`) would otherwise become visible while recursively
+        // mirroring, making the traversal descend forever into the new copy.
+        // The target branch already denotes the bind root, so it must not be
+        // copied as a child of itself.
+        if target == source_child
+            || target
+                .strip_prefix(source_child.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+        {
+            continue;
+        }
         let child = open(&source_child, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
         if child.inode.types() == InodeType::Dir {
             if open(&target_child, OpenFlags::O_RDONLY, NONE_MODE).is_err() {

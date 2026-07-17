@@ -774,3 +774,9 @@
 - **场景**：分析 `log.ans` 的 fs_bind13 `EXPECT_FAIL` 失败、对照 Linux mount propagation 规则、修复挂载表状态并执行双架构构建和 RISC-V QEMU 回归
 - **描述**：确认 `--make-runbindable` 状态被路径化挂载表折叠为普通非 shared 状态，导致 Linux 要求 `EINVAL` 的 bind clone 误成功，并产生 cleanup 残留。修复为在每层挂载保存 unbindable 标志，在写表和传播前拒绝 unbindable source。RISC-V QEMU 的 musl/glibc `fs_bind13` 均为 `passed 24 failed 0 broken 0`。详见 [problem/fs-bind13-unbindable-source.md](./problem/fs-bind13-unbindable-source.md)。
 - **关联 commit**：待提交
+#### LTP fs_bind peer/slave 传播与同树 bind panic 修复（7.17）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 中 fs_bind shared/slave 传播失败和内核 panic，对照 LTP 脚本实现挂载状态修复，并执行双架构构建与 RISC-V QEMU 回归。
+- **描述**：确认挂载表只建模 shared peer、缺失 slave master 关系且只展开一层副本，导致 `fs_bind17` 至 `fs_bind21` 的后续子挂载传播失败；同树 bind 的目录镜像递归进入自身新建目标，触发 `StorePageFault`。修复后 RISC-V `fs_bind17` 至 `fs_bind21` 均 `failed 0`，`fs_bind22` panic 消除；其首次 parent-to-child 全树 diff 仍受路径化 VFS 不具备 mount-root dentry 的限制。详见 [problem/fs-bind-peer-slave-propagation.md](./problem/fs-bind-peer-slave-propagation.md)。
+- **关联 commit**：待提交

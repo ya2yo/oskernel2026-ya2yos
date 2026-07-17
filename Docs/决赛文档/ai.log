@@ -4960,3 +4960,18 @@ AI 确认 `fs_bind13` 的唯一真实失败是 `EXPECT_FAIL mount --bind parent1
 ### 修改与验证
 
 修改 `os/src/fs/mount.rs`、`os/src/syscall/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind13-unbindable-source.md` 并更新索引、开发日志和 AI 协作记录。`rustfmt`、`git diff --check` 通过；`make TARGET_ARCH=riscv64` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。在允许 QEMU 写 `/var/tmp` 的环境中，RISC-V `fs_bind13` musl/glibc 均为 `passed 24 failed 0 broken 0 skipped 0 warnings 0`，预期失败命令正确显示 `failed as expected`，正常 `shutdown!`。LoongArch64 单测未运行。
+## 2026-07-17：LTP fs_bind peer/slave 传播与同树 bind panic 修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并进行修复。
+
+### 分析与采纳结论
+
+AI 以 `fs_bind17` 的 shared 子挂载缺失、`fs_bind21` 的多级 slave 缺失和 `fs_bind22` 的 `StorePageFault` 为主线，对照 LTP 脚本和 `MountTable`。确认现有实现只有 shared peer group、没有 slave master 关系，且仅做一层传播；`--make-rshared` 也未将同一 event 的子挂载副本组为 peers。目录镜像在 target 位于 source 子树时递归进入新目标，导致内核栈耗尽。
+
+采纳在挂载表补充 `master_group`、递归 peer/slave 后代展开和按接收父挂载继承传播状态的方案；`MS_SHARED` 对同 event 副本建立新 peer group，`MS_SLAVE` 保存转换前的 shared group 为 master。目录镜像跳过包含 target 的源分支，消除递归。未修改维护者用于复现的 `user/src/bin/initproc.rs`。
+
+### 修改与验证
+
+修改 `os/src/fs/mount.rs`、`os/src/syscall/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind-peer-slave-propagation.md` 并更新索引、开发日志和 AI 记录。`cargo fmt --check` 与 `git diff --check` 通过；根目录 `make` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。RISC-V release QEMU 中 `fs_bind17` 至 `fs_bind21` 均为 `failed 0`，`fs_bind21` 为 `passed 33 failed 0 broken 0`，不再出现 panic。`fs_bind22` 不再 panic，但路径化 VFS 尚无真实独立 mount-root 视图，首次 parent-to-child 全树 diff 仍失败；详见 problem 复盘。

@@ -1,4 +1,4 @@
-use alloc::{format, string::String, sync::Arc, vec::Vec};
+use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
 use linux_raw_sys::general::*;
 use spin::{Lazy, Mutex};
 
@@ -20,6 +20,9 @@ struct MountEntry {
     // Mounts in the same group receive new child mount events at matching
     // relative paths.
     shared_group: Option<u64>,
+    // A slave receives mount events from this shared peer group, but never
+    // sends events back to it. A slave may also have its own shared group.
+    master_group: Option<u64>,
     // Linux forbids bind-cloning an unbindable mount.
     unbindable: bool,
     // All copies made for one mount event are removed together by umount.
@@ -92,26 +95,110 @@ impl MountTable {
 
     /// 修改挂载点及可选递归子树的 propagation type。
     ///
-    /// `MS_SHARED` 创建新的 shared group；`MS_PRIVATE`、`MS_SLAVE` 和
-    /// `MS_UNBINDABLE` 清除 shared group。仅 `MS_UNBINDABLE` 保留不可 clone 标记。
+    /// `MS_SHARED` 将同一 mount event 的副本放入一个新的 shared group。
+    /// `MS_SLAVE` 保留原 shared group 作为 master；`MS_PRIVATE` 和
+    /// `MS_UNBINDABLE` 断开所有传播关系。
     fn set_propagation(&mut self, dir: &str, flags: u32) {
         let recursive = flags & MS_REC != 0;
-        let group = (flags & MS_SHARED != 0).then(|| self.next_group());
-        let unbindable = flags & MS_UNBINDABLE != 0;
-        for mount in &mut self.mnt_list {
-            if mount.dir == dir || (recursive && Self::path_is_at_or_below(&mount.dir, dir)) {
-                mount.shared_group = group;
+        let Some(root_idx) = self.top_mount_index_at_path(dir) else {
+            return;
+        };
+        let root_event = self.mnt_list[root_idx].event_group;
+        let select_event_copies = flags & MS_SHARED != 0;
+        let selected: Vec<usize> = self
+            .mnt_list
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, mount)| {
+                (mount.dir == dir
+                    || (recursive && Self::path_is_at_or_below(&mount.dir, dir))
+                    || (select_event_copies && mount.event_group == root_event))
+                    .then_some(idx)
+            })
+            .collect();
+
+        if flags & MS_SHARED != 0 {
+            let group = self.next_group();
+            for idx in selected {
+                let mount = &mut self.mnt_list[idx];
+                mount.shared_group = Some(group);
+                mount.unbindable = false;
+            }
+        } else if flags & MS_SLAVE != 0 {
+            for idx in selected {
+                let mount = &mut self.mnt_list[idx];
+                mount.master_group = mount.shared_group.or(mount.master_group);
+                mount.shared_group = None;
+                mount.unbindable = false;
+            }
+        } else {
+            let unbindable = flags & MS_UNBINDABLE != 0;
+            for idx in selected {
+                let mount = &mut self.mnt_list[idx];
+                mount.shared_group = None;
+                mount.master_group = None;
                 mount.unbindable = unbindable;
             }
         }
     }
 
+    /// Expand a new child mount into every reachable peer and slave mount.
+    ///
+    /// The returned pairs retain the mount that receives each copy, so the
+    /// child can inherit that receiver's propagation state. This matters for
+    /// a shared slave: later child mounts must flow to its own peers/slaves,
+    /// but never back to its master.
+    fn propagation_targets(&self, dir: &str, parent_idx: usize) -> Vec<(String, usize)> {
+        let parent = &self.mnt_list[parent_idx];
+        let relative = dir
+            .strip_prefix(parent.dir.as_str())
+            .unwrap_or("")
+            .trim_start_matches('/');
+        let mut targets = vec![(String::from(dir), parent_idx)];
+        let mut pending = vec![parent_idx];
+        let mut visited = Vec::new();
+
+        while let Some(idx) = pending.pop() {
+            if visited.iter().any(|seen| *seen == idx) {
+                continue;
+            }
+            visited.push(idx);
+            let mount = &self.mnt_list[idx];
+            let mut receivers = Vec::new();
+            if let Some(group) = mount.shared_group {
+                for (candidate_idx, candidate) in self.mnt_list.iter().enumerate() {
+                    if candidate.shared_group == Some(group)
+                        && self.top_mount_index_at_path(&candidate.dir) == Some(candidate_idx)
+                    {
+                        receivers.push(candidate_idx);
+                    }
+                }
+                for (candidate_idx, candidate) in self.mnt_list.iter().enumerate() {
+                    if candidate.master_group == Some(group)
+                        && self.top_mount_index_at_path(&candidate.dir) == Some(candidate_idx)
+                    {
+                        receivers.push(candidate_idx);
+                    }
+                }
+            }
+
+            for receiver_idx in receivers {
+                let target = Self::append_relative(&self.mnt_list[receiver_idx].dir, relative);
+                if !targets.iter().any(|(known, _)| known == &target) {
+                    targets.push((target, receiver_idx));
+                }
+                pending.push(receiver_idx);
+            }
+        }
+        targets
+    }
+
     /// 记录一次挂载，并返回路径化 VFS 需要执行的 bind tree 镜像动作。
     ///
     /// 对 propagation-only 操作更新挂载状态，对 remount 更新顶层属性；普通挂载
-    /// 创建一层新条目。目标父挂载属于 shared group 时，同一相对路径会在每个 peer
-    /// 上创建副本。返回的 `(source, target)` 仅适用于 `MS_BIND`，由 syscall 层在
-    /// 表锁外完成目录镜像。
+    /// 创建一层新条目。目标父挂载的 shared peer 与 slave 后代都会收到同一相对路径
+    /// 的副本。返回的 `(source, target)` 仅适用于 `MS_BIND`，由 syscall 层在表锁外
+    /// 完成目录镜像。
     ///
     /// # Errors
     ///
@@ -150,51 +237,36 @@ impl MountTable {
             return Err(SysErrNo::EINVAL);
         }
 
-        let source_group = self
-            .top_mount_index_for_path(&special)
-            .and_then(|idx| self.mnt_list[idx].shared_group);
-        let exact_target_group = self
-            .top_mount_index_at_path(&dir)
-            .and_then(|idx| self.mnt_list[idx].shared_group);
+        let source = (flags & MS_BIND != 0)
+            .then(|| self.top_mount_index_at_path(&special))
+            .flatten()
+            .map(|idx| self.mnt_list[idx].clone());
         let parent_idx = self.top_mount_index_for_path(&dir);
-        let parent = parent_idx.map(|idx| self.mnt_list[idx].clone());
-        let inherited_group = source_group
-            .or(exact_target_group)
-            .or_else(|| parent.as_ref().and_then(|mount| mount.shared_group));
-
-        let mut targets = Vec::new();
-        targets.push(dir.clone());
-        if let Some(parent) = parent {
-            if let Some(group) = parent.shared_group {
-                let relative = dir
-                    .strip_prefix(parent.dir.as_str())
-                    .unwrap_or("")
-                    .trim_start_matches('/');
-                for (idx, peer) in self.mnt_list.iter().enumerate() {
-                    if peer.shared_group != Some(group)
-                        || self.top_mount_index_at_path(&peer.dir) != Some(idx)
-                    {
-                        continue;
-                    }
-                    let peer_target = Self::append_relative(&peer.dir, relative);
-                    if !targets.iter().any(|target| target == &peer_target) {
-                        targets.push(peer_target);
-                    }
-                }
-            }
-        }
+        let targets = parent_idx
+            .map(|idx| self.propagation_targets(&dir, idx))
+            .unwrap_or_else(|| vec![(dir.clone(), usize::MAX)]);
 
         if self.mnt_list.len() + targets.len() > MNT_MAXLEN {
             return Err(SysErrNo::ENOSPC);
         }
         let event_group = self.next_group();
-        for target in &targets {
+        for (target, receiver_idx) in &targets {
+            let receiver = (*receiver_idx != usize::MAX).then(|| &self.mnt_list[*receiver_idx]);
+            let shared_group = source
+                .as_ref()
+                .and_then(|mount| mount.shared_group)
+                .or_else(|| receiver.and_then(|mount| mount.shared_group));
+            let master_group = source
+                .as_ref()
+                .and_then(|mount| mount.master_group)
+                .or_else(|| receiver.and_then(|mount| mount.master_group));
             self.mnt_list.push(MountEntry {
                 special: special.clone(),
                 dir: target.clone(),
                 fstype: fstype.clone(),
                 flags,
-                shared_group: inherited_group,
+                shared_group,
+                master_group,
                 unbindable: false,
                 event_group,
             });
@@ -205,8 +277,8 @@ impl MountTable {
         }
         Ok(targets
             .into_iter()
-            .filter(|target| target != &special)
-            .map(|target| (special.clone(), target))
+            .filter(|(target, _)| target != &special)
+            .map(|(target, _)| (special.clone(), target))
             .collect())
     }
 
