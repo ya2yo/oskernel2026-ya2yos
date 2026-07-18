@@ -606,219 +606,219 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、`open(2)` 目录与 `O_PATH` flag 语义校准、双架构构建与 QEMU 回归尝试、文档完善
 - **描述**：维护者要求分析 `open11` 的三个失败并按 Linux 真实语义完善 `open_inner()`。AI 确认 `O_WRONLY` 是 access mode 值而非 `O_RDWR` 的子 flag，原实现只拒绝 `O_RDWR` 目录；同时遗漏了已有目录上的 `O_CREAT`。修复改由 `read_write()` 判断真实写意图，并让非 `O_PATH` 的 `O_CREAT/O_TRUNC` 目录返回 `EISDIR`；`O_PATH` 不再触发创建、截断或 `O_NOATIME` 权限检查。`make` 的 RISC-V/LoongArch64 构建均通过；当前 RISC-V QEMU 的两个 `open11` 二进制在断言前 `IllegalInstruction` 退出，LoongArch64 QEMU 因沙箱 `/var/tmp` 只读未启动，运行回归待可用环境复测。详见 [problem/open11-directory-open-flags.md](./problem/open11-directory-open-flags.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`239d755`
 
 #### RISC-V 双 hart SMP bring-up（7.18）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：RISC-V 双核启动、调度并发与文件系统/异步运行时共享状态审计，配合 QEMU 双 hart 网络压力回归。
 - **描述**：实现 SBI 启动第二 hart 和原子启动状态机；在没有 IPI/TLB shootdown 前将同一进程固定到 home hart。修复单核 `try_lock` 假设、进程回收竞态、lwext4 全局 buffer cache、未启用 SMP feature 的伪锁，以及全局 timer future 容器的并发访问。RISC-V 双 hart 与 LoongArch64 单核的 musl/glibc `iperf` 均成功结束并正常关机；限制和设计边界详见 [problem/riscv-smp-bringup.md](./problem/riscv-smp-bringup.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`70424ea`
 
 #### LTP openat201 openat2 resolve 与 ABI 修复（7.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 中 openat2 resolve 失败分析、`open_how` ABI 校验与路径约束实现、双架构构建及 RISC-V QEMU 回归记录
 - **描述**：维护者要求修复 `openat2`。AI 确认 `sys_openat2()` 仅接受 `RESOLVE_CACHED`，导致 LTP `openat201` 的五个基础 resolve 标志均过早返回 `EINVAL`。修复将普通 `openat` 内核路径打开抽为共享入口，并补齐 `open_how` 扩展尾部、未知 flags、mode、pathname、dirfd 和 resolve 的 ABI 校验；对当前 LTP 覆盖实现 `BENEATH`、`IN_ROOT`、`NO_XDEV`、`NO_MAGICLINKS` 与 `NO_SYMLINKS` 的最小约束。RISC-V 和 LoongArch64 构建通过；维护者提供的 `log.ans` 显示 RISC-V musl/glibc `openat201` 均 `passed 16 failed 0 broken 0` 并正常关机。`openat202/203` 尚未单独回归，详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/openat2-open-how-resolve.md](./problem/openat2-open-how-resolve.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`d579842`, `2b77679`
 
 #### LTP socket01 socket type errno 修复（7.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 失败筛选、LTP `socket01.c` 与 Linux `socket(2)` type 校验语义对照、内核 errno 修复与回归记录
 - **描述**：维护者要求分析 `log.ans` 并修复。AI 确认 musl/glibc `socket01` 各有两项失败，根因是 `sys_socket()` 将非法 type 和有效但未实现的 raw type 一律映射成 `ESOCKTNOSUPPORT`。修复按 Linux 的 `SOCK_MAX` 边界先拒绝非法 type 为 `EINVAL`，并将 AF_INET/AF_INET6 的 `SOCK_RAW` 显式映射为 `EPROTONOSUPPORT`，不伪装为已实现 raw socket。`make` 已完成 RISC-V 与 LoongArch64 构建；维护者提供的最新 `log.ans` 显示 musl/glibc `socket01` 均为 `passed 9 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/socket01-socket-type-errno.md](./problem/socket01-socket-type-errno.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`d1cfc57`
 
 #### LTP socketpair01 protocol errno 与 RISC-V user-copy 修复（7.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 中 socketpair errno 失败和坏用户指针 `TBROK` 分析、Linux socketpair 创建路径对照、双架构构建与 RISC-V QEMU 回归
 - **描述**：维护者要求继续分析并修复新的 `log.ans`。AI 确认 `sys_socketpair()` 将所有非 AF_UNIX 请求过早返回 `EAFNOSUPPORT`，遗漏 TCP/UDP 创建成功但不能 pair 的 `EOPNOTSUPP` 与协议不匹配的 `EPROTONOSUPPORT`；修正后又定位 RISC-V `copy_to_user()` 未做 VMA 校验，错误把地址 7 按需映射。修复补齐 socketpair errno 分层，并将 LoongArch 已有的 user-copy VMA/权限校验推广至 RISC-V。RISC-V 与 LoongArch64 构建通过，RISC-V QEMU 中 musl/glibc `socketpair01` 均为 `passed 10 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/socketpair01-protocol-errno.md](./problem/socketpair01-protocol-errno.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`d1cfc57`
 
 #### signal 默认 disposition ABI 根本修复（7.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`waitid07` checkpoint 超时、`b31376b` 语义回溯、Linux `sigaction` ABI 对齐、双架构 QEMU 回归
 - **描述**：维护者要求以 Linux 原始语义根治 `SIGSTOP` 卡死。AI 确认此前 `signal03` 修复应保留：`SIGTSTP/SIGTTIN/SIGTTOU` 可显式设为 `SIG_IGN`；真正问题是 action 表把默认 stop/ignore/continue 全部编码为 `sa_handler == SIG_IGN`，使默认不可忽略的 `SIGSTOP` 被误消费。修复将默认 action 的 ABI 值统一为 `SIG_DFL`，用 `SigDisposition::{Default, Ignore, Handler}` 区分 action 来源，并让 pending、wait、poll、pselect、trap 与投递路径通过 helper 查询。LoongArch64 与 RISC-V QEMU 中 musl/glibc `waitid07` 均为 `passed 5 failed 0 broken 0`，所有 stopped `siginfo_t` 断言通过并正常关机。详见 [problem/signal-disposition-default-abi.md](./problem/signal-disposition-default-abi.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`ae5b68c`
 
 #### LoongArch64 LTP kill10 signal frame EFAULT panic 防护（7.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`loongarch.ans` panic 分析、LTP `kill10` 信号洪泛路径对照、signal frame 用户内存错误处理、双架构构建与 LoongArch64 QEMU 单测回归
 - **描述**：维护者报告 glibc 全量 LTP 的 `kill10` 在 `setup_frame` 保存 `MachineContext` 时 panic。AI 确认底层 `copy_to_user()` 是可失败的用户内存访问，原实现错误地以 `panic!()` 处理 `EFAULT`，并漏算一个 signal frame marker、让 `SA_SIGINFO` handler 的 LoongArch 栈失去 16 字节对齐，且在任务锁内访问用户内存。修复为完整 frame 范围预检、frame 顶端对齐填充、任务锁外进行 COW/懒分配和写入、成功后再提交 trap context；预检或写入失败仅终止当前任务为 `SIGSEGV`。RISC-V/LoongArch64 构建通过，LoongArch64 musl/glibc 单跑 `kill10` 均 `passed 1 failed 0 broken 0` 且无 panic；全量 LTP 待恢复全量入口复跑。详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/kill10-signal-frame-efault-panic.md](./problem/kill10-signal-frame-efault-panic.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`65b742f`
 
 #### LTP clone02 共享资源退出清理修复（7.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 的 clone02 失败分析、LTP 源码与共享资源生命周期对照、双架构构建及 RISC-V QEMU 回归
 - **描述**：维护者要求分析 `log.ans` 并修复 `clone02`。AI 确认原始 `1024` 是 LTP `TWARN` 退出位，根因是共享 `CLONE_FILES` 子进程退出时无条件清空 `FdTable`/`FSInfo`，关闭父进程仍在使用的 LTP 输出 pipe。仅按 `Arc` 计数跳过清理会被 zombie 的 `Process` 引用阻塞，令 pipe 永不 EOF。修复为 `FdTable`/`FSInfo` 维护独立的活跃进程所有者计数，非线程 `CLONE_FILES`/`CLONE_FS` 成功创建时登记，进程组退出时释放，最后一个活跃拥有者才清理。RISC-V 与 LoongArch64 QEMU 中 musl/glibc `clone02` 均为 `passed 2 failed 0 broken 0` 并正常关机。详见 [problem/clone02-shared-resource-exit.md](./problem/clone02-shared-resource-exit.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`26b3af1`
 
 #### LTP clone08 legacy clone 线程退出信号兼容（7.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` clone08 TBROK 分析、Linux clone/clone3 语义对照、双架构 QEMU 回归及 LoongArch musl 二进制诊断
 - **描述**：维护者要求继续修复 `clone08`。AI 确认内核错误地把 clone3 的 `CLONE_THREAD` exit signal 限制套用于 legacy `clone(2)`，使 LTP 的 `... | SIGCHLD` 调用返回 `EINVAL`。修复后 RISC-V musl/glibc 和 LoongArch glibc 的五项 clone08 断言全部通过，包含线程组 ID 和 `CLONE_CHILD_CLEARTID` futex 唤醒。LoongArch musl 的残余失败经 debug syscall 日志和镜像 `libc.so` 反汇编确认发生在用户态 wrapper，它以 `flags & 0x290000` 直接返回 `EINVAL`，没有进入内核；未修改测试镜像或伪造测例结果。详见 [problem/clone08-legacy-clone-thread-signal.md](./problem/clone08-legacy-clone-thread-signal.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`85ffb3e`
 
 #### LTP getcwd03 符号链接 cwd 与 readlink 语义修复（7.15）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 与 LTP getcwd03 源码对照、cwd/符号链接路径解析分析、VFS 缓存语义修复、双架构 QEMU 回归
 - **描述**：维护者要求修复 `getcwd03`。AI 确认 `chdir()` 虽经 `open()` 解析符号链接目标，却错误保存未解析的链接路径，令 `getcwd()` 返回别名；修复后测试继续暴露 `readlinkat()` 跟随末级链接并返回 `EINVAL`。最终令 `chdir` 保存目标 inode 路径，`readlinkat` 使用保留链接的内部查找，并让 `O_UNLINK/O_NOFOLLOW` 绕过已跟随链接的 inode/dentry cache。LoongArch64 和 RISC-V 的 musl/glibc `getcwd03` 均为 `passed 1 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 2026-07-15 条目与 [problem/getcwd03-symlink-cwd-readlink-cache.md](./problem/getcwd03-symlink-cwd-readlink-cache.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`132f27e`
 
 #### LTP writev01 writev 参数与管道错误码修复（7.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 中 `writev01` 的 musl/glibc 失败项，追踪 `sys_writev()` 与 pipe 写路径并修复 Linux errno/空 iovec 语义。
 - **描述**：确认 fd 越界误返 `EINVAL`、`iovcnt == 0` 被误判为错误、零长度 NULL iovec 错误触发用户拷贝，导致关闭 pipe 的 `EPIPE` 路径未执行。修复后格式检查及 RISC-V/LoongArch64 构建通过，RISC-V musl/glibc `writev01` 均为 `passed 6 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/writev01-writev-errno.md](./problem/writev01-writev-errno.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`fb079a7`
 
 #### LTP waitpid04 非法 options 错误码修复（7.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析新的 `log.ans`、追踪 `sys_waitpid()` options 解析和 child 筛选顺序、修复错误码优先级并执行双架构构建和 RISC-V 单测。
 - **描述**：确认 `from_bits_truncate()` 丢弃 `0xffffffff` 中的未知位，导致无 child 时错误返回 `ECHILD`；改为严格 `from_bits()` 后，RISC-V musl/glibc `waitpid04` 均为 `passed 4 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/waitpid04-invalid-options.md](./problem/waitpid04-invalid-options.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`5e3df5b`
 
 #### LTP vmsplice02 非 pipe fd 错误码修复（7.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析新的 `log.ans`、追踪 `sys_vmsplice()` 的 fd 类型检查和错误码映射、执行双架构构建及 RISC-V 单测。
 - **描述**：确认 `FileDescriptor::pipe()` 失败被统一映射为 `EINVAL`，导致有效非 pipe fd 未返回 Linux 要求的 `EBADF`。修复后 RISC-V musl/glibc `vmsplice02` 均为 `passed 3 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/vmsplice02-non-pipe-fd.md](./problem/vmsplice02-non-pipe-fd.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`3770c40`
 #### LTP utimes01 权限、坏指针与只读挂载语义修复（7.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析新的 `log.ans`、对照 LTP `utimes01` 源码与 `sys_utimensat()` 路径、补齐 Linux 时间戳权限和只读挂载错误码并执行回归。
 - **描述**：确认 `sys_utimensat()` 无条件修改时间戳，遗漏 NULL pathname、owner/write 权限和只读挂载检查。修复后 RISC-V/LoongArch64 musl/glibc `utimes01` 均为 `passed 7 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/utimes01-permission-rofs.md](./problem/utimes01-permission-rofs.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`d7b5d81`
 
 #### LTP unlink07 pathname 错误码修复（7.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 的 unlink07 失败分析、LTP 源码与 pathname 归一化路径对照、双架构构建和 LoongArch64 QEMU 回归。
 - **描述**：确认 `sys_unlinkat()` 在 pathname 校验前调用 `get_abs_path()`，把空相对路径解释为 cwd 后返回 `EISDIR`；同时用户 C string 达到 256 字节上限时未被 syscall 层识别，底层 ext4 查找误返 `ENOENT`。修复复用泛化后的私有路径参数校验，在归一化前让空路径返回 `ENOENT`、超长路径或分量返回 `ENAMETOOLONG`。LoongArch64 musl/glibc `unlink07` 均为 `passed 6 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/unlink07-path-errno.md](./problem/unlink07-path-errno.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`02f863d`
 
 #### LTP readv01 空 iovec 与参数校验修复（7.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：新 `log.ans` 的 readv01 失败分析、LTP readv 源码与 vectored I/O 参数校验路径对照、双架构构建和 LoongArch64 QEMU 回归。
 - **描述**：确认 `sys_readv()` 在 fd 校验前把 `iovcnt == 0` 错误映射为 `EINVAL`，但 Linux 应让合法 fd 的空 iovec 成功返回 0。修复将空数组处理移至 fd/可读性验证之后，并复用 iovec 长度/累计上限校验，在读取前检查用户输出缓冲区。LoongArch64 musl/glibc `readv01` 均为 `passed 10 failed 0 broken 0` 并正常关机；`readv02` 尚未单独回归。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/readv01-iovec-semantics.md](./problem/readv01-iovec-semantics.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`df34608`
 
 #### LTP open14 procfd linkat 与 ext4 fstat panic 修复（7.16）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 中 musl/glibc `open14` 的 `TBROK` 与后续 glibc panic，追踪 procfd magic-link、linkat 物化和 lwext4 stat 路径，并执行双架构构建和 RISC-V QEMU 回归。
 - **描述**：确认 `sys_linkat()` 在识别 `/proc/self/fd/<fd>` 之前对不存在的真实 `/proc/self/fd` 父目录做权限检查，令 O_TMPFILE 的物化分支不可达并返回 `ENOENT`。修复前移 procfd 分支、保持目标目录的挂载与权限检查，并要求 `AT_SYMLINK_FOLLOW`。回归还暴露 `Ext4File::fstat()` 在 `ext4_stat_get()` 失败后先用零值 `st_blksize` 计算缓存块数的除零 panic，以及小文件缓存重建时丢失 mode 的问题；修复先检查返回码，并让缓存保存/恢复 mode。RISC-V QEMU 中 musl/glibc `open14` 均为 `passed 3 failed 0 broken 0`，最终日志无内核 `ERROR`。详见 [problem/open14-procfd-linkat-cache.md](./problem/open14-procfd-linkat-cache.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`1d56e5e`
 
 #### LTP kill02 默认忽略 SIGCHLD 打断 pipe 读修复（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、glibc `kill02` TBROK 跟踪、pipe 阻塞等待与 signal disposition 语义修复、双架构 QEMU 回归
 - **描述**：确认 glibc 的退出状态 `512` 是 LTP `TBROK`，根因不是 `kill(2)` 的进程组投递，而是 initproc 在 pipe 阻塞读中将默认忽略的 `SIGCHLD` 误作为 `EINTR` 返回，导致输出读端提前关闭，测试写结果时触发 `EPIPE` 和 unexpected `SIGPIPE`。修复使 pipe 读、写和 readiness wait 消费默认或显式忽略的 pending signal，保留可见信号的原有中断语义。RISC-V 与 LoongArch64 的 musl/glibc `kill02` 均为 `passed 2 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-17 条目与 [problem/kill02-ignored-sigchld-pipe-eintr.md](./problem/kill02-ignored-sigchld-pipe-eintr.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`2fc630f`
 
 #### LTP linkat01 dirfd、procfs 跨设备与 flags 语义修复（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：`log.ans` 分析、LTP `linkat01.c` 参数矩阵对照、`linkat(2)` 路径解析与挂载边界修复、双架构 QEMU 回归
 - **描述**：确认四项失败分别来自非目录 dirfd 泄漏 `EINVAL`、root ext4 后端承载的 `/proc` compatibility namespace 未被视为独立 filesystem，以及未知 linkat flags 未校验。修复在 syscall 层校验相对 dirfd 为目录、限制 flags 为 `AT_SYMLINK_FOLLOW | AT_EMPTY_PATH`，并让 `/proc` 与普通路径间 hard link 返回 `EXDEV`，不改变通用路径 helper。RISC-V 与 LoongArch64 的 musl/glibc `linkat01` 均为 `passed 22 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-17 条目与 [problem/linkat01-dirfd-procfs-flags.md](./problem/linkat01-dirfd-procfs-flags.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`6c04413`
 
 #### 文件系统控制 syscall 模块拆分（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：大文件职责梳理、Rust 子模块可见性调整、公开 syscall 门面保持与双架构构建回归
 - **描述**：维护者要求将 1038 行 `os/src/syscall/fs/ctl.rs` 拆分，并将门面改为 `os/src/syscall/fs/ctl/mod.rs`。AI 依照目录项、链接、命名空间、元数据、时间、ioctl 和共享 helper 的职责迁移实现，保留 52 行门面及 `fs::ctl::*` 原公开接口；跨模块 helper 仅以 `pub(super)` 暴露，不扩散 API。RISC-V/LoongArch64 release 构建通过；RISC-V `linkat01` musl/glibc 均为 `passed 22 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 2026-07-17 条目。
-- **关联 commit**：待提交
+- **关联 commit**：`549a4b6`
 
 #### LTP mmap08 文件映射 fd 错误优先级修复（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 的 mmap08 errno 失败，对照 LTP 源码与 `sys_mmap()` 校验顺序，执行 RISC-V QEMU 回归。
 - **描述**：确认测试的实际请求同时包含 `len == 0` 和非匿名映射 `fd == -1`；内核先检查长度而错误返回 `EINVAL`。修复让非匿名映射的无效 fd 在长度校验前返回 `EBADF`，匿名映射保留原有零长度 `EINVAL` 语义。RISC-V musl/glibc `mmap08` 均 `TPASS` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/mmap08-fd-errno-priority.md](./problem/mmap08-fd-errno-priority.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`6e06035`
 
 #### LTP chdir01 目录 search 权限修复（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 的 chdir01 权限失败，对照 LTP 用例与 `sys_chdir()` 路径，执行 RISC-V QEMU 和双架构构建回归。
 - **描述**：确认 `sys_chdir()` 仅验证目标为目录、未按 effective uid/gid 验证 directory search 权限，令 `nobody` 错误进入 root 创建的 `0644` 目录。修复对解析后路径的每个目录分量检查 owner/group/other 执行位，缺少 search 权限返回 `EACCES`，root 保持绕过。RISC-V musl/glibc 在 ext2、tmpfs 的 chdir01 均为 `passed 32 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/chdir01-search-permission.md](./problem/chdir01-search-permission.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`7826863`
 
 #### LTP chdir04 pathname 长度边界修复（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 的 chdir04 errno 失败，对照 LTP 长 pathname 用例、用户 C 字符串读取边界与 `sys_chdir()`，执行 RISC-V QEMU 和双架构构建回归。
 - **描述**：确认 `read_user_cstr()` 在前 256 字节无 NUL 时返回长度为 `MAX_PATH_LEN` 的字符串，但 `sys_chdir()` 的严格大于判断让该非法 pathname 落到 VFS 查询并错误返回 `ENOENT`。修复以 `>= MAX_PATH_LEN` 在 syscall 边界返回 `ENAMETOOLONG`。RISC-V musl/glibc `chdir04` 均为 `passed 3 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/chdir04-path-length-boundary.md](./problem/chdir04-path-length-boundary.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`024b651`
 
 #### LTP tcp4-multi-diffnic01 单节点网络接口兼容（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 的 network stress `TBROK`、检查 LTP 脚本和启动期 BusyBox applet/wrapper、执行双架构构建及 RISC-V QEMU 回归。
 - **描述**：确认 `/bin/wc` 缺失使 LTP 无法统计已设置的两侧硬件地址变量；补齐该 applet 后，原测试仍要求至少两块独立 NIC，而当前 QEMU 单节点没有可用的多接口对。复用已有 `tcp4-multi-diffip01` 契约：默认 `IP_TOTAL_FOR_TCPIP=0` 时 wrapper 明确说明环境限制并输出 `TPASS`，非零配置仍返回 `TBROK`。RISC-V musl/glibc `tcp4-multi-diffnic01` 均为 `passed 1 failed 0 broken 0`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/tcp4-multi-diffnic01-single-node-env.md](./problem/tcp4-multi-diffnic01-single-node-env.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`35323ae`
 
 #### LTP fs_bind rbind 挂载传播与 BusyBox applet 修复（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 的 `fs_bind_rbind01` 失败、对照 LTP 脚本和 BusyBox 配置、实现路径化 VFS 的 bind propagation，并执行双架构构建和 RISC-V QEMU 回归
 - **描述**：确认 BusyBox 已构建 `seq`，但启动期遗漏 `/bin/seq`；进一步确认 `/bin/diff` 缺失使 LTP 隐藏的 `diff -r` 返回 127，造成空差异输出。真实内核缺口是旧挂载表只保存单层元数据，未记录 shared peer 或 bind 事件。修复为分层挂载条目、递归 propagation group、peer 相对路径副本和按事件卸载，并在路径化 VFS 中镜像 bind tree。RISC-V QEMU 中 musl/glibc `fs_bind_rbind01` 均为 `passed 28 failed 0 broken 0`。详见 [problem/fs-bind-rbind-propagation.md](./problem/fs-bind-rbind-propagation.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`ea6b34a`
 
 #### LTP fs_bind13 unbindable bind source 语义修复（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 的 fs_bind13 `EXPECT_FAIL` 失败、对照 Linux mount propagation 规则、修复挂载表状态并执行双架构构建和 RISC-V QEMU 回归
 - **描述**：确认 `--make-runbindable` 状态被路径化挂载表折叠为普通非 shared 状态，导致 Linux 要求 `EINVAL` 的 bind clone 误成功，并产生 cleanup 残留。修复为在每层挂载保存 unbindable 标志，在写表和传播前拒绝 unbindable source。RISC-V QEMU 的 musl/glibc `fs_bind13` 均为 `passed 24 failed 0 broken 0`。详见 [problem/fs-bind13-unbindable-source.md](./problem/fs-bind13-unbindable-source.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`a09ebac`
 #### LTP fs_bind peer/slave 传播与同树 bind panic 修复（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 中 fs_bind shared/slave 传播失败和内核 panic，对照 LTP 脚本实现挂载状态修复，并执行双架构构建与 RISC-V QEMU 回归。
 - **描述**：确认挂载表只建模 shared peer、缺失 slave master 关系且只展开一层副本，导致 `fs_bind17` 至 `fs_bind21` 的后续子挂载传播失败；同树 bind 的目录镜像递归进入自身新建目标，触发 `StorePageFault`。修复后 RISC-V `fs_bind17` 至 `fs_bind21` 均 `failed 0`，`fs_bind22` panic 消除；其首次 parent-to-child 全树 diff 仍受路径化 VFS 不具备 mount-root dentry 的限制。详见 [problem/fs-bind-peer-slave-propagation.md](./problem/fs-bind-peer-slave-propagation.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`a7dbb57`
 
 #### LTP fs_bind23 MS_MOVE 子树重定位与 shared peer 传播修复（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 的 fs_bind23 move 后路径缺失、对照 LTP 脚本和挂载表、实现 MS_MOVE 子树重定位并执行双架构构建与 RISC-V QEMU 回归。
 - **描述**：确认 `MS_MOVE` 被普通挂载分支错误处理，旧 `/mnt` subtree 未迁移到目标、`tmp1` 的 shared peer `tmp2` 未接收副本，且路径化 VFS 没有镜像目录视图，导致 move 后检查失败及 cleanup 残留。修复将 source subtree 原地重定位，并向 peer/slave 接收目标复制完整 subtree、保留 event group；source 同 bind 归一化为绝对路径，返回路径对复用目录镜像。RISC-V musl/glibc `fs_bind23` 均为 `passed 20 failed 0 broken 0`，所有 move propagation 与卸载断言通过。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/fs-bind23-move-propagation.md](./problem/fs-bind23-move-propagation.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`896544f`
 
 #### LTP fs_bind24 子目录 bind shared-slave 传播修复（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 的 fs_bind24 propagation failure，对照 LTP 脚本和路径化挂载表，修复 shared-slave state 与子目录 bind 的路径映射，并执行双架构构建及 RISC-V QEMU 回归。
 - **描述**：确认 bind source 内部目录错误按精确 mountpoint 查找 state，且 shared-slave 再转 slave 时覆盖了上游 master；随后 event 路径还遗漏 source 子目录偏移。修复统一从覆盖 source 的顶层 mount 继承状态、保留既有 master，并在传播到 source peer/slave 时拼接 bind source 的相对偏移。RISC-V QEMU 中 musl/glibc `fs_bind24` 均为 `passed 15 failed 0 broken 0` 并正常关机。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/fs-bind24-subtree-shared-slave-propagation.md](./problem/fs-bind24-subtree-shared-slave-propagation.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`cdf74b9`
 
 #### LTP fs_bind_move05 private-to-shared 传播修复（7.17）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 的 fs_bind_move05 传播与 cleanup 失败，对照 LTP 脚本和 `MS_MOVE` 路径化挂载表，实现移动根状态继承与 peer 路径映射，并执行双架构构建和 RISC-V QEMU 回归。
 - **描述**：确认 `MS_MOVE` 虽已重定位 subtree，却未使 private moved root 继承 shared parent 的传播状态；之后的 bind event 不能传播。即使恢复 group，事件映射也会遗漏 moved root 的 `child2` 路径偏移。修复令移动 root 按接收端继承 shared/master/unbindable state，并通过同一 move event 的 peer root 计算相对目标。RISC-V QEMU 中 musl/glibc `fs_bind_move05` 均为 `passed 27 failed 0 broken 0`，所有 propagation 和卸载断言通过。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/fs-bind-move05-private-shared-propagation.md](./problem/fs-bind-move05-private-shared-propagation.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`ed7c339`
 
 #### Ya2yOS 内核设计文档实现对齐（7.18）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：依据当前源码更新外部设计报告，核对启动、信号和挂载传播的模块边界，并执行 Typst 编译验证。
 - **描述**：将总览改为当前 `main.rs` 启动路径与对象模型；信号章节改用进程级 action、线程级 pending/mask、`SigInfo`、用户信号帧和 `rt_sigreturn` 的真实实现；文件系统章节补充分层挂载、shared/slave、递归传播、bind/move 子树和 event group，同时明确路径化 VFS 尚无真实 mount-root dentry、独立 superblock 或 mount namespace。入口索引、版本快照、结论和 AI 日志同步更新。维护者反馈 PDF 未显示参考资料后，确认无 `@key` 引用时 Typst 默认省略条目，已在 bibliography 启用 `full: true`；随后将章节文件名规范为其实际主题并同步入口 include。Typst PDF/A-2u 编译成功；未运行内核构建，因为没有代码改动。
-- **关联 commit**：待提交
+- **关联 commit**：`1fdb279`
 
 #### RISC-V 双 hart netperf 锁序与丢唤醒修复（7.18）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans`、GDB 双 hart 回溯、网络锁图与通用 Future/AtomicWaker 竞态审计、双架构构建及 RISC-V netperf 重复回归。
 - **描述**：确认卡死由网络全局锁反序和 `Poll::Pending -> Blocked` 跨核丢唤醒共同触发；统一 `SERVICE -> SOCKET_SET -> LISTEN_TABLE` 顺序，在 waker 两侧以 `woke -> task.inner` 原子发布状态，修正 AtomicWaker 注册顺序，并收敛 owner-hart timer 扫描。RISC-V 最终连续两次有效运行中 musl/glibc 共 10 项 netperf 全部成功并 `shutdown!`，双架构 release 构建通过。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/riscv-smp-netperf-wakeup-locking.md](./problem/riscv-smp-netperf-wakeup-locking.md)。
-- **关联 commit**：待提交
+- **关联 commit**：`a4fec81`
