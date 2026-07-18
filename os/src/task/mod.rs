@@ -234,7 +234,9 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     debug!("[exit_current_and_run_next] enter!");
     let curr_task = take_current_task().unwrap();
     let count = Arc::strong_count(&curr_task);
-    if count > 2 {
+    // The current scheduler reference, the global TID table, and this local
+    // reference normally account for three strong references under SMP.
+    if count > 3 {
         warn!(
             "[exit_current_and_run_next] tid {} exits with extra TCB refs, strong_count = {}",
             curr_task.tid(),

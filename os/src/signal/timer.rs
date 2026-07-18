@@ -5,7 +5,7 @@
 
 use alloc::collections::BTreeSet;
 
-use spin::Lazy;
+use spin::{Lazy, Mutex};
 
 use super::SigSet;
 use crate::{
@@ -13,8 +13,8 @@ use crate::{
     timer::TimeVal,
 };
 
-static PSELECT_ITIMER_WAITERS: Lazy<kspin::SpinNoIrq<BTreeSet<usize>>> =
-    Lazy::new(|| kspin::SpinNoIrq::new(BTreeSet::new()));
+static PSELECT_ITIMER_WAITERS: Lazy<Mutex<BTreeSet<usize>>> =
+    Lazy::new(|| Mutex::new(BTreeSet::new()));
 
 pub struct PselectItimerGuard {
     tid: usize,

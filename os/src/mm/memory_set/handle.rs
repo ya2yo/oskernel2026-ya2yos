@@ -37,16 +37,12 @@ impl MemorySet {
     /// Keep this guard short-lived. Do not hold it across filesystem, network,
     /// futex, signal-delivery, or scheduler paths.
     pub fn get_mut(&self) -> RwLockWriteGuard<'_, MemorySetInner> {
-        self.inner
-            .try_write()
-            .expect("You should not fail to get memory_set write lock in a 1 HART system!")
+        self.inner.write()
     }
 
     /// Borrow the inner address space read-only.
     pub fn get_ref(&self) -> RwLockReadGuard<'_, MemorySetInner> {
-        self.inner
-            .try_read()
-            .expect("You should not fail to get memory_set read lock in a 1 HART system!")
+        self.inner.read()
     }
 
     /// Execute a closure while holding the write lock.

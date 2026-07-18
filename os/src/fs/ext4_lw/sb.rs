@@ -15,7 +15,7 @@ use log::{debug, error, warn};
 use lwext4_rust::{Ext4BlockWrapper, InodeTypes, KernelDevOp};
 use spin::Lazy;
 
-use super::Ext4Inode;
+use super::{Ext4Inode, EXT4_OP_LOCK};
 
 /// EXT4 超级块结构体，维护文件系统的全局元数据。
 ///
@@ -45,6 +45,7 @@ impl SuperBlock for Ext4SuperBlock {
     ///
     /// Linux `statfs(2)` 可见字段主要来自 lwext4 的 mount-point 统计信息。
     fn fs_stat(&self) -> Statfs {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let stat = self.inner.get_unchecked_ref().get_lwext4_mp_stats();
         Statfs {
             f_type: 0xEF53,
@@ -61,11 +62,13 @@ impl SuperBlock for Ext4SuperBlock {
 
     /// 将 lwext4 内部缓存同步回磁盘。
     fn sync(&self) {
+        let _ext4 = EXT4_OP_LOCK.lock();
         self.inner.get_unchecked_mut().sync();
     }
 
     /// 调试用：列出文件系统根目录下的内容。
     fn ls(&self) {
+        let _ext4 = EXT4_OP_LOCK.lock();
         self.inner
             .get_unchecked_ref()
             .lwext4_dir_ls()

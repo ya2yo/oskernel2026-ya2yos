@@ -61,7 +61,7 @@ use arch::*;
 use cfg_if::cfg_if;
 use core::{
     arch::asm,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 use log::info;
 use smoltcp::phy::DeviceCapabilities;
@@ -108,8 +108,15 @@ pub fn trampoline(hartid: usize) {
 //     }
 // }
 
-static FIRST_HART: AtomicBool = AtomicBool::new(true);
-static INIT_FINISHED: AtomicBool = AtomicBool::new(false);
+const BOOT_UNINITIALIZED: usize = usize::MAX;
+const BOOT_INITIALIZING: usize = 0;
+const BOOT_ONLINE: usize = 1;
+
+/// Startup state deliberately has a non-zero initial value, keeping it in
+/// `.data` instead of the BSS that the bootstrap hart clears. A secondary hart
+/// may enter the kernel before that clear has finished, so it must not observe
+/// or modify a BSS-resident synchronisation flag.
+static BOOT_STATE: AtomicUsize = AtomicUsize::new(BOOT_UNINITIALIZED);
 static START_HART_ID: AtomicUsize = AtomicUsize::new(0);
 // /// boot start_hart之外的所有 hart
 // pub fn boot_all_harts(hartid: usize) {
@@ -125,8 +132,16 @@ static START_HART_ID: AtomicUsize = AtomicUsize::new(0);
 #[no_mangle]
 /// the rust entry-point of os
 pub fn rust_main(hartid: usize) -> ! {
-    if FIRST_HART.load(Ordering::SeqCst) {
-        FIRST_HART.store(false, Ordering::SeqCst);
+    let is_bootstrap = BOOT_STATE
+        .compare_exchange(
+            BOOT_UNINITIALIZED,
+            BOOT_INITIALIZING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok();
+
+    if is_bootstrap {
         clear_bss();
         println!("[kernel] Hello, world!");
         println!(
@@ -181,11 +196,18 @@ pub fn rust_main(hartid: usize) -> ! {
         println!("complete.");
 
         print!("START_HART_ID.store...");
-        START_HART_ID.store(hartid, Ordering::SeqCst);
+        START_HART_ID.store(hartid, Ordering::Release);
         println!("complete.");
 
-        print!("INIT_FINISHED.store...");
-        INIT_FINISHED.store(true, Ordering::SeqCst);
+        #[cfg(target_arch = "riscv64")]
+        {
+            print!("boot secondary harts...");
+            arch::cpu::boot_secondary_harts(hartid);
+            println!("complete.");
+        }
+
+        print!("BOOT_STATE.store(ONLINE)...");
+        BOOT_STATE.store(BOOT_ONLINE, Ordering::Release);
         println!("complete.");
 
         print!("trap::enable_timer_interrupt...");
@@ -197,7 +219,7 @@ pub fn rust_main(hartid: usize) -> ! {
         println!("complete.");
     } else {
         // barrier
-        while !INIT_FINISHED.load(Ordering::SeqCst) {
+        while BOOT_STATE.load(Ordering::Acquire) != BOOT_ONLINE {
             core::hint::spin_loop();
         }
 
@@ -210,7 +232,7 @@ pub fn rust_main(hartid: usize) -> ! {
         arch::trap_interface::enable_timer_interrupt();
         timer::set_next_trigger();
     }
-    if arch::cpu::hart_id() == START_HART_ID.load(Ordering::SeqCst) {
+    if arch::cpu::hart_id() == START_HART_ID.load(Ordering::Acquire) {
         fs::list_apps();
     }
     task::run_tasks();

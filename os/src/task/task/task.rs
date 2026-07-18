@@ -207,7 +207,7 @@ fn task_comm_from_argv0(argv0: &str) -> String {
 
 impl TaskControlBlock {
     pub fn inner_lock(&self) -> MutexGuard<'_, TaskControlBlockInner> {
-        self.inner.try_lock().expect("fail to get task inner")
+        self.inner.lock()
     }
     pub fn tid(&self) -> usize {
         self.tid.0

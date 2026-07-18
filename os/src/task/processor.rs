@@ -80,7 +80,7 @@ pub fn run_tasks() {
             // debug!("Task id: {} is running.", cur_task.tid());
             let mut cur_task_inner = cur_task.inner_lock();
 
-            if let Some(next_task) = ready_queue::fetch_task() {
+            if let Some(next_task) = ready_queue::fetch_task(hart_id()) {
                 let mut next_task_inner = next_task.inner_lock();
                 let next_task_cx_ptr = &next_task_inner.task_cx as *const TaskContext;
                 next_task_inner.task_status = TaskStatus::Running;
@@ -112,7 +112,7 @@ pub fn run_tasks() {
             }
         } else {
             // 第一次调度，抢占
-            if let Some(task) = ready_queue::fetch_task() {
+            if let Some(task) = ready_queue::fetch_task(hart_id()) {
                 // debug!("first fetch task {}", task.pid());
                 let mut task_inner = task.inner_lock();
                 let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;

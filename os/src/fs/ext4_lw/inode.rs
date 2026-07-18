@@ -11,6 +11,7 @@ use lwext4_rust::{
     Ext4File, InodeTypes,
 };
 
+use super::EXT4_OP_LOCK;
 use crate::{
     fs::{
         patch_dynamic_link_file_bytes, Inode, InodeType, Kstat, OpenFlags, String, FILE_PAGE_CACHE,
@@ -79,6 +80,7 @@ impl Ext4Inode {
     /// hard link / rename 之后，原始路径可能失效，但 fd 仍应能继续访问同一个文件。
     /// alias 列表供 `recover_live_path()` 在底层 path 操作失败时兜底。
     fn add_alias_path(&self, path: &str) {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         if inner.aliases.iter().all(|alias| alias != path) {
             inner.aliases.push(path.to_string());
@@ -120,6 +122,7 @@ impl Inode for Ext4Inode {
     ///
     /// 目录和其他非普通文件当前返回 0；普通文件需要按 lwext4 API 重新打开后读取 size。
     fn size(&self) -> usize {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         let types = as_inode_type(inner.f.file_type());
@@ -143,6 +146,7 @@ impl Inode for Ext4Inode {
     /// `file_open(O_CREAT|O_TRUNC)` 创建后立即关闭。目标已存在时返回 `EEXIST`，
     /// 用于承载 Linux `O_CREAT|O_EXCL` 语义。
     fn create(&self, path: &str, ty: InodeType) -> Result<Arc<dyn Inode>, SysErrNo> {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let types = as_ext4_de_type(ty);
         let file = &mut self.inner.get_unchecked_mut().f;
         let nf = Ext4Inode::new(path, types.clone());
@@ -168,6 +172,7 @@ impl Inode for Ext4Inode {
     ///
     /// 类型来自 `Ext4File` 构造时记录的 lwext4 类型，避免为了类型判断再次走路径查询。
     fn types(&self) -> InodeType {
+        let _ext4 = EXT4_OP_LOCK.lock();
         as_inode_type(self.inner.get_unchecked_mut().f.types())
     }
 
@@ -176,6 +181,7 @@ impl Inode for Ext4Inode {
     /// 动态链接文件可能需要按路径 patch 内容，因此读取完成后会调用
     /// `patch_dynamic_link_file_bytes()` 做兼容修补。
     fn read_at(&self, off: usize, buf: &mut [u8]) -> SyscallRet {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         let file = &mut inner.f;
@@ -189,6 +195,7 @@ impl Inode for Ext4Inode {
 
     /// 从指定偏移量写入数据。
     fn write_at(&self, off: usize, buf: &[u8]) -> SyscallRet {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         let file = &mut inner.f;
@@ -208,6 +215,7 @@ impl Inode for Ext4Inode {
     ///
     /// 成功后失效文件页缓存，避免 mmap/page cache 继续暴露旧大小或旧内容。
     fn truncate(&self, size: usize) -> SyscallRet {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         let file = &mut inner.f;
@@ -225,6 +233,7 @@ impl Inode for Ext4Inode {
     /// 成功后把新路径加入 alias，并将内部 `Ext4File` 切换到新路径，减少后续元数据操作
     /// 依赖 fallback 恢复路径的次数。
     fn rename(&self, path: &str, new_path: &str) -> SyscallRet {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let types = inner.f.types();
         let ret = inner
@@ -245,12 +254,16 @@ impl Inode for Ext4Inode {
     ///
     /// 成功后把新路径加入 alias，以便原路径 unlink 后已打开 fd 仍有可用路径。
     fn hard_link(&self, old_path: &str, new_path: &str) -> SyscallRet {
-        let file = &mut self.inner.get_unchecked_mut().f;
+        let _ext4 = EXT4_OP_LOCK.lock();
+        let inner = self.inner.get_unchecked_mut();
+        let file = &mut inner.f;
         let ret = file
             .file_hardlink(old_path, new_path)
             .map_or(Err(SysErrNo::ENOENT), |_| Ok(0));
         if ret.is_ok() {
-            self.add_alias_path(new_path);
+            if inner.aliases.iter().all(|alias| alias != new_path) {
+                inner.aliases.push(new_path.to_string());
+            }
         }
         ret
     }
@@ -262,6 +275,7 @@ impl Inode for Ext4Inode {
         mtime: Option<u64>,
         ctime: Option<u64>,
     ) -> SyscallRet {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         let file = &mut inner.f;
@@ -270,6 +284,7 @@ impl Inode for Ext4Inode {
 
     /// 将 lwext4 文件缓存刷新到磁盘。
     fn sync(&self) {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         inner.f.file_cache_flush();
@@ -281,6 +296,7 @@ impl Inode for Ext4Inode {
     fn read_all(&self) -> Result<Vec<u8>, SysErrNo> {
         // 先提取 path 和类型，避免后续访问 self.inner 时产生重叠借用
         let (file_type, path_str) = {
+            let _ext4 = EXT4_OP_LOCK.lock();
             let inner = self.inner.get_unchecked_mut();
             let path = Self::live_path(inner);
             let file_type = as_inode_type(inner.f.types());
@@ -288,6 +304,7 @@ impl Inode for Ext4Inode {
         };
 
         if file_type == InodeType::File {
+            let _ext4 = EXT4_OP_LOCK.lock();
             let file = &mut self.inner.get_unchecked_mut().f;
             file.file_open(&path_str, O_RDONLY)
                 .map_err(SysErrNo::from)?;
@@ -339,57 +356,55 @@ impl Inode for Ext4Inode {
         loop_times: usize,
     ) -> Result<Arc<dyn Inode>, SysErrNo> {
         // log::info!("[Inode.find] origin path={}", path);
-        let file = &mut self.inner.get_unchecked_mut().f;
-        if flags.contains(OpenFlags::O_NOFOLLOW) && file.is_symlink(path) {
+        let is_symlink = {
+            let _ext4 = EXT4_OP_LOCK.lock();
+            let file = &mut self.inner.get_unchecked_mut().f;
+            if flags.contains(OpenFlags::O_NOFOLLOW) && file.is_symlink(path) {
+                return Err(SysErrNo::ELOOP);
+            }
+            if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
+                return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)));
+            }
+            if file.check_inode_exist(path, InodeTypes::EXT4_DE_REG_FILE) {
+                if flags.contains(OpenFlags::O_DIRECTORY) {
+                    return Err(SysErrNo::ENOTDIR);
+                }
+                return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_REG_FILE)));
+            }
+            file.check_inode_exist(path, InodeTypes::EXT4_DE_SYMLINK)
+        };
+
+        if !is_symlink {
+            return Err(SysErrNo::ENOENT);
+        }
+        if flags.contains(OpenFlags::O_UNLINK) {
+            return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK)));
+        }
+        if flags.contains(OpenFlags::O_NOFOLLOW) || loop_times >= MAX_LOOPTIMES {
             return Err(SysErrNo::ELOOP);
         }
-        if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
-            Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)))
-        } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_REG_FILE) {
-            if flags.contains(OpenFlags::O_DIRECTORY) {
-                return Err(SysErrNo::ENOTDIR);
-            }
-            Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_REG_FILE)))
-        } else if file.check_inode_exist(path, InodeTypes::EXT4_DE_SYMLINK) {
-            if flags.contains(OpenFlags::O_UNLINK) {
-                return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK)));
-            }
-            if flags.contains(OpenFlags::O_NOFOLLOW) {
-                return Err(SysErrNo::ELOOP);
-            }
-            if loop_times >= MAX_LOOPTIMES {
-                debug!("error ELOOP!");
-                return Err(SysErrNo::ELOOP);
-            }
-            // 符号链接文件应该返回对应的真实的文件
-            let mut file_name = [0u8; 256];
-            let file = Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK);
-            file.read_link(&mut file_name, 256)?;
-            let end = file_name
-                .iter()
-                .position(|v| *v == 0)
-                .unwrap_or(file_name.len());
-            let file_path = core::str::from_utf8(&file_name[..end]).unwrap();
-            // log::info!("[Inode.find] file_path={}", file_path);
-            let next_path = if file_path.starts_with('/') {
-                // 绝对路径 symlink
-                file_path.to_string()
-            } else {
-                // 相对路径 symlink
-                join_path(path, file_path)
-            };
-            //debug!("[Inode.find] symlink abs_path={}", &abs_path);
-            self.find(&next_path, flags, loop_times + 1)
-            // Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK)))
+
+        let mut file_name = [0u8; 256];
+        let file = Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK);
+        file.read_link(&mut file_name, 256)?;
+        let end = file_name
+            .iter()
+            .position(|v| *v == 0)
+            .unwrap_or(file_name.len());
+        let file_path = core::str::from_utf8(&file_name[..end]).unwrap();
+        let next_path = if file_path.starts_with('/') {
+            file_path.to_string()
         } else {
-            Err(SysErrNo::ENOENT)
-        }
+            join_path(path, file_path)
+        };
+        self.find(&next_path, flags, loop_times + 1)
     }
     /// 获取文件状态信息。
     ///
     /// 正常情况下直接用当前路径对应的 lwext4 句柄查询；如果路径因 rename/unlink 失效，
     /// 再尝试 `recover_live_path()`，从已记录 alias 中恢复一个仍存在的路径。
     fn fstat(&self) -> Kstat {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let known_size = inner.known_size;
         let stat = match inner.f.fstat() {
@@ -442,6 +457,7 @@ impl Inode for Ext4Inode {
     ///
     /// `off` 是 lwext4 目录读取 cookie，不一定等价于普通字节偏移。
     fn read_dentry(&self, off: usize, len: usize) -> SysResult<(Vec<u8>, isize)> {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         let file = &mut inner.f;
@@ -467,6 +483,7 @@ impl Inode for Ext4Inode {
     ///
     /// 只要出现除 `.` 和 `..` 之外的目录项，就认为目录非空。
     fn is_dir_empty(&self) -> Result<bool, SysErrNo> {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         let file = &mut inner.f;
@@ -491,6 +508,7 @@ impl Inode for Ext4Inode {
 
     /// 读取符号链接目标路径。
     fn read_link(&self, buf: &mut [u8], bufsize: usize) -> SysResult<usize> {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         let file = &mut inner.f;
@@ -499,6 +517,7 @@ impl Inode for Ext4Inode {
 
     /// 创建符号链接。
     fn sym_link(&self, target: &str, path: &str) -> SyscallRet {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let file = &mut self.inner.get_unchecked_mut().f;
         file.file_fsymlink(target, path).map_err(SysErrNo::from)
     }
@@ -506,6 +525,7 @@ impl Inode for Ext4Inode {
     ///
     /// lwext4 在路径已不存在时可能返回 `ENOENT`，这里按 0 个 link 兼容延迟删除路径。
     fn link_cnt(&self) -> SyscallRet {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         let file = &mut inner.f;
@@ -524,8 +544,11 @@ impl Inode for Ext4Inode {
     ///
     /// 目录走 `dir_rm()`，普通文件和其他文件类型走 `file_remove()`。
     fn unlink(&self, path: &str) -> SyscallRet {
-        let file = &mut self.inner.get_unchecked_mut().f;
-        if self.types() == InodeType::Dir {
+        let _ext4 = EXT4_OP_LOCK.lock();
+        let inner = self.inner.get_unchecked_mut();
+        let is_dir = as_inode_type(inner.f.types()) == InodeType::Dir;
+        let file = &mut inner.f;
+        if is_dir {
             file.dir_rm(path).map_err(SysErrNo::from)
         } else {
             file.file_remove(path).map_err(SysErrNo::from)
@@ -534,6 +557,7 @@ impl Inode for Ext4Inode {
 
     /// 返回当前可用于 lwext4 path-based API 的路径。
     fn path(&self) -> String {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         Self::live_path(inner)
     }
@@ -548,6 +572,7 @@ impl Inode for Ext4Inode {
     /// 当文件已经 unlink 但仍有 fd 持有 inode 时，先标记延迟删除，等最后一个
     /// `Arc<Ext4Inode>` drop 时再真正移除磁盘文件。
     fn delay(&self) {
+        let _ext4 = EXT4_OP_LOCK.lock();
         self.inner.get_unchecked_mut().delay = true;
     }
 
@@ -555,6 +580,7 @@ impl Inode for Ext4Inode {
     ///
     /// 当前路径失败时会尝试从 alias 恢复，兼容 rename/hard link 后的已打开 fd。
     fn fmode(&self) -> Result<u32, SysErrNo> {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         match inner.f.file_mode() {
             Ok(mode) => Ok(mode),
@@ -569,6 +595,7 @@ impl Inode for Ext4Inode {
     /// 如果传入 mode 未带文件类型位，则沿用当前 inode 类型，避免 chmod 类操作把
     /// regular/dir/symlink 类型位清掉。
     fn fmode_set(&self, mode: u32) -> SyscallRet {
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let mode_type = mode & 0o170000;
         let mode_type = if mode_type != 0 {
@@ -589,6 +616,7 @@ impl Inode for Ext4Inode {
     /// 设置 inode owner uid/gid。
     fn owner_set(&self, uid: u32, gid: u32) -> SyscallRet {
         // Keep owner updates in the filesystem layer so stat and permission checks agree.
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         match inner.f.file_owner_set(uid, gid) {
             Ok(ret) => Ok(ret),
@@ -603,8 +631,9 @@ impl Inode for Ext4Inode {
 /// 当 `Ext4Inode` 生命周期结束时，确保关闭底层文件句柄。
 impl Drop for Ext4Inode {
     fn drop(&mut self) {
-        let path = self.path();
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
+        let path = Self::live_path(inner);
         // 如果标记了延时删除，则在关闭前移除文件。
         if inner.delay {
             debug!("Ext4Inode delays unlink {:?}", path);

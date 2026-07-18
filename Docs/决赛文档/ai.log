@@ -5039,3 +5039,19 @@ AI 对照 `os/src/main.rs`、`os/src/signal/`、`os/src/syscall/signal.rs`、`os
 ### 修改与验证
 
 修改 `Docs/ya2yos/main.typ`、`chapters/01-overview.typ`、`chapters/03-process-image.typ`、`chapters/05-signal.typ`、`chapters/06-network.typ`、`chapters/07-devices.typ`、`chapters/08-filesystem.typ`、`chapters/09-ai-usage.typ`、`chapters/10-conclusion.typ` 及本 AI 记录。初次编译后，维护者反馈 PDF 未显示参考资料；确认 Typst 在未出现 `@key` 引用时默认省略 bibliography 条目，已在 `#bibliography` 启用 `full: true` 输出完整条目。随后按章节实际主题重命名目录文件，并同步 `main.typ` 的 include 路径。`git diff --check` 通过；`typst compile --root . --pdf-standard a-2u Docs/ya2yos/main.typ /tmp/ya2yos-kernel-design.pdf` 成功。未运行内核构建或 QEMU，因为本次仅修改设计文档。
+
+## 2026-07-18：RISC-V 双 hart SMP bring-up
+
+### 用户需求
+
+维护者询问当前内核能否编译 Linux、性能如何，并要求扩展为双核运行和直接修改实现。
+
+### 分析与采纳结论
+
+AI 检查启动、调度、任务/进程资源和 lwext4 路径后，将范围限定为 RISC-V QEMU 的双 hart 首版 SMP，而非宣称完整 Linux SMP。采用 SBI HSM 启动 AP，并以原子启动状态机处理任意 boot hart。鉴于尚无 IPI 和远程 TLB shootdown，同一 `MemorySet` 的线程固定在同一个 home hart；新 fork 进程可按 pid 分散到两个 hart。
+
+双核运行依次暴露了 `try_lock` 单核断言、进程回收/`waitpid` 发布竞态、lwext4 buffer cache 并发破坏、未启用 SMP feature 的 `kspin::SpinNoIrq` 无实际锁，以及异步定时轮 `static mut BTreeMap` 并发访问。AI 采用现有 `spin::Mutex` 保护共享容器和 lwext4 调用，并在定时轮锁前保留本地 IRQ/preempt 禁止，避免中断重入。
+
+### 修改与验证
+
+修改 RISC-V 启动、trap、任务调度、进程、内存资源、lwext4、future timer/poll 和 signal timer 相关文件；新增 `Docs/决赛文档/problem/riscv-smp-bringup.md` 并更新索引、开发日志和 AI 协作记录。`make build-arch TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过，仅有既有 vendored `smoltcp` warnings。RISC-V `timeout 120s make run TARGET_ARCH=riscv64` 显示 `HART Count : 2`、hart 1 上线，musl/glibc `iperf` 均完成并 `shutdown!`，无 `panic`/`TFAIL`/`TBROK`；LoongArch64 保持单核，`timeout 60s make run TARGET_ARCH=loongarch64` 的同两组 `iperf` 亦完成并关机。完整设计边界与性能限制见 `problem/riscv-smp-bringup.md`。

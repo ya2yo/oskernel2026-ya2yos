@@ -22,7 +22,7 @@ use crate::{
     utils::SysErrNo,
 };
 use kernel_guard::NoPreemptIrqSave;
-use kspin::SpinNoIrq;
+use spin::Mutex;
 
 mod poll;
 pub use poll::*;
@@ -36,7 +36,7 @@ struct MyWaker {
     /// 目标任务的弱引用，防止循环引用导致任务无法释放
     task: WeakTaskRef,
     /// 唤醒状态标志，使用带自旋锁的 bool 保证多核安全
-    woke: SpinNoIrq<bool>,
+    woke: Mutex<bool>,
 }
 
 impl MyWaker {
@@ -44,7 +44,7 @@ impl MyWaker {
     fn new(task: &TaskRef) -> Arc<Self> {
         Arc::new(MyWaker {
             task: Arc::downgrade(task),
-            woke: SpinNoIrq::new(false),
+            woke: Mutex::new(false),
         })
     }
 }

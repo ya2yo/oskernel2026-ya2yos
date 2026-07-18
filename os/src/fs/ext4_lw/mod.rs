@@ -12,5 +12,14 @@
 mod inode;
 mod sb;
 
+/// lwext4 shares one mounted block cache and does not provide SMP-safe internal
+/// locking. Keep every call into its path/file API serialized until the wrapper
+/// gains per-superblock concurrency support.
+///
+/// Do not use `kspin::SpinNoIrq` here: its atomic lock field is compiled out
+/// unless the dependency's `smp` feature is explicitly enabled. `spin::Mutex`
+/// is configured in this kernel and remains a real atomic lock on every build.
+pub(super) static EXT4_OP_LOCK: spin::Mutex<()> = spin::Mutex::new(());
+
 pub use inode::*;
 pub use sb::{superblock_fs_stat, superblock_ls, superblock_root_inode, superblock_sync};

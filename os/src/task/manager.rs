@@ -50,20 +50,27 @@ pub mod ready_queue {
         queue.push_back(Arc::downgrade(&task));
     }
 
-    /// 从就绪队列中取出
-    pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
-        loop {
-            if let Some(task) = READY_QUEUE.lock().pop_front() {
-                if let Some(task_arc) = task.upgrade() {
-                    return Some(task_arc);
-                } else {
-                    warn!("fetch task got a None task???");
-                    continue;
-                }
-            } else {
-                return None;
+    /// 从就绪队列中取出当前 hart 可以运行的任务。
+    ///
+    /// 在远程 TLB shootdown 完成前，进程固定到一个 hart；不属于当前
+    /// hart 的任务保留在队列中等待其 owner，避免共享地址空间跨核并行。
+    pub fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {
+        let mut queue = READY_QUEUE.lock();
+        let queued = queue.len();
+        for _ in 0..queued {
+            let Some(task) = queue.pop_front() else {
+                break;
+            };
+            let Some(task_arc) = task.upgrade() else {
+                warn!("fetch task got a dropped task");
+                continue;
+            };
+            if task_arc.process.home_hart() == hartid {
+                return Some(task_arc);
             }
+            queue.push_back(Arc::downgrade(&task_arc));
         }
+        None
     }
     /// 取就绪队列长度
     pub fn ready_procs_num() -> usize {
@@ -131,14 +138,10 @@ pub mod tid_to_task {
 
     /// 构造一个vector，包括所有的TCB和他们的tid
     pub fn get_all_tasks() -> Vec<(usize, Arc<TaskControlBlock>)> {
-        match TID_TO_TASK.try_lock() {
-            Some(guard) => guard
-                .iter()
-                .map(|(&tid, task)| (tid, Arc::clone(task)))
-                .collect(),
-            None => {
-                panic!("Fail to get all tasks!");
-            }
-        }
+        TID_TO_TASK
+            .lock()
+            .iter()
+            .map(|(&tid, task)| (tid, Arc::clone(task)))
+            .collect()
     }
 }

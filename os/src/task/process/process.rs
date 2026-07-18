@@ -10,6 +10,7 @@ use log::{debug, warn};
 use spin::{Lazy, Mutex, MutexGuard};
 
 use crate::{
+    config::HART_NUM,
     fs::{remove_proc_dir_and_file, FSInfo, FdTable},
     mm::MemorySet,
     signal::{send_signal_to_thread_group, SigSet, SigTable},
@@ -31,6 +32,11 @@ pub struct Process {
     /// 文件系统上下文。本身带锁，不再放入 PCB 内部锁。
     pub fs_info: Arc<FSInfo>,
     pub pid: usize,
+    /// First-generation SMP keeps all threads sharing one address space on a
+    /// single hart. This prevents stale remote TLB entries until shootdown IPI
+    /// support is available. Forked processes have independent page tables and
+    /// are spread across RISC-V harts by pid.
+    home_hart: usize,
     pub meta: Mutex<ProcessMeta>,
 }
 // 我们需要向编译器保证Process含有这样的特性……这样真的好吗？
@@ -99,12 +105,17 @@ impl Process {
         sid: usize,
     ) -> Arc<Self> {
         let id = pid;
+        #[cfg(target_arch = "riscv64")]
+        let home_hart = (pid - 1) % HART_NUM;
+        #[cfg(target_arch = "loongarch64")]
+        let home_hart = 0;
         let ret = Arc::new(Self {
             memory_set: ResourceSlot::new(memory_set),
             sig_table: ResourceSlot::new(sig_table),
             fd_table,
             fs_info,
             pid,
+            home_hart,
             meta: Mutex::new(ProcessMeta {
                 tasks: Vec::new(),
                 children: Vec::new(),
@@ -128,10 +139,7 @@ impl Process {
             }
         }
         debug!("inserting process {}", id);
-        let oldval = PID_2_PROCESS_ARC
-            .try_lock()
-            .unwrap()
-            .insert(id, ret.clone());
+        let oldval = PID_2_PROCESS_ARC.lock().insert(id, ret.clone());
         if let Some(old_proc) = oldval {
             debug!("expected replacement? {}", old_proc.pid);
         }
@@ -139,9 +147,7 @@ impl Process {
     }
     /// 获取元数据的锁
     pub fn meta_lock(&self) -> MutexGuard<'_, ProcessMeta> {
-        self.meta
-            .try_lock()
-            .expect(&format!("fail to get proc.meta lock({})", self.pid))
+        self.meta.lock()
     }
     /// 获取父进程的 pid（0 表示无父进程，例如 initproc）
     pub fn ppid(&self) -> usize {
@@ -170,6 +176,12 @@ impl Process {
     pub fn memory_set_arc(&self) -> Arc<MemorySet> {
         self.memory_set.get()
     }
+    /// The only hart allowed to execute this process until remote TLB
+    /// invalidation is implemented.
+    #[inline]
+    pub fn home_hart(&self) -> usize {
+        self.home_hart
+    }
     /// 获取当前进程的文件描述表
     pub fn fd_table_arc(&self) -> Arc<FdTable> {
         self.fd_table.clone()
@@ -183,9 +195,7 @@ impl Process {
     /// 在当前信号表锁内执行操作。
     pub fn with_sigtable<T>(&self, f: impl FnOnce(&mut SigTable) -> T) -> T {
         let sig_table = self.sig_table_arc();
-        let mut sig_table = sig_table
-            .try_lock()
-            .expect("You should not fail to get sig_table lock in a 1 HART system!");
+        let mut sig_table = sig_table.lock();
         f(&mut sig_table)
     }
     /// 获取绝对路径
@@ -245,12 +255,7 @@ impl Process {
     }
     /// 通过pid获取对应的进程
     pub fn get_process_arc_by_pid(pid: usize) -> Option<Arc<Process>> {
-        let ret = PID_2_PROCESS_ARC
-            .try_lock()
-            .expect("fail to get pid2process mapper")
-            .get(&pid)
-            .map(|x| x.clone());
-        ret
+        PID_2_PROCESS_ARC.lock().get(&pid).cloned()
     }
 
     /// 如果一个线程调用了ExitGroup，或者最后一个线程Exit，那么这个就会为true
@@ -264,40 +269,32 @@ impl Process {
     /// 等其他线程接收到信号，并exit（使得本进程不再持有有效的Weak引用）时
     /// 本函数才会return true
     pub fn all_tasks_exited(&self) -> bool {
-        self.meta_lock().tasks.iter().all(|x| x.upgrade().is_none())
+        let meta = self.meta_lock();
+        // The final exiting task is removed from `tasks` before it publishes
+        // the group exit code. A waiter on another hart must not observe that
+        // transient empty task list as a reapable zombie.
+        meta.group_exit_code.is_some() && meta.tasks.iter().all(|x| x.upgrade().is_none())
     }
 
     /// Process被Wait4时会调用这个
     pub fn remove_from_global_map(pid: usize) {
         remove_proc_dir_and_file(pid);
-        let ret = PID_2_PROCESS_ARC
-            .try_lock()
-            .expect("fail to get pid2process mapper")
-            .remove(&pid);
+        let ret = PID_2_PROCESS_ARC.lock().remove(&pid);
         if let Some(arc) = ret {
-            if Arc::strong_count(&arc) == 1 {
-                debug!("remove process[{}] succeed!", pid);
-            } else {
-                warn!("unexpected ref cnt");
-                warn!("the proc's children:");
-                for i in arc.meta_lock().children.iter() {
-                    warn!("{}", i.upgrade().unwrap().pid);
-                }
-                warn!("the proc's tasks:");
-                let tasks: Vec<usize> = arc
-                    .meta_lock()
-                    .tasks
-                    .iter()
-                    .filter_map(|x| x.upgrade())
-                    .map(|x| x.tid())
-                    .collect();
-                warn!("{:?}", tasks);
-                panic!(
-                    "process[{}] removed but still refed! refcnt={}",
+            let references = Arc::strong_count(&arc);
+            if references > 1 {
+                // A scheduler, signal path, or waiter on another hart can
+                // legitimately retain an Arc after reaping removed the global
+                // lookup entry. The process remains alive until that final Arc
+                // drops; treating the temporary reference as a fatal leak made
+                // the former single-hart invariant incompatible with SMP.
+                debug!(
+                    "process[{}] removed from global map with {} outstanding references",
                     pid,
-                    Arc::strong_count(&arc)
+                    references - 1
                 );
             }
+            debug!("remove process[{}] succeed!", pid);
         } else {
             panic!("remove process[{}] fail! it does not exist!", pid);
         }

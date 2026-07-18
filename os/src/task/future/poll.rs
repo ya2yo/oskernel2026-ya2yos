@@ -46,9 +46,9 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
     use alloc::collections::{btree_map::Entry, BTreeMap};
 
     use crate::utils::PollSet;
-    use kspin::SpinNoIrq;
+    use spin::Mutex;
 
-    static POLL_IRQ: SpinNoIrq<BTreeMap<usize, PollSet>> = SpinNoIrq::new(BTreeMap::new());
+    static POLL_IRQ: Mutex<BTreeMap<usize, PollSet>> = Mutex::new(BTreeMap::new());
 
     fn irq_hook(irq: usize) {
         if let Some(s) = POLL_IRQ.lock().get(&irq) {

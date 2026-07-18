@@ -608,6 +608,13 @@
 - **描述**：维护者要求分析 `open11` 的三个失败并按 Linux 真实语义完善 `open_inner()`。AI 确认 `O_WRONLY` 是 access mode 值而非 `O_RDWR` 的子 flag，原实现只拒绝 `O_RDWR` 目录；同时遗漏了已有目录上的 `O_CREAT`。修复改由 `read_write()` 判断真实写意图，并让非 `O_PATH` 的 `O_CREAT/O_TRUNC` 目录返回 `EISDIR`；`O_PATH` 不再触发创建、截断或 `O_NOATIME` 权限检查。`make` 的 RISC-V/LoongArch64 构建均通过；当前 RISC-V QEMU 的两个 `open11` 二进制在断言前 `IllegalInstruction` 退出，LoongArch64 QEMU 因沙箱 `/var/tmp` 只读未启动，运行回归待可用环境复测。详见 [problem/open11-directory-open-flags.md](./problem/open11-directory-open-flags.md)。
 - **关联 commit**：待提交
 
+#### RISC-V 双 hart SMP bring-up（7.18）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：RISC-V 双核启动、调度并发与文件系统/异步运行时共享状态审计，配合 QEMU 双 hart 网络压力回归。
+- **描述**：实现 SBI 启动第二 hart 和原子启动状态机；在没有 IPI/TLB shootdown 前将同一进程固定到 home hart。修复单核 `try_lock` 假设、进程回收竞态、lwext4 全局 buffer cache、未启用 SMP feature 的伪锁，以及全局 timer future 容器的并发访问。RISC-V 双 hart 与 LoongArch64 单核的 musl/glibc `iperf` 均成功结束并正常关机；限制和设计边界详见 [problem/riscv-smp-bringup.md](./problem/riscv-smp-bringup.md)。
+- **关联 commit**：待提交
+
 #### LTP openat201 openat2 resolve 与 ABI 修复（7.15）
 
 - **工具/模型**：Codex (GPT-5)

@@ -77,20 +77,20 @@ impl TimerRuntime {
     }
 }
 
-static mut TIMER_RUNTIME: TimerRuntime = TimerRuntime::new();
+/// All harts drive the same timer wheel. Local interrupt exclusion alone is
+/// insufficient once more than one hart can poll or update it.
+static TIMER_RUNTIME: Mutex<TimerRuntime> = Mutex::new(TimerRuntime::new());
 
 #[allow(dead_code)]
 pub(crate) fn check_timer_events() {
-    // SAFETY: only called in timer::check_events
-    unsafe {
-        (&mut *core::ptr::addr_of_mut!(TIMER_RUNTIME)).wake();
-    }
+    with_current(|runtime| runtime.wake());
 }
 
 fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
-    // FIXME: optimize `percpu` crate! should disable irq and provide more apis
+    // The guard prevents local timer interrupt reentrancy; the mutex serializes
+    // accesses from different harts.
     let _g = kernel_guard::NoPreemptIrqSave::new();
-    unsafe { f(&mut *core::ptr::addr_of_mut!(TIMER_RUNTIME)) }
+    f(&mut TIMER_RUNTIME.lock())
 }
 
 /// Future returned by `sleep` and `sleep_until`.

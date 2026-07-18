@@ -267,6 +267,10 @@ pub fn trap_return() {
     unsafe {
         // 方便调试进入__return_to_user
         let trap_cx = current_trap_cx();
+        #[cfg(target_arch = "riscv64")]
+        {
+            trap_cx.kernel_hartid = hart_id();
+        }
         // let ptr = (trap_cx as *mut TrapContext) as usize;
         // debug!(
         //     "### [return_to_user], trap_cx.sepc={:#x}, sp={:#x}, kstack={:#x}, trap_cx={:#x}",

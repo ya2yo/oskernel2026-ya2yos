@@ -1,6 +1,6 @@
 PLATFORM := qemu
 MEMORY_SIZE := 2G  # 修改时同步 os/src/arch/riscv64/qemu/memory_layout.rs
-SMP := 1  # CPU核心数
+SMP := 2  # CPU核心数
 MODE := release
 
 ARCH := riscv64

@@ -1,5 +1,6 @@
 # Problem 复盘索引
 
+- [RISC-V 双 hart SMP bring-up](./riscv-smp-bringup.md)
 - [splice syscall 兼容实现](./splice-syscall.md)
 - [splice07 文件类型校验与空 pipe 卡死](./splice07-file-type-validation.md)
 - [splice07 匿名挂载 fd 默认可读写导致阻塞](./splice07-mount-context-fd-block.md)

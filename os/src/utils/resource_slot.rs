@@ -21,17 +21,11 @@ impl<T> ResourceSlot<T> {
     }
 
     pub fn get(&self) -> Arc<T> {
-        self.current
-            .try_lock()
-            .expect("fail to get resource slot lock")
-            .clone()
+        self.current.lock().clone()
     }
 
     pub fn replace(&self, resource: Arc<T>) -> Arc<T> {
-        let mut current = self
-            .current
-            .try_lock()
-            .expect("fail to get resource slot lock");
+        let mut current = self.current.lock();
         core::mem::replace(&mut *current, resource)
     }
 
@@ -40,10 +34,7 @@ impl<T> ResourceSlot<T> {
     }
 
     pub fn strong_count(&self) -> usize {
-        let current = self
-            .current
-            .try_lock()
-            .expect("fail to get resource slot lock");
+        let current = self.current.lock();
         Arc::strong_count(&current)
     }
 }
