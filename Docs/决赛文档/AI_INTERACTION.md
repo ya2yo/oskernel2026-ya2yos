@@ -815,3 +815,10 @@
 - **场景**：依据当前源码更新外部设计报告，核对启动、信号和挂载传播的模块边界，并执行 Typst 编译验证。
 - **描述**：将总览改为当前 `main.rs` 启动路径与对象模型；信号章节改用进程级 action、线程级 pending/mask、`SigInfo`、用户信号帧和 `rt_sigreturn` 的真实实现；文件系统章节补充分层挂载、shared/slave、递归传播、bind/move 子树和 event group，同时明确路径化 VFS 尚无真实 mount-root dentry、独立 superblock 或 mount namespace。入口索引、版本快照、结论和 AI 日志同步更新。维护者反馈 PDF 未显示参考资料后，确认无 `@key` 引用时 Typst 默认省略条目，已在 bibliography 启用 `full: true`；随后将章节文件名规范为其实际主题并同步入口 include。Typst PDF/A-2u 编译成功；未运行内核构建，因为没有代码改动。
 - **关联 commit**：待提交
+
+#### RISC-V 双 hart netperf 锁序与丢唤醒修复（7.18）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans`、GDB 双 hart 回溯、网络锁图与通用 Future/AtomicWaker 竞态审计、双架构构建及 RISC-V netperf 重复回归。
+- **描述**：确认卡死由网络全局锁反序和 `Poll::Pending -> Blocked` 跨核丢唤醒共同触发；统一 `SERVICE -> SOCKET_SET -> LISTEN_TABLE` 顺序，在 waker 两侧以 `woke -> task.inner` 原子发布状态，修正 AtomicWaker 注册顺序，并收敛 owner-hart timer 扫描。RISC-V 最终连续两次有效运行中 musl/glibc 共 10 项 netperf 全部成功并 `shutdown!`，双架构 release 构建通过。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/riscv-smp-netperf-wakeup-locking.md](./problem/riscv-smp-netperf-wakeup-locking.md)。
+- **关联 commit**：待提交

@@ -14,8 +14,8 @@ use crate::{
 };
 
 use super::{
-    get_service,
     options::{Configurable, GetSocketOption, SetSocketOption},
+    register_network_waker,
 };
 
 /// 通用套接字配置选项
@@ -83,7 +83,7 @@ impl GeneralOptions {
     }
     /// 向底层网络服务注册当前任务的 Waker，以便在有网络包到达时唤醒任务
     pub fn register_waker(&self, waker: &Waker) {
-        get_service().register_waker(self.device_mask(), waker);
+        register_network_waker(self.device_mask(), waker);
     }
     /// 发送操作的通用轮询处理器
     ///

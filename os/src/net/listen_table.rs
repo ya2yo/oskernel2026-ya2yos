@@ -90,7 +90,11 @@ impl ListenTable {
     /// 停止对某个端口的监听并释放相关 Socket 资源
     pub fn unlisten(&self, port: u16) {
         // debug!("TCP socket unlisten on {}", port);
-        *self.tcp[port as usize].lock() = None;
+        // `ListenTableEntryInner::drop()` removes queued sockets. Drop it only
+        // after releasing the port lock, otherwise this path reverses the
+        // socket-set -> listen-table order used by packet processing.
+        let removed = self.tcp[port as usize].lock().take();
+        drop(removed);
     }
 
     /// 获取对应端口监听项的克隆 (Arc 引用计数增加)
@@ -100,16 +104,24 @@ impl ListenTable {
 
     /// 检查当前队列中是否有已经完成握手、可以被 accept 的连接
     pub fn can_accept(&self, port: u16) -> SysResult<bool> {
-        if let Some(entry) = self.listen_entry(port).lock().as_ref() {
-            Ok(entry.syn_queue.iter().any(|&handle| is_connected(handle)))
-        } else {
+        // Packet processing uses SOCKET_SET -> per-port entry. Use the same
+        // order here so handles cannot be removed or reused while inspected.
+        let sockets = SOCKET_SET.inner.lock();
+        let entry = self.listen_entry(port);
+        let table = entry.lock();
+        let Some(entry) = table.as_ref() else {
             warn!("accept before listen");
-            Err(SysErrNo::EINVAL)
-        }
+            return Err(SysErrNo::EINVAL);
+        };
+        Ok(entry
+            .syn_queue
+            .iter()
+            .any(|&handle| is_connected(&sockets, handle)))
     }
 
     /// 从监听队列中提取一个已建立的连接
     pub fn accept(&self, port: u16) -> SysResult<SocketHandle> {
+        let sockets = SOCKET_SET.inner.lock();
         let entry = self.listen_entry(port);
         let mut table = entry.lock();
         // 确保该端口确实在监听
@@ -122,8 +134,7 @@ impl ListenTable {
         // 寻找队列中第一个已经完成连接的 Socket 索引
         let idx = syn_queue
             .iter()
-            .enumerate()
-            .find_map(|(idx, &handle)| is_connected(handle).then_some(idx))
+            .position(|&handle| is_connected(&sockets, handle))
             .ok_or(SysErrNo::EAGAIN)?; // wait for connection
         if idx > 0 {
             warn!(
@@ -135,7 +146,7 @@ impl ListenTable {
         // 从队列中移除该 Socket
         let handle = syn_queue.swap_remove_front(idx).unwrap();
         // 如果在取出的一瞬间连接断开了
-        if is_closed(handle) {
+        if is_closed(&sockets, handle) {
             warn!("accept failed: connection reset");
             Err(SysErrNo::ECONNRESET)
         } else {
@@ -182,14 +193,12 @@ impl ListenTable {
 }
 
 /// 判断 Socket 是否已完成握手（不再处于监听或同步状态）
-fn is_connected(handle: SocketHandle) -> bool {
-    SOCKET_SET.with_socket::<tcp::Socket, _, _>(handle, |socket| {
-        !matches!(socket.state(), State::Listen | State::SynReceived)
-    })
+fn is_connected(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
+    let socket = sockets.get::<tcp::Socket>(handle);
+    !matches!(socket.state(), State::Listen | State::SynReceived)
 }
 
 /// 判断 Socket 是否已经彻底关闭
-fn is_closed(handle: SocketHandle) -> bool {
-    SOCKET_SET
-        .with_socket::<tcp::Socket, _, _>(handle, |socket| matches!(socket.state(), State::Closed))
+fn is_closed(sockets: &SocketSet<'_>, handle: SocketHandle) -> bool {
+    matches!(sockets.get::<tcp::Socket>(handle).state(), State::Closed)
 }

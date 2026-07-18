@@ -3,8 +3,6 @@ use super::{current_task, TaskControlBlock, TaskStatus, INITPROC};
 use crate::signal::deliver_blocked_itimer_signal;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
-use hashbrown::HashSet;
 use log::debug;
 use spin::{Lazy, Mutex};
 
@@ -95,7 +93,14 @@ pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
 }
 
 pub fn check_blocked_task_timers() {
-    for (_, task) in tid_to_task::get_all_tasks() {
+    let hartid = crate::arch::cpu::hart_id();
+    tid_to_task::for_each_task(|task| {
+        // A process is pinned to one hart until remote TLB shootdown exists.
+        // Its owner alone drives blocked-wait timer delivery, avoiding both a
+        // cross-hart data race on the per-task timer and duplicated scans.
+        if task.process.home_hart() != hartid {
+            return;
+        }
         // 这条补扫主要服务于阻塞在 accept/recv 等路径中的任务，避免它们在
         // 内核态调度循环中错过 ITIMER_REAL。具体到期判断和 SIGALRM 投递由
         // timer/signal 模块负责，任务管理器只负责遍历候选任务。
@@ -104,15 +109,16 @@ pub fn check_blocked_task_timers() {
             inner.task_status == TaskStatus::Blocked
         };
         if should_check {
-            deliver_blocked_itimer_signal(&task);
+            deliver_blocked_itimer_signal(task);
         }
-    }
+    });
 }
 
 pub mod tid_to_task {
+    use alloc::vec::Vec;
     use log::debug;
 
-    use super::{Arc, BTreeMap, Lazy, Mutex, TaskControlBlock, Vec};
+    use super::{Arc, BTreeMap, Lazy, Mutex, TaskControlBlock};
     static TID_TO_TASK: Lazy<Mutex<BTreeMap<usize, Arc<TaskControlBlock>>>> =
         Lazy::new(|| Mutex::new(BTreeMap::new()));
 
@@ -143,5 +149,29 @@ pub mod tid_to_task {
             .iter()
             .map(|(&tid, task)| (tid, Arc::clone(task)))
             .collect()
+    }
+
+    /// Visit tasks without allocating a snapshot vector or holding the task
+    /// table lock while entering task/signal code.
+    pub fn for_each_task(mut f: impl FnMut(&Arc<TaskControlBlock>)) {
+        let mut next_tid = 0;
+        loop {
+            let next = {
+                let tasks = TID_TO_TASK.lock();
+                tasks
+                    .range(next_tid..)
+                    .next()
+                    .map(|(&tid, task)| (tid, Arc::clone(task)))
+            };
+            let Some((tid, task)) = next else {
+                return;
+            };
+
+            f(&task);
+            let Some(tid) = tid.checked_add(1) else {
+                return;
+            };
+            next_tid = tid;
+        }
     }
 }

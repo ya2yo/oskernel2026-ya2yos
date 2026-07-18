@@ -67,6 +67,22 @@ fn get_service() -> spin::MutexGuard<'static, Service> {
         .lock()
 }
 
+/// Access the protocol stack and socket set with the network-wide lock order.
+///
+/// smoltcp operations that need both objects must use this helper: taking the
+/// service lock first prevents an SMP lock inversion with `poll_interfaces`.
+pub(crate) fn with_service_and_socket_set<R>(
+    f: impl FnOnce(&mut Service, &mut smoltcp::iface::SocketSet<'static>) -> R,
+) -> R {
+    let mut service = get_service();
+    let mut sockets = SOCKET_SET.inner.lock();
+    f(&mut service, &mut sockets)
+}
+
+pub(crate) fn register_network_waker(mask: u32, waker: &core::task::Waker) {
+    with_service_and_socket_set(|service, sockets| service.register_waker(sockets, mask, waker));
+}
+
 fn check_privileged_port_bind(port: u16) -> SysResult {
     if port < 1024 {
         let task = current_task().ok_or(SysErrNo::ESRCH)?;
@@ -205,7 +221,7 @@ pub fn init_network(mut net_devs: DeviceContainer<NetDeviceImpl>) {
 /// - 处理重传定时器。
 /// - 将待发送的数据包写入硬件。
 pub fn poll_interfaces() {
-    while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
+    while with_service_and_socket_set(|service, sockets| service.poll(sockets)) {}
 }
 
 /// 将 Linux 对应的__kernel_sockaddr_storage 转换成 IpAddress

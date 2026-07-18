@@ -5055,3 +5055,19 @@ AI 检查启动、调度、任务/进程资源和 lwext4 路径后，将范围�
 ### 修改与验证
 
 修改 RISC-V 启动、trap、任务调度、进程、内存资源、lwext4、future timer/poll 和 signal timer 相关文件；新增 `Docs/决赛文档/problem/riscv-smp-bringup.md` 并更新索引、开发日志和 AI 协作记录。`make build-arch TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过，仅有既有 vendored `smoltcp` warnings。RISC-V `timeout 120s make run TARGET_ARCH=riscv64` 显示 `HART Count : 2`、hart 1 上线，musl/glibc `iperf` 均完成并 `shutdown!`，无 `panic`/`TFAIL`/`TBROK`；LoongArch64 保持单核，`timeout 60s make run TARGET_ARCH=loongarch64` 的同两组 `iperf` 亦完成并关机。完整设计边界与性能限制见 `problem/riscv-smp-bringup.md`。
+
+## 2026-07-18：RISC-V 双 hart netperf 卡死修复
+
+### 用户需求
+
+维护者要求按仓库 skill 分析 `log.ans`，修复双核实现后 `netperf` 卡死，并要求运行日志直接写入 `log.ans`。
+
+### 分析与采纳结论
+
+AI 先确认原日志在四项成功后停于 `TCP_CRR begin`，无 panic/TFAIL；随后对网络路径建立锁图，定位 `SERVICE -> SOCKET_SET -> LISTEN_TABLE` 与旧 `LISTEN_TABLE -> SOCKET_SET`、`SOCKET_SET -> SERVICE` 的反向顺序。统一锁序后卡点会随日志扰动漂移，GDB 和静态审计进一步确认通用 Future 执行器存在跨核 lost-wakeup：waker 的临时 `woke` guard 在检查任务状态前已经释放，waiter 可消费标志、再次 Pending，再在 waker 判断其仍 Running 后发布 Blocked，最终无人入队。`poll_interrupt()` 同时存在先检查 condition、后注册 AtomicWaker 的通知窗口。
+
+采纳最小的共享路径修复：统一网络全局锁序；让监听检查在 `SOCKET_SET -> port` 同一临界区内完成；在 MyWaker 两侧使用相同的 `woke -> task.inner` 锁序并让预唤醒直接重新 poll；AtomicWaker 改为先注册再检查；blocked timer 仅由 owner hart 无分配扫描，timer-wheel 在锁外执行 waker。未修改只读 testcase，也未改动维护者已有的 `user/src/bin/initproc.rs` 测试入口。
+
+### 修改与验证
+
+修改 `os/src/net/{mod.rs,service.rs,general.rs,listen_table.rs,tcp.rs}`、`os/src/task/future/{mod.rs,time.rs}`、`os/src/task/manager.rs` 和 `os/src/task/task/task.rs`；新增 `Docs/决赛文档/problem/riscv-smp-netperf-wakeup-locking.md` 并更新索引、开发日志和 AI 记录。`make build-arch TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过，仅有既有 warnings。最终连续两次 `timeout 300s make run > log.ans 2>&1` 的有效 boot hart 0 样本中，musl/glibc 的五类 netperf 共 10 项均 `end: success`，两组均结束并 `shutdown!`。另有 boot hart 1 样本在进入测试前触发 poisoned `Lazy` panic，确认为独立启动风险，未计入 netperf 验证。

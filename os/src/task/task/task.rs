@@ -780,10 +780,13 @@ impl TaskControlBlock {
         drop(task_inner);
     }
     pub fn poll_interrupt(&self, cx: &mut core::task::Context) -> core::task::Poll<()> {
+        // Register first, then check the condition. If interrupt() races with
+        // registration, AtomicWaker guarantees either this check observes the
+        // flag or the newly registered waker is notified.
+        self.interrupt_waker.register(cx.waker());
         if self.interrupted.swap(false, Ordering::AcqRel) {
             core::task::Poll::Ready(())
         } else {
-            self.interrupt_waker.register(cx.waker());
             core::task::Poll::Pending
         }
     }

@@ -16,7 +16,7 @@ use super::{TaskRef, WeakTaskRef};
 use crate::{
     signal::SigSet,
     task::{
-        block_current_and_run_next, current_task, exit_current_and_run_next, ready_queue, schedule,
+        current_task, exit_current_and_run_next, ready_queue, schedule, take_current_task,
         TaskContext, TaskStatus,
     },
     utils::SysErrNo,
@@ -47,6 +47,31 @@ impl MyWaker {
             woke: Mutex::new(false),
         })
     }
+
+    /// Atomically consume a pending wakeup or publish the current task as
+    /// blocked before handing control back to the scheduler.
+    ///
+    /// `wake_by_ref` takes `woke` before the task inner lock as well. Keeping
+    /// that order here closes the SMP race where a remote hart woke a Running
+    /// task between `Poll::Pending` and `block_current_and_run_next`; the task
+    /// would then become Blocked after the waker had decided not to enqueue it.
+    fn block_current_if_not_woken(&self) {
+        let mut woke = self.woke.lock();
+        if *woke {
+            *woke = false;
+            return;
+        }
+
+        let task = take_current_task().unwrap();
+        let task_cx_ptr = {
+            let mut inner = task.inner_lock();
+            inner.task_status = TaskStatus::Blocked;
+            &mut inner.task_cx as *mut TaskContext
+        };
+        drop(task);
+        drop(woke);
+        schedule(task_cx_ptr);
+    }
 }
 
 impl Wake for MyWaker {
@@ -59,15 +84,22 @@ impl Wake for MyWaker {
     fn wake_by_ref(self: &Arc<Self>) {
         // 尝试将弱引用升级为强引用
         if let Some(task) = self.task.upgrade() {
-            // 标记已唤醒
-            *self.woke.lock() = true;
+            // Hold the wake flag lock through the task-state decision. The
+            // blocking side takes the same locks in the same order, so a wake
+            // cannot be consumed before the task publishes Blocked.
+            let mut woke = self.woke.lock();
+            *woke = true;
             // 只把真正睡眠的任务放回 ready queue。poll/register 过程中可能
             // 同步 wake 当前 Running 任务；若把 Running 任务也入队，会造成
             // 同一 TCB 被重复调度并触发 inner_lock 重入。
             let mut inner = task.inner_lock();
-            if inner.task_status == TaskStatus::Blocked {
+            let should_ready = inner.task_status == TaskStatus::Blocked;
+            if should_ready {
                 inner.task_status = TaskStatus::Ready;
-                drop(inner);
+            }
+            drop(inner);
+            drop(woke);
+            if should_ready {
                 ready_queue::add_task(&task);
             }
         }
@@ -101,28 +133,7 @@ pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
         match fut.as_mut().poll(&mut cx) {
             Poll::Ready(output) => return output,
             Poll::Pending => {
-                let mut is_woke = waker_inner.woke.lock();
-                if !*is_woke {
-                    drop(is_woke);
-                    let task = current_task().unwrap();
-                    // debug!(
-                    //     "[block_on] Pending strong_count = {}",
-                    //     Arc::strong_count(&task)
-                    // ); // 这里怎么比上面多一个
-                    drop(task);
-                    block_current_and_run_next();
-                } else {
-                    *is_woke = false;
-                    drop(is_woke);
-                    let cur = current_task().unwrap();
-                    let task_cx_ptr = {
-                        let mut inner = cur.inner_lock();
-                        &mut inner.task_cx as *mut TaskContext
-                    };
-                    // debug!("strong_count = {}", Arc::strong_count(&cur));
-                    drop(cur);
-                    schedule(task_cx_ptr);
-                }
+                waker_inner.block_current_if_not_woken();
             }
         }
     }

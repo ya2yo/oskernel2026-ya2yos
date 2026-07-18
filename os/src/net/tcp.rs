@@ -31,9 +31,10 @@ use super::{
     options::{Configurable, GetSocketOption, SetSocketOption},
     poll_interfaces,
     state::*,
-    RecvFlags, RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps, LISTEN_TABLE,
-    SOCKET_SET,
+    with_service_and_socket_set, RecvFlags, RecvOptions, SendOptions, Shutdown, Socket,
+    SocketAddrEx, SocketOps, LISTEN_TABLE, SOCKET_SET,
 };
+
 /// 创建新的tcp套接字
 /// 分配接收和发送缓冲区，缓冲区大小由常量定义
 pub(crate) fn new_tcp_socket() -> smol::Socket<'static> {
@@ -87,11 +88,10 @@ impl TcpSocket {
             memberships: RwLock::new(vec![]),
         };
         // 获取该套接字绑定的端点，并设置相应的网络设备掩码
-        result.with_smol_socket(|socket| {
-            result
-                .general
-                .set_device_mask(get_service().device_mask_for(&socket.get_bound_endpoint()));
-        });
+        let endpoint = result.with_smol_socket(|socket| socket.get_bound_endpoint());
+        result
+            .general
+            .set_device_mask(get_service().device_mask_for(&endpoint));
         result
     }
 }
@@ -317,24 +317,25 @@ impl SocketOps for TcpSocket {
                     SOCKET_SET.bind_check(local_addr.ip().into(), local_addr.port())?;
                 }
 
+                let endpoint = IpListenEndpoint {
+                    addr: if local_addr.ip().is_unspecified() {
+                        None
+                    } else {
+                        Some(local_addr.ip().into())
+                    },
+                    port: local_addr.port(),
+                };
                 self.with_smol_socket(|socket| {
                     if socket.get_bound_endpoint().port != 0 {
                         return Err(SysErrNo::EINVAL);
                     }
-                    let endpoint = IpListenEndpoint {
-                        addr: if local_addr.ip().is_unspecified() {
-                            None
-                        } else {
-                            Some(local_addr.ip().into())
-                        },
-                        port: local_addr.port(),
-                    };
                     socket.set_bound_endpoint(endpoint);
-                    // 更新绑定的网络设备
-                    self.general
-                        .set_device_mask(get_service().device_mask_for(&endpoint));
                     Ok(())
                 })?;
+                // The socket-set lock above is released before taking the
+                // service lock; packet polling uses the opposite order.
+                self.general
+                    .set_device_mask(get_service().device_mask_for(&endpoint));
                 // debug!("TCP socket {}: binding to {}", self.handle, local_addr);
                 Ok(())
             })
@@ -374,23 +375,20 @@ impl SocketOps for TcpSocket {
                     bound_endpoint, remote_endpoint
                 );
 
-                self.with_smol_socket(|socket| {
+                let device_mask = with_service_and_socket_set(|service, sockets| {
+                    let socket = sockets.get_mut::<smol::Socket>(self.handle);
                     socket.set_bound_endpoint(bound_endpoint);
-                    self.general
-                        .set_device_mask(get_service().device_mask_for(&bound_endpoint));
                     // 开启 smoltcp 连接流程
                     socket
-                        .connect(
-                            get_service().iface.context(),
-                            remote_endpoint,
-                            bound_endpoint,
-                        )
+                        .connect(service.iface.context(), remote_endpoint, bound_endpoint)
                         .map_err(|e| match e {
                             smol::ConnectError::InvalidState => SysErrNo::EALREADY,
                             smol::ConnectError::Unaddressable => SysErrNo::ECONNREFUSED,
                         })?;
-                    Ok(())
-                })
+                    Ok::<u32, SysErrNo>(service.device_mask_for(&bound_endpoint))
+                })?;
+                self.general.set_device_mask(device_mask);
+                Ok(())
             })?;
 
         // 出让 CPU 尝试给协议栈处理时间

@@ -12,7 +12,7 @@ use smoltcp::{
     wire::{HardwareAddress, IpAddress, IpListenEndpoint},
 };
 
-use super::{router::Router, SOCKET_SET};
+use super::router::Router;
 /// 获取当前系统的 Instant 时间（smoltcp 专用格式）
 /// 使用单调 uptime，避免系统日历时间调整影响 TCP 重传等协议定时器。
 fn now() -> Instant {
@@ -72,9 +72,9 @@ impl Service {
     }
     /// 注册异步唤醒器（Waker）
     /// 该函数确保当网络协议栈需要处理（如超时）或底层设备有新包时，能够唤醒当前的异步任务
-    pub fn register_waker(&mut self, mask: u32, waker: &Waker) {
+    pub fn register_waker(&mut self, sockets: &SocketSet, mask: u32, waker: &Waker) {
         // 询问协议栈下一次定时任务是什么时候？
-        let next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
+        let next = self.iface.poll_at(now(), sockets);
 
         if let Some(t) = next {
             let next = Timespec::from_micros(t.total_micros() as _);
