@@ -14,7 +14,7 @@ Ya2yOS 的文件系统以 VFS 为统一抽象层，将系统调用、普通文�
 - `files/` 存放各种 `File` 实现，包括普通文件、管道、设备文件、loop 设备、epoll、eventfd、inotify、mqueue、挂载上下文 fd 等；
 - `fstruct.rs` 管理进程级文件描述符表；
 - `fs_info.rs` 维护进程的当前目录、可执行文件路径、fd 到路径映射和 `umask`；
-- `mount.rs` 维护简化的挂载记录，并同步 `/proc/mounts`。
+- `mount.rs` 维护路径化的挂载层、传播关系和 event group，并同步 `/proc/mounts`。
 
 == VFS 抽象
 
@@ -348,9 +348,28 @@ POSIX mqueue 通过全局名称表管理队列，`mq_open()` 创建或打开命�
 == 挂载接口
 
 
-`MNT_TABLE` 是一个简化挂载表，最多记录 16 条 `(special, dir, fstype, flags)`。`mount()` 添加或 remount 记录，`umount2()` 根据设备名或挂载点删除记录，并刷新 `/proc/mounts`。只读挂载会被部分权限检查用于返回 `EROFS`。
+`MNT_TABLE` 是当前挂载语义的状态中心。每个 `MountEntry` 保存
+`(special, dir, fstype, flags)` 以及 `shared_group`、`master_group`、
+`unbindable`、`event_group`。表最多容纳 256 个条目，允许同一路径出现多个挂载层；
+按路径查询时选择最长覆盖路径，同一挂载点选择最新层，因此 `umount2()` 删除顶层后会
+重新显露更早的层。`/proc/mounts` 由该表序列化，根 ext4 记录始终存在。
 
-需要注意的是，当前挂载表主要提供 Linux 兼容接口和 `/proc/mounts` 可见性，并没有真正构建多 superblock 的目录树，也不会在路径解析时切换到底层新文件系统。`fsopen/fsconfig/fsmount/fspick/open_tree/move_mount/mount_setattr` 等新挂载 API 已接入 fd 类型、flags 校验和状态记录；其中 `move_mount()` 可将 detached mount 的记录落入 `MNT_TABLE`。
+传统 `mount()` 支持普通挂载、remount、`MS_BIND`、`MS_MOVE` 和 propagation-only
+调用。`MS_SHARED` 为选定挂载副本建立 peer group，`MS_SLAVE` 保留上游 master 关系，
+`MS_PRIVATE`/`MS_UNBINDABLE` 断开传播关系；`MS_REC` 可将这些属性递归应用到子树。
+在 shared 挂载或其 slave 后代下创建子挂载时，表会按相对路径扩展副本：事件从 peer
+流向 slave，但不会由 slave 反向传播到 master。`MS_UNBINDABLE` 源不能被 bind clone。
+
+`MS_MOVE` 移动整棵挂载子树，并为目标父挂载可达的 peer/slave 创建副本；每次普通
+挂载或移动产生一个 `event_group`，卸载任何一个副本时会同时删除同组副本。bind/move
+的系统调用层还会在表锁外镜像目录树：目录递归创建，普通文件使用 hard link。这使当前
+路径式 VFS 能观察到常见 bind/传播测试的目录形状，同时避免在递归 bind 中复制目标自身。
+
+`fsopen`、`fsconfig`、`fsmount`、`fspick`、`open_tree`、`move_mount` 和
+`mount_setattr` 已提供 fd 类型、参数校验与最小状态流。`fsconfig` 记录选项并在 create
+后允许 `fsmount` 生成 detached mount fd；`move_mount` 可将它落入 `MNT_TABLE`。这些
+接口尚未创建独立 superblock 或 namespace，`mount_setattr` 目前主要校验 ABI 结构。
+fresh `tmpfs` 挂载会清空底层挂载点目录，以在该简化模型中近似空的 tmpfs 根目录。
 
 == 文件锁、fcntl 与 xattr
 
@@ -375,7 +394,7 @@ POSIX mqueue 通过全局名称表管理队列，`mq_open()` 创建或打开命�
 
 
 1. *页缓存*：当前普通文件读写直接落到 lwext4 和块设备，尚未建立统一 page cache；文件 mmap、read/write 和回写还不能共享同一缓存页。
-2. *真实多文件系统挂载*：挂载表已经能服务常见 syscall 和 `/proc/mounts`，但还没有真正的 mount namespace、挂载点 inode 切换和多 superblock 树。
+2. *真实多文件系统挂载*：挂载表已支持叠加层、bind/move 子树和 shared/slave 传播，但路径解析仍没有挂载点 inode 切换、独立 superblock 或 mount namespace；bind 目录可见性依赖目录镜像而非 VFS dentry 切换。
 3. *tmpfs/devtmpfs/procfs*：`/dev` 与 `/proc` 目前是兼容实现。后续可将它们提升为独立内存文件系统，减少对 ext4 承载虚拟文件内容的依赖。
 4. *loop 设备数据路径*：loop ioctl 状态管理已实现，但块读写尚未转发到 backing file。
 5. *inotify 事件生产*：watch 管理和 fd 读写框架已经具备，仍需在 create/unlink/rename/write/chmod 等 VFS 操作中插入事件生成钩子。

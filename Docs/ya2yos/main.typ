@@ -1,9 +1,9 @@
 // Ya2yOS 内核设计文档（Typst 入口）
 // 对外发布建议：typst compile --pdf-standard a-2u main.typ ya2yos-kernel-design.pdf
 
-#let doc-version = "0.2"
-#let doc-date = datetime(year: 2026, month: 7, day: 14)
-#let source-snapshot = "工作树快照（2026-07-14）"
+#let doc-version = "0.3"
+#let doc-date = datetime(year: 2026, month: 7, day: 18)
+#let source-snapshot = "工作树快照（2026-07-18，基于 ed7c339）"
 #let ink = rgb("161616")
 #let muted = rgb("555555")
 #let line = rgb("9a9a9a")
@@ -107,13 +107,13 @@ Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作
 #include "diagrams.typ"
 #include "chapters/01-overview.typ"
 #include "chapters/02-boot-arch.typ"
-#include "chapters/03-process-import.typ"
+#include "chapters/03-process-image.typ"
 #include "chapters/04-memory.typ"
-#include "chapters/05-task-signal.typ"
-#include "chapters/06-syscall-fs.typ"
-#include "chapters/07-network-device.typ"
-#include "chapters/08-engineering.typ"
-#include "chapters/09-boundaries.typ"
+#include "chapters/05-signal.typ"
+#include "chapters/06-network.typ"
+#include "chapters/07-devices.typ"
+#include "chapters/08-filesystem.typ"
+#include "chapters/09-ai-usage.typ"
 #include "chapters/10-conclusion.typ"
 
 #pagebreak()
@@ -126,15 +126,15 @@ Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作
   table.header([*主题*], [*主要实现位置*], [*本文位置*]),
   [内核入口与初始化], [`os/src/main.rs`], [第 2 章],
   [架构实现], [`os/src/arch/riscv64/`、`os/src/arch/loongarch64/`], [第 2 章],
-  [页表、VMA 与用户复制], [`os/src/mm/`], [第 3 章],
-  [进程、调度与 futex], [`os/src/task/`], [第 4 章],
-  [信号动作、pending 与 frame], [`os/src/signal/`], [第 4 章],
-  [syscall ABI 与实现分发], [`os/src/syscall/`], [第 5 章],
-  [VFS、ext4、proc 与 pipe], [`os/src/fs/`], [第 5 章],
+  [进程、调度与 futex], [`os/src/task/`], [第 3 章],
+  [页表、VMA 与用户复制], [`os/src/mm/`], [第 4 章],
+  [信号动作、pending 与 frame], [`os/src/signal/`], [第 5 章],
+  [syscall ABI 与实现分发], [`os/src/syscall/`], [第 3--8 章],
   [socket 和协议栈封装], [`os/src/net/`], [第 6 章],
-  [VirtIO 与平台设备], [`os/src/drivers/`], [第 6 章],
+  [VirtIO 与平台设备], [`os/src/drivers/`], [第 7 章],
+  [VFS、ext4、proc、pipe 与挂载], [`os/src/fs/`], [第 8 章],
 )
 
 == 参考资料
 
-#bibliography("references.bib", title: none, style: "ieee")
+#bibliography("references.bib", title: none, style: "ieee", full: true)

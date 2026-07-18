@@ -801,3 +801,10 @@
 - **场景**：分析 `log.ans` 的 fs_bind_move05 传播与 cleanup 失败，对照 LTP 脚本和 `MS_MOVE` 路径化挂载表，实现移动根状态继承与 peer 路径映射，并执行双架构构建和 RISC-V QEMU 回归。
 - **描述**：确认 `MS_MOVE` 虽已重定位 subtree，却未使 private moved root 继承 shared parent 的传播状态；之后的 bind event 不能传播。即使恢复 group，事件映射也会遗漏 moved root 的 `child2` 路径偏移。修复令移动 root 按接收端继承 shared/master/unbindable state，并通过同一 move event 的 peer root 计算相对目标。RISC-V QEMU 中 musl/glibc `fs_bind_move05` 均为 `passed 27 failed 0 broken 0`，所有 propagation 和卸载断言通过。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/fs-bind-move05-private-shared-propagation.md](./problem/fs-bind-move05-private-shared-propagation.md)。
 - **关联 commit**：待提交
+
+#### Ya2yOS 内核设计文档实现对齐（7.18）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：依据当前源码更新外部设计报告，核对启动、信号和挂载传播的模块边界，并执行 Typst 编译验证。
+- **描述**：将总览改为当前 `main.rs` 启动路径与对象模型；信号章节改用进程级 action、线程级 pending/mask、`SigInfo`、用户信号帧和 `rt_sigreturn` 的真实实现；文件系统章节补充分层挂载、shared/slave、递归传播、bind/move 子树和 event group，同时明确路径化 VFS 尚无真实 mount-root dentry、独立 superblock 或 mount namespace。入口索引、版本快照、结论和 AI 日志同步更新。维护者反馈 PDF 未显示参考资料后，确认无 `@key` 引用时 Typst 默认省略条目，已在 bibliography 启用 `full: true`；随后将章节文件名规范为其实际主题并同步入口 include。Typst PDF/A-2u 编译成功；未运行内核构建，因为没有代码改动。
+- **关联 commit**：待提交

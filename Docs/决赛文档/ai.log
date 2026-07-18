@@ -5023,3 +5023,19 @@ AI 以 `fs_bind_move05` 在 `mount --move dir parent2/child2` 后的两处 propa
 ### 修改与验证
 
 修改 `os/src/fs/mount.rs`，新增 `Docs/决赛文档/problem/fs-bind-move05-private-shared-propagation.md` 并更新索引、开发日志与 AI 记录。`rustfmt --edition 2021 --check os/src/fs/mount.rs` 和 `git diff --check` 通过；`make TARGET_ARCH=riscv64` 完成 RISC-V/LoongArch64 release 构建，仅有既有 vendored `smoltcp` warnings。`timeout 180s make run TARGET_ARCH=riscv64` 的 RISC-V `fs_bind_move05` musl/glibc 均为 `passed 27 failed 0 broken 0 skipped 0 warnings 0`，propagation 与 cleanup 全部 `TPASS` 并正常 `shutdown!`；LoongArch64 LTP 单测未运行。
+
+## 2026-07-18：Ya2yOS 内核设计文档与当前实现对齐
+
+### 用户需求
+
+维护者要求依据当前内核设计更新 `Docs/ya2yos/` 下相关章节。
+
+### 分析与采纳结论
+
+AI 对照 `os/src/main.rs`、`os/src/signal/`、`os/src/syscall/signal.rs`、`os/src/fs/mount.rs` 和 `os/src/syscall/fs/mount.rs`，确认设计文档存在三类失配：总览仍使用拆分前的模块树和过度完整的能力表述；信号章节仍以已移除的 `customed` 元数据、旧 `sa_flags` 布局和旧 `SigTable` 职责解释实现；文件系统章节仍将挂载表描述为最多 16 条的单层兼容记录，遗漏 shared/slave、递归传播、bind/move subtree 与 event-group 卸载。
+
+采纳实现优先的更新：总览改写为当前启动主线、对象边界和限制；信号章节按进程级 action、线程级 pending/mask、用户信号帧和 `rt_sigreturn` 重写；挂载章节记录路径化挂载层、传播状态和目录镜像，同时明确没有独立 superblock、mount-root dentry 或 mount namespace。入口的源码—章节索引、版本快照和结论中的挂载限制一并更正。
+
+### 修改与验证
+
+修改 `Docs/ya2yos/main.typ`、`chapters/01-overview.typ`、`chapters/03-process-image.typ`、`chapters/05-signal.typ`、`chapters/06-network.typ`、`chapters/07-devices.typ`、`chapters/08-filesystem.typ`、`chapters/09-ai-usage.typ`、`chapters/10-conclusion.typ` 及本 AI 记录。初次编译后，维护者反馈 PDF 未显示参考资料；确认 Typst 在未出现 `@key` 引用时默认省略 bibliography 条目，已在 `#bibliography` 启用 `full: true` 输出完整条目。随后按章节实际主题重命名目录文件，并同步 `main.typ` 的 include 路径。`git diff --check` 通过；`typst compile --root . --pdf-standard a-2u Docs/ya2yos/main.typ /tmp/ya2yos-kernel-design.pdf` 成功。未运行内核构建或 QEMU，因为本次仅修改设计文档。

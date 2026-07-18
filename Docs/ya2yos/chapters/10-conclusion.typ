@@ -74,7 +74,7 @@ Ya2yOS 实现了大量 Linux syscall，并围绕 glibc、musl、BusyBox、libc-t
 
 1. *页缓存缺失*：普通文件读写直接进入 lwext4 和块设备，mmap 与 read/write 的一致性和性能仍受限制。
 
-2. *挂载语义简化*：挂载表主要服务 syscall 兼容和 `/proc/mounts`，尚未实现真正的多 superblock 目录树和 mount namespace。
+2. *挂载语义仍受路径式 VFS 限制*：挂载表已处理叠加层、bind/move 子树及 shared/slave 传播，但尚未实现独立 superblock、挂载点 dentry 切换和 mount namespace；当前 bind 可见性通过目录镜像近似。
 
 3. *网络轮询驱动*：TCP/UDP 依赖 `poll_interfaces()` 周期性推进，VirtIO-net 中断路径尚未完整接管收包和唤醒。
 
@@ -105,7 +105,7 @@ Ya2yOS 实现了大量 Linux syscall，并围绕 glibc、musl、BusyBox、libc-t
 
 5. *tmpfs/procfs/devtmpfs*：将 `/proc`、`/dev`、`/tmp` 从 ext4 承载的兼容文件提升为独立虚拟文件系统。
 
-6. *完整挂载树*：实现挂载点路径切换、多 superblock、mount namespace 和更接近 Linux 的新挂载 API。
+6. *完整挂载树*：在现有传播状态和 event group 之上实现挂载点 dentry 切换、多 superblock、mount namespace，并将新挂载 API 接到真实 VFS 对象。
 
 7. *调度与多核*：补齐抢占、负载均衡、CPU 亲和性和更公平的调度策略。
 
