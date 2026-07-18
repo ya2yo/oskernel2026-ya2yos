@@ -96,7 +96,8 @@ fn run_interactive_shell() -> i32 {
 #[no_mangle]
 fn main() -> i32 {
     // run_interactive_shell()
-    get_score()
+    // get_score()
+    test_final_2026()
 }
 
 // Score helpers (kept for ad-hoc testing)
@@ -138,5 +139,13 @@ fn get_score() -> i32 {
     ltp::test_musl_ltp();
     ltp::test_glibc_ltp();
     shutdown();
+    0
+}
+
+// final-2026
+#[allow(unused)]
+fn test_final_2026() -> i32 {
+    run_testsuit("glibc\0", "cagent_testcode.sh\0");
+    run_testsuit("glibc\0", "buildstorm_testcode.sh\0");
     0
 }
