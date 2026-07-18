@@ -14,7 +14,8 @@ Linux 风格任务模型、创建和回收路径；调度策略、资源回收�
   table.header([*位置*], [*当前职责*]),
   [`os/src/task/process/process.rs`], [`Process`、全局 PID 映射、父子关系、进程组/会话和线程组退出元数据],
   [`os/src/task/task/task.rs`], [`TaskControlBlock`、用户 trap 上下文、内核栈，以及 `new`、`clone_process`、`exec`],
-  [`os/src/task/manager.rs`], [全局 FIFO 就绪队列、TID 到 TCB 的映射、futex 唤醒和阻塞任务计时器补扫],
+  [`os/src/task/manager.rs`], [TID 到 TCB 的映射、futex 唤醒和阻塞任务计时器补扫],
+  [`os/src/task/scheduler/`], [编译期选择的 CFS/RR 策略、就绪队列门面与运行时间记账],
   [`os/src/task/processor.rs`], [按 Hart 保存当前任务和 idle 上下文，执行调度循环],
   [`os/src/task/mod.rs`], [suspend、block、stop、exit 和 initproc 的控制流入口],
   [`os/src/syscall/task/`], [`clone`、`clone3`、`execve`、`exit`、`waitpid` 与 `waitid` 的 ABI 入口],
@@ -43,6 +44,7 @@ pub struct TaskControlBlock {
     pub process: Arc<Process>,
     pub interrupted: AtomicBool,
     pub interrupt_waker: AtomicWaker,
+    pub(crate) sched_entity: SchedEntity,
     inner: Mutex<TaskControlBlockInner>,
 }
 ```
@@ -62,7 +64,7 @@ pub struct TaskControlBlock {
 #figure(
   relation((
     ([*Process*\地址空间、fd、fs、信号动作、PID], [*TCB*\TID、内核栈、trap/task context、线程私有状态], [*ProcessMeta*\父子关系、PGID/SID、退出与等待事件]),
-    ([*TaskManager*\FIFO ready queue、TID 映射], [*Processor*\每 Hart 当前任务、idle context])
+    ([*Scheduler*\feature-selected ready queue], [*TaskManager*\TID 映射、timer/futex 唤醒], [*Processor*\每 Hart 当前任务、idle context])
   )),
   caption: [当前任务管理对象关系。]
 )
@@ -74,7 +76,7 @@ pub struct TaskControlBlock {
 #table(
   columns: (1.25fr, 3fr),
   table.header([*状态*], [*实现含义*]),
-  [`Ready`], [已可运行，可进入全局就绪队列],
+  [`Ready`], [已可运行，可进入当前编译策略的就绪队列],
   [`Running`], [被当前 Hart 的 `Processor.current` 持有并正在执行],
   [`Blocked`], [等待 futex、I/O、异步事件等；唤醒路径将其改回 `Ready`],
   [`Stopped`], [被 stop 类信号停止，等待 `SIGCONT` 等恢复路径],
@@ -92,30 +94,41 @@ TCB 的 trap 上下文实际位于用户地址空间的专用映射页，`TaskCo
 被 `wait` 前重用 ID，会覆盖全局 PID 映射。因此本快照中 TID/PID 单调消耗，不应把
 它描述为已实现的 ID 回收机制。
 
-== 调度与全局任务表
+== 调度策略与全局任务表
 
-`ready_queue` 是由 `Mutex<VecDeque<Weak<TaskControlBlock>>>` 实现的单个全局
-FIFO 队列。`add_task()` 以 `Arc::ptr_eq` 扫描去重后从队尾插入；`fetch_task()` 从
-队首取出并跳过已经失效的弱引用。`tid_to_task` 则维护
-`BTreeMap<usize, Arc<TaskControlBlock>>`，用于按 TID 查找线程、遍历计时器候选和
-在线程退出的 idle 控制流中移除条目。
+`task::ready_queue` 是稳定门面，具体实现由互斥的 `scheduler-cfs` 与 `scheduler-rr`
+Cargo feature 在编译期选择。默认 `scheduler-cfs` 为每个 Hart 建立一个
+`Mutex<CfsHartRunQueue>`，其内部 `BinaryHeap<CfsEntry>` 以 `(vruntime, tid)`
+反向排序，使 `pop()` 取得
+虚拟运行时间最小的任务。TCB 的 `SchedEntity` 保存 `vruntime`、`exec_start` 与原子
+`on_rq` 去重位；任务离开 `Processor.current` 时按硬件 tick 统计执行时间，并使用
+Linux nice -20..19 的权重表折算 `vruntime`。每个 Hart 的 `min_vruntime` 单调推进，
+新任务首次入队时被放置到目标 Hart 的这一坐标，避免跨 Hart 使用不同 runqueue 基线。
 
-每个 Hart 有一个 `Processor`，其中包含 `current: Option<Arc<TaskControlBlock>>`
-和 `idle_task_cx`。`run_tasks()` 在循环中检查普通计时器、阻塞任务计时器和 futex
-超时，然后从 FIFO 队列选择任务并通过 `switch()` 进入其 `TaskContext`。若已经有
-当前任务且仍有下一个就绪任务，当前任务会重新入队，唯独 `VforkBlocked` 与 `Stopped`
-任务留在队列外；若没有下一个任务，未被这两种状态阻塞的当前任务继续运行。
+`scheduler-rr` 保留原有 FIFO 语义：单个全局 `VecDeque` 从队尾入队、队首出队，
+辅以 TID 集合去重，并在取任务时跳过不属于当前 `home_hart` 的项。CFS 使用 per-Hart
+heap，RR 使用全局队列，但二者都通过同一 `add_task()` / `fetch_task()` API 服务唤醒
+路径。`tid_to_task` 独立维护 `BTreeMap<usize, Arc<TaskControlBlock>>`，用于按 TID
+查找线程、遍历计时器候选和在线程退出的 idle 控制流中移除条目。
 
-时钟中断路径会调用 `suspend_current_and_run_next()`，后者把普通任务设为 `Ready`
-后切回调度循环；若线程组已经进入退出状态，则改走退出路径。因此当前实现具有
-时钟驱动的轮转切换，不是“纯协作式”调度器。它也还不是按优先级、vruntime 或负载
-均衡选择任务的 CFS/实时调度器；多 Hart 共享同一全局 FIFO 队列。
+每个 Hart 有一个 `Processor`，其中包含 `current: Option<Arc<TaskControlBlock>>` 和
+`idle_task_cx`。`run_tasks()` 检查普通计时器、阻塞任务计时器和 futex 超时，记账并
+取出当前任务；仅将 `Ready`/`Running` 实体重新入队，再由所选策略统一选择下一个任务
+并通过 `switch()` 进入其 `TaskContext`。`Blocked`、`VforkBlocked` 与 `Stopped` 留在
+队列外，直到相应唤醒路径把它们恢复为 `Ready`。
+
+时钟中断仍以 100Hz 调用 `suspend_current_and_run_next()` 驱动抢占，自愿 yield 和阻塞
+路径也可切回调度循环。因此这是基于 nice 加权 `vruntime` 的简化 CFS，而非 Linux
+完整调度子系统：尚无 target latency/sched period、调度组、跨 Hart 迁移或负载均衡，
+也没有实现实时调度类。feature 只选择内核内部 runqueue；`sched_setscheduler(2)` 等
+用户 ABI 仍是兼容 stub，不提供运行时 CFS/RR 切换。
 
 #figure(
   sequence(((
     [用户态 / 时钟中断], [trap 后调用 suspend、block、stop 或 exit], [任务控制流]),
-    ([任务控制流], [状态更新，必要时回到 FIFO 或等待队列], [TaskManager]),
-    ([TaskManager], [取下一个 `Ready` 任务并 `switch`], [Processor])
+    ([任务控制流], [状态更新，必要时回到 scheduler 或等待队列], [Scheduler]),
+    ([Scheduler], [按 CFS/RR 策略取下一个 `Ready` 任务], [Processor]),
+    ([Processor], [`switch` 到任务 `TaskContext`], [任务控制流])
   )),
   caption: [调度入口与状态转换的当前控制流。]
 )
@@ -157,7 +170,7 @@ pidfd/cgroup 相关请求最终会被 flags 校验拒绝。因此不能将 `clon
     [*按 flags 共享或复制进程资源*],
     [*创建 TCB、内核栈和 trap context*],
     [*登记 TID 与 Process 关系*],
-    [*放入 FIFO ready queue*]
+    [*放入 feature-selected ready queue*]
   )),
   caption: [clone 创建路径。]
 )
@@ -236,15 +249,16 @@ ELF 末尾预留 guard page 后建立初始 brk 区域，并生成 `AT_PHDR`、`
 `INITPROC` 是惰性初始化的 `Arc<TaskControlBlock>`。首次访问时，内核从根文件系统
 打开 `/initproc`，读取 ELF 并调用 `TaskControlBlock::new()`；该函数创建 PID/TID 1 的
 `Process`、带标准输入输出的 `FdTable`、初始 `FSInfo`、用户地址空间、四页内核栈及
-初始 trap context。`add_initproc()` 把它放入全局就绪队列和 TID 映射，之后
+初始 trap context。`add_initproc()` 把它放入当前调度策略的就绪队列和 TID 映射，之后
 `run_tasks()` 才能首次进入用户态。孤儿进程会在父进程退出时重新挂到 PID 1。
 
 #table(
   columns: (1.6fr, 3fr),
   table.header([*边界*], [*当前状态*]),
-  [调度策略], [单全局 FIFO 队列；有时钟驱动轮转，但没有 CFS、实时优先级或负载均衡。],
+  [调度策略], [默认启用简化 CFS；`make SCHEDULER=rr` 编译 FIFO RR。两个 feature 互斥，不能在运行时切换。],
   [ID 生命周期], [`TidHandle` 当前不归还 ID，避免 zombie 等待期间发生 PID/TID 重用。],
   [clone3], [仅将支持的 `clone_args` 字段转换到 `sys_clone`；set_tid、pidfd 和 cgroup 等扩展未实现。],
   [ELF 动态加载], [内核映射 `PT_INTERP` 指定的解释器并提供 auxv；共享库解析与重定位在用户态完成。],
-  [多核], [每 Hart 有 `Processor`，但 ready queue 和 TID 映射是全局锁保护结构。],
+  [Linux 调度 ABI], [`sched_setscheduler`/`sched_getscheduler` 等仍为兼容实现，不代表完整 `SCHED_OTHER`/实时类语义。],
+  [多核], [CFS 按 Hart 分队列，RR 使用按 `home_hart` 过滤的全局队列；进程固定到所属 Hart，尚无迁移、work stealing 或负载均衡。TID 映射仍为全局锁保护结构。],
 )

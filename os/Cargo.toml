@@ -52,7 +52,7 @@ cty = { path = "../crates/cty" }
 smoltcp = { path = "vendor/smoltcp" }
 
 [features]
-default = ["net"]
+default = ["net", "scheduler-cfs"]
 error = []
 warn = []
 info = []
@@ -60,6 +60,8 @@ debug = []
 trace = []
 irq = []
 net = []
+scheduler-rr = []
+scheduler-cfs = []
 
 # 这里不再需要 riscv64 = ["riscv", "sbi-rt"]，因为 target 会自动处理
 # 但如果你代码里还在用 #[cfg(feature = "riscv64")]，建议改为 #[cfg(target_arch = "riscv64")]

@@ -5071,3 +5071,23 @@ AI 先确认原日志在四项成功后停于 `TCP_CRR begin`，无 panic/TFAIL�
 ### 修改与验证
 
 修改 `os/src/net/{mod.rs,service.rs,general.rs,listen_table.rs,tcp.rs}`、`os/src/task/future/{mod.rs,time.rs}`、`os/src/task/manager.rs` 和 `os/src/task/task/task.rs`；新增 `Docs/决赛文档/problem/riscv-smp-netperf-wakeup-locking.md` 并更新索引、开发日志和 AI 记录。`make build-arch TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过，仅有既有 warnings。最终连续两次 `timeout 300s make run > log.ans 2>&1` 的有效 boot hart 0 样本中，musl/glibc 的五类 netperf 共 10 项均 `end: success`，两组均结束并 `shutdown!`。另有 boot hart 1 样本在进入测试前触发 poisoned `Lazy` panic，确认为独立启动风险，未计入 netperf 验证。
+
+## 2026-07-18：CFS 调度器与编译期 RR 切换
+
+### 用户需求
+
+维护者要求在当前内核实现 CFS，保留现有 RR 并通过 feature 切换；随后指定默认使用 CFS，并要求 QEMU 输出直接写入 `log.ans`。
+
+### 分析与采纳结论
+
+AI 从原 `task::ready_queue::{add_task, fetch_task}` 门面、`run_tasks()`、100Hz timer trap 和所有唤醒调用点梳理调度边界，将策略实现下沉到 `os/src/task/scheduler/`。`scheduler-cfs` 与 `scheduler-rr` 在编译期互斥，Cargo 和 Makefile 默认选择 CFS；显式 `make SCHEDULER=rr` 关闭默认 feature 后启用 `net + scheduler-rr`。该选择只控制内核内部 runqueue，不改变仍为兼容实现的 `sched_setscheduler`/`sched_getscheduler` Linux ABI。
+
+CFS 为每个 Hart 建立独立锁保护的 `BinaryHeap`，以反向 `(vruntime, tid)` 键选择最小实体。每个 TCB 的 `SchedEntity` 保存 `vruntime`、`exec_start` 和原子 `on_rq` 位；任务离开 processor 时按硬件 tick 与 Linux nice 权重表累计虚拟运行时间，首次入队按目标 Hart 的 `min_vruntime` 放置。`run_tasks()` 改为先把仍 runnable 的当前实体入队，再统一选择下一任务，使 CFS 能比较当前任务与所有候选，同时保持 RR 的队尾轮转次序。RR 继续使用全局 `VecDeque`，增加 TID 集合去重以消除 400-task 压力下的线性扫描开销。
+
+初版 CFS 使用全局 `BTreeMap + BTreeSet`，在 hackbench 的短阻塞/唤醒热路径中频繁分配树节点并跨 Hart 扫描，QEMU 两核满载但 180 秒无法完成。最终改为 per-Hart heap 复用底层 Vec 容量，拆分 runqueue 锁，并让 `on_rq` 保持到任务状态发布为 `Running` 后再清除，既消除性能热点，也关闭出队到运行之间的重复入队窗口。新任务不继承另一个 Hart 的绝对 `vruntime`，而在首次入队时进入目标 runqueue 的坐标系。当前仍不实现跨 Hart 迁移、负载均衡、target latency、调度组或实时调度类。
+
+### 修改与验证
+
+修改 `os/Cargo.toml`、`os/Makefile`、`os/src/task/mod.rs`、`os/src/task/manager.rs`、`os/src/task/processor.rs`、`os/src/task/task/task.rs` 和 `os/src/syscall/task/schedule.rs`，新增 `os/src/task/scheduler/{mod.rs,cfs.rs,rr.rs}`；同步更新 Typst 设计文档、使用指南、开发日志和 AI 协作记录。维护者已有的 `user/src/bin/initproc.rs` cyclictest 入口仅用于验证，本次未修改。
+
+`make` 在默认 CFS 下完成 RISC-V/LoongArch64 release 构建，`make SCHEDULER=rr` 在 RR 下也完成双架构构建，只有既有 vendored `smoltcp` warnings。最终 `timeout 180s make run > log.ans 2>&1` 的 RISC-V CFS 日志中，musl/glibc 各四个 cyclictest 阶段共 8 项均 `end: success`，两轮 400-task hackbench 均 `kill hackbench: success` 并正常 `shutdown!`；扫描未见 `panic`、`TFAIL`、`TBROK` 或 `ERROR`。RR 对照日志 `/tmp/rr-riscv.log` 得到同样的 8 项成功、两轮预期清理和正常关机。LoongArch64 默认 CFS 的 `timeout 180s make run TARGET_ARCH=loongarch64 > log.ans 2>&1` 也取得 8 项成功、两轮预期清理和正常关机，样本保存为 `/tmp/cfs-loongarch-final.log`；随后重跑 RISC-V，最终 `log.ans` 保留双 hart CFS 成功样本。`typst compile --root . --pdf-standard a-2u Docs/ya2yos/main.typ /tmp/ya2yos-kernel-design.pdf` 与适配原有 CRLF 指南文件的 `git -c core.whitespace=cr-at-eol diff --check` 均通过。LoongArch64 RR 完成编译验证，未运行 QEMU 行为回归。

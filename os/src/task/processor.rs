@@ -74,61 +74,42 @@ pub fn run_tasks() {
         check_timer_events();
         check_blocked_task_timers();
         check_futex_timer();
+        let cur_task = take_current_task();
         let processor = get_proc_by_hartid(hart_id());
         let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
-        if let Some(cur_task) = take_current_task() {
-            // debug!("Task id: {} is running.", cur_task.tid());
-            let mut cur_task_inner = cur_task.inner_lock();
-
-            if let Some(next_task) = ready_queue::fetch_task(hart_id()) {
-                let mut next_task_inner = next_task.inner_lock();
-                let next_task_cx_ptr = &next_task_inner.task_cx as *const TaskContext;
-                next_task_inner.task_status = TaskStatus::Running;
-                drop(next_task_inner);
-                let cur_vfork = cur_task_inner.task_status == TaskStatus::VforkBlocked;
-                let cur_stopped = cur_task_inner.task_status == TaskStatus::Stopped;
-                drop(cur_task_inner);
-                processor.current = Some(next_task);
-                // VFORK/Stopped tasks stay out of ready queue until their wake condition.
-                if !cur_vfork && !cur_stopped {
-                    ready_queue::add_task(&cur_task);
-                }
-                switch(idle_task_cx_ptr, next_task_cx_ptr);
-            } else {
-                // No ready task: re-run current unless it is blocked outside the run queue.
-                if cur_task_inner.task_status == TaskStatus::VforkBlocked
-                    || cur_task_inner.task_status == TaskStatus::Stopped
-                {
-                    drop(cur_task_inner);
-                    drop(cur_task);
-                    // Loop back to wait for the corresponding wake event.
-                    continue;
-                }
-                cur_task_inner.task_status = TaskStatus::Running;
-                let cur_task_cx_ptr = &cur_task_inner.task_cx as *const TaskContext;
-                drop(cur_task_inner);
-                processor.current = Some(cur_task);
-                switch(idle_task_cx_ptr, cur_task_cx_ptr);
+        if let Some(cur_task) = cur_task {
+            let runnable = matches!(
+                cur_task.inner_lock().task_status,
+                TaskStatus::Ready | TaskStatus::Running
+            );
+            if runnable {
+                // Enqueue before selection so CFS can compare the current task
+                // with every other runnable entity. For RR this preserves the
+                // original behavior of appending the current task at the tail.
+                ready_queue::add_task(&cur_task);
             }
-        } else {
-            // 第一次调度，抢占
-            if let Some(task) = ready_queue::fetch_task(hart_id()) {
-                // debug!("first fetch task {}", task.pid());
-                let mut task_inner = task.inner_lock();
-                let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
-                task_inner.task_status = TaskStatus::Running;
-                drop(task_inner);
-                processor.current = Some(task);
-                switch(idle_task_cx_ptr, next_task_cx_ptr);
-            }
-            //不切换到内核的地址空间，可能继续运行或转到别的任务
         }
+
+        if let Some(next_task) = ready_queue::fetch_task(hart_id()) {
+            let mut next_task_inner = next_task.inner_lock();
+            let next_task_cx_ptr = &next_task_inner.task_cx as *const TaskContext;
+            next_task_inner.task_status = TaskStatus::Running;
+            drop(next_task_inner);
+            ready_queue::mark_running(&next_task);
+            processor.current = Some(next_task);
+            switch(idle_task_cx_ptr, next_task_cx_ptr);
+        }
+        // 不切换到内核地址空间；没有可运行任务时继续 idle 调度循环。
     }
 }
 ///Take the current task,leaving a None in its place
 pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
     // debug!("[processor]: take_current_task!");
-    get_proc_by_hartid(hart_id()).take_current()
+    let task = get_proc_by_hartid(hart_id()).take_current();
+    if let Some(task) = &task {
+        ready_queue::account_current(task);
+    }
+    task
 }
 ///Get running task
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {

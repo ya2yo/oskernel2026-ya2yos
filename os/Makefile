@@ -3,6 +3,18 @@
 
 build: $(KERNEL_BIN)
 
+SCHEDULER ?= cfs
+
+ifeq ($(SCHEDULER),rr)
+SCHEDULER_BUILD_ARGS := --no-default-features
+SCHEDULER_FEATURE := net,scheduler-rr
+else ifeq ($(SCHEDULER),cfs)
+SCHEDULER_BUILD_ARGS :=
+SCHEDULER_FEATURE := scheduler-cfs
+else
+$(error Unsupported SCHEDULER: $(SCHEDULER), expected rr or cfs)
+endif
+
 $(KERNEL_BIN): kernel
 # 这里如果是la64，则需要保留elf给qemu-system-loongarch64才能正常运行
 ifeq ($(ARCH), riscv64)
@@ -14,7 +26,8 @@ endif
 
 kernel:
 	@echo "In os/Makefile, BUILD_ARGS: $(KERNEL_BUILD_ARGS)"
-	@cargo build $(KERNEL_BUILD_ARGS) --features $(KERNEL_OUTPUT_LOG_LEVEL)
+	@echo "Scheduler: $(SCHEDULER)"
+	@cargo build $(KERNEL_BUILD_ARGS) $(SCHEDULER_BUILD_ARGS) --features $(KERNEL_OUTPUT_LOG_LEVEL),$(SCHEDULER_FEATURE)
 
 clean:
 	@cargo clean

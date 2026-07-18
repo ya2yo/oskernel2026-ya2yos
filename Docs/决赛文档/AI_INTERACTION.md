@@ -822,3 +822,10 @@
 - **场景**：分析 `log.ans`、GDB 双 hart 回溯、网络锁图与通用 Future/AtomicWaker 竞态审计、双架构构建及 RISC-V netperf 重复回归。
 - **描述**：确认卡死由网络全局锁反序和 `Poll::Pending -> Blocked` 跨核丢唤醒共同触发；统一 `SERVICE -> SOCKET_SET -> LISTEN_TABLE` 顺序，在 waker 两侧以 `woke -> task.inner` 原子发布状态，修正 AtomicWaker 注册顺序，并收敛 owner-hart timer 扫描。RISC-V 最终连续两次有效运行中 musl/glibc 共 10 项 netperf 全部成功并 `shutdown!`，双架构 release 构建通过。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/riscv-smp-netperf-wakeup-locking.md](./problem/riscv-smp-netperf-wakeup-locking.md)。
 - **关联 commit**：`a4fec81`
+
+#### CFS 调度器与编译期 RR 切换（7.18）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：任务调度设计、Cargo feature 互斥、CFS 压力性能定位、双策略/双架构构建与 RISC-V QEMU 回归
+- **描述**：将原 ready queue 抽为编译期可选策略，默认 `scheduler-cfs` 使用 per-Hart `BinaryHeap`、nice 加权 `vruntime`、`min_vruntime` 和原子 `on_rq`；`scheduler-rr` 保留全局 FIFO，并以 TID 集合消除压力下的线性去重。统一调度循环先入队 runnable 当前实体再选下一任务，同时明确 feature 不等同运行时 `sched_setscheduler`，且当前无跨 Hart 迁移或负载均衡。默认 CFS 与显式 RR 均通过双架构 release 构建；RISC-V 两种策略及 LoongArch64 CFS 的 musl/glibc cyclictest 各 8 项成功，两轮 400-task hackbench 均完成预期清理并输出 `kill hackbench: success`，最终 `shutdown!`。最终 RISC-V CFS 输出位于 `log.ans`，详见 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-18 工作树）

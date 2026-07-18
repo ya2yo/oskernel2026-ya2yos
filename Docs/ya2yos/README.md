@@ -7,7 +7,7 @@ Markdown 仅保留给 README、开发日志、问题复盘和轻量索引。报�
 ```bash
 cd /path/to/oskernel2026-ya2yos
 typst compile --root . --pdf-standard a-2u \
-  Docs/ya2yos/main.typ Docs/ya2yos/typst/ya2yos-kernel-design.pdf
+  Docs/ya2yos/main.typ /tmp/ya2yos-kernel-design.pdf
 ```
 
 `--pdf-standard a-2u` 用于生成面向长期存档和外部交换的 PDF/A-2u 文件。生成的

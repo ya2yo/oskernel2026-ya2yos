@@ -36,7 +36,7 @@ os/src/
 ├── drivers/    # VirtIO block/net、设备容器及架构相关 transport
 ├── trap/       # 用户陷入、页故障、时钟中断与返回用户态
 ├── syscall/    # Linux syscall 分发；task/mm/fs/net/signal/sync/io_mpx 等 ABI 入口
-├── task/       # Process、TCB、FIFO 调度、futex、clone/exit/wait 支撑
+├── task/       # Process、TCB、可选 CFS/RR 调度、futex、clone/exit/wait 支撑
 ├── mm/         # MemorySet、VMA、帧分配、ELF、用户复制、COW、共享内存
 ├── fs/         # ext4/VFS 适配、fd、pipe、epoll、设备、挂载记录与 proc 兼容
 ├── signal/     # action 表、pending、递送、信号帧和 interval timer 信号
@@ -60,11 +60,13 @@ os/src/
 
 汇编入口位于 `arch/*/qemu/asms/entry.asm`。首个 hart 进入 `rust_main()` 后依次完成
 时钟频率、内存、日志、trap、任务、文件系统和网络初始化；随后创建 `/initproc` 对应的
-初始 TCB，发布启动屏障并使能定时器。`run_tasks()` 从全局 FIFO 就绪队列取出任务，首次
-由 `trap_return` 恢复其用户 trap context。
+初始 TCB，发布启动屏障并使能定时器。`run_tasks()` 将 runnable 任务交给
+`task/scheduler/` 中由 feature 选定的策略，再取出下一任务；默认 CFS 按最小
+`vruntime` 选择，RR 配置按 FIFO 轮转。首次运行由 `trap_return` 恢复用户 trap context。
 
 其他 hart 在 `INIT_FINISHED` 前自旋等待，之后安装 trap 向量、激活内核地址空间并设置
-定时器；默认 `HART_NUM` 为 1。网络由 `net` feature 控制，默认启用：RISC-V 在未发现
+定时器。当前 RISC-V QEMU 配置为两个 hart，进程按 PID 固定到 `home_hart`；
+LoongArch64 保持单 hart 运行。网络由 `net` feature 控制，默认启用：RISC-V 在未发现
 VirtIO-net 时仍保留 loopback，LoongArch 通过 PCI 路径建立设备 transport。
 
 #figure(

@@ -65,6 +65,7 @@ mod kernel_stack;
 mod manager;
 mod process;
 mod processor;
+mod scheduler;
 mod switch;
 mod sysinfo;
 mod task;
@@ -95,6 +96,7 @@ pub use processor::{
     current_task, current_token, current_trap_cx, run_tasks, schedule, take_current_task,
     Processor, PROCESSORS,
 };
+pub use scheduler::ready_queue;
 use spin::Lazy;
 use switch::__abandon;
 pub use sysinfo::Sysinfo;

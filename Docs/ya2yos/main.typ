@@ -1,9 +1,9 @@
 // Ya2yOS 内核设计文档（Typst 入口）
 // 对外发布建议：typst compile --pdf-standard a-2u main.typ ya2yos-kernel-design.pdf
 
-#let doc-version = "0.3"
+#let doc-version = "0.4"
 #let doc-date = datetime(year: 2026, month: 7, day: 18)
-#let source-snapshot = "工作树快照（2026-07-18，基于 ed7c339）"
+#let source-snapshot = "未提交工作树快照（2026-07-18，含 CFS/RR 调度器改动）"
 #let ink = rgb("161616")
 #let muted = rgb("555555")
 #let line = rgb("9a9a9a")
@@ -13,7 +13,7 @@
   title: "Ya2yOS 内核设计文档",
   author: "饶晓杰",
   date: doc-date,
-  keywords: ("Ya2yOS", "Rust", "kernel", "RISC-V", "LoongArch"),
+  keywords: ("Ya2yOS", "Rust", "kernel", "RISC-V", "LoongArch", "CFS", "scheduler"),
 )
 #set page(
   paper: "a4",
@@ -79,10 +79,10 @@
   #text(font: "WenQuanYi Zen Hei", size: 16pt, weight: "bold")[摘要]
 ]
 
-Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作系统内核，当前支持 RISC-V 64 与 LoongArch64 QEMU 平台。本文档从可复核的实现视角阐述内核的启动与异常入口、地址空间和页面生命周期、进程线程与信号、Linux 风格系统调用与 VFS、网络栈和 VirtIO 设备接入，并给出模块边界、关键不变量、验证约定和已知边界。设计描述以当前源代码为准；对未完成能力使用明确的边界表述，避免将规划误作已实现功能。
+Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作系统内核，当前支持 RISC-V 64 与 LoongArch64 QEMU 平台。本文档从可复核的实现视角阐述内核的启动与异常入口、地址空间和页面生命周期、进程线程与编译期可选的 CFS/RR 调度、信号、Linux 风格系统调用与 VFS、网络栈和 VirtIO 设备接入，并给出模块边界、关键不变量、验证约定和已知边界。设计描述以当前源代码为准；对未完成能力使用明确的边界表述，避免将规划误作已实现功能。
 
 #v(0.5em)
-*关键词*：操作系统内核；Rust；Linux ABI；虚拟内存；VFS；RISC-V；LoongArch
+*关键词*：操作系统内核；Rust；Linux ABI；CFS；进程调度；虚拟内存；VFS；RISC-V；LoongArch
 
 #v(1.2em)
 #callout([文档范围], [本文面向评审、协作者和后续维护者。其描述对应 #source-snapshot；源代码变更后，应同步核对受影响章节。测试故障的逐案证据不在本文展开，而位于 `Docs/决赛文档/problem/`。])
@@ -126,7 +126,7 @@ Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作
   table.header([*主题*], [*主要实现位置*], [*本文位置*]),
   [内核入口与初始化], [`os/src/main.rs`], [第 2 章],
   [架构实现], [`os/src/arch/riscv64/`、`os/src/arch/loongarch64/`], [第 2 章],
-  [进程、调度与 futex], [`os/src/task/`], [第 3 章],
+  [进程、调度与 futex], [`os/src/task/`、`os/src/task/scheduler/`], [第 3 章],
   [页表、VMA 与用户复制], [`os/src/mm/`], [第 4 章],
   [信号动作、pending 与 frame], [`os/src/signal/`], [第 5 章],
   [syscall ABI 与实现分发], [`os/src/syscall/`], [第 3--8 章],

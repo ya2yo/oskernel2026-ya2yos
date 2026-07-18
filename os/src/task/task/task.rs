@@ -2,6 +2,7 @@
 use super::super::process::Process;
 use super::super::{
     aux::{Aux, AuxType},
+    scheduler::SchedEntity,
     tid_to_task, TaskContext, TidHandle,
 };
 use crate::{
@@ -106,6 +107,8 @@ pub struct TaskControlBlock {
     // 异步中断/信号同步
     pub interrupted: AtomicBool,
     pub interrupt_waker: AtomicWaker,
+    /// 调度器私有运行时间状态；RR 下为空，CFS 下保存 vruntime。
+    pub(crate) sched_entity: SchedEntity,
     /// 内部主要数据，使用锁进行包含保护
     inner: Mutex<TaskControlBlockInner>,
 }
@@ -249,6 +252,7 @@ impl TaskControlBlock {
             process: process.clone(),
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
+            sched_entity: SchedEntity::new(),
             inner: Mutex::new(TaskControlBlockInner {
                 trap_cx_ppn: 0.into(),
                 trap_cx_bottom: 0,
@@ -630,6 +634,9 @@ impl TaskControlBlock {
             process: process_arc,
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
+            // First enqueue places the child in its destination hart's
+            // min_vruntime coordinate system.
+            sched_entity: SchedEntity::new(),
             inner: Mutex::new(TaskControlBlockInner {
                 trap_cx_ppn: 0.into(),
                 trap_cx_bottom: 0,

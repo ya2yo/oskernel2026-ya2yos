@@ -33,6 +33,7 @@ Ya2yOS 实现了大量 Linux syscall，并围绕 glibc、musl、BusyBox、libc-t
 - *ext4 集成*：通过 `lwext4_rust` 将 lwext4 接入内核，提供普通文件、目录、软硬链接、truncate、stat 等能力；
 - *socket 栈*：基于 smoltcp 支持 TCP/UDP，并实现 Unix domain socket 和常见 socket syscall；
 - *等待与同步*：实现 futex 基础等待/唤醒、robust list 相关路径，以及 pipe/eventfd/epoll 的阻塞和唤醒机制；
+- *可选调度策略*：默认按 nice 加权 `vruntime` 运行简化 CFS，并可在编译期切换到 FIFO RR；
 - *双架构适配*：同一内核代码支持 RISC-V64 与 LoongArch64，设备侧分别适配 MMIO 与 PCI VirtIO。
 
 === Rust 工程实践
@@ -82,7 +83,7 @@ Ya2yOS 实现了大量 Linux syscall，并围绕 glibc、musl、BusyBox、libc-t
 
 5. *权限和安全模型有限*：已有 uid/gid、mode、umask 和部分访问检查，但 capabilities、seccomp、namespace、LSM 等机制仍缺失。
 
-6. *调度和多核能力有限*：多核负载均衡、抢占、NUMA 感知和复杂调度策略仍需完善。
+6. *调度和多核能力有限*：已有 100Hz 抢占及编译期可选 CFS/RR，但尚无跨 Hart 迁移、负载均衡、NUMA 感知、实时类和完整 Linux `SCHED_*` 运行时策略。
 
 7. *设备模型不完整*：`/dev` 主要是手工注册兼容层，loop 设备尚无真实 backing file 数据路径，图形/输入/熵设备未系统接入。
 
@@ -107,7 +108,7 @@ Ya2yOS 实现了大量 Linux syscall，并围绕 glibc、musl、BusyBox、libc-t
 
 6. *完整挂载树*：在现有传播状态和 event group 之上实现挂载点 dentry 切换、多 superblock、mount namespace，并将新挂载 API 接到真实 VFS 对象。
 
-7. *调度与多核*：补齐抢占、负载均衡、CPU 亲和性和更公平的调度策略。
+7. *调度与多核*：完善 CFS 调度周期与唤醒放置，实现 CPU 亲和性迁移、跨 Hart 负载均衡和实时调度类。
 
 8. *io_uring/AIO*：在页缓存和设备 waker 基础上实现高性能异步 IO。
 

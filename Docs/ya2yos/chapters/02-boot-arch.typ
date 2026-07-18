@@ -10,7 +10,7 @@
   `entry.asm` → `rust_main` → `mm::init` → `logger::init` → `trap::init` → `task::init` → `fs::init` → `net::init_network` → `add_initproc` → 开启时钟中断 → `run_tasks`
 ]
 
-非首 hart 等待 `INIT_FINISHED`，随后各自安装 trap 向量、激活内核页表、开启定时器并进入调度循环。`START_HART_ID` 用于区分负责列举应用和启动初始调度的 hart。当前默认配置中的 `HART_NUM` 为 1，但启动屏障保留了多 hart 的初始化骨架。
+非首 hart 等待 `INIT_FINISHED`，随后各自安装 trap 向量、激活内核页表、开启定时器并进入调度循环。`START_HART_ID` 用于区分负责列举应用和启动初始调度的 hart。当前 `HART_NUM` 为 2，RISC-V QEMU 启动两个 hart；LoongArch64 的进程固定到 hart 0，并以单 hart QEMU 配置运行。
 
 == 架构抽象
 

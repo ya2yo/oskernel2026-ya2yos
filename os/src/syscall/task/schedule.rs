@@ -139,7 +139,7 @@ pub fn sys_sched_setscheduler(_pid: usize, _policy: usize, _param: *const u8) ->
 /// 参考 https://man7.org/linux/man-pages/man2/sched_getscheduler.2.html
 pub fn sys_sched_getscheduler(_pid: usize) -> SyscallRet {
     // debug!("[sys_sched_getscheduler] pid is {}", pid);
-    //由于使用的是标准的时间片调度算法，直接返回SCHED_OHTER = 0
+    // 内部 CFS/RR feature 不改变 Linux ABI；当前兼容返回 SCHED_OTHER = 0。
     Ok(0)
 }
 

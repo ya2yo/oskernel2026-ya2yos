@@ -1,80 +1,10 @@
 //!Implementation of [`TaskManager`]
-use super::{current_task, TaskControlBlock, TaskStatus, INITPROC};
+use super::{current_task, ready_queue, TaskControlBlock, TaskStatus, INITPROC};
 use crate::signal::deliver_blocked_itimer_signal;
-use alloc::collections::{BTreeMap, VecDeque};
-use alloc::sync::{Arc, Weak};
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use log::debug;
 use spin::{Lazy, Mutex};
-
-pub mod ready_queue {
-    use log::warn;
-
-    use super::*;
-    /// 就绪队列，存储TCB的Arc
-    static READY_QUEUE: Lazy<Mutex<VecDeque<Weak<TaskControlBlock>>>> =
-        Lazy::new(|| Mutex::new(VecDeque::new()));
-
-    // 一个HashMap，用于表示一个tid是否存于TASK_MANAGER中
-    // static IN_QUEUE: Lazy<Mutex<HashSet<usize>>> = Lazy::new(|| Mutex::new(HashSet::new()));
-    // 算了我们不要它了
-
-    fn task_in_queue(
-        queue_guard: &spin::MutexGuard<'_, VecDeque<Weak<TaskControlBlock>>>,
-        task: &Arc<TaskControlBlock>,
-    ) -> bool {
-        for weak_tcb in queue_guard.iter() {
-            if let Some(strong_tcb) = weak_tcb.upgrade() {
-                if Arc::ptr_eq(&strong_tcb, task) {
-                    return true;
-                }
-            } else {
-                warn!("task_in_queue got a None task???");
-            }
-        }
-        return false;
-    }
-    /// 向就绪队列中添加
-    pub fn add_task(task: &Arc<TaskControlBlock>) {
-        // debug!("task: {} add", task.tid());
-        let mut queue = READY_QUEUE.lock();
-        // debug!("{:?}", queue);
-        if task_in_queue(&queue, task) {
-            warn!(
-                "add_task: task tid={} already in queue, skipping",
-                task.tid()
-            );
-            return;
-        }
-        queue.push_back(Arc::downgrade(&task));
-    }
-
-    /// 从就绪队列中取出当前 hart 可以运行的任务。
-    ///
-    /// 在远程 TLB shootdown 完成前，进程固定到一个 hart；不属于当前
-    /// hart 的任务保留在队列中等待其 owner，避免共享地址空间跨核并行。
-    pub fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {
-        let mut queue = READY_QUEUE.lock();
-        let queued = queue.len();
-        for _ in 0..queued {
-            let Some(task) = queue.pop_front() else {
-                break;
-            };
-            let Some(task_arc) = task.upgrade() else {
-                warn!("fetch task got a dropped task");
-                continue;
-            };
-            if task_arc.process.home_hart() == hartid {
-                return Some(task_arc);
-            }
-            queue.push_back(Arc::downgrade(&task_arc));
-        }
-        None
-    }
-    /// 取就绪队列长度
-    pub fn ready_procs_num() -> usize {
-        READY_QUEUE.lock().len()
-    }
-}
 
 pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
     let mut task_inner = task.inner_lock();
