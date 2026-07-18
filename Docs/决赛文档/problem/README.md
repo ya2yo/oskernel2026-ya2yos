@@ -82,3 +82,4 @@
 - [LTP fs_bind23 MS_MOVE 子树重定位与 shared peer 传播](./fs-bind23-move-propagation.md)
 - [LTP fs_bind24 子目录 bind 的 shared-slave 传播](./fs-bind24-subtree-shared-slave-propagation.md)
 - [LTP fs_bind_move05 私有子树移入 shared 父挂载后的传播](./fs-bind-move05-private-shared-propagation.md)
+- [决赛测例一：CAgent](./cagent.md)
