@@ -18,6 +18,7 @@ const UDP_RR_SCRIPT: &str = concat!(
 /// The server lifetime and client arguments intentionally match
 /// `netperf_testcode.sh`; keeping both endpoints under the shell preserves the
 /// original fork topology while excluding the other netperf workloads.
+#[allow(unused)]
 pub fn run_udp_rr_musl() -> i32 {
     println!("#### OS COMP TEST GROUP START netperf-udp-rr-musl ####");
     let status = fork_and_run("musl\0", &["busybox\0", "sh\0", "-c\0", UDP_RR_SCRIPT]);

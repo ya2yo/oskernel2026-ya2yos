@@ -385,9 +385,9 @@ impl PageTable {
         // 必须有对应的 frame（ELF 段用 data_frames 跟踪）
         // fork 子进程的 Brk 区域可能存在无 data_frames 条目的 COW PTE；
         // 此时仍应分配新帧并复制数据。
-        let refcnt = match vma.data_frames.get(&va.into()) {
-            Some(f) => Arc::strong_count(f),
-            None => 2, // no tracker → force copy path
+        let (refcnt, source_frame) = match vma.data_frames.get(&va.into()) {
+            Some(frame) => (Arc::strong_count(frame), Some(Arc::clone(frame))),
+            None => (2, None), // no tracker → force copy path
         };
         debug!("---> refcnt={}", refcnt);
         // 只有一个引用：无需复制物理页，直接调整权限即可
@@ -402,8 +402,11 @@ impl PageTable {
             return true;
         }
 
-        // 多个引用（COW 共享或非 COW 共享）：复制物理页内容
-        let src = pte.get_ppn().bytes_array_mut();
+        // Multiple address spaces can fault the same COW page concurrently.
+        // Keep a FrameTracker reference until the copy has completed: after
+        // unmapping this VMA, another fault handler may drop its last VMA
+        // reference and recycle the source physical page.
+        let src_ppn = pte.get_ppn();
         vma.unmap_one(self, va.into());
         if vma.map_one(self, va.into()).is_none() {
             return false; // OOM — let trap handler send SIGSEGV
@@ -411,7 +414,8 @@ impl PageTable {
         tlb_invalidate();
         let pte = self.find_valid_pte(va.floor()).unwrap();
         let dst = &mut pte.get_ppn().bytes_array_mut()[..PAGE_SIZE];
-        dst.copy_from_slice(src);
+        dst.copy_from_slice(src_ppn.bytes_array());
+        drop(source_frame);
 
         let mut flags = pte.get_flags();
         flags.remove(RVPTEFlags::COW);

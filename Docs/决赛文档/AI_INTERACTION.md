@@ -850,3 +850,10 @@
 - **场景**：分析 `log.ans` 和此前双 hart网络唤醒复盘，审计 CFS 出队/网络 waker 时序与 smoltcp deadline 换算，新增独立 UDP_RR 测例并执行双架构构建与 RISC-V QEMU 回归。
 - **描述**：确认 CFS 的陈旧 entry 在读取 `Blocked` 状态后才清 `on_rq`，会让并发网络 waker 跳过重新入队，最终留下无 queue entry 的 `Ready` task；同时发现 smoltcp 微秒 `Instant` 到内核 `Timespec` 的两处单位换算均错误，使 fallback poll deadline 约偏离三个数量级。修复把状态检查与 CFS membership 清除收敛到同一个 `task.inner` 临界区，修正微秒/纳秒换算；`initproc` 仅运行新建的 musl `UDP_RR` 模块，保留 `netserver` 的 kill/wait 清理。RISC-V 连续有效样本均成功，最终 `log.ans` 输出 group END 和 `shutdown!`；LoongArch64 完成编译验证。详见 [problem/riscv-cfs-netperf-udp-rr-hang.md](./problem/riscv-cfs-netperf-udp-rr-hang.md)。
 - **关联 commit**：尚未提交（2026-07-19 工作树）
+
+#### RISC-V libctest 批量 COW 源帧并发释放修复（7.19）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `riscv.ans` 与 `log.ans` 中单测正常、批量随机段错误的问题，检查测试镜像 BusyBox 反汇编和 RISC-V COW 页故障路径，并执行最终 QEMU 回归。
+- **描述**：确认 `0x1066c0` 是 BusyBox/musl 分配器检测 heap chunk 元数据损坏后的主动崩溃，而非 `clocale_mbfuncs` 断言。根因是两个 hart 并发 COW 时，一个路径在取得裸源页后解除 VMA 映射，另一路径可删除最后一个 `FrameTracker` 引用并复用源物理页。修复在 `unmap_one()` 前克隆并持有源帧到页内容复制完成。RISC-V 构建通过；最终根目录 `log.ans` 的 static 107 项与 dynamic 110 项全部结束、打印 `GROUP END`/`shutdown!`，无段错误、页故障、panic、TFAIL 或 TBROK；两个既有 `utime` 失败未纳入本次修复。详见 [problem/riscv-libctest-cow-source-frame-race.md](./problem/riscv-libctest-cow-source-frame-race.md) 与 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-19 工作树）
