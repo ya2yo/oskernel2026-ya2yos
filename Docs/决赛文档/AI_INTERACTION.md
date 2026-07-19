@@ -864,3 +864,10 @@
 - **场景**：维护者要求根据本地 Linux 7.0 源码说明 fork/COW 实现，并将其生命周期与权限检查原则落地到 Ya2yOS 的 RISC-V COW 路径。
 - **描述**：对照 Linux `do_wp_page()`/`wp_page_copy()` 的“旧 folio 引用 -> 分配并复制 -> PTE 重验/切换 -> rmap 与引用释放”顺序，保留源 `FrameTracker` pin，并把 Ya2yOS COW 改为 OOM 时保持旧映射、成功后才替换 PTE 和 VMA frame。RISC-V `copy_to_user` 现会对 present COW 页走 StorePageFault，避免绕过硬件写保护；Brk shrink 和 lazy stack clone 的页表所有权也同步修复。RISC-V/LoongArch64 release 构建均通过；最终 RISC-V 根目录 `log.ans` 有 217 个 START/END、`GROUP END`/`shutdown!`，无段错误或页故障，两个既有 `utime` 失败未纳入本次修复。详见 [problem/riscv-libctest-cow-source-frame-race.md](./problem/riscv-libctest-cow-source-frame-race.md) 与 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-19 工作树）
+
+#### libc-test futimens fd + NULL pathname 语义修复（7.19）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 的 libc-test `utime` 失败，区分 `futimens` fd ABI 与 `utimes(NULL)` 错误语义，修复 syscall 并执行双架构 QEMU 回归。
+- **描述**：确认 musl `futimens(fd, times)` 以 `utimensat(fd, NULL, times, 0)` 进入内核，而旧实现将任意 NULL pathname 直接返回 `EFAULT`，使所有有效 fd 调用在读取时间数组前失败。修复仅对非负 fd 从 fd 表直取 `OSFile`/inode，拒绝 `O_PATH`，并保留 `AT_FDCWD + NULL` 的 `EFAULT`，从而不回归 LTP `utimes01`。RISC-V 与 LoongArch64 的定向 `entry-static.exe utime` 均输出 `Pass!` 和 `shutdown!`；最后一次 LoongArch64 日志保留在根目录 `log.ans`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/libctest-futimens-fd-null-pathname.md](./problem/libctest-futimens-fd-null-pathname.md)。
+- **关联 commit**：尚未提交（2026-07-19 工作树）

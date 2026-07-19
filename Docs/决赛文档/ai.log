@@ -5173,3 +5173,19 @@ AI 只读追踪 Linux 7.0.0 的 `copy_page_range()`、`do_wp_page()` 和 `wp_pag
 ### 修改与验证
 
 修改 `os/src/arch/riscv64/qemu/page_table.rs`、`os/src/mm/translate.rs`、`os/src/mm/memory_set/area_ops.rs`，并更新本问题复盘、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check` 通过；`make TARGET_ARCH=riscv64 build-arch` 和 `make TARGET_ARCH=loongarch64 build-arch` 均通过，仅有既有 Cargo 配置弃用提示和 vendored `smoltcp` warnings。最终执行 `timeout 90s make TARGET_ARCH=riscv64 run > log.ans 2>&1`，根目录 `log.ans` 显示 static 107 项、dynamic 110 项共 217 个 START/END，`GROUP END` 和 `shutdown!` 均出现，无段错误、页故障、panic、TFAIL 或 TBROK；`utime` 两项既有失败仍在。LoongArch64 未运行本轮行为回归。
+
+## 2026-07-19：libc-test futimens fd + NULL pathname 语义修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并修复其中的失败；后续要求将 QEMU 输出直接写入根目录 `log.ans`。
+
+### 分析与采纳结论
+
+AI 先以 `TPASS`/`TFAIL`/panic 和 libc-test 断言为准检查日志，确认唯一真实失败是 musl 静态 `entry-static.exe utime`：从 `src/functional/utime.c:29` 起所有有效 fd 的 `futimens()` 均失败，最后一次显示 `Bad address`。`futimens(-1)` 的 `EBADF` 和 `/dev/null/invalid` 的 `ENOTDIR` 已通过，故 errno 直接对应 `sys_utimensat()` 对 NULL pathname 的提前 `EFAULT`。
+
+依据 Linux `utimensat(2)` ABI 和 fd 表实现，采纳区分式修复：仅让非负 fd 的 `utimensat(fd, NULL, times, 0)` 通过已打开的 `OSFile`/inode 执行，这正是 `futimens()` 的实现形式；`AT_FDCWD + NULL` 继续返回 `EFAULT`，其他负 fd 返回 `EBADF`，避免回归已通过的 LTP `utimes01`。fd 分支不按路径重新打开文件，以保留已 unlink 打开文件的语义，并拒绝 `O_PATH` fd。
+
+### 修改与验证
+
+修改 `os/src/syscall/fs/ctl/time.rs`，新增 `Docs/决赛文档/problem/libctest-futimens-fd-null-pathname.md` 并更新问题索引、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml -- --check` 与 `git diff --check` 通过；`make` 完成 RISC-V/LoongArch64 release 构建，只有既有 vendored `smoltcp` warnings。`timeout 120s make TARGET_ARCH=riscv64 run > log.ans 2>&1` 与 LoongArch64 对应命令均完成，两个 `entry-static.exe utime` 定向测例均输出 `Pass!` 和 `shutdown!`，未出现 `futimens` 断言、`Bad address`、`FAIL utime`、panic、TFAIL 或 TBROK。最后一次 LoongArch64 输出保留在 `log.ans`。

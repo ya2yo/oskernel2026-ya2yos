@@ -3,7 +3,8 @@ use super::*;
 /// 实现 `utimensat(2)`，更新文件访问时间和修改时间。
 ///
 /// 该函数读取可选的两个 `Timespec`，支持 `UTIME_NOW` 和 `UTIME_OMIT`，再把解析后的
-/// atime/mtime 传给 inode。当前入口要求 pathname 为有效用户字符串。
+/// atime/mtime 传给 inode。除普通 pathname 外，也支持 `futimens(2)` 使用的
+/// `utimensat(fd, NULL, times, 0)` fd 目标形式。
 /// 参考 https://man7.org/linux/man-pages/man2/utimensat.2.html
 pub fn sys_utimensat(
     dirfd: isize,
@@ -21,16 +22,24 @@ pub fn sys_utimensat(
     let task = current_task().unwrap();
     let proc = &task.process;
     let memory_set = proc.memory_set_arc();
-    // `AT_EMPTY_PATH` compatibility is not implemented by this path; retain
-    // the historical utimes(2) ABI and reject a NULL pathname as EFAULT.
-    if path.is_null() {
-        return Err(SysErrNo::EFAULT);
-    }
-    let path = read_user_cstr(&memory_set, path)?;
-    // TODO(ZMY) 为了过测试,暂时特殊处理一下
-    if path == "/dev/null/invalid" {
-        return Err(SysErrNo::ENOTDIR);
-    }
+    let path = if path.is_null() {
+        // futimens(fd, times) is implemented as utimensat(fd, NULL, times, 0).
+        // Keep utimes(NULL, ...) (AT_FDCWD) on the existing EFAULT path.
+        if dirfd == -100 {
+            return Err(SysErrNo::EFAULT);
+        }
+        if dirfd < 0 {
+            return Err(SysErrNo::EBADF);
+        }
+        None
+    } else {
+        let path = read_user_cstr(&memory_set, path)?;
+        // TODO(ZMY) 为了过测试,暂时特殊处理一下
+        if path == "/dev/null/invalid" {
+            return Err(SysErrNo::ENOTDIR);
+        }
+        Some(path)
+    };
     let mut nowtime = (get_time_ms() / 1000) as u64;
     // add by
     nowtime += NOW_TIME_STAMP as u64;
@@ -67,14 +76,25 @@ pub fn sys_utimensat(
         };
     }
 
-    let abs_path = proc.get_abs_path(dirfd, &path)?;
+    let (osfile, abs_path) = if let Some(path) = path {
+        let abs_path = proc.get_abs_path(dirfd, &path)?;
+        let osfile = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+        (osfile, abs_path)
+    } else {
+        let fd_desc = proc.fd_table.get(dirfd as usize)?;
+        if fd_desc.is_path_only() {
+            return Err(SysErrNo::EBADF);
+        }
+        let osfile = fd_desc.file()?;
+        let abs_path = osfile.inode.path();
+        (osfile, abs_path)
+    };
     if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(&abs_path) {
         if mountflags & 1 != 0 {
             return Err(SysErrNo::EROFS);
         }
     }
 
-    let osfile = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     let stat = osfile.inode.fstat();
     let task_inner = task.inner_lock();
     let euid = task_inner.effective_uid;
