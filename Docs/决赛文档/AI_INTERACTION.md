@@ -836,3 +836,10 @@
 - **场景**：分析 `log.ans`、对照只读 testcase 源码和测试镜像反汇编、还原双 hart fork/exit 锁链、修复任务锁边界并执行双架构构建与 QEMU 回归
 - **描述**：确认同一 child 连续五条 `iteration 0` 是测试打印外层 fork 序号的正常结果，真正卡点位于第五条后的 `exit(0)`。父进程 `clone_process()` 原先以 `TaskControlBlockInner -> ProcessMeta` 获取锁，首个子进程退出则以 `ProcessMeta -> TaskControlBlockInner` 获取同一父对象，RISC-V 双 hart 下形成 AB-BA；CFS 仅放大触发窗口。修复通过快照父元数据、将 `Process::new()` 移出父 task inner 临界区，并在 exit/exit-group 中先复制 task weak 列表后再获取 task inner。双架构 release 构建通过；RISC-V release+CFS 多轮和 LoongArch64 单核 basic 回归均完整结束，最终 RISC-V 结果保存在 `log.ans`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/basic-test-yield-fork-exit-deadlock.md](./problem/basic-test-yield-fork-exit-deadlock.md)。
 - **关联 commit**：尚未提交（2026-07-19 工作树）
+
+#### BusyBox fork/exec/exit 并发卡死修复（7.19）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：梳理当前 BusyBox 卡死修复的任务唤醒、调度、exec/exit 改动，并根据现有 `log.ans` 补充问题复盘与开发记录。
+- **描述**：确认 BusyBox 高频短进程暴露的是内核共享生命周期竞态：futex 唤醒会把已运行或 zombie task 重复入队，CFS/RR 未过滤陈旧就绪项，exec/调度存在反向锁域，地址空间替换/释放前仍可能使用旧页表。修复将入队权收敛为 `Blocked -> Ready`，取队检查 `Ready`，维持 `ProcessMeta -> TaskControlBlockInner`，并在 exec/退出回收前激活有效页表、重置过期 `robust_list`。当前 RISC-V `log.ans` 的 musl/glibc BusyBox 组均结束且 `shutdown!`；`hwclock`、`mv/rmdir`、后台 `sleep/kill` 失败及 glibc malloc assertion 未被视为已解决。详见 [problem/busybox-fork-exec-exit-smp-hang.md](./problem/busybox-fork-exec-exit-smp-hang.md) 与 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-19 工作树）

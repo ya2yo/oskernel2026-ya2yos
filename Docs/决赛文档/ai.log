@@ -5107,3 +5107,19 @@ AI 先对照只读 testcase 历史源码、判题器和测试镜像中的 RISC-V
 ### 修改与验证
 
 修改 `os/src/task/task/task.rs`、`os/src/task/mod.rs`；新增 `Docs/决赛文档/problem/basic-test-yield-fork-exit-deadlock.md` 并更新索引、开发日志和 AI 协作记录。`cargo fmt -- --check`、`git diff --check` 通过；`make SCHEDULER=cfs` 完成 RISC-V/LoongArch64 release 构建。修复前无 DEBUG 的 RISC-V basic 可在 glibc `test_yield` 首名 child 五条输出后超时；修复后多个 RISC-V release+CFS 有效样本中，musl/glibc 均各输出 15 条 child 行、打印 `END test_yield` 和 group END，并正常 `shutdown!`，最终结果保存在 `log.ans`。独立复核样本同样返回 0；LoongArch64 单核运行也完成两组 basic 和正常关机。
+
+## 2026-07-19：BusyBox fork/exec/exit 并发卡死修复
+
+### 用户需求
+
+维护者要求补充当前未提交修改的文档，重点记录 BusyBox 测试卡死的修复。
+
+### 分析与采纳结论
+
+AI 审阅工作区 diff、任务唤醒/调度/exec/exit 路径及当前 `log.ans`，确认 BusyBox 的高频短进程和后台任务并非独立用户态故障，而是扩大了多个共享任务生命周期窗口：futex 超时/信号在 task 已运行或成为 zombie 后仍可能重复入队；CFS/RR 会保留既有的陈旧 weak entry；exec 的 vfork 父唤醒和调度路径仍有反向锁域；替换或回收 `MemorySet` 前当前 hart 仍可能使用旧 `satp`。采用的修复保持 `ProcessMeta -> TaskControlBlockInner` 锁序，限定 `Blocked -> Ready` 为唯一入队转换，取队时过滤非 `Ready` 项，并在 exec/最后线程退出回收前切换到新页表或内核页表，同时清除跨 exec 的 `robust_list` 用户地址。
+
+当前 `log.ans` 显示 musl/glibc BusyBox 组均到达 `GROUP END` 并最终 `shutdown!`，故原卡死已消除；但 `hwclock`、`mv/rmdir`、后台 `sleep/kill` 仍失败，glibc 还有一次 malloc assertion。AI 未将这些独立症状记录为已修复或全量通过。
+
+### 修改与验证
+
+工作区代码修改位于 `os/src/task/manager.rs`、`os/src/task/mod.rs`、`os/src/task/scheduler/{cfs.rs,rr.rs}`、`os/src/task/task/task.rs` 和 `user/src/bin/initproc.rs`；新增 `Docs/决赛文档/problem/busybox-fork-exec-exit-smp-hang.md`，同步更新 problem 索引、开发日志与 AI 协作记录。`git diff --check` 通过。本轮仅补充文档，未重新运行构建或 QEMU；运行结论来自当前工作区的 `log.ans`，尚无本轮 LoongArch64 BusyBox 回归结果。

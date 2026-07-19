@@ -8,18 +8,20 @@ use spin::{Lazy, Mutex};
 
 pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
     let mut task_inner = task.inner_lock();
-    if task_inner.task_status == TaskStatus::Ready {
-        // 任务已被信号唤醒并在就绪队列中，只需清理 futex 字段
-        task_inner.futex_key = 0;
-        task_inner.futex_pa = 0;
-        drop(task_inner);
-        return;
+    // A timeout and a signal can race after the blocked task has already been
+    // scheduled again.  Only the transition from Blocked owns a new enqueue;
+    // changing Running or Zombie back to Ready creates a stale run-queue entry
+    // that can execute after its kernel stack has been released.
+    let should_enqueue = task_inner.task_status == TaskStatus::Blocked;
+    if should_enqueue {
+        task_inner.task_status = TaskStatus::Ready;
     }
-    task_inner.task_status = TaskStatus::Ready;
     task_inner.futex_key = 0;
     task_inner.futex_pa = 0;
     drop(task_inner);
-    ready_queue::add_task(&task);
+    if should_enqueue {
+        ready_queue::add_task(&task);
+    }
 }
 
 pub fn check_blocked_task_timers() {

@@ -1,4 +1,5 @@
 use super::TaskControlBlock;
+use crate::task::TaskStatus;
 use alloc::{
     collections::{BTreeSet, VecDeque},
     sync::{Arc, Weak},
@@ -49,6 +50,14 @@ pub(super) fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {
         };
         if task.process.home_hart() == hartid {
             queue.queued_tids.remove(&tid);
+            let status = task.inner_lock().task_status;
+            if status != TaskStatus::Ready {
+                warn!(
+                    "fetch_task: discard stale RR entry tid={}, status={:?}",
+                    tid, status
+                );
+                continue;
+            }
             return Some(task);
         }
         queue.tasks.push_back((tid, Arc::downgrade(&task)));

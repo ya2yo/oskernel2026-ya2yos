@@ -113,11 +113,14 @@ pub fn suspend_current_and_run_next() {
     //     "[suspend_current_and_run_next] strong_count = {}",
     //     Arc::strong_count(&task)
     // );
+    // Keep the global ProcessMeta -> TaskControlBlockInner lock order.  The
+    // exec/vfork wake path may hold the parent's ProcessMeta while inspecting
+    // its task state on another hart, so taking these locks in reverse here
+    // can deadlock during concurrent fork/exec/signal workloads.
+    let exit_code = task.process.meta_lock().group_exit_code;
     let mut task_inner = task.inner_lock();
-    let exited = task.process.is_group_exiting();
 
-    if exited {
-        let exit_code = task.process.group_exit_code();
+    if let Some(exit_code) = exit_code {
         drop(task_inner);
         drop(task);
         exit_current_and_run_next(exit_code);
@@ -378,6 +381,13 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             }
             write_process_acct_record(&curr_task, exit_code, &usage);
             curr_task.process.meta_lock().usage = usage;
+            // The process page table is still active on this hart.  Reclaiming
+            // its page-table frames first leaves satp pointing at a freed root
+            // page and lets subsequent allocations corrupt the live address
+            // translation state.  This task cannot return to user mode after
+            // becoming a zombie, so switch to the kernel page table before the
+            // eager address-space teardown.
+            activate_kernel_space();
             if Arc::strong_count(&memory_set) == 2 {
                 memory_set.recycle_data_pages();
             }

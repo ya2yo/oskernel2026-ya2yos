@@ -1,4 +1,5 @@
 use super::TaskControlBlock;
+use crate::task::TaskStatus;
 use crate::{arch::time::get_ticks, config::HART_NUM};
 use alloc::{
     collections::BinaryHeap,
@@ -56,8 +57,12 @@ impl SchedEntity {
         current
     }
 
-    fn mark_running(&self) {
+    fn mark_dequeued(&self) {
         self.on_rq.store(false, Ordering::Release);
+    }
+
+    fn mark_running(&self) {
+        self.mark_dequeued();
         self.exec_start.store(get_ticks() as u64, Ordering::Release);
     }
 
@@ -161,6 +166,16 @@ pub(super) fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {
             warn!("fetch task got a dropped task");
             continue;
         };
+        let status = task.inner_lock().task_status;
+        if status != TaskStatus::Ready {
+            task.sched_entity.mark_dequeued();
+            warn!(
+                "fetch_task: discard stale CFS entry tid={}, status={:?}",
+                task.tid(),
+                status
+            );
+            continue;
+        }
         hart_queue.advance_min_vruntime(entry.key.0);
         return Some(task);
     }

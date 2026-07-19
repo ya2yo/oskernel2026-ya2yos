@@ -300,7 +300,6 @@ impl TaskControlBlock {
     }
     /// exec的主逻辑
     pub fn exec(&self, elf_data: &[u8], argv: &[String], env: &mut [String]) -> Result<(), ()> {
-        let mut task_inner = self.inner_lock();
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
         debug!("exec: goto from_elf");
@@ -311,13 +310,19 @@ impl TaskControlBlock {
         debug!("exec: return from from_elf");
         let memory_set = MemorySet::new(memory_set);
 
-        task_inner.time_data.clear();
+        // Snapshot the parent task list before taking this task's inner lock.
+        // The lock order is ProcessMeta -> TaskControlBlockInner; retaining
+        // the metadata guard while waking a parent task would otherwise let a
+        // concurrent scheduler path form an AB-BA cycle.
+        let ppid = self.ppid();
+        let parent_tasks = Process::get_process_arc_by_pid(ppid)
+            .map(|parent_proc| parent_proc.meta_lock().tasks.clone());
 
         // VFORK: wake up parent if it was suspended waiting for this task
         // (exec replaces the process image, which counts as "done" for vfork)
-        let ppid = self.ppid();
-        if let Some(parent_proc) = Process::get_process_arc_by_pid(ppid) {
-            for task_weak in &parent_proc.meta_lock().tasks {
+        let mut wake_parent_tasks = Vec::new();
+        if let Some(parent_tasks) = parent_tasks {
+            for task_weak in &parent_tasks {
                 if let Some(t) = task_weak.upgrade() {
                     let mut parent_inner = t.inner_lock();
                     if parent_inner.vfork_wait_child == self.tid()
@@ -326,11 +331,17 @@ impl TaskControlBlock {
                         parent_inner.vfork_wait_child = 0;
                         parent_inner.task_status = TaskStatus::Ready;
                         drop(parent_inner);
-                        crate::task::ready_queue::add_task(&t);
+                        wake_parent_tasks.push(t);
                     }
                 }
             }
         }
+        for parent_task in wake_parent_tasks {
+            crate::task::ready_queue::add_task(&parent_task);
+        }
+
+        let mut task_inner = self.inner_lock();
+        task_inner.time_data.clear();
 
         debug!(
             "task_inner.clear_child_tid={:#x}",
@@ -357,6 +368,12 @@ impl TaskControlBlock {
             task_inner.clear_child_tid = 0;
         }
 
+        // Install the new page table on this hart before replacing the process
+        // slot.  Replacing the slot drops the last Arc to the old address space
+        // in the usual exec path; without this activation, its root page can be
+        // recycled while satp still points at it and the next kernel allocation
+        // faults or spins on a corrupted allocator lock.
+        memory_set.activate();
         self.process
             .change_memory_set_and_sigtable(memory_set, SigTable::new());
 
@@ -368,6 +385,10 @@ impl TaskControlBlock {
         task_inner.sig_mask = SigSet::empty();
         task_inner.sig_pending = SigSet::empty();
         task_inner.sig_pending_info = [None; SIG_MAX_NUM + 1];
+        // robust_list is an address in the old image.  Keeping it across exec
+        // would make a signal arriving before the new libc calls
+        // set_robust_list() interpret stale user memory during thread exit.
+        task_inner.robust_list = RobustListHead::default();
 
         // 获取新地址空间用于栈写入
         let proc_inner = &self.process;
@@ -476,8 +497,10 @@ impl TaskControlBlock {
         *task_inner.trap_cx() = trap_cx;
         task_inner.user_heappoint = user_hp;
         task_inner.user_heapbottom = user_hp;
-        if let Some(argv0) = argv.first() {
-            self.process.meta_lock().comm = task_comm_from_argv0(argv0);
+        let new_comm = argv.first().map(|argv0| task_comm_from_argv0(argv0));
+        drop(task_inner);
+        if let Some(new_comm) = new_comm {
+            self.process.meta_lock().comm = new_comm;
         }
         Ok(())
     }
