@@ -185,11 +185,14 @@ pub const IDLE_PID: usize = 0;
 pub fn exit_current_group_and_run_next(exit_code: i32) {
     debug!("[exit_current_group_and_run_next] exit_code: {}", exit_code);
     let task = current_task().unwrap();
-    let task_inner = task.inner_lock();
     let mut exit_code = exit_code;
 
-    for bro_tasks in &task.process.meta_lock().tasks {
-        if let Some(alive_t) = bro_tasks.upgrade() {
+    // Snapshot the task list before taking any sibling TaskControlBlockInner
+    // lock. Holding the current task lock while acquiring ProcessMeta reverses
+    // the normal ProcessMeta -> TaskControlBlockInner order used by exit/wait.
+    let sibling_tasks = task.process.meta_lock().tasks.clone();
+    for task_weak in &sibling_tasks {
+        if let Some(alive_t) = task_weak.upgrade() {
             if alive_t.tid() == task.tid() {
                 continue;
             }
@@ -221,12 +224,10 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
         // 第一个调用的线程
         // 设置线程组退出标志并保存终止代号。
         let pid = task.pid();
-        drop(task_inner);
         drop(task);
         send_signal_to_thread_group(pid, SigSet::SIGKILL);
     } else {
         exit_code = task.process.group_exit_code();
-        drop(task_inner);
         drop(task);
     }
     exit_current_and_run_next(exit_code);
@@ -278,7 +279,10 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     // VFORK: wake up parent if it was suspended waiting for this child
     if let Some(parent) = Process::get_process_arc_by_pid(curr_task.ppid()) {
-        for task_weak in &parent.meta_lock().tasks {
+        // Do not keep ProcessMeta locked while acquiring a parent task's
+        // inner lock; copy the weak list first so the lock scope is explicit.
+        let parent_tasks = parent.meta_lock().tasks.clone();
+        for task_weak in &parent_tasks {
             if let Some(t) = task_weak.upgrade() {
                 let mut parent_inner = t.inner_lock();
                 if parent_inner.vfork_wait_child == curr_task.tid() {

@@ -5091,3 +5091,19 @@ CFS 为每个 Hart 建立独立锁保护的 `BinaryHeap`，以反向 `(vruntime,
 修改 `os/Cargo.toml`、`os/Makefile`、`os/src/task/mod.rs`、`os/src/task/manager.rs`、`os/src/task/processor.rs`、`os/src/task/task/task.rs` 和 `os/src/syscall/task/schedule.rs`，新增 `os/src/task/scheduler/{mod.rs,cfs.rs,rr.rs}`；同步更新 Typst 设计文档、使用指南、开发日志和 AI 协作记录。维护者已有的 `user/src/bin/initproc.rs` cyclictest 入口仅用于验证，本次未修改。
 
 `make` 在默认 CFS 下完成 RISC-V/LoongArch64 release 构建，`make SCHEDULER=rr` 在 RR 下也完成双架构构建，只有既有 vendored `smoltcp` warnings。最终 `timeout 180s make run > log.ans 2>&1` 的 RISC-V CFS 日志中，musl/glibc 各四个 cyclictest 阶段共 8 项均 `end: success`，两轮 400-task hackbench 均 `kill hackbench: success` 并正常 `shutdown!`；扫描未见 `panic`、`TFAIL`、`TBROK` 或 `ERROR`。RR 对照日志 `/tmp/rr-riscv.log` 得到同样的 8 项成功、两轮预期清理和正常关机。LoongArch64 默认 CFS 的 `timeout 180s make run TARGET_ARCH=loongarch64 > log.ans 2>&1` 也取得 8 项成功、两轮预期清理和正常关机，样本保存为 `/tmp/cfs-loongarch-final.log`；随后重跑 RISC-V，最终 `log.ans` 保留双 hart CFS 成功样本。`typst compile --root . --pdf-standard a-2u Docs/ya2yos/main.typ /tmp/ya2yos-kernel-design.pdf` 与适配原有 CRLF 指南文件的 `git -c core.whitespace=cr-at-eol diff --check` 均通过。LoongArch64 RR 完成编译验证，未运行 QEMU 行为回归。
+
+## 2026-07-19：RISC-V basic test_yield fork/exit 锁序死锁修复
+
+### 用户需求
+
+维护者要求分析 `log.ans`，解决内核运行 `basic_testcode.sh` 时卡死在 `test_yield` 的问题，并指定 QEMU 输出直接写入 `log.ans`。
+
+### 分析与采纳结论
+
+AI 先对照只读 testcase 历史源码、判题器和测试镜像中的 RISC-V ELF 反汇编，确认同一 PID 连续五次打印 `iteration 0` 是测试设计：子进程循环五次，但输出的是外层 fork 序号。第五条后立即进入 `exit(0)`，因此真正卡点不在 `sched_yield` 返回、trap PC 或整数寄存器恢复。
+
+结合 RISC-V 双 hart 的 `home_hart` 分配和 release/debug 时序差异，AI 定位到父进程继续 `clone_process()` 与首个子进程退出之间的 AB-BA：clone 旧路径持有父 `TaskControlBlockInner` 后读取/登记父 `ProcessMeta`，退出旧路径则持有父 `ProcessMeta` 后获取父任务 inner。CFS 使首个 child 在自己的 hart 上快速完成五轮，只是更容易触发既有反向锁序。采纳锁边界修复：先独立快照父进程元数据；以快照替代 inner 锁内的 `self.ppid()`；将 `Process::new()` 移到父 task inner 解锁后；退出和 exit-group 路径先复制 weak task 列表、释放 `ProcessMeta` 后再逐个获取 task inner。未修改 syscall ABI、调度策略、只读 testcase 或维护者已有的 `user/src/bin/initproc.rs` basic 复现入口。
+
+### 修改与验证
+
+修改 `os/src/task/task/task.rs`、`os/src/task/mod.rs`；新增 `Docs/决赛文档/problem/basic-test-yield-fork-exit-deadlock.md` 并更新索引、开发日志和 AI 协作记录。`cargo fmt -- --check`、`git diff --check` 通过；`make SCHEDULER=cfs` 完成 RISC-V/LoongArch64 release 构建。修复前无 DEBUG 的 RISC-V basic 可在 glibc `test_yield` 首名 child 五条输出后超时；修复后多个 RISC-V release+CFS 有效样本中，musl/glibc 均各输出 15 条 child 行、打印 `END test_yield` 和 group END，并正常 `shutdown!`，最终结果保存在 `log.ans`。独立复核样本同样返回 0；LoongArch64 单核运行也完成两组 basic 和正常关机。

@@ -829,3 +829,10 @@
 - **场景**：任务调度设计、Cargo feature 互斥、CFS 压力性能定位、双策略/双架构构建与 RISC-V QEMU 回归
 - **描述**：将原 ready queue 抽为编译期可选策略，默认 `scheduler-cfs` 使用 per-Hart `BinaryHeap`、nice 加权 `vruntime`、`min_vruntime` 和原子 `on_rq`；`scheduler-rr` 保留全局 FIFO，并以 TID 集合消除压力下的线性去重。统一调度循环先入队 runnable 当前实体再选下一任务，同时明确 feature 不等同运行时 `sched_setscheduler`，且当前无跨 Hart 迁移或负载均衡。默认 CFS 与显式 RR 均通过双架构 release 构建；RISC-V 两种策略及 LoongArch64 CFS 的 musl/glibc cyclictest 各 8 项成功，两轮 400-task hackbench 均完成预期清理并输出 `kill hackbench: success`，最终 `shutdown!`。最终 RISC-V CFS 输出位于 `log.ans`，详见 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-18 工作树）
+
+#### RISC-V basic test_yield fork/exit 锁序死锁修复（7.19）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans`、对照只读 testcase 源码和测试镜像反汇编、还原双 hart fork/exit 锁链、修复任务锁边界并执行双架构构建与 QEMU 回归
+- **描述**：确认同一 child 连续五条 `iteration 0` 是测试打印外层 fork 序号的正常结果，真正卡点位于第五条后的 `exit(0)`。父进程 `clone_process()` 原先以 `TaskControlBlockInner -> ProcessMeta` 获取锁，首个子进程退出则以 `ProcessMeta -> TaskControlBlockInner` 获取同一父对象，RISC-V 双 hart 下形成 AB-BA；CFS 仅放大触发窗口。修复通过快照父元数据、将 `Process::new()` 移出父 task inner 临界区，并在 exit/exit-group 中先复制 task weak 列表后再获取 task inner。双架构 release 构建通过；RISC-V release+CFS 多轮和 LoongArch64 单核 basic 回归均完整结束，最终 RISC-V 结果保存在 `log.ans`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/basic-test-yield-fork-exit-deadlock.md](./problem/basic-test-yield-fork-exit-deadlock.md)。
+- **关联 commit**：尚未提交（2026-07-19 工作树）

@@ -500,7 +500,11 @@ impl TaskControlBlock {
         let kernel_stack_top = kernel_stack.top();
         debug!("TCB::new kstack top = {:#x}", kernel_stack_top);
 
-        // ==================== Phase 1: 在父进程锁内提取数据 ====================
+        // ==================== Phase 1: 提取父进程元数据和任务状态 ====================
+        //
+        // 退出路径的锁顺序是 ProcessMeta -> TaskControlBlockInner。不要在
+        // 持有 TaskControlBlockInner 时再获取 ProcessMeta，否则父进程并发
+        // fork、子进程退出会形成 AB-BA 死锁。
         let (
             child_memory_set_arc,
             child_fs_info,
@@ -510,7 +514,6 @@ impl TaskControlBlock {
             child_ppid,
             child_timer,
             child_sig_mask,
-            process_arc,
             clear_child_tid,
             parent_memory_set_arc,
             parent_trap_cx,
@@ -528,14 +531,17 @@ impl TaskControlBlock {
             parent_pgid,
             parent_sid,
         );
+        let parent_pid;
         {
-            let parent_inner = self.inner.lock();
-            let parent_proc_inner = &self.process;
-            let parent_meta = parent_proc_inner.meta_lock();
+            let parent_meta = self.process.meta_lock();
+            parent_pid = parent_meta.parent_pid;
             parent_pgid = parent_meta.pgid;
             parent_sid = parent_meta.sid;
             parent_comm = parent_meta.comm.clone();
-            drop(parent_meta);
+        }
+        {
+            let parent_inner = self.inner.lock();
+            let parent_proc_inner = &self.process;
 
             // 保存父进程 memory_set Arc（fork 时需要读取父进程页面来 clone_area）
             parent_memory_set_arc = parent_proc_inner.memory_set_arc();
@@ -586,29 +592,18 @@ impl TaskControlBlock {
             // 确定 pid / 进程归属
             if flags.contains(CloneFlags::CLONE_THREAD) {
                 child_pid = self.pid();
-                child_ppid = self.ppid();
+                child_ppid = parent_pid;
                 child_timer = Arc::clone(&parent_inner.timer);
                 child_sig_mask = parent_inner.sig_mask;
-                process_arc = self.process.clone();
             } else {
                 child_pid = tid_handle.0;
                 child_ppid = if flags.contains(CloneFlags::CLONE_PARENT) {
-                    self.ppid()
+                    parent_pid
                 } else {
                     self.pid()
                 };
                 child_timer = Arc::new(Timer::new());
                 child_sig_mask = parent_inner.sig_mask;
-                process_arc = Process::new(
-                    child_memory_set_arc.clone(),
-                    child_sig_table.clone(),
-                    child_fd_table,
-                    child_fs_info,
-                    child_pid,
-                    child_ppid,
-                    parent_pgid,
-                    parent_sid,
-                );
             }
 
             // 提取父进程 inner 中需要复制给子进程的字段
@@ -624,6 +619,23 @@ impl TaskControlBlock {
             parent_capabilities = parent_inner.capabilities;
             parent_nice = parent_inner.nice;
         } // parent_inner, parent_proc_inner 在此释放
+
+        // Process::new() 会登记父子关系并获取 ProcessMeta。必须在父任务
+        // inner 锁释放后执行，避免与子进程退出路径反向获取锁。
+        let process_arc = if flags.contains(CloneFlags::CLONE_THREAD) {
+            self.process.clone()
+        } else {
+            Process::new(
+                child_memory_set_arc.clone(),
+                child_sig_table.clone(),
+                child_fd_table,
+                child_fs_info,
+                child_pid,
+                child_ppid,
+                parent_pgid,
+                parent_sid,
+            )
+        };
 
         // ==================== Phase 2: 构造子进程（不持有父进程锁）====================
         process_arc.meta_lock().comm = parent_comm;
