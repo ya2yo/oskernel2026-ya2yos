@@ -2,6 +2,7 @@
 
 - [RISC-V 双 hart SMP bring-up](./riscv-smp-bringup.md)
 - [RISC-V 双 hart netperf 锁序与丢唤醒修复](./riscv-smp-netperf-wakeup-locking.md)
+- [RISC-V CFS netperf UDP_RR 首 burst 卡死](./riscv-cfs-netperf-udp-rr-hang.md)
 - [RISC-V 双 hart basic test_yield fork/exit 锁序死锁](./basic-test-yield-fork-exit-deadlock.md)
 - [BusyBox fork/exec/exit 并发路径卡死与地址空间回收修复](./busybox-fork-exec-exit-smp-hang.md)
 - [splice syscall 兼容实现](./splice-syscall.md)

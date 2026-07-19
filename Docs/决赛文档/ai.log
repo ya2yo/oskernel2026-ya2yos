@@ -5123,3 +5123,21 @@ AI 审阅工作区 diff、任务唤醒/调度/exec/exit 路径及当前 `log.ans
 ### 修改与验证
 
 工作区代码修改位于 `os/src/task/manager.rs`、`os/src/task/mod.rs`、`os/src/task/scheduler/{cfs.rs,rr.rs}`、`os/src/task/task/task.rs` 和 `user/src/bin/initproc.rs`；新增 `Docs/决赛文档/problem/busybox-fork-exec-exit-smp-hang.md`，同步更新 problem 索引、开发日志与 AI 协作记录。`git diff --check` 通过。本轮仅补充文档，未重新运行构建或 QEMU；运行结论来自当前工作区的 `log.ans`，尚无本轮 LoongArch64 BusyBox 回归结果。
+
+## 2026-07-19：RISC-V CFS netperf UDP_RR 卡死修复
+
+### 用户需求
+
+维护者要求分析 `log.ans`，修复 RISC-V 双 hart 默认 CFS 下 `netperf UDP_RR` 卡死，并参考前几天的网络唤醒修复文档。随后要求修改 `user/src/bin/initproc.rs`，在同目录新建 `netperf/` 放置独立测例，只运行 `UDP_RR`，并将 QEMU 输出直接写入根目录 `log.ans`。
+
+### 分析与采纳结论
+
+AI 先保留原始最小复现：日志在 `MIGRATED UDP REQUEST/RESPONSE TEST ... first burst 0` 后被 timeout 终止，未出现 panic、TFAIL、TBROK 或协议拒绝。对照 7 月 18 日的网络锁序/`block_on` 修复后，确认本轮仍有两个独立的确定缺陷落在同一等待路径。
+
+第一，CFS `fetch_task()` 从 per-Hart heap 弹出陈旧 entry 后，旧代码在释放 `task.inner` 后才清 `on_rq`。并发网络 waker 可在中间将 `Blocked -> Ready`，但 `add_task()` 因仍见 `on_rq=true` 而跳过；出队方随后清位并丢 entry，使 task 成为没有物理 queue entry 的 Ready task。修复将状态检查和 `mark_dequeued()` 放在同一个 task inner 临界区。第二，smoltcp 用微秒 `Instant`，但 `NANOS_PER_MICROS` 误为每毫秒纳秒数，`Timespec::from_micros()` 又将微秒按毫秒拆秒并错误填充纳秒；修复两端单位换算，恢复 `poll_at()` deadline 到 `sleep_until()` 的绝对时间关系。
+
+为缩小负载，新增 `user/src/bin/netperf/{mod.rs,udp_rr.rs}`。它用原参数启动一个 loopback `netserver` 和一个 `UDP_RR` client，客户端结束后 `kill -9` 并 `wait` server；`initproc` 仅调用该模块。未修改只读 testcase、端口、协议参数、网络 ABI 或完整 netperf 脚本。
+
+### 修改与验证
+
+修改 `os/src/task/scheduler/cfs.rs`、`os/src/timer/mod.rs`、`os/src/timer/timespec.rs`、`user/src/bin/initproc.rs`，新增 `user/src/bin/netperf/mod.rs`、`user/src/bin/netperf/udp_rr.rs` 和问题复盘，更新 problem 索引、开发日志及 AI 协作记录。`make build-arch TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过，只有既有 Cargo 配置弃用提示和 vendored `smoltcp` warnings。修复后连续三次有效 RISC-V 双 hart `UDP_RR` 均成功；补回 server `wait` 后重新构建并运行的最终 `log.ans` 显示 `3527.82 trans/s`、group END 和 `shutdown!`，无 panic/TFAIL/TBROK/QEMU timeout。LoongArch64 本轮完成编译验证，未运行 UDP_RR 行为回归。

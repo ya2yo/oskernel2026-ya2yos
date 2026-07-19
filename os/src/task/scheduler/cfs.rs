@@ -166,9 +166,16 @@ pub(super) fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {
             warn!("fetch task got a dropped task");
             continue;
         };
-        let status = task.inner_lock().task_status;
-        if status != TaskStatus::Ready {
+        let status = {
+            let inner = task.inner_lock();
+            let status = inner.task_status;
+            // Keep membership set until the task-state inspection is complete.
+            // A concurrent waker then either sees the entry as still claimed,
+            // or observes membership cleared and can enqueue a replacement.
             task.sched_entity.mark_dequeued();
+            status
+        };
+        if status != TaskStatus::Ready {
             warn!(
                 "fetch_task: discard stale CFS entry tid={}, status={:?}",
                 task.tid(),

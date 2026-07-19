@@ -843,3 +843,10 @@
 - **场景**：梳理当前 BusyBox 卡死修复的任务唤醒、调度、exec/exit 改动，并根据现有 `log.ans` 补充问题复盘与开发记录。
 - **描述**：确认 BusyBox 高频短进程暴露的是内核共享生命周期竞态：futex 唤醒会把已运行或 zombie task 重复入队，CFS/RR 未过滤陈旧就绪项，exec/调度存在反向锁域，地址空间替换/释放前仍可能使用旧页表。修复将入队权收敛为 `Blocked -> Ready`，取队检查 `Ready`，维持 `ProcessMeta -> TaskControlBlockInner`，并在 exec/退出回收前激活有效页表、重置过期 `robust_list`。当前 RISC-V `log.ans` 的 musl/glibc BusyBox 组均结束且 `shutdown!`；`hwclock`、`mv/rmdir`、后台 `sleep/kill` 失败及 glibc malloc assertion 未被视为已解决。详见 [problem/busybox-fork-exec-exit-smp-hang.md](./problem/busybox-fork-exec-exit-smp-hang.md) 与 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-19 工作树）
+
+#### RISC-V CFS netperf UDP_RR 首 burst 卡死修复（7.19）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 和此前双 hart网络唤醒复盘，审计 CFS 出队/网络 waker 时序与 smoltcp deadline 换算，新增独立 UDP_RR 测例并执行双架构构建与 RISC-V QEMU 回归。
+- **描述**：确认 CFS 的陈旧 entry 在读取 `Blocked` 状态后才清 `on_rq`，会让并发网络 waker 跳过重新入队，最终留下无 queue entry 的 `Ready` task；同时发现 smoltcp 微秒 `Instant` 到内核 `Timespec` 的两处单位换算均错误，使 fallback poll deadline 约偏离三个数量级。修复把状态检查与 CFS membership 清除收敛到同一个 `task.inner` 临界区，修正微秒/纳秒换算；`initproc` 仅运行新建的 musl `UDP_RR` 模块，保留 `netserver` 的 kill/wait 清理。RISC-V 连续有效样本均成功，最终 `log.ans` 输出 group END 和 `shutdown!`；LoongArch64 完成编译验证。详见 [problem/riscv-cfs-netperf-udp-rr-hang.md](./problem/riscv-cfs-netperf-udp-rr-hang.md)。
+- **关联 commit**：尚未提交（2026-07-19 工作树）

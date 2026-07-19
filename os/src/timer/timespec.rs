@@ -13,11 +13,11 @@ use core::cmp::Ordering;
 use core::ops::Add;
 use core::time::Duration;
 
-use super::NANOS_PER_SEC;
+use super::{NANOS_PER_SEC, USEC_PER_SEC};
 use crate::arch::time::get_clock_freq;
 
 const NSEC_PER_SEC: usize = 1_000_000_000;
-const MSEC_PER_SEC: usize = 1_000;
+const NSEC_PER_USEC: u64 = 1_000;
 
 #[repr(C)]
 #[derive(Default, Debug, Ord, Clone, Copy, PartialEq, Eq)]
@@ -83,8 +83,8 @@ impl Timespec {
     /// 从微秒数构造
     pub fn from_micros(micros: u64) -> Self {
         Self {
-            tv_sec: (micros / MSEC_PER_SEC as u64) as usize,
-            tv_nsec: (micros % MSEC_PER_SEC as u64) as usize,
+            tv_sec: (micros / USEC_PER_SEC) as usize,
+            tv_nsec: ((micros % USEC_PER_SEC) * NSEC_PER_USEC) as usize,
         }
     }
 }

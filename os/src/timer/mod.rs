@@ -118,8 +118,8 @@ pub const MSEC_PER_SEC: usize = 1000;
 pub const USEC_PER_SEC: u64 = 1_000_000;
 /// 每秒钟的纳秒数
 pub const NANOS_PER_SEC: u64 = 1_000_000_000;
-/// 每毫秒的纳秒数
-pub const NANOS_PER_MICROS: u64 = 1_000_000;
+/// 每微秒的纳秒数
+pub const NANOS_PER_MICROS: u64 = 1_000;
 /// 开机时间到 UNIX 纪元 (1970-01-01) 的固定偏移量 (秒)
 /// 2026-05-31 00:00:00 UTC
 pub const NOW_TIME_STAMP: usize = 1_777_593_600;
