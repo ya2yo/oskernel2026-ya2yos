@@ -62,20 +62,48 @@ hart A: 从已复用的 src 复制到新页
 
 ## 修复
 
-在 `os/src/arch/riscv64/qemu/page_table.rs` 中，处理函数现在在 `unmap_one()` 前：
+第一轮修复在 `unmap_one()` 前取得 `source_frame: Arc<FrameTracker>`，使源页在复制期间
+不能被回收。随后按 Linux 7.0 的顺序进一步收敛为：
 
-1. 读取原始 `Arc::strong_count` 以保留 COW 的共享判断；
-2. 从 `vma.data_frames` 克隆 `source_frame: Arc<FrameTracker>`；
-3. 用原 PTE 的 `src_ppn` 在新页映射完成后复制内容；
-4. 仅在 `copy_from_slice()` 完成后释放 `source_frame`。
+1. 先读取原始 `Arc::strong_count`，再克隆 `source_frame`，避免临时 pin 影响独占页判断；
+2. 对非 COW PTE 区分“已可写、仅需补 DIRTY”与“真正只读、应返回 SIGSEGV”，不再把只读
+   ELF 或只读映射错误升级为可写页；
+3. 在源帧 pin 存活时先 `FrameTracker::alloc()` 并复制源页；若 OOM，原 PTE 和原 VMA
+   frame 保持不变；
+4. 仅在新页准备完成后替换当前 PTE、执行本 hart `sfence.vma`，再替换
+   `vma.data_frames[vpn]` 并释放旧 VMA 引用和临时源 pin；
+5. RISC-V `copy_to_user()` 对已 present 的 COW PTE 显式触发 StorePageFault 处理，避免
+   内核通过裸 PPN 直接写入父子共享页而绕过硬件写保护。
 
-这样，即使两个 hart 都删除自己 VMA 的引用，复制中的源帧仍有局部强引用，不能被 frame
-allocator 回收或复用。`refcnt == 1` 分支仍按克隆前的计数直接恢复可写权限，不会被临时
-pin 错判为共享页。
+这使 COW 复制不再破坏 OOM 时仍有效的旧映射，也保证两个 hart 都删除自身 VMA 引用时，
+复制中的源帧仍有局部强引用。`refcnt == 1` 分支继续按克隆前的计数直接恢复可写权限。
+
+另外修复了两个会制造或放大无所有权 PTE 的路径：
+
+- `grow()` 缩小 Brk 时按旧 `[new_vpn, old_end)` 全范围清除 PTE 并移除已有 frame，而不是
+  只遍历 `data_frames`；
+- `lazy_clone_area()` 直接使用所属的 `self.page_table` 分配中间页表页，不再让
+  `PageTable::from_token()` 临时对象持有可能新建的 Sv39 中间页表 frame。
+
+## Linux 7.0 对照
+
+本轮只读分析的 Linux 源码版本为 7.0.0（`Makefile:2-4`）。Linux 的
+`do_wp_page()` 在持 PTE lock 确认 fault PTE 后，对必须复制的旧 folio 执行
+`folio_get()`，释放 PTE lock 后进入 `wp_page_copy()`（`mm/memory.c:4149-4241`）。
+`wp_page_copy()` 的注释明确要求“旧页已引用”；它先分配/复制新 folio，重新取得 PTE lock
+并以 `pte_same()` 重验，随后先 clear/flush 旧 PTE、安装新 PTE，最后才降低旧页 rmap 并
+`folio_put()`（`mm/memory.c:3741-3895`）。
+
+Ya2yOS 当前的 `Arc<FrameTracker>` 是这一 `folio_get()` 生命周期 pin 的等价物，
+`MemorySet` 写锁和“同一地址空间固定一个 hart”约束则替代了 Linux 的部分 PTL/远程 TLB
+并发条件。本轮没有照搬 Linux 的全局 `struct page`、rmap、`mm_cpumask` 或 SBI/IPI
+shootdown：当前 `tlb_invalidate()` 仅刷新本 hart，只有维持既有 `home_hart` 约束时才正确。
 
 ## 涉及文件
 
 - `os/src/arch/riscv64/qemu/page_table.rs`
+- `os/src/mm/translate.rs`
+- `os/src/mm/memory_set/area_ops.rs`
 - `Docs/决赛文档/problem/riscv-libctest-cow-source-frame-race.md`
 - `Docs/决赛文档/problem/README.md`
 - `Docs/决赛文档/开发日志.md`
@@ -89,10 +117,12 @@ pin 错判为共享页。
 ```bash
 make TARGET_ARCH=riscv64 build-arch
 timeout 90s make TARGET_ARCH=riscv64 run > log.ans 2>&1
+make TARGET_ARCH=loongarch64 build-arch
 ```
 
-RISC-V release 构建通过。最终 QEMU 输出直接保存在仓库根目录 `log.ans`，配置为双 hart；
-其中 static 组 107 项、dynamic 组 110 项，共 217 个 `START`/217 个 `END`，并出现：
+RISC-V 与 LoongArch64 release 构建均通过。最终 RISC-V QEMU 输出直接保存在仓库根目录
+`log.ans`，配置为双 hart；其中 static 组 107 项、dynamic 组 110 项，共 217 个
+`START`/217 个 `END`，并出现：
 
 ```text
 #### OS COMP TEST GROUP END libctest-musl ####
@@ -107,7 +137,13 @@ shutdown!
 ## 剩余风险
 
 - `data_frames` 中没有对应条目的历史 Brk COW PTE 仍没有可克隆的源帧；当前代码会强制
-  进入复制分支，但该边界的物理页所有权需要单独建模和验证。
-- `os/src/mm/memory_set/area_ops.rs` 中临时 `PageTable::from_token()` 创建中间页表帧的
-  所有权风险与本问题独立，本次没有修改或宣称已修复。
-- 本次代码仅位于 RISC-V 页表实现；LoongArch64 未运行行为回归。
+  进入复制分支以保持历史 iozone Brk 语义，但无法从裸 PPN 取得真正的生命周期 pin。长期
+  需要为每个受管 present PTE 建立可查找的 frame owner/refcount，而不能伪造
+  `FrameTracker`。
+- 通用 `MapArea::unmap_one()` 仍是“先移除 Arc、后清 PTE”的旧顺序；本轮 COW 分裂路径已
+  不再调用它，但常规 munmap/area teardown 仍应在后续引入类似 Linux `mmu_gather` 的
+  “清 PTE/TLB 后释放 frame”批处理。
+- `push_with_given_frames()` 对稀疏映射仍按 VMA 起点 zip frame Vec；MAP_SHARED 的预 fault
+  OOM/稀疏 PTE 需要后续改为按 `(vpn, frame)` 复制并传播 ENOMEM。
+- LoongArch64 完成了构建验证，未运行本轮 COW 行为回归；若未来允许同一地址空间跨 hart
+  运行，必须先实现远程 TLB shootdown。

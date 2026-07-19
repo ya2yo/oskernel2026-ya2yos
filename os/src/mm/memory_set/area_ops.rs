@@ -166,31 +166,34 @@ impl MemorySetInner {
         user_heappoint: usize,
         user_heapbottom: usize,
     ) -> usize {
-        let area = self
-            .areas
+        let new_addr = user_heappoint
+            .checked_add_signed(grow_size)
+            .expect("USER_HEAP address overflow");
+        let new_vpn: VirtPageNum = VirtAddr::from(new_addr).ceil();
+        let heap_bottom_vpn: VirtPageNum = (user_heapbottom / PAGE_SIZE).into();
+        let (areas, page_table) = (&mut self.areas, &mut self.page_table);
+        let area = areas
             .iter_mut()
             .find(|area| area.area_type == MapAreaType::Brk)
             .unwrap();
-        let new_addr: usize = user_heappoint + grow_size as usize;
-        let new_vpn: VirtPageNum = VirtAddr::from(new_addr).ceil();
+        let old_end_vpn = area.vpn_range.end();
         if grow_size > 0 {
             let user_vpn_top: VirtPageNum = ((user_heapbottom + USER_HEAP_SIZE) / PAGE_SIZE).into();
             if new_vpn >= user_vpn_top {
                 panic!("USER_HEAP overflow as {:#X}!", new_addr);
             }
-            area.vpn_range = VPNRange::new((user_heapbottom / PAGE_SIZE).into(), new_vpn);
+            area.vpn_range = VPNRange::new(heap_bottom_vpn, new_vpn);
         } else {
             if new_addr < user_heapbottom {
                 panic!("USER_HEAP downflow at {:#X}!", new_addr);
             }
-            area.vpn_range = VPNRange::new((user_heapbottom / PAGE_SIZE).into(), new_vpn);
-            while !area.data_frames.is_empty() {
-                let page = area.data_frames.pop_last().unwrap();
-                if page.0 < new_vpn {
-                    area.data_frames.insert(page.0, page.1);
-                    break;
-                }
-                self.page_table.unmap(page.0);
+            area.vpn_range = VPNRange::new(heap_bottom_vpn, new_vpn);
+            // Clear the complete old tail, not only data_frames entries.  A
+            // stale PTE without a FrameTracker must not survive shrink/grow
+            // and later become an unpinned COW source during fork.
+            for vpn in VPNRange::new(new_vpn, old_end_vpn) {
+                page_table.unmap(vpn);
+                area.data_frames.remove(&vpn);
             }
         }
         tlb_invalidate();
@@ -225,8 +228,8 @@ impl MemorySetInner {
         } else {
             return;
         };
-        let this_area = if let Some(area) = self
-            .areas
+        let (areas, this_page_table) = (&mut self.areas, &mut self.page_table);
+        let this_area = if let Some(area) = areas
             .iter_mut()
             .find(|area| area.vpn_range.start() == start_vpn)
         {
@@ -234,17 +237,15 @@ impl MemorySetInner {
         } else {
             return;
         };
-        let mut this_page_table = PageTable::from_token(self.page_table.token());
-        let another_page_table = PageTable::from_token(another.page_table.token());
         for vpn in another_area.vpn_range {
-            let src_ppn = match another_page_table.translate(vpn) {
+            let src_ppn = match another.page_table.translate(vpn) {
                 Some(ppn) => ppn,
                 None => continue,
             };
 
             let dst_ppn = match this_page_table.translate(vpn) {
                 Some(ppn) => ppn,
-                None => match this_area.map_one(&mut this_page_table, vpn) {
+                None => match this_area.map_one(this_page_table, vpn) {
                     Some(ppn) => ppn,
                     None => continue,
                 },

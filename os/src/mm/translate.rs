@@ -109,12 +109,19 @@ fn translated_user_page_for_write(
     page_table: &PageTable,
     vpn: VirtPageNum,
 ) -> Option<PhysPageNum> {
-    translated_user_page(
-        memory_set,
-        page_table,
-        vpn,
-        Trap::Exception(Exception::StorePageFault),
-    )
+    let fault = Trap::Exception(Exception::StorePageFault);
+    if page_table.translate(vpn).is_none() && !memory_set.handle_page_fault(vpn, fault) {
+        return None;
+    }
+
+    // copy_to_user() accesses the physical page directly, so it would bypass
+    // the CPU's StorePageFault on a present COW PTE without this explicit
+    // write-fault step.
+    if page_table.is_cow_page(vpn) && !memory_set.handle_page_fault(vpn, fault) {
+        return None;
+    }
+
+    page_table.translate(vpn)
 }
 
 /// 安全地从用户空间复制任意类型 T 的值到内核空间。

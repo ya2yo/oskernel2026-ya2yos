@@ -5157,3 +5157,19 @@ AI 先核对批量脚本、测试顺序和镜像中 `runtest.exe` 的输出协�
 ### 修改与验证
 
 修改 `os/src/arch/riscv64/qemu/page_table.rs`；新增本问题复盘并更新 problem 索引、开发日志和 AI 协作记录。`make TARGET_ARCH=riscv64 build-arch` 成功，只有既有 Cargo 配置弃用提示和 vendored `smoltcp` warnings。最终执行 `timeout 90s make TARGET_ARCH=riscv64 run > log.ans 2>&1`，输出直接写入根目录 `log.ans`：static 107 项和 dynamic 110 项共 217 项均有 START/END，出现 libctest `GROUP END` 与 `shutdown!`，未发现段错误、页故障、panic、TFAIL 或 TBROK。static/dynamic 各一项 `utime` 仍因既有 `futimens` 时间语义失败；本次未运行 LoongArch64 行为回归。
+
+## 2026-07-19：参考 Linux 7.0 加固 RISC-V COW 所有权
+
+### 用户需求
+
+维护者要求说明 Linux 7.0 对 fork/COW 的做法，并询问能否依据本地 `~/linux/linux-7.0` 源码进一步增强 Ya2yOS 的健壮性。
+
+### 分析与采纳结论
+
+AI 只读追踪 Linux 7.0.0 的 `copy_page_range()`、`do_wp_page()` 和 `wp_page_copy()`。Linux 在 fork 复制 present PTE 时先增加 folio 引用/rmap 并将父子 PTE 写保护；写 fault 则在旧 folio 已引用的前提下先分配并复制新页，重取 PTE lock、以 `pte_same()` 重验，随后 clear/flush 旧 PTE、安装新 PTE，最后删除旧 rmap/释放旧 folio。该顺序直接解释了本项目不能在复制前丢失 `FrameTracker` 的原因。
+
+没有直接搬运 Linux 的 `struct page`、rmap、PTL 或远程 TLB shootdown：Ya2yOS 当前以 `MemorySet` 写锁串行同一地址空间修改，且 `home_hart` 保证同一地址空间不跨 hart，现有 `sfence.vma` 只需刷新本 hart。采纳可在当前对象模型中安全落地的四项强化：RISC-V COW 先分配/复制、成功后再切换 PTE 和 VMA frame；写 fault 严格区分 COW、已 writable 的 dirty 更新和真正只读页；RISC-V `copy_to_user()` 对 present COW PTE 显式走 StorePageFault；Brk shrink 清理完整旧 VPN 区间，lazy stack clone 使用持久 `self.page_table` 分配中间页表帧。保留无 `data_frames` 的 Brk COW 兼容路径，因为历史 `iozone -t 4` 回归依赖它保存已映射 heap 数据；该路径仍作为后续统一 frame ownership 的残余风险记录。
+
+### 修改与验证
+
+修改 `os/src/arch/riscv64/qemu/page_table.rs`、`os/src/mm/translate.rs`、`os/src/mm/memory_set/area_ops.rs`，并更新本问题复盘、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check` 通过；`make TARGET_ARCH=riscv64 build-arch` 和 `make TARGET_ARCH=loongarch64 build-arch` 均通过，仅有既有 Cargo 配置弃用提示和 vendored `smoltcp` warnings。最终执行 `timeout 90s make TARGET_ARCH=riscv64 run > log.ans 2>&1`，根目录 `log.ans` 显示 static 107 项、dynamic 110 项共 217 个 START/END，`GROUP END` 和 `shutdown!` 均出现，无段错误、页故障、panic、TFAIL 或 TBROK；`utime` 两项既有失败仍在。LoongArch64 未运行本轮行为回归。

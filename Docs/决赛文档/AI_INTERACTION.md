@@ -857,3 +857,10 @@
 - **场景**：分析 `riscv.ans` 与 `log.ans` 中单测正常、批量随机段错误的问题，检查测试镜像 BusyBox 反汇编和 RISC-V COW 页故障路径，并执行最终 QEMU 回归。
 - **描述**：确认 `0x1066c0` 是 BusyBox/musl 分配器检测 heap chunk 元数据损坏后的主动崩溃，而非 `clocale_mbfuncs` 断言。根因是两个 hart 并发 COW 时，一个路径在取得裸源页后解除 VMA 映射，另一路径可删除最后一个 `FrameTracker` 引用并复用源物理页。修复在 `unmap_one()` 前克隆并持有源帧到页内容复制完成。RISC-V 构建通过；最终根目录 `log.ans` 的 static 107 项与 dynamic 110 项全部结束、打印 `GROUP END`/`shutdown!`，无段错误、页故障、panic、TFAIL 或 TBROK；两个既有 `utime` 失败未纳入本次修复。详见 [problem/riscv-libctest-cow-source-frame-race.md](./problem/riscv-libctest-cow-source-frame-race.md) 与 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-19 工作树）
+
+#### 参考 Linux 7.0 加固 RISC-V COW 所有权（7.19）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求根据本地 Linux 7.0 源码说明 fork/COW 实现，并将其生命周期与权限检查原则落地到 Ya2yOS 的 RISC-V COW 路径。
+- **描述**：对照 Linux `do_wp_page()`/`wp_page_copy()` 的“旧 folio 引用 -> 分配并复制 -> PTE 重验/切换 -> rmap 与引用释放”顺序，保留源 `FrameTracker` pin，并把 Ya2yOS COW 改为 OOM 时保持旧映射、成功后才替换 PTE 和 VMA frame。RISC-V `copy_to_user` 现会对 present COW 页走 StorePageFault，避免绕过硬件写保护；Brk shrink 和 lazy stack clone 的页表所有权也同步修复。RISC-V/LoongArch64 release 构建均通过；最终 RISC-V 根目录 `log.ans` 有 217 个 START/END、`GROUP END`/`shutdown!`，无段错误或页故障，两个既有 `utime` 失败未纳入本次修复。详见 [problem/riscv-libctest-cow-source-frame-race.md](./problem/riscv-libctest-cow-source-frame-race.md) 与 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-19 工作树）

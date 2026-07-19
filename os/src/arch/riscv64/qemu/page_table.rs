@@ -334,6 +334,15 @@ impl PageTable {
         }
         None
     }
+    /// Whether an existing leaf PTE still requires a COW write fault.
+    ///
+    /// Kernel-side copies use this to preserve the same COW boundary as a
+    /// user-mode store instead of writing directly through a shared PPN.
+    pub fn is_cow_page(&self, vpn: VirtPageNum) -> bool {
+        self.find_valid_pte(vpn)
+            .map(|pte| pte.get_flags().contains(RVPTEFlags::COW))
+            .unwrap_or(false)
+    }
     /// Translate `VirtAddr` to `PhysAddr`，页表项无效和不存在返回None
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
         let vpn = va.floor();
@@ -377,16 +386,37 @@ impl PageTable {
     /// return: 若成功处理了 present PTE 的写保护页错误，返回true，否则返回false
     pub fn handle_write_protect_page_fault(&mut self, va: VirtAddr, vma: &mut MapArea) -> bool {
         debug!("[handle_write_protect_page_fault] va={:?}", va);
-        let pte = match self.find_valid_pte(va.floor()) {
+        let vpn = va.floor();
+        let pte = match self.find_valid_pte(vpn) {
             Some(pte) => pte,
             None => return false,
         };
 
+        let mut flags = pte.get_flags();
+        if !flags.contains(RVPTEFlags::COW) {
+            if flags.contains(RVPTEFlags::WRITEABLE) {
+                // A writable PTE can fault only because the hardware dirty
+                // state needs refreshing; it is not a COW split.
+                flags.insert(RVPTEFlags::DIRTY);
+                pte.set_flags(flags);
+                tlb_invalidate();
+                return true;
+            }
+            // Do not turn ELF text or an intentionally read-only mapping
+            // into a writable COW page.
+            return false;
+        }
+
         // 必须有对应的 frame（ELF 段用 data_frames 跟踪）
         // fork 子进程的 Brk 区域可能存在无 data_frames 条目的 COW PTE；
         // 此时仍应分配新帧并复制数据。
-        let (refcnt, source_frame) = match vma.data_frames.get(&va.into()) {
-            Some(frame) => (Arc::strong_count(frame), Some(Arc::clone(frame))),
+        let (refcnt, source_frame) = match vma.data_frames.get(&vpn) {
+            Some(frame) => {
+                // Count before pinning: the temporary pin must not turn an
+                // exclusively mapped page into a shared one.
+                let refcnt = Arc::strong_count(frame);
+                (refcnt, Some(Arc::clone(frame)))
+            }
             None => (2, None), // no tracker → force copy path
         };
         debug!("---> refcnt={}", refcnt);
@@ -402,27 +432,37 @@ impl PageTable {
             return true;
         }
 
-        // Multiple address spaces can fault the same COW page concurrently.
-        // Keep a FrameTracker reference until the copy has completed: after
-        // unmapping this VMA, another fault handler may drop its last VMA
-        // reference and recycle the source physical page.
+        // Linux's wp_page_copy() keeps the old folio referenced while it
+        // allocates and copies the replacement page, then swaps the PTE.
+        // Keep the same order here: do not tear down a working mapping before
+        // allocation succeeds, and keep source_frame pinned through the copy.
         let src_ppn = pte.get_ppn();
-        vma.unmap_one(self, va.into());
-        if vma.map_one(self, va.into()).is_none() {
-            return false; // OOM — let trap handler send SIGSEGV
+        if let Some(frame) = source_frame.as_ref() {
+            if frame.ppn != src_ppn {
+                return false;
+            }
         }
-        tlb_invalidate();
-        let pte = self.find_valid_pte(va.floor()).unwrap();
-        let dst = &mut pte.get_ppn().bytes_array_mut()[..PAGE_SIZE];
-        dst.copy_from_slice(src_ppn.bytes_array());
-        drop(source_frame);
+        let new_frame = match FrameTracker::alloc() {
+            Some(frame) => frame,
+            None => return false, // Keep the old PTE and mapping intact on OOM.
+        };
+        let new_ppn = new_frame.ppn;
+        new_ppn
+            .bytes_array_mut()
+            .copy_from_slice(src_ppn.bytes_array());
 
-        let mut flags = pte.get_flags();
+        flags = pte.get_flags();
         flags.remove(RVPTEFlags::COW);
         flags.insert(RVPTEFlags::WRITEABLE);
         flags.insert(RVPTEFlags::DIRTY);
-        pte.set_flags(flags);
+        *pte = PageTableEntry::new(new_ppn, flags);
         tlb_invalidate();
+
+        // The current VMA no longer maps the old frame.  Drop its old Arc
+        // only after the PTE has switched and the local TLB is invalidated.
+        let old_frame = vma.data_frames.insert(vpn, new_frame);
+        drop(old_frame);
+        drop(source_frame);
 
         true
     }
