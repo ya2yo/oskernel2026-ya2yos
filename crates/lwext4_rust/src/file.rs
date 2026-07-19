@@ -5,7 +5,6 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::{ffi::CString, vec::Vec};
-use hashbrown::HashSet;
 use spin::{Lazy, Mutex, RwLock};
 
 const PAGE_SIZE: usize = 4096;
@@ -253,15 +252,12 @@ impl Ext4File {
     /// Remove file by path.
     pub fn file_remove(&mut self, path: &str) -> Result<usize, i32> {
         //debug!("file_remove {}", path);
-
         let c_path = CString::new(path).expect("CString::new failed");
         let c_path = c_path.into_raw();
 
         let path = String::from(path);
-        //删掉对应缓存
-        if if_cache(path.clone()) {
-            remove_cache(path);
-        }
+        // 删除目录项后，该路径不能继续保留 write-back cache 或 FIFO 元数据。
+        remove_file_cache_state(&path);
 
         //修改为未打开
         self.has_opened = false;
@@ -279,6 +275,14 @@ impl Ext4File {
 
     // 检查是否值得建立文件缓存。大文件直接走 ext4，避免一次性占用大量堆。
     fn check_cached(&mut self, file_path: String) {
+        // These files are regenerated and synchronously synced on every procfs
+        // refresh. Keeping them in the global delayed write-back FIFO leaves
+        // stale entries after process teardown and can recurse into lwext4
+        // while an ext4 operation is already in progress.
+        if is_proc_task_runtime_file(&file_path) {
+            return;
+        }
+
         if if_cache(file_path.clone()) {
             return;
         }
@@ -287,26 +291,44 @@ impl Ext4File {
         let c_path = CString::new(file_path.as_str()).expect("CString::new failed");
         let c_path = c_path.into_raw();
         let c_flags = Ext4File::flags_to_cstring(2).into_raw();
+        let mut cache_desc = ext4_file {
+            mp: core::ptr::null_mut(),
+            inode: 0,
+            flags: 0,
+            fsize: 0,
+            fpos: 0,
+        };
 
-        // 重新打开文件获得最新的文件信息
-        unsafe { ext4_fopen(&mut self.file_desc, c_path, c_flags) };
+        // Query cache contents through a separate descriptor.  Reopening
+        // self.file_desc here can otherwise desynchronize an active file from
+        // its path/cache key when lwext4 rejects the cache open.
+        let r = unsafe { ext4_fopen(&mut cache_desc, c_path, c_flags) };
         unsafe {
             drop(CString::from_raw(c_path));
             drop(CString::from_raw(c_flags));
         }
-
-        let size = unsafe { ext4_fsize(&mut self.file_desc) as usize };
-        if size > MAX_CACHED_FILE_SIZE {
+        if r != EOK as i32 {
+            error!("check_cached ext4_fopen: {}, rc = {}", file_path, r);
             return;
         }
 
-        insert_fifo(file_path.clone());
+        let size = unsafe { ext4_fsize(&mut cache_desc) as usize };
+        if size > MAX_CACHED_FILE_SIZE {
+            unsafe {
+                ext4_fclose(&mut cache_desc);
+            }
+            return;
+        }
+
         let cache = Arc::new(RwLock::new(VFileCache::new()));
         let mut cache_writer = cache.write();
         cache_writer.mode = self.pending_mode;
         let aligned_size = aligned_down(size) + PAGE_SIZE;
         cache_writer.data = Vec::new();
         if cache_writer.data.try_reserve_exact(aligned_size).is_err() {
+            unsafe {
+                ext4_fclose(&mut cache_desc);
+            }
             return;
         }
         let data = &mut cache_writer.data;
@@ -315,20 +337,28 @@ impl Ext4File {
         }
         cache_writer.size = size;
         if size == 0 {
+            unsafe {
+                ext4_fclose(&mut cache_desc);
+            }
             insert_cache(file_path.clone(), &cache);
+            insert_fifo(file_path);
             return;
         }
-        unsafe { ext4_fseek(&mut self.file_desc, 0, SEEK_SET) };
+        unsafe { ext4_fseek(&mut cache_desc, 0, SEEK_SET) };
         let mut rw_count = 0;
         unsafe {
             ext4_fread(
-                &mut self.file_desc,
+                &mut cache_desc,
                 cache_writer.data.as_mut_ptr() as _,
                 size,
                 &mut rw_count,
             )
         };
+        unsafe {
+            ext4_fclose(&mut cache_desc);
+        }
         insert_cache(file_path.clone(), &cache);
+        insert_fifo(file_path);
     }
 
     pub fn file_seek(&mut self, offset: i64, seek_type: u32) -> Result<usize, i32> {
@@ -439,8 +469,7 @@ impl Ext4File {
                 let write_offset = cache_writer.offset;
                 drop(cache_writer);
                 write_back_cache(path.clone())?;
-                remove_cache(path.clone());
-                remove_fifo_set(path.clone());
+                remove_file_cache_state(&path);
                 self.file_desc.fpos = write_offset as u64;
             } else {
                 cache_writer.writebuf(buf)?;
@@ -991,6 +1020,18 @@ pub fn remove_cache(file_path: String) {
     CACHE_TABLE.lock().remove(&file_path);
 }
 
+/// Remove every global write-back bookkeeping entry for a pathname.
+///
+/// The guards are deliberately released between tables so cache removal never
+/// waits for FIFO state while retaining a cache-table guard.
+fn remove_file_cache_state(file_path: &str) {
+    {
+        let mut fifo = FIFO_TABLE.lock();
+        fifo.retain(|entry| entry != file_path);
+    }
+    CACHE_TABLE.lock().remove(file_path);
+}
+
 fn is_proc_task_runtime_file(path: &str) -> bool {
     let rest = match path.strip_prefix("/proc/") {
         Some(rest) => rest,
@@ -1011,136 +1052,130 @@ const FIFO_SIZE: usize = 10;
 static FIFO_TABLE: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
 pub fn insert_fifo(file_path: String) {
-    let mut fifo = FIFO_TABLE.lock();
-    //队列中存在该文件，说明之前被删除过，不重复加入
-    if if_fifo_set(file_path.clone()) {
-        // debug!("file {} already exist", file_path);
-        return;
-    }
-    if fifo.len() == FIFO_SIZE {
-        //替换并可能写回
-        let path = fifo.pop_front().unwrap();
-        let _ = write_back_cache(path.clone());
-        if if_cache(path.clone()) {
-            remove_cache(path.clone());
-            remove_fifo_set(path.clone());
+    let evicted = {
+        let mut fifo = FIFO_TABLE.lock();
+        // FIFO_SIZE is intentionally small, so keeping de-duplication in the
+        // queue itself avoids a second table with a separate lifetime.
+        if fifo.iter().any(|entry| entry == &file_path) {
+            return;
         }
-        // debug!("\n\n{} is replaced!\n\n", path);
+
+        let evicted = if fifo.len() == FIFO_SIZE {
+            let path = fifo.pop_front().unwrap();
+            // Detach the global state before doing lwext4 I/O.  A pathname
+            // recreated during the write-back can then receive a new cache.
+            CACHE_TABLE.lock().remove(&path).map(|cache| (path, cache))
+        } else {
+            None
+        };
+
+        fifo.push_back(file_path.clone());
+        evicted
+    };
+
+    // write_back_cache_entry() may handle an ENOENT proc entry.  It must run
+    // after FIFO_TABLE is unlocked because it can otherwise re-enter cache
+    // cleanup paths.
+    if let Some((path, cache)) = evicted {
+        let _ = write_back_cache_entry(&path, &cache);
     }
-    fifo.push_back(file_path.clone());
-    insert_fifo_set(file_path.clone());
-    // debug!(
-    //     "\n\ninsert {} into fifo!\nlen is {}\n\n",
-    //     file_path,
-    //     fifo.len()
-    // );
-}
-
-static FIFO_SET: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(HashSet::new()));
-
-pub fn insert_fifo_set(file_path: String) {
-    FIFO_SET.lock().insert(file_path);
-}
-
-pub fn if_fifo_set(file_path: String) -> bool {
-    FIFO_SET.lock().contains(&file_path)
-}
-
-pub fn remove_fifo_set(file_path: String) {
-    FIFO_SET.lock().remove(&file_path);
 }
 
 pub fn write_back_cache(path: String) -> Result<usize, i32> {
-    if if_cache(path.clone()) {
-        //如果在缓存中有，表明未被删除
-        let cache = get_cache(path.clone());
-        let cache_writer = cache.write();
-        if cache_writer.modified {
-            //如果被修改过，则写回
-            // debug!("{} is written back!", path);
-            let c_path = CString::new(path.as_str()).expect("CString::new failed");
-            let c_path = c_path.into_raw();
-            let flags = Ext4File::flags_to_cstring(2).into_raw();
-            let mut file_desc = ext4_file {
-                mp: core::ptr::null_mut(),
-                inode: 0,
-                flags: 0,
-                fsize: 0,
-                fpos: 0,
-            };
-            let mut r = unsafe { ext4_fopen(&mut file_desc, c_path, flags) };
-            unsafe {
-                // deallocate the CString
-                drop(CString::from_raw(c_path));
-                drop(CString::from_raw(flags));
-            }
-            if r == ENOENT as i32 {
-                // A newly created file can remain only in the write-back cache
-                // until its first eviction. Materialize that cache entry and
-                // then flush the pending contents through the same descriptor.
-                file_desc = ext4_file {
-                    mp: core::ptr::null_mut(),
-                    inode: 0,
-                    flags: 0,
-                    fsize: 0,
-                    fpos: 0,
-                };
-                let c_path = CString::new(path.as_str()).expect("CString::new failed");
+    let cache = CACHE_TABLE.lock().get(&path).cloned();
+    match cache {
+        Some(cache) => write_back_cache_entry(&path, &cache),
+        None => Ok(0),
+    }
+}
+
+fn write_back_cache_entry(path: &str, cache: &Arc<RwLock<VFileCache>>) -> Result<usize, i32> {
+    let cache_writer = cache.write();
+    if !cache_writer.modified {
+        return Ok(0);
+    }
+
+    //如果被修改过，则写回
+    // debug!("{} is written back!", path);
+    let c_path = CString::new(path).expect("CString::new failed");
+    let c_path = c_path.into_raw();
+    let flags = Ext4File::flags_to_cstring(2).into_raw();
+    let mut file_desc = ext4_file {
+        mp: core::ptr::null_mut(),
+        inode: 0,
+        flags: 0,
+        fsize: 0,
+        fpos: 0,
+    };
+    let mut r = unsafe { ext4_fopen(&mut file_desc, c_path, flags) };
+    unsafe {
+        // deallocate the CString
+        drop(CString::from_raw(c_path));
+        drop(CString::from_raw(flags));
+    }
+    if r == ENOENT as i32 {
+        // Runtime proc files are removed together with their task.
+        // They must never be recreated from a stale write-back cache.
+        if is_proc_task_runtime_file(path) {
+            return Ok(0);
+        }
+        // A newly created file can remain only in the write-back cache
+        // until its first eviction. Materialize that cache entry and
+        // then flush the pending contents through the same descriptor.
+        file_desc = ext4_file {
+            mp: core::ptr::null_mut(),
+            inode: 0,
+            flags: 0,
+            fsize: 0,
+            fpos: 0,
+        };
+        let c_path = CString::new(path).expect("CString::new failed");
+        let c_path = c_path.into_raw();
+        let flags = Ext4File::flags_to_cstring(O_RDWR | O_CREAT | O_TRUNC).into_raw();
+        r = unsafe { ext4_fopen(&mut file_desc, c_path, flags) };
+        unsafe {
+            drop(CString::from_raw(c_path));
+            drop(CString::from_raw(flags));
+        }
+        if r == EOK as i32 {
+            if let Some(mode) = cache_writer.mode {
+                let c_path = CString::new(path).expect("CString::new failed");
                 let c_path = c_path.into_raw();
-                let flags = Ext4File::flags_to_cstring(O_RDWR | O_CREAT | O_TRUNC).into_raw();
-                r = unsafe { ext4_fopen(&mut file_desc, c_path, flags) };
+                r = unsafe { ext4_mode_set(c_path, mode) };
                 unsafe {
                     drop(CString::from_raw(c_path));
-                    drop(CString::from_raw(flags));
-                }
-                if r == EOK as i32 {
-                    if let Some(mode) = cache_writer.mode {
-                        let c_path = CString::new(path.as_str()).expect("CString::new failed");
-                        let c_path = c_path.into_raw();
-                        r = unsafe { ext4_mode_set(c_path, mode) };
-                        unsafe {
-                            drop(CString::from_raw(c_path));
-                        }
-                    }
                 }
             }
-            if r != EOK as i32 {
-                if r == ENOENT as i32 && is_proc_task_runtime_file(&path) {
-                    drop(cache_writer);
-                    remove_cache(path.clone());
-                    remove_fifo_set(path);
-                    return Ok(0);
-                }
-                error!("write_back_cache ext4_fopen: {}, rc = {}", path, r);
-                return Err(r);
-            }
-
-            file_desc.fpos = 0;
-            let mut rw_count = 0;
-            let r = unsafe {
-                ext4_fwrite(
-                    &mut file_desc,
-                    cache_writer.data.as_ptr() as _,
-                    cache_writer.size,
-                    &mut rw_count,
-                )
-            };
-            if r != EOK as i32 {
-                error!("write_back_cache ext4_fwrite: {}, rc = {}", path, r);
-                unsafe {
-                    ext4_fclose(&mut file_desc);
-                }
-                return Err(r);
-            }
-            let r = unsafe { ext4_fclose(&mut file_desc) };
-            if r != EOK as i32 {
-                error!("write_back_cache ext4_fclose: {}, rc = {}", path, r);
-                return Err(r);
-            }
-            return Ok(rw_count);
         }
     }
-    Ok(0)
+    if r != EOK as i32 {
+        error!("write_back_cache ext4_fopen: {}, rc = {}", path, r);
+        return Err(r);
+    }
+
+    file_desc.fpos = 0;
+    let mut rw_count = 0;
+    let r = unsafe {
+        ext4_fwrite(
+            &mut file_desc,
+            cache_writer.data.as_ptr() as _,
+            cache_writer.size,
+            &mut rw_count,
+        )
+    };
+    if r != EOK as i32 {
+        error!("write_back_cache ext4_fwrite: {}, rc = {}", path, r);
+        unsafe {
+            ext4_fclose(&mut file_desc);
+        }
+        return Err(r);
+    }
+    let r = unsafe { ext4_fclose(&mut file_desc) };
+    if r != EOK as i32 {
+        error!("write_back_cache ext4_fclose: {}, rc = {}", path, r);
+        return Err(r);
+    }
+    Ok(rw_count)
 }
 
 fn seek_pos(current: usize, size: usize, offset: i64, seek_type: u32) -> Result<usize, i32> {

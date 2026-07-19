@@ -871,3 +871,10 @@
 - **场景**：分析 `log.ans` 的 libc-test `utime` 失败，区分 `futimens` fd ABI 与 `utimes(NULL)` 错误语义，修复 syscall 并执行双架构 QEMU 回归。
 - **描述**：确认 musl `futimens(fd, times)` 以 `utimensat(fd, NULL, times, 0)` 进入内核，而旧实现将任意 NULL pathname 直接返回 `EFAULT`，使所有有效 fd 调用在读取时间数组前失败。修复仅对非负 fd 从 fd 表直取 `OSFile`/inode，拒绝 `O_PATH`，并保留 `AT_FDCWD + NULL` 的 `EFAULT`，从而不回归 LTP `utimes01`。RISC-V 与 LoongArch64 的定向 `entry-static.exe utime` 均输出 `Pass!` 和 `shutdown!`；最后一次 LoongArch64 日志保留在根目录 `log.ans`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/libctest-futimens-fd-null-pathname.md](./problem/libctest-futimens-fd-null-pathname.md)。
 - **关联 commit**：尚未提交（2026-07-19 工作树）
+
+#### iozone 连续测例 inode 缓存复用卡死修复（7.20）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：拆分 iozone 子测例、分析 `log.ans` 与 GDB 双 hart 回溯，审计 VFS inode cache、lwext4 write-back FIFO 和 wait 回收锁边界，并执行双架构 QEMU 回归。
+- **描述**：确认 iozone cleanup 后的 `/proc/21/stat` 错误复用已删除 `/musl/iozone.DUMMY.1` 的 canonical inode，导致 `check_cached()` 对错误路径进入 lwext4 `ext4_fread()` 自旋。修复将路径索引和 inode cache 收敛为单状态锁，回收被同路径 key 覆盖的强引用 orphan，并在 stale canonical replacement 时撤销旧 alias；task proc 子树改为 path key。同步清理 cache/FIFO 元数据、将 FIFO 淘汰写回移出队列锁、以独立 descriptor 初始化文件缓存，并在 child reaping 前释放父 `ProcessMeta`。最终 RISC-V `log.ans` 与 LoongArch64 `/tmp/iozone-loong.log` 均出现两次 `iozone test complete.`、backward-read 吞吐段和 `shutdown!`。详见 [problem/iozone-inode-cache-reuse-hang.md](./problem/iozone-inode-cache-reuse-hang.md) 与 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-20 工作树）

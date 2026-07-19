@@ -308,6 +308,9 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
                     process_meta.children.remove(idx);
                 }
                 drop(child);
+                // The child has left this parent's list. Do not carry
+                // ProcessMeta into procfs and PID-table teardown.
+                drop(process_meta);
                 Process::remove_from_global_map(found_pid);
             }
 
@@ -573,6 +576,9 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
                     process_meta.children.remove(idx);
                 }
                 drop(child);
+                // The child has left this parent's list. Do not carry
+                // ProcessMeta into procfs and PID-table teardown.
+                drop(process_meta);
                 Process::remove_from_global_map(found_pid);
             }
 

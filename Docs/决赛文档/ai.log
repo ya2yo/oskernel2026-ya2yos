@@ -5189,3 +5189,19 @@ AI 先以 `TPASS`/`TFAIL`/panic 和 libc-test 断言为准检查日志，确认�
 ### 修改与验证
 
 修改 `os/src/syscall/fs/ctl/time.rs`，新增 `Docs/决赛文档/problem/libctest-futimens-fd-null-pathname.md` 并更新问题索引、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml -- --check` 与 `git diff --check` 通过；`make` 完成 RISC-V/LoongArch64 release 构建，只有既有 vendored `smoltcp` warnings。`timeout 120s make TARGET_ARCH=riscv64 run > log.ans 2>&1` 与 LoongArch64 对应命令均完成，两个 `entry-static.exe utime` 定向测例均输出 `Pass!` 和 `shutdown!`，未出现 `futimens` 断言、`Bad address`、`FAIL utime`、panic、TFAIL 或 TBROK。最后一次 LoongArch64 输出保留在 `log.ans`。
+
+## 2026-07-20：iozone 连续测例 inode 缓存复用卡死修复
+
+### 用户需求
+
+维护者要求将 iozone 子测例拆分到 `user/src/bin/iozone/` 以便单独执行，并分析根目录 `log.ans` 中两个连续 iozone 测例的卡死；要求最终 QEMU 串口输出直接写入根目录 `log.ans`。
+
+### 分析与采纳结论
+
+AI 先保留 `random_read::run_musl()` 与 `backward_read::run_musl()` 的最小连续入口，确认单独执行正常、连续执行在 iozone cleanup 后卡死。通过 syscall/FS 路径日志和 GDB 双 hart 回溯，将停点从表面的 `EXT4_OP_LOCK` 竞争收敛到 `Ext4File::check_cached()->ext4_fread()` 自旋。决定性日志显示请求 `/proc/21/stat` 时实际返回的 inode path 是已删除的 `/musl/iozone.DUMMY.1`。
+
+继续审计 `FsIndex` 后确认同一路径不同阶段的 `(st_dev, st_ino)` key 会覆盖 `PATH_INDEX`，但旧 `INODE_CACHE` 强 `Arc` 未回收；unlink 只能删除最新 key，ext4 复用更早 orphan key 后错误返回 DUMMY canonical inode。采纳单状态锁、path rebind orphan 回收、alias-aware unlink 清理、stale canonical 重新发布和 task proc path key。同步修复 iozone 暴露的 FIFO/CACHE 元数据残留和 FIFO 锁内写回风险，并让 `check_cached()` 使用独立 descriptor、检查缓存打开失败。`waitpid`/`waitid` 还在 procfs/PID 表清理前释放父 `ProcessMeta`，避免锁跨入文件系统。
+
+### 修改与验证
+
+修改 `os/src/fs/kernel_fs_ops/fsidx.rs`、`crates/lwext4_rust/src/file.rs`、`os/src/syscall/task/wait.rs` 和 `user/src/bin/initproc.rs`；新增本问题复盘并更新问题索引、开发日志与 AI 记录。`git diff --check` 通过。`make build-arch TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过，只有既有 Cargo config/vendored `smoltcp` warnings。最终 `timeout 180s make run TARGET_ARCH=riscv64 > log.ans 2>&1` 直接写入根目录，出现两次 `iozone test complete.`、backward-read 吞吐段和 `shutdown!`，无 panic/TFAIL/TBROK/ERROR；LoongArch64 对应运行输出在 `/tmp/iozone-loong.log`，同样完成两个测例并正常关机。LoongArch QEMU 首次受沙箱 `/var/tmp` 只读限制未启动，获准使用宿主临时目录后完成有效回归。

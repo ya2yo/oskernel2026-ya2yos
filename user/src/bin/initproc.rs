@@ -21,6 +21,7 @@ mod lua;
 #[path = "netdev_test/cases.rs"]
 mod netdev_test_cases;
 mod netperf;
+mod iozone;
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -129,6 +130,8 @@ fn get_score() -> i32 {
     // // run_testsuit("glibc\0", "libctest_testcode.sh\0");// riscv loongarch 通过
     // // iozone
     run_testsuit("musl\0", "iozone_testcode.sh\0"); //龙芯 riscv 不会死循环或panic
+    // iozone::random_read::run_musl();
+    // iozone::backward_read::run_musl();
     run_testsuit("glibc\0", "iozone_testcode.sh\0"); // riscv 通过
     // // lmbench
     // run_testsuit("musl\0", "lmbench_testcode.sh\0"); // 双架构通过

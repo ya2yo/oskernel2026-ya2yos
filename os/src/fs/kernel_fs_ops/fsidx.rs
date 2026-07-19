@@ -20,21 +20,20 @@ enum InodeCacheKey {
     Path(String),
 }
 
-/// 路径别名索引：`绝对路径 -> inode 身份键`。
+/// 路径索引与 inode 对象缓存必须在一次锁持有中更新。
 ///
-/// 同一个 inode 的硬链接会对应多个路径条目，但会指向同一个 key。它承担了
-/// 部分 Linux dcache 的路径关联职责；完整的父目录/子名称 dentry 缓存见
-/// `DENTRY_CACHE`，本表不保存 positive/negative dentry 状态。
-static PATH_INDEX: Lazy<RwLock<HashMap<String, InodeCacheKey>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
+/// 如果先更新路径索引、后更新 inode 缓存（或相反），底层 ext4 在两步之间复用
+/// inode 号时，新文件可能会错误拿到已删除文件的 `Arc<dyn Inode>`。
+#[derive(Default)]
+struct InodeCacheState {
+    /// `绝对路径 -> inode 身份键`。硬链接可对应多个路径但共享同一个键。
+    paths: HashMap<String, InodeCacheKey>,
+    /// `inode 身份键 -> 规范的 inode 对象`。
+    inodes: HashMap<InodeCacheKey, Arc<dyn Inode>>,
+}
 
-/// VFS inode 对象缓存：`inode 身份键 -> 规范的 inode 对象`。
-///
-/// 插入同一 `(st_dev, st_ino)` 时复用已有 `Arc<dyn Inode>`，从而使硬链接和
-/// 已解析的路径别名共享同一个 VFS inode 对象。概念上对应 Linux 的全局
-/// `inode_hashtable`，其内部以 `(super_block, i_ino)` 标识 inode。
-static INODE_CACHE: Lazy<RwLock<HashMap<InodeCacheKey, Arc<dyn Inode>>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
+static INODE_CACHE: Lazy<RwLock<InodeCacheState>> =
+    Lazy::new(|| RwLock::new(InodeCacheState::default()));
 
 /// 特殊节点类型补充表：`绝对路径 -> InodeType`。
 ///
@@ -52,26 +51,58 @@ impl FsIndex {
     }
 
     pub fn find_inode_idx(path: &str) -> Option<Arc<dyn Inode>> {
-        let key = PATH_INDEX.read().get(path).cloned()?;
-        let inode = INODE_CACHE.read().get(&key).cloned()?;
+        let inode = {
+            let cache = INODE_CACHE.read();
+            let key = cache.paths.get(path)?;
+            cache.inodes.get(key).cloned()?
+        };
         inode.cache_path_alias(path);
         Some(inode)
     }
 
     pub fn insert_inode_idx(path: &str, inode: Arc<dyn Inode>) -> Arc<dyn Inode> {
         let key = Self::cache_key(path, &inode);
-        let canonical = {
+        let canonical = loop {
+            let existing = {
+                let cache = INODE_CACHE.read();
+                cache.inodes.get(&key).cloned()
+            };
+
+            let Some(existing) = existing else {
+                let mut cache = INODE_CACHE.write();
+                if cache.inodes.contains_key(&key) {
+                    continue;
+                }
+                cache.inodes.insert(key.clone(), inode.clone());
+                Self::bind_path(&mut cache, path, &key);
+                break inode.clone();
+            };
+
+            let replace_stale = !Self::inode_matches_key(&existing, &key);
             let mut cache = INODE_CACHE.write();
-            if let Some(existing) = cache.get(&key).cloned() {
-                existing.cache_path_alias(path);
-                existing
-            } else {
-                inode.cache_path_alias(path);
-                cache.insert(key.clone(), inode.clone());
-                inode
+            let Some(current) = cache.inodes.get(&key).cloned() else {
+                continue;
+            };
+            if !Arc::ptr_eq(&current, &existing) {
+                continue;
             }
+
+            if replace_stale {
+                // Every path under this key refers to an inode that has just
+                // been proven dead.  Keeping any of those aliases would make
+                // a later lookup route the old pathname to the replacement.
+                cache.paths.retain(|_, candidate| candidate != &key);
+                cache.inodes.insert(key.clone(), inode.clone());
+                Self::bind_path(&mut cache, path, &key);
+                break inode.clone();
+            }
+
+            Self::bind_path(&mut cache, path, &key);
+            break current;
         };
-        PATH_INDEX.write().insert(path.to_string(), key);
+        // Do not enter an inode method while the index lock is held: Ext4Inode
+        // records aliases under EXT4_OP_LOCK, the opposite of unlink's order.
+        canonical.cache_path_alias(path);
         canonical
     }
 
@@ -86,17 +117,25 @@ impl FsIndex {
     }
 
     pub fn remove_inode_idx(path: &str) {
-        if let Some(key) = PATH_INDEX.write().remove(path) {
-            INODE_CACHE.write().remove(&key);
+        {
+            let mut cache = INODE_CACHE.write();
+            if let Some(key) = cache.paths.remove(path) {
+                if !cache.paths.values().any(|candidate| candidate == &key) {
+                    cache.inodes.remove(&key);
+                }
+            }
         }
         SPECIAL_NODE_TYPES.write().remove(path);
     }
 
     pub fn print_inner() {
-        println!("{:#?}", PATH_INDEX.read().keys());
+        println!("{:#?}", INODE_CACHE.read().paths.keys());
     }
 
     fn cache_key(path: &str, inode: &Arc<dyn Inode>) -> InodeCacheKey {
+        if is_proc_task_path(path) {
+            return InodeCacheKey::Path(path.to_string());
+        }
         let stat = inode.fstat();
         if stat.st_ino != 0 {
             InodeCacheKey::Inode {
@@ -107,4 +146,44 @@ impl FsIndex {
             InodeCacheKey::Path(path.to_string())
         }
     }
+
+    /// Publish a path under `key` and discard an old identity key once no path
+    /// refers to it.  This prevents a changing lwext4 stat key from leaving a
+    /// strong orphan in `inodes` that a later inode-number reuse can hit.
+    fn bind_path(cache: &mut InodeCacheState, path: &str, key: &InodeCacheKey) {
+        let previous = cache.paths.insert(path.to_string(), key.clone());
+        if let Some(previous) = previous {
+            if &previous != key && !cache.paths.values().any(|candidate| candidate == &previous) {
+                cache.inodes.remove(&previous);
+            }
+        }
+    }
+
+    /// A stale canonical inode can survive until the unlink-side cache detach
+    /// runs.  Reusing it for a newly allocated ext4 inode would retain the old
+    /// path and route I/O to the wrong file.  Hard-link aliases remain valid:
+    /// Ext4Inode::fstat() recovers a live alias before reporting its identity.
+    fn inode_matches_key(inode: &Arc<dyn Inode>, key: &InodeCacheKey) -> bool {
+        match key {
+            InodeCacheKey::Inode { dev, ino } => {
+                let stat = inode.fstat();
+                stat.st_dev == *dev && stat.st_ino == *ino
+            }
+            InodeCacheKey::Path(path) if is_proc_task_path(path) => {
+                inode.path() == path.as_str() && inode.fstat().st_ino != 0
+            }
+            InodeCacheKey::Path(path) => inode.path() == path.as_str(),
+        }
+    }
+}
+
+/// Per-process procfs entries are short lived and never participate in hard
+/// links.  Keep them path-keyed so ext4's aggressively reused inode numbers
+/// cannot merge a newly created proc entry with an unrelated regular file.
+fn is_proc_task_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/proc/") else {
+        return false;
+    };
+    let pid = rest.split_once('/').map_or(rest, |(pid, _)| pid);
+    !pid.is_empty() && pid.as_bytes().iter().all(|byte| byte.is_ascii_digit())
 }
