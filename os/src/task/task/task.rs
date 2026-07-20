@@ -22,7 +22,7 @@ use crate::{
         copy_to_user, copy_to_user_val, MapAreaType, MapPermission, MemorySet, MemorySetInner,
         PhysPageNum, VirtAddr,
     },
-    signal::{SigInfo, SigSet, SigTable, SIG_MAX_NUM},
+    signal::{SigInfo, SigSet, SigTable, SignalStack, SIG_MAX_NUM},
     task::{futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid, CloneFlags},
     timer::{TimeData, Timer},
     trap::trap_types::{Exception, Trap},
@@ -138,6 +138,8 @@ pub struct TaskControlBlockInner {
     pub vfork_wait_child: usize,
     /// 被屏蔽的信号
     pub sig_mask: SigSet,
+    /// Per-thread alternate signal stack configured by sigaltstack(2).
+    pub alt_signal_stack: SignalStack,
     /// 待处理信号集合
     pub sig_pending: SigSet,
     /// 与 sig_pending 位图并行保存的 siginfo_t；标准信号不排队，每个信号保留一份。
@@ -266,6 +268,7 @@ impl TaskControlBlock {
                 clear_child_tid: 0,
                 vfork_wait_child: 0,
                 sig_mask: SigSet::empty(),
+                alt_signal_stack: SignalStack::disabled(),
                 sig_pending: SigSet::empty(),
                 sig_pending_info: [None; SIG_MAX_NUM + 1],
                 timer: Arc::new(Timer::new()),
@@ -309,6 +312,10 @@ impl TaskControlBlock {
             })?;
         debug!("exec: return from from_elf");
         let memory_set = MemorySet::new(memory_set);
+
+        // execve replaces a process-wide address space.  No sibling may keep
+        // an old trap context or user stack once that replacement happens.
+        crate::task::kill_other_threads_before_exec(self);
 
         // Snapshot the parent task list before taking this task's inner lock.
         // The lock order is ProcessMeta -> TaskControlBlockInner; retaining
@@ -383,6 +390,7 @@ impl TaskControlBlock {
             self.process.fd_table.close_on_exec();
         }
         task_inner.sig_mask = SigSet::empty();
+        task_inner.alt_signal_stack = SignalStack::disabled();
         task_inner.sig_pending = SigSet::empty();
         task_inner.sig_pending_info = [None; SIG_MAX_NUM + 1];
         // robust_list is an address in the old image.  Keeping it across exec
@@ -537,6 +545,7 @@ impl TaskControlBlock {
             child_ppid,
             child_timer,
             child_sig_mask,
+            child_alt_signal_stack,
             clear_child_tid,
             parent_memory_set_arc,
             parent_trap_cx,
@@ -628,6 +637,15 @@ impl TaskControlBlock {
                 child_timer = Arc::new(Timer::new());
                 child_sig_mask = parent_inner.sig_mask;
             }
+            // Linux clears the alternate stack for clone(CLONE_VM) threads,
+            // except the CLONE_VM | CLONE_VFORK exec hand-off case.
+            child_alt_signal_stack = if flags.contains(CloneFlags::CLONE_VM)
+                && !flags.contains(CloneFlags::CLONE_VFORK)
+            {
+                SignalStack::disabled()
+            } else {
+                parent_inner.alt_signal_stack
+            };
 
             // 提取父进程 inner 中需要复制给子进程的字段
             parent_trap_cx = *parent_inner.trap_cx();
@@ -683,6 +701,7 @@ impl TaskControlBlock {
                 clear_child_tid,
                 vfork_wait_child: 0,
                 sig_mask: child_sig_mask,
+                alt_signal_stack: child_alt_signal_stack,
                 sig_pending: SigSet::empty(),
                 sig_pending_info: [None; SIG_MAX_NUM + 1],
                 timer: child_timer,

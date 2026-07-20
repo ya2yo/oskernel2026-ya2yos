@@ -47,31 +47,59 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
 
     // Do not hold the task lock while faulting/COWing user pages.  Signal frame
     // construction only needs a snapshot; commit the updated context below.
-    let (mut trap_cx, old_sig_mask) = {
+    let (mut trap_cx, old_sig_mask, alt_signal_stack) = {
         let task_inner = task.inner_lock();
-        (*task_inner.trap_cx(), task_inner.sig_mask)
+        (
+            *task_inner.trap_cx(),
+            task_inner.sig_mask,
+            task_inner.alt_signal_stack,
+        )
     };
-    let user_sp = trap_cx.get_sp();
+    let interrupted_sp = trap_cx.get_sp();
 
-    // 动态查找包含当前 sp 的 MapArea，以此确定栈的真实边界。
-    // 这对 mmap 分配的线程栈也能正确工作。
     let memory_set = proc.memory_set_arc();
-    let sp_vpn = VirtAddr::from(user_sp).floor();
-    let stack_bottom = memory_set
-        .get_ref()
-        .areas
-        .iter()
-        .find(|area| area.vpn_range.start() <= sp_vpn && sp_vpn < area.vpn_range.end())
-        .map(|area| VirtAddr::from(area.vpn_range.start()).0)
-        .unwrap_or_else(|| user_sp.saturating_sub(USER_STACK_SIZE));
+    let interrupted_on_alt_stack = alt_signal_stack.is_on_stack(interrupted_sp);
+    let (user_sp, stack_bottom) = if sig_action.act.sa_flags.contains(SigActionFlags::SA_ONSTACK)
+        && alt_signal_stack.should_switch_for_signal(interrupted_sp)
+    {
+        let Some(stack_top) = alt_signal_stack.stack_top() else {
+            warn!(
+                "setup_frame: alternate stack overflows for signal {}, base={:#x}, size={:#x}",
+                signo, alt_signal_stack.sp, alt_signal_stack.size
+            );
+            drop(memory_set);
+            drop(task);
+            exit_current_and_run_next((super::SIGSEGV + 128) as i32);
+            return;
+        };
+        (stack_top, alt_signal_stack.sp)
+    } else if interrupted_on_alt_stack {
+        (interrupted_sp, alt_signal_stack.sp)
+    } else {
+        // Dynamically find the MapArea containing the interrupted SP.  This
+        // also handles thread stacks allocated through mmap.
+        let sp_vpn = VirtAddr::from(interrupted_sp).floor();
+        let stack_bottom = memory_set
+            .get_ref()
+            .areas
+            .iter()
+            .find(|area| area.vpn_range.start() <= sp_vpn && sp_vpn < area.vpn_range.end())
+            .map(|area| VirtAddr::from(area.vpn_range.start()).0)
+            .unwrap_or_else(|| interrupted_sp.saturating_sub(USER_STACK_SIZE));
+        (interrupted_sp, stack_bottom)
+    };
 
     let raw_frame_size = if sig_action.act.sa_flags.contains(SigActionFlags::SA_SIGINFO) {
         // 实时信号
         // 上下文 + SigInfo + 返回地址 + 对齐占位
         size_of::<UserContext>() + size_of::<SigInfo>() + 2 * size_of::<usize>()
     } else {
-        // 传统信号
-        size_of::<MachineContext>() + size_of::<SigSet>() + 2 * size_of::<usize>()
+        // Traditional handler: mcontext + signal mask + saved alternate-stack
+        // state + frame marker + return magic.
+        size_of::<MachineContext>()
+            + size_of::<SigSet>()
+            + size_of::<SignalStack>()
+            + 2 * size_of::<usize>()
     };
     let Some(raw_frame_start) = user_sp.checked_sub(raw_frame_size) else {
         warn!(
@@ -135,7 +163,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
     let signal_sp;
     if !sig_action.act.sa_flags.contains(SigActionFlags::SA_SIGINFO) {
         // 普通 handler: void (*sa_handler)(int)。用户栈从高到低布局为：
-        // [MachineContext][SigSet][siginfo 标记 = 0][magic]。
+        // [MachineContext][SigSet][SignalStack][siginfo 标记 = 0][magic]。
         // `signal_sp` 最终指向最低地址的 magic，rt_sigreturn 从此处反向恢复。
         let mctx_addr = frame_top - size_of::<MachineContext>();
         // 保存进入 handler 前的用户寄存器，以便 rt_sigreturn 恢复被打断的执行点。
@@ -164,8 +192,22 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
             return signal_frame_write_failed(signo, sigset_addr, task);
         }
 
+        // Save the configured stack_t state, rather than the dynamic
+        // sigaltstack(2) query view.  Linux exposes SS_ONSTACK to a live query
+        // but preserves the raw configuration in a signal frame.
+        let stack_addr = sigset_addr - size_of::<SignalStack>();
+        if copy_to_user_val(
+            &*memory_set,
+            stack_addr as *mut SignalStack,
+            &alt_signal_stack,
+        )
+        .is_err()
+        {
+            return signal_frame_write_failed(signo, stack_addr, task);
+        }
+
         // 标记普通 frame。restore_frame() 读到 0 后按 SigSet + MachineContext 解析。
-        let siginfo_flag_addr = sigset_addr - size_of::<usize>();
+        let siginfo_flag_addr = stack_addr - size_of::<usize>();
         if copy_to_user(
             &memory_set,
             siginfo_flag_addr,
@@ -183,13 +225,10 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
         let uctx_addr = frame_top - size_of::<UserContext>();
         let siginfo_addr = uctx_addr - size_of::<SigInfo>();
         signal_sp = siginfo_addr - 2 * size_of::<usize>();
-        let sig_size = siginfo_addr - stack_bottom;
-        // debug!("sig_size={:#x}", sig_size);
-        // debug!("save: uctx_addr = {:#x}", uctx_addr);
         let uctx = UserContext {
             flags: 0,
             link: 0,
-            stack: SignalStack::new(siginfo_addr, sig_size),
+            stack: alt_signal_stack,
             sigmask: old_sig_mask,
             __pad: [0u8; 128],
             mcontext: trap_cx.as_mctx(),
@@ -269,6 +308,11 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
     let mut task_inner = task.inner_lock();
     *task_inner.trap_cx() = trap_cx;
     task_inner.sig_mask = old_sig_mask | new_mask;
+    // Each frame saves the prior stack state, so rt_sigreturn can restore an
+    // SS_AUTODISARM configuration after this handler completes.
+    if alt_signal_stack.is_autodisarm() {
+        task_inner.alt_signal_stack = SignalStack::disabled();
+    }
 }
 
 fn signal_frame_write_failed(
@@ -287,13 +331,12 @@ fn signal_frame_write_failed(
 /// 恢复栈帧。
 pub fn restore_frame() -> SyscallRet {
     let task = current_task().unwrap();
-    let mut task_inner = task.inner_lock();
-
-    let proc = &task.process;
-    let memory_set = proc.memory_set_arc();
-
-    let trap_cx = task_inner.trap_cx();
-    let mut user_sp = trap_cx.get_sp();
+    let signal_sp = {
+        let task_inner = task.inner_lock();
+        task_inner.trap_cx().get_sp()
+    };
+    let memory_set = task.process.memory_set_arc();
+    let mut user_sp = signal_sp;
 
     let checkout: usize = copy_from_user_val(&*memory_set, user_sp as *const usize).unwrap();
     assert!(checkout == 0xdeadbeef, "restore frame checkout error!");
@@ -304,22 +347,39 @@ pub fn restore_frame() -> SyscallRet {
     let sa_siginfo = sa_siginfo_flag == usize::MAX;
     user_sp += size_of::<usize>();
 
-    if !sa_siginfo {
-        // signal mask
-        task_inner.sig_mask = copy_from_user_val(&*memory_set, user_sp as *const SigSet).unwrap();
+    let (restored_sig_mask, restored_stack, restored_mctx) = if !sa_siginfo {
+        let saved_stack: SignalStack =
+            copy_from_user_val(&*memory_set, user_sp as *const SignalStack).unwrap();
+        user_sp += size_of::<SignalStack>();
+        let sig_mask = copy_from_user_val(&*memory_set, user_sp as *const SigSet).unwrap();
         user_sp += size_of::<SigSet>();
-        // Trap cx
         let mctx = copy_from_user_val(&*memory_set, user_sp as *const MachineContext).unwrap();
-        trap_cx.copy_from_mctx(mctx);
+        (sig_mask, saved_stack, mctx)
     } else {
         let uctx_addr = user_sp as usize + size_of::<SigInfo>();
         // debug!("load: uctx_addr = {:#x}", uctx_addr);
         let uctx: UserContext =
             copy_from_user_val(&*memory_set, uctx_addr as *const UserContext).unwrap();
-        task_inner.sig_mask = uctx.sigmask;
-        let mctx = uctx.mcontext;
-        trap_cx.copy_from_mctx(mctx);
+        (uctx.sigmask, uctx.stack, uctx.mcontext)
+    };
+
+    drop(memory_set);
+    let mut task_inner = task.inner_lock();
+    task_inner.sig_mask = restored_sig_mask;
+    let (restored_sp, return_value) = {
+        let trap_cx = task_inner.trap_cx();
+        trap_cx.copy_from_mctx(restored_mctx);
+        // The Linux ABI judges whether a replacement is allowed against the
+        // restored interrupted stack pointer, not the signal frame's stack
+        // pointer.  The latter is necessarily on the alternate stack for a
+        // SA_ONSTACK handler.
+        (trap_cx.get_sp(), trap_cx.get_a0())
+    };
+    if let Ok(stack) = task_inner
+        .alt_signal_stack
+        .replace_from_user(restored_stack, restored_sp)
+    {
+        task_inner.alt_signal_stack = stack;
     }
-    // debug!("[restore_frame!] sepc= {:#x}", trap_cx.get_sepc());
-    Ok(trap_cx.get_a0())
+    Ok(return_value)
 }

@@ -5337,3 +5337,51 @@ VMA/user-copy 的权限元数据错误改成可读。`mprotect` 的直接 flags 
 warnings。最终 `timeout 120s make run TARGET_ARCH=riscv64 > log.ans 2>&1` 直接写入根目录：
 `mmap001` 输出 4 条 `TPASS`，Summary 为 `passed 4 failed 0 broken 0`，并正常 `shutdown!`；
 未运行 LoongArch64 mmap001 行为回归。
+
+## 2026-07-20：BuildStorm 启动与 rustc 工具链启动兼容修复
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans` 中正在执行的决赛 BuildStorm 测例并修复问题；随后要求当天
+停止继续运行长测，整理工作区准备提交。
+
+### 分析与采纳结论
+
+AI 先按 `TPASS`、`TFAIL`、`TBROK`、panic 和 Summary 过滤原始日志，确认其中没有真实的
+测试断言失败，而是 BuildStorm 在启动早期被外部终止。结合定向 RISC-V QEMU 日志、代码路径、
+release ELF 反汇编和 Linux 7.0 语义对照，采纳了四个独立根因及其最小修复：
+
+1. `create_dir("/proc")` 对已存在目录使用创建式打开，得到 `EISDIR` 后令 DevFS 初始化提前
+   返回，`/dev/null` 未注册；Debian 的 `/bin -> /usr/bin` 又会让 BusyBox wrapper 覆盖真实工具。
+2. rustup/rustc 使用 RISC-V syscall `132` (`sigaltstack`)，需要线程私有备用栈、信号 frame
+   切栈和 `rt_sigreturn` 协同；复核后同步修正原始/动态 stack_t 状态、恢复 SP 顺序和 ABI
+   padding。
+3. RISC-V 64 KiB/hart 的 bootstrap stack 已小于 `rust_main`、VirtIO-net 初始化固定栈帧之和；
+   HART1 启动会下溢破坏紧邻 `.data` 的 `log::LOGGER` vtable。
+4. BuildStorm 的 leader 在线程组仍有 `epoll_pwait` sibling 时执行真实 rustc `execve`；旧实现
+   直接替换共享地址空间，导致旧 TID 在新映像中继续运行。按 Linux `de_thread()` 的基本原则，
+   先投递 `SIGKILL`、等待 sibling 走正常退出，再替换进程映像。
+
+未采纳直接删除 sibling、伪造 zombie 或调用 group-exit 的做法，因为会绕过线程清理或杀死
+exec 调用者。未在本轮扩大修复 `rt_sigreturn` 的完整坏 frame 容错和非 leader exec 的 TID
+交换，二者已在 problem 文档中作为后续边界记录。
+
+### 修改与验证
+
+修改：
+
+- `os/src/fs/kernel_fs_ops/initfiles.rs`、`os/src/fs/mod.rs`
+- `os/src/signal/{types.rs,frame.rs,delivery.rs}`
+- `os/src/syscall/{mod.rs,signal.rs}`
+- `os/src/task/{mod.rs,task/task.rs}`
+- `os/src/arch/riscv64/qemu/asms/entry.asm`
+- `user/src/lib.rs`、`user/src/syscall/mod.rs`、`user/src/bin/initproc.rs`、
+  `user/src/bin/initproc/sigaltstack_regression.rs`
+- 本轮新增的四篇 problem 复盘、索引和开发日志。
+
+主补丁阶段的 RISC-V debug 启动日志已出现 `create_init_files success!` 与
+`sigaltstack regression: PASS`，且不再出现 `/dev/null` 打开失败、syscall `132` 未支持和原
+bootstrap stack panic。最终整理后的 `make build-arch TARGET_ARCH=riscv64` 与
+`make build-arch TARGET_ARCH=loongarch64` 均成功；只有既有 Cargo config/vendored `smoltcp`
+warnings。新的 90 秒 RISC-V QEMU 运行首次受隔离环境 `/var/tmp` 限制未启动，授权后被维护者
+中断，因此没有声称 `BUILDSTORM_TOOLCHAIN`、完整编译或性能测例已经完成。

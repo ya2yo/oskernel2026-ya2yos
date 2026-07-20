@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use crate::StackT;
 use core::arch::asm;
 mod socket;
 pub use socket::*;
@@ -43,6 +44,7 @@ const SYSCALL_SCHED_SETAFFINITY: usize = 122;
 const SYSCALL_SCHED_GETAFFINITY: usize = 123;
 const SYSCALL_SCHED_YIELD: usize = 124;
 const SYSCALL_KILL: usize = 129;
+const SYSCALL_SIGALTSTACK: usize = 132;
 const SYSCALL_SIGACTION: usize = 134;
 const SYSCALL_SIGRETURN: usize = 139;
 const SYSCALL_TIMES: usize = 153;
@@ -456,6 +458,13 @@ pub fn sys_sigreturn() -> isize {
 
 pub fn sys_kill(pid: isize, signum: usize) -> isize {
     syscall(SYSCALL_KILL, [pid, signum as isize, 0, 0, 0, 0])
+}
+
+pub fn sys_sigaltstack(new_stack: *const StackT, old_stack: *mut StackT) -> isize {
+    syscall(
+        SYSCALL_SIGALTSTACK,
+        [new_stack as isize, old_stack as isize, 0, 0, 0, 0],
+    )
 }
 
 pub fn sys_fstatat(dirfd: isize, path: &str, kst: &mut [u8], flags: usize) -> isize {

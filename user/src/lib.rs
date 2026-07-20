@@ -280,13 +280,40 @@ pub fn sysinfo(info: &mut Sysinfo) -> isize {
 
 const SA_NOCLDSTOP: usize = 1; /* Don't send SIGCHLD when children stop.  */
 const SA_NOCLDWAIT: usize = 2; /* Don't create zombie on child death.  */
-const SA_SIGINFO: usize = 4; /* Invoke signal-catching function with
-                             :usize             three arguments instead of one.  */
-const SA_ONSTACK: usize = 0x08000000; /* Use signal stack by using `sa_restorer'. */
+pub const SA_SIGINFO: usize = 4; /* Invoke signal-catching function with
+                                 :usize             three arguments instead of one.  */
+pub const SA_ONSTACK: usize = 0x08000000; /* Use signal stack by using `sa_restorer'. */
 const SA_RESTART: usize = 0x10000000; /* Restart syscall on signal return.  */
 const SA_NODEFER: usize = 0x40000000; /* Don't automatically block the signal when
                                       :usize                 its handler is being executed.  */
 const SA_RESETHAND: usize = 0x80000000; /* Reset to SIG_DFL on entry to handler.  */
+
+pub const SS_DISABLE: u32 = 2;
+
+/// Linux `stack_t` ABI used by sigaltstack(2).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct StackT {
+    pub sp: usize,
+    pub flags: u32,
+    pub _pad: u32,
+    pub size: usize,
+}
+
+impl StackT {
+    pub const fn new(sp: usize, flags: u32, size: usize) -> Self {
+        Self {
+            sp,
+            flags,
+            _pad: 0,
+            size,
+        }
+    }
+
+    pub const fn empty() -> Self {
+        Self::new(0, 0, 0)
+    }
+}
 
 /// rt_sigaction syscall 使用的 raw kernel sigaction ABI 布局。
 #[cfg(target_arch = "riscv64")]
@@ -329,6 +356,12 @@ pub fn sigaction(signum: usize, act: &RawSigAction, oldact: &mut RawSigAction) -
 
 pub fn sigreturn() -> isize {
     sys_sigreturn()
+}
+
+pub fn sigaltstack(new_stack: Option<&StackT>, old_stack: Option<&mut StackT>) -> isize {
+    let new_stack = new_stack.map_or(core::ptr::null(), |stack| stack as *const StackT);
+    let old_stack = old_stack.map_or(core::ptr::null_mut(), |stack| stack as *mut StackT);
+    sys_sigaltstack(new_stack, old_stack)
 }
 
 pub fn kill(pid: usize, signum: usize) -> isize {

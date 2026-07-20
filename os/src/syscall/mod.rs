@@ -137,6 +137,7 @@ pub enum Syscall {
     SigKill = 129,
     Tkill = 130,
     Tgkill = 131,
+    SigAltStack = 132,
     SigSuspend = 133,
     SigAction = 134,
     SigProcMask = 135,
@@ -292,7 +293,7 @@ use crate::utils::SysErrNo;
 use crate::{
     arch::cpu::shutdown,
     fs::{Kstat, Statfs},
-    signal::{SigAction, SigInfo, SigSet},
+    signal::{SigAction, SigInfo, SigSet, SignalStack},
     timer::{Itimerval, Rusage, TimeVal, Timespec, Timex, Tms},
     utils::SyscallRet,
 };
@@ -568,6 +569,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::SigKill => sys_kill(args[0] as isize, args[1]),
         Syscall::Tkill => sys_tkill(args[0], args[1]),
         Syscall::Tgkill => sys_tgkill(args[0], args[1], args[2]),
+        Syscall::SigAltStack => {
+            sys_sigaltstack(args[0] as *const SignalStack, args[1] as *mut SignalStack)
+        }
         Syscall::SigSuspend => sys_rt_sigsuspend(args[0] as *const SigSet),
         Syscall::SigAction => sys_rt_sigaction(
             args[0],

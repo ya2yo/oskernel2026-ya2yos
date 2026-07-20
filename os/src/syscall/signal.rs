@@ -9,8 +9,8 @@ use crate::{
         restore_frame, send_signal_to_thread_group, send_user_signal_to_accessible_processes,
         send_user_signal_to_process_group, send_user_signal_to_thread,
         send_user_signal_to_thread_group, send_user_signal_to_thread_of_proc, KSigAction,
-        SigAction, SigActionFlags, SigInfo, SigSet, SIGCONT, SIGKILL, SIGSTOP, SIG_DFL, SIG_IGN,
-        SIG_MAX_NUM,
+        SigAction, SigActionFlags, SigInfo, SigSet, SignalStack, SIGCONT, SIGKILL, SIGSTOP,
+        SIG_DFL, SIG_IGN, SIG_MAX_NUM,
     },
     syscall::SignalMaskFlag,
     task::{block_on, current_task, suspend_current_and_run_next},
@@ -64,6 +64,42 @@ impl RawSigAction {
             sa_mask: SigSet::from_bits_truncate(mask),
         }
     }
+}
+
+/// https://www.man7.org/linux/man-pages/man2/sigaltstack.2.html
+/// Linux sigaltstack(2): configure or query the calling thread's alternate
+/// signal stack.  The saved state is task-local because sibling threads do not
+/// share alternate stacks even when they share a process address space.
+pub fn sys_sigaltstack(new_stack: *const SignalStack, old_stack: *mut SignalStack) -> SyscallRet {
+    let task = current_task().unwrap();
+
+    // Match Linux ordering: an unreadable input fails before any state change
+    // or old-stack copy; an unwritable output may fail after a successful set.
+    let requested = if new_stack.is_null() {
+        None
+    } else {
+        let memory_set = task.process.memory_set_arc();
+        Some(copy_from_user_val(&*memory_set, new_stack)?)
+    };
+
+    let previous = {
+        let mut task_inner = task.inner_lock();
+        let user_sp = task_inner.trap_cx().get_sp();
+        let previous = task_inner.alt_signal_stack.user_view(user_sp);
+        if let Some(requested) = requested {
+            task_inner.alt_signal_stack = task_inner
+                .alt_signal_stack
+                .replace_from_user(requested, user_sp)?;
+        }
+        previous
+    };
+
+    if !old_stack.is_null() {
+        let memory_set = task.process.memory_set_arc();
+        copy_to_user_val(&*memory_set, old_stack, &previous)?;
+    }
+
+    Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/rt_sigaction.2.html

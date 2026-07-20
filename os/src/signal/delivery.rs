@@ -34,8 +34,8 @@ struct SignalCred {
 
 /// 向 task 挂起信号，并按信号语义把可唤醒的任务放回 ready queue。
 ///
-/// 返回值表示本次投递是否把 `Stopped` 任务恢复为 `Ready`。`kill(SIGCONT)`
-/// 需要用这个结果决定是否主动调度一次，让刚恢复的子进程先处理 SIGCONT。
+/// 返回值表示本次投递是否把 `Stopped` 或 `VforkBlocked` 任务恢复为 `Ready`。
+/// `kill(SIGCONT)` 需要用这个结果决定是否主动调度一次，让刚恢复的子进程先处理 SIGCONT。
 pub(super) fn add_signal(task: &TaskControlBlock, signal: SigSet) -> bool {
     add_signal_with_info(task, signal, None)
 }
@@ -76,9 +76,17 @@ pub(super) fn add_signal_with_info(
         }
     }
     task_inner.sig_pending |= signal;
-    if task_inner.task_status == TaskStatus::Stopped
-        && signal.intersects(SigSet::SIGCONT | SigSet::SIGKILL)
-    {
+    let wake_stopped = task_inner.task_status == TaskStatus::Stopped
+        && signal.intersects(SigSet::SIGCONT | SigSet::SIGKILL);
+    let wake_vfork_parent =
+        task_inner.task_status == TaskStatus::VforkBlocked && signal.intersects(SigSet::SIGKILL);
+    if wake_stopped || wake_vfork_parent {
+        // A vfork parent normally remains asleep until its child exits or
+        // execs. SIGKILL is not deferrable, including while that wait is
+        // active, so make it runnable to consume the pending signal.
+        if wake_vfork_parent {
+            task_inner.vfork_wait_child = 0;
+        }
         task_inner.task_status = TaskStatus::Ready;
         drop(task_inner);
         if let Some(task) = tid_to_task::tid2task(task.tid()) {

@@ -23,6 +23,8 @@ mod lua;
 #[path = "netdev_test/cases.rs"]
 mod netdev_test_cases;
 mod netperf;
+#[path = "initproc/sigaltstack_regression.rs"]
+mod sigaltstack_regression;
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -149,6 +151,10 @@ fn get_score() -> i32 {
 #[allow(unused)]
 fn test_final_2026() -> i32 {
     // run_testsuit("glibc\0", "cagent_testcode.sh\0");
+    if !sigaltstack_regression::run() {
+        shutdown();
+        return 1;
+    }
     run_testsuit("glibc\0", "buildstorm_testcode.sh\0");
     shutdown();
     0

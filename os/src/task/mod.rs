@@ -76,7 +76,7 @@ use crate::{
     arch::cpu::hart_id,
     fs::{open, OpenFlags, NONE_MODE},
     mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
-    signal::{send_signal_to_thread_group, SigSet},
+    signal::{send_signal_to_thread, send_signal_to_thread_group, SigSet},
     syscall::fs::file_lock,
     task::acct::write_process_acct_record,
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
@@ -108,34 +108,46 @@ pub const INITPROC_PID: usize = 1;
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     // debug!("[suspend_current_and_run_next]!");
+    exit_current_if_group_exited_or_killed();
     let task = current_task().unwrap();
     // debug!(
     //     "[suspend_current_and_run_next] strong_count = {}",
     //     Arc::strong_count(&task)
     // );
-    // Keep the global ProcessMeta -> TaskControlBlockInner lock order.  The
-    // exec/vfork wake path may hold the parent's ProcessMeta while inspecting
-    // its task state on another hart, so taking these locks in reverse here
-    // can deadlock during concurrent fork/exec/signal workloads.
-    let exit_code = task.process.meta_lock().group_exit_code;
     let mut task_inner = task.inner_lock();
 
+    let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
+    // Change status to Ready, unless blocked by VFORK
+    // (VFORK parents stay blocked until child exits or execs).
+    if task_inner.task_status != TaskStatus::VforkBlocked {
+        task_inner.task_status = TaskStatus::Ready;
+    }
+    // ---- release current PCB
+    drop(task_inner);
+    drop(task);
+    // jump to scheduling cycle
+    schedule(task_cx_ptr);
+    // A fatal signal can arrive after this task saves its context and before
+    // it is selected again.  Recheck after schedule() returns so cooperative
+    // wait loops do not need a second yield to consume SIGKILL.
+    exit_current_if_group_exited_or_killed();
+}
+
+/// Exit the current task for a process-wide exit or an unmaskable SIGKILL.
+///
+/// Keep ProcessMeta and TaskControlBlockInner lock scopes disjoint and drop
+/// the current task reference before the normal exit path takes ownership.
+fn exit_current_if_group_exited_or_killed() {
+    let task = current_task().unwrap();
+    let exit_code = task.process.meta_lock().group_exit_code;
+    let sigkill_pending =
+        exit_code.is_none() && task.inner_lock().sig_pending.contains(SigSet::SIGKILL);
+    drop(task);
+
     if let Some(exit_code) = exit_code {
-        drop(task_inner);
-        drop(task);
         exit_current_and_run_next(exit_code);
-    } else {
-        let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
-        // Change status to Ready, unless blocked by VFORK
-        // (VFORK parents stay blocked until child exits or execs).
-        if task_inner.task_status != TaskStatus::VforkBlocked {
-            task_inner.task_status = TaskStatus::Ready;
-        }
-        // ---- release current PCB
-        drop(task_inner);
-        drop(task);
-        // jump to scheduling cycle
-        schedule(task_cx_ptr);
+    } else if sigkill_pending {
+        exit_current_and_run_next(137);
     }
 }
 
@@ -187,6 +199,43 @@ pub fn schedule_blocked_current(task_cx_ptr: *mut TaskContext) {
 
 /// pid of usertests app in make run TEST=1
 pub const IDLE_PID: usize = 0;
+
+/// Collapse a thread group to its execve caller before replacing the shared
+/// process image.
+///
+/// Each sibling must leave through `exit_current_and_run_next()` so it can
+/// clear child TIDs, release robust futexes, remove its trap context, and let
+/// the switch path reclaim its kernel stack.  Keep only tids across the yield:
+/// retaining sibling `Arc`s here would delay that teardown.
+pub(crate) fn kill_other_threads_before_exec(current: &TaskControlBlock) {
+    let current_tid = current.tid();
+
+    loop {
+        let sibling_tids: Vec<usize> = {
+            let meta = current.process.meta_lock();
+            meta.tasks
+                .iter()
+                .filter_map(|task| {
+                    let task = task.upgrade()?;
+                    (task.tid() != current_tid).then_some(task.tid())
+                })
+                .collect()
+        };
+
+        if sibling_tids.is_empty() {
+            return;
+        }
+
+        for tid in sibling_tids {
+            send_signal_to_thread(tid, SigSet::SIGKILL);
+        }
+
+        // Threads that share one address space are pinned to this process's
+        // home hart. Yield without holding metadata so each sibling can take
+        // SIGKILL and finish its normal exit path in the old address space.
+        suspend_current_and_run_next();
+    }
+}
 
 /// 杀死当前线程组的所有线程
 pub fn exit_current_group_and_run_next(exit_code: i32) {

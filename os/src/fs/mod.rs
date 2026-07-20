@@ -26,7 +26,7 @@ pub use fstruct::*;
 pub use dcache::*;
 pub use files::pipe::{make_pipe, open_fifo, Pipe, PIPE_MAX_SIZE};
 pub use files::stdio::{Stdin, Stdout};
-use log::debug;
+use log::{debug, error};
 pub use mount::MNT_TABLE;
 pub use page_cache::*;
 pub use stat::*;
@@ -250,7 +250,9 @@ impl InodeType {
 }
 
 pub fn init() {
-    create_init_files();
+    if let Err(err) = create_init_files() {
+        error!("fs: create_init_files failed: {:?}", err);
+    }
     // TODO(ZMY):为了过libc-test utime的权宜之计,读取RTC太麻烦了
     superblock_root_inode().set_timestamps(Some(0), Some(0), Some(0));
 }

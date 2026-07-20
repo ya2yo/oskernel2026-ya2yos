@@ -269,16 +269,106 @@ bitflags! {
 pub struct SignalStack {
     pub sp: usize,
     pub flags: u32,
+    // Explicitly model the 64-bit Linux stack_t ABI padding so copies to
+    // userspace never expose an uninitialized byte range.
+    pub _pad: u32,
     pub size: usize,
 }
 
 impl SignalStack {
-    pub fn new(sp: usize, size: usize) -> Self {
-        SignalStack {
-            sp,
+    pub const fn disabled() -> Self {
+        Self {
+            sp: 0,
             flags: SignalStackFlags::DISABLE.bits,
+            _pad: 0,
+            size: 0,
+        }
+    }
+
+    pub const fn new(sp: usize, size: usize) -> Self {
+        Self {
+            sp,
+            flags: 0,
+            _pad: 0,
             size,
         }
+    }
+
+    /// Linux treats a zero-sized alternate stack as disabled, regardless of
+    /// the stale address left in `ss_sp`.
+    pub const fn is_disabled(&self) -> bool {
+        self.size == 0
+    }
+
+    pub const fn is_autodisarm(&self) -> bool {
+        self.flags & SignalStackFlags::AUTODISARM.bits != 0
+    }
+
+    /// Match Linux's downward-growing-stack interval: `(ss_sp, ss_sp + ss_size]`.
+    /// `SS_AUTODISARM` deliberately reports false here, as Linux does.
+    pub fn is_on_stack(&self, sp: usize) -> bool {
+        !self.is_disabled() && !self.is_autodisarm() && sp > self.sp && sp - self.sp <= self.size
+    }
+
+    pub fn should_switch_for_signal(&self, sp: usize) -> bool {
+        !self.is_disabled() && !self.is_on_stack(sp)
+    }
+
+    pub fn stack_top(&self) -> Option<usize> {
+        self.sp.checked_add(self.size)
+    }
+
+    /// Build the dynamic `stack_t` view returned by sigaltstack(2).
+    pub fn user_view(&self, sp: usize) -> Self {
+        let mut flags = self.flags & SignalStackFlags::AUTODISARM.bits;
+        if self.is_disabled() {
+            flags |= SignalStackFlags::DISABLE.bits;
+        } else if self.is_on_stack(sp) {
+            flags |= SignalStackFlags::ONSTACK.bits;
+        }
+        Self {
+            sp: self.sp,
+            flags,
+            _pad: 0,
+            size: self.size,
+        }
+    }
+
+    /// Validate and canonicalize a userspace sigaltstack request.  Callers
+    /// hold the current task lock while using this so the stack pointer and
+    /// saved configuration are observed consistently.
+    pub fn replace_from_user(&self, requested: Self, sp: usize) -> Result<Self, SysErrNo> {
+        if self.is_on_stack(sp) {
+            return Err(SysErrNo::EPERM);
+        }
+
+        let mode = requested.flags & !SignalStackFlags::AUTODISARM.bits;
+        if mode != 0
+            && mode != SignalStackFlags::DISABLE.bits
+            && mode != SignalStackFlags::ONSTACK.bits
+        {
+            return Err(SysErrNo::EINVAL);
+        }
+
+        if mode == SignalStackFlags::DISABLE.bits {
+            return Ok(Self {
+                sp: 0,
+                flags: requested.flags,
+                _pad: 0,
+                size: 0,
+            });
+        }
+
+        if requested.size < linux_raw_sys::general::MINSIGSTKSZ as usize {
+            return Err(SysErrNo::ENOMEM);
+        }
+
+        Ok(Self {
+            sp: requested.sp,
+            flags: requested.flags,
+            _pad: 0,
+            size: requested.size,
+        })
     }
 }
 

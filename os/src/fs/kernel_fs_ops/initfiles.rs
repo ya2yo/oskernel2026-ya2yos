@@ -242,12 +242,20 @@ const BUSYBOX_APPLETS: &[&str] = &[
 ];
 
 fn create_dir(path: &str) -> SysResult {
-    open(
-        path,
-        OpenFlags::O_CREATE | OpenFlags::O_RDWR | OpenFlags::O_DIRECTORY,
-        DEFAULT_DIR_MODE,
-    )?;
-    Ok(())
+    // `open(O_CREAT)` intentionally rejects an existing directory.  Probe
+    // first so test images may provide any part of the startup directory tree.
+    match open(path, OpenFlags::O_DIRECTORY, 0) {
+        Ok(_) => Ok(()),
+        Err(SysErrNo::ENOENT) => {
+            open(
+                path,
+                OpenFlags::O_CREATE | OpenFlags::O_DIRECTORY,
+                DEFAULT_DIR_MODE,
+            )?;
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn create_proc_files() -> SysResult {
@@ -426,10 +434,23 @@ fn has_musl_busybox() -> bool {
     open("/musl/busybox", OpenFlags::O_RDONLY, 0).is_ok()
 }
 
+fn bin_is_symlink() -> bool {
+    // Preserve the final path component so Debian's `/bin -> /usr/bin` is not
+    // mistaken for an ordinary directory into which compatibility wrappers can
+    // be installed.
+    let Ok(file) = open("/bin", OpenFlags::O_UNLINK, 0) else {
+        return false;
+    };
+    let Ok(file) = file.file() else {
+        return false;
+    };
+    file.inode.types().is_symlink()
+}
+
 fn create_bin_files() -> SysResult {
     // 这些 wrapper 是给竞赛测试镜像补 `/musl/busybox` applet 的。
-    // Alpine 根文件系统已有 `/bin/busybox` 与 `/bin/sh`，不能覆盖成 `/musl/busybox`。
-    if !has_musl_busybox() {
+    // `/bin` 为符号链接的 Debian/BuildStorm 镜像也不能覆盖成 `/musl/busybox`。
+    if !has_musl_busybox() || bin_is_symlink() {
         return Ok(());
     }
 
