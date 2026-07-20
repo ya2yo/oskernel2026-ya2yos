@@ -15,6 +15,7 @@ use crate::libctest::pthread_cancel_points::run_musl_static;
 
 mod basic;
 mod busybox;
+mod iozone;
 mod libctest;
 mod lmbench;
 mod ltp;
@@ -22,7 +23,6 @@ mod lua;
 #[path = "netdev_test/cases.rs"]
 mod netdev_test_cases;
 mod netperf;
-mod iozone;
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -99,49 +99,48 @@ fn run_interactive_shell() -> i32 {
 #[no_mangle]
 fn main() -> i32 {
     // run_interactive_shell()
-    get_score()
-    // test_final_2026()
+    // get_score()
+    test_final_2026()
 }
 
 // Score helpers (kept for ad-hoc testing)
 #[allow(unused)]
 fn get_score() -> i32 {
     println!("get_score start!");
-    // netdev_test_cases::run_all();
-    // // basic
-    // run_testsuit("musl\0", "basic_testcode.sh\0");
-    // run_testsuit("glibc\0", "basic_testcode.sh\0");
-    // // busybox
-    // run_testsuit("musl\0", "busybox_testcode.sh\0");
-
-    // run_testsuit("glibc\0", "busybox_testcode.sh\0");
-    // // lua
-    // run_testsuit("musl\0", "lua_testcode.sh\0");
-    // run_testsuit("glibc\0", "lua_testcode.sh\0");
-    // // iperf
-    // run_testsuit("musl\0", "iperf_testcode.sh\0");
-    // run_testsuit("glibc\0", "iperf_testcode.sh\0");
-    // // netperf
-    // run_testsuit("musl\0", "netperf_testcode.sh\0");
-    // run_testsuit("glibc\0", "netperf_testcode.sh\0");
-    // // cyclictest
-    // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
-    // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
-    // // libc
-    // run_testsuit("musl\0", "libctest_testcode.sh\0");
-    // // run_testsuit("glibc\0", "libctest_testcode.sh\0");
-    // // iozone
-    // run_testsuit("musl\0", "iozone_testcode.sh\0");
-    // run_testsuit("glibc\0", "iozone_testcode.sh\0");
-    // // lmbench
-    // run_testsuit("musl\0", "lmbench_testcode.sh\0");
-    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");
-    // // libcbench
-    // run_testsuit("musl\0", "libcbench_testcode.sh\0");
-    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");
-    // // ltp
-    // ltp::test_musl_ltp();
-    // ltp::test_glibc_ltp();
+    netdev_test_cases::run_all();
+    // basic
+    run_testsuit("musl\0", "basic_testcode.sh\0");
+    run_testsuit("glibc\0", "basic_testcode.sh\0");
+    // busybox
+    run_testsuit("musl\0", "busybox_testcode.sh\0");
+    run_testsuit("glibc\0", "busybox_testcode.sh\0");
+    // lua
+    run_testsuit("musl\0", "lua_testcode.sh\0");
+    run_testsuit("glibc\0", "lua_testcode.sh\0");
+    // iperf
+    run_testsuit("musl\0", "iperf_testcode.sh\0");
+    run_testsuit("glibc\0", "iperf_testcode.sh\0");
+    // netperf
+    run_testsuit("musl\0", "netperf_testcode.sh\0");
+    run_testsuit("glibc\0", "netperf_testcode.sh\0");
+    // cyclictest
+    run_testsuit("musl\0", "cyclictest_testcode.sh\0");
+    run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
+    // libc
+    run_testsuit("musl\0", "libctest_testcode.sh\0");
+    // run_testsuit("glibc\0", "libctest_testcode.sh\0");
+    // iozone
+    run_testsuit("musl\0", "iozone_testcode.sh\0");
+    run_testsuit("glibc\0", "iozone_testcode.sh\0");
+    // lmbench
+    run_testsuit("musl\0", "lmbench_testcode.sh\0");
+    run_testsuit("glibc\0", "lmbench_testcode.sh\0");
+    // libcbench
+    run_testsuit("musl\0", "libcbench_testcode.sh\0");
+    run_testsuit("glibc\0", "libcbench_testcode.sh\0");
+    // ltp
+    ltp::test_musl_ltp();
+    ltp::test_glibc_ltp();
     shutdown();
     0
 }
@@ -149,7 +148,7 @@ fn get_score() -> i32 {
 // final-2026
 #[allow(unused)]
 fn test_final_2026() -> i32 {
-    run_testsuit("glibc\0", "cagent_testcode.sh\0");
+    // run_testsuit("glibc\0", "cagent_testcode.sh\0");
     run_testsuit("glibc\0", "buildstorm_testcode.sh\0");
     shutdown();
     0
