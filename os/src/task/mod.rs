@@ -141,12 +141,16 @@ pub fn suspend_current_and_run_next() {
 
 pub fn block_current_and_run_next() {
     debug!("[block_current_and_run_next()] BEGIN!");
-    let task = take_current_task().unwrap();
-    // debug!("current strong_count: {}", Arc::strong_count(&task));
+    let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
     task_inner.task_status = TaskStatus::Blocked;
     drop(task_inner);
+    drop(task);
+    // Publish Blocked before detaching the current task. A signal arriving in
+    // this interval can then transition it back to Ready and enqueue it,
+    // instead of being lost while the task is still marked Running.
+    let task = take_current_task().unwrap();
     drop(task);
     // error!("schedule() BEGIN!");
     schedule(task_cx_ptr);

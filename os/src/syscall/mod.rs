@@ -470,7 +470,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Pwrite64 => sys_pwrite64(args[0], args[1] as *const u8, args[2], args[3] as isize),
         Syscall::SendFile => sys_sendfile(args[0], args[1], args[2], args[3]),
         Syscall::Pselect6 => sys_pselect6(args[0], args[1], args[2], args[3], args[4], args[5]),
-        Syscall::Ppoll => sys_ppoll(args[0], args[1], args[2], args[3]),
+        Syscall::Ppoll => sys_ppoll(args[0], args[1], args[2], args[3], args[4]),
         Syscall::Signalfd4 => sys_signalfd4(args[0] as u32, args[1] as *const u8, args[2] as u32),
         Syscall::Vmsplice => sys_vmsplice(args[0] as i32, args[1], args[2] as u32, args[3] as u32),
         Syscall::Splice => sys_splice(

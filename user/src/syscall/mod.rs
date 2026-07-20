@@ -676,7 +676,11 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: &[u8], mask: usize) -> isiz
             nfds as isize,
             tmo_p.as_ptr() as isize,
             mask as isize,
-            0,
+            if mask == 0 {
+                0
+            } else {
+                core::mem::size_of::<usize>() as isize
+            },
             0,
         ],
     )

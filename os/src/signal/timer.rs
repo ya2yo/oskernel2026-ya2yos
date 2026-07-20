@@ -56,15 +56,22 @@ fn add_blocked_itimer_signal(task: &TaskControlBlock) {
     let should_wake = task_inner.task_status == TaskStatus::Blocked;
     drop(task_inner);
 
-    if should_wake && task.wake_interruptible() {
-        let mut task_inner = task.inner_lock();
-        task_inner.sig_pending |= SigSet::SIGALRM;
-        if task_inner.task_status == TaskStatus::Blocked {
-            task_inner.task_status = TaskStatus::Ready;
-            drop(task_inner);
-            if let Some(task) = tid_to_task::tid2task(task.tid()) {
-                ready_queue::add_task(&task);
-            }
+    if !should_wake {
+        return;
+    }
+
+    // Future-based waits register an interrupt waker; ppoll/pause do not.
+    // ITIMER_REAL must interrupt both kinds of blocked syscall, so waking the
+    // optional Future is only an additional notification, not a prerequisite
+    // for recording SIGALRM and making the task runnable.
+    let _ = task.wake_interruptible();
+    let mut task_inner = task.inner_lock();
+    task_inner.sig_pending |= SigSet::SIGALRM;
+    if task_inner.task_status == TaskStatus::Blocked {
+        task_inner.task_status = TaskStatus::Ready;
+        drop(task_inner);
+        if let Some(task) = tid_to_task::tid2task(task.tid()) {
+            ready_queue::add_task(&task);
         }
     }
 }
@@ -84,12 +91,8 @@ pub fn deliver_itimer_signal(task: &TaskControlBlock) {
     }
 }
 
-/// Deliver expired ITIMER_REAL only to interruptible blocked waits.
+/// Deliver expired ITIMER_REAL to a blocked task on its owner hart.
 pub fn deliver_blocked_itimer_signal(task: &TaskControlBlock) {
-    if !task.has_interruptible_waiter() {
-        return;
-    }
-
     let timer = {
         let task_inner = task.inner_lock();
         task_inner.timer.clone()

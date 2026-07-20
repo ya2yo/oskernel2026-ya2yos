@@ -899,3 +899,10 @@
 - **场景**：分析 `riscv.ans` 的 kill10 集体运行卡死，审计信号投递/handler 锁序，并执行 RISC-V 双 hart QEMU 回归。
 - **描述**：原始日志只证明 kill10 启动后卡住、没有锁栈，未将风险误写成唯一已证实根因。代码审计确认 `add_signal_with_info()` 与 `handle_signal()` 都曾在 `TaskControlBlockInner` 临界区获取 `SigTable`，违反项目全局锁序。修复将 disposition 查询提前为无任务锁的快照，随后才写入或消费 pending 信号，保留停止态恢复、唤醒与 `SA_SIGINFO` 语义。RISC-V musl/glibc kill10 均 `passed 1 failed 0 broken 0` 并正常关机；详见 [problem/kill10-signal-lock-order.md](./problem/kill10-signal-lock-order.md)。
 - **关联 commit**：尚未提交（2026-07-20 工作树）
+
+#### RISC-V release kill10 ppoll/ITIMER 阻塞唤醒修复（7.20）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 release 与 `make log` 的 kill10 时序差异、读取测试镜像 LTP ELF、GDB 检查 ppoll/ITIMER 路径，并执行双架构构建和 RISC-V release QEMU 回归。
+- **描述**：确认 LTP `pause()` 实现为无 fd 无限 `ppoll`，而旧内核只作 Ready/yield，未建立可靠的等待状态；将其改为原子发布 Blocked 后，又修正 owner-hart blocked timer 仅依赖 Future waker、遗漏 ppoll/pause 的问题。ITIMER 现向所有 Blocked task 投递 SIGALRM 并重新入队，ppoll 同时补齐临时 signal mask ABI 与 task/signal-table 锁序。根目录 `log.ans` 中 musl `kill08/kill10` 均为 `passed 1 failed 0 broken 0`，最终 `shutdown!`；LoongArch64 本轮仅编译。
+- **关联 commit**：尚未提交（2026-07-20 工作树）

@@ -3,7 +3,7 @@ use crate::{
     mm::{copy_from_user, copy_to_user},
     signal::{SigOp, SigSet, SIGCHLD},
     syscall::{options::PollFd, PollEvents},
-    task::{current_task, suspend_current_and_run_next},
+    task::{block_current_and_run_next, current_task, suspend_current_and_run_next},
     timer::{get_time_ms, Timespec},
     utils::{SysErrNo, SyscallRet},
 };
@@ -11,8 +11,39 @@ use alloc::vec;
 use alloc::{sync::Arc, vec::Vec};
 use core::cmp::min;
 
+struct PpollSigMaskGuard {
+    task: Arc<crate::task::TaskControlBlock>,
+    old_mask: Option<SigSet>,
+}
+
+impl PpollSigMaskGuard {
+    fn replace(task: Arc<crate::task::TaskControlBlock>, new_mask: Option<SigSet>) -> Self {
+        let old_mask = new_mask.map(|new_mask| {
+            let mut inner = task.inner_lock();
+            let old_mask = inner.sig_mask;
+            inner.sig_mask = new_mask;
+            old_mask
+        });
+        Self { task, old_mask }
+    }
+}
+
+impl Drop for PpollSigMaskGuard {
+    fn drop(&mut self) {
+        if let Some(old_mask) = self.old_mask {
+            self.task.inner_lock().sig_mask = old_mask;
+        }
+    }
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/ppoll.2.html
-pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> SyscallRet {
+pub fn sys_ppoll(
+    fds_ptr: usize,
+    nfds: usize,
+    tmo_p: usize,
+    sigmask_ptr: usize,
+    sigsetsize: usize,
+) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
     let memory_set = proc_inner.memory_set_arc();
@@ -52,10 +83,32 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
         return Ok(0);
     }
 
+    let new_mask = if sigmask_ptr == 0 {
+        None
+    } else {
+        if sigsetsize != core::mem::size_of::<SigSet>() {
+            return Err(SysErrNo::EINVAL);
+        }
+        let mut sigset = SigSet::default();
+        copy_from_user(&memory_set, sigmask_ptr, unsafe {
+            core::slice::from_raw_parts_mut(
+                &mut sigset as *mut SigSet as *mut u8,
+                core::mem::size_of::<SigSet>(),
+            )
+        })?;
+        sigset.remove(SigSet::SIGKILL | SigSet::SIGSTOP);
+        Some(sigset)
+    };
+
     let begin = get_time_ms() * 1000000;
+
+    // The temporary ppoll mask applies only while waiting and must be restored
+    // before every return, including EINTR and user-memory failures.
+    let _sigmask_guard = PpollSigMaskGuard::replace(Arc::clone(&task), new_mask);
 
     //由于每次循环结束需要让出cpu，因此需要在每次循环时重新获得锁
     drop(memory_set);
+    drop(task);
 
     loop {
         let task = current_task().unwrap();
@@ -88,26 +141,30 @@ pub fn sys_ppoll(fds_ptr: usize, nfds: usize, tmo_p: usize, _mask: usize) -> Sys
         if waittime > 0 && get_time_ms() * 1000000 - begin >= waittime as usize {
             return Ok(0);
         }
-        {
-            let mut task_inner = task.inner_lock();
-            if let Some(signo) = task_inner
+        let pending_signo = {
+            let task_inner = task.inner_lock();
+            task_inner
                 .sig_pending
                 .difference(task_inner.sig_mask)
                 .peek_front()
-            {
-                let signal = SigSet::from_sig(signo);
-                let sig_action = proc_inner.with_sigtable(|sigtable| sigtable.action(signo));
-                let ignorable = signo == SIGCHLD
-                    || sig_action.is_ignored()
-                    || (!sig_action.is_handler() && signal.default_op() == SigOp::Ignore);
-                if ignorable {
-                    task_inner.sig_pending.remove(signal);
-                } else {
-                    return Err(SysErrNo::EINTR);
-                }
+        };
+        if let Some(signo) = pending_signo {
+            let signal = SigSet::from_sig(signo);
+            let sig_action = proc_inner.with_sigtable(|sigtable| sigtable.action(signo));
+            let ignorable = signo == SIGCHLD
+                || sig_action.is_ignored()
+                || (!sig_action.is_handler() && signal.default_op() == SigOp::Ignore);
+            if ignorable {
+                task.inner_lock().sig_pending.remove(signal);
+            } else {
+                return Err(SysErrNo::EINTR);
             }
         }
         drop(task);
+        if nfds == 0 && waittime < 0 {
+            block_current_and_run_next();
+            continue;
+        }
         suspend_current_and_run_next();
     }
 }

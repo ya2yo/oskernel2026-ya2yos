@@ -5269,3 +5269,39 @@ warnings。首次 QEMU 在沙箱内因 `/var/tmp` 只读无法创建临时快照
 后，`timeout 180s make run TARGET_ARCH=riscv64 > /tmp/kill10-signal-lock.log 2>&1` 完整结束：
 musl/glibc `kill10` 均为 `passed 1 failed 0 broken 0` 且 `shutdown!`。LoongArch64 本次未
 运行行为回归。
+
+## 2026-07-20：RISC-V release kill10 ppoll/ITIMER 阻塞唤醒修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并修复 release 编译后卡死、`make log` 正常的 LTP `kill10`；
+提供的 GDB 轨迹显示 `sys_ppoll()` 在 signal 检查和调度让出之间反复循环。随后要求将
+最终 QEMU 串口输出直接写入根目录 `log.ans`。
+
+### 分析与采纳结论
+
+AI 先在 RISC-V release+CFS 中复现：`kill08` 通过后，`kill10` 仅打印启动参数并在
+120 秒 timeout 后无 summary。读取测试镜像中的 ELF/DWARF 并对照 LTP 20240524
+`kill10.c`，确认 musl `pause()` 落入 `ppoll(NULL, 0, NULL, NULL)`，测试依赖
+`alarm(1)` 的 SIGALRM 防止错过 manager/child 信号。独立 GDB 证实该 ppoll 参数全为
+NULL/0，且 ITIMER 到期会进入 `add_itimer_signal()`。
+
+审计确认无 fd 无限 ppoll 只做 Ready 状态的 cooperative yield；它没有形成可靠的
+signal wait hand-off。进一步核对 blocked timer 路径发现，尽管 owner hart 会扫描
+Blocked task，`deliver_blocked_itimer_signal()` 却要求 Future `interrupt_waker`，从而
+遗漏 pause/ppoll。`block_current_and_run_next()` 还在先脱离 processor、后写 Blocked
+的窗口内允许 signal 看到 Running 并丢失入队。采纳的修复是先发布 Blocked，再切换；
+无 fd 无限 ppoll 进入该阻塞路径；ITIMER 对所有 Blocked task 投递 SIGALRM 并入队，
+Future waker 仅作为额外通知。同步补齐 raw ppoll 的 sigmask/sigsetsize ABI 和 ppoll
+中 task/signal-table 的锁序。
+
+### 修改与验证
+
+修改 `os/src/task/mod.rs`、`os/src/signal/timer.rs`、`os/src/syscall/io_mpx/poll.rs`、
+`os/src/syscall/mod.rs` 与 `user/src/syscall/mod.rs`；新增问题复盘并更新索引、开发日志
+和 AI 协作记录。文件级 `rustfmt --edition 2021 --check` 与 `git diff --check` 通过；
+RISC-V、LoongArch64 release 构建均通过，只有既有 Cargo config/vendored `smoltcp`
+warnings。最终以测试镜像路径和 `-snapshot` 运行 RISC-V QEMU，完整输出直接写入
+根目录 `log.ans`：musl `kill08`、`kill10` 均为 `passed 1 failed 0 broken 0`，`kill10`
+输出 `TPASS: All 2 pgrps received their signals`，随后 `shutdown!`。未重跑 `make log`，
+也未运行 LoongArch64 行为回归。
