@@ -879,6 +879,13 @@
 - **描述**：确认 iozone cleanup 后的 `/proc/21/stat` 错误复用已删除 `/musl/iozone.DUMMY.1` 的 canonical inode，导致 `check_cached()` 对错误路径进入 lwext4 `ext4_fread()` 自旋。修复将路径索引和 inode cache 收敛为单状态锁，回收被同路径 key 覆盖的强引用 orphan，并在 stale canonical replacement 时撤销旧 alias；task proc 子树改为 path key。同步清理 cache/FIFO 元数据、将 FIFO 淘汰写回移出队列锁、以独立 descriptor 初始化文件缓存，并在 child reaping 前释放父 `ProcessMeta`。最终 RISC-V `log.ans` 与 LoongArch64 `/tmp/iozone-loong.log` 均出现两次 `iozone test complete.`、backward-read 吞吐段和 `shutdown!`。详见 [problem/iozone-inode-cache-reuse-hang.md](./problem/iozone-inode-cache-reuse-hang.md) 与 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-20 工作树）
 
+#### RISC-V LTP mmap001 PROT_WRITE 页表编码卡死修复（7.20）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 中 mmap001 首次写入后的无限 page fault，核对测试镜像 ELF 与 RISC-V PTE 规则，修复硬件权限转换并执行 QEMU 回归。
+- **描述**：确认 `MAP_SHARED | PROT_WRITE` 的文件页被错误编码为 `R=0,W=1`，这是 RISC-V 保留 PTE 组合；软件页表将其误视为 present，写保护处理只补 `DIRTY` 后重试，造成同一 store 无限陷入。修复在硬件 PTE 构造及 mprotect 直接 flags 路径中规范化 `W => R`，同时保留 VMA 的逻辑 `PROT_WRITE` 元数据以及 lazy PTE 不设 `VALID` 的约束。RISC-V `log.ans` 中 mmap001 现为 `passed 4 failed 0 broken 0` 并 `shutdown!`；LoongArch64 release 构建通过，未运行其行为回归。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/mmap001-riscv-write-only-pte.md](./problem/mmap001-riscv-write-only-pte.md)。
+- **关联 commit**：尚未提交（2026-07-20 工作树）
+
 #### BusyBox hwclock 与目录 rename 失败修复（7.20）
 
 - **工具/模型**：Codex (GPT-5)

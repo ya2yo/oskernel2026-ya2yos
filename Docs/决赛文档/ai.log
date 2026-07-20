@@ -5305,3 +5305,35 @@ warnings。最终以测试镜像路径和 `-snapshot` 运行 RISC-V QEMU，完�
 根目录 `log.ans`：musl `kill08`、`kill10` 均为 `passed 1 failed 0 broken 0`，`kill10`
 输出 `TPASS: All 2 pgrps received their signals`，随后 `shutdown!`。未重跑 `make log`，
 也未运行 LoongArch64 行为回归。
+
+## 2026-07-20：RISC-V LTP mmap001 PROT_WRITE 页表编码卡死修复
+
+### 用户需求
+
+维护者要求根据根目录 `log.ans` 修复 `mmap001` 卡死；随后明确要求将修复后的 QEMU 串口
+输出直接写入根目录 `log.ans`。
+
+### 分析与采纳结论
+
+AI 从原始日志确认 `mmap(PROT_WRITE, MAP_SHARED)` 成功返回后，首次写入同一虚拟地址反复
+进入 `handle_write_protect_page_fault`，没有后续 syscall 或 LTP 结果。对照测试镜像中
+`mmap001` ELF 的 DWARF/反汇编，确认测例立即逐字节写入该映射首地址。继续审计首次文件页
+fault 路径发现，VMA 正确保存为逻辑 `MapPermission::W | U`，但 RISC-V PTE 转换把它编码成
+`V|W|U`。
+
+RISC-V 将 `R=0,W=1` 定义为保留 PTE 组合；软件页表仍认定该项存在，写保护处理只补
+`DIRTY` 后返回，导致原 store 无限重试。采纳在硬件 PTE 层实施 `W => R` 的修复，而不改变
+VMA 的逻辑权限；这样既符合 Linux RISC-V `riscv_sys_mmap()`/`PAGE_WRITE` 的处理，也不把
+VMA/user-copy 的权限元数据错误改成可读。`mprotect` 的直接 flags 路径同步补齐该规范化，且
+保留懒 PTE 不设 `VALID` 的约束。维护者已有 `user/src/bin/initproc.rs` 单测入口仅被复用，
+未由本次修改覆盖。
+
+### 修改与验证
+
+修改 `os/src/arch/riscv64/qemu/page_table.rs`；新增本问题复盘并更新索引、开发日志与 AI
+协作记录。`cargo fmt --manifest-path os/Cargo.toml -- --check`、`make log TARGET_ARCH=riscv64`
+和 `git diff --check` 通过；`make TARGET_ARCH=riscv64` 完成双架构 release 构建，另行
+`make build-arch TARGET_ARCH=loongarch64` 通过，只有既有 Cargo config/vendored `smoltcp`
+warnings。最终 `timeout 120s make run TARGET_ARCH=riscv64 > log.ans 2>&1` 直接写入根目录：
+`mmap001` 输出 4 条 `TPASS`，Summary 为 `passed 4 failed 0 broken 0`，并正常 `shutdown!`；
+未运行 LoongArch64 mmap001 行为回归。

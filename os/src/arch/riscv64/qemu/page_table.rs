@@ -55,6 +55,10 @@ impl From<MapPermission> for RVPTEFlags {
             flags.insert(RVPTEFlags::READABLE);
         }
         if perm.contains(MapPermission::W) {
+            // RISC-V reserves the R=0, W=1 PTE encoding.  Keep the VMA's
+            // logical permission unchanged, but normalize its hardware PTE
+            // so a PROT_WRITE-only mapping is a valid writable leaf.
+            flags.insert(RVPTEFlags::READABLE);
             flags.insert(RVPTEFlags::WRITEABLE);
         }
         if perm.contains(MapPermission::X) {
@@ -381,7 +385,14 @@ impl PageTable {
     pub fn handle_mprotect(&mut self, vpn: VirtPageNum, add_flags: MapPermission) {
         let pte = self.find_pte_create(vpn).unwrap();
         let old_flags = pte.get_flags();
-        pte.set_flags(RVPTEFlags::from_bits_truncate(add_flags.bits() as usize) | old_flags);
+        // Do not use `RVPTEFlags::from` here: mprotect also visits lazy PTEs
+        // and must not make their PPN=0 entries valid.  It still needs the
+        // architectural W => R normalization for present entries.
+        let mut requested_flags = RVPTEFlags::from_bits_truncate(add_flags.bits() as usize);
+        if requested_flags.contains(RVPTEFlags::WRITEABLE) {
+            requested_flags.insert(RVPTEFlags::READABLE);
+        }
+        pte.set_flags(requested_flags | old_flags);
     }
     /// return: 若成功处理了 present PTE 的写保护页错误，返回true，否则返回false
     pub fn handle_write_protect_page_fault(&mut self, va: VirtAddr, vma: &mut MapArea) -> bool {

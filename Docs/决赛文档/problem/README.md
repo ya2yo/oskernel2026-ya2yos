@@ -81,6 +81,7 @@
 - [LTP readv01 空 iovec 与参数校验修复](./readv01-iovec-semantics.md)
 - [LTP chdir01 目录 search 权限修复](./chdir01-search-permission.md)
 - [LTP chdir04 pathname 长度边界修复](./chdir04-path-length-boundary.md)
+- [LTP mmap001 RISC-V PROT_WRITE 页表编码卡死](./mmap001-riscv-write-only-pte.md)
 - [LTP mmap04 /proc/self/maps 动态映射与格式修复](./proc-self-maps-mmap04.md)
 - [LTP mmap08 文件映射 fd 错误优先级修复](./mmap08-fd-errno-priority.md)
 - [LTP mmap12 /proc/self/pagemap 缺失修复](./proc-self-pagemap-mmap12.md)
