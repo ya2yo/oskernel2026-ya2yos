@@ -1,13 +1,16 @@
 use alloc::sync::Arc;
 
 use crate::{
-    fs::{open, superblock_fs_stat, File, OpenFlags},
+    fs::{open, superblock_fs_stat, File, OpenFlags, StMode},
     mm::read_user_cstr,
     syscall::fs::file_lock,
     task::current_task,
     utils::{SysErrNo, SyscallRet},
 };
-use linux_raw_sys::general::AT_FDCWD;
+use linux_raw_sys::general::{
+    AT_FDCWD, POSIX_FADV_DONTNEED, POSIX_FADV_NOREUSE, POSIX_FADV_NORMAL, POSIX_FADV_RANDOM,
+    POSIX_FADV_SEQUENTIAL, POSIX_FADV_WILLNEED,
+};
 
 const FALLOC_FL_KEEP_SIZE: u32 = 0x01;
 const FALLOC_SUPPORTED_FLAGS: u32 = FALLOC_FL_KEEP_SIZE;
@@ -98,4 +101,39 @@ pub fn sys_fallocate(fd: usize, mode: u32, offset: usize, len: usize) -> Syscall
     }
 
     Ok(0)
+}
+
+/// https://man7.org/linux/man-pages/man2/posix_fadvise.2.html
+///
+/// `fadvise64` only supplies an I/O access-pattern hint.  Ya2yOS does not yet
+/// expose a per-file readahead or cache-reclaim policy, so each valid hint is
+/// accepted without changing cache state.  The Linux-visible argument and fd
+/// validation remains necessary because libc's `posix_fadvise()` exposes the
+/// resulting errno values to applications.
+pub fn sys_fadvise64(fd: i32, _offset: i64, len: i64, advice: i32) -> SyscallRet {
+    if fd < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let file = task.process.fd_table.get(fd as usize)?.any();
+    let file_type = file.fstat().st_mode & StMode::FILE_TYPE_MASK.bits();
+    if file_type == StMode::FIFO.bits() {
+        return Err(SysErrNo::ESPIPE);
+    }
+
+    // Linux accepts a negative offset, but rejects a negative range length.
+    if len < 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    match advice as u32 {
+        POSIX_FADV_NORMAL
+        | POSIX_FADV_RANDOM
+        | POSIX_FADV_SEQUENTIAL
+        | POSIX_FADV_WILLNEED
+        | POSIX_FADV_DONTNEED
+        | POSIX_FADV_NOREUSE => Ok(0),
+        _ => Err(SysErrNo::EINVAL),
+    }
 }

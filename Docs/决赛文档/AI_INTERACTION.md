@@ -920,3 +920,10 @@
 - **场景**：分析决赛 BuildStorm `log.ans`、定向 RISC-V 启动日志和 release ELF 反汇编；对照 Linux 7.0 信号与 exec 语义，完成双架构构建整理。
 - **描述**：确认原日志没有真实 TFAIL/TBROK，而是启动路径先后暴露 initfiles `/dev/null`、Debian `/bin` 符号链接、RISC-V syscall 132 `sigaltstack`、双 hart bootstrap stack 下溢以及多线程 `execve` 未 de-thread 等问题。修复目录初始化和 wrapper 注入边界，补齐线程私有备用栈、SA_ONSTACK frame/rt_sigreturn 恢复和 ABI padding，将 RISC-V bootstrap stack 提升至 128 KiB/hart，并使 exec 在替换共享映像前以 SIGKILL 收敛 sibling。最终 RISC-V/LoongArch64 release 构建通过；完整 BuildStorm QEMU 回归因当天停止而待续。详见 [四篇问题复盘](./problem/README.md)。
 - **关联 commit**：尚未提交（2026-07-20 工作树）
+
+#### fadvise64(223) syscall 实现（7.20）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：确认 RISC-V/LoongArch64 223 号 ABI，补齐 fadvise64 分发与 Linux 可见 errno 语义，并按维护者要求只完成构建和文档记录。
+- **描述**：确认 `Syscall::Fadvise64 = 223` 已登记但未分发，导致调用返回 `ENOSYS`。实现按 `(int fd, loff_t offset, loff_t len, int advice)` 解码，保留 `EBADF`、FIFO/pipe `ESPIPE`、负 `len` 与非法 advice `EINVAL`；六种合法 hint 在当前缺少完整页缓存策略时作为无状态建议返回成功。RISC-V 和 LoongArch64 release 构建均通过。维护者未授权 QEMU/LTP 运行，因此未解除相关 LTP 黑名单，也未声称行为回归完成；详见 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-20 工作树）

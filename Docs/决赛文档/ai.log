@@ -5385,3 +5385,31 @@ bootstrap stack panic。最终整理后的 `make build-arch TARGET_ARCH=riscv64`
 `make build-arch TARGET_ARCH=loongarch64` 均成功；只有既有 Cargo config/vendored `smoltcp`
 warnings。新的 90 秒 RISC-V QEMU 运行首次受隔离环境 `/var/tmp` 限制未启动，授权后被维护者
 中断，因此没有声称 `BUILDSTORM_TOOLCHAIN`、完整编译或性能测例已经完成。
+
+## 2026-07-20：fadvise64(223) syscall 实现
+
+### 用户需求
+
+维护者要求实现 223 号 syscall。完成代码与双架构构建后，维护者明确要求直接记录文档，
+不执行运行时或 LTP 测试，也不新增 `problem/` 复盘。
+
+### 分析与采纳结论
+
+RISC-V64 与 LoongArch64 均使用 asm-generic ABI，223 对应
+`fadvise64(int fd, loff_t offset, loff_t len, int advice)`。仓库已经定义
+`Syscall::Fadvise64 = 223`，但分发表没有对应分支，因此此前会落入默认 `ENOSYS`。
+
+采纳最小 Linux 兼容路径：分发层按 ABI 将参数解码为 `i32/i64/i64/i32`；处理函数先验证
+fd，再以 `fstat` 识别匿名 pipe 与命名 FIFO 并返回 `ESPIPE`，随后拒绝负 `len` 与不在
+`POSIX_FADV_NORMAL..=POSIX_FADV_NOREUSE` 范围内的 advice。无效 fd 返回 `EBADF`，非法
+范围或 advice 返回 `EINVAL`。Linux 对 fadvise hint 不要求可观察的缓存动作；当前
+`FILE_PAGE_CACHE` 也没有满足 `DONTNEED` 的 `len == 0`、脏页回写、VMA 一致性和 inode
+identity 条件，因此六种合法 hint 暂作为经过完整校验的无状态 no-op 返回成功。
+
+### 修改与验证
+
+修改 `os/src/syscall/mod.rs` 与 `os/src/syscall/fs/space.rs`。`make` 已完成 RISC-V 和
+LoongArch64 release 构建，只有既有 Cargo config/vendored `smoltcp` warnings；代码改动的
+`git diff --check` 通过。维护者未授权运行时验证，故未运行 QEMU、LTP 或解除
+`posix_fadvise01`、`posix_fadvise02`、`posix_fadvise04` 及其 `_64` 变体的黑名单；此前一次
+QEMU 启动在沙箱内因 `/var/tmp` 只读而未进入内核，未产生任何测试结论。
