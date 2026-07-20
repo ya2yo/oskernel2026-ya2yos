@@ -45,8 +45,8 @@ pub fn sys_flock(fd: i32, op: i32) -> SyscallRet {
     }
 
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let proc_inner = &task.process;
-    let fd_desc = proc_inner.fd_table.get(fd as usize)?;
+    let proc = &task.process;
+    let fd_desc = proc.fd_table.get(fd as usize)?;
 
     // flock 仅适用于普通文件（OSFile），非普通文件返回 EINVAL
     let osfile = fd_desc.file()?;
@@ -92,19 +92,19 @@ pub fn sys_flock(fd: i32, op: i32) -> SyscallRet {
 
 fn dup_fd(old_fd: usize, cloexec: bool) -> SyscallRet {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let proc_inner = &task.process;
-    let mut new_desc = proc_inner.fd_table.get(old_fd)?;
+    let proc = &task.process;
+    let mut new_desc = proc.fd_table.get(old_fd)?;
     if cloexec {
         new_desc.set_cloexec();
     } else {
         new_desc.unset_cloexec();
     }
-    let new_fd = proc_inner.fd_table.alloc_fd()?;
-    if let Err(e) = proc_inner.fd_table.set(new_fd, new_desc) {
-        proc_inner.fd_table.take(new_fd);
+    let new_fd = proc.fd_table.alloc_fd()?;
+    if let Err(e) = proc.fd_table.set(new_fd, new_desc) {
+        proc.fd_table.take(new_fd);
         return Err(e);
     }
-    proc_inner.fs_info.dup_fd_path(old_fd, new_fd);
+    proc.fs_info.dup_fd_path(old_fd, new_fd);
     Ok(new_fd)
 }
 
@@ -117,7 +117,7 @@ pub fn sys_dup(fd: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/dup3.2.html
 pub fn sys_dup3(old: usize, new: usize, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
+    let proc = &task.process;
 
     // debug!(
     //     "[sys_dup3] : oldfd is {}, newfd is {}, flags is {}",
@@ -126,35 +126,35 @@ pub fn sys_dup3(old: usize, new: usize, flags: u32) -> SyscallRet {
     if old == new {
         return Err(SysErrNo::EINVAL);
     }
-    if old >= proc_inner.fd_table.len() || new >= proc_inner.fd_table.get_soft_limit() {
+    if old >= proc.fd_table.len() || new >= proc.fd_table.get_soft_limit() {
         return Err(SysErrNo::EMFILE); // 添加文件描述符耗尽检查
     }
 
-    if old >= proc_inner.fd_table.len()
+    if old >= proc.fd_table.len()
         || (old as isize) < 0
         || (new as isize) < 0
-        || new >= proc_inner.fd_table.get_soft_limit()
+        || new >= proc.fd_table.get_soft_limit()
     {
         error!("lots of");
         return Err(SysErrNo::EBADF);
     }
     // 检查文件描述符表是否已满
-    if proc_inner.fd_table.try_get(old).is_none() {
+    if proc.fd_table.try_get(old).is_none() {
         return Err(SysErrNo::EINVAL);
     }
 
-    if proc_inner.fd_table.len() <= new {
-        proc_inner.fd_table.resize(new + 1)?;
+    if proc.fd_table.len() <= new {
+        proc.fd_table.resize(new + 1)?;
     }
 
-    let mut file = proc_inner.fd_table.get(old)?;
+    let mut file = proc.fd_table.get(old)?;
     if flags == 0x800000 || flags == 0x80000 {
         //flags包含O_CLOEXEC,为新的fd设置该标志，否则不设置
         file.set_cloexec();
     } else {
         file.unset_cloexec();
     }
-    proc_inner.fd_table.set(new, file);
+    proc.fd_table.set(new, file);
     Ok(new)
 }
 
@@ -176,8 +176,8 @@ pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> Sysca
     }
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
     let path = read_user_cstr(&*memory_set, path)?;
     drop(memory_set);
 
@@ -192,13 +192,13 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
     }
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let fd_table = proc_inner.fd_table.clone();
-    let fs_info = proc_inner.fs_info.clone();
+    let proc = &task.process;
+    let fd_table = proc.fd_table.clone();
+    let fs_info = proc.fs_info.clone();
 
     let mut flags = OpenFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
 
-    let mut abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+    let mut abs_path = proc.get_abs_path(dirfd, &path)?;
     debug!(
         "[sys_openat] path is {}, flags is {:?}, mode is {:o}",
         &abs_path, flags, mode
@@ -256,9 +256,9 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
         abs_path = format!("/proc/{}/pagemap", task.pid());
     }
     if abs_path == "/proc/self/status" {
-        let proc_inner = &task.process;
-        let memory_set = proc_inner.memory_set_arc();
-        let comm = proc_inner.meta_lock().comm.clone();
+        let proc = &task.process;
+        let memory_set = proc.memory_set_arc();
+        let comm = proc.meta_lock().comm.clone();
         refresh_proc_status(task.pid(), task.ppid(), &comm, &memory_set)?;
         abs_path = format!("/proc/{}/status", task.pid());
     }
@@ -271,17 +271,17 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
         if let Some(process) = Process::get_process_arc_by_pid(pid) {
             let ppid = process.ppid();
             let state = if process.all_tasks_exited() { 'Z' } else { 'S' };
-            let proc_inner = &process;
-            let memory_set = proc_inner.memory_set_arc();
-            let comm = proc_inner.meta_lock().comm.clone();
+            let proc = &process;
+            let memory_set = proc.memory_set_arc();
+            let comm = proc.meta_lock().comm.clone();
             refresh_proc_stat(pid, ppid, state, &comm, &memory_set)?;
         }
     }
     if let Some(pid) = parse_proc_pid_file(&abs_path, "status") {
         if let Some(process) = Process::get_process_arc_by_pid(pid) {
-            let proc_inner = &process;
-            let memory_set = proc_inner.memory_set_arc();
-            let comm = proc_inner.meta_lock().comm.clone();
+            let proc = &process;
+            let memory_set = proc.memory_set_arc();
+            let comm = proc.meta_lock().comm.clone();
             refresh_proc_status(pid, process.ppid(), &comm, &memory_set)?;
         }
     }
@@ -396,13 +396,13 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
     // CLOEXEC (1 << 2): Close all file descriptors in the range on exec
     if flags.contains(CloseRangeFlags::CLOEXEC) {
         let task = current_task().unwrap();
-        let proc_inner = &task.process;
+        let proc = &task.process;
         for fd in first..=last {
-            if fd as usize >= proc_inner.fd_table.len() {
+            if fd as usize >= proc.fd_table.len() {
                 continue;
             }
             // Try to get the file descriptor, ignore errors
-            if let Some(mut desc) = proc_inner.fd_table.try_get(fd as usize) {
+            if let Some(mut desc) = proc.fd_table.try_get(fd as usize) {
                 desc.set_cloexec();
             }
         }
@@ -410,15 +410,15 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
         // Close all file descriptors in the range
         let task = current_task().unwrap();
         let owner_pid = task.pid() as i32;
-        let proc_inner = &task.process;
+        let proc = &task.process;
 
         for fd in first..=last {
-            if fd as usize >= proc_inner.fd_table.len() {
+            if fd as usize >= proc.fd_table.len() {
                 continue;
             }
 
             // Remove from fd_table
-            if let Some(desc) = proc_inner.fd_table.close(fd as usize) {
+            if let Some(desc) = proc.fd_table.close(fd as usize) {
                 if let Ok(osfile) = desc.file() {
                     let path = osfile.inode.path();
                     file_lock::release_posix_locks(&path, owner_pid);
@@ -428,7 +428,7 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
                     }
                 }
                 // Remove from fs_info
-                proc_inner.fs_info.remove(fd as usize);
+                proc.fs_info.remove(fd as usize);
             }
         }
     }
@@ -567,8 +567,8 @@ pub fn sys_openat2(
     }
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
 
     // 从用户空间读取 open_how 结构。比已知 ABI 更长的全零尾部可以向前兼容；
     // 不可读尾部返回 EFAULT，非零字段表示调用者需要更新的 ABI，返回 E2BIG。
@@ -619,7 +619,7 @@ pub fn sys_openat2(
         return Err(SysErrNo::EINVAL);
     }
 
-    let base_path = openat2_base_path(proc_inner, dirfd)?;
+    let base_path = openat2_base_path(proc, dirfd)?;
     if open_how_val.resolve & RESOLVE_BENEATH != 0 && openat2_escapes_beneath(&path) {
         return Err(SysErrNo::EXDEV);
     }

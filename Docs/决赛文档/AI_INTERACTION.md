@@ -927,3 +927,10 @@
 - **场景**：确认 RISC-V/LoongArch64 223 号 ABI，补齐 fadvise64 分发与 Linux 可见 errno 语义，并按维护者要求只完成构建和文档记录。
 - **描述**：确认 `Syscall::Fadvise64 = 223` 已登记但未分发，导致调用返回 `ENOSYS`。实现按 `(int fd, loff_t offset, loff_t len, int advice)` 解码，保留 `EBADF`、FIFO/pipe `ESPIPE`、负 `len` 与非法 advice `EINVAL`；六种合法 hint 在当前缺少完整页缓存策略时作为无状态建议返回成功。RISC-V 和 LoongArch64 release 构建均通过。维护者未授权 QEMU/LTP 运行，因此未解除相关 LTP 黑名单，也未声称行为回归完成；详见 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-20 工作树）
+
+#### BuildStorm 动态库绝对路径规范化修复（7.20）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 BuildStorm 日志中 Rust toolchain DSO 的动态库路径 warning，校正绝对路径的 `..` 规范化层级并完成双架构构建。
+- **描述**：确认 `/root/.rustup/.../bin/../lib/*.so` 是绝对但未规范化的路径；根因不是 `map_dynamic_link_file()` 缺少库条目，而是通用 `get_abs_path()` 对绝对输入直接复制、未像相对路径一样折叠 `.`/`..`。修复在通用路径函数复用 `path2abs()`，动态库兼容层不再承担路径规范化。RISC-V 与 LoongArch64 release 构建通过；未运行 QEMU 行为回归，未新增 problem 文档。详见 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-20 工作树）

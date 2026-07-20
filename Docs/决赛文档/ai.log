@@ -5413,3 +5413,31 @@ LoongArch64 release 构建，只有既有 Cargo config/vendored `smoltcp` warnin
 `git diff --check` 通过。维护者未授权运行时验证，故未运行 QEMU、LTP 或解除
 `posix_fadvise01`、`posix_fadvise02`、`posix_fadvise04` 及其 `_64` 变体的黑名单；此前一次
 QEMU 启动在沙箱内因 `/var/tmp` 只读而未进入内核，未产生任何测试结论。
+
+## 2026-07-20：BuildStorm 动态库绝对路径规范化
+
+### 用户需求
+
+维护者提供 `log.ans` 中 `map_dynamic_link_file cannot find DL path` 的 warning，要求解释
+`/root/.rustup/.../bin/../lib/*.so` 路径为何没有按预期命中，并完成修复。
+
+### 分析与采纳结论
+
+该路径以 `/root` 开头，已经是绝对路径；问题是其中仍保留 `bin/../lib`，即未作词法规范化。
+`sys_openat_path()` 先调用 `Process::get_abs_path()`，但它对绝对路径调用
+`utils::get_abs_path("/", path)` 后，后者原先直接复制输入字符串。相对路径却会使用
+`path2abs()` 折叠 `.`/`..`，形成了两条不一致的路径处理分支。
+
+不在 `map_dynamic_link_file()` 中新增专用规范化逻辑：该模块只应做动态库兼容路径重定向，
+并且 VFS 的实际路径解析不应由该模块改变。采纳在通用 `get_abs_path()` 的绝对路径分支中
+复用已有 `path2abs()`；这样进入 `openat` 的
+`/root/.../bin/../lib/tls/librustc_driver-*.so` 会统一为
+`/root/.../lib/tls/librustc_driver-*.so`，从而与工作区已有的 `DYNAMIC_PATH` 条目匹配。
+
+### 修改与验证
+
+修改 `os/src/utils/string.rs`，并更正 `os/src/fs/map_dynamic_link.rs` 对 `DYNAMIC_PATH` 的
+说明，明确它是镜像路径重定向目标集合而非 ELF 依赖或链接器。未改动工作区已有的动态库路径
+条目和 `fd_ops.rs` 改动。`rustfmt --edition 2021 --check`、`git diff --check` 与根目录
+`make` 均通过，RISC-V、LoongArch64 release 构建成功，只有既有 Cargo config/vendored
+`smoltcp` warnings；未运行 QEMU 行为回归。按维护者此前要求，本次未新增 `problem/` 文档。

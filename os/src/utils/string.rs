@@ -54,12 +54,12 @@ pub fn rsplit_once<'a>(s: &'a str, delimiter: &str) -> (&'a str, &'a str) {
     (parent_path, child_name)
 }
 
-/// 从一个base_path出发找到path对应的绝对路径
-/// 如果path本身就是绝对路径，则直接返回path的String形式
+/// 从一个base_path出发找到path对应的绝对路径，并按当前 VFS 的路径模型折叠 `.` 和 `..`。
 /// 如果取base_path="/"，可以用来把从root开始的相对路径转为绝对路径
 pub fn get_abs_path(base_path: &str, path: &str) -> String {
     if is_abs_path(path) {
-        path.to_string()
+        let mut wpath = Vec::with_capacity(32);
+        path2abs(&mut wpath, &path2vec(path))
     } else {
         let mut wpath = {
             if base_path == "/" {
