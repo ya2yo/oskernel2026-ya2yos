@@ -5221,3 +5221,21 @@ AI 先从原日志确认 musl/glibc 均在 `hwclock`、`mv test_dir test` 与随
 ### 修改与验证
 
 修改 `os/src/syscall/fs/ctl/namespace.rs`、`os/src/fs/files/devfs.rs`、`user/src/bin/busybox/mod.rs` 和 `user/src/bin/initproc.rs`；新增 [problem/busybox-hwclock-rename.md](./problem/busybox-hwclock-rename.md)，并更新 problem 索引、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml`、`cargo fmt --manifest-path user/Cargo.toml`、`git diff --check` 通过。`make build-arch TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过，只有既有 Cargo 配置弃用提示和 vendored `smoltcp` warnings。最终执行 `timeout 90s make run > log.ans 2>&1`：RISC-V `log.ans` 中 musl/glibc 的 `hwclock`、`mv test_dir test`、`rmdir test` 均输出 `exit_code=0`，最终 `shutdown!`，未出现 panic/TFAIL/TBROK/ERROR/WARN。此次只运行最小 BusyBox 回归，LoongArch64 未做行为回归。
+
+## 2026-07-20：lmbench musl/glibc 连续运行 ext4 EEXIST 析构自锁修复
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans` 的三次 lmbench 运行并修复 musl 后 glibc 卡死；要求先逐项运行 musl lmbench 测例与 glibc，以定位造成卡死的具体测例。随后明确要求将完整 debug 过程写入问题复盘，因为最终代码修改很小而定位过程才是关键。
+
+### 分析与采纳结论
+
+AI 先按 QEMU banner 划分三次原始运行：第一段 musl 已完整 END、glibc 只到 `Simple write` 后被终止；第二段停在 `add_initproc` 但只有宿主 `QEMU: Terminated`，没有可归因内核状态；第三段单独 glibc 完整通过。读取 ext4 镜像中的真实 `lmbench_testcode.sh` 后确认实际有 24 项，未以仓库旧 Rust runner 代替镜像脚本。
+
+初次 `make log` 的单独 glibc 超时被 DEBUG syscall 日志放大；过滤 18 MiB 日志后确认已经推进到 `lat_ctx`，因此改用 release/warn 构建。真实 musl+glibc 组合在 release 下复现后，shell `-x` 将最后命令定位到 `./busybox mkdir -p /var/tmp`。临时逐项矩阵又将最小样本缩小为：case #4 首次创建 `/var/tmp` 后，case #5 的重复 `mkdir -p` 在进入 `lat_syscall fstat` 前停止。
+
+沿 `sys_mkdirat -> create_file -> Ext4Inode::create` 审计，确认旧代码先获取 `EXT4_OP_LOCK` 再构造局部 `Ext4Inode`；已存在目录返回 `EEXIST` 时，Rust 会在释放 guard 前调用该临时 inode 的 `Drop`，而 Drop 再次获取同一个不可重入 `spin::Mutex`，形成同 hart 自旋锁自锁。采纳最小修复：在获取 guard 前构造临时 inode，保持存在性检查和实际创建仍处于同一 ext4 临界区。没有把 `add_initproc` 的无栈终止样本、CFS 契约风险或 `kill(-1)` 广播 ESRCH 风险混入本次修复。
+
+### 修改与验证
+
+修改 `os/src/fs/ext4_lw/inode.rs`；新增详细问题复盘并更新 problem 索引、开发日志及 AI 协作记录。诊断期间临时修改 `user/src/bin/initproc.rs` 添加 xtrace、单项矩阵和组合入口，验证后均已撤回；最终 lmbench 入口选择保留工作区当前维护者配置。`make build-arch TARGET_ARCH=riscv64` 和 `make build-arch TARGET_ARCH=loongarch64` 均通过，只有既有 Cargo config/vendored `smoltcp` warnings。RISC-V 中，修复后的 24 个 musl 单项均 `status=0`，随后完整 glibc END/shutdown；真实 musl+glibc 脚本组合也均 END/shutdown，无 panic/TFAIL/TBROK。LoongArch64 本轮仅编译，未运行 lmbench 行为回归。测试镜像 `/tmp/hello` 的绝对 wrapper 路径仍错误并打印 `not found`，未修改镜像。

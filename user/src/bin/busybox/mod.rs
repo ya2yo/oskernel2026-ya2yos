@@ -31,6 +31,7 @@ fn run_failed_cases_for_root(root: &str) {
     println!("#### BUSYBOX FAILED CASES END {} ####", root);
 }
 
+#[allow(unused)]
 pub fn run_failed_cases() {
     run_failed_cases_for_root("musl\0");
     run_failed_cases_for_root("glibc\0");

@@ -1,5 +1,6 @@
 # Problem 复盘索引
 
+- [lmbench musl/glibc 连续运行的 ext4 EEXIST 析构自锁](./lmbench-ext4-eexist-drop-self-deadlock.md)
 - [BusyBox hwclock RTC ioctl 与目录 rename 失败](./busybox-hwclock-rename.md)
 - [iozone 连续 random-read/backward-read 的 inode 缓存复用卡死](./iozone-inode-cache-reuse-hang.md)
 - [RISC-V 双 hart SMP bring-up](./riscv-smp-bringup.md)

@@ -885,3 +885,10 @@
 - **场景**：根据 `log.ans` 的 BusyBox musl/glibc 失败项建立最小复现，审计 VFS `renameat2` 和 devfs RTC ioctl 路径，并执行双架构构建与 RISC-V QEMU 回归。
 - **描述**：确认 `renameat2` 为取得源 inode 使用 `O_RDWR` 打开目录，VFS 在进入 ext4 前返回 `EISDIR`；`DevRtc` 未实现 `RTC_RD_TIME`，调用落入默认 `ENOTTY`。修复改为只读打开 rename 源路径，并按 Linux `struct rtc_time` ABI 从内核 realtime 向用户态复制时间。RISC-V 根目录 `log.ans` 中 musl/glibc 的 `hwclock`、`mv test_dir test`、`rmdir test` 均为 `exit_code=0` 并 `shutdown!`；LoongArch64 release 构建通过。详见 [problem/busybox-hwclock-rename.md](./problem/busybox-hwclock-rename.md) 与 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-20 工作树）
+
+#### lmbench musl/glibc 连续运行 ext4 `EEXIST` 自锁修复（7.20）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析三次 `log.ans` lmbench 运行，读取测试镜像脚本，建立 musl 单项矩阵和真实组合回归，定位 musl 后 glibc 卡死。
+- **描述**：先排除 `make log` 的 syscall DEBUG 输出导致的伪超时，再用 `sh -x` 将组合卡点定位为重复 `mkdir -p /var/tmp`，并用 #4 创建目录后 #5 重复 mkdir 的最小矩阵复现。审计确认 `Ext4Inode::create()` 在持有 `EXT4_OP_LOCK` 后构造临时 inode；`EEXIST` 错误返回时其 Drop 重入同一不可重入锁。修复调整构造与 guard 的声明顺序，保持创建检查原子性。RISC-V 的 24 项 musl 单项、完整 glibc 以及真实 musl+glibc 组合均 END/shutdown；LoongArch64 release 编译通过。完整调试过程见 [problem/lmbench-ext4-eexist-drop-self-deadlock.md](./problem/lmbench-ext4-eexist-drop-self-deadlock.md) 和 `ai.log`。
+- **关联 commit**：尚未提交（2026-07-20 工作树）

@@ -146,10 +146,12 @@ impl Inode for Ext4Inode {
     /// `file_open(O_CREAT|O_TRUNC)` 创建后立即关闭。目标已存在时返回 `EEXIST`，
     /// 用于承载 Linux `O_CREAT|O_EXCL` 语义。
     fn create(&self, path: &str, ty: InodeType) -> Result<Arc<dyn Inode>, SysErrNo> {
-        let _ext4 = EXT4_OP_LOCK.lock();
         let types = as_ext4_de_type(ty);
-        let file = &mut self.inner.get_unchecked_mut().f;
+        // Drop closes the underlying handle under EXT4_OP_LOCK.  Construct it
+        // before the guard so error paths release the guard before Drop runs.
         let nf = Ext4Inode::new(path, types.clone());
+        let _ext4 = EXT4_OP_LOCK.lock();
+        let file = &mut self.inner.get_unchecked_mut().f;
 
         if file.check_inode_exist(path, types.clone()) {
             return Err(SysErrNo::EEXIST);
