@@ -56,6 +56,12 @@ pub fn consume_ignorable_pending_signal_for_current_task() -> bool {
 
 pub fn handle_signal(signo: usize) {
     let task = current_task().unwrap();
+    // Do not take SigTable under TaskControlBlockInner.  A concurrent signal
+    // sender also needs both locks, and SIGALRM-heavy workloads such as
+    // kill10 make this inversion reproducible on SMP.
+    let sig_action = task
+        .process
+        .with_sigtable(|sigtable| sigtable.action(signo));
     let mut task_inner = task.inner_lock();
     let signal = SigSet::from_sig(signo);
     debug!(
@@ -64,9 +70,6 @@ pub fn handle_signal(signo: usize) {
         signal,
         task_inner.trap_cx().get_sepc()
     );
-    let sig_action = task
-        .process
-        .with_sigtable(|sigtable| sigtable.action(signo));
     task_inner.sig_pending.remove(signal);
     let siginfo = task_inner.sig_pending_info[signo].take();
     drop(task_inner);

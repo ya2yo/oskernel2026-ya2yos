@@ -51,14 +51,10 @@ pub(super) fn add_signal_with_info(
     signal: SigSet,
     siginfo: Option<SigInfo>,
 ) -> bool {
-    let mut task_inner = task.inner_lock();
-    // debug!("add signal: tid {}, signal: {}", task.tid(), signal.bits());
-    if let Some(signo) = signal.peek_front() {
-        if !task_inner.sig_pending.contains(signal) {
-            task_inner.sig_pending_info[signo] = siginfo;
-        }
-    }
-    task_inner.sig_pending |= signal;
+    // Snapshot the disposition before taking TaskControlBlockInner.  Signal
+    // delivery can race with trap-return handling on another hart; taking the
+    // signal-table lock while holding the task lock reverses the task lock
+    // ordering and can deadlock that path.
     let interrupt_wait = signal.peek_front().is_some_and(|signo| {
         if signo == SIGCHLD {
             return task
@@ -71,6 +67,15 @@ pub(super) fn add_signal_with_info(
                 && (action.is_handler() || SigSet::from_sig(signo).default_op() != SigOp::Ignore)
         })
     });
+
+    let mut task_inner = task.inner_lock();
+    // debug!("add signal: tid {}, signal: {}", task.tid(), signal.bits());
+    if let Some(signo) = signal.peek_front() {
+        if !task_inner.sig_pending.contains(signal) {
+            task_inner.sig_pending_info[signo] = siginfo;
+        }
+    }
+    task_inner.sig_pending |= signal;
     if task_inner.task_status == TaskStatus::Stopped
         && signal.intersects(SigSet::SIGCONT | SigSet::SIGKILL)
     {

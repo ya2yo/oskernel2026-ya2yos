@@ -5239,3 +5239,33 @@ AI 先按 QEMU banner 划分三次原始运行：第一段 musl 已完整 END、
 ### 修改与验证
 
 修改 `os/src/fs/ext4_lw/inode.rs`；新增详细问题复盘并更新 problem 索引、开发日志及 AI 协作记录。诊断期间临时修改 `user/src/bin/initproc.rs` 添加 xtrace、单项矩阵和组合入口，验证后均已撤回；最终 lmbench 入口选择保留工作区当前维护者配置。`make build-arch TARGET_ARCH=riscv64` 和 `make build-arch TARGET_ARCH=loongarch64` 均通过，只有既有 Cargo config/vendored `smoltcp` warnings。RISC-V 中，修复后的 24 个 musl 单项均 `status=0`，随后完整 glibc END/shutdown；真实 musl+glibc 脚本组合也均 END/shutdown，无 panic/TFAIL/TBROK。LoongArch64 本轮仅编译，未运行 lmbench 行为回归。测试镜像 `/tmp/hello` 的绝对 wrapper 路径仍错误并打印 `not found`，未修改镜像。
+
+## 2026-07-20：RISC-V LTP kill10 信号锁序风险修复
+
+### 用户需求
+
+维护者要求分析 `log.ans`，检查 `kill10` 调用过程是否有死锁风险；该测例在 RISC-V
+全量测试末尾卡死、单独测试正常，要求修复可能导致死锁的代码。
+
+### 分析与采纳结论
+
+AI 对比 `riscv.ans` 与 `log.ans`，确认原始 RISC-V 日志在 `RUN LTP CASE kill10` 后无
+LTP 结果，缺少卡死时栈，不能将某条锁链断言为唯一实际根因。随后沿
+`sys_kill -> delivery::add_signal_with_info -> pending::handle_signal` 审计，并按
+`os/src/task/mod.rs` 的锁序规则识别两处确定的 `TaskControlBlockInner -> SigTable`
+反向嵌套：投递路径在写 pending 后查询 disposition，handler 路径在持有任务锁时读取
+disposition。`kill10` 高密度 `SIGALRM`/`SA_SIGINFO` 闭环和双 hart 并发会放大这一风险。
+
+采纳最小修复：两处均先获取并释放 `SigTable`，把 action 作为快照保存，随后才获取
+任务锁更新 pending 状态或消费 `siginfo`。停止态恢复、可中断等待唤醒和 handler/default
+disposition 逻辑保持不变；action 并发更新使用投递时的快照。
+
+### 修改与验证
+
+修改 `os/src/signal/delivery.rs` 与 `os/src/signal/pending.rs`，新增问题复盘并更新问题
+索引、开发日志和 AI 协作记录。`git diff --check` 通过；`make TARGET_ARCH=riscv64` 完成
+RISC-V 和构建链中的 LoongArch64 release 编译，仅有既有 Cargo config/vendored `smoltcp`
+warnings。首次 QEMU 在沙箱内因 `/var/tmp` 只读无法创建临时快照，获准在宿主临时目录运行
+后，`timeout 180s make run TARGET_ARCH=riscv64 > /tmp/kill10-signal-lock.log 2>&1` 完整结束：
+musl/glibc `kill10` 均为 `passed 1 failed 0 broken 0` 且 `shutdown!`。LoongArch64 本次未
+运行行为回归。

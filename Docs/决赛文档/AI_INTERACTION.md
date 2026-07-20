@@ -892,3 +892,10 @@
 - **场景**：分析三次 `log.ans` lmbench 运行，读取测试镜像脚本，建立 musl 单项矩阵和真实组合回归，定位 musl 后 glibc 卡死。
 - **描述**：先排除 `make log` 的 syscall DEBUG 输出导致的伪超时，再用 `sh -x` 将组合卡点定位为重复 `mkdir -p /var/tmp`，并用 #4 创建目录后 #5 重复 mkdir 的最小矩阵复现。审计确认 `Ext4Inode::create()` 在持有 `EXT4_OP_LOCK` 后构造临时 inode；`EEXIST` 错误返回时其 Drop 重入同一不可重入锁。修复调整构造与 guard 的声明顺序，保持创建检查原子性。RISC-V 的 24 项 musl 单项、完整 glibc 以及真实 musl+glibc 组合均 END/shutdown；LoongArch64 release 编译通过。完整调试过程见 [problem/lmbench-ext4-eexist-drop-self-deadlock.md](./problem/lmbench-ext4-eexist-drop-self-deadlock.md) 和 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-20 工作树）
+
+#### RISC-V LTP kill10 信号锁序风险修复（7.20）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `riscv.ans` 的 kill10 集体运行卡死，审计信号投递/handler 锁序，并执行 RISC-V 双 hart QEMU 回归。
+- **描述**：原始日志只证明 kill10 启动后卡住、没有锁栈，未将风险误写成唯一已证实根因。代码审计确认 `add_signal_with_info()` 与 `handle_signal()` 都曾在 `TaskControlBlockInner` 临界区获取 `SigTable`，违反项目全局锁序。修复将 disposition 查询提前为无任务锁的快照，随后才写入或消费 pending 信号，保留停止态恢复、唤醒与 `SA_SIGINFO` 语义。RISC-V musl/glibc kill10 均 `passed 1 failed 0 broken 0` 并正常关机；详见 [problem/kill10-signal-lock-order.md](./problem/kill10-signal-lock-order.md)。
+- **关联 commit**：尚未提交（2026-07-20 工作树）

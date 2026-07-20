@@ -19,7 +19,7 @@ pub const USER_STACK_SIZE: usize = 1024 * 1024 * 8; // 8MB
 pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 4;
 // Full pre-test runs retain kernel objects while execing the 1.7 MiB glibc
 // busybox image. Keep one 2 MiB buddy block available for that normal load.
-pub const KERNEL_HEAP_SIZE: usize = 0x6_000_000; // 96MB
+pub const KERNEL_HEAP_SIZE: usize = 0x8_000_000; // 128MB
 pub const USER_HEAP_SIZE: usize = 0x2000_0000; // 512MB (virtual reservation)
 /// Maximum heap (brk) growth per process.
 /// Caps runaway brk from exhausting physical memory.
