@@ -57,7 +57,9 @@ pub fn sys_renameat2(
     let newpath = read_user_cstr(&memory_set, newpath)?;
 
     let old_abs_path = proc.get_abs_path(olddirfd, &oldpath)?;
-    let osfile = open(&old_abs_path, OpenFlags::O_RDWR, NONE_MODE)?.file()?;
+    // rename only needs the source inode. Opening a directory with write intent
+    // is rejected by VFS before the inode rename operation can run.
+    let osfile = open(&old_abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     let new_abs_path = proc.get_abs_path(newdirfd, &newpath)?;
     let ret = osfile.inode.rename(&old_abs_path, &new_abs_path);
     // rename 成功后，旧路径的文件已移到新路径，需要更新/清理 FsIndex 缓存，

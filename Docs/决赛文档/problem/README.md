@@ -1,5 +1,6 @@
 # Problem 复盘索引
 
+- [BusyBox hwclock RTC ioctl 与目录 rename 失败](./busybox-hwclock-rename.md)
 - [iozone 连续 random-read/backward-read 的 inode 缓存复用卡死](./iozone-inode-cache-reuse-hang.md)
 - [RISC-V 双 hart SMP bring-up](./riscv-smp-bringup.md)
 - [RISC-V 双 hart netperf 锁序与丢唤醒修复](./riscv-smp-netperf-wakeup-locking.md)

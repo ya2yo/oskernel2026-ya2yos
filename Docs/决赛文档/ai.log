@@ -5205,3 +5205,19 @@ AI 先保留 `random_read::run_musl()` 与 `backward_read::run_musl()` 的最小
 ### 修改与验证
 
 修改 `os/src/fs/kernel_fs_ops/fsidx.rs`、`crates/lwext4_rust/src/file.rs`、`os/src/syscall/task/wait.rs` 和 `user/src/bin/initproc.rs`；新增本问题复盘并更新问题索引、开发日志与 AI 记录。`git diff --check` 通过。`make build-arch TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过，只有既有 Cargo config/vendored `smoltcp` warnings。最终 `timeout 180s make run TARGET_ARCH=riscv64 > log.ans 2>&1` 直接写入根目录，出现两次 `iozone test complete.`、backward-read 吞吐段和 `shutdown!`，无 panic/TFAIL/TBROK/ERROR；LoongArch64 对应运行输出在 `/tmp/iozone-loong.log`，同样完成两个测例并正常关机。LoongArch QEMU 首次受沙箱 `/var/tmp` 只读限制未启动，获准使用宿主临时目录后完成有效回归。
+
+## 2026-07-20：BusyBox hwclock 与目录 rename 失败修复
+
+### 用户需求
+
+维护者要求先从 `log.ans` 中单独运行 BusyBox 失败项，随后要求根据该日志修复 bug，并把修复后的 RISC-V QEMU 输出直接写入根目录 `log.ans`。
+
+### 分析与采纳结论
+
+AI 先从原日志确认 musl/glibc 均在 `hwclock`、`mv test_dir test` 与随后 `rmdir test` 失败。独立入口按原文件操作依赖顺序执行，确认 `rmdir test` 只是 `mv` 失败后目标路径不存在的派生结果。继续检查 syscall/VFS 路径后，确认 `sys_renameat2()` 只为得到源 inode 却使用 `O_RDWR` 打开源路径；VFS 正确拒绝目录的写意图打开并返回 `EISDIR`，所以 inode/ext4 rename 从未运行。
+
+`/dev/rtc` 已映射为 `DevRtc`，但该设备没有覆盖 `File::ioctl()`，所有请求都落入默认 `ENOTTY`。BusyBox 默认 `hwclock` 调用 `RTC_RD_TIME` 并读取 Linux `struct rtc_time`。修复使 rename 源路径使用 `O_RDONLY`，并为 `DevRtc` 实现 `RTC_RD_TIME`：从内核 `CLOCK_REALTIME` 生成 `#[repr(C)]` 的九个 `i32` Linux 时间字段后通过 `copy_to_user` 返回；未实现 ioctl 保持 `ENOTTY`。
+
+### 修改与验证
+
+修改 `os/src/syscall/fs/ctl/namespace.rs`、`os/src/fs/files/devfs.rs`、`user/src/bin/busybox/mod.rs` 和 `user/src/bin/initproc.rs`；新增 [problem/busybox-hwclock-rename.md](./problem/busybox-hwclock-rename.md)，并更新 problem 索引、开发日志和 AI 协作记录。`cargo fmt --manifest-path os/Cargo.toml`、`cargo fmt --manifest-path user/Cargo.toml`、`git diff --check` 通过。`make build-arch TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过，只有既有 Cargo 配置弃用提示和 vendored `smoltcp` warnings。最终执行 `timeout 90s make run > log.ans 2>&1`：RISC-V `log.ans` 中 musl/glibc 的 `hwclock`、`mv test_dir test`、`rmdir test` 均输出 `exit_code=0`，最终 `shutdown!`，未出现 panic/TFAIL/TBROK/ERROR/WARN。此次只运行最小 BusyBox 回归，LoongArch64 未做行为回归。

@@ -1,6 +1,7 @@
 use crate::{
-    mm::UserBuffer,
+    mm::{copy_to_user, MemorySet, UserBuffer},
     syscall::PollEvents,
+    timer::realtime,
     utils::{SysErrNo, SyscallRet},
 };
 use alloc::{
@@ -11,6 +12,8 @@ use alloc::{
     sync::Arc,
 };
 use core::cmp::min;
+use core::mem::size_of;
+use linux_raw_sys::ioctl::RTC_RD_TIME;
 use spin::{Lazy, Mutex, RwLock};
 
 use super::super::{stat::StMode, File, Kstat, Stdin, Stdout};
@@ -222,6 +225,75 @@ impl DevRtc {
     }
 }
 
+#[repr(C)]
+struct LinuxRtcTime {
+    tm_sec: i32,
+    tm_min: i32,
+    tm_hour: i32,
+    tm_mday: i32,
+    tm_mon: i32,
+    tm_year: i32,
+    tm_wday: i32,
+    tm_yday: i32,
+    tm_isdst: i32,
+}
+
+impl LinuxRtcTime {
+    fn from_realtime() -> Self {
+        const SECS_PER_DAY: usize = 24 * 60 * 60;
+
+        let seconds = realtime().tv_sec;
+        let mut days = seconds / SECS_PER_DAY;
+        let seconds_in_day = seconds % SECS_PER_DAY;
+        let weekday = ((days + 4) % 7) as i32;
+        let mut year = 1970usize;
+        while days >= days_in_year(year) {
+            days -= days_in_year(year);
+            year += 1;
+        }
+
+        let yearday = days;
+        let mut month = 0usize;
+        while days >= days_in_month(year, month) {
+            days -= days_in_month(year, month);
+            month += 1;
+        }
+
+        Self {
+            tm_sec: (seconds_in_day % 60) as i32,
+            tm_min: ((seconds_in_day / 60) % 60) as i32,
+            tm_hour: (seconds_in_day / (60 * 60)) as i32,
+            tm_mday: (days + 1) as i32,
+            tm_mon: month as i32,
+            tm_year: year as i32 - 1900,
+            tm_wday: weekday,
+            tm_yday: yearday as i32,
+            tm_isdst: 0,
+        }
+    }
+}
+
+fn is_leap_year(year: usize) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn days_in_year(year: usize) -> usize {
+    if is_leap_year(year) {
+        366
+    } else {
+        365
+    }
+}
+
+fn days_in_month(year: usize, month: usize) -> usize {
+    if month == 1 && is_leap_year(year) {
+        29
+    } else {
+        const DAYS_PER_MONTH: [usize; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        DAYS_PER_MONTH[month]
+    }
+}
+
 impl File for DevRtc {
     fn readable(&self) -> bool {
         true
@@ -260,6 +332,21 @@ impl File for DevRtc {
             revents |= PollEvents::OUT;
         }
         revents
+    }
+    fn ioctl(&self, cmd: u32, arg: usize, memory_set: &MemorySet) -> SyscallRet {
+        match cmd {
+            RTC_RD_TIME => {
+                let rtc_time = LinuxRtcTime::from_realtime();
+                copy_to_user(memory_set, arg, unsafe {
+                    core::slice::from_raw_parts(
+                        &rtc_time as *const LinuxRtcTime as *const u8,
+                        size_of::<LinuxRtcTime>(),
+                    )
+                })?;
+                Ok(0)
+            }
+            _ => Err(SysErrNo::ENOTTY),
+        }
     }
 }
 

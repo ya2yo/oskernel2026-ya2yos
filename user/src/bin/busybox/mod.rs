@@ -27,16 +27,7 @@ fn run_failed_cases_for_root(root: &str) {
         "mv test_dir test",
         &["busybox\0", "mv\0", "test_dir\0", "test\0"],
     );
-    run_applet(
-        root,
-        "rmdir test",
-        &["busybox\0", "rmdir\0", "test\0"],
-    );
-    run_applet(
-        root,
-        "rmdir test_dir (control)",
-        &["busybox\0", "rmdir\0", "test_dir\0"],
-    );
+    run_applet(root, "rmdir test", &["busybox\0", "rmdir\0", "test\0"]);
     println!("#### BUSYBOX FAILED CASES END {} ####", root);
 }
 

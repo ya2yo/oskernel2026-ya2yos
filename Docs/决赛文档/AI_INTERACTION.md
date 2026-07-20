@@ -878,3 +878,10 @@
 - **场景**：拆分 iozone 子测例、分析 `log.ans` 与 GDB 双 hart 回溯，审计 VFS inode cache、lwext4 write-back FIFO 和 wait 回收锁边界，并执行双架构 QEMU 回归。
 - **描述**：确认 iozone cleanup 后的 `/proc/21/stat` 错误复用已删除 `/musl/iozone.DUMMY.1` 的 canonical inode，导致 `check_cached()` 对错误路径进入 lwext4 `ext4_fread()` 自旋。修复将路径索引和 inode cache 收敛为单状态锁，回收被同路径 key 覆盖的强引用 orphan，并在 stale canonical replacement 时撤销旧 alias；task proc 子树改为 path key。同步清理 cache/FIFO 元数据、将 FIFO 淘汰写回移出队列锁、以独立 descriptor 初始化文件缓存，并在 child reaping 前释放父 `ProcessMeta`。最终 RISC-V `log.ans` 与 LoongArch64 `/tmp/iozone-loong.log` 均出现两次 `iozone test complete.`、backward-read 吞吐段和 `shutdown!`。详见 [problem/iozone-inode-cache-reuse-hang.md](./problem/iozone-inode-cache-reuse-hang.md) 与 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-20 工作树）
+
+#### BusyBox hwclock 与目录 rename 失败修复（7.20）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：根据 `log.ans` 的 BusyBox musl/glibc 失败项建立最小复现，审计 VFS `renameat2` 和 devfs RTC ioctl 路径，并执行双架构构建与 RISC-V QEMU 回归。
+- **描述**：确认 `renameat2` 为取得源 inode 使用 `O_RDWR` 打开目录，VFS 在进入 ext4 前返回 `EISDIR`；`DevRtc` 未实现 `RTC_RD_TIME`，调用落入默认 `ENOTTY`。修复改为只读打开 rename 源路径，并按 Linux `struct rtc_time` ABI 从内核 realtime 向用户态复制时间。RISC-V 根目录 `log.ans` 中 musl/glibc 的 `hwclock`、`mv test_dir test`、`rmdir test` 均为 `exit_code=0` 并 `shutdown!`；LoongArch64 release 构建通过。详见 [problem/busybox-hwclock-rename.md](./problem/busybox-hwclock-rename.md) 与 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-20 工作树）
