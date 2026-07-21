@@ -1,4 +1,7 @@
 use super::*;
+use crate::mm::copy_from_user_val;
+
+const FIONBIO: u32 = 0x5421;
 
 /// 处理 `ioctl(2)` 文件控制请求。
 ///
@@ -9,10 +12,25 @@ pub fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
     debug!("[sys_ioctl] fd={}, cmd={}, arg={}", fd, cmd, arg);
     let task = current_task().unwrap();
     let proc = &task.process;
-    if cmd as u32 == LOOP_SET_FD {
+    let cmd = cmd as u32;
+    if cmd == LOOP_SET_FD {
         proc.fd_table.get(arg)?;
     }
     let file = proc.fd_table.get(fd)?.any();
     let memory_set = proc.memory_set_arc();
-    file.ioctl(cmd as u32, arg, &memory_set)
+
+    // Linux handles FIONBIO in the common VFS ioctl path.  It changes the
+    // file status flag, rather than being a pipe- or tty-specific operation.
+    if cmd == FIONBIO {
+        let nonblocking = copy_from_user_val::<i32>(&memory_set, arg as *const i32)? != 0;
+        file.set_nonblocking(nonblocking)?;
+        if nonblocking {
+            proc.fd_table.set_nonblock(fd)?;
+        } else {
+            proc.fd_table.unset_nonblock(fd)?;
+        }
+        return Ok(0);
+    }
+
+    file.ioctl(cmd, arg, &memory_set)
 }
