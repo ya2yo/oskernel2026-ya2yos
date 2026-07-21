@@ -74,13 +74,42 @@ pub fn sys_chdir(path: *const u8) -> SyscallRet {
     Ok(0)
 }
 
+/// https://www.man7.org/linux/man-pages/man2/fchdir.2.html
+pub fn sys_fchdir(fd: i32) -> SyscallRet {
+    let task = current_task().unwrap();
+    let proc = &task.process;
+
+    if fd < 0 {
+        return Err(SysErrNo::EBADF);
+    }
+
+    // FileDescriptor::file() reports EINVAL for non-file descriptor classes,
+    // while fchdir(2) exposes ENOTDIR for every descriptor that is not a
+    // directory.
+    let file = proc
+        .fd_table
+        .get(fd as usize)?
+        .file()
+        .map_err(|_| SysErrNo::ENOTDIR)?;
+    if !file.inode.types().is_dir() {
+        return Err(SysErrNo::ENOTDIR);
+    }
+
+    let (euid, egid) = {
+        let task_inner = task.inner_lock();
+        (task_inner.effective_uid, task_inner.effective_gid)
+    };
+    let file_mode = FaccessatFileMode::from_bits_truncate(file.inode.fmode()? & 0xfff);
+    let stat = file.inode.fstat();
+    check_directory_search_permission_for_metadata(file_mode, &stat, euid, egid)?;
+
+    proc.fs_info.set_cwd(file.inode.path());
+    Ok(0)
+}
+
 /// `chdir(2)` requires search permission on every directory in the resolved
 /// path, including the destination directory itself.
 fn check_directory_search_permission(path: &str, uid: u32, gid: u32) -> SyscallRet {
-    if uid == 0 {
-        return Ok(0);
-    }
-
     let mut current = String::from("/");
     for component in path.split('/').filter(|component| !component.is_empty()) {
         if current.len() > 1 {
@@ -94,19 +123,33 @@ fn check_directory_search_permission(path: &str, uid: u32, gid: u32) -> SyscallR
         }
         let stat = directory.inode.fstat();
         let mode = FaccessatFileMode::from_bits_truncate(directory.inode.fmode()? & 0xfff);
-        if !mode_allows(
-            mode,
-            &stat,
+        check_directory_search_permission_for_metadata(mode, &stat, uid, gid)?;
+    }
+    Ok(0)
+}
+
+/// Check search permission for one already-resolved directory inode.
+fn check_directory_search_permission_for_metadata(
+    file_mode: FaccessatFileMode,
+    stat: &Kstat,
+    uid: u32,
+    gid: u32,
+) -> SyscallRet {
+    if uid == 0
+        || mode_allows(
+            file_mode,
+            stat,
             uid,
             gid,
             FaccessatFileMode::S_IXUSR,
             FaccessatFileMode::S_IXGRP,
             FaccessatFileMode::S_IXOTH,
-        ) {
-            return Err(SysErrNo::EACCES);
-        }
+        )
+    {
+        Ok(0)
+    } else {
+        Err(SysErrNo::EACCES)
     }
-    Ok(0)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/chroot.2.html

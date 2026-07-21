@@ -230,6 +230,10 @@ pub fn chdir(path: &str) -> isize {
     sys_chdir(path)
 }
 
+pub fn fchdir(fd: i32) -> isize {
+    sys_fchdir(fd)
+}
+
 pub fn mkdir(dirfd: isize, path: &str, mode: u32) -> isize {
     sys_mkdirat(dirfd, path, mode)
 }

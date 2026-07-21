@@ -65,6 +65,7 @@ pub enum Syscall {
     Fallocate = 47,
     Faccessat = 48,
     Chdir = 49,
+    Fchdir = 50,
     Chroot = 51,
     Fchmod = 52,
     Fchmodat = 53,
@@ -414,6 +415,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[3],
         ),
         Syscall::Chdir => sys_chdir(args[0] as *const u8),
+        Syscall::Fchdir => sys_fchdir(args[0] as i32),
         Syscall::Fchmod => sys_fchmod(args[0] as usize, args[1] as u32),
         Syscall::Fchmodat => sys_fchmodat(
             args[0] as isize,

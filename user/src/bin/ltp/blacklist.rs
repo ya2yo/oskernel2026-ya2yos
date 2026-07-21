@@ -288,9 +288,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "fanotify_child\0",
     // [400,500)区间
     "fanout01\0",
-    "fchdir01\0",
-    "fchdir02\0",
-    "fchdir03\0",
     "fchown01\0",
     "fchown01_16\0",
     "fchown02\0",

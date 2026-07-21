@@ -5875,3 +5875,43 @@ VFS 语义。
 `shutdown!`。其中 factorial、date、network、cpu、kernel、fs-create、fs-search 为 `pass`；
 fs-directory、fs-usage、fs-readwrite 为 `reject`。本轮只修复启动和路径解析，不将这三项
 agent 语义失败表述为已通过。未运行 LoongArch64 CAgent 回归。
+
+---
+
+## 2026-07-21：fchdir(50) 系统调用接入
+
+### 用户需求
+
+维护者要求实现 `sys_fchdir`，随后要求检查其已运行的 `log.ans` 并补齐项目文档。
+
+### 分析与采纳结论
+
+Linux asm-generic ABI 中 `fchdir(2)` 为 50 号调用。工作区已登记 `Syscall::Fchdir = 50`，但
+分发表没有对应 arm，`sys_fchdir` 也仍是半成品。采纳直接从当前进程 fd 表取得 `OSFile` 的实现：
+无效 fd 返回 `EBADF`，不能转换为普通文件对象或 inode 非目录时返回 `ENOTDIR`，目录本身没有
+search 权限时返回 `EACCES`，成功后更新共享的 `FSInfo.cwd`。
+
+`chdir(path)` 需要沿 pathname 逐级检查目录；`fchdir(fd)` 已有稳定的目标 inode，只应检查该目录
+本身。为避免重新按路径解析时受到 rename/unlink 或路径别名影响，将单个 inode 的权限判断抽为
+`check_directory_search_permission_for_metadata()`，供路径逐级检查和 fd 单目录检查复用。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/fs/path.rs` | 实现 `sys_fchdir`，补目录类型、搜索权限和 cwd 更新；抽取单 inode 权限判断。 |
+| `os/src/syscall/mod.rs` | 分发 `Syscall::Fchdir` 的第一个 ABI 参数。 |
+| `user/src/{syscall/mod.rs,lib.rs}` | 增加 50 号 raw syscall 和 `fchdir()` 封装。 |
+| `user/src/bin/ltp/blacklist.rs` | 移除已经通过的 `fchdir01` 至 `fchdir03`。 |
+
+### 验证与边界
+
+`make TARGET_ARCH=riscv64` 的 RISC-V user/kernel 阶段通过；顶层默认目标随后进入 LoongArch64
+阶段时，被既有 `user/target/.../release` 的 `nobody:nogroup` 所有权阻断。为避免改动该目录，使用
+`CARGO_TARGET_DIR=/tmp/...` 分别完成 LoongArch64 kernel 及双架构 user target 的隔离 release 构建。
+
+维护者提供的 RISC-V `log.ans` 显示 musl/glibc 的 `fchdir01`、`fchdir02`、`fchdir03` 均为
+`passed 1 failed 0 broken 0`，分别覆盖成功切换 cwd、坏 fd 的 `EBADF` 和无搜索权限的 `EACCES`，
+最终输出 `shutdown!`。runner 中的 `FAIL LTP CASE ... : 0` 是既有固定打印，退出码为 0，不是
+失败。现有三项 LTP 未单独覆盖非目录 fd 的 `ENOTDIR` 和目录 `O_PATH` fd；实现按 Linux errno
+语义处理这两类路径，但本轮没有额外自定义测例。

@@ -41,6 +41,13 @@ fn run_testsuit(root: &str, script: &str) -> i32 {
     status
 }
 
+/// Run final-round scripts with Bash because CAgent uses Bash arrays.
+fn run_final_testsuit(root: &str, script: &str) {
+    let args = ["/bin/bash\0", script];
+    fork_and_run(root, &args);
+    cleanup_testsuit_children();
+}
+
 fn cleanup_testsuit_children() {
     const SIGKILL: usize = 9;
     let _ = kill_processes(-1, SIGKILL);
@@ -57,8 +64,8 @@ pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
     let pid = fork();
     if pid == 0 {
         chdir(dir);
-        let _ret = execve(&args);
-        println!("execve fail!");
+        let ret = execve(&args);
+        println!("execve fail: {}", ret);
         exit(0);
     } else {
         let mut exit_code: i32 = 0;
@@ -166,8 +173,8 @@ fn test_final_2026() -> i32 {
         shutdown();
         return 1;
     }
-    run_testsuit("glibc\0", "cagent_testcode.sh\0");
-    run_testsuit("glibc\0", "buildstorm_testcode.sh\0");
+    run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
+    run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
     shutdown();
     0
 }

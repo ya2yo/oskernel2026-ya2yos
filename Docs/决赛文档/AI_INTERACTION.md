@@ -1022,3 +1022,10 @@
 - **场景**：维护者提供 `cagent_testcode.sh` 的语法错误日志，要求改用 `/bin/bash` 并继续处理新的运行失败。
 - **描述**：AI 对照只读 CAgent 脚本确认 Bash 数组与 BusyBox `sh` 不兼容；改用 Bash 后，依据 `execve fail: -20`、镜像 `/bin -> /usr/bin` 布局和 VFS 查找实现，定位中间符号链接与 `FsIndex` 未跟随缓存导致的 `ENOTDIR`。人工审核后采纳决赛专用 Bash 运行器及通用父目录重解析修复。RISC-V `log.ans` 已输出 CAgent `GROUP END` 和 `shutdown!`，10 项中 7 项 pass、3 项 reject；后三项未被表述为通过。详见 `Docs/决赛文档/ai.log` 2026-07-21 条目和 [problem/cagent.md](./problem/cagent.md)。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### fchdir(50) syscall 接入与 LTP 回归（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求实现 `sys_fchdir`，并提供 RISC-V `log.ans` 要求核验结果和补齐文档。
+- **描述**：确认 50 号 ABI 已登记但未分发，handler 也未完成；实现从 fd 表直接取得目录 inode，保持目录 `O_PATH` fd 可用，并分别返回 `EBADF`、`ENOTDIR`、`EACCES`。路径型 `chdir` 与 fd 型 `fchdir` 共用单 inode 权限检查，但 fd 路径不重新解析 pathname。日志中 musl/glibc `fchdir01` 至 `fchdir03` 均为 `passed 1 failed 0 broken 0` 并正常 `shutdown!`，因此解除三项 LTP blacklist。详见 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-21 工作树）

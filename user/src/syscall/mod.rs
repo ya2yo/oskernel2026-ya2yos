@@ -20,6 +20,7 @@ const SYSCALL_STATFS: usize = 43;
 const SYSCALL_FTRUNCATE: usize = 46;
 const SYSCALL_FACCESSAT: usize = 48;
 const SYSCALL_CHDIR: usize = 49;
+const SYSCALL_FCHDIR: usize = 50;
 const SYSCALL_OPENAT: usize = 56;
 const SYSCALL_CLOSE: usize = 57;
 const SYSCALL_PIPE2: usize = 59;
@@ -323,6 +324,10 @@ pub fn sys_dup3(old: usize, new: usize) -> isize {
 
 pub fn sys_chdir(path: &str) -> isize {
     syscall(SYSCALL_CHDIR, [path.as_ptr() as isize, 0, 0, 0, 0, 0])
+}
+
+pub fn sys_fchdir(fd: i32) -> isize {
+    syscall(SYSCALL_FCHDIR, [fd as isize, 0, 0, 0, 0, 0])
 }
 
 pub fn sys_mkdirat(dirfd: isize, path: &str, mode: u32) -> isize {
