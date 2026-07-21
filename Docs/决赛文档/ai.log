@@ -5550,3 +5550,35 @@ release 构建，均通过。未启动 QEMU 或运行 LTP，因为该桩没有�
 
 `rustfmt --check` 对本次文件通过；检查同时发现工作区既有
 `os/src/syscall/sys/prctl.rs` 格式差异，未修改该非本任务文件。
+
+---
+
+## 2026-07-21：RISC-V 8GiB CMA 与八核启动配置修复
+
+### 用户需求
+
+维护者要求在与评测机对齐的配置下分析根目录 `log.ans` 并修复启动失败，随后要求将修改过的
+allocator dependency 从 `os/vendor/` 移到根目录 `crates/`。
+
+### 分析与采纳结论
+
+日志中的首个有效错误是 `init_cma_late()` 调用 buddy allocator 时的 order 32 越界。8GiB
+RAM 的后 7GiB 区间会产生 4GiB block，但 upstream 0.6.0 只有 32 个 free list。只把区间
+人为切小会留下释放合并时再次超过最高阶的风险，因此采纳增加 allocator 最大阶和最高阶合并
+边界的修复。
+
+修复后 8 核 QEMU 停在 `mm:cma inited`。对照单核启动确认 CMA 已通过；审计汇编发现
+`HART_NUM = 8` 与 `BOOT_HARTS = 2` 不一致。非 0/1 bootstrap hart 的启动栈会越界覆盖 `.bss`，
+故同步为 8。
+
+### 修改与验证
+
+- 新增 `crates/buddy_system_allocator/` 本地 crate，`os/Cargo.toml` 改用 path dependency，
+  删除原 `os/vendor/buddy_system_allocator/` 副本。
+- free-list 扩至 34 阶，frame allocator 使用 `core::array::from_fn`，最高阶合并不再越界。
+- `entry.asm` 的 `BOOT_HARTS` 从 2 改为 8。
+
+`make riscv64-build`、`make loongarch64-build` 均通过。默认 `8G / 8` QEMU 输出写入根目录
+`log.ans`，包含 `mm:cma late range inited`、`boot secondary harts...complete.`、全部 7 个 AP
+启动消息和 `BUILDSTORM_TOOLCHAIN ok`，无 panic/TFAIL/TBROK。运行在 60 秒外部 timeout 截止，
+未验证完整 BuildStorm 或全量测试；详见 `problem/riscv-8g-8hart-bootstrap.md`。

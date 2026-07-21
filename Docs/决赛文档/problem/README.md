@@ -100,6 +100,7 @@
 - [BuildStorm 根文件系统 initfiles、/dev/null 与 /bin 符号链接兼容](./buildstorm-initfiles-devfs-bin-symlink.md)
 - [sigaltstack(2)、SA_ONSTACK 信号帧与 rt_sigreturn 状态恢复](./sigaltstack-signal-frame.md)
 - [RISC-V 双 hart BuildStorm 启动栈越界与 .data 破坏](./riscv-buildstorm-bootstrap-stack-overflow.md)
+- [RISC-V 8GiB CMA 阶数越界与八核启动栈破坏](./riscv-8g-8hart-bootstrap.md)
 - [BuildStorm 多线程 execve de-thread 与 SIGKILL 退出收敛](./buildstorm-multithreaded-execve-dethread.md)
 - [BuildStorm final-2026 动态库路径错误重定向](./buildstorm-final-2026-dynamic-library-path.md)
 - [ext4 getdents64 d_type ABI 映射错误](./ext4-getdents64-d-type.md)

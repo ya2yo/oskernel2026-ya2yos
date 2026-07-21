@@ -26,8 +26,8 @@ use spin::Mutex;
 /// assert_eq!(num, Some(0));
 /// ```
 pub struct FrameAllocator {
-    // buddy system with max order of 32
-    free_list: [BTreeSet<usize>; 32],
+    // Keep in sync with the byte allocator's 8 GiB-capable order range.
+    free_list: [BTreeSet<usize>; super::MAX_ORDER],
 
     // statistics
     allocated: usize,
@@ -38,7 +38,7 @@ impl FrameAllocator {
     /// Create an empty frame allocator
     pub fn new() -> Self {
         FrameAllocator {
-            free_list: Default::default(),
+            free_list: core::array::from_fn(|_| BTreeSet::new()),
             allocated: 0,
             total: 0,
         }
@@ -117,7 +117,7 @@ impl FrameAllocator {
         // Merge free buddy lists
         let mut current_ptr = frame;
         let mut current_class = class;
-        while current_class < self.free_list.len() {
+        while current_class + 1 < self.free_list.len() {
             let buddy = current_ptr ^ (1 << current_class);
             if self.free_list[current_class].remove(&buddy) == true {
                 // Free buddy found

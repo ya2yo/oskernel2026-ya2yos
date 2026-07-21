@@ -4,7 +4,7 @@
     # hart 1 wins the bootstrap race and overwrite adjacent .data.
     .equ BOOT_STACK_SHIFT, 17
     .equ BOOT_STACK_SIZE, (1 << BOOT_STACK_SHIFT)
-    .equ BOOT_HARTS, 2
+    .equ BOOT_HARTS, 8
 
     .section .text.entry
     .globl _start

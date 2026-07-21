@@ -20,17 +20,7 @@ KERNEL_BUILD_ARGS := --$(MODE) --target $(TARGET)
 # 不知道什么原因bus参数报错：qemu-system-loongarch64: -device virtio-blk-pci,drive=x0,bus=virtio-mmio-bus.0: Bus 'virtio-mmio-bus.0' not found
 # 暂时不带bus参数
 
-# QEMU_CMD := qemu-system-loongarch64 \
-#     -kernel $(KERNEL_BIN) \
-#     -m $(MEMORY_SIZE) \
-#     -nographic \
-#     -smp $(SMP) \
-#     -drive file=$(DISK_IMG),if=none,format=raw,id=x0 \
-#     -device virtio-blk-pci,drive=x0,bus=virtio-mmio-bus.0 \
-#     -no-reboot \
-#     -device virtio-net-pci,netdev=net0 \
-#     -netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
-#     -rtc base=utc \
+# QEMU_CMD := qemu-system-loongarch64 -kernel kernel-la -m 8G -nographic -smp 8 -drive file=sdcard-la.img,if=none,format=raw,id=x0 -device virtio-blk-pci,drive=x0 -no-reboot -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -rtc base=utc 
 
 QEMU_CMD := qemu-system-loongarch64 \
     -kernel $(KERNEL_BIN) \

@@ -27,6 +27,10 @@ mod test;
 
 pub use frame::*;
 
+// The RISC-V QEMU configuration manages 8 GiB of RAM.  Keep classes through
+// order 33 so a fully coalesced 8 GiB block is representable.
+const MAX_ORDER: usize = 34;
+
 /// A heap that uses buddy system
 ///
 /// # Usage
@@ -47,8 +51,8 @@ pub use frame::*;
 /// }
 /// ```
 pub struct Heap {
-    // buddy system with max order of 32
-    free_list: [linked_list::LinkedList; 32],
+    // Buddy system free lists for orders 0 through MAX_ORDER - 1.
+    free_list: [linked_list::LinkedList; MAX_ORDER],
 
     // statistics
     user: usize,
@@ -60,7 +64,7 @@ impl Heap {
     /// Create an empty heap
     pub const fn new() -> Self {
         Heap {
-            free_list: [linked_list::LinkedList::new(); 32],
+            free_list: [linked_list::LinkedList::new(); MAX_ORDER],
             user: 0,
             allocated: 0,
             total: 0,
@@ -155,7 +159,7 @@ impl Heap {
             // Merge free buddy lists
             let mut current_ptr = ptr.as_ptr() as usize;
             let mut current_class = class;
-            while current_class < self.free_list.len() {
+            while current_class + 1 < self.free_list.len() {
                 let buddy = current_ptr ^ (1 << current_class);
                 let mut flag = false;
                 for block in self.free_list[current_class].iter_mut() {
