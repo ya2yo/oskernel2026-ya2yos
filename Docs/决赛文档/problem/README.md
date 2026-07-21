@@ -100,3 +100,6 @@
 - [sigaltstack(2)、SA_ONSTACK 信号帧与 rt_sigreturn 状态恢复](./sigaltstack-signal-frame.md)
 - [RISC-V 双 hart BuildStorm 启动栈越界与 .data 破坏](./riscv-buildstorm-bootstrap-stack-overflow.md)
 - [BuildStorm 多线程 execve de-thread 与 SIGKILL 退出收敛](./buildstorm-multithreaded-execve-dethread.md)
+- [BuildStorm final-2026 动态库路径错误重定向](./buildstorm-final-2026-dynamic-library-path.md)
+- [ext4 getdents64 d_type ABI 映射错误](./ext4-getdents64-d-type.md)
+- [BuildStorm Rust 子进程管道 FIONBIO 兼容](./buildstorm-fionbio-nonblocking.md)

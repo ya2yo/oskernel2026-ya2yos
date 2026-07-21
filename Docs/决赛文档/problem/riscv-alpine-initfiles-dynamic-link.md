@@ -54,7 +54,7 @@ Exception(FetchInstructionPageFault) in application, bad addr = 0xffffffffffffff
 - `Stdin::read()` 对控制台输入执行基础回显：普通字符直接显示，回车统一显示换行，退格/DEL 显示擦除序列，使启动后的 shell 命令输入可见。
 - stdio 文件补充最小 termios ioctl：支持 `TCGETS`、`TCSETS`、`TCSETSW`、`TCSETSF` 和 `TIOCGWINSZ`。回显改为受 `c_lflag & ECHO` 控制，`ICANON` 关闭时按原始字符返回，避免 `vi` 进入 `:` 模式后内核和 `vi` 各显示一次输入字符。
 - 新增 `open_direct()`，允许内核按精确路径打开文件而不经过动态库兼容映射。
-- `elf_loader` 打开动态解释器时先尝试兼容映射路径；如果映射路径不存在且不同于 ELF 原始 `.interp`，则用 `open_direct()` 回退打开原始路径。
+- `elf_loader` 打开动态解释器时先以 ELF 原始 `.interp` 路径执行 `open_direct()`；仅原路径不存在时才回退到竞赛镜像兼容映射。
 - `load_dl_interp_if_needed()` 改为返回 `Result<Option<usize>, ()>`，区分“静态 ELF 无解释器”和“动态 ELF 解释器加载失败”，避免加载失败后继续以错误入口返回用户态。
 
 涉及文件：

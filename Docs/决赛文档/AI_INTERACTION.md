@@ -934,3 +934,10 @@
 - **场景**：分析 BuildStorm 日志中 Rust toolchain DSO 的动态库路径 warning，校正绝对路径的 `..` 规范化层级并完成双架构构建。
 - **描述**：确认 `/root/.rustup/.../bin/../lib/*.so` 是绝对但未规范化的路径；根因不是 `map_dynamic_link_file()` 缺少库条目，而是通用 `get_abs_path()` 对绝对输入直接复制、未像相对路径一样折叠 `.`/`..`。修复在通用路径函数复用 `path2abs()`，动态库兼容层不再承担路径规范化。RISC-V 与 LoongArch64 release 构建通过；未运行 QEMU 行为回归，未新增 problem 文档。详见 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-20 工作树）
+
+#### BuildStorm final-2026 动态链接、目录项与 FIONBIO 修复（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求根据 final-2026 的根目录 `log.ans` 修复 BuildStorm 启动、Cargo 与目录扫描失败，并持续将 QEMU 输出写回该日志。
+- **描述**：确认 final Debian 原生 multiarch libc 与旧 `/glibc/lib` 被错误混用，Rustup RPATH 的正常 `ENOENT` 也被 basename fallback 伪造为旧 libc，触发 rustc TLS SIGSEGV；同时修复 lwext4 `EXT4_DE_* -> DT_*` ABI 转换和 Rust `Command::output()` 所需的 common-VFS `FIONBIO`。修复后 `GLIBC_2.38`、目录误识别、rustc SIGSEGV、`process.rs` ENOTTY panic 均消失，RISC-V 日志出现 `BUILDSTORM_TOOLCHAIN ok`。双架构 release 构建通过；由于当前 QEMU 仅 `2G / 2 CPU`，300 秒窗口未完成后续 guest 编译，不宣称完整 BuildStorm 通过。详见三篇新增 problem/ 复盘与 `ai.log`。
+- **关联 commit**：尚未提交（2026-07-21 工作树）

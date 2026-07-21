@@ -5441,3 +5441,45 @@ QEMU 启动在沙箱内因 `/var/tmp` 只读而未进入内核，未产生任何
 条目和 `fd_ops.rs` 改动。`rustfmt --edition 2021 --check`、`git diff --check` 与根目录
 `make` 均通过，RISC-V、LoongArch64 release 构建成功，只有既有 Cargo config/vendored
 `smoltcp` warnings；未运行 QEMU 行为回归。按维护者此前要求，本次未新增 `problem/` 文档。
+
+## 2026-07-21：BuildStorm final-2026 动态库、目录项与 FIONBIO 兼容修复
+
+### 用户需求
+
+维护者要求根据根目录 `log.ans` 修复已切换到 `final-2026` 的 BuildStorm 测例，并要求后续
+QEMU 输出持续写入根目录 `log.ans`。
+
+### 分析与采纳结论
+
+初始失败并非 LTP `TFAIL/TBROK`，而是 BuildStorm 启动和 Cargo 兼容问题。AI 对照 final
+Debian 镜像、外部只读测例、当前内核日志以及 Linux 7.0 源码后，采纳以下独立根因：
+
+1. `/lib/riscv64-linux-gnu` 的 final libc（最高 `GLIBC_2.41`）和 Rustup RPATH 中本应
+   返回 `ENOENT` 的库请求，被 basename fallback 偷换为最高仅 `GLIBC_2.35` 的
+   `/glibc/lib`，导致 `GLIBC_2.38` 错误及旧 loader/libc TLS 混用下的 rustc SIGSEGV。
+2. lwext4 将 ext4 `EXT4_DE_*` 数值直接写入 Linux `getdents64.d_type`；真实目录被
+   识别成 `DT_CHR`，使 GNU rm 不递归，Cargo 也无法识别目录式 bench。
+3. Rust 标准库用 `FIONBIO(0x5421)` 设置子进程输出 pipe 的非阻塞状态；内核缺少 common
+   VFS 分支，返回 `ENOTTY` 并使 `process.rs:2454` panic。
+
+未把 RISC-V `riscv_hwprobe(258)`、`rseq(293)` 的 `ENOSYS` 探测视为根因：动态库与
+FIONBIO 修复后 rustc/cargo 均可正常启动。
+
+### 修改与验证
+
+修改：
+
+- `os/src/fs/map_dynamic_link.rs`、`os/src/mm/memory_set/elf_loader.rs`
+- `crates/lwext4_rust/src/file.rs`
+- `os/src/syscall/fs/ctl/ioctl.rs`
+- 本条目对应的三篇 problem 复盘、索引、开发日志、AI 记录，以及 Alpine 动态解释器说明。
+
+`rustfmt --edition 2021 --check`、`git diff --check` 与根目录 `make` 已执行；RISC-V 和
+LoongArch64 release 构建均通过，只有既有 `.cargo/config` 弃用和 vendored `smoltcp`
+warnings。多轮 RISC-V release QEMU 输出均写入 `log.ans`：`GLIBC_2.38 not found`、
+`rm: cannot remove ... Is a directory`、目录式 bench 报错、rustc SIGSEGV 与
+`process.rs` 的 `ENOTTY` panic 均已消失，日志已出现 `BUILDSTORM_TOOLCHAIN ok`。
+
+正式评分要求 `8G / 8 CPU`，当前宿主只能使用 `2G / 2 CPU`；guest 内 minibuild 编译在
+300 秒窗口仍持续满载且由 timeout 终止，故未声称 `BUILDSTORM_MINIBUILD`、完整 ArceOS
+编译或性能分项通过。
