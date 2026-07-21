@@ -1153,8 +1153,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "posix_fadvise04\0",
     "posix_fadvise04_64\0",
     "ppoll01\0",
-    "prctl03\0",
-    "prctl04\0",
     "prctl06\0",
     "prctl06_execve\0",
     "prctl07\0",

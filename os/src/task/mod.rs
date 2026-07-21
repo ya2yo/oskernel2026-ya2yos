@@ -67,6 +67,7 @@ mod process;
 mod processor;
 mod rseq;
 mod scheduler;
+mod seccomp;
 mod switch;
 mod sysinfo;
 mod task;
@@ -99,6 +100,7 @@ pub use processor::{
 };
 pub(crate) use rseq::RseqState;
 pub use scheduler::ready_queue;
+pub use seccomp::{SeccompAction, SeccompState, SockFilter, SECCOMP_FILTER_MAX_INSNS};
 use spin::Lazy;
 use switch::__abandon;
 pub use sysinfo::Sysinfo;

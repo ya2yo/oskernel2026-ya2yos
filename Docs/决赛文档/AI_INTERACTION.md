@@ -1036,3 +1036,10 @@
 - **场景**：维护者要求实现 `prctl(PR_SET_CHILD_SUBREAPER)`，使父进程退出后的孤儿后代由最近的 child subreaper 收养，并要求仅保留必要修改、停止 LoongArch64 验证后补齐文档。
 - **描述**：AI 对照 Linux 7.0 的 `prctl` 与退出重父化路径，确认这不是新增 syscall 号而是既有 167 号调用的 option 语义。实现将 subreaper 标记置于线程组共享的 `ProcessMeta`，通过父链选择最近存活收养者，并同步更新 `children`、PPID、zombie 通知和默认 wait 语义。RISC-V musl/glibc `prctl03` 均为 `passed 6 failed 0 broken 0` 并正常 `shutdown!`；未进行 LoongArch64 运行时验收。详见 `Docs/决赛文档/ai.log` 对应条目和 [problem/prctl-child-subreaper.md](./problem/prctl-child-subreaper.md)。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### LTP prctl04 seccomp strict/filter 修复（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析 `log.ans` 的 `prctl04` 失败并完善既有 `prctl(167)` 语义。
+- **描述**：AI 对照 LTP `prctl04.c`、当前 syscall 分发、task clone 和 signal return 路径，确认问题是 seccomp 只在 handler 中伪返回成功，未在线程状态保存或统一 syscall 入口强制执行。实现线程级 strict/filter 状态，安全复制并验证测试所用 classic BPF 子集，在 fork/clone 中继承，并在拒绝时投递 strict 的 `SIGKILL` 或 filter 的 `SIGSYS`。同时修正 variadic `prctl()` 未使用寄存器不得强制为零的 ABI 假设。RISC-V、LoongArch64 的 musl/glibc `prctl04` 均为 `passed 9 failed 0 broken 0` 并正常关机；未实现的 BPF 指令、TSYNC、filter 叠加和其他 seccomp action 已明确记录。详见 [problem/prctl-seccomp-prctl04.md](./problem/prctl-seccomp-prctl04.md) 与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-21 工作树）

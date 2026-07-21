@@ -5952,3 +5952,48 @@ GET、fork 不继承、PPID 重父化、`wait()` 回收和 orphan 的 `SIGCHLD`�
 
 按维护者要求，未对 LoongArch64 进行本项运行时验收。当前实现也不涉及 PID namespace、ptrace
 重父化或 `PR_SET_PDEATHSIG` 的完整 Linux 联动语义；这些路径未由本轮 LTP 用例覆盖。
+
+---
+
+## 2026-07-21：LTP prctl04 seccomp strict/filter 修复
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans` 并完善 `prctl`。
+
+### 分析与采纳结论
+
+日志中 musl/glibc 的 `prctl04` 均有 strict 的 `PR_GET_SECCOMP`、`close(2)` 未被禁止，以及
+filter 安装固定 `EACCES` 等 7 个失败。读取测试套件提交
+`5c63b03d:ltp-full-20240524/testcases/kernel/syscalls/prctl/prctl04.c` 后确认，测试要求 strict
+非法调用产生 `SIGKILL`，十条 classic BPF filter 的拒绝路径产生 `SIGSYS`，且 filter 必须由
+fork 子进程继承。
+
+原实现的问题不在单个 option：strict 只返回成功而没有保存状态，filter 固定返回 `EACCES`，统一
+syscall 分发没有策略钩子。采纳线程级 `SeccompState`，在 task clone 时复制状态；`PR_SET_SECCOMP`
+安全复制 `sock_fprog`/`sock_filter`，支持 LTP 实际使用的 `LD W ABS nr`、`JEQ K`、`RET K` 并拒绝
+其他未实现指令。分发前严格模式只允许 read/write/raw exit/rt_sigreturn，filter 的非 ALLOW
+动作投递相应终止信号。
+
+回归发现 C variadic `prctl()` 未定义的寄存器参数不为零；移除对 strict/filter 未使用参数的
+零值校验后，与 Linux 的忽略语义一致。filter 安装仍检查 `CAP_SYS_ADMIN` 或 `no_new_privs`，所有
+用户指针在未持 task 锁时通过 `copy_from_user*()` 处理。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/task/seccomp.rs` | 新增 seccomp 状态和受限 classic BPF 验证/解释。 |
+| `os/src/task/{mod.rs,task/task.rs}` | 导出状态，初始化并在 fork/clone 中继承。 |
+| `os/src/syscall/{mod.rs,sys/prctl.rs}` | 安装/查询策略、权限检查和 syscall 前置强制执行。 |
+| `Docs/决赛文档/problem/prctl-seccomp-prctl04.md` | 记录根因、实现范围、验证和边界。 |
+
+### 验证与边界
+
+`make build-arch TARGET_ARCH=riscv64`、`make log`、RISC-V QEMU 回归，以及
+`make build-arch TARGET_ARCH=loongarch64`、`make log TARGET_ARCH=loongarch64`、LoongArch64 QEMU
+回归均通过。两架构 musl/glibc `prctl04` 均为 `passed 9 failed 0 broken 0` 且正常 `shutdown!`。
+
+实现刻意限定为 LTP 覆盖的 classic BPF 子集，未声称支持 filter 叠加、TSYNC、其他 BPF 指令、
+其他 seccomp action 或 `seccomp(2)` syscall；详见
+`Docs/决赛文档/problem/prctl-seccomp-prctl04.md`。

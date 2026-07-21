@@ -1,13 +1,44 @@
-use linux_raw_sys::prctl::{
-    PR_CAP_AMBIENT, PR_CAPBSET_DROP, PR_CAPBSET_READ, PR_GET_CHILD_SUBREAPER, PR_GET_DUMPABLE, PR_GET_NO_NEW_PRIVS, PR_GET_PDEATHSIG, PR_GET_SPECULATION_CTRL, PR_GET_THP_DISABLE, PR_SET_CHILD_SUBREAPER, PR_SET_DUMPABLE, PR_SET_NAME, PR_SET_NO_NEW_PRIVS, PR_SET_PDEATHSIG, PR_SET_SECCOMP, PR_SET_SECUREBITS, PR_SET_THP_DISABLE, PR_SET_TIMING
+use core::mem::size_of;
+
+use linux_raw_sys::{
+    general::CAP_SYS_ADMIN,
+    prctl::{
+        PR_CAPBSET_DROP, PR_CAPBSET_READ, PR_CAP_AMBIENT, PR_GET_CHILD_SUBREAPER, PR_GET_DUMPABLE,
+        PR_GET_NO_NEW_PRIVS, PR_GET_PDEATHSIG, PR_GET_SECCOMP, PR_GET_SPECULATION_CTRL,
+        PR_GET_THP_DISABLE, PR_SET_CHILD_SUBREAPER, PR_SET_DUMPABLE, PR_SET_NAME,
+        PR_SET_NO_NEW_PRIVS, PR_SET_PDEATHSIG, PR_SET_SECCOMP, PR_SET_SECUREBITS,
+        PR_SET_THP_DISABLE, PR_SET_TIMING,
+    },
 };
 use log::{debug, warn};
 
 use crate::{
-    mm::{copy_to_user, copy_to_user_val, if_bad_address},
-    task::current_task,
+    mm::{copy_from_user, copy_from_user_val, copy_to_user, copy_to_user_val, if_bad_address},
+    task::{current_task, SeccompState, SockFilter, SECCOMP_FILTER_MAX_INSNS},
     utils::{SysErrNo, SyscallRet},
 };
+
+const SECCOMP_MODE_STRICT: usize = 1;
+const SECCOMP_MODE_FILTER: usize = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SockFprog {
+    len: u16,
+    filter: *const SockFilter,
+}
+
+fn current_has_cap_sys_admin() -> bool {
+    let task = current_task().unwrap();
+    let inner = task.inner_lock();
+    let word = (CAP_SYS_ADMIN / 32) as usize;
+    let bit = 1u32 << (CAP_SYS_ADMIN % 32);
+    inner
+        .capabilities
+        .effective
+        .get(word)
+        .map_or(false, |capabilities| capabilities & bit != 0)
+}
 
 // prctl(2) — 进程控制
 /// 参考 https://man7.org/linux/man-pages/man2/prctl.2.html
@@ -47,9 +78,7 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
             debug!("[prctl] get pdeath_signal={}", sig);
             Ok(0)
         }
-        PR_GET_DUMPABLE => {
-            Ok(0)
-        }
+        PR_GET_DUMPABLE => Ok(0),
         PR_SET_DUMPABLE => {
             // 仅接受 SUID_DUMP_DISABLE(0) / SUID_DUMP_USER(1)
             if arg2 > 1 {
@@ -64,20 +93,60 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
             }
             Ok(0)
         }
-        PR_SET_SECCOMP => {
-            // 仅 SECCOMP_MODE_FILTER(2) 需要 EACCES
-            if arg2 == 2 {
-                // 没有 CAP_SYS_ADMIN → EACCES
-                if arg3 > 0 && if_bad_address(arg3) {
+        PR_GET_SECCOMP => Ok(task.inner_lock().seccomp_state.mode()),
+        PR_SET_SECCOMP => match arg2 {
+            SECCOMP_MODE_STRICT => {
+                // prctl(2) is variadic. Linux ignores the unused argument
+                // registers here, and libc does not reliably clear them.
+                let mut inner = task.inner_lock();
+                if !inner.seccomp_state.is_disabled() {
+                    return Err(SysErrNo::EINVAL);
+                }
+                inner.seccomp_state = SeccompState::Strict;
+                Ok(0)
+            }
+            SECCOMP_MODE_FILTER => {
+                if !task.inner_lock().seccomp_state.is_disabled() {
+                    return Err(SysErrNo::EINVAL);
+                }
+                let no_new_privs = task.inner_lock().no_new_privs;
+                if !no_new_privs && !current_has_cap_sys_admin() {
+                    return Err(SysErrNo::EACCES);
+                }
+                if arg3 == 0 || if_bad_address(arg3) {
                     return Err(SysErrNo::EFAULT);
                 }
-                return Err(SysErrNo::EACCES);
+
+                let memory_set = task.process.memory_set_arc();
+                let fprog = copy_from_user_val(&memory_set, arg3 as *const SockFprog)?;
+                let filter_len = fprog.len as usize;
+                if filter_len == 0 || filter_len > SECCOMP_FILTER_MAX_INSNS {
+                    return Err(SysErrNo::EINVAL);
+                }
+                if fprog.filter.is_null() || if_bad_address(fprog.filter as usize) {
+                    return Err(SysErrNo::EFAULT);
+                }
+
+                let mut filter = alloc::vec![SockFilter::default(); filter_len];
+                let filter_bytes = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        filter.as_mut_ptr() as *mut u8,
+                        filter_len * size_of::<SockFilter>(),
+                    )
+                };
+                copy_from_user(&memory_set, fprog.filter as usize, filter_bytes)?;
+                let seccomp_state = SeccompState::new_filter(filter).ok_or(SysErrNo::EINVAL)?;
+
+                let mut inner = task.inner_lock();
+                if !inner.seccomp_state.is_disabled() {
+                    return Err(SysErrNo::EINVAL);
+                }
+                inner.seccomp_state = seccomp_state;
+                Ok(0)
             }
-            Ok(0)
-        }
-        PR_CAPBSET_READ => {
-            Ok(0)
-        }
+            _ => Err(SysErrNo::EINVAL),
+        },
+        PR_CAPBSET_READ => Ok(0),
         PR_CAPBSET_DROP => {
             // 没有 CAP_SETPCAP → EPERM
             Err(SysErrNo::EPERM)
@@ -108,6 +177,7 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
             if arg2 != 1 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
                 return Err(SysErrNo::EINVAL);
             }
+            task.inner_lock().no_new_privs = true;
             Ok(0)
         }
         PR_GET_NO_NEW_PRIVS => {
@@ -115,7 +185,7 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
             if arg2 != 0 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
                 return Err(SysErrNo::EINVAL);
             }
-            Ok(0)
+            Ok(task.inner_lock().no_new_privs as usize)
         }
         PR_SET_THP_DISABLE => {
             // arg3/4/5 必须为 0

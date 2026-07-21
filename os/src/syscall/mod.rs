@@ -292,12 +292,12 @@ mod sys;
 mod task;
 mod time;
 
-use crate::task::{current_task, sys_futex};
+use crate::task::{current_task, sys_futex, SeccompAction};
 use crate::utils::SysErrNo;
 use crate::{
     arch::cpu::shutdown,
     fs::{Kstat, Statfs},
-    signal::{SigAction, SigInfo, SigSet, SignalStack},
+    signal::{send_signal_to_thread, SigAction, SigInfo, SigSet, SignalStack},
     timer::{Itimerval, Rusage, TimeVal, Timespec, Timex, Tms},
     utils::SyscallRet,
 };
@@ -320,6 +320,21 @@ use time::*;
 pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
     let id = syscall_id;
     let syscall_id: Syscall = Syscall::from(syscall_id);
+    let task = current_task().unwrap();
+    let seccomp_action = task.seccomp_action(id);
+    let tid = task.tid();
+    drop(task);
+    match seccomp_action {
+        SeccompAction::Allow => {}
+        SeccompAction::Kill => {
+            send_signal_to_thread(tid, SigSet::SIGKILL);
+            return Err(SysErrNo::EPERM);
+        }
+        SeccompAction::Trap => {
+            send_signal_to_thread(tid, SigSet::SIGSYS);
+            return Err(SysErrNo::EPERM);
+        }
+    }
     log::debug!(
         "[syscall begin] {:?} sepc = {:#x}",
         syscall_id,

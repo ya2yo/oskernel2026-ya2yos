@@ -24,7 +24,10 @@ use crate::{
     },
     signal::{SigInfo, SigSet, SigTable, SignalStack, SIG_MAX_NUM},
     syscall::MmapFlags,
-    task::{futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid, CloneFlags},
+    task::{
+        futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid, CloneFlags, SeccompAction,
+        SeccompState,
+    },
     timer::{TimeData, Timer},
     trap::trap_types::{Exception, Trap},
     utils::{get_abs_path, is_abs_path, SysErrNo},
@@ -174,6 +177,10 @@ pub struct TaskControlBlockInner {
     pub capabilities: CapabilitySets,
     /// PR_SET_PDEATHSIG 设置的父进程死亡信号 (0 表示未设置)
     pub pdeath_signal: u8,
+    /// PR_SET_NO_NEW_PRIVS is monotonic and inherited by children.
+    pub no_new_privs: bool,
+    /// Seccomp policy is per-thread and is inherited by clone/fork.
+    pub seccomp_state: SeccompState,
 
     // 用于futex
     pub futex_pa: usize,      // 当前正在等待的pa
@@ -217,6 +224,12 @@ fn task_comm_from_argv0(argv0: &str) -> String {
 impl TaskControlBlock {
     pub fn inner_lock(&self) -> MutexGuard<'_, TaskControlBlockInner> {
         self.inner.lock()
+    }
+
+    pub fn seccomp_action(&self, syscall_nr: usize) -> SeccompAction {
+        self.inner_lock()
+            .seccomp_state
+            .action_for_syscall(syscall_nr)
     }
     pub fn tid(&self) -> usize {
         self.tid.0
@@ -286,6 +299,8 @@ impl TaskControlBlock {
                 saved_gid: 0,
                 capabilities: CapabilitySets::full(),
                 pdeath_signal: 0,
+                no_new_privs: false,
+                seccomp_state: SeccompState::Disabled,
                 futex_pa: 0,
                 futex_key: 0,
                 futex_timedout: false,
@@ -572,6 +587,8 @@ impl TaskControlBlock {
             parent_capabilities,
             parent_nice,
             parent_rseq,
+            parent_no_new_privs,
+            parent_seccomp_state,
             parent_comm,
             parent_pgid,
             parent_sid,
@@ -672,6 +689,8 @@ impl TaskControlBlock {
             parent_sgid = parent_inner.saved_gid;
             parent_capabilities = parent_inner.capabilities;
             parent_nice = parent_inner.nice;
+            parent_no_new_privs = parent_inner.no_new_privs;
+            parent_seccomp_state = parent_inner.seccomp_state.clone();
             // Linux inherits rseq on fork but clears it for CLONE_VM, whose
             // child gets a distinct thread-local rseq ABI area.
             parent_rseq = if flags.contains(CloneFlags::CLONE_VM) {
@@ -747,6 +766,8 @@ impl TaskControlBlock {
                 saved_gid: parent_sgid,
                 capabilities: parent_capabilities,
                 pdeath_signal: 0,
+                no_new_privs: parent_no_new_privs,
+                seccomp_state: parent_seccomp_state,
                 futex_pa: 0,
                 futex_key: 0,
                 futex_timedout: false,
