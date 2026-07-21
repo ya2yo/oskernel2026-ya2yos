@@ -27,12 +27,44 @@ Rust 工具链中的 `librustc_driver-*.so` 约为 300 MiB。原 lwext4 读取�
 `MAP_PRIVATE` 若经 `mprotect(PROT_WRITE)` 变为可写，现有实现尚未保证先分裂为
 COW 私有页。这两项语义风险必须先修正并回归后才能合入。
 
+## 独立复现入口（2026-07-21）
+
+官方 `buildstorm_testcode.sh` 位于只读测例仓，最终镜像不会在构建时自动安装该脚本，
+因此不能只在外部仓拆分后期待 guest 使用新文件。为保持与正式测例一致的
+`busybox sh <script>` 执行方式，`create_init_files()` 现在仅在同时发现 `/glibc` 与
+`/root/.cargo` 的 BuildStorm 根文件系统时，通过 `write_executable_init_file()` 写入五个
+诊断脚本：
+
+- `buildstorm_toolchain_debug.sh`
+- `buildstorm_minibuild_prepare_debug.sh`
+- `buildstorm_minibuild_build_debug.sh`
+- `buildstorm_xtask_prebuild_debug.sh`
+- `buildstorm_xtask_build_debug.sh`
+
+它们分别覆盖工具链、MINIBUILD 的 `rm/cargo new` 与 `cargo build`、`tg-xtask`
+预构建和正式 `xtask` 编译。每项重新设置原脚本的挂载与 Rust 环境；MINIBUILD build
+仍保留 `cargo build >/dev/null 2>&1`，避免改变待诊断的 fd/pipe 拓扑。
+
+所有新脚本只输出 `BUILDSTORM_DEBUG_*`，不输出评分器会匹配的正式
+`BUILDSTORM_TOOLCHAIN`、`BUILDSTORM_MINIBUILD` 或 `BUILDSTORM_COMPILE` 标记。这样，
+局部调试不会把部分执行误报为竞赛得分。`initproc` 当前只顺序运行 MINIBUILD 的
+prepare 和 build 两项；prepare 失败时不会进入 build。
+
 ## 验证
 
 - `make riscv64-build`：通过。
-- `make loongarch64-build`：在本轮代码修改后尚未重新运行；此前同一组源码改动的 LoongArch64 release 构建通过。
 - `git diff --check`：通过。
 - `timeout 600s make run TARGET_ARCH=riscv64 > log.ans 2>&1`：未通过完整 BuildStorm；日志停在 `BUILDSTORM_TOOLCHAIN ok`，因此本问题仍待继续定位。
+- `make build-arch TARGET_ARCH=riscv64`：独立脚本和入口编译通过。
+- `make build-arch TARGET_ARCH=loongarch64`：同一启动期脚本路径编译通过；本轮未运行
+  LoongArch64 QEMU 行为回归。
+- `timeout 180s make run TARGET_ARCH=riscv64 > /tmp/buildstorm-minibuild-split-riscv.log 2>&1`：
+  串口依次输出 `BUILDSTORM_DEBUG_MINIBUILD_PREPARE begin`、`ok` 和
+  `BUILDSTORM_DEBUG_MINIBUILD_BUILD begin`，之后没有 `BUILDSTORM_DEBUG_MINIBUILD ok/fail`、
+  panic、TFAIL 或 TBROK。该宿主采集在正常 guest `shutdown!` 前中断，故它证明了卡点
+  已被隔离到原始 `cargo build`，但不把这一次短样本表述为完整的 180 秒死锁证明。
+- 命令行强制 `MEMORY_SIZE=2G SMP=2` 的尝试未进入用户态：当前内核的 CMA 布局按 8GiB
+  初始化，在 `init_cma_late()` 前后停止；该样本不用于判断 MINIBUILD 语义。
 
 ## 后续
 

@@ -5627,3 +5627,36 @@ RAM 的后 7GiB 区间会产生 4GiB block，但 upstream 0.6.0 只有 32 个 fr
 启动日志包含 `net::init...Initialize network subsystem...`，且不再包含
 `No usable VirtIO Net MMIO device` 或 `No network device found`；后续用户态网络服务收到 HTTP
 请求。完整测试运行由 120 秒 timeout 截止，未作为全量评测通过结论。
+
+---
+
+## 2026-07-21：BuildStorm MINIBUILD 独立脚本复现
+
+### 用户需求
+
+维护者要求拆分 `buildstorm_testcode.sh` 的测例；当前 RISC-V 内核已输出 Rust/Cargo 版本和
+`BUILDSTORM_TOOLCHAIN ok`，需要新建后续卡住测例的单独入口。
+
+### 分析与采纳结论
+
+只读官方脚本可分为工具链、MINIBUILD、`tg-xtask` 预构建和正式 `xtask` 编译；其中
+MINIBUILD 再按 `rm/cargo new` 与静默 `cargo build` 拆开。官方脚本源文件不随最终镜像的
+构建流程安装，直接改外部只读脚本不会进入 guest。初版用户态 `busybox sh -c` runner 没有
+实际执行命令，故改用内核现有 `write_executable_init_file()` 在每次启动时向 `/glibc` 写入
+独立脚本，再沿正式的 `busybox sh <script>` 调用链执行。
+
+五个脚本都重建原挂载和 Rust 环境，MINIBUILD build 保留 `>/dev/null 2>&1`，避免调试载体
+改变 Cargo 的 fd/pipe 拓扑。脚本一律使用 `BUILDSTORM_DEBUG_*` 标记，不能被官方 judge 的
+`BUILDSTORM_(TOOLCHAIN|MINIBUILD|COMPILE) ok` 正则误判为部分得分。当前 `initproc` 只运行
+MINIBUILD prepare/build；prepare 非零时直接关机，不进入 build。
+
+### 修改与验证
+
+修改 `os/src/fs/kernel_fs_ops/initfiles.rs`、`user/src/bin/initproc.rs`，并更新现有
+`problem/buildstorm-minibuild-post-toolchain-stall.md`、开发日志和 AI 协作记录。
+`make build-arch TARGET_ARCH=riscv64` 通过，只有既有 Cargo config 弃用和 vendored smoltcp
+warnings。`timeout 180s make run TARGET_ARCH=riscv64 > /tmp/buildstorm-minibuild-split-riscv.log 2>&1`
+输出 prepare begin/ok，随后输出 `BUILDSTORM_DEBUG_MINIBUILD_BUILD begin`，没有完成标记、panic、
+TFAIL 或 TBROK；串口采集在 `shutdown!` 前结束，因此只将其记录为成功隔离到 `cargo build`，
+不将其标记为完整超时或修复。临时 `2G / 2 CPU` 运行因当前 8GiB CMA 布局未进入用户态，未用于
+行为结论。LoongArch64 release 构建通过，本轮未运行其 QEMU 行为回归。

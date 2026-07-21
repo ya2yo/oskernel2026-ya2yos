@@ -974,3 +974,10 @@
 - **场景**：维护者要求按评测机 `8G / 8 CPU` 配置分析根目录 `log.ans`、修复启动 panic，并将修改过的 allocator 从 `os/vendor` 迁移至根目录 `crates`。
 - **描述**：确认 7GiB 晚期 CMA 区间产生 4GiB/order 32 block，而 upstream allocator 仅有 32 个 free-list，初始化立即越界。将该依赖迁移为显式 path crate，扩展到 34 阶并限制最高阶合并；进一步定位到 `HART_NUM=8` 与汇编 `BOOT_HARTS=2` 不一致，bootstrap hart 非 0/1 时会覆盖 `.bss`，同步为 8。RISC-V 与 LoongArch64 release 构建通过；默认 RISC-V QEMU 运行越过 CMA panic，启动 7 个 AP 并进入 `BUILDSTORM_TOOLCHAIN ok`。完整 BuildStorm 未在 60 秒窗口内完成。详见 [problem/riscv-8g-8hart-bootstrap.md](./problem/riscv-8g-8hart-bootstrap.md) 与 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### BuildStorm MINIBUILD 独立脚本复现（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：拆分 final-2026 BuildStorm 的工具链、MINIBUILD、预构建和正式编译阶段，建立后续 `cargo build` 卡点的单独 RISC-V 入口。
+- **描述**：复用启动期 `write_executable_init_file()` 向具备 Rust toolchain 的 `/glibc` 根文件系统注入五个独立诊断脚本，保留正式 `busybox sh <script>` 与 MINIBUILD 的静默 `cargo build` 语义。所有新输出使用 `BUILDSTORM_DEBUG_*`，不会被官方评分器当作正式得分。RISC-V 日志已确认 `MINIBUILD_PREPARE ok` 后进入 `MINIBUILD_BUILD begin`，但未出现完成标记；RISC-V、LoongArch64 release 构建通过，根因与完整 BuildStorm 仍待继续定位。详见 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md) 与 `ai.log`。
+- **关联 commit**：尚未提交（2026-07-21 工作树）

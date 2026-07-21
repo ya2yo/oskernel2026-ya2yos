@@ -147,6 +147,114 @@ CONFIG_BSD_PROCESS_ACCT=y
 # CONFIG_BSD_PROCESS_ACCT_V3 is not set
 ";
 
+// These scripts are diagnostic copies of the BuildStorm stages.  They use
+// DEBUG-only markers so a partial diagnostic run cannot satisfy the official
+// judge's log parser.
+const BUILDSTORM_TOOLCHAIN_DEBUG_SH: &str = r#"#!/bin/sh
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+export PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin
+export HOME=/root RUSTUP_HOME=/root/.rustup CARGO_HOME=/root/.cargo
+export RUSTUP_TOOLCHAIN=nightly-2026-05-28 CARGO_NET_OFFLINE=true
+
+if rustc --version && cargo --version; then
+    echo "BUILDSTORM_DEBUG_TOOLCHAIN ok"
+    exit 0
+fi
+echo "BUILDSTORM_DEBUG_TOOLCHAIN fail"
+exit 1
+"#;
+
+const BUILDSTORM_MINIBUILD_PREPARE_DEBUG_SH: &str = r#"#!/bin/sh
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+export PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin
+export HOME=/root RUSTUP_HOME=/root/.rustup CARGO_HOME=/root/.cargo
+export RUSTUP_TOOLCHAIN=nightly-2026-05-28 CARGO_NET_OFFLINE=true
+
+echo "BUILDSTORM_DEBUG_MINIBUILD_PREPARE begin"
+rm -rf /tmp/minibuild
+if cargo new --vcs none /tmp/minibuild >/dev/null 2>&1; then
+    echo "BUILDSTORM_DEBUG_MINIBUILD_PREPARE ok"
+    exit 0
+fi
+echo "BUILDSTORM_DEBUG_MINIBUILD_PREPARE fail"
+exit 1
+"#;
+
+const BUILDSTORM_MINIBUILD_BUILD_DEBUG_SH: &str = r#"#!/bin/sh
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+export PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin
+export HOME=/root RUSTUP_HOME=/root/.rustup CARGO_HOME=/root/.cargo
+export RUSTUP_TOOLCHAIN=nightly-2026-05-28 CARGO_NET_OFFLINE=true
+
+echo "BUILDSTORM_DEBUG_MINIBUILD_BUILD begin"
+if ( cd /tmp/minibuild && cargo build >/dev/null 2>&1 ) \
+   && [ "$(/tmp/minibuild/target/debug/minibuild)" = "Hello, world!" ]; then
+    echo "BUILDSTORM_DEBUG_MINIBUILD ok"
+    exit 0
+fi
+echo "BUILDSTORM_DEBUG_MINIBUILD fail"
+exit 1
+"#;
+
+const BUILDSTORM_XTASK_PREBUILD_DEBUG_SH: &str = r#"#!/bin/sh
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+export PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin
+export HOME=/root RUSTUP_HOME=/root/.rustup CARGO_HOME=/root/.cargo
+export RUSTUP_TOOLCHAIN=nightly-2026-05-28 CARGO_NET_OFFLINE=true
+
+case "$(uname -m 2>/dev/null)" in
+  loongarch64) AXTGT=loongarch64-unknown-linux-musl ;;
+  *)           AXTGT=riscv64gc-unknown-linux-musl ;;
+esac
+cd /work/tgoskits 2>/dev/null || exit 1
+rm -rf "target/$AXTGT"
+echo "----- pre-build tg-xtask (untimed) -----"
+cargo build -p tg-xtask 2>&1 || true
+echo "BUILDSTORM_DEBUG_XTASK_PREBUILD done"
+"#;
+
+const BUILDSTORM_XTASK_BUILD_DEBUG_SH: &str = r#"#!/bin/sh
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+export PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin
+export HOME=/root RUSTUP_HOME=/root/.rustup CARGO_HOME=/root/.cargo
+export RUSTUP_TOOLCHAIN=nightly-2026-05-28 CARGO_NET_OFFLINE=true
+
+case "$(uname -m 2>/dev/null)" in
+  loongarch64) AXARCH=loongarch64; AXTGT=loongarch64-unknown-linux-musl ;;
+  riscv64)     AXARCH=riscv64;     AXTGT=riscv64gc-unknown-linux-musl ;;
+  *)           AXARCH=riscv64;     AXTGT=riscv64gc-unknown-linux-musl ;;
+esac
+cd /work/tgoskits 2>/dev/null || exit 1
+echo "----- build arceos-helloworld (timed, arch=$AXARCH) -----"
+echo "BUILDSTORM_DEBUG_BEGIN mode=multi"
+T0=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
+{ timeout 14400 cargo xtask arceos build -p arceos-helloworld --arch "$AXARCH" 2>&1; echo $? > /work/.build.rc; } | tee /work/buildstorm.build.out
+RC=$(cat /work/.build.rc 2>/dev/null || echo 1); rm -f /work/.build.rc
+T1=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
+ELAPSED=$(awk "BEGIN{printf \"%.2f\", (\"$T1\"+0)-(\"$T0\"+0)}" 2>/dev/null); [ -z "$ELAPSED" ] && ELAPSED=0
+ART=$(find target -type f \( -name 'arceos-helloworld' -o -name 'helloworld' \) 2>/dev/null | head -1)
+BYTES=0
+[ -n "$ART" ] && BYTES=$(wc -c <"$ART")
+if [ "$RC" -eq 0 ] && [ -n "$ART" ] && [ "$BYTES" -ge 500000 ]; then
+    echo "BUILDSTORM_DEBUG_COMPILE mode=multi ok=true elapsed_s=$ELAPSED cores=$(nproc) bytes=$BYTES arch=$AXARCH"
+    exit 0
+fi
+echo "BUILDSTORM_DEBUG_COMPILE mode=multi ok=false rc=$RC elapsed_s=$ELAPSED cores=$(nproc) bytes=$BYTES arch=$AXARCH"
+echo "----- buildstorm.build.out tail -----"
+tail -25 /work/buildstorm.build.out 2>/dev/null
+exit "$RC"
+"#;
+
 fn write_init_file(path: &str, content: &str) -> SysResult {
     let file = open(
         path,
@@ -434,6 +542,48 @@ fn has_musl_busybox() -> bool {
     open("/musl/busybox", OpenFlags::O_RDONLY, 0).is_ok()
 }
 
+fn create_buildstorm_debug_scripts() -> SysResult {
+    // The final BuildStorm rootfs supplies both glibc and the Rust toolchain.
+    // Keep the pre-test glibc and other rootfs variants free of diagnostics
+    // for a suite they cannot run.
+    if open("/glibc", OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY, 0).is_err()
+        || open(
+            "/root/.cargo",
+            OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY,
+            0,
+        )
+        .is_err()
+    {
+        return Ok(());
+    }
+
+    for (path, content) in [
+        (
+            "/glibc/buildstorm_toolchain_debug.sh",
+            BUILDSTORM_TOOLCHAIN_DEBUG_SH,
+        ),
+        (
+            "/glibc/buildstorm_minibuild_prepare_debug.sh",
+            BUILDSTORM_MINIBUILD_PREPARE_DEBUG_SH,
+        ),
+        (
+            "/glibc/buildstorm_minibuild_build_debug.sh",
+            BUILDSTORM_MINIBUILD_BUILD_DEBUG_SH,
+        ),
+        (
+            "/glibc/buildstorm_xtask_prebuild_debug.sh",
+            BUILDSTORM_XTASK_PREBUILD_DEBUG_SH,
+        ),
+        (
+            "/glibc/buildstorm_xtask_build_debug.sh",
+            BUILDSTORM_XTASK_BUILD_DEBUG_SH,
+        ),
+    ] {
+        write_executable_init_file(path, content)?;
+    }
+    Ok(())
+}
+
 fn bin_is_symlink() -> bool {
     // Preserve the final path component so Debian's `/bin -> /usr/bin` is not
     // mistaken for an ordinary directory into which compatibility wrappers can
@@ -472,6 +622,7 @@ pub fn create_init_files() -> SysResult {
     create_etc_files()?;
     create_dir("/tmp")?;
     create_bin_files()?;
+    create_buildstorm_debug_scripts()?;
 
     // 磁盘镜像中 glibc/lib 下已同时存在 libm.so 和 libm.so.6（两个独立文件），
     // 此处不再创建重复的符号链接，避免覆盖已存在的普通文件。
