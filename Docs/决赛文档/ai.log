@@ -6033,3 +6033,42 @@ glibc basic 回归稳定出现 `free(): invalid pointer`，该展示性改动已
 CMA 终点 `0x9000000270000000`、hart 1 至 hart 7 上线、`Summary: netdev passed 4 failed 0`，
 musl/glibc basic 都到达 `GROUP END` 并 `shutdown!`，无 `panic`、`TFAIL` 或 `TBROK`。详见
 `Docs/决赛文档/problem/loongarch-8g-8hart-bootstrap.md`。
+
+---
+
+## 2026-07-21：LoongArch 八核 COW 源帧并发释放修复
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans`。当前内核存在竞态条件，相同配置每次运行结果不同，需要完成修复。
+
+### 分析与采纳结论
+
+AI 先按失败信号还原日志时序：`basic-musl` 完整通过，`basic-glibc` 的 PID 53 在 HART4、
+PC `0x25d0` 触发 `IllegalInstruction`，随后复用同一 shell 的下一测试在打印自身 `START` 前
+`Segmentation fault`。PID 53 按新启用的 `(pid - 1) % 8` 正好属于 HART4，故排查集中到
+LoongArch 多 hart 后首次并行的 fork/COW 路径。
+
+AI 从只读 pre_tests 镜像核对 clone 二进制及反汇编：musl/glibc 文件哈希一致，`0x25d0` 是合法
+`ori $a7, $zero, 93`，下一条为 exit syscall。该 ELF 的代码、`child_pid` 和 clone 子栈共处
+VPN `0x2`，父子会跨 hart 同时写入并拆分这个 COW 页。因此日志不是固定非法指令，而是运行时
+页面内容损坏。
+
+源码审计确认 LoongArch COW 旧实现取得裸源页 slice 后先执行 `unmap_one()`，删除当前
+`Arc<FrameTracker>`，再分配目标页并复制。两个地址空间分别受不同 `MemorySet` 锁保护，父子可
+同时删除最后两个 VMA 引用；源页被 allocator 回收、清零和复用后，另一 hart 仍从裸地址复制。
+仓库中 RISC-V 已有同型问题的成熟修复，因此采纳等价的源帧 pin 与“先复制、后换 PTE”顺序，
+没有扩大到本次日志未触发的 futex 或其他锁序问题。
+
+### 修改与验证
+
+修改 `os/src/arch/loongarch64/qemu/page_table.rs`：引用计数在 pin 前读取，源
+`FrameTracker` 局部强引用覆盖完整复制；目标帧分配并复制成功后才替换 PTE、刷新本地 TLB 和
+更新 VMA 所有权。OOM 时旧映射保持有效，并增加 tracker PPN 与 PTE PPN 一致性校验。
+
+新增 `Docs/决赛文档/problem/loongarch-cow-source-frame-race.md`，更新 problem 索引、开发日志和
+AI 协作记录。`make TARGET_ARCH=loongarch64` 成功；当前 `8G / 8 CPU`、pre_tests、
+`basic-musl/basic-glibc` 配置连续执行五轮 QEMU，五轮均有两个 `GROUP END` 和 `shutdown!`，
+两个 clone 子进程均正常输出，未出现 `IllegalInstruction`、`Segmentation fault`、panic、
+`TFAIL`、`TBROK` 或 `ERROR`。未运行 RISC-V QEMU；`cargo fmt --check` 仅报告既有
+LoongArch `mod.rs` 模块声明顺序差异。

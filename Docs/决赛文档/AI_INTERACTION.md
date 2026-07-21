@@ -1050,3 +1050,10 @@
 - **场景**：维护者要求将 LoongArch 评测 QEMU 扩展到 `8G / 8 CPU`，并指出只修改启动参数不构成内核支持。
 - **描述**：审计 QEMU 9.2 direct boot、内核内存布局和调度路径后，补齐分段 RAM、CPUID hart ID、mailbox/IPI 次核启动、per-hart bootstrap stack、进程 home hart 和用户可见 CPU 拓扑。最终 QEMU 日志显示完整高端 CMA、7 个 AP 上线、netdev 4 项通过以及 musl/glibc basic 正常关机。保持进程固定 hart，未虚报可迁移 affinity；动态内存展示尝试会触发 glibc 回归，已撤回。详见 [problem/loongarch-8g-8hart-bootstrap.md](./problem/loongarch-8g-8hart-bootstrap.md) 和 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### LoongArch 八核 COW 源帧并发释放修复（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析 `log.ans` 中每次运行结果不同的 LoongArch 八核 basic 崩溃，定位并修复竞态后执行重复 QEMU 回归。
+- **描述**：AI 通过日志 PID/HART 对应、只读镜像反汇编和既有 RISC-V COW 修复对照，确认合法的 `0x25d0` 指令因父子跨 hart 同时拆分同一 COW 页而被破坏。LoongArch 旧路径在复制前删除源页的最后 `FrameTracker` 引用，使 allocator 可回收、清零并复用仍在读取的物理页；修复固定源帧，先分配复制目标页，再替换 PTE、刷新 TLB 和转移 VMA 所有权。LoongArch64 release 构建通过，8 核 `basic-musl/basic-glibc` 连续五轮完整结束并 `shutdown!`，未再出现非法指令、段错误或内核失败信号。详见 [problem/loongarch-cow-source-frame-race.md](./problem/loongarch-cow-source-frame-race.md) 与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-21 工作树）

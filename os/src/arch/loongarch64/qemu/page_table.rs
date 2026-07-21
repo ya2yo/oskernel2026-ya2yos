@@ -1,7 +1,7 @@
 use core::arch::asm;
 
 use super::{
-    memory_layout::{KERNEL_PGNUM_OFFSET, PAGE_SIZE, PAGE_SIZE_BITS},
+    memory_layout::{KERNEL_PGNUM_OFFSET, PAGE_SIZE_BITS},
     tlb::tlb_invalidate,
 };
 use crate::{
@@ -390,7 +390,8 @@ impl PageTable {
     }
     /// return: 若成功处理了 present PTE 的写保护页错误，返回true，否则返回false
     pub fn handle_write_protect_page_fault(&mut self, va: VirtAddr, vma: &mut MapArea) -> bool {
-        let pte = match self.find_valid_pte(va.floor()) {
+        let vpn = va.floor();
+        let pte = match self.find_valid_pte(vpn) {
             Some(pte) => pte,
             None => return false,
         };
@@ -408,11 +409,16 @@ impl PageTable {
         // 必须有对应的 frame（ELF 段用 data_frames 跟踪）
         // fork 子进程的 Brk 区域可能存在无 data_frames 条目的 COW PTE；
         // 此时仍应分配新帧并复制数据，防止 heap 元数据因 lazy fault 被清零。
-        let refcnt = match vma.data_frames.get(&va.into()) {
-            Some(f) => Arc::strong_count(f),
-            // No FrameTracker: always go through the copy path so that
-            // a new FrameTracker is created and the original data is preserved.
-            None => 2,
+        let (refcnt, source_frame) = match vma.data_frames.get(&vpn) {
+            Some(frame) => {
+                // Count before pinning: the temporary pin must not turn an
+                // exclusively mapped page into a shared one.
+                let refcnt = Arc::strong_count(frame);
+                // This owned Arc pins the source frame until the COW split
+                // has installed the replacement PTE and VMA ownership.
+                (refcnt, Some(Arc::clone(frame)))
+            }
+            None => (2, None), // no tracker -> force copy path
         };
 
         // 只有一个引用：无需复制物理页，直接调整权限即可
@@ -426,23 +432,37 @@ impl PageTable {
             return true;
         }
 
-        // 多个引用（COW 共享或非 COW 共享）：复制物理页内容
-        let src = pte.get_ppn().bytes_array_mut();
-        vma.unmap_one(self, va.into());
-        if vma.map_one(self, va.into()).is_none() {
-            return false; // OOM — let trap handler send SIGSEGV
+        let src_ppn = pte.get_ppn();
+        // This borrow only validates the VMA bookkeeping. `source_frame`
+        // above is the owned Arc that keeps `src_ppn` alive across the copy.
+        if let Some(frame) = source_frame.as_ref() {
+            if frame.ppn != src_ppn {
+                return false;
+            }
         }
-        tlb_invalidate();
-        let pte = self.find_valid_pte(va.floor()).unwrap();
-        let dst = &mut pte.get_ppn().bytes_array_mut()[..PAGE_SIZE];
-        dst.copy_from_slice(src);
+        // Allocate and copy before replacing the live mapping so an allocation
+        // failure leaves the old PTE and VMA ownership intact.
+        let new_frame = match FrameTracker::alloc() {
+            Some(frame) => frame,
+            None => return false,
+        };
+        let new_ppn = new_frame.ppn;
+        new_ppn
+            .bytes_array_mut()
+            .copy_from_slice(src_ppn.bytes_array());
 
-        let mut flags = pte.get_flags();
+        flags = pte.get_flags();
         flags.remove(LAPTEFlags::COW);
         flags.insert(LAPTEFlags::WRITEABLE);
         flags.insert(LAPTEFlags::DIRTY);
-        pte.set_flags(flags);
+        *pte = PageTableEntry::new(new_ppn, flags);
         tlb_invalidate();
+
+        // Drop this VMA's old ownership only after the PTE and local TLB no
+        // longer expose the source page. The local pin covers the whole copy.
+        let old_frame = vma.data_frames.insert(vpn, new_frame);
+        drop(old_frame);
+        drop(source_frame);
 
         true
     }

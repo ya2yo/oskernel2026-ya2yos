@@ -7,6 +7,7 @@
 - [RISC-V 双 hart netperf 锁序与丢唤醒修复](./riscv-smp-netperf-wakeup-locking.md)
 - [RISC-V CFS netperf UDP_RR 首 burst 卡死](./riscv-cfs-netperf-udp-rr-hang.md)
 - [RISC-V libctest 批量 fork 的 COW 源帧并发释放](./riscv-libctest-cow-source-frame-race.md)
+- [LoongArch 八核 basic clone 的 COW 源帧并发释放](./loongarch-cow-source-frame-race.md)
 - [RISC-V 双 hart basic test_yield fork/exit 锁序死锁](./basic-test-yield-fork-exit-deadlock.md)
 - [BusyBox fork/exec/exit 并发路径卡死与地址空间回收修复](./busybox-fork-exec-exit-smp-hang.md)
 - [splice syscall 兼容实现](./splice-syscall.md)
