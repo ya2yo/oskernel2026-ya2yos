@@ -35,7 +35,7 @@ pub struct Process {
     /// First-generation SMP keeps all threads sharing one address space on a
     /// single hart. This prevents stale remote TLB entries until shootdown IPI
     /// support is available. Forked processes have independent page tables and
-    /// are spread across RISC-V harts by pid.
+    /// are spread across harts by pid.
     home_hart: usize,
     pub meta: Mutex<ProcessMeta>,
 }
@@ -155,10 +155,7 @@ impl Process {
         pgid: usize,
         sid: usize,
     ) -> Arc<Self> {
-        #[cfg(target_arch = "riscv64")]
         let home_hart = (pid - 1) % HART_NUM;
-        #[cfg(target_arch = "loongarch64")]
-        let home_hart = 0;
         Self::new_on_hart(
             memory_set, sig_table, fd_table, fs_info, pid, parent_pid, pgid, sid, home_hart,
         )
@@ -181,6 +178,8 @@ impl Process {
         home_hart: usize,
     ) -> Arc<Self> {
         assert!(home_hart < HART_NUM);
+        let id = pid;
+        let home_hart = (pid - 1) % HART_NUM;
         let ret = Arc::new(Self {
             memory_set: ResourceSlot::new(memory_set),
             sig_table: ResourceSlot::new(sig_table),

@@ -4,6 +4,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use log::{debug, warn};
 
 use crate::{
+    arch::cpu::hart_id,
     fs::open_device_file,
     mm::{copy_from_user, copy_to_user, if_bad_address, user_buffer_from_kernel, UserBuffer},
     syscall::Utsname,
@@ -113,7 +114,6 @@ pub fn sys_getrandom(buf_ptr: *const u8, buflen: usize, flags: u32) -> SyscallRe
 /// 参考 https://man7.org/linux/man-pages/man2/getcpu.2.html
 ///
 /// 返回当前线程所在的 CPU 编号和 NUMA 节点编号。
-/// 单核系统下始终返回 cpu=0, node=0。
 pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: *mut u8) -> SyscallRet {
     let task = current_task().unwrap();
     let proc_inner = &task.process;
@@ -122,7 +122,7 @@ pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: *mut u8) -> SyscallRet
     // tcache must be NULL when called from userspace (used only by vDSO)
     // We ignore it for simplicity
 
-    let cpu_val: u32 = 0;
+    let cpu_val = hart_id() as u32;
     let node_val: u32 = 0;
 
     if !cpu.is_null() {
@@ -148,7 +148,7 @@ pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: *mut u8) -> SyscallRet
         })?;
     }
 
-    debug!("[getcpu] cpu=0, node=0");
+    debug!("[getcpu] cpu={}, node={}", cpu_val, node_val);
     Ok(0)
 }
 

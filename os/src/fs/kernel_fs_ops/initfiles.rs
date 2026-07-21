@@ -9,7 +9,7 @@ use alloc::{format, string::String, vec::Vec};
 use log::debug;
 
 use super::*;
-use crate::{fs::PIPE_MAX_SIZE, mm::UserBuffer, utils::SysResult};
+use crate::{arch::config::HART_NUM, fs::PIPE_MAX_SIZE, mm::UserBuffer, utils::SysResult};
 
 fn flush_preload() {
     extern "C" {
@@ -74,24 +74,20 @@ fn flush_libgcc_s() {
 const MOUNTS: &str = " ext4 / ext rw 0 0\n";
 const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobody:/bin/bash\n";
 const GROUP: &str = "root:x:0:\ndaemon:x:2:\nusers:x:100:\nnobody:x:1:\n";
-#[cfg(target_arch = "riscv64")]
-const CPUINFO: &str = "\
-processor\t: 0
-hart\t\t: 0
-isa\t\t: rv64imafdch
-mmu\t\t: sv39
-uarch\t\t: ya2yos
-
-";
-#[cfg(target_arch = "loongarch64")]
-const CPUINFO: &str = "\
-processor\t: 0
-cpu family\t: LoongArch
-model name\t: LoongArch64
-CPU Revision\t: 0x00
-FPU\t\t: yes
-
-";
+fn cpuinfo() -> String {
+    let mut info = String::new();
+    for hart in 0..HART_NUM {
+        #[cfg(target_arch = "riscv64")]
+        info.push_str(&format!(
+            "processor\t: {hart}\nhart\t\t: {hart}\nisa\t\t: rv64imafdch\nmmu\t\t: sv39\nuarch\t\t: ya2yos\n\n"
+        ));
+        #[cfg(target_arch = "loongarch64")]
+        info.push_str(&format!(
+            "processor\t: {hart}\ncpu family\t: LoongArch\nmodel name\t: LoongArch64\nCPU Revision\t: 0x00\nFPU\t\t: yes\n\n"
+        ));
+    }
+    info
+}
 const MEMINFO: &str = r"
 MemTotal:         944564 kB
 MemFree:          835248 kB
@@ -370,7 +366,8 @@ fn create_proc_files() -> SysResult {
     create_dir("/proc")?;
     write_init_file("/proc/mounts", MOUNTS)?;
     debug!("create /proc/mounts");
-    write_init_file("/proc/cpuinfo", CPUINFO)?;
+    let cpuinfo = cpuinfo();
+    write_init_file("/proc/cpuinfo", &cpuinfo)?;
     debug!("create /proc/cpuinfo");
     write_init_file("/proc/meminfo", MEMINFO)?;
     debug!("create /proc/meminfo");

@@ -4,15 +4,21 @@ use super::{
     trap_interface::set_kernel_trap_entry,
 };
 use crate::trap::trap_handler;
-use crate::{arch::memory_layout::PAGE_SIZE, rust_main};
+use crate::{
+    arch::{config::HART_NUM, memory_layout::PAGE_SIZE},
+    rust_main,
+};
 use core::arch::asm;
+use loongArch64::ipi::{csr_mail_send, send_ipi_single};
 use loongArch64::register::prcfg1::{self, Prcfg1};
 use loongArch64::register::{asid, tlbidx};
 use loongArch64::register::{
-    crmd, dmw0, dmw1, dmw2, dmw3, ecfg, eentry, euen, prmd,
+    cpuid, crmd, dmw0, dmw1, dmw2, dmw3, ecfg, eentry, euen, prmd,
     pwch::{self, set_dir3_base},
     pwcl, stlbps, tcfg, ticlr, tlbrehi, tlbrentry, CpuMode, MemoryAccessType,
 };
+
+const BOOT_IPI_VECTOR: u32 = 1 << 0;
 
 // LA库似乎有点问题，没把这个暴露出来……
 fn set_merrentry(val: usize) {
@@ -31,17 +37,27 @@ pub fn shutdown(_failure: bool) -> ! {
 
 /// 获取当前运行的 CPU 核
 pub fn hart_id() -> usize {
-    // let hartid;
-    // unsafe {
-    //     asm! {
-    //         "move {}, $tp",
-    //         out(reg) hartid
-    //     };
-    // }
-    // hartid
+    // $tp is restored from the user trap context, so it cannot be used as
+    // persistent per-hart state after returning from userspace.
+    cpuid::read().core_id()
+}
 
-    // 我们是单核系统！
-    0
+/// Start QEMU LoongArch secondary harts through the mailbox/IPI boot ROM.
+pub fn boot_secondary_harts(boot_hart: usize) {
+    extern "C" {
+        fn _start();
+    }
+
+    // QEMU loads CPU0 at the high-half ELF entry and its slave boot ROM must
+    // jump to that same address. Direct-address translation supplies the PA.
+    let entry = _start as *const () as usize as u64;
+    for hart in 0..HART_NUM {
+        if hart == boot_hart {
+            continue;
+        }
+        csr_mail_send(entry, hart, 0);
+        send_ipi_single(hart, BOOT_IPI_VECTOR);
+    }
 }
 
 /// 初始化csr寄存器

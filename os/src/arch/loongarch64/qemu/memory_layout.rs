@@ -3,9 +3,9 @@
 use crate::config::THREAD_MAX_NUM;
 
 pub const PHYSICAL_MEMORY_START: usize = 0; // la64的物理内存从0开始，而riscv的物理内存从0x8000_0000开始
-pub const PHYSICAL_MEMORY_SIZE: usize = 0x8000_0000; // 2GB total: low 256MB + high 1792MB
+pub const PHYSICAL_MEMORY_SIZE: usize = 0x2_0000_0000; // 8GiB total: low 256MiB + high 7936MiB
 pub const PHYSICAL_MEMORY_RANGES: &[(usize, usize)] =
-    &[(0x0000_0000, 0x1000_0000), (0x8000_0000, 0x7000_0000)];
+    &[(0x0000_0000, 0x1000_0000), (0x8000_0000, 0x1_f000_0000)];
 
 pub const PAGE_SIZE: usize = 0x1000; // 4KB
 pub const PAGE_SIZE_BITS: usize = 12;
@@ -52,7 +52,7 @@ pub const DL_INTERP_OFFSET: usize = 0x15_0000_0000;
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 
 // 内核虚拟地址空间中对应的低端连续内存结束地址。
-// LoongArch QEMU virt 的 2G RAM 被 PCI/MMIO hole 切成两段，完整 RAM 见
+// LoongArch QEMU virt 的 8GiB RAM 被 PCI/MMIO hole 切成两段，完整 RAM 见
 // PHYSICAL_MEMORY_RANGES。
 pub const MEMORY_END: usize =
     KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_RANGES[0].0 + PHYSICAL_MEMORY_RANGES[0].1;

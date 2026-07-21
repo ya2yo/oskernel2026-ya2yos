@@ -5997,3 +5997,39 @@ syscall 分发没有策略钩子。采纳线程级 `SeccompState`，在 task clo
 实现刻意限定为 LTP 覆盖的 classic BPF 子集，未声称支持 filter 叠加、TSYNC、其他 BPF 指令、
 其他 seccomp action 或 `seccomp(2)` syscall；详见
 `Docs/决赛文档/problem/prctl-seccomp-prctl04.md`。
+
+---
+
+## 2026-07-21：LoongArch 8GiB/8 核评测配置与内核 bring-up
+
+### 用户需求
+
+维护者要求将 `make_scripts/loongarch64.mk` 的评测机 QEMU 配置扩展为 8 核、8GiB，并保留
+`-snapshot` 方便本地测试；随后指出不能只改启动脚本，必须同步修改内核代码。
+
+### 分析与采纳结论
+
+审计确认龙芯内核仍保留四类限制：`HART_NUM = 1`、`hart_id()` 恒为 0、QEMU 次核没有
+mailbox/IPI bring-up、CMA 物理范围仍是 2GiB。QEMU 9.2 源码表明 8GiB virt RAM 是低端
+256MiB 与从 `0x8000_0000` 开始的 7936MiB 高段；次核 flash ROM 读取 mailbox 0 并等待
+IPI vector 0。`$tp` 不可作为 persistent hart state，因为用户 trap return 会恢复 TLS，故采用
+CPUID CSR。
+
+采纳将 QEMU、`HART_NUM`、bootstrap stack 和分段物理范围同步为 8；主核完成全局初始化后用
+高半 `_start` ELF entry 通过 `csr_mail_send`/`send_ipi_single` 唤醒 AP。独立进程按 pid 固定到
+各 home hart，避免在无远程 TLB shootdown 时迁移；同时让 `getcpu`、affinity 和
+`/proc/cpuinfo` 不再伪报 CPU0。尝试将 `/proc/meminfo`/`sysinfo` 改为动态 CMA 统计时，
+glibc basic 回归稳定出现 `free(): invalid pointer`，该展示性改动已撤回，未混入最终实现。
+
+### 修改与验证
+
+- `make_scripts/loongarch64.mk` 使用 `-m 8G -smp 8` 并保留 `-snapshot`。
+- LoongArch 内存布局纳管 `[0, 0x1000_0000)` 与
+  `[0x8000_0000, 0x2_7000_0000)`，不把 MMIO hole 加入 CMA。
+- 实现 LoongArch AP 的 mailbox/IPI 启动，并让运行期 hart ID 直接读取 CPUID CSR。
+- 更新进程 home hart、`getcpu`、affinity 和 `/proc/cpuinfo` 拓扑表达。
+
+`make loongarch64-build` 通过。最终 `timeout 60s make run TARGET_ARCH=loongarch64` 显示高端
+CMA 终点 `0x9000000270000000`、hart 1 至 hart 7 上线、`Summary: netdev passed 4 failed 0`，
+musl/glibc basic 都到达 `GROUP END` 并 `shutdown!`，无 `panic`、`TFAIL` 或 `TBROK`。详见
+`Docs/决赛文档/problem/loongarch-8g-8hart-bootstrap.md`。

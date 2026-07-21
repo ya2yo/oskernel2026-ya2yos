@@ -1043,3 +1043,10 @@
 - **场景**：维护者要求分析 `log.ans` 的 `prctl04` 失败并完善既有 `prctl(167)` 语义。
 - **描述**：AI 对照 LTP `prctl04.c`、当前 syscall 分发、task clone 和 signal return 路径，确认问题是 seccomp 只在 handler 中伪返回成功，未在线程状态保存或统一 syscall 入口强制执行。实现线程级 strict/filter 状态，安全复制并验证测试所用 classic BPF 子集，在 fork/clone 中继承，并在拒绝时投递 strict 的 `SIGKILL` 或 filter 的 `SIGSYS`。同时修正 variadic `prctl()` 未使用寄存器不得强制为零的 ABI 假设。RISC-V、LoongArch64 的 musl/glibc `prctl04` 均为 `passed 9 failed 0 broken 0` 并正常关机；未实现的 BPF 指令、TSYNC、filter 叠加和其他 seccomp action 已明确记录。详见 [problem/prctl-seccomp-prctl04.md](./problem/prctl-seccomp-prctl04.md) 与 `ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### LoongArch 8GiB/8 核 QEMU bring-up（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求将 LoongArch 评测 QEMU 扩展到 `8G / 8 CPU`，并指出只修改启动参数不构成内核支持。
+- **描述**：审计 QEMU 9.2 direct boot、内核内存布局和调度路径后，补齐分段 RAM、CPUID hart ID、mailbox/IPI 次核启动、per-hart bootstrap stack、进程 home hart 和用户可见 CPU 拓扑。最终 QEMU 日志显示完整高端 CMA、7 个 AP 上线、netdev 4 项通过以及 musl/glibc basic 正常关机。保持进程固定 hart，未虚报可迁移 affinity；动态内存展示尝试会触发 glibc 回归，已撤回。详见 [problem/loongarch-8g-8hart-bootstrap.md](./problem/loongarch-8g-8hart-bootstrap.md) 和 `ai.log`。
+- **关联 commit**：尚未提交（2026-07-21 工作树）

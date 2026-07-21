@@ -199,7 +199,6 @@ pub fn rust_main(hartid: usize) -> ! {
         START_HART_ID.store(hartid, Ordering::Release);
         println!("complete.");
 
-        #[cfg(target_arch = "riscv64")]
         {
             print!("boot secondary harts...");
             arch::cpu::boot_secondary_harts(hartid);

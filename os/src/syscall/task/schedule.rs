@@ -88,17 +88,26 @@ pub fn sys_sched_setaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
     }
 
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    if pid != 0
-        && Process::get_process_arc_by_pid(pid).is_none()
-        && tid_to_task::tid2task(pid).is_none()
-    {
+    let target_process = if pid == 0 {
+        task.process.clone()
+    } else if let Some(process) = Process::get_process_arc_by_pid(pid) {
+        process
+    } else if let Some(target) = tid_to_task::tid2task(pid) {
+        target.process.clone()
+    } else {
         return Err(SysErrNo::ESRCH);
-    }
+    };
 
     let process = &task.process;
     let memory_set = process.memory_set_arc();
     let mut raw_mask = [0u8; core::mem::size_of::<usize>()];
     copy_from_user(&memory_set, mask, &mut raw_mask)?;
+    let requested_mask = usize::from_ne_bytes(raw_mask);
+    let home_hart_mask = 1usize << target_process.home_hart();
+    // Processes stay pinned until remote TLB shootdown supports migration.
+    if requested_mask & home_hart_mask == 0 {
+        return Err(SysErrNo::EINVAL);
+    }
     Ok(0)
 }
 
@@ -113,17 +122,20 @@ pub fn sys_sched_getaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
     }
 
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    if pid != 0
-        && Process::get_process_arc_by_pid(pid).is_none()
-        && tid_to_task::tid2task(pid).is_none()
-    {
+    let target_process = if pid == 0 {
+        task.process.clone()
+    } else if let Some(process) = Process::get_process_arc_by_pid(pid) {
+        process
+    } else if let Some(target) = tid_to_task::tid2task(pid) {
+        target.process.clone()
+    } else {
         return Err(SysErrNo::ESRCH);
-    }
+    };
 
     let process = &task.process;
     let memory_set = process.memory_set_arc();
-    let cpu0_mask = 1usize.to_ne_bytes();
-    copy_to_user(&memory_set, mask, &cpu0_mask)?;
+    let home_hart_mask = (1usize << target_process.home_hart()).to_ne_bytes();
+    copy_to_user(&memory_set, mask, &home_hart_mask)?;
     Ok(mask_bytes)
 }
 
