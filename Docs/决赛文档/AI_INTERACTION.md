@@ -1016,3 +1016,9 @@
 - **场景**：维护者要求继续修复 BuildStorm MINIBUILD 单独运行成功、prepare 后 fresh 编译失败及 10 分钟超时。
 - **描述**：通过 TrapContext 现场、Cargo linker stderr 和 final 镜像 ELF 对照，确认普通 fork 在正确复制当前线程 trap 快照后又按 child VMA 覆盖为另一 parent 线程的 futex wait 现场；解除该死锁后，又确认两层动态库 mapper 将 native libc linker script 的 `/lib/ld-linux-*` 依赖错误改写为旧 `/glibc/lib` loader，导致 `GLIBC_PRIVATE`/TLS 符号无法解析。修复删除冗余 trap VMA clone，将 GCC toolchain 路径视为 native，并让真实 loader 优先、缺失时才走 legacy fallback。RISC-V fresh MINIBUILD 现输出 `ok` 和 `shutdown!`；RISC-V、LoongArch64 release 构建通过。完整 `cargo xtask` 未运行，详见 [problem/buildstorm-minibuild-fresh-fork-loader.md](./problem/buildstorm-minibuild-fresh-fork-loader.md) 与 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-22 工作树）
+#### CAgent Bash 运行器与 Debian `/bin` 路径修复（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `cagent_testcode.sh` 的语法错误日志，要求改用 `/bin/bash` 并继续处理新的运行失败。
+- **描述**：AI 对照只读 CAgent 脚本确认 Bash 数组与 BusyBox `sh` 不兼容；改用 Bash 后，依据 `execve fail: -20`、镜像 `/bin -> /usr/bin` 布局和 VFS 查找实现，定位中间符号链接与 `FsIndex` 未跟随缓存导致的 `ENOTDIR`。人工审核后采纳决赛专用 Bash 运行器及通用父目录重解析修复。RISC-V `log.ans` 已输出 CAgent `GROUP END` 和 `shutdown!`，10 项中 7 项 pass、3 项 reject；后三项未被表述为通过。详见 `Docs/决赛文档/ai.log` 2026-07-21 条目和 [problem/cagent.md](./problem/cagent.md)。
+- **关联 commit**：尚未提交（2026-07-21 工作树）

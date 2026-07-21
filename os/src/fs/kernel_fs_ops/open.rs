@@ -51,16 +51,17 @@ fn resolve_parent_path(abs_path: &str) -> SysResult<ParentPath> {
         return Err(SysErrNo::ENOENT);
     };
 
-    let parent_inode = if FsIndex::has_inode(parent_path) {
-        FsIndex::find_inode_idx(parent_path).ok_or(SysErrNo::ENOENT)?
-    } else {
-        let inode = superblock_root_inode().find(parent_path, OpenFlags::O_DIRECTORY, 0)?;
-        FsIndex::insert_inode_idx(parent_path, inode)
-    };
-
-    if !parent_inode.types().is_dir() {
-        return Err(SysErrNo::ENOTDIR);
-    }
+    let parent_inode =
+        match FsIndex::find_inode_idx(parent_path).filter(|inode| inode.types().is_dir()) {
+            Some(inode) => inode,
+            None => {
+                // O_NOFOLLOW/O_UNLINK callers may have cached a final symlink
+                // (for example Debian's `/bin -> /usr/bin`).  A later path
+                // component needs the resolved directory instead of that inode.
+                let inode = superblock_root_inode().find(parent_path, OpenFlags::O_DIRECTORY, 0)?;
+                FsIndex::insert_inode_idx(parent_path, inode)
+            }
+        };
 
     Ok(ParentPath {
         create_path: join_parent_child(&parent_inode.path(), child_name),
@@ -362,7 +363,22 @@ fn open_inner(
             Ok(t) => {
                 inode = Some(FsIndex::insert_inode_idx(abs_path, t));
             }
-            Err(SysErrNo::ENOTDIR) => return Err(SysErrNo::ENOTDIR),
+            // `Ext4Inode::find()` only follows a final symlink.  A Debian
+            // path such as `/bin/bash` therefore reports ENOTDIR while
+            // traversing `/bin -> /usr/bin`; retry through its resolved
+            // parent before treating it as a genuine non-directory error.
+            Err(SysErrNo::ENOTDIR) => {
+                let resolved_path = resolve_create_path(abs_path)?;
+                if resolved_path == abs_path {
+                    return Err(SysErrNo::ENOTDIR);
+                }
+                let found_res = find_from_cached_parent(&resolved_path, flags)
+                    .unwrap_or_else(|| superblock_root_inode().find(&resolved_path, flags, 0));
+                let resolved_inode = found_res?;
+                let resolved_inode = FsIndex::insert_inode_idx(&resolved_path, resolved_inode);
+                FsIndex::insert_inode_idx(abs_path, resolved_inode.clone());
+                inode = Some(resolved_inode);
+            }
             Err(SysErrNo::ELOOP) => return Err(SysErrNo::ELOOP),
             Err(_) => {
                 if let Ok(resolved_path) = resolve_create_path(abs_path) {

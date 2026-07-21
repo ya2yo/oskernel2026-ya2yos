@@ -96,7 +96,7 @@
 - [LTP fs_bind23 MS_MOVE 子树重定位与 shared peer 传播](./fs-bind23-move-propagation.md)
 - [LTP fs_bind24 子目录 bind 的 shared-slave 传播](./fs-bind24-subtree-shared-slave-propagation.md)
 - [LTP fs_bind_move05 私有子树移入 shared 父挂载后的传播](./fs-bind-move05-private-shared-propagation.md)
-- [决赛测例一：CAgent](./cagent.md)
+- [CAgent Bash 运行器与 Debian `/bin` 符号链接](./cagent.md)
 - [BuildStorm 根文件系统 initfiles、/dev/null 与 /bin 符号链接兼容](./buildstorm-initfiles-devfs-bin-symlink.md)
 - [sigaltstack(2)、SA_ONSTACK 信号帧与 rt_sigreturn 状态恢复](./sigaltstack-signal-frame.md)
 - [RISC-V 双 hart BuildStorm 启动栈越界与 .data 破坏](./riscv-buildstorm-bootstrap-stack-overflow.md)

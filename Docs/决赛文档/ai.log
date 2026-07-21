@@ -5838,3 +5838,40 @@ native；第一层动态 mapper 保留 `ld-*` 原路径，第二层 `open()` 先
 在约两分半主动结束，依次输出 `BUILDSTORM_DEBUG_MINIBUILD_PREPARE ok`、
 `BUILDSTORM_DEBUG_MINIBUILD ok`、`shutdown!`，且无 panic、`TFAIL`、`TBROK`、`ERROR` 或 `WARN`。
 未运行完整官方 BuildStorm 的后续 `cargo xtask` 阶段，不把 MINIBUILD 成功扩大为全项评分结论。
+## 2026-07-21：CAgent Bash 运行器与 Debian `/bin` 解析
+
+### 用户需求
+
+维护者报告内核运行 `cagent_testcode.sh` 时在第 7 行报 `syntax error: unexpected "("`，要求
+将决赛脚本改由 `/bin/bash` 启动；随后提供新的 `log.ans`，要求继续修复并在成功运行后补齐文档。
+
+### 分析与采纳结论
+
+AI 对照 `initproc.rs`、外部只读 CAgent 脚本和 final-2026 RISC-V 镜像，确认脚本使用 Bash
+数组 `TEST_PIDS=()`，而通用运行器固定调用 `busybox sh`，显式绕开了 `#!/bin/bash`。改用
+`/bin/bash` 后日志返回 `execve fail: -20`。检查镜像确认 `/bin` 是相对符号链接
+`usr/bin`，`/usr/bin/bash` 为动态链接 ELF。
+
+进一步追踪 VFS 后确认 `Ext4Inode::find()` 只解析末级 symlink，`/bin/bash` 的中间 `/bin`
+导致 `ENOTDIR`。`open_inner()` 对该 errno 过早返回，且 `bin_is_symlink()` 的
+`O_UNLINK` 探测把未跟随 `/bin` symlink 缓入 `FsIndex`，使父目录回退路径也将其误认成
+非目录。采纳在通用父目录解析中重新解析非目录缓存项，并在 `open_inner()` 的 `ENOTDIR`
+分支按解析后的父目录重试；这使 `/bin/bash` 走到真实 `/usr/bin/bash`，不以相对路径绕过
+VFS 语义。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `user/src/bin/initproc.rs` | 新增仅供决赛脚本使用的 `/bin/bash` 运行器；保留普通 BusyBox `sh` 路径，并输出 exec errno。 |
+| `os/src/fs/kernel_fs_ops/open.rs` | 修复中间目录 symlink 的父目录缓存与 `ENOTDIR` 回退解析。 |
+| `Docs/决赛文档/problem/cagent.md` | 记录启动失败、VFS 根因、修复和 CAgent 结果边界。 |
+
+### 验证与边界
+
+`rustfmt --edition 2021 --check`、`git diff --check` 与
+`make build-arch TARGET_ARCH=riscv64` 通过。真实 QEMU `log.ans` 已从 Bash 语法错误和
+`execve fail: -20` 前进到 `GROUP START cagent`、10 项任务输出、`GROUP END cagent` 与
+`shutdown!`。其中 factorial、date、network、cpu、kernel、fs-create、fs-search 为 `pass`；
+fs-directory、fs-usage、fs-readwrite 为 `reject`。本轮只修复启动和路径解析，不将这三项
+agent 语义失败表述为已通过。未运行 LoongArch64 CAgent 回归。
