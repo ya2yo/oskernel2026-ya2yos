@@ -1057,3 +1057,10 @@
 - **场景**：维护者要求分析 `log.ans` 中每次运行结果不同的 LoongArch 八核 basic 崩溃，定位并修复竞态后执行重复 QEMU 回归。
 - **描述**：AI 通过日志 PID/HART 对应、只读镜像反汇编和既有 RISC-V COW 修复对照，确认合法的 `0x25d0` 指令因父子跨 hart 同时拆分同一 COW 页而被破坏。LoongArch 旧路径在复制前删除源页的最后 `FrameTracker` 引用，使 allocator 可回收、清零并复用仍在读取的物理页；修复固定源帧，先分配复制目标页，再替换 PTE、刷新 TLB 和转移 VMA 所有权。LoongArch64 release 构建通过，8 核 `basic-musl/basic-glibc` 连续五轮完整结束并 `shutdown!`，未再出现非法指令、段错误或内核失败信号。详见 [problem/loongarch-cow-source-frame-race.md](./problem/loongarch-cow-source-frame-race.md) 与 `ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### LoongArch LTP fs_bind01 hush timeout 与 bind 挂载栈卸载修复（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析根目录 `log.ans` 中 LoongArch64 `fs_bind01` 的早期终止并完成修复与 QEMU 验证。
+- **描述**：确认 BusyBox hush 不能按 LTP 原写法保留 `eval "local timeout=..."` 创建的局部变量，导致 watchdog 获得零秒并在真实挂载断言前终止。启动期对 musl/glibc `tst_test.sh` 做幂等的声明/赋值拆分，保留原 inode/权限写回后，进一步定位到 `/proc/mounts` 将 self-bind 的路径 source 暴露给 BusyBox，使其一次 `umount` 同时以 mountpoint 和 device 匹配并卸掉两层。仅改变 bind 条目的展示 source 为 `none`，并将 bind 身份独立于 remount flags 保存，保留内核 mount stack、event group 和非 bind source 语义。LoongArch64 `fs_bind01` 自身为 `passed 29 failed 0 broken 0`，四次关键卸载均 `TPASS` 并正常 `shutdown!`；RISC-V release 构建通过，未运行 RISC-V QEMU。
+- **关联 commit**：尚未提交（2026-07-21 工作树）

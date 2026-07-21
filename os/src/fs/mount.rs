@@ -17,6 +17,10 @@ struct MountEntry {
     dir: String,
     fstype: String,
     flags: u32,
+    // MS_BIND is a mount(2) operation flag. Keep the mount kind separately
+    // because a later MS_REMOUNT replaces `flags` without changing the
+    // underlying bind mount.
+    is_bind: bool,
     // Mounts in the same group receive new child mount events at matching
     // relative paths.
     shared_group: Option<u64>,
@@ -207,9 +211,9 @@ impl MountTable {
                 // For example, an event below `dir2`, bound from
                 // `dir1/1/2`, maps to `dir1/1/2/<event>` rather than
                 // `dir1/<event>`.
-                let target = if mount.flags & MS_BIND != 0
-                    && Self::path_is_at_or_below(&mount.special, &receiver.dir)
-                {
+                let bind_source_is_below_receiver =
+                    mount.is_bind && Self::path_is_at_or_below(&mount.special, &receiver.dir);
+                let target = if bind_source_is_below_receiver {
                     let source_relative = mount
                         .special
                         .strip_prefix(receiver.dir.as_str())
@@ -403,6 +407,7 @@ impl MountTable {
                 dir: target.clone(),
                 fstype: fstype.clone(),
                 flags,
+                is_bind: flags & MS_BIND != 0,
                 shared_group,
                 master_group,
                 unbindable: false,
@@ -458,9 +463,19 @@ impl MountTable {
         let mut content = String::from(" ext4 / ext rw 0 0\n");
         for mount in &self.mnt_list {
             let opts = if mount.flags & 1 != 0 { "ro" } else { "rw" };
+            // A bind mount must not expose its target pathname as a device.
+            // This path-based VFS does not retain a backing-device identity,
+            // so use a stable non-path placeholder. Otherwise BusyBox umount
+            // treats self-bind stack layers as aliases of one device and pops
+            // multiple layers in a single invocation.
+            let source = if mount.is_bind {
+                "none"
+            } else {
+                mount.special.as_str()
+            };
             content.push_str(&format!(
                 "{} {} {} {} 0 0\n",
-                mount.special, mount.dir, mount.fstype, opts
+                source, mount.dir, mount.fstype, opts
             ));
         }
         content

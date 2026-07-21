@@ -9,7 +9,12 @@ use alloc::{format, string::String, vec::Vec};
 use log::debug;
 
 use super::*;
-use crate::{arch::config::HART_NUM, fs::PIPE_MAX_SIZE, mm::UserBuffer, utils::SysResult};
+use crate::{
+    arch::config::HART_NUM,
+    fs::PIPE_MAX_SIZE,
+    mm::UserBuffer,
+    utils::{SysErrNo, SysResult},
+};
 
 fn flush_preload() {
     extern "C" {
@@ -293,6 +298,26 @@ fn write_executable_init_file(path: &str, content: &str) -> SysResult {
     Ok(())
 }
 
+fn rewrite_existing_init_file(path: &str, content: &str) -> SysResult {
+    let file = open(path, OpenFlags::O_RDWR, DEFAULT_FILE_MODE)?.file()?;
+    let mut content = String::from(content);
+    let content_len = content.len();
+    let mut buffers = Vec::new();
+    unsafe {
+        let bytes = content.as_bytes_mut();
+        buffers.push(core::slice::from_raw_parts_mut(
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        ));
+    }
+    if file.write(UserBuffer::new(buffers))? != content_len {
+        return Err(SysErrNo::EIO);
+    }
+    file.inode.truncate(content_len)?;
+    file.inode.sync();
+    Ok(())
+}
+
 const BUSYBOX_APPLETS: &[&str] = &[
     "/bin/awk",
     "/bin/basename", // 如果不加这个，ltp_testcode.sh会无法使用basename
@@ -535,6 +560,39 @@ fn create_ltp_utility_wrappers() -> SysResult {
     Ok(())
 }
 
+// BusyBox 1.33 hush loses the dynamically scoped local created by
+// `eval "local timeout=\$$1"` in LTP's `_tst_multiply_timeout()`. Split the
+// declaration and assignment so the LTP watchdog retains its configured
+// timeout instead of being started with zero seconds.
+const LTP_TIMEOUT_LOCAL_BUG: &str = "\teval \"local timeout=\\$$1\"";
+const LTP_TIMEOUT_LOCAL_FIX: &str = "\tlocal timeout\n\teval \"timeout=\\$$1\"";
+
+fn patch_ltp_timeout_library(path: &str) -> SysResult {
+    let file = open(path, OpenFlags::O_RDONLY, 0)?.file()?;
+    let bytes = file.inode.read_all()?;
+    let script = core::str::from_utf8(&bytes).map_err(|_| SysErrNo::EINVAL)?;
+
+    if !script.contains(LTP_TIMEOUT_LOCAL_BUG) {
+        return Ok(());
+    }
+
+    let patched = script.replace(LTP_TIMEOUT_LOCAL_BUG, LTP_TIMEOUT_LOCAL_FIX);
+    rewrite_existing_init_file(path, &patched)
+}
+
+fn patch_ltp_timeout_libraries() -> SysResult {
+    for path in [
+        "/musl/ltp/testcases/bin/tst_test.sh",
+        "/glibc/ltp/testcases/bin/tst_test.sh",
+    ] {
+        match patch_ltp_timeout_library(path) {
+            Ok(()) | Err(SysErrNo::ENOENT) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
 fn has_musl_busybox() -> bool {
     open("/musl/busybox", OpenFlags::O_RDONLY, 0).is_ok()
 }
@@ -595,6 +653,8 @@ fn bin_is_symlink() -> bool {
 }
 
 fn create_bin_files() -> SysResult {
+    patch_ltp_timeout_libraries()?;
+
     // 这些 wrapper 是给竞赛测试镜像补 `/musl/busybox` applet 的。
     // `/bin` 为符号链接的 Debian/BuildStorm 镜像也不能覆盖成 `/musl/busybox`。
     if !has_musl_busybox() || bin_is_symlink() {
