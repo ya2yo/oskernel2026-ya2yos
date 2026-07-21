@@ -5689,5 +5689,49 @@ PID 10/TID 13 申请 128 MiB `PROT_NONE | MAP_PRIVATE | MAP_ANONYMOUS` 映射时
 RISC-V `timeout 180s make run TARGET_ARCH=riscv64 > /tmp/buildstorm-mmap-2g.log 2>&1`
 在复用既有项目时输出 `BUILDSTORM_DEBUG_MINIBUILD ok` 和 `shutdown!`。随后强制
 prepare 的 fresh run 已确认 mmap `ENOMEM` 不再是首个错误，但 Cargo 进入
-`Compiling minibuild` 后执行完整 rustc 参数返回 `Bad address (os error 14)`。
+`Compiling minibuild` 后，其 worker 创建 Rustc 子进程的普通 `clone()` 返回
+`Bad address (os error 14)`。
 因此本提交只修复 mmap 预算，不将完整 MINIBUILD 或后续 `xtask` 标记为通过。
+
+---
+
+## 2026-07-21：BuildStorm clone3/vfork 生命周期整理
+
+### 用户需求
+
+维护者要求根据当前可保留的代码生成文档并提交，同时排除临时诊断和已确认有语义风险的实验。
+
+### 分析与采纳结论
+
+AI 复核工作树和 RISC-V `log.ans`，确认 Rust toolchain 使用
+`clone3(CLONE_VM | CLONE_VFORK | CLONE_CLEAR_SIGHAND)` 启动 rustc。现有实现虽会将父
+task 置为 `VforkBlocked`，但 `sys_clone()` 没有立刻切换，父 task 仍可能先回到用户态；
+`exec()` 又在新地址空间、用户栈和 trap context 安装前唤醒父 task。非线程 `CLONE_VM`
+子进程还会按 pid 分到另一 hart，与尚未实现的 remote TLB shootdown 冲突。
+
+采纳将 vfork 状态变化与调度切换绑定、把父唤醒延后到 exec 映像安装完成、让非线程
+`CLONE_VM` 继承父 `home_hart`，并把 clone3 的 `stack + stack_size` ABI 换算统一到两个
+架构。同步避免 group exit 内部 `SIGKILL` 覆盖既有正常退出状态，exec de-thread 完成后
+清除该临时记录。
+
+复核同时纠正了 MINIBUILD 文档中的归因：`Bad address` 并非 Rustc `execve` 读长 argv/env
+失败，而是 Cargo worker 的普通 fork 遗漏动态 `MAP_STACK` VMA 后，写
+`CLONE_CHILD_SETTID` 返回 `EFAULT`。该后续修复不混入本提交。
+
+### 修改与验证
+
+提交范围为 `os/src/signal/pending.rs`、`os/src/syscall/task/clone.rs`、
+`os/src/syscall/task/clone3.rs`、`os/src/task/process/process.rs` 与
+`os/src/task/task/task.rs`，以及相关决赛文档。
+
+`crates/lwext4_rust/src/file.rs`、`os/src/fs/ext4_lw/inode.rs`、
+`os/src/mm/page_fault_handler.rs` 是已有文档记录的缓存实验，仍有缓存偏移和
+`mprotect(PROT_WRITE)` COW 风险；`user/src/bin/initproc.rs` 是本地单脚本诊断入口。两类
+修改均保留在工作区、未纳入本次提交。
+
+已执行 `make build-arch TARGET_ARCH=riscv64` 与
+`make build-arch TARGET_ARCH=loongarch64`，均通过；只有既有 Cargo config 弃用和 vendored
+smoltcp warnings。随后 `timeout 90s make run > /tmp/vfork-clone3-commit.log 2>&1` 完成启动、
+通过 `sigaltstack`/`rseq` probe 并进入 `buildstorm_xtask_prebuild_debug.sh`，但在 Rust 编译和
+目标 vfork 前由外层时限结束；采集范围内无 panic、`TFAIL` 或 `TBROK`，不将其作为完整 QEMU
+行为回归。完整 BuildStorm 仍会在独立的动态栈 fork `EFAULT` 处失败。

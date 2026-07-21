@@ -104,11 +104,32 @@ impl Process {
         pgid: usize,
         sid: usize,
     ) -> Arc<Self> {
-        let id = pid;
         #[cfg(target_arch = "riscv64")]
         let home_hart = (pid - 1) % HART_NUM;
         #[cfg(target_arch = "loongarch64")]
         let home_hart = 0;
+        Self::new_on_hart(
+            memory_set, sig_table, fd_table, fs_info, pid, parent_pid, pgid, sid, home_hart,
+        )
+    }
+
+    /// Create a process pinned to a specific hart.
+    ///
+    /// `CLONE_VM` creates a distinct process that still shares its parent's
+    /// address space, so it must use the parent's hart until remote TLB
+    /// shootdown is available.
+    pub(crate) fn new_on_hart(
+        memory_set: Arc<MemorySet>,
+        sig_table: Arc<Mutex<SigTable>>,
+        fd_table: Arc<FdTable>,
+        fs_info: Arc<FSInfo>,
+        pid: usize,
+        parent_pid: usize,
+        pgid: usize,
+        sid: usize,
+        home_hart: usize,
+    ) -> Arc<Self> {
+        assert!(home_hart < HART_NUM);
         let ret = Arc::new(Self {
             memory_set: ResourceSlot::new(memory_set),
             sig_table: ResourceSlot::new(sig_table),
@@ -138,8 +159,8 @@ impl Process {
                 Self::link_child_to_parent(&parent_process, &ret);
             }
         }
-        debug!("inserting process {}", id);
-        let oldval = PID_2_PROCESS_ARC.lock().insert(id, ret.clone());
+        debug!("inserting process {}", pid);
+        let oldval = PID_2_PROCESS_ARC.lock().insert(pid, ret.clone());
         if let Some(old_proc) = oldval {
             debug!("expected replacement? {}", old_proc.pid);
         }

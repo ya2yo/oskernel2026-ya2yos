@@ -106,4 +106,5 @@
 - [BuildStorm final-2026 动态库路径错误重定向](./buildstorm-final-2026-dynamic-library-path.md)
 - [ext4 getdents64 d_type ABI 映射错误](./ext4-getdents64-d-type.md)
 - [BuildStorm Rust 子进程管道 FIONBIO 兼容](./buildstorm-fionbio-nonblocking.md)
-- [BuildStorm MINIBUILD mmap 预算与 Rustc execve EFAULT](./buildstorm-minibuild-post-toolchain-stall.md)
+- [BuildStorm MINIBUILD mmap 预算与动态栈 fork EFAULT](./buildstorm-minibuild-post-toolchain-stall.md)
+- [BuildStorm clone3/vfork 共享地址空间交接](./buildstorm-vfork-clone3-lifecycle.md)

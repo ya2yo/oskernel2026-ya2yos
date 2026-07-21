@@ -320,6 +320,9 @@ impl TaskControlBlock {
         // execve replaces a process-wide address space.  No sibling may keep
         // an old trap context or user stack once that replacement happens.
         crate::task::kill_other_threads_before_exec(self);
+        // The SIGKILLs used to collapse sibling threads are an internal exec
+        // detail, not a termination of the replacement program.
+        self.process.meta_lock().termination_signal = None;
 
         // Snapshot the parent task list before taking this task's inner lock.
         // The lock order is ProcessMeta -> TaskControlBlockInner; retaining
@@ -328,28 +331,6 @@ impl TaskControlBlock {
         let ppid = self.ppid();
         let parent_tasks = Process::get_process_arc_by_pid(ppid)
             .map(|parent_proc| parent_proc.meta_lock().tasks.clone());
-
-        // VFORK: wake up parent if it was suspended waiting for this task
-        // (exec replaces the process image, which counts as "done" for vfork)
-        let mut wake_parent_tasks = Vec::new();
-        if let Some(parent_tasks) = parent_tasks {
-            for task_weak in &parent_tasks {
-                if let Some(t) = task_weak.upgrade() {
-                    let mut parent_inner = t.inner_lock();
-                    if parent_inner.vfork_wait_child == self.tid()
-                        && parent_inner.task_status == TaskStatus::VforkBlocked
-                    {
-                        parent_inner.vfork_wait_child = 0;
-                        parent_inner.task_status = TaskStatus::Ready;
-                        drop(parent_inner);
-                        wake_parent_tasks.push(t);
-                    }
-                }
-            }
-        }
-        for parent_task in wake_parent_tasks {
-            crate::task::ready_queue::add_task(&parent_task);
-        }
 
         let mut task_inner = self.inner_lock();
         task_inner.time_data.clear();
@@ -517,6 +498,29 @@ impl TaskControlBlock {
         if let Some(new_comm) = new_comm {
             self.process.meta_lock().comm = new_comm;
         }
+
+        // vfork(2) releases its parent only after the child no longer uses
+        // the shared address space. The new page table and trap context above
+        // are fully installed at this point.
+        let mut wake_parent_tasks = Vec::new();
+        if let Some(parent_tasks) = parent_tasks {
+            for task_weak in &parent_tasks {
+                if let Some(t) = task_weak.upgrade() {
+                    let mut parent_inner = t.inner_lock();
+                    if parent_inner.vfork_wait_child == self.tid()
+                        && parent_inner.task_status == TaskStatus::VforkBlocked
+                    {
+                        parent_inner.vfork_wait_child = 0;
+                        parent_inner.task_status = TaskStatus::Ready;
+                        drop(parent_inner);
+                        wake_parent_tasks.push(t);
+                    }
+                }
+            }
+        }
+        for parent_task in wake_parent_tasks {
+            crate::task::ready_queue::add_task(&parent_task);
+        }
         Ok(())
     }
     /// 复制进程，注意这里需要实现 fork 的主要逻辑
@@ -680,6 +684,18 @@ impl TaskControlBlock {
         // inner 锁释放后执行，避免与子进程退出路径反向获取锁。
         let process_arc = if flags.contains(CloneFlags::CLONE_THREAD) {
             self.process.clone()
+        } else if flags.contains(CloneFlags::CLONE_VM) {
+            Process::new_on_hart(
+                child_memory_set_arc.clone(),
+                child_sig_table.clone(),
+                child_fd_table,
+                child_fs_info,
+                child_pid,
+                child_ppid,
+                parent_pgid,
+                parent_sid,
+                self.process.home_hart(),
+            )
         } else {
             Process::new(
                 child_memory_set_arc.clone(),

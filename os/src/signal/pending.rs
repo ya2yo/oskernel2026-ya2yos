@@ -117,11 +117,16 @@ pub fn handle_signal(signo: usize) {
             }
             op @ (SigOp::Terminate | SigOp::CoreDump) => {
                 debug!("handle_signal: terminate, signo={}", signo);
-                current_task()
-                    .unwrap()
-                    .process
-                    .meta_lock()
-                    .termination_signal = Some((signo, op == SigOp::CoreDump));
+                let task = current_task().unwrap();
+                let mut process_meta = task.process.meta_lock();
+                // exit_group() uses an internal SIGKILL to stop siblings.
+                // That cleanup signal must not replace the normal exit status
+                // already selected by the thread group leader.
+                if process_meta.group_exit_code.is_none() {
+                    process_meta.termination_signal = Some((signo, op == SigOp::CoreDump));
+                }
+                drop(process_meta);
+                drop(task);
                 exit_current_and_run_next((signo + 128) as i32);
             }
         }

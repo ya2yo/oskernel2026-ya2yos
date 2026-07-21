@@ -91,7 +91,6 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
             return Err(SysErrNo::EINVAL);
         }
     }
-    #[cfg(target_arch = "loongarch64")]
     let stack = if cargs.stack == 0 {
         if cargs.stack_size != 0 {
             return Err(SysErrNo::EINVAL);
@@ -105,8 +104,6 @@ pub fn sys_clone3(cl_args: *const clone_args, size: usize) -> SyscallRet {
             .checked_add(cargs.stack_size as usize)
             .ok_or(SysErrNo::EINVAL)?
     };
-    #[cfg(not(target_arch = "loongarch64"))]
-    let stack = cargs.stack as usize;
     drop(memory_set);
     drop(task);
     // Delegate to the existing legacy clone implementation.

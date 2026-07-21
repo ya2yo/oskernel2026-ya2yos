@@ -986,5 +986,12 @@
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：继续分析 BuildStorm MINIBUILD 的 Rustc 实际编译路径，定位累计 mmap 预算导致的 ENOMEM，并完成双架构构建与 RISC-V QEMU 回归。
-- **描述**：独立诊断日志确认 Rustc 在已有约 468 MiB lazy VMA 后申请 128 MiB 匿名 `PROT_NONE` arena，被 512 MiB `MAX_MMAP_SIZE` 拒绝；这不是物理内存或用户 VA 耗尽。两架构预算提升至 2 GiB，保留 VMA 上限及缺页物理页约束。复用既有项目的 RISC-V MINIBUILD 能正常结束；强制 prepare 的 fresh run 已进入 `Compiling minibuild`，但完整 rustc execve 返回 `Bad address (os error 14)`。因此只将 mmap 预算修复标记为完成，完整 BuildStorm 仍待后续修复；LoongArch64 已完成构建，未运行其 QEMU。详见 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md) 与 `ai.log`。
+- **描述**：独立诊断日志确认 Rustc 在已有约 468 MiB lazy VMA 后申请 128 MiB 匿名 `PROT_NONE` arena，被 512 MiB `MAX_MMAP_SIZE` 拒绝；这不是物理内存或用户 VA 耗尽。两架构预算提升至 2 GiB，保留 VMA 上限及缺页物理页约束。复用既有项目的 RISC-V MINIBUILD 能正常结束；强制 prepare 的 fresh run 已进入 `Compiling minibuild`，但 Cargo worker 创建 Rustc 子进程的普通 `clone()` 返回 `Bad address (os error 14)`。因此只将 mmap 预算修复标记为完成，完整 BuildStorm 仍待后续修复；LoongArch64 已完成构建，未运行其 QEMU。详见 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md) 与 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### BuildStorm clone3/vfork 生命周期修复整理（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求只提交已确认可保留的 BuildStorm 任务管理修改，并补齐问题复盘、开发日志和 AI 记录。
+- **描述**：复核 Rust toolchain 的 `clone3(CLONE_VM | CLONE_VFORK)` 日志后，将 vfork 父 task 的状态变化与即时调度切换绑定，延后 exec 对父 task 的唤醒，并让非线程 `CLONE_VM` 子进程继承父 hart，避免无 remote TLB shootdown 时跨 hart 共享页表。两个架构统一 clone3 stack ABI，并防止 group-exit 内部 SIGKILL 污染正常退出状态。双架构 release 构建通过。缓存性能实验和 `initproc` 单脚本入口未提交；MINIBUILD 剩余 EFAULT 已更正为动态 `MAP_STACK` 普通 fork 复制问题。详见 [problem/buildstorm-vfork-clone3-lifecycle.md](./problem/buildstorm-vfork-clone3-lifecycle.md) 与 `ai.log`。
+- **关联 commit**：`fix(task): correct vfork clone3 handoff`

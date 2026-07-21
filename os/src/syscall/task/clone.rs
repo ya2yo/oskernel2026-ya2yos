@@ -4,7 +4,7 @@ use log::debug;
 
 use crate::{
     signal::SIG_MAX_NUM,
-    task::{current_task, ready_queue, CloneFlags},
+    task::{current_task, ready_queue, suspend_current_and_run_next, CloneFlags},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -101,5 +101,12 @@ pub fn sys_clone(
     // we do not have to move to next instruction since we have done it before
     // add new task to scheduler
     ready_queue::add_task(&new_task);
+    if flags.contains(CloneFlags::CLONE_VFORK) {
+        // vfork(2) must not return to the parent until the child has called
+        // execve() or exited. clone_process() already marked this task as
+        // VforkBlocked; switch immediately so userspace cannot reclaim the
+        // shared child stack before the child first runs.
+        suspend_current_and_run_next();
+    }
     Ok(new_tid)
 }

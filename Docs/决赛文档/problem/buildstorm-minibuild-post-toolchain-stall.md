@@ -1,4 +1,4 @@
-# BuildStorm MINIBUILD mmap 预算与 Rustc execve EFAULT
+# BuildStorm MINIBUILD mmap 预算与动态栈 fork EFAULT
 
 ## 背景
 
@@ -27,8 +27,11 @@ final-2026 的 `buildstorm_testcode.sh` 在验证 `rustc --version` 和 `cargo -
 保留单进程 VMA 上限及缺页时的物理页约束，只允许 Rustc 所需的未驻留地址空间预留。
 
 该修复消除了已记录的 mmap `ENOMEM`，但不是 MINIBUILD 的全部问题。强制重新创建
-`/tmp/minibuild` 后，Cargo 已进入实际 `Compiling minibuild`，随后执行带完整参数的
-`rustc` 返回 `Bad address (os error 14)`；该独立 `execve` 用户参数复制错误仍待修复。
+`/tmp/minibuild` 后，Cargo 已进入实际 `Compiling minibuild`，随后报告
+`Bad address (os error 14)`。后续审计确认这不是 Rustc 的 `execve` 用户参数复制错误：
+Cargo worker 的普通 `clone()` 在创建 Rustc 子进程时返回 `EFAULT`。fork 克隆跳过了动态
+`MAP_STACK` VMA，随后写 `CLONE_CHILD_SETTID` 的用户地址找不到 child VMA。该独立 fork
+地址空间复制问题仍待修复。
 
 ## 此前分析
 
@@ -80,8 +83,9 @@ prepare 路径保留为独立诊断入口，必要时可先运行以强制创建
   不能证明干净项目已重新编译。
 - `timeout 240s make run TARGET_ARCH=riscv64 > /tmp/buildstorm-mmap-2g-fresh-cargo.log 2>&1`：
   强制 prepare 后输出 `BUILDSTORM_DEBUG_MINIBUILD_PREPARE ok` 和
-  `BUILDSTORM_DEBUG_MINIBUILD_BUILD begin`，Cargo 进入 `Compiling minibuild`，但实际
-  `rustc` execve 返回 `Bad address (os error 14)`，因此完整 MINIBUILD 尚未通过。
+  `BUILDSTORM_DEBUG_MINIBUILD_BUILD begin`，Cargo 进入 `Compiling minibuild`，但其 worker
+  创建 Rustc 子进程的普通 `clone()` 返回 `Bad address (os error 14)`，因此完整 MINIBUILD
+  尚未通过。
 - `make build-arch TARGET_ARCH=loongarch64`：通过；本次没有运行 LoongArch64 QEMU，
   因为当前复现入口和 final-2026 Rust 工具链镜像是 RISC-V 专用。
 
@@ -99,7 +103,7 @@ prepare 路径保留为独立诊断入口，必要时可先运行以强制创建
 
 ## 后续
 
-下一步先修复 Rustc 长 argv/env 调用触发的 `execve EFAULT`，再以正式
+下一步修复普通 fork 对动态 `MAP_STACK` VMA 的继承，再以正式
 `buildstorm_testcode.sh` 的 `BUILDSTORM_MINIBUILD` 和 `BUILDSTORM_COMPILE` 标记验证
 完整 BuildStorm。另有一个独立的 mmap 记账问题待处理：`munmap()` 目前不会回收
 `MAP_STACK` 的预算，且只处理完整覆盖的 VMA；它不是本次 Rustc ENOMEM 的首个阻塞点，
