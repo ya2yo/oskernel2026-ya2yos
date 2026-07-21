@@ -10,6 +10,7 @@
 - [RISC-V 双 hart basic test_yield fork/exit 锁序死锁](./basic-test-yield-fork-exit-deadlock.md)
 - [BusyBox fork/exec/exit 并发路径卡死与地址空间回收修复](./busybox-fork-exec-exit-smp-hang.md)
 - [splice syscall 兼容实现](./splice-syscall.md)
+- [rseq(293) 系统调用接入](./rseq-syscall.md)
 - [splice07 文件类型校验与空 pipe 卡死](./splice07-file-type-validation.md)
 - [splice07 匿名挂载 fd 默认可读写导致阻塞](./splice07-mount-context-fd-block.md)
 - [pipe2 flags 丢失导致 F_GETFD/F_GETFL 失败](./pipe2-flags-propagation.md)

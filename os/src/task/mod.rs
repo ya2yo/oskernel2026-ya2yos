@@ -65,6 +65,7 @@ mod kernel_stack;
 mod manager;
 mod process;
 mod processor;
+mod rseq;
 mod scheduler;
 mod switch;
 mod sysinfo;
@@ -96,6 +97,7 @@ pub use processor::{
     current_task, current_token, current_trap_cx, run_tasks, schedule, take_current_task,
     Processor, PROCESSORS,
 };
+pub(crate) use rseq::RseqState;
 pub use scheduler::ready_queue;
 use spin::Lazy;
 use switch::__abandon;

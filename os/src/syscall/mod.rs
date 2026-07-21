@@ -253,6 +253,7 @@ pub enum Syscall {
     Preadv2 = 286,
     Pwritev2 = 287,
     Statx = 291,
+    Rseq = 293,
     IoUringSetup = 425,
     OpenTree = 428,
     MoveMount = 429,
@@ -740,6 +741,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::Clone => sys_clone(args[0], args[1], args[2], args[3], args[4]),
         Syscall::Clone3 => sys_clone3(args[0] as *const clone_args, args[1]),
+        Syscall::Rseq => sys_rseq(
+            args[0] as *mut u8,
+            args[1] as u32,
+            args[2] as u32,
+            args[3] as u32,
+        ),
         Syscall::Brk => sys_brk(args[0]),
 
         Syscall::Mmap => sys_mmap(

@@ -3,7 +3,7 @@ use super::super::process::Process;
 use super::super::{
     aux::{Aux, AuxType},
     scheduler::SchedEntity,
-    tid_to_task, TaskContext, TidHandle,
+    tid_to_task, RseqState, TaskContext, TidHandle,
 };
 use crate::{
     arch::{
@@ -144,6 +144,9 @@ pub struct TaskControlBlockInner {
     pub sig_pending: SigSet,
     /// 与 sig_pending 位图并行保存的 siginfo_t；标准信号不排队，每个信号保留一份。
     pub sig_pending_info: [Option<SigInfo>; SIG_MAX_NUM + 1],
+    /// rseq ABI registration is thread-local, just like the user TLS area it
+    /// references.
+    pub(crate) rseq: RseqState,
     pub timer: Arc<Timer>,
     pub robust_list: RobustListHead,
     /// POSIX 进程凭证（Credentials）
@@ -271,6 +274,7 @@ impl TaskControlBlock {
                 alt_signal_stack: SignalStack::disabled(),
                 sig_pending: SigSet::empty(),
                 sig_pending_info: [None; SIG_MAX_NUM + 1],
+                rseq: RseqState::default(),
                 timer: Arc::new(Timer::new()),
                 robust_list: RobustListHead::default(),
                 user_id: 0,
@@ -397,6 +401,9 @@ impl TaskControlBlock {
         // would make a signal arriving before the new libc calls
         // set_robust_list() interpret stale user memory during thread exit.
         task_inner.robust_list = RobustListHead::default();
+        // rseq retains a pointer into the replaced user image, so exec starts
+        // with no registered area.
+        task_inner.rseq = RseqState::default();
 
         // 获取新地址空间用于栈写入
         let proc_inner = &self.process;
@@ -559,6 +566,7 @@ impl TaskControlBlock {
             parent_sgid,
             parent_capabilities,
             parent_nice,
+            parent_rseq,
             parent_comm,
             parent_pgid,
             parent_sid,
@@ -659,6 +667,13 @@ impl TaskControlBlock {
             parent_sgid = parent_inner.saved_gid;
             parent_capabilities = parent_inner.capabilities;
             parent_nice = parent_inner.nice;
+            // Linux inherits rseq on fork but clears it for CLONE_VM, whose
+            // child gets a distinct thread-local rseq ABI area.
+            parent_rseq = if flags.contains(CloneFlags::CLONE_VM) {
+                RseqState::default()
+            } else {
+                parent_inner.rseq
+            };
         } // parent_inner, parent_proc_inner 在此释放
 
         // Process::new() 会登记父子关系并获取 ProcessMeta。必须在父任务
@@ -704,6 +719,7 @@ impl TaskControlBlock {
                 alt_signal_stack: child_alt_signal_stack,
                 sig_pending: SigSet::empty(),
                 sig_pending_info: [None; SIG_MAX_NUM + 1],
+                rseq: parent_rseq,
                 timer: child_timer,
                 robust_list: RobustListHead::default(),
                 user_id: parent_user_id,

@@ -5483,3 +5483,44 @@ warnings。多轮 RISC-V release QEMU 输出均写入 `log.ans`：`GLIBC_2.38 no
 正式评分要求 `8G / 8 CPU`，当前宿主只能使用 `2G / 2 CPU`；guest 内 minibuild 编译在
 300 秒窗口仍持续满载且由 timeout 终止，故未声称 `BUILDSTORM_MINIBUILD`、完整 ArceOS
 编译或性能分项通过。
+## 2026-07-21：rseq(293) 系统调用接入
+
+### 用户需求
+
+维护者要求实现 293 号 syscall。确认 RISC-V 和 LoongArch64 的 Linux asm-generic ABI 中
+`293` 为 `rseq(2)`；随后明确本轮只要求新增 syscall，不要求继续验证 rseq 行为语义，要求
+直接补齐项目文档。
+
+### 分析与采纳结论
+
+AI 对照本地 Linux 7.0 的 `kernel/rseq.c`、UAPI `struct rseq` 以及 Ya2yOS 的 syscall、任务、
+trap 和信号路径，确认不能把未知 syscall 直接改为无条件成功：用户态会把成功注册视为可使用
+rseq fast path。采纳经典 32-byte ABI 的最小接入范围，并将状态归属到单个 TCB；`fork`、
+`CLONE_VM` 和 `execve` 分别按独立地址空间、共享地址空间和替换映像处理注册状态。
+
+为避免注册后活跃 `rseq_cs` 在返回用户态直接续跑，代码在统一返回用户态路径发布 CPU ID，
+并在 signal frame 前清理或 fixup critical section。但维护者未要求证明这部分与 Linux 的完整
+抢占、信号和跨 hart 行为完全等价，文档和最终结果均不将其标记为已验证语义。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/mod.rs` | 增加 `Syscall::Rseq = 293` 和分发 |
+| `os/src/syscall/task/rseq.rs` | 新增薄 syscall 入口 |
+| `os/src/task/rseq.rs` | 新增每线程 rseq 状态、ABI 初始化、注销和返回用户态 fixup |
+| `os/src/task/{mod.rs,task/task.rs}` | 增加状态字段和 clone/exec 生命周期处理 |
+| `os/src/trap/mod.rs` | 在 signal frame 前及最终返回用户态前调用 fixup |
+| `user/src/{lib.rs,syscall/mod.rs}` | 增加用户 ABI 和 raw syscall 包装 |
+| `user/src/bin/initproc/rseq_regression.rs` | 增加基础 ABI 回归探针，随后在 RISC-V `log.ans` 中通过 |
+
+### 验证与边界
+
+已完成 `rustfmt`/`cargo fmt --check`、`git diff --check` 和真实 `task/rseq.rs` 的临时 Rust
+类型检查。RISC-V/LoongArch64 的用户态目标均编译成功。两套内核完整构建均在未编译本次内核
+crate 前被 `lwext4_rust` 的 CMake 阶段阻断，原因是主机缺少
+`riscv64-linux-musl-cc` 或 `loongarch64-linux-musl-cc`；Docker 守护进程也不可用。
+
+维护者随后提供的 RISC-V QEMU `log.ans` 输出 `rseq regression: PASS`。该 probe 覆盖基础
+ABI 闭环；仍未运行 LTP 或 Linux rseq selftests，未对真实 critical section abort、抢占、
+信号或跨 hart 语义作通过结论。

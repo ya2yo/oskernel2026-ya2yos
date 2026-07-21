@@ -63,6 +63,7 @@ const SYSCALL_WAIT4: usize = 260;
 const SYSCALL_RENAMEAT2: usize = 276;
 const SYSCALL_GETRANDOM: usize = 278;
 const SYSCALL_COPYFILERANGE: usize = 285;
+const SYSCALL_RSEQ: usize = 293;
 
 const SYSCALL_SHUTDOWN: usize = 1000;
 const SYSCALL_STRACE: usize = 2000;
@@ -171,6 +172,20 @@ pub fn sys_gettimeofday(ts: &mut [u8]) -> isize {
 
 pub fn sys_getpid() -> isize {
     syscall(SYSCALL_GETPID, [0, 0, 0, 0, 0, 0])
+}
+
+pub fn sys_rseq(rseq: *mut u8, rseq_len: u32, flags: u32, sig: u32) -> isize {
+    syscall(
+        SYSCALL_RSEQ,
+        [
+            rseq as isize,
+            rseq_len as isize,
+            flags as isize,
+            sig as isize,
+            0,
+            0,
+        ],
+    )
 }
 
 pub fn sys_fork() -> isize {

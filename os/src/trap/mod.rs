@@ -241,18 +241,52 @@ pub fn trap_handler() {
         .update_stime();
 }
 
+/// Publish rseq CPU state and abort a live rseq critical section before user
+/// execution resumes.  A stale or malformed user rseq area is fatal in Linux;
+/// disable it here before queueing SIGSEGV so the signal path cannot retry an
+/// inaccessible pointer indefinitely.
+fn prepare_rseq_user_return() -> bool {
+    let task = current_task().unwrap();
+    let tid = task.tid();
+    match task.rseq_prepare_user_return() {
+        Ok(()) => true,
+        Err(errno) => {
+            warn!(
+                "rseq user-return fixup failed for tid {}: {:?}; sending SIGSEGV",
+                tid, errno
+            );
+            task.disable_rseq();
+            drop(task);
+            let _ = send_signal_to_thread(tid, SigSet::SIGSEGV);
+            false
+        }
+    }
+}
+
 #[no_mangle]
 pub fn trap_return() {
-    //检查信号
-    while let Some(signo) = check_if_any_sig_for_current_task() {
-        // 默认信号可以连续消费；遇到用户自定义 handler 时需要立刻返回用户态，
-        // 让用户 handler 先运行，避免在同一个 trap_return 中覆盖信号栈帧。
-        let has_handler = current_task()
-            .unwrap()
-            .process
-            .with_sigtable(|sigtable| sigtable.action(signo).is_handler());
-        handle_signal(signo);
-        if has_handler {
+    loop {
+        if let Some(signo) = check_if_any_sig_for_current_task() {
+            // The signal frame must save the rseq abort PC, not the interrupted
+            // critical-section PC.  Do this before handle_signal/setup_frame.
+            let rseq_ok = prepare_rseq_user_return();
+            // 默认信号可以连续消费；遇到用户自定义 handler 时需要立刻返回用户态，
+            // 让用户 handler 先运行，避免在同一个 trap_return 中覆盖信号栈帧。
+            let has_handler = current_task()
+                .unwrap()
+                .process
+                .with_sigtable(|sigtable| sigtable.action(signo).is_handler());
+            handle_signal(signo);
+            if has_handler && rseq_ok {
+                break;
+            }
+            continue;
+        }
+
+        // Timer preemption and migration both resume through trap_return.
+        // This common point publishes the actual hart and aborts a live rseq
+        // critical section before any instruction can run in user mode.
+        if prepare_rseq_user_return() {
             break;
         }
     }

@@ -112,6 +112,43 @@ pub fn get_time() -> usize {
 pub fn getpid() -> isize {
     sys_getpid()
 }
+
+/// Classic Linux rseq ABI area.  Ya2yOS currently supports this original
+/// 32-byte layout and does not advertise newer rseq extension fields.
+#[repr(C, align(32))]
+#[derive(Clone, Copy)]
+pub struct RseqAbi {
+    pub cpu_id_start: u32,
+    pub cpu_id: u32,
+    pub rseq_cs: u64,
+    pub flags: u32,
+    pub node_id: u32,
+    pub mm_cid: u32,
+    pub slice_ctrl: u32,
+}
+
+impl RseqAbi {
+    pub const fn new() -> Self {
+        Self {
+            cpu_id_start: u32::MAX,
+            cpu_id: u32::MAX,
+            rseq_cs: 0,
+            flags: 0,
+            node_id: 0,
+            mm_cid: 0,
+            slice_ctrl: 0,
+        }
+    }
+}
+
+pub const RSEQ_FLAG_UNREGISTER: u32 = 1;
+pub const RSEQ_CPU_ID_UNINITIALIZED: u32 = u32::MAX;
+
+/// Register or unregister the calling thread's rseq ABI area.
+pub fn rseq(rseq: *mut RseqAbi, rseq_len: u32, flags: u32, sig: u32) -> isize {
+    sys_rseq(rseq as *mut u8, rseq_len, flags, sig)
+}
+
 pub fn fork() -> isize {
     sys_fork()
 }
