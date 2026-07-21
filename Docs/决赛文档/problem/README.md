@@ -106,3 +106,4 @@
 - [BuildStorm final-2026 动态库路径错误重定向](./buildstorm-final-2026-dynamic-library-path.md)
 - [ext4 getdents64 d_type ABI 映射错误](./ext4-getdents64-d-type.md)
 - [BuildStorm Rust 子进程管道 FIONBIO 兼容](./buildstorm-fionbio-nonblocking.md)
+- [BuildStorm 工具链检查后 minibuild 超时分析（待续）](./buildstorm-minibuild-post-toolchain-stall.md)

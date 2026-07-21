@@ -5585,6 +5585,24 @@ RAM 的后 7GiB 区间会产生 4GiB block，但 upstream 0.6.0 只有 32 个 fr
 
 ---
 
+## 2026-07-21：BuildStorm 工具链检查后 minibuild 超时分析
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans` 中 `BUILDSTORM_TOOLCHAIN ok` 后的长时间超时，随后要求记录当前检查点并先提交一部分。
+
+### 分析与采纳结论
+
+脚本跟踪确认 `cargo new` 已完成、停在重定向输出的 `cargo build`。审计发现大 Rust DSO 的逐页读取会重复进入 lwext4 小文件缓存准入，且只读 `MAP_PRIVATE` 映射不能复用现有文件页缓存，因此实现了大文件 bypass、供 inode 读取使用的 uncached seek、以及只读 private clean file page 复用供验证。
+
+这不是完整根因结论：两次 10 分钟 QEMU 运行都未出现 `BUILDSTORM_MINIBUILD ok`。64 KiB/256 KiB 预读实验没有可观察收益，已撤回。后续复核还确认 uncached seek 会与命中 `VFileCache` 的偏移脱节，且 private file page 可经 `mprotect(PROT_WRITE)` 变为共享可写页；三个源码文件暂不提交，待修复这两项语义问题。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs`、`os/src/fs/ext4_lw/inode.rs`、`os/src/mm/page_fault_handler.rs`。`make riscv64-build` 和 `git diff --check` 通过；完整 BuildStorm 尚未通过，LoongArch64 本轮未重新运行。详见 `problem/buildstorm-minibuild-post-toolchain-stall.md`。
+
+---
+
 ## 2026-07-21：RISC-V VirtIO-MMIO 网卡自动总线分配修复
 
 ### 用户需求

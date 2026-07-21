@@ -947,6 +947,13 @@
 - **描述**：AI 对照本地 Linux 7.0 rseq ABI 和本项目的 syscall、TCB、clone/exec、trap/信号路径，确认 RISC-V 与 LoongArch64 的 293 均为 `rseq(2)`。人工审核后采纳经典 32-byte ABI 的线程级注册状态、基础 errno、clone/exec 生命周期和用户态返回前的防御性 fixup；同时加入 initproc 基础探针。维护者提供的 RISC-V `log.ans` 随后输出 `rseq regression: PASS`，证明基础 ABI 闭环已运行通过。维护者仍未要求完整 rseq 语义验收，因此未运行 LTP/Linux selftest，也未宣称抢占、信号或跨 hart critical-section 语义已通过。用户态双架构编译成功；内核完整构建受缺失的 lwext4 musl C 交叉编译器阻断。详见 `Docs/决赛文档/ai.log` 2026-07-21 条目和 [problem/rseq-syscall.md](./problem/rseq-syscall.md)。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
 
+#### BuildStorm 工具链检查后 minibuild 超时分析（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 final-2026 BuildStorm 在工具链检查成功后的 guest Rust 编译超时，并形成未完成问题的可审计检查点。
+- **描述**：记录了大 Rust DSO 的 lwext4 缓存准入重复开销与只读 private 文件映射页复用限制，并实现局部优化供验证。RISC-V release 构建通过，但 10 分钟 QEMU 运行仍未到达 `BUILDSTORM_MINIBUILD ok`；复核还发现缓存偏移和 `mprotect` 后 COW 隔离风险，三个源码文件暂不提交。预读实验已撤回，未将该问题标记为修复完成。详见 `ai.log` 和 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md)。
+- **关联 commit**：文档检查点提交（2026-07-21）
+
 #### RISC-V VirtIO-MMIO 网卡自动总线分配修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
