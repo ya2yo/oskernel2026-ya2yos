@@ -5582,3 +5582,30 @@ RAM 的后 7GiB 区间会产生 4GiB block，但 upstream 0.6.0 只有 32 个 fr
 `log.ans`，包含 `mm:cma late range inited`、`boot secondary harts...complete.`、全部 7 个 AP
 启动消息和 `BUILDSTORM_TOOLCHAIN ok`，无 panic/TFAIL/TBROK。运行在 60 秒外部 timeout 截止，
 未验证完整 BuildStorm 或全量测试；详见 `problem/riscv-8g-8hart-bootstrap.md`。
+
+---
+
+## 2026-07-21：RISC-V VirtIO-MMIO 网卡自动总线分配修复
+
+### 用户需求
+
+维护者反馈评测机配置下根目录 `log.ans` 报找不到网络设备，并询问是否可避免修改 QEMU 参数。
+
+### 分析与采纳结论
+
+日志显示内核只在 `0x10002000` 初始化网卡并获得 `ZeroDeviceId`。QEMU 9.2.1 monitor 的
+`info qtree` 证明：磁盘显式占用 `virtio-mmio-bus.0`，未指定 `bus` 的网卡被 QEMU 自动放在
+`virtio-mmio-bus.7`，物理地址为 `0x10008000`。内核的 MMIO 映射和驱动基址仍保留 `.1` 的旧
+假设，故无法读取网卡寄存器。
+
+为保留评测机 QEMU 参数，采纳同步更新 RISC-V 页表 MMIO 映射和网卡驱动基址至 `.7`。这与
+当前 QEMU virt 平台的自动分配规则一致；若将来设备数量或分配顺序可变，应以 boot DTB 枚举
+取代固定地址。
+
+### 修改与验证
+
+修改 `os/src/arch/riscv64/qemu/memory_layout.rs` 与 `os/src/drivers/mod.rs`；未改动
+`make_scripts/riscv64.mk`。`make TARGET_ARCH=riscv64 build-arch` 通过。真实 RISC-V QEMU
+启动日志包含 `net::init...Initialize network subsystem...`，且不再包含
+`No usable VirtIO Net MMIO device` 或 `No network device found`；后续用户态网络服务收到 HTTP
+请求。完整测试运行由 120 秒 timeout 截止，未作为全量评测通过结论。

@@ -58,7 +58,7 @@ pub const MMIO: &[(usize, usize)] = &[
     (0x0010_1000, 0x00_1000), // VIRT_RTC
     (0x1000_0000, 0x00_1000), // UART0
     (0x1000_1000, 0x00_1000), // Virtio Block
-    (0x1000_2000, 0x00_1000), // Virtio Net
+    (0x1000_8000, 0x00_1000), // Virtio Net
 ];
 
 pub const MMIO_MAP_OFFSET: usize = KERNEL_ADDR_OFFSET;

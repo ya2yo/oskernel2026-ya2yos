@@ -947,6 +947,13 @@
 - **描述**：AI 对照本地 Linux 7.0 rseq ABI 和本项目的 syscall、TCB、clone/exec、trap/信号路径，确认 RISC-V 与 LoongArch64 的 293 均为 `rseq(2)`。人工审核后采纳经典 32-byte ABI 的线程级注册状态、基础 errno、clone/exec 生命周期和用户态返回前的防御性 fixup；同时加入 initproc 基础探针。维护者提供的 RISC-V `log.ans` 随后输出 `rseq regression: PASS`，证明基础 ABI 闭环已运行通过。维护者仍未要求完整 rseq 语义验收，因此未运行 LTP/Linux selftest，也未宣称抢占、信号或跨 hart critical-section 语义已通过。用户态双架构编译成功；内核完整构建受缺失的 lwext4 musl C 交叉编译器阻断。详见 `Docs/决赛文档/ai.log` 2026-07-21 条目和 [problem/rseq-syscall.md](./problem/rseq-syscall.md)。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
 
+#### RISC-V VirtIO-MMIO 网卡自动总线分配修复（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求排查评测机配置下 RISC-V 启动日志找不到网络设备，并要求不改动 QEMU 参数。
+- **描述**：日志中的 `0x10002000: ZeroDeviceId` 表明旧网卡地址未挂载设备。通过 QEMU `info qtree` 确认显式绑定 `.0` 的块设备之外，未指定 bus 的网卡被自动分配到 `virtio-mmio-bus.7` / `0x10008000`。内核同步更新该页的 MMIO 映射和网卡驱动基址，保留评测机 QEMU 参数不变。RISC-V release 构建与真实 QEMU 启动均通过；日志正常初始化网络，且已无原有无网卡警告。详见 [problem/riscv-virtio-net-mmio-autobus.md](./problem/riscv-virtio-net-mmio-autobus.md) 与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-21 工作树）
+
 #### RISC-V riscv_hwprobe(258) syscall 桩接入（7.21）
 
 - **工具/模型**：Codex (GPT-5)
