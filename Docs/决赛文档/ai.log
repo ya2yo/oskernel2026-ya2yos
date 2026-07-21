@@ -5524,3 +5524,29 @@ crate 前被 `lwext4_rust` 的 CMake 阶段阻断，原因是主机缺少
 维护者随后提供的 RISC-V QEMU `log.ans` 输出 `rseq regression: PASS`。该 probe 覆盖基础
 ABI 闭环；仍未运行 LTP 或 Linux rseq selftests，未对真实 critical section abort、抢占、
 信号或跨 hart 语义作通过结论。
+
+---
+
+## 2026-07-21：RISC-V riscv_hwprobe(258) 桩接入
+
+### 用户需求
+
+维护者要求为 RISC-V 的 258 号 syscall 添加 stub 代码。
+
+### 分析与采纳结论
+
+Linux RISC-V ABI 将 `258` 定义为 `riscv_hwprobe(2)`。未知 syscall 虽同样会返回 `ENOSYS`，但
+会输出 unsupported 警告且无法在分发表中明确标识该架构专用接口。stub 不应返回成功：调用者
+会将成功结果中的 probe pair 当作有效硬件能力数据使用，而当前内核没有填充 ABI 结构的实现。
+
+因此仅在 `riscv64` 条件编译下登记并分发该 syscall，薄入口保留三个 ABI 参数并固定返回
+`ENOSYS`。未实现硬件能力查询、CPU mask 过滤或向用户指针写入数据。
+
+### 修改与验证
+
+修改 `os/src/syscall/mod.rs`、`os/src/syscall/sys/mod.rs`，新增
+`os/src/syscall/sys/riscv.rs`。`make TARGET_ARCH=riscv64` 已完成 RISC-V 与 LoongArch64
+release 构建，均通过。未启动 QEMU 或运行 LTP，因为该桩没有成功行为可验证。
+
+`rustfmt --check` 对本次文件通过；检查同时发现工作区既有
+`os/src/syscall/sys/prctl.rs` 格式差异，未修改该非本任务文件。

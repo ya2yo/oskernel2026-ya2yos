@@ -1,7 +1,5 @@
 use linux_raw_sys::prctl::{
-    PR_CAPBSET_DROP, PR_CAP_AMBIENT, PR_GET_NO_NEW_PRIVS, PR_GET_PDEATHSIG,
-    PR_GET_SPECULATION_CTRL, PR_GET_THP_DISABLE, PR_SET_DUMPABLE, PR_SET_NAME, PR_SET_NO_NEW_PRIVS,
-    PR_SET_PDEATHSIG, PR_SET_SECCOMP, PR_SET_SECUREBITS, PR_SET_THP_DISABLE, PR_SET_TIMING,
+    PR_CAP_AMBIENT, PR_CAPBSET_DROP, PR_GET_DUMPABLE, PR_GET_NO_NEW_PRIVS, PR_GET_PDEATHSIG, PR_GET_SPECULATION_CTRL, PR_GET_THP_DISABLE, PR_SET_DUMPABLE, PR_SET_NAME, PR_SET_NO_NEW_PRIVS, PR_SET_PDEATHSIG, PR_SET_SECCOMP, PR_SET_SECUREBITS, PR_SET_THP_DISABLE, PR_SET_TIMING
 };
 use log::{debug, warn};
 
@@ -47,6 +45,9 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
                 })?;
             }
             debug!("[prctl] get pdeath_signal={}", sig);
+            Ok(0)
+        }
+        PR_GET_DUMPABLE => {
             Ok(0)
         }
         PR_SET_DUMPABLE => {
