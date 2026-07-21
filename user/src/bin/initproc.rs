@@ -152,7 +152,6 @@ fn get_score() -> i32 {
 // final-2026
 #[allow(unused)]
 fn test_final_2026() -> i32 {
-    // run_testsuit("glibc\0", "cagent_testcode.sh\0");
     if !sigaltstack_regression::run() {
         shutdown();
         return 1;
@@ -161,6 +160,7 @@ fn test_final_2026() -> i32 {
         shutdown();
         return 1;
     }
+    run_testsuit("glibc\0", "cagent_testcode.sh\0");
     run_testsuit("glibc\0", "buildstorm_testcode.sh\0");
     shutdown();
     0
