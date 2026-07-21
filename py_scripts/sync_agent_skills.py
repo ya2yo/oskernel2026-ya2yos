@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SHARED = ROOT / "agent-skills" / "shared"
-TARGETS = (ROOT / ".codex" / "skills", ROOT / ".claude" / "skills")
+TARGETS = (ROOT / ".codex" / "skills", ROOT / ".claude" / "skills", ROOT / ".opencode" / "skills")
 
 
 def copytree_replace(src: Path, dst: Path) -> None:

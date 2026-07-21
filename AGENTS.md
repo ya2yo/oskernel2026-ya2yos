@@ -18,7 +18,7 @@ commands, paths, and errors in their original language.
 - `Docs/`: project documentation, development logs, and problem writeups.
 - `Docs/决赛文档/problem/`: detailed bug and testcase analysis records.
 - `agent-skills/shared/`: source of truth for repo-specific agent skills.
-- `.codex/skills/` and `.claude/skills/`: generated skill directories. Do not
+- `.codex/skills/`, `.opencode/skills` and `.claude/skills/`: generated skill directories. Do not
   edit generated skill files directly.
 - `~/projects/OSKernel2026-PlainOs/testsuits-for-oskernel` the testcase source code, it's read only and not compile it.
 
