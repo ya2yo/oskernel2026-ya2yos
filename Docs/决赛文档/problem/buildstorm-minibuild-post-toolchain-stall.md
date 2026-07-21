@@ -33,22 +33,27 @@ Cargo worker 的普通 `clone()` 在创建 Rustc 子进程时返回 `EFAULT`。f
 `MAP_STACK` VMA，随后写 `CLONE_CHILD_SETTID` 的用户地址找不到 child VMA。该独立 fork
 地址空间复制问题仍待修复。
 
-## 此前分析
+## 已采纳的 lwext4 大文件缓存探测优化（2026-07-21）
 
-Rust 工具链中的 `librustc_driver-*.so` 约为 300 MiB。原 lwext4 读取路径中，文件映射的每个 4 KiB 缺页都会进入小文件 write-back cache 的准入检查；对超过 4 MiB 上限的文件，这会反复打开并测量同一大文件。另一个限制是原文件页缓存只给 `MAP_SHARED` 映射复用页帧，而动态链接器的只读 `MAP_PRIVATE` DSO 映射会重复读取 clean page。
+`librustc_driver-37ff94a6423d6d34.so` 的映射长度约为 198 MiB，远超 lwext4
+whole-file write-back cache 的 4 MiB 上限。原 `Ext4File::check_cached()` 在大小判断前
+打印 `initialize cache!`，且 `file_seek()` 会在每次 mmap 页读取时再次调用它；超限后虽然
+不建立缓存，却会重复执行 `ext4_fopen()`、`ext4_fsize()`、`ext4_fclose()`。
 
-这些是已确认的低效路径，但尚不能将它们单独认定为 BuildStorm 超时的根因。一次 64 KiB/256 KiB 页缓存预读实验未缩短 minibuild 的可观察完成时间，已撤回，避免引入没有验证收益的内存占用与行为复杂度。
+修复只改动 `Ext4File`，不引入此前有偏移风险的 `file_seek_uncached()`：
 
-## 未采纳的性能实验
+- `initialize cache!` 移到 `insert_cache()`/`insert_fifo()` 成功后，因此只表示真实建立了
+  小文件缓存。
+- `cache_too_large` 是 `Ext4File` 实例级负状态。首次确认文件超过 4 MiB 后，后续
+  `file_seek()` 跳过准入探测，仍优先检查已有 `VFileCache`，再走原有底层 descriptor
+  seek/read，不会改变小文件缓存偏移语义。
+- 成功的跨阈值写入、`file_truncate()`、`O_TRUNC` 打开和删除路径会更新或清除该状态；
+  VFS rename 会重建 `Ext4File`，自然重新探测新路径。
 
-- `crates/lwext4_rust/src/file.rs`：为超过小文件缓存上限或缓存探测失败的 `Ext4File` 记录 bypass 状态；新增 `file_seek_uncached()`，仅更新 lwext4 descriptor 的位置。
-- `os/src/fs/ext4_lw/inode.rs`：`read_at()` 走 uncached seek，避免 mmap/ELF 页读取反复进入 lwext4 write-back cache 准入。
-- `os/src/mm/page_fault_handler.rs`：对无写权限的文件后备 `MAP_PRIVATE` 映射，使用现有 `FILE_PAGE_CACHE` 复用 clean page；可写 private 映射仍保持原 COW 路径。
-
-上述三个源码修改不是本次 mmap 预算修复的一部分，仍暂不提交。复核发现 `file_seek_uncached()` 不会推进已命中
-`VFileCache` 的缓存偏移，可能使小文件 `read_at(off)` 从旧偏移读取；同时只读
-`MAP_PRIVATE` 若经 `mprotect(PROT_WRITE)` 变为可写，现有实现尚未保证先分裂为
-COW 私有页。这两项语义风险必须先修正并回归后才能合入。
+该状态按 `Ext4File` 保存而非全局 path 表，避免 rename、hard link、unlink 和路径复用时
+引入额外失效表或锁顺序。独立 inode 实例仍各自做一次尺寸探测，这是可接受的性能边界。
+本轮仍未采纳只读 `MAP_PRIVATE` 页复用或预读实验，避免把 `mprotect(PROT_WRITE)` 的 COW
+隔离问题混入本修复。
 
 ## 独立复现入口（2026-07-21）
 
@@ -88,6 +93,12 @@ prepare 路径保留为独立诊断入口，必要时可先运行以强制创建
   尚未通过。
 - `make build-arch TARGET_ARCH=loongarch64`：通过；本次没有运行 LoongArch64 QEMU，
   因为当前复现入口和 final-2026 Rust 工具链镜像是 RISC-V 专用。
+- `make`：RISC-V 与 LoongArch64 release 构建均通过。
+- `make log TARGET_ARCH=riscv64`：通过。
+- `timeout 180s make run TARGET_ARCH=riscv64 > /tmp/lwext4-cache-probe-riscv.log 2>&1`：
+  输出 `BUILDSTORM_DEBUG_MINIBUILD ok` 和 `shutdown!`，无 panic、`TFAIL` 或 `TBROK`。
+  与修复前 `log.ans` 的 16,191 条 `initialize cache!`（其中目标 DSO 为 16,133 条）相比，
+  新日志为 68 条，目标 DSO 为 0 条。
 
 ### 修复前的诊断记录
 

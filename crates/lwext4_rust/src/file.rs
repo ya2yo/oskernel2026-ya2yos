@@ -53,6 +53,8 @@ pub struct Ext4File {
     has_opened: bool,
     last_flags: u32,
     pending_mode: Option<u32>,
+    // Large files bypass the whole-file write-back cache after one size probe.
+    cache_too_large: bool,
 }
 
 impl Ext4File {
@@ -70,6 +72,7 @@ impl Ext4File {
             has_opened: false,
             last_flags: 0,
             pending_mode: None,
+            cache_too_large: false,
         }
     }
 
@@ -130,6 +133,9 @@ impl Ext4File {
 
         self.has_opened = true;
         self.last_flags = flags;
+        if flags & O_TRUNC != 0 {
+            self.cache_too_large = false;
+        }
 
         //self.file_desc_map.insert(to_map, fd); // store c_path
         //debug!("file_open {}, mp={:#x}", path, self.file_desc.mp as usize);
@@ -296,6 +302,7 @@ impl Ext4File {
             error!("ext4_fremove error: rc = {}", r);
             return Err(r);
         }
+        self.cache_too_large = false;
         Ok(EOK as usize)
     }
 
@@ -313,7 +320,10 @@ impl Ext4File {
             return;
         }
 
-        debug!("initialize cache! {}", file_path);
+        if self.cache_too_large {
+            return;
+        }
+
         let c_path = CString::new(file_path.as_str()).expect("CString::new failed");
         let c_path = c_path.into_raw();
         let c_flags = Ext4File::flags_to_cstring(2).into_raw();
@@ -343,6 +353,7 @@ impl Ext4File {
             unsafe {
                 ext4_fclose(&mut cache_desc);
             }
+            self.cache_too_large = true;
             return;
         }
 
@@ -367,7 +378,8 @@ impl Ext4File {
                 ext4_fclose(&mut cache_desc);
             }
             insert_cache(file_path.clone(), &cache);
-            insert_fifo(file_path);
+            insert_fifo(file_path.clone());
+            debug!("initialize cache! {}", file_path);
             return;
         }
         unsafe { ext4_fseek(&mut cache_desc, 0, SEEK_SET) };
@@ -384,13 +396,16 @@ impl Ext4File {
             ext4_fclose(&mut cache_desc);
         }
         insert_cache(file_path.clone(), &cache);
-        insert_fifo(file_path);
+        insert_fifo(file_path.clone());
+        debug!("initialize cache! {}", file_path);
     }
 
     pub fn file_seek(&mut self, offset: i64, seek_type: u32) -> Result<usize, i32> {
         if self.this_type != InodeTypes::EXT4_DE_DIR {
             let path = String::from((*self.file_path).to_str().unwrap());
-            self.check_cached(path.clone());
+            if !self.cache_too_large {
+                self.check_cached(path.clone());
+            }
 
             if if_cache(path.clone()) {
                 let cache = get_cache(path.clone());
@@ -503,6 +518,7 @@ impl Ext4File {
             }
         }
 
+        let write_start = self.file_desc.fpos as usize;
         let mut rw_count = 0;
         let r = unsafe {
             ext4_fwrite(
@@ -516,6 +532,10 @@ impl Ext4File {
         if r != EOK as i32 {
             error!("ext4_fwrite: rc = {}", r);
             return Err(r);
+        }
+
+        if write_start.saturating_add(rw_count) > MAX_CACHED_FILE_SIZE {
+            self.cache_too_large = true;
         }
 
         //debug!("file_write {:?}, len={}", self.get_path(), rw_count);
@@ -537,6 +557,7 @@ impl Ext4File {
             error!("ext4_ftruncate: rc = {}", r);
             return Err(r);
         }
+        self.cache_too_large = size > MAX_CACHED_FILE_SIZE as u64;
         Ok(EOK as usize)
     }
 

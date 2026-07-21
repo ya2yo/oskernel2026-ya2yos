@@ -995,3 +995,10 @@
 - **场景**：维护者要求只提交已确认可保留的 BuildStorm 任务管理修改，并补齐问题复盘、开发日志和 AI 记录。
 - **描述**：复核 Rust toolchain 的 `clone3(CLONE_VM | CLONE_VFORK)` 日志后，将 vfork 父 task 的状态变化与即时调度切换绑定，延后 exec 对父 task 的唤醒，并让非线程 `CLONE_VM` 子进程继承父 hart，避免无 remote TLB shootdown 时跨 hart 共享页表。两个架构统一 clone3 stack ABI，并防止 group-exit 内部 SIGKILL 污染正常退出状态。双架构 release 构建通过。缓存性能实验和 `initproc` 单脚本入口未提交；MINIBUILD 剩余 EFAULT 已更正为动态 `MAP_STACK` 普通 fork 复制问题。详见 [problem/buildstorm-vfork-clone3-lifecycle.md](./problem/buildstorm-vfork-clone3-lifecycle.md) 与 `ai.log`。
 - **关联 commit**：`fix(task): correct vfork clone3 handoff`
+
+#### lwext4 大文件缓存准入重复探测优化（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 BuildStorm MINIBUILD 调试日志中 `librustc_driver` 的大量 `initialize cache!`，并实施两步缓存路径优化。
+- **描述**：确认 4 MiB whole-file cache 的超限文件在 mmap 按页读取时重复执行 `ext4_fopen/fsize/fclose`，且调试日志在缓存资格判断前输出。修复将日志移动到真实缓存插入后，并在 `Ext4File` 内记录超限负状态，保留已有小文件缓存优先级；成功写入、truncate、`O_TRUNC` 和删除路径同步更新状态。RISC-V MINIBUILD 输出 `ok`/`shutdown!`，日志总数从 16,191 降为 68，目标 DSO 日志为 0；RISC-V、LoongArch64 release 构建均通过。
+- **关联 commit**：尚未提交（2026-07-21 工作树）

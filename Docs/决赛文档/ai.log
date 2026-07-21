@@ -5735,3 +5735,33 @@ smoltcp warnings。随后 `timeout 90s make run > /tmp/vfork-clone3-commit.log 2
 通过 `sigaltstack`/`rseq` probe 并进入 `buildstorm_xtask_prebuild_debug.sh`，但在 Rust 编译和
 目标 vfork 前由外层时限结束；采集范围内无 panic、`TFAIL` 或 `TBROK`，不将其作为完整 QEMU
 行为回归。完整 BuildStorm 仍会在独立的动态栈 fork `EFAULT` 处失败。
+
+---
+
+## 2026-07-21：lwext4 大文件缓存准入重复探测优化
+
+### 用户需求
+
+维护者要求先分析根目录 `log.ans` 中大量 `initialize cache!`，随后要求分两步修改：
+收敛无效调试输出，并消除超限大文件的重复缓存探测。
+
+### 分析与采纳结论
+
+`librustc_driver-37ff94a6423d6d34.so` 超过 lwext4 4 MiB whole-file cache 上限。原
+`file_seek()` 在 mmap 按页读取时反复进入 `check_cached()`；该函数在大小判断前打印日志，
+随后每次执行 `ext4_fopen/fsize/fclose` 后放弃缓存。旧 `log.ans` 的 16,191 条该日志中，
+16,133 条来自这一个 DSO。
+
+采纳在单个 `Ext4File` 记录 `cache_too_large` 的最小修复，不使用全局 path 表，也不恢复
+此前会绕过 `VFileCache` 偏移更新的 `file_seek_uncached()` 实验。命中现有小文件缓存仍走原
+路径；只有已确认超限且未缓存的对象跳过后续探测。状态在成功写入跨阈值、truncate、`O_TRUNC`
+和删除后更新或失效。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs`：日志移至真实 `insert_cache/insert_fifo` 成功后；
+超限文件只做一次尺寸探测，后续 seek 直接使用底层 descriptor。`make` 的 RISC-V、LoongArch64
+release 构建通过，`make log TARGET_ARCH=riscv64` 通过。RISC-V
+`timeout 180s make run TARGET_ARCH=riscv64 > /tmp/lwext4-cache-probe-riscv.log 2>&1` 输出
+`BUILDSTORM_DEBUG_MINIBUILD ok` 和 `shutdown!`，无 panic、`TFAIL` 或 `TBROK`；缓存初始化日志
+降至 68 条，目标 DSO 为 0 条。未将尚未验证的 `MAP_PRIVATE` 页复用或预读实验纳入修改。
