@@ -43,8 +43,6 @@ make
 - 日志中的 `FAIL LTP CASE open14 : 0` 是当前 initproc 包装层打印格式，按 LTP Summary 判断 failed 为 0。
 - 未运行 `riscv64`。
 
----
-
 ## 2026-07-02: copy_file_range02 错误路径语义修复
 
 ### 用户需求
@@ -5765,3 +5763,37 @@ release 构建通过，`make log TARGET_ARCH=riscv64` 通过。RISC-V
 `timeout 180s make run TARGET_ARCH=riscv64 > /tmp/lwext4-cache-probe-riscv.log 2>&1` 输出
 `BUILDSTORM_DEBUG_MINIBUILD ok` 和 `shutdown!`，无 panic、`TFAIL` 或 `TBROK`；缓存初始化日志
 降至 68 条，目标 DSO 为 0 条。未将尚未验证的 `MAP_PRIVATE` 页复用或预读实验纳入修改。
+
+---
+
+## 2026-07-21：BuildStorm MINIBUILD 动态 MAP_STACK fork EFAULT 修复
+
+### 用户需求
+
+维护者要求分析 `buildstorm_minibuild_build_debug.sh` 单独成功、紧随 prepare 后失败的差异，并修复串行 fresh 编译路径。
+
+### 分析与采纳结论
+
+`log.ans` 显示 prepare 成功后，Cargo worker 的普通 `clone()` 以
+`CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID` 创建 Rustc 子进程；内核已登记 PID 32，
+但向 child 地址空间写 `child_tid` 时返回 `Bad address`。前序 prepare 会清空并重建
+`/tmp/minibuild`，使后续 build 必须实际编译；单独运行可复用已有 target，因此未稳定触发该路径。
+
+审计确认 `MAP_STACK` 被分类为 `MapAreaType::Stack`，而普通 fork 的
+`from_existed_user()` 过去会跳过全部 Stack VMA，只重建固定初始 stack。采纳仅将带
+`MAP_STACK` 的动态 stack 作为 mmap VMA 纳入原有 COW/shared clone 逻辑，并在查找 child
+固定 stack 时排除该类 VMA；不混入无关的 mmap 记账或通用 clone 失败回滚重构。
+
+### 修改与验证
+
+修改 `os/src/mm/memory_set/fork_clone.rs` 与 `os/src/task/task/task.rs`，并更新既有
+BuildStorm problem、开发日志和 AI 记录。`make build-arch TARGET_ARCH=riscv64`、
+`make build-arch TARGET_ARCH=loongarch64`、`make log TARGET_ARCH=riscv64` 均通过，只有
+既有 Cargo config 弃用和 vendored smoltcp warnings。
+
+RISC-V fresh `prepare -> build` debug 回归中，原来返回 `Bad address` 的
+`CLONE_CHILD_SETTID` clone 现成功返回 PID 32，且 child 已实际运行；采集范围内无
+`Clone ret = Bad address` 或 Cargo `exit_code: 101`。300 秒 debug 与 600 秒 release
+guest 回归均在 `cargo build` 完成前受外层 timeout 终止，release 采集范围内无
+`BUILDSTORM_DEBUG_MINIBUILD fail`、panic、`TFAIL` 或 `TBROK`，故不将 fresh MINIBUILD
+标记为完整通过。LoongArch64 未运行 QEMU，因为 final-2026 Rust toolchain 镜像是 RISC-V 专用。

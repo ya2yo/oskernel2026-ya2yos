@@ -16,6 +16,14 @@ use crate::syscall::MmapFlags;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+fn is_dynamic_mmap_stack(area: &MapArea) -> bool {
+    area.area_type == MapAreaType::Stack && area.mmap_flags.contains(MmapFlags::MAP_STACK)
+}
+
+fn is_mmap_vma(area: &MapArea) -> bool {
+    area.area_type == MapAreaType::Mmap || is_dynamic_mmap_stack(area)
+}
+
 impl MemorySetInner {
     /// Clone a same `MemorySet`
     pub fn from_existed_user(user_space: &MemorySet) -> MemorySetInner {
@@ -29,9 +37,7 @@ impl MemorySetInner {
             let areas_ptr: *mut Vec<MapArea> = &mut u.areas;
             let pt_ptr: *mut PageTable = &mut u.page_table;
             for area in unsafe { &mut *areas_ptr }.iter_mut() {
-                if area.area_type != MapAreaType::Mmap
-                    || !area.mmap_flags.contains(MmapFlags::MAP_SHARED)
-                {
+                if !is_mmap_vma(area) || !area.mmap_flags.contains(MmapFlags::MAP_SHARED) {
                     continue;
                 }
                 let pt = unsafe { &mut *pt_ptr };
@@ -51,20 +57,22 @@ impl MemorySetInner {
             }
 
             for area in u.areas.iter_mut() {
-                // don't copy stack and trap
-                if area.area_type == MapAreaType::Stack || area.area_type == MapAreaType::Trap {
+                // The fixed task stack and trap context are rebuilt by
+                // `clone_process`. A MAP_STACK VMA is instead a dynamic mmap
+                // and must be inherited like every other mmap area.
+                if (area.area_type == MapAreaType::Stack && !is_dynamic_mmap_stack(area))
+                    || area.area_type == MapAreaType::Trap
+                {
                     continue;
                 }
                 let mut new_area = MapArea::from_another(area);
-                if area.area_type == MapAreaType::Mmap
-                    && area.mmap_flags.contains(MmapFlags::MAP_SHARED)
-                {
+                if is_mmap_vma(area) && area.mmap_flags.contains(MmapFlags::MAP_SHARED) {
                     // 子进程继承 MAP_SHARED 的 groupid，增加引用计数后才允许
                     // 父子在后续 lazy fault 中从 GROUP_SHARE 找到同一共享帧。
                     GROUP_SHARE.lock().add_area(new_area.groupid);
                 }
                 // Mmap and brk are lazy allocation
-                if area.area_type == MapAreaType::Mmap || area.area_type == MapAreaType::Brk {
+                if is_mmap_vma(area) || area.area_type == MapAreaType::Brk {
                     if area.mmap_flags.contains(MmapFlags::MAP_SHARED) {
                         let frames = area.data_frames.values().cloned().collect();
                         memory_set.push_with_given_frames(new_area, frames);

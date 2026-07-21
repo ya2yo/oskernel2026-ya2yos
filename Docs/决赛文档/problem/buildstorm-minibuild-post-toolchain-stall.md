@@ -30,8 +30,17 @@ final-2026 的 `buildstorm_testcode.sh` 在验证 `rustc --version` 和 `cargo -
 `/tmp/minibuild` 后，Cargo 已进入实际 `Compiling minibuild`，随后报告
 `Bad address (os error 14)`。后续审计确认这不是 Rustc 的 `execve` 用户参数复制错误：
 Cargo worker 的普通 `clone()` 在创建 Rustc 子进程时返回 `EFAULT`。fork 克隆跳过了动态
-`MAP_STACK` VMA，随后写 `CLONE_CHILD_SETTID` 的用户地址找不到 child VMA。该独立 fork
-地址空间复制问题仍待修复。
+`MAP_STACK` VMA，随后写 `CLONE_CHILD_SETTID` 的用户地址找不到 child VMA。
+
+该独立 fork 地址空间复制问题已修复。`from_existed_user()` 现在将
+`MapAreaType::Stack` 且带 `MAP_STACK` 的动态 VMA 作为 mmap 区域参与 fork 的
+COW / shared-memory 克隆；只有固定初始 stack 和 trap VMA 保持由 child 重建。普通 fork
+查找 child 的固定 stack 时显式排除 `MAP_STACK`，避免把已继承的动态栈误认为初始 stack。
+这样 `CLONE_CHILD_SETTID` 写入时，子地址空间已包含对应的动态栈地址。
+
+本轮未重构 `clone_process()` 其他后置可失败步骤的通用回滚路径。修复前的 EFAULT 会留下
+未运行的 child process 记录；本次只消除已定位的触发条件，不将该独立清理问题混入动态栈
+地址空间修复。
 
 ## 已采纳的 lwext4 大文件缓存探测优化（2026-07-21）
 
@@ -99,6 +108,19 @@ prepare 路径保留为独立诊断入口，必要时可先运行以强制创建
   输出 `BUILDSTORM_DEBUG_MINIBUILD ok` 和 `shutdown!`，无 panic、`TFAIL` 或 `TBROK`。
   与修复前 `log.ans` 的 16,191 条 `initialize cache!`（其中目标 DSO 为 16,133 条）相比，
   新日志为 68 条，目标 DSO 为 0 条。
+- `make build-arch TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64`：通过。
+  只有既有 Cargo config 弃用和 vendored smoltcp warnings。
+- `make log TARGET_ARCH=riscv64`：通过。
+- `timeout 300s make run TARGET_ARCH=riscv64 > /tmp/buildstorm-map-stack-fork-riscv-final.log 2>&1`：
+  fresh `prepare -> build` 输出 `BUILDSTORM_DEBUG_MINIBUILD_PREPARE ok` 和
+  `BUILDSTORM_DEBUG_MINIBUILD_BUILD begin`。原失败的 Cargo worker
+  `clone(CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID)` 现返回 PID 32，子进程已实际运行；
+  采集范围内没有 `Clone ret = Bad address` 或 Cargo `exit_code: 101`。外层 300 秒上限在
+  MINIBUILD 完成前终止 guest。
+- `timeout 600s make run TARGET_ARCH=riscv64 > /tmp/buildstorm-map-stack-fork-riscv-release.log 2>&1`：
+  release guest 同样完成 prepare 并进入 build，600 秒内没有输出 `BUILDSTORM_DEBUG_MINIBUILD
+  fail`、panic、`TFAIL` 或 `TBROK`，但也没有到达 `BUILDSTORM_DEBUG_MINIBUILD ok` 或
+  `shutdown!`；因此不能将 fresh MINIBUILD 标记为完整通过。
 
 ### 修复前的诊断记录
 
@@ -114,8 +136,7 @@ prepare 路径保留为独立诊断入口，必要时可先运行以强制创建
 
 ## 后续
 
-下一步修复普通 fork 对动态 `MAP_STACK` VMA 的继承，再以正式
-`buildstorm_testcode.sh` 的 `BUILDSTORM_MINIBUILD` 和 `BUILDSTORM_COMPILE` 标记验证
-完整 BuildStorm。另有一个独立的 mmap 记账问题待处理：`munmap()` 目前不会回收
-`MAP_STACK` 的预算，且只处理完整覆盖的 VMA；它不是本次 Rustc ENOMEM 的首个阻塞点，
-不应混入本修复。
+动态 `MAP_STACK` fork `EFAULT` 已修复。后续应以正式 `buildstorm_testcode.sh` 覆盖
+`BUILDSTORM_MINIBUILD` 与 `BUILDSTORM_COMPILE`，不能将当前诊断脚本中跨过 EFAULT 的结果
+等同于最终评分通过。另有一个独立的 mmap 记账问题待处理：`munmap()` 目前不会回收
+`MAP_STACK` 的预算，且只处理完整覆盖的 VMA；它不应混入本修复。

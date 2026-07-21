@@ -1002,3 +1002,10 @@
 - **场景**：分析 BuildStorm MINIBUILD 调试日志中 `librustc_driver` 的大量 `initialize cache!`，并实施两步缓存路径优化。
 - **描述**：确认 4 MiB whole-file cache 的超限文件在 mmap 按页读取时重复执行 `ext4_fopen/fsize/fclose`，且调试日志在缓存资格判断前输出。修复将日志移动到真实缓存插入后，并在 `Ext4File` 内记录超限负状态，保留已有小文件缓存优先级；成功写入、truncate、`O_TRUNC` 和删除路径同步更新状态。RISC-V MINIBUILD 输出 `ok`/`shutdown!`，日志总数从 16,191 降为 68，目标 DSO 日志为 0；RISC-V、LoongArch64 release 构建均通过。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### BuildStorm MINIBUILD 动态 MAP_STACK fork EFAULT 修复（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 MINIBUILD build 单独成功、prepare 后 fresh build 失败的差异，定位并修复普通 fork 的动态栈 VMA 继承缺失。
+- **描述**：日志确认 Cargo worker 的普通 `clone()` 在写 `CLONE_CHILD_SETTID` 时返回 `EFAULT`；根因是 `MAP_STACK` 被误作固定 stack 跳过 fork 复制。修复将动态 `MAP_STACK` 纳入 mmap 继承，并保留固定初始 stack/trap 的重建边界。RISC-V debug 回归已确认同一 clone 成功创建并运行 child；双架构 release 构建通过。fresh RISC-V 600 秒回归尚未到达 `BUILDSTORM_DEBUG_MINIBUILD ok`，因此不宣称完整 MINIBUILD 通过。详见 `ai.log` 和 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md)。
+- **关联 commit**：尚未提交（2026-07-21 工作树）

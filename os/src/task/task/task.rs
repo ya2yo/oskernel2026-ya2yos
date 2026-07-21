@@ -23,6 +23,7 @@ use crate::{
         PhysPageNum, VirtAddr,
     },
     signal::{SigInfo, SigSet, SigTable, SignalStack, SIG_MAX_NUM},
+    syscall::MmapFlags,
     task::{futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid, CloneFlags},
     timer::{TimeData, Timer},
     trap::trap_types::{Exception, Trap},
@@ -783,7 +784,10 @@ impl TaskControlBlock {
                 .get_ref()
                 .areas
                 .iter()
-                .find(|area| area.area_type == MapAreaType::Stack)
+                .find(|area| {
+                    area.area_type == MapAreaType::Stack
+                        && !area.mmap_flags.contains(MmapFlags::MAP_STACK)
+                })
                 .map(|area| area.vpn_range.start())
                 .expect("fork: child has no Stack area");
             let parent_ref = parent_memory_set_arc.get_ref();
