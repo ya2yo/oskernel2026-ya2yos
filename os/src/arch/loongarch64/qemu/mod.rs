@@ -1,4 +1,5 @@
 pub mod console;
+pub mod config;
 pub mod cpu;
 pub mod memory_layout;
 pub mod page_table;

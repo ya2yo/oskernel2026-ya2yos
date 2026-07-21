@@ -1,7 +1,7 @@
 use core::arch::asm;
 use sbi_rt::{system_reset, NoReason, Shutdown, SystemFailure};
 
-use crate::{arch::memory_layout::KERNEL_ADDR_OFFSET, config::HART_NUM};
+use crate::arch::{config::HART_NUM, memory_layout::KERNEL_ADDR_OFFSET};
 
 pub fn hart_id() -> usize {
     let hartid: usize;

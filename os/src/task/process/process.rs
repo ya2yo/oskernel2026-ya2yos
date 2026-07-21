@@ -10,7 +10,7 @@ use log::{debug, warn};
 use spin::{Lazy, Mutex, MutexGuard};
 
 use crate::{
-    config::HART_NUM,
+    arch::config::HART_NUM,
     fs::{remove_proc_dir_and_file, FSInfo, FdTable},
     mm::MemorySet,
     signal::{send_signal_to_thread_group, SigSet, SigTable},

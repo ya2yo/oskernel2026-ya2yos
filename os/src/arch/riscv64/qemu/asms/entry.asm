@@ -1,4 +1,4 @@
-    # Keep BOOT_HARTS in sync with crate::config::HART_NUM.  The bootstrap
+    # Keep BOOT_HARTS in sync with crate::arch::config::HART_NUM.  The bootstrap
     # path mounts the filesystem and initializes the network before switching
     # to dynamically allocated kernel stacks, so 64 KiB can overflow when
     # hart 1 wins the bootstrap race and overwrite adjacent .data.

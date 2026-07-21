@@ -1,6 +1,6 @@
 use super::TaskControlBlock;
+use crate::arch::{config::HART_NUM, time::get_ticks};
 use crate::task::TaskStatus;
-use crate::{arch::time::get_ticks, config::HART_NUM};
 use alloc::{
     collections::BinaryHeap,
     sync::{Arc, Weak},

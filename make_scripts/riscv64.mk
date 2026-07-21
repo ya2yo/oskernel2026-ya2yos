@@ -1,6 +1,6 @@
 PLATFORM := qemu
-MEMORY_SIZE := 2G  # 修改时同步 os/src/arch/riscv64/qemu/memory_layout.rs
-SMP := 2  # CPU核心数
+MEMORY_SIZE := 8G  # 修改时同步 os/src/arch/riscv64/qemu/memory_layout.rs
+SMP := 8  # CPU核心数
 MODE := release
 
 ARCH := riscv64
@@ -26,10 +26,11 @@ QEMU_CMD := qemu-system-riscv64 \
     -bios default \
     -drive file=disk.img,if=none,format=raw,id=x0 \
     -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
-    -device virtio-net-device,netdev=net,bus=virtio-mmio-bus.1 \
+    -no-reboot \
+    -device virtio-net-device,netdev=net \
     -netdev user,id=net \
-	-snapshot
-# -snapshot是为了避免修改被保存仅镜像
+    -rtc base=utc \
+    -snapshot
 
 OBJDUMP := rust-objdump --arch-name=$(ARCH)
 OBJCOPY := rust-objcopy --binary-architecture=$(ARCH)
