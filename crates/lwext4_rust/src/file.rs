@@ -16,6 +16,32 @@ fn aligned_down(addr: usize) -> usize {
     addr & PAGE_MASK
 }
 
+/// Convert ext4 on-disk directory entry types to the Linux `getdents64`
+/// `d_type` ABI.  The two enums use different numeric values.
+#[inline]
+fn ext4_dirent_type_to_linux_dtype(inode_type: u8) -> u8 {
+    const DT_UNKNOWN: u8 = 0;
+    const DT_FIFO: u8 = 1;
+    const DT_CHR: u8 = 2;
+    const DT_DIR: u8 = 4;
+    const DT_BLK: u8 = 6;
+    const DT_REG: u8 = 8;
+    const DT_LNK: u8 = 10;
+    const DT_SOCK: u8 = 12;
+
+    match inode_type as u32 {
+        EXT4_DE_UNKNOWN => DT_UNKNOWN,
+        EXT4_DE_REG_FILE => DT_REG,
+        EXT4_DE_DIR => DT_DIR,
+        EXT4_DE_CHRDEV => DT_CHR,
+        EXT4_DE_BLKDEV => DT_BLK,
+        EXT4_DE_FIFO => DT_FIFO,
+        EXT4_DE_SOCK => DT_SOCK,
+        EXT4_DE_SYMLINK => DT_LNK,
+        _ => DT_UNKNOWN,
+    }
+}
+
 // Ext4File文件操作与block device设备解耦了
 pub struct Ext4File {
     //file_desc_map: BTreeMap<CString, ext4_file>,
@@ -823,7 +849,7 @@ impl Ext4File {
                     d_ino: dentry.inode as u64,
                     d_off: d.next_off as i64,
                     d_reclen: len as u16,
-                    d_type: dentry.inode_type,
+                    d_type: ext4_dirent_type_to_linux_dtype(dentry.inode_type),
                     d_name: name,
                 });
                 de = ext4_dir_entry_next(&mut d);
