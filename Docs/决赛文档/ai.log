@@ -5660,3 +5660,34 @@ warnings。`timeout 180s make run TARGET_ARCH=riscv64 > /tmp/buildstorm-minibuil
 TFAIL 或 TBROK；串口采集在 `shutdown!` 前结束，因此只将其记录为成功隔离到 `cargo build`，
 不将其标记为完整超时或修复。临时 `2G / 2 CPU` 运行因当前 8GiB CMA 布局未进入用户态，未用于
 行为结论。LoongArch64 release 构建通过，本轮未运行其 QEMU 行为回归。
+
+---
+
+## 2026-07-21：BuildStorm MINIBUILD Rustc mmap 虚拟地址预算修复
+
+### 用户需求
+
+维护者要求根据根目录 `log.ans` 继续修复 BuildStorm 卡点。
+
+### 分析与采纳结论
+
+沿独立 MINIBUILD 入口继续追踪后，`/tmp/buildstorm-vfork-after.log` 显示 Rustc 的
+PID 10/TID 13 申请 128 MiB `PROT_NONE | MAP_PRIVATE | MAP_ANONYMOUS` 映射时，
+`total_mmap_size` 已为 491,208,704 字节；`MemorySetInner::mmap()` 在 512 MiB
+累计预算处返回 `ENOMEM`，其 64 MiB fallback 同样失败。该 VMA 是 lazy mapping，
+并不立即分配物理页，且 192 GiB 用户虚拟地址空间并未耗尽。
+
+采纳将两架构 `MAX_MMAP_SIZE` 从 512 MiB 提升为 2 GiB 的最小修复。这样保留
+每进程 VMA 上限和缺页分配时的物理内存约束，同时允许 Rustc 的多块 128 MiB arena
+预留。未修改独立的 `munmap()` 部分覆盖和 `MAP_STACK` 记账问题。
+
+### 修改与验证
+
+修改 `os/src/arch/riscv64/qemu/memory_layout.rs` 与
+`os/src/arch/loongarch64/qemu/memory_layout.rs`。`make build-arch TARGET_ARCH=riscv64`、
+`make log TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64` 均通过。
+RISC-V `timeout 180s make run TARGET_ARCH=riscv64 > /tmp/buildstorm-mmap-2g.log 2>&1`
+在复用既有项目时输出 `BUILDSTORM_DEBUG_MINIBUILD ok` 和 `shutdown!`。随后强制
+prepare 的 fresh run 已确认 mmap `ENOMEM` 不再是首个错误，但 Cargo 进入
+`Compiling minibuild` 后执行完整 rustc 参数返回 `Bad address (os error 14)`。
+因此本提交只修复 mmap 预算，不将完整 MINIBUILD 或后续 `xtask` 标记为通过。

@@ -19,10 +19,11 @@ pub const USER_HEAP_SIZE: usize = 0x2000_0000; // 512MB (virtual reservation)
 /// Maximum heap (brk) growth per process.
 /// Caps runaway brk from exhausting physical memory.
 pub const MAX_BRK_SIZE: usize = 0x2000_0000; // 512MB
-/// Maximum total mmap size per process.
-/// Prevent runaway mmap from exhausting physical memory.
-pub const MAX_MMAP_SIZE: usize = 0x2000_0000; // 512MB
-/// and subsequently exhausting physical memory via lazy page faults.
+/// Maximum total lazy mmap virtual reservation per process.
+/// Rustc reserves several 128 MiB PROT_NONE arenas before those pages are
+/// faulted in, so this must leave room beyond the physical-memory working set
+/// while still bounding VMA growth.
+pub const MAX_MMAP_SIZE: usize = 0x8000_0000; // 2 GiB
 pub const PRE_ALLOC_PAGES: usize = 8;
 
 // 内核虚拟地址的起始地址

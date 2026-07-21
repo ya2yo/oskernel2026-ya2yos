@@ -173,8 +173,8 @@ fork 前，匿名或文件后备的 `MAP_SHARED` VMA 会被预先 fault：否则
 `sys_mmap()` 检查长度、对齐、flags、偏移与文件读写权限后，调用 `MemorySet::mmap()`。
 匿名映射必须包含 `MAP_ANONYMOUS`；文件映射保存 `OSFile`、文件偏移和映射时的大小
 快照。普通映射从 `MMAP_TOP` 向低地址寻找空洞，登记为延迟 `MapArea`，并按虚拟长度
-累计到 `total_mmap_size`。该计数受 `MAX_MMAP_SIZE = 512 MiB` 限制，以防无界 VMA 在
-后续缺页时耗尽 CMA。`MAP_STACK` 使用 `MapAreaType::Stack`；其他 mmap 使用
+累计到 `total_mmap_size`。该延迟 VMA 预算受 `MAX_MMAP_SIZE = 2 GiB` 限制；实际物理页
+仍只在缺页时分配。`MAP_STACK` 使用 `MapAreaType::Stack`；其他 mmap 使用
 `MapAreaType::Mmap`。
 
 `MAP_FIXED` 与 `MAP_FIXED_NOREPLACE` 使用调用者指定地址。后者若与既有 VMA 相交，
@@ -226,7 +226,7 @@ VMA 起始页移除映射；`shm_drop()` 删除全局段记录。当前 `MemoryS
   columns: (1.5fr, 2.9fr),
   table.header([*主题*], [*当前实现边界*]),
   [物理页回收], [无 swap；`FrameTracker` 最后引用释放后归还 CMA。],
-  [mmap 地址空间], [普通 mmap 有 512 MiB 计数上限；固定 mmap 不计入该计数。],
+  [mmap 地址空间], [普通 mmap 有 2 GiB 延迟 VMA 计数上限；固定 mmap 不计入该计数。],
   [mremap], [仅 `MREMAP_MAYMOVE` 的重建式路径；固定和 DONTUNMAP 未实现。],
   [SysV shmat], [仅自动选址；显式非零地址尚未实现。],
   [文件 mmap EOF], [完整页落在映射时 EOF 外会发 `SIGBUS`；最后一个部分页允许零填充。],

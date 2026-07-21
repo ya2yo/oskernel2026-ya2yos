@@ -981,3 +981,10 @@
 - **场景**：拆分 final-2026 BuildStorm 的工具链、MINIBUILD、预构建和正式编译阶段，建立后续 `cargo build` 卡点的单独 RISC-V 入口。
 - **描述**：复用启动期 `write_executable_init_file()` 向具备 Rust toolchain 的 `/glibc` 根文件系统注入五个独立诊断脚本，保留正式 `busybox sh <script>` 与 MINIBUILD 的静默 `cargo build` 语义。所有新输出使用 `BUILDSTORM_DEBUG_*`，不会被官方评分器当作正式得分。RISC-V 日志已确认 `MINIBUILD_PREPARE ok` 后进入 `MINIBUILD_BUILD begin`，但未出现完成标记；RISC-V、LoongArch64 release 构建通过，根因与完整 BuildStorm 仍待继续定位。详见 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md) 与 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### BuildStorm MINIBUILD Rustc mmap 虚拟地址预算修复（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：继续分析 BuildStorm MINIBUILD 的 Rustc 实际编译路径，定位累计 mmap 预算导致的 ENOMEM，并完成双架构构建与 RISC-V QEMU 回归。
+- **描述**：独立诊断日志确认 Rustc 在已有约 468 MiB lazy VMA 后申请 128 MiB 匿名 `PROT_NONE` arena，被 512 MiB `MAX_MMAP_SIZE` 拒绝；这不是物理内存或用户 VA 耗尽。两架构预算提升至 2 GiB，保留 VMA 上限及缺页物理页约束。复用既有项目的 RISC-V MINIBUILD 能正常结束；强制 prepare 的 fresh run 已进入 `Compiling minibuild`，但完整 rustc execve 返回 `Bad address (os error 14)`。因此只将 mmap 预算修复标记为完成，完整 BuildStorm 仍待后续修复；LoongArch64 已完成构建，未运行其 QEMU。详见 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md) 与 `ai.log`。
+- **关联 commit**：尚未提交（2026-07-21 工作树）
