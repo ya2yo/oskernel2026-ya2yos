@@ -1029,3 +1029,10 @@
 - **场景**：维护者要求实现 `sys_fchdir`，并提供 RISC-V `log.ans` 要求核验结果和补齐文档。
 - **描述**：确认 50 号 ABI 已登记但未分发，handler 也未完成；实现从 fd 表直接取得目录 inode，保持目录 `O_PATH` fd 可用，并分别返回 `EBADF`、`ENOTDIR`、`EACCES`。路径型 `chdir` 与 fd 型 `fchdir` 共用单 inode 权限检查，但 fd 路径不重新解析 pathname。日志中 musl/glibc `fchdir01` 至 `fchdir03` 均为 `passed 1 failed 0 broken 0` 并正常 `shutdown!`，因此解除三项 LTP blacklist。详见 `ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### prctl PR_SET_CHILD_SUBREAPER 接入与 orphan reparenting 回归（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求实现 `prctl(PR_SET_CHILD_SUBREAPER)`，使父进程退出后的孤儿后代由最近的 child subreaper 收养，并要求仅保留必要修改、停止 LoongArch64 验证后补齐文档。
+- **描述**：AI 对照 Linux 7.0 的 `prctl` 与退出重父化路径，确认这不是新增 syscall 号而是既有 167 号调用的 option 语义。实现将 subreaper 标记置于线程组共享的 `ProcessMeta`，通过父链选择最近存活收养者，并同步更新 `children`、PPID、zombie 通知和默认 wait 语义。RISC-V musl/glibc `prctl03` 均为 `passed 6 failed 0 broken 0` 并正常 `shutdown!`；未进行 LoongArch64 运行时验收。详见 `Docs/决赛文档/ai.log` 对应条目和 [problem/prctl-child-subreaper.md](./problem/prctl-child-subreaper.md)。
+- **关联 commit**：尚未提交（2026-07-21 工作树）

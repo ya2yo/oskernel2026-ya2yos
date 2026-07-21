@@ -13,7 +13,7 @@ use crate::{
     arch::config::HART_NUM,
     fs::{remove_proc_dir_and_file, FSInfo, FdTable},
     mm::MemorySet,
-    signal::{send_signal_to_thread_group, SigSet, SigTable},
+    signal::{send_signal_to_thread_group, SigSet, SigTable, SIGCHLD},
     task::{TaskControlBlock, TidHandle},
     utils::{get_abs_path, is_abs_path, ResourceSlot, SysErrNo},
 };
@@ -44,7 +44,7 @@ unsafe impl Send for Process {}
 unsafe impl Sync for Process {}
 
 impl Process {
-    /// 退出时把尚未 wait 的子进程挂到 initproc，避免子进程继续强引用已退出父进程。
+    /// 退出时将尚未 wait 的子进程交给最近的存活 child subreaper，或回退到 initproc。
     pub fn exit_and_reparent(&self) {
         let orphans: Vec<Arc<Process>> = {
             let mut meta = self.meta_lock();
@@ -64,20 +64,71 @@ impl Process {
             return;
         }
 
-        const INIT_PID: usize = 1;
-        let initproc = Self::get_process_arc_by_pid(INIT_PID).expect("initproc not found!");
+        let reaper = self.find_child_reaper();
+        let reaper_pid = reaper.pid;
+        let mut has_zombie_child = false;
         for child in &orphans {
-            child.meta_lock().parent_pid = INIT_PID;
-            Self::link_child_to_parent(&initproc, child);
+            let child_is_zombie = {
+                let mut child_meta = child.meta_lock();
+                child_meta.parent_pid = reaper_pid;
+                // Linux reparenting turns an adopted process into a normal
+                // SIGCHLD child so its new parent can wait for it.
+                child_meta.exit_signal = SIGCHLD as i32;
+                child_meta.group_exit_code.is_some()
+                    && child_meta.tasks.iter().all(|task| task.upgrade().is_none())
+            };
+            has_zombie_child |= child_is_zombie;
+            Self::link_child_to_parent(&reaper, child);
         }
-        drop(initproc);
 
-        let _ = send_signal_to_thread_group(INIT_PID, SigSet::SIGCHLD);
+        // A newly adopted live child has not changed state and must not cause
+        // a synthetic SIGCHLD. An already-zombie child, however, must wake and
+        // notify the new parent so waitpid() can reap it.
+        if has_zombie_child {
+            reaper.meta_lock().child_exit_event.wake();
+            let _ = send_signal_to_thread_group(reaper_pid, SigSet::SIGCHLD);
+        }
         debug!(
-            "[exit_and_reparent] process[{}] reparented {} child(ren) to init",
+            "[exit_and_reparent] process[{}] reparented {} child(ren) to process[{}]",
             self.pid,
-            orphans.len()
+            orphans.len(),
+            reaper_pid,
         );
+    }
+
+    /// 查找当前进程父系中最近的存活 child subreaper；没有时回退到 initproc。
+    ///
+    /// 每次只读取一个 `ProcessMeta`，避免在重父化路径中嵌套多个进程锁。
+    fn find_child_reaper(&self) -> Arc<Process> {
+        const INIT_PID: usize = 1;
+        let mut ancestor_pid = self.ppid();
+
+        while ancestor_pid != 0 && ancestor_pid != INIT_PID {
+            let Some(ancestor) = Self::get_process_arc_by_pid(ancestor_pid) else {
+                break;
+            };
+            let (next_parent_pid, is_child_subreaper, group_exiting) = {
+                let meta = ancestor.meta_lock();
+                (
+                    meta.parent_pid,
+                    meta.is_child_subreaper,
+                    meta.group_exit_code.is_some(),
+                )
+            };
+            if is_child_subreaper && !group_exiting {
+                return ancestor;
+            }
+            if next_parent_pid == ancestor_pid {
+                warn!(
+                    "[exit_and_reparent] process[{}] found a self-parent cycle at process[{}]",
+                    self.pid, ancestor_pid
+                );
+                break;
+            }
+            ancestor_pid = next_parent_pid;
+        }
+
+        Self::get_process_arc_by_pid(INIT_PID).expect("initproc not found!")
     }
 
     /// 在父进程的 children 中登记子进程（按 pid 去重）。
@@ -141,6 +192,7 @@ impl Process {
                 tasks: Vec::new(),
                 children: Vec::new(),
                 parent_pid,
+                is_child_subreaper: false,
                 pgid,
                 sid,
                 child_exit_event: AtomicWaker::new(),
@@ -173,6 +225,13 @@ impl Process {
     /// 获取父进程的 pid（0 表示无父进程，例如 initproc）
     pub fn ppid(&self) -> usize {
         self.meta_lock().parent_pid
+    }
+    /// `PR_SET_CHILD_SUBREAPER` 是线程组级属性，所有线程共享同一状态。
+    pub fn set_child_subreaper(&self, enabled: bool) {
+        self.meta_lock().is_child_subreaper = enabled;
+    }
+    pub fn is_child_subreaper(&self) -> bool {
+        self.meta_lock().is_child_subreaper
     }
     /// 获取进程组 ID
     pub fn pgid(&self) -> usize {
@@ -364,6 +423,10 @@ pub struct ProcessMeta {
     pub children: Vec<Weak<Process>>,
     /// 父进程 pid；0 表示无父进程
     pub parent_pid: usize,
+    /// `PR_SET_CHILD_SUBREAPER` 设置的线程组级收养标记。
+    ///
+    /// 该状态不随 fork/非线程 clone 继承；exec 保留同一个 `ProcessMeta`，因此会保留。
+    is_child_subreaper: bool,
     /// 进程组 ID，用于 waitpid(0)、waitpid(<-1)、setpgid/getpgid。
     pub pgid: usize,
     /// 会话 ID，用于 getsid/setsid 和进程组会话边界检查。

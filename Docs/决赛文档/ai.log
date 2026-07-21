@@ -5915,3 +5915,40 @@ search 权限时返回 `EACCES`，成功后更新共享的 `FSInfo.cwd`。
 最终输出 `shutdown!`。runner 中的 `FAIL LTP CASE ... : 0` 是既有固定打印，退出码为 0，不是
 失败。现有三项 LTP 未单独覆盖非目录 fd 的 `ENOTDIR` 和目录 `O_PATH` fd；实现按 Linux errno
 语义处理这两类路径，但本轮没有额外自定义测例。
+
+---
+
+## 2026-07-21：prctl PR_SET_CHILD_SUBREAPER 接入
+
+### 用户需求
+
+维护者要求实现 `prctl(PR_SET_CHILD_SUBREAPER)`，随后要求回退无关临时修改、不再验证 LoongArch64，并补齐项目文档。
+
+### 分析与采纳结论
+
+`prctl(2)` 的 167 号 syscall 已存在，缺失的是 option `PR_SET_CHILD_SUBREAPER = 36` 的实际语义。
+单纯返回成功不能改变孤儿进程的收养者，且现有 LTP `prctl03` 还会检查配套
+`PR_GET_CHILD_SUBREAPER = 37`、fork 后不继承、孤儿 PPID、`wait()` 和两次 `SIGCHLD`。
+
+采纳将标记放在 `ProcessMeta`：线程共享同一 `Process`，非线程 fork/clone 会新建并默认清除该标记，
+`execve` 不替换该元数据因而保留标记。进程退出时从其父链选择最近的、尚未进入 group exit 的
+subreaper；找不到才回退 PID 1。收养路径同时转移 `children` 索引与 `parent_pid`，使既有
+`waitpid()` 可见新子进程。对已经 zombie 的被收养进程，转换为 `SIGCHLD` child 并唤醒/通知新父；
+仍在运行的子进程不产生额外 `SIGCHLD`，避免破坏 LTP 的精确计数。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/sys/prctl.rs` | 实现 `PR_SET_CHILD_SUBREAPER`，并补齐 `PR_GET_CHILD_SUBREAPER` 的 `int` 用户内存回写。 |
+| `os/src/task/process/process.rs` | 增加进程级标记，退出时选择最近存活 subreaper，转移子进程关系并处理 zombie 收养通知。 |
+| `Docs/决赛文档/problem/prctl-child-subreaper.md` | 记录语义、实现和验证边界。 |
+
+### 验证与边界
+
+`make TARGET_ARCH=riscv64 build-arch` 通过。`timeout 120s make run TARGET_ARCH=riscv64` 正常结束，
+musl 与 glibc 的 `prctl03` 均输出 `passed 6 failed 0 broken 0` 和 `shutdown!`；六项覆盖 SET、
+GET、fork 不继承、PPID 重父化、`wait()` 回收和 orphan 的 `SIGCHLD`。
+
+按维护者要求，未对 LoongArch64 进行本项运行时验收。当前实现也不涉及 PID namespace、ptrace
+重父化或 `PR_SET_PDEATHSIG` 的完整 Linux 联动语义；这些路径未由本轮 LTP 用例覆盖。
