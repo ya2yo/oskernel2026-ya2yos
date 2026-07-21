@@ -116,9 +116,9 @@ impl MemorySetInner {
     ///
     /// - 没有 `PT_INTERP` 时返回 `Ok(None)`，表示这是静态 ELF，调用者应
     ///   使用主程序自己的 entry point。
-    /// - 有 `PT_INTERP` 时，先按竞赛镜像兼容规则映射解释器路径；如果映射
-    ///   路径不存在，再按 ELF 中写明的原始路径直接打开。这是为了同时兼容
-    ///   `/musl/lib/libc.so` 测试镜像和 Alpine 的 `/lib/ld-musl-*.so.1`。
+    /// - 有 `PT_INTERP` 时，优先按 ELF 中写明的原始路径直接打开；只有原始
+    ///   路径不存在时才按竞赛镜像兼容规则回退。这既保留 `/musl/lib/libc.so`
+    ///   测试镜像兼容性，也不会把 Debian/Alpine 的原生解释器替换成旧副本。
     /// - 成功后把解释器 ELF 映射到固定的 `DL_INTERP_OFFSET`，并返回解释器
     ///   的实际入口地址 `Some(interp_entry + DL_INTERP_OFFSET)`。
     /// - 解释器存在但读取、解析或映射失败时返回 `Err(())`。这类错误不能被
@@ -151,18 +151,19 @@ impl MemorySetInner {
         }
 
         if let Some(interp) = interp {
-            // 先按竞赛测试镜像的兼容规则映射动态链接器路径；如果映射路径
-            // 不存在，再按 ELF 原始 `.interp` 路径打开，兼容 Alpine 等标准布局。
-            let mapped_interp = map_dynamic_link_file_directly_map(&interp);
-            let interp_file = open_direct(mapped_interp, OpenFlags::O_RDONLY, NONE_MODE)
+            // A real interpreter path from the mounted image is authoritative.
+            // The legacy mapper is only a fallback for older test images that
+            // do not provide the ELF's declared `/lib/ld-*.so` entry.
+            let interp_file = open_direct(&interp, OpenFlags::O_RDONLY, NONE_MODE)
                 .ok()
                 .and_then(|file| file.file().ok())
                 .or_else(|| {
+                    let mapped_interp = map_dynamic_link_file_directly_map(&interp);
                     // 映射路径和原始路径相同则不用重复打开。
                     if mapped_interp == interp {
                         None
                     } else {
-                        open_direct(&interp, OpenFlags::O_RDONLY, NONE_MODE)
+                        open_direct(mapped_interp, OpenFlags::O_RDONLY, NONE_MODE)
                             .ok()
                             .and_then(|file| file.file().ok())
                     }

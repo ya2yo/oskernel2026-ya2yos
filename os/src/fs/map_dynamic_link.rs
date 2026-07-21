@@ -33,22 +33,12 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "/glibc/lib/tls_align_dso.so",
         "/glibc/lib/tls_get_new-dtv_dso.so",
         "/glibc/lib/tls_init_dso.so",
-        // 决赛
-        "/lib/riscv64-linux-gnu/libmount.so.1",
-        "/lib/riscv64-linux-gnu/tls/libmount.so.1",
-        "/usr/lib/riscv64-linux-gnu/tls/libmount.so.1",
-        "/usr/lib/riscv64-linux-gnu/libmount.so.1",
-        "/lib/riscv64-linux-gnu/libselinux.so.1",
-        "/lib/riscv64-linux-gnu/libblkid.so.1",
-        "/lib/riscv64-linux-gnu/libpcre2-8.so.0",
+        // BuildStorm Rust toolchain DSOs outside the standard library directories.
         "/root/.rustup/toolchains/nightly-2026-05-28-riscv64gc-unknown-linux-gnu/lib/tls/librustc_driver-37ff94a6423d6d34.so",
-        "/lib/riscv64-linux-gnu/libpthread.so.0",
-        "/lib/riscv64-linux-gnu/libdl.so.2",
         "/root/.rustup/toolchains/nightly-2026-05-28-riscv64gc-unknown-linux-gnu/lib/librustc_driver-37ff94a6423d6d34.so",
         "/root/.rustup/toolchains/nightly-2026-05-28-riscv64gc-unknown-linux-gnu/lib/tls/libdl.so.2",
         "/root/.rustup/toolchains/nightly-2026-05-28-riscv64gc-unknown-linux-gnu/lib/libdl.so.2",
         "/root/.rustup/toolchains/nightly-2026-05-28-riscv64gc-unknown-linux-gnu/lib/libatomic.so.1",
-        "/lib/riscv64-linux-gnu/libatomic.so.1",
         "/root/.rustup/toolchains/nightly-2026-05-28-riscv64gc-unknown-linux-gnu/lib/libpthread.so.0",
     ]
     .into_iter()
@@ -57,7 +47,43 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 
 static DYNAMIC_PREFIX: Lazy<Vec<&'static str>> = Lazy::new(|| vec!["/glibc/lib/", "/musl/lib/"]);
 
+/// Debian-style multiarch directories contain the authoritative shared objects
+/// from the mounted root filesystem.  They must not fall through to the
+/// legacy `/glibc/lib/<basename>` compatibility store: a newer executable can
+/// require symbol versions that the legacy copy does not provide.
+fn is_native_multiarch_library_path(path: &str) -> bool {
+    [
+        "/lib/riscv64-linux-gnu/",
+        "/usr/lib/riscv64-linux-gnu/",
+        "/lib/loongarch64-linux-gnu/",
+        "/usr/lib/loongarch64-linux-gnu/",
+    ]
+    .iter()
+    .any(|prefix| path.starts_with(prefix))
+}
+
+/// The compatibility store only substitutes libraries requested from legacy
+/// linker search roots.  For other absolute paths, including RPATH entries,
+/// an `ENOENT` is meaningful: the dynamic linker must be allowed to continue
+/// searching its remaining native locations.
+fn is_legacy_library_search_path(path: &str) -> bool {
+    [
+        "/lib/",
+        "/usr/lib/",
+        "/lib64/",
+        "/usr/lib64/",
+        "/glibc/",
+        "/musl/",
+    ]
+    .iter()
+    .any(|prefix| path.starts_with(prefix))
+}
+
 pub fn map_library_path(requested_path: &str) -> Option<&str> {
+    if is_native_multiarch_library_path(requested_path) {
+        return None;
+    }
+
     match requested_path {
         // "/musl/lib/dlopen_dso.so" => Some("/musl/lib/dlopen_dso.so"),
         // "/musl/lib/libc.so" => Some("/musl/lib/libc.so"),
@@ -116,7 +142,10 @@ pub fn map_dynamic_link_file(path: &str) -> &str {
 
     // DYNAMIC_PATH stores known image paths used as redirection targets.  It
     // is not an ELF dependency list and does not itself perform linking.
-    if DYNAMIC_PATH.contains(path) {
+    if DYNAMIC_PATH.contains(path)
+        || is_native_multiarch_library_path(path)
+        || !is_legacy_library_search_path(path)
+    {
         return path;
     }
 
