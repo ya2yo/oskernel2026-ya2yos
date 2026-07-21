@@ -6112,3 +6112,36 @@ LoongArch BusyBox 配置确认 `/bin/sh` 选用 hush。用镜像内 BusyBox 1.33
 卸载均 `TPASS`，最后正常 `shutdown!`。调试用 `sh -x` 会让外层字符串扫描器误计 trap 中的
 `TBROK`，故未把其外层聚合计数当作用例结果。RISC-V release 构建通过，未运行 RISC-V QEMU；
 RISC-V 使用 ash，当前 hush 兼容问题只在 LoongArch 配置中复现。
+
+---
+
+## 2026-07-21：LTP read03 FIFO 创建后 stat 模式类型位错误
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans` 中 `read03.c:38: TBROK: Mode does not indicate fifo file` 并修复。
+
+### 分析与采纳结论
+
+AI 从 `mknodat` syscall 入口跟踪完整创建→stat 链路。确认 `sys_mknodat` 分两步：先通过
+`Ext4Inode::create()` 在 ext4 分配 inode，再调用 `fmode_set()` 设置 mode。`create()` 内部
+经 `file_open` → `ext4_fopen` → `ext4_generic_open(file_expect=true)` 硬编码
+`filetype = EXT4_DE_REG_FILE`，使得新 inode 的 `st_mode` 高位被初始化为 `EXT4_INODE_MODE_FILE`
+(0x8000)。后续 `fmode_set(0x1000 | perm)` 调用 lwext4 的 `ext4_mode_set`，但该 C 函数只修改
+`mode & 0xFFF` 低 12 位，保留原有高位类型位。因此磁盘 inode 的 mode 始终为 0x8000 | perm，
+`stat` 返回普通文件类型。
+
+AI 先尝试修改 `ext4_mode_set` 增加高位类型位写入，但因预编译 `liblwext4-loongarch64.a` 的
+build 目录权限为 root 无法重新编译，实际生效的修改改为在 Rust 层。最终采纳方案：在
+`Ext4Inode::fstat()` 末尾通过 `FsIndex::special_node_type()` 查询 mknodat 时记录的正确
+`InodeType::Fifo`，用其 `mode_bits()` 替换 `st_mode` 高 4 位。
+
+### 修改与验证
+
+修改 `os/src/fs/ext4_lw/inode.rs`（导入 `FsIndex`，`fstat()` 末尾 patch mode）、
+`crates/lwext4_rust/c/lwext4/src/ext4.c`（防御性 fix，未编译进二进制），新增
+`Docs/决赛文档/problem/read03-fifo-mode-type-bits.md`，更新 problem 索引、开发日志和
+AI 协作记录。
+
+LoongArch64 `make` + `make run`：musl/glibc `read03` 均从 `TBROK` 变为 `TPASS`，正常
+`shutdown!`。未运行 RISC-V。

@@ -14,7 +14,8 @@ use lwext4_rust::{
 use super::EXT4_OP_LOCK;
 use crate::{
     fs::{
-        patch_dynamic_link_file_bytes, Inode, InodeType, Kstat, OpenFlags, String, FILE_PAGE_CACHE,
+        patch_dynamic_link_file_bytes, FsIndex, Inode, InodeType, Kstat, OpenFlags, String,
+        FILE_PAGE_CACHE,
     },
     sync::SyncUnsafeCell,
     utils::{SysErrNo, SysResult, SyscallRet},
@@ -452,6 +453,12 @@ impl Inode for Ext4Inode {
         };
         if let Some(size) = known_size {
             kstat.st_size = size as isize;
+        }
+        let cpath = inner.f.path();
+        let path_str = cpath.to_str().unwrap_or("");
+        if let Some(node_type) = FsIndex::special_node_type(path_str) {
+            let type_bits = node_type.mode_bits();
+            kstat.st_mode = (kstat.st_mode & !0xF000) | type_bits;
         }
         kstat
     }

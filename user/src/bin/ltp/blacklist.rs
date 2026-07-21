@@ -1221,7 +1221,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "quotactl08\0",
     "quotactl09\0",
     "rcu_torture.sh\0",
-    "read03\0",
     "read_all\0",
     "readahead01\0",
     "readahead02\0",

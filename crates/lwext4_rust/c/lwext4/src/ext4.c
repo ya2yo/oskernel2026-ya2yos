@@ -2142,6 +2142,10 @@ int ext4_mode_set(const char *path, uint32_t mode)
 		goto Finish;
 
 	orig_mode = ext4_inode_get_mode(&mp->fs.sb, inode_ref.inode);
+	if (mode & EXT4_INODE_MODE_TYPE_MASK) {
+		orig_mode &= ~EXT4_INODE_MODE_TYPE_MASK;
+		orig_mode |= mode & EXT4_INODE_MODE_TYPE_MASK;
+	}
 	orig_mode &= ~0xFFF;
 	orig_mode |= mode & 0xFFF;
 	ext4_inode_set_mode(&mp->fs.sb, inode_ref.inode, orig_mode);

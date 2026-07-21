@@ -1058,7 +1058,12 @@
 - **描述**：AI 通过日志 PID/HART 对应、只读镜像反汇编和既有 RISC-V COW 修复对照，确认合法的 `0x25d0` 指令因父子跨 hart 同时拆分同一 COW 页而被破坏。LoongArch 旧路径在复制前删除源页的最后 `FrameTracker` 引用，使 allocator 可回收、清零并复用仍在读取的物理页；修复固定源帧，先分配复制目标页，再替换 PTE、刷新 TLB 和转移 VMA 所有权。LoongArch64 release 构建通过，8 核 `basic-musl/basic-glibc` 连续五轮完整结束并 `shutdown!`，未再出现非法指令、段错误或内核失败信号。详见 [problem/loongarch-cow-source-frame-race.md](./problem/loongarch-cow-source-frame-race.md) 与 `ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
 
-#### LoongArch LTP fs_bind01 hush timeout 与 bind 挂载栈卸载修复（7.21）
+#### LTP read03 FIFO 创建后 stat 模式类型位修复（7.21）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析根目录 `log.ans` 的 `read03 TBROK: Mode does not indicate fifo file` 并修复。
+- **描述**：AI 从 mknodat 创建链路追踪到 ext4 inode 初始化与 mode 写入。确认 `create()` → `file_open()` → `ext4_generic_open` 硬编码 `EXT4_DE_REG_FILE` 导致 inode mode 高位被初始化为普通文件而非 FIFO，而 `ext4_mode_set` 仅修改低 12 位权限位。修复在 `Ext4Inode::fstat()` 末尾通过 `FsIndex::special_node_type()` 修正 mode 类型高位；同时修改 `ext4_mode_set` 使其支持类型高位写入作为防御。LoongArch64 musl/glibc read03 均 TPASS。详见 [problem/read03-fifo-mode-type-bits.md](./problem/read03-fifo-mode-type-bits.md) 与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-21 工作树）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析根目录 `log.ans` 中 LoongArch64 `fs_bind01` 的早期终止并完成修复与 QEMU 验证。

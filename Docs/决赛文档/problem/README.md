@@ -114,3 +114,4 @@
 - [prctl PR_SET_CHILD_SUBREAPER 子进程收养语义](./prctl-child-subreaper.md)
 - [LTP prctl04 seccomp strict/filter 语义](./prctl-seccomp-prctl04.md)
 - [LoongArch LTP fs_bind01 hush timeout 与 bind 挂载栈卸载修复](./fs-bind01-loongarch-hush-timeout-mount-stack.md)
+- [read03 FIFO 创建后 stat 模式类型位错误](./read03-fifo-mode-type-bits.md)
