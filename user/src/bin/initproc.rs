@@ -34,10 +34,11 @@ mod sigaltstack_regression;
 
 #[allow(dead_code)]
 /// fork 并在子进程中运行一个 testsuit
-fn run_testsuit(root: &str, script: &str) {
+fn run_testsuit(root: &str, script: &str) -> i32 {
     let args = ["busybox\0", "sh\0", script];
-    fork_and_run(root, &args);
+    let status = fork_and_run(root, &args);
     cleanup_testsuit_children();
+    status
 }
 
 fn cleanup_testsuit_children() {
@@ -150,6 +151,11 @@ fn get_score() -> i32 {
 }
 
 // final-2026
+// - `buildstorm_toolchain_debug.sh`
+// - `buildstorm_minibuild_prepare_debug.sh`
+// - `buildstorm_minibuild_build_debug.sh`
+// - `buildstorm_xtask_prebuild_debug.sh`
+// - `buildstorm_xtask_build_debug.sh`
 #[allow(unused)]
 fn test_final_2026() -> i32 {
     if !sigaltstack_regression::run() {
