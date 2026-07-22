@@ -1016,6 +1016,7 @@
 - **场景**：维护者要求继续修复 BuildStorm MINIBUILD 单独运行成功、prepare 后 fresh 编译失败及 10 分钟超时。
 - **描述**：通过 TrapContext 现场、Cargo linker stderr 和 final 镜像 ELF 对照，确认普通 fork 在正确复制当前线程 trap 快照后又按 child VMA 覆盖为另一 parent 线程的 futex wait 现场；解除该死锁后，又确认两层动态库 mapper 将 native libc linker script 的 `/lib/ld-linux-*` 依赖错误改写为旧 `/glibc/lib` loader，导致 `GLIBC_PRIVATE`/TLS 符号无法解析。修复删除冗余 trap VMA clone，将 GCC toolchain 路径视为 native，并让真实 loader 优先、缺失时才走 legacy fallback。RISC-V fresh MINIBUILD 现输出 `ok` 和 `shutdown!`；RISC-V、LoongArch64 release 构建通过。完整 `cargo xtask` 未运行，详见 [problem/buildstorm-minibuild-fresh-fork-loader.md](./problem/buildstorm-minibuild-fresh-fork-loader.md) 与 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-22 工作树）
+
 #### CAgent Bash 运行器与 Debian `/bin` 路径修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
@@ -1110,4 +1111,11 @@
   RISC-V rename 发布探针结果按实际记录；完整 Cargo 结论不超出本轮运行证据。详见
   [problem/buildstorm-rustc-artifact-rename-writeback.md](./problem/buildstorm-rustc-artifact-rename-writeback.md)
   与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-22 工作树）
+
+#### BuildStorm 用户态 `/tmp` 分阶段诊断入口迁移（7.22）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求依据 `scripts/buildstorm_testcode.sh` 将 BuildStorm 拆为可单独选择的小测例，放入 `user/src/bin/buildstorm/`，并移除内核启动期注入的重复脚本。
+- **描述**：AI 对照官方阶段、现有 `initfiles.rs` 注入脚本和用户态构建/预加载边界，将工具链、MINIBUILD prepare/build、target 清理、`tg-xtask` 预构建、正式构建，以及原先混入预构建的 rename/unicode artifact probe 分离为八项。每项在 `initproc` 内按需物化到固定 `/tmp/buildstorm-*.sh`，再沿用 Bash 执行，保留 Rust/Cargo 环境、fd/pipe 拓扑和 `BUILDSTORM_DEBUG_*` 防误评分边界；内核不再写入 BuildStorm 测试脚本。新增官方顺序和扩展诊断组合入口，runner 返回子进程 wait status，exec 失败的 child 以 `127` 显式退出。双架构 release 构建通过；RISC-V snapshot 已确认 Bash 从 `/tmp/buildstorm-xtask-prebuild.sh` 启动并进入 Cargo，120 秒内未完成。此次结构迁移不宣称完整 BuildStorm 或性能评分通过，详见 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md) 与 `ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-22 工作树）

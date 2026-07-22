@@ -14,6 +14,7 @@ use user_lib::{
 use crate::libctest::pthread_cancel_points::run_musl_static;
 
 mod basic;
+mod buildstorm;
 mod busybox;
 mod iozone;
 mod libctest;
@@ -41,11 +42,12 @@ fn run_testsuit(root: &str, script: &str) -> i32 {
     status
 }
 
-/// Run final-round scripts with Bash because CAgent uses Bash arrays.
-fn run_final_testsuit(root: &str, script: &str) {
+/// Run a final-round script with Bash and preserve its wait status.
+pub(crate) fn run_final_testsuit(root: &str, script: &str) -> i32 {
     let args = ["/bin/bash\0", script];
-    fork_and_run(root, &args);
+    let status = fork_and_run(root, &args);
     cleanup_testsuit_children();
+    status
 }
 
 fn cleanup_testsuit_children() {
@@ -62,11 +64,15 @@ fn cleanup_testsuit_children() {
 pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
     println!("{:?}", args);
     let pid = fork();
+    if pid < 0 {
+        println!("fork fail: {}", pid);
+        return pid as i32;
+    }
     if pid == 0 {
         chdir(dir);
         let ret = execve(&args);
         println!("execve fail: {}", ret);
-        exit(0);
+        exit(127);
     } else {
         let mut exit_code: i32 = 0;
         let _ = waitpid(pid as usize, &mut exit_code);
@@ -158,11 +164,6 @@ fn get_score() -> i32 {
 }
 
 // final-2026
-// - `buildstorm_toolchain_debug.sh`
-// - `buildstorm_minibuild_prepare_debug.sh`
-// - `buildstorm_minibuild_build_debug.sh`
-// - `buildstorm_xtask_prebuild_debug.sh`
-// - `buildstorm_xtask_build_debug.sh`
 #[allow(unused)]
 fn test_final_2026() -> i32 {
     if !sigaltstack_regression::run() {
@@ -173,8 +174,9 @@ fn test_final_2026() -> i32 {
         shutdown();
         return 1;
     }
-    run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
-    run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
+    // run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
+    // run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
+    let status = buildstorm::run_selected();
     shutdown();
-    0
+    status
 }

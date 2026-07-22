@@ -6354,3 +6354,50 @@ rename 的目标数据。
 探针。guest 之后进入完整 Cargo，但未得到 `cargo_rc` 或 artifact Rustc probe；此前 900 秒
 运行同样在 Cargo 阶段超时，因此未将完整 Cargo/BuildStorm 或 `E0463` 完全消失标记为通过。
 详见 `Docs/决赛文档/problem/buildstorm-rustc-artifact-rename-writeback.md`。
+
+---
+
+## 2026-07-22：BuildStorm 用户态 `/tmp` 分阶段脚本迁移
+
+### 用户需求
+
+维护者要求根据 `scripts/buildstorm_testcode.sh` 将 BuildStorm 拆成可逐项选择的小测例，
+放入 `user/src/bin/buildstorm/`，并同步移除内核中已有的相关 BuildStorm 测例注入。
+
+### 分析与采纳结论
+
+官方脚本可按工具链、MINIBUILD prepare/build、目标清理、非计时 `tg-xtask` 预构建和计时
+`xtask` 构建拆分；此前的 `xtask_prebuild` 还混入 Rustc artifact rename 发布和
+`unicode_ident` direct Rustc probe，无法在失败时区分文件系统发布、Cargo 预构建和 artifact
+可读性。采纳八个独立 case：`toolchain`、`minibuild_prepare`、`minibuild_build`、
+`xtask_clean_target`、`rename_publish`、`xtask_prebuild`、`unicode_artifact`、`xtask_build`。
+
+由于内核只预加载 `initproc`，`user/src/bin/buildstorm/` 作为其子模块而不是额外 ELF。每个
+模块保留原始 shell 正文和 `BUILDSTORM_DEBUG_*` 输出；公共层通过
+`openat(O_CREATE | O_WRONLY | O_TRUNC)` 在固定 `/tmp/buildstorm-*.sh` 路径物化脚本，循环处理
+短写、检查 `close()`，再交由既有 Bash runner 执行。这样保留 Cargo 的 shell 环境、重定向和
+pipe 拓扑，同时不再让 `initfiles.rs` 维护或向 `/glibc` 注入测试脚本。
+
+`run_minibuild_fresh()` 明确保持 `prepare -> build` 前置关系；`run_official_sequence()` 保留
+参考脚本的主阶段顺序，`run_diagnostics()` 额外运行 rename 与 unicode artifact probe。单项由
+`SELECTED_CASE` 选择。runner 现在返回 wait status，且 `execve` 失败的 child 以 `127` 退出，
+避免脚本物化或执行失败被误报为通过。
+
+### 修改与验证
+
+修改 `user/src/bin/buildstorm/`、`user/src/bin/initproc.rs` 和
+`os/src/fs/kernel_fs_ops/initfiles.rs`；后者删除全部 BuildStorm shell 常量、注入函数及
+`create_init_files()` 调用。同步更新本开发日志、两份既有 BuildStorm problem 复盘和
+`AI_INTERACTION.md`。
+
+本条记录只确认测例载体与调度边界的迁移，不将其视为 `BUILDSTORM_TOOLCHAIN`、
+`BUILDSTORM_MINIBUILD`、正式 `BUILDSTORM_COMPILE` 或性能项通过结论。后续应以目标 case 的
+`BUILDSTORM_DEBUG_*` 标记和完整官方脚本分别验证。
+
+本轮已运行 `make build-arch TARGET_ARCH=riscv64` 与
+`make build-arch TARGET_ARCH=loongarch64`，均通过。RISC-V 使用 final-2026 原始镜像的
+`-snapshot` 启动 120 秒：先通过 `sigaltstack regression: PASS` 和 `rseq regression: PASS`，
+随后真实执行 `["/bin/bash\0", "/tmp/buildstorm-xtask-prebuild.sh\0"]` 并到达
+`----- pre-build tg-xtask (untimed) -----`。外层时限到期前没有 `stage=materialize`、panic、
+`TFAIL` 或 `TBROK`，但也没有完成标记，因此只确认用户态脚本物化/启动路径，不宣称 Cargo 或
+完整 BuildStorm 通过。

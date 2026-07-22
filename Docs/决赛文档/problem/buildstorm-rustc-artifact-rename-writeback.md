@@ -112,3 +112,13 @@ BUILDSTORM_DEBUG_XTASK_PREBUILD rename_publish=PASS
 结束标记。此前一次 `timeout 900s make run TARGET_ARCH=riscv64` 也在 Cargo 仍运行时被外层
 时限终止。因此本修复不将完整 Cargo、`unicode_ident` 的 `E0463` 消失或完整 BuildStorm 标记为
 已通过。
+
+## 后续测例拆分（2026-07-22）
+
+为避免 rename 发布结果被宽泛的 `tg-xtask` 预构建输出掩盖，`rename_publish` 已成为独立的
+用户态 BuildStorm case：它在运行时写入 `/tmp/buildstorm-rename-publish.sh`，单独创建临时
+`.rmeta`、执行 `mv`，并验证旧路径不存在、最终路径保留 payload。`unicode_artifact` 同样从
+预构建中拆出，要求在已有 `unicode_ident` artifact 后用 `rustc --extern` 单独验证可读性。
+
+这只改变诊断入口和归因粒度，不改变本复盘中 rename/write-back 根因、修复顺序或历史验证结论；
+独立 `rename_publish` 成功仍不能代替完整 Cargo、`E0463` 消失或正式 BuildStorm 通过证据。

@@ -64,7 +64,7 @@ whole-file write-back cache 的 4 MiB 上限。原 `Ext4File::check_cached()` �
 本轮仍未采纳只读 `MAP_PRIVATE` 页复用或预读实验，避免把 `mprotect(PROT_WRITE)` 的 COW
 隔离问题混入本修复。
 
-## 独立复现入口（2026-07-21）
+## 独立复现入口（2026-07-21，历史实现）
 
 官方 `buildstorm_testcode.sh` 位于只读测例仓，最终镜像不会在构建时自动安装该脚本，
 因此不能只在外部仓拆分后期待 guest 使用新文件。为保持与正式测例一致的
@@ -140,3 +140,49 @@ prepare 路径保留为独立诊断入口，必要时可先运行以强制创建
 `BUILDSTORM_MINIBUILD` 与 `BUILDSTORM_COMPILE`，不能将当前诊断脚本中跨过 EFAULT 的结果
 等同于最终评分通过。另有一个独立的 mmap 记账问题待处理：`munmap()` 目前不会回收
 `MAP_STACK` 的预算，且只处理完整覆盖的 VMA；它不应混入本修复。
+
+## 用户态 `/tmp` 分阶段入口（2026-07-22）
+
+上述内核注入方式用于最初将长测例快速拆开，但测试脚本文本属于用户态诊断载体，不应继续由
+`create_init_files()` 在启动期写进 `/glibc`。本轮将全部 BuildStorm debug shell 正文迁至
+`user/src/bin/buildstorm/`，内核删除对应常量、`create_buildstorm_debug_scripts()` 以及
+`create_init_files()` 调用。这样普通根文件系统初始化不再带有 BuildStorm 专用测试资产。
+
+`buildstorm::common` 在每个 case 运行前以
+`openat(O_CREATE | O_WRONLY | O_TRUNC, 0o600)` 将脚本写到固定 `/tmp/buildstorm-*.sh`，循环
+处理短写并检查 `close()`；写入成功后才通过现有 Bash runner 在 `/glibc` 工作目录执行。脚本仍
+自行挂载 proc/sysfs/devtmpfs、导出 Rustup/Cargo 环境，尤其保留 MINIBUILD 的
+`cargo build >/dev/null 2>&1` 和正式编译的 pipe/`tee` 拓扑，避免改变待诊断的 Rust/Cargo
+行为。物化失败会输出 `BUILDSTORM_DEBUG_CASE ... stage=materialize`；执行失败则保留 child 的
+wait status，`execve` 失败的 child 以 `127` 退出并表现为非零 wait status，不会再伪装成成功。
+
+用户态模块提供以下独立入口：
+
+| case | `/tmp` 脚本 | 覆盖范围与依赖 |
+| --- | --- | --- |
+| `toolchain` | `buildstorm-toolchain.sh` | `rustc --version` 与 `cargo --version` |
+| `minibuild_prepare` | `buildstorm-minibuild-prepare.sh` | 删除并以 `cargo new` 创建 `/tmp/minibuild` |
+| `minibuild_build` | `buildstorm-minibuild-build.sh` | 依赖 prepare，编译并运行 Hello World |
+| `xtask_clean_target` | `buildstorm-xtask-clean-target.sh` | 对应参考脚本的交叉 target 清理 |
+| `rename_publish` | `buildstorm-rename-publish.sh` | 独立验证临时 `.rmeta` rename 发布 |
+| `xtask_prebuild` | `buildstorm-xtask-prebuild.sh` | 非计时 `cargo build -p tg-xtask` |
+| `unicode_artifact` | `buildstorm-unicode-artifact.sh` | 依赖预构建产物，直接以 `rustc --extern` 验证 artifact |
+| `xtask_build` | `buildstorm-xtask-build.sh` | 计时 `cargo xtask arceos build` 与产物大小检查 |
+
+`SELECTED_CASE` 允许在一次启动中选择一项；`run_minibuild_fresh()` 固化
+`prepare -> build` 依赖，`run_official_sequence()` 保留参考脚本主阶段顺序，
+`run_diagnostics()` 额外执行 rename 和 unicode artifact 探针。所有局部路径继续只输出
+`BUILDSTORM_DEBUG_*`，不得以正式 `BUILDSTORM_TOOLCHAIN`、`BUILDSTORM_MINIBUILD` 或
+`BUILDSTORM_COMPILE` 标记替代，以免部分运行被 judge 误计为得分。
+
+这次迁移只改善可定位性和运行入口，不重新证明此前的 mmap、fork、loader 或 rename 修复，也
+不等同于完整 BuildStorm 或性能项通过；正式结论仍须分别运行原始 `buildstorm_testcode.sh`。
+
+### 本轮迁移验证
+
+`make build-arch TARGET_ARCH=riscv64` 与
+`make build-arch TARGET_ARCH=loongarch64` 均通过。RISC-V 以 final-2026 原始镜像和
+`-snapshot` 运行 120 秒，依次输出 `sigaltstack regression: PASS`、`rseq regression: PASS`、
+`["/bin/bash\0", "/tmp/buildstorm-xtask-prebuild.sh\0"]` 和
+`----- pre-build tg-xtask (untimed) -----`。这确认脚本由用户态写入 `/tmp` 后可被 Bash 读取和
+执行；外层时限到期前未得到 prebuild 完成标记，因此不将该样本解释为 Cargo 或 BuildStorm 通过。
