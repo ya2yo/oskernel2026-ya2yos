@@ -18,14 +18,15 @@
 //! | `unicode_artifact::run` | `unicode_ident` artifact 的 `rustc --extern` | prebuild 已产出 artifact |
 //! | `xtask_build::run` | 计时 `cargo xtask arceos build` | target、工具链和较长运行窗口 |
 //!
-//! 可组合选择 [`run_minibuild_fresh`]、[`run_official_sequence`] 或
-//! [`run_diagnostics`]。组合入口用于诊断顺序和依赖，不替代正式评分使用的
-//! `scripts/buildstorm_testcode.sh`。
+//! 可组合选择 [`run_minibuild_fresh`] 或 [`run_diagnostics`] 排查问题。全量
+//! [`run_official_sequence`] 会直接运行参考脚本，输出正式评分标记；它与
+//! 分阶段诊断的输出契约不同。
 
 mod common;
 
 pub mod minibuild_build;
 pub mod minibuild_prepare;
+pub mod official;
 pub mod rename_publish;
 pub mod toolchain;
 pub mod unicode_artifact;
@@ -62,22 +63,12 @@ pub fn run_minibuild_fresh() -> i32 {
 }
 
 #[allow(dead_code)]
-/// 按参考脚本的主阶段顺序运行。
+/// 运行完整的正式评分脚本。
 ///
-/// 这是定位问题的组合入口；其中独立 prebuild 会保留真实失败状态，不能当作
-/// `scripts/buildstorm_testcode.sh` 的正式评分等价物。
+/// 参考脚本由 `include_str!` 在构建期嵌入，因此 guest 不依赖 `/glibc` 中是否
+/// 预安装 `buildstorm_testcode.sh`。不要用分阶段诊断入口替代此入口进行判分。
 pub fn run_official_sequence() -> i32 {
-    run_sequence(
-        "official-sequence",
-        &[
-            toolchain::run,
-            minibuild_prepare::run,
-            minibuild_build::run,
-            xtask_clean_target::run,
-            xtask_prebuild::run,
-            xtask_build::run,
-        ],
-    )
+    official::run()
 }
 
 #[allow(dead_code)]

@@ -1,5 +1,6 @@
 # Problem 复盘索引
 
+- [BuildStorm 全量运行误用诊断标记导致评分器 0 分](./buildstorm-full-run-marker-contract.md)
 - [LoongArch CAgent loopback TCP 分片校验和与大请求传输](./cagent-loopback-tcp-fragmentation.md)
 - [BuildStorm Rustc mremap(MAYMOVE) 扩容丢失数据](./buildstorm-mremap-data-loss.md)
 - [BuildStorm Rustc artifact rename 后 lwext4 write-back 缓存重建旧临时文件](./buildstorm-rustc-artifact-rename-writeback.md)

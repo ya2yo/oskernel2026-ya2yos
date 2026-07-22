@@ -1131,3 +1131,10 @@
 - **场景**：维护者要求将内核定制的 smoltcp 从 `os/vendor/` 移至根目录 `crates/`。
 - **描述**：审计 Cargo patch、离线 vendor 配置和构建脚本后，将完整 crate 移至 `crates/smoltcp`，并仅把 `os/Cargo.toml` 的本地 patch 路径改为 `../crates/smoltcp`。保留 `os/dotcargo/config` 的其余离线依赖解析，不改写历史问题复盘，也未触碰 CAgent 脚本、测试镜像、testcase 源码或维护者已有的 `initproc` 改动。smoltcp 定向离线单测及 RISC-V、LoongArch64 release 构建均通过。
 - **关联 commit**：尚未提交（2026-07-22 工作树）
+
+#### BuildStorm 全量评分输出契约修复（7.22）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者发现 BuildStorm 自定义全量测试已执行分阶段脚本，但 `judge_buildstorm-glibc.py` 仍输出 0/180，要求修复 `user/src/bin` 下的测试入口。
+- **描述**：AI 对照 judge 正则、参考脚本、当前日志和提交历史，确认全量入口误用了刻意输出 `BUILDSTORM_DEBUG_*` 的诊断组合。新增构建期嵌入 `scripts/buildstorm_testcode.sh` 的正式单脚本 runner，令全量入口在 `/tmp` 一次执行并恢复 canonical `BUILDSTORM_*` 标记；分阶段诊断保持 DEBUG-only。RISC-V/LoongArch64 release 构建通过，RISC-V 180 秒真实回归已输出 toolchain/minibuild 正式成功标记，judge 从 0/180 恢复为 20/180；运行窗口在 prebuild 结束前到期，未将完整 compile 或性能项误报为通过。详见 [problem/buildstorm-full-run-marker-contract.md](./problem/buildstorm-full-run-marker-contract.md) 与 `ai.log`。
+- **关联 commit**：尚未提交（2026-07-22 工作树）

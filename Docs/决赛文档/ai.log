@@ -6465,3 +6465,55 @@ fragmenter 未排空时被其他 socket 覆盖的风险、TX 满时的 poll 空�
 `cargo test --offline test_tcp_tx_fragmentation_checksum_after_reassembly`、
 `make build-arch TARGET_ARCH=loongarch64` 和 `make build-arch TARGET_ARCH=riscv64` 均通过；
 两种内核构建日志均确认从 `crates/smoltcp` 编译 smoltcp，`os/Cargo.lock` 保持无改动。
+
+---
+
+## 2026-07-22：BuildStorm 全量评分标记契约修复
+
+### 用户需求
+
+维护者要求修复当前内核 `user/src/bin` 下自定义 BuildStorm 全量测试的输出：
+
+```bash
+cat log.ans | python3 scripts/judge_buildstorm-glibc.py | jq .
+```
+
+显示 `0.0 / 180.0`，尽管日志已出现 BuildStorm 分阶段执行输出。
+
+### 分析与采纳结论
+
+AI 对照 `scripts/judge_buildstorm-glibc.py`、`scripts/buildstorm_testcode.sh`、
+`user/src/bin/buildstorm/`、当前 `log.ans` 与相关提交历史，确认 judge 仅识别
+`BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok` 和
+`BUILDSTORM_COMPILE ...`。当前全量入口调用的 `run_official_sequence()` 原本是
+DEBUG-only 的诊断组合，日志实际为 `BUILDSTORM_DEBUG_TOOLCHAIN ok` 和
+`BUILDSTORM_DEBUG_MINIBUILD ok`，因此 0 分是必然的协议失配，不是 judge 漏判。
+
+没有修改 judge 以兼容 DEBUG，也没有机械改写每个分阶段 case 的前缀。后者会使局部诊断
+被误计分，且仍不能复刻参考脚本单一 Bash 进程、fresh MINIBUILD、`tg-xtask` 预构建
+`|| true`、目录缺失时的 compile false marker 等语义。采纳单独的正式全量 runner：在
+构建期直接 `include_str!` 参考脚本，在 guest `/tmp` 物化后一次执行；各诊断入口继续
+只输出 `BUILDSTORM_DEBUG_*`。
+
+### 修改与验证
+
+新增 `user/src/bin/buildstorm/official.rs`，并让
+`buildstorm::run_official_sequence()` 委托 `official::run()`。未触碰维护者已有的
+`initproc.rs` CAgent 注释。同步新增
+`problem/buildstorm-full-run-marker-contract.md`，更新 problem 索引、既有
+MINIBUILD 复盘、开发日志和 AI 记录。
+
+`git diff --check` 与 `sh -n scripts/buildstorm_testcode.sh` 通过。向 judge 输入三条
+canonical success marker 得到 `180.0 / 180.0`。`make` 完成 RISC-V 和 LoongArch64
+release 构建，只有既有 Cargo config 弃用和 smoltcp warnings。
+
+RISC-V 实际运行：
+
+```bash
+timeout 180s make run TARGET_ARCH=riscv64 > /tmp/buildstorm-full-marker-riscv.log 2>&1
+python3 scripts/judge_buildstorm-glibc.py /tmp/buildstorm-full-marker-riscv.log | jq .
+```
+
+guest 已输出 `BUILDSTORM_TOOLCHAIN ok` 和 `BUILDSTORM_MINIBUILD ok`，judge 结果为
+`20.0 / 180.0`；外层 180 秒在 `cargo build -p tg-xtask` 预构建期间终止，尚未出现
+`BUILDSTORM_COMPILE`，故未将完整编译、40 分 compile 或 120 分时间项记为通过。

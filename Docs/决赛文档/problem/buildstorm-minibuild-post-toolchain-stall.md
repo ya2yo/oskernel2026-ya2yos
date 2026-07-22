@@ -186,3 +186,15 @@ wait status，`execve` 失败的 child 以 `127` 退出并表现为非零 wait s
 `["/bin/bash\0", "/tmp/buildstorm-xtask-prebuild.sh\0"]` 和
 `----- pre-build tg-xtask (untimed) -----`。这确认脚本由用户态写入 `/tmp` 后可被 Bash 读取和
 执行；外层时限到期前未得到 prebuild 完成标记，因此不将该样本解释为 Cargo 或 BuildStorm 通过。
+
+### 后续：全量正式评分入口（2026-07-22）
+
+上文的 `run_official_sequence()` 在迁移当时确实只是 DEBUG-only 的诊断组合，不能作为
+正式评分入口。后续发现 final-2026 已将全量路径接到该函数，导致 `log.ans` 即使出现
+`BUILDSTORM_DEBUG_TOOLCHAIN ok` 和 `BUILDSTORM_DEBUG_MINIBUILD ok`，judge 仍为 0 分。
+
+当前该函数已改为调用 `buildstorm::official::run()`：它在构建期以 `include_str!` 嵌入
+`scripts/buildstorm_testcode.sh`，物化到 `/tmp/buildstorm-official.sh` 后由一个 Bash 进程
+完整执行。分阶段与扩展诊断入口仍保留 `BUILDSTORM_DEBUG_*`，只有该全量入口产生正式的
+`BUILDSTORM_TOOLCHAIN`、`BUILDSTORM_MINIBUILD` 和 `BUILDSTORM_COMPILE` 标记。此次接线
+修复的独立复盘见 [buildstorm-full-run-marker-contract.md](./buildstorm-full-run-marker-contract.md)。
