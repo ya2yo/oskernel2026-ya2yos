@@ -42,7 +42,7 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
         b
     }
     let uname = Utsname {
-        sysname: str2u8("Ya2yOS"),
+        sysname: str2u8("Linux"),
         nodename: str2u8("Ya2yOS"),
         release: str2u8("5.0.0"),
         version: str2u8("5.0.0"),
