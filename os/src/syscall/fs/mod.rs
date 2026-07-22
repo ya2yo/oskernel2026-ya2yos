@@ -41,12 +41,6 @@ fn dummyfd_create() -> SyscallRet {
     Ok(newfd)
 }
 
-/// https://man7.org/linux/man-pages/man2/bpf.2.html
-pub fn sys_bpf(_cmd: i32, _attr: *mut u8, _size: u32) -> SyscallRet {
-    warn!("[sys_bpf] not implement!");
-    dummyfd_create()
-}
-
 /// https://man7.org/linux/man-pages/man2/io_uring_setup.2.html
 pub fn sys_io_uring_setup(_entriers: u32, _params: *mut u8) -> SyscallRet {
     warn!("[sys_io_uring_setup] not implement!");

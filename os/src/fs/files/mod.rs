@@ -8,6 +8,7 @@ pub mod pipe;
 pub mod stdio;
 #[cfg(feature = "net")]
 pub use net::*;
+pub mod bpf;
 mod dummyfd;
 mod epoll;
 mod events;

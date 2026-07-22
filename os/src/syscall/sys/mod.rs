@@ -1,9 +1,11 @@
+mod bpf;
 mod capability;
 mod prctl;
 #[cfg(target_arch = "riscv64")]
 mod riscv;
 mod system;
 
+pub use bpf::*;
 pub use capability::*;
 pub use prctl::*;
 #[cfg(target_arch = "riscv64")]
