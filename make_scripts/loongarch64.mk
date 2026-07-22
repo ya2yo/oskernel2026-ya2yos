@@ -1,6 +1,6 @@
 PLATFORM := qemu
-MEMORY_SIZE := 2G  # low 256M + high 1792M on QEMU loongarch64 virt
-SMP := 1  # CPU核心数
+MEMORY_SIZE := 8G  # 与 os/src/arch/loongarch64/qemu/memory_layout.rs 同步
+SMP := 8  # 与 os/src/arch/loongarch64/qemu/config.rs 同步
 MODE := release
 
 ARCH := loongarch64
