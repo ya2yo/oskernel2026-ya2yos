@@ -256,10 +256,31 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
         abs_path = format!("/proc/{}/pagemap", task.pid());
     }
     if abs_path == "/proc/self/status" {
+        // 锁顺序: ProcessMeta(2) → TaskControlBlockInner(3) → MemorySet(5)
+        // 必须先获取 meta/inner 再获取 memory_set
+        let comm = task.process.meta_lock().comm.clone();
+        let task_inner = task.inner_lock();
+        let real_uid = task_inner.user_id as u32;
+        let effective_uid = task_inner.effective_uid;
+        let saved_uid = task_inner.saved_uid;
+        let real_gid = task_inner.real_gid;
+        let effective_gid = task_inner.effective_gid;
+        let saved_gid = task_inner.saved_gid;
+        drop(task_inner);
         let proc = &task.process;
         let memory_set = proc.memory_set_arc();
-        let comm = proc.meta_lock().comm.clone();
-        refresh_proc_status(task.pid(), task.ppid(), &comm, &memory_set)?;
+        refresh_proc_status(
+            task.pid(),
+            task.ppid(),
+            &comm,
+            &memory_set,
+            real_uid,
+            effective_uid,
+            saved_uid,
+            real_gid,
+            effective_gid,
+            saved_gid,
+        )?;
         abs_path = format!("/proc/{}/status", task.pid());
     }
     if abs_path == "/proc/self/exe" {
@@ -280,9 +301,48 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
     if let Some(pid) = parse_proc_pid_file(&abs_path, "status") {
         if let Some(process) = Process::get_process_arc_by_pid(pid) {
             let proc = &process;
+            // 锁顺序: ProcessMeta(2) → TaskControlBlockInner(3) → MemorySet(5)
+            // 必须在获取 memory_set 之前先获取 meta/inner
+            let (comm, real_uid, effective_uid, saved_uid, real_gid, effective_gid, saved_gid) = {
+                let meta = proc.meta_lock();
+                let comm = meta.comm.clone();
+                let (real_uid, effective_uid, saved_uid, real_gid, effective_gid, saved_gid) =
+                    if let Some(first_task) = meta.tasks.iter().find_map(|w| w.upgrade()) {
+                        let inner = first_task.inner_lock();
+                        (
+                            inner.user_id as u32,
+                            inner.effective_uid,
+                            inner.saved_uid,
+                            inner.real_gid,
+                            inner.effective_gid,
+                            inner.saved_gid,
+                        )
+                    } else {
+                        (0u32, 0u32, 0u32, 0u32, 0u32, 0u32)
+                    };
+                (
+                    comm,
+                    real_uid,
+                    effective_uid,
+                    saved_uid,
+                    real_gid,
+                    effective_gid,
+                    saved_gid,
+                )
+            };
             let memory_set = proc.memory_set_arc();
-            let comm = proc.meta_lock().comm.clone();
-            refresh_proc_status(pid, process.ppid(), &comm, &memory_set)?;
+            refresh_proc_status(
+                pid,
+                process.ppid(),
+                &comm,
+                &memory_set,
+                real_uid,
+                effective_uid,
+                saved_uid,
+                real_gid,
+                effective_gid,
+                saved_gid,
+            )?;
         }
     }
     if let Some(pid) = parse_proc_pid_file(&abs_path, "maps") {

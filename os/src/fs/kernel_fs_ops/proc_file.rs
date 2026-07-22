@@ -46,23 +46,49 @@ fn write_kernel_file(file: &dyn File, data: &mut String) -> Result<usize, SysErr
     file.write(UserBuffer::new(vec))
 }
 
-fn format_status(pid: usize, ppid: usize, comm: &str, memory_set: &MemorySet) -> String {
+fn format_status(
+    pid: usize,
+    ppid: usize,
+    comm: &str,
+    memory_set: &MemorySet,
+    real_uid: u32,
+    effective_uid: u32,
+    saved_uid: u32,
+    real_gid: u32,
+    effective_gid: u32,
+    saved_gid: u32,
+) -> String {
     let vm_size = memory_set.virtual_size_kb();
     let vm_rss = memory_set.resident_size_kb();
     format!(
-        "VmSwap:\t       0 kB\n\
-VmHWM:\t{:8} kB\n\
-VmRSS:\t{:8} kB\n\
-Name:\t{}\n\
+        "Name:\t{}\n\
 State:\tS (sleeping)\n\
 Tgid:\t{}\n\
 Pid:\t{}\n\
 PPid:\t{}\n\
+Uid:\t{}\t{}\t{}\t{}\n\
+Gid:\t{}\t{}\t{}\t{}\n\
 VmPeak:\t{:8} kB\n\
 VmSize:\t{:8} kB\n\
 VmHWM:\t{:8} kB\n\
-VmRSS:\t{:8} kB\n",
-        vm_rss, vm_rss, comm, pid, pid, ppid, vm_size, vm_size, vm_rss, vm_rss
+VmRSS:\t{:8} kB\n\
+VmSwap:\t       0 kB\n",
+        comm,
+        pid,
+        pid,
+        ppid,
+        real_uid,
+        effective_uid,
+        saved_uid,
+        effective_uid, // fs_uid defaults to effective_uid
+        real_gid,
+        effective_gid,
+        saved_gid,
+        effective_gid, // fs_gid defaults to effective_gid
+        vm_size,
+        vm_size,
+        vm_rss,
+        vm_rss,
     )
 }
 
@@ -86,6 +112,12 @@ pub fn create_proc_dir_and_file(
     ppid: usize,
     comm: &str,
     memory_set: &MemorySet,
+    real_uid: u32,
+    effective_uid: u32,
+    saved_uid: u32,
+    real_gid: u32,
+    effective_gid: u32,
+    saved_gid: u32,
 ) -> Result<(), SysErrNo> {
     let procdir = open(
         format!("/proc/{}", pid).as_str(),
@@ -115,7 +147,8 @@ pub fn create_proc_dir_and_file(
         DEFAULT_FILE_MODE,
     )?
     .file()?;
-    let mut statusinfo = format_status(pid, ppid, comm, memory_set);
+    let mut statusinfo =
+        format_status(pid, ppid, comm, memory_set, real_uid, effective_uid, saved_uid, real_gid, effective_gid, saved_gid);
     write_kernel_file(statusfile.as_ref(), &mut statusinfo)?;
     statusfile.inode.sync();
 
@@ -205,6 +238,12 @@ pub fn refresh_proc_status(
     ppid: usize,
     comm: &str,
     memory_set: &MemorySet,
+    real_uid: u32,
+    effective_uid: u32,
+    saved_uid: u32,
+    real_gid: u32,
+    effective_gid: u32,
+    saved_gid: u32,
 ) -> Result<(), SysErrNo> {
     let statusfile = open(
         format!("/proc/{}/status", pid).as_str(),
@@ -212,7 +251,8 @@ pub fn refresh_proc_status(
         DEFAULT_FILE_MODE,
     )?
     .file()?;
-    let mut statusinfo = format_status(pid, ppid, comm, memory_set);
+    let mut statusinfo =
+        format_status(pid, ppid, comm, memory_set, real_uid, effective_uid, saved_uid, real_gid, effective_gid, saved_gid);
     write_kernel_file(statusfile.as_ref(), &mut statusinfo)?;
     statusfile.inode.sync();
     Ok(())

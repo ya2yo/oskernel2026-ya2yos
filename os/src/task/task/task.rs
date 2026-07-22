@@ -317,7 +317,7 @@ impl TaskControlBlock {
         let trap_cx = task_inner.trap_cx();
         *trap_cx = TrapContext::app_init_context(entry_point, ustack_top, kernel_stack_top);
         drop(task_inner);
-        create_proc_dir_and_file(process.pid, 0, "initproc", &memory_set)
+        create_proc_dir_and_file(process.pid, 0, "initproc", &memory_set, 0, 0, 0, 0, 0, 0)
             .expect("create initproc proc files");
         arc_task
     }
@@ -835,6 +835,17 @@ impl TaskControlBlock {
             trap_cx.set_tp(tls);
         }
 
+        // 在释放 child_inner 前提前提取 procfs 需要的字段。
+        // 子进程的 uid/gid 在构造时已从父进程复制，直接复用 Phase 1 提取的
+        // parent_* 变量即可，无需重新加锁。
+        let child_real_uid = parent_user_id as u32;
+        let child_effective_uid = parent_euid;
+        let child_saved_uid = parent_suid;
+        let child_real_gid = parent_rgid;
+        let child_effective_gid = parent_egid;
+        let child_saved_gid = parent_sgid;
+        drop(child_inner);
+
         // CLONE_CHILD_SETTID: 写入子进程地址空间
         if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
             let child_proc_inner = &child.process;
@@ -855,9 +866,20 @@ impl TaskControlBlock {
         // Threads share the process, so /proc/<pid> is only created for a new process.
         if !flags.contains(CloneFlags::CLONE_THREAD) {
             let child_proc = &child.process;
-            let child_mm = child_proc.memory_set_arc();
             let child_comm = child_proc.meta_lock().comm.clone();
-            create_proc_dir_and_file(child_pid, child_ppid, &child_comm, &child_mm);
+            let child_mm = child_proc.memory_set_arc();
+            create_proc_dir_and_file(
+                child_pid,
+                child_ppid,
+                &child_comm,
+                &child_mm,
+                child_real_uid,
+                child_effective_uid,
+                child_saved_uid,
+                child_real_gid,
+                child_effective_gid,
+                child_saved_gid,
+            );
         }
 
         // VFORK: 挂起父进程直到子进程 exec 或退出
@@ -868,8 +890,6 @@ impl TaskControlBlock {
                 parent_inner.task_status = TaskStatus::VforkBlocked;
             }
         }
-
-        drop(child_inner);
         tid_to_task::insert(child.tid(), &child);
         if !flags.contains(CloneFlags::CLONE_THREAD) {
             if flags.contains(CloneFlags::CLONE_FILES) {
