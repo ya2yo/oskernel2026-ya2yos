@@ -1,6 +1,57 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::{env, fs};
+use std::{env, fs, time::SystemTime};
+
+const LWEXT4_BUILD_INPUTS: &[&str] = &[
+    "c/lwext4/CMakeLists.txt",
+    "c/lwext4/include",
+    "c/lwext4/src",
+    "c/lwext4/toolchain/musl-generic.cmake",
+];
+
+fn path_modified_after(path: &Path, threshold: SystemTime) -> bool {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return true,
+    };
+    if metadata.modified().map_or(true, |modified| modified > threshold) {
+        return true;
+    }
+    if !metadata.is_dir() {
+        return false;
+    }
+
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => return true,
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => return true,
+        };
+        if path_modified_after(&entry.path(), threshold) {
+            return true;
+        }
+    }
+    false
+}
+
+fn lwext4_needs_rebuild(c_path: &Path, archive: &Path) -> bool {
+    let archive_modified = match fs::metadata(archive).and_then(|metadata| metadata.modified()) {
+        Ok(modified) => modified,
+        Err(_) => return true,
+    };
+
+    [
+        c_path.join("CMakeLists.txt"),
+        c_path.join("include"),
+        c_path.join("src"),
+        c_path.join("toolchain/musl-generic.cmake"),
+    ]
+    .iter()
+    .any(|path| path_modified_after(path, archive_modified))
+}
 
 fn main() {
     let c_path = PathBuf::from("c/lwext4")
@@ -35,7 +86,8 @@ fn main() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let lwext4_lib = &format!("lwext4-{}", arch);
     let lwext4_lib_path = &format!("c/lwext4/lib{}.a", lwext4_lib);
-    if !Path::new(lwext4_lib_path).exists() {
+    let archive_missing = !Path::new(lwext4_lib_path).exists();
+    if archive_missing || lwext4_needs_rebuild(&c_path, Path::new(lwext4_lib_path)) {
         let status = Command::new("make")
             .args(&[
                 "musl-generic",
@@ -47,16 +99,18 @@ fn main() {
             .expect("failed to execute process: make lwext4");
         assert!(status.success());
 
-        let cc = &format!("{}-linux-musl-gcc", arch);
-        let output = Command::new(cc)
-            .args(["-print-sysroot"])
-            .output()
-            .expect("failed to execute process: gcc -print-sysroot");
+        if archive_missing {
+            let cc = &format!("{}-linux-musl-gcc", arch);
+            let output = Command::new(cc)
+                .args(["-print-sysroot"])
+                .output()
+                .expect("failed to execute process: gcc -print-sysroot");
 
-        let sysroot = core::str::from_utf8(&output.stdout).unwrap();
-        let sysroot = sysroot.trim_end();
-        let sysroot_inc = &format!("-I{}/include/", sysroot);
-        generates_bindings_to_rust(sysroot_inc);
+            let sysroot = core::str::from_utf8(&output.stdout).unwrap();
+            let sysroot = sysroot.trim_end();
+            let sysroot_inc = &format!("-I{}/include/", sysroot);
+            generates_bindings_to_rust(sysroot_inc);
+        }
     }
 
     /* No longer need to implement the libc.a
@@ -79,7 +133,9 @@ fn main() {
         c_path.to_str().unwrap()
     );
     println!("cargo:rerun-if-changed=c/wrapper.h");
-    println!("cargo:rerun-if-changed={}", c_path.to_str().unwrap());
+    for input in LWEXT4_BUILD_INPUTS {
+        println!("cargo:rerun-if-changed={input}");
+    }
 }
 
 #[cfg(target_arch = "x86_64")]

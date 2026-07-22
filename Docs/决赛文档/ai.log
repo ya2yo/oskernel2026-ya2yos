@@ -6517,3 +6517,41 @@ python3 scripts/judge_buildstorm-glibc.py /tmp/buildstorm-full-marker-riscv.log 
 guest 已输出 `BUILDSTORM_TOOLCHAIN ok` 和 `BUILDSTORM_MINIBUILD ok`，judge 结果为
 `20.0 / 180.0`；外层 180 秒在 `cargo build -p tg-xtask` 预构建期间终止，尚未出现
 `BUILDSTORM_COMPILE`，故未将完整编译、40 分 compile 或 120 分时间项记为通过。
+
+---
+
+## 2026-07-23：LoongArch BuildStorm 稀疏 EXT4 读取破坏修复
+
+### 用户需求
+
+维护者提供 LoongArch64 BuildStorm `log.ans`：正式 judge 显示 0/180，Rust 工具链在
+启动时报告 `unexpected reloc type 0x00dd8170`。维护者要求分析并修复，随后要求给出
+官方 Docker image 中重编译 lwext4 的命令，并补齐本次文档。
+
+### 分析与采纳结论
+
+AI 对照正式脚本、judge 和 `user/src/bin/buildstorm/` 后确认，正式输出契约已经正确；0 分
+是三项真实失败的结果，而非 judge 漏识别。镜像中的 `/root/.cargo/bin/rustup` 是稀疏 EXT4
+文件，逻辑块 328 是 hole、逻辑块 329 才是 relocation 数据。旧 `ext4_fread()` 同时以零
+表示“未初始化 run”与 hole，因而把 329 的物理页错误写入 328，精确造成动态加载器看到的
+`0x00dd8170`。尾部 partial read 也会错误读物理块 0。
+
+采纳在 lwext4 C 层修复 sparse/unwritten block 的零填和连续块聚合，而不是修改 ELF loader、
+TLB、页表或动态链接器。同步修复 build script 对已有 archive 的陈旧复用，并让 `uname -m`
+返回脚本可识别的标准架构名。未修改官方 BuildStorm 脚本或 judge，也没有把 jemalloc 的
+QEMU `MADV_DONTNEED` 提示误判为内核错误。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/c/lwext4/src/ext4.c`、`crates/lwext4_rust/build.rs` 和
+`os/src/syscall/sys/system.rs`。官方 Docker image 中重新执行
+`make -C crates/lwext4_rust/c/lwext4 musl-generic ARCH=loongarch64` 后，archive 的
+`ext4.c.o` 为 `LoongArch`、`0x43 ... OBJ-v1`、GCC 13.2.0，且 `ext4_fread` 大小由
+修复前的 1012 B 变为 1160 B。
+
+当前 LoongArch64 QEMU 日志已无 relocation 错误，正式脚本输出
+`BUILDSTORM_TOOLCHAIN ok` 和 `BUILDSTORM_MINIBUILD ok`；`python3`
+judge 重放为 20/180。QEMU 在 `cargo build -p tg-xtask` 预构建阶段被外层终止，尚无
+`BUILDSTORM_COMPILE`，因此没有声称完整 BuildStorm 或性能项通过。`git diff --check`
+通过；RISC-V 完整回归待后续执行。详见
+[problem/loongarch-buildstorm-sparse-ext4-read-corruption.md](./problem/loongarch-buildstorm-sparse-ext4-read-corruption.md)。

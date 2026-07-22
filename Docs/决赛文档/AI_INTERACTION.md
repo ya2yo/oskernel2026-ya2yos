@@ -1138,3 +1138,10 @@
 - **场景**：维护者发现 BuildStorm 自定义全量测试已执行分阶段脚本，但 `judge_buildstorm-glibc.py` 仍输出 0/180，要求修复 `user/src/bin` 下的测试入口。
 - **描述**：AI 对照 judge 正则、参考脚本、当前日志和提交历史，确认全量入口误用了刻意输出 `BUILDSTORM_DEBUG_*` 的诊断组合。新增构建期嵌入 `scripts/buildstorm_testcode.sh` 的正式单脚本 runner，令全量入口在 `/tmp` 一次执行并恢复 canonical `BUILDSTORM_*` 标记；分阶段诊断保持 DEBUG-only。RISC-V/LoongArch64 release 构建通过，RISC-V 180 秒真实回归已输出 toolchain/minibuild 正式成功标记，judge 从 0/180 恢复为 20/180；运行窗口在 prebuild 结束前到期，未将完整 compile 或性能项误报为通过。详见 [problem/buildstorm-full-run-marker-contract.md](./problem/buildstorm-full-run-marker-contract.md) 与 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-22 工作树）
+
+#### LoongArch BuildStorm 稀疏 EXT4 文件读取破坏修复（7.23）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 LoongArch64 BuildStorm 的 `unexpected reloc type 0x00dd8170` 日志，要求修复首两个环境测例和正式编译前的 Rust 动态加载失败，并在官方 Docker image 中重建 C archive。
+- **描述**：AI 对照镜像 extent、`ext4_fread()`、正式评分脚本与 judge，确认 `/root/.cargo/bin/rustup` 的 logical block 328 是 sparse hole，旧 C 代码将其与连续 run 的零 sentinel 混用，复制了紧随其后的 relocation 页面。修复将 hole 零填、限制聚合到非零连续物理块，并修复尾部 partial read；build script 也会在 C 输入新于 archive 时重建。`uname -m` 改为返回精确的小写架构名，防止 LoongArch guest 落入 RISC-V 兜底分支。官方 Docker 重建后的 archive 保持 ABI v1，QEMU 已恢复 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`；外层终止发生在 prebuild，未将完整 compile/time 标为通过。详见 [problem/loongarch-buildstorm-sparse-ext4-read-corruption.md](./problem/loongarch-buildstorm-sparse-ext4-read-corruption.md) 与 `ai.log`。
+- **关联 commit**：尚未提交（2026-07-23 工作树）

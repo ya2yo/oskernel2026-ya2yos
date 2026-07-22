@@ -1757,28 +1757,40 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 		iblock_idx++;
 	}
 
-	fblock_start = 0;
-	fblock_count = 0;
 	while (size >= block_size) {
-		while (iblock_idx < iblock_last) {
-			r = ext4_fs_get_inode_dblk_idx(&ref, iblock_idx,
-						       &fblock, true);
+		r = ext4_fs_get_inode_dblk_idx(&ref, iblock_idx, &fblock, true);
+		if (r != EOK)
+			goto Finish;
+
+		/* Sparse and unwritten blocks are logically zero-filled. */
+		if (!fblock) {
+			memset(u8_buf, 0, block_size);
+			size -= block_size;
+			u8_buf += block_size;
+			file->fpos += block_size;
+			if (rcnt)
+				*rcnt += block_size;
+			iblock_idx++;
+			continue;
+		}
+
+		/* Batch only non-zero, physically contiguous blocks. */
+		fblock_start = fblock;
+		fblock_count = 1;
+		while ((size_t)fblock_count * block_size < size &&
+		       iblock_idx + fblock_count < iblock_last) {
+			r = ext4_fs_get_inode_dblk_idx(&ref,
+							       iblock_idx + fblock_count,
+							       &fblock, true);
 			if (r != EOK)
 				goto Finish;
-
-			iblock_idx++;
-
-			if (!fblock_start)
-				fblock_start = fblock;
-
-			if ((fblock_start + fblock_count) != fblock)
+			if (!fblock || fblock != fblock_start + fblock_count)
 				break;
-
 			fblock_count++;
 		}
 
 		r = ext4_blocks_get_direct(file->mp->fs.bdev, u8_buf,
-					   fblock_start, fblock_count);
+						   fblock_start, fblock_count);
 		if (r != EOK)
 			goto Finish;
 
@@ -1788,9 +1800,7 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 
 		if (rcnt)
 			*rcnt += block_size * fblock_count;
-
-		fblock_start = fblock;
-		fblock_count = 1;
+		iblock_idx += fblock_count;
 	}
 
 	if (size) {
@@ -1799,10 +1809,14 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 		if (r != EOK)
 			goto Finish;
 
-		off = fblock * block_size;
-		r = ext4_block_readbytes(file->mp->fs.bdev, off, u8_buf, size);
-		if (r != EOK)
-			goto Finish;
+		if (fblock) {
+			off = fblock * block_size;
+			r = ext4_block_readbytes(file->mp->fs.bdev, off, u8_buf, size);
+			if (r != EOK)
+				goto Finish;
+		} else {
+			memset(u8_buf, 0, size);
+		}
 
 		file->fpos += size;
 

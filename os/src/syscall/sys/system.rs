@@ -21,6 +21,12 @@ use crate::{
 static DOMAIN_NAME: spin::Mutex<[u8; 65]> = spin::Mutex::new([0; 65]);
 static DOMAIN_NAME_INIT: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_arch = "riscv64")]
+const MACHINE_NAME: &str = "riscv64";
+
+#[cfg(target_arch = "loongarch64")]
+const MACHINE_NAME: &str = "loongarch64";
+
 /// 获取动态 domainname 的字节数组 (未设置则返回默认值 "Ya2yOS")
 fn get_domainname_bytes() -> [u8; 65] {
     if DOMAIN_NAME_INIT.load(Ordering::Relaxed) {
@@ -46,7 +52,7 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
         nodename: str2u8("Ya2yOS"),
         release: str2u8("5.0.0"),
         version: str2u8("5.0.0"),
-        machine: str2u8("RISC-V64"),
+        machine: str2u8(MACHINE_NAME),
         domainname: get_domainname_bytes(),
     };
     let task = current_task().unwrap();

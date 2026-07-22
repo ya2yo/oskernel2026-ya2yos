@@ -452,6 +452,15 @@ impl TaskControlBlock {
         //将auxv放入栈中
         auxv.push(Aux::new(AuxType::EXECFN, argvp[0]));
         auxv.push(Aux::new(AuxType::NULL, 0));
+
+        // Every auxv entry occupies two machine words, so only argc, argv
+        // and envp determine the final stack alignment.  Reserve padding
+        // before laying out that block; rounding down after writing argc
+        // would move SP away from argc and break the ELF entry ABI.
+        let initial_stack_words = 1 + argvp.len() + envp.len();
+        if initial_stack_words % 2 != 0 {
+            user_sp -= size_of::<usize>();
+        }
         for aux in auxv.iter().rev() {
             // println!("{:?}", aux);
             user_sp -= size_of::<Aux>();
@@ -494,8 +503,9 @@ impl TaskControlBlock {
         user_sp -= size_of::<usize>();
         copy_to_user_val(&*proc_mem, user_sp as *mut usize, &argv.len()).unwrap();
 
-        //以8字节对齐
-        user_sp -= user_sp % size_of::<usize>();
+        // The process entry stack is required to be 16-byte aligned by both
+        // the LoongArch and RISC-V psABIs, while its first word remains argc.
+        debug_assert_eq!(user_sp % 16, 0);
         //println!("user_sp:{:#X}", user_sp);
 
         // 将设置了O_CLOEXEC位的文件描述符关闭
