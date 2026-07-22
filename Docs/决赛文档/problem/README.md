@@ -1,5 +1,6 @@
 # Problem 复盘索引
 
+- [LoongArch CAgent loopback TCP 分片校验和与大请求传输](./cagent-loopback-tcp-fragmentation.md)
 - [BuildStorm Rustc mremap(MAYMOVE) 扩容丢失数据](./buildstorm-mremap-data-loss.md)
 - [BuildStorm Rustc artifact rename 后 lwext4 write-back 缓存重建旧临时文件](./buildstorm-rustc-artifact-rename-writeback.md)
 - [LoongArch 批量 LTP Rust 内核堆耗尽与 CMA 扩容](./loongarch-ltp-heap-cma-reclaim.md)

@@ -205,6 +205,12 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
     let (protocol, src_addr, dst_addr, payload) = match IpVersion::of_packet(buf).unwrap() {
         IpVersion::Ipv4 => {
             let packet = Ipv4Packet::new_unchecked(buf);
+            // IPv4 reassembly happens inside smoltcp. Neither a non-initial
+            // fragment nor a first fragment contains a complete TCP packet
+            // suitable for passive-open inspection.
+            if packet.more_frags() || packet.frag_offset() != 0 {
+                return;
+            }
             (
                 packet.next_header(),
                 IpAddress::Ipv4(packet.src_addr()),
@@ -224,7 +230,9 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
     };
     // 如果是 TCP 协议且是第一次握手
     if protocol == IpProtocol::Tcp {
-        let tcp_packet = TcpPacket::new_unchecked(payload);
+        let Ok(tcp_packet) = TcpPacket::new_checked(payload) else {
+            return;
+        };
         let src_addr = (src_addr, tcp_packet.src_port()).into();
         let dst_addr = (dst_addr, tcp_packet.dst_port()).into();
         let is_first = tcp_packet.syn() && !tcp_packet.ack();

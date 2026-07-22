@@ -6401,3 +6401,41 @@ pipe 拓扑，同时不再让 `initfiles.rs` 维护或向 `/glibc` 注入测试�
 `----- pre-build tg-xtask (untimed) -----`。外层时限到期前没有 `stage=materialize`、panic、
 `TFAIL` 或 `TBROK`，但也没有完成标记，因此只确认用户态脚本物化/启动路径，不宣称 Cargo 或
 完整 BuildStorm 通过。
+## 2026-07-22：LoongArch CAgent loopback TCP 分片校验和修复
+
+### 用户需求
+
+维护者要求继续修复 LoongArch64 `log.ans` 中未通过的 CAgent 测例，并明确
+`scripts/cagent_testcode.sh`、测试镜像及 testcase 源码均为只读。此前已独立提交十项诊断
+runner；本轮只能修改内核、临时诊断入口和规定文档，最终不得保留临时入口。
+
+### 分析与采纳结论
+
+AI 先以原始 `log.ans` 确认 `kernel`、`fs-readwrite`、`fs-directory` 三项 reject，再用已提交的
+单项 runner 缩小到 loopback HTTP 传输。TCP trace 显示两个文件系统请求分别为 1517 B 和 1510 B，
+在 1500 B MTU 下分片后，IPv4 assembler 收到完整 `1480 + 57`、`1480 + 50` payload，却没有 TCP
+接收事件并发生重传。审计 smoltcp `dispatch_ip()`、`IpPayload::Tcp` 和 TCP checksum 实现后，确认
+首片构造将完整 8192 B `Fragmenter::buffer` 传入 TCP emit，导致 pseudo-header length 和 checksum
+覆盖了 datagram 之外的尾部；重组端按真实长度校验，故必然丢包。
+
+采纳局部 IPv4 loopback MSS 方案，未提高 Router/物理网卡 MTU：客户端和被动连接均设置安全的
+4096 B local MSS，数据由 IPv4 分片/重组传送；保留外网和 IPv6 的原有 MSS。同步修复全局
+fragmenter 未排空时被其他 socket 覆盖的风险、TX 满时的 poll 空转，以及 IPv4 首片可伪造 SYN
+旁路监听表的问题。`send()` 入队后主动驱动接口，loopback 关闭 Nagle 与 delayed ACK，避免本地
+请求/响应等待不相关的后续轮询。
+
+### 修改与验证
+
+修改 `os/Cargo.toml`、`os/src/net/consts.rs`、`os/src/net/listen_table.rs`、
+`os/src/net/router.rs`、`os/src/net/tcp.rs`、`os/vendor/smoltcp/src/iface/interface/mod.rs` 和
+`os/vendor/smoltcp/src/socket/tcp.rs`，新增
+`os/vendor/smoltcp/src/iface/interface/tests/ipv4.rs` 的分片 TCP checksum 回归测试，并新增
+`Docs/决赛文档/problem/cagent-loopback-tcp-fragmentation.md` 及索引/开发日志记录。诊断期间
+`initproc` 曾临时调用三个失败项，验证后已恢复为 `test_final_2026()`；维护者已有的 BuildStorm
+注释保持不变。
+
+`cargo test --offline test_tcp_tx_fragmentation_checksum_after_reassembly` 通过；最终
+`make build-arch TARGET_ARCH=loongarch64`、完整 LoongArch QEMU CAgent 回归、
+`python3 scripts/judge_cagent-glibc.py` 和 `make build-arch TARGET_ARCH=riscv64` 均通过。
+最终 LoongArch64 判题结果十项均为 `pass: 1/1`，无 `Invalid JSON`、`No choices in response`、
+`TFAIL`、`TBROK` 或 panic。修复过程中完整 RISC-V CAgent 十项也均通过。

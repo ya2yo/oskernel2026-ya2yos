@@ -510,6 +510,11 @@ pub struct Socket<'a> {
     remote_has_sack: bool,
     /// The maximum number of data octets that the remote side may receive.
     remote_mss: usize,
+    /// An optional local maximum segment size override.
+    ///
+    /// This is useful when a path has a larger effective MTU than the device
+    /// capability reported to the interface.
+    local_mss: Option<usize>,
     /// The timestamp of the last packet received.
     remote_last_ts: Option<Instant>,
     /// The sequence number of the last packet received, used for sACK
@@ -597,6 +602,7 @@ impl<'a> Socket<'a> {
             remote_win_scale: None,
             remote_has_sack: false,
             remote_mss: DEFAULT_MSS,
+            local_mss: None,
             remote_last_ts: None,
             local_rx_last_ack: None,
             local_rx_last_seq: None,
@@ -809,6 +815,15 @@ impl<'a> Socket<'a> {
         self.nagle = enabled
     }
 
+    /// Override the local TCP maximum segment size.
+    ///
+    /// When set, the value is used for both outgoing data segments and the
+    /// MSS option advertised in SYN packets. The caller must ensure the path
+    /// can carry the resulting IP packets.
+    pub fn set_local_mss(&mut self, mss: Option<usize>) {
+        self.local_mss = mss;
+    }
+
     /// Return the keep-alive interval.
     ///
     /// See also the [set_keep_alive](#method.set_keep_alive) method.
@@ -892,6 +907,12 @@ impl<'a> Socket<'a> {
     #[inline]
     pub fn set_bound_endpoint(&mut self, bound_endpoint: IpListenEndpoint) {
         self.bound_endpoint = bound_endpoint
+    }
+
+    #[inline]
+    fn local_mss(&self, cx: &Context, ip_header_len: usize) -> usize {
+        self.local_mss
+            .unwrap_or_else(|| cx.ip_mtu() - ip_header_len - TCP_HEADER_LEN)
     }
 
     /// Return the connection state, in terms of the TCP state machine.
@@ -2248,7 +2269,7 @@ impl<'a> Socket<'a> {
         };
 
         // Max segment size we're able to send due to MTU limitations.
-        let local_mss = cx.ip_mtu() - ip_header_len - TCP_HEADER_LEN;
+        let local_mss = self.local_mss(cx, ip_header_len);
 
         // The effective max segment size, taking into account our and remote's limits.
         let effective_mss = local_mss.min(self.remote_mss);
@@ -2557,7 +2578,7 @@ impl<'a> Socket<'a> {
                 // 3. MSS we can send, determined by our MTU.
                 let size = win_limit
                     .min(self.remote_mss)
-                    .min(cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN);
+                    .min(self.local_mss(cx, ip_repr.header_len()));
 
                 let offset = self.remote_last_seq - self.local_seq_no;
                 repr.payload = self.tx_buffer.get_allocated(offset, size);
@@ -2619,8 +2640,8 @@ impl<'a> Socket<'a> {
 
         if repr.control == TcpControl::Syn {
             // Fill the MSS option. See RFC 6691 for an explanation of this calculation.
-            let max_segment_size = cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN;
-            repr.max_seg_size = Some(max_segment_size as u16);
+            let max_segment_size = self.local_mss(cx, ip_repr.header_len());
+            repr.max_seg_size = Some(u16::try_from(max_segment_size).unwrap_or(u16::MAX));
         }
 
         // Actually send the packet. If this succeeds, it means the packet is in

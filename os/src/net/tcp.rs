@@ -25,7 +25,7 @@ use spin::{Mutex, RwLock};
 
 use super::{
     check_local_bind_address, check_privileged_port_bind,
-    consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
+    consts::{LOOPBACK_TCP_MSS, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
     general::GeneralOptions,
     get_service,
     options::{Configurable, GetSocketOption, SetSocketOption},
@@ -344,6 +344,12 @@ impl SocketOps for TcpSocket {
     /// 发起连接
     fn connect(&self, remote_addr: SocketAddrEx) -> SysResult {
         let remote_addr = remote_addr.into_ip()?;
+        // The in-kernel loopback device is packetized at the Ethernet MTU.
+        // Avoid holding the final short segment of a single local write behind
+        // Nagle's algorithm; Linux loopback normally delivers that write as one
+        // large local packet instead.
+        let local_loopback =
+            matches!(remote_addr, SocketAddr::V4(addr) if addr.ip().is_loopback());
         self.state
             .lock(State::Idle) // 状态机检查
             .map_err(|state| {
@@ -385,6 +391,11 @@ impl SocketOps for TcpSocket {
                             smol::ConnectError::InvalidState => SysErrNo::EALREADY,
                             smol::ConnectError::Unaddressable => SysErrNo::ECONNREFUSED,
                         })?;
+                    if local_loopback {
+                        socket.set_local_mss(Some(LOOPBACK_TCP_MSS));
+                        socket.set_nagle_enabled(false);
+                        socket.set_ack_delay(None);
+                    }
                     Ok::<u32, SysErrNo>(service.device_mask_for(&bound_endpoint))
                 })?;
                 self.general.set_device_mask(device_mask);
@@ -449,7 +460,7 @@ impl SocketOps for TcpSocket {
         self.general.send_poller(self, || {
             poll_interfaces();
 
-            self.with_smol_socket(|socket| {
+            let sent = self.with_smol_socket(|socket| {
                 // 检测套接字状态
                 if !socket.is_active() {
                     return Err(SysErrNo::ENOTCONN);
@@ -464,7 +475,13 @@ impl SocketOps for TcpSocket {
                 });
                 // 如果在读取过程中发生了错误，优先返回那个错误
                 send_result.map_err(|_| SysErrNo::ENOTCONN)
-            })
+            })?;
+
+            // `socket.send` only appends bytes to smoltcp's transmit queue.
+            // Flush it before returning so a loopback peer that is already
+            // blocked in `read` can observe every segment of this write.
+            poll_interfaces();
+            Ok(sent)
         })
     }
     /// 接收数据

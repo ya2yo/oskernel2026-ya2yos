@@ -879,6 +879,86 @@ fn test_packet_len(#[case] medium: Medium) {
     }
 }
 
+#[test]
+#[cfg(all(
+    feature = "medium-ip",
+    feature = "socket-tcp",
+    feature = "proto-ipv4-fragmentation",
+))]
+fn test_tcp_tx_fragmentation_checksum_after_reassembly() {
+    let (mut iface, mut sockets, mut device) = setup(Medium::Ip);
+
+    // Keep this independent of the selected fragmentation buffer size while
+    // still forcing a TCP datagram to be emitted as two IPv4 fragments.
+    iface.inner.caps.max_transmission_unit = 1280;
+
+    let src_addr = Ipv4Address::new(192, 168, 1, 2);
+    let dst_addr = Ipv4Address::new(192, 168, 1, 1);
+    let payload = vec![0xa5; 1400];
+    let tcp_repr = TcpRepr {
+        src_port: 49152,
+        dst_port: 8080,
+        control: TcpControl::Psh,
+        seq_number: TcpSeqNumber(1),
+        ack_number: None,
+        window_len: 4096,
+        window_scale: None,
+        max_seg_size: None,
+        sack_permitted: false,
+        sack_ranges: [None, None, None],
+        timestamp: None,
+        payload: &payload,
+    };
+    let ipv4_repr = Ipv4Repr {
+        src_addr,
+        dst_addr,
+        next_header: IpProtocol::Tcp,
+        payload_len: tcp_repr.buffer_len(),
+        hop_limit: 64,
+    };
+
+    let tx_token = device.transmit(Instant::ZERO).unwrap();
+    iface
+        .inner
+        .dispatch_ip(
+            tx_token,
+            PacketMeta::default(),
+            Packet::new_ipv4(ipv4_repr, IpPayload::Tcp(tcp_repr)),
+            &mut iface.fragmenter,
+        )
+        .unwrap();
+
+    while !iface.fragmenter.is_empty() {
+        iface.ipv4_egress(&mut device);
+    }
+
+    let fragments = recv_all(&mut device, Instant::ZERO);
+    assert_eq!(fragments.len(), 2);
+
+    let mut got_tcp_response = false;
+    for fragment in fragments {
+        let packet = Ipv4Packet::new_checked(&fragment[..]).unwrap();
+        if iface
+            .inner
+            .process_ipv4(
+                &mut sockets,
+                PacketMeta::default(),
+                HardwareAddress::default(),
+                &packet,
+                &mut iface.fragments,
+            )
+            .is_some()
+        {
+            got_tcp_response = true;
+        }
+    }
+
+    // There is no matching TCP socket, so successful reassembly and TCP
+    // checksum validation produce an RST. The old full-buffer checksum path
+    // dropped the reassembled segment before reaching this point.
+    assert!(got_tcp_response);
+}
+
 /// Check no reply is emitted when using a raw socket
 #[cfg(feature = "socket-raw")]
 fn check_no_reply_raw_socket(medium: Medium, frame: &crate::wire::ipv4::Packet<&[u8]>) {

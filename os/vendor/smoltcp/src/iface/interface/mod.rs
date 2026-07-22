@@ -511,6 +511,9 @@ impl Interface {
     ) -> PollResult {
         self.inner.now = timestamp;
 
+        #[cfg(feature = "_proto-fragmentation")]
+        let fragment_sent_bytes = self.fragmenter.sent_bytes;
+
         match self.inner.caps.medium {
             #[cfg(feature = "medium-ieee802154")]
             Medium::Ieee802154 => {
@@ -522,6 +525,19 @@ impl Interface {
                 #[cfg(feature = "proto-ipv4-fragmentation")]
                 self.ipv4_egress(device);
             }
+        }
+
+        // A single Fragmenter stores one packet. Finish it before a socket
+        // egress pass can start another fragmented packet and overwrite that
+        // state. If the device TX queue was full, however, return to the
+        // caller so it can drain that queue instead of spinning here.
+        #[cfg(feature = "_proto-fragmentation")]
+        if !self.fragmenter.is_empty() {
+            return if self.fragmenter.sent_bytes != fragment_sent_bytes {
+                PollResult::SocketStateChanged
+            } else {
+                PollResult::None
+            };
         }
 
         #[cfg(feature = "proto-ipv6-slaac")]
@@ -810,6 +826,11 @@ impl Interface {
                     );
                 }
                 Ok(()) => {}
+            }
+
+            #[cfg(feature = "_proto-fragmentation")]
+            if !self.fragmenter.is_empty() {
+                break;
             }
         }
         result
@@ -1317,7 +1338,10 @@ impl InterfaceInner {
                         frag.sent_bytes = first_frag_ip_len;
 
                         // Emit the IP header to the buffer.
-                        emit_ip(&ip_repr, &mut frag.buffer);
+                        // `emit_ip` passes its payload slice to the TCP checksum
+                        // calculation. Restrict it to this datagram rather than
+                        // the whole fragmentation backing buffer.
+                        emit_ip(&ip_repr, &mut frag.buffer[..total_ip_len]);
 
                         let mut ipv4_packet = Ipv4Packet::new_unchecked(&mut frag.buffer[..]);
                         frag.ipv4.ident = ipv4_id;

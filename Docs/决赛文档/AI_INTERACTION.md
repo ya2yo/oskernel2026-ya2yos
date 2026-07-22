@@ -1118,4 +1118,9 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求依据 `scripts/buildstorm_testcode.sh` 将 BuildStorm 拆为可单独选择的小测例，放入 `user/src/bin/buildstorm/`，并移除内核启动期注入的重复脚本。
 - **描述**：AI 对照官方阶段、现有 `initfiles.rs` 注入脚本和用户态构建/预加载边界，将工具链、MINIBUILD prepare/build、target 清理、`tg-xtask` 预构建、正式构建，以及原先混入预构建的 rename/unicode artifact probe 分离为八项。每项在 `initproc` 内按需物化到固定 `/tmp/buildstorm-*.sh`，再沿用 Bash 执行，保留 Rust/Cargo 环境、fd/pipe 拓扑和 `BUILDSTORM_DEBUG_*` 防误评分边界；内核不再写入 BuildStorm 测试脚本。新增官方顺序和扩展诊断组合入口，runner 返回子进程 wait status，exec 失败的 child 以 `127` 显式退出。双架构 release 构建通过；RISC-V snapshot 已确认 Bash 从 `/tmp/buildstorm-xtask-prebuild.sh` 启动并进入 Cargo，120 秒内未完成。此次结构迁移不宣称完整 BuildStorm 或性能评分通过，详见 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md) 与 `ai.log` 对应条目。
+#### LoongArch CAgent loopback TCP 分片校验和修复（7.22）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求继续修复 LoongArch64 CAgent 的三个 reject，并要求测试脚本、镜像和 testcase 源码只读。
+- **描述**：AI 以单项 runner、TCP trace 和 smoltcp 源码确认大 HTTP 请求经过 IPv4 分片与重组后，发送端却把整个 8192 B fragment buffer 纳入 TCP pseudo-header length/checksum，导致接收端按真实 datagram 长度校验失败。修复仅为 IPv4 loopback socket 设置 4096 B MSS，保持 Router/物理网卡 1500 B MTU，并在 smoltcp 首片 emit 时限制 checksum buffer 到 `total_ip_len`。同时串行排空单一 fragmenter、防止 IPv4 首分片伪造 SYN 进入监听表，并加入实际分片-重组-TCP checksum 回归测试。最终 LoongArch64 完整 CAgent 十项全部通过，RISC-V release 构建通过；临时诊断入口已恢复。详见 [problem/cagent-loopback-tcp-fragmentation.md](./problem/cagent-loopback-tcp-fragmentation.md) 与 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-22 工作树）

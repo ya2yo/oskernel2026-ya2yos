@@ -11,7 +11,7 @@ use smoltcp::{
 use spin::Mutex;
 
 use super::{
-    consts::{LISTEN_QUEUE_SIZE, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
+    consts::{LISTEN_QUEUE_SIZE, LOOPBACK_TCP_MSS, TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
     SOCKET_SET,
 };
 
@@ -161,6 +161,10 @@ impl ListenTable {
         dst: IpEndpoint,
         sockets: &mut SocketSet<'_>,
     ) {
+        let local_loopback = matches!(
+            dst.addr,
+            smoltcp::wire::IpAddress::Ipv4(addr) if addr.is_loopback()
+        );
         // 如果目标端口正在监听
         if let Some(entry) = self.listen_entry(dst.port).lock().deref_mut() {
             // 检查队列（Backlog）是否已满
@@ -173,6 +177,16 @@ impl ListenTable {
                 SocketBuffer::new(vec![0; TCP_RX_BUF_LEN]),
                 SocketBuffer::new(vec![0; TCP_TX_BUF_LEN]),
             );
+            if local_loopback {
+                socket.set_local_mss(Some(LOOPBACK_TCP_MSS));
+                // The server writes HTTP headers and body separately. Do not
+                // hold the short body behind an unacknowledged header packet.
+                socket.set_nagle_enabled(false);
+                // The loopback peer is in the same kernel. Send ACKs while
+                // handling ingress instead of depending on a delayed-ACK
+                // timer shared by unrelated socket waiters.
+                socket.set_ack_delay(None);
+            }
             // 将新 Socket 设为监听状态，准备响应 SYN
             if let Err(err) = socket.listen(IpListenEndpoint {
                 addr: None,

@@ -13,6 +13,11 @@ pub const IP_PREFIX: u8 = 24;
 
 pub const STANDARD_MTU: usize = 1500;
 
+// A local TCP segment is emitted as IPv4 fragments and reassembled before it
+// reaches a loopback peer. This keeps the Router and physical NIC at 1500 MTU
+// while ensuring a local HTTP request is delivered as one TCP segment.
+pub const LOOPBACK_TCP_MSS: usize = 4096;
+
 pub const TCP_RX_BUF_LEN: usize = 64 * 1024;
 pub const TCP_TX_BUF_LEN: usize = 64 * 1024;
 pub const UDP_RX_BUF_LEN: usize = 64 * 1024;
