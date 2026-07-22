@@ -188,9 +188,13 @@ fork 前，匿名或文件后备的 `MAP_SHARED` VMA 会被预先 fault：否则
 `map_perm` 和既有 PTE；它不把未分配页面 materialize。系统调用入口要求地址与长度
 页对齐，并检查 `addr + len` 溢出。
 
-`mremap()` 目前只实现 `MREMAP_MAYMOVE` 的“解除旧映射后再新建映射”路径；
-`MREMAP_FIXED` 和 `MREMAP_DONTUNMAP` 返回 `ENOSYS`。`mincore()` 检查范围覆盖和读
-权限，并按 PTE 是否已存在向用户返回驻留位；内核没有 swap，已映射页即视为驻留。
+`mremap()` 当前仅支持完整 `MapAreaType::Mmap` 私有 VMA 的 `MREMAP_MAYMOVE` 迁移。等长
+请求直接返回原地址；变长时在同一 `MemorySet` 写锁内保留旧 VMA，选择不相交的目标地址，
+先复制全部已驻留页，全部成功后才卸载旧映射并刷新 TLB。私有文件映射保留其 metadata 和
+未驻留页的 lazy fault 语义。`MAP_SHARED`/`MAP_SHARED_VALIDATE` VMA、`MREMAP_FIXED`、
+`MREMAP_DONTUNMAP` 以及没有 `MREMAP_MAYMOVE` 的请求尚未实现，返回 `ENOSYS`；
+`MREMAP_FIXED` 缺少 `MREMAP_MAYMOVE` 时返回 `EINVAL`。`mincore()` 检查范围覆盖和读权限，
+并按 PTE 是否已存在向用户返回驻留位；内核没有 swap，已映射页即视为驻留。
 
 #figure(
   sequence(((
@@ -227,7 +231,7 @@ VMA 起始页移除映射；`shm_drop()` 删除全局段记录。当前 `MemoryS
   table.header([*主题*], [*当前实现边界*]),
   [物理页回收], [无 swap；`FrameTracker` 最后引用释放后归还 CMA。],
   [mmap 地址空间], [普通 mmap 有 2 GiB 延迟 VMA 计数上限；固定 mmap 不计入该计数。],
-  [mremap], [仅 `MREMAP_MAYMOVE` 的重建式路径；固定和 DONTUNMAP 未实现。],
+  [mremap], [仅完整 private mmap 的 `MREMAP_MAYMOVE`：先复制 resident 页，成功后迁移；shared、fixed、DONTUNMAP 和无 MAYMOVE 未实现。],
   [SysV shmat], [仅自动选址；显式非零地址尚未实现。],
   [文件 mmap EOF], [完整页落在映射时 EOF 外会发 `SIGBUS`；最后一个部分页允许零填充。],
   [跨架构差异], [高层 VMA/COW 接口通用，PTE 格式、TLB 和内核物理映射依 RISC-V/LoongArch 不同。],

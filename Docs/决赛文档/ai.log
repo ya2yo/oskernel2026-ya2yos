@@ -6276,3 +6276,45 @@ LoongArch pre-tests 下单例 `fsmount01` 已走到 BusyBox `mkfs.ext2`，6 项 
 `TBROK: Test 6 haven't reported results!`，因此未宣称用例全通过。完整 `get_score()` QEMU
 在约 128 秒外部窗口被中止，未进入 LTP，日志仅证明 CMA 后备启用和前段无 OOM，完整批量回归
 待维护者环境继续执行。
+
+---
+
+## 2026-07-22：BuildStorm Rustc `mremap(MREMAP_MAYMOVE)` 数据丢失修复
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans` 并修复其中的实际失败。
+
+### 分析与采纳结论
+
+AI 先按 Rustc error、Cargo 编译器输出和 syscall 时序筛选日志，确认实质失败是
+`unicode-ident-1.0.24/src/tables.rs:164` 的 `expected expression, found '='`，而不是诊断
+脚本在 `cargo build ... || true` 后仍会输出的 `BUILDSTORM_DEBUG_XTASK_PREBUILD done`。镜像内
+和宿主缓存中的 `tables.rs` SHA-256 相同；guest 中原文件与 `/tmp` 副本都能显示正确第 164 行，
+且直接 rustc 都复现失败，排除了镜像文件损坏或 VFS 读错内容。
+
+诊断日志显示 Rustc 先成功读取 63369 字节源码，再创建 `0x21000` 的匿名私有映射，连续用
+`mremap(MREMAP_MAYMOVE)` 扩至 `0x41000`、`0x81000`，紧接着 parser 失败；两个独立 Rustc
+进程的时序一致。审查旧 `sys_mremap()` 发现 MAYMOVE 分支先 `munmap` 旧 VMA、释放 resident
+页帧，再创建空的新 VMA，从未复制旧数据。因此 Rust allocator 扩容后失去已读源码内容，解析
+错误只是其后果。
+
+采纳在同一 `MemorySet` 写锁内的事务式私有 VMA 迁移：源 VMA 保留到目标 VMA 的全部 resident
+页完成 `FrameTracker` 固定、分配和物理复制；任一失败仅回滚目标，成功后才卸载旧 VMA、安装
+目标并刷新 TLB。等长请求保持原址；私有文件映射保留 metadata 和未驻留页的 lazy fault 语义。
+为避免把尚不能重定位的共享组状态移到错误地址，支持范围限定为完整 `MapAreaType::Mmap` 的
+`MAP_PRIVATE + MREMAP_MAYMOVE`；shared、fixed、dontunmap 和无 MAYMOVE 的语义明确返回未实现
+错误，fixed 缺少 MAYMOVE 返回 `EINVAL`。
+
+### 修改与验证
+
+修改 `os/src/syscall/mm/mmap.rs` 和 `os/src/mm/memory_set/mmap_ops.rs`，新增
+`Docs/决赛文档/problem/buildstorm-mremap-data-loss.md`，并更新 problem 索引、开发日志、
+AI 协作记录及内存设计文档。
+
+`make build-arch TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64` 和
+`make log TARGET_ARCH=riscv64` 均通过。RISC-V QEMU 的临时 probe 输出
+`BUILDSTORM_DEBUG_UNICODE_ORIGIN rc=0` 与 `BUILDSTORM_DEBUG_UNICODE_COPY rc=0`，采集范围内
+没有原 Rustc parser error 或 `could not compile unicode-ident`。外层 180 秒上限发生在 Cargo
+继续扫描 workspace 时，故未将完整 Cargo/BuildStorm 标记为通过。probe 已在验证后从
+initfiles 诊断脚本删除，不属于最终 diff。

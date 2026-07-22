@@ -5,7 +5,7 @@ use linux_raw_sys::general::{MAP_SHARED, MAP_SHARED_VALIDATE};
 use log::{debug, warn};
 
 use crate::{
-    arch::memory_layout::{MAX_MMAP_SIZE, PAGE_SIZE},
+    arch::memory_layout::{MAX_MMAP_SIZE, PAGE_SIZE, USER_SPACE_SIZE},
     fs::{get_devno, File},
     mm::{
         copy_to_user, if_bad_address, remove_bad_address, MapArea, MapAreaType, MapPermission,
@@ -151,97 +151,46 @@ pub fn sys_mremap(
     flags: i32,
     _new_addr: usize,
 ) -> SyscallRet {
-    let flags_bitmap = MremapFlags::from_bits(flags).expect("Invalid flags on mremap!");
-    // debug!(
-    //     "sys_mremap: old_addr={:#x}, old_size={}, new_size={}, new_addr={:#x}",
-    //     old_addr, old_size, new_size, new_addr
-    // );
-    // debug!("flags={:?}", flags_bitmap);
-    // 允许内核在原地址空间不足时，将内存区域移动到新的虚拟地址。此时返回值应为移动后的地址。此时new_addr参数应该被忽视
-    // 如果为false，则表示必须原地扩展/收缩
+    let flags_bitmap = MremapFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
     let may_move = flags_bitmap.contains(MremapFlags::MAYMOVE);
-
-    // 强制将内存重新映射到指定的新地址new_addr​（需配合MREMAP_MAYMOVE使用）
-    // 如果为true，则may_move必须为true
-    // 如果为false，则new_addr则是建议地址，不强制
     let fixed = flags_bitmap.contains(MremapFlags::FIXED);
-
-    // 如果存在，则并不调整原来的map，而是创建一个新的[new_addr, new_addr+new_size]虚拟地址空间，映射到原来的物理地址空间
     let dont_unmap = flags_bitmap.contains(MremapFlags::DONTUNMAP);
     if dont_unmap {
-        warn!("sys_munmap for DONTUNMAP unimplemented!");
         return Err(SysErrNo::ENOSYS);
     }
     if fixed && !may_move {
         return Err(SysErrNo::EINVAL);
     }
-    let task = current_task().unwrap();
-    let process = &task.process;
-    let memory_set = process.memory_set_arc();
-    // 检查 old_addr + old_size 是否溢出
-    let old_end = match old_addr.checked_add(old_size) {
-        Some(v) => v,
-        None => return Err(SysErrNo::EINVAL),
-    };
-    let old_range = (
-        VirtAddr::from(old_addr).floor(),
-        VirtAddr::from(old_end.saturating_sub(1)).ceil(),
-    );
-    let (old_flag, old_file, old_perm) = memory_set.with_ref(|ms| {
-        let old_area = ms
-            .areas
-            .iter()
-            .find(|area| area.vpn_range.range() == old_range)
-            .ok_or(SysErrNo::EFAULT)?;
-        if old_area.area_type != MapAreaType::Mmap {
-            debug!("old_area.area_type != MapAreaType::Mmap");
-            return Err(SysErrNo::EINVAL);
-        }
-        Ok((
-            old_area.mmap_flags,
-            old_area.mmap_file.clone(),
-            old_area.map_perm,
-        ))
-    })?;
-
-    if fixed {
-        warn!("fixed not implement");
-        return Err(SysErrNo::ENOSYS);
-    } else if may_move {
-        // sys_munmap(old_addr, old_size);
-        // debug!("[sys_munmap] addr={:#x}, len={:#x}", addr, len);
-        if if_bad_address(old_addr) {
-            remove_bad_address(old_addr);
-        }
-        memory_set.munmap(old_addr, page_round_up(old_size));
-        // sys_mmap(old_addr, new_len, prot, flags, fd, off)
-        let file = &old_file.file;
-
-        if let Some(inode) = file {
-            // 读写权限
-            if old_perm.contains(MapPermission::R) && !inode.readable()
-                || old_flag.contains(MmapFlags::MAP_SHARED)
-                    && old_perm.contains(MapPermission::W)
-                    && !inode.writable()
-            {
-                return Err(SysErrNo::EPERM);
-            }
-        }
-
-        let rv = memory_set.mmap(
-            old_addr,
-            new_size,
-            old_perm,
-            old_flag,
-            file.clone(),
-            old_file.offset,
-        );
-
-        return Ok(rv);
-    } else {
-        // fixed == may_move == 0
+    if fixed || !may_move {
         return Err(SysErrNo::ENOSYS);
     }
+    if old_addr % PAGE_SIZE != 0 || old_size == 0 || new_size == 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    let old_len = old_size
+        .checked_add(PAGE_SIZE - 1)
+        .map(|size| size / PAGE_SIZE * PAGE_SIZE)
+        .ok_or(SysErrNo::EINVAL)?;
+    let new_len = new_size
+        .checked_add(PAGE_SIZE - 1)
+        .map(|size| size / PAGE_SIZE * PAGE_SIZE)
+        .ok_or(SysErrNo::EINVAL)?;
+    let old_end = old_addr.checked_add(old_len).ok_or(SysErrNo::EINVAL)?;
+    if old_end > USER_SPACE_SIZE
+        || VirtAddr::try_from(old_addr).is_none()
+        || VirtAddr::try_from(old_end - 1).is_none()
+    {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let memory_set = task.process.memory_set_arc();
+    let result =
+        memory_set.with_mut(|memory_set| memory_set.mremap_maymove(old_addr, old_len, new_len));
+    if result.is_ok() && if_bad_address(old_addr) {
+        remove_bad_address(old_addr);
+    }
+    result
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/mprotect.2.html

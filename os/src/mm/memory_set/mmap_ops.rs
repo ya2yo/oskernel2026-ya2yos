@@ -284,6 +284,126 @@ impl MemorySetInner {
         Ok(0)
     }
 
+    /// Move a complete private mmap VMA to a new free range while retaining
+    /// the contents of every resident page.
+    ///
+    /// `MREMAP_MAYMOVE` is used by Rust's allocator to grow its backing
+    /// mappings. Recreating the VMA after unmapping the source loses the
+    /// allocator's live contents, so construct the destination first and
+    /// commit the source teardown only after every resident page is copied.
+    /// Shared mappings are deliberately left unsupported here: `GROUP_SHARE`
+    /// currently indexes frames by absolute VPN, so moving one side of a
+    /// shared mapping requires a separate representation change.
+    pub fn mremap_maymove(
+        &mut self,
+        old_addr: usize,
+        old_len: usize,
+        new_len: usize,
+    ) -> SyscallRet {
+        let old_end_addr = old_addr.checked_add(old_len).ok_or(SysErrNo::EINVAL)?;
+        let old_start_vpn = VirtAddr::from(old_addr).floor();
+        let old_end_vpn = VirtAddr::from(old_end_addr).ceil();
+        let old_range = VPNRange::new(old_start_vpn, old_end_vpn);
+        let Some(old_idx) = self.areas.iter().position(|area| {
+            area.area_type == MapAreaType::Mmap && area.vpn_range.range() == old_range.range()
+        }) else {
+            return Err(SysErrNo::EFAULT);
+        };
+
+        let old_flags = self.areas[old_idx].mmap_flags;
+        if !old_flags.contains(MmapFlags::MAP_PRIVATE)
+            || old_flags.intersects(MmapFlags::MAP_SHARED | MmapFlags::MAP_SHARED_VALIDATE)
+        {
+            return Err(SysErrNo::ENOSYS);
+        }
+
+        let old_len = (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
+        if new_len == old_len {
+            return Ok(old_addr);
+        }
+        let old_was_accounted =
+            !old_flags.intersects(MmapFlags::MAP_FIXED | MmapFlags::MAP_FIXED_NOREPLACE);
+        let base_mmap_size = if old_was_accounted {
+            self.total_mmap_size
+                .checked_sub(old_len)
+                .ok_or(SysErrNo::EINVAL)?
+        } else {
+            self.total_mmap_size
+        };
+        let Some(new_total_mmap_size) = base_mmap_size.checked_add(new_len) else {
+            return Err(SysErrNo::ENOMEM);
+        };
+        if new_total_mmap_size > MAX_MMAP_SIZE {
+            return Err(SysErrNo::ENOMEM);
+        }
+
+        // Keep the source VMA in the obstacle set while selecting a target,
+        // so the two ranges can never overlap during the copy.
+        let new_addr = self.find_insert_addr(MMAP_TOP, new_len);
+        if new_addr == 0 {
+            return Err(SysErrNo::ENOMEM);
+        }
+        let new_end_addr = new_addr.checked_add(new_len).ok_or(SysErrNo::ENOMEM)?;
+        let new_start_vpn = VirtAddr::from(new_addr).floor();
+        let new_end_vpn = VirtAddr::from(new_end_addr).ceil();
+        let new_page_count = new_end_vpn.0 - new_start_vpn.0;
+
+        let mut new_area = MapArea::from_another(&self.areas[old_idx]);
+        new_area.vpn_range = VPNRange::new(new_start_vpn, new_end_vpn);
+        new_area
+            .mmap_flags
+            .remove(MmapFlags::MAP_FIXED | MmapFlags::MAP_FIXED_NOREPLACE);
+
+        let copy_page_count = (old_end_vpn.0 - old_start_vpn.0).min(new_page_count);
+        for page_offset in 0..copy_page_count {
+            let old_vpn = VirtPageNum(old_start_vpn.0 + page_offset);
+            let Some(old_ppn) = self.page_table.translate(old_vpn) else {
+                continue;
+            };
+
+            // Pin the source frame while allocating the destination. Normally
+            // the first lookup succeeds. The fallback also tolerates an older
+            // VMA split that left a valid PTE's tracker in a neighboring area.
+            let source_frame = self.areas[old_idx]
+                .data_frames
+                .get(&old_vpn)
+                .filter(|frame| frame.ppn == old_ppn)
+                .cloned()
+                .or_else(|| {
+                    self.areas.iter().find_map(|area| {
+                        area.data_frames
+                            .values()
+                            .find(|frame| frame.ppn == old_ppn)
+                            .cloned()
+                    })
+                });
+            let Some(source_frame) = source_frame else {
+                new_area.unmap(&mut self.page_table);
+                tlb_invalidate();
+                return Err(SysErrNo::EFAULT);
+            };
+
+            let new_vpn = VirtPageNum(new_start_vpn.0 + page_offset);
+            let Some(new_ppn) = new_area.map_one(&mut self.page_table, new_vpn) else {
+                new_area.unmap(&mut self.page_table);
+                tlb_invalidate();
+                return Err(SysErrNo::ENOMEM);
+            };
+            new_ppn
+                .bytes_array_mut()
+                .copy_from_slice(source_frame.ppn.bytes_array());
+        }
+
+        // Commit only after the destination has a complete copy of all pages
+        // that were resident in the old VMA. Lazy pages remain lazy.
+        let mut old_area = self.areas.remove(old_idx);
+        old_area.unmap(&mut self.page_table);
+        self.areas.push(new_area);
+        self.total_mmap_size = new_total_mmap_size;
+        tlb_invalidate();
+        Ok(new_addr)
+    }
+
     /// 修改一段虚拟地址空间的访问权限（mprotect 核心逻辑）。
     ///
     /// 此函数完成两件事：

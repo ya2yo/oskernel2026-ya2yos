@@ -1090,3 +1090,10 @@
 - **场景**：维护者要求分析 LoongArch64 批量 LTP `Heap allocation error`，从 CMA 高段堆后备和前例资源回收两条路径完成修复、构建与定向 QEMU 验证。
 - **描述**：AI 将 `Layout { size: 2065194 }` 精确对应到 `/musl/busybox` ELF 最大 `PT_LOAD` 末端，确认 `fsmount01` 的 BusyBox `mkfs.ext2` 装载需要一个正常的 2 MiB buddy block，而原 128 MiB `.bss` global heap 不会使用已经纳入 CMA 的高段 RAM。修复将 CMA 连续页安全移交给 global heap，避免 SMP retry 假 OOM；同时有界回收 idle dentry/inode、保证 shared mmap teardown 即使 writeback 出错也释放页表，并让 LTP runner 以非阻塞 pipe + `WNOHANG` 清理遗留 helper。LoongArch/RISC-V release 构建均通过；LoongArch `fsmount01` 单例无 heap panic、6 项 TPASS 并正常关机，仍保留 1 项环境 TBROK，完整批量回归未被误报为通过。详见 [problem/loongarch-ltp-heap-cma-reclaim.md](./problem/loongarch-ltp-heap-cma-reclaim.md) 与 `ai.log` 2026-07-22 条目。
 - **关联 commit**：尚未提交（2026-07-22 工作树）
+
+#### BuildStorm Rustc `mremap(MREMAP_MAYMOVE)` 数据丢失修复（7.22）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析根目录 `log.ans` 中 Rustc 编译 `unicode-ident` 的 parser error 并修复。
+- **描述**：AI 通过镜像/宿主源码哈希、guest 原文件和副本的直接 Rustc 对照，排除依赖损坏；随后将源码读取、匿名私有 mmap、两次 `mremap(MREMAP_MAYMOVE)` 和 parser 失败按 PID 串联，确认旧实现先 `munmap` 再建立空 VMA，导致 Rust allocator 扩容丢失已读内容。修复在同一 `MemorySet` 写锁内先为 private VMA 的每个 resident 页固定源 `FrameTracker`、分配和复制目标页，全部成功后才撤销旧 VMA；失败仅回滚目标。等长原址、私有文件 lazy 页和 metadata 均明确保留。RISC-V probe 中原文件和副本的 Rustc 均返回 0，未再出现 parser error；外层 180 秒在 Cargo 扫描 workspace 时到期，未将完整 BuildStorm 标为通过。详见 [problem/buildstorm-mremap-data-loss.md](./problem/buildstorm-mremap-data-loss.md) 与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-22 工作树）
