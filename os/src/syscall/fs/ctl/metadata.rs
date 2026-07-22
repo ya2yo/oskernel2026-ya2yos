@@ -47,6 +47,21 @@ fn chown_inode(
     };
 
     inode.owner_set(uid, gid)?;
+
+    // Linux clears S_ISUID on a successful chown of a non-directory inode.
+    // S_ISGID is only cleared when the group-execute bit is set; otherwise it
+    // may represent the mandatory-locking marker and must be preserved.
+    if inode.types() != InodeType::Dir {
+        let mode = stat.st_mode;
+        let mut new_mode = mode & !FaccessatFileMode::S_ISUID.bits();
+        if mode & FaccessatFileMode::S_IXGRP.bits() != 0 {
+            new_mode &= !FaccessatFileMode::S_ISGID.bits();
+        }
+        if new_mode != mode {
+            inode.fmode_set(new_mode)?;
+        }
+    }
+
     Ok(0)
 }
 
