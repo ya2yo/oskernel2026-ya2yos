@@ -6,7 +6,7 @@ use alloc::{
 use log::debug;
 
 use crate::{
-    fs::{open, Inode, OSFile, OpenFlags, NONE_MODE},
+    fs::{open, Inode, OSFile, OpenFlags, MAX_PATH_LEN, NONE_MODE},
     mm::{copy_from_user, read_elf_load_image, read_user_cstr},
     syscall::FaccessatFileMode,
     task::current_task,
@@ -129,6 +129,15 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         path = strip_color(path, "ltp/testcases/bin/\u{1b}[1;32m", "\u{1b}[m");
     }
     //log::info!("[sys_execve] path={}", path);
+
+    // path.len() >= MAX_PATH_LEN(256): read_user_cstr 的缓冲区是 256 字节，
+    // 若用户传来的路径不含 '\0' 且超过 256 字节，会被截断并返回 256 字节串，
+    // 此时截断后的路径落到底层 open() 会错误返回 ENOENT，应提前返回 ENAMETOOLONG。
+    // path.split('/').any(|c| c.len() > 255): 单个路径分量超过 NAME_MAX(255)，
+    // 同样应返回 ENAMETOOLONG 而非让底层文件系统返回 ENOENT。
+    if path.len() >= MAX_PATH_LEN || path.split('/').any(|c| c.len() > 255) {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
 
     //处理argv参数
     let mut argv_vec = Vec::<String>::new();
