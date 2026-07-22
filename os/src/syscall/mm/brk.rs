@@ -19,7 +19,7 @@ pub fn sys_brk(brk_addr: usize) -> SyscallRet {
     // check it grows the heap to >128 MiB and exhausts CMA via page
     // faults (same pattern as the mmap probing issue).
     let heap_bottom = task.inner_lock().user_heapbottom;
-    if brk_addr > heap_bottom && brk_addr - heap_bottom > MAX_BRK_SIZE {
+    if brk_addr > former_addr && brk_addr - heap_bottom > MAX_BRK_SIZE {
         debug!(
             "[sys_brk] ENOMEM: requested={:#x}, heap_bottom={:#x}, max={:#x}",
             brk_addr, heap_bottom, MAX_BRK_SIZE
