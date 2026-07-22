@@ -3,6 +3,8 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+extern crate alloc;
+
 extern crate user_lib;
 
 use libctest::runall::{run_specific_test, runall};
@@ -16,6 +18,8 @@ use crate::libctest::pthread_cancel_points::run_musl_static;
 mod basic;
 mod buildstorm;
 mod busybox;
+#[allow(dead_code)]
+mod cagent;
 mod iozone;
 mod libctest;
 mod lmbench;
