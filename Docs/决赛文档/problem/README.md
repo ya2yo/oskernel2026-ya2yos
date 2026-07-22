@@ -108,3 +108,4 @@
 - [BuildStorm Rust 子进程管道 FIONBIO 兼容](./buildstorm-fionbio-nonblocking.md)
 - [BuildStorm MINIBUILD mmap 预算与动态栈 fork EFAULT](./buildstorm-minibuild-post-toolchain-stall.md)
 - [BuildStorm clone3/vfork 共享地址空间交接](./buildstorm-vfork-clone3-lifecycle.md)
+- [BuildStorm MINIBUILD fresh fork TrapContext 与 libc/loader 混配](./buildstorm-minibuild-fresh-fork-loader.md)

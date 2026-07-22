@@ -200,23 +200,6 @@ impl MemorySetInner {
         new_addr
     }
 
-    /// Copy already materialized pages for one logical area from `another`.
-    pub fn clone_area(&mut self, start_vpn: VirtPageNum, another: &MemorySetInner) {
-        if let Some(area) = another
-            .areas
-            .iter()
-            .find(|area| area.vpn_range.start() == start_vpn)
-        {
-            for vpn in area.vpn_range {
-                let src_ppn = another.translate(vpn).unwrap();
-                let dst_ppn = self.translate(vpn).unwrap();
-                dst_ppn
-                    .bytes_array_mut()
-                    .copy_from_slice(src_ppn.bytes_array());
-            }
-        }
-    }
-
     /// Copy pages for a lazily allocated area, faulting destination pages as needed.
     pub fn lazy_clone_area(&mut self, start_vpn: VirtPageNum, another: &MemorySetInner) {
         let another_area = if let Some(area) = another

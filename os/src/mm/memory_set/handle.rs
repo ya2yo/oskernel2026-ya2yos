@@ -205,12 +205,6 @@ impl MemorySet {
             .lazy_insert_framed_area_with_hint(hint, size, map_perm, area_type)
     }
 
-    /// Copy an already mapped logical area from another address space.
-    #[inline(always)]
-    pub fn clone_area(&self, start_vpn: VirtPageNum, another: &MemorySetInner) {
-        self.get_mut().clone_area(start_vpn, another)
-    }
-
     /// Copy a lazily allocated logical area from another address space.
     #[inline(always)]
     pub fn lazy_clone_area(&self, start_vpn: VirtPageNum, another: &MemorySetInner) {

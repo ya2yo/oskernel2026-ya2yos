@@ -1009,3 +1009,10 @@
 - **场景**：分析 MINIBUILD build 单独成功、prepare 后 fresh build 失败的差异，定位并修复普通 fork 的动态栈 VMA 继承缺失。
 - **描述**：日志确认 Cargo worker 的普通 `clone()` 在写 `CLONE_CHILD_SETTID` 时返回 `EFAULT`；根因是 `MAP_STACK` 被误作固定 stack 跳过 fork 复制。修复将动态 `MAP_STACK` 纳入 mmap 继承，并保留固定初始 stack/trap 的重建边界。RISC-V debug 回归已确认同一 clone 成功创建并运行 child；双架构 release 构建通过。fresh RISC-V 600 秒回归尚未到达 `BUILDSTORM_DEBUG_MINIBUILD ok`，因此不宣称完整 MINIBUILD 通过。详见 `ai.log` 和 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md)。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### BuildStorm MINIBUILD fresh fork TrapContext 与 native loader 修复（7.22）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求继续修复 BuildStorm MINIBUILD 单独运行成功、prepare 后 fresh 编译失败及 10 分钟超时。
+- **描述**：通过 TrapContext 现场、Cargo linker stderr 和 final 镜像 ELF 对照，确认普通 fork 在正确复制当前线程 trap 快照后又按 child VMA 覆盖为另一 parent 线程的 futex wait 现场；解除该死锁后，又确认两层动态库 mapper 将 native libc linker script 的 `/lib/ld-linux-*` 依赖错误改写为旧 `/glibc/lib` loader，导致 `GLIBC_PRIVATE`/TLS 符号无法解析。修复删除冗余 trap VMA clone，将 GCC toolchain 路径视为 native，并让真实 loader 优先、缺失时才走 legacy fallback。RISC-V fresh MINIBUILD 现输出 `ok` 和 `shutdown!`；RISC-V、LoongArch64 release 构建通过。完整 `cargo xtask` 未运行，详见 [problem/buildstorm-minibuild-fresh-fork-loader.md](./problem/buildstorm-minibuild-fresh-fork-loader.md) 与 `ai.log`。
+- **关联 commit**：尚未提交（2026-07-22 工作树）

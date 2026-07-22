@@ -39,8 +39,8 @@ pub use kernel_fs_ops::{
 };
 mod map_dynamic_link;
 pub use map_dynamic_link::{
-    map_dynamic_link_file, map_dynamic_link_file_directly_map, map_library_path,
-    patch_dynamic_link_file_bytes,
+    is_dynamic_loader_path, map_dynamic_link_file, map_dynamic_link_file_directly_map,
+    map_library_path, patch_dynamic_link_file_bytes,
 };
 
 bitflags! {

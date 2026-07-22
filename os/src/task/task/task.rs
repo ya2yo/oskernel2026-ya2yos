@@ -588,7 +588,7 @@ impl TaskControlBlock {
             let parent_inner = self.inner.lock();
             let parent_proc_inner = &self.process;
 
-            // 保存父进程 memory_set Arc（fork 时需要读取父进程页面来 clone_area）
+            // 保存父进程 memory_set Arc，fork 时用于复制固定初始用户栈的已映射页。
             parent_memory_set_arc = parent_proc_inner.memory_set_arc();
 
             // 子进程 memory_set
@@ -792,10 +792,6 @@ impl TaskControlBlock {
                 .expect("fork: child has no Stack area");
             let parent_ref = parent_memory_set_arc.get_ref();
             child_mm.lazy_clone_area(child_stack_bottom, &parent_ref);
-            child_mm.clone_area(
-                VirtAddr::from(child_inner.trap_cx_bottom).floor(),
-                &parent_ref,
-            );
             child_inner.trap_cx().set_a0(0);
         }
 

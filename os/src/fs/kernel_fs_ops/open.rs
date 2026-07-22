@@ -1,4 +1,6 @@
-use crate::fs::{map_library_path, DentryLookup, DENTRY_CACHE, MNT_TABLE};
+use crate::fs::{
+    is_dynamic_loader_path, map_library_path, DentryLookup, DENTRY_CACHE, MNT_TABLE, NONE_MODE,
+};
 use crate::syscall::{fs::file_lock, FaccessatFileMode};
 use crate::task::current_task;
 use crate::utils::SysResult;
@@ -324,9 +326,16 @@ fn open_inner(
     debug!("abs_path is {}", abs_path);
     let mut abs_path: &str = abs_path;
     if map_dynamic {
-        if let Some(newpath) = map_library_path(abs_path) {
-            debug!("new path is {}", newpath);
-            abs_path = newpath;
+        // The linker can name its interpreter explicitly from a native libc
+        // script. Prefer that matching loader; legacy images still fall back
+        // to the compatibility target when the original path is absent.
+        let native_loader_exists = is_dynamic_loader_path(abs_path)
+            && open_direct(abs_path, OpenFlags::O_RDONLY, NONE_MODE).is_ok();
+        if !native_loader_exists {
+            if let Some(newpath) = map_library_path(abs_path) {
+                debug!("new path is {}", newpath);
+                abs_path = newpath;
+            }
         }
     }
 

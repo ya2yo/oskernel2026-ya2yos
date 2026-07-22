@@ -47,16 +47,18 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 
 static DYNAMIC_PREFIX: Lazy<Vec<&'static str>> = Lazy::new(|| vec!["/glibc/lib/", "/musl/lib/"]);
 
-/// Debian-style multiarch directories contain the authoritative shared objects
-/// from the mounted root filesystem.  They must not fall through to the
-/// legacy `/glibc/lib/<basename>` compatibility store: a newer executable can
-/// require symbol versions that the legacy copy does not provide.
+/// Debian-style multiarch directories and GCC toolchain directories contain
+/// authoritative files from the mounted root filesystem. They must not fall
+/// through to the legacy `/glibc/lib/<basename>` compatibility store: a newer
+/// executable can require symbol versions that the legacy copy does not provide.
 fn is_native_multiarch_library_path(path: &str) -> bool {
     [
         "/lib/riscv64-linux-gnu/",
         "/usr/lib/riscv64-linux-gnu/",
+        "/usr/lib/gcc/riscv64-linux-gnu/",
         "/lib/loongarch64-linux-gnu/",
         "/usr/lib/loongarch64-linux-gnu/",
+        "/usr/lib/gcc/loongarch64-linux-gnu/",
     ]
     .iter()
     .any(|prefix| path.starts_with(prefix))
@@ -133,10 +135,26 @@ fn looks_like_shared_library(path: &str) -> bool {
     }
 }
 
+/// Dynamic loader paths in linker scripts must use the mounted image's loader
+/// when it exists. Mixing a native libc with the legacy compatibility loader
+/// can leave GLIBC_PRIVATE symbols unresolved during a native toolchain link.
+pub fn is_dynamic_loader_path(path: &str) -> bool {
+    match path.rsplit_once('/') {
+        Some((_, file_name)) => file_name.starts_with("ld-"),
+        None => false,
+    }
+}
+
 pub fn map_dynamic_link_file(path: &str) -> &str {
     // 只拦截共享库路径（如 libc.so.6, ld-linux.so.1），
     // 排除 ld.so.preload、ld.so.cache 等非库文件
     if !looks_like_shared_library(path) {
+        return path;
+    }
+
+    // `open()` checks whether a real loader exists before applying the legacy
+    // fallback. Keep the original pathname through this first mapping layer.
+    if is_dynamic_loader_path(path) {
         return path;
     }
 

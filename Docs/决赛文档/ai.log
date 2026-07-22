@@ -5797,3 +5797,44 @@ RISC-V fresh `prepare -> build` debug 回归中，原来返回 `Bad address` 的
 guest 回归均在 `cargo build` 完成前受外层 timeout 终止，release 采集范围内无
 `BUILDSTORM_DEBUG_MINIBUILD fail`、panic、`TFAIL` 或 `TBROK`，故不将 fresh MINIBUILD
 标记为完整通过。LoongArch64 未运行 QEMU，因为 final-2026 Rust toolchain 镜像是 RISC-V 专用。
+
+---
+
+## 2026-07-22：BuildStorm MINIBUILD fresh fork TrapContext 与 native loader 修复
+
+### 用户需求
+
+维护者要求继续分析 `log.ans` 并修复 `buildstorm_minibuild_build_debug.sh` 单独运行成功、紧随
+prepare 运行失败的问题；在询问是否已修好后指出 guest 又被 10 分钟 timeout 终止，要求继续。
+
+### 分析与采纳结论
+
+先保留一次 debug 脚本的 Cargo stderr，确认 fork 死锁解除后真实失败位于 GCC 链接，而不是
+缺少日志中的 `.so` probe 文件。RISC-V TrapContext probe 显示：普通 fork 已将调用 clone 的
+线程现场写入 child，随后 `clone_area(child_inner.trap_cx_bottom, parent_ref)` 却按 child VMA
+地址从多线程 parent 复制了另一线程的 trap 页。child 因而从 Cargo worker 的 private futex
+wait 现场恢复，永远不会被 parent wake，解释原始 10 分钟 timeout。
+
+删除这次 trap 页复制后，Cargo 进入 GCC `ld`。stderr 先报告 `__tls_get_addr@@GLIBC_2.27`
+及 `ld-linux` DSO missing，路径收敛后报告 native `libc.so.6` 缺少
+`__tunable_is_initialized@GLIBC_PRIVATE`。用 `debugfs` 和临时 ELF 只读审计确认 native
+`libc.so` linker script 的 `AS_NEEDED(/lib/ld-linux-riscv64-lp64d.so.1)` 被两层 mapper 改写为
+legacy `/glibc/lib/ld-linux...`；native loader 定义两个符号，legacy loader 缺少后者，二者
+不能混用。GCC `/usr/lib/gcc/<arch>/` 也被宽泛 `/usr/lib/` legacy 判定误分类。
+
+采纳最小修复：fork 仅保留已存在的 `parent_trap_cx` 结构体快照；GCC toolchain 目录视为
+native；第一层动态 mapper 保留 `ld-*` 原路径，第二层 `open()` 先 direct-open 原生 loader，
+失败后才保留旧 `/glibc/lib`/`/musl/lib` fallback。诊断用的 Cargo stderr 重定向已恢复。
+
+### 修改与验证
+
+修改 `os/src/task/task/task.rs`、`os/src/fs/map_dynamic_link.rs`、`os/src/fs/mod.rs`、
+`os/src/fs/kernel_fs_ops/open.rs`，并在确认全树无调用后删除
+`os/src/mm/memory_set/area_ops.rs` 与 `os/src/mm/memory_set/handle.rs` 中的 eager
+`clone_area()` API；维护者已有的 `user/src/bin/initproc.rs` 诊断入口未由本轮修改。
+`rustfmt --check`、`git diff --check`、RISC-V/LoongArch64 `make build-arch` 均通过。
+
+`timeout 360s make run TARGET_ARCH=riscv64 > /tmp/buildstorm-minibuild-loaderfix-riscv.log 2>&1`
+在约两分半主动结束，依次输出 `BUILDSTORM_DEBUG_MINIBUILD_PREPARE ok`、
+`BUILDSTORM_DEBUG_MINIBUILD ok`、`shutdown!`，且无 panic、`TFAIL`、`TBROK`、`ERROR` 或 `WARN`。
+未运行完整官方 BuildStorm 的后续 `cargo xtask` 阶段，不把 MINIBUILD 成功扩大为全项评分结论。
