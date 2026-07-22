@@ -6229,3 +6229,50 @@ AI 协作记录。
 QEMU 不具备有效运行结果；维护者随后提供的根目录 `log.ans` 是有效 LoongArch64 CAgent 回归：
 `GROUP START cagent` 至 `GROUP END cagent` 和 `shutdown!` 均出现，未见 panic、Unknown trap、
 SXD 或 ASXD。10 个 CAgent 业务任务为 6 项 pass、4 项 reject，reject 未被表述为已通过。
+
+---
+
+## 2026-07-22：LoongArch 批量 LTP Rust 内核堆耗尽与 CMA 后备回收
+
+### 用户需求
+
+维护者报告 LoongArch64 批量 LTP 最后在 `heap_allocator.rs` 以
+`Layout { size: 2065194, align: 1 }` panic，并要求同时从“前例资源没有回收”和
+“应使用高地址内存扩展内核堆”两个方向优化。
+
+### 分析与采纳结论
+
+AI 先以 LTP 关键行定位失败窗口：`fsetxattr01` 已结束，`fsmount01` 输出
+`Kernel supports ext2` 后立即 OOM。将 `2065194` 转为 `0x1f832a` 并检查 pre-tests 镜像
+ELF program headers，确认它精确等于 `/musl/busybox` 最大 `PT_LOAD` 末端；`fsmount01`
+后续通过 `/bin/mkfs.ext2` BusyBox applet 装载该 ELF，`elf_loader.rs` 会一次性创建 image
+`Vec<u8>`。buddy allocator 将其提升为 2 MiB block，因此这是合法 ELF 装载请求触发固定
+128 MiB Rust heap 的容量/碎片边界，而非异常 LTP 参数。
+
+AI 审计 CMA 后确认 LoongArch 高段真实 RAM 已纳入 CMA 且由 DMW0 映射，但原 global
+allocator 只管理 `.bss` 的 `HEAP_SPACE`，CMA 页不会自动供 Rust `Box/Vec` 使用。采纳
+“CMA 连续块永久移交 global buddy heap”的方式：OOM 后在不持有 heap lock 时申请 CMA，
+在同一 heap lock 中 `add_to_heap` 并保留原请求分配，避免 SMP retry 假 OOM。当前低段 CMA
+约 119 MiB，小于首选 128 MiB 扩容，第一次扩容自然落到高段 RAM；RISC-V 则在完整 direct
+map 和 late CMA 初始化后才启用。
+
+为处理批量放大因素，AI 审计并修正 dentry/inode 缓存、共享 mmap teardown 和 LTP runner：
+cache 清理后的最终 `Ext4Inode::drop()` 均移到索引锁外；退出写回按真实 resident VPN 段并
+保证恢复 file offset，即使失败也继续释放页表；LTP 不再等 pipe EOF 后才 wait，改为非阻塞
+drain + `WNOHANG`，direct child 退出后立即清理/reap reparented helper。用户态原
+`waitpid` 保留 `-1` ABI，另加 raw options wrapper 给此状态机区分 `EINTR/ECHILD/0`。
+
+### 修改与验证
+
+修改 `os/src/mm/heap_allocator.rs`、`os/src/mm/mod.rs`、`os/src/fs/dcache.rs`、
+`os/src/fs/fstruct.rs`、`os/src/fs/kernel_fs_ops/fsidx.rs`、`os/src/fs/mod.rs`、
+`os/src/mm/memory_set/accessors.rs`、`os/src/task/mod.rs`、`user/src/bin/ltp/mod.rs`、
+`user/src/lib.rs`、`user/src/syscall/mod.rs`，新增
+`Docs/决赛文档/problem/loongarch-ltp-heap-cma-reclaim.md` 并更新索引与开发日志。
+
+`rustfmt` 和 `git diff --check` 通过；`make loongarch64-build`、`make riscv64-build` 均通过。
+LoongArch pre-tests 下单例 `fsmount01` 已走到 BusyBox `mkfs.ext2`，6 项 TPASS 且没有
+`Heap allocation error`、`CMA OOM` 或 panic，正常 `shutdown!`；该环境仍有一项
+`TBROK: Test 6 haven't reported results!`，因此未宣称用例全通过。完整 `get_score()` QEMU
+在约 128 秒外部窗口被中止，未进入 LTP，日志仅证明 CMA 后备启用和前段无 OOM，完整批量回归
+待维护者环境继续执行。

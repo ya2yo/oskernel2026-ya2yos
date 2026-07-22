@@ -5,16 +5,108 @@ use alloc::vec;
 use super::MemorySetInner;
 use crate::{
     arch::{memory_layout::PAGE_SIZE, page_table::PageTable},
-    fs::{File, SEEK_CUR, SEEK_SET},
+    fs::{File, OSFile, SEEK_CUR, SEEK_SET},
     mm::{
-        read_user_bytes_direct_into, user_buffer_from_kernel, MapAreaType, MapPermission,
+        read_user_bytes_direct_into, user_buffer_from_kernel, MapArea, MapAreaType, MapPermission,
         PhysPageNum, VPNRange, VirtAddr, VirtPageNum,
     },
     syscall::MmapFlags,
-    utils::SyscallRet,
+    utils::{SysErrNo, SyscallRet},
 };
 
 const MMAP_WRITEBACK_CHUNK_SIZE: usize = 0x10000;
+
+/// Write one contiguous run of resident shared-mmap pages back to its file.
+fn writeback_resident_segment(
+    token: usize,
+    area: &MapArea,
+    file: &OSFile,
+    start_vpn: VirtPageNum,
+    end_vpn: VirtPageNum,
+) -> SyscallRet {
+    let map_base: usize = VirtAddr::from(area.vpn_range.start()).into();
+    let start_addr: usize = VirtAddr::from(start_vpn).into();
+    let segment_len = end_vpn
+        .0
+        .checked_sub(start_vpn.0)
+        .and_then(|pages| pages.checked_mul(PAGE_SIZE))
+        .ok_or(SysErrNo::EOVERFLOW)?;
+    let mapped_offset = start_addr.checked_sub(map_base).ok_or(SysErrNo::EFAULT)?;
+    let file_base = area
+        .mmap_file
+        .offset
+        .checked_add(mapped_offset)
+        .ok_or(SysErrNo::EOVERFLOW)?;
+
+    let mut written = 0;
+    while written < segment_len {
+        let chunk_len = MMAP_WRITEBACK_CHUNK_SIZE.min(segment_len - written);
+        let mut kernel_buf = vec![0u8; chunk_len];
+        let user_addr = start_addr.checked_add(written).ok_or(SysErrNo::EOVERFLOW)?;
+        read_user_bytes_direct_into(token, user_addr, &mut kernel_buf).ok_or(SysErrNo::EFAULT)?;
+
+        let file_offset = file_base.checked_add(written).ok_or(SysErrNo::EOVERFLOW)?;
+        let file_offset = isize::try_from(file_offset).map_err(|_| SysErrNo::EOVERFLOW)?;
+        file.lseek(file_offset, SEEK_SET)?;
+        let ret = file.write(unsafe { user_buffer_from_kernel(&mut kernel_buf) })?;
+        if ret == 0 || ret > chunk_len {
+            return Err(SysErrNo::EIO);
+        }
+        written += ret;
+    }
+    Ok(0)
+}
+
+/// Write every resident shared-mmap page back and restore the shared open-file
+/// description offset even when a writeback step fails.
+fn writeback_shared_mmap_area(token: usize, area: &MapArea, file: &OSFile) -> SyscallRet {
+    // Match munmap's existing behavior: an unlinked file has no persistent
+    // pathname target to update during final address-space teardown.
+    if file.inode.link_cnt()? == 0 {
+        return Ok(0);
+    }
+
+    let saved_offset = file.lseek(0, SEEK_CUR)?;
+    let saved_offset = isize::try_from(saved_offset).map_err(|_| SysErrNo::EOVERFLOW)?;
+    let writeback_result = (|| -> SyscallRet {
+        let mut segment_start: Option<VirtPageNum> = None;
+        let mut previous: Option<VirtPageNum> = None;
+
+        for vpn in area
+            .data_frames
+            .keys()
+            .copied()
+            .filter(|vpn| area.vpn_range.contains_vpn(*vpn))
+        {
+            if let Some(prev) = previous {
+                let expected = prev.0.checked_add(1).ok_or(SysErrNo::EOVERFLOW)?;
+                if vpn.0 != expected {
+                    let start = segment_start.ok_or(SysErrNo::EFAULT)?;
+                    writeback_resident_segment(token, area, file, start, VirtPageNum(expected))?;
+                    segment_start = Some(vpn);
+                }
+            } else {
+                segment_start = Some(vpn);
+            }
+            previous = Some(vpn);
+        }
+
+        if let (Some(start), Some(last)) = (segment_start, previous) {
+            let end = VirtPageNum(last.0.checked_add(1).ok_or(SysErrNo::EOVERFLOW)?);
+            writeback_resident_segment(token, area, file, start, end)?;
+        }
+        Ok(0)
+    })();
+
+    // Do not use `?` before this restore: OSFile offset is shared by every
+    // descriptor referring to the same open-file description.
+    let restore_result = file.lseek(saved_offset, SEEK_SET);
+    match (writeback_result, restore_result) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(_), Ok(_)) => Ok(0),
+    }
+}
 
 impl MemorySetInner {
     /// Return the hardware page-table token.
@@ -62,48 +154,28 @@ impl MemorySetInner {
 
     /// Write back shared writable mmap pages, then clear all areas and page-table entries.
     pub fn recycle_data_pages(&mut self) -> SyscallRet {
-        for area in self.areas.iter_mut() {
+        let token = self.page_table.token();
+        let mut first_writeback_error = None;
+        for area in self.areas.iter() {
             if area.area_type == MapAreaType::Mmap
                 && area.mmap_flags.contains(MmapFlags::MAP_SHARED)
                 && area.map_perm.contains(MapPermission::W)
             {
-                if let Some(file) = area.mmap_file.file.clone() {
-                    let addr: VirtAddr = area.vpn_range.start().into();
-                    let mapped_len: usize = area
-                        .vpn_range
-                        .into_iter()
-                        .filter(|vpn| area.data_frames.contains_key(&vpn))
-                        .count()
-                        * PAGE_SIZE;
-                    let off = file.lseek(0, SEEK_CUR)?;
-                    let mut written = 0;
-                    while written < mapped_len {
-                        let chunk_len = MMAP_WRITEBACK_CHUNK_SIZE.min(mapped_len - written);
-                        let mut kernel_buf = vec![0u8; chunk_len];
-                        if read_user_bytes_direct_into(
-                            self.page_table.token(),
-                            addr.0 as usize + written,
-                            &mut kernel_buf,
-                        )
-                        .is_none()
-                        {
-                            break;
-                        }
-                        let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-                        file.lseek((area.mmap_file.offset + written) as isize, SEEK_SET)?;
-                        let ret = file.write(buf)?;
-                        if ret == 0 {
-                            break;
-                        }
-                        written += ret;
+                if let Some(file) = area.mmap_file.file.as_deref() {
+                    let writeback_result = writeback_shared_mmap_area(token, area, file);
+                    if first_writeback_error.is_none() {
+                        first_writeback_error = writeback_result.err();
                     }
-                    file.lseek(off as isize, SEEK_SET)?;
                 }
             }
         }
         self.areas.clear();
         self.page_table.clear();
-        Ok(0)
+        self.total_mmap_size = 0;
+        match first_writeback_error {
+            Some(error) => Err(error),
+            None => Ok(0),
+        }
     }
 
     /// Check that a VPN range is fully covered by user-accessible areas with permissions.

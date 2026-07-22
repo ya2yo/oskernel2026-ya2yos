@@ -178,6 +178,21 @@ pub fn waitpid(pid: usize, exit_code: &mut i32) -> isize {
     sys_waitpid(pid as isize, exit_code as *mut _, 0)
 }
 
+/// Linux wait option: return immediately when no selected child has changed
+/// state.  The successful no-event result is `0`.
+pub const WNOHANG: i32 = 1;
+/// Linux internal wait option accepted by Ya2yOS: include clone children.
+pub const __WALL: i32 = 0x4000_0000;
+
+/// Wait with explicit options without collapsing errno to `-1`.
+///
+/// Existing `wait()` and `waitpid()` keep their historical simplified ABI;
+/// callers that poll with `WNOHANG` need the raw result to distinguish an
+/// interrupted syscall from a child that has not exited yet.
+pub fn waitpid_with_options_raw(pid: isize, exit_code: &mut i32, options: i32) -> isize {
+    sys_waitpid_raw(pid, exit_code as *mut _, options)
+}
+
 #[derive(Debug)]
 pub struct Timespec {
     pub tv_sec: usize,  //秒

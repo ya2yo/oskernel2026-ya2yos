@@ -455,7 +455,13 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             // eager address-space teardown.
             activate_kernel_space();
             if Arc::strong_count(&memory_set) == 2 {
-                memory_set.recycle_data_pages();
+                if let Err(error) = memory_set.recycle_data_pages() {
+                    warn!(
+                        "process {} shared mmap writeback failed during teardown: {:?}",
+                        curr_task.pid(),
+                        error
+                    );
+                }
             }
             file_lock::release_posix_locks_by_owner(curr_task.pid() as i32);
             file_lock::release_file_leases_by_owner(curr_task.pid() as i32);
@@ -464,8 +470,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             // Arc::strong_count cannot determine whether a live process
             // remains.  The resource owner counts are decremented exactly
             // once when each process group exits.
-            fd_table.release_owner();
+            let released_last_fd_table_owner = fd_table.release_owner();
             fs_info.release_owner();
+            if released_last_fd_table_owner {
+                crate::fs::reclaim_vfs_caches();
+            }
 
             curr_task.process.set_group_exit_code_once(exit_code);
             curr_task.process.exit_and_reparent();

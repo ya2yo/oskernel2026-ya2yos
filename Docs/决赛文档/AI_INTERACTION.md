@@ -1083,3 +1083,10 @@
 - **场景**：维护者要求分析根目录 `log.ans` 中 LoongArch64 CAgent 在 Bash 启动后立即触发的内核 panic。
 - **描述**：AI 从 `execve` 成功、动态解释器加载和 ecode `0x10` 的日志链路出发，使用本地 Linux 7.0 异常定义与 final-2026 镜像中 `ld-linux` 的只读反汇编，确认故障指令是 LSX `vld`，根因是每个 hart 仅设置 FPE、未设置 EUEN.SXE。修复启用 SXE，并将用户 trap/signal/clone 上下文由 32 x 64-bit FPR 扩展为完整 32 x 128-bit LSX 状态，汇编以 `vst/vld` 保存恢复。LoongArch64 release 构建通过；维护者提供的 `log.ans` 到达 CAgent `GROUP END` 和 `shutdown!`，无 panic、Unknown trap、SXD 或 ASXD。10 个业务任务中 6 项 pass、4 项 reject，未将 reject 误报为通过。详见 [problem/loongarch-cagent-lsx-disabled-panic.md](./problem/loongarch-cagent-lsx-disabled-panic.md) 与 `ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-22 工作树）
+
+#### LoongArch 批量 LTP Rust heap CMA 后备与回收修复（7.22）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析 LoongArch64 批量 LTP `Heap allocation error`，从 CMA 高段堆后备和前例资源回收两条路径完成修复、构建与定向 QEMU 验证。
+- **描述**：AI 将 `Layout { size: 2065194 }` 精确对应到 `/musl/busybox` ELF 最大 `PT_LOAD` 末端，确认 `fsmount01` 的 BusyBox `mkfs.ext2` 装载需要一个正常的 2 MiB buddy block，而原 128 MiB `.bss` global heap 不会使用已经纳入 CMA 的高段 RAM。修复将 CMA 连续页安全移交给 global heap，避免 SMP retry 假 OOM；同时有界回收 idle dentry/inode、保证 shared mmap teardown 即使 writeback 出错也释放页表，并让 LTP runner 以非阻塞 pipe + `WNOHANG` 清理遗留 helper。LoongArch/RISC-V release 构建均通过；LoongArch `fsmount01` 单例无 heap panic、6 项 TPASS 并正常关机，仍保留 1 项环境 TBROK，完整批量回归未被误报为通过。详见 [problem/loongarch-ltp-heap-cma-reclaim.md](./problem/loongarch-ltp-heap-cma-reclaim.md) 与 `ai.log` 2026-07-22 条目。
+- **关联 commit**：尚未提交（2026-07-22 工作树）

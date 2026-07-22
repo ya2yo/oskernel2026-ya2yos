@@ -1,6 +1,7 @@
 use alloc::{
     string::{String, ToString},
     sync::Arc,
+    vec::Vec,
 };
 use hashbrown::HashMap;
 use spin::{Lazy, RwLock};
@@ -43,6 +44,10 @@ static INODE_CACHE: Lazy<RwLock<InodeCacheState>> =
 static SPECIAL_NODE_TYPES: Lazy<RwLock<HashMap<String, InodeType>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
+/// A lookup cache must not grow without bound in one long-running process.
+/// Entries with live file users are retained even when this threshold is met.
+const MAX_CACHED_INODES: usize = 4096;
+
 pub struct FsIndex;
 
 impl FsIndex {
@@ -61,6 +66,7 @@ impl FsIndex {
     }
 
     pub fn insert_inode_idx(path: &str, inode: Arc<dyn Inode>) -> Arc<dyn Inode> {
+        Self::reclaim_if_at_capacity();
         let key = Self::cache_key(path, &inode);
         let canonical = loop {
             let existing = {
@@ -69,36 +75,49 @@ impl FsIndex {
             };
 
             let Some(existing) = existing else {
-                let mut cache = INODE_CACHE.write();
-                if cache.inodes.contains_key(&key) {
-                    continue;
-                }
-                cache.inodes.insert(key.clone(), inode.clone());
-                Self::bind_path(&mut cache, path, &key);
-                break inode.clone();
+                let (canonical, replaced, displaced) = {
+                    let mut cache = INODE_CACHE.write();
+                    if cache.inodes.contains_key(&key) {
+                        continue;
+                    }
+                    let replaced = cache.inodes.insert(key.clone(), inode.clone());
+                    let displaced = Self::bind_path(&mut cache, path, &key);
+                    (inode.clone(), replaced, displaced)
+                };
+                // Removing a cache entry may be the last Arc and invoke
+                // Ext4Inode::drop(), which takes EXT4_OP_LOCK.  Never do that
+                // while holding the index lock.
+                drop(replaced);
+                drop(displaced);
+                break canonical;
             };
 
             let replace_stale = !Self::inode_matches_key(&existing, &key);
-            let mut cache = INODE_CACHE.write();
-            let Some(current) = cache.inodes.get(&key).cloned() else {
-                continue;
+            let (canonical, replaced, displaced) = {
+                let mut cache = INODE_CACHE.write();
+                let Some(current) = cache.inodes.get(&key).cloned() else {
+                    continue;
+                };
+                if !Arc::ptr_eq(&current, &existing) {
+                    continue;
+                }
+
+                if replace_stale {
+                    // Every path under this key refers to an inode that has just
+                    // been proven dead.  Keeping any of those aliases would make
+                    // a later lookup route the old pathname to the replacement.
+                    cache.paths.retain(|_, candidate| candidate != &key);
+                    let replaced = cache.inodes.insert(key.clone(), inode.clone());
+                    let displaced = Self::bind_path(&mut cache, path, &key);
+                    (inode.clone(), replaced, displaced)
+                } else {
+                    let displaced = Self::bind_path(&mut cache, path, &key);
+                    (current, None, displaced)
+                }
             };
-            if !Arc::ptr_eq(&current, &existing) {
-                continue;
-            }
-
-            if replace_stale {
-                // Every path under this key refers to an inode that has just
-                // been proven dead.  Keeping any of those aliases would make
-                // a later lookup route the old pathname to the replacement.
-                cache.paths.retain(|_, candidate| candidate != &key);
-                cache.inodes.insert(key.clone(), inode.clone());
-                Self::bind_path(&mut cache, path, &key);
-                break inode.clone();
-            }
-
-            Self::bind_path(&mut cache, path, &key);
-            break current;
+            drop(replaced);
+            drop(displaced);
+            break canonical;
         };
         // Do not enter an inode method while the index lock is held: Ext4Inode
         // records aliases under EXT4_OP_LOCK, the opposite of unlink's order.
@@ -117,15 +136,59 @@ impl FsIndex {
     }
 
     pub fn remove_inode_idx(path: &str) {
-        {
+        let removed_inode = {
             let mut cache = INODE_CACHE.write();
             if let Some(key) = cache.paths.remove(path) {
                 if !cache.paths.values().any(|candidate| candidate == &key) {
-                    cache.inodes.remove(&key);
+                    cache.inodes.remove(&key)
+                } else {
+                    None
                 }
+            } else {
+                None
             }
-        }
+        };
+        drop(removed_inode);
         SPECIAL_NODE_TYPES.write().remove(path);
+    }
+
+    /// Evict inode cache entries that are no longer referenced by a live VFS
+    /// user.  `INODE_CACHE` itself owns one strong Arc per key.  Callers clear
+    /// the strong dentry cache first, so a count of one means this cache is the
+    /// last owner.  This keeps LTP's short-lived pathname churn from becoming
+    /// permanent kernel heap usage.
+    pub fn reclaim_unused() -> usize {
+        let capacity = INODE_CACHE.read().inodes.len();
+        let mut reclaimed = Vec::with_capacity(capacity);
+        {
+            let mut cache = INODE_CACHE.write();
+            cache.inodes.retain(|_, inode| {
+                if Arc::strong_count(inode) > 1 {
+                    return true;
+                }
+                // Retain one temporary Arc until after the index write lock is
+                // released.  Ext4Inode::drop() enters EXT4_OP_LOCK.
+                reclaimed.push(inode.clone());
+                false
+            });
+
+            let InodeCacheState { paths, inodes } = &mut *cache;
+            paths.retain(|_, key| inodes.contains_key(key));
+        }
+        let count = reclaimed.len();
+        drop(reclaimed);
+        count
+    }
+
+    fn reclaim_if_at_capacity() {
+        let at_capacity = INODE_CACHE.read().inodes.len() >= MAX_CACHED_INODES;
+        if at_capacity {
+            // Positive dentries intentionally keep strong inode references for
+            // hot close/open loops.  Drop that accelerator before testing which
+            // FsIndex entries are otherwise idle.
+            crate::fs::DENTRY_CACHE.clear();
+            Self::reclaim_unused();
+        }
     }
 
     pub fn print_inner() {
@@ -150,13 +213,18 @@ impl FsIndex {
     /// Publish a path under `key` and discard an old identity key once no path
     /// refers to it.  This prevents a changing lwext4 stat key from leaving a
     /// strong orphan in `inodes` that a later inode-number reuse can hit.
-    fn bind_path(cache: &mut InodeCacheState, path: &str, key: &InodeCacheKey) {
+    fn bind_path(
+        cache: &mut InodeCacheState,
+        path: &str,
+        key: &InodeCacheKey,
+    ) -> Option<Arc<dyn Inode>> {
         let previous = cache.paths.insert(path.to_string(), key.clone());
         if let Some(previous) = previous {
             if &previous != key && !cache.paths.values().any(|candidate| candidate == &previous) {
-                cache.inodes.remove(&previous);
+                return cache.inodes.remove(&previous);
             }
         }
+        None
     }
 
     /// A stale canonical inode can survive until the unlink-side cache detach

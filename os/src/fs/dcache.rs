@@ -7,7 +7,9 @@
 use alloc::{
     string::{String, ToString},
     sync::Arc,
+    vec::Vec,
 };
+use core::mem;
 use hashbrown::HashMap;
 use spin::{Lazy, RwLock};
 
@@ -29,7 +31,12 @@ struct DentryKey {
 /// Positive 表示子项存在，并直接保存子 inode；Negative 表示已经确认子项不存在。
 /// Negative cache 主要服务非 `O_CREAT` 查找路径，创建路径应绕过或失效旧的 negative 项。
 enum DentryValue {
-    Positive { inode: Arc<dyn Inode> },
+    /// Keep the child alive across close/open cycles in the same process.
+    /// `reclaim_vfs_caches()` drops these strong references at testcase and
+    /// cache-pressure boundaries before reclaiming FsIndex entries.
+    Positive {
+        inode: Arc<dyn Inode>,
+    },
     Negative,
 }
 
@@ -43,12 +50,15 @@ pub enum DentryLookup {
 
 /// 全局 VFS dentry cache。
 ///
-/// 当前内核是单机竞赛场景，没有实现完整 Linux dcache shrinker 或 LRU；因此这里采用
-/// 简单 `HashMap + RwLock`，并依赖 create/link/unlink/symlink/rename 等路径显式回填
-/// 或失效条目，避免 stale dentry 影响后续路径语义。
+/// 当前内核采用有界的 `HashMap + RwLock`：create/link/unlink/symlink/rename 路径显式
+/// 回填或失效条目，缓存达到上限和 process/testcase 回收边界时统一清理。
 pub struct DentryCache {
     entries: RwLock<HashMap<DentryKey, DentryValue>>,
 }
+
+/// Bound path-name metadata even while one long-running process continually
+/// probes unique names.  A cache miss only costs another filesystem lookup.
+const MAX_DENTRY_CACHE_ENTRIES: usize = 4096;
 
 impl DentryCache {
     /// 创建空的 dentry cache。
@@ -66,7 +76,6 @@ impl DentryCache {
         let key = Self::key(parent, name);
         let entries = self.entries.read();
         match entries.get(&key) {
-            // Positive cache 保存 strong Arc，使刚创建/刚查到的目录项能跨 fd 关闭继续复用。
             Some(DentryValue::Positive { inode }) => Some(DentryLookup::Positive(inode.clone())),
             // Negative cache 让重复的“确认不存在”查询不用再次进入 ext4。
             Some(DentryValue::Negative) => Some(DentryLookup::Negative),
@@ -78,9 +87,7 @@ impl DentryCache {
     ///
     /// 通常在 `open()` 查找成功、`create_file()` 创建成功、`linkat()` 物化成功后调用。
     pub fn insert_positive(&self, parent: &Arc<dyn Inode>, name: &str, inode: Arc<dyn Inode>) {
-        self.entries
-            .write()
-            .insert(Self::key(parent, name), DentryValue::Positive { inode });
+        self.insert(Self::key(parent, name), DentryValue::Positive { inode });
     }
 
     /// 插入不存在的子项缓存。
@@ -88,16 +95,16 @@ impl DentryCache {
     /// 只适合非创建路径的 `ENOENT` 结果；创建、link、rename 等可能改变目录项的操作
     /// 必须先失效或覆盖对应缓存。
     pub fn insert_negative(&self, parent: &Arc<dyn Inode>, name: &str) {
-        self.entries
-            .write()
-            .insert(Self::key(parent, name), DentryValue::Negative);
+        self.insert(Self::key(parent, name), DentryValue::Negative);
     }
 
     /// 失效父目录下的单个子项缓存。
     ///
     /// 用于 unlink、rename、symlink、link 或 create 前后，确保后续查找不会命中旧结果。
     pub fn invalidate(&self, parent: &Arc<dyn Inode>, name: &str) {
-        self.entries.write().remove(&Self::key(parent, name));
+        let key = Self::key(parent, name);
+        let removed = { self.entries.write().remove(&key) };
+        drop(removed);
     }
 
     /// 失效某个父目录下的所有子项缓存。
@@ -105,8 +112,52 @@ impl DentryCache {
     /// 当无法精确知道哪个 child 发生变化，或父目录整体状态发生变化时使用。
     pub fn invalidate_parent(&self, parent: &Arc<dyn Inode>) {
         let parent = Self::parent_key(parent);
+        let capacity = self.entries.read().len();
+        let mut removed_inodes = Vec::with_capacity(capacity);
         // 只删除指定父目录的目录项，避免一次目录变化冲掉整个全局 cache。
-        self.entries.write().retain(|key, _| key.parent != parent);
+        {
+            let mut entries = self.entries.write();
+            entries.retain(|key, value| {
+                if key.parent != parent {
+                    return true;
+                }
+                if let DentryValue::Positive { inode } = value {
+                    // Keep the inode alive until the dcache lock is released:
+                    // Ext4Inode::drop() takes EXT4_OP_LOCK.
+                    removed_inodes.push(inode.clone());
+                }
+                false
+            });
+        }
+        drop(removed_inodes);
+    }
+
+    /// Drop all cached path-name metadata at a process boundary.  This is safe
+    /// because both positive and negative entries are accelerators only.
+    pub fn clear(&self) -> usize {
+        let removed = {
+            let mut entries = self.entries.write();
+            mem::take(&mut *entries)
+        };
+        let count = removed.len();
+        drop(removed);
+        count
+    }
+
+    fn insert(&self, key: DentryKey, value: DentryValue) {
+        let (evicted, replaced) = {
+            let mut entries = self.entries.write();
+            let evicted =
+                if !entries.contains_key(&key) && entries.len() >= MAX_DENTRY_CACHE_ENTRIES {
+                    Some(mem::take(&mut *entries))
+                } else {
+                    None
+                };
+            let replaced = entries.insert(key, value);
+            (evicted, replaced)
+        };
+        drop(replaced);
+        drop(evicted);
     }
 
     /// 构造 `(parent inode identity, child name)` 形式的 dentry key。

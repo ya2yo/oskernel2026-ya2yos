@@ -1,5 +1,8 @@
 use crate::*;
-use user_lib::{close, dup2, pipe, read, write as fd_write};
+use user_lib::{
+    close, dup2, fcntl, kill, kill_processes, pipe, read, sleep, waitpid_with_options_raw,
+    write as fd_write, WNOHANG, __WALL,
+};
 mod blacklist;
 mod filelist;
 pub use blacklist::LTP_BLACKLIST;
@@ -22,6 +25,13 @@ const LTP_TWARN: i32 = 0x04;
 const LTP_TCONF: i32 = 0x20;
 const STDOUT: usize = 1;
 const STDERR: usize = 2;
+const F_GETFL: usize = 3;
+const F_SETFL: usize = 4;
+const O_NONBLOCK: usize = 0o4000;
+const EAGAIN: isize = -11;
+const EINTR: isize = -4;
+const SIGKILL: usize = 9;
+const LTP_BROKEN_WAIT_STATUS: i32 = LTP_TBROK << 8;
 
 #[derive(Default)]
 struct LtpSummary {
@@ -170,6 +180,7 @@ fn fork_run_ltp_and_collect(dir: &str, args: &[&str]) -> LtpRunResult {
     let mut fds = [0u32; 2];
     if pipe(&mut fds, 0) < 0 {
         let wait_status = fork_and_run(dir, args);
+        cleanup_ltp_descendants();
         return LtpRunResult {
             wait_status,
             counts: LtpOutputCounts::default(),
@@ -179,6 +190,15 @@ fn fork_run_ltp_and_collect(dir: &str, args: &[&str]) -> LtpRunResult {
     let read_fd = fds[0] as usize;
     let write_fd = fds[1] as usize;
     let pid = fork();
+    if pid < 0 {
+        println!("LTP fork failed: {}", pid);
+        close(read_fd);
+        close(write_fd);
+        return LtpRunResult {
+            wait_status: LTP_BROKEN_WAIT_STATUS,
+            counts: LtpOutputCounts::default(),
+        };
+    }
     if pid == 0 {
         close(read_fd);
         dup2(write_fd, STDOUT, 0);
@@ -191,25 +211,144 @@ fn fork_run_ltp_and_collect(dir: &str, args: &[&str]) -> LtpRunResult {
     }
 
     close(write_fd);
+    if !set_nonblocking(read_fd) {
+        println!("LTP failed to set output pipe nonblocking");
+        let _ = kill(pid as usize, SIGKILL);
+        let mut reap_status = 0;
+        wait_for_ltp_child(pid, &mut reap_status);
+        cleanup_ltp_descendants();
+        close(read_fd);
+        return LtpRunResult {
+            wait_status: LTP_BROKEN_WAIT_STATUS,
+            counts: LtpOutputCounts::default(),
+        };
+    }
+
     let mut scanner = LtpOutputScanner::new();
     let mut buf = [0u8; 256];
-    loop {
-        let buf_len = buf.len();
-        let n = read(read_fd, &mut buf, buf_len);
-        if n <= 0 {
-            break;
+    let mut wait_status = LTP_BROKEN_WAIT_STATUS;
+    let mut pipe_open = true;
+
+    // Check the direct child before every pipe read.  A testcase can leave a
+    // helper holding the write end, so waiting for EOF before reaping the
+    // child would make the cleanup path unreachable.
+    while pipe_open {
+        match waitpid_with_options_raw(pid, &mut wait_status, WNOHANG) {
+            result if result > 0 => {
+                cleanup_ltp_descendants();
+                drain_ltp_output(read_fd, &mut scanner, &mut buf);
+                pipe_open = false;
+            }
+            0 | EINTR => match collect_ltp_output(read_fd, &mut scanner, &mut buf) {
+                PipeRead::Data => {}
+                PipeRead::Empty => sleep(1),
+                PipeRead::Closed => {
+                    // No writer remains, so a blocking wait cannot be held up
+                    // by stdout/stderr backpressure.
+                    wait_for_ltp_child(pid, &mut wait_status);
+                    cleanup_ltp_descendants();
+                    pipe_open = false;
+                }
+                PipeRead::Error(error) => {
+                    println!("LTP output read failed: {}", error);
+                    let _ = kill(pid as usize, SIGKILL);
+                    let mut reap_status = 0;
+                    wait_for_ltp_child(pid, &mut reap_status);
+                    cleanup_ltp_descendants();
+                    pipe_open = false;
+                }
+            },
+            error => {
+                println!("LTP waitpid({}) failed: {}", pid, error);
+                cleanup_ltp_descendants();
+                pipe_open = false;
+            }
         }
-        let n = n as usize;
-        fd_write(STDOUT, &buf[..n], n);
-        scanner.push(&buf[..n]);
     }
     close(read_fd);
 
-    let mut wait_status: i32 = 0;
-    let _ = waitpid(pid as usize, &mut wait_status);
     LtpRunResult {
         wait_status,
         counts: scanner.counts,
+    }
+}
+
+enum PipeRead {
+    Data,
+    Empty,
+    Closed,
+    Error(isize),
+}
+
+fn set_nonblocking(fd: usize) -> bool {
+    let flags = fcntl(fd, F_GETFL, 0);
+    flags >= 0 && fcntl(fd, F_SETFL, flags as usize | O_NONBLOCK) >= 0
+}
+
+fn collect_ltp_output(read_fd: usize, scanner: &mut LtpOutputScanner, buf: &mut [u8]) -> PipeRead {
+    let n = read(read_fd, buf, buf.len());
+    if n > 0 {
+        let n = n as usize;
+        fd_write(STDOUT, &buf[..n], n);
+        scanner.push(&buf[..n]);
+        PipeRead::Data
+    } else if n == 0 {
+        PipeRead::Closed
+    } else if n == EAGAIN || n == EINTR {
+        PipeRead::Empty
+    } else {
+        PipeRead::Error(n)
+    }
+}
+
+/// After the direct child and every reparented helper has been reaped, no
+/// valid writer can produce more output.  Drain only currently buffered bytes
+/// and do not let a leaked writer reference stall the next testcase.
+fn drain_ltp_output(read_fd: usize, scanner: &mut LtpOutputScanner, buf: &mut [u8]) {
+    loop {
+        match collect_ltp_output(read_fd, scanner, buf) {
+            PipeRead::Data => {}
+            PipeRead::Empty | PipeRead::Closed => return,
+            PipeRead::Error(error) => {
+                println!("LTP output drain failed: {}", error);
+                return;
+            }
+        }
+    }
+}
+
+/// LTP cases may leave helpers behind.  Test cases are expected to be isolated
+/// just like the other testsuit groups, so terminate and reap any descendants
+/// reparented to initproc before launching the next case.
+fn cleanup_ltp_descendants() {
+    let _ = kill_processes(-1, SIGKILL);
+    loop {
+        let mut exit_code: i32 = 0;
+        let result = waitpid_with_options_raw(-1, &mut exit_code, WNOHANG | __WALL);
+        if result > 0 || result == EINTR {
+            continue;
+        }
+        if result == 0 {
+            sleep(1);
+            continue;
+        }
+        return;
+    }
+}
+
+/// `waitpid()` may be interrupted by a signal while its direct child remains
+/// alive.  Retry EINTR so the child cannot remain in the global process map.
+fn wait_for_ltp_child(pid: isize, wait_status: &mut i32) {
+    loop {
+        let result = waitpid_with_options_raw(pid, wait_status, 0);
+        if result > 0 {
+            return;
+        }
+        if result == EINTR {
+            continue;
+        }
+        println!("LTP waitpid({}) failed: {}", pid, result);
+        return;
     }
 }
 

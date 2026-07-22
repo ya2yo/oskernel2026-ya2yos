@@ -249,12 +249,16 @@ impl FdTable {
         self.owners.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Release one exiting process.  The last live owner closes all fds.
-    pub fn release_owner(&self) {
+    /// Release one exiting process.  The last live owner closes all fds and
+    /// reports that process-scoped VFS caches may be reclaimed.
+    pub fn release_owner(&self) -> bool {
         let previous = self.owners.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(previous > 0, "fd table owner count underflow");
         if previous == 1 {
             self.clear();
+            true
+        } else {
+            false
         }
     }
 

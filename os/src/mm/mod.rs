@@ -53,6 +53,8 @@ pub fn init() {
     println!("mm:kernel pagetable activated");
     frame_alloc::init_cma_late();
     println!("mm:cma late range inited");
+    heap_allocator::enable_cma_backing();
+    println!("mm:heap CMA backing enabled");
     memory_set::remap_test();
     println!("mm:remap_test complete, mm_init is finished");
 }

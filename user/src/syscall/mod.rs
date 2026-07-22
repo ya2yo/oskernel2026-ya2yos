@@ -297,11 +297,17 @@ pub fn sys_run_lmbench_test() -> isize {
     )
 }
 
-pub fn sys_waitpid(pid: isize, exit_code: *mut i32, options: i32) -> isize {
-    let mut rv = syscall(
+/// Raw wait4 result for callers that need to distinguish `EINTR`/`ECHILD`
+/// from the successful `WNOHANG == 0` result.
+pub fn sys_waitpid_raw(pid: isize, exit_code: *mut i32, options: i32) -> isize {
+    syscall(
         SYSCALL_WAIT4,
         [pid as isize, exit_code as isize, options as isize, 0, 0, 0],
-    );
+    )
+}
+
+pub fn sys_waitpid(pid: isize, exit_code: *mut i32, options: i32) -> isize {
+    let mut rv = sys_waitpid_raw(pid, exit_code, options);
     if rv < 0 {
         rv = -1;
     }
