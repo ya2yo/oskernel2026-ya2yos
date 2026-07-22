@@ -110,6 +110,9 @@ pub fn sys_fchdir(fd: i32) -> SyscallRet {
 /// `chdir(2)` requires search permission on every directory in the resolved
 /// path, including the destination directory itself.
 fn check_directory_search_permission(path: &str, uid: u32, gid: u32) -> SyscallRet {
+    if uid == 0 {
+        return Ok(0);
+    }
     let mut current = String::from("/");
     for component in path.split('/').filter(|component| !component.is_empty()) {
         if current.len() > 1 {
