@@ -178,7 +178,6 @@ fn test_final_2026() -> i32 {
         shutdown();
         return 1;
     }
-    run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
     cagent::run_cases(&cagent::ALL_CASES);
     buildstorm::run_official_sequence();
     shutdown();
