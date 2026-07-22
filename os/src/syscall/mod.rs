@@ -274,6 +274,7 @@ pub enum Syscall {
     MountSetattr = 442,
     MemfdSecret = 447,
     FutexWaitv = 449,
+    Fchmodat2 = 452,
     FutexWait = 455,
     MachineShutdown = 1000,
     #[num_enum(default)]
@@ -433,6 +434,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Fchdir => sys_fchdir(args[0] as i32),
         Syscall::Fchmod => sys_fchmod(args[0] as usize, args[1] as u32),
         Syscall::Fchmodat => sys_fchmodat(
+            args[0] as isize,
+            args[1] as *const u8,
+            args[2] as u32,
+            args[3] as u32,
+        ),
+        Syscall::Fchmodat2 => sys_fchmodat2(
             args[0] as isize,
             args[1] as *const u8,
             args[2] as u32,

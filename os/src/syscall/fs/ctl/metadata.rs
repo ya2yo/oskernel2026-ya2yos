@@ -209,12 +209,11 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
     let path = file.inode.path();
     chmod_inode(file.inode.clone(), Some(&path), mode)
 }
-/// 实现 `fchmodat(2)`，按 dirfd/path/flags 修改文件权限位。
+/// `fchmodat` / `fchmodat2` 的公共实现，按 dirfd/path/flags 修改文件权限位。
 ///
 /// 支持 `AT_EMPTY_PATH` 的 fd 目标、`/proc/self/fd/<fd>` 兼容路径和普通路径目标；
 /// 各路径最终统一调用 `chmod_inode()`，保证和 `fchmod(2)` 一致的权限及 setgid 语义。
-/// 参考 https://www.man7.org/linux/man-pages/man2/fchmodat.2.html
-pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
+fn do_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc = &task.process;
     let memory_set = proc.memory_set_arc();
@@ -246,7 +245,7 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
             return Err(SysErrNo::EBADF);
         }
         let fd_desc = proc.fd_table.get(dirfd as usize)?;
-        // fchmodat(fd, "", ..., AT_EMPTY_PATH) 与 fchmod(fd, ...) 一样拒绝 O_PATH。
+        // fchmodat2(fd, "", ..., AT_EMPTY_PATH) 与 fchmod(fd, ...) 一样拒绝 O_PATH。
         if fd_desc.is_path_only() {
             return Err(SysErrNo::EBADF);
         }
@@ -269,7 +268,7 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
     }
 
     debug!(
-        "[sys_fchmodat] path is {}, flags is {}, new mode is {:o}",
+        "[do_fchmodat] path is {}, flags is {}, new mode is {:o}",
         &abs_path, flags, mode
     );
 
@@ -287,4 +286,23 @@ pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> Sys
 
     let inode = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
     chmod_inode(inode.inode.clone(), Some(&abs_path), mode)
+}
+
+/// 实现 `fchmodat(2)`，按 dirfd/path/flags 修改文件权限位。
+///
+/// 仅支持 `AT_SYMLINK_NOFOLLOW`，不支持 `AT_EMPTY_PATH`（该标志由 `fchmodat2` 提供）。
+/// 参考 https://www.man7.org/linux/man-pages/man2/fchmodat.2.html
+pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
+    if flags & AT_EMPTY_PATH as u32 != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    do_fchmodat(dirfd, path, mode, flags)
+}
+
+/// 实现 `fchmodat2(2)`（Linux 6.6+），是 `fchmodat(2)` 的扩展版本。
+///
+/// 与 `fchmodat(2)` 相比，额外支持 `AT_EMPTY_PATH` 标志，允许对 fd 本身操作。
+/// 参考 https://www.man7.org/linux/man-pages/man2/fchmodat2.2.html
+pub fn sys_fchmodat2(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
+    do_fchmodat(dirfd, path, mode, flags)
 }
