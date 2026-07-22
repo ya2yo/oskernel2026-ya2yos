@@ -1069,3 +1069,10 @@
 - **场景**：维护者要求分析根目录 `log.ans` 中 LoongArch64 `fs_bind01` 的早期终止并完成修复与 QEMU 验证。
 - **描述**：确认 BusyBox hush 不能按 LTP 原写法保留 `eval "local timeout=..."` 创建的局部变量，导致 watchdog 获得零秒并在真实挂载断言前终止。启动期对 musl/glibc `tst_test.sh` 做幂等的声明/赋值拆分，保留原 inode/权限写回后，进一步定位到 `/proc/mounts` 将 self-bind 的路径 source 暴露给 BusyBox，使其一次 `umount` 同时以 mountpoint 和 device 匹配并卸掉两层。仅改变 bind 条目的展示 source 为 `none`，并将 bind 身份独立于 remount flags 保存，保留内核 mount stack、event group 和非 bind source 语义。LoongArch64 `fs_bind01` 自身为 `passed 29 failed 0 broken 0`，四次关键卸载均 `TPASS` 并正常 `shutdown!`；RISC-V release 构建通过，未运行 RISC-V QEMU。
 - **关联 commit**：尚未提交（2026-07-21 工作树）
+
+#### LTP kill07 SIGKILL 快速退出的 waitpid 状态编码修复（7.22）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析根目录 `log.ans` 最后的 `kill07` 失败并完成内核修复与验证。
+- **描述**：确认 `kill(pid, SIGKILL)` 已成功投递并由父进程回收，失败来自 blocked child 经 scheduler/future 快速退出后缺少 `termination_signal`，使 `waitpid()` 将内部 137 误编码为普通 `exit(137)`。修复仅在用户态 `kill/tkill/tgkill` 携带 `SigInfo` 的不可忽略 SIGKILL 投递时记录进程终止原因，内部 execve sibling 清理信号不污染共享 wait status；同时统一 `block_on()` 与协作调度的 group-exit/SIGKILL 退出门。LoongArch64 单跑 `kill07` 为 `passed 1 failed 0 broken 0` 并正常关机，LoongArch64 与 RISC-V release 构建通过。详见 [problem/kill07-sigkill-fast-exit-wait-status.md](./problem/kill07-sigkill-fast-exit-wait-status.md) 与 `ai.log` 2026-07-22 条目。
+- **关联 commit**：尚未提交（2026-07-22 工作树）

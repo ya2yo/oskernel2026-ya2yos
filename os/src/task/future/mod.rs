@@ -14,10 +14,9 @@ use log::debug;
 
 use super::{TaskRef, WeakTaskRef};
 use crate::{
-    signal::SigSet,
     task::{
-        current_task, exit_current_and_run_next, ready_queue, schedule, take_current_task,
-        TaskContext, TaskStatus,
+        current_task, exit_current_if_group_exited_or_killed, ready_queue, schedule,
+        take_current_task, TaskContext, TaskStatus,
     },
     utils::SysErrNo,
 };
@@ -119,16 +118,9 @@ pub fn block_on<F: core::future::Future>(f: F) -> F::Output {
     let mut cx = Context::from_waker(&waker);
 
     loop {
-        // 每轮单独作用域：检查完信号就释放 clone，避免带着 Arc 调用 block_current
-        {
-            let task = current_task().unwrap();
-            // debug!("[block_on] strong count: {}", Arc::strong_count(&task));
-            if task.inner_lock().sig_pending.contains(SigSet::SIGKILL) {
-                drop(task);
-                exit_current_and_run_next(137);
-                unreachable!();
-            }
-        }
+        // Keep SIGKILL and exit_group handling consistent with cooperative
+        // scheduling, including the waitpid-visible signal termination cause.
+        exit_current_if_group_exited_or_killed();
 
         match fut.as_mut().poll(&mut cx) {
             Poll::Ready(output) => return output,

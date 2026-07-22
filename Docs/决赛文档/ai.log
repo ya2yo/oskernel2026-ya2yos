@@ -6145,3 +6145,46 @@ AI 协作记录。
 
 LoongArch64 `make` + `make run`：musl/glibc `read03` 均从 `TBROK` 变为 `TPASS`，正常
 `shutdown!`。未运行 RISC-V。
+
+---
+
+## 2026-07-22：LTP kill07 SIGKILL 快速退出的 waitpid 状态编码修复
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans` 最后的失败原因并完成修复。
+
+### 分析与采纳结论
+
+AI 先按 `TPASS/TFAIL/TBROK` 过滤日志，确认最后一个真实失败为
+`kill07.c:161: No signals received`，而非包装器信息。对照 LTP 20240524 `kill07.c`，该分支只在
+`WTERMSIG(status) == 0` 时触发；测试实际要求子进程被 `SIGKILL` 终止后，父进程的
+`waitpid()` 观察到 `WIFSIGNALED(status)` 和 `WTERMSIG(status) == 9`。
+
+日志显示父进程 `kill(pid, SIGKILL)` 返回 0、子进程退出、父进程 `wait4()` 成功回收，且父进程
+已经收到 `SIGCHLD`。因此问题不是投递失败或漏收 `SIGCHLD`，而是 wait status ABI 编码错误。
+调用链显示 child 正在 `nanosleep`，被唤醒后通过 `block_on()`/协作调度中的 pending `SIGKILL`
+快速路径直接 `exit_current_and_run_next(137)`，绕过了 `handle_signal()` 中保存
+`ProcessMeta.termination_signal` 的默认终止分支。`sys_waitpid()` 因没有终止原因而写入
+`137 << 8`，使 LTP 看到普通退出且 `WTERMSIG == 0`。
+
+AI 审查了 `exit_group()` 与多线程 `execve` 边界。不能在通用快速退出门中对全部 SIGKILL 写
+进程级终止原因：execve 用不携带 siginfo 的内部 SIGKILL 清理 sibling，若记录将污染成功 exec
+后未来的正常 wait status。最终采纳按投递来源区分的最小方案：仅 `add_signal_with_info()` 收到
+用户态 `kill/tkill/tgkill` 提供的 `SigInfo` 且信号为不可捕获、不可忽略的 `SIGKILL` 时记录
+`termination_signal`；内部投递不记录。`block_on()` 同时复用统一的 group-exit/SIGKILL 退出门，
+保留已有 `group_exit_code` 的正常退出语义。
+
+### 修改与验证
+
+修改 `os/src/signal/delivery.rs`、`os/src/task/mod.rs` 和 `os/src/task/future/mod.rs`，新增
+`Docs/决赛文档/problem/kill07-sigkill-fast-exit-wait-status.md`，并更新 problem 索引、开发日志和
+AI 协作记录。
+
+`rustfmt --edition 2021 --check` 针对修改文件与 `git diff --check` 均通过。LoongArch64 和
+RISC-V release 构建均通过。LoongArch64 下执行
+`timeout 120s make TARGET_ARCH=loongarch64 run > /tmp/kill07-after-fix.log 2>&1`，输出
+`kill07 0 TINFO: received expected signal 9`、`kill07 1 TPASS`，Summary 为
+`passed 1 failed 0 broken 0`，并正常 `shutdown!`。未运行 RISC-V QEMU 行为回归。
+
+全仓 `cargo fmt --check` 仍只报告未触及的 `os/src/arch/loongarch64/qemu/mod.rs` 模块声明排序。

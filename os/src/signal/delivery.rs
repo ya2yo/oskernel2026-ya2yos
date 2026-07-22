@@ -51,6 +51,20 @@ pub(super) fn add_signal_with_info(
     signal: SigSet,
     siginfo: Option<SigInfo>,
 ) -> bool {
+    // SIGKILL cannot be caught or ignored. Record its process-exit cause at
+    // user-signal delivery time because a blocked task may exit through the
+    // scheduler fast path before trap-return dispatches handle_signal().
+    // Internal SIGKILL users such as execve thread teardown carry no siginfo
+    // and must not affect the eventual process wait status.
+    if signal.contains(SigSet::SIGKILL) && siginfo.is_some() {
+        let mut process_meta = task.process.meta_lock();
+        if process_meta.group_exit_code.is_none() {
+            process_meta
+                .termination_signal
+                .get_or_insert((SIGKILL, false));
+        }
+    }
+
     // Snapshot the disposition before taking TaskControlBlockInner.  Signal
     // delivery can race with trap-return handling on another hart; taking the
     // signal-table lock while holding the task lock reverses the task lock

@@ -141,17 +141,26 @@ pub fn suspend_current_and_run_next() {
 ///
 /// Keep ProcessMeta and TaskControlBlockInner lock scopes disjoint and drop
 /// the current task reference before the normal exit path takes ownership.
-fn exit_current_if_group_exited_or_killed() {
+pub(crate) fn exit_current_if_group_exited_or_killed() {
     let task = current_task().unwrap();
-    let exit_code = task.process.meta_lock().group_exit_code;
-    let sigkill_pending =
-        exit_code.is_none() && task.inner_lock().sig_pending.contains(SigSet::SIGKILL);
+    let sigkill_pending = {
+        let task_inner = task.inner_lock();
+        task_inner.sig_pending.contains(SigSet::SIGKILL)
+    };
+    let exit_code = {
+        let process_meta = task.process.meta_lock();
+        if let Some(exit_code) = process_meta.group_exit_code {
+            Some(exit_code)
+        } else if sigkill_pending {
+            Some(137)
+        } else {
+            None
+        }
+    };
     drop(task);
 
     if let Some(exit_code) = exit_code {
         exit_current_and_run_next(exit_code);
-    } else if sigkill_pending {
-        exit_current_and_run_next(137);
     }
 }
 
