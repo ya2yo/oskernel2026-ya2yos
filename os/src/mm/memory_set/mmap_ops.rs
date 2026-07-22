@@ -189,6 +189,9 @@ impl MemorySetInner {
         };
         let start_vpn = VirtAddr::from(addr).floor();
         let end_vpn = VirtAddr::from(end_addr).ceil();
+        if start_vpn >= end_vpn {
+            return Err(SysErrNo::EINVAL);
+        }
         while let Some((idx, area)) = self
             .areas
             .iter_mut()
@@ -196,42 +199,44 @@ impl MemorySetInner {
             .filter(|(_, area)| area.area_type == MapAreaType::Mmap)
             .find(|(_, area)| {
                 let (start, end) = area.vpn_range.range();
-                start >= start_vpn && end <= end_vpn
+                start < end_vpn && end > start_vpn
             })
         {
+            let (area_start, area_end) = area.vpn_range.range();
+            // 计算 munmap 范围与此 area 的交集
+            let unmap_start = area_start.max(start_vpn);
+            let unmap_end = area_end.min(end_vpn);
+
+            // 共享映射脏页写回（仅实际卸载的部分）
             if area.mmap_flags.contains(MmapFlags::MAP_SHARED)
                 && area.map_perm.contains(MapPermission::W)
                 && area.mmap_file.file.is_some()
             {
                 let file = area.mmap_file.file.clone().unwrap();
                 if file.inode.link_cnt()? > 0 {
-                    // 将修改的内容写回文件
                     let mut wb_range: Vec<(VirtPageNum, VirtPageNum)> = Vec::new();
-                    VPNRange::new(start_vpn, end_vpn)
-                        .into_iter()
-                        .for_each(|vpn| {
-                            if area.data_frames.contains_key(&vpn) {
-                                if wb_range.is_empty() {
-                                    wb_range.push((vpn, VirtPageNum(vpn.0 + 1)));
+                    for vpn in unmap_start.0..unmap_end.0 {
+                        let vpn = VirtPageNum(vpn);
+                        if area.data_frames.contains_key(&vpn) {
+                            if wb_range.is_empty() {
+                                wb_range.push((vpn, VirtPageNum(vpn.0 + 1)));
+                            } else {
+                                let end_range = wb_range.pop().unwrap();
+                                if end_range.1 == vpn {
+                                    wb_range.push((end_range.0, VirtPageNum(vpn.0 + 1)));
                                 } else {
-                                    let end_range = wb_range.pop().unwrap();
-                                    if end_range.1 == vpn {
-                                        // 说明可以拼接起来
-                                        wb_range.push((end_range.0, VirtPageNum(vpn.0 + 1)));
-                                    } else {
-                                        // 分开的页面
-                                        wb_range.push(end_range);
-                                        wb_range.push((vpn, VirtPageNum(vpn.0 + 1)));
-                                    }
+                                    wb_range.push(end_range);
+                                    wb_range.push((vpn, VirtPageNum(vpn.0 + 1)));
                                 }
                             }
-                        });
+                        }
+                    }
                     let off = file.lseek(0, SEEK_CUR).unwrap();
                     let map_base: usize = VirtAddr::from(area.vpn_range.start()).into();
                     let file_base = area.mmap_file.offset;
-                    for (start_vpn, end_vpn) in wb_range {
-                        let start_addr: usize = VirtAddr::from(start_vpn).into();
-                        let mapped_len: usize = (end_vpn.0 - start_vpn.0) * PAGE_SIZE;
+                    for (wb_vpn_start, wb_vpn_end) in wb_range {
+                        let start_addr: usize = VirtAddr::from(wb_vpn_start).into();
+                        let mapped_len: usize = (wb_vpn_end.0 - wb_vpn_start.0) * PAGE_SIZE;
                         let mut written = 0;
                         while written < mapped_len {
                             let chunk_len = MMAP_WRITEBACK_CHUNK_SIZE.min(mapped_len - written);
@@ -266,18 +271,41 @@ impl MemorySetInner {
                     );
                 }
             }
-            for vpn in VPNRange::new(start_vpn, end_vpn) {
+            // 卸载交集范围内的所有页
+            for vpn in VPNRange::new(unmap_start, unmap_end) {
                 area.unmap_one(&mut self.page_table, vpn);
             }
-            let area_end_vpn = area.vpn_range.end();
-            if area_end_vpn <= end_vpn {
-                let area_size = (area_end_vpn.0 - area.vpn_range.start().0) * PAGE_SIZE;
-                self.total_mmap_size = self.total_mmap_size.saturating_sub(area_size);
+            let trimmed = (unmap_end.0 - unmap_start.0) * PAGE_SIZE;
+            self.total_mmap_size = self.total_mmap_size.saturating_sub(trimmed);
+
+            if area_start >= start_vpn && area_end <= end_vpn {
+                // 情况1：area 完全在卸载范围内 → 删除整个 area
                 self.areas.remove(idx);
+            } else if area_start < start_vpn && area_end <= end_vpn {
+                // 情况2：area 左侧伸出卸载范围 → 截断右端
+                area.vpn_range = VPNRange::new(area_start, start_vpn);
+            } else if area_start >= start_vpn && area_end > end_vpn {
+                // 情况3：area 右侧伸出卸载范围 → 截断左端
+                area.vpn_range = VPNRange::new(end_vpn, area_end);
             } else {
-                let trimmed = (end_vpn.0 - area.vpn_range.start().0) * PAGE_SIZE;
-                self.total_mmap_size = self.total_mmap_size.saturating_sub(trimmed);
-                area.vpn_range = VPNRange::new(end_vpn, area_end_vpn);
+                // 情况4：area 完全包围卸载范围 → 拆分为左右两个 area
+                // 左部 [area_start, start_vpn) 保留在原 area
+                // 右部 [end_vpn, area_end) 创建新 area
+                let mut right_area = MapArea::from_another(area);
+                right_area.vpn_range = VPNRange::new(end_vpn, area_end);
+                // 迁移属于右部的 data_frames
+                let right_keys: Vec<VirtPageNum> = area
+                    .data_frames
+                    .range(end_vpn..)
+                    .map(|(k, _)| *k)
+                    .collect();
+                for k in right_keys {
+                    if let Some(frame) = area.data_frames.remove(&k) {
+                        right_area.data_frames.insert(k, frame);
+                    }
+                }
+                area.vpn_range = VPNRange::new(area_start, start_vpn);
+                self.areas.push(right_area);
             }
             tlb_invalidate();
         }
