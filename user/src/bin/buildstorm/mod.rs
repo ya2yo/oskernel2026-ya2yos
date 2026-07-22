@@ -46,7 +46,7 @@ pub type CaseRunner = fn() -> i32;
 // `minibuild_build::run` 依赖 prepare；希望强制 fresh 路径时应选择
 // `run_minibuild_fresh`，不要只选择 `minibuild_build::run`。
 pub const SELECTED_CASE: CaseRunner = xtask_prebuild::run;
-
+#[allow(unused)]
 pub fn run_selected() -> i32 {
     SELECTED_CASE()
 }
