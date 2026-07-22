@@ -68,6 +68,7 @@
 - [fcntl11 POSIX record lock 区间语义修复](./fcntl11-record-lock.md)
 - [fcntl13 record lock EFAULT 优先级修复](./fcntl13-lock-efault-priority.md)
 - [fcntl14 POSIX record lock SEEK_CUR 与阻塞语义修复](./fcntl14-record-lock-seekcur-len.md)
+- [LTP fcntl14 rt_sigsuspend 临时信号掩码恢复时机修复](./fcntl14-sigsuspend-mask-restore.md)
 - [fcntl23 文件租约 F_SETLEASE/F_GETLEASE 修复](./fcntl23-file-lease.md)
 - [fcntl31 F_SETOWN_EX 与异步 I/O 信号修复](./fcntl31-fasync-owner-signal.md)
 - [fcntl33 文件租约 break SIGIO 通知修复](./fcntl33-lease-break-sigio.md)

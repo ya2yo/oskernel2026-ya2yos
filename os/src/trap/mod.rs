@@ -287,6 +287,13 @@ pub fn trap_return() {
         // This common point publishes the actual hart and aborts a live rseq
         // critical section before any instruction can run in user mode.
         if prepare_rseq_user_return() {
+            // rt_sigsuspend() 有 handler 时由 rt_sigreturn 恢复旧 mask。若
+            // trap return 仅消费默认/忽略信号，就没有 signal frame 可负责恢复。
+            let task = current_task().unwrap();
+            let mut task_inner = task.inner_lock();
+            if let Some(old_sig_mask) = task_inner.sigsuspend_restore_mask.take() {
+                task_inner.sig_mask = old_sig_mask;
+            }
             break;
         }
     }

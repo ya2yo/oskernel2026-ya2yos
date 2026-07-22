@@ -6555,3 +6555,34 @@ judge 重放为 20/180。QEMU 在 `cargo build -p tg-xtask` 预构建阶段被�
 `BUILDSTORM_COMPILE`，因此没有声称完整 BuildStorm 或性能项通过。`git diff --check`
 通过；RISC-V 完整回归待后续执行。详见
 [problem/loongarch-buildstorm-sparse-ext4-read-corruption.md](./problem/loongarch-buildstorm-sparse-ext4-read-corruption.md)。
+## 2026-07-22：LoongArch64 LTP fcntl14 rt_sigsuspend 临时信号掩码恢复修复
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans` 并修复 LoongArch64 LTP `fcntl14` 失败。
+
+### 分析与采纳结论
+
+`log.ans` 的 musl/glibc `fcntl14` 分别为 `passed 11 failed 129` 与 `passed 67 failed 37`。
+先审计 POSIX record lock 后确认子进程最早能观察到父锁，`F_GETLK/F_SETLK` 后续错误是父进程
+提前解锁的连锁结果。对照只读 `fcntl14.c` 的 `sighold(SIGUSR1)`、`sigpause(SIGUSR1)` 和
+`catch1()` 同步协议，并用临时 `/tmp/` 日志确认：内核已看到 pending `SIGUSR1(10)` 且
+`rt_sigsuspend` 返回 `EINTR`，但 signal frame 建立前旧 mask 又屏蔽了该信号，因而未进入
+handler。
+
+采纳以 task 级 `sigsuspend_restore_mask` 分离临时活跃 mask 与 handler 返回时应恢复的旧 mask。
+保留临时 mask 到 trap return 选择/投递信号，`setup_frame()` 将旧 mask 写入普通或
+`SA_SIGINFO` frame，并由 `rt_sigreturn()` 恢复。无 handler 的默认/忽略路径在即将返回用户态时
+兜底恢复旧 mask；不能只删除早期恢复语句，否则 signal frame 会错误保存临时 mask。
+
+### 修改与验证
+
+修改 `os/src/task/task/task.rs`、`os/src/syscall/signal.rs`、`os/src/signal/frame.rs` 和
+`os/src/trap/mod.rs`，新增本 problem 复盘及索引、开发日志和 AI 记录。测试源码、镜像未修改；
+`scripts/loongarch64.mk` 与 `user/src/bin/initproc.rs` 为维护者已有的定向测试工作区改动，保持不变。
+
+`git diff --check`、`make build-arch TARGET_ARCH=loongarch64` 和
+`make build-arch TARGET_ARCH=riscv64` 均通过。LoongArch64 QEMU 定向 `fcntl14` 的 musl/glibc
+均为 `passed 96 failed 0 broken 0`，共 192 个 `TPASS`，无 `TFAIL`、`TBROK`、panic 或
+`Pause terminated without signal SIGUSR1`。RISC-V QEMU 实际启动，但 final-2026 镜像缺少
+`fcntl14`，两个 libc 均 `execve fail!`，因此只记录 RISC-V 构建通过，不宣称其运行时回归通过。

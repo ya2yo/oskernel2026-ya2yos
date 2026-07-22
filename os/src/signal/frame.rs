@@ -45,13 +45,28 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
         });
     }
 
-    // Do not hold the task lock while faulting/COWing user pages.  Signal frame
+    // Do not hold the task lock while faulting/COWing user pages. Signal frame
     // construction only needs a snapshot; commit the updated context below.
-    let (mut trap_cx, old_sig_mask, alt_signal_stack) = {
-        let task_inner = task.inner_lock();
+    let (mut trap_cx, active_sig_mask, restore_sig_mask, alt_signal_stack) = {
+        let mut task_inner = task.inner_lock();
+        let active_sig_mask = task_inner.sig_mask;
+        // 唤醒 rt_sigsuspend() 的 handler 需要同时保留两套 mask：
+        //
+        // - `active_sig_mask` 是当前临时 mask。handler 运行时以它为基础，
+        //   再叠加 sa_mask；未设置 SA_NODEFER 时还会屏蔽 signo。
+        // - `restore_sig_mask` 是调用 rt_sigsuspend() 前的 mask。它保存到
+        //   当前 frame，并在 handler 返回时由 rt_sigreturn() 恢复。
+        //
+        // 仅由第一个 frame 通过 take() 消费恢复值；嵌套 handler 应保存外层
+        // handler 的当前 mask，不能重复使用该旧值。
+        let restore_sig_mask = task_inner
+            .sigsuspend_restore_mask
+            .take()
+            .unwrap_or(active_sig_mask);
         (
             *task_inner.trap_cx(),
-            task_inner.sig_mask,
+            active_sig_mask,
+            restore_sig_mask,
             task_inner.alt_signal_stack,
         )
     };
@@ -183,7 +198,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
         let sigset_addr = mctx_addr - size_of::<SigSet>();
         if copy_to_user(&memory_set, sigset_addr, unsafe {
             core::slice::from_raw_parts(
-                &old_sig_mask as *const SigSet as *const _,
+                &restore_sig_mask as *const SigSet as *const _,
                 core::mem::size_of::<SigSet>(),
             )
         })
@@ -229,7 +244,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
             flags: 0,
             link: 0,
             stack: alt_signal_stack,
-            sigmask: old_sig_mask,
+            sigmask: restore_sig_mask,
             __pad: [0u8; 128],
             mcontext: trap_cx.as_mctx(),
         };
@@ -307,7 +322,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
     }
     let mut task_inner = task.inner_lock();
     *task_inner.trap_cx() = trap_cx;
-    task_inner.sig_mask = old_sig_mask | new_mask;
+    task_inner.sig_mask = active_sig_mask | new_mask;
     // Each frame saves the prior stack state, so rt_sigreturn can restore an
     // SS_AUTODISARM configuration after this handler completes.
     if alt_signal_stack.is_autodisarm() {

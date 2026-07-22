@@ -1145,3 +1145,9 @@
 - **场景**：维护者提供 LoongArch64 BuildStorm 的 `unexpected reloc type 0x00dd8170` 日志，要求修复首两个环境测例和正式编译前的 Rust 动态加载失败，并在官方 Docker image 中重建 C archive。
 - **描述**：AI 对照镜像 extent、`ext4_fread()`、正式评分脚本与 judge，确认 `/root/.cargo/bin/rustup` 的 logical block 328 是 sparse hole，旧 C 代码将其与连续 run 的零 sentinel 混用，复制了紧随其后的 relocation 页面。修复将 hole 零填、限制聚合到非零连续物理块，并修复尾部 partial read；build script 也会在 C 输入新于 archive 时重建。`uname -m` 改为返回精确的小写架构名，防止 LoongArch guest 落入 RISC-V 兜底分支。官方 Docker 重建后的 archive 保持 ABI v1，QEMU 已恢复 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`；外层终止发生在 prebuild，未将完整 compile/time 标为通过。详见 [problem/loongarch-buildstorm-sparse-ext4-read-corruption.md](./problem/loongarch-buildstorm-sparse-ext4-read-corruption.md) 与 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-23 工作树）
+#### LoongArch64 LTP fcntl14 rt_sigsuspend 临时信号掩码恢复修复（7.22）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析根目录 `log.ans` 中 LoongArch64 LTP `fcntl14` 失败并完成修复。
+- **描述**：AI 对照 `fcntl14.c` 的 `sighold(SIGUSR1)`/`sigpause(SIGUSR1)` 同步流程与内核 trap return 路径，确认 record lock 的连锁失败来自 `rt_sigsuspend` 在 signal frame 建立前恢复旧 mask，令 pending `SIGUSR1` 再次被屏蔽且 handler 未执行。修复保留临时 mask 直到交付，将调用前 mask 写入 signal frame 供 `rt_sigreturn` 恢复，并在无 handler 返回路径清理状态。LoongArch64 musl/glibc `fcntl14` 均为 `passed 96 failed 0 broken 0`；RISC-V release 构建通过，但其 final-2026 镜像缺少该用例，未将 RISC-V runtime 标为通过。详见 [problem/fcntl14-sigsuspend-mask-restore.md](./problem/fcntl14-sigsuspend-mask-restore.md) 与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-22 工作树）

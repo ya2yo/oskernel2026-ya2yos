@@ -142,6 +142,10 @@ pub struct TaskControlBlockInner {
     pub vfork_wait_child: usize,
     /// 被屏蔽的信号
     pub sig_mask: SigSet,
+    /// `rt_sigsuspend()` 临时替换信号掩码时保存的调用前掩码。
+    /// 有 handler 时写入 signal frame 并由 `rt_sigreturn()` 恢复；无 handler 时由
+    /// `trap_return()` 清理，不能在 syscall 返回前恢复。
+    pub sigsuspend_restore_mask: Option<SigSet>,
     /// Per-thread alternate signal stack configured by sigaltstack(2).
     pub alt_signal_stack: SignalStack,
     /// 待处理信号集合
@@ -285,6 +289,7 @@ impl TaskControlBlock {
                 clear_child_tid: 0,
                 vfork_wait_child: 0,
                 sig_mask: SigSet::empty(),
+                sigsuspend_restore_mask: None,
                 alt_signal_stack: SignalStack::disabled(),
                 sig_pending: SigSet::empty(),
                 sig_pending_info: [None; SIG_MAX_NUM + 1],
@@ -391,6 +396,7 @@ impl TaskControlBlock {
             self.process.fd_table.close_on_exec();
         }
         task_inner.sig_mask = SigSet::empty();
+        task_inner.sigsuspend_restore_mask = None;
         task_inner.alt_signal_stack = SignalStack::disabled();
         task_inner.sig_pending = SigSet::empty();
         task_inner.sig_pending_info = [None; SIG_MAX_NUM + 1];
@@ -762,6 +768,7 @@ impl TaskControlBlock {
                 clear_child_tid,
                 vfork_wait_child: 0,
                 sig_mask: child_sig_mask,
+                sigsuspend_restore_mask: None,
                 alt_signal_stack: child_alt_signal_stack,
                 sig_pending: SigSet::empty(),
                 sig_pending_info: [None; SIG_MAX_NUM + 1],

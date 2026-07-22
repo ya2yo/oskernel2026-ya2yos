@@ -336,7 +336,6 @@ pub fn sys_rt_sigtimedwait(
 /// mask 用于屏蔽特定的信号，直到有不同的新信号传入
 /// 参考 https://man7.org/linux/man-pages/man2/rt_sigsuspend.2.html
 pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
-    // TODO(ZMY): 暂停线程
     // debug!("[sys_rt_sigsuspend] mask is {:?}", mask);
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
@@ -356,12 +355,22 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
     drop(task_inner);
     loop {
         let task = current_task().unwrap();
-        let mut task_inner = task.inner_lock();
-        let pending = task_inner.sig_pending.difference(task_inner.sig_mask); // 修复bug, 改为判断待处理信号和掩码信号的不同，
+        let task_inner = task.inner_lock();
+        let pending = task_inner.sig_pending.difference(task_inner.sig_mask);
         if !pending.is_empty() {
-            // 发生中断
-            // debug!("[sys_rt_sigsuspend] pending is {:?}", pending);
-            task_inner.sig_mask = old_mask;
+            // 先检查 pending signal 是否是可忽略的（SIG_IGN 或默认忽略动作，
+            // 例如默认的 SIGCHLD）。可忽略信号不应导致 sigsuspend 返回 EINTR。
+            drop(task_inner);
+            drop(task);
+            if crate::signal::consume_ignorable_pending_signal_for_current_task() {
+                continue;
+            }
+            let task = current_task().unwrap();
+            let mut task_inner = task.inner_lock();
+            // 保留临时 mask，确保 trap_return 仍能选中刚刚唤醒 sigsuspend
+            // 的信号。handler 路径由 setup_frame 将旧 mask 写入 signal frame，
+            // 无 handler 路径则由 trap_return 恢复。
+            task_inner.sigsuspend_restore_mask = Some(old_mask);
             return Err(SysErrNo::EINTR);
         }
         drop(task_inner);
