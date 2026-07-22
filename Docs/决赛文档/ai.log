@@ -6188,3 +6188,44 @@ RISC-V release 构建均通过。LoongArch64 下执行
 `passed 1 failed 0 broken 0`，并正常 `shutdown!`。未运行 RISC-V QEMU 行为回归。
 
 全仓 `cargo fmt --check` 仍只报告未触及的 `os/src/arch/loongarch64/qemu/mod.rs` 模块声明排序。
+
+---
+
+## 2026-07-22：LoongArch CAgent 动态链接器 LSX 未启用 panic 修复
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans`，修复 LoongArch64 运行 CAgent 时直接 panic 的问题；修复后的实际运行结果以根目录 `log.ans` 为准。
+
+### 分析与采纳结论
+
+AI 先按 `panic`、`TFAIL`、`TBROK` 和 CAgent 标记过滤原始日志，确认 PID 2 的
+`execve("/bin/bash", "cagent_testcode.sh")` 已返回成功，Bash 和
+`ld-linux-loongarch-lp64d.so.1` 已被打开，随后才出现 `Unknown to Trap type! 0x10` 与
+`Unsupported trap Unknown` panic。`stval=0x15000177d4` 减去解释器固定基址
+`0x1500000000` 为 `0x177d4`；用 debugfs 从 final-2026 镜像只读导出解释器、再用
+LoongArch objdump 反汇编，精确对应 `vld $vr2,$r12,16(0x10)`。
+
+本地 Linux 7.0 定义 ecode `0x10` 为 `EXCCODE_LSXDIS`。Ya2yOS 的每 hart CSR 初始化仅开启
+FPE，未开启 SXE；依赖的 `estat::cause()` 又只解码到 `0x0f`，因此 LSX disabled 被降级为
+`Trap::Unknown` 并 panic。将该异常改为 SIGILL 不能让 Bash 继续，所以采纳实际启用 LSX 的
+方案。
+
+AI 同时审计了 trap context，确认旧实现只保存 32 x 64-bit FPR。仅加 `set_sxe(true)` 会在
+定时抢占、信号或 CAgent 并发任务切换时丢失 LSX 高 64 位。最终扩展 `FloatRegs` 为 32 x
+128-bit，16-byte 对齐；trap 汇编用 `vst/vld` 成对保存 32 个 `$vr` 寄存器，并重新计算
+FCSR/FCC、origin_a0、PRMD 和 kernel stack 偏移。没有启用 ASXE，因为 LASX 需独立的
+256-bit 上下文支持。
+
+### 修改与验证
+
+修改 `os/src/arch/loongarch64/qemu/cpu.rs`、
+`os/src/arch/loongarch64/qemu/context/regs.rs` 和
+`os/src/arch/loongarch64/qemu/asms/trap.S`；新增
+`Docs/决赛文档/problem/loongarch-cagent-lsx-disabled-panic.md`，并更新 problem 索引、开发日志和
+AI 协作记录。
+
+`make loongarch64-build` 和 `git diff --check` 通过。受沙箱 `/var/tmp` 只读限制，AI 发起的
+QEMU 不具备有效运行结果；维护者随后提供的根目录 `log.ans` 是有效 LoongArch64 CAgent 回归：
+`GROUP START cagent` 至 `GROUP END cagent` 和 `shutdown!` 均出现，未见 panic、Unknown trap、
+SXD 或 ASXD。10 个 CAgent 业务任务为 6 项 pass、4 项 reject，reject 未被表述为已通过。

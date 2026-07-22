@@ -1,5 +1,6 @@
 # Problem 复盘索引
 
+- [LoongArch CAgent 动态链接器 LSX 未启用导致 panic](./loongarch-cagent-lsx-disabled-panic.md)
 - [LTP kill07 SIGKILL 快速退出的 waitpid 状态编码](./kill07-sigkill-fast-exit-wait-status.md)
 - [lmbench musl/glibc 连续运行的 ext4 EEXIST 析构自锁](./lmbench-ext4-eexist-drop-self-deadlock.md)
 - [BusyBox hwclock RTC ioctl 与目录 rename 失败](./busybox-hwclock-rename.md)

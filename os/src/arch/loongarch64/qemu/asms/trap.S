@@ -1,4 +1,4 @@
-FP_START = 32
+LSX_START = 16
 .altmacro
 .macro SAVE_GP n
     st.d $r\n, $sp, \n*8
@@ -6,11 +6,11 @@ FP_START = 32
 .macro LOAD_GP n
     ld.d $r\n, $sp, \n*8
 .endm
-.macro SAVE_FP n, m
-    fst.d $f\n, $sp, \m*8
+.macro SAVE_LSX n, m
+    vst $vr\n, $sp, \m*16
 .endm
-.macro LOAD_FP n, m
-    fld.d $f\n, $sp, \m*8
+.macro LOAD_LSX n, m
+    vld $vr\n, $sp, \m*16
 .endm
     .section .text.trampoline
     .globl __alltraps
@@ -59,9 +59,12 @@ __alltraps:
     .endr
     .set n, 0
 
-    .set m, FP_START
+    # GeneralRegs is 32 x 8 bytes.  FloatRegs then stores 32 x 128-bit
+    # LSX registers, followed by FCSR/FCC; keep these offsets in sync with
+    # context/regs.rs and context/trap_context.rs.
+    .set m, LSX_START
     .rept 32
-        SAVE_FP %n, %m
+        SAVE_LSX %n, %m
         .set n, n+1
         .set m, m+1
     .endr
@@ -69,7 +72,7 @@ __alltraps:
     # we can use t0/t1/t2 freely, because they have been saved in TrapContext
     # save FCSR
     movfcsr2gr $t0, $fcsr0
-    st.w $t0, $sp, 64*8
+    st.w $t0, $sp, 96*8
 
     # save FCC
     movcf2gr $t0, $fcc7
@@ -87,19 +90,19 @@ __alltraps:
     movcf2gr $t0, $fcc1
     slli.w $t0, $t0, 1
     movcf2gr $t0, $fcc0
-    st.b $t0, $sp, 64*8+4
+    st.b $t0, $sp, 96*8+4
 
     # save other general purpose registers
-    st.d $a0, $sp, 65*8
+    st.d $a0, $sp, 98*8
     csrrd $t0, CSR_PRMD
     csrrd $t1, CSR_ERA
-    st.d $t0, $sp, 66*8
+    st.d $t0, $sp, 99*8
     st.d $t1, $sp, 0
     # read user stack from SAVE and save it in TrapContext
     csrrd $t2, CSR_SAVE0
     st.d $t2, $sp, 3*8
     # move to kernel_sp
-    ld.d $sp, $sp, 67*8
+    ld.d $sp, $sp, 100*8
     invtlb 0x0, $zero, $zero
     bl trap_entry   # 应该前往trap_entry，而后者是一个常数
 
@@ -110,10 +113,10 @@ __return_to_user:
     csrwr  $a0, CSR_SAVE0
     # now sp points to TrapContext in user space, start restoring based on it
     # restore FCSR
-    ld.w $t0, $sp, 64*8
+    ld.w $t0, $sp, 96*8
     movgr2fcsr $fcsr0, $t0
     # restore FCC
-    ld.b $t0, $sp, 64*8+4
+    ld.b $t0, $sp, 96*8+4
     movgr2cf $fcc0, $t0
     srli.w $t0, $t0, 1
     movgr2cf $fcc1, $t0
@@ -130,7 +133,7 @@ __return_to_user:
     srli.w $t0, $t0, 1
     movgr2cf $fcc7, $t0
     # restore CSR_PRMD/CSR_ERA
-    ld.d $t0, $sp, 66*8
+    ld.d $t0, $sp, 99*8
     ld.d $t1, $sp, 0
     csrwr $t0, CSR_PRMD
     csrwr $t1, CSR_ERA
@@ -143,9 +146,9 @@ __return_to_user:
         .set n, n+1
     .endr
     .set n, 0
-    .set m, FP_START
+    .set m, LSX_START
     .rept 32
-        LOAD_FP %n, %m
+        LOAD_LSX %n, %m
         .set n, n+1
         .set m, m+1
     .endr

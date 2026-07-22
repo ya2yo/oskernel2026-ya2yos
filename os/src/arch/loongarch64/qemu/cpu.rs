@@ -133,8 +133,11 @@ pub fn init_csr_regs() {
     prmd::set_pie(true);
     prmd::set_pplv(CpuMode::Ring3);
 
-    // 开启浮点功能
+    // The glibc dynamic loader in the LoongArch test image uses LSX `vld`/
+    // `vst` instructions before Bash starts.  LSX requires both the scalar
+    // floating-point and SIMD enable bits on every hart.
     euen::set_fpe(true);
+    euen::set_sxe(true);
 
     asid::set_asid_width(0);
 

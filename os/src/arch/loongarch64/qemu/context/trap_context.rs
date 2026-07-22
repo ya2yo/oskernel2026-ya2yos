@@ -38,6 +38,21 @@ pub struct TrapContext {
     /// The current sp to be recovered on next entry into kernel space.
     pub kernel_stack: usize,
 }
+
+// `trap.S` saves the user context with fixed byte offsets. Keep the Rust
+// layout checked at compile time so a future field change cannot silently
+// corrupt LSX state or the return frame.
+const _: () = {
+    assert!(core::mem::size_of::<usize>() == 8);
+    assert!(core::mem::size_of::<GeneralRegs>() == 32 * 8);
+    assert!(core::mem::align_of::<FloatRegs>() == 16);
+    assert!(core::mem::size_of::<FloatRegs>() == 66 * 8);
+    assert!(core::mem::offset_of!(TrapContext, fp) == 32 * 8);
+    assert!(core::mem::offset_of!(TrapContext, origin_a0) == 98 * 8);
+    assert!(core::mem::offset_of!(TrapContext, sstatus) == 99 * 8);
+    assert!(core::mem::offset_of!(TrapContext, kernel_stack) == 100 * 8);
+};
+
 impl TrapContext {
     pub fn app_init_context(entry: usize, sp: usize, kernel_sp: usize) -> Self {
         let pr_md = prmd::read();

@@ -1076,3 +1076,10 @@
 - **场景**：维护者要求分析根目录 `log.ans` 最后的 `kill07` 失败并完成内核修复与验证。
 - **描述**：确认 `kill(pid, SIGKILL)` 已成功投递并由父进程回收，失败来自 blocked child 经 scheduler/future 快速退出后缺少 `termination_signal`，使 `waitpid()` 将内部 137 误编码为普通 `exit(137)`。修复仅在用户态 `kill/tkill/tgkill` 携带 `SigInfo` 的不可忽略 SIGKILL 投递时记录进程终止原因，内部 execve sibling 清理信号不污染共享 wait status；同时统一 `block_on()` 与协作调度的 group-exit/SIGKILL 退出门。LoongArch64 单跑 `kill07` 为 `passed 1 failed 0 broken 0` 并正常关机，LoongArch64 与 RISC-V release 构建通过。详见 [problem/kill07-sigkill-fast-exit-wait-status.md](./problem/kill07-sigkill-fast-exit-wait-status.md) 与 `ai.log` 2026-07-22 条目。
 - **关联 commit**：尚未提交（2026-07-22 工作树）
+
+#### LoongArch CAgent 动态链接器 LSX 未启用 panic 修复（7.22）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析根目录 `log.ans` 中 LoongArch64 CAgent 在 Bash 启动后立即触发的内核 panic。
+- **描述**：AI 从 `execve` 成功、动态解释器加载和 ecode `0x10` 的日志链路出发，使用本地 Linux 7.0 异常定义与 final-2026 镜像中 `ld-linux` 的只读反汇编，确认故障指令是 LSX `vld`，根因是每个 hart 仅设置 FPE、未设置 EUEN.SXE。修复启用 SXE，并将用户 trap/signal/clone 上下文由 32 x 64-bit FPR 扩展为完整 32 x 128-bit LSX 状态，汇编以 `vst/vld` 保存恢复。LoongArch64 release 构建通过；维护者提供的 `log.ans` 到达 CAgent `GROUP END` 和 `shutdown!`，无 panic、Unknown trap、SXD 或 ASXD。10 个业务任务中 6 项 pass、4 项 reject，未将 reject 误报为通过。详见 [problem/loongarch-cagent-lsx-disabled-panic.md](./problem/loongarch-cagent-lsx-disabled-panic.md) 与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-22 工作树）

@@ -38,11 +38,15 @@ pub struct GeneralRegs {
     pub s8: usize,
 }
 
-/// FP registers
-#[repr(C)]
+/// Scalar FPRs and LSX vector registers share the same physical register file.
+///
+/// Each LSX register is 128 bits.  Keeping both words in the trap context is
+/// required once EUEN.SXE is enabled: saving only the scalar low 64 bits would
+/// corrupt a preempted process's vector state on the next return to user mode.
+#[repr(C, align(16))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FloatRegs {
-    pub f: [usize; 32],
+    pub f: [[usize; 2]; 32],
     pub fcsr: u32, // 浮点控制状态寄存器
     pub fcc: u8,   // 浮点条件标志寄存器集合（一共有8个，每个标志寄存器只需1bit）
 }
