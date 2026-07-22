@@ -216,10 +216,43 @@ case "$(uname -m 2>/dev/null)" in
   *)           AXTGT=riscv64gc-unknown-linux-musl ;;
 esac
 cd /work/tgoskits 2>/dev/null || exit 1
-rm -rf "target/$AXTGT"
+export CARGO_TARGET_DIR=/work/tgoskits/target
+RENAME_PROBE=/work/buildstorm-rename-artifact-probe
+rm -rf "$RENAME_PROBE"
+mkdir -p "$RENAME_PROBE/rmeta" || exit 1
+printf 'metadata-payload-123456789\n' > "$RENAME_PROBE/rmeta/full.rmeta"
+mv "$RENAME_PROBE/rmeta/full.rmeta" "$RENAME_PROBE/final.rmeta"
+if [ ! -e "$RENAME_PROBE/rmeta/full.rmeta" ] \
+   && [ "$(cat "$RENAME_PROBE/final.rmeta")" = "metadata-payload-123456789" ]; then
+    echo "BUILDSTORM_DEBUG_XTASK_PREBUILD rename_publish=PASS"
+else
+    echo "BUILDSTORM_DEBUG_XTASK_PREBUILD rename_publish=FAIL"
+    exit 1
+fi
+rm -rf "$CARGO_TARGET_DIR"
 echo "----- pre-build tg-xtask (untimed) -----"
-cargo build -p tg-xtask 2>&1 || true
+CARGO_LOG=/work/buildstorm-xtask-prebuild-vv.log
+cargo build -vv -p tg-xtask >"$CARGO_LOG" 2>&1
+CARGO_RC=$?
+awk '/unicode-ident|unicode_ident|E0463|could not compile/ { print }' "$CARGO_LOG"
+echo "BUILDSTORM_DEBUG_XTASK_PREBUILD cargo_rc=$CARGO_RC"
+
+PROBE_SRC=/work/unicode-ident-probe.rs
+PROBE_OUT=/work/unicode-ident-probe
+printf '%s\n' 'extern crate unicode_ident; fn main() { assert!(unicode_ident::is_xid_start('\''a'\'')); }' > "$PROBE_SRC"
+FOUND_ARTIFACT=0
+for ARTIFACT in "$CARGO_TARGET_DIR"/debug/deps/libunicode_ident-*.rmeta "$CARGO_TARGET_DIR"/debug/deps/libunicode_ident-*.rlib; do
+    [ -f "$ARTIFACT" ] || continue
+    FOUND_ARTIFACT=1
+    echo "BUILDSTORM_DEBUG_XTASK_PREBUILD artifact=$ARTIFACT"
+    ls -ln "$ARTIFACT"
+    wc -c < "$ARTIFACT"
+    rustc --edition=2021 "$PROBE_SRC" --extern "unicode_ident=$ARTIFACT" -o "$PROBE_OUT"
+    echo "BUILDSTORM_DEBUG_XTASK_PREBUILD probe_rc=$? artifact=$ARTIFACT"
+done
+[ "$FOUND_ARTIFACT" -eq 1 ] || echo "BUILDSTORM_DEBUG_XTASK_PREBUILD artifact=missing"
 echo "BUILDSTORM_DEBUG_XTASK_PREBUILD done"
+exit "$CARGO_RC"
 "#;
 
 const BUILDSTORM_XTASK_BUILD_DEBUG_SH: &str = r#"#!/bin/sh

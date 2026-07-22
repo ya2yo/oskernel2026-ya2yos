@@ -1,6 +1,7 @@
 # Problem 复盘索引
 
 - [BuildStorm Rustc mremap(MAYMOVE) 扩容丢失数据](./buildstorm-mremap-data-loss.md)
+- [BuildStorm Rustc artifact rename 后 lwext4 write-back 缓存重建旧临时文件](./buildstorm-rustc-artifact-rename-writeback.md)
 - [LoongArch 批量 LTP Rust 内核堆耗尽与 CMA 扩容](./loongarch-ltp-heap-cma-reclaim.md)
 - [LoongArch CAgent 动态链接器 LSX 未启用导致 panic](./loongarch-cagent-lsx-disabled-panic.md)
 - [LTP kill07 SIGKILL 快速退出的 waitpid 状态编码](./kill07-sigkill-fast-exit-wait-status.md)

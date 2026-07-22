@@ -6318,3 +6318,39 @@ AI 协作记录及内存设计文档。
 没有原 Rustc parser error 或 `could not compile unicode-ident`。外层 180 秒上限发生在 Cargo
 继续扫描 workspace 时，故未将完整 Cargo/BuildStorm 标记为通过。probe 已在验证后从
 initfiles 诊断脚本删除，不属于最终 diff。
+
+---
+
+## 2026-07-22：BuildStorm Rustc artifact rename/write-back 缓存修复
+
+### 用户需求
+
+维护者要求继续分析根目录 `log.ans`，完成修复，并参考
+`83c981c7073ffa9f8c6923db6c0ded9b7eae9f81`。
+
+### 分析与采纳结论
+
+AI 对比 `83c981c7` 的 `mremap` parser error 与当前日志，确认新的实际失败是
+`proc-macro2` 编译时 `E0463: can't find crate for unicode_ident`。沿 Rustc artifact 发布、
+VFS rename 和 lwext4 write-back cache 路径审查后，确认 cache 以 pathname 为键：旧实现先
+rename、后关闭旧 `Ext4File`，关闭时仍会按已不存在的临时 pathname 回写，并在 `ENOENT` 分支
+用 `O_CREAT | O_TRUNC` 重建旧文件。该时序会破坏 Rustc 的临时 artifact 到最终路径发布。
+
+审查同时发现 rename 前新增的 flush/discard 不能把 short write 视为成功；`ext4_fwrite()`
+返回的写入字节数不足时必须保留 cache 并拒绝 rename。还需在 rename 成功后才清除 source 与
+destination 的孤立 pathname cache，避免后续 FIFO eviction 覆盖最终 artifact，且不影响失败
+rename 的目标数据。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs`、`os/src/fs/ext4_lw/inode.rs` 和
+`os/src/fs/kernel_fs_ops/initfiles.rs`：新增完整写回后丢弃路径 cache 的 helper、成功 rename
+后的 source/destination state 清理，以及 short write 的 `EIO` 检查；诊断脚本保留 Cargo
+真实返回码并加入 `.rmeta` rename 发布与 artifact probe。
+
+`git diff --check`、`make build-arch TARGET_ARCH=riscv64` 和
+`make build-arch TARGET_ARCH=loongarch64` 均通过。最终补丁的 RISC-V QEMU 快速路径输出
+`BUILDSTORM_DEBUG_XTASK_PREBUILD rename_publish=PASS`，并通过既有 `sigaltstack`、`rseq`
+探针。guest 之后进入完整 Cargo，但未得到 `cargo_rc` 或 artifact Rustc probe；此前 900 秒
+运行同样在 Cargo 阶段超时，因此未将完整 Cargo/BuildStorm 或 `E0463` 完全消失标记为通过。
+详见 `Docs/决赛文档/problem/buildstorm-rustc-artifact-rename-writeback.md`。

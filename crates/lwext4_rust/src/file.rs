@@ -600,6 +600,16 @@ impl Ext4File {
         Ok(0)
     }
 
+    /// Persist and discard delayed write-back state before changing this path's
+    /// directory entry.  Keeping a dirty cache under the old pathname after a
+    /// rename can otherwise recreate that pathname on a later close or eviction.
+    pub fn flush_and_discard_path_cache(&mut self) -> Result<usize, i32> {
+        let path = String::from((*self.file_path).to_str().unwrap());
+        self.file_cache_flush()?;
+        discard_path_cache(&path);
+        Ok(0)
+    }
+
     pub fn set_time(
         &mut self,
         atime: Option<u64>,
@@ -1067,6 +1077,13 @@ pub fn remove_cache(file_path: String) {
     CACHE_TABLE.lock().remove(&file_path);
 }
 
+/// Drop every global write-back bookkeeping entry for a pathname without
+/// writing it back.  Callers must persist dirty data first when it still
+/// belongs to a live directory entry.
+pub fn discard_path_cache(file_path: &str) {
+    remove_file_cache_state(file_path);
+}
+
 /// Remove every global write-back bookkeeping entry for a pathname.
 ///
 /// The guards are deliberately released between tables so cache removal never
@@ -1221,6 +1238,13 @@ fn write_back_cache_entry(path: &str, cache: &Arc<RwLock<VFileCache>>) -> Result
     if r != EOK as i32 {
         error!("write_back_cache ext4_fclose: {}, rc = {}", path, r);
         return Err(r);
+    }
+    if rw_count != cache_writer.size {
+        error!(
+            "write_back_cache short write: {}, expected {}, got {}",
+            path, cache_writer.size, rw_count
+        );
+        return Err(EIO as i32);
     }
     Ok(rw_count)
 }

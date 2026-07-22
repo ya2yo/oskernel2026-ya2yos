@@ -24,7 +24,7 @@ use crate::{
 use alloc::{format, string::ToString, vec};
 use alloc::{sync::Arc, vec::Vec};
 
-use lwext4_rust::file::OsDirent;
+use lwext4_rust::file::{discard_path_cache, OsDirent};
 
 /// 防止符号链接死循环的最大跳转次数。
 const MAX_LOOPTIMES: usize = 5;
@@ -236,21 +236,44 @@ impl Inode for Ext4Inode {
     /// 成功后把新路径加入 alias，并将内部 `Ext4File` 切换到新路径，减少后续元数据操作
     /// 依赖 fallback 恢复路径的次数。
     fn rename(&self, path: &str, new_path: &str) -> SyscallRet {
+        if path == new_path {
+            return Ok(0);
+        }
+
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let types = inner.f.types();
-        let ret = inner
+        let active_path = inner.f.path().into_string().unwrap();
+
+        // Rustc publishes rmeta/rlib files by renaming a populated temporary
+        // path.  Flush and detach its path-keyed write-back cache while the
+        // source still exists; otherwise a later close can recreate the temp
+        // file and leave the published destination stale.
+        inner
+            .f
+            .flush_and_discard_path_cache()
+            .map_err(SysErrNo::from)?;
+        inner.f.file_close().map_err(SysErrNo::from)?;
+        inner
             .f
             .file_rename(path, new_path)
-            .map_or(Err(SysErrNo::ENOENT), |_| Ok(0));
-        if ret.is_ok() {
-            if inner.aliases.iter().all(|alias| alias != new_path) {
-                inner.aliases.push(new_path.to_string());
-            }
-            let _ = inner.f.file_close();
-            inner.f = Ext4File::new(new_path, types);
+            .map_err(SysErrNo::from)?;
+
+        // A successful directory-entry move must not leave an orphaned
+        // write-back entry for either pathname.  In particular, stale target
+        // state could otherwise overwrite Rustc's newly published artifact.
+        discard_path_cache(path);
+        discard_path_cache(new_path);
+
+        inner.aliases.retain(|alias| alias.as_str() != path);
+        if inner.aliases.iter().all(|alias| alias != new_path) {
+            inner.aliases.push(new_path.to_string());
         }
-        ret
+        inner.f = Ext4File::new(new_path, types);
+        FILE_PAGE_CACHE.invalidate_path(&active_path);
+        FILE_PAGE_CACHE.invalidate_path(path);
+        FILE_PAGE_CACHE.invalidate_path(new_path);
+        Ok(0)
     }
 
     /// 创建硬链接：`new_path` 指向 `old_path` 相同的 inode。

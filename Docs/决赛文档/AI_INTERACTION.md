@@ -1097,3 +1097,17 @@
 - **场景**：维护者要求分析根目录 `log.ans` 中 Rustc 编译 `unicode-ident` 的 parser error 并修复。
 - **描述**：AI 通过镜像/宿主源码哈希、guest 原文件和副本的直接 Rustc 对照，排除依赖损坏；随后将源码读取、匿名私有 mmap、两次 `mremap(MREMAP_MAYMOVE)` 和 parser 失败按 PID 串联，确认旧实现先 `munmap` 再建立空 VMA，导致 Rust allocator 扩容丢失已读内容。修复在同一 `MemorySet` 写锁内先为 private VMA 的每个 resident 页固定源 `FrameTracker`、分配和复制目标页，全部成功后才撤销旧 VMA；失败仅回滚目标。等长原址、私有文件 lazy 页和 metadata 均明确保留。RISC-V probe 中原文件和副本的 Rustc 均返回 0，未再出现 parser error；外层 180 秒在 Cargo 扫描 workspace 时到期，未将完整 BuildStorm 标为通过。详见 [problem/buildstorm-mremap-data-loss.md](./problem/buildstorm-mremap-data-loss.md) 与 `ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-22 工作树）
+
+#### BuildStorm Rustc artifact rename/write-back 缓存修复（7.22）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求继续分析 `log.ans` 中 `unicode_ident` 的 `E0463`，并参考前序
+  `mremap` 修复完成后续 BuildStorm 编译失败的定位与修复。
+- **描述**：AI 区分了 `83c981c7` 已修复的 Rustc parser error 与本次 artifact 发布失败，
+  确认 lwext4 在 rename 后按旧 pathname 回写脏 cache 会重建临时文件。修复将 active source
+  的完整回写/丢弃置于 rename 前，在成功 rename 后丢弃 source/destination 的遗留
+  write-back state，并将 short write 转为 `EIO` 以阻止不完整 artifact 发布。双架构构建及
+  RISC-V rename 发布探针结果按实际记录；完整 Cargo 结论不超出本轮运行证据。详见
+  [problem/buildstorm-rustc-artifact-rename-writeback.md](./problem/buildstorm-rustc-artifact-rename-writeback.md)
+  与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-22 工作树）
