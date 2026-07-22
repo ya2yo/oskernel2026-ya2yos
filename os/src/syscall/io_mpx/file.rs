@@ -4,6 +4,7 @@ use log::{debug, warn};
 use crate::{
     fs::{File, OSFile, OpenFlags, StMode, SEEK_CUR, SEEK_SET},
     mm::{copy_from_user, copy_to_user, probe_user_write, user_buffer_from_kernel, UserBuffer},
+    signal::{send_signal_to_thread_group, SigSet, SIGXFSZ},
     syscall::options::Iovec,
     task::current_task,
     timer::get_time_ms,
@@ -147,6 +148,22 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         f
     }; // 锁在此处释放
 
+    // ---- 阶段 0.5: 检查 RLIMIT_FSIZE ---- //
+    {
+        let task = current_task().unwrap();
+        let rlimit_fsize = task.process.get_rlimit_fsize();
+        if rlimit_fsize.rlim_cur != usize::MAX {
+            let pos = f.lseek(0, SEEK_CUR)?;
+            if pos >= rlimit_fsize.rlim_cur {
+                let _ = send_signal_to_thread_group(
+                    task.process.pid,
+                    SigSet::SIGXFSZ,
+                );
+                return Err(SysErrNo::EFBIG);
+            }
+        }
+    }
+
     // ---- 阶段 1: 分片写 ----
     let mut total_written: usize = 0;
     let mut user_ptr = buf as usize;
@@ -280,6 +297,21 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     };
     if !file.writable() {
         return Err(SysErrNo::EBADF);
+    }
+
+    // ---- 检查 RLIMIT_FSIZE ---- //
+    {
+        let rlimit_fsize = task.process.get_rlimit_fsize();
+        if rlimit_fsize.rlim_cur != usize::MAX {
+            let pos = file.lseek(0, SEEK_CUR)?;
+            if pos >= rlimit_fsize.rlim_cur {
+                let _ = send_signal_to_thread_group(
+                    task.process.pid,
+                    SigSet::SIGXFSZ,
+                );
+                return Err(SysErrNo::EFBIG);
+            }
+        }
     }
 
     // Linux treats an empty iovec array as a successful no-op.  The fd is

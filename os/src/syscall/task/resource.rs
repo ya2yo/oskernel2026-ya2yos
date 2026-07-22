@@ -102,6 +102,7 @@ pub fn sys_setpriority(which: i32, who: usize, prio: i32) -> SyscallRet {
 // getrlimit(163) / setrlimit(164)
 // ---------------------------------------------------------------------------
 
+pub const RLIMIT_FSIZE: i32 = 1;
 pub const RLIMIT_NOFILE: i32 = 7;
 pub const RLIMIT_STACK: i32 = 3;
 /// 表示"无限制"的特殊值（与 Linux RLIM64_INFINITY 一致）
@@ -110,6 +111,10 @@ pub const RLIM_INFINITY: usize = usize::MAX;
 /// 根据资源类型返回默认的 rlimit 值
 pub fn default_rlimit(resource: i32) -> RLimit {
     match resource {
+        RLIMIT_FSIZE => RLimit {
+            rlim_cur: RLIM_INFINITY,
+            rlim_max: RLIM_INFINITY,
+        },
         RLIMIT_NOFILE => RLimit {
             rlim_cur: 128,
             rlim_max: 256,
@@ -145,6 +150,8 @@ pub fn sys_getrlimit(resource: i32, rlim: usize) -> SyscallRet {
             rlim_cur: fd_table.get_soft_limit(),
             rlim_max: fd_table.get_hard_limit(),
         }
+    } else if resource == RLIMIT_FSIZE {
+        proc_inner.get_rlimit_fsize()
     } else {
         default_rlimit(resource)
     };
@@ -191,6 +198,8 @@ pub fn sys_setrlimit(resource: i32, rlim: usize) -> SyscallRet {
     if resource == RLIMIT_NOFILE {
         let fd_table = &proc_inner.fd_table;
         fd_table.set_limit(limit.rlim_cur, limit.rlim_max);
+    } else if resource == RLIMIT_FSIZE {
+        proc_inner.set_rlimit_fsize(limit);
     }
     // 其他资源类型目前静默接受，不实际存储限制
 
@@ -217,6 +226,8 @@ pub fn sys_prlimit(
                 rlim_cur: fd_table.get_soft_limit(),
                 rlim_max: fd_table.get_hard_limit(),
             }
+        } else if resource as i32 == RLIMIT_FSIZE {
+            inner.get_rlimit_fsize()
         } else {
             default_rlimit(resource as i32)
         };
@@ -243,6 +254,8 @@ pub fn sys_prlimit(
         }
         if resource as i32 == RLIMIT_NOFILE {
             fd_table.set_limit(limit.rlim_cur, limit.rlim_max);
+        } else if resource as i32 == RLIMIT_FSIZE {
+            inner.set_rlimit_fsize(limit);
         }
     }
 

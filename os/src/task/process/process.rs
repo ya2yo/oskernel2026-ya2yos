@@ -14,6 +14,7 @@ use crate::{
     fs::{remove_proc_dir_and_file, FSInfo, FdTable},
     mm::MemorySet,
     signal::{send_signal_to_thread_group, SigSet, SigTable, SIGCHLD},
+    syscall::RLimit,
     task::{TaskControlBlock, TidHandle},
     utils::{get_abs_path, is_abs_path, ResourceSlot, SysErrNo},
 };
@@ -38,6 +39,8 @@ pub struct Process {
     /// are spread across harts by pid.
     home_hart: usize,
     pub meta: Mutex<ProcessMeta>,
+    /// RLIMIT_FSIZE 文件大小限制。写路径在持有文件锁之前读取此值，因此需要独立 Mutex。
+    pub rlimit_fsize: Mutex<RLimit>,
 }
 // 我们需要向编译器保证Process含有这样的特性……这样真的好吗？
 unsafe impl Send for Process {}
@@ -202,6 +205,10 @@ impl Process {
                 comm: String::from("initproc"),
                 personality: 0,
             }),
+            rlimit_fsize: Mutex::new(RLimit {
+                rlim_cur: usize::MAX,
+                rlim_max: usize::MAX,
+            }),
         });
         if parent_pid != 0 {
             if let Some(parent_process) = Self::get_process_arc_by_pid(parent_pid) {
@@ -218,6 +225,14 @@ impl Process {
     /// 获取元数据的锁
     pub fn meta_lock(&self) -> MutexGuard<'_, ProcessMeta> {
         self.meta.lock()
+    }
+    /// 获取当前进程的 RLIMIT_FSIZE 限制。
+    pub fn get_rlimit_fsize(&self) -> RLimit {
+        *self.rlimit_fsize.lock()
+    }
+    /// 设置当前进程的 RLIMIT_FSIZE 限制。
+    pub fn set_rlimit_fsize(&self, limit: RLimit) {
+        *self.rlimit_fsize.lock() = limit;
     }
     /// 获取父进程的 pid（0 表示无父进程，例如 initproc）
     pub fn ppid(&self) -> usize {
