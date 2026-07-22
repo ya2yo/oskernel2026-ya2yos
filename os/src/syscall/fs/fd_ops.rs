@@ -295,7 +295,7 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
             let proc = &process;
             let memory_set = proc.memory_set_arc();
             let comm = proc.meta_lock().comm.clone();
-            refresh_proc_stat(pid, ppid, state, &comm, &memory_set)?;
+            refresh_proc_stat(pid, ppid, process.pgid(), state, &comm, &memory_set)?;
         }
     }
     if let Some(pid) = parse_proc_pid_file(&abs_path, "status") {

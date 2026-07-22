@@ -92,15 +92,16 @@ VmSwap:\t       0 kB\n",
     )
 }
 
-fn format_stat(pid: usize, ppid: usize, state: char, comm: &str, memory_set: &MemorySet) -> String {
+fn format_stat(pid: usize, ppid: usize, pgid: usize, state: char, comm: &str, memory_set: &MemorySet) -> String {
     let vsize = memory_set.virtual_size_kb() * 1024;
     let rss_pages = memory_set.resident_size_kb() * 1024 / PAGE_SIZE;
     format!(
-        "{} ({}) {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+        "{} ({}) {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
         pid,
         comm,
         state,
         ppid,
+        pgid,
         get_ticks(),
         vsize,
         rss_pages
@@ -110,6 +111,7 @@ fn format_stat(pid: usize, ppid: usize, state: char, comm: &str, memory_set: &Me
 pub fn create_proc_dir_and_file(
     pid: usize,
     ppid: usize,
+    pgid: usize,
     comm: &str,
     memory_set: &MemorySet,
     real_uid: u32,
@@ -136,7 +138,7 @@ pub fn create_proc_dir_and_file(
     )
     .unwrap()
     .file()?;
-    let mut statinfo = format_stat(pid, ppid, 'S', comm, memory_set);
+    let mut statinfo = format_stat(pid, ppid, pgid, 'S', comm, memory_set);
     write_kernel_file(statfile.as_ref(), &mut statinfo)?;
     statfile.inode.sync();
 
@@ -217,6 +219,7 @@ pub fn refresh_proc_maps(pid: usize, memory_set: &MemorySet) -> Result<(), SysEr
 pub fn refresh_proc_stat(
     pid: usize,
     ppid: usize,
+    pgid: usize,
     state: char,
     comm: &str,
     memory_set: &MemorySet,
@@ -227,7 +230,7 @@ pub fn refresh_proc_stat(
         DEFAULT_FILE_MODE,
     )?
     .file()?;
-    let mut statinfo = format_stat(pid, ppid, state, comm, memory_set);
+    let mut statinfo = format_stat(pid, ppid, pgid, state, comm, memory_set);
     write_kernel_file(statfile.as_ref(), &mut statinfo)?;
     statfile.inode.sync();
     Ok(())

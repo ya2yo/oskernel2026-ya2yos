@@ -317,7 +317,7 @@ impl TaskControlBlock {
         let trap_cx = task_inner.trap_cx();
         *trap_cx = TrapContext::app_init_context(entry_point, ustack_top, kernel_stack_top);
         drop(task_inner);
-        create_proc_dir_and_file(process.pid, 0, "initproc", &memory_set, 0, 0, 0, 0, 0, 0)
+        create_proc_dir_and_file(process.pid, 0, process.pgid(), "initproc", &memory_set, 0, 0, 0, 0, 0, 0)
             .expect("create initproc proc files");
         arc_task
     }
@@ -871,6 +871,7 @@ impl TaskControlBlock {
             create_proc_dir_and_file(
                 child_pid,
                 child_ppid,
+                child_proc.pgid(),
                 &child_comm,
                 &child_mm,
                 child_real_uid,
