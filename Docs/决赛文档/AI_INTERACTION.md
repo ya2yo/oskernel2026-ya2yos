@@ -1124,3 +1124,10 @@
 - **场景**：维护者要求继续修复 LoongArch64 CAgent 的三个 reject，并要求测试脚本、镜像和 testcase 源码只读。
 - **描述**：AI 以单项 runner、TCP trace 和 smoltcp 源码确认大 HTTP 请求经过 IPv4 分片与重组后，发送端却把整个 8192 B fragment buffer 纳入 TCP pseudo-header length/checksum，导致接收端按真实 datagram 长度校验失败。修复仅为 IPv4 loopback socket 设置 4096 B MSS，保持 Router/物理网卡 1500 B MTU，并在 smoltcp 首片 emit 时限制 checksum buffer 到 `total_ip_len`。同时串行排空单一 fragmenter、防止 IPv4 首分片伪造 SYN 进入监听表，并加入实际分片-重组-TCP checksum 回归测试。最终 LoongArch64 完整 CAgent 十项全部通过，RISC-V release 构建通过；临时诊断入口已恢复。详见 [problem/cagent-loopback-tcp-fragmentation.md](./problem/cagent-loopback-tcp-fragmentation.md) 与 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-22 工作树）
+
+#### smoltcp 本地 crate 迁移（7.22）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求将内核定制的 smoltcp 从 `os/vendor/` 移至根目录 `crates/`。
+- **描述**：审计 Cargo patch、离线 vendor 配置和构建脚本后，将完整 crate 移至 `crates/smoltcp`，并仅把 `os/Cargo.toml` 的本地 patch 路径改为 `../crates/smoltcp`。保留 `os/dotcargo/config` 的其余离线依赖解析，不改写历史问题复盘，也未触碰 CAgent 脚本、测试镜像、testcase 源码或维护者已有的 `initproc` 改动。smoltcp 定向离线单测及 RISC-V、LoongArch64 release 构建均通过。
+- **关联 commit**：尚未提交（2026-07-22 工作树）

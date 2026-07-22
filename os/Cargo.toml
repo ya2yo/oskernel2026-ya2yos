@@ -50,7 +50,7 @@ cfg-if = { version = "1.0.0" }
 
 [patch.crates-io]
 cty = { path = "../crates/cty" }
-smoltcp = { path = "vendor/smoltcp" }
+smoltcp = { path = "../crates/smoltcp" }
 
 [features]
 default = ["net", "scheduler-cfs"]

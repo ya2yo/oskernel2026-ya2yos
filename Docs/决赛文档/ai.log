@@ -6439,3 +6439,29 @@ fragmenter 未排空时被其他 socket 覆盖的风险、TX 满时的 poll 空�
 `python3 scripts/judge_cagent-glibc.py` 和 `make build-arch TARGET_ARCH=riscv64` 均通过。
 最终 LoongArch64 判题结果十项均为 `pass: 1/1`，无 `Invalid JSON`、`No choices in response`、
 `TFAIL`、`TBROK` 或 panic。修复过程中完整 RISC-V CAgent 十项也均通过。
+
+---
+
+## 2026-07-22：smoltcp 本地 crate 迁移
+
+### 用户需求
+
+维护者要求将项目内定制的 smoltcp 从 `os/vendor/` 移动到根目录 `crates/` 下。
+
+### 分析与采纳结论
+
+审计确认 `os/Cargo.toml` 的 `[patch.crates-io]` 是唯一生效的源码路径引用；保持该 patch
+模式可以让内核依赖继续以版本 `0.13.1` 解析，同时稳定覆盖为项目内的定制实现。`os/dotcargo/config`
+的 `vendor` source replacement 仍供其余离线注册表依赖使用，因此不随 smoltcp 移动修改。
+`os/Cargo.lock` 不记录本地 path 的物理位置，无需人工编辑。既有问题复盘记录的是修复发生时的
+目录快照，未批量改写历史路径。
+
+### 修改与验证
+
+完整移动 `os/vendor/smoltcp` 到 `crates/smoltcp`，保留源码、本地补丁、回归测试、Cargo 元数据、
+许可证和上游元数据；将 `[patch.crates-io].smoltcp` 改为 `../crates/smoltcp`，并更新仓库布局说明。
+未触碰测试脚本、镜像、testcase 源码或维护者已有的 `user/src/bin/initproc.rs` 改动。
+
+`cargo test --offline test_tcp_tx_fragmentation_checksum_after_reassembly`、
+`make build-arch TARGET_ARCH=loongarch64` 和 `make build-arch TARGET_ARCH=riscv64` 均通过；
+两种内核构建日志均确认从 `crates/smoltcp` 编译 smoltcp，`os/Cargo.lock` 保持无改动。

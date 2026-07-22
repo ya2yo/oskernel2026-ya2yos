@@ -14,6 +14,7 @@ commands, paths, and errors in their original language.
 
 - `os/`: kernel implementation.
 - `user/`: user-space programs and test entry points.
+- `crates/`: shared local Rust crates, including the customized `smoltcp`.
 - `scripts/`: architecture-specific build and QEMU settings, plus repository
   maintenance and test helper scripts.
 - `Docs/`: project documentation, development logs, and problem writeups.
