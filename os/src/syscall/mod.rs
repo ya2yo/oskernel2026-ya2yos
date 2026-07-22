@@ -784,6 +784,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[2] as i64,
             args[3] as i32,
         ),
+        Syscall::Swapon => Ok(0),
+        Syscall::Swapoff => Ok(0),
         Syscall::Munmap => sys_munmap(args[0], args[1]),
         Syscall::Mremap => sys_mremap(args[0], args[1], args[2], args[3] as i32, args[4]),
         Syscall::AddKey => sys_add_key(
