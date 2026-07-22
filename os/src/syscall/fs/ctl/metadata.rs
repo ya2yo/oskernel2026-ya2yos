@@ -218,7 +218,7 @@ fn do_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallR
     let proc = &task.process;
     let memory_set = proc.memory_set_arc();
 
-    if (flags as isize) < 0 {
+    if (flags as i32) < 0 {
         return Err(SysErrNo::EINVAL);
     }
 
@@ -232,7 +232,7 @@ fn do_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallR
 
     let path = read_user_cstr(&memory_set, path)?;
 
-    if path.len() > MAX_PATH_LEN {
+    if path.len() >= MAX_PATH_LEN {
         return Err(SysErrNo::ENAMETOOLONG);
     }
 
@@ -290,18 +290,14 @@ fn do_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallR
 
 /// 实现 `fchmodat(2)`，按 dirfd/path/flags 修改文件权限位。
 ///
-/// 仅支持 `AT_SYMLINK_NOFOLLOW`，不支持 `AT_EMPTY_PATH`（该标志由 `fchmodat2` 提供）。
+/// 支持 `AT_SYMLINK_NOFOLLOW` 和 `AT_EMPTY_PATH`；实际逻辑委托给 `do_fchmodat()`。
 /// 参考 https://www.man7.org/linux/man-pages/man2/fchmodat.2.html
 pub fn sys_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
-    if flags & AT_EMPTY_PATH as u32 != 0 {
-        return Err(SysErrNo::EINVAL);
-    }
     do_fchmodat(dirfd, path, mode, flags)
 }
 
-/// 实现 `fchmodat2(2)`（Linux 6.6+），是 `fchmodat(2)` 的扩展版本。
+/// 实现 `fchmodat2(2)`（Linux 6.6+ syscall 452），与 `fchmodat(2)` 语义一致。
 ///
-/// 与 `fchmodat(2)` 相比，额外支持 `AT_EMPTY_PATH` 标志，允许对 fd 本身操作。
 /// 参考 https://www.man7.org/linux/man-pages/man2/fchmodat2.2.html
 pub fn sys_fchmodat2(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
     do_fchmodat(dirfd, path, mode, flags)
