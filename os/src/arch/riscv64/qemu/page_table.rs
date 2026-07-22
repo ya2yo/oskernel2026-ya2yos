@@ -20,18 +20,6 @@ pub fn get_token_from_regs() -> usize {
     satp::read().bits() & ((1 << 44) - 1)
 }
 
-// bitflags! {
-//     // 页表项标志位
-//     pub struct PTEFlags: usize {
-//         const VALID = 1 << 0;       // 有效位
-//         const READABLE = 1 << 1;    // 可读
-//         const WRITEABLE = 1 << 2;   // 可写
-//         const EXECUTABLE = 1 << 3;  // 可执行
-//         const USER = 1 << 4;        // 用户态访问
-//         const COW = 1 << 9;         // 写时复制
-//     }
-// }
-
 bitflags! {
     pub struct RVPTEFlags: usize {
         const VALID = 1 << 0;
@@ -89,18 +77,6 @@ impl From<RVPTEFlags> for MapPermission {
         perm
     }
 }
-
-// impl From<RVPTEFlags> for PTEFlags {
-//     fn from(flags: RVPTEFlags) -> Self {
-//         PTEFlags::from_bits_truncate(flags.bits as usize)
-//     }
-// }
-
-// impl From<PTEFlags> for RVPTEFlags {
-//     fn from(flags: PTEFlags) -> Self {
-//         RVPTEFlags::from_bits_truncate(flags.bits as usize)
-//     }
-// }
 
 #[derive(Copy, Clone)]
 #[repr(C)]

@@ -26,18 +26,6 @@ pub fn get_token_from_regs() -> usize {
     low >> 12
 }
 
-// bitflags! {
-//     // 页表项标志位
-//     pub struct PTEFlags: usize {
-//         const VALID = 1 << 0;       // 有效位
-//         const READABLE = 1 << 1;    // 可读
-//         const WRITEABLE = 1 << 2;   // 可写
-//         const EXECUTABLE = 1 << 3;  // 可执行
-//         const USER = 1 << 4;        // 用户态访问
-//         const COW = 1 << 9;         // 写时复制
-//     }
-// }
-
 bitflags! {
     /// Page Table Entry flags
     pub struct LAPTEFlags: usize {
@@ -114,56 +102,6 @@ impl From<LAPTEFlags> for MapPermission {
         perm
     }
 }
-
-// impl From<LAPTEFlags> for PTEFlags {
-//     fn from(flags: LAPTEFlags) -> Self {
-//         let mut result = PTEFlags::empty();
-//         if flags.contains(LAPTEFlags::VALID) {
-//             result.insert(PTEFlags::VALID);
-//         }
-//         if !flags.contains(LAPTEFlags::UNREADEABLE) {
-//             result.insert(PTEFlags::READABLE);
-//         }
-//         if flags.contains(LAPTEFlags::WRITEABLE) {
-//             result.insert(PTEFlags::WRITEABLE);
-//         }
-//         if !flags.contains(LAPTEFlags::UNEXECUTABLE) {
-//             result.insert(PTEFlags::EXECUTABLE);
-//         }
-//         if flags.contains(LAPTEFlags::PLV3) {
-//             result.insert(PTEFlags::USER);
-//         }
-//         if flags.contains(LAPTEFlags::COW) {
-//             result.insert(PTEFlags::COW);
-//         }
-//         result
-//     }
-// }
-
-// impl From<PTEFlags> for LAPTEFlags {
-//     fn from(flags: PTEFlags) -> Self {
-//         let mut result = LAPTEFlags::MAT_CC | LAPTEFlags::P;
-//         if flags.contains(PTEFlags::VALID) {
-//             result.insert(LAPTEFlags::VALID);
-//         }
-//         if !flags.contains(PTEFlags::READABLE) {
-//             result.insert(LAPTEFlags::UNREADEABLE);
-//         }
-//         if flags.contains(PTEFlags::WRITEABLE) {
-//             result.insert(LAPTEFlags::WRITEABLE);
-//         }
-//         if !flags.contains(PTEFlags::EXECUTABLE) {
-//             result.insert(LAPTEFlags::UNEXECUTABLE);
-//         }
-//         if flags.contains(PTEFlags::USER) {
-//             result.insert(LAPTEFlags::PLV3);
-//         }
-//         if flags.contains(PTEFlags::COW) {
-//             result.insert(LAPTEFlags::COW);
-//         }
-//         result
-//     }
-// }
 
 /// Page Table Entry
 #[derive(Copy, Clone)]
