@@ -108,7 +108,7 @@ VmSwap is not zero
 
 `getrusage03` 会真实触碰 100MiB / 300MiB 内存。当前 256MiB QEMU 内存不够，因此同步调整：
 
-- `make_scripts/riscv64.mk` / `make_scripts/loongarch64.mk`：`MEMORY_SIZE = 512M`
+- `scripts/riscv64.mk` / `scripts/loongarch64.mk`：`MEMORY_SIZE = 512M`
 - 两架构 `memory_layout.rs`：`PHYSICAL_MEMORY_SIZE = 512MiB`
 - `USER_HEAP_SIZE` / `MAX_BRK_SIZE` / `MAX_MMAP_SIZE` 调整到 512MiB
 - `sys_mmap` 去掉 64MiB 单次限制，改为按总 mmap 上限判断
@@ -126,7 +126,7 @@ VmSwap is not zero
 | `os/src/task/process/process.rs` | 新增进程资源快照，wait 回收时删除 proc |
 | `os/src/task/mod.rs` | 退出时冻结资源快照 |
 | `os/src/syscall/task/wait.rs` | wait 后累计子进程资源 |
-| `make_scripts/*.mk` / `memory_layout.rs` | 512MiB 运行与内核内存布局 |
+| `scripts/*.mk` / `memory_layout.rs` | 512MiB 运行与内核内存布局 |
 
 ### 验证
 
@@ -210,7 +210,7 @@ getrusage03.c:112: TPASS: post_wait.children ~= 400MB
 
 `getrusage03` 后续阶段会真实触碰 500MiB。512MiB 配置在扣除内核和前序运行开销后余量不足，因此调整：
 
-- `make_scripts/riscv64.mk`：`MEMORY_SIZE := 1G`
+- `scripts/riscv64.mk`：`MEMORY_SIZE := 1G`
 - `os/src/arch/riscv64/qemu/memory_layout.rs`：`PHYSICAL_MEMORY_SIZE = 0x4000_0000`
 
 ### 验证结果

@@ -11,14 +11,14 @@ all: riscv64-build loongarch64-build
 export PROJECT_ROOT := $(CURDIR)
 
 ifeq ($(TARGET_ARCH), riscv64)
-	include make_scripts/riscv64.mk
+	include scripts/riscv64.mk
 else ifeq ($(TARGET_ARCH), loongarch64)
-	include make_scripts/loongarch64.mk
+	include scripts/loongarch64.mk
 else
 	$(error Unsupported TARGET_ARCH: $(TARGET_ARCH))
 endif
 
-include make_scripts/user.mk
+include scripts/user.mk
 
 
 riscv64-build: 
@@ -48,11 +48,11 @@ build-arch: set_env_arch
 # 为特定架构设置环境
 set_env_arch:
 ifeq ($(TARGET_ARCH), riscv64)
-	$(eval include make_scripts/riscv64.mk)
-	$(eval include make_scripts/user.mk)
+	$(eval include scripts/riscv64.mk)
+	$(eval include scripts/user.mk)
 else ifeq ($(TARGET_ARCH), loongarch64)
-	$(eval include make_scripts/loongarch64.mk)
-	$(eval include make_scripts/user.mk)
+	$(eval include scripts/loongarch64.mk)
+	$(eval include scripts/user.mk)
 else
 	$(error Unsupported TARGET_ARCH: $(TARGET_ARCH))
 endif

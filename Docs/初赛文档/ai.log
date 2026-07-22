@@ -897,7 +897,7 @@ VmSwap is not zero
 | `os/src/task/process/process.rs` | 新增 `ProcessUsage` 退出快照；wait 回收时删除 proc 文件 |
 | `os/src/task/mod.rs` | 最后一个线程退出时冻结自身与已 wait 子进程资源 |
 | `os/src/syscall/task/wait.rs` | wait 成功后累计子进程 `utime/stime/cutime/cstime/cmaxrss`；按 pid 删除 children 记录 |
-| `make_scripts/*.mk` / `memory_layout.rs` | QEMU 与内核物理内存调整到 512MiB，brk/mmap/heap 上限同步放宽 |
+| `scripts/*.mk` / `memory_layout.rs` | QEMU 与内核物理内存调整到 512MiB，brk/mmap/heap 上限同步放宽 |
 | `os/src/syscall/mm/mmap.rs` | 去掉 64MiB 单次限制，改为按总 mmap 上限判断 |
 
 ### 文档补充
@@ -1017,7 +1017,7 @@ getrusage03.c:112: TPASS: post_wait.children ~= 400MB
 | `os/src/task/manager.rs` | 新增 `check_all_task_timers()` 扫描所有任务 itimer |
 | `os/src/trap/mod.rs` | timer interrupt 中调用 `check_all_task_timers()` |
 | `os/src/task/task/task.rs` | itimer 到期时投递 SIGALRM；目标任务 blocked 时调用 `interrupt()` 唤醒 `block_on(interruptible(...))` |
-| `make_scripts/riscv64.mk` / `os/src/arch/riscv64/qemu/memory_layout.rs` | RISC-V QEMU 与内核物理内存同步提升到 1GiB |
+| `scripts/riscv64.mk` / `os/src/arch/riscv64/qemu/memory_layout.rs` | RISC-V QEMU 与内核物理内存同步提升到 1GiB |
 | `Docs/初赛文档/problem/getrusage03-rusage-proc-status.md` | 追加本轮 zombie stat、timer timeout 与 500MiB 剩余问题复盘 |
 
 ### 验证
@@ -1067,7 +1067,7 @@ getrusage03.c:66: TPASS: child.children == 0
 
 AI 重新检查 RISC-V 修复记录 `0dc1f49`，确认其核心是：
 
-- `make_scripts/riscv64.mk`：`MEMORY_SIZE` 从 512MiB 提升到 1GiB
+- `scripts/riscv64.mk`：`MEMORY_SIZE` 从 512MiB 提升到 1GiB
 - `os/src/arch/riscv64/qemu/memory_layout.rs`：`PHYSICAL_MEMORY_SIZE` 提升到 1GiB
 
 该方案在 RISC-V 上成立，是因为 RISC-V QEMU `virt` 的 RAM 从 `0x80000000` 开始连续增长。
@@ -1085,7 +1085,7 @@ AI 重新检查 RISC-V 修复记录 `0dc1f49`，确认其核心是：
 
 | 文件 | 修改 |
 |------|------|
-| `make_scripts/loongarch64.mk` | 将 QEMU `MEMORY_SIZE` 调整为 `1G` |
+| `scripts/loongarch64.mk` | 将 QEMU `MEMORY_SIZE` 调整为 `1G` |
 | `os/src/arch/loongarch64/qemu/memory_layout.rs` | 新增 `PHYSICAL_MEMORY_RANGES`，描述低 256MiB + 高 768MiB 两段 RAM |
 | `os/src/mm/frame_alloc/buddy_cma.rs` | LoongArch 按 range 多次 `add_to_heap` 初始化 CMA；非 LoongArch 保持原连续 `init(left, size)` 路径 |
 

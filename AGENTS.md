@@ -14,7 +14,8 @@ commands, paths, and errors in their original language.
 
 - `os/`: kernel implementation.
 - `user/`: user-space programs and test entry points.
-- `make_scripts/`: architecture-specific build and QEMU settings.
+- `scripts/`: architecture-specific build and QEMU settings, plus repository
+  maintenance and test helper scripts.
 - `Docs/`: project documentation, development logs, and problem writeups.
 - `Docs/决赛文档/problem/`: detailed bug and testcase analysis records.
 - `agent-skills/shared/`: source of truth for repo-specific agent skills.

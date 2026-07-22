@@ -7,8 +7,8 @@ Extracts two kinds of information from the log:
   2. LTP test output messages (e.g. tst_device.c:100: TINFO: ...)
 
 Usage:
-  python3 analyze_logs.py log.ans
-  python3 analyze_logs.py log.ans | less
+  python3 scripts/analyze_logs.py log.ans
+  python3 scripts/analyze_logs.py log.ans | less
 """
 
 import re
@@ -156,7 +156,7 @@ def analyze_log(file_path):
 
 def main():
     if len(sys.argv) < 2:
-        print("usage: python3 analyze_logs.py <logfile>", file=sys.stderr)
+        print("usage: python3 scripts/analyze_logs.py <logfile>", file=sys.stderr)
         sys.exit(1)
 
     analyze_log(file_path=sys.argv[1])

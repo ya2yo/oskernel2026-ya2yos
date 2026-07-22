@@ -29,7 +29,7 @@ monitor `info qtree` 检查同一组启动参数，确认块设备在 `.0` / `0x
 
 - 将 RISC-V 网卡驱动的 `VIRTIO_NET_BASE` 改为 `0x10008000`。
 - 将 RISC-V 内核页表的 VirtIO 网卡 MMIO 映射同步改为 `0x10008000`。
-- 保持 `make_scripts/riscv64.mk` 的评测机 QEMU 参数不变。
+- 保持 `scripts/riscv64.mk` 的评测机 QEMU 参数不变。
 
 这个最小修复适用于当前 QEMU `virt` 自动分配规则。若评测环境未来调整 VirtIO 设备数或顺序，
 应解析 boot DTB 的 `virtio,mmio` 节点来发现网卡，而不是继续依赖固定槽位。

@@ -38,7 +38,7 @@ SBI `hart_start` 需要内核物理入口，而 `_start` 是高半内核虚拟�
 
 ## 涉及文件
 
-- `make_scripts/riscv64.mk`
+- `scripts/riscv64.mk`
 - `os/src/config.rs`
 - `os/src/main.rs`
 - `os/src/arch/riscv64/qemu/cpu.rs`

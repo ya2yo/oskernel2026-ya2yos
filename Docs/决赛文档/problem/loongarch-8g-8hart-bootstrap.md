@@ -3,7 +3,7 @@
 ## 背景
 
 评测机的 LoongArch QEMU 使用 `-m 8G -smp 8`。仅把
-`make_scripts/loongarch64.mk` 的启动参数改为该值不足以启用内核侧的内存和多核能力：内核原先仍按
+`scripts/loongarch64.mk` 的启动参数改为该值不足以启用内核侧的内存和多核能力：内核原先仍按
 2GiB、单 hart 建模。
 
 ## 现象

@@ -32,7 +32,7 @@ to:   0x9000000020000000
 
 RISC-V QEMU `virt` 的 RAM 从 `0x80000000` 开始连续增长。因此 RISC-V 修复只需要：
 
-- `make_scripts/riscv64.mk`：`MEMORY_SIZE := 1G`
+- `scripts/riscv64.mk`：`MEMORY_SIZE := 1G`
 - `os/src/arch/riscv64/qemu/memory_layout.rs`：`PHYSICAL_MEMORY_SIZE = 0x4000_0000`
 
 LoongArch QEMU `virt` 不同。实测设备树内存节点显示：
@@ -54,7 +54,7 @@ RISC-V 没有这个问题，是因为 RISC-V 的 1GiB RAM 在当前 QEMU 参数�
 
 #### 1. LoongArch QEMU 内存提升到 1GiB
 
-`make_scripts/loongarch64.mk`：
+`scripts/loongarch64.mk`：
 
 ```make
 MEMORY_SIZE := 1G
@@ -85,7 +85,7 @@ pub const PHYSICAL_MEMORY_RANGES: &[(usize, usize)] =
 
 | 文件 | 修改内容 |
 |------|----------|
-| `make_scripts/loongarch64.mk` | QEMU 内存从 512MiB 提升到 1GiB |
+| `scripts/loongarch64.mk` | QEMU 内存从 512MiB 提升到 1GiB |
 | `os/src/arch/loongarch64/qemu/memory_layout.rs` | 新增 `PHYSICAL_MEMORY_RANGES` 描述两段 RAM |
 | `os/src/mm/frame_alloc/buddy_cma.rs` | LoongArch 使用分段 RAM 初始化 CMA，非 LoongArch 保持连续逻辑 |
 

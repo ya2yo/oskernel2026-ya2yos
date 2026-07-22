@@ -4153,7 +4153,7 @@ PCI/MMIO hole，不能当作连续 RAM。GDB 在 `handle_alloc_error` 断点取�
 
 | 文件 | 修改 |
 | --- | --- |
-| `make_scripts/loongarch64.mk` | QEMU 内存上限从 1GiB 改为 2GiB |
+| `scripts/loongarch64.mk` | QEMU 内存上限从 1GiB 改为 2GiB |
 | `os/src/arch/loongarch64/qemu/memory_layout.rs` | 2GiB 分段 RAM 表与 128MiB LoongArch 静态堆 |
 | `os/src/net/unix.rs` | AF_UNIX 有界队列、阻塞写端和 `write_poll` 唤醒 |
 | `Docs/决赛文档/problem/loongarch-unix-queue-oom.md` | 根因、物理布局和验证复盘 |
@@ -5621,7 +5621,7 @@ RAM 的后 7GiB 区间会产生 4GiB block，但 upstream 0.6.0 只有 32 个 fr
 ### 修改与验证
 
 修改 `os/src/arch/riscv64/qemu/memory_layout.rs` 与 `os/src/drivers/mod.rs`；未改动
-`make_scripts/riscv64.mk`。`make TARGET_ARCH=riscv64 build-arch` 通过。真实 RISC-V QEMU
+`scripts/riscv64.mk`。`make TARGET_ARCH=riscv64 build-arch` 通过。真实 RISC-V QEMU
 启动日志包含 `net::init...Initialize network subsystem...`，且不再包含
 `No usable VirtIO Net MMIO device` 或 `No network device found`；后续用户态网络服务收到 HTTP
 请求。完整测试运行由 120 秒 timeout 截止，未作为全量评测通过结论。
@@ -6004,7 +6004,7 @@ syscall 分发没有策略钩子。采纳线程级 `SeccompState`，在 task clo
 
 ### 用户需求
 
-维护者要求将 `make_scripts/loongarch64.mk` 的评测机 QEMU 配置扩展为 8 核、8GiB，并保留
+维护者要求将 `scripts/loongarch64.mk` 的评测机 QEMU 配置扩展为 8 核、8GiB，并保留
 `-snapshot` 方便本地测试；随后指出不能只改启动脚本，必须同步修改内核代码。
 
 ### 分析与采纳结论
@@ -6023,7 +6023,7 @@ glibc basic 回归稳定出现 `free(): invalid pointer`，该展示性改动已
 
 ### 修改与验证
 
-- `make_scripts/loongarch64.mk` 使用 `-m 8G -smp 8` 并保留 `-snapshot`。
+- `scripts/loongarch64.mk` 使用 `-m 8G -smp 8` 并保留 `-snapshot`。
 - LoongArch 内存布局纳管 `[0, 0x1000_0000)` 与
   `[0x8000_0000, 0x2_7000_0000)`，不把 MMIO hole 加入 CMA。
 - 实现 LoongArch AP 的 mailbox/IPI 启动，并让运行期 hart ID 直接读取 CPUID CSR。

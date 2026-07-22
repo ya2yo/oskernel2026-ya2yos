@@ -105,7 +105,7 @@ LoongArch 在启用多 hart 前仍保留旧实现，因此单核时代没有暴�
 - `Docs/决赛文档/ai.log`
 - `Docs/决赛文档/AI_INTERACTION.md`
 
-维护者已有的 `Makefile`、`make_scripts/loongarch64.mk` 和 `user/src/bin/initproc.rs` 修改只用于
+维护者已有的 `Makefile`、`scripts/loongarch64.mk` 和 `user/src/bin/initproc.rs` 修改只用于
 定义当前 8 核复现环境，本次没有回退或重写这些改动。
 
 ## 验证

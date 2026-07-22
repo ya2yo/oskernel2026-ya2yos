@@ -10,8 +10,8 @@
 不是失败依据，因此会被忽略。
 
 Usage:
-    python3 py_scripts/extract_failed_tests.py loongarch.ans
-    python3 py_scripts/extract_failed_tests.py --details loongarch.ans
+    python3 scripts/extract_failed_tests.py loongarch.ans
+    python3 scripts/extract_failed_tests.py --details loongarch.ans
 """
 
 from __future__ import annotations

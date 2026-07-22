@@ -77,7 +77,7 @@ RISC-V QEMU `virt` 在 `-m 2G` 时的 DTB 是一段连续 RAM：
 
 ### 2GiB 分段物理 RAM
 
-- `make_scripts/loongarch64.mk` 将 QEMU `-m` 从 `1G` 改为 `2G`。
+- `scripts/loongarch64.mk` 将 QEMU `-m` 从 `1G` 改为 `2G`。
 - `PHYSICAL_MEMORY_RANGES` 更新为
   `[(0x0000_0000, 0x1000_0000), (0x8000_0000, 0x7000_0000)]`，总计 2GiB。
 - 保持两段范围通过同一个 CMA `LockedHeap` 逻辑合并，不分配 PCI/MMIO hole。
@@ -97,7 +97,7 @@ RISC-V QEMU `virt` 在 `-m 2G` 时的 DTB 是一段连续 RAM：
 
 ### RISC-V 连续 2GiB 与两阶段 CMA
 
-- `make_scripts/riscv64.mk` 和 RISC-V 内存布局同步到 QEMU `virt` 的
+- `scripts/riscv64.mk` 和 RISC-V 内存布局同步到 QEMU `virt` 的
   `[0x80000000, 0x100000000)` 连续 2GiB RAM。
 - 启动早期 CMA 只加入内核镜像之后到 `0xc0000000` 的可见范围；建立并激活完整内核页表后，
   再将 `[0xc0000000, 0x100000000)` 通过同一个 `CMA_ALLOCATOR.add_to_heap()` 纳入。因此最终
@@ -111,9 +111,9 @@ RISC-V QEMU `virt` 在 `-m 2G` 时的 DTB 是一段连续 RAM：
 
 | 文件 | 修改 |
 | --- | --- |
-| `make_scripts/loongarch64.mk` | LoongArch QEMU 内存上限改为 2GiB |
+| `scripts/loongarch64.mk` | LoongArch QEMU 内存上限改为 2GiB |
 | `os/src/arch/loongarch64/qemu/memory_layout.rs` | 更新真实分段 RAM 表，总物理内存和静态内核堆大小 |
-| `make_scripts/riscv64.mk` | RISC-V QEMU 内存上限改为 2GiB |
+| `scripts/riscv64.mk` | RISC-V QEMU 内存上限改为 2GiB |
 | `os/src/arch/riscv64/qemu/memory_layout.rs` | RISC-V 连续 2GiB RAM 与 1GiB bootstrap 映射边界 |
 | `os/src/arch/riscv64/qemu/page_table.rs`、`os/src/mm/map_area.rs` | 内核物理直接映射的 Sv39 2MiB/1GiB leaf PTE |
 | `os/src/mm/frame_alloc/buddy_cma.rs`、`os/src/mm/mod.rs` | RISC-V CMA 启动早期/页表激活后的两阶段初始化 |
