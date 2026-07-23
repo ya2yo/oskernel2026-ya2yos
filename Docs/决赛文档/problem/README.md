@@ -1,5 +1,6 @@
 # Problem 复盘索引
 
+- [BuildStorm Rustc 长 argv 截断与 RISC-V 空闲轮询](./buildstorm-execve-argv-truncation.md)
 - [LoongArch BuildStorm 稀疏 EXT4 文件读取破坏动态链接数据](./loongarch-buildstorm-sparse-ext4-read-corruption.md)
 - [BuildStorm 全量运行误用诊断标记导致评分器 0 分](./buildstorm-full-run-marker-contract.md)
 - [LTP lseek11 ext4 SEEK_DATA/SEEK_HOLE 与稀疏文件语义修复](./lseek11-ext4-seek-data-hole-sparse-write.md)

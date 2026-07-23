@@ -1145,6 +1145,7 @@
 - **场景**：维护者提供 LoongArch64 BuildStorm 的 `unexpected reloc type 0x00dd8170` 日志，要求修复首两个环境测例和正式编译前的 Rust 动态加载失败，并在官方 Docker image 中重建 C archive。
 - **描述**：AI 对照镜像 extent、`ext4_fread()`、正式评分脚本与 judge，确认 `/root/.cargo/bin/rustup` 的 logical block 328 是 sparse hole，旧 C 代码将其与连续 run 的零 sentinel 混用，复制了紧随其后的 relocation 页面。修复将 hole 零填、限制聚合到非零连续物理块，并修复尾部 partial read；build script 也会在 C 输入新于 archive 时重建。`uname -m` 改为返回精确的小写架构名，防止 LoongArch guest 落入 RISC-V 兜底分支。官方 Docker 重建后的 archive 保持 ABI v1，QEMU 已恢复 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`；外层终止发生在 prebuild，未将完整 compile/time 标为通过。详见 [problem/loongarch-buildstorm-sparse-ext4-read-corruption.md](./problem/loongarch-buildstorm-sparse-ext4-read-corruption.md) 与 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-23 工作树）
+
 #### LoongArch64 LTP fcntl14 rt_sigsuspend 临时信号掩码恢复修复（7.22）
 
 - **工具/模型**：Codex (GPT-5)
@@ -1158,4 +1159,11 @@
 - **场景**：维护者要求依据 Docker 构建运行后的 `log.ans` 持续修复 LoongArch64 LTP `lseek11`。
 - **描述**：AI 对照 `lseek11` 的 block-size 二分探测、sparse write 和 EOF 扩展序列，确认 seek 映射本身修通后，block 0 数据仍被 bcache 与 direct payload I/O 的双副本覆盖；临时 `ftruncate01` 复现 grow 后旧字节未清零。修复补齐 Linux `SEEK_DATA/SEEK_HOLE` 的 VFS/lwext4 路径、extent-aware sparse write/read、inode 级 whole-file cache 禁用和 C rebuild 依赖，并将 `ftruncate` retained partial block 的 zero 操作统一到 direct I/O。LoongArch64 的 musl/glibc `lseek11` 均为 `passed 15 failed 0 broken 0`，临时 `ftruncate01` 两侧均通过后已移除入口；双架构 release 构建通过。详见 [problem/lseek11-ext4-seek-data-hole-sparse-write.md](./problem/lseek11-ext4-seek-data-hole-sparse-write.md) 与 `ai.log` 2026-07-23 条目。
 - **补充验证**：最终复审补齐 sparse inode 首次打开的 flush-then-disable、`O_TRUNC` 丢弃旧 cache、未打开 unlink 的 policy 回收，以及 `ftruncate` 错误路径的单一 mount 解锁；收口后重新通过 LoongArch64/RISC-V release 构建，LoongArch64 musl/glibc `lseek11` 仍均为 `passed 15 failed 0 broken 0` 并正常关机。
+- **关联 commit**：尚未提交（2026-07-23 工作树）
+
+#### BuildStorm Rustc 长 argv 截断与 RISC-V idle 轮询修复（7.23）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析根目录 `log.ans` 的 BuildStorm `pre-build tg-xtask` 编译失败和长期低吞吐，并让 `initproc` 仅运行该定向测例。
+- **描述**：AI 确认 Rustc 的长 `--check-cfg` 被 `execve` 误用的 256 B pathname 读取接口截断，导致 `E0765`。修复将 `argv/envp` 改为有上限的原始字节读取，预先构造可失败的新用户栈；RISC-V 空闲调度改为 one-shot timer + WFI，LoongArch 保持 polling。`initproc` 选择显式单作业诊断入口并保留 case 返回状态，默认并发和正式 BuildStorm 路径未改。双架构构建通过，独占的根目录 `16.ans` 已越过原错误位置；完整 446 单元和正式性能评分未宣称通过。详见 [problem/buildstorm-execve-argv-truncation.md](./problem/buildstorm-execve-argv-truncation.md) 与 `ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-23 工作树）

@@ -15,6 +15,7 @@
 //! | `xtask_clean_target::run` | 清理交叉 target | `/work/tgoskits` 存在 |
 //! | `rename_publish::run` | `.rmeta` 临时文件 rename 发布 | `/work` 可写 |
 //! | `xtask_prebuild::run` | 非计时 `cargo build -p tg-xtask` | `/work/tgoskits` 与 Cargo 缓存 |
+//! | `xtask_prebuild::run_serial` | 单作业 prebuild 争用诊断 | 与默认 prebuild 相同 |
 //! | `unicode_artifact::run` | `unicode_ident` artifact 的 `rustc --extern` | prebuild 已产出 artifact |
 //! | `xtask_build::run` | 计时 `cargo xtask arceos build` | target、工具链和较长运行窗口 |
 //!
@@ -46,7 +47,7 @@ pub type CaseRunner = fn() -> i32;
 //
 // `minibuild_build::run` 依赖 prepare；希望强制 fresh 路径时应选择
 // `run_minibuild_fresh`，不要只选择 `minibuild_build::run`。
-pub const SELECTED_CASE: CaseRunner = xtask_prebuild::run;
+pub const SELECTED_CASE: CaseRunner = xtask_prebuild::run_serial;
 #[allow(unused)]
 pub fn run_selected() -> i32 {
     SELECTED_CASE()

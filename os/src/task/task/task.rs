@@ -208,21 +208,227 @@ impl TaskControlBlockInner {
     }
 }
 
-fn task_comm_from_argv0(argv0: &str) -> String {
-    let name = argv0
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or(argv0);
+fn task_comm_from_argv0(argv0: &[u8]) -> String {
+    let mut name = argv0;
+    while name.last() == Some(&b'/') {
+        name = &name[..name.len() - 1];
+    }
+    let name = name.rsplit(|byte| *byte == b'/').next().unwrap_or(name);
     let mut comm = String::new();
-    for ch in name.chars().take(16) {
-        comm.push(ch);
+    if let Ok(name) = core::str::from_utf8(name) {
+        for ch in name.chars().take(16) {
+            comm.push(ch);
+        }
     }
     if comm.is_empty() {
         String::from("?")
     } else {
         comm
     }
+}
+
+const EXEC_STACK_LAYOUT_SLACK: usize = 64;
+
+fn checked_exec_stack_add(total: &mut usize, bytes: usize) -> Result<(), SysErrNo> {
+    *total = total.checked_add(bytes).ok_or(SysErrNo::E2BIG)?;
+    Ok(())
+}
+
+/// Reject an exec image whose initial argv/envp stack cannot fit before the
+/// address space is replaced.  The slack covers the random bytes and all
+/// alignment/padding steps in `TaskControlBlock::exec` below.
+fn validate_exec_stack_layout(
+    argv: &[Vec<u8>],
+    env: &[Vec<u8>],
+    elf_auxv_count: usize,
+) -> Result<(), SysErrNo> {
+    let mut required = 0;
+    for value in argv.iter().chain(env.iter()) {
+        checked_exec_stack_add(
+            &mut required,
+            value.len().checked_add(1).ok_or(SysErrNo::E2BIG)?,
+        )?;
+    }
+
+    // argv/envp each have a trailing NULL, and argc occupies one word.
+    let pointer_words = argv
+        .len()
+        .checked_add(env.len())
+        .and_then(|count| count.checked_add(3))
+        .ok_or(SysErrNo::E2BIG)?;
+    checked_exec_stack_add(
+        &mut required,
+        pointer_words
+            .checked_mul(size_of::<usize>())
+            .ok_or(SysErrNo::E2BIG)?,
+    )?;
+
+    // exec appends AT_RANDOM, AT_EXECFN, and AT_NULL to the ELF auxiliary vector.
+    let aux_entries = elf_auxv_count.checked_add(3).ok_or(SysErrNo::E2BIG)?;
+    checked_exec_stack_add(
+        &mut required,
+        aux_entries
+            .checked_mul(size_of::<Aux>())
+            .ok_or(SysErrNo::E2BIG)?,
+    )?;
+    checked_exec_stack_add(&mut required, EXEC_STACK_LAYOUT_SLACK)?;
+
+    if required > USER_STACK_SIZE {
+        return Err(SysErrNo::E2BIG);
+    }
+    Ok(())
+}
+
+fn checked_exec_stack_sub(user_sp: &mut usize, bytes: usize) -> Result<usize, SysErrNo> {
+    *user_sp = user_sp.checked_sub(bytes).ok_or(SysErrNo::E2BIG)?;
+    Ok(*user_sp)
+}
+
+fn alloc_user_res_in_memory_set(
+    memory_set: &MemorySet,
+) -> Result<(usize, usize, PhysPageNum), SysErrNo> {
+    memory_set.with_mut(|ms| {
+        let (u_bottom, u_top) = ms.lazy_insert_framed_area_with_hint(
+            USER_STACK_TOP,
+            USER_STACK_SIZE,
+            MapPermission::R | MapPermission::W | MapPermission::U,
+            MapAreaType::Stack,
+        );
+        let (trap_cx_bottom, _) = ms.insert_framed_area_with_hint(
+            USER_TRAP_CONTEXT_TOP,
+            PAGE_SIZE,
+            MapPermission::R | MapPermission::W,
+            MapAreaType::Trap,
+        );
+        let trap_cx_ppn = ms
+            .translate(VirtAddr::from(trap_cx_bottom).floor())
+            .ok_or(SysErrNo::ENOMEM)?;
+
+        let stack_range = (
+            VirtAddr::from(u_bottom).floor(),
+            VirtAddr::from(u_top).floor(),
+        );
+        let area_idx = ms
+            .areas
+            .iter()
+            .position(|area| area.vpn_range.range() == stack_range)
+            .ok_or(SysErrNo::ENOMEM)?;
+        let stack_end = ms.areas[area_idx].vpn_range.end().0;
+        let (page_table, areas) = (&mut ms.page_table, &mut ms.areas);
+        let area = &mut areas[area_idx];
+        for i in 1..=PRE_ALLOC_PAGES {
+            let vpn = (stack_end - i).into();
+            if page_table.translate(vpn).is_none() && area.map_one(page_table, vpn).is_none() {
+                return Err(SysErrNo::ENOMEM);
+            }
+        }
+
+        Ok((u_top, trap_cx_bottom, trap_cx_ppn))
+    })
+}
+
+fn prepare_exec_stack(
+    memory_set: &MemorySet,
+    ustack_top: usize,
+    argv: &[Vec<u8>],
+    env: &[Vec<u8>],
+    auxv: &mut Vec<Aux>,
+) -> Result<(usize, usize, usize), SysErrNo> {
+    let mut envp = Vec::new();
+    envp.try_reserve(env.len().checked_add(1).ok_or(SysErrNo::E2BIG)?)
+        .map_err(|_| SysErrNo::ENOMEM)?;
+    let mut argvp = Vec::new();
+    argvp
+        .try_reserve(argv.len().checked_add(1).ok_or(SysErrNo::E2BIG)?)
+        .map_err(|_| SysErrNo::ENOMEM)?;
+    auxv.try_reserve(3).map_err(|_| SysErrNo::ENOMEM)?;
+
+    let mut user_sp = ustack_top;
+    for value in env {
+        let value_len = value.len().checked_add(1).ok_or(SysErrNo::E2BIG)?;
+        let value_sp = checked_exec_stack_sub(&mut user_sp, value_len)?;
+        envp.push(value_sp);
+        copy_to_user(memory_set, value_sp, value)?;
+        copy_to_user(
+            memory_set,
+            value_sp.checked_add(value.len()).ok_or(SysErrNo::E2BIG)?,
+            &[0],
+        )?;
+    }
+    envp.push(0);
+    user_sp -= user_sp % size_of::<usize>();
+
+    for value in argv {
+        let value_len = value.len().checked_add(1).ok_or(SysErrNo::E2BIG)?;
+        let value_sp = checked_exec_stack_sub(&mut user_sp, value_len)?;
+        argvp.push(value_sp);
+        copy_to_user(memory_set, value_sp, value)?;
+        copy_to_user(
+            memory_set,
+            value_sp.checked_add(value.len()).ok_or(SysErrNo::E2BIG)?,
+            &[0],
+        )?;
+    }
+    user_sp -= user_sp % size_of::<usize>();
+    argvp.push(0);
+
+    let random_sp = checked_exec_stack_sub(&mut user_sp, 16)?;
+    let mut random = [0u8; 15];
+    for (index, byte) in random.iter_mut().enumerate() {
+        *byte = index as u8;
+    }
+    copy_to_user(memory_set, random_sp, &random)?;
+    user_sp -= user_sp % 16;
+
+    let execfn = *argvp.first().ok_or(SysErrNo::E2BIG)?;
+    auxv.push(Aux::new(AuxType::RANDOM, random_sp));
+    auxv.push(Aux::new(AuxType::EXECFN, execfn));
+    auxv.push(Aux::new(AuxType::NULL, 0));
+
+    let initial_stack_words = 1 + argvp.len() + envp.len();
+    if initial_stack_words % 2 != 0 {
+        checked_exec_stack_sub(&mut user_sp, size_of::<usize>())?;
+    }
+    for aux in auxv.iter().rev() {
+        let aux_sp = checked_exec_stack_sub(&mut user_sp, size_of::<Aux>())?;
+        copy_to_user_val(memory_set, aux_sp as *mut usize, &(aux.aux_type as usize))?;
+        copy_to_user_val(
+            memory_set,
+            (aux_sp + size_of::<usize>()) as *mut usize,
+            &aux.value,
+        )?;
+    }
+
+    let envp_bytes = envp
+        .len()
+        .checked_mul(size_of::<usize>())
+        .ok_or(SysErrNo::E2BIG)?;
+    let envp_base = checked_exec_stack_sub(&mut user_sp, envp_bytes)?;
+    for (index, value) in envp.iter().enumerate() {
+        copy_to_user_val(
+            memory_set,
+            (envp_base + index * size_of::<usize>()) as *mut usize,
+            value,
+        )?;
+    }
+
+    let argvp_bytes = argvp
+        .len()
+        .checked_mul(size_of::<usize>())
+        .ok_or(SysErrNo::E2BIG)?;
+    let argv_base = checked_exec_stack_sub(&mut user_sp, argvp_bytes)?;
+    for (index, value) in argvp.iter().enumerate() {
+        copy_to_user_val(
+            memory_set,
+            (argv_base + index * size_of::<usize>()) as *mut usize,
+            value,
+        )?;
+    }
+
+    let argc_sp = checked_exec_stack_sub(&mut user_sp, size_of::<usize>())?;
+    copy_to_user_val(memory_set, argc_sp as *mut usize, &argv.len())?;
+    debug_assert_eq!(argc_sp % 16, 0);
+    Ok((argc_sp, argv_base, envp_base))
 }
 
 impl TaskControlBlock {
@@ -327,16 +533,34 @@ impl TaskControlBlock {
         arc_task
     }
     /// exec的主逻辑
-    pub fn exec(&self, elf_data: &[u8], argv: &[String], env: &mut [String]) -> Result<(), ()> {
+    pub fn exec(
+        &self,
+        elf_data: &[u8],
+        argv: &[Vec<u8>],
+        env: &[Vec<u8>],
+    ) -> Result<(), SysErrNo> {
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
         debug!("exec: goto from_elf");
         let (memory_set, user_hp, entry_point, mut auxv) = MemorySetInner::from_elf(elf_data)
             .map_err(|_| {
                 error!("exec: OOM during ELF load");
+                SysErrNo::ENOMEM
             })?;
+        validate_exec_stack_layout(argv, env, auxv.len())?;
+
         debug!("exec: return from from_elf");
         let memory_set = MemorySet::new(memory_set);
+        let (ustack_top, trap_cx_bottom, trap_cx_ppn) =
+            alloc_user_res_in_memory_set(&memory_set)?;
+        let (user_sp, argv_base, envp_base) =
+            prepare_exec_stack(&memory_set, ustack_top, argv, env, &mut auxv)?;
+        let mut trap_cx =
+            TrapContext::app_init_context(entry_point, user_sp, self.kernel_stack.top());
+        trap_cx.set_a0(argv.len());
+        trap_cx.set_a1(argv_base);
+        trap_cx.set_a2(envp_base);
+        let new_comm = argv.first().map(|argv0| task_comm_from_argv0(argv0));
 
         // execve replaces a process-wide address space.  No sibling may keep
         // an old trap context or user stack once that replacement happens.
@@ -352,6 +576,10 @@ impl TaskControlBlock {
         let ppid = self.ppid();
         let parent_tasks = Process::get_process_arc_by_pid(ppid)
             .map(|parent_proc| parent_proc.meta_lock().tasks.clone());
+        let mut wake_parent_tasks = Vec::new();
+        wake_parent_tasks
+            .try_reserve(parent_tasks.as_ref().map_or(0, Vec::len))
+            .map_err(|_| SysErrNo::ENOMEM)?;
 
         let mut task_inner = self.inner_lock();
         task_inner.time_data.clear();
@@ -390,11 +618,6 @@ impl TaskControlBlock {
         self.process
             .change_memory_set_and_sigtable(memory_set, SigTable::new());
 
-        // 重新分配用户资源
-        let ustack_top = self.alloc_user_res(&mut task_inner);
-        {
-            self.process.fd_table.close_on_exec();
-        }
         task_inner.sig_mask = SigSet::empty();
         task_inner.sigsuspend_restore_mask = None;
         task_inner.alt_signal_stack = SignalStack::disabled();
@@ -407,125 +630,12 @@ impl TaskControlBlock {
         // rseq retains a pointer into the replaced user image, so exec starts
         // with no registered area.
         task_inner.rseq = RseqState::default();
-
-        // 获取新地址空间用于栈写入
-        let proc_inner = &self.process;
-        let proc_mem = proc_inner.memory_set_arc();
-
-        let mut user_sp = ustack_top;
-
-        // println!("user_sp:{:#X}  argv:{:?}", user_sp, argv);
-
-        //环境变量内容入栈
-        let mut envp = Vec::new();
-        for env in env.iter() {
-            user_sp -= env.len() + 1;
-            envp.push(user_sp);
-            // println!("{:#X}:{}", user_sp, env);
-            for (j, c) in env.as_bytes().iter().enumerate() {
-                copy_to_user_val(&*proc_mem, (user_sp + j) as *mut u8, c).unwrap();
-            }
-            copy_to_user_val(&*proc_mem, (user_sp + env.len()) as *mut u8, &0u8).unwrap();
-        }
-        envp.push(0);
-        user_sp -= user_sp % size_of::<usize>();
-
-        //存放字符串首址的数组
-        let mut argvp = Vec::new();
-        for arg in argv.iter() {
-            // 计算字符串在栈上的地址
-            user_sp -= arg.len() + 1;
-            argvp.push(user_sp);
-            // println!("{:#X}:{}", user_sp, arg);
-            for (j, c) in arg.as_bytes().iter().enumerate() {
-                copy_to_user_val(&*proc_mem, (user_sp + j) as *mut u8, c).unwrap();
-            }
-            // 添加字符串末尾的 null 字符
-            copy_to_user_val(&*proc_mem, (user_sp + arg.len()) as *mut u8, &0u8).unwrap();
-        }
-        user_sp -= user_sp % size_of::<usize>(); //以8字节对齐
-        argvp.push(0);
-
-        //需要随便放16个字节，不知道干嘛用的。
-        user_sp -= 16;
-        auxv.push(Aux::new(AuxType::RANDOM, user_sp));
-        for i in 0..0xf {
-            copy_to_user_val(&*proc_mem, (user_sp + i) as *mut u8, &(i as u8)).unwrap();
-        }
-        user_sp -= user_sp % 16;
-
-        // println!("aux:");
-        //将auxv放入栈中
-        auxv.push(Aux::new(AuxType::EXECFN, argvp[0]));
-        auxv.push(Aux::new(AuxType::NULL, 0));
-
-        // Every auxv entry occupies two machine words, so only argc, argv
-        // and envp determine the final stack alignment.  Reserve padding
-        // before laying out that block; rounding down after writing argc
-        // would move SP away from argc and break the ELF entry ABI.
-        let initial_stack_words = 1 + argvp.len() + envp.len();
-        if initial_stack_words % 2 != 0 {
-            user_sp -= size_of::<usize>();
-        }
-        for aux in auxv.iter().rev() {
-            // println!("{:?}", aux);
-            user_sp -= size_of::<Aux>();
-            copy_to_user_val(&*proc_mem, user_sp as *mut usize, &(aux.aux_type as usize)).unwrap();
-            copy_to_user_val(
-                &*proc_mem,
-                (user_sp + size_of::<usize>()) as *mut usize,
-                &aux.value,
-            )
-            .unwrap();
-        }
-
-        //将环境变量指针数组放入栈中
-        // println!("env pointers:");
-        user_sp -= envp.len() * size_of::<usize>();
-        let envp_base = user_sp;
-        for (i, data) in envp.iter().enumerate() {
-            copy_to_user_val(
-                &*proc_mem,
-                (user_sp + i * size_of::<usize>()) as *mut usize,
-                data,
-            )
-            .unwrap();
-        }
-
-        // println!("arg pointers:");
-        user_sp -= argvp.len() * size_of::<usize>();
-        let argv_base = user_sp;
-        //将参数指针数组放入栈中
-        for (i, &data) in argvp.iter().enumerate() {
-            copy_to_user_val(
-                &*proc_mem,
-                (user_sp + i * size_of::<usize>()) as *mut usize,
-                &data,
-            )
-            .unwrap();
-        }
-
-        //将argc放入栈中
-        user_sp -= size_of::<usize>();
-        copy_to_user_val(&*proc_mem, user_sp as *mut usize, &argv.len()).unwrap();
-
-        // The process entry stack is required to be 16-byte aligned by both
-        // the LoongArch and RISC-V psABIs, while its first word remains argc.
-        debug_assert_eq!(user_sp % 16, 0);
-        //println!("user_sp:{:#X}", user_sp);
-
-        // 将设置了O_CLOEXEC位的文件描述符关闭
-        proc_inner.fd_table.close_on_exec();
-
-        let mut trap_cx =
-            TrapContext::app_init_context(entry_point, user_sp, self.kernel_stack.top());
-        trap_cx.set_a0(argv.len());
-        trap_cx.set_a1(argv_base);
-        trap_cx.set_a2(envp_base);
+        self.process.fd_table.close_on_exec();
+        task_inner.trap_cx_ppn = trap_cx_ppn;
+        task_inner.trap_cx_bottom = trap_cx_bottom;
         *task_inner.trap_cx() = trap_cx;
         task_inner.user_heappoint = user_hp;
         task_inner.user_heapbottom = user_hp;
-        let new_comm = argv.first().map(|argv0| task_comm_from_argv0(argv0));
         drop(task_inner);
         if let Some(new_comm) = new_comm {
             self.process.meta_lock().comm = new_comm;
@@ -534,7 +644,6 @@ impl TaskControlBlock {
         // vfork(2) releases its parent only after the child no longer uses
         // the shared address space. The new page table and trap context above
         // are fully installed at this point.
-        let mut wake_parent_tasks = Vec::new();
         if let Some(parent_tasks) = parent_tasks {
             for task_weak in &parent_tasks {
                 if let Some(t) = task_weak.upgrade() {
@@ -974,45 +1083,10 @@ impl TaskControlBlock {
     }
     /// 分配用户栈和 trap context 区域，并返回用户栈顶地址
     fn alloc_user_res(&self, task_inner: &mut TaskControlBlockInner) -> usize {
-        let (ustack_top, trap_cx_bottom, trap_cx_ppn) = {
-            let proc_inner = &self.process;
-            let memory_set = proc_inner.memory_set_arc();
-            memory_set.with_mut(|ms| {
-                let (u_bottom, u_top) = ms.lazy_insert_framed_area_with_hint(
-                    USER_STACK_TOP,
-                    USER_STACK_SIZE,
-                    MapPermission::R | MapPermission::W | MapPermission::U,
-                    MapAreaType::Stack,
-                );
-                let (t_cx, _) = ms.insert_framed_area_with_hint(
-                    USER_TRAP_CONTEXT_TOP,
-                    PAGE_SIZE,
-                    MapPermission::R | MapPermission::W,
-                    MapAreaType::Trap,
-                );
-                let t_cx_ppn = ms.translate(VirtAddr::from(t_cx).floor()).unwrap();
-
-                let stack_range = (
-                    VirtAddr::from(u_bottom).floor(),
-                    VirtAddr::from(u_top).floor(),
-                );
-                let area_idx = ms
-                    .areas
-                    .iter()
-                    .position(|area| area.vpn_range.range() == stack_range)
-                    .unwrap();
-                let stack_end = ms.areas[area_idx].vpn_range.end().0;
-                for i in 1..=PRE_ALLOC_PAGES {
-                    let vpn = (stack_end - i).into();
-                    if ms.page_table.translate(vpn).is_none() {
-                        let page_table = &mut ms.page_table;
-                        let area = &mut ms.areas[area_idx];
-                        area.map_one(page_table, vpn);
-                    }
-                }
-                (u_top, t_cx, t_cx_ppn)
-            })
-        };
+        let memory_set = self.process.memory_set_arc();
+        let (ustack_top, trap_cx_bottom, trap_cx_ppn) =
+            alloc_user_res_in_memory_set(&memory_set)
+                .expect("failed to allocate task user resources");
         task_inner.trap_cx_ppn = trap_cx_ppn;
         task_inner.trap_cx_bottom = trap_cx_bottom;
         ustack_top

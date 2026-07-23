@@ -353,6 +353,56 @@ pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, 
     Ok(String::from(core::str::from_utf8(&dst_str).unwrap_or("")))
 }
 
+/// Safely read a NUL-terminated user string with an explicit byte limit.
+///
+/// `max_len` includes the trailing NUL byte.  Unlike [`read_user_cstr`], this
+/// helper never silently truncates an unterminated string: reaching the limit
+/// returns `E2BIG`.  It preserves the raw non-NUL bytes because `execve`
+/// argv/envp entries are byte strings, not necessarily UTF-8 text.
+pub fn read_user_cstr_with_limit(
+    memory_set: &MemorySet,
+    ptr: *const u8,
+    max_len: usize,
+) -> Result<Vec<u8>, SysErrNo> {
+    if ptr.is_null() {
+        return Ok(Vec::new());
+    }
+    if max_len == 0 {
+        return Err(SysErrNo::E2BIG);
+    }
+
+    // Keep this buffer small enough for the LoongArch kernel stack.  The
+    // destination grows in the heap only up to the caller-specified bound.
+    const CSTR_COPY_CHUNK_SIZE: usize = 256;
+    let mut chunk = [0u8; CSTR_COPY_CHUNK_SIZE];
+    let mut bytes = Vec::new();
+    let ptr_addr = ptr as usize;
+    let mut pos = 0;
+
+    while pos < max_len {
+        let current_addr = ptr_addr.checked_add(pos).ok_or(SysErrNo::EFAULT)?;
+        let va = VirtAddr::try_from(current_addr).ok_or(SysErrNo::EFAULT)?;
+        let chunk_len = (PAGE_SIZE - va.page_offset())
+            .min(max_len - pos)
+            .min(CSTR_COPY_CHUNK_SIZE);
+
+        copy_from_user(memory_set, current_addr, &mut chunk[..chunk_len])?;
+        if let Some(nul_offset) = chunk[..chunk_len].iter().position(|&byte| byte == 0) {
+            bytes
+                .try_reserve(nul_offset)
+                .map_err(|_| SysErrNo::ENOMEM)?;
+            bytes.extend_from_slice(&chunk[..nul_offset]);
+            return Ok(bytes);
+        }
+
+        bytes.try_reserve(chunk_len).map_err(|_| SysErrNo::ENOMEM)?;
+        bytes.extend_from_slice(&chunk[..chunk_len]);
+        pos += chunk_len;
+    }
+
+    Err(SysErrNo::E2BIG)
+}
+
 // Internal helpers for mm-crate use (pages guaranteed mapped)
 
 /// Internal: read bytes from user memory via page table into an existing buffer.

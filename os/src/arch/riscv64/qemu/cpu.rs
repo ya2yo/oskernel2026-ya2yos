@@ -34,6 +34,22 @@ pub fn boot_secondary_harts(boot_hart: usize) {
     }
 }
 
+/// Wait until this hart's one-shot timer becomes pending while its run queue
+/// is empty.
+///
+/// `run_tasks` normally runs with supervisor interrupts disabled.  RISC-V WFI
+/// still resumes when a locally enabled interrupt becomes pending in that
+/// state, so no trap is taken through the non-returning kernel trap entry.
+/// The timer bounds the latency for tasks enqueued on another hart to one tick.
+pub fn idle() {
+    unsafe {
+        asm!("csrci sstatus, 2", options(nostack));
+        crate::timer::set_next_trigger();
+        riscv::asm::wfi();
+    }
+    crate::timer::set_next_trigger();
+}
+
 /// use sbi call to shutdown the kernel
 pub fn shutdown(failure: bool) -> ! {
     if !failure {

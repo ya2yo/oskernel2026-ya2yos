@@ -6632,3 +6632,60 @@ policy。与此同时删除 `ext4_ftruncate_no_lock()` inode-ref 获取失败时
 统一释放 mount lock。收口后重新执行 `git diff --check`、`cargo fmt --check`、Docker
 LoongArch64/RISC-V release 构建和 LoongArch64 QEMU。最终 `log.ans` 的 musl/glibc
 `lseek11` 均为 `passed 15 failed 0 broken 0`，无 `TFAIL`、`TBROK` 或 panic，并正常 `shutdown!`。
+
+---
+
+## 2026-07-23：BuildStorm Rustc 长 argv 截断与 RISC-V idle 轮询修复
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans`，修复 BuildStorm `pre-build tg-xtask (untimed)` 无法编译
+通过的问题，并改善超过 40 分钟仍只有少量 crate 进度的高 CPU/低吞吐现象；同时将
+`initproc.rs` 改为只运行该定向测例。维护者指定新的运行日志直接写项目根目录，并使用
+`1.ans`、`2.ans` 等顺序文件名。
+
+### 分析与采纳结论
+
+AI 从 `log.ans` 的 `error[E0765]: unterminated double quote string` 和 Rustc 完整命令行入手，
+确认 `--check-cfg=cfg(feature, values(...))` 正好截在 `release_max`。调用链是
+`sys_execve()` 将 `argv/envp` 误用为 pathname，调用固定 `MAX_PATH_LEN = 256` 的
+`read_user_cstr()`；它在没有 NUL 时静默返回 256 B 截断串。Rustc 接到不完整的引用字符串才
+报告 `E0765`，因此 `log` crate 源码并没有语法错误。
+
+性能问题独立于该编译错误。`run_tasks()` 在无 next task 时持续扫描，RISC-V 的 8 个 hart
+会在 Cargo 少量 worker 或 lwext4 全局 FFI 锁竞争期间忙等。不能直接删除或扩大
+`EXT4_OP_LOCK`，也不能将 `--jobs 1` 伪装成正式评分优化；前者缺少 lwext4 SMP 安全证明，
+后者改变了默认工作负载。选择了低风险的 RISC-V idle WFI，并保留单作业入口为显式诊断。
+
+### 修改
+
+- `os/src/mm/translate.rs` 新增显式长度的 C string 读取接口，按小块跨页复制并返回原始
+  `Vec<u8>`，对无 NUL、地址错误和分配失败分别返回受控 errno。
+- `os/src/syscall/task/execve.rs` 对 `argv/envp` 使用新接口；单参数上限为 32 页，总预算为
+  用户栈四分之一，计入 strings、指针和 NULL。读取指针与指针递增均做溢出检查，shebang
+  重写后再次计费。
+- `os/src/task/task/task.rs` 保持二进制参数语义，在替换旧地址空间之前完成新 stack、auxv、
+  trap context 的可失败分配/写入，避免大参数触发 lazy stack 页分配后 `unwrap()` panic。
+- `os/src/task/processor.rs` 和 RISC-V CPU 支持在无 runnable task 时设置 one-shot timer 后
+  WFI，并在返回后 rearm timer；LoongArch 只保守地调用 `spin_loop()`，因为现有 kernel trap
+  entry 不能恢复。
+- `user/src/bin/initproc.rs` 只运行 `buildstorm::run_selected()`；新增
+  `xtask_prebuild::run_serial()`，当前 selector 仅选中该争用诊断，默认 prebuild 和正式评分
+  路径保持原命令与语义。最终复审同时保留 `run_selected()` 的返回状态，避免测试失败被
+  `initproc` 的常量 `0` 掩盖。
+
+### 验证与边界
+
+已执行 `make build-arch TARGET_ARCH=loongarch64`、`make build-arch TARGET_ARCH=riscv64` 和
+`git diff --check`，均通过，只有既有 Cargo config/vendored warning。根目录 `11.ans` 的
+600 秒单作业定向运行到 `syn v2.0.118`、`7/446`，没有复现 `E0765`、`could not compile` 或
+kernel panic；`12.ans` 用最终 selector 启动，sigaltstack/rseq 均 PASS，120 秒内无旧错误。
+随后在独占 QEMU 中执行最终源码的根目录 `16.ans`，同样到达 `syn v2.0.118`、`7/446`，
+无旧 Rustc 参数错误或 panic；600 秒外层窗口以 124 结束。
+
+`11.ans` 与另一短暂 QEMU 样本部分重叠；虽然 `16.ans` 已改为独占样本，但它同样在
+`7/446` 时到达 600 秒上限，且未采集与默认并发一致的完整 A/B 指标。因此没有将结果表述为
+严格性能对比、完整 446 crate 成功、正式 BuildStorm 成功或评分通过。后续需要在同一干净
+镜像和独占宿主条件下完成默认并发与单作业的完整 A/B。
+
+返回状态修正后再次执行根目录 `17.ans`（RISC-V）和 `18.ans`（LoongArch64）构建，均成功。

@@ -98,8 +98,9 @@ pub fn run_tasks() {
             ready_queue::mark_running(&next_task);
             processor.current = Some(next_task);
             switch(idle_task_cx_ptr, next_task_cx_ptr);
+        } else {
+            crate::arch::cpu::idle();
         }
-        // 不切换到内核地址空间；没有可运行任务时继续 idle 调度循环。
     }
 }
 ///Take the current task,leaving a None in its place

@@ -60,6 +60,13 @@ pub fn boot_secondary_harts(boot_hart: usize) {
     }
 }
 
+/// LoongArch's current kernel-mode trap entry is not resumable, so it cannot
+/// enable interrupts around `idle` yet.  Keep the existing polling behavior
+/// until that entry gains a complete save/restore path.
+pub fn idle() {
+    core::hint::spin_loop();
+}
+
 /// 初始化csr寄存器
 #[no_mangle]
 pub fn init_csr_regs() {
