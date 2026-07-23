@@ -1,7 +1,7 @@
 //! memory related syscall
 
 use alloc::format;
-use linux_raw_sys::general::{MAP_SHARED, MAP_SHARED_VALIDATE};
+use linux_raw_sys::general::{MAP_SHARED_VALIDATE, MAP_TYPE};
 use log::{debug, warn};
 
 use crate::{
@@ -29,7 +29,15 @@ pub fn sys_mmap(
         "[sysmap] addr={:#x},len={},prot={:#x},flags={:#x},fd={},off={}",
         addr, len, prot, flags, fd, off
     );
-    let flags = MmapFlags::from_bits_truncate(flags);
+    let raw_flags = flags;
+    let flags = MmapFlags::from_bits_truncate(raw_flags);
+    // Linux ignores unknown mmap bits for MAP_SHARED/MAP_PRIVATE, but
+    // MAP_SHARED_VALIDATE turns them into a strict capability check.
+    if raw_flags & MAP_TYPE == MAP_SHARED_VALIDATE
+        && raw_flags & !MmapFlags::all().bits() != 0
+    {
+        return Err(SysErrNo::EOPNOTSUPP);
+    }
     if flags
         .intersection(
             MmapFlags::MAP_PRIVATE | MmapFlags::MAP_SHARED | MmapFlags::MAP_SHARED_VALIDATE,
