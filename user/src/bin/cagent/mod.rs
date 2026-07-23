@@ -5,7 +5,9 @@
 //! in isolation while its agent output stays on the serial console.
 
 use alloc::format;
-use user_lib::{chdir, execve, exit, fork, kill, println, sleep, waitpid};
+use user_lib::{
+    chdir, close, execve, exit, fork, kill, openat, println, sleep, waitpid, write, OpenFlags,
+};
 
 mod cpu;
 mod date;
@@ -19,8 +21,13 @@ mod kernel;
 mod network;
 
 const GLIBC_ROOT: &str = "glibc\0";
+const SCORE_SCRIPT_PATH: &str = "/tmp/cagent-score.sh\0";
+const DIAGNOSTIC_SCRIPT_PATH: &str = "/tmp/cagent-diagnostic.sh\0";
 const SERVER_START_DELAY_MS: usize = 1000;
 const SIGTERM: usize = 15;
+const AT_FDCWD: isize = -100;
+const SCRIPT_MODE: u32 = 0o600;
+const EIO: isize = -5;
 
 #[derive(Clone, Copy)]
 pub struct Case {
@@ -64,6 +71,54 @@ pub fn run_failed_cases() -> usize {
     run_cases(&[&kernel::CASE, &fs_readwrite::CASE, &fs_directory::CASE])
 }
 
+/// Run the canonical scoring script without changing the diagnostic cases.
+pub fn run_official_script() -> i32 {
+    match materialize_script(SCORE_SCRIPT_PATH, CAGENT_TESTCODE) {
+        Ok(()) => crate::run_final_testsuit(GLIBC_ROOT, SCORE_SCRIPT_PATH),
+        Err(err) => {
+            println!("cagent-score materialize fail: {}", err);
+            err as i32
+        }
+    }
+}
+
+fn materialize_script(path: &str, script: &str) -> Result<(), isize> {
+    let fd = openat(
+        AT_FDCWD,
+        path,
+        OpenFlags::O_CREATE | OpenFlags::O_WRONLY | OpenFlags::O_TRUNC,
+        SCRIPT_MODE,
+    );
+    if fd < 0 {
+        return Err(fd);
+    }
+
+    let bytes = script.as_bytes();
+    let mut offset = 0;
+    let mut result = Ok(());
+    while offset < bytes.len() {
+        let remaining = &bytes[offset..];
+        let written = write(fd as usize, remaining, remaining.len());
+        if written <= 0 {
+            result = Err(if written == 0 { EIO } else { written });
+            break;
+        }
+        let written = written as usize;
+        if written > remaining.len() {
+            result = Err(EIO);
+            break;
+        }
+        offset += written;
+    }
+
+    let close_status = close(fd as usize);
+    match (result, close_status) {
+        (Err(err), _) => Err(err),
+        (Ok(()), err) if err < 0 => Err(err),
+        (Ok(()), _) => Ok(()),
+    }
+}
+
 /// Run arbitrary CAgent cases sequentially.  A separate server is used for
 /// every case, so a hung or malformed request cannot contaminate the next one.
 pub fn run_cases(cases: &[&Case]) -> usize {
@@ -95,7 +150,10 @@ fn run_case(case: Case) -> bool {
         println!("===== END cagent {} pass =====", case.name);
         true
     } else {
-        println!("===== END cagent {} reject status={} =====", case.name, status);
+        println!(
+            "===== END cagent {} reject status={} =====",
+            case.name, status
+        );
         false
     }
 }
@@ -132,13 +190,16 @@ rm -f "$3";
 echo "testcase cagent $5 $result";
 exit $ret"#;
 
+    if let Err(err) = materialize_script(DIAGNOSTIC_SCRIPT_PATH, RUN_CASE) {
+        println!("cagent-diagnostic materialize fail: {}", err);
+        return err as i32;
+    }
+
     crate::fork_and_run(
         GLIBC_ROOT,
         &[
             "/bin/bash",
-            "-c",
-            RUN_CASE,
-            "cagent-diagnostic",
+            DIAGNOSTIC_SCRIPT_PATH,
             timeout_secs.as_str(),
             case.prompt,
             output_path.as_str(),
@@ -147,3 +208,5 @@ exit $ret"#;
         ],
     )
 }
+
+const CAGENT_TESTCODE: &str = include_str!("../../../../scripts/cagent_testcode.sh");

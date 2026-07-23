@@ -84,23 +84,6 @@ pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// LTP-musl test helpers
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-fn test_cgroup_fj_function_cpuset_via_script() {
-    let args = [
-        "/musl/busybox\0",
-        "sh\0",
-        "-c\0",
-        "PATH=/musl/ltp/testcases/bin:/bin:$PATH; export PATH; ./cgroup_fj_function.sh cpuset\0",
-    ];
-    println!("#### OS COMP TEST GROUP START ltp-musl-cgroup-fj-cpuset ####");
-    fork_and_run("/musl/ltp/testcases/bin\0", &args);
-    println!("#### OS COMP TEST GROUP END ltp-musl-cgroup-fj-cpuset ####");
-}
-
 // Entry points
 #[allow(unused)]
 fn run_interactive_shell() -> i32 {
@@ -178,8 +161,12 @@ fn test_final_2026() -> i32 {
         shutdown();
         return 1;
     }
-    cagent::run_cases(&cagent::ALL_CASES);
-    buildstorm::run_official_sequence();
+    let cagent_status = cagent::run_official_script();
+    let buildstorm_status = buildstorm::run_official_sequence();
     shutdown();
-    0
+    if cagent_status != 0 {
+        cagent_status
+    } else {
+        buildstorm_status
+    }
 }
