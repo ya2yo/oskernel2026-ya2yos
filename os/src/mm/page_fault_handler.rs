@@ -37,6 +37,7 @@ pub fn mmap_file_page_beyond_eof(va: VirtAddr, vma: &MapArea) -> bool {
 }
 
 fn map_file_page_from_cache(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
+    crate::perf::record_file_page_fault();
     let Some(page_index) = file_page_index(vma, va) else {
         return false;
     };

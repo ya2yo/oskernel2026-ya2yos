@@ -320,6 +320,7 @@ use time::*;
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
     let id = syscall_id;
+    crate::perf::record_syscall(id);
     let syscall_id: Syscall = Syscall::from(syscall_id);
     let task = current_task().unwrap();
     let seccomp_action = task.seccomp_action(id);

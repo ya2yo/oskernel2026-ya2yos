@@ -6764,3 +6764,43 @@ guest 被 Cargo 识别为单核；调度器内部固定 home hart 是 TLB shootd
 Cargo 预构建并显示多个 crate 编译队列，无 panic；没有完成完整 446 单元，也没有同一干净
 guest 下的新旧 `elapsed_s` A/B，因此不报告具体加速百分比或正式评分结果。详见
 `Docs/决赛文档/problem/buildstorm-parallel-file-cache.md`。
+
+## 2026-07-23：BuildStorm 普通 read 路径与 EXT4 锁争用优化
+
+### 用户需求
+
+维护者要求使用 `perf` 等工具定位 `buildstorm::compile::run()` 编译超过两小时的性能瓶颈，
+并完成可验证的内核加速。
+
+### 分析与采纳结论
+
+宿主未安装可用 `perf`，guest `perf_event_open` 仍为未实现桩；使用 `/usr/bin/time -v` 和
+`strace -f -c` 进行结构诊断。60 秒样本 CPU 约 124%、voluntary context switch 479,964
+次；30 秒 `strace` 中 futex 占 79.46%、wait4 占 16.09%、pread64 仅 0.18%，指向
+QEMU/guest 调度与锁争用，而不是宿主磁盘读取。日志显示主要停留在 `pre-build tg-xtask`
+的 Cargo 普通文件读取阶段。
+
+采纳在不删除 lwext4 SMP 安全锁的前提下优化热路径：只读打开不建立 whole-file 写回缓存，
+新增偏移直读和缓存优先读取；跨页用户 read 合并为一次 inode 操作；移除每次 read 前的
+冗余 `inode.size()`。此前调度器定时器扫描的按 hart 快照和 10 ms 节流也保留。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs`、`os/src/fs/ext4_lw/inode.rs`、
+`os/src/fs/files/os_file.rs`、`os/src/task/{manager.rs,processor.rs}` 和
+`os/src/timer/mod.rs`；新增问题复盘
+`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`，并更新开发日志与
+problem 索引。`rustfmt`、`git diff --check`、RISC-V 和 LoongArch64 release 构建通过。
+独占 RISC-V QEMU 180 秒和 70 秒烟测均能进入 `pre-build tg-xtask`，无 panic/错误；完整
+446 crate、同镜像严格 A/B 和加速比例尚未完成，未将本轮结果表述为正式 BuildStorm 通过。
+
+## 2026-07-24：BuildStorm guest 性能分类统计
+
+维护者要求先完善当前工作区并在提交前继续定位 `buildstorm::compile::run()` 的编译瓶颈；此前宿主
+`perf` 不可用，guest `perf_event_open` 仍为桩。新增 `os/src/perf.rs`，以 relaxed 原子计数记录
+syscall 分类、EXT4 lock、文件页缓存、mmap 缺页以及调度器选取/idle；报告限频且不打印逐条日志。
+同步把 EXT4 全局锁包装为带计时 guard，未删除锁或在锁内主动 yield。双架构 release 构建通过；
+独占 RISC-V 90 秒样本无 panic/错误，在约 63 秒观察到 55 万 syscall、13.3 万 futex、631 万
+调度选取，EXT4 锁等待远低于持有时间。该证据将下一轮方向收敛到调度/ready queue 重复切换检查，
+未宣称完整 446 crate 或严格 A/B 加速比例。关联文档：
+`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`。

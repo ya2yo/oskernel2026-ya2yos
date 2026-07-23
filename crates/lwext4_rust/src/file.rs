@@ -112,6 +112,23 @@ impl Ext4File {
     /// |   a+ or ab+ or a+b        O_RDWR|O_CREAT|O_APPEND             |
     /// |---------------------------------------------------------------|
     pub fn file_open(&mut self, path: &str, flags: u32) -> Result<usize, i32> {
+        self.file_open_inner(path, flags, true)
+    }
+
+    /// Open a descriptor for a read-only operation without populating the
+    /// delayed whole-file write-back cache.  Compiler workloads usually read
+    /// each source/artifact once, so eagerly mirroring every file doubles the
+    /// I/O and copying cost without improving locality.
+    pub fn file_open_read_only(&mut self, path: &str) -> Result<usize, i32> {
+        self.file_open_inner(path, O_RDONLY, false)
+    }
+
+    fn file_open_inner(
+        &mut self,
+        path: &str,
+        flags: u32,
+        prepare_write_back_cache: bool,
+    ) -> Result<usize, i32> {
         let c_path = CString::new(path).expect("CString::new failed");
         if c_path != self.path() {
             // debug!(
@@ -145,27 +162,29 @@ impl Ext4File {
 
         self.has_opened = true;
         self.last_flags = flags;
-        self.cache_disabled = self.whole_file_cache_disabled();
-        if flags & O_TRUNC != 0 {
-            if let Some(key) = self.whole_file_cache_key() {
-                // `ext4_fopen(..., O_TRUNC)` has already discarded the
-                // on-disk contents.  Any byte-only mirror belongs to the old
-                // contents as well, so it must not be written back later.
-                discard_inode_caches(key);
-                clear_whole_file_cache_policy(key);
-            } else {
-                discard_path_cache(path);
+        if prepare_write_back_cache {
+            self.cache_disabled = self.whole_file_cache_disabled();
+            if flags & O_TRUNC != 0 {
+                if let Some(key) = self.whole_file_cache_key() {
+                    // `ext4_fopen(..., O_TRUNC)` has already discarded the
+                    // on-disk contents.  Any byte-only mirror belongs to the old
+                    // contents as well, so it must not be written back later.
+                    discard_inode_caches(key);
+                    clear_whole_file_cache_policy(key);
+                } else {
+                    discard_path_cache(path);
+                }
+                self.cache_disabled = false;
+                self.cache_too_large = false;
+            } else if !self.cache_disabled
+                && self.this_type == InodeTypes::EXT4_DE_REG_FILE
+                && ext4_file_has_hole(&mut self.file_desc)
+            {
+                // A byte-only cache cannot preserve existing hole extents.  This
+                // must be established before the first ordinary read can build a
+                // dense zero-filled mirror of a sparse inode.
+                self.disable_write_back_cache()?;
             }
-            self.cache_disabled = false;
-            self.cache_too_large = false;
-        } else if !self.cache_disabled
-            && self.this_type == InodeTypes::EXT4_DE_REG_FILE
-            && ext4_file_has_hole(&mut self.file_desc)
-        {
-            // A byte-only cache cannot preserve existing hole extents.  This
-            // must be established before the first ordinary read can build a
-            // dense zero-filled mirror of a sparse inode.
-            self.disable_write_back_cache()?;
         }
 
         //self.file_desc_map.insert(to_map, fd); // store c_path
@@ -572,6 +591,27 @@ impl Ext4File {
         }
 
         //debug!("file_read {:?}, len={}", self.get_path(), rw_count);
+        Ok(rw_count)
+    }
+
+    /// Read from an already-open descriptor at an explicit offset, bypassing
+    /// the whole-file cache.  The VFS keeps the userspace file offset itself;
+    /// setting `fpos` here avoids an extra `ext4_fseek` for every read syscall.
+    pub fn file_read_at(&mut self, offset: usize, buff: &mut [u8]) -> Result<usize, i32> {
+        self.file_desc.fpos = offset as u64;
+        let mut rw_count = 0;
+        let r = unsafe {
+            ext4_fread(
+                &mut self.file_desc,
+                buff.as_mut_ptr() as _,
+                buff.len(),
+                &mut rw_count,
+            )
+        };
+        if r != EOK as i32 {
+            error!("ext4_fread: rc = {}", r);
+            return Err(r);
+        }
         Ok(rw_count)
     }
 
@@ -1365,6 +1405,21 @@ fn flush_ext4_block_cache_for_path(path: &str) -> Result<usize, i32> {
 
 pub fn if_cache(file_path: String) -> bool {
     CACHE_TABLE.lock().contains_key(&file_path)
+}
+
+/// Read a cached file at an explicit offset without touching an `Ext4File`
+/// descriptor.  This is used by VFS read paths to preserve dirty write-back
+/// data while avoiding the descriptor seek/cache bookkeeping on every call.
+pub fn read_cached_at(path: &str, offset: usize, buff: &mut [u8]) -> Option<usize> {
+    let cache = CACHE_TABLE.lock().get(path).cloned()?;
+    let cache = cache.read();
+    if offset >= cache.size {
+        return Some(0);
+    }
+    let end = offset.saturating_add(buff.len()).min(cache.size);
+    let read_size = end - offset;
+    buff[..read_size].copy_from_slice(&cache.data[offset..end]);
+    Some(read_size)
 }
 
 pub fn get_cache(file_path: String) -> Arc<RwLock<VFileCache>> {

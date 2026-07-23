@@ -24,7 +24,7 @@ use crate::{
 use alloc::{format, string::ToString, vec};
 use alloc::{sync::Arc, vec::Vec};
 
-use lwext4_rust::file::{discard_path_cache, OsDirent};
+use lwext4_rust::file::{discard_path_cache, read_cached_at, OsDirent};
 
 /// 防止符号链接死循环的最大跳转次数。
 const MAX_LOOPTIMES: usize = 5;
@@ -132,7 +132,7 @@ impl Inode for Ext4Inode {
                 return size;
             }
             let file = &mut inner.f;
-            file.file_open(&path, O_RDONLY);
+            file.file_open_read_only(&path);
             let fsize = file.file_size();
             let size = fsize as usize;
             inner.known_size = Some(size);
@@ -184,14 +184,24 @@ impl Inode for Ext4Inode {
     /// 动态链接文件可能需要按路径 patch 内容，因此读取完成后会调用
     /// `patch_dynamic_link_file_bytes()` 做兼容修补。
     fn read_at(&self, off: usize, buf: &mut [u8]) -> SyscallRet {
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         let file = &mut inner.f;
-        file.file_open(&path, O_RDONLY).map_err(SysErrNo::from)?;
-        file.file_seek(off as i64, SEEK_SET)
-            .map_err(SysErrNo::from)?;
-        let r = file.file_read(buf).map_err(SysErrNo::from)?;
+        // Read-back caches may contain dirty bytes which are not on disk yet.
+        // Check them first, then use a direct ext4 read for the common cold
+        // read-only case.  The latter avoids creating a whole-file write-back
+        // cache and avoids a separate fseek for every VFS read.
+        let r = if let Some(r) = read_cached_at(&path, off, buf) {
+            r
+        } else {
+            file.file_open_read_only(&path).map_err(SysErrNo::from)?;
+            file.file_read_at(off, buf).map_err(SysErrNo::from)?
+        };
+        crate::perf::record_ext4_read(r);
         patch_dynamic_link_file_bytes(&path, off, &mut buf[..r]);
         Ok(r)
     }
@@ -336,12 +346,15 @@ impl Inode for Ext4Inode {
         if file_type == InodeType::File {
             let _ext4 = EXT4_OP_LOCK.lock();
             let file = &mut self.inner.get_unchecked_mut().f;
-            file.file_open(&path_str, O_RDONLY)
+            file.file_open_read_only(&path_str)
                 .map_err(SysErrNo::from)?;
             let size = file.file_size() as usize;
             let mut buf: Vec<u8> = vec![0; size];
-            file.file_seek(0, SEEK_SET).map_err(SysErrNo::from)?;
-            let r = file.file_read(buf.as_mut_slice());
+            let r = if let Some(r) = read_cached_at(&path_str, 0, buf.as_mut_slice()) {
+                Ok(r)
+            } else {
+                file.file_read_at(0, buf.as_mut_slice())
+            };
             if let Err(e) = r {
                 Err(SysErrNo::from(e))
             } else {

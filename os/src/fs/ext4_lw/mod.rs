@@ -19,7 +19,46 @@ mod sb;
 /// Do not use `kspin::SpinNoIrq` here: its atomic lock field is compiled out
 /// unless the dependency's `smp` feature is explicitly enabled. `spin::Mutex`
 /// is configured in this kernel and remains a real atomic lock on every build.
-pub(super) static EXT4_OP_LOCK: spin::Mutex<()> = spin::Mutex::new(());
+pub(super) struct Ext4OpLock {
+    inner: spin::Mutex<()>,
+}
+
+pub(super) struct Ext4OpGuard<'a> {
+    _guard: spin::MutexGuard<'a, ()>,
+    wait_ticks: usize,
+    acquired_at: usize,
+}
+
+impl Ext4OpLock {
+    pub const fn new() -> Self {
+        Self {
+            inner: spin::Mutex::new(()),
+        }
+    }
+
+    pub fn lock(&self) -> Ext4OpGuard<'_> {
+        let wait_start = crate::arch::time::get_ticks();
+        let guard = self.inner.lock();
+        let acquired_at = crate::arch::time::get_ticks();
+        Ext4OpGuard {
+            _guard: guard,
+            wait_ticks: acquired_at.saturating_sub(wait_start),
+            acquired_at,
+        }
+    }
+}
+
+impl Drop for Ext4OpGuard<'_> {
+    fn drop(&mut self) {
+        let released_at = crate::arch::time::get_ticks();
+        crate::perf::record_ext4_lock(
+            self.wait_ticks,
+            released_at.saturating_sub(self.acquired_at),
+        );
+    }
+}
+
+pub(super) static EXT4_OP_LOCK: Ext4OpLock = Ext4OpLock::new();
 
 pub use inode::*;
 pub use sb::{superblock_fs_stat, superblock_ls, superblock_root_inode, superblock_sync};

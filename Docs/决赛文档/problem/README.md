@@ -1,5 +1,6 @@
 # Problem 复盘索引
 
+- [BuildStorm 普通 read 路径与 EXT4 全局锁争用](./buildstorm-read-path-lock-contention.md)
 - [BuildStorm Rustc 长 argv 截断与 RISC-V 空闲轮询](./buildstorm-execve-argv-truncation.md)
 - [LoongArch BuildStorm 稀疏 EXT4 文件读取破坏动态链接数据](./loongarch-buildstorm-sparse-ext4-read-corruption.md)
 - [BuildStorm 全量运行误用诊断标记导致评分器 0 分](./buildstorm-full-run-marker-contract.md)

@@ -1146,6 +1146,35 @@
 - **描述**：AI 对照镜像 extent、`ext4_fread()`、正式评分脚本与 judge，确认 `/root/.cargo/bin/rustup` 的 logical block 328 是 sparse hole，旧 C 代码将其与连续 run 的零 sentinel 混用，复制了紧随其后的 relocation 页面。修复将 hole 零填、限制聚合到非零连续物理块，并修复尾部 partial read；build script 也会在 C 输入新于 archive 时重建。`uname -m` 改为返回精确的小写架构名，防止 LoongArch guest 落入 RISC-V 兜底分支。官方 Docker 重建后的 archive 保持 ABI v1，QEMU 已恢复 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`；外层终止发生在 prebuild，未将完整 compile/time 标为通过。详见 [problem/loongarch-buildstorm-sparse-ext4-read-corruption.md](./problem/loongarch-buildstorm-sparse-ext4-read-corruption.md) 与 `ai.log`。
 - **关联 commit**：尚未提交（2026-07-23 工作树）
 
+#### BuildStorm guest 性能分类统计（7.24）
+
+- **用户目标**：维护者要求在当前优化基础上继续工作，并在提交前用 guest 内证据定位编译
+  速度瓶颈；同时指出此前修改过于集中于文件系统。
+- **我的处理**：按 `fix-bug` 流程复核工作区、保留已有 `initproc` 定向入口，新增低开销
+  `perf` 计数模块，覆盖 syscall、EXT4 lock、文件页缓存、mmap 缺页和 scheduler；报告限频
+  且不打印逐条日志。没有删除 lwext4 全局锁，也没有修改只读 testcase 源码。
+- **验证与边界**：`make TARGET_ARCH=riscv64`（同时完成 LoongArch64 子构建）通过；独占
+  RISC-V 90 秒 QEMU 样本进入 `pre-build tg-xtask`，无 panic/错误，输出约 55 万 syscall、
+  13.3 万 futex、631 万 scheduler 选取，但未完成 446 crate，不能写成正式性能提升结论。
+- **后续方向**：优先区分 scheduler 的真实 context switch、idle loop 和 ready queue 重复选取，
+  再决定是否需要进一步改文件系统锁。
+- **关联 commit**：尚未提交（2026-07-24 工作树）
+
+#### BuildStorm 普通 read 路径与 EXT4 全局锁争用（7.23）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求用 `perf` 等工具定位 `buildstorm::compile::run()` 长时间编译的
+  性能瓶颈并实现优化。
+- **描述**：宿主无可用 `perf`、guest `perf_event_open` 未实现，因此使用 `/usr/bin/time`
+  与 `strace -f -c` 做结构分析；futex 占 79.46%、pread64 仅 0.18%，日志主要停在
+  `pre-build tg-xtask`。在保留 lwext4 全局 SMP 安全锁的前提下，新增只读直读、缓存优先
+  读取，合并跨页普通 read，并移除每次 read 前的 size 探测；同时保留调度器 timer 扫描
+  快照与节流优化。RISC-V/LoongArch64 构建通过，独占 RISC-V 180 秒和 70 秒运行进入
+  预构建且无错误，但未完成 446 crate 或严格 A/B 耗时，未宣称具体加速比例。详见
+  [problem/buildstorm-read-path-lock-contention.md](./buildstorm-read-path-lock-contention.md)
+  与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-23 工作树）
+
 #### LoongArch64 LTP fcntl14 rt_sigsuspend 临时信号掩码恢复修复（7.22）
 
 - **工具/模型**：Codex (GPT-5)

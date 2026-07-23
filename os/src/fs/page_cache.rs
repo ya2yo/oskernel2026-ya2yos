@@ -93,8 +93,11 @@ impl FilePageCache {
         let key = FilePageKey { path, page_index };
 
         if let Some(page) = self.pages.lock().get(&key).cloned() {
+            crate::perf::record_file_cache_hit();
             return Ok(page);
         }
+
+        crate::perf::record_file_cache_miss();
 
         let frame = FrameTracker::alloc().ok_or(SysErrNo::ENOMEM)?;
         let bytes = frame.ppn.bytes_array_mut();

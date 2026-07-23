@@ -10,7 +10,11 @@ use crate::arch::cpu::hart_id;
 use crate::arch::context::TrapContext;
 use crate::arch::page_table::get_token_from_regs;
 use crate::task::Process;
-use crate::{arch::config::HART_NUM, task::switch::switch, timer::check_futex_timer};
+use crate::{
+    arch::config::HART_NUM,
+    task::switch::switch,
+    timer::{check_futex_timer, get_time_ms, TIMER_INTERVAL_MS},
+};
 use alloc::{boxed::Box, sync::Arc};
 use log::{debug, error};
 ///Processor management structure
@@ -19,6 +23,8 @@ pub struct Processor {
     pub current: Option<Arc<TaskControlBlock>>,
     ///The basic control flow of each core, helping to select and switch process
     pub idle_task_cx: Option<Box<TaskContext>>,
+    /// Last 10 ms bucket in which scheduler-side timer maintenance ran.
+    last_timer_maintenance_tick: usize,
 }
 
 ///Init PROCESSORS
@@ -36,7 +42,19 @@ impl Processor {
         Self {
             current: None,
             idle_task_cx: None,
+            last_timer_maintenance_tick: usize::MAX,
         }
+    }
+    /// Timer interrupts normally drive these queues. The scheduler also has to
+    /// do so after an idle wakeup, but running the same global scans on every
+    /// context switch causes severe lock contention under BuildStorm.
+    fn should_run_timer_maintenance(&mut self) -> bool {
+        let tick = get_time_ms() / TIMER_INTERVAL_MS;
+        if tick == self.last_timer_maintenance_tick {
+            return false;
+        }
+        self.last_timer_maintenance_tick = tick;
+        true
     }
     ///Get mutable reference to `idle_task_cx`
     fn get_idle_task_cx_ptr(&mut self) -> *mut TaskContext {
@@ -71,11 +89,14 @@ fn get_proc_by_hartid(hartid: usize) -> &'static mut Processor {
 ///Loop `fetch_task` to get the process that needs to run, and switch the process through `__switch`
 pub fn run_tasks() {
     loop {
-        check_timer_events();
-        check_blocked_task_timers();
-        check_futex_timer();
+        let hartid = hart_id();
+        if get_proc_by_hartid(hartid).should_run_timer_maintenance() {
+            check_timer_events();
+            check_blocked_task_timers();
+            check_futex_timer();
+        }
         let cur_task = take_current_task();
-        let processor = get_proc_by_hartid(hart_id());
+        let processor = get_proc_by_hartid(hartid);
         let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
         if let Some(cur_task) = cur_task {
             let runnable = matches!(
@@ -90,7 +111,8 @@ pub fn run_tasks() {
             }
         }
 
-        if let Some(next_task) = ready_queue::fetch_task(hart_id()) {
+        if let Some(next_task) = ready_queue::fetch_task(hartid) {
+            crate::perf::record_scheduler_selection();
             let mut next_task_inner = next_task.inner_lock();
             let next_task_cx_ptr = &next_task_inner.task_cx as *const TaskContext;
             next_task_inner.task_status = TaskStatus::Running;
@@ -99,6 +121,7 @@ pub fn run_tasks() {
             processor.current = Some(next_task);
             switch(idle_task_cx_ptr, next_task_cx_ptr);
         } else {
+            crate::perf::record_idle_loop();
             crate::arch::cpu::idle();
         }
     }

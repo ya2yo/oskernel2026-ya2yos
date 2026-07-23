@@ -26,13 +26,12 @@ pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
 
 pub fn check_blocked_task_timers() {
     let hartid = crate::arch::cpu::hart_id();
-    tid_to_task::for_each_task(|task| {
-        // A process is pinned to one hart until remote TLB shootdown exists.
-        // Its owner alone drives blocked-wait timer delivery, avoiding both a
-        // cross-hart data race on the per-task timer and duplicated scans.
-        if task.process.home_hart() != hartid {
-            return;
-        }
+    // A process is pinned to one hart until remote TLB shootdown exists. Its
+    // owner alone drives blocked-wait timer delivery. Snapshot the owner's
+    // tasks under one table lock, then enter task/signal locks after releasing
+    // it; BuildStorm can otherwise reacquire the global table hundreds of
+    // times during every timer scan.
+    for task in tid_to_task::get_tasks_on_hart(hartid) {
         // 这条补扫主要服务于阻塞在 accept/recv 等路径中的任务，避免它们在
         // 内核态调度循环中错过 ITIMER_REAL。具体到期判断和 SIGALRM 投递由
         // timer/signal 模块负责，任务管理器只负责遍历候选任务。
@@ -41,9 +40,9 @@ pub fn check_blocked_task_timers() {
             inner.task_status == TaskStatus::Blocked
         };
         if should_check {
-            deliver_blocked_itimer_signal(task);
+            deliver_blocked_itimer_signal(&task);
         }
-    });
+    }
 }
 
 pub mod tid_to_task {
@@ -83,27 +82,14 @@ pub mod tid_to_task {
             .collect()
     }
 
-    /// Visit tasks without allocating a snapshot vector or holding the task
-    /// table lock while entering task/signal code.
-    pub fn for_each_task(mut f: impl FnMut(&Arc<TaskControlBlock>)) {
-        let mut next_tid = 0;
-        loop {
-            let next = {
-                let tasks = TID_TO_TASK.lock();
-                tasks
-                    .range(next_tid..)
-                    .next()
-                    .map(|(&tid, task)| (tid, Arc::clone(task)))
-            };
-            let Some((tid, task)) = next else {
-                return;
-            };
-
-            f(&task);
-            let Some(tid) = tid.checked_add(1) else {
-                return;
-            };
-            next_tid = tid;
-        }
+    /// Snapshot tasks owned by one hart without holding the task-table lock
+    /// while entering task or signal code.
+    pub fn get_tasks_on_hart(hartid: usize) -> Vec<Arc<TaskControlBlock>> {
+        TID_TO_TASK
+            .lock()
+            .values()
+            .filter(|task| task.process.home_hart() == hartid)
+            .cloned()
+            .collect()
     }
 }

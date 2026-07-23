@@ -13,7 +13,7 @@ use super::{
     super::{File, Inode},
     pipe::set_pipe_max_size,
 };
-use alloc::{collections::BTreeMap, string::String, sync::Arc};
+use alloc::{collections::BTreeMap, string::String, sync::Arc, vec};
 use core::sync::atomic::{AtomicI32, Ordering};
 use linux_raw_sys::{
     general::FS_IMMUTABLE_FL,
@@ -26,6 +26,7 @@ static WRITE_OPEN_COUNTS: Lazy<Mutex<BTreeMap<String, usize>>> =
 static FILE_FLAGS: Lazy<Mutex<BTreeMap<String, u32>>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
 static NEXT_OFD_LOCK_OWNER: AtomicI32 = AtomicI32::new(1);
 const PIPE_MAX_SIZE_PATH: &str = "/proc/sys/fs/pipe-max-size";
+const MAX_AGGREGATED_READ: usize = 64 * 1024;
 
 fn seek_offset(base: usize, offset: isize) -> Result<usize, SysErrNo> {
     if offset < 0 {
@@ -207,20 +208,47 @@ impl File for OSFile {
     fn read(&self, mut buf: UserBuffer) -> SyscallRet {
         let mut inner = self.inner.lock();
         let mut total_read_size = 0usize;
+        let requested_len = buf.len();
 
-        if self.inode.size() <= inner.offset {
-            //读取位置超过文件大小，返回结果为EOF
+        if buf.buffers.is_empty() || requested_len == 0 {
+            // EOF and zero-length reads are handled without entering the
+            // filesystem adapter.  A non-empty read_at() returns 0 itself at
+            // EOF, so a separate inode.size() probe would only add another
+            // serialized EXT4 operation to every read syscall.
             return Ok(0);
         }
 
-        // 这边要使用 iter_mut()，因为要将数据写入
-        for slice in buf.buffers.iter_mut() {
+        if buf.buffers.len() == 1 {
+            // Keep the common single-page case zero-copy.
+            let slice = &mut buf.buffers[0];
             let read_size = self.inode.read_at(inner.offset, slice)?;
-            if read_size == 0 {
-                break;
-            }
             inner.offset += read_size;
-            total_read_size += read_size;
+            total_read_size = read_size;
+        } else if requested_len <= MAX_AGGREGATED_READ {
+            // A user read commonly crosses a page boundary.  Entering the
+            // EXT4 adapter once per page serializes the whole syscall on the
+            // global lwext4 lock and repeats path/descriptor bookkeeping.  A
+            // temporary contiguous buffer lets the filesystem perform one
+            // read; the final copy only spans the user pages already supplied
+            // by the syscall.
+            let mut kernel_buf = vec![0; requested_len];
+            let read_size = self.inode.read_at(inner.offset, &mut kernel_buf)?;
+            if read_size != 0 {
+                buf.write(&kernel_buf[..read_size]);
+                inner.offset += read_size;
+                total_read_size = read_size;
+            }
+        } else {
+            // Keep very large reads streaming so a user-controlled length
+            // cannot force an unbounded temporary kernel allocation.
+            for slice in buf.buffers.iter_mut() {
+                let read_size = self.inode.read_at(inner.offset, slice)?;
+                if read_size == 0 {
+                    break;
+                }
+                inner.offset += read_size;
+                total_read_size += read_size;
+            }
         }
         if total_read_size > 0 && !self.suppress_fanotify && !fanotify_events_suppressed() {
             notify_path_event(&self.inode.path(), FAN_ACCESS);

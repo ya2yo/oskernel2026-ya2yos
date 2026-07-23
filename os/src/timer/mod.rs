@@ -114,6 +114,8 @@ use spin::{Lazy, Mutex};
 const TICKS_PER_SEC: usize = 100;
 /// 每秒钟的毫秒数
 pub const MSEC_PER_SEC: usize = 1000;
+/// Scheduler-side timer maintenance interval.
+pub const TIMER_INTERVAL_MS: usize = MSEC_PER_SEC / TICKS_PER_SEC;
 /// 每秒钟的微秒数
 pub const USEC_PER_SEC: u64 = 1_000_000;
 /// 每秒钟的纳秒数
