@@ -1172,3 +1172,19 @@
 - **场景**：维护者要求整理 `user/src/bin` 的决赛测试包装器，保持提交平台时由 `run_final_testsuit` 在 `/glibc` 直接执行两个正式 `testcode.sh`，并删除 CAgent/BuildStorm 的多余全量和组合入口。
 - **描述**：AI 对照 `initproc`、两份正式脚本和只读 BuildStorm judge，确认正式路径原本已正确且必须保持不变。删除 CAgent 的官方脚本嵌入、失败案例/全案例聚合，改为恰好 10 个单项 `run_*` 入口；删除 BuildStorm 的官方序列、选择器、组合诊断及非得分点探针，改为 toolchain、MINIBUILD、compile success、compile time 四个单项模块。compile 与 compile time 复用冷构建主体并仅输出 `BUILDSTORM_DEBUG_*`，不会干扰平台正式评分。RISC-V 与 LoongArch64 用户态构建通过；未运行依赖 final 镜像且可能持续 4 小时的 QEMU 单项编译。
 - **关联 commit**：尚未提交（2026-07-23 工作树）
+
+#### BuildStorm 并行度与文件映射吞吐优化（7.23）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析根目录 `log.ans` 中 BuildStorm 编译超过两小时仍只推进到
+  `97/446` 的低吞吐问题并完成内核优化。
+- **描述**：AI 结合 BuildStorm 脚本和调度器实现确认，`sched_getaffinity` 暴露单个
+  `home_hart` 使 guest `nproc=1`，Cargo 因此串行；修复恢复八核在线 mask。同时将干净
+  文件页缓存扩展到 `MAP_PRIVATE` 读 fault，架构页表为私有写映射保留 COW，并把文件读
+  直接写入新页帧。曾尝试挂载后重建 lwext4 bcache，但 QEMU 复现 journal 引用导致的
+  `fs::init` 卡住，已撤回该不安全方案。
+- **验证**：RISC-V、LoongArch64 release 构建通过；RISC-V 180 秒 QEMU 启动进入多 crate
+  Cargo 预构建，无 panic。完整 446 单元和严格 A/B 耗时未完成，未宣称性能百分比或正式
+  BuildStorm 通过。详见 `ai.log` 对应条目和
+  [problem/buildstorm-parallel-file-cache.md](./problem/buildstorm-parallel-file-cache.md)。
+- **关联 commit**：尚未提交（2026-07-23 工作树）

@@ -6725,3 +6725,42 @@ LoongArch64 使用独立 `/tmp` 目标目录以避开既有 `user/target` 文件
 TARGET_ARCH=riscv64` 的用户态阶段亦成功，后续内核阶段因既有 `nobody:nogroup` fingerprint
 不可覆盖而停止，未清理该构建产物。未运行 QEMU：单项测试依赖 final 镜像中的 glibc、
 agent/Cargo 环境，compile/time 单项可能运行至 4 小时。
+
+## 2026-07-23：BuildStorm 并行度与文件映射吞吐优化
+
+### 用户需求
+
+维护者提供根目录 `log.ans`，说明 `buildstorm::compile::run()` 运行超过两小时仍未报错，
+但只推进到约 `97/446`，要求进行大量优化加速。
+
+### 分析与采纳结论
+
+AI 先区分了“仍在推进但吞吐极低”和死锁/panic：日志没有错误，测试脚本实际执行
+`cargo xtask arceos build`，并由 guest 的 `nproc` 决定 Cargo 并发度。审计调度器后确认，
+维护者已有的 `sched_getaffinity` 修改把返回 mask 限制为当前进程的 `home_hart`，使八核
+guest 被 Cargo 识别为单核；调度器内部固定 home hart 是 TLB shootdown 尚未实现的约束，
+不应伪装成用户可见的单 CPU 拓扑。
+
+第二条路径是文件 mmap：原实现只让 `MAP_SHARED` 使用 `FILE_PAGE_CACHE`，多个独立 rustc
+进程读取同一只读 DSO 时重复分配和读取。采纳的方案是将干净文件页缓存扩展到
+`MAP_PRIVATE` 读 fault，并由两架构页表 helper 为可写私有映射设置 COW；私有 writable fault
+不直接复用全局缓存。缺页读还改为直接写入新页帧，删除中间 `Vec`，同时移除已由帧分配器保
+证的重复清零检查。
+
+曾试验在 lwext4 挂载完成后将 16 项 bcache 运行时重建为 4096 项。RISC-V QEMU 实测重建
+后停在 `fs::init`，原因是 journal 可能仍持有旧缓存引用；该方案被撤回，CMake/build.rs
+保持原状，不把不安全的缓存扩大列为已实现优化。
+
+### 修改文件
+
+`os/src/syscall/task/schedule.rs`、`os/src/mm/page_fault_handler.rs`、
+`os/src/fs/page_cache.rs`、`os/src/mm/map_area.rs`。`user/src/bin/initproc.rs` 及其他
+工作区改动均由维护者预先存在，未回滚或扩大其范围。
+
+### 验证与边界
+
+`make` 成功完成 RISC-V 和 LoongArch64 release 构建，只有既有 `smoltcp` warning。RISC-V
+`timeout 180s make run` 在 final-2026 镜像中完成 fs/net/八 hart 启动，进入 `tg-xtask`
+Cargo 预构建并显示多个 crate 编译队列，无 panic；没有完成完整 446 单元，也没有同一干净
+guest 下的新旧 `elapsed_s` A/B，因此不报告具体加速百分比或正式评分结果。详见
+`Docs/决赛文档/problem/buildstorm-parallel-file-cache.md`。

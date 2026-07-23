@@ -9,7 +9,7 @@ use crate::{
     syscall::MmapFlags,
 };
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use log::{debug, error};
+use log::debug;
 
 /// map area structure, controls a contiguous piece of virtual memory
 /// 逻辑段
@@ -115,13 +115,6 @@ impl MapArea {
         }
 
         page_table.map(vpn, ppn, self.map_perm);
-        // 打印调试信息
-        for b in ppn.bytes_array().iter() {
-            if *b != 0 {
-                error!("new page not zero! vpn={:?} ppn={:?}", vpn, ppn);
-                break;
-            }
-        }
         Some(ppn)
     }
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {

@@ -1,20 +1,12 @@
 // Page Fault Handler 回调
 
-use alloc::vec;
-
 use crate::{arch::memory_layout::PAGE_SIZE, fs::FILE_PAGE_CACHE};
 
 use super::group::GROUP_SHARE;
 use super::{MapArea, VirtAddr, VirtPageNum};
 use crate::arch::page_table::PageTable;
 
-fn shared_file_page_index(vma: &MapArea, va: VirtAddr) -> Option<usize> {
-    if !vma
-        .mmap_flags
-        .contains(crate::syscall::MmapFlags::MAP_SHARED)
-    {
-        return None;
-    }
+fn file_page_index(vma: &MapArea, va: VirtAddr) -> Option<usize> {
     vma.mmap_file.file.as_ref()?;
     let start_addr: VirtAddr = vma.vpn_range.start().into();
     let page_index = (va.0 - start_addr.0 + vma.mmap_file.offset) / PAGE_SIZE;
@@ -44,12 +36,8 @@ pub fn mmap_file_page_beyond_eof(va: VirtAddr, vma: &MapArea) -> bool {
             .unwrap_or_else(|| file.inode.size())
 }
 
-fn map_shared_file_page_from_cache(
-    va: VirtAddr,
-    page_table: &mut PageTable,
-    vma: &mut MapArea,
-) -> bool {
-    let Some(page_index) = shared_file_page_index(vma, va) else {
+fn map_file_page_from_cache(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
+    let Some(page_index) = file_page_index(vma, va) else {
         return false;
     };
     let Some(file) = vma.mmap_file.file.as_ref() else {
@@ -73,26 +61,33 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
     if mmap_file_page_beyond_eof(va, vma) {
         return false;
     }
-    if map_shared_file_page_from_cache(va, page_table, vma) {
+    // A MAP_SHARED writable fault can reuse the clean file page. Private
+    // writable mappings allocate below so their first store is isolated from
+    // the global read-only cache.
+    if vma
+        .mmap_flags
+        .contains(crate::syscall::MmapFlags::MAP_SHARED)
+        && map_file_page_from_cache(va, page_table, vma)
+    {
         return true;
     }
 
     // 映射页面,拷贝数据
-    if vma.map_one(page_table, va.into()).is_none() {
+    let Some(ppn) = vma.map_one(page_table, va.into()) else {
         return false;
-    }
+    };
     if vma.mmap_file.file.is_none() {
         return true;
     }
     let file = vma.mmap_file.file.clone().unwrap();
     let start_addr: VirtAddr = vma.vpn_range.start().into();
-    let va = va.0;
-    let mut kernel_buf = vec![0u8; PAGE_SIZE];
     file.inode
-        .read_at(va - start_addr.0 + vma.mmap_file.offset, &mut kernel_buf)
+        .read_at(
+            va.0 - start_addr.0 + vma.mmap_file.offset,
+            ppn.bytes_array_mut(),
+        )
         .expect("mmap_write_page_fault should not fail");
-    crate::mm::write_user_bytes_direct(page_table.token(), va as usize, &kernel_buf);
-    let vpn = VirtAddr::from(va).floor();
+    let vpn = va.floor();
     page_table.handle_mmap_write_page_fault(vpn, vma.map_perm, vma.mmap_flags);
     true
 }
@@ -112,6 +107,12 @@ pub fn mmap_read_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut 
 
         // page_table.map(vpn, ppn, pte_flags);
         page_table.handle_mmap_read_page_fault(vpn, ppn, vma.map_perm, vma.mmap_flags);
+        return true;
+    }
+    // MAP_PRIVATE file mappings can share clean pages between processes. The
+    // page-table helper marks writable private mappings COW, so a later store
+    // still gets a private copy through the normal write-protect path.
+    if map_file_page_from_cache(va, page_table, vma) {
         return true;
     }
     //第一次读，分配页面

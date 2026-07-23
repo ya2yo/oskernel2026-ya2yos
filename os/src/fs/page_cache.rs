@@ -98,7 +98,6 @@ impl FilePageCache {
 
         let frame = FrameTracker::alloc().ok_or(SysErrNo::ENOMEM)?;
         let bytes = frame.ppn.bytes_array_mut();
-        bytes.fill(0);
 
         let file_offset = page_index * PAGE_SIZE;
         let valid_len = if file_offset < inode.size() {
