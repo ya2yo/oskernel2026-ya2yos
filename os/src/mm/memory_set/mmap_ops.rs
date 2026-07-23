@@ -29,6 +29,19 @@ use log::{debug, warn};
 
 const MMAP_WRITEBACK_CHUNK_SIZE: usize = 0x10000; // 64KB
 
+// pthread stacks are allocated with mmap(MAP_STACK), but the area type is
+// kept as Stack so page faults use the regular stack lazy-allocation path.
+// They are nevertheless ordinary dynamic VMAs and must be reclaimed by
+// munmap.  The fixed process stack is a Stack without MAP_STACK and remains
+// excluded.
+fn is_dynamic_mmap_stack(area: &MapArea) -> bool {
+    area.area_type == MapAreaType::Stack && area.mmap_flags.contains(MmapFlags::MAP_STACK)
+}
+
+fn is_mmap_vma(area: &MapArea) -> bool {
+    area.area_type == MapAreaType::Mmap || is_dynamic_mmap_stack(area)
+}
+
 impl MemorySetInner {
     /// Check the Linux SIGBUS condition for a file-backed mmap fault.
     pub fn mmap_file_page_beyond_eof(&self, vpn: VirtPageNum) -> bool {
@@ -196,7 +209,7 @@ impl MemorySetInner {
             .areas
             .iter_mut()
             .enumerate()
-            .filter(|(_, area)| area.area_type == MapAreaType::Mmap)
+            .filter(|(_, area)| is_mmap_vma(area))
             .find(|(_, area)| {
                 let (start, end) = area.vpn_range.range();
                 start < end_vpn && end > start_vpn

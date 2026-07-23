@@ -66,6 +66,10 @@ pub struct Ext4File {
     // does not preserve allocation extents, so sparse files must write
     // directly to lwext4 once their layout can contain holes.
     cache_disabled: bool,
+    // Delayed-unlink files remain active while their pathname is hidden from
+    // new opens. Keep their cache out of the global FIFO until the last fd
+    // closes, otherwise concurrent temporary writers continually rebuild it.
+    cache_pinned: bool,
 }
 
 impl Ext4File {
@@ -85,6 +89,7 @@ impl Ext4File {
             pending_mode: None,
             cache_too_large: false,
             cache_disabled: false,
+            cache_pinned: false,
         }
     }
 
@@ -432,7 +437,7 @@ impl Ext4File {
 
         let c_path = CString::new(file_path.as_str()).expect("CString::new failed");
         let c_path = c_path.into_raw();
-        let c_flags = Ext4File::flags_to_cstring(2).into_raw();
+        let c_flags = Ext4File::flags_to_cstring(O_RDONLY).into_raw();
         let mut cache_desc = ext4_file {
             mp: core::ptr::null_mut(),
             inode: 0,
@@ -496,7 +501,10 @@ impl Ext4File {
                 ext4_fclose(&mut cache_desc);
             }
             drop(cache_writer);
-            if insert_fifo(file_path.clone()).is_ok() {
+            if self.cache_pinned {
+                insert_cache(file_path.clone(), &cache);
+                debug!("initialize pinned cache! {}", file_path);
+            } else if insert_fifo(file_path.clone()).is_ok() {
                 insert_cache(file_path.clone(), &cache);
                 debug!("initialize cache! {}", file_path);
             }
@@ -524,7 +532,10 @@ impl Ext4File {
             return Ok(());
         }
         drop(cache_writer);
-        if insert_fifo(file_path.clone()).is_ok() {
+        if self.cache_pinned {
+            insert_cache(file_path.clone(), &cache);
+            debug!("initialize pinned cache! {}", file_path);
+        } else if insert_fifo(file_path.clone()).is_ok() {
             insert_cache(file_path.clone(), &cache);
             debug!("initialize cache! {}", file_path);
         }
@@ -726,18 +737,38 @@ impl Ext4File {
             return get_cache(path.clone()).read().size as u64;
         }
 
-        //注，记得先 O_RDONLY 打开文件
+        // Query the size through a separate descriptor.  Reusing
+        // `self.file_desc` here would replace an active O_RDWR descriptor
+        // with O_RDONLY while leaving `last_flags` unchanged; the next write
+        // could then be rejected by lwext4 as a read-only operation.
         let c_path = self.file_path.clone().into_raw();
-        let c_flags = Ext4File::flags_to_cstring(2).into_raw();
+        let c_flags = Ext4File::flags_to_cstring(O_RDONLY).into_raw();
+        let mut size_desc = ext4_file {
+            mp: core::ptr::null_mut(),
+            inode: 0,
+            flags: 0,
+            fsize: 0,
+            fpos: 0,
+        };
 
-        //重新打开文件获得最新的文件信息
-        unsafe { ext4_fopen(&mut self.file_desc, c_path, c_flags) };
+        // 重新打开文件获得最新的文件信息，但不要覆盖当前活动句柄。
+        let r = unsafe { ext4_fopen(&mut size_desc, c_path, c_flags) };
         unsafe {
             // deallocate the CString
             drop(CString::from_raw(c_path));
             drop(CString::from_raw(c_flags));
         }
-        unsafe { ext4_fsize(&mut self.file_desc) }
+        if r != EOK as i32 {
+            return 0;
+        }
+        let size = unsafe { ext4_fsize(&mut size_desc) };
+        unsafe {
+            ext4_fclose(&mut size_desc);
+        }
+        // Keep SEEK_END and direct writes based on the current EOF without
+        // replacing the active descriptor's flags or file position.
+        self.file_desc.fsize = size;
+        size
     }
 
     pub fn file_cache_flush(&mut self) -> Result<usize, i32> {
@@ -819,6 +850,15 @@ impl Ext4File {
         self.disable_whole_file_cache();
         self.cache_disabled = true;
         Ok(0)
+    }
+
+    /// Keep this descriptor's cache out of the global FIFO while the inode is
+    /// still actively used after unlink.  The owner removes it through the
+    /// normal path/inode cache cleanup when the last reference is dropped.
+    pub fn pin_write_back_cache(&mut self) {
+        self.cache_pinned = true;
+        let path = self.file_path.to_str().unwrap();
+        remove_fifo_path(path);
     }
 
     pub fn set_time(
@@ -1465,11 +1505,12 @@ pub fn discard_path_cache(file_path: &str) {
 ///
 /// The guards are deliberately released between tables so cache removal never
 /// waits for FIFO state while retaining a cache-table guard.
+fn remove_fifo_path(file_path: &str) {
+    FIFO_TABLE.lock().retain(|entry| entry != file_path);
+}
+
 fn remove_file_cache_state(file_path: &str) {
-    {
-        let mut fifo = FIFO_TABLE.lock();
-        fifo.retain(|entry| entry != file_path);
-    }
+    remove_fifo_path(file_path);
     CACHE_TABLE.lock().remove(file_path);
 }
 
@@ -1657,6 +1698,7 @@ fn write_back_cache_entry(path: &str, cache: &Arc<RwLock<VFileCache>>) -> Result
         );
         return Err(EIO as i32);
     }
+    cache_writer.modified = false;
     Ok(rw_count)
 }
 

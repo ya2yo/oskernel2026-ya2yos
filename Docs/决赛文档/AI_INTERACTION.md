@@ -1262,3 +1262,9 @@
 - **验证**：RISC-V/LoongArch64 独立 target perf release 编译通过，仅有既有 smoltcp
   warning；QEMU 运行因 `/var/tmp` snapshot 权限未重新执行，未报告新耗时或正式评分。
 - **关联 commit**：尚未提交（2026-07-24 工作树）
+#### LTP mmap3 并发缓存抖动与 MAP_STACK 回收修复（7.23）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析 `log.ans` 中的 `mmap3` watchdog `TBROK`，定位 ext4 缓存性能问题并完成修复、双架构构建和 QEMU 回归。
+- **描述**：AI 对照 `mmap3.c` 确认 40 个线程并发操作延迟删除临时文件；`FIFO_SIZE=10` 的 whole-file cache 会驱逐仍活跃的缓存，下一次 seek 又在全局 ext4 锁下重建，造成缓存抖动和超时。修复为延迟删除 inode 固定缓存、成功写回清除脏标志、`file_size()` 使用独立 descriptor，并让 `munmap()` 回收带 `MAP_STACK` 的动态线程栈而不影响固定主栈。RISC-V 300 秒 QEMU 中 musl/glibc 均 `TPASS`、summary 为 `passed 1 failed 0 broken 0` 并正常 `shutdown!`；RISC-V/LoongArch64 release 与 RISC-V debug 构建通过。详见 [problem/mmap3-cache-churn-and-map-stack-leak.md](./problem/mmap3-cache-churn-and-map-stack-leak.md) 与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-23 工作树）

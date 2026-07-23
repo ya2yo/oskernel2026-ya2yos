@@ -6871,3 +6871,27 @@ getdents 路径及 memory range 诊断，详见 `Docs/决赛文档/problem/clone
 RISC-V 新样本为 `clone total_us=104066`、`clone_duration procfs total_us=231 max_us=109`，
 `cagent cpu pass 603` 并正常 `shutdown!`；RISC-V 与 LoongArch64 `make perf` 均通过，
 仅有既有 smoltcp warning。
+## 2026-07-23：LTP mmap3 并发缓存抖动与 MAP_STACK 回收修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并继续修复 LTP `mmap3` 超时。
+
+### 分析与采纳结论
+
+AI 先按 LTP `TPASS/TFAIL/TBROK` 和 summary 过滤日志，确认真实失败是 musl/glibc 两轮均在 90 秒 watchdog 输出 `TBROK: Test killed! (timeout?)`；外层 `FAIL LTP CASE mmap3 : 512` 是包装器把 `TBROK=2` 编码为 wait status，并非断言失败。对照只读的 `mmap3.c` 源码确认其 40 线程临时文件工作负载，再追踪 `Ext4Inode::write_at()`、lwext4 whole-file cache 和 `FIFO_SIZE=10`，定位到 active delayed-unlink 文件的缓存被 FIFO 驱逐后反复 `ext4_fopen`/`ext4_fread` 重建。全局 `EXT4_OP_LOCK` 将这些重建和写回串行化，形成主要超时原因。
+
+同时复核了两个相关语义缺口：`file_size()` 覆盖活动 `O_RDWR` 描述符的问题，以及 `munmap()` 只识别 `MapAreaType::Mmap`、无法回收带 `MAP_STACK` 的动态 pthread 栈。直接禁用延迟删除文件缓存的试验消除了重复初始化但仍然过慢，因此没有采用直写绕过方案。
+
+### 修改
+
+- `crates/lwext4_rust/src/file.rs` 增加 `cache_pinned` 和 `pin_write_back_cache()`。延迟删除 inode 从 FIFO 移除但保留缓存表项，缓存重建不再参与全局 FIFO；成功写回清除 `modified`，并用独立只读 descriptor 实现 `file_size()`。
+- `os/src/fs/ext4_lw/inode.rs` 在延迟删除文件的 `write_at()` 中固定 write-back cache，使 40 个仍有活动 fd 的临时 inode 不会互相驱逐缓存。
+- `os/src/mm/memory_set/mmap_ops.rs` 增加动态 `MAP_STACK` VMA 判定，使 pthread 动态栈的页表、物理页和 mmap 计数随 `munmap()` 回收，同时保留固定主栈排除规则。
+- 新增 `Docs/决赛文档/problem/mmap3-cache-churn-and-map-stack-leak.md`，并更新问题索引、开发日志和 `AI_INTERACTION.md`。
+
+### 验证与边界
+
+基线 `timeout 120s make run` 的 `/tmp/mmap3-release-baseline.log` 仍在 LTP watchdog 超时；修复后的独占 `timeout 300s make run` 日志 `/tmp/mmap3-pinned-300.log` 中 musl/glibc 均输出 `mmap3.c:124: TPASS`，summary 均为 `passed 1 failed 0 broken 0`，最终 `shutdown!`，无 panic/ERROR/WARN。`make TARGET_ARCH=riscv64`（实际完成 RISC-V 与 LoongArch64 release 构建）、`make log TARGET_ARCH=riscv64` 和 `git diff --check` 均通过。未运行完整 LTP 批量套件，因此没有把单项结果表述为全量通过。
+
+- **关联 commit**：尚未提交（2026-07-23 工作树）

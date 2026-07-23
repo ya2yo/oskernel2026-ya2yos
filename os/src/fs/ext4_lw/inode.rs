@@ -228,8 +228,15 @@ impl Inode for Ext4Inode {
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
+        let delayed = inner.delay;
         let file = &mut inner.f;
         file.file_open(&path, O_RDWR).map_err(SysErrNo::from)?;
+        if delayed {
+            // Keep an unlinked-but-open temporary file's cache alive until
+            // its last fd closes; the FIFO cannot otherwise distinguish it
+            // from an idle cache and will repeatedly evict/rebuild it.
+            file.pin_write_back_cache();
+        }
         let current_size = inner
             .known_size
             .unwrap_or_else(|| file.file_size() as usize);
