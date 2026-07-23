@@ -6689,3 +6689,39 @@ kernel panic；`12.ans` 用最终 selector 启动，sigaltstack/rseq 均 PASS，
 镜像和独占宿主条件下完成默认并发与单作业的完整 A/B。
 
 返回状态修正后再次执行根目录 `17.ans`（RISC-V）和 `18.ans`（LoongArch64）构建，均成功。
+## 2026-07-23：决赛 CAgent/BuildStorm 测试包装器收束
+
+### 用户需求
+
+维护者要求整理 `user/src/bin` 下的决赛测试脚本运行包装器：提交平台时继续用
+`run_final_testsuit` 在 glibc 目录执行 `cagent_testcode.sh` 和
+`buildstorm_testcode.sh`；删除 CAgent、BuildStorm 目录中的全量官方脚本和组合诊断包装，
+使两者分别只保留 10 个和 4 个得分点的单项测试。
+
+### 分析与采纳结论
+
+审计 `initproc::test_final_2026()`、参考脚本和只读 judge 后确认，正式入口已经正确：子进程
+切换到 `/glibc` 后以 Bash 顺序运行两个正式脚本。CAgent 的官方脚本含
+`factorial`、`date`、`network`、`cpu`、`kernel`、`fs-create`、`fs-readwrite`、
+`fs-directory`、`fs-search`、`fs-usage` 十项；BuildStorm judge 的四项为 toolchain、
+MINIBUILD、compile success、compile time。原有 `run_official_script()`、
+`run_official_sequence()`、选择器、批量诊断和额外探针均不应参与这两个稳定接口。
+
+采纳保留单项执行所需的内部脚本物化/进程执行基础，但删除正式脚本的 `include_str!` 嵌入和
+所有多 case 公共 API。BuildStorm 的 compile success 与 compile time 共享同一冷构建 Shell
+主体，以保证清理 target、预构建和产物检查语义一致；两项只输出 `BUILDSTORM_DEBUG_*`，
+不会污染正式评分标记。未修改测试源码、正式 testcode 或维护者已有的 `initproc.rs` 改动。
+
+### 修改与验证
+
+修改 `user/src/bin/cagent/mod.rs`，增加 10 个显式 `run_*` 单项入口并删除官方/聚合包装。
+修改 `user/src/bin/buildstorm/{mod.rs,common.rs}`，新增 `minibuild.rs`、`compile.rs`、
+`compile_time.rs`，保留 `toolchain.rs`，删除 `official.rs`、旧的 MINIBUILD 两阶段、xtask、
+rename 和 unicode 等非得分点包装器。
+
+`git diff --check`、Rust 格式检查、嵌入 Shell 的 `sh -n` 和遗留包装器符号搜索均通过。用户态
+`cargo build --release` 对 `riscv64gc-unknown-none-elf` 与 `loongarch64-unknown-none` 均通过；
+LoongArch64 使用独立 `/tmp` 目标目录以避开既有 `user/target` 文件属主问题。`make build-arch
+TARGET_ARCH=riscv64` 的用户态阶段亦成功，后续内核阶段因既有 `nobody:nogroup` fingerprint
+不可覆盖而停止，未清理该构建产物。未运行 QEMU：单项测试依赖 final 镜像中的 glibc、
+agent/Cargo 环境，compile/time 单项可能运行至 4 小时。

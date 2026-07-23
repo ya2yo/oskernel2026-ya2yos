@@ -1,8 +1,9 @@
-//! Guest-side, individually runnable CAgent diagnostics.
+//! Guest-side, single-score-point CAgent tests.
 //!
-//! Each case mirrors one entry in `scripts/cagent_testcode.sh`.  The source
-//! script remains untouched; this module exists so a failed case can be run
-//! in isolation while its agent output stays on the serial console.
+//! Each public function mirrors exactly one entry in `scripts/cagent_testcode.sh`.
+//! The platform submission runs that canonical script directly; these entries
+//! exist only for isolating one score point while keeping agent output on the
+//! serial console.
 
 use alloc::format;
 use user_lib::{
@@ -21,7 +22,6 @@ mod kernel;
 mod network;
 
 const GLIBC_ROOT: &str = "glibc\0";
-const SCORE_SCRIPT_PATH: &str = "/tmp/cagent-score.sh\0";
 const DIAGNOSTIC_SCRIPT_PATH: &str = "/tmp/cagent-diagnostic.sh\0";
 const SERVER_START_DELAY_MS: usize = 1000;
 const SIGTERM: usize = 15;
@@ -30,7 +30,7 @@ const SCRIPT_MODE: u32 = 0o600;
 const EIO: isize = -5;
 
 #[derive(Clone, Copy)]
-pub struct Case {
+struct Case {
     name: &'static str,
     prompt: &'static str,
     validation: &'static str,
@@ -38,7 +38,7 @@ pub struct Case {
 }
 
 impl Case {
-    pub const fn new(
+    const fn new(
         name: &'static str,
         prompt: &'static str,
         validation: &'static str,
@@ -53,33 +53,44 @@ impl Case {
     }
 }
 
-pub static ALL_CASES: [&Case; 10] = [
-    &factorial::CASE,
-    &date::CASE,
-    &network::CASE,
-    &cpu::CASE,
-    &kernel::CASE,
-    &fs_create::CASE,
-    &fs_readwrite::CASE,
-    &fs_directory::CASE,
-    &fs_search::CASE,
-    &fs_usage::CASE,
-];
-
-/// Run the three cases that rejected in the supplied LoongArch CAgent log.
-pub fn run_failed_cases() -> usize {
-    run_cases(&[&kernel::CASE, &fs_readwrite::CASE, &fs_directory::CASE])
+pub fn run_factorial() -> i32 {
+    run_case(factorial::CASE)
 }
 
-/// Run the canonical scoring script without changing the diagnostic cases.
-pub fn run_official_script() -> i32 {
-    match materialize_script(SCORE_SCRIPT_PATH, CAGENT_TESTCODE) {
-        Ok(()) => crate::run_final_testsuit(GLIBC_ROOT, SCORE_SCRIPT_PATH),
-        Err(err) => {
-            println!("cagent-score materialize fail: {}", err);
-            err as i32
-        }
-    }
+pub fn run_date() -> i32 {
+    run_case(date::CASE)
+}
+
+pub fn run_network() -> i32 {
+    run_case(network::CASE)
+}
+
+pub fn run_cpu() -> i32 {
+    run_case(cpu::CASE)
+}
+
+pub fn run_kernel() -> i32 {
+    run_case(kernel::CASE)
+}
+
+pub fn run_fs_create() -> i32 {
+    run_case(fs_create::CASE)
+}
+
+pub fn run_fs_readwrite() -> i32 {
+    run_case(fs_readwrite::CASE)
+}
+
+pub fn run_fs_directory() -> i32 {
+    run_case(fs_directory::CASE)
+}
+
+pub fn run_fs_search() -> i32 {
+    run_case(fs_search::CASE)
+}
+
+pub fn run_fs_usage() -> i32 {
+    run_case(fs_usage::CASE)
 }
 
 fn materialize_script(path: &str, script: &str) -> Result<(), isize> {
@@ -119,26 +130,9 @@ fn materialize_script(path: &str, script: &str) -> Result<(), isize> {
     }
 }
 
-/// Run arbitrary CAgent cases sequentially.  A separate server is used for
-/// every case, so a hung or malformed request cannot contaminate the next one.
-pub fn run_cases(cases: &[&Case]) -> usize {
-    let mut failures = 0;
-
-    for case in cases {
-        if !run_case(**case) {
-            failures += 1;
-        }
-    }
-
-    println!(
-        "===== CAgent diagnostics complete: {}/{} passed =====",
-        cases.len() - failures,
-        cases.len()
-    );
-    failures
-}
-
-fn run_case(case: Case) -> bool {
+/// A separate server is used for every score point so a hung or malformed
+/// request cannot contaminate a later manual run.
+fn run_case(case: Case) -> i32 {
     println!("===== START cagent {} =====", case.name);
     let server_pid = start_server();
     sleep(SERVER_START_DELAY_MS);
@@ -148,14 +142,14 @@ fn run_case(case: Case) -> bool {
 
     if status == 0 {
         println!("===== END cagent {} pass =====", case.name);
-        true
     } else {
         println!(
             "===== END cagent {} reject status={} =====",
             case.name, status
         );
-        false
     }
+
+    status
 }
 
 fn start_server() -> isize {
@@ -208,5 +202,3 @@ exit $ret"#;
         ],
     )
 }
-
-const CAGENT_TESTCODE: &str = include_str!("../../../../scripts/cagent_testcode.sh");

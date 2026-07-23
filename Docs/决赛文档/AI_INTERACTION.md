@@ -1166,4 +1166,9 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析根目录 `log.ans` 的 BuildStorm `pre-build tg-xtask` 编译失败和长期低吞吐，并让 `initproc` 仅运行该定向测例。
 - **描述**：AI 确认 Rustc 的长 `--check-cfg` 被 `execve` 误用的 256 B pathname 读取接口截断，导致 `E0765`。修复将 `argv/envp` 改为有上限的原始字节读取，预先构造可失败的新用户栈；RISC-V 空闲调度改为 one-shot timer + WFI，LoongArch 保持 polling。`initproc` 选择显式单作业诊断入口并保留 case 返回状态，默认并发和正式 BuildStorm 路径未改。双架构构建通过，独占的根目录 `16.ans` 已越过原错误位置；完整 446 单元和正式性能评分未宣称通过。详见 [problem/buildstorm-execve-argv-truncation.md](./problem/buildstorm-execve-argv-truncation.md) 与 `ai.log` 对应条目。
+#### 决赛 CAgent/BuildStorm 单项评分包装器收束（7.23）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求整理 `user/src/bin` 的决赛测试包装器，保持提交平台时由 `run_final_testsuit` 在 `/glibc` 直接执行两个正式 `testcode.sh`，并删除 CAgent/BuildStorm 的多余全量和组合入口。
+- **描述**：AI 对照 `initproc`、两份正式脚本和只读 BuildStorm judge，确认正式路径原本已正确且必须保持不变。删除 CAgent 的官方脚本嵌入、失败案例/全案例聚合，改为恰好 10 个单项 `run_*` 入口；删除 BuildStorm 的官方序列、选择器、组合诊断及非得分点探针，改为 toolchain、MINIBUILD、compile success、compile time 四个单项模块。compile 与 compile time 复用冷构建主体并仅输出 `BUILDSTORM_DEBUG_*`，不会干扰平台正式评分。RISC-V 与 LoongArch64 用户态构建通过；未运行依赖 final 镜像且可能持续 4 小时的 QEMU 单项编译。
 - **关联 commit**：尚未提交（2026-07-23 工作树）

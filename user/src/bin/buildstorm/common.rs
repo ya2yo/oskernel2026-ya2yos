@@ -48,7 +48,7 @@ fn materialize_script(path: &str, script: &str) -> Result<(), isize> {
     }
 }
 
-/// 物化并运行一个 case，保留 child 的原始 wait status 供组合入口汇总。
+/// 物化并运行一个 case，保留 child 的原始 wait status 供调用方报告。
 pub(crate) fn run_case(name: &str, script_path: &str, script_body: &str) -> i32 {
     println!("#### OS COMP TEST GROUP START buildstorm-{} ####", name);
     let status = match materialize_script(script_path, script_body) {
