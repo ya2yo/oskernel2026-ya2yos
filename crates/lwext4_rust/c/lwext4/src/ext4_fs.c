@@ -1175,10 +1175,47 @@ static int ext4_fs_release_inode_block(struct ext4_inode_ref *inode_ref,
 	return ext4_balloc_free_block(inode_ref, fblock);
 }
 
+/* Zero a range contained in one already-mapped data block. Holes and
+ * unwritten extents stay unallocated: reads from them already return zero. */
+static int ext4_fs_zero_inode_tail(struct ext4_inode_ref *inode_ref,
+				   uint64_t offset, uint32_t length)
+{
+	struct ext4_fs *fs = inode_ref->fs;
+	uint32_t block_size = ext4_sb_get_block_size(&fs->sb);
+	uint32_t block_offset = (uint32_t)(offset % block_size);
+	ext4_fsblk_t fblock = 0;
+	uint8_t *zeros;
+	int r;
+
+	if (!length)
+		return EOK;
+	if (!block_offset || length > block_size - block_offset)
+		return EINVAL;
+
+	r = ext4_fs_get_inode_dblk_idx(inode_ref, offset / block_size,
+					       &fblock, true);
+	if (r != EOK || !fblock)
+		return r;
+
+	zeros = ext4_calloc(1, length);
+	if (!zeros)
+		return ENOMEM;
+
+	/* File payload reads and writes bypass bcache. Keep tail clearing on that
+	 * same path: a dirty cached snapshot can otherwise overwrite a later
+	 * direct write to this block. */
+	r = ext4_block_writebytes(fs->bdev,
+				 fblock * (uint64_t)block_size + block_offset,
+				 zeros, length);
+	ext4_free(zeros);
+	return r;
+}
+
 int ext4_fs_truncate_inode(struct ext4_inode_ref *inode_ref, uint64_t new_size)
 {
 	struct ext4_sblock *sb = &inode_ref->fs->sb;
 	uint32_t i;
+	uint32_t block_size;
 	int r;
 	bool v;
 
@@ -1191,14 +1228,12 @@ int ext4_fs_truncate_inode(struct ext4_inode_ref *inode_ref, uint64_t new_size)
 	if (old_size == new_size)
 		return EOK;
 
-	/* It's not supported to make the larger file by truncate operation */
-	if (old_size < new_size)
-		return EINVAL;
-
 	/* For symbolic link which is small enough */
 	v = ext4_inode_is_type(sb, inode_ref->inode, EXT4_INODE_MODE_SOFTLINK);
 	if (v && old_size < sizeof(inode_ref->inode->blocks) &&
 	    !ext4_inode_get_blocks_count(sb, inode_ref->inode)) {
+		if (old_size < new_size)
+			return EINVAL;
 		char *content = (char *)inode_ref->inode->blocks + new_size;
 		memset(content, 0,
 		       sizeof(inode_ref->inode->blocks) - (uint32_t)new_size);
@@ -1212,6 +1247,8 @@ int ext4_fs_truncate_inode(struct ext4_inode_ref *inode_ref, uint64_t new_size)
 	if (i == EXT4_INODE_MODE_CHARDEV ||
 	    i == EXT4_INODE_MODE_BLOCKDEV ||
 	    i == EXT4_INODE_MODE_SOCKET) {
+		if (old_size < new_size)
+			return EINVAL;
 		inode_ref->inode->blocks[0] = 0;
 		inode_ref->inode->blocks[1] = 0;
 
@@ -1219,8 +1256,35 @@ int ext4_fs_truncate_inode(struct ext4_inode_ref *inode_ref, uint64_t new_size)
 		return EOK;
 	}
 
+	block_size = ext4_sb_get_block_size(sb);
+	if (old_size < new_size) {
+		uint32_t tail = (uint32_t)(old_size % block_size);
+		if (tail) {
+			uint64_t growth = new_size - old_size;
+			uint32_t zero_len = block_size - tail;
+			if (growth < zero_len)
+				zero_len = (uint32_t)growth;
+			r = ext4_fs_zero_inode_tail(inode_ref, old_size, zero_len);
+			if (r != EOK)
+				return r;
+		}
+
+		ext4_inode_set_size(inode_ref->inode, new_size);
+		inode_ref->dirty = true;
+		return EOK;
+	}
+
+	/* Clear the retained tail before shrinking. A later extension must never
+	 * expose bytes that were past the new EOF. */
+	if (new_size % block_size) {
+		r = ext4_fs_zero_inode_tail(
+			inode_ref, new_size,
+			block_size - (uint32_t)(new_size % block_size));
+		if (r != EOK)
+			return r;
+	}
+
 	/* Compute how many blocks will be released */
-	uint32_t block_size = ext4_sb_get_block_size(sb);
 	uint32_t new_blocks_cnt = (uint32_t)((new_size + block_size - 1) / block_size);
 	uint32_t old_blocks_cnt = (uint32_t)((old_size + block_size - 1) / block_size);
 	uint32_t diff_blocks_cnt = old_blocks_cnt - new_blocks_cnt;
@@ -1349,15 +1413,15 @@ static int ext4_fs_get_inode_dblk_idx_internal(struct ext4_inode_ref *inode_ref,
 {
 	struct ext4_fs *fs = inode_ref->fs;
 
-	/* For empty file is situation simple */
-	if (ext4_inode_get_size(&fs->sb, inode_ref->inode) == 0) {
+	/* A lookup on an empty inode is a hole, but a write-side lookup must
+	 * reach the extent mapper so it can allocate the first data block. */
+	if (!extent_create && ext4_inode_get_size(&fs->sb, inode_ref->inode) == 0) {
 		*fblock = 0;
 		return EOK;
 	}
 
 	ext4_fsblk_t current_block;
 
-	(void)extent_create;
 #if CONFIG_EXTENT_ENABLE && CONFIG_EXTENTS_ENABLE
 	/* Handle i-node using extents */
 	if ((ext4_sb_feature_incom(&fs->sb, EXT4_FINCOM_EXTENTS)) &&

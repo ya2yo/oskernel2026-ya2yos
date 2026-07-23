@@ -106,9 +106,13 @@ impl OpenFlags {
 
 pub const MAX_PATH_LEN: usize = 256;
 
-pub const SEEK_SET: usize = 0;
-pub const SEEK_CUR: usize = 1;
-pub const SEEK_END: usize = 2;
+// Keep the VFS seek interface architecture-independent. `linux_raw_sys`
+// exposes these ABI constants as `u32`, while `File::lseek()` takes `usize`.
+pub const SEEK_SET: usize = linux_raw_sys::general::SEEK_SET as usize;
+pub const SEEK_CUR: usize = linux_raw_sys::general::SEEK_CUR as usize;
+pub const SEEK_END: usize = linux_raw_sys::general::SEEK_END as usize;
+pub const SEEK_DATA: usize = linux_raw_sys::general::SEEK_DATA as usize;
+pub const SEEK_HOLE: usize = linux_raw_sys::general::SEEK_HOLE as usize;
 
 pub const DEFAULT_FILE_MODE: u32 = 0o666;
 pub const DEFAULT_DIR_MODE: u32 = 0o777;

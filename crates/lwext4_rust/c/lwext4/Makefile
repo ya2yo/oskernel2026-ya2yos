@@ -33,10 +33,23 @@ endef
 
 ARCH ?= x86_64
 #Output: src/liblwext4.a
+define build_dir
+$(if $(LWEXT4_BUILD_DIR),$(LWEXT4_BUILD_DIR),build_$(1))
+endef
+
+define generate_arch_build
+	rm -R -f $(call build_dir,$(1))
+	mkdir $(call build_dir,$(1))
+	cd $(call build_dir,$(1)) && cmake -G"Unix Makefiles" \
+	$(COMMON_DEFINITIONS)                                  \
+	$(2)                                                   \
+	-DCMAKE_TOOLCHAIN_FILE=../toolchain/$(1).cmake ..
+endef
+
 musl-generic:
-	$(call generate_common,$@)
-	cd build_$@ && make lwext4
-	cp build_$@/src/liblwext4.a ./liblwext4-$(ARCH).a
+	$(call generate_arch_build,$@)
+	cd $(call build_dir,$@) && make lwext4
+	cp $(call build_dir,$@)/src/liblwext4.a ./liblwext4-$(ARCH).a
 
 generic:
 	$(call generate_common,$@)

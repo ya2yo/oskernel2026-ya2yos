@@ -1,8 +1,8 @@
 use crate::{
     fs::{
         fanotify_events_suppressed, notify_path_event, FsIndex, Kstat, FAN_ACCESS,
-        FAN_CLOSE_NOWRITE, FAN_CLOSE_WRITE, FAN_MODIFY, FILE_PAGE_CACHE, SEEK_CUR, SEEK_END,
-        SEEK_SET,
+        FAN_CLOSE_NOWRITE, FAN_CLOSE_WRITE, FAN_MODIFY, FILE_PAGE_CACHE, SEEK_CUR, SEEK_DATA,
+        SEEK_END, SEEK_HOLE, SEEK_SET,
     },
     mm::{copy_from_user, copy_to_user, MemorySet, UserBuffer},
     syscall::PollEvents,
@@ -26,6 +26,15 @@ static WRITE_OPEN_COUNTS: Lazy<Mutex<BTreeMap<String, usize>>> =
 static FILE_FLAGS: Lazy<Mutex<BTreeMap<String, u32>>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
 static NEXT_OFD_LOCK_OWNER: AtomicI32 = AtomicI32::new(1);
 const PIPE_MAX_SIZE_PATH: &str = "/proc/sys/fs/pipe-max-size";
+
+fn seek_offset(base: usize, offset: isize) -> Result<usize, SysErrNo> {
+    if offset < 0 {
+        let magnitude = offset.checked_neg().ok_or(SysErrNo::EINVAL)? as usize;
+        base.checked_sub(magnitude).ok_or(SysErrNo::EINVAL)
+    } else {
+        base.checked_add(offset as usize).ok_or(SysErrNo::EINVAL)
+    }
+}
 
 fn alloc_ofd_lock_owner() -> i32 {
     -NEXT_OFD_LOCK_OWNER.fetch_add(1, Ordering::Relaxed)
@@ -259,34 +268,43 @@ impl File for OSFile {
         revents
     }
     fn lseek(&self, offset: isize, whence: usize) -> SyscallRet {
-        if whence > 2 {
-            return Err(SysErrNo::EINVAL);
-        }
         let inode_type =
             FsIndex::special_node_type(&self.inode.path()).unwrap_or_else(|| self.inode.types());
         if inode_type.is_fifo() || inode_type.is_socket() {
             return Err(SysErrNo::ESPIPE);
         }
         let mut inner = self.inner.lock();
-        if whence == SEEK_SET {
-            if offset < 0 {
-                return Err(SysErrNo::EINVAL);
+        let new_offset = match whence {
+            SEEK_SET => {
+                if offset < 0 {
+                    return Err(SysErrNo::EINVAL);
+                }
+                offset as usize
             }
-            inner.offset = offset as usize;
-        } else if whence == SEEK_CUR {
-            let newoff = inner.offset as isize + offset;
-            if newoff < 0 {
-                return Err(SysErrNo::EINVAL);
+            SEEK_CUR => seek_offset(inner.offset, offset)?,
+            SEEK_END => seek_offset(self.inode.size(), offset)?,
+            SEEK_DATA => {
+                if offset < 0 {
+                    return Err(SysErrNo::ENXIO);
+                }
+                self.inode.seek_data(offset as usize)?
             }
-            inner.offset = newoff as usize;
-        } else if whence == SEEK_END {
-            let newoff = self.inode.size() as isize + offset;
-            if newoff < 0 {
-                return Err(SysErrNo::EINVAL);
+            SEEK_HOLE => {
+                if offset < 0 {
+                    return Err(SysErrNo::ENXIO);
+                }
+                self.inode.seek_hole(offset as usize)?
             }
-            inner.offset = newoff as usize;
+            _ => return Err(SysErrNo::EINVAL),
+        };
+        // `off_t` is signed in the Linux ABI.  Do not let a valid `usize`
+        // calculation cross into the negative half of the user-visible
+        // return register.
+        if new_offset > isize::MAX as usize {
+            return Err(SysErrNo::EOVERFLOW);
         }
-        Ok(inner.offset)
+        inner.offset = new_offset;
+        Ok(new_offset)
     }
 
     fn ioctl(&self, cmd: u32, arg: usize, memory_set: &MemorySet) -> SyscallRet {

@@ -1969,19 +1969,20 @@ static int ext4_ext_zero_unwritten_range(struct ext4_inode_ref *inode_ref,
 	int err = EOK;
 	uint32_t i;
 	uint32_t block_size = ext4_sb_get_block_size(&inode_ref->fs->sb);
-	for (i = 0; i < blocks_count; i++) {
-		struct ext4_block bh = EXT4_BLOCK_ZERO();
-		err = ext4_trans_block_get_noread(inode_ref->fs->bdev, &bh,
-						  block + i);
-		if (err != EOK)
-			break;
+	uint8_t *zeros = ext4_calloc(1, block_size);
+	if (!zeros)
+		return ENOMEM;
 
-		memset(bh.data, 0, block_size);
-		ext4_trans_set_block_dirty(bh.buf);
-		err = ext4_block_set(inode_ref->fs->bdev, &bh);
+	for (i = 0; i < blocks_count; i++) {
+		/* ext4_fwrite() uses direct block I/O for payload data. Keep the
+		 * zero initialization on the same path so a dirty bcache entry cannot
+		 * later overwrite the just-written user bytes. */
+		err = ext4_blocks_set_direct(inode_ref->fs->bdev, zeros,
+					     block + i, 1);
 		if (err != EOK)
 			break;
 	}
+	ext4_free(zeros);
 	return err;
 }
 
@@ -2103,6 +2104,15 @@ int ext4_extent_get_blocks(struct ext4_inode_ref *inode_ref, ext4_lblk_t iblock,
 	newblock = ext4_new_meta_blocks(inode_ref, goal, 0, &allocated, &err);
 	if (!newblock)
 		goto out2;
+
+	/* Data blocks can contain bytes from a previous inode. Zero them before
+	 * publishing the initialized extent so partial writes never expose stale
+	 * data through the unwritten portion of the block. */
+	err = ext4_ext_zero_unwritten_range(inode_ref, newblock, allocated);
+	if (err != EOK) {
+		ext4_ext_free_blocks(inode_ref, newblock, allocated, 0);
+		goto out2;
+	}
 
 	/* try to insert new extent into found leaf and return */
 	newex.first_block = to_le32(iblock);

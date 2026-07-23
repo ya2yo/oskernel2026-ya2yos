@@ -206,6 +206,11 @@ impl Inode for Ext4Inode {
         let current_size = inner
             .known_size
             .unwrap_or_else(|| file.file_size() as usize);
+        if off > current_size {
+            // A write beyond EOF creates a sparse range. The whole-file cache
+            // tracks bytes only and would otherwise materialize that range.
+            file.disable_write_back_cache().map_err(SysErrNo::from)?;
+        }
         file.file_seek(off as i64, SEEK_SET)
             .map_err(SysErrNo::from)?;
         let written = file.file_write(buf).map_err(SysErrNo::from)?;
@@ -222,8 +227,7 @@ impl Inode for Ext4Inode {
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         let file = &mut inner.f;
-        file.file_open(&path, O_RDWR | O_CREAT | O_TRUNC)
-            .map_err(SysErrNo::from)?;
+        file.file_open(&path, O_RDWR).map_err(SysErrNo::from)?;
 
         file.file_truncate(size as u64).map_err(SysErrNo::from)?;
         inner.known_size = Some(size);
@@ -656,6 +660,37 @@ impl Inode for Ext4Inode {
                 let _ = Self::recover_live_path(inner);
                 inner.f.file_owner_set(uid, gid).map_err(SysErrNo::from)
             }
+        }
+    }
+
+    fn seek_data(&self, offset: usize) -> SyscallRet {
+        let _ext4 = EXT4_OP_LOCK.lock();
+        let inner = self.inner.get_unchecked_mut();
+        let path = Self::live_path(inner);
+        let file = &mut inner.f;
+        file.file_open(&path, O_RDONLY).map_err(SysErrNo::from)?;
+        // Opening first establishes the stable `(mountpoint, inode)` cache
+        // key.  Disabling before that would only affect this descriptor and
+        // let another alias recreate a byte-only cache for the sparse inode.
+        file.disable_write_back_cache().map_err(SysErrNo::from)?;
+        match file.file_seek_data(offset as u64) {
+            Ok(pos) => Ok(pos as usize),
+            Err(rc) => Err(SysErrNo::from(rc)),
+        }
+    }
+
+    fn seek_hole(&self, offset: usize) -> SyscallRet {
+        let _ext4 = EXT4_OP_LOCK.lock();
+        let inner = self.inner.get_unchecked_mut();
+        let path = Self::live_path(inner);
+        let file = &mut inner.f;
+        file.file_open(&path, O_RDONLY).map_err(SysErrNo::from)?;
+        // See `seek_data()`: the cache policy is inode-wide, so the
+        // descriptor must be open before deriving its key.
+        file.disable_write_back_cache().map_err(SysErrNo::from)?;
+        match file.file_seek_hole(offset as u64) {
+            Ok(pos) => Ok(pos as usize),
+            Err(rc) => Err(SysErrNo::from(rc)),
         }
     }
 }

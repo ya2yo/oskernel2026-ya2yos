@@ -6586,3 +6586,49 @@ handler。
 均为 `passed 96 failed 0 broken 0`，共 192 个 `TPASS`，无 `TFAIL`、`TBROK`、panic 或
 `Pause terminated without signal SIGUSR1`。RISC-V QEMU 实际启动，但 final-2026 镜像缺少
 `fcntl14`，两个 libc 均 `execve fail!`，因此只记录 RISC-V 构建通过，不宣称其运行时回归通过。
+
+---
+
+## 2026-07-23：LTP lseek11 ext4 SEEK_DATA/SEEK_HOLE 与 sparse truncate 修复
+
+### 用户需求
+
+维护者要求根据 Docker 内编译运行得到的根目录 `log.ans` 持续修复。初始日志中
+LoongArch64 musl/glibc 的 LTP `lseek11` 未实现 `SEEK_DATA`/`SEEK_HOLE`；接入第一版
+映射查询后，重新构建的日志仍显示 block 0 的 `data01suffix` 被读为空。
+
+### 分析与采纳结论
+
+AI 对照只读 LTP `lseek11.c` 和 `ftruncate01.c` 重建操作序列，确认 `lseek11` 的分配粒度
+探测在 offset 4094 留下已分配的 block 0 与 EOF=4095。随后 grow 到 30 个块时，旧的
+tail-zero helper 经 bcache 修改 `[4095,4096)`；普通文件的后续 short write/read 却走 direct
+block I/O，两个数据副本失去一致性，dirty/stale bcache snapshot 会覆盖 `data01suffix`。
+临时运行 `ftruncate01` 在 grow 后读到旧值 `'a'`，独立证明 partial-tail zero 语义失效。
+
+采纳的修复包括：在 VFS 和 lwext4 接入 Linux `SEEK_DATA`/`SEEK_HOLE`；按 extent 映射识别
+data/hole；让空 inode 写侧进入 mapper、sparse write 保持调用方 logical block；对新的 data
+extent 与 retained tail 使用 direct zero；让 Rust byte-only whole-file cache 在稀疏 inode 上
+按 `(mountpoint, inode)` 禁用；并使 C 构建依赖按 target 隔离。最终 tail-zero 使用
+`ext4_block_writebytes()`，不再将 regular-file data block 放入 bcache，且只在成功清零后
+更新 inode size。
+
+### 修改与验证
+
+修改 `os/src/fs/{mod.rs,vfs.rs,files/os_file.rs,ext4_lw/inode.rs}`、
+`crates/lwext4_rust/{build.rs,src/file.rs,c/lwext4/Makefile,c/lwext4/include/ext4.h,`
+`c/lwext4/src/ext4.c,c/lwext4/src/ext4_extent.c,c/lwext4/src/ext4_fs.c}`，并新增 problem 复盘、
+索引、开发日志和 AI 记录。`scripts/loongarch64.mk` 与 `user/src/bin/initproc.rs` 是维护者
+已有的定向测试工作区改动；AI 只临时加入 `ftruncate01` 两行并在最终构建前精确移除。
+
+`git diff --check`、`cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml -- --check`、Docker
+LoongArch64/RISC-V release 构建均通过。临时 LoongArch64 `ftruncate01` 的 musl/glibc 各为
+`passed 2 failed 0 broken 0`；最终只运行 `lseek11`，两侧均为 `passed 15 failed 0 broken 0`
+并正常 `shutdown!`。RISC-V 未运行默认 8G/8 CPU QEMU，因此仅记录其构建验证。
+
+最终 cache 状态机复审又发现并收口了三个边界：已有 sparse inode 的首次打开必须先落盘同
+inode cache 再禁用 policy；`O_TRUNC` 后必须丢弃旧的 byte mirror；普通 unlink 即使没有
+已打开 descriptor，也要取得目标 `(mountpoint, inode)`，在删除最后一个 link 后释放 sparse
+policy。与此同时删除 `ext4_ftruncate_no_lock()` inode-ref 获取失败时的内部解锁，保证外层
+统一释放 mount lock。收口后重新执行 `git diff --check`、`cargo fmt --check`、Docker
+LoongArch64/RISC-V release 构建和 LoongArch64 QEMU。最终 `log.ans` 的 musl/glibc
+`lseek11` 均为 `passed 15 failed 0 broken 0`，无 `TFAIL`、`TBROK` 或 panic，并正常 `shutdown!`。

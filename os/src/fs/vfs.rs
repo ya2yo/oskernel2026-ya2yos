@@ -142,6 +142,16 @@ pub trait Inode: Send + Sync {
     fn owner_set(&self, _uid: u32, _gid: u32) -> SyscallRet {
         unimplemented!("Inode::owner_set")
     }
+    /// SEEK_DATA: find next data offset >= `offset` (in bytes).
+    /// Returns the byte offset, or ENXIO if no data beyond offset.
+    fn seek_data(&self, _offset: usize) -> SyscallRet {
+        Err(SysErrNo::ENXIO)
+    }
+    /// SEEK_HOLE: find next hole offset >= `offset` (in bytes).
+    /// Returns the byte offset, or the file size (implicit hole at EOF).
+    fn seek_hole(&self, _offset: usize) -> SyscallRet {
+        Err(SysErrNo::ENXIO)
+    }
 }
 
 /// 文件接口

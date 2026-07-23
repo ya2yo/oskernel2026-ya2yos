@@ -1587,17 +1587,15 @@ int ext4_fclose(ext4_file *file)
 static int ext4_ftruncate_no_lock(ext4_file *file, uint64_t size)
 {
 	struct ext4_inode_ref ref;
-	int r;
+	int r, rr;
 
 	r = ext4_fs_get_inode_ref(&file->mp->fs, file->inode, &ref);
-	if (r != EOK) {
-		EXT4_MP_UNLOCK(file->mp);
+	if (r != EOK)
 		return r;
-	}
 
 	/*Sync file size*/
 	file->fsize = ext4_inode_get_size(&file->mp->fs.sb, ref.inode);
-	if (file->fsize <= size) {
+	if (file->fsize == size) {
 		r = EOK;
 		goto Finish;
 	}
@@ -1607,7 +1605,16 @@ static int ext4_ftruncate_no_lock(ext4_file *file, uint64_t size)
 	if (r != EOK)
 		goto Finish;
 
-	r = ext4_trunc_inode(file->mp, ref.index, size);
+	if (file->fsize < size)
+		/* Extending keeps the range sparse, while the fs helper clears a
+		 * retained partial data block before making it visible. */
+		r = ext4_fs_truncate_inode(&ref, size);
+	else
+		/* Preserve the existing chunked shrink path for journal limits. */
+		r = ext4_trunc_inode(file->mp, ref.index, size);
+	rr = ext4_block_cache_write_back(file->mp->fs.bdev, 0);
+	if (r == EOK)
+		r = rr;
 	if (r != EOK)
 		goto Finish;
 
@@ -1615,14 +1622,10 @@ static int ext4_ftruncate_no_lock(ext4_file *file, uint64_t size)
 	if (file->fpos > size)
 		file->fpos = size;
 
-	/*Stop write back cache mode*/
-	ext4_block_cache_write_back(file->mp->fs.bdev, 0);
-
-	if (r != EOK)
-		goto Finish;
-
 Finish:
-	ext4_fs_put_inode_ref(&ref);
+	rr = ext4_fs_put_inode_ref(&ref);
+	if (r == EOK)
+		r = rr;
 	return r;
 }
 
@@ -1811,7 +1814,8 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 
 		if (fblock) {
 			off = fblock * block_size;
-			r = ext4_block_readbytes(file->mp->fs.bdev, off, u8_buf, size);
+			r = ext4_block_readbytes(file->mp->fs.bdev, off, u8_buf,
+						 size);
 			if (r != EOK)
 				goto Finish;
 		} else {
@@ -1841,6 +1845,8 @@ int ext4_fwrite(ext4_file *file, const void *buf, size_t size, size_t *wcnt)
 	uint32_t fblock_count;
 	ext4_fsblk_t fblk;
 	ext4_fsblk_t fblock_start;
+	bool sparse_write;
+	bool cache_write_back = false;
 
 	struct ext4_inode_ref ref;
 	const uint8_t *u8_buf = buf;
@@ -1880,6 +1886,7 @@ int ext4_fwrite(ext4_file *file, const void *buf, size_t size, size_t *wcnt)
 	iblock_last = (uint32_t)((file->fpos + size) / block_size);
 	iblk_idx = (uint32_t)(file->fpos / block_size);
 	ifile_blocks = (uint32_t)((file->fsize + block_size - 1) / block_size);
+	sparse_write = file->fpos > file->fsize;
 
 	unalg = (file->fpos) % block_size;
 
@@ -1892,6 +1899,12 @@ int ext4_fwrite(ext4_file *file, const void *buf, size_t size, size_t *wcnt)
 		r = ext4_fs_init_inode_dblk_idx(&ref, iblk_idx, &fblk);
 		if (r != EOK)
 			goto Finish;
+		if (!fblk) {
+			/* Non-extent sparse target allocation is not implemented by
+			 * ext4_fs_init_inode_dblk_idx(). Never write through block 0. */
+			r = EIO;
+			goto Finish;
+		}
 
 		off = fblk * block_size + unalg;
 		r = ext4_block_writebytes(file->mp->fs.bdev, off, u8_buf, len);
@@ -1912,13 +1925,16 @@ int ext4_fwrite(ext4_file *file, const void *buf, size_t size, size_t *wcnt)
 	r = ext4_block_cache_write_back(file->mp->fs.bdev, 1);
 	if (r != EOK)
 		goto Finish;
+	cache_write_back = true;
 
 	fblock_start = 0;
 	fblock_count = 0;
 	while (size >= block_size) {
 
 		while (iblk_idx < iblock_last) {
-			if (iblk_idx < ifile_blocks) {
+			/* append_inode_dblk() derives the logical block from EOF, so
+			 * sparse writes must preserve the caller's target block. */
+			if (iblk_idx < ifile_blocks || sparse_write) {
 				r = ext4_fs_init_inode_dblk_idx(&ref, iblk_idx,
 								&fblk);
 				if (r != EOK)
@@ -1932,6 +1948,10 @@ int ext4_fwrite(ext4_file *file, const void *buf, size_t size, size_t *wcnt)
 					 * */
 					break;
 				}
+			}
+			if (!fblk) {
+				r = EIO;
+				goto Finish;
 			}
 
 			iblk_idx++;
@@ -1971,14 +1991,18 @@ int ext4_fwrite(ext4_file *file, const void *buf, size_t size, size_t *wcnt)
 	}
 
 	/*Stop write back cache mode*/
-	ext4_block_cache_write_back(file->mp->fs.bdev, 0);
+	rr = ext4_block_cache_write_back(file->mp->fs.bdev, 0);
+	cache_write_back = false;
+	if (r == EOK)
+		r = rr;
 
 	if (r != EOK)
 		goto Finish;
 
 	if (size) {
 		uint64_t off;
-		if (iblk_idx < ifile_blocks) {
+		/* Keep a residual sparse write at its requested logical block. */
+		if (iblk_idx < ifile_blocks || sparse_write) {
 			r = ext4_fs_init_inode_dblk_idx(&ref, iblk_idx, &fblk);
 			if (r != EOK)
 				goto Finish;
@@ -1987,6 +2011,10 @@ int ext4_fwrite(ext4_file *file, const void *buf, size_t size, size_t *wcnt)
 			if (r != EOK)
 				/*Node size sholud be updated.*/
 				goto out_fsize;
+		}
+		if (!fblk) {
+			r = EIO;
+			goto Finish;
 		}
 
 		off = fblk * block_size;
@@ -2008,7 +2036,17 @@ out_fsize:
 	}
 
 Finish:
-	r = ext4_fs_put_inode_ref(&ref);
+	/* Every path after enabling delayed block-cache write-back must balance
+	 * its nesting level.  Preserve the original payload/allocation error if
+	 * flushing or releasing the inode also fails. */
+	if (cache_write_back) {
+		rr = ext4_block_cache_write_back(file->mp->fs.bdev, 0);
+		if (r == EOK)
+			r = rr;
+	}
+	rr = ext4_fs_put_inode_ref(&ref);
+	if (r == EOK)
+		r = rr;
 
 	if (r != EOK)
 		ext4_trans_abort(file->mp);
@@ -2042,6 +2080,82 @@ int ext4_fseek(ext4_file *file, int64_t offset, uint32_t origin)
 		return EOK;
 	}
 	return EINVAL;
+}
+
+static int ext4_fseek_data_or_hole(ext4_file *file, uint64_t offset,
+					  uint64_t *result, bool want_data)
+{
+	struct ext4_fs *fs;
+	struct ext4_inode_ref inode_ref;
+	uint32_t block_size;
+	uint64_t file_size;
+	ext4_lblk_t start_block;
+	ext4_lblk_t end_block;
+	int r, rr;
+
+	if (!file || !result || !file->mp)
+		return EINVAL;
+
+	EXT4_MP_LOCK(file->mp);
+	fs = &file->mp->fs;
+	block_size = ext4_sb_get_block_size(&fs->sb);
+	if (!block_size) {
+		r = EINVAL;
+		goto Unlock;
+	}
+
+	r = ext4_fs_get_inode_ref(fs, file->inode, &inode_ref);
+	if (r != EOK)
+		goto Unlock;
+
+	file_size = ext4_inode_get_size(&fs->sb, inode_ref.inode);
+	file->fsize = file_size;
+	if (offset >= file_size) {
+		r = ENXIO;
+		goto Put;
+	}
+
+	start_block = (ext4_lblk_t)(offset / block_size);
+	end_block = (ext4_lblk_t)(((file_size - 1) / block_size) + 1);
+	for (ext4_lblk_t lblk = start_block; lblk < end_block; lblk++) {
+		ext4_fsblk_t pblock = 0;
+		r = ext4_fs_get_inode_dblk_idx(&inode_ref, lblk, &pblock, true);
+		if (r != EOK)
+			goto Put;
+
+		if ((pblock != 0) == want_data) {
+			uint64_t block_offset = (uint64_t)lblk * block_size;
+			*result = block_offset > offset ? block_offset : offset;
+			r = EOK;
+			goto Put;
+		}
+	}
+
+	if (want_data)
+		r = ENXIO;
+	else {
+		/* A fully allocated final block is followed by the implicit EOF hole. */
+		*result = file_size;
+		r = EOK;
+	}
+
+Put:
+	rr = ext4_fs_put_inode_ref(&inode_ref);
+	if (r == EOK && rr != EOK)
+		r = rr;
+Unlock:
+	EXT4_MP_UNLOCK(file->mp);
+	return r;
+}
+
+int ext4_fseek_data(ext4_file *file, uint64_t offset, uint64_t *result)
+{
+	return ext4_fseek_data_or_hole(file, offset, result, true);
+}
+
+int ext4_fseek_hole(ext4_file *file, uint64_t offset, uint64_t *result)
+{
+	return ext4_fseek_data_or_hole(file, offset, result, false);
 }
 
 uint64_t ext4_ftell(ext4_file *file) { return file->fpos; }

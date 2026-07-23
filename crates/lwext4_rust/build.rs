@@ -3,7 +3,9 @@ use std::process::Command;
 use std::{env, fs, time::SystemTime};
 
 const LWEXT4_BUILD_INPUTS: &[&str] = &[
+    "c/ulibc.c",
     "c/lwext4/CMakeLists.txt",
+    "c/lwext4/Makefile",
     "c/lwext4/include",
     "c/lwext4/src",
     "c/lwext4/toolchain/musl-generic.cmake",
@@ -14,7 +16,10 @@ fn path_modified_after(path: &Path, threshold: SystemTime) -> bool {
         Ok(metadata) => metadata,
         Err(_) => return true,
     };
-    if metadata.modified().map_or(true, |modified| modified > threshold) {
+    if metadata
+        .modified()
+        .map_or(true, |modified| modified > threshold)
+    {
         return true;
     }
     if !metadata.is_dir() {
@@ -45,9 +50,11 @@ fn lwext4_needs_rebuild(c_path: &Path, archive: &Path) -> bool {
 
     [
         c_path.join("CMakeLists.txt"),
+        c_path.join("Makefile"),
         c_path.join("include"),
         c_path.join("src"),
         c_path.join("toolchain/musl-generic.cmake"),
+        PathBuf::from("c/ulibc.c"),
     ]
     .iter()
     .any(|path| path_modified_after(path, archive_modified))
@@ -86,6 +93,8 @@ fn main() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let lwext4_lib = &format!("lwext4-{}", arch);
     let lwext4_lib_path = &format!("c/lwext4/lib{}.a", lwext4_lib);
+    let lwext4_build_dir = format!("build_musl-generic-{}", arch);
+    let lwext4_build_path = c_path.join(&lwext4_build_dir);
     let archive_missing = !Path::new(lwext4_lib_path).exists();
     if archive_missing || lwext4_needs_rebuild(&c_path, Path::new(lwext4_lib_path)) {
         let status = Command::new("make")
@@ -95,6 +104,7 @@ fn main() {
                 c_path.to_str().expect("invalid path of lwext4"),
             ])
             .arg(&format!("ARCH={}", arch))
+            .arg(&format!("LWEXT4_BUILD_DIR={}", lwext4_build_dir))
             .status()
             .expect("failed to execute process: make lwext4");
         assert!(status.success());
@@ -109,7 +119,7 @@ fn main() {
             let sysroot = core::str::from_utf8(&output.stdout).unwrap();
             let sysroot = sysroot.trim_end();
             let sysroot_inc = &format!("-I{}/include/", sysroot);
-            generates_bindings_to_rust(sysroot_inc);
+            generates_bindings_to_rust(sysroot_inc, &lwext4_build_path);
         }
     }
 
@@ -139,10 +149,10 @@ fn main() {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn generates_bindings_to_rust(_mpath: &str) {}
+fn generates_bindings_to_rust(_mpath: &str, _build_path: &Path) {}
 
 #[cfg(not(target_arch = "x86_64"))]
-fn generates_bindings_to_rust(mpath: &str) {
+fn generates_bindings_to_rust(mpath: &str, build_path: &Path) {
     let bindings = bindgen::Builder::default()
         .use_core()
         // The input header we would like to generate bindings for.
@@ -151,7 +161,7 @@ fn generates_bindings_to_rust(mpath: &str) {
         .clang_arg(mpath)
         //.clang_arg("-I../../ulib/axlibc/include")
         .clang_arg("-I./c/lwext4/include")
-        .clang_arg("-I./c/lwext4/build_musl-generic/include/")
+        .clang_arg(format!("-I{}/include/", build_path.display()))
         .layout_tests(false)
         // Tell cargo to invalidate the built crate whenever any of the included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))

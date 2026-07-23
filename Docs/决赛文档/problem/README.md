@@ -2,6 +2,7 @@
 
 - [LoongArch BuildStorm 稀疏 EXT4 文件读取破坏动态链接数据](./loongarch-buildstorm-sparse-ext4-read-corruption.md)
 - [BuildStorm 全量运行误用诊断标记导致评分器 0 分](./buildstorm-full-run-marker-contract.md)
+- [LTP lseek11 ext4 SEEK_DATA/SEEK_HOLE 与稀疏文件语义修复](./lseek11-ext4-seek-data-hole-sparse-write.md)
 - [LoongArch CAgent loopback TCP 分片校验和与大请求传输](./cagent-loopback-tcp-fragmentation.md)
 - [BuildStorm Rustc mremap(MAYMOVE) 扩容丢失数据](./buildstorm-mremap-data-loss.md)
 - [BuildStorm Rustc artifact rename 后 lwext4 write-back 缓存重建旧临时文件](./buildstorm-rustc-artifact-rename-writeback.md)

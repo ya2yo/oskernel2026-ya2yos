@@ -1,7 +1,14 @@
 use core::ffi::c_char;
 
 use crate::bindings::*;
-use alloc::collections::{BTreeMap, VecDeque};
+
+extern "C" {
+    #[link_name = "ext4_fseek_data"]
+    fn ext4_fseek_data_raw(file: *mut ext4_file, offset: u64, result: *mut u64) -> i32;
+    #[link_name = "ext4_fseek_hole"]
+    fn ext4_fseek_hole_raw(file: *mut ext4_file, offset: u64, result: *mut u64) -> i32;
+}
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::{ffi::CString, vec::Vec};
@@ -55,6 +62,10 @@ pub struct Ext4File {
     pending_mode: Option<u32>,
     // Large files bypass the whole-file write-back cache after one size probe.
     cache_too_large: bool,
+    // Local fast-path mirror of the global per-inode policy. Whole-file cache
+    // does not preserve allocation extents, so sparse files must write
+    // directly to lwext4 once their layout can contain holes.
+    cache_disabled: bool,
 }
 
 impl Ext4File {
@@ -73,6 +84,7 @@ impl Ext4File {
             last_flags: 0,
             pending_mode: None,
             cache_too_large: false,
+            cache_disabled: false,
         }
     }
 
@@ -133,8 +145,27 @@ impl Ext4File {
 
         self.has_opened = true;
         self.last_flags = flags;
+        self.cache_disabled = self.whole_file_cache_disabled();
         if flags & O_TRUNC != 0 {
+            if let Some(key) = self.whole_file_cache_key() {
+                // `ext4_fopen(..., O_TRUNC)` has already discarded the
+                // on-disk contents.  Any byte-only mirror belongs to the old
+                // contents as well, so it must not be written back later.
+                discard_inode_caches(key);
+                clear_whole_file_cache_policy(key);
+            } else {
+                discard_path_cache(path);
+            }
+            self.cache_disabled = false;
             self.cache_too_large = false;
+        } else if !self.cache_disabled
+            && self.this_type == InodeTypes::EXT4_DE_REG_FILE
+            && ext4_file_has_hole(&mut self.file_desc)
+        {
+            // A byte-only cache cannot preserve existing hole extents.  This
+            // must be established before the first ordinary read can build a
+            // dense zero-filled mirror of a sparse inode.
+            self.disable_write_back_cache()?;
         }
 
         //self.file_desc_map.insert(to_map, fd); // store c_path
@@ -284,15 +315,34 @@ impl Ext4File {
     /// Remove file by path.
     pub fn file_remove(&mut self, path: &str) -> Result<usize, i32> {
         //debug!("file_remove {}", path);
+        let cache_path = String::from(path);
+        let target_is_open_inode = self.file_path.to_str().ok() == Some(path);
+        let cache_key = if target_is_open_inode {
+            self.whole_file_cache_key()
+                .or_else(|| whole_file_cache_key_for_path(path))
+        } else {
+            whole_file_cache_key_for_path(path)
+        };
+        let removes_last_link = if cache_key.is_some() {
+            links_cnt_for_path(path)
+                .map(|count| count == 1)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        // Keep delayed data reachable until both the byte cache and lwext4's
+        // block cache are persisted.  A failed unlink must not turn a visible
+        // file into a silent cache-data loss.
+        if let Some(key) = cache_key {
+            flush_inode_caches(key)?;
+        } else if if_cache(cache_path.clone()) {
+            write_back_cache(cache_path.clone())?;
+        }
+        flush_ext4_block_cache_for_path(path)?;
+
         let c_path = CString::new(path).expect("CString::new failed");
         let c_path = c_path.into_raw();
-
-        let path = String::from(path);
-        // 删除目录项后，该路径不能继续保留 write-back cache 或 FIFO 元数据。
-        remove_file_cache_state(&path);
-
-        //修改为未打开
-        self.has_opened = false;
 
         let r = unsafe { ext4_fremove(c_path) };
         unsafe {
@@ -302,26 +352,44 @@ impl Ext4File {
             error!("ext4_fremove error: rc = {}", r);
             return Err(r);
         }
+
+        // The directory entry is now gone (or was already absent), so its
+        // path-keyed cache cannot be reused.  Preserve it on every real
+        // ext4_fremove failure above.
+        discard_path_cache(&cache_path);
+        if r == EOK as i32 && removes_last_link {
+            if let Some(key) = cache_key {
+                discard_inode_caches(key);
+                clear_whole_file_cache_policy(key);
+            }
+        }
+
+        self.has_opened = false;
         self.cache_too_large = false;
+        self.cache_disabled = r != EOK as i32 || !removes_last_link;
         Ok(EOK as usize)
     }
 
     // 检查是否值得建立文件缓存。大文件直接走 ext4，避免一次性占用大量堆。
-    fn check_cached(&mut self, file_path: String) {
+    fn check_cached(&mut self, file_path: String) -> Result<(), i32> {
         // These files are regenerated and synchronously synced on every procfs
         // refresh. Keeping them in the global delayed write-back FIFO leaves
         // stale entries after process teardown and can recurse into lwext4
         // while an ext4 operation is already in progress.
         if is_proc_task_runtime_file(&file_path) {
-            return;
+            return Ok(());
+        }
+
+        if !self.write_back_cache_enabled(&file_path) {
+            return Ok(());
         }
 
         if if_cache(file_path.clone()) {
-            return;
+            return Ok(());
         }
 
         if self.cache_too_large {
-            return;
+            return Ok(());
         }
 
         let c_path = CString::new(file_path.as_str()).expect("CString::new failed");
@@ -345,7 +413,7 @@ impl Ext4File {
         }
         if r != EOK as i32 {
             error!("check_cached ext4_fopen: {}, rc = {}", file_path, r);
-            return;
+            return Ok(());
         }
 
         let size = unsafe { ext4_fsize(&mut cache_desc) as usize };
@@ -354,19 +422,31 @@ impl Ext4File {
                 ext4_fclose(&mut cache_desc);
             }
             self.cache_too_large = true;
-            return;
+            return Ok(());
+        }
+
+        if self.this_type == InodeTypes::EXT4_DE_REG_FILE && ext4_file_has_hole(&mut cache_desc) {
+            unsafe {
+                ext4_fclose(&mut cache_desc);
+            }
+            // `file_open()` normally detects this first.  Keep this second
+            // check beside cache creation as a defensive barrier for an
+            // existing sparse inode and never mirror its holes as bytes.
+            self.disable_write_back_cache()?;
+            return Ok(());
         }
 
         let cache = Arc::new(RwLock::new(VFileCache::new()));
         let mut cache_writer = cache.write();
         cache_writer.mode = self.pending_mode;
+        cache_writer.inode_key = whole_file_cache_key_for_desc(&cache_desc);
         let aligned_size = aligned_down(size) + PAGE_SIZE;
         cache_writer.data = Vec::new();
         if cache_writer.data.try_reserve_exact(aligned_size).is_err() {
             unsafe {
                 ext4_fclose(&mut cache_desc);
             }
-            return;
+            return Ok(());
         }
         let data = &mut cache_writer.data;
         unsafe {
@@ -377,14 +457,16 @@ impl Ext4File {
             unsafe {
                 ext4_fclose(&mut cache_desc);
             }
-            insert_cache(file_path.clone(), &cache);
-            insert_fifo(file_path.clone());
-            debug!("initialize cache! {}", file_path);
-            return;
+            drop(cache_writer);
+            if insert_fifo(file_path.clone()).is_ok() {
+                insert_cache(file_path.clone(), &cache);
+                debug!("initialize cache! {}", file_path);
+            }
+            return Ok(());
         }
         unsafe { ext4_fseek(&mut cache_desc, 0, SEEK_SET) };
         let mut rw_count = 0;
-        unsafe {
+        let r = unsafe {
             ext4_fread(
                 &mut cache_desc,
                 cache_writer.data.as_mut_ptr() as _,
@@ -395,19 +477,31 @@ impl Ext4File {
         unsafe {
             ext4_fclose(&mut cache_desc);
         }
-        insert_cache(file_path.clone(), &cache);
-        insert_fifo(file_path.clone());
-        debug!("initialize cache! {}", file_path);
+        if r != EOK as i32 || rw_count != size {
+            drop(cache_writer);
+            error!(
+                "check_cached ext4_fread: {}, rc = {}, expected {}, got {}",
+                file_path, r, size, rw_count
+            );
+            return Ok(());
+        }
+        drop(cache_writer);
+        if insert_fifo(file_path.clone()).is_ok() {
+            insert_cache(file_path.clone(), &cache);
+            debug!("initialize cache! {}", file_path);
+        }
+        Ok(())
     }
 
     pub fn file_seek(&mut self, offset: i64, seek_type: u32) -> Result<usize, i32> {
         if self.this_type != InodeTypes::EXT4_DE_DIR {
             let path = String::from((*self.file_path).to_str().unwrap());
-            if !self.cache_too_large {
-                self.check_cached(path.clone());
+            let cache_enabled = self.write_back_cache_enabled(&path);
+            if cache_enabled && !self.cache_too_large {
+                self.check_cached(path.clone())?;
             }
 
-            if if_cache(path.clone()) {
+            if cache_enabled && if_cache(path.clone()) {
                 let cache = get_cache(path.clone());
                 let mut cache_writer = cache.write();
                 cache_writer.offset =
@@ -428,7 +522,7 @@ impl Ext4File {
 
     pub fn file_read(&mut self, buff: &mut [u8]) -> Result<usize, i32> {
         let path = String::from((*self.file_path).to_str().unwrap());
-        if if_cache(path.clone()) {
+        if self.write_back_cache_enabled(&path) && if_cache(path.clone()) {
             //找到cache直接读cache
             let cache = get_cache(path.clone());
             let cache_read = cache.read();
@@ -498,7 +592,7 @@ impl Ext4File {
 
     pub fn file_write(&mut self, buf: &[u8]) -> Result<usize, i32> {
         let path = String::from((*self.file_path).to_str().unwrap());
-        if if_cache(path.clone()) {
+        if self.write_back_cache_enabled(&path) && if_cache(path.clone()) {
             // 找到 cache 直接写 cache；一旦文件膨胀到阈值以上，立即回退到底层 ext4。
             let cache = get_cache(path.clone());
             let mut cache_writer = cache.write();
@@ -506,11 +600,16 @@ impl Ext4File {
                 .offset
                 .checked_add(buf.len())
                 .ok_or(EINVAL as i32)?;
-            if next_size > MAX_CACHED_FILE_SIZE {
+            let write_creates_hole = !buf.is_empty() && cache_writer.offset > cache_writer.size;
+            if next_size > MAX_CACHED_FILE_SIZE || write_creates_hole {
                 let write_offset = cache_writer.offset;
                 drop(cache_writer);
-                write_back_cache(path.clone())?;
-                remove_file_cache_state(&path);
+                if write_creates_hole {
+                    self.disable_write_back_cache()?;
+                } else {
+                    write_back_cache(path.clone())?;
+                    remove_file_cache_state(&path);
+                }
                 self.file_desc.fpos = write_offset as u64;
             } else {
                 cache_writer.writebuf(buf)?;
@@ -545,17 +644,18 @@ impl Ext4File {
     pub fn file_truncate(&mut self, size: u64) -> Result<usize, i32> {
         debug!("file_truncate to {}", size);
 
-        let path = String::from((*self.file_path).to_str().unwrap());
-        if if_cache(path.clone()) {
-            let cache = get_cache(path.clone());
-            let mut cache_writer = cache.write();
-            cache_writer.truncate(size as usize)?;
-        }
+        self.disable_write_back_cache()?;
 
         let r = unsafe { ext4_ftruncate(&mut self.file_desc, size) };
         if r != EOK as i32 {
             error!("ext4_ftruncate: rc = {}", r);
             return Err(r);
+        }
+        if size == 0 {
+            if let Some(key) = self.whole_file_cache_key() {
+                clear_whole_file_cache_policy(key);
+            }
+            self.cache_disabled = false;
         }
         self.cache_too_large = size > MAX_CACHED_FILE_SIZE as u64;
         Ok(EOK as usize)
@@ -563,7 +663,7 @@ impl Ext4File {
 
     pub fn file_size(&mut self) -> u64 {
         let path = String::from((*self.file_path).to_str().unwrap());
-        if if_cache(path.clone()) {
+        if self.write_back_cache_enabled(&path) && if_cache(path.clone()) {
             return get_cache(path.clone()).read().size as u64;
         }
 
@@ -583,21 +683,16 @@ impl Ext4File {
 
     pub fn file_cache_flush(&mut self) -> Result<usize, i32> {
         let path = String::from((*self.file_path).to_str().unwrap());
-        if if_cache(path.clone()) {
+        if self.write_back_cache_enabled(&path) && if_cache(path.clone()) {
             write_back_cache(path.clone())?;
         }
 
-        let c_path = self.file_path.clone();
-        let c_path = c_path.into_raw();
-        unsafe {
-            let r = ext4_cache_flush(c_path);
-            if r != EOK as i32 {
-                error!("ext4_cache_flush: rc = {}", r);
-                return Err(r);
-            }
-            drop(CString::from_raw(c_path));
-        }
-        Ok(0)
+        self.flush_ext4_block_cache()
+    }
+
+    fn flush_ext4_block_cache(&mut self) -> Result<usize, i32> {
+        let path = self.file_path.to_str().expect("invalid ext4 file path");
+        flush_ext4_block_cache_for_path(path)
     }
 
     /// Persist and discard delayed write-back state before changing this path's
@@ -605,8 +700,65 @@ impl Ext4File {
     /// rename can otherwise recreate that pathname on a later close or eviction.
     pub fn flush_and_discard_path_cache(&mut self) -> Result<usize, i32> {
         let path = String::from((*self.file_path).to_str().unwrap());
-        self.file_cache_flush()?;
+        // This path can be transitioning to the non-cacheable state. Flush a
+        // pre-existing entry even after its policy was marked disabled.
+        if if_cache(path.clone()) {
+            write_back_cache(path.clone())?;
+        }
+        self.flush_ext4_block_cache()?;
         discard_path_cache(&path);
+        Ok(0)
+    }
+
+    fn whole_file_cache_key(&self) -> Option<WholeFileCacheKey> {
+        whole_file_cache_key_for_desc(&self.file_desc)
+    }
+
+    fn whole_file_cache_disabled(&self) -> bool {
+        whole_file_cache_disabled_for_desc(&self.file_desc)
+    }
+
+    fn disable_whole_file_cache(&self) {
+        if let Some(key) = self.whole_file_cache_key() {
+            WHOLE_FILE_CACHE_DISABLED_INODES.lock().insert(key);
+        }
+    }
+
+    fn write_back_cache_enabled(&mut self, _path: &str) -> bool {
+        if self.cache_disabled || self.whole_file_cache_disabled() {
+            self.cache_disabled = true;
+            return false;
+        }
+        true
+    }
+
+    /// A whole-file cache stores bytes but not extents. Disable it before an
+    /// operation that can create or inspect holes. The policy is path-global:
+    /// separate open file descriptions must not recreate the cache later.
+    pub fn disable_write_back_cache(&mut self) -> Result<usize, i32> {
+        let path = String::from((*self.file_path).to_str().unwrap());
+        if self.cache_disabled || self.whole_file_cache_disabled() {
+            self.cache_disabled = true;
+            if let Some(key) = self.whole_file_cache_key() {
+                discard_inode_caches(key);
+            }
+            return Ok(0);
+        }
+
+        if let Some(key) = self.whole_file_cache_key() {
+            // Persist every alias's existing cache before this inode becomes
+            // sparse.  Keep the entries until the underlying ext4 cache has
+            // flushed as well, so a failed flush leaves caller data available
+            // for a retry instead of silently discarding it.
+            flush_inode_caches(key)?;
+            self.flush_ext4_block_cache()?;
+            discard_inode_caches(key);
+        } else if if_cache(path.clone()) {
+            self.flush_and_discard_path_cache()?;
+        }
+
+        self.disable_whole_file_cache();
+        self.cache_disabled = true;
         Ok(0)
     }
 
@@ -889,6 +1041,30 @@ impl Ext4File {
         }
         Ok(entries)
     }
+
+    /// SEEK_DATA: find next data offset >= `offset`.
+    /// Returns ENXIO if there is no data at or after `offset`.
+    pub fn file_seek_data(&mut self, offset: u64) -> Result<u64, i32> {
+        let mut result: u64 = 0;
+        let rc = unsafe { ext4_fseek_data_raw(&mut self.file_desc, offset, &mut result) };
+        if rc != EOK as i32 {
+            error!("ext4_fseek_data: rc = {}", rc);
+            return Err(rc);
+        }
+        Ok(result)
+    }
+
+    /// SEEK_HOLE: find next hole offset >= `offset`.
+    /// Returns ENXIO for offsets at or beyond EOF.
+    pub fn file_seek_hole(&mut self, offset: u64) -> Result<u64, i32> {
+        let mut result: u64 = 0;
+        let rc = unsafe { ext4_fseek_hole_raw(&mut self.file_desc, offset, &mut result) };
+        if rc != EOK as i32 {
+            error!("ext4_fseek_hole: rc = {}", rc);
+            return Err(rc);
+        }
+        Ok(result)
+    }
 }
 
 /*
@@ -985,6 +1161,7 @@ pub struct VFileCache {
     modified: bool,
     size: usize,
     mode: Option<u32>,
+    inode_key: Option<WholeFileCacheKey>,
 }
 
 impl VFileCache {
@@ -995,6 +1172,7 @@ impl VFileCache {
             modified: false,
             size: 0,
             mode: None,
+            inode_key: None,
         }
     }
 
@@ -1061,6 +1239,130 @@ impl VFileCache {
 static CACHE_TABLE: Lazy<Mutex<BTreeMap<String, Arc<RwLock<VFileCache>>>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
 
+type WholeFileCacheKey = (usize, u32);
+
+// Whole-file caches represent bytes only. Once an inode has sparse layout,
+// every path and open file description referring to it must bypass the cache
+// so no later write-back materializes its holes as zero-filled data blocks.
+static WHOLE_FILE_CACHE_DISABLED_INODES: Lazy<Mutex<BTreeSet<WholeFileCacheKey>>> =
+    Lazy::new(|| Mutex::new(BTreeSet::new()));
+
+fn clear_whole_file_cache_policy(key: WholeFileCacheKey) {
+    WHOLE_FILE_CACHE_DISABLED_INODES.lock().remove(&key);
+}
+
+fn whole_file_cache_key_for_desc(file: &ext4_file) -> Option<WholeFileCacheKey> {
+    if file.mp.is_null() {
+        None
+    } else {
+        Some((file.mp as usize, file.inode))
+    }
+}
+
+fn whole_file_cache_disabled_for_desc(file: &ext4_file) -> bool {
+    match whole_file_cache_key_for_desc(file) {
+        Some(key) => WHOLE_FILE_CACHE_DISABLED_INODES.lock().contains(&key),
+        None => false,
+    }
+}
+
+/// Fetch an inode-key for a path that is being unlinked without an active
+/// `Ext4File` descriptor. This is best effort because cache-policy cleanup is
+/// an optimization; failure must not change unlink's filesystem-visible errno.
+fn whole_file_cache_key_for_path(path: &str) -> Option<WholeFileCacheKey> {
+    let c_path = CString::new(path).expect("CString::new failed").into_raw();
+    let flags = Ext4File::flags_to_cstring(O_RDONLY).into_raw();
+    let mut file = ext4_file {
+        mp: core::ptr::null_mut(),
+        inode: 0,
+        flags: 0,
+        fsize: 0,
+        fpos: 0,
+    };
+    let r = unsafe { ext4_fopen(&mut file, c_path, flags) };
+    unsafe {
+        drop(CString::from_raw(c_path));
+        drop(CString::from_raw(flags));
+    }
+    if r != EOK as i32 {
+        return None;
+    }
+
+    let key = whole_file_cache_key_for_desc(&file);
+    let close_r = unsafe { ext4_fclose(&mut file) };
+    if close_r != EOK as i32 {
+        return None;
+    }
+    key
+}
+
+/// Link count lookup paired with `whole_file_cache_key_for_path()`. It is only
+/// used to decide whether a successful unlink can retire inode-global cache
+/// state, so lookup failure conservatively keeps that state.
+fn links_cnt_for_path(path: &str) -> Option<u32> {
+    let c_path = CString::new(path).expect("CString::new failed").into_raw();
+    let mut count = 0;
+    let r = unsafe { ext4_get_links_cnt(c_path, &mut count) };
+    unsafe {
+        drop(CString::from_raw(c_path));
+    }
+    (r == EOK as i32).then_some(count)
+}
+
+/// Returns true for a cacheable nonempty file whose on-disk layout has a hole,
+/// or when lwext4 cannot safely report its layout. Large files already bypass
+/// the byte-only cache, so do not linearly scan their allocation map here.
+fn ext4_file_has_hole(file: &mut ext4_file) -> bool {
+    let size = unsafe { ext4_fsize(file) };
+    if size == 0 || size > MAX_CACHED_FILE_SIZE as u64 {
+        return false;
+    }
+
+    let mut hole = 0;
+    let r = unsafe { ext4_fseek_hole_raw(file, 0, &mut hole) };
+    r != EOK as i32 || hole < size
+}
+
+fn cached_entries_for_inode(key: WholeFileCacheKey) -> Vec<(String, Arc<RwLock<VFileCache>>)> {
+    let entries: Vec<(String, Arc<RwLock<VFileCache>>)> = CACHE_TABLE
+        .lock()
+        .iter()
+        .map(|(path, cache)| (path.clone(), cache.clone()))
+        .collect();
+
+    entries
+        .into_iter()
+        .filter(|(_, cache)| cache.read().inode_key == Some(key))
+        .collect()
+}
+
+fn flush_inode_caches(key: WholeFileCacheKey) -> Result<(), i32> {
+    for (path, cache) in cached_entries_for_inode(key) {
+        write_back_cache_entry(&path, &cache)?;
+    }
+    Ok(())
+}
+
+fn discard_inode_caches(key: WholeFileCacheKey) {
+    for (path, _) in cached_entries_for_inode(key) {
+        remove_file_cache_state(&path);
+    }
+}
+
+fn flush_ext4_block_cache_for_path(path: &str) -> Result<usize, i32> {
+    let c_path = CString::new(path).expect("CString::new failed");
+    let c_path = c_path.into_raw();
+    let r = unsafe { ext4_cache_flush(c_path) };
+    unsafe {
+        drop(CString::from_raw(c_path));
+    }
+    if r != EOK as i32 {
+        error!("ext4_cache_flush: {}, rc = {}", path, r);
+        return Err(r);
+    }
+    Ok(0)
+}
+
 pub fn if_cache(file_path: String) -> bool {
     CACHE_TABLE.lock().contains_key(&file_path)
 }
@@ -1078,8 +1380,9 @@ pub fn remove_cache(file_path: String) {
 }
 
 /// Drop every global write-back bookkeeping entry for a pathname without
-/// writing it back.  Callers must persist dirty data first when it still
-/// belongs to a live directory entry.
+/// writing it back. Callers must persist dirty data first when it still
+/// belongs to a live directory entry. Sparse-layout policy is inode-based and
+/// deliberately survives this pathname cleanup.
 pub fn discard_path_cache(file_path: &str) {
     remove_file_cache_state(file_path);
 }
@@ -1115,33 +1418,55 @@ const FIFO_SIZE: usize = 10;
 //采用先进先出策略
 static FIFO_TABLE: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
-pub fn insert_fifo(file_path: String) {
-    let evicted = {
-        let mut fifo = FIFO_TABLE.lock();
-        // FIFO_SIZE is intentionally small, so keeping de-duplication in the
-        // queue itself avoids a second table with a separate lifetime.
-        if fifo.iter().any(|entry| entry == &file_path) {
-            return;
-        }
+fn insert_fifo(file_path: String) -> Result<(), i32> {
+    loop {
+        let evicted = {
+            let mut fifo = FIFO_TABLE.lock();
+            // FIFO_SIZE is intentionally small, so keeping de-duplication in
+            // the queue itself avoids a second table with a separate lifetime.
+            if fifo.iter().any(|entry| entry == &file_path) {
+                return Ok(());
+            }
+            if fifo.len() < FIFO_SIZE {
+                fifo.push_back(file_path.clone());
+                return Ok(());
+            }
 
-        let evicted = if fifo.len() == FIFO_SIZE {
-            let path = fifo.pop_front().unwrap();
-            // Detach the global state before doing lwext4 I/O.  A pathname
-            // recreated during the write-back can then receive a new cache.
-            CACHE_TABLE.lock().remove(&path).map(|cache| (path, cache))
-        } else {
-            None
+            let path = fifo.front().cloned().expect("full FIFO has no front");
+            match CACHE_TABLE.lock().get(&path).cloned() {
+                Some(cache) => Some((path, cache)),
+                // Repair an orphaned queue entry before selecting another
+                // victim.  No cache data exists for this pathname anymore.
+                None => {
+                    fifo.pop_front();
+                    None
+                }
+            }
         };
 
-        fifo.push_back(file_path.clone());
-        evicted
-    };
+        let Some((path, cache)) = evicted else {
+            continue;
+        };
 
-    // write_back_cache_entry() may handle an ENOENT proc entry.  It must run
-    // after FIFO_TABLE is unlocked because it can otherwise re-enter cache
-    // cleanup paths.
-    if let Some((path, cache)) = evicted {
-        let _ = write_back_cache_entry(&path, &cache);
+        // Write-back runs without either global table lock.  Leave both table
+        // entries reachable until it succeeds so a transient I/O error can be
+        // retried instead of silently dropping dirty user data.
+        if let Err(r) = write_back_cache_entry(&path, &cache) {
+            error!("write-back cache eviction: {}, rc = {}", path, r);
+            return Err(r);
+        }
+
+        {
+            let mut fifo = FIFO_TABLE.lock();
+            fifo.retain(|entry| entry != &path);
+        }
+        let mut table = CACHE_TABLE.lock();
+        if table
+            .get(&path)
+            .is_some_and(|current| Arc::ptr_eq(current, &cache))
+        {
+            table.remove(&path);
+        }
     }
 }
 
@@ -1154,7 +1479,7 @@ pub fn write_back_cache(path: String) -> Result<usize, i32> {
 }
 
 fn write_back_cache_entry(path: &str, cache: &Arc<RwLock<VFileCache>>) -> Result<usize, i32> {
-    let cache_writer = cache.write();
+    let mut cache_writer = cache.write();
     if !cache_writer.modified {
         return Ok(0);
     }
@@ -1215,6 +1540,18 @@ fn write_back_cache_entry(path: &str, cache: &Arc<RwLock<VFileCache>>) -> Result
     if r != EOK as i32 {
         error!("write_back_cache ext4_fopen: {}, rc = {}", path, r);
         return Err(r);
+    }
+
+    if whole_file_cache_disabled_for_desc(&file_desc) {
+        // An alias may have created sparse layout after this path's cache was
+        // populated. Dropping the stale byte-only cache is safer than turning
+        // its holes into zero-filled allocated blocks during FIFO eviction.
+        cache_writer.modified = false;
+        let close_r = unsafe { ext4_fclose(&mut file_desc) };
+        if close_r != EOK as i32 {
+            return Err(close_r);
+        }
+        return Ok(0);
     }
 
     file_desc.fpos = 0;

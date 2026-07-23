@@ -1151,3 +1151,11 @@
 - **场景**：维护者要求分析根目录 `log.ans` 中 LoongArch64 LTP `fcntl14` 失败并完成修复。
 - **描述**：AI 对照 `fcntl14.c` 的 `sighold(SIGUSR1)`/`sigpause(SIGUSR1)` 同步流程与内核 trap return 路径，确认 record lock 的连锁失败来自 `rt_sigsuspend` 在 signal frame 建立前恢复旧 mask，令 pending `SIGUSR1` 再次被屏蔽且 handler 未执行。修复保留临时 mask 直到交付，将调用前 mask 写入 signal frame 供 `rt_sigreturn` 恢复，并在无 handler 返回路径清理状态。LoongArch64 musl/glibc `fcntl14` 均为 `passed 96 failed 0 broken 0`；RISC-V release 构建通过，但其 final-2026 镜像缺少该用例，未将 RISC-V runtime 标为通过。详见 [problem/fcntl14-sigsuspend-mask-restore.md](./problem/fcntl14-sigsuspend-mask-restore.md) 与 `ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-22 工作树）
+
+#### LTP lseek11 ext4 SEEK_DATA/SEEK_HOLE 与 sparse truncate 修复（7.23）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求依据 Docker 构建运行后的 `log.ans` 持续修复 LoongArch64 LTP `lseek11`。
+- **描述**：AI 对照 `lseek11` 的 block-size 二分探测、sparse write 和 EOF 扩展序列，确认 seek 映射本身修通后，block 0 数据仍被 bcache 与 direct payload I/O 的双副本覆盖；临时 `ftruncate01` 复现 grow 后旧字节未清零。修复补齐 Linux `SEEK_DATA/SEEK_HOLE` 的 VFS/lwext4 路径、extent-aware sparse write/read、inode 级 whole-file cache 禁用和 C rebuild 依赖，并将 `ftruncate` retained partial block 的 zero 操作统一到 direct I/O。LoongArch64 的 musl/glibc `lseek11` 均为 `passed 15 failed 0 broken 0`，临时 `ftruncate01` 两侧均通过后已移除入口；双架构 release 构建通过。详见 [problem/lseek11-ext4-seek-data-hole-sparse-write.md](./problem/lseek11-ext4-seek-data-hole-sparse-write.md) 与 `ai.log` 2026-07-23 条目。
+- **补充验证**：最终复审补齐 sparse inode 首次打开的 flush-then-disable、`O_TRUNC` 丢弃旧 cache、未打开 unlink 的 policy 回收，以及 `ftruncate` 错误路径的单一 mount 解锁；收口后重新通过 LoongArch64/RISC-V release 构建，LoongArch64 musl/glibc `lseek11` 仍均为 `passed 15 failed 0 broken 0` 并正常关机。
+- **关联 commit**：尚未提交（2026-07-23 工作树）

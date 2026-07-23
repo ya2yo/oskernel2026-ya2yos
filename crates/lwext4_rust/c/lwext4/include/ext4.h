@@ -386,6 +386,18 @@ int ext4_fwrite(ext4_file *file, const void *buf, size_t size, size_t *wcnt);
  * @return  Standard error code.*/
 int ext4_fseek(ext4_file *file, int64_t offset, uint32_t origin);
 
+/**@brief Find the next data block at or after an offset.
+ *
+ * @return Standard error code, or ENXIO when no data exists at or after
+ *         the requested offset. */
+int ext4_fseek_data(ext4_file *file, uint64_t offset, uint64_t *result);
+
+/**@brief Find the next hole at or after an offset.
+ *
+ * @return Standard error code, or ENXIO when the requested offset is at or
+ *         beyond end-of-file. */
+int ext4_fseek_hole(ext4_file *file, uint64_t offset, uint64_t *result);
+
 /**@brief   Get file position.
  *
  * @param   file File handle.
