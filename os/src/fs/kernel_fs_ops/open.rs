@@ -346,10 +346,6 @@ fn open_inner(
     let create = !path_only && flags.contains(OpenFlags::O_CREATE);
     let create_exclusive = create && flags.contains(OpenFlags::O_EXCL);
 
-    if create_exclusive {
-        return create_file(abs_path, flags, mode);
-    }
-
     let mut inode: Option<Arc<dyn Inode>> = None;
     // 同一个路径对应一个Inode
     if !flags.intersects(OpenFlags::O_NOFOLLOW | OpenFlags::O_UNLINK)

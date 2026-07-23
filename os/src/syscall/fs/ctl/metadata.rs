@@ -214,13 +214,17 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> SyscallRet {
 /// 支持 `AT_EMPTY_PATH` 的 fd 目标、`/proc/self/fd/<fd>` 兼容路径和普通路径目标；
 /// 各路径最终统一调用 `chmod_inode()`，保证和 `fchmod(2)` 一致的权限及 setgid 语义。
 fn do_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallRet {
+    // Mask to valid flag bits.  musl-libc for riscv64 does not zero a3 before
+    // ecall in chmod(), leaving stale register content.  Clamping here avoids
+    // spurious EINVAL and mirrors Linux behaviour on 64-bit arches where the
+    // upper bits of a 32-bit int argument are undefined.
+    let valid_flags = (AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) as u32;
+    let flags = flags & valid_flags;
+
+    debug!("[do_fchmodat] dirfd={}, path={}, mode={}, flags={}", dirfd, path as usize, mode, flags);
     let task = current_task().unwrap();
     let proc = &task.process;
     let memory_set = proc.memory_set_arc();
-
-    if (flags as i32) < 0 {
-        return Err(SysErrNo::EINVAL);
-    }
 
     if dirfd != -100 && dirfd as usize >= proc.fd_table.len() {
         return Err(SysErrNo::EBADF);
@@ -231,7 +235,7 @@ fn do_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallR
     }
 
     let path = read_user_cstr(&memory_set, path)?;
-
+    debug!("path={path}");
     if path.len() >= MAX_PATH_LEN {
         return Err(SysErrNo::ENAMETOOLONG);
     }
@@ -284,7 +288,12 @@ fn do_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallR
         FaccessatFileMode::from_bits_truncate(mode)
     );
 
-    let inode = open(&abs_path, OpenFlags::empty(), NONE_MODE)?.file()?;
+    let open_flags = if flags & AT_SYMLINK_NOFOLLOW as u32 != 0 {
+        OpenFlags::O_NOFOLLOW
+    } else {
+        OpenFlags::empty()
+    };
+    let inode = open(&abs_path, open_flags, NONE_MODE)?.file()?;
     chmod_inode(inode.inode.clone(), Some(&abs_path), mode)
 }
 

@@ -85,6 +85,10 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     //     dirfd, path, mode
     // );
 
+    if path.len() >= MAX_PATH_LEN || has_too_long_path_component(&path) {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+
     if dirfd != -100 && dirfd as usize >= proc.fd_table.len() {
         return Err(SysErrNo::EBADF);
     }
