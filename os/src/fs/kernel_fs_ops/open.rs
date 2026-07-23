@@ -315,11 +315,6 @@ fn open_inner(
 ) -> SysResult<FileClass> {
     debug!("open({},{:?},{})", abs_path, flags, mode);
     // log::info!("[open] abs_path={}", abs_path);
-    //判断是否是设备文件
-    if find_device(abs_path) {
-        let device = open_device_file(abs_path)?;
-        return Ok(FileClass::Abs(device));
-    }
     // 如果是动态链接文件,转换路径
     // HXC: 转个锤子，本来输入的路径就是转换后的
     // HXC: 我错了还是得转，因为用户态也可能想要这个文件
@@ -345,6 +340,19 @@ fn open_inner(
     let path_only = flags.contains(OpenFlags::O_PATH);
     let create = !path_only && flags.contains(OpenFlags::O_CREATE);
     let create_exclusive = create && flags.contains(OpenFlags::O_EXCL);
+
+    //判断是否是设备文件。必须在 create_exclusive 检查之后，否则
+    //mkdir("/dev/null") 会错误地返回成功。
+    if find_device(abs_path) {
+        if create_exclusive {
+            return Err(SysErrNo::EEXIST);
+        }
+        if flags.contains(OpenFlags::O_DIRECTORY) {
+            return Err(SysErrNo::ENOTDIR);
+        }
+        let device = open_device_file(abs_path)?;
+        return Ok(FileClass::Abs(device));
+    }
 
     let mut inode: Option<Arc<dyn Inode>> = None;
     // 同一个路径对应一个Inode

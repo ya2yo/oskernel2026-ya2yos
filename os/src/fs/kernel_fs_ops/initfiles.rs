@@ -172,6 +172,11 @@ fn write_init_file(path: &str, content: &str) -> SysResult {
 fn write_executable_init_file(path: &str, content: &str) -> SysResult {
     if let Ok(file) = open(path, OpenFlags::O_UNLINK, 0) {
         file.file()?.inode.unlink(path)?;
+        // This bypasses sys_unlinkat(), so invalidate the lookup caches before
+        // recreating the pathname. Otherwise open(O_CREAT) can reuse an inode
+        // whose backing ext4 entry has just been removed.
+        invalidate_dentry_path(path);
+        FsIndex::remove_inode_idx(path);
     }
     let file = open(path, OpenFlags::O_CREATE | OpenFlags::O_RDWR, 0o777)?.file()?;
     file.inode.truncate(0)?;

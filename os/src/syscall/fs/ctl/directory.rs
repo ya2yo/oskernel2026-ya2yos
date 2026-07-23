@@ -85,7 +85,10 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     //     dirfd, path, mode
     // );
 
-    if path.len() >= MAX_PATH_LEN || has_too_long_path_component(&path) {
+    // Reject only an overlong individual component here. A full-path limit
+    // needs special handling below because a symlink loop can take precedence
+    // over the reader's fixed-length truncation.
+    if has_too_long_path_component(&path) {
         return Err(SysErrNo::ENAMETOOLONG);
     }
 
@@ -96,6 +99,18 @@ pub fn sys_mkdirat(dirfd: isize, path: *const u8, mode: u32) -> SyscallRet {
     if abs_path.bytes().all(|b| b == b'/') {
         return Err(SysErrNo::EEXIST);
     }
+
+    // read_user_cstr() returns MAX_PATH_LEN bytes when it cannot find a NUL.
+    // Before reporting that truncated path as ENAMETOOLONG, preserve ELOOP for
+    // a loop already visible in its parent traversal. Do not inspect the final
+    // component: mkdir() does not dereference a final symlink while creating.
+    if path.len() >= MAX_PATH_LEN {
+        if has_self_referential_symlink_prefix(parent_path_of(&abs_path)?) {
+            return Err(SysErrNo::ELOOP);
+        }
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+
     open(
         &abs_path,
         OpenFlags::O_RDWR | OpenFlags::O_CREATE | OpenFlags::O_EXCL | OpenFlags::O_DIRECTORY,
