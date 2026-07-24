@@ -322,6 +322,10 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
     let id = syscall_id;
     #[cfg(feature = "perf")]
     crate::utils::perf::record_syscall(id);
+    #[cfg(feature = "perf")]
+    let syscall_begin = crate::utils::perf::should_record_syscall_duration(id)
+        .then(crate::arch::time::get_ticks)
+        .unwrap_or(0);
     let syscall_id: Syscall = Syscall::from(syscall_id);
     let task = current_task().unwrap();
     let seccomp_action = task.seccomp_action(id);
@@ -343,7 +347,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         syscall_id,
         current_task().unwrap().inner_lock().trap_cx().get_sepc()
     );
-    match syscall_id {
+    let result = match syscall_id {
         // Xattr
         Syscall::Setxattr => sys_setxattr(args[0], args[1], args[2], args[3], args[4]),
         Syscall::Lsetxattr => sys_lsetxattr(args[0], args[1], args[2], args[3], args[4]),
@@ -942,7 +946,10 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         _ => {
             warn!("Unsupported syscall_id: {}!", id);
             // sys_memfd_secret(args[0] as u32)
-            return Err(SysErrNo::ENOSYS);
+            Err(SysErrNo::ENOSYS)
         }
-    }
+    };
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_syscall_duration(id, syscall_begin);
+    result
 }

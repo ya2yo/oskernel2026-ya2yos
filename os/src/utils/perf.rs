@@ -7,6 +7,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::arch::time::{get_clock_freq, get_ticks};
 use crate::timer::get_time_ms;
 
 const REPORT_INTERVAL_MS: usize = 30_000;
@@ -22,6 +23,49 @@ static SYSCALL_MM: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_PROCESS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_FUTEX: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_SCHED_YIELD: AtomicUsize = AtomicUsize::new(0);
+
+static SYSCALL_READ_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_READ_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_READ_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_READ_ACTIVE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_READ_ACTIVE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_READ_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_WRITE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_WRITE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_WRITE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_CONNECT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_CONNECT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_CONNECT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_ACCEPT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_ACCEPT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_ACCEPT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_ACCEPT_ACTIVE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_ACCEPT_ACTIVE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_ACCEPT_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_SEND_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_SEND_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_SEND_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_RECV_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_RECV_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_NET_RECV_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_CLONE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_CLONE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_CLONE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_EXEC_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_EXEC_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_EXEC_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_WAIT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_WAIT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_WAIT_ACTIVE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_WAIT_ACTIVE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_WAIT_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_ADDRESS_SPACE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_ADDRESS_SPACE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_ADDRESS_SPACE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCFS_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCFS_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCFS_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 
 static EXT4_READ_OPS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_READ_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -73,6 +117,230 @@ pub fn record_syscall(id: usize) {
     if total & 0xffff == 0 {
         maybe_report();
     }
+}
+
+/// Return whether a syscall needs a duration sample.  Blocking network and
+/// stream I/O are sampled at the syscall boundary; other calls are counted
+/// without taking an extra clock read.
+#[inline]
+pub fn should_record_syscall_duration(id: usize) -> bool {
+    matches!(
+        id,
+        63 | 64
+            | 65
+            | 66
+            | 67
+            | 68
+            | 69
+            | 70
+            | 95
+            | 202
+            | 203
+            | 206
+            | 207
+            | 211
+            | 212
+            | 220
+            | 221
+            | 242
+            | 260
+    )
+}
+
+#[inline]
+fn update_max(counter: &AtomicUsize, value: usize) {
+    let mut current = counter.load(Ordering::Relaxed);
+    while value > current {
+        match counter.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(next) => current = next,
+        }
+    }
+}
+
+#[inline]
+fn record_duration(
+    samples: &AtomicUsize,
+    total: &AtomicUsize,
+    maximum: &AtomicUsize,
+    elapsed: usize,
+) {
+    add(samples, 1);
+    add(total, elapsed);
+    update_max(maximum, elapsed);
+}
+
+/// Add one sampled syscall duration to its aggregate bucket.
+#[inline]
+pub fn record_syscall_duration(id: usize, begin: usize) {
+    if begin == 0 {
+        return;
+    }
+    let elapsed = get_ticks().saturating_sub(begin);
+    let (samples, total, maximum) = match id {
+        63 | 65 | 67 | 69 => (
+            &SYSCALL_READ_SAMPLES,
+            &SYSCALL_READ_TICKS,
+            &SYSCALL_READ_MAX_TICKS,
+        ),
+        64 | 66 | 68 | 70 => (
+            &SYSCALL_WRITE_SAMPLES,
+            &SYSCALL_WRITE_TICKS,
+            &SYSCALL_WRITE_MAX_TICKS,
+        ),
+        202 | 242 => (
+            &SYSCALL_NET_ACCEPT_SAMPLES,
+            &SYSCALL_NET_ACCEPT_TICKS,
+            &SYSCALL_NET_ACCEPT_MAX_TICKS,
+        ),
+        203 => (
+            &SYSCALL_NET_CONNECT_SAMPLES,
+            &SYSCALL_NET_CONNECT_TICKS,
+            &SYSCALL_NET_CONNECT_MAX_TICKS,
+        ),
+        206 | 211 => (
+            &SYSCALL_NET_SEND_SAMPLES,
+            &SYSCALL_NET_SEND_TICKS,
+            &SYSCALL_NET_SEND_MAX_TICKS,
+        ),
+        207 | 212 => (
+            &SYSCALL_NET_RECV_SAMPLES,
+            &SYSCALL_NET_RECV_TICKS,
+            &SYSCALL_NET_RECV_MAX_TICKS,
+        ),
+        220 => (
+            &SYSCALL_PROCESS_CLONE_SAMPLES,
+            &SYSCALL_PROCESS_CLONE_TICKS,
+            &SYSCALL_PROCESS_CLONE_MAX_TICKS,
+        ),
+        221 => (
+            &SYSCALL_PROCESS_EXEC_SAMPLES,
+            &SYSCALL_PROCESS_EXEC_TICKS,
+            &SYSCALL_PROCESS_EXEC_MAX_TICKS,
+        ),
+        95 | 260 => (
+            &SYSCALL_PROCESS_WAIT_SAMPLES,
+            &SYSCALL_PROCESS_WAIT_TICKS,
+            &SYSCALL_PROCESS_WAIT_MAX_TICKS,
+        ),
+        _ => return,
+    };
+    record_duration(samples, total, maximum, elapsed);
+}
+
+/// Profile the address-space portion of a process clone without emitting a
+/// per-fork trace line.
+#[inline]
+pub fn record_clone_address_space_duration(elapsed: usize) {
+    record_duration(
+        &CLONE_ADDRESS_SPACE_SAMPLES,
+        &CLONE_ADDRESS_SPACE_TICKS,
+        &CLONE_ADDRESS_SPACE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile synthetic /proc entry creation during a process clone.
+#[inline]
+pub fn record_clone_procfs_duration(elapsed: usize) {
+    record_duration(
+        &CLONE_PROCFS_SAMPLES,
+        &CLONE_PROCFS_TICKS,
+        &CLONE_PROCFS_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Record only the active accept poll closure, excluding time while the task
+/// is descheduled waiting for a client connection.
+#[inline]
+pub fn record_accept_active_duration(elapsed: usize) {
+    record_duration(
+        &SYSCALL_NET_ACCEPT_ACTIVE_SAMPLES,
+        &SYSCALL_NET_ACCEPT_ACTIVE_TICKS,
+        &SYSCALL_NET_ACCEPT_ACTIVE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Record one active waitpid poll, excluding time while `block_on` deschedules
+/// the task between two child-exit notifications.
+#[inline]
+pub fn record_wait_active_duration(elapsed: usize) {
+    record_duration(
+        &SYSCALL_PROCESS_WAIT_ACTIVE_SAMPLES,
+        &SYSCALL_PROCESS_WAIT_ACTIVE_TICKS,
+        &SYSCALL_PROCESS_WAIT_ACTIVE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Record the non-blocking portion of a regular-file read syscall.
+#[inline]
+pub fn record_read_active_duration(elapsed: usize) {
+    record_duration(
+        &SYSCALL_READ_ACTIVE_SAMPLES,
+        &SYSCALL_READ_ACTIVE_TICKS,
+        &SYSCALL_READ_ACTIVE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Scope guard used by `sys_read` so error returns are included as well.
+pub struct ReadActiveGuard {
+    begin: usize,
+}
+
+impl ReadActiveGuard {
+    #[inline]
+    pub fn new() -> Self {
+        Self { begin: get_ticks() }
+    }
+}
+
+impl Drop for ReadActiveGuard {
+    #[inline]
+    fn drop(&mut self) {
+        record_read_active_duration(get_ticks().saturating_sub(self.begin));
+    }
+}
+
+/// A scope guard for measuring one active poll without touching every early
+/// return in the poll closure.
+pub struct WaitActiveGuard {
+    begin: usize,
+}
+
+impl WaitActiveGuard {
+    #[inline]
+    pub fn new() -> Self {
+        Self { begin: get_ticks() }
+    }
+}
+
+impl Drop for WaitActiveGuard {
+    #[inline]
+    fn drop(&mut self) {
+        record_wait_active_duration(get_ticks().saturating_sub(self.begin));
+    }
+}
+
+#[inline]
+fn ticks_to_us(ticks: usize) -> usize {
+    ticks
+        .saturating_mul(1_000_000)
+        .checked_div(get_clock_freq().max(1))
+        .unwrap_or(usize::MAX)
+}
+
+fn emit_duration(label: &str, samples: &AtomicUsize, total: &AtomicUsize, maximum: &AtomicUsize) {
+    println!(
+        "{}(samples={} total_us={} max_us={})",
+        label,
+        samples.load(Ordering::Relaxed),
+        ticks_to_us(total.load(Ordering::Relaxed)),
+        ticks_to_us(maximum.load(Ordering::Relaxed)),
+    );
 }
 
 #[inline]
@@ -188,5 +456,103 @@ fn emit_report(now: usize) {
         SCHEDULER_SELECTIONS.load(Ordering::Relaxed),
         SCHEDULER_SELF_SELECTIONS.load(Ordering::Relaxed),
         IDLE_LOOPS.load(Ordering::Relaxed),
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "read",
+        &SYSCALL_READ_SAMPLES,
+        &SYSCALL_READ_TICKS,
+        &SYSCALL_READ_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "read_active",
+        &SYSCALL_READ_ACTIVE_SAMPLES,
+        &SYSCALL_READ_ACTIVE_TICKS,
+        &SYSCALL_READ_ACTIVE_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "write",
+        &SYSCALL_WRITE_SAMPLES,
+        &SYSCALL_WRITE_TICKS,
+        &SYSCALL_WRITE_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "connect",
+        &SYSCALL_NET_CONNECT_SAMPLES,
+        &SYSCALL_NET_CONNECT_TICKS,
+        &SYSCALL_NET_CONNECT_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "accept",
+        &SYSCALL_NET_ACCEPT_SAMPLES,
+        &SYSCALL_NET_ACCEPT_TICKS,
+        &SYSCALL_NET_ACCEPT_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "accept_active",
+        &SYSCALL_NET_ACCEPT_ACTIVE_SAMPLES,
+        &SYSCALL_NET_ACCEPT_ACTIVE_TICKS,
+        &SYSCALL_NET_ACCEPT_ACTIVE_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "send",
+        &SYSCALL_NET_SEND_SAMPLES,
+        &SYSCALL_NET_SEND_TICKS,
+        &SYSCALL_NET_SEND_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "recv",
+        &SYSCALL_NET_RECV_SAMPLES,
+        &SYSCALL_NET_RECV_TICKS,
+        &SYSCALL_NET_RECV_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "clone",
+        &SYSCALL_PROCESS_CLONE_SAMPLES,
+        &SYSCALL_PROCESS_CLONE_TICKS,
+        &SYSCALL_PROCESS_CLONE_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "execve",
+        &SYSCALL_PROCESS_EXEC_SAMPLES,
+        &SYSCALL_PROCESS_EXEC_TICKS,
+        &SYSCALL_PROCESS_EXEC_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "wait",
+        &SYSCALL_PROCESS_WAIT_SAMPLES,
+        &SYSCALL_PROCESS_WAIT_TICKS,
+        &SYSCALL_PROCESS_WAIT_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "wait_active",
+        &SYSCALL_PROCESS_WAIT_ACTIVE_SAMPLES,
+        &SYSCALL_PROCESS_WAIT_ACTIVE_TICKS,
+        &SYSCALL_PROCESS_WAIT_ACTIVE_MAX_TICKS,
+    );
+    print!("[perf] clone_duration ");
+    emit_duration(
+        "address_space",
+        &CLONE_ADDRESS_SPACE_SAMPLES,
+        &CLONE_ADDRESS_SPACE_TICKS,
+        &CLONE_ADDRESS_SPACE_MAX_TICKS,
+    );
+    print!("[perf] clone_duration ");
+    emit_duration(
+        "procfs",
+        &CLONE_PROCFS_SAMPLES,
+        &CLONE_PROCFS_TICKS,
+        &CLONE_PROCFS_MAX_TICKS,
     );
 }

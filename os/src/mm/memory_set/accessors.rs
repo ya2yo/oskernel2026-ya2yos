@@ -193,12 +193,12 @@ impl MemorySetInner {
                 continue;
             }
             if !area.vpn_range.contains_vpn(current_vpn) {
-                log::error!(
+                log::debug!(
                     "[check_valid_user_vpn_range] can't find area with vpn {:#x}",
                     current_vpn.0
                 );
                 self.areas.iter().for_each(|area| {
-                    log::error!(
+                    log::debug!(
                         "[check_valid_user_vpn_range] area: {:#x?}, {:?}",
                         area.vpn_range,
                         area.map_perm
@@ -207,7 +207,7 @@ impl MemorySetInner {
                 return false;
             }
             if !area.map_perm.contains(wanted_map_perm) {
-                log::error!(
+                log::debug!(
                     "[check_valid_user_vpn_range] vpn {:#x} has wrong map permission: {:?}, wanted: {:?}",
                     current_vpn.0,
                     area.map_perm,
@@ -223,7 +223,7 @@ impl MemorySetInner {
         }
 
         if current_vpn < end_vpn {
-            log::error!(
+            log::debug!(
                 "[check_valid_user_vpn_range] reach end prematurely at {:#x}, want {:#x}",
                 current_vpn.0,
                 end_vpn.0

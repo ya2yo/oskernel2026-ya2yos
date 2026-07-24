@@ -1232,6 +1232,21 @@
   [problem/scheduler-uncontended-preemption.md](./problem/scheduler-uncontended-preemption.md)。
 - **关联 commit**：尚未提交（2026-07-24 工作树）
 
+#### clone procfs 目录延迟物化与性能优化（7.24）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 `log.ans`，要求继续降低 clone 的高耗时。
+- **描述**：perf 分项显示 11 次 clone 的 procfs 阶段占 `95703 us`，而地址空间仅
+  `20952 us`。AI 追踪通用 `open(O_CREATE|O_DIRECTORY)` 到 EXT4 目录创建，确认重复
+  路径查找、元数据更新和目录事务是根因。修复为 clone 只登记 PID，首次打开具体 proc
+  路径时延迟物化目录；枚举 `/proc` 前批量物化，回收时注销，并加入父目录 inode 缓存
+  的根查找回退。另将 `mincore` 合法的未映射范围失败日志降为 debug。
+- **验证**：RISC-V 日志从 `clone procfs total_us=95703` 降至 `231`，最大值 109 us，
+  `cagent cpu pass 603` 并正常关机；RISC-V、LoongArch64 perf 构建通过。详见
+  [clone-procfs-lazy-materialization.md](./problem/clone-procfs-lazy-materialization.md)
+  和 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-24 工作树）
+
 #### CAgent `rt_sigsuspend` 忙让出调度优化（7.24）
 
 - **工具/模型**：Codex (GPT-5)

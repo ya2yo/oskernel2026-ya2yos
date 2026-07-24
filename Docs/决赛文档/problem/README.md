@@ -130,3 +130,4 @@
 - [BuildStorm 并行度与文件映射吞吐优化](./buildstorm-parallel-file-cache.md)
 - [定时器无竞争抢占的调度路径优化](./scheduler-uncontended-preemption.md)
 - [`rt_sigsuspend` 忙让出导致调度器高频自切换](./sigsuspend-busy-yield-scheduler.md)
+- [clone procfs 目录延迟物化优化](./clone-procfs-lazy-materialization.md)

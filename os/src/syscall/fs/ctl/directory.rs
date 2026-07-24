@@ -118,6 +118,9 @@ pub fn sys_getdents64(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     if !file.inode.types().is_dir() {
         return Err(SysErrNo::ENOTDIR);
     }
+    if file.inode.path() == "/proc" {
+        crate::fs::materialize_proc_dirs()?;
+    }
     // read_dentry uses usize::MAX as the EOF cookie. It is not a byte offset,
     // so feeding it back into lseek(SEEK_CUR) would turn a clean EOF into EINVAL.
     let off = file.offset();

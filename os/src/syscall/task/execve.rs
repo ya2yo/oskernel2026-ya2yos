@@ -9,8 +9,8 @@ use crate::{
     arch::memory_layout::{PAGE_SIZE, USER_STACK_SIZE},
     fs::{open, Inode, OSFile, OpenFlags, MAX_PATH_LEN, NONE_MODE},
     mm::{
-        copy_from_user_val, read_elf_load_image, read_user_cstr, read_user_cstr_with_limit,
-        MemorySet,
+        copy_from_user_val, read_elf_load_image, read_elf_load_image_with_prefix, read_user_cstr,
+        read_user_cstr_with_limit, MemorySet,
     },
     syscall::FaccessatFileMode,
     task::current_task,
@@ -96,8 +96,11 @@ fn is_elf(data: &[u8]) -> bool {
     data.len() >= 4 && data[0] == 0x7F && data[1] == b'E' && data[2] == b'L' && data[3] == b'F'
 }
 
-fn read_exec_probe(inode: &Arc<dyn Inode>) -> Result<Vec<u8>, SysErrNo> {
-    let read_len = EXEC_PROBE_SIZE.min(inode.size());
+fn read_exec_probe_with_size(
+    inode: &Arc<dyn Inode>,
+    file_size: usize,
+) -> Result<Vec<u8>, SysErrNo> {
+    let read_len = EXEC_PROBE_SIZE.min(file_size);
     let mut data = alloc::vec![0u8; read_len];
     let mut done = 0;
     while done < read_len {
@@ -319,12 +322,15 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     let script_abs_path = abs_path.clone();
     let app_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     let app_stat = app_inode.inode.fstat();
-    check_exec_permission(app_inode.inode.fmode()?, app_stat.st_uid, app_stat.st_gid)?;
+    // `fstat()` already provides the permission bits.  Calling `fmode()` here
+    // would reacquire the serialized EXT4 operation lock for identical data.
+    check_exec_permission(app_stat.st_mode, app_stat.st_uid, app_stat.st_gid)?;
     check_not_write_open(&app_inode.inode.path())?;
 
-    let mut elf_data = read_exec_probe(&app_inode.inode)?;
+    let app_size = app_stat.st_size.max(0) as usize;
+    let mut elf_data = read_exec_probe_with_size(&app_inode.inode, app_size)?;
     if is_elf(&elf_data) {
-        elf_data = read_elf_load_image(&app_inode.inode)?;
+        elf_data = read_elf_load_image_with_prefix(&app_inode.inode, &elf_data, app_size)?;
     } else {
         // 非 ELF：尝试按 shebang 脚本处理（如 #!/bin/sh）。
         // Linux 内核不会把脚本当最终可执行体，而是转去 exec 解释器。
@@ -359,15 +365,13 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
             };
             let interp_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
             let interp_stat = interp_inode.inode.fstat();
-            check_exec_permission(
-                interp_inode.inode.fmode()?,
-                interp_stat.st_uid,
-                interp_stat.st_gid,
-            )?;
+            check_exec_permission(interp_stat.st_mode, interp_stat.st_uid, interp_stat.st_gid)?;
             check_not_write_open(&interp_inode.inode.path())?;
-            elf_data = read_exec_probe(&interp_inode.inode)?;
+            let interp_size = interp_stat.st_size.max(0) as usize;
+            elf_data = read_exec_probe_with_size(&interp_inode.inode, interp_size)?;
             if is_elf(&elf_data) {
-                elf_data = read_elf_load_image(&interp_inode.inode)?;
+                elf_data =
+                    read_elf_load_image_with_prefix(&interp_inode.inode, &elf_data, interp_size)?;
             } else {
                 return Err(SysErrNo::ENOEXEC);
             }

@@ -96,7 +96,7 @@ pub fn run_tasks() {
             check_futex_timer();
         }
         let cur_task = take_current_task();
-        let current_tid = cur_task.as_ref().map(|task| task.tid());
+        let _current_tid = cur_task.as_ref().map(|task| task.tid());
         let processor = get_proc_by_hartid(hartid);
         let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
         if let Some(cur_task) = cur_task {
@@ -114,7 +114,7 @@ pub fn run_tasks() {
 
         if let Some(next_task) = ready_queue::fetch_task(hartid) {
             #[cfg(feature = "perf")]
-            crate::utils::perf::record_scheduler_selection(current_tid == Some(next_task.tid()));
+            crate::utils::perf::record_scheduler_selection(_current_tid == Some(next_task.tid()));
             let mut next_task_inner = next_task.inner_lock();
             let next_task_cx_ptr = &next_task_inner.task_cx as *const TaskContext;
             next_task_inner.task_status = TaskStatus::Running;

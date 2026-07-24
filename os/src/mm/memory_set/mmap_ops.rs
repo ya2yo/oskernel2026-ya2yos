@@ -294,11 +294,8 @@ impl MemorySetInner {
                 let mut right_area = MapArea::from_another(area);
                 right_area.vpn_range = VPNRange::new(end_vpn, area_end);
                 // 迁移属于右部的 data_frames
-                let right_keys: Vec<VirtPageNum> = area
-                    .data_frames
-                    .range(end_vpn..)
-                    .map(|(k, _)| *k)
-                    .collect();
+                let right_keys: Vec<VirtPageNum> =
+                    area.data_frames.range(end_vpn..).map(|(k, _)| *k).collect();
                 for k in right_keys {
                     if let Some(frame) = area.data_frames.remove(&k) {
                         right_area.data_frames.insert(k, frame);

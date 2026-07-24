@@ -2,7 +2,7 @@ use alloc::{vec, vec::Vec};
 use log::{debug, warn};
 
 use crate::{
-    fs::{File, OSFile, OpenFlags, StMode, SEEK_CUR, SEEK_SET},
+    fs::{File, Inode, OSFile, OpenFlags, StMode, SEEK_CUR, SEEK_SET},
     mm::{copy_from_user, copy_to_user, probe_user_write, user_buffer_from_kernel, UserBuffer},
     signal::{send_signal_to_thread_group, SigSet, SIGXFSZ},
     syscall::options::Iovec,
@@ -155,10 +155,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         if rlimit_fsize.rlim_cur != usize::MAX {
             let pos = f.lseek(0, SEEK_CUR)?;
             if pos >= rlimit_fsize.rlim_cur {
-                let _ = send_signal_to_thread_group(
-                    task.process.pid,
-                    SigSet::SIGXFSZ,
-                );
+                let _ = send_signal_to_thread_group(task.process.pid, SigSet::SIGXFSZ);
                 return Err(SysErrNo::EFBIG);
             }
         }
@@ -228,12 +225,20 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         if !file.readable() {
             return Err(SysErrNo::EBADF);
         }
-        if stat_file_type(file.fstat().st_mode) == StMode::FDIR.bits() {
-            return Err(SysErrNo::EISDIR);
-        }
+        let is_regular_file = if let Ok(os_file) = file_desc.file() {
+            if os_file.inode.types().is_dir() {
+                return Err(SysErrNo::EISDIR);
+            }
+            true
+        } else {
+            false
+        };
 
-        (file, file_desc.file().is_ok())
+        (file, is_regular_file)
     }; // 锁在此处释放
+
+    #[cfg(feature = "perf")]
+    let _read_active_guard = is_regular_file.then(crate::utils::perf::ReadActiveGuard::new);
 
     let mut total_read = 0usize;
     let mut user_ptr = buf as usize;
@@ -305,10 +310,7 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
         if rlimit_fsize.rlim_cur != usize::MAX {
             let pos = file.lseek(0, SEEK_CUR)?;
             if pos >= rlimit_fsize.rlim_cur {
-                let _ = send_signal_to_thread_group(
-                    task.process.pid,
-                    SigSet::SIGXFSZ,
-                );
+                let _ = send_signal_to_thread_group(task.process.pid, SigSet::SIGXFSZ);
                 return Err(SysErrNo::EFBIG);
             }
         }

@@ -206,6 +206,25 @@ impl Ext4File {
         Ok(0)
     }
 
+    /// Close a descriptor without flushing the global block cache.
+    ///
+    /// Creation callers commonly perform several metadata operations as one
+    /// transaction.  The ext4 descriptor still must be closed, but flushing
+    /// after each empty file serializes and repeats the same cache write-back.
+    /// The caller remains responsible for syncing when visibility or
+    /// durability is required.
+    pub fn file_close_without_cache_flush(&mut self) -> Result<usize, i32> {
+        if self.file_desc.mp != core::ptr::null_mut() {
+            unsafe {
+                ext4_fclose(&mut self.file_desc);
+            }
+        }
+
+        self.has_opened = false;
+
+        Ok(0)
+    }
+
     pub fn flags_to_cstring(flags: u32) -> CString {
         let cstr = match flags {
             O_RDONLY => "rb",

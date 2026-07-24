@@ -4,9 +4,9 @@ use super::fcntl::*;
 use super::file_lock;
 use crate::arch::memory_layout::PAGE_SIZE;
 use crate::fs::{
-    map_dynamic_link_file, notify_path_event, open, open_fifo, refresh_proc_maps,
-    refresh_proc_stat, refresh_proc_status, superblock_root_inode, File, FileClass, FileDescriptor,
-    FsIndex, OpenFlags, PagemapFile, TmpFile, FAN_OPEN, MNT_TABLE,
+    ensure_proc_dir, ensure_proc_path, map_dynamic_link_file, notify_path_event, open, open_fifo,
+    refresh_proc_maps, refresh_proc_stat, refresh_proc_status, superblock_root_inode, File,
+    FileClass, FileDescriptor, FsIndex, OpenFlags, PagemapFile, TmpFile, FAN_OPEN, MNT_TABLE,
 };
 use crate::mm::{copy_from_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::fs::has_too_long_path_component;
@@ -256,6 +256,7 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
         abs_path = format!("/proc/{}/pagemap", task.pid());
     }
     if abs_path == "/proc/self/status" {
+        ensure_proc_dir(task.pid())?;
         // 锁顺序: ProcessMeta(2) → TaskControlBlockInner(3) → MemorySet(5)
         // 必须先获取 meta/inner 再获取 memory_set
         let comm = task.process.meta_lock().comm.clone();
@@ -288,6 +289,7 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
         // `sys_openat2` has already rejected it when RESOLVE_NO_MAGICLINKS is set.
         abs_path = fs_info.get_exe();
     }
+    ensure_proc_path(&abs_path)?;
     if let Some(pid) = parse_proc_pid_file(&abs_path, "stat") {
         if let Some(process) = Process::get_process_arc_by_pid(pid) {
             let ppid = process.ppid();

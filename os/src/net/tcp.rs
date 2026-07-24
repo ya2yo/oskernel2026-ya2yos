@@ -15,6 +15,8 @@ use crate::{
     utils::{PollSet, SysErrNo, SysResult},
 };
 use crate::{net::extract_ipaddr_from_sockaddr, syscall::PollEvents};
+#[cfg(feature = "perf")]
+use crate::arch::time::get_ticks;
 use smoltcp::{
     iface::{MulticastError, SocketHandle},
     socket::tcp as smol,
@@ -440,18 +442,30 @@ impl SocketOps for TcpSocket {
         }
 
         let bound_port = self.bound_endpoint()?.port;
-        // 轮询检查是否有新句柄被放入监听表
+        // Match Linux inet_csk_accept(): consume an already-established
+        // accept-queue entry before driving the protocol stack.  The latter
+        // is only needed for the EAGAIN path and may otherwise add a full
+        // service/socket-set poll to every ready accept.
         self.general.recv_poller(self, || {
-            poll_interfaces();
-            LISTEN_TABLE.accept(bound_port).map(|handle| {
-                let socket = TcpSocket::new_connected(handle);
-                // debug!(
-                //     "accepted connection from {}, {}",
-                //     handle,
-                //     socket.with_smol_socket(|socket| socket.remote_endpoint().unwrap())
-                // );
-                Socket::Tcp(socket)
-            })
+            #[cfg(feature = "perf")]
+            let active_start = get_ticks();
+            let accept_ready = |result: SysResult<SocketHandle>| {
+                result.map(|handle| Socket::Tcp(TcpSocket::new_connected(handle)))
+            };
+
+            let result = match LISTEN_TABLE.accept(bound_port) {
+                Ok(handle) => accept_ready(Ok(handle)),
+                Err(SysErrNo::EAGAIN) => {
+                    poll_interfaces();
+                    accept_ready(LISTEN_TABLE.accept(bound_port))
+                }
+                Err(error) => Err(error),
+            };
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_accept_active_duration(
+                get_ticks().saturating_sub(active_start),
+            );
+            result
         })
     }
     /// 发送数据

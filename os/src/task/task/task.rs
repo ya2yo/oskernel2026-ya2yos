@@ -5,6 +5,8 @@ use super::super::{
     scheduler::SchedEntity,
     tid_to_task, RseqState, TaskContext, TidHandle,
 };
+#[cfg(feature = "perf")]
+use crate::arch::time::get_ticks;
 use crate::{
     arch::{
         context::TrapContext,
@@ -15,7 +17,8 @@ use crate::{
         page_table::PageTable,
     },
     fs::{
-        create_proc_dir_and_file, open, FSInfo, FdTable, OpenFlags, DEFAULT_DIR_MODE,
+        create_proc_dir, create_proc_dir_and_file, open, FSInfo, FdTable, OpenFlags,
+        DEFAULT_DIR_MODE,
         DEFAULT_FILE_MODE,
     },
     mm::{
@@ -528,17 +531,24 @@ impl TaskControlBlock {
         let trap_cx = task_inner.trap_cx();
         *trap_cx = TrapContext::app_init_context(entry_point, ustack_top, kernel_stack_top);
         drop(task_inner);
-        create_proc_dir_and_file(process.pid, 0, process.pgid(), "initproc", &memory_set, 0, 0, 0, 0, 0, 0)
-            .expect("create initproc proc files");
+        create_proc_dir_and_file(
+            process.pid,
+            0,
+            process.pgid(),
+            "initproc",
+            &memory_set,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        .expect("create initproc proc files");
         arc_task
     }
     /// exec的主逻辑
-    pub fn exec(
-        &self,
-        elf_data: &[u8],
-        argv: &[Vec<u8>],
-        env: &[Vec<u8>],
-    ) -> Result<(), SysErrNo> {
+    pub fn exec(&self, elf_data: &[u8], argv: &[Vec<u8>], env: &[Vec<u8>]) -> Result<(), SysErrNo> {
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
         debug!("exec: goto from_elf");
@@ -551,8 +561,7 @@ impl TaskControlBlock {
 
         debug!("exec: return from from_elf");
         let memory_set = MemorySet::new(memory_set);
-        let (ustack_top, trap_cx_bottom, trap_cx_ppn) =
-            alloc_user_res_in_memory_set(&memory_set)?;
+        let (ustack_top, trap_cx_bottom, trap_cx_ppn) = alloc_user_res_in_memory_set(&memory_set)?;
         let (user_sp, argv_base, envp_base) =
             prepare_exec_stack(&memory_set, ustack_top, argv, env, &mut auxv)?;
         let mut trap_cx =
@@ -734,6 +743,8 @@ impl TaskControlBlock {
             parent_memory_set_arc = parent_proc_inner.memory_set_arc();
 
             // 子进程 memory_set
+            #[cfg(feature = "perf")]
+            let address_space_start = get_ticks();
             child_memory_set_arc = if flags.contains(CloneFlags::CLONE_VM) {
                 parent_proc_inner.memory_set_arc()
             } else {
@@ -742,6 +753,10 @@ impl TaskControlBlock {
                     &parent_memory_set,
                 )))
             };
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_clone_address_space_duration(
+                get_ticks().saturating_sub(address_space_start),
+            );
 
             // fs / fd / sig
             child_fs_info = if flags.contains(CloneFlags::CLONE_FS) {
@@ -951,15 +966,6 @@ impl TaskControlBlock {
             trap_cx.set_tp(tls);
         }
 
-        // 在释放 child_inner 前提前提取 procfs 需要的字段。
-        // 子进程的 uid/gid 在构造时已从父进程复制，直接复用 Phase 1 提取的
-        // parent_* 变量即可，无需重新加锁。
-        let child_real_uid = parent_user_id as u32;
-        let child_effective_uid = parent_euid;
-        let child_saved_uid = parent_suid;
-        let child_real_gid = parent_rgid;
-        let child_effective_gid = parent_egid;
-        let child_saved_gid = parent_sgid;
         drop(child_inner);
 
         // CLONE_CHILD_SETTID: 写入子进程地址空间
@@ -981,21 +987,12 @@ impl TaskControlBlock {
 
         // Threads share the process, so /proc/<pid> is only created for a new process.
         if !flags.contains(CloneFlags::CLONE_THREAD) {
-            let child_proc = &child.process;
-            let child_comm = child_proc.meta_lock().comm.clone();
-            let child_mm = child_proc.memory_set_arc();
-            create_proc_dir_and_file(
-                child_pid,
-                child_ppid,
-                child_proc.pgid(),
-                &child_comm,
-                &child_mm,
-                child_real_uid,
-                child_effective_uid,
-                child_saved_uid,
-                child_real_gid,
-                child_effective_gid,
-                child_saved_gid,
+            #[cfg(feature = "perf")]
+            let procfs_start = get_ticks();
+            let _ = create_proc_dir(child_pid);
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_clone_procfs_duration(
+                get_ticks().saturating_sub(procfs_start),
             );
         }
 
@@ -1084,9 +1081,8 @@ impl TaskControlBlock {
     /// 分配用户栈和 trap context 区域，并返回用户栈顶地址
     fn alloc_user_res(&self, task_inner: &mut TaskControlBlockInner) -> usize {
         let memory_set = self.process.memory_set_arc();
-        let (ustack_top, trap_cx_bottom, trap_cx_ppn) =
-            alloc_user_res_in_memory_set(&memory_set)
-                .expect("failed to allocate task user resources");
+        let (ustack_top, trap_cx_bottom, trap_cx_ppn) = alloc_user_res_in_memory_set(&memory_set)
+            .expect("failed to allocate task user resources");
         task_inner.trap_cx_ppn = trap_cx_ppn;
         task_inner.trap_cx_bottom = trap_cx_bottom;
         ustack_top

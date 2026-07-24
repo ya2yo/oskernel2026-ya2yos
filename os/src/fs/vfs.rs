@@ -55,6 +55,13 @@ pub trait Inode: Send + Sync {
     fn create(&self, _path: &str, _ty: InodeType) -> Result<Arc<dyn Inode>, SysErrNo> {
         unimplemented!("Inode::create")
     }
+    /// 创建一个内核已知不存在的目录，绕过通用 open(O_CREATE) 语义。
+    ///
+    /// 该入口只用于 proc 等内核维护的固定目录：调用者已经完成父目录解析，
+    /// 不需要再次执行权限、umask、owner 和普通文件描述符处理。
+    fn create_dir_fast(&self, path: &str) -> Result<Arc<dyn Inode>, SysErrNo> {
+        self.create(path, InodeType::Dir)
+    }
     /// 查找文件
     fn find(
         &self,

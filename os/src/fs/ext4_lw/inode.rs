@@ -146,6 +146,9 @@ impl Inode for Ext4Inode {
     /// `path` 必须是绝对路径。目录通过 `dir_mk()` 创建，普通文件通过
     /// `file_open(O_CREAT|O_TRUNC)` 创建后立即关闭。目标已存在时返回 `EEXIST`，
     /// 用于承载 Linux `O_CREAT|O_EXCL` 语义。
+    ///
+    /// 新文件的描述符关闭不立即刷新全局 block cache；创建路径通常还会设置
+    /// mode/owner 或写入内容，由上层在完整操作结束后统一同步。
     fn create(&self, path: &str, ty: InodeType) -> Result<Arc<dyn Inode>, SysErrNo> {
         let types = as_ext4_de_type(ty);
         // Drop closes the underlying handle under EXT4_OP_LOCK.  Construct it
@@ -166,8 +169,21 @@ impl Inode for Ext4Inode {
         } else if let Err(e) = nfile.file_open(path, O_RDWR | O_CREAT | O_TRUNC) {
             return Err(SysErrNo::from(e));
         } else {
-            nfile.file_close()?;
+            nfile.file_close_without_cache_flush()?;
         }
+        Ok(Arc::new(nf))
+    }
+
+    /// 创建内核维护的目录项。
+    ///
+    /// `ext4_dir_mk()` 自身已经完成“存在则打开，不存在则创建”的路径处理；
+    /// proc 目录由 PID 分配器保证名称唯一，因此无需再由 VFS 先执行一次
+    /// `check_inode_exist()`。
+    fn create_dir_fast(&self, path: &str) -> Result<Arc<dyn Inode>, SysErrNo> {
+        let nf = Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR);
+        let _ext4 = EXT4_OP_LOCK.lock();
+        let nfile = &mut nf.inner.get_unchecked_mut().f;
+        nfile.dir_mk(path).map_err(SysErrNo::from)?;
         Ok(Arc::new(nf))
     }
 

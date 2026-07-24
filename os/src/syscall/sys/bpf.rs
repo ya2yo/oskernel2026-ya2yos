@@ -65,14 +65,18 @@ fn read_u32(buf: &[u8], offset: usize) -> Result<u32, SysErrNo> {
     if offset + 4 > buf.len() {
         return Err(SysErrNo::EINVAL);
     }
-    Ok(u32::from_ne_bytes(buf[offset..offset + 4].try_into().unwrap()))
+    Ok(u32::from_ne_bytes(
+        buf[offset..offset + 4].try_into().unwrap(),
+    ))
 }
 
 fn read_u64(buf: &[u8], offset: usize) -> Result<u64, SysErrNo> {
     if offset + 8 > buf.len() {
         return Err(SysErrNo::EINVAL);
     }
-    Ok(u64::from_ne_bytes(buf[offset..offset + 8].try_into().unwrap()))
+    Ok(u64::from_ne_bytes(
+        buf[offset..offset + 8].try_into().unwrap(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -119,11 +123,7 @@ pub fn sys_bpf(cmd: i32, uattr: *mut u8, size: u32) -> SyscallRet {
 // BPF_MAP_CREATE
 // ---------------------------------------------------------------------------
 
-fn bpf_map_create(
-    attr: &[u8],
-    attr_len: usize,
-    _memory_set: &crate::mm::MemorySet,
-) -> SyscallRet {
+fn bpf_map_create(attr: &[u8], attr_len: usize, _memory_set: &crate::mm::MemorySet) -> SyscallRet {
     if attr_len < MAP_CREATE_MIN_SIZE as usize {
         return Err(SysErrNo::EINVAL);
     }
@@ -134,8 +134,7 @@ fn bpf_map_create(
     let max_entries = read_u32(attr, 12)?;
     let _map_flags = read_u32(attr, 16)?;
 
-    let map_type = BpfMapType::from_u32(map_type_val)
-        .ok_or(SysErrNo::EINVAL)?;
+    let map_type = BpfMapType::from_u32(map_type_val).ok_or(SysErrNo::EINVAL)?;
 
     let bpf_map = BpfMap::new(map_type, key_size, value_size, max_entries);
 

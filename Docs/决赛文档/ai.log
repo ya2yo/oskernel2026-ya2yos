@@ -6853,3 +6853,21 @@ AI 沿 timer trap、调度门面、CFS/RR run queue 和 `run_tasks()` 追踪调�
 RISC-V 与 LoongArch64 的独立 `/tmp` target perf release 编译通过，仅有既有 smoltcp
 warning；QEMU snapshot 需要宿主 `/var/tmp` 写权限，本轮未重新取得运行快照，未宣称
 CAgent 新耗时或完整 BuildStorm A/B。详见 `Docs/决赛文档/problem/sigsuspend-busy-yield-scheduler.md`。
+
+## 2026-07-24：clone procfs 目录延迟物化优化
+
+维护者提供新的 `log.ans`，指出 clone 仍然偏慢。AI 对齐 perf 分项后确认，11 次 clone
+的地址空间仅 `20952 us`，而 procfs 占 `95703 us`；根因是每次 clone 都通过通用
+`open(O_CREATE|O_DIRECTORY)` 同步执行 EXT4 路径查找、父目录元数据/权限处理和目录事务，
+即使子进程从未访问 procfs 也承担该开销。
+
+采纳的修复是新增进程 PID 注册表：clone 只登记活跃 PID，首次打开 `/proc/<pid>` 或
+stat/status/maps/pagemap 时才调用 `ensure_proc_dir()` 物化目录；`getdents64` 枚举 `/proc`
+前批量物化以保持目录可见性，进程回收时注销 PID。物化阶段复用 `create_dir_fast()`，并
+在 `/proc` inode 缓存缺失时回退根 inode 查找；同时将 `mincore` 未映射范围的诊断从
+error 降为 debug，避免合法 `ENOMEM` 失败刷屏。修改涉及 proc_file、VFS inode、openat/
+getdents 路径及 memory range 诊断，详见 `Docs/决赛文档/problem/clone-procfs-lazy-materialization.md`。
+
+RISC-V 新样本为 `clone total_us=104066`、`clone_duration procfs total_us=231 max_us=109`，
+`cagent cpu pass 603` 并正常 `shutdown!`；RISC-V 与 LoongArch64 `make perf` 均通过，
+仅有既有 smoltcp warning。

@@ -162,6 +162,9 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
     };
 
     block_on(poll_fn(|cx| {
+        #[cfg(feature = "perf")]
+        let _active_guard = crate::utils::perf::WaitActiveGuard::new();
+
         let task = current_task().unwrap();
         let mut process_meta = task.process.meta_lock();
 

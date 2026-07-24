@@ -27,8 +27,8 @@ use crate::mm::{
 };
 use spin::{Lazy, Mutex};
 
-pub(crate) use elf_loader::read_elf_load_image;
 pub use elf_loader::*;
+pub(crate) use elf_loader::{read_elf_load_image, read_elf_load_image_with_prefix};
 pub use fork_clone::*;
 pub use handle::*;
 pub use kernel_init::*;

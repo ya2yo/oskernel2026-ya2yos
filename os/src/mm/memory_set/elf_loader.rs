@@ -20,8 +20,12 @@ use xmas_elf::ElfFile;
 
 const ELF_PROBE_SIZE: usize = 256;
 
-fn read_inode_prefix(inode: &Arc<dyn Inode>, len: usize) -> Result<Vec<u8>, SysErrNo> {
-    let read_len = len.min(inode.size());
+fn read_inode_prefix(
+    inode: &Arc<dyn Inode>,
+    len: usize,
+    file_size: usize,
+) -> Result<Vec<u8>, SysErrNo> {
+    let read_len = len.min(file_size);
     let mut data = alloc::vec![0u8; read_len];
     let mut done = 0;
     while done < read_len {
@@ -76,7 +80,22 @@ fn needed_elf_prefix_len(elf_data: &[u8]) -> Result<usize, SysErrNo> {
 /// PT_INTERP bytes, and PT_LOAD file ranges, so avoid copying the whole file
 /// into the kernel heap.
 pub(crate) fn read_elf_load_image(inode: &Arc<dyn Inode>) -> Result<Vec<u8>, SysErrNo> {
-    let head = read_inode_prefix(inode, ELF_PROBE_SIZE)?;
+    let file_size = inode.fstat().st_size.max(0) as usize;
+    read_elf_load_image_with_prefix(inode, &[], file_size)
+}
+
+/// Read the ELF load image while reusing a prefix already fetched by the
+/// syscall layer for magic/shebang detection.
+pub(crate) fn read_elf_load_image_with_prefix(
+    inode: &Arc<dyn Inode>,
+    prefix: &[u8],
+    file_size: usize,
+) -> Result<Vec<u8>, SysErrNo> {
+    let head = if prefix.is_empty() {
+        read_inode_prefix(inode, ELF_PROBE_SIZE, file_size)?
+    } else {
+        prefix.to_vec()
+    };
     if head.len() < 4 || head[0] != 0x7f || head[1] != b'E' || head[2] != b'L' || head[3] != b'F' {
         return Err(SysErrNo::ENOEXEC);
     }
@@ -84,7 +103,7 @@ pub(crate) fn read_elf_load_image(inode: &Arc<dyn Inode>) -> Result<Vec<u8>, Sys
     let header_elf = ElfFile::new(&head).map_err(|_| SysErrNo::ENOEXEC)?;
     let ph_end = program_headers_end(&header_elf)?;
     let ph_data = if head.len() < ph_end {
-        read_inode_prefix(inode, ph_end)?
+        read_inode_prefix(inode, ph_end, file_size)?
     } else {
         head
     };
@@ -94,7 +113,7 @@ pub(crate) fn read_elf_load_image(inode: &Arc<dyn Inode>) -> Result<Vec<u8>, Sys
 
     let needed = needed_elf_prefix_len(&ph_data)?;
     let image = if ph_data.len() < needed {
-        read_inode_prefix(inode, needed)?
+        read_inode_prefix(inode, needed, file_size)?
     } else {
         ph_data
     };
