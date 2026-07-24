@@ -75,6 +75,10 @@ pub trait Inode: Send + Sync {
     fn read_at(&self, _off: usize, _buf: &mut [u8]) -> SyscallRet {
         unimplemented!("Inode::read_at")
     }
+    /// Record a successful file access.
+    fn touch_atime(&self) -> SyscallRet {
+        Ok(0)
+    }
     /// 在指定偏移位置将buf的数据写入
     fn write_at(&self, _off: usize, _buf: &[u8]) -> SyscallRet {
         unimplemented!("Inode::write_at")

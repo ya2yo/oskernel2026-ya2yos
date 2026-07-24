@@ -7,7 +7,7 @@ use log::debug;
 
 use crate::{
     arch::memory_layout::{PAGE_SIZE, USER_STACK_SIZE},
-    fs::{open, Inode, OSFile, OpenFlags, MAX_PATH_LEN, NONE_MODE},
+    fs::{open, Inode, MNT_TABLE, OSFile, OpenFlags, MAX_PATH_LEN, NONE_MODE},
     mm::{
         copy_from_user_val, read_elf_load_image, read_elf_load_image_with_prefix, read_user_cstr,
         read_user_cstr_with_limit, MemorySet,
@@ -16,6 +16,7 @@ use crate::{
     task::current_task,
     utils::{get_abs_path, strip_color, trim_start_slash, SysErrNo, SyscallRet},
 };
+use linux_raw_sys::general::MS_NOEXEC;
 
 const EXEC_PROBE_SIZE: usize = 256;
 const MAX_EXEC_ARG_STRLEN: usize = 32 * PAGE_SIZE;
@@ -322,9 +323,18 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     let script_abs_path = abs_path.clone();
     let app_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     let app_stat = app_inode.inode.fstat();
-    // `fstat()` already provides the permission bits.  Calling `fmode()` here
-    // would reacquire the serialized EXT4 operation lock for identical data.
-    check_exec_permission(app_stat.st_mode, app_stat.st_uid, app_stat.st_gid)?;
+
+    // 检查挂载的 MS_NOEXEC 标志，noexec 挂载上不允许执行文件。
+    {
+        let mnt_table = MNT_TABLE.lock();
+        if let Some((_, _, _, mount_flags)) = mnt_table.mount_for_path(&abs_path) {
+            if mount_flags & MS_NOEXEC != 0 {
+                return Err(SysErrNo::EACCES);
+            }
+        }
+    }
+
+    check_exec_permission(app_inode.inode.fmode()?, app_stat.st_uid, app_stat.st_gid)?;
     check_not_write_open(&app_inode.inode.path())?;
 
     let app_size = app_stat.st_size.max(0) as usize;

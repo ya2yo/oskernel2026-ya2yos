@@ -1297,3 +1297,10 @@
 - **场景**：维护者要求分析 `log.ans` 并修复 LTP `mmapstress04` 的 musl/glibc `SIGBUS`。
 - **描述**：AI 对照只读 `mmapstress04.c` 确认文件在 mmap 后从 1 页扩展到 384 页；原 VMA 静态 EOF 快照将扩展后新页误判为 EOF 外页。修复删除静态快照，缺页时按 backing inode 当前长度判断，并在建图时初始化 ext4 inode 长度以保留 unlink 后打开映射语义。RISC-V `log.ans` 中 musl/glibc 均 `TPASS`、summary 为 `passed 1 failed 0 broken 0`，正常 `shutdown!`；详见 `problem/mmapstress04-dynamic-eof.md`。
 - **关联 commit**：尚未提交（2026-07-24 工作树）
+
+#### LTP mount03 EOF 读取 atime 修复（7.24）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析根目录 `log.ans` 中 LTP `mount03` 的失败并修复，随后要求补充项目文档。
+- **描述**：AI 对照 `mount03.c`、VFS 文件读取路径和 lwext4 时间戳接口，确认测试写入后从 EOF 成功读取 0 字节，而 `OSFile::read()` 的 EOF 快速返回绕过 `Ext4Inode::read_at()`，使普通文件 atime 从未更新。新增 inode 级 `touch_atime()`，由 ext4 在未设置 `MS_NOATIME` 时关闭临时句柄后更新 atime，并在普通读取与 EOF 快速路径调用；目录的 `MS_NODIRATIME` 行为保持不变。最新 RISC-V `log.ans` 中 musl/glibc 均为 `passed 55 failed 0 broken 0`，无 `TFAIL/TBROK`，正常 `shutdown!`；详见 [problem/mount03-atime-eof-read.md](./problem/mount03-atime-eof-read.md) 与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-24 工作树）

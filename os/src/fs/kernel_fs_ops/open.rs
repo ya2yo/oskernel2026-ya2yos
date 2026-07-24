@@ -8,7 +8,7 @@ use crate::utils::SysResult;
 use super::*;
 use alloc::sync::Arc;
 use alloc::{format, string::String};
-use linux_raw_sys::general::{CAP_FOWNER, MOUNT_ATTR_RDONLY};
+use linux_raw_sys::general::{CAP_FOWNER, MOUNT_ATTR_RDONLY, MS_NODEV};
 use log::{debug, warn};
 
 /// 将绝对路径拆分为父目录路径和末级名称。
@@ -344,6 +344,15 @@ fn open_inner(
     //判断是否是设备文件。必须在 create_exclusive 检查之后，否则
     //mkdir("/dev/null") 会错误地返回成功。
     if find_device(abs_path) {
+        // 检查挂载的 MS_NODEV 标志，nodev 挂载上不允许打开设备文件。
+        {
+            let mnt_table = MNT_TABLE.lock();
+            if let Some((_, _, _, mount_flags)) = mnt_table.mount_for_path(abs_path) {
+                if mount_flags & MS_NODEV != 0 {
+                    return Err(SysErrNo::EACCES);
+                }
+            }
+        }
         if create_exclusive {
             return Err(SysErrNo::EEXIST);
         }
@@ -423,6 +432,20 @@ fn open_inner(
 
         if !path_only {
             check_noatime_permission(&inode, flags)?;
+        }
+        // 检查挂载的 MS_NODEV 标志：文件系统上的设备节点（mknod 创建）
+        // 在 nodev 挂载上也不允许打开。但 O_UNLINK（删除操作）应豁免，
+        // 否则 cleanup 无法删除设备节点。
+        if !flags.contains(OpenFlags::O_UNLINK) {
+            let node_type = inode.types();
+            if node_type == InodeType::CharDevice || node_type == InodeType::BlockDevice {
+                let mnt_table = MNT_TABLE.lock();
+                if let Some((_, _, _, mount_flags)) = mnt_table.mount_for_path(abs_path) {
+                    if mount_flags & MS_NODEV != 0 {
+                        return Err(SysErrNo::EACCES);
+                    }
+                }
+            }
         }
         // 如果以写模式打开，检查文件的写权限
         if writable {

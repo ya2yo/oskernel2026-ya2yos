@@ -20,6 +20,7 @@ use crate::{
     sync::SyncUnsafeCell,
     utils::{SysErrNo, SysResult, SyscallRet},
 };
+use linux_raw_sys::general::{MS_NOATIME, MS_NODIRATIME};
 
 use alloc::{format, string::ToString, vec};
 use alloc::{sync::Arc, vec::Vec};
@@ -587,7 +588,7 @@ impl Inode for Ext4Inode {
     fn read_dentry(&self, off: usize, len: usize) -> SysResult<(Vec<u8>, isize)> {
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
-        let _ = Self::live_path(inner);
+        let path = Self::live_path(inner);
         let file = &mut inner.f;
         let entries = file.read_dir_from(off as u64).map_err(SysErrNo::from)?;
         let mut de: Vec<u8> = Vec::new();
@@ -602,6 +603,20 @@ impl Inode for Ext4Inode {
             res += entry.len();
             f_off = entry.off();
             de.extend_from_slice(entry.as_bytes());
+        }
+        // Update dir atime unless MS_NOATIME or MS_NODIRATIME suppresses it.
+        if res > 0 {
+            let suppress = MNT_TABLE
+                .lock()
+                .mount_for_path(&path)
+                .map(|(_, _, _, flags)| {
+                    flags & (MS_NOATIME | MS_NODIRATIME) != 0
+                })
+                .unwrap_or(false);
+            if !suppress {
+                let now = crate::timer::realtime();
+                file.set_time(Some(now.tv_sec as u64), None, None).ok();
+            }
         }
         // assert!(res != 0);
         Ok((de, f_off as isize))

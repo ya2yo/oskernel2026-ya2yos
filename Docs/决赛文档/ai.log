@@ -6894,8 +6894,6 @@ AI 先按 LTP `TPASS/TFAIL/TBROK` 和 summary 过滤日志，确认真实失败�
 
 基线 `timeout 120s make run` 的 `/tmp/mmap3-release-baseline.log` 仍在 LTP watchdog 超时；修复后的独占 `timeout 300s make run` 日志 `/tmp/mmap3-pinned-300.log` 中 musl/glibc 均输出 `mmap3.c:124: TPASS`，summary 均为 `passed 1 failed 0 broken 0`，最终 `shutdown!`，无 panic/ERROR/WARN。`make TARGET_ARCH=riscv64`（实际完成 RISC-V 与 LoongArch64 release 构建）、`make log TARGET_ARCH=riscv64` 和 `git diff --check` 均通过。未运行完整 LTP 批量套件，因此没有把单项结果表述为全量通过。
 
-- **关联 commit**：尚未提交（2026-07-23 工作树）
-
 ## 2026-07-24：LTP mmap18 MAP_GROWSDOWN 与默认 SIGSEGV 线程组退出修复
 
 ### 用户需求
@@ -6921,8 +6919,6 @@ AI 对照只读 `mmap18.c` 确认前两轮将 `MAP_GROWSDOWN` 映射作为 pthre
 `make log TARGET_ARCH=riscv64` 成功，只有既有 Cargo config/vendored `smoltcp` warning。随后执行 `timeout 90s make run TARGET_ARCH=riscv64 > log.ans 2>&1`；最终 `log.ans` 中 musl/glibc 各有 4 个 `TPASS`，摘要均为 `passed 4 failed 0 broken 0 warnings 0`，有 `shutdown!`，没有 `TFAIL`、`TBROK`、panic、ERROR 或 WARN。`python3 scripts/extract_failed_tests.py log.ans` 输出“未发现失败测试”，`git diff --check` 通过。
 
 未运行 LoongArch64 运行时、完整 LTP 批量、独立多线程 execve 或 strict seccomp 回归；本轮行为验证只覆盖 RISC-V `mmap18`。
-
-- **关联 commit**：尚未提交（2026-07-24 工作树）
 
 ## LTP mmap14 MAP_LOCKED 与 VmLck 统计修复（2026-07-24）
 
@@ -6967,3 +6963,19 @@ AI 从 `TPASS/TFAIL/TBROK` 摘要确认 musl/glibc 的 `mmapstress04` 均因 `SI
 ### 修改与验证
 
 删除静态 EOF 快照；建立/替换文件 VMA 时先初始化 ext4 inode 的当前长度，缺页时直接按 inode 当前长度判断完整页是否超出 EOF。`cargo fmt`、`git diff --check` 和 `make TARGET_ARCH=riscv64` 通过；最新 `log.ans` 中 musl/glibc 各输出 `mmapstress04.c:94: TPASS`，summary 均为 `passed 1 failed 0 broken 0` 并正常 `shutdown!`。详见 `Docs/决赛文档/problem/mmapstress04-dynamic-eof.md`。
+
+## LTP mount03 EOF 读取 atime 修复（2026-07-24）
+
+### 用户输入
+
+维护者要求分析新的根目录 `log.ans` 并修复失败；最终确认最新输出已通过，要求补充项目文档。
+
+### 分析与采纳结论
+
+AI 依据 `TPASS/TFAIL/Summary` 确认失败固定为 `MS_NODIRATIME` 和 `MS_STRICTATIME` 下普通文件 atime 未增长，覆盖 musl/glibc 与 ext2/ext4/tmpfs；`MS_NOATIME` 和目录 atime 行为已经正确。对照只读 `mount03.c` 发现测试写入后不回退 fd 偏移，下一次读从 EOF 成功返回 0。继续追踪 `OSFile::read()` 确认该 EOF 快速路径在调用 `Inode::read_at()` 前返回，先前的 inode 读取路径更新无法触发。
+
+采纳 inode 级 `touch_atime()`：Ext4 实现根据 `MS_NOATIME` 决定是否更新时间，关闭 lwext4 临时读句柄后更新，并将错误返回调用方；`read_at()` 和 `OSFile::read()` 的 EOF 快速路径均调用此操作。默认 trait 实现保持无操作，避免把该语义扩展到非文件 inode。
+
+### 修改与验证
+
+修改 `os/src/fs/vfs.rs`、`os/src/fs/ext4_lw/inode.rs`、`os/src/fs/files/os_file.rs`。`make build-arch TARGET_ARCH=riscv64` 与 `git diff --check` 通过，只有既有 `smoltcp` warning。最新 `log.ans` 中 musl/glibc 的 `mount03` 摘要均为 `passed 55 failed 0 broken 0` 并正常 `shutdown!`；三种 atime 挂载标志断言均为 `TPASS`。问题复盘见 `Docs/决赛文档/problem/mount03-atime-eof-read.md`。

@@ -507,10 +507,10 @@ pub fn sys_fstatat(dirfd: isize, path: &str, kst: &mut [u8], flags: usize) -> is
     )
 }
 
-pub fn sys_statfs(statfs: &mut [u8]) -> isize {
+pub fn sys_statfs(path: &str, statfs: &mut [u8]) -> isize {
     syscall(
         SYSCALL_STATFS,
-        [0, statfs.as_mut_ptr() as isize, 0, 0, 0, 0],
+        [path.as_ptr() as isize, statfs.as_mut_ptr() as isize, 0, 0, 0, 0],
     )
 }
 

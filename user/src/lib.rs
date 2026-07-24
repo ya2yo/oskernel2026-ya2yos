@@ -550,8 +550,8 @@ impl Statfs {
     }
 }
 
-pub fn statfs(statfs: &mut Statfs) -> isize {
-    sys_statfs(statfs.as_bytes_mut())
+pub fn statfs(path: &str, statfs: &mut Statfs) -> isize {
+    sys_statfs(path, statfs.as_bytes_mut())
 }
 
 bitflags! {

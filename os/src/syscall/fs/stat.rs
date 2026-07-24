@@ -8,7 +8,7 @@ use linux_raw_sys::general::{
 use log::debug;
 
 use crate::{
-    fs::{open, superblock_fs_stat, InodeType, Kstat, OpenFlags, Statfs, NONE_MODE},
+    fs::{open, superblock_fs_stat, InodeType, Kstat, OpenFlags, Statfs, MNT_TABLE, NONE_MODE},
     mm::{copy_to_user, if_bad_address, read_user_cstr},
     task::current_task,
     utils::{trim_start_slash, SysErrNo, SyscallRet},
@@ -74,17 +74,17 @@ fn statx_time(sec: usize, nsec: usize) -> statx_timestamp {
 /// 参考 https://man7.org/linux/man-pages/man2/fstat.2.html
 pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
 
     if (kst as isize) <= 0 || if_bad_address(kst as usize) {
         return Err(SysErrNo::EFAULT);
     }
 
-    if fd >= proc_inner.fd_table.len() || proc_inner.fd_table.try_get(fd).is_none() {
+    if fd >= proc.fd_table.len() || proc.fd_table.try_get(fd).is_none() {
         return Err(SysErrNo::EBADF);
     }
-    let file = proc_inner.fd_table.get(fd)?.any();
+    let file = proc.fd_table.get(fd)?.any();
     let kst_data = file.fstat();
     copy_to_user(&memory_set, kst as usize, unsafe {
         core::slice::from_raw_parts(
@@ -99,8 +99,8 @@ pub fn sys_fstat(fd: usize, kst: *mut Kstat) -> SyscallRet {
 pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, flags: usize) -> SyscallRet {
     let task = current_task().unwrap();
 
-    let proc_inner = &task.process;
-    let memory_set = &proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = &proc.memory_set_arc();
 
     if (kst as isize) <= 0 || if_bad_address(kst as usize) {
         return Err(SysErrNo::EFAULT);
@@ -114,15 +114,15 @@ pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, flags: usize)
             return Err(SysErrNo::ENOENT);
         }
         if dirfd == AT_FDCWD as isize {
-            let cwd = proc_inner.fs_info.get_cwd();
+            let cwd = proc.fs_info.get_cwd();
             open(&cwd, OpenFlags::O_RDONLY, NONE_MODE)?.any()
         } else if dirfd < 0 {
             return Err(SysErrNo::EBADF);
         } else {
-            proc_inner.fd_table.get(dirfd as usize)?.any()
+            proc.fd_table.get(dirfd as usize)?.any()
         }
     } else {
-        let abs_path = proc_inner.get_abs_path(dirfd, &path)?;
+        let abs_path = proc.get_abs_path(dirfd, &path)?;
 
         if abs_path == "/ls" || abs_path == "/xargs" || abs_path == "/sleep" {
             open(&abs_path, OpenFlags::O_CREATE, NONE_MODE);
@@ -156,8 +156,8 @@ pub fn sys_statx(
     }
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
     let kstat = if path.is_null() {
         // path 为 nullptr，且设置了 AT_EMPTY_PATH，表示获取 dirfd 指向文件的信息
         if flags & AT_EMPTY_PATH as usize == 0 {
@@ -166,7 +166,7 @@ pub fn sys_statx(
         if dirfd == AT_FDCWD as isize {
             return Err(SysErrNo::EINVAL);
         }
-        proc_inner.fd_table.get(dirfd as usize)?.any().fstat()
+        proc.fd_table.get(dirfd as usize)?.any().fstat()
     } else {
         let path_str = read_user_cstr(&memory_set, path)?;
         let path_str = trim_start_slash(path_str);
@@ -175,14 +175,14 @@ pub fn sys_statx(
             if dirfd == AT_FDCWD as isize {
                 return Err(SysErrNo::EINVAL);
             }
-            proc_inner.fd_table.get(dirfd as usize)?.any().fstat()
+            proc.fd_table.get(dirfd as usize)?.any().fstat()
         } else {
             if path_str.is_empty() {
                 return Err(SysErrNo::ENOENT);
             }
             // 绝对路径直接打开，dirfd 会被 get_abs_path 忽略；
             // 相对路径则由 get_abs_path 根据 AT_FDCWD 或 dirfd 转成绝对路径
-            let abs_path = proc_inner.get_abs_path(dirfd, &path_str)?;
+            let abs_path = proc.get_abs_path(dirfd, &path_str)?;
             open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?
                 .any()
                 .fstat()
@@ -201,11 +201,37 @@ pub fn sys_statx(
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/statfs.2.html
-pub fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
+///
+/// 返回 path 所在文件系统的统计信息，写入用户空间 Statfs 缓冲区。
+/// 当前内核仅有单一 ext4 文件系统，所有路径返回相同的 superblock 数据；
+/// 但仍需解析 path 确认文件存在，以便返回正确的错误码（ENOENT 等）。
+pub fn sys_statfs(path: *const u8, statfs: *mut Statfs) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
-    let stat = superblock_fs_stat();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
+
+    if statfs.is_null() || (statfs as isize) <= 0 {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    let path = read_user_cstr(&memory_set, path)?;
+    let path = trim_start_slash(path);
+
+    if path.is_empty() {
+        return Err(SysErrNo::ENOENT);
+    }
+
+    // 打开路径确认文件存在；当前只有单一文件系统，不区分挂载点。
+    let abs_path = proc.get_abs_path(AT_FDCWD as isize, &path)?;
+    open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
+
+    let mut stat = superblock_fs_stat();
+    // 从挂载表查询该路径的挂载标志，填充 statfs.f_flags。
+    if let Some((_source, _dir, _fstype, flags)) =
+        MNT_TABLE.lock().mount_for_path(&abs_path)
+    {
+        stat.f_flags = flags as i64;
+    }
     copy_to_user(&memory_set, statfs as usize, unsafe {
         core::slice::from_raw_parts(
             &stat as *const Statfs as *const u8,
@@ -221,21 +247,24 @@ pub fn sys_statfs(_path: *const u8, statfs: *mut Statfs) -> SyscallRet {
 /// 当前内核仅有单一 ext4 文件系统，所有 fd 返回相同的 superblock 数据。
 pub fn sys_fstatfs(fd: i32, buf: usize) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
+    let proc = &task.process;
     let fd = fd as usize;
 
-    // 校验 fd 有效性
-    if fd >= proc_inner.fd_table.len() || proc_inner.fd_table.try_get(fd).is_none() {
-        return Err(SysErrNo::EBADF);
+    let file = proc.fd_table.get(fd)?.any();
+    let mut stat = superblock_fs_stat();
+
+    // 从挂载表查询该文件路径的挂载标志，填充 statfs.f_flags。
+    let path = file.path();
+    if let Some((_source, _dir, _fstype, flags)) = MNT_TABLE.lock().mount_for_path(&path) {
+        stat.f_flags = flags as i64;
     }
 
-    let stat = superblock_fs_stat();
     let bytes = unsafe {
         core::slice::from_raw_parts(
             &stat as *const Statfs as *const u8,
             core::mem::size_of::<Statfs>(),
         )
     };
-    let memory_set = proc_inner.memory_set_arc();
+    let memory_set = proc.memory_set_arc();
     copy_to_user(&memory_set, buf, bytes)
 }
