@@ -136,10 +136,11 @@ fault 上尝试 COW 或写权限恢复，读/取指权限错误不会被误作 C
   caption: [当前用户缺页处理的高层分支。]
 )
 
-文件 mmap 的 EOF 语义由 VMA 创建时的 `mapped_file_size` 快照维持。最后一个部分页面
-可以零填充；若 fault 页的起始文件偏移已在快照 EOF 之外，
-`mmap_file_page_beyond_eof()` 令 trap 层报告 `SIGBUS`，而不是错误地建立零页。该快照
-还避免了文件 unlink 后 ext4 路径式元数据无法表示已映射文件长度的问题。
+文件 mmap 的 EOF 语义按 backing inode 的当前长度判断。最后一个部分页面可以零填充；若
+fault 页的起始文件偏移已在当前 EOF 之外，`mmap_file_page_beyond_eof()` 令 trap 层报告
+`SIGBUS`，而不是错误地建立零页。建立或替换 VMA 时会先让 ext4 inode 记录当前长度，
+因此 unlink 后仍可使用打开 inode 的长度；后续 write/truncate 更新该长度，文件扩展后新
+覆盖的页面不会被过期的 VMA 快照误判为 `SIGBUS`。
 
 == fork 与写时复制
 

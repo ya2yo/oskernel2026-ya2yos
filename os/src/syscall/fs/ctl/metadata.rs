@@ -221,7 +221,10 @@ fn do_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallR
     let valid_flags = (AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) as u32;
     let flags = flags & valid_flags;
 
-    debug!("[do_fchmodat] dirfd={}, path={}, mode={}, flags={}", dirfd, path as usize, mode, flags);
+    debug!(
+        "[do_fchmodat] dirfd={}, path={}, mode={}, flags={}",
+        dirfd, path as usize, mode, flags
+    );
     let task = current_task().unwrap();
     let proc = &task.process;
     let memory_set = proc.memory_set_arc();

@@ -68,7 +68,12 @@ static BPF_MAP_TABLE: Lazy<Mutex<BTreeMap<usize, Weak<BpfMap>>>> =
 
 impl BpfMap {
     /// 创建一个新的 BPF map
-    pub fn new(map_type: BpfMapType, key_size: u32, value_size: u32, max_entries: u32) -> Arc<Self> {
+    pub fn new(
+        map_type: BpfMapType,
+        key_size: u32,
+        value_size: u32,
+        max_entries: u32,
+    ) -> Arc<Self> {
         // key_size 和 value_size 至少为 1（除特殊类型外），max_entries 至少为 1
         let key_size = key_size.max(1);
         let value_size = value_size.max(1);

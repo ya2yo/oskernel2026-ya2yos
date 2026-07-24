@@ -1289,3 +1289,11 @@
 - **场景**：维护者要求分析根目录 `log.ans` 并修复其中的 LTP `mmap14` 失败。
 - **描述**：AI 对照 `mmap14.c` 的 `MAP_LOCKED`/`VmLck` 断言，确认 `MmapFlags` 未定义 `MAP_LOCKED` 导致 mmap flags 被截断，同时 `/proc/self/status` 动态内容缺少 `VmLck`。修复接入 `MAP_LOCKED`，按 VMA 范围统计锁定内存并输出 `VmLck`；`make` 双架构构建和 RISC-V 定向 QEMU 回归通过，musl/glibc 均 `TPASS`、无 `TFAIL/TBROK/panic` 并正常 `shutdown!`。详见 [problem/mmap14-map-locked-vmlck.md](./problem/mmap14-map-locked-vmlck.md) 与 `ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-24 工作树）
+
+
+#### LTP mmapstress04 文件扩展后的 mmap EOF 误判修复（7.24）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析 `log.ans` 并修复 LTP `mmapstress04` 的 musl/glibc `SIGBUS`。
+- **描述**：AI 对照只读 `mmapstress04.c` 确认文件在 mmap 后从 1 页扩展到 384 页；原 VMA 静态 EOF 快照将扩展后新页误判为 EOF 外页。修复删除静态快照，缺页时按 backing inode 当前长度判断，并在建图时初始化 ext4 inode 长度以保留 unlink 后打开映射语义。RISC-V `log.ans` 中 musl/glibc 均 `TPASS`、summary 为 `passed 1 failed 0 broken 0`，正常 `shutdown!`；详见 `problem/mmapstress04-dynamic-eof.md`。
+- **关联 commit**：尚未提交（2026-07-24 工作树）

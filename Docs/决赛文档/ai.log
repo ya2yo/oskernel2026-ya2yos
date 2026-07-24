@@ -6953,3 +6953,17 @@ AI 对照 `mmap16.c` 确认初始 `ENOSYS` 来自未实现 `mremap()` 原址扩�
 ### 修改与验证
 
 修改 `os/src/syscall/mm/mmap.rs`、`os/src/mm/memory_set/mmap_ops.rs`、`crates/lwext4_rust/src/file.rs`、`os/src/fs/ext4_lw/inode.rs`、`os/src/fs/files/loopdev.rs`、`os/src/fs/mount.rs`、`os/src/syscall/fs/mount.rs`、`os/src/syscall/fs/ctl/unlink.rs` 和 `os/src/fs/kernel_fs_ops/initfiles.rs`。`make riscv64-build` 通过；`timeout 180s make run TARGET_ARCH=riscv64 > /tmp/mmap16-third-capacity.log 2>&1` 中 musl/glibc 均 `passed 10 failed 0 broken 0` 并正常 `shutdown!`，没有 `TFAIL/TBROK/panic`。问题复盘见 `Docs/决赛文档/problem/mmap16-ext4-loop-enospc-writeback.md`。
+
+## LTP mmapstress04 文件扩展后的 mmap EOF 误判修复（2026-07-24）
+
+### 用户输入
+
+维护者要求分析 `log.ans` 并进行修复；后续确认最新 `log.ans` 已成功通过。
+
+### 分析与采纳结论
+
+AI 从 `TPASS/TFAIL/TBROK` 摘要确认 musl/glibc 的 `mmapstress04` 均因 `SIGBUS` 提前终止。对照只读 testcase 发现文件在 mmap 建立后才从 1 页扩展到 384 页。原缺页检查使用 `MmapFile::mapped_file_size` 的建图时快照，把扩展后已合法的页误判为 EOF 外页。
+
+### 修改与验证
+
+删除静态 EOF 快照；建立/替换文件 VMA 时先初始化 ext4 inode 的当前长度，缺页时直接按 inode 当前长度判断完整页是否超出 EOF。`cargo fmt`、`git diff --check` 和 `make TARGET_ARCH=riscv64` 通过；最新 `log.ans` 中 musl/glibc 各输出 `mmapstress04.c:94: TPASS`，summary 均为 `passed 1 failed 0 broken 0` 并正常 `shutdown!`。详见 `Docs/决赛文档/problem/mmapstress04-dynamic-eof.md`。

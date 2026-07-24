@@ -29,11 +29,10 @@ pub fn mmap_file_page_beyond_eof(va: VirtAddr, vma: &MapArea) -> bool {
     else {
         return true;
     };
-    file_offset
-        >= vma
-            .mmap_file
-            .mapped_file_size
-            .unwrap_or_else(|| file.inode.size())
+    // File mappings observe the backing object's current size.  This matters
+    // when a mapping is made before a later write grows the file: the newly
+    // covered pages are valid and must not receive SIGBUS.
+    file_offset >= file.inode.size()
 }
 
 fn map_file_page_from_cache(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {

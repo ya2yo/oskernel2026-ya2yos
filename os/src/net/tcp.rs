@@ -350,8 +350,7 @@ impl SocketOps for TcpSocket {
         // Avoid holding the final short segment of a single local write behind
         // Nagle's algorithm; Linux loopback normally delivers that write as one
         // large local packet instead.
-        let local_loopback =
-            matches!(remote_addr, SocketAddr::V4(addr) if addr.ip().is_loopback());
+        let local_loopback = matches!(remote_addr, SocketAddr::V4(addr) if addr.ip().is_loopback());
         self.state
             .lock(State::Idle) // 状态机检查
             .map_err(|state| {
