@@ -78,7 +78,7 @@ use crate::{
     arch::cpu::hart_id,
     fs::{open, OpenFlags, NONE_MODE},
     mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
-    signal::{send_signal_to_thread, send_signal_to_thread_group, SigSet},
+    signal::{send_exec_teardown_kill, send_signal_to_thread_group, SigSet},
     syscall::fs::file_lock,
     task::acct::write_process_acct_record,
     task::{kernel_stack::KernelStackOnHeap, processor::abandon},
@@ -173,24 +173,31 @@ pub fn yield_current_and_run_next() {
 /// the current task reference before the normal exit path takes ownership.
 pub(crate) fn exit_current_if_group_exited_or_killed() {
     let task = current_task().unwrap();
-    let sigkill_pending = {
+    let (sigkill_pending, exec_teardown_kill) = {
         let task_inner = task.inner_lock();
-        task_inner.sig_pending.contains(SigSet::SIGKILL)
+        (
+            task_inner.sig_pending.contains(SigSet::SIGKILL),
+            task_inner.exec_teardown_kill,
+        )
     };
-    let exit_code = {
+    let group_exit_code = {
         let process_meta = task.process.meta_lock();
-        if let Some(exit_code) = process_meta.group_exit_code {
-            Some(exit_code)
-        } else if sigkill_pending {
-            Some(137)
-        } else {
-            None
-        }
+        process_meta.group_exit_code
     };
     drop(task);
 
-    if let Some(exit_code) = exit_code {
+    if let Some(exit_code) = group_exit_code {
         exit_current_and_run_next(exit_code);
+    }
+    if sigkill_pending {
+        // execve marks only its own sibling-cleanup SIGKILL as thread-local.
+        // All regular SIGKILL deliveries, including strict seccomp, must
+        // initiate the same process-wide termination as other fatal signals.
+        if exec_teardown_kill {
+            exit_current_and_run_next(137);
+        } else {
+            exit_current_group_and_run_next(137);
+        }
     }
 }
 
@@ -282,7 +289,7 @@ pub(crate) fn kill_other_threads_before_exec(current: &TaskControlBlock) {
         }
 
         for tid in sibling_tids {
-            send_signal_to_thread(tid, SigSet::SIGKILL);
+            send_exec_teardown_kill(tid);
         }
 
         // Threads that share one address space are pinned to this process's

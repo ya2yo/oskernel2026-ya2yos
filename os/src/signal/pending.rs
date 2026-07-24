@@ -6,8 +6,13 @@
 
 use log::debug;
 
-use super::{send_signal_to_thread_group, setup_frame, SigActionFlags, SigOp, SigSet, SIGCHLD};
-use crate::task::{current_task, exit_current_and_run_next, stop_current_and_run_next, Process};
+use super::{
+    send_signal_to_thread_group, setup_frame, SigActionFlags, SigOp, SigSet, SIGCHLD, SIGKILL,
+};
+use crate::task::{
+    current_task, exit_current_and_run_next, exit_current_group_and_run_next,
+    stop_current_and_run_next, Process,
+};
 
 pub fn check_if_any_sig_for_current_task() -> Option<usize> {
     let task = current_task().unwrap();
@@ -72,6 +77,10 @@ pub fn handle_signal(signo: usize) {
     );
     task_inner.sig_pending.remove(signal);
     let siginfo = task_inner.sig_pending_info[signo].take();
+    let exec_teardown_kill = signo == SIGKILL && task_inner.exec_teardown_kill;
+    if exec_teardown_kill {
+        task_inner.exec_teardown_kill = false;
+    }
     drop(task_inner);
     drop(task);
     if sig_action.is_handler() {
@@ -117,17 +126,26 @@ pub fn handle_signal(signo: usize) {
             }
             op @ (SigOp::Terminate | SigOp::CoreDump) => {
                 debug!("handle_signal: terminate, signo={}", signo);
+                if exec_teardown_kill {
+                    // execve uses an explicitly marked internal SIGKILL to
+                    // reclaim stale siblings before installing the new image.
+                    // It is not a process termination event.
+                    exit_current_and_run_next((signo + 128) as i32);
+                    return;
+                }
                 let task = current_task().unwrap();
                 let mut process_meta = task.process.meta_lock();
                 // exit_group() uses an internal SIGKILL to stop siblings.
                 // That cleanup signal must not replace the normal exit status
                 // already selected by the thread group leader.
                 if process_meta.group_exit_code.is_none() {
-                    process_meta.termination_signal = Some((signo, op == SigOp::CoreDump));
+                    process_meta
+                        .termination_signal
+                        .get_or_insert((signo, op == SigOp::CoreDump));
                 }
                 drop(process_meta);
                 drop(task);
-                exit_current_and_run_next((signo + 128) as i32);
+                exit_current_group_and_run_next((signo + 128) as i32);
             }
         }
     }

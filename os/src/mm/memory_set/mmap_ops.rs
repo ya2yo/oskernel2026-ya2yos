@@ -28,6 +28,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use log::{debug, warn};
 
 const MMAP_WRITEBACK_CHUNK_SIZE: usize = 0x10000; // 64KB
+const STACK_GUARD_GAP_PAGES: usize = 256;
 
 // pthread stacks are allocated with mmap(MAP_STACK), but the area type is
 // kept as Stack so page faults use the regular stack lazy-allocation path.
@@ -40,6 +41,45 @@ fn is_dynamic_mmap_stack(area: &MapArea) -> bool {
 
 fn is_mmap_vma(area: &MapArea) -> bool {
     area.area_type == MapAreaType::Mmap || is_dynamic_mmap_stack(area)
+}
+
+fn handle_mmap_not_present_page_fault(
+    page_table: &mut PageTable,
+    area: &mut MapArea,
+    vpn: VirtPageNum,
+    scause: Trap,
+) -> bool {
+    // A file VMA may legally cover bytes past EOF, but faulting a complete
+    // page beyond EOF is SIGBUS, never a demand-zero page.
+    if mmap_file_page_beyond_eof(vpn.into(), area) {
+        return false;
+    }
+
+    match scause {
+        Trap::Exception(Exception::LoadPageFault) => {
+            area.map_perm.contains(MapPermission::R)
+                && mmap_read_page_fault(vpn.into(), page_table, area)
+        }
+        Trap::Exception(Exception::FetchInstructionPageFault) => {
+            area.map_perm.contains(MapPermission::X)
+                && mmap_read_page_fault(vpn.into(), page_table, area)
+        }
+        Trap::Exception(Exception::PagePrivilegeIllegal) => {
+            if area
+                .map_perm
+                .intersects(MapPermission::R | MapPermission::X)
+            {
+                mmap_read_page_fault(vpn.into(), page_table, area)
+            } else {
+                area.map_perm.contains(MapPermission::W)
+                    && mmap_write_page_fault(vpn.into(), page_table, area)
+            }
+        }
+        _ => {
+            area.map_perm.contains(MapPermission::W)
+                && mmap_write_page_fault(vpn.into(), page_table, area)
+        }
+    }
 }
 
 impl MemorySetInner {
@@ -657,37 +697,7 @@ impl MemorySetInner {
                 start <= vpn && vpn < end
             })
         {
-            // A file VMA may legally cover bytes past EOF, but faulting a
-            // complete page beyond EOF is SIGBUS, never a demand-zero page.
-            if mmap_file_page_beyond_eof(vpn.into(), area) {
-                return false;
-            }
-            let ok = match scause {
-                Trap::Exception(Exception::LoadPageFault) => {
-                    area.map_perm.contains(MapPermission::R)
-                        && mmap_read_page_fault(vpn.into(), &mut self.page_table, area)
-                }
-                Trap::Exception(Exception::FetchInstructionPageFault) => {
-                    area.map_perm.contains(MapPermission::X)
-                        && mmap_read_page_fault(vpn.into(), &mut self.page_table, area)
-                }
-                Trap::Exception(Exception::PagePrivilegeIllegal) => {
-                    if area
-                        .map_perm
-                        .intersects(MapPermission::R | MapPermission::X)
-                    {
-                        mmap_read_page_fault(vpn.into(), &mut self.page_table, area)
-                    } else {
-                        area.map_perm.contains(MapPermission::W)
-                            && mmap_write_page_fault(vpn.into(), &mut self.page_table, area)
-                    }
-                }
-                _ => {
-                    area.map_perm.contains(MapPermission::W)
-                        && mmap_write_page_fault(vpn.into(), &mut self.page_table, area)
-                }
-            };
-            return ok; // false on OOM → SIGSEGV in trap handler
+            return handle_mmap_not_present_page_fault(&mut self.page_table, area, vpn, scause);
         }
         // brk or stack
         if let Some(area) = self
@@ -715,7 +725,63 @@ impl MemorySetInner {
             };
             return allowed && lazy_page_fault(vpn.into(), &mut self.page_table, area);
         }
-        false
+
+        // Linux grows an anonymous MAP_GROWSDOWN VMA when its guard page is
+        // touched.  Do not grow through another VMA and keep the default
+        // 256-page stack guard gap from the nearest lower mapping.
+        if self
+            .areas
+            .iter()
+            .any(|area| area.vpn_range.contains_vpn(vpn))
+        {
+            return false;
+        }
+        let Some((growdown_idx, growdown_start, growdown_end)) = self
+            .areas
+            .iter()
+            .enumerate()
+            .filter(|(_, area)| {
+                area.area_type == MapAreaType::Mmap
+                    && area.mmap_flags.contains(MmapFlags::MAP_GROWSDOWN)
+                    && area.mmap_flags.contains(MmapFlags::MAP_PRIVATE)
+                    && area.mmap_file.file.is_none()
+                    && vpn < area.vpn_range.start()
+            })
+            .map(|(idx, area)| (idx, area.vpn_range.start(), area.vpn_range.end()))
+            .min_by_key(|(_, start, _)| start.0)
+        else {
+            return false;
+        };
+
+        let overlaps_growth = self.areas.iter().enumerate().any(|(idx, area)| {
+            if idx == growdown_idx {
+                return false;
+            }
+            let (start, end) = area.vpn_range.range();
+            start < growdown_start && vpn < end
+        });
+        if overlaps_growth {
+            return false;
+        }
+
+        let lower_vma_end = self
+            .areas
+            .iter()
+            .enumerate()
+            .filter(|(idx, area)| *idx != growdown_idx && area.vpn_range.end() <= vpn)
+            .map(|(_, area)| area.vpn_range.end())
+            .max_by_key(|end| end.0);
+        if lower_vma_end.is_some_and(|end| vpn.0 - end.0 < STACK_GUARD_GAP_PAGES) {
+            return false;
+        }
+
+        let (page_table, areas) = (&mut self.page_table, &mut self.areas);
+        let area = &mut areas[growdown_idx];
+        if !handle_mmap_not_present_page_fault(page_table, area, vpn, scause) {
+            return false;
+        }
+        area.vpn_range = VPNRange::new(vpn, growdown_end);
+        true
     }
 
     fn handle_write_protect_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {

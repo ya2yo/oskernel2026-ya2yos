@@ -6895,3 +6895,31 @@ AI 先按 LTP `TPASS/TFAIL/TBROK` 和 summary 过滤日志，确认真实失败�
 基线 `timeout 120s make run` 的 `/tmp/mmap3-release-baseline.log` 仍在 LTP watchdog 超时；修复后的独占 `timeout 300s make run` 日志 `/tmp/mmap3-pinned-300.log` 中 musl/glibc 均输出 `mmap3.c:124: TPASS`，summary 均为 `passed 1 failed 0 broken 0`，最终 `shutdown!`，无 panic/ERROR/WARN。`make TARGET_ARCH=riscv64`（实际完成 RISC-V 与 LoongArch64 release 构建）、`make log TARGET_ARCH=riscv64` 和 `git diff --check` 均通过。未运行完整 LTP 批量套件，因此没有把单项结果表述为全量通过。
 
 - **关联 commit**：尚未提交（2026-07-23 工作树）
+
+## 2026-07-24：LTP mmap18 MAP_GROWSDOWN 与默认 SIGSEGV 线程组退出修复
+
+### 用户需求
+
+维护者要求分析根目录 `log.ans`、修复 LTP `mmap18`，将最终运行结果保留在 `log.ans`，并补齐项目文档。
+
+### 分析与采纳结论
+
+AI 对照只读 `mmap18.c` 确认前两轮将 `MAP_GROWSDOWN` 映射作为 pthread 栈，递归触碰 guard page；后两轮先占用预期增长区域，要求父进程观察到子进程被 `SIGSEGV` 杀死。早期 musl trace 只有两项正例 `TPASS`，随后 LTP watchdog 输出 `TBROK`，说明不能只把 `MAP_GROWSDOWN` 当作已接受但无行为的 flag。
+
+内核缺页处理原先仅在 fault VPN 已属于 VMA 时处理 mmap，guard page 位于 VMA 起始页下方，因而直接走 `SIGSEGV`。补上 VMA 扩展后，负例仍要求默认 `SIGSEGV` 终止整个线程组；原实现只退出当前 pthread，导致 musl `pthread_join()` 路径停滞。将默认致命信号改为 group exit 后，审查发现 execve 去线程化也会发送内部 `SIGKILL`，若不区分来源会反杀 exec 调用线程。另一个快速路径必须让真实 SIGKILL 启动线程组退出，不能继续只杀一个阻塞线程。
+
+### 修改
+
+- `os/src/mm/memory_set/mmap_ops.rs` 新增匿名私有 `MAP_GROWSDOWN` 的 guard page 扩展：拒绝现有映射/跨 VMA 扩展以及 256 页 guard gap 内扩展，复用 mmap 缺页权限处理后更新 VMA 起点。
+- `os/src/signal/pending.rs` 将默认 `Terminate/CoreDump` 信号改为线程组退出并保存首个终止原因。
+- `os/src/signal/delivery.rs`、`os/src/task/mod.rs` 和 `os/src/task/task/task.rs` 引入显式 `ExecTeardown` 投递来源和 `exec_teardown_kill` 标记；execve sibling 保持线程级退出，普通/用户态 SIGKILL 与 strict seccomp 走线程组终止。
+- `os/src/syscall/mod.rs` 让 strict seccomp 的内核 SIGKILL 在调度快速退出前保留信号终止状态；`os/src/syscall/options.rs` 更新 `MAP_GROWSDOWN` 注释。
+- 新增 `Docs/决赛文档/problem/mmap18-growsdown-sigsegv-group-exit.md`，并更新问题索引、开发日志和 AI 交互记录。
+
+### 验证与边界
+
+`make log TARGET_ARCH=riscv64` 成功，只有既有 Cargo config/vendored `smoltcp` warning。随后执行 `timeout 90s make run TARGET_ARCH=riscv64 > log.ans 2>&1`；最终 `log.ans` 中 musl/glibc 各有 4 个 `TPASS`，摘要均为 `passed 4 failed 0 broken 0 warnings 0`，有 `shutdown!`，没有 `TFAIL`、`TBROK`、panic、ERROR 或 WARN。`python3 scripts/extract_failed_tests.py log.ans` 输出“未发现失败测试”，`git diff --check` 通过。
+
+未运行 LoongArch64 运行时、完整 LTP 批量、独立多线程 execve 或 strict seccomp 回归；本轮行为验证只覆盖 RISC-V `mmap18`。
+
+- **关联 commit**：尚未提交（2026-07-24 工作树）

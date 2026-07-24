@@ -155,6 +155,9 @@ pub struct TaskControlBlockInner {
     pub sig_pending: SigSet,
     /// 与 sig_pending 位图并行保存的 siginfo_t；标准信号不排队，每个信号保留一份。
     pub sig_pending_info: [Option<SigInfo>; SIG_MAX_NUM + 1],
+    /// `execve()` 用于回收 sibling 的内部 SIGKILL。它只允许当前线程退出，
+    /// 不能被普通或用户态 SIGKILL 复用为线程组终止。
+    pub exec_teardown_kill: bool,
     /// rseq ABI registration is thread-local, just like the user TLS area it
     /// references.
     pub(crate) rseq: RseqState,
@@ -502,6 +505,7 @@ impl TaskControlBlock {
                 alt_signal_stack: SignalStack::disabled(),
                 sig_pending: SigSet::empty(),
                 sig_pending_info: [None; SIG_MAX_NUM + 1],
+                exec_teardown_kill: false,
                 rseq: RseqState::default(),
                 timer: Arc::new(Timer::new()),
                 robust_list: RobustListHead::default(),
@@ -632,6 +636,7 @@ impl TaskControlBlock {
         task_inner.alt_signal_stack = SignalStack::disabled();
         task_inner.sig_pending = SigSet::empty();
         task_inner.sig_pending_info = [None; SIG_MAX_NUM + 1];
+        task_inner.exec_teardown_kill = false;
         // robust_list is an address in the old image.  Keeping it across exec
         // would make a signal arriving before the new libc calls
         // set_robust_list() interpret stale user memory during thread exit.
@@ -896,6 +901,7 @@ impl TaskControlBlock {
                 alt_signal_stack: child_alt_signal_stack,
                 sig_pending: SigSet::empty(),
                 sig_pending_info: [None; SIG_MAX_NUM + 1],
+                exec_teardown_kill: false,
                 rseq: parent_rseq,
                 timer: child_timer,
                 robust_list: RobustListHead::default(),

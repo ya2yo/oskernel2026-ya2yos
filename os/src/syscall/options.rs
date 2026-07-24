@@ -78,7 +78,7 @@ bitflags! {
         const MAP_FIXED = MAP_FIXED;
         /// 创建匿名映射​（不与文件关联，初始化为零），此时 fd 应为 -1。
         const MAP_ANONYMOUS = MAP_ANONYMOUS;
-        /// 映射向下增长（用于栈），本内核作为 no-op 接受
+        /// 向下增长的映射（用于栈）
         const MAP_GROWSDOWN = MAP_GROWSDOWN;
         /// This flag is ignored.
         const MAP_EXECUTABLE = MAP_EXECUTABLE;

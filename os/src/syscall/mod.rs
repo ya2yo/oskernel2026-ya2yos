@@ -298,7 +298,7 @@ use crate::utils::SysErrNo;
 use crate::{
     arch::cpu::shutdown,
     fs::{Kstat, Statfs},
-    signal::{send_signal_to_thread, SigAction, SigInfo, SigSet, SignalStack},
+    signal::{send_signal_to_thread, SigAction, SigInfo, SigSet, SignalStack, SIGKILL},
     timer::{Itimerval, Rusage, TimeVal, Timespec, Timex, Tms},
     utils::SyscallRet,
 };
@@ -334,6 +334,18 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
     match seccomp_action {
         SeccompAction::Allow => {}
         SeccompAction::Kill => {
+            // Strict seccomp injects SIGKILL from the kernel rather than a
+            // user kill(2) sender, but waitpid()/waitid() must still observe
+            // signal termination when the scheduler fast path consumes it.
+            let task = current_task().unwrap();
+            let mut process_meta = task.process.meta_lock();
+            if process_meta.group_exit_code.is_none() {
+                process_meta
+                    .termination_signal
+                    .get_or_insert((SIGKILL, false));
+            }
+            drop(process_meta);
+            drop(task);
             send_signal_to_thread(tid, SigSet::SIGKILL);
             return Err(SysErrNo::EPERM);
         }

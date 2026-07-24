@@ -32,12 +32,23 @@ struct SignalCred {
     sid: usize,
 }
 
+/// Internal signal origins that need semantics beyond the signal number.
+///
+/// `execve()` uses SIGKILL only to remove stale sibling threads before it
+/// replaces the shared address space. A real SIGKILL must always win over
+/// this cleanup request and terminate the whole thread group.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SignalDeliverySource {
+    Normal,
+    ExecTeardown,
+}
+
 /// 向 task 挂起信号，并按信号语义把可唤醒的任务放回 ready queue。
 ///
 /// 返回值表示本次投递是否把 `Stopped` 或 `VforkBlocked` 任务恢复为 `Ready`。
 /// `kill(SIGCONT)` 需要用这个结果决定是否主动调度一次，让刚恢复的子进程先处理 SIGCONT。
 pub(super) fn add_signal(task: &TaskControlBlock, signal: SigSet) -> bool {
-    add_signal_with_info(task, signal, None)
+    add_signal_with_info(task, signal, None, SignalDeliverySource::Normal)
 }
 
 /// 向 task 挂起信号，并可携带用户态可见的 `siginfo_t`。
@@ -46,10 +57,11 @@ pub(super) fn add_signal(task: &TaskControlBlock, signal: SigSet) -> bool {
 /// 后续重复投递只保留 pending 位，不覆盖第一次记录的 `siginfo_t`。这样可
 /// 保持 `kill(2)`/`tkill(2)`/`tgkill(2)` 的 `SA_SIGINFO` handler 能看到
 /// 最初触发该 pending signal 的发送者信息。
-pub(super) fn add_signal_with_info(
+fn add_signal_with_info(
     task: &TaskControlBlock,
     signal: SigSet,
     siginfo: Option<SigInfo>,
+    source: SignalDeliverySource,
 ) -> bool {
     // SIGKILL cannot be caught or ignored. Record its process-exit cause at
     // user-signal delivery time because a blocked task may exit through the
@@ -84,6 +96,20 @@ pub(super) fn add_signal_with_info(
 
     let mut task_inner = task.inner_lock();
     // debug!("add signal: tid {}, signal: {}", task.tid(), signal.bits());
+    if signal.contains(SigSet::SIGKILL) {
+        match source {
+            SignalDeliverySource::ExecTeardown
+                if !task_inner.sig_pending.contains(SigSet::SIGKILL) =>
+            {
+                task_inner.exec_teardown_kill = true;
+            }
+            // A regular SIGKILL that races with exec teardown takes priority:
+            // it carries Linux process-termination semantics rather than
+            // merely removing this sibling thread.
+            SignalDeliverySource::Normal => task_inner.exec_teardown_kill = false,
+            SignalDeliverySource::ExecTeardown => {}
+        }
+    }
     if let Some(signo) = signal.peek_front() {
         if !task_inner.sig_pending.contains(signal) {
             task_inner.sig_pending_info[signo] = siginfo;
@@ -200,7 +226,7 @@ fn deliver_signal_to_thread_group(proc: &Process, sig: SigSet, siginfo: Option<S
     let mut resumed = 0;
     for task in tasks.iter() {
         if let Some(task) = task.upgrade() {
-            if add_signal_with_info(&task, sig, siginfo) {
+            if add_signal_with_info(&task, sig, siginfo, SignalDeliverySource::Normal) {
                 resumed += 1;
             }
         }
@@ -339,6 +365,22 @@ pub fn send_signal_to_thread(tid: usize, sig: SigSet) {
     }
 }
 
+/// Mark an internal SIGKILL used solely to collapse execve sibling threads.
+///
+/// The origin is stored while publishing the pending bit, so a normal SIGKILL
+/// racing with this request wins deterministically instead of being mistaken
+/// for thread-only exec cleanup.
+pub(crate) fn send_exec_teardown_kill(tid: usize) {
+    if let Some(task) = tid_to_task::tid2task(tid) {
+        add_signal_with_info(
+            &task,
+            SigSet::SIGKILL,
+            None,
+            SignalDeliverySource::ExecTeardown,
+        );
+    }
+}
+
 /// 用户态 `tkill(2)` 路径：向指定 tid 投递信号并记录当前任务为发送者。
 ///
 /// 该 helper 不做权限检查，保持原 `tkill(2)` 简化语义；与内部
@@ -348,7 +390,7 @@ pub fn send_user_signal_to_thread(tid: usize, sig: SigSet, signo: usize) {
         let siginfo = current_signal_cred()
             .ok()
             .and_then(|sender| siginfo_from_sender(sender, signo));
-        add_signal_with_info(&task, sig, siginfo);
+        add_signal_with_info(&task, sig, siginfo, SignalDeliverySource::Normal);
     }
 }
 
@@ -362,7 +404,7 @@ pub fn send_user_signal_to_thread_of_proc(pid: usize, tid: usize, sig: SigSet, s
             let siginfo = current_signal_cred()
                 .ok()
                 .and_then(|sender| siginfo_from_sender(sender, signo));
-            add_signal_with_info(&task, sig, siginfo);
+            add_signal_with_info(&task, sig, siginfo, SignalDeliverySource::Normal);
         }
     }
 }

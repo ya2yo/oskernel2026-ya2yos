@@ -101,6 +101,7 @@
 - [LTP mmap12 /proc/self/pagemap 缺失修复](./proc-self-pagemap-mmap12.md)
 - [`/proc/pagemap` 截断导致 fork 停滞](./proc-pagemap-fork-allocation.md)
 - [LTP mmap13 文件映射 EOF 外页 SIGBUS 修复](./mmap13-sigbus-eof.md)
+- [LTP mmap18 MAP_GROWSDOWN 与 SIGSEGV 线程组退出修复](./mmap18-growsdown-sigsegv-group-exit.md)
 - [LoongArch PCI VirtIO-net 早期启动内存破坏修复](./loongarch-pci-virtio-net-bootstrap-corruption.md)
 - [LTP tcp4-multi-diffnic01 单节点网络接口兼容](./tcp4-multi-diffnic01-single-node-env.md)
 - [LTP fs_bind rbind 挂载传播与 BusyBox applet 缺失修复](./fs-bind-rbind-propagation.md)
