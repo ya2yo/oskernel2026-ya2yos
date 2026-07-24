@@ -39,7 +39,7 @@ description: >-
 目录：`Docs/决赛文档/problem/`
 
 - 单问题单文件，文件名用英文 kebab-case。
-- 新增文件后更新 `Docs/决赛文档/problem/README.md` 索引。
+- 新增文件后更新 `Docs/决赛文档/README.md` 索引。
 - 内容写清：背景、现象、分析、根因、修复、涉及文件、验证。
 - 不记录“用户问 AI 什么”，那属于 `ai.log`。
 

@@ -20,7 +20,7 @@ commands, paths, and errors in their original language.
 - `Docs/`: project documentation, development logs, and problem writeups.
 - `Docs/决赛文档/problem/`: detailed bug and testcase analysis records.
 - `agent-skills/shared/`: source of truth for repo-specific agent skills.
-- `.codex/skills/`, `.opencode/skills` and `.claude/skills/`: generated skill directories. Do not
+- `.codex/skills/` and `.claude/skills/`: generated skill directories. Do not
   edit generated skill files directly.
 - `~/projects/OSKernel2026-PlainOs/testsuits-for-oskernel` the testcase source code, it's read only and not compile it.
 
@@ -131,7 +131,7 @@ strings log.ans | tail -80
 - Use `Docs/决赛文档/开发日志.md` for short chronological development notes.
 - Use one file per issue in `Docs/决赛文档/problem/` for non-trivial bugs,
   testcase fixes, panic analysis, or syscall behavior investigations.
-- Update `Docs/决赛文档/problem/README.md` when adding a new problem writeup.
+- Update `Docs/决赛文档/README.md` when adding a new problem writeup.
 - When AI assistance is used for a substantive code/debugging change, update
   both `Docs/决赛文档/ai.log` and `Docs/决赛文档/AI_INTERACTION.md`, following the
   existing style.

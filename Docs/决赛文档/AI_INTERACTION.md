@@ -828,276 +828,280 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：任务调度设计、Cargo feature 互斥、CFS 压力性能定位、双策略/双架构构建与 RISC-V QEMU 回归
 - **描述**：将原 ready queue 抽为编译期可选策略，默认 `scheduler-cfs` 使用 per-Hart `BinaryHeap`、nice 加权 `vruntime`、`min_vruntime` 和原子 `on_rq`；`scheduler-rr` 保留全局 FIFO，并以 TID 集合消除压力下的线性去重。统一调度循环先入队 runnable 当前实体再选下一任务，同时明确 feature 不等同运行时 `sched_setscheduler`，且当前无跨 Hart 迁移或负载均衡。默认 CFS 与显式 RR 均通过双架构 release 构建；RISC-V 两种策略及 LoongArch64 CFS 的 musl/glibc cyclictest 各 8 项成功，两轮 400-task hackbench 均完成预期清理并输出 `kill hackbench: success`，最终 `shutdown!`。最终 RISC-V CFS 输出位于 `log.ans`，详见 `Docs/决赛文档/ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-18 工作树）
+- **关联 commit**：`671d9e5b`
 
 #### RISC-V basic test_yield fork/exit 锁序死锁修复（7.19）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans`、对照只读 testcase 源码和测试镜像反汇编、还原双 hart fork/exit 锁链、修复任务锁边界并执行双架构构建与 QEMU 回归
 - **描述**：确认同一 child 连续五条 `iteration 0` 是测试打印外层 fork 序号的正常结果，真正卡点位于第五条后的 `exit(0)`。父进程 `clone_process()` 原先以 `TaskControlBlockInner -> ProcessMeta` 获取锁，首个子进程退出则以 `ProcessMeta -> TaskControlBlockInner` 获取同一父对象，RISC-V 双 hart 下形成 AB-BA；CFS 仅放大触发窗口。修复通过快照父元数据、将 `Process::new()` 移出父 task inner 临界区，并在 exit/exit-group 中先复制 task weak 列表后再获取 task inner。双架构 release 构建通过；RISC-V release+CFS 多轮和 LoongArch64 单核 basic 回归均完整结束，最终 RISC-V 结果保存在 `log.ans`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/basic-test-yield-fork-exit-deadlock.md](./problem/basic-test-yield-fork-exit-deadlock.md)。
-- **关联 commit**：尚未提交（2026-07-19 工作树）
+- **关联 commit**：`f1f3a730`
 
 #### BusyBox fork/exec/exit 并发卡死修复（7.19）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：梳理当前 BusyBox 卡死修复的任务唤醒、调度、exec/exit 改动，并根据现有 `log.ans` 补充问题复盘与开发记录。
 - **描述**：确认 BusyBox 高频短进程暴露的是内核共享生命周期竞态：futex 唤醒会把已运行或 zombie task 重复入队，CFS/RR 未过滤陈旧就绪项，exec/调度存在反向锁域，地址空间替换/释放前仍可能使用旧页表。修复将入队权收敛为 `Blocked -> Ready`，取队检查 `Ready`，维持 `ProcessMeta -> TaskControlBlockInner`，并在 exec/退出回收前激活有效页表、重置过期 `robust_list`。当前 RISC-V `log.ans` 的 musl/glibc BusyBox 组均结束且 `shutdown!`；`hwclock`、`mv/rmdir`、后台 `sleep/kill` 失败及 glibc malloc assertion 未被视为已解决。详见 [problem/busybox-fork-exec-exit-smp-hang.md](./problem/busybox-fork-exec-exit-smp-hang.md) 与 `Docs/决赛文档/ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-19 工作树）
+- **关联 commit**：`0a0845bf`
 
 #### RISC-V CFS netperf UDP_RR 首 burst 卡死修复（7.19）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 和此前双 hart网络唤醒复盘，审计 CFS 出队/网络 waker 时序与 smoltcp deadline 换算，新增独立 UDP_RR 测例并执行双架构构建与 RISC-V QEMU 回归。
 - **描述**：确认 CFS 的陈旧 entry 在读取 `Blocked` 状态后才清 `on_rq`，会让并发网络 waker 跳过重新入队，最终留下无 queue entry 的 `Ready` task；同时发现 smoltcp 微秒 `Instant` 到内核 `Timespec` 的两处单位换算均错误，使 fallback poll deadline 约偏离三个数量级。修复把状态检查与 CFS membership 清除收敛到同一个 `task.inner` 临界区，修正微秒/纳秒换算；`initproc` 仅运行新建的 musl `UDP_RR` 模块，保留 `netserver` 的 kill/wait 清理。RISC-V 连续有效样本均成功，最终 `log.ans` 输出 group END 和 `shutdown!`；LoongArch64 完成编译验证。详见 [problem/riscv-cfs-netperf-udp-rr-hang.md](./problem/riscv-cfs-netperf-udp-rr-hang.md)。
-- **关联 commit**：尚未提交（2026-07-19 工作树）
+- **关联 commit**：`a7c9fa55`
 
 #### RISC-V libctest 批量 COW 源帧并发释放修复（7.19）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `riscv.ans` 与 `log.ans` 中单测正常、批量随机段错误的问题，检查测试镜像 BusyBox 反汇编和 RISC-V COW 页故障路径，并执行最终 QEMU 回归。
 - **描述**：确认 `0x1066c0` 是 BusyBox/musl 分配器检测 heap chunk 元数据损坏后的主动崩溃，而非 `clocale_mbfuncs` 断言。根因是两个 hart 并发 COW 时，一个路径在取得裸源页后解除 VMA 映射，另一路径可删除最后一个 `FrameTracker` 引用并复用源物理页。修复在 `unmap_one()` 前克隆并持有源帧到页内容复制完成。RISC-V 构建通过；最终根目录 `log.ans` 的 static 107 项与 dynamic 110 项全部结束、打印 `GROUP END`/`shutdown!`，无段错误、页故障、panic、TFAIL 或 TBROK；两个既有 `utime` 失败未纳入本次修复。详见 [problem/riscv-libctest-cow-source-frame-race.md](./problem/riscv-libctest-cow-source-frame-race.md) 与 `Docs/决赛文档/ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-19 工作树）
+- **关联 commit**：`615acc46`
 
 #### 参考 Linux 7.0 加固 RISC-V COW 所有权（7.19）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求根据本地 Linux 7.0 源码说明 fork/COW 实现，并将其生命周期与权限检查原则落地到 Ya2yOS 的 RISC-V COW 路径。
 - **描述**：对照 Linux `do_wp_page()`/`wp_page_copy()` 的“旧 folio 引用 -> 分配并复制 -> PTE 重验/切换 -> rmap 与引用释放”顺序，保留源 `FrameTracker` pin，并把 Ya2yOS COW 改为 OOM 时保持旧映射、成功后才替换 PTE 和 VMA frame。RISC-V `copy_to_user` 现会对 present COW 页走 StorePageFault，避免绕过硬件写保护；Brk shrink 和 lazy stack clone 的页表所有权也同步修复。RISC-V/LoongArch64 release 构建均通过；最终 RISC-V 根目录 `log.ans` 有 217 个 START/END、`GROUP END`/`shutdown!`，无段错误或页故障，两个既有 `utime` 失败未纳入本次修复。详见 [problem/riscv-libctest-cow-source-frame-race.md](./problem/riscv-libctest-cow-source-frame-race.md) 与 `Docs/决赛文档/ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-19 工作树）
+- **关联 commit**：`c0ca0e8f`
 
 #### libc-test futimens fd + NULL pathname 语义修复（7.19）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 的 libc-test `utime` 失败，区分 `futimens` fd ABI 与 `utimes(NULL)` 错误语义，修复 syscall 并执行双架构 QEMU 回归。
 - **描述**：确认 musl `futimens(fd, times)` 以 `utimensat(fd, NULL, times, 0)` 进入内核，而旧实现将任意 NULL pathname 直接返回 `EFAULT`，使所有有效 fd 调用在读取时间数组前失败。修复仅对非负 fd 从 fd 表直取 `OSFile`/inode，拒绝 `O_PATH`，并保留 `AT_FDCWD + NULL` 的 `EFAULT`，从而不回归 LTP `utimes01`。RISC-V 与 LoongArch64 的定向 `entry-static.exe utime` 均输出 `Pass!` 和 `shutdown!`；最后一次 LoongArch64 日志保留在根目录 `log.ans`。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/libctest-futimens-fd-null-pathname.md](./problem/libctest-futimens-fd-null-pathname.md)。
-- **关联 commit**：尚未提交（2026-07-19 工作树）
+- **关联 commit**：`df863af3`
 
 #### iozone 连续测例 inode 缓存复用卡死修复（7.20）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：拆分 iozone 子测例、分析 `log.ans` 与 GDB 双 hart 回溯，审计 VFS inode cache、lwext4 write-back FIFO 和 wait 回收锁边界，并执行双架构 QEMU 回归。
 - **描述**：确认 iozone cleanup 后的 `/proc/21/stat` 错误复用已删除 `/musl/iozone.DUMMY.1` 的 canonical inode，导致 `check_cached()` 对错误路径进入 lwext4 `ext4_fread()` 自旋。修复将路径索引和 inode cache 收敛为单状态锁，回收被同路径 key 覆盖的强引用 orphan，并在 stale canonical replacement 时撤销旧 alias；task proc 子树改为 path key。同步清理 cache/FIFO 元数据、将 FIFO 淘汰写回移出队列锁、以独立 descriptor 初始化文件缓存，并在 child reaping 前释放父 `ProcessMeta`。最终 RISC-V `log.ans` 与 LoongArch64 `/tmp/iozone-loong.log` 均出现两次 `iozone test complete.`、backward-read 吞吐段和 `shutdown!`。详见 [problem/iozone-inode-cache-reuse-hang.md](./problem/iozone-inode-cache-reuse-hang.md) 与 `Docs/决赛文档/ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-20 工作树）
+- **关联 commit**：`9d4168be`
 
 #### RISC-V LTP mmap001 PROT_WRITE 页表编码卡死修复（7.20）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `log.ans` 中 mmap001 首次写入后的无限 page fault，核对测试镜像 ELF 与 RISC-V PTE 规则，修复硬件权限转换并执行 QEMU 回归。
 - **描述**：确认 `MAP_SHARED | PROT_WRITE` 的文件页被错误编码为 `R=0,W=1`，这是 RISC-V 保留 PTE 组合；软件页表将其误视为 present，写保护处理只补 `DIRTY` 后重试，造成同一 store 无限陷入。修复在硬件 PTE 构造及 mprotect 直接 flags 路径中规范化 `W => R`，同时保留 VMA 的逻辑 `PROT_WRITE` 元数据以及 lazy PTE 不设 `VALID` 的约束。RISC-V `log.ans` 中 mmap001 现为 `passed 4 failed 0 broken 0` 并 `shutdown!`；LoongArch64 release 构建通过，未运行其行为回归。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/mmap001-riscv-write-only-pte.md](./problem/mmap001-riscv-write-only-pte.md)。
-- **关联 commit**：尚未提交（2026-07-20 工作树）
+- **关联 commit**：`1f6f2244`
 
 #### BusyBox hwclock 与目录 rename 失败修复（7.20）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：根据 `log.ans` 的 BusyBox musl/glibc 失败项建立最小复现，审计 VFS `renameat2` 和 devfs RTC ioctl 路径，并执行双架构构建与 RISC-V QEMU 回归。
 - **描述**：确认 `renameat2` 为取得源 inode 使用 `O_RDWR` 打开目录，VFS 在进入 ext4 前返回 `EISDIR`；`DevRtc` 未实现 `RTC_RD_TIME`，调用落入默认 `ENOTTY`。修复改为只读打开 rename 源路径，并按 Linux `struct rtc_time` ABI 从内核 realtime 向用户态复制时间。RISC-V 根目录 `log.ans` 中 musl/glibc 的 `hwclock`、`mv test_dir test`、`rmdir test` 均为 `exit_code=0` 并 `shutdown!`；LoongArch64 release 构建通过。详见 [problem/busybox-hwclock-rename.md](./problem/busybox-hwclock-rename.md) 与 `Docs/决赛文档/ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-20 工作树）
+- **关联 commit**：`88fb507a`
 
 #### lmbench musl/glibc 连续运行 ext4 `EEXIST` 自锁修复（7.20）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析三次 `log.ans` lmbench 运行，读取测试镜像脚本，建立 musl 单项矩阵和真实组合回归，定位 musl 后 glibc 卡死。
 - **描述**：先排除 `make log` 的 syscall DEBUG 输出导致的伪超时，再用 `sh -x` 将组合卡点定位为重复 `mkdir -p /var/tmp`，并用 #4 创建目录后 #5 重复 mkdir 的最小矩阵复现。审计确认 `Ext4Inode::create()` 在持有 `EXT4_OP_LOCK` 后构造临时 inode；`EEXIST` 错误返回时其 Drop 重入同一不可重入锁。修复调整构造与 guard 的声明顺序，保持创建检查原子性。RISC-V 的 24 项 musl 单项、完整 glibc 以及真实 musl+glibc 组合均 END/shutdown；LoongArch64 release 编译通过。完整调试过程见 [problem/lmbench-ext4-eexist-drop-self-deadlock.md](./problem/lmbench-ext4-eexist-drop-self-deadlock.md) 和 `ai.log`。
-- **关联 commit**：尚未提交（2026-07-20 工作树）
+- **关联 commit**：`597cddee`
 
 #### RISC-V LTP kill10 信号锁序风险修复（7.20）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 `riscv.ans` 的 kill10 集体运行卡死，审计信号投递/handler 锁序，并执行 RISC-V 双 hart QEMU 回归。
 - **描述**：原始日志只证明 kill10 启动后卡住、没有锁栈，未将风险误写成唯一已证实根因。代码审计确认 `add_signal_with_info()` 与 `handle_signal()` 都曾在 `TaskControlBlockInner` 临界区获取 `SigTable`，违反项目全局锁序。修复将 disposition 查询提前为无任务锁的快照，随后才写入或消费 pending 信号，保留停止态恢复、唤醒与 `SA_SIGINFO` 语义。RISC-V musl/glibc kill10 均 `passed 1 failed 0 broken 0` 并正常关机；详见 [problem/kill10-signal-lock-order.md](./problem/kill10-signal-lock-order.md)。
-- **关联 commit**：尚未提交（2026-07-20 工作树）
+- **关联 commit**：`c9b21ca9`
 
 #### RISC-V release kill10 ppoll/ITIMER 阻塞唤醒修复（7.20）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 release 与 `make log` 的 kill10 时序差异、读取测试镜像 LTP ELF、GDB 检查 ppoll/ITIMER 路径，并执行双架构构建和 RISC-V release QEMU 回归。
 - **描述**：确认 LTP `pause()` 实现为无 fd 无限 `ppoll`，而旧内核只作 Ready/yield，未建立可靠的等待状态；将其改为原子发布 Blocked 后，又修正 owner-hart blocked timer 仅依赖 Future waker、遗漏 ppoll/pause 的问题。ITIMER 现向所有 Blocked task 投递 SIGALRM 并重新入队，ppoll 同时补齐临时 signal mask ABI 与 task/signal-table 锁序。根目录 `log.ans` 中 musl `kill08/kill10` 均为 `passed 1 failed 0 broken 0`，最终 `shutdown!`；LoongArch64 本轮仅编译。
-- **关联 commit**：尚未提交（2026-07-20 工作树）
+- **关联 commit**：`c28275db`
 
 #### BuildStorm 启动与 rustc 工具链启动兼容修复（7.20）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析决赛 BuildStorm `log.ans`、定向 RISC-V 启动日志和 release ELF 反汇编；对照 Linux 7.0 信号与 exec 语义，完成双架构构建整理。
 - **描述**：确认原日志没有真实 TFAIL/TBROK，而是启动路径先后暴露 initfiles `/dev/null`、Debian `/bin` 符号链接、RISC-V syscall 132 `sigaltstack`、双 hart bootstrap stack 下溢以及多线程 `execve` 未 de-thread 等问题。修复目录初始化和 wrapper 注入边界，补齐线程私有备用栈、SA_ONSTACK frame/rt_sigreturn 恢复和 ABI padding，将 RISC-V bootstrap stack 提升至 128 KiB/hart，并使 exec 在替换共享映像前以 SIGKILL 收敛 sibling。最终 RISC-V/LoongArch64 release 构建通过；完整 BuildStorm QEMU 回归因当天停止而待续。详见 [四篇问题复盘](./problem/README.md)。
-- **关联 commit**：尚未提交（2026-07-20 工作树）
+- **关联 commit**：`2ce578de`
 
 #### fadvise64(223) syscall 实现（7.20）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：确认 RISC-V/LoongArch64 223 号 ABI，补齐 fadvise64 分发与 Linux 可见 errno 语义，并按维护者要求只完成构建和文档记录。
 - **描述**：确认 `Syscall::Fadvise64 = 223` 已登记但未分发，导致调用返回 `ENOSYS`。实现按 `(int fd, loff_t offset, loff_t len, int advice)` 解码，保留 `EBADF`、FIFO/pipe `ESPIPE`、负 `len` 与非法 advice `EINVAL`；六种合法 hint 在当前缺少完整页缓存策略时作为无状态建议返回成功。RISC-V 和 LoongArch64 release 构建均通过。维护者未授权 QEMU/LTP 运行，因此未解除相关 LTP 黑名单，也未声称行为回归完成；详见 `Docs/决赛文档/ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-20 工作树）
+- **关联 commit**：`c56bfc9c`
 
 #### BuildStorm 动态库绝对路径规范化修复（7.20）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 BuildStorm 日志中 Rust toolchain DSO 的动态库路径 warning，校正绝对路径的 `..` 规范化层级并完成双架构构建。
 - **描述**：确认 `/root/.rustup/.../bin/../lib/*.so` 是绝对但未规范化的路径；根因不是 `map_dynamic_link_file()` 缺少库条目，而是通用 `get_abs_path()` 对绝对输入直接复制、未像相对路径一样折叠 `.`/`..`。修复在通用路径函数复用 `path2abs()`，动态库兼容层不再承担路径规范化。RISC-V 与 LoongArch64 release 构建通过；未运行 QEMU 行为回归，未新增 problem 文档。详见 `Docs/决赛文档/ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-20 工作树）
+- **关联 commit**：`8fc0ee75`
 
 #### BuildStorm final-2026 动态链接、目录项与 FIONBIO 修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求根据 final-2026 的根目录 `log.ans` 修复 BuildStorm 启动、Cargo 与目录扫描失败，并持续将 QEMU 输出写回该日志。
 - **描述**：确认 final Debian 原生 multiarch libc 与旧 `/glibc/lib` 被错误混用，Rustup RPATH 的正常 `ENOENT` 也被 basename fallback 伪造为旧 libc，触发 rustc TLS SIGSEGV；同时修复 lwext4 `EXT4_DE_* -> DT_*` ABI 转换和 Rust `Command::output()` 所需的 common-VFS `FIONBIO`。修复后 `GLIBC_2.38`、目录误识别、rustc SIGSEGV、`process.rs` ENOTTY panic 均消失，RISC-V 日志出现 `BUILDSTORM_TOOLCHAIN ok`。双架构 release 构建通过；由于当前 QEMU 仅 `2G / 2 CPU`，300 秒窗口未完成后续 guest 编译，不宣称完整 BuildStorm 通过。详见三篇新增 problem/ 复盘与 `ai.log`。
+- **关联 commit**：`1e1ec559`, `1f78f84b`, `02302286`
+
 #### rseq(293) 系统调用接入
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：确认双架构 syscall 293 的 Linux ABI，接入 kernel/user syscall 路径并记录实现边界。
 - **描述**：AI 对照本地 Linux 7.0 rseq ABI 和本项目的 syscall、TCB、clone/exec、trap/信号路径，确认 RISC-V 与 LoongArch64 的 293 均为 `rseq(2)`。人工审核后采纳经典 32-byte ABI 的线程级注册状态、基础 errno、clone/exec 生命周期和用户态返回前的防御性 fixup；同时加入 initproc 基础探针。维护者提供的 RISC-V `log.ans` 随后输出 `rseq regression: PASS`，证明基础 ABI 闭环已运行通过。维护者仍未要求完整 rseq 语义验收，因此未运行 LTP/Linux selftest，也未宣称抢占、信号或跨 hart critical-section 语义已通过。用户态双架构编译成功；内核完整构建受缺失的 lwext4 musl C 交叉编译器阻断。详见 `Docs/决赛文档/ai.log` 2026-07-21 条目和 [problem/rseq-syscall.md](./problem/rseq-syscall.md)。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`9fe9db03`
 
 #### BuildStorm 工具链检查后 minibuild 超时分析（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 final-2026 BuildStorm 在工具链检查成功后的 guest Rust 编译超时，并形成未完成问题的可审计检查点。
 - **描述**：记录了大 Rust DSO 的 lwext4 缓存准入重复开销与只读 private 文件映射页复用限制，并实现局部优化供验证。RISC-V release 构建通过，但 10 分钟 QEMU 运行仍未到达 `BUILDSTORM_MINIBUILD ok`；复核还发现缓存偏移和 `mprotect` 后 COW 隔离风险，三个源码文件暂不提交。预读实验已撤回，未将该问题标记为修复完成。详见 `ai.log` 和 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md)。
-- **关联 commit**：文档检查点提交（2026-07-21）
+- **关联 commit**：`766aa004`
 
 #### RISC-V VirtIO-MMIO 网卡自动总线分配修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求排查评测机配置下 RISC-V 启动日志找不到网络设备，并要求不改动 QEMU 参数。
 - **描述**：日志中的 `0x10002000: ZeroDeviceId` 表明旧网卡地址未挂载设备。通过 QEMU `info qtree` 确认显式绑定 `.0` 的块设备之外，未指定 bus 的网卡被自动分配到 `virtio-mmio-bus.7` / `0x10008000`。内核同步更新该页的 MMIO 映射和网卡驱动基址，保留评测机 QEMU 参数不变。RISC-V release 构建与真实 QEMU 启动均通过；日志正常初始化网络，且已无原有无网卡警告。详见 [problem/riscv-virtio-net-mmio-autobus.md](./problem/riscv-virtio-net-mmio-autobus.md) 与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`881713d2`
 
 #### RISC-V riscv_hwprobe(258) syscall 桩接入（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求为 RISC-V 258 号 syscall 接入最小 stub。
 - **描述**：确认 `258` 是 `riscv_hwprobe(2)`。在 `riscv64` 条件编译下登记并分发该调用，新增薄入口固定返回 `ENOSYS`，避免在未填充 probe pair 时向用户态伪造有效硬件能力。RISC-V 与 LoongArch64 release 构建通过；未运行 QEMU/LTP。详见 `Docs/决赛文档/ai.log` 2026-07-21 条目。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`1f964d9b`
 
 #### RISC-V 8GiB CMA 与八核启动配置修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求按评测机 `8G / 8 CPU` 配置分析根目录 `log.ans`、修复启动 panic，并将修改过的 allocator 从 `os/vendor` 迁移至根目录 `crates`。
 - **描述**：确认 7GiB 晚期 CMA 区间产生 4GiB/order 32 block，而 upstream allocator 仅有 32 个 free-list，初始化立即越界。将该依赖迁移为显式 path crate，扩展到 34 阶并限制最高阶合并；进一步定位到 `HART_NUM=8` 与汇编 `BOOT_HARTS=2` 不一致，bootstrap hart 非 0/1 时会覆盖 `.bss`，同步为 8。RISC-V 与 LoongArch64 release 构建通过；默认 RISC-V QEMU 运行越过 CMA panic，启动 7 个 AP 并进入 `BUILDSTORM_TOOLCHAIN ok`。完整 BuildStorm 未在 60 秒窗口内完成。详见 [problem/riscv-8g-8hart-bootstrap.md](./problem/riscv-8g-8hart-bootstrap.md) 与 `ai.log`。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`2955379a`
 
 #### BuildStorm MINIBUILD 独立脚本复现（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：拆分 final-2026 BuildStorm 的工具链、MINIBUILD、预构建和正式编译阶段，建立后续 `cargo build` 卡点的单独 RISC-V 入口。
 - **描述**：复用启动期 `write_executable_init_file()` 向具备 Rust toolchain 的 `/glibc` 根文件系统注入五个独立诊断脚本，保留正式 `busybox sh <script>` 与 MINIBUILD 的静默 `cargo build` 语义。所有新输出使用 `BUILDSTORM_DEBUG_*`，不会被官方评分器当作正式得分。RISC-V 日志已确认 `MINIBUILD_PREPARE ok` 后进入 `MINIBUILD_BUILD begin`，但未出现完成标记；RISC-V、LoongArch64 release 构建通过，根因与完整 BuildStorm 仍待继续定位。详见 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md) 与 `ai.log`。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`bc6cf21f`
 
 #### BuildStorm MINIBUILD Rustc mmap 虚拟地址预算修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：继续分析 BuildStorm MINIBUILD 的 Rustc 实际编译路径，定位累计 mmap 预算导致的 ENOMEM，并完成双架构构建与 RISC-V QEMU 回归。
 - **描述**：独立诊断日志确认 Rustc 在已有约 468 MiB lazy VMA 后申请 128 MiB 匿名 `PROT_NONE` arena，被 512 MiB `MAX_MMAP_SIZE` 拒绝；这不是物理内存或用户 VA 耗尽。两架构预算提升至 2 GiB，保留 VMA 上限及缺页物理页约束。复用既有项目的 RISC-V MINIBUILD 能正常结束；强制 prepare 的 fresh run 已进入 `Compiling minibuild`，但 Cargo worker 创建 Rustc 子进程的普通 `clone()` 返回 `Bad address (os error 14)`。因此只将 mmap 预算修复标记为完成，完整 BuildStorm 仍待后续修复；LoongArch64 已完成构建，未运行其 QEMU。详见 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md) 与 `ai.log`。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`92dac901`
 
 #### BuildStorm clone3/vfork 生命周期修复整理（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求只提交已确认可保留的 BuildStorm 任务管理修改，并补齐问题复盘、开发日志和 AI 记录。
 - **描述**：复核 Rust toolchain 的 `clone3(CLONE_VM | CLONE_VFORK)` 日志后，将 vfork 父 task 的状态变化与即时调度切换绑定，延后 exec 对父 task 的唤醒，并让非线程 `CLONE_VM` 子进程继承父 hart，避免无 remote TLB shootdown 时跨 hart 共享页表。两个架构统一 clone3 stack ABI，并防止 group-exit 内部 SIGKILL 污染正常退出状态。双架构 release 构建通过。缓存性能实验和 `initproc` 单脚本入口未提交；MINIBUILD 剩余 EFAULT 已更正为动态 `MAP_STACK` 普通 fork 复制问题。详见 [problem/buildstorm-vfork-clone3-lifecycle.md](./problem/buildstorm-vfork-clone3-lifecycle.md) 与 `ai.log`。
-- **关联 commit**：`fix(task): correct vfork clone3 handoff`
+- **关联 commit**：`916f426a`
 
 #### lwext4 大文件缓存准入重复探测优化（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 BuildStorm MINIBUILD 调试日志中 `librustc_driver` 的大量 `initialize cache!`，并实施两步缓存路径优化。
 - **描述**：确认 4 MiB whole-file cache 的超限文件在 mmap 按页读取时重复执行 `ext4_fopen/fsize/fclose`，且调试日志在缓存资格判断前输出。修复将日志移动到真实缓存插入后，并在 `Ext4File` 内记录超限负状态，保留已有小文件缓存优先级；成功写入、truncate、`O_TRUNC` 和删除路径同步更新状态。RISC-V MINIBUILD 输出 `ok`/`shutdown!`，日志总数从 16,191 降为 68，目标 DSO 日志为 0；RISC-V、LoongArch64 release 构建均通过。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`07349789`
 
 #### BuildStorm MINIBUILD 动态 MAP_STACK fork EFAULT 修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：分析 MINIBUILD build 单独成功、prepare 后 fresh build 失败的差异，定位并修复普通 fork 的动态栈 VMA 继承缺失。
 - **描述**：日志确认 Cargo worker 的普通 `clone()` 在写 `CLONE_CHILD_SETTID` 时返回 `EFAULT`；根因是 `MAP_STACK` 被误作固定 stack 跳过 fork 复制。修复将动态 `MAP_STACK` 纳入 mmap 继承，并保留固定初始 stack/trap 的重建边界。RISC-V debug 回归已确认同一 clone 成功创建并运行 child；双架构 release 构建通过。fresh RISC-V 600 秒回归尚未到达 `BUILDSTORM_DEBUG_MINIBUILD ok`，因此不宣称完整 MINIBUILD 通过。详见 `ai.log` 和 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md)。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`dd250ec5`
 
 #### BuildStorm MINIBUILD fresh fork TrapContext 与 native loader 修复（7.22）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求继续修复 BuildStorm MINIBUILD 单独运行成功、prepare 后 fresh 编译失败及 10 分钟超时。
 - **描述**：通过 TrapContext 现场、Cargo linker stderr 和 final 镜像 ELF 对照，确认普通 fork 在正确复制当前线程 trap 快照后又按 child VMA 覆盖为另一 parent 线程的 futex wait 现场；解除该死锁后，又确认两层动态库 mapper 将 native libc linker script 的 `/lib/ld-linux-*` 依赖错误改写为旧 `/glibc/lib` loader，导致 `GLIBC_PRIVATE`/TLS 符号无法解析。修复删除冗余 trap VMA clone，将 GCC toolchain 路径视为 native，并让真实 loader 优先、缺失时才走 legacy fallback。RISC-V fresh MINIBUILD 现输出 `ok` 和 `shutdown!`；RISC-V、LoongArch64 release 构建通过。完整 `cargo xtask` 未运行，详见 [problem/buildstorm-minibuild-fresh-fork-loader.md](./problem/buildstorm-minibuild-fresh-fork-loader.md) 与 `ai.log`。
-- **关联 commit**：尚未提交（2026-07-22 工作树）
+- **关联 commit**：`bfbfb2c4`
 
 #### CAgent Bash 运行器与 Debian `/bin` 路径修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者提供 `cagent_testcode.sh` 的语法错误日志，要求改用 `/bin/bash` 并继续处理新的运行失败。
 - **描述**：AI 对照只读 CAgent 脚本确认 Bash 数组与 BusyBox `sh` 不兼容；改用 Bash 后，依据 `execve fail: -20`、镜像 `/bin -> /usr/bin` 布局和 VFS 查找实现，定位中间符号链接与 `FsIndex` 未跟随缓存导致的 `ENOTDIR`。人工审核后采纳决赛专用 Bash 运行器及通用父目录重解析修复。RISC-V `log.ans` 已输出 CAgent `GROUP END` 和 `shutdown!`，10 项中 7 项 pass、3 项 reject；后三项未被表述为通过。详见 `Docs/决赛文档/ai.log` 2026-07-21 条目和 [problem/cagent.md](./problem/cagent.md)。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`371a3d7e`
 
 #### fchdir(50) syscall 接入与 LTP 回归（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求实现 `sys_fchdir`，并提供 RISC-V `log.ans` 要求核验结果和补齐文档。
 - **描述**：确认 50 号 ABI 已登记但未分发，handler 也未完成；实现从 fd 表直接取得目录 inode，保持目录 `O_PATH` fd 可用，并分别返回 `EBADF`、`ENOTDIR`、`EACCES`。路径型 `chdir` 与 fd 型 `fchdir` 共用单 inode 权限检查，但 fd 路径不重新解析 pathname。日志中 musl/glibc `fchdir01` 至 `fchdir03` 均为 `passed 1 failed 0 broken 0` 并正常 `shutdown!`，因此解除三项 LTP blacklist。详见 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`6f492f68`
 
 #### prctl PR_SET_CHILD_SUBREAPER 接入与 orphan reparenting 回归（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求实现 `prctl(PR_SET_CHILD_SUBREAPER)`，使父进程退出后的孤儿后代由最近的 child subreaper 收养，并要求仅保留必要修改、停止 LoongArch64 验证后补齐文档。
 - **描述**：AI 对照 Linux 7.0 的 `prctl` 与退出重父化路径，确认这不是新增 syscall 号而是既有 167 号调用的 option 语义。实现将 subreaper 标记置于线程组共享的 `ProcessMeta`，通过父链选择最近存活收养者，并同步更新 `children`、PPID、zombie 通知和默认 wait 语义。RISC-V musl/glibc `prctl03` 均为 `passed 6 failed 0 broken 0` 并正常 `shutdown!`；未进行 LoongArch64 运行时验收。详见 `Docs/决赛文档/ai.log` 对应条目和 [problem/prctl-child-subreaper.md](./problem/prctl-child-subreaper.md)。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`351c42c0`
 
 #### LTP prctl04 seccomp strict/filter 修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析 `log.ans` 的 `prctl04` 失败并完善既有 `prctl(167)` 语义。
 - **描述**：AI 对照 LTP `prctl04.c`、当前 syscall 分发、task clone 和 signal return 路径，确认问题是 seccomp 只在 handler 中伪返回成功，未在线程状态保存或统一 syscall 入口强制执行。实现线程级 strict/filter 状态，安全复制并验证测试所用 classic BPF 子集，在 fork/clone 中继承，并在拒绝时投递 strict 的 `SIGKILL` 或 filter 的 `SIGSYS`。同时修正 variadic `prctl()` 未使用寄存器不得强制为零的 ABI 假设。RISC-V、LoongArch64 的 musl/glibc `prctl04` 均为 `passed 9 failed 0 broken 0` 并正常关机；未实现的 BPF 指令、TSYNC、filter 叠加和其他 seccomp action 已明确记录。详见 [problem/prctl-seccomp-prctl04.md](./problem/prctl-seccomp-prctl04.md) 与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`8c437ff2`
 
 #### LoongArch 8GiB/8 核 QEMU bring-up（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求将 LoongArch 评测 QEMU 扩展到 `8G / 8 CPU`，并指出只修改启动参数不构成内核支持。
 - **描述**：审计 QEMU 9.2 direct boot、内核内存布局和调度路径后，补齐分段 RAM、CPUID hart ID、mailbox/IPI 次核启动、per-hart bootstrap stack、进程 home hart 和用户可见 CPU 拓扑。最终 QEMU 日志显示完整高端 CMA、7 个 AP 上线、netdev 4 项通过以及 musl/glibc basic 正常关机。保持进程固定 hart，未虚报可迁移 affinity；动态内存展示尝试会触发 glibc 回归，已撤回。详见 [problem/loongarch-8g-8hart-bootstrap.md](./problem/loongarch-8g-8hart-bootstrap.md) 和 `ai.log`。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`2b49f411`
 
 #### LoongArch 八核 COW 源帧并发释放修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析 `log.ans` 中每次运行结果不同的 LoongArch 八核 basic 崩溃，定位并修复竞态后执行重复 QEMU 回归。
 - **描述**：AI 通过日志 PID/HART 对应、只读镜像反汇编和既有 RISC-V COW 修复对照，确认合法的 `0x25d0` 指令因父子跨 hart 同时拆分同一 COW 页而被破坏。LoongArch 旧路径在复制前删除源页的最后 `FrameTracker` 引用，使 allocator 可回收、清零并复用仍在读取的物理页；修复固定源帧，先分配复制目标页，再替换 PTE、刷新 TLB 和转移 VMA 所有权。LoongArch64 release 构建通过，8 核 `basic-musl/basic-glibc` 连续五轮完整结束并 `shutdown!`，未再出现非法指令、段错误或内核失败信号。详见 [problem/loongarch-cow-source-frame-race.md](./problem/loongarch-cow-source-frame-race.md) 与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`bac5bf8d`
 
 #### LTP read03 FIFO 创建后 stat 模式类型位修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析根目录 `log.ans` 的 `read03 TBROK: Mode does not indicate fifo file` 并修复。
 - **描述**：AI 从 mknodat 创建链路追踪到 ext4 inode 初始化与 mode 写入。确认 `create()` → `file_open()` → `ext4_generic_open` 硬编码 `EXT4_DE_REG_FILE` 导致 inode mode 高位被初始化为普通文件而非 FIFO，而 `ext4_mode_set` 仅修改低 12 位权限位。修复在 `Ext4Inode::fstat()` 末尾通过 `FsIndex::special_node_type()` 修正 mode 类型高位；同时修改 `ext4_mode_set` 使其支持类型高位写入作为防御。LoongArch64 musl/glibc read03 均 TPASS。详见 [problem/read03-fifo-mode-type-bits.md](./problem/read03-fifo-mode-type-bits.md) 与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`bee2e09f`
+
+#### LoongArch LTP fs_bind01 hush timeout 与 bind 挂载栈卸载修复（7.21）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析根目录 `log.ans` 中 LoongArch64 `fs_bind01` 的早期终止并完成修复与 QEMU 验证。
 - **描述**：确认 BusyBox hush 不能按 LTP 原写法保留 `eval "local timeout=..."` 创建的局部变量，导致 watchdog 获得零秒并在真实挂载断言前终止。启动期对 musl/glibc `tst_test.sh` 做幂等的声明/赋值拆分，保留原 inode/权限写回后，进一步定位到 `/proc/mounts` 将 self-bind 的路径 source 暴露给 BusyBox，使其一次 `umount` 同时以 mountpoint 和 device 匹配并卸掉两层。仅改变 bind 条目的展示 source 为 `none`，并将 bind 身份独立于 remount flags 保存，保留内核 mount stack、event group 和非 bind source 语义。LoongArch64 `fs_bind01` 自身为 `passed 29 failed 0 broken 0`，四次关键卸载均 `TPASS` 并正常 `shutdown!`；RISC-V release 构建通过，未运行 RISC-V QEMU。
-- **关联 commit**：尚未提交（2026-07-21 工作树）
+- **关联 commit**：`60dd297e`
 
 #### LTP kill07 SIGKILL 快速退出的 waitpid 状态编码修复（7.22）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析根目录 `log.ans` 最后的 `kill07` 失败并完成内核修复与验证。
 - **描述**：确认 `kill(pid, SIGKILL)` 已成功投递并由父进程回收，失败来自 blocked child 经 scheduler/future 快速退出后缺少 `termination_signal`，使 `waitpid()` 将内部 137 误编码为普通 `exit(137)`。修复仅在用户态 `kill/tkill/tgkill` 携带 `SigInfo` 的不可忽略 SIGKILL 投递时记录进程终止原因，内部 execve sibling 清理信号不污染共享 wait status；同时统一 `block_on()` 与协作调度的 group-exit/SIGKILL 退出门。LoongArch64 单跑 `kill07` 为 `passed 1 failed 0 broken 0` 并正常关机，LoongArch64 与 RISC-V release 构建通过。详见 [problem/kill07-sigkill-fast-exit-wait-status.md](./problem/kill07-sigkill-fast-exit-wait-status.md) 与 `ai.log` 2026-07-22 条目。
-- **关联 commit**：尚未提交（2026-07-22 工作树）
+- **关联 commit**：`7389ed3a`
 
 #### LoongArch CAgent 动态链接器 LSX 未启用 panic 修复（7.22）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析根目录 `log.ans` 中 LoongArch64 CAgent 在 Bash 启动后立即触发的内核 panic。
 - **描述**：AI 从 `execve` 成功、动态解释器加载和 ecode `0x10` 的日志链路出发，使用本地 Linux 7.0 异常定义与 final-2026 镜像中 `ld-linux` 的只读反汇编，确认故障指令是 LSX `vld`，根因是每个 hart 仅设置 FPE、未设置 EUEN.SXE。修复启用 SXE，并将用户 trap/signal/clone 上下文由 32 x 64-bit FPR 扩展为完整 32 x 128-bit LSX 状态，汇编以 `vst/vld` 保存恢复。LoongArch64 release 构建通过；维护者提供的 `log.ans` 到达 CAgent `GROUP END` 和 `shutdown!`，无 panic、Unknown trap、SXD 或 ASXD。10 个业务任务中 6 项 pass、4 项 reject，未将 reject 误报为通过。详见 [problem/loongarch-cagent-lsx-disabled-panic.md](./problem/loongarch-cagent-lsx-disabled-panic.md) 与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-22 工作树）
+- **关联 commit**：`e351d564`
 
 #### LoongArch 批量 LTP Rust heap CMA 后备与回收修复（7.22）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析 LoongArch64 批量 LTP `Heap allocation error`，从 CMA 高段堆后备和前例资源回收两条路径完成修复、构建与定向 QEMU 验证。
 - **描述**：AI 将 `Layout { size: 2065194 }` 精确对应到 `/musl/busybox` ELF 最大 `PT_LOAD` 末端，确认 `fsmount01` 的 BusyBox `mkfs.ext2` 装载需要一个正常的 2 MiB buddy block，而原 128 MiB `.bss` global heap 不会使用已经纳入 CMA 的高段 RAM。修复将 CMA 连续页安全移交给 global heap，避免 SMP retry 假 OOM；同时有界回收 idle dentry/inode、保证 shared mmap teardown 即使 writeback 出错也释放页表，并让 LTP runner 以非阻塞 pipe + `WNOHANG` 清理遗留 helper。LoongArch/RISC-V release 构建均通过；LoongArch `fsmount01` 单例无 heap panic、6 项 TPASS 并正常关机，仍保留 1 项环境 TBROK，完整批量回归未被误报为通过。详见 [problem/loongarch-ltp-heap-cma-reclaim.md](./problem/loongarch-ltp-heap-cma-reclaim.md) 与 `ai.log` 2026-07-22 条目。
-- **关联 commit**：尚未提交（2026-07-22 工作树）
+- **关联 commit**：`372071ef`
 
 #### BuildStorm Rustc `mremap(MREMAP_MAYMOVE)` 数据丢失修复（7.22）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析根目录 `log.ans` 中 Rustc 编译 `unicode-ident` 的 parser error 并修复。
 - **描述**：AI 通过镜像/宿主源码哈希、guest 原文件和副本的直接 Rustc 对照，排除依赖损坏；随后将源码读取、匿名私有 mmap、两次 `mremap(MREMAP_MAYMOVE)` 和 parser 失败按 PID 串联，确认旧实现先 `munmap` 再建立空 VMA，导致 Rust allocator 扩容丢失已读内容。修复在同一 `MemorySet` 写锁内先为 private VMA 的每个 resident 页固定源 `FrameTracker`、分配和复制目标页，全部成功后才撤销旧 VMA；失败仅回滚目标。等长原址、私有文件 lazy 页和 metadata 均明确保留。RISC-V probe 中原文件和副本的 Rustc 均返回 0，未再出现 parser error；外层 180 秒在 Cargo 扫描 workspace 时到期，未将完整 BuildStorm 标为通过。详见 [problem/buildstorm-mremap-data-loss.md](./problem/buildstorm-mremap-data-loss.md) 与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-22 工作树）
+- **关联 commit**：`83c981c7`
 
 #### BuildStorm Rustc artifact rename/write-back 缓存修复（7.22）
 
@@ -1111,40 +1115,44 @@
   RISC-V rename 发布探针结果按实际记录；完整 Cargo 结论不超出本轮运行证据。详见
   [problem/buildstorm-rustc-artifact-rename-writeback.md](./problem/buildstorm-rustc-artifact-rename-writeback.md)
   与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-22 工作树）
+- **关联 commit**：`d50c274c`
 
 #### BuildStorm 用户态 `/tmp` 分阶段诊断入口迁移（7.22）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求依据 `scripts/buildstorm_testcode.sh` 将 BuildStorm 拆为可单独选择的小测例，放入 `user/src/bin/buildstorm/`，并移除内核启动期注入的重复脚本。
 - **描述**：AI 对照官方阶段、现有 `initfiles.rs` 注入脚本和用户态构建/预加载边界，将工具链、MINIBUILD prepare/build、target 清理、`tg-xtask` 预构建、正式构建，以及原先混入预构建的 rename/unicode artifact probe 分离为八项。每项在 `initproc` 内按需物化到固定 `/tmp/buildstorm-*.sh`，再沿用 Bash 执行，保留 Rust/Cargo 环境、fd/pipe 拓扑和 `BUILDSTORM_DEBUG_*` 防误评分边界；内核不再写入 BuildStorm 测试脚本。新增官方顺序和扩展诊断组合入口，runner 返回子进程 wait status，exec 失败的 child 以 `127` 显式退出。双架构 release 构建通过；RISC-V snapshot 已确认 Bash 从 `/tmp/buildstorm-xtask-prebuild.sh` 启动并进入 Cargo，120 秒内未完成。此次结构迁移不宣称完整 BuildStorm 或性能评分通过，详见 [problem/buildstorm-minibuild-post-toolchain-stall.md](./problem/buildstorm-minibuild-post-toolchain-stall.md) 与 `ai.log` 对应条目。
+
+
+- **关联 commit**：`18ab8e82`
+
 #### LoongArch CAgent loopback TCP 分片校验和修复（7.22）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求继续修复 LoongArch64 CAgent 的三个 reject，并要求测试脚本、镜像和 testcase 源码只读。
 - **描述**：AI 以单项 runner、TCP trace 和 smoltcp 源码确认大 HTTP 请求经过 IPv4 分片与重组后，发送端却把整个 8192 B fragment buffer 纳入 TCP pseudo-header length/checksum，导致接收端按真实 datagram 长度校验失败。修复仅为 IPv4 loopback socket 设置 4096 B MSS，保持 Router/物理网卡 1500 B MTU，并在 smoltcp 首片 emit 时限制 checksum buffer 到 `total_ip_len`。同时串行排空单一 fragmenter、防止 IPv4 首分片伪造 SYN 进入监听表，并加入实际分片-重组-TCP checksum 回归测试。最终 LoongArch64 完整 CAgent 十项全部通过，RISC-V release 构建通过；临时诊断入口已恢复。详见 [problem/cagent-loopback-tcp-fragmentation.md](./problem/cagent-loopback-tcp-fragmentation.md) 与 `ai.log`。
-- **关联 commit**：尚未提交（2026-07-22 工作树）
+- **关联 commit**：`d62f52ed`
 
 #### smoltcp 本地 crate 迁移（7.22）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求将内核定制的 smoltcp 从 `os/vendor/` 移至根目录 `crates/`。
 - **描述**：审计 Cargo patch、离线 vendor 配置和构建脚本后，将完整 crate 移至 `crates/smoltcp`，并仅把 `os/Cargo.toml` 的本地 patch 路径改为 `../crates/smoltcp`。保留 `os/dotcargo/config` 的其余离线依赖解析，不改写历史问题复盘，也未触碰 CAgent 脚本、测试镜像、testcase 源码或维护者已有的 `initproc` 改动。smoltcp 定向离线单测及 RISC-V、LoongArch64 release 构建均通过。
-- **关联 commit**：尚未提交（2026-07-22 工作树）
+- **关联 commit**：`8afe7918`
 
 #### BuildStorm 全量评分输出契约修复（7.22）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者发现 BuildStorm 自定义全量测试已执行分阶段脚本，但 `judge_buildstorm-glibc.py` 仍输出 0/180，要求修复 `user/src/bin` 下的测试入口。
 - **描述**：AI 对照 judge 正则、参考脚本、当前日志和提交历史，确认全量入口误用了刻意输出 `BUILDSTORM_DEBUG_*` 的诊断组合。新增构建期嵌入 `scripts/buildstorm_testcode.sh` 的正式单脚本 runner，令全量入口在 `/tmp` 一次执行并恢复 canonical `BUILDSTORM_*` 标记；分阶段诊断保持 DEBUG-only。RISC-V/LoongArch64 release 构建通过，RISC-V 180 秒真实回归已输出 toolchain/minibuild 正式成功标记，judge 从 0/180 恢复为 20/180；运行窗口在 prebuild 结束前到期，未将完整 compile 或性能项误报为通过。详见 [problem/buildstorm-full-run-marker-contract.md](./problem/buildstorm-full-run-marker-contract.md) 与 `ai.log`。
-- **关联 commit**：尚未提交（2026-07-22 工作树）
+- **关联 commit**：`21f7525c`
 
 #### LoongArch BuildStorm 稀疏 EXT4 文件读取破坏修复（7.23）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者提供 LoongArch64 BuildStorm 的 `unexpected reloc type 0x00dd8170` 日志，要求修复首两个环境测例和正式编译前的 Rust 动态加载失败，并在官方 Docker image 中重建 C archive。
 - **描述**：AI 对照镜像 extent、`ext4_fread()`、正式评分脚本与 judge，确认 `/root/.cargo/bin/rustup` 的 logical block 328 是 sparse hole，旧 C 代码将其与连续 run 的零 sentinel 混用，复制了紧随其后的 relocation 页面。修复将 hole 零填、限制聚合到非零连续物理块，并修复尾部 partial read；build script 也会在 C 输入新于 archive 时重建。`uname -m` 改为返回精确的小写架构名，防止 LoongArch guest 落入 RISC-V 兜底分支。官方 Docker 重建后的 archive 保持 ABI v1，QEMU 已恢复 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`；外层终止发生在 prebuild，未将完整 compile/time 标为通过。详见 [problem/loongarch-buildstorm-sparse-ext4-read-corruption.md](./problem/loongarch-buildstorm-sparse-ext4-read-corruption.md) 与 `ai.log`。
-- **关联 commit**：尚未提交（2026-07-23 工作树）
+- **关联 commit**：`4e0193d7`
 
 #### BuildStorm guest 性能分类统计（7.24）
 
@@ -1158,7 +1166,7 @@
   13.3 万 futex、631 万 scheduler 选取，但未完成 446 crate，不能写成正式性能提升结论。
 - **后续方向**：优先区分 scheduler 的真实 context switch、idle loop 和 ready queue 重复选取，
   再决定是否需要进一步改文件系统锁。
-- **关联 commit**：尚未提交（2026-07-24 工作树）
+- **关联 commit**：`b93ad36a`
 
 #### BuildStorm 普通 read 路径与 EXT4 全局锁争用（7.23）
 
@@ -1173,14 +1181,14 @@
   预构建且无错误，但未完成 446 crate 或严格 A/B 耗时，未宣称具体加速比例。详见
   [problem/buildstorm-read-path-lock-contention.md](./buildstorm-read-path-lock-contention.md)
   与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-23 工作树）
+- **关联 commit**：`b93ad36a`
 
 #### LoongArch64 LTP fcntl14 rt_sigsuspend 临时信号掩码恢复修复（7.22）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析根目录 `log.ans` 中 LoongArch64 LTP `fcntl14` 失败并完成修复。
 - **描述**：AI 对照 `fcntl14.c` 的 `sighold(SIGUSR1)`/`sigpause(SIGUSR1)` 同步流程与内核 trap return 路径，确认 record lock 的连锁失败来自 `rt_sigsuspend` 在 signal frame 建立前恢复旧 mask，令 pending `SIGUSR1` 再次被屏蔽且 handler 未执行。修复保留临时 mask 直到交付，将调用前 mask 写入 signal frame 供 `rt_sigreturn` 恢复，并在无 handler 返回路径清理状态。LoongArch64 musl/glibc `fcntl14` 均为 `passed 96 failed 0 broken 0`；RISC-V release 构建通过，但其 final-2026 镜像缺少该用例，未将 RISC-V runtime 标为通过。详见 [problem/fcntl14-sigsuspend-mask-restore.md](./problem/fcntl14-sigsuspend-mask-restore.md) 与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-22 工作树）
+- **关联 commit**：`7b1e7325`
 
 #### LTP lseek11 ext4 SEEK_DATA/SEEK_HOLE 与 sparse truncate 修复（7.23）
 
@@ -1188,19 +1196,21 @@
 - **场景**：维护者要求依据 Docker 构建运行后的 `log.ans` 持续修复 LoongArch64 LTP `lseek11`。
 - **描述**：AI 对照 `lseek11` 的 block-size 二分探测、sparse write 和 EOF 扩展序列，确认 seek 映射本身修通后，block 0 数据仍被 bcache 与 direct payload I/O 的双副本覆盖；临时 `ftruncate01` 复现 grow 后旧字节未清零。修复补齐 Linux `SEEK_DATA/SEEK_HOLE` 的 VFS/lwext4 路径、extent-aware sparse write/read、inode 级 whole-file cache 禁用和 C rebuild 依赖，并将 `ftruncate` retained partial block 的 zero 操作统一到 direct I/O。LoongArch64 的 musl/glibc `lseek11` 均为 `passed 15 failed 0 broken 0`，临时 `ftruncate01` 两侧均通过后已移除入口；双架构 release 构建通过。详见 [problem/lseek11-ext4-seek-data-hole-sparse-write.md](./problem/lseek11-ext4-seek-data-hole-sparse-write.md) 与 `ai.log` 2026-07-23 条目。
 - **补充验证**：最终复审补齐 sparse inode 首次打开的 flush-then-disable、`O_TRUNC` 丢弃旧 cache、未打开 unlink 的 policy 回收，以及 `ftruncate` 错误路径的单一 mount 解锁；收口后重新通过 LoongArch64/RISC-V release 构建，LoongArch64 musl/glibc `lseek11` 仍均为 `passed 15 failed 0 broken 0` 并正常关机。
-- **关联 commit**：尚未提交（2026-07-23 工作树）
+- **关联 commit**：`b0ce887d`
 
 #### BuildStorm Rustc 长 argv 截断与 RISC-V idle 轮询修复（7.23）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析根目录 `log.ans` 的 BuildStorm `pre-build tg-xtask` 编译失败和长期低吞吐，并让 `initproc` 仅运行该定向测例。
 - **描述**：AI 确认 Rustc 的长 `--check-cfg` 被 `execve` 误用的 256 B pathname 读取接口截断，导致 `E0765`。修复将 `argv/envp` 改为有上限的原始字节读取，预先构造可失败的新用户栈；RISC-V 空闲调度改为 one-shot timer + WFI，LoongArch 保持 polling。`initproc` 选择显式单作业诊断入口并保留 case 返回状态，默认并发和正式 BuildStorm 路径未改。双架构构建通过，独占的根目录 `16.ans` 已越过原错误位置；完整 446 单元和正式性能评分未宣称通过。详见 [problem/buildstorm-execve-argv-truncation.md](./problem/buildstorm-execve-argv-truncation.md) 与 `ai.log` 对应条目。
+- **关联 commit**：`7280f9c3`
+
 #### 决赛 CAgent/BuildStorm 单项评分包装器收束（7.23）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求整理 `user/src/bin` 的决赛测试包装器，保持提交平台时由 `run_final_testsuit` 在 `/glibc` 直接执行两个正式 `testcode.sh`，并删除 CAgent/BuildStorm 的多余全量和组合入口。
 - **描述**：AI 对照 `initproc`、两份正式脚本和只读 BuildStorm judge，确认正式路径原本已正确且必须保持不变。删除 CAgent 的官方脚本嵌入、失败案例/全案例聚合，改为恰好 10 个单项 `run_*` 入口；删除 BuildStorm 的官方序列、选择器、组合诊断及非得分点探针，改为 toolchain、MINIBUILD、compile success、compile time 四个单项模块。compile 与 compile time 复用冷构建主体并仅输出 `BUILDSTORM_DEBUG_*`，不会干扰平台正式评分。RISC-V 与 LoongArch64 用户态构建通过；未运行依赖 final 镜像且可能持续 4 小时的 QEMU 单项编译。
-- **关联 commit**：尚未提交（2026-07-23 工作树）
+- **关联 commit**：`33793bbc`
 
 #### BuildStorm 并行度与文件映射吞吐优化（7.23）
 
@@ -1216,7 +1226,7 @@
   Cargo 预构建，无 panic。完整 446 单元和严格 A/B 耗时未完成，未宣称性能百分比或正式
   BuildStorm 通过。详见 `ai.log` 对应条目和
   [problem/buildstorm-parallel-file-cache.md](./problem/buildstorm-parallel-file-cache.md)。
-- **关联 commit**：尚未提交（2026-07-23 工作树）
+- **关联 commit**：`82e92a54`
 
 #### 调度器无竞争定时器抢占优化（7.24）
 
@@ -1230,7 +1240,7 @@
   内核 `679`，但完整 BuildStorm 446 单元和严格 A/B 尚未完成，未宣称正式性能提升。
   详见 `Docs/决赛文档/ai.log` 2026-07-24 条目和
   [problem/scheduler-uncontended-preemption.md](./problem/scheduler-uncontended-preemption.md)。
-- **关联 commit**：尚未提交（2026-07-24 工作树）
+- **关联 commit**：`daa9f96c`
 
 #### clone procfs 目录延迟物化与性能优化（7.24）
 
@@ -1245,7 +1255,7 @@
   `cagent cpu pass 603` 并正常关机；RISC-V、LoongArch64 perf 构建通过。详见
   [clone-procfs-lazy-materialization.md](./problem/clone-procfs-lazy-materialization.md)
   和 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-24 工作树）
+- **关联 commit**：`336b1e24`
 
 #### CAgent `rt_sigsuspend` 忙让出调度优化（7.24）
 
@@ -1261,34 +1271,34 @@
   `problem/sigsuspend-busy-yield-scheduler.md`。
 - **验证**：RISC-V/LoongArch64 独立 target perf release 编译通过，仅有既有 smoltcp
   warning；QEMU 运行因 `/var/tmp` snapshot 权限未重新执行，未报告新耗时或正式评分。
-- **关联 commit**：尚未提交（2026-07-24 工作树）
+- **关联 commit**：`3fd49fd2`
 #### LTP mmap3 并发缓存抖动与 MAP_STACK 回收修复（7.23）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析 `log.ans` 中的 `mmap3` watchdog `TBROK`，定位 ext4 缓存性能问题并完成修复、双架构构建和 QEMU 回归。
 - **描述**：AI 对照 `mmap3.c` 确认 40 个线程并发操作延迟删除临时文件；`FIFO_SIZE=10` 的 whole-file cache 会驱逐仍活跃的缓存，下一次 seek 又在全局 ext4 锁下重建，造成缓存抖动和超时。修复为延迟删除 inode 固定缓存、成功写回清除脏标志、`file_size()` 使用独立 descriptor，并让 `munmap()` 回收带 `MAP_STACK` 的动态线程栈而不影响固定主栈。RISC-V 300 秒 QEMU 中 musl/glibc 均 `TPASS`、summary 为 `passed 1 failed 0 broken 0` 并正常 `shutdown!`；RISC-V/LoongArch64 release 与 RISC-V debug 构建通过。详见 [problem/mmap3-cache-churn-and-map-stack-leak.md](./problem/mmap3-cache-churn-and-map-stack-leak.md) 与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-23 工作树）
+- **关联 commit**：`67fa0afb`
 
 #### LTP mmap18 MAP_GROWSDOWN 与 SIGSEGV 线程组退出修复（7.24）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析并修复根目录 `log.ans` 中的 LTP `mmap18`，将最终结果写回 `log.ans` 并补充问题复盘。
 - **描述**：AI 对照只读 `mmap18.c` 确认用例同时要求匿名 `MAP_GROWSDOWN` 守卫页扩展和被阻挡扩展时的子进程 `SIGSEGV`。修复在 mmap 缺页路径中加入匿名私有 grow-down VMA 的 256 页 guard gap/重叠约束扩展，并将默认致命信号改为线程组退出。为避免该通用语义破坏 execve 去线程化，内部 sibling `SIGKILL` 采用显式 per-task 标记，真实 SIGKILL 和 strict seccomp 仍保持进程终止及 wait status。RISC-V `log.ans` 中 musl/glibc 各 4 项 `TPASS`、无 `TFAIL/TBROK`、正常 `shutdown!`；详见 [problem/mmap18-growsdown-sigsegv-group-exit.md](./problem/mmap18-growsdown-sigsegv-group-exit.md) 与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-24 工作树）
+- **关联 commit**：`ed5b28cf`
 
 #### LTP mmap16 ext4 loop 容量与 mmap 写回修复（7.24）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析 `log.ans` 中 LTP `mmap16` 的 `mremap ENOSYS` 与后续测试超时，并完成修复。
 - **描述**：AI 对照只读 `mmap16.c` 和日志，区分了初始 syscall 语义缺失与后续每轮父进程 1 KiB 写满 loop 文件导致的 checkpoint 超时。修复实现原址 `mremap`、共享 mmap `ENOSPC -> SIGBUS`，在简化 loop/ext4 模型中记录格式化容量和共享逻辑配额，按 64 KiB 预留与 unlink 回收；连续写入增加按 offset 的 cache fast path，配额耗尽时避免关闭路径同步重放整份脏缓存。RISC-V musl/glibc 均 10 轮 `TPASS`，summary 均为 `passed 10 failed 0 broken 0` 并正常关机。详见 `problem/mmap16-ext4-loop-enospc-writeback.md`。
-- **关联 commit**：尚未提交（2026-07-24 工作树）
+- **关联 commit**：`ccb03bb2`
 
 #### LTP mmap14 MAP_LOCKED 与 VmLck 统计修复（7.24）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析根目录 `log.ans` 并修复其中的 LTP `mmap14` 失败。
 - **描述**：AI 对照 `mmap14.c` 的 `MAP_LOCKED`/`VmLck` 断言，确认 `MmapFlags` 未定义 `MAP_LOCKED` 导致 mmap flags 被截断，同时 `/proc/self/status` 动态内容缺少 `VmLck`。修复接入 `MAP_LOCKED`，按 VMA 范围统计锁定内存并输出 `VmLck`；`make` 双架构构建和 RISC-V 定向 QEMU 回归通过，musl/glibc 均 `TPASS`、无 `TFAIL/TBROK/panic` 并正常 `shutdown!`。详见 [problem/mmap14-map-locked-vmlck.md](./problem/mmap14-map-locked-vmlck.md) 与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-24 工作树）
+- **关联 commit**：`bb43a80f`
 
 
 #### LTP mmapstress04 文件扩展后的 mmap EOF 误判修复（7.24）
@@ -1296,11 +1306,11 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析 `log.ans` 并修复 LTP `mmapstress04` 的 musl/glibc `SIGBUS`。
 - **描述**：AI 对照只读 `mmapstress04.c` 确认文件在 mmap 后从 1 页扩展到 384 页；原 VMA 静态 EOF 快照将扩展后新页误判为 EOF 外页。修复删除静态快照，缺页时按 backing inode 当前长度判断，并在建图时初始化 ext4 inode 长度以保留 unlink 后打开映射语义。RISC-V `log.ans` 中 musl/glibc 均 `TPASS`、summary 为 `passed 1 failed 0 broken 0`，正常 `shutdown!`；详见 `problem/mmapstress04-dynamic-eof.md`。
-- **关联 commit**：尚未提交（2026-07-24 工作树）
+- **关联 commit**：`bc3c1fad`
 
 #### LTP mount03 EOF 读取 atime 修复（7.24）
 
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者要求分析根目录 `log.ans` 中 LTP `mount03` 的失败并修复，随后要求补充项目文档。
 - **描述**：AI 对照 `mount03.c`、VFS 文件读取路径和 lwext4 时间戳接口，确认测试写入后从 EOF 成功读取 0 字节，而 `OSFile::read()` 的 EOF 快速返回绕过 `Ext4Inode::read_at()`，使普通文件 atime 从未更新。新增 inode 级 `touch_atime()`，由 ext4 在未设置 `MS_NOATIME` 时关闭临时句柄后更新 atime，并在普通读取与 EOF 快速路径调用；目录的 `MS_NODIRATIME` 行为保持不变。最新 RISC-V `log.ans` 中 musl/glibc 均为 `passed 55 failed 0 broken 0`，无 `TFAIL/TBROK`，正常 `shutdown!`；详见 [problem/mount03-atime-eof-read.md](./problem/mount03-atime-eof-read.md) 与 `ai.log` 对应条目。
-- **关联 commit**：尚未提交（2026-07-24 工作树）
+- **关联 commit**：`48a981e3`
