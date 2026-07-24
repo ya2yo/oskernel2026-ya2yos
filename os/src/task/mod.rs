@@ -137,6 +137,22 @@ pub fn suspend_current_and_run_next() {
     exit_current_if_group_exited_or_killed();
 }
 
+/// Preempt the current task only when another task is queued on this hart.
+/// Timer interrupts otherwise return directly to the interrupted task; this
+/// avoids switching through the idle context when there is no scheduling
+/// decision to make.  Blocking and sleep paths continue to use
+/// `suspend_current_and_run_next` because they must yield even with an empty
+/// run queue.
+pub fn preempt_current_and_run_next() {
+    exit_current_if_group_exited_or_killed();
+    let task = current_task().unwrap();
+    if !ready_queue::has_ready_for_hart(task.process.home_hart()) {
+        return;
+    }
+    drop(task);
+    suspend_current_and_run_next();
+}
+
 /// Exit the current task for a process-wide exit or an unmaskable SIGKILL.
 ///
 /// Keep ProcessMeta and TaskControlBlockInner lock scopes disjoint and drop

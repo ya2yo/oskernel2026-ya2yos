@@ -1217,3 +1217,17 @@
   BuildStorm 通过。详见 `ai.log` 对应条目和
   [problem/buildstorm-parallel-file-cache.md](./problem/buildstorm-parallel-file-cache.md)。
 - **关联 commit**：尚未提交（2026-07-23 工作树）
+
+#### 调度器无竞争定时器抢占优化（7.24）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：进程调度器性能路径梳理、timer 抢占优化、CFS/RR 双策略验证与文档记录
+- **描述**：AI 沿 timer trap 到 `suspend_current_and_run_next()` 的调用路径审计后确认，
+  当前 hart 无其他就绪任务时，原实现仍会经过 idle 上下文完成一次无效调度往返。新增
+  `preempt_current_and_run_next()` 和策略统一的 `has_ready_for_hart()`；CFS 检查本 hart
+  队列，RR 检查全局队列中匹配 `home_hart` 的任务。阻塞、睡眠、显式让出和 group-exit/
+  SIGKILL 处理保持原路径。双架构 perf 构建通过，短样本约为普通内核 `707 -> 684`、perf
+  内核 `679`，但完整 BuildStorm 446 单元和严格 A/B 尚未完成，未宣称正式性能提升。
+  详见 `Docs/决赛文档/ai.log` 2026-07-24 条目和
+  [problem/scheduler-uncontended-preemption.md](./problem/scheduler-uncontended-preemption.md)。
+- **关联 commit**：尚未提交（2026-07-24 工作树）

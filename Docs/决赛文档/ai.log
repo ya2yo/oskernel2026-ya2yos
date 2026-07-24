@@ -6804,3 +6804,34 @@ syscall 分类、EXT4 lock、文件页缓存、mmap 缺页以及调度器选取/
 调度选取，EXT4 锁等待远低于持有时间。该证据将下一轮方向收敛到调度/ready queue 重复切换检查，
 未宣称完整 446 crate 或严格 A/B 加速比例。关联文档：
 `Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`。
+
+## 2026-07-24：调度器无竞争定时器抢占优化
+
+### 用户需求
+
+维护者要求记录当前进程调度器已经完成的性能优化，并将实现边界和验证结果写入项目文档。
+
+### 分析与采纳结论
+
+AI 沿 timer trap、调度门面、CFS/RR run queue 和 `run_tasks()` 追踪调用路径，确认 timer
+中断原本无条件调用 `suspend_current_and_run_next()`。在当前 hart 没有其他候选就绪任务时，
+该路径会把当前任务标记为 Ready、切到 idle 上下文，再立即选回同一任务，产生不必要的
+队列锁、状态更新和上下文切换。
+
+采纳在抢占入口增加 `has_ready_for_hart()` 检查：CFS 直接检查本 hart 队列，RR 按
+`home_hart` 过滤全局队列；无候选时保留当前任务继续执行，有候选时复用原调度路径。退出、
+阻塞、睡眠和显式让出仍走原有路径，避免把“无需抢占”错误套用于必须切换的场景。
+
+### 修改文件
+
+`os/src/task/mod.rs`、`os/src/task/scheduler/{mod.rs,cfs.rs,rr.rs}`、
+`os/src/trap/mod.rs`；新增问题复盘
+`Docs/决赛文档/problem/scheduler-uncontended-preemption.md`，并更新开发日志、problem
+索引和 AI 协作记录。
+
+### 验证与边界
+
+`KERNEL_EXTRA_FEATURES=perf make TARGET_ARCH=riscv64` 已完成 RISC-V 与 LoongArch64 release
+构建；perf 快照记录过 `scheduler selections=194875`、`idle_loops=1088`。短样本普通内核约
+`707 -> 684`、perf 内核约 `679`，但没有完成完整 BuildStorm 446 单元严格 A/B，因此不报告
+正式加速比例或完整测例通过。

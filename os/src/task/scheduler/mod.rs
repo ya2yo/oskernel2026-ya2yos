@@ -45,6 +45,14 @@ pub mod ready_queue {
         policy::ready_procs_num()
     }
 
+    /// Return whether the specified hart has a queued task that can compete
+    /// with its currently running task.  The scheduler uses this on timer
+    /// preemption to avoid a needless round trip through the idle context
+    /// when the run queue is otherwise empty.
+    pub(crate) fn has_ready_for_hart(hartid: usize) -> bool {
+        policy::has_ready_for_hart(hartid)
+    }
+
     pub(crate) fn mark_running(task: &Arc<TaskControlBlock>) {
         policy::mark_running(task);
     }

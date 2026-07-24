@@ -195,6 +195,13 @@ pub(super) fn ready_procs_num() -> usize {
         .sum()
 }
 
+pub(super) fn has_ready_for_hart(hartid: usize) -> bool {
+    READY_QUEUES
+        .get(hartid)
+        .map(|queue| !queue.lock().tasks.is_empty())
+        .unwrap_or(false)
+}
+
 pub(super) fn mark_running(task: &Arc<TaskControlBlock>) {
     task.sched_entity.mark_running();
 }

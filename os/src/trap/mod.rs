@@ -218,7 +218,7 @@ pub fn trap_handler() {
             check_futex_timer();
             set_next_trigger();
             // debug!("Timer Interupt!");
-            suspend_current_and_run_next();
+            crate::task::preempt_current_and_run_next();
         }
         // Trap::Exception(Exception::Breakpoint) => {
         //     warn!("[kernel] Breakpoint from application");

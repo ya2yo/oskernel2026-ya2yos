@@ -69,6 +69,14 @@ pub(super) fn ready_procs_num() -> usize {
     READY_QUEUE.lock().tasks.len()
 }
 
+pub(super) fn has_ready_for_hart(hartid: usize) -> bool {
+    READY_QUEUE.lock().tasks.iter().any(|(_, task)| {
+        task.upgrade()
+            .map(|task| task.process.home_hart() == hartid)
+            .unwrap_or(false)
+    })
+}
+
 pub(super) fn mark_running(_task: &Arc<TaskControlBlock>) {}
 
 pub(super) fn account_current(_task: &Arc<TaskControlBlock>) {}
