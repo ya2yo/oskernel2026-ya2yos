@@ -221,6 +221,13 @@ impl Ext4File {
         self.file_open(&path, flags)
     }
 
+    /// Keep a logical quota failure from flushing dirty byte-cache data when
+    /// this descriptor closes.  The caller must arrange for the cache to be
+    /// discarded with the pathname that can no longer be persisted.
+    pub fn defer_close_flush(&mut self) {
+        self.defer_close_flush = true;
+    }
+
     pub fn file_close(&mut self) -> Result<usize, i32> {
         if self.file_desc.mp != core::ptr::null_mut() {
             if !self.defer_close_flush {
