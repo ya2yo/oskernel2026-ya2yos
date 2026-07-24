@@ -27,7 +27,7 @@ pub use dcache::*;
 pub use files::pipe::{make_pipe, open_fifo, Pipe, PIPE_MAX_SIZE};
 pub use files::stdio::{Stdin, Stdout};
 use log::{debug, error};
-pub use mount::MNT_TABLE;
+pub use mount::{MountFlags, MNT_TABLE};
 pub use page_cache::*;
 pub use stat::*;
 pub use vfs::*;

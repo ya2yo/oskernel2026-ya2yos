@@ -1,5 +1,6 @@
 use crate::fs::{
-    is_dynamic_loader_path, map_library_path, DentryLookup, DENTRY_CACHE, MNT_TABLE, NONE_MODE,
+    is_dynamic_loader_path, map_library_path, DentryLookup, DENTRY_CACHE, MNT_TABLE, MountFlags,
+    NONE_MODE,
 };
 use crate::syscall::{fs::file_lock, FaccessatFileMode};
 use crate::task::current_task;
@@ -8,7 +9,7 @@ use crate::utils::SysResult;
 use super::*;
 use alloc::sync::Arc;
 use alloc::{format, string::String};
-use linux_raw_sys::general::{CAP_FOWNER, MOUNT_ATTR_RDONLY, MS_NODEV};
+use linux_raw_sys::general::CAP_FOWNER;
 use log::{debug, warn};
 
 /// 将绝对路径拆分为父目录路径和末级名称。
@@ -198,7 +199,7 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
     {
         let mnt_table = MNT_TABLE.lock();
         if let Some((_, _, _, mount_flags)) = mnt_table.mount_for_path(&create_path) {
-            if mount_flags & MOUNT_ATTR_RDONLY != 0 {
+            if mount_flags.contains(MountFlags::RDONLY) {
                 return Err(SysErrNo::EROFS);
             }
         }
@@ -348,7 +349,7 @@ fn open_inner(
         {
             let mnt_table = MNT_TABLE.lock();
             if let Some((_, _, _, mount_flags)) = mnt_table.mount_for_path(abs_path) {
-                if mount_flags & MS_NODEV != 0 {
+                if mount_flags.contains(MountFlags::NODEV) {
                     return Err(SysErrNo::EACCES);
                 }
             }
@@ -441,7 +442,7 @@ fn open_inner(
             if node_type == InodeType::CharDevice || node_type == InodeType::BlockDevice {
                 let mnt_table = MNT_TABLE.lock();
                 if let Some((_, _, _, mount_flags)) = mnt_table.mount_for_path(abs_path) {
-                    if mount_flags & MS_NODEV != 0 {
+                    if mount_flags.contains(MountFlags::NODEV) {
                         return Err(SysErrNo::EACCES);
                     }
                 }

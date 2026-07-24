@@ -15,12 +15,11 @@ use super::EXT4_OP_LOCK;
 use crate::{
     fs::{
         patch_dynamic_link_file_bytes, FsIndex, Inode, InodeType, Kstat, OpenFlags, String,
-        FILE_PAGE_CACHE, MNT_TABLE,
+        FILE_PAGE_CACHE, MNT_TABLE, MountFlags,
     },
     sync::SyncUnsafeCell,
     utils::{SysErrNo, SysResult, SyscallRet},
 };
-use linux_raw_sys::general::{MS_NOATIME, MS_NODIRATIME};
 
 use alloc::{format, string::ToString, vec};
 use alloc::{sync::Arc, vec::Vec};
@@ -621,7 +620,9 @@ impl Inode for Ext4Inode {
             let suppress = MNT_TABLE
                 .lock()
                 .mount_for_path(&path)
-                .map(|(_, _, _, flags)| flags & (MS_NOATIME | MS_NODIRATIME) != 0)
+                .map(|(_, _, _, flags)| {
+                    flags.intersects(MountFlags::NOATIME | MountFlags::NODIRATIME)
+                })
                 .unwrap_or(false);
             if !suppress {
                 let now = crate::timer::realtime();

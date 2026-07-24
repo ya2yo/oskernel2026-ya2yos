@@ -1,5 +1,5 @@
 use crate::{
-    fs::{open, FileClass, InodeType, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE},
+    fs::{open, FileClass, InodeType, MountFlags, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE},
     mm::{if_bad_address, read_user_cstr},
     task::{current_task, set_process_acct_file},
     utils::{get_abs_path, SysErrNo, SyscallRet},
@@ -95,7 +95,7 @@ pub fn sys_acct(filename: *const u8) -> SyscallRet {
     }
 
     if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(&abs_path) {
-        if mountflags & 1 != 0 {
+        if mountflags.contains(MountFlags::RDONLY) {
             return Err(SysErrNo::EROFS);
         }
     }

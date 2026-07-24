@@ -7,7 +7,7 @@ use linux_raw_sys::general::{AT_EACCESS, AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOF
 use log::debug;
 
 use crate::{
-    fs::{open, InodeType, Kstat, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE},
+    fs::{open, InodeType, Kstat, MountFlags, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE},
     mm::{copy_to_user, if_bad_address, read_user_cstr},
     syscall::options::{FaccessatFileMode, FaccessatMode},
     task::current_task,
@@ -417,7 +417,7 @@ fn do_faccessat(dirfd: i32, path: *const u8, mode: u32, flags: usize) -> Syscall
     let inode = open(&abs_path, open_flags, NONE_MODE)?.file()?;
     if mode.contains(FaccessatMode::W_OK) {
         if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(&abs_path) {
-            if mountflags & 1 != 0 {
+            if mountflags.contains(MountFlags::RDONLY) {
                 // 只读文件系统挂载
                 return Err(SysErrNo::EROFS);
             }

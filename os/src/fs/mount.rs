@@ -6,10 +6,113 @@ use crate::utils::SysErrNo;
 
 const MNT_MAXLEN: usize = 256;
 
-// Linux mount(2) propagation flags. Keep these local because MountTable is
-// also used by the legacy mount API, which does not otherwise need syscall
-// flag definitions.
-const PROPAGATION_MASK: u32 = MS_UNBINDABLE | MS_PRIVATE | MS_SLAVE | MS_SHARED;
+bitflags! {
+    /// 所有 Linux mount(2) 标志位的完整定义。
+    ///
+    /// 按 Linux 语义分为三类：
+    /// - **操作类型标志**（互斥）：`BIND`, `MOVE`, `REMOUNT`
+    /// - **传播类型标志**：`SHARED`, `PRIVATE`, `SLAVE`, `UNBINDABLE`
+    /// - **挂载属性标志**：`RDONLY`, `NOSUID`, `NODEV` 等
+    ///
+    /// 标志位值与 `linux_raw_sys::general::MS_*` 完全一致。
+    pub struct MountFlags: u32 {
+        // ---- 挂载属性 ----
+        const RDONLY       = MS_RDONLY;
+        const NOSUID       = MS_NOSUID;
+        const NODEV        = MS_NODEV;
+        const NOEXEC       = MS_NOEXEC;
+        const SYNCHRONOUS  = MS_SYNCHRONOUS;
+        const MANDLOCK     = MS_MANDLOCK;
+        const DIRSYNC      = MS_DIRSYNC;
+        const NOSYMFOLLOW  = MS_NOSYMFOLLOW;
+        const NOATIME      = MS_NOATIME;
+        const NODIRATIME   = MS_NODIRATIME;
+        const RELATIME     = MS_RELATIME;
+        const STRICTATIME  = MS_STRICTATIME;
+        // MS_LAZYTIME (33554432) is omitted: not supported by ext4_lw.
+
+        // ---- 操作类型（互斥） ----
+        const REMOUNT      = MS_REMOUNT;
+        const BIND         = MS_BIND;
+        const MOVE         = MS_MOVE;
+
+        // ---- 传播类型 ----
+        const SHARED       = MS_SHARED;
+        const PRIVATE      = MS_PRIVATE;
+        const SLAVE        = MS_SLAVE;
+        const UNBINDABLE   = MS_UNBINDABLE;
+
+        // ---- 递归 ----
+        const REC          = MS_REC;
+
+        // ---- 杂项 ----
+        const SILENT       = MS_SILENT;
+        const POSIXACL     = MS_POSIXACL;
+        const I_VERSION    = MS_I_VERSION;
+        const ACTIVE       = MS_ACTIVE;
+        const NOUSER       = MS_NOUSER;
+    }
+}
+
+/// 传播类型掩码：`SHARED | PRIVATE | SLAVE | UNBINDABLE`
+pub const PROPAGATION_MASK: MountFlags = MountFlags::SHARED
+    .union(MountFlags::PRIVATE)
+    .union(MountFlags::SLAVE)
+    .union(MountFlags::UNBINDABLE);
+
+/// 操作类型掩码：`BIND | MOVE | REMOUNT`
+pub const OPERATION_MASK: MountFlags = MountFlags::BIND
+    .union(MountFlags::MOVE)
+    .union(MountFlags::REMOUNT);
+
+/// 可 remount 修改的属性：不包含操作类型和传播类型
+pub const REMOUNT_ATTR_MASK: MountFlags = MountFlags::RDONLY
+    .union(MountFlags::NOSUID)
+    .union(MountFlags::NODEV)
+    .union(MountFlags::NOEXEC)
+    .union(MountFlags::SYNCHRONOUS)
+    .union(MountFlags::MANDLOCK)
+    .union(MountFlags::DIRSYNC)
+    .union(MountFlags::NOSYMFOLLOW)
+    .union(MountFlags::NOATIME)
+    .union(MountFlags::NODIRATIME)
+    .union(MountFlags::RELATIME)
+    .union(MountFlags::STRICTATIME)
+    .union(MountFlags::SILENT)
+    .union(MountFlags::POSIXACL)
+    .union(MountFlags::I_VERSION);
+
+impl MountFlags {
+    /// 是否为 MS_MOVE 操作。
+    pub fn is_move(self) -> bool {
+        self.contains(MountFlags::MOVE)
+    }
+
+    /// 是否为 MS_BIND 操作。
+    pub fn is_bind(self) -> bool {
+        self.contains(MountFlags::BIND)
+    }
+
+    /// 是否为 MS_REMOUNT 操作。
+    pub fn is_remount(self) -> bool {
+        self.contains(MountFlags::REMOUNT)
+    }
+
+    /// 是否为纯粹的传播类型修改（设置了传播标志但未设置 BIND/REMOUNT）。
+    pub fn is_propagation_only(self) -> bool {
+        self.intersects(PROPAGATION_MASK) && !self.intersects(OPERATION_MASK)
+    }
+
+    /// 返回传播类型位（SHARED | PRIVATE | SLAVE | UNBINDABLE）。
+    pub fn propagation_bits(self) -> MountFlags {
+        self.intersection(PROPAGATION_MASK)
+    }
+
+    /// 是否为普通新挂载（非 BIND, MOVE, REMOUNT, propagation-only）。
+    pub fn is_regular(self) -> bool {
+        !self.intersects(OPERATION_MASK.union(PROPAGATION_MASK))
+    }
+}
 
 /// Logical capacity used by the simplified path-based ext4 mount model.
 ///
@@ -34,7 +137,7 @@ struct MountEntry {
     special: String,
     dir: String,
     fstype: String,
-    flags: u32,
+    flags: MountFlags,
     // MS_BIND is a mount(2) operation flag. Keep the mount kind separately
     // because a later MS_REMOUNT replaces `flags` without changing the
     // underlying bind mount.
@@ -119,16 +222,16 @@ impl MountTable {
 
     /// 修改挂载点及可选递归子树的 propagation type。
     ///
-    /// `MS_SHARED` 将同一 mount event 的副本放入一个新的 shared group。
-    /// `MS_SLAVE` 保留原 shared group 作为 master；`MS_PRIVATE` 和
-    /// `MS_UNBINDABLE` 断开所有传播关系。
-    fn set_propagation(&mut self, dir: &str, flags: u32) {
-        let recursive = flags & MS_REC != 0;
+    /// `SHARED` 将同一 mount event 的副本放入一个新的 shared group。
+    /// `SLAVE` 保留原 shared group 作为 master；`PRIVATE` 和
+    /// `UNBINDABLE` 断开所有传播关系。
+    fn set_propagation(&mut self, dir: &str, flags: MountFlags) {
+        let recursive = flags.contains(MountFlags::REC);
         let Some(root_idx) = self.top_mount_index_at_path(dir) else {
             return;
         };
         let root_event = self.mnt_list[root_idx].event_group;
-        let select_event_copies = flags & MS_SHARED != 0;
+        let select_event_copies = flags.contains(MountFlags::SHARED);
         let selected: Vec<usize> = self
             .mnt_list
             .iter()
@@ -141,14 +244,14 @@ impl MountTable {
             })
             .collect();
 
-        if flags & MS_SHARED != 0 {
+        if flags.contains(MountFlags::SHARED) {
             let group = self.next_group();
             for idx in selected {
                 let mount = &mut self.mnt_list[idx];
                 mount.shared_group = Some(group);
                 mount.unbindable = false;
             }
-        } else if flags & MS_SLAVE != 0 {
+        } else if flags.contains(MountFlags::SLAVE) {
             for idx in selected {
                 let mount = &mut self.mnt_list[idx];
                 // A shared slave already has an upstream master. Dropping
@@ -159,7 +262,7 @@ impl MountTable {
                 mount.unbindable = false;
             }
         } else {
-            let unbindable = flags & MS_UNBINDABLE != 0;
+            let unbindable = flags.contains(MountFlags::UNBINDABLE);
             for idx in selected {
                 let mount = &mut self.mnt_list[idx];
                 mount.shared_group = None;
@@ -363,22 +466,22 @@ impl MountTable {
         special: String,
         dir: String,
         fstype: String,
-        flags: u32,
+        flags: MountFlags,
         data: String,
         capacity: Option<usize>,
     ) -> Result<Vec<(String, String)>, SysErrNo> {
         _ = data;
 
-        if flags & MS_MOVE != 0 {
+        if flags.is_move() {
             return self.move_mount(&special, &dir);
         }
 
-        if flags & PROPAGATION_MASK != 0 && flags & (MS_BIND | MS_REMOUNT) == 0 {
+        if flags.is_propagation_only() {
             self.set_propagation(&dir, flags);
             return Ok(Vec::new());
         }
 
-        if flags & MS_REMOUNT != 0 {
+        if flags.is_remount() {
             let Some(idx) = self.top_mount_index_at_path(&dir) else {
                 return Err(SysErrNo::EINVAL);
             };
@@ -389,7 +492,7 @@ impl MountTable {
             return Ok(Vec::new());
         }
 
-        if flags & MS_BIND != 0
+        if flags.is_bind()
             && self
                 .top_mount_index_for_path(&special)
                 .is_some_and(|idx| self.mnt_list[idx].unbindable)
@@ -398,7 +501,7 @@ impl MountTable {
         }
 
         // A regular (non-BIND) mount must not shadow an existing mount point.
-        if flags & MS_BIND == 0 && self.top_mount_index_at_path(&dir).is_some() {
+        if !flags.is_bind() && self.top_mount_index_at_path(&dir).is_some() {
             return Err(SysErrNo::EBUSY);
         }
 
@@ -406,7 +509,8 @@ impl MountTable {
         // than the mount root itself. Its propagation state comes from the
         // visible mount covering that directory, just as the unbindable
         // source validation above does.
-        let source = (flags & MS_BIND != 0)
+        let source = flags
+            .is_bind()
             .then(|| self.top_mount_index_for_path(&special))
             .flatten()
             .map(|idx| self.mnt_list[idx].clone());
@@ -419,7 +523,7 @@ impl MountTable {
             return Err(SysErrNo::ENOSPC);
         }
         let event_group = self.next_group();
-        let quota = (fstype == "ext4" && flags & MS_BIND == 0)
+        let quota = (fstype == "ext4" && !flags.is_bind())
             .then(|| capacity.filter(|limit| *limit != 0))
             .flatten()
             .map(|limit| {
@@ -444,7 +548,7 @@ impl MountTable {
                 dir: target.clone(),
                 fstype: fstype.clone(),
                 flags,
-                is_bind: flags & MS_BIND != 0,
+                is_bind: flags.is_bind(),
                 shared_group,
                 master_group,
                 unbindable: false,
@@ -455,7 +559,7 @@ impl MountTable {
             });
         }
 
-        if flags & MS_BIND == 0 {
+        if !flags.is_bind() {
             return Ok(Vec::new());
         }
         Ok(targets
@@ -534,7 +638,7 @@ impl MountTable {
     /// 查询精确挂载点的可见顶层，并复制返回 `(source, dir, fstype, flags)`。
     ///
     /// 若该路径没有挂载层，返回 `None`。更早叠加在同一路径上的挂载不会被返回。
-    pub fn got_mount(&mut self, dir: String) -> Option<(String, String, String, u32)> {
+    pub fn got_mount(&mut self, dir: String) -> Option<(String, String, String, MountFlags)> {
         self.top_mount_index_at_path(&dir).map(|idx| {
             let mount = &self.mnt_list[idx];
             (
@@ -549,7 +653,7 @@ impl MountTable {
     /// 查询覆盖 `path` 的可见顶层挂载，并复制返回其元数据。
     ///
     /// 在多层嵌套挂载中优先选择目标路径最长者；同一目标存在叠加层时选择最新层。
-    pub fn mount_for_path(&self, path: &str) -> Option<(String, String, String, u32)> {
+    pub fn mount_for_path(&self, path: &str) -> Option<(String, String, String, MountFlags)> {
         self.top_mount_index_for_path(path).map(|idx| {
             let mount = &self.mnt_list[idx];
             (
@@ -568,7 +672,7 @@ impl MountTable {
     pub fn proc_mounts_content(&self) -> String {
         let mut content = String::from(" ext4 / ext rw 0 0\n");
         for mount in &self.mnt_list {
-            let opts = if mount.flags & 1 != 0 { "ro" } else { "rw" };
+            let opts = if mount.flags.contains(MountFlags::RDONLY) { "ro" } else { "rw" };
             // A bind mount must not expose its target pathname as a device.
             // This path-based VFS does not retain a backing-device identity,
             // so use a stable non-path placeholder. Otherwise BusyBox umount
@@ -591,7 +695,7 @@ impl MountTable {
     ///
     /// 成功返回 0；路径没有顶层挂载时返回 -1。卸载后，保留在同一路径下的更早
     /// 挂载层重新可见。`flags` 当前只保留 ABI 入口，尚不影响卸载策略。
-    pub fn umount(&mut self, dir: String, flags: u32) -> isize {
+    pub fn umount(&mut self, dir: String, flags: MountFlags) -> isize {
         _ = flags;
         let Some(idx) = self.top_mount_index_at_path(&dir) else {
             return -1;

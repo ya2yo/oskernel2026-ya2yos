@@ -13,7 +13,7 @@ fn chown_inode(
 ) -> SyscallRet {
     if let Some(path) = path {
         if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(path) {
-            if mountflags & 1 != 0 {
+            if mountflags.contains(MountFlags::RDONLY) {
                 return Err(SysErrNo::EROFS);
             }
         }
@@ -73,7 +73,7 @@ fn chown_inode(
 fn chmod_inode(inode: Arc<dyn Inode>, path: Option<&str>, mode: u32) -> SyscallRet {
     if let Some(path) = path {
         if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(path) {
-            if mountflags & 1 != 0 {
+            if mountflags.contains(MountFlags::RDONLY) {
                 return Err(SysErrNo::EROFS);
             }
         }

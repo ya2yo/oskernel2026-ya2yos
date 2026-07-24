@@ -15,7 +15,7 @@ use log::debug;
 use super::super::path::{mode_allows, parse_proc_self_fd};
 use crate::fs::{
     cache_positive_dentry_path, invalidate_dentry_path, open, superblock_root_inode,
-    superblock_sync, File, FsIndex, Inode, InodeType, OpenFlags, MAX_PATH_LEN, MNT_TABLE,
+    superblock_sync, File, FsIndex, Inode, InodeType, MountFlags, OpenFlags, MAX_PATH_LEN, MNT_TABLE,
     NONE_MODE, SEEK_CUR, SEEK_SET,
 };
 use crate::mm::{
@@ -87,7 +87,7 @@ pub(super) fn check_link_mounts(old_abs_path: &str, new_abs_path: &str) -> Sysca
     }
 
     if let Some((_, _, _, mountflags)) = new_mount.or(old_mount) {
-        if mountflags & 1 != 0 {
+        if mountflags.contains(MountFlags::RDONLY) {
             return Err(SysErrNo::EROFS);
         }
     }

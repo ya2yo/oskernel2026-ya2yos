@@ -9,7 +9,7 @@ use log::debug;
 
 use crate::{
     arch::memory_layout::{PAGE_SIZE, USER_STACK_SIZE},
-    fs::{open, Inode, MNT_TABLE, OSFile, OpenFlags, MAX_PATH_LEN, NONE_MODE},
+    fs::{open, Inode, MNT_TABLE, MountFlags, OSFile, OpenFlags, MAX_PATH_LEN, NONE_MODE},
     mm::{
         copy_from_user_val, read_elf_load_image, read_elf_load_image_with_prefix, read_user_cstr,
         read_user_cstr_with_limit, MemorySet,
@@ -18,7 +18,6 @@ use crate::{
     task::current_task,
     utils::{get_abs_path, strip_color, trim_start_slash, SysErrNo, SyscallRet},
 };
-use linux_raw_sys::general::MS_NOEXEC;
 
 const EXEC_PROBE_SIZE: usize = 256;
 const MAX_EXEC_ARG_STRLEN: usize = 32 * PAGE_SIZE;
@@ -330,7 +329,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     {
         let mnt_table = MNT_TABLE.lock();
         if let Some((_, _, _, mount_flags)) = mnt_table.mount_for_path(&abs_path) {
-            if mount_flags & MS_NOEXEC != 0 {
+            if mount_flags.contains(MountFlags::NOEXEC) {
                 return Err(SysErrNo::EACCES);
             }
         }

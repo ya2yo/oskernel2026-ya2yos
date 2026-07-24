@@ -90,7 +90,7 @@ pub fn sys_utimensat(
         (osfile, abs_path)
     };
     if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(&abs_path) {
-        if mountflags & 1 != 0 {
+        if mountflags.contains(MountFlags::RDONLY) {
             return Err(SysErrNo::EROFS);
         }
     }

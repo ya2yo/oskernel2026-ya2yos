@@ -7,7 +7,7 @@ use crate::{
     fs::invalidate_dentry_path,
     fs::{
         open, DetachedMountFd, File, FileClass, FileDescriptor, FsConfigOption, FsConfigValue,
-        FsContextFd, FsIndex, InodeType, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE,
+        FsContextFd, FsIndex, InodeType, MountFlags, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE,
     },
     mm::{copy_from_user, translate::read_user_cstr, UserBuffer},
     task::current_task,
@@ -270,7 +270,7 @@ pub fn sys_umount2(special: *const u8, flags: u32) -> SyscallRet {
     let special = read_user_cstr(&memory_set, special)?;
     let special = proc.get_abs_path(AT_FDCWD as isize, &special)?;
 
-    let ret = MNT_TABLE.lock().umount(special, flags);
+    let ret = MNT_TABLE.lock().umount(special, MountFlags::from_bits_truncate(flags));
     if ret != -1 {
         refresh_proc_mounts();
         Ok(0)
@@ -280,6 +280,16 @@ pub fn sys_umount2(special: *const u8, flags: u32) -> SyscallRet {
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/mount.2.html
+///
+/// 根据 flags 的不同组合，`mount(2)` 实际执行 5 种不同的操作：
+///
+/// | flags 组合                          | 操作              |
+/// |-------------------------------------|-------------------|
+/// | `MOVE`                              | 移动已有挂载        |
+/// | `BIND`                              | bind mount         |
+/// | `REMOUNT`                           | 重挂载（改属性）     |
+/// | propagation-only (`SHARED\|PRIVATE\|...)` | 修改传播类型     |
+/// | 以上均未设置（普通挂载）               | 新建挂载           |
 pub fn sys_mount(
     special: *const u8,
     dir: *const u8,
@@ -287,122 +297,186 @@ pub fn sys_mount(
     flags: u32,
     data: *const u8,
 ) -> SyscallRet {
+    // -- 权限检查 --
     let task = current_task().unwrap();
     let uid = task.inner_lock().effective_uid;
-    if uid !=0 {
-        // EPERM  The caller does not have the required privileges.
-        return Err(SysErrNo::EPERM)
+    if uid != 0 {
+        return Err(SysErrNo::EPERM);
     }
     let proc = &task.process;
     let memory_set = proc.memory_set_arc();
-    let special = read_user_cstr(&memory_set, special)?;
-    let dir = read_user_cstr(&memory_set, dir)?;
-    let ftype = read_user_cstr(&memory_set, ftype)?;
-    
-    // mount02 expects EINVAL when fstype pointer is NULL.
-    if ftype.is_empty() {
+
+    // -- 读取用户态字符串 --
+    let special_raw = read_user_cstr(&memory_set, special)?;
+    let dir_raw = read_user_cstr(&memory_set, dir)?;
+    let ftype_raw = read_user_cstr(&memory_set, ftype)?;
+
+    // -- 基本校验 --
+    if ftype_raw.is_empty() {
         return Err(SysErrNo::EINVAL);
     }
-
-    if dir.len() >= MAX_PATH_LEN {
+    if dir_raw.len() >= MAX_PATH_LEN {
         return Err(SysErrNo::ENAMETOOLONG);
     }
 
-    let dir = proc.get_abs_path(AT_FDCWD as isize, &dir)?;
-    
-    // Validate the mount target exists and is a directory.
-    let target_inode_type = match open(&dir, OpenFlags::O_RDONLY, NONE_MODE) {
-        Ok(target) => match target.file() {
-            Ok(f) => f.inode.types(),
+    // -- 解析 flags --
+    let mnt_flags = MountFlags::from_bits_truncate(flags);
+
+    // -- 解析 target 路径并校验为目录 --
+    let dir_abs = proc.get_abs_path(AT_FDCWD as isize, &dir_raw)?;
+    let target_type = match open(&dir_abs, OpenFlags::O_RDONLY, NONE_MODE) {
+        Ok(f) => match f.file() {
+            Ok(file) => file.inode.types(),
             Err(_) => return Err(SysErrNo::ENOENT),
         },
         Err(e) => return Err(e),
     };
-    if target_inode_type != InodeType::Dir {
+    if target_type != InodeType::Dir {
         return Err(SysErrNo::ENOTDIR);
     }
 
-    let special = if flags & (MS_BIND | MS_MOVE) != 0 {
-        proc.get_abs_path(AT_FDCWD as isize, &special)?
+    // -- 解析 special/source 路径 --
+    // BIND / MOVE 操作的 special 是路径，需要解析为绝对路径。
+    // 普通挂载的 special 是设备标识符，保留原样（在后续按 fstype 校验）。
+    let special_abs = if mnt_flags.is_move() || mnt_flags.is_bind() {
+        proc.get_abs_path(AT_FDCWD as isize, &special_raw)?
     } else {
-        special
+        special_raw.clone()
     };
 
-    // Validate fstype and device for regular (non-BIND, non-MOVE) mounts.
-    if flags & (MS_BIND | MS_MOVE) == 0 {
-        if !is_known_fs(&ftype) {
-            return Err(SysErrNo::ENODEV);
+    // -- 读取 mount data --
+    let mount_data = if !data.is_null() {
+        read_user_cstr(&memory_set, data)?
+    } else {
+        String::new()
+    };
+
+    // =================================================================
+    // 按操作类型分派
+    // =================================================================
+
+    // --- REMOUNT ---
+    if mnt_flags.is_remount() {
+        // 向只读 remount 时，检查是否还有进程持有可写 fd。
+        if mnt_flags.contains(MountFlags::RDONLY) && has_open_write_fd() {
+            return Err(SysErrNo::EBUSY);
         }
-        if fstype_requires_dev(&ftype) {
-            if special.is_empty() {
-                return Err(SysErrNo::EINVAL);
-            }
-            // The device string may be a relative user path.  Resolve it so that
-            // open() can look up the node through the inode cache.
-            if let Ok(special_abs) =
-                proc.get_abs_path(AT_FDCWD as isize, &special)
-            {
-                if let Ok(special_file) = open(&special_abs, OpenFlags::O_RDONLY, NONE_MODE) {
-                    if let Ok(f) = special_file.file() {
-                        if f.inode.types() == InodeType::CharDevice {
-                            return Err(SysErrNo::ENOTBLK);
-                        }
+        MNT_TABLE
+            .lock()
+            .mount(
+                special_abs,
+                dir_abs,
+                ftype_raw,
+                mnt_flags,
+                mount_data,
+                None,
+            )?;
+        refresh_proc_mounts();
+        return Ok(0);
+    }
+
+    // --- MOVE ---
+    if mnt_flags.is_move() {
+        let copies = MNT_TABLE.lock().mount(
+            special_abs,
+            dir_abs,
+            ftype_raw,
+            mnt_flags,
+            mount_data,
+            None,
+        )?;
+        for (source, target) in &copies {
+            mirror_bind_tree(source, target)?;
+        }
+        refresh_proc_mounts();
+        return Ok(0);
+    }
+
+    // --- BIND ---
+    if mnt_flags.is_bind() {
+        let copies = MNT_TABLE.lock().mount(
+            special_abs,
+            dir_abs,
+            ftype_raw,
+            mnt_flags,
+            mount_data,
+            None,
+        )?;
+        for (source, target) in &copies {
+            mirror_bind_tree(source, target)?;
+        }
+        refresh_proc_mounts();
+        return Ok(0);
+    }
+
+    // --- Propagation-only ---
+    if mnt_flags.is_propagation_only() {
+        MNT_TABLE.lock().mount(
+            String::new(),
+            dir_abs,
+            String::new(),
+            mnt_flags,
+            mount_data,
+            None,
+        )?;
+        refresh_proc_mounts();
+        return Ok(0);
+    }
+
+    // =================================================================
+    // 普通挂载（非 BIND, MOVE, REMOUNT, propagation-only）
+    // =================================================================
+
+    // 校验 fstype
+    if !is_known_fs(&ftype_raw) {
+        return Err(SysErrNo::ENODEV);
+    }
+
+    // 设备文件系统需要有效的设备路径
+    if fstype_requires_dev(&ftype_raw) {
+        if special_abs.is_empty() {
+            return Err(SysErrNo::EINVAL);
+        }
+        // 尝试解析设备路径并校验设备类型
+        if let Ok(dev_abs) = proc.get_abs_path(AT_FDCWD as isize, &special_abs) {
+            if let Ok(f) = open(&dev_abs, OpenFlags::O_RDONLY, NONE_MODE) {
+                if let Ok(file) = f.file() {
+                    if file.inode.types() == InodeType::CharDevice {
+                        return Err(SysErrNo::ENOTBLK);
                     }
                 }
             }
         }
     }
 
-    // Fresh tmpfs mounts should expose an empty root. Because `MNT_TABLE`
-    // currently records mount metadata but path lookup still uses the
-    // underlying ext4 directory, purge the mountpoint before recording the
-    // tmpfs mount. Do not run this for `MS_REMOUNT`: remount changes mount
-    // attributes and must not reset filesystem contents.
-    if ftype == "tmpfs" && flags & MS_REMOUNT == 0 {
-        if let Err(err) = purge_dir_contents(&dir) {
+    // tmpfs: 挂载前清空挂载点内容，使 LTP 观测到空的 tmpfs 根目录。
+    if ftype_raw == "tmpfs" {
+        if let Err(err) = purge_dir_contents(&dir_abs) {
             warn!(
                 "[sys_mount] failed to purge tmpfs mountpoint {}: {:?}",
-                dir, err
+                dir_abs, err
             );
         }
     }
 
-    // Check whether MS_REMOUNT with MS_RDONLY is blocked by any open write
-    // file descriptor.  In the single-superblock model any writable fd anywhere
-    // prevents a transition to read-only.
-    if (flags & (MS_REMOUNT | MS_RDONLY)) == (MS_REMOUNT | MS_RDONLY) {
-        if has_open_write_fd() {
-            return Err(SysErrNo::EBUSY);
-        }
-    }
-
-    // The current VFS keeps a single root superblock. Preserve a loop-backed
-    // ext4 test filesystem's formatted capacity as a logical mount quota so
-    // callers still observe the expected `ENOSPC` boundary.
-    let mount_capacity = (ftype == "ext4")
-        .then(|| crate::fs::loopdev::formatted_size(&special))
+    // ext4 loop 镜像格式化的容量作为逻辑配额。
+    let mount_capacity = (ftype_raw == "ext4")
+        .then(|| crate::fs::loopdev::formatted_size(&special_abs))
         .flatten();
-    if !data.is_null() {
-        let data = read_user_cstr(&memory_set, data)?;
-        let copies = MNT_TABLE
-            .lock()
-            .mount(special, dir, ftype, flags, data, mount_capacity)?;
-        for (source, target) in copies {
-            mirror_bind_tree(&source, &target)?;
-        }
-        refresh_proc_mounts();
-        Ok(0)
-    } else {
-        let copies =
-            MNT_TABLE
-                .lock()
-                .mount(special, dir, ftype, flags, String::from(""), mount_capacity)?;
-        for (source, target) in copies {
-            mirror_bind_tree(&source, &target)?;
-        }
-        refresh_proc_mounts();
-        Ok(0)
+
+    let copies = MNT_TABLE.lock().mount(
+        special_abs,
+        dir_abs,
+        ftype_raw,
+        mnt_flags,
+        mount_data,
+        mount_capacity,
+    )?;
+    for (source, target) in &copies {
+        mirror_bind_tree(source, target)?;
     }
+    refresh_proc_mounts();
+    Ok(0)
 }
 
 /// https://man7.org/linux/man-pages/man2/open_tree.2.html
@@ -488,7 +562,7 @@ pub fn sys_move_mount(
         } else {
             detached.fsname.clone()
         };
-        let mount_flags = detached.attr_flags;
+        let mount_flags = MountFlags::from_bits_truncate(detached.attr_flags);
         let copies = MNT_TABLE.lock().mount(
             source,
             to_abs_path,
