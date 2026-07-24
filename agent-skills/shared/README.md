@@ -1,10 +1,11 @@
 # Ya2yOS Agent Skills
 
-本目录只保留面向本仓库（2026 OS 竞赛内核）的 3 个高频入口：
+本目录只保留面向本仓库（2026 OS 竞赛内核）的高频入口：
 
 1. 添加功能 / 实现 syscall
 2. 修复 bug
 3. 写文档
+4. 内核性能优化
 
 ## 统一维护方式
 
@@ -27,6 +28,7 @@ python3 scripts/sync_agent_skills.py --check
 | 添加功能 / Syscall | [add-syscall-feature/SKILL.md](./add-syscall-feature/SKILL.md) | 新功能、新 syscall、syscall 语义修改 |
 | 修复 Bug | [fix-bug/SKILL.md](./fix-bug/SKILL.md) | panic、LTP 失败、卡死、语义错误、日志分析 |
 | 写文档 | [write-docs/SKILL.md](./write-docs/SKILL.md) | 开发日志、problem/、ai.log、AI_INTERACTION |
+| 内核性能优化 | [optimize-kernel-performance/SKILL.md](./optimize-kernel-performance/SKILL.md) | 根据 `log.ans` 定位调用路径，使用 `os/src/utils/perf.rs` 测量耗时并验证优化 |
 
 ## 使用建议
 
@@ -35,6 +37,7 @@ python3 scripts/sync_agent_skills.py --check
 | 新 syscall / 新功能 | add-syscall-feature → write-docs |
 | 修 bug / 跑测例失败 | fix-bug → write-docs |
 | 只写记录 | write-docs |
+| 性能定位 / 优化 | optimize-kernel-performance → write-docs |
 
 ## 目录结构
 
@@ -43,7 +46,8 @@ agent-skills/shared/
 ├── README.md
 ├── add-syscall-feature/SKILL.md
 ├── fix-bug/SKILL.md
-└── write-docs/SKILL.md
+├── write-docs/SKILL.md
+└── optimize-kernel-performance/SKILL.md
 
 .codex/skills/        ← 由 shared 生成，供 Codex 使用
 .claude/skills/       ← 由 shared 生成，供 Claude Code 使用

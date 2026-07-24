@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kernel Performance Optimization"
+  short_description: "Trace Ya2yOS hot paths and measure kernel timing"
+  default_prompt: "Use $optimize-kernel-performance to analyze log.ans, trace the slow kernel call path, and measure it with os/src/utils/perf.rs."
