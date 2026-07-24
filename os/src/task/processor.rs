@@ -112,7 +112,8 @@ pub fn run_tasks() {
         }
 
         if let Some(next_task) = ready_queue::fetch_task(hartid) {
-            // crate::perf::record_scheduler_selection();
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_scheduler_selection();
             let mut next_task_inner = next_task.inner_lock();
             let next_task_cx_ptr = &next_task_inner.task_cx as *const TaskContext;
             next_task_inner.task_status = TaskStatus::Running;
@@ -121,7 +122,8 @@ pub fn run_tasks() {
             processor.current = Some(next_task);
             switch(idle_task_cx_ptr, next_task_cx_ptr);
         } else {
-            crate::perf::record_idle_loop();
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_idle_loop();
             crate::arch::cpu::idle();
         }
     }

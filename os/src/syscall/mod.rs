@@ -320,7 +320,8 @@ use time::*;
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
     let id = syscall_id;
-    // crate::perf::record_syscall(id);
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_syscall(id);
     let syscall_id: Syscall = Syscall::from(syscall_id);
     let task = current_task().unwrap();
     let seccomp_action = task.seccomp_action(id);
@@ -842,7 +843,11 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::EpollCreate1 => sys_epoll_create1(args[0] as u32),
         Syscall::EpollCtl => sys_epoll_ctl(args[0], args[1], args[2], args[3]),
         Syscall::EpollPwait => sys_epoll_pwait(args[0], args[1], args[2], args[3], args[4]),
-        Syscall::MachineShutdown => shutdown(false),
+        Syscall::MachineShutdown => {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::report_now();
+            shutdown(false)
+        }
 
         // task ops
         Syscall::Execve => sys_execve(

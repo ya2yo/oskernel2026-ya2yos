@@ -15,6 +15,8 @@ else
 $(error Unsupported SCHEDULER: $(SCHEDULER), expected rr or cfs)
 endif
 
+KERNEL_FEATURES := $(KERNEL_OUTPUT_LOG_LEVEL),$(SCHEDULER_FEATURE),$(KERNEL_EXTRA_FEATURES)
+
 $(KERNEL_BIN): kernel
 # 这里如果是la64，则需要保留elf给qemu-system-loongarch64才能正常运行
 ifeq ($(ARCH), riscv64)
@@ -27,7 +29,7 @@ endif
 kernel:
 	@echo "In os/Makefile, BUILD_ARGS: $(KERNEL_BUILD_ARGS)"
 	@echo "Scheduler: $(SCHEDULER)"
-	@cargo build $(KERNEL_BUILD_ARGS) $(SCHEDULER_BUILD_ARGS) --features $(KERNEL_OUTPUT_LOG_LEVEL),$(SCHEDULER_FEATURE)
+	@cargo build $(KERNEL_BUILD_ARGS) $(SCHEDULER_BUILD_ARGS) --features $(KERNEL_FEATURES)
 
 clean:
 	@cargo clean

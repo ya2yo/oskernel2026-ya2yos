@@ -134,6 +134,26 @@ pub fn maybe_report() {
         return;
     }
 
+    emit_report(now);
+}
+
+/// Emit a report even when a short-lived test has not crossed the periodic
+/// sampling interval.  The compare-exchange also prevents two harts from
+/// printing the same snapshot when they shut down together.
+pub fn report_now() {
+    let now = get_time_ms();
+    let previous = LAST_REPORT_MS.load(Ordering::Relaxed);
+    if previous == now
+        || LAST_REPORT_MS
+            .compare_exchange(previous, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+    {
+        return;
+    }
+    emit_report(now);
+}
+
+fn emit_report(now: usize) {
     println!(
         "[perf] t={}ms syscalls total={} read={} write={} open={} close={} stat={} mm={} process={} futex={} yield={}",
         now,

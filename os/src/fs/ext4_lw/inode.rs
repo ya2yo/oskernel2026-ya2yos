@@ -201,7 +201,8 @@ impl Inode for Ext4Inode {
             file.file_open_read_only(&path).map_err(SysErrNo::from)?;
             file.file_read_at(off, buf).map_err(SysErrNo::from)?
         };
-        // crate::perf::record_ext4_read(r);
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_ext4_read(r);
         patch_dynamic_link_file_bytes(&path, off, &mut buf[..r]);
         Ok(r)
     }

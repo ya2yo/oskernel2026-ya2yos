@@ -76,6 +76,13 @@ log: set_env
 	@cd ./os && $(MAKE) build KERNEL_OUTPUT_LOG_LEVEL=debug
 	@$(MAKE) cleanup_cargo
 
+# 构建带内核性能统计埋点的版本
+perf: set_env
+	@$(MAKE) setup_cargo
+	@cd ./user && $(MAKE) build
+	@cd ./os && $(MAKE) build KERNEL_EXTRA_FEATURES=perf
+	@$(MAKE) cleanup_cargo
+
 # 仅生成内核 crate 的 rustdoc；依赖仍会参与类型检查，但不生成其文档页面。
 doc: set_env_arch
 	@$(MAKE) setup_cargo
@@ -126,6 +133,6 @@ docker:
 	docker run --rm -it -v $(PROJECT_ROOT):/workplace -w /workplace zhouzhouyi/os-contest:20260510 bash
 
 .PHONY: all all-arch riscv64-build loongarch64-build build-arch set_env_arch \
-        run log doc clean objdump gdbserver gdbclient setup_cargo cleanup_cargo set_env
+        run log perf doc clean objdump gdbserver gdbclient setup_cargo cleanup_cargo set_env
 
 .DEFAULT_GOAL := all
