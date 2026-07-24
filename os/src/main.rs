@@ -46,7 +46,6 @@ pub mod fs;
 pub mod lang_items;
 pub mod logger;
 pub mod mm;
-pub mod perf;
 #[cfg(feature = "net")]
 pub mod net;
 pub mod signal;
