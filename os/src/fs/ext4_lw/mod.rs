@@ -51,10 +51,10 @@ impl Ext4OpLock {
 impl Drop for Ext4OpGuard<'_> {
     fn drop(&mut self) {
         let released_at = crate::arch::time::get_ticks();
-        crate::perf::record_ext4_lock(
-            self.wait_ticks,
-            released_at.saturating_sub(self.acquired_at),
-        );
+        // crate::perf::record_ext4_lock(
+        //     self.wait_ticks,
+        //     released_at.saturating_sub(self.acquired_at),
+        // );
     }
 }
 

@@ -112,7 +112,7 @@ pub fn run_tasks() {
         }
 
         if let Some(next_task) = ready_queue::fetch_task(hartid) {
-            crate::perf::record_scheduler_selection();
+            // crate::perf::record_scheduler_selection();
             let mut next_task_inner = next_task.inner_lock();
             let next_task_cx_ptr = &next_task_inner.task_cx as *const TaskContext;
             next_task_inner.task_status = TaskStatus::Running;
