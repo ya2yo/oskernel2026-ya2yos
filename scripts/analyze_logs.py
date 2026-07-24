@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Kernel log analyzer for PlainOs.
+Kernel log analyzer for Ya2yOS.
 
 Extracts two kinds of information from the log:
   1. System call sequences (begin -> ret pairs)
