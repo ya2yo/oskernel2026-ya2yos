@@ -13,7 +13,7 @@ use crate::{
         SIG_DFL, SIG_IGN, SIG_MAX_NUM,
     },
     syscall::SignalMaskFlag,
-    task::{block_on, current_task, suspend_current_and_run_next},
+    task::{block_current_and_run_next, block_on, current_task, suspend_current_and_run_next},
     timer::{add_sigtimedwait_timer, get_time_spec, Timespec},
     utils::{SysErrNo, SyscallRet},
 };
@@ -375,7 +375,7 @@ pub fn sys_rt_sigsuspend(mask: *const SigSet) -> SyscallRet {
         }
         drop(task_inner);
         drop(task);
-        suspend_current_and_run_next();
+        block_current_and_run_next();
     }
 }
 

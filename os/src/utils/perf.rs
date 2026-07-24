@@ -34,6 +34,7 @@ static FILE_CACHE_MISSES: AtomicUsize = AtomicUsize::new(0);
 static FILE_PAGE_FAULTS: AtomicUsize = AtomicUsize::new(0);
 
 static SCHEDULER_SELECTIONS: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULER_SELF_SELECTIONS: AtomicUsize = AtomicUsize::new(0);
 static IDLE_LOOPS: AtomicUsize = AtomicUsize::new(0);
 
 #[inline]
@@ -107,8 +108,11 @@ pub fn record_file_page_fault() {
 }
 
 #[inline]
-pub fn record_scheduler_selection() {
+pub fn record_scheduler_selection(self_selected: bool) {
     add(&SCHEDULER_SELECTIONS, 1);
+    if self_selected {
+        add(&SCHEDULER_SELF_SELECTIONS, 1);
+    }
     let selections = SCHEDULER_SELECTIONS.load(Ordering::Relaxed);
     if selections & 0x0fff == 0 {
         maybe_report();
@@ -180,8 +184,9 @@ fn emit_report(now: usize) {
         FILE_PAGE_FAULTS.load(Ordering::Relaxed),
     );
     println!(
-        "[perf] scheduler selections={} idle_loops={}",
+        "[perf] scheduler selections={} self_selections={} idle_loops={}",
         SCHEDULER_SELECTIONS.load(Ordering::Relaxed),
+        SCHEDULER_SELF_SELECTIONS.load(Ordering::Relaxed),
         IDLE_LOOPS.load(Ordering::Relaxed),
     );
 }

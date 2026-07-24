@@ -6835,3 +6835,21 @@ AI 沿 timer trap、调度门面、CFS/RR run queue 和 `run_tasks()` 追踪调�
 构建；perf 快照记录过 `scheduler selections=194875`、`idle_loops=1088`。短样本普通内核约
 `707 -> 684`、perf 内核约 `679`，但没有完成完整 BuildStorm 446 单元严格 A/B，因此不报告
 正式加速比例或完整测例通过。
+
+## 2026-07-24：CAgent `rt_sigsuspend` 忙让出调度优化
+
+维护者提供最新 `log.ans` 并指出本次 `nanosleep` 仅启动时以非法 `tv_nsec` 返回
+`EINVAL`，不能解释 `cagent cpu pass 819` 的主要耗时。AI 对齐 `debug.ans` 后确认，
+`SigSuspend` 在请求期间持续约 1 秒，而 `sys_rt_sigsuspend` 使用
+`suspend_current_and_run_next()` 忙让出；这会在无信号期间反复将同一任务放回 CFS 队列，
+与 perf 中 4096 -> 158928 的调度选择增长相符。
+
+采纳的修复是将 `rt_sigsuspend` 改为真正的 `Blocked` 等待，由信号投递重新入队；
+`block_current_and_run_next()` 在置阻塞状态前复查未屏蔽 pending 信号，避免检查与状态
+转换的竞态。另加无本地竞争者的 `sched_yield()` 快速返回，并保留 timer future 版
+`nanosleep`。修改文件为 `os/src/syscall/signal.rs`、`os/src/task/mod.rs`、
+`os/src/syscall/task/schedule.rs`、`os/src/task/processor.rs` 和 `os/src/utils/perf.rs`。
+
+RISC-V 与 LoongArch64 的独立 `/tmp` target perf release 编译通过，仅有既有 smoltcp
+warning；QEMU snapshot 需要宿主 `/var/tmp` 写权限，本轮未重新取得运行快照，未宣称
+CAgent 新耗时或完整 BuildStorm A/B。详见 `Docs/决赛文档/problem/sigsuspend-busy-yield-scheduler.md`。

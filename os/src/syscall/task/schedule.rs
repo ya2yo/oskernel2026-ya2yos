@@ -4,7 +4,10 @@ use crate::{
     arch::{config::HART_NUM, time::get_clock_freq},
     mm::{copy_from_user, copy_to_user, if_bad_address},
     signal::check_if_any_sig_for_current_task,
-    task::{current_task, suspend_current_and_run_next, tid_to_task, Process},
+    task::{
+        block_on, current_task, interruptible, sleep_until, suspend_current_and_run_next,
+        tid_to_task, yield_current_and_run_next, Process,
+    },
     timer::{
         calculate_left_timespec, get_time_ms, get_time_spec, Timespec, MSEC_PER_SEC, NANOS_PER_SEC,
     },
@@ -18,7 +21,7 @@ use log::debug;
 
 /// 参考 https://man7.org/linux/man-pages/man2/sched_yield.2.html
 pub fn sys_sched_yield() -> SyscallRet {
-    suspend_current_and_run_next();
+    yield_current_and_run_next();
     Ok(0)
 }
 
@@ -41,8 +44,6 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
         return Err(SysErrNo::EINVAL);
     }
 
-    let waittime = req.tv_sec * (NANOS_PER_SEC as usize) + req.tv_nsec;
-    let begin = get_time_ms() * (NANOS_PER_SEC as usize / MSEC_PER_SEC);
     let endtime = get_time_spec() + req;
 
     debug!(
@@ -50,29 +51,51 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
         req.tv_sec, req.tv_nsec
     );
 
-    while get_time_ms() * 1_000_000usize - begin < waittime {
-        if check_if_any_sig_for_current_task().is_some() || {
-            let mut task_inner = task.inner_lock();
-            let eintr = task_inner.sig_eintr;
-            if eintr {
-                task_inner.sig_eintr = false;
-            }
-            eintr
-        } {
-            if rem as usize != 0 {
-                let process = &task.process;
-                let memory_set = process.memory_set_arc();
-                let left = calculate_left_timespec(endtime);
-                copy_to_user(&memory_set, rem as usize, unsafe {
-                    core::slice::from_raw_parts(
-                        &left as *const Timespec as *const u8,
-                        core::mem::size_of::<Timespec>(),
-                    )
-                })?;
-            }
-            return Err(SysErrNo::EINTR);
+    let interrupted = || {
+        if check_if_any_sig_for_current_task().is_some() {
+            return true;
         }
-        suspend_current_and_run_next();
+        let mut task_inner = task.inner_lock();
+        let eintr = task_inner.sig_eintr;
+        if eintr {
+            task_inner.sig_eintr = false;
+        }
+        eintr
+    };
+
+    if interrupted() {
+        if rem as usize != 0 {
+            let process = &task.process;
+            let memory_set = process.memory_set_arc();
+            let left = calculate_left_timespec(endtime);
+            copy_to_user(&memory_set, rem as usize, unsafe {
+                core::slice::from_raw_parts(
+                    &left as *const Timespec as *const u8,
+                    core::mem::size_of::<Timespec>(),
+                )
+            })?;
+        }
+        return Err(SysErrNo::EINTR);
+    }
+
+    // Register the deadline in the kernel timer wheel and block until either
+    // the timer or an interruptible signal wakes this task.  The old loop
+    // yielded immediately and repeatedly selected the same task while it was
+    // waiting, which inflated scheduler traffic during ordinary sleeps.
+    let timer_result = block_on(interruptible(sleep_until(endtime)));
+    if timer_result.is_err() || interrupted() {
+        if rem as usize != 0 {
+            let process = &task.process;
+            let memory_set = process.memory_set_arc();
+            let left = calculate_left_timespec(endtime);
+            copy_to_user(&memory_set, rem as usize, unsafe {
+                core::slice::from_raw_parts(
+                    &left as *const Timespec as *const u8,
+                    core::mem::size_of::<Timespec>(),
+                )
+            })?;
+        }
+        return Err(SysErrNo::EINTR);
     }
     Ok(0)
 }

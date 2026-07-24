@@ -153,6 +153,20 @@ pub fn preempt_current_and_run_next() {
     suspend_current_and_run_next();
 }
 
+/// Yield only when another task is ready on this task's home hart.
+///
+/// `sched_yield()` is allowed to return immediately when there is no local
+/// competitor.  Avoiding the ready-queue round trip matters for userspace
+/// polling loops that use yield as a backoff hint.
+pub fn yield_current_and_run_next() {
+    let task = current_task().unwrap();
+    if !ready_queue::has_ready_for_hart(task.process.home_hart()) {
+        return;
+    }
+    drop(task);
+    suspend_current_and_run_next();
+}
+
 /// Exit the current task for a process-wide exit or an unmaskable SIGKILL.
 ///
 /// Keep ProcessMeta and TaskControlBlockInner lock scopes disjoint and drop
@@ -184,6 +198,18 @@ pub fn block_current_and_run_next() {
     debug!("[block_current_and_run_next()] BEGIN!");
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
+    // A signal may have arrived after the caller's last pending check but
+    // before it reached this lock.  Keep the task runnable in that case so a
+    // signal cannot be stranded behind a newly published Blocked state.
+    if !task_inner
+        .sig_pending
+        .difference(task_inner.sig_mask)
+        .is_empty()
+    {
+        drop(task_inner);
+        drop(task);
+        return;
+    }
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
     task_inner.task_status = TaskStatus::Blocked;
     drop(task_inner);

@@ -1231,3 +1231,19 @@
   详见 `Docs/决赛文档/ai.log` 2026-07-24 条目和
   [problem/scheduler-uncontended-preemption.md](./problem/scheduler-uncontended-preemption.md)。
 - **关联 commit**：尚未提交（2026-07-24 工作树）
+
+#### CAgent `rt_sigsuspend` 忙让出调度优化（7.24）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 `log.ans`（`cagent cpu pass 819`）并澄清启动阶段的
+  `nanosleep` 仅因非法 `tv_nsec` 返回 `EINVAL`，要求继续根据 `log.ans`/`debug.ans`
+  优化。
+- **描述**：AI 对齐 `SigSuspend` 的 debug 行号和 perf 调度快照，确认
+  `sys_rt_sigsuspend` 在约 1 秒等待期间忙调用 `suspend_current_and_run_next()`，造成
+  4096 -> 158928 次调度选择。修复改用 `block_current_and_run_next()`，在发布 Blocked
+  前复查 pending signal 以避免丢唤醒；同时增加无竞争 `sched_yield()` 快速路径，保留
+  timer future `nanosleep` 与其 `EINVAL` 校验语义。详见 `ai.log` 和
+  `problem/sigsuspend-busy-yield-scheduler.md`。
+- **验证**：RISC-V/LoongArch64 独立 target perf release 编译通过，仅有既有 smoltcp
+  warning；QEMU 运行因 `/var/tmp` snapshot 权限未重新执行，未报告新耗时或正式评分。
+- **关联 commit**：尚未提交（2026-07-24 工作树）
