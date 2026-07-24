@@ -393,6 +393,11 @@ fn create_common_bin_wrappers() -> SysResult {
         "/bin/get_ifname",
         "#!/bin/sh\n# Ya2yOS only exposes loopback on LoongArch single-node LTP runs.\necho lo\n",
     )?;
+    // BusyBox 的 mkfs.ext4 不是独立 applet，symlink 到 busybox 会导致
+    // "applet not found"（argv[0] 保持 "mkfs.ext4" 不变）。
+    // 用 shell wrapper 委托给 mke2fs。注意 BusyBox mke2fs 不支持 -t 参数，
+    // 直接透传 LTP 传入的 -b / device / KBYTES 等参数。
+    write_executable_init_file("/bin/mkfs.ext4", "#!/bin/sh\nexec /bin/mke2fs \"$@\"\n")?;
     Ok(())
 }
 

@@ -15,7 +15,7 @@ use super::EXT4_OP_LOCK;
 use crate::{
     fs::{
         patch_dynamic_link_file_bytes, FsIndex, Inode, InodeType, Kstat, OpenFlags, String,
-        FILE_PAGE_CACHE,
+        FILE_PAGE_CACHE, MNT_TABLE,
     },
     sync::SyncUnsafeCell,
     utils::{SysErrNo, SysResult, SyscallRet},
@@ -28,6 +28,7 @@ use lwext4_rust::file::{discard_path_cache, read_cached_at, OsDirent};
 
 /// 防止符号链接死循环的最大跳转次数。
 const MAX_LOOPTIMES: usize = 5;
+const QUOTA_RESERVE_GRANULARITY: usize = 64 * 1024;
 
 /// EXT4 inode 的 VFS 包装。
 ///
@@ -51,6 +52,10 @@ pub struct Ext4InodeInner {
     /// path-based stat 查询到新长度。保留该值可使同一 inode 的 fstat、
     /// 文件页缓存和 mmap 使用一致的 EOF。
     known_size: Option<usize>,
+    /// Upper bound already charged to a loop-backed mount quota. Large
+    /// sequential writes reserve in chunks so each small write avoids taking
+    /// the global mount-table lock.
+    quota_reserved: usize,
     /// 指向同一 inode 的路径别名，用于 hard link / rename 后继续找到可用路径。
     aliases: Vec<String>,
     /// 延迟删除标志。如果为 true，在该 inode 被 Drop 时会从磁盘删除对应文件。
@@ -70,6 +75,7 @@ impl Ext4Inode {
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
                 known_size: None,
+                quota_reserved: 0,
                 aliases: vec![path.to_string()],
                 delay: false,
             }),
@@ -230,7 +236,7 @@ impl Inode for Ext4Inode {
         let path = Self::live_path(inner);
         let delayed = inner.delay;
         let file = &mut inner.f;
-        file.file_open(&path, O_RDWR).map_err(SysErrNo::from)?;
+        file.ensure_open(O_RDWR).map_err(SysErrNo::from)?;
         if delayed {
             // Keep an unlinked-but-open temporary file's cache alive until
             // its last fd closes; the FIFO cannot otherwise distinguish it
@@ -240,14 +246,63 @@ impl Inode for Ext4Inode {
         let current_size = inner
             .known_size
             .unwrap_or_else(|| file.file_size() as usize);
+        let end = off.checked_add(buf.len()).ok_or(SysErrNo::EFBIG)?;
+        let previous_reserved = inner.quota_reserved;
+        let reservation = if end > previous_reserved {
+            let target = if end <= QUOTA_RESERVE_GRANULARITY {
+                end
+            } else {
+                end.checked_add(QUOTA_RESERVE_GRANULARITY - 1)
+                    .map(|value| value / QUOTA_RESERVE_GRANULARITY * QUOTA_RESERVE_GRANULARITY)
+                    .ok_or(SysErrNo::EFBIG)?
+            };
+            let previous = previous_reserved.max(current_size);
+            let mut mount_table = MNT_TABLE.lock();
+            if let Err(error) = mount_table.reserve_write(&path, previous, target) {
+                // The final chunk may be smaller than the reservation unit.
+                // Charge only this write before reporting ENOSPC so callers
+                // can consume the mount exactly up to its real limit.
+                if target == end || error != SysErrNo::ENOSPC {
+                    if error == SysErrNo::ENOSPC {
+                        file.defer_close_flush();
+                    }
+                    return Err(error);
+                }
+                if let Err(error) = mount_table.reserve_write(&path, previous, end) {
+                    if error == SysErrNo::ENOSPC {
+                        file.defer_close_flush();
+                    }
+                    return Err(error);
+                }
+                inner.quota_reserved = end;
+                Some((previous, end))
+            } else {
+                inner.quota_reserved = target;
+                Some((previous, target))
+            }
+        } else {
+            None
+        };
         if off > current_size {
             // A write beyond EOF creates a sparse range. The whole-file cache
             // tracks bytes only and would otherwise materialize that range.
             file.disable_write_back_cache().map_err(SysErrNo::from)?;
         }
-        file.file_seek(off as i64, SEEK_SET)
-            .map_err(SysErrNo::from)?;
-        let written = file.file_write(buf).map_err(SysErrNo::from)?;
+        let written = match file.file_write_at(off, buf) {
+            Ok(written) => written,
+            Err(err) => {
+                if SysErrNo::from(err) == SysErrNo::ENOSPC {
+                    file.defer_close_flush();
+                }
+                if let Some((previous, target)) = reservation {
+                    MNT_TABLE
+                        .lock()
+                        .rollback_reservation(&path, previous, target);
+                    inner.quota_reserved = previous_reserved;
+                }
+                return Err(SysErrNo::from(err));
+            }
+        };
         let end = off.checked_add(written).ok_or(SysErrNo::EFBIG)?;
         inner.known_size = Some(current_size.max(end));
         Ok(written)
@@ -624,7 +679,9 @@ impl Inode for Ext4Inode {
         if is_dir {
             file.dir_rm(path).map_err(SysErrNo::from)
         } else {
-            file.file_remove(path).map_err(SysErrNo::from)
+            file.file_remove(path).map_err(SysErrNo::from)?;
+            MNT_TABLE.lock().remove_file(path);
+            Ok(0)
         }
     }
 
@@ -742,6 +799,7 @@ impl Drop for Ext4Inode {
         if inner.delay {
             debug!("Ext4Inode delays unlink {:?}", path);
             inner.f.file_remove(&path);
+            MNT_TABLE.lock().remove_file(&path);
         }
         inner.f.file_close().expect("failed to close fd");
     }

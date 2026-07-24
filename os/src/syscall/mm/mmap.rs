@@ -11,6 +11,7 @@ use crate::{
         copy_to_user, if_bad_address, remove_bad_address, MapArea, MapAreaType, MapPermission,
         MremapFlags, VirtAddr, VirtPageNum,
     },
+    signal::{send_signal_to_thread, SigSet},
     syscall::options::{MmapFlags, MmapProt},
     task::{self, current_task},
     utils::{page_round_up, SysErrNo, SyscallRet},
@@ -33,9 +34,7 @@ pub fn sys_mmap(
     let flags = MmapFlags::from_bits_truncate(raw_flags);
     // Linux ignores unknown mmap bits for MAP_SHARED/MAP_PRIVATE, but
     // MAP_SHARED_VALIDATE turns them into a strict capability check.
-    if raw_flags & MAP_TYPE == MAP_SHARED_VALIDATE
-        && raw_flags & !MmapFlags::all().bits() != 0
-    {
+    if raw_flags & MAP_TYPE == MAP_SHARED_VALIDATE && raw_flags & !MmapFlags::all().bits() != 0 {
         return Err(SysErrNo::EOPNOTSUPP);
     }
     if flags
@@ -148,7 +147,16 @@ pub fn sys_munmap(addr: usize, len: usize) -> SyscallRet {
     if if_bad_address(addr) {
         remove_bad_address(addr);
     }
-    memory_set.munmap(addr, len)
+    match memory_set.munmap(addr, len) {
+        Err(SysErrNo::ENOSPC) => {
+            // A shared file mapping can discover exhausted backing blocks only
+            // while dirty pages are written during munmap. Linux reports this
+            // as SIGBUS rather than turning the unmap into an ordinary error.
+            send_signal_to_thread(task.tid(), SigSet::SIGBUS);
+            Ok(0)
+        }
+        result => result,
+    }
 }
 
 /// Add by HXC
@@ -169,7 +177,7 @@ pub fn sys_mremap(
     if fixed && !may_move {
         return Err(SysErrNo::EINVAL);
     }
-    if fixed || !may_move {
+    if fixed {
         return Err(SysErrNo::ENOSYS);
     }
     if old_addr % PAGE_SIZE != 0 || old_size == 0 || new_size == 0 {
@@ -193,8 +201,13 @@ pub fn sys_mremap(
 
     let task = current_task().unwrap();
     let memory_set = task.process.memory_set_arc();
-    let result =
-        memory_set.with_mut(|memory_set| memory_set.mremap_maymove(old_addr, old_len, new_len));
+    let result = memory_set.with_mut(|memory_set| {
+        if may_move {
+            memory_set.mremap_maymove(old_addr, old_len, new_len)
+        } else {
+            memory_set.mremap_in_place(old_addr, old_len, new_len)
+        }
+    });
     if result.is_ok() && if_bad_address(old_addr) {
         remove_bad_address(old_addr);
     }

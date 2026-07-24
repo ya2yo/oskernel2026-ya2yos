@@ -16,8 +16,12 @@ use spin::{Lazy, Mutex, RwLock};
 
 const PAGE_SIZE: usize = 4096;
 pub const PAGE_MASK: usize = !0xfff;
-// Covers iozone -s 4m while still avoiding large test artifacts.
-const MAX_CACHED_FILE_SIZE: usize = 4 * 0x10_0000; // 4 MiB
+// Keep ordinary small-file workloads in one write-back transaction.  The
+// mmap16 regression fills a 10 MiB loop-backed filesystem with 1 KiB writes;
+// flushing after 4 MiB turns the remainder into thousands of slow ext4
+// allocations and can miss its checkpoint deadline.  A 16 MiB bound still
+// limits cache growth to a bounded amount per FIFO entry.
+const MAX_CACHED_FILE_SIZE: usize = 16 * 0x10_0000; // 16 MiB
 
 fn aligned_down(addr: usize) -> usize {
     addr & PAGE_MASK
@@ -70,6 +74,10 @@ pub struct Ext4File {
     // new opens. Keep their cache out of the global FIFO until the last fd
     // closes, otherwise concurrent temporary writers continually rebuild it.
     cache_pinned: bool,
+    // A logical loop-mount quota failure leaves the dirty byte cache visible
+    // to readers, but the simplified ext4 model cannot persist it. Defer the
+    // close-time write-back until the pathname is removed.
+    defer_close_flush: bool,
 }
 
 impl Ext4File {
@@ -90,11 +98,16 @@ impl Ext4File {
             cache_too_large: false,
             cache_disabled: false,
             cache_pinned: false,
+            defer_close_flush: false,
         }
     }
 
     pub fn path(&self) -> CString {
         self.file_path.clone()
+    }
+
+    pub fn path_str(&self) -> &str {
+        self.file_path.to_str().unwrap_or("")
     }
 
     pub fn types(&self) -> InodeTypes {
@@ -148,6 +161,7 @@ impl Ext4File {
                 return Ok(EOK as usize);
             }
         }
+        let c_path = CString::new(path).expect("CString::new failed");
 
         //let to_map = c_path.clone();
         let c_path = c_path.into_raw();
@@ -197,16 +211,29 @@ impl Ext4File {
         Ok(EOK as usize)
     }
 
+    /// Reuse the descriptor already associated with this pathname whenever
+    /// possible; this is the hot path for VFS `write_at` calls.
+    pub fn ensure_open(&mut self, flags: u32) -> Result<usize, i32> {
+        if self.has_opened && self.last_flags == flags {
+            return Ok(EOK as usize);
+        }
+        let path = String::from(self.path_str());
+        self.file_open(&path, flags)
+    }
+
     pub fn file_close(&mut self) -> Result<usize, i32> {
         if self.file_desc.mp != core::ptr::null_mut() {
-            //debug!("file_close {:?}", self.get_path());
-            self.file_cache_flush()?;
+            if !self.defer_close_flush {
+                //debug!("file_close {:?}", self.get_path());
+                self.file_cache_flush()?;
+            }
             unsafe {
                 ext4_fclose(&mut self.file_desc);
             }
         }
 
         self.has_opened = false;
+        self.defer_close_flush = false;
 
         Ok(0)
     }
@@ -374,15 +401,20 @@ impl Ext4File {
             false
         };
 
-        // Keep delayed data reachable until both the byte cache and lwext4's
-        // block cache are persisted.  A failed unlink must not turn a visible
-        // file into a silent cache-data loss.
+        // A last-link unlink makes the file contents unreachable immediately;
+        // flushing a large dirty whole-file cache before removing that inode
+        // only burns filesystem bandwidth. Preserve the cache on every
+        // failure path, but discard it after the directory entry is removed.
         if let Some(key) = cache_key {
-            flush_inode_caches(key)?;
+            if !removes_last_link {
+                flush_inode_caches(key)?;
+            }
         } else if if_cache(cache_path.clone()) {
             write_back_cache(cache_path.clone())?;
         }
-        flush_ext4_block_cache_for_path(path)?;
+        if !removes_last_link {
+            flush_ext4_block_cache_for_path(path)?;
+        }
 
         let c_path = CString::new(path).expect("CString::new failed");
         let c_path = c_path.into_raw();
@@ -708,6 +740,62 @@ impl Ext4File {
         }
 
         //debug!("file_write {:?}, len={}", self.get_path(), rw_count);
+        Ok(rw_count)
+    }
+
+    /// Write at an explicit offset without performing a separate seek.
+    ///
+    /// VFS `write_at` already owns the file offset, and mmap16 issues many
+    /// adjacent 1 KiB writes. Combining the cache lookup, offset update and
+    /// write avoids two global cache-table locks and a second cache policy
+    /// probe for every small write.
+    pub fn file_write_at(&mut self, offset: usize, buf: &[u8]) -> Result<usize, i32> {
+        if !self.cache_disabled && !self.cache_too_large {
+            let mut cache = CACHE_TABLE.lock().get(self.path_str()).cloned();
+            if cache.is_none() && !self.whole_file_cache_disabled() {
+                self.check_cached(String::from(self.path_str()))?;
+                cache = CACHE_TABLE.lock().get(self.path_str()).cloned();
+            } else if cache.is_none() {
+                self.cache_disabled = true;
+            }
+
+            if let Some(cache) = cache {
+                let mut cache_writer = cache.write();
+                let next_size = offset.checked_add(buf.len()).ok_or(EINVAL as i32)?;
+                let write_creates_hole = !buf.is_empty() && offset > cache_writer.size;
+                if next_size <= MAX_CACHED_FILE_SIZE && !write_creates_hole {
+                    cache_writer.offset = offset;
+                    cache_writer.writebuf(buf)?;
+                    return Ok(buf.len());
+                }
+
+                drop(cache_writer);
+                if write_creates_hole {
+                    self.disable_write_back_cache()?;
+                } else {
+                    write_back_cache(String::from(self.path_str()))?;
+                    remove_file_cache_state(self.path_str());
+                }
+            }
+        }
+
+        self.file_desc.fpos = offset as u64;
+        let mut rw_count = 0;
+        let r = unsafe {
+            ext4_fwrite(
+                &mut self.file_desc,
+                buf.as_ptr() as _,
+                buf.len(),
+                &mut rw_count,
+            )
+        };
+        if r != EOK as i32 {
+            error!("ext4_fwrite: rc = {}", r);
+            return Err(r);
+        }
+        if offset.saturating_add(rw_count) > MAX_CACHED_FILE_SIZE {
+            self.cache_too_large = true;
+        }
         Ok(rw_count)
     }
 

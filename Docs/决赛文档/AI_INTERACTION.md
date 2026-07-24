@@ -1275,3 +1275,10 @@
 - **场景**：维护者要求分析并修复根目录 `log.ans` 中的 LTP `mmap18`，将最终结果写回 `log.ans` 并补充问题复盘。
 - **描述**：AI 对照只读 `mmap18.c` 确认用例同时要求匿名 `MAP_GROWSDOWN` 守卫页扩展和被阻挡扩展时的子进程 `SIGSEGV`。修复在 mmap 缺页路径中加入匿名私有 grow-down VMA 的 256 页 guard gap/重叠约束扩展，并将默认致命信号改为线程组退出。为避免该通用语义破坏 execve 去线程化，内部 sibling `SIGKILL` 采用显式 per-task 标记，真实 SIGKILL 和 strict seccomp 仍保持进程终止及 wait status。RISC-V `log.ans` 中 musl/glibc 各 4 项 `TPASS`、无 `TFAIL/TBROK`、正常 `shutdown!`；详见 [problem/mmap18-growsdown-sigsegv-group-exit.md](./problem/mmap18-growsdown-sigsegv-group-exit.md) 与 `ai.log` 对应条目。
 - **关联 commit**：尚未提交（2026-07-24 工作树）
+
+#### LTP mmap16 ext4 loop 容量与 mmap 写回修复（7.24）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析 `log.ans` 中 LTP `mmap16` 的 `mremap ENOSYS` 与后续测试超时，并完成修复。
+- **描述**：AI 对照只读 `mmap16.c` 和日志，区分了初始 syscall 语义缺失与后续每轮父进程 1 KiB 写满 loop 文件导致的 checkpoint 超时。修复实现原址 `mremap`、共享 mmap `ENOSPC -> SIGBUS`，在简化 loop/ext4 模型中记录格式化容量和共享逻辑配额，按 64 KiB 预留与 unlink 回收；连续写入增加按 offset 的 cache fast path，配额耗尽时避免关闭路径同步重放整份脏缓存。RISC-V musl/glibc 均 10 轮 `TPASS`，summary 均为 `passed 10 failed 0 broken 0` 并正常关机。详见 `problem/mmap16-ext4-loop-enospc-writeback.md`。
+- **关联 commit**：尚未提交（2026-07-24 工作树）

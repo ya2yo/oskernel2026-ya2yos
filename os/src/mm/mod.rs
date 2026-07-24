@@ -60,13 +60,9 @@ pub fn init() {
 }
 
 bitflags! {
-
     pub struct MremapFlags: i32 {
-
         const MAYMOVE    = 1 << 0;
-
         const FIXED      = 1 << 1;
-
         const DONTUNMAP  = 1 << 2;
     }
 }

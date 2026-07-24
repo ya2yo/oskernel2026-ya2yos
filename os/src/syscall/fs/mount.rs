@@ -312,18 +312,27 @@ pub fn sys_mount(
             );
         }
     }
+    // The current VFS keeps a single root superblock. Preserve a loop-backed
+    // ext4 test filesystem's formatted capacity as a logical mount quota so
+    // callers still observe the expected `ENOSPC` boundary.
+    let mount_capacity = (ftype == "ext4")
+        .then(|| crate::fs::loopdev::formatted_size(&special))
+        .flatten();
     if !data.is_null() {
         let data = read_user_cstr(&memory_set, data)?;
-        let copies = MNT_TABLE.lock().mount(special, dir, ftype, flags, data)?;
+        let copies = MNT_TABLE
+            .lock()
+            .mount(special, dir, ftype, flags, data, mount_capacity)?;
         for (source, target) in copies {
             mirror_bind_tree(&source, &target)?;
         }
         refresh_proc_mounts();
         Ok(0)
     } else {
-        let copies = MNT_TABLE
-            .lock()
-            .mount(special, dir, ftype, flags, String::from(""))?;
+        let copies =
+            MNT_TABLE
+                .lock()
+                .mount(special, dir, ftype, flags, String::from(""), mount_capacity)?;
         for (source, target) in copies {
             mirror_bind_tree(&source, &target)?;
         }
@@ -416,10 +425,14 @@ pub fn sys_move_mount(
             detached.fsname.clone()
         };
         let mount_flags = detached.attr_flags;
-        let copies =
-            MNT_TABLE
-                .lock()
-                .mount(source, to_abs_path, fstype, mount_flags, String::from(""))?;
+        let copies = MNT_TABLE.lock().mount(
+            source,
+            to_abs_path,
+            fstype,
+            mount_flags,
+            String::from(""),
+            None,
+        )?;
         for (source, target) in copies {
             mirror_bind_tree(&source, &target)?;
         }

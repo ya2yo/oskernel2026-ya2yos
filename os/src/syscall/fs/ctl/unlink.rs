@@ -42,6 +42,7 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     }
     if is_dir {
         osfile.inode.unlink(&abs_path)?;
+        MNT_TABLE.lock().remove_file(&abs_path);
         invalidate_dentry_path(&abs_path);
         FsIndex::remove_inode_idx(&abs_path);
         return Ok(0);
@@ -59,10 +60,12 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
     let has_fd = locked_fs_info.has_fd(&abs_path);
     if has_fd && osfile.inode.link_cnt()? == 1 {
         osfile.inode.delay();
+        MNT_TABLE.lock().remove_file(&abs_path);
         invalidate_dentry_path(&abs_path);
         FsIndex::remove_inode_idx(&abs_path);
     } else {
         osfile.inode.unlink(&abs_path)?;
+        MNT_TABLE.lock().remove_file(&abs_path);
         invalidate_dentry_path(&abs_path);
         FsIndex::remove_inode_idx(&abs_path);
     }

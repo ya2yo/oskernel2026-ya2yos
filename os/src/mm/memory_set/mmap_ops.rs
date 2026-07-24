@@ -9,7 +9,9 @@ use super::{
     read_user_bytes_direct_into, user_buffer_from_kernel, FrameTracker, MapArea, MapAreaType,
     MapPermission, PhysAddr, UserBuffer, VPNRange, VirtAddr, VirtPageNum,
 };
-use crate::arch::memory_layout::{MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS};
+use crate::arch::memory_layout::{
+    MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_SPACE_SIZE,
+};
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
 use crate::fs::{File, OSFile, OpenFlags, SEEK_CUR, SEEK_SET};
@@ -480,6 +482,80 @@ impl MemorySetInner {
         self.total_mmap_size = new_total_mmap_size;
         tlb_invalidate();
         Ok(new_addr)
+    }
+
+    /// Resize a complete VMA without changing its starting address.
+    ///
+    /// Without `MREMAP_MAYMOVE`, Linux can only grow into an entirely free
+    /// adjacent range.  The VMA stays lazy, so expansion only changes its
+    /// metadata; newly touched pages will follow the existing mmap fault path
+    /// (including shared-file page-cache handling).  Shrinking delegates to
+    /// `munmap` so resident shared pages receive the normal writeback path.
+    pub fn mremap_in_place(
+        &mut self,
+        old_addr: usize,
+        old_len: usize,
+        new_len: usize,
+    ) -> SyscallRet {
+        let old_end_addr = old_addr.checked_add(old_len).ok_or(SysErrNo::EINVAL)?;
+        let old_start_vpn = VirtAddr::from(old_addr).floor();
+        let old_end_vpn = VirtAddr::from(old_end_addr).ceil();
+        let old_range = VPNRange::new(old_start_vpn, old_end_vpn);
+        let Some(old_idx) = self
+            .areas
+            .iter()
+            .position(|area| is_mmap_vma(area) && area.vpn_range.range() == old_range.range())
+        else {
+            return Err(SysErrNo::EFAULT);
+        };
+
+        let old_len = (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
+        if new_len == old_len {
+            return Ok(old_addr);
+        }
+        if new_len < old_len {
+            let trim_addr = old_addr.checked_add(new_len).ok_or(SysErrNo::EINVAL)?;
+            self.munmap(trim_addr, old_len - new_len)?;
+            return Ok(old_addr);
+        }
+
+        let new_end_addr = old_addr.checked_add(new_len).ok_or(SysErrNo::EINVAL)?;
+        if new_end_addr > USER_SPACE_SIZE
+            || VirtAddr::try_from(old_addr).is_none()
+            || VirtAddr::try_from(new_end_addr - 1).is_none()
+        {
+            return Err(SysErrNo::EINVAL);
+        }
+        let new_end_vpn = VirtAddr::from(new_end_addr).ceil();
+        let overlaps = self.areas.iter().enumerate().any(|(idx, area)| {
+            if idx == old_idx {
+                return false;
+            }
+            let (start, end) = area.vpn_range.range();
+            start < new_end_vpn && old_end_vpn < end
+        });
+        if overlaps {
+            return Err(SysErrNo::ENOMEM);
+        }
+
+        let old_flags = self.areas[old_idx].mmap_flags;
+        let old_was_accounted =
+            !old_flags.intersects(MmapFlags::MAP_FIXED | MmapFlags::MAP_FIXED_NOREPLACE);
+        let new_total_mmap_size = if old_was_accounted {
+            self.total_mmap_size
+                .checked_add(new_len - old_len)
+                .ok_or(SysErrNo::ENOMEM)?
+        } else {
+            self.total_mmap_size
+        };
+        if new_total_mmap_size > MAX_MMAP_SIZE {
+            return Err(SysErrNo::ENOMEM);
+        }
+
+        self.areas[old_idx].vpn_range = VPNRange::new(old_start_vpn, new_end_vpn);
+        self.total_mmap_size = new_total_mmap_size;
+        tlb_invalidate();
+        Ok(old_addr)
     }
 
     /// 修改一段虚拟地址空间的访问权限（mprotect 核心逻辑）。

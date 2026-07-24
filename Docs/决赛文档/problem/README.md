@@ -133,3 +133,4 @@
 - [`rt_sigsuspend` 忙让出导致调度器高频自切换](./sigsuspend-busy-yield-scheduler.md)
 - [clone procfs 目录延迟物化优化](./clone-procfs-lazy-materialization.md)
 - [LTP mmap3 并发临时文件缓存抖动与动态栈回收](./mmap3-cache-churn-and-map-stack-leak.md)
+- [LTP mmap16 ext4 loop 容量与 mmap 写回](./mmap16-ext4-loop-enospc-writeback.md)

@@ -6923,3 +6923,19 @@ AI 对照只读 `mmap18.c` 确认前两轮将 `MAP_GROWSDOWN` 映射作为 pthre
 未运行 LoongArch64 运行时、完整 LTP 批量、独立多线程 execve 或 strict seccomp 回归；本轮行为验证只覆盖 RISC-V `mmap18`。
 
 - **关联 commit**：尚未提交（2026-07-24 工作树）
+
+## 2026-07-24：LTP mmap16 ext4 loop 容量与 mmap 写回修复
+
+### 用户输入
+
+维护者要求“分析 `log.ans`，进行修复”。
+
+### 分析与采纳结论
+
+AI 对照 `mmap16.c` 确认初始 `ENOSYS` 来自未实现 `mremap()` 原址扩展；随后日志中的真实剩余问题是每个 30 秒运行窗口只完成约 5 轮，且没有 `TFAIL`。追踪发现简化 loop 设备不保留 mke2fs 的格式化容量，路径化 ext4 没有独立空间账本；父进程的 whole-file cache 又在 1 KiB 写入和关闭时重复查找、seek 和大块写回。
+
+采纳的修复是：实现 `MREMAP_MAYMOVE` 未设置时的原址 VMA 调整，将共享 mmap 写回 `ENOSPC` 转为 `SIGBUS`；记录 loop 格式化最大 offset，并在 ext4 挂载建立共享逻辑配额，按约三分之一格式化容量建模可用普通文件空间，按 64 KiB 增量预留并在 unlink 释放；新增按 offset 的缓存写快路径、descriptor 复用和配额耗尽时延后关闭写回。显式同步仍保留正常写回语义。
+
+### 修改与验证
+
+修改 `os/src/syscall/mm/mmap.rs`、`os/src/mm/memory_set/mmap_ops.rs`、`crates/lwext4_rust/src/file.rs`、`os/src/fs/ext4_lw/inode.rs`、`os/src/fs/files/loopdev.rs`、`os/src/fs/mount.rs`、`os/src/syscall/fs/mount.rs`、`os/src/syscall/fs/ctl/unlink.rs` 和 `os/src/fs/kernel_fs_ops/initfiles.rs`。`make riscv64-build` 通过；`timeout 180s make run TARGET_ARCH=riscv64 > /tmp/mmap16-third-capacity.log 2>&1` 中 musl/glibc 均 `passed 10 failed 0 broken 0` 并正常 `shutdown!`，没有 `TFAIL/TBROK/panic`。问题复盘见 `Docs/决赛文档/problem/mmap16-ext4-loop-enospc-writeback.md`。

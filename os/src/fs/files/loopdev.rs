@@ -21,6 +21,10 @@ const LOOP_SECTOR_SIZE: usize = 512;
 struct LoopState {
     backing_fd: Option<usize>,
     info: loop_info64,
+    // The simplified loop device does not persist backing-file bytes.  Keep
+    // the largest formatted offset so an ext4 mount can still derive the
+    // capacity requested by mke2fs.
+    formatted_size: usize,
 }
 
 impl LoopState {
@@ -28,6 +32,7 @@ impl LoopState {
         Self {
             backing_fd: None,
             info: unsafe { core::mem::zeroed() },
+            formatted_size: 0,
         }
     }
 }
@@ -186,13 +191,15 @@ impl File for DevLoop {
     }
     fn write(&self, buf: UserBuffer) -> SyscallRet {
         // 当前 loop 设备用于 LTP 临时格式化/挂载路径，暂不持久化 backing file 数据。
-        let capacity = loop_capacity(&LOOP_TABLE[self.number as usize].lock());
+        let mut state = LOOP_TABLE[self.number as usize].lock();
+        let capacity = loop_capacity(&state);
         let mut offset = self.offset.lock();
         if *offset >= capacity {
             return Err(SysErrNo::ENOSPC);
         }
         let len = buf.len().min(capacity - *offset);
         *offset += len;
+        state.formatted_size = state.formatted_size.max(*offset);
         Ok(len)
     }
     fn fstat(&self) -> Kstat {
@@ -260,6 +267,7 @@ impl File for DevLoop {
             LOOP_SET_FD => {
                 let mut state = LOOP_TABLE[idx].lock();
                 state.backing_fd = Some(arg);
+                state.formatted_size = 0;
                 *self.offset.lock() = 0;
                 Ok(0)
             }
@@ -271,6 +279,7 @@ impl File for DevLoop {
                 state.backing_fd = None;
                 state.info = unsafe { core::mem::zeroed() };
                 state.info.lo_number = self.number;
+                state.formatted_size = 0;
                 *self.offset.lock() = 0;
                 Ok(0)
             }
@@ -345,6 +354,22 @@ impl File for DevLoop {
             _ => Err(SysErrNo::ENOTTY),
         }
     }
+}
+
+/// Return the largest offset written while formatting a loop device.
+///
+/// `mke2fs` writes the requested filesystem image through `/dev/loopN`, while
+/// the current loop implementation intentionally discards the payload.  The
+/// offset is nevertheless enough to preserve the capacity contract needed by
+/// the simplified ext4 mount model.
+pub fn formatted_size(path: &str) -> Option<usize> {
+    let number = parse_loop_device(path)? as usize;
+    let state = LOOP_TABLE[number].lock();
+    Some(if state.formatted_size != 0 {
+        state.formatted_size
+    } else {
+        loop_capacity(&state)
+    })
 }
 
 /// 将 32 位 loop_info 转换为内部使用的 loop_info64

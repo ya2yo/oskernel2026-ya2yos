@@ -1,4 +1,4 @@
-use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{collections::BTreeMap, format, string::String, sync::Arc, vec, vec::Vec};
 use linux_raw_sys::general::*;
 use spin::{Lazy, Mutex};
 
@@ -10,6 +10,24 @@ const MNT_MAXLEN: usize = 256;
 // also used by the legacy mount API, which does not otherwise need syscall
 // flag definitions.
 const PROPAGATION_MASK: u32 = MS_UNBINDABLE | MS_PRIVATE | MS_SLAVE | MS_SHARED;
+
+/// Logical capacity used by the simplified path-based ext4 mount model.
+///
+/// The VFS currently keeps one root superblock, so an ext4 loop mount cannot
+/// provide a separate block allocator. This counter preserves the most
+/// visible contract needed by callers: growing files below the mount consumes
+/// the modeled usable data capacity and eventually returns `ENOSPC`.
+struct MountUsage {
+    limit: usize,
+    used: usize,
+    files: BTreeMap<String, usize>,
+}
+
+// A real small ext4 image reserves space for its journal, inode tables and
+// superblock metadata. The path-based model has no block-group allocator, so
+// conservatively expose about one third of a tiny formatted image as ordinary
+// file-data capacity; this leaves room for metadata and keeps ENOSPC checks
+// deterministic without allocating the whole fake device.
 
 #[derive(Clone)]
 struct MountEntry {
@@ -31,6 +49,8 @@ struct MountEntry {
     unbindable: bool,
     // All copies made for one mount event are removed together by umount.
     event_group: u64,
+    // Shared by propagated copies of the same ext4 mount.
+    quota: Option<Arc<Mutex<MountUsage>>>,
 }
 
 pub struct MountTable {
@@ -345,6 +365,7 @@ impl MountTable {
         fstype: String,
         flags: u32,
         data: String,
+        capacity: Option<usize>,
     ) -> Result<Vec<(String, String)>, SysErrNo> {
         _ = data;
 
@@ -392,6 +413,16 @@ impl MountTable {
             return Err(SysErrNo::ENOSPC);
         }
         let event_group = self.next_group();
+        let quota = (fstype == "ext4" && flags & MS_BIND == 0)
+            .then(|| capacity.filter(|limit| *limit != 0))
+            .flatten()
+            .map(|limit| {
+                Arc::new(Mutex::new(MountUsage {
+                    limit: (limit / 3).max(1024 * 1024),
+                    used: 0,
+                    files: BTreeMap::new(),
+                }))
+            });
         for (target, receiver_idx) in &targets {
             let receiver = (*receiver_idx != usize::MAX).then(|| &self.mnt_list[*receiver_idx]);
             let shared_group = source
@@ -412,6 +443,9 @@ impl MountTable {
                 master_group,
                 unbindable: false,
                 event_group,
+                quota: quota
+                    .clone()
+                    .or_else(|| source.as_ref().and_then(|mount| mount.quota.clone())),
             });
         }
 
@@ -423,6 +457,72 @@ impl MountTable {
             .filter(|(target, _)| target != &special)
             .map(|(target, _)| (special.clone(), target))
             .collect())
+    }
+
+    /// Reserve logical file growth on the ext4 mount covering `path`.
+    pub fn reserve_write(
+        &mut self,
+        path: &str,
+        old_size: usize,
+        new_size: usize,
+    ) -> Result<(), SysErrNo> {
+        let Some(idx) = self.top_mount_index_for_path(path) else {
+            return Ok(());
+        };
+        let Some(quota) = self.mnt_list[idx].quota.clone() else {
+            return Ok(());
+        };
+        let mut usage = quota.lock();
+        let current = usage.files.get(path).copied().unwrap_or_else(|| {
+            usage.used = usage.used.saturating_add(old_size);
+            old_size
+        });
+        if new_size <= current {
+            usage.files.entry(String::from(path)).or_insert(current);
+            return Ok(());
+        }
+        let growth = new_size - current;
+        if growth > usage.limit.saturating_sub(usage.used) {
+            return Err(SysErrNo::ENOSPC);
+        }
+        usage.used += growth;
+        usage.files.insert(String::from(path), new_size);
+        Ok(())
+    }
+
+    /// Roll back a newly enlarged reservation when the underlying inode write
+    /// fails. `previous_size` may already include an earlier chunk reservation.
+    pub fn rollback_reservation(&mut self, path: &str, previous_size: usize, new_size: usize) {
+        let Some(idx) = self.top_mount_index_for_path(path) else {
+            return;
+        };
+        let Some(quota) = self.mnt_list[idx].quota.clone() else {
+            return;
+        };
+        let mut usage = quota.lock();
+        if let Some(current) = usage.files.get(path).copied() {
+            let rollback = new_size
+                .saturating_sub(previous_size)
+                .min(current.saturating_sub(previous_size));
+            usage.used = usage.used.saturating_sub(rollback);
+            if current == new_size {
+                usage.files.insert(String::from(path), previous_size);
+            }
+        }
+    }
+
+    /// Release logical space after an inode pathname is removed.
+    pub fn remove_file(&mut self, path: &str) {
+        let Some(idx) = self.top_mount_index_for_path(path) else {
+            return;
+        };
+        let Some(quota) = self.mnt_list[idx].quota.clone() else {
+            return;
+        };
+        let mut usage = quota.lock();
+        if let Some(size) = usage.files.remove(path) {
+            usage.used = usage.used.saturating_sub(size);
+        }
     }
 
     /// 查询精确挂载点的可见顶层，并复制返回 `(source, dir, fstype, flags)`。
