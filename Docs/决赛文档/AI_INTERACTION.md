@@ -1282,3 +1282,10 @@
 - **场景**：维护者要求分析 `log.ans` 中 LTP `mmap16` 的 `mremap ENOSYS` 与后续测试超时，并完成修复。
 - **描述**：AI 对照只读 `mmap16.c` 和日志，区分了初始 syscall 语义缺失与后续每轮父进程 1 KiB 写满 loop 文件导致的 checkpoint 超时。修复实现原址 `mremap`、共享 mmap `ENOSPC -> SIGBUS`，在简化 loop/ext4 模型中记录格式化容量和共享逻辑配额，按 64 KiB 预留与 unlink 回收；连续写入增加按 offset 的 cache fast path，配额耗尽时避免关闭路径同步重放整份脏缓存。RISC-V musl/glibc 均 10 轮 `TPASS`，summary 均为 `passed 10 failed 0 broken 0` 并正常关机。详见 `problem/mmap16-ext4-loop-enospc-writeback.md`。
 - **关联 commit**：尚未提交（2026-07-24 工作树）
+
+#### LTP mmap14 MAP_LOCKED 与 VmLck 统计修复（7.24）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析根目录 `log.ans` 并修复其中的 LTP `mmap14` 失败。
+- **描述**：AI 对照 `mmap14.c` 的 `MAP_LOCKED`/`VmLck` 断言，确认 `MmapFlags` 未定义 `MAP_LOCKED` 导致 mmap flags 被截断，同时 `/proc/self/status` 动态内容缺少 `VmLck`。修复接入 `MAP_LOCKED`，按 VMA 范围统计锁定内存并输出 `VmLck`；`make` 双架构构建和 RISC-V 定向 QEMU 回归通过，musl/glibc 均 `TPASS`、无 `TFAIL/TBROK/panic` 并正常 `shutdown!`。详见 [problem/mmap14-map-locked-vmlck.md](./problem/mmap14-map-locked-vmlck.md) 与 `ai.log` 对应条目。
+- **关联 commit**：尚未提交（2026-07-24 工作树）

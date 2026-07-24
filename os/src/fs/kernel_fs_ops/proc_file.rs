@@ -123,6 +123,7 @@ fn format_status(
 ) -> String {
     let vm_size = memory_set.virtual_size_kb();
     let vm_rss = memory_set.resident_size_kb();
+    let vm_lck = memory_set.locked_size_kb();
     format!(
         "Name:\t{}\n\
 State:\tS (sleeping)\n\
@@ -135,6 +136,7 @@ VmPeak:\t{:8} kB\n\
 VmSize:\t{:8} kB\n\
 VmHWM:\t{:8} kB\n\
 VmRSS:\t{:8} kB\n\
+VmLck:\t{:8} kB\n\
 VmSwap:\t       0 kB\n",
         comm,
         pid,
@@ -152,6 +154,7 @@ VmSwap:\t       0 kB\n",
         vm_size,
         vm_rss,
         vm_rss,
+        vm_lck,
     )
 }
 

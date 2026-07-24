@@ -141,6 +141,21 @@ impl MemorySetInner {
             .sum()
     }
 
+    /// Return pages covered by `MAP_LOCKED` mappings.
+    ///
+    /// This follows VMA metadata rather than resident frames so `/proc` shows
+    /// the lock immediately after a lazy `mmap` call.
+    pub fn locked_size_kb(&self) -> usize {
+        self.areas
+            .iter()
+            .filter(|area| area.mmap_flags.contains(MmapFlags::MAP_LOCKED))
+            .map(|area| {
+                let (start, end) = area.vpn_range.range();
+                (end.0 - start.0) * PAGE_SIZE / 1024
+            })
+            .sum()
+    }
+
     /// Virtual address space size in KiB.
     pub fn virtual_size_kb(&self) -> usize {
         self.areas

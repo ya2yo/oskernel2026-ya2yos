@@ -2,7 +2,8 @@
 use crate::mm::MapPermission;
 use linux_raw_sys::general::{
     MAP_ANONYMOUS, MAP_DENYWRITE, MAP_EXECUTABLE, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN,
-    MAP_NORESERVE, MAP_POPULATE, MAP_PRIVATE, MAP_SHARED, MAP_SHARED_VALIDATE, MAP_STACK, P_ALL,
+    MAP_LOCKED, MAP_NORESERVE, MAP_POPULATE, MAP_PRIVATE, MAP_SHARED, MAP_SHARED_VALIDATE,
+    MAP_STACK, P_ALL,
     P_PGID, P_PID, P_PIDFD, WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WSTOPPED, WUNTRACED,
 };
 use num_enum::FromPrimitive;
@@ -86,6 +87,8 @@ bitflags! {
         const MAP_DENYWRITE = MAP_DENYWRITE;
         /// 栈，自动延伸
         const MAP_STACK = MAP_STACK;
+        /// 将映射计入进程的锁定内存（VmLck）
+        const MAP_LOCKED = MAP_LOCKED;
         const MAP_NORESERVE = MAP_NORESERVE;
         /// 预先填充页表（MAP_POPULATE），我们作为 no-op 接受
         const MAP_POPULATE = MAP_POPULATE;

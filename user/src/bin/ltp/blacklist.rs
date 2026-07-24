@@ -915,8 +915,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "mlockall02\0",
     "mlockall03\0",
     "mmap-corruption01\0",
-    "mmap14\0",
-    "mmap16\0",
     "mmapstress01\0",
     "mmapstress02\0",
     "mmapstress03\0",

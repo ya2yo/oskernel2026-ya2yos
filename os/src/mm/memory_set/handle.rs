@@ -163,6 +163,12 @@ impl MemorySet {
         self.get_ref().resident_size_kb()
     }
 
+    /// Locked virtual-memory size in KiB.
+    #[inline(always)]
+    pub fn locked_size_kb(&self) -> usize {
+        self.get_ref().locked_size_kb()
+    }
+
     /// Virtual address space size in KiB.
     #[inline(always)]
     pub fn virtual_size_kb(&self) -> usize {
