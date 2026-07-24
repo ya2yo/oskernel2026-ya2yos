@@ -265,10 +265,10 @@ pub fn sys_pivot_root(_new_root: usize, _put_old: usize) -> SyscallRet {
 /// 参考 https://man7.org/linux/man-pages/man2/umount2.2.html
 pub fn sys_umount2(special: *const u8, flags: u32) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
     let special = read_user_cstr(&memory_set, special)?;
-    let special = proc_inner.get_abs_path(AT_FDCWD as isize, &special)?;
+    let special = proc.get_abs_path(AT_FDCWD as isize, &special)?;
 
     let ret = MNT_TABLE.lock().umount(special, flags);
     if ret != -1 {
@@ -288,12 +288,17 @@ pub fn sys_mount(
     data: *const u8,
 ) -> SyscallRet {
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let uid = task.inner_lock().effective_uid;
+    if uid !=0 {
+        // EPERM  The caller does not have the required privileges.
+        return Err(SysErrNo::EPERM)
+    }
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
     let special = read_user_cstr(&memory_set, special)?;
     let dir = read_user_cstr(&memory_set, dir)?;
     let ftype = read_user_cstr(&memory_set, ftype)?;
-
+    
     // mount02 expects EINVAL when fstype pointer is NULL.
     if ftype.is_empty() {
         return Err(SysErrNo::EINVAL);
@@ -303,7 +308,7 @@ pub fn sys_mount(
         return Err(SysErrNo::ENAMETOOLONG);
     }
 
-    let dir = proc_inner.get_abs_path(AT_FDCWD as isize, &dir)?;
+    let dir = proc.get_abs_path(AT_FDCWD as isize, &dir)?;
     
     // Validate the mount target exists and is a directory.
     let target_inode_type = match open(&dir, OpenFlags::O_RDONLY, NONE_MODE) {
@@ -318,7 +323,7 @@ pub fn sys_mount(
     }
 
     let special = if flags & (MS_BIND | MS_MOVE) != 0 {
-        proc_inner.get_abs_path(AT_FDCWD as isize, &special)?
+        proc.get_abs_path(AT_FDCWD as isize, &special)?
     } else {
         special
     };
@@ -335,7 +340,7 @@ pub fn sys_mount(
             // The device string may be a relative user path.  Resolve it so that
             // open() can look up the node through the inode cache.
             if let Ok(special_abs) =
-                proc_inner.get_abs_path(AT_FDCWD as isize, &special)
+                proc.get_abs_path(AT_FDCWD as isize, &special)
             {
                 if let Ok(special_file) = open(&special_abs, OpenFlags::O_RDONLY, NONE_MODE) {
                     if let Ok(f) = special_file.file() {
@@ -410,8 +415,8 @@ pub fn sys_open_tree(dirfd: i32, path: *const u8, flags: u32) -> SyscallRet {
 
     let abs_path = {
         let task = current_task().unwrap();
-        let proc_inner = &task.process;
-        let memory_set = proc_inner.memory_set_arc();
+        let proc = &task.process;
+        let memory_set = proc.memory_set_arc();
         let path = read_user_cstr(&memory_set, path)?;
         if path.is_empty() && flags & AT_EMPTY_PATH == 0 {
             return Err(SysErrNo::ENOENT);
@@ -419,7 +424,7 @@ pub fn sys_open_tree(dirfd: i32, path: *const u8, flags: u32) -> SyscallRet {
         if path.len() > MAX_PATH_LEN {
             return Err(SysErrNo::ENAMETOOLONG);
         }
-        let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
+        let abs_path = proc.get_abs_path(dirfd as isize, &path)?;
         open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
         abs_path
     };
@@ -457,16 +462,16 @@ pub fn sys_move_mount(
     }
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
     let from_path = read_user_cstr(&memory_set, from_path)?;
     let to_path = read_user_cstr(&memory_set, to_path)?;
     if from_path.len() > MAX_PATH_LEN || to_path.len() > MAX_PATH_LEN {
         return Err(SysErrNo::ENAMETOOLONG);
     }
 
-    let to_abs_path = proc_inner.get_abs_path(to_dirfd as isize, &to_path)?;
-    if let Ok(detached) = proc_inner
+    let to_abs_path = proc.get_abs_path(to_dirfd as isize, &to_path)?;
+    if let Ok(detached) = proc
         .fd_table
         .get(from_dirfd as usize)
         .and_then(|fd| fd.detached_mount())
@@ -499,7 +504,7 @@ pub fn sys_move_mount(
         return Ok(0);
     }
 
-    let from_abs_path = proc_inner.get_abs_path(from_dirfd as isize, &from_path)?;
+    let from_abs_path = proc.get_abs_path(from_dirfd as isize, &from_path)?;
     open(&from_abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
     open(&to_abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
     if flags & (MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH) != 0 {
@@ -515,8 +520,8 @@ pub fn sys_fsopen(fsname: *const u8, flags: u32) -> SyscallRet {
     }
     let fsname = {
         let task = current_task().unwrap();
-        let proc_inner = &task.process;
-        let memory_set = proc_inner.memory_set_arc();
+        let proc = &task.process;
+        let memory_set = proc.memory_set_arc();
         let fsname = read_user_cstr(&memory_set, fsname)?;
         if fsname.is_empty() || fsname.len() > MAX_PATH_LEN {
             return Err(SysErrNo::EINVAL);
@@ -554,9 +559,9 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
     fsconfig_check(cmd, key, value, aux)?;
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
-    let fsctx = proc_inner.fd_table.get(fd as usize)?.fs_context()?;
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
+    let fsctx = proc.fd_table.get(fd as usize)?.fs_context()?;
 
     match cmd {
         fsconfig_command::FSCONFIG_SET_FLAG => {
@@ -610,7 +615,7 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
             if path.len() > MAX_PATH_LEN {
                 return Err(SysErrNo::ENAMETOOLONG);
             }
-            let _ = proc_inner.get_abs_path(aux as isize, &path)?;
+            let _ = proc.get_abs_path(aux as isize, &path)?;
             fsctx.with_inner(|ctx| {
                 if key == "source" {
                     ctx.source = Some(path.clone());
@@ -624,7 +629,7 @@ pub fn sys_fsconfig(fd: i32, cmd: u32, key: usize, value: usize, aux: i32) -> Sy
         }
         fsconfig_command::FSCONFIG_SET_FD => {
             let key = read_user_cstr(&memory_set, key as *const u8)?;
-            let _ = proc_inner.fd_table.get(aux as usize)?;
+            let _ = proc.fd_table.get(aux as usize)?;
             fsctx.with_inner(|ctx| {
                 ctx.options.push(FsConfigOption {
                     key,
@@ -722,8 +727,8 @@ pub fn sys_fsmount(fd: i32, flags: u32, attr_flags: u32) -> SyscallRet {
 
     let (fsname, source) = {
         let task = current_task().unwrap();
-        let proc_inner = &task.process;
-        let fsctx = proc_inner.fd_table.get(fd as usize)?.fs_context()?;
+        let proc = &task.process;
+        let fsctx = proc.fd_table.get(fd as usize)?.fs_context()?;
         fsctx.with_inner(|ctx| {
             if !ctx.created {
                 return Err(SysErrNo::EINVAL);
@@ -748,8 +753,8 @@ pub fn sys_fspick(dirfd: i32, path: *mut u8, flags: u32) -> SyscallRet {
 
     let abs_path = {
         let task = current_task().unwrap();
-        let proc_inner = &task.process;
-        let memory_set = proc_inner.memory_set_arc();
+        let proc = &task.process;
+        let memory_set = proc.memory_set_arc();
         let path = read_user_cstr(&memory_set, path)?;
         if path.is_empty() && flags & FSPICK_EMPTY_PATH == 0 {
             return Err(SysErrNo::ENOENT);
@@ -757,7 +762,7 @@ pub fn sys_fspick(dirfd: i32, path: *mut u8, flags: u32) -> SyscallRet {
         if path.len() > MAX_PATH_LEN {
             return Err(SysErrNo::ENAMETOOLONG);
         }
-        let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
+        let abs_path = proc.get_abs_path(dirfd as isize, &path)?;
         open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
         abs_path
     };
@@ -796,8 +801,8 @@ pub fn sys_mount_setattr(
     }
 
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let memory_set = proc_inner.memory_set_arc();
+    let proc = &task.process;
+    let memory_set = proc.memory_set_arc();
     let mut mount_attr_data = mount_attr {
         attr_set: 0,
         attr_clr: 0,
@@ -825,7 +830,7 @@ pub fn sys_mount_setattr(
         if flags & AT_EMPTY_PATH == 0 || dirfd == AT_FDCWD {
             return Err(SysErrNo::EFAULT);
         }
-        let _ = proc_inner.fd_table.get(dirfd as usize)?;
+        let _ = proc.fd_table.get(dirfd as usize)?;
         return Ok(0);
     }
 
@@ -836,7 +841,7 @@ pub fn sys_mount_setattr(
     if path.is_empty() && flags & AT_EMPTY_PATH == 0 {
         return Err(SysErrNo::ENOENT);
     }
-    let abs_path = proc_inner.get_abs_path(dirfd as isize, &path)?;
+    let abs_path = proc.get_abs_path(dirfd as isize, &path)?;
     open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?;
     Ok(0)
 }
@@ -845,14 +850,14 @@ fn alloc_new_mount_fd(file: FileClass, cloexec: bool) -> SyscallRet {
     // This helper allocates in the current fd table and therefore takes that
     // table's internal lock itself.
     let task = current_task().unwrap();
-    let proc_inner = &task.process;
-    let fd = proc_inner.fd_table.alloc_fd()?;
+    let proc = &task.process;
+    let fd = proc.fd_table.alloc_fd()?;
     let flags = if cloexec {
         OpenFlags::O_CLOEXEC
     } else {
         OpenFlags::empty()
     };
-    proc_inner
+    proc
         .fd_table
         .set(fd, FileDescriptor::new(flags, file))?;
     Ok(fd)
