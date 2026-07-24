@@ -176,12 +176,15 @@ fn stop_server(pid: isize) {
 fn run_agent(case: Case) -> i32 {
     let output_path = format!("/tmp/cagent_diagnostic_{}", case.name);
     let timeout_secs = format!("{}", case.timeout_secs);
-    const RUN_CASE: &str = r#"timeout "$1"s ./agent_lite --workspace . --host 127.0.0.1 --port 8080 "$2" > "$3" 2>&1;
+    const RUN_CASE: &str = r#"start_time=$(date +%s%3N);
+timeout "$1"s ./agent_lite --workspace . --host 127.0.0.1 --port 8080 "$2" > "$3" 2>&1;
 status=$?;
+end_time=$(date +%s%3N);
+duration=$((end_time - start_time));
 cat "$3";
 if [ "$status" -eq 0 ] && eval "$4" < "$3"; then result=pass; ret=0; else result=reject; ret=1; fi;
 rm -f "$3";
-echo "testcase cagent $5 $result";
+echo "testcase cagent $5 $result $duration";
 exit $ret"#;
 
     if let Err(err) = materialize_script(DIAGNOSTIC_SCRIPT_PATH, RUN_CASE) {
