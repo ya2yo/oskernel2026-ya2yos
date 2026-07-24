@@ -293,12 +293,61 @@ pub fn sys_mount(
     let special = read_user_cstr(&memory_set, special)?;
     let dir = read_user_cstr(&memory_set, dir)?;
     let ftype = read_user_cstr(&memory_set, ftype)?;
+
+    // mount02 expects EINVAL when fstype pointer is NULL.
+    if ftype.is_empty() {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    if dir.len() >= MAX_PATH_LEN {
+        return Err(SysErrNo::ENAMETOOLONG);
+    }
+
     let dir = proc_inner.get_abs_path(AT_FDCWD as isize, &dir)?;
+    
+    // Validate the mount target exists and is a directory.
+    let target_inode_type = match open(&dir, OpenFlags::O_RDONLY, NONE_MODE) {
+        Ok(target) => match target.file() {
+            Ok(f) => f.inode.types(),
+            Err(_) => return Err(SysErrNo::ENOENT),
+        },
+        Err(e) => return Err(e),
+    };
+    if target_inode_type != InodeType::Dir {
+        return Err(SysErrNo::ENOTDIR);
+    }
+
     let special = if flags & (MS_BIND | MS_MOVE) != 0 {
         proc_inner.get_abs_path(AT_FDCWD as isize, &special)?
     } else {
         special
     };
+
+    // Validate fstype and device for regular (non-BIND, non-MOVE) mounts.
+    if flags & (MS_BIND | MS_MOVE) == 0 {
+        if !is_known_fs(&ftype) {
+            return Err(SysErrNo::ENODEV);
+        }
+        if fstype_requires_dev(&ftype) {
+            if special.is_empty() {
+                return Err(SysErrNo::EINVAL);
+            }
+            // The device string may be a relative user path.  Resolve it so that
+            // open() can look up the node through the inode cache.
+            if let Ok(special_abs) =
+                proc_inner.get_abs_path(AT_FDCWD as isize, &special)
+            {
+                if let Ok(special_file) = open(&special_abs, OpenFlags::O_RDONLY, NONE_MODE) {
+                    if let Ok(f) = special_file.file() {
+                        if f.inode.types() == InodeType::CharDevice {
+                            return Err(SysErrNo::ENOTBLK);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Fresh tmpfs mounts should expose an empty root. Because `MNT_TABLE`
     // currently records mount metadata but path lookup still uses the
     // underlying ext4 directory, purge the mountpoint before recording the
@@ -312,6 +361,16 @@ pub fn sys_mount(
             );
         }
     }
+
+    // Check whether MS_REMOUNT with MS_RDONLY is blocked by any open write
+    // file descriptor.  In the single-superblock model any writable fd anywhere
+    // prevents a transition to read-only.
+    if (flags & (MS_REMOUNT | MS_RDONLY)) == (MS_REMOUNT | MS_RDONLY) {
+        if has_open_write_fd() {
+            return Err(SysErrNo::EBUSY);
+        }
+    }
+
     // The current VFS keeps a single root superblock. Preserve a loop-backed
     // ext4 test filesystem's formatted capacity as a logical mount quota so
     // callers still observe the expected `ENOSPC` boundary.
@@ -827,6 +886,30 @@ fn is_known_fs(fsname: &str) -> bool {
             | "fuse"
             | "fuseblk"
     )
+}
+
+/// Returns `true` when `fsname` identifies a filesystem that requires a
+/// backing block device.  Virtual (pseudo) filesystems such as tmpfs or proc
+/// do not need one, so an empty source string is rejected only for
+/// device-backed types.
+fn fstype_requires_dev(fsname: &str) -> bool {
+    matches!(
+        fsname,
+        "ext4" | "ext3" | "ext2" | "xfs" | "btrfs" | "bcachefs" | "vfat" | "fat" | "exfat" | "ntfs"
+    )
+}
+
+/// Return `true` when any task holds a file descriptor open for writing
+/// (O_WRONLY or O_RDWR) on the single-superblock ext4 filesystem.  This is
+/// used to decide whether `MS_REMOUNT|MS_RDONLY` must return `EBUSY`.
+fn has_open_write_fd() -> bool {
+    use crate::task::tid_to_task;
+    for (_tid, task) in tid_to_task::get_all_tasks() {
+        if task.process.fd_table.has_write_fd() {
+            return true;
+        }
+    }
+    false
 }
 
 fn valid_mount_attr_bits() -> u32 {

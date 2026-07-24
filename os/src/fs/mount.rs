@@ -379,12 +379,13 @@ impl MountTable {
         }
 
         if flags & MS_REMOUNT != 0 {
-            if let Some(idx) = self.top_mount_index_at_path(&dir) {
-                let mount = &mut self.mnt_list[idx];
-                mount.special = special;
-                mount.fstype = fstype;
-                mount.flags = flags;
-            }
+            let Some(idx) = self.top_mount_index_at_path(&dir) else {
+                return Err(SysErrNo::EINVAL);
+            };
+            let mount = &mut self.mnt_list[idx];
+            mount.special = special;
+            mount.fstype = fstype;
+            mount.flags = flags;
             return Ok(Vec::new());
         }
 
@@ -394,6 +395,11 @@ impl MountTable {
                 .is_some_and(|idx| self.mnt_list[idx].unbindable)
         {
             return Err(SysErrNo::EINVAL);
+        }
+
+        // A regular (non-BIND) mount must not shadow an existing mount point.
+        if flags & MS_BIND == 0 && self.top_mount_index_at_path(&dir).is_some() {
+            return Err(SysErrNo::EBUSY);
         }
 
         // A bind source may name a directory inside a mounted tree rather

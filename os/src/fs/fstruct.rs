@@ -541,4 +541,16 @@ impl FdTable {
     pub fn try_get_file(&self, fd: usize) -> Option<Arc<dyn File>> {
         self.get_mut().files[fd].as_mut().map(|f| f.any())
     }
+
+    /// Returns `true` when any file descriptor in this table is open for
+    /// writing (O_WRONLY or O_RDWR).
+    pub fn has_write_fd(&self) -> bool {
+        const O_ACCMODE: u32 = 3;
+        let inner = self.get_ref();
+        inner.files.iter().any(|entry| {
+            entry
+                .as_ref()
+                .is_some_and(|fd| fd.flags() & O_ACCMODE != 0)
+        })
+    }
 }
