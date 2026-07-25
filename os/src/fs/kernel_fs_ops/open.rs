@@ -364,13 +364,16 @@ fn open_inner(
         return Ok(FileClass::Abs(device));
     }
 
-    let mut inode: Option<Arc<dyn Inode>> = None;
-    // 同一个路径对应一个Inode
-    if !flags.intersects(OpenFlags::O_NOFOLLOW | OpenFlags::O_UNLINK)
-        && FsIndex::has_inode(abs_path)
-    {
-        inode = FsIndex::find_inode_idx(abs_path);
+    // A cache hit already represents an alias bound by `insert_inode_idx()`.
+    // Avoid probing it twice: apart from the duplicated map lookup, the old
+    // `has_inode() + find_inode_idx()` sequence repeatedly entered the inode
+    // alias-maintenance path on every cached open.
+    let mut inode = if !flags.intersects(OpenFlags::O_NOFOLLOW | OpenFlags::O_UNLINK) {
+        FsIndex::find_inode_idx(abs_path)
     } else {
+        None
+    };
+    if inode.is_none() {
         let found_res = find_from_cached_parent(abs_path, flags)
             .unwrap_or_else(|| superblock_root_inode().find(abs_path, flags, 0));
         match found_res {
@@ -418,16 +421,20 @@ fn open_inner(
         }
     }
     if let Some(inode) = inode {
+        // The inode type is immutable for the lifetime of a VFS inode.  Read
+        // it once so O_DIRECTORY, directory-write, device, and regular-file
+        // checks do not repeat the same filesystem metadata lookup.
+        let inode_type = inode.types();
         if create_exclusive {
             return Err(SysErrNo::EEXIST);
         }
-        if flags.contains(OpenFlags::O_DIRECTORY) && inode.types() != InodeType::Dir {
+        if flags.contains(OpenFlags::O_DIRECTORY) && inode_type != InodeType::Dir {
             return Err(SysErrNo::ENOTDIR);
         }
 
         let (readable, writable) = flags.read_write();
         let directory_write_intent = writable || (!path_only && flags.contains(OpenFlags::O_TRUNC));
-        if inode.types().is_dir() && (directory_write_intent || create) {
+        if inode_type.is_dir() && (directory_write_intent || create) {
             return Err(SysErrNo::EISDIR);
         }
 
@@ -438,8 +445,7 @@ fn open_inner(
         // 在 nodev 挂载上也不允许打开。但 O_UNLINK（删除操作）应豁免，
         // 否则 cleanup 无法删除设备节点。
         if !flags.contains(OpenFlags::O_UNLINK) {
-            let node_type = inode.types();
-            if node_type == InodeType::CharDevice || node_type == InodeType::BlockDevice {
+            if inode_type == InodeType::CharDevice || inode_type == InodeType::BlockDevice {
                 let mnt_table = MNT_TABLE.lock();
                 if let Some((_, _, _, mount_flags)) = mnt_table.mount_for_path(abs_path) {
                     if mount_flags.contains(MountFlags::NODEV) {
@@ -489,7 +495,7 @@ fn open_inner(
                 }
             }
         }
-        if inode.types().is_file() {
+        if inode_type.is_file() {
             let requester_pid = current_task()
                 .map(|task| task.pid() as i32)
                 .unwrap_or_default();

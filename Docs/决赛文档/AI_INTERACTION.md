@@ -1323,6 +1323,23 @@
 - **验证**：当前 RISC-V `log.ans` 的 12 次 `execve` 累计 `208763 us`，CAgent `fs-search pass 764` 并正常 `shutdown!`，无 `panic/TFAIL/TBROK`；RISC-V、LoongArch64 release 构建通过。详见 `ai.log` 对应条目和 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md)。
 - **关联 commit**：当前工作区未提交
 
+#### BuildStorm MINIBUILD inode cache 命中路径优化（7.25）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 MINIBUILD 的 `path/open/read/write/stat` 聚合耗时，要求沿文件 I/O
+  和路径相关 syscall 读取代码并优化，随后要求先补充文档。
+- **描述**：沿 `open_inner()` -> `FsIndex` -> `Ext4Inode` 追踪后，确认缓存打开路径重复执行
+  `has_inode`/`find_inode_idx`，命中时重复登记 alias，并在同一次打开中多次取得 EXT4 锁做
+  `types()` 查询。修复为一次缓存索引读取、复用 inode 类型，并在 `Ext4Inode` 中保存不可变
+  类型字段，使 `types()` 无锁读取；新 inode 的 alias 登记和 rename/hardlink 恢复边界保持
+  不变。详见 [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
+- **验证**：格式检查、`git diff --check`、`make perf TARGET_ARCH=riscv64` 通过；现有
+  `log.ans` 成功到达 `BUILDSTORM_DEBUG_MINIBUILD ok` 和 `shutdown!`，最终 `path`、`open`、
+  `read`、`write`、`stat` 分别为 `4318737`、`3599279`、`3742446`、`3631424`、`2613611 us`。
+  QEMU 新一轮未取得独立 A/B 样本，因宿主 `/var/tmp` 权限限制且后续运行被中断，未报告加速
+  比例。
+- **关联 commit**：当前工作区未提交
+
 #### execve 解释器元数据读取优化（7.25）
 
 - **工具/模型**：Codex (GPT-5)

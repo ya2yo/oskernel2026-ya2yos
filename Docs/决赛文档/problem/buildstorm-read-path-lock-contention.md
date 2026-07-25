@@ -61,6 +61,41 @@ guest 暴露八个 CPU，但仍需要确认普通文件读取是否重复执行�
 - 完整 BuildStorm、严格同镜像 A/B 耗时和正式评分尚未完成；当前结论是减少了可证明的
   额外读取/锁操作，不宣称已经解决全部编译吞吐问题。
 
+## 2026-07-25：MINIBUILD 路径命中与 inode 类型查询优化
+
+### 新观测
+
+`log.ans` 已完成本轮定向 MINIBUILD，输出 `BUILDSTORM_DEBUG_MINIBUILD ok`、
+`BUILDSTORM_DEBUG_CASE name=minibuild ok` 和 `shutdown!`，无 `panic/TFAIL/TBROK`。
+最终 perf 快照为：`path=4318737 us/1700`、`open=3599279 us/763`、
+`read=3742446 us/3896`、`write=3631424 us/1342`、`stat=2613611 us/1081`，
+`lseek=130216 us/8396`；其中 `lseek` 的 `type_check=56150 us/8403`。
+这些是单次运行的累计观测，未与同镜像、同缓存状态的旧内核形成 A/B，不能据此宣称
+端到端加速比例。
+
+### 根因与修复
+
+缓存 inode 的 `open` 路径原先先调用 `FsIndex::has_inode()`，随后再次调用
+`find_inode_idx()`；命中后还会重复登记路径 alias。对 EXT4 inode 而言，alias 更新和
+`types()` 查询都可能进入全局 `EXT4_OP_LOCK`，使纯缓存命中仍重复获取文件系统锁。
+
+本轮做了三项局部优化：
+
+- `FsIndex::find_inode_idx()` 只进行一次索引读取，不在每次命中时重复写 alias；新 inode
+  绑定仍由 `insert_inode_idx()` 负责登记 alias。
+- `open_inner()` 直接复用一次缓存查找结果，移除 `has_inode` 双查，并在一次
+  `inode.types()` 结果上完成目录、设备、写权限相关的类型分支。
+- `Ext4Inode` 保存创建时的不可变 `InodeType`，`types()` 变为无锁只读查询；路径、大小、
+  fstat、读写和删除等仍使用原有 EXT4 锁和恢复逻辑。
+
+### 验证
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check` 和
+`make perf TARGET_ARCH=riscv64` 通过，后者生成带 perf 统计的 RISC-V 内核；构建过程仅有
+既有 smoltcp warning。随后一次独立 QEMU 启动因宿主 `/var/tmp` 临时文件权限失败，获准的
+第二次运行被中断，未取得可归因于本改动的新 A/B wall-clock 样本；文中 perf 数值来自现有
+`log.ans` 的成功 MINIBUILD 快照。
+
 ## 后续观测
 
 为避免继续凭单一假设修改文件系统，内核新增 `os/src/perf.rs` 聚合计数器，并在系统调用、

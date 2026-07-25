@@ -56,13 +56,9 @@ impl FsIndex {
     }
 
     pub fn find_inode_idx(path: &str) -> Option<Arc<dyn Inode>> {
-        let inode = {
-            let cache = INODE_CACHE.read();
-            let key = cache.paths.get(path)?;
-            cache.inodes.get(key).cloned()?
-        };
-        inode.cache_path_alias(path);
-        Some(inode)
+        let cache = INODE_CACHE.read();
+        let key = cache.paths.get(path)?;
+        cache.inodes.get(key).cloned()
     }
 
     pub fn insert_inode_idx(path: &str, inode: Arc<dyn Inode>) -> Arc<dyn Inode> {

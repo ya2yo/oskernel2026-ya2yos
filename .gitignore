@@ -29,3 +29,4 @@ kernel-la
 !crates/lwext4_rust/**/CMakeLists.txt
 !os/vendor/**
 *.ans
+*.svg

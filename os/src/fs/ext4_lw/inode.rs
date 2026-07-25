@@ -37,6 +37,9 @@ const QUOTA_RESERVE_GRANULARITY: usize = 64 * 1024;
 /// alias，并在必要时重新打开到仍然存在的路径。
 pub struct Ext4Inode {
     inner: SyncUnsafeCell<Ext4InodeInner>,
+    /// 文件类型在创建后不会改变；将它放在可变 lwext4 状态之外，让纯类型
+    /// 查询不必争用全局 EXT4 操作锁。
+    inode_type: InodeType,
 }
 
 /// `Ext4Inode` 的可变内部状态。
@@ -72,6 +75,7 @@ impl Ext4Inode {
     /// - `types`: 文件类型（文件、目录、链接等）
     pub fn new(path: &str, types: InodeTypes) -> Self {
         Ext4Inode {
+            inode_type: as_inode_type(types.clone()),
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
                 known_size: None,
@@ -197,8 +201,7 @@ impl Inode for Ext4Inode {
     ///
     /// 类型来自 `Ext4File` 构造时记录的 lwext4 类型，避免为了类型判断再次走路径查询。
     fn types(&self) -> InodeType {
-        let _ext4 = EXT4_OP_LOCK.lock();
-        as_inode_type(self.inner.get_unchecked_mut().f.types())
+        self.inode_type
     }
 
     /// 从指定偏移量读取数据到缓冲区。
