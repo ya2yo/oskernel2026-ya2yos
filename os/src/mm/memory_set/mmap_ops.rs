@@ -383,12 +383,59 @@ impl MemorySetInner {
         let old_end_addr = old_addr.checked_add(old_len).ok_or(SysErrNo::EINVAL)?;
         let old_start_vpn = VirtAddr::from(old_addr).floor();
         let old_end_vpn = VirtAddr::from(old_end_addr).ceil();
-        let old_range = VPNRange::new(old_start_vpn, old_end_vpn);
         let Some(old_idx) = self.areas.iter().position(|area| {
-            area.area_type == MapAreaType::Mmap && area.vpn_range.range() == old_range.range()
+            (is_mmap_vma(area) || area.area_type == MapAreaType::Shm)
+                && area.vpn_range.start() <= old_start_vpn
+                && old_end_vpn <= area.vpn_range.end()
         }) else {
             return Err(SysErrNo::EFAULT);
         };
+
+        // Trim the VMA to exactly [old_start_vpn, old_end_vpn).
+        let area_start_vpn = self.areas[old_idx].vpn_range.start();
+        let area_end_vpn = self.areas[old_idx].vpn_range.end();
+
+        // Split off the front if the VMA begins before the requested range.
+        if area_start_vpn < old_start_vpn {
+            let mut front_area = MapArea::from_another(&self.areas[old_idx]);
+            front_area.vpn_range = VPNRange::new(area_start_vpn, old_start_vpn);
+            let front_keys: Vec<VirtPageNum> = self.areas[old_idx]
+                .data_frames
+                .range(..old_start_vpn)
+                .map(|(k, _)| *k)
+                .collect();
+            for k in front_keys {
+                if let Some(frame) = self.areas[old_idx].data_frames.remove(&k) {
+                    front_area.data_frames.insert(k, frame);
+                }
+            }
+            self.areas[old_idx].vpn_range = VPNRange::new(old_start_vpn, area_end_vpn);
+            if front_area.groupid != 0 {
+                GROUP_SHARE.lock().add_area(front_area.groupid);
+            }
+            self.areas.push(front_area);
+        }
+
+        // Split off the tail if the VMA extends beyond the requested range.
+        if old_end_vpn < area_end_vpn {
+            let mut tail_area = MapArea::from_another(&self.areas[old_idx]);
+            tail_area.vpn_range = VPNRange::new(old_end_vpn, area_end_vpn);
+            let tail_keys: Vec<VirtPageNum> = self.areas[old_idx]
+                .data_frames
+                .range(old_end_vpn..)
+                .map(|(k, _)| *k)
+                .collect();
+            for k in tail_keys {
+                if let Some(frame) = self.areas[old_idx].data_frames.remove(&k) {
+                    tail_area.data_frames.insert(k, frame);
+                }
+            }
+            self.areas[old_idx].vpn_range = VPNRange::new(old_start_vpn, old_end_vpn);
+            if tail_area.groupid != 0 {
+                GROUP_SHARE.lock().add_area(tail_area.groupid);
+            }
+            self.areas.push(tail_area);
+        }
 
         let old_flags = self.areas[old_idx].mmap_flags;
         if old_flags.contains(MmapFlags::MAP_SHARED_VALIDATE) {
@@ -501,14 +548,61 @@ impl MemorySetInner {
         let old_end_addr = old_addr.checked_add(old_len).ok_or(SysErrNo::EINVAL)?;
         let old_start_vpn = VirtAddr::from(old_addr).floor();
         let old_end_vpn = VirtAddr::from(old_end_addr).ceil();
-        let old_range = VPNRange::new(old_start_vpn, old_end_vpn);
-        let Some(old_idx) = self
-            .areas
-            .iter()
-            .position(|area| is_mmap_vma(area) && area.vpn_range.range() == old_range.range())
-        else {
+        let Some(old_idx) = self.areas.iter().position(|area| {
+            (is_mmap_vma(area) || area.area_type == MapAreaType::Shm)
+                && area.vpn_range.start() <= old_start_vpn
+                && old_end_vpn <= area.vpn_range.end()
+        }) else {
             return Err(SysErrNo::EFAULT);
         };
+
+        // Trim the VMA to exactly [old_start_vpn, old_end_vpn).
+        let area_start_vpn = self.areas[old_idx].vpn_range.start();
+        let area_end_vpn = self.areas[old_idx].vpn_range.end();
+
+        // Split off the front if the VMA begins before the requested range.
+        if area_start_vpn < old_start_vpn {
+            let mut front_area = MapArea::from_another(&self.areas[old_idx]);
+            front_area.vpn_range = VPNRange::new(area_start_vpn, old_start_vpn);
+            let front_keys: Vec<VirtPageNum> = self.areas[old_idx]
+                .data_frames
+                .range(..old_start_vpn)
+                .map(|(k, _)| *k)
+                .collect();
+            for k in front_keys {
+                if let Some(frame) = self.areas[old_idx].data_frames.remove(&k) {
+                    front_area.data_frames.insert(k, frame);
+                }
+            }
+            self.areas[old_idx].vpn_range = VPNRange::new(old_start_vpn, area_end_vpn);
+            if front_area.groupid != 0 {
+                GROUP_SHARE.lock().add_area(front_area.groupid);
+            }
+            self.areas.push(front_area);
+        }
+
+        // Split off the tail if the VMA extends beyond the requested range,
+        // so the expansion check below can detect the collision and return
+        // ENOMEM (as Linux does when the rest of the VMA blocks in-place growth).
+        if old_end_vpn < area_end_vpn {
+            let mut tail_area = MapArea::from_another(&self.areas[old_idx]);
+            tail_area.vpn_range = VPNRange::new(old_end_vpn, area_end_vpn);
+            let tail_keys: Vec<VirtPageNum> = self.areas[old_idx]
+                .data_frames
+                .range(old_end_vpn..)
+                .map(|(k, _)| *k)
+                .collect();
+            for k in tail_keys {
+                if let Some(frame) = self.areas[old_idx].data_frames.remove(&k) {
+                    tail_area.data_frames.insert(k, frame);
+                }
+            }
+            self.areas[old_idx].vpn_range = VPNRange::new(old_start_vpn, old_end_vpn);
+            if tail_area.groupid != 0 {
+                GROUP_SHARE.lock().add_area(tail_area.groupid);
+            }
+            self.areas.push(tail_area);
+        }
 
         let old_len = (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
         if new_len == old_len {
