@@ -384,28 +384,17 @@ pub fn sys_mount(
         }
         MNT_TABLE
             .lock()
-            .mount(
-                special_abs,
-                dir_abs,
-                ftype_raw,
-                mnt_flags,
-                mount_data,
-                None,
-            )?;
+            .mount(special_abs, dir_abs, ftype_raw, mnt_flags, mount_data, None)?;
         refresh_proc_mounts();
         return Ok(0);
     }
 
     // --- MOVE ---
     if mnt_flags.is_move() {
-        let copies = MNT_TABLE.lock().mount(
-            special_abs,
-            dir_abs,
-            ftype_raw,
-            mnt_flags,
-            mount_data,
-            None,
-        )?;
+        let copies =
+            MNT_TABLE
+                .lock()
+                .mount(special_abs, dir_abs, ftype_raw, mnt_flags, mount_data, None)?;
         for (source, target) in &copies {
             mirror_bind_tree(source, target)?;
         }
@@ -427,14 +416,10 @@ pub fn sys_mount(
 
     // --- BIND ---
     if mnt_flags.is_bind() {
-        let copies = MNT_TABLE.lock().mount(
-            special_abs,
-            dir_abs,
-            ftype_raw,
-            mnt_flags,
-            mount_data,
-            None,
-        )?;
+        let copies =
+            MNT_TABLE
+                .lock()
+                .mount(special_abs, dir_abs, ftype_raw, mnt_flags, mount_data, None)?;
         for (source, target) in &copies {
             mirror_bind_tree(source, target)?;
         }
@@ -964,9 +949,7 @@ fn alloc_new_mount_fd(file: FileClass, cloexec: bool) -> SyscallRet {
     } else {
         OpenFlags::empty()
     };
-    proc
-        .fd_table
-        .set(fd, FileDescriptor::new(flags, file))?;
+    proc.fd_table.set(fd, FileDescriptor::new(flags, file))?;
     Ok(fd)
 }
 

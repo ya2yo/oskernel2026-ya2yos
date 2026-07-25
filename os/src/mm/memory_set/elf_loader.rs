@@ -7,8 +7,10 @@
 use super::super::map_area::MapType;
 use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::{DL_INTERP_OFFSET, PAGE_SIZE, USER_HEAP_SIZE};
+#[cfg(feature = "perf")]
+use crate::arch::time::get_ticks;
 use crate::fs::{
-    map_dynamic_link_file_directly_map, open_direct, File, Inode, OpenFlags, OSFile, NONE_MODE,
+    map_dynamic_link_file_directly_map, open_direct, File, Inode, OSFile, OpenFlags, NONE_MODE,
 };
 use crate::mm::memory_set::MemorySetInner;
 use crate::syscall::MmapFlags;
@@ -17,8 +19,6 @@ use crate::utils::SysErrNo;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-#[cfg(feature = "perf")]
-use crate::arch::time::get_ticks;
 use xmas_elf::ElfFile;
 
 const ELF_PROBE_SIZE: usize = 256;
@@ -600,9 +600,7 @@ impl MemorySetInner {
             auxv.push(Aux::new(AuxType::BASE, 0));
         }
         #[cfg(feature = "perf")]
-        crate::utils::perf::record_exec_interp_duration(
-            get_ticks().saturating_sub(interp_begin),
-        );
+        crate::utils::perf::record_exec_interp_duration(get_ticks().saturating_sub(interp_begin));
         auxv.push(Aux::new(AuxType::FLAGS, 0 as usize));
         // `AT_ENTRY` 始终是主程序入口，即使实际 trap context 先跳到解释器。
         auxv.push(Aux::new(
@@ -626,9 +624,7 @@ impl MemorySetInner {
         let map_elf_begin = get_ticks();
         let (max_end_vpn, head_va) = memory_set.map_elf(&elf, VirtAddr(0))?;
         #[cfg(feature = "perf")]
-        crate::utils::perf::record_exec_map_elf_duration(
-            get_ticks().saturating_sub(map_elf_begin),
-        );
+        crate::utils::perf::record_exec_map_elf_duration(get_ticks().saturating_sub(map_elf_begin));
 
         // `AT_PHDR` 指向用户虚拟地址中的 program header 表。
         // `head_va` 是包含 ELF header 的 LOAD 段起点，`e_phoff` 是表内偏移。

@@ -100,7 +100,13 @@ pub fn sys_clone(
     let new_tid = new_task.tid();
     // we do not have to move to next instruction since we have done it before
     // add new task to scheduler
+    #[cfg(feature = "perf")]
+    let enqueue_begin = crate::arch::time::get_ticks();
     ready_queue::add_task(&new_task);
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_clone_enqueue_duration(
+        crate::arch::time::get_ticks().saturating_sub(enqueue_begin),
+    );
     if flags.contains(CloneFlags::CLONE_VFORK) {
         // vfork(2) must not return to the parent until the child has called
         // execve() or exited. clone_process() already marked this task as

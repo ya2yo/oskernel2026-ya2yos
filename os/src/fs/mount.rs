@@ -624,15 +624,15 @@ impl MountTable {
 
             // 将新条目插入挂载表
             self.mnt_list.push(MountEntry {
-                special: special.clone(),   // 源设备路径 / bind 源路径
-                dir: target.clone(),        // 挂载目标路径（传播后的路径）
-                fstype: fstype.clone(),     // 文件系统类型
-                flags,                      // 挂载标志位
-                is_bind: flags.is_bind(),   // 是否为 bind mount
-                shared_group,               // 所属 shared peer group
-                master_group,               // 所属 master（slave 的上游）
-                unbindable: false,          // 新挂载默认不是 unbindable
-                event_group,                // 同一 mount event 的标识
+                special: special.clone(), // 源设备路径 / bind 源路径
+                dir: target.clone(),      // 挂载目标路径（传播后的路径）
+                fstype: fstype.clone(),   // 文件系统类型
+                flags,                    // 挂载标志位
+                is_bind: flags.is_bind(), // 是否为 bind mount
+                shared_group,             // 所属 shared peer group
+                master_group,             // 所属 master（slave 的上游）
+                unbindable: false,        // 新挂载默认不是 unbindable
+                event_group,              // 同一 mount event 的标识
                 quota: quota
                     .clone()
                     // bind mount：继承 source 的配额（共享同一 ext4 镜像容量）
@@ -766,7 +766,11 @@ impl MountTable {
     pub fn proc_mounts_content(&self) -> String {
         let mut content = String::from(" ext4 / ext rw 0 0\n");
         for mount in &self.mnt_list {
-            let opts = if mount.flags.contains(MountFlags::RDONLY) { "ro" } else { "rw" };
+            let opts = if mount.flags.contains(MountFlags::RDONLY) {
+                "ro"
+            } else {
+                "rw"
+            };
             // bind mount 不能将目标路径暴露为设备名。这个路径化 VFS 没有保留
             // 后端设备标识，因此使用一个稳定的、非路径的占位符。否则 BusyBox
             // umount 会把 self-bind 叠加层视为同一设备的别名，一次性弹出多层。

@@ -14,8 +14,8 @@ use lwext4_rust::{
 use super::EXT4_OP_LOCK;
 use crate::{
     fs::{
-        patch_dynamic_link_file_bytes, FsIndex, Inode, InodeType, Kstat, OpenFlags, String,
-        FILE_PAGE_CACHE, MNT_TABLE, MountFlags,
+        patch_dynamic_link_file_bytes, FsIndex, Inode, InodeType, Kstat, MountFlags, OpenFlags,
+        String, FILE_PAGE_CACHE, MNT_TABLE,
     },
     sync::SyncUnsafeCell,
     utils::{SysErrNo, SysResult, SyscallRet},

@@ -547,10 +547,9 @@ impl FdTable {
     pub fn has_write_fd(&self) -> bool {
         const O_ACCMODE: u32 = 3;
         let inner = self.get_ref();
-        inner.files.iter().any(|entry| {
-            entry
-                .as_ref()
-                .is_some_and(|fd| fd.flags() & O_ACCMODE != 0)
-        })
+        inner
+            .files
+            .iter()
+            .any(|entry| entry.as_ref().is_some_and(|fd| fd.flags() & O_ACCMODE != 0))
     }
 }

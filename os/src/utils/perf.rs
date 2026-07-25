@@ -63,9 +63,33 @@ static SYSCALL_PROCESS_WAIT_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CLONE_ADDRESS_SPACE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static CLONE_ADDRESS_SPACE_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CLONE_ADDRESS_SPACE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
-static CLONE_PROCFS_SAMPLES: AtomicUsize = AtomicUsize::new(0);
-static CLONE_PROCFS_TICKS: AtomicUsize = AtomicUsize::new(0);
-static CLONE_PROCFS_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCESS_TOTAL_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCESS_TOTAL_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCESS_TOTAL_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_BOOTSTRAP_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_BOOTSTRAP_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_BOOTSTRAP_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PARENT_STATE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PARENT_STATE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PARENT_STATE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCESS_CREATE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCESS_CREATE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCESS_CREATE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_TASK_SETUP_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_TASK_SETUP_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_TASK_SETUP_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCFS_REGISTER_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCFS_REGISTER_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PROCFS_REGISTER_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PUBLISH_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PUBLISH_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_PUBLISH_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_ENQUEUE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_ENQUEUE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_ENQUEUE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PROCFS_MATERIALIZE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static PROCFS_MATERIALIZE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PROCFS_MATERIALIZE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 
 static EXEC_IMAGE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static EXEC_IMAGE_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -169,6 +193,7 @@ pub fn should_record_syscall_duration(id: usize) -> bool {
             | 211
             | 212
             | 220
+            | 435
             | 221
             | 242
             | 260
@@ -236,7 +261,7 @@ pub fn record_syscall_duration(id: usize, begin: usize) {
             &SYSCALL_NET_RECV_TICKS,
             &SYSCALL_NET_RECV_MAX_TICKS,
         ),
-        220 => (
+        220 | 435 => (
             &SYSCALL_PROCESS_CLONE_SAMPLES,
             &SYSCALL_PROCESS_CLONE_TICKS,
             &SYSCALL_PROCESS_CLONE_MAX_TICKS,
@@ -268,13 +293,101 @@ pub fn record_clone_address_space_duration(elapsed: usize) {
     );
 }
 
-/// Profile synthetic /proc entry creation during a process clone.
+/// Profile the full `TaskControlBlock::clone_process()` success path.
 #[inline]
-pub fn record_clone_procfs_duration(elapsed: usize) {
+pub fn record_clone_process_total_duration(elapsed: usize) {
     record_duration(
-        &CLONE_PROCFS_SAMPLES,
-        &CLONE_PROCFS_TICKS,
-        &CLONE_PROCFS_MAX_TICKS,
+        &CLONE_PROCESS_TOTAL_SAMPLES,
+        &CLONE_PROCESS_TOTAL_TICKS,
+        &CLONE_PROCESS_TOTAL_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile TID/kernel-stack allocation and the initial parent metadata snapshot.
+#[inline]
+pub fn record_clone_bootstrap_duration(elapsed: usize) {
+    record_duration(
+        &CLONE_BOOTSTRAP_SAMPLES,
+        &CLONE_BOOTSTRAP_TICKS,
+        &CLONE_BOOTSTRAP_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile the parent task lock scope. `address_space` is a nested subphase.
+#[inline]
+pub fn record_clone_parent_state_duration(elapsed: usize) {
+    record_duration(
+        &CLONE_PARENT_STATE_SAMPLES,
+        &CLONE_PARENT_STATE_TICKS,
+        &CLONE_PARENT_STATE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile creation and registration of the child `Process` object.
+#[inline]
+pub fn record_clone_process_create_duration(elapsed: usize) {
+    record_duration(
+        &CLONE_PROCESS_CREATE_SAMPLES,
+        &CLONE_PROCESS_CREATE_TICKS,
+        &CLONE_PROCESS_CREATE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile child task construction, user resources, and child-visible state.
+#[inline]
+pub fn record_clone_task_setup_duration(elapsed: usize) {
+    record_duration(
+        &CLONE_TASK_SETUP_SAMPLES,
+        &CLONE_TASK_SETUP_TICKS,
+        &CLONE_TASK_SETUP_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile in-memory `/proc` PID registration during a process clone.
+#[inline]
+pub fn record_clone_procfs_register_duration(elapsed: usize) {
+    record_duration(
+        &CLONE_PROCFS_REGISTER_SAMPLES,
+        &CLONE_PROCFS_REGISTER_TICKS,
+        &CLONE_PROCFS_REGISTER_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile final child publication to task and shared-resource registries.
+#[inline]
+pub fn record_clone_publish_duration(elapsed: usize) {
+    record_duration(
+        &CLONE_PUBLISH_SAMPLES,
+        &CLONE_PUBLISH_TICKS,
+        &CLONE_PUBLISH_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile placing the child into the scheduler ready queue.
+#[inline]
+pub fn record_clone_enqueue_duration(elapsed: usize) {
+    record_duration(
+        &CLONE_ENQUEUE_SAMPLES,
+        &CLONE_ENQUEUE_TICKS,
+        &CLONE_ENQUEUE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile a real deferred `/proc/<pid>` EXT4 directory materialization.
+#[inline]
+pub fn record_procfs_materialize_duration(elapsed: usize) {
+    record_duration(
+        &PROCFS_MATERIALIZE_SAMPLES,
+        &PROCFS_MATERIALIZE_TICKS,
+        &PROCFS_MATERIALIZE_MAX_TICKS,
         elapsed,
     );
 }
@@ -668,10 +781,66 @@ fn emit_report(now: usize) {
     );
     print!("[perf] clone_duration ");
     emit_duration(
-        "procfs",
-        &CLONE_PROCFS_SAMPLES,
-        &CLONE_PROCFS_TICKS,
-        &CLONE_PROCFS_MAX_TICKS,
+        "process_total",
+        &CLONE_PROCESS_TOTAL_SAMPLES,
+        &CLONE_PROCESS_TOTAL_TICKS,
+        &CLONE_PROCESS_TOTAL_MAX_TICKS,
+    );
+    print!("[perf] clone_duration ");
+    emit_duration(
+        "bootstrap",
+        &CLONE_BOOTSTRAP_SAMPLES,
+        &CLONE_BOOTSTRAP_TICKS,
+        &CLONE_BOOTSTRAP_MAX_TICKS,
+    );
+    print!("[perf] clone_duration ");
+    emit_duration(
+        "parent_state",
+        &CLONE_PARENT_STATE_SAMPLES,
+        &CLONE_PARENT_STATE_TICKS,
+        &CLONE_PARENT_STATE_MAX_TICKS,
+    );
+    print!("[perf] clone_duration ");
+    emit_duration(
+        "process_create",
+        &CLONE_PROCESS_CREATE_SAMPLES,
+        &CLONE_PROCESS_CREATE_TICKS,
+        &CLONE_PROCESS_CREATE_MAX_TICKS,
+    );
+    print!("[perf] clone_duration ");
+    emit_duration(
+        "task_setup",
+        &CLONE_TASK_SETUP_SAMPLES,
+        &CLONE_TASK_SETUP_TICKS,
+        &CLONE_TASK_SETUP_MAX_TICKS,
+    );
+    print!("[perf] clone_duration ");
+    emit_duration(
+        "procfs_register",
+        &CLONE_PROCFS_REGISTER_SAMPLES,
+        &CLONE_PROCFS_REGISTER_TICKS,
+        &CLONE_PROCFS_REGISTER_MAX_TICKS,
+    );
+    print!("[perf] clone_duration ");
+    emit_duration(
+        "publish",
+        &CLONE_PUBLISH_SAMPLES,
+        &CLONE_PUBLISH_TICKS,
+        &CLONE_PUBLISH_MAX_TICKS,
+    );
+    print!("[perf] clone_duration ");
+    emit_duration(
+        "enqueue",
+        &CLONE_ENQUEUE_SAMPLES,
+        &CLONE_ENQUEUE_TICKS,
+        &CLONE_ENQUEUE_MAX_TICKS,
+    );
+    print!("[perf] procfs_duration ");
+    emit_duration(
+        "materialize",
+        &PROCFS_MATERIALIZE_SAMPLES,
+        &PROCFS_MATERIALIZE_TICKS,
+        &PROCFS_MATERIALIZE_MAX_TICKS,
     );
     print!("[perf] exec_duration ");
     emit_duration(

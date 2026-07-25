@@ -1,15 +1,15 @@
+#[cfg(feature = "perf")]
+use crate::arch::time::get_ticks;
 use alloc::{
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
 };
-#[cfg(feature = "perf")]
-use crate::arch::time::get_ticks;
 use log::debug;
 
 use crate::{
     arch::memory_layout::{PAGE_SIZE, USER_STACK_SIZE},
-    fs::{open, Inode, MNT_TABLE, MountFlags, OSFile, OpenFlags, MAX_PATH_LEN, NONE_MODE},
+    fs::{open, Inode, MountFlags, OSFile, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE},
     mm::{
         copy_from_user_val, read_elf_load_image, read_elf_load_image_with_prefix, read_user_cstr,
         read_user_cstr_with_limit, MemorySet,

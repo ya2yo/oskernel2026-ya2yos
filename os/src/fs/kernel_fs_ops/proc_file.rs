@@ -36,18 +36,27 @@ pub fn ensure_proc_dir(pid: usize) -> Result<(), SysErrNo> {
         return Ok(());
     }
 
-    let parent = match FsIndex::find_inode_idx("/proc") {
-        Some(parent) => parent,
-        None => {
-            let parent = superblock_root_inode().find("/proc", OpenFlags::O_DIRECTORY, 0)?;
-            FsIndex::insert_inode_idx("/proc", parent)
-        }
-    };
-    let inode = parent.create_dir_fast(&path)?;
-    let inode = FsIndex::insert_inode_idx(&path, inode);
-    let child_name = format!("{}", pid);
-    DENTRY_CACHE.insert_positive(&parent, &child_name, inode);
-    Ok(())
+    #[cfg(feature = "perf")]
+    let materialize_begin = get_ticks();
+    let result = (|| {
+        let parent = match FsIndex::find_inode_idx("/proc") {
+            Some(parent) => parent,
+            None => {
+                let parent = superblock_root_inode().find("/proc", OpenFlags::O_DIRECTORY, 0)?;
+                FsIndex::insert_inode_idx("/proc", parent)
+            }
+        };
+        let inode = parent.create_dir_fast(&path)?;
+        let inode = FsIndex::insert_inode_idx(&path, inode);
+        let child_name = format!("{}", pid);
+        DENTRY_CACHE.insert_positive(&parent, &child_name, inode);
+        Ok(())
+    })();
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_procfs_materialize_duration(
+        get_ticks().saturating_sub(materialize_begin),
+    );
+    result
 }
 
 /// Materialize all live task directories before `/proc` is enumerated.
@@ -65,7 +74,12 @@ pub fn ensure_proc_path(path: &str) -> Result<(), SysErrNo> {
         return Ok(());
     };
     let component = rest.split('/').next().unwrap_or("");
-    if component.is_empty() || !component.as_bytes().iter().all(|byte| byte.is_ascii_digit()) {
+    if component.is_empty()
+        || !component
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit())
+    {
         return Ok(());
     }
     let pid = component.parse::<usize>().map_err(|_| SysErrNo::ENOENT)?;

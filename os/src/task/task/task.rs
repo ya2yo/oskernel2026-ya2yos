@@ -18,8 +18,7 @@ use crate::{
     },
     fs::{
         create_proc_dir, create_proc_dir_and_file, open, FSInfo, FdTable, OpenFlags,
-        DEFAULT_DIR_MODE,
-        DEFAULT_FILE_MODE,
+        DEFAULT_DIR_MODE, DEFAULT_FILE_MODE,
     },
     mm::{
         copy_to_user, copy_to_user_val, MapAreaType, MapPermission, MemorySet, MemorySetInner,
@@ -689,9 +688,7 @@ impl TaskControlBlock {
             crate::task::ready_queue::add_task(&parent_task);
         }
         #[cfg(feature = "perf")]
-        crate::utils::perf::record_exec_commit_duration(
-            get_ticks().saturating_sub(commit_begin),
-        );
+        crate::utils::perf::record_exec_commit_duration(get_ticks().saturating_sub(commit_begin));
         Ok(())
     }
     /// 复制进程，注意这里需要实现 fork 的主要逻辑
@@ -708,6 +705,8 @@ impl TaskControlBlock {
         tls: usize,
         child_tid: *mut u32,
     ) -> Result<Arc<TaskControlBlock>, SysErrNo> {
+        #[cfg(feature = "perf")]
+        let clone_process_begin = get_ticks();
         let tid_handle = TidHandle::alloc().unwrap();
         let kernel_stack = KernelStackOnHeap::new();
         let kernel_stack_top = kernel_stack.top();
@@ -756,6 +755,13 @@ impl TaskControlBlock {
             parent_sid = parent_meta.sid;
             parent_comm = parent_meta.comm.clone();
         }
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_clone_bootstrap_duration(
+            get_ticks().saturating_sub(clone_process_begin),
+        );
+
+        #[cfg(feature = "perf")]
+        let parent_state_begin = get_ticks();
         {
             let parent_inner = self.inner.lock();
             let parent_proc_inner = &self.process;
@@ -860,9 +866,15 @@ impl TaskControlBlock {
                 parent_inner.rseq
             };
         } // parent_inner, parent_proc_inner 在此释放
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_clone_parent_state_duration(
+            get_ticks().saturating_sub(parent_state_begin),
+        );
 
         // Process::new() 会登记父子关系并获取 ProcessMeta。必须在父任务
         // inner 锁释放后执行，避免与子进程退出路径反向获取锁。
+        #[cfg(feature = "perf")]
+        let process_create_begin = get_ticks();
         let process_arc = if flags.contains(CloneFlags::CLONE_THREAD) {
             self.process.clone()
         } else if flags.contains(CloneFlags::CLONE_VM) {
@@ -889,8 +901,14 @@ impl TaskControlBlock {
                 parent_sid,
             )
         };
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_clone_process_create_duration(
+            get_ticks().saturating_sub(process_create_begin),
+        );
 
         // ==================== Phase 2: 构造子进程（不持有父进程锁）====================
+        #[cfg(feature = "perf")]
+        let task_setup_begin = get_ticks();
         process_arc.meta_lock().comm = parent_comm;
 
         let child = Arc::new(TaskControlBlock {
@@ -1006,6 +1024,10 @@ impl TaskControlBlock {
                 child_pid, flags, child_meta.exit_signal
             );
         }
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_clone_task_setup_duration(
+            get_ticks().saturating_sub(task_setup_begin),
+        );
 
         // Threads share the process, so /proc/<pid> is only created for a new process.
         if !flags.contains(CloneFlags::CLONE_THREAD) {
@@ -1013,12 +1035,14 @@ impl TaskControlBlock {
             let procfs_start = get_ticks();
             let _ = create_proc_dir(child_pid);
             #[cfg(feature = "perf")]
-            crate::utils::perf::record_clone_procfs_duration(
+            crate::utils::perf::record_clone_procfs_register_duration(
                 get_ticks().saturating_sub(procfs_start),
             );
         }
 
         // VFORK: 挂起父进程直到子进程 exec 或退出
+        #[cfg(feature = "perf")]
+        let publish_begin = get_ticks();
         {
             let mut parent_inner = self.inner_lock();
             if flags.contains(CloneFlags::CLONE_VFORK) {
@@ -1035,6 +1059,14 @@ impl TaskControlBlock {
                 child.process.fs_info.acquire_owner();
             }
         }
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_clone_publish_duration(
+            get_ticks().saturating_sub(publish_begin),
+        );
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_clone_process_total_duration(
+            get_ticks().saturating_sub(clone_process_begin),
+        );
         Ok(child.clone())
     }
 

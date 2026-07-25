@@ -9,14 +9,14 @@ use core::{
 use linux_raw_sys::net::{__kernel_sockaddr_storage, AF_INET, AF_INET6};
 use log::{debug, info, warn};
 
+#[cfg(feature = "perf")]
+use crate::arch::time::get_ticks;
 use crate::{
     fs::File,
     mm::UserBuffer,
     utils::{PollSet, SysErrNo, SysResult},
 };
 use crate::{net::extract_ipaddr_from_sockaddr, syscall::PollEvents};
-#[cfg(feature = "perf")]
-use crate::arch::time::get_ticks;
 use smoltcp::{
     iface::{MulticastError, SocketHandle},
     socket::tcp as smol,

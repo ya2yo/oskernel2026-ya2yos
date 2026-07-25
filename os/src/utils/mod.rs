@@ -1,9 +1,9 @@
 mod error;
 mod id_allocator;
+pub mod perf;
 mod resource_slot;
 pub mod simple_range;
 mod string;
-pub mod perf;
 use core::arch::asm;
 pub mod poll;
 pub use poll::*;

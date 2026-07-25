@@ -8,7 +8,10 @@ use linux_raw_sys::general::{
 use log::debug;
 
 use crate::{
-    fs::{open, superblock_fs_stat, InodeType, Kstat, MountFlags, OpenFlags, Statfs, MNT_TABLE, NONE_MODE},
+    fs::{
+        open, superblock_fs_stat, InodeType, Kstat, MountFlags, OpenFlags, Statfs, MNT_TABLE,
+        NONE_MODE,
+    },
     mm::{copy_to_user, if_bad_address, read_user_cstr},
     task::current_task,
     utils::{trim_start_slash, SysErrNo, SyscallRet},
@@ -227,9 +230,7 @@ pub fn sys_statfs(path: *const u8, statfs: *mut Statfs) -> SyscallRet {
 
     let mut stat = superblock_fs_stat();
     // 从挂载表查询该路径的挂载标志，填充 statfs.f_flags。
-    if let Some((_source, _dir, _fstype, flags)) =
-        MNT_TABLE.lock().mount_for_path(&abs_path)
-    {
+    if let Some((_source, _dir, _fstype, flags)) = MNT_TABLE.lock().mount_for_path(&abs_path) {
         stat.f_flags = flags.bits() as i64;
     }
     copy_to_user(&memory_set, statfs as usize, unsafe {

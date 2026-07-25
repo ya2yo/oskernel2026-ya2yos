@@ -14,8 +14,8 @@ use log::debug;
 use super::path::{mode_allows, parse_proc_self_fd};
 use crate::fs::{
     cache_positive_dentry_path, invalidate_dentry_path, open, superblock_root_inode,
-    superblock_sync, File, FsIndex, Inode, InodeType, MountFlags, OpenFlags, MAX_PATH_LEN, MNT_TABLE,
-    NONE_MODE, SEEK_CUR, SEEK_SET,
+    superblock_sync, File, FsIndex, Inode, InodeType, MountFlags, OpenFlags, MAX_PATH_LEN,
+    MNT_TABLE, NONE_MODE, SEEK_CUR, SEEK_SET,
 };
 use crate::mm::{
     copy_from_user, copy_to_user, if_bad_address, read_user_cstr, user_buffer_from_kernel,
