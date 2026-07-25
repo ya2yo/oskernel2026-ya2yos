@@ -13,7 +13,7 @@ use super::{
     super::{File, Inode},
     pipe::set_pipe_max_size,
 };
-use alloc::{collections::BTreeMap, string::String, sync::Arc, vec};
+use alloc::{borrow::Cow, collections::BTreeMap, string::String, sync::Arc, vec};
 use core::sync::atomic::{AtomicI32, Ordering};
 use linux_raw_sys::{
     general::FS_IMMUTABLE_FL,
@@ -283,6 +283,10 @@ impl File for OSFile {
 
     fn fstat(&self) -> Kstat {
         self.inode.fstat()
+    }
+
+    fn path(&self) -> Cow<'_, str> {
+        Cow::Owned(self.inode.path())
     }
 
     fn poll(&self, events: PollEvents) -> PollEvents {
