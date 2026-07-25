@@ -3,7 +3,8 @@
 //! 这里包含 `statfs/fstatfs/statx/fstatat`。
 
 use linux_raw_sys::general::{
-    statx, statx_timestamp, AT_EMPTY_PATH, AT_FDCWD, STATX_BASIC_STATS, STATX__RESERVED,
+    statx, statx_timestamp, AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS,
+    STATX__RESERVED,
 };
 use log::debug;
 
@@ -131,7 +132,15 @@ pub fn sys_fstatat(dirfd: isize, path: *const u8, kst: *mut Kstat, flags: usize)
             open(&abs_path, OpenFlags::O_CREATE, NONE_MODE);
         }
 
-        open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.any()
+        let open_flags = if flags & AT_SYMLINK_NOFOLLOW as usize != 0 {
+            // O_NOFOLLOW would reject symlinks with ELOOP.  Use the internal
+            // O_UNLINK flag instead: it returns the symlink inode itself,
+            // which is what lstat() / fstatat(AT_SYMLINK_NOFOLLOW) expects.
+            OpenFlags::O_RDONLY | OpenFlags::O_UNLINK
+        } else {
+            OpenFlags::O_RDONLY
+        };
+        open(&abs_path, open_flags, NONE_MODE)?.any()
     };
     let kst_data = file.fstat();
     copy_to_user(memory_set, kst as usize, unsafe {
@@ -186,7 +195,12 @@ pub fn sys_statx(
             // 绝对路径直接打开，dirfd 会被 get_abs_path 忽略；
             // 相对路径则由 get_abs_path 根据 AT_FDCWD 或 dirfd 转成绝对路径
             let abs_path = proc.get_abs_path(dirfd, &path_str)?;
-            open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?
+            let open_flags = if flags & AT_SYMLINK_NOFOLLOW as usize != 0 {
+                OpenFlags::O_RDONLY | OpenFlags::O_UNLINK
+            } else {
+                OpenFlags::O_RDONLY
+            };
+            open(&abs_path, open_flags, NONE_MODE)?
                 .any()
                 .fstat()
         }
@@ -201,6 +215,52 @@ pub fn sys_statx(
     };
     copy_to_user(&memory_set, statxbuf as usize, bytes).map(|_| ())?;
     Ok(0)
+}
+
+/// 将 MountFlags 转换为 statfs.f_flags 对应的 ST_* 标志位。
+///
+/// MS_* 与 ST_* 大部分位一一对应，但 MS_NOSYMFOLLOW (256=0x100) 对应
+/// ST_NOSYMFOLLOW (0x2000)、MS_RELATIME (0x200000) 对应 ST_RELATIME (0x1000)。
+/// 未映射的挂载标志位不会出现在 statfs 结果中。
+fn mount_flags_to_statfs_flags(flags: MountFlags) -> i64 {
+    let mut f: i64 = 0;
+    // 以下标志位 MS_* 与 ST_* 数值相同，直接映射。
+    if flags.contains(MountFlags::RDONLY) {
+        f |= 0x1; // ST_RDONLY
+    }
+    if flags.contains(MountFlags::NOSUID) {
+        f |= 0x2; // ST_NOSUID
+    }
+    if flags.contains(MountFlags::NODEV) {
+        f |= 0x4; // ST_NODEV
+    }
+    if flags.contains(MountFlags::NOEXEC) {
+        f |= 0x8; // ST_NOEXEC
+    }
+    if flags.contains(MountFlags::SYNCHRONOUS) {
+        f |= 0x10; // ST_SYNCHRONOUS
+    }
+    if flags.contains(MountFlags::MANDLOCK) {
+        f |= 0x40; // ST_MANDLOCK
+    }
+    if flags.contains(MountFlags::DIRSYNC) {
+        f |= 0x80; // ST_DIRSYNC (same bit)
+    }
+    if flags.contains(MountFlags::NOATIME) {
+        f |= 0x400; // ST_NOATIME
+    }
+    if flags.contains(MountFlags::NODIRATIME) {
+        f |= 0x800; // ST_NODIRATIME
+    }
+    // MS_NOSYMFOLLOW (0x100) → ST_NOSYMFOLLOW (0x2000), different bit position.
+    if flags.contains(MountFlags::NOSYMFOLLOW) {
+        f |= 0x2000;
+    }
+    // MS_RELATIME (0x200000) → ST_RELATIME (0x1000), different bit position.
+    if flags.contains(MountFlags::RELATIME) {
+        f |= 0x1000;
+    }
+    f
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/statfs.2.html
@@ -257,7 +317,7 @@ pub fn sys_fstatfs(fd: i32, buf: usize) -> SyscallRet {
     // 从挂载表查询该文件路径的挂载标志，填充 statfs.f_flags。
     let path = file.path();
     if let Some((_source, _dir, _fstype, flags)) = MNT_TABLE.lock().mount_for_path(&path) {
-        stat.f_flags = flags.bits() as i64;
+        stat.f_flags = mount_flags_to_statfs_flags(flags);
     }
 
     let bytes = unsafe {

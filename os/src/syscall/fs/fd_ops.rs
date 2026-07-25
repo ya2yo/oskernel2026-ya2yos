@@ -389,10 +389,21 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
         other => other,
     };
     let new_fd = fd_table.alloc_fd()?;
+    // Capture the resolved inode path before moving `inode` into the fd table.
+    // realpath(3) (musl in particular) reads /proc/self/fd/N and must see the
+    // resolved target rather than the symlink alias.  fanotify still reports
+    // the original path requested by userspace.
+    // Only FileClass::File carries an Inode whose path() reflects the
+    // symlink-resolved location; abstract files (device nodes, pipes, etc.)
+    // keep the original abs_path because their File::path() may panic.
+    let fd_path = match &inode {
+        FileClass::File(osfile) => osfile.inode.path(),
+        _ => abs_path.clone(),
+    };
     fd_table.set(new_fd, FileDescriptor::new(flags, inode));
 
     notify_path_event(&abs_path, FAN_OPEN);
-    fs_info.insert(abs_path, new_fd);
+    fs_info.insert(fd_path, new_fd);
     return Ok(new_fd);
 }
 

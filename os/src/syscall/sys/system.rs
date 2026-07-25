@@ -50,8 +50,8 @@ pub fn sys_uname(buf: *mut u8) -> SyscallRet {
     let uname = Utsname {
         sysname: str2u8("Linux"),
         nodename: str2u8("Ya2yOS"),
-        release: str2u8("5.0.0"),
-        version: str2u8("5.0.0"),
+        release: str2u8("7.0.0"),
+        version: str2u8("7.0.0"),
         machine: str2u8(MACHINE_NAME),
         domainname: get_domainname_bytes(),
     };

@@ -322,6 +322,24 @@ fn open_inner(
     // 也许以后可以改成符号链接实现这种映射？
     debug!("abs_path is {}", abs_path);
     let mut abs_path: &str = abs_path;
+    // If the mount has NOSYMFOLLOW, prevent symlink traversal by adding O_NOFOLLOW.
+    // This must be done before the inode lookup so that find() rejects symlinks.
+    //
+    // Do not add O_NOFOLLOW when the caller already uses O_UNLINK (readlinkat,
+    // unlinkat, faccessat with AT_SYMLINK_NOFOLLOW): those callers operate on the
+    // symlink inode itself rather than following its target.  Adding O_NOFOLLOW
+    // would turn their legitimate "look at the link" into an ELOOP rejection.
+    let mut flags = flags;
+    {
+        let mnt_table = MNT_TABLE.lock();
+        if let Some((_, _, _, mount_flags)) = mnt_table.mount_for_path(abs_path) {
+            if mount_flags.contains(MountFlags::NOSYMFOLLOW)
+                && !flags.contains(OpenFlags::O_UNLINK)
+            {
+                flags |= OpenFlags::O_NOFOLLOW;
+            }
+        }
+    }
     if map_dynamic {
         // The linker can name its interpreter explicitly from a native libc
         // script. Prefer that matching loader; legacy images still fall back

@@ -927,7 +927,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "modify_ldt02\0",
     "modify_ldt03\0",
     "mount03_suid_child\0",
-    "mount06\0",
     "mount07\0",
     "mount_setattr01\0",
     "mountns01\0",
