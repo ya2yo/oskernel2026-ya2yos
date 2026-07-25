@@ -165,7 +165,7 @@ pub fn sys_mremap(
     old_size: usize,
     new_size: usize,
     flags: i32,
-    _new_addr: usize,
+    new_addr: usize,
 ) -> SyscallRet {
     let flags_bitmap = MremapFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
     debug!("[sys_mremap] old_addr={:#x}, old_size={:#X}, new_size={:#x}, flags={:?}", old_addr, old_size, new_size, flags_bitmap);
@@ -178,11 +178,11 @@ pub fn sys_mremap(
     if fixed && !may_move {
         return Err(SysErrNo::EINVAL);
     }
-    if fixed {
-        return Err(SysErrNo::ENOSYS);
-    }
     if old_addr % PAGE_SIZE != 0 || old_size == 0 || new_size == 0 {
         return Err(SysErrNo::EINVAL);
+    }
+    if fixed && may_move&&new_addr%PAGE_SIZE!=0 {
+        return Err(SysErrNo::EINVAL)
     }
     let old_len = old_size
         .checked_add(PAGE_SIZE - 1)
@@ -204,7 +204,7 @@ pub fn sys_mremap(
     let memory_set = task.process.memory_set_arc();
     let result = memory_set.with_mut(|memory_set| {
         if may_move {
-            memory_set.mremap_maymove(old_addr, old_len, new_len)
+            memory_set.mremap_maymove(old_addr, old_len, new_len, new_addr, fixed)
         } else {
             memory_set.mremap_in_place(old_addr, old_len, new_len)
         }

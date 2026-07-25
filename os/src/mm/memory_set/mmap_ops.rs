@@ -379,11 +379,13 @@ impl MemorySetInner {
         old_addr: usize,
         old_len: usize,
         new_len: usize,
+        new_addr: usize,
+        fixed: bool,
     ) -> SyscallRet {
         let old_end_addr = old_addr.checked_add(old_len).ok_or(SysErrNo::EINVAL)?;
         let old_start_vpn = VirtAddr::from(old_addr).floor();
         let old_end_vpn = VirtAddr::from(old_end_addr).ceil();
-        let Some(old_idx) = self.areas.iter().position(|area| {
+        let Some(mut old_idx) = self.areas.iter().position(|area| {
             (is_mmap_vma(area) || area.area_type == MapAreaType::Shm)
                 && area.vpn_range.start() <= old_start_vpn
                 && old_end_vpn <= area.vpn_range.end()
@@ -437,13 +439,39 @@ impl MemorySetInner {
             self.areas.push(tail_area);
         }
 
+        // MREMAP_FIXED path: validate and prepare the target range.
+        if fixed {
+            let new_end = new_addr.checked_add(new_len).ok_or(SysErrNo::EINVAL)?;
+            if new_end > USER_SPACE_SIZE
+                || VirtAddr::try_from(new_addr).is_none()
+                || VirtAddr::try_from(new_end - 1).is_none()
+            {
+                return Err(SysErrNo::EINVAL);
+            }
+            // Source and destination must not overlap.
+            if new_addr < old_end_addr && old_addr < new_end {
+                return Err(SysErrNo::EINVAL);
+            }
+            // Unmap any existing mappings at the destination range.
+            self.munmap(new_addr, new_len)?;
+            // Re-find the old area — munmap may have shifted self.areas indices.
+            let Some(reidx) = self.areas.iter().position(|area| {
+                (is_mmap_vma(area) || area.area_type == MapAreaType::Shm)
+                    && area.vpn_range.start() <= old_start_vpn
+                    && old_end_vpn <= area.vpn_range.end()
+            }) else {
+                return Err(SysErrNo::EFAULT);
+            };
+            old_idx = reidx;
+        }
+
         let old_flags = self.areas[old_idx].mmap_flags;
         if old_flags.contains(MmapFlags::MAP_SHARED_VALIDATE) {
             return Err(SysErrNo::ENOSYS);
         }
 
         let old_len = (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
-        if new_len == old_len {
+        if new_len == old_len && !fixed {
             return Ok(old_addr);
         }
         let old_was_accounted =
@@ -464,12 +492,16 @@ impl MemorySetInner {
 
         // Keep the source VMA in the obstacle set while selecting a target,
         // so the two ranges can never overlap during the copy.
-        let new_addr = self.find_insert_addr(MMAP_TOP, new_len);
-        if new_addr == 0 {
+        let dest_addr = if fixed {
+            new_addr
+        } else {
+            self.find_insert_addr(MMAP_TOP, new_len)
+        };
+        if dest_addr == 0 {
             return Err(SysErrNo::ENOMEM);
         }
-        let new_end_addr = new_addr.checked_add(new_len).ok_or(SysErrNo::ENOMEM)?;
-        let new_start_vpn = VirtAddr::from(new_addr).floor();
+        let new_end_addr = dest_addr.checked_add(new_len).ok_or(SysErrNo::ENOMEM)?;
+        let new_start_vpn = VirtAddr::from(dest_addr).floor();
         let new_end_vpn = VirtAddr::from(new_end_addr).ceil();
         let new_page_count = new_end_vpn.0 - new_start_vpn.0;
 
@@ -529,7 +561,7 @@ impl MemorySetInner {
         self.areas.push(new_area);
         self.total_mmap_size = new_total_mmap_size;
         tlb_invalidate();
-        Ok(new_addr)
+        Ok(dest_addr)
     }
 
     /// Resize a complete VMA without changing its starting address.
