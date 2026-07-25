@@ -270,8 +270,27 @@ pub fn sys_umount2(special: *const u8, flags: u32) -> SyscallRet {
     let special = read_user_cstr(&memory_set, special)?;
     let special = proc.get_abs_path(AT_FDCWD as isize, &special)?;
 
-    let ret = MNT_TABLE.lock().umount(special, MountFlags::from_bits_truncate(flags));
+    // Record whether the target is a bind mount before removing the entry.
+    // mirror_bind_tree() copies source content into the target directory,
+    // and those files must be removed on umount so the target can be reused.
+    let is_bind = MNT_TABLE
+        .lock()
+        .mount_for_path(&special)
+        .map(|(_, _, _, mnt_flags)| mnt_flags.is_bind())
+        .unwrap_or(false);
+
+    let ret = MNT_TABLE
+        .lock()
+        .umount(special.clone(), MountFlags::from_bits_truncate(flags));
     if ret != -1 {
+        if is_bind {
+            if let Err(err) = purge_dir_contents(&special) {
+                warn!(
+                    "[sys_umount2] failed to purge bind mount target {}: {:?}",
+                    special, err
+                );
+            }
+        }
         refresh_proc_mounts();
         Ok(0)
     } else {
@@ -449,14 +468,14 @@ pub fn sys_mount(
         }
     }
 
-    // tmpfs: 挂载前清空挂载点内容，使 LTP 观测到空的 tmpfs 根目录。
-    if ftype_raw == "tmpfs" {
-        if let Err(err) = purge_dir_contents(&dir_abs) {
-            warn!(
-                "[sys_mount] failed to purge tmpfs mountpoint {}: {:?}",
-                dir_abs, err
-            );
-        }
+    // 路径化 VFS 中 umount 不清理底层目录中残留的文件，而 LTP 在同一
+    // 挂载点对不同文件系统类型（ext2/ext3/ext4/tmpfs）复用目录，因此
+    // 普通挂载前必须清空挂载点，确保每次挂载从干净状态开始。
+    if let Err(err) = purge_dir_contents(&dir_abs) {
+        warn!(
+            "[sys_mount] failed to purge mountpoint {}: {:?}",
+            dir_abs, err
+        );
     }
 
     // ext4 loop 镜像格式化的容量作为逻辑配额。
