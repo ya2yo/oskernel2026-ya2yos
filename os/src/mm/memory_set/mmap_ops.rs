@@ -412,6 +412,10 @@ impl MemorySetInner {
                 }
             }
             self.areas[old_idx].vpn_range = VPNRange::new(old_start_vpn, area_end_vpn);
+            // The VMA now starts later; bump the file offset so that
+            // (va - start + offset) still maps to the correct file page.
+            self.areas[old_idx].mmap_file.offset +=
+                (old_start_vpn.0 - area_start_vpn.0) * PAGE_SIZE;
             if front_area.groupid != 0 {
                 GROUP_SHARE.lock().add_area(front_area.groupid);
             }
@@ -422,6 +426,9 @@ impl MemorySetInner {
         if old_end_vpn < area_end_vpn {
             let mut tail_area = MapArea::from_another(&self.areas[old_idx]);
             tail_area.vpn_range = VPNRange::new(old_end_vpn, area_end_vpn);
+            // Tail area starts later than the source VMA; bump its file offset.
+            tail_area.mmap_file.offset +=
+                (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
             let tail_keys: Vec<VirtPageNum> = self.areas[old_idx]
                 .data_frames
                 .range(old_end_vpn..)
@@ -607,6 +614,8 @@ impl MemorySetInner {
                 }
             }
             self.areas[old_idx].vpn_range = VPNRange::new(old_start_vpn, area_end_vpn);
+            self.areas[old_idx].mmap_file.offset +=
+                (old_start_vpn.0 - area_start_vpn.0) * PAGE_SIZE;
             if front_area.groupid != 0 {
                 GROUP_SHARE.lock().add_area(front_area.groupid);
             }
@@ -619,6 +628,8 @@ impl MemorySetInner {
         if old_end_vpn < area_end_vpn {
             let mut tail_area = MapArea::from_another(&self.areas[old_idx]);
             tail_area.vpn_range = VPNRange::new(old_end_vpn, area_end_vpn);
+            tail_area.mmap_file.offset +=
+                (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
             let tail_keys: Vec<VirtPageNum> = self.areas[old_idx]
                 .data_frames
                 .range(old_end_vpn..)
