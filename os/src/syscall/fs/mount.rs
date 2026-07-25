@@ -270,23 +270,25 @@ pub fn sys_umount2(special: *const u8, flags: u32) -> SyscallRet {
     let special = read_user_cstr(&memory_set, special)?;
     let special = proc.get_abs_path(AT_FDCWD as isize, &special)?;
 
-    // Record whether the target is a bind mount before removing the entry.
-    // mirror_bind_tree() copies source content into the target directory,
-    // and those files must be removed on umount so the target can be reused.
-    let is_bind = MNT_TABLE
+    // Record whether the target is a self-bind mount before removing the entry.
+    // mirror_bind_tree() and MS_MOVE may copy source content into the target
+    // directory, and those files must be removed on umount so the target can be
+    // reused.  Self-bind mounts (special == dir) are excluded: mirror_bind_tree
+    // is a no-op for them, so purging would incorrectly delete pre-existing files.
+    let is_self_bind = MNT_TABLE
         .lock()
         .mount_for_path(&special)
-        .map(|(_, _, _, mnt_flags)| mnt_flags.is_bind())
+        .map(|(source, dir, _, _mnt_flags)| source == dir)
         .unwrap_or(false);
 
     let ret = MNT_TABLE
         .lock()
         .umount(special.clone(), MountFlags::from_bits_truncate(flags));
     if ret != -1 {
-        if is_bind {
+        if !is_self_bind {
             if let Err(err) = purge_dir_contents(&special) {
                 warn!(
-                    "[sys_umount2] failed to purge bind mount target {}: {:?}",
+                    "[sys_umount2] failed to purge mount target {}: {:?}",
                     special, err
                 );
             }
