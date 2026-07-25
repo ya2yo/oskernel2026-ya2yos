@@ -333,8 +333,7 @@ fn open_inner(
     {
         let mnt_table = MNT_TABLE.lock();
         if let Some((_, _, _, mount_flags)) = mnt_table.mount_for_path(abs_path) {
-            if mount_flags.contains(MountFlags::NOSYMFOLLOW)
-                && !flags.contains(OpenFlags::O_UNLINK)
+            if mount_flags.contains(MountFlags::NOSYMFOLLOW) && !flags.contains(OpenFlags::O_UNLINK)
             {
                 flags |= OpenFlags::O_NOFOLLOW;
             }

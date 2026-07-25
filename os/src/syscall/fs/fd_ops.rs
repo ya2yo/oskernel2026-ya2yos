@@ -243,8 +243,7 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
         // umask that clears S_IXGRP must not turn an unprivileged setgid-file
         // request into a mandatory-locking marker after the security check.
         let setgid = FileMode::S_ISGID.bits();
-        let setgid_and_group_execute =
-            (FileMode::S_ISGID | FileMode::S_IXGRP).bits();
+        let setgid_and_group_execute = (FileMode::S_ISGID | FileMode::S_IXGRP).bits();
         let mut effective_mode = mode;
         if mode & setgid_and_group_execute == setgid_and_group_execute
             && parent_stat.st_mode & setgid != 0

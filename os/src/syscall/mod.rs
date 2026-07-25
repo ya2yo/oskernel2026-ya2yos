@@ -308,8 +308,7 @@ use mm::*;
 #[cfg(feature = "net")]
 use net::*;
 pub use options::{
-    FileMode, FutexCmd, FutexOpt, MmapFlags, MmapProt, PollEvents, RLimit, SignalMaskFlag,
-    Utsname,
+    FileMode, FutexCmd, FutexOpt, MmapFlags, MmapProt, PollEvents, RLimit, SignalMaskFlag, Utsname,
 };
 use signal::*;
 use sync::*;

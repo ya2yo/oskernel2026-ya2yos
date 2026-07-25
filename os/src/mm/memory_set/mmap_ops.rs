@@ -427,8 +427,7 @@ impl MemorySetInner {
             let mut tail_area = MapArea::from_another(&self.areas[old_idx]);
             tail_area.vpn_range = VPNRange::new(old_end_vpn, area_end_vpn);
             // Tail area starts later than the source VMA; bump its file offset.
-            tail_area.mmap_file.offset +=
-                (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
+            tail_area.mmap_file.offset += (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
             let tail_keys: Vec<VirtPageNum> = self.areas[old_idx]
                 .data_frames
                 .range(old_end_vpn..)
@@ -628,8 +627,7 @@ impl MemorySetInner {
         if old_end_vpn < area_end_vpn {
             let mut tail_area = MapArea::from_another(&self.areas[old_idx]);
             tail_area.vpn_range = VPNRange::new(old_end_vpn, area_end_vpn);
-            tail_area.mmap_file.offset +=
-                (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
+            tail_area.mmap_file.offset += (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
             let tail_keys: Vec<VirtPageNum> = self.areas[old_idx]
                 .data_frames
                 .range(old_end_vpn..)

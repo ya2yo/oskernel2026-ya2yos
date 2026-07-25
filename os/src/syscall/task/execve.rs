@@ -122,9 +122,7 @@ fn current_task_can_exec(file_mode: u32, owner_uid: u32, owner_gid: u32) -> bool
     let file_mode = FileMode::from_bits_truncate(file_mode & 0xfff);
 
     if task_inner.effective_uid == 0 {
-        return file_mode.intersects(
-            FileMode::S_IXUSR | FileMode::S_IXGRP | FileMode::S_IXOTH,
-        );
+        return file_mode.intersects(FileMode::S_IXUSR | FileMode::S_IXGRP | FileMode::S_IXOTH);
     }
 
     if task_inner.effective_uid == owner_uid {

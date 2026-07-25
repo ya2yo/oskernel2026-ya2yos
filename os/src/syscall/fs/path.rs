@@ -9,7 +9,7 @@ use log::debug;
 use crate::{
     fs::{open, InodeType, Kstat, MountFlags, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE},
     mm::{copy_to_user, if_bad_address, read_user_cstr},
-    syscall::options::{FileMode, FaccessatMode},
+    syscall::options::{FaccessatMode, FileMode},
     task::current_task,
     utils::{get_abs_path, is_abs_path, rsplit_once, SysErrNo, SyscallRet},
 };
@@ -284,11 +284,7 @@ fn check_faccessat_access(
     }
     if mode.contains(FaccessatMode::X_OK)
         && !if uid == 0 {
-            file_mode.intersects(
-                FileMode::S_IXUSR
-                    | FileMode::S_IXGRP
-                    | FileMode::S_IXOTH,
-            )
+            file_mode.intersects(FileMode::S_IXUSR | FileMode::S_IXGRP | FileMode::S_IXOTH)
         } else {
             mode_allows(
                 file_mode,

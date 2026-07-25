@@ -285,11 +285,7 @@ fn do_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallR
         return Err(SysErrNo::ENOTDIR);
     }
 
-    debug!(
-        "{} set {:?}",
-        abs_path,
-        FileMode::from_bits_truncate(mode)
-    );
+    debug!("{} set {:?}", abs_path, FileMode::from_bits_truncate(mode));
 
     let open_flags = if flags & AT_SYMLINK_NOFOLLOW as u32 != 0 {
         OpenFlags::O_NOFOLLOW

@@ -168,7 +168,10 @@ pub fn sys_mremap(
     new_addr: usize,
 ) -> SyscallRet {
     let flags_bitmap = MremapFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
-    debug!("[sys_mremap] old_addr={:#x}, old_size={:#X}, new_size={:#x}, flags={:?}", old_addr, old_size, new_size, flags_bitmap);
+    debug!(
+        "[sys_mremap] old_addr={:#x}, old_size={:#X}, new_size={:#x}, flags={:?}",
+        old_addr, old_size, new_size, flags_bitmap
+    );
     let may_move = flags_bitmap.contains(MremapFlags::MAYMOVE);
     let fixed = flags_bitmap.contains(MremapFlags::FIXED);
     let dont_unmap = flags_bitmap.contains(MremapFlags::DONTUNMAP);
@@ -181,8 +184,8 @@ pub fn sys_mremap(
     if old_addr % PAGE_SIZE != 0 || old_size == 0 || new_size == 0 {
         return Err(SysErrNo::EINVAL);
     }
-    if fixed && may_move&&new_addr%PAGE_SIZE!=0 {
-        return Err(SysErrNo::EINVAL)
+    if fixed && may_move && new_addr % PAGE_SIZE != 0 {
+        return Err(SysErrNo::EINVAL);
     }
     let old_len = old_size
         .checked_add(PAGE_SIZE - 1)

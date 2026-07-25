@@ -200,9 +200,7 @@ pub fn sys_statx(
             } else {
                 OpenFlags::O_RDONLY
             };
-            open(&abs_path, open_flags, NONE_MODE)?
-                .any()
-                .fstat()
+            open(&abs_path, open_flags, NONE_MODE)?.any().fstat()
         }
     };
 
