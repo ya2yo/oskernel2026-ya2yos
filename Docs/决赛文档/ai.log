@@ -7144,3 +7144,21 @@ AI 对照 `log.ans` 与 `os/src/utils/perf.rs`，确认旧快照同时输出 `ac
 ### 修改与验证
 
 修改 `scripts/plot_perf_durations.py`，统一处理 `wait/wait_active` 与 `accept/accept_active` 的默认替换，并更新说明文本。`python3 -m py_compile`、`git diff --check` 通过；当前 `log.ans` 默认图表中的 `accept` 从 `1.237 s` 改为 `2.432 ms`（samples=16），`--include-active` 仍同时显示原始 `accept` 和 `accept_active`。未运行内核构建，本轮仅改动日志分析脚本。
+
+## 2026-07-26：CAgent 全量并发 EXT4/TCP 吞吐优化
+
+### 用户输入
+
+维护者指出评测机上 CAgent 全量 case 均可通过但每项耗时 41--56 秒，Linux 快约两个数量级，要求针对内核进行大幅优化；随后要求补充本次明显优化的文档。
+
+### 分析与采纳结论
+
+AI 解析当前 `log.ans` 最后一个 `shutdown!` 后的 perf 快照，确认 9.345 秒样本内 EXT4 全局锁累计等待 290,340,683 tick（约 29.034 秒）、持锁约 7.334 秒，且文件页缓存有 9,719 次命中、10,037 次文件缺页。`read` 的 38.187 秒 syscall 边界累计与 0.376 秒 active 累计进一步证明锁等待而非数据复制是主要放大项。
+
+追踪到 `Ext4Inode::path()` 和已知大小的 `size()` 在 mmap/page-cache 高频路径无条件获取 lwext4 全局锁，`FilePageCache` 也用独占锁串行全部命中。采纳 VFS 路径 `RwLock` 镜像、原子文件大小缓存和页缓存读写锁方案；rename、alias recovery、写入与截断同步失效/更新缓存。另将 TCP 收发改为 `EAGAIN` 才轮询，router SYN 检测改为逐包 peek，移除 RX 队列 `Vec` 往返复制。
+
+### 修改与验证
+
+修改 `os/src/fs/ext4_lw/inode.rs`、`os/src/fs/page_cache.rs`、`os/src/net/tcp.rs`、`os/src/net/router.rs`、`os/src/net/service.rs`、`os/src/task/processor.rs` 和 `os/src/utils/perf.rs`。`cargo fmt --manifest-path os/Cargo.toml`、`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 与 `git diff --check` 均通过，仅保留既有 smoltcp warning。
+
+变更后的本机全量 QEMU 被中断，故未伪造 A/B wall-clock 或评分比例；维护者已反馈评测性能提升明显。详见 `problem/cagent-ext4-tcp-throughput.md`。

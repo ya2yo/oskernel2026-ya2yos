@@ -7,7 +7,7 @@ use core::{
     task::{Context, Waker},
 };
 use smoltcp::{
-    iface::{Interface, SocketSet},
+    iface::{Interface, PollIngressSingleResult, PollResult, SocketSet},
     time::Instant,
     wire::{HardwareAddress, IpAddress, IpListenEndpoint},
 };
@@ -47,8 +47,20 @@ impl Service {
         let timestamp = now();
 
         self.router.poll(timestamp);
-        self.router.snoop_tcp_packets(sockets);
-        self.iface.poll(timestamp, &mut self.router, sockets);
+        loop {
+            // The listener table must see a SYN before smoltcp matches this
+            // packet to its socket. Inspect only the current packet; the
+            // following ingress call consumes it.
+            self.router.snoop_next_tcp_packet(sockets);
+            if self
+                .iface
+                .poll_ingress_single(timestamp, &mut self.router, sockets)
+                == PollIngressSingleResult::None
+            {
+                break;
+            }
+        }
+        while self.iface.poll_egress(timestamp, &mut self.router, sockets) != PollResult::None {}
         self.router.dispatch(timestamp)
     }
     /// 根据目的 IP 地址查找路由表，获取对应的源 IP 地址

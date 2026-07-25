@@ -106,17 +106,14 @@ impl Router {
         }
     }
 
-    pub fn snoop_tcp_packets(&mut self, sockets: &mut SocketSet<'_>) {
-        let mut packets = Vec::new();
-        while let Ok(((), packet)) = self.rx_buffer.dequeue() {
+    /// Inspect the next ingress packet before smoltcp consumes it.
+    ///
+    /// A passive TCP socket must exist before its SYN reaches smoltcp. Peeking
+    /// avoids the former dequeue, heap-copy, and re-enqueue cycle for every
+    /// packet currently buffered by the router.
+    pub fn snoop_next_tcp_packet(&mut self, sockets: &mut SocketSet<'_>) {
+        if let Ok(((), packet)) = self.rx_buffer.peek() {
             snoop_tcp_packet(packet, sockets);
-            packets.push(packet.to_vec());
-        }
-        for packet in packets {
-            self.rx_buffer
-                .enqueue(packet.len(), ())
-                .unwrap()
-                .copy_from_slice(&packet);
         }
     }
 

@@ -173,6 +173,13 @@ static FILE_PAGE_FAULTS: AtomicUsize = AtomicUsize::new(0);
 static SCHEDULER_SELECTIONS: AtomicUsize = AtomicUsize::new(0);
 static SCHEDULER_SELF_SELECTIONS: AtomicUsize = AtomicUsize::new(0);
 static IDLE_LOOPS: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULER_DISPATCH_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULER_DISPATCH_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULER_DISPATCH_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+
+static TCP_RECV_ACTIVE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static TCP_RECV_ACTIVE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static TCP_RECV_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 
 #[inline]
 fn add(counter: &AtomicUsize, value: usize) {
@@ -869,6 +876,31 @@ pub fn record_scheduler_selection(self_selected: bool) {
     }
 }
 
+/// Record scheduler work between returning to the idle scheduler context and
+/// selecting the next runnable task. The task's actual execution and context
+/// switch are intentionally outside this interval.
+#[inline]
+pub fn record_scheduler_dispatch_duration(elapsed: usize) {
+    record_duration(
+        &SCHEDULER_DISPATCH_SAMPLES,
+        &SCHEDULER_DISPATCH_TICKS,
+        &SCHEDULER_DISPATCH_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Record one active TCP receive poll closure, excluding time while
+/// `poll_io` leaves the task blocked waiting for packet arrival.
+#[inline]
+pub fn record_tcp_recv_active_duration(elapsed: usize) {
+    record_duration(
+        &TCP_RECV_ACTIVE_SAMPLES,
+        &TCP_RECV_ACTIVE_TICKS,
+        &TCP_RECV_ACTIVE_MAX_TICKS,
+        elapsed,
+    );
+}
+
 #[inline]
 pub fn record_idle_loop() {
     add(&IDLE_LOOPS, 1);
@@ -940,6 +972,20 @@ fn emit_report(now: usize) {
         SCHEDULER_SELECTIONS.load(Ordering::Relaxed),
         SCHEDULER_SELF_SELECTIONS.load(Ordering::Relaxed),
         IDLE_LOOPS.load(Ordering::Relaxed),
+    );
+    print!("[perf] scheduler_duration ");
+    emit_duration(
+        "dispatch",
+        &SCHEDULER_DISPATCH_SAMPLES,
+        &SCHEDULER_DISPATCH_TICKS,
+        &SCHEDULER_DISPATCH_MAX_TICKS,
+    );
+    print!("[perf] socket_duration ");
+    emit_duration(
+        "tcp_recv_active",
+        &TCP_RECV_ACTIVE_SAMPLES,
+        &TCP_RECV_ACTIVE_TICKS,
+        &TCP_RECV_ACTIVE_MAX_TICKS,
     );
     print!("[perf] syscall_duration ");
     emit_duration(

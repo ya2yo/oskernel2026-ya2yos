@@ -119,6 +119,54 @@ impl TcpSocket {
     fn with_smol_socket<R>(&self, f: impl FnOnce(&mut smol::Socket) -> R) -> R {
         SOCKET_SET.with_socket_mut::<smol::Socket, _, _>(self.handle, f)
     }
+
+    /// Try one non-blocking write without driving the whole network stack.
+    fn try_send(&self, src: &UserBuffer) -> SysResult<usize> {
+        self.with_smol_socket(|socket| {
+            if !socket.is_active() {
+                return Err(SysErrNo::ENOTCONN);
+            }
+            if !socket.can_send() {
+                return Err(SysErrNo::EAGAIN);
+            }
+            socket
+                .send(|buffer| {
+                    let sent = src.read_to(buffer);
+                    (sent, sent)
+                })
+                .map_err(|_| SysErrNo::ENOTCONN)
+        })
+    }
+
+    /// Try one non-blocking read without driving the whole network stack.
+    fn try_recv(&self, dst: &mut UserBuffer, peek: bool) -> SysResult<usize> {
+        self.with_smol_socket(|socket| {
+            if !socket.is_active() {
+                return Err(SysErrNo::ENOTCONN);
+            }
+            if !socket.may_recv() && socket.recv_queue() == 0 {
+                return Ok(0);
+            }
+            if socket.recv_queue() == 0 {
+                return Err(SysErrNo::EAGAIN);
+            }
+
+            if peek {
+                let buffer = socket
+                    .peek(socket.recv_queue())
+                    .map_err(|_| SysErrNo::ENOTCONN)?;
+                Ok(dst.write(buffer))
+            } else {
+                socket
+                    .recv(|buffer| {
+                        let received = dst.write(buffer);
+                        (received, received)
+                    })
+                    .map_err(|_| SysErrNo::ENOTCONN)
+            }
+        })
+    }
+
     /// 获取当前绑定的本地端点的IP和端口
     fn bound_endpoint(&self) -> SysResult<IpListenEndpoint> {
         let endpoint = self.with_smol_socket(|socket| socket.get_bound_endpoint());
@@ -468,27 +516,19 @@ impl SocketOps for TcpSocket {
         })
     }
     /// 发送数据
-    fn send(&self, mut src: UserBuffer, _options: SendOptions) -> SysResult<usize> {
+    fn send(&self, src: UserBuffer, _options: SendOptions) -> SysResult<usize> {
         // SAFETY: `self.handle` should be initialized in a connected socket.
         self.general.send_poller(self, || {
-            poll_interfaces();
-
-            let sent = self.with_smol_socket(|socket| {
-                // 检测套接字状态
-                if !socket.is_active() {
-                    return Err(SysErrNo::ENOTCONN);
+            let sent = match self.try_send(&src) {
+                Ok(sent) => sent,
+                Err(SysErrNo::EAGAIN) => {
+                    // Only a full transmit queue needs a protocol-stack pass
+                    // before retrying. Ready sockets avoid the global poll.
+                    poll_interfaces();
+                    self.try_send(&src)?
                 }
-                if !socket.can_send() {
-                    return Err(SysErrNo::EAGAIN); // 发送缓冲区满
-                }
-                let send_result = socket.send(|buffer| {
-                    let data = src.read(buffer.len());
-                    buffer[..data.len()].copy_from_slice(&data);
-                    (data.len(), data.len())
-                });
-                // 如果在读取过程中发生了错误，优先返回那个错误
-                send_result.map_err(|_| SysErrNo::ENOTCONN)
-            })?;
+                Err(error) => return Err(error),
+            };
 
             // `socket.send` only appends bytes to smoltcp's transmit queue.
             // Flush it before returning so a loopback peer that is already
@@ -503,43 +543,23 @@ impl SocketOps for TcpSocket {
             return Err(SysErrNo::ENOTCONN);
         }
         self.general.recv_poller(self, || {
-            poll_interfaces();
-            self.with_smol_socket(|socket| {
-                // 状态检查
-                if !socket.is_active() {
-                    return Err(SysErrNo::ENOTCONN);
+            #[cfg(feature = "perf")]
+            let active_begin = get_ticks();
+            let result = match self.try_recv(&mut dst, options.flags.contains(RecvFlags::PEEK)) {
+                Ok(received) => Ok(received),
+                Err(SysErrNo::EAGAIN) => {
+                    // Poll only when the local receive queue is empty. This
+                    // is the slow path that can discover a newly arrived packet.
+                    poll_interfaces();
+                    self.try_recv(&mut dst, options.flags.contains(RecvFlags::PEEK))
                 }
-                // may_recv 为 false 表示对方已关闭发送（FIN），且缓冲区已读完
-                if !socket.may_recv() && socket.recv_queue() == 0 {
-                    return Ok(0);
-                }
-
-                if socket.recv_queue() == 0 {
-                    return Err(SysErrNo::EAGAIN);
-                }
-
-                // 处理 PEEK 标志或正常接收
-                // smoltcp 的 peek 和 recv 都接受闭包: FnOnce(&[u8]) -> (usize, R) 或 FnOnce(&[u8]) -> R
-                if options.flags.contains(RecvFlags::PEEK) {
-                    // PEEK 模式：只读取不从缓冲区删除
-                    // 获取当前缓冲区里有多少数据
-                    let avail = socket.recv_queue();
-                    if avail == 0 {
-                        return Err(SysErrNo::EAGAIN);
-                    }
-                    // 调用 peek(usize)，它返回 Result<&[u8], RecvError>
-                    let buffer = socket.peek(avail).map_err(|_| SysErrNo::ENOTCONN)?;
-                    // 返回写入的字节数
-                    Ok(dst.write(buffer))
-                } else {
-                    // 正常接收模式：读取并从缓冲区删除
-                    let recv_result = socket.recv(|buffer| {
-                        let n = dst.write(buffer);
-                        (n, n)
-                    });
-                    recv_result.map_err(|_| SysErrNo::ENOTCONN)
-                }
-            })
+                Err(error) => Err(error),
+            };
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_tcp_recv_active_duration(
+                get_ticks().saturating_sub(active_begin),
+            );
+            result
         })
     }
     /// 获取本地地址

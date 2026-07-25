@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, string::String, sync::Arc};
 use core::sync::atomic::{AtomicBool, Ordering};
-use spin::Mutex;
+use spin::RwLock;
 
 use crate::{arch::memory_layout::PAGE_SIZE, fs::Inode, mm::FrameTracker, utils::SysErrNo};
 
@@ -49,18 +49,19 @@ impl FilePage {
 
 /// 基于文件路径和页号组织的全局文件页缓存。
 ///
-/// 缓存内部使用 `BTreeMap` 保存已加载页，并由 `Mutex` 保护并发访问。
+/// 缓存内部使用 `BTreeMap` 保存已加载页。缺页通常远少于命中，因此读取路径使用
+/// 共享锁；加载和失效才获取独占锁。
 /// 该结构只负责缓存页的查找、按需加载和失效，不直接负责脏页回写策略。
 pub struct FilePageCache {
     /// 已缓存的文件页集合。
-    pages: Mutex<BTreeMap<FilePageKey, Arc<FilePage>>>,
+    pages: RwLock<BTreeMap<FilePageKey, Arc<FilePage>>>,
 }
 
 impl FilePageCache {
     /// 创建一个空的文件页缓存。
     pub const fn new() -> Self {
         Self {
-            pages: Mutex::new(BTreeMap::new()),
+            pages: RwLock::new(BTreeMap::new()),
         }
     }
 
@@ -69,7 +70,7 @@ impl FilePageCache {
     /// 如果页尚未加载到缓存中，则返回 `None`。
     pub fn get(&self, path: &str, page_index: usize) -> Option<Arc<FilePage>> {
         self.pages
-            .lock()
+            .read()
             .get(&FilePageKey {
                 path: String::from(path),
                 page_index,
@@ -92,7 +93,7 @@ impl FilePageCache {
         let path = inode.path();
         let key = FilePageKey { path, page_index };
 
-        if let Some(page) = self.pages.lock().get(&key).cloned() {
+        if let Some(page) = self.pages.read().get(&key).cloned() {
             #[cfg(feature = "perf")]
             crate::utils::perf::record_file_cache_hit();
             return Ok(page);
@@ -118,7 +119,7 @@ impl FilePageCache {
             dirty: AtomicBool::new(false),
         });
 
-        let mut pages = self.pages.lock();
+        let mut pages = self.pages.write();
         if let Some(existing) = pages.get(&key).cloned() {
             return Ok(existing);
         }
@@ -137,7 +138,7 @@ impl FilePageCache {
         let first = start / PAGE_SIZE;
         let end = start.saturating_add(len);
         let last = end.saturating_add(PAGE_SIZE - 1) / PAGE_SIZE;
-        let mut pages = self.pages.lock();
+        let mut pages = self.pages.write();
         for page_index in first..last {
             pages.remove(&FilePageKey {
                 path: String::from(path),
@@ -148,7 +149,7 @@ impl FilePageCache {
 
     /// 失效指定文件路径的全部缓存页。
     pub fn invalidate_path(&self, path: &str) {
-        self.pages.lock().retain(|key, _| key.path != path);
+        self.pages.write().retain(|key, _| key.path != path);
     }
 }
 

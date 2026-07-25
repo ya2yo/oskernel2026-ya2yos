@@ -1377,3 +1377,11 @@
 - **描述**：确认旧日志中的 `accept` 是包含阻塞区间的历史桶，而 `accept_active` 只覆盖 accept poll 闭包执行区间。脚本默认模式现在用 `accept_active` 替换 `accept`，`--include-active` 仍可同时查看嵌套项。
 - **验证**：当前 `log.ans` 默认汇总显示 `accept=2.432 ms (samples=16)`，而显式保留活动项模式仍显示原始 `accept=1.237 s` 与 `accept_active=2.432 ms`；Python 编译检查和 `git diff --check` 通过。
 - **关联 commit**：当前工作区未提交
+
+#### CAgent 全量并发 EXT4/TCP 吞吐优化（7.26）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供全量 CAgent 的评测机耗时，指出其相对 Linux 存在数量级性能差距，并要求针对内核优化及补充文档。
+- **描述**：AI 对齐 `log.ans` 的最终 perf 快照，确认 EXT4 全局锁累计等待约 29.034 秒是首要吞吐瓶颈。修复将高频 `inode.path()` 和已知大小查询移出 lwext4 全局锁，页缓存命中改用共享读锁；同时收缩 TCP 无效全栈轮询和 router RX 队列复制。rename、alias recovery、写入、截断和缓存重复加载的语义边界保持保护。详见 `ai.log` 和 [problem/cagent-ext4-tcp-throughput.md](./problem/cagent-ext4-tcp-throughput.md)。
+- **验证**：RISC-V、LoongArch64 `make perf` 及格式检查通过。变更后本机 QEMU 全量运行被中断，未报告伪造的 A/B 比例；维护者反馈评测性能提升明显。
+- **关联 commit**：当前工作区未提交

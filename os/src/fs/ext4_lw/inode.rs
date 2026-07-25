@@ -23,12 +23,15 @@ use crate::{
 
 use alloc::{format, string::ToString, vec};
 use alloc::{sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicUsize, Ordering};
+use spin::RwLock;
 
 use lwext4_rust::file::{discard_path_cache, read_cached_at, OsDirent};
 
 /// 防止符号链接死循环的最大跳转次数。
 const MAX_LOOPTIMES: usize = 5;
 const QUOTA_RESERVE_GRANULARITY: usize = 64 * 1024;
+const UNKNOWN_FILE_SIZE: usize = usize::MAX;
 
 /// EXT4 inode 的 VFS 包装。
 ///
@@ -40,6 +43,14 @@ pub struct Ext4Inode {
     /// 文件类型在创建后不会改变；将它放在可变 lwext4 状态之外，让纯类型
     /// 查询不必争用全局 EXT4 操作锁。
     inode_type: InodeType,
+    /// The path is read by page-cache and fd bookkeeping on every access. It
+    /// changes only after a successful rename or alias recovery, so keep a
+    /// VFS-side mirror instead of taking the global lwext4 lock for `path()`.
+    path: RwLock<String>,
+    /// File-backed mmap faults check EOF for every page. Once lwext4 has
+    /// established a regular file's size, serve that immutable-until-write
+    /// value without serializing on its global operation lock.
+    known_size: AtomicUsize,
 }
 
 /// `Ext4Inode` 的可变内部状态。
@@ -49,12 +60,6 @@ pub struct Ext4Inode {
 pub struct Ext4InodeInner {
     /// lwext4 wrapper 的文件/目录句柄。
     f: Ext4File,
-    /// 已由当前 VFS inode 成功更新的普通文件长度。
-    ///
-    /// lwext4 的 `ext4_ftruncate()` 在扩展空文件后可能暂时不能通过
-    /// path-based stat 查询到新长度。保留该值可使同一 inode 的 fstat、
-    /// 文件页缓存和 mmap 使用一致的 EOF。
-    known_size: Option<usize>,
     /// Upper bound already charged to a loop-backed mount quota. Large
     /// sequential writes reserve in chunks so each small write avoids taking
     /// the global mount-table lock.
@@ -76,9 +81,10 @@ impl Ext4Inode {
     pub fn new(path: &str, types: InodeTypes) -> Self {
         Ext4Inode {
             inode_type: as_inode_type(types.clone()),
+            path: RwLock::new(path.to_string()),
+            known_size: AtomicUsize::new(UNKNOWN_FILE_SIZE),
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
-                known_size: None,
                 quota_reserved: 0,
                 aliases: vec![path.to_string()],
                 delay: false,
@@ -106,14 +112,38 @@ impl Ext4Inode {
         inner.f.path().into_string().unwrap()
     }
 
+    #[inline]
+    fn cached_path(&self) -> String {
+        self.path.read().clone()
+    }
+
+    #[inline]
+    fn update_cached_path(&self, path: &str) {
+        *self.path.write() = path.to_string();
+    }
+
+    #[inline]
+    fn known_size(&self) -> Option<usize> {
+        match self.known_size.load(Ordering::Acquire) {
+            UNKNOWN_FILE_SIZE => None,
+            size => Some(size),
+        }
+    }
+
+    #[inline]
+    fn update_known_size(&self, size: usize) {
+        self.known_size.store(size, Ordering::Release);
+    }
+
     /// 在当前路径失效后尝试从 alias 列表恢复一个可用路径。
     ///
     /// 这是 rename/hard link 后 fd 继续可用的兜底路径。只有底层元数据操作失败时才调用，
     /// 避免把普通热路径变成重复的 ext4 路径存在性检查。
-    fn recover_live_path(inner: &mut Ext4InodeInner) -> String {
+    fn recover_live_path(&self, inner: &mut Ext4InodeInner) -> String {
         let current = inner.f.path().into_string().unwrap();
         let types = inner.f.types();
         if inner.f.check_inode_exist(&current, types.clone()) {
+            self.update_cached_path(&current);
             return current;
         }
 
@@ -121,6 +151,7 @@ impl Ext4Inode {
             if inner.f.check_inode_exist(&alias, types.clone()) {
                 let _ = inner.f.file_close();
                 inner.f = Ext4File::new(&alias, types.clone());
+                self.update_cached_path(&alias);
                 return alias;
             }
         }
@@ -133,23 +164,24 @@ impl Inode for Ext4Inode {
     ///
     /// 目录和其他非普通文件当前返回 0；普通文件需要按 lwext4 API 重新打开后读取 size。
     fn size(&self) -> usize {
+        if self.inode_type != InodeType::File {
+            return 0;
+        }
+        if let Some(size) = self.known_size() {
+            return size;
+        }
+
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
-        let path = Self::live_path(inner);
-        let types = as_inode_type(inner.f.file_type());
-        if types == InodeType::File {
-            if let Some(size) = inner.known_size {
-                return size;
-            }
-            let file = &mut inner.f;
-            file.file_open_read_only(&path);
-            let fsize = file.file_size();
-            let size = fsize as usize;
-            inner.known_size = Some(size);
-            size
-        } else {
-            0
+        if let Some(size) = self.known_size() {
+            return size;
         }
+        let path = Self::live_path(inner);
+        let file = &mut inner.f;
+        file.file_open_read_only(&path);
+        let size = file.file_size() as usize;
+        self.update_known_size(size);
+        size
     }
     /// 在当前文件系统中创建一个新 inode。
     ///
@@ -253,8 +285,8 @@ impl Inode for Ext4Inode {
             // from an idle cache and will repeatedly evict/rebuild it.
             file.pin_write_back_cache();
         }
-        let current_size = inner
-            .known_size
+        let current_size = self
+            .known_size()
             .unwrap_or_else(|| file.file_size() as usize);
         let end = off.checked_add(buf.len()).ok_or(SysErrNo::EFBIG)?;
         let previous_reserved = inner.quota_reserved;
@@ -314,7 +346,7 @@ impl Inode for Ext4Inode {
             }
         };
         let end = off.checked_add(written).ok_or(SysErrNo::EFBIG)?;
-        inner.known_size = Some(current_size.max(end));
+        self.update_known_size(current_size.max(end));
         Ok(written)
     }
 
@@ -329,7 +361,7 @@ impl Inode for Ext4Inode {
         file.file_open(&path, O_RDWR).map_err(SysErrNo::from)?;
 
         file.file_truncate(size as u64).map_err(SysErrNo::from)?;
-        inner.known_size = Some(size);
+        self.update_known_size(size);
         FILE_PAGE_CACHE.invalidate_path(&path);
         Ok(0)
     }
@@ -373,6 +405,7 @@ impl Inode for Ext4Inode {
             inner.aliases.push(new_path.to_string());
         }
         inner.f = Ext4File::new(new_path, types);
+        self.update_cached_path(new_path);
         FILE_PAGE_CACHE.invalidate_path(&active_path);
         FILE_PAGE_CACHE.invalidate_path(path);
         FILE_PAGE_CACHE.invalidate_path(new_path);
@@ -438,6 +471,7 @@ impl Inode for Ext4Inode {
             file.file_open_read_only(&path_str)
                 .map_err(SysErrNo::from)?;
             let size = file.file_size() as usize;
+            self.update_known_size(size);
             let mut buf: Vec<u8> = vec![0; size];
             let r = if let Some(r) = read_cached_at(&path_str, 0, buf.as_mut_slice()) {
                 Ok(r)
@@ -538,11 +572,11 @@ impl Inode for Ext4Inode {
     fn fstat(&self) -> Kstat {
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
-        let known_size = inner.known_size;
+        let known_size = self.known_size();
         let stat = match inner.f.fstat() {
             Ok(s) => s,
             Err(rc) => {
-                let _ = Self::recover_live_path(inner);
+                let _ = self.recover_live_path(inner);
                 match inner.f.fstat() {
                     Ok(s) => s,
                     Err(_) => {
@@ -716,9 +750,7 @@ impl Inode for Ext4Inode {
 
     /// 返回当前可用于 lwext4 path-based API 的路径。
     fn path(&self) -> String {
-        let _ext4 = EXT4_OP_LOCK.lock();
-        let inner = self.inner.get_unchecked_mut();
-        Self::live_path(inner)
+        self.cached_path()
     }
 
     /// 从 VFS inode cache 记录新的路径别名。
@@ -744,7 +776,7 @@ impl Inode for Ext4Inode {
         match inner.f.file_mode() {
             Ok(mode) => Ok(mode),
             Err(_) => {
-                let _ = Self::recover_live_path(inner);
+                let _ = self.recover_live_path(inner);
                 inner.f.file_mode().map_err(SysErrNo::from)
             }
         }
@@ -766,7 +798,7 @@ impl Inode for Ext4Inode {
         match inner.f.file_mode_set(mode) {
             Ok(ret) => Ok(ret),
             Err(_) => {
-                let _ = Self::recover_live_path(inner);
+                let _ = self.recover_live_path(inner);
                 inner.f.file_mode_set(mode).map_err(SysErrNo::from)
             }
         }
@@ -780,7 +812,7 @@ impl Inode for Ext4Inode {
         match inner.f.file_owner_set(uid, gid) {
             Ok(ret) => Ok(ret),
             Err(_) => {
-                let _ = Self::recover_live_path(inner);
+                let _ = self.recover_live_path(inner);
                 inner.f.file_owner_set(uid, gid).map_err(SysErrNo::from)
             }
         }
