@@ -26,12 +26,12 @@ pub fn sys_mmap(
     fd: usize,
     off: usize,
 ) -> SyscallRet {
-    debug!(
-        "[sysmap] addr={:#x},len={},prot={:#x},flags={:#x},fd={},off={}",
-        addr, len, prot, flags, fd, off
-    );
     let raw_flags = flags;
     let flags = MmapFlags::from_bits_truncate(raw_flags);
+    debug!(
+        "[sysmap] addr={:#x},len={:#x},prot={:#x},flags={:?},fd={},off={:#x}",
+        addr, len, prot, flags, fd, off
+    );
     // Linux ignores unknown mmap bits for MAP_SHARED/MAP_PRIVATE, but
     // MAP_SHARED_VALIDATE turns them into a strict capability check.
     if raw_flags & MAP_TYPE == MAP_SHARED_VALIDATE && raw_flags & !MmapFlags::all().bits() != 0 {
@@ -159,7 +159,7 @@ pub fn sys_munmap(addr: usize, len: usize) -> SyscallRet {
     }
 }
 
-/// Add by HXC
+/// https://www.man7.org/linux/man-pages/man2/mremap.2.html
 pub fn sys_mremap(
     old_addr: usize,
     old_size: usize,
@@ -168,6 +168,7 @@ pub fn sys_mremap(
     _new_addr: usize,
 ) -> SyscallRet {
     let flags_bitmap = MremapFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
+    debug!("[sys_mremap] old_addr={:#x}, old_size={:#X}, new_size={:#x}, flags={:?}", old_addr, old_size, new_size, flags_bitmap);
     let may_move = flags_bitmap.contains(MremapFlags::MAYMOVE);
     let fixed = flags_bitmap.contains(MremapFlags::FIXED);
     let dont_unmap = flags_bitmap.contains(MremapFlags::DONTUNMAP);

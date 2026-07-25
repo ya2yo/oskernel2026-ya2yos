@@ -364,16 +364,16 @@ impl MemorySetInner {
         Ok(0)
     }
 
-    /// Move a complete private mmap VMA to a new free range while retaining
+    /// Move a complete mmap VMA to a new free range while retaining
     /// the contents of every resident page.
     ///
     /// `MREMAP_MAYMOVE` is used by Rust's allocator to grow its backing
     /// mappings. Recreating the VMA after unmapping the source loses the
     /// allocator's live contents, so construct the destination first and
     /// commit the source teardown only after every resident page is copied.
-    /// Shared mappings are deliberately left unsupported here: `GROUP_SHARE`
-    /// currently indexes frames by absolute VPN, so moving one side of a
-    /// shared mapping requires a separate representation change.
+    /// For MAP_SHARED mappings, resident pages are deep-copied into new frames
+    /// and lazy pages stay lazy; old GROUP_SHARE entries become orphaned but
+    /// harmlessly unreachable since the old VPN range is unmapped.
     pub fn mremap_maymove(
         &mut self,
         old_addr: usize,
@@ -391,9 +391,7 @@ impl MemorySetInner {
         };
 
         let old_flags = self.areas[old_idx].mmap_flags;
-        if !old_flags.contains(MmapFlags::MAP_PRIVATE)
-            || old_flags.intersects(MmapFlags::MAP_SHARED | MmapFlags::MAP_SHARED_VALIDATE)
-        {
+        if old_flags.contains(MmapFlags::MAP_SHARED_VALIDATE) {
             return Err(SysErrNo::ENOSYS);
         }
 
@@ -433,6 +431,9 @@ impl MemorySetInner {
         new_area
             .mmap_flags
             .remove(MmapFlags::MAP_FIXED | MmapFlags::MAP_FIXED_NOREPLACE);
+        if new_area.groupid != 0 {
+            GROUP_SHARE.lock().add_area(new_area.groupid);
+        }
 
         let copy_page_count = (old_end_vpn.0 - old_start_vpn.0).min(new_page_count);
         for page_offset in 0..copy_page_count {
