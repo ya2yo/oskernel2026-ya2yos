@@ -2,7 +2,8 @@
 name: fix-bug
 description: >-
   Ya2yOS bug 修复流程。用于排查 panic、LTP/TFAIL、死循环、阻塞、语义错误、
-  网络/文件/任务/内存问题、跨架构失败或日志分析，并要求修复后验证和写文档时。
+  网络/文件/任务/内存问题、跨架构失败、LTP/回归程序/BuildStorm 日志分析，
+  并要求修复后验证和写文档时。
 ---
 
 # 修复 Bug
@@ -12,10 +13,28 @@ description: >-
 ## 排查顺序
 
 1. 明确失败信号：panic、`TFAIL`、卡死、退出码、日志关键字或用户描述。
-2. 优先看现有日志：`rg -a -n "panic|TFAIL|TBROK|ERROR|WARN|Summary" log.ans`。
+2. 先识别测试族和边界，再解释日志；不要把 LTP 专用标记当作所有测例的统一判据。
 3. 找测试源或同类实现，确认期望语义。
 4. 从 syscall 入口追到领域模块：`syscall/* -> fs/net/task/mm/arch/drivers`。
 5. 加临时日志时保持可删除；修复前后都要能解释日志变化。
+
+## 日志判读
+
+`log.ans` 可能含 NUL 字节和 ANSI 控制序列。先用 `rg -a` 定位原始位置，必要时用
+`strings` 查看连续的用户态输出：
+
+```bash
+rg -a -n -i 'panic|TPASS|TFAIL|TBROK|Summary|regression: (PASS|FAIL)|OS COMP TEST GROUP|buildstorm|fatal error|error|could not compile|linking with|exit status|QEMU: Terminated' log.ans
+strings -n 4 log.ans | rg -n -i 'TPASS|TFAIL|TBROK|Summary|regression: (PASS|FAIL)|OS COMP TEST GROUP|buildstorm|fatal error|error|could not compile|linking with|exit status|QEMU: Terminated'
+```
+
+| 测试类型 | 识别和结论 |
+|----------|------------|
+| LTP | 仅在日志确实出现 `TPASS`、`TFAIL`、`TBROK` 或 `Summary` 时按 LTP 规则判读。`FAIL LTP CASE x : 0` 只是 initproc 打印的退出码，不单独作为失败结论。 |
+| 内置回归程序 | 以 `<name> regression: PASS` / `FAIL` 为单项结果。当前 `sigaltstack regression: PASS`、`rseq regression: PASS` 就属于此类；没有 LTP 汇总是正常的。收集全部回归项，并结合下一个测试组开始标记、测试脚本或最终退出状态确认运行是否完整，不能因前几个 `PASS` 就宣布整轮成功。 |
+| BuildStorm/编译类测例 | 用 `OS COMP TEST GROUP START buildstorm-...` 和实际执行脚本识别组边界。优先保留第一个编译器/链接器诊断及其上下文，例如 `fatal error`、`linking with ... failed`、`could not compile`、`exit status`；当前日志的直接失败是 `cc: fatal error: '-fuse-linker-plugin', but liblto_plugin.so not found`。`[ERROR]`、`warning` 或 `QEMU: Terminated` 需要结合前文判断，后两者通常是伴随信息或运行结束现象，不可替代根因。 |
+
+输出可能被多核并发日志穿插，例如测试组名称与目录输出相连。定位后读取前后文和实际执行命令，不能依赖一条被截断的行推断测试名称或错误原因。
 
 ## 常见方向
 
@@ -27,7 +46,9 @@ description: >-
 | 死锁、偶现卡住、`try_lock().expect()` panic | 是否违反 `os/src/task/mod.rs` 开头的 task/PCB 锁顺序 |
 | futex / signal 相关 panic | wait 被信号打断时是否清理等待队列 |
 | COW / page fault | 两架构 PTE flags、TLB 刷新、写时复制分裂 |
-| LTP 输出迷惑 | 以 `TPASS`/`TFAIL`/`Summary` 为准，`FAIL LTP CASE x : 0` 只是 initproc 打印退出码 |
+| LTP 输出迷惑 | 先确认这是 LTP；再以 `TPASS`/`TFAIL`/`TBROK`/`Summary` 为准，`FAIL LTP CASE x : 0` 只是 initproc 打印退出码 |
+| 非 LTP 回归程序没有 Summary | 查找 `<name> regression: PASS/FAIL`、测试组边界和脚本的完成标记；不能只筛 `TFAIL`/`TBROK` |
+| BuildStorm 在内核中编译失败 | 先看最早的编译器/链接器 `error` 上下文和执行命令；把 `QEMU: Terminated` 视为结束现象，继续向前找可操作的诊断 |
 | 网络组播/setsockopt | `syscall/net/opt.rs` 参数解析 + `net/tcp.rs`/`udp.rs` socket 状态 |
 | ext4 `/tmp` cleanup ENOENT | 多数是 cleanup 噪音；先确认测试断言是否已 TPASS |
 
@@ -59,7 +80,8 @@ make run
 长日志用：
 
 ```bash
-rg -a -n "TPASS|TFAIL|TBROK|panic|ERROR|WARN|Summary" log.ans
+rg -a -n -i 'panic|TPASS|TFAIL|TBROK|Summary|regression: (PASS|FAIL)|OS COMP TEST GROUP|buildstorm|fatal error|error|could not compile|linking with|exit status|QEMU: Terminated' log.ans
+strings -n 4 log.ans | rg -n -i 'TPASS|TFAIL|TBROK|Summary|regression: (PASS|FAIL)|OS COMP TEST GROUP|buildstorm|fatal error|error|could not compile|linking with|exit status|QEMU: Terminated'
 strings log.ans | tail -80
 ```
 
