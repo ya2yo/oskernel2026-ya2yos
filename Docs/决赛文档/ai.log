@@ -6979,3 +6979,32 @@ AI 依据 `TPASS/TFAIL/Summary` 确认失败固定为 `MS_NODIRATIME` 和 `MS_ST
 ### 修改与验证
 
 修改 `os/src/fs/vfs.rs`、`os/src/fs/ext4_lw/inode.rs`、`os/src/fs/files/os_file.rs`。`make build-arch TARGET_ARCH=riscv64` 与 `git diff --check` 通过，只有既有 `smoltcp` warning。最新 `log.ans` 中 musl/glibc 的 `mount03` 摘要均为 `passed 55 failed 0 broken 0` 并正常 `shutdown!`；三种 atime 挂载标志断言均为 `TPASS`。问题复盘见 `Docs/决赛文档/problem/mount03-atime-eof-read.md`。
+
+## 2026-07-25：execve 动态解释器装载按需化
+
+### 用户输入
+
+维护者指出新的 `log.ans` 中真正的主要热点是 `execve`，要求停止只优化文件系统并继续针对
+execve 优化；完成后要求先补齐文档。
+
+### 分析与采纳结论
+
+AI 读取 perf 快照确认此前 12 次 `execve` 累计约 `465887 us`，随后沿
+`sys_execve()` -> `read_elf_load_image_with_prefix()` -> `TaskControlBlock::exec()` ->
+`MemorySetInner::from_elf()` 追踪。阶段计时显示 `from_elf` 占主要时间，进一步拆分后确认
+动态解释器 PT_LOAD 的 eager frame 分配和镜像复制是主要子阶段；普通内核页表创建和 exec
+提交只占很小比例。
+
+采纳两项局部优化：ELF 前缀扩展从已读偏移继续读取，避免重复从 inode 0 重读；动态解释器
+页对齐的文件段改成 `MAP_PRIVATE` 按需文件 VMA，缺页时复用文件页缓存，可写页仍通过常规
+COW 保持进程私有；BSS 和非页对齐段保留匿名 ELF 缺页路径。新增 ELF BSS 缺页处理和聚合
+exec 阶段计时，未共享可写解释器物理页。
+
+### 修改与验证
+
+涉及 `os/src/mm/memory_set/elf_loader.rs`、`os/src/mm/memory_set/mmap_ops.rs`、
+`os/src/syscall/task/execve.rs`、`os/src/task/task/task.rs` 和 `os/src/utils/perf.rs`，并
+更新问题复盘、开发日志和问题索引。当前 `log.ans` 为 `execve(samples=12 total_us=208763
+max_us=37071)`、`from_elf total_us=96487`、`interp_map total_us=11728`；CAgent
+`fs-search pass 764`、`shutdown!`，无 `panic/TFAIL/TBROK`。RISC-V、LoongArch64 release
+构建均通过；未运行完整 BuildStorm/LTP 或 LoongArch64 QEMU 运行时。

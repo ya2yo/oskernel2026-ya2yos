@@ -8,14 +8,17 @@ use super::super::map_area::MapType;
 use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::{DL_INTERP_OFFSET, PAGE_SIZE, USER_HEAP_SIZE};
 use crate::fs::{
-    map_dynamic_link_file_directly_map, open_direct, File, Inode, OpenFlags, NONE_MODE,
+    map_dynamic_link_file_directly_map, open_direct, File, Inode, OpenFlags, OSFile, NONE_MODE,
 };
 use crate::mm::memory_set::MemorySetInner;
+use crate::syscall::MmapFlags;
 use crate::task::{Aux, AuxType};
 use crate::utils::SysErrNo;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+#[cfg(feature = "perf")]
+use crate::arch::time::get_ticks;
 use xmas_elf::ElfFile;
 
 const ELF_PROBE_SIZE: usize = 256;
@@ -37,6 +40,37 @@ fn read_inode_prefix(
     }
     data.truncate(done);
     Ok(data)
+}
+
+/// Extend an already-read prefix without issuing a second read from offset 0.
+///
+/// `execve` first reads a small probe to distinguish ELF from a script.  ELF
+/// parsing may then require the program headers and the loadable ranges.  The
+/// old implementation reread the complete prefix for every extension, which
+/// inflated both filesystem traffic and the execve critical path.
+fn extend_inode_prefix(
+    inode: &Arc<dyn Inode>,
+    data: &mut Vec<u8>,
+    len: usize,
+    file_size: usize,
+) -> Result<(), SysErrNo> {
+    let target = len.min(file_size);
+    if data.len() >= target {
+        return Ok(());
+    }
+
+    let old_len = data.len();
+    data.resize(target, 0);
+    let mut done = old_len;
+    while done < target {
+        let read = inode.read_at(done, &mut data[done..target])?;
+        if read == 0 {
+            break;
+        }
+        done += read;
+    }
+    data.truncate(done);
+    Ok(())
 }
 
 fn program_headers_end(elf: &ElfFile) -> Result<usize, SysErrNo> {
@@ -91,32 +125,29 @@ pub(crate) fn read_elf_load_image_with_prefix(
     prefix: &[u8],
     file_size: usize,
 ) -> Result<Vec<u8>, SysErrNo> {
-    let head = if prefix.is_empty() {
+    let mut image = if prefix.is_empty() {
         read_inode_prefix(inode, ELF_PROBE_SIZE, file_size)?
     } else {
         prefix.to_vec()
     };
-    if head.len() < 4 || head[0] != 0x7f || head[1] != b'E' || head[2] != b'L' || head[3] != b'F' {
+    if image.len() < 4
+        || image[0] != 0x7f
+        || image[1] != b'E'
+        || image[2] != b'L'
+        || image[3] != b'F'
+    {
         return Err(SysErrNo::ENOEXEC);
     }
 
-    let header_elf = ElfFile::new(&head).map_err(|_| SysErrNo::ENOEXEC)?;
+    let header_elf = ElfFile::new(&image).map_err(|_| SysErrNo::ENOEXEC)?;
     let ph_end = program_headers_end(&header_elf)?;
-    let ph_data = if head.len() < ph_end {
-        read_inode_prefix(inode, ph_end, file_size)?
-    } else {
-        head
-    };
-    if ph_data.len() < ph_end {
+    extend_inode_prefix(inode, &mut image, ph_end, file_size)?;
+    if image.len() < ph_end {
         return Err(SysErrNo::ENOEXEC);
     }
 
-    let needed = needed_elf_prefix_len(&ph_data)?;
-    let image = if ph_data.len() < needed {
-        read_inode_prefix(inode, needed, file_size)?
-    } else {
-        ph_data
-    };
+    let needed = needed_elf_prefix_len(&image)?;
+    extend_inode_prefix(inode, &mut image, needed, file_size)?;
     if image.len() < needed {
         return Err(SysErrNo::ENOEXEC);
     }
@@ -190,9 +221,21 @@ impl MemorySetInner {
                 .ok_or(())?;
             // 动态解释器本身也是一个 ELF。读入并解析后复用 `map_elf()`，
             // 只是在地址空间中整体平移到 `DL_INTERP_OFFSET`。
+            #[cfg(feature = "perf")]
+            let interp_read_begin = get_ticks();
             let interp_elf_data = read_elf_load_image(&interp_file.inode).map_err(|_| ())?;
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_exec_interp_read_duration(
+                get_ticks().saturating_sub(interp_read_begin),
+            );
             let interp_elf = xmas_elf::ElfFile::new(&interp_elf_data).map_err(|_| ())?;
-            self.map_elf(&interp_elf, DL_INTERP_OFFSET.into())?;
+            #[cfg(feature = "perf")]
+            let interp_map_begin = get_ticks();
+            self.map_elf_lazy_file(&interp_elf, DL_INTERP_OFFSET.into(), &interp_file)?;
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_exec_interp_map_duration(
+                get_ticks().saturating_sub(interp_map_begin),
+            );
 
             // 动态链接程序的第一条用户态指令应来自解释器入口。
             Ok(Some(
@@ -281,6 +324,106 @@ impl MemorySetInner {
         Ok((max_end_vpn, header_va.into()))
     }
 
+    /// Register an interpreter's PT_LOAD segments as demand-paged private
+    /// file mappings.  The interpreter is executed repeatedly by execve, so
+    /// allocating and copying every segment up front wastes most of the work:
+    /// the file page cache can provide clean read-only pages on first fault,
+    /// while writable pages still become private through the normal COW path.
+    fn map_elf_lazy_file(
+        &mut self,
+        elf: &ElfFile,
+        offset: VirtAddr,
+        file: &Arc<OSFile>,
+    ) -> Result<(VirtPageNum, VirtAddr), ()> {
+        let ph_count = elf.header.pt2.ph_count();
+        let mut max_end_vpn = offset.floor();
+        let mut header_va = 0;
+        let mut has_found_header_va = false;
+
+        for i in 0..ph_count {
+            let ph = elf.program_header(i).map_err(|_| ())?;
+            if ph.get_type().map_err(|_| ())? != xmas_elf::program::Type::Load {
+                continue;
+            }
+
+            let start_va: VirtAddr = (ph.virtual_addr() as usize + offset.0).into();
+            let end_va: VirtAddr = ((ph.virtual_addr() + ph.mem_size()) as usize + offset.0).into();
+            let file_size = ph.file_size() as usize;
+            let mem_size = ph.mem_size() as usize;
+            if file_size > mem_size {
+                return Err(());
+            }
+            if !has_found_header_va {
+                header_va = start_va.0;
+                has_found_header_va = true;
+            }
+
+            let mut map_perm = MapPermission::U;
+            let ph_flags = ph.flags();
+            if ph_flags.is_read() {
+                map_perm |= MapPermission::R;
+            }
+            if ph_flags.is_write() {
+                map_perm |= MapPermission::W;
+            }
+            if ph_flags.is_execute() {
+                map_perm |= MapPermission::X;
+            }
+
+            let page_offset = start_va.0 - start_va.floor().0 * PAGE_SIZE;
+            let can_lazy_map = page_offset == 0 && (ph.offset() as usize) % PAGE_SIZE == 0;
+            if !can_lazy_map {
+                // Preserve the exact zero-before/after-segment semantics for
+                // unusual unaligned ELF segments.
+                let map_area = MapArea::new(
+                    start_va,
+                    end_va,
+                    MapType::Framed,
+                    map_perm,
+                    MapAreaType::Elf,
+                );
+                max_end_vpn = max_end_vpn.max(map_area.vpn_range.end());
+                self.push_with_offset(
+                    map_area,
+                    page_offset,
+                    Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
+                )?;
+                continue;
+            }
+
+            let file_end = start_va.0.checked_add(file_size).ok_or(())?;
+            let file_end_vpn = VirtAddr::from(file_end).ceil();
+            if file_size != 0 {
+                let file_area = MapArea::new_mmap(
+                    start_va,
+                    file_end_vpn.into(),
+                    MapType::Framed,
+                    map_perm,
+                    MapAreaType::Mmap,
+                    Some(file.clone()),
+                    ph.offset() as usize,
+                    MmapFlags::MAP_PRIVATE,
+                );
+                max_end_vpn = max_end_vpn.max(file_area.vpn_range.end());
+                self.push_lazily(file_area);
+            }
+
+            let mem_end_vpn = end_va.ceil();
+            if file_end_vpn < mem_end_vpn {
+                let bss_area = MapArea::new(
+                    file_end_vpn.into(),
+                    mem_end_vpn.into(),
+                    MapType::Framed,
+                    map_perm,
+                    MapAreaType::Elf,
+                );
+                max_end_vpn = max_end_vpn.max(bss_area.vpn_range.end());
+                self.push_lazily(bss_area);
+            }
+        }
+        Ok((max_end_vpn, header_va.into()))
+    }
+
     /// 从 ELF 字节创建一个新的用户地址空间。
     ///
     /// 这是 `execve()` 和初始进程创建用户地址空间时使用的入口。它会完成：
@@ -309,7 +452,13 @@ impl MemorySetInner {
         let mut auxv = Vec::new();
         // 新用户地址空间仍必须带内核映射；用户态 trap 进入内核后需要这些映射
         // 才能继续执行内核代码。
+        #[cfg(feature = "perf")]
+        let kernel_space_begin = get_ticks();
         let mut memory_set = Self::new_from_kernel();
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_exec_kernel_space_duration(
+            get_ticks().saturating_sub(kernel_space_begin),
+        );
         let elf = xmas_elf::ElfFile::new(elf_data).unwrap();
         let elf_header = elf.header;
         let magic = elf_header.pt1.magic;
@@ -326,6 +475,8 @@ impl MemorySetInner {
         ));
         auxv.push(Aux::new(AuxType::PHNUM, ph_count as usize));
         auxv.push(Aux::new(AuxType::PAGESZ, PAGE_SIZE as usize));
+        #[cfg(feature = "perf")]
+        let interp_begin = get_ticks();
         if let Some(interp_entry_point) = memory_set.load_dl_interp_if_needed(&elf)? {
             // `AT_BASE` 记录动态解释器的加载基址；动态链接器用它定位自身。
             auxv.push(Aux::new(AuxType::BASE, DL_INTERP_OFFSET));
@@ -335,6 +486,10 @@ impl MemorySetInner {
             // 静态 ELF 没有动态解释器，Linux 语义下 `AT_BASE` 为 0。
             auxv.push(Aux::new(AuxType::BASE, 0));
         }
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_exec_interp_duration(
+            get_ticks().saturating_sub(interp_begin),
+        );
         auxv.push(Aux::new(AuxType::FLAGS, 0 as usize));
         // `AT_ENTRY` 始终是主程序入口，即使实际 trap context 先跳到解释器。
         auxv.push(Aux::new(
@@ -354,7 +509,13 @@ impl MemorySetInner {
         auxv.push(Aux::new(AuxType::NOTELF, 0x112d as usize));
 
         // 主程序按 ELF 自己声明的虚拟地址映射，所以 offset 为 0。
+        #[cfg(feature = "perf")]
+        let map_elf_begin = get_ticks();
         let (max_end_vpn, head_va) = memory_set.map_elf(&elf, VirtAddr(0))?;
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_exec_map_elf_duration(
+            get_ticks().saturating_sub(map_elf_begin),
+        );
 
         // `AT_PHDR` 指向用户虚拟地址中的 program header 表。
         // `head_va` 是包含 ELF header 的 LOAD 段起点，`e_phoff` 是表内偏移。

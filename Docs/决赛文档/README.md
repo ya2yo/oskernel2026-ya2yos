@@ -137,3 +137,4 @@
 - [LTP mmapstress04 文件扩展后的 mmap EOF 误判](./problem/mmapstress04-dynamic-eof.md)
 - [LTP mount03 EOF 读取未更新 atime](./problem/mount03-atime-eof-read.md)
 - [clone procfs 目录延迟物化优化](./problem/clone-procfs-lazy-materialization.md)
+- [execve 动态解释器按需映射优化](./problem/execve-dynamic-interpreter-demand-paging.md)

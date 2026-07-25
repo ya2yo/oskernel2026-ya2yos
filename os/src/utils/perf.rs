@@ -67,6 +67,34 @@ static CLONE_PROCFS_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static CLONE_PROCFS_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CLONE_PROCFS_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 
+static EXEC_IMAGE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXEC_IMAGE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_IMAGE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_FROM_ELF_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXEC_FROM_ELF_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_FROM_ELF_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_STACK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXEC_STACK_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_STACK_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_COMMIT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXEC_COMMIT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_COMMIT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_KERNEL_SPACE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXEC_KERNEL_SPACE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_KERNEL_SPACE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_INTERP_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXEC_INTERP_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_INTERP_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_INTERP_READ_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXEC_INTERP_READ_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_INTERP_READ_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_INTERP_MAP_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXEC_INTERP_MAP_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_INTERP_MAP_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_MAP_ELF_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXEC_MAP_ELF_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXEC_MAP_ELF_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+
 static EXT4_READ_OPS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_READ_BYTES: AtomicUsize = AtomicUsize::new(0);
 static EXT4_LOCK_ACQUIRES: AtomicUsize = AtomicUsize::new(0);
@@ -247,6 +275,96 @@ pub fn record_clone_procfs_duration(elapsed: usize) {
         &CLONE_PROCFS_SAMPLES,
         &CLONE_PROCFS_TICKS,
         &CLONE_PROCFS_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_exec_image_duration(elapsed: usize) {
+    record_duration(
+        &EXEC_IMAGE_SAMPLES,
+        &EXEC_IMAGE_TICKS,
+        &EXEC_IMAGE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_exec_from_elf_duration(elapsed: usize) {
+    record_duration(
+        &EXEC_FROM_ELF_SAMPLES,
+        &EXEC_FROM_ELF_TICKS,
+        &EXEC_FROM_ELF_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_exec_stack_duration(elapsed: usize) {
+    record_duration(
+        &EXEC_STACK_SAMPLES,
+        &EXEC_STACK_TICKS,
+        &EXEC_STACK_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_exec_commit_duration(elapsed: usize) {
+    record_duration(
+        &EXEC_COMMIT_SAMPLES,
+        &EXEC_COMMIT_TICKS,
+        &EXEC_COMMIT_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_exec_kernel_space_duration(elapsed: usize) {
+    record_duration(
+        &EXEC_KERNEL_SPACE_SAMPLES,
+        &EXEC_KERNEL_SPACE_TICKS,
+        &EXEC_KERNEL_SPACE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_exec_interp_duration(elapsed: usize) {
+    record_duration(
+        &EXEC_INTERP_SAMPLES,
+        &EXEC_INTERP_TICKS,
+        &EXEC_INTERP_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_exec_interp_read_duration(elapsed: usize) {
+    record_duration(
+        &EXEC_INTERP_READ_SAMPLES,
+        &EXEC_INTERP_READ_TICKS,
+        &EXEC_INTERP_READ_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_exec_interp_map_duration(elapsed: usize) {
+    record_duration(
+        &EXEC_INTERP_MAP_SAMPLES,
+        &EXEC_INTERP_MAP_TICKS,
+        &EXEC_INTERP_MAP_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_exec_map_elf_duration(elapsed: usize) {
+    record_duration(
+        &EXEC_MAP_ELF_SAMPLES,
+        &EXEC_MAP_ELF_TICKS,
+        &EXEC_MAP_ELF_MAX_TICKS,
         elapsed,
     );
 }
@@ -554,5 +672,68 @@ fn emit_report(now: usize) {
         &CLONE_PROCFS_SAMPLES,
         &CLONE_PROCFS_TICKS,
         &CLONE_PROCFS_MAX_TICKS,
+    );
+    print!("[perf] exec_duration ");
+    emit_duration(
+        "image",
+        &EXEC_IMAGE_SAMPLES,
+        &EXEC_IMAGE_TICKS,
+        &EXEC_IMAGE_MAX_TICKS,
+    );
+    print!("[perf] exec_duration ");
+    emit_duration(
+        "from_elf",
+        &EXEC_FROM_ELF_SAMPLES,
+        &EXEC_FROM_ELF_TICKS,
+        &EXEC_FROM_ELF_MAX_TICKS,
+    );
+    print!("[perf] exec_duration ");
+    emit_duration(
+        "stack",
+        &EXEC_STACK_SAMPLES,
+        &EXEC_STACK_TICKS,
+        &EXEC_STACK_MAX_TICKS,
+    );
+    print!("[perf] exec_duration ");
+    emit_duration(
+        "commit",
+        &EXEC_COMMIT_SAMPLES,
+        &EXEC_COMMIT_TICKS,
+        &EXEC_COMMIT_MAX_TICKS,
+    );
+    print!("[perf] exec_loader_duration ");
+    emit_duration(
+        "kernel_space",
+        &EXEC_KERNEL_SPACE_SAMPLES,
+        &EXEC_KERNEL_SPACE_TICKS,
+        &EXEC_KERNEL_SPACE_MAX_TICKS,
+    );
+    print!("[perf] exec_loader_duration ");
+    emit_duration(
+        "interp",
+        &EXEC_INTERP_SAMPLES,
+        &EXEC_INTERP_TICKS,
+        &EXEC_INTERP_MAX_TICKS,
+    );
+    print!("[perf] exec_loader_duration ");
+    emit_duration(
+        "interp_read",
+        &EXEC_INTERP_READ_SAMPLES,
+        &EXEC_INTERP_READ_TICKS,
+        &EXEC_INTERP_READ_MAX_TICKS,
+    );
+    print!("[perf] exec_loader_duration ");
+    emit_duration(
+        "interp_map",
+        &EXEC_INTERP_MAP_SAMPLES,
+        &EXEC_INTERP_MAP_TICKS,
+        &EXEC_INTERP_MAP_MAX_TICKS,
+    );
+    print!("[perf] exec_loader_duration ");
+    emit_duration(
+        "map_elf",
+        &EXEC_MAP_ELF_SAMPLES,
+        &EXEC_MAP_ELF_TICKS,
+        &EXEC_MAP_ELF_MAX_TICKS,
     );
 }

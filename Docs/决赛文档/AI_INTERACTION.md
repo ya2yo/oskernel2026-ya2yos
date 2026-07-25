@@ -1314,3 +1314,11 @@
 - **场景**：维护者要求分析根目录 `log.ans` 中 LTP `mount03` 的失败并修复，随后要求补充项目文档。
 - **描述**：AI 对照 `mount03.c`、VFS 文件读取路径和 lwext4 时间戳接口，确认测试写入后从 EOF 成功读取 0 字节，而 `OSFile::read()` 的 EOF 快速返回绕过 `Ext4Inode::read_at()`，使普通文件 atime 从未更新。新增 inode 级 `touch_atime()`，由 ext4 在未设置 `MS_NOATIME` 时关闭临时句柄后更新 atime，并在普通读取与 EOF 快速路径调用；目录的 `MS_NODIRATIME` 行为保持不变。最新 RISC-V `log.ans` 中 musl/glibc 均为 `passed 55 failed 0 broken 0`，无 `TFAIL/TBROK`，正常 `shutdown!`；详见 [problem/mount03-atime-eof-read.md](./problem/mount03-atime-eof-read.md) 与 `ai.log` 对应条目。
 - **关联 commit**：`48a981e3`
+
+#### execve 动态解释器按需映射优化（7.25）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者根据新的 `log.ans` 指出 `execve` 是主要耗时并要求继续优化，随后要求先补充文档。
+- **描述**：阶段 perf 计时确认 `from_elf` 和动态解释器 PT_LOAD eager 映射占主要时间。修复 ELF 前缀增量读取、动态解释器页对齐文件段按需 `MAP_PRIVATE` 映射，并让 ELF BSS 缺页分配零页；可写页保持 COW 私有语义。
+- **验证**：当前 RISC-V `log.ans` 的 12 次 `execve` 累计 `208763 us`，CAgent `fs-search pass 764` 并正常 `shutdown!`，无 `panic/TFAIL/TBROK`；RISC-V、LoongArch64 release 构建通过。详见 `ai.log` 对应条目和 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md)。
+- **关联 commit**：当前工作区未提交

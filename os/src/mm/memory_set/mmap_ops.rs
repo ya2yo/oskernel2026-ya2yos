@@ -775,12 +775,14 @@ impl MemorySetInner {
         {
             return handle_mmap_not_present_page_fault(&mut self.page_table, area, vpn, scause);
         }
-        // brk or stack
+        // brk, fixed stack, or an ELF BSS tail registered for lazy loading
         if let Some(area) = self
             .areas
             .iter_mut()
             .filter(|area| {
-                area.area_type == MapAreaType::Brk || area.area_type == MapAreaType::Stack
+                area.area_type == MapAreaType::Brk
+                    || area.area_type == MapAreaType::Stack
+                    || area.area_type == MapAreaType::Elf
             })
             .find(|area| {
                 let (start, end) = area.vpn_range.range();

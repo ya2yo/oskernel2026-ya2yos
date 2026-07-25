@@ -210,19 +210,26 @@ impl Inode for Ext4Inode {
         if buf.is_empty() {
             return Ok(0);
         }
-        let _ext4 = EXT4_OP_LOCK.lock();
-        let inner = self.inner.get_unchecked_mut();
-        let path = Self::live_path(inner);
-        let file = &mut inner.f;
-        // Read-back caches may contain dirty bytes which are not on disk yet.
-        // Check them first, then use a direct ext4 read for the common cold
-        // read-only case.  The latter avoids creating a whole-file write-back
-        // cache and avoids a separate fseek for every VFS read.
-        let r = if let Some(r) = read_cached_at(&path, off, buf) {
-            r
-        } else {
-            file.file_open_read_only(&path).map_err(SysErrNo::from)?;
-            file.file_read_at(off, buf).map_err(SysErrNo::from)?
+        // Keep the lwext4 guard around cache/descriptor access only.  The
+        // compatibility patch below mutates an already-read buffer and does
+        // not touch lwext4, so doing it under the global guard needlessly
+        // extends contention for concurrent readers.
+        let (path, r) = {
+            let _ext4 = EXT4_OP_LOCK.lock();
+            let inner = self.inner.get_unchecked_mut();
+            let path = Self::live_path(inner);
+            let file = &mut inner.f;
+            // Read-back caches may contain dirty bytes which are not on disk yet.
+            // Check them first, then use a direct ext4 read for the common cold
+            // read-only case.  The latter avoids creating a whole-file write-back
+            // cache and avoids a separate fseek for every VFS read.
+            let r = if let Some(r) = read_cached_at(&path, off, buf) {
+                r
+            } else {
+                file.file_open_read_only(&path).map_err(SysErrNo::from)?;
+                file.file_read_at(off, buf).map_err(SysErrNo::from)?
+            };
+            (path, r)
         };
         #[cfg(feature = "perf")]
         crate::utils::perf::record_ext4_read(r);
@@ -586,11 +593,16 @@ impl Inode for Ext4Inode {
     ///
     /// `off` 是 lwext4 目录读取 cookie，不一定等价于普通字节偏移。
     fn read_dentry(&self, off: usize, len: usize) -> SysResult<(Vec<u8>, isize)> {
-        let _ext4 = EXT4_OP_LOCK.lock();
-        let inner = self.inner.get_unchecked_mut();
-        let path = Self::live_path(inner);
-        let file = &mut inner.f;
-        let entries = file.read_dir_from(off as u64).map_err(SysErrNo::from)?;
+        // `read_dir_from` is the only lwext4 operation here.  Keep directory
+        // entry serialization and mount-table inspection outside the global
+        // guard so a large directory does not block unrelated file reads.
+        let (path, entries) = {
+            let _ext4 = EXT4_OP_LOCK.lock();
+            let inner = self.inner.get_unchecked_mut();
+            let path = Self::live_path(inner);
+            let entries = inner.f.read_dir_from(off as u64).map_err(SysErrNo::from)?;
+            (path, entries)
+        };
         let mut de: Vec<u8> = Vec::new();
         let (mut res, mut f_off) = (0usize, off);
         for entry in entries {
@@ -609,13 +621,11 @@ impl Inode for Ext4Inode {
             let suppress = MNT_TABLE
                 .lock()
                 .mount_for_path(&path)
-                .map(|(_, _, _, flags)| {
-                    flags & (MS_NOATIME | MS_NODIRATIME) != 0
-                })
+                .map(|(_, _, _, flags)| flags & (MS_NOATIME | MS_NODIRATIME) != 0)
                 .unwrap_or(false);
             if !suppress {
                 let now = crate::timer::realtime();
-                file.set_time(Some(now.tv_sec as u64), None, None).ok();
+                let _ = self.set_timestamps(Some(now.tv_sec as u64), None, None);
             }
         }
         // assert!(res != 0);

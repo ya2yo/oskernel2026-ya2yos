@@ -3,6 +3,8 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
+#[cfg(feature = "perf")]
+use crate::arch::time::get_ticks;
 use log::debug;
 
 use crate::{
@@ -338,6 +340,8 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     check_not_write_open(&app_inode.inode.path())?;
 
     let app_size = app_stat.st_size.max(0) as usize;
+    #[cfg(feature = "perf")]
+    let image_begin = get_ticks();
     let mut elf_data = read_exec_probe_with_size(&app_inode.inode, app_size)?;
     if is_elf(&elf_data) {
         elf_data = read_elf_load_image_with_prefix(&app_inode.inode, &elf_data, app_size)?;
@@ -390,6 +394,8 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
             return Err(SysErrNo::ENOEXEC);
         }
     }
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_exec_image_duration(get_ticks().saturating_sub(image_begin));
     validate_exec_argument_budget(&argv_vec, &env)?;
     fs_info.set_exe(abs_path);
     drop(memory_set);

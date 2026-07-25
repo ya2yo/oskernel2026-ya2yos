@@ -77,3 +77,29 @@ EXT4 锁、文件页缓存、文件 mmap 缺页和调度器路径中记录低开
 syscall 和 EXT4 操作次数，说明下一轮应先拆分真实上下文切换与调度循环/ready queue 的
 重复选取，再决定是否继续扩大文件系统并行度；当前不能把 EXT4 锁认定为唯一根因，也不能
 据此宣称完整编译已提速或正式评分通过。
+
+## 2026-07-25：收窄读取与目录枚举的 EXT4 锁临界区
+
+### 新观测
+
+定向 `cagent fs-search` 的最终 perf 快照显示，44 次 `read` 累计约 `767462 us`、最大单次
+`340045 us`；EXT4 锁等待 `2818072` tick、持有 `11312293` tick。`read_active` 只有约
+`12925 us`，说明额外时间主要发生在阻塞/锁竞争，而不是用户缓冲复制。
+
+### 根因与修复
+
+`Ext4Inode::read_at()` 在底层读取完成后仍持有全局锁执行只读动态库字节补丁；
+`read_dentry()` 还在锁内序列化目录项、查询挂载标志并更新 atime。上述工作不访问 lwext4，
+会把纯内存开销放大为所有 hart 的锁等待。
+
+本轮将 `read_at()` 的锁范围限制为缓存和 lwext4 descriptor 访问，将动态库补丁移到解锁后；
+`read_dentry()` 只在 `read_dir_from()` 期间持锁，目录项打包和挂载表查询移到锁外，atime
+更新改为单独的短 `set_timestamps()` 操作。没有放宽 lwext4 的全局 SMP 安全锁。
+
+### 验证
+
+RISC-V perf 内核使用同一 final-2026 镜像的临时 qcow2 overlay 重复运行两次，`fs-search`
+分别为 `pass 695` 和 `pass 722`；最终快照的 `read` 累计为 `590669/624178 us`，锁等待为
+`914651/973686` tick，锁持有为 `8823483/9019860` tick。两次均正常 `shutdown!`，无
+`panic/TFAIL/TBROK`；宿主 wall-clock 分别约 `2.31/2.30 s`。这是定向样本，不代表完整
+BuildStorm 446 crate 的加速比例。RISC-V 与 LoongArch64 release 构建均通过。

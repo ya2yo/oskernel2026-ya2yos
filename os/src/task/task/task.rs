@@ -556,14 +556,22 @@ impl TaskControlBlock {
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
         debug!("exec: goto from_elf");
+        #[cfg(feature = "perf")]
+        let from_elf_begin = get_ticks();
         let (memory_set, user_hp, entry_point, mut auxv) = MemorySetInner::from_elf(elf_data)
             .map_err(|_| {
                 error!("exec: OOM during ELF load");
                 SysErrNo::ENOMEM
             })?;
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_exec_from_elf_duration(
+            get_ticks().saturating_sub(from_elf_begin),
+        );
         validate_exec_stack_layout(argv, env, auxv.len())?;
 
         debug!("exec: return from from_elf");
+        #[cfg(feature = "perf")]
+        let stack_begin = get_ticks();
         let memory_set = MemorySet::new(memory_set);
         let (ustack_top, trap_cx_bottom, trap_cx_ppn) = alloc_user_res_in_memory_set(&memory_set)?;
         let (user_sp, argv_base, envp_base) =
@@ -574,7 +582,11 @@ impl TaskControlBlock {
         trap_cx.set_a1(argv_base);
         trap_cx.set_a2(envp_base);
         let new_comm = argv.first().map(|argv0| task_comm_from_argv0(argv0));
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_exec_stack_duration(get_ticks().saturating_sub(stack_begin));
 
+        #[cfg(feature = "perf")]
+        let commit_begin = get_ticks();
         // execve replaces a process-wide address space.  No sibling may keep
         // an old trap context or user stack once that replacement happens.
         crate::task::kill_other_threads_before_exec(self);
@@ -676,6 +688,10 @@ impl TaskControlBlock {
         for parent_task in wake_parent_tasks {
             crate::task::ready_queue::add_task(&parent_task);
         }
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_exec_commit_duration(
+            get_ticks().saturating_sub(commit_begin),
+        );
         Ok(())
     }
     /// 复制进程，注意这里需要实现 fork 的主要逻辑
