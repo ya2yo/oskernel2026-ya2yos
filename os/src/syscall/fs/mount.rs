@@ -407,6 +407,18 @@ pub fn sys_mount(
         for (source, target) in &copies {
             mirror_bind_tree(source, target)?;
         }
+        // After moving the mount tree, purge the old mount point contents.
+        // MS_MOVE relocates the mount subtree to the new target, so the
+        // original mount root must be empty afterwards.  Propagation copies
+        // share the same source path; purge it once.
+        if let Some((first_source, _)) = copies.first() {
+            if let Err(err) = purge_dir_contents(first_source) {
+                warn!(
+                    "[sys_mount] failed to purge move source {}: {:?}",
+                    first_source, err
+                );
+            }
+        }
         refresh_proc_mounts();
         return Ok(0);
     }
