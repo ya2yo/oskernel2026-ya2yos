@@ -1,5 +1,5 @@
 PLATFORM := qemu
-MEMORY_SIZE := 8G  # 修改时同步 os/src/arch/riscv64/qemu/memory_layout.rs
+MEMORY_SIZE := 16G  # 修改时同步 os/src/arch/riscv64/qemu/memory_layout.rs
 SMP := 8  # CPU核心数
 MODE := release
 

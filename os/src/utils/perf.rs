@@ -48,9 +48,9 @@ static SYSCALL_NET_SEND_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_NET_RECV_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_NET_RECV_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_NET_RECV_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
-static SYSCALL_PROCESS_CLONE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
-static SYSCALL_PROCESS_CLONE_TICKS: AtomicUsize = AtomicUsize::new(0);
-static SYSCALL_PROCESS_CLONE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_CLONE_TOTAL_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_CLONE_TOTAL_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PROCESS_CLONE_TOTAL_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_PROCESS_EXEC_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_PROCESS_EXEC_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_PROCESS_EXEC_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -66,6 +66,12 @@ static CLONE_ADDRESS_SPACE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CLONE_PROCESS_TOTAL_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static CLONE_PROCESS_TOTAL_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CLONE_PROCESS_TOTAL_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_ACTIVE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_ACTIVE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_VFORK_WAIT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static CLONE_VFORK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static CLONE_VFORK_WAIT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CLONE_BOOTSTRAP_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static CLONE_BOOTSTRAP_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CLONE_BOOTSTRAP_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -262,9 +268,9 @@ pub fn record_syscall_duration(id: usize, begin: usize) {
             &SYSCALL_NET_RECV_MAX_TICKS,
         ),
         220 | 435 => (
-            &SYSCALL_PROCESS_CLONE_SAMPLES,
-            &SYSCALL_PROCESS_CLONE_TICKS,
-            &SYSCALL_PROCESS_CLONE_MAX_TICKS,
+            &SYSCALL_PROCESS_CLONE_TOTAL_SAMPLES,
+            &SYSCALL_PROCESS_CLONE_TOTAL_TICKS,
+            &SYSCALL_PROCESS_CLONE_TOTAL_MAX_TICKS,
         ),
         221 => (
             &SYSCALL_PROCESS_EXEC_SAMPLES,
@@ -300,6 +306,29 @@ pub fn record_clone_process_total_duration(elapsed: usize) {
         &CLONE_PROCESS_TOTAL_SAMPLES,
         &CLONE_PROCESS_TOTAL_TICKS,
         &CLONE_PROCESS_TOTAL_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile clone work up to the child becoming runnable, excluding a possible
+/// `CLONE_VFORK` parent wait after the child has been published.
+#[inline]
+pub fn record_clone_active_duration(elapsed: usize) {
+    record_duration(
+        &CLONE_ACTIVE_SAMPLES,
+        &CLONE_ACTIVE_TICKS,
+        &CLONE_ACTIVE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile the semantic parent wait imposed by `CLONE_VFORK`.
+#[inline]
+pub fn record_clone_vfork_wait_duration(elapsed: usize) {
+    record_duration(
+        &CLONE_VFORK_WAIT_SAMPLES,
+        &CLONE_VFORK_WAIT_TICKS,
+        &CLONE_VFORK_WAIT_MAX_TICKS,
         elapsed,
     );
 }
@@ -520,6 +549,26 @@ pub fn record_read_active_duration(elapsed: usize) {
 /// Scope guard used by `sys_read` so error returns are included as well.
 pub struct ReadActiveGuard {
     begin: usize,
+}
+
+/// Scope guard for clone setup work.  The caller drops it before a vfork
+/// parent suspension so the active bucket does not include child execution.
+pub struct CloneActiveGuard {
+    begin: usize,
+}
+
+impl CloneActiveGuard {
+    #[inline]
+    pub fn new() -> Self {
+        Self { begin: get_ticks() }
+    }
+}
+
+impl Drop for CloneActiveGuard {
+    #[inline]
+    fn drop(&mut self) {
+        record_clone_active_duration(get_ticks().saturating_sub(self.begin));
+    }
 }
 
 impl ReadActiveGuard {
@@ -746,10 +795,10 @@ fn emit_report(now: usize) {
     );
     print!("[perf] syscall_duration ");
     emit_duration(
-        "clone",
-        &SYSCALL_PROCESS_CLONE_SAMPLES,
-        &SYSCALL_PROCESS_CLONE_TICKS,
-        &SYSCALL_PROCESS_CLONE_MAX_TICKS,
+        "clone_total",
+        &SYSCALL_PROCESS_CLONE_TOTAL_SAMPLES,
+        &SYSCALL_PROCESS_CLONE_TOTAL_TICKS,
+        &SYSCALL_PROCESS_CLONE_TOTAL_MAX_TICKS,
     );
     print!("[perf] syscall_duration ");
     emit_duration(
@@ -785,6 +834,20 @@ fn emit_report(now: usize) {
         &CLONE_PROCESS_TOTAL_SAMPLES,
         &CLONE_PROCESS_TOTAL_TICKS,
         &CLONE_PROCESS_TOTAL_MAX_TICKS,
+    );
+    print!("[perf] clone_duration ");
+    emit_duration(
+        "active",
+        &CLONE_ACTIVE_SAMPLES,
+        &CLONE_ACTIVE_TICKS,
+        &CLONE_ACTIVE_MAX_TICKS,
+    );
+    print!("[perf] clone_duration ");
+    emit_duration(
+        "vfork_wait",
+        &CLONE_VFORK_WAIT_SAMPLES,
+        &CLONE_VFORK_WAIT_TICKS,
+        &CLONE_VFORK_WAIT_MAX_TICKS,
     );
     print!("[perf] clone_duration ");
     emit_duration(

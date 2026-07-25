@@ -88,6 +88,8 @@ pub fn sys_clone(
     //     return Ok(current_task().unwrap().tid());
     // }
 
+    #[cfg(feature = "perf")]
+    let clone_active_guard = crate::utils::perf::CloneActiveGuard::new();
     let task = current_task().unwrap();
     let new_task = task.clone_process(
         flags,
@@ -107,12 +109,21 @@ pub fn sys_clone(
     crate::utils::perf::record_clone_enqueue_duration(
         crate::arch::time::get_ticks().saturating_sub(enqueue_begin),
     );
+    // Do not charge the semantic vfork parent wait to child creation work.
+    #[cfg(feature = "perf")]
+    drop(clone_active_guard);
     if flags.contains(CloneFlags::CLONE_VFORK) {
         // vfork(2) must not return to the parent until the child has called
         // execve() or exited. clone_process() already marked this task as
         // VforkBlocked; switch immediately so userspace cannot reclaim the
         // shared child stack before the child first runs.
+        #[cfg(feature = "perf")]
+        let vfork_wait_begin = crate::arch::time::get_ticks();
         suspend_current_and_run_next();
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_clone_vfork_wait_duration(
+            crate::arch::time::get_ticks().saturating_sub(vfork_wait_begin),
+        );
     }
     Ok(new_tid)
 }

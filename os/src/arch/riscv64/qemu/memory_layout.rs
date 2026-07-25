@@ -5,7 +5,7 @@ use crate::config::THREAD_MAX_NUM;
 // 物理内存的起始地址
 pub const PHYSICAL_MEMORY_START: usize = 0x8000_0000;
 // QEMU virt RAM is one contiguous range starting at PHYSICAL_MEMORY_START.
-pub const PHYSICAL_MEMORY_SIZE: usize = 0x2_0000_0000; // 8GB
+pub const PHYSICAL_MEMORY_SIZE: usize = 0x4_0000_0000; // 16GB
 
 // The boot page table in entry.asm has a single 1GiB direct-map leaf. CMA
 // must not place its free-list metadata above this range before the full
