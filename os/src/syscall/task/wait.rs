@@ -396,6 +396,9 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
     debug!("sys_waitid <= idtype: {idtype:?}, id: {id:?}, options: {options:?}");
 
     block_on(poll_fn(|cx| {
+        #[cfg(feature = "perf")]
+        let _active_guard = crate::utils::perf::WaitActiveGuard::new();
+
         let task = current_task().unwrap();
         let mut process_meta = task.process.meta_lock();
 

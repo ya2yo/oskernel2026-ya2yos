@@ -99,6 +99,9 @@ fn futex_wait_bitset(
     timeout: Option<Timespec>,
 ) -> SyscallRet {
     debug!("wait bitset = {:b}", bitset);
+    #[cfg(feature = "perf")]
+    let active_guard = crate::utils::perf::FutexActiveGuard::new();
+
     // 清除上次的定时器超时标记
     task.inner_lock().futex_timedout = false;
 
@@ -130,8 +133,12 @@ fn futex_wait_bitset(
     drop(task);
     drop(waitq);
     debug!("futex_wait_bitset sleeping...");
+    #[cfg(feature = "perf")]
+    drop(active_guard);
     block_current_and_run_next();
     debug!("futex_wait_bitset wake up!");
+    #[cfg(feature = "perf")]
+    let _resume_active_guard = crate::utils::perf::FutexActiveGuard::new();
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
 
@@ -276,6 +283,8 @@ pub fn sys_futex(
 ) -> SyscallRet {
     let cmd = FutexCmd::try_from(futex_op & 0x7f).map_err(|_| SysErrNo::EINVAL)?;
     let opt = FutexOpt::from_bits_truncate(futex_op);
+    #[cfg(feature = "perf")]
+    let active_guard = crate::utils::perf::FutexActiveGuard::new();
     // 检查uaddr一定是4字节对齐（因为是int*）
     if uaddr.align_offset(4) != 0 {
         return Err(SysErrNo::EINVAL);
@@ -366,6 +375,8 @@ pub fn sys_futex(
     drop(task_inner);
     match cmd {
         FutexCmd::Wait | FutexCmd::WaitBitset => {
+            #[cfg(feature = "perf")]
+            drop(active_guard);
             let bitset = if cmd == FutexCmd::Wait {
                 u32::MAX
             } else {

@@ -1344,3 +1344,11 @@
   `/var/tmp` 只读在启动前失败，尚无新的 guest perf 快照。详见 `ai.log` 对应条目和
   [problem/buildstorm-read-path-lock-contention.md](./buildstorm-read-path-lock-contention.md)。
 - **关联 commit**：当前工作区未提交
+
+#### 阻塞型 wait/futex perf 改用实际运行时间（7.25）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：调整阻塞型 syscall 的耗时统计，剔除任务被调度出去期间的时间
+- **描述**：AI 追踪通用 syscall 边界计时、`waitpid`/`waitid` 的 poll 阻塞和 futex 的任务切换，确认原 `wait`/`futex` 桶把睡眠区间计入累计 tick。改为 wait/futex 使用活动 guard：wait 按实际 poll，futex 按等待前准备、唤醒后收尾及非阻塞 wake/requeue 区间计时；报告中的 `wait`/`futex` 直接使用活动桶。脚本兼容旧日志，优先以 `wait_active` 替换旧 `wait`。
+- **验证**：RISC-V、LoongArch64 `make perf` 通过；旧 `log.ans` 解析后 `wait` 采用 `wait_active` 的 `25.291 ms`。QEMU 因宿主 `/var/tmp` 只读在启动前失败，未取得新的 guest perf 快照。
+- **关联 commit**：当前工作区未提交

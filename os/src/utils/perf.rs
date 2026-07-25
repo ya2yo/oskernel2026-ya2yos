@@ -92,9 +92,6 @@ static SYSCALL_PROCESS_CLONE_TOTAL_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_PROCESS_EXEC_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_PROCESS_EXEC_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_PROCESS_EXEC_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
-static SYSCALL_PROCESS_WAIT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
-static SYSCALL_PROCESS_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
-static SYSCALL_PROCESS_WAIT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_PROCESS_WAIT_ACTIVE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_PROCESS_WAIT_ACTIVE_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_PROCESS_WAIT_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -221,8 +218,9 @@ pub fn record_syscall(id: usize) {
 
 /// Return whether a syscall needs a duration sample. BuildStorm's hot path is
 /// dominated by process creation plus filesystem metadata and memory mapping,
-/// so those categories are sampled at their syscall boundaries. The feature is
-/// opt-in and the report remains aggregate-only.
+/// so those categories are sampled at their syscall boundaries. Blocking
+/// wait/futex operations are intentionally excluded: their duration is
+/// recorded by active guards so descheduled time is not charged to the syscall.
 #[inline]
 pub fn should_record_syscall_duration(id: usize) -> bool {
     matches!(
@@ -265,7 +263,6 @@ pub fn should_record_syscall_duration(id: usize) -> bool {
             | 44
             | 88
             | 62
-            | 95
             | 202
             | 203
             | 206
@@ -281,15 +278,11 @@ pub fn should_record_syscall_duration(id: usize) -> bool {
             | 222
             | 226
             | 242
-            | 260
             | 276
             | 285
             | 291
             | 437
             | 436
-            | 98
-            | 449
-            | 455
             | 134
     )
 }
@@ -367,11 +360,6 @@ pub fn record_syscall_duration(id: usize, begin: usize) {
             &SYSCALL_MM_TICKS,
             &SYSCALL_MM_MAX_TICKS,
         ),
-        98 | 449 | 455 => (
-            &SYSCALL_FUTEX_SAMPLES,
-            &SYSCALL_FUTEX_TICKS,
-            &SYSCALL_FUTEX_MAX_TICKS,
-        ),
         134 => (
             &SYSCALL_SIGACTION_SAMPLES,
             &SYSCALL_SIGACTION_TICKS,
@@ -406,11 +394,6 @@ pub fn record_syscall_duration(id: usize, begin: usize) {
             &SYSCALL_PROCESS_EXEC_SAMPLES,
             &SYSCALL_PROCESS_EXEC_TICKS,
             &SYSCALL_PROCESS_EXEC_MAX_TICKS,
-        ),
-        95 | 260 => (
-            &SYSCALL_PROCESS_WAIT_SAMPLES,
-            &SYSCALL_PROCESS_WAIT_TICKS,
-            &SYSCALL_PROCESS_WAIT_MAX_TICKS,
         ),
         _ => return,
     };
@@ -665,6 +648,21 @@ pub fn record_wait_active_duration(elapsed: usize) {
     );
 }
 
+/// Record one futex interval in which the task was actually executing.
+///
+/// A futex wait can leave the task descheduled between the pre-wait setup and
+/// the wakeup path. Reusing the futex bucket for these active intervals keeps
+/// the report compatible while removing that sleep time from the aggregate.
+#[inline]
+pub fn record_futex_active_duration(elapsed: usize) {
+    record_duration(
+        &SYSCALL_FUTEX_SAMPLES,
+        &SYSCALL_FUTEX_TICKS,
+        &SYSCALL_FUTEX_MAX_TICKS,
+        elapsed,
+    );
+}
+
 /// Record the non-blocking portion of a regular-file read syscall.
 #[inline]
 pub fn record_read_active_duration(elapsed: usize) {
@@ -787,6 +785,25 @@ impl Drop for WaitActiveGuard {
     #[inline]
     fn drop(&mut self) {
         record_wait_active_duration(get_ticks().saturating_sub(self.begin));
+    }
+}
+
+/// Scope guard for one actively executing futex interval.
+pub struct FutexActiveGuard {
+    begin: usize,
+}
+
+impl FutexActiveGuard {
+    #[inline]
+    pub fn new() -> Self {
+        Self { begin: get_ticks() }
+    }
+}
+
+impl Drop for FutexActiveGuard {
+    #[inline]
+    fn drop(&mut self) {
+        record_futex_active_duration(get_ticks().saturating_sub(self.begin));
     }
 }
 
@@ -1078,16 +1095,10 @@ fn emit_report(now: usize) {
         &SYSCALL_PROCESS_EXEC_TICKS,
         &SYSCALL_PROCESS_EXEC_MAX_TICKS,
     );
+    // Keep the historical label while reporting only active poll intervals.
     print!("[perf] syscall_duration ");
     emit_duration(
         "wait",
-        &SYSCALL_PROCESS_WAIT_SAMPLES,
-        &SYSCALL_PROCESS_WAIT_TICKS,
-        &SYSCALL_PROCESS_WAIT_MAX_TICKS,
-    );
-    print!("[perf] syscall_duration ");
-    emit_duration(
-        "wait_active",
         &SYSCALL_PROCESS_WAIT_ACTIVE_SAMPLES,
         &SYSCALL_PROCESS_WAIT_ACTIVE_TICKS,
         &SYSCALL_PROCESS_WAIT_ACTIVE_MAX_TICKS,

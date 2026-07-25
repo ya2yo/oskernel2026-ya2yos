@@ -7067,3 +7067,33 @@ EXT4 适配器，`SEEK_END` 还会调用 `inode.size()`。日志只有调用频�
 维护者已有的 `user/src/bin/initproc.rs` 定向 MINIBUILD 入口，未恢复 `common.rs`。
 `cargo fmt`、`git diff --check`、RISC-V perf 构建和双架构 release 构建通过。QEMU 尝试仍
 在启动前因宿主 `/var/tmp` 只读失败，尚未取得新的 `[perf]` 快照。
+
+## 2026-07-25：新增 perf 耗时 SVG 饼图分析脚本
+
+### 用户输入
+
+维护者要求新增一个放在 `scripts/` 下的 Python 脚本，统计 `log.ans` 最后一个 `shutdown!` 后输出的耗时，并以图例包含具体耗时和比例的饼图呈现。
+
+### 分析与采纳结论
+
+AI 检查现有日志格式，确认最终快照的耗时统一为 `*_duration` 行中的 `total_us`，且 `*_active` 是父项的嵌套子阶段。新增 `scripts/plot_perf_durations.py`，默认选取最后一个 `shutdown!` 后的 `syscall_duration` 非零项并排除 `*_active`，避免默认图表重复计时；支持 `--group`、`--include-active`、`--list-groups` 和自定义输出路径。由于环境未安装 `matplotlib`，采用 Python 标准库直接生成 SVG，浏览器可直接打开，图例包含累计耗时、比例、samples 和 max。
+
+### 修改与验证
+
+修改 `scripts/plot_perf_durations.py`，并按项目约定更新开发日志和 `AI_INTERACTION.md`。使用当前 `log.ans` 验证最后一个 `shutdown!` 为第 599 行，默认汇总 `1588.140 s`，其中 `wait` 为 `804.410 s (50.65%)`、`futex` 为 `758.103 s (47.74%)`；`--list-groups`、`--include-active` 和 `clone_duration` 分组均可运行。`python3 -m py_compile`、`git diff --check` 通过，生成 SVG 可由标准 XML 解析器读取；未运行内核构建，因为本次仅新增日志分析工具。
+
+## 2026-07-25：阻塞型 wait/futex perf 改用实际运行时间
+
+### 用户输入
+
+维护者要求调整 `wait` 这类 syscall 的统计逻辑，只统计任务实际运行消耗的时间，不把任务被阻塞期间的时间计入耗时。
+
+### 分析与采纳结论
+
+AI 追踪 `syscall()` 的通用边界计时、`waitpid`/`waitid` 的 `block_on(poll_fn)` 和 futex 的 `block_current_and_run_next()`，确认原 `wait`/`futex` 桶会跨越任务阻塞期间累计架构 tick。保留 wait 每次 poll 的活动 guard，并为 `waitid` 补齐同样的 guard；wait/futex syscall 从通用边界采样中移除。futex 现在分别统计等待前准备、唤醒后收尾和非阻塞 wake/requeue 的活动区间，在真正切换到阻塞调度器前显式结束 guard。报告中的 `wait` 直接输出活动桶，`futex` 复用活动累计桶。
+
+同时更新 `scripts/plot_perf_durations.py`：对于旧日志中同时存在的 `wait` 与 `wait_active`，默认用 `wait_active` 替换 `wait`，避免历史快照的饼图继续展示阻塞时间。
+
+### 修改与验证
+
+修改 `os/src/utils/perf.rs`、`os/src/syscall/task/wait.rs`、`os/src/task/futex.rs` 和 `scripts/plot_perf_durations.py`，并更新开发日志与 `AI_INTERACTION.md`。`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 均通过；旧 `log.ans` 解析后 `wait` 从 `804.410 s` 改按 `wait_active` 显示为 `25.291 ms`。QEMU 运行尝试因宿主无法创建 `/var/tmp` 临时文件而在启动前失败，未取得新的 guest perf 快照。
