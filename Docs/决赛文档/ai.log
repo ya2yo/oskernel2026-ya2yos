@@ -7043,3 +7043,27 @@ wall-clock，包含 `timeout` 与 HTTP 交互，但不包含后续 `cat`/`eval`/
 `panic/TFAIL/TBROK`。`make TARGET_ARCH=riscv64`（含两架构 release）和
 `make perf TARGET_ARCH=riscv64` 通过，仅有既有 smoltcp warning。未完成第二次独立 QEMU 样本、
 完整 LTP/BuildStorm 或 LoongArch64 QEMU 运行时，故不把单样本比例泛化为正式评分结果。
+
+## 2026-07-25：BuildStorm MINIBUILD `lseek` 热路径计时
+
+### 用户输入
+
+维护者说明已撤销 `common.rs` 修改，要求不要统计用户态总耗时，而是根据 `debug.ans` 的
+实际调用路径找出 `buildstorm::minibuild::run()` 的内核瓶颈，并在关键位置加计时。
+
+### 分析与采纳结论
+
+AI 清理了用户态总计时假设，沿 `initproc -> materialize -> fork/exec bash -> cargo/rustc`
+核对 `debug.ans`。日志共 64389 行，PID 64 有 8329 次 `Lseek`，且主要集中在 cargo/rustc
+处理归档或对象文件的连续 seek/read 区间。源码路径为 `sys_lseek()` -> `OSFile::lseek()`；
+后者每次先执行 `inode.path()`，再在非特殊节点上回退到 `inode.types()`，两步都进入串行
+EXT4 适配器，`SEEK_END` 还会调用 `inode.size()`。日志只有调用频次没有 tick，所以只把
+该路径作为待证伪热点，不宣称已经测得时间占比。
+
+### 修改与验证
+
+修改 `os/src/fs/files/os_file.rs` 和 `os/src/utils/perf.rs`：新增 VFS `lseek` 实现总计时，
+并拆分 `type_check`、`size`、`sparse` 阶段；syscall `lseek` 从泛 path 桶独立统计。保留
+维护者已有的 `user/src/bin/initproc.rs` 定向 MINIBUILD 入口，未恢复 `common.rs`。
+`cargo fmt`、`git diff --check`、RISC-V perf 构建和双架构 release 构建通过。QEMU 尝试仍
+在启动前因宿主 `/var/tmp` 只读失败，尚未取得新的 `[perf]` 快照。

@@ -1330,3 +1330,17 @@
 - **描述**：AI 对比动态解释器 VMA 路径与 perf 快照，确认页对齐解释器段虽已按需映射，仍先被完整读入内核 `Vec`。修复为仅读 ELF/program header，页对齐段继续使用 `MAP_PRIVATE` 文件 VMA，未对齐 RW 段直接读入已分配用户页，维持零填充、动态库字节补丁与私有 COW 语义。`472` 被确认是 `agent_lite` 的用户态 wall-clock，不是单个内核时间桶；相邻 494 ms 快照的首尾并不与 agent 窗口对齐，故其中 4 次 `execve` 仅可给出近似内核活动，不能视为 472 ms 的精确组成。
 - **验证**：RISC-V `log.ans` 中 10 次 `execve` 由 `188572 us` 降至 `170980 us`，8 次解释器读取由 `23402 us` 降至 `8371 us`；`fs-create pass 472` 后正常 `shutdown!`，无 `panic/TFAIL/TBROK`。RISC-V、LoongArch64 release 与 RISC-V perf 构建通过；未运行 LoongArch64 QEMU、完整 LTP/BuildStorm 或第二次独立性能样本。详见 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md) 和 `ai.log`。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm MINIBUILD `lseek` 热路径计时（7.25）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者撤销 `common.rs` 修改后，要求根据 `debug.ans` 的实际调用路径定位
+  `buildstorm::minibuild::run()` 慢点并增加内核关键阶段计时。
+- **描述**：按 PID/syscall 聚合发现 PID 64 有 8329 次 `lseek`，追踪到
+  `sys_lseek()` -> `OSFile::lseek()` 的 `inode.path()`/`inode.types()` EXT4 类型检查，以及
+  `SEEK_END` 大小查询和 `SEEK_DATA/HOLE` 探测。新增 `lseek` syscall/VFS 总计时与三个阶段
+  桶，未把 debug 日志中的调用次数当作耗时结论，也未恢复 `common.rs`。
+- **验证**：RISC-V perf、RISC-V/LoongArch64 release 构建和格式检查通过；QEMU 因宿主
+  `/var/tmp` 只读在启动前失败，尚无新的 guest perf 快照。详见 `ai.log` 对应条目和
+  [problem/buildstorm-read-path-lock-contention.md](./buildstorm-read-path-lock-contention.md)。
+- **关联 commit**：当前工作区未提交

@@ -103,3 +103,34 @@ RISC-V perf 内核使用同一 final-2026 镜像的临时 qcow2 overlay 重复�
 `914651/973686` tick，锁持有为 `8823483/9019860` tick。两次均正常 `shutdown!`，无
 `panic/TFAIL/TBROK`；宿主 wall-clock 分别约 `2.31/2.30 s`。这是定向样本，不代表完整
 BuildStorm 446 crate 的加速比例。RISC-V 与 LoongArch64 release 构建均通过。
+
+## 2026-07-25：MINIBUILD `lseek` 热路径计时
+
+### 新观测
+
+本轮根据 `debug.ans` 追踪的是 `buildstorm::minibuild::run()`，不是用户态总耗时。
+日志共 64389 行，`BUILDSTORM_DEBUG_MINIBUILD ok` 位于约第 64333 行；按 PID 和 syscall
+聚合后，PID 64 出现 8329 次 `Lseek`、3511 次 `Read` 和 1231 次 `Write`。其中大量
+`Lseek` 集中在 cargo/rustc 处理归档或对象文件的连续 seek/read 区间，属于当前最明确的
+高频候选，但 `debug.ans` 本身没有 tick，不能仅凭次数断言它占用了多少实际时间。
+
+### 埋点
+
+`OSFile::lseek()` 现在由 `LseekDurationGuard` 统计 VFS 实现总时间，并把以下阶段单独
+聚合为 samples、total_ticks、max_ticks：
+
+- `type_check`：`inode.path()`、特殊节点索引查询和 `inode.types()` 回退；
+- `size`：`SEEK_END` 的 `inode.size()`，包括已知长度缓存和 EXT4 查询；
+- `sparse`：`SEEK_DATA`/`SEEK_HOLE` 探测。
+
+syscall 层的 `lseek` 仍单独统计完整 syscall 时间，因此可以用 `lseek - impl` 估算 fd
+查找和 syscall 分发开销。`lseek` 已从泛化 path duration 桶独立出来，报告仍限频且不打印
+逐调用日志。
+
+### 验证与边界
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64` 通过；普通 `make TARGET_ARCH=riscv64` 同时完成 RISC-V
+和 LoongArch64 release 构建。尝试使用 `/tmp` 作为临时目录运行 guest，QEMU 仍因宿主
+`/var/tmp` 只读而在启动前失败，因此尚未取得新的 `[perf] lseek_duration` 快照，也不把
+`lseek` 认定为已证实的时间占比或宣称完整 BuildStorm 加速。

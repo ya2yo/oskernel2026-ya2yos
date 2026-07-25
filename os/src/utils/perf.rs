@@ -19,10 +19,12 @@ static SYSCALL_WRITE: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_OPEN: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_CLOSE: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_STAT: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_LSEEK: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_MM: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_PROCESS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_FUTEX: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_SCHED_YIELD: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_SIGACTION: AtomicUsize = AtomicUsize::new(0);
 
 static SYSCALL_READ_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_READ_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -33,6 +35,42 @@ static SYSCALL_READ_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_WRITE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_WRITE_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_WRITE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_OPEN_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_OPEN_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_OPEN_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_CLOSE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_CLOSE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_CLOSE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_STAT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_STAT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_STAT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_LSEEK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_LSEEK_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_LSEEK_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_IMPL_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_IMPL_TICKS: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_IMPL_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_TYPE_CHECK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_TYPE_CHECK_TICKS: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_TYPE_CHECK_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_SIZE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_SIZE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_SIZE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_SPARSE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_SPARSE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static LSEEK_SPARSE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PATH_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PATH_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_PATH_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_MM_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_MM_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_MM_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_FUTEX_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_FUTEX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_FUTEX_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_SIGACTION_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_SIGACTION_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_SIGACTION_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_NET_CONNECT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_NET_CONNECT_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_NET_CONNECT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -158,10 +196,14 @@ pub fn record_syscall(id: usize) {
         57 | 436 => add(&SYSCALL_CLOSE, 1),
         // fstat/statx and filesystem metadata probes
         43 | 44 | 79 | 80 | 88 | 291 => add(&SYSCALL_STAT, 1),
+        // lseek
+        62 => add(&SYSCALL_LSEEK, 1),
         // brk/mmap/mprotect/munmap/mremap
         214 | 215 | 216 | 222 | 226 => add(&SYSCALL_MM, 1),
         // clone/clone3/execve/wait4/waitid
         95 | 220 | 221 | 260 | 435 => add(&SYSCALL_PROCESS, 1),
+        // signal
+        134 => add(&SYSCALL_SIGACTION, 1),
         // futex and newer futex wait variants
         98 | 449 | 455 => add(&SYSCALL_FUTEX, 1),
         124 => add(&SYSCALL_SCHED_YIELD, 1),
@@ -177,9 +219,10 @@ pub fn record_syscall(id: usize) {
     }
 }
 
-/// Return whether a syscall needs a duration sample.  Blocking network and
-/// stream I/O are sampled at the syscall boundary; other calls are counted
-/// without taking an extra clock read.
+/// Return whether a syscall needs a duration sample. BuildStorm's hot path is
+/// dominated by process creation plus filesystem metadata and memory mapping,
+/// so those categories are sampled at their syscall boundaries. The feature is
+/// opt-in and the report remains aggregate-only.
 #[inline]
 pub fn should_record_syscall_duration(id: usize) -> bool {
     matches!(
@@ -191,6 +234,37 @@ pub fn should_record_syscall_duration(id: usize) -> bool {
             | 68
             | 69
             | 70
+            | 33
+            | 34
+            | 35
+            | 36
+            | 37
+            | 38
+            | 45
+            | 46
+            | 47
+            | 48
+            | 49
+            | 50
+            | 52
+            | 53
+            | 54
+            | 55
+            | 56
+            | 57
+            | 61
+            | 71
+            | 78
+            | 79
+            | 80
+            | 81
+            | 82
+            | 83
+            | 84
+            | 43
+            | 44
+            | 88
+            | 62
             | 95
             | 202
             | 203
@@ -201,8 +275,22 @@ pub fn should_record_syscall_duration(id: usize) -> bool {
             | 220
             | 435
             | 221
+            | 214
+            | 215
+            | 216
+            | 222
+            | 226
             | 242
             | 260
+            | 276
+            | 285
+            | 291
+            | 437
+            | 436
+            | 98
+            | 449
+            | 455
+            | 134
     )
 }
 
@@ -246,6 +334,48 @@ pub fn record_syscall_duration(id: usize, begin: usize) {
             &SYSCALL_WRITE_SAMPLES,
             &SYSCALL_WRITE_TICKS,
             &SYSCALL_WRITE_MAX_TICKS,
+        ),
+        56 | 437 => (
+            &SYSCALL_OPEN_SAMPLES,
+            &SYSCALL_OPEN_TICKS,
+            &SYSCALL_OPEN_MAX_TICKS,
+        ),
+        57 | 436 => (
+            &SYSCALL_CLOSE_SAMPLES,
+            &SYSCALL_CLOSE_TICKS,
+            &SYSCALL_CLOSE_MAX_TICKS,
+        ),
+        43 | 44 | 79 | 80 | 88 | 291 => (
+            &SYSCALL_STAT_SAMPLES,
+            &SYSCALL_STAT_TICKS,
+            &SYSCALL_STAT_MAX_TICKS,
+        ),
+        62 => (
+            &SYSCALL_LSEEK_SAMPLES,
+            &SYSCALL_LSEEK_TICKS,
+            &SYSCALL_LSEEK_MAX_TICKS,
+        ),
+        // Directory traversal, path mutation, and file-position/sync calls.
+        33 | 34 | 35 | 36 | 37 | 38 | 45 | 46 | 47 | 48 | 49 | 50 | 52 | 53 | 54 | 55 | 61 | 71
+        | 78 | 81 | 82 | 83 | 84 | 276 | 285 => (
+            &SYSCALL_PATH_SAMPLES,
+            &SYSCALL_PATH_TICKS,
+            &SYSCALL_PATH_MAX_TICKS,
+        ),
+        214 | 215 | 216 | 222 | 226 => (
+            &SYSCALL_MM_SAMPLES,
+            &SYSCALL_MM_TICKS,
+            &SYSCALL_MM_MAX_TICKS,
+        ),
+        98 | 449 | 455 => (
+            &SYSCALL_FUTEX_SAMPLES,
+            &SYSCALL_FUTEX_TICKS,
+            &SYSCALL_FUTEX_MAX_TICKS,
+        ),
+        134 => (
+            &SYSCALL_SIGACTION_SAMPLES,
+            &SYSCALL_SIGACTION_TICKS,
+            &SYSCALL_SIGACTION_MAX_TICKS,
         ),
         202 | 242 => (
             &SYSCALL_NET_ACCEPT_SAMPLES,
@@ -546,6 +676,61 @@ pub fn record_read_active_duration(elapsed: usize) {
     );
 }
 
+#[inline]
+pub fn record_lseek_type_check_duration(elapsed: usize) {
+    record_duration(
+        &LSEEK_TYPE_CHECK_SAMPLES,
+        &LSEEK_TYPE_CHECK_TICKS,
+        &LSEEK_TYPE_CHECK_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_lseek_size_duration(elapsed: usize) {
+    record_duration(
+        &LSEEK_SIZE_SAMPLES,
+        &LSEEK_SIZE_TICKS,
+        &LSEEK_SIZE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_lseek_sparse_duration(elapsed: usize) {
+    record_duration(
+        &LSEEK_SPARSE_SAMPLES,
+        &LSEEK_SPARSE_TICKS,
+        &LSEEK_SPARSE_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Scope guard for the complete VFS-level lseek implementation, excluding
+/// syscall dispatch and fd-table lookup.
+pub struct LseekDurationGuard {
+    begin: usize,
+}
+
+impl LseekDurationGuard {
+    #[inline]
+    pub fn new() -> Self {
+        Self { begin: get_ticks() }
+    }
+}
+
+impl Drop for LseekDurationGuard {
+    #[inline]
+    fn drop(&mut self) {
+        record_duration(
+            &LSEEK_IMPL_SAMPLES,
+            &LSEEK_IMPL_TICKS,
+            &LSEEK_IMPL_MAX_TICKS,
+            get_ticks().saturating_sub(self.begin),
+        );
+    }
+}
+
 /// Scope guard used by `sys_read` so error returns are included as well.
 pub struct ReadActiveGuard {
     begin: usize,
@@ -707,7 +892,7 @@ pub fn report_now() {
 
 fn emit_report(now: usize) {
     println!(
-        "[perf] t={}ms syscalls total={} read={} write={} open={} close={} stat={} mm={} process={} futex={} yield={}",
+        "[perf] t={}ms syscalls total={} read={} write={} open={} close={} stat={} lseek={} mm={} process={} futex={} sigaction={} yield={}",
         now,
         SYSCALL_TOTAL.load(Ordering::Relaxed),
         SYSCALL_READ.load(Ordering::Relaxed),
@@ -715,9 +900,11 @@ fn emit_report(now: usize) {
         SYSCALL_OPEN.load(Ordering::Relaxed),
         SYSCALL_CLOSE.load(Ordering::Relaxed),
         SYSCALL_STAT.load(Ordering::Relaxed),
+        SYSCALL_LSEEK.load(Ordering::Relaxed),
         SYSCALL_MM.load(Ordering::Relaxed),
         SYSCALL_PROCESS.load(Ordering::Relaxed),
         SYSCALL_FUTEX.load(Ordering::Relaxed),
+        SYSCALL_SIGACTION.load(Ordering::Relaxed),
         SYSCALL_SCHED_YIELD.load(Ordering::Relaxed),
     );
     println!(
@@ -757,6 +944,90 @@ fn emit_report(now: usize) {
         &SYSCALL_WRITE_SAMPLES,
         &SYSCALL_WRITE_TICKS,
         &SYSCALL_WRITE_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "open",
+        &SYSCALL_OPEN_SAMPLES,
+        &SYSCALL_OPEN_TICKS,
+        &SYSCALL_OPEN_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "close",
+        &SYSCALL_CLOSE_SAMPLES,
+        &SYSCALL_CLOSE_TICKS,
+        &SYSCALL_CLOSE_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "stat",
+        &SYSCALL_STAT_SAMPLES,
+        &SYSCALL_STAT_TICKS,
+        &SYSCALL_STAT_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "lseek",
+        &SYSCALL_LSEEK_SAMPLES,
+        &SYSCALL_LSEEK_TICKS,
+        &SYSCALL_LSEEK_MAX_TICKS,
+    );
+    print!("[perf] lseek_duration ");
+    emit_duration(
+        "impl",
+        &LSEEK_IMPL_SAMPLES,
+        &LSEEK_IMPL_TICKS,
+        &LSEEK_IMPL_MAX_TICKS,
+    );
+    print!("[perf] lseek_duration ");
+    emit_duration(
+        "type_check",
+        &LSEEK_TYPE_CHECK_SAMPLES,
+        &LSEEK_TYPE_CHECK_TICKS,
+        &LSEEK_TYPE_CHECK_MAX_TICKS,
+    );
+    print!("[perf] lseek_duration ");
+    emit_duration(
+        "size",
+        &LSEEK_SIZE_SAMPLES,
+        &LSEEK_SIZE_TICKS,
+        &LSEEK_SIZE_MAX_TICKS,
+    );
+    print!("[perf] lseek_duration ");
+    emit_duration(
+        "sparse",
+        &LSEEK_SPARSE_SAMPLES,
+        &LSEEK_SPARSE_TICKS,
+        &LSEEK_SPARSE_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "path",
+        &SYSCALL_PATH_SAMPLES,
+        &SYSCALL_PATH_TICKS,
+        &SYSCALL_PATH_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "mm",
+        &SYSCALL_MM_SAMPLES,
+        &SYSCALL_MM_TICKS,
+        &SYSCALL_MM_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "futex",
+        &SYSCALL_FUTEX_SAMPLES,
+        &SYSCALL_FUTEX_TICKS,
+        &SYSCALL_FUTEX_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "sigaction",
+        &SYSCALL_SIGACTION_SAMPLES,
+        &SYSCALL_SIGACTION_TICKS,
+        &SYSCALL_SIGACTION_MAX_TICKS,
     );
     print!("[perf] syscall_duration ");
     emit_duration(

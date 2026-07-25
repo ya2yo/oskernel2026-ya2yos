@@ -1,3 +1,5 @@
+#[cfg(feature = "perf")]
+use crate::arch::time::get_ticks;
 use crate::{
     fs::{
         fanotify_events_suppressed, notify_path_event, FsIndex, Kstat, FAN_ACCESS,
@@ -300,8 +302,20 @@ impl File for OSFile {
         revents
     }
     fn lseek(&self, offset: isize, whence: usize) -> SyscallRet {
+        #[cfg(feature = "perf")]
+        let _lseek_guard = crate::utils::perf::LseekDurationGuard::new();
+
+        // `path()` and the fallback `types()` each enter the serialized EXT4
+        // adapter. Keep this phase separate so the high-frequency lseek path
+        // in BuildStorm can be compared with the surrounding syscall time.
+        #[cfg(feature = "perf")]
+        let type_check_begin = get_ticks();
         let inode_type =
             FsIndex::special_node_type(&self.inode.path()).unwrap_or_else(|| self.inode.types());
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_lseek_type_check_duration(
+            get_ticks().saturating_sub(type_check_begin),
+        );
         if inode_type.is_fifo() || inode_type.is_socket() {
             return Err(SysErrNo::ESPIPE);
         }
@@ -314,18 +328,41 @@ impl File for OSFile {
                 offset as usize
             }
             SEEK_CUR => seek_offset(inner.offset, offset)?,
-            SEEK_END => seek_offset(self.inode.size(), offset)?,
+            SEEK_END => {
+                #[cfg(feature = "perf")]
+                let size_begin = get_ticks();
+                let size = self.inode.size();
+                #[cfg(feature = "perf")]
+                crate::utils::perf::record_lseek_size_duration(
+                    get_ticks().saturating_sub(size_begin),
+                );
+                seek_offset(size, offset)?
+            }
             SEEK_DATA => {
                 if offset < 0 {
                     return Err(SysErrNo::ENXIO);
                 }
-                self.inode.seek_data(offset as usize)?
+                #[cfg(feature = "perf")]
+                let sparse_begin = get_ticks();
+                let data = self.inode.seek_data(offset as usize);
+                #[cfg(feature = "perf")]
+                crate::utils::perf::record_lseek_sparse_duration(
+                    get_ticks().saturating_sub(sparse_begin),
+                );
+                data?
             }
             SEEK_HOLE => {
                 if offset < 0 {
                     return Err(SysErrNo::ENXIO);
                 }
-                self.inode.seek_hole(offset as usize)?
+                #[cfg(feature = "perf")]
+                let sparse_begin = get_ticks();
+                let hole = self.inode.seek_hole(offset as usize);
+                #[cfg(feature = "perf")]
+                crate::utils::perf::record_lseek_sparse_duration(
+                    get_ticks().saturating_sub(sparse_begin),
+                );
+                hole?
             }
             _ => return Err(SysErrNo::EINVAL),
         };
