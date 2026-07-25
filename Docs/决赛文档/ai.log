@@ -7130,3 +7130,17 @@ inode 上多次调用 `types()`，而该查询原先也取得 EXT4 锁。该路�
 `lseek type_check=56150 us`。QEMU 新一轮未形成可比较样本：沙箱内启动受宿主 `/var/tmp`
 只读限制，获准的第二次运行随后被中断。因此本轮不宣称 A/B 加速比例；完整根因、修改和
 验证边界见 `problem/buildstorm-read-path-lock-contention.md`。
+
+## 2026-07-25：perf 饼图中的 accept 改用实际运行时间
+
+### 用户输入
+
+维护者要求调整 `scripts/plot_perf_durations.py` 关于 `accept` 的统计逻辑，类似 `wait` 只统计任务实际运行时间。
+
+### 分析与采纳结论
+
+AI 对照 `log.ans` 与 `os/src/utils/perf.rs`，确认旧快照同时输出 `accept`（跨越阻塞等待的 syscall 边界耗时）和 `accept_active`（accept poll 闭包实际执行耗时）。脚本默认排除 `*_active`，导致 `accept` 仍展示包含睡眠时间的旧桶；应像 `wait` 一样在默认模式用活动桶替换历史标签，显式 `--include-active` 则保留两项供诊断。
+
+### 修改与验证
+
+修改 `scripts/plot_perf_durations.py`，统一处理 `wait/wait_active` 与 `accept/accept_active` 的默认替换，并更新说明文本。`python3 -m py_compile`、`git diff --check` 通过；当前 `log.ans` 默认图表中的 `accept` 从 `1.237 s` 改为 `2.432 ms`（samples=16），`--include-active` 仍同时显示原始 `accept` 和 `accept_active`。未运行内核构建，本轮仅改动日志分析脚本。

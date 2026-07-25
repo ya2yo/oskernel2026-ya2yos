@@ -1369,3 +1369,11 @@
 - **描述**：AI 追踪通用 syscall 边界计时、`waitpid`/`waitid` 的 poll 阻塞和 futex 的任务切换，确认原 `wait`/`futex` 桶把睡眠区间计入累计 tick。改为 wait/futex 使用活动 guard：wait 按实际 poll，futex 按等待前准备、唤醒后收尾及非阻塞 wake/requeue 区间计时；报告中的 `wait`/`futex` 直接使用活动桶。脚本兼容旧日志，优先以 `wait_active` 替换旧 `wait`。
 - **验证**：RISC-V、LoongArch64 `make perf` 通过；旧 `log.ans` 解析后 `wait` 采用 `wait_active` 的 `25.291 ms`。QEMU 因宿主 `/var/tmp` 只读在启动前失败，未取得新的 guest perf 快照。
 - **关联 commit**：当前工作区未提交
+
+#### perf 饼图中的 accept 改用实际运行时间（7.25）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求让 `scripts/plot_perf_durations.py` 对 `accept` 采用与 `wait` 相同的实际运行时间口径。
+- **描述**：确认旧日志中的 `accept` 是包含阻塞区间的历史桶，而 `accept_active` 只覆盖 accept poll 闭包执行区间。脚本默认模式现在用 `accept_active` 替换 `accept`，`--include-active` 仍可同时查看嵌套项。
+- **验证**：当前 `log.ans` 默认汇总显示 `accept=2.432 ms (samples=16)`，而显式保留活动项模式仍显示原始 `accept=1.237 s` 与 `accept_active=2.432 ms`；Python 编译检查和 `git diff --check` 通过。
+- **关联 commit**：当前工作区未提交

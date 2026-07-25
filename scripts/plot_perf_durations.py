@@ -3,7 +3,9 @@
 
 默认读取最后一个 ``shutdown!`` 之后的 ``syscall_duration`` 指标。默认不包含
 ``*_active`` 指标，因为它们是对应 syscall 耗时的嵌套子集；旧日志若同时有
-``wait`` 和 ``wait_active``，会优先使用实际运行的 ``wait_active``。
+``wait``/``accept``/``read`` 和对应的 ``*_active`` 指标同时存在时，会优先使用实际运行的
+``wait_active``/``accept_active``/``read_active``。其中 ``read_active`` 仅覆盖普通文件
+读取的活动区间。
 
 示例：
     python3 scripts/plot_perf_durations.py log.ans
@@ -123,29 +125,35 @@ def select_durations(
         and (include_active or not duration.label.endswith("_active"))
     ]
 
-    # Older kernels emitted both wall-clock ``wait`` and active ``wait_active``
-    # buckets. Prefer the active value for the default chart so old logs use
-    # the same semantics as newer logs, where the ``wait`` line is active-only.
+    # Older kernels emitted both wall-clock syscall buckets and active buckets.
+    # Prefer the active value for the default chart so old logs use the same
+    # semantics as newer logs, where the historical label is active-only.
     if group == "syscall_duration" and not include_active:
-        active_wait = next(
-            (
-                duration
-                for duration in durations
-                if duration.group == group
-                and duration.label == "wait_active"
-                and duration.total_us > 0
-            ),
-            None,
-        )
-        if active_wait is not None:
+        for label, active_label in (
+            ("wait", "wait_active"),
+            ("accept", "accept_active"),
+            ("read", "read_active"),
+        ):
+            active_duration = next(
+                (
+                    duration
+                    for duration in durations
+                    if duration.group == group
+                    and duration.label == active_label
+                    and duration.total_us > 0
+                ),
+                None,
+            )
+            if active_duration is None:
+                continue
             selected = [
                 replace(
                     duration,
-                    samples=active_wait.samples,
-                    total_us=active_wait.total_us,
-                    max_us=active_wait.max_us,
+                    samples=active_duration.samples,
+                    total_us=active_duration.total_us,
+                    max_us=active_duration.max_us,
                 )
-                if duration.label == "wait"
+                if duration.label == label
                 else duration
                 for duration in selected
             ]
@@ -359,7 +367,7 @@ def main() -> None:
     print(f"解析最后一个 shutdown!（第 {shutdown_line} 行）的 {args.group}。")
     if not args.include_active:
         print(
-            "已排除 *_active 嵌套子指标；旧日志中的 wait 优先采用 wait_active。"
+            "已排除 *_active 嵌套子指标；旧日志中的 wait/accept/read 优先采用对应的 active 指标。"
             "使用 --include-active 可将其加入。"
         )
     if args.group != "syscall_duration":
