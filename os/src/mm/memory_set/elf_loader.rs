@@ -107,6 +107,56 @@ fn needed_elf_prefix_len(elf_data: &[u8]) -> Result<usize, SysErrNo> {
     Ok(needed)
 }
 
+/// Validate every file range the ELF loader can consume without copying the
+/// segment contents into a temporary image.
+fn validate_elf_load_ranges(elf: &ElfFile, file_size: usize) -> Result<(), SysErrNo> {
+    for idx in 0..elf.header.pt2.ph_count() {
+        let ph = elf.program_header(idx).map_err(|_| SysErrNo::ENOEXEC)?;
+        let ph_type = ph.get_type().map_err(|_| SysErrNo::ENOEXEC)?;
+        if matches!(
+            ph_type,
+            xmas_elf::program::Type::Load | xmas_elf::program::Type::Interp
+        ) {
+            let end = (ph.offset() as usize)
+                .checked_add(ph.file_size() as usize)
+                .ok_or(SysErrNo::ENOEXEC)?;
+            if end > file_size {
+                return Err(SysErrNo::ENOEXEC);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read the ELF header and program-header table only.
+///
+/// A dynamically loaded interpreter is later represented by file-backed VMAs,
+/// so its aligned load segments do not need a second kernel-heap copy here.
+/// Unaligned segments are read directly into their newly allocated user pages.
+fn read_elf_metadata(inode: &Arc<dyn Inode>) -> Result<Vec<u8>, SysErrNo> {
+    let file_size = inode.fstat().st_size.max(0) as usize;
+    let mut metadata = read_inode_prefix(inode, ELF_PROBE_SIZE, file_size)?;
+    if metadata.len() < 4
+        || metadata[0] != 0x7f
+        || metadata[1] != b'E'
+        || metadata[2] != b'L'
+        || metadata[3] != b'F'
+    {
+        return Err(SysErrNo::ENOEXEC);
+    }
+
+    let header_elf = ElfFile::new(&metadata).map_err(|_| SysErrNo::ENOEXEC)?;
+    let ph_end = program_headers_end(&header_elf)?;
+    extend_inode_prefix(inode, &mut metadata, ph_end, file_size)?;
+    if metadata.len() < ph_end {
+        return Err(SysErrNo::ENOEXEC);
+    }
+
+    let elf = ElfFile::new(&metadata).map_err(|_| SysErrNo::ENOEXEC)?;
+    validate_elf_load_ranges(&elf, file_size)?;
+    Ok(metadata)
+}
+
 /// Read only the ELF bytes required by the loader.
 ///
 /// Contest images may contain large static binaries with debug sections after
@@ -219,11 +269,11 @@ impl MemorySetInner {
                     }
                 })
                 .ok_or(())?;
-            // 动态解释器本身也是一个 ELF。读入并解析后复用 `map_elf()`，
-            // 只是在地址空间中整体平移到 `DL_INTERP_OFFSET`。
+            // 动态解释器的页对齐段会登记为 file-backed VMA，因此这里只读取
+            // ELF 元数据；未对齐段在下面直接装入新地址空间的用户页。
             #[cfg(feature = "perf")]
             let interp_read_begin = get_ticks();
-            let interp_elf_data = read_elf_load_image(&interp_file.inode).map_err(|_| ())?;
+            let interp_elf_data = read_elf_metadata(&interp_file.inode).map_err(|_| ())?;
             #[cfg(feature = "perf")]
             crate::utils::perf::record_exec_interp_read_duration(
                 get_ticks().saturating_sub(interp_read_begin),
@@ -383,10 +433,12 @@ impl MemorySetInner {
                     MapAreaType::Elf,
                 );
                 max_end_vpn = max_end_vpn.max(map_area.vpn_range.end());
-                self.push_with_offset(
+                self.push_elf_segment_from_file(
                     map_area,
                     page_offset,
-                    Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
+                    file,
+                    ph.offset() as usize,
+                    file_size,
                 )?;
                 continue;
             }
@@ -422,6 +474,67 @@ impl MemorySetInner {
             }
         }
         Ok((max_end_vpn, header_va.into()))
+    }
+
+    /// Eagerly map an unaligned interpreter segment and fill only its file
+    /// bytes. The common aligned segments remain lazy file mappings; this path
+    /// preserves the zero-before/after-segment behavior that a single mmap VMA
+    /// cannot express.
+    fn push_elf_segment_from_file(
+        &mut self,
+        mut map_area: MapArea,
+        data_offset: usize,
+        file: &Arc<OSFile>,
+        file_offset: usize,
+        file_size: usize,
+    ) -> Result<(), ()> {
+        let mapped_size = map_area
+            .vpn_range
+            .end()
+            .0
+            .checked_sub(map_area.vpn_range.start().0)
+            .and_then(|pages| pages.checked_mul(PAGE_SIZE))
+            .ok_or(())?;
+        if file_size != 0
+            && data_offset
+                .checked_add(file_size)
+                .filter(|end| *end <= mapped_size)
+                .is_none()
+        {
+            return Err(());
+        }
+
+        map_area.map(&mut self.page_table)?;
+        let mut copied = 0;
+        while copied < file_size {
+            let area_offset = data_offset.checked_add(copied).ok_or(())?;
+            let vpn = VirtPageNum(
+                map_area
+                    .vpn_range
+                    .start()
+                    .0
+                    .checked_add(area_offset / PAGE_SIZE)
+                    .ok_or(())?,
+            );
+            let page_offset = area_offset % PAGE_SIZE;
+            let copy_len = (file_size - copied).min(PAGE_SIZE - page_offset);
+            let file_read_offset = file_offset.checked_add(copied).ok_or(())?;
+            let ppn = self.page_table.translate(vpn).ok_or(())?;
+            let read = file
+                .inode
+                .read_at(
+                    file_read_offset,
+                    &mut ppn.bytes_array_mut()[page_offset..page_offset + copy_len],
+                )
+                .map_err(|_| ())?;
+            if read == 0 || read > copy_len {
+                return Err(());
+            }
+            copied = copied.checked_add(read).ok_or(())?;
+        }
+
+        self.areas.push(map_area);
+        Ok(())
     }
 
     /// 从 ELF 字节创建一个新的用户地址空间。

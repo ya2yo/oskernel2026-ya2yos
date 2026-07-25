@@ -7008,3 +7008,38 @@ exec 阶段计时，未共享可写解释器物理页。
 max_us=37071)`、`from_elf total_us=96487`、`interp_map total_us=11728`；CAgent
 `fs-search pass 764`、`shutdown!`，无 `panic/TFAIL/TBROK`。RISC-V、LoongArch64 release
 构建均通过；未运行完整 BuildStorm/LTP 或 LoongArch64 QEMU 运行时。
+
+## 2026-07-25：execve 解释器元数据读取优化
+
+### 用户需求
+
+维护者要求根据新的 `log.ans` 继续优化 `execve`，并在输出出现 `testcase cagent fs-create
+pass 472` 后确认该数值的耗时组成。
+
+### 分析与采纳结论
+
+AI 对比优化前后的 RISC-V perf 快照，确认已有动态解释器按需 VMA 仍在映射前调用
+`read_elf_load_image()`，把全部 `PT_LOAD` 范围读入内核堆；页对齐的解释器段随后又从文件 VMA
+缺页读取，构成冗余。解析 final-2026 镜像 ELF 后确认 musl/glibc loader 的代码段页对齐，而
+末尾 RW 段不对齐，后者必须保持 eager、零填充正确的映射。
+
+采纳“只读 header/program header + 未对齐段直接读入用户帧”的局部方案。读取仍经由
+`Inode::read_at()`，故动态库兼容字节补丁保持有效；页对齐段继续是 `MAP_PRIVATE` 文件 VMA，
+可写私有页维持 COW 语义。主程序 ELF 未改为懒加载，避免冷启动时大量单页缺页的回归风险。
+
+`pass 472` 由用户态诊断脚本在 `agent_lite` 前后调用 `date +%s%3N` 得出，是该 agent 命令的
+wall-clock，包含 `timeout` 与 HTTP 交互，但不包含后续 `cat`/`eval`/清理或 server 启动前的
+1 秒等待；它不是 perf 中某一条内核计时。与之相邻的 `t=1363 -> 1857 ms` perf 快照为 494 ms，
+但前一快照已在 HTTP 交互期间、后一快照在后处理与停服之后，不能当作 472 ms 的边界。新增 4 次
+`execve` 为 83286 us，只能作为近似的内核活动，不能按 PID 精确分摊或换算成 472 ms 的组成比例。
+
+### 修改与验证
+
+修改 `os/src/mm/memory_set/elf_loader.rs`，新增元数据范围校验和未对齐解释器段的直接用户页
+填充。RISC-V `log.ans` 的 10 次 `execve` 从 `188572 us` 降至 `170980 us`，`from_elf` 从
+`97565 us` 降至 `84227 us`，8 次 `interp_read` 从 `23402 us` 降至 `8371 us`；聚合
+`interp` 总计从 `37072 us` 降至 `29734 us`。`interp_map` 增长源于未对齐段读取的计时边界
+移动，不将其单独表述为回归。CAgent `fs-create pass 472`、`shutdown!`，无
+`panic/TFAIL/TBROK`。`make TARGET_ARCH=riscv64`（含两架构 release）和
+`make perf TARGET_ARCH=riscv64` 通过，仅有既有 smoltcp warning。未完成第二次独立 QEMU 样本、
+完整 LTP/BuildStorm 或 LoongArch64 QEMU 运行时，故不把单样本比例泛化为正式评分结果。

@@ -1322,3 +1322,11 @@
 - **描述**：阶段 perf 计时确认 `from_elf` 和动态解释器 PT_LOAD eager 映射占主要时间。修复 ELF 前缀增量读取、动态解释器页对齐文件段按需 `MAP_PRIVATE` 映射，并让 ELF BSS 缺页分配零页；可写页保持 COW 私有语义。
 - **验证**：当前 RISC-V `log.ans` 的 12 次 `execve` 累计 `208763 us`，CAgent `fs-search pass 764` 并正常 `shutdown!`，无 `panic/TFAIL/TBROK`；RISC-V、LoongArch64 release 构建通过。详见 `ai.log` 对应条目和 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md)。
 - **关联 commit**：当前工作区未提交
+
+#### execve 解释器元数据读取优化（7.25）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求继续优化 `log.ans` 中的 `execve`，并确认 CAgent `fs-create pass 472` 的耗时组成。
+- **描述**：AI 对比动态解释器 VMA 路径与 perf 快照，确认页对齐解释器段虽已按需映射，仍先被完整读入内核 `Vec`。修复为仅读 ELF/program header，页对齐段继续使用 `MAP_PRIVATE` 文件 VMA，未对齐 RW 段直接读入已分配用户页，维持零填充、动态库字节补丁与私有 COW 语义。`472` 被确认是 `agent_lite` 的用户态 wall-clock，不是单个内核时间桶；相邻 494 ms 快照的首尾并不与 agent 窗口对齐，故其中 4 次 `execve` 仅可给出近似内核活动，不能视为 472 ms 的精确组成。
+- **验证**：RISC-V `log.ans` 中 10 次 `execve` 由 `188572 us` 降至 `170980 us`，8 次解释器读取由 `23402 us` 降至 `8371 us`；`fs-create pass 472` 后正常 `shutdown!`，无 `panic/TFAIL/TBROK`。RISC-V、LoongArch64 release 与 RISC-V perf 构建通过；未运行 LoongArch64 QEMU、完整 LTP/BuildStorm 或第二次独立性能样本。详见 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md) 和 `ai.log`。
+- **关联 commit**：当前工作区未提交
