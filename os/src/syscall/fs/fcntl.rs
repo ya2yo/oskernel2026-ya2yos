@@ -207,7 +207,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         }
         // 文件记录锁（F_GETLK / F_SETLK / F_SETLKW）
         // 按 inode 路径在全局锁表中管理 POSIX advisory record lock
-        FcntlCmd::F_GETLK | FcntlCmd::F_GETLK64 => {
+        FcntlCmd::F_GETLK => {
             let memory_set = proc_inner.memory_set_arc();
             let mut flock_bytes = [0u8; 32];
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
@@ -235,7 +235,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             copy_to_user(&memory_set, arg, &result_bytes)?;
             return Ok(0);
         }
-        FcntlCmd::F_SETLK | FcntlCmd::F_SETLK64 => {
+        FcntlCmd::F_SETLK => {
             let memory_set = proc_inner.memory_set_arc();
             let mut flock_bytes = [0u8; 32];
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;
@@ -254,7 +254,7 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             file_lock::setlk(&inode_path, &flock, file_size, current_offset, owner_pid)?;
             return Ok(0);
         }
-        FcntlCmd::F_SETLKW | FcntlCmd::F_SETLKW64 => {
+        FcntlCmd::F_SETLKW => {
             let memory_set = proc_inner.memory_set_arc();
             let mut flock_bytes = [0u8; 32];
             copy_from_user(&memory_set, arg, &mut flock_bytes)?;

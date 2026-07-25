@@ -53,9 +53,9 @@ fn chown_inode(
     // may represent the mandatory-locking marker and must be preserved.
     if inode.types() != InodeType::Dir {
         let mode = stat.st_mode;
-        let mut new_mode = mode & !FaccessatFileMode::S_ISUID.bits();
-        if mode & FaccessatFileMode::S_IXGRP.bits() != 0 {
-            new_mode &= !FaccessatFileMode::S_ISGID.bits();
+        let mut new_mode = mode & !FileMode::S_ISUID.bits();
+        if mode & FileMode::S_IXGRP.bits() != 0 {
+            new_mode &= !FileMode::S_ISGID.bits();
         }
         if new_mode != mode {
             inode.fmode_set(new_mode)?;
@@ -288,7 +288,7 @@ fn do_fchmodat(dirfd: isize, path: *const u8, mode: u32, flags: u32) -> SyscallR
     debug!(
         "{} set {:?}",
         abs_path,
-        FaccessatFileMode::from_bits_truncate(mode)
+        FileMode::from_bits_truncate(mode)
     );
 
     let open_flags = if flags & AT_SYMLINK_NOFOLLOW as u32 != 0 {

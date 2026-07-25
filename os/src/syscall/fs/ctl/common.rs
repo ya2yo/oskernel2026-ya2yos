@@ -21,7 +21,7 @@ use crate::fs::{
 use crate::mm::{
     copy_from_user, copy_to_user, if_bad_address, read_user_cstr, user_buffer_from_kernel,
 };
-use crate::syscall::options::FaccessatFileMode;
+use crate::syscall::options::FileMode;
 use crate::task::{current_task, Process};
 use crate::timer::{get_time_ms, Timespec, NOW_TIME_STAMP};
 use crate::utils::{

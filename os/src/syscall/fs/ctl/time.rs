@@ -105,15 +105,15 @@ pub fn sys_utimensat(
         if times.is_null() {
             // Supplying NULL requests the current time.  Linux allows that
             // for a non-owner only when the file is writable by the caller.
-            let mode = FaccessatFileMode::from_bits_truncate(osfile.inode.fmode()? & 0xfff);
+            let mode = FileMode::from_bits_truncate(osfile.inode.fmode()? & 0xfff);
             if !mode_allows(
                 mode,
                 &stat,
                 euid,
                 egid,
-                FaccessatFileMode::S_IWUSR,
-                FaccessatFileMode::S_IWGRP,
-                FaccessatFileMode::S_IWOTH,
+                FileMode::S_IWUSR,
+                FileMode::S_IWGRP,
+                FileMode::S_IWOTH,
             ) {
                 return Err(SysErrNo::EACCES);
             }

@@ -9,7 +9,7 @@ use log::debug;
 use crate::{
     fs::{open, InodeType, Kstat, MountFlags, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE},
     mm::{copy_to_user, if_bad_address, read_user_cstr},
-    syscall::options::{FaccessatFileMode, FaccessatMode},
+    syscall::options::{FileMode, FaccessatMode},
     task::current_task,
     utils::{get_abs_path, is_abs_path, rsplit_once, SysErrNo, SyscallRet},
 };
@@ -99,7 +99,7 @@ pub fn sys_fchdir(fd: i32) -> SyscallRet {
         let task_inner = task.inner_lock();
         (task_inner.effective_uid, task_inner.effective_gid)
     };
-    let file_mode = FaccessatFileMode::from_bits_truncate(file.inode.fmode()? & 0xfff);
+    let file_mode = FileMode::from_bits_truncate(file.inode.fmode()? & 0xfff);
     let stat = file.inode.fstat();
     check_directory_search_permission_for_metadata(file_mode, &stat, euid, egid)?;
 
@@ -125,7 +125,7 @@ fn check_directory_search_permission(path: &str, uid: u32, gid: u32) -> SyscallR
             return Err(SysErrNo::ENOTDIR);
         }
         let stat = directory.inode.fstat();
-        let mode = FaccessatFileMode::from_bits_truncate(directory.inode.fmode()? & 0xfff);
+        let mode = FileMode::from_bits_truncate(directory.inode.fmode()? & 0xfff);
         check_directory_search_permission_for_metadata(mode, &stat, uid, gid)?;
     }
     Ok(0)
@@ -133,7 +133,7 @@ fn check_directory_search_permission(path: &str, uid: u32, gid: u32) -> SyscallR
 
 /// Check search permission for one already-resolved directory inode.
 fn check_directory_search_permission_for_metadata(
-    file_mode: FaccessatFileMode,
+    file_mode: FileMode,
     stat: &Kstat,
     uid: u32,
     gid: u32,
@@ -144,9 +144,9 @@ fn check_directory_search_permission_for_metadata(
             stat,
             uid,
             gid,
-            FaccessatFileMode::S_IXUSR,
-            FaccessatFileMode::S_IXGRP,
-            FaccessatFileMode::S_IXOTH,
+            FileMode::S_IXUSR,
+            FileMode::S_IXGRP,
+            FileMode::S_IXOTH,
         )
     {
         Ok(0)
@@ -229,13 +229,13 @@ pub fn sys_readlinkat(dirfd: isize, path: *const u8, buf: *const u8, bufsize: us
 
 /// 按 POSIX owner/group/other 顺序检查一个权限位是否允许当前凭据访问。
 pub(super) fn mode_allows(
-    file_mode: FaccessatFileMode,
+    file_mode: FileMode,
     stat: &Kstat,
     uid: u32,
     gid: u32,
-    owner_bit: FaccessatFileMode,
-    group_bit: FaccessatFileMode,
-    other_bit: FaccessatFileMode,
+    owner_bit: FileMode,
+    group_bit: FileMode,
+    other_bit: FileMode,
 ) -> bool {
     if uid == stat.st_uid {
         file_mode.contains(owner_bit)
@@ -248,7 +248,7 @@ pub(super) fn mode_allows(
 
 /// 对已解析出的目标文件权限位执行 `R_OK/W_OK/X_OK` 检查。
 fn check_faccessat_access(
-    file_mode: FaccessatFileMode,
+    file_mode: FileMode,
     file_stat: &Kstat,
     uid: u32,
     gid: u32,
@@ -261,9 +261,9 @@ fn check_faccessat_access(
             file_stat,
             uid,
             gid,
-            FaccessatFileMode::S_IRUSR,
-            FaccessatFileMode::S_IRGRP,
-            FaccessatFileMode::S_IROTH,
+            FileMode::S_IRUSR,
+            FileMode::S_IRGRP,
+            FileMode::S_IROTH,
         )
     {
         return Err(SysErrNo::EACCES);
@@ -275,9 +275,9 @@ fn check_faccessat_access(
             file_stat,
             uid,
             gid,
-            FaccessatFileMode::S_IWUSR,
-            FaccessatFileMode::S_IWGRP,
-            FaccessatFileMode::S_IWOTH,
+            FileMode::S_IWUSR,
+            FileMode::S_IWGRP,
+            FileMode::S_IWOTH,
         )
     {
         return Err(SysErrNo::EACCES);
@@ -285,9 +285,9 @@ fn check_faccessat_access(
     if mode.contains(FaccessatMode::X_OK)
         && !if uid == 0 {
             file_mode.intersects(
-                FaccessatFileMode::S_IXUSR
-                    | FaccessatFileMode::S_IXGRP
-                    | FaccessatFileMode::S_IXOTH,
+                FileMode::S_IXUSR
+                    | FileMode::S_IXGRP
+                    | FileMode::S_IXOTH,
             )
         } else {
             mode_allows(
@@ -295,9 +295,9 @@ fn check_faccessat_access(
                 file_stat,
                 uid,
                 gid,
-                FaccessatFileMode::S_IXUSR,
-                FaccessatFileMode::S_IXGRP,
-                FaccessatFileMode::S_IXOTH,
+                FileMode::S_IXUSR,
+                FileMode::S_IXGRP,
+                FileMode::S_IXOTH,
             )
         }
     {
@@ -374,7 +374,7 @@ fn do_faccessat(dirfd: i32, path: *const u8, mode: u32, flags: usize) -> Syscall
             proc.fd_table.get(dirfd as usize)?.any()
         };
         let file_stat = file.fstat();
-        let file_mode = FaccessatFileMode::from_bits_truncate(file_stat.st_mode & 0xfff);
+        let file_mode = FileMode::from_bits_truncate(file_stat.st_mode & 0xfff);
         return check_faccessat_access(file_mode, &file_stat, uid, gid, mode);
     }
 
@@ -391,7 +391,7 @@ fn do_faccessat(dirfd: i32, path: *const u8, mode: u32, flags: usize) -> Syscall
     let (parent_path, _) = rsplit_once(abs_path.as_str(), "/");
     let parent_inode = open(&parent_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
     let parent_mode = parent_inode.inode.fmode()? & 0xfff;
-    let parent_mode = FaccessatFileMode::from_bits_truncate(parent_mode);
+    let parent_mode = FileMode::from_bits_truncate(parent_mode);
     if parent_inode.inode.types() != InodeType::Dir {
         return Err(SysErrNo::ENOTDIR);
     }
@@ -402,9 +402,9 @@ fn do_faccessat(dirfd: i32, path: *const u8, mode: u32, flags: usize) -> Syscall
             &parent_stat,
             uid,
             gid,
-            FaccessatFileMode::S_IXUSR,
-            FaccessatFileMode::S_IXGRP,
-            FaccessatFileMode::S_IXOTH,
+            FileMode::S_IXUSR,
+            FileMode::S_IXGRP,
+            FileMode::S_IXOTH,
         )
     {
         return Err(SysErrNo::EACCES);
@@ -424,7 +424,7 @@ fn do_faccessat(dirfd: i32, path: *const u8, mode: u32, flags: usize) -> Syscall
         }
     }
     let file_mode = inode.inode.fmode()? & 0xfff;
-    let file_mode = FaccessatFileMode::from_bits_truncate(file_mode);
+    let file_mode = FileMode::from_bits_truncate(file_mode);
     let file_stat = inode.inode.fstat();
     check_faccessat_access(file_mode, &file_stat, uid, gid, mode)
 }

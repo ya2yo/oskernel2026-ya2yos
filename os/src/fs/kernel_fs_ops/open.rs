@@ -2,7 +2,7 @@ use crate::fs::{
     is_dynamic_loader_path, map_library_path, DentryLookup, MountFlags, DENTRY_CACHE, MNT_TABLE,
     NONE_MODE,
 };
-use crate::syscall::{fs::file_lock, FaccessatFileMode};
+use crate::syscall::{fs::file_lock, FileMode};
 use crate::task::current_task;
 use crate::utils::SysResult;
 
@@ -217,25 +217,25 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
         // root (euid 0) 绕过权限检查；Linux 文件权限检查基于 effective uid。
         if my_uid != 0 {
             let pstat = parent_stat.as_ref().ok_or(SysErrNo::EACCES)?;
-            let parent_mode = FaccessatFileMode::from_bits_truncate((pstat.st_mode & 0xfff) as u32);
+            let parent_mode = FileMode::from_bits_truncate((pstat.st_mode & 0xfff) as u32);
             let owner_uid = pstat.st_uid;
             let owner_gid = pstat.st_gid;
 
             // 确定进程属于 owner / group / other 哪一类。
             let (has_write, has_exec) = if my_uid == owner_uid {
                 (
-                    parent_mode.contains(FaccessatFileMode::S_IWUSR),
-                    parent_mode.contains(FaccessatFileMode::S_IXUSR),
+                    parent_mode.contains(FileMode::S_IWUSR),
+                    parent_mode.contains(FileMode::S_IXUSR),
                 )
             } else if my_gid == owner_gid {
                 (
-                    parent_mode.contains(FaccessatFileMode::S_IWGRP),
-                    parent_mode.contains(FaccessatFileMode::S_IXGRP),
+                    parent_mode.contains(FileMode::S_IWGRP),
+                    parent_mode.contains(FileMode::S_IXGRP),
                 )
             } else {
                 (
-                    parent_mode.contains(FaccessatFileMode::S_IWOTH),
-                    parent_mode.contains(FaccessatFileMode::S_IXOTH),
+                    parent_mode.contains(FileMode::S_IWOTH),
+                    parent_mode.contains(FileMode::S_IXOTH),
                 )
             };
 
@@ -484,7 +484,7 @@ fn open_inner(
                     let file_stat = inode.fstat();
                     let file_fmode = inode.fmode()?;
                     let file_mode = file_fmode & 0xfff;
-                    let file_mode = FaccessatFileMode::from_bits_truncate(file_mode);
+                    let file_mode = FileMode::from_bits_truncate(file_mode);
                     let my_uid = task_inner.effective_uid;
                     let my_gid = task_inner.effective_gid;
                     let owner_uid = file_stat.st_uid;
@@ -500,11 +500,11 @@ fn open_inner(
                     );
 
                     let has_write = if my_uid == owner_uid {
-                        file_mode.contains(FaccessatFileMode::S_IWUSR)
+                        file_mode.contains(FileMode::S_IWUSR)
                     } else if my_gid == owner_gid {
-                        file_mode.contains(FaccessatFileMode::S_IWGRP)
+                        file_mode.contains(FileMode::S_IWGRP)
                     } else {
-                        file_mode.contains(FaccessatFileMode::S_IWOTH)
+                        file_mode.contains(FileMode::S_IWOTH)
                     };
                     if !has_write {
                         debug!("[open] EACCES: no write permission on existing file");

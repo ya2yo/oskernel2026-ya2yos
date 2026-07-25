@@ -14,7 +14,7 @@ use crate::{
         copy_from_user_val, read_elf_load_image, read_elf_load_image_with_prefix, read_user_cstr,
         read_user_cstr_with_limit, MemorySet,
     },
-    syscall::FaccessatFileMode,
+    syscall::FileMode,
     task::current_task,
     utils::{get_abs_path, strip_color, trim_start_slash, SysErrNo, SyscallRet},
 };
@@ -119,20 +119,20 @@ fn read_exec_probe_with_size(
 fn current_task_can_exec(file_mode: u32, owner_uid: u32, owner_gid: u32) -> bool {
     let task = current_task().unwrap();
     let task_inner = task.inner_lock();
-    let file_mode = FaccessatFileMode::from_bits_truncate(file_mode & 0xfff);
+    let file_mode = FileMode::from_bits_truncate(file_mode & 0xfff);
 
     if task_inner.effective_uid == 0 {
         return file_mode.intersects(
-            FaccessatFileMode::S_IXUSR | FaccessatFileMode::S_IXGRP | FaccessatFileMode::S_IXOTH,
+            FileMode::S_IXUSR | FileMode::S_IXGRP | FileMode::S_IXOTH,
         );
     }
 
     if task_inner.effective_uid == owner_uid {
-        file_mode.contains(FaccessatFileMode::S_IXUSR)
+        file_mode.contains(FileMode::S_IXUSR)
     } else if task_inner.effective_gid == owner_gid {
-        file_mode.contains(FaccessatFileMode::S_IXGRP)
+        file_mode.contains(FileMode::S_IXGRP)
     } else {
-        file_mode.contains(FaccessatFileMode::S_IXOTH)
+        file_mode.contains(FileMode::S_IXOTH)
     }
 }
 

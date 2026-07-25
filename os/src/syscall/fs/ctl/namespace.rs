@@ -91,15 +91,15 @@ pub(super) fn check_parent_permission(parent_path: &str, need_write: bool) -> Sy
     }
 
     let parent_stat = parent.inode.fstat();
-    let parent_mode = FaccessatFileMode::from_bits_truncate(parent.inode.fmode()? & 0xfff);
+    let parent_mode = FileMode::from_bits_truncate(parent.inode.fmode()? & 0xfff);
     let has_exec = mode_allows(
         parent_mode,
         &parent_stat,
         uid,
         gid,
-        FaccessatFileMode::S_IXUSR,
-        FaccessatFileMode::S_IXGRP,
-        FaccessatFileMode::S_IXOTH,
+        FileMode::S_IXUSR,
+        FileMode::S_IXGRP,
+        FileMode::S_IXOTH,
     );
     let has_write = !need_write
         || mode_allows(
@@ -107,9 +107,9 @@ pub(super) fn check_parent_permission(parent_path: &str, need_write: bool) -> Sy
             &parent_stat,
             uid,
             gid,
-            FaccessatFileMode::S_IWUSR,
-            FaccessatFileMode::S_IWGRP,
-            FaccessatFileMode::S_IWOTH,
+            FileMode::S_IWUSR,
+            FileMode::S_IWGRP,
+            FileMode::S_IWOTH,
         );
     if !has_exec || !has_write {
         return Err(SysErrNo::EACCES);

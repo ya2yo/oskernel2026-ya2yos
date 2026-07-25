@@ -12,7 +12,7 @@ mod vfs;
 pub use crate::fs::files::Socket;
 pub use crate::fs::files::*;
 use crate::mm::UserBuffer;
-// use crate::syscall::FaccessatFileMode;
+// use crate::syscall::FileMode;
 use crate::utils::{SysErrNo, SysResult};
 
 use alloc::string::String;

@@ -10,7 +10,7 @@ use crate::fs::{
 };
 use crate::mm::{copy_from_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::fs::has_too_long_path_component;
-use crate::syscall::Syscall;
+use crate::syscall::{FileMode, Syscall};
 use crate::task::{block_on, current_task, interruptible, Process};
 use crate::utils::{get_abs_path, is_abs_path, SysErrNo, SyscallRet};
 use alloc::{
@@ -20,7 +20,10 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use linux_raw_sys::general::open_how;
+use linux_raw_sys::general::{
+    open_how, AT_FDCWD, CAP_FSETID, LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_CLOEXEC, RESOLVE_BENEATH,
+    RESOLVE_CACHED, RESOLVE_IN_ROOT, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS, RESOLVE_NO_XDEV,
+};
 use log::{debug, error};
 
 /// https://man7.org/linux/man-pages/man2/flock.2.html
@@ -39,7 +42,7 @@ use log::{debug, error};
 /// - 未设置 `LOCK_NB` 时，若锁冲突则阻塞等待直到锁可用或被信号中断
 /// - 设置 `LOCK_NB` 时，锁冲突立即返回 `EAGAIN`
 pub fn sys_flock(fd: i32, op: i32) -> SyscallRet {
-    let valid_mask = LOCK_SH | LOCK_EX | LOCK_NB | LOCK_UN;
+    let valid_mask = (LOCK_SH | LOCK_EX | LOCK_NB | LOCK_UN) as i32;
     if op & !valid_mask != 0 {
         return Err(SysErrNo::EINVAL);
     }
@@ -55,18 +58,18 @@ pub fn sys_flock(fd: i32, op: i32) -> SyscallRet {
     let file_ptr = Arc::as_ptr(&osfile) as usize;
 
     // --- 解锁 ---
-    if (op & LOCK_UN) != 0 {
+    if (op & LOCK_UN as i32) != 0 {
         file_lock::flock_unlock(&inode_path, file_ptr);
         return Ok(0);
     }
 
     // --- 加锁 ---
-    let lock_type = op & (LOCK_SH | LOCK_EX);
-    if lock_type != LOCK_SH && lock_type != LOCK_EX {
+    let lock_type = op & (LOCK_SH | LOCK_EX) as i32;
+    if lock_type != LOCK_SH as i32 && lock_type != LOCK_EX as i32 {
         return Err(SysErrNo::EINVAL);
     }
 
-    let nonblock = (op & LOCK_NB) != 0;
+    let nonblock = (op & LOCK_NB as i32) != 0;
 
     if nonblock {
         return file_lock::flock_try_lock(&inode_path, file_ptr, lock_type).map(|_| 0);
@@ -148,8 +151,11 @@ pub fn sys_dup3(old: usize, new: usize, flags: u32) -> SyscallRet {
     }
 
     let mut file = proc.fd_table.get(old)?;
-    if flags == 0x800000 || flags == 0x80000 {
-        //flags包含O_CLOEXEC,为新的fd设置该标志，否则不设置
+    if flags & !O_CLOEXEC != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    if flags & O_CLOEXEC != 0 {
+        // flags 包含 O_CLOEXEC，为新的 fd 设置该标志。
         file.set_cloexec();
     } else {
         file.unset_cloexec();
@@ -211,30 +217,57 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
         if flags.bits() & OpenFlags::O_ACCMODE.bits() == OpenFlags::O_RDONLY.bits() {
             return Err(SysErrNo::EINVAL);
         }
-        if !(dirfd == -100 && path == ".") {
-            // Resolve the directory without calling high-level open(): sys_openat
-            // already holds process state, and open() can re-enter those locks.
-            let dir_inode = if FsIndex::has_inode(&abs_path) {
-                FsIndex::find_inode_idx(&abs_path).ok_or(SysErrNo::ENOENT)?
-            } else {
-                let inode = superblock_root_inode().find(&abs_path, OpenFlags::O_DIRECTORY, 0)?;
-                FsIndex::insert_inode_idx(&abs_path, inode)
-            };
-            if !dir_inode.types().is_dir() {
-                return Err(SysErrNo::ENOTDIR);
-            }
+        // Resolve the directory without calling high-level open(): sys_openat
+        // already holds process state, and open() can re-enter those locks.
+        let dir_inode = if FsIndex::has_inode(&abs_path) {
+            FsIndex::find_inode_idx(&abs_path).ok_or(SysErrNo::ENOENT)?
+        } else {
+            let inode = superblock_root_inode().find(&abs_path, OpenFlags::O_DIRECTORY, 0)?;
+            FsIndex::insert_inode_idx(&abs_path, inode)
+        };
+        if !dir_inode.types().is_dir() {
+            return Err(SysErrNo::ENOTDIR);
         }
+        let parent_stat = dir_inode.fstat();
 
         let (readable, writable) = flags.read_write();
         let task_inner = task.inner_lock();
         let uid = task_inner.effective_uid;
         let gid = task_inner.effective_gid;
+        let cap = CAP_FSETID as usize;
+        let has_cap_fsetid =
+            task_inner.capabilities.effective[cap / 32] & (1u32 << (cap % 32)) != 0;
         drop(task_inner);
 
-        let effective_mode = mode & !fs_info.get_umask();
+        // Linux strips S_ISGID before applying the umask.  In particular, a
+        // umask that clears S_IXGRP must not turn an unprivileged setgid-file
+        // request into a mandatory-locking marker after the security check.
+        let setgid = FileMode::S_ISGID.bits();
+        let setgid_and_group_execute =
+            (FileMode::S_ISGID | FileMode::S_IXGRP).bits();
+        let mut effective_mode = mode;
+        if mode & setgid_and_group_execute == setgid_and_group_execute
+            && parent_stat.st_mode & setgid != 0
+            && gid != parent_stat.st_gid
+            && !has_cap_fsetid
+        {
+            effective_mode &= !setgid;
+        }
+        effective_mode &= !fs_info.get_umask();
+        let file_gid = if parent_stat.st_mode & setgid != 0 {
+            parent_stat.st_gid
+        } else {
+            gid
+        };
         flags.remove(OpenFlags::O_TMPFILE);
         flags.remove(OpenFlags::O_DIRECTORY);
-        let file = FileClass::Abs(TmpFile::new(readable, writable, effective_mode, uid, gid));
+        let file = FileClass::Abs(TmpFile::new(
+            readable,
+            writable,
+            effective_mode,
+            uid,
+            file_gid,
+        ));
         let new_fd = fd_table.alloc_fd()?;
         fd_table.set(new_fd, FileDescriptor::new(flags, file));
         // Record a procfd target string for readlink(/proc/self/fd/<fd>). The
@@ -520,19 +553,13 @@ pub fn sys_close_range(first: u32, last: u32, flags: u32) -> SyscallRet {
 /// - `usize`: sizeof(struct open_how)，应 >= 24
 ///
 /// `struct open_how { __u64 flags; __u64 mode; __u64 resolve; }`
-/// 的 resolve 掩码。
-const RESOLVE_NO_XDEV: u64 = 0x01;
-const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-const RESOLVE_BENEATH: u64 = 0x08;
-const RESOLVE_IN_ROOT: u64 = 0x10;
-const RESOLVE_CACHED: u64 = 0x20;
-const RESOLVE_KNOWN: u64 = RESOLVE_NO_XDEV
+/// 的已知 resolve 掩码。
+const RESOLVE_KNOWN: u64 = (RESOLVE_NO_XDEV
     | RESOLVE_NO_MAGICLINKS
     | RESOLVE_NO_SYMLINKS
     | RESOLVE_BENEATH
     | RESOLVE_IN_ROOT
-    | RESOLVE_CACHED;
+    | RESOLVE_CACHED) as u64;
 
 /// 返回路径所在的挂载根。`/proc` 目前由 rootfs 内的伪文件模拟，但仍须作为
 /// `RESOLVE_NO_XDEV` 可见的独立挂载点处理。
@@ -607,7 +634,7 @@ fn openat2_is_magic_link(path: &str) -> bool {
 /// 获取 `openat2` 路径解析的起点。普通 `openat` 在真正打开前也会做同样的
 /// dirfd 校验；这里提前取得它，以便 resolve 约束可以在进入 VFS 前生效。
 fn openat2_base_path(process: &Process, dirfd: isize) -> Result<String, SysErrNo> {
-    if dirfd == -100 {
+    if dirfd == AT_FDCWD as isize {
         Ok(process.fs_info.get_cwd())
     } else {
         process
@@ -685,7 +712,14 @@ pub fn sys_openat2(
     let flags = open_how_val.flags as u32;
     let flags = OpenFlags::from_bits(flags).ok_or(SysErrNo::EINVAL)?;
     let creates = flags.contains(OpenFlags::O_CREATE) || flags.contains(OpenFlags::O_TMPFILE);
-    if open_how_val.mode > 0o7777 || (!creates && open_how_val.mode != 0) {
+    let valid_create_mode = (FileMode::S_ISUID
+        | FileMode::S_ISGID
+        | FileMode::S_ISVTX
+        | FileMode::S_IRWXU
+        | FileMode::S_IRWXG
+        | FileMode::S_IRWXO)
+        .bits() as u64;
+    if open_how_val.mode > valid_create_mode || (!creates && open_how_val.mode != 0) {
         return Err(SysErrNo::EINVAL);
     }
     if open_how_val.resolve & !RESOLVE_KNOWN != 0 {
@@ -693,21 +727,23 @@ pub fn sys_openat2(
     }
 
     let base_path = openat2_base_path(proc, dirfd)?;
-    if open_how_val.resolve & RESOLVE_BENEATH != 0 && openat2_escapes_beneath(&path) {
+    if open_how_val.resolve & RESOLVE_BENEATH as u64 != 0 && openat2_escapes_beneath(&path) {
         return Err(SysErrNo::EXDEV);
     }
-    let relative_path = if open_how_val.resolve & RESOLVE_IN_ROOT != 0 {
+    let relative_path = if open_how_val.resolve & RESOLVE_IN_ROOT as u64 != 0 {
         openat2_in_root_path(&path)
     } else {
         path.clone()
     };
     let resolved_path = get_abs_path(&base_path, &relative_path);
-    if open_how_val.resolve & RESOLVE_NO_XDEV != 0
+    if open_how_val.resolve & RESOLVE_NO_XDEV as u64 != 0
         && openat2_mount_root(&base_path) != openat2_mount_root(&resolved_path)
     {
         return Err(SysErrNo::EXDEV);
     }
-    if open_how_val.resolve & RESOLVE_NO_MAGICLINKS != 0 && openat2_is_magic_link(&resolved_path) {
+    if open_how_val.resolve & RESOLVE_NO_MAGICLINKS as u64 != 0
+        && openat2_is_magic_link(&resolved_path)
+    {
         return Err(SysErrNo::ELOOP);
     }
 
@@ -721,14 +757,14 @@ pub fn sys_openat2(
     );
 
     let mut open_flags = flags;
-    if open_how_val.resolve & RESOLVE_NO_SYMLINKS != 0 {
+    if open_how_val.resolve & RESOLVE_NO_SYMLINKS as u64 != 0 {
         // 现有 VFS 的 O_NOFOLLOW 可准确拒绝末级 symlink，并绕开 dentry cache
         // 以确保底层路径查询返回 ELOOP。
         open_flags.insert(OpenFlags::O_NOFOLLOW);
     }
 
     sys_openat_path(
-        -100,
+        AT_FDCWD as isize,
         &resolved_path,
         open_flags.bits(),
         open_how_val.mode as u32,
