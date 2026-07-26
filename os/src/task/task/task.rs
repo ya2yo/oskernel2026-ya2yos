@@ -878,7 +878,14 @@ impl TaskControlBlock {
         let process_create_begin = get_ticks();
         let process_arc = if flags.contains(CloneFlags::CLONE_THREAD) {
             self.process.clone()
-        } else if flags.contains(CloneFlags::CLONE_VM) {
+        } else if flags.contains(CloneFlags::CLONE_VM) && !flags.contains(CloneFlags::CLONE_VFORK) {
+            // A regular CLONE_VM child can run concurrently with its parent,
+            // so it must retain the parent's hart until remote TLB shootdown
+            // is available.  CLONE_VM | CLONE_VFORK is different: the parent
+            // is marked VforkBlocked before this child is made runnable, and
+            // the child replaces the shared address space with execve() before
+            // the parent can resume.  Giving that exec hand-off a new process
+            // placement lets Cargo's posix_spawn rustc workers use all harts.
             Process::new_on_hart(
                 child_memory_set_arc.clone(),
                 child_sig_table.clone(),

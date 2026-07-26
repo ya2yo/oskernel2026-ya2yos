@@ -13,7 +13,7 @@ bitflags! {
 }
 
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Kstat {
     pub st_dev: usize,  // 包含文件的设备 ID
     pub st_ino: usize,  // 索引节点号

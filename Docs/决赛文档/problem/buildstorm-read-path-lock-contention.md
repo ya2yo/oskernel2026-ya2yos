@@ -271,3 +271,40 @@ qcow2 叠加盘运行 RISC-V 定向 BuildStorm 180 秒，无 panic/TFAIL/TBROK�
 推进到 `1/446`，约 `t=128434ms` 的快照为 EXT4 读取 `26357` 次、锁等待 `46747937us`、
 持锁 `10686619us`。这不是同镜像严格 A/B，完整 446 crate 和正式评分仍未完成，不能据此
 宣称端到端加速比例。
+
+## 2026-07-26：Vfork hart 分布、跨 worker VFS 缓存与单页读缓存
+
+### 新观测
+
+最新 `log.ans` 已不再出现死锁、`SIGSEGV`、`panic`、`TFAIL` 或 `TBROK`，但 Cargo 在 8 hart
+并行后仍受 lwext4 全局锁限制。上一份样本首次出现 `Building 11/446` 在
+`t=518588ms` 之后；启用单页 read 缓存后的新样本在 `t=302597ms` 后已进入 `11/446`。两次
+运行不是严格 A/B，但新样本在更短的 guest 时间推进到相同阶段，且同阶段的 EXT4 读取/读锁
+统计由旧样本 `45623/669455984us/64669037us` 降为 `33278/368941615us/35626467us`
+（依次为 reads、读锁等待、读锁持有）。
+
+新样本的剩余主要锁等待是 `find=278324986us` 和 `fstat=192636911us`，而不是 hart 没有启动。
+启动日志仍确认 HART0 至 HART7 都已上线；`-smp 8` 已生效。
+
+### 修复
+
+- Cargo 的 `posix_spawn` 使用 `CLONE_VM|CLONE_VFORK`。父任务在子任务可运行前已进入
+  `VforkBlocked`，子任务在恢复父任务前会 `execve()` 或退出，因此该类非线程子进程改用
+  `Process::new()` 的 pid round-robin hart 分配；普通可与父并发的 `CLONE_VM` 线程仍固定在
+  父 hart，避免没有远程 TLB shootdown 时跨 hart 共用地址空间。
+- inode 与 dentry lookup cache 从 4096 提升到 32768 项，并取消“某个独立 fd table 的最后
+  owner 退出即清空全局缓存”。缓存仍有硬上限；达到预算时先清 dentry，再回收不再被使用的
+  inode，故不会无限增长，也不会以悬空父 inode 指针复用旧 dentry。
+- `OSFile::read()` 的普通文件单页请求也接入现有 `FILE_PAGE_CACHE`。冷读加载完整页，命中后
+  只复制缓存字节；文件大小上限从 1MiB 放宽到 8MiB。现有 write、truncate 与 rename 的页缓存
+  失效继续生效。
+- `Ext4Inode` 为普通文件缓存完整 `Kstat`；第一次查询和缓存未命中仍在 EXT4 锁内完成，命中则
+  直接返回。读、写、truncate、rename、hard-link、unlink、chmod、chown 与显式时间戳更新都会
+  失效；目录和特殊节点不缓存，以免目录项变化暴露旧元数据。
+
+### 验证与边界
+
+`make perf TARGET_ARCH=riscv64`、`make TARGET_ARCH=loongarch64` 和 `git diff --check` 通过，
+仅有既有 smoltcp unused warning。`log.ans` 中的 303 s 运行覆盖了单页 read 缓存，不包含随后
+加入的 `fstat` 缓存；后者目前仅完成双架构编译验证。完整 446 crate、正式评分和严格同配置
+A/B wall-clock 尚未完成，不能据此承诺一小时内完成编译。

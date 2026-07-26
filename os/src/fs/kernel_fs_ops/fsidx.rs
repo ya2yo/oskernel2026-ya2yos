@@ -44,9 +44,10 @@ static INODE_CACHE: Lazy<RwLock<InodeCacheState>> =
 static SPECIAL_NODE_TYPES: Lazy<RwLock<HashMap<String, InodeType>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
-/// A lookup cache must not grow without bound in one long-running process.
-/// Entries with live file users are retained even when this threshold is met.
-const MAX_CACHED_INODES: usize = 4096;
+/// A lookup cache must not grow without bound.  BuildStorm opens substantially
+/// more than 4096 distinct source and artifact paths in one cold build; keep a
+/// full working set here and reclaim it only under the explicit cache budget.
+const MAX_CACHED_INODES: usize = 32 * 1024;
 
 pub struct FsIndex;
 

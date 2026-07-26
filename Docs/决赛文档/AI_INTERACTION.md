@@ -1323,6 +1323,14 @@
 - **验证**：当前 RISC-V `log.ans` 的 12 次 `execve` 累计 `208763 us`，CAgent `fs-search pass 764` 并正常 `shutdown!`，无 `panic/TFAIL/TBROK`；RISC-V、LoongArch64 release 构建通过。详见 `ai.log` 对应条目和 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md)。
 - **关联 commit**：当前工作区未提交
 
+#### BuildStorm 多 hart VFS 读/元数据吞吐优化（7.26）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者在 BuildStorm 不再报错后要求继续将 8 hart 并行编译的吞吐降到可接受范围，并禁止通过修改测试脚本掩盖内核问题。
+- **描述**：确认所有 hart 已启动，修正 `CLONE_VM|CLONE_VFORK` exec worker 的 hart 放置；保留普通共享地址空间线程的原 hart 约束。将有界 VFS lookup cache 跨短命 compiler worker 保留，扩展普通单页读取的共享页缓存，并为普通文件增加带写入/元数据变更失效的 `Kstat` cache。lwext4 全局串行约束保持不变。
+- **验证**：最新 RISC-V `log.ans` 无 panic/TFAIL/TBROK，在约 303 s 前到达 `11/446`；同阶段旧样本在约 519 s 后才到达，二者不是严格 A/B。RISC-V perf、RISC-V/LoongArch64 release 构建和 `git diff --check` 通过。完整 BuildStorm 与 `fstat` cache 的运行期样本尚未完成。
+- **关联 commit**：当前工作区未提交
+
 #### BuildStorm EXT4 全局锁可睡眠等待（7.26）
 
 - **工具/模型**：Codex (GPT-5)

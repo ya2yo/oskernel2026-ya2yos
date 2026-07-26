@@ -44,14 +44,6 @@ pub use map_dynamic_link::{
     map_library_path, patch_dynamic_link_file_bytes,
 };
 
-/// Reclaim VFS lookup caches after the final owner of a process fd table has
-/// exited.  Both caches are accelerators, so eviction cannot invalidate an
-/// open file or change filesystem state.
-pub fn reclaim_vfs_caches() {
-    DENTRY_CACHE.clear();
-    FsIndex::reclaim_unused();
-}
-
 bitflags! {
     /// 定义一份打开文件的标志
     pub struct OpenFlags: u32 {

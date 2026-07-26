@@ -7303,3 +7303,31 @@ mmap 写回；lwext4 的可睡眠 `Ext4OpLock` 在竞争时会 `block_on()`，�
 `git diff --check`、`cargo fmt --manifest-path os/Cargo.toml -- --check`、
 `make TARGET_ARCH=riscv64` 均通过，后者同时完成 RISC-V 与 LoongArch64 release 构建。
 沙箱 QEMU 因宿主 `/var/tmp` 只读未启动；维护者确认死锁已经修复，未将其记录为 AI 独立完成的完整 BuildStorm 回归。
+
+## 2026-07-26：BuildStorm 多 hart VFS 读/元数据吞吐优化
+
+### 用户输入
+
+维护者提供连续更新的 `log.ans`，确认 BuildStorm 不再报错但编译速度仍不可接受，要求继续以
+内核实现而非测试脚本参数优化，并检查 8 hart 利用情况。
+
+### 分析与采纳结论
+
+启动日志和 QEMU 配置确认 8 个 hart 已上线。Cargo 的 `posix_spawn` 使用
+`CLONE_VM|CLONE_VFORK`，原实现将 exec 后独立的 rustc 长期固定到父 hart，故对该安全的
+vfork 交接改用 round-robin process placement；普通并发 `CLONE_VM` 仍保留原 hart。
+
+性能快照显示最大剩余成本是 lwext4 的串行 read/find/fstat，而非测试错误。全局 VFS cache 被
+每个短命 worker 退出清空，单页 `read()` 又绕过了既有页缓存。采纳有界跨 worker cache、单页
+read 回填和普通文件 `Kstat` 缓存；没有删除 lwext4 的 SMP 安全锁，也没有修改 BuildStorm 脚本、
+Cargo job 数或 `RUST_MIN_STACK`。
+
+### 修改与验证
+
+修改 `os/src/task/task/task.rs`、`os/src/task/mod.rs`、`os/src/fs/{dcache,stat}.rs`、
+`os/src/fs/kernel_fs_ops/fsidx.rs`、`os/src/fs/files/os_file.rs` 与
+`os/src/fs/ext4_lw/inode.rs`。新 `log.ans` 在约 303 s 前到达 `11/446`，旧相似运行约在 519 s
+后才出现相同进度；两者非严格 A/B，故只作为方向性证据。RISC-V perf、RISC-V release 与
+LoongArch64 release 构建均通过，`git diff --check` 通过。`fstat` 缓存未取得新的 guest 样本，
+完整 BuildStorm 仍待运行，不报告端到端完成时间。详见
+`problem/buildstorm-read-path-lock-contention.md`。

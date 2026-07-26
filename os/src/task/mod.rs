@@ -518,12 +518,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             // A zombie still keeps an Arc through its Process metadata, so
             // Arc::strong_count cannot determine whether a live process
             // remains.  The resource owner counts are decremented exactly
-            // once when each process group exits.
-            let released_last_fd_table_owner = fd_table.release_owner();
+            // once when each process group exits.  VFS lookup caches are
+            // global and capacity-bounded, so they intentionally survive a
+            // short-lived compiler worker and remain reusable by the next one.
+            fd_table.release_owner();
             fs_info.release_owner();
-            if released_last_fd_table_owner {
-                crate::fs::reclaim_vfs_caches();
-            }
 
             curr_task.process.set_group_exit_code_once(exit_code);
             curr_task.process.exit_and_reparent();

@@ -32,8 +32,8 @@ struct DentryKey {
 /// Negative cache 主要服务非 `O_CREAT` 查找路径，创建路径应绕过或失效旧的 negative 项。
 enum DentryValue {
     /// Keep the child alive across close/open cycles in the same process.
-    /// `reclaim_vfs_caches()` drops these strong references at testcase and
-    /// cache-pressure boundaries before reclaiming FsIndex entries.
+    /// Cache-pressure eviction drops these strong references before reclaiming
+    /// otherwise-unused FsIndex entries.
     Positive {
         inode: Arc<dyn Inode>,
     },
@@ -57,8 +57,10 @@ pub struct DentryCache {
 }
 
 /// Bound path-name metadata even while one long-running process continually
-/// probes unique names.  A cache miss only costs another filesystem lookup.
-const MAX_DENTRY_CACHE_ENTRIES: usize = 4096;
+/// probes unique names.  Cargo's parallel compiler workers share this global
+/// cache, so keep one cold BuildStorm build resident instead of repeatedly
+/// flushing the working set at a few thousand paths.
+const MAX_DENTRY_CACHE_ENTRIES: usize = 32 * 1024;
 
 impl DentryCache {
     /// 创建空的 dentry cache。

@@ -51,6 +51,11 @@ pub struct Ext4Inode {
     /// established a regular file's size, serve that immutable-until-write
     /// value without serializing on its global operation lock.
     known_size: AtomicUsize,
+    /// Repeated `stat(2)` calls on an unchanged regular source or artifact
+    /// otherwise serialize on lwext4's global path-based metadata lookup.
+    /// Directories and special nodes are intentionally excluded because their
+    /// metadata changes as children are created or removed.
+    stat_cache: RwLock<Option<Kstat>>,
 }
 
 /// `Ext4Inode` 的可变内部状态。
@@ -83,6 +88,7 @@ impl Ext4Inode {
             inode_type: as_inode_type(types.clone()),
             path: RwLock::new(path.to_string()),
             known_size: AtomicUsize::new(UNKNOWN_FILE_SIZE),
+            stat_cache: RwLock::new(None),
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
                 quota_reserved: 0,
@@ -133,6 +139,37 @@ impl Ext4Inode {
     #[inline]
     fn update_known_size(&self, size: usize) {
         self.known_size.store(size, Ordering::Release);
+    }
+
+    #[inline]
+    fn cached_stat(&self) -> Option<Kstat> {
+        if self.inode_type == InodeType::File {
+            *self.stat_cache.read()
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn update_cached_stat(&self, stat: Kstat) {
+        if self.inode_type == InodeType::File {
+            *self.stat_cache.write() = Some(stat);
+        }
+    }
+
+    #[inline]
+    fn invalidate_cached_stat(&self) {
+        if self.inode_type == InodeType::File {
+            *self.stat_cache.write() = None;
+        }
+    }
+
+    #[inline]
+    fn stat_with_known_size(&self, mut stat: Kstat) -> Kstat {
+        if let Some(size) = self.known_size() {
+            stat.st_size = size as isize;
+        }
+        stat
     }
 
     /// 在当前路径失效后尝试从 alias 列表恢复一个可用路径。
@@ -317,6 +354,10 @@ impl Inode for Ext4Inode {
         };
         #[cfg(feature = "perf")]
         crate::utils::perf::record_ext4_read(r);
+        // Preserve visible atime semantics if lwext4 updated it while serving
+        // this read.  Cached page hits never enter this path and therefore do
+        // not change the filesystem metadata either.
+        self.invalidate_cached_stat();
         patch_dynamic_link_file_bytes(&path, off, &mut buf[..r]);
         Ok(r)
     }
@@ -397,6 +438,7 @@ impl Inode for Ext4Inode {
         };
         let end = off.checked_add(written).ok_or(SysErrNo::EFBIG)?;
         self.update_known_size(current_size.max(end));
+        self.invalidate_cached_stat();
         Ok(written)
     }
 
@@ -412,6 +454,7 @@ impl Inode for Ext4Inode {
 
         file.file_truncate(size as u64).map_err(SysErrNo::from)?;
         self.update_known_size(size);
+        self.invalidate_cached_stat();
         FILE_PAGE_CACHE.invalidate_path(&path);
         Ok(0)
     }
@@ -456,6 +499,7 @@ impl Inode for Ext4Inode {
         }
         inner.f = Ext4File::new(new_path, types);
         self.update_cached_path(new_path);
+        self.invalidate_cached_stat();
         FILE_PAGE_CACHE.invalidate_path(&active_path);
         FILE_PAGE_CACHE.invalidate_path(path);
         FILE_PAGE_CACHE.invalidate_path(new_path);
@@ -476,6 +520,7 @@ impl Inode for Ext4Inode {
             if inner.aliases.iter().all(|alias| alias != new_path) {
                 inner.aliases.push(new_path.to_string());
             }
+            self.invalidate_cached_stat();
         }
         ret
     }
@@ -491,7 +536,11 @@ impl Inode for Ext4Inode {
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         let file = &mut inner.f;
-        file.set_time(atime, mtime, ctime).map_err(SysErrNo::from)
+        let ret = file.set_time(atime, mtime, ctime).map_err(SysErrNo::from);
+        if ret.is_ok() {
+            self.invalidate_cached_stat();
+        }
+        ret
     }
 
     /// 将 lwext4 文件缓存刷新到磁盘。
@@ -633,9 +682,18 @@ impl Inode for Ext4Inode {
     /// 正常情况下直接用当前路径对应的 lwext4 句柄查询；如果路径因 rename/unlink 失效，
     /// 再尝试 `recover_live_path()`，从已记录 alias 中恢复一个仍存在的路径。
     fn fstat(&self) -> Kstat {
+        if let Some(stat) = self.cached_stat() {
+            return self.stat_with_known_size(stat);
+        }
+
         let _ext4 = EXT4_OP_LOCK.lock_for_fstat();
+        // Another hart may have populated the cache while this task waited
+        // for lwext4.  Recheck after acquiring the guard to avoid redundant
+        // metadata I/O during Cargo's parallel probes.
+        if let Some(stat) = self.cached_stat() {
+            return self.stat_with_known_size(stat);
+        }
         let inner = self.inner.get_unchecked_mut();
-        let known_size = self.known_size();
         let stat = match inner.f.fstat() {
             Ok(s) => s,
             Err(rc) => {
@@ -662,7 +720,7 @@ impl Inode for Ext4Inode {
             tmp_stat.st_atime &= 0xFFFF_FFFF;
             tmp_stat.st_mtime &= 0xFFFF_FFFF;
         }
-        let mut kstat = Kstat {
+        let kstat = Kstat {
             st_dev: stat.st_dev,
             st_ino: stat.st_ino,
             st_mode: stat.st_mode,
@@ -677,16 +735,15 @@ impl Inode for Ext4Inode {
             st_mtime: tmp_stat.st_mtime,
             ..Kstat::default()
         };
-        if let Some(size) = known_size {
-            kstat.st_size = size as isize;
-        }
         let cpath = inner.f.path();
         let path_str = cpath.to_str().unwrap_or("");
+        let mut kstat = kstat;
         if let Some(node_type) = FsIndex::special_node_type(path_str) {
             let type_bits = node_type.mode_bits();
             kstat.st_mode = (kstat.st_mode & !0xF000) | type_bits;
         }
-        kstat
+        self.update_cached_stat(kstat);
+        self.stat_with_known_size(kstat)
     }
     /// 读取目录项内容。
     ///
@@ -802,13 +859,17 @@ impl Inode for Ext4Inode {
         let inner = self.inner.get_unchecked_mut();
         let is_dir = as_inode_type(inner.f.types()) == InodeType::Dir;
         let file = &mut inner.f;
-        if is_dir {
+        let ret = if is_dir {
             file.dir_rm(path).map_err(SysErrNo::from)
         } else {
             file.file_remove(path).map_err(SysErrNo::from)?;
             MNT_TABLE.lock().remove_file(path);
             Ok(0)
+        };
+        if ret.is_ok() {
+            self.invalidate_cached_stat();
         }
+        ret
     }
 
     /// 返回当前可用于 lwext4 path-based API 的路径。
@@ -858,13 +919,17 @@ impl Inode for Ext4Inode {
             as_inode_type(inner.f.file_type()).mode_bits()
         };
         let mode = mode_type | (mode & 0o7777);
-        match inner.f.file_mode_set(mode) {
+        let ret = match inner.f.file_mode_set(mode) {
             Ok(ret) => Ok(ret),
             Err(_) => {
                 let _ = self.recover_live_path(inner);
                 inner.f.file_mode_set(mode).map_err(SysErrNo::from)
             }
+        };
+        if ret.is_ok() {
+            self.invalidate_cached_stat();
         }
+        ret
     }
 
     /// 设置 inode owner uid/gid。
@@ -872,13 +937,17 @@ impl Inode for Ext4Inode {
         // Keep owner updates in the filesystem layer so stat and permission checks agree.
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
-        match inner.f.file_owner_set(uid, gid) {
+        let ret = match inner.f.file_owner_set(uid, gid) {
             Ok(ret) => Ok(ret),
             Err(_) => {
                 let _ = self.recover_live_path(inner);
                 inner.f.file_owner_set(uid, gid).map_err(SysErrNo::from)
             }
+        };
+        if ret.is_ok() {
+            self.invalidate_cached_stat();
         }
+        ret
     }
 
     fn seek_data(&self, offset: usize) -> SyscallRet {

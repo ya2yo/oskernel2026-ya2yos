@@ -30,7 +30,7 @@ static FILE_FLAGS: Lazy<Mutex<BTreeMap<String, u32>>> = Lazy::new(|| Mutex::new(
 static NEXT_OFD_LOCK_OWNER: AtomicI32 = AtomicI32::new(1);
 const PIPE_MAX_SIZE_PATH: &str = "/proc/sys/fs/pipe-max-size";
 const MAX_AGGREGATED_READ: usize = 64 * 1024;
-const MAX_PAGE_CACHED_READ_FILE_SIZE: usize = 1024 * 1024;
+const MAX_PAGE_CACHED_READ_FILE_SIZE: usize = 8 * 1024 * 1024;
 
 fn seek_offset(base: usize, offset: isize) -> Result<usize, SysErrNo> {
     if offset < 0 {
@@ -184,28 +184,40 @@ impl OSFile {
 
     /// Use the shared file-page cache for bounded regular-file reads.
     ///
-    /// A cold range is fetched with one ordinary inode read and its fully
-    /// covered pages are published for later rustc/Cargo readers.  Files that
-    /// are too large, special files, or ranges spanning an uncached page fall
-    /// back to the existing direct path and keep its zero-copy behavior.
+    /// A cold single-page range loads one complete page, allowing later
+    /// compiler workers to reuse it even when their `read(2)` buffer is only
+    /// a few bytes.  Larger requests retain the aggregated-read fast path.
+    /// Files that are too large or special still use the direct path.
     fn try_page_cached_read(
         &self,
         offset: usize,
         buf: &mut UserBuffer,
     ) -> Result<Option<usize>, SysErrNo> {
         let requested_len = buf.len();
-        if requested_len <= PAGE_SIZE
-            || requested_len > MAX_AGGREGATED_READ
-            || self.inode.types() != InodeType::File
-        {
+        if requested_len > MAX_AGGREGATED_READ || self.inode.types() != InodeType::File {
             return Ok(None);
         }
         let file_size = self.inode.size();
         if file_size > MAX_PAGE_CACHED_READ_FILE_SIZE {
             return Ok(None);
         }
+        if offset >= file_size {
+            return Ok(Some(0));
+        }
 
         let path = self.inode.path();
+        if requested_len <= PAGE_SIZE {
+            let page = FILE_PAGE_CACHE.get_or_load(self.inode.clone(), offset / PAGE_SIZE)?;
+            let page_offset = offset % PAGE_SIZE;
+            if page_offset >= page.valid_len {
+                return Ok(Some(0));
+            }
+            let read_size = (page.valid_len - page_offset).min(requested_len);
+            let page_bytes = page.frame.ppn.bytes_array();
+            buf.write(&page_bytes[page_offset..page_offset + read_size]);
+            return Ok(Some(read_size));
+        }
+
         let mut kernel_buf = vec![0; requested_len];
         let read_size = match FILE_PAGE_CACHE.read_cached_at(&path, offset, &mut kernel_buf) {
             Some(read_size) => read_size,
