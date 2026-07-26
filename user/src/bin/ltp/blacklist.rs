@@ -42,7 +42,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "autogroup01\0",
     "bbr01.sh\0",
     "bbr02.sh\0",
-    // "bind04\0",
     "bind05\0",
     "bind06\0",
     "bind_noport01.sh\0",
@@ -79,9 +78,9 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "capset04\0",
     // [100,200)区间
     "cfs_bandwidth01\0",
-    "cgroup_core01\0",
-    "cgroup_core02\0",
-    "cgroup_core03\0",
+    "cgroup_core01\0",// 'memory' controller required, but not available
+    "cgroup_core02\0",// 'memory' controller required, but not available
+    "cgroup_core03\0",// 'memory' controller required, but not available
     "cgroup_regression_3_1.sh\0",
     "cgroup_regression_3_2.sh\0",
     "cgroup_regression_5_1.sh\0",
@@ -1052,10 +1051,10 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "ns-udpsender\0",
     "ns-udpserver\0",
     "numa01.sh\0",
-    "oom02\0",
-    "oom03\0",
-    "oom04\0",
-    "oom05\0",
+    "oom02\0",// test requires libnuma development packages with LIBNUMA_API_VERSION >= 2
+    "oom03\0",// test requires libnuma development packages with LIBNUMA_API_VERSION >= 2
+    "oom04\0",// test requires libnuma development packages with LIBNUMA_API_VERSION >= 2
+    "oom05\0",// test requires libnuma development packages with LIBNUMA_API_VERSION >= 2
     "open12_child\0",
     "open_by_handle_at01\0",
     "open_by_handle_at02\0",

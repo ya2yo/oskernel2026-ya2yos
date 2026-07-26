@@ -967,8 +967,6 @@ fn is_known_fs(fsname: &str) -> bool {
             | "rootfs"
             | "ramfs"
             | "bpf"
-            | "cgroup"
-            | "cgroup2"
             | "overlay"
             | "squashfs"
             | "xfs"
