@@ -1323,6 +1323,19 @@
 - **验证**：当前 RISC-V `log.ans` 的 12 次 `execve` 累计 `208763 us`，CAgent `fs-search pass 764` 并正常 `shutdown!`，无 `panic/TFAIL/TBROK`；RISC-V、LoongArch64 release 构建通过。详见 `ai.log` 对应条目和 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md)。
 - **关联 commit**：当前工作区未提交
 
+#### BuildStorm `ppoll` 忙让出调度热循环修复（7.26）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析 `buildstorm::compile::run()` 的 `log.ans` 性能瓶颈并实施修复。
+- **描述**：AI 以旧、新 perf 快照对齐调度选择、系统调用与 Cargo 进度，定位 `ppoll` 在未就绪
+  时将任务保持为 `Ready` 后反复让出 CPU，导致 CFS 立即重选并形成内核态热循环。修复改为快照
+  fd、注册文件 waker、二次检查并通过 timer future 阻塞等待；临时 signal mask、可见信号、
+  `POLLNVAL` 与零 timeout 扫描语义一并保留或修正。
+- **验证**：RISC-V perf、LoongArch64 release 构建与补丁检查通过。RISC-V 新 `log.ans` 在
+  guest 341684 ms 时调度选择为 153080 次，Cargo 已至 `6/446`，无 `panic/TFAIL/TBROK`；QEMU
+  被外层终止，未将完整 BuildStorm 标为通过。详见 [problem/buildstorm-ppoll-busy-yield.md](./problem/buildstorm-ppoll-busy-yield.md) 与 `ai.log`。
+- **关联 commit**：当前工作区未提交
+
 #### BuildStorm MINIBUILD inode cache 命中路径优化（7.25）
 
 - **工具/模型**：Codex (GPT-5)

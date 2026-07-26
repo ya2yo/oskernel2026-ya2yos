@@ -140,3 +140,4 @@
 - [execve 动态解释器按需映射优化](./problem/execve-dynamic-interpreter-demand-paging.md)
 - [CAgent 全量并发 EXT4/TCP 吞吐优化](./problem/cagent-ext4-tcp-throughput.md)
 - [BuildStorm `cc` 符号链接缓存污染](./problem/buildstorm-cc-symlink-cache-poisoning.md)
+- [BuildStorm `ppoll` 忙让出导致调度器热循环](./problem/buildstorm-ppoll-busy-yield.md)

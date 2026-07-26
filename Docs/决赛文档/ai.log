@@ -7188,3 +7188,27 @@ inode；后续普通打开复用该 inode，lwext4 不跟随链接而返回 `ENO
 `make build-arch TARGET_ARCH=riscv64` 均通过。最新 RISC-V 日志已通过 LTO 探针并推进到
 Cargo `37/446`，不再含 `/usr/bin/cc`、LTO、Cargo 链接、panic、`TFAIL` 或 `TBROK` 错误。
 该日志随后停止写入，未完成完整 BuildStorm 或 LoongArch64 回归，文档未将其记录为通过。
+
+## 2026-07-26：BuildStorm `ppoll` 忙让出调度热循环
+
+### 用户输入
+
+维护者要求分析 `log.ans` 中 `buildstorm::compile::run()` 的性能瓶颈并完成修复；随后提供
+新一轮运行结果，要求以根目录 `log.ans` 为准继续分析。
+
+### 分析与采纳结论
+
+AI 对比旧、新 perf 快照，确认旧样本中 Cargo 约 382 s 只到 `4/446`，调度器已有约 9500 万次
+选择，而系统调用只有数十万量级。沿 `sys_ppoll()` -> `suspend_current_and_run_next()` 追踪后，
+确认未就绪 fd 只被设为 `Ready` 并立即让出，CFS 随后可再次选中同一任务，使 Cargo 的 pipe
+等待在单个 syscall 内形成扫描/切换热循环。采纳已有 `pselect6` 的 waker + `block_on` + timer
+future 模型，不修改调度器、EXT4 或 Cargo 脚本。
+
+### 修改与验证
+
+修改 `os/src/syscall/io_mpx/poll.rs`：`ppoll` 现在快照 fd、注册 `File::register()` waker、二次
+检查就绪状态，并通过 `block_on(timeout(...))` 等待 I/O、信号或超时；零 timeout 也正确执行
+一次就绪扫描。RISC-V perf 构建、LoongArch64 release 构建和补丁检查均通过。新 RISC-V
+`log.ans` 在 guest 341684 ms 时为 `scheduler selections=153080`、Cargo `6/446`，无
+`panic/TFAIL/TBROK`；QEMU 被外层终止，未报告完整 BuildStorm 通过或正式加速比例。详见
+`problem/buildstorm-ppoll-busy-yield.md`。
