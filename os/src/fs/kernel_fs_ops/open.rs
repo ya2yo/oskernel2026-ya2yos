@@ -131,6 +131,13 @@ fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult
 
     let lookup_path = join_parent_child(&parent_inode.path(), child_name);
     let found = parent_inode.find(&lookup_path, flags, 0).map(|inode| {
+        // `O_NOFOLLOW` and the internal `O_UNLINK` return the final symlink
+        // itself.  That object must not populate the normal pathname cache:
+        // a later ordinary open would reuse it and pass the link pathname to
+        // lwext4, whose file-open API deliberately does not follow links.
+        if preserve_final_symlink {
+            return inode;
+        }
         let inode = FsIndex::insert_inode_idx(&lookup_path, inode);
         if lookup_path != abs_path {
             FsIndex::insert_inode_idx(abs_path, inode.clone());
@@ -385,7 +392,8 @@ fn open_inner(
     // Avoid probing it twice: apart from the duplicated map lookup, the old
     // `has_inode() + find_inode_idx()` sequence repeatedly entered the inode
     // alias-maintenance path on every cached open.
-    let mut inode = if !flags.intersects(OpenFlags::O_NOFOLLOW | OpenFlags::O_UNLINK) {
+    let preserve_final_symlink = flags.intersects(OpenFlags::O_NOFOLLOW | OpenFlags::O_UNLINK);
+    let mut inode = if !preserve_final_symlink {
         FsIndex::find_inode_idx(abs_path)
     } else {
         None
@@ -395,7 +403,11 @@ fn open_inner(
             .unwrap_or_else(|| superblock_root_inode().find(abs_path, flags, 0));
         match found_res {
             Ok(t) => {
-                inode = Some(FsIndex::insert_inode_idx(abs_path, t));
+                inode = Some(if preserve_final_symlink {
+                    t
+                } else {
+                    FsIndex::insert_inode_idx(abs_path, t)
+                });
             }
             // `Ext4Inode::find()` only follows a final symlink.  A Debian
             // path such as `/bin/bash` therefore reports ENOTDIR while
@@ -409,9 +421,13 @@ fn open_inner(
                 let found_res = find_from_cached_parent(&resolved_path, flags)
                     .unwrap_or_else(|| superblock_root_inode().find(&resolved_path, flags, 0));
                 let resolved_inode = found_res?;
-                let resolved_inode = FsIndex::insert_inode_idx(&resolved_path, resolved_inode);
-                FsIndex::insert_inode_idx(abs_path, resolved_inode.clone());
-                inode = Some(resolved_inode);
+                inode = Some(if preserve_final_symlink {
+                    resolved_inode
+                } else {
+                    let resolved_inode = FsIndex::insert_inode_idx(&resolved_path, resolved_inode);
+                    FsIndex::insert_inode_idx(abs_path, resolved_inode.clone());
+                    resolved_inode
+                });
             }
             Err(SysErrNo::ELOOP) => return Err(SysErrNo::ELOOP),
             Err(_) => {
@@ -422,9 +438,13 @@ fn open_inner(
                                 superblock_root_inode().find(&resolved_path, flags, 0)
                             });
                         if let Ok(t) = found_res {
-                            let t = FsIndex::insert_inode_idx(&resolved_path, t);
-                            FsIndex::insert_inode_idx(abs_path, t.clone());
-                            inode = Some(t);
+                            inode = Some(if preserve_final_symlink {
+                                t
+                            } else {
+                                let t = FsIndex::insert_inode_idx(&resolved_path, t);
+                                FsIndex::insert_inode_idx(abs_path, t.clone());
+                                t
+                            });
                         }
                     }
                 } else {

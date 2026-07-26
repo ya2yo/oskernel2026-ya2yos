@@ -7162,3 +7162,29 @@ AI 解析当前 `log.ans` 最后一个 `shutdown!` 后的 perf 快照，确认 9
 修改 `os/src/fs/ext4_lw/inode.rs`、`os/src/fs/page_cache.rs`、`os/src/net/tcp.rs`、`os/src/net/router.rs`、`os/src/net/service.rs`、`os/src/task/processor.rs` 和 `os/src/utils/perf.rs`。`cargo fmt --manifest-path os/Cargo.toml`、`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 与 `git diff --check` 均通过，仅保留既有 smoltcp warning。
 
 变更后的本机全量 QEMU 被中断，故未伪造 A/B wall-clock 或评分比例；维护者已反馈评测性能提升明显。详见 `problem/cagent-ext4-tcp-throughput.md`。
+
+## 2026-07-26：BuildStorm `cc` 符号链接缓存污染
+
+### 用户输入
+
+维护者提供新的 `log.ans`，其中 BuildStorm 在 Cargo 并行编译时仍报
+`ext4_fopen: /usr/bin/cc, rc = 2`，随后 GCC 报 `-fuse-linker-plugin` 找不到
+`liblto_plugin.so`，要求优先修复该错误。
+
+### 分析与采纳结论
+
+AI 先核对最早的内核错误和 Cargo 诊断，再对比独立 GCC 探针。插件路径可读且独立链接
+成功，故未改工具链、环境变量或镜像文件。沿 `open_inner()`、`find_from_cached_parent()`、
+`FsIndex` 与 `Ext4Inode::read_at()` 追踪后确认：`O_UNLINK`/`O_NOFOLLOW` 虽跳过普通缓存
+读取，成功结果仍被写回普通缓存。对 `/usr/bin/cc` 的 `readlink/lstat` 会缓存末级链接
+inode；后续普通打开复用该 inode，lwext4 不跟随链接而返回 `ENOENT`。同时补齐中间链接
+展开，保证 `/lib -> /usr/lib` 等 Debian 路径可解析。
+
+### 修改与验证
+
+修改 `os/src/fs/kernel_fs_ops/open.rs` 与 `os/src/fs/ext4_lw/inode.rs`，并新增
+`problem/buildstorm-cc-symlink-cache-poisoning.md` 及索引、开发日志、交互记录。
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check`、
+`make build-arch TARGET_ARCH=riscv64` 均通过。最新 RISC-V 日志已通过 LTO 探针并推进到
+Cargo `37/446`，不再含 `/usr/bin/cc`、LTO、Cargo 链接、panic、`TFAIL` 或 `TBROK` 错误。
+该日志随后停止写入，未完成完整 BuildStorm 或 LoongArch64 回归，文档未将其记录为通过。

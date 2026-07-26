@@ -157,6 +157,56 @@ impl Ext4Inode {
         }
         current
     }
+
+    /// Find the first symbolic link before the final component of an absolute
+    /// pathname.  lwext4's path lookups can resolve a final link, but a cold
+    /// lookup through Debian's `/lib -> usr/lib` reports ENOENT once the VFS
+    /// parent cache has been reclaimed.  Intermediate links must always be
+    /// followed, including for operations that preserve a final link.
+    fn first_intermediate_symlink(&self, path: &str) -> Option<String> {
+        let components: Vec<&str> = path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .collect();
+        if components.len() < 2 {
+            return None;
+        }
+
+        let _ext4 = EXT4_OP_LOCK.lock();
+        let file = &mut self.inner.get_unchecked_mut().f;
+        let mut prefix = String::new();
+        for component in &components[..components.len() - 1] {
+            prefix.push('/');
+            prefix.push_str(component);
+            if file.is_symlink(&prefix) {
+                return Some(prefix);
+            }
+        }
+        None
+    }
+
+    /// Replace an intermediate symlink in `path` with its target.
+    fn resolve_intermediate_symlink(&self, path: &str) -> Result<Option<String>, SysErrNo> {
+        let Some(link_path) = self.first_intermediate_symlink(path) else {
+            return Ok(None);
+        };
+        let mut link_buf = [0u8; 256];
+        let link_buf_len = link_buf.len();
+        let link = Ext4Inode::new(&link_path, InodeTypes::EXT4_DE_SYMLINK);
+        let link_len = link.read_link(&mut link_buf, link_buf_len)?;
+        let target = core::str::from_utf8(&link_buf[..link_len]).map_err(|_| SysErrNo::ENOENT)?;
+        let resolved_target = if target.starts_with('/') {
+            join_path("/", target)
+        } else {
+            join_path(&link_path, target)
+        };
+        let suffix = path.strip_prefix(&link_path).ok_or(SysErrNo::ENOENT)?;
+        Ok(Some(format!(
+            "{}{}",
+            resolved_target.trim_end_matches('/'),
+            suffix
+        )))
+    }
 }
 
 impl Inode for Ext4Inode {
@@ -525,22 +575,31 @@ impl Inode for Ext4Inode {
         let is_symlink = {
             let _ext4 = EXT4_OP_LOCK.lock();
             let file = &mut self.inner.get_unchecked_mut().f;
-            if flags.contains(OpenFlags::O_NOFOLLOW) && file.is_symlink(path) {
-                return Err(SysErrNo::ELOOP);
-            }
-            if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
-                return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)));
-            }
-            if file.check_inode_exist(path, InodeTypes::EXT4_DE_REG_FILE) {
-                if flags.contains(OpenFlags::O_DIRECTORY) {
-                    return Err(SysErrNo::ENOTDIR);
+            let is_symlink = file.is_symlink(path);
+            if is_symlink {
+                if flags.contains(OpenFlags::O_NOFOLLOW) {
+                    return Err(SysErrNo::ELOOP);
                 }
-                return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_REG_FILE)));
+            } else {
+                if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
+                    return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)));
+                }
+                if file.check_inode_exist(path, InodeTypes::EXT4_DE_REG_FILE) {
+                    if flags.contains(OpenFlags::O_DIRECTORY) {
+                        return Err(SysErrNo::ENOTDIR);
+                    }
+                    return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_REG_FILE)));
+                }
             }
-            file.check_inode_exist(path, InodeTypes::EXT4_DE_SYMLINK)
+            is_symlink
         };
 
         if !is_symlink {
+            if loop_times < MAX_LOOPTIMES {
+                if let Some(next_path) = self.resolve_intermediate_symlink(path)? {
+                    return self.find(&next_path, flags, loop_times + 1);
+                }
+            }
             return Err(SysErrNo::ENOENT);
         }
         if flags.contains(OpenFlags::O_UNLINK) {

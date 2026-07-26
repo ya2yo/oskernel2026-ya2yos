@@ -1385,3 +1385,17 @@
 - **描述**：AI 对齐 `log.ans` 的最终 perf 快照，确认 EXT4 全局锁累计等待约 29.034 秒是首要吞吐瓶颈。修复将高频 `inode.path()` 和已知大小查询移出 lwext4 全局锁，页缓存命中改用共享读锁；同时收缩 TCP 无效全栈轮询和 router RX 队列复制。rename、alias recovery、写入、截断和缓存重复加载的语义边界保持保护。详见 `ai.log` 和 [problem/cagent-ext4-tcp-throughput.md](./problem/cagent-ext4-tcp-throughput.md)。
 - **验证**：RISC-V、LoongArch64 `make perf` 及格式检查通过。变更后本机 QEMU 全量运行被中断，未报告伪造的 A/B 比例；维护者反馈评测性能提升明显。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm `cc` 符号链接缓存污染修复（7.26）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求根据 `log.ans` 修复 BuildStorm 并行 Cargo 编译中的
+  `/usr/bin/cc` 打开失败及其后的 LTO 插件误报。
+- **描述**：AI 确认 GCC/LTO 独立探针正常，定位为 VFS 对 `O_UNLINK`/`O_NOFOLLOW`
+  的末级链接查找仍回填普通 inode 缓存。修复禁止该类结果写入 `FsIndex` 和 dentry cache，
+  并补齐 Debian 中间 symlink 展开；普通打开继续缓存解析后的实际文件。
+- **验证**：格式检查、补丁检查和 RISC-V release 构建通过。定向 BuildStorm 日志已由旧版
+  Cargo `1--2/446` 的 `ext4_fopen`/LTO 失败推进到 `37/446` 且未出现对应错误；日志未完成，
+  因此未宣称全量 BuildStorm 或 LoongArch64 通过。详见
+  [problem/buildstorm-cc-symlink-cache-poisoning.md](./problem/buildstorm-cc-symlink-cache-poisoning.md)。
+- **关联 commit**：当前工作区未提交
