@@ -7,9 +7,12 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use super::MemorySetInner;
+use super::{
+    accessors::{writeback_shared_mmap_pages, SharedMmapWriteback},
+    MemorySetInner,
+};
 use crate::{
-    fs::OSFile,
+    fs::{OSFile, FILE_PAGE_CACHE},
     mm::{
         FrameTracker, MapAreaType, MapPermission, PhysAddr, PhysPageNum, VPNRange, VirtAddr,
         VirtPageNum,
@@ -117,12 +120,30 @@ impl MemorySet {
     /// Unmap an mmap-created range.
     #[inline(always)]
     pub fn munmap(&self, addr: usize, len: usize) -> SyscallRet {
+        let end_addr = addr
+            .checked_add(len)
+            .ok_or(crate::utils::SysErrNo::EINVAL)?;
+        let start_vpn = VirtAddr::from(addr).floor();
+        let end_vpn = VirtAddr::from(end_addr).ceil();
+        if start_vpn >= end_vpn {
+            return Err(crate::utils::SysErrNo::EINVAL);
+        }
+        let writebacks: Vec<SharedMmapWriteback> = self
+            .get_ref()
+            .collect_shared_mmap_writebacks(Some((start_vpn, end_vpn)));
+        for writeback in &writebacks {
+            writeback_shared_mmap_pages(writeback)?;
+        }
         self.get_mut().munmap(addr, len)
     }
 
     /// Handle a user page fault in this address space.
     #[inline(always)]
     pub fn handle_page_fault(&self, vpn: VirtPageNum, scause: Trap) -> bool {
+        // File-backed faults may block in EXT4. Prepare the page before
+        // taking MemorySet's write lock; the locked phase only installs the
+        // already-cached frame into the VMA and page table.
+        self.prepare_file_page(vpn);
         self.get_mut().handle_page_fault(vpn, scause)
     }
 
@@ -131,7 +152,26 @@ impl MemorySet {
     /// The trap layer uses this to distinguish Linux SIGBUS from ordinary
     /// unmapped/protection faults, which result in SIGSEGV.
     pub fn mmap_file_page_beyond_eof(&self, vpn: VirtPageNum) -> bool {
-        self.get_ref().mmap_file_page_beyond_eof(vpn)
+        self.prepare_file_page(vpn).unwrap_or(false)
+    }
+
+    /// Load one file-backed mmap page without holding the MemorySet lock.
+    /// Returns `Some(true)` when the page starts at or beyond EOF, `Some(false)`
+    /// for a valid page, and `None` for non-file-backed mappings.
+    fn prepare_file_page(&self, vpn: VirtPageNum) -> Option<bool> {
+        let request = self.get_ref().mmap_file_page_info(vpn);
+        let (inode, page_index) = request?;
+        let page = FILE_PAGE_CACHE.get_or_load(inode, page_index).ok()?;
+        Some(page.valid_len == 0)
+    }
+
+    /// Preload all file pages in shared mappings before a fork takes the
+    /// parent's MemorySet write lock to install shared frames.
+    pub fn prefetch_shared_file_pages(&self) {
+        let requests = self.get_ref().shared_file_page_info();
+        for (inode, page_index) in requests {
+            let _ = FILE_PAGE_CACHE.get_or_load(inode, page_index);
+        }
     }
 
     /// Change permissions for a virtual page range.
@@ -154,7 +194,20 @@ impl MemorySet {
     /// Drop all user VM areas and write back dirty shared mmap pages first.
     #[inline(always)]
     pub fn recycle_data_pages(&self) -> SyscallRet {
-        self.get_mut().recycle_data_pages()
+        let writebacks = self.get_ref().collect_shared_mmap_writebacks(None);
+        let mut first_error = None;
+        for writeback in &writebacks {
+            if let Err(error) = writeback_shared_mmap_pages(writeback) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        let clear_result = self.get_mut().recycle_data_pages();
+        match first_error {
+            Some(error) => Err(error),
+            None => clear_result,
+        }
     }
 
     /// Resident physical memory in KiB.

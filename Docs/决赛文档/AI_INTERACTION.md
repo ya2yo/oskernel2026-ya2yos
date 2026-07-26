@@ -1450,3 +1450,19 @@
   180 秒定向运行无 panic/TFAIL/TBROK，Cargo 推进到 `1/446`。完整 BuildStorm 与严格 A/B
   wall-clock 尚未完成。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm MemorySet 与 EXT4 可睡眠锁死锁（7.26）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `log.ans` 与 `gdbclient.ans`，要求定位 BuildStorm 死锁并遵守
+  `TaskControlBlockInner -> ResourceSlot -> MemorySet` 锁顺序；死锁修复后要求补充文档。
+- **描述**：GDB 显示多个 hart 在 rseq 用户态返回写回或地址空间激活时自旋等待不同的
+  `MemorySet` 读锁。追踪确认文件 mmap 缺页、fork 共享页预填充及共享映射写回会在
+  `MemorySet` 写锁内进入可通过 `block_on()` 睡眠的 lwext4 全局锁。修复采用锁外 inode/page/frame
+  快照与 EXT4 I/O、锁内页表/VMA 更新的两阶段边界；clone 仅在 PCB 锁内瞬时取得资源 Arc，
+  tuple 声明保持维护者要求的原状。详见
+  [problem/memoryset-ext4-sleeping-lock-deadlock.md](./problem/memoryset-ext4-sleeping-lock-deadlock.md)。
+- **验证**：`git diff --check`、格式检查及 RISC-V/LoongArch64 release 构建通过。沙箱 QEMU
+  受宿主 `/var/tmp` 临时文件权限限制未启动；维护者确认死锁已修复，未记录为 AI 独立完成的
+  完整 BuildStorm 回归。
+- **关联 commit**：当前工作区未提交

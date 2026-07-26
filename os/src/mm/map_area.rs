@@ -243,15 +243,10 @@ impl MmapFile {
     }
 
     pub fn new(file: Option<Arc<OSFile>>, offset: usize) -> Self {
-        // Ext4 retains this per-inode value after unlink, while later writes
-        // and truncates through the same inode continue to update it.
-        if let Some(file) = file.as_ref() {
-            let _ = file.inode.size();
-        }
         Self { file, offset }
     }
 
-    /// Replace a VMA's file backing and initialize its inode length tracking.
+    /// Replace a VMA's file backing.
     pub fn replace(&mut self, file: Option<Arc<OSFile>>, offset: usize) {
         *self = Self::new(file, offset);
     }

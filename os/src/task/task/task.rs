@@ -760,57 +760,14 @@ impl TaskControlBlock {
             get_ticks().saturating_sub(clone_process_begin),
         );
 
+        // Snapshot the resource-slot Arc while holding TaskControlBlockInner,
+        // following the documented lock order. This only takes and releases
+        // the slot lock; no MemorySet-internal lock is acquired here.
         #[cfg(feature = "perf")]
         let parent_state_begin = get_ticks();
         {
             let parent_inner = self.inner.lock();
-            let parent_proc_inner = &self.process;
-
-            // 保存父进程 memory_set Arc，fork 时用于复制固定初始用户栈的已映射页。
-            parent_memory_set_arc = parent_proc_inner.memory_set_arc();
-
-            // 子进程 memory_set
-            #[cfg(feature = "perf")]
-            let address_space_start = get_ticks();
-            child_memory_set_arc = if flags.contains(CloneFlags::CLONE_VM) {
-                parent_proc_inner.memory_set_arc()
-            } else {
-                let parent_memory_set = parent_proc_inner.memory_set_arc();
-                Arc::new(MemorySet::new(MemorySetInner::from_existed_user(
-                    &parent_memory_set,
-                )))
-            };
-            #[cfg(feature = "perf")]
-            crate::utils::perf::record_clone_address_space_duration(
-                get_ticks().saturating_sub(address_space_start),
-            );
-
-            // fs / fd / sig
-            child_fs_info = if flags.contains(CloneFlags::CLONE_FS) {
-                Arc::clone(&parent_proc_inner.fs_info)
-            } else {
-                Arc::new(FSInfo::from_another(&parent_proc_inner.fs_info))
-            };
-            child_fd_table = if flags.contains(CloneFlags::CLONE_FILES) {
-                Arc::clone(&parent_proc_inner.fd_table)
-            } else {
-                Arc::new(FdTable::from_another(&parent_proc_inner.fd_table))
-            };
-            child_sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
-                parent_proc_inner.sig_table_arc()
-            } else if flags.contains(CloneFlags::CLONE_CLEAR_SIGHAND) {
-                Arc::new(Mutex::new(SigTable::new()))
-            } else {
-                Arc::new(Mutex::new(
-                    parent_proc_inner.with_sigtable(|sigtable| SigTable::from_another(sigtable)),
-                ))
-            };
-
-            // CLONE_PARENT_SETTID: 写入父进程地址空间
-            if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
-                let parent_mem = parent_proc_inner.memory_set_arc();
-                copy_to_user_val(&*parent_mem, parent_tid, &(tid_handle.0 as u32))?;
-            }
+            parent_memory_set_arc = self.process.memory_set_arc();
 
             clear_child_tid = if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) {
                 child_tid as usize
@@ -865,11 +822,55 @@ impl TaskControlBlock {
             } else {
                 parent_inner.rseq
             };
-        } // parent_inner, parent_proc_inner 在此释放
+        } // parent_inner 在此释放
         #[cfg(feature = "perf")]
         crate::utils::perf::record_clone_parent_state_duration(
             get_ticks().saturating_sub(parent_state_begin),
         );
+
+        #[cfg(feature = "perf")]
+        let address_space_start = get_ticks();
+        // Do not hold TaskControlBlockInner while taking MemorySet's write
+        // lock. Pre-faulting a shared mapping can enter ext4 and block, which
+        // would otherwise strand this task's PCB lock and the parent MM lock.
+        child_memory_set_arc = if flags.contains(CloneFlags::CLONE_VM) {
+            Arc::clone(&parent_memory_set_arc)
+        } else {
+            Arc::new(MemorySet::new(MemorySetInner::from_existed_user(
+                &parent_memory_set_arc,
+            )))
+        };
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_clone_address_space_duration(
+            get_ticks().saturating_sub(address_space_start),
+        );
+
+        child_fs_info = if flags.contains(CloneFlags::CLONE_FS) {
+            Arc::clone(&self.process.fs_info)
+        } else {
+            Arc::new(FSInfo::from_another(&self.process.fs_info))
+        };
+        child_fd_table = if flags.contains(CloneFlags::CLONE_FILES) {
+            Arc::clone(&self.process.fd_table)
+        } else {
+            Arc::new(FdTable::from_another(&self.process.fd_table))
+        };
+        child_sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
+            self.process.sig_table_arc()
+        } else if flags.contains(CloneFlags::CLONE_CLEAR_SIGHAND) {
+            Arc::new(Mutex::new(SigTable::new()))
+        } else {
+            Arc::new(Mutex::new(
+                self.process
+                    .with_sigtable(|sigtable| SigTable::from_another(sigtable)),
+            ))
+        };
+
+        // CLONE_PARENT_SETTID accesses user memory, so it must stay outside
+        // the parent PCB lock as well.
+        if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
+            copy_to_user_val(&*parent_memory_set_arc, parent_tid, &(tid_handle.0 as u32))?;
+        }
 
         // Process::new() 会登记父子关系并获取 ProcessMeta。必须在父任务
         // inner 锁释放后执行，避免与子进程退出路径反向获取锁。

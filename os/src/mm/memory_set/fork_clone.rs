@@ -29,11 +29,17 @@ impl MemorySetInner {
     pub fn from_existed_user(user_space: &MemorySet) -> MemorySetInner {
         let mut memory_set = Self::new_from_kernel();
 
+        // Loading file-backed MAP_SHARED pages can sleep on EXT4. Do it
+        // before taking the parent's MemorySet write lock; the locked phase
+        // below only allocates anonymous frames and installs cached frames.
+        user_space.prefetch_shared_file_pages();
+
         user_space.with_mut(|u| {
             // Pre-fault MAP_SHARED areas: lazy mmap pages need backing frames
             // allocated before forking, otherwise parent and child would each
             // independently allocate their own frames on page fault, breaking
-            // MAP_SHARED semantics.
+            // MAP_SHARED semantics. File pages were prefetched above, so this
+            // loop does not enter the filesystem while the lock is held.
             let areas_ptr: *mut Vec<MapArea> = &mut u.areas;
             let pt_ptr: *mut PageTable = &mut u.page_table;
             for area in unsafe { &mut *areas_ptr }.iter_mut() {

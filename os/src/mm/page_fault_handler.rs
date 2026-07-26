@@ -1,6 +1,11 @@
 // Page Fault Handler 回调
 
-use crate::{arch::memory_layout::PAGE_SIZE, fs::FILE_PAGE_CACHE};
+use alloc::sync::Arc;
+
+use crate::{
+    arch::memory_layout::PAGE_SIZE,
+    fs::{FilePage, FILE_PAGE_CACHE},
+};
 
 use super::group::GROUP_SHARE;
 use super::{MapArea, VirtAddr, VirtPageNum};
@@ -9,42 +14,25 @@ use crate::arch::page_table::PageTable;
 fn file_page_index(vma: &MapArea, va: VirtAddr) -> Option<usize> {
     vma.mmap_file.file.as_ref()?;
     let start_addr: VirtAddr = vma.vpn_range.start().into();
-    let page_index = (va.0 - start_addr.0 + vma.mmap_file.offset) / PAGE_SIZE;
-    Some(page_index)
+    va.0.checked_sub(start_addr.0)?
+        .checked_add(vma.mmap_file.offset)
+        .map(|offset| offset / PAGE_SIZE)
 }
 
-/// Return whether `va` addresses a file page wholly beyond the backing file.
-///
-/// Linux permits a file mapping to extend beyond EOF, and zero-fills the tail
-/// of its final partial page. A fault whose page *starts* at or after EOF is
-/// different: it must raise SIGBUS instead of materializing a zero page.
-pub fn mmap_file_page_beyond_eof(va: VirtAddr, vma: &MapArea) -> bool {
-    let Some(file) = vma.mmap_file.file.as_ref() else {
-        return false;
-    };
-    let start_addr: VirtAddr = vma.vpn_range.start().into();
-    let Some(file_offset) =
-        va.0.checked_sub(start_addr.0)
-            .and_then(|offset| offset.checked_add(vma.mmap_file.offset))
-    else {
-        return true;
-    };
-    // File mappings observe the backing object's current size.  This matters
-    // when a mapping is made before a later write grows the file: the newly
-    // covered pages are valid and must not receive SIGBUS.
-    file_offset >= file.inode.size()
+/// Return a file page that was loaded before taking the `MemorySet` lock.
+/// A zero-length page is the page wholly beyond EOF and is therefore not
+/// materializable by a mmap fault.
+fn cached_file_page(va: VirtAddr, vma: &MapArea) -> Option<Arc<FilePage>> {
+    let page_index = file_page_index(vma, va)?;
+    let file = vma.mmap_file.file.as_ref()?;
+    let page = FILE_PAGE_CACHE.get(&file.inode.path(), page_index)?;
+    (page.valid_len > 0).then_some(page)
 }
 
 fn map_file_page_from_cache(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
     #[cfg(feature = "perf")]
     crate::utils::perf::record_file_page_fault();
-    let Some(page_index) = file_page_index(vma, va) else {
-        return false;
-    };
-    let Some(file) = vma.mmap_file.file.as_ref() else {
-        return false;
-    };
-    let Ok(page) = FILE_PAGE_CACHE.get_or_load(file.inode.clone(), page_index) else {
+    let Some(page) = cached_file_page(va, vma) else {
         return false;
     };
     let vpn: VirtPageNum = va.into();
@@ -58,8 +46,14 @@ fn map_file_page_from_cache(va: VirtAddr, page_table: &mut PageTable, vma: &mut 
 ///mmap写触发的lazy alocation，直接新分配帧
 /// Returns true on success, false if OOM (caller should SIGSEGV).
 pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
-    // debug!("[mmap_write_page_fault] va={:?}", va);
-    if mmap_file_page_beyond_eof(va, vma) {
+    // File-backed pages are loaded by the caller before the MemorySet write
+    // lock is acquired. Never enter EXT4 from this locked path.
+    let cached_page = vma
+        .mmap_file
+        .file
+        .as_ref()
+        .and_then(|_| cached_file_page(va, vma));
+    if vma.mmap_file.file.is_some() && cached_page.is_none() {
         return false;
     }
     // A MAP_SHARED writable fault can reuse the clean file page. Private
@@ -77,17 +71,11 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
     let Some(ppn) = vma.map_one(page_table, va.into()) else {
         return false;
     };
-    if vma.mmap_file.file.is_none() {
-        return true;
+    if let Some(page) = cached_page {
+        let bytes = ppn.bytes_array_mut();
+        bytes.fill(0);
+        bytes[..page.valid_len].copy_from_slice(&page.frame.ppn.bytes_array()[..page.valid_len]);
     }
-    let file = vma.mmap_file.file.clone().unwrap();
-    let start_addr: VirtAddr = vma.vpn_range.start().into();
-    file.inode
-        .read_at(
-            va.0 - start_addr.0 + vma.mmap_file.offset,
-            ppn.bytes_array_mut(),
-        )
-        .expect("mmap_write_page_fault should not fail");
     let vpn = va.floor();
     page_table.handle_mmap_write_page_fault(vpn, vma.map_perm, vma.mmap_flags);
     true
@@ -95,10 +83,6 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
 ///mmap读触发的lazy alocation，查看是否有共享页可直接用，没有再直接分配
 /// Returns true on success, false if OOM.
 pub fn mmap_read_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
-    // debug!("[mmap_read_page_fault] va={:?}", va);
-    if mmap_file_page_beyond_eof(va, vma) {
-        return false;
-    }
     let frame = GROUP_SHARE.lock().find(vma.groupid, va.into());
     if let Some(frame) = frame {
         //有现成的，直接clone,需要是cow的

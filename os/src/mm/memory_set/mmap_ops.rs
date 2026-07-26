@@ -6,21 +6,20 @@
 //! lazy- / COW- / mmap- page-fault handlers.
 
 use super::{
-    read_user_bytes_direct_into, user_buffer_from_kernel, FrameTracker, MapArea, MapAreaType,
-    MapPermission, PhysAddr, UserBuffer, VPNRange, VirtAddr, VirtPageNum,
+    FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer, VPNRange, VirtAddr,
+    VirtPageNum,
 };
 use crate::arch::memory_layout::{
     MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_SPACE_SIZE,
 };
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
-use crate::fs::{File, OSFile, OpenFlags, SEEK_CUR, SEEK_SET};
+use crate::fs::{File, Inode, OSFile, OpenFlags};
 use crate::mm::group::GROUP_SHARE;
 use crate::mm::map_area::MapType;
 use crate::mm::memory_set::MemorySetInner;
 use crate::mm::page_fault_handler::{
-    lazy_page_fault, mmap_file_page_beyond_eof, mmap_read_page_fault, mmap_write_page_fault,
-    write_protect_page_fault,
+    lazy_page_fault, mmap_read_page_fault, mmap_write_page_fault, write_protect_page_fault,
 };
 use crate::syscall::MmapFlags;
 use crate::trap::trap_types::*;
@@ -29,7 +28,6 @@ use alloc::vec;
 use alloc::{string::String, sync::Arc, vec::Vec};
 use log::{debug, warn};
 
-const MMAP_WRITEBACK_CHUNK_SIZE: usize = 0x10000; // 64KB
 const STACK_GUARD_GAP_PAGES: usize = 256;
 
 // pthread stacks are allocated with mmap(MAP_STACK), but the area type is
@@ -53,10 +51,6 @@ fn handle_mmap_not_present_page_fault(
 ) -> bool {
     // A file VMA may legally cover bytes past EOF, but faulting a complete
     // page beyond EOF is SIGBUS, never a demand-zero page.
-    if mmap_file_page_beyond_eof(vpn.into(), area) {
-        return false;
-    }
-
     match scause {
         Trap::Exception(Exception::LoadPageFault) => {
             area.map_perm.contains(MapPermission::R)
@@ -85,13 +79,41 @@ fn handle_mmap_not_present_page_fault(
 }
 
 impl MemorySetInner {
-    /// Check the Linux SIGBUS condition for a file-backed mmap fault.
-    pub fn mmap_file_page_beyond_eof(&self, vpn: VirtPageNum) -> bool {
-        self.areas
+    /// Return the backing inode and page index for a file-backed mmap VMA.
+    /// The caller may use this snapshot after releasing the MemorySet lock to
+    /// perform the potentially blocking filesystem read.
+    pub fn mmap_file_page_info(&self, vpn: VirtPageNum) -> Option<(Arc<dyn Inode>, usize)> {
+        let area = self
+            .areas
             .iter()
-            .filter(|area| area.area_type == MapAreaType::Mmap)
-            .find(|area| area.vpn_range.contains_vpn(vpn))
-            .is_some_and(|area| mmap_file_page_beyond_eof(vpn.into(), area))
+            .find(|area| area.area_type == MapAreaType::Mmap && area.vpn_range.contains_vpn(vpn))?;
+        let file = area.mmap_file.file.as_ref()?;
+        let page_offset = (vpn.0 - area.vpn_range.start().0)
+            .checked_mul(PAGE_SIZE)?
+            .checked_add(area.mmap_file.offset)?;
+        Some((file.inode.clone(), page_offset / PAGE_SIZE))
+    }
+
+    /// Collect all file pages required to materialize shared mappings during
+    /// fork. Only metadata and inode Arcs are copied while the MemorySet read
+    /// lock is held; actual EXT4 reads happen in the caller's unlocked phase.
+    pub fn shared_file_page_info(&self) -> Vec<(Arc<dyn Inode>, usize)> {
+        let mut requests = Vec::new();
+        for area in &self.areas {
+            if !area.mmap_flags.contains(MmapFlags::MAP_SHARED) || !is_mmap_vma(area) {
+                continue;
+            }
+            let Some(file) = area.mmap_file.file.as_ref() else {
+                continue;
+            };
+            for vpn in area.vpn_range {
+                let page_offset = (vpn.0 - area.vpn_range.start().0)
+                    .saturating_mul(PAGE_SIZE)
+                    .saturating_add(area.mmap_file.offset);
+                requests.push((file.inode.clone(), page_offset / PAGE_SIZE));
+            }
+        }
+        requests
     }
 
     pub fn shm(
@@ -262,70 +284,8 @@ impl MemorySetInner {
             let unmap_start = area_start.max(start_vpn);
             let unmap_end = area_end.min(end_vpn);
 
-            // 共享映射脏页写回（仅实际卸载的部分）
-            if area.mmap_flags.contains(MmapFlags::MAP_SHARED)
-                && area.map_perm.contains(MapPermission::W)
-                && area.mmap_file.file.is_some()
-            {
-                let file = area.mmap_file.file.clone().unwrap();
-                if file.inode.link_cnt()? > 0 {
-                    let mut wb_range: Vec<(VirtPageNum, VirtPageNum)> = Vec::new();
-                    for vpn in unmap_start.0..unmap_end.0 {
-                        let vpn = VirtPageNum(vpn);
-                        if area.data_frames.contains_key(&vpn) {
-                            if wb_range.is_empty() {
-                                wb_range.push((vpn, VirtPageNum(vpn.0 + 1)));
-                            } else {
-                                let end_range = wb_range.pop().unwrap();
-                                if end_range.1 == vpn {
-                                    wb_range.push((end_range.0, VirtPageNum(vpn.0 + 1)));
-                                } else {
-                                    wb_range.push(end_range);
-                                    wb_range.push((vpn, VirtPageNum(vpn.0 + 1)));
-                                }
-                            }
-                        }
-                    }
-                    let off = file.lseek(0, SEEK_CUR).unwrap();
-                    let map_base: usize = VirtAddr::from(area.vpn_range.start()).into();
-                    let file_base = area.mmap_file.offset;
-                    for (wb_vpn_start, wb_vpn_end) in wb_range {
-                        let start_addr: usize = VirtAddr::from(wb_vpn_start).into();
-                        let mapped_len: usize = (wb_vpn_end.0 - wb_vpn_start.0) * PAGE_SIZE;
-                        let mut written = 0;
-                        while written < mapped_len {
-                            let chunk_len = MMAP_WRITEBACK_CHUNK_SIZE.min(mapped_len - written);
-                            let mut kernel_buf = vec![0u8; chunk_len];
-                            if read_user_bytes_direct_into(
-                                self.page_table.token(),
-                                start_addr + written,
-                                &mut kernel_buf,
-                            )
-                            .is_none()
-                            {
-                                break;
-                            }
-                            let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
-                            file.lseek(
-                                (file_base + (start_addr - map_base) + written) as isize,
-                                SEEK_SET,
-                            )
-                            .unwrap();
-                            let ret = file.write(buf)?;
-                            if ret == 0 {
-                                break;
-                            }
-                            written += ret;
-                        }
-                    }
-                    file.lseek(off as isize, SEEK_SET).unwrap();
-                } else {
-                    debug!(
-                        "[munmap] skip writeback for unlinked shared mapping: {}",
-                        file.inode.path()
-                    );
-                }
-            }
+            // Shared-mmap writeback is performed by `MemorySet::munmap`
+            // before this lock-protected metadata/page-table update.
             // 卸载交集范围内的所有页
             for vpn in VPNRange::new(unmap_start, unmap_end) {
                 area.unmap_one(&mut self.page_table, vpn);
