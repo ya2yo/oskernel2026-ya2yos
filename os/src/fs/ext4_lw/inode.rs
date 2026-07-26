@@ -294,18 +294,18 @@ impl Inode for Ext4Inode {
         if buf.is_empty() {
             return Ok(0);
         }
-        // Keep the lwext4 guard around cache/descriptor access only.  The
+        // Keep the lwext4 guard around cache/descriptor access only. The
         // compatibility patch below mutates an already-read buffer and does
         // not touch lwext4, so doing it under the global guard needlessly
         // extends contention for concurrent readers.
         let (path, r) = {
-            let _ext4 = EXT4_OP_LOCK.lock();
+            let _ext4 = EXT4_OP_LOCK.lock_for_read();
             let inner = self.inner.get_unchecked_mut();
             let path = Self::live_path(inner);
             let file = &mut inner.f;
             // Read-back caches may contain dirty bytes which are not on disk yet.
             // Check them first, then use a direct ext4 read for the common cold
-            // read-only case.  The latter avoids creating a whole-file write-back
+            // read-only case. The latter avoids creating a whole-file write-back
             // cache and avoids a separate fseek for every VFS read.
             let r = if let Some(r) = read_cached_at(&path, off, buf) {
                 r
@@ -573,25 +573,29 @@ impl Inode for Ext4Inode {
     ) -> Result<Arc<dyn Inode>, SysErrNo> {
         // log::info!("[Inode.find] origin path={}", path);
         let is_symlink = {
-            let _ext4 = EXT4_OP_LOCK.lock();
+            let _ext4 = EXT4_OP_LOCK.lock_for_find();
             let file = &mut self.inner.get_unchecked_mut().f;
-            let is_symlink = file.is_symlink(path);
-            if is_symlink {
-                if flags.contains(OpenFlags::O_NOFOLLOW) {
-                    return Err(SysErrNo::ELOOP);
-                }
-            } else {
-                if file.check_inode_exist(path, InodeTypes::EXT4_DE_DIR) {
+            match file.inode_type_at(path) {
+                Ok(InodeTypes::EXT4_DE_DIR | InodeTypes::EXT4_INODE_MODE_DIRECTORY) => {
                     return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)));
                 }
-                if file.check_inode_exist(path, InodeTypes::EXT4_DE_REG_FILE) {
+                Ok(InodeTypes::EXT4_DE_REG_FILE | InodeTypes::EXT4_INODE_MODE_FILE) => {
                     if flags.contains(OpenFlags::O_DIRECTORY) {
                         return Err(SysErrNo::ENOTDIR);
                     }
                     return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_REG_FILE)));
                 }
+                Ok(InodeTypes::EXT4_DE_SYMLINK | InodeTypes::EXT4_INODE_MODE_SOFTLINK) => {
+                    if flags.contains(OpenFlags::O_NOFOLLOW) {
+                        return Err(SysErrNo::ELOOP);
+                    }
+                    true
+                }
+                // Keep the existing behavior for unsupported special nodes
+                // and lookup errors: callers can still retry an intermediate
+                // symlink before receiving ENOENT.
+                _ => false,
             }
-            is_symlink
         };
 
         if !is_symlink {
@@ -629,7 +633,7 @@ impl Inode for Ext4Inode {
     /// 正常情况下直接用当前路径对应的 lwext4 句柄查询；如果路径因 rename/unlink 失效，
     /// 再尝试 `recover_live_path()`，从已记录 alias 中恢复一个仍存在的路径。
     fn fstat(&self) -> Kstat {
-        let _ext4 = EXT4_OP_LOCK.lock();
+        let _ext4 = EXT4_OP_LOCK.lock_for_fstat();
         let inner = self.inner.get_unchecked_mut();
         let known_size = self.known_size();
         let stat = match inner.f.fstat() {

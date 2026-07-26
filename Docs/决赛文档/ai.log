@@ -7212,3 +7212,49 @@ future 模型，不修改调度器、EXT4 或 Cargo 脚本。
 `log.ans` 在 guest 341684 ms 时为 `scheduler selections=153080`、Cargo `6/446`，无
 `panic/TFAIL/TBROK`；QEMU 被外层终止，未报告完整 BuildStorm 通过或正式加速比例。详见
 `problem/buildstorm-ppoll-busy-yield.md`。
+
+## 2026-07-26：BuildStorm EXT4 全局锁忙等优化
+
+### 用户输入
+
+维护者持续提供 `buildstorm::compile::run()` 的最新 `log.ans`，要求继续优化 EXT4 文件系统锁。
+
+### 分析与采纳结论
+
+AI 对照相近 EXT4 读取量的前后 perf 快照，确认全局 `spin::Mutex` 的竞争等待仍为主要放大项：
+锁跨 lwext4 文件/块设备操作持有，而其余 Cargo 任务在 8 hart QEMU 中持续自旋。采用现有
+`PollSet`、`block_on` 与任务 waker 机制实现竞争时可睡眠的等待队列，保留启动阶段无当前任务
+时的自旋回退，并在释放 mutex 后唤醒 waiter 以防止丢失唤醒。另删除只读重复打开路径中的
+`CString` 比较分配，保持路径和 flags 变化时的重开语义。
+
+### 修改与验证
+
+修改 `os/src/fs/ext4_lw/mod.rs` 和 `crates/lwext4_rust/src/file.rs`，并保留已有的
+`inode.rs` 路径解析与 perf 分类统计改动。新 RISC-V 日志在 `38943` 次 EXT4 读取时，锁等待/持锁
+为 `951568610/677557464` tick；旧相近样本为 `1401679883/986584484` tick，且无
+`panic/TFAIL/TBROK`。Cargo 仅推进到 `3/446` 后被外部终止，故不报告端到端比例。
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 和 `git diff --check`
+通过，构建只含既有 smoltcp warning。详见
+[problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
+
+## 2026-07-26：BuildStorm EXT4 锁 FIFO 单唤醒
+
+### 用户输入
+
+维护者继续提供 `buildstorm::compile::run()` 的 `log.ans`，要求分析最新输出并继续优化 EXT4
+文件系统锁。
+
+### 分析与采纳结论
+
+AI 核对最新快照：Cargo 在 `3/446` 被外层终止，无 `panic`、`TFAIL` 或 `TBROK`，但
+`read_at` 的累计锁等待约 `70.56 s`。代码追踪显示此前的可睡眠锁在每次解锁时调用
+`PollSet::wake()`，会同时唤醒至多 64 个竞争 Cargo task；它们争抢同一把必须串行的 lwext4
+mutex 后大多重新阻塞。采纳 FIFO 单唤醒，而不放宽 lwext4 全局锁。
+
+### 修改与验证
+
+修改 `os/src/utils/poll.rs` 和 `os/src/fs/ext4_lw/mod.rs`：waker 队列去重，二次抢锁成功时
+注销登记，释放 EXT4 mutex 后 `wake_one()` 交接给一个 waiter。`rustfmt`、`git diff --check`、
+RISC-V/LoongArch64 `make perf` 均通过，仅有既有 smoltcp warning。90 秒 RISC-V 定向运行进入
+`buildstorm-compile` 预构建后由外层 timeout 结束，未取得可比的后续 perf 快照；未报告端到端
+加速或完整 BuildStorm 通过。详见 `problem/buildstorm-read-path-lock-contention.md`。

@@ -5,12 +5,9 @@
 extern crate alloc;
 
 use crate::syscall::PollEvents;
-use alloc::{boxed::Box, sync::Arc, task::Wake};
+use alloc::{sync::Arc, task::Wake, vec::Vec};
 use bitflags::bitflags;
-use core::{
-    mem::MaybeUninit,
-    task::{Context, Waker},
-};
+use core::task::{Context, Waker};
 use spin::{Lazy, Mutex};
 
 // /// Trait for types that can be polled for I/O events.
@@ -25,46 +22,43 @@ use spin::{Lazy, Mutex};
 const POLL_SET_CAPACITY: usize = 64;
 
 struct Inner {
-    entries: Box<[MaybeUninit<Waker>]>,
-    cursor: usize,
+    entries: Vec<Waker>,
 }
 
 impl Inner {
     fn new() -> Self {
         Self {
-            entries: Box::new_uninit_slice(POLL_SET_CAPACITY),
-            cursor: 0,
+            entries: Vec::new(),
         }
     }
 
-    fn len(&self) -> usize {
-        self.cursor.min(POLL_SET_CAPACITY)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.cursor == 0
-    }
-
-    fn register(&mut self, waker: &Waker) {
-        let slot = self.cursor % POLL_SET_CAPACITY;
-        if self.cursor >= POLL_SET_CAPACITY {
-            let old = unsafe { self.entries[slot].assume_init_read() };
-            if !old.will_wake(waker) {
-                old.wake();
-            }
-            self.cursor = ((slot + 1) % POLL_SET_CAPACITY) + POLL_SET_CAPACITY;
+    /// Add one task at most once and return a displaced task when full.
+    fn register(&mut self, waker: &Waker) -> Option<Waker> {
+        if self.entries.iter().any(|entry| entry.will_wake(waker)) {
+            return None;
+        }
+        let displaced = if self.entries.len() == POLL_SET_CAPACITY {
+            Some(self.entries.remove(0))
         } else {
-            self.cursor += 1;
-        }
-        self.entries[slot].write(waker.clone());
+            None
+        };
+        self.entries.push(waker.clone());
+        displaced
     }
-}
 
-impl Drop for Inner {
-    fn drop(&mut self) {
-        for i in 0..self.len() {
-            unsafe { self.entries[i].assume_init_read() }.wake();
+    fn unregister(&mut self, waker: &Waker) {
+        let mut index = 0;
+        while index < self.entries.len() {
+            if self.entries[index].will_wake(waker) {
+                self.entries.remove(index);
+            } else {
+                index += 1;
+            }
         }
+    }
+
+    fn take_one(&mut self) -> Option<Waker> {
+        (!self.entries.is_empty()).then(|| self.entries.remove(0))
     }
 }
 
@@ -85,18 +79,39 @@ impl PollSet {
 
     /// Registers a waker.
     pub fn register(&self, waker: &Waker) {
-        self.0.lock().register(waker);
+        let displaced = self.0.lock().register(waker);
+        if let Some(displaced) = displaced {
+            displaced.wake();
+        }
+    }
+
+    /// Removes a previously registered waker without waking it.
+    pub fn unregister(&self, waker: &Waker) {
+        self.0.lock().unregister(waker);
+    }
+
+    /// Wakes one registered task in FIFO order.
+    pub fn wake_one(&self) -> usize {
+        let waker = self.0.lock().take_one();
+        if let Some(waker) = waker {
+            waker.wake();
+            1
+        } else {
+            0
+        }
     }
 
     /// Wakes up all registered wakers.
     pub fn wake(&self) -> usize {
-        let mut guard = self.0.lock();
-        if guard.is_empty() {
-            return 0;
+        let wakers = {
+            let mut guard = self.0.lock();
+            core::mem::take(&mut guard.entries)
+        };
+        let count = wakers.len();
+        for waker in wakers {
+            waker.wake();
         }
-        let inner = core::mem::replace(&mut *guard, Inner::new());
-        drop(guard);
-        inner.len()
+        count
     }
 }
 

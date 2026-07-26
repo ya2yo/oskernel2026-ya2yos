@@ -169,3 +169,70 @@ syscall 层的 `lseek` 仍单独统计完整 syscall 时间，因此可以用 `l
 和 LoongArch64 release 构建。尝试使用 `/tmp` 作为临时目录运行 guest，QEMU 仍因宿主
 `/var/tmp` 只读而在启动前失败，因此尚未取得新的 `[perf] lseek_duration` 快照，也不把
 `lseek` 认定为已证实的时间占比或宣称完整 BuildStorm 加速。
+
+## 2026-07-26：全局锁可睡眠等待与只读描述符复用
+
+### 新观测
+
+此前的 Cargo 并发样本中，lwext4 仍由 `spin::Mutex` 保护。该锁会跨越文件读取和块设备
+访问，持锁可达毫秒量级；其他 hart 在此期间持续忙等。旧样本在约 `37815` 次 EXT4 读取时，
+累计锁等待/持锁分别为 `1401679883/986584484` tick。分类统计中 `read_at`、`find`、`fstat`
+均有显著等待，且 QEMU 的 guest 时间在激烈竞争窗口中多次停滞，表明忙等会放大宿主调度压力。
+
+### 修复
+
+`Ext4OpLock` 仍保持一个 lwext4 全局互斥门闩，不允许并发进入第三方库；但任务上下文在
+首次 `try_lock()` 失败后会注册到 `PollSet`，通过 `block_on()` 进入 `Blocked`。释放锁时先
+释放原始 mutex，再唤醒 waiter，避免解锁与注册之间丢失唤醒；没有当前任务的启动期继续使用
+自旋回退，避免早期初始化依赖调度器。
+
+同时将 `Ext4File::file_open_inner()` 的已打开快路径改为直接比较 `path_str()`、`flags` 和
+`has_opened`。常见的重复 `O_RDONLY` 读取不再在 EXT4 锁内构造两次比较用 `CString`；路径或
+打开标志变化时仍执行原有 `ext4_fopen()`，因此不改变 descriptor 切换语义。
+
+### 验证与边界
+
+新 RISC-V `log.ans` 在 `38943` 次 EXT4 读取时记录全局锁等待/持锁
+`951568610/677557464` tick；与旧样本相近读取量相比均下降。分类统计为：
+
+- `read_at`：`70561126/16952778` us；
+- `find`：`16476614/12595879` us；
+- `fstat`：`5231028/12868936` us。
+
+Cargo 已推进到 `3/446`，日志中没有 `panic`、`TFAIL`、`TBROK` 或新的 EXT4 错误，但 QEMU
+被外层终止，不能根据单个未完成样本宣称端到端加速比例。`make perf TARGET_ARCH=riscv64`、
+`make perf TARGET_ARCH=loongarch64` 和 `git diff --check` 通过；构建仅有既有 smoltcp 未使用项
+警告。直接描述符复用快路径完成双架构编译，尚未形成独立运行样本。
+
+## 2026-07-26：EXT4 锁 FIFO 单唤醒交接
+
+### 新观测
+
+最新 `log.ans` 仍在 Cargo `3/446` 时被终止，但已显示全局锁 `91481` 次获取中，`read_at`
+分类累计等待约 `70.56` 秒，明显高于其持锁约 `16.95` 秒。现有可睡眠锁使用
+`PollSet::wake()`；该函数会唤醒队列中的全部 waiter。Cargo 并发读取时，这些任务会同时被
+调度、抢同一个 lwext4 mutex、失败后再睡眠，形成不必要的 wake/retry 风暴。
+
+### 修复
+
+`PollSet` 改为有界、去重的 FIFO waker 队列，新增 `unregister()` 和 `wake_one()`：
+
+- 同一任务重复 poll 不会写入多个 waker；队列满时仅唤醒最老 waiter，保持原有的有界语义。
+- EXT4 的二次 `try_lock()` 成功后会撤销已登记的 waker，避免它在随后解锁时占据一次无效交接。
+- `Ext4OpGuard::drop()` 在释放 primitive mutex 后仅唤醒一个 waiter；该 waiter 后续获得或再次
+  等待锁，下一次解锁再交接给队列中的下一个任务。
+
+lwext4 仍由唯一的 `spin::Mutex` 串行保护，未改变第三方块缓存/路径 API 的非 SMP 安全假设；
+启动阶段无当前 task 的自旋回退也保持不变。
+
+### 验证与边界
+
+`rustfmt --edition 2021 os/src/utils/poll.rs os/src/fs/ext4_lw/mod.rs`、
+`git diff --check`、`make perf TARGET_ARCH=riscv64` 和
+`make perf TARGET_ARCH=loongarch64` 均通过，仅有既有 smoltcp 未使用项 warning。
+
+`timeout 90s make run TARGET_ARCH=riscv64` 成功启动 8 hart QEMU，并进入
+`buildstorm-compile` 的 `pre-build tg-xtask` 阶段；外层 timeout 结束前未观察到 panic。
+该运行没有产生可与旧 `log.ans` 对齐的后续 perf 快照，不能据此报告加速比例或完整 BuildStorm
+通过。后续应以相同镜像和 timeout 获得至少一个 Cargo 稳定阶段的累计锁统计，再比较唤醒风暴的
+实际影响。

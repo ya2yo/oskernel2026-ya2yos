@@ -1323,6 +1323,19 @@
 - **验证**：当前 RISC-V `log.ans` 的 12 次 `execve` 累计 `208763 us`，CAgent `fs-search pass 764` 并正常 `shutdown!`，无 `panic/TFAIL/TBROK`；RISC-V、LoongArch64 release 构建通过。详见 `ai.log` 对应条目和 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md)。
 - **关联 commit**：当前工作区未提交
 
+#### BuildStorm EXT4 全局锁可睡眠等待（7.26）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者持续根据 `log.ans` 要求优化 `buildstorm::compile::run()` 的 EXT4 锁竞争。
+- **描述**：将 lwext4 的全局串行约束保留为单一 mutex，但任务竞争时用 `PollSet` 注册
+  waker 并阻塞，解锁后再唤醒；无当前任务的启动期保留自旋回退。另将重复 `O_RDONLY`
+  descriptor 的打开快路径改为零 `CString` 分配比较。
+- **验证**：新 RISC-V 样本在约 3.9 万次 EXT4 读取时，累计锁等待/持锁低于旧相近样本，且无
+  `panic/TFAIL/TBROK`；QEMU 在 Cargo `3/446` 被外部终止。RISC-V、LoongArch64 `make perf`
+  与补丁检查通过。详见 `ai.log` 对应条目和
+  [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
+- **关联 commit**：当前工作区未提交
+
 #### BuildStorm `ppoll` 忙让出调度热循环修复（7.26）
 
 - **工具/模型**：Codex (GPT-5)
@@ -1411,4 +1424,17 @@
   Cargo `1--2/446` 的 `ext4_fopen`/LTO 失败推进到 `37/446` 且未出现对应错误；日志未完成，
   因此未宣称全量 BuildStorm 或 LoongArch64 通过。详见
   [problem/buildstorm-cc-symlink-cache-poisoning.md](./problem/buildstorm-cc-symlink-cache-poisoning.md)。
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm EXT4 锁 FIFO 单唤醒优化（7.26）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 `log.ans`，要求继续优化 `buildstorm::compile::run()` 的 EXT4 锁。
+- **描述**：分析确认可睡眠锁的解锁路径仍全量唤醒 `PollSet` waiter，使并发 Cargo 任务反复竞争
+  唯一 lwext4 mutex。修复使 waker 队列去重并 FIFO 单唤醒，二次抢锁成功时撤销登记；lwext4 的
+  全局串行与启动期回退语义保持不变。
+- **验证**：RISC-V、LoongArch64 `make perf` 与补丁检查通过。90 秒 RISC-V 运行已进入
+  `buildstorm-compile` 预构建，外层 timeout 结束前未观察到 panic；没有可比的完整 guest 快照，
+  未报告端到端加速比例。详见 `ai.log` 和
+  [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
 - **关联 commit**：当前工作区未提交

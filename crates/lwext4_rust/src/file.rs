@@ -147,19 +147,11 @@ impl Ext4File {
         flags: u32,
         prepare_write_back_cache: bool,
     ) -> Result<usize, i32> {
-        let c_path = CString::new(path).expect("CString::new failed");
-        if c_path != self.path() {
-            // debug!(
-            //     "Ext4File file_open, cur path={}, new path={}",
-            //     self.file_path.to_str().unwrap(),
-            //     path
-            // );
-        } else {
-            if self.has_opened && self.last_flags == flags {
-                //如果之前已经按相同方式打开
-                //debug!("reopen");
-                return Ok(EOK as usize);
-            }
+        if self.has_opened && self.last_flags == flags && self.path_str() == path {
+            // The common read path repeatedly opens the same VFS descriptor
+            // with O_RDONLY. Reuse it without allocating comparison CStrings
+            // while the global lwext4 lock is held.
+            return Ok(EOK as usize);
         }
         let c_path = CString::new(path).expect("CString::new failed");
 
@@ -307,6 +299,24 @@ impl Ext4File {
             // debug!("{:?} {} No Exist. ext4_inode_exist rc = {}", mtype, path, r);
             false
         }
+    }
+
+    /// Resolve a pathname once and return its inode type.
+    ///
+    /// `ext4_stat_get()` accepts any final directory-entry type and returns
+    /// the inode mode, unlike `ext4_inode_exist()` which needs one full path
+    /// walk for every candidate type.
+    pub fn inode_type_at(&self, path: &str) -> Result<InodeTypes, i32> {
+        let c_path = CString::new(path).expect("CString::new failed").into_raw();
+        let mut stat = ext4_inode_stat::default();
+        let r = unsafe { ext4_stat_get(c_path, &mut stat) };
+        unsafe {
+            drop(CString::from_raw(c_path));
+        }
+        if r != EOK as i32 {
+            return Err(r);
+        }
+        Ok(InodeTypes::from((stat.st_mode as usize) & 0xf000))
     }
 
     pub fn file_readlink(&mut self, buf: &mut [u8], bufsize: usize) -> Result<usize, i32> {
