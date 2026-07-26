@@ -1052,7 +1052,6 @@ pub const LTP_BLACKLIST: &[&str] = &[
     "ns-udpsender\0",
     "ns-udpserver\0",
     "numa01.sh\0",
-    "oom01\0",
     "oom02\0",
     "oom03\0",
     "oom04\0",

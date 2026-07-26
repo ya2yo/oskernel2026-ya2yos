@@ -305,6 +305,9 @@ fn create_proc_files() -> SysResult {
         &format!("{}\n", PIPE_MAX_SIZE),
     )?;
     write_init_file("/proc/sys/fs/lease-break-time", "45\n")?;
+    // 创建内存管理相关系统文件
+    create_dir("/proc/sys/vm")?;
+    write_init_file("/proc/sys/vm/overcommit_memory", "0\n")?;
     Ok(())
 }
 
