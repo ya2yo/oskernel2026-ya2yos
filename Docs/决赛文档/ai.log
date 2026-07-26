@@ -7258,3 +7258,24 @@ mutex 后大多重新阻塞。采纳 FIFO 单唤醒，而不放宽 lwext4 全局
 RISC-V/LoongArch64 `make perf` 均通过，仅有既有 smoltcp warning。90 秒 RISC-V 定向运行进入
 `buildstorm-compile` 预构建后由外层 timeout 结束，未取得可比的后续 perf 快照；未报告端到端
 加速或完整 BuildStorm 通过。详见 `problem/buildstorm-read-path-lock-contention.md`。
+
+## 2026-07-26：BuildStorm 普通 `read()` 文件页缓存复用
+
+### 用户输入
+
+维护者要求分析 `log.ans` 中 Cargo 长时间停在 `itoa`、`quote(build.rs)` 附近的问题，并给出解决方案。
+
+### 分析与采纳结论
+
+AI 先按 ANSI/NUL 日志规则核对 BuildStorm 边界，确认没有 panic、编译器错误或死锁；`t=287411ms`
+时 Cargo 仅到 `3/446`，普通 `read` 3919 次却触发 40293 次 EXT4 读取，读锁累计等待约
+70.55 秒。沿 `OSFile::read()`、`Ext4Inode::read_at()` 和 `FILE_PAGE_CACHE` 追踪后确认，
+现有页缓存只服务 mmap 缺页，普通跨页读每次都重新进入串行 lwext4。采纳的修复是对普通小文件
+的中等跨页读增加“完整页命中复制、缺页单次读取并回填”的路径，并保留写/截断/rename 失效。
+
+### 修改与验证
+
+修改 `os/src/fs/files/os_file.rs`、`os/src/fs/page_cache.rs`，并更新开发日志、问题复盘和交互记录。
+格式检查、补丁检查、RISC-V/LoongArch64 release 构建及 RISC-V perf 构建通过。使用 `/tmp` qcow2
+叠加盘的 RISC-V 180 秒定向运行无 panic/TFAIL/TBROK，Cargo 从 `0/446` 到 `1/446`；外层窗口
+结束，未宣称完整 BuildStorm 或严格 A/B 加速比例。

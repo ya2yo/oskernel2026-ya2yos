@@ -1,8 +1,9 @@
+use crate::arch::memory_layout::PAGE_SIZE;
 #[cfg(feature = "perf")]
 use crate::arch::time::get_ticks;
 use crate::{
     fs::{
-        fanotify_events_suppressed, notify_path_event, FsIndex, Kstat, FAN_ACCESS,
+        fanotify_events_suppressed, notify_path_event, FsIndex, InodeType, Kstat, FAN_ACCESS,
         FAN_CLOSE_NOWRITE, FAN_CLOSE_WRITE, FAN_MODIFY, FILE_PAGE_CACHE, SEEK_CUR, SEEK_DATA,
         SEEK_END, SEEK_HOLE, SEEK_SET,
     },
@@ -29,6 +30,7 @@ static FILE_FLAGS: Lazy<Mutex<BTreeMap<String, u32>>> = Lazy::new(|| Mutex::new(
 static NEXT_OFD_LOCK_OWNER: AtomicI32 = AtomicI32::new(1);
 const PIPE_MAX_SIZE_PATH: &str = "/proc/sys/fs/pipe-max-size";
 const MAX_AGGREGATED_READ: usize = 64 * 1024;
+const MAX_PAGE_CACHED_READ_FILE_SIZE: usize = 1024 * 1024;
 
 fn seek_offset(base: usize, offset: isize) -> Result<usize, SysErrNo> {
     if offset < 0 {
@@ -179,6 +181,50 @@ impl OSFile {
     pub fn ofd_lock_owner(&self) -> i32 {
         self.ofd_lock_owner
     }
+
+    /// Use the shared file-page cache for bounded regular-file reads.
+    ///
+    /// A cold range is fetched with one ordinary inode read and its fully
+    /// covered pages are published for later rustc/Cargo readers.  Files that
+    /// are too large, special files, or ranges spanning an uncached page fall
+    /// back to the existing direct path and keep its zero-copy behavior.
+    fn try_page_cached_read(
+        &self,
+        offset: usize,
+        buf: &mut UserBuffer,
+    ) -> Result<Option<usize>, SysErrNo> {
+        let requested_len = buf.len();
+        if requested_len <= PAGE_SIZE
+            || requested_len > MAX_AGGREGATED_READ
+            || self.inode.types() != InodeType::File
+        {
+            return Ok(None);
+        }
+        let file_size = self.inode.size();
+        if file_size > MAX_PAGE_CACHED_READ_FILE_SIZE {
+            return Ok(None);
+        }
+
+        let path = self.inode.path();
+        let mut kernel_buf = vec![0; requested_len];
+        let read_size = match FILE_PAGE_CACHE.read_cached_at(&path, offset, &mut kernel_buf) {
+            Some(read_size) => read_size,
+            None => {
+                let read_size = self.inode.read_at(offset, &mut kernel_buf)?;
+                FILE_PAGE_CACHE.insert_read_range(
+                    &path,
+                    offset,
+                    &kernel_buf[..read_size],
+                    file_size,
+                );
+                read_size
+            }
+        };
+        if read_size != 0 {
+            buf.write(&kernel_buf[..read_size]);
+        }
+        Ok(Some(read_size))
+    }
 }
 
 impl Drop for OSFile {
@@ -220,7 +266,10 @@ impl File for OSFile {
             return Ok(0);
         }
 
-        if buf.buffers.len() == 1 {
+        if let Some(read_size) = self.try_page_cached_read(inner.offset, &mut buf)? {
+            inner.offset += read_size;
+            total_read_size = read_size;
+        } else if buf.buffers.len() == 1 {
             // Keep the common single-page case zero-copy.
             let slice = &mut buf.buffers[0];
             let read_size = self.inode.read_at(inner.offset, slice)?;

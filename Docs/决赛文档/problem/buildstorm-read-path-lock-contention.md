@@ -236,3 +236,38 @@ lwext4 仍由唯一的 `spin::Mutex` 串行保护，未改变第三方块缓存/
 该运行没有产生可与旧 `log.ans` 对齐的后续 perf 快照，不能据此报告加速比例或完整 BuildStorm
 通过。后续应以相同镜像和 timeout 获得至少一个 Cargo 稳定阶段的累计锁统计，再比较唤醒风暴的
 实际影响。
+
+## 2026-07-26：普通 `read()` 复用文件页缓存
+
+### 新观测
+
+根目录 `log.ans` 不是死锁或编译器报错：guest 在 `t=287411ms` 时只有 Cargo `3/446`，随后
+被外层终止。最终统计为 `read=3919`、EXT4 读取 `40293` 次和 `227390418` 字节，
+`ext4_read_lock` 累计等待 `70552459us`、持锁 `22801924us`；日志没有 `panic`、`TFAIL`
+或 `TBROK`。现有 `FILE_PAGE_CACHE` 命中统计主要来自 mmap 缺页，普通 `OSFile::read()`
+仍反复调用 `inode.read_at()`，因此 Cargo/rustc 的重复小文件读没有共享页缓存。
+
+### 根因
+
+跨页 `read()` 虽已合并为一次连续的 EXT4 读，但每个 syscall 的结果只写入用户缓冲区，
+没有发布到共享文件页缓存。并行 Cargo 任务随后再次读取相同的归档、元数据和构建脚本时，
+仍需进入 lwext4 的全局串行锁；这表现为吞吐极低和锁等待累计增长，而不是任务在锁上永久
+互相等待。
+
+### 修复
+
+`FilePageCache` 新增 `read_cached_at()` 和 `insert_read_range()`：命中时在共享锁下复制
+所有完整页，缺页则回退一次原有 `inode.read_at()`，只发布完全覆盖的页，避免把部分页或
+未初始化尾部暴露给后续读取。`OSFile::read()` 仅对普通文件、文件不超过 1MiB 且请求为
+`PAGE_SIZE < len <= 64KiB` 的读启用该路径；单页、大读、特殊文件继续使用原有零拷贝/流式
+分支。已有 write、truncate、rename 和路径范围失效逻辑继续清除缓存，保持写后可见性边界。
+
+### 验证与边界
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check`、
+`make TARGET_ARCH=riscv64 build-arch`、`make TARGET_ARCH=loongarch64 build-arch` 和
+`make perf TARGET_ARCH=riscv64` 均通过（仅有既有 smoltcp unused warning）。使用 `/tmp`
+qcow2 叠加盘运行 RISC-V 定向 BuildStorm 180 秒，无 panic/TFAIL/TBROK；Cargo 从 `0/446`
+推进到 `1/446`，约 `t=128434ms` 的快照为 EXT4 读取 `26357` 次、锁等待 `46747937us`、
+持锁 `10686619us`。这不是同镜像严格 A/B，完整 446 crate 和正式评分仍未完成，不能据此
+宣称端到端加速比例。

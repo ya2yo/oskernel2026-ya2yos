@@ -78,6 +78,86 @@ impl FilePageCache {
             .cloned()
     }
 
+    /// Copy a range when every page is already cached.
+    ///
+    /// A miss returns `None` without entering the filesystem.  Callers can
+    /// then perform one normal read and publish the returned full pages with
+    /// [`insert_read_range`].
+    pub fn read_cached_at(&self, path: &str, offset: usize, buf: &mut [u8]) -> Option<usize> {
+        if buf.is_empty() {
+            return Some(0);
+        }
+
+        let mut copied = 0;
+        while copied < buf.len() {
+            let file_offset = offset.checked_add(copied)?;
+            let page_index = file_offset / PAGE_SIZE;
+            let page_offset = file_offset % PAGE_SIZE;
+            let page = self.get(path, page_index)?;
+            if page_offset >= page.valid_len {
+                break;
+            }
+            let count = (page.valid_len - page_offset).min(buf.len() - copied);
+            let page_bytes = page.frame.ppn.bytes_array();
+            buf[copied..copied + count]
+                .copy_from_slice(&page_bytes[page_offset..page_offset + count]);
+            copied += count;
+            if count == 0 {
+                break;
+            }
+        }
+
+        Some(copied)
+    }
+
+    /// Publish complete pages covered by a normal read.
+    ///
+    /// Only bytes wholly covered by the read are inserted, so a partial first
+    /// or last page can never expose uninitialised data to a later reader.
+    pub fn insert_read_range(&self, path: &str, offset: usize, data: &[u8], file_size: usize) {
+        if data.is_empty() || offset >= file_size {
+            return;
+        }
+        let end = offset.saturating_add(data.len()).min(file_size);
+        let first_page = offset / PAGE_SIZE;
+        let last_page = end.saturating_sub(1) / PAGE_SIZE;
+        for page_index in first_page..=last_page {
+            let page_start = page_index.saturating_mul(PAGE_SIZE);
+            let valid_len = PAGE_SIZE.min(file_size.saturating_sub(page_start));
+            if valid_len == 0 || page_start < offset {
+                continue;
+            }
+            let source_start = page_start - offset;
+            let Some(source_end) = source_start.checked_add(valid_len) else {
+                continue;
+            };
+            if source_end > data.len() {
+                continue;
+            }
+
+            let key = FilePageKey {
+                path: String::from(path),
+                page_index,
+            };
+            if self.pages.read().contains_key(&key) {
+                continue;
+            }
+            let Some(frame) = FrameTracker::alloc() else {
+                return;
+            };
+            frame.ppn.bytes_array_mut()[..valid_len]
+                .copy_from_slice(&data[source_start..source_end]);
+            let page = Arc::new(FilePage {
+                key: key.clone(),
+                frame,
+                valid_len,
+                dirty: AtomicBool::new(false),
+            });
+            let mut pages = self.pages.write();
+            pages.entry(key).or_insert(page);
+        }
+    }
+
     /// 获取指定 inode 的文件页，缓存未命中时从底层文件加载。
     ///
     /// 新分配的页帧会先清零，再从 `page_index * PAGE_SIZE` 偏移处读取文件内容。

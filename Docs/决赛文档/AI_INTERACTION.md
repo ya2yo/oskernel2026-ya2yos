@@ -1435,6 +1435,18 @@
   全局串行与启动期回退语义保持不变。
 - **验证**：RISC-V、LoongArch64 `make perf` 与补丁检查通过。90 秒 RISC-V 运行已进入
   `buildstorm-compile` 预构建，外层 timeout 结束前未观察到 panic；没有可比的完整 guest 快照，
-  未报告端到端加速比例。详见 `ai.log` 和
-  [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
+未报告端到端加速比例。详见 `ai.log` 和
+[problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm 普通 `read()` 文件页缓存复用（7.26）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析 `log.ans` 中 Cargo 长时间停在 `3/446` 的读路径吞吐问题并实施修复。
+- **描述**：根据 EXT4 读锁累计等待和 syscall 聚合，确认普通跨页 `read()` 未复用已有文件页缓存，
+  反复进入串行 lwext4。新增受限的普通小文件完整页缓存命中/冷读回填路径，保留写入、截断、
+  rename 的失效边界；详见 `ai.log` 和 [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
+- **验证**：RISC-V/LoongArch64 release 构建、RISC-V perf 构建通过；RISC-V `/tmp` qcow2 叠加盘
+  180 秒定向运行无 panic/TFAIL/TBROK，Cargo 推进到 `1/446`。完整 BuildStorm 与严格 A/B
+  wall-clock 尚未完成。
 - **关联 commit**：当前工作区未提交
