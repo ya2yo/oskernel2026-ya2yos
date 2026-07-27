@@ -1,6 +1,6 @@
 PLATFORM := qemu
-MEMORY_SIZE := 8G  # 与 os/src/arch/loongarch64/qemu/memory_layout.rs 同步
-SMP := 8  # 与 os/src/arch/loongarch64/qemu/config.rs 同步
+MEMORY_SIZE := 36G  # 与 os/src/arch/loongarch64/qemu/memory_layout.rs 同步
+SMP := 12  # 与 os/src/arch/loongarch64/qemu/config.rs 同步
 MODE := release
 
 ARCH := loongarch64

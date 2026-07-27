@@ -3,9 +3,9 @@
 use crate::config::THREAD_MAX_NUM;
 
 pub const PHYSICAL_MEMORY_START: usize = 0; // la64的物理内存从0开始，而riscv的物理内存从0x8000_0000开始
-pub const PHYSICAL_MEMORY_SIZE: usize = 0x2_0000_0000; // 8GiB total: low 256MiB + high 7936MiB
+pub const PHYSICAL_MEMORY_SIZE: usize = 0x9_0000_0000; // 36GiB total: low 256MiB + high 35.75GiB
 pub const PHYSICAL_MEMORY_RANGES: &[(usize, usize)] =
-    &[(0x0000_0000, 0x1000_0000), (0x8000_0000, 0x1_f000_0000)];
+    &[(0x0000_0000, 0x1000_0000), (0x8000_0000, 0x8_f000_0000)];
 
 pub const PAGE_SIZE: usize = 0x1000; // 4KB
 pub const PAGE_SIZE_BITS: usize = 12;
