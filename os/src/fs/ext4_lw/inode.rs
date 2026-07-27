@@ -7,7 +7,7 @@
 
 use log::{debug, warn};
 use lwext4_rust::{
-    bindings::{O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
+    bindings::{ext4_inode_stat, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
     Ext4File, InodeTypes,
 };
 
@@ -84,17 +84,68 @@ impl Ext4Inode {
     /// - `path`: 文件在 EXT4 内部的路径
     /// - `types`: 文件类型（文件、目录、链接等）
     pub fn new(path: &str, types: InodeTypes) -> Self {
+        Self::new_with_lookup_stat(path, types, None)
+    }
+
+    /// Build a regular-file inode from a lookup that has already performed
+    /// `ext4_stat_get()`.  Reusing the metadata avoids a second serialized
+    /// lookup when `FsIndex` records the inode identity and when the first
+    /// page-cache access asks for the file size.
+    fn new_with_stat(path: &str, types: InodeTypes, stat: ext4_inode_stat) -> Self {
+        Self::new_with_lookup_stat(path, types, Some(stat))
+    }
+
+    fn new_with_lookup_stat(
+        path: &str,
+        types: InodeTypes,
+        lookup_stat: Option<ext4_inode_stat>,
+    ) -> Self {
+        let inode_type = as_inode_type(types.clone());
+        let (known_size, stat_cache) = if inode_type == InodeType::File {
+            match lookup_stat {
+                Some(stat) => (stat.st_size as usize, Some(Self::kstat_from_ext4(stat))),
+                None => (UNKNOWN_FILE_SIZE, None),
+            }
+        } else {
+            (UNKNOWN_FILE_SIZE, None)
+        };
         Ext4Inode {
-            inode_type: as_inode_type(types.clone()),
+            inode_type,
             path: RwLock::new(path.to_string()),
-            known_size: AtomicUsize::new(UNKNOWN_FILE_SIZE),
-            stat_cache: RwLock::new(None),
+            known_size: AtomicUsize::new(known_size),
+            stat_cache: RwLock::new(stat_cache),
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
                 quota_reserved: 0,
                 aliases: vec![path.to_string()],
                 delay: false,
             }),
+        }
+    }
+
+    /// Convert lwext4 metadata into the VFS representation while preserving
+    /// the timestamp compatibility normalization used by `fstat()`.
+    fn kstat_from_ext4(stat: ext4_inode_stat) -> Kstat {
+        let mut tmp_stat = stat;
+        if tmp_stat.st_atime > (1 << 32) || tmp_stat.st_mtime > (1 << 32) {
+            tmp_stat.st_ctime &= 0xFFFF_FFFF;
+            tmp_stat.st_atime &= 0xFFFF_FFFF;
+            tmp_stat.st_mtime &= 0xFFFF_FFFF;
+        }
+        Kstat {
+            st_dev: stat.st_dev,
+            st_ino: stat.st_ino,
+            st_mode: stat.st_mode,
+            st_nlink: stat.st_nlink,
+            st_uid: stat.st_uid,
+            st_gid: stat.st_gid,
+            st_size: stat.st_size,
+            st_blksize: stat.st_blksize,
+            st_blocks: stat.st_blocks,
+            st_atime: tmp_stat.st_atime,
+            st_ctime: tmp_stat.st_ctime,
+            st_mtime: tmp_stat.st_mtime,
+            ..Kstat::default()
         }
     }
 
@@ -624,17 +675,21 @@ impl Inode for Ext4Inode {
         let is_symlink = {
             let _ext4 = EXT4_OP_LOCK.lock_for_find();
             let file = &mut self.inner.get_unchecked_mut().f;
-            match file.inode_type_at(path) {
-                Ok(InodeTypes::EXT4_DE_DIR | InodeTypes::EXT4_INODE_MODE_DIRECTORY) => {
+            match file.inode_type_and_stat_at(path) {
+                Ok((InodeTypes::EXT4_DE_DIR | InodeTypes::EXT4_INODE_MODE_DIRECTORY, _)) => {
                     return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)));
                 }
-                Ok(InodeTypes::EXT4_DE_REG_FILE | InodeTypes::EXT4_INODE_MODE_FILE) => {
+                Ok((InodeTypes::EXT4_DE_REG_FILE | InodeTypes::EXT4_INODE_MODE_FILE, stat)) => {
                     if flags.contains(OpenFlags::O_DIRECTORY) {
                         return Err(SysErrNo::ENOTDIR);
                     }
-                    return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_REG_FILE)));
+                    return Ok(Arc::new(Ext4Inode::new_with_stat(
+                        path,
+                        InodeTypes::EXT4_DE_REG_FILE,
+                        stat,
+                    )));
                 }
-                Ok(InodeTypes::EXT4_DE_SYMLINK | InodeTypes::EXT4_INODE_MODE_SOFTLINK) => {
+                Ok((InodeTypes::EXT4_DE_SYMLINK | InodeTypes::EXT4_INODE_MODE_SOFTLINK, _)) => {
                     if flags.contains(OpenFlags::O_NOFOLLOW) {
                         return Err(SysErrNo::ELOOP);
                     }
@@ -711,30 +766,7 @@ impl Inode for Ext4Inode {
                 }
             }
         };
-        let mut tmp_stat = stat; // ext4_inode_stat
-
-        // 兼容性修补，处理时间戳高位。
-        // lwext4 在某些实现中会将纳秒和秒混合存储在一个 u64 中，这里剥离出秒部分
-        if tmp_stat.st_atime > (1 << 32) || tmp_stat.st_mtime > (1 << 32) {
-            tmp_stat.st_ctime &= 0xFFFF_FFFF;
-            tmp_stat.st_atime &= 0xFFFF_FFFF;
-            tmp_stat.st_mtime &= 0xFFFF_FFFF;
-        }
-        let kstat = Kstat {
-            st_dev: stat.st_dev,
-            st_ino: stat.st_ino,
-            st_mode: stat.st_mode,
-            st_nlink: stat.st_nlink,
-            st_uid: stat.st_uid,
-            st_gid: stat.st_gid,
-            st_size: stat.st_size,
-            st_blksize: stat.st_blksize,
-            st_blocks: stat.st_blocks,
-            st_atime: tmp_stat.st_atime,
-            st_ctime: tmp_stat.st_ctime,
-            st_mtime: tmp_stat.st_mtime,
-            ..Kstat::default()
-        };
+        let kstat = Self::kstat_from_ext4(stat);
         let cpath = inner.f.path();
         let path_str = cpath.to_str().unwrap_or("");
         let mut kstat = kstat;

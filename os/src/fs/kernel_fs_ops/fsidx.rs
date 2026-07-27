@@ -90,7 +90,7 @@ impl FsIndex {
             };
 
             let replace_stale = !Self::inode_matches_key(&existing, &key);
-            let (canonical, replaced, displaced) = {
+            let (canonical, replaced, displaced, record_alias) = {
                 let mut cache = INODE_CACHE.write();
                 let Some(current) = cache.inodes.get(&key).cloned() else {
                     continue;
@@ -106,19 +106,30 @@ impl FsIndex {
                     cache.paths.retain(|_, candidate| candidate != &key);
                     let replaced = cache.inodes.insert(key.clone(), inode.clone());
                     let displaced = Self::bind_path(&mut cache, path, &key);
-                    (inode.clone(), replaced, displaced)
+                    // `inode` was constructed from `path`, so its initial
+                    // alias list already contains this path.  Recording it
+                    // again would needlessly enter EXT4_OP_LOCK.
+                    (inode.clone(), replaced, displaced, false)
                 } else {
+                    // A path already bound to this canonical inode has
+                    // already been recorded in Ext4Inode's alias list.  Only
+                    // a genuinely new path (for example, a hard link) needs
+                    // the lock-protected alias update below.
+                    let path_already_bound = cache
+                        .paths
+                        .get(path)
+                        .map_or(false, |candidate| candidate == &key);
                     let displaced = Self::bind_path(&mut cache, path, &key);
-                    (current, None, displaced)
+                    (current, None, displaced, !path_already_bound)
                 }
             };
             drop(replaced);
             drop(displaced);
+            if record_alias {
+                canonical.cache_path_alias(path);
+            }
             break canonical;
         };
-        // Do not enter an inode method while the index lock is held: Ext4Inode
-        // records aliases under EXT4_OP_LOCK, the opposite of unlink's order.
-        canonical.cache_path_alias(path);
         canonical
     }
 

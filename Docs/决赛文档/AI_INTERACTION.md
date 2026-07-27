@@ -1323,6 +1323,14 @@
 - **验证**：当前 RISC-V `log.ans` 的 12 次 `execve` 累计 `208763 us`，CAgent `fs-search pass 764` 并正常 `shutdown!`，无 `panic/TFAIL/TBROK`；RISC-V、LoongArch64 release 构建通过。详见 `ai.log` 对应条目和 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md)。
 - **关联 commit**：当前工作区未提交
 
+#### BuildStorm EXT4 查找元数据复用（7.27）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求继续分析 BuildStorm `log.ans` 并优化 Cargo 并行编译中的文件系统瓶颈，随后提供 360 秒 `log.ans` 和三分钟 `1.ans`。
+- **描述**：AI 追踪 `find()`、`FsIndex::insert_inode_idx()`、`fstat()` 与首个文件页缓存读取，确认同一次路径查找已获得的 `ext4_stat_get()` 结果被重复查询。实现类型与 stat 联合查询，并用其初始化普通文件的可失效 `Kstat/known_size`；同时只为真正新增的 canonical inode alias 进入 EXT4 全局锁。目录、链接和特殊节点保持原有动态路径。
+- **验证**：RISC-V `make perf`、LoongArch64 `make build-arch`、格式检查与补丁检查通过。三分钟 RISC-V 样本无 panic/TFAIL/TBROK，且相近读量下 `ext4_fstat_lock` samples、hold、wait 分别由 `8929/7.39 s/4.22 s` 降至 `6028/4.11 s/1.23 s`；日志未完成，未报告完整 BuildStorm wall-clock。
+- **关联 commit**：当前工作区未提交
+
 #### BuildStorm 多 hart VFS 读/元数据吞吐优化（7.26）
 
 - **工具/模型**：Codex (GPT-5)

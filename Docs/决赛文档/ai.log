@@ -7331,3 +7331,29 @@ Cargo job 数或 `RUST_MIN_STACK`。
 LoongArch64 release 构建均通过，`git diff --check` 通过。`fstat` 缓存未取得新的 guest 样本，
 完整 BuildStorm 仍待运行，不报告端到端完成时间。详见
 `problem/buildstorm-read-path-lock-contention.md`。
+
+## 2026-07-27：BuildStorm EXT4 查找元数据复用
+
+### 用户输入
+
+维护者要求分析新的 BuildStorm `log.ans` 并继续优化；随后提供 360 秒的 `log.ans` 与
+三分钟的 `1.ans` 作为运行样本。
+
+### 分析与采纳结论
+
+AI 确认两个样本均未出现 `panic`、`TFAIL`、`TBROK`、BuildStorm 成功标记或结束标记，不能把
+中途进度当作完整编译时间。分类统计显示普通文件首次 `find()` 已以 `ext4_stat_get()` 获得
+类型和 metadata，`FsIndex` 建立 inode identity 时却立即再次 `fstat()`，首个页缓存读取还可能
+查询大小；同时新 inode 的构造函数已保存初始 alias，索引层仍重复取全局 EXT4 锁登记同一路径。
+采纳复用原始 stat、预热普通文件的 `Kstat/known_size`，并只为既有 canonical inode 的新 alias
+登记底层路径；目录、符号链接和特殊节点不启用该缓存。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs`、`os/src/fs/ext4_lw/inode.rs` 与
+`os/src/fs/kernel_fs_ops/fsidx.rs`。格式检查与 `git diff --check` 通过；
+`make perf TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64` 均通过，仅有既有
+smoltcp warning。与 `log.ans` 的相近读量快照相比，`1.ans` 中 `ext4_fstat_lock` 的 samples
+由 `8929` 降为 `6028`，hold 由 `7.39 s` 降为 `4.11 s`，wait 由 `4.22 s` 降为 `1.23 s`；
+两份日志均未完成 BuildStorm，因此不报告端到端加速比例。详见
+`problem/buildstorm-read-path-lock-contention.md`。

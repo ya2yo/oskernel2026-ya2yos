@@ -308,3 +308,49 @@ qcow2 叠加盘运行 RISC-V 定向 BuildStorm 180 秒，无 panic/TFAIL/TBROK�
 仅有既有 smoltcp unused warning。`log.ans` 中的 303 s 运行覆盖了单页 read 缓存，不包含随后
 加入的 `fstat` 缓存；后者目前仅完成双架构编译验证。完整 446 crate、正式评分和严格同配置
 A/B wall-clock 尚未完成，不能据此承诺一小时内完成编译。
+
+## 2026-07-27：复用首次路径查找的 EXT4 元数据
+
+### 新观测
+
+维护者提供的 360 秒 `log.ans` 仍未完成 BuildStorm：最后一条快照在
+`t=322949ms`，Cargo 只到 `8/446`，没有 `BUILDSTORM_DEBUG_COMPILE`、`shutdown!`、
+`panic`、`TFAIL` 或 `TBROK`。在相近文件系统工作量的 `t=130268ms` 快照中，普通文件
+`find()` 已执行路径 `ext4_stat_get()`，随后 `FsIndex::insert_inode_idx()` 又因取得
+`(st_dev, st_ino)` 调用 `inode.fstat()`；页缓存首读还会再次查询 `inode.size()`。这三步中
+前两步的元数据来自同一个路径状态，却都要排队进入 lwext4 的全局锁。
+
+### 修复
+
+- `Ext4File` 新增 `inode_type_and_stat_at()`，一次路径查找返回 inode 类型与
+  `ext4_inode_stat`；保留 `inode_type_at()` 作为只需类型的兼容包装。
+- `Ext4Inode::find()` 对普通文件用该结果初始化 `stat_cache` 和 `known_size`。因此
+  `FsIndex` 获取 identity、`fstat()` 与首个页缓存 EOF 检查可直接命中 VFS 侧缓存；写、
+  截断、rename、chmod、chown 和显式时间更新仍按原逻辑失效缓存。目录、符号链接和特殊节点
+  没有改为静态缓存，避免目录项或链接语义变化后返回旧元数据。
+- `FsIndex::insert_inode_idx()` 仅在已有 canonical inode 获得真正的新路径（例如 hard link）
+  时调用 `cache_path_alias()`；新建 inode 的初始 path 已在构造时记录，重复登记不再进入
+  `EXT4_OP_LOCK`。陈旧 inode 的替换同样使用新对象已具备的初始 alias。
+
+### 验证与边界
+
+`cargo fmt --manifest-path os/Cargo.toml`、
+`cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过，构建
+仅含既有 smoltcp unused warning。
+
+维护者提供的三分钟 RISC-V `1.ans` 同样未完成（最高到 Cargo `5/446`，无结束或失败标记），
+不能比较完整 wall-clock。与前一样本中读取量相近的快照相比：
+
+| 指标 | 360 秒样本 `log.ans`，`t=130268ms` | 本轮 `1.ans`，`t=105564ms` |
+| --- | ---: | ---: |
+| EXT4 reads | 23,592 | 25,128 |
+| `open` | 5,030 | 5,227 |
+| `ext4_fstat_lock` samples | 8,929 | 6,028 |
+| `ext4_fstat_lock` hold | 7.39 s | 4.11 s |
+| `ext4_fstat_lock` wait | 4.22 s | 1.23 s |
+| 全部 EXT4 lock hold | 58.76 s | 44.83 s |
+
+该比较支持“重复元数据查询已被移除”的假设，但两次的 guest 时间、Cargo 阶段和宿主负载并不
+完全相同；后续仍需使用同一镜像、相同 timeout、至少两次完整 BuildStorm 运行，才可报告最终
+编译时间或加速比例。

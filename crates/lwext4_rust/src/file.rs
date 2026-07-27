@@ -301,12 +301,14 @@ impl Ext4File {
         }
     }
 
-    /// Resolve a pathname once and return its inode type.
+    /// Resolve a pathname once and return its inode type plus metadata.
     ///
     /// `ext4_stat_get()` accepts any final directory-entry type and returns
     /// the inode mode, unlike `ext4_inode_exist()` which needs one full path
-    /// walk for every candidate type.
-    pub fn inode_type_at(&self, path: &str) -> Result<InodeTypes, i32> {
+    /// walk for every candidate type.  Callers that are about to cache the
+    /// result can reuse the returned stat instead of immediately issuing a
+    /// second `ext4_stat_get()` for the same path.
+    pub fn inode_type_and_stat_at(&self, path: &str) -> Result<(InodeTypes, ext4_inode_stat), i32> {
         let c_path = CString::new(path).expect("CString::new failed").into_raw();
         let mut stat = ext4_inode_stat::default();
         let r = unsafe { ext4_stat_get(c_path, &mut stat) };
@@ -316,7 +318,16 @@ impl Ext4File {
         if r != EOK as i32 {
             return Err(r);
         }
-        Ok(InodeTypes::from((stat.st_mode as usize) & 0xf000))
+        Ok((InodeTypes::from((stat.st_mode as usize) & 0xf000), stat))
+    }
+
+    /// Resolve a pathname once and return its inode type.
+    ///
+    /// Prefer [`Self::inode_type_and_stat_at`] when the caller will also need
+    /// the metadata for an inode-cache insertion.
+    pub fn inode_type_at(&self, path: &str) -> Result<InodeTypes, i32> {
+        self.inode_type_and_stat_at(path)
+            .map(|(inode_type, _)| inode_type)
     }
 
     pub fn file_readlink(&mut self, buf: &mut [u8], bufsize: usize) -> Result<usize, i32> {
