@@ -149,6 +149,14 @@ pub trait Inode: Send + Sync {
     fn path(&self) -> String {
         unimplemented!("Inode::path");
     }
+    /// 返回底层文件系统在本 inode 生命周期内稳定的身份键。
+    ///
+    /// 路径查找已经取得 `(st_dev, st_ino)` 时，VFS inode 索引可直接复用它，
+    /// 不必为建立缓存再执行一次可能串行的 `fstat()`。后端无法可靠提供该
+    /// 身份时返回 `None`，索引会保留原来的 `fstat()` 回退路径。
+    fn cache_identity(&self) -> Option<(usize, usize)> {
+        None
+    }
     /// 记录该 inode 的一个可用路径别名。
     ///
     /// 真正的 inode cache 会让硬链接等多个路径复用同一个 inode 对象。

@@ -55,6 +55,10 @@ pub struct Ext4Inode {
     /// established a regular file's size, serve that immutable-until-write
     /// value without serializing on its global operation lock.
     known_size: AtomicUsize,
+    /// `(st_dev, st_ino)` is immutable while this VFS inode is live.  Keep
+    /// the value returned by the initial pathname lookup so FsIndex does not
+    /// immediately re-enter lwext4 merely to assign its cache key.
+    inode_identity: Option<(usize, usize)>,
     /// Repeated `stat(2)` calls on an unchanged regular source or artifact
     /// otherwise serialize on lwext4's global path-based metadata lookup.
     /// Directories and special nodes are intentionally excluded because their
@@ -83,9 +87,9 @@ pub struct Ext4InodeInner {
 /// Constructing the VFS wrapper allocates Rust-side state and must stay outside
 /// the global operation lock so parallel Cargo lookups can hand it over sooner.
 enum Ext4FindResult {
-    Dir,
+    Dir(ext4_inode_stat),
     File(ext4_inode_stat),
-    SymLink,
+    SymLink(ext4_inode_stat),
     Missing,
 }
 
@@ -101,10 +105,10 @@ impl Ext4Inode {
         Self::new_with_lookup_stat(path, types, None)
     }
 
-    /// Build a regular-file inode from a lookup that has already performed
+    /// Build an inode from a lookup that has already performed
     /// `ext4_stat_get()`.  Reusing the metadata avoids a second serialized
-    /// lookup when `FsIndex` records the inode identity and when the first
-    /// page-cache access asks for the file size.
+    /// lookup when `FsIndex` records the inode identity and, for regular
+    /// files, when the first page-cache access asks for the file size.
     fn new_with_stat(path: &str, types: InodeTypes, stat: ext4_inode_stat) -> Self {
         Self::new_with_lookup_stat(path, types, Some(stat))
     }
@@ -115,6 +119,9 @@ impl Ext4Inode {
         lookup_stat: Option<ext4_inode_stat>,
     ) -> Self {
         let inode_type = as_inode_type(types.clone());
+        let inode_identity = lookup_stat
+            .as_ref()
+            .and_then(|stat| (stat.st_ino != 0).then_some((stat.st_dev, stat.st_ino)));
         let (known_size, stat_cache) = if inode_type == InodeType::File {
             match lookup_stat {
                 Some(stat) => (stat.st_size as usize, Some(Self::kstat_from_ext4(stat))),
@@ -127,6 +134,7 @@ impl Ext4Inode {
             inode_type,
             path: RwLock::new(path.to_string()),
             known_size: AtomicUsize::new(known_size),
+            inode_identity,
             stat_cache: RwLock::new(stat_cache),
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
@@ -396,11 +404,26 @@ impl Inode for Ext4Inode {
         if buf.is_empty() {
             return Ok(0);
         }
+        // The delayed byte cache has its own synchronization and contains
+        // every visible byte for its dense, non-sparse inode.  Check it
+        // before taking the mount-wide lwext4 guard: concurrent compiler
+        // readers otherwise queue behind unrelated block I/O merely to copy
+        // data that is already resident in kernel memory.
+        let cached_path = self.cached_path();
+        if let Some(r) = read_cached_at(&cached_path, off, buf) {
+            #[cfg(feature = "perf")]
+            {
+                crate::utils::perf::record_ext4_read(r);
+                crate::utils::perf::record_ext4_byte_cache_read_hit(r);
+            }
+            patch_dynamic_link_file_bytes(&cached_path, off, &mut buf[..r]);
+            return Ok(r);
+        }
         // Keep the lwext4 guard around cache/descriptor access only. The
         // compatibility patch below mutates an already-read buffer and does
         // not touch lwext4, so doing it under the global guard needlessly
         // extends contention for concurrent readers.
-        let (path, r) = {
+        let (path, r, byte_cache_hit) = {
             let _ext4 = EXT4_OP_LOCK.lock_for_read();
             let inner = self.inner.get_unchecked_mut();
             let path = Self::live_path(inner);
@@ -409,16 +432,23 @@ impl Inode for Ext4Inode {
             // Check them first, then use a direct ext4 read for the common cold
             // read-only case. The latter avoids creating a whole-file write-back
             // cache and avoids a separate fseek for every VFS read.
-            let r = if let Some(r) = read_cached_at(&path, off, buf) {
-                r
+            let (r, byte_cache_hit) = if let Some(r) = read_cached_at(&path, off, buf) {
+                (r, true)
             } else {
                 file.file_open_read_only(&path).map_err(SysErrNo::from)?;
-                file.file_read_at(off, buf).map_err(SysErrNo::from)?
+                (file.file_read_at(off, buf).map_err(SysErrNo::from)?, false)
             };
-            (path, r)
+            (path, r, byte_cache_hit)
         };
+        #[cfg(not(feature = "perf"))]
+        let _ = byte_cache_hit;
         #[cfg(feature = "perf")]
-        crate::utils::perf::record_ext4_read(r);
+        {
+            crate::utils::perf::record_ext4_read(r);
+            if byte_cache_hit {
+                crate::utils::perf::record_ext4_byte_cache_read_hit(r);
+            }
+        }
         // lwext4's ext4_fread() only reads blocks and advances the descriptor
         // position; atime changes go through the explicit set_timestamps()
         // path. Keeping the immutable regular-file stat cache here avoids
@@ -434,13 +464,21 @@ impl Inode for Ext4Inode {
         let path = Self::live_path(inner);
         let delayed = inner.delay;
         let file = &mut inner.f;
+        #[cfg(feature = "perf")]
+        let open_phase =
+            crate::utils::perf::Ext4WritePhaseGuard::new(crate::utils::perf::Ext4WritePhase::Open);
         file.ensure_open(O_RDWR).map_err(SysErrNo::from)?;
+        #[cfg(feature = "perf")]
+        drop(open_phase);
         if delayed {
             // Keep an unlinked-but-open temporary file's cache alive until
             // its last fd closes; the FIFO cannot otherwise distinguish it
             // from an idle cache and will repeatedly evict/rebuild it.
             file.pin_write_back_cache();
         }
+        #[cfg(feature = "perf")]
+        let quota_phase =
+            crate::utils::perf::Ext4WritePhaseGuard::new(crate::utils::perf::Ext4WritePhase::Quota);
         let current_size = self
             .known_size()
             .unwrap_or_else(|| file.file_size() as usize);
@@ -481,6 +519,11 @@ impl Inode for Ext4Inode {
         } else {
             None
         };
+        #[cfg(feature = "perf")]
+        drop(quota_phase);
+        #[cfg(feature = "perf")]
+        let data_phase =
+            crate::utils::perf::Ext4WritePhaseGuard::new(crate::utils::perf::Ext4WritePhase::Data);
         if off > current_size {
             // A write beyond EOF creates a sparse range. The whole-file cache
             // tracks bytes only and would otherwise materialize that range.
@@ -501,6 +544,8 @@ impl Inode for Ext4Inode {
                 return Err(SysErrNo::from(err));
             }
         };
+        #[cfg(feature = "perf")]
+        drop(data_phase);
         let end = off.checked_add(written).ok_or(SysErrNo::EFBIG)?;
         self.update_known_size(current_size.max(end));
         self.invalidate_cached_stat();
@@ -704,14 +749,14 @@ impl Inode for Ext4Inode {
             let _ext4 = EXT4_OP_LOCK.lock_for_find();
             let file = &mut self.inner.get_unchecked_mut().f;
             match file.inode_type_and_stat_at(path) {
-                Ok((InodeTypes::EXT4_DE_DIR | InodeTypes::EXT4_INODE_MODE_DIRECTORY, _)) => {
-                    Ext4FindResult::Dir
+                Ok((InodeTypes::EXT4_DE_DIR | InodeTypes::EXT4_INODE_MODE_DIRECTORY, stat)) => {
+                    Ext4FindResult::Dir(stat)
                 }
                 Ok((InodeTypes::EXT4_DE_REG_FILE | InodeTypes::EXT4_INODE_MODE_FILE, stat)) => {
                     Ext4FindResult::File(stat)
                 }
-                Ok((InodeTypes::EXT4_DE_SYMLINK | InodeTypes::EXT4_INODE_MODE_SOFTLINK, _)) => {
-                    Ext4FindResult::SymLink
+                Ok((InodeTypes::EXT4_DE_SYMLINK | InodeTypes::EXT4_INODE_MODE_SOFTLINK, stat)) => {
+                    Ext4FindResult::SymLink(stat)
                 }
                 // Keep the existing behavior for unsupported special nodes
                 // and lookup errors: callers can still retry an intermediate
@@ -721,8 +766,12 @@ impl Inode for Ext4Inode {
         };
 
         let is_symlink = match result {
-            Ext4FindResult::Dir => {
-                return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)));
+            Ext4FindResult::Dir(stat) => {
+                return Ok(Arc::new(Ext4Inode::new_with_stat(
+                    path,
+                    InodeTypes::EXT4_DE_DIR,
+                    stat,
+                )));
             }
             Ext4FindResult::File(stat) => {
                 if flags.contains(OpenFlags::O_DIRECTORY) {
@@ -734,7 +783,7 @@ impl Inode for Ext4Inode {
                     stat,
                 )));
             }
-            Ext4FindResult::SymLink => {
+            Ext4FindResult::SymLink(_) => {
                 if flags.contains(OpenFlags::O_NOFOLLOW) {
                     return Err(SysErrNo::ELOOP);
                 }
@@ -960,6 +1009,10 @@ impl Inode for Ext4Inode {
     /// 返回当前可用于 lwext4 path-based API 的路径。
     fn path(&self) -> String {
         self.cached_path()
+    }
+
+    fn cache_identity(&self) -> Option<(usize, usize)> {
+        self.inode_identity
     }
 
     /// 从 VFS inode cache 记录新的路径别名。

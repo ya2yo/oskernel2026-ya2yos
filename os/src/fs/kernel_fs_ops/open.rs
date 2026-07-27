@@ -130,6 +130,8 @@ fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult
     }
 
     let lookup_path = join_parent_child(&parent_inode.path(), child_name);
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_vfs_cached_parent_find();
     let found = parent_inode
         .find_from_cached_parent(&lookup_path, flags)
         .map(|inode| {
@@ -156,6 +158,25 @@ fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult
         DENTRY_CACHE.insert_negative(&parent_inode, child_name);
     }
     Some(found)
+}
+
+/// 将末级查找结果写入常规 inode cache，除非它确实是一个需要保留的符号链接。
+///
+/// `O_NOFOLLOW`/内部 `O_UNLINK` 不能缓存 symlink：之后的普通 open 必须跟随
+/// 链接，而 lwext4 的 pathname descriptor 不会自动完成该语义。但同样的标志
+/// 作用于 regular file 或 directory 时，其结果与普通 open 完全一致；缓存这些
+/// 已确认非链接的 inode 可以让高频 lstat/unlink/readlink 探测避开 EXT4 查找。
+fn cache_final_lookup_result(
+    abs_path: &str,
+    flags: OpenFlags,
+    inode: Arc<dyn Inode>,
+) -> Arc<dyn Inode> {
+    let preserve_final_symlink = flags.intersects(OpenFlags::O_NOFOLLOW | OpenFlags::O_UNLINK);
+    if preserve_final_symlink && inode.types().is_symlink() {
+        inode
+    } else {
+        FsIndex::insert_inode_idx(abs_path, inode)
+    }
 }
 
 /// 在父目录下写入新建或已确认存在的正目录项缓存。
@@ -395,21 +416,26 @@ fn open_inner(
     // `has_inode() + find_inode_idx()` sequence repeatedly entered the inode
     // alias-maintenance path on every cached open.
     let preserve_final_symlink = flags.intersects(OpenFlags::O_NOFOLLOW | OpenFlags::O_UNLINK);
-    let mut inode = if !preserve_final_symlink {
-        FsIndex::find_inode_idx(abs_path)
-    } else {
-        None
-    };
+    let mut inode = FsIndex::find_inode_idx(abs_path).filter(|inode| {
+        // A symlink is deliberately excluded from the ordinary pathname
+        // cache. Retain this defensive check for any legacy/special caller
+        // that may have populated one, but allow cached non-links through
+        // O_NOFOLLOW/O_UNLINK because their Linux-visible result is identical.
+        !preserve_final_symlink || !inode.types().is_symlink()
+    });
+    #[cfg(feature = "perf")]
+    if preserve_final_symlink && inode.is_some() {
+        crate::utils::perf::record_vfs_preserve_final_cache_hit();
+    }
     if inode.is_none() {
-        let found_res = find_from_cached_parent(abs_path, flags)
-            .unwrap_or_else(|| superblock_root_inode().find(abs_path, flags, 0));
+        let found_res = find_from_cached_parent(abs_path, flags).unwrap_or_else(|| {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_vfs_root_find();
+            superblock_root_inode().find(abs_path, flags, 0)
+        });
         match found_res {
             Ok(t) => {
-                inode = Some(if preserve_final_symlink {
-                    t
-                } else {
-                    FsIndex::insert_inode_idx(abs_path, t)
-                });
+                inode = Some(cache_final_lookup_result(abs_path, flags, t));
             }
             // `Ext4Inode::find()` only follows a final symlink.  A Debian
             // path such as `/bin/bash` therefore reports ENOTDIR while
@@ -420,16 +446,22 @@ fn open_inner(
                 if resolved_path == abs_path {
                     return Err(SysErrNo::ENOTDIR);
                 }
-                let found_res = find_from_cached_parent(&resolved_path, flags)
-                    .unwrap_or_else(|| superblock_root_inode().find(&resolved_path, flags, 0));
+                let found_res =
+                    find_from_cached_parent(&resolved_path, flags).unwrap_or_else(|| {
+                        #[cfg(feature = "perf")]
+                        crate::utils::perf::record_vfs_root_find();
+                        superblock_root_inode().find(&resolved_path, flags, 0)
+                    });
                 let resolved_inode = found_res?;
-                inode = Some(if preserve_final_symlink {
-                    resolved_inode
-                } else {
-                    let resolved_inode = FsIndex::insert_inode_idx(&resolved_path, resolved_inode);
-                    FsIndex::insert_inode_idx(abs_path, resolved_inode.clone());
-                    resolved_inode
-                });
+                let resolved_inode =
+                    cache_final_lookup_result(&resolved_path, flags, resolved_inode);
+                inode = Some(
+                    if resolved_path == abs_path || resolved_inode.types().is_symlink() {
+                        resolved_inode
+                    } else {
+                        FsIndex::insert_inode_idx(abs_path, resolved_inode.clone())
+                    },
+                );
             }
             Err(SysErrNo::ELOOP) => return Err(SysErrNo::ELOOP),
             Err(_) => {
@@ -437,15 +469,16 @@ fn open_inner(
                     if resolved_path != abs_path {
                         let found_res = find_from_cached_parent(&resolved_path, flags)
                             .unwrap_or_else(|| {
+                                #[cfg(feature = "perf")]
+                                crate::utils::perf::record_vfs_root_find();
                                 superblock_root_inode().find(&resolved_path, flags, 0)
                             });
                         if let Ok(t) = found_res {
-                            inode = Some(if preserve_final_symlink {
+                            let t = cache_final_lookup_result(&resolved_path, flags, t);
+                            inode = Some(if resolved_path == abs_path || t.types().is_symlink() {
                                 t
                             } else {
-                                let t = FsIndex::insert_inode_idx(&resolved_path, t);
-                                FsIndex::insert_inode_idx(abs_path, t.clone());
-                                t
+                                FsIndex::insert_inode_idx(abs_path, t.clone())
                             });
                         }
                     }

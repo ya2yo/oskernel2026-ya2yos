@@ -165,6 +165,10 @@ impl FilePageCache {
     ///
     /// 为避免并发加载同一页导致重复插入，函数在完成 I/O 后会再次检查缓存中是否
     /// 已存在同一 `FilePageKey`，若存在则返回已有页。
+    ///
+    /// 若前一页已经缓存而当前页缺失，访问模式很可能是顺序读取。此时在一次底层
+    /// 读取中同时加载当前页和下一页，以减少连续 mmap/read/splice 产生的 EXT4
+    /// 全局锁获取次数。随机访问、文件尾页和预读页分配失败仍维持单页加载。
     pub fn get_or_load(
         &self,
         inode: Arc<dyn Inode>,
@@ -182,15 +186,64 @@ impl FilePageCache {
         #[cfg(feature = "perf")]
         crate::utils::perf::record_file_cache_miss();
 
-        let frame = FrameTracker::alloc().ok_or(SysErrNo::ENOMEM)?;
-        let bytes = frame.ppn.bytes_array_mut();
-
+        let file_size = inode.size();
         let file_offset = page_index * PAGE_SIZE;
-        let valid_len = if file_offset < inode.size() {
-            inode.read_at(file_offset, bytes)?
+        let next_key = page_index
+            .checked_add(1)
+            .map(|next_page_index| FilePageKey {
+                path: key.path.clone(),
+                page_index: next_page_index,
+            });
+        let has_cached_previous = page_index != 0
+            && self.pages.read().contains_key(&FilePageKey {
+                path: key.path.clone(),
+                page_index: page_index - 1,
+            });
+        let should_readahead = has_cached_previous
+            && file_offset.saturating_add(PAGE_SIZE) < file_size
+            && next_key.is_some();
+
+        let frame = FrameTracker::alloc().ok_or(SysErrNo::ENOMEM)?;
+        let next_frame = if should_readahead {
+            FrameTracker::alloc()
         } else {
-            0
+            None
         };
+
+        let (valid_len, readahead_page) =
+            if let (Some(next_key), Some(next_frame)) = (next_key.as_ref(), next_frame) {
+                let mut read_buf = alloc::vec![0; PAGE_SIZE * 2];
+                let read_len = if file_offset < file_size {
+                    inode.read_at(file_offset, &mut read_buf)?
+                } else {
+                    0
+                };
+                let valid_len = read_len.min(PAGE_SIZE);
+                frame.ppn.bytes_array_mut()[..valid_len].copy_from_slice(&read_buf[..valid_len]);
+
+                let readahead_len = read_len.saturating_sub(PAGE_SIZE).min(PAGE_SIZE);
+                let readahead_page = if readahead_len == 0 {
+                    None
+                } else {
+                    next_frame.ppn.bytes_array_mut()[..readahead_len]
+                        .copy_from_slice(&read_buf[PAGE_SIZE..PAGE_SIZE + readahead_len]);
+                    Some(Arc::new(FilePage {
+                        key: next_key.clone(),
+                        frame: next_frame,
+                        valid_len: readahead_len,
+                        dirty: AtomicBool::new(false),
+                    }))
+                };
+                (valid_len, readahead_page)
+            } else {
+                let bytes = frame.ppn.bytes_array_mut();
+                let valid_len = if file_offset < file_size {
+                    inode.read_at(file_offset, bytes)?
+                } else {
+                    0
+                };
+                (valid_len, None)
+            };
 
         let page = Arc::new(FilePage {
             key: key.clone(),
@@ -204,6 +257,23 @@ impl FilePageCache {
             return Ok(existing);
         }
         pages.insert(key, page.clone());
+        let readahead_bytes = readahead_page.and_then(|readahead_page| {
+            let readahead_bytes = readahead_page.valid_len;
+            let readahead_key = readahead_page.key.clone();
+            if pages.contains_key(&readahead_key) {
+                None
+            } else {
+                pages.insert(readahead_key, readahead_page);
+                Some(readahead_bytes)
+            }
+        });
+        drop(pages);
+        #[cfg(not(feature = "perf"))]
+        let _ = readahead_bytes;
+        #[cfg(feature = "perf")]
+        if let Some(readahead_bytes) = readahead_bytes {
+            crate::utils::perf::record_file_cache_readahead(1, readahead_bytes);
+        }
         Ok(page)
     }
 

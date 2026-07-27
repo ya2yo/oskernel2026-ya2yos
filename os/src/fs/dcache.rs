@@ -77,12 +77,19 @@ impl DentryCache {
     pub fn lookup(&self, parent: &Arc<dyn Inode>, name: &str) -> Option<DentryLookup> {
         let key = Self::key(parent, name);
         let entries = self.entries.read();
-        match entries.get(&key) {
+        let lookup = match entries.get(&key) {
             Some(DentryValue::Positive { inode }) => Some(DentryLookup::Positive(inode.clone())),
             // Negative cache 让重复的“确认不存在”查询不用再次进入 ext4。
             Some(DentryValue::Negative) => Some(DentryLookup::Negative),
             None => None,
+        };
+        #[cfg(feature = "perf")]
+        match &lookup {
+            Some(DentryLookup::Positive(_)) => crate::utils::perf::record_vfs_dentry_positive_hit(),
+            Some(DentryLookup::Negative) => crate::utils::perf::record_vfs_dentry_negative_hit(),
+            None => crate::utils::perf::record_vfs_dentry_miss(),
         }
+        lookup
     }
 
     /// 插入存在的子项缓存。
@@ -158,6 +165,10 @@ impl DentryCache {
             let replaced = entries.insert(key, value);
             (evicted, replaced)
         };
+        #[cfg(feature = "perf")]
+        if let Some(entries) = evicted.as_ref() {
+            crate::utils::perf::record_vfs_dentry_capacity_evict(entries.len());
+        }
         drop(replaced);
         drop(evicted);
     }

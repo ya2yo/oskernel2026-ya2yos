@@ -162,6 +162,8 @@ static EXEC_MAP_ELF_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 
 static EXT4_READ_OPS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_READ_BYTES: AtomicUsize = AtomicUsize::new(0);
+static EXT4_BYTE_CACHE_READ_HITS: AtomicUsize = AtomicUsize::new(0);
+static EXT4_BYTE_CACHE_READ_HIT_BYTES: AtomicUsize = AtomicUsize::new(0);
 static EXT4_LOCK_ACQUIRES: AtomicUsize = AtomicUsize::new(0);
 static EXT4_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -177,6 +179,15 @@ static EXT4_FSTAT_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_WRITE_LOCK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static EXT4_WRITE_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_WRITE_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_OPEN_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_OPEN_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_OPEN_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_QUOTA_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_QUOTA_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_QUOTA_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_DATA_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_DATA_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_DATA_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_RENAME_LOCK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static EXT4_RENAME_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_RENAME_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -184,6 +195,21 @@ static EXT4_RENAME_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_MISSES: AtomicUsize = AtomicUsize::new(0);
 static FILE_PAGE_FAULTS: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_READAHEAD_OPS: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_READAHEAD_PAGES: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_READAHEAD_BYTES: AtomicUsize = AtomicUsize::new(0);
+static VFS_FSINDEX_HITS: AtomicUsize = AtomicUsize::new(0);
+static VFS_FSINDEX_MISSES: AtomicUsize = AtomicUsize::new(0);
+static VFS_DENTRY_POSITIVE_HITS: AtomicUsize = AtomicUsize::new(0);
+static VFS_DENTRY_NEGATIVE_HITS: AtomicUsize = AtomicUsize::new(0);
+static VFS_DENTRY_MISSES: AtomicUsize = AtomicUsize::new(0);
+static VFS_CACHED_PARENT_FINDS: AtomicUsize = AtomicUsize::new(0);
+static VFS_ROOT_FINDS: AtomicUsize = AtomicUsize::new(0);
+static VFS_PRESERVE_FINAL_CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
+static VFS_FSINDEX_RECLAIMED: AtomicUsize = AtomicUsize::new(0);
+static VFS_DENTRY_CLEARED_BY_FSINDEX: AtomicUsize = AtomicUsize::new(0);
+static VFS_DENTRY_CAPACITY_EVICTIONS: AtomicUsize = AtomicUsize::new(0);
+static VFS_DENTRY_CAPACITY_EVICTED_ENTRIES: AtomicUsize = AtomicUsize::new(0);
 
 static SCHEDULER_SELECTIONS: AtomicUsize = AtomicUsize::new(0);
 static SCHEDULER_SELF_SELECTIONS: AtomicUsize = AtomicUsize::new(0);
@@ -854,6 +880,12 @@ pub fn record_ext4_read(bytes: usize) {
 }
 
 #[inline]
+pub fn record_ext4_byte_cache_read_hit(bytes: usize) {
+    add(&EXT4_BYTE_CACHE_READ_HITS, 1);
+    add(&EXT4_BYTE_CACHE_READ_HIT_BYTES, bytes);
+}
+
+#[inline]
 pub fn record_ext4_lock(wait_ticks: usize, hold_ticks: usize) {
     add(&EXT4_LOCK_ACQUIRES, 1);
     add(&EXT4_LOCK_WAIT_TICKS, wait_ticks);
@@ -892,6 +924,59 @@ pub fn record_ext4_write_lock(wait_ticks: usize, hold_ticks: usize) {
     add(&EXT4_WRITE_LOCK_HOLD_TICKS, hold_ticks);
 }
 
+/// A mutually exclusive phase inside `Ext4Inode::write_at()`.  The outer
+/// lwext4 operation guard already accounts for lock wait and whole-section
+/// hold time; these buckets identify which work performed while holding it is
+/// worth optimizing.
+pub enum Ext4WritePhase {
+    Open,
+    Quota,
+    Data,
+}
+
+/// Scope guard which includes early error returns in a write phase sample.
+pub struct Ext4WritePhaseGuard {
+    phase: Ext4WritePhase,
+    begin: usize,
+}
+
+impl Ext4WritePhaseGuard {
+    #[inline]
+    pub fn new(phase: Ext4WritePhase) -> Self {
+        Self {
+            phase,
+            begin: get_ticks(),
+        }
+    }
+}
+
+impl Drop for Ext4WritePhaseGuard {
+    #[inline]
+    fn drop(&mut self) {
+        let elapsed = get_ticks().saturating_sub(self.begin);
+        match self.phase {
+            Ext4WritePhase::Open => record_duration(
+                &EXT4_WRITE_OPEN_SAMPLES,
+                &EXT4_WRITE_OPEN_TICKS,
+                &EXT4_WRITE_OPEN_MAX_TICKS,
+                elapsed,
+            ),
+            Ext4WritePhase::Quota => record_duration(
+                &EXT4_WRITE_QUOTA_SAMPLES,
+                &EXT4_WRITE_QUOTA_TICKS,
+                &EXT4_WRITE_QUOTA_MAX_TICKS,
+                elapsed,
+            ),
+            Ext4WritePhase::Data => record_duration(
+                &EXT4_WRITE_DATA_SAMPLES,
+                &EXT4_WRITE_DATA_TICKS,
+                &EXT4_WRITE_DATA_MAX_TICKS,
+                elapsed,
+            ),
+        }
+    }
+}
+
 #[inline]
 pub fn record_ext4_rename_lock(wait_ticks: usize, hold_ticks: usize) {
     add(&EXT4_RENAME_LOCK_SAMPLES, 1);
@@ -912,6 +997,65 @@ pub fn record_file_cache_miss() {
 #[inline]
 pub fn record_file_page_fault() {
     add(&FILE_PAGE_FAULTS, 1);
+}
+
+#[inline]
+pub fn record_file_cache_readahead(pages: usize, bytes: usize) {
+    add(&FILE_CACHE_READAHEAD_OPS, 1);
+    add(&FILE_CACHE_READAHEAD_PAGES, pages);
+    add(&FILE_CACHE_READAHEAD_BYTES, bytes);
+}
+
+#[inline]
+pub fn record_vfs_fsidx_hit() {
+    add(&VFS_FSINDEX_HITS, 1);
+}
+
+#[inline]
+pub fn record_vfs_fsidx_miss() {
+    add(&VFS_FSINDEX_MISSES, 1);
+}
+
+#[inline]
+pub fn record_vfs_dentry_positive_hit() {
+    add(&VFS_DENTRY_POSITIVE_HITS, 1);
+}
+
+#[inline]
+pub fn record_vfs_dentry_negative_hit() {
+    add(&VFS_DENTRY_NEGATIVE_HITS, 1);
+}
+
+#[inline]
+pub fn record_vfs_dentry_miss() {
+    add(&VFS_DENTRY_MISSES, 1);
+}
+
+#[inline]
+pub fn record_vfs_cached_parent_find() {
+    add(&VFS_CACHED_PARENT_FINDS, 1);
+}
+
+#[inline]
+pub fn record_vfs_root_find() {
+    add(&VFS_ROOT_FINDS, 1);
+}
+
+#[inline]
+pub fn record_vfs_preserve_final_cache_hit() {
+    add(&VFS_PRESERVE_FINAL_CACHE_HITS, 1);
+}
+
+#[inline]
+pub fn record_vfs_fsidx_reclaim(reclaimed_inodes: usize, cleared_dentries: usize) {
+    add(&VFS_FSINDEX_RECLAIMED, reclaimed_inodes);
+    add(&VFS_DENTRY_CLEARED_BY_FSINDEX, cleared_dentries);
+}
+
+#[inline]
+pub fn record_vfs_dentry_capacity_evict(entries: usize) {
+    add(&VFS_DENTRY_CAPACITY_EVICTIONS, 1);
+    add(&VFS_DENTRY_CAPACITY_EVICTED_ENTRIES, entries);
 }
 
 #[inline]
@@ -1007,15 +1151,35 @@ fn emit_report(now: usize) {
         SYSCALL_SCHED_YIELD.load(Ordering::Relaxed),
     );
     println!(
-        "[perf] ext4 reads={} bytes={} lock={} wait_ticks={} hold_ticks={} file_cache hit={} miss={} page_faults={}",
+        "[perf] ext4 reads={} bytes={} byte_cache_read_hits={} byte_cache_read_hit_bytes={} lock={} wait_ticks={} hold_ticks={} file_cache hit={} miss={} page_faults={} readahead_ops={} readahead_pages={} readahead_bytes={}",
         EXT4_READ_OPS.load(Ordering::Relaxed),
         EXT4_READ_BYTES.load(Ordering::Relaxed),
+        EXT4_BYTE_CACHE_READ_HITS.load(Ordering::Relaxed),
+        EXT4_BYTE_CACHE_READ_HIT_BYTES.load(Ordering::Relaxed),
         EXT4_LOCK_ACQUIRES.load(Ordering::Relaxed),
         EXT4_LOCK_WAIT_TICKS.load(Ordering::Relaxed),
         EXT4_LOCK_HOLD_TICKS.load(Ordering::Relaxed),
         FILE_CACHE_HITS.load(Ordering::Relaxed),
         FILE_CACHE_MISSES.load(Ordering::Relaxed),
         FILE_PAGE_FAULTS.load(Ordering::Relaxed),
+        FILE_CACHE_READAHEAD_OPS.load(Ordering::Relaxed),
+        FILE_CACHE_READAHEAD_PAGES.load(Ordering::Relaxed),
+        FILE_CACHE_READAHEAD_BYTES.load(Ordering::Relaxed),
+    );
+    println!(
+        "[perf] vfs_lookup fsidx_hit={} fsidx_miss={} dentry_positive_hit={} dentry_negative_hit={} dentry_miss={} cached_parent_find={} root_find={} preserve_final_cache_hit={} fsidx_reclaimed={} dentry_cleared_by_fsidx={} dentry_capacity_evictions={} dentry_capacity_evicted_entries={}",
+        VFS_FSINDEX_HITS.load(Ordering::Relaxed),
+        VFS_FSINDEX_MISSES.load(Ordering::Relaxed),
+        VFS_DENTRY_POSITIVE_HITS.load(Ordering::Relaxed),
+        VFS_DENTRY_NEGATIVE_HITS.load(Ordering::Relaxed),
+        VFS_DENTRY_MISSES.load(Ordering::Relaxed),
+        VFS_CACHED_PARENT_FINDS.load(Ordering::Relaxed),
+        VFS_ROOT_FINDS.load(Ordering::Relaxed),
+        VFS_PRESERVE_FINAL_CACHE_HITS.load(Ordering::Relaxed),
+        VFS_FSINDEX_RECLAIMED.load(Ordering::Relaxed),
+        VFS_DENTRY_CLEARED_BY_FSINDEX.load(Ordering::Relaxed),
+        VFS_DENTRY_CAPACITY_EVICTIONS.load(Ordering::Relaxed),
+        VFS_DENTRY_CAPACITY_EVICTED_ENTRIES.load(Ordering::Relaxed),
     );
     println!(
         "[perf] ext4_read_lock samples={} wait_us={} hold_us={}",
@@ -1041,12 +1205,67 @@ fn emit_report(now: usize) {
         ticks_to_us(EXT4_WRITE_LOCK_WAIT_TICKS.load(Ordering::Relaxed)),
         ticks_to_us(EXT4_WRITE_LOCK_HOLD_TICKS.load(Ordering::Relaxed)),
     );
+    print!("[perf] ext4_write_duration ");
+    emit_duration(
+        "open",
+        &EXT4_WRITE_OPEN_SAMPLES,
+        &EXT4_WRITE_OPEN_TICKS,
+        &EXT4_WRITE_OPEN_MAX_TICKS,
+    );
+    print!("[perf] ext4_write_duration ");
+    emit_duration(
+        "quota",
+        &EXT4_WRITE_QUOTA_SAMPLES,
+        &EXT4_WRITE_QUOTA_TICKS,
+        &EXT4_WRITE_QUOTA_MAX_TICKS,
+    );
+    print!("[perf] ext4_write_duration ");
+    emit_duration(
+        "data",
+        &EXT4_WRITE_DATA_SAMPLES,
+        &EXT4_WRITE_DATA_TICKS,
+        &EXT4_WRITE_DATA_MAX_TICKS,
+    );
     println!(
         "[perf] ext4_rename_lock samples={} wait_us={} hold_us={}",
         EXT4_RENAME_LOCK_SAMPLES.load(Ordering::Relaxed),
         ticks_to_us(EXT4_RENAME_LOCK_WAIT_TICKS.load(Ordering::Relaxed)),
         ticks_to_us(EXT4_RENAME_LOCK_HOLD_TICKS.load(Ordering::Relaxed)),
     );
+    #[cfg(feature = "perf")]
+    {
+        let write_cache = lwext4_rust::file::write_back_cache_perf_stats();
+        println!(
+            "[perf] ext4_write_cache hit_ops={} hit_bytes={} init_ops={} init_read_bytes={} evict_ops={} evict_writeback_bytes={} limit_flush_ops={} limit_flush_bytes={} direct_ops={} direct_bytes={} direct_disabled_ops={} direct_disabled_bytes={} direct_too_large_ops={} direct_too_large_bytes={} direct_uncached_ops={} direct_uncached_bytes={} direct_hole_ops={} direct_hole_bytes={} direct_limit_ops={} direct_limit_bytes={} sparse_buffer_ops={} sparse_buffer_bytes={} sparse_flush_ops={} sparse_flush_bytes={} sparse_read_overlay_ops={} sparse_read_overlay_bytes={} sparse_read_overlay_dirty_bytes={}",
+            write_cache.cache_hit_ops,
+            write_cache.cache_hit_bytes,
+            write_cache.cache_init_ops,
+            write_cache.cache_init_read_bytes,
+            write_cache.cache_evict_ops,
+            write_cache.cache_evict_writeback_bytes,
+            write_cache.cache_limit_flush_ops,
+            write_cache.cache_limit_flush_bytes,
+            write_cache.direct_write_ops,
+            write_cache.direct_write_bytes,
+            write_cache.direct_disabled_ops,
+            write_cache.direct_disabled_bytes,
+            write_cache.direct_too_large_ops,
+            write_cache.direct_too_large_bytes,
+            write_cache.direct_uncached_ops,
+            write_cache.direct_uncached_bytes,
+            write_cache.direct_hole_ops,
+            write_cache.direct_hole_bytes,
+            write_cache.direct_limit_ops,
+            write_cache.direct_limit_bytes,
+            write_cache.sparse_buffer_ops,
+            write_cache.sparse_buffer_bytes,
+            write_cache.sparse_flush_ops,
+            write_cache.sparse_flush_bytes,
+            write_cache.sparse_read_overlay_ops,
+            write_cache.sparse_read_overlay_bytes,
+            write_cache.sparse_read_overlay_dirty_bytes,
+        );
+    }
     println!(
         "[perf] scheduler selections={} self_selections={} idle_loops={}",
         SCHEDULER_SELECTIONS.load(Ordering::Relaxed),

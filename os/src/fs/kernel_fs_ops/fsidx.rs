@@ -58,8 +58,18 @@ impl FsIndex {
 
     pub fn find_inode_idx(path: &str) -> Option<Arc<dyn Inode>> {
         let cache = INODE_CACHE.read();
-        let key = cache.paths.get(path)?;
-        cache.inodes.get(key).cloned()
+        let inode = cache
+            .paths
+            .get(path)
+            .and_then(|key| cache.inodes.get(key))
+            .cloned();
+        #[cfg(feature = "perf")]
+        if inode.is_some() {
+            crate::utils::perf::record_vfs_fsidx_hit();
+        } else {
+            crate::utils::perf::record_vfs_fsidx_miss();
+        }
+        inode
     }
 
     pub fn insert_inode_idx(path: &str, inode: Arc<dyn Inode>) -> Arc<dyn Inode> {
@@ -194,8 +204,12 @@ impl FsIndex {
             // Positive dentries intentionally keep strong inode references for
             // hot close/open loops.  Drop that accelerator before testing which
             // FsIndex entries are otherwise idle.
-            crate::fs::DENTRY_CACHE.clear();
-            Self::reclaim_unused();
+            let cleared_dentries = crate::fs::DENTRY_CACHE.clear();
+            let reclaimed_inodes = Self::reclaim_unused();
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_vfs_fsidx_reclaim(reclaimed_inodes, cleared_dentries);
+            #[cfg(not(feature = "perf"))]
+            let _ = (reclaimed_inodes, cleared_dentries);
         }
     }
 
@@ -206,6 +220,9 @@ impl FsIndex {
     fn cache_key(path: &str, inode: &Arc<dyn Inode>) -> InodeCacheKey {
         if is_proc_task_path(path) {
             return InodeCacheKey::Path(path.to_string());
+        }
+        if let Some((dev, ino)) = inode.cache_identity().filter(|(_, ino)| *ino != 0) {
+            return InodeCacheKey::Inode { dev, ino };
         }
         let stat = inode.fstat();
         if stat.st_ino != 0 {
@@ -242,6 +259,10 @@ impl FsIndex {
     fn inode_matches_key(inode: &Arc<dyn Inode>, key: &InodeCacheKey) -> bool {
         match key {
             InodeCacheKey::Inode { dev, ino } => {
+                // This is deliberately a live metadata probe rather than the
+                // immutable lookup identity.  An unlinked inode can remain
+                // cached until unlink-side detachment runs; if ext4 reuses
+                // its number, only `fstat()` can reject that stale object.
                 let stat = inode.fstat();
                 stat.st_dev == *dev && stat.st_ino == *ino
             }
