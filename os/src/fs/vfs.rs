@@ -71,6 +71,18 @@ pub trait Inode: Send + Sync {
     ) -> Result<Arc<dyn Inode>, SysErrNo> {
         unimplemented!("Inode::find")
     }
+    /// Resolve one final directory entry below an already-cached parent.
+    ///
+    /// Backends that need a full pathname fallback can override this to skip
+    /// work which the cached, concrete parent inode has already ruled out.
+    /// The default retains the complete `find()` behavior for other filesystems.
+    fn find_from_cached_parent(
+        &self,
+        path: &str,
+        flags: OpenFlags,
+    ) -> Result<Arc<dyn Inode>, SysErrNo> {
+        self.find(path, flags, 0)
+    }
     /// 在指定偏移位置读取数据进buf
     fn read_at(&self, _off: usize, _buf: &mut [u8]) -> SyscallRet {
         unimplemented!("Inode::read_at")

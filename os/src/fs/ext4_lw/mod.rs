@@ -43,6 +43,8 @@ pub(super) enum Ext4LockClass {
     Read,
     Find,
     Fstat,
+    Write,
+    Rename,
 }
 
 pub(super) struct Ext4ProfiledOpGuard<'a> {
@@ -104,6 +106,14 @@ impl Ext4OpLock {
         self.lock_profiled(Ext4LockClass::Fstat)
     }
 
+    pub fn lock_for_write(&self) -> Ext4ProfiledOpGuard<'_> {
+        self.lock_profiled(Ext4LockClass::Write)
+    }
+
+    pub fn lock_for_rename(&self) -> Ext4ProfiledOpGuard<'_> {
+        self.lock_profiled(Ext4LockClass::Rename)
+    }
+
     fn lock_profiled(&self, class: Ext4LockClass) -> Ext4ProfiledOpGuard<'_> {
         Ext4ProfiledOpGuard {
             guard: self.lock(),
@@ -145,6 +155,12 @@ impl Drop for Ext4ProfiledOpGuard<'_> {
                 }
                 Ext4LockClass::Fstat => {
                     crate::utils::perf::record_ext4_fstat_lock(self.guard.wait_ticks, hold_ticks)
+                }
+                Ext4LockClass::Write => {
+                    crate::utils::perf::record_ext4_write_lock(self.guard.wait_ticks, hold_ticks)
+                }
+                Ext4LockClass::Rename => {
+                    crate::utils::perf::record_ext4_rename_lock(self.guard.wait_ticks, hold_ticks)
                 }
             }
         }

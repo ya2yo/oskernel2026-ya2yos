@@ -1482,3 +1482,47 @@
   受宿主 `/var/tmp` 临时文件权限限制未启动；维护者确认死锁已修复，未记录为 AI 独立完成的
   完整 BuildStorm 回归。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm write-back cache LRU 优化（7.27）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供一小时 `2.ans` 后又提供最新十分钟 `3.ans`，要求继续定位 BuildStorm
+  编译吞吐瓶颈。
+- **描述**：AI 以新的 `ext4_write_lock`/`ext4_rename_lock` 分类核对 3.ans，确认 `write_at` 的
+  累计锁持有已超过 read，而 `find` 仍是最大排队来源。沿 write path 定位到 10 项 FIFO 的
+  whole-file cache：并发 Rustc 活跃输出会在持有全局 lwext4 锁时被驱逐并整文件写回。修复将其
+  改为 32 项有界 LRU，并在 cache 命中写后更新 recency；稀疏文件、rename、错误重试和非 SMP 安全
+  的 lwext4 串行化保持不变。详见 [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
+- **验证**：`cargo fmt`、补丁检查，以及 RISC-V/LoongArch64 `make perf` 通过，仅有既有
+  smoltcp warning。`3.ans` 在修复前生成，尚未取得新 kernel 的同配置运行样本或完整 BuildStorm
+  结果，未报告加速比例。
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm cached-parent miss 去除无效中间链接扫描（7.27）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供已含 LRU 的十分钟 `4.ans`，Cargo 仍停在 `9/446`，要求继续优化内核吞吐。
+- **描述**：AI 核对 `4.ans`，确认没有 panic/TFAIL/TBROK 或 BuildStorm 结束标记；LRU 后单次
+  `write_at` 平均锁持有由约 33.1 ms 降至约 30.3 ms，但不是严格 A/B。继续追踪 `find`：cached-parent
+  路径已持有实际目录 inode，却在 child miss 后仍逐前缀进入 lwext4 扫描中间符号链接。新增 VFS 默认
+  `find_from_cached_parent()`；EXT4 覆盖它，仅对这个确定的负查找跳过无效扫描。完整路径回退、末级
+  symlink 递归、`O_NOFOLLOW`、`O_UNLINK`、`O_CREAT` 和 dentry 失效语义均保留。
+- **验证**：`cargo fmt`、`git diff --check`、RISC-V/LoongArch64 `make perf` 均通过，仅有既有
+  smoltcp warning。`4.ans` 早于新 fast path，未取得其 QEMU 运行样本或完整 BuildStorm 数据，未报告
+  端到端加速比例。详见 [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm Rustc rename 全挂载 flush 优化（7.27）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 30 分钟的 `5.ans`，BuildStorm 已到 Cargo `33/446` 但后段仍明显变慢。
+- **描述**：AI 发现 `t=1641118ms` 到 `t=1689127ms` 内 rename 样本仅加一、持锁却增加约 74.878 s，
+  全局 EXT4 累计等待增加约 402.882 s。源码确认 rename 为清理临时产物 write-back cache 调用
+  `ext4_cache_flush()`；该 lwext4 API 实际 flush 整个 mount 的 dirty list，普通 close 又重复调用。
+  修复将 byte-cache writeback/discard 与 mount flush 拆开：rename 写回并删除旧 pathname cache、关闭
+  descriptor后执行 `ext4_frename()`，但不把普通原子发布升级成隐式 fsync。写回失败重试、源/目标
+  cache 失效、同 inode 可见性以及显式 sync/fsync 均保留。
+- **验证**：`cargo fmt`、`git diff --check`、RISC-V/LoongArch64 `make perf` 均通过，仅有既有
+  smoltcp warning。`5.ans` 早于修复；未取得修复后的 QEMU/完整 BuildStorm 数据，未报告端到端
+  加速比例。详见 [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
+- **关联 commit**：当前工作区未提交

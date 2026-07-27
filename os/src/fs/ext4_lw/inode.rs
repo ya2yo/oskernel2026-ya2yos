@@ -30,6 +30,10 @@ use lwext4_rust::file::{discard_path_cache, read_cached_at, OsDirent};
 
 /// 防止符号链接死循环的最大跳转次数。
 const MAX_LOOPTIMES: usize = 5;
+/// `find_from_cached_parent()` has already resolved every component preceding
+/// the final name.  Use a private sentinel to skip the compatibility scan for
+/// intermediate symlinks after that final lookup misses.
+const SKIP_INTERMEDIATE_SYMLINK_RETRY: usize = usize::MAX;
 const QUOTA_RESERVE_GRANULARITY: usize = 64 * 1024;
 const UNKNOWN_FILE_SIZE: usize = usize::MAX;
 
@@ -73,6 +77,16 @@ pub struct Ext4InodeInner {
     aliases: Vec<String>,
     /// 延迟删除标志。如果为 true，在该 inode 被 Drop 时会从磁盘删除对应文件。
     delay: bool,
+}
+
+/// `find()` only needs lwext4 serialization for the metadata query itself.
+/// Constructing the VFS wrapper allocates Rust-side state and must stay outside
+/// the global operation lock so parallel Cargo lookups can hand it over sooner.
+enum Ext4FindResult {
+    Dir,
+    File(ext4_inode_stat),
+    SymLink,
+    Missing,
 }
 
 unsafe impl Send for Ext4Inode {}
@@ -415,7 +429,7 @@ impl Inode for Ext4Inode {
 
     /// 从指定偏移量写入数据。
     fn write_at(&self, off: usize, buf: &[u8]) -> SyscallRet {
-        let _ext4 = EXT4_OP_LOCK.lock();
+        let _ext4 = EXT4_OP_LOCK.lock_for_write();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         let delayed = inner.delay;
@@ -519,20 +533,28 @@ impl Inode for Ext4Inode {
             return Ok(0);
         }
 
-        let _ext4 = EXT4_OP_LOCK.lock();
+        let _ext4 = EXT4_OP_LOCK.lock_for_rename();
         let inner = self.inner.get_unchecked_mut();
         let types = inner.f.types();
         let active_path = inner.f.path().into_string().unwrap();
 
         // Rustc publishes rmeta/rlib files by renaming a populated temporary
-        // path.  Flush and detach its path-keyed write-back cache while the
-        // source still exists; otherwise a later close can recreate the temp
-        // file and leave the published destination stale.
+        // path.  Write back and detach its path-keyed cache while the source
+        // still exists; otherwise a later close can recreate the temp file and
+        // leave the published destination stale.  Do not make rename flush the
+        // whole mount's block cache: rename preserves the inode and Linux does
+        // not give it fsync durability semantics.
         inner
             .f
-            .flush_and_discard_path_cache()
+            .write_back_and_discard_path_cache()
             .map_err(SysErrNo::from)?;
-        inner.f.file_close().map_err(SysErrNo::from)?;
+        // The preceding helper has already handled byte-cache write-back.
+        // Closing with the normal helper would call ext4_cache_flush() a
+        // second time, again serializing every dirty block on this mount.
+        inner
+            .f
+            .file_close_without_cache_flush()
+            .map_err(SysErrNo::from)?;
         inner
             .f
             .file_rename(path, new_path)
@@ -672,40 +694,59 @@ impl Inode for Ext4Inode {
         loop_times: usize,
     ) -> Result<Arc<dyn Inode>, SysErrNo> {
         // log::info!("[Inode.find] origin path={}", path);
-        let is_symlink = {
+        let skip_intermediate_retry = loop_times == SKIP_INTERMEDIATE_SYMLINK_RETRY;
+        let symlink_depth = if skip_intermediate_retry {
+            0
+        } else {
+            loop_times
+        };
+        let result = {
             let _ext4 = EXT4_OP_LOCK.lock_for_find();
             let file = &mut self.inner.get_unchecked_mut().f;
             match file.inode_type_and_stat_at(path) {
                 Ok((InodeTypes::EXT4_DE_DIR | InodeTypes::EXT4_INODE_MODE_DIRECTORY, _)) => {
-                    return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)));
+                    Ext4FindResult::Dir
                 }
                 Ok((InodeTypes::EXT4_DE_REG_FILE | InodeTypes::EXT4_INODE_MODE_FILE, stat)) => {
-                    if flags.contains(OpenFlags::O_DIRECTORY) {
-                        return Err(SysErrNo::ENOTDIR);
-                    }
-                    return Ok(Arc::new(Ext4Inode::new_with_stat(
-                        path,
-                        InodeTypes::EXT4_DE_REG_FILE,
-                        stat,
-                    )));
+                    Ext4FindResult::File(stat)
                 }
                 Ok((InodeTypes::EXT4_DE_SYMLINK | InodeTypes::EXT4_INODE_MODE_SOFTLINK, _)) => {
-                    if flags.contains(OpenFlags::O_NOFOLLOW) {
-                        return Err(SysErrNo::ELOOP);
-                    }
-                    true
+                    Ext4FindResult::SymLink
                 }
                 // Keep the existing behavior for unsupported special nodes
                 // and lookup errors: callers can still retry an intermediate
                 // symlink before receiving ENOENT.
-                _ => false,
+                _ => Ext4FindResult::Missing,
             }
         };
 
+        let is_symlink = match result {
+            Ext4FindResult::Dir => {
+                return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR)));
+            }
+            Ext4FindResult::File(stat) => {
+                if flags.contains(OpenFlags::O_DIRECTORY) {
+                    return Err(SysErrNo::ENOTDIR);
+                }
+                return Ok(Arc::new(Ext4Inode::new_with_stat(
+                    path,
+                    InodeTypes::EXT4_DE_REG_FILE,
+                    stat,
+                )));
+            }
+            Ext4FindResult::SymLink => {
+                if flags.contains(OpenFlags::O_NOFOLLOW) {
+                    return Err(SysErrNo::ELOOP);
+                }
+                true
+            }
+            Ext4FindResult::Missing => false,
+        };
+
         if !is_symlink {
-            if loop_times < MAX_LOOPTIMES {
+            if !skip_intermediate_retry && symlink_depth < MAX_LOOPTIMES {
                 if let Some(next_path) = self.resolve_intermediate_symlink(path)? {
-                    return self.find(&next_path, flags, loop_times + 1);
+                    return self.find(&next_path, flags, symlink_depth + 1);
                 }
             }
             return Err(SysErrNo::ENOENT);
@@ -713,7 +754,7 @@ impl Inode for Ext4Inode {
         if flags.contains(OpenFlags::O_UNLINK) {
             return Ok(Arc::new(Ext4Inode::new(path, InodeTypes::EXT4_DE_SYMLINK)));
         }
-        if flags.contains(OpenFlags::O_NOFOLLOW) || loop_times >= MAX_LOOPTIMES {
+        if flags.contains(OpenFlags::O_NOFOLLOW) || symlink_depth >= MAX_LOOPTIMES {
             return Err(SysErrNo::ELOOP);
         }
 
@@ -730,7 +771,19 @@ impl Inode for Ext4Inode {
         } else {
             join_path(path, file_path)
         };
-        self.find(&next_path, flags, loop_times + 1)
+        self.find(&next_path, flags, symlink_depth + 1)
+    }
+
+    /// A cached parent inode denotes an already-resolved directory.  If its
+    /// direct child is absent, there cannot be an unresolved intermediate
+    /// symlink in this final lookup path, so avoid the fallback prefix scan.
+    /// A final symlink still follows the ordinary recursive path above.
+    fn find_from_cached_parent(
+        &self,
+        path: &str,
+        flags: OpenFlags,
+    ) -> Result<Arc<dyn Inode>, SysErrNo> {
+        self.find(path, flags, SKIP_INTERMEDIATE_SYMLINK_RETRY)
     }
     /// 获取文件状态信息。
     ///

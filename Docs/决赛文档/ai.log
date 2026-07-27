@@ -7357,3 +7357,85 @@ smoltcp warning。与 `log.ans` 的相近读量快照相比，`1.ans` 中 `ext4_
 由 `8929` 降为 `6028`，hold 由 `7.39 s` 降为 `4.11 s`，wait 由 `4.22 s` 降为 `1.23 s`；
 两份日志均未完成 BuildStorm，因此不报告端到端加速比例。详见
 `problem/buildstorm-read-path-lock-contention.md`。
+
+## 2026-07-27：BuildStorm 写回缓存 LRU 优化
+
+### 用户输入
+
+维护者更正一小时运行日志为 `2.ans`，随后提供最新十分钟 `3.ans`，指出 BuildStorm 速度仍然很慢。
+
+### 分析与采纳结论
+
+AI 先确认 `3.ans` 在 `t=564168ms` 仅推进至 Cargo `9/446`，但没有 panic、错误或 LTP 失败，故按
+吞吐问题分析。新增分类表明全局 EXT4 锁累计 wait/hold 为 `2951.10/491.14 s`；`find` 的等待为
+`1026.97 s`，而 `write_at` 5,188 次累计持锁 `171.65 s`，超过 read 的 `150.94 s`。`lseek`、
+调度 dispatch、clone 与 exec 活动时间不构成同级热点。
+
+沿 `sys_write()` -> `OSFile::write()` -> `Ext4Inode::write_at()` ->
+`Ext4File::file_write_at()` 追踪，确认小写走 whole-file write-back cache。旧 cache 只有 10 项
+FIFO，缓存命中不会提升顺序；并发 Rustc 输出交错写入时会驱逐仍活跃文件。驱逐在已持有的
+`EXT4_OP_LOCK` 内执行整文件回写，后续写又建立 cache，符合 write lock 持有异常高的观测。采纳
+32 项有界 LRU：写命中提升最近使用项，闲置项继续按已有写回与错误重试语义淘汰；没有去掉
+lwext4 的非 SMP 安全串行化，也没有修改 BuildStorm 脚本或 Cargo job 数。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs`，并保留/完成前一轮的
+`os/src/fs/ext4_lw/{inode,mod}.rs` 与 `os/src/utils/perf.rs` 分类及锁外 VFS inode 构造。更新开发
+日志、同一问题复盘和 AI 交互记录。`cargo fmt`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 均通过，仅有既有 smoltcp
+warning。QEMU 未在此环境重新运行：`3.ans` 早于 LRU 改动，尚无同配置 A/B 或完整 446 crate 结果，
+不报告端到端加速比例。
+
+## 2026-07-27：BuildStorm cached-parent 负查找去除无效链接扫描
+
+### 用户输入
+
+维护者提供新的十分钟 `4.ans`，反馈 BuildStorm 速度仍然很慢。
+
+### 分析与采纳结论
+
+`4.ans` 含上一轮 32 项 LRU：最后 `t=593387ms` 仍为 Cargo `9/446`，无 panic、错误或完成标记。
+`ext4_write_lock` 平均 hold 从 `3.ans` 的约 33.1 ms 降为约 30.3 ms，方向符合 LRU 预期，但不能由
+不同工作量的中途样本推导整体加速。更稳定的热点仍是 `find` 的约千秒累计等待。
+
+AI 追踪 VFS cached-parent 路径，确认它从 `FsIndex` 取得的是真实 directory inode，并以该 inode
+的真实路径拼接唯一末级名称；child miss 后再检查此前路径前缀是否存在中间 symlink 必然无效，却
+会多次获取 lwext4 全局锁。采纳只在这个证明成立的 miss 路径跳过回退扫描；不删除普通全路径
+查找的 Debian 中间链接兼容，也不改变末级链接、`O_NOFOLLOW`、`O_UNLINK`、`O_CREAT` 或负 dentry
+失效语义。
+
+### 修改与验证
+
+修改 `os/src/fs/vfs.rs`、`os/src/fs/kernel_fs_ops/open.rs` 与 `os/src/fs/ext4_lw/inode.rs`：VFS 新增
+默认 `find_from_cached_parent()`，EXT4 用私有 sentinel 只跳过 cached-parent child miss 的中间链接
+扫描；末级 symlink 仍走旧的递归解析。格式检查、`git diff --check`、RISC-V 与 LoongArch64
+`make perf` 均通过，仅有既有 smoltcp warning。`4.ans` 在此 fast path 前生成，尚无其 runtime A/B
+或完整 446 crate 数据，不报告端到端比例；后续样本需比较 classified 与 generic EXT4 lock 时间。
+
+## 2026-07-27：BuildStorm rename 全挂载 flush 去除
+
+### 用户输入
+
+维护者提供新的 `5.ans`，这是 BuildStorm 运行约 30 分钟的结果。
+
+### 分析与采纳结论
+
+AI 确认 `5.ans` 在 `t=1775349ms` 到 Cargo `33/446`，无 panic、`ERROR`、`TFAIL` 或 `TBROK`。同一
+日志的 `t=1641118ms` 到 `t=1689127ms` 中，rename 样本仅增加一次而累计 hold 增加 `74.878s`，
+全局 EXT4 wait 同期增加 `402.882s`。审计 lwext4 后确认这不是单个 directory-entry move：rename
+先为旧 pathname 的 byte cache 调用 `ext4_cache_flush()`；该 C API 清空整个 mount 的 dirty block list，
+随后普通 descriptor close 再调用一次。并行 Rustc 因而被一个发布临时 artifact 的任务串行阻塞。
+
+采纳“写回 byte cache、丢弃旧 pathname 状态、然后 rename”的最小语义边界。`ext4_fwrite()` 已将
+数据置入同一文件系统的共享 block cache，rename 保持 inode identity，因此后续读取仍可见；Linux
+rename 不承诺 fsync 持久化。没有改动成功写回前的失败重试、源/目标 cache 失效、最终 `ext4_frename()`
+或显式 sync/fsync 职责。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs` 与 `os/src/fs/ext4_lw/inode.rs`：新增
+`write_back_and_discard_path_cache()`，rename 改用它及不 flush 的 close helper，保留要求 mount-wide
+flush 的既有 `flush_and_discard_path_cache()` 调用点。`cargo fmt`、RISC-V/LoongArch64 `make perf`
+与 `git diff --check` 均通过，仅有既有 smoltcp warning。`5.ans` 在改动前生成，尚未取得修复后的
+QEMU 样本、rename 发布定向回归或完整 BuildStorm，不报告端到端加速比例。

@@ -130,23 +130,25 @@ fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult
     }
 
     let lookup_path = join_parent_child(&parent_inode.path(), child_name);
-    let found = parent_inode.find(&lookup_path, flags, 0).map(|inode| {
-        // `O_NOFOLLOW` and the internal `O_UNLINK` return the final symlink
-        // itself.  That object must not populate the normal pathname cache:
-        // a later ordinary open would reuse it and pass the link pathname to
-        // lwext4, whose file-open API deliberately does not follow links.
-        if preserve_final_symlink {
-            return inode;
-        }
-        let inode = FsIndex::insert_inode_idx(&lookup_path, inode);
-        if lookup_path != abs_path {
-            FsIndex::insert_inode_idx(abs_path, inode.clone());
-        }
-        if !preserve_final_symlink {
-            DENTRY_CACHE.insert_positive(&parent_inode, child_name, inode.clone());
-        }
-        inode
-    });
+    let found = parent_inode
+        .find_from_cached_parent(&lookup_path, flags)
+        .map(|inode| {
+            // `O_NOFOLLOW` and the internal `O_UNLINK` return the final symlink
+            // itself.  That object must not populate the normal pathname cache:
+            // a later ordinary open would reuse it and pass the link pathname to
+            // lwext4, whose file-open API deliberately does not follow links.
+            if preserve_final_symlink {
+                return inode;
+            }
+            let inode = FsIndex::insert_inode_idx(&lookup_path, inode);
+            if lookup_path != abs_path {
+                FsIndex::insert_inode_idx(abs_path, inode.clone());
+            }
+            if !preserve_final_symlink {
+                DENTRY_CACHE.insert_positive(&parent_inode, child_name, inode.clone());
+            }
+            inode
+        });
     if found.as_ref().err() == Some(&SysErrNo::ENOENT)
         && !preserve_final_symlink
         && !flags.contains(OpenFlags::O_CREATE)

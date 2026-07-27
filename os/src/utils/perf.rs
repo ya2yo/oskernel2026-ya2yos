@@ -174,6 +174,12 @@ static EXT4_FIND_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_FSTAT_LOCK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static EXT4_FSTAT_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_FSTAT_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_LOCK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXT4_WRITE_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXT4_RENAME_LOCK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static EXT4_RENAME_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static EXT4_RENAME_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
 
 static FILE_CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_MISSES: AtomicUsize = AtomicUsize::new(0);
@@ -880,6 +886,20 @@ pub fn record_ext4_fstat_lock(wait_ticks: usize, hold_ticks: usize) {
 }
 
 #[inline]
+pub fn record_ext4_write_lock(wait_ticks: usize, hold_ticks: usize) {
+    add(&EXT4_WRITE_LOCK_SAMPLES, 1);
+    add(&EXT4_WRITE_LOCK_WAIT_TICKS, wait_ticks);
+    add(&EXT4_WRITE_LOCK_HOLD_TICKS, hold_ticks);
+}
+
+#[inline]
+pub fn record_ext4_rename_lock(wait_ticks: usize, hold_ticks: usize) {
+    add(&EXT4_RENAME_LOCK_SAMPLES, 1);
+    add(&EXT4_RENAME_LOCK_WAIT_TICKS, wait_ticks);
+    add(&EXT4_RENAME_LOCK_HOLD_TICKS, hold_ticks);
+}
+
+#[inline]
 pub fn record_file_cache_hit() {
     add(&FILE_CACHE_HITS, 1);
 }
@@ -1014,6 +1034,18 @@ fn emit_report(now: usize) {
         EXT4_FSTAT_LOCK_SAMPLES.load(Ordering::Relaxed),
         ticks_to_us(EXT4_FSTAT_LOCK_WAIT_TICKS.load(Ordering::Relaxed)),
         ticks_to_us(EXT4_FSTAT_LOCK_HOLD_TICKS.load(Ordering::Relaxed)),
+    );
+    println!(
+        "[perf] ext4_write_lock samples={} wait_us={} hold_us={}",
+        EXT4_WRITE_LOCK_SAMPLES.load(Ordering::Relaxed),
+        ticks_to_us(EXT4_WRITE_LOCK_WAIT_TICKS.load(Ordering::Relaxed)),
+        ticks_to_us(EXT4_WRITE_LOCK_HOLD_TICKS.load(Ordering::Relaxed)),
+    );
+    println!(
+        "[perf] ext4_rename_lock samples={} wait_us={} hold_us={}",
+        EXT4_RENAME_LOCK_SAMPLES.load(Ordering::Relaxed),
+        ticks_to_us(EXT4_RENAME_LOCK_WAIT_TICKS.load(Ordering::Relaxed)),
+        ticks_to_us(EXT4_RENAME_LOCK_HOLD_TICKS.load(Ordering::Relaxed)),
     );
     println!(
         "[perf] scheduler selections={} self_selections={} idle_loops={}",

@@ -743,6 +743,8 @@ impl Ext4File {
                 self.file_desc.fpos = write_offset as u64;
             } else {
                 cache_writer.writebuf(buf)?;
+                drop(cache_writer);
+                touch_fifo_path(&path);
                 return Ok(buf.len());
             }
         }
@@ -794,6 +796,8 @@ impl Ext4File {
                 if next_size <= MAX_CACHED_FILE_SIZE && !write_creates_hole {
                     cache_writer.offset = offset;
                     cache_writer.writebuf(buf)?;
+                    drop(cache_writer);
+                    touch_fifo_path(self.path_str());
                     return Ok(buf.len());
                 }
 
@@ -901,16 +905,38 @@ impl Ext4File {
         flush_ext4_block_cache_for_path(path)
     }
 
-    /// Persist and discard delayed write-back state before changing this path's
-    /// directory entry.  Keeping a dirty cache under the old pathname after a
-    /// rename can otherwise recreate that pathname on a later close or eviction.
-    pub fn flush_and_discard_path_cache(&mut self) -> Result<usize, i32> {
+    /// Write the pathname's delayed byte cache into lwext4, retaining the
+    /// cache entry on failure so the caller can retry without losing data.
+    fn write_back_path_cache(&mut self) -> Result<String, i32> {
         let path = String::from((*self.file_path).to_str().unwrap());
         // This path can be transitioning to the non-cacheable state. Flush a
         // pre-existing entry even after its policy was marked disabled.
         if if_cache(path.clone()) {
             write_back_cache(path.clone())?;
         }
+        Ok(path)
+    }
+
+    /// Write back and discard delayed state before renaming a pathname.
+    ///
+    /// `ext4_fwrite()` has already made the bytes visible through lwext4's
+    /// shared block cache.  A rename moves the same inode, so forcing
+    /// `ext4_cache_flush()` here is neither needed for visibility nor required
+    /// by Linux rename semantics; it would flush every dirty block on the
+    /// mount while Ya2yOS holds its global EXT4 operation lock.  Durability
+    /// remains the responsibility of the existing sync/fsync paths.
+    pub fn write_back_and_discard_path_cache(&mut self) -> Result<usize, i32> {
+        let path = self.write_back_path_cache()?;
+        discard_path_cache(&path);
+        Ok(0)
+    }
+
+    /// Persist and discard delayed write-back state before an operation that
+    /// requires a mount-wide block-cache flush.  Keeping a dirty cache under
+    /// the old pathname after that transition could otherwise recreate the
+    /// pathname on a later close or eviction.
+    pub fn flush_and_discard_path_cache(&mut self) -> Result<usize, i32> {
+        let path = self.write_back_path_cache()?;
         self.flush_ext4_block_cache()?;
         discard_path_cache(&path);
         Ok(0)
@@ -1645,9 +1671,29 @@ fn is_proc_task_runtime_file(path: &str) -> bool {
         && matches!(name, "stat" | "status" | "maps")
 }
 
-const FIFO_SIZE: usize = 10;
-//采用先进先出策略
+// Cargo/rustc keeps several temporary outputs active per compiler worker.  A
+// ten-entry FIFO evicts a still-growing file merely because another worker
+// touched its artifact, then rebuilds and writes the whole byte cache while
+// the caller holds the serialized lwext4 lock.  Keep a bounded active working
+// set and promote modified entries so those files remain cache-resident.
+//
+// Each entry is independently capped by `MAX_CACHED_FILE_SIZE`; 32 entries
+// therefore remain bounded (at most 512 MiB) on the 8/16 GiB QEMU targets.
+const FIFO_SIZE: usize = 32;
 static FIFO_TABLE: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+
+/// Mark a write-back cache entry as recently modified.
+///
+/// This deliberately touches only the FIFO bookkeeping.  The caller already
+/// owns the file cache's write lock and lwext4 operation serialization, so it
+/// cannot race an eviction of the same active entry.
+fn touch_fifo_path(file_path: &str) {
+    let mut fifo = FIFO_TABLE.lock();
+    if let Some(index) = fifo.iter().position(|entry| entry == file_path) {
+        let path = fifo.remove(index).expect("FIFO entry disappeared");
+        fifo.push_back(path);
+    }
+}
 
 fn insert_fifo(file_path: String) -> Result<(), i32> {
     loop {

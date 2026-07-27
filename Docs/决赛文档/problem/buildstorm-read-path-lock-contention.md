@@ -354,3 +354,165 @@ A/B wall-clock 尚未完成，不能据此承诺一小时内完成编译。
 该比较支持“重复元数据查询已被移除”的假设，但两次的 guest 时间、Cargo 阶段和宿主负载并不
 完全相同；后续仍需使用同一镜像、相同 timeout、至少两次完整 BuildStorm 运行，才可报告最终
 编译时间或加速比例。
+
+## 2026-07-27：写回缓存活跃工作集驱逐
+
+### 新观测
+
+维护者提供的最新 RISC-V `3.ans` 是启用 EXT4 写入/rename 分类后的十分钟样本。最后一条快照
+位于 `t=564168ms`，Cargo 只到 `9/446`，随后由外层 QEMU 终止；日志没有 `panic`、`ERROR`、
+`TFAIL`、`TBROK`、`TEST GROUP END` 或 `shutdown!`，所以它反映的是低吞吐而不是功能失败。
+
+该快照的全局 EXT4 锁累计等待/持有为 `2951.10 s/491.14 s`（跨任务累计，不能视为单一
+wall-clock）。新增分类将此前的大部分 mutation 空洞收敛为：
+
+| 类别 | samples | wait | hold |
+| --- | ---: | ---: | ---: |
+| `ext4_read_lock` | 38,240 | 852.65 s | 150.94 s |
+| `ext4_find_lock` | 20,037 | 1026.97 s | 65.98 s |
+| `ext4_fstat_lock` | 6,681 | 207.23 s | 26.28 s |
+| `ext4_write_lock` | 5,188 | 546.53 s | 171.65 s |
+| `ext4_rename_lock` | 19 | 9.73 s | 3.95 s |
+
+`find` 仍是最大的排队来源，而 `write_at` 已是最大的已分类临界区，平均每次约 33 ms。相反，
+`lseek` 实现累计仅 2.29 s，调度 dispatch 仅 0.44 s，`clone`/`execve` 活动时间也远小于文件
+系统锁累计，均不是本轮主优化方向。
+
+### 根因
+
+`Ext4Inode::write_at()` 持有唯一的 `EXT4_OP_LOCK` 调用 `Ext4File::file_write_at()`。后者为了
+合并小写，会把普通文件放入 whole-file write-back cache；旧实现只有 `FIFO_SIZE = 10`，且命中
+缓存时不更新 FIFO 顺序。并行 Cargo/rustc 的多个 worker 交错写 `.d`、metadata 和临时 artifact
+时，仍在增长的文件会因其它 worker 新建缓存而被驱逐。一次驱逐会在同一全局 EXT4 锁内重新打开
+文件并将整个 byte cache 写回，因此下次写同一产物又要重新建 cache，形成“驱逐—整文件回写—重建”
+抖动。此前为延迟删除文件做的 pin 只覆盖 `unlink` 临时文件，不覆盖这类正常 rename 发布的输出。
+
+### 修复
+
+- 将有界 write-back 工作集从 10 项提升到 32 项。每项仍受 `MAX_CACHED_FILE_SIZE = 16 MiB`
+  限制，缓存数据上限为 512 MiB；RISC-V/LoongArch QEMU 分别配置 16 GiB/8 GiB 内存，未引入
+  无界缓存。
+- `file_write()` 与 `file_write_at()` 在命中、修改 byte cache 后把对应 pathname 移到队尾，
+  使淘汰策略变成 LRU。仍活跃的 Rustc 输出不再被纯插入顺序错误驱逐；闲置产物保留原有的写回、
+  成功后删除和错误重试行为。
+- 未改变 lwext4 的全局串行保护、`write_back_cache_entry()` 的完整写回语义、稀疏文件禁用策略、
+  rename 前 flush/discard，或延迟删除文件的 pin 行为。
+
+本轮还把普通 `find()` 中 Rust 侧 `Arc<Ext4Inode>` 构造移到 metadata 查询的锁外，并加入
+`write`/`rename` 两类低开销累计锁统计；这些统计仅在 `perf` feature 下输出，不会逐调用打印。
+
+### 验证与边界
+
+已执行 `cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml`、
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64` 和 `make perf TARGET_ARCH=loongarch64`，均通过。构建只有既有
+smoltcp unused-import/dead-code warning。
+
+尚未运行新的 QEMU 样本：`3.ans` 生成于本次 LRU 改动之前，只能用于根因定位，不能作为加速
+结果。后续应使用相同 `buildstorm::compile::run()` 入口和至少十分钟窗口，比较 Cargo 进度及
+`ext4_write_lock` 的 samples/wait/hold；若 write hold 未明显下降，再对 `file_write_at()` 的
+cache-hit、cache-build 与 eviction/write-back 分段计时，避免继续猜测。
+
+## 2026-07-27：LRU 样本复核与 cached-parent miss 快路径
+
+### 新观测
+
+维护者提供的 `4.ans` 是已包含 whole-file write-back LRU 的十分钟 RISC-V 样本。最后一条
+快照在 `t=593387ms`，Cargo 仍只到 `9/446`；日志同样没有 `panic`、`ERROR`、`TFAIL`、`TBROK`、
+`TEST GROUP END`、`shutdown!` 或 BuildStorm 完成标记。因此 LRU 没有引入可见功能回归，但单凭
+十分钟进度不能证明端到端吞吐已经改善。
+
+`3.ans` 与 `4.ans` 的末尾分类统计如下。锁等待、持锁为所有 task 的累计值，不能与十分钟
+wall-clock 一一对应；两次样本也不是严格的同一执行阶段 A/B。
+
+| 指标 | `3.ans` | `4.ans` |
+| --- | ---: | ---: |
+| `ext4_find_lock` wait / hold | 1026.97 / 65.98 s | 1000.77 / 65.90 s |
+| `ext4_read_lock` wait / hold | 852.65 / 150.94 s | 890.54 / 151.00 s |
+| `ext4_write_lock` samples | 5,188 | 6,059 |
+| `ext4_write_lock` wait / hold | 546.53 / 171.65 s | 763.78 / 183.57 s |
+| 每次 `write_at` 平均持锁 | 约 33.1 ms | 约 30.3 ms |
+
+写路径平均锁内时间约下降 8%，符合“活跃输出不再被纯 FIFO 顺序提前驱逐”的预期，但绝对
+`write` 工作量更多、Cargo 进度相同，不能据此宣称整体编译加速。`find` 仍稳定地贡献约千秒
+累计排队，说明下一步应减少查找失败后的额外路径探测，而不是继续无证据地扩大 dentry/FsIndex
+的 32K 上限。
+
+### 修复
+
+普通 `find()` 在末级查询失败时，为兼容 Debian 路径中的中间符号链接，会调用
+`resolve_intermediate_symlink()`，逐个前缀进入 lwext4 检查符号链接。`find_from_cached_parent()`
+的调用点已经从 `FsIndex` 得到实际目录 inode，并使用该 inode 的真实路径加上一个末级名称。
+在这种“已解析父目录 + 直接 child”查询中，若 child 不存在，前缀中不可能还有未解析的中间
+链接；此前扫描必然失败，却额外占用未分类的 `EXT4_OP_LOCK`。
+
+- `Inode` 增加默认的 `find_from_cached_parent()`，其他 VFS 后端继续走原有完整 `find()` 语义。
+- `Ext4Inode` 对该接口使用私有 sentinel：只有直接 child 未命中时跳过中间链接回退扫描，直接
+  返回 `ENOENT`。最终组件是符号链接时，仍读取链接并按原有递归路径解析；普通完整路径查找、
+  `O_NOFOLLOW`、`O_UNLINK`、`O_DIRECTORY` 和最长链接深度的语义均保持不变。
+- `open_inner()` 的 cached-parent helper 改调此接口。负 dentry 的缓存、`O_CREAT` 后续创建与
+  父目录路径的真实化逻辑没有改变。
+
+这项优化不会取消必需的 `inode_type_and_stat_at()`，故新的样本中 `ext4_find_lock` 的一次查询
+计数未必立即降低；目标是削减 miss 之后原先落在 generic EXT4 lock 桶中的逐前缀扫描和其排队。
+
+### 验证与边界
+
+最新改动后执行了 `cargo fmt --manifest-path os/Cargo.toml`、
+`cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml -- --check`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64` 与 `make perf TARGET_ARCH=loongarch64`，均通过。构建仅出现既有
+smoltcp 的两个 unused-import warning 和一个 dead-code warning。
+
+尚无含本次 cached-parent fast path 的新的 QEMU 样本；`4.ans` 只验证了其前的 LRU 改动。下一次
+至少十分钟同入口采样应同时记录 Cargo 进度、`ext4_find_lock`、五类已分类锁以及全局减去已分类
+后的 generic EXT4 wait/hold。若 generic 时间没有下降，应新增低开销聚合计数区分 root 全路径
+查找、cached-parent child 查询、中间链接回退和末级链接递归，再决定是否改动更深层路径解析。
+
+## 2026-07-27：Rustc rename 发布的全挂载 flush 尖峰
+
+### 新观测
+
+维护者提供的 `5.ans` 已覆盖 cached-parent miss 快路径，运行约 30 分钟至
+`t=1775349ms`，Cargo 从 `4.ans` 同窗口约十分钟的 `9/446` 推进到 `33/446`。相近的早期快照中，
+`5.ans` 在 `t=598865ms` 已到 `10/446`，而 `4.ans` 在 `t=593387ms` 为 `9/446`。这说明路径优化
+没有引入功能异常，且有方向性收益；两个样本的阶段、I/O 工作量和宿主状态不完全相同，不能据此
+报告端到端加速比例。`5.ans` 没有 `panic`、`ERROR`、`TFAIL`、`TBROK` 或完成标记。
+
+新的分类还暴露出一个更大的尾部尖峰。`t=1641118ms` 到 `t=1689127ms` 之间，
+`ext4_rename_lock` 的 samples 仅从 `51` 增至 `52`，但累计 hold 从 `55.480s` 跳到 `130.358s`；
+即单次 rename 独占约 `74.878s`。同一窗口全局 EXT4 lock 的累计 wait 增加约 `402.882s`、hold
+增加约 `85.221s`，Cargo 几乎没有新的 read/write syscall 进展。这是串行文件系统发布路径造成的
+队首阻塞，不是普通 Rustc 计算阶段。
+
+### 根因
+
+Rustc 通过 rename 发布已写完的临时 rmeta/rlib。旧 `Ext4Inode::rename()` 为防止旧 pathname 的
+whole-file byte cache 在以后回写并重建临时文件，调用 `flush_and_discard_path_cache()`；该函数在
+写回 byte cache 后执行 `ext4_cache_flush(path)`。lwext4 的此 API 先由 path 找到 mount，再调用
+`ext4_block_cache_flush()`，循环清空该挂载点的全部 dirty block，不是对该文件的定向 flush。
+随后 `file_close()` 又经 `file_cache_flush()` 再调用一次 `ext4_cache_flush()`。这使一个 rename 在
+Ya2yOS 的全局 `EXT4_OP_LOCK` 内替所有 Cargo worker 同步积压的块 I/O，正好匹配 `5.ans` 的 75 秒
+长临界区。
+
+### 修复
+
+- `Ext4File` 把“写回 pathname 的 whole-file byte cache”和“强制挂载级 block-cache flush”拆分。
+  新 `write_back_and_discard_path_cache()` 仍在 rename 前完成 byte cache 的 `ext4_fwrite()`、在成功后
+  丢弃旧 pathname 的 cache bookkeeping；任何写回错误仍保留 cache 以便重试。
+- `Ext4Inode::rename()` 改用该轻量接口，并用 `file_close_without_cache_flush()` 关闭已打开的
+  descriptor。`ext4_frename()` 仍在写回后执行，且 pathname cache 在成功 rename 后继续清理源和目标。
+- 数据已进入 lwext4 共享 block cache，rename 移动的是同一个 inode，故后续打开能立刻看见完整
+  内容。Linux `rename(2)` 本身不提供 `fsync` 级持久化保证；本轮没有删除或弱化显式 sync/fsync
+  路径，只是不再把每一次 Rustc 原子发布变成对整个 mount 的隐式 flush。
+
+### 验证与边界
+
+修改后执行 `cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml`、
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`make perf TARGET_ARCH=riscv64` 与
+`make perf TARGET_ARCH=loongarch64`，均通过；构建仅有既有 smoltcp 的两个 unused-import warning
+和一个 dead-code warning。`git diff --check` 已通过。
+
+`5.ans` 生成在这次 rename 修复之前，因此目前的运行期证据是根因定位而不是修复后的 A/B。下一次
+至少十分钟样本应重点观察 `ext4_rename_lock` 的最大/累计 hold 是否不再出现数十秒跳变，同时对比
+Cargo 进度和全局 EXT4 wait/hold；还应保留 Rustc 临时文件 rename 后立即读取的定向回归与完整
+BuildStorm 回归。
