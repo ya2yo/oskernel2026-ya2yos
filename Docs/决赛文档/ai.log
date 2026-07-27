@@ -7439,3 +7439,59 @@ rename 不承诺 fsync 持久化。没有改动成功写回前的失败重试、
 flush 的既有 `flush_and_discard_path_cache()` 调用点。`cargo fmt`、RISC-V/LoongArch64 `make perf`
 与 `git diff --check` 均通过，仅有既有 smoltcp warning。`5.ans` 在改动前生成，尚未取得修复后的
 QEMU 样本、rename 发布定向回归或完整 BuildStorm，不报告端到端加速比例。
+
+## 2026-07-27：BuildStorm `6.ans` rename 验证与 regular-file stat cache 收敛
+
+### 用户输入
+
+维护者提供 `6.ans`，说明其为当前 RISC-V 内核 210 秒运行的 BuildStorm 编译结果，要求继续分析和优化。
+
+### 分析与采纳结论
+
+AI 将 `6.ans` 与 `5.ans` 的相近阶段 perf 快照对齐。`6.ans` 到 185.991 秒时 Cargo 已显示
+`8/446`，没有 `panic`、`ERROR`、`TFAIL` 或 `TBROK`；`5.ans` 在 193.979 秒仍为 `3/446`，但两个
+未完成样本不构成严格 A/B。关键目标已验证：`6.ans` 的 13 次 rename 合计 hold 为 `570715 us`，而
+`5.ans` 曾在一次新增 rename 中增加 `74877757 us` hold，因此 rename 的 mount-wide flush 尖峰已消失。
+
+新的分类热点仍是唯一 lwext4 门闩前的 read/find/fstat 排队。审计 `Ext4Inode::read_at()` 与 lwext4
+`ext4_fread()` C 实现后确认，后者不更新 atime；当前 read 后清空 `stat_cache` 只会迫使下一个
+fstat 重入全局锁。`6.ans` 在 185.991 秒已累计 6,375 次 fstat lock、`31.258808 s` wait。采纳保留
+read 后的 regular-file `Kstat`，继续由 write/truncate/rename/link/unlink/set_timestamps 失效缓存，
+不放宽 lwext4 的非 SMP 安全串行化，也不改动显式 metadata 修改语义。
+
+### 修改与验证
+
+修改 `os/src/fs/ext4_lw/inode.rs`，删除 `read_at()` 的无条件 `invalidate_cached_stat()`，改以源码
+事实说明其安全边界。更新开发日志、既有 BuildStorm 锁争用复盘、AI 记录和交互摘要。
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`make perf TARGET_ARCH=riscv64`、
+`make perf TARGET_ARCH=loongarch64`、`git diff --check` 均通过；构建仅有既有 smoltcp warnings。
+`6.ans` 在本修改前生成，故没有声称 stat-cache 改动的运行期收益或完整 BuildStorm 通过。
+
+## 2026-07-27：BuildStorm `7.ans` 后段写入密集样本复核
+
+### 用户输入
+
+维护者提供 240 秒运行结果 `7.ans`，反馈相较 210 秒 `6.ans` 感觉变慢。
+
+### 分析与采纳结论
+
+AI 先按 Cargo `Building` 阶段而不是 timeout 时最终序号对齐：`7.ans` 的 `0/446` 和 `5/446`
+分别为 69.730 s 与 166.289 s，均早于 `6.ans` 的 71.807 s 与 185.991 s；但后者在 210 秒前显示
+`8/446`，而前者在 238.983 s 显示 `7/446`，故慢化集中于后续阶段。`7.ans` 从 197.096 s 的
+`6/446` 到 238.983 s 的 `7/446`，EXT4 write 分类新增 3,398 次，累计 hold 新增 20.343140 s，
+平均仅约 5.99 ms；同期 fstat 分类只增加 147 次。结合 `5/446` 时 fstat 样本低于 `6.ans` 对应
+快照，未发现 read 后保留 stat cache 造成 fstat 重入或计数膨胀。
+
+rename 仍只有 19 次、累计 hold 2.153465 s，没有复现 `5.ans` 的单次 74.878 s 全挂载 flush
+尖峰。采纳结论是：本样本确有后段变慢表象，但更符合 Cargo 在 `serde_core`/artifact 进入
+写入密集工作量，而不能作为 stat-cache 或 rename 优化回归的因果证据。因此保留现有最小优化，
+不盲目扩大 LRU 或修改 write 路径；建议使用同一镜像重复运行，并在需要时以可逆的一行对照隔离
+stat cache。
+
+### 修改与验证
+
+本轮未改动新的内核代码；补充开发日志、BuildStorm 锁争用复盘和 AI 交互记录，使原先“stat-cache
+尚无运行期样本”的边界更新为“已有非严格样本，不报告端到端结论”。`7.ans` 未出现 panic、ERROR、
+TFAIL、TBROK 或完成标记。此前该缓存改动已通过 `cargo fmt --manifest-path os/Cargo.toml -- --check`、
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 与 `git diff --check`；本轮仅为
+日志/文档更新，未重复长时间 QEMU 或内核构建。

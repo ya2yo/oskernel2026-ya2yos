@@ -419,10 +419,10 @@ impl Inode for Ext4Inode {
         };
         #[cfg(feature = "perf")]
         crate::utils::perf::record_ext4_read(r);
-        // Preserve visible atime semantics if lwext4 updated it while serving
-        // this read.  Cached page hits never enter this path and therefore do
-        // not change the filesystem metadata either.
-        self.invalidate_cached_stat();
+        // lwext4's ext4_fread() only reads blocks and advances the descriptor
+        // position; atime changes go through the explicit set_timestamps()
+        // path. Keeping the immutable regular-file stat cache here avoids
+        // turning the next fstat() into another serialized metadata lookup.
         patch_dynamic_link_file_bytes(&path, off, &mut buf[..r]);
         Ok(r)
     }

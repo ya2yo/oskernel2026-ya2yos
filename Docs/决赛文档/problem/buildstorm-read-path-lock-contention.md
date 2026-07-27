@@ -516,3 +516,103 @@ Ya2yOS 的全局 `EXT4_OP_LOCK` 内替所有 Cargo worker 同步积压的块 I/O
 至少十分钟样本应重点观察 `ext4_rename_lock` 的最大/累计 hold 是否不再出现数十秒跳变，同时对比
 Cargo 进度和全局 EXT4 wait/hold；还应保留 Rustc 临时文件 rename 后立即读取的定向回归与完整
 BuildStorm 回归。
+
+## 2026-07-27：`6.ans` 验证 rename 尖峰消失并收敛 stat cache 失效
+
+### `6.ans` 观测
+
+维护者以同一 RISC-V final-2026、16 GiB、8 hart 的 `buildstorm::compile::run()` 入口提供了
+210 秒 `6.ans`。日志没有 `panic`、`ERROR`、`TFAIL` 或 `TBROK`，但外层 timeout 前没有
+BuildStorm 完成标记，不能视为完整编译通过。
+
+`5.ans` 在 `t=1641118ms -> 1689127ms` 之间只有一次新的 rename，却使
+`ext4_rename_lock` hold 从 `55.480325 s` 激增至 `130.358082 s`，即单次 `74.877757 s`。
+取消 rename 中的 mount-wide flush 后，`6.ans` 的 185.991 秒快照为：
+
+- Cargo 已显示 `8/446`；`5.ans` 在相近的 193.979 秒仍停在 `3/446`。两次未完成运行的
+  工作量和缓存状态不构成严格 A/B，不能据此计算加速百分比。
+- `ext4_rename_lock` 为 13 samples、wait `0.935056 s`、hold `0.570715 s`，平均持锁约
+  `43.9 ms`；没有新的分钟级 rename 临界区。
+- 主导等待已回到全局 lwext4 串行化的普通 I/O：`read/find/fstat/write` 的分类 wait 分别为
+  `304.622128/167.477541/31.258808/24.866948 s`，对应 hold 为
+  `32.796255/26.183333/9.141548/23.436165 s`。这些是多 hart 累计值，不能与 210 秒 wall-clock
+  直接相加。
+
+因此本次样本验证了 rename flush 优化的目标，同时指出下一步应继续减少可证明的 metadata
+锁进入，而不能移除 lwext4 的全局非 SMP 安全门闩。
+
+### regular-file `stat_cache` 修复
+
+`Ext4Inode::read_at()` 原先在每次底层读后无条件调用 `invalidate_cached_stat()`，注释假定
+lwext4 会在 `ext4_fread()` 中更新 atime。审计
+`crates/lwext4_rust/c/lwext4/src/ext4.c:1656` 的 `ext4_fread()` 后确认其只读取 inode/block、
+更新 descriptor 的 `fsize/fpos`，没有修改 atime 或提交 inode。Ya2yOS 的 atime 修改只通过
+`set_timestamps()` 显式执行，且该路径会保留原有 cache invalidation。
+
+无条件失效不会得到新的可见 metadata，却会令后续 `fstat()` 跳过已缓存的 `Kstat`，重新等待
+`EXT4_OP_LOCK`。这与 `6.ans` 中 6,375 次 fstat 分类锁、31.258808 秒累计等待相符。
+
+`os/src/fs/ext4_lw/inode.rs` 现保留读后的 regular-file `stat_cache`。写入、truncate、rename、
+link/unlink 和 `set_timestamps()` 的既有失效操作未改变，所以 size、mode、owner、timestamps 或
+路径实际变化时仍会重新查询。
+
+### 验证与边界
+
+- `cargo fmt --manifest-path os/Cargo.toml -- --check`：通过。
+- `make perf TARGET_ARCH=riscv64`：通过；仅有既有 `smoltcp` warning。
+- `make perf TARGET_ARCH=loongarch64`：通过；仅有既有 `smoltcp` warning。
+- `git diff --check`：通过。
+- `6.ans` 在 stat-cache 改动前生成，故它只验证 rename flush 优化；新的 stat-cache 路径尚未
+  取得 guest A/B 或完整 BuildStorm 样本，不能宣称其具体加速比例。
+
+## 2026-07-27：`7.ans` 的后段慢化不构成 stat cache 回归
+
+### 现象
+
+维护者提供的 `7.ans` 是启用 regular-file `stat_cache` 保留后的 RISC-V、16 GiB、8 hart
+BuildStorm `buildstorm::compile::run()` 240 秒样本。日志最终显示 Cargo `7/446`，而 210 秒的
+`6.ans` 在超时前已打印 `8/446`，所以“这次感觉更慢”有直接的表面依据。两个日志都没有
+`panic`、`ERROR`、`TFAIL`、`TBROK`、`shutdown!` 或 BuildStorm 完成标记，均只是中途快照。
+
+但按 Cargo 阶段标记对齐，前半段并未退化：
+
+| 阶段标记 | `6.ans` | `7.ans` |
+| --- | ---: | ---: |
+| `Building 0/446` | 71.807 s | 69.730 s |
+| `Building 5/446` | 185.991 s | 166.289 s |
+| 日志末尾可见进度 | `8/446`（210 s timeout 前） | `7/446`（238.983 s） |
+
+因此，`7.ans` 的慢化集中在 `5/446` 之后；这时 Cargo 正在编译 `serde_core`，随后到
+`scopeguard`，并非全程吞吐下降。
+
+### 分类数据
+
+`7.ans` 从 `t=197096ms`（`Building 6/446`）到 `t=238983ms`（`Building 7/446`）的 41.887 秒内：
+
+| 分类 | samples 增量 | wait 增量 | hold 增量 | 每次 hold |
+| --- | ---: | ---: | ---: | ---: |
+| `ext4_write_lock` | 3,398 | 82.582351 s | 20.343140 s | 5.99 ms |
+| `ext4_fstat_lock` | 147 | 12.387939 s | 0.763626 s | 5.19 ms |
+| `ext4_read_lock` | 2,336 | 104.042145 s | 13.976329 s | 5.98 ms |
+
+这是一段明显的 artifact 写入/读取工作量上升：`write` 数量从 997 增至 4,395，而不是单次
+write 临界区突然变长。相比之下，fstat 样本只从 6,099 增至 6,246；在更早的 `5/446` 标记，
+`7.ans` 的 fstat 样本为 5,761，也低于 `6.ans` 对应快照的 6,375。故现有数据不支持“保留
+stat cache 使 fstat 回退或放大了锁请求”的假设。
+
+最后快照中，`ext4_rename_lock` 为 19 samples、hold `2.153465 s`；虽然普通 I/O 仍会竞争
+lwext4 全局门闩，但没有重现 `5.ans` 一次 rename 持锁 74.878 秒的 mount-wide flush 尖峰。
+file page cache 的 hit/miss 为 519,568/28,931（约 18:1），也没有显示页缓存命中明显退化。
+
+### 结论与边界
+
+保留 read 后的 regular-file `stat_cache` 不会直接进入 write 路径，且 `7.ans` 中 fstat 锁次数
+没有异常增长；不能仅按两次 timeout 的最终 crate 序号将这项改动定性为回归。更合理的解释是
+Cargo 依赖 DAG、worker 调度、镜像/宿主缓存状态使本次在 `serde_core` 的写入密集阶段停留更久。
+当前 perf 计数缺少 write-back cache 命中、初始化和 LRU 驱逐的来源分类，因而也不能据此盲目
+增大 LRU 或重写 write 路径。
+
+后续应至少在相同 final-2026 镜像、RISC-V 16 GiB/8 hart、相同入口下重复两次 240 或 300 秒运行；
+每次记录相同 Cargo 阶段及 read/find/fstat/write/rename 的 samples、wait、hold。若需要隔离
+stat-cache 的影响，再在不覆盖维护者未提交改动的前提下，以临时可逆补丁跑一个仅恢复该一行失效的
+对照样本。完成样本前不报告整体加速或回归百分比。

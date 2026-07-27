@@ -1526,3 +1526,24 @@
   smoltcp warning。`5.ans` 早于修复；未取得修复后的 QEMU/完整 BuildStorm 数据，未报告端到端
   加速比例。详见 [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm `6.ans` rename 验证与 stat cache 优化（7.27）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供修复后运行 210 秒的 `6.ans`，要求验证 `5.ans` 中的 EXT4 rename 尖峰并继续优化。
+- **描述**：`6.ans` 的 13 次 rename 累计持锁仅 `0.571 s`，确认此前单次 `74.878 s` 的
+  mount-wide flush 尖峰已消失；其余主要等待回到全局 lwext4 锁的 read/find/fstat 路径。审计
+  `ext4_fread()` 确认它不写 atime，故移除普通读后无条件失效 `stat_cache`，使后续 fstat 能复用
+  未变化的 metadata；写、truncate、rename、link/unlink 与显式时间修改仍维持失效边界。
+- **验证**：格式检查、补丁检查及 RISC-V/LoongArch64 `make perf` 均通过，仅有既有 smoltcp warning。
+  `6.ans` 早于 stat-cache 改动，未报告该改动的运行期 A/B 或完整 BuildStorm 结果。详见
+  `ai.log` 和 [BuildStorm 普通 read 路径与 EXT4 全局锁争用](./problem/buildstorm-read-path-lock-contention.md)。
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm `7.ans` 后段性能复核（7.27）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供运行 240 秒的 `7.ans`，认为其最终 Cargo 进度低于 210 秒的 `6.ans`，要求复核是否出现性能回归。
+- **描述**：按 `Building` 阶段对齐后，`7.ans` 到 `5/446` 反而比 `6.ans` 更早；慢化集中在后续 `serde_core`/artifact 写入密集段。该段新增 3,398 次 EXT4 write，而 fstat 锁仅新增 147 次，故没有证据表明 read 后保留 regular-file `stat_cache` 导致 fstat 回退。rename 的全挂载 flush 尖峰也未复发。保留既有优化，避免仅凭不等长 timeout 样本盲目回滚或扩大写缓存；详见 `ai.log` 和 [BuildStorm 普通 read 路径与 EXT4 全局锁争用](./problem/buildstorm-read-path-lock-contention.md)。
+- **验证**：`7.ans` 无 panic、ERROR、TFAIL、TBROK 或 BuildStorm 完成标记；本轮未修改新的内核代码，未重复长时间 QEMU/构建。此前 stat cache 修改已通过 RISC-V、LoongArch64 `make perf`、格式和补丁检查。
+- **关联 commit**：当前工作区未提交
