@@ -1547,3 +1547,11 @@
 - **描述**：按 `Building` 阶段对齐后，`7.ans` 到 `5/446` 反而比 `6.ans` 更早；慢化集中在后续 `serde_core`/artifact 写入密集段。该段新增 3,398 次 EXT4 write，而 fstat 锁仅新增 147 次，故没有证据表明 read 后保留 regular-file `stat_cache` 导致 fstat 回退。rename 的全挂载 flush 尖峰也未复发。保留既有优化，避免仅凭不等长 timeout 样本盲目回滚或扩大写缓存；详见 `ai.log` 和 [BuildStorm 普通 read 路径与 EXT4 全局锁争用](./problem/buildstorm-read-path-lock-contention.md)。
 - **验证**：`7.ans` 无 panic、ERROR、TFAIL、TBROK 或 BuildStorm 完成标记；本轮未修改新的内核代码，未重复长时间 QEMU/构建。此前 stat cache 修改已通过 RISC-V、LoongArch64 `make perf`、格式和补丁检查。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm EXT4 稀疏写、两页预读与写路径统计（7.27）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者连续提供 BuildStorm `*.ans`/`log.ans`，要求根据实时 perf 输出直接优化；随后明确要求补齐当前工作区和本轮优化的文档。
+- **描述**：确认三页预读会以更长的 lwext4 临界区抵消较少的读锁请求，已恢复为当前页加下一页的两页读取。实现按 `(mount, inode)` 索引、16 个 range/64 KiB 上限的 sparse 写缓冲与读时覆盖，避免洞被 whole-file cache 零填充，也避免同路径 descriptor 切换把脏 range 过早提交；同时复用首次 lookup identity、收紧保留最终 symlink 的 cache 边界，并新增 VFS、预读、write-back cache 与 write `open/quota/data` 聚合统计。详见 [problem/buildstorm-ext4-sparse-write-readahead.md](./problem/buildstorm-ext4-sparse-write-readahead.md) 与 `ai.log`。
+- **验证**：当前两页预读样本在相近 `Building 9/446` 阶段的 read lock 累计 wait/hold 为 `424.939/53.579 s`，低于三页试验的 `525.574/68.484 s`；sparse read overlay 已实际命中。RISC-V、LoongArch64 perf 构建和双架构 release 构建通过，`git diff --check` 通过。最终新增的 write phase 统计尚未取得 guest 样本；未报告完整 BuildStorm 或严格 A/B 加速比例。
+- **关联 commit**：当前工作区未提交

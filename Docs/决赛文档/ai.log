@@ -7495,3 +7495,46 @@ stat cache。
 TFAIL、TBROK 或完成标记。此前该缓存改动已通过 `cargo fmt --manifest-path os/Cargo.toml -- --check`、
 `make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 与 `git diff --check`；本轮仅为
 日志/文档更新，未重复长时间 QEMU 或内核构建。
+
+## 2026-07-27：BuildStorm EXT4 稀疏写缓冲、两页预读与写路径统计
+
+### 用户输入
+
+维护者连续提供 `5.ans` 至 `11.ans` 与多次覆盖更新的 `log.ans`，要求分析当前内核的
+BuildStorm 吞吐、加入 perf 统计并直接优化。最后要求根据这几次修改和当前工作区生成相应文档。
+维护者曾要求不要写文档；在本条明确授权后才补充本记录和关联复盘。
+
+### 分析与采纳结论
+
+AI 按相近 Cargo `Building` 阶段而不是 timeout 尾部序号比较累积 perf。三页总读取试验虽然把
+`ext4_read_lock` samples 降到 28,768，却在 `Building 9/446` 的约 297.264 秒快照把累计 read
+wait/hold 提高到 `525.574286/68.483890 s`；恢复当前页加下一页的 8 KiB 两页读取后，约 295.402 秒、
+同为 `Building 9/446` 的样本为 29,453 samples、`424.939015/53.578775 s`。样本不是严格 A/B，
+但“请求更少、排队和持锁更长”的结果已足以否定三页窗口。
+
+对 sparse inode，whole-file byte cache 不能保存 extent 洞；直接逐次 `ext4_fwrite` 又会在 Rustc
+小范围 offset 写入中放大全局锁争用。AI 采用按 `(mountpoint, inode)` 的 16-run/64 KiB 有界 range
+缓冲：range 保留原 offset，交错写按写入顺序覆盖，读先取得磁盘字节/洞零填充后叠加脏 range。为让
+不同 descriptor 也可读取未提交数据，同 pathname 的 `O_RDWR -> O_RDONLY` 不再强制 flush；但 close、
+sync、rename、truncate、fstat、SEEK_DATA/HOLE、删除和路径变化等持久性或布局观察边界仍 flush。
+当前样本已有 `sparse_buffer_ops=2879`、`sparse_flush_ops=308`、`sparse_read_overlay_ops=1681`，证明
+读时覆盖路径实际被使用。
+
+同时，首次 `find()` 返回的 stat 被保存在 inode identity 供 `FsIndex` 建 key，避免紧随其后的重复
+fstat；`O_NOFOLLOW`/`O_UNLINK` 只排除实际 symlink，regular file/directory 可安全命中缓存。dense
+byte-cache read 在获取 `EXT4_OP_LOCK` 前先命中。新的 perf 统计记录 VFS cache、预读、byte-cache、
+write-back cache 和 `write_at` 锁内 `open/quota/data` 三阶段，后者尚无新 guest 样本。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/Cargo.toml`、`crates/lwext4_rust/src/file.rs`、`os/Cargo.toml`、
+`os/src/fs/dcache.rs`、`os/src/fs/ext4_lw/inode.rs`、`os/src/fs/kernel_fs_ops/fsidx.rs`、
+`os/src/fs/kernel_fs_ops/open.rs`、`os/src/fs/page_cache.rs`、`os/src/fs/vfs.rs` 与
+`os/src/utils/perf.rs`。维护者已有的 `user/src/bin/initproc.rs` 和 `disk.img` 未修改。
+
+最终统计代码通过 `cargo fmt --manifest-path os/Cargo.toml`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 和
+`make TARGET_ARCH=riscv64`；最后一个入口也完成 LoongArch64 release 构建。仅有 vendored smoltcp
+既有 warning。为避免干扰维护者运行，未在最后一次统计改动后启动 QEMU 长测；没有报告完整
+BuildStorm、严格 A/B wall-clock 或正式评分结果。详见
+`problem/buildstorm-ext4-sparse-write-readahead.md`。
