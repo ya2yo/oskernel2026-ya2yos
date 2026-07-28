@@ -211,3 +211,36 @@ Linux 端到端对标和正式评分仍待后续同配置运行。
 guest A/B；下一份三分钟以上样本应固定镜像、hart 和入口，至少比较相同 Cargo 阶段的
 `file_cache hit/miss`、`ext4_read_lock wait/hold`、`read_active` 和 `Building N/446` 推进，另行
 跟踪偶发 Rustc `SIGSEGV`，不能以其后的累计统计作性能结论。
+
+## `tmp_08.ans` / `tmp_09.ans`：mmap 页缓存二次查找复用 inode 路径
+
+`tmp_08.ans` 的最后快照在 `t=104694ms`，已经有 `163603` 次文件页 fault、
+`339356` 次文件页缓存命中；`tmp_09.ans` 在 `t=100023ms` 已有 `146410` 次页 fault、
+`302166` 次命中，后续输出推进到 `Building 4/446`。两份 RISC-V 8-hart 样本均没有
+`panic`、`ERROR`、`TFAIL`、`TBROK` 或完成标记。它们的工作量和 Cargo 阶段不同，不能用于
+端到端 A/B；特别是 `tmp_09` 的 `ext4_read_lock wait=69.082s` 仍说明 lwext4 的串行入口是
+主要累计等待来源。
+
+### 根因
+
+`MemorySet::handle_page_fault()` 先在锁外经 `FilePageCache::get_or_load()` 准备文件页，随后
+`mmap_read_page_fault()` 或 `mmap_write_page_fault()` 再通过 `cached_file_page()` 取得同一已加载页。
+后一步原先调用 `file.inode.path()`，即便 EXT4 inode 已保存可共享的 `Arc<str>` 页缓存键，仍会在
+每个 fault 分配并复制完整 pathname 后进行第二次缓存查询。高频动态链接和 Rustc mmap 会把这部分
+纯索引成本放大到数十万次。
+
+### 修复
+
+- `FilePageCache` 新增 `get_inode()`：优先使用 `Inode::page_cache_path()` 返回的稳定共享路径；没有
+  该能力的文件系统仍沿用 `inode.path()` 的原有回退。
+- `cached_file_page()` 改为通过 `get_inode()` 查询。它只改变已缓存页的索引载体，不改变页加载、
+  `RwLock`、写入/截断/rename 失效、mmap COW 或 lwext4 的全局串行边界。
+- 本轮没有重新启用曾发生永久阻塞的 page-loading waiter 实验。
+
+### 验证与限制
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check` 和 RISC-V
+`make perf TARGET_ARCH=riscv64` 均通过；构建只有 vendored smoltcp 的既有 warning。维护者已自行
+完成编译，因此没有继续 LoongArch64 构建，也没有运行会删除维护者现有 `disk.img` 链接的 `make run`。
+`tmp_09.ans` 是维护者提供的中途运行样本，不含同镜像、同缓存状态的严格对照或完整 446 crate 结果；
+本轮只声明消除了确定的 pathname 分配，不能从当前累计统计报告整体加速百分比。

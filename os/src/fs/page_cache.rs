@@ -97,6 +97,22 @@ impl FilePageCache {
             .cloned()
     }
 
+    /// Look up a cached page through the inode's stable cache pathname.
+    ///
+    /// File-backed page faults first load a page through `get_or_load()` and
+    /// then install that page in a VMA.  Rebuilding `inode.path()` for the
+    /// second lookup allocates and copies a pathname on every fault.  EXT4
+    /// inodes retain an `Arc<str>` specifically for this cache key, while
+    /// other backends keep the original path-string fallback.
+    pub fn get_inode(&self, inode: &dyn Inode, page_index: usize) -> Option<Arc<FilePage>> {
+        if let Some(path) = inode.page_cache_path() {
+            self.get_shared(&path, page_index)
+        } else {
+            let path = inode.path();
+            self.get(&path, page_index)
+        }
+    }
+
     /// Copy a range when every page is already cached.
     ///
     /// A miss returns `None` without entering the filesystem.  Callers can

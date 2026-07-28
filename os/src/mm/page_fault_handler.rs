@@ -25,7 +25,7 @@ fn file_page_index(vma: &MapArea, va: VirtAddr) -> Option<usize> {
 fn cached_file_page(va: VirtAddr, vma: &MapArea) -> Option<Arc<FilePage>> {
     let page_index = file_page_index(vma, va)?;
     let file = vma.mmap_file.file.as_ref()?;
-    let page = FILE_PAGE_CACHE.get(&file.inode.path(), page_index)?;
+    let page = FILE_PAGE_CACHE.get_inode(file.inode.as_ref(), page_index)?;
     (page.valid_len > 0).then_some(page)
 }
 

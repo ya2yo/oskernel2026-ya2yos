@@ -1668,3 +1668,15 @@
   A/B，未报告端到端或 Linux 对标百分比。
 - **关联文档**：[BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm mmap 页缓存二次查找路径复用（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：BuildStorm 性能日志分析、mmap 页缓存热路径优化与验证边界记录。
+- **描述**：依据 `tmp_08.ans` 的 `163603` 次文件页 fault 与 `tmp_09.ans` 的 `146410` 次页 fault，
+  AI 定位 VMA 安装阶段对已加载缓存页的第二次 lookup 仍复制 `inode.path()`。修复为优先复用
+  inode 的 `Arc<str>` 页缓存路径，保留其他后端回退和原有加载、失效、COW、lwext4 串行语义。
+  `tmp_09` 无 panic/ERROR/TFAIL/TBROK 且推进至 `Building 4/446`，但不是严格 A/B，因此不报告
+  端到端加速。详见 `ai.log` 同日条目与
+  [problem/buildstorm-lseek-open-file-type-cache.md](./problem/buildstorm-lseek-open-file-type-cache.md)。
+- **关联 commit**：当前工作区未提交

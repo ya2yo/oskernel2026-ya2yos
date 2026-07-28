@@ -7764,3 +7764,31 @@ AI 复核后确认更新版 `tmp_03.ans`、`tmp_05.ans` 和 `tmp_06.ans` 都包�
 `make perf TARGET_ARCH=loongarch64` 均通过，仅有 vendored smoltcp 既有 warning。未运行独立
 QEMU 长测：沙箱 `/var/tmp` 仍限制启动，且 `tmp_06` 未作为最终组合改动的严格 A/B；下一份同配置
 三分钟以上样本应在相同 Cargo 阶段比较页缓存命中、读锁 wait/hold、`read_active` 和推进进度。
+
+## 2026-07-28：`tmp_08`/`tmp_09` mmap 页缓存二次查找路径复用
+
+### 用户输入
+
+维护者要求分析 `tmp_08.ans` 并继续优化内核，随后提供 `tmp_09.ans`，并在 RISC-V perf 构建完成后
+要求停止后续构建，因为维护者已自行完成编译。
+
+### 分析与修改
+
+`tmp_08` 的 `t=104694ms` 快照有 `163603` 次文件页 fault、`339356` 次页缓存命中；`tmp_09` 的
+`t=100023ms` 快照为 `146410`/`302166`，随后输出 `Building 4/446`，均未见
+panic/ERROR/TFAIL/TBROK 或完成标记。当前两个样本的 Cargo 工作量不同，且 `tmp_09` 的
+`ext4_read_lock wait=69.082s` 仍显示 lwext4 串行入口为主压力，不能据此报告整体加速。
+
+源码审计确认 `MemorySet::handle_page_fault()` 先由 `get_or_load()` 准备文件页，VMA 安装阶段再经
+`cached_file_page()` 查询已加载页；旧实现每次都调用 `inode.path()` 分配完整 `String`，尽管 EXT4
+inode 已保存稳定的 `Arc<str>` 页缓存键。现新增 `FilePageCache::get_inode()`，优先复用
+`Inode::page_cache_path()`，不支持该接口的后端保留原 pathname 回退；页加载、失效、COW、锁与
+page-loading waiter 行为没有改变。
+
+### 验证与限制
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check` 和
+`make perf TARGET_ARCH=riscv64` 通过，只有既有 smoltcp warning。按维护者指令未继续运行
+LoongArch64 构建或 `make run`；后者会删除维护者现有 `disk.img` 链接。`tmp_09` 是维护者提供的
+中途样本，并非同镜像、同缓存状态的严格 A/B，也没有完成完整 446 crate，故本轮只说明消除了确定的
+pathname 分配，不报告端到端性能百分比。
