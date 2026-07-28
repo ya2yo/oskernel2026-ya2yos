@@ -351,6 +351,20 @@ impl Ext4File {
     /// each source/artifact once, so eagerly mirroring every file doubles the
     /// I/O and copying cost without improving locality.
     pub fn file_open_read_only(&mut self, path: &str) -> Result<usize, i32> {
+        // A writable descriptor is also valid for reads.  Keep it when the
+        // VFS inode is shared by a writer and a reader: otherwise each read
+        // changes O_RDWR -> O_RDONLY and the next write opens the pathname
+        // again.  Those repeated lwext4 path walks run under the mount-wide
+        // operation lock and are especially expensive for parallel Cargo.
+        // Callers serialize descriptor position and all lwext4 access before
+        // reaching this method, so retaining the descriptor does not relax
+        // the wrapper's concurrency guarantees.
+        if self.has_opened
+            && self.path_str() == path
+            && matches!(self.last_flags, O_RDONLY | O_RDWR)
+        {
+            return Ok(EOK as usize);
+        }
         self.file_open_inner(path, O_RDONLY, false)
     }
 

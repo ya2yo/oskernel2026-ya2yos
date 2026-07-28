@@ -138,9 +138,9 @@ lwext4 的全局串行仍是正确性要求：本轮没有把第三方文件系�
 [perf] ext4_write_duration data(samples=... total_us=... max_us=...)
 ```
 
-这三条为当前最新一次 `log.ans` 分析后加入，尚未出现在该旧样本中。它们只在 perf 构建下读取
-tick，并以 scope guard 覆盖错误返回；下一次同入口运行可据此决定应优化 descriptor 打开、配额
-预留还是实际写入/稀疏缓存处理，不能再仅凭 `ext4_write_lock` 总量猜测。
+这三条只在 perf 构建下读取 tick，并以 scope guard 覆盖错误返回。后续 `log.ans` 已验证它们能将
+写锁内的 descriptor 打开、配额预留和实际写入分开；仍需按同一 Cargo 阶段比较，不能再仅凭
+`ext4_write_lock` 总量猜测。
 
 ## 涉及文件
 
@@ -174,12 +174,40 @@ make TARGET_ARCH=riscv64
   构建。
 - `git diff --check` 通过；构建仅有 vendored `smoltcp` 既有的两个 unused-import warning 和一个
   dead-code warning。
-- 未在最后一次新增 write phase 统计后启动 QEMU 长测，以免干扰维护者的 `disk.img`、运行环境和
-  `log.ans`。因此新 `ext4_write_duration` 字段只完成编译验证，尚无 guest 样本。
+- 后续维护者提供的 RISC-V `log.ans` 已含 write phase 的 guest 样本，结果见下节；本代理没有以
+  `make run` 删除或改写维护者保留的 `disk.img`。
 
 ## 后续
 
 下一次应使用相同 RISC-V 镜像、内存、hart 数和 BuildStorm 入口，至少运行到与当前相近的
-`Building 9/446`，同时记录 Cargo 阶段、`ext4_read_lock`/`write_lock` 的 samples/wait/hold、
+`Building 15/446`，同时记录 Cargo 阶段、`ext4_read_lock`/`write_lock` 的 samples/wait/hold、
 `readahead_ops/pages`、sparse 计数以及三个 `ext4_write_duration` 桶。只有当同阶段的重复样本
 确认某个写阶段占主导后，才应缩小对应临界区；不应再次扩大预读窗口或放宽 lwext4 全局锁。
+
+## 2026-07-28：读写描述符复用与 write phase 样本验证
+
+新的 RISC-V `log.ans` 使用相同的 8-hart BuildStorm `compile` 入口，在 `t=257349ms` 已显示
+`Building 15/446`，未见 `panic`、`ERROR`、`TFAIL`、`TBROK`、`shutdown!` 或最终
+`BUILDSTORM_DEBUG_COMPILE`。它仍是外层运行结束前的中途快照，不能用作完整 BuildStorm 通过或
+严格端到端 A/B 结果。
+
+此前的样本在 `t=290321ms` 附近仍为 `Building 10/446`，其中写路径的 `open` 阶段为
+`38080447 us / 3912 samples`，约 `9.74 ms`/sample。审计 `Ext4File::file_open_read_only()` 发现：
+同一 canonical `Ext4Inode` 已持有 `O_RDWR` descriptor 时，读操作仍重新以 `O_RDONLY` 打开；紧随的
+写操作再切回 `O_RDWR`。这两个模式都允许读取，并且描述符位置和 lwext4 调用始终由
+`EXT4_OP_LOCK` 串行，因此该切换没有提供额外的隔离或 Linux 可见语义。
+
+`file_open_read_only()` 现对同路径、已打开的 `O_RDONLY` 或 `O_RDWR` descriptor 直接返回。它不绕过
+全局锁，不改变 sparse range 读时覆盖、write-back、close、sync、rename 或错误重试边界；只删除了
+读写交错时多余的 pathname lookup 和 descriptor 建立。
+
+新样本在 `t=257349ms` 的 `open` 阶段为 `5526703 us / 5711 samples`，约 `0.97 ms`/sample；即使样本
+阶段和输入工作量不同，较低的每样本开销也与该定向改动一致。同期 `ext4_write_lock` 为
+`204.334609 s` wait、`35.072056 s` hold，write phase 分别为 open `5.526703 s`、quota `5.056378 s`、
+data `24.040277 s`。这把后续重点明确收敛到实际写入，而不是继续优化 descriptor 打开。
+
+`sparse_flush_ops=689`、`sparse_flush_bytes=16578252`，平均每次约 24 KiB，低于 64 KiB 上限；但现有
+计数不能区分 16-run/64 KiB 阈值与 close、rename、fstat 等可见性边界触发的 flush。故本轮不盲目扩大
+sparse buffer，避免增加内存上界却不能确定减少真实 lwext4 I/O。`make perf TARGET_ARCH=riscv64`、
+`make perf TARGET_ARCH=loongarch64`、格式检查和 `git diff --check` 均通过；构建只含既有 smoltcp
+warning。

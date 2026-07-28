@@ -1555,3 +1555,16 @@
 - **描述**：确认三页预读会以更长的 lwext4 临界区抵消较少的读锁请求，已恢复为当前页加下一页的两页读取。实现按 `(mount, inode)` 索引、16 个 range/64 KiB 上限的 sparse 写缓冲与读时覆盖，避免洞被 whole-file cache 零填充，也避免同路径 descriptor 切换把脏 range 过早提交；同时复用首次 lookup identity、收紧保留最终 symlink 的 cache 边界，并新增 VFS、预读、write-back cache 与 write `open/quota/data` 聚合统计。详见 [problem/buildstorm-ext4-sparse-write-readahead.md](./problem/buildstorm-ext4-sparse-write-readahead.md) 与 `ai.log`。
 - **验证**：当前两页预读样本在相近 `Building 9/446` 阶段的 read lock 累计 wait/hold 为 `424.939/53.579 s`，低于三页试验的 `525.574/68.484 s`；sparse read overlay 已实际命中。RISC-V、LoongArch64 perf 构建和双架构 release 构建通过，`git diff --check` 通过。最终新增的 write phase 统计尚未取得 guest 样本；未报告完整 BuildStorm 或严格 A/B 加速比例。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 读写 descriptor 往返重开优化（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：分析新版 RISC-V BuildStorm `log.ans` 的 write phase，并优化 lwext4 全局锁内的 descriptor 打开开销。
+- **描述**：确认共享 inode 已持有 `O_RDWR` descriptor 时，读路径仍切换为 `O_RDONLY`，使随后写路径重新
+  `ext4_fopen`。`file_open_read_only()` 现复用同路径已打开的可读 descriptor；全局 EXT4 串行、稀疏写
+  覆盖、write-back 和显式持久化边界保持不变。详见
+  [BuildStorm EXT4 稀疏写、两页预读与写路径统计](./problem/buildstorm-ext4-sparse-write-readahead.md)。
+- **验证**：RISC-V/LoongArch64 `make perf` 和格式/补丁检查通过。维护者提供的新 RISC-V 样本在
+  `t=257.349s` 到 `Building 15/446`，无 panic/TFAIL/TBROK；write open 累计 `5.527s / 5711` 次。样本未完成，
+  且不是严格 A/B，不报告完整 BuildStorm 或端到端比例。
+- **关联 commit**：当前工作区未提交

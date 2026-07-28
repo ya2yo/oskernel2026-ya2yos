@@ -7538,3 +7538,34 @@ write-back cache 和 `write_at` 锁内 `open/quota/data` 三阶段，后者尚�
 既有 warning。为避免干扰维护者运行，未在最后一次统计改动后启动 QEMU 长测；没有报告完整
 BuildStorm、严格 A/B wall-clock 或正式评分结果。详见
 `problem/buildstorm-ext4-sparse-write-readahead.md`。
+
+## 2026-07-28：BuildStorm 读写 descriptor 往返重开优化
+
+### 用户输入
+
+维护者要求分析 `log.ans` 并进行合理性能优化，随后提供包含修改后 RISC-V BuildStorm 运行结果的新版
+`log.ans`。
+
+### 分析与采纳结论
+
+旧样本的 write phase 显示 `open` 在 `t=290321ms` 已累计 `38080447 us / 3912 samples`，约
+`9.74 ms`/sample。沿 `Ext4Inode::read_at()`、`Ext4File::file_open_read_only()` 和
+`Ext4Inode::write_at()` 追踪确认：共享 canonical inode 已有同路径 `O_RDWR` descriptor 时，只读访问
+仍重新 `ext4_fopen(..., O_RDONLY)`，随后的写又 `ensure_open(O_RDWR)`。两种 descriptor 都允许读取，且
+Ya2yOS 在调用 wrapper 前保持 `EXT4_OP_LOCK` 串行，因此这一往返只增加 path walk 和 descriptor 建立。
+
+采纳在 `file_open_read_only()` 复用同路径已打开的 `O_RDONLY` 或 `O_RDWR` descriptor。稀疏写读时覆盖、
+descriptor 位置串行化、write-back、close/sync/rename 的 flush 边界和 lwext4 全局安全锁均未改变。
+
+新版 RISC-V 日志在 `t=257349ms` 到 `Building 15/446`，没有 panic、ERROR、TFAIL 或 TBROK。write
+open 为 `5526703 us / 5711 samples`（约 `0.97 ms`/sample），与旧样本相比明显降低；两个快照的 Cargo
+阶段不同，故不报告端到端百分比。剩余 write data 为 `24040277 us / 5712 samples`，且 sparse flush
+平均约 24 KiB，尚无法判断是缓冲阈值还是语义可见性边界触发，未盲目增大缓冲。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs`，新增 writable descriptor 的只读复用分支。更新开发日志、既有
+BuildStorm sparse write 复盘和 AI 交互摘要。`cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml -- --check`、
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 与 `git diff --check` 通过；构建仅有
+既有 smoltcp warning。尝试在沙箱直接执行 QEMU 时，`-snapshot` 因 `/var/tmp` 只读而在内核启动前失败；
+本次 guest 结果由维护者提供，未把该失败当作验证样本。
