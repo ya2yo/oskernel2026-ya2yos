@@ -223,7 +223,6 @@ impl OSFile {
             return Ok(Some(0));
         }
 
-        let path = self.inode.path();
         if requested_len <= PAGE_SIZE {
             let page = FILE_PAGE_CACHE.get_or_load(self.inode.clone(), offset / PAGE_SIZE)?;
             let page_offset = offset % PAGE_SIZE;
@@ -244,13 +243,17 @@ impl OSFile {
         // copying resident pages and issuing I/O only for contiguous cold
         // runs; the resulting complete pages are published as before.
         let available = requested_len.min(file_size.saturating_sub(offset));
+        let cache_path = self
+            .inode
+            .page_cache_path()
+            .unwrap_or_else(|| Arc::from(self.inode.path().as_str()));
         let mut kernel_buf = vec![0; available];
         let mut cursor = 0usize;
         while cursor < available {
             let file_offset = offset.saturating_add(cursor);
             let page_index = file_offset / PAGE_SIZE;
             let page_offset = file_offset % PAGE_SIZE;
-            if let Some(page) = FILE_PAGE_CACHE.get(&path, page_index) {
+            if let Some(page) = FILE_PAGE_CACHE.get_shared(&cache_path, page_index) {
                 if page_offset >= page.valid_len {
                     break;
                 }
@@ -271,7 +274,10 @@ impl OSFile {
             let mut run_end = first_page_end.max(cursor.saturating_add(1));
             while run_end < available {
                 let next_page_index = offset.saturating_add(run_end) / PAGE_SIZE;
-                if FILE_PAGE_CACHE.get(&path, next_page_index).is_some() {
+                if FILE_PAGE_CACHE
+                    .get_shared(&cache_path, next_page_index)
+                    .is_some()
+                {
                     break;
                 }
                 let next_page_end = next_page_index
@@ -291,7 +297,7 @@ impl OSFile {
             )?;
             if read_size != 0 {
                 FILE_PAGE_CACHE.insert_read_range(
-                    &path,
+                    cache_path.as_ref(),
                     offset.saturating_add(run_start),
                     &kernel_buf[run_start..run_start + read_size],
                     file_size,

@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeMap, string::String, sync::Arc};
+use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::RwLock;
 
@@ -11,7 +11,7 @@ use crate::{arch::memory_layout::PAGE_SIZE, fs::Inode, mm::FrameTracker, utils::
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct FilePageKey {
     /// 被缓存文件的路径。
-    pub path: String,
+    pub path: Arc<str>,
     /// 文件内以 `PAGE_SIZE` 为单位的页号。
     pub page_index: usize,
 }
@@ -33,6 +33,11 @@ pub struct FilePage {
     dirty: AtomicBool,
 }
 
+/// Pages belonging to one pathname.  Grouping the page number beneath the
+/// pathname avoids comparing that pathname repeatedly while a read or mmap
+/// walk probes adjacent pages from the same file.
+type FilePages = BTreeMap<usize, Arc<FilePage>>;
+
 impl FilePage {
     /// 将当前页标记为脏页。
     ///
@@ -53,8 +58,11 @@ impl FilePage {
 /// 共享锁；加载和失效才获取独占锁。
 /// 该结构只负责缓存页的查找、按需加载和失效，不直接负责脏页回写策略。
 pub struct FilePageCache {
-    /// 已缓存的文件页集合。
-    pages: RwLock<BTreeMap<FilePageKey, Arc<FilePage>>>,
+    /// 已缓存的文件页集合，先按路径、再按文件内页号索引。
+    ///
+    /// BuildStorm 的 mmap 和多页 read 会在同一文件中连续探测大量页。把路径
+    /// 放在外层能让内层查询只比较页号，而不是在全局页表中反复比较同一段路径。
+    pages: RwLock<BTreeMap<Arc<str>, FilePages>>,
 }
 
 impl FilePageCache {
@@ -71,10 +79,21 @@ impl FilePageCache {
     pub fn get(&self, path: &str, page_index: usize) -> Option<Arc<FilePage>> {
         self.pages
             .read()
-            .get(&FilePageKey {
-                path: String::from(path),
-                page_index,
-            })
+            .get(path)
+            .and_then(|pages| pages.get(&page_index))
+            .cloned()
+    }
+
+    /// Look up a page with a path allocation shared by the caller.
+    ///
+    /// A single `read(2)` commonly probes several pages.  Keeping the path in
+    /// an `Arc<str>` lets those probes borrow the same pathname without
+    /// allocating and copying it for every lookup.
+    pub fn get_shared(&self, path: &Arc<str>, page_index: usize) -> Option<Arc<FilePage>> {
+        self.pages
+            .read()
+            .get(path.as_ref())
+            .and_then(|pages| pages.get(&page_index))
             .cloned()
     }
 
@@ -88,12 +107,13 @@ impl FilePageCache {
             return Some(0);
         }
 
+        let path: Arc<str> = Arc::from(path);
         let mut copied = 0;
         while copied < buf.len() {
             let file_offset = offset.checked_add(copied)?;
             let page_index = file_offset / PAGE_SIZE;
             let page_offset = file_offset % PAGE_SIZE;
-            let page = self.get(path, page_index)?;
+            let page = self.get_shared(&path, page_index)?;
             if page_offset >= page.valid_len {
                 break;
             }
@@ -119,6 +139,7 @@ impl FilePageCache {
             return;
         }
         let end = offset.saturating_add(data.len()).min(file_size);
+        let path: Arc<str> = Arc::from(path);
         let first_page = offset / PAGE_SIZE;
         let last_page = end.saturating_sub(1) / PAGE_SIZE;
         for page_index in first_page..=last_page {
@@ -136,10 +157,16 @@ impl FilePageCache {
             }
 
             let key = FilePageKey {
-                path: String::from(path),
+                path: path.clone(),
                 page_index,
             };
-            if self.pages.read().contains_key(&key) {
+            if self
+                .pages
+                .read()
+                .get(path.as_ref())
+                .and_then(|pages| pages.get(&page_index))
+                .is_some()
+            {
                 continue;
             }
             let Some(frame) = FrameTracker::alloc() else {
@@ -148,13 +175,17 @@ impl FilePageCache {
             frame.ppn.bytes_array_mut()[..valid_len]
                 .copy_from_slice(&data[source_start..source_end]);
             let page = Arc::new(FilePage {
-                key: key.clone(),
+                key,
                 frame,
                 valid_len,
                 dirty: AtomicBool::new(false),
             });
             let mut pages = self.pages.write();
-            pages.entry(key).or_insert(page);
+            pages
+                .entry(path.clone())
+                .or_default()
+                .entry(page_index)
+                .or_insert(page);
         }
     }
 
@@ -174,10 +205,21 @@ impl FilePageCache {
         inode: Arc<dyn Inode>,
         page_index: usize,
     ) -> Result<Arc<FilePage>, SysErrNo> {
-        let path = inode.path();
-        let key = FilePageKey { path, page_index };
+        let path = inode
+            .page_cache_path()
+            .unwrap_or_else(|| Arc::from(inode.path().as_str()));
+        let key = FilePageKey {
+            path: path.clone(),
+            page_index,
+        };
 
-        if let Some(page) = self.pages.read().get(&key).cloned() {
+        if let Some(page) = self
+            .pages
+            .read()
+            .get(path.as_ref())
+            .and_then(|pages| pages.get(&page_index))
+            .cloned()
+        {
             #[cfg(feature = "perf")]
             crate::utils::perf::record_file_cache_hit();
             return Ok(page);
@@ -195,10 +237,11 @@ impl FilePageCache {
                 page_index: next_page_index,
             });
         let has_cached_previous = page_index != 0
-            && self.pages.read().contains_key(&FilePageKey {
-                path: key.path.clone(),
-                page_index: page_index - 1,
-            });
+            && self
+                .pages
+                .read()
+                .get(path.as_ref())
+                .is_some_and(|pages| pages.contains_key(&(page_index - 1)));
         let should_readahead = has_cached_previous
             && file_offset.saturating_add(PAGE_SIZE) < file_size
             && next_key.is_some();
@@ -246,24 +289,25 @@ impl FilePageCache {
             };
 
         let page = Arc::new(FilePage {
-            key: key.clone(),
+            key,
             frame,
             valid_len,
             dirty: AtomicBool::new(false),
         });
 
         let mut pages = self.pages.write();
-        if let Some(existing) = pages.get(&key).cloned() {
+        let file_pages = pages.entry(path.clone()).or_default();
+        if let Some(existing) = file_pages.get(&page_index).cloned() {
             return Ok(existing);
         }
-        pages.insert(key, page.clone());
+        file_pages.insert(page_index, page.clone());
         let readahead_bytes = readahead_page.and_then(|readahead_page| {
             let readahead_bytes = readahead_page.valid_len;
-            let readahead_key = readahead_page.key.clone();
-            if pages.contains_key(&readahead_key) {
+            let readahead_page_index = readahead_page.key.page_index;
+            if file_pages.contains_key(&readahead_page_index) {
                 None
             } else {
-                pages.insert(readahead_key, readahead_page);
+                file_pages.insert(readahead_page_index, readahead_page);
                 Some(readahead_bytes)
             }
         });
@@ -288,18 +332,24 @@ impl FilePageCache {
         let first = start / PAGE_SIZE;
         let end = start.saturating_add(len);
         let last = end.saturating_add(PAGE_SIZE - 1) / PAGE_SIZE;
+        let path: Arc<str> = Arc::from(path);
         let mut pages = self.pages.write();
-        for page_index in first..last {
-            pages.remove(&FilePageKey {
-                path: String::from(path),
-                page_index,
-            });
+        let remove_path = if let Some(file_pages) = pages.get_mut(path.as_ref()) {
+            for page_index in first..last {
+                file_pages.remove(&page_index);
+            }
+            file_pages.is_empty()
+        } else {
+            false
+        };
+        if remove_path {
+            pages.remove(path.as_ref());
         }
     }
 
     /// 失效指定文件路径的全部缓存页。
     pub fn invalidate_path(&self, path: &str) {
-        self.pages.write().retain(|key, _| key.path != path);
+        self.pages.write().remove(path);
     }
 }
 

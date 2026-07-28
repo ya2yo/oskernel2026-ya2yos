@@ -149,6 +149,14 @@ pub trait Inode: Send + Sync {
     fn path(&self) -> String {
         unimplemented!("Inode::path");
     }
+    /// Return a shareable pathname for file-page-cache lookups.
+    ///
+    /// Backends whose VFS-side pathname changes only on rename can return a
+    /// shared allocation here.  The default preserves the existing path()
+    /// fallback for filesystems that do not maintain one.
+    fn page_cache_path(&self) -> Option<Arc<str>> {
+        None
+    }
     /// 返回底层文件系统在本 inode 生命周期内稳定的身份键。
     ///
     /// 路径查找已经取得 `(st_dev, st_ino)` 时，VFS inode 索引可直接复用它，

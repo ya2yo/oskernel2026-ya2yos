@@ -169,3 +169,45 @@ git diff --check                    # 通过
 沙箱宿主的 `/var/tmp` 为只读，QEMU 在内核启动前无法创建临时文件；因此 `tmp_02.ans` 是维护
 者提供的运行期验证，不能据此报告严格同镜像 wall-clock 百分比。完整 446 crate BuildStorm、
 Linux 端到端对标和正式评分仍待后续同配置运行。
+
+## `tmp_05.ans` / `tmp_06.ans`：页缓存命中索引仍有重复分配
+
+`tmp_05.ans` 的 `t=173661ms` 快照已有 `file_cache hit=395610, miss=19151`；两分钟的
+`tmp_06.ans` 在 `t=106268ms, Building 3/446` 时也已有 `hit=336542, miss=18467`。这说明后续
+优化应优先收缩命中路径本身，而不是扩大没有淘汰机制的页缓存容量。
+
+两份样本都出现 `error: rustc interrupted by SIGSEGV`，更新版 `tmp_03.ans` 也在相同 Cargo
+早期阶段出现过该错误。因此它不是本次页缓存索引改动独有的信号；但 `tmp_06` 在约 106 秒的
+`ext4_read_lock wait=78.017s` 高于 `tmp_04` 相近阶段的 `63.696s`，并且两个样本的工作量、
+调度与失败重试均不同，不能把任何一个数值归因于本轮改动或报告端到端加速。
+
+### 根因
+
+旧 `FilePageCache` 将每一页保存在单一
+`BTreeMap<FilePageKey, Arc<FilePage>>` 中，`FilePageKey` 含有完整 pathname。即使只是同一文件
+相邻页的命中查询，也要构造复合键、比较 pathname；`get_or_load()` 还会先从 `inode.path()`
+复制 `String` 再构造键。`tmp_06` 的数十万次页缓存命中使这部分 Rust 分配、复制和有序表比较
+成为明确的可收缩常数成本。
+
+### 修复
+
+- `FilePageCache` 改为 `pathname -> page_index -> page` 的两级 `BTreeMap`。外层仅定位一次文件，
+  同文件后续页查询只比较 `usize` 页号；整文件失效直接移除外层项，范围写失效只访问该文件的
+  内层页表。
+- 路径键使用 `Arc<str>`。`get()` 用 `&str` 异构借用查询，连续多页读取使用共享路径查询，不再
+  为每次命中复制 pathname。
+- `Inode` 新增有默认回退的 `page_cache_path()`；`Ext4Inode` 将其 VFS 路径镜像保存为
+  `RwLock<Arc<str>>`，常规 `path()` 仍按旧接口返回独立 `String`。rename/alias 恢复仍替换路径
+  镜像，写入、truncate 与 rename 继续沿用既有路径失效边界。
+
+这只优化页缓存索引和路径载体，不改变页缓存准入上限、页内容、两页预读、mmap/read/splice
+调用关系或 lwext4 的全局串行模型；未提供共享路径的 inode 自动走原有 `path()` 回退。
+
+### 验证与下一样本
+
+已通过 `cargo fmt --manifest-path os/Cargo.toml -- --check`、
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 与 `git diff --check`。
+构建只有 vendored smoltcp 的既有 warning。尚未取得包含这次两级索引和 inode 共享路径的同配置
+guest A/B；下一份三分钟以上样本应固定镜像、hart 和入口，至少比较相同 Cargo 阶段的
+`file_cache hit/miss`、`ext4_read_lock wait/hold`、`read_active` 和 `Building N/446` 推进，另行
+跟踪偶发 Rustc `SIGSEGV`，不能以其后的累计统计作性能结论。

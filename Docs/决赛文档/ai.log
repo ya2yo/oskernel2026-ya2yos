@@ -7730,3 +7730,37 @@ EXT4 reads 也从 `28732` 降至 `27174`，但 file-cache hit/miss 和 Cargo 阶
 
 本轮仅完善文档，没有新增内核代码；此前混合命中修复的 RISC-V/LoongArch64 perf、release
 构建、格式和补丁检查均已通过。
+
+## 2026-07-28：`tmp_05.ans` / `tmp_06.ans` 的文件页缓存命中路径优化
+
+### 用户输入
+
+维护者先后提供 `tmp_05.ans` 和两分钟运行的 `tmp_06.ans`，要求继续优先提升性能；并说明
+Rustc `SIGSEGV` 是偶发的，不应阻塞性能优化。
+
+### 分析与采纳结论
+
+AI 复核后确认更新版 `tmp_03.ans`、`tmp_05.ans` 和 `tmp_06.ans` 都包含
+`error: rustc interrupted by SIGSEGV`，故不能将它直接归咎于本轮尚未验证的页缓存改动；同时也
+不把错误后的锁等待、syscall 累计或 Cargo 推进当成严格性能证据。
+
+可稳定观察到的高频事实是：`tmp_05` 在 `t=173661ms` 有 `file_cache hit=395610`，`tmp_06`
+在 `t=106268ms` 有 `hit=336542`。源码审计发现 `FilePageCache` 仍把完整 pathname 置于每个
+平铺 `FilePageKey`，同文件多页命中反复构造复合键并进行 pathname 比较；`get_or_load()` 每次还
+经由 `inode.path()` 新建 `String`。这与 Linux 页缓存按 inode/folio 分层定位、避免 pathname
+复制的目标相反，且不需要改变 lwext4 的非 SMP-safe 全局锁。
+
+采纳路径分组而不是扩大缓存容量：`FilePageCache` 改为 `Arc<str> -> BTreeMap<page_index, page>`，
+外层路径只查一次，内层只比较页号；`get()` 使用 `&str` 异构查询，连续 read 使用共享 `Arc<str>`。
+`Inode` 新增默认 `page_cache_path()`，`Ext4Inode` 的 VFS 路径镜像由 `RwLock<String>` 改为
+`RwLock<Arc<str>>`，常规 `path()` 接口仍返回 `String`，rename/alias 更新仍替换镜像。范围写失效
+只操作对应内层页表，整文件失效直接删除外层路径项，原有写入、truncate、rename 语义未扩张。
+
+### 修改与验证
+
+修改 `os/src/fs/files/os_file.rs`、`os/src/fs/page_cache.rs`、`os/src/fs/ext4_lw/inode.rs` 和
+`os/src/fs/vfs.rs`；维护者已有的 `user/src/bin/initproc.rs` 与 `disk.img` 未触碰。`cargo fmt
+--manifest-path os/Cargo.toml -- --check`、`git diff --check`、`make perf TARGET_ARCH=riscv64` 与
+`make perf TARGET_ARCH=loongarch64` 均通过，仅有 vendored smoltcp 既有 warning。未运行独立
+QEMU 长测：沙箱 `/var/tmp` 仍限制启动，且 `tmp_06` 未作为最终组合改动的严格 A/B；下一份同配置
+三分钟以上样本应在相同 Cargo 阶段比较页缓存命中、读锁 wait/hold、`read_active` 和推进进度。

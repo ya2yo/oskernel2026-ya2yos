@@ -1651,3 +1651,20 @@
   release 构建、格式检查和 `git diff --check`。QEMU 独立 A/B 仍受宿主 `/var/tmp` 只读限制。
 - **关联文档**：[BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 文件页缓存路径分组与共享路径优化（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `tmp_05.ans`、两分钟 `tmp_06.ans`，要求优先继续提升 BuildStorm 性能，并说明
+  Rustc `SIGSEGV` 是偶发现象。
+- **描述**：AI 对照更新版 `tmp_03`、`tmp_05`、`tmp_06` 确认三者均出现过同类 Rustc `SIGSEGV`，
+  因而不把它归因于本次改动，也不使用失败后的累计统计报告加速。稳定热点是数十万页缓存命中仍在
+  平铺 `(pathname, page_index)` `BTreeMap` 中反复构造键、复制路径和比较 pathname。修复将索引改为
+  `pathname -> page_index -> page` 两级结构，使用 `Arc<str>` 共享路径；EXT4 inode 通过新增的
+  `page_cache_path()` 返回稳定路径镜像，常规 `path()`、写入/截断/rename 失效及非 EXT4 inode 的
+  回退语义保留。
+- **验证**：`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check`、RISC-V 和
+  LoongArch64 `make perf` 通过，仅有既有 smoltcp warning。尚无包含最终组合改动的同配置三分钟 guest
+  A/B，未报告端到端或 Linux 对标百分比。
+- **关联文档**：[BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
+- **关联 commit**：当前工作区未提交

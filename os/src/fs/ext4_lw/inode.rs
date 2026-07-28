@@ -50,7 +50,7 @@ pub struct Ext4Inode {
     /// The path is read by page-cache and fd bookkeeping on every access. It
     /// changes only after a successful rename or alias recovery, so keep a
     /// VFS-side mirror instead of taking the global lwext4 lock for `path()`.
-    path: RwLock<String>,
+    path: RwLock<Arc<str>>,
     /// File-backed mmap faults check EOF for every page. Once lwext4 has
     /// established a regular file's size, serve that immutable-until-write
     /// value without serializing on its global operation lock.
@@ -132,7 +132,7 @@ impl Ext4Inode {
         };
         Ext4Inode {
             inode_type,
-            path: RwLock::new(path.to_string()),
+            path: RwLock::new(Arc::from(path)),
             known_size: AtomicUsize::new(known_size),
             inode_identity,
             stat_cache: RwLock::new(stat_cache),
@@ -193,12 +193,17 @@ impl Ext4Inode {
 
     #[inline]
     fn cached_path(&self) -> String {
+        String::from(self.path.read().as_ref())
+    }
+
+    #[inline]
+    fn cached_page_cache_path(&self) -> Arc<str> {
         self.path.read().clone()
     }
 
     #[inline]
     fn update_cached_path(&self, path: &str) {
-        *self.path.write() = path.to_string();
+        *self.path.write() = Arc::from(path);
     }
 
     #[inline]
@@ -1009,6 +1014,10 @@ impl Inode for Ext4Inode {
     /// 返回当前可用于 lwext4 path-based API 的路径。
     fn path(&self) -> String {
         self.cached_path()
+    }
+
+    fn page_cache_path(&self) -> Option<Arc<str>> {
+        Some(self.cached_page_cache_path())
     }
 
     fn cache_identity(&self) -> Option<(usize, usize)> {
