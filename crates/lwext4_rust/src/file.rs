@@ -45,6 +45,8 @@ const MAX_SPARSE_WRITE_BUFFER_RUNS: usize = 32;
 pub struct WriteBackCachePerfStats {
     pub cache_hit_ops: usize,
     pub cache_hit_bytes: usize,
+    pub cache_fast_hit_ops: usize,
+    pub cache_fast_hit_bytes: usize,
     pub cache_init_ops: usize,
     pub cache_init_read_bytes: usize,
     pub cache_evict_ops: usize,
@@ -76,6 +78,10 @@ pub struct WriteBackCachePerfStats {
 static WRITE_CACHE_HIT_OPS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "perf")]
 static WRITE_CACHE_HIT_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static WRITE_CACHE_FAST_HIT_OPS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static WRITE_CACHE_FAST_HIT_BYTES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "perf")]
 static WRITE_CACHE_INIT_OPS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "perf")]
@@ -146,6 +152,13 @@ fn record_write_cache_hit(bytes: usize) {
 
 #[cfg(feature = "perf")]
 #[inline]
+fn record_write_cache_fast_hit(bytes: usize) {
+    WRITE_CACHE_FAST_HIT_OPS.fetch_add(1, Ordering::Relaxed);
+    WRITE_CACHE_FAST_HIT_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+#[cfg(feature = "perf")]
+#[inline]
 fn record_write_cache_init(read_bytes: usize) {
     WRITE_CACHE_INIT_OPS.fetch_add(1, Ordering::Relaxed);
     WRITE_CACHE_INIT_READ_BYTES.fetch_add(read_bytes, Ordering::Relaxed);
@@ -209,6 +222,8 @@ pub fn write_back_cache_perf_stats() -> WriteBackCachePerfStats {
     WriteBackCachePerfStats {
         cache_hit_ops: WRITE_CACHE_HIT_OPS.load(Ordering::Relaxed),
         cache_hit_bytes: WRITE_CACHE_HIT_BYTES.load(Ordering::Relaxed),
+        cache_fast_hit_ops: WRITE_CACHE_FAST_HIT_OPS.load(Ordering::Relaxed),
+        cache_fast_hit_bytes: WRITE_CACHE_FAST_HIT_BYTES.load(Ordering::Relaxed),
         cache_init_ops: WRITE_CACHE_INIT_OPS.load(Ordering::Relaxed),
         cache_init_read_bytes: WRITE_CACHE_INIT_READ_BYTES.load(Ordering::Relaxed),
         cache_evict_ops: WRITE_CACHE_EVICT_OPS.load(Ordering::Relaxed),
@@ -2316,6 +2331,38 @@ pub fn read_cached_at(path: &str, offset: usize, buff: &mut [u8]) -> Option<usiz
     Some(read_size)
 }
 
+/// Update an existing dense write-back cache without touching an `Ext4File`.
+///
+/// `Some` means that a resident byte cache can represent this write exactly;
+/// `None` leaves the caller on its serialized lwext4 slow path for cache
+/// creation, sparse writes, and cache-size transitions.  The cache's own
+/// write lock publishes the update before a FIFO eviction can write it back.
+pub fn write_cached_at(path: &str, offset: usize, buf: &[u8]) -> Option<Result<usize, i32>> {
+    let cache = CACHE_TABLE.lock().get(path).cloned()?;
+    let mut cache_writer = cache.write();
+    let next_size = match offset.checked_add(buf.len()) {
+        Some(size) => size,
+        None => return Some(Err(EINVAL as i32)),
+    };
+    let write_creates_hole = !buf.is_empty() && offset > cache_writer.size;
+    if next_size > MAX_CACHED_FILE_SIZE || write_creates_hole {
+        return None;
+    }
+
+    cache_writer.offset = offset;
+    if let Err(error) = cache_writer.writebuf(buf) {
+        return Some(Err(error));
+    }
+    drop(cache_writer);
+    touch_fifo_path(path);
+    #[cfg(feature = "perf")]
+    {
+        record_write_cache_hit(buf.len());
+        record_write_cache_fast_hit(buf.len());
+    }
+    Some(Ok(buf.len()))
+}
+
 pub fn get_cache(file_path: String) -> Arc<RwLock<VFileCache>> {
     CACHE_TABLE.lock().get(&file_path).unwrap().clone()
 }
@@ -2377,9 +2424,10 @@ static FIFO_TABLE: Lazy<Mutex<VecDeque<String>>> = Lazy::new(|| Mutex::new(VecDe
 
 /// Mark a write-back cache entry as recently modified.
 ///
-/// This deliberately touches only the FIFO bookkeeping.  The caller already
-/// owns the file cache's write lock and lwext4 operation serialization, so it
-/// cannot race an eviction of the same active entry.
+/// This deliberately touches only FIFO bookkeeping.  The caller has released
+/// the file-cache write lock, so an eviction may persist the completed update
+/// before this promotion; that is safe because the cache lock published the
+/// bytes before the eviction could acquire it.
 fn touch_fifo_path(file_path: &str) {
     let mut fifo = FIFO_TABLE.lock();
     if let Some(index) = fifo.iter().position(|entry| entry == file_path) {

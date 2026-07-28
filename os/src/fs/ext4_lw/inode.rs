@@ -11,7 +11,7 @@ use lwext4_rust::{
     Ext4File, InodeTypes,
 };
 
-use super::EXT4_OP_LOCK;
+use super::{TaskMutex, EXT4_OP_LOCK};
 use crate::{
     fs::{
         patch_dynamic_link_file_bytes, FsIndex, Inode, InodeType, Kstat, MountFlags, OpenFlags,
@@ -23,10 +23,10 @@ use crate::{
 
 use alloc::{format, string::ToString, vec};
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::RwLock;
 
-use lwext4_rust::file::{discard_path_cache, read_cached_at, OsDirent};
+use lwext4_rust::file::{discard_path_cache, read_cached_at, write_cached_at, OsDirent};
 
 /// 防止符号链接死循环的最大跳转次数。
 const MAX_LOOPTIMES: usize = 5;
@@ -44,6 +44,11 @@ const UNKNOWN_FILE_SIZE: usize = usize::MAX;
 /// alias，并在必要时重新打开到仍然存在的路径。
 pub struct Ext4Inode {
     inner: SyncUnsafeCell<Ext4InodeInner>,
+    /// Serializes transitions of this inode's pathname, cache policy and
+    /// quota reservation.  A resident byte-cache write holds this lock but
+    /// does not need the mount-wide lwext4 lock, mirroring Linux's inode-level
+    /// write serialization while preserving lwext4's global slow-path gate.
+    write_state: TaskMutex,
     /// 文件类型在创建后不会改变；将它放在可变 lwext4 状态之外，让纯类型
     /// 查询不必争用全局 EXT4 操作锁。
     inode_type: InodeType,
@@ -55,6 +60,16 @@ pub struct Ext4Inode {
     /// established a regular file's size, serve that immutable-until-write
     /// value without serializing on its global operation lock.
     known_size: AtomicUsize,
+    /// Upper bound already charged to the loop-mounted filesystem quota.
+    /// `write_state` serializes updates, while the atomic load permits the
+    /// cache-only write fast path to reject unreserved extensions before it
+    /// reaches lwext4 or the mount table.
+    quota_reserved: AtomicUsize,
+    /// Delayed-unlink files must pin their cache before accepting another
+    /// write.  Keep them on the established slow path, which performs that
+    /// pinning, rather than allowing a FIFO eviction to recreate an unlinked
+    /// pathname.
+    delayed: AtomicBool,
     /// `(st_dev, st_ino)` is immutable while this VFS inode is live.  Keep
     /// the value returned by the initial pathname lookup so FsIndex does not
     /// immediately re-enter lwext4 merely to assign its cache key.
@@ -73,10 +88,6 @@ pub struct Ext4Inode {
 pub struct Ext4InodeInner {
     /// lwext4 wrapper 的文件/目录句柄。
     f: Ext4File,
-    /// Upper bound already charged to a loop-backed mount quota. Large
-    /// sequential writes reserve in chunks so each small write avoids taking
-    /// the global mount-table lock.
-    quota_reserved: usize,
     /// 指向同一 inode 的路径别名，用于 hard link / rename 后继续找到可用路径。
     aliases: Vec<String>,
     /// 延迟删除标志。如果为 true，在该 inode 被 Drop 时会从磁盘删除对应文件。
@@ -132,13 +143,15 @@ impl Ext4Inode {
         };
         Ext4Inode {
             inode_type,
+            write_state: TaskMutex::new(),
             path: RwLock::new(Arc::from(path)),
             known_size: AtomicUsize::new(known_size),
+            quota_reserved: AtomicUsize::new(0),
+            delayed: AtomicBool::new(false),
             inode_identity,
             stat_cache: RwLock::new(stat_cache),
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
-                quota_reserved: 0,
                 aliases: vec![path.to_string()],
                 delay: false,
             }),
@@ -176,6 +189,7 @@ impl Ext4Inode {
     /// hard link / rename 之后，原始路径可能失效，但 fd 仍应能继续访问同一个文件。
     /// alias 列表供 `recover_live_path()` 在底层 path 操作失败时兜底。
     fn add_alias_path(&self, path: &str) {
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         if inner.aliases.iter().all(|alias| alias != path) {
@@ -414,7 +428,7 @@ impl Inode for Ext4Inode {
         // before taking the mount-wide lwext4 guard: concurrent compiler
         // readers otherwise queue behind unrelated block I/O merely to copy
         // data that is already resident in kernel memory.
-        let cached_path = self.cached_path();
+        let cached_path = self.cached_page_cache_path();
         if let Some(r) = read_cached_at(&cached_path, off, buf) {
             #[cfg(feature = "perf")]
             {
@@ -464,6 +478,26 @@ impl Inode for Ext4Inode {
 
     /// 从指定偏移量写入数据。
     fn write_at(&self, off: usize, buf: &[u8]) -> SyscallRet {
+        // The state lock keeps the path, cache policy and quota reservation
+        // stable while an in-memory write bypasses `EXT4_OP_LOCK`.  Slow paths
+        // retain the original global serialization before entering lwext4.
+        let _write_state = self.write_state.lock();
+        let end = off.checked_add(buf.len()).ok_or(SysErrNo::EFBIG)?;
+        let cached_path = self.cached_path();
+        if !self.delayed.load(Ordering::Acquire)
+            && end <= self.quota_reserved.load(Ordering::Acquire)
+        {
+            if let Some(current_size) = self.known_size() {
+                if let Some(result) = write_cached_at(cached_path.as_ref(), off, buf) {
+                    let written = result.map_err(SysErrNo::from)?;
+                    let end = off.checked_add(written).ok_or(SysErrNo::EFBIG)?;
+                    self.update_known_size(current_size.max(end));
+                    self.invalidate_cached_stat();
+                    return Ok(written);
+                }
+            }
+        }
+
         let _ext4 = EXT4_OP_LOCK.lock_for_write();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
@@ -487,8 +521,7 @@ impl Inode for Ext4Inode {
         let current_size = self
             .known_size()
             .unwrap_or_else(|| file.file_size() as usize);
-        let end = off.checked_add(buf.len()).ok_or(SysErrNo::EFBIG)?;
-        let previous_reserved = inner.quota_reserved;
+        let previous_reserved = self.quota_reserved.load(Ordering::Acquire);
         let reservation = if end > previous_reserved {
             let target = if end <= QUOTA_RESERVE_GRANULARITY {
                 end
@@ -515,10 +548,10 @@ impl Inode for Ext4Inode {
                     }
                     return Err(error);
                 }
-                inner.quota_reserved = end;
+                self.quota_reserved.store(end, Ordering::Release);
                 Some((previous, end))
             } else {
-                inner.quota_reserved = target;
+                self.quota_reserved.store(target, Ordering::Release);
                 Some((previous, target))
             }
         } else {
@@ -544,7 +577,8 @@ impl Inode for Ext4Inode {
                     MNT_TABLE
                         .lock()
                         .rollback_reservation(&path, previous, target);
-                    inner.quota_reserved = previous_reserved;
+                    self.quota_reserved
+                        .store(previous_reserved, Ordering::Release);
                 }
                 return Err(SysErrNo::from(err));
             }
@@ -561,6 +595,7 @@ impl Inode for Ext4Inode {
     ///
     /// 成功后失效文件页缓存，避免 mmap/page cache 继续暴露旧大小或旧内容。
     fn truncate(&self, size: usize) -> SyscallRet {
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
@@ -583,6 +618,7 @@ impl Inode for Ext4Inode {
             return Ok(0);
         }
 
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_rename();
         let inner = self.inner.get_unchecked_mut();
         let types = inner.f.types();
@@ -633,6 +669,7 @@ impl Inode for Ext4Inode {
     ///
     /// 成功后把新路径加入 alias，以便原路径 unlink 后已打开 fd 仍有可用路径。
     fn hard_link(&self, old_path: &str, new_path: &str) -> SyscallRet {
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let file = &mut inner.f;
@@ -848,6 +885,7 @@ impl Inode for Ext4Inode {
             return self.stat_with_known_size(stat);
         }
 
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_fstat();
         // Another hart may have populated the cache while this task waited
         // for lwext4.  Recheck after acquiring the guard to avoid redundant
@@ -994,6 +1032,7 @@ impl Inode for Ext4Inode {
     ///
     /// 目录走 `dir_rm()`，普通文件和其他文件类型走 `file_remove()`。
     fn unlink(&self, path: &str) -> SyscallRet {
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let is_dir = as_inode_type(inner.f.types()) == InodeType::Dir;
@@ -1034,14 +1073,17 @@ impl Inode for Ext4Inode {
     /// 当文件已经 unlink 但仍有 fd 持有 inode 时，先标记延迟删除，等最后一个
     /// `Arc<Ext4Inode>` drop 时再真正移除磁盘文件。
     fn delay(&self) {
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock();
         self.inner.get_unchecked_mut().delay = true;
+        self.delayed.store(true, Ordering::Release);
     }
 
     /// 读取文件 mode bits。
     ///
     /// 当前路径失败时会尝试从 alias 恢复，兼容 rename/hard link 后的已打开 fd。
     fn fmode(&self) -> Result<u32, SysErrNo> {
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         match inner.f.file_mode() {
@@ -1057,6 +1099,7 @@ impl Inode for Ext4Inode {
     /// 如果传入 mode 未带文件类型位，则沿用当前 inode 类型，避免 chmod 类操作把
     /// regular/dir/symlink 类型位清掉。
     fn fmode_set(&self, mode: u32) -> SyscallRet {
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let mode_type = mode & 0o170000;
@@ -1082,6 +1125,7 @@ impl Inode for Ext4Inode {
     /// 设置 inode owner uid/gid。
     fn owner_set(&self, uid: u32, gid: u32) -> SyscallRet {
         // Keep owner updates in the filesystem layer so stat and permission checks agree.
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let ret = match inner.f.file_owner_set(uid, gid) {
@@ -1098,6 +1142,7 @@ impl Inode for Ext4Inode {
     }
 
     fn seek_data(&self, offset: usize) -> SyscallRet {
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
@@ -1114,6 +1159,7 @@ impl Inode for Ext4Inode {
     }
 
     fn seek_hole(&self, offset: usize) -> SyscallRet {
+        let _write_state = self.write_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);

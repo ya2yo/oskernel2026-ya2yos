@@ -7792,3 +7792,38 @@ page-loading waiter 行为没有改变。
 LoongArch64 构建或 `make run`；后者会删除维护者现有 `disk.img` 链接。`tmp_09` 是维护者提供的
 中途样本，并非同镜像、同缓存状态的严格 A/B，也没有完成完整 446 crate，故本轮只说明消除了确定的
 pathname 分配，不报告端到端性能百分比。
+
+## 2026-07-28：参考 Linux inode 锁的 EXT4 写回缓存命中并发重构
+
+### 用户输入
+
+维护者基于 `tmp_09.ans` 要求继续下一轮内核性能优化，随后明确询问能否参考 Linux 对文件系统进行
+高性能重构；并再次约束不要构建，因为已自行完成编译。
+
+### 分析与采纳结论
+
+`tmp_09` 的后 30 秒 BuildStorm compile 阶段出现 write 后读/查找/metadata 同时排队：
+`ext4_write_lock wait/hold=9.388/3.300s`，而 write-back cache 已有 `124` 次命中，稀疏写为零。
+这说明下一步应先移除“已有内存缓存仍持有 mount-wide lwext4 lock”的不必要串行，而不是扩大 sparse
+buffer 或直接移动 quota 会计。
+
+AI 使用本地 Linux 7.0 源码对照 `include/linux/fs.h`、`fs/ext4/file.c` 和 `mm/filemap.c`：Linux 用
+每 inode `i_rwsem` 保护 buffered write/size/布局转换，且不在 inode 锁中同步写回。Ya2yOS 的
+lwext4 没有内部 SMP 安全保障，故不照搬为并发进入 lwext4；采纳“inode 级状态锁 + cache-only 快路径，
+全局锁保留给后端慢路径”的受限实现。完整对照分析在
+`/home/ya2yo/learning_linux/ya2yos-ext4-cache-concurrency.md`。
+
+### 修改与验证
+
+新增 `TaskMutex` 复用原有 `PollSet` 可睡眠等待行为；每个 `Ext4Inode` 增加 `write_state`，并按
+`write_state -> EXT4_OP_LOCK` 保护 cache 写、rename、truncate、unlink、延迟删除、硬链接与
+recover 路径。满足既有 dense cache、已配额预留、非 hole、未超 16 MiB 且非 delayed-unlink 的写入
+通过 `write_cached_at()` 只更新 `VFileCache` 和 FIFO，不进入 lwext4。cache miss、缓存初始化、
+quota 预留、direct/sparse write、eviction/writeback 与全部 `Ext4File` C API 维持旧全局锁路径。
+perf 输出另增 `ext4_write_cache fast_hit_ops/fast_hit_bytes`，使下一份日志可区分绕过全局锁的
+cache-only 写和原有全部 cache hit。
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check` 与 `git diff --check` 均通过。遵从维护者要求，
+未运行任何构建、QEMU、BuildStorm 或 `make run`；后者还会影响维护者现有未跟踪 `disk.img`。`tmp_09`
+早于该修复且未完整结束，故没有报告性能百分比。详见
+`problem/buildstorm-ext4-inode-cache-write-concurrency.md`。

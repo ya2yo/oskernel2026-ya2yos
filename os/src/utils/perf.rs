@@ -1236,9 +1236,11 @@ fn emit_report(now: usize) {
     {
         let write_cache = lwext4_rust::file::write_back_cache_perf_stats();
         println!(
-            "[perf] ext4_write_cache hit_ops={} hit_bytes={} init_ops={} init_read_bytes={} evict_ops={} evict_writeback_bytes={} limit_flush_ops={} limit_flush_bytes={} direct_ops={} direct_bytes={} direct_disabled_ops={} direct_disabled_bytes={} direct_too_large_ops={} direct_too_large_bytes={} direct_uncached_ops={} direct_uncached_bytes={} direct_hole_ops={} direct_hole_bytes={} direct_limit_ops={} direct_limit_bytes={} sparse_buffer_ops={} sparse_buffer_bytes={} sparse_flush_ops={} sparse_flush_bytes={} sparse_read_overlay_ops={} sparse_read_overlay_bytes={} sparse_read_overlay_dirty_bytes={}",
+            "[perf] ext4_write_cache hit_ops={} hit_bytes={} fast_hit_ops={} fast_hit_bytes={} init_ops={} init_read_bytes={} evict_ops={} evict_writeback_bytes={} limit_flush_ops={} limit_flush_bytes={} direct_ops={} direct_bytes={} direct_disabled_ops={} direct_disabled_bytes={} direct_too_large_ops={} direct_too_large_bytes={} direct_uncached_ops={} direct_uncached_bytes={} direct_hole_ops={} direct_hole_bytes={} direct_limit_ops={} direct_limit_bytes={} sparse_buffer_ops={} sparse_buffer_bytes={} sparse_flush_ops={} sparse_flush_bytes={} sparse_read_overlay_ops={} sparse_read_overlay_bytes={} sparse_read_overlay_dirty_bytes={}",
             write_cache.cache_hit_ops,
             write_cache.cache_hit_bytes,
+            write_cache.cache_fast_hit_ops,
+            write_cache.cache_fast_hit_bytes,
             write_cache.cache_init_ops,
             write_cache.cache_init_read_bytes,
             write_cache.cache_evict_ops,

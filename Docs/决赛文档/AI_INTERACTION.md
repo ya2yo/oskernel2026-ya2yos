@@ -1680,3 +1680,20 @@
   端到端加速。详见 `ai.log` 同日条目与
   [problem/buildstorm-lseek-open-file-type-cache.md](./problem/buildstorm-lseek-open-file-type-cache.md)。
 - **关联 commit**：当前工作区未提交
+
+#### 参考 Linux inode 锁的 BuildStorm EXT4 写回缓存并发重构（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求根据 `tmp_09.ans` 开展下一轮性能优化，并要求参考 Linux 对文件系统进行
+  高性能重构；维护者已编译完成，明确要求不再构建。
+- **依据与修改**：`tmp_09` 的 write-back cache 有 `124` 次命中，而 `ext4_write_lock` 的累计
+  wait/hold 为 `9.388/3.300 s`。对照 Linux 7.0 的 `i_rwsem`、ext4 buffered write 和 filemap 锁序，
+  在 Ya2yOS 新增可睡眠的每 inode `write_state`，使已有 dense cache 且已完成 quota 预留的非 sparse
+  常规写仅更新 `VFileCache`/FIFO，不占用 `EXT4_OP_LOCK`。rename、truncate、unlink、delayed-unlink、
+  hard link 和恢复路径共用 inode 状态锁；miss、quota、cache init、direct/sparse write、eviction 与
+  全部 lwext4 API 仍保留全局串行。perf 新增 `fast_hit_ops/fast_hit_bytes` 用于统计实际绕过次数。
+- **验证与边界**：`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check` 通过；未运行
+  构建、QEMU 或 BuildStorm，遵从维护者指令并保护其未跟踪 `disk.img`。`tmp_09` 不是完整 A/B，未报告
+  性能百分比。Linux 对照文档为 `/home/ya2yo/learning_linux/ya2yos-ext4-cache-concurrency.md`，详见
+  [问题复盘](./problem/buildstorm-ext4-inode-cache-write-concurrency.md)。
+- **关联 commit**：当前工作区未提交

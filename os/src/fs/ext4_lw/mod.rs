@@ -16,22 +16,33 @@ use core::{future::poll_fn, task::Poll};
 
 use crate::utils::PollSet;
 
-/// lwext4 shares one mounted block cache and does not provide SMP-safe internal
-/// locking. Keep every call into its path/file API serialized until the wrapper
-/// gains per-superblock concurrency support.
+/// A task-aware mutex for filesystem operations that can block on I/O.
 ///
-/// The critical sections include block-device I/O and may last milliseconds.
-/// Spinning every competing Cargo task for that interval starves the lock owner
-/// under QEMU SMP.  Contended task-context callers therefore sleep on
-/// `waiters`; boot-time callers without a current task retain the spin fallback.
-pub(super) struct Ext4OpLock {
+/// Contended task-context callers sleep instead of spinning, while boot-time
+/// callers without a current task retain the spin fallback.  It is used both
+/// for the mount-wide lwext4 gate and for per-inode state that must stay stable
+/// while a cache-only write bypasses that global gate.
+pub(super) struct TaskMutex {
     inner: spin::Mutex<()>,
     waiters: PollSet,
 }
 
-pub(super) struct Ext4OpGuard<'a> {
-    lock: &'a Ext4OpLock,
+pub(super) struct TaskMutexGuard<'a> {
+    lock: &'a TaskMutex,
     guard: Option<spin::MutexGuard<'a, ()>>,
+    wait_ticks: usize,
+    acquired_at: usize,
+}
+
+/// lwext4 shares one mounted block cache and does not provide SMP-safe internal
+/// locking. Keep every call into its path/file API serialized until the wrapper
+/// gains per-superblock concurrency support.
+pub(super) struct Ext4OpLock {
+    inner: TaskMutex,
+}
+
+pub(super) struct Ext4OpGuard<'a> {
+    guard: Option<TaskMutexGuard<'a>>,
     wait_ticks: usize,
     acquired_at: usize,
 }
@@ -52,7 +63,7 @@ pub(super) struct Ext4ProfiledOpGuard<'a> {
     class: Ext4LockClass,
 }
 
-impl Ext4OpLock {
+impl TaskMutex {
     pub const fn new() -> Self {
         Self {
             inner: spin::Mutex::new(()),
@@ -60,7 +71,7 @@ impl Ext4OpLock {
         }
     }
 
-    pub fn lock(&self) -> Ext4OpGuard<'_> {
+    pub fn lock(&self) -> TaskMutexGuard<'_> {
         let wait_start = crate::arch::time::get_ticks();
         let guard = match self.inner.try_lock() {
             Some(guard) => guard,
@@ -86,11 +97,38 @@ impl Ext4OpLock {
             })),
         };
         let acquired_at = crate::arch::time::get_ticks();
-        Ext4OpGuard {
+        TaskMutexGuard {
             lock: self,
             guard: Some(guard),
             wait_ticks: acquired_at.saturating_sub(wait_start),
             acquired_at,
+        }
+    }
+}
+
+impl Drop for TaskMutexGuard<'_> {
+    fn drop(&mut self) {
+        // Drop the primitive mutex before waking a single sleeper.  Waking all
+        // waiters would make unrelated compiler tasks contend on the same
+        // filesystem state again immediately.
+        self.guard.take();
+        self.lock.waiters.wake_one();
+    }
+}
+
+impl Ext4OpLock {
+    pub const fn new() -> Self {
+        Self {
+            inner: TaskMutex::new(),
+        }
+    }
+
+    pub fn lock(&self) -> Ext4OpGuard<'_> {
+        let guard = self.inner.lock();
+        Ext4OpGuard {
+            wait_ticks: guard.wait_ticks,
+            acquired_at: guard.acquired_at,
+            guard: Some(guard),
         }
     }
 
@@ -126,12 +164,9 @@ impl Drop for Ext4OpGuard<'_> {
     fn drop(&mut self) {
         #[cfg(feature = "perf")]
         let released_at = crate::arch::time::get_ticks();
-        // Drop the primitive mutex before waking waiters.  A woken task can
-        // acquire it immediately instead of bouncing through another sleep.
+        // Release before recording so a newly woken task can acquire lwext4
+        // immediately instead of waiting for profiling bookkeeping.
         self.guard.take();
-        // Hand off to one waiter. Waking every blocked Cargo task here makes
-        // all of them race for the same non-SMP-safe lwext4 instance.
-        self.lock.waiters.wake_one();
         #[cfg(feature = "perf")]
         crate::utils::perf::record_ext4_lock(
             self.wait_ticks,
