@@ -1749,3 +1749,18 @@
   但被 timeout 终止，最终仅可见 `Building 6/446`。完整 BuildStorm 和一小时目标尚未验证。
 - **关联文档**：[BuildStorm EXT4 稀疏写、读锁与预读优化](./problem/buildstorm-ext4-sparse-write-readahead.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm vfork 长等待四段时序与 release-reason 聚合（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求为接近四小时、停在 Cargo `101/446` 的 BuildStorm 补齐 vfork 生命周期取证。
+- **依据与修改**：`full.ans` 的 `vfork_wait` 最大单样本约 42 分钟，不能由已记录约 234 秒的
+  `execve` 最大样本直接解释。新增仅在 perf feature 生效的 task 时间戳与 relaxed atomic，输出
+  `child_to_exec`、`exec_to_parent_ready`、`child_to_exit`、`parent_ready_to_resume`，并按
+  exec、exit、SIGKILL 聚合实际解除 `VforkBlocked` 的原因。地址空间提交、task status 与 ready queue
+  顺序保持不变，未提前唤醒 parent。
+- **验证**：`cargo fmt --manifest-path os/Cargo.toml`、RISC-V 和 LoongArch64 `make perf` 与普通 release
+  构建均通过，只有既有 smoltcp warning。未运行四小时 BuildStorm，新增统计尚无异常尾段 guest 数据；
+  不报告性能比例。
+- **关联文档**：[BuildStorm clone3/vfork 共享地址空间交接](./problem/buildstorm-vfork-clone3-lifecycle.md)
+- **关联 commit**：当前工作区未提交

@@ -200,6 +200,22 @@ fn parse_shebang(data: &[u8]) -> Option<(String, Option<String>)> {
 /// 参考 https://man7.org/linux/man-pages/man2/execve.2.html
 pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usize) -> SyscallRet {
     let task = current_task().unwrap();
+    #[cfg(feature = "perf")]
+    {
+        let exec_started_at = get_ticks();
+        let child_to_exec = {
+            let mut task_inner = task.inner_lock();
+            if task_inner.vfork_published_at != 0 && task_inner.vfork_exec_started_at == 0 {
+                task_inner.vfork_exec_started_at = exec_started_at;
+                Some(exec_started_at.saturating_sub(task_inner.vfork_published_at))
+            } else {
+                None
+            }
+        };
+        if let Some(elapsed) = child_to_exec {
+            crate::utils::perf::record_vfork_child_to_exec_duration(elapsed);
+        }
+    }
     let proc = &task.process;
 
     let memory_set = proc.memory_set_arc();

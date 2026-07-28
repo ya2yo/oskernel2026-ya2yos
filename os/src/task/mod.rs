@@ -369,6 +369,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     let fd_table = Arc::clone(&curr_proc.fd_table);
     let fs_info = Arc::clone(&curr_proc.fs_info);
     let mut curr_task_inner = curr_task.inner_lock();
+    #[cfg(feature = "perf")]
+    let vfork_published_at = curr_task_inner.vfork_published_at;
     // debug!(
     //     "[sys_exit] exit_current_and_run_next() -- thread {} exit, exit_code = {}",
     //     curr_task.tid(),
@@ -396,6 +398,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // debug!("exit_current_and_run_next: futex released");
 
     // VFORK: wake up parent if it was suspended waiting for this child
+    #[cfg(feature = "perf")]
+    let mut vfork_exit_release_at = None;
     if let Some(parent) = Process::get_process_arc_by_pid(curr_task.ppid()) {
         // Do not keep ProcessMeta locked while acquiring a parent task's
         // inner lock; copy the weak list first so the lock scope is explicit.
@@ -406,12 +410,27 @@ pub fn exit_current_and_run_next(exit_code: i32) {
                 if parent_inner.vfork_wait_child == curr_task.tid() {
                     parent_inner.vfork_wait_child = 0;
                     if parent_inner.task_status == TaskStatus::VforkBlocked {
+                        #[cfg(feature = "perf")]
+                        {
+                            let parent_ready_at = crate::arch::time::get_ticks();
+                            parent_inner.vfork_parent_ready_at = parent_ready_at;
+                            vfork_exit_release_at = Some(parent_ready_at);
+                        }
                         parent_inner.task_status = TaskStatus::Ready;
                         drop(parent_inner);
                         ready_queue::add_task(&t);
                     }
                 }
             }
+        }
+    }
+    #[cfg(feature = "perf")]
+    if let Some(parent_ready_at) = vfork_exit_release_at {
+        crate::utils::perf::record_vfork_release_exit();
+        if vfork_published_at != 0 {
+            crate::utils::perf::record_vfork_child_to_exit_duration(
+                parent_ready_at.saturating_sub(vfork_published_at),
+            );
         }
     }
 

@@ -83,3 +83,54 @@ make build-arch TARGET_ARCH=loongarch64
 本次不将完整 BuildStorm 标为通过。最新 fresh MINIBUILD 的 `Bad address (os error 14)`
 已确认来自 Cargo worker 对普通 `clone()` 的调用：fork 克隆时遗漏动态 `MAP_STACK` VMA，
 随后写 `CLONE_CHILD_SETTID` 失败。该独立的 fork 地址空间复制问题不在本提交范围内。
+
+## 2026-07-28：长 vfork 等待的分段时序
+
+### 现象与目标
+
+维护者提供的 `full.ans` 在 `[101/446]` 后约 61 分钟没有 Cargo 进度。同期
+`clone_duration vfork_wait` 从 `93 samples / 1,207,906,826us` 增至
+`95 samples / 3,772,493,137us`，单次最大 `2,525,349,969us`（约 42 分钟）。
+这段窗口只有约 `10.75 MiB` EXT4 读取，且已记录的 `execve` 最大时长约 234 秒，
+不足以直接解释 42 分钟的 parent wait。
+
+因此本轮不提前唤醒 parent，也不把问题武断归为 ELF 装载；先把 vfork hand-off
+拆为可证伪的时序边界，以区分 child 未及时运行、exec 提交缓慢、ready queue 延迟，
+以及 child 走 exit 或 SIGKILL 兜底的情形。
+
+### 修改
+
+原有 `clone_duration vfork_wait` 保留为 parent 端到端等待。`perf` feature 下的
+`TaskControlBlockInner` 另保存三个时间戳，全部在既有 task inner lock 保护下读写：
+
+- `child_to_exec`：child 发布到首次进入 `sys_execve()`；
+- `exec_to_parent_ready`：首次进入 `sys_execve()` 到新地址空间、用户栈与 trap context
+  安装完成后，child 将 parent 设为 `Ready`；
+- `child_to_exit`：没有通过 exec 解除等待，而由 child exit 解除 parent 时的 child 发布到
+  parent `Ready`；
+- `parent_ready_to_resume`：parent 被设为 `Ready` 到其原 `sys_clone()` 的
+  `suspend_current_and_run_next()` 返回。
+
+报告还输出 `vfork_release exec=<n> exit=<n> signal=<n>`。`signal` 仅统计现有的
+`SIGKILL` 将 `VforkBlocked` parent 恢复为 `Ready` 的兜底路径；它不被视为正常 exec
+完成。`exec`、`exit` 和 `signal` 均只在实际完成该 `VforkBlocked -> Ready` 转换时递增，
+避免重复归因。
+
+时间戳记录和聚合均是 perf 构建中的常数时间字段赋值及 relaxed atomic，不输出逐 clone
+日志，也不改变地址空间提交、task state 或 ready queue 的既有顺序。
+
+### 验证与边界
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+make perf TARGET_ARCH=riscv64
+make perf TARGET_ARCH=loongarch64
+make build-arch TARGET_ARCH=riscv64
+make build-arch TARGET_ARCH=loongarch64
+```
+
+两个架构的 perf 与普通 release 构建均通过，只有既有的 smoltcp unused-item warning。
+本轮未重新运行接近四小时的 BuildStorm；短样本无法覆盖 `[101/446]` 后的异常窗口，因而尚无
+四段时序 guest 数据，不能据此报告端到端加速。

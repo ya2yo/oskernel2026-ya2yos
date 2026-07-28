@@ -126,9 +126,17 @@ fn add_signal_with_info(
         // active, so make it runnable to consume the pending signal.
         if wake_vfork_parent {
             task_inner.vfork_wait_child = 0;
+            #[cfg(feature = "perf")]
+            {
+                task_inner.vfork_parent_ready_at = crate::arch::time::get_ticks();
+            }
         }
         task_inner.task_status = TaskStatus::Ready;
         drop(task_inner);
+        #[cfg(feature = "perf")]
+        if wake_vfork_parent {
+            crate::utils::perf::record_vfork_release_signal();
+        }
         if let Some(task) = tid_to_task::tid2task(task.tid()) {
             ready_queue::add_task(&task);
         }

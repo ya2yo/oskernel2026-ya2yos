@@ -121,9 +121,21 @@ pub fn sys_clone(
         let vfork_wait_begin = crate::arch::time::get_ticks();
         suspend_current_and_run_next();
         #[cfg(feature = "perf")]
-        crate::utils::perf::record_clone_vfork_wait_duration(
-            crate::arch::time::get_ticks().saturating_sub(vfork_wait_begin),
-        );
+        {
+            let vfork_wait_end = crate::arch::time::get_ticks();
+            let vfork_parent_ready_at = {
+                let mut task_inner = task.inner_lock();
+                core::mem::take(&mut task_inner.vfork_parent_ready_at)
+            };
+            if vfork_parent_ready_at != 0 {
+                crate::utils::perf::record_vfork_parent_ready_to_resume_duration(
+                    vfork_wait_end.saturating_sub(vfork_parent_ready_at),
+                );
+            }
+            crate::utils::perf::record_clone_vfork_wait_duration(
+                vfork_wait_end.saturating_sub(vfork_wait_begin),
+            );
+        }
     }
     Ok(new_tid)
 }

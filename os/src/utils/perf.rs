@@ -107,6 +107,21 @@ static CLONE_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CLONE_VFORK_WAIT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static CLONE_VFORK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CLONE_VFORK_WAIT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static VFORK_CHILD_TO_EXEC_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static VFORK_CHILD_TO_EXEC_TICKS: AtomicUsize = AtomicUsize::new(0);
+static VFORK_CHILD_TO_EXEC_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static VFORK_EXEC_TO_PARENT_READY_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static VFORK_EXEC_TO_PARENT_READY_TICKS: AtomicUsize = AtomicUsize::new(0);
+static VFORK_EXEC_TO_PARENT_READY_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static VFORK_CHILD_TO_EXIT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static VFORK_CHILD_TO_EXIT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static VFORK_CHILD_TO_EXIT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static VFORK_PARENT_READY_TO_RESUME_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static VFORK_PARENT_READY_TO_RESUME_TICKS: AtomicUsize = AtomicUsize::new(0);
+static VFORK_PARENT_READY_TO_RESUME_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static VFORK_RELEASE_EXEC: AtomicUsize = AtomicUsize::new(0);
+static VFORK_RELEASE_EXIT: AtomicUsize = AtomicUsize::new(0);
+static VFORK_RELEASE_SIGNAL: AtomicUsize = AtomicUsize::new(0);
 static CLONE_BOOTSTRAP_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static CLONE_BOOTSTRAP_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CLONE_BOOTSTRAP_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -541,6 +556,65 @@ pub fn record_clone_vfork_wait_duration(elapsed: usize) {
         &CLONE_VFORK_WAIT_MAX_TICKS,
         elapsed,
     );
+}
+
+/// Profile a vfork child from publication to its first execve entry.
+#[inline]
+pub fn record_vfork_child_to_exec_duration(elapsed: usize) {
+    record_duration(
+        &VFORK_CHILD_TO_EXEC_SAMPLES,
+        &VFORK_CHILD_TO_EXEC_TICKS,
+        &VFORK_CHILD_TO_EXEC_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile a vfork child from execve entry until it releases its parent.
+#[inline]
+pub fn record_vfork_exec_to_parent_ready_duration(elapsed: usize) {
+    record_duration(
+        &VFORK_EXEC_TO_PARENT_READY_SAMPLES,
+        &VFORK_EXEC_TO_PARENT_READY_TICKS,
+        &VFORK_EXEC_TO_PARENT_READY_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile a vfork child from publication to an exit-based parent release.
+#[inline]
+pub fn record_vfork_child_to_exit_duration(elapsed: usize) {
+    record_duration(
+        &VFORK_CHILD_TO_EXIT_SAMPLES,
+        &VFORK_CHILD_TO_EXIT_TICKS,
+        &VFORK_CHILD_TO_EXIT_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Profile a vfork parent from Ready until it resumes after its forced yield.
+#[inline]
+pub fn record_vfork_parent_ready_to_resume_duration(elapsed: usize) {
+    record_duration(
+        &VFORK_PARENT_READY_TO_RESUME_SAMPLES,
+        &VFORK_PARENT_READY_TO_RESUME_TICKS,
+        &VFORK_PARENT_READY_TO_RESUME_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_vfork_release_exec() {
+    add(&VFORK_RELEASE_EXEC, 1);
+}
+
+#[inline]
+pub fn record_vfork_release_exit() {
+    add(&VFORK_RELEASE_EXIT, 1);
+}
+
+#[inline]
+pub fn record_vfork_release_signal() {
+    add(&VFORK_RELEASE_SIGNAL, 1);
 }
 
 /// Profile TID/kernel-stack allocation and the initial parent metadata snapshot.
@@ -1639,6 +1713,40 @@ fn emit_report(now: usize) {
         &CLONE_VFORK_WAIT_SAMPLES,
         &CLONE_VFORK_WAIT_TICKS,
         &CLONE_VFORK_WAIT_MAX_TICKS,
+    );
+    print!("[perf] vfork_duration ");
+    emit_duration(
+        "child_to_exec",
+        &VFORK_CHILD_TO_EXEC_SAMPLES,
+        &VFORK_CHILD_TO_EXEC_TICKS,
+        &VFORK_CHILD_TO_EXEC_MAX_TICKS,
+    );
+    print!("[perf] vfork_duration ");
+    emit_duration(
+        "exec_to_parent_ready",
+        &VFORK_EXEC_TO_PARENT_READY_SAMPLES,
+        &VFORK_EXEC_TO_PARENT_READY_TICKS,
+        &VFORK_EXEC_TO_PARENT_READY_MAX_TICKS,
+    );
+    print!("[perf] vfork_duration ");
+    emit_duration(
+        "child_to_exit",
+        &VFORK_CHILD_TO_EXIT_SAMPLES,
+        &VFORK_CHILD_TO_EXIT_TICKS,
+        &VFORK_CHILD_TO_EXIT_MAX_TICKS,
+    );
+    print!("[perf] vfork_duration ");
+    emit_duration(
+        "parent_ready_to_resume",
+        &VFORK_PARENT_READY_TO_RESUME_SAMPLES,
+        &VFORK_PARENT_READY_TO_RESUME_TICKS,
+        &VFORK_PARENT_READY_TO_RESUME_MAX_TICKS,
+    );
+    println!(
+        "[perf] vfork_release exec={} exit={} signal={}",
+        VFORK_RELEASE_EXEC.load(Ordering::Relaxed),
+        VFORK_RELEASE_EXIT.load(Ordering::Relaxed),
+        VFORK_RELEASE_SIGNAL.load(Ordering::Relaxed),
     );
     print!("[perf] clone_duration ");
     emit_duration(

@@ -7927,3 +7927,32 @@ dentry 命中、metadata/namespace 细分、容量受限的页缓存分片，以
 
 - 问题复盘：[BuildStorm EXT4 稀疏写、读锁与预读优化](./problem/buildstorm-ext4-sparse-write-readahead.md)
 - 关联 commit：当前工作区未提交
+
+## 2026-07-28：BuildStorm 长 `CLONE_VFORK` 等待分段取证
+
+### 用户输入
+
+维护者确认 `full.ans` 的运行总时长接近四小时且 Cargo 只到 `101/446`，要求开始修改：
+为 vfork 增加四段时序和 release-reason 聚合，以便定位异常长 parent 等待。
+
+### 分析与采纳结论
+
+`full.ans` 的 `[101/446]` 后约 61 分钟窗口内，`vfork_wait` 最大单样本为约 42 分钟，
+而实际 EXT4 读取量较低、已记录 `execve` 最大样本约 234 秒。AI 没有以提前唤醒 parent
+换取表面速度，因为 child 必须在新 `MemorySet`、用户栈和 trap context 全部安装后才能解除
+共享地址空间 hand-off。采纳“先测量后优化”：区分 child 发布到 exec、exec 到 parent Ready、
+child exit 兜底及 parent Ready 到恢复，并单独累计 exec/exit/SIGKILL release 原因。
+
+### 修改与验证
+
+新增 perf-only task 时间戳和 relaxed aggregate：`vfork_duration child_to_exec`、
+`exec_to_parent_ready`、`child_to_exit`、`parent_ready_to_resume`，以及
+`vfork_release exec/exit/signal`。接入点分别为 child 发布、`sys_execve()` 入口、exec
+提交、exit 兜底、SIGKILL 唤醒和 `sys_clone()` 恢复；task 状态和 ready queue 顺序未改变。
+
+修改 `os/src/utils/perf.rs`、`os/src/task/task/task.rs`、`os/src/syscall/task/clone.rs`、
+`os/src/syscall/task/execve.rs`、`os/src/task/mod.rs` 和 `os/src/signal/delivery.rs`。维护者的
+`user/src/bin/initproc.rs` 未触碰。`cargo fmt --manifest-path os/Cargo.toml`、
+`make perf TARGET_ARCH=riscv64` 与 `make perf TARGET_ARCH=loongarch64`，以及两架构普通
+release 构建均通过，只有既有 smoltcp warning。未运行四小时 BuildStorm，故没有端到端加速或
+异常样本归因结论。

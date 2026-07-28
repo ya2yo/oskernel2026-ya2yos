@@ -142,6 +142,14 @@ pub struct TaskControlBlockInner {
     /// VFORK: if non-zero, parent is suspended waiting for this child PID to
     /// exit or exec. Set by CLONE_VFORK, cleared when child wakes the parent.
     pub vfork_wait_child: usize,
+    /// Perf-only vfork lifecycle boundaries. A zero value means this task is
+    /// not participating in the corresponding hand-off.
+    #[cfg(feature = "perf")]
+    pub vfork_published_at: usize,
+    #[cfg(feature = "perf")]
+    pub vfork_exec_started_at: usize,
+    #[cfg(feature = "perf")]
+    pub vfork_parent_ready_at: usize,
     /// 被屏蔽的信号
     pub sig_mask: SigSet,
     /// `rt_sigsuspend()` 临时替换信号掩码时保存的调用前掩码。
@@ -499,6 +507,12 @@ impl TaskControlBlock {
                 user_heapbottom,
                 clear_child_tid: 0,
                 vfork_wait_child: 0,
+                #[cfg(feature = "perf")]
+                vfork_published_at: 0,
+                #[cfg(feature = "perf")]
+                vfork_exec_started_at: 0,
+                #[cfg(feature = "perf")]
+                vfork_parent_ready_at: 0,
                 sig_mask: SigSet::empty(),
                 sigsuspend_restore_mask: None,
                 alt_signal_stack: SignalStack::disabled(),
@@ -607,6 +621,8 @@ impl TaskControlBlock {
 
         let mut task_inner = self.inner_lock();
         task_inner.time_data.clear();
+        #[cfg(feature = "perf")]
+        let vfork_exec_started_at = task_inner.vfork_exec_started_at;
 
         debug!(
             "task_inner.clear_child_tid={:#x}",
@@ -669,6 +685,10 @@ impl TaskControlBlock {
         // vfork(2) releases its parent only after the child no longer uses
         // the shared address space. The new page table and trap context above
         // are fully installed at this point.
+        #[cfg(feature = "perf")]
+        let vfork_parent_ready_at = get_ticks();
+        #[cfg(feature = "perf")]
+        let mut released_vfork_parent = false;
         if let Some(parent_tasks) = parent_tasks {
             for task_weak in &parent_tasks {
                 if let Some(t) = task_weak.upgrade() {
@@ -677,6 +697,11 @@ impl TaskControlBlock {
                         && parent_inner.task_status == TaskStatus::VforkBlocked
                     {
                         parent_inner.vfork_wait_child = 0;
+                        #[cfg(feature = "perf")]
+                        {
+                            parent_inner.vfork_parent_ready_at = vfork_parent_ready_at;
+                            released_vfork_parent = true;
+                        }
                         parent_inner.task_status = TaskStatus::Ready;
                         drop(parent_inner);
                         wake_parent_tasks.push(t);
@@ -686,6 +711,15 @@ impl TaskControlBlock {
         }
         for parent_task in wake_parent_tasks {
             crate::task::ready_queue::add_task(&parent_task);
+        }
+        #[cfg(feature = "perf")]
+        if released_vfork_parent {
+            crate::utils::perf::record_vfork_release_exec();
+            if vfork_exec_started_at != 0 {
+                crate::utils::perf::record_vfork_exec_to_parent_ready_duration(
+                    vfork_parent_ready_at.saturating_sub(vfork_exec_started_at),
+                );
+            }
         }
         #[cfg(feature = "perf")]
         crate::utils::perf::record_exec_commit_duration(get_ticks().saturating_sub(commit_begin));
@@ -938,6 +972,12 @@ impl TaskControlBlock {
                 user_heapbottom: parent_heapbottom,
                 clear_child_tid,
                 vfork_wait_child: 0,
+                #[cfg(feature = "perf")]
+                vfork_published_at: 0,
+                #[cfg(feature = "perf")]
+                vfork_exec_started_at: 0,
+                #[cfg(feature = "perf")]
+                vfork_parent_ready_at: 0,
                 sig_mask: child_sig_mask,
                 sigsuspend_restore_mask: None,
                 alt_signal_stack: child_alt_signal_stack,
@@ -1055,8 +1095,16 @@ impl TaskControlBlock {
             let mut parent_inner = self.inner_lock();
             if flags.contains(CloneFlags::CLONE_VFORK) {
                 parent_inner.vfork_wait_child = child.tid();
+                #[cfg(feature = "perf")]
+                {
+                    parent_inner.vfork_parent_ready_at = 0;
+                }
                 parent_inner.task_status = TaskStatus::VforkBlocked;
             }
+        }
+        #[cfg(feature = "perf")]
+        if flags.contains(CloneFlags::CLONE_VFORK) {
+            child.inner_lock().vfork_published_at = get_ticks();
         }
         tid_to_task::insert(child.tid(), &child);
         if !flags.contains(CloneFlags::CLONE_THREAD) {
