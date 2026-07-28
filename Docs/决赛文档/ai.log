@@ -7677,3 +7677,56 @@ owner 取消、失效代际以及 read/mmap/splice 并发测试前不重新启�
 smoltcp 既有 warning。沙箱中的独立 QEMU 因宿主 `/var/tmp` 只读、无法创建临时文件而未能
 启动，因此没有新的独立 wall-clock A/B；`tmp_02.ans` 是维护者提供的运行样本。完整 446
 crate BuildStorm、Linux 端到端对标和正式评分尚未完成。
+
+## 2026-07-28：更新版 `tmp_03.ans` 的混合命中读取优化
+
+### 新样本澄清
+
+维护者更新了同名 `tmp_03.ans`。此前文档中记录的 `t=33511ms, Building 0/446` 属于早期
+页缓存 loading 等待实验；当前文件实际运行到 `t=175421ms`、Cargo `Building 5/446`，没有
+panic、`TFAIL`、`TBROK` 或 `shutdown!`。两份文件不能混作一次回归。
+
+最新快照显示 `file_cache hit=453844, miss=24266`，但 `ext4 reads=32214`、
+`ext4_read_lock wait/hold=311032683/29048081 us`，`read` syscall 的 total/active 为
+`257989646/153629671 us`。页缓存命中很多而 EXT4 读锁等待仍高，说明问题不只是冷页数量。
+
+### 根因与修复
+
+`OSFile::try_page_cached_read()` 原先对大于一页的请求使用 all-or-nothing
+`FILE_PAGE_CACHE.read_cached_at()`：跨页范围只要有一页 miss，就放弃整段命中结果并把完整
+请求重新交给 `inode.read_at()`，导致已缓存页被重复读取并再次排队 `EXT4_OP_LOCK`。
+
+现改为在 `os/src/fs/files/os_file.rs` 中按连续范围拼装临时缓冲：命中页直接复制，连续冷页
+合并成一次 `inode.read_at()`，只发布完整覆盖的冷页；文件尾、稀疏覆盖、写入/截断/rename
+失效和用户缓冲语义保持不变。没有重新启用早期会卡住的 page-loading waiter。
+
+### 验证与边界
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 均通过，仅有既有
+vendored smoltcp warning。更新版 `tmp_03` 产生于本修复之前，尚无新的 guest A/B；后续需
+比较 `ext4 reads`、read lock wait/hold 和 `read_active`，并覆盖跨页、EOF、稀疏文件及
+read/mmap/splice 并发路径，不能先报告 wall-clock 加速比例。
+
+## 2026-07-28：`tmp_04.ans` 对混合命中读取修复的方向性验证
+
+### 样本对齐
+
+`tmp_04.ans` 是混合命中读取修复后的 RISC-V、8 hart 样本，最后可见 Cargo 标记为
+`Building 5/446`，最后 perf 快照为 `t=145163ms, Building 4/446`；日志无 panic、`TFAIL`、
+`TBROK`、`ERROR` 或 `shutdown!`。
+
+在约 145 秒处与旧 `tmp_03.ans` 对齐：旧样本 `t=143914ms` 为 `Building 5/446`，
+`ext4_read_lock wait/hold=226.250/24.141 s`、`read total/active=199.853/118.286 s`；
+新样本 `tmp_04` 为 `Building 4/446`，对应 `122.490/16.571 s` 和 `150.207/49.550 s`。
+EXT4 reads 也从 `28732` 降至 `27174`，但 file-cache hit/miss 和 Cargo 阶段并不相同。
+
+### 结论边界
+
+新样本没有出现混合命中优化应消除的整段回源特征，锁等待和 read 累计时间均呈有利方向，
+可以作为修复有效性的方向性证据；然而两次运行不是固定镜像状态、相同 Cargo DAG 位置和
+相同请求序列的严格 A/B，不能据此计算整体 wall-clock 加速或宣称超过 Linux。后续应在相同
+阶段比较 EXT4 reads、冷段读取数、read lock wait/hold 和 `read_active`。
+
+本轮仅完善文档，没有新增内核代码；此前混合命中修复的 RISC-V/LoongArch64 perf、release
+构建、格式和补丁检查均已通过。

@@ -1618,3 +1618,36 @@
   启动，`tmp_02` 为维护者提供的运行验证；完整 446 crate、Linux 端到端和正式评分仍待后续。
 - **关联文档**：[BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
 - **关联 commit**：当前工作区未提交
+
+#### 更新版 `tmp_03.ans` 的混合命中读取优化（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供更新后的同名 `tmp_03.ans`，要求基于最新三分钟 BuildStorm 结果继续优化。
+- **样本澄清**：此前文档中的 `t=33511ms, Building 0/446` 属于早期 page-loading waiter 实验；
+  更新版实际在 `t=175421ms` 到达 `Building 5/446`，无 panic/TFAIL/TBROK/shutdown。最后快照的
+  `file_cache hit/miss=453844/24266`，而 `ext4_read_lock wait/hold=311.033/29.048 s`。
+- **根因与修改**：大于一页的 `read()` 原先只要一页未命中就整段调用 `inode.read_at()`，重复
+  读取其余命中页。`OSFile::try_page_cached_read()` 现按页复制命中数据，只对连续冷页段执行
+  一次 `inode.read_at()` 并发布完整页；容量、失效、稀疏文件覆盖和 EOF 语义未改，也没有重新
+  启用早期会卡住的 loading waiter。
+- **验证**：RISC-V/LoongArch64 `make perf`、格式检查和 `git diff --check` 通过，仅有既有
+  smoltcp warning。更新版 `tmp_03` 早于本修复，尚无 guest A/B，不能报告 wall-clock 加速；后续
+  需比较 EXT4 read 次数、锁 wait/hold、read_active，并覆盖跨页、EOF、稀疏和并发 mmap/splice。
+- **关联文档**：[BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
+- **关联 commit**：当前工作区未提交
+
+#### `tmp_04.ans` 对混合命中读取修复的方向性验证（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供混合命中读取修复后的 `tmp_04.ans`，要求完善性能复盘并给出合适提交信息。
+- **描述**：`tmp_04` 最后可见 Cargo 为 `Building 5/446`，最后 perf 快照为
+  `t=145163ms, Building 4/446`，无 panic/TFAIL/TBROK/ERROR/shutdown。与旧 `tmp_03` 约 145 秒
+  快照相比，`ext4_read_lock` wait/hold 从 `226.250/24.141 s` 降为 `122.490/16.571 s`，
+  read total/active 从 `199.853/118.286 s` 降为 `150.207/49.550 s`；样本阶段和工作量不同，
+  只作为方向性证据，不报告严格 A/B 或整体 wall-clock 加速。
+- **结论**：数据与“命中页直接复制、只对连续冷页段进入 inode.read_at”一致；后续仍应固定
+  镜像、hart、缓存状态和 Cargo 阶段，比较 EXT4 reads、冷段读取数、锁 wait/hold 和 read_active。
+- **验证**：本轮完善文档，没有新增内核代码；混合命中修复已通过 RISC-V/LoongArch64 perf、
+  release 构建、格式检查和 `git diff --check`。QEMU 独立 A/B 仍受宿主 `/var/tmp` 只读限制。
+- **关联文档**：[BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
+- **关联 commit**：当前工作区未提交

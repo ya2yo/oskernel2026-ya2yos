@@ -236,20 +236,73 @@ impl OSFile {
             return Ok(Some(read_size));
         }
 
-        let mut kernel_buf = vec![0; requested_len];
-        let read_size = match FILE_PAGE_CACHE.read_cached_at(&path, offset, &mut kernel_buf) {
-            Some(read_size) => read_size,
-            None => {
-                let read_size = self.inode.read_at(offset, &mut kernel_buf)?;
+        // A large read often straddles both resident and cold pages.  The old
+        // all-or-nothing lookup treated one cold page as a miss for the whole
+        // request, rereading every already cached page through lwext4.  That
+        // inflated the serialized EXT4 read queue even when most of the
+        // request was a page-cache hit.  Fill a temporary contiguous buffer by
+        // copying resident pages and issuing I/O only for contiguous cold
+        // runs; the resulting complete pages are published as before.
+        let available = requested_len.min(file_size.saturating_sub(offset));
+        let mut kernel_buf = vec![0; available];
+        let mut cursor = 0usize;
+        while cursor < available {
+            let file_offset = offset.saturating_add(cursor);
+            let page_index = file_offset / PAGE_SIZE;
+            let page_offset = file_offset % PAGE_SIZE;
+            if let Some(page) = FILE_PAGE_CACHE.get(&path, page_index) {
+                if page_offset >= page.valid_len {
+                    break;
+                }
+                let read_size = (page.valid_len - page_offset).min(available - cursor);
+                let page_bytes = page.frame.ppn.bytes_array();
+                kernel_buf[cursor..cursor + read_size]
+                    .copy_from_slice(&page_bytes[page_offset..page_offset + read_size]);
+                cursor += read_size;
+                continue;
+            }
+
+            let run_start = cursor;
+            let first_page_end = page_index
+                .saturating_add(1)
+                .saturating_mul(PAGE_SIZE)
+                .saturating_sub(offset)
+                .min(available);
+            let mut run_end = first_page_end.max(cursor.saturating_add(1));
+            while run_end < available {
+                let next_page_index = offset.saturating_add(run_end) / PAGE_SIZE;
+                if FILE_PAGE_CACHE.get(&path, next_page_index).is_some() {
+                    break;
+                }
+                let next_page_end = next_page_index
+                    .saturating_add(1)
+                    .saturating_mul(PAGE_SIZE)
+                    .saturating_sub(offset)
+                    .min(available);
+                if next_page_end <= run_end {
+                    break;
+                }
+                run_end = next_page_end;
+            }
+
+            let read_size = self.inode.read_at(
+                offset.saturating_add(run_start),
+                &mut kernel_buf[run_start..run_end],
+            )?;
+            if read_size != 0 {
                 FILE_PAGE_CACHE.insert_read_range(
                     &path,
-                    offset,
-                    &kernel_buf[..read_size],
+                    offset.saturating_add(run_start),
+                    &kernel_buf[run_start..run_start + read_size],
                     file_size,
                 );
-                read_size
+                cursor = cursor.saturating_add(read_size);
             }
-        };
+            if read_size < run_end - run_start {
+                break;
+            }
+        }
+        let read_size = cursor;
         if read_size != 0 {
             buf.write(&kernel_buf[..read_size]);
         }
