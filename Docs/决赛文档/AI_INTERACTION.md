@@ -1730,3 +1730,22 @@
   终止，首份有历史偶发 Rustc `SIGSEGV`，不报告端到端加速或完整 BuildStorm 结果。详见
   [问题复盘](./problem/buildstorm-ext4-sparse-write-readahead.md)。
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_01`/`tmp_02` EXT4 读路径收敛与一小时目标规划（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求根据 `tmp_01.ans`、`tmp_02.ans` 总结已完成的 EXT4 锁粒度和页缓存工作，并给出在评测机
+  一小时内编译约 446 个 crates 的后续优化路线。
+- **依据与结论**：两个日志均未出现 `BUILDSTORM_COMPILE mode=multi ok=true elapsed_s=<...>`、`shutdown!` 或最终
+  Summary，故不能报告一小时达标或端到端加速。`tmp_02` 的 `read_data_lock` 仍有 `7.552 s` 累计 wait，`find`、
+  `fstat`、metadata 仍频繁进入 lwext4；`dentry_positive_hit=0` 是高优先级异常。Linux 的 generic filemap/read-ahead
+  使用 per-file mapping、folio 与 `file_ra_state`，而 Ya2yOS 仍有全局页缓存索引和 lwext4 单一非 SMP-safe gate，
+  因而不将该 gate 改为 rwlock，也不继续无证据扩大预读。
+- **修改**：以每 inode `io_state` 保护 descriptor/alias/delay 状态，读取拆为 open/data 锁段并复用兼容 descriptor；
+  保留最多四页/16 KiB 的有界顺序预读。8 页试验因扩大 `read_data` 的全局锁 hold/wait 被撤回。后续按完整受控
+  benchmark、dentry 正命中、metadata/namespace 细分、容量受限的页缓存分片、写入/rename 及后端架构上限的顺序推进。
+- **验证**：RISC-V `make perf`、LoongArch64 `make build-arch`、格式与补丁检查通过；两次使用 `/tmp` qcow2 overlay
+  的 120 秒 RISC-V 冒烟进入 `buildstorm-compile`，有 `sigaltstack`/`rseq` PASS，无 panic/TFAIL/TBROK/could-not-compile，
+  但被 timeout 终止，最终仅可见 `Building 6/446`。完整 BuildStorm 和一小时目标尚未验证。
+- **关联文档**：[BuildStorm EXT4 稀疏写、读锁与预读优化](./problem/buildstorm-ext4-sparse-write-readahead.md)
+- **关联 commit**：当前工作区未提交

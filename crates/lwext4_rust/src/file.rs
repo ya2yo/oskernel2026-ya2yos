@@ -375,13 +375,19 @@ impl Ext4File {
         // Callers serialize descriptor position and all lwext4 access before
         // reaching this method, so retaining the descriptor does not relax
         // the wrapper's concurrency guarantees.
-        if self.has_opened
-            && self.path_str() == path
-            && matches!(self.last_flags, O_RDONLY | O_RDWR)
-        {
+        if self.is_open_for_read(path) {
             return Ok(EOK as usize);
         }
         self.file_open_inner(path, O_RDONLY, false)
+    }
+
+    /// Check whether this descriptor can serve a read without another
+    /// pathname lookup.  Callers that use it must already serialize access to
+    /// this `Ext4File`; the check itself is entirely Rust-side and does not
+    /// enter lwext4.
+    #[inline]
+    pub fn is_open_for_read(&self, path: &str) -> bool {
+        self.has_opened && self.path_str() == path && matches!(self.last_flags, O_RDONLY | O_RDWR)
     }
 
     fn file_open_inner(

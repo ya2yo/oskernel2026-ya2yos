@@ -51,7 +51,8 @@ pub(super) struct Ext4OpGuard<'a> {
 /// without changing its global serialization model.
 #[derive(Clone, Copy)]
 pub(super) enum Ext4LockClass {
-    Read,
+    ReadOpen,
+    ReadData,
     Find,
     Fstat,
     Write,
@@ -140,8 +141,12 @@ impl Ext4OpLock {
         }
     }
 
-    pub fn lock_for_read(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Read)
+    pub fn lock_for_read_open(&self) -> Ext4ProfiledOpGuard<'_> {
+        self.lock_profiled(Ext4LockClass::ReadOpen)
+    }
+
+    pub fn lock_for_read_data(&self) -> Ext4ProfiledOpGuard<'_> {
+        self.lock_profiled(Ext4LockClass::ReadData)
     }
 
     pub fn lock_for_find(&self) -> Ext4ProfiledOpGuard<'_> {
@@ -232,8 +237,13 @@ impl Drop for Ext4ProfiledOpGuard<'_> {
         {
             if let Some((wait_ticks, hold_ticks)) = self.guard.release() {
                 match self.class {
-                    Ext4LockClass::Read => {
-                        crate::utils::perf::record_ext4_read_lock(wait_ticks, hold_ticks)
+                    Ext4LockClass::ReadOpen => {
+                        crate::utils::perf::record_ext4_read_lock(wait_ticks, hold_ticks);
+                        crate::utils::perf::record_ext4_read_open_lock(wait_ticks, hold_ticks);
+                    }
+                    Ext4LockClass::ReadData => {
+                        crate::utils::perf::record_ext4_read_lock(wait_ticks, hold_ticks);
+                        crate::utils::perf::record_ext4_read_data_lock(wait_ticks, hold_ticks);
                     }
                     Ext4LockClass::Find => {
                         crate::utils::perf::record_ext4_find_lock(wait_ticks, hold_ticks)

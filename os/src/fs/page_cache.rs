@@ -1,8 +1,14 @@
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::RwLock;
 
 use crate::{arch::memory_layout::PAGE_SIZE, fs::Inode, mm::FrameTracker, utils::SysErrNo};
+
+/// Maximum number of adjacent pages a confirmed sequential fault may load in
+/// one filesystem read.  This deliberately stays small: the global cache has
+/// no eviction policy yet, while 16 KiB is enough to amortize the lwext4 gate
+/// over common ELF and source-file mmap walks.
+const SEQUENTIAL_READAHEAD_MAX_PAGES: usize = 4;
 
 /// 文件页缓存的索引键。
 ///
@@ -221,9 +227,9 @@ impl FilePageCache {
     /// 为避免并发加载同一页导致重复插入，函数在完成 I/O 后会再次检查缓存中是否
     /// 已存在同一 `FilePageKey`，若存在则返回已有页。
     ///
-    /// 若前一页已经缓存而当前页缺失，访问模式很可能是顺序读取。此时在一次底层
-    /// 读取中同时加载当前页和下一页，以减少连续 mmap/read/splice 产生的 EXT4
-    /// 全局锁获取次数。随机访问、文件尾页和预读页分配失败仍维持单页加载。
+    /// 若前一页已经缓存而当前页缺失，访问模式很可能是顺序读取。此时用一次底层
+    /// 读取加载一个有上限的相邻页批次，以减少连续 mmap/read/splice 产生的 EXT4
+    /// 全局锁获取次数。随机访问、文件尾页和预读页分配失败仍维持单页或较小批次加载。
     pub fn get_or_load(
         &self,
         inode: Arc<dyn Inode>,
@@ -275,12 +281,6 @@ impl FilePageCache {
 
         let file_size = inode.size();
         let file_offset = page_index * PAGE_SIZE;
-        let next_key = page_index
-            .checked_add(1)
-            .map(|next_page_index| FilePageKey {
-                path: key.path.clone(),
-                page_index: next_page_index,
-            });
         let has_cached_previous = page_index != 0
             && self
                 .pages
@@ -289,56 +289,70 @@ impl FilePageCache {
                 .is_some_and(|pages| pages.contains_key(&(page_index - 1)));
         let should_readahead = has_cached_previous
             && file_offset.saturating_add(PAGE_SIZE) < file_size
-            && next_key.is_some();
-
-        let frame = FrameTracker::alloc().ok_or(SysErrNo::ENOMEM)?;
-        let next_frame = if should_readahead {
-            FrameTracker::alloc()
+            && page_index.checked_add(1).is_some();
+        let wanted_pages = if should_readahead {
+            file_size
+                .saturating_sub(file_offset)
+                .saturating_add(PAGE_SIZE - 1)
+                / PAGE_SIZE
         } else {
-            None
+            1
+        }
+        .clamp(1, SEQUENTIAL_READAHEAD_MAX_PAGES);
+
+        // Allocation failure only shortens the speculative tail.  The faulting
+        // page must still be available or this is a real ENOMEM for the caller.
+        let mut frames = Vec::with_capacity(wanted_pages);
+        frames.push(FrameTracker::alloc().ok_or(SysErrNo::ENOMEM)?);
+        while frames.len() < wanted_pages {
+            let Some(frame) = FrameTracker::alloc() else {
+                break;
+            };
+            frames.push(frame);
+        }
+
+        let read_len = if file_offset >= file_size {
+            0
+        } else if frames.len() == 1 {
+            inode.read_at(file_offset, frames[0].ppn.bytes_array_mut())?
+        } else {
+            let mut read_buf = alloc::vec![0; frames.len() * PAGE_SIZE];
+            let read_len = inode.read_at(file_offset, &mut read_buf)?;
+            for (index, frame) in frames.iter().enumerate() {
+                let page_start = index * PAGE_SIZE;
+                let valid_len = read_len.saturating_sub(page_start).min(PAGE_SIZE);
+                if valid_len == 0 {
+                    break;
+                }
+                frame.ppn.bytes_array_mut()[..valid_len]
+                    .copy_from_slice(&read_buf[page_start..page_start + valid_len]);
+            }
+            read_len
         };
 
-        let (valid_len, readahead_page) =
-            if let (Some(next_key), Some(next_frame)) = (next_key.as_ref(), next_frame) {
-                let mut read_buf = alloc::vec![0; PAGE_SIZE * 2];
-                let read_len = if file_offset < file_size {
-                    inode.read_at(file_offset, &mut read_buf)?
-                } else {
-                    0
-                };
-                let valid_len = read_len.min(PAGE_SIZE);
-                frame.ppn.bytes_array_mut()[..valid_len].copy_from_slice(&read_buf[..valid_len]);
-
-                let readahead_len = read_len.saturating_sub(PAGE_SIZE).min(PAGE_SIZE);
-                let readahead_page = if readahead_len == 0 {
-                    None
-                } else {
-                    next_frame.ppn.bytes_array_mut()[..readahead_len]
-                        .copy_from_slice(&read_buf[PAGE_SIZE..PAGE_SIZE + readahead_len]);
-                    Some(Arc::new(FilePage {
-                        key: next_key.clone(),
-                        frame: next_frame,
-                        valid_len: readahead_len,
-                        dirty: AtomicBool::new(false),
-                    }))
-                };
-                (valid_len, readahead_page)
-            } else {
-                let bytes = frame.ppn.bytes_array_mut();
-                let valid_len = if file_offset < file_size {
-                    inode.read_at(file_offset, bytes)?
-                } else {
-                    0
-                };
-                (valid_len, None)
+        let mut loaded_pages = Vec::with_capacity(frames.len());
+        for (index, frame) in frames.into_iter().enumerate() {
+            let page_start = index * PAGE_SIZE;
+            let valid_len = read_len.saturating_sub(page_start).min(PAGE_SIZE);
+            // The first page represents the fault itself, including an EOF
+            // sentinel.  Empty trailing speculative pages are not published.
+            if index != 0 && valid_len == 0 {
+                break;
+            }
+            let Some(loaded_page_index) = page_index.checked_add(index) else {
+                break;
             };
-
-        let page = Arc::new(FilePage {
-            key,
-            frame,
-            valid_len,
-            dirty: AtomicBool::new(false),
-        });
+            loaded_pages.push(Arc::new(FilePage {
+                key: FilePageKey {
+                    path: key.path.clone(),
+                    page_index: loaded_page_index,
+                },
+                frame,
+                valid_len,
+                dirty: AtomicBool::new(false),
+            }));
+        }
+        let page = loaded_pages.remove(0);
 
         let mut pages = self.pages.write();
         let file_pages = pages.entry(path.clone()).or_default();
@@ -348,22 +362,22 @@ impl FilePageCache {
             return Ok(existing);
         }
         file_pages.insert(page_index, page.clone());
-        let readahead_bytes = readahead_page.and_then(|readahead_page| {
-            let readahead_bytes = readahead_page.valid_len;
+        let mut readahead_pages = 0;
+        let mut readahead_bytes = 0;
+        for readahead_page in loaded_pages {
             let readahead_page_index = readahead_page.key.page_index;
-            if file_pages.contains_key(&readahead_page_index) {
-                None
-            } else {
+            if !file_pages.contains_key(&readahead_page_index) {
+                readahead_pages += 1;
+                readahead_bytes += readahead_page.valid_len;
                 file_pages.insert(readahead_page_index, readahead_page);
-                Some(readahead_bytes)
             }
-        });
+        }
         drop(pages);
         #[cfg(not(feature = "perf"))]
-        let _ = readahead_bytes;
+        let _ = (readahead_pages, readahead_bytes);
         #[cfg(feature = "perf")]
-        if let Some(readahead_bytes) = readahead_bytes {
-            crate::utils::perf::record_file_cache_readahead(1, readahead_bytes);
+        if readahead_pages != 0 {
+            crate::utils::perf::record_file_cache_readahead(readahead_pages, readahead_bytes);
         }
         Ok(page)
     }

@@ -414,3 +414,101 @@ make perf TARGET_ARCH=loongarch64
 `metadata` 细分为 size、alias、mode/owner、link count 等，并将 `namespace` 细分为 create、truncate、
 unlink、hard link、symlink，再以相同 Cargo 阶段决定是否能缩短某个具体临界区。不要仅凭本轮 `2.4%` 的页缓存
 race 引入 single-flight，也不要未经新的 inode 内部并发设计而移除 `add_alias_path()` 的全局锁。
+
+## 2026-07-28：`tmp_01`/`tmp_02` 读锁拆分、四页有界预读与一小时目标
+
+### 样本边界和当前结论
+
+本轮复核维护者提供的 `tmp_01.ans`、`tmp_02.ans`。二者都是 BuildStorm `buildstorm-compile` 的中途输出，
+只有 Cargo `Building N/446`，没有 `BUILDSTORM_COMPILE mode=multi ok=true elapsed_s=<...>`、`shutdown!`、
+最终 `Summary` 或完成标记。因此它们只能用于热点归因，不能报告完整编译时间、端到端加速比例或“评测机一小时内
+完成约 446 个 crates”已经达标。
+
+`tmp_01` 最后约为 `Building 5/446`，`ext4_read_lock` 累计 wait/hold 为 `59.854/9.434 s`。`tmp_02` 在
+`t=67.340s` 时约为 `Building 4/446`，其主要指标如下：
+
+| 指标 | `tmp_02` 值 | 结论 |
+| --- | ---: | --- |
+| `ext4_read_lock` | 17,553 samples，`7.604/4.816 s` wait/hold | 全局 lwext4 gate 仍主要被读取排队 |
+| `read_open_lock` | 1,820 samples，`0.052/1.538 s` wait/hold | descriptor 准备不再是读路径主要等待来源 |
+| `read_data_lock` | 15,733 samples，`7.552/3.278 s` wait/hold | 实际数据读取仍必须通过唯一后端串行边界 |
+| `find_lock` | 9,436 samples，`0.511/8.106 s` wait/hold | 路径查找和锁内工作仍不可忽略 |
+| `fstat_lock` | 3,931 samples，`0.106/2.302 s` wait/hold | 属性查询仍频繁进入后端 |
+| `metadata_lock` | 1,616 samples，`0.230/5.350 s` wait/hold | 聚合类别尚需进一步细分 |
+| `file_cache` | 222,518/14,644 hit/miss | mmap 缺页仍是主要冷页来源 |
+| `load_races/load_attempts` | 427/14,647（约 2.9%） | 同页重复加载不足以支持高风险 waiter 重构 |
+
+读锁拆分后的 `tmp_02` 中，实际 data-read 累计等待低于 `tmp_01` 未拆分读路径的约 `59.854 s`，但两个样本的
+工作量和 Cargo 阶段不同，不能把它解释为整体加速比例。当前可确认的是：无谓的全局锁入口已减少，但 gate 请求数与
+锁内数据读取仍然制约吞吐，距离一小时目标仍有显著差距。
+
+### 已实现的收敛与取舍
+
+`Ext4Inode` 现在通过每 inode 的 `io_state` 保护 descriptor、alias 与 delay 状态。锁序固定为写状态路径
+`write_state -> io_state -> EXT4_OP_LOCK`，普通读取为 `io_state -> EXT4_OP_LOCK`。`read_at()` 可据此将
+descriptor open 和 data read 分成两个全局锁段，同时保证中间不会被同 inode 的并发操作改变 descriptor；已有同
+路径 `O_RDONLY/O_RDWR` descriptor 时也会直接复用。
+
+唯一的 `EXT4_OP_LOCK` 仍然保留。lwext4 的挂载级块缓存和路径式 C API 没有 SMP 并发安全保证，直接改为 rwlock
+会破坏后端前提，不能作为性能优化。
+
+页缓存最终采用四页/16 KiB 有界顺序预读：前一页已缓存、当前页缺失且未到 EOF 时，单次最多读取当前页及后三页；
+随机访问、文件第一页和 EOF 均保持单页行为。8 页试验扩大了 `read_data` 的单次持锁时间和全局排队，已撤回。
+最终四页方案的 120 秒运行中，`readahead_ops=4,658`、`readahead_pages=11,572`，平均约 2.48 页/次；该数据
+只证明预读边界的实际行为，不是完整性能 A/B。
+
+### Linux 对照与关键差距
+
+Linux 7.0 的 `ext4_file_read_iter()` 对普通 buffered read 进入 `generic_file_read_iter()`，再由
+`mm/filemap.c` 的 `filemap_get_pages()`、同步/异步 readahead 和 `file_ra_state` 调度；ext4 address-space ops
+还注册 `.readahead = ext4_readahead`。它使用 per-file mapping、folio 批处理和细粒度页锁管理并发。
+
+Ya2yOS 的页缓存当前仍是全局 `RwLock<BTreeMap<path, BTreeMap<page, FilePage>>>`，并且所有 lwext4 C API
+仍经唯一 `EXT4_OP_LOCK`。因此不应照搬 Linux 的大预读窗口，更不能让多 hart 未经证明地同时调用 lwext4。
+近期最有效的方向是消除可避免的 `read/find/fstat/metadata` 后端进入；长期才是建设真实的 per-file 缓存和
+后端并发架构。
+
+`dentry_positive_hit=0` 是必须优先解释的异常：BuildStorm 含有大量已知 regular file 路径，正向 dentry cache
+却没有产生可见命中。这会使 open、路径解析和元数据查询落入 `find`/metadata 的 lwext4 慢路径，比继续盲目扩张
+预读更值得优先取证。
+
+### 验证
+
+已执行并通过：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml
+cargo fmt --manifest-path os/Cargo.toml -- --check
+cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml -- --check
+git diff --check
+make perf TARGET_ARCH=riscv64
+make build-arch TARGET_ARCH=loongarch64
+```
+
+RISC-V perf 和 LoongArch64 release 构建均通过，只有 vendored `smoltcp` 的既有 warning。使用 `/tmp` qcow2
+overlay 的两次 120 秒 RISC-V QEMU 冒烟均通过 `sigaltstack regression: PASS`、`rseq regression: PASS` 并进入
+`buildstorm-compile`，未发现 panic、`TFAIL`、`TBROK` 或 `could not compile`。两次均由外层 timeout 正常结束，
+最终四页方案仅可见 `Building 6/446`；没有改写维护者已有的 `disk.img` 或基础 raw 镜像。因此完整 BuildStorm 和
+一小时目标仍未验证。
+
+### 一小时目标的后续计划
+
+1. **P0：先获得可复现的完整基线。** 固定 raw 镜像、16 GiB 内存、8 hart、BuildStorm 入口和缓存起始状态，
+   用 `/tmp` qcow2 overlay 跑至 guest 输出 `BUILDSTORM_COMPILE mode=multi ok=true elapsed_s=<...>`。只有该行及
+   `elapsed_s` 是完成和时限判据，`timeout` 或 `Building N/446` 不是。
+2. **P1：恢复正向 dentry 命中。** 从 `open`、`FsIndex` 和 `DENTRY_CACHE` 的插入、失效、lookup 路径查明
+   `dentry_positive_hit=0` 的原因；先修复可证实的缓存键、生命周期或准入错误，以消除 `find` 和路径 metadata
+   的后端调用。
+3. **P2：细分 metadata/namespace。** 分别计量 size、mode/owner、link count、create、truncate、unlink、rename
+   和 link，依据完整基线选择可缓存或可合并且语义安全的具体操作，不能由聚合总量猜测性缩锁。
+4. **P3：以锁时间证据驱动页缓存改造。** 在保持失效、COW、mmap 语义前提下，评估有容量上限、按 inode/路径分片
+   的缓存索引和锁；目标是逐步接近 Linux 的 per-file mapping，而不是无限扩大预读或立即引入有停滞历史的
+   per-page waiter。
+5. **P4：处理编译后段的写和目录操作。** 根据完整样本的 write/namespace 数据优化 sparse/direct write、
+   artifact rename 与 metadata cache，同时保持 fsync、rename、unlink、hole 和崩溃可见性语义。
+6. **P5：评估架构上限。** 若上述措施后的完整 benchmark 仍接近或超过一小时，应把 lwext4 的非 SMP-safe 单一
+   gate 视为架构限制，评估替换或深度改造文件系统后端；不得未经并发安全证明把 `EXT4_OP_LOCK` 改为 rwlock。
+
+每一项优化都必须用同配置的完整 `elapsed_s` 与基线比较。当前只完成局部读路径与页缓存改动及有限运行期冒烟，
+尚不能声称评测机一小时内完成 400 多个 crates。

@@ -7891,3 +7891,39 @@ atomic 统计。页缓存新增 `load_attempts/load_races` 计数，两者均不
 `make perf TARGET_ARCH=loongarch64` 通过，只有既有 smoltcp warning。两次 QEMU 样本均由外层 timeout
 终止，未完成 446 crate 或输出测试总结；第一份含历史偶发 Rustc `SIGSEGV`，因此没有报告端到端加速或功能通过。
 详见 `problem/buildstorm-ext4-sparse-write-readahead.md` 同日小节。
+
+## 2026-07-28：`tmp_01`/`tmp_02` EXT4 读路径收敛与一小时编译目标规划
+
+### 用户输入
+
+维护者要求先生成本轮文档总结并规划后续优化方向；评测机要求在一小时内完成约 400 多个 crates，而当前
+BuildStorm 表现远未完成验证。
+
+### 分析与采纳结论
+
+`tmp_01.ans`、`tmp_02.ans` 都是未完成的 BuildStorm 中途样本，没有
+`BUILDSTORM_COMPILE mode=multi ok=true elapsed_s=<...>`、最终 Summary 或 shutdown，不能报告整体 wall-clock
+加速或一小时达标。`tmp_02` 在 `t=67.340s` 约为 `Building 4/446`：data-read 的 EXT4 全局锁累计 wait/hold
+为 `7.552/3.278 s`，而 `find`、`fstat`、metadata 仍高频进入 lwext4；页缓存 miss 主要来自 mmap fault，
+`load_races/load_attempts=427/14647`（约 2.9%）不足以采用有停滞历史的 per-page waiter。
+
+Linux 7.0 使用 per-file mapping、folio batch、`file_ra_state` 和细粒度页锁，Ya2yOS 则仍有全局路径页缓存
+索引和非 SMP-safe lwext4 的唯一 `EXT4_OP_LOCK`。近期应优先减少无效的 read/find/fstat/metadata 后端进入，
+而不是把全局锁改为 rwlock 或盲目扩大预读。`dentry_positive_hit=0` 是下一轮最优先的可证伪异常。
+
+### 修改与验证
+
+本轮以每 inode `io_state` 保护 descriptor、alias 和 delay 状态，读取拆为 open/data 两个全局锁段并复用兼容
+descriptor；页缓存确认保留四页/16 KiB 有界顺序预读，8 页实验因使 read-data 锁 hold/wait 上升而撤回。
+RISC-V `make perf`、LoongArch64 `make build-arch`、两份 120 秒 RISC-V QEMU overlay 冒烟均通过；后两者进入
+`buildstorm-compile` 并有 `sigaltstack`、`rseq` PASS，无 panic/TFAIL/TBROK/could-not-compile，但均由 timeout
+终止，最终只可见 `Building 6/446`。
+
+完整测量计划将固定镜像、内存、hart、入口和缓存起始状态，运行到 guest `ok=true elapsed_s`，再依次处理正向
+dentry 命中、metadata/namespace 细分、容量受限的页缓存分片，以及编译后段的写和 rename。若完整样本仍超过
+一小时，应将 lwext4 单一 gate 当作架构上限评估后端重构，而不破坏其并发安全前提。
+
+### 关联
+
+- 问题复盘：[BuildStorm EXT4 稀疏写、读锁与预读优化](./problem/buildstorm-ext4-sparse-write-readahead.md)
+- 关联 commit：当前工作区未提交

@@ -200,7 +200,11 @@ impl Ext4LockStats {
 }
 
 static EXT4_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+/// Aggregate across both pieces of a split `Ext4Inode::read_at()` slow path.
+/// `samples` therefore counts global-lock acquisitions, not logical reads.
 static EXT4_READ_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_READ_OPEN_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_READ_DATA_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 static EXT4_FIND_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 static EXT4_FSTAT_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 static EXT4_WRITE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
@@ -957,6 +961,16 @@ pub fn record_ext4_read_lock(wait_ticks: usize, hold_ticks: usize) {
 }
 
 #[inline]
+pub fn record_ext4_read_open_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_READ_OPEN_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
+#[inline]
+pub fn record_ext4_read_data_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_READ_DATA_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
+#[inline]
 pub fn record_ext4_find_lock(wait_ticks: usize, hold_ticks: usize) {
     EXT4_FIND_LOCK_STATS.record(wait_ticks, hold_ticks);
 }
@@ -1345,6 +1359,8 @@ fn emit_report(now: usize) {
         VFS_DENTRY_CAPACITY_EVICTED_ENTRIES.load(Ordering::Relaxed),
     );
     emit_ext4_lock_stats("ext4_read_lock", &EXT4_READ_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_read_open_lock", &EXT4_READ_OPEN_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_read_data_lock", &EXT4_READ_DATA_LOCK_STATS);
     emit_ext4_lock_stats("ext4_find_lock", &EXT4_FIND_LOCK_STATS);
     emit_ext4_lock_stats("ext4_fstat_lock", &EXT4_FSTAT_LOCK_STATS);
     emit_ext4_lock_stats("ext4_write_lock", &EXT4_WRITE_LOCK_STATS);
