@@ -194,6 +194,17 @@ pub fn sys_fork() -> isize {
     syscall(SYSCALL_CLONE, [SIGCHLD as isize, 0, 0, 0, 0, 0])
 }
 
+/// vfork uses no architecture-sensitive optional clone arguments.
+#[inline(always)]
+pub fn sys_vfork() -> isize {
+    const SIGCHLD: usize = 17;
+    const CLONE_VM: usize = 0x0000_0100;
+    const CLONE_VFORK: usize = 0x0000_4000;
+    let flags = (SIGCHLD | CLONE_VM | CLONE_VFORK) as isize;
+
+    syscall(SYSCALL_CLONE, [flags, 0, 0, 0, 0, 0])
+}
+
 pub fn sys_exec(path: &str) -> isize {
     let path = c_string_bytes(path);
     syscall(SYSCALL_EXECVE, [path.as_ptr() as isize, 0, 0, 0, 0, 0])
@@ -222,6 +233,21 @@ pub fn sys_execve(args: &[&str]) -> isize {
             0,
             0,
         ],
+    )
+}
+
+/// Invoke execve with already NUL-terminated C ABI pointers and no allocation.
+/// This is the only exec wrapper that is safe to call after a successful
+/// vfork() return in the child branch.
+#[inline(always)]
+pub unsafe fn sys_execve_raw(
+    path: *const u8,
+    argv: *const *const u8,
+    envp: *const *const u8,
+) -> isize {
+    syscall(
+        SYSCALL_EXECVE,
+        [path as isize, argv as isize, envp as isize, 0, 0, 0],
     )
 }
 

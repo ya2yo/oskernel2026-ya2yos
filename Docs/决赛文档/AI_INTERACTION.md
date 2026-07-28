@@ -1764,3 +1764,15 @@
   不报告性能比例。
 - **关联文档**：[BuildStorm clone3/vfork 共享地址空间交接](./problem/buildstorm-vfork-clone3-lifecycle.md)
 - **关联 commit**：当前工作区未提交
+
+#### Rust vfork/exec 微基准替代 stress-ng（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者希望用本地 stress-ng 源码测试 vfork+exec，随后要求将所需 workload 简化翻译为 Rust。
+- **描述**：未引入完整 stress-ng C 工程及其交叉构建依赖，改为实现固定操作数的原生 Rust profile。
+  `vfork()` 使用 `CLONE_VM|CLONE_VFORK|SIGCHLD`，child 只可调用无分配的 raw `execve()` 或 `exit()`；
+  profile 顺序执行 vfork+exit、vfork+exec 和 fork+exec control，统一执行镜像既有的
+  `/musl/busybox true`。这使内核已有的 vfork 四段时序和 release-reason 统计可被直接、可解释地触发。
+- **验证**：RISC-V、LoongArch64 `make perf` 通过。RISC-V final-2026 镜像的临时 qcow2 overlay guest
+  运行完成，三个组均 `failed=0`，`vfork_release exec=64 exit=256 signal=0`；未用单次运行宣称性能提升。
+- **关联 commit**：当前工作区未提交

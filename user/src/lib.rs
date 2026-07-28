@@ -152,11 +152,36 @@ pub fn rseq(rseq: *mut RseqAbi, rseq_len: u32, flags: u32, sig: u32) -> isize {
 pub fn fork() -> isize {
     sys_fork()
 }
+
+/// Create a Linux `CLONE_VM | CLONE_VFORK | SIGCHLD` child.
+///
+/// # Safety
+///
+/// In the child branch, the caller must perform only an async-signal-safe
+/// `execve_raw()` or `exit()` operation. In particular, do not allocate,
+/// print, lock, or return through ordinary Rust control flow before exec/exit.
+#[inline(always)]
+pub unsafe fn vfork() -> isize {
+    sys_vfork()
+}
+
 pub fn exec(path: &str) -> isize {
     sys_exec(path)
 }
 pub fn execve(args: &[&str]) -> isize {
     sys_execve(args)
+}
+
+/// Invoke `execve` with caller-owned, NUL-terminated C ABI pointers.
+///
+/// # Safety
+///
+/// `path` and every non-null `argv`/`envp` entry must remain valid and
+/// NUL-terminated for the syscall. This wrapper does not allocate so it can be
+/// used by the child side of [`vfork`].
+#[inline(always)]
+pub unsafe fn execve_raw(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> isize {
+    sys_execve_raw(path, argv, envp)
 }
 pub fn run_busyboxsh() -> isize {
     sys_busyboxsh()

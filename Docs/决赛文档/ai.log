@@ -7956,3 +7956,37 @@ child exit 兜底及 parent Ready 到恢复，并单独累计 exec/exit/SIGKILL 
 `make perf TARGET_ARCH=riscv64` 与 `make perf TARGET_ARCH=loongarch64`，以及两架构普通
 release 构建均通过，只有既有 smoltcp warning。未运行四小时 BuildStorm，故没有端到端加速或
 异常样本归因结论。
+
+## 2026-07-29：Rust `vfork`/`execve` 微基准替代 stress-ng 接入
+
+### 用户输入
+
+维护者拿到 stress-ng 源码后，希望将其作为当前项目性能测试工具；在交叉构建遇到 RISC-V C++
+驱动缺失、LoongArch 静态链接缺少 `strlcat` 后，要求“简单地将对应代码翻译成 Rust”。
+
+### 分析与采纳结论
+
+本轮目标是定位和比较 `CLONE_VFORK` 加 `execve`，不需要 stress-ng 的完整压力器集合。完整
+上游二进制还会在 root-owned initproc 下主动跳过 exec stressor，并引入未实现 ABI 的噪声。因而
+改为用户态 Rust 微基准，固定三组串行工作：256 次 vfork+exit，64 次 vfork+exec，以及同一
+`/musl/busybox true` 负载的 64 次 fork+exec 对照。
+
+普通 `user_lib::execve(&[&str])` 会构造 `Vec`，不满足 vfork child 只允许 exec/exit 的约束。
+新增的 unsafe `vfork()` 仅组合 Linux legacy clone 的 `CLONE_VM | CLONE_VFORK | SIGCHLD`；
+`execve_raw()` 接受预先构造的 NUL 结尾指针且不分配内存。Rust 子进程分支不打印、不分配、不加锁，
+仅执行 raw execve，失败才 `exit(127)`；安全前提写入 API 文档。vfork 不传递 legacy clone 的
+可选 TLS/TID 参数，因此两个已支持架构使用同一调用接口。
+
+### 修改与验证
+
+新增 `user/src/bin/vfork_bench/mod.rs`，在 `initproc` 的临时 `get_score()` 入口运行该 profile；
+`user/src/lib.rs` 和 `user/src/syscall/mod.rs` 增加受安全约束的 `vfork`/raw `execve` 封装。先前创建的
+stress-ng 构建脚本、补丁、README 和忽略规则已撤回，未修改任何 ext4 测试镜像。
+
+`cargo fmt --manifest-path user/Cargo.toml -- --check`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64` 与 `make perf TARGET_ARCH=loongarch64` 均通过，只有既有 smoltcp
+warning。RISC-V 使用当前 final-2026 raw 镜像的 `/tmp` qcow2 overlay 运行，避免沙箱 `/var/tmp`
+只读限制；guest 三组 `failed=0`、profile `status=0`，最终 perf 为
+`vfork_release exec=64 exit=256 signal=0`、四段 vfork 样本为 64/64/256/320，且 128 次 execve
+来自两组各 64 次的 exec workload。该 run 验证路径与统计语义，不作为不同实现、不同镜像或 Linux
+之间的性能提升结论。LoongArch64 未运行 QEMU，仅完成 perf 编译验证。
