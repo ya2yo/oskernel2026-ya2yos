@@ -12,7 +12,7 @@ use super::{
     MemorySetInner,
 };
 use crate::{
-    fs::{OSFile, FILE_PAGE_CACHE},
+    fs::{FilePageCacheSource, OSFile, FILE_PAGE_CACHE},
     mm::{
         FrameTracker, MapAreaType, MapPermission, PhysAddr, PhysPageNum, VPNRange, VirtAddr,
         VirtPageNum,
@@ -161,7 +161,9 @@ impl MemorySet {
     fn prepare_file_page(&self, vpn: VirtPageNum) -> Option<bool> {
         let request = self.get_ref().mmap_file_page_info(vpn);
         let (inode, page_index) = request?;
-        let page = FILE_PAGE_CACHE.get_or_load(inode, page_index).ok()?;
+        let page = FILE_PAGE_CACHE
+            .get_or_load(inode, page_index, FilePageCacheSource::Mmap)
+            .ok()?;
         Some(page.valid_len == 0)
     }
 
@@ -170,7 +172,7 @@ impl MemorySet {
     pub fn prefetch_shared_file_pages(&self) {
         let requests = self.get_ref().shared_file_page_info();
         for (inode, page_index) in requests {
-            let _ = FILE_PAGE_CACHE.get_or_load(inode, page_index);
+            let _ = FILE_PAGE_CACHE.get_or_load(inode, page_index, FilePageCacheSource::Mmap);
         }
     }
 

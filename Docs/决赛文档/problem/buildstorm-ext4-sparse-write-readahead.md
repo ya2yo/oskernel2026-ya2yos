@@ -281,3 +281,59 @@ write 锁内 `data` 为 `16.519 s / 5609` 次，高于 open `3.923 s` 和 quota 
    检查几乎全为 regular-file miss，可在 `OSFile` 创建时缓存不可变的 seekability/type，避免每次
    `lseek` 复制路径并查询全局 special-node 表；需保留 FIFO/socket 返回 `ESPIPE` 的语义，并以定向
    `lseek`/FIFO 回归验证。
+
+## 2026-07-28：`tmp_10`/`tmp_11` 复核与页缓存来源统计
+
+### 样本结论
+
+维护者指出应以 `tmp_10.ans` 而不是较早的 `tmp_09.ans` 对照 `tmp_11.ans`。两份日志都使用
+`buildstorm::compile::run()` 入口，但都停在 Cargo `Building N/446` 阶段，没有 `TPASS`、`TFAIL`、
+`TBROK`、`Summary` 或 `shutdown!`；`syscalls total` 也包含 futex 与未分类 syscall，不能充当编译吞吐。
+
+在约 70 秒快照中，两者的 `open`、`stat`、`read`、`write` 数量近似，而 `tmp_11` 的 EXT4 分类锁等待
+合计约为 `1.052 s`，低于 `tmp_10` 的约 `2.339 s`。约 100 秒时，`tmp_11` 的对应等待合计约 `53.715 s`，
+仍低于 `tmp_10` 的约 `69.871 s`。但 Cargo 并发任务与 crate 顺序不同，且运行均未完成，因此这些数据既
+不能证明端到端回归，也不能报告加速比例。
+
+### 不扩大预读窗口
+
+本轮曾按 Linux readahead 的批量 I/O 思路评估将 `FilePageCache::get_or_load()` 扩展为四页冷页窗口。
+在提交前复核本问题的既有证据后撤回：同一文档已经记录三页试验于 `t=297.264 s` 的
+`ext4_read_lock wait/hold=525.574286/68.483890 s`，而正式两页方案在相近 `t=295.402 s` 为
+`424.939015/53.578775 s`。样本非严格 A/B，不能报告百分比，但在更少 read 样本下同时出现更高 wait/hold，
+足以否定继续扩大预读深度的假设。
+
+当前正式行为保持不变：顺序信号仅为“前一页已缓存、当前页缺失”，一次读取当前页与一页预读页；已缓存页、
+尾页、分配失败及随机访问仍回退原行为。没有重新引入曾发生停滞的 page-loading waiter。
+
+### 修改
+
+为确定下一轮可安全合并的冷读来源，新增低开销的 `perf` 聚合统计，不改变缓存准入、页内容、失效、锁或
+读取语义：
+
+- `FilePageCache::get_or_load()` 的既有 hit/miss 按 `mmap`、普通 `read`、`splice` 归因；普通多页
+  `read()` 还按实际页探测累计 `read_page_hit/read_page_miss`，因此这两个字段不与历史总计数直接相加。
+- `OSFile::try_page_cached_read()` 记录普通 read 因请求超过 64 KiB、文件超过 8 MiB 或非 regular inode
+  旁路页缓存的操作次数与请求字节数。
+- 定期 perf 输出增加独立的 `file_cache_source` 行；旧 `ext4 ... file_cache hit/miss` 输出不变，历史
+  解析脚本和日志对比不受字段迁移影响。
+
+涉及 `os/src/fs/page_cache.rs`、`os/src/fs/files/os_file.rs`、`os/src/mm/memory_set/handle.rs`、
+`os/src/syscall/io_mpx/splice.rs` 与 `os/src/utils/perf.rs`。维护者已有的 `user/src/bin/initproc.rs`
+和未跟踪 `disk.img` 未触碰。
+
+### 验证与后续样本
+
+已执行 `cargo fmt --manifest-path os/Cargo.toml --check` 与 `git diff --check`。维护者已明确要求不再构建，
+故未执行 `make`、QEMU、BuildStorm 或双架构编译；尚无包含新统计的 guest 样本。
+
+下一次同配置运行应同时读取：
+
+```text
+[perf] ext4 ... file_cache hit=... miss=...
+[perf] file_cache_source mmap_hit=... mmap_miss=... read_page_hit=... read_page_miss=...
+       splice_hit=... splice_miss=... read_bypass_*_ops=... read_bypass_*_bytes=...
+```
+
+只有当旁路大头可归因到可失效、受内存上限约束的 immutable regular file，才评估扩大该类文件的缓存准入；
+若冷页主要来自 mmap fault 或 splice，则应分别合并相邻缺页而不是扩大全局预读窗口。

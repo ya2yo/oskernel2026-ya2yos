@@ -3,9 +3,9 @@ use crate::arch::memory_layout::PAGE_SIZE;
 use crate::arch::time::get_ticks;
 use crate::{
     fs::{
-        fanotify_events_suppressed, notify_path_event, FsIndex, InodeType, Kstat, FAN_ACCESS,
-        FAN_CLOSE_NOWRITE, FAN_CLOSE_WRITE, FAN_MODIFY, FILE_PAGE_CACHE, SEEK_CUR, SEEK_DATA,
-        SEEK_END, SEEK_HOLE, SEEK_SET,
+        fanotify_events_suppressed, notify_path_event, FilePageCacheSource, FsIndex, InodeType,
+        Kstat, FAN_ACCESS, FAN_CLOSE_NOWRITE, FAN_CLOSE_WRITE, FAN_MODIFY, FILE_PAGE_CACHE,
+        SEEK_CUR, SEEK_DATA, SEEK_END, SEEK_HOLE, SEEK_SET,
     },
     mm::{copy_from_user, copy_to_user, MemorySet, UserBuffer},
     syscall::PollEvents,
@@ -212,11 +212,20 @@ impl OSFile {
         buf: &mut UserBuffer,
     ) -> Result<Option<usize>, SysErrNo> {
         let requested_len = buf.len();
-        if requested_len > MAX_AGGREGATED_READ || self.inode.types() != InodeType::File {
+        if requested_len > MAX_AGGREGATED_READ {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_file_cache_read_bypass_request_size(requested_len);
+            return Ok(None);
+        }
+        if self.inode.types() != InodeType::File {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_file_cache_read_bypass_nonregular(requested_len);
             return Ok(None);
         }
         let file_size = self.inode.size();
         if file_size > MAX_PAGE_CACHED_READ_FILE_SIZE {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_file_cache_read_bypass_file_size(requested_len);
             return Ok(None);
         }
         if offset >= file_size {
@@ -224,7 +233,11 @@ impl OSFile {
         }
 
         if requested_len <= PAGE_SIZE {
-            let page = FILE_PAGE_CACHE.get_or_load(self.inode.clone(), offset / PAGE_SIZE)?;
+            let page = FILE_PAGE_CACHE.get_or_load(
+                self.inode.clone(),
+                offset / PAGE_SIZE,
+                FilePageCacheSource::Read,
+            )?;
             let page_offset = offset % PAGE_SIZE;
             if page_offset >= page.valid_len {
                 return Ok(Some(0));
@@ -254,6 +267,8 @@ impl OSFile {
             let page_index = file_offset / PAGE_SIZE;
             let page_offset = file_offset % PAGE_SIZE;
             if let Some(page) = FILE_PAGE_CACHE.get_shared(&cache_path, page_index) {
+                #[cfg(feature = "perf")]
+                crate::utils::perf::record_file_cache_read_hit(1);
                 if page_offset >= page.valid_len {
                     break;
                 }
@@ -289,6 +304,13 @@ impl OSFile {
                     break;
                 }
                 run_end = next_page_end;
+            }
+
+            #[cfg(feature = "perf")]
+            {
+                let run_len = run_end - run_start;
+                let cold_pages = (page_offset + run_len + PAGE_SIZE - 1) / PAGE_SIZE;
+                crate::utils::perf::record_file_cache_read_miss(cold_pages);
             }
 
             let read_size = self.inode.read_at(

@@ -1697,3 +1697,22 @@
   性能百分比。Linux 对照文档为 `/home/ya2yo/learning_linux/ya2yos-ext4-cache-concurrency.md`，详见
   [问题复盘](./problem/buildstorm-ext4-inode-cache-write-concurrency.md)。
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_10`/`tmp_11` 页缓存预读复核与来源统计（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者纠正 BuildStorm 性能基线为 `tmp_10.ans`，并要求继续优化
+  `FilePageCache::get_or_load()` 的冷页读取和顺序预读；维护者已编译，要求不再构建。
+- **依据与修改**：`tmp_10`/`tmp_11` 都没有完成标记，不能用累计 syscall 数报告回归。项目已有三页预读
+  试验的 EXT4 read-lock wait/hold 高于两页正式方案，故撤回未提交的四页窗口尝试，正式缓存预读深度不变。
+  新增 `FilePageCacheSource`，将既有页缓存 hit/miss 分为 mmap/read/splice；多页普通 read 的实际页探测
+  另输出为 `read_page_hit/read_page_miss`，不与旧总计数相加。另统计 `OSFile` 因请求长度、文件大小或非
+  regular inode 绕过页缓存的次数和请求字节；所有统计为 perf feature 下的 relaxed atomic，不改变读写、
+  缓存内容、失效、COW 或 lwext4 串行边界。
+- **Linux 依据**：Linux 7.0 `mm/readahead.c` 按连续访问、缓存页和窗口上限决定批量读取；Ya2yOS 尚无
+  等价的 per-file 状态，不照搬扩窗。分析记录：
+  `/home/ya2yo/learning_linux/ya2yos-page-cache-readahead-analysis.md`。
+- **验证**：`cargo fmt --manifest-path os/Cargo.toml --check` 与 `git diff --check` 通过。遵从维护者指令，
+  未运行 build/QEMU/BuildStorm 或任一架构构建；下一份同配置日志需比较 `file_cache_source`、原有
+  hit/miss、read-lock wait/hold 和完结状态，当前不报告性能百分比。
+- **关联 commit**：当前工作区未提交

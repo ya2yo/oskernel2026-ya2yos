@@ -194,6 +194,18 @@ static EXT4_RENAME_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
 
 static FILE_CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_MISSES: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_MMAP_HITS: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_MMAP_MISSES: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_READ_HITS: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_READ_MISSES: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_SPLICE_HITS: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_SPLICE_MISSES: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_READ_BYPASS_REQUEST_OPS: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_READ_BYPASS_REQUEST_BYTES: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_READ_BYPASS_FILE_OPS: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_READ_BYPASS_FILE_BYTES: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_READ_BYPASS_NONREGULAR_OPS: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_READ_BYPASS_NONREGULAR_BYTES: AtomicUsize = AtomicUsize::new(0);
 static FILE_PAGE_FAULTS: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_READAHEAD_OPS: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_READAHEAD_PAGES: AtomicUsize = AtomicUsize::new(0);
@@ -995,6 +1007,54 @@ pub fn record_file_cache_miss() {
 }
 
 #[inline]
+pub fn record_file_cache_mmap_hit() {
+    add(&FILE_CACHE_MMAP_HITS, 1);
+}
+
+#[inline]
+pub fn record_file_cache_mmap_miss() {
+    add(&FILE_CACHE_MMAP_MISSES, 1);
+}
+
+#[inline]
+pub fn record_file_cache_read_hit(pages: usize) {
+    add(&FILE_CACHE_READ_HITS, pages);
+}
+
+#[inline]
+pub fn record_file_cache_read_miss(pages: usize) {
+    add(&FILE_CACHE_READ_MISSES, pages);
+}
+
+#[inline]
+pub fn record_file_cache_splice_hit() {
+    add(&FILE_CACHE_SPLICE_HITS, 1);
+}
+
+#[inline]
+pub fn record_file_cache_splice_miss() {
+    add(&FILE_CACHE_SPLICE_MISSES, 1);
+}
+
+#[inline]
+pub fn record_file_cache_read_bypass_request_size(bytes: usize) {
+    add(&FILE_CACHE_READ_BYPASS_REQUEST_OPS, 1);
+    add(&FILE_CACHE_READ_BYPASS_REQUEST_BYTES, bytes);
+}
+
+#[inline]
+pub fn record_file_cache_read_bypass_file_size(bytes: usize) {
+    add(&FILE_CACHE_READ_BYPASS_FILE_OPS, 1);
+    add(&FILE_CACHE_READ_BYPASS_FILE_BYTES, bytes);
+}
+
+#[inline]
+pub fn record_file_cache_read_bypass_nonregular(bytes: usize) {
+    add(&FILE_CACHE_READ_BYPASS_NONREGULAR_OPS, 1);
+    add(&FILE_CACHE_READ_BYPASS_NONREGULAR_BYTES, bytes);
+}
+
+#[inline]
 pub fn record_file_page_fault() {
     add(&FILE_PAGE_FAULTS, 1);
 }
@@ -1165,6 +1225,21 @@ fn emit_report(now: usize) {
         FILE_CACHE_READAHEAD_OPS.load(Ordering::Relaxed),
         FILE_CACHE_READAHEAD_PAGES.load(Ordering::Relaxed),
         FILE_CACHE_READAHEAD_BYTES.load(Ordering::Relaxed),
+    );
+    println!(
+        "[perf] file_cache_source mmap_hit={} mmap_miss={} read_page_hit={} read_page_miss={} splice_hit={} splice_miss={} read_bypass_request_ops={} read_bypass_request_bytes={} read_bypass_file_ops={} read_bypass_file_bytes={} read_bypass_nonregular_ops={} read_bypass_nonregular_bytes={}",
+        FILE_CACHE_MMAP_HITS.load(Ordering::Relaxed),
+        FILE_CACHE_MMAP_MISSES.load(Ordering::Relaxed),
+        FILE_CACHE_READ_HITS.load(Ordering::Relaxed),
+        FILE_CACHE_READ_MISSES.load(Ordering::Relaxed),
+        FILE_CACHE_SPLICE_HITS.load(Ordering::Relaxed),
+        FILE_CACHE_SPLICE_MISSES.load(Ordering::Relaxed),
+        FILE_CACHE_READ_BYPASS_REQUEST_OPS.load(Ordering::Relaxed),
+        FILE_CACHE_READ_BYPASS_REQUEST_BYTES.load(Ordering::Relaxed),
+        FILE_CACHE_READ_BYPASS_FILE_OPS.load(Ordering::Relaxed),
+        FILE_CACHE_READ_BYPASS_FILE_BYTES.load(Ordering::Relaxed),
+        FILE_CACHE_READ_BYPASS_NONREGULAR_OPS.load(Ordering::Relaxed),
+        FILE_CACHE_READ_BYPASS_NONREGULAR_BYTES.load(Ordering::Relaxed),
     );
     println!(
         "[perf] vfs_lookup fsidx_hit={} fsidx_miss={} dentry_positive_hit={} dentry_negative_hit={} dentry_miss={} cached_parent_find={} root_find={} preserve_final_cache_hit={} fsidx_reclaimed={} dentry_cleared_by_fsidx={} dentry_capacity_evictions={} dentry_capacity_evicted_entries={}",

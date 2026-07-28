@@ -38,6 +38,14 @@ pub struct FilePage {
 /// walk probes adjacent pages from the same file.
 type FilePages = BTreeMap<usize, Arc<FilePage>>;
 
+/// Identifies the VFS path that requested a page-cache load.
+#[derive(Clone, Copy)]
+pub enum FilePageCacheSource {
+    Mmap,
+    Read,
+    Splice,
+}
+
 impl FilePage {
     /// 将当前页标记为脏页。
     ///
@@ -220,7 +228,11 @@ impl FilePageCache {
         &self,
         inode: Arc<dyn Inode>,
         page_index: usize,
+        source: FilePageCacheSource,
     ) -> Result<Arc<FilePage>, SysErrNo> {
+        #[cfg(not(feature = "perf"))]
+        let _ = source;
+
         let path = inode
             .page_cache_path()
             .unwrap_or_else(|| Arc::from(inode.path().as_str()));
@@ -237,12 +249,28 @@ impl FilePageCache {
             .cloned()
         {
             #[cfg(feature = "perf")]
-            crate::utils::perf::record_file_cache_hit();
+            {
+                crate::utils::perf::record_file_cache_hit();
+                match source {
+                    FilePageCacheSource::Mmap => crate::utils::perf::record_file_cache_mmap_hit(),
+                    FilePageCacheSource::Read => crate::utils::perf::record_file_cache_read_hit(1),
+                    FilePageCacheSource::Splice => {
+                        crate::utils::perf::record_file_cache_splice_hit()
+                    }
+                }
+            }
             return Ok(page);
         }
 
         #[cfg(feature = "perf")]
-        crate::utils::perf::record_file_cache_miss();
+        {
+            crate::utils::perf::record_file_cache_miss();
+            match source {
+                FilePageCacheSource::Mmap => crate::utils::perf::record_file_cache_mmap_miss(),
+                FilePageCacheSource::Read => crate::utils::perf::record_file_cache_read_miss(1),
+                FilePageCacheSource::Splice => crate::utils::perf::record_file_cache_splice_miss(),
+            }
+        }
 
         let file_size = inode.size();
         let file_offset = page_index * PAGE_SIZE;

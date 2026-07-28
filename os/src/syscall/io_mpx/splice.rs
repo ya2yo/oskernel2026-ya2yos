@@ -2,7 +2,10 @@ use alloc::{sync::Arc, vec, vec::Vec};
 
 use crate::{
     arch::memory_layout::PAGE_SIZE,
-    fs::{File, OSFile, OpenFlags, Pipe, StMode, FILE_PAGE_CACHE, SEEK_CUR, SEEK_SET},
+    fs::{
+        File, FilePageCacheSource, OSFile, OpenFlags, Pipe, StMode, FILE_PAGE_CACHE, SEEK_CUR,
+        SEEK_SET,
+    },
     mm::{
         copy_from_user, copy_from_user_val, copy_to_user_val, user_buffer_from_kernel, UserBuffer,
     },
@@ -369,7 +372,11 @@ fn splice_file_to_pipe_cached(
     while remaining > 0 {
         let page_index = file_offset / PAGE_SIZE;
         let page_offset = file_offset % PAGE_SIZE;
-        let page = match FILE_PAGE_CACHE.get_or_load(input.inode.clone(), page_index) {
+        let page = match FILE_PAGE_CACHE.get_or_load(
+            input.inode.clone(),
+            page_index,
+            FilePageCacheSource::Splice,
+        ) {
             Ok(page) => page,
             Err(err) => {
                 if total > 0 {

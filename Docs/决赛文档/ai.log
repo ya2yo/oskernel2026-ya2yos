@@ -7827,3 +7827,34 @@ cache-only 写和原有全部 cache hit。
 未运行任何构建、QEMU、BuildStorm 或 `make run`；后者还会影响维护者现有未跟踪 `disk.img`。`tmp_09`
 早于该修复且未完整结束，故没有报告性能百分比。详见
 `problem/buildstorm-ext4-inode-cache-write-concurrency.md`。
+
+## 2026-07-28：`tmp_10`/`tmp_11` 复核与文件页缓存来源/旁路统计
+
+### 用户输入
+
+维护者指出先前应比较 `tmp_10.ans` 与 `tmp_11.ans`，随后要求继续围绕
+`os/src/fs/page_cache.rs:218` 做冷页读取合并和更有效的顺序预读；维护者已完成编译，继续要求不构建。
+
+### 分析与采纳结论
+
+AI 对齐两个 BuildStorm 中途快照后发现，约 70 秒的 `open/stat/read/write` 工作量接近，`tmp_11` 的
+分类 EXT4 锁等待反而较低；但两份日志均无结束标记，且 `syscalls total` 包含 futex 与未分类 syscall，
+不能据此判定端到端退化。进一步复核项目已有的
+`problem/buildstorm-ext4-sparse-write-readahead.md`，发现三页预读试验的 read-lock wait/hold 高于
+当前两页方案；因此没有把四页预读窗口交付到工作区，也没有重新启用已出现停滞的 loading waiter。
+
+Linux 7.0 的 `mm/readahead.c` 显示：sync readahead 依据连续访问构建有上限窗口，先分配 folio，遇到
+已缓存页切分批次；Ya2yOS 尚无 per-file readahead state，直接照搬窗口扩大既不具备相同控制条件，也与
+现有三页反证冲突。采纳低风险的归因统计作为下一轮输入，而不是再次改变预读深度。
+
+### 修改与验证
+
+`FilePageCache::get_or_load()` 新增来源参数，调用点标记为 mmap、普通 read 或 splice；perf 在保留总
+hit/miss 的同时输出分来源计数。多页普通 read 直接探测页缓存，故另以 `read_page_hit/read_page_miss`
+累计实际页探测量，不与旧总计数相加。`OSFile::try_page_cached_read()` 记录请求大于 64 KiB、文件大于
+8 MiB 及非 regular inode 三类页缓存旁路的操作/请求字节。缓存准入、两页预读、IO、失效、COW 与锁行为均未改。
+
+修改 `os/src/fs/page_cache.rs`、`os/src/fs/files/os_file.rs`、`os/src/mm/memory_set/handle.rs`、
+`os/src/syscall/io_mpx/splice.rs`、`os/src/utils/perf.rs`；维护者的 `user/src/bin/initproc.rs` 和
+`disk.img` 未触碰。`cargo fmt --manifest-path os/Cargo.toml --check` 与 `git diff --check` 通过。遵从
+维护者要求，未运行任何构建、QEMU、BuildStorm 或 `make run`；新统计尚无 guest 样本，不能报告加速。
