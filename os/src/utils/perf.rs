@@ -164,21 +164,55 @@ static EXT4_READ_OPS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_READ_BYTES: AtomicUsize = AtomicUsize::new(0);
 static EXT4_BYTE_CACHE_READ_HITS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_BYTE_CACHE_READ_HIT_BYTES: AtomicUsize = AtomicUsize::new(0);
-static EXT4_LOCK_ACQUIRES: AtomicUsize = AtomicUsize::new(0);
-static EXT4_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
-static EXT4_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
-static EXT4_READ_LOCK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
-static EXT4_READ_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
-static EXT4_READ_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
-static EXT4_FIND_LOCK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
-static EXT4_FIND_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
-static EXT4_FIND_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
-static EXT4_FSTAT_LOCK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
-static EXT4_FSTAT_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
-static EXT4_FSTAT_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
-static EXT4_WRITE_LOCK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
-static EXT4_WRITE_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
-static EXT4_WRITE_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
+
+/// Aggregate timing for one class of lwext4 operation.
+///
+/// This remains deliberately caller-free: BuildStorm has enough concurrent
+/// filesystem traffic that per-path maps or per-operation logging would alter
+/// the contention we are trying to measure.
+struct Ext4LockStats {
+    samples: AtomicUsize,
+    wait_ticks: AtomicUsize,
+    hold_ticks: AtomicUsize,
+    max_wait_ticks: AtomicUsize,
+    max_hold_ticks: AtomicUsize,
+}
+
+impl Ext4LockStats {
+    const fn new() -> Self {
+        Self {
+            samples: AtomicUsize::new(0),
+            wait_ticks: AtomicUsize::new(0),
+            hold_ticks: AtomicUsize::new(0),
+            max_wait_ticks: AtomicUsize::new(0),
+            max_hold_ticks: AtomicUsize::new(0),
+        }
+    }
+
+    #[inline]
+    fn record(&self, wait_ticks: usize, hold_ticks: usize) {
+        add(&self.samples, 1);
+        add(&self.wait_ticks, wait_ticks);
+        add(&self.hold_ticks, hold_ticks);
+        update_max(&self.max_wait_ticks, wait_ticks);
+        update_max(&self.max_hold_ticks, hold_ticks);
+    }
+}
+
+static EXT4_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_READ_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_FIND_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_FSTAT_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_WRITE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_RENAME_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_CLOSE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_READ_ALL_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_READ_DIR_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_PATH_RESOLVE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_METADATA_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_NAMESPACE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_SYNC_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+static EXT4_SEEK_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 static EXT4_WRITE_OPEN_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static EXT4_WRITE_OPEN_TICKS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_WRITE_OPEN_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -188,9 +222,6 @@ static EXT4_WRITE_QUOTA_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_WRITE_DATA_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static EXT4_WRITE_DATA_TICKS: AtomicUsize = AtomicUsize::new(0);
 static EXT4_WRITE_DATA_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
-static EXT4_RENAME_LOCK_SAMPLES: AtomicUsize = AtomicUsize::new(0);
-static EXT4_RENAME_LOCK_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
-static EXT4_RENAME_LOCK_HOLD_TICKS: AtomicUsize = AtomicUsize::new(0);
 
 static FILE_CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_MISSES: AtomicUsize = AtomicUsize::new(0);
@@ -206,6 +237,8 @@ static FILE_CACHE_READ_BYPASS_FILE_OPS: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_READ_BYPASS_FILE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_READ_BYPASS_NONREGULAR_OPS: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_READ_BYPASS_NONREGULAR_BYTES: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_LOAD_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+static FILE_CACHE_LOAD_RACES: AtomicUsize = AtomicUsize::new(0);
 static FILE_PAGE_FAULTS: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_READAHEAD_OPS: AtomicUsize = AtomicUsize::new(0);
 static FILE_CACHE_READAHEAD_PAGES: AtomicUsize = AtomicUsize::new(0);
@@ -885,6 +918,18 @@ fn emit_duration(label: &str, samples: &AtomicUsize, total: &AtomicUsize, maximu
     );
 }
 
+fn emit_ext4_lock_stats(label: &str, stats: &Ext4LockStats) {
+    println!(
+        "[perf] {} samples={} wait_us={} hold_us={} max_wait_us={} max_hold_us={}",
+        label,
+        stats.samples.load(Ordering::Relaxed),
+        ticks_to_us(stats.wait_ticks.load(Ordering::Relaxed)),
+        ticks_to_us(stats.hold_ticks.load(Ordering::Relaxed)),
+        ticks_to_us(stats.max_wait_ticks.load(Ordering::Relaxed)),
+        ticks_to_us(stats.max_hold_ticks.load(Ordering::Relaxed)),
+    );
+}
+
 #[inline]
 pub fn record_ext4_read(bytes: usize) {
     add(&EXT4_READ_OPS, 1);
@@ -899,10 +944,8 @@ pub fn record_ext4_byte_cache_read_hit(bytes: usize) {
 
 #[inline]
 pub fn record_ext4_lock(wait_ticks: usize, hold_ticks: usize) {
-    add(&EXT4_LOCK_ACQUIRES, 1);
-    add(&EXT4_LOCK_WAIT_TICKS, wait_ticks);
-    add(&EXT4_LOCK_HOLD_TICKS, hold_ticks);
-    let samples = EXT4_LOCK_ACQUIRES.load(Ordering::Relaxed);
+    EXT4_LOCK_STATS.record(wait_ticks, hold_ticks);
+    let samples = EXT4_LOCK_STATS.samples.load(Ordering::Relaxed);
     if samples & 0x0fff == 0 {
         maybe_report();
     }
@@ -910,30 +953,22 @@ pub fn record_ext4_lock(wait_ticks: usize, hold_ticks: usize) {
 
 #[inline]
 pub fn record_ext4_read_lock(wait_ticks: usize, hold_ticks: usize) {
-    add(&EXT4_READ_LOCK_SAMPLES, 1);
-    add(&EXT4_READ_LOCK_WAIT_TICKS, wait_ticks);
-    add(&EXT4_READ_LOCK_HOLD_TICKS, hold_ticks);
+    EXT4_READ_LOCK_STATS.record(wait_ticks, hold_ticks);
 }
 
 #[inline]
 pub fn record_ext4_find_lock(wait_ticks: usize, hold_ticks: usize) {
-    add(&EXT4_FIND_LOCK_SAMPLES, 1);
-    add(&EXT4_FIND_LOCK_WAIT_TICKS, wait_ticks);
-    add(&EXT4_FIND_LOCK_HOLD_TICKS, hold_ticks);
+    EXT4_FIND_LOCK_STATS.record(wait_ticks, hold_ticks);
 }
 
 #[inline]
 pub fn record_ext4_fstat_lock(wait_ticks: usize, hold_ticks: usize) {
-    add(&EXT4_FSTAT_LOCK_SAMPLES, 1);
-    add(&EXT4_FSTAT_LOCK_WAIT_TICKS, wait_ticks);
-    add(&EXT4_FSTAT_LOCK_HOLD_TICKS, hold_ticks);
+    EXT4_FSTAT_LOCK_STATS.record(wait_ticks, hold_ticks);
 }
 
 #[inline]
 pub fn record_ext4_write_lock(wait_ticks: usize, hold_ticks: usize) {
-    add(&EXT4_WRITE_LOCK_SAMPLES, 1);
-    add(&EXT4_WRITE_LOCK_WAIT_TICKS, wait_ticks);
-    add(&EXT4_WRITE_LOCK_HOLD_TICKS, hold_ticks);
+    EXT4_WRITE_LOCK_STATS.record(wait_ticks, hold_ticks);
 }
 
 /// A mutually exclusive phase inside `Ext4Inode::write_at()`.  The outer
@@ -991,9 +1026,47 @@ impl Drop for Ext4WritePhaseGuard {
 
 #[inline]
 pub fn record_ext4_rename_lock(wait_ticks: usize, hold_ticks: usize) {
-    add(&EXT4_RENAME_LOCK_SAMPLES, 1);
-    add(&EXT4_RENAME_LOCK_WAIT_TICKS, wait_ticks);
-    add(&EXT4_RENAME_LOCK_HOLD_TICKS, hold_ticks);
+    EXT4_RENAME_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
+#[inline]
+pub fn record_ext4_close_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_CLOSE_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
+#[inline]
+pub fn record_ext4_read_all_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_READ_ALL_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
+#[inline]
+pub fn record_ext4_read_dir_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_READ_DIR_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
+#[inline]
+pub fn record_ext4_path_resolve_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_PATH_RESOLVE_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
+#[inline]
+pub fn record_ext4_metadata_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_METADATA_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
+#[inline]
+pub fn record_ext4_namespace_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_NAMESPACE_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
+#[inline]
+pub fn record_ext4_sync_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_SYNC_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
+#[inline]
+pub fn record_ext4_seek_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_SEEK_LOCK_STATS.record(wait_ticks, hold_ticks);
 }
 
 #[inline]
@@ -1052,6 +1125,19 @@ pub fn record_file_cache_read_bypass_file_size(bytes: usize) {
 pub fn record_file_cache_read_bypass_nonregular(bytes: usize) {
     add(&FILE_CACHE_READ_BYPASS_NONREGULAR_OPS, 1);
     add(&FILE_CACHE_READ_BYPASS_NONREGULAR_BYTES, bytes);
+}
+
+/// Count one page-cache miss that proceeds to a potentially serialized
+/// filesystem read. A later `load_race` means another hart published the same
+/// page while this task was in flight, so this attempt performed redundant I/O.
+#[inline]
+pub fn record_file_cache_load_attempt() {
+    add(&FILE_CACHE_LOAD_ATTEMPTS, 1);
+}
+
+#[inline]
+pub fn record_file_cache_load_race() {
+    add(&FILE_CACHE_LOAD_RACES, 1);
 }
 
 #[inline]
@@ -1216,9 +1302,9 @@ fn emit_report(now: usize) {
         EXT4_READ_BYTES.load(Ordering::Relaxed),
         EXT4_BYTE_CACHE_READ_HITS.load(Ordering::Relaxed),
         EXT4_BYTE_CACHE_READ_HIT_BYTES.load(Ordering::Relaxed),
-        EXT4_LOCK_ACQUIRES.load(Ordering::Relaxed),
-        EXT4_LOCK_WAIT_TICKS.load(Ordering::Relaxed),
-        EXT4_LOCK_HOLD_TICKS.load(Ordering::Relaxed),
+        EXT4_LOCK_STATS.samples.load(Ordering::Relaxed),
+        EXT4_LOCK_STATS.wait_ticks.load(Ordering::Relaxed),
+        EXT4_LOCK_STATS.hold_ticks.load(Ordering::Relaxed),
         FILE_CACHE_HITS.load(Ordering::Relaxed),
         FILE_CACHE_MISSES.load(Ordering::Relaxed),
         FILE_PAGE_FAULTS.load(Ordering::Relaxed),
@@ -1227,7 +1313,7 @@ fn emit_report(now: usize) {
         FILE_CACHE_READAHEAD_BYTES.load(Ordering::Relaxed),
     );
     println!(
-        "[perf] file_cache_source mmap_hit={} mmap_miss={} read_page_hit={} read_page_miss={} splice_hit={} splice_miss={} read_bypass_request_ops={} read_bypass_request_bytes={} read_bypass_file_ops={} read_bypass_file_bytes={} read_bypass_nonregular_ops={} read_bypass_nonregular_bytes={}",
+        "[perf] file_cache_source mmap_hit={} mmap_miss={} read_page_hit={} read_page_miss={} splice_hit={} splice_miss={} read_bypass_request_ops={} read_bypass_request_bytes={} read_bypass_file_ops={} read_bypass_file_bytes={} read_bypass_nonregular_ops={} read_bypass_nonregular_bytes={} load_attempts={} load_races={}",
         FILE_CACHE_MMAP_HITS.load(Ordering::Relaxed),
         FILE_CACHE_MMAP_MISSES.load(Ordering::Relaxed),
         FILE_CACHE_READ_HITS.load(Ordering::Relaxed),
@@ -1240,6 +1326,8 @@ fn emit_report(now: usize) {
         FILE_CACHE_READ_BYPASS_FILE_BYTES.load(Ordering::Relaxed),
         FILE_CACHE_READ_BYPASS_NONREGULAR_OPS.load(Ordering::Relaxed),
         FILE_CACHE_READ_BYPASS_NONREGULAR_BYTES.load(Ordering::Relaxed),
+        FILE_CACHE_LOAD_ATTEMPTS.load(Ordering::Relaxed),
+        FILE_CACHE_LOAD_RACES.load(Ordering::Relaxed),
     );
     println!(
         "[perf] vfs_lookup fsidx_hit={} fsidx_miss={} dentry_positive_hit={} dentry_negative_hit={} dentry_miss={} cached_parent_find={} root_find={} preserve_final_cache_hit={} fsidx_reclaimed={} dentry_cleared_by_fsidx={} dentry_capacity_evictions={} dentry_capacity_evicted_entries={}",
@@ -1256,30 +1344,10 @@ fn emit_report(now: usize) {
         VFS_DENTRY_CAPACITY_EVICTIONS.load(Ordering::Relaxed),
         VFS_DENTRY_CAPACITY_EVICTED_ENTRIES.load(Ordering::Relaxed),
     );
-    println!(
-        "[perf] ext4_read_lock samples={} wait_us={} hold_us={}",
-        EXT4_READ_LOCK_SAMPLES.load(Ordering::Relaxed),
-        ticks_to_us(EXT4_READ_LOCK_WAIT_TICKS.load(Ordering::Relaxed)),
-        ticks_to_us(EXT4_READ_LOCK_HOLD_TICKS.load(Ordering::Relaxed)),
-    );
-    println!(
-        "[perf] ext4_find_lock samples={} wait_us={} hold_us={}",
-        EXT4_FIND_LOCK_SAMPLES.load(Ordering::Relaxed),
-        ticks_to_us(EXT4_FIND_LOCK_WAIT_TICKS.load(Ordering::Relaxed)),
-        ticks_to_us(EXT4_FIND_LOCK_HOLD_TICKS.load(Ordering::Relaxed)),
-    );
-    println!(
-        "[perf] ext4_fstat_lock samples={} wait_us={} hold_us={}",
-        EXT4_FSTAT_LOCK_SAMPLES.load(Ordering::Relaxed),
-        ticks_to_us(EXT4_FSTAT_LOCK_WAIT_TICKS.load(Ordering::Relaxed)),
-        ticks_to_us(EXT4_FSTAT_LOCK_HOLD_TICKS.load(Ordering::Relaxed)),
-    );
-    println!(
-        "[perf] ext4_write_lock samples={} wait_us={} hold_us={}",
-        EXT4_WRITE_LOCK_SAMPLES.load(Ordering::Relaxed),
-        ticks_to_us(EXT4_WRITE_LOCK_WAIT_TICKS.load(Ordering::Relaxed)),
-        ticks_to_us(EXT4_WRITE_LOCK_HOLD_TICKS.load(Ordering::Relaxed)),
-    );
+    emit_ext4_lock_stats("ext4_read_lock", &EXT4_READ_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_find_lock", &EXT4_FIND_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_fstat_lock", &EXT4_FSTAT_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_write_lock", &EXT4_WRITE_LOCK_STATS);
     print!("[perf] ext4_write_duration ");
     emit_duration(
         "open",
@@ -1301,12 +1369,15 @@ fn emit_report(now: usize) {
         &EXT4_WRITE_DATA_TICKS,
         &EXT4_WRITE_DATA_MAX_TICKS,
     );
-    println!(
-        "[perf] ext4_rename_lock samples={} wait_us={} hold_us={}",
-        EXT4_RENAME_LOCK_SAMPLES.load(Ordering::Relaxed),
-        ticks_to_us(EXT4_RENAME_LOCK_WAIT_TICKS.load(Ordering::Relaxed)),
-        ticks_to_us(EXT4_RENAME_LOCK_HOLD_TICKS.load(Ordering::Relaxed)),
-    );
+    emit_ext4_lock_stats("ext4_rename_lock", &EXT4_RENAME_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_close_lock", &EXT4_CLOSE_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_read_all_lock", &EXT4_READ_ALL_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_read_dir_lock", &EXT4_READ_DIR_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_path_resolve_lock", &EXT4_PATH_RESOLVE_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_metadata_lock", &EXT4_METADATA_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_namespace_lock", &EXT4_NAMESPACE_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_sync_lock", &EXT4_SYNC_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_seek_lock", &EXT4_SEEK_LOCK_STATS);
     #[cfg(feature = "perf")]
     {
         let write_cache = lwext4_rust::file::write_back_cache_perf_stats();

@@ -270,6 +270,7 @@ impl FilePageCache {
                 FilePageCacheSource::Read => crate::utils::perf::record_file_cache_read_miss(1),
                 FilePageCacheSource::Splice => crate::utils::perf::record_file_cache_splice_miss(),
             }
+            crate::utils::perf::record_file_cache_load_attempt();
         }
 
         let file_size = inode.size();
@@ -342,6 +343,8 @@ impl FilePageCache {
         let mut pages = self.pages.write();
         let file_pages = pages.entry(path.clone()).or_default();
         if let Some(existing) = file_pages.get(&page_index).cloned() {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_file_cache_load_race();
             return Ok(existing);
         }
         file_pages.insert(page_index, page.clone());

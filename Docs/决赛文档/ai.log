@@ -7858,3 +7858,36 @@ hit/miss 的同时输出分来源计数。多页普通 read 直接探测页缓�
 `os/src/syscall/io_mpx/splice.rs`、`os/src/utils/perf.rs`；维护者的 `user/src/bin/initproc.rs` 和
 `disk.img` 未触碰。`cargo fmt --manifest-path os/Cargo.toml --check` 与 `git diff --check` 通过。遵从
 维护者要求，未运行任何构建、QEMU、BuildStorm 或 `make run`；新统计尚无 guest 样本，不能报告加速。
+
+## 2026-07-28：`tmp_13` EXT4 锁分类与页缓存重复加载取证
+
+### 用户输入
+
+维护者要求分析 `tmp_13.ans`，认为下一步应优化 EXT4 各类锁；在确认按“先补齐锁归因、再处理 read 路径、
+最后评估高复杂度页缓存同步”的顺序后，要求进行修改。
+
+### 分析与采纳结论
+
+原有 `perf` 只区分 `read/find/fstat/write/rename`，其余所有 `EXT4_OP_LOCK.lock()` 无法判定是 close、
+元数据、namespace 还是同步路径。AI 因而先把所有现存锁入口映射到有语义的 aggregate class，并保持唯一的
+lwext4 gate；这只是测量边界调整，不宣称完成拆锁。另在 `FilePageCache::get_or_load()` 统计每次潜在底层加载
+及返回时的同页发布竞争，用于检验是否值得实现 single-flight。
+
+RISC-V 两个 130 秒 BuildStorm 中途样本表明，锁分类窗口内 `read` 为 `62.674/70.547 s` 的 wait
+（约 88.8%）；`close` 仅 `0.000114 s` wait。page-cache 样本的 `load_races=434`、
+`load_attempts=18080`（约 2.4%），收益不足以承担 per-page waiter 的锁序/睡眠风险，故不实施该方案。
+metadata 与 namespace 存在约 96/97 ms 的 hold 峰值，但类别尚不够细，下一轮先细分函数而非猜测性缩锁。
+
+### 修改与验证
+
+新增 `Ext4LockClass` 和 samples/wait/hold/max 统计，覆盖 close、read_all、read_dir、path_resolve、
+metadata、namespace、sync、seek；profile guard 在 primitive lock 释放和 waiter 唤醒后才执行 relaxed
+atomic 统计。页缓存新增 `load_attempts/load_races` 计数，两者均不改变 I/O、缓存、失效、COW 或 lwext4
+串行行为。
+
+修改 `os/src/fs/ext4_lw/mod.rs`、`os/src/fs/ext4_lw/inode.rs`、`os/src/fs/ext4_lw/sb.rs`、
+`os/src/fs/page_cache.rs` 和 `os/src/utils/perf.rs`。维护者的 `user/src/bin/initproc.rs` 与 `disk.img`
+未触碰。`cargo fmt --manifest-path os/Cargo.toml`、`make perf TARGET_ARCH=riscv64` 和
+`make perf TARGET_ARCH=loongarch64` 通过，只有既有 smoltcp warning。两次 QEMU 样本均由外层 timeout
+终止，未完成 446 crate 或输出测试总结；第一份含历史偶发 Rustc `SIGSEGV`，因此没有报告端到端加速或功能通过。
+详见 `problem/buildstorm-ext4-sparse-write-readahead.md` 同日小节。

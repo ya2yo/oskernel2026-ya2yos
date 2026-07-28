@@ -1716,3 +1716,17 @@
   未运行 build/QEMU/BuildStorm 或任一架构构建；下一份同配置日志需比较 `file_cache_source`、原有
   hit/miss、read-lock wait/hold 和完结状态，当前不报告性能百分比。
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_13` EXT4 锁分类与页缓存重复加载取证（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求根据 `tmp_13.ans` 按 EXT4 各类锁的优先级继续性能优化。
+- **描述**：AI 将 lwext4 单一全局 gate 的现有入口归入 read/find/fstat/write/rename/close/read_all/
+  read_dir/path_resolve/metadata/namespace/sync/seek，新增 samples、wait/hold 累计及最大值，且在释放
+  primitive lock、单唤醒 waiter 后才记录 relaxed atomic。页缓存另统计 miss 后潜在底层加载和发布时
+  同页竞争。130 秒 RISC-V 中途样本显示 read 占窗口锁等待约 88.8%，close 不是主因；
+  `load_races/load_attempts=434/18080`（约 2.4%），不实施 per-page single-flight/waiter。
+- **验证**：RISC-V、LoongArch64 `make perf` 通过，只有既有 smoltcp warning；两个 QEMU 样本均被 timeout
+  终止，首份有历史偶发 Rustc `SIGSEGV`，不报告端到端加速或完整 BuildStorm 结果。详见
+  [问题复盘](./problem/buildstorm-ext4-sparse-write-readahead.md)。
+- **关联 commit**：当前工作区未提交

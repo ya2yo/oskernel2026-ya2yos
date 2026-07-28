@@ -337,3 +337,80 @@ write 锁内 `data` 为 `16.519 s / 5609` 次，高于 open `3.923 s` 和 quota 
 
 只有当旁路大头可归因到可失效、受内存上限约束的 immutable regular file，才评估扩大该类文件的缓存准入；
 若冷页主要来自 mmap fault 或 splice，则应分别合并相邻缺页而不是扩大全局预读窗口。
+
+## 2026-07-28：`tmp_13` EXT4 锁分类与页缓存重复加载复核
+
+### 背景
+
+维护者根据 `tmp_13.ans` 要求继续按 EXT4 各类锁的优先级推进。本轮先验证两个可证伪假设：
+
+1. 除原有 `read/find/fstat/write/rename` 外，`close` 或通用 metadata/namespace 路径可能才是当前全局锁排队的主要来源。
+2. `FilePageCache::get_or_load()` 的同页重复底层读取足够频繁，值得用 single-flight/waiter 合并加载。
+
+lwext4 的挂载级块缓存和路径式 API 仍不具备 SMP 安全保证，因此统计过程不能拆除
+`EXT4_OP_LOCK`，也不能让多个 hart 并发进入 lwext4。
+
+### 修改
+
+`Ext4OpLock` 增加分类 profile guard，仍然只获取同一把 `TaskMutex`。除既有读、查找、fstat、写入和 rename 外，新增
+`close`、`read_all`、`read_dir`、`path_resolve`、`metadata`、`namespace`、`sync`、`seek` 八类；分别覆盖底层
+descriptor close、完整/目录读取、软链接与 live-path 恢复、属性访问、创建/删除/链接、显式刷新和 hole/data seek。
+每类计数保留 samples、累计 wait/hold tick 和 wait/hold 最大值。
+
+profile guard 在释放 `TaskMutexGuard`、唤醒一个等待者以后才更新 relaxed atomic，避免统计本身延长 lwext4 临界区。
+页缓存同时增加两个纯统计字段：`load_attempts` 在 miss 后即将进行底层读取时递增，`load_races` 在 I/O 返回后发现另一
+hart 已发布同一页时递增。它们不改变缓存锁、I/O、失效、COW 或预读行为。
+
+涉及文件：`os/src/fs/ext4_lw/mod.rs`、`os/src/fs/ext4_lw/inode.rs`、`os/src/fs/ext4_lw/sb.rs`、
+`os/src/fs/page_cache.rs`、`os/src/utils/perf.rs`。维护者已有的 `user/src/bin/initproc.rs` 和未跟踪 `disk.img`
+未触碰。
+
+### RISC-V 运行期样本
+
+两次均以相同 BuildStorm `compile` 入口运行，宿主外层在 130 秒终止：
+
+```text
+/usr/bin/time -f 'elapsed_s=%e user_s=%U sys_s=%S' \
+  timeout 130s make run TARGET_ARCH=riscv64 > /tmp/<sample>.log 2>&1
+```
+
+锁分类样本最后快照为 `t=106614ms`，Cargo 约为 `Building 6/446`。取 `t=72518ms -> 106614ms` 的累计差值，
+EXT4 全局锁新增 `15522` 次，累计 wait/hold 为 `70.547/17.446 s`：
+
+| 类别 | 新增 samples | 新增 wait | 新增 hold |
+| --- | ---: | ---: | ---: |
+| `read` | 13,158 | 62.674 s | 7.946 s |
+| `find` | 746 | 3.437 s | 2.258 s |
+| `fstat` | 465 | 1.364 s | 1.449 s |
+| `write` | 117 | 1.563 s | 1.348 s |
+| `close` | 92 | 0.000114 s | 0.008833 s |
+| `metadata` | 403 | 0.873 s | 2.221 s |
+| `namespace` | 153 | 0.483 s | 1.727 s |
+
+`read` 独占该窗口约 `88.8%` 的全局锁等待，仍是首要方向；`close` 不是当前的通用热点。`metadata` 和
+`namespace` 的最大持锁分别约为 96 ms、97 ms，但当前类别仍包含多个函数，不足以安全缩小任一临界区。
+
+该样本出现 Rustc `SIGSEGV`，但项目已有多个历史 BuildStorm 样本出现相同偶发异常；本轮新增的仅是聚合统计，
+不能将该现象归因于此修改，也不将它当作功能或性能通过结果。
+
+第二次样本最后快照为 `t=94153ms`、Cargo 约 `Building 5/446`，未出现该 `SIGSEGV`。最终
+`load_attempts=18080`、`load_races=434`，即约 `2.4%` 的潜在加载在发布时发现另一 hart 已先写入缓存。
+重复读取真实存在，但比例不足以抵消 per-page single-flight/waiter map 所引入的锁序、等待和历史停滞风险。
+
+两个样本都被外层 timeout 终止，且没有 `TPASS`、`TFAIL`、`TBROK`、最终 `Summary`、`shutdown!` 或
+`BUILDSTORM_DEBUG_COMPILE`；因此不报告端到端加速或完整 BuildStorm 通过。
+
+### 验证与后续
+
+已执行：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml
+make perf TARGET_ARCH=riscv64
+make perf TARGET_ARCH=loongarch64
+```
+
+两个 perf 构建均通过；仅有 vendored `smoltcp` 既有的 unused-import/dead-code warning。下一轮应先将
+`metadata` 细分为 size、alias、mode/owner、link count 等，并将 `namespace` 细分为 create、truncate、
+unlink、hard link、symlink，再以相同 Cargo 阶段决定是否能缩短某个具体临界区。不要仅凭本轮 `2.4%` 的页缓存
+race 引入 single-flight，也不要未经新的 inode 内部并发设计而移除 `add_alias_path()` 的全局锁。
