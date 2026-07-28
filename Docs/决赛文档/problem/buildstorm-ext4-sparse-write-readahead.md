@@ -87,7 +87,7 @@ lwext4 的全局串行仍是正确性要求：本轮没有把第三方文件系�
 `crates/lwext4_rust/src/file.rs` 为禁用 dense whole-file cache 的 regular inode 新增按
 `(mountpoint, inode)` 索引的 sparse range 集合：
 
-- 最多保存 16 个 range、总字节最多 64 KiB；相邻写会合并，交错/重叠写保留写入顺序，读取时按
+- 最多保存 32 个 range、总字节最多 64 KiB；相邻写会合并，交错/重叠写保留写入顺序，读取时按
   顺序重放，满足 pwrite 风格的 last-write-wins。
 - 每个 range 保持原始 offset；最终 `ext4_fwrite()` 只写用户提供的字节，绝不为洞合成零填充。
 - 同一路径的 `O_RDWR -> O_RDONLY` descriptor 切换不再立即 flush。读取先从磁盘读取现有 extent，
@@ -182,7 +182,9 @@ make TARGET_ARCH=riscv64
 下一次应使用相同 RISC-V 镜像、内存、hart 数和 BuildStorm 入口，至少运行到与当前相近的
 `Building 15/446`，同时记录 Cargo 阶段、`ext4_read_lock`/`write_lock` 的 samples/wait/hold、
 `readahead_ops/pages`、sparse 计数以及三个 `ext4_write_duration` 桶。只有当同阶段的重复样本
-确认某个写阶段占主导后，才应缩小对应临界区；不应再次扩大预读窗口或放宽 lwext4 全局锁。
+确认某个写阶段占主导后，才应缩小对应临界区；不应再次扩大预读窗口或放宽 lwext4 全局锁。sparse
+计数必须先补齐“每次 flush batch”和“触发原因”口径，不能仅由 `sparse_flush_ops` 推断 buffer 被提前
+提交的次数。
 
 ## 2026-07-28：读写描述符复用与 write phase 样本验证
 
@@ -206,8 +208,76 @@ make TARGET_ARCH=riscv64
 `204.334609 s` wait、`35.072056 s` hold，write phase 分别为 open `5.526703 s`、quota `5.056378 s`、
 data `24.040277 s`。这把后续重点明确收敛到实际写入，而不是继续优化 descriptor 打开。
 
-`sparse_flush_ops=689`、`sparse_flush_bytes=16578252`，平均每次约 24 KiB，低于 64 KiB 上限；但现有
-计数不能区分 16-run/64 KiB 阈值与 close、rename、fstat 等可见性边界触发的 flush。故本轮不盲目扩大
-sparse buffer，避免增加内存上界却不能确定减少真实 lwext4 I/O。`make perf TARGET_ARCH=riscv64`、
+`sparse_flush_ops=689`、`sparse_flush_bytes=16578252` 中的 `ops` 实际按每个底层
+`ext4_fwrite()` range 递增，并不表示 `flush_sparse_write_buffer()` 调用了 689 次；约 24 KiB 只是已
+提交 range 的平均长度，不能据此判断 16-run/64 KiB 阈值或 close、rename、fstat 等可见性边界到底触发
+了多少 batch。故当时未盲目扩大 sparse buffer，避免增加内存上界却不能确定减少真实 lwext4 I/O。
+`make perf TARGET_ARCH=riscv64`、
 `make perf TARGET_ARCH=loongarch64`、格式检查和 `git diff --check` 均通过；构建只含既有 smoltcp
 warning。
+
+## 2026-07-28：32-run sparse 样本复核与下一步计划
+
+维护者提供的新 `log.ans` 是约 5 分钟的 RISC-V 运行结果。最后一个 guest perf 快照为
+`t=216291ms`，Cargo 到 `Building 8/446`；日志未包含 `TPASS`、`TFAIL`、`TBROK`、panic、`ERROR`、
+`shutdown!`、`BUILDSTORM_DEBUG_COMPILE` 或最终 `Summary`，所以它是未完成的中途快照。
+
+### 32-run 的实际证据边界
+
+新旧样本的 sparse 数据量几乎相同，但 Cargo 阶段不同：
+
+| 指标 | 旧 16-run 样本 | 新 32-run 样本 | 变化 |
+| --- | ---: | ---: | ---: |
+| `sparse_buffer_bytes` | 16,620,418 B | 16,607,608 B | -0.08% |
+| `sparse_flush_ops` | 689 | 628 | -8.85% |
+| `sparse_flush_bytes` | 16,578,252 B | 16,560,271 B | -0.11% |
+| 每个已提交 range 的平均字节数 | 24,061 B (23.50 KiB) | 26,370 B (25.75 KiB) | +9.59% |
+
+这里的 `sparse_flush_ops` 在 `flush_sparse_write_buffer()` 的 `while` 循环内、每次成功的
+`ext4_fwrite()` 后递增；它是已提交的 range 数，**不是** sparse buffer flush batch 数。因而表格仅
+说明在相近 payload 下落盘 range 更少、平均 range 更长，可能与相邻写合并或不同 Cargo 工作负载有关；
+它不能证明 16->32 减少了 range-limit 触发的提交，也不能给出端到端加速比例。
+
+当前实现仍将 `MAX_SPARSE_WRITE_BUFFER_RUNS` 保持为 32，而 `MAX_SPARSE_WRITE_BUFFER_SIZE` 保持为
+64 KiB。这个尝试没有改变洞布局、写入顺序、last-write-wins、读时覆盖和各类可见性 flush 边界；
+但在拿到正确 batch 统计之前，不应继续提高到 64 个 range 或扩大 byte 上限。
+
+### 当前主瓶颈
+
+最终快照的 EXT4 全局锁统计如下。wait/hold 为所有 hart 的累计时间，不能与 216 秒 guest wall-clock
+相加，但类别间的高 wait/hold 比例直接表明并发任务主要在等待唯一的 lwext4 入口：
+
+| 锁类别 | samples | wait | hold |
+| --- | ---: | ---: | ---: |
+| `ext4_read_lock` | 31,942 | 241.236 s | 24.419 s |
+| `ext4_write_lock` | 5,609 | 140.405 s | 24.455 s |
+| `ext4_find_lock` | 10,511 | 80.670 s | 21.899 s |
+| `ext4_fstat_lock` | 4,666 | 30.881 s | 15.607 s |
+| `ext4_rename_lock` | 18 | 3.755 s | 3.609 s |
+| 合计 | 52,746 | 496.947 s | 89.987 s |
+
+write 锁内 `data` 为 `16.519 s / 5609` 次，高于 open `3.923 s` 和 quota `3.780 s`；不过它只解释写锁
+持有的一部分，主要损失仍是 read/write/find/fstat 的排队。页缓存已有 `515047` hit、`24559` miss 和
+`7110` 次两页预读，不能仅凭这些累计数把预读窗口再扩大到三页，历史试验已显示那会增加锁持有。
+
+此外 `lseek` 有 39,061 次 type-check，累计 `3.400 s`，其中几乎全部来自每次调用先构造 pathname、查询
+`FsIndex::special_node_type()` 再回退 inode 固定类型；这是独立于 EXT4 锁的高频小路径，但量级低于全局
+锁排队，不应抢在读路径前进行未经验证的大改。
+
+### 下一步优化计划
+
+1. **先补齐 sparse 计数口径，不改容量策略。** 在 `lwext4_rust/perf` 用 relaxed atomic 记录非空
+   `flush_sparse_write_buffer()` 的 batch 数、每 batch 的 range 数/字节数/最大值，并按 `range_limit`、
+   `payload_limit`、分配失败、大写直通和可见性边界分别累计原因。保持定期聚合输出，不增加逐调用
+   日志。下一轮只在 `range_limit` batch 占比可观且 32-run 仍频繁触发时，才讨论进一步调整。
+2. **定位读锁的可消除进入点。** 将 `FilePageCache` 的 hit/miss 分为 mmap fault、普通 `read()`、
+   `splice` 三个来源，并统计 `OSFile::try_page_cached_read()` 因文件超过 8 MiB、请求超过 64 KiB 或非
+   regular inode 而旁路的次数和字节数。这样可判断 24,559 次 miss 是否主要来自可安全复用的 toolchain
+   输入，而不是盲目扩页缓存。
+3. **按统计结果实施受限缓存。** 只有当重复读取主要落在 8 MiB 阈值外的 immutable regular file 时，
+   才为该类文件增加有内存上限、可失效的页缓存准入；当前 `FilePageCache` 不设容量淘汰，不能直接提高
+   8 MiB 阈值。仍保持两页预读、写入/截断/rename 失效和 mmap COW 语义。
+4. **最后处理 lseek 小路径。** 若补充的命中统计确认 `special_node_type()` 对 BuildStorm 的 39,061 次
+   检查几乎全为 regular-file miss，可在 `OSFile` 创建时缓存不可变的 seekability/type，避免每次
+   `lseek` 复制路径并查询全局 special-node 表；需保留 FIFO/socket 返回 `ESPIPE` 的语义，并以定向
+   `lseek`/FIFO 回归验证。

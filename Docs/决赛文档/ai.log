@@ -7569,3 +7569,69 @@ BuildStorm sparse write 复盘和 AI 交互摘要。`cargo fmt --manifest-path c
 `make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 与 `git diff --check` 通过；构建仅有
 既有 smoltcp warning。尝试在沙箱直接执行 QEMU 时，`-snapshot` 因 `/var/tmp` 只读而在内核启动前失败；
 本次 guest 结果由维护者提供，未把该失败当作验证样本。
+
+## 2026-07-28：BuildStorm sparse range 槽位收束
+
+### 用户输入
+
+维护者在 descriptor 复用优化后要求继续下一步性能优化。
+
+### 分析与采纳结论
+
+AI 当时以最新 RISC-V `log.ans` 的 write phase 为候选证据：`sparse_flush_ops=689` 与
+`sparse_flush_bytes=16578252` 对应每个已提交 range 平均 `24061 B`（约 `23.5 KiB`），低于 64 KiB。
+后续源码复核确认该计数在每个 range 的 `ext4_fwrite()` 后递增，而不是每个 buffer flush batch；它既
+不能区分 16 个 range 槽位、64 KiB byte limit 和 close/rename/fstat 可见性边界，也不能单独证明早期
+提交。因而 32-run 只是受限的可证伪尝试，后续必须以 batch/reason 计数验证，而不是依据此范围计数
+报告性能结论。
+
+`MAX_SPARSE_WRITE_BUFFER_RUNS` 从 16 提高到 32，`MAX_SPARSE_WRITE_BUFFER_SIZE` 保持 `64 KiB`。相邻
+range 合并、写入顺序、pwrite last-write-wins、读时覆盖、洞不物化，以及 close/sync/rename/truncate/
+`fstat`/`SEEK_DATA`/`SEEK_HOLE` 的 flush 边界均未修改。新增的只是最多 16 个 buffer 元数据槽位；单
+inode 的未提交数据字节上界不变。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs` 及关联性能复盘、开发日志和 AI 交互记录。`cargo fmt --manifest-path
+crates/lwext4_rust/Cargo.toml -- --check`、`make perf TARGET_ARCH=riscv64`、`make perf
+TARGET_ARCH=loongarch64` 与 `git diff --check` 通过；构建仅有 vendored `smoltcp` 既有 warning。普通
+`make TARGET_ARCH=riscv64` 与 `make TARGET_ARCH=loongarch64` 的 release 构建也通过。未运行 `make run`，
+以免删除维护者保留的 `disk.img`；本轮没有新 guest 结果，未报告 sparse range、写锁或完整
+BuildStorm 的加速比例。维护者已有的 `user/src/bin/initproc.rs` 和 `disk.img` 未触碰。
+
+## 2026-07-28：BuildStorm 五分钟样本复核与下一轮计划
+
+### 用户输入
+
+维护者提供新的约五分钟 `log.ans`，要求完善文档并规划下一步优化。
+
+### 样本结论与计数口径修正
+
+最后一个 guest perf 快照为 `t=216291ms`、Cargo `Building 8/446`，没有 `TPASS`、`TFAIL`、`TBROK`、
+panic、`ERROR`、`shutdown!`、`BUILDSTORM_DEBUG_COMPILE` 或最终 Summary，故运行仍未完成。32-run 样本
+的 `sparse_buffer_bytes=16607608` 与旧 16-run 样本的 `16620418` 基本相同；`sparse_flush_ops` 从
+689 变为 628，平均 `sparse_flush_bytes / sparse_flush_ops` 从 `24061 B` 增至 `26370 B`。
+
+复读实现后确认此前把这个指标称为“flush 次数”的说法不精确：`record_sparse_write_flush()` 位于
+`flush_sparse_write_buffer()` 内部逐个 range 的 `ext4_fwrite()` 成功之后。它记录的是已提交 extent
+range，而不是一次 buffer flush batch。因此新样本最多说明 range 数减少、平均 range 变长；Cargo
+阶段不同，且没有 range-limit/visibility 的原因计数，不能归因于 16->32，也不能报告加速百分比。
+
+最终快照的全局 EXT4 等待仍为主压力：read/write/find/fstat/rename 分别累计 wait
+`241.236/140.405/80.670/30.881/3.755 s`，hold 为
+`24.419/24.455/21.899/15.607/3.609 s`；这是各 hart 累计值，不等同 wall-clock，但显示任务主要排队
+等待唯一 lwext4 入口。write 的 data 阶段为 `16.519 s`，高于 open `3.923 s`、quota `3.780 s`；
+page cache 已有 `515047` hit、`24559` miss、`7110` 次两页预读，三页预读的历史反例仍成立。另有
+39,061 次 lseek type check 累计 `3.400 s`，是次级高频路径。
+
+### 下一轮计划
+
+先在 lwext4 的 perf feature 增加 sparse flush batch 数、batch range/bytes 分布和容量/分配/大写直通/
+可见性边界原因的聚合计数；不改变 32-run/64 KiB 策略。并为 FilePageCache 的 mmap、read、splice
+调用来源和 8 MiB/64 KiB/非 regular 旁路原因增加聚合统计，定位仍会进入 EXT4 的读请求。仅当统计证明
+重复的 immutable regular-file 读取主要受 8 MiB 限制时，才设计有容量上限的页缓存准入；当前全局页
+缓存没有淘汰，不能直接扩大阈值。lseek 的 special-node 查询可作为后续小优化，须先确认 regular-file
+miss 占主导并保持 FIFO/socket `ESPIPE` 语义。
+
+本轮只分析日志和更新文档，没有修改内核或用户态代码，也未运行构建或 QEMU；维护者已有的
+`user/src/bin/initproc.rs` 和 `disk.img` 未触碰。

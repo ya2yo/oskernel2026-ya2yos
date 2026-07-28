@@ -1568,3 +1568,32 @@
   `t=257.349s` 到 `Building 15/446`，无 panic/TFAIL/TBROK；write open 累计 `5.527s / 5711` 次。样本未完成，
   且不是严格 A/B，不报告完整 BuildStorm 或端到端比例。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm sparse range 槽位收束（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者在分析新版 RISC-V BuildStorm `log.ans` 后，要求继续下一步性能优化。
+- **描述**：AI 曾以 `sparse_flush_ops=689`、`sparse_flush_bytes=16578252` 的平均 range 长度作为
+  16 个离散 range 槽位可能造成提前提交的候选证据，并将 `MAX_SPARSE_WRITE_BUFFER_RUNS` 调整为 32，
+  payload 仍限制为 64 KiB。后续代码复核确认 `sparse_flush_ops` 按每个底层 `ext4_fwrite()` range
+  递增，而不是每个 buffer flush batch；该指标不能单独证明槽位限制。写入顺序、洞布局、读时覆盖及
+  close/sync/rename/truncate/`fstat`/`SEEK_DATA`/`SEEK_HOLE` 的 flush 语义均保持不变。
+- **验证**：格式检查、`git diff --check`、RISC-V 与 LoongArch64 `make perf` 以及普通 release 构建
+  通过，仅有既有 smoltcp warning。未取得包含该改动的新 guest 样本，且为避免删除维护者保留的
+  `disk.img` 未运行 `make run`，不报告运行期加速比例；后续首先补齐并比较 flush batch/reason、
+  每 batch payload、write data 和 write-lock wait/hold。
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm 五分钟样本复核与下一轮计划（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的约五分钟 RISC-V `log.ans`，要求完善文档并规划下一步优化。
+- **描述**：最后一个 guest 快照为 `t=216.291s`、Cargo `8/446`，无 panic/TFAIL/TBROK 或结束标记。
+  新 32-run 样本在近似 sparse payload 下有 628 个已提交 range、平均 `25.75 KiB`，旧样本为 689 个、
+  `23.50 KiB`；由于该计数不是 flush batch 且 Cargo 阶段不同，不报告加速。最终全局 EXT4 累计
+  wait/hold 为 `496.947/89.987 s`（多 hart 累计），read/write/find/fstat 排队仍是主压力。下一轮先
+  增加 sparse batch/reason 和页缓存来源/旁路统计，再决定是否受限扩展 immutable 大文件缓存；lseek
+  special-node 查询只作为后续小路径候选。
+- **验证**：本轮为日志与源码口径复核、文档更新，没有改动内核代码或运行构建/QEMU。维护者已有的
+  `user/src/bin/initproc.rs` 和 `disk.img` 未触碰。
+- **关联 commit**：当前工作区未提交

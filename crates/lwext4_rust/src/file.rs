@@ -28,10 +28,11 @@ const MAX_CACHED_FILE_SIZE: usize = 16 * 0x10_0000; // 16 MiB
 // Sparse files cannot use the byte-only whole-file cache because writing that
 // cache back would allocate every hole. Still, compiler/linker output often
 // arrives as many adjacent sub-page writes to one sparse inode. Keep only a
-// bounded contiguous run so those writes can be committed as one ext4 write
-// without changing the inode's extent layout.
+// bounded range set so those writes can be committed together without
+// changing the inode's extent layout. Keep the payload cap fixed while
+// allowing enough fragmented pwrite-style ranges for compiler artifacts.
 const MAX_SPARSE_WRITE_BUFFER_SIZE: usize = 64 * 1024;
-const MAX_SPARSE_WRITE_BUFFER_RUNS: usize = 16;
+const MAX_SPARSE_WRITE_BUFFER_RUNS: usize = 32;
 
 /// Aggregate counters for the whole-file write-back cache.
 ///
