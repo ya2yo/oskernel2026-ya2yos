@@ -7635,3 +7635,45 @@ miss 占主导并保持 FIFO/socket `ESPIPE` 语义。
 
 本轮只分析日志和更新文档，没有修改内核或用户态代码，也未运行构建或 QEMU；维护者已有的
 `user/src/bin/initproc.rs` 和 `disk.img` 未触碰。
+
+## 2026-07-28：`tmp_01`/`tmp_02`/`tmp_03` 与 `lseek` open-time 类型缓存
+
+### 用户输入
+
+维护者先后提供 BuildStorm 约三分钟输出 `tmp_01.ans`、`tmp_02.ans`，以及新的页缓存等待
+实验输出 `tmp_03.ans`，要求分析性能缺陷、按 Linux 对标并修复。
+
+### 分析与修改
+
+`tmp_01.ans` 最后快照为 `t=157571ms`、Cargo `Building 7/446`。`lseek` 共约 3.28 万次，
+`lseek_duration impl` 累计 `15,571,456 us`，其中 `type_check` 累计 `15,521,831 us`；
+`size` 只有 `16 us`，`sparse` 为零。源码追踪确认每次 `OSFile::lseek()` 都重新调用
+`inode.path()`、`FsIndex::special_node_type()`，再回退 `inode.types()`。这不符合 Linux
+`struct file` 在 open 后绑定稳定 inode/file 状态的模型，也把不必要的 metadata 查询带进
+EXT4 全局锁竞争。
+
+`os/src/fs/files/os_file.rs` 现新增 `seek_type: InodeType`。`OSFile::new()` 和
+`new_fanotify_event()` 创建 open file description 时调用一次 `resolve_seek_type()`，优先
+保留 `FsIndex` 中的 FIFO/设备/socket 类型，普通 inode 回退到 `inode.types()`；后续 `lseek()`
+只读取该字段。FIFO/socket 仍返回 Linux 兼容的 `ESPIPE`，SEEK_END、SEEK_DATA、SEEK_HOLE、
+目录和负偏移语义未改。
+
+维护者的 `tmp_02.ans` 最后快照为 `t=149435ms`、Cargo `Building 5/446`。在约 3.19 万次
+`lseek` 下，`syscall_duration lseek=187,462 us`，`lseek_duration impl=10,833 us`，
+`type_check=0 us/0 samples`；这直接验证了 open-time cache 消除了已定位的重复类型检查。
+两个样本 Cargo 阶段、缓存状态和宿主调度不同，不能将最终阶段或 `t=` 差异解释为整体
+BuildStorm 加速，也不能宣称已经超过 Linux。剩余主压力仍是 EXT4 `read_lock` 排队，
+`tmp_02` 累计 wait/hold 为 `141,573,230/16,300,990 us`（多 hart 累计值）。
+
+曾尝试按 Linux locked folio 思路在 `FilePageCache` miss 时插入 loading 占位并让同页访问者
+睡眠等待。`tmp_03.ans` 只到 `t=33511ms, Building 0/446`，之后三分钟没有 perf/Cargo
+推进，说明实现存在永久阻塞或任务生命周期/失效竞态。页缓存实验代码已全部撤销；在补齐
+owner 取消、失效代际以及 read/mmap/splice 并发测试前不重新启用。
+
+### 验证与限制
+
+已执行并通过：`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64`、
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check`。构建仅有 vendored
+smoltcp 既有 warning。沙箱中的独立 QEMU 因宿主 `/var/tmp` 只读、无法创建临时文件而未能
+启动，因此没有新的独立 wall-clock A/B；`tmp_02.ans` 是维护者提供的运行样本。完整 446
+crate BuildStorm、Linux 端到端对标和正式评分尚未完成。

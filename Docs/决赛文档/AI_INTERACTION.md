@@ -1597,3 +1597,24 @@
 - **验证**：本轮为日志与源码口径复核、文档更新，没有改动内核代码或运行构建/QEMU。维护者已有的
   `user/src/bin/initproc.rs` 和 `disk.img` 未触碰。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm `lseek` open-file 类型缓存与 `tmp_03` 页缓存实验回归（7.28）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `tmp_01.ans`、`tmp_02.ans` 和新的 `tmp_03.ans`，要求分析三分钟
+  BuildStorm 性能、对标 Linux 并修复缺陷。
+- **描述**：`tmp_01` 的约 3.28 万次 `lseek` 中，`lseek_duration type_check` 累计
+  `15,521,831 us`，几乎占满实现时间；根因是每次调用重复 `inode.path()`、特殊节点表查找和
+  `inode.types()` 回退。参照 Linux `struct file` 在 open 后绑定稳定 inode/file 状态，
+  `OSFile` 新增 `seek_type` 并在 `new()`/`new_fanotify_event()` 创建时解析一次；FIFO/socket
+  的 `ESPIPE` 与 SEEK_END/SEEK_DATA/SEEK_HOLE 语义保持。`tmp_02` 在相近调用量下显示
+  `type_check=0`、`lseek impl=10,833 us`，证明该热路径优化有效，但 Cargo 阶段不同，不报告
+  整体 wall-clock 或超过 Linux。
+- **页缓存实验**：曾按 Linux locked folio 思路加入 page-loading 占位和同页等待；`tmp_03`
+  停在 `t=33511ms, Building 0/446`，之后没有 perf/Cargo 推进，疑似永久阻塞或失效竞态。
+  实验代码已撤销，不作为成功修复；须先补 owner 取消、失效代际及 read/mmap/splice 并发测试。
+- **验证**：RISC-V/LoongArch64 `make perf`、`cargo fmt --manifest-path os/Cargo.toml -- --check`
+  和 `git diff --check` 通过，仅有既有 smoltcp warning。QEMU 因沙箱 `/var/tmp` 只读未能独立
+  启动，`tmp_02` 为维护者提供的运行验证；完整 446 crate、Linux 端到端和正式评分仍待后续。
+- **关联文档**：[BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
+- **关联 commit**：当前工作区未提交

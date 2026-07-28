@@ -108,6 +108,10 @@ pub struct OSFile {
     writable: bool, // 该文件是否允许通过 sys_write 进行写
     append: bool,   // O_APPEND: 每次 write 前都定位到文件末尾
     pub inode: Arc<dyn Inode>,
+    /// 文件类型在 open() 时已经确定；lseek() 不应每次重新构造路径并查询
+    /// 全局特殊节点表。对普通 inode 直接复用 inode.types()，对 FIFO/设备/socket
+    /// 则保留创建时登记在 FsIndex 中的类型。
+    seek_type: InodeType,
     write_path: Option<String>,
     suppress_fanotify: bool,
     ofd_lock_owner: i32,
@@ -119,6 +123,7 @@ struct OSFileInner {
 
 impl OSFile {
     pub fn new(readable: bool, writable: bool, append: bool, inode: Arc<dyn Inode>) -> Self {
+        let seek_type = Self::resolve_seek_type(&inode);
         let write_path = if writable {
             let path = inode.path();
             register_write_open(&path);
@@ -131,6 +136,7 @@ impl OSFile {
             writable,
             append,
             inode,
+            seek_type,
             write_path,
             suppress_fanotify: false,
             ofd_lock_owner: alloc_ofd_lock_owner(),
@@ -148,16 +154,28 @@ impl OSFile {
         append: bool,
         inode: Arc<dyn Inode>,
     ) -> Self {
+        let seek_type = Self::resolve_seek_type(&inode);
         Self {
             readable,
             writable,
             append,
             inode,
+            seek_type,
             write_path: None,
             suppress_fanotify: true,
             ofd_lock_owner: alloc_ofd_lock_owner(),
             inner: Mutex::new(OSFileInner { offset: 0 }),
         }
+    }
+
+    /// Resolve special-node type once while constructing the open file
+    /// description.  Linux keeps the opened inode attached to `struct file`,
+    /// so subsequent `lseek()` calls only inspect that stable object.  The
+    /// fallback is important for normal EXT4 files and directories, whose
+    /// type is already immutable in the VFS inode.
+    fn resolve_seek_type(inode: &Arc<dyn Inode>) -> InodeType {
+        let path = inode.path();
+        FsIndex::special_node_type(&path).unwrap_or_else(|| inode.types())
     }
 
     pub fn is_write_open_path(path: &str) -> bool {
@@ -366,18 +384,7 @@ impl File for OSFile {
         #[cfg(feature = "perf")]
         let _lseek_guard = crate::utils::perf::LseekDurationGuard::new();
 
-        // `path()` and the fallback `types()` each enter the serialized EXT4
-        // adapter. Keep this phase separate so the high-frequency lseek path
-        // in BuildStorm can be compared with the surrounding syscall time.
-        #[cfg(feature = "perf")]
-        let type_check_begin = get_ticks();
-        let inode_type =
-            FsIndex::special_node_type(&self.inode.path()).unwrap_or_else(|| self.inode.types());
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_lseek_type_check_duration(
-            get_ticks().saturating_sub(type_check_begin),
-        );
-        if inode_type.is_fifo() || inode_type.is_socket() {
+        if self.seek_type.is_fifo() || self.seek_type.is_socket() {
             return Err(SysErrNo::ESPIPE);
         }
         let mut inner = self.inner.lock();
