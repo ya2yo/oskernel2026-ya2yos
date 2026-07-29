@@ -135,6 +135,13 @@ pub(crate) static EXT4_READ_OPEN_LOCK_STATS: Ext4LockStats = Ext4LockStats::new(
 pub(crate) static EXT4_READ_DATA_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_FIND_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_FSTAT_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+/// `fast_cached`, `post_wait_cached`, and `actual_ext4_fstat` are mutually
+/// exclusive results of `Ext4Inode::fstat()`. Alias recovery is a nested
+/// subphase of the last bucket and is deliberately reported separately.
+pub(crate) static EXT4_FSTAT_FAST_CACHED: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_FSTAT_POST_WAIT_CACHED: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_FSTAT_ACTUAL_EXT4_FSTAT: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_FSTAT_RECOVER_LIVE_PATH: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_WRITE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_RENAME_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_CLOSE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
@@ -668,6 +675,58 @@ impl Drop for Ext4WritePhaseGuard {
                 elapsed,
             ),
         }
+    }
+}
+
+/// Result classes for one `Ext4Inode::fstat()` call. The recorded duration
+/// starts at method entry, so the non-fast buckets include time spent waiting
+/// for inode state and the mount-wide lwext4 gate.
+pub enum Ext4FstatPath {
+    FastCached,
+    PostWaitCached,
+    ActualExt4Fstat,
+}
+
+/// Records exactly one terminal result for one `Ext4Inode::fstat()` call.
+pub struct Ext4FstatPathGuard {
+    begin: usize,
+}
+
+impl Ext4FstatPathGuard {
+    #[inline]
+    pub fn new() -> Self {
+        Self { begin: get_ticks() }
+    }
+
+    #[inline]
+    pub fn finish(self, path: Ext4FstatPath) {
+        let elapsed = get_ticks().saturating_sub(self.begin);
+        match path {
+            Ext4FstatPath::FastCached => EXT4_FSTAT_FAST_CACHED.record(elapsed),
+            Ext4FstatPath::PostWaitCached => EXT4_FSTAT_POST_WAIT_CACHED.record(elapsed),
+            Ext4FstatPath::ActualExt4Fstat => EXT4_FSTAT_ACTUAL_EXT4_FSTAT.record(elapsed),
+        }
+    }
+}
+
+/// Times the alias scan and descriptor replacement after `Ext4File::fstat()`
+/// reports a stale pathname. This is intentionally separate from the
+/// mutually exclusive terminal result above.
+pub struct Ext4FstatRecoveryGuard {
+    begin: usize,
+}
+
+impl Ext4FstatRecoveryGuard {
+    #[inline]
+    pub fn new() -> Self {
+        Self { begin: get_ticks() }
+    }
+}
+
+impl Drop for Ext4FstatRecoveryGuard {
+    #[inline]
+    fn drop(&mut self) {
+        EXT4_FSTAT_RECOVER_LIVE_PATH.record(get_ticks().saturating_sub(self.begin));
     }
 }
 

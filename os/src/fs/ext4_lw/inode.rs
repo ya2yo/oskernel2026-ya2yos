@@ -14,7 +14,8 @@ use lwext4_rust::{
 use super::{TaskMutex, EXT4_OP_LOCK};
 #[cfg(feature = "perf")]
 use crate::utils::perf::{
-    Ext4InodePhaseGuard, Ext4MetadataPhase, Ext4NamespacePhase, Ext4RenamePhase,
+    Ext4FstatPath, Ext4FstatPathGuard, Ext4FstatRecoveryGuard, Ext4InodePhaseGuard,
+    Ext4MetadataPhase, Ext4NamespacePhase, Ext4RenamePhase,
 };
 use crate::{
     fs::{
@@ -954,7 +955,11 @@ impl Inode for Ext4Inode {
     /// 正常情况下直接用当前路径对应的 lwext4 句柄查询；如果路径因 rename/unlink 失效，
     /// 再尝试 `recover_live_path()`，从已记录 alias 中恢复一个仍存在的路径。
     fn fstat(&self) -> Kstat {
+        #[cfg(feature = "perf")]
+        let fstat_path = Ext4FstatPathGuard::new();
         if let Some(stat) = self.cached_stat() {
+            #[cfg(feature = "perf")]
+            fstat_path.finish(Ext4FstatPath::FastCached);
             return self.stat_with_known_size(stat);
         }
 
@@ -965,13 +970,19 @@ impl Inode for Ext4Inode {
         // for lwext4.  Recheck after acquiring the guard to avoid redundant
         // metadata I/O during Cargo's parallel probes.
         if let Some(stat) = self.cached_stat() {
+            #[cfg(feature = "perf")]
+            fstat_path.finish(Ext4FstatPath::PostWaitCached);
             return self.stat_with_known_size(stat);
         }
         let inner = self.inner.get_unchecked_mut();
         let stat = match inner.f.fstat() {
             Ok(s) => s,
             Err(rc) => {
-                let _ = self.recover_live_path(inner);
+                {
+                    #[cfg(feature = "perf")]
+                    let _recovery = Ext4FstatRecoveryGuard::new();
+                    let _ = self.recover_live_path(inner);
+                }
                 match inner.f.fstat() {
                     Ok(s) => s,
                     Err(_) => {
@@ -980,6 +991,8 @@ impl Inode for Ext4Inode {
                             rc,
                             inner.f.path()
                         );
+                        #[cfg(feature = "perf")]
+                        fstat_path.finish(Ext4FstatPath::ActualExt4Fstat);
                         return Kstat::default();
                     }
                 }
@@ -994,6 +1007,8 @@ impl Inode for Ext4Inode {
             kstat.st_mode = (kstat.st_mode & !0xF000) | type_bits;
         }
         self.update_cached_stat(kstat);
+        #[cfg(feature = "perf")]
+        fstat_path.finish(Ext4FstatPath::ActualExt4Fstat);
         self.stat_with_known_size(kstat)
     }
     /// 读取目录项内容。

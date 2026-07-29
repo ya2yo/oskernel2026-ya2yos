@@ -79,6 +79,14 @@ pub(super) fn emit_report(now: usize) {
     emit_ext4_lock_stats("ext4_read_data_lock", &EXT4_READ_DATA_LOCK_STATS);
     emit_ext4_lock_stats("ext4_find_lock", &EXT4_FIND_LOCK_STATS);
     emit_ext4_lock_stats("ext4_fstat_lock", &EXT4_FSTAT_LOCK_STATS);
+    print!("[perf] ext4_fstat_path ");
+    emit_ext4_phase_stats("fast_cached", &EXT4_FSTAT_FAST_CACHED);
+    print!("[perf] ext4_fstat_path ");
+    emit_ext4_phase_stats("post_wait_cached", &EXT4_FSTAT_POST_WAIT_CACHED);
+    print!("[perf] ext4_fstat_path ");
+    emit_ext4_phase_stats("actual_ext4_fstat", &EXT4_FSTAT_ACTUAL_EXT4_FSTAT);
+    print!("[perf] ext4_fstat_path ");
+    emit_ext4_phase_stats("recover_live_path", &EXT4_FSTAT_RECOVER_LIVE_PATH);
     emit_ext4_lock_stats("ext4_write_lock", &EXT4_WRITE_LOCK_STATS);
     print!("[perf] ext4_write_duration ");
     emit_duration(
