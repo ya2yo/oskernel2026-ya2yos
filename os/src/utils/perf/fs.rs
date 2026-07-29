@@ -2,6 +2,9 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(feature = "perf")]
+use lwext4_rust::perf::FstatStageEvent;
+
 use crate::arch::time::get_ticks;
 use crate::fs::{Ext4OpGuard, Ext4OpLock};
 
@@ -127,6 +130,130 @@ impl Ext4PhaseStats {
     }
 }
 
+/// Cause retained with a regular-file stat-cache miss until `fstat()` really
+/// enters `Ext4File::fstat()`. Values are operation classes, never paths or
+/// tasks, so the counters remain low-overhead global aggregates.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum Ext4FstatMissReason {
+    ColdInode,
+    DenseWriteBack,
+    DirectWrite,
+    SparseBufferedWrite,
+    Truncate,
+    Rename,
+    Unlink,
+    HardLink,
+    Metadata,
+    AliasRecovery,
+    FsIndexRebuild,
+}
+
+/// Cache-invalidation counts grouped by their source. Every successful
+/// metadata-changing operation is included, even if a prior invalidation has
+/// not yet been consumed by `fstat()`.
+pub(crate) struct Ext4FstatReasonCounts {
+    pub(crate) cold_inode: AtomicUsize,
+    pub(crate) dense_write_back: AtomicUsize,
+    pub(crate) direct_write: AtomicUsize,
+    pub(crate) sparse_buffered_write: AtomicUsize,
+    pub(crate) truncate: AtomicUsize,
+    pub(crate) rename: AtomicUsize,
+    pub(crate) unlink: AtomicUsize,
+    pub(crate) hard_link: AtomicUsize,
+    pub(crate) metadata: AtomicUsize,
+    pub(crate) alias_recovery: AtomicUsize,
+    pub(crate) fsidx_rebuild: AtomicUsize,
+}
+
+impl Ext4FstatReasonCounts {
+    const fn new() -> Self {
+        Self {
+            cold_inode: AtomicUsize::new(0),
+            dense_write_back: AtomicUsize::new(0),
+            direct_write: AtomicUsize::new(0),
+            sparse_buffered_write: AtomicUsize::new(0),
+            truncate: AtomicUsize::new(0),
+            rename: AtomicUsize::new(0),
+            unlink: AtomicUsize::new(0),
+            hard_link: AtomicUsize::new(0),
+            metadata: AtomicUsize::new(0),
+            alias_recovery: AtomicUsize::new(0),
+            fsidx_rebuild: AtomicUsize::new(0),
+        }
+    }
+
+    #[inline]
+    fn record(&self, reason: Ext4FstatMissReason) {
+        let counter = match reason {
+            Ext4FstatMissReason::ColdInode => &self.cold_inode,
+            Ext4FstatMissReason::DenseWriteBack => &self.dense_write_back,
+            Ext4FstatMissReason::DirectWrite => &self.direct_write,
+            Ext4FstatMissReason::SparseBufferedWrite => &self.sparse_buffered_write,
+            Ext4FstatMissReason::Truncate => &self.truncate,
+            Ext4FstatMissReason::Rename => &self.rename,
+            Ext4FstatMissReason::Unlink => &self.unlink,
+            Ext4FstatMissReason::HardLink => &self.hard_link,
+            Ext4FstatMissReason::Metadata => &self.metadata,
+            Ext4FstatMissReason::AliasRecovery => &self.alias_recovery,
+            Ext4FstatMissReason::FsIndexRebuild => &self.fsidx_rebuild,
+        };
+        add(counter, 1);
+    }
+}
+
+/// Actual `Ext4File::fstat()` time grouped by the reason that reached it. A
+/// stale pathname can yield two samples: the failed old alias and its explicit
+/// `AliasRecovery` retry.
+pub(crate) struct Ext4FstatReasonPhases {
+    pub(crate) cold_inode: Ext4PhaseStats,
+    pub(crate) dense_write_back: Ext4PhaseStats,
+    pub(crate) direct_write: Ext4PhaseStats,
+    pub(crate) sparse_buffered_write: Ext4PhaseStats,
+    pub(crate) truncate: Ext4PhaseStats,
+    pub(crate) rename: Ext4PhaseStats,
+    pub(crate) unlink: Ext4PhaseStats,
+    pub(crate) hard_link: Ext4PhaseStats,
+    pub(crate) metadata: Ext4PhaseStats,
+    pub(crate) alias_recovery: Ext4PhaseStats,
+    pub(crate) fsidx_rebuild: Ext4PhaseStats,
+}
+
+impl Ext4FstatReasonPhases {
+    const fn new() -> Self {
+        Self {
+            cold_inode: Ext4PhaseStats::new(),
+            dense_write_back: Ext4PhaseStats::new(),
+            direct_write: Ext4PhaseStats::new(),
+            sparse_buffered_write: Ext4PhaseStats::new(),
+            truncate: Ext4PhaseStats::new(),
+            rename: Ext4PhaseStats::new(),
+            unlink: Ext4PhaseStats::new(),
+            hard_link: Ext4PhaseStats::new(),
+            metadata: Ext4PhaseStats::new(),
+            alias_recovery: Ext4PhaseStats::new(),
+            fsidx_rebuild: Ext4PhaseStats::new(),
+        }
+    }
+
+    #[inline]
+    fn record(&self, reason: Ext4FstatMissReason, elapsed: usize) {
+        let stats = match reason {
+            Ext4FstatMissReason::ColdInode => &self.cold_inode,
+            Ext4FstatMissReason::DenseWriteBack => &self.dense_write_back,
+            Ext4FstatMissReason::DirectWrite => &self.direct_write,
+            Ext4FstatMissReason::SparseBufferedWrite => &self.sparse_buffered_write,
+            Ext4FstatMissReason::Truncate => &self.truncate,
+            Ext4FstatMissReason::Rename => &self.rename,
+            Ext4FstatMissReason::Unlink => &self.unlink,
+            Ext4FstatMissReason::HardLink => &self.hard_link,
+            Ext4FstatMissReason::Metadata => &self.metadata,
+            Ext4FstatMissReason::AliasRecovery => &self.alias_recovery,
+            Ext4FstatMissReason::FsIndexRebuild => &self.fsidx_rebuild,
+        };
+        stats.record(elapsed);
+    }
+}
+
 pub(crate) static EXT4_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 /// Aggregate across both pieces of a split `Ext4Inode::read_at()` slow path.
 /// `samples` therefore counts global-lock acquisitions, not logical reads.
@@ -142,6 +269,13 @@ pub(crate) static EXT4_FSTAT_FAST_CACHED: Ext4PhaseStats = Ext4PhaseStats::new()
 pub(crate) static EXT4_FSTAT_POST_WAIT_CACHED: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_FSTAT_ACTUAL_EXT4_FSTAT: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_FSTAT_RECOVER_LIVE_PATH: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_FSTAT_SPARSE_WRITE_FLUSH: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_FSTAT_STAT_GET: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_FSTAT_WRITE_BACK_FALLBACK: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_FSTAT_WRITE_BACK_OVERLAY: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_FSTAT_CACHE_INVALIDATIONS: Ext4FstatReasonCounts =
+    Ext4FstatReasonCounts::new();
+pub(crate) static EXT4_FSTAT_INNER_MISSES: Ext4FstatReasonPhases = Ext4FstatReasonPhases::new();
 pub(crate) static EXT4_WRITE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_RENAME_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_CLOSE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
@@ -208,6 +342,7 @@ pub(crate) static VFS_CACHED_PARENT_FINDS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_ROOT_FINDS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_PRESERVE_FINAL_CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_FSINDEX_RECLAIMED: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_FSINDEX_REBUILDS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_DENTRY_CLEARED_BY_FSINDEX: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_DENTRY_CAPACITY_EVICTIONS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_DENTRY_CAPACITY_EVICTED_ENTRIES: AtomicUsize = AtomicUsize::new(0);
@@ -730,6 +865,95 @@ impl Drop for Ext4FstatRecoveryGuard {
     }
 }
 
+/// Time exactly one real entry into `Ext4File::fstat()`. Unlike
+/// [`Ext4FstatPathGuard`], this excludes inode/global-lock waiting and lets a
+/// report separate `ext4_stat_get` candidates from a sparse flush performed
+/// inside the wrapper.
+pub struct Ext4FstatMissGuard {
+    reason: Ext4FstatMissReason,
+    begin: usize,
+}
+
+impl Ext4FstatMissGuard {
+    #[inline]
+    pub fn new(reason: Ext4FstatMissReason) -> Self {
+        Self {
+            reason,
+            begin: get_ticks(),
+        }
+    }
+}
+
+impl Drop for Ext4FstatMissGuard {
+    #[inline]
+    fn drop(&mut self) {
+        EXT4_FSTAT_INNER_MISSES.record(self.reason, get_ticks().saturating_sub(self.begin));
+    }
+}
+
+/// Per-call timing state for `Ext4File::fstat()` boundaries. It lives on the
+/// caller stack rather than in a global state, so timing remains correct if a
+/// later implementation ever removes the ext4 mount-wide serialization.
+#[cfg(feature = "perf")]
+pub struct Ext4FstatStageRecorder {
+    sparse_write_flush_begin: usize,
+    stat_get_begin: usize,
+    write_back_fallback_begin: usize,
+    write_back_overlay_begin: usize,
+}
+
+#[cfg(feature = "perf")]
+impl Ext4FstatStageRecorder {
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            sparse_write_flush_begin: 0,
+            stat_get_begin: 0,
+            write_back_fallback_begin: 0,
+            write_back_overlay_begin: 0,
+        }
+    }
+
+    #[inline]
+    pub fn record(&mut self, event: FstatStageEvent) {
+        match event {
+            FstatStageEvent::SparseWriteFlushBegin => {
+                self.sparse_write_flush_begin = get_ticks();
+            }
+            FstatStageEvent::SparseWriteFlushEnd => {
+                EXT4_FSTAT_SPARSE_WRITE_FLUSH
+                    .record(get_ticks().saturating_sub(self.sparse_write_flush_begin));
+            }
+            FstatStageEvent::Ext4StatGetBegin => {
+                self.stat_get_begin = get_ticks();
+            }
+            FstatStageEvent::Ext4StatGetEnd => {
+                EXT4_FSTAT_STAT_GET.record(get_ticks().saturating_sub(self.stat_get_begin));
+            }
+            FstatStageEvent::WriteBackFallbackBegin => {
+                self.write_back_fallback_begin = get_ticks();
+            }
+            FstatStageEvent::WriteBackFallbackEnd => {
+                EXT4_FSTAT_WRITE_BACK_FALLBACK
+                    .record(get_ticks().saturating_sub(self.write_back_fallback_begin));
+            }
+            FstatStageEvent::WriteBackOverlayBegin => {
+                self.write_back_overlay_begin = get_ticks();
+            }
+            FstatStageEvent::WriteBackOverlayEnd => {
+                EXT4_FSTAT_WRITE_BACK_OVERLAY
+                    .record(get_ticks().saturating_sub(self.write_back_overlay_begin));
+            }
+        }
+    }
+}
+
+/// Record the operation that invalidated a regular inode's stat cache.
+#[inline]
+pub fn record_ext4_fstat_cache_invalidation(reason: Ext4FstatMissReason) {
+    EXT4_FSTAT_CACHE_INVALIDATIONS.record(reason);
+}
+
 /// Mutually exclusive stages inside `Ext4Inode::rename()` while it holds the
 /// mount-wide lwext4 gate.
 #[derive(Clone, Copy)]
@@ -1034,6 +1258,14 @@ pub fn record_vfs_preserve_final_cache_hit() {
 pub fn record_vfs_fsidx_reclaim(reclaimed_inodes: usize, cleared_dentries: usize) {
     add(&VFS_FSINDEX_RECLAIMED, reclaimed_inodes);
     add(&VFS_DENTRY_CLEARED_BY_FSINDEX, cleared_dentries);
+}
+
+/// Record a new canonical entry installed immediately after FsIndex reclaimed
+/// an unused inode. This is distinct from the number of reclaimed entries:
+/// most rebuilt inodes keep their lookup stat and never execute lwext4 fstat.
+#[inline]
+pub fn record_vfs_fsidx_rebuild() {
+    add(&VFS_FSINDEX_REBUILDS, 1);
 }
 
 #[inline]

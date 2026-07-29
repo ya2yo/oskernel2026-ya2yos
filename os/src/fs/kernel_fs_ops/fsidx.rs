@@ -73,7 +73,17 @@ impl FsIndex {
     }
 
     pub fn insert_inode_idx(path: &str, inode: Arc<dyn Inode>) -> Arc<dyn Inode> {
-        Self::reclaim_if_at_capacity();
+        let reclaimed_inodes = Self::reclaim_if_at_capacity();
+        // A newly constructed inode normally has a lookup-time stat cache.
+        // If it does need to fall back to `fstat()` while rebuilding FsIndex
+        // immediately after a real reclaim, retain that causal label without
+        // discarding an already-valid lookup stat.
+        #[cfg(feature = "perf")]
+        if reclaimed_inodes != 0 {
+            inode.mark_fstat_cache_fsidx_rebuild();
+        }
+        #[cfg(not(feature = "perf"))]
+        let _ = reclaimed_inodes;
         let key = Self::cache_key(path, &inode);
         let canonical = loop {
             let existing = {
@@ -96,6 +106,10 @@ impl FsIndex {
                 // while holding the index lock.
                 drop(replaced);
                 drop(displaced);
+                #[cfg(feature = "perf")]
+                if reclaimed_inodes != 0 {
+                    crate::utils::perf::record_vfs_fsidx_rebuild();
+                }
                 break canonical;
             };
 
@@ -198,7 +212,7 @@ impl FsIndex {
         count
     }
 
-    fn reclaim_if_at_capacity() {
+    fn reclaim_if_at_capacity() -> usize {
         let at_capacity = INODE_CACHE.read().inodes.len() >= MAX_CACHED_INODES;
         if at_capacity {
             // Positive dentries intentionally keep strong inode references for
@@ -210,6 +224,9 @@ impl FsIndex {
             crate::utils::perf::record_vfs_fsidx_reclaim(reclaimed_inodes, cleared_dentries);
             #[cfg(not(feature = "perf"))]
             let _ = (reclaimed_inodes, cleared_dentries);
+            reclaimed_inodes
+        } else {
+            0
         }
     }
 

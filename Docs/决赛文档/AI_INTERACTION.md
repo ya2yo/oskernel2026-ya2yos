@@ -1840,3 +1840,20 @@
   `make TARGET_ARCH=riscv64 perf` 与 `make TARGET_ARCH=loongarch64 perf`，均通过。仅见既有 Cargo config、
   vendored `smoltcp` 和 `ipi_sent` warning；未运行 QEMU/BuildStorm，故不报告性能比例。
 - **关联 commit**：当前工作区未提交
+
+#### lwext4 `fstat` 因果、内部阶段与 sparse flush reason 聚合（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求在不改变 Linux 可见语义或 lwext4 锁域的条件下，定位 `fstat` 实际慢在
+  `ext4_stat_get` 还是为准确 `st_blocks` 被迫提交 sparse 写入；并要求将 lwext4 wrapper 的所有 perf
+  状态收敛到新增 `lwext4_rust::perf` 模块。
+- **描述**：regular-file `stat_cache` 在既有 RwLock 下保留最后一个未消费 miss 原因；实际 wrapper
+  `fstat` 以 reason 分桶计时。新增 wrapper stage observer，分别输出 sparse flush、`ext4_stat_get`、
+  write-back fallback/overlay，alias recovery 保持内核侧 recovery phase；sparse batch/bytes 按 fstat、
+  close、rename、truncate、sparse-buffer 容量淘汰和 other 分类。FsIndex 仅在实际回收后将新候选的空缓存
+  miss 标为 rebuild，不为统计清空有效 lookup stat。原子均为 `Relaxed`，不新增锁或移动 I/O。
+- **验证**：`cargo fmt`、`git diff --check`、RISC-V 与 LoongArch64 `make perf`、默认双架构 release
+  `make` 均通过，只有既有 Cargo config/vendored `smoltcp`/`ipi_sent` warning。RISC-V `-snapshot`
+  60 秒样本输出 425 次 wrapper fstat，`ext4_stat_get` 累计 `335244 us`，fstat sparse flush 为
+  `2 batch / 30128 B`；运行因 timeout 停止，未作为完整回归或性能结论。
+- **关联 commit**：当前工作区未提交

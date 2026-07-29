@@ -17,6 +17,7 @@ mod ulibc;
 pub mod bindings;
 pub mod blockdev;
 pub mod file;
+pub mod perf;
 
 pub use blockdev::*;
 pub use file::{Ext4File, InodeTypes};

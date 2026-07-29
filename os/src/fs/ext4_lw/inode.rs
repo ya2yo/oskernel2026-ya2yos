@@ -12,10 +12,12 @@ use lwext4_rust::{
 };
 
 use super::{TaskMutex, EXT4_OP_LOCK};
+use crate::utils::perf::Ext4FstatMissReason;
 #[cfg(feature = "perf")]
 use crate::utils::perf::{
-    Ext4FstatPath, Ext4FstatPathGuard, Ext4FstatRecoveryGuard, Ext4InodePhaseGuard,
-    Ext4MetadataPhase, Ext4NamespacePhase, Ext4RenamePhase,
+    Ext4FstatMissGuard, Ext4FstatPath, Ext4FstatPathGuard, Ext4FstatRecoveryGuard,
+    Ext4FstatStageRecorder, Ext4InodePhaseGuard, Ext4MetadataPhase, Ext4NamespacePhase,
+    Ext4RenamePhase,
 };
 use crate::{
     fs::{
@@ -89,7 +91,17 @@ pub struct Ext4Inode {
     /// otherwise serialize on lwext4's global path-based metadata lookup.
     /// Directories and special nodes are intentionally excluded because their
     /// metadata changes as children are created or removed.
-    stat_cache: RwLock<Option<Kstat>>,
+    stat_cache: RwLock<Ext4StatCache>,
+}
+
+/// The stat cache and, for perf builds, the operation which most recently
+/// made it stale share the existing cache lock. This adds no lock acquisition
+/// domain: readers still take the same `stat_cache` read lock and writers take
+/// the same write lock as before.
+struct Ext4StatCache {
+    stat: Option<Kstat>,
+    #[cfg(feature = "perf")]
+    miss_reason: Ext4FstatMissReason,
 }
 
 /// `Ext4Inode` 的可变内部状态。
@@ -145,13 +157,18 @@ impl Ext4Inode {
         let inode_identity = lookup_stat
             .as_ref()
             .and_then(|stat| (stat.st_ino != 0).then_some((stat.st_dev, stat.st_ino)));
-        let (known_size, stat_cache) = if inode_type == InodeType::File {
+        let (known_size, cached_stat) = if inode_type == InodeType::File {
             match lookup_stat {
                 Some(stat) => (stat.st_size as usize, Some(Self::kstat_from_ext4(stat))),
                 None => (UNKNOWN_FILE_SIZE, None),
             }
         } else {
             (UNKNOWN_FILE_SIZE, None)
+        };
+        let stat_cache = Ext4StatCache {
+            stat: cached_stat,
+            #[cfg(feature = "perf")]
+            miss_reason: Ext4FstatMissReason::ColdInode,
         };
         Ext4Inode {
             inode_type,
@@ -252,7 +269,7 @@ impl Ext4Inode {
     #[inline]
     fn cached_stat(&self) -> Option<Kstat> {
         if self.inode_type == InodeType::File {
-            *self.stat_cache.read()
+            self.stat_cache.read().stat
         } else {
             None
         }
@@ -261,14 +278,42 @@ impl Ext4Inode {
     #[inline]
     fn update_cached_stat(&self, stat: Kstat) {
         if self.inode_type == InodeType::File {
-            *self.stat_cache.write() = Some(stat);
+            self.stat_cache.write().stat = Some(stat);
         }
     }
 
     #[inline]
-    fn invalidate_cached_stat(&self) {
+    fn invalidate_cached_stat(&self, reason: Ext4FstatMissReason) {
         if self.inode_type == InodeType::File {
-            *self.stat_cache.write() = None;
+            let mut cache = self.stat_cache.write();
+            cache.stat = None;
+            #[cfg(feature = "perf")]
+            {
+                cache.miss_reason = reason;
+                crate::utils::perf::record_ext4_fstat_cache_invalidation(reason);
+            }
+            #[cfg(not(feature = "perf"))]
+            let _ = reason;
+        }
+    }
+
+    #[cfg(feature = "perf")]
+    #[inline]
+    fn stat_cache_miss_reason(&self) -> Ext4FstatMissReason {
+        self.stat_cache.read().miss_reason
+    }
+
+    /// `FsIndex` calls this only for a new candidate constructed immediately
+    /// after it actually reclaimed idle entries. Do not evict a populated
+    /// cache merely for accounting; a later real miss will carry this reason.
+    #[cfg(feature = "perf")]
+    #[inline]
+    fn mark_stat_cache_fsidx_rebuild(&self) {
+        if self.inode_type == InodeType::File {
+            let mut cache = self.stat_cache.write();
+            if cache.stat.is_none() {
+                cache.miss_reason = Ext4FstatMissReason::FsIndexRebuild;
+            }
         }
     }
 
@@ -534,7 +579,7 @@ impl Inode for Ext4Inode {
                     let written = result.map_err(SysErrNo::from)?;
                     let end = off.checked_add(written).ok_or(SysErrNo::EFBIG)?;
                     self.update_known_size(current_size.max(end));
-                    self.invalidate_cached_stat();
+                    self.invalidate_cached_stat(Ext4FstatMissReason::DenseWriteBack);
                     return Ok(written);
                 }
             }
@@ -629,7 +674,17 @@ impl Inode for Ext4Inode {
         drop(data_phase);
         let end = off.checked_add(written).ok_or(SysErrNo::EFBIG)?;
         self.update_known_size(current_size.max(end));
-        self.invalidate_cached_stat();
+        #[cfg(feature = "perf")]
+        let fstat_miss_reason = match file.last_write_path() {
+            lwext4_rust::perf::FileWritePath::DenseWriteBack => Ext4FstatMissReason::DenseWriteBack,
+            lwext4_rust::perf::FileWritePath::Direct => Ext4FstatMissReason::DirectWrite,
+            lwext4_rust::perf::FileWritePath::SparseBuffered => {
+                Ext4FstatMissReason::SparseBufferedWrite
+            }
+        };
+        #[cfg(not(feature = "perf"))]
+        let fstat_miss_reason = Ext4FstatMissReason::DirectWrite;
+        self.invalidate_cached_stat(fstat_miss_reason);
         Ok(written)
     }
 
@@ -649,7 +704,7 @@ impl Inode for Ext4Inode {
 
         file.file_truncate(size as u64).map_err(SysErrNo::from)?;
         self.update_known_size(size);
-        self.invalidate_cached_stat();
+        self.invalidate_cached_stat(Ext4FstatMissReason::Truncate);
         FILE_PAGE_CACHE.invalidate_path(&path);
         Ok(0)
     }
@@ -719,7 +774,7 @@ impl Inode for Ext4Inode {
             }
             inner.f = Ext4File::new(new_path, types);
             self.update_cached_path(new_path);
-            self.invalidate_cached_stat();
+            self.invalidate_cached_stat(Ext4FstatMissReason::Rename);
             FILE_PAGE_CACHE.invalidate_path(&active_path);
             FILE_PAGE_CACHE.invalidate_path(path);
             FILE_PAGE_CACHE.invalidate_path(new_path);
@@ -745,7 +800,7 @@ impl Inode for Ext4Inode {
             if inner.aliases.iter().all(|alias| alias != new_path) {
                 inner.aliases.push(new_path.to_string());
             }
-            self.invalidate_cached_stat();
+            self.invalidate_cached_stat(Ext4FstatMissReason::HardLink);
         }
         ret
     }
@@ -766,7 +821,7 @@ impl Inode for Ext4Inode {
         let file = &mut inner.f;
         let ret = file.set_time(atime, mtime, ctime).map_err(SysErrNo::from);
         if ret.is_ok() {
-            self.invalidate_cached_stat();
+            self.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
         ret
     }
@@ -975,7 +1030,23 @@ impl Inode for Ext4Inode {
             return self.stat_with_known_size(stat);
         }
         let inner = self.inner.get_unchecked_mut();
-        let stat = match inner.f.fstat() {
+        #[cfg(feature = "perf")]
+        let miss_reason = self.stat_cache_miss_reason();
+        let fstat_result = {
+            #[cfg(feature = "perf")]
+            {
+                let _miss = Ext4FstatMissGuard::new(miss_reason);
+                let mut fstat_stages = Ext4FstatStageRecorder::new();
+                inner
+                    .f
+                    .fstat_with_perf_observer(|event| fstat_stages.record(event))
+            }
+            #[cfg(not(feature = "perf"))]
+            {
+                inner.f.fstat()
+            }
+        };
+        let stat = match fstat_result {
             Ok(s) => s,
             Err(rc) => {
                 {
@@ -983,7 +1054,21 @@ impl Inode for Ext4Inode {
                     let _recovery = Ext4FstatRecoveryGuard::new();
                     let _ = self.recover_live_path(inner);
                 }
-                match inner.f.fstat() {
+                let recovery_fstat_result = {
+                    #[cfg(feature = "perf")]
+                    {
+                        let _miss = Ext4FstatMissGuard::new(Ext4FstatMissReason::AliasRecovery);
+                        let mut fstat_stages = Ext4FstatStageRecorder::new();
+                        inner
+                            .f
+                            .fstat_with_perf_observer(|event| fstat_stages.record(event))
+                    }
+                    #[cfg(not(feature = "perf"))]
+                    {
+                        inner.f.fstat()
+                    }
+                };
+                match recovery_fstat_result {
                     Ok(s) => s,
                     Err(_) => {
                         warn!(
@@ -1146,7 +1231,7 @@ impl Inode for Ext4Inode {
             Ok(0)
         };
         if ret.is_ok() {
-            self.invalidate_cached_stat();
+            self.invalidate_cached_stat(Ext4FstatMissReason::Unlink);
         }
         ret
     }
@@ -1162,6 +1247,11 @@ impl Inode for Ext4Inode {
 
     fn cache_identity(&self) -> Option<(usize, usize)> {
         self.inode_identity
+    }
+
+    #[cfg(feature = "perf")]
+    fn mark_fstat_cache_fsidx_rebuild(&self) {
+        self.mark_stat_cache_fsidx_rebuild();
     }
 
     /// 从 VFS inode cache 记录新的路径别名。
@@ -1227,7 +1317,7 @@ impl Inode for Ext4Inode {
             }
         };
         if ret.is_ok() {
-            self.invalidate_cached_stat();
+            self.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
         ret
     }
@@ -1249,7 +1339,7 @@ impl Inode for Ext4Inode {
             }
         };
         if ret.is_ok() {
-            self.invalidate_cached_stat();
+            self.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
         ret
     }

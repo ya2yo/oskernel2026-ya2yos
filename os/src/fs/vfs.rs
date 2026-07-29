@@ -165,6 +165,11 @@ pub trait Inode: Send + Sync {
     fn cache_identity(&self) -> Option<(usize, usize)> {
         None
     }
+    /// Mark a freshly constructed candidate as following an actual FsIndex
+    /// reclaim. Backends with a stat cache can retain this as the next miss
+    /// cause without evicting already valid metadata.
+    #[cfg(feature = "perf")]
+    fn mark_fstat_cache_fsidx_rebuild(&self) {}
     /// 记录该 inode 的一个可用路径别名。
     ///
     /// 真正的 inode cache 会让硬链接等多个路径复用同一个 inode 对象。

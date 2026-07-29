@@ -60,7 +60,7 @@ pub(super) fn emit_report(now: usize) {
         FILE_CACHE_LOAD_RACES.load(Ordering::Relaxed),
     );
     println!(
-        "[perf] vfs_lookup fsidx_hit={} fsidx_miss={} dentry_positive_hit={} dentry_negative_hit={} dentry_miss={} cached_parent_find={} root_find={} preserve_final_cache_hit={} fsidx_reclaimed={} dentry_cleared_by_fsidx={} dentry_capacity_evictions={} dentry_capacity_evicted_entries={}",
+        "[perf] vfs_lookup fsidx_hit={} fsidx_miss={} dentry_positive_hit={} dentry_negative_hit={} dentry_miss={} cached_parent_find={} root_find={} preserve_final_cache_hit={} fsidx_reclaimed={} fsidx_rebuilds={} dentry_cleared_by_fsidx={} dentry_capacity_evictions={} dentry_capacity_evicted_entries={}",
         VFS_FSINDEX_HITS.load(Ordering::Relaxed),
         VFS_FSINDEX_MISSES.load(Ordering::Relaxed),
         VFS_DENTRY_POSITIVE_HITS.load(Ordering::Relaxed),
@@ -70,6 +70,7 @@ pub(super) fn emit_report(now: usize) {
         VFS_ROOT_FINDS.load(Ordering::Relaxed),
         VFS_PRESERVE_FINAL_CACHE_HITS.load(Ordering::Relaxed),
         VFS_FSINDEX_RECLAIMED.load(Ordering::Relaxed),
+        VFS_FSINDEX_REBUILDS.load(Ordering::Relaxed),
         VFS_DENTRY_CLEARED_BY_FSINDEX.load(Ordering::Relaxed),
         VFS_DENTRY_CAPACITY_EVICTIONS.load(Ordering::Relaxed),
         VFS_DENTRY_CAPACITY_EVICTED_ENTRIES.load(Ordering::Relaxed),
@@ -87,6 +88,68 @@ pub(super) fn emit_report(now: usize) {
     emit_ext4_phase_stats("actual_ext4_fstat", &EXT4_FSTAT_ACTUAL_EXT4_FSTAT);
     print!("[perf] ext4_fstat_path ");
     emit_ext4_phase_stats("recover_live_path", &EXT4_FSTAT_RECOVER_LIVE_PATH);
+    print!("[perf] ext4_fstat_stage ");
+    emit_ext4_phase_stats("flush_sparse_write_buffer", &EXT4_FSTAT_SPARSE_WRITE_FLUSH);
+    print!("[perf] ext4_fstat_stage ");
+    emit_ext4_phase_stats("ext4_stat_get", &EXT4_FSTAT_STAT_GET);
+    print!("[perf] ext4_fstat_stage ");
+    emit_ext4_phase_stats("write_back_fallback", &EXT4_FSTAT_WRITE_BACK_FALLBACK);
+    print!("[perf] ext4_fstat_stage ");
+    emit_ext4_phase_stats("write_back_overlay", &EXT4_FSTAT_WRITE_BACK_OVERLAY);
+    println!(
+        "[perf] ext4_fstat_cache_invalidate cold_inode={} dense_write_back={} direct_write={} sparse_buffered_write={} truncate={} rename={} unlink={} hard_link={} metadata={} alias_recovery={} fsidx_rebuild={}",
+        EXT4_FSTAT_CACHE_INVALIDATIONS
+            .cold_inode
+            .load(Ordering::Relaxed),
+        EXT4_FSTAT_CACHE_INVALIDATIONS
+            .dense_write_back
+            .load(Ordering::Relaxed),
+        EXT4_FSTAT_CACHE_INVALIDATIONS
+            .direct_write
+            .load(Ordering::Relaxed),
+        EXT4_FSTAT_CACHE_INVALIDATIONS
+            .sparse_buffered_write
+            .load(Ordering::Relaxed),
+        EXT4_FSTAT_CACHE_INVALIDATIONS.truncate.load(Ordering::Relaxed),
+        EXT4_FSTAT_CACHE_INVALIDATIONS.rename.load(Ordering::Relaxed),
+        EXT4_FSTAT_CACHE_INVALIDATIONS.unlink.load(Ordering::Relaxed),
+        EXT4_FSTAT_CACHE_INVALIDATIONS.hard_link.load(Ordering::Relaxed),
+        EXT4_FSTAT_CACHE_INVALIDATIONS.metadata.load(Ordering::Relaxed),
+        EXT4_FSTAT_CACHE_INVALIDATIONS
+            .alias_recovery
+            .load(Ordering::Relaxed),
+        EXT4_FSTAT_CACHE_INVALIDATIONS
+            .fsidx_rebuild
+            .load(Ordering::Relaxed),
+    );
+    print!("[perf] ext4_fstat_inner_duration ");
+    emit_ext4_phase_stats("cold_inode", &EXT4_FSTAT_INNER_MISSES.cold_inode);
+    print!("[perf] ext4_fstat_inner_duration ");
+    emit_ext4_phase_stats(
+        "dense_write_back",
+        &EXT4_FSTAT_INNER_MISSES.dense_write_back,
+    );
+    print!("[perf] ext4_fstat_inner_duration ");
+    emit_ext4_phase_stats("direct_write", &EXT4_FSTAT_INNER_MISSES.direct_write);
+    print!("[perf] ext4_fstat_inner_duration ");
+    emit_ext4_phase_stats(
+        "sparse_buffered_write",
+        &EXT4_FSTAT_INNER_MISSES.sparse_buffered_write,
+    );
+    print!("[perf] ext4_fstat_inner_duration ");
+    emit_ext4_phase_stats("truncate", &EXT4_FSTAT_INNER_MISSES.truncate);
+    print!("[perf] ext4_fstat_inner_duration ");
+    emit_ext4_phase_stats("rename", &EXT4_FSTAT_INNER_MISSES.rename);
+    print!("[perf] ext4_fstat_inner_duration ");
+    emit_ext4_phase_stats("unlink", &EXT4_FSTAT_INNER_MISSES.unlink);
+    print!("[perf] ext4_fstat_inner_duration ");
+    emit_ext4_phase_stats("hard_link", &EXT4_FSTAT_INNER_MISSES.hard_link);
+    print!("[perf] ext4_fstat_inner_duration ");
+    emit_ext4_phase_stats("metadata", &EXT4_FSTAT_INNER_MISSES.metadata);
+    print!("[perf] ext4_fstat_inner_duration ");
+    emit_ext4_phase_stats("alias_recovery", &EXT4_FSTAT_INNER_MISSES.alias_recovery);
+    print!("[perf] ext4_fstat_inner_duration ");
+    emit_ext4_phase_stats("fsidx_rebuild", &EXT4_FSTAT_INNER_MISSES.fsidx_rebuild);
     emit_ext4_lock_stats("ext4_write_lock", &EXT4_WRITE_LOCK_STATS);
     print!("[perf] ext4_write_duration ");
     emit_duration(
@@ -154,9 +217,9 @@ pub(super) fn emit_report(now: usize) {
     emit_ext4_lock_stats("ext4_seek_lock", &EXT4_SEEK_LOCK_STATS);
     #[cfg(feature = "perf")]
     {
-        let write_cache = lwext4_rust::file::write_back_cache_perf_stats();
+        let write_cache = lwext4_rust::perf::write_back_cache_perf_stats();
         println!(
-            "[perf] ext4_write_cache hit_ops={} hit_bytes={} fast_hit_ops={} fast_hit_bytes={} init_ops={} init_read_bytes={} evict_ops={} evict_writeback_bytes={} limit_flush_ops={} limit_flush_bytes={} direct_ops={} direct_bytes={} direct_disabled_ops={} direct_disabled_bytes={} direct_too_large_ops={} direct_too_large_bytes={} direct_uncached_ops={} direct_uncached_bytes={} direct_hole_ops={} direct_hole_bytes={} direct_limit_ops={} direct_limit_bytes={} sparse_buffer_ops={} sparse_buffer_bytes={} sparse_flush_ops={} sparse_flush_bytes={} sparse_read_overlay_ops={} sparse_read_overlay_bytes={} sparse_read_overlay_dirty_bytes={}",
+            "[perf] ext4_write_cache hit_ops={} hit_bytes={} fast_hit_ops={} fast_hit_bytes={} init_ops={} init_read_bytes={} evict_ops={} evict_writeback_bytes={} limit_flush_ops={} limit_flush_bytes={} direct_ops={} direct_bytes={} direct_disabled_ops={} direct_disabled_bytes={} direct_too_large_ops={} direct_too_large_bytes={} direct_uncached_ops={} direct_uncached_bytes={} direct_hole_ops={} direct_hole_bytes={} direct_limit_ops={} direct_limit_bytes={} sparse_buffer_ops={} sparse_buffer_bytes={} sparse_flush_ops={} sparse_flush_bytes={} sparse_flush_fstat_ops={} sparse_flush_fstat_bytes={} sparse_flush_close_ops={} sparse_flush_close_bytes={} sparse_flush_rename_ops={} sparse_flush_rename_bytes={} sparse_flush_truncate_ops={} sparse_flush_truncate_bytes={} sparse_flush_cache_evict_ops={} sparse_flush_cache_evict_bytes={} sparse_flush_other_ops={} sparse_flush_other_bytes={} sparse_read_overlay_ops={} sparse_read_overlay_bytes={} sparse_read_overlay_dirty_bytes={}",
             write_cache.cache_hit_ops,
             write_cache.cache_hit_bytes,
             write_cache.cache_fast_hit_ops,
@@ -183,9 +246,30 @@ pub(super) fn emit_report(now: usize) {
             write_cache.sparse_buffer_bytes,
             write_cache.sparse_flush_ops,
             write_cache.sparse_flush_bytes,
+            write_cache.sparse_flush_fstat_ops,
+            write_cache.sparse_flush_fstat_bytes,
+            write_cache.sparse_flush_close_ops,
+            write_cache.sparse_flush_close_bytes,
+            write_cache.sparse_flush_rename_ops,
+            write_cache.sparse_flush_rename_bytes,
+            write_cache.sparse_flush_truncate_ops,
+            write_cache.sparse_flush_truncate_bytes,
+            write_cache.sparse_flush_cache_evict_ops,
+            write_cache.sparse_flush_cache_evict_bytes,
+            write_cache.sparse_flush_other_ops,
+            write_cache.sparse_flush_other_bytes,
             write_cache.sparse_read_overlay_ops,
             write_cache.sparse_read_overlay_bytes,
             write_cache.sparse_read_overlay_dirty_bytes,
+        );
+        println!(
+            "[perf] ext4_fstat_inner calls={} sparse_flush_batches={} sparse_flush_bytes={} stat_get_ops={} write_back_overlay_ops={} write_back_fallback_ops={}",
+            write_cache.fstat_calls,
+            write_cache.sparse_flush_fstat_ops,
+            write_cache.sparse_flush_fstat_bytes,
+            write_cache.fstat_stat_get_ops,
+            write_cache.fstat_write_back_overlay_ops,
+            write_cache.fstat_write_back_fallback_ops,
         );
     }
     println!(

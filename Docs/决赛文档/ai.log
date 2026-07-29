@@ -8160,3 +8160,43 @@ QEMU/BuildStorm：本轮交付的是计时取证，尚无同配置 workload 新�
 已执行 `rustfmt --edition 2021`（全部 perf 子模块）、`make TARGET_ARCH=riscv64`（默认 release）和当前源码的
 `make TARGET_ARCH=riscv64 perf`、`make TARGET_ARCH=loongarch64 perf`。构建只有既有 Cargo config、vendored
 `smoltcp` 及 `ipi_sent` unused warning；未运行 QEMU/BuildStorm，因为本轮不改变任何 workload 行为。
+
+## 2026-07-29：lwext4 fstat 因果与 sparse flush 分阶段统计
+
+### 用户输入
+
+维护者要求补充 `fstat` 的因果统计：保留 regular-file `stat_cache` 失效来源，在真正进入
+`inner.f.fstat()` 时按最终 miss 原因计时；区分首次/冷 inode、dense write-back、direct write、sparse
+buffered write、truncate、rename/unlink/hard link、metadata 修改、alias recovery 与 FsIndex 回收后重建。
+同时需要将 wrapper `fstat` 分为 sparse flush、`ext4_stat_get`、write-back size/block overlay、alias
+recovery，并按 fstat/close/rename/truncate/缓存淘汰记录 sparse flush 原因。维护者随后明确指定：
+`lwext4_rust` 的 perf 状态与统计实现必须进入新增 `perf` 模块，不散落在 `file.rs`。
+
+### 分析与采纳结论
+
+`stat_cache` 原有的 `RwLock` 已覆盖更新和读取，因此将 `Option<Kstat>` 扩为同锁保护的
+`Ext4StatCache { stat, miss_reason }`，仅在 perf build 写入最后一个尚未消费的 miss 来源；不引入锁、
+不延长锁域。每次成功修改仍记录失效事件，而实际调用 wrapper 时通过 RAII guard 记录最终原因的耗时，
+两者可区分“发生过的失效”与“真正落到 lwext4 的 miss”。alias 恢复的重试单列为 `alias_recovery`；
+FsIndex 仅在真实回收后标记新候选 inode 的下一次空缓存 miss，已有 lookup stat 不会为记账被清除。
+
+`lwext4_rust::perf` 统一拥有 relaxed atomics、快照、write path、sparse flush reason 与 wrapper fstat
+stage event。`Ext4File::fstat()` 以 perf-only 同步 observer 标出 sparse flush、`ext4_stat_get`、
+write-back fallback/overlay 的开始和结束；内核 perf 模块用已有 tick 聚合 samples/total/max，observer
+不取锁、不影响 I/O、返回值或错误路径。这样可将 wrapper 整体耗时与其内部的实际 sparse 落盘及
+`ext4_stat_get` 耗时交叉对照。
+
+### 修改与验证
+
+新增 `crates/lwext4_rust/src/perf.rs` 并在 `lib.rs` 导出；`file.rs` 的原子统计已移入该模块，补齐
+sparse flush reason、fstat 子阶段事件及 write-back overlay/fallback 计数。`os/src/utils/perf/fs.rs`/
+`report.rs` 增加 fstat miss 原因、分阶段 tick、FsIndex rebuild 计数及周期报告；
+`os/src/fs/ext4_lw/inode.rs`、`fsidx.rs`、`vfs.rs` 只增加来源传播钩子，保留既有 lock 和调用顺序。
+
+已执行 `cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml`、`cargo fmt --manifest-path os/Cargo.toml`、
+`git diff --check`、`make TARGET_ARCH=riscv64 perf`、`make TARGET_ARCH=loongarch64 perf` 以及默认 `make`
+（RISC-V、LoongArch64 release），均通过。构建只有既有 Cargo config、vendored `smoltcp` 和
+`ipi_sent` warning。以维护者已有 `disk.img` symlink 为只读输入直接运行 60 秒 RISC-V QEMU `-snapshot`；
+日志 `/tmp/fstat-perf-riscv64.log` 输出新字段，最后快照为 425 次 wrapper fstat、
+`ext4_stat_get=335244 us`、fstat-triggered sparse flush 为 2 batch/30128 B。运行被 timeout 终止，
+未取得 `shutdown!`/完整 Summary，故不报告功能全量回归或性能提升。

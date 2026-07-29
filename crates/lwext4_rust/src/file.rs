@@ -1,8 +1,9 @@
 use core::ffi::c_char;
-#[cfg(feature = "perf")]
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::bindings::*;
+#[cfg(feature = "perf")]
+use crate::perf::{self, DirectWriteReason, FileWritePath, FstatStageEvent};
+use crate::perf::{FstatStageObserver, SparseWriteFlushReason};
 
 extern "C" {
     #[link_name = "ext4_fseek_data"]
@@ -33,224 +34,6 @@ const MAX_CACHED_FILE_SIZE: usize = 16 * 0x10_0000; // 16 MiB
 // allowing enough fragmented pwrite-style ranges for compiler artifacts.
 const MAX_SPARSE_WRITE_BUFFER_SIZE: usize = 64 * 1024;
 const MAX_SPARSE_WRITE_BUFFER_RUNS: usize = 32;
-
-/// Aggregate counters for the whole-file write-back cache.
-///
-/// They are intentionally enabled only by the kernel's `perf` feature.  The
-/// cache implementation cannot depend on `os::utils::perf`, so this crate
-/// owns the relaxed counters and the kernel reads a snapshot when emitting
-/// its existing periodic report.
-#[cfg(feature = "perf")]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct WriteBackCachePerfStats {
-    pub cache_hit_ops: usize,
-    pub cache_hit_bytes: usize,
-    pub cache_fast_hit_ops: usize,
-    pub cache_fast_hit_bytes: usize,
-    pub cache_init_ops: usize,
-    pub cache_init_read_bytes: usize,
-    pub cache_evict_ops: usize,
-    pub cache_evict_writeback_bytes: usize,
-    pub cache_limit_flush_ops: usize,
-    pub cache_limit_flush_bytes: usize,
-    pub direct_write_ops: usize,
-    pub direct_write_bytes: usize,
-    pub direct_disabled_ops: usize,
-    pub direct_disabled_bytes: usize,
-    pub direct_too_large_ops: usize,
-    pub direct_too_large_bytes: usize,
-    pub direct_uncached_ops: usize,
-    pub direct_uncached_bytes: usize,
-    pub direct_hole_ops: usize,
-    pub direct_hole_bytes: usize,
-    pub direct_limit_ops: usize,
-    pub direct_limit_bytes: usize,
-    pub sparse_buffer_ops: usize,
-    pub sparse_buffer_bytes: usize,
-    pub sparse_flush_ops: usize,
-    pub sparse_flush_bytes: usize,
-    pub sparse_read_overlay_ops: usize,
-    pub sparse_read_overlay_bytes: usize,
-    pub sparse_read_overlay_dirty_bytes: usize,
-}
-
-#[cfg(feature = "perf")]
-static WRITE_CACHE_HIT_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_CACHE_HIT_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_CACHE_FAST_HIT_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_CACHE_FAST_HIT_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_CACHE_INIT_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_CACHE_INIT_READ_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_CACHE_EVICT_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_CACHE_EVICT_WRITEBACK_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_CACHE_LIMIT_FLUSH_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_CACHE_LIMIT_FLUSH_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_DISABLED_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_DISABLED_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_TOO_LARGE_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_TOO_LARGE_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_UNCACHED_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_UNCACHED_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_HOLE_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_HOLE_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_LIMIT_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static WRITE_DIRECT_LIMIT_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static SPARSE_WRITE_BUFFER_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static SPARSE_WRITE_BUFFER_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static SPARSE_WRITE_FLUSH_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static SPARSE_WRITE_FLUSH_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static SPARSE_READ_OVERLAY_OPS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static SPARSE_READ_OVERLAY_BYTES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "perf")]
-static SPARSE_READ_OVERLAY_DIRTY_BYTES: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(feature = "perf")]
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum DirectWriteReason {
-    Disabled,
-    TooLarge,
-    Uncached,
-    Hole,
-    Limit,
-}
-
-#[cfg(feature = "perf")]
-#[inline]
-fn record_write_cache_hit(bytes: usize) {
-    WRITE_CACHE_HIT_OPS.fetch_add(1, Ordering::Relaxed);
-    WRITE_CACHE_HIT_BYTES.fetch_add(bytes, Ordering::Relaxed);
-}
-
-#[cfg(feature = "perf")]
-#[inline]
-fn record_write_cache_fast_hit(bytes: usize) {
-    WRITE_CACHE_FAST_HIT_OPS.fetch_add(1, Ordering::Relaxed);
-    WRITE_CACHE_FAST_HIT_BYTES.fetch_add(bytes, Ordering::Relaxed);
-}
-
-#[cfg(feature = "perf")]
-#[inline]
-fn record_write_cache_init(read_bytes: usize) {
-    WRITE_CACHE_INIT_OPS.fetch_add(1, Ordering::Relaxed);
-    WRITE_CACHE_INIT_READ_BYTES.fetch_add(read_bytes, Ordering::Relaxed);
-}
-
-#[cfg(feature = "perf")]
-#[inline]
-fn record_write_cache_eviction(writeback_bytes: usize) {
-    WRITE_CACHE_EVICT_OPS.fetch_add(1, Ordering::Relaxed);
-    WRITE_CACHE_EVICT_WRITEBACK_BYTES.fetch_add(writeback_bytes, Ordering::Relaxed);
-}
-
-#[cfg(feature = "perf")]
-#[inline]
-fn record_write_cache_limit_flush(bytes: usize) {
-    WRITE_CACHE_LIMIT_FLUSH_OPS.fetch_add(1, Ordering::Relaxed);
-    WRITE_CACHE_LIMIT_FLUSH_BYTES.fetch_add(bytes, Ordering::Relaxed);
-}
-
-#[cfg(feature = "perf")]
-#[inline]
-fn record_direct_write(reason: DirectWriteReason, bytes: usize) {
-    WRITE_DIRECT_OPS.fetch_add(1, Ordering::Relaxed);
-    WRITE_DIRECT_BYTES.fetch_add(bytes, Ordering::Relaxed);
-    let (ops, total_bytes) = match reason {
-        DirectWriteReason::Disabled => (&WRITE_DIRECT_DISABLED_OPS, &WRITE_DIRECT_DISABLED_BYTES),
-        DirectWriteReason::TooLarge => (&WRITE_DIRECT_TOO_LARGE_OPS, &WRITE_DIRECT_TOO_LARGE_BYTES),
-        DirectWriteReason::Uncached => (&WRITE_DIRECT_UNCACHED_OPS, &WRITE_DIRECT_UNCACHED_BYTES),
-        DirectWriteReason::Hole => (&WRITE_DIRECT_HOLE_OPS, &WRITE_DIRECT_HOLE_BYTES),
-        DirectWriteReason::Limit => (&WRITE_DIRECT_LIMIT_OPS, &WRITE_DIRECT_LIMIT_BYTES),
-    };
-    ops.fetch_add(1, Ordering::Relaxed);
-    total_bytes.fetch_add(bytes, Ordering::Relaxed);
-}
-
-#[cfg(feature = "perf")]
-#[inline]
-fn record_sparse_write_buffer(bytes: usize) {
-    SPARSE_WRITE_BUFFER_OPS.fetch_add(1, Ordering::Relaxed);
-    SPARSE_WRITE_BUFFER_BYTES.fetch_add(bytes, Ordering::Relaxed);
-}
-
-#[cfg(feature = "perf")]
-#[inline]
-fn record_sparse_write_flush(bytes: usize) {
-    SPARSE_WRITE_FLUSH_OPS.fetch_add(1, Ordering::Relaxed);
-    SPARSE_WRITE_FLUSH_BYTES.fetch_add(bytes, Ordering::Relaxed);
-}
-
-#[cfg(feature = "perf")]
-#[inline]
-fn record_sparse_read_overlay(bytes: usize, dirty_bytes: usize) {
-    SPARSE_READ_OVERLAY_OPS.fetch_add(1, Ordering::Relaxed);
-    SPARSE_READ_OVERLAY_BYTES.fetch_add(bytes, Ordering::Relaxed);
-    SPARSE_READ_OVERLAY_DIRTY_BYTES.fetch_add(dirty_bytes, Ordering::Relaxed);
-}
-
-/// Return a relaxed aggregate snapshot for the kernel's periodic perf report.
-#[cfg(feature = "perf")]
-pub fn write_back_cache_perf_stats() -> WriteBackCachePerfStats {
-    WriteBackCachePerfStats {
-        cache_hit_ops: WRITE_CACHE_HIT_OPS.load(Ordering::Relaxed),
-        cache_hit_bytes: WRITE_CACHE_HIT_BYTES.load(Ordering::Relaxed),
-        cache_fast_hit_ops: WRITE_CACHE_FAST_HIT_OPS.load(Ordering::Relaxed),
-        cache_fast_hit_bytes: WRITE_CACHE_FAST_HIT_BYTES.load(Ordering::Relaxed),
-        cache_init_ops: WRITE_CACHE_INIT_OPS.load(Ordering::Relaxed),
-        cache_init_read_bytes: WRITE_CACHE_INIT_READ_BYTES.load(Ordering::Relaxed),
-        cache_evict_ops: WRITE_CACHE_EVICT_OPS.load(Ordering::Relaxed),
-        cache_evict_writeback_bytes: WRITE_CACHE_EVICT_WRITEBACK_BYTES.load(Ordering::Relaxed),
-        cache_limit_flush_ops: WRITE_CACHE_LIMIT_FLUSH_OPS.load(Ordering::Relaxed),
-        cache_limit_flush_bytes: WRITE_CACHE_LIMIT_FLUSH_BYTES.load(Ordering::Relaxed),
-        direct_write_ops: WRITE_DIRECT_OPS.load(Ordering::Relaxed),
-        direct_write_bytes: WRITE_DIRECT_BYTES.load(Ordering::Relaxed),
-        direct_disabled_ops: WRITE_DIRECT_DISABLED_OPS.load(Ordering::Relaxed),
-        direct_disabled_bytes: WRITE_DIRECT_DISABLED_BYTES.load(Ordering::Relaxed),
-        direct_too_large_ops: WRITE_DIRECT_TOO_LARGE_OPS.load(Ordering::Relaxed),
-        direct_too_large_bytes: WRITE_DIRECT_TOO_LARGE_BYTES.load(Ordering::Relaxed),
-        direct_uncached_ops: WRITE_DIRECT_UNCACHED_OPS.load(Ordering::Relaxed),
-        direct_uncached_bytes: WRITE_DIRECT_UNCACHED_BYTES.load(Ordering::Relaxed),
-        direct_hole_ops: WRITE_DIRECT_HOLE_OPS.load(Ordering::Relaxed),
-        direct_hole_bytes: WRITE_DIRECT_HOLE_BYTES.load(Ordering::Relaxed),
-        direct_limit_ops: WRITE_DIRECT_LIMIT_OPS.load(Ordering::Relaxed),
-        direct_limit_bytes: WRITE_DIRECT_LIMIT_BYTES.load(Ordering::Relaxed),
-        sparse_buffer_ops: SPARSE_WRITE_BUFFER_OPS.load(Ordering::Relaxed),
-        sparse_buffer_bytes: SPARSE_WRITE_BUFFER_BYTES.load(Ordering::Relaxed),
-        sparse_flush_ops: SPARSE_WRITE_FLUSH_OPS.load(Ordering::Relaxed),
-        sparse_flush_bytes: SPARSE_WRITE_FLUSH_BYTES.load(Ordering::Relaxed),
-        sparse_read_overlay_ops: SPARSE_READ_OVERLAY_OPS.load(Ordering::Relaxed),
-        sparse_read_overlay_bytes: SPARSE_READ_OVERLAY_BYTES.load(Ordering::Relaxed),
-        sparse_read_overlay_dirty_bytes: SPARSE_READ_OVERLAY_DIRTY_BYTES.load(Ordering::Relaxed),
-    }
-}
 
 fn aligned_down(addr: usize) -> usize {
     addr & PAGE_MASK
@@ -307,6 +90,9 @@ pub struct Ext4File {
     // to readers, but the simplified ext4 model cannot persist it. Defer the
     // close-time write-back until the pathname is removed.
     defer_close_flush: bool,
+    /// Perf-only path attribution consumed after a successful `file_write_at`.
+    #[cfg(feature = "perf")]
+    last_write_path: FileWritePath,
 }
 
 impl Ext4File {
@@ -328,6 +114,8 @@ impl Ext4File {
             cache_disabled: false,
             cache_pinned: false,
             defer_close_flush: false,
+            #[cfg(feature = "perf")]
+            last_write_path: FileWritePath::Direct,
         }
     }
 
@@ -413,7 +201,7 @@ impl Ext4File {
         // needs the old descriptor's bytes published before its inode key is
         // lost; normal Ext4Inode callers retain one pathname per wrapper.
         if self.file_desc.mp != core::ptr::null_mut() && self.path_str() != path {
-            self.flush_sparse_write_buffer()?;
+            self.flush_sparse_write_buffer(SparseWriteFlushReason::Other)?;
         }
         let c_path = CString::new(path).expect("CString::new failed");
 
@@ -487,7 +275,7 @@ impl Ext4File {
         if self.file_desc.mp != core::ptr::null_mut() {
             if !self.defer_close_flush {
                 //debug!("file_close {:?}", self.get_path());
-                self.file_cache_flush()?;
+                self.file_cache_flush_with_sparse_reason(SparseWriteFlushReason::Close)?;
             }
             unsafe {
                 ext4_fclose(&mut self.file_desc);
@@ -512,7 +300,7 @@ impl Ext4File {
             // Delayed sparse ranges must reach lwext4 before their owning
             // descriptor disappears.  This deliberately does not call the
             // mount-wide block-cache flush used by `file_close()`.
-            self.flush_sparse_write_buffer()?;
+            self.flush_sparse_write_buffer(SparseWriteFlushReason::Close)?;
             unsafe {
                 ext4_fclose(&mut self.file_desc);
             }
@@ -706,7 +494,7 @@ impl Ext4File {
                 // this commits its range buffer before another hard link
                 // exposes the same inode.  The descriptor-key check inside
                 // the helper makes parent-directory callers a no-op.
-                self.flush_sparse_write_buffer()?;
+                self.flush_sparse_write_buffer(SparseWriteFlushReason::Other)?;
                 flush_inode_caches(key)?;
             }
         } else if if_cache(cache_path.clone()) {
@@ -837,12 +625,12 @@ impl Ext4File {
             if self.cache_pinned {
                 insert_cache(file_path.clone(), &cache);
                 #[cfg(feature = "perf")]
-                record_write_cache_init(0);
+                perf::record_write_cache_init(0);
                 debug!("initialize pinned cache! {}", file_path);
             } else if insert_fifo(file_path.clone()).is_ok() {
                 insert_cache(file_path.clone(), &cache);
                 #[cfg(feature = "perf")]
-                record_write_cache_init(0);
+                perf::record_write_cache_init(0);
                 debug!("initialize cache! {}", file_path);
             }
             return Ok(());
@@ -872,12 +660,12 @@ impl Ext4File {
         if self.cache_pinned {
             insert_cache(file_path.clone(), &cache);
             #[cfg(feature = "perf")]
-            record_write_cache_init(size);
+            perf::record_write_cache_init(size);
             debug!("initialize pinned cache! {}", file_path);
         } else if insert_fifo(file_path.clone()).is_ok() {
             insert_cache(file_path.clone(), &cache);
             #[cfg(feature = "perf")]
-            record_write_cache_init(size);
+            perf::record_write_cache_init(size);
             debug!("initialize cache! {}", file_path);
         }
         Ok(())
@@ -950,7 +738,7 @@ impl Ext4File {
         if let Some(read_size) = self.read_sparse_write_buffer_at(offset, buff)? {
             return Ok(read_size);
         }
-        self.flush_sparse_write_buffer()?;
+        self.flush_sparse_write_buffer(SparseWriteFlushReason::Other)?;
 
         let mut rw_count = 0;
         let r = unsafe {
@@ -980,7 +768,7 @@ impl Ext4File {
         }
         // No dirty sparse range overlaps this inode.  The normal direct read
         // path remains unchanged in that case.
-        self.flush_sparse_write_buffer()?;
+        self.flush_sparse_write_buffer(SparseWriteFlushReason::Other)?;
         self.file_desc.fpos = offset as u64;
         let mut rw_count = 0;
         let r = unsafe {
@@ -1103,7 +891,7 @@ impl Ext4File {
         }
         self.file_desc.fpos = offset.saturating_add(visible_len) as u64;
         #[cfg(feature = "perf")]
-        record_sparse_read_overlay(visible_len, dirty_bytes);
+        perf::record_sparse_read_overlay(visible_len, dirty_bytes);
         Ok(Some(visible_len))
     }
 
@@ -1119,13 +907,17 @@ impl Ext4File {
     /// Commit this inode's bounded sparse-write run.  The caller already
     /// holds Ya2yOS's global lwext4 guard, so the descriptor and the
     /// inode-keyed buffer remain serialized with other filesystem operations.
-    fn flush_sparse_write_buffer(&mut self) -> Result<usize, i32> {
+    fn flush_sparse_write_buffer(&mut self, reason: SparseWriteFlushReason) -> Result<usize, i32> {
         let Some(key) = self.whole_file_cache_key() else {
             return Ok(0);
         };
         let Some(mut buffers) = SPARSE_WRITE_BUFFERS.lock().remove(&key) else {
             return Ok(0);
         };
+        #[cfg(feature = "perf")]
+        perf::record_sparse_write_flush_trigger(reason);
+        #[cfg(not(feature = "perf"))]
+        let _ = reason;
 
         // Prefer the active writable descriptor so delayed-unlink files keep
         // working after their pathname disappears.  A reader may instead be
@@ -1208,7 +1000,7 @@ impl Ext4File {
             }
             largest_end = largest_end.max(end as u64);
             #[cfg(feature = "perf")]
-            record_sparse_write_flush(rw_count);
+            perf::record_sparse_write_flush(reason, rw_count);
         }
         file_desc.fpos = saved_pos;
 
@@ -1241,7 +1033,7 @@ impl Ext4File {
         // must not be allowed to reach lwext4 first and then be overwritten
         // by a later sparse-buffer flush.
         if buf.len() > MAX_SPARSE_WRITE_BUFFER_SIZE {
-            self.flush_sparse_write_buffer()?;
+            self.flush_sparse_write_buffer(SparseWriteFlushReason::CacheEvict)?;
             return Ok(false);
         }
         let end = offset.checked_add(buf.len()).ok_or(EINVAL as i32)?;
@@ -1266,7 +1058,7 @@ impl Ext4File {
                         buffer_set.bytes += buf.len();
                         self.file_desc.fsize = self.file_desc.fsize.max(end as u64);
                         #[cfg(feature = "perf")]
-                        record_sparse_write_buffer(buf.len());
+                        perf::record_sparse_write_buffer(buf.len());
                         return Ok(true);
                     }
                     should_flush = true;
@@ -1284,7 +1076,7 @@ impl Ext4File {
                         buffer_set.bytes += buf.len();
                         self.file_desc.fsize = self.file_desc.fsize.max(end as u64);
                         #[cfg(feature = "perf")]
-                        record_sparse_write_buffer(buf.len());
+                        perf::record_sparse_write_buffer(buf.len());
                         return Ok(true);
                     }
                     should_flush = true;
@@ -1295,7 +1087,7 @@ impl Ext4File {
         }
 
         if should_flush {
-            self.flush_sparse_write_buffer()?;
+            self.flush_sparse_write_buffer(SparseWriteFlushReason::CacheEvict)?;
         }
 
         let mut data = Vec::new();
@@ -1314,7 +1106,7 @@ impl Ext4File {
         );
         self.file_desc.fsize = self.file_desc.fsize.max(end as u64);
         #[cfg(feature = "perf")]
-        record_sparse_write_buffer(buf.len());
+        perf::record_sparse_write_buffer(buf.len());
         Ok(true)
     }
 
@@ -1362,7 +1154,7 @@ impl Ext4File {
                 } else {
                     let _flushed = write_back_cache(path.clone())?;
                     #[cfg(feature = "perf")]
-                    record_write_cache_limit_flush(_flushed);
+                    perf::record_write_cache_limit_flush(_flushed);
                     remove_file_cache_state(&path);
                 }
                 self.file_desc.fpos = write_offset as u64;
@@ -1371,7 +1163,7 @@ impl Ext4File {
                 drop(cache_writer);
                 touch_fifo_path(&path);
                 #[cfg(feature = "perf")]
-                record_write_cache_hit(buf.len());
+                perf::record_write_cache_hit(buf.len());
                 return Ok(buf.len());
             }
         }
@@ -1410,7 +1202,7 @@ impl Ext4File {
                     DirectWriteReason::Uncached
                 };
             }
-            record_direct_write(direct_reason, rw_count);
+            perf::record_direct_write(direct_reason, rw_count);
         }
 
         //debug!("file_write {:?}, len={}", self.get_path(), rw_count);
@@ -1445,7 +1237,10 @@ impl Ext4File {
                     drop(cache_writer);
                     touch_fifo_path(self.path_str());
                     #[cfg(feature = "perf")]
-                    record_write_cache_hit(buf.len());
+                    {
+                        self.last_write_path = FileWritePath::DenseWriteBack;
+                        perf::record_write_cache_hit(buf.len());
+                    }
                     return Ok(buf.len());
                 }
 
@@ -1463,7 +1258,7 @@ impl Ext4File {
                 } else {
                     let _flushed = write_back_cache(String::from(self.path_str()))?;
                     #[cfg(feature = "perf")]
-                    record_write_cache_limit_flush(_flushed);
+                    perf::record_write_cache_limit_flush(_flushed);
                     remove_file_cache_state(self.path_str());
                 }
             }
@@ -1471,6 +1266,10 @@ impl Ext4File {
 
         if self.buffer_sparse_write_at(offset, buf)? {
             self.file_desc.fpos = offset.checked_add(buf.len()).ok_or(EINVAL as i32)? as u64;
+            #[cfg(feature = "perf")]
+            {
+                self.last_write_path = FileWritePath::SparseBuffered;
+            }
             return Ok(buf.len());
         }
 
@@ -1493,6 +1292,7 @@ impl Ext4File {
         }
         #[cfg(feature = "perf")]
         {
+            self.last_write_path = FileWritePath::Direct;
             if direct_reason == DirectWriteReason::Uncached {
                 direct_reason = if self.cache_disabled {
                     DirectWriteReason::Disabled
@@ -1502,9 +1302,15 @@ impl Ext4File {
                     DirectWriteReason::Uncached
                 };
             }
-            record_direct_write(direct_reason, rw_count);
+            perf::record_direct_write(direct_reason, rw_count);
         }
         Ok(rw_count)
+    }
+
+    #[cfg(feature = "perf")]
+    #[inline]
+    pub fn last_write_path(&self) -> FileWritePath {
+        self.last_write_path
     }
 
     pub fn file_truncate(&mut self, size: u64) -> Result<usize, i32> {
@@ -1513,7 +1319,7 @@ impl Ext4File {
         // Truncation changes EOF and may discard/extend extents.  Commit the
         // pending range first so the operation observes the same ordering as
         // a sequence of direct pwrite calls.
-        self.flush_sparse_write_buffer()?;
+        self.flush_sparse_write_buffer(SparseWriteFlushReason::Truncate)?;
         self.disable_write_back_cache()?;
 
         let r = unsafe { ext4_ftruncate(&mut self.file_desc, size) };
@@ -1574,7 +1380,14 @@ impl Ext4File {
     }
 
     pub fn file_cache_flush(&mut self) -> Result<usize, i32> {
-        self.flush_sparse_write_buffer()?;
+        self.file_cache_flush_with_sparse_reason(SparseWriteFlushReason::Other)
+    }
+
+    fn file_cache_flush_with_sparse_reason(
+        &mut self,
+        reason: SparseWriteFlushReason,
+    ) -> Result<usize, i32> {
+        self.flush_sparse_write_buffer(reason)?;
         let path = String::from((*self.file_path).to_str().unwrap());
         if self.write_back_cache_enabled(&path) && if_cache(path.clone()) {
             write_back_cache(path.clone())?;
@@ -1590,8 +1403,8 @@ impl Ext4File {
 
     /// Write the pathname's delayed byte cache into lwext4, retaining the
     /// cache entry on failure so the caller can retry without losing data.
-    fn write_back_path_cache(&mut self) -> Result<String, i32> {
-        self.flush_sparse_write_buffer()?;
+    fn write_back_path_cache(&mut self, reason: SparseWriteFlushReason) -> Result<String, i32> {
+        self.flush_sparse_write_buffer(reason)?;
         let path = String::from((*self.file_path).to_str().unwrap());
         // This path can be transitioning to the non-cacheable state. Flush a
         // pre-existing entry even after its policy was marked disabled.
@@ -1610,7 +1423,7 @@ impl Ext4File {
     /// mount while Ya2yOS holds its global EXT4 operation lock.  Durability
     /// remains the responsibility of the existing sync/fsync paths.
     pub fn write_back_and_discard_path_cache(&mut self) -> Result<usize, i32> {
-        let path = self.write_back_path_cache()?;
+        let path = self.write_back_path_cache(SparseWriteFlushReason::Rename)?;
         discard_path_cache(&path);
         Ok(0)
     }
@@ -1620,7 +1433,7 @@ impl Ext4File {
     /// the old pathname after that transition could otherwise recreate the
     /// pathname on a later close or eviction.
     pub fn flush_and_discard_path_cache(&mut self) -> Result<usize, i32> {
-        let path = self.write_back_path_cache()?;
+        let path = self.write_back_path_cache(SparseWriteFlushReason::Other)?;
         self.flush_ext4_block_cache()?;
         discard_path_cache(&path);
         Ok(0)
@@ -1734,16 +1547,54 @@ impl Ext4File {
     //     }
     //     Ok((atime, mtime, ctime))
     // }
+    /// Query inode metadata without exposing perf stage events.
     pub fn fstat(&mut self) -> Result<ext4_inode_stat, i32> {
+        #[cfg(feature = "perf")]
+        return self.fstat_with_stage_observer(|_| {});
+        #[cfg(not(feature = "perf"))]
+        self.fstat_with_stage_observer(())
+    }
+
+    /// Query inode metadata while reporting the exact wrapper boundaries
+    /// needed by Ya2yOS's aggregate fstat profiler. The observer is invoked
+    /// synchronously and does not alter fstat's cache, I/O, or error paths.
+    #[cfg(feature = "perf")]
+    pub fn fstat_with_perf_observer(
+        &mut self,
+        observer: impl FnMut(FstatStageEvent),
+    ) -> Result<ext4_inode_stat, i32> {
+        self.fstat_with_stage_observer(observer)
+    }
+
+    fn fstat_with_stage_observer<O: FstatStageObserver>(
+        &mut self,
+        mut observer: O,
+    ) -> Result<ext4_inode_stat, i32> {
+        #[cfg(not(feature = "perf"))]
+        let _ = &mut observer;
+        #[cfg(feature = "perf")]
+        perf::record_fstat_call();
         // `st_blocks` as well as `st_size` are observable through fstat, so
         // publish a pending sparse range instead of fabricating allocation
         // metadata from an in-memory byte buffer.
-        self.flush_sparse_write_buffer()?;
+        #[cfg(feature = "perf")]
+        observer.stage(FstatStageEvent::SparseWriteFlushBegin);
+        let sparse_flush = self.flush_sparse_write_buffer(SparseWriteFlushReason::Fstat);
+        #[cfg(feature = "perf")]
+        observer.stage(FstatStageEvent::SparseWriteFlushEnd);
+        sparse_flush?;
         let path = String::from((*self.file_path).to_str().unwrap());
         let c_path = self.file_path.clone();
         let c_path = c_path.into_raw();
         let mut stat = ext4_inode_stat::default();
+        #[cfg(feature = "perf")]
+        {
+            perf::record_fstat_stat_get();
+            observer.stage(FstatStageEvent::Ext4StatGetBegin);
+        }
         let r = unsafe { ext4_stat_get(c_path, &mut stat) };
+        #[cfg(feature = "perf")]
+        observer.stage(FstatStageEvent::Ext4StatGetEnd);
 
         unsafe {
             drop(CString::from_raw(c_path));
@@ -1753,6 +1604,11 @@ impl Ext4File {
             // until their first flush. Keep fstat usable for that transient
             // state instead of reporting a spurious filesystem error.
             if if_cache(path.clone()) {
+                #[cfg(feature = "perf")]
+                {
+                    perf::record_fstat_write_back_fallback();
+                    observer.stage(FstatStageEvent::WriteBackFallbackBegin);
+                }
                 let cache = get_cache(path);
                 let cache = cache.read();
                 stat.st_mode = cache.mode.unwrap_or(0o100000);
@@ -1760,6 +1616,8 @@ impl Ext4File {
                 stat.st_size = cache.size as isize;
                 stat.st_blksize = 512;
                 stat.st_blocks = ((cache.size + 511) / 512) as isize;
+                #[cfg(feature = "perf")]
+                observer.stage(FstatStageEvent::WriteBackFallbackEnd);
                 return Ok(stat);
             }
             error!("ext4_stat_get: rc = {}", r);
@@ -1768,11 +1626,18 @@ impl Ext4File {
 
         if if_cache(path.clone()) {
             //如果在缓存中，更新stat获得的大小
+            #[cfg(feature = "perf")]
+            {
+                perf::record_fstat_write_back_overlay();
+                observer.stage(FstatStageEvent::WriteBackOverlayBegin);
+            }
             let cache = get_cache(path.clone());
             let cache_reader = cache.read();
             stat.st_size = cache_reader.size as isize;
             stat.st_blocks =
                 (stat.st_size - 1 + (stat.st_blksize as isize)) / (stat.st_blksize as isize);
+            #[cfg(feature = "perf")]
+            observer.stage(FstatStageEvent::WriteBackOverlayEnd);
         }
 
         // error!(
@@ -1976,7 +1841,7 @@ impl Ext4File {
     pub fn file_seek_data(&mut self, offset: u64) -> Result<u64, i32> {
         // SEEK_DATA/SEEK_HOLE expose allocation layout, not merely bytes.
         // Commit the exact dirty range before asking lwext4 to inspect holes.
-        self.flush_sparse_write_buffer()?;
+        self.flush_sparse_write_buffer(SparseWriteFlushReason::Other)?;
         let mut result: u64 = 0;
         let rc = unsafe { ext4_fseek_data_raw(&mut self.file_desc, offset, &mut result) };
         if rc != EOK as i32 {
@@ -1989,7 +1854,7 @@ impl Ext4File {
     /// SEEK_HOLE: find next hole offset >= `offset`.
     /// Returns ENXIO for offsets at or beyond EOF.
     pub fn file_seek_hole(&mut self, offset: u64) -> Result<u64, i32> {
-        self.flush_sparse_write_buffer()?;
+        self.flush_sparse_write_buffer(SparseWriteFlushReason::Other)?;
         let mut result: u64 = 0;
         let rc = unsafe { ext4_fseek_hole_raw(&mut self.file_desc, offset, &mut result) };
         if rc != EOK as i32 {
@@ -2363,8 +2228,8 @@ pub fn write_cached_at(path: &str, offset: usize, buf: &[u8]) -> Option<Result<u
     touch_fifo_path(path);
     #[cfg(feature = "perf")]
     {
-        record_write_cache_hit(buf.len());
-        record_write_cache_fast_hit(buf.len());
+        perf::record_write_cache_hit(buf.len());
+        perf::record_write_cache_fast_hit(buf.len());
     }
     Some(Ok(buf.len()))
 }
@@ -2483,7 +2348,7 @@ fn insert_fifo(file_path: String) -> Result<(), i32> {
             }
         };
         #[cfg(feature = "perf")]
-        record_write_cache_eviction(_written);
+        perf::record_write_cache_eviction(_written);
 
         {
             let mut fifo = FIFO_TABLE.lock();
