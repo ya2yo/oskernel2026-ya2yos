@@ -177,7 +177,8 @@ impl PipeRingBuffer {
         }
     }
 
-    fn wake_waiters(waiters: &mut VecDeque<Weak<TaskControlBlock>>, wake_one: bool) {
+    fn wake_waiters(waiters: &mut VecDeque<Weak<TaskControlBlock>>, wake_one: bool) -> usize {
+        let mut woken = 0;
         while let Some(waiter) = waiters.pop_front() {
             if let Some(task) = waiter.upgrade() {
                 let mut inner = task.inner_lock();
@@ -185,33 +186,43 @@ impl PipeRingBuffer {
                     inner.task_status = TaskStatus::Ready;
                     drop(inner);
                     ready_queue::add_task(&task);
+                    woken += 1;
                     if wake_one {
                         break;
                     }
                 }
             }
         }
+        woken
     }
 
     pub(super) fn wake_reader(&mut self) {
         // pipe 每次写入只需要唤醒一个阻塞读者即可继续推进。
-        Self::wake_waiters(&mut self.read_waiters, true);
-        self.read_poll.wake();
+        let _task_woken = Self::wake_waiters(&mut self.read_waiters, true);
+        let _poll_woken = self.read_poll.wake();
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_pipe_reader_wakeup(_task_woken, _poll_woken);
     }
 
     pub(super) fn wake_writer(&mut self) {
         // pipe 每次读取释放空间后，只唤醒一个阻塞写者。
-        Self::wake_waiters(&mut self.write_waiters, true);
-        self.write_poll.wake();
+        let _task_woken = Self::wake_waiters(&mut self.write_waiters, true);
+        let _poll_woken = self.write_poll.wake();
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_pipe_writer_wakeup(_task_woken, _poll_woken);
     }
 
     pub(super) fn wake_all_readers(&mut self) {
-        Self::wake_waiters(&mut self.read_waiters, false);
-        self.read_poll.wake();
+        let _task_woken = Self::wake_waiters(&mut self.read_waiters, false);
+        let _poll_woken = self.read_poll.wake();
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_pipe_reader_wakeup(_task_woken, _poll_woken);
     }
 
     pub(super) fn wake_all_writers(&mut self) {
-        Self::wake_waiters(&mut self.write_waiters, false);
-        self.write_poll.wake();
+        let _task_woken = Self::wake_waiters(&mut self.write_waiters, false);
+        let _poll_woken = self.write_poll.wake();
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_pipe_writer_wakeup(_task_woken, _poll_woken);
     }
 }

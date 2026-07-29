@@ -26,7 +26,9 @@ impl File for Pipe {
 
     fn read(&self, mut buf: UserBuffer) -> SyscallRet {
         assert!(self.readable());
-        // let buf_len = buf.len();
+        let requested = buf.len();
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_pipe_read_call(requested);
         let mut read_size = 0usize;
         let mut loop_read;
         loop {
@@ -36,6 +38,9 @@ impl File for Pipe {
                 // 管道数据为空，需要进行阻塞或关闭
                 if ring_buffer.all_write_ends_closed() {
                     // 写者全部关闭，不会有数据了，直接返回
+                    drop(ring_buffer);
+                    #[cfg(feature = "perf")]
+                    crate::utils::perf::record_pipe_read_complete(requested, read_size);
                     return Ok(read_size);
                 }
                 if self.nonblocking() {
@@ -65,7 +70,16 @@ impl File for Pipe {
                 }
                 ring_buffer.push_reader(&task);
                 drop(ring_buffer);
+                #[cfg(feature = "perf")]
+                let wait_begin = crate::arch::time::get_ticks();
                 schedule_blocked_current(task_cx_ptr);
+                #[cfg(feature = "perf")]
+                {
+                    crate::utils::perf::record_pipe_read_wait_duration(
+                        crate::arch::time::get_ticks().saturating_sub(wait_begin),
+                    );
+                    crate::utils::perf::record_pipe_read_wait_recheck();
+                }
                 continue;
             } else {
                 break;
@@ -73,7 +87,9 @@ impl File for Pipe {
         }
         // read at most loop_read bytes
         let mut ring_buffer = self.inner_lock();
-        let length = buf.len();
+        let length = requested;
+        #[cfg(feature = "perf")]
+        let copy_begin = crate::arch::time::get_ticks();
         if length <= 10 {
             let mut buf_iter = buf.into_iter();
             for _ in 0..loop_read {
@@ -90,12 +106,25 @@ impl File for Pipe {
             read_size = min(loop_read, length);
             buf.write(&ring_buffer.read_bytes(read_size));
         }
+        #[cfg(feature = "perf")]
+        let copy_elapsed = crate::arch::time::get_ticks().saturating_sub(copy_begin);
         ring_buffer.wake_writer();
+        drop(ring_buffer);
+        #[cfg(feature = "perf")]
+        {
+            if read_size > 0 {
+                crate::utils::perf::record_pipe_read_copy_duration(copy_elapsed);
+            }
+            crate::utils::perf::record_pipe_read_complete(requested, read_size);
+        }
         Ok(read_size)
     }
 
     fn write(&self, mut buf: UserBuffer) -> SyscallRet {
         assert!(self.writable());
+        let requested = buf.len();
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_pipe_write_call(requested);
         let mut write_size = 0usize;
         let mut loop_write;
         loop {
@@ -139,7 +168,16 @@ impl File for Pipe {
                 }
                 ring_buffer.push_writer(&task);
                 drop(ring_buffer);
+                #[cfg(feature = "perf")]
+                let wait_begin = crate::arch::time::get_ticks();
                 schedule_blocked_current(task_cx_ptr);
+                #[cfg(feature = "perf")]
+                {
+                    crate::utils::perf::record_pipe_write_wait_duration(
+                        crate::arch::time::get_ticks().saturating_sub(wait_begin),
+                    );
+                    crate::utils::perf::record_pipe_write_wait_recheck();
+                }
                 continue;
             } else {
                 break;
@@ -147,7 +185,9 @@ impl File for Pipe {
         }
         // write at most loop_write bytes
         let mut ring_buffer = self.inner_lock();
-        let length = buf.len();
+        let length = requested;
+        #[cfg(feature = "perf")]
+        let copy_begin = crate::arch::time::get_ticks();
         if length <= 10 {
             let mut buf_iter = buf.into_iter();
             for _ in 0..loop_write {
@@ -162,9 +202,18 @@ impl File for Pipe {
             write_size = min(loop_write, length);
             ring_buffer.write_bytes(&buf.read(write_size), write_size);
         }
+        #[cfg(feature = "perf")]
+        let copy_elapsed = crate::arch::time::get_ticks().saturating_sub(copy_begin);
         let async_owner = ring_buffer.async_owner;
         ring_buffer.wake_reader();
         drop(ring_buffer);
+        #[cfg(feature = "perf")]
+        {
+            if write_size > 0 {
+                crate::utils::perf::record_pipe_write_copy_duration(copy_elapsed);
+            }
+            crate::utils::perf::record_pipe_write_complete(requested, write_size);
+        }
         if write_size > 0 {
             self.notify_async_read_ready(async_owner);
         }

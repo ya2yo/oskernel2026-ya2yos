@@ -1785,3 +1785,11 @@
 - **证据**：`log1.ans` 出现 `file_cache_source mmap_hit=4081 mmap_miss=15`、`page_faults=2048`，而基线均为 0；EXT4 读取字节从 `177497216` 降至 `461952`，`execve/from_elf/map_elf` 累计耗时下降约 `88.7%/93.9%/94.2%`。两份日志的 vfork 组均 `failed=0`，优化样本 `status=0` 并 `shutdown!`。
 - **验证边界**：RISC-V、LoongArch64 release 构建和 `git diff --check` 通过；尚未运行完整 LTP/BuildStorm 或 LoongArch64 QEMU，未将单次 A/B 外推为完整评分加速。
 - **关联 commit**：当前工作区未提交
+
+#### pipe 阻塞、复制与唤醒聚合取证（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求为 pipe 补齐 wait/copy/short-write/wakeup 聚合统计，并提供可独立运行的 lmbench pipe workload。
+- **描述**：AI 在 perf feature 下新增 relaxed pipe I/O、wait/copy duration、任务/poll wakeup 及 wakeup 后重检计数；wait 只包围 `schedule_blocked_current()`，copy 只包围 `UserBuffer` 与 `PipeBuf` 数据移动，未改动 pipe 容量、阻塞条件、队列或唤醒策略。lmbench 增加 glibc/musl 的显式 `bw_pipe -P 1` 单项入口和成对日志标记，不接入默认全量流程。
+- **验证**：RISC-V、LoongArch64 `make perf` 与普通 release 构建通过，只有既有 `smoltcp` warning；RISC-V QEMU 已打印新 pipe 字段，但预制 `sdcard-rv.img` 不会被 `make run` 回写 user ELF，新增独立入口未实际装入 guest，且 120 秒运行未到 `shutdown!`。临时路由与 `disk.img` 链接均已恢复/删除；未以 raw `syscall_duration write` 或单次吞吐样本声称加速。
+- **关联 commit**：当前工作区未提交

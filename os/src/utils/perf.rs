@@ -38,6 +38,38 @@ static SYSCALL_WRITE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_WRITE_ACTIVE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_WRITE_ACTIVE_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_WRITE_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+// Pipe I/O is measured below the syscall layer so blocked pipe writes can be
+// separated from regular-file writes and from unrelated non-regular fds.
+static PIPE_READ_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_COMPLETED_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_REQUESTED_BYTES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_BYTES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_SHORT_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_COMPLETED_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_REQUESTED_BYTES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_BYTES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_SHORT_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_WAIT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_WAIT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_WAIT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_WAIT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_COPY_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_COPY_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_COPY_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_COPY_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_COPY_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_COPY_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_WAIT_RECHECKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_WAIT_RECHECKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READER_WAKE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READER_WAKE_TASKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READER_WAKE_POLL_TASKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITER_WAKE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITER_WAKE_TASKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITER_WAKE_POLL_TASKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_OPEN_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_OPEN_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_OPEN_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -860,6 +892,108 @@ pub fn record_write_active_duration(elapsed: usize) {
     );
 }
 
+/// Record one attempted pipe read before it can block or fail.
+#[inline]
+pub fn record_pipe_read_call(requested: usize) {
+    add(&PIPE_READ_CALLS, 1);
+    add(&PIPE_READ_REQUESTED_BYTES, requested);
+}
+
+/// Record one pipe read that returned a byte count to its caller.
+#[inline]
+pub fn record_pipe_read_complete(requested: usize, actual: usize) {
+    add(&PIPE_READ_COMPLETED_CALLS, 1);
+    add(&PIPE_READ_BYTES, actual);
+    if actual < requested {
+        add(&PIPE_READ_SHORT_CALLS, 1);
+    }
+}
+
+/// Record one attempted pipe write before it can block or fail.
+#[inline]
+pub fn record_pipe_write_call(requested: usize) {
+    add(&PIPE_WRITE_CALLS, 1);
+    add(&PIPE_WRITE_REQUESTED_BYTES, requested);
+}
+
+/// Record one pipe write that returned a byte count to its caller.
+#[inline]
+pub fn record_pipe_write_complete(requested: usize, actual: usize) {
+    add(&PIPE_WRITE_COMPLETED_CALLS, 1);
+    add(&PIPE_WRITE_BYTES, actual);
+    if actual < requested {
+        add(&PIPE_WRITE_SHORT_CALLS, 1);
+    }
+}
+
+#[inline]
+pub fn record_pipe_read_wait_duration(elapsed: usize) {
+    record_duration(
+        &PIPE_READ_WAIT_SAMPLES,
+        &PIPE_READ_WAIT_TICKS,
+        &PIPE_READ_WAIT_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_pipe_write_wait_duration(elapsed: usize) {
+    record_duration(
+        &PIPE_WRITE_WAIT_SAMPLES,
+        &PIPE_WRITE_WAIT_TICKS,
+        &PIPE_WRITE_WAIT_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_pipe_read_copy_duration(elapsed: usize) {
+    record_duration(
+        &PIPE_READ_COPY_SAMPLES,
+        &PIPE_READ_COPY_TICKS,
+        &PIPE_READ_COPY_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_pipe_write_copy_duration(elapsed: usize) {
+    record_duration(
+        &PIPE_WRITE_COPY_SAMPLES,
+        &PIPE_WRITE_COPY_TICKS,
+        &PIPE_WRITE_COPY_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_pipe_read_wait_recheck() {
+    add(&PIPE_READ_WAIT_RECHECKS, 1);
+}
+
+#[inline]
+pub fn record_pipe_write_wait_recheck() {
+    add(&PIPE_WRITE_WAIT_RECHECKS, 1);
+}
+
+/// Record a reader wakeup. `task_woken` and `poll_woken` are kept separate
+/// because task wait queues and poll registrations have different wake rules.
+#[inline]
+pub fn record_pipe_reader_wakeup(task_woken: usize, poll_woken: usize) {
+    add(&PIPE_READER_WAKE_CALLS, 1);
+    add(&PIPE_READER_WAKE_TASKS, task_woken);
+    add(&PIPE_READER_WAKE_POLL_TASKS, poll_woken);
+}
+
+/// Record a writer wakeup. See [`record_pipe_reader_wakeup`] for the count
+/// meanings.
+#[inline]
+pub fn record_pipe_writer_wakeup(task_woken: usize, poll_woken: usize) {
+    add(&PIPE_WRITER_WAKE_CALLS, 1);
+    add(&PIPE_WRITER_WAKE_TASKS, task_woken);
+    add(&PIPE_WRITER_WAKE_POLL_TASKS, poll_woken);
+}
+
 #[inline]
 pub fn record_lseek_type_check_duration(elapsed: usize) {
     record_duration(
@@ -1544,6 +1678,58 @@ fn emit_report(now: usize) {
         SCHEDULER_SELECTIONS.load(Ordering::Relaxed),
         SCHEDULER_SELF_SELECTIONS.load(Ordering::Relaxed),
         IDLE_LOOPS.load(Ordering::Relaxed),
+    );
+    println!(
+        "[perf] pipe_io read_calls={} read_completed={} read_requested_bytes={} read_bytes={} read_short_calls={} write_calls={} write_completed={} write_requested_bytes={} write_bytes={} write_short_calls={}",
+        PIPE_READ_CALLS.load(Ordering::Relaxed),
+        PIPE_READ_COMPLETED_CALLS.load(Ordering::Relaxed),
+        PIPE_READ_REQUESTED_BYTES.load(Ordering::Relaxed),
+        PIPE_READ_BYTES.load(Ordering::Relaxed),
+        PIPE_READ_SHORT_CALLS.load(Ordering::Relaxed),
+        PIPE_WRITE_CALLS.load(Ordering::Relaxed),
+        PIPE_WRITE_COMPLETED_CALLS.load(Ordering::Relaxed),
+        PIPE_WRITE_REQUESTED_BYTES.load(Ordering::Relaxed),
+        PIPE_WRITE_BYTES.load(Ordering::Relaxed),
+        PIPE_WRITE_SHORT_CALLS.load(Ordering::Relaxed),
+    );
+    println!(
+        "[perf] pipe_wakeup reader_calls={} reader_tasks={} reader_poll_tasks={} reader_wait_rechecks={} writer_calls={} writer_tasks={} writer_poll_tasks={} writer_wait_rechecks={}",
+        PIPE_READER_WAKE_CALLS.load(Ordering::Relaxed),
+        PIPE_READER_WAKE_TASKS.load(Ordering::Relaxed),
+        PIPE_READER_WAKE_POLL_TASKS.load(Ordering::Relaxed),
+        PIPE_READ_WAIT_RECHECKS.load(Ordering::Relaxed),
+        PIPE_WRITER_WAKE_CALLS.load(Ordering::Relaxed),
+        PIPE_WRITER_WAKE_TASKS.load(Ordering::Relaxed),
+        PIPE_WRITER_WAKE_POLL_TASKS.load(Ordering::Relaxed),
+        PIPE_WRITE_WAIT_RECHECKS.load(Ordering::Relaxed),
+    );
+    print!("[perf] pipe_duration ");
+    emit_duration(
+        "read_wait",
+        &PIPE_READ_WAIT_SAMPLES,
+        &PIPE_READ_WAIT_TICKS,
+        &PIPE_READ_WAIT_MAX_TICKS,
+    );
+    print!("[perf] pipe_duration ");
+    emit_duration(
+        "write_wait",
+        &PIPE_WRITE_WAIT_SAMPLES,
+        &PIPE_WRITE_WAIT_TICKS,
+        &PIPE_WRITE_WAIT_MAX_TICKS,
+    );
+    print!("[perf] pipe_duration ");
+    emit_duration(
+        "read_copy",
+        &PIPE_READ_COPY_SAMPLES,
+        &PIPE_READ_COPY_TICKS,
+        &PIPE_READ_COPY_MAX_TICKS,
+    );
+    print!("[perf] pipe_duration ");
+    emit_duration(
+        "write_copy",
+        &PIPE_WRITE_COPY_SAMPLES,
+        &PIPE_WRITE_COPY_TICKS,
+        &PIPE_WRITE_COPY_MAX_TICKS,
     );
     print!("[perf] scheduler_duration ");
     emit_duration(

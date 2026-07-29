@@ -8004,3 +8004,21 @@ warning。RISC-V 使用当前 final-2026 raw 镜像的 `/tmp` qcow2 overlay 运�
 ### 修改与验证
 
 新增 ELF 元数据读取和 `from_elf_file()` 入口，`execve` 传递最终可执行 `Arc<OSFile>`。RISC-V、LoongArch64 release 构建通过；RISC-V `log1.ans` 三组 vfork 测试均 `failed=0`、profile `status=0`、正常 `shutdown!`。与基线相比，EXT4 读取字节 `177497216 -> 461952`，file-cache `mmap_hit/miss=4081/15`、page faults=2048，`execve` `1853467 -> 209920 us`，`from_elf` `1232911 -> 74616 us`，`map_elf` `1230064 -> 71811 us`。该结果证明 lazy 链路生效，但尚未覆盖完整 LTP/BuildStorm 或 LoongArch64 QEMU。
+
+## 2026-07-29：pipe wait/copy/wakeup 聚合统计与独立 lmbench workload
+
+### 用户输入
+
+维护者要求修改内核，补齐 pipe 的 wait/copy/short-write/wakeup 聚合统计，并在 lmbench 测试模块添加针对 pipe 的单独测试。
+
+### 分析与采纳结论
+
+`tmp_01.ans` 的 raw `syscall_duration write` 包含调度出去的累计墙钟时间，不能作为 EXT4 写路径耗时。现有 `Pipe::read()`/`Pipe::write()` 在空/满 pipe 上通过 `schedule_blocked_current()` 等待，数据路径分别经过 `UserBuffer` 与 `PipeBuf`，等待队列与 `PollSet` 的唤醒则在 `PipeRingBuffer` 集中完成。因此统计仅覆盖这三处边界：只围绕实际调度测 wait，只围绕数据移动测 copy，唤醒区分阻塞任务与 poll waiter；不做逐调用输出，不改变队列顺序、容量、唤醒策略或 pipe 语义。
+
+### 修改与验证
+
+`os/src/utils/perf.rs` 增加 relaxed aggregate 和 `pipe_io`、`pipe_wakeup`、`pipe_duration` 报告；`file_impl.rs` 接入 read/write 的调用、完成、short、wait、copy 与重检统计；`ring_buffer.rs` 让等待队列返回实际唤醒数，并在四种 reader/writer 唤醒入口归集任务/poll 数。`user/src/bin/lmbench/mod.rs` 增加不修改全量 lmbench 的 `run_lmbench_pipe_bandwidth_musl()`、`run_lmbench_pipe_bandwidth_glibc()`，均固定执行 `bw_pipe -P 1` 并输出独立起止和退出状态。
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`cargo fmt --manifest-path user/Cargo.toml -- --check`、`git diff --check`、RISC-V 与 LoongArch64 `make perf` 均通过；普通 release `make TARGET_ARCH=riscv64` 也按当前根 Makefile 完成两架构构建，只有既有 `smoltcp` warning。
+
+RISC-V QEMU 在预制 `sdcard-rv.img` 上启动并输出新字段：最新周期快照有 `pipe_io read/write=1599/1598`、`write_short_calls=0`、`read_wait samples=1510 total_us=25449712`、`read_copy/write_copy total_us=29855/7726`。运行被 120 秒上限中止，未有 `shutdown!`；且该镜像中的 initproc 未随 `make run` 回写，因此没有出现新增 `[lmbench-pipe]` 标记，不能把该输出记为新独立 `bw_pipe` workload 的结果。临时测试路由和生成的 `disk.img` 链接均已恢复/删除。此记录不将新统计或单次 pipe 吞吐解释为性能提升。
