@@ -11,9 +11,9 @@
 //!
 //! ## 实际资源锁与锁序
 //!
-//! `lock_for_read_open()`、`lock_for_write()` 等方法只是 `EXT4_OP_LOCK` 的
-//! perf 分类标签，不是互相独立的锁；所有这些方法最后都竞争同一把挂载级
-//! `TaskMutex`。当前 EXT4/VFS 数据路径中实际管理共享资源的锁如下：
+//! `EXT4_OP_LOCK` 始终是同一把挂载级 `TaskMutex`；可选的 perf 分类在
+//! `crate::utils::perf` 中实现，并不引入额外的锁。当前 EXT4/VFS 数据路径中
+//! 实际管理共享资源的锁如下：
 //!
 //! | 锁 | 粒度 | 受保护的资源和使用场景 |
 //! | --- | --- | --- |
@@ -60,46 +60,17 @@ pub(super) struct TaskMutex {
 pub(super) struct TaskMutexGuard<'a> {
     lock: &'a TaskMutex,
     guard: Option<spin::MutexGuard<'a, ()>>,
-    wait_ticks: usize,
-    acquired_at: usize,
 }
 
 /// lwext4 shares one mounted block cache and does not provide SMP-safe internal
 /// locking. Keep every call into its path/file API serialized until the wrapper
 /// gains per-superblock concurrency support.
-pub(super) struct Ext4OpLock {
+pub(crate) struct Ext4OpLock {
     inner: TaskMutex,
 }
 
-pub(super) struct Ext4OpGuard<'a> {
+pub(crate) struct Ext4OpGuard<'a> {
     guard: Option<TaskMutexGuard<'a>>,
-    wait_ticks: usize,
-    acquired_at: usize,
-}
-
-/// Lightweight lock classes identify the most contended lwext4 entry points
-/// without changing its global serialization model.
-#[derive(Clone, Copy)]
-pub(super) enum Ext4LockClass {
-    ReadOpen,
-    ReadData,
-    Find,
-    Fstat,
-    Write,
-    Rename,
-    Close,
-    ReadAll,
-    ReadDir,
-    PathResolve,
-    Metadata,
-    Namespace,
-    Sync,
-    Seek,
-}
-
-pub(super) struct Ext4ProfiledOpGuard<'a> {
-    guard: Ext4OpGuard<'a>,
-    class: Ext4LockClass,
 }
 
 impl TaskMutex {
@@ -111,7 +82,6 @@ impl TaskMutex {
     }
 
     pub fn lock(&self) -> TaskMutexGuard<'_> {
-        let wait_start = crate::arch::time::get_ticks();
         let guard = match self.inner.try_lock() {
             Some(guard) => guard,
             None if crate::task::current_task().is_none() => self.inner.lock(),
@@ -135,12 +105,9 @@ impl TaskMutex {
                 }
             })),
         };
-        let acquired_at = crate::arch::time::get_ticks();
         TaskMutexGuard {
             lock: self,
             guard: Some(guard),
-            wait_ticks: acquired_at.saturating_sub(wait_start),
-            acquired_at,
         }
     }
 }
@@ -162,159 +129,24 @@ impl Ext4OpLock {
         }
     }
 
-    pub fn lock(&self) -> Ext4OpGuard<'_> {
+    pub(crate) fn lock(&self) -> Ext4OpGuard<'_> {
         let guard = self.inner.lock();
-        Ext4OpGuard {
-            wait_ticks: guard.wait_ticks,
-            acquired_at: guard.acquired_at,
-            guard: Some(guard),
-        }
-    }
-
-    pub fn lock_for_read_open(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::ReadOpen)
-    }
-
-    pub fn lock_for_read_data(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::ReadData)
-    }
-
-    pub fn lock_for_find(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Find)
-    }
-
-    pub fn lock_for_fstat(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Fstat)
-    }
-
-    pub fn lock_for_write(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Write)
-    }
-
-    pub fn lock_for_rename(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Rename)
-    }
-
-    pub fn lock_for_close(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Close)
-    }
-
-    pub fn lock_for_read_all(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::ReadAll)
-    }
-
-    pub fn lock_for_read_dir(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::ReadDir)
-    }
-
-    pub fn lock_for_path_resolve(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::PathResolve)
-    }
-
-    pub fn lock_for_metadata(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Metadata)
-    }
-
-    pub fn lock_for_namespace(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Namespace)
-    }
-
-    pub fn lock_for_sync(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Sync)
-    }
-
-    pub fn lock_for_seek(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Seek)
-    }
-
-    fn lock_profiled(&self, class: Ext4LockClass) -> Ext4ProfiledOpGuard<'_> {
-        Ext4ProfiledOpGuard {
-            guard: self.lock(),
-            class,
-        }
+        Ext4OpGuard { guard: Some(guard) }
     }
 }
 
 impl Ext4OpGuard<'_> {
-    #[cfg(feature = "perf")]
-    fn release(&mut self) -> Option<(usize, usize)> {
-        let released_at = crate::arch::time::get_ticks();
-        self.guard.take().map(|_| {
-            (
-                self.wait_ticks,
-                released_at.saturating_sub(self.acquired_at),
-            )
-        })
+    /// Release the primitive guard before a caller performs bookkeeping.
+    pub(crate) fn release(&mut self) -> bool {
+        let held = self.guard.is_some();
+        self.guard.take();
+        held
     }
 }
 
 impl Drop for Ext4OpGuard<'_> {
     fn drop(&mut self) {
-        #[cfg(feature = "perf")]
-        if let Some((wait_ticks, hold_ticks)) = self.release() {
-            // The primitive guard is released before the relaxed atomics so a
-            // newly woken task never queues behind profiling bookkeeping.
-            crate::utils::perf::record_ext4_lock(wait_ticks, hold_ticks);
-        }
-        #[cfg(not(feature = "perf"))]
-        self.guard.take();
-    }
-}
-
-impl Drop for Ext4ProfiledOpGuard<'_> {
-    fn drop(&mut self) {
-        #[cfg(feature = "perf")]
-        {
-            if let Some((wait_ticks, hold_ticks)) = self.guard.release() {
-                match self.class {
-                    Ext4LockClass::ReadOpen => {
-                        crate::utils::perf::record_ext4_read_lock(wait_ticks, hold_ticks);
-                        crate::utils::perf::record_ext4_read_open_lock(wait_ticks, hold_ticks);
-                    }
-                    Ext4LockClass::ReadData => {
-                        crate::utils::perf::record_ext4_read_lock(wait_ticks, hold_ticks);
-                        crate::utils::perf::record_ext4_read_data_lock(wait_ticks, hold_ticks);
-                    }
-                    Ext4LockClass::Find => {
-                        crate::utils::perf::record_ext4_find_lock(wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::Fstat => {
-                        crate::utils::perf::record_ext4_fstat_lock(wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::Write => {
-                        crate::utils::perf::record_ext4_write_lock(wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::Rename => {
-                        crate::utils::perf::record_ext4_rename_lock(wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::Close => {
-                        crate::utils::perf::record_ext4_close_lock(wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::ReadAll => {
-                        crate::utils::perf::record_ext4_read_all_lock(wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::ReadDir => {
-                        crate::utils::perf::record_ext4_read_dir_lock(wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::PathResolve => {
-                        crate::utils::perf::record_ext4_path_resolve_lock(wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::Metadata => {
-                        crate::utils::perf::record_ext4_metadata_lock(wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::Namespace => {
-                        crate::utils::perf::record_ext4_namespace_lock(wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::Sync => {
-                        crate::utils::perf::record_ext4_sync_lock(wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::Seek => {
-                        crate::utils::perf::record_ext4_seek_lock(wait_ticks, hold_ticks)
-                    }
-                }
-                crate::utils::perf::record_ext4_lock(wait_ticks, hold_ticks);
-            }
-        }
+        self.release();
     }
 }
 

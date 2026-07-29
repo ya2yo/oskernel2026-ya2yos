@@ -8079,3 +8079,84 @@ Vec 的 `write_from_slices()`；`os/src/fs/files/pipe/ring_buffer.rs` 增加直�
 short I/O 和 remote IPI failed 均为 0。RISC-V、LoongArch64 perf/release 构建、os fmt check 与
 `git diff --check` 均通过；LoongArch64 未运行 QEMU。详情见
 [RISC-V pipe 跨 hart 空闲唤醒延迟优化](./problem/riscv-pipe-remote-idle-wakeup.md)。
+
+## 2026-07-29：lwext4 长临界区内部阶段聚合计时
+
+### 用户输入
+
+维护者要求先为 lwext4 的长临界区增加内部阶段聚合计时，不直接猜测或移动锁：rename 需拆分
+write-back cache、close、底层 rename、VFS/cache invalidate；namespace 与 metadata 也需按实际操作细分。
+
+### 分析与采纳结论
+
+`EXT4_OP_LOCK` 是 lwext4 非 SMP-safe path/file API 的唯一挂载级 gate。现有 `rename()` 同时在锁内执行
+cache 写回、descriptor close、`file_rename()`、alias 维护和 VFS/page cache 失效；粗粒度的
+`ext4_rename_lock` 只能给出总 wait/hold，不能证明任何纯内存工作可以安全移到解锁后。
+
+因此新增仅 `perf` feature 使用的 relaxed 聚合 phase guard。guard 以 RAII 覆盖成功和错误返回，不逐调用
+打印；阶段开始均位于已获取全局 gate 之后，不把锁等待混入内部耗时。此次不改变锁顺序、缓存失效、alias
+维护、写回或任何 Linux 可见文件系统语义。
+
+### 修改与验证
+
+`os/src/utils/perf.rs` 新增 samples/total/max 的 phase 聚合和报告：`ext4_rename_duration` 输出
+`write_back_cache`、`close`、`lwext4_rename`、`vfs_cache_invalidate`；`ext4_namespace_duration` 输出
+`create`、`unlink`、`truncate`、`link_symlink`；`ext4_metadata_duration` 输出 `size`、`timestamp`、`mode`、
+`owner`、`link_count`、`alias`、`recovery`，并单列同一 metadata gate 内原有的 `delay`、`read_all_prepare`。
+`os/src/fs/ext4_lw/inode.rs` 将 guard 放在所有上述实际操作边界；recovery 作为 mode/owner 失败路径中的嵌套样本。
+
+已执行 `rustfmt --edition 2021 os/src/fs/ext4_lw/inode.rs os/src/utils/perf.rs`、`git diff --check`、
+`make TARGET_ARCH=riscv64 perf`、`make TARGET_ARCH=loongarch64 perf` 和默认 `make`（RISC-V、LoongArch64
+release），均通过。构建只有已有的 Cargo config、vendored `smoltcp` 和 `ipi_sent` unused warning。未运行
+QEMU/BuildStorm：本轮交付的是计时取证，尚无同配置 workload 新样本，不能报告根因或性能提升。
+
+## 2026-07-29：lwext4 perf 实现与锁实现解耦
+
+### 用户输入
+
+维护者要求将 `os/src/fs/ext4_lw/mod.rs` 中只服务于 perf 的代码全部拆分到 `os/src/utils/perf.rs`。
+
+### 分析与采纳结论
+
+`mod.rs` 原先同时保存 `TaskMutex`/`Ext4OpLock` 的同步语义，以及 `Ext4LockClass`、`Ext4ProfiledOpGuard`、
+`lock_for_*()`、tick 计时和 `record_ext4_*` 分派。后者不改变 lwext4 的单一全局 gate，是性能诊断实现，
+应由 `utils::perf` 统一拥有。保留 `Ext4OpGuard::release()` 作为无统计含义的锁原语，以便 profile guard 在
+释放 primitive mutex、唤醒一个 waiter 后才更新 relaxed atomic，保持原有交接顺序。
+
+### 修改与验证
+
+`os/src/fs/ext4_lw/mod.rs` 现在只负责可睡眠 `TaskMutex`、`Ext4OpLock` 及其 RAII release；删除全部分类、
+时间戳和 perf record 调用。`os/src/utils/perf.rs` 持有 `Ext4LockClass`、`Ext4ProfiledOpGuard`、所有
+`Ext4OpLock::lock_for_*()` 实现和 drop 时的锁统计分派。`os/src/fs/mod.rs` 只作 crate 内 re-export，避免将
+私有 `ext4_lw` 模块公开。未改变 inode/sb 调用点、锁序、wait/hold 统计标签或文件系统语义。
+
+已执行 `rustfmt --edition 2021 os/src/fs/mod.rs os/src/fs/ext4_lw/mod.rs os/src/utils/perf.rs`、
+`git diff --check`、`make TARGET_ARCH=riscv64 perf`、`make TARGET_ARCH=loongarch64 perf` 和默认 `make`，
+均通过。构建只有既有 Cargo config、vendored `smoltcp` 和 `ipi_sent` unused warning；未运行 QEMU/BuildStorm，
+因为本轮是内部代码归属重构，不产生新的 workload 性能结论。
+
+## 2026-07-29：按内核分区拆分 perf 聚合统计模块
+
+### 用户输入
+
+维护者要求继续重构 `os/src/utils/perf.rs`，按内核分区拆分为不同模块。
+
+### 分析与采纳结论
+
+原 `perf.rs` 已包含 syscall、lwext4/VFS/page cache/pipe、clone/exec/vfork/futex、scheduler 与 TCP 的统计、
+记录 API 和报告逻辑，单文件超过 2500 行。按统计对象的实际所有者拆分为 `common`、`fs`、`syscall`、`task`、
+`scheduler`、`net` 和 `report`；根 `perf.rs` 只保留聚合报告的限频 CAS 与对旧
+`crate::utils::perf::*` 路径的 re-export。该安排不要求改动任何调用点，也不改变底层锁的归属。
+
+统计变量仍为 `Relaxed` 原子，计时范围与 RAII drop 位置不变；`report` 复用原有输出文本和字段顺序，
+故既有日志解析可继续使用。此次是代码组织调整，不以此宣称任何性能提升。
+
+### 修改与验证
+
+新增 `os/src/utils/perf/{common,fs,syscall,task,scheduler,net,report}.rs`。`fs` 持有 lwext4 lock/phase、
+页缓存、VFS 与 pipe 统计及 `Ext4OpLock::lock_for_*()` 扩展；`syscall` 持有 ABI 边界和 regular-file active
+统计；`task` 持有 clone/exec/vfork/procfs 与 wait/futex guard；scheduler/net 分别持有其内核路径的统计。
+
+已执行 `rustfmt --edition 2021`（全部 perf 子模块）、`make TARGET_ARCH=riscv64`（默认 release）和当前源码的
+`make TARGET_ARCH=riscv64 perf`、`make TARGET_ARCH=loongarch64 perf`。构建只有既有 Cargo config、vendored
+`smoltcp` 及 `ipi_sent` unused warning；未运行 QEMU/BuildStorm，因为本轮不改变任何 workload 行为。

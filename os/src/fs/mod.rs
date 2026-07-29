@@ -19,6 +19,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::{sync::Arc, vec::Vec};
 pub use ext4_lw::{superblock_fs_stat, superblock_ls, superblock_root_inode, superblock_sync};
+pub(crate) use ext4_lw::{Ext4OpGuard, Ext4OpLock};
 pub use files::devfs::*;
 pub use fs_info::*;
 pub use fstruct::*;

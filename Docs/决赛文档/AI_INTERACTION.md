@@ -1811,3 +1811,32 @@
 - **验证**：RISC-V、LoongArch64 `make perf` 与普通 release 构建、os fmt check、`git diff --check` 均通过，只有既有 Cargo config、vendored `smoltcp` 与 pre-existing scheduler warning。两次 RISC-V QEMU 均 `status=0`、END、`shutdown!`，带宽 `264.51/258.19 MB/sec`；相对细分基线 read copy 降约 `51.5%/52.9%`、write copy 均降约 `20.7%`，short I/O 与 remote IPI failed 均为 0。LoongArch64 未运行 QEMU。
 - **关联文档**：[RISC-V pipe 跨 hart 空闲唤醒延迟优化](./problem/riscv-pipe-remote-idle-wakeup.md)
 - **关联 commit**：当前工作区未提交
+
+#### lwext4 长临界区内部阶段聚合计时（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求先为 lwext4 rename、namespace 和 metadata 的长全局临界区补齐内部阶段聚合取证，再决定是否可缩短锁域。
+- **描述**：新增仅在 `perf` feature 下调用的 relaxed phase guard；rename 输出 write-back/close/lwext4 rename/VFS-cache invalidate，namespace 输出 create/unlink/truncate/link-symlink，metadata 输出 size/timestamp/mode/owner/link-count/alias/recovery，并单列原有同锁的 delay/read-all prepare。guard 覆盖错误返回且不逐调用日志，`EXT4_OP_LOCK`、per-inode 锁序、写回、alias 与失效语义均未改变。
+- **验证**：RISC-V、LoongArch64 `make perf` 及默认双架构 release `make` 均通过，`git diff --check` 通过；只有既有 Cargo config、vendored `smoltcp` 和 `ipi_sent` unused warning。未运行 QEMU/BuildStorm，本轮不报告根因或性能比例。
+- **关联 commit**：当前工作区未提交
+
+#### lwext4 perf 实现与锁实现解耦（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求将 `ext4_lw/mod.rs` 中仅服务于 perf 的锁分类、计时和统计代码拆分至 `utils/perf.rs`。
+- **描述**：`mod.rs` 仅保留 `TaskMutex`、全局 gate 与 RAII release；`perf.rs` 接管 `Ext4LockClass`、`Ext4ProfiledOpGuard`、全部 `lock_for_*()` 和 drop 时的统计分派。profile guard 仍在释放 primitive mutex 后记录 relaxed atomic；锁序、单一 lwext4 串行边界、计数名称与 inode/sb 调用点不变。通过 `fs` crate 内 re-export 使用内部锁类型，未公开 `ext4_lw` 模块。
+- **验证**：RISC-V、LoongArch64 `make perf` 与默认双架构 release `make`、格式和 `git diff --check` 均通过；未运行 QEMU/BuildStorm，本轮不报告性能比例。
+- **关联 commit**：当前工作区未提交
+
+#### `utils::perf` 按内核分区拆分（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求将超过 2500 行的 `os/src/utils/perf.rs` 按内核分区重构为不同模块。
+- **描述**：保留根 `perf.rs` 的 `crate::utils::perf::*` 兼容入口、限频 CAS 与报告触发；统计与 API 分别迁移到
+  `common`、`fs`、`syscall`、`task`、`scheduler`、`net`、`report`。`fs` 包含 lwext4/VFS/page cache/pipe 与
+  `Ext4OpLock` 计时扩展，task 包含 clone/exec/vfork/procfs 与 wait/futex guard。原子内存序、tick 边界、锁释放
+  后记账顺序和报告标签保持不变，不移动临界区，也不更改用户可见文件系统或调度语义。
+- **验证**：所有 perf 子模块已 `rustfmt`；默认 `make TARGET_ARCH=riscv64` 通过，随后在当前源码上分别执行
+  `make TARGET_ARCH=riscv64 perf` 与 `make TARGET_ARCH=loongarch64 perf`，均通过。仅见既有 Cargo config、
+  vendored `smoltcp` 和 `ipi_sent` warning；未运行 QEMU/BuildStorm，故不报告性能比例。
+- **关联 commit**：当前工作区未提交

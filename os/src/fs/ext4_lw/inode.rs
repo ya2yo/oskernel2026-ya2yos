@@ -12,6 +12,10 @@ use lwext4_rust::{
 };
 
 use super::{TaskMutex, EXT4_OP_LOCK};
+#[cfg(feature = "perf")]
+use crate::utils::perf::{
+    Ext4InodePhaseGuard, Ext4MetadataPhase, Ext4NamespacePhase, Ext4RenamePhase,
+};
 use crate::{
     fs::{
         patch_dynamic_link_file_bytes, FsIndex, Inode, InodeType, Kstat, MountFlags, OpenFlags,
@@ -200,6 +204,8 @@ impl Ext4Inode {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Alias);
         let inner = self.inner.get_unchecked_mut();
         if inner.aliases.iter().all(|alias| alias != path) {
             inner.aliases.push(path.to_string());
@@ -278,6 +284,8 @@ impl Ext4Inode {
     /// 这是 rename/hard link 后 fd 继续可用的兜底路径。只有底层元数据操作失败时才调用，
     /// 避免把普通热路径变成重复的 ext4 路径存在性检查。
     fn recover_live_path(&self, inner: &mut Ext4InodeInner) -> String {
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Recovery);
         let current = inner.f.path().into_string().unwrap();
         let types = inner.f.types();
         if inner.f.check_inode_exist(&current, types.clone()) {
@@ -362,6 +370,8 @@ impl Inode for Ext4Inode {
 
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Size);
         let inner = self.inner.get_unchecked_mut();
         if let Some(size) = self.known_size() {
             return size;
@@ -388,6 +398,8 @@ impl Inode for Ext4Inode {
         let nf = Ext4Inode::new(path, types.clone());
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Create);
         let file = &mut self.inner.get_unchecked_mut().f;
 
         if file.check_inode_exist(path, types.clone()) {
@@ -415,6 +427,8 @@ impl Inode for Ext4Inode {
     fn create_dir_fast(&self, path: &str) -> Result<Arc<dyn Inode>, SysErrNo> {
         let nf = Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR);
         let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Create);
         let nfile = &mut nf.inner.get_unchecked_mut().f;
         nfile.dir_mk(path).map_err(SysErrNo::from)?;
         Ok(Arc::new(nf))
@@ -625,6 +639,8 @@ impl Inode for Ext4Inode {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Truncate);
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         let file = &mut inner.f;
@@ -649,6 +665,8 @@ impl Inode for Ext4Inode {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_rename();
+        #[cfg(feature = "perf")]
+        let write_back_phase = Ext4InodePhaseGuard::rename(Ext4RenamePhase::WriteBackCache);
         let inner = self.inner.get_unchecked_mut();
         let types = inner.f.types();
         let active_path = inner.f.path().into_string().unwrap();
@@ -663,34 +681,48 @@ impl Inode for Ext4Inode {
             .f
             .write_back_and_discard_path_cache()
             .map_err(SysErrNo::from)?;
+        #[cfg(feature = "perf")]
+        drop(write_back_phase);
         // The preceding helper has already handled byte-cache write-back.
         // Closing with the normal helper would call ext4_cache_flush() a
         // second time, again serializing every dirty block on this mount.
-        inner
-            .f
-            .file_close_without_cache_flush()
-            .map_err(SysErrNo::from)?;
-        inner
-            .f
-            .file_rename(path, new_path)
-            .map_err(SysErrNo::from)?;
+        {
+            #[cfg(feature = "perf")]
+            let _phase = Ext4InodePhaseGuard::rename(Ext4RenamePhase::Close);
+            inner
+                .f
+                .file_close_without_cache_flush()
+                .map_err(SysErrNo::from)?;
+        }
+        {
+            #[cfg(feature = "perf")]
+            let _phase = Ext4InodePhaseGuard::rename(Ext4RenamePhase::Lwext4Rename);
+            inner
+                .f
+                .file_rename(path, new_path)
+                .map_err(SysErrNo::from)?;
+        }
 
         // A successful directory-entry move must not leave an orphaned
         // write-back entry for either pathname.  In particular, stale target
         // state could otherwise overwrite Rustc's newly published artifact.
-        discard_path_cache(path);
-        discard_path_cache(new_path);
+        {
+            #[cfg(feature = "perf")]
+            let _phase = Ext4InodePhaseGuard::rename(Ext4RenamePhase::VfsCacheInvalidate);
+            discard_path_cache(path);
+            discard_path_cache(new_path);
 
-        inner.aliases.retain(|alias| alias.as_str() != path);
-        if inner.aliases.iter().all(|alias| alias != new_path) {
-            inner.aliases.push(new_path.to_string());
+            inner.aliases.retain(|alias| alias.as_str() != path);
+            if inner.aliases.iter().all(|alias| alias != new_path) {
+                inner.aliases.push(new_path.to_string());
+            }
+            inner.f = Ext4File::new(new_path, types);
+            self.update_cached_path(new_path);
+            self.invalidate_cached_stat();
+            FILE_PAGE_CACHE.invalidate_path(&active_path);
+            FILE_PAGE_CACHE.invalidate_path(path);
+            FILE_PAGE_CACHE.invalidate_path(new_path);
         }
-        inner.f = Ext4File::new(new_path, types);
-        self.update_cached_path(new_path);
-        self.invalidate_cached_stat();
-        FILE_PAGE_CACHE.invalidate_path(&active_path);
-        FILE_PAGE_CACHE.invalidate_path(path);
-        FILE_PAGE_CACHE.invalidate_path(new_path);
         Ok(0)
     }
 
@@ -701,6 +733,8 @@ impl Inode for Ext4Inode {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::LinkSymlink);
         let inner = self.inner.get_unchecked_mut();
         let file = &mut inner.f;
         let ret = file
@@ -724,6 +758,8 @@ impl Inode for Ext4Inode {
     ) -> SyscallRet {
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Timestamp);
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         let file = &mut inner.f;
@@ -751,6 +787,8 @@ impl Inode for Ext4Inode {
         let (file_type, path_str) = {
             let _io_state = self.io_state.lock();
             let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+            #[cfg(feature = "perf")]
+            let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::ReadAllPrepare);
             let inner = self.inner.get_unchecked_mut();
             let path = Self::live_path(inner);
             let file_type = as_inode_type(inner.f.types());
@@ -1046,6 +1084,8 @@ impl Inode for Ext4Inode {
     fn sym_link(&self, target: &str, path: &str) -> SyscallRet {
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::LinkSymlink);
         let file = &mut self.inner.get_unchecked_mut().f;
         file.file_fsymlink(target, path).map_err(SysErrNo::from)
     }
@@ -1055,6 +1095,8 @@ impl Inode for Ext4Inode {
     fn link_cnt(&self) -> SyscallRet {
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::LinkCount);
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         let file = &mut inner.f;
@@ -1076,6 +1118,8 @@ impl Inode for Ext4Inode {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Unlink);
         let inner = self.inner.get_unchecked_mut();
         let is_dir = as_inode_type(inner.f.types()) == InodeType::Dir;
         let file = &mut inner.f;
@@ -1118,6 +1162,8 @@ impl Inode for Ext4Inode {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Delay);
         self.inner.get_unchecked_mut().delay = true;
         self.delayed.store(true, Ordering::Release);
     }
@@ -1129,6 +1175,8 @@ impl Inode for Ext4Inode {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Mode);
         let inner = self.inner.get_unchecked_mut();
         match inner.f.file_mode() {
             Ok(mode) => Ok(mode),
@@ -1146,6 +1194,8 @@ impl Inode for Ext4Inode {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Mode);
         let inner = self.inner.get_unchecked_mut();
         let mode_type = mode & 0o170000;
         let mode_type = if mode_type != 0 {
@@ -1173,6 +1223,8 @@ impl Inode for Ext4Inode {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        #[cfg(feature = "perf")]
+        let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Owner);
         let inner = self.inner.get_unchecked_mut();
         let ret = match inner.f.file_owner_set(uid, gid) {
             Ok(ret) => Ok(ret),
