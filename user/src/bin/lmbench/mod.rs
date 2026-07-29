@@ -1,17 +1,9 @@
 use crate::*;
 
-fn run_lmbench_pipe_bandwidth(root: &str, libc: &str) -> i32 {
-    println!(
-        "#### OS COMP TEST GROUP START lmbench-pipe-bandwidth-{} ####",
-        libc
-    );
+fn run_lmbench_pipe_bandwidth(root: &str) -> i32 {
     println!("[lmbench-pipe] command=bw_pipe processes=1");
     let status = fork_and_run(root, &["./lmbench_all\0", "bw_pipe\0", "-P\0", "1\0"]);
     println!("[lmbench-pipe] bw_pipe_exit_status={}", status);
-    println!(
-        "#### OS COMP TEST GROUP END lmbench-pipe-bandwidth-{} ####",
-        libc
-    );
     status
 }
 
@@ -21,7 +13,10 @@ fn run_lmbench_pipe_bandwidth(root: &str, libc: &str) -> i32 {
 /// compared under a stable pipe-only workload.
 #[allow(unused)]
 pub fn run_lmbench_pipe_bandwidth_musl() -> i32 {
-    run_lmbench_pipe_bandwidth("/musl\0", "musl")
+    println!("#### OS COMP TEST GROUP START lmbench-pipe-bandwidth-musl ####");
+    let status = run_lmbench_pipe_bandwidth("/musl\0");
+    println!("#### OS COMP TEST GROUP END lmbench-pipe-bandwidth-musl ####");
+    status
 }
 
 /// Run only the glibc pipe bandwidth workload.
@@ -30,7 +25,10 @@ pub fn run_lmbench_pipe_bandwidth_musl() -> i32 {
 /// full lmbench entry points.
 #[allow(unused)]
 pub fn run_lmbench_pipe_bandwidth_glibc() -> i32 {
-    run_lmbench_pipe_bandwidth("/glibc\0", "glibc")
+    println!("#### OS COMP TEST GROUP START lmbench-pipe-bandwidth-glibc ####");
+    let status = run_lmbench_pipe_bandwidth("/glibc\0");
+    println!("#### OS COMP TEST GROUP END lmbench-pipe-bandwidth-glibc ####");
+    status
 }
 
 #[allow(unused)]

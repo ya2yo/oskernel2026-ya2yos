@@ -146,3 +146,4 @@
 - [BuildStorm EXT4 稀疏写缓冲、顺序预读与锁统计收敛](./problem/buildstorm-ext4-sparse-write-readahead.md)
 - [BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
 - [BuildStorm EXT4 inode 级写回缓存并发](./problem/buildstorm-ext4-inode-cache-write-concurrency.md)
+- [RISC-V pipe 跨 hart 空闲唤醒延迟优化](./problem/riscv-pipe-remote-idle-wakeup.md)

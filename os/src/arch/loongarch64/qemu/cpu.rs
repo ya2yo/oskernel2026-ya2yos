@@ -67,6 +67,13 @@ pub fn idle() {
     core::hint::spin_loop();
 }
 
+/// LoongArch's idle path currently spins, so an enqueued task is observed on
+/// the next scheduler iteration without an IPI.  Keep the scheduler API
+/// uniform while the resumable kernel IPI trap path is not implemented here.
+pub fn wake_hart(_hartid: usize) -> bool {
+    false
+}
+
 /// 初始化csr寄存器
 #[no_mangle]
 pub fn init_csr_regs() {

@@ -8022,3 +8022,37 @@ warning。RISC-V 使用当前 final-2026 raw 镜像的 `/tmp` qcow2 overlay 运�
 `cargo fmt --manifest-path os/Cargo.toml -- --check`、`cargo fmt --manifest-path user/Cargo.toml -- --check`、`git diff --check`、RISC-V 与 LoongArch64 `make perf` 均通过；普通 release `make TARGET_ARCH=riscv64` 也按当前根 Makefile 完成两架构构建，只有既有 `smoltcp` warning。
 
 RISC-V QEMU 在预制 `sdcard-rv.img` 上启动并输出新字段：最新周期快照有 `pipe_io read/write=1599/1598`、`write_short_calls=0`、`read_wait samples=1510 total_us=25449712`、`read_copy/write_copy total_us=29855/7726`。运行被 120 秒上限中止，未有 `shutdown!`；且该镜像中的 initproc 未随 `make run` 回写，因此没有出现新增 `[lmbench-pipe]` 标记，不能把该输出记为新独立 `bw_pipe` workload 的结果。临时测试路由和生成的 `disk.img` 链接均已恢复/删除。此记录不将新统计或单次 pipe 吞吐解释为性能提升。
+
+## 2026-07-29：RISC-V pipe 跨 hart idle IPI 唤醒优化
+
+### 用户输入
+
+维护者要求继续分析 `tmp_02.ans` 并进行优化。
+
+### 分析与采纳结论
+
+`tmp_02.ans` 的完整 glibc `bw_pipe -P 1` 测例传输约 2.16 GiB，successful short read/write 均为 0；
+pipe read/write 的累计 wait 为 `50.703/50.425 s`，copy 仅 `1.647/4.556 s`。每次 wait 平均约
+10.6 ms，对齐 100 Hz timer。`bw_pipe` 在内部再次普通 `fork()` writer，而 `Process::new()` 按 PID
+分配 `home_hart`，故 reader/writer 跨 hart。旧 `ready_queue::add_task()` 虽将 woken task 入目标 CFS
+queue，但没有唤醒处于 RISC-V `wfi` 的目标 hart，必须等下一 timer。
+
+曾在 pipe 满/空处试验 `yield_current_and_run_next()`，有效样本带宽从 `40.90` 降至 `14.09 MB/sec`，
+且 wait 未下降。它强制当前 hart 切换却无法唤醒远端 idle hart，已完整撤回。
+
+### 修改与验证
+
+在通用 scheduler enqueue 之后加入 remote-idle notify：目标 hart 先原子发布 idle、二次检查本地
+run queue 后才进入 idle；waker 要么被二次检查观察到，要么读到 idle 标志并对 RISC-V 发 SBI sPI。
+IPI 仅在 RISC-V `wfi` 周期临时启用并在恢复后清除，不进入用户 trap，也不对 running target 强制
+抢占。LoongArch64 idle 仍为 spin loop，只保留返回 false 的统一接口。新增 `scheduler_wakeup` 聚合，
+报告 local/remote enqueue、remote idle notify 和 IPI 成功/失败数。
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`cargo fmt --manifest-path user/Cargo.toml -- --check`、
+`git diff --check`、RISC-V 与 LoongArch64 `make perf` 均通过，只有既有 config/smoltcp warnings。两次
+同配置 RISC-V QEMU 均输出测试组 END、`bw_pipe_exit_status=0` 和 `shutdown!`，无 panic/TFAIL/TBROK：
+`/tmp/tmp02-ipi-1.ans` 为 `251.96 MB/sec`、read/write wait `0.969/0.141 s`、IPI `3617/0` sent/failed；
+`/tmp/tmp02-ipi-2.ans` 为 `223.03 MB/sec`、read/write wait `1.411/0.136 s`、IPI `4359/0` sent/failed。
+两次相对 `tmp_02.ans` 的 `40.90 MB/sec` 分别为约 `6.16x` 和 `5.45x`，但仍受 QEMU 宿主调度影响，
+记录区间和原始统计，不外推为完整 lmbench、BuildStorm 或 LoongArch64 性能结论。LoongArch64 未运行
+QEMU，只完成 perf 编译验证。

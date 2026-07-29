@@ -1,5 +1,8 @@
 //!Implementation of [`Processor`] and Intersection of control flow
-use core::cell::SyncUnsafeCell;
+use core::{
+    cell::SyncUnsafeCell,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use super::{
     __abandon, check_blocked_task_timers, check_timer_events, ready_queue, TaskContext,
@@ -74,6 +77,38 @@ const EMPTY_PROCESSOR: Processor = Processor::new();
 /// 不需要加锁,每个核只会访问固定的Processor
 pub static PROCESSORS: SyncUnsafeCell<[Processor; HART_NUM]> =
     SyncUnsafeCell::new([EMPTY_PROCESSOR; HART_NUM]);
+
+/// Published only around the architecture idle instruction.  Wakers use this
+/// to avoid sending an IPI to a hart that is already executing useful work.
+static HART_IDLE: [AtomicBool; HART_NUM] = [const { AtomicBool::new(false) }; HART_NUM];
+
+/// Notify a remote hart after a runnable task has been enqueued for it.
+///
+/// The idle hart publishes `true` before rechecking its run queue, so either
+/// the enqueue is observed by that recheck or the sender observes `true` and
+/// wakes the hart.  This closes the enqueue-before-WFI lost-wakeup window.
+pub(crate) fn notify_hart_of_runnable_task(target_hart: usize) {
+    let source_hart = hart_id();
+    if target_hart == source_hart {
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_scheduler_enqueue(false, false, false);
+        return;
+    }
+
+    let target_idle = HART_IDLE[target_hart].load(Ordering::Acquire);
+    let ipi_sent = target_idle && crate::arch::cpu::wake_hart(target_hart);
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_scheduler_enqueue(true, target_idle, ipi_sent);
+}
+
+fn idle_until_runnable(hartid: usize) {
+    HART_IDLE[hartid].store(true, Ordering::Release);
+    if !ready_queue::has_ready_for_hart(hartid) {
+        crate::arch::cpu::idle();
+    }
+    HART_IDLE[hartid].store(false, Ordering::Release);
+}
+
 ///attach to processors
 fn get_proc_by_hartid(hartid: usize) -> &'static mut Processor {
     if hartid >= HART_NUM {
@@ -134,7 +169,7 @@ pub fn run_tasks() {
         } else {
             #[cfg(feature = "perf")]
             crate::utils::perf::record_idle_loop();
-            crate::arch::cpu::idle();
+            idle_until_runnable(hartid);
         }
     }
 }

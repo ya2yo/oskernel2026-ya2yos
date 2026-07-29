@@ -1793,3 +1793,12 @@
 - **描述**：AI 在 perf feature 下新增 relaxed pipe I/O、wait/copy duration、任务/poll wakeup 及 wakeup 后重检计数；wait 只包围 `schedule_blocked_current()`，copy 只包围 `UserBuffer` 与 `PipeBuf` 数据移动，未改动 pipe 容量、阻塞条件、队列或唤醒策略。lmbench 增加 glibc/musl 的显式 `bw_pipe -P 1` 单项入口和成对日志标记，不接入默认全量流程。
 - **验证**：RISC-V、LoongArch64 `make perf` 与普通 release 构建通过，只有既有 `smoltcp` warning；RISC-V QEMU 已打印新 pipe 字段，但预制 `sdcard-rv.img` 不会被 `make run` 回写 user ELF，新增独立入口未实际装入 guest，且 120 秒运行未到 `shutdown!`。临时路由与 `disk.img` 链接均已恢复/删除；未以 raw `syscall_duration write` 或单次吞吐样本声称加速。
 - **关联 commit**：当前工作区未提交
+
+#### RISC-V pipe 跨 hart idle IPI 唤醒优化（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求继续分析 `tmp_02.ans` 并优化 pipe write/read 的高耗时。
+- **分析与修改**：`tmp_02.ans` 的 pipe read/write 累计等待各约 50 秒，平均约一个 10 ms tick，copy 仅约 6.2 秒。lmbench `bw_pipe` 的 writer 是第二次普通 fork，按 PID 落到不同 `home_hart`；旧 ready queue 入队不通知 idle 目标 hart。增加 per-hart 原子 idle 发布与二次 run-queue 检查，RISC-V 仅对已 idle 的 remote hart 发 SBI IPI；IPI 只在 `wfi` 周期开启且恢复后清除，不引入 running task 的强制抢占。曾试验 pipe 局部 yield，带宽降至 `14.09 MB/sec`，已撤回。
+- **验证**：RISC-V、LoongArch64 `make perf`、两份 Cargo fmt check 和 `git diff --check` 通过。两次 RISC-V QEMU pipe-only 运行均 `status=0`、END、`shutdown!`，带宽为 `251.96` 与 `223.03 MB/sec`，相比基线 `40.90 MB/sec` 提升约 `6.16x`/`5.45x`；`remote_ipi_failed=0`。LoongArch64 未运行 QEMU，只验证编译。
+- **关联文档**：[RISC-V pipe 跨 hart 空闲唤醒延迟优化](./problem/riscv-pipe-remote-idle-wakeup.md)
+- **关联 commit**：当前工作区未提交

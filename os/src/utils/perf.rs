@@ -70,6 +70,14 @@ static PIPE_READER_WAKE_POLL_TASKS: AtomicUsize = AtomicUsize::new(0);
 static PIPE_WRITER_WAKE_CALLS: AtomicUsize = AtomicUsize::new(0);
 static PIPE_WRITER_WAKE_TASKS: AtomicUsize = AtomicUsize::new(0);
 static PIPE_WRITER_WAKE_POLL_TASKS: AtomicUsize = AtomicUsize::new(0);
+// Scheduler enqueue placement is kept separate from pipe-specific wakeups.
+// It identifies remote blocked-task wakeups that otherwise wait for an idle
+// hart's periodic timer interrupt.
+static SCHEDULER_LOCAL_ENQUEUES: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULER_REMOTE_ENQUEUES: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULER_REMOTE_IDLE_NOTIFICATIONS: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULER_REMOTE_IPI_SENT: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULER_REMOTE_IPI_FAILED: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_OPEN_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_OPEN_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_OPEN_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -994,6 +1002,26 @@ pub fn record_pipe_writer_wakeup(task_woken: usize, poll_woken: usize) {
     add(&PIPE_WRITER_WAKE_POLL_TASKS, poll_woken);
 }
 
+/// Record the scheduler placement after a task becomes runnable.  `ipi_sent`
+/// is meaningful only when a remote target had already published itself idle.
+#[inline]
+pub fn record_scheduler_enqueue(remote: bool, target_idle: bool, ipi_sent: bool) {
+    if !remote {
+        add(&SCHEDULER_LOCAL_ENQUEUES, 1);
+        return;
+    }
+
+    add(&SCHEDULER_REMOTE_ENQUEUES, 1);
+    if target_idle {
+        add(&SCHEDULER_REMOTE_IDLE_NOTIFICATIONS, 1);
+        if ipi_sent {
+            add(&SCHEDULER_REMOTE_IPI_SENT, 1);
+        } else {
+            add(&SCHEDULER_REMOTE_IPI_FAILED, 1);
+        }
+    }
+}
+
 #[inline]
 pub fn record_lseek_type_check_duration(elapsed: usize) {
     record_duration(
@@ -1678,6 +1706,14 @@ fn emit_report(now: usize) {
         SCHEDULER_SELECTIONS.load(Ordering::Relaxed),
         SCHEDULER_SELF_SELECTIONS.load(Ordering::Relaxed),
         IDLE_LOOPS.load(Ordering::Relaxed),
+    );
+    println!(
+        "[perf] scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",
+        SCHEDULER_LOCAL_ENQUEUES.load(Ordering::Relaxed),
+        SCHEDULER_REMOTE_ENQUEUES.load(Ordering::Relaxed),
+        SCHEDULER_REMOTE_IDLE_NOTIFICATIONS.load(Ordering::Relaxed),
+        SCHEDULER_REMOTE_IPI_SENT.load(Ordering::Relaxed),
+        SCHEDULER_REMOTE_IPI_FAILED.load(Ordering::Relaxed),
     );
     println!(
         "[perf] pipe_io read_calls={} read_completed={} read_requested_bytes={} read_bytes={} read_short_calls={} write_calls={} write_completed={} write_requested_bytes={} write_bytes={} write_short_calls={}",
