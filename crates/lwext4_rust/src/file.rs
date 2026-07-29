@@ -3,7 +3,7 @@ use core::ffi::c_char;
 use crate::bindings::*;
 #[cfg(feature = "perf")]
 use crate::perf::{self, DirectWriteReason, FileWritePath, FstatStageEvent};
-use crate::perf::{FstatStageObserver, SparseWriteFlushReason};
+use crate::perf::{FstatStageObserver, SparseWriteCacheEvictCause, SparseWriteFlushReason};
 
 extern "C" {
     #[link_name = "ext4_fseek_data"]
@@ -30,10 +30,12 @@ const MAX_CACHED_FILE_SIZE: usize = 16 * 0x10_0000; // 16 MiB
 // cache back would allocate every hole. Still, compiler/linker output often
 // arrives as many adjacent sub-page writes to one sparse inode. Keep only a
 // bounded range set so those writes can be committed together without
-// changing the inode's extent layout. Keep the payload cap fixed while
-// allowing enough fragmented pwrite-style ranges for compiler artifacts.
-const MAX_SPARSE_WRITE_BUFFER_SIZE: usize = 64 * 1024;
+// changing the inode's extent layout. BuildStorm shows the payload cap, not
+// run count, drives almost every capacity flush. The global budget below
+// keeps the larger per-inode batch from becoming unbounded across inodes.
+const MAX_SPARSE_WRITE_BUFFER_SIZE: usize = 256 * 1024;
 const MAX_SPARSE_WRITE_BUFFER_RUNS: usize = 32;
+const MAX_TOTAL_SPARSE_WRITE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 fn aligned_down(addr: usize) -> usize {
     addr & PAGE_MASK
@@ -799,6 +801,7 @@ impl Ext4File {
         let key = self.whole_file_cache_key()?;
         let buffers = SPARSE_WRITE_BUFFERS.lock();
         buffers
+            .entries
             .get(&key)?
             .runs
             .iter()
@@ -827,7 +830,7 @@ impl Ext4File {
         };
         let sparse_end = {
             let buffers = SPARSE_WRITE_BUFFERS.lock();
-            let Some(buffer_set) = buffers.get(&key) else {
+            let Some(buffer_set) = buffers.entries.get(&key) else {
                 return Ok(None);
             };
             buffer_set
@@ -864,7 +867,7 @@ impl Ext4File {
         let mut dirty_bytes = 0;
         {
             let buffers = SPARSE_WRITE_BUFFERS.lock();
-            if let Some(buffer_set) = buffers.get(&key) {
+            if let Some(buffer_set) = buffers.entries.get(&key) {
                 // Runs are kept in write order.  Replaying them in that order
                 // gives overlapping pwrite-style updates last-write-wins
                 // semantics without materialising holes in lwext4.
@@ -908,6 +911,21 @@ impl Ext4File {
     /// holds Ya2yOS's global lwext4 guard, so the descriptor and the
     /// inode-keyed buffer remain serialized with other filesystem operations.
     fn flush_sparse_write_buffer(&mut self, reason: SparseWriteFlushReason) -> Result<usize, i32> {
+        self.flush_sparse_write_buffer_with_cause(reason, None)
+    }
+
+    fn flush_sparse_write_buffer_with_cache_evict_cause(
+        &mut self,
+        cause: SparseWriteCacheEvictCause,
+    ) -> Result<usize, i32> {
+        self.flush_sparse_write_buffer_with_cause(SparseWriteFlushReason::CacheEvict, Some(cause))
+    }
+
+    fn flush_sparse_write_buffer_with_cause(
+        &mut self,
+        reason: SparseWriteFlushReason,
+        cache_evict_cause: Option<SparseWriteCacheEvictCause>,
+    ) -> Result<usize, i32> {
         let Some(key) = self.whole_file_cache_key() else {
             return Ok(0);
         };
@@ -915,9 +933,18 @@ impl Ext4File {
             return Ok(0);
         };
         #[cfg(feature = "perf")]
-        perf::record_sparse_write_flush_trigger(reason);
+        {
+            perf::record_sparse_write_flush_trigger(reason);
+            perf::record_sparse_write_flush_batch(
+                cache_evict_cause,
+                buffers.runs.len(),
+                buffers.bytes,
+            );
+        }
         #[cfg(not(feature = "perf"))]
         let _ = reason;
+        #[cfg(not(feature = "perf"))]
+        let _ = cache_evict_cause;
 
         // Prefer the active writable descriptor so delayed-unlink files keep
         // working after their pathname disappears.  A reader may instead be
@@ -1033,7 +1060,11 @@ impl Ext4File {
         // must not be allowed to reach lwext4 first and then be overwritten
         // by a later sparse-buffer flush.
         if buf.len() > MAX_SPARSE_WRITE_BUFFER_SIZE {
-            self.flush_sparse_write_buffer(SparseWriteFlushReason::CacheEvict)?;
+            #[cfg(feature = "perf")]
+            perf::record_sparse_large_direct(buf.len());
+            self.flush_sparse_write_buffer_with_cache_evict_cause(
+                SparseWriteCacheEvictCause::LargeDirect,
+            )?;
             return Ok(false);
         }
         let end = offset.checked_add(buf.len()).ok_or(EINVAL as i32)?;
@@ -1041,69 +1072,114 @@ impl Ext4File {
             return Ok(false);
         };
 
-        let mut should_flush = false;
+        let mut flush_cause = None;
+        let mut buffered = false;
         {
-            let mut buffers = SPARSE_WRITE_BUFFERS.lock();
-            if let Some(buffer_set) = buffers.get_mut(&key) {
+            let mut sparse_buffers = SPARSE_WRITE_BUFFERS.lock();
+            let budget_available = sparse_buffers.can_accept(buf.len());
+            if let Some(buffer_set) = sparse_buffers.entries.get_mut(&key) {
                 if let Some(buffer) = buffer_set.runs.iter_mut().find(|buffer| {
                     buffer
                         .offset
                         .checked_add(buffer.data.len())
                         .is_some_and(|buffered_end| offset == buffered_end)
                 }) {
-                    if buffer_set.bytes.saturating_add(buf.len()) <= MAX_SPARSE_WRITE_BUFFER_SIZE
+                    let payload_limit =
+                        buffer_set.bytes.saturating_add(buf.len()) > MAX_SPARSE_WRITE_BUFFER_SIZE;
+                    if !payload_limit
+                        && budget_available
                         && buffer.data.try_reserve_exact(buf.len()).is_ok()
                     {
                         buffer.data.extend_from_slice(buf);
                         buffer_set.bytes += buf.len();
-                        self.file_desc.fsize = self.file_desc.fsize.max(end as u64);
-                        #[cfg(feature = "perf")]
-                        perf::record_sparse_write_buffer(buf.len());
-                        return Ok(true);
+                        buffered = true;
                     }
-                    should_flush = true;
-                } else if buffer_set.runs.len() < MAX_SPARSE_WRITE_BUFFER_RUNS
-                    && buffer_set.bytes.saturating_add(buf.len()) <= MAX_SPARSE_WRITE_BUFFER_SIZE
-                {
-                    let mut data = Vec::new();
-                    if data.try_reserve_exact(buf.len()).is_ok()
-                        && buffer_set.runs.try_reserve_exact(1).is_ok()
-                    {
-                        data.extend_from_slice(buf);
-                        buffer_set
-                            .runs
-                            .push_back(SparseWriteBuffer { offset, data });
-                        buffer_set.bytes += buf.len();
-                        self.file_desc.fsize = self.file_desc.fsize.max(end as u64);
-                        #[cfg(feature = "perf")]
-                        perf::record_sparse_write_buffer(buf.len());
-                        return Ok(true);
+                    if !buffered {
+                        flush_cause = Some(if payload_limit {
+                            SparseWriteCacheEvictCause::PayloadLimit
+                        } else if !budget_available {
+                            SparseWriteCacheEvictCause::GlobalBudget
+                        } else {
+                            #[cfg(feature = "perf")]
+                            perf::record_sparse_buffer_allocation_failure(buf.len());
+                            SparseWriteCacheEvictCause::AllocationFailure
+                        });
                     }
-                    should_flush = true;
                 } else {
-                    should_flush = true;
+                    let payload_limit =
+                        buffer_set.bytes.saturating_add(buf.len()) > MAX_SPARSE_WRITE_BUFFER_SIZE;
+                    let run_limit = buffer_set.runs.len() >= MAX_SPARSE_WRITE_BUFFER_RUNS;
+                    if !payload_limit && !run_limit && budget_available {
+                        let mut data = Vec::new();
+                        if data.try_reserve_exact(buf.len()).is_ok()
+                            && buffer_set.runs.try_reserve_exact(1).is_ok()
+                        {
+                            data.extend_from_slice(buf);
+                            buffer_set
+                                .runs
+                                .push_back(SparseWriteBuffer { offset, data });
+                            buffer_set.bytes += buf.len();
+                            buffered = true;
+                        }
+                        if !buffered {
+                            #[cfg(feature = "perf")]
+                            perf::record_sparse_buffer_allocation_failure(buf.len());
+                            flush_cause = Some(SparseWriteCacheEvictCause::AllocationFailure);
+                        }
+                    } else if !payload_limit && !run_limit {
+                        flush_cause = Some(SparseWriteCacheEvictCause::GlobalBudget);
+                    } else {
+                        flush_cause = Some(match (payload_limit, run_limit) {
+                            (true, true) => SparseWriteCacheEvictCause::BothLimits,
+                            (true, false) => SparseWriteCacheEvictCause::PayloadLimit,
+                            (false, true) => SparseWriteCacheEvictCause::RunLimit,
+                            (false, false) => unreachable!(),
+                        });
+                    }
                 }
+            }
+            if buffered {
+                sparse_buffers.add_bytes(buf.len());
+                #[cfg(feature = "perf")]
+                perf::record_sparse_buffer_resident_bytes(sparse_buffers.total_bytes);
             }
         }
 
-        if should_flush {
-            self.flush_sparse_write_buffer(SparseWriteFlushReason::CacheEvict)?;
+        if buffered {
+            self.file_desc.fsize = self.file_desc.fsize.max(end as u64);
+            #[cfg(feature = "perf")]
+            perf::record_sparse_write_buffer(buf.len());
+            return Ok(true);
+        }
+
+        if let Some(cause) = flush_cause {
+            self.flush_sparse_write_buffer_with_cache_evict_cause(cause)?;
         }
 
         let mut data = Vec::new();
         let mut runs = VecDeque::new();
         if data.try_reserve_exact(buf.len()).is_err() || runs.try_reserve_exact(1).is_err() {
+            #[cfg(feature = "perf")]
+            perf::record_sparse_buffer_allocation_failure(buf.len());
             return Ok(false);
         }
         data.extend_from_slice(buf);
         runs.push_back(SparseWriteBuffer { offset, data });
-        SPARSE_WRITE_BUFFERS.lock().insert(
+        let mut sparse_buffers = SPARSE_WRITE_BUFFERS.lock();
+        if !sparse_buffers.can_accept(buf.len()) {
+            #[cfg(feature = "perf")]
+            perf::record_sparse_buffer_budget_direct(buf.len());
+            return Ok(false);
+        }
+        sparse_buffers.insert(
             key,
             SparseWriteBuffers {
                 runs,
                 bytes: buf.len(),
             },
         );
+        #[cfg(feature = "perf")]
+        perf::record_sparse_buffer_resident_bytes(sparse_buffers.total_bytes);
         self.file_desc.fsize = self.file_desc.fsize.max(end as u64);
         #[cfg(feature = "perf")]
         perf::record_sparse_write_buffer(buf.len());
@@ -2055,11 +2131,52 @@ struct SparseWriteBuffers {
     bytes: usize,
 }
 
+/// The sparse payload budget is global rather than per inode. A caller
+/// can only flush the pending ranges for its own open descriptor, so budget
+/// pressure either publishes that inode's ranges or falls back to the normal
+/// direct-write path; it never writes another inode behind its owner's back.
+struct SparseWriteBufferStore {
+    entries: BTreeMap<WholeFileCacheKey, SparseWriteBuffers>,
+    total_bytes: usize,
+}
+
+impl SparseWriteBufferStore {
+    #[inline]
+    fn can_accept(&self, bytes: usize) -> bool {
+        bytes <= MAX_TOTAL_SPARSE_WRITE_BUFFER_BYTES
+            && self.total_bytes <= MAX_TOTAL_SPARSE_WRITE_BUFFER_BYTES - bytes
+    }
+
+    #[inline]
+    fn add_bytes(&mut self, bytes: usize) {
+        debug_assert!(self.can_accept(bytes));
+        self.total_bytes = self.total_bytes.saturating_add(bytes);
+    }
+
+    fn insert(&mut self, key: WholeFileCacheKey, buffers: SparseWriteBuffers) {
+        let bytes = buffers.bytes;
+        if let Some(previous) = self.entries.insert(key, buffers) {
+            self.total_bytes = self.total_bytes.saturating_sub(previous.bytes);
+        }
+        self.total_bytes = self.total_bytes.saturating_add(bytes);
+    }
+
+    fn remove(&mut self, key: &WholeFileCacheKey) -> Option<SparseWriteBuffers> {
+        let buffers = self.entries.remove(key)?;
+        self.total_bytes = self.total_bytes.saturating_sub(buffers.bytes);
+        Some(buffers)
+    }
+}
+
 /// Entries are keyed by `(mount, inode)`, rather than pathname, so another
 /// open file description observes the same pending bytes before it reads,
 /// stats, renames, or synchronizes that inode.
-static SPARSE_WRITE_BUFFERS: Lazy<Mutex<BTreeMap<WholeFileCacheKey, SparseWriteBuffers>>> =
-    Lazy::new(|| Mutex::new(BTreeMap::new()));
+static SPARSE_WRITE_BUFFERS: Lazy<Mutex<SparseWriteBufferStore>> = Lazy::new(|| {
+    Mutex::new(SparseWriteBufferStore {
+        entries: BTreeMap::new(),
+        total_bytes: 0,
+    })
+});
 
 // Whole-file caches represent bytes only. Once an inode has sparse layout,
 // every path and open file description referring to it must bypass the cache

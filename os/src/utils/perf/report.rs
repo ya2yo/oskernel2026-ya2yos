@@ -301,6 +301,33 @@ pub(super) fn emit_report(now: usize) {
             write_cache.fstat_write_back_overlay_ops,
             write_cache.fstat_write_back_fallback_ops,
         );
+        println!(
+            "[perf] ext4_sparse_buffer batches={} batch_runs={} batch_bytes={} batch_max_runs={} batch_max_bytes={} payload_limit_batches={} payload_limit_bytes={} run_limit_batches={} run_limit_bytes={} both_limits_batches={} both_limits_bytes={} allocation_failure_batches={} allocation_failure_bytes={} large_direct_batches={} large_direct_bytes={} global_budget_batches={} global_budget_bytes={} allocation_failure_ops={} allocation_failure_request_bytes={} large_direct_ops={} large_direct_request_bytes={} global_budget_direct_ops={} global_budget_direct_request_bytes={} resident_max_bytes={}",
+            write_cache.sparse_flush_batches,
+            write_cache.sparse_flush_batch_runs,
+            write_cache.sparse_flush_batch_bytes,
+            write_cache.sparse_flush_batch_max_runs,
+            write_cache.sparse_flush_batch_max_bytes,
+            write_cache.sparse_cache_evict_payload_limit_batches,
+            write_cache.sparse_cache_evict_payload_limit_bytes,
+            write_cache.sparse_cache_evict_run_limit_batches,
+            write_cache.sparse_cache_evict_run_limit_bytes,
+            write_cache.sparse_cache_evict_both_limits_batches,
+            write_cache.sparse_cache_evict_both_limits_bytes,
+            write_cache.sparse_cache_evict_allocation_failure_batches,
+            write_cache.sparse_cache_evict_allocation_failure_bytes,
+            write_cache.sparse_cache_evict_large_direct_batches,
+            write_cache.sparse_cache_evict_large_direct_bytes,
+            write_cache.sparse_cache_evict_global_budget_batches,
+            write_cache.sparse_cache_evict_global_budget_bytes,
+            write_cache.sparse_buffer_allocation_failure_ops,
+            write_cache.sparse_buffer_allocation_failure_bytes,
+            write_cache.sparse_large_direct_ops,
+            write_cache.sparse_large_direct_bytes,
+            write_cache.sparse_buffer_budget_direct_ops,
+            write_cache.sparse_buffer_budget_direct_bytes,
+            write_cache.sparse_buffer_resident_max_bytes,
+        );
     }
     println!(
         "[perf] scheduler selections={} self_selections={} idle_loops={}",

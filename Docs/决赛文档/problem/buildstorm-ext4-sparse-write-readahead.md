@@ -512,3 +512,54 @@ overlay 的两次 120 秒 RISC-V QEMU 冒烟均通过 `sigaltstack regression: P
 
 每一项优化都必须用同配置的完整 `elapsed_s` 与基线比较。当前只完成局部读路径与页缓存改动及有限运行期冒烟，
 尚不能声称评测机一小时内完成 400 多个 crates。
+
+## `tmp_10.ans` sparse payload 上限归因与有界扩容（2026-07-29）
+
+### 背景
+
+此前 sparse range 缓冲限制为每 inode `64 KiB` payload、32 个 run。`tmp_09.ans` 的 `CacheEvict` batch
+平均接近 64 KiB，但旧统计无法区分 payload、run 数、分配失败或大写直通，不能安全直接扩容。
+
+### 现象与分析
+
+维护者提供的十分钟 RISC-V `tmp_10.ans` 最后完整快照是 `t=591581ms`、Cargo `Building 14/446`。
+其中 `ext4_sparse_buffer` 的 batch 统计为：
+
+| 指标 | 数值 |
+| --- | ---: |
+| 全部非空 batch | 439 / 26,239,884 B |
+| `CacheEvict` batch | 427 / 26,011,386 B |
+| payload limit | 422 / 25,856,958 B |
+| run limit | 5 / 154,428 B |
+| 两种限制同时命中、分配失败、大写直通 | 0 |
+
+`25,856,958 + 154,428 = 26,011,386`，与原 `CacheEvict` bytes 精确一致；payload 造成
+`98.8%` 的容量 batch 与 `99.4%` 的容量字节，32-run 上限并非本轮主要限制。日志只有
+`BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，没有完整 compile/end/shutdown，故它只用于局部归因。
+
+### 修复
+
+`lwext4_rust::file` 保持 32 个 sparse run，将单 inode payload 上限从 `64 KiB` 提至 `256 KiB`。为避免
+多 inode 同时积累使扩大后的每 inode 上限转化为无界内存，`SPARSE_WRITE_BUFFERS` 改为保存 `total_bytes` 的
+wrapper 全局 store，并强制总 payload 不超过 `8 MiB`。
+
+预算命中时，若当前 inode 已有 pending range，沿既有 `CacheEvict` 发布该 inode 的 ranges 后再尝试本次写；
+若当前 inode 无 pending range，或发布后全局预算仍不足，则本次写返回原有 direct `ext4_fwrite` 慢路径。不会
+为回收预算而强制写回另一个 inode，也不改变 hole 保留、write-order/last-write-wins、读时 overlay，或
+`fstat/statx`、rename、truncate、unlink、close、fsync/sync、`SEEK_DATA/SEEK_HOLE` 的可见性边界。
+
+perf 增加 batch runs/bytes/max、payload/run/both/allocation/large-direct/global-budget 原因、预算 direct fallback
+以及 `resident_max_bytes`。所有统计仍只在 `perf` feature 下使用 relaxed atomic。
+
+### 验证
+
+已通过 `cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml`、
+`cargo fmt --manifest-path os/Cargo.toml`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 与默认 `make`（RISC-V、LoongArch64
+release）。仅出现既有 Cargo config、vendored `smoltcp` 与 release `ipi_sent` warning。
+
+RISC-V 8 GiB/8 hart、final-2026 raw 镜像的 `-snapshot` 120 秒冒烟到达
+`BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok` 和 untimed prebuild；无 `panic`、`ERROR`、`TFAIL` 或
+`TBROK`，没有改写基础镜像或维护者的 `disk.img`。该窗口没有进入 sparse 写密集的正式编译段，且未运行
+`mmap16`、`lseek11`、fstat/statx、rename/unlink 定向回归，完整 BuildStorm `elapsed_s` 和性能提升仍待同配置
+长样本验证。

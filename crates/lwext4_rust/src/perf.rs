@@ -53,6 +53,37 @@ pub struct WriteBackCachePerfStats {
     pub sparse_flush_cache_evict_bytes: usize,
     pub sparse_flush_other_ops: usize,
     pub sparse_flush_other_bytes: usize,
+    /// Non-empty sparse flush batches, independent of their visibility
+    /// barrier. `sparse_flush_ops` remains the number of individual runs.
+    pub sparse_flush_batches: usize,
+    pub sparse_flush_batch_runs: usize,
+    pub sparse_flush_batch_bytes: usize,
+    pub sparse_flush_batch_max_runs: usize,
+    pub sparse_flush_batch_max_bytes: usize,
+    /// Capacity-driven flushes split by the condition that could not accept
+    /// the next sparse write. A batch that hits both bounds is counted in its
+    /// own bucket so the two single-limit counters remain unambiguous.
+    pub sparse_cache_evict_payload_limit_batches: usize,
+    pub sparse_cache_evict_payload_limit_bytes: usize,
+    pub sparse_cache_evict_run_limit_batches: usize,
+    pub sparse_cache_evict_run_limit_bytes: usize,
+    pub sparse_cache_evict_both_limits_batches: usize,
+    pub sparse_cache_evict_both_limits_bytes: usize,
+    pub sparse_cache_evict_allocation_failure_batches: usize,
+    pub sparse_cache_evict_allocation_failure_bytes: usize,
+    pub sparse_cache_evict_large_direct_batches: usize,
+    pub sparse_cache_evict_large_direct_bytes: usize,
+    pub sparse_cache_evict_global_budget_batches: usize,
+    pub sparse_cache_evict_global_budget_bytes: usize,
+    /// Failed sparse-buffer allocations include the initial-buffer case,
+    /// which may not have a prior batch to flush.
+    pub sparse_buffer_allocation_failure_ops: usize,
+    pub sparse_buffer_allocation_failure_bytes: usize,
+    pub sparse_large_direct_ops: usize,
+    pub sparse_large_direct_bytes: usize,
+    pub sparse_buffer_budget_direct_ops: usize,
+    pub sparse_buffer_budget_direct_bytes: usize,
+    pub sparse_buffer_resident_max_bytes: usize,
     /// Stages reached by `Ext4File::fstat()`.
     pub fstat_calls: usize,
     pub fstat_stat_get_ops: usize,
@@ -139,6 +170,18 @@ pub(crate) enum SparseWriteFlushReason {
     Other,
 }
 
+/// Exact reason a bounded sparse buffer was committed for capacity pressure.
+/// This is perf-only attribution; it never selects a different write path.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum SparseWriteCacheEvictCause {
+    PayloadLimit,
+    RunLimit,
+    BothLimits,
+    AllocationFailure,
+    LargeDirect,
+    GlobalBudget,
+}
+
 #[cfg(feature = "perf")]
 static WRITE_CACHE_HIT_OPS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "perf")]
@@ -215,6 +258,54 @@ static SPARSE_WRITE_FLUSH_CACHE_EVICT_BYTES: AtomicUsize = AtomicUsize::new(0);
 static SPARSE_WRITE_FLUSH_OTHER_OPS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "perf")]
 static SPARSE_WRITE_FLUSH_OTHER_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_WRITE_FLUSH_BATCHES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_WRITE_FLUSH_BATCH_RUNS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_WRITE_FLUSH_BATCH_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_WRITE_FLUSH_BATCH_MAX_RUNS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_WRITE_FLUSH_BATCH_MAX_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BATCHES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_RUN_LIMIT_BATCHES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_RUN_LIMIT_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_BOTH_LIMITS_BATCHES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_BOTH_LIMITS_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_ALLOCATION_FAILURE_BATCHES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_ALLOCATION_FAILURE_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_LARGE_DIRECT_BATCHES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_LARGE_DIRECT_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_GLOBAL_BUDGET_BATCHES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_CACHE_EVICT_GLOBAL_BUDGET_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_BUFFER_ALLOCATION_FAILURE_OPS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_BUFFER_ALLOCATION_FAILURE_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_LARGE_DIRECT_OPS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_LARGE_DIRECT_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_BUFFER_BUDGET_DIRECT_OPS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_BUFFER_BUDGET_DIRECT_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static SPARSE_BUFFER_RESIDENT_MAX_BYTES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "perf")]
 static FSTAT_CALLS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "perf")]
@@ -339,6 +430,97 @@ pub(crate) fn record_sparse_write_flush(reason: SparseWriteFlushReason, bytes: u
 
 #[cfg(feature = "perf")]
 #[inline]
+fn record_max(counter: &AtomicUsize, value: usize) {
+    let mut observed = counter.load(Ordering::Relaxed);
+    while observed < value {
+        match counter.compare_exchange_weak(observed, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(actual) => observed = actual,
+        }
+    }
+}
+
+#[cfg(feature = "perf")]
+#[inline]
+fn sparse_cache_evict_cause_counters(
+    cause: SparseWriteCacheEvictCause,
+) -> (&'static AtomicUsize, &'static AtomicUsize) {
+    match cause {
+        SparseWriteCacheEvictCause::PayloadLimit => (
+            &SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BATCHES,
+            &SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BYTES,
+        ),
+        SparseWriteCacheEvictCause::RunLimit => (
+            &SPARSE_CACHE_EVICT_RUN_LIMIT_BATCHES,
+            &SPARSE_CACHE_EVICT_RUN_LIMIT_BYTES,
+        ),
+        SparseWriteCacheEvictCause::BothLimits => (
+            &SPARSE_CACHE_EVICT_BOTH_LIMITS_BATCHES,
+            &SPARSE_CACHE_EVICT_BOTH_LIMITS_BYTES,
+        ),
+        SparseWriteCacheEvictCause::AllocationFailure => (
+            &SPARSE_CACHE_EVICT_ALLOCATION_FAILURE_BATCHES,
+            &SPARSE_CACHE_EVICT_ALLOCATION_FAILURE_BYTES,
+        ),
+        SparseWriteCacheEvictCause::LargeDirect => (
+            &SPARSE_CACHE_EVICT_LARGE_DIRECT_BATCHES,
+            &SPARSE_CACHE_EVICT_LARGE_DIRECT_BYTES,
+        ),
+        SparseWriteCacheEvictCause::GlobalBudget => (
+            &SPARSE_CACHE_EVICT_GLOBAL_BUDGET_BATCHES,
+            &SPARSE_CACHE_EVICT_GLOBAL_BUDGET_BYTES,
+        ),
+    }
+}
+
+#[cfg(feature = "perf")]
+#[inline]
+pub(crate) fn record_sparse_write_flush_batch(
+    cache_evict_cause: Option<SparseWriteCacheEvictCause>,
+    runs: usize,
+    bytes: usize,
+) {
+    SPARSE_WRITE_FLUSH_BATCHES.fetch_add(1, Ordering::Relaxed);
+    SPARSE_WRITE_FLUSH_BATCH_RUNS.fetch_add(runs, Ordering::Relaxed);
+    SPARSE_WRITE_FLUSH_BATCH_BYTES.fetch_add(bytes, Ordering::Relaxed);
+    record_max(&SPARSE_WRITE_FLUSH_BATCH_MAX_RUNS, runs);
+    record_max(&SPARSE_WRITE_FLUSH_BATCH_MAX_BYTES, bytes);
+    if let Some(cause) = cache_evict_cause {
+        let (batches, total_bytes) = sparse_cache_evict_cause_counters(cause);
+        batches.fetch_add(1, Ordering::Relaxed);
+        total_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+}
+
+#[cfg(feature = "perf")]
+#[inline]
+pub(crate) fn record_sparse_buffer_allocation_failure(bytes: usize) {
+    SPARSE_BUFFER_ALLOCATION_FAILURE_OPS.fetch_add(1, Ordering::Relaxed);
+    SPARSE_BUFFER_ALLOCATION_FAILURE_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+#[cfg(feature = "perf")]
+#[inline]
+pub(crate) fn record_sparse_large_direct(bytes: usize) {
+    SPARSE_LARGE_DIRECT_OPS.fetch_add(1, Ordering::Relaxed);
+    SPARSE_LARGE_DIRECT_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+#[cfg(feature = "perf")]
+#[inline]
+pub(crate) fn record_sparse_buffer_budget_direct(bytes: usize) {
+    SPARSE_BUFFER_BUDGET_DIRECT_OPS.fetch_add(1, Ordering::Relaxed);
+    SPARSE_BUFFER_BUDGET_DIRECT_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+#[cfg(feature = "perf")]
+#[inline]
+pub(crate) fn record_sparse_buffer_resident_bytes(bytes: usize) {
+    record_max(&SPARSE_BUFFER_RESIDENT_MAX_BYTES, bytes);
+}
+
+#[cfg(feature = "perf")]
+#[inline]
 pub(crate) fn record_sparse_read_overlay(bytes: usize, dirty_bytes: usize) {
     SPARSE_READ_OVERLAY_OPS.fetch_add(1, Ordering::Relaxed);
     SPARSE_READ_OVERLAY_BYTES.fetch_add(bytes, Ordering::Relaxed);
@@ -412,6 +594,45 @@ pub fn write_back_cache_perf_stats() -> WriteBackCachePerfStats {
             .load(Ordering::Relaxed),
         sparse_flush_other_ops: SPARSE_WRITE_FLUSH_OTHER_OPS.load(Ordering::Relaxed),
         sparse_flush_other_bytes: SPARSE_WRITE_FLUSH_OTHER_BYTES.load(Ordering::Relaxed),
+        sparse_flush_batches: SPARSE_WRITE_FLUSH_BATCHES.load(Ordering::Relaxed),
+        sparse_flush_batch_runs: SPARSE_WRITE_FLUSH_BATCH_RUNS.load(Ordering::Relaxed),
+        sparse_flush_batch_bytes: SPARSE_WRITE_FLUSH_BATCH_BYTES.load(Ordering::Relaxed),
+        sparse_flush_batch_max_runs: SPARSE_WRITE_FLUSH_BATCH_MAX_RUNS.load(Ordering::Relaxed),
+        sparse_flush_batch_max_bytes: SPARSE_WRITE_FLUSH_BATCH_MAX_BYTES.load(Ordering::Relaxed),
+        sparse_cache_evict_payload_limit_batches: SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BATCHES
+            .load(Ordering::Relaxed),
+        sparse_cache_evict_payload_limit_bytes: SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BYTES
+            .load(Ordering::Relaxed),
+        sparse_cache_evict_run_limit_batches: SPARSE_CACHE_EVICT_RUN_LIMIT_BATCHES
+            .load(Ordering::Relaxed),
+        sparse_cache_evict_run_limit_bytes: SPARSE_CACHE_EVICT_RUN_LIMIT_BYTES
+            .load(Ordering::Relaxed),
+        sparse_cache_evict_both_limits_batches: SPARSE_CACHE_EVICT_BOTH_LIMITS_BATCHES
+            .load(Ordering::Relaxed),
+        sparse_cache_evict_both_limits_bytes: SPARSE_CACHE_EVICT_BOTH_LIMITS_BYTES
+            .load(Ordering::Relaxed),
+        sparse_cache_evict_allocation_failure_batches:
+            SPARSE_CACHE_EVICT_ALLOCATION_FAILURE_BATCHES.load(Ordering::Relaxed),
+        sparse_cache_evict_allocation_failure_bytes: SPARSE_CACHE_EVICT_ALLOCATION_FAILURE_BYTES
+            .load(Ordering::Relaxed),
+        sparse_cache_evict_large_direct_batches: SPARSE_CACHE_EVICT_LARGE_DIRECT_BATCHES
+            .load(Ordering::Relaxed),
+        sparse_cache_evict_large_direct_bytes: SPARSE_CACHE_EVICT_LARGE_DIRECT_BYTES
+            .load(Ordering::Relaxed),
+        sparse_cache_evict_global_budget_batches: SPARSE_CACHE_EVICT_GLOBAL_BUDGET_BATCHES
+            .load(Ordering::Relaxed),
+        sparse_cache_evict_global_budget_bytes: SPARSE_CACHE_EVICT_GLOBAL_BUDGET_BYTES
+            .load(Ordering::Relaxed),
+        sparse_buffer_allocation_failure_ops: SPARSE_BUFFER_ALLOCATION_FAILURE_OPS
+            .load(Ordering::Relaxed),
+        sparse_buffer_allocation_failure_bytes: SPARSE_BUFFER_ALLOCATION_FAILURE_BYTES
+            .load(Ordering::Relaxed),
+        sparse_large_direct_ops: SPARSE_LARGE_DIRECT_OPS.load(Ordering::Relaxed),
+        sparse_large_direct_bytes: SPARSE_LARGE_DIRECT_BYTES.load(Ordering::Relaxed),
+        sparse_buffer_budget_direct_ops: SPARSE_BUFFER_BUDGET_DIRECT_OPS.load(Ordering::Relaxed),
+        sparse_buffer_budget_direct_bytes: SPARSE_BUFFER_BUDGET_DIRECT_BYTES
+            .load(Ordering::Relaxed),
+        sparse_buffer_resident_max_bytes: SPARSE_BUFFER_RESIDENT_MAX_BYTES.load(Ordering::Relaxed),
         fstat_calls: FSTAT_CALLS.load(Ordering::Relaxed),
         fstat_stat_get_ops: FSTAT_STAT_GET_OPS.load(Ordering::Relaxed),
         fstat_write_back_overlay_ops: FSTAT_WRITE_BACK_OVERLAY_OPS.load(Ordering::Relaxed),

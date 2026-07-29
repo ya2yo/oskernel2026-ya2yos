@@ -1900,3 +1900,12 @@
   60 秒样本输出 425 次 wrapper fstat，`ext4_stat_get` 累计 `335244 us`，fstat sparse flush 为
   `2 batch / 30128 B`；运行因 timeout 停止，未作为完整回归或性能结论。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm sparse payload 容量归因与全局预算扩容（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求参考优化方案与 `tmp_09.ans` 优化内核，随后提供十分钟 `tmp_10.ans` 用于决定 sparse 写缓冲的下一步。
+- **描述**：AI 先新增 batch/range/bytes/max 与容量触发原因统计，`tmp_10` 证明 427 个 CacheEvict batch 中 422 个、25,856,958 B 由 64 KiB payload 上限触发，32-run 限制仅 5 批。实现保持 32 runs，将 per-inode payload 提至 256 KiB；全局 store 维护 pending bytes 并限制为 8 MiB。预算压力只 flush 当前 inode，不能满足时走既有 direct write，未写回其他 inode，未改 EXT4 gate、hole、写顺序、read overlay、metadata 或同步发布边界。
+- **验证**：RISC-V/LoongArch64 perf 和默认双架构 release 构建、格式及 diff 检查通过。RISC-V `-snapshot` 120 秒到达 toolchain/MINIBUILD 和 prebuild，未见 panic/TFAIL/TBROK；未完成 sparse 写密集编译、定向 LTP 或完整 BuildStorm，未报告性能比例。
+- **关联文档**：[BuildStorm EXT4 稀疏写、两页预读与写路径统计](./problem/buildstorm-ext4-sparse-write-readahead.md)
+- **关联 commit**：当前工作区未提交

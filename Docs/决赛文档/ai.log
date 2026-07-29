@@ -8321,3 +8321,32 @@ guest 样本区分实际命中和安全回退。
 `make TARGET_ARCH=riscv64`，均通过；最后再次执行 RISC-V perf 构建，`kernel-rv` 可直接用于采样。
 输出仅含已有 Cargo config、vendored smoltcp 和 release `ipi_sent` warning。本轮未自行运行 QEMU 长测；下一份
 样本需检查 `lookup_directory_stat` hit、`epoch_miss`、actual fstat/lock、ColdInode buckets 与最终测试状态。
+
+## 2026-07-29：`tmp_10.ans` sparse payload 容量归因与有界扩容
+
+### 用户输入
+
+维护者要求参考 `Docs/决赛文档/优化方案.md` 和 `tmp_09.ans` 优化内核，随后提供十分钟运行结果
+`tmp_10.ans`。
+
+### 分析与采纳结论
+
+先按方案 P1.2 在 lwext4 sparse buffer 中新增 relaxed batch/cause 统计，再读取 `tmp_10.ans` 的最后完整
+`t=591581ms` 快照。`CacheEvict=427/26,011,386 B` 被完整拆分为 payload `422/25,856,958 B` 与 run limit
+`5/154,428 B`，分配失败、大写直通和双限制均为零；两类字节相加精确回归旧计数。因此采纳 P2 情形 A，未修改
+32-run 上限或 dentry/dense write 路径。
+
+### 修改
+
+将每 inode sparse payload 从 64 KiB 增至 256 KiB，同时把全局 `SPARSE_WRITE_BUFFERS` 封装为带
+`total_bytes` 的 store，以 8 MiB 限制全部 pending payload。预算不足时仅 flush 当前 inode，若没有当前
+pending range 或释放后仍不能容纳本次写则回退已有 direct write；不任意写回其他 inode。保留 EXT4 单一 gate、
+稀疏 hole、写顺序/last-write-wins、read overlay 和所有 metadata/同步发布边界。perf 新增预算原因、direct
+fallback 和驻留峰值字段。
+
+### 验证
+
+`cargo fmt` 两个 manifest、`git diff --check`、RISC-V/LoongArch64 `make perf`、默认双架构 release `make`
+均通过。RISC-V 8 GiB/8 hart final-2026 镜像以 `-snapshot` 运行 120 秒，进入
+`BUILDSTORM_TOOLCHAIN/MINIBUILD ok` 与 prebuild，未见 `panic/ERROR/TFAIL/TBROK`；运行窗口未到正式编译，未把它
+作为性能结论。`mmap16`、`lseek11`、fstat/statx、rename/unlink 定向 guest 回归及完整同配置 BuildStorm 尚待运行。
