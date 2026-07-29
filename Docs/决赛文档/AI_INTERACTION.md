@@ -1802,3 +1802,12 @@
 - **验证**：RISC-V、LoongArch64 `make perf`、两份 Cargo fmt check 和 `git diff --check` 通过。两次 RISC-V QEMU pipe-only 运行均 `status=0`、END、`shutdown!`，带宽为 `251.96` 与 `223.03 MB/sec`，相比基线 `40.90 MB/sec` 提升约 `6.16x`/`5.45x`；`remote_ipi_failed=0`。LoongArch64 未运行 QEMU，只验证编译。
 - **关联文档**：[RISC-V pipe 跨 hart 空闲唤醒延迟优化](./problem/riscv-pipe-remote-idle-wakeup.md)
 - **关联 commit**：当前工作区未提交
+
+#### pipe 大消息临时 Vec 消除与 copy 分段验证（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求按照既定顺序修改内核并允许验证：先细分 copy 证据，再消除确认存在的临时数据副本。
+- **分析与修改**：完整 glibc `bw_pipe -P 1` 的首个约 2.14 GiB 快照中，旧大消息 read 的 `PipeBuf` gather 为 `0.993290 s`，write 的临时 `Vec -> PipeBuf` copy 为 `1.201123 s`。随后保留容量、partial I/O、wait/wakeup 与锁域：read 直接分段写入 `UserBuffer`，write 只分配最终数据 Vec 并移交 `PipeBuf`；small-I/O 路径不变。
+- **验证**：RISC-V、LoongArch64 `make perf` 与普通 release 构建、os fmt check、`git diff --check` 均通过，只有既有 Cargo config、vendored `smoltcp` 与 pre-existing scheduler warning。两次 RISC-V QEMU 均 `status=0`、END、`shutdown!`，带宽 `264.51/258.19 MB/sec`；相对细分基线 read copy 降约 `51.5%/52.9%`、write copy 均降约 `20.7%`，short I/O 与 remote IPI failed 均为 0。LoongArch64 未运行 QEMU。
+- **关联文档**：[RISC-V pipe 跨 hart 空闲唤醒延迟优化](./problem/riscv-pipe-remote-idle-wakeup.md)
+- **关联 commit**：当前工作区未提交

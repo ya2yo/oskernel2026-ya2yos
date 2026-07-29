@@ -570,6 +570,53 @@ impl UserBuffer {
         }
         return len;
     }
+
+    /// 将多个连续源切片顺序写入用户缓冲区，避免调用方先聚合成临时 `Vec`。
+    ///
+    /// 返回最多 `len` 字节中的实际写入量。源切片和用户页片段都可能不连续，
+    /// 因此这里同时推进两侧的偏移量。
+    pub fn write_from_slices<'a, I>(&mut self, slices: I, len: usize) -> usize
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        let limit = self.len().min(len);
+        if limit == 0 {
+            return 0;
+        }
+
+        let mut written = 0;
+        let mut target_index = 0;
+        let mut target_offset = 0;
+
+        for source in slices {
+            let mut source_offset = 0;
+            while source_offset < source.len() && written < limit {
+                while target_index < self.buffers.len()
+                    && target_offset == self.buffers[target_index].len()
+                {
+                    target_index += 1;
+                    target_offset = 0;
+                }
+                if target_index == self.buffers.len() {
+                    return written;
+                }
+
+                let copy_len = (limit - written)
+                    .min(source.len() - source_offset)
+                    .min(self.buffers[target_index].len() - target_offset);
+                self.buffers[target_index][target_offset..target_offset + copy_len]
+                    .copy_from_slice(&source[source_offset..source_offset + copy_len]);
+                source_offset += copy_len;
+                target_offset += copy_len;
+                written += copy_len;
+            }
+            if written == limit {
+                return written;
+            }
+        }
+        written
+    }
+
     //在指定位置写入数据
     pub fn write_at(&mut self, offset: usize, buff: &[u8]) -> isize {
         //未被使用，暂不做优化

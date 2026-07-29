@@ -8056,3 +8056,26 @@ IPI 仅在 RISC-V `wfi` 周期临时启用并在恢复后清除，不进入用�
 两次相对 `tmp_02.ans` 的 `40.90 MB/sec` 分别为约 `6.16x` 和 `5.45x`，但仍受 QEMU 宿主调度影响，
 记录区间和原始统计，不外推为完整 lmbench、BuildStorm 或 LoongArch64 性能结论。LoongArch64 未运行
 QEMU，只完成 perf 编译验证。
+
+## 2026-07-29：pipe 大消息临时 Vec 消除与 copy 分段验证
+
+### 用户输入
+
+维护者要求按照既定顺序修改内核并允许验证：先细分 copy 证据，再消除确认存在的临时数据副本。
+
+### 分析与采纳结论
+
+完整 glibc `bw_pipe -P 1` 的首个约 2.14 GiB 快照表明，旧大消息 read 的 `PipeBuf` gather 为
+`0.993290 s`，write 的临时 `Vec -> PipeBuf` copy 为 `1.201123 s`，故采用最小数据面改动。
+read 保持 `pop_bufs()` 的移动/切分语义，直接分段写入 `UserBuffer`；write 保持原有容量检查，
+只分配最终 Vec 并移交给 `PipeBuf`。不改变 small-I/O、阻塞、唤醒或锁顺序。
+
+### 修改与验证
+
+`os/src/utils/perf.rs` 新增四个 `pipe_duration` 分段聚合；`os/src/mm/translate.rs` 新增无数据聚合
+Vec 的 `write_from_slices()`；`os/src/fs/files/pipe/ring_buffer.rs` 增加直接 read/write helper；
+`file_impl.rs` 改用它们。两份 RISC-V QEMU 完整样本均为 `bw_pipe_exit_status=0`、END、`shutdown!`，
+带宽为 `264.51` 与 `258.19 MB/sec`，read copy 降约 `51.5%/52.9%`、write copy 均降约 `20.7%`，
+short I/O 和 remote IPI failed 均为 0。RISC-V、LoongArch64 perf/release 构建、os fmt check 与
+`git diff --check` 均通过；LoongArch64 未运行 QEMU。详情见
+[RISC-V pipe 跨 hart 空闲唤醒延迟优化](./problem/riscv-pipe-remote-idle-wakeup.md)。

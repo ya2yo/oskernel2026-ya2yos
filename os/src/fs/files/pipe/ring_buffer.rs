@@ -1,6 +1,7 @@
 use super::buffer::PipeBuf;
 use super::PIPE_DEFAULT_SIZE;
 use crate::fs::FasyncOwner;
+use crate::mm::UserBuffer;
 use crate::task::{ready_queue, TaskControlBlock, TaskStatus};
 use crate::utils::PollSet;
 use alloc::collections::VecDeque;
@@ -58,6 +59,18 @@ impl PipeRingBuffer {
         self.bytes += len;
     }
 
+    /// 将已经分配好的普通 write 数据直接移入 PipeBuf，避免再复制一次。
+    pub(super) fn write_owned_bytes(&mut self, bytes: Vec<u8>) -> usize {
+        let len = bytes.len();
+        assert!(len <= self.available_write(), "pipe buffer overflow");
+        if len == 0 {
+            return 0;
+        }
+        self.bufs.push_back(PipeBuf::new(bytes));
+        self.bytes += len;
+        len
+    }
+
     /// 从管道头读一个字节
     pub(super) fn read_byte(&mut self) -> u8 {
         self.read_bytes(1)[0]
@@ -71,6 +84,16 @@ impl PipeRingBuffer {
             bytes.extend_from_slice(buf.as_slice());
         }
         bytes
+    }
+
+    /// 将管道片段直接复制到用户页片段，避免为大 read 聚合临时数据 Vec。
+    pub(super) fn read_into(&mut self, user_buffer: &mut UserBuffer, len: usize) -> usize {
+        let len = len.min(self.available_read());
+        if len == 0 {
+            return 0;
+        }
+        let bufs = self.pop_bufs(len);
+        user_buffer.write_from_slices(bufs.iter().map(|buf| buf.as_slice()), len)
     }
 
     /// 获取管道中剩余可读长度

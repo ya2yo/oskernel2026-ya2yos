@@ -7,6 +7,7 @@ use crate::signal::{
 use crate::syscall::PollEvents;
 use crate::task::{current_task, schedule_blocked_current, TaskStatus};
 use crate::utils::{SysErrNo, SyscallRet};
+use alloc::vec::Vec;
 use core::cmp::min;
 use core::sync::atomic::Ordering;
 use core::task::Context;
@@ -104,7 +105,13 @@ impl File for Pipe {
             }
         } else {
             read_size = min(loop_read, length);
-            buf.write(&ring_buffer.read_bytes(read_size));
+            #[cfg(feature = "perf")]
+            let user_copy_begin = crate::arch::time::get_ticks();
+            read_size = ring_buffer.read_into(&mut buf, read_size);
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_pipe_read_user_copy_duration(
+                crate::arch::time::get_ticks().saturating_sub(user_copy_begin),
+            );
         }
         #[cfg(feature = "perf")]
         let copy_elapsed = crate::arch::time::get_ticks().saturating_sub(copy_begin);
@@ -120,7 +127,7 @@ impl File for Pipe {
         Ok(read_size)
     }
 
-    fn write(&self, mut buf: UserBuffer) -> SyscallRet {
+    fn write(&self, buf: UserBuffer) -> SyscallRet {
         assert!(self.writable());
         let requested = buf.len();
         #[cfg(feature = "perf")]
@@ -200,7 +207,23 @@ impl File for Pipe {
             }
         } else {
             write_size = min(loop_write, length);
-            ring_buffer.write_bytes(&buf.read(write_size), write_size);
+            #[cfg(feature = "perf")]
+            let user_extract_begin = crate::arch::time::get_ticks();
+            let mut bytes = Vec::with_capacity(write_size);
+            bytes.resize(write_size, 0);
+            let copied = buf.read_to(&mut bytes);
+            bytes.truncate(copied);
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_pipe_write_user_extract_duration(
+                crate::arch::time::get_ticks().saturating_sub(user_extract_begin),
+            );
+            #[cfg(feature = "perf")]
+            let pipebuf_copy_begin = crate::arch::time::get_ticks();
+            write_size = ring_buffer.write_owned_bytes(bytes);
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_pipe_write_pipebuf_copy_duration(
+                crate::arch::time::get_ticks().saturating_sub(pipebuf_copy_begin),
+            );
         }
         #[cfg(feature = "perf")]
         let copy_elapsed = crate::arch::time::get_ticks().saturating_sub(copy_begin);

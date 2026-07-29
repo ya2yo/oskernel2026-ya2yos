@@ -88,3 +88,59 @@ LoongArch64 的性能结论。
   runnable task 仍由正常 timer 抢占调度，这避免未经完整回归验证的跨 hart 强制抢占。
 - LoongArch64 只完成编译验证。其内核 IPI trap 仍未实现，且当前 spin-idle 不需要该 IPI 才能
   观察新任务，不能将 RISC-V QEMU 数据外推到该架构。
+
+## 大消息 copy 路径收敛
+
+### 细分取证
+
+在保留 idle IPI 的同一 RISC-V、8 hart、8 GiB、预制镜像和 glibc `bw_pipe -P 1` 配置下，
+先增加四个 `pipe_duration` 聚合项。`/tmp/tmp02-copy-breakdown.ans` 完整结束，带宽为
+`233.68 MB/sec`，首个约 `2.14 GiB` 快照的 large-message 数据路径如下：
+
+| 阶段 | samples | total_us | 含义 |
+| --- | ---: | ---: | --- |
+| `read_pipebuf_gather` | 32640 | 993290 | `PipeBuf` 片段聚合为临时数据 `Vec` |
+| `read_user_copy` | 32640 | 573207 | 聚合数据 `Vec` 回写 `UserBuffer` |
+| `write_user_extract` | 32640 | 3411734 | `UserBuffer::read()` 生成临时数据 `Vec` |
+| `write_pipebuf_copy` | 32640 | 1201123 | 临时数据 `Vec` 再复制为最终 `PipeBuf` |
+
+同一快照中 `read_copy/write_copy` 为 `1.615/4.657 s`。因此临时数据 `Vec` 确实处于热路径：
+read 需要先聚合再回写，write 则对同一字节流进行了两次分配/复制。该结论来自完整 workload，
+而不是把并发 wait 累计值误解为单线程执行时间。
+
+### 实现
+
+- `UserBuffer::write_from_slices()` 顺序推进源片段与用户页片段的偏移，直接完成
+  `PipeBuf -> UserBuffer` 的一次数据复制。
+- 大消息 read 改用 `PipeRingBuffer::read_into()`。它仍通过既有 `pop_bufs()` 移出或切分
+  `PipeBuf`，从而保留 splice/tee 的片段和容量语义；仅保留短生命周期的 `Vec<PipeBuf>` 元数据，
+  不再分配按数据量大小的 gather `Vec<u8>`。
+- 大消息 write 只分配最终的 `Vec<u8>`，用既有 `UserBuffer::read_to()` 填充后交给
+  `write_owned_bytes()` 移入 `PipeBuf`。`PipeBuf::new()` 接收该 `Vec` 的所有权，不再执行
+  `to_vec()` 的第二次数据复制。
+- `<= 10` 字节的原有逐字节路径、available-read/write 边界、short read/write 返回值、等待队列、
+  wakeup、锁域及 pipe 容量均未改变。`read_into()` 和 `write_owned_bytes()` 返回实际处理长度，
+  仍由调用方作为系统调用结果记录。
+
+`read_pipebuf_gather` 和 `write_pipebuf_copy` 统计保留，方便跨版本对照；优化后前者为零，后者只测量
+`Vec` 所有权移入 `PipeBuf` 的元数据开销，不再代表数据复制。
+
+### 验证
+
+两次独立 RISC-V QEMU 运行均包含测试组 END、`bw_pipe_exit_status=0` 与 `shutdown!`，未出现
+`panic`、`TFAIL`、`TBROK` 或成功 short read/write，`remote_ipi_failed=0`：
+
+| 样本 | 带宽 | read copy | write copy | read gather | PipeBuf 插入 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `/tmp/tmp02-copy-breakdown.ans` | 233.68 MB/sec | 1.615 s | 4.657 s | 0.993 s | 1.201 s |
+| `/tmp/tmp02-copy-opt-1.ans` | 264.51 MB/sec | 0.783 s | 3.695 s | 0 | 0.058 s |
+| `/tmp/tmp02-copy-opt-2.ans` | 258.19 MB/sec | 0.760 s | 3.695 s | 0 | 0.054 s |
+
+相对细分基线，两个优化样本的 read copy 降低约 `51.5%`、`52.9%`，write copy 均降低约 `20.7%`；
+带宽分别提高约 `13.2%` 与 `10.5%`。`write_user_extract` 仍约 `3.61 s`，符合保留的一次用户页到
+最终 pipe 数据的必要复制。QEMU 吞吐仍可能受宿主调度影响，故这里只报告两个完整同配置样本的区间，
+不外推为全量 lmbench、BuildStorm 或 LoongArch64 的性能结论。
+
+本轮还通过 `cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 以及两个架构的普通 release
+构建。LoongArch64 未运行 QEMU 行为回归，仅完成编译验证。

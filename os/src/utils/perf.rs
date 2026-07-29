@@ -62,6 +62,22 @@ static PIPE_READ_COPY_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static PIPE_WRITE_COPY_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static PIPE_WRITE_COPY_TICKS: AtomicUsize = AtomicUsize::new(0);
 static PIPE_WRITE_COPY_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+// Split the large-message data path into the formerly indirect operations on
+// each side of the pipe. The existing read_copy/write_copy buckets stay intact
+// for comparisons with older logs. A zero gather/copy bucket after optimization
+// proves that the corresponding temporary data Vec is no longer materialized.
+static PIPE_READ_PIPEBUF_GATHER_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_PIPEBUF_GATHER_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_PIPEBUF_GATHER_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_USER_COPY_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_USER_COPY_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_READ_USER_COPY_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_USER_EXTRACT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_USER_EXTRACT_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_USER_EXTRACT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_PIPEBUF_COPY_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_PIPEBUF_COPY_TICKS: AtomicUsize = AtomicUsize::new(0);
+static PIPE_WRITE_PIPEBUF_COPY_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static PIPE_READ_WAIT_RECHECKS: AtomicUsize = AtomicUsize::new(0);
 static PIPE_WRITE_WAIT_RECHECKS: AtomicUsize = AtomicUsize::new(0);
 static PIPE_READER_WAKE_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -974,6 +990,54 @@ pub fn record_pipe_write_copy_duration(elapsed: usize) {
     );
 }
 
+/// Record the temporary-gather step from PipeBuf fragments before a large
+/// pipe read copies the bytes to a user buffer.
+#[inline]
+pub fn record_pipe_read_pipebuf_gather_duration(elapsed: usize) {
+    record_duration(
+        &PIPE_READ_PIPEBUF_GATHER_SAMPLES,
+        &PIPE_READ_PIPEBUF_GATHER_TICKS,
+        &PIPE_READ_PIPEBUF_GATHER_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Record the large pipe-read copy to userspace. The source is a gathered Vec
+/// before optimization and PipeBuf fragments directly afterwards.
+#[inline]
+pub fn record_pipe_read_user_copy_duration(elapsed: usize) {
+    record_duration(
+        &PIPE_READ_USER_COPY_SAMPLES,
+        &PIPE_READ_USER_COPY_TICKS,
+        &PIPE_READ_USER_COPY_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Record extraction of a large pipe write from a segmented user buffer into
+/// the final PipeBuf Vec.
+#[inline]
+pub fn record_pipe_write_user_extract_duration(elapsed: usize) {
+    record_duration(
+        &PIPE_WRITE_USER_EXTRACT_SAMPLES,
+        &PIPE_WRITE_USER_EXTRACT_TICKS,
+        &PIPE_WRITE_USER_EXTRACT_MAX_TICKS,
+        elapsed,
+    );
+}
+
+/// Record insertion of a large write's final Vec into PipeBuf. Before the
+/// move-based path this also included an additional allocation/copy.
+#[inline]
+pub fn record_pipe_write_pipebuf_copy_duration(elapsed: usize) {
+    record_duration(
+        &PIPE_WRITE_PIPEBUF_COPY_SAMPLES,
+        &PIPE_WRITE_PIPEBUF_COPY_TICKS,
+        &PIPE_WRITE_PIPEBUF_COPY_MAX_TICKS,
+        elapsed,
+    );
+}
+
 #[inline]
 pub fn record_pipe_read_wait_recheck() {
     add(&PIPE_READ_WAIT_RECHECKS, 1);
@@ -1766,6 +1830,34 @@ fn emit_report(now: usize) {
         &PIPE_WRITE_COPY_SAMPLES,
         &PIPE_WRITE_COPY_TICKS,
         &PIPE_WRITE_COPY_MAX_TICKS,
+    );
+    print!("[perf] pipe_duration ");
+    emit_duration(
+        "read_pipebuf_gather",
+        &PIPE_READ_PIPEBUF_GATHER_SAMPLES,
+        &PIPE_READ_PIPEBUF_GATHER_TICKS,
+        &PIPE_READ_PIPEBUF_GATHER_MAX_TICKS,
+    );
+    print!("[perf] pipe_duration ");
+    emit_duration(
+        "read_user_copy",
+        &PIPE_READ_USER_COPY_SAMPLES,
+        &PIPE_READ_USER_COPY_TICKS,
+        &PIPE_READ_USER_COPY_MAX_TICKS,
+    );
+    print!("[perf] pipe_duration ");
+    emit_duration(
+        "write_user_extract",
+        &PIPE_WRITE_USER_EXTRACT_SAMPLES,
+        &PIPE_WRITE_USER_EXTRACT_TICKS,
+        &PIPE_WRITE_USER_EXTRACT_MAX_TICKS,
+    );
+    print!("[perf] pipe_duration ");
+    emit_duration(
+        "write_pipebuf_copy",
+        &PIPE_WRITE_PIPEBUF_COPY_SAMPLES,
+        &PIPE_WRITE_PIPEBUF_COPY_TICKS,
+        &PIPE_WRITE_PIPEBUF_COPY_MAX_TICKS,
     );
     print!("[perf] scheduler_duration ");
     emit_duration(
