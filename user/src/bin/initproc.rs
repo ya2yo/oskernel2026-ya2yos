@@ -32,6 +32,7 @@ mod netperf;
 mod rseq_regression;
 #[path = "initproc/sigaltstack_regression.rs"]
 mod sigaltstack_regression;
+mod vfork_bench;
 
 // ---------------------------------------------------------------------------
 // Utilities
