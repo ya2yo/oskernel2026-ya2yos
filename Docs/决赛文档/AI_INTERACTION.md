@@ -1323,6 +1323,22 @@
 - **验证**：当前 RISC-V `log.ans` 的 12 次 `execve` 累计 `208763 us`，CAgent `fs-search pass 764` 并正常 `shutdown!`，无 `panic/TFAIL/TBROK`；RISC-V、LoongArch64 release 构建通过。详见 `ai.log` 对应条目和 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md)。
 - **关联 commit**：当前工作区未提交
 
+#### `tmp_06` fstat 分析与 FsIndex identity epoch 优化（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求按 `tmp_06.ans` 的 fstat/sparse/dense/cold-inode 归因直接修改内核。
+- **分析与修改**：sparse 失效次数多但 fstat flush 非主因，cold inode 是主要实际 miss，故未放松
+  `Kstat`/`st_blocks` 语义。Ext4Inode 新增 inode-reuse epoch，成功 unlink/rename 与 delayed
+  file_remove 推进 epoch；FsIndex 在 identity 相同且 epoch 未变时免除 live fstat，epoch 不一致仍保留
+  原有 probe，防止 inode number reuse。新增 fast-hit/live-probe/stale-replace 聚合计数。
+- **验证**：默认双架构 release、RISC-V `make log`、RISC-V/LoongArch64 `make perf`、fmt 与 diff check
+  均通过。RISC-V `-snapshot` BuildStorm 冒烟输出 TOOLCHAIN/MINIBUILD ok；120 秒 timeout 前最后快照
+  epoch hit 753、live probe 18、stale replacement 0，无 panic/TFAIL/TBROK。后续 `tmp_07.ans` 在
+  `t=583585ms` 记录 epoch hit 819、live probe 18、stale replacement 0，Cargo 到 `29/446`（末尾状态
+  `30/446`）；相近时间的 `tmp_06` 为 `20/446`。两份均未完成，故只作为方向性验证，不报告端到端加速。
+- **关联文档**：[BuildStorm 读路径与 lwext4 锁竞争](./problem/buildstorm-read-path-lock-contention.md)
+- **关联 commit**：`perf(ext4): avoid redundant FsIndex identity probes`（本提交）
+
 #### BuildStorm EXT4 查找元数据复用（7.27）
 
 - **工具/模型**：Codex (GPT-5)

@@ -8200,3 +8200,60 @@ sparse flush reason、fstat 子阶段事件及 write-back overlay/fallback 计�
 日志 `/tmp/fstat-perf-riscv64.log` 输出新字段，最后快照为 425 次 wrapper fstat、
 `ext4_stat_get=335244 us`、fstat-triggered sparse flush 为 2 batch/30128 B。运行被 timeout 终止，
 未取得 `shutdown!`/完整 Summary，故不报告功能全量回归或性能提升。
+
+## 2026-07-29：`tmp_06.ans` cold-inode fstat 的 FsIndex identity epoch 优化
+
+### 用户输入
+
+维护者要求按 `tmp_06.ans` 的 fstat/sparse/dense/cold-inode 归因直接修改内核：sparse flush 主导时才做
+allocation metadata/可见性设计，dense miss 足够高时才 patch Kstat，cold inode/FsIndex 方向则优化
+inode/dentry/identity，且不得为了吞吐返回错误的 sparse metadata。
+
+### 分析与采纳结论
+
+最终 `tmp_06` 中 sparse buffered write 有 7211 次失效事件，但真实 fstat sparse miss 只有 10 次；
+慢路径主要是 gate wait 和 `ext4_stat_get`，实际 miss 以 ColdInode 的 5091/5615 次为主，FsIndex
+reclaim/rebuild 均为零。采纳“identity 复用”方向，保留 direct/sparse 写的完整 stat 失效和真实
+`st_blocks` 可见性。
+
+不能删除 inode reuse 保护：旧 canonical inode 若在 unlink 后存活，lwext4 可能复用其 number。为此让
+Ext4Inode 在 lookup identity 旁保存 epoch，unlink/rename/delayed file_remove 推进 epoch；同 identity
+且 epoch 未变时免 live fstat，epoch 不一致时保留旧 probe/replacement。
+
+### 修改与验证
+
+修改 `os/src/fs/ext4_lw/inode.rs`、`fsidx.rs`、`vfs.rs`、`utils/perf/fs.rs`、`report.rs`，新增 epoch
+fast-hit/live-probe/stale-replace 聚合计数；未新增锁或改变 sparse、write、rename、unlink 路径。
+
+`cargo fmt`、`git diff --check`、默认双架构 release、RISC-V `make log`、RISC-V/LoongArch64 `make perf`
+均通过，只有既有 Cargo config、smoltcp、`ipi_sent` warning。RISC-V `-snapshot` BuildStorm 冒烟输出
+TOOLCHAIN/MINIBUILD ok；120 秒 timeout 前最后可见的 `t=98093ms` 快照为 epoch hit 753、live probe 18、
+stale replacement 0，未见 panic/TFAIL/TBROK；未完成 BuildStorm/`shutdown!`，不报告端到端加速。
+
+## 2026-07-29：`tmp_07.ans` 验证 FsIndex identity epoch 优化并准备下一轮
+
+### 用户输入
+
+维护者要求分析新的 `tmp_07.ans`，与预期比对；若符合预期，给出合理 commit，并准备下一轮修复方向。
+
+### 分析与结论
+
+`tmp_07` 有 `BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok`，无 `panic`、`ERROR`、`TFAIL` 或
+`TBROK`。末尾完整 perf 快照在 `t=583585ms`：`fsidx_identity_epoch_hit=819`、
+`fsidx_identity_live_probe=18`、`fsidx_identity_stale_replace=0`；末尾 Cargo 状态到 `30/446`。
+
+这符合设计预期：819 次同 identity 且 epoch 当前的 collision 免除了 live fstat，18 次 epoch 不确定的
+collision 仍走旧 probe，正常 BuildStorm 未触发实际 inode number reuse，故没有 stale replacement。相近
+guest 时间的 `tmp_06` 快照为 `t=587383ms`、Cargo `20/446`、5615 次实际 fstat；`tmp_07` 为 Cargo
+`29/446`、5649 次实际 fstat，且 fstat wait/hold 从 `188.586/55.409s` 降为 `185.422/53.645s`。
+两份未完成样本不是受控 A/B，不报告整体加速百分比。
+
+`tmp_07` 剩余的 5649 次实际 fstat 中 `ColdInode=4976`，sparse fstat flush 仅 `0.560s`，继续放松
+sparse/direct Kstat 会破坏真实 `st_blocks` 而不能解决主因。下一轮先对 ColdInode 按 inode 类型及构造
+来源（lookup stat / 无 lookup stat）做无侵入归因，并为 inode number reuse 添加 unlink-open-close-
+recreate 安全回归；确认可证明安全的子类后才讨论 metadata 复用。
+
+### 提交
+
+本轮将 identity epoch 实现、perf 统计及上述验证文档作为同一个提交：
+`perf(ext4): avoid redundant FsIndex identity probes`。

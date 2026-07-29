@@ -60,7 +60,7 @@ pub(super) fn emit_report(now: usize) {
         FILE_CACHE_LOAD_RACES.load(Ordering::Relaxed),
     );
     println!(
-        "[perf] vfs_lookup fsidx_hit={} fsidx_miss={} dentry_positive_hit={} dentry_negative_hit={} dentry_miss={} cached_parent_find={} root_find={} preserve_final_cache_hit={} fsidx_reclaimed={} fsidx_rebuilds={} dentry_cleared_by_fsidx={} dentry_capacity_evictions={} dentry_capacity_evicted_entries={}",
+        "[perf] vfs_lookup fsidx_hit={} fsidx_miss={} dentry_positive_hit={} dentry_negative_hit={} dentry_miss={} cached_parent_find={} root_find={} preserve_final_cache_hit={} fsidx_reclaimed={} fsidx_rebuilds={} fsidx_identity_epoch_hit={} fsidx_identity_live_probe={} fsidx_identity_stale_replace={} dentry_cleared_by_fsidx={} dentry_capacity_evictions={} dentry_capacity_evicted_entries={}",
         VFS_FSINDEX_HITS.load(Ordering::Relaxed),
         VFS_FSINDEX_MISSES.load(Ordering::Relaxed),
         VFS_DENTRY_POSITIVE_HITS.load(Ordering::Relaxed),
@@ -71,6 +71,9 @@ pub(super) fn emit_report(now: usize) {
         VFS_PRESERVE_FINAL_CACHE_HITS.load(Ordering::Relaxed),
         VFS_FSINDEX_RECLAIMED.load(Ordering::Relaxed),
         VFS_FSINDEX_REBUILDS.load(Ordering::Relaxed),
+        VFS_FSINDEX_IDENTITY_EPOCH_HITS.load(Ordering::Relaxed),
+        VFS_FSINDEX_IDENTITY_LIVE_PROBES.load(Ordering::Relaxed),
+        VFS_FSINDEX_IDENTITY_STALE_REPLACES.load(Ordering::Relaxed),
         VFS_DENTRY_CLEARED_BY_FSINDEX.load(Ordering::Relaxed),
         VFS_DENTRY_CAPACITY_EVICTIONS.load(Ordering::Relaxed),
         VFS_DENTRY_CAPACITY_EVICTED_ENTRIES.load(Ordering::Relaxed),

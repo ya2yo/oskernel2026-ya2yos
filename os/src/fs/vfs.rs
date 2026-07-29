@@ -165,6 +165,16 @@ pub trait Inode: Send + Sync {
     fn cache_identity(&self) -> Option<(usize, usize)> {
         None
     }
+    /// Returns whether the immutable identity captured during lookup is still
+    /// usable for a cache-key collision without a live metadata probe.
+    ///
+    /// Backends must return `false` unless they can prove that no successful
+    /// namespace operation capable of recycling an inode number occurred
+    /// since the identity was captured.  `FsIndex` then retains its existing
+    /// `fstat()` validation fallback for every uncertain case.
+    fn cache_identity_is_current(&self) -> bool {
+        false
+    }
     /// Mark a freshly constructed candidate as following an actual FsIndex
     /// reclaim. Backends with a stat cache can retain this as the next miss
     /// cause without evicting already valid metadata.

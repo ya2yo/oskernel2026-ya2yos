@@ -616,3 +616,84 @@ Cargo 依赖 DAG、worker 调度、镜像/宿主缓存状态使本次在 `serde_
 每次记录相同 Cargo 阶段及 read/find/fstat/write/rename 的 samples、wait、hold。若需要隔离
 stat-cache 的影响，再在不覆盖维护者未提交改动的前提下，以临时可逆补丁跑一个仅恢复该一行失效的
 对照样本。完成样本前不报告整体加速或回归百分比。
+
+## 2026-07-29：`tmp_06.ans` 的 cold-inode fstat 与 FsIndex identity epoch
+
+### 观测与取舍
+
+`tmp_06.ans` 最后可用快照在 `t=587383ms`、Cargo `Building 21/446`，没有完成、`shutdown!`、
+`TPASS`、`TFAIL` 或 `TBROK`，因此只能用于定位。
+
+其中真正进入 EXT4 fstat 的慢路径为 `5615` 次、累计 `246.839s`；global gate 的 wait/hold 为
+`188.586s/55.409s`，锁内 `ext4_stat_get=54.174s`，而 fstat-triggered sparse flush 仅 `0.477s`。
+`sparse_buffered_write=7211` 是失效事件而不是实际 miss：真正被 fstat 消费的 sparse miss 仅 10 次、
+`0.591s`。实际 miss 则以 `cold_inode=5091` 次、`29.164s` 为主，FsIndex reclaim/rebuild 都为 0。
+
+故本轮不放松 sparse/direct write 的 Kstat 失效，也不按 `known_size` 伪造 `st_blocks`、mtime/ctime。
+优化目标是可证明安全的 lookup identity 重复验证。
+
+### 修复与安全边界
+
+`Ext4Inode` 在捕获 immutable `(st_dev, st_ino)` 时同时记录 `EXT4_IDENTITY_EPOCH`。成功 `unlink`、
+`rename`，以及 delayed unlink 最后关闭时成功的 `file_remove()` 推进 epoch；这些都是 inode 可能离开
+namespace、以后被 lwext4 复用的边界。
+
+`FsIndex::inode_matches_key()` 在 identity 相同且 epoch 未变化时直接复用 canonical inode，避开一次
+live `fstat()`；epoch 不匹配、后端没有 epoch 证明或 identity 不同仍完全走旧 live probe/replacement。
+因此已 unlink 后 inode number 被复用时不会被错误接受。改动不新增锁、不移动 lwext4 I/O，也不改变
+sparse flush、write、rename、unlink 或用户可见 metadata 语义。
+
+`vfs_lookup` 新增 `fsidx_identity_epoch_hit`、`fsidx_identity_live_probe` 和
+`fsidx_identity_stale_replace` 三个 relaxed 聚合计数，分别记录免 probe、保守 probe 和拒绝 stale 的次数。
+
+### 验证与边界
+
+已执行 `cargo fmt --manifest-path os/Cargo.toml`、`git diff --check`、默认 `make`（双架构 release）、
+`make log TARGET_ARCH=riscv64` 与 RISC-V/LoongArch64 `make perf`，均通过；仅有既有 Cargo config、
+vendored `smoltcp` 和 `ipi_sent` warning。
+
+RISC-V final-2026 raw 镜像用 `-snapshot` 直接启动，未改写维护者的 `disk.img`；guest 输出
+`BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok`。120 秒 timeout 前最后可见的 `t=98093ms` 快照为
+epoch hit `753`、live probe `18`、stale replacement `0`，无 panic/ERROR/TFAIL/TBROK。该 guest 未完成
+BuildStorm/`shutdown!`，故不报告端到端加速，也未覆盖长时 inode reuse 压力。
+
+## 2026-07-29：`tmp_07.ans` 对 identity epoch 的后续验证
+
+### 结果是否符合预期
+
+符合。`tmp_07.ans` 继续使用同一 BuildStorm 路由，已输出 `BUILDSTORM_TOOLCHAIN ok` 和
+`BUILDSTORM_MINIBUILD ok`，未出现 `panic`、`ERROR`、`TFAIL` 或 `TBROK`。最后一个完整 perf 快照为
+`t=583585ms`；其后的 Cargo 状态仍继续到 `Building 30/446`，但没有完整 BuildStorm、Summary 或
+`shutdown!`，因此该样本只能验证路径行为和阶段性进度。
+
+新增计数为 `fsidx_identity_epoch_hit=819`、`fsidx_identity_live_probe=18`、
+`fsidx_identity_stale_replace=0`。前者按定义就是已免除的 live `fstat()` identity probe；后两者说明
+发生 namespace epoch 变化时没有错误地继续采用 immutable identity，而是保留了 18 次旧的安全 probe。
+正常 BuildStorm 没有恰好撞上 inode number reuse，故 `stale_replace=0` 是预期现象，不能替代专门的
+reuse 压力回归。
+
+| 末尾完整快照 | `tmp_06` | `tmp_07` |
+| --- | ---: | ---: |
+| guest 时间 / Cargo 阶段 | `587383ms` / `20/446` | `583585ms` / `29/446` |
+| FsIndex identity 快路径 / 保守 probe / stale reject | 不适用（改动前） | `819 / 18 / 0` |
+| `ext4_fstat_lock` samples / wait / hold | `5615 / 188.586 / 55.409 s` | `5649 / 185.422 / 53.645 s` |
+| 实际 `ext4_fstat` / `ext4_stat_get` | `246.839 / 54.174 s` | `241.139 / 52.268 s` |
+| fstat-triggered sparse flush | `0.477 s`（10 batch） | `0.560 s`（14 batch） |
+| `ColdInode` 实际 miss | `5091` | `4976` |
+
+该阶段进度和计数方向支持本轮优化：在相近 guest 时间内，`tmp_07` 工作量更多，仍避免了 819 次串行
+identity probe，fstat wait/hold 和 `ext4_stat_get` 累计值没有恶化。它不是严格 A/B：Cargo 依赖调度、
+文件读写量和 host/QEMU 状态不同，且两次运行都没有完成；不得将 `20 -> 29/446` 或累计微秒差异解释为
+全量 BuildStorm 的加速比例。
+
+### 下一轮取证与修复方向
+
+不修改 sparse/direct write 的 `Kstat` 失效。`tmp_07` 的 5649 次实际 fstat 中，`ColdInode=4976`
+（约 88%），而 sparse flush 仅占 `0.560s`；当前主成本仍是唯一 lwext4 gate 的排队，fstat/read/find
+累计 wait 分别为 `185.422/722.397/261.410s`。下一轮先添加低开销归因，按 regular file、directory、
+special node 以及“携带 lookup stat 构造”/“`Ext4Inode::new()` 无 lookup stat 构造”拆分 ColdInode。
+
+只有确认某一类 metadata 在语义上可安全复用后，才考虑为该类缩短路径或保留缓存；目录的 mtime/ctime
+会受子项变更影响，不能把普通文件的 `Kstat` 方案直接推广。与此同时新增一个 unlink-open-close-recreate
+循环的 inode-number reuse 回归，要求 epoch mismatch 仍走 live probe，并在实际复用时观察到 stale
+canonical 被拒绝；在此之前 `stale_replace=0` 只表示真实工作负载未覆盖该分支。

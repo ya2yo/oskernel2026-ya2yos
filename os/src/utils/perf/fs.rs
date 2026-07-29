@@ -343,6 +343,9 @@ pub(crate) static VFS_ROOT_FINDS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_PRESERVE_FINAL_CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_FSINDEX_RECLAIMED: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_FSINDEX_REBUILDS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_FSINDEX_IDENTITY_EPOCH_HITS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_FSINDEX_IDENTITY_LIVE_PROBES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_FSINDEX_IDENTITY_STALE_REPLACES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_DENTRY_CLEARED_BY_FSINDEX: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_DENTRY_CAPACITY_EVICTIONS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_DENTRY_CAPACITY_EVICTED_ENTRIES: AtomicUsize = AtomicUsize::new(0);
@@ -1266,6 +1269,26 @@ pub fn record_vfs_fsidx_reclaim(reclaimed_inodes: usize, cleared_dentries: usize
 #[inline]
 pub fn record_vfs_fsidx_rebuild() {
     add(&VFS_FSINDEX_REBUILDS, 1);
+}
+
+/// A collision between two lookup identities was resolved from the Ext4
+/// identity epoch, avoiding a live `fstat()` probe.
+#[inline]
+pub fn record_vfs_fsidx_identity_epoch_hit() {
+    add(&VFS_FSINDEX_IDENTITY_EPOCH_HITS, 1);
+}
+
+/// An identity collision crossed an unlink/rename epoch (or came from a
+/// backend without an epoch proof), so FsIndex retained live validation.
+#[inline]
+pub fn record_vfs_fsidx_identity_live_probe() {
+    add(&VFS_FSINDEX_IDENTITY_LIVE_PROBES, 1);
+}
+
+/// The live identity probe rejected a stale canonical inode and replaced it.
+#[inline]
+pub fn record_vfs_fsidx_identity_stale_replace() {
+    add(&VFS_FSINDEX_IDENTITY_STALE_REPLACES, 1);
 }
 
 #[inline]

@@ -276,12 +276,31 @@ impl FsIndex {
     fn inode_matches_key(inode: &Arc<dyn Inode>, key: &InodeCacheKey) -> bool {
         match key {
             InodeCacheKey::Inode { dev, ino } => {
-                // This is deliberately a live metadata probe rather than the
-                // immutable lookup identity.  An unlinked inode can remain
-                // cached until unlink-side detachment runs; if ext4 reuses
-                // its number, only `fstat()` can reject that stale object.
+                // An Ext4Inode whose lookup identity is still in the current
+                // inode-reuse epoch cannot have crossed a successful
+                // unlink/rename boundary.  Its immutable identity is then
+                // enough to merge a concurrent lookup or hard-link alias
+                // without contending on lwext4's global `fstat()` lock.
+                if inode.cache_identity() == Some((*dev, *ino)) && inode.cache_identity_is_current()
+                {
+                    #[cfg(feature = "perf")]
+                    crate::utils::perf::record_vfs_fsidx_identity_epoch_hit();
+                    return true;
+                }
+
+                // Epoch mismatch remains deliberately conservative.  An
+                // unlinked inode can survive until cache detach; if lwext4
+                // has reused its number, only a live `fstat()` can reject the
+                // stale canonical object.
+                #[cfg(feature = "perf")]
+                crate::utils::perf::record_vfs_fsidx_identity_live_probe();
                 let stat = inode.fstat();
-                stat.st_dev == *dev && stat.st_ino == *ino
+                let matches = stat.st_dev == *dev && stat.st_ino == *ino;
+                #[cfg(feature = "perf")]
+                if !matches {
+                    crate::utils::perf::record_vfs_fsidx_identity_stale_replace();
+                }
+                matches
             }
             InodeCacheKey::Path(path) if is_proc_task_path(path) => {
                 inode.path() == path.as_str() && inode.fstat().st_ino != 0

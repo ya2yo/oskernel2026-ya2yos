@@ -44,6 +44,12 @@ const SKIP_INTERMEDIATE_SYMLINK_RETRY: usize = usize::MAX;
 const QUOTA_RESERVE_GRANULARITY: usize = 64 * 1024;
 const UNKNOWN_FILE_SIZE: usize = usize::MAX;
 
+/// Bump after a successful namespace operation that can retire an inode and
+/// let lwext4 reuse its inode number.  The value is deliberately mount-wide:
+/// an unrelated unlink only makes `FsIndex` fall back to its existing live
+/// `fstat()` validation, never lets it accept a stale identity.
+static EXT4_IDENTITY_EPOCH: AtomicUsize = AtomicUsize::new(1);
+
 /// EXT4 inode 的 VFS 包装。
 ///
 /// `Ext4Inode` 是 VFS 层看到的 inode 对象，内部用 `Ext4File` 调用 lwext4。
@@ -87,6 +93,10 @@ pub struct Ext4Inode {
     /// the value returned by the initial pathname lookup so FsIndex does not
     /// immediately re-enter lwext4 merely to assign its cache key.
     inode_identity: Option<(usize, usize)>,
+    /// Snapshot of [`EXT4_IDENTITY_EPOCH`] taken with `inode_identity` during
+    /// construction.  Equality proves no inode-recycling namespace boundary
+    /// has occurred since this VFS wrapper was created.
+    identity_epoch: usize,
     /// Repeated `stat(2)` calls on an unchanged regular source or artifact
     /// otherwise serialize on lwext4's global path-based metadata lookup.
     /// Directories and special nodes are intentionally excluded because their
@@ -122,8 +132,14 @@ pub struct Ext4InodeInner {
 /// Constructing the VFS wrapper allocates Rust-side state and must stay outside
 /// the global operation lock so parallel Cargo lookups can hand it over sooner.
 enum Ext4FindResult {
-    Dir(ext4_inode_stat),
-    File(ext4_inode_stat),
+    Dir {
+        stat: ext4_inode_stat,
+        identity_epoch: usize,
+    },
+    File {
+        stat: ext4_inode_stat,
+        identity_epoch: usize,
+    },
     SymLink(ext4_inode_stat),
     Missing,
 }
@@ -137,26 +153,37 @@ impl Ext4Inode {
     /// - `path`: 文件在 EXT4 内部的路径
     /// - `types`: 文件类型（文件、目录、链接等）
     pub fn new(path: &str, types: InodeTypes) -> Self {
-        Self::new_with_lookup_stat(path, types, None)
+        Self::new_with_lookup_stat(path, types, None, None)
     }
 
     /// Build an inode from a lookup that has already performed
     /// `ext4_stat_get()`.  Reusing the metadata avoids a second serialized
     /// lookup when `FsIndex` records the inode identity and, for regular
     /// files, when the first page-cache access asks for the file size.
-    fn new_with_stat(path: &str, types: InodeTypes, stat: ext4_inode_stat) -> Self {
-        Self::new_with_lookup_stat(path, types, Some(stat))
+    fn new_with_stat(
+        path: &str,
+        types: InodeTypes,
+        stat: ext4_inode_stat,
+        identity_epoch: usize,
+    ) -> Self {
+        Self::new_with_lookup_stat(path, types, Some(stat), Some(identity_epoch))
     }
 
     fn new_with_lookup_stat(
         path: &str,
         types: InodeTypes,
         lookup_stat: Option<ext4_inode_stat>,
+        lookup_identity_epoch: Option<usize>,
     ) -> Self {
         let inode_type = as_inode_type(types.clone());
         let inode_identity = lookup_stat
             .as_ref()
             .and_then(|stat| (stat.st_ino != 0).then_some((stat.st_dev, stat.st_ino)));
+        // `find()` captures this while it holds `EXT4_OP_LOCK`, alongside the
+        // `(st_dev, st_ino)` returned by lwext4.  A later namespace mutation
+        // therefore cannot make an old lookup result appear current.
+        let identity_epoch =
+            lookup_identity_epoch.unwrap_or_else(|| EXT4_IDENTITY_EPOCH.load(Ordering::Acquire));
         let (known_size, cached_stat) = if inode_type == InodeType::File {
             match lookup_stat {
                 Some(stat) => (stat.st_size as usize, Some(Self::kstat_from_ext4(stat))),
@@ -179,6 +206,7 @@ impl Ext4Inode {
             quota_reserved: AtomicUsize::new(0),
             delayed: AtomicBool::new(false),
             inode_identity,
+            identity_epoch,
             stat_cache: RwLock::new(stat_cache),
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
@@ -264,6 +292,11 @@ impl Ext4Inode {
     #[inline]
     fn update_known_size(&self, size: usize) {
         self.known_size.store(size, Ordering::Release);
+    }
+
+    #[inline]
+    fn advance_identity_epoch() {
+        EXT4_IDENTITY_EPOCH.fetch_add(1, Ordering::AcqRel);
     }
 
     #[inline]
@@ -758,6 +791,10 @@ impl Inode for Ext4Inode {
                 .file_rename(path, new_path)
                 .map_err(SysErrNo::from)?;
         }
+        // `rename()` can replace an existing destination inode.  Invalidate
+        // identity-epoch proofs before releasing the global lwext4 guard so a
+        // later FsIndex collision retains the live `fstat()` reuse check.
+        Self::advance_identity_epoch();
 
         // A successful directory-entry move must not leave an orphaned
         // write-back entry for either pathname.  In particular, stale target
@@ -919,12 +956,22 @@ impl Inode for Ext4Inode {
             let _io_state = self.io_state.lock();
             let _ext4 = EXT4_OP_LOCK.lock_for_find();
             let file = &mut self.inner.get_unchecked_mut().f;
+            // Capture the epoch while the same global gate protects the
+            // lookup result.  It must travel with `stat`, not be sampled
+            // later while constructing the VFS wrapper outside this guard.
+            let lookup_identity_epoch = EXT4_IDENTITY_EPOCH.load(Ordering::Acquire);
             match file.inode_type_and_stat_at(path) {
                 Ok((InodeTypes::EXT4_DE_DIR | InodeTypes::EXT4_INODE_MODE_DIRECTORY, stat)) => {
-                    Ext4FindResult::Dir(stat)
+                    Ext4FindResult::Dir {
+                        stat,
+                        identity_epoch: lookup_identity_epoch,
+                    }
                 }
                 Ok((InodeTypes::EXT4_DE_REG_FILE | InodeTypes::EXT4_INODE_MODE_FILE, stat)) => {
-                    Ext4FindResult::File(stat)
+                    Ext4FindResult::File {
+                        stat,
+                        identity_epoch: lookup_identity_epoch,
+                    }
                 }
                 Ok((InodeTypes::EXT4_DE_SYMLINK | InodeTypes::EXT4_INODE_MODE_SOFTLINK, stat)) => {
                     Ext4FindResult::SymLink(stat)
@@ -937,14 +984,21 @@ impl Inode for Ext4Inode {
         };
 
         let is_symlink = match result {
-            Ext4FindResult::Dir(stat) => {
+            Ext4FindResult::Dir {
+                stat,
+                identity_epoch,
+            } => {
                 return Ok(Arc::new(Ext4Inode::new_with_stat(
                     path,
                     InodeTypes::EXT4_DE_DIR,
                     stat,
+                    identity_epoch,
                 )));
             }
-            Ext4FindResult::File(stat) => {
+            Ext4FindResult::File {
+                stat,
+                identity_epoch,
+            } => {
                 if flags.contains(OpenFlags::O_DIRECTORY) {
                     return Err(SysErrNo::ENOTDIR);
                 }
@@ -952,6 +1006,7 @@ impl Inode for Ext4Inode {
                     path,
                     InodeTypes::EXT4_DE_REG_FILE,
                     stat,
+                    identity_epoch,
                 )));
             }
             Ext4FindResult::SymLink(_) => {
@@ -1231,6 +1286,10 @@ impl Inode for Ext4Inode {
             Ok(0)
         };
         if ret.is_ok() {
+            // A removed directory entry can eventually make this inode number
+            // available to another path.  Existing wrappers from before this
+            // point therefore require FsIndex's live identity validation.
+            Self::advance_identity_epoch();
             self.invalidate_cached_stat(Ext4FstatMissReason::Unlink);
         }
         ret
@@ -1247,6 +1306,11 @@ impl Inode for Ext4Inode {
 
     fn cache_identity(&self) -> Option<(usize, usize)> {
         self.inode_identity
+    }
+
+    fn cache_identity_is_current(&self) -> bool {
+        self.inode_identity.is_some()
+            && self.identity_epoch == EXT4_IDENTITY_EPOCH.load(Ordering::Acquire)
     }
 
     #[cfg(feature = "perf")]
@@ -1389,7 +1453,10 @@ impl Drop for Ext4Inode {
         // 如果标记了延时删除，则在关闭前移除文件。
         if inner.delay {
             debug!("Ext4Inode delays unlink {:?}", path);
-            inner.f.file_remove(&path);
+            let remove_result = inner.f.file_remove(&path);
+            if remove_result.is_ok() {
+                Self::advance_identity_epoch();
+            }
             MNT_TABLE.lock().remove_file(&path);
         }
         inner.f.file_close().expect("failed to close fd");
