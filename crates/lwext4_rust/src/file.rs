@@ -33,7 +33,7 @@ const MAX_CACHED_FILE_SIZE: usize = 16 * 0x10_0000; // 16 MiB
 // changing the inode's extent layout. BuildStorm shows the payload cap, not
 // run count, drives almost every capacity flush. The global budget below
 // keeps the larger per-inode batch from becoming unbounded across inodes.
-const MAX_SPARSE_WRITE_BUFFER_SIZE: usize = 256 * 1024;
+const MAX_SPARSE_WRITE_BUFFER_SIZE: usize = 512 * 1024;
 const MAX_SPARSE_WRITE_BUFFER_RUNS: usize = 32;
 const MAX_TOTAL_SPARSE_WRITE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
