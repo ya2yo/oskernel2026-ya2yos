@@ -122,7 +122,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
     }
 
     // ---- 阶段 0: 校验 fd、取出文件引用、检查可写 ----
-    let f = {
+    let (f, _is_regular_file) = {
         let task = current_task().unwrap();
         let proc = &task.process;
 
@@ -141,12 +141,16 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> SyscallRet {
         if file_desc.is_path_only() {
             return Err(SysErrNo::EBADF);
         }
+        let is_regular_file = file_desc.file().is_ok();
         let f = file_desc.any();
         if !f.writable() {
             return Err(SysErrNo::EBADF);
         }
-        f
+        (f, is_regular_file)
     }; // 锁在此处释放
+
+    #[cfg(feature = "perf")]
+    let _write_active_guard = _is_regular_file.then(crate::utils::perf::WriteActiveGuard::new);
 
     // ---- 阶段 0.5: 检查 RLIMIT_FSIZE ---- //
     {

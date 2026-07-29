@@ -35,6 +35,9 @@ static SYSCALL_READ_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_WRITE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_WRITE_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_WRITE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_WRITE_ACTIVE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_WRITE_ACTIVE_TICKS: AtomicUsize = AtomicUsize::new(0);
+static SYSCALL_WRITE_ACTIVE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_OPEN_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_OPEN_TICKS: AtomicUsize = AtomicUsize::new(0);
 static SYSCALL_OPEN_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -845,6 +848,18 @@ pub fn record_read_active_duration(elapsed: usize) {
     );
 }
 
+/// Record the regular-file portion of a write syscall separately from pipe,
+/// socket, and device writes that can spend most of their time blocked.
+#[inline]
+pub fn record_write_active_duration(elapsed: usize) {
+    record_duration(
+        &SYSCALL_WRITE_ACTIVE_SAMPLES,
+        &SYSCALL_WRITE_ACTIVE_TICKS,
+        &SYSCALL_WRITE_ACTIVE_MAX_TICKS,
+        elapsed,
+    );
+}
+
 #[inline]
 pub fn record_lseek_type_check_duration(elapsed: usize) {
     record_duration(
@@ -905,6 +920,12 @@ pub struct ReadActiveGuard {
     begin: usize,
 }
 
+/// Scope guard used by `sys_write` for regular files so the aggregate write
+/// duration can be attributed independently from non-regular fd waits.
+pub struct WriteActiveGuard {
+    begin: usize,
+}
+
 /// Scope guard for clone setup work.  The caller drops it before a vfork
 /// parent suspension so the active bucket does not include child execution.
 pub struct CloneActiveGuard {
@@ -936,6 +957,20 @@ impl Drop for ReadActiveGuard {
     #[inline]
     fn drop(&mut self) {
         record_read_active_duration(get_ticks().saturating_sub(self.begin));
+    }
+}
+
+impl WriteActiveGuard {
+    #[inline]
+    pub fn new() -> Self {
+        Self { begin: get_ticks() }
+    }
+}
+
+impl Drop for WriteActiveGuard {
+    #[inline]
+    fn drop(&mut self) {
+        record_write_active_duration(get_ticks().saturating_sub(self.begin));
     }
 }
 
@@ -1544,6 +1579,13 @@ fn emit_report(now: usize) {
         &SYSCALL_WRITE_SAMPLES,
         &SYSCALL_WRITE_TICKS,
         &SYSCALL_WRITE_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "write_active",
+        &SYSCALL_WRITE_ACTIVE_SAMPLES,
+        &SYSCALL_WRITE_ACTIVE_TICKS,
+        &SYSCALL_WRITE_ACTIVE_MAX_TICKS,
     );
     print!("[perf] syscall_duration ");
     emit_duration(

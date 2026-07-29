@@ -134,7 +134,7 @@ fn run_fork_exec_control() -> CaseResult {
     print_case_end("fork-exec-control", result);
     result
 }
-
+#[allow(unused)]
 /// Run the serial, deterministic vfork/exec regression and performance probe.
 pub fn run() -> i32 {
     println!("#### OS COMP TEST GROUP START rust-vfork-profile ####");
