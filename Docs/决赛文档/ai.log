@@ -8257,3 +8257,67 @@ recreate 安全回归；确认可证明安全的子类后才讨论 metadata 复�
 
 本轮将 identity epoch 实现、perf 统计及上述验证文档作为同一个提交：
 `perf(ext4): avoid redundant FsIndex identity probes`。
+
+## 2026-07-29：为 10 分钟 BuildStorm 样本细分 ColdInode 来源
+
+### 用户输入
+
+维护者要求在再次运行 10 分钟测试前，先补低开销归因：将 ColdInode 分为 regular file/directory/
+special node，并区分 `new_with_stat()` 的 lookup stat 构造和 `Ext4Inode::new()` 的无 lookup stat 构造；
+不直接改缓存。
+
+### 修改
+
+`Ext4Inode` 在 `perf` feature 下仅保存构造时是否携带 lookup stat 的布尔值；当且仅当默认
+`ColdInode` 原因真正进入 `Ext4File::fstat()` 时，按三种 inode 类和两种构造来源对六个 `Relaxed`
+counter 之一加一。`report.rs` 增加 `ext4_fstat_cold_inode` 一行。统计不改变缓存命中判定、Kstat、
+fstat 返回值、lwext4 gate、write 或 sparse flush。
+
+六项 bucket 的总和必须等于同一快照的 `ext4_fstat_inner_duration cold_inode(samples=...)`；它只统计
+实际底层 fstat，不包含 fast hit、其他失效原因或 alias recovery retry。
+
+### 验证与待测
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml -- --check`
+与 `git diff --check` 通过。`make perf TARGET_ARCH=riscv64` 和
+`make perf TARGET_ARCH=loongarch64` 均通过，仅有既有 Cargo config/vendored smoltcp warning。按维护者
+安排未启动 QEMU；待同入口 10 分钟 BuildStorm 样本输出后，以新 bucket 决定是否存在可安全复用的
+ColdInode 子类。
+
+## 2026-07-29：基于 `tmp_08.ans` 优化 directory lookup-stat fstat
+
+### 用户输入
+
+维护者提供新的 `tmp_08.ans` 并要求开始优化。此前明确要求先完成 ColdInode 的 inode 类型与构造来源
+归因，再由 10 分钟 BuildStorm 样本决定下一步，且目录不可直接套用普通文件 stat cache。
+
+### 分析与采纳结论
+
+最后完整 `t=565553ms` 快照中，`ColdInode=4596`；六类为 regular `0/0`、directory `2758/1838`、
+special `0/0`（lookup-stat/no-lookup-stat），总和精确相等。`BUILDSTORM_TOOLCHAIN/MINIBUILD` 均为 ok，
+未见 panic/ERROR/TFAIL/TBROK，但 Cargo 仅到 `17/446`，没有 Summary 或 shutdown，不能报告全量性能。
+
+因此只优化来自 `new_with_stat()` 的目录首次 fstat：pathname lookup 已完成 `ext4_stat_get()`，重复进入
+同一全局 lwext4 gate 是可避免的；directory 的持久 Kstat cache 仍不安全，因为子目录项变化和 atime 都会
+改变其可见 metadata。sparse fstat flush 仅 `0.102s`，不改 direct/sparse 失效策略。
+
+### 修改
+
+新增独立的 mount-wide `EXT4_DIRECTORY_STAT_EPOCH`。`find()` 在持有 `EXT4_OP_LOCK` 时与 lookup stat 一同
+采样该 epoch；目录 wrapper 将转换后的 Kstat 与 epoch 放入现有 `stat_cache` 的一次性字段。首次 fstat 在
+不取得 lwext4 gate 的情况下 `take()` 它：epoch 一致立即返回，不一致丢弃后走未修改的 live fstat，第二次
+fstat 也走 live 路径。`stat_cache` 写锁使并发 fstat 至多一个消费快照。
+
+成功 create/create_dir_fast/rename/hard_link/sym_link/unlink/delayed file_remove，以及目录自身的
+timestamp/mode/owner 修改，均推进 directory epoch；identity epoch 保持独立，普通写/truncate、sparse/dense
+buffer 和 FsIndex 策略未改。perf 新增 `lookup_directory_stat` terminal path 与 `epoch_miss` 计数，供下一轮
+guest 样本区分实际命中和安全回退。
+
+### 验证与待测
+
+已执行 `cargo fmt --manifest-path os/Cargo.toml`、
+`cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 和
+`make TARGET_ARCH=riscv64`，均通过；最后再次执行 RISC-V perf 构建，`kernel-rv` 可直接用于采样。
+输出仅含已有 Cargo config、vendored smoltcp 和 release `ipi_sent` warning。本轮未自行运行 QEMU 长测；下一份
+样本需检查 `lookup_directory_stat` hit、`epoch_miss`、actual fstat/lock、ColdInode buckets 与最终测试状态。

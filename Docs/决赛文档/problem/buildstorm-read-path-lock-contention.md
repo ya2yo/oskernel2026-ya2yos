@@ -697,3 +697,107 @@ special node 以及“携带 lookup stat 构造”/“`Ext4Inode::new()` 无 loo
 会受子项变更影响，不能把普通文件的 `Kstat` 方案直接推广。与此同时新增一个 unlink-open-close-recreate
 循环的 inode-number reuse 回归，要求 epoch mismatch 仍走 live probe，并在实际复用时观察到 stale
 canonical 被拒绝；在此之前 `stale_replace=0` 只表示真实工作负载未覆盖该分支。
+
+## 2026-07-29：10 分钟样本前的 ColdInode 二维归因
+
+### 目的
+
+`tmp_07` 的 `ColdInode=4976/5649` 仍不足以判断下一步能否安全复用 metadata。已有 regular-file
+`stat_cache` 会在 `new_with_stat()` 中由 lookup 的 `ext4_stat_get()` 预填，而 directory 和 special node
+为保持 mtime/ctime、目录内容与特殊文件语义，故意不沿用该缓存。因此先细分实际慢调用，不能直接扩大
+`Kstat` cache 的适用范围。
+
+### 实现
+
+perf build 新增一行：
+
+```text
+[perf] ext4_fstat_cold_inode regular_lookup_stat=... regular_no_lookup_stat=... \
+       directory_lookup_stat=... directory_no_lookup_stat=... \
+       special_lookup_stat=... special_no_lookup_stat=...
+```
+
+只在某个 `Ext4Inode::fstat()` 已经过两次 cache check、真正将以 `ColdInode` 原因进入
+`Ext4File::fstat()` 时记录一次 `Relaxed` 原子计数；fast-cache hit、写入/metadata 失效引起的其他
+miss，以及 alias-recovery retry 均不计入。分类标准为：
+
+- `regular`：`InodeType::File`；`directory`：`InodeType::Dir`；其他类型均归 `special`。
+- `*_lookup_stat`：包装对象由 `new_with_stat()` 构造，pathname lookup 已提供 stat；
+  `*_no_lookup_stat`：对象由 `Ext4Inode::new()` 构造，未携带 lookup stat。
+
+每个 perf 快照必须满足六个字段之和等于同一报告中的
+`ext4_fstat_inner_duration cold_inode(samples=...)`。若不相等，应先检查统计接入而不是解释比例。
+
+### 待运行样本与判读
+
+已通过 RISC-V 和 LoongArch64 `make perf`；没有因本次统计变更自行启动 guest。维护者运行同入口的
+10 分钟 BuildStorm 后，应提取最新完整快照的上述一行、`cold_inode(samples=...)`、fstat/read/find lock
+统计、Cargo 阶段以及 `panic/ERROR/TFAIL/TBROK/Summary/shutdown!` 标记。
+
+若 directory/special bucket 主导，则保留它们的无 stat cache 语义并改查路径/identity；若
+`regular_no_lookup_stat` 主导，才追踪该构造点能否安全携带 lookup metadata；若
+`regular_lookup_stat` 非零，则首先核查普通 lookup stat 是否在首次 fstat 前被异常丢失。无论结果如何，
+sparse/direct write 的完整 metadata 失效不在本轮候选范围内。
+
+## 2026-07-29：`tmp_08.ans` 验证 ColdInode 来源并实现目录一次性 lookup stat
+
+### `tmp_08` 结论
+
+`tmp_08.ans` 已输出 `BUILDSTORM_TOOLCHAIN ok` 和 `BUILDSTORM_MINIBUILD ok`，没有匹配到
+`panic`、`ERROR`、`TFAIL` 或 `TBROK`。它没有 Summary、`shutdown!` 或完整 BuildStorm，因此仍只是路径
+归因样本；最后完整 perf 快照为 `t=565553ms`，其后的 Cargo 状态仅到 `Building 17/446`，不能与
+`tmp_06/tmp_07` 的不同调度和工作量作端到端比较。
+
+末尾 `ColdInode=4596` 的六项细分为：
+
+| actual ColdInode fstat 来源 | 样本数 |
+| --- | ---: |
+| regular lookup-stat / no-lookup-stat | `0 / 0` |
+| directory lookup-stat / no-lookup-stat | `2758 / 1838` |
+| special lookup-stat / no-lookup-stat | `0 / 0` |
+
+六项和为 `2758 + 1838 = 4596`，与同一快照
+`ext4_fstat_inner_duration cold_inode(samples=4596)` 相等；前面的各快照也保持这个关系。故实际底层
+ColdInode fstat 全是目录，其中约 `60.0%` 来自 pathname lookup 已得到 `ext4_stat_get()` 结果的
+`new_with_stat()`，剩余约 `40.0%` 来自 `Ext4Inode::new()`。同一快照的 `ext4_stat_get` 为 `51.957s`，
+fstat-triggered sparse flush 仅 `0.102s`，继续放宽 sparse/direct metadata 失效既不能消除主因，也会破坏
+`st_blocks` 正确性。
+
+### 实现：一次性而非目录 stat cache
+
+目录的 mtime/ctime 会随子目录项 create/link/unlink/rename/symlink 变化，读取目录还可能更新 atime，因此
+不能将普通文件的持续 `Kstat` cache 扩展到目录。本轮实现以下保守快路径：
+
+1. `find()` 在持有 `EXT4_OP_LOCK` 的同一临界区取得目录 `ext4_inode_stat`、identity epoch 和新的
+   mount-wide `EXT4_DIRECTORY_STAT_EPOCH`；新目录 wrapper 仅保存转换后的 `(Kstat, epoch)` 一次性快照。
+2. `fstat()` 在现有 regular-file cache 检查之后、取得 `write_state/io_state/EXT4_OP_LOCK` 之前，短暂取得
+   `stat_cache` 写锁并 `take()` 该快照。epoch 相等时直接返回，两个并发 fstat 也只能有一个消费成功；快照
+   用过一次后，后续 fstat 保留原有 live lwext4 路径。
+3. 成功 create、`create_dir_fast`、rename、hard link、symlink、unlink、delayed-unlink 的 `file_remove()` 都
+   推进 directory epoch；目录自身成功 `set_timestamps()`、`fmode_set()`、`owner_set()` 同样推进。普通文件
+   write/truncate、dense/sparse buffer 和 FsIndex identity epoch 均未改变。
+
+directory epoch 与 inode-reuse 的 `EXT4_IDENTITY_EPOCH` 独立：前者的无关目录修改只会保守丢弃一次快照，
+不会降低 FsIndex identity fast path 的命中。fstat 快路径不取得 lwext4 gate；它在 Acquire epoch load 处线性化，
+并发但随后完成的目录修改可按 fstat 先于该修改观察，已经完成的修改则会使旧快照被丢弃并回退 live fstat。
+
+perf 新增两项：
+
+```text
+[perf] ext4_fstat_path lookup_directory_stat(samples=... total_us=... max_us=...)
+[perf] ext4_fstat_directory_lookup_stat epoch_miss=...
+```
+
+前者是一次性 terminal fast path，不是持续 cache hit；后者是 lookup 与首次 fstat 之间已有目录 metadata
+变化时被安全丢弃的快照数。下一轮同入口样本应同时比较这两个字段、`actual_ext4_fstat`/`ext4_fstat_lock`、
+ColdInode 六类及 `panic/ERROR/TFAIL/TBROK/Summary/shutdown!`。命中数量不必等于 2758，因为只有实际调用
+首次 fstat 的目录会消费快照，且 epoch miss 必须回退慢路径。
+
+### 验证边界
+
+已执行 `cargo fmt --manifest-path os/Cargo.toml`、
+`cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 及
+`make TARGET_ARCH=riscv64`，均通过；最后再次运行 RISC-V `make perf`，使 `kernel-rv` 保持 perf 版本。
+构建仅有既有 Cargo config 弃用、vendored `smoltcp` 与 release 的 `ipi_sent` warning。本轮按维护者的
+10 分钟测试安排未启动新的 QEMU，故尚无 guest 运行期命中率或完整功能回归可报告。

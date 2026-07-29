@@ -1339,6 +1339,33 @@
 - **关联文档**：[BuildStorm 读路径与 lwext4 锁竞争](./problem/buildstorm-read-path-lock-contention.md)
 - **关联 commit**：`perf(ext4): avoid redundant FsIndex identity probes`（本提交）
 
+#### ColdInode 的类型与构造来源归因（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者将在同入口执行 10 分钟 BuildStorm，要求先辨别 ColdInode 的 inode 类型和是否来自带
+  lookup stat 的构造，且不直接扩大缓存。
+- **修改**：仅在 perf build 中为实际进入 lwext4 fstat 的 ColdInode 记录六个 relaxed bucket：
+  regular/directory/special × lookup-stat/no-lookup-stat；六项总和可与现有 ColdInode fstat samples
+  交叉校验。没有改变 Kstat、缓存命中、锁域、sparse/direct write 或用户可见元数据。
+- **验证**：RISC-V、LoongArch64 `make perf` 及 fmt/diff check 均通过，仅有既有 Cargo config 和
+  vendored smoltcp warning；guest 10 分钟样本待维护者运行。
+- **关联文档**：[BuildStorm 读路径与 lwext4 锁竞争](./problem/buildstorm-read-path-lock-contention.md)
+- **关联 commit**：当前工作区未提交
+
+#### `tmp_08` directory lookup-stat 一次性 fstat 优化（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 10 分钟 BuildStorm 的 `tmp_08.ans` 并要求开始优化。ColdInode 六类统计确认
+  `4596` 次实际慢调用全是目录，其中 `2758` 次来自已携带 pathname lookup stat 的构造。
+- **修改**：目录仅保存一次 `(Kstat, directory metadata epoch)` lookup 快照；首次 fstat 在 epoch 未变化时
+  直接消费，epoch 不一致或第二次调用保留 live lwext4 fstat。create/link/symlink/rename/unlink、延迟删除及
+  目录 metadata 修改均保守推进独立 epoch；不引入目录持久 cache，不改变 sparse/direct 写元数据或 FsIndex
+  identity 策略。新增 perf 的 terminal hit 与 epoch-miss 聚合。
+- **验证**：fmt/diff check、RISC-V/LoongArch64 `make perf` 和 `make TARGET_ARCH=riscv64` 均通过；最后保留
+  perf 版 RISC-V `kernel-rv`。未自行运行新的 QEMU，下一轮样本待验证 guest hit/miss 与完整 BuildStorm 状态。
+- **关联文档**：[BuildStorm 读路径与 lwext4 锁竞争](./problem/buildstorm-read-path-lock-contention.md)
+- **关联 commit**：当前工作区未提交
+
 #### BuildStorm EXT4 查找元数据复用（7.27）
 
 - **工具/模型**：Codex (GPT-5)

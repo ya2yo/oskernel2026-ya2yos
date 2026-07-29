@@ -15,9 +15,9 @@ use super::{TaskMutex, EXT4_OP_LOCK};
 use crate::utils::perf::Ext4FstatMissReason;
 #[cfg(feature = "perf")]
 use crate::utils::perf::{
-    Ext4FstatMissGuard, Ext4FstatPath, Ext4FstatPathGuard, Ext4FstatRecoveryGuard,
-    Ext4FstatStageRecorder, Ext4InodePhaseGuard, Ext4MetadataPhase, Ext4NamespacePhase,
-    Ext4RenamePhase,
+    Ext4FstatColdInodeKind, Ext4FstatMissGuard, Ext4FstatPath, Ext4FstatPathGuard,
+    Ext4FstatRecoveryGuard, Ext4FstatStageRecorder, Ext4InodePhaseGuard, Ext4MetadataPhase,
+    Ext4NamespacePhase, Ext4RenamePhase,
 };
 use crate::{
     fs::{
@@ -49,6 +49,13 @@ const UNKNOWN_FILE_SIZE: usize = usize::MAX;
 /// an unrelated unlink only makes `FsIndex` fall back to its existing live
 /// `fstat()` validation, never lets it accept a stale identity.
 static EXT4_IDENTITY_EPOCH: AtomicUsize = AtomicUsize::new(1);
+
+/// Bump after a successful operation that can change directory metadata.
+/// Directory `mtime`/`ctime` is affected by child entry changes, so a pathname
+/// lookup stat is usable only once and only while this conservative mount-wide
+/// epoch still matches.  This must stay separate from `EXT4_IDENTITY_EPOCH`:
+/// unrelated metadata changes do not make an inode identity unsafe.
+static EXT4_DIRECTORY_STAT_EPOCH: AtomicUsize = AtomicUsize::new(1);
 
 /// EXT4 inode 的 VFS 包装。
 ///
@@ -97,10 +104,15 @@ pub struct Ext4Inode {
     /// construction.  Equality proves no inode-recycling namespace boundary
     /// has occurred since this VFS wrapper was created.
     identity_epoch: usize,
+    /// Whether this VFS wrapper was constructed from the `ext4_stat_get()`
+    /// result of a pathname lookup. Kept only for perf attribution; it never
+    /// affects cache eligibility or fstat semantics.
+    #[cfg(feature = "perf")]
+    has_lookup_stat: bool,
     /// Repeated `stat(2)` calls on an unchanged regular source or artifact
     /// otherwise serialize on lwext4's global path-based metadata lookup.
-    /// Directories and special nodes are intentionally excluded because their
-    /// metadata changes as children are created or removed.
+    /// It also contains a directory lookup snapshot that is consumed at most
+    /// once; directories never retain a persistent `Kstat` cache.
     stat_cache: RwLock<Ext4StatCache>,
 }
 
@@ -110,8 +122,17 @@ pub struct Ext4Inode {
 /// the same write lock as before.
 struct Ext4StatCache {
     stat: Option<Kstat>,
+    directory_lookup_stat: Option<Ext4DirectoryLookupStat>,
     #[cfg(feature = "perf")]
     miss_reason: Ext4FstatMissReason,
+}
+
+/// A one-shot directory `Kstat` converted from the `ext4_stat_get()` already
+/// performed by pathname lookup.  `stat_cache` serializes `take()` so exactly
+/// one concurrent `fstat()` can consume it.
+struct Ext4DirectoryLookupStat {
+    stat: Kstat,
+    epoch: usize,
 }
 
 /// `Ext4Inode` 的可变内部状态。
@@ -135,6 +156,7 @@ enum Ext4FindResult {
     Dir {
         stat: ext4_inode_stat,
         identity_epoch: usize,
+        directory_stat_epoch: usize,
     },
     File {
         stat: ext4_inode_stat,
@@ -153,7 +175,7 @@ impl Ext4Inode {
     /// - `path`: 文件在 EXT4 内部的路径
     /// - `types`: 文件类型（文件、目录、链接等）
     pub fn new(path: &str, types: InodeTypes) -> Self {
-        Self::new_with_lookup_stat(path, types, None, None)
+        Self::new_with_lookup_stat(path, types, None, None, None)
     }
 
     /// Build an inode from a lookup that has already performed
@@ -165,8 +187,15 @@ impl Ext4Inode {
         types: InodeTypes,
         stat: ext4_inode_stat,
         identity_epoch: usize,
+        directory_stat_epoch: Option<usize>,
     ) -> Self {
-        Self::new_with_lookup_stat(path, types, Some(stat), Some(identity_epoch))
+        Self::new_with_lookup_stat(
+            path,
+            types,
+            Some(stat),
+            Some(identity_epoch),
+            directory_stat_epoch,
+        )
     }
 
     fn new_with_lookup_stat(
@@ -174,8 +203,11 @@ impl Ext4Inode {
         types: InodeTypes,
         lookup_stat: Option<ext4_inode_stat>,
         lookup_identity_epoch: Option<usize>,
+        lookup_directory_stat_epoch: Option<usize>,
     ) -> Self {
         let inode_type = as_inode_type(types.clone());
+        #[cfg(feature = "perf")]
+        let has_lookup_stat = lookup_stat.is_some();
         let inode_identity = lookup_stat
             .as_ref()
             .and_then(|stat| (stat.st_ino != 0).then_some((stat.st_dev, stat.st_ino)));
@@ -192,8 +224,16 @@ impl Ext4Inode {
         } else {
             (UNKNOWN_FILE_SIZE, None)
         };
+        let directory_lookup_stat = match (inode_type, lookup_stat, lookup_directory_stat_epoch) {
+            (InodeType::Dir, Some(stat), Some(epoch)) => Some(Ext4DirectoryLookupStat {
+                stat: Self::kstat_from_ext4(stat),
+                epoch,
+            }),
+            _ => None,
+        };
         let stat_cache = Ext4StatCache {
             stat: cached_stat,
+            directory_lookup_stat,
             #[cfg(feature = "perf")]
             miss_reason: Ext4FstatMissReason::ColdInode,
         };
@@ -207,6 +247,8 @@ impl Ext4Inode {
             delayed: AtomicBool::new(false),
             inode_identity,
             identity_epoch,
+            #[cfg(feature = "perf")]
+            has_lookup_stat,
             stat_cache: RwLock::new(stat_cache),
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
@@ -300,10 +342,37 @@ impl Ext4Inode {
     }
 
     #[inline]
+    fn advance_directory_stat_epoch() {
+        EXT4_DIRECTORY_STAT_EPOCH.fetch_add(1, Ordering::AcqRel);
+    }
+
+    #[inline]
     fn cached_stat(&self) -> Option<Kstat> {
         if self.inode_type == InodeType::File {
             self.stat_cache.read().stat
         } else {
+            None
+        }
+    }
+
+    /// Return and consume the lookup stat for one directory fstat when no
+    /// successful directory metadata operation has occurred since lookup.
+    /// Sampling the epoch before taking the cache gives this lock-free path a
+    /// linearization point without entering lwext4's mount-wide operation
+    /// gate; a concurrent later mutation may validly be observed afterward.
+    #[inline]
+    fn take_directory_lookup_stat(&self) -> Option<Kstat> {
+        if self.inode_type != InodeType::Dir {
+            return None;
+        }
+
+        let current_epoch = EXT4_DIRECTORY_STAT_EPOCH.load(Ordering::Acquire);
+        let directory_lookup_stat = self.stat_cache.write().directory_lookup_stat.take()?;
+        if directory_lookup_stat.epoch == current_epoch {
+            Some(directory_lookup_stat.stat)
+        } else {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_fstat_directory_lookup_stat_epoch_miss();
             None
         }
     }
@@ -495,6 +564,9 @@ impl Inode for Ext4Inode {
         } else {
             nfile.file_close_without_cache_flush()?;
         }
+        // Both file and directory creation add one entry to this inode's
+        // directory, changing its mtime/ctime.
+        Self::advance_directory_stat_epoch();
         Ok(Arc::new(nf))
     }
 
@@ -510,6 +582,7 @@ impl Inode for Ext4Inode {
         let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Create);
         let nfile = &mut nf.inner.get_unchecked_mut().f;
         nfile.dir_mk(path).map_err(SysErrNo::from)?;
+        Self::advance_directory_stat_epoch();
         Ok(Arc::new(nf))
     }
 
@@ -795,6 +868,7 @@ impl Inode for Ext4Inode {
         // identity-epoch proofs before releasing the global lwext4 guard so a
         // later FsIndex collision retains the live `fstat()` reuse check.
         Self::advance_identity_epoch();
+        Self::advance_directory_stat_epoch();
 
         // A successful directory-entry move must not leave an orphaned
         // write-back entry for either pathname.  In particular, stale target
@@ -837,6 +911,7 @@ impl Inode for Ext4Inode {
             if inner.aliases.iter().all(|alias| alias != new_path) {
                 inner.aliases.push(new_path.to_string());
             }
+            Self::advance_directory_stat_epoch();
             self.invalidate_cached_stat(Ext4FstatMissReason::HardLink);
         }
         ret
@@ -858,6 +933,9 @@ impl Inode for Ext4Inode {
         let file = &mut inner.f;
         let ret = file.set_time(atime, mtime, ctime).map_err(SysErrNo::from);
         if ret.is_ok() {
+            if self.inode_type == InodeType::Dir {
+                Self::advance_directory_stat_epoch();
+            }
             self.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
         ret
@@ -960,11 +1038,13 @@ impl Inode for Ext4Inode {
             // lookup result.  It must travel with `stat`, not be sampled
             // later while constructing the VFS wrapper outside this guard.
             let lookup_identity_epoch = EXT4_IDENTITY_EPOCH.load(Ordering::Acquire);
+            let lookup_directory_stat_epoch = EXT4_DIRECTORY_STAT_EPOCH.load(Ordering::Acquire);
             match file.inode_type_and_stat_at(path) {
                 Ok((InodeTypes::EXT4_DE_DIR | InodeTypes::EXT4_INODE_MODE_DIRECTORY, stat)) => {
                     Ext4FindResult::Dir {
                         stat,
                         identity_epoch: lookup_identity_epoch,
+                        directory_stat_epoch: lookup_directory_stat_epoch,
                     }
                 }
                 Ok((InodeTypes::EXT4_DE_REG_FILE | InodeTypes::EXT4_INODE_MODE_FILE, stat)) => {
@@ -987,12 +1067,14 @@ impl Inode for Ext4Inode {
             Ext4FindResult::Dir {
                 stat,
                 identity_epoch,
+                directory_stat_epoch,
             } => {
                 return Ok(Arc::new(Ext4Inode::new_with_stat(
                     path,
                     InodeTypes::EXT4_DE_DIR,
                     stat,
                     identity_epoch,
+                    Some(directory_stat_epoch),
                 )));
             }
             Ext4FindResult::File {
@@ -1007,6 +1089,7 @@ impl Inode for Ext4Inode {
                     InodeTypes::EXT4_DE_REG_FILE,
                     stat,
                     identity_epoch,
+                    None,
                 )));
             }
             Ext4FindResult::SymLink(_) => {
@@ -1072,6 +1155,11 @@ impl Inode for Ext4Inode {
             fstat_path.finish(Ext4FstatPath::FastCached);
             return self.stat_with_known_size(stat);
         }
+        if let Some(stat) = self.take_directory_lookup_stat() {
+            #[cfg(feature = "perf")]
+            fstat_path.finish(Ext4FstatPath::LookupDirectoryStat);
+            return stat;
+        }
 
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
@@ -1090,6 +1178,14 @@ impl Inode for Ext4Inode {
         let fstat_result = {
             #[cfg(feature = "perf")]
             {
+                if miss_reason == Ext4FstatMissReason::ColdInode {
+                    let kind = match self.inode_type {
+                        InodeType::File => Ext4FstatColdInodeKind::RegularFile,
+                        InodeType::Dir => Ext4FstatColdInodeKind::Directory,
+                        _ => Ext4FstatColdInodeKind::SpecialNode,
+                    };
+                    crate::utils::perf::record_ext4_fstat_cold_inode(kind, self.has_lookup_stat);
+                }
                 let _miss = Ext4FstatMissGuard::new(miss_reason);
                 let mut fstat_stages = Ext4FstatStageRecorder::new();
                 inner
@@ -1242,7 +1338,11 @@ impl Inode for Ext4Inode {
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::LinkSymlink);
         let file = &mut self.inner.get_unchecked_mut().f;
-        file.file_fsymlink(target, path).map_err(SysErrNo::from)
+        let ret = file.file_fsymlink(target, path).map_err(SysErrNo::from);
+        if ret.is_ok() {
+            Self::advance_directory_stat_epoch();
+        }
+        ret
     }
     /// 获取硬链接计数。
     ///
@@ -1290,6 +1390,7 @@ impl Inode for Ext4Inode {
             // available to another path.  Existing wrappers from before this
             // point therefore require FsIndex's live identity validation.
             Self::advance_identity_epoch();
+            Self::advance_directory_stat_epoch();
             self.invalidate_cached_stat(Ext4FstatMissReason::Unlink);
         }
         ret
@@ -1381,6 +1482,9 @@ impl Inode for Ext4Inode {
             }
         };
         if ret.is_ok() {
+            if self.inode_type == InodeType::Dir {
+                Self::advance_directory_stat_epoch();
+            }
             self.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
         ret
@@ -1403,6 +1507,9 @@ impl Inode for Ext4Inode {
             }
         };
         if ret.is_ok() {
+            if self.inode_type == InodeType::Dir {
+                Self::advance_directory_stat_epoch();
+            }
             self.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
         ret
@@ -1456,6 +1563,7 @@ impl Drop for Ext4Inode {
             let remove_result = inner.f.file_remove(&path);
             if remove_result.is_ok() {
                 Self::advance_identity_epoch();
+                Self::advance_directory_stat_epoch();
             }
             MNT_TABLE.lock().remove_file(&path);
         }

@@ -20,7 +20,7 @@
 //! | `EXT4_OP_LOCK` | 挂载级、全局唯一 | lwext4 挂载块缓存及非 SMP-safe 的 path/file C API；所有 lwext4 调用都必须持有它。 |
 //! | `Ext4Inode::io_state` | 每 inode | 可变 `Ext4File` descriptor、`aliases` 和延迟删除内部状态；同 inode 的 open/read、close、路径恢复不能并发改变这些状态。 |
 //! | `Ext4Inode::write_state` | 每 inode | pathname、byte-cache 策略和 quota reservation 的状态转换；写入、truncate、rename、link 等与写可见性相关的操作使用它。 |
-//! | `Ext4Inode::path` / `stat_cache` | 每 inode `RwLock` | VFS 侧路径镜像和可失效的 regular-file metadata cache；只保护 Rust 侧缓存，不保护 lwext4 descriptor。 |
+//! | `Ext4Inode::path` / `stat_cache` | 每 inode `RwLock` | VFS 侧路径镜像、可失效的 regular-file metadata cache 及一次性 directory lookup stat；只保护 Rust 侧缓存，不保护 lwext4 descriptor。 |
 //! | `FILE_PAGE_CACHE.pages` | 全局 `RwLock` | `(path, page_index)` 文件页缓存；命中使用读锁，发布和失效使用写锁，底层 I/O 不得在该锁内进行。 |
 //! | `DENTRY_CACHE.entries`、`INODE_CACHE` | 全局 `RwLock` | VFS 的 dentry、inode identity/path 缓存；用于避免重复的路径查找和 inode 包装。 |
 //! | `MNT_TABLE` / 挂载 quota | 全局或每挂载 `Mutex` | mount namespace 与容量记账；不是普通 lwext4 读路径的替代锁。 |

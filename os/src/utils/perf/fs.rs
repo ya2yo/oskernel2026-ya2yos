@@ -148,6 +148,55 @@ pub enum Ext4FstatMissReason {
     FsIndexRebuild,
 }
 
+/// Inode class for the subset of actual `ColdInode` fstat misses.  This stays
+/// independent of VFS types so the perf module does not add a filesystem
+/// dependency; Ext4 maps its own `InodeType` at the recording site.
+#[derive(Clone, Copy)]
+pub enum Ext4FstatColdInodeKind {
+    RegularFile,
+    Directory,
+    SpecialNode,
+}
+
+/// Actual ColdInode fstat misses split by inode class and whether construction
+/// carried the stat obtained by pathname lookup.  The six counters are a
+/// diagnostic partition: their sum must equal the `cold_inode` samples in
+/// `EXT4_FSTAT_INNER_MISSES` for each perf snapshot.
+pub(crate) struct Ext4FstatColdInodeCounts {
+    pub(crate) regular_lookup_stat: AtomicUsize,
+    pub(crate) regular_no_lookup_stat: AtomicUsize,
+    pub(crate) directory_lookup_stat: AtomicUsize,
+    pub(crate) directory_no_lookup_stat: AtomicUsize,
+    pub(crate) special_lookup_stat: AtomicUsize,
+    pub(crate) special_no_lookup_stat: AtomicUsize,
+}
+
+impl Ext4FstatColdInodeCounts {
+    const fn new() -> Self {
+        Self {
+            regular_lookup_stat: AtomicUsize::new(0),
+            regular_no_lookup_stat: AtomicUsize::new(0),
+            directory_lookup_stat: AtomicUsize::new(0),
+            directory_no_lookup_stat: AtomicUsize::new(0),
+            special_lookup_stat: AtomicUsize::new(0),
+            special_no_lookup_stat: AtomicUsize::new(0),
+        }
+    }
+
+    #[inline]
+    fn record(&self, kind: Ext4FstatColdInodeKind, has_lookup_stat: bool) {
+        let counter = match (kind, has_lookup_stat) {
+            (Ext4FstatColdInodeKind::RegularFile, true) => &self.regular_lookup_stat,
+            (Ext4FstatColdInodeKind::RegularFile, false) => &self.regular_no_lookup_stat,
+            (Ext4FstatColdInodeKind::Directory, true) => &self.directory_lookup_stat,
+            (Ext4FstatColdInodeKind::Directory, false) => &self.directory_no_lookup_stat,
+            (Ext4FstatColdInodeKind::SpecialNode, true) => &self.special_lookup_stat,
+            (Ext4FstatColdInodeKind::SpecialNode, false) => &self.special_no_lookup_stat,
+        };
+        add(counter, 1);
+    }
+}
+
 /// Cache-invalidation counts grouped by their source. Every successful
 /// metadata-changing operation is included, even if a prior invalidation has
 /// not yet been consumed by `fstat()`.
@@ -262,10 +311,12 @@ pub(crate) static EXT4_READ_OPEN_LOCK_STATS: Ext4LockStats = Ext4LockStats::new(
 pub(crate) static EXT4_READ_DATA_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_FIND_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_FSTAT_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-/// `fast_cached`, `post_wait_cached`, and `actual_ext4_fstat` are mutually
-/// exclusive results of `Ext4Inode::fstat()`. Alias recovery is a nested
-/// subphase of the last bucket and is deliberately reported separately.
+/// `fast_cached`, `lookup_directory_stat`, `post_wait_cached`, and
+/// `actual_ext4_fstat` are mutually exclusive results of `Ext4Inode::fstat()`.
+/// Alias recovery is a nested subphase of the last bucket and is deliberately
+/// reported separately.
 pub(crate) static EXT4_FSTAT_FAST_CACHED: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_FSTAT_LOOKUP_DIRECTORY_STAT: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_FSTAT_POST_WAIT_CACHED: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_FSTAT_ACTUAL_EXT4_FSTAT: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_FSTAT_RECOVER_LIVE_PATH: Ext4PhaseStats = Ext4PhaseStats::new();
@@ -276,6 +327,11 @@ pub(crate) static EXT4_FSTAT_WRITE_BACK_OVERLAY: Ext4PhaseStats = Ext4PhaseStats
 pub(crate) static EXT4_FSTAT_CACHE_INVALIDATIONS: Ext4FstatReasonCounts =
     Ext4FstatReasonCounts::new();
 pub(crate) static EXT4_FSTAT_INNER_MISSES: Ext4FstatReasonPhases = Ext4FstatReasonPhases::new();
+pub(crate) static EXT4_FSTAT_COLD_INODE_COUNTS: Ext4FstatColdInodeCounts =
+    Ext4FstatColdInodeCounts::new();
+/// Lookup stat samples discarded because a directory metadata operation
+/// completed between pathname lookup and the one-shot fstat fast path.
+pub(crate) static EXT4_FSTAT_DIRECTORY_LOOKUP_STAT_EPOCH_MISSES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_WRITE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_RENAME_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_CLOSE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
@@ -821,6 +877,7 @@ impl Drop for Ext4WritePhaseGuard {
 /// for inode state and the mount-wide lwext4 gate.
 pub enum Ext4FstatPath {
     FastCached,
+    LookupDirectoryStat,
     PostWaitCached,
     ActualExt4Fstat,
 }
@@ -841,6 +898,7 @@ impl Ext4FstatPathGuard {
         let elapsed = get_ticks().saturating_sub(self.begin);
         match path {
             Ext4FstatPath::FastCached => EXT4_FSTAT_FAST_CACHED.record(elapsed),
+            Ext4FstatPath::LookupDirectoryStat => EXT4_FSTAT_LOOKUP_DIRECTORY_STAT.record(elapsed),
             Ext4FstatPath::PostWaitCached => EXT4_FSTAT_POST_WAIT_CACHED.record(elapsed),
             Ext4FstatPath::ActualExt4Fstat => EXT4_FSTAT_ACTUAL_EXT4_FSTAT.record(elapsed),
         }
@@ -955,6 +1013,19 @@ impl Ext4FstatStageRecorder {
 #[inline]
 pub fn record_ext4_fstat_cache_invalidation(reason: Ext4FstatMissReason) {
     EXT4_FSTAT_CACHE_INVALIDATIONS.record(reason);
+}
+
+/// Record one actual `Ext4File::fstat()` that retained the default
+/// `ColdInode` reason. This is intentionally not called for fast-cache hits,
+/// invalidation-triggered misses, or alias-recovery retries.
+#[inline]
+pub fn record_ext4_fstat_cold_inode(kind: Ext4FstatColdInodeKind, has_lookup_stat: bool) {
+    EXT4_FSTAT_COLD_INODE_COUNTS.record(kind, has_lookup_stat);
+}
+
+#[inline]
+pub fn record_ext4_fstat_directory_lookup_stat_epoch_miss() {
+    add(&EXT4_FSTAT_DIRECTORY_LOOKUP_STAT_EPOCH_MISSES, 1);
 }
 
 /// Mutually exclusive stages inside `Ext4Inode::rename()` while it holds the

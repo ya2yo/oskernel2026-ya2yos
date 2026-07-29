@@ -86,6 +86,8 @@ pub(super) fn emit_report(now: usize) {
     print!("[perf] ext4_fstat_path ");
     emit_ext4_phase_stats("fast_cached", &EXT4_FSTAT_FAST_CACHED);
     print!("[perf] ext4_fstat_path ");
+    emit_ext4_phase_stats("lookup_directory_stat", &EXT4_FSTAT_LOOKUP_DIRECTORY_STAT);
+    print!("[perf] ext4_fstat_path ");
     emit_ext4_phase_stats("post_wait_cached", &EXT4_FSTAT_POST_WAIT_CACHED);
     print!("[perf] ext4_fstat_path ");
     emit_ext4_phase_stats("actual_ext4_fstat", &EXT4_FSTAT_ACTUAL_EXT4_FSTAT);
@@ -153,6 +155,31 @@ pub(super) fn emit_report(now: usize) {
     emit_ext4_phase_stats("alias_recovery", &EXT4_FSTAT_INNER_MISSES.alias_recovery);
     print!("[perf] ext4_fstat_inner_duration ");
     emit_ext4_phase_stats("fsidx_rebuild", &EXT4_FSTAT_INNER_MISSES.fsidx_rebuild);
+    println!(
+        "[perf] ext4_fstat_cold_inode regular_lookup_stat={} regular_no_lookup_stat={} directory_lookup_stat={} directory_no_lookup_stat={} special_lookup_stat={} special_no_lookup_stat={}",
+        EXT4_FSTAT_COLD_INODE_COUNTS
+            .regular_lookup_stat
+            .load(Ordering::Relaxed),
+        EXT4_FSTAT_COLD_INODE_COUNTS
+            .regular_no_lookup_stat
+            .load(Ordering::Relaxed),
+        EXT4_FSTAT_COLD_INODE_COUNTS
+            .directory_lookup_stat
+            .load(Ordering::Relaxed),
+        EXT4_FSTAT_COLD_INODE_COUNTS
+            .directory_no_lookup_stat
+            .load(Ordering::Relaxed),
+        EXT4_FSTAT_COLD_INODE_COUNTS
+            .special_lookup_stat
+            .load(Ordering::Relaxed),
+        EXT4_FSTAT_COLD_INODE_COUNTS
+            .special_no_lookup_stat
+            .load(Ordering::Relaxed),
+    );
+    println!(
+        "[perf] ext4_fstat_directory_lookup_stat epoch_miss={}",
+        EXT4_FSTAT_DIRECTORY_LOOKUP_STAT_EPOCH_MISSES.load(Ordering::Relaxed),
+    );
     emit_ext4_lock_stats("ext4_write_lock", &EXT4_WRITE_LOCK_STATS);
     print!("[perf] ext4_write_duration ");
     emit_duration(
