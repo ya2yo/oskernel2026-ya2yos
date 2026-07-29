@@ -7990,3 +7990,17 @@ warning。RISC-V 使用当前 final-2026 raw 镜像的 `/tmp` qcow2 overlay 运�
 `vfork_release exec=64 exit=256 signal=0`、四段 vfork 样本为 64/64/256/320，且 128 次 execve
 来自两组各 64 次的 exec workload。该 run 验证路径与统计语义，不作为不同实现、不同镜像或 Linux
 之间的性能提升结论。LoongArch64 未运行 QEMU，仅完成 perf 编译验证。
+
+## 2026-07-29：主 ELF lazy/file-backed 映射与 log A/B 复核
+
+### 用户输入
+
+维护者要求根据 `log.ans` 将主 ELF 从整文件 eager copy 改为 lazy/file-backed 映射，并随后要求对比 `log.ans` 与 `log1.ans` 确认优化是否生效。
+
+### 分析与采纳结论
+
+沿 `execve -> TaskControlBlock::exec -> MemorySetInner::from_elf -> map_elf` 追踪后确认，主程序缺少保留的 `Arc<OSFile>`，只能为所有 PT_LOAD 分配 Framed 页并复制文件内容。复用动态解释器已有的 file-backed VMA 机制：仅页对齐虚拟地址和文件偏移的 PT_LOAD 使用 `MAP_PRIVATE` lazy 映射；非对齐段逐页 eager；`.bss` 匿名按需分配；不修改 `MapAreaType::Elf` 的全局 fork/COW 语义，也不提前释放 vfork parent。
+
+### 修改与验证
+
+新增 ELF 元数据读取和 `from_elf_file()` 入口，`execve` 传递最终可执行 `Arc<OSFile>`。RISC-V、LoongArch64 release 构建通过；RISC-V `log1.ans` 三组 vfork 测试均 `failed=0`、profile `status=0`、正常 `shutdown!`。与基线相比，EXT4 读取字节 `177497216 -> 461952`，file-cache `mmap_hit/miss=4081/15`、page faults=2048，`execve` `1853467 -> 209920 us`，`from_elf` `1232911 -> 74616 us`，`map_elf` `1230064 -> 71811 us`。该结果证明 lazy 链路生效，但尚未覆盖完整 LTP/BuildStorm 或 LoongArch64 QEMU。

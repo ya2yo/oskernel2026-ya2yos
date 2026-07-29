@@ -1776,3 +1776,12 @@
 - **验证**：RISC-V、LoongArch64 `make perf` 通过。RISC-V final-2026 镜像的临时 qcow2 overlay guest
   运行完成，三个组均 `failed=0`，`vfork_release exec=64 exit=256 signal=0`；未用单次运行宣称性能提升。
 - **关联 commit**：当前工作区未提交
+
+#### 主 ELF lazy/file-backed 映射与 `log.ans`/`log1.ans` A/B（7.29）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求优化主 ELF 的 eager copy，并用两份 RISC-V vfork profile 日志确认是否生效。
+- **分析与修改**：沿 `execve`、ELF loader、page fault、fork/COW 路径检查现有动态解释器实现；新增保留 `Arc<OSFile>` 的 `from_elf_file()`，页对齐 PT_LOAD 使用私有文件 VMA，非对齐段 eager fallback，`.bss` 匿名 lazy，保留 `AT_PHDR`、入口、权限和 vfork hand-off 语义。
+- **证据**：`log1.ans` 出现 `file_cache_source mmap_hit=4081 mmap_miss=15`、`page_faults=2048`，而基线均为 0；EXT4 读取字节从 `177497216` 降至 `461952`，`execve/from_elf/map_elf` 累计耗时下降约 `88.7%/93.9%/94.2%`。两份日志的 vfork 组均 `failed=0`，优化样本 `status=0` 并 `shutdown!`。
+- **验证边界**：RISC-V、LoongArch64 release 构建和 `git diff --check` 通过；尚未运行完整 LTP/BuildStorm 或 LoongArch64 QEMU，未将单次 A/B 外推为完整评分加速。
+- **关联 commit**：当前工作区未提交

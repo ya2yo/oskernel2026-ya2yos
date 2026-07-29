@@ -83,26 +83,17 @@ fn program_headers_end(elf: &ElfFile) -> Result<usize, SysErrNo> {
         .ok_or(SysErrNo::ENOEXEC)
 }
 
-fn needed_elf_prefix_len(elf_data: &[u8]) -> Result<usize, SysErrNo> {
-    let elf = ElfFile::new(elf_data).map_err(|_| SysErrNo::ENOEXEC)?;
-    let ph_end = program_headers_end(&elf)?;
-    if elf_data.len() < ph_end {
-        return Err(SysErrNo::ENOEXEC);
-    }
-
-    let mut needed = ph_end;
+fn needed_elf_metadata_len(elf: &ElfFile) -> Result<usize, SysErrNo> {
+    let mut needed = program_headers_end(elf)?;
     for idx in 0..elf.header.pt2.ph_count() {
         let ph = elf.program_header(idx).map_err(|_| SysErrNo::ENOEXEC)?;
-        let ph_type = ph.get_type().map_err(|_| SysErrNo::ENOEXEC)?;
-        if matches!(
-            ph_type,
-            xmas_elf::program::Type::Load | xmas_elf::program::Type::Interp
-        ) {
-            let end = (ph.offset() as usize)
-                .checked_add(ph.file_size() as usize)
-                .ok_or(SysErrNo::ENOEXEC)?;
-            needed = needed.max(end);
+        if ph.get_type().map_err(|_| SysErrNo::ENOEXEC)? != xmas_elf::program::Type::Interp {
+            continue;
         }
+        let end = (ph.offset() as usize)
+            .checked_add(ph.file_size() as usize)
+            .ok_or(SysErrNo::ENOEXEC)?;
+        needed = needed.max(end);
     }
     Ok(needed)
 }
@@ -128,14 +119,29 @@ fn validate_elf_load_ranges(elf: &ElfFile, file_size: usize) -> Result<(), SysEr
     Ok(())
 }
 
-/// Read the ELF header and program-header table only.
+/// Read the ELF header, program-header table, and optional `PT_INTERP` path.
 ///
-/// A dynamically loaded interpreter is later represented by file-backed VMAs,
-/// so its aligned load segments do not need a second kernel-heap copy here.
-/// Unaligned segments are read directly into their newly allocated user pages.
+/// Loadable segment bytes deliberately remain in the executable file.  Aligned
+/// segments can then become private file-backed VMAs; uncommon unaligned ones
+/// are read directly into their newly allocated user pages by the loader.
 fn read_elf_metadata(inode: &Arc<dyn Inode>) -> Result<Vec<u8>, SysErrNo> {
     let file_size = inode.fstat().st_size.max(0) as usize;
-    let mut metadata = read_inode_prefix(inode, ELF_PROBE_SIZE, file_size)?;
+    read_elf_metadata_with_prefix(inode, &[], file_size)
+}
+
+/// Extend an ELF probe from `execve` into only the metadata needed to build
+/// the initial address space.  Keeping the already-read probe avoids a second
+/// read from offset zero while avoiding a kernel-heap copy of every PT_LOAD.
+pub(crate) fn read_elf_metadata_with_prefix(
+    inode: &Arc<dyn Inode>,
+    prefix: &[u8],
+    file_size: usize,
+) -> Result<Vec<u8>, SysErrNo> {
+    let mut metadata = if prefix.is_empty() {
+        read_inode_prefix(inode, ELF_PROBE_SIZE, file_size)?
+    } else {
+        prefix.to_vec()
+    };
     if metadata.len() < 4
         || metadata[0] != 0x7f
         || metadata[1] != b'E'
@@ -154,54 +160,12 @@ fn read_elf_metadata(inode: &Arc<dyn Inode>) -> Result<Vec<u8>, SysErrNo> {
 
     let elf = ElfFile::new(&metadata).map_err(|_| SysErrNo::ENOEXEC)?;
     validate_elf_load_ranges(&elf, file_size)?;
+    let needed = needed_elf_metadata_len(&elf)?;
+    extend_inode_prefix(inode, &mut metadata, needed, file_size)?;
+    if metadata.len() < needed {
+        return Err(SysErrNo::ENOEXEC);
+    }
     Ok(metadata)
-}
-
-/// Read only the ELF bytes required by the loader.
-///
-/// Contest images may contain large static binaries with debug sections after
-/// the loadable segments. `execve` only needs the ELF header, program headers,
-/// PT_INTERP bytes, and PT_LOAD file ranges, so avoid copying the whole file
-/// into the kernel heap.
-pub(crate) fn read_elf_load_image(inode: &Arc<dyn Inode>) -> Result<Vec<u8>, SysErrNo> {
-    let file_size = inode.fstat().st_size.max(0) as usize;
-    read_elf_load_image_with_prefix(inode, &[], file_size)
-}
-
-/// Read the ELF load image while reusing a prefix already fetched by the
-/// syscall layer for magic/shebang detection.
-pub(crate) fn read_elf_load_image_with_prefix(
-    inode: &Arc<dyn Inode>,
-    prefix: &[u8],
-    file_size: usize,
-) -> Result<Vec<u8>, SysErrNo> {
-    let mut image = if prefix.is_empty() {
-        read_inode_prefix(inode, ELF_PROBE_SIZE, file_size)?
-    } else {
-        prefix.to_vec()
-    };
-    if image.len() < 4
-        || image[0] != 0x7f
-        || image[1] != b'E'
-        || image[2] != b'L'
-        || image[3] != b'F'
-    {
-        return Err(SysErrNo::ENOEXEC);
-    }
-
-    let header_elf = ElfFile::new(&image).map_err(|_| SysErrNo::ENOEXEC)?;
-    let ph_end = program_headers_end(&header_elf)?;
-    extend_inode_prefix(inode, &mut image, ph_end, file_size)?;
-    if image.len() < ph_end {
-        return Err(SysErrNo::ENOEXEC);
-    }
-
-    let needed = needed_elf_prefix_len(&image)?;
-    extend_inode_prefix(inode, &mut image, needed, file_size)?;
-    if image.len() < needed {
-        return Err(SysErrNo::ENOEXEC);
-    }
-    Ok(image)
 }
 
 impl MemorySetInner {
@@ -562,6 +526,26 @@ impl MemorySetInner {
     /// 本函数不负责用户栈、trap context 和 trampoline 的最终布置；这些由
     /// 调用方在拿到 `memory_set` 后继续完成。
     pub fn from_elf(elf_data: &[u8]) -> Result<(Self, usize, usize, Vec<Aux>), ()> {
+        Self::from_elf_inner(elf_data, None)
+    }
+
+    /// Create an address space from ELF metadata while retaining the opened
+    /// executable for demand-paged, private file-backed PT_LOAD mappings.
+    ///
+    /// Only page-aligned PT_LOAD segments take this path.  The loader keeps the
+    /// existing eager implementation for callers that do not provide a file
+    /// object (the boot-time init process) and for unaligned segments.
+    pub fn from_elf_file(
+        elf_data: &[u8],
+        file: &Arc<OSFile>,
+    ) -> Result<(Self, usize, usize, Vec<Aux>), ()> {
+        Self::from_elf_inner(elf_data, Some(file))
+    }
+
+    fn from_elf_inner(
+        elf_data: &[u8],
+        executable_file: Option<&Arc<OSFile>>,
+    ) -> Result<(Self, usize, usize, Vec<Aux>), ()> {
         let mut auxv = Vec::new();
         // 新用户地址空间仍必须带内核映射；用户态 trap 进入内核后需要这些映射
         // 才能继续执行内核代码。
@@ -622,7 +606,11 @@ impl MemorySetInner {
         // 主程序按 ELF 自己声明的虚拟地址映射，所以 offset 为 0。
         #[cfg(feature = "perf")]
         let map_elf_begin = get_ticks();
-        let (max_end_vpn, head_va) = memory_set.map_elf(&elf, VirtAddr(0))?;
+        let (max_end_vpn, head_va) = if let Some(file) = executable_file {
+            memory_set.map_elf_lazy_file(&elf, VirtAddr(0), file)?
+        } else {
+            memory_set.map_elf(&elf, VirtAddr(0))?
+        };
         #[cfg(feature = "perf")]
         crate::utils::perf::record_exec_map_elf_duration(get_ticks().saturating_sub(map_elf_begin));
 

@@ -11,7 +11,7 @@ use crate::{
     arch::memory_layout::{PAGE_SIZE, USER_STACK_SIZE},
     fs::{open, Inode, MountFlags, OSFile, OpenFlags, MAX_PATH_LEN, MNT_TABLE, NONE_MODE},
     mm::{
-        copy_from_user_val, read_elf_load_image, read_elf_load_image_with_prefix, read_user_cstr,
+        copy_from_user_val, read_elf_metadata_with_prefix, read_user_cstr,
         read_user_cstr_with_limit, MemorySet,
     },
     syscall::FileMode,
@@ -337,6 +337,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     // debug!("The real abs_path is {}", abs_path);
     let script_abs_path = abs_path.clone();
     let app_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+    let mut executable_file = app_inode.clone();
     let app_stat = app_inode.inode.fstat();
 
     // 检查挂载的 MS_NOEXEC 标志，noexec 挂载上不允许执行文件。
@@ -357,7 +358,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     let image_begin = get_ticks();
     let mut elf_data = read_exec_probe_with_size(&app_inode.inode, app_size)?;
     if is_elf(&elf_data) {
-        elf_data = read_elf_load_image_with_prefix(&app_inode.inode, &elf_data, app_size)?;
+        elf_data = read_elf_metadata_with_prefix(&app_inode.inode, &elf_data, app_size)?;
     } else {
         // 非 ELF：尝试按 shebang 脚本处理（如 #!/bin/sh）。
         // Linux 内核不会把脚本当最终可执行体，而是转去 exec 解释器。
@@ -391,6 +392,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
                 _ => get_abs_path(&cwd, trim_start_slash(interp.clone()).as_str()),
             };
             let interp_inode = open(&abs_path, OpenFlags::O_RDONLY, NONE_MODE)?.file()?;
+            executable_file = interp_inode.clone();
             let interp_stat = interp_inode.inode.fstat();
             check_exec_permission(interp_stat.st_mode, interp_stat.st_uid, interp_stat.st_gid)?;
             check_not_write_open(&interp_inode.inode.path())?;
@@ -398,7 +400,7 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
             elf_data = read_exec_probe_with_size(&interp_inode.inode, interp_size)?;
             if is_elf(&elf_data) {
                 elf_data =
-                    read_elf_load_image_with_prefix(&interp_inode.inode, &elf_data, interp_size)?;
+                    read_elf_metadata_with_prefix(&interp_inode.inode, &elf_data, interp_size)?;
             } else {
                 return Err(SysErrNo::ENOEXEC);
             }
@@ -414,6 +416,6 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
     drop(memory_set);
 
     // 不用切换页表，因为return_to_user会切换
-    task.exec(&elf_data, &argv_vec, &env)?;
+    task.exec(&elf_data, &executable_file, &argv_vec, &env)?;
     Ok(0)
 }

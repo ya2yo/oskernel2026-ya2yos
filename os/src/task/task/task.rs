@@ -17,7 +17,7 @@ use crate::{
         page_table::PageTable,
     },
     fs::{
-        create_proc_dir, create_proc_dir_and_file, open, FSInfo, FdTable, OpenFlags,
+        create_proc_dir, create_proc_dir_and_file, open, FSInfo, FdTable, OSFile, OpenFlags,
         DEFAULT_DIR_MODE, DEFAULT_FILE_MODE,
     },
     mm::{
@@ -565,14 +565,20 @@ impl TaskControlBlock {
         arc_task
     }
     /// exec的主逻辑
-    pub fn exec(&self, elf_data: &[u8], argv: &[Vec<u8>], env: &[Vec<u8>]) -> Result<(), SysErrNo> {
+    pub fn exec(
+        &self,
+        elf_data: &[u8],
+        executable_file: &Arc<OSFile>,
+        argv: &[Vec<u8>],
+        env: &[Vec<u8>],
+    ) -> Result<(), SysErrNo> {
         //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
         // memory_set with elf program headers/trampoline/trap context/user stack
         debug!("exec: goto from_elf");
         #[cfg(feature = "perf")]
         let from_elf_begin = get_ticks();
-        let (memory_set, user_hp, entry_point, mut auxv) = MemorySetInner::from_elf(elf_data)
-            .map_err(|_| {
+        let (memory_set, user_hp, entry_point, mut auxv) =
+            MemorySetInner::from_elf_file(elf_data, executable_file).map_err(|_| {
                 error!("exec: OOM during ELF load");
                 SysErrNo::ENOMEM
             })?;
