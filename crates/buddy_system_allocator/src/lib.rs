@@ -27,9 +27,9 @@ mod test;
 
 pub use frame::*;
 
-// The RISC-V QEMU configuration manages 8 GiB of RAM.  Keep classes through
-// order 33 so a fully coalesced 8 GiB block is representable.
-const MAX_ORDER: usize = 34;
+// Keep classes through order 34 so the largest block produced by the current
+// 36 GiB LoongArch layout (and the 16 GiB RISC-V layout) is representable.
+const MAX_ORDER: usize = 35;
 
 /// A heap that uses buddy system
 ///

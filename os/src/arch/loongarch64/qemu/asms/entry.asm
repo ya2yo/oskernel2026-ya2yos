@@ -3,7 +3,7 @@
 
 .equ BOOT_STACK_SIZE, 0x40000
 # Keep this in sync with crate::arch::config::HART_NUM.
-.equ MAX_HARTS, 8
+.equ MAX_HARTS, 12
 
 _start:
     # 清空 TLB

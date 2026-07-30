@@ -8753,3 +8753,38 @@ MAP_PRIVATE/MAP_SHARED 和 COW 语义保持。处理失败时在冷路径重新�
 ### 关联 commit
 
 当前工作区未提交
+
+## 2026-07-30：LoongArch 36GiB/12-hart 启动参数修复
+
+### 用户输入
+
+维护者反馈龙芯架构运行报错，询问 16GiB 配置是否属于 RISC-V，随后提供新的 `log.ans`：LoongArch64
+运行到 `#### OS COMP TEST GROUP START cagent ####` 后没有后续输出，要求分析并修复。
+
+### 分析与采纳结论
+
+第一份日志在 `init_cma` 初始化龙芯高端内存时触发 buddy allocator 的 `index out of bounds`：高端区间按地址
+对齐拆分出 `order 34` 块，而共享 allocator 的 `free_list` 只有 34 项（最大索引 33）。这不是把 LoongArch
+误套成 RISC-V 的 16GiB 运行参数，而是共享 allocator 的阶数上限没有覆盖当前 36GiB 布局。
+
+补齐 allocator 后，新的日志能够启动 12 个 hart，但入口汇编仍按 `MAX_HARTS = 8` 分配启动栈。hart 8--11
+通过 `CPUID + 1` 计算出的栈偏移越过预留数组，破坏后续状态，恰好在 CAgent 启动后台 `simple_llm_server`
+后表现为无输出停滞；组开始标记本身不是故障点。
+
+### 修改与验证
+
+将 buddy `MAX_ORDER` 调整为 35，并将 LoongArch 入口汇编的 `MAX_HARTS` 与 `config::HART_NUM`/QEMU 的 12
+核配置同步。`make build-arch TARGET_ARCH=loongarch64` 通过；`timeout 120s make run TARGET_ARCH=loongarch64`
+的最新日志显示 12 个 hart 正常启动，CAgent 十项均为 `pass`，出现 `#### OS COMP TEST GROUP END cagent ####`
+和 `shutdown!`。日志中 PID 57 的 `PagePrivilegeIllegal` 被隔离为 `SIGSEGV`，未造成测试失败或内核 panic，
+与本次启动参数修复无关。
+
+### 修改文件
+
+`crates/buddy_system_allocator/src/lib.rs`、`crates/buddy_system_allocator/src/frame.rs`、
+`os/src/arch/loongarch64/qemu/asms/entry.asm`、`Docs/决赛文档/problem/loongarch-36g-12hart-bootstrap.md`、
+`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/README.md`。
+
+### 关联 commit
+
+当前工作区未提交

@@ -26,7 +26,7 @@ use spin::Mutex;
 /// assert_eq!(num, Some(0));
 /// ```
 pub struct FrameAllocator {
-    // Keep in sync with the byte allocator's 8 GiB-capable order range.
+    // Keep in sync with the byte allocator's maximum order range.
     free_list: [BTreeSet<usize>; super::MAX_ORDER],
 
     // statistics

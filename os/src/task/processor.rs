@@ -96,9 +96,9 @@ pub(crate) fn notify_hart_of_runnable_task(target_hart: usize) {
     }
 
     let target_idle = HART_IDLE[target_hart].load(Ordering::Acquire);
-    let ipi_sent = target_idle && crate::arch::cpu::wake_hart(target_hart);
+    let _ipi_sent = target_idle && crate::arch::cpu::wake_hart(target_hart);
     #[cfg(feature = "perf")]
-    crate::utils::perf::record_scheduler_enqueue(true, target_idle, ipi_sent);
+    crate::utils::perf::record_scheduler_enqueue(true, target_idle, _ipi_sent);
 }
 
 fn idle_until_runnable(hartid: usize) {

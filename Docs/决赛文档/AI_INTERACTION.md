@@ -2045,3 +2045,16 @@
   指标，并补做尾页及并发 truncate 的 SIGBUS 回归。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### LoongArch 36GiB/12-hart 启动参数修复（7.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 LoongArch64 新 `log.ans`，反馈输出停在 `#### OS COMP TEST GROUP START cagent ####`，要求分析龙芯启动报错并完善文档。
+- **描述**：定位到共享 buddy allocator 未覆盖龙芯 36GiB CMA 拆出的 `order 34`，以及入口汇编仍只为 8 个 hart
+  分配启动栈而配置/QEMU 已启动 12 个 hart。分别将 `MAX_ORDER` 调为 35、LoongArch `MAX_HARTS` 调为 12，
+  与 `config::HART_NUM` 同步；CAgent 启动后的停滞由 hart 8--11 栈越界破坏状态解释，不是组开始标记或 16GiB
+  RISC-V 参数被误用。独立用户态 `PagePrivilegeIllegal` 按 `SIGSEGV` 隔离，未影响测试完成。
+- **验证**：`make build-arch TARGET_ARCH=loongarch64` 通过；`timeout 120s make run TARGET_ARCH=loongarch64` 中
+  12 个 hart 正常启动，CAgent 十项均 `pass`，出现组结束标记和 `shutdown!`。完整复盘见
+  [loongarch-36g-12hart-bootstrap.md](./problem/loongarch-36g-12hart-bootstrap.md)。
+- **关联 commit**：当前工作区未提交

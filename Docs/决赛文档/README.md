@@ -148,3 +148,4 @@
 - [BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
 - [BuildStorm EXT4 inode 级写回缓存并发](./problem/buildstorm-ext4-inode-cache-write-concurrency.md)
 - [RISC-V pipe 跨 hart 空闲唤醒延迟优化](./problem/riscv-pipe-remote-idle-wakeup.md)
+- [LoongArch 36GiB CMA 与 12 核启动栈配置同步](./problem/loongarch-36g-12hart-bootstrap.md)
