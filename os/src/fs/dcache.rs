@@ -96,6 +96,10 @@ impl DentryCache {
     ///
     /// 通常在 `open()` 查找成功、`create_file()` 创建成功、`linkat()` 物化成功后调用。
     pub fn insert_positive(&self, parent: &Arc<dyn Inode>, name: &str, inode: Arc<dyn Inode>) {
+        #[cfg(feature = "perf")]
+        if !name.is_empty() {
+            crate::utils::perf::record_vfs_dentry_positive_insert();
+        }
         self.insert(Self::key(parent, name), DentryValue::Positive { inode });
     }
 
@@ -104,6 +108,10 @@ impl DentryCache {
     /// 只适合非创建路径的 `ENOENT` 结果；创建、link、rename 等可能改变目录项的操作
     /// 必须先失效或覆盖对应缓存。
     pub fn insert_negative(&self, parent: &Arc<dyn Inode>, name: &str) {
+        #[cfg(feature = "perf")]
+        if !name.is_empty() {
+            crate::utils::perf::record_vfs_dentry_negative_insert();
+        }
         self.insert(Self::key(parent, name), DentryValue::Negative);
     }
 
@@ -113,6 +121,10 @@ impl DentryCache {
     pub fn invalidate(&self, parent: &Arc<dyn Inode>, name: &str) {
         let key = Self::key(parent, name);
         let removed = { self.entries.write().remove(&key) };
+        #[cfg(feature = "perf")]
+        if !name.is_empty() {
+            crate::utils::perf::record_vfs_dentry_invalidate(removed.is_some());
+        }
         drop(removed);
     }
 
@@ -144,6 +156,8 @@ impl DentryCache {
     /// Drop all cached path-name metadata at a process boundary.  This is safe
     /// because both positive and negative entries are accelerators only.
     pub fn clear(&self) -> usize {
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_vfs_dentry_clear();
         let removed = {
             let mut entries = self.entries.write();
             mem::take(&mut *entries)

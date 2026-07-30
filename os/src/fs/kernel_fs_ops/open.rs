@@ -113,7 +113,14 @@ fn check_noatime_permission(inode: &Arc<dyn Inode>, flags: OpenFlags) -> SysResu
 /// `O_NOFOLLOW` 与内部 `O_UNLINK` 禁用目录项缓存，以保留末级符号链接本身的语义。
 fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult<Arc<dyn Inode>>> {
     let (parent_path, child_name) = split_parent_child(abs_path)?;
-    let parent_inode = FsIndex::find_inode_idx(parent_path)?;
+    let parent_inode = match FsIndex::find_inode_idx(parent_path) {
+        Some(inode) => inode,
+        None => {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_vfs_dentry_parent_miss();
+            return None;
+        }
+    };
     if !parent_inode.types().is_dir() {
         return Some(Err(SysErrNo::ENOTDIR));
     }
@@ -127,6 +134,9 @@ fn find_from_cached_parent(abs_path: &str, flags: OpenFlags) -> Option<SysResult
             }
             _ => {}
         }
+    } else {
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_vfs_dentry_lookup_bypass_flags();
     }
 
     let lookup_path = join_parent_child(&parent_inode.path(), child_name);
@@ -425,6 +435,10 @@ fn open_inner(
         // O_NOFOLLOW/O_UNLINK because their Linux-visible result is identical.
         !preserve_final_symlink || !inode.types().is_symlink()
     });
+    #[cfg(feature = "perf")]
+    if inode.is_some() {
+        crate::utils::perf::record_vfs_path_index_hit();
+    }
     #[cfg(feature = "perf")]
     if preserve_final_symlink && inode.is_some() {
         crate::utils::perf::record_vfs_preserve_final_cache_hit();

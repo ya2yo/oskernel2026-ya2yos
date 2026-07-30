@@ -311,13 +311,14 @@ pub(crate) static EXT4_READ_OPEN_LOCK_STATS: Ext4LockStats = Ext4LockStats::new(
 pub(crate) static EXT4_READ_DATA_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_FIND_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_FSTAT_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-/// `fast_cached`, `lookup_directory_stat`, `post_wait_cached`, and
+/// `fast_cached`, `directory_epoch_cached`, `post_wait_cached`, and
 /// `actual_ext4_fstat` are mutually exclusive results of `Ext4Inode::fstat()`.
 /// Alias recovery is a nested subphase of the last bucket and is deliberately
 /// reported separately.
 pub(crate) static EXT4_FSTAT_FAST_CACHED: Ext4PhaseStats = Ext4PhaseStats::new();
-pub(crate) static EXT4_FSTAT_LOOKUP_DIRECTORY_STAT: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_FSTAT_DIRECTORY_EPOCH_CACHED: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_FSTAT_POST_WAIT_CACHED: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_FSTAT_POST_WAIT_DIRECTORY_CACHED: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_FSTAT_ACTUAL_EXT4_FSTAT: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_FSTAT_RECOVER_LIVE_PATH: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_FSTAT_SPARSE_WRITE_FLUSH: Ext4PhaseStats = Ext4PhaseStats::new();
@@ -329,9 +330,9 @@ pub(crate) static EXT4_FSTAT_CACHE_INVALIDATIONS: Ext4FstatReasonCounts =
 pub(crate) static EXT4_FSTAT_INNER_MISSES: Ext4FstatReasonPhases = Ext4FstatReasonPhases::new();
 pub(crate) static EXT4_FSTAT_COLD_INODE_COUNTS: Ext4FstatColdInodeCounts =
     Ext4FstatColdInodeCounts::new();
-/// Lookup stat samples discarded because a directory metadata operation
-/// completed between pathname lookup and the one-shot fstat fast path.
-pub(crate) static EXT4_FSTAT_DIRECTORY_LOOKUP_STAT_EPOCH_MISSES: AtomicUsize = AtomicUsize::new(0);
+/// Directory stat cache samples discarded because a directory metadata
+/// operation completed after they were captured.
+pub(crate) static EXT4_FSTAT_DIRECTORY_STAT_EPOCH_MISSES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_WRITE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_WRITE_OPEN_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_WRITE_DATA_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
@@ -396,6 +397,14 @@ pub(crate) static VFS_FSINDEX_MISSES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_DENTRY_POSITIVE_HITS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_DENTRY_NEGATIVE_HITS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_DENTRY_MISSES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_DENTRY_POSITIVE_INSERTS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_DENTRY_NEGATIVE_INSERTS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_DENTRY_INVALIDATES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_DENTRY_INVALIDATE_HITS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_DENTRY_CLEAR_CALLS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_DENTRY_PARENT_MISSES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_DENTRY_LOOKUP_BYPASS_FLAGS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static VFS_PATH_INDEX_HITS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_CACHED_PARENT_FINDS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_ROOT_FINDS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static VFS_PRESERVE_FINAL_CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
@@ -900,8 +909,9 @@ impl Drop for Ext4WritePhaseGuard {
 /// for inode state and the mount-wide lwext4 gate.
 pub enum Ext4FstatPath {
     FastCached,
-    LookupDirectoryStat,
+    DirectoryEpochCached,
     PostWaitCached,
+    PostWaitDirectoryCached,
     ActualExt4Fstat,
 }
 
@@ -921,8 +931,13 @@ impl Ext4FstatPathGuard {
         let elapsed = get_ticks().saturating_sub(self.begin);
         match path {
             Ext4FstatPath::FastCached => EXT4_FSTAT_FAST_CACHED.record(elapsed),
-            Ext4FstatPath::LookupDirectoryStat => EXT4_FSTAT_LOOKUP_DIRECTORY_STAT.record(elapsed),
+            Ext4FstatPath::DirectoryEpochCached => {
+                EXT4_FSTAT_DIRECTORY_EPOCH_CACHED.record(elapsed)
+            }
             Ext4FstatPath::PostWaitCached => EXT4_FSTAT_POST_WAIT_CACHED.record(elapsed),
+            Ext4FstatPath::PostWaitDirectoryCached => {
+                EXT4_FSTAT_POST_WAIT_DIRECTORY_CACHED.record(elapsed)
+            }
             Ext4FstatPath::ActualExt4Fstat => EXT4_FSTAT_ACTUAL_EXT4_FSTAT.record(elapsed),
         }
     }
@@ -1047,8 +1062,8 @@ pub fn record_ext4_fstat_cold_inode(kind: Ext4FstatColdInodeKind, has_lookup_sta
 }
 
 #[inline]
-pub fn record_ext4_fstat_directory_lookup_stat_epoch_miss() {
-    add(&EXT4_FSTAT_DIRECTORY_LOOKUP_STAT_EPOCH_MISSES, 1);
+pub fn record_ext4_fstat_directory_stat_epoch_miss() {
+    add(&EXT4_FSTAT_DIRECTORY_STAT_EPOCH_MISSES, 1);
 }
 
 /// Mutually exclusive stages inside `Ext4Inode::rename()` while it holds the
@@ -1334,6 +1349,44 @@ pub fn record_vfs_dentry_negative_hit() {
 #[inline]
 pub fn record_vfs_dentry_miss() {
     add(&VFS_DENTRY_MISSES, 1);
+}
+
+#[inline]
+pub fn record_vfs_dentry_positive_insert() {
+    add(&VFS_DENTRY_POSITIVE_INSERTS, 1);
+}
+
+#[inline]
+pub fn record_vfs_dentry_negative_insert() {
+    add(&VFS_DENTRY_NEGATIVE_INSERTS, 1);
+}
+
+#[inline]
+pub fn record_vfs_dentry_invalidate(removed: bool) {
+    add(&VFS_DENTRY_INVALIDATES, 1);
+    if removed {
+        add(&VFS_DENTRY_INVALIDATE_HITS, 1);
+    }
+}
+
+#[inline]
+pub fn record_vfs_dentry_clear() {
+    add(&VFS_DENTRY_CLEAR_CALLS, 1);
+}
+
+#[inline]
+pub fn record_vfs_dentry_parent_miss() {
+    add(&VFS_DENTRY_PARENT_MISSES, 1);
+}
+
+#[inline]
+pub fn record_vfs_dentry_lookup_bypass_flags() {
+    add(&VFS_DENTRY_LOOKUP_BYPASS_FLAGS, 1);
+}
+
+#[inline]
+pub fn record_vfs_path_index_hit() {
+    add(&VFS_PATH_INDEX_HITS, 1);
 }
 
 #[inline]

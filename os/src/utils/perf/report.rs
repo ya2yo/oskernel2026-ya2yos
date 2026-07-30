@@ -60,12 +60,20 @@ pub(super) fn emit_report(now: usize) {
         FILE_CACHE_LOAD_RACES.load(Ordering::Relaxed),
     );
     println!(
-        "[perf] vfs_lookup fsidx_hit={} fsidx_miss={} dentry_positive_hit={} dentry_negative_hit={} dentry_miss={} cached_parent_find={} root_find={} preserve_final_cache_hit={} fsidx_reclaimed={} fsidx_rebuilds={} fsidx_identity_epoch_hit={} fsidx_identity_live_probe={} fsidx_identity_stale_replace={} dentry_cleared_by_fsidx={} dentry_capacity_evictions={} dentry_capacity_evicted_entries={}",
+        "[perf] vfs_lookup fsidx_hit={} fsidx_miss={} path_index_hit={} dentry_positive_hit={} dentry_negative_hit={} dentry_miss={} dentry_positive_insert={} dentry_negative_insert={} dentry_invalidates={} dentry_invalidate_hits={} dentry_clear_calls={} dentry_parent_miss={} dentry_lookup_bypass_flags={} cached_parent_find={} root_find={} preserve_final_cache_hit={} fsidx_reclaimed={} fsidx_rebuilds={} fsidx_identity_epoch_hit={} fsidx_identity_live_probe={} fsidx_identity_stale_replace={} dentry_cleared_by_fsidx={} dentry_capacity_evictions={} dentry_capacity_evicted_entries={}",
         VFS_FSINDEX_HITS.load(Ordering::Relaxed),
         VFS_FSINDEX_MISSES.load(Ordering::Relaxed),
+        VFS_PATH_INDEX_HITS.load(Ordering::Relaxed),
         VFS_DENTRY_POSITIVE_HITS.load(Ordering::Relaxed),
         VFS_DENTRY_NEGATIVE_HITS.load(Ordering::Relaxed),
         VFS_DENTRY_MISSES.load(Ordering::Relaxed),
+        VFS_DENTRY_POSITIVE_INSERTS.load(Ordering::Relaxed),
+        VFS_DENTRY_NEGATIVE_INSERTS.load(Ordering::Relaxed),
+        VFS_DENTRY_INVALIDATES.load(Ordering::Relaxed),
+        VFS_DENTRY_INVALIDATE_HITS.load(Ordering::Relaxed),
+        VFS_DENTRY_CLEAR_CALLS.load(Ordering::Relaxed),
+        VFS_DENTRY_PARENT_MISSES.load(Ordering::Relaxed),
+        VFS_DENTRY_LOOKUP_BYPASS_FLAGS.load(Ordering::Relaxed),
         VFS_CACHED_PARENT_FINDS.load(Ordering::Relaxed),
         VFS_ROOT_FINDS.load(Ordering::Relaxed),
         VFS_PRESERVE_FINAL_CACHE_HITS.load(Ordering::Relaxed),
@@ -86,9 +94,14 @@ pub(super) fn emit_report(now: usize) {
     print!("[perf] ext4_fstat_path ");
     emit_ext4_phase_stats("fast_cached", &EXT4_FSTAT_FAST_CACHED);
     print!("[perf] ext4_fstat_path ");
-    emit_ext4_phase_stats("lookup_directory_stat", &EXT4_FSTAT_LOOKUP_DIRECTORY_STAT);
+    emit_ext4_phase_stats("directory_epoch_cached", &EXT4_FSTAT_DIRECTORY_EPOCH_CACHED);
     print!("[perf] ext4_fstat_path ");
     emit_ext4_phase_stats("post_wait_cached", &EXT4_FSTAT_POST_WAIT_CACHED);
+    print!("[perf] ext4_fstat_path ");
+    emit_ext4_phase_stats(
+        "post_wait_directory_cached",
+        &EXT4_FSTAT_POST_WAIT_DIRECTORY_CACHED,
+    );
     print!("[perf] ext4_fstat_path ");
     emit_ext4_phase_stats("actual_ext4_fstat", &EXT4_FSTAT_ACTUAL_EXT4_FSTAT);
     print!("[perf] ext4_fstat_path ");
@@ -177,8 +190,8 @@ pub(super) fn emit_report(now: usize) {
             .load(Ordering::Relaxed),
     );
     println!(
-        "[perf] ext4_fstat_directory_lookup_stat epoch_miss={}",
-        EXT4_FSTAT_DIRECTORY_LOOKUP_STAT_EPOCH_MISSES.load(Ordering::Relaxed),
+        "[perf] ext4_fstat_directory_stat epoch_miss={}",
+        EXT4_FSTAT_DIRECTORY_STAT_EPOCH_MISSES.load(Ordering::Relaxed),
     );
     emit_ext4_lock_stats("ext4_write_lock", &EXT4_WRITE_LOCK_STATS);
     emit_ext4_lock_stats("ext4_write_open_lock", &EXT4_WRITE_OPEN_LOCK_STATS);

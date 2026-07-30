@@ -801,3 +801,32 @@ ColdInode 六类及 `panic/ERROR/TFAIL/TBROK/Summary/shutdown!`。命中数量�
 `make TARGET_ARCH=riscv64`，均通过；最后再次运行 RISC-V `make perf`，使 `kernel-rv` 保持 perf 版本。
 构建仅有既有 Cargo config 弃用、vendored `smoltcp` 与 release 的 `ipi_sent` warning。本轮按维护者的
 10 分钟测试安排未启动新的 QEMU，故尚无 guest 运行期命中率或完整功能回归可报告。
+
+## 2026-07-30：`tmp_17/18` dentry 结论与目录 epoch stat cache
+
+### dentry 取证
+
+`tmp_17.ans` 的末尾快照位于 `t=539592ms`、Cargo `Building 29/446`。新增的路径统计为
+`path_index_hit=31517`、`dentry_positive_insert=2013`、`dentry_positive_hit=0`、
+`dentry_negative_hit=3937`、`dentry_miss=4592`、`dentry_parent_miss=4638`；dentry clear 和容量淘汰均为零。
+正目录项确实已写入，但普通成功路径会先被 `FsIndex` 的完整 pathname 命中截获，因此不再经过 dentry lookup。
+负目录项仍避免重复 ENOENT 查找。结论是不恢复正 dentry fast path，避免为不会命中的缓存增加语义风险。
+
+### 目录 stat cache
+
+`tmp_17` 同一快照的实际 `ext4_fstat` 为 `4919` 次，`ext4_fstat_lock` 的 wait/hold 为
+`219294389/59343405 us`。目录 lookup 已在全局 gate 内取得 stat，却只能被首次 fstat 一次性消费；随后稳定目录的
+fstat 会重复进入 lwext4。实现将该 snapshot 改为按 `EXT4_DIRECTORY_STAT_EPOCH` 有效的缓存，实际 fstat 的新结果也会
+回填。所有目录项变更和目录自身 metadata 变更，以及 read_dentry 的 atime 更新，均在成功后推进 epoch；因此缓存不跨
+已完成的可见 metadata 修改。fstat 仍在 epoch load 处线性化，失配时保持原 live fstat 回退。
+
+`tmp_18.ans`（`t=566931ms`、Cargo `Building 32/446`）有 `19457` 次 stat syscall，但只实际执行
+`3653` 次 `ext4_fstat`，目录 epoch 快路径 `2251` 次，fstat lock wait/hold 为 `175237416/52576106 us`。该样本比
+`tmp_17` 更长且工作量不同，故仅记录为方向性证据，不报告端到端比例。两份均有
+`BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，未见 panic/TFAIL/TBROK/ERROR；都未完成 compile、END 或 shutdown。
+
+### 下一步
+
+`tmp_18` 的 `read_bypass_file_ops=11252`、`read_bypass_file_bytes=74614810` 说明 8 MiB 文件准入阈值已绕过可观
+读量，但全局 file page cache 无逐出策略，不能直接扩大阈值。下一轮先增加全局容量边界或证明该类读取的复用，再以
+相同 Cargo 检查点评估 read-data lock 和实际 cache hit/miss。

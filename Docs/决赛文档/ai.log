@@ -8419,3 +8419,47 @@ mode、owner 及 read/find/fstat 锁等待是稳定热点；两份日志均早�
 ### 关联 commit
 
 当前工作区未提交
+
+## 2026-07-30：`tmp_17/18` BuildStorm dentry 取证与目录 epoch stat cache
+
+### 用户输入
+
+维护者在开始下一轮优化后提供 `tmp_17.ans`，随后提供新的 `tmp_18.ans`，要求继续依据
+`Docs/决赛文档/优化方案.md` 优化内核。
+
+### 分析与采纳结论
+
+`tmp_17` 的 `dentry_positive_insert=2013` 而 `dentry_positive_hit=0`，同时 `path_index_hit=31517`；dentry 没有
+clear 或容量淘汰。普通成功路径被 FsIndex 的完整路径缓存先命中，正 dentry 不会被再次 lookup，负 dentry 的
+3937 次 hit 则仍有价值。因此没有恢复正 dentry fast path。`tmp_17` 的实际 fstat 为 4919 次，目录 lookup 已携带
+stat 却只能一次性使用，故采纳按目录 metadata epoch 保留该 Kstat 的局部优化。
+
+`tmp_18` 的更长 `t=566931ms` 快照仍只有 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，没有 compile/end/shutdown；无
+panic/TFAIL/TBROK/ERROR。它有更多 stat syscall（19457），实际 ext4 fstat 降到 3653，fstat lock wait/hold 为
+175.237/52.576 s，目录 epoch cache 命中 2251 次。这是混合工作量下的方向性证据，不报告端到端百分比。read-data
+lock wait 仍为 500.517 s，且 8 MiB 文件缓存准入绕过 11252 次/74.615 MiB；全局页缓存无逐出策略，未在无容量边界
+情况下扩大阈值。
+
+### 修改
+
+目录 lookup/fstat Kstat 现由 `EXT4_DIRECTORY_STAT_EPOCH` 保护并可在 epoch 不变时重复复用；每次成功的
+目录项变更、目录 metadata 更新和 getdents atime 更新都会推进 epoch，失配则保留原 live fstat。perf 将该快路径
+标为 `directory_epoch_cached`，并保留锁后复检 bucket。dentry 新增的插入、失效、parent miss、flag bypass 和
+path-index 计数用于固定 P4 结论，未更改目录项语义。
+
+### 验证
+
+已执行 `cargo fmt --manifest-path os/Cargo.toml`、`git diff --check`、`make perf TARGET_ARCH=riscv64` 和
+`make perf TARGET_ARCH=loongarch64`，均通过；构建仅有既有 Cargo config 与 vendored smoltcp warning。没有重复
+QEMU 长测，使用维护者提供的 `tmp_18.ans` 作运行期观察；完整 BuildStorm、目录 metadata 定向 guest 回归和有界
+大文件页缓存 A/B 待后续执行。
+
+### 修改文件
+
+`os/src/fs/dcache.rs`、`os/src/fs/kernel_fs_ops/open.rs`、`os/src/fs/ext4_lw/inode.rs`、
+`os/src/utils/perf/fs.rs`、`os/src/utils/perf/report.rs`、`Docs/决赛文档/优化方案.md`、
+`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、`Docs/决赛文档/开发日志.md`。
+
+### 关联 commit
+
+当前工作区未提交

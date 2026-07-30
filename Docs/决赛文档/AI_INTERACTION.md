@@ -1928,3 +1928,17 @@
   无 panic/TFAIL/TBROK/ERROR；样本因 timeout 结束，未报告完整 BuildStorm 或端到端性能比例。
 - **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm dentry 取证与目录 epoch stat cache（7.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `tmp_17.ans`、`tmp_18.ans`，要求依据优化方案继续内核性能优化。
+- **描述**：P4 统计证明正 dentry 已插入但被 FsIndex pathname hit 绕过，故保留负 dentry 而不改变正 dentry
+  语义。随后把目录 lookup 取得的 Kstat 扩展为受 mount-wide directory metadata epoch 保护的缓存；目录项变更、
+  目录自身 metadata 更新和 getdents atime 更新都会失效，epoch 不匹配保留 live lwext4 fstat。新增 perf 标签
+  `directory_epoch_cached`，并保留缓存后锁内复检计数。
+- **验证**：RISC-V、LoongArch64 `make perf`、格式及 diff 检查通过。`tmp_18` 在 `t=566.931s` 有
+  `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`、无 panic/TFAIL/TBROK/ERROR，实际 fstat 为 3653；无完整 compile/end/shutdown，
+  不报告端到端加速。大于 8 MiB 文件的读旁路仍无容量受限缓存策略，未直接放宽阈值。
+- **关联文档**：[优化方案](./优化方案.md)、[BuildStorm 读路径、FsIndex 与 fstat 锁争用](./problem/buildstorm-read-path-lock-contention.md)
+- **关联 commit**：当前工作区未提交

@@ -127,9 +127,9 @@ struct Ext4StatCache {
     miss_reason: Ext4FstatMissReason,
 }
 
-/// A one-shot directory `Kstat` converted from the `ext4_stat_get()` already
-/// performed by pathname lookup.  `stat_cache` serializes `take()` so exactly
-/// one concurrent `fstat()` can consume it.
+/// A directory `Kstat` converted from the `ext4_stat_get()` already performed
+/// by pathname lookup or a later `fstat()`. The epoch makes it safe to retain
+/// until the next directory metadata mutation.
 struct Ext4DirectoryLookupStat {
     stat: Kstat,
     epoch: usize,
@@ -355,25 +355,36 @@ impl Ext4Inode {
         }
     }
 
-    /// Return and consume the lookup stat for one directory fstat when no
-    /// successful directory metadata operation has occurred since lookup.
-    /// Sampling the epoch before taking the cache gives this lock-free path a
-    /// linearization point without entering lwext4's mount-wide operation
-    /// gate; a concurrent later mutation may validly be observed afterward.
+    /// Return a directory stat while the conservative metadata epoch is
+    /// unchanged.  Path lookup and a successful `fstat()` both populate this
+    /// cache, so repeated stats on a stable directory avoid the mount-wide
+    /// lwext4 gate.  Sampling the epoch before taking the cache gives this
+    /// lock-free path a linearization point without entering lwext4's gate;
+    /// a concurrent later mutation may validly be observed afterward.
     #[inline]
-    fn take_directory_lookup_stat(&self) -> Option<Kstat> {
+    fn cached_directory_stat(&self) -> Option<Kstat> {
         if self.inode_type != InodeType::Dir {
             return None;
         }
 
         let current_epoch = EXT4_DIRECTORY_STAT_EPOCH.load(Ordering::Acquire);
-        let directory_lookup_stat = self.stat_cache.write().directory_lookup_stat.take()?;
-        if directory_lookup_stat.epoch == current_epoch {
-            Some(directory_lookup_stat.stat)
+        let cache = self.stat_cache.read();
+        let directory_stat = cache.directory_lookup_stat.as_ref()?;
+        if directory_stat.epoch == current_epoch {
+            Some(directory_stat.stat)
         } else {
             #[cfg(feature = "perf")]
-            crate::utils::perf::record_ext4_fstat_directory_lookup_stat_epoch_miss();
+            crate::utils::perf::record_ext4_fstat_directory_stat_epoch_miss();
             None
+        }
+    }
+
+    #[inline]
+    fn update_cached_directory_stat(&self, stat: Kstat) {
+        if self.inode_type == InodeType::Dir {
+            let epoch = EXT4_DIRECTORY_STAT_EPOCH.load(Ordering::Acquire);
+            self.stat_cache.write().directory_lookup_stat =
+                Some(Ext4DirectoryLookupStat { stat, epoch });
         }
     }
 
@@ -1272,9 +1283,9 @@ impl Inode for Ext4Inode {
             fstat_path.finish(Ext4FstatPath::FastCached);
             return self.stat_with_known_size(stat);
         }
-        if let Some(stat) = self.take_directory_lookup_stat() {
+        if let Some(stat) = self.cached_directory_stat() {
             #[cfg(feature = "perf")]
-            fstat_path.finish(Ext4FstatPath::LookupDirectoryStat);
+            fstat_path.finish(Ext4FstatPath::DirectoryEpochCached);
             return stat;
         }
 
@@ -1288,6 +1299,11 @@ impl Inode for Ext4Inode {
             #[cfg(feature = "perf")]
             fstat_path.finish(Ext4FstatPath::PostWaitCached);
             return self.stat_with_known_size(stat);
+        }
+        if let Some(stat) = self.cached_directory_stat() {
+            #[cfg(feature = "perf")]
+            fstat_path.finish(Ext4FstatPath::PostWaitDirectoryCached);
+            return stat;
         }
         let inner = self.inner.get_unchecked_mut();
         #[cfg(feature = "perf")]
@@ -1360,6 +1376,7 @@ impl Inode for Ext4Inode {
             kstat.st_mode = (kstat.st_mode & !0xF000) | type_bits;
         }
         self.update_cached_stat(kstat);
+        self.update_cached_directory_stat(kstat);
         #[cfg(feature = "perf")]
         fstat_path.finish(Ext4FstatPath::ActualExt4Fstat);
         self.stat_with_known_size(kstat)
