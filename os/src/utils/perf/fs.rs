@@ -333,6 +333,8 @@ pub(crate) static EXT4_FSTAT_COLD_INODE_COUNTS: Ext4FstatColdInodeCounts =
 /// completed between pathname lookup and the one-shot fstat fast path.
 pub(crate) static EXT4_FSTAT_DIRECTORY_LOOKUP_STAT_EPOCH_MISSES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_WRITE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+pub(crate) static EXT4_WRITE_OPEN_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+pub(crate) static EXT4_WRITE_DATA_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_RENAME_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_CLOSE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_READ_ALL_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
@@ -675,6 +677,16 @@ pub fn record_ext4_write_lock(wait_ticks: usize, hold_ticks: usize) {
     EXT4_WRITE_LOCK_STATS.record(wait_ticks, hold_ticks);
 }
 
+#[inline]
+pub fn record_ext4_write_open_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_WRITE_OPEN_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
+#[inline]
+pub fn record_ext4_write_data_lock(wait_ticks: usize, hold_ticks: usize) {
+    EXT4_WRITE_DATA_LOCK_STATS.record(wait_ticks, hold_ticks);
+}
+
 /// Lightweight lock classes identify the most contended lwext4 entry points
 /// without changing the filesystem's single global serialization boundary.
 #[derive(Clone, Copy)]
@@ -683,7 +695,8 @@ enum Ext4LockClass {
     ReadData,
     Find,
     Fstat,
-    Write,
+    WriteOpen,
+    WriteData,
     Rename,
     Close,
     ReadAll,
@@ -721,8 +734,12 @@ impl Ext4OpLock {
         self.lock_profiled(Ext4LockClass::Fstat)
     }
 
-    pub(crate) fn lock_for_write(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Write)
+    pub(crate) fn lock_for_write_open(&self) -> Ext4ProfiledOpGuard<'_> {
+        self.lock_profiled(Ext4LockClass::WriteOpen)
+    }
+
+    pub(crate) fn lock_for_write_data(&self) -> Ext4ProfiledOpGuard<'_> {
+        self.lock_profiled(Ext4LockClass::WriteData)
     }
 
     pub(crate) fn lock_for_rename(&self) -> Ext4ProfiledOpGuard<'_> {
@@ -792,7 +809,14 @@ impl Drop for Ext4ProfiledOpGuard<'_> {
                     }
                     Ext4LockClass::Find => record_ext4_find_lock(self.wait_ticks, hold_ticks),
                     Ext4LockClass::Fstat => record_ext4_fstat_lock(self.wait_ticks, hold_ticks),
-                    Ext4LockClass::Write => record_ext4_write_lock(self.wait_ticks, hold_ticks),
+                    Ext4LockClass::WriteOpen => {
+                        record_ext4_write_lock(self.wait_ticks, hold_ticks);
+                        record_ext4_write_open_lock(self.wait_ticks, hold_ticks);
+                    }
+                    Ext4LockClass::WriteData => {
+                        record_ext4_write_lock(self.wait_ticks, hold_ticks);
+                        record_ext4_write_data_lock(self.wait_ticks, hold_ticks);
+                    }
                     Ext4LockClass::Rename => record_ext4_rename_lock(self.wait_ticks, hold_ticks),
                     Ext4LockClass::Close => record_ext4_close_lock(self.wait_ticks, hold_ticks),
                     Ext4LockClass::ReadAll => {
@@ -819,10 +843,9 @@ impl Drop for Ext4ProfiledOpGuard<'_> {
     }
 }
 
-/// A mutually exclusive phase inside `Ext4Inode::write_at()`.  The outer
-/// lwext4 operation guard already accounts for lock wait and whole-section
-/// hold time; these buckets identify which work performed while holding it is
-/// worth optimizing.
+/// A mutually exclusive phase inside `Ext4Inode::write_at()`. The quota phase
+/// is measured outside the global lwext4 operation guard so its cost is not
+/// attributed to global lock hold time.
 pub enum Ext4WritePhase {
     Open,
     Quota,

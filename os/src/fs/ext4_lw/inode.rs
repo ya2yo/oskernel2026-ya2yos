@@ -780,29 +780,33 @@ impl Inode for Ext4Inode {
             }
         }
 
-        let _ext4 = EXT4_OP_LOCK.lock_for_write();
-        let inner = self.inner.get_unchecked_mut();
-        let path = Self::live_path(inner);
-        let delayed = inner.delay;
-        let file = &mut inner.f;
-        #[cfg(feature = "perf")]
-        let open_phase =
-            crate::utils::perf::Ext4WritePhaseGuard::new(crate::utils::perf::Ext4WritePhase::Open);
-        file.ensure_open(O_RDWR).map_err(SysErrNo::from)?;
-        #[cfg(feature = "perf")]
-        drop(open_phase);
-        if delayed {
-            // Keep an unlinked-but-open temporary file's cache alive until
-            // its last fd closes; the FIFO cannot otherwise distinguish it
-            // from an idle cache and will repeatedly evict/rebuild it.
-            file.pin_write_back_cache();
-        }
+        let (path, current_size) = {
+            let _ext4 = EXT4_OP_LOCK.lock_for_write_open();
+            let inner = self.inner.get_unchecked_mut();
+            let path = Self::live_path(inner);
+            let delayed = inner.delay;
+            let file = &mut inner.f;
+            #[cfg(feature = "perf")]
+            let open_phase = crate::utils::perf::Ext4WritePhaseGuard::new(
+                crate::utils::perf::Ext4WritePhase::Open,
+            );
+            file.ensure_open(O_RDWR).map_err(SysErrNo::from)?;
+            #[cfg(feature = "perf")]
+            drop(open_phase);
+            if delayed {
+                // Keep an unlinked-but-open temporary file's cache alive until
+                // its last fd closes; the FIFO cannot otherwise distinguish it
+                // from an idle cache and will repeatedly evict/rebuild it.
+                file.pin_write_back_cache();
+            }
+            let current_size = self
+                .known_size()
+                .unwrap_or_else(|| file.file_size() as usize);
+            (path, current_size)
+        };
         #[cfg(feature = "perf")]
         let quota_phase =
             crate::utils::perf::Ext4WritePhaseGuard::new(crate::utils::perf::Ext4WritePhase::Quota);
-        let current_size = self
-            .known_size()
-            .unwrap_or_else(|| file.file_size() as usize);
         let previous_reserved = self.quota_reserved.load(Ordering::Acquire);
         let reservation = if end > previous_reserved {
             let target = if end <= QUOTA_RESERVE_GRANULARITY {
@@ -819,42 +823,78 @@ impl Inode for Ext4Inode {
                 // Charge only this write before reporting ENOSPC so callers
                 // can consume the mount exactly up to its real limit.
                 if target == end || error != SysErrNo::ENOSPC {
-                    if error == SysErrNo::ENOSPC {
-                        file.defer_close_flush();
-                    }
-                    return Err(error);
+                    Err(error)
+                } else if let Err(error) = mount_table.reserve_write(&path, previous, end) {
+                    Err(error)
+                } else {
+                    self.quota_reserved.store(end, Ordering::Release);
+                    Ok(Some((previous, end)))
                 }
-                if let Err(error) = mount_table.reserve_write(&path, previous, end) {
-                    if error == SysErrNo::ENOSPC {
-                        file.defer_close_flush();
-                    }
-                    return Err(error);
-                }
-                self.quota_reserved.store(end, Ordering::Release);
-                Some((previous, end))
             } else {
                 self.quota_reserved.store(target, Ordering::Release);
-                Some((previous, target))
+                Ok(Some((previous, target)))
             }
         } else {
-            None
+            Ok(None)
         };
         #[cfg(feature = "perf")]
         drop(quota_phase);
+        let reservation = match reservation {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                if error == SysErrNo::ENOSPC {
+                    let _ext4 = EXT4_OP_LOCK.lock_for_write_data();
+                    self.inner.get_unchecked_mut().f.defer_close_flush();
+                }
+                return Err(error);
+            }
+        };
         #[cfg(feature = "perf")]
         let data_phase =
             crate::utils::perf::Ext4WritePhaseGuard::new(crate::utils::perf::Ext4WritePhase::Data);
-        if off > current_size {
-            // A write beyond EOF creates a sparse range. The whole-file cache
-            // tracks bytes only and would otherwise materialize that range.
-            file.disable_write_back_cache().map_err(SysErrNo::from)?;
-        }
-        let written = match file.file_write_at(off, buf) {
-            Ok(written) => written,
-            Err(err) => {
-                if SysErrNo::from(err) == SysErrNo::ENOSPC {
-                    file.defer_close_flush();
+        let write_result = {
+            let _ext4 = EXT4_OP_LOCK.lock_for_write_data();
+            let file = &mut self.inner.get_unchecked_mut().f;
+            let result = if off > current_size {
+                // A write beyond EOF creates a sparse range. The whole-file cache
+                // tracks bytes only and would otherwise materialize that range.
+                file.disable_write_back_cache()
+                    .map_err(SysErrNo::from)
+                    .and_then(|_| file.file_write_at(off, buf).map_err(SysErrNo::from))
+            } else {
+                file.file_write_at(off, buf).map_err(SysErrNo::from)
+            };
+            match result {
+                Ok(written) => {
+                    #[cfg(feature = "perf")]
+                    let fstat_miss_reason = match file.last_write_path() {
+                        lwext4_rust::perf::FileWritePath::DenseWriteBack => {
+                            Ext4FstatMissReason::DenseWriteBack
+                        }
+                        lwext4_rust::perf::FileWritePath::Direct => {
+                            Ext4FstatMissReason::DirectWrite
+                        }
+                        lwext4_rust::perf::FileWritePath::SparseBuffered => {
+                            Ext4FstatMissReason::SparseBufferedWrite
+                        }
+                    };
+                    #[cfg(not(feature = "perf"))]
+                    let fstat_miss_reason = Ext4FstatMissReason::DirectWrite;
+                    Ok((written, fstat_miss_reason))
                 }
+                Err(error) => {
+                    if error == SysErrNo::ENOSPC {
+                        file.defer_close_flush();
+                    }
+                    Err(error)
+                }
+            }
+        };
+        #[cfg(feature = "perf")]
+        drop(data_phase);
+        let (written, fstat_miss_reason) = match write_result {
+            Ok(result) => result,
+            Err(error) => {
                 if let Some((previous, target)) = reservation {
                     MNT_TABLE
                         .lock()
@@ -862,23 +902,11 @@ impl Inode for Ext4Inode {
                     self.quota_reserved
                         .store(previous_reserved, Ordering::Release);
                 }
-                return Err(SysErrNo::from(err));
+                return Err(error);
             }
         };
-        #[cfg(feature = "perf")]
-        drop(data_phase);
         let end = off.checked_add(written).ok_or(SysErrNo::EFBIG)?;
         self.update_known_size(current_size.max(end));
-        #[cfg(feature = "perf")]
-        let fstat_miss_reason = match file.last_write_path() {
-            lwext4_rust::perf::FileWritePath::DenseWriteBack => Ext4FstatMissReason::DenseWriteBack,
-            lwext4_rust::perf::FileWritePath::Direct => Ext4FstatMissReason::DirectWrite,
-            lwext4_rust::perf::FileWritePath::SparseBuffered => {
-                Ext4FstatMissReason::SparseBufferedWrite
-            }
-        };
-        #[cfg(not(feature = "perf"))]
-        let fstat_miss_reason = Ext4FstatMissReason::DirectWrite;
         self.invalidate_cached_stat(fstat_miss_reason);
         Ok(written)
     }
@@ -1461,26 +1489,31 @@ impl Inode for Ext4Inode {
     fn unlink(&self, path: &str) -> SyscallRet {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
-        #[cfg(feature = "perf")]
-        let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Unlink);
-        let inner = self.inner.get_unchecked_mut();
-        let is_dir = as_inode_type(inner.f.types()) == InodeType::Dir;
-        let file = &mut inner.f;
-        let ret = if is_dir {
-            file.dir_rm(path).map_err(SysErrNo::from)
-        } else {
-            file.file_remove(path).map_err(SysErrNo::from)?;
-            MNT_TABLE.lock().remove_file(path);
-            Ok(0)
+        let (ret, remove_quota) = {
+            let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
+            #[cfg(feature = "perf")]
+            let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Unlink);
+            let inner = self.inner.get_unchecked_mut();
+            let is_dir = as_inode_type(inner.f.types()) == InodeType::Dir;
+            let file = &mut inner.f;
+            let ret = if is_dir {
+                file.dir_rm(path).map_err(SysErrNo::from)
+            } else {
+                file.file_remove(path).map_err(SysErrNo::from).map(|_| 0)
+            };
+            if ret.is_ok() {
+                // A removed directory entry can eventually make this inode number
+                // available to another path.  Existing wrappers from before this
+                // point therefore require FsIndex's live identity validation.
+                Self::advance_identity_epoch();
+                Self::advance_directory_stat_epoch();
+                self.invalidate_cached_stat(Ext4FstatMissReason::Unlink);
+            }
+            let remove_quota = !is_dir && ret.is_ok();
+            (ret, remove_quota)
         };
-        if ret.is_ok() {
-            // A removed directory entry can eventually make this inode number
-            // available to another path.  Existing wrappers from before this
-            // point therefore require FsIndex's live identity validation.
-            Self::advance_identity_epoch();
-            Self::advance_directory_stat_epoch();
-            self.invalidate_cached_stat(Ext4FstatMissReason::Unlink);
+        if remove_quota {
+            MNT_TABLE.lock().remove_file(path);
         }
         ret
     }
@@ -1643,20 +1676,30 @@ impl Inode for Ext4Inode {
 /// 当 `Ext4Inode` 生命周期结束时，确保关闭底层文件句柄。
 impl Drop for Ext4Inode {
     fn drop(&mut self) {
-        let _ext4 = EXT4_OP_LOCK.lock_for_close();
-        let inner = self.inner.get_unchecked_mut();
-        let path = Self::live_path(inner);
-        // 如果标记了延时删除，则在关闭前移除文件。
-        if inner.delay {
-            debug!("Ext4Inode delays unlink {:?}", path);
-            let remove_result = inner.f.file_remove(&path);
-            if remove_result.is_ok() {
-                Self::advance_identity_epoch();
-                Self::advance_directory_stat_epoch();
-            }
+        let remove_quota_path = {
+            let _ext4 = EXT4_OP_LOCK.lock_for_close();
+            let inner = self.inner.get_unchecked_mut();
+            let path = Self::live_path(inner);
+            // 如果标记了延时删除，则在关闭前移除文件。
+            let remove_quota_path = if inner.delay {
+                debug!("Ext4Inode delays unlink {:?}", path);
+                let remove_result = inner.f.file_remove(&path);
+                if remove_result.is_ok() {
+                    Self::advance_identity_epoch();
+                    Self::advance_directory_stat_epoch();
+                    Some(path)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            inner.f.file_close().expect("failed to close fd");
+            remove_quota_path
+        };
+        if let Some(path) = remove_quota_path {
             MNT_TABLE.lock().remove_file(&path);
         }
-        inner.f.file_close().expect("failed to close fd");
     }
 }
 

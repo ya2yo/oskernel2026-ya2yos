@@ -1916,3 +1916,15 @@
 - **描述**：AI 对齐两份最终 perf 快照，确认 sparse 工作量均为 `88` batches/`34,922,007 B`，而 `Building 41/446` 与 `38/446` 的差异来自并发锁交错；两份日志均没有完整 compile/end/shutdown，不能作为新代码 A/B。随后在 VFS/ext4 创建路径增加 `create_with_metadata()`，将新 inode 的 create/mode/owner 连续操作合并到一次 namespace gate，并保留元数据语义与错误恢复。
 - **验证**：RISC-V/LoongArch64 perf 与 release 构建、`git diff --check` 通过；提升权限的 120 秒 RISC-V 烟测进入 `3/446`，无 `panic/TFAIL/TBROK`，因 timeout 结束。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/buildstorm-create-metadata-lock-merge.md](./problem/buildstorm-create-metadata-lock-merge.md)。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 写配额移出 EXT4 全局锁（7.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求参考《优化方案》继续优化，并指定使用十分钟结果 `tmp_16.ans` 作为新依据。
+- **描述**：将 `Ext4Inode::write_at()` 拆为 write-open、quota、write-data 三段，配额预留/回滚不再持有
+  `EXT4_OP_LOCK`；新增 open/data 锁统计，并把 unlink/延迟删除的 `MNT_TABLE` 记账移到 lwext4 gate 释放之后。
+- **验证**：RISC-V/LoongArch64 perf 与 release 构建、格式和 diff 检查通过。RISC-V `/tmp` qcow2 overlay
+  180 秒样本进入 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`、`Building 8/446`，sigaltstack/rseq regression 均 PASS，
+  无 panic/TFAIL/TBROK/ERROR；样本因 timeout 结束，未报告完整 BuildStorm 或端到端性能比例。
+- **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

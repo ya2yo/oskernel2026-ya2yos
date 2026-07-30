@@ -8376,3 +8376,46 @@ mode、owner 及 read/find/fstat 锁等待是稳定热点；两份日志均早�
 `git diff --check` 通过。提升权限的 120 秒 RISC-V `make run` 启动成功并推进到 `3/446`，无
 `panic/TFAIL/TBROK`，因 timeout 结束；未以该短样本宣称端到端性能提升。详见
 `Docs/决赛文档/problem/buildstorm-create-metadata-lock-merge.md`。
+
+## 2026-07-30：BuildStorm 写配额移出 EXT4 全局锁
+
+### 用户输入
+
+维护者要求参考 `Docs/决赛文档/优化方案.md` 优化内核，并提供新的十分钟结果 `tmp_16.ans`。
+
+### 分析与采纳结论
+
+方案基线显示 `Ext4Inode::write_at()` 的纯 Rust 配额记账占用 `EXT4_OP_LOCK`，而配额操作不调用 lwext4；同时
+`unlink()` 与延迟删除析构存在 `EXT4_OP_LOCK -> MNT_TABLE` 嵌套。`tmp_16.ans` 最后快照在 `Building 30/446`
+附近，write gate 两段统计的 quota 累计仅 `8.744 ms`，证明可以缩短全局锁域；该样本未完成完整 BuildStorm，不能外推端到端加速。
+
+### 修改
+
+`Ext4Inode::write_at()` 现在按 write-open、quota、write-data 三段运行：open 段获取稳定 path/size 并完成
+`ensure_open`，quota 段单独持有 `MNT_TABLE`，data 段保留 sparse 判定、`file_write_at`、失败 flush 和
+`last_write_path` 失效原因。写失败回滚在 data gate 释放后执行；`unlink()` 与 `Drop` 将配额删除移到 lwext4
+成功且全局 gate 释放之后。`utils/perf` 新增 `ext4_write_open_lock` 与 `ext4_write_data_lock`，总 write
+统计继续保留。
+
+### 验证
+
+`cargo fmt --manifest-path os/Cargo.toml -- --check`、`git diff --check`、RISC-V/LoongArch64 `make perf` 和
+双架构 release `make TARGET_ARCH=riscv64` 均通过（仅既有 smoltcp/调度 warning）。使用 `/tmp` qcow2 overlay
+运行 RISC-V 180 秒，输出 `sigaltstack regression: PASS`、`rseq regression: PASS`、
+`BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok`，最后到 `Building 8/446`，无 panic/TFAIL/TBROK/ERROR；
+因外层 timeout 结束，未完成完整 BuildStorm，未报告端到端性能比例。
+
+### 下一轮候选
+
+同一 `tmp_16.ans` 快照仍为 `dentry_positive_hit=0`，而 `ext4_find_lock` 累计
+`wait_us=455,517,853`、`hold_us=71,616,077`。下一轮先按优化方案 P4.0 对 dentry lookup/插入/失效原因做聚合
+取证，再决定是否恢复正向 dentry 复用；必须保留 rename/unlink、identity epoch、负 dentry 与 `O_CREAT` 语义。
+
+### 修改文件
+
+`os/src/fs/ext4_lw/inode.rs`、`os/src/utils/perf/fs.rs`、`os/src/utils/perf/report.rs`、
+`Docs/决赛文档/优化方案.md`、`Docs/决赛文档/开发日志.md`。
+
+### 关联 commit
+
+当前工作区未提交

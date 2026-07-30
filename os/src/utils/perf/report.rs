@@ -181,6 +181,8 @@ pub(super) fn emit_report(now: usize) {
         EXT4_FSTAT_DIRECTORY_LOOKUP_STAT_EPOCH_MISSES.load(Ordering::Relaxed),
     );
     emit_ext4_lock_stats("ext4_write_lock", &EXT4_WRITE_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_write_open_lock", &EXT4_WRITE_OPEN_LOCK_STATS);
+    emit_ext4_lock_stats("ext4_write_data_lock", &EXT4_WRITE_DATA_LOCK_STATS);
     print!("[perf] ext4_write_duration ");
     emit_duration(
         "open",
