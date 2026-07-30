@@ -1,14 +1,19 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::{collections::btree_map::Entry, collections::BTreeMap, sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::RwLock;
 
 use crate::{arch::memory_layout::PAGE_SIZE, fs::Inode, mm::FrameTracker, utils::SysErrNo};
 
 /// Maximum number of adjacent pages a confirmed sequential fault may load in
 /// one filesystem read.  This deliberately stays small: the global cache has
-/// no eviction policy yet, while 16 KiB is enough to amortize the lwext4 gate
-/// over common ELF and source-file mmap walks.
+/// a fixed capacity but no eviction policy, while 16 KiB is enough to amortize
+/// the lwext4 gate over common ELF and source-file mmap walks.
 const SEQUENTIAL_READAHEAD_MAX_PAGES: usize = 4;
+/// Keep the global page cache bounded even when one long-lived compiler walks
+/// large source and artifact files.  This is 384 MiB with the current 4 KiB
+/// page size, leaving room for the mmap working set while permitting normal
+/// read caching above the former 8 MiB per-file threshold.
+const MAX_FILE_PAGE_CACHE_PAGES: usize = 96 * 1024;
 
 /// 文件页缓存的索引键。
 ///
@@ -77,6 +82,10 @@ pub struct FilePageCache {
     /// BuildStorm 的 mmap 和多页 read 会在同一文件中连续探测大量页。把路径
     /// 放在外层能让内层查询只比较页号，而不是在全局页表中反复比较同一段路径。
     pages: RwLock<BTreeMap<Arc<str>, FilePages>>,
+    /// Number of pages published in `pages`. Reservations are taken before a
+    /// cold page is allocated or inserted, so concurrent publishers cannot
+    /// push the cache beyond its configured capacity.
+    page_count: AtomicUsize,
 }
 
 impl FilePageCache {
@@ -84,7 +93,56 @@ impl FilePageCache {
     pub const fn new() -> Self {
         Self {
             pages: RwLock::new(BTreeMap::new()),
+            page_count: AtomicUsize::new(0),
         }
+    }
+
+    /// Number of resident pages currently retained by the global cache.
+    #[inline]
+    pub fn cached_page_count(&self) -> usize {
+        self.page_count.load(Ordering::Relaxed)
+    }
+
+    /// Fixed global cache capacity, expressed in pages.
+    #[inline]
+    pub const fn max_cached_pages(&self) -> usize {
+        MAX_FILE_PAGE_CACHE_PAGES
+    }
+
+    /// Reserve one cache slot before a cold page is allocated. The reservation
+    /// is released when allocation fails or a concurrent publisher won the
+    /// same key, keeping the global cap exact without holding the map lock
+    /// across allocation or filesystem I/O.
+    #[inline]
+    fn try_reserve_page(&self) -> bool {
+        let mut count = self.page_count.load(Ordering::Relaxed);
+        loop {
+            if count >= MAX_FILE_PAGE_CACHE_PAGES {
+                return false;
+            }
+            match self.page_count.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(current) => count = current,
+            }
+        }
+    }
+
+    #[inline]
+    fn release_page_reservation(&self) {
+        self.page_count.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    #[inline]
+    fn record_capacity_bypass(&self, pages: usize) {
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_file_cache_capacity_bypass(pages);
+        #[cfg(not(feature = "perf"))]
+        let _ = pages;
     }
 
     /// 查找指定文件路径和页号对应的缓存页。
@@ -199,7 +257,12 @@ impl FilePageCache {
             {
                 continue;
             }
+            if !self.try_reserve_page() {
+                self.record_capacity_bypass(1);
+                continue;
+            }
             let Some(frame) = FrameTracker::alloc() else {
+                self.release_page_reservation();
                 return;
             };
             frame.ppn.bytes_array_mut()[..valid_len]
@@ -211,11 +274,16 @@ impl FilePageCache {
                 dirty: AtomicBool::new(false),
             });
             let mut pages = self.pages.write();
-            pages
-                .entry(path.clone())
-                .or_default()
-                .entry(page_index)
-                .or_insert(page);
+            let inserted = match pages.entry(path.clone()).or_default().entry(page_index) {
+                Entry::Vacant(entry) => {
+                    entry.insert(page);
+                    true
+                }
+                Entry::Occupied(_) => false,
+            };
+            if !inserted {
+                self.release_page_reservation();
+            }
         }
     }
 
@@ -355,18 +423,31 @@ impl FilePageCache {
         let page = loaded_pages.remove(0);
 
         let mut pages = self.pages.write();
-        let file_pages = pages.entry(path.clone()).or_default();
-        if let Some(existing) = file_pages.get(&page_index).cloned() {
+        if let Some(existing) = pages
+            .get(path.as_ref())
+            .and_then(|file_pages| file_pages.get(&page_index))
+            .cloned()
+        {
             #[cfg(feature = "perf")]
             crate::utils::perf::record_file_cache_load_race();
             return Ok(existing);
         }
+        if !self.try_reserve_page() {
+            self.record_capacity_bypass(1 + loaded_pages.len());
+            return Ok(page);
+        }
+        let file_pages = pages.entry(path.clone()).or_default();
         file_pages.insert(page_index, page.clone());
         let mut readahead_pages = 0;
         let mut readahead_bytes = 0;
-        for readahead_page in loaded_pages {
+        let mut readahead = loaded_pages.into_iter();
+        while let Some(readahead_page) = readahead.next() {
             let readahead_page_index = readahead_page.key.page_index;
             if !file_pages.contains_key(&readahead_page_index) {
+                if !self.try_reserve_page() {
+                    self.record_capacity_bypass(1 + readahead.len());
+                    break;
+                }
                 readahead_pages += 1;
                 readahead_bytes += readahead_page.valid_len;
                 file_pages.insert(readahead_page_index, readahead_page);
@@ -395,22 +476,31 @@ impl FilePageCache {
         let last = end.saturating_add(PAGE_SIZE - 1) / PAGE_SIZE;
         let path: Arc<str> = Arc::from(path);
         let mut pages = self.pages.write();
-        let remove_path = if let Some(file_pages) = pages.get_mut(path.as_ref()) {
+        let removed = if let Some(file_pages) = pages.get_mut(path.as_ref()) {
+            let mut removed = 0;
             for page_index in first..last {
-                file_pages.remove(&page_index);
+                if file_pages.remove(&page_index).is_some() {
+                    removed += 1;
+                }
             }
-            file_pages.is_empty()
+            (removed, file_pages.is_empty())
         } else {
-            false
+            (0, false)
         };
-        if remove_path {
+        if removed.1 {
             pages.remove(path.as_ref());
+        }
+        if removed.0 != 0 {
+            self.page_count.fetch_sub(removed.0, Ordering::AcqRel);
         }
     }
 
     /// 失效指定文件路径的全部缓存页。
     pub fn invalidate_path(&self, path: &str) {
-        self.pages.write().remove(path);
+        if let Some(file_pages) = self.pages.write().remove(path) {
+            self.page_count
+                .fetch_sub(file_pages.len(), Ordering::AcqRel);
+        }
     }
 }
 

@@ -388,6 +388,7 @@ pub(crate) static FILE_CACHE_READ_BYPASS_NONREGULAR_OPS: AtomicUsize = AtomicUsi
 pub(crate) static FILE_CACHE_READ_BYPASS_NONREGULAR_BYTES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_LOAD_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_LOAD_RACES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static FILE_CACHE_CAPACITY_BYPASS_PAGES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_PAGE_FAULTS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_READAHEAD_OPS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_READAHEAD_PAGES: AtomicUsize = AtomicUsize::new(0);
@@ -1312,6 +1313,13 @@ pub fn record_file_cache_load_attempt() {
 #[inline]
 pub fn record_file_cache_load_race() {
     add(&FILE_CACHE_LOAD_RACES, 1);
+}
+
+/// Count cold pages loaded but not retained because the global page-cache
+/// capacity was already reserved by other entries.
+#[inline]
+pub fn record_file_cache_capacity_bypass(pages: usize) {
+    add(&FILE_CACHE_CAPACITY_BYPASS_PAGES, pages);
 }
 
 #[inline]

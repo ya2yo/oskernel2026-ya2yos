@@ -2,6 +2,8 @@
 
 use core::sync::atomic::Ordering;
 
+use crate::fs::FILE_PAGE_CACHE;
+
 use super::common::emit_duration;
 use super::fs::*;
 use super::net::*;
@@ -58,6 +60,12 @@ pub(super) fn emit_report(now: usize) {
         FILE_CACHE_READ_BYPASS_NONREGULAR_BYTES.load(Ordering::Relaxed),
         FILE_CACHE_LOAD_ATTEMPTS.load(Ordering::Relaxed),
         FILE_CACHE_LOAD_RACES.load(Ordering::Relaxed),
+    );
+    println!(
+        "[perf] file_cache_capacity resident_pages={} max_pages={} capacity_bypass_pages={}",
+        FILE_PAGE_CACHE.cached_page_count(),
+        FILE_PAGE_CACHE.max_cached_pages(),
+        FILE_CACHE_CAPACITY_BYPASS_PAGES.load(Ordering::Relaxed),
     );
     println!(
         "[perf] vfs_lookup fsidx_hit={} fsidx_miss={} path_index_hit={} dentry_positive_hit={} dentry_negative_hit={} dentry_miss={} dentry_positive_insert={} dentry_negative_insert={} dentry_invalidates={} dentry_invalidate_hits={} dentry_clear_calls={} dentry_parent_miss={} dentry_lookup_bypass_flags={} cached_parent_find={} root_find={} preserve_final_cache_hit={} fsidx_reclaimed={} fsidx_rebuilds={} fsidx_identity_epoch_hit={} fsidx_identity_live_probe={} fsidx_identity_stale_replace={} dentry_cleared_by_fsidx={} dentry_capacity_evictions={} dentry_capacity_evicted_entries={}",

@@ -820,13 +820,78 @@ fstat 会重复进入 lwext4。实现将该 snapshot 改为按 `EXT4_DIRECTORY_S
 回填。所有目录项变更和目录自身 metadata 变更，以及 read_dentry 的 atime 更新，均在成功后推进 epoch；因此缓存不跨
 已完成的可见 metadata 修改。fstat 仍在 epoch load 处线性化，失配时保持原 live fstat 回退。
 
-`tmp_18.ans`（`t=566931ms`、Cargo `Building 32/446`）有 `19457` 次 stat syscall，但只实际执行
-`3653` 次 `ext4_fstat`，目录 epoch 快路径 `2251` 次，fstat lock wait/hold 为 `175237416/52576106 us`。该样本比
-`tmp_17` 更长且工作量不同，故仅记录为方向性证据，不报告端到端比例。两份均有
-`BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，未见 panic/TFAIL/TBROK/ERROR；都未完成 compile、END 或 shutdown。
+`tmp_18.ans`（`t=566931ms`、Cargo `Building 32/446`）有 `19457` 次 stat syscall、`3653` 次实际
+`ext4_fstat`，fstat lock wait/hold 为 `175237416/52576106 us`。但日志仍打印旧的
+`lookup_directory_stat(samples=2251, ...)`，而当前 `bdd7e30b` 内核使用 `directory_epoch_cached` 与
+`ext4_fstat_directory_stat`；故该运行没有装载目录 epoch cache，不能将其中的 2251 次一次性 lookup-stat 返回归因于
+新实现。该日志仅保留为旧路径基线。两份均有 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，未见
+panic/TFAIL/TBROK/ERROR；都未完成 compile、END 或 shutdown。
 
 ### 下一步
 
 `tmp_18` 的 `read_bypass_file_ops=11252`、`read_bypass_file_bytes=74614810` 说明 8 MiB 文件准入阈值已绕过可观
-读量，但全局 file page cache 无逐出策略，不能直接扩大阈值。下一轮先增加全局容量边界或证明该类读取的复用，再以
-相同 Cargo 检查点评估 read-data lock 和实际 cache hit/miss。
+读量，但全局 file page cache 无容量边界，不能直接扩大阈值。P9 已改为带固定上限的准入扩展，见下一节；其运行期
+效果仍须用新内核样本验证。
+
+## 2026-07-30：P9 有界大文件文件页缓存
+
+### 基线与取舍
+
+旧 `tmp_18.ans` 末尾的 `mmap_miss=21167`、`read_page_miss=24919`、`readahead_pages=22070` 合计约 68K 页，
+而超过 8 MiB 的 regular-file read 已旁路 `11252` 次、`74614810 B`。这表明扩大准入有可验证的候选工作量，但不证明
+每个冷页会再次命中。由于原 cache 不会主动逐出，直接移除 8 MiB 限制会让长时编译不受控制地占用页帧，未采纳。
+
+### 实现与语义边界
+
+`MAX_PAGE_CACHED_READ_FILE_SIZE` 调整为 32 MiB；`FilePageCache` 新增 96K 页的全局常驻上限（当前 4 KiB 页约
+384 MiB）。冷页在分配/发布前由 CAS 预留一个 page slot：`insert_read_range()` 的完整 read 页以及
+`get_or_load()` 的 fault/readahead 页都受同一上限约束；并发发布同一 key 未成功时和 frame 分配失败时释放 reservation。
+write range invalidation、truncate、rename/unlink 的全路径 invalidation 则按实际移除页数递减计数。
+
+容量满时 faulting/read page 仍由已完成的 inode read 返回，只跳过共享 cache 发布；因此不会把暂时的容量压力暴露为
+`ENOMEM`、短读或陈旧数据。改动不移动 `EXT4_OP_LOCK`、不改变两页顺序预读上限，也不改变 write/rename/truncate 的
+缓存失效语义。
+
+perf 报告新增 `file_cache_capacity resident_pages=<...> max_pages=98304 capacity_bypass_pages=<...>`。其中 bypass 只表示
+冷页未被保留，不能单独作为 read I/O 或性能退化结论。
+
+### 验证与下一次采样
+
+已执行 `cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check`、
+`make special_make TARGET_ARCH=riscv64`、`make special_make TARGET_ARCH=loongarch64`、
+`make perf TARGET_ARCH=riscv64` 及 `make perf TARGET_ARCH=loongarch64`，均通过；最后再次重建 RISC-V perf 内核。构建仅显示
+已有 Cargo config 弃用、vendored `smoltcp` 未使用项和非 perf release 的既有 `ipi_sent` 未使用变量 warning。本轮未启动新的
+长 QEMU。
+
+下一次测试必须使用上述 RISC-V perf 构建产物，并在日志中同时看到 `file_cache_capacity`、
+`directory_epoch_cached` 和 `ext4_fstat_directory_stat`。仍以同一 Cargo 检查点比较
+`read_bypass_file_*`、`resident_pages/capacity_bypass_pages`、页缓存 hit/miss、`ext4_read_data_lock` 与
+`ext4_find_lock` 的 wait/hold；没有 `BUILDSTORM_COMPILE`、END、`shutdown!` 的 timeout 样本不作为端到端加速结论。
+
+## 2026-07-30：`tmp_20.ans` 验证 P9 并准备 P10
+
+### 运行期结果
+
+`tmp_20` 包含 `file_cache_capacity`、`directory_epoch_cached` 与 `ext4_fstat_directory_stat`，确认运行的是 P9/RISC-V
+perf 内核。它有 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，未见 `panic/TFAIL/TBROK/ERROR`，但最后只打印 Cargo
+`Building 27/446`，没有 compile/END/shutdown，仍是中途样本。
+
+同为 `Building 26/446` 的 `tmp_18`/`tmp_20` 快照显示，原 8 MiB 准入造成的 `read_bypass_file` 从
+`11060 ops / 72744122 B` 降至 `45 ops / 37440 B`；新 cache 的 resident 为 `60092 / 98304` 页，
+`capacity_bypass_pages=0`。这直接验证 32 MiB 准入与容量边界的行为，但不证明每个新增页都带来可观复用。
+
+同一检查点 `ext4_read_data_lock` 的 wait/hold 从 `440.983/36.495 s` 降至 `293.473/23.890 s`，
+`ext4_find_lock` 从 `255.732/54.484 s` 降至 `204.783/44.803 s`；末尾 `t=561110ms` 仍为
+`453.407/28.184 s` 与 `238.507/58.840 s`。两个样本的 Cargo 依赖交错不同，且没有完成，故这些数值只支持保留 P9，
+不报告吞吐百分比。最后 resident `60294` 页、capacity bypass `0`；未尝试继续扩大 32 MiB 或 96K 页参数。
+
+目录 epoch cache 也实际运行：末尾 `directory_epoch_cached=2201`、`actual_ext4_fstat=3347`、
+`epoch_miss=3934`。该统计只能证明新路径被走到，不能与旧 `lookup_directory_stat` 的次数直接相减。
+
+### P10 准备
+
+先固定 P9 并在同一 RISC-V `8G/8 hart` BuildStorm 配置下再取得一个十分钟样本，按 Cargo 标记而非 timeout 终点复核。
+若 read-data/find 仍为首要 gate 等待，才增加每次实际底层 `inode.read_at()` 的来源聚合：mmap cache fill、regular-read
+cold run、direct bypass、other，以及各自 bytes；来源总量需和 data-lock samples 交叉检查。统计只在 perf feature 下运行，
+不对每个 page-cache hit 记账，不改变 lwext4 的单一串行锁或现有缓存/失效语义。归因前不修改预读长度、缓存上限或
+正 dentry 路径。

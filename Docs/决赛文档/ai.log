@@ -8435,10 +8435,10 @@ clear 或容量淘汰。普通成功路径被 FsIndex 的完整路径缓存先�
 stat 却只能一次性使用，故采纳按目录 metadata epoch 保留该 Kstat 的局部优化。
 
 `tmp_18` 的更长 `t=566931ms` 快照仍只有 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，没有 compile/end/shutdown；无
-panic/TFAIL/TBROK/ERROR。它有更多 stat syscall（19457），实际 ext4 fstat 降到 3653，fstat lock wait/hold 为
-175.237/52.576 s，目录 epoch cache 命中 2251 次。这是混合工作量下的方向性证据，不报告端到端百分比。read-data
-lock wait 仍为 500.517 s，且 8 MiB 文件缓存准入绕过 11252 次/74.615 MiB；全局页缓存无逐出策略，未在无容量边界
-情况下扩大阈值。
+panic/TFAIL/TBROK/ERROR。它有更多 stat syscall（19457），实际 ext4 fstat 为 3653，fstat lock wait/hold 为
+175.237/52.576 s，但仍打印旧 `lookup_directory_stat(samples=2251, ...)`。当前目录 epoch cache 应输出
+`directory_epoch_cached`，故该样本未装载本节实现，只保留为旧路径工作量基线。read-data lock wait 为 500.517 s，且
+8 MiB 文件缓存准入绕过 11252 次/74.615 MiB；这成为有容量约束的大文件 cache 候选，而非目录缓存的性能证据。
 
 ### 修改
 
@@ -8459,6 +8459,95 @@ QEMU 长测，使用维护者提供的 `tmp_18.ans` 作运行期观察；完整 
 `os/src/fs/dcache.rs`、`os/src/fs/kernel_fs_ops/open.rs`、`os/src/fs/ext4_lw/inode.rs`、
 `os/src/utils/perf/fs.rs`、`os/src/utils/perf/report.rs`、`Docs/决赛文档/优化方案.md`、
 `Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、`Docs/决赛文档/开发日志.md`。
+
+### 关联 commit
+
+当前工作区未提交
+
+## 2026-07-30：P9 有界大文件文件页缓存
+
+### 用户输入
+
+维护者重新运行后提供 `tmp_18.ans`，要求开始下一轮内核优化；优化应继续以
+`Docs/决赛文档/优化方案.md` 的 BuildStorm 锁竞争与大文件读旁路方向为准。
+
+### 分析与采纳结论
+
+先以输出标签核对日志与内核快照：`tmp_18` 仍为 `lookup_directory_stat`，而当前 `kernel-rv` 已包含
+`directory_epoch_cached`、`ext4_fstat_directory_stat` 和 `file_cache_capacity`。因此该日志未装载
+`bdd7e30b` 的目录 epoch cache，不能把其 `2251` 次旧的一次性 lookup-stat 返回写成新缓存命中；文档已更正。
+
+该旧样本最后快照为 `t=566931ms`、Cargo `32/446`，没有 `BUILDSTORM_COMPILE`、END 或 `shutdown!`，也无
+`panic/TFAIL/TBROK/ERROR`。其中 `ext4_read_data_lock`/`ext4_find_lock` wait 为 `500.517/290.144 s`，普通 read 因
+8 MiB 文件阈值旁路 `11252` 次、`74614810 B`。最后 `mmap_miss=21167`、`read_page_miss=24919`、
+`readahead_pages=22070`，约 68K 页的已观测冷页工作集允许设置比此稍大的安全上限，而不能移除阈值后无界保留。
+
+### 修改
+
+将 `MAX_PAGE_CACHED_READ_FILE_SIZE` 从 8 MiB 调至 32 MiB；`FilePageCache` 以 `AtomicUsize` 为所有 publish 路径
+统一限制在 96K 页（约 384 MiB）。`insert_read_range()` 与 `get_or_load()` 都在 frame 分配或映射发布前 CAS reservation；
+重复发布和分配失败释放 reservation，range/full-path invalidation 按实际删除页数扣减。达到上限时继续把本次
+inode read 的 page 返回给 `mmap/read`，只跳过全局 cache 发布，保持数据和错误语义。
+
+perf 新增 `file_cache_capacity resident_pages/max_pages/capacity_bypass_pages`。`capacity_bypass_pages` 仅是未保留的
+冷页数量；不把它解释为 I/O 次数或性能结论。未调整 lwext4 的单一串行 gate、两页顺序预读、或 write/rename/truncate
+失效语义。
+
+### 验证与待测
+
+已执行 `cargo fmt --manifest-path os/Cargo.toml --all`、`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、
+`git diff --check`、RISC-V/LoongArch64 `make special_make`、RISC-V/LoongArch64 `make perf`，均通过；最后再次执行
+RISC-V perf 构建。仅有已有 Cargo config 弃用、vendored smoltcp 未使用项及非 perf release 的 `ipi_sent` warning。
+本轮未启动 QEMU 长测。
+
+下一份样本需先装载新的 RISC-V perf 内核，并检查 `file_cache_capacity`、`directory_epoch_cached`、
+`ext4_fstat_directory_stat`。比较同一 Cargo 检查点的 read-bypass、resident/capacity-bypass、cache hit/miss 与
+read/find lock wait/hold；无完整 BuildStorm 结束标记时不报告端到端加速。
+
+### 修改文件
+
+`os/src/fs/page_cache.rs`、`os/src/fs/files/os_file.rs`、`os/src/utils/perf/fs.rs`、`os/src/utils/perf/report.rs`、
+`Docs/决赛文档/优化方案.md`、`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、
+`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 关联 commit
+
+当前工作区未提交
+
+## 2026-07-30：`tmp_20.ans` P9 运行期验证与 P10 准备
+
+### 用户输入
+
+维护者提供新的 `tmp_20.ans`，要求完善文档并准备下一轮内核优化。
+
+### 分析与采纳结论
+
+日志已输出 `file_cache_capacity`、`directory_epoch_cached` 和 `ext4_fstat_directory_stat`，确认 P9 perf 内核被装载。
+`BUILDSTORM_TOOLCHAIN/MINIBUILD` 均为 ok，无 `panic/TFAIL/TBROK/ERROR`；末尾为 Cargo `Building 27/446`，没有
+`BUILDSTORM_COMPILE`、END 或 `shutdown!`，不可作为完整验收。
+
+在同为 `Building 26/446` 的快照中，旧 `tmp_18` 的大文件旁路为 `11060 ops / 72744122 B`，新 `tmp_20` 为
+`45 ops / 37440 B`；后者 resident `60092/98304` 页、capacity bypass 为零。read-data lock wait/hold 从
+`440.983/36.495 s` 到 `293.473/23.890 s`，find 从 `255.732/54.484 s` 到 `204.783/44.803 s`。这证明 P9 机制生效并
+支持保留，但 Cargo DAG 交错不同、样本未完成，不能报告加速比例。末尾 resident 仍为 `60294`，不扩大阈值或容量。
+
+末尾 read-data/find 仍有 `453.407/28.184 s`、`238.507/58.840 s` 的 wait/hold，说明单一 lwext4 gate 仍受竞争；
+现有累计统计不能区分 mmap fill、regular-read cold run、direct bypass 和其他底层读取，故不能安全选择下一处实现优化。
+
+### 采纳的下一轮准备
+
+先固定 32 MiB/96K 页 P9 参数，在相同 RISC-V `8G/8 hart` BuildStorm 配置下复跑一个十分钟样本。若 P9 的低旁路、
+未触顶及同阶段锁趋势复现，下一次代码改动只加入每个实际 `inode.read_at()` 的来源 ops/bytes 聚合，并和 data-lock
+samples 交叉检查；不在 page-cache hit 路径增加诊断 atomic，不改 `EXT4_OP_LOCK`、预读、失效或目录 epoch 语义。
+
+### 修改文件
+
+`Docs/决赛文档/优化方案.md`、`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、
+`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证
+
+本轮只分析维护者提供的日志并更新文档，未修改内核代码、未重新构建或运行 QEMU。
 
 ### 关联 commit
 

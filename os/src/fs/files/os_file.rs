@@ -30,7 +30,10 @@ static FILE_FLAGS: Lazy<Mutex<BTreeMap<String, u32>>> = Lazy::new(|| Mutex::new(
 static NEXT_OFD_LOCK_OWNER: AtomicI32 = AtomicI32::new(1);
 const PIPE_MAX_SIZE_PATH: &str = "/proc/sys/fs/pipe-max-size";
 const MAX_AGGREGATED_READ: usize = 64 * 1024;
-const MAX_PAGE_CACHED_READ_FILE_SIZE: usize = 8 * 1024 * 1024;
+/// Large compiler inputs can be read repeatedly by worker processes. The
+/// shared cache is globally capped, so admit a moderate per-file size while
+/// retaining a fixed upper bound on retained physical pages.
+const MAX_PAGE_CACHED_READ_FILE_SIZE: usize = 32 * 1024 * 1024;
 
 fn seek_offset(base: usize, offset: isize) -> Result<usize, SysErrNo> {
     if offset < 0 {

@@ -1935,10 +1935,38 @@
 - **场景**：维护者提供 `tmp_17.ans`、`tmp_18.ans`，要求依据优化方案继续内核性能优化。
 - **描述**：P4 统计证明正 dentry 已插入但被 FsIndex pathname hit 绕过，故保留负 dentry 而不改变正 dentry
   语义。随后把目录 lookup 取得的 Kstat 扩展为受 mount-wide directory metadata epoch 保护的缓存；目录项变更、
-  目录自身 metadata 更新和 getdents atime 更新都会失效，epoch 不匹配保留 live lwext4 fstat。新增 perf 标签
+  目录自身 metadata 更新和 getdents atime 更新都会失效，epoch 不匹配保留 live lwext4 fstat。新内核输出
   `directory_epoch_cached`，并保留缓存后锁内复检计数。
 - **验证**：RISC-V、LoongArch64 `make perf`、格式及 diff 检查通过。`tmp_18` 在 `t=566.931s` 有
-  `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`、无 panic/TFAIL/TBROK/ERROR，实际 fstat 为 3653；无完整 compile/end/shutdown，
-  不报告端到端加速。大于 8 MiB 文件的读旁路仍无容量受限缓存策略，未直接放宽阈值。
+  `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`、无 panic/TFAIL/TBROK/ERROR，实际 fstat 为 3653；但它仍输出旧
+  `lookup_directory_stat`，未装载目录 epoch cache，不能作为该实现的运行期证据。无完整 compile/end/shutdown，
+  不报告端到端加速。
 - **关联文档**：[优化方案](./优化方案.md)、[BuildStorm 读路径、FsIndex 与 fstat 锁争用](./problem/buildstorm-read-path-lock-contention.md)
+- **关联 commit**：当前工作区未提交
+
+#### P9 有界大文件文件页缓存（7.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供重新运行的 `tmp_18.ans`，要求按优化方案开始下一轮 BuildStorm 内核优化。
+- **描述**：先核对日志标签与新 RISC-V 内核字符串，确认 `tmp_18` 仍是旧的 `lookup_directory_stat` 镜像，故修正文档，
+不把它写作目录 epoch cache 的结果。以其 8 MiB 以上 regular-file 读旁路为基线，将准入调整为 32 MiB，并在全局
+`FilePageCache` 加入 96K 页的 reservation-cap；容量满时返回新读页面但不发布，失效时按实际移除页数归还容量。新增
+聚合 `file_cache_capacity`，未改变 lwext4 串行 gate、预读上限或文件缓存失效语义。
+- **验证**：RISC-V、LoongArch64 `make special_make` 与 `make perf`，os fmt check 和 `git diff --check` 通过；最后
+重建 RISC-V perf 内核。仅有已有 Cargo config、vendored smoltcp 与非 perf release 的 `ipi_sent` warning。未启动新的
+长 QEMU；下一样本必须出现新 `file_cache_capacity`、目录 epoch cache 标签和 BuildStorm 状态才可评价运行期效果。
+- **关联文档**：[优化方案](./优化方案.md)、[BuildStorm 读路径、FsIndex 与 fstat 锁争用](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
+#### `tmp_20` P9 运行期验证与 P10 准备（7.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 BuildStorm 输出 `tmp_20.ans`，要求完善文档并准备下一轮优化。
+- **描述**：确认新 perf 标签已出现。以同为 Cargo `26/446` 的快照比较，32 MiB/96K 页 P9 将大文件 read 旁路从
+  `11060 / 72.7 MiB` 降至 `45 / 37 KiB`，resident 约 60K 页且没有 capacity bypass；read-data/find 锁累计值方向下降。
+  末尾仍有明显 lwext4 gate 排队，但现有统计不能归因到具体 backing-read 来源，因此固定 P9，先复跑，再以一次底层
+  `inode.read_at()` 为粒度新增来源 ops/bytes 聚合；不改锁、预读或缓存语义。
+- **验证边界**：日志含 toolchain/minibuild ok 且无 panic/TFAIL/TBROK/ERROR，但只到 `27/446`，没有完整结束标记；未报告
+  端到端加速。本轮仅更新文档，未改代码、构建或运行 QEMU。
+- **关联文档**：[优化方案](./优化方案.md)、[BuildStorm 读路径、FsIndex 与 fstat 锁争用](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
