@@ -8350,3 +8350,29 @@ fallback 和驻留峰值字段。
 均通过。RISC-V 8 GiB/8 hart final-2026 镜像以 `-snapshot` 运行 120 秒，进入
 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok` 与 prebuild，未见 `panic/ERROR/TFAIL/TBROK`；运行窗口未到正式编译，未把它
 作为性能结论。`mmap16`、`lseek11`、fstat/statx、rename/unlink 定向 guest 回归及完整同配置 BuildStorm 尚待运行。
+## 2026-07-30：`tmp_15.ans`/`log.ans` BuildStorm 波动归因与创建元数据锁合并
+
+### 用户输入
+
+维护者要求继续以内核优化为目标，并明确新的十分钟结果以 `tmp_15.ans` 和二次运行的 `log.ans` 为准。
+
+### 分析与采纳结论
+
+AI 对两份日志提取最终 perf 快照和 Cargo 进度。两份均只有 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，没有完整
+`BUILDSTORM_COMPILE`、结束标记或 `shutdown!`；`tmp_15` 的末尾进度为 `41/446`，`log.ans` 为 `38/446`。
+两份 sparse 统计完全一致（`88` batches、`34,922,007 B`、512 KiB/32 runs、预算/分配失败为零），因此
+差异归因于 QEMU TCG、宿主调度和 EXT4 全局锁竞争交错，而不是 sparse 工作量变化。最终快照仍显示 create、
+mode、owner 及 read/find/fstat 锁等待是稳定热点；两份日志均早于本轮代码构建，不能作为新实现 A/B。
+
+### 修改
+
+在 `Inode` trait 增加带默认行为的 `create_with_metadata()`；`Ext4Inode` 覆盖该方法，在新 inode 发布到
+`FsIndex` 前持有一次 namespace gate，直接完成创建、mode 和 owner，保留各阶段 perf 统计、失败恢复、
+目录 epoch、stat cache 失效与 Linux 可见顺序。`create_file()` 负责在创建前计算 umask、setgid 继承和 owner tuple。
+
+### 验证
+
+`cargo fmt --manifest-path os/Cargo.toml`、RISC-V/LoongArch64 `make perf`、双架构 release `make` 和
+`git diff --check` 通过。提升权限的 120 秒 RISC-V `make run` 启动成功并推进到 `3/446`，无
+`panic/TFAIL/TBROK`，因 timeout 结束；未以该短样本宣称端到端性能提升。详见
+`Docs/决赛文档/problem/buildstorm-create-metadata-lock-merge.md`。

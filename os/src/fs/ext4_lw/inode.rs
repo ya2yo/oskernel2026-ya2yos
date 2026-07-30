@@ -570,6 +570,95 @@ impl Inode for Ext4Inode {
         Ok(Arc::new(nf))
     }
 
+    /// Create a node and apply its initial metadata while retaining the
+    /// namespace operation lock.  The new inode has not been published to
+    /// `FsIndex` yet, so its mutable lwext4 descriptor can be accessed
+    /// directly without taking the child inode locks a second time.
+    fn create_with_metadata(
+        &self,
+        path: &str,
+        ty: InodeType,
+        mode: u32,
+        owner: Option<(u32, u32)>,
+    ) -> Result<Arc<dyn Inode>, SysErrNo> {
+        let types = as_ext4_de_type(ty);
+        // Construct before taking the parent/global locks so error paths drop
+        // the descriptor only after those guards have been released.
+        let nf = Ext4Inode::new(path, types.clone());
+        let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
+
+        {
+            #[cfg(feature = "perf")]
+            let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Create);
+            let file = &mut self.inner.get_unchecked_mut().f;
+            if file.check_inode_exist(path, types.clone()) {
+                return Err(SysErrNo::EEXIST);
+            }
+
+            let nfile = &mut nf.inner.get_unchecked_mut().f;
+            if types == InodeTypes::EXT4_DE_DIR {
+                if let Err(e) = nfile.dir_mk(path) {
+                    return Err(SysErrNo::from(e));
+                }
+            } else if let Err(e) = nfile.file_open(path, O_RDWR | O_CREAT | O_TRUNC) {
+                return Err(SysErrNo::from(e));
+            } else {
+                nfile.file_close_without_cache_flush()?;
+            }
+            Self::advance_directory_stat_epoch();
+        }
+
+        {
+            #[cfg(feature = "perf")]
+            let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Mode);
+            let mode_type = mode & 0o170000;
+            let mode_type = if mode_type != 0 {
+                mode_type
+            } else {
+                as_inode_type(nf.inner.get_unchecked_mut().f.file_type()).mode_bits()
+            };
+            let mode = mode_type | (mode & 0o7777);
+            let ret = {
+                let inner = nf.inner.get_unchecked_mut();
+                match inner.f.file_mode_set(mode) {
+                    Ok(ret) => Ok(ret),
+                    Err(_) => {
+                        let _ = nf.recover_live_path(inner);
+                        inner.f.file_mode_set(mode).map_err(SysErrNo::from)
+                    }
+                }
+            };
+            ret?;
+            if nf.inode_type == InodeType::Dir {
+                Self::advance_directory_stat_epoch();
+            }
+            nf.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
+        }
+
+        if let Some((uid, gid)) = owner {
+            #[cfg(feature = "perf")]
+            let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Owner);
+            let ret = {
+                let inner = nf.inner.get_unchecked_mut();
+                match inner.f.file_owner_set(uid, gid) {
+                    Ok(ret) => Ok(ret),
+                    Err(_) => {
+                        let _ = nf.recover_live_path(inner);
+                        inner.f.file_owner_set(uid, gid).map_err(SysErrNo::from)
+                    }
+                }
+            };
+            ret?;
+            if nf.inode_type == InodeType::Dir {
+                Self::advance_directory_stat_epoch();
+            }
+            nf.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
+        }
+
+        Ok(Arc::new(nf))
+    }
+
     /// 创建内核维护的目录项。
     ///
     /// `ext4_dir_mk()` 自身已经完成“存在则打开，不存在则创建”的路径处理；

@@ -55,6 +55,25 @@ pub trait Inode: Send + Sync {
     fn create(&self, _path: &str, _ty: InodeType) -> Result<Arc<dyn Inode>, SysErrNo> {
         unimplemented!("Inode::create")
     }
+    /// Create a node and apply the metadata assigned by `open(O_CREAT)`.
+    ///
+    /// Filesystems with a mount-wide operation lock may override this to keep
+    /// the create/mode/owner sequence in one critical section.  The default
+    /// preserves the existing separate operations for other backends.
+    fn create_with_metadata(
+        &self,
+        path: &str,
+        ty: InodeType,
+        mode: u32,
+        owner: Option<(u32, u32)>,
+    ) -> Result<Arc<dyn Inode>, SysErrNo> {
+        let inode = self.create(path, ty)?;
+        inode.fmode_set(mode)?;
+        if let Some((uid, gid)) = owner {
+            inode.owner_set(uid, gid)?;
+        }
+        Ok(inode)
+    }
     /// 创建一个内核已知不存在的目录，绕过通用 open(O_CREATE) 语义。
     ///
     /// 该入口只用于 proc 等内核维护的固定目录：调用者已经完成父目录解析，
