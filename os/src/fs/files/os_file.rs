@@ -320,6 +320,11 @@ impl OSFile {
                 offset.saturating_add(run_start),
                 &mut kernel_buf[run_start..run_end],
             )?;
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_inode_read_source(
+                crate::utils::perf::InodeReadSource::PageCachedReadColdRun,
+                read_size,
+            );
             if read_size != 0 {
                 FILE_PAGE_CACHE.insert_read_range(
                     cache_path.as_ref(),
@@ -387,6 +392,11 @@ impl File for OSFile {
             // Keep the common single-page case zero-copy.
             let slice = &mut buf.buffers[0];
             let read_size = self.inode.read_at(inner.offset, slice)?;
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_inode_read_source(
+                crate::utils::perf::InodeReadSource::DirectBypass,
+                read_size,
+            );
             inner.offset += read_size;
             total_read_size = read_size;
         } else if requested_len <= MAX_AGGREGATED_READ {
@@ -398,6 +408,11 @@ impl File for OSFile {
             // by the syscall.
             let mut kernel_buf = vec![0; requested_len];
             let read_size = self.inode.read_at(inner.offset, &mut kernel_buf)?;
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_inode_read_source(
+                crate::utils::perf::InodeReadSource::DirectBypass,
+                read_size,
+            );
             if read_size != 0 {
                 buf.write(&kernel_buf[..read_size]);
                 inner.offset += read_size;
@@ -408,6 +423,11 @@ impl File for OSFile {
             // cannot force an unbounded temporary kernel allocation.
             for slice in buf.buffers.iter_mut() {
                 let read_size = self.inode.read_at(inner.offset, slice)?;
+                #[cfg(feature = "perf")]
+                crate::utils::perf::record_inode_read_source(
+                    crate::utils::perf::InodeReadSource::DirectBypass,
+                    read_size,
+                );
                 if read_size == 0 {
                     break;
                 }

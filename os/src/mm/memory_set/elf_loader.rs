@@ -22,6 +22,11 @@ use alloc::vec::Vec;
 use xmas_elf::ElfFile;
 
 const ELF_PROBE_SIZE: usize = 256;
+/// Bound temporary storage while coalescing an unaligned ELF segment's
+/// formerly page-at-a-time reads. This is large enough to amortize lwext4's
+/// global read gate without allowing one executable segment to allocate an
+/// unbounded kernel buffer.
+const ELF_SEGMENT_READ_CHUNK: usize = 64 * 1024;
 
 fn read_inode_prefix(
     inode: &Arc<dyn Inode>,
@@ -33,6 +38,11 @@ fn read_inode_prefix(
     let mut done = 0;
     while done < read_len {
         let read = inode.read_at(done, &mut data[done..])?;
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_inode_read_source(
+            crate::utils::perf::InodeReadSource::Other,
+            read,
+        );
         if read == 0 {
             break;
         }
@@ -64,6 +74,11 @@ fn extend_inode_prefix(
     let mut done = old_len;
     while done < target {
         let read = inode.read_at(done, &mut data[done..target])?;
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_inode_read_source(
+            crate::utils::perf::InodeReadSource::Other,
+            read,
+        );
         if read == 0 {
             break;
         }
@@ -468,31 +483,50 @@ impl MemorySetInner {
             return Err(());
         }
 
+        let chunk_capacity = file_size.min(ELF_SEGMENT_READ_CHUNK);
+        let mut read_buf = Vec::new();
+        read_buf.try_reserve_exact(chunk_capacity).map_err(|_| ())?;
+        read_buf.resize(chunk_capacity, 0);
+
         map_area.map(&mut self.page_table)?;
+
         let mut copied = 0;
         while copied < file_size {
-            let area_offset = data_offset.checked_add(copied).ok_or(())?;
-            let vpn = VirtPageNum(
-                map_area
-                    .vpn_range
-                    .start()
-                    .0
-                    .checked_add(area_offset / PAGE_SIZE)
-                    .ok_or(())?,
-            );
-            let page_offset = area_offset % PAGE_SIZE;
-            let copy_len = (file_size - copied).min(PAGE_SIZE - page_offset);
+            let chunk_len = (file_size - copied).min(read_buf.len());
             let file_read_offset = file_offset.checked_add(copied).ok_or(())?;
-            let ppn = self.page_table.translate(vpn).ok_or(())?;
             let read = file
                 .inode
-                .read_at(
-                    file_read_offset,
-                    &mut ppn.bytes_array_mut()[page_offset..page_offset + copy_len],
-                )
+                .read_at(file_read_offset, &mut read_buf[..chunk_len])
                 .map_err(|_| ())?;
-            if read == 0 || read > copy_len {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_inode_read_source(
+                crate::utils::perf::InodeReadSource::Other,
+                read,
+            );
+            if read == 0 || read > chunk_len {
                 return Err(());
+            }
+
+            let mut chunk_copied = 0;
+            while chunk_copied < read {
+                let area_offset = data_offset
+                    .checked_add(copied)
+                    .and_then(|offset| offset.checked_add(chunk_copied))
+                    .ok_or(())?;
+                let vpn = VirtPageNum(
+                    map_area
+                        .vpn_range
+                        .start()
+                        .0
+                        .checked_add(area_offset / PAGE_SIZE)
+                        .ok_or(())?,
+                );
+                let page_offset = area_offset % PAGE_SIZE;
+                let copy_len = (read - chunk_copied).min(PAGE_SIZE - page_offset);
+                let ppn = self.page_table.translate(vpn).ok_or(())?;
+                ppn.bytes_array_mut()[page_offset..page_offset + copy_len]
+                    .copy_from_slice(&read_buf[chunk_copied..chunk_copied + copy_len]);
+                chunk_copied = chunk_copied.checked_add(copy_len).ok_or(())?;
             }
             copied = copied.checked_add(read).ok_or(())?;
         }

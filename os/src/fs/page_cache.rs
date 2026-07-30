@@ -306,6 +306,12 @@ impl FilePageCache {
     ) -> Result<Arc<FilePage>, SysErrNo> {
         #[cfg(not(feature = "perf"))]
         let _ = source;
+        #[cfg(feature = "perf")]
+        let inode_read_source = match source {
+            FilePageCacheSource::Mmap => crate::utils::perf::InodeReadSource::MmapCacheFill,
+            FilePageCacheSource::Read => crate::utils::perf::InodeReadSource::PageCachedReadColdRun,
+            FilePageCacheSource::Splice => crate::utils::perf::InodeReadSource::Other,
+        };
 
         let path = inode
             .page_cache_path()
@@ -397,6 +403,10 @@ impl FilePageCache {
             }
             read_len
         };
+        #[cfg(feature = "perf")]
+        if file_offset < file_size {
+            crate::utils::perf::record_inode_read_source(inode_read_source, read_len);
+        }
 
         let mut loaded_pages = Vec::with_capacity(frames.len());
         for (index, frame) in frames.into_iter().enumerate() {

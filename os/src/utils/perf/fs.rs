@@ -71,6 +71,47 @@ pub(crate) static EXT4_READ_BYTES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_BYTE_CACHE_READ_HITS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_BYTE_CACHE_READ_HIT_BYTES: AtomicUsize = AtomicUsize::new(0);
 
+/// Successful VFS-level `Inode::read_at()` calls, partitioned by their caller.
+///
+/// The buckets deliberately identify a small number of stable read paths
+/// rather than files, processes, or pages. They therefore stay suitable for
+/// a contended BuildStorm run while explaining which callers feed lwext4's
+/// read-data gate.
+pub(crate) struct InodeReadSourceStats {
+    pub(crate) ops: AtomicUsize,
+    pub(crate) bytes: AtomicUsize,
+}
+
+impl InodeReadSourceStats {
+    const fn new() -> Self {
+        Self {
+            ops: AtomicUsize::new(0),
+            bytes: AtomicUsize::new(0),
+        }
+    }
+
+    #[inline]
+    fn record(&self, bytes: usize) {
+        add(&self.ops, 1);
+        add(&self.bytes, bytes);
+    }
+}
+
+/// Coarse caller classes for a real `Inode::read_at()` invocation.
+#[derive(Clone, Copy)]
+pub enum InodeReadSource {
+    MmapCacheFill,
+    PageCachedReadColdRun,
+    DirectBypass,
+    Other,
+}
+
+pub(crate) static INODE_READ_MMAP_CACHE_FILL: InodeReadSourceStats = InodeReadSourceStats::new();
+pub(crate) static INODE_READ_PAGE_CACHED_COLD_RUN: InodeReadSourceStats =
+    InodeReadSourceStats::new();
+pub(crate) static INODE_READ_DIRECT_BYPASS: InodeReadSourceStats = InodeReadSourceStats::new();
+pub(crate) static INODE_READ_OTHER: InodeReadSourceStats = InodeReadSourceStats::new();
+
 /// Aggregate timing for one class of lwext4 operation.
 ///
 /// This remains deliberately caller-free: BuildStorm has enough concurrent
@@ -640,6 +681,18 @@ pub(crate) fn emit_ext4_lock_stats(label: &str, stats: &Ext4LockStats) {
 pub fn record_ext4_read(bytes: usize) {
     add(&EXT4_READ_OPS, 1);
     add(&EXT4_READ_BYTES, bytes);
+}
+
+/// Record one real VFS-level `Inode::read_at()` return. Page-cache hits do not
+/// call this API, so this is intentionally not a per-page lookup counter.
+#[inline]
+pub fn record_inode_read_source(source: InodeReadSource, bytes: usize) {
+    match source {
+        InodeReadSource::MmapCacheFill => INODE_READ_MMAP_CACHE_FILL.record(bytes),
+        InodeReadSource::PageCachedReadColdRun => INODE_READ_PAGE_CACHED_COLD_RUN.record(bytes),
+        InodeReadSource::DirectBypass => INODE_READ_DIRECT_BYPASS.record(bytes),
+        InodeReadSource::Other => INODE_READ_OTHER.record(bytes),
+    }
 }
 
 #[inline]

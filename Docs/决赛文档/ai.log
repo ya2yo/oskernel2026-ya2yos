@@ -8420,6 +8420,83 @@ mode、owner 及 read/find/fstat 锁等待是稳定热点；两份日志均早�
 
 当前工作区未提交
 
+## 2026-07-30：`tmp_02.ans` P10 来源验证与未对齐 ELF 读取合并
+
+### 用户输入
+
+维护者提供新的 `tmp_02.ans`，要求继续下一轮内核优化。
+
+### 分析与采纳结论
+
+日志出现 P10 的 `inode_read_source`，有 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，无 `panic/TFAIL/TBROK/ERROR`，但仅到
+Cargo `Building 23/446`，不能作为端到端样本。末尾 ext4 reads 为 `32954 / 296203960 B`，已记录的 mmap/cold/direct
+三桶为 `28858 / 281906659 B`，差 `4096 / 14297301 B`；data-lock `32072` 加 byte-cache hit `882` 恰等于 reads，证明
+这不是统计采样误差。
+
+全局审计发现 P10 漏记 exec probe、ELF metadata 和未对齐 ELF `PT_LOAD` 的直接读取；其中后者按每个目标页执行一次
+`read_at`，是数千次小读的主要候选。采纳最大 64 KiB 的分块读取：一次底层读后仍按页内偏移复制到原先已映射的零页，
+不改变段外零填充、错误/短读处理、权限、COW、auxv、页缓存或 `EXT4_OP_LOCK`。所有四个遗漏点也补记为
+`InodeReadSource::Other`，使下一轮可以检验来源总量。
+
+### 修改文件
+
+`os/src/mm/memory_set/elf_loader.rs`、`os/src/syscall/task/execve.rs`、`Docs/决赛文档/优化方案.md`、
+`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、`Docs/决赛文档/开发日志.md`、
+`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证
+
+已执行 `cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check`、RISC-V/LoongArch64 `make perf`
+及默认 `make TARGET_ARCH=riscv64`（release 覆盖两种架构），均通过；最后重建 RISC-V perf 内核。构建仅有已有
+Cargo config、vendored `smoltcp` 与 release `ipi_sent` warning。未运行 `make run`，以免删除维护者 `disk.img` 链接；
+运行期效果待新 BuildStorm 样本。
+
+### 关联 commit
+
+当前工作区未提交
+
+## 2026-07-30：`tmp_01.ans` 复核 P9 并实施 P10 backing-read 来源归因
+
+### 用户输入
+
+维护者提供新的 `tmp_01.ans`，要求以此继续下一轮内核性能优化。
+
+### 分析与采纳结论
+
+`tmp_01` 含 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`、`file_cache_capacity`、`directory_epoch_cached` 与
+`ext4_fstat_directory_stat`，未见 `panic/TFAIL/TBROK/ERROR`；最终完整 perf 快照为 `t=552564ms`，后续 Cargo 仅到
+`Building 24/446`，没有 compile/END/shutdown。它不是端到端样本。
+
+末尾 `read_bypass_file=37 ops / 30784 B`、`resident_pages=53470/98304`、`capacity_bypass_pages=0`，复现 `tmp_20`
+的低旁路和未触顶性质，故固定 P9 的 32 MiB/96K 页参数。`ext4_read_data_lock` 与 `ext4_find_lock` 仍有大量累计等待，
+但与 `tmp_20` 不处于相同 Cargo 检查点，不能依据累计 wait/hold 报告吞吐变化。现有 perf 未能说明这些读请求来自 mmap、
+页缓存冷区间还是直读，因此采纳 P10 的最小归因，而不再调整缓存或锁。
+
+### 实现
+
+新增 `[perf] inode_read_source`，按 mmap cache fill、page-cached regular-read cold run、direct bypass、other 分别输出
+ops/bytes。只在一个真实 `Inode::read_at()` 成功返回后以 `Relaxed` 原子累计一次：页缓存命中、大小检查、失败返回和
+`read_all()` 不计入；`splice` cache fill 单列为 other。改动覆盖 `FilePageCache::get_or_load()`、regular read 冷 run
+和 page-cache 拒绝后的 OSFile 直读，未改变 `EXT4_OP_LOCK`、预读、页缓存准入/容量、write/rename/truncate 失效或目录
+epoch 语义。
+
+### 修改文件
+
+`os/src/fs/page_cache.rs`、`os/src/fs/files/os_file.rs`、`os/src/utils/perf/fs.rs`、`os/src/utils/perf/report.rs`、
+`Docs/决赛文档/优化方案.md`、`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、
+`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证
+
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check`、RISC-V/LoongArch64 `make perf` 与默认
+`make TARGET_ARCH=riscv64`（release 覆盖两种架构）均已通过；最后重建 RISC-V perf 内核。仅有已有 Cargo config、
+vendored `smoltcp` 与 release `ipi_sent` warning。本轮不运行 `make run`，以免删除维护者用于 BuildStorm 的 `disk.img`
+链接；新 guest 样本须含 `inode_read_source` 与 P9 标签，且未完成样本不用于端到端结论。
+
+### 关联 commit
+
+当前工作区未提交
+
 ## 2026-07-30：`tmp_17/18` BuildStorm dentry 取证与目录 epoch stat cache
 
 ### 用户输入
@@ -8552,3 +8629,34 @@ samples 交叉检查；不在 page-cache hit 路径增加诊断 atomic，不改 
 ### 关联 commit
 
 当前工作区未提交
+
+## 2026-07-30：`tmp_03.ans` 验证 P11 并准备 P12
+
+### 用户输入
+
+维护者提供新的 `tmp_03.ans`，要求完善当前优化记录并准备下一轮内核性能优化。
+
+### 分析与结论
+
+`tmp_03` 已运行 P11 perf 内核，包含 P9/P10 标签以及 `inode_read_source`。日志有
+`BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，无 `panic/TFAIL/TBROK/ERROR`，但最后为 `t=599250ms`、Cargo
+`Building 26/446`，没有 `BUILDSTORM_COMPILE`、END 或 `shutdown!`，因此不具备完整 BuildStorm 或端到端耗时结论。
+
+最终 `ext4 reads=29060 / 287043303 B`，来源为 mmap fill `18869 / 173813719 B`、page-cached cold run
+`9335 / 98840795 B`、direct bypass `44 / 36608 B`、other `812 / 14352181 B`。四桶 ops 和 bytes 均精确守恒到
+`ext4 reads`；`byte_cache_read_hits=645 / 6657614 B` 是独立的 delayed byte-cache 统计。相较 `tmp_02` 的
+`4096 ops / 14.3 MiB` 缺口，P11 已覆盖 exec probe、ELF metadata 和未对齐 `PT_LOAD` 读取来源。不同 Cargo
+检查点不能据累计 reads/锁值宣称吞吐改善。
+
+### 采纳的下一轮准备
+
+固定 P9 的 32 MiB 文件准入、96K 页容量和四页预读，不盲目扩大缓存或改变 EXT4 gate。P12 仅细分
+`FilePageCacheSource::Mmap` 的 demand page fault 与 `prefetch_shared_file_pages()` 共享映射预取来源，继续在
+成功 `inode.read_at()` 后一次性 relaxed 记账。下一样本并列比较两类 mmap 来源、page-cached cold run、read-data
+lock、page fault/readahead、resident/capacity-bypass；根据占比再检查 `prepare_file_page()`/`mmap_read_page_fault()`
+是否存在重复读或预取覆盖已驻留页。
+
+### 本轮修改与验证
+
+本轮只更新《优化方案》、读路径问题复盘、开发日志、`ai.log` 和 `AI_INTERACTION.md`，未修改内核代码、未重新构建、
+未运行 QEMU；保留工作区已有内核与维护者的 `disk.img` 改动。

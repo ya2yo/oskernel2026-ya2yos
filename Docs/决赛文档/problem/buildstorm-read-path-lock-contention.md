@@ -895,3 +895,125 @@ perf 内核。它有 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，未见 `panic/TFAIL/T
 cold run、direct bypass、other，以及各自 bytes；来源总量需和 data-lock samples 交叉检查。统计只在 perf feature 下运行，
 不对每个 page-cache hit 记账，不改变 lwext4 的单一串行锁或现有缓存/失效语义。归因前不修改预读长度、缓存上限或
 正 dentry 路径。
+
+## 2026-07-30：`tmp_01.ans` 复核 P9 并实现 backing-read 来源聚合
+
+### 第二份 P9 窗口
+
+`tmp_01` 含 P9 的 `file_cache_capacity`、目录 epoch fstat 标签和 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`；未匹配到
+`panic/TFAIL/TBROK/ERROR`。最终完整 perf 快照为 `t=552564ms`，其后仅继续到 Cargo `Building 24/446`，没有
+`BUILDSTORM_COMPILE`、END 或 `shutdown!`，故不作为完整 BuildStorm 或端到端性能验收。
+
+该快照的 `read_bypass_file=37 ops / 30784 B`，`resident_pages=53470 / 98304`，且
+`capacity_bypass_pages=0`。它独立复现了 `tmp_20` 的低旁路、缓存未触顶趋势（后者末尾分别为
+`45 / 37440 B`、`60294 / 98304`、`0`），足以固定 P9 参数；两者末尾的 Cargo 依赖和锁交错不相同，不能从
+`tmp_01` 的 read-data `349694294/30058520 us`、find `327209989/69373084 us` 与旧累计值得出吞吐比例。
+
+### P10 实现
+
+在 `os/src/utils/perf/fs.rs` 增加四个 `InodeReadSourceStats`（ops/bytes）和 `InodeReadSource`：
+`MmapCacheFill`、`PageCachedReadColdRun`、`DirectBypass`、`Other`。报告增加：
+
+```text
+[perf] inode_read_source mmap_cache_fill_ops=... mmap_cache_fill_bytes=... \
+       page_cached_cold_run_ops=... page_cached_cold_run_bytes=... \
+       direct_bypass_ops=... direct_bypass_bytes=... other_ops=... other_bytes=...
+```
+
+接入点只包围真实、成功返回的 `Inode::read_at()`：`FilePageCache::get_or_load()` 的 `Mmap` 归入 mmap fill、
+其 `Read` 归入 page-cached cold run、`Splice` 归入 other；`OSFile::try_page_cached_read()` 的多页冷 run 同样归入
+page-cached cold run；只有该函数返回 `None` 后的 `OSFile::read()` 直读归入 direct bypass。缓存命中、EOF 前的
+`inode.size()`、失败返回与 `read_all()` 都不增加该计数，避免把每个 page hit 的额外 atomic 加到热路径。
+
+此行记录的是 VFS caller 对实际 `read_at()` 的需求，不是 device I/O：Ext4 delayed byte-cache 命中仍会有一次
+VFS `read_at`，但不取得 `ext4_read_data_lock`。因此下一份样本以各来源 ops 与 `ext4 reads` 的同量级关系、以及
+read-data lock samples 不超过相应 EXT4 读取工作量作合理性检查，而不要求两者严格相等。
+
+### 验证计划
+
+已通过 `cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check`、RISC-V/LoongArch64
+`make perf` 和默认 `make TARGET_ARCH=riscv64`（其 release 子目标覆盖两种架构）；最后重建 RISC-V perf 内核。
+构建只出现已有 Cargo config、vendored `smoltcp` 与 release `ipi_sent` warning。运行时使用 RISC-V `8G/8 hart` 的同一
+BuildStorm 入口，确认 P9 标签与 `inode_read_source` 同时存在。按共同 Cargo 检查点保留来源 ops/bytes、`ext4 reads`、byte-cache hit、
+read-data/find lock、read-bypass 和 resident/capacity-bypass；样本没有 `BUILDSTORM_COMPILE`、END、`shutdown!` 时
+仍不宣称端到端加速。P10 未移动 lwext4 单一 gate，未修改预读、页缓存容量/准入或写入失效语义。
+
+## 2026-07-30：`tmp_02.ans` P10 来源验证与未对齐 ELF 分块读取
+
+### P10 运行期结果
+
+`tmp_02` 同时输出 P9 标签和 `[perf] inode_read_source`，有 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，没有
+`panic/TFAIL/TBROK/ERROR`。最后完整快照为 `t=585973ms`，后续只到 Cargo `Building 23/446`，没有 compile/END/shutdown，
+因而不作为完整功能或端到端性能结论。
+
+末尾 `ext4 reads=32954 / 296203960 B`；mmap fill 为 `19486 / 183063432 B`，page-cached cold run 为
+`9331 / 98809115 B`，direct bypass 为 `41 / 34112 B`，other 为零。前三桶总计 `28858 / 281906659 B`，与 ext4
+总量相差 `4096 / 14297301 B`。同一快照 `ext4_read_data_lock samples=32072`，`byte_cache_read_hits=882`，满足
+`32072 + 882 = 32954`；故来源缺口是真实成功 `read_at()` 调用，而非字节缓存或锁统计口径造成。
+
+全局 `read_at` 审计定位四个漏记的 exec/ELF 点：`sys_execve` 的 256 B probe、ELF metadata 的初读/扩展，以及未对齐
+`PT_LOAD` 的逐页装载。前两类每次 exec 只读小 metadata；`push_elf_segment_from_file()` 则会为未对齐段的每个目标页进入
+lwext4，故是 4096 次、14.3 MiB 的主要候选。P10 的 mmap/page-cache 结论保持不变：mmap fill 已占约 59.1% reads，不能把
+来源差额误解为继续扩大 cache 或预读的依据。
+
+### P11 实现
+
+为全部四个遗漏位置补记 `InodeReadSource::Other`，使 BuildStorm 的来源桶完整覆盖 VFS `read_at`。
+`push_elf_segment_from_file()` 不再每页调用一次：它在已经 `map()` 的零初始化段中使用一个最大 64 KiB 的
+`try_reserve_exact` 临时 buffer 完成一次连续 `read_at()`，再按原来的 `(data_offset, vpn, page_offset)` 规则分段复制。
+每段文件数据不足一块时只分配所需容量；分配失败、错误、返回零或超过请求长度仍返回 `Err(())`，非零短读则与原来一样继续
+读取剩余范围，段外字节未写入，继续保持原来的零填充。文件页缓存、ELF 段映射范围/权限、COW、auxv 和 lwext4 gate 均未调整。
+
+64 KiB 上界将每个未对齐段的读取限制为 `ceil(segment_file_size / 64 KiB)` 次，代替原先最多按 4 KiB 目标页进入的多次
+读取；`tmp_02` 的 14,297,301 B 还混有 metadata，不能仅按总字节数承诺全局调用次数。此为锁进入次数的可验证减少，
+不是已实测的 BuildStorm 吞吐承诺。
+
+### 验证与下一次采样
+
+已通过 os fmt check、`git diff --check`、RISC-V/LoongArch64 `make perf` 和默认双架构 release 构建，最后恢复
+RISC-V perf `kernel-rv`。只有已有 Cargo config、vendored `smoltcp`、release `ipi_sent` warning；没有运行 QEMU，以免
+删除维护者 `disk.img` 链接。
+
+下一次 RISC-V `8G/8 hart` BuildStorm 必须同时打印 P9/P10 标签。以相同 Cargo 标记检查：四个来源 bucket 的 ops/bytes
+与 `ext4 reads` 的覆盖关系，`other` 的操作数和字节数，read-data lock samples/wait/hold，以及
+`exec_loader_duration map_elf`。若 `other` 未降或总数不再与 reads 对齐，先修正分类；若其按预期降低而 mmap fill/cold run
+成为主因，再为它们选择下一步而不先改缓存参数。
+
+## 2026-07-30：`tmp_03.ans` 验证 P11 来源守恒并准备 P12
+
+### 运行期证据
+
+`tmp_03.ans` 已包含 P9 的 `file_cache_capacity`、目录 epoch fstat 标签以及 P10/P11 的
+`inode_read_source`。日志有 `BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok`，未见
+`panic`、`TFAIL`、`TBROK` 或 `ERROR`；最后快照约为 `t=599250ms`、Cargo `Building 26/446`。
+由于没有 `BUILDSTORM_COMPILE`、END 或 `shutdown!`，该样本仍是中途路径归因窗口，不能作为完整回归或
+端到端加速结论。
+
+末尾计数如下：
+
+```text
+ext4 reads=29060 bytes=287043303 byte_cache_read_hits=645 byte_cache_read_hit_bytes=6657614
+inode_read_source
+  mmap_cache_fill       18869 ops / 173813719 bytes
+  page_cached_cold_run   9335 ops /  98840795 bytes
+  direct_bypass             44 ops /      36608 bytes
+  other                    812 ops /  14352181 bytes
+```
+
+四类来源的 ops 和 bytes 分别精确相加为 `29060` 和 `287043303`，与 `ext4 reads` 完全一致。相较
+`tmp_02` 中约 `4096 ops / 14.3 MiB` 的未归因缺口，P11 已将 exec probe、ELF metadata 和未对齐
+`PT_LOAD` 段路径纳入 `other`，同时将未对齐段从逐页读改为最大 64 KiB 的有界分块读。`other=812`
+仍包含 metadata 和其他非 mmap/page-cache caller，不能把它直接视为重复数据读取；不同 Cargo 检查点也不能用
+总 reads 或锁累计值推导吞吐变化。
+
+### P12 取证计划
+
+当前 mmap fill 约占来源 `65%` 的 ops、`61%` 的 bytes，page-cached cold run 约占 `32%` 的 ops、`34%` 的
+bytes，是下一步唯一有足够规模的候选。先在 `FilePageCacheSource::Mmap` 内把成功 backing read 分为 demand
+page fault 与 `prefetch_shared_file_pages()` 的 fork/shared-map 预取；分类仍只在真实 `inode.read_at()` 成功后
+做一次 `Relaxed` 累加，不在 cache hit 或 size 检查路径增加计数。
+
+下一份同配置 RISC-V `8G/8 hart` 样本需并列保留 mmap demand/prefetch、page-cached cold run、
+`ext4_read_data_lock` samples/wait/hold、page fault/readahead、resident/capacity-bypass。若 demand fill 占主导，
+再检查 `prepare_file_page()` 与 `mmap_read_page_fault()` 是否重复触发；若共享映射预取占主导，则检查预取是否
+覆盖已驻留页。完成来源比例和完整结束标记之前，维持 32 MiB/96K 页 P9 参数、四页预读上限及 EXT4 单一 gate。

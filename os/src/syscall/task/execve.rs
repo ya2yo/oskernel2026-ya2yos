@@ -107,6 +107,11 @@ fn read_exec_probe_with_size(
     let mut done = 0;
     while done < read_len {
         let read = inode.read_at(done, &mut data[done..])?;
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_inode_read_source(
+            crate::utils::perf::InodeReadSource::Other,
+            read,
+        );
         if read == 0 {
             break;
         }

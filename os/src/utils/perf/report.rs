@@ -68,6 +68,17 @@ pub(super) fn emit_report(now: usize) {
         FILE_CACHE_CAPACITY_BYPASS_PAGES.load(Ordering::Relaxed),
     );
     println!(
+        "[perf] inode_read_source mmap_cache_fill_ops={} mmap_cache_fill_bytes={} page_cached_cold_run_ops={} page_cached_cold_run_bytes={} direct_bypass_ops={} direct_bypass_bytes={} other_ops={} other_bytes={}",
+        INODE_READ_MMAP_CACHE_FILL.ops.load(Ordering::Relaxed),
+        INODE_READ_MMAP_CACHE_FILL.bytes.load(Ordering::Relaxed),
+        INODE_READ_PAGE_CACHED_COLD_RUN.ops.load(Ordering::Relaxed),
+        INODE_READ_PAGE_CACHED_COLD_RUN.bytes.load(Ordering::Relaxed),
+        INODE_READ_DIRECT_BYPASS.ops.load(Ordering::Relaxed),
+        INODE_READ_DIRECT_BYPASS.bytes.load(Ordering::Relaxed),
+        INODE_READ_OTHER.ops.load(Ordering::Relaxed),
+        INODE_READ_OTHER.bytes.load(Ordering::Relaxed),
+    );
+    println!(
         "[perf] vfs_lookup fsidx_hit={} fsidx_miss={} path_index_hit={} dentry_positive_hit={} dentry_negative_hit={} dentry_miss={} dentry_positive_insert={} dentry_negative_insert={} dentry_invalidates={} dentry_invalidate_hits={} dentry_clear_calls={} dentry_parent_miss={} dentry_lookup_bypass_flags={} cached_parent_find={} root_find={} preserve_final_cache_hit={} fsidx_reclaimed={} fsidx_rebuilds={} fsidx_identity_epoch_hit={} fsidx_identity_live_probe={} fsidx_identity_stale_replace={} dentry_cleared_by_fsidx={} dentry_capacity_evictions={} dentry_capacity_evicted_entries={}",
         VFS_FSINDEX_HITS.load(Ordering::Relaxed),
         VFS_FSINDEX_MISSES.load(Ordering::Relaxed),

@@ -1970,3 +1970,42 @@
   端到端加速。本轮仅更新文档，未改代码、构建或运行 QEMU。
 - **关联文档**：[优化方案](./优化方案.md)、[BuildStorm 读路径、FsIndex 与 fstat 锁争用](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_01` P9 复核与 backing-read 来源归因（7.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 `tmp_01.ans`，要求据此继续 BuildStorm 内核优化。
+- **描述**：第二份 P9 窗口再次显示低大文件 read 旁路（`37 / 30,784 B`）和未触顶的页缓存
+  （`53,470 / 98,304`、capacity bypass `0`），故固定 32 MiB/96K 页参数。新增一次成功 `Inode::read_at()` 一次的
+  mmap-fill/page-cached-cold-run/direct-bypass/other ops+bytes 聚合；page-cache hit 不做新 atomic，`splice` 归 other，
+  未改变 lwext4 gate、预读、页缓存失效或目录 epoch 语义。
+- **验证边界**：`tmp_01` 有 toolchain/minibuild ok 且无 panic/TFAIL/TBROK/ERROR，但只到 Cargo `24/446`，未报告端到端
+  加速。RISC-V、LoongArch64 perf/release 构建和格式/diff 检查已通过；为保留维护者的 `disk.img` 链接，不运行
+  `make run`。
+- **关联文档**：[优化方案](./优化方案.md)、[BuildStorm 读路径、FsIndex 与 fstat 锁争用](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
+#### `tmp_02` P10 来源验证与未对齐 ELF 读取合并（7.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 `tmp_02.ans`，要求继续依据 BuildStorm 输出优化内核。
+- **描述**：P10 发现 4,096 次/14.3 MiB 的 exec/ELF 未归因 `read_at`；全局审计定位 exec probe、ELF metadata 和未对齐
+  `PT_LOAD` 段。将后者从逐页直接读取改为最大 64 KiB 的可失败临时缓冲分块读取，复制规则与零填充语义不变；所有遗漏点
+  都归入 `inode_read_source other`，不移动 lwext4 gate 或改变页缓存、ELF 权限/COW/auxv。
+- **验证边界**：`tmp_02` 有 toolchain/minibuild ok 且无 panic/TFAIL/TBROK/ERROR，但只到 Cargo `23/446`，未报告端到端加速。
+  RISC-V、LoongArch64 perf/release 构建和格式/diff 检查已通过；为保留维护者的 `disk.img` 链接，不运行 `make run`。
+- **关联文档**：[优化方案](./优化方案.md)、[BuildStorm 读路径、FsIndex 与 fstat 锁争用](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
+#### `tmp_03` P11 来源守恒与 P12 取证准备（7.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 `tmp_03.ans`，要求完善 P11 文档并准备下一轮优化。
+- **描述**：`tmp_03` 已装载 P11 perf 内核，四类 `inode_read_source` 的 ops/bytes
+  （`18869/173813719`、`9335/98840795`、`44/36608`、`812/14352181`）精确覆盖
+  `ext4 reads=29060/287043303 B`，确认 exec/ELF 漏记路径已归因。日志虽有 toolchain/minibuild ok 且无异常，
+  但只到 `Building 26/446`，没有完整结束标记，未报告端到端加速。下一轮固定 P9 参数，只细分 mmap demand fault 与
+  共享映射预取来源，暂不改变缓存、预读或 EXT4 锁语义。
+- **验证边界**：本轮仅分析日志并更新文档，未修改内核代码、重新构建或运行 QEMU。
+- **关联文档**：[优化方案](./优化方案.md)、[BuildStorm 读路径、FsIndex 与 fstat 锁争用](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
