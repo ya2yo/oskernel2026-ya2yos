@@ -100,13 +100,16 @@ impl InodeReadSourceStats {
 /// Coarse caller classes for a real `Inode::read_at()` invocation.
 #[derive(Clone, Copy)]
 pub enum InodeReadSource {
-    MmapCacheFill,
+    MmapDemand,
+    MmapPrefetch,
     PageCachedReadColdRun,
     DirectBypass,
     Other,
 }
 
 pub(crate) static INODE_READ_MMAP_CACHE_FILL: InodeReadSourceStats = InodeReadSourceStats::new();
+pub(crate) static INODE_READ_MMAP_DEMAND: InodeReadSourceStats = InodeReadSourceStats::new();
+pub(crate) static INODE_READ_MMAP_PREFETCH: InodeReadSourceStats = InodeReadSourceStats::new();
 pub(crate) static INODE_READ_PAGE_CACHED_COLD_RUN: InodeReadSourceStats =
     InodeReadSourceStats::new();
 pub(crate) static INODE_READ_DIRECT_BYPASS: InodeReadSourceStats = InodeReadSourceStats::new();
@@ -688,7 +691,14 @@ pub fn record_ext4_read(bytes: usize) {
 #[inline]
 pub fn record_inode_read_source(source: InodeReadSource, bytes: usize) {
     match source {
-        InodeReadSource::MmapCacheFill => INODE_READ_MMAP_CACHE_FILL.record(bytes),
+        InodeReadSource::MmapDemand => {
+            INODE_READ_MMAP_CACHE_FILL.record(bytes);
+            INODE_READ_MMAP_DEMAND.record(bytes);
+        }
+        InodeReadSource::MmapPrefetch => {
+            INODE_READ_MMAP_CACHE_FILL.record(bytes);
+            INODE_READ_MMAP_PREFETCH.record(bytes);
+        }
         InodeReadSource::PageCachedReadColdRun => INODE_READ_PAGE_CACHED_COLD_RUN.record(bytes),
         InodeReadSource::DirectBypass => INODE_READ_DIRECT_BYPASS.record(bytes),
         InodeReadSource::Other => INODE_READ_OTHER.record(bytes),

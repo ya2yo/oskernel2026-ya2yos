@@ -2009,3 +2009,39 @@
 - **验证边界**：本轮仅分析日志并更新文档，未修改内核代码、重新构建或运行 QEMU。
 - **关联文档**：[优化方案](./优化方案.md)、[BuildStorm 读路径、FsIndex 与 fstat 锁争用](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_04` P12 mmap 来源细分实现（7.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `tmp_04.ans`，要求继续依据《优化方案》进行内核性能优化。
+- **描述**：`tmp_04` 仍是 P11 中途样本，mmap fill 约占主要 backing-read，页缓存未触顶且无异常。将
+  `FilePageCacheSource::Mmap` 拆为真实 demand 缺页和 `prefetch_shared_file_pages()` 的 shared-map fork 预取，
+  保留 `mmap_cache_fill_*` 聚合并增加两组 ops/bytes，未修改 P9 参数、预读、EXT4 锁或失效语义。
+- **验证边界**：已执行 `cargo fmt --manifest-path os/Cargo.toml --all`；双架构 perf 构建、格式检查及带新字段的 guest 样本待完成。
+  `tmp_04` 无完整 compile/end/shutdown，不能报告端到端加速。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
+#### `tmp_05` P13 mmap demand 重复加载优化（7.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `tmp_05.ans`，要求继续依据 perf 输出优化。
+- **描述**：`tmp_05` 显示 mmap demand `21328` 次、prefetch `0`，且页缓存未触顶。将文件映射 EOF 检查从
+  `prepare_file_page()->get_or_load()` 改为页偏移/`inode.size()` 判断，避免 in-range fault 在 EOF 检查与实际缺页处理间重复查找同一页；处理失败时仅在冷路径重新判断 EOF 以保留并发截断的 SIGBUS，其余尾页、COW 和 P9 参数不变。
+- **验证边界**：RISC-V/LoongArch64 perf、默认 release、LoongArch64 log 构建和格式检查通过；尾页/BuildStorm 新样本待完成。
+  `tmp_05` 无完整 compile/end/shutdown，不能报告端到端加速。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
+#### `tmp_06` P12/P13 运行期证据整理（7.30）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 `tmp_06.ans`，要求完善文档并准备提交。
+- **描述**：最后快照 `t=560923ms`、Cargo `Building 24/446`。`ext4 reads=29210/289132560 B` 与四类来源精确守恒：
+  mmap demand `19059/176501187 B`、prefetch `0/0 B`、page-cached cold run `9310/98278502 B`、direct bypass
+  `43/35776 B`、other `798/14317095 B`；resident `55956/98304` 页且容量旁路为零。记录该窗口仅证明 P12
+  归因稳定、P13 可运行和 P9 未触顶，不把未出现 `BUILDSTORM_COMPILE`/结束标记的中途样本解释为端到端加速。
+- **验证边界**：本轮只完善文档，没有新增代码或运行 QEMU；后续需同 Cargo 检查点比较 page-cache/page-fault/read-lock
+  指标，并补做尾页及并发 truncate 的 SIGBUS 回归。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

@@ -1017,3 +1017,69 @@ page fault 与 `prefetch_shared_file_pages()` 的 fork/shared-map 预取；分�
 `ext4_read_data_lock` samples/wait/hold、page fault/readahead、resident/capacity-bypass。若 demand fill 占主导，
 再检查 `prepare_file_page()` 与 `mmap_read_page_fault()` 是否重复触发；若共享映射预取占主导，则检查预取是否
 覆盖已驻留页。完成来源比例和完整结束标记之前，维持 32 MiB/96K 页 P9 参数、四页预读上限及 EXT4 单一 gate。
+
+## 2026-07-30：`tmp_04.ans` P12 来源细分实现
+
+### 运行期基线
+
+`tmp_04.ans` 仍装载 P11/RISC-V perf 内核，末尾完整快照约为 `t=577239ms`、Cargo `Building 26/446`；有
+`BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，未见 `panic/TFAIL/TBROK/ERROR`，但没有 `BUILDSTORM_COMPILE`、END 或
+`shutdown!`。该快照的来源为 mmap fill `19861/187563419 B`、page-cached cold run `8660/92375936 B`、
+direct bypass `42/34944 B`、other `791/14311446 B`，resident `57402/98304` 页且容量旁路为零。
+
+### P12 实现
+
+`FilePageCacheSource::Mmap` 拆为 `MmapDemand` 与 `MmapPrefetch`：`MemorySet::prepare_file_page()` 的真实缺页走
+demand，`prefetch_shared_file_pages()` 的共享映射 fork 预取走 prefetch。`inode_read_source` 保留原
+`mmap_cache_fill` 聚合并新增 demand/prefetch 两组 ops/bytes；只有实际 `inode.read_at()` 成功返回才累加，缓存命中、
+`inode.size()` 与失效路径不增加诊断开销。页缓存容量、四页预读、EXT4 单一 gate 及失效语义均未改变。
+
+### 验证计划
+
+已运行格式化，下一步执行 `cargo fmt --manifest-path os/Cargo.toml --all -- --check`、双架构 `make perf` 与
+`git diff --check`，随后用包含新字段的 RISC-V 样本判断 demand 与 prefetch 占比；未取得新样本前不宣称实际吞吐改善。
+
+## 2026-07-30：`tmp_05.ans` demand mmap 归因与 EOF 重复加载优化
+
+### 运行期证据
+
+`tmp_05.ans` 已装载 P12/RISC-V perf 内核，末尾约 `t=588233ms`、Cargo `Building 36/446`；有
+`BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，未见 `panic/TFAIL/TBROK/ERROR`，但没有 `BUILDSTORM_COMPILE`、END 或
+`shutdown!`。末尾 `mmap_demand=21328/206960356 B`、`mmap_prefetch=0/0`，`file_cache_source mmap_miss=21329`，
+`resident_pages=64836/98304`、capacity bypass 为零，说明该窗口的 mmap 回源全部来自真实 demand fault，不能以预取
+比例支持扩大预取深度。
+
+### P13 修复
+
+trap 的文件映射缺页此前先调用 `mmap_file_page_beyond_eof()`，该函数通过 `prepare_file_page()` 完整加载/查找页；
+对未越过 EOF 的 fault，随后 `handle_page_fault()` 又执行一次相同页缓存查找。现在 EOF 检查只根据
+`mmap_file_page_info()` 的页偏移和 `inode.size()` 判断完整越界页，避免第一次 `get_or_load()`；真正缺页仍由
+`prepare_file_page()` 唯一加载；如果加载竞态期间截断使处理失败，trap 仅在失败冷路径重新检查 EOF 并区分 SIGBUS。页部分覆盖 EOF、SIGBUS、MAP_PRIVATE/MAP_SHARED 与 COW 语义保持不变。
+
+### 验证计划
+
+需以同一 RISC-V BuildStorm 入口复跑，比较 `file_cache hit/mmap_hit`、`mmap_miss`、`page_faults`、
+`ext4_read_data_lock` 和尾页 SIGBUS 回归；样本无完整结束标记时不报告端到端加速。
+
+## 2026-07-30：`tmp_06.ans` 验证 P12/P13 运行边界
+
+### 运行期证据
+
+`tmp_06.ans` 装载了包含 P12/P13 标签的 RISC-V perf 内核，最后快照为 `t=560923ms`、Cargo `Building 24/446`。
+日志有 `BUILDSTORM_MINIBUILD ok`，未见 `panic`、`TFAIL`、`TBROK` 或 `ERROR`；但没有
+`BUILDSTORM_COMPILE`、`#### OS COMP TEST GROUP END buildstorm ####` 或 `shutdown!`，所以不能把它当作完整
+BuildStorm 功能回归或端到端性能样本。
+
+快照计数为 `ext4 reads=29210 / 289132560 B`；来源为 mmap demand `19059 / 176501187 B`、mmap prefetch
+`0 / 0 B`、page-cached cold run `9310 / 98278502 B`、direct bypass `43 / 35776 B`、other
+`798 / 14317095 B`。四类来源的 ops/bytes 均精确覆盖 `ext4 reads`，确认 P12 的来源分类没有丢失调用点；
+`mmap_prefetch=0` 说明本窗口没有 shared-map fork 预取回源。页缓存 `55956/98304` 页，
+`capacity_bypass_pages=0`，P9 容量上限未触发。
+
+### 结论与后续
+
+该样本支持“mmap 回源仍以 demand fault 为主、来源归因守恒、缓存没有触顶”的取证结论，不支持端到端加速百分比。
+由于 `tmp_05` 与 `tmp_06` 的 Cargo 阶段和并发交错不同，不能直接比较累计 `file_cache`、锁等待或 wall-clock。下一次
+应在相同 Cargo 检查点比较 `file_cache hit/mmap_hit`、`mmap_miss`、`page_faults`、`readahead` 和
+`ext4_read_data_lock`，并补做文件映射部分尾页、越界页及并发 truncate 的 SIGBUS 回归；在完整结束标记出现前保持
+P9 的 32 MiB 准入、96K 页容量、四页预读、EXT4 单一 gate 及写入失效语义。

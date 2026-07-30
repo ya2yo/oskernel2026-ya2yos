@@ -68,9 +68,13 @@ pub(super) fn emit_report(now: usize) {
         FILE_CACHE_CAPACITY_BYPASS_PAGES.load(Ordering::Relaxed),
     );
     println!(
-        "[perf] inode_read_source mmap_cache_fill_ops={} mmap_cache_fill_bytes={} page_cached_cold_run_ops={} page_cached_cold_run_bytes={} direct_bypass_ops={} direct_bypass_bytes={} other_ops={} other_bytes={}",
+        "[perf] inode_read_source mmap_cache_fill_ops={} mmap_cache_fill_bytes={} mmap_demand_ops={} mmap_demand_bytes={} mmap_prefetch_ops={} mmap_prefetch_bytes={} page_cached_cold_run_ops={} page_cached_cold_run_bytes={} direct_bypass_ops={} direct_bypass_bytes={} other_ops={} other_bytes={}",
         INODE_READ_MMAP_CACHE_FILL.ops.load(Ordering::Relaxed),
         INODE_READ_MMAP_CACHE_FILL.bytes.load(Ordering::Relaxed),
+        INODE_READ_MMAP_DEMAND.ops.load(Ordering::Relaxed),
+        INODE_READ_MMAP_DEMAND.bytes.load(Ordering::Relaxed),
+        INODE_READ_MMAP_PREFETCH.ops.load(Ordering::Relaxed),
+        INODE_READ_MMAP_PREFETCH.bytes.load(Ordering::Relaxed),
         INODE_READ_PAGE_CACHED_COLD_RUN.ops.load(Ordering::Relaxed),
         INODE_READ_PAGE_CACHED_COLD_RUN.bytes.load(Ordering::Relaxed),
         INODE_READ_DIRECT_BYPASS.ops.load(Ordering::Relaxed),

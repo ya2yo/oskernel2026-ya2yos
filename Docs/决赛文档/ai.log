@@ -8420,6 +8420,35 @@ mode、owner 及 read/find/fstat 锁等待是稳定热点；两份日志均早�
 
 当前工作区未提交
 
+## 2026-07-30：`tmp_06.ans` 完成 P12/P13 文档复核
+
+### 用户输入
+
+维护者提供新的 `tmp_06.ans`，要求完善文档并准备提交。
+
+### 分析与采纳结论
+
+`tmp_06` 最后快照为 `t=560923ms`、Cargo `Building 24/446`，包含 `BUILDSTORM_MINIBUILD ok`，未见
+`panic/TFAIL/TBROK/ERROR`，但没有 `BUILDSTORM_COMPILE`、BuildStorm 组结束标记或 `shutdown!`。因此只记录
+运行期取证，不报告完整测试通过或端到端性能提升。
+
+快照显示 `ext4 reads=29210 / 289132560 B`；`mmap_demand=19059 / 176501187 B`、`mmap_prefetch=0 / 0 B`、
+`page_cached_cold_run=9310 / 98278502 B`、`direct_bypass=43 / 35776 B`、`other=798 / 14317095 B`，四类来源的
+ops/bytes 均精确守恒。`resident_pages=55956 / 98304` 且 `capacity_bypass_pages=0`，说明本窗口 mmap 回源仍全为
+demand fault，shared-map fork 预取没有产生 backing read，页缓存也未触及上限。由于与 `tmp_05` 的 Cargo 阶段及并发
+交错不同，不能用累计锁统计或 wall-clock 做 A/B。
+
+### 文档修改与验证边界
+
+已更新《优化方案》P14、`problem/buildstorm-read-path-lock-contention.md`、开发日志、本文档和
+`AI_INTERACTION.md`，补充来源守恒、缓存容量和未完成样本的限制；未修改内核代码。后续仍需同 Cargo 检查点比较
+`file_cache hit/mmap_hit`、`mmap_miss`、`page_faults`、`readahead`、`ext4_read_data_lock`，并执行文件映射尾页及
+并发 truncate 的 SIGBUS 回归。
+
+### 关联 commit
+
+当前工作区未提交
+
 ## 2026-07-30：`tmp_02.ans` P10 来源验证与未对齐 ELF 读取合并
 
 ### 用户输入
@@ -8660,3 +8689,67 @@ lock、page fault/readahead、resident/capacity-bypass；根据占比再检查 `
 
 本轮只更新《优化方案》、读路径问题复盘、开发日志、`ai.log` 和 `AI_INTERACTION.md`，未修改内核代码、未重新构建、
 未运行 QEMU；保留工作区已有内核与维护者的 `disk.img` 改动。
+
+## 2026-07-30：`tmp_04.ans` 实施 P12 mmap 来源细分
+
+### 用户输入
+
+维护者提供新的 `tmp_04.ans`，要求继续依据《优化方案》进行性能优化。
+
+### 分析与采纳结论
+
+`tmp_04` 仍为 P11/RISC-V perf 内核，末尾约 `t=577239ms`、Cargo `Building 26/446`，有 toolchain/minibuild ok，
+无 panic/TFAIL/TBROK/ERROR，但没有完整 compile/end/shutdown。末尾 `mmap_cache_fill=19861/187563419 B`、
+`page_cached_cold_run=8660/92375936 B`、`direct_bypass=42/34944 B`、`other=791/14311446 B`，resident
+`57402/98304` 页且容量旁路为零。该结果支持继续固定 P9 参数，但无法在来源未分解前选择新的缓存或预读改动。
+
+本轮实施 P12：将 `FilePageCacheSource::Mmap` 拆为 demand 缺页和 shared-map fork prefetch 两类；保留旧 mmap 聚合字段，
+新增 demand/prefetch ops+bytes，只在真实成功 `inode.read_at()` 返回后记账。未改变页缓存容量、四页预读、EXT4 gate 或
+失效语义。
+
+### 修改文件
+
+`os/src/fs/page_cache.rs`、`os/src/mm/memory_set/handle.rs`、`os/src/utils/perf/fs.rs`、
+`os/src/utils/perf/report.rs`、`Docs/决赛文档/优化方案.md`、
+`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、`Docs/决赛文档/开发日志.md`、
+`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+已执行 `cargo fmt --manifest-path os/Cargo.toml --all`、RISC-V/LoongArch64 perf 构建、默认双架构 release 构建、
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check` 和 `git diff --check`；新字段 guest 样本待维护者运行。
+`tmp_04` 本身没有完整结束标记，不能报告端到端加速。
+
+### 关联 commit
+
+当前工作区未提交
+
+## 2026-07-30：`tmp_05.ans` P13 mmap demand 重复加载优化
+
+### 用户输入
+
+维护者提供新的 `tmp_05.ans`，要求继续优化。
+
+### 分析与采纳结论
+
+`tmp_05` 装载 P12/RISC-V perf 内核，末尾约 `t=588233ms`、Cargo `Building 36/446`，toolchain/minibuild ok，无
+panic/TFAIL/TBROK/ERROR，但没有完整 compile/end/shutdown。`mmap_demand=21328/206960356 B`、`mmap_prefetch=0/0`，
+`file_cache_source mmap_miss=21329`，resident `64836/98304`，capacity bypass 为零，证明本窗口 mmap 回源全部来自
+demand fault，未显示预取可优化空间。
+
+### 修改与验证边界
+
+trap 的 EOF 检查此前通过 `prepare_file_page()` 先加载/查找页，随后真正 fault 又查找同一页。现改为页偏移和
+`inode.size()` 的纯判断，避免对 in-range fault 的第一次 `get_or_load()`；实际缺页仍唯一加载，部分尾页、SIGBUS、
+MAP_PRIVATE/MAP_SHARED 和 COW 语义保持。处理失败时在冷路径重新检查 EOF，避免并发截断误报 SIGSEGV。RISC-V/LoongArch64 perf、默认 release、LoongArch64 log 构建和格式检查通过；
+尾页回归与同入口新样本待完成，不能用 `tmp_05` 报告端到端加速。
+
+### 修改文件
+
+`os/src/mm/memory_set/handle.rs`、`Docs/决赛文档/优化方案.md`、
+`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、`Docs/决赛文档/开发日志.md`、
+`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 关联 commit
+
+当前工作区未提交

@@ -12,6 +12,7 @@ use super::{
     MemorySetInner,
 };
 use crate::{
+    arch::memory_layout::PAGE_SIZE,
     fs::{FilePageCacheSource, OSFile, FILE_PAGE_CACHE},
     mm::{
         FrameTracker, MapAreaType, MapPermission, PhysAddr, PhysPageNum, VPNRange, VirtAddr,
@@ -150,9 +151,17 @@ impl MemorySet {
     /// Whether a faulting VPN lies in a file mapping beyond that file's EOF.
     ///
     /// The trap layer uses this to distinguish Linux SIGBUS from ordinary
-    /// unmapped/protection faults, which result in SIGSEGV.
+    /// unmapped/protection faults, which result in SIGSEGV. Do not load the
+    /// backing page here: an in-range fault immediately calls
+    /// `handle_page_fault()`, which would otherwise duplicate the cache load.
     pub fn mmap_file_page_beyond_eof(&self, vpn: VirtPageNum) -> bool {
-        self.prepare_file_page(vpn).unwrap_or(false)
+        let Some((inode, page_index)) = self.get_ref().mmap_file_page_info(vpn) else {
+            return false;
+        };
+        let Some(file_offset) = page_index.checked_mul(PAGE_SIZE) else {
+            return true;
+        };
+        file_offset >= inode.size()
     }
 
     /// Load one file-backed mmap page without holding the MemorySet lock.
@@ -162,7 +171,7 @@ impl MemorySet {
         let request = self.get_ref().mmap_file_page_info(vpn);
         let (inode, page_index) = request?;
         let page = FILE_PAGE_CACHE
-            .get_or_load(inode, page_index, FilePageCacheSource::Mmap)
+            .get_or_load(inode, page_index, FilePageCacheSource::MmapDemand)
             .ok()?;
         Some(page.valid_len == 0)
     }
@@ -172,7 +181,8 @@ impl MemorySet {
     pub fn prefetch_shared_file_pages(&self) {
         let requests = self.get_ref().shared_file_page_info();
         for (inode, page_index) in requests {
-            let _ = FILE_PAGE_CACHE.get_or_load(inode, page_index, FilePageCacheSource::Mmap);
+            let _ =
+                FILE_PAGE_CACHE.get_or_load(inode, page_index, FilePageCacheSource::MmapPrefetch);
         }
     }
 

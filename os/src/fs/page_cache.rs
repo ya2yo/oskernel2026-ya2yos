@@ -52,7 +52,8 @@ type FilePages = BTreeMap<usize, Arc<FilePage>>;
 /// Identifies the VFS path that requested a page-cache load.
 #[derive(Clone, Copy)]
 pub enum FilePageCacheSource {
-    Mmap,
+    MmapDemand,
+    MmapPrefetch,
     Read,
     Splice,
 }
@@ -308,7 +309,8 @@ impl FilePageCache {
         let _ = source;
         #[cfg(feature = "perf")]
         let inode_read_source = match source {
-            FilePageCacheSource::Mmap => crate::utils::perf::InodeReadSource::MmapCacheFill,
+            FilePageCacheSource::MmapDemand => crate::utils::perf::InodeReadSource::MmapDemand,
+            FilePageCacheSource::MmapPrefetch => crate::utils::perf::InodeReadSource::MmapPrefetch,
             FilePageCacheSource::Read => crate::utils::perf::InodeReadSource::PageCachedReadColdRun,
             FilePageCacheSource::Splice => crate::utils::perf::InodeReadSource::Other,
         };
@@ -332,7 +334,9 @@ impl FilePageCache {
             {
                 crate::utils::perf::record_file_cache_hit();
                 match source {
-                    FilePageCacheSource::Mmap => crate::utils::perf::record_file_cache_mmap_hit(),
+                    FilePageCacheSource::MmapDemand | FilePageCacheSource::MmapPrefetch => {
+                        crate::utils::perf::record_file_cache_mmap_hit()
+                    }
                     FilePageCacheSource::Read => crate::utils::perf::record_file_cache_read_hit(1),
                     FilePageCacheSource::Splice => {
                         crate::utils::perf::record_file_cache_splice_hit()
@@ -346,7 +350,9 @@ impl FilePageCache {
         {
             crate::utils::perf::record_file_cache_miss();
             match source {
-                FilePageCacheSource::Mmap => crate::utils::perf::record_file_cache_mmap_miss(),
+                FilePageCacheSource::MmapDemand | FilePageCacheSource::MmapPrefetch => {
+                    crate::utils::perf::record_file_cache_mmap_miss()
+                }
                 FilePageCacheSource::Read => crate::utils::perf::record_file_cache_read_miss(1),
                 FilePageCacheSource::Splice => crate::utils::perf::record_file_cache_splice_miss(),
             }
