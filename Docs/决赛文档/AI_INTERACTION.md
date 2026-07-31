@@ -2022,6 +2022,17 @@
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
 
+#### `tmp_13` P18.2.2 验证与 P15.2 目录 epoch（7.31）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的十分钟 `tmp_13.ans`，要求进行下一轮优化。
+- **描述**：`regular_no_lookup_stat=0` 证明创建 stat 复用已消除普通文件首次 pathname fstat；目录仍有
+  `directory_lookup_stat=1501`，epoch miss 为 `3007`（local `2166`、global `1238`）。实现目录 rename/rmdir
+  的局部 epoch：标记源目录、源/目标父目录和已缓存替换目标，未知目标保留全局回退。
+- **验证边界**：格式与 diff 检查通过；Docker 只读目录未改动，双架构链接、目录语义回归和新运行样本待后续完成。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
 #### `tmp_12` P18.2 创建结果复用（7.31）
 
 - **工具/模型**：Codex (GPT-5)

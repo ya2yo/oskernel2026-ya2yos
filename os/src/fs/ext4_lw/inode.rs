@@ -380,14 +380,34 @@ impl Ext4Inode {
             return;
         };
         let parent = if parent.is_empty() { "/" } else { parent };
-        if let Some(parent_inode) = FsIndex::find_inode_idx(parent) {
-            parent_inode.mark_directory_stat_changed();
+        if Self::mark_cached_directory_stat(parent) {
             #[cfg(feature = "perf")]
             crate::utils::perf::record_ext4_fstat_directory_parent_local();
         } else {
             Self::advance_global_directory_stat_epoch();
             #[cfg(feature = "perf")]
             crate::utils::perf::record_ext4_fstat_directory_parent_global();
+        }
+    }
+
+    /// Invalidate one cached directory without broadening the mount-wide
+    /// epoch.  A missing or non-directory FsIndex entry is deliberately
+    /// reported to the caller so it can retain the conservative fallback.
+    #[inline]
+    fn mark_cached_directory_stat(path: &str) -> bool {
+        if let Some(inode) = FsIndex::find_inode_idx(path) {
+            if inode.types() == InodeType::Dir {
+                inode.mark_directory_stat_changed();
+                return true;
+            }
+        }
+        false
+    }
+
+    #[inline]
+    fn mark_cached_directory_stat_inode(inode: &Arc<dyn Inode>) {
+        if inode.types() == InodeType::Dir {
+            inode.mark_directory_stat_changed();
         }
     }
 
@@ -1026,6 +1046,14 @@ impl Inode for Ext4Inode {
             return Ok(0);
         }
 
+        // Directory rename changes the source and possibly replaced target
+        // metadata.  Retain the target handle so a successful replacement can
+        // invalidate only that directory instead of the whole mount.
+        let cached_target = if self.inode_type == InodeType::Dir {
+            FsIndex::find_inode_idx(new_path)
+        } else {
+            None
+        };
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_rename();
@@ -1079,10 +1107,19 @@ impl Inode for Ext4Inode {
         // later FsIndex collision retains the live `fstat()` reuse check.
         Self::advance_identity_epoch();
         if self.inode_type == InodeType::Dir {
-            // Renaming a directory changes its own ctime and may replace a
-            // directory at the destination, so retain the conservative global
-            // invalidation for this less common path.
-            Self::advance_global_directory_stat_epoch();
+            // Keep directory metadata invalidation local.  If the destination
+            // was not cached, retain the old conservative global fallback for
+            // a potentially live-but-unindexed replacement inode.
+            self.advance_local_directory_stat_epoch();
+            Self::advance_directory_stat_epoch_for_path(path);
+            if Self::parent_path(path) != Self::parent_path(new_path) {
+                Self::advance_directory_stat_epoch_for_path(new_path);
+            }
+            if let Some(target) = cached_target.as_ref() {
+                Self::mark_cached_directory_stat_inode(target);
+            } else {
+                Self::advance_global_directory_stat_epoch();
+            }
         } else {
             Self::advance_directory_stat_epoch_for_path(path);
             if Self::parent_path(path) != Self::parent_path(new_path) {
@@ -1616,9 +1653,10 @@ impl Inode for Ext4Inode {
                 // point therefore require FsIndex's live identity validation.
                 Self::advance_identity_epoch();
                 if is_dir {
-                    // Removing a directory changes the removed inode itself and
-                    // may invalidate another cached directory at the same path.
-                    Self::advance_global_directory_stat_epoch();
+                    // The removed inode and its cached parent are known; only
+                    // an uncached parent needs the mount-wide fallback.
+                    self.advance_local_directory_stat_epoch();
+                    Self::advance_directory_stat_epoch_for_path(path);
                 } else {
                     Self::advance_directory_stat_epoch_for_path(path);
                 }

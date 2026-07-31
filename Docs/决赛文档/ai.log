@@ -8993,3 +8993,31 @@ epoch stat cache，不伪造 blocks/timestamp，也不增加文件系统读取�
 `cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check` 和按已有 lwext4 RISC-V 参数执行的
 宿主 C `-fsyntax-only` 检查通过。宿主 `make perf` 因 Docker 生成目录为 `nobody:nogroup` 无法清理；遵照维护者
 要求没有移动、删除或修改这些目录，因此本轮 Rust 链接、双架构构建、QEMU 运行和创建语义回归尚未执行。
+
+## 2026-07-31：`tmp_13` P18.2.2 验证与 P15.2 目录 epoch 优化
+
+### 用户输入
+
+维护者提供新的十分钟输出 `tmp_13.ans`，要求进行下一轮优化。
+
+### 分析与采纳结论
+
+`tmp_13` 最后为 `t=571211ms`、Cargo `33/446`，无 panic/TFAIL/TBROK/ERROR/SIGSEGV/rustc error，未出现完整
+BuildStorm 结束标记。P18.2.2 已生效：`regular_no_lookup_stat=0`，实际 fstat `1889/227.431s`，目录
+`directory_lookup_stat=1501`、`directory_no_lookup_stat=61`；因此不再继续修改 regular-file 创建路径。
+
+目录 epoch miss 为 `3007`（local `2166`、global `1238`），而 namespace parent 计数仍为
+`local_updates=245/global_fallbacks=0`。代码追踪确认目录 rename/rmdir 仍推进 mount-wide epoch，导致无关目录
+缓存失效。采纳 P15.2：目录 rename 局部标记源 inode、源/目标父目录和已缓存替换目标；目录 unlink/rmdir 标记
+被移除目录和父目录，目标或父目录未缓存时保留全局 fallback。
+
+### 修改文件
+
+`os/src/fs/ext4_lw/inode.rs`、`Docs/决赛文档/优化方案.md`、
+`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、`Docs/决赛文档/开发日志.md`、
+`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check` 通过。Docker 生成的只读目录未移动
+或修改；双架构链接、目录 rename/rmdir 定向语义回归和新运行样本待后续完成。

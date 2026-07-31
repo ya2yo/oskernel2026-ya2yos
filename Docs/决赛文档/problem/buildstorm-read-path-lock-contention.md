@@ -1212,3 +1212,31 @@ mode/owner 合并版本已通过 RISC-V/LoongArch64 perf 构建和默认 release
 仍待定向验证：新文件/新目录成功创建、既有普通文件 `O_CREAT|O_EXCL|O_TRUNC` 返回 `EEXIST` 且内容不被截断、既有目录
 独占创建返回 `EEXIST`，以及非 root/S_ISGID 继承的 uid/gid。当前 `initproc` 是维护者的 BuildStorm-only 入口，未为这些
 测试改写入口。
+
+## 2026-07-31：P15.2 目录 epoch 局部失效
+
+### 新观测
+
+`tmp_13.ans` 已装载 P18.2.2：`regular_no_lookup_stat=0`，但目录 cold inode 仍有
+`directory_lookup_stat=1501`、`directory_no_lookup_stat=61`。目录 stat epoch miss 为
+`3007`，其中 local `2166`、global `1238`；parent 计数为 `local_updates=245/global_fallbacks=0`。
+实际 fstat 为 `1889/227.431s`，fstat 锁等待为 `178.760s`，样本止于 Cargo `33/446`，没有完整结束标记。
+
+### 根因
+
+P15.1 已将普通文件的父目录失效改为局部 epoch，但目录 `rename/rmdir` 仍直接推进 mount-wide
+`EXT4_DIRECTORY_STAT_EPOCH`。一次目录操作会使所有目录缓存的 global epoch 检查失败，造成与该操作无关的
+目录重复执行 pathname `ext4_stat_get()`。
+
+### 修复
+
+- 目录 rename 成功后递增源目录自身 epoch，并局部标记源/目标父目录。
+- 若目标路径已有缓存目录 inode，只递增该目标 inode 的局部 epoch；目标未缓存时保留全局回退，覆盖仍由打开
+  fd 持有但不在 FsIndex 的替换目录。
+- 目录 unlink/rmdir 同时标记被移除目录自身和父目录；普通文件路径、锁顺序和 inode identity epoch 不变。
+
+### 验证边界
+
+本轮 `cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check` 通过；尚未完成 Docker
+双架构链接、定向 rename/rmdir/fstat 语义回归或新运行样本。下一份日志需确认 global epoch miss 下降，且
+`actual_ext4_fstat` 与目录 fstat 锁等待同步下降。
