@@ -8863,3 +8863,35 @@ P17 代码已通过 `cargo fmt --manifest-path os/Cargo.toml --all`、`git diff 
 `make perf TARGET_ARCH=riscv64` 和 `make perf TARGET_ARCH=loongarch64`。`tmp_05/tmp_06` 是维护者提供的
 运行期样本，均没有完整 BuildStorm 结束标记；公平交接、create transaction 合并和 cache re-key 仍是下一轮方案，
 尚未实施或运行语义回归。
+
+## 2026-07-31：`tmp_07` P18.1 公平 EXT4 gate 验收
+
+### 用户输入
+
+维护者提供新的十分钟运行结果 `tmp_07.ans`，要求继续按《优化方案》分析并推进下一轮优化。
+
+### 分析与采纳结论
+
+复核 P18.1 的 FIFO/ticket `EXT4_OP_LOCK` 实现和 `tmp_07` perf 快照。最后样本为 `t=539771ms`、Cargo
+`Building 24/446`，无 panic/TFAIL/TBROK/ERROR/SIGSEGV，但没有完整 BuildStorm 结束标记。公平 gate 累计
+`fast=38741`、`queued=32432`、`handoffs=32426`、`cancelled=0`、`queue_depth=6`、`max_queue_depth=9`，
+满足 `queued=handoffs+cancelled+queue_depth`；六个等待分桶之和也等于 `handoffs`。
+
+与 `tmp_06` 的 `ext4_write_open_lock max_wait_us=175953977` 相比，`tmp_07` 降至 `14185616`，全局
+`ext4_write_lock` 与 gate handoff 的最大等待约 `25.8s`，说明公平交接消除了插队放大的百秒级饥饿长尾，
+但剩余长尾来自单次 lwext4 长事务，不能报告端到端加速。代码审计确认 waiter 取消、任务退出清理、队首唤醒
+和无竞争 fast path 的锁状态竞态均有处理；仍需定向压力与完整 BuildStorm 验收。
+
+### 修改文件
+
+`os/src/fs/ext4_lw/mod.rs`、`os/src/fs/mod.rs`、`os/src/task/mod.rs`、`os/src/utils/perf/fs.rs`、
+`os/src/utils/perf/report.rs`、`crates/lwext4_rust/src/file.rs`、`Docs/决赛文档/优化方案.md`、
+`Docs/决赛文档/problem/buildstorm-ext4-sparse-write-readahead.md`、`Docs/决赛文档/开发日志.md`、
+`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+本轮已通过 `make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 和默认
+`make TARGET_ARCH=riscv64`（同时覆盖 LoongArch64 release 子目标）；文档编辑后的
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check` 与 `git diff --check` 也已通过。
+维护者已有的 `user/src/bin/initproc.rs` 和未跟踪 `disk.img` 保留未改。

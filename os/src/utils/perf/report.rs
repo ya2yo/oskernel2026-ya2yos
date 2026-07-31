@@ -85,6 +85,14 @@ static DELTA_EXT4_NAMESPACE_LOCK: LockDelta = LockDelta::new();
 static DELTA_EXT4_SYNC_LOCK: LockDelta = LockDelta::new();
 static DELTA_EXT4_SEEK_LOCK: LockDelta = LockDelta::new();
 
+static DELTA_EXT4_GATE_FAST_ACQUIRES: CounterDelta = CounterDelta::new();
+static DELTA_EXT4_GATE_QUEUED: CounterDelta = CounterDelta::new();
+static DELTA_EXT4_GATE_HANDOFFS: CounterDelta = CounterDelta::new();
+static DELTA_EXT4_GATE_HANDOFF_WAKES: CounterDelta = CounterDelta::new();
+static DELTA_EXT4_GATE_BARGING_PREVENTED: CounterDelta = CounterDelta::new();
+static DELTA_EXT4_GATE_CANCELLED: CounterDelta = CounterDelta::new();
+static DELTA_EXT4_GATE_HANDOFF_WAIT_TICKS: CounterDelta = CounterDelta::new();
+
 static DELTA_SYSCALL_READ: DurationDelta = DurationDelta::new();
 static DELTA_SYSCALL_WRITE: DurationDelta = DurationDelta::new();
 static DELTA_SYSCALL_OPEN: DurationDelta = DurationDelta::new();
@@ -229,6 +237,20 @@ fn emit_interval_deltas(now: usize) {
         "ext4_seek_lock",
         &EXT4_SEEK_LOCK_STATS,
         &DELTA_EXT4_SEEK_LOCK,
+    );
+    println!(
+        "[perf] interval_ext4_gate fast_acquires={} queued={} handoffs={} handoff_wakes={} barging_prevented={} cancelled={} handoff_wait_us={} queue_depth={} max_queue_depth={}",
+        DELTA_EXT4_GATE_FAST_ACQUIRES.take(&EXT4_GATE_STATS.fast_acquires),
+        DELTA_EXT4_GATE_QUEUED.take(&EXT4_GATE_STATS.queued),
+        DELTA_EXT4_GATE_HANDOFFS.take(&EXT4_GATE_STATS.handoffs),
+        DELTA_EXT4_GATE_HANDOFF_WAKES.take(&EXT4_GATE_STATS.handoff_wakes),
+        DELTA_EXT4_GATE_BARGING_PREVENTED.take(&EXT4_GATE_STATS.barging_prevented),
+        DELTA_EXT4_GATE_CANCELLED.take(&EXT4_GATE_STATS.cancelled),
+        ticks_to_us(
+            DELTA_EXT4_GATE_HANDOFF_WAIT_TICKS.take(&EXT4_GATE_STATS.handoff_wait_ticks)
+        ),
+        EXT4_GATE_STATS.queue_depth.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.max_queue_depth.load(Ordering::Relaxed),
     );
 
     println!(
@@ -585,6 +607,29 @@ pub(super) fn emit_report(now: usize) {
     emit_ext4_lock_stats("ext4_namespace_lock", &EXT4_NAMESPACE_LOCK_STATS);
     emit_ext4_lock_stats("ext4_sync_lock", &EXT4_SYNC_LOCK_STATS);
     emit_ext4_lock_stats("ext4_seek_lock", &EXT4_SEEK_LOCK_STATS);
+    println!(
+        "[perf] ext4_gate_fair fast_acquires={} queued={} handoffs={} handoff_wakes={} barging_prevented={} cancelled={} queue_depth={} max_queue_depth={} handoff_wait_us={} max_handoff_wait_us={} wait_lt_1ms={} wait_lt_10ms={} wait_lt_100ms={} wait_lt_1s={} wait_lt_10s={} wait_ge_10s={}",
+        EXT4_GATE_STATS.fast_acquires.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.queued.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.handoffs.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.handoff_wakes.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.barging_prevented.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.cancelled.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.queue_depth.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.max_queue_depth.load(Ordering::Relaxed),
+        ticks_to_us(EXT4_GATE_STATS.handoff_wait_ticks.load(Ordering::Relaxed)),
+        ticks_to_us(
+            EXT4_GATE_STATS
+                .max_handoff_wait_ticks
+                .load(Ordering::Relaxed)
+        ),
+        EXT4_GATE_STATS.wait_lt_1ms.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.wait_lt_10ms.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.wait_lt_100ms.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.wait_lt_1s.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.wait_lt_10s.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.wait_ge_10s.load(Ordering::Relaxed),
+    );
     #[cfg(feature = "perf")]
     {
         let write_cache = lwext4_rust::perf::write_back_cache_perf_stats();

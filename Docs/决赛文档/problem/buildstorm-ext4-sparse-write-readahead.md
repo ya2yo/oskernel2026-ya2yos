@@ -704,3 +704,68 @@ P17 在长样本中仍成立：到 `t=1579.319s`，93 次 rename dense write-bac
 4. P19：若后段单次操作仍退化，拆分 lwext4 C 层 transaction/path/allocation/journal/cache-flush 时间。
 
 页缓存末尾为 `79776/98304` 且 `capacity_bypass_pages=0`，本轮没有证据支持继续扩大缓存。
+
+## `tmp_07` P18.1 公平 gate 验收（2026-07-31）
+
+### 背景与现象
+
+`tmp_07.ans` 是装载 P18.1 公平 `EXT4_OP_LOCK` 后的十分钟 RISC-V 样本。日志最后为
+`t=539771ms`、Cargo `Building 24/446`，没有 `BUILDSTORM_COMPILE`、测试组 END 或 `shutdown!`；同时
+未出现 `panic`、`TFAIL`、`TBROK`、`ERROR` 或 `SIGSEGV`。因此它只能验收 gate 行为和方向性等待数据，不能给出完整
+BuildStorm 的 crates/min 或端到端加速结论。
+
+与 `tmp_06` 的 `ext4_write_open_lock max_wait_us=175953977` 相比，`tmp_07` 的最大等待为：
+
+| 指标 | `tmp_07` |
+| --- | ---: |
+| `ext4_write_open_lock max_wait_us` | 14,185,616 |
+| `ext4_write_lock max_wait_us` | 25,758,208 |
+| `ext4_gate_fair max_handoff_wait_us` | 25,757,793 |
+
+最大值已经从跨越整个静默窗口的百秒级等待降至与一次长 lwext4 事务相近的约 25.8 秒。公平交接解决了
+“新请求插队导致队首长期得不到所有权”的第一层问题，但没有缩短该长事务本体。
+
+### 统计守恒与实现核对
+
+最后累计快照为：
+
+```text
+fast_acquires=38741 queued=32432 handoffs=32426 handoff_wakes=32427
+barging_prevented=24401 cancelled=0 queue_depth=6 max_queue_depth=9
+handoff_wait_us=2298306230 max_handoff_wait_us=25757793
+wait_ge_10s=12
+```
+
+队列记账满足：
+
+```text
+queued = handoffs + cancelled + queue_depth
+32432 = 32426 + 0 + 6
+```
+
+等待分桶也闭合：`11554 + 4963 + 11714 + 3874 + 309 + 12 = 32426`。`handoff_wakes` 比已完成
+handoffs 多一次，表示样本截断时有 waiter 已被唤醒但尚未完成下一次 poll，不应把它误判为重复所有权。
+最后一个 `67962ms` interval 新增 `3293` 次排队、`3292` 次 handoff、队深仍为 6，说明队列持续交接而非永久
+阻塞。
+
+代码审计确认：登记、队首判断、释放和 ticket 移除均在 gate 状态锁下完成；释放只唤醒队首，队列非空时
+`try_lock` 不会插队；Future Drop 和 `exit_current_and_run_next()` 会删除 stale ticket，队首取消且 gate 空闲
+时继续唤醒下一位。该路径保留 `write_state -> io_state -> EXT4_OP_LOCK` 锁序，也未改变 lwext4 的单线程串行
+边界。`cancelled=0` 只表示本 workload 没有观测到取消，不替代定向取消/退出测试。
+
+### 修复与涉及文件
+
+- `os/src/fs/ext4_lw/mod.rs`：以 FIFO ticket queue 实现 mount-wide gate，禁止有队列时 fast-path 插队，支持
+  Future Drop、队首 handoff 和按 TID 清理。
+- `os/src/fs/mod.rs`、`os/src/task/mod.rs`：导出清理入口，并在任务退出前移除 gate waiter。
+- `os/src/utils/perf/fs.rs`、`os/src/utils/perf/report.rs`：增加累计及 interval 的队深、交接、插队阻止、取消
+  和等待分桶统计。
+- `crates/lwext4_rust/src/file.rs`：修复非 perf 构建下写回阶段统计变量的 unused warning。
+
+### 验证边界与后续
+
+本轮已通过 `make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 和默认
+`make TARGET_ARCH=riscv64`（该目标同时覆盖 LoongArch64 release 子目标）；`tmp_07` 无异常但未完成 BuildStorm。
+尚需补做无竞争 fast path、64+ waiter、队首取消/任务退出、跨 hart 交接及持锁任务抢占回归，并取得包含
+`BUILDSTORM_COMPILE ... ok=true elapsed_s`、测试组 END、`shutdown!` 的完整样本。公平 gate 之后的优先级仍是
+创建事务元数据合并、受限 rename dense-cache re-key，以及对 create/unlink/stat 的 lwext4 C 层长事务分段计时。

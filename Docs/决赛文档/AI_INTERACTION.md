@@ -2100,3 +2100,16 @@
   BUILDSTORM_COMPILE、END 或 shutdown，后续行为候选尚未实施或回归。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-ext4-sparse-write-readahead.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_07` P18.1 公平 EXT4 gate 验收（7.31）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的十分钟 `tmp_07.ans`，要求继续按《优化方案》进行性能分析与优化。
+- **描述**：复核 FIFO/ticket `EXT4_OP_LOCK` 及公平性统计。样本止于 Cargo `Building 24/446`，无异常但无完整
+  BuildStorm 结束标记；累计 `queued=32432`、`handoffs=32426`、`cancelled=0`、`queue_depth=6`，守恒关系和等待
+  分桶均闭合。`max_handoff_wait_us=25757793`，相较 `tmp_06` 的 `175953977us` gate 长尾明显下降，结论限定为
+  消除插队饥饿，不能报告端到端加速；下一轮补做取消/退出压力和完整 BuildStorm。
+- **验证边界**：RISC-V/LoongArch64 perf 与默认 release 构建已通过；文档编辑后执行的
+  `cargo fmt --manifest-path os/Cargo.toml --all -- --check` 与 `git diff --check` 也通过。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-ext4-sparse-write-readahead.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

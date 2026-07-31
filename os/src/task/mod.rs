@@ -76,7 +76,7 @@ mod tid;
 pub use crate::arch::context::TaskContext;
 use crate::{
     arch::cpu::hart_id,
-    fs::{open, OpenFlags, NONE_MODE},
+    fs::{cancel_ext4_op_waiter, open, OpenFlags, NONE_MODE},
     mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
     signal::{send_exec_teardown_kill, send_signal_to_thread_group, SigSet},
     syscall::fs::file_lock,
@@ -354,6 +354,11 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
 pub fn exit_current_and_run_next(exit_code: i32) {
     debug!("[exit_current_and_run_next] enter!");
     let curr_task = take_current_task().unwrap();
+    // A task blocked in the fair EXT4 gate cannot unwind its lock future when
+    // this diverging exit path abandons the kernel stack. Remove its ticket
+    // before taking process/task locks so a stale queue head cannot reserve
+    // an otherwise idle mount-wide gate forever.
+    cancel_ext4_op_waiter(curr_task.tid());
     let count = Arc::strong_count(&curr_task);
     // The current scheduler reference, the global TID table, and this local
     // reference normally account for three strong references under SMP.

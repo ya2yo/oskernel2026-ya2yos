@@ -1555,6 +1555,9 @@ impl Ext4File {
         observer.stage(RenameWriteBackStageEvent::DenseWriteBackEnd);
         let dense_bytes = dense_write_back?;
 
+        #[cfg(not(feature = "perf"))]
+        let _ = (sparse_bytes, dense_bytes);
+
         #[cfg(feature = "perf")]
         observer.stage(RenameWriteBackStageEvent::PathCacheDiscardBegin);
         discard_path_cache(&path);

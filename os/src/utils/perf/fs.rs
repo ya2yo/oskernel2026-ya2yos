@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "perf")]
 use lwext4_rust::perf::{FstatStageEvent, RenameWriteBackStageEvent};
 
-use crate::arch::time::get_ticks;
+use crate::arch::time::{get_clock_freq, get_ticks};
 use crate::fs::{Ext4OpGuard, Ext4OpLock};
 
 use super::common::{add, emit_duration, record_duration, ticks_to_us, update_max};
@@ -146,6 +146,52 @@ impl Ext4LockStats {
         add(&self.hold_ticks, hold_ticks);
         update_max(&self.max_wait_ticks, wait_ticks);
         update_max(&self.max_hold_ticks, hold_ticks);
+    }
+}
+
+/// Queue and ownership-transfer counters for the mount-wide EXT4 gate.
+///
+/// `queued = handoffs + cancelled + queue_depth` is the steady-state
+/// accounting invariant. Fast acquisitions never entered the FIFO queue.
+pub(crate) struct Ext4GateStats {
+    pub(crate) fast_acquires: AtomicUsize,
+    pub(crate) queued: AtomicUsize,
+    pub(crate) handoffs: AtomicUsize,
+    pub(crate) handoff_wakes: AtomicUsize,
+    pub(crate) barging_prevented: AtomicUsize,
+    pub(crate) cancelled: AtomicUsize,
+    pub(crate) queue_depth: AtomicUsize,
+    pub(crate) max_queue_depth: AtomicUsize,
+    pub(crate) handoff_wait_ticks: AtomicUsize,
+    pub(crate) max_handoff_wait_ticks: AtomicUsize,
+    pub(crate) wait_lt_1ms: AtomicUsize,
+    pub(crate) wait_lt_10ms: AtomicUsize,
+    pub(crate) wait_lt_100ms: AtomicUsize,
+    pub(crate) wait_lt_1s: AtomicUsize,
+    pub(crate) wait_lt_10s: AtomicUsize,
+    pub(crate) wait_ge_10s: AtomicUsize,
+}
+
+impl Ext4GateStats {
+    const fn new() -> Self {
+        Self {
+            fast_acquires: AtomicUsize::new(0),
+            queued: AtomicUsize::new(0),
+            handoffs: AtomicUsize::new(0),
+            handoff_wakes: AtomicUsize::new(0),
+            barging_prevented: AtomicUsize::new(0),
+            cancelled: AtomicUsize::new(0),
+            queue_depth: AtomicUsize::new(0),
+            max_queue_depth: AtomicUsize::new(0),
+            handoff_wait_ticks: AtomicUsize::new(0),
+            max_handoff_wait_ticks: AtomicUsize::new(0),
+            wait_lt_1ms: AtomicUsize::new(0),
+            wait_lt_10ms: AtomicUsize::new(0),
+            wait_lt_100ms: AtomicUsize::new(0),
+            wait_lt_1s: AtomicUsize::new(0),
+            wait_lt_10s: AtomicUsize::new(0),
+            wait_ge_10s: AtomicUsize::new(0),
+        }
     }
 }
 
@@ -348,6 +394,7 @@ impl Ext4FstatReasonPhases {
 }
 
 pub(crate) static EXT4_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
+pub(crate) static EXT4_GATE_STATS: Ext4GateStats = Ext4GateStats::new();
 /// Aggregate across both pieces of a split `Ext4Inode::read_at()` slow path.
 /// `samples` therefore counts global-lock acquisitions, not logical reads.
 pub(crate) static EXT4_READ_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
@@ -728,6 +775,60 @@ pub fn record_ext4_lock(wait_ticks: usize, hold_ticks: usize) {
     if samples & 0x0fff == 0 {
         maybe_report();
     }
+}
+
+#[inline]
+pub(crate) fn record_ext4_gate_fast_acquire() {
+    add(&EXT4_GATE_STATS.fast_acquires, 1);
+}
+
+#[inline]
+pub(crate) fn record_ext4_gate_queued() {
+    add(&EXT4_GATE_STATS.queued, 1);
+}
+
+#[inline]
+pub(crate) fn record_ext4_gate_queue_depth(depth: usize) {
+    EXT4_GATE_STATS.queue_depth.store(depth, Ordering::Relaxed);
+    update_max(&EXT4_GATE_STATS.max_queue_depth, depth);
+}
+
+#[inline]
+pub(crate) fn record_ext4_gate_barging_prevented() {
+    add(&EXT4_GATE_STATS.barging_prevented, 1);
+}
+
+#[inline]
+pub(crate) fn record_ext4_gate_handoff_wake() {
+    add(&EXT4_GATE_STATS.handoff_wakes, 1);
+}
+
+#[inline]
+pub(crate) fn record_ext4_gate_waiter_cancelled(count: usize) {
+    add(&EXT4_GATE_STATS.cancelled, count);
+}
+
+#[inline]
+pub(crate) fn record_ext4_gate_handoff_acquire(wait_ticks: usize) {
+    add(&EXT4_GATE_STATS.handoffs, 1);
+    add(&EXT4_GATE_STATS.handoff_wait_ticks, wait_ticks);
+    update_max(&EXT4_GATE_STATS.max_handoff_wait_ticks, wait_ticks);
+
+    let ticks_per_second = get_clock_freq().max(1);
+    let bucket = if wait_ticks < ticks_per_second / 1_000 {
+        &EXT4_GATE_STATS.wait_lt_1ms
+    } else if wait_ticks < ticks_per_second / 100 {
+        &EXT4_GATE_STATS.wait_lt_10ms
+    } else if wait_ticks < ticks_per_second / 10 {
+        &EXT4_GATE_STATS.wait_lt_100ms
+    } else if wait_ticks < ticks_per_second {
+        &EXT4_GATE_STATS.wait_lt_1s
+    } else if wait_ticks < ticks_per_second.saturating_mul(10) {
+        &EXT4_GATE_STATS.wait_lt_10s
+    } else {
+        &EXT4_GATE_STATS.wait_ge_10s
+    };
+    add(bucket, 1);
 }
 
 #[inline]

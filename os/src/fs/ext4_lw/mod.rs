@@ -11,8 +11,8 @@
 //!
 //! ## 实际资源锁与锁序
 //!
-//! `EXT4_OP_LOCK` 始终是同一把挂载级 `TaskMutex`；可选的 perf 分类在
-//! `crate::utils::perf` 中实现，并不引入额外的锁。当前 EXT4/VFS 数据路径中
+//! `EXT4_OP_LOCK` 始终是同一把挂载级公平 gate；可选的 perf 分类在
+//! `crate::utils::perf` 中实现，并不引入额外的资源锁。当前 EXT4/VFS 数据路径中
 //! 实际管理共享资源的锁如下：
 //!
 //! | 锁 | 粒度 | 受保护的资源和使用场景 |
@@ -25,7 +25,7 @@
 //! | `DENTRY_CACHE.entries`、`INODE_CACHE` | 全局 `RwLock` | VFS 的 dentry、inode identity/path 缓存；用于避免重复的路径查找和 inode 包装。 |
 //! | `MNT_TABLE` / 挂载 quota | 全局或每挂载 `Mutex` | mount namespace 与容量记账；不是普通 lwext4 读路径的替代锁。 |
 //!
-//! 已固定且必须保持的 `TaskMutex` 锁序为：
+//! 已固定且必须保持的锁序为：
 //!
 //! ```text
 //! 普通 lwext4 读取：       io_state -> EXT4_OP_LOCK
@@ -42,16 +42,21 @@
 mod inode;
 mod sb;
 
-use core::{future::poll_fn, task::Poll};
+use alloc::collections::VecDeque;
+use core::{
+    future::{poll_fn, Future},
+    pin::Pin,
+    task::{Context, Poll, Waker},
+};
 
 use crate::utils::PollSet;
 
 /// A task-aware mutex for filesystem operations that can block on I/O.
 ///
 /// Contended task-context callers sleep instead of spinning, while boot-time
-/// callers without a current task retain the spin fallback.  It is used both
-/// for the mount-wide lwext4 gate and for per-inode state that must stay stable
-/// while a cache-only write bypasses that global gate.
+/// callers without a current task retain the spin fallback. It protects the
+/// per-inode state that must stay stable while a cache-only write bypasses the
+/// separately fair mount-wide gate.
 pub(super) struct TaskMutex {
     inner: spin::Mutex<()>,
     waiters: PollSet,
@@ -62,15 +67,36 @@ pub(super) struct TaskMutexGuard<'a> {
     guard: Option<spin::MutexGuard<'a, ()>>,
 }
 
+struct Ext4OpWaiter {
+    ticket: usize,
+    tid: usize,
+    queued_at: usize,
+    waker: Waker,
+}
+
+struct Ext4OpState {
+    held: bool,
+    next_ticket: usize,
+    waiters: VecDeque<Ext4OpWaiter>,
+}
+
 /// lwext4 shares one mounted block cache and does not provide SMP-safe internal
-/// locking. Keep every call into its path/file API serialized until the wrapper
-/// gains per-superblock concurrency support.
+/// locking. The logical state and FIFO waiter queue share one short spin lock,
+/// so an idle gate with queued waiters remains reserved for the queue head.
 pub(crate) struct Ext4OpLock {
-    inner: TaskMutex,
+    state: spin::Lazy<spin::Mutex<Ext4OpState>>,
 }
 
 pub(crate) struct Ext4OpGuard<'a> {
-    guard: Option<TaskMutexGuard<'a>>,
+    lock: &'a Ext4OpLock,
+    held: bool,
+}
+
+struct Ext4OpLockFuture<'a> {
+    lock: &'a Ext4OpLock,
+    tid: usize,
+    ticket: Option<usize>,
+    barging_prevented: bool,
 }
 
 impl TaskMutex {
@@ -122,24 +148,257 @@ impl Drop for TaskMutexGuard<'_> {
     }
 }
 
+impl Ext4OpState {
+    fn new() -> Self {
+        Self {
+            held: false,
+            next_ticket: 1,
+            waiters: VecDeque::new(),
+        }
+    }
+}
+
 impl Ext4OpLock {
     pub const fn new() -> Self {
         Self {
-            inner: TaskMutex::new(),
+            state: spin::Lazy::new(|| spin::Mutex::new(Ext4OpState::new())),
         }
     }
 
     pub(crate) fn lock(&self) -> Ext4OpGuard<'_> {
-        let guard = self.inner.lock();
-        Ext4OpGuard { guard: Some(guard) }
+        let (guard, reserved) = self.try_lock_unqueued();
+        if let Some(guard) = guard {
+            return guard;
+        }
+
+        let Some(task) = crate::task::current_task() else {
+            loop {
+                let (guard, _) = self.try_lock_unqueued();
+                if let Some(guard) = guard {
+                    return guard;
+                }
+                core::hint::spin_loop();
+            }
+        };
+
+        #[cfg(not(feature = "perf"))]
+        let _ = reserved;
+
+        let tid = task.tid();
+        drop(task);
+        crate::task::block_on(Ext4OpLockFuture {
+            lock: self,
+            tid,
+            ticket: None,
+            barging_prevented: reserved,
+        })
+    }
+
+    fn try_lock_unqueued(&self) -> (Option<Ext4OpGuard<'_>>, bool) {
+        let mut state = self.state.lock();
+        if !state.held && state.waiters.is_empty() {
+            state.held = true;
+            drop(state);
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_gate_fast_acquire();
+            return (
+                Some(Ext4OpGuard {
+                    lock: self,
+                    held: true,
+                }),
+                false,
+            );
+        }
+        let reserved = !state.held && !state.waiters.is_empty();
+        (None, reserved)
+    }
+
+    fn release(&self) {
+        let next = {
+            let mut state = self.state.lock();
+            debug_assert!(state.held, "EXT4 operation gate released while idle");
+            state.held = false;
+            state.waiters.front().map(|waiter| waiter.waker.clone())
+        };
+        if let Some(next) = next {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_gate_handoff_wake();
+            next.wake();
+        }
+    }
+
+    fn cancel_ticket(&self, ticket: usize) {
+        let (removed, next) = {
+            let mut state = self.state.lock();
+            let Some(index) = state
+                .waiters
+                .iter()
+                .position(|waiter| waiter.ticket == ticket)
+            else {
+                return;
+            };
+            let removed_front = index == 0;
+            state.waiters.remove(index);
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_gate_queue_depth(state.waiters.len());
+            let next = (removed_front && !state.held)
+                .then(|| state.waiters.front().map(|waiter| waiter.waker.clone()))
+                .flatten();
+            (true, next)
+        };
+        if removed {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_gate_waiter_cancelled(1);
+        }
+        if let Some(next) = next {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_gate_handoff_wake();
+            next.wake();
+        }
+    }
+
+    fn cancel_waiter_by_tid(&self, tid: usize) {
+        let (removed, next) = {
+            let mut state = self.state.lock();
+            let removed_front = state
+                .waiters
+                .front()
+                .is_some_and(|waiter| waiter.tid == tid);
+            let before = state.waiters.len();
+            state.waiters.retain(|waiter| waiter.tid != tid);
+            let removed = before.saturating_sub(state.waiters.len());
+            #[cfg(feature = "perf")]
+            if removed != 0 {
+                crate::utils::perf::record_ext4_gate_queue_depth(state.waiters.len());
+            }
+            let next = (removed_front && !state.held)
+                .then(|| state.waiters.front().map(|waiter| waiter.waker.clone()))
+                .flatten();
+            (removed, next)
+        };
+        if removed != 0 {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_gate_waiter_cancelled(removed);
+        }
+        if let Some(next) = next {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_gate_handoff_wake();
+            next.wake();
+        }
+    }
+}
+
+impl<'a> Future for Ext4OpLockFuture<'a> {
+    type Output = Ext4OpGuard<'a>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let mut state = this.lock.state.lock();
+        let is_front = this.ticket.is_some_and(|ticket| {
+            state
+                .waiters
+                .front()
+                .is_some_and(|waiter| waiter.ticket == ticket)
+        });
+
+        if !state.held && (state.waiters.is_empty() || is_front) {
+            let queued_at = if is_front {
+                let waiter = state.waiters.pop_front().unwrap();
+                debug_assert_eq!(Some(waiter.ticket), this.ticket);
+                Some(waiter.queued_at)
+            } else {
+                None
+            };
+            state.held = true;
+            let depth = state.waiters.len();
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_gate_queue_depth(depth);
+            this.ticket = None;
+            drop(state);
+
+            #[cfg(feature = "perf")]
+            {
+                if this.barging_prevented {
+                    crate::utils::perf::record_ext4_gate_barging_prevented();
+                    this.barging_prevented = false;
+                }
+                if let Some(queued_at) = queued_at {
+                    crate::utils::perf::record_ext4_gate_handoff_acquire(
+                        crate::arch::time::get_ticks().saturating_sub(queued_at),
+                    );
+                } else {
+                    crate::utils::perf::record_ext4_gate_fast_acquire();
+                }
+            }
+            #[cfg(not(feature = "perf"))]
+            let _ = (queued_at, depth);
+
+            return Poll::Ready(Ext4OpGuard {
+                lock: this.lock,
+                held: true,
+            });
+        }
+
+        if let Some(ticket) = this.ticket {
+            if let Some(waiter) = state
+                .waiters
+                .iter_mut()
+                .find(|waiter| waiter.ticket == ticket)
+            {
+                if !waiter.waker.will_wake(cx.waker()) {
+                    waiter.waker = cx.waker().clone();
+                }
+            }
+        } else {
+            this.barging_prevented |= !state.held && !state.waiters.is_empty();
+            let ticket = state.next_ticket;
+            state.next_ticket = state.next_ticket.wrapping_add(1).max(1);
+            state.waiters.push_back(Ext4OpWaiter {
+                ticket,
+                tid: this.tid,
+                #[cfg(feature = "perf")]
+                queued_at: crate::arch::time::get_ticks(),
+                #[cfg(not(feature = "perf"))]
+                queued_at: 0,
+                waker: cx.waker().clone(),
+            });
+            this.ticket = Some(ticket);
+            let depth = state.waiters.len();
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_gate_queue_depth(depth);
+            drop(state);
+            #[cfg(feature = "perf")]
+            {
+                crate::utils::perf::record_ext4_gate_queued();
+                if this.barging_prevented {
+                    crate::utils::perf::record_ext4_gate_barging_prevented();
+                    this.barging_prevented = false;
+                }
+            }
+            #[cfg(not(feature = "perf"))]
+            let _ = depth;
+            return Poll::Pending;
+        }
+
+        Poll::Pending
+    }
+}
+
+impl Drop for Ext4OpLockFuture<'_> {
+    fn drop(&mut self) {
+        if let Some(ticket) = self.ticket.take() {
+            self.lock.cancel_ticket(ticket);
+        }
     }
 }
 
 impl Ext4OpGuard<'_> {
-    /// Release the primitive guard before a caller performs bookkeeping.
+    /// Release the logical gate before a caller performs bookkeeping.
     pub(crate) fn release(&mut self) -> bool {
-        let held = self.guard.is_some();
-        self.guard.take();
+        let held = core::mem::take(&mut self.held);
+        if held {
+            self.lock.release();
+        }
         held
     }
 }
@@ -148,6 +407,10 @@ impl Drop for Ext4OpGuard<'_> {
     fn drop(&mut self) {
         self.release();
     }
+}
+
+pub(crate) fn cancel_ext4_op_waiter(tid: usize) {
+    EXT4_OP_LOCK.cancel_waiter_by_tid(tid);
 }
 
 pub(super) static EXT4_OP_LOCK: Ext4OpLock = Ext4OpLock::new();
