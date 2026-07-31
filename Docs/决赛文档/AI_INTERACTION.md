@@ -2113,3 +2113,18 @@
   `cargo fmt --manifest-path os/Cargo.toml --all -- --check` 与 `git diff --check` 也通过。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-ext4-sparse-write-readahead.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_08` P15.1 父目录局部 stat epoch（7.31）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者重新运行约 30 分钟并提供 `tmp_08.ans`，要求依据结果开始新一轮性能优化。
+- **描述**：样本最后为 `t=1787649ms`、Cargo `Building 65/446`，无异常但无完整 BuildStorm 结束标记。末尾
+  `ext4_fstat_lock=4737`、实际 `ext4_fstat=4729`、`directory_epoch_cached=3310`，epoch miss 为
+  `4722/3258/2653`（total/local/global）；页缓存未触顶，公平 gate 最大 handoff wait 约 `24.5s`。
+  `tmp_08` 未输出新父目录计数，故不作为本轮 A/B。新增 `mark_directory_stat_changed()` 和
+  `ext4_fstat_directory_parent local_updates/global_fallbacks`，普通文件 namespace 失效优先更新已缓存父目录，
+  未缓存时回退全局 epoch，目录 rename/rmdir 保持全局边界。
+- **验证**：RISC-V/LoongArch64 perf 构建、默认 RISC-V release、格式和补丁检查通过；下一份样本需比较父目录
+  local/global 比例、目录 epoch cache、实际 fstat 与 fstat lock wait/hold，完整结束标记前不报告端到端加速。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

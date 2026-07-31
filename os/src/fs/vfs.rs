@@ -51,6 +51,13 @@ pub trait Inode: Send + Sync {
     fn fstat(&self) -> Kstat {
         unimplemented!("Inode::fstat")
     }
+    /// Mark the cached metadata of this inode's directory as changed.
+    ///
+    /// Filesystem backends with a directory-local metadata cache may override
+    /// this hook when a namespace operation identifies the affected parent.
+    /// Other backends retain the no-op default and their existing invalidation
+    /// strategy.
+    fn mark_directory_stat_changed(&self) {}
     /// 在当前目录下创建文件或目录
     fn create(&self, _path: &str, _ty: InodeType) -> Result<Arc<dyn Inode>, SysErrNo> {
         unimplemented!("Inode::create")

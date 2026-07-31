@@ -8895,3 +8895,37 @@ P17 代码已通过 `cargo fmt --manifest-path os/Cargo.toml --all`、`git diff 
 `make TARGET_ARCH=riscv64`（同时覆盖 LoongArch64 release 子目标）；文档编辑后的
 `cargo fmt --manifest-path os/Cargo.toml --all -- --check` 与 `git diff --check` 也已通过。
 维护者已有的 `user/src/bin/initproc.rs` 和未跟踪 `disk.img` 保留未改。
+
+## 2026-07-31：`tmp_08` P15.1 父目录局部 stat epoch 优化
+
+### 用户输入
+
+维护者重新运行约 30 分钟，提供 `tmp_08.ans`，要求依据该结果开始新一轮优化。
+
+### 分析与采纳结论
+
+`tmp_08` 最后为 `t=1787649ms`、Cargo `Building 65/446`，持续输出 perf 但没有
+`BUILDSTORM_COMPILE`、测试组 END 或 `shutdown!`，没有 panic/TFAIL/TBROK/ERROR/SIGSEGV/rustc error。末尾
+`ext4_fstat_lock=4737`（wait `880.098s`、hold `145.228s`）、实际 `ext4_fstat=4729`、
+`directory_epoch_cached=3310`，epoch miss 为 `4722`（local `3258`、global `2653`）；页缓存
+`82368/98304` 且 capacity bypass 为 0，继续排除扩大页缓存或预读的方向。
+
+公平 gate 的 `max_handoff_wait_us=24542100`、队深 `6`，说明 P18.1 已消除百秒级插队饥饿，但剩余长尾仍由
+lwext4 长事务和排队构成。`tmp_08` 没有本轮新增的 `ext4_fstat_directory_parent` 字段，不能把它当作 P15.1
+代码的 A/B；因此本轮采用低风险局部失效：普通文件 rename/hard-link/unlink/延迟删除解析已缓存父目录并只递增
+其 local epoch，父目录未缓存时回退 global epoch，目录 rename/rmdir 仍保守走 global。
+
+### 修改文件
+
+`os/src/fs/vfs.rs`、`os/src/fs/ext4_lw/inode.rs`、`os/src/utils/perf/fs.rs`、
+`os/src/utils/perf/report.rs`、`Docs/决赛文档/优化方案.md`、
+`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、`Docs/决赛文档/开发日志.md`、
+`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+已通过 `cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64` 和默认 RISC-V release 构建。
+本轮没有新的 QEMU/BuildStorm 运行样本；下一份样本必须出现
+`ext4_fstat_directory_parent local_updates=... global_fallbacks=...`，并在相近 Cargo 检查点比较实际 fstat、
+目录缓存命中和 fstat 锁 wait/hold，完整结束标记出现前不报告端到端加速。

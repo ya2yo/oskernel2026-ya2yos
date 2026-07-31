@@ -366,6 +366,38 @@ impl Ext4Inode {
         }
     }
 
+    /// Invalidate the directory containing a namespace path when that parent
+    /// is already represented by the VFS inode index.  Falling back to the
+    /// mount-wide epoch preserves correctness for uncached parents and for
+    /// paths whose parent cannot be resolved without another filesystem walk.
+    #[inline]
+    fn advance_directory_stat_epoch_for_path(path: &str) {
+        let trimmed = path.trim_end_matches('/');
+        let Some((parent, _)) = trimmed.rsplit_once('/') else {
+            Self::advance_global_directory_stat_epoch();
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_fstat_directory_parent_global();
+            return;
+        };
+        let parent = if parent.is_empty() { "/" } else { parent };
+        if let Some(parent_inode) = FsIndex::find_inode_idx(parent) {
+            parent_inode.mark_directory_stat_changed();
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_fstat_directory_parent_local();
+        } else {
+            Self::advance_global_directory_stat_epoch();
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_fstat_directory_parent_global();
+        }
+    }
+
+    #[inline]
+    fn parent_path(path: &str) -> Option<&str> {
+        let trimmed = path.trim_end_matches('/');
+        let (parent, _) = trimmed.rsplit_once('/')?;
+        Some(if parent.is_empty() { "/" } else { parent })
+    }
+
     #[inline]
     fn cached_stat(&self) -> Option<Kstat> {
         if self.inode_type == InodeType::File {
@@ -546,6 +578,10 @@ impl Ext4Inode {
 }
 
 impl Inode for Ext4Inode {
+    fn mark_directory_stat_changed(&self) {
+        self.advance_local_directory_stat_epoch();
+    }
+
     /// 获取普通文件大小。
     ///
     /// 目录和其他非普通文件当前返回 0；普通文件需要按 lwext4 API 重新打开后读取 size。
@@ -1052,7 +1088,17 @@ impl Inode for Ext4Inode {
         // identity-epoch proofs before releasing the global lwext4 guard so a
         // later FsIndex collision retains the live `fstat()` reuse check.
         Self::advance_identity_epoch();
-        Self::advance_global_directory_stat_epoch();
+        if self.inode_type == InodeType::Dir {
+            // Renaming a directory changes its own ctime and may replace a
+            // directory at the destination, so retain the conservative global
+            // invalidation for this less common path.
+            Self::advance_global_directory_stat_epoch();
+        } else {
+            Self::advance_directory_stat_epoch_for_path(path);
+            if Self::parent_path(path) != Self::parent_path(new_path) {
+                Self::advance_directory_stat_epoch_for_path(new_path);
+            }
+        }
 
         // A successful directory-entry move must not leave an orphaned
         // write-back entry for either pathname.  In particular, stale target
@@ -1095,7 +1141,7 @@ impl Inode for Ext4Inode {
             if inner.aliases.iter().all(|alias| alias != new_path) {
                 inner.aliases.push(new_path.to_string());
             }
-            Self::advance_global_directory_stat_epoch();
+            Self::advance_directory_stat_epoch_for_path(new_path);
             self.invalidate_cached_stat(Ext4FstatMissReason::HardLink);
         }
         ret
@@ -1579,7 +1625,13 @@ impl Inode for Ext4Inode {
                 // available to another path.  Existing wrappers from before this
                 // point therefore require FsIndex's live identity validation.
                 Self::advance_identity_epoch();
-                Self::advance_global_directory_stat_epoch();
+                if is_dir {
+                    // Removing a directory changes the removed inode itself and
+                    // may invalidate another cached directory at the same path.
+                    Self::advance_global_directory_stat_epoch();
+                } else {
+                    Self::advance_directory_stat_epoch_for_path(path);
+                }
                 self.invalidate_cached_stat(Ext4FstatMissReason::Unlink);
             }
             let remove_quota = !is_dir && ret.is_ok();
@@ -1759,7 +1811,7 @@ impl Drop for Ext4Inode {
                 let remove_result = inner.f.file_remove(&path);
                 if remove_result.is_ok() {
                     Self::advance_identity_epoch();
-                    Self::advance_global_directory_stat_epoch();
+                    Self::advance_directory_stat_epoch_for_path(&path);
                     Some(path)
                 } else {
                     None

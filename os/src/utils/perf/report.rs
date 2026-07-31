@@ -524,6 +524,11 @@ pub(super) fn emit_report(now: usize) {
         EXT4_FSTAT_DIRECTORY_STAT_LOCAL_EPOCH_MISSES.load(Ordering::Relaxed),
         EXT4_FSTAT_DIRECTORY_STAT_GLOBAL_EPOCH_MISSES.load(Ordering::Relaxed),
     );
+    println!(
+        "[perf] ext4_fstat_directory_parent local_updates={} global_fallbacks={}",
+        EXT4_FSTAT_DIRECTORY_PARENT_LOCAL_UPDATES.load(Ordering::Relaxed),
+        EXT4_FSTAT_DIRECTORY_PARENT_GLOBAL_FALLBACKS.load(Ordering::Relaxed),
+    );
     emit_ext4_lock_stats("ext4_write_lock", &EXT4_WRITE_LOCK_STATS);
     emit_ext4_lock_stats("ext4_write_open_lock", &EXT4_WRITE_OPEN_LOCK_STATS);
     emit_ext4_lock_stats("ext4_write_data_lock", &EXT4_WRITE_DATA_LOCK_STATS);
