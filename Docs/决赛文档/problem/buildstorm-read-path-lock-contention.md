@@ -1122,3 +1122,75 @@ Cargo 进度只在 crate 完成或新 crate 启动时刷新。日志最后可见
 4. 在下一份样本中重点比较 Cargo `28/446` 后的静默窗口 delta。若 namespace/create 子阶段占主导，再评估复用
    negative dentry/FsIndex 结果跳过重复 `check_inode_exist`，或把纯 VFS/cache 收尾移出 gate；若 read/find 占主导，
    再回到路径解析和冷页读取。
+
+## 2026-07-31：P16 create 子阶段归因与原子独占创建
+
+### 取证实现与样本边界
+
+为避免继续用累计锁时间猜测静默窗口，perf 报告在保留原累计字段的同时增加 `[perf] interval`：按相邻报告输出
+`ext4_*_lock` 的 samples/wait/hold、scheduler 与 pipe wakeup、pipe read wait、scheduler dispatch，以及 read/write/open/stat/path
+syscall 耗时的 delta。create 路径另拆为 `exist_check`、`dir_mk_or_file_open`、`file_close`、`metadata_apply` 和
+`vfs_finish`。这些字段只在 perf feature 下记账，不移动 lwext4 gate，也不改变 release 热路径。
+
+`tmp_00.ans`、`tmp_01.ans`、`tmp_02.ans` 都没有 `BUILDSTORM_COMPILE`、测试组 END 或 `shutdown!`，但均未见
+`panic/TFAIL/TBROK/ERROR/SIGSEGV` 或 rustc error。三份日志的最后可见进度分别是：
+
+- `tmp_00`：`t=524701ms`，Cargo `19/446`；
+- `tmp_01`：`t=545844ms`，Cargo `27/446`；
+- `tmp_02`：`t=538611ms` 为 `30/446`，`t=598404ms` 为 `31/446`。
+
+这些样本的请求数、Cargo crate 和并发交错不同，故只用于确认代码路径和方向，不能报告严格 A/B、完整 BuildStorm
+通过或端到端加速比例。
+
+### 根因一：新 inode 重复设置默认 owner
+
+create 后的 mode 与 owner 原先分别执行一次完整 pathname transaction。lwext4 新分配 inode 的 uid/gid 默认为 0/0，
+而 BuildStorm 由 root 运行，绝大多数 create 又调用一次 `owner_set(0, 0)`，既不改变结果，又延长全局 namespace/metadata
+临界区。`tmp_00` 末尾 owner 为 `954 samples / 26807550us`，create 的 metadata_apply 为
+`1932 / 77750534us`。
+
+lwext4 现提供 `ext4_mode_owner_set()`，在一次 `ext4_trans_get_inode_ref()` / `ext4_trans_put_inode_ref()` 中同时写
+mode、uid、gid。`create_with_metadata()` 对默认 root `(0, 0)` 只写 mode；非 root owner 或 S_ISGID 父目录继承场景仍走
+组合入口，不省略 owner 语义。`tmp_01` 与 `tmp_02` 的 owner 统计均为 0；`tmp_01` 的 metadata_apply 为
+`1077 / 42354530us`。这证明冗余 owner 路径已消失，但不同样本阶段不允许把累计值差直接当作吞吐比例。
+
+### 根因二：VFS 检查后底层再次查找目标
+
+`tmp_01` 暴露显式 `check_inode_exist()` 为 `1077 / 11765426us`，随后 `dir_mk`/`file_open` 又在 lwext4 内部完成一次
+pathname traversal。不能直接相信第一次阴性结果并用普通 `O_CREAT|O_TRUNC` 创建：并发创建者可能在两次操作之间插入，
+从而破坏 `O_EXCL`，甚至让 `O_TRUNC` 截断已存在文件。
+
+修复把独占语义下沉到单次 lwext4 transaction：
+
+- `ext4_generic_open2()` 记录最终目录项是否由本次调用创建；`O_CREAT|O_EXCL` 命中既有目标时在处理 `O_TRUNC` 前返回
+  `EEXIST`，保证失败不会截断目标；
+- 普通文件通过 `ext4_fopen2(O_RDWR|O_CREAT|O_EXCL|O_TRUNC)` 创建；
+- 目录通过新的 `ext4_dir_mk_exclusive()` 在同一次 transaction 内判断并创建；
+- VFS create 删除前置 `check_inode_exist()`，但保留 `exist_check` perf 字段作为运行期验证哨兵。
+
+`tmp_02` 从第一份 perf 快照开始就显示 `exist_check=0`。末尾 create/open 为
+`1219 / 32327957us`（约 `26.5ms/次`）；`tmp_01` 的 create/open 与显式检查合计
+`28114428us + 11765426us`、共 1132 次 create（约 `35.2ms/次`）。这支持重复遍历已被消除的方向性结论，但不是同
+Cargo 检查点的严格 A/B。
+
+### 新热点与正确性边界
+
+`tmp_02` 末尾 namespace lock 为 `1599 samples / 91.072s wait / 104.152s hold`。create 已缩短后，rename 前的
+`write_back_cache` 暴露出更明显的长尾：`49 / 40.674s`，单次最大 `21.922s`。该阶段会把旧路径下尚未进入 lwext4 的
+dirty byte cache 和 sparse buffer 提交到同一 inode；直接省略会让 rename 后目标仍是旧内容，或让后续 close/eviction
+按旧路径重建临时文件。
+
+因此本轮不修改 rename 可见性语义。下一轮先把该阶段拆成 sparse flush、dense byte-cache write-back、表项清理和实际
+提交字节数；只有能同时覆盖目标替换、硬链接、已打开 fd、失败回滚和淘汰并发时，才评估在成功 rename 后把脏缓存从旧路径
+原子 re-key 到新路径。累计 pipe `read_wait` 是多个阻塞读者的睡眠总和，也不能直接当作端到端 CPU 瓶颈。
+
+### 验证
+
+mode/owner 合并版本已通过 RISC-V/LoongArch64 perf 构建和默认 release 构建；`tmp_01`、`tmp_02` 分别提供 owner
+省略与原子独占创建的 RISC-V guest 运行证据。加入原子 `O_EXCL` 后，宿主机重编译受 Docker 生成目录
+`build_musl-generic-riscv64` 的 `nobody:nogroup` 所有权阻塞；维护者已确认新内核通过 Docker 编译，且 `tmp_02` 已实际
+启动该版本。故不删除维护者的 Docker 产物，也不把宿主机权限问题误报为代码编译失败。
+
+仍待定向验证：新文件/新目录成功创建、既有普通文件 `O_CREAT|O_EXCL|O_TRUNC` 返回 `EEXIST` 且内容不被截断、既有目录
+独占创建返回 `EEXIST`，以及非 root/S_ISGID 继承的 uid/gid。当前 `initproc` 是维护者的 BuildStorm-only 入口，未为这些
+测试改写入口。

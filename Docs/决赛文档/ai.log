@@ -8781,3 +8781,47 @@ release 构建，并用包含完整 `BUILDSTORM_COMPILE ... ok=true`、END、`sh
 
 `Docs/决赛文档/优化方案.md`、`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、
 `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+## 2026-07-31：`tmp_00/tmp_01/tmp_02` P16 create 路径优化
+
+### 用户输入
+
+维护者连续提供 `tmp_00.ans`、`tmp_01.ans`、`tmp_02.ans`，说明最新输出结果在 `tmp_02.ans`，要求继续根据《优化方案》优化内核。
+
+### 分析与采纳结论
+
+P16 先增加 interval delta 与 create 子阶段统计。`tmp_00` 中 create 的显式 `exist_check` 为
+`978 / 16125351us`，metadata_apply 为 `1932 / 77750534us`，owner 为 `954 / 26807550us`；说明 create 后的 mode/owner
+和重复存在性检查是 namespace/metadata 临界区的重要组成。
+
+第一项优化是合并或省略 owner 更新：lwext4 新 inode 默认 uid/gid 为 0/0，root BuildStorm 不需要再执行
+`owner_set(0,0)`。新增 `ext4_mode_owner_set()` 将非默认 owner 与 mode 放到一次 pathname transaction 中；root 0/0
+只设置 mode。`tmp_01` 和 `tmp_02` 均显示 owner samples 为 0，`tmp_01` 的 metadata_apply 降为
+`1077 / 42354530us`。该结论只作为方向性证据，因为 Cargo 阶段和请求量不同。
+
+第二项优化是把 `O_CREAT|O_EXCL` 语义下沉到 lwext4 的单次 traversal。不能简单跳过 VFS 之后的底层检查，否则并发创建可能违反
+`O_EXCL`，甚至让 `O_TRUNC` 截断已存在目标。`ext4_generic_open2()` 现在记录最终目标是否由本次调用创建；若
+`O_CREAT|O_EXCL` 命中既有目标，在 `O_TRUNC` 前返回 `EEXIST`。普通文件通过 `ext4_fopen2(O_RDWR|O_CREAT|O_EXCL|O_TRUNC)`，
+目录通过 `ext4_dir_mk_exclusive()` 原子创建。`tmp_02` 显示 `exist_check=0`，create/open 为
+`1219 / 32327957us`，相比 `tmp_01` 的显式检查加 create/open 约 `35.2ms/次`，方向性下降到约 `26.5ms/次`。
+
+`tmp_02` 没有 panic/TFAIL/TBROK/ERROR/SIGSEGV/rustc error，但最后只到 `t=598404ms`、Cargo `31/446`，无
+`BUILDSTORM_COMPILE`、END 或 `shutdown!`，不能报告完整 BuildStorm 通过或端到端加速。新增热点是 rename 前
+`write_back_cache=49 / 40674384us`、最大 `21922271us`；该阶段提交旧路径 dirty cache，直接跳过有正确性风险，下一轮先细分来源。
+
+### 修改文件
+
+`crates/lwext4_rust/c/lwext4/include/ext4.h`、`crates/lwext4_rust/c/lwext4/src/ext4.c`、
+`crates/lwext4_rust/src/file.rs`、`os/src/fs/ext4_lw/inode.rs`、`os/src/utils/perf/fs.rs`、
+`os/src/utils/perf/report.rs`、`Docs/决赛文档/优化方案.md`、
+`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、`Docs/决赛文档/开发日志.md`、
+`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+mode/owner 合并版本已通过 `cargo fmt --manifest-path os/Cargo.toml --all`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64`、`make TARGET_ARCH=riscv64` 和 `make perf TARGET_ARCH=loongarch64`；普通 RISC-V
+构建实际继续覆盖了 LoongArch64 release 子目标。加入原子 `O_EXCL` 后，宿主机重编译因 Docker 生成目录
+`crates/lwext4_rust/c/lwext4/build_musl-generic-riscv64` 属主为 `nobody:nogroup` 而无法清理；维护者确认通过 Docker
+已经编译成功，且 `tmp_02` 为新内核运行结果。本轮未删除该可重建目录，未改维护者的 BuildStorm-only `initproc.rs`，也未运行
+O_EXCL 定向语义回归；这些回归需在不破坏当前入口的条件下补测。

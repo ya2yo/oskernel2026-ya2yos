@@ -2072,3 +2072,18 @@
 - **验证边界**：本轮仅分析日志并更新文档，没有新增代码、重新构建或运行 QEMU。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_00/tmp_01/tmp_02` P16 create 路径优化（7.31）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供连续 BuildStorm perf 样本，最新为 `tmp_02.ans`，要求继续依据《优化方案》优化内核。
+- **描述**：先补 interval delta 与 create 子阶段统计，定位到 root BuildStorm 重复执行 `owner_set(0,0)` 以及 VFS
+  阴性 lookup 后 lwext4 再次遍历目标的 create 成本。新增 `ext4_mode_owner_set()` 合并非默认 mode+owner，root 0/0
+  只写 mode；新增底层 `O_CREAT|O_EXCL` 原子创建，现有目标在 `O_TRUNC` 前返回 `EEXIST`，目录使用
+  `ext4_dir_mk_exclusive()`。`tmp_02` 中 `owner=0`、`exist_check=0`，但样本仅到 Cargo `31/446`，不报告完整
+  BuildStorm 通过或端到端加速。
+- **验证边界**：mode/owner 合并版本已通过双架构 perf/release 构建与格式/补丁检查；原子 `O_EXCL` 版本由维护者通过
+  Docker 编译并生成 `tmp_02` 运行证据。宿主机因 Docker 生成目录属主为 `nobody:nogroup` 无法重编译，本轮未删除该目录；
+  新文件/既有文件 `O_EXCL`、新目录/既有目录和非 root/S_ISGID owner 语义回归仍待定向补测。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

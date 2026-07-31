@@ -10,6 +10,10 @@ extern "C" {
     fn ext4_fseek_data_raw(file: *mut ext4_file, offset: u64, result: *mut u64) -> i32;
     #[link_name = "ext4_fseek_hole"]
     fn ext4_fseek_hole_raw(file: *mut ext4_file, offset: u64, result: *mut u64) -> i32;
+    #[link_name = "ext4_mode_owner_set"]
+    fn ext4_mode_owner_set_raw(path: *const c_char, mode: u32, uid: u32, gid: u32) -> i32;
+    #[link_name = "ext4_dir_mk_exclusive"]
+    fn ext4_dir_mk_exclusive_raw(path: *const c_char) -> i32;
 }
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::string::String;
@@ -209,14 +213,18 @@ impl Ext4File {
 
         //let to_map = c_path.clone();
         let c_path = c_path.into_raw();
-        let c_flags = Self::flags_to_cstring(flags);
-        let c_flags = c_flags.into_raw();
-
-        let r = unsafe { ext4_fopen(&mut self.file_desc, c_path, c_flags) };
+        let r = if flags & O_EXCL != 0 {
+            unsafe { ext4_fopen2(&mut self.file_desc, c_path, flags as i32) }
+        } else {
+            let c_flags = Self::flags_to_cstring(flags).into_raw();
+            let r = unsafe { ext4_fopen(&mut self.file_desc, c_path, c_flags) };
+            unsafe {
+                drop(CString::from_raw(c_flags));
+            }
+            r
+        };
         unsafe {
-            // deallocate the CString
             drop(CString::from_raw(c_path));
-            drop(CString::from_raw(c_flags));
         }
         if r != EOK as i32 {
             error!("ext4_fopen: {}, rc = {}", path, r);
@@ -1775,6 +1783,25 @@ impl Ext4File {
         Ok(EOK as usize)
     }
 
+    pub fn file_mode_owner_set(&mut self, mode: u32, uid: u32, gid: u32) -> Result<usize, i32> {
+        let c_path = self.file_path.clone();
+        let c_path = c_path.into_raw();
+        let r = unsafe { ext4_mode_owner_set_raw(c_path, mode, uid, gid) };
+        unsafe {
+            drop(CString::from_raw(c_path));
+        }
+        if r != EOK as i32 {
+            error!("ext4_mode_owner_set: rc = {}", r);
+            return Err(r);
+        }
+        self.pending_mode = Some(mode);
+        let path = String::from((*self.file_path).to_str().unwrap());
+        if if_cache(path.clone()) {
+            get_cache(path).write().mode = Some(mode);
+        }
+        Ok(EOK as usize)
+    }
+
     pub fn file_owner_set(&mut self, uid: u32, gid: u32) -> Result<usize, i32> {
         // chown/fchownat need the on-disk inode owner, not just cached stat data.
         let c_path = self.file_path.clone();
@@ -1831,6 +1858,22 @@ impl Ext4File {
         }
         if r != EOK as i32 {
             error!("ext4_dir_mk: rc = {}", r);
+            return Err(r);
+        }
+        Ok(EOK as usize)
+    }
+
+    /// Create a directory while preserving O_CREAT|O_EXCL semantics in the
+    /// same lwext4 pathname traversal.
+    pub fn dir_mk_exclusive(&mut self, path: &str) -> Result<usize, i32> {
+        let c_path = CString::new(path).expect("CString::new failed");
+        let c_path = c_path.into_raw();
+        let r = unsafe { ext4_dir_mk_exclusive_raw(c_path) };
+        unsafe {
+            drop(CString::from_raw(c_path));
+        }
+        if r != EOK as i32 {
+            error!("ext4_dir_mk_exclusive: rc = {}", r);
             return Err(r);
         }
         Ok(EOK as usize)

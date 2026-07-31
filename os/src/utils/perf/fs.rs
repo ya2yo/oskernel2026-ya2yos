@@ -405,6 +405,11 @@ pub(crate) static EXT4_RENAME_CLOSE: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_RENAME_LWEXT4_RENAME: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_RENAME_VFS_CACHE_INVALIDATE: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_NAMESPACE_CREATE: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_NAMESPACE_CREATE_EXIST_CHECK: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_NAMESPACE_CREATE_NODE_OPEN: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_NAMESPACE_CREATE_FILE_CLOSE: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_NAMESPACE_CREATE_METADATA_APPLY: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_NAMESPACE_CREATE_VFS_FINISH: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_NAMESPACE_UNLINK: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_NAMESPACE_TRUNCATE: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_NAMESPACE_LINK_SYMLINK: Ext4PhaseStats = Ext4PhaseStats::new();
@@ -1164,6 +1169,18 @@ pub enum Ext4NamespacePhase {
     LinkSymlink,
 }
 
+/// Sub-phases inside create/open-with-create while the namespace gate is held.
+/// These counters explain which part of the broad create bucket justifies any
+/// future lock-boundary change.
+#[derive(Clone, Copy)]
+pub enum Ext4CreatePhase {
+    ExistCheck,
+    DirMkOrFileOpen,
+    FileClose,
+    MetadataApply,
+    VfsFinish,
+}
+
 /// Metadata operations which currently share the broad metadata lock class.
 /// `Recovery` is nested inside the failed mode/owner paths and therefore
 /// identifies the alias scan and descriptor transition separately.
@@ -1195,6 +1212,11 @@ pub struct Ext4InodePhaseGuard {
     begin: usize,
 }
 
+pub struct Ext4CreatePhaseGuard {
+    phase: Ext4CreatePhase,
+    begin: usize,
+}
+
 impl Ext4InodePhaseGuard {
     #[inline]
     pub fn rename(phase: Ext4RenamePhase) -> Self {
@@ -1216,6 +1238,16 @@ impl Ext4InodePhaseGuard {
     pub fn metadata(phase: Ext4MetadataPhase) -> Self {
         Self {
             phase: Ext4InodePhase::Metadata(phase),
+            begin: get_ticks(),
+        }
+    }
+}
+
+impl Ext4CreatePhaseGuard {
+    #[inline]
+    pub fn new(phase: Ext4CreatePhase) -> Self {
+        Self {
+            phase,
             begin: get_ticks(),
         }
     }
@@ -1271,6 +1303,20 @@ impl Drop for Ext4InodePhaseGuard {
             Ext4InodePhase::Metadata(Ext4MetadataPhase::ReadAllPrepare) => {
                 EXT4_METADATA_READ_ALL_PREPARE.record(elapsed)
             }
+        }
+    }
+}
+
+impl Drop for Ext4CreatePhaseGuard {
+    #[inline]
+    fn drop(&mut self) {
+        let elapsed = get_ticks().saturating_sub(self.begin);
+        match self.phase {
+            Ext4CreatePhase::ExistCheck => EXT4_NAMESPACE_CREATE_EXIST_CHECK.record(elapsed),
+            Ext4CreatePhase::DirMkOrFileOpen => EXT4_NAMESPACE_CREATE_NODE_OPEN.record(elapsed),
+            Ext4CreatePhase::FileClose => EXT4_NAMESPACE_CREATE_FILE_CLOSE.record(elapsed),
+            Ext4CreatePhase::MetadataApply => EXT4_NAMESPACE_CREATE_METADATA_APPLY.record(elapsed),
+            Ext4CreatePhase::VfsFinish => EXT4_NAMESPACE_CREATE_VFS_FINISH.record(elapsed),
         }
     }
 }

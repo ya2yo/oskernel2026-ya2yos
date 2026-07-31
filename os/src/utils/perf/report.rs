@@ -1,15 +1,299 @@
 //! Periodic aggregate performance report formatting.
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fs::FILE_PAGE_CACHE;
 
-use super::common::emit_duration;
+use super::common::{emit_duration, ticks_to_us};
 use super::fs::*;
 use super::net::*;
 use super::scheduler::*;
 use super::syscall::*;
 use super::task::*;
+
+struct CounterDelta {
+    last: AtomicUsize,
+}
+
+impl CounterDelta {
+    const fn new() -> Self {
+        Self {
+            last: AtomicUsize::new(0),
+        }
+    }
+
+    fn take(&self, counter: &AtomicUsize) -> usize {
+        let current = counter.load(Ordering::Relaxed);
+        let previous = self.last.swap(current, Ordering::Relaxed);
+        current.saturating_sub(previous)
+    }
+}
+
+struct DurationDelta {
+    samples: AtomicUsize,
+    ticks: AtomicUsize,
+}
+
+impl DurationDelta {
+    const fn new() -> Self {
+        Self {
+            samples: AtomicUsize::new(0),
+            ticks: AtomicUsize::new(0),
+        }
+    }
+}
+
+struct LockDelta {
+    samples: AtomicUsize,
+    wait_ticks: AtomicUsize,
+    hold_ticks: AtomicUsize,
+}
+
+impl LockDelta {
+    const fn new() -> Self {
+        Self {
+            samples: AtomicUsize::new(0),
+            wait_ticks: AtomicUsize::new(0),
+            hold_ticks: AtomicUsize::new(0),
+        }
+    }
+}
+
+fn take_delta(last: &AtomicUsize, counter: &AtomicUsize) -> usize {
+    let current = counter.load(Ordering::Relaxed);
+    let previous = last.swap(current, Ordering::Relaxed);
+    current.saturating_sub(previous)
+}
+
+static DELTA_REPORT_MS: AtomicUsize = AtomicUsize::new(0);
+
+static DELTA_EXT4_READ_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_READ_OPEN_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_READ_DATA_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_FIND_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_FSTAT_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_WRITE_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_WRITE_OPEN_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_WRITE_DATA_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_RENAME_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_CLOSE_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_READ_ALL_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_READ_DIR_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_PATH_RESOLVE_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_METADATA_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_NAMESPACE_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_SYNC_LOCK: LockDelta = LockDelta::new();
+static DELTA_EXT4_SEEK_LOCK: LockDelta = LockDelta::new();
+
+static DELTA_SYSCALL_READ: DurationDelta = DurationDelta::new();
+static DELTA_SYSCALL_WRITE: DurationDelta = DurationDelta::new();
+static DELTA_SYSCALL_OPEN: DurationDelta = DurationDelta::new();
+static DELTA_SYSCALL_STAT: DurationDelta = DurationDelta::new();
+static DELTA_SYSCALL_PATH: DurationDelta = DurationDelta::new();
+static DELTA_PIPE_READ_WAIT: DurationDelta = DurationDelta::new();
+static DELTA_SCHEDULER_DISPATCH: DurationDelta = DurationDelta::new();
+
+static DELTA_SCHED_LOCAL_ENQUEUES: CounterDelta = CounterDelta::new();
+static DELTA_SCHED_REMOTE_ENQUEUES: CounterDelta = CounterDelta::new();
+static DELTA_SCHED_REMOTE_IDLE_NOTIFICATIONS: CounterDelta = CounterDelta::new();
+static DELTA_SCHED_REMOTE_IPI_SENT: CounterDelta = CounterDelta::new();
+static DELTA_SCHED_REMOTE_IPI_FAILED: CounterDelta = CounterDelta::new();
+static DELTA_PIPE_READER_WAKE_CALLS: CounterDelta = CounterDelta::new();
+static DELTA_PIPE_READER_WAKE_TASKS: CounterDelta = CounterDelta::new();
+static DELTA_PIPE_READER_WAKE_POLL_TASKS: CounterDelta = CounterDelta::new();
+static DELTA_PIPE_READ_WAIT_RECHECKS: CounterDelta = CounterDelta::new();
+static DELTA_PIPE_WRITER_WAKE_CALLS: CounterDelta = CounterDelta::new();
+static DELTA_PIPE_WRITER_WAKE_TASKS: CounterDelta = CounterDelta::new();
+static DELTA_PIPE_WRITER_WAKE_POLL_TASKS: CounterDelta = CounterDelta::new();
+static DELTA_PIPE_WRITE_WAIT_RECHECKS: CounterDelta = CounterDelta::new();
+
+fn emit_lock_delta(label: &str, stats: &Ext4LockStats, delta: &LockDelta) {
+    let samples = take_delta(&delta.samples, &stats.samples);
+    let wait_ticks = take_delta(&delta.wait_ticks, &stats.wait_ticks);
+    let hold_ticks = take_delta(&delta.hold_ticks, &stats.hold_ticks);
+    println!(
+        "[perf] interval_ext4_lock name={} samples={} wait_us={} hold_us={}",
+        label,
+        samples,
+        ticks_to_us(wait_ticks),
+        ticks_to_us(hold_ticks),
+    );
+}
+
+fn emit_duration_delta(
+    label: &str,
+    samples: &AtomicUsize,
+    ticks: &AtomicUsize,
+    delta: &DurationDelta,
+) {
+    let sample_delta = take_delta(&delta.samples, samples);
+    let tick_delta = take_delta(&delta.ticks, ticks);
+    println!(
+        "[perf] interval_duration name={} samples={} total_us={}",
+        label,
+        sample_delta,
+        ticks_to_us(tick_delta),
+    );
+}
+
+fn emit_interval_deltas(now: usize) {
+    let previous = DELTA_REPORT_MS.swap(now, Ordering::Relaxed);
+    let elapsed_ms = if previous == 0 {
+        now
+    } else {
+        now.saturating_sub(previous)
+    };
+    println!("[perf] interval t={}ms elapsed_ms={}", now, elapsed_ms);
+
+    emit_lock_delta(
+        "ext4_read_lock",
+        &EXT4_READ_LOCK_STATS,
+        &DELTA_EXT4_READ_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_read_open_lock",
+        &EXT4_READ_OPEN_LOCK_STATS,
+        &DELTA_EXT4_READ_OPEN_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_read_data_lock",
+        &EXT4_READ_DATA_LOCK_STATS,
+        &DELTA_EXT4_READ_DATA_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_find_lock",
+        &EXT4_FIND_LOCK_STATS,
+        &DELTA_EXT4_FIND_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_fstat_lock",
+        &EXT4_FSTAT_LOCK_STATS,
+        &DELTA_EXT4_FSTAT_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_write_lock",
+        &EXT4_WRITE_LOCK_STATS,
+        &DELTA_EXT4_WRITE_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_write_open_lock",
+        &EXT4_WRITE_OPEN_LOCK_STATS,
+        &DELTA_EXT4_WRITE_OPEN_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_write_data_lock",
+        &EXT4_WRITE_DATA_LOCK_STATS,
+        &DELTA_EXT4_WRITE_DATA_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_rename_lock",
+        &EXT4_RENAME_LOCK_STATS,
+        &DELTA_EXT4_RENAME_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_close_lock",
+        &EXT4_CLOSE_LOCK_STATS,
+        &DELTA_EXT4_CLOSE_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_read_all_lock",
+        &EXT4_READ_ALL_LOCK_STATS,
+        &DELTA_EXT4_READ_ALL_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_read_dir_lock",
+        &EXT4_READ_DIR_LOCK_STATS,
+        &DELTA_EXT4_READ_DIR_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_path_resolve_lock",
+        &EXT4_PATH_RESOLVE_LOCK_STATS,
+        &DELTA_EXT4_PATH_RESOLVE_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_metadata_lock",
+        &EXT4_METADATA_LOCK_STATS,
+        &DELTA_EXT4_METADATA_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_namespace_lock",
+        &EXT4_NAMESPACE_LOCK_STATS,
+        &DELTA_EXT4_NAMESPACE_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_sync_lock",
+        &EXT4_SYNC_LOCK_STATS,
+        &DELTA_EXT4_SYNC_LOCK,
+    );
+    emit_lock_delta(
+        "ext4_seek_lock",
+        &EXT4_SEEK_LOCK_STATS,
+        &DELTA_EXT4_SEEK_LOCK,
+    );
+
+    println!(
+        "[perf] interval_scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",
+        DELTA_SCHED_LOCAL_ENQUEUES.take(&SCHEDULER_LOCAL_ENQUEUES),
+        DELTA_SCHED_REMOTE_ENQUEUES.take(&SCHEDULER_REMOTE_ENQUEUES),
+        DELTA_SCHED_REMOTE_IDLE_NOTIFICATIONS.take(&SCHEDULER_REMOTE_IDLE_NOTIFICATIONS),
+        DELTA_SCHED_REMOTE_IPI_SENT.take(&SCHEDULER_REMOTE_IPI_SENT),
+        DELTA_SCHED_REMOTE_IPI_FAILED.take(&SCHEDULER_REMOTE_IPI_FAILED),
+    );
+    println!(
+        "[perf] interval_pipe_wakeup reader_calls={} reader_tasks={} reader_poll_tasks={} reader_wait_rechecks={} writer_calls={} writer_tasks={} writer_poll_tasks={} writer_wait_rechecks={}",
+        DELTA_PIPE_READER_WAKE_CALLS.take(&PIPE_READER_WAKE_CALLS),
+        DELTA_PIPE_READER_WAKE_TASKS.take(&PIPE_READER_WAKE_TASKS),
+        DELTA_PIPE_READER_WAKE_POLL_TASKS.take(&PIPE_READER_WAKE_POLL_TASKS),
+        DELTA_PIPE_READ_WAIT_RECHECKS.take(&PIPE_READ_WAIT_RECHECKS),
+        DELTA_PIPE_WRITER_WAKE_CALLS.take(&PIPE_WRITER_WAKE_CALLS),
+        DELTA_PIPE_WRITER_WAKE_TASKS.take(&PIPE_WRITER_WAKE_TASKS),
+        DELTA_PIPE_WRITER_WAKE_POLL_TASKS.take(&PIPE_WRITER_WAKE_POLL_TASKS),
+        DELTA_PIPE_WRITE_WAIT_RECHECKS.take(&PIPE_WRITE_WAIT_RECHECKS),
+    );
+
+    emit_duration_delta(
+        "pipe_read_wait",
+        &PIPE_READ_WAIT_SAMPLES,
+        &PIPE_READ_WAIT_TICKS,
+        &DELTA_PIPE_READ_WAIT,
+    );
+    emit_duration_delta(
+        "scheduler_dispatch",
+        &SCHEDULER_DISPATCH_SAMPLES,
+        &SCHEDULER_DISPATCH_TICKS,
+        &DELTA_SCHEDULER_DISPATCH,
+    );
+    emit_duration_delta(
+        "syscall_read",
+        &SYSCALL_READ_SAMPLES,
+        &SYSCALL_READ_TICKS,
+        &DELTA_SYSCALL_READ,
+    );
+    emit_duration_delta(
+        "syscall_write",
+        &SYSCALL_WRITE_SAMPLES,
+        &SYSCALL_WRITE_TICKS,
+        &DELTA_SYSCALL_WRITE,
+    );
+    emit_duration_delta(
+        "syscall_open",
+        &SYSCALL_OPEN_SAMPLES,
+        &SYSCALL_OPEN_TICKS,
+        &DELTA_SYSCALL_OPEN,
+    );
+    emit_duration_delta(
+        "syscall_stat",
+        &SYSCALL_STAT_SAMPLES,
+        &SYSCALL_STAT_TICKS,
+        &DELTA_SYSCALL_STAT,
+    );
+    emit_duration_delta(
+        "syscall_path",
+        &SYSCALL_PATH_SAMPLES,
+        &SYSCALL_PATH_TICKS,
+        &DELTA_SYSCALL_PATH,
+    );
+}
 
 pub(super) fn emit_report(now: usize) {
     println!(
@@ -252,6 +536,16 @@ pub(super) fn emit_report(now: usize) {
     emit_ext4_phase_stats("vfs_cache_invalidate", &EXT4_RENAME_VFS_CACHE_INVALIDATE);
     print!("[perf] ext4_namespace_duration ");
     emit_ext4_phase_stats("create", &EXT4_NAMESPACE_CREATE);
+    print!("[perf] ext4_namespace_create_duration ");
+    emit_ext4_phase_stats("exist_check", &EXT4_NAMESPACE_CREATE_EXIST_CHECK);
+    print!("[perf] ext4_namespace_create_duration ");
+    emit_ext4_phase_stats("dir_mk_or_file_open", &EXT4_NAMESPACE_CREATE_NODE_OPEN);
+    print!("[perf] ext4_namespace_create_duration ");
+    emit_ext4_phase_stats("file_close", &EXT4_NAMESPACE_CREATE_FILE_CLOSE);
+    print!("[perf] ext4_namespace_create_duration ");
+    emit_ext4_phase_stats("metadata_apply", &EXT4_NAMESPACE_CREATE_METADATA_APPLY);
+    print!("[perf] ext4_namespace_create_duration ");
+    emit_ext4_phase_stats("vfs_finish", &EXT4_NAMESPACE_CREATE_VFS_FINISH);
     print!("[perf] ext4_namespace_duration ");
     emit_ext4_phase_stats("unlink", &EXT4_NAMESPACE_UNLINK);
     print!("[perf] ext4_namespace_duration ");
@@ -827,4 +1121,5 @@ pub(super) fn emit_report(now: usize) {
         &EXEC_MAP_ELF_TICKS,
         &EXEC_MAP_ELF_MAX_TICKS,
     );
+    emit_interval_deltas(now);
 }

@@ -447,6 +447,16 @@ int ext4_inode_exist(const char *path, int type);
  * @return  Standard error code.*/
 int ext4_mode_set(const char *path, uint32_t mode);
 
+/**@brief Change file/directory/link mode bits, owner and group in one lookup.
+ *
+ * @param path Path to file/dir/link.
+ * @param mode New mode bits (for example 0777).
+ * @param uid  User id.
+ * @param gid  Group id.
+ *
+ * @return  Standard error code.*/
+int ext4_mode_owner_set(const char *path, uint32_t mode, uint32_t uid,
+			uint32_t gid);
 
 /**@brief Get file/directory/link mode bits.
  *
@@ -616,6 +626,13 @@ int ext4_dir_mv(const char *path, const char *new_path);
  *
  * @return  Standard error code.*/
 int ext4_dir_mk(const char *path);
+
+/**@brief Create a new directory and fail if the final entry already exists.
+ *
+ * @param path Directory name.
+ *
+ * @return Standard error code.*/
+int ext4_dir_mk_exclusive(const char *path);
 
 /**@brief   Directory open.
  *

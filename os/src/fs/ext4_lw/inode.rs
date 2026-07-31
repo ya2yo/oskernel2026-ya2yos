@@ -7,7 +7,7 @@
 
 use log::{debug, warn};
 use lwext4_rust::{
-    bindings::{ext4_inode_stat, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
+    bindings::{ext4_inode_stat, O_CREAT, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, SEEK_SET},
     Ext4File, InodeTypes,
 };
 
@@ -15,9 +15,9 @@ use super::{TaskMutex, EXT4_OP_LOCK};
 use crate::utils::perf::Ext4FstatMissReason;
 #[cfg(feature = "perf")]
 use crate::utils::perf::{
-    Ext4FstatColdInodeKind, Ext4FstatMissGuard, Ext4FstatPath, Ext4FstatPathGuard,
-    Ext4FstatRecoveryGuard, Ext4FstatStageRecorder, Ext4InodePhaseGuard, Ext4MetadataPhase,
-    Ext4NamespacePhase, Ext4RenamePhase,
+    Ext4CreatePhase, Ext4CreatePhaseGuard, Ext4FstatColdInodeKind, Ext4FstatMissGuard,
+    Ext4FstatPath, Ext4FstatPathGuard, Ext4FstatRecoveryGuard, Ext4FstatStageRecorder,
+    Ext4InodePhaseGuard, Ext4MetadataPhase, Ext4NamespacePhase, Ext4RenamePhase,
 };
 use crate::{
     fs::{
@@ -588,25 +588,33 @@ impl Inode for Ext4Inode {
         let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Create);
-        let file = &mut self.inner.get_unchecked_mut().f;
-
-        if file.check_inode_exist(path, types.clone()) {
-            return Err(SysErrNo::EEXIST);
-        }
 
         let nfile = &mut nf.inner.get_unchecked_mut().f;
         if types == InodeTypes::EXT4_DE_DIR {
-            if let Err(e) = nfile.dir_mk(path) {
+            #[cfg(feature = "perf")]
+            let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::DirMkOrFileOpen);
+            if let Err(e) = nfile.dir_mk_exclusive(path) {
                 return Err(SysErrNo::from(e));
             }
-        } else if let Err(e) = nfile.file_open(path, O_RDWR | O_CREAT | O_TRUNC) {
-            return Err(SysErrNo::from(e));
         } else {
+            {
+                #[cfg(feature = "perf")]
+                let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::DirMkOrFileOpen);
+                if let Err(e) = nfile.file_open(path, O_RDWR | O_CREAT | O_EXCL | O_TRUNC) {
+                    return Err(SysErrNo::from(e));
+                }
+            }
+            #[cfg(feature = "perf")]
+            let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::FileClose);
             nfile.file_close_without_cache_flush()?;
         }
         // Both file and directory creation add one entry to this inode's
         // directory, changing only this parent directory's mtime/ctime.
-        self.advance_local_directory_stat_epoch();
+        {
+            #[cfg(feature = "perf")]
+            let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::VfsFinish);
+            self.advance_local_directory_stat_epoch();
+        }
         Ok(Arc::new(nf))
     }
 
@@ -627,31 +635,45 @@ impl Inode for Ext4Inode {
         let nf = Ext4Inode::new(path, types.clone());
         let _io_state = self.io_state.lock();
         let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
+        // lwext4 initializes a newly allocated inode with uid/gid 0/0.
+        // Root builds therefore need only the mode update; non-root and
+        // S_ISGID inheritance use the combined mode+owner transaction.
+        let owner_to_set = owner.filter(|&(uid, gid)| uid != 0 || gid != 0);
 
         {
             #[cfg(feature = "perf")]
             let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Create);
-            let file = &mut self.inner.get_unchecked_mut().f;
-            if file.check_inode_exist(path, types.clone()) {
-                return Err(SysErrNo::EEXIST);
-            }
-
             let nfile = &mut nf.inner.get_unchecked_mut().f;
             if types == InodeTypes::EXT4_DE_DIR {
-                if let Err(e) = nfile.dir_mk(path) {
+                #[cfg(feature = "perf")]
+                let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::DirMkOrFileOpen);
+                if let Err(e) = nfile.dir_mk_exclusive(path) {
                     return Err(SysErrNo::from(e));
                 }
-            } else if let Err(e) = nfile.file_open(path, O_RDWR | O_CREAT | O_TRUNC) {
-                return Err(SysErrNo::from(e));
             } else {
+                {
+                    #[cfg(feature = "perf")]
+                    let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::DirMkOrFileOpen);
+                    if let Err(e) = nfile.file_open(path, O_RDWR | O_CREAT | O_EXCL | O_TRUNC) {
+                        return Err(SysErrNo::from(e));
+                    }
+                }
+                #[cfg(feature = "perf")]
+                let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::FileClose);
                 nfile.file_close_without_cache_flush()?;
             }
-            self.advance_local_directory_stat_epoch();
+            {
+                #[cfg(feature = "perf")]
+                let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::VfsFinish);
+                self.advance_local_directory_stat_epoch();
+            }
         }
 
         {
             #[cfg(feature = "perf")]
             let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Mode);
+            #[cfg(feature = "perf")]
+            let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::MetadataApply);
             let mode_type = mode & 0o170000;
             let mode_type = if mode_type != 0 {
                 mode_type
@@ -661,39 +683,27 @@ impl Inode for Ext4Inode {
             let mode = mode_type | (mode & 0o7777);
             let ret = {
                 let inner = nf.inner.get_unchecked_mut();
-                match inner.f.file_mode_set(mode) {
+                let set_metadata = |file: &mut Ext4File| match owner_to_set {
+                    Some((uid, gid)) => file.file_mode_owner_set(mode, uid, gid),
+                    None => file.file_mode_set(mode),
+                };
+                match set_metadata(&mut inner.f) {
                     Ok(ret) => Ok(ret),
                     Err(_) => {
                         let _ = nf.recover_live_path(inner);
-                        inner.f.file_mode_set(mode).map_err(SysErrNo::from)
+                        set_metadata(&mut inner.f).map_err(SysErrNo::from)
                     }
                 }
             };
             ret?;
-            if nf.inode_type == InodeType::Dir {
-                nf.advance_local_directory_stat_epoch();
-            }
-            nf.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
-        }
-
-        if let Some((uid, gid)) = owner {
-            #[cfg(feature = "perf")]
-            let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Owner);
-            let ret = {
-                let inner = nf.inner.get_unchecked_mut();
-                match inner.f.file_owner_set(uid, gid) {
-                    Ok(ret) => Ok(ret),
-                    Err(_) => {
-                        let _ = nf.recover_live_path(inner);
-                        inner.f.file_owner_set(uid, gid).map_err(SysErrNo::from)
-                    }
+            {
+                #[cfg(feature = "perf")]
+                let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::VfsFinish);
+                if nf.inode_type == InodeType::Dir {
+                    nf.advance_local_directory_stat_epoch();
                 }
-            };
-            ret?;
-            if nf.inode_type == InodeType::Dir {
-                nf.advance_local_directory_stat_epoch();
+                nf.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
             }
-            nf.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
 
         Ok(Arc::new(nf))
@@ -710,8 +720,16 @@ impl Inode for Ext4Inode {
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Create);
         let nfile = &mut nf.inner.get_unchecked_mut().f;
-        nfile.dir_mk(path).map_err(SysErrNo::from)?;
-        self.advance_local_directory_stat_epoch();
+        {
+            #[cfg(feature = "perf")]
+            let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::DirMkOrFileOpen);
+            nfile.dir_mk(path).map_err(SysErrNo::from)?;
+        }
+        {
+            #[cfg(feature = "perf")]
+            let _create_phase = Ext4CreatePhaseGuard::new(Ext4CreatePhase::VfsFinish);
+            self.advance_local_directory_stat_epoch();
+        }
         Ok(Arc::new(nf))
     }
 
