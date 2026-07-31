@@ -17,7 +17,7 @@ export PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin
 export HOME=/root RUSTUP_HOME=/root/.rustup CARGO_HOME=/root/.cargo
 export RUSTUP_TOOLCHAIN=nightly-2026-05-28 CARGO_NET_OFFLINE=true
 # Rustc reports stack exhaustion in its parallel compilation workers on this workload.
-export RUST_MIN_STACK=16777216
+export RUST_MIN_STACK=33554432
 
 case "$(uname -m 2>/dev/null)" in
   loongarch64) AXARCH=loongarch64; AXTGT=loongarch64-unknown-linux-musl ;;

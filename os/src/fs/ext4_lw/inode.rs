@@ -50,11 +50,12 @@ const UNKNOWN_FILE_SIZE: usize = usize::MAX;
 /// `fstat()` validation, never lets it accept a stale identity.
 static EXT4_IDENTITY_EPOCH: AtomicUsize = AtomicUsize::new(1);
 
-/// Bump after a successful operation that can change directory metadata.
-/// Directory `mtime`/`ctime` is affected by child entry changes, so a pathname
-/// lookup stat is usable only once and only while this conservative mount-wide
-/// epoch still matches.  This must stay separate from `EXT4_IDENTITY_EPOCH`:
-/// unrelated metadata changes do not make an inode identity unsafe.
+/// Bump after a successful namespace operation whose affected parent
+/// directory is not available as a live `Ext4Inode` here.  Directory-local
+/// metadata changes use each inode's `directory_stat_epoch` instead, so
+/// unrelated creates/chmods do not discard every cached directory stat on the
+/// mount.  This must stay separate from `EXT4_IDENTITY_EPOCH`: unrelated
+/// metadata changes do not make an inode identity unsafe.
 static EXT4_DIRECTORY_STAT_EPOCH: AtomicUsize = AtomicUsize::new(1);
 
 /// EXT4 inode 的 VFS 包装。
@@ -111,9 +112,14 @@ pub struct Ext4Inode {
     has_lookup_stat: bool,
     /// Repeated `stat(2)` calls on an unchanged regular source or artifact
     /// otherwise serialize on lwext4's global path-based metadata lookup.
-    /// It also contains a directory lookup snapshot that is consumed at most
-    /// once; directories never retain a persistent `Kstat` cache.
+    /// It also contains a directory lookup snapshot retained until either
+    /// this directory's local metadata epoch or the conservative global
+    /// namespace epoch changes.
     stat_cache: RwLock<Ext4StatCache>,
+    /// Directory metadata changes local to this inode should not invalidate
+    /// cached stats for every other directory in the mount.  Cross-directory
+    /// namespace operations still use the mount-wide epoch below.
+    directory_stat_epoch: AtomicUsize,
 }
 
 /// The stat cache and, for perf builds, the operation which most recently
@@ -132,7 +138,8 @@ struct Ext4StatCache {
 /// until the next directory metadata mutation.
 struct Ext4DirectoryLookupStat {
     stat: Kstat,
-    epoch: usize,
+    local_epoch: usize,
+    global_epoch: usize,
 }
 
 /// `Ext4Inode` 的可变内部状态。
@@ -224,10 +231,14 @@ impl Ext4Inode {
         } else {
             (UNKNOWN_FILE_SIZE, None)
         };
+        let global_directory_stat_epoch = EXT4_DIRECTORY_STAT_EPOCH.load(Ordering::Acquire);
+        let directory_stat_epoch =
+            lookup_directory_stat_epoch.unwrap_or(global_directory_stat_epoch);
         let directory_lookup_stat = match (inode_type, lookup_stat, lookup_directory_stat_epoch) {
             (InodeType::Dir, Some(stat), Some(epoch)) => Some(Ext4DirectoryLookupStat {
                 stat: Self::kstat_from_ext4(stat),
-                epoch,
+                local_epoch: epoch,
+                global_epoch: epoch,
             }),
             _ => None,
         };
@@ -250,6 +261,7 @@ impl Ext4Inode {
             #[cfg(feature = "perf")]
             has_lookup_stat,
             stat_cache: RwLock::new(stat_cache),
+            directory_stat_epoch: AtomicUsize::new(directory_stat_epoch),
             inner: SyncUnsafeCell::new(Ext4InodeInner {
                 f: Ext4File::new(path, types),
                 aliases: vec![path.to_string()],
@@ -342,8 +354,15 @@ impl Ext4Inode {
     }
 
     #[inline]
-    fn advance_directory_stat_epoch() {
+    fn advance_global_directory_stat_epoch() {
         EXT4_DIRECTORY_STAT_EPOCH.fetch_add(1, Ordering::AcqRel);
+    }
+
+    #[inline]
+    fn advance_local_directory_stat_epoch(&self) {
+        if self.inode_type == InodeType::Dir {
+            self.directory_stat_epoch.fetch_add(1, Ordering::AcqRel);
+        }
     }
 
     #[inline]
@@ -367,14 +386,20 @@ impl Ext4Inode {
             return None;
         }
 
-        let current_epoch = EXT4_DIRECTORY_STAT_EPOCH.load(Ordering::Acquire);
+        let current_local_epoch = self.directory_stat_epoch.load(Ordering::Acquire);
+        let current_global_epoch = EXT4_DIRECTORY_STAT_EPOCH.load(Ordering::Acquire);
         let cache = self.stat_cache.read();
         let directory_stat = cache.directory_lookup_stat.as_ref()?;
-        if directory_stat.epoch == current_epoch {
+        let local_miss = directory_stat.local_epoch != current_local_epoch;
+        let global_miss = directory_stat.global_epoch != current_global_epoch;
+        if !local_miss && !global_miss {
             Some(directory_stat.stat)
         } else {
             #[cfg(feature = "perf")]
-            crate::utils::perf::record_ext4_fstat_directory_stat_epoch_miss();
+            crate::utils::perf::record_ext4_fstat_directory_stat_epoch_miss(
+                local_miss,
+                global_miss,
+            );
             None
         }
     }
@@ -382,9 +407,13 @@ impl Ext4Inode {
     #[inline]
     fn update_cached_directory_stat(&self, stat: Kstat) {
         if self.inode_type == InodeType::Dir {
-            let epoch = EXT4_DIRECTORY_STAT_EPOCH.load(Ordering::Acquire);
-            self.stat_cache.write().directory_lookup_stat =
-                Some(Ext4DirectoryLookupStat { stat, epoch });
+            let local_epoch = self.directory_stat_epoch.load(Ordering::Acquire);
+            let global_epoch = EXT4_DIRECTORY_STAT_EPOCH.load(Ordering::Acquire);
+            self.stat_cache.write().directory_lookup_stat = Some(Ext4DirectoryLookupStat {
+                stat,
+                local_epoch,
+                global_epoch,
+            });
         }
     }
 
@@ -576,8 +605,8 @@ impl Inode for Ext4Inode {
             nfile.file_close_without_cache_flush()?;
         }
         // Both file and directory creation add one entry to this inode's
-        // directory, changing its mtime/ctime.
-        Self::advance_directory_stat_epoch();
+        // directory, changing only this parent directory's mtime/ctime.
+        self.advance_local_directory_stat_epoch();
         Ok(Arc::new(nf))
     }
 
@@ -617,7 +646,7 @@ impl Inode for Ext4Inode {
             } else {
                 nfile.file_close_without_cache_flush()?;
             }
-            Self::advance_directory_stat_epoch();
+            self.advance_local_directory_stat_epoch();
         }
 
         {
@@ -642,7 +671,7 @@ impl Inode for Ext4Inode {
             };
             ret?;
             if nf.inode_type == InodeType::Dir {
-                Self::advance_directory_stat_epoch();
+                nf.advance_local_directory_stat_epoch();
             }
             nf.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
@@ -662,7 +691,7 @@ impl Inode for Ext4Inode {
             };
             ret?;
             if nf.inode_type == InodeType::Dir {
-                Self::advance_directory_stat_epoch();
+                nf.advance_local_directory_stat_epoch();
             }
             nf.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
@@ -682,7 +711,7 @@ impl Inode for Ext4Inode {
         let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Create);
         let nfile = &mut nf.inner.get_unchecked_mut().f;
         nfile.dir_mk(path).map_err(SysErrNo::from)?;
-        Self::advance_directory_stat_epoch();
+        self.advance_local_directory_stat_epoch();
         Ok(Arc::new(nf))
     }
 
@@ -996,7 +1025,7 @@ impl Inode for Ext4Inode {
         // identity-epoch proofs before releasing the global lwext4 guard so a
         // later FsIndex collision retains the live `fstat()` reuse check.
         Self::advance_identity_epoch();
-        Self::advance_directory_stat_epoch();
+        Self::advance_global_directory_stat_epoch();
 
         // A successful directory-entry move must not leave an orphaned
         // write-back entry for either pathname.  In particular, stale target
@@ -1039,7 +1068,7 @@ impl Inode for Ext4Inode {
             if inner.aliases.iter().all(|alias| alias != new_path) {
                 inner.aliases.push(new_path.to_string());
             }
-            Self::advance_directory_stat_epoch();
+            Self::advance_global_directory_stat_epoch();
             self.invalidate_cached_stat(Ext4FstatMissReason::HardLink);
         }
         ret
@@ -1062,7 +1091,7 @@ impl Inode for Ext4Inode {
         let ret = file.set_time(atime, mtime, ctime).map_err(SysErrNo::from);
         if ret.is_ok() {
             if self.inode_type == InodeType::Dir {
-                Self::advance_directory_stat_epoch();
+                self.advance_local_directory_stat_epoch();
             }
             self.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
@@ -1474,7 +1503,7 @@ impl Inode for Ext4Inode {
         let file = &mut self.inner.get_unchecked_mut().f;
         let ret = file.file_fsymlink(target, path).map_err(SysErrNo::from);
         if ret.is_ok() {
-            Self::advance_directory_stat_epoch();
+            self.advance_local_directory_stat_epoch();
         }
         ret
     }
@@ -1523,7 +1552,7 @@ impl Inode for Ext4Inode {
                 // available to another path.  Existing wrappers from before this
                 // point therefore require FsIndex's live identity validation.
                 Self::advance_identity_epoch();
-                Self::advance_directory_stat_epoch();
+                Self::advance_global_directory_stat_epoch();
                 self.invalidate_cached_stat(Ext4FstatMissReason::Unlink);
             }
             let remove_quota = !is_dir && ret.is_ok();
@@ -1622,7 +1651,7 @@ impl Inode for Ext4Inode {
         };
         if ret.is_ok() {
             if self.inode_type == InodeType::Dir {
-                Self::advance_directory_stat_epoch();
+                self.advance_local_directory_stat_epoch();
             }
             self.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
@@ -1647,7 +1676,7 @@ impl Inode for Ext4Inode {
         };
         if ret.is_ok() {
             if self.inode_type == InodeType::Dir {
-                Self::advance_directory_stat_epoch();
+                self.advance_local_directory_stat_epoch();
             }
             self.invalidate_cached_stat(Ext4FstatMissReason::Metadata);
         }
@@ -1703,7 +1732,7 @@ impl Drop for Ext4Inode {
                 let remove_result = inner.f.file_remove(&path);
                 if remove_result.is_ok() {
                     Self::advance_identity_epoch();
-                    Self::advance_directory_stat_epoch();
+                    Self::advance_global_directory_stat_epoch();
                     Some(path)
                 } else {
                     None

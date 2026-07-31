@@ -2058,3 +2058,17 @@
   12 个 hart 正常启动，CAgent 十项均 `pass`，出现组结束标记和 `shutdown!`。完整复盘见
   [loongarch-36g-12hart-bootstrap.md](./problem/loongarch-36g-12hart-bootstrap.md)。
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_08` 目录局部 epoch 验证与 P16 取证准备（7.31）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `tmp_08.ans`，询问后续长时间没有编译成功输出的原因，并要求继续完善文档准备下一轮优化。
+- **描述**：确认 `tmp_08` 已装载目录 stat 局部 epoch 与 `local_epoch_miss/global_epoch_miss` 标签。日志无
+  panic/TFAIL/TBROK/ERROR/SIGSEGV/rustc error，最后为 `t=558003ms`、Cargo `Building 28/446`，没有完整
+  BuildStorm 结束标记；因此长静默是中途 heavy crate 编译/等待窗口，而不是成功后卡死或新崩溃。相邻窗口中
+  `ext4_fstat_lock` 和 `actual_ext4_fstat` 下降，但不报告严格 A/B 或端到端加速。
+- **文档影响**：补充《优化方案》P15/P16、读路径问题复盘、开发日志和 AI 记录。下一轮计划先增加 interval delta、
+  namespace/create 子阶段和 pipe wait 归因，再决定是否移动 lwext4 gate 或优化 create/check 路径。
+- **验证边界**：本轮仅分析日志并更新文档，没有新增代码、重新构建或运行 QEMU。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

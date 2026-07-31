@@ -1083,3 +1083,42 @@ BuildStorm 功能回归或端到端性能样本。
 应在相同 Cargo 检查点比较 `file_cache hit/mmap_hit`、`mmap_miss`、`page_faults`、`readahead` 和
 `ext4_read_data_lock`，并补做文件映射部分尾页、越界页及并发 truncate 的 SIGBUS 回归；在完整结束标记出现前保持
 P9 的 32 MiB 准入、96K 页容量、四页预读、EXT4 单一 gate 及写入失效语义。
+
+## 2026-07-31：`tmp_08.ans` 验证目录局部 epoch 与下一轮静默窗口取证
+
+### 运行期证据
+
+`tmp_08.ans` 已装载目录 stat cache 局部 epoch 与 `local_epoch_miss/global_epoch_miss` perf 标签。日志未见
+`panic`、`TFAIL`、`TBROK`、`ERROR`、`SIGSEGV` 或 rustc `error:`；最后快照为 `t=558003ms`，
+Cargo 仍在 `Building 28/446`，没有 `BUILDSTORM_COMPILE`、测试组 END 或 `shutdown!`。因此这不是完整
+BuildStorm 验收样本，也不是“成功编译后无输出”；它是在 Cargo 仍有重 crate 正在编译或等待时被截断的中途窗口。
+
+P15 的目录局部 epoch 有方向性收益。与 `tmp_07.ans` 末尾 `Building 29/446` 相邻窗口相比，`tmp_08` 末尾
+`ext4_fstat_lock` 从 `3174 / 227.383s wait / 56.014s hold` 降到
+`2632 / 166.707s wait / 44.491s hold`；`actual_ext4_fstat` 从 `3168` 降到 `2630`，
+`directory_epoch_cached` 从 `2119` 增至 `2682`。新的目录 miss 拆分显示总 `epoch_miss=2606`，
+其中 local `1999`、global `1053`；后续可以继续判断 miss 是否来自真实本目录修改还是保守全局边界。
+
+同时，`tmp_08` 仍显示页缓存容量未触顶（`57468/98304`，capacity bypass `0`），`mmap_prefetch=0`，
+四类 `inode_read_source` 继续守恒。因此当前没有证据支持继续扩大文件页缓存准入、全局容量或预读深度。
+
+### 为什么长时间没有编译成功输出
+
+Cargo 进度只在 crate 完成或新 crate 启动时刷新。日志最后可见 `Compiling errno v0.3.14`，随后停在
+`Building 28/446: libc, serde_core, parking...`；后续 perf 快照仍持续打印，说明 guest 没有死机。尾段累计等待继续增长：
+`ext4_read_data_lock`、`ext4_find_lock`、`ext4_fstat_lock`、`ext4_write_lock` 以及 `pipe_duration read_wait`
+都有新增；这解释了为什么外部看起来长时间没有 Cargo 成功输出，但不能从累计值直接断言某个锁就是唯一原因。
+
+### 下一轮取证计划
+
+下一步先补充 interval delta 和更细子阶段统计，而不是直接移动 lwext4 全局 gate：
+
+1. 在 perf 报告中保留全局累计值，同时输出上一次报告以来的 delta，覆盖 `ext4_*_lock`、`read/write/open/stat/path`
+   syscall duration、pipe read wait 与 scheduler wakeup。
+2. 细分 `ext4_namespace_duration create`：区分存在性检查、底层 create/open、close、mode/owner/timestamp 组合应用、
+   VFS/cache 失效等子阶段。`tmp_08` 末尾 `ext4_namespace_lock hold=114.849s` 已是主要 gate 持有来源之一。
+3. 细分 pipe read wait：记录等待时是否存在 writer、writer 是否 runnable/睡眠、是否发生 poll 唤醒后重检。只有确认 writer 已可运行但未及时调度，
+   才进入 scheduler 或 pipe 唤醒优化；否则它只是 Cargo 父进程等待 rustc 输出的正常阻塞。
+4. 在下一份样本中重点比较 Cargo `28/446` 后的静默窗口 delta。若 namespace/create 子阶段占主导，再评估复用
+   negative dentry/FsIndex 结果跳过重复 `check_inode_exist`，或把纯 VFS/cache 收尾移出 gate；若 read/find 占主导，
+   再回到路径解析和冷页读取。

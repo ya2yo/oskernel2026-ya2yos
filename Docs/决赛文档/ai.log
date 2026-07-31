@@ -7926,7 +7926,7 @@ dentry 命中、metadata/namespace 细分、容量受限的页缓存分片，以
 ### 关联
 
 - 问题复盘：[BuildStorm EXT4 稀疏写、读锁与预读优化](./problem/buildstorm-ext4-sparse-write-readahead.md)
-- 关联 commit：当前工作区未提交
+- 关联 commit：
 
 ## 2026-07-28：BuildStorm 长 `CLONE_VFORK` 等待分段取证
 
@@ -8416,10 +8416,6 @@ mode、owner 及 read/find/fstat 锁等待是稳定热点；两份日志均早�
 `os/src/fs/ext4_lw/inode.rs`、`os/src/utils/perf/fs.rs`、`os/src/utils/perf/report.rs`、
 `Docs/决赛文档/优化方案.md`、`Docs/决赛文档/开发日志.md`。
 
-### 关联 commit
-
-当前工作区未提交
-
 ## 2026-07-30：`tmp_06.ans` 完成 P12/P13 文档复核
 
 ### 用户输入
@@ -8444,10 +8440,6 @@ demand fault，shared-map fork 预取没有产生 backing read，页缓存也未
 `AI_INTERACTION.md`，补充来源守恒、缓存容量和未完成样本的限制；未修改内核代码。后续仍需同 Cargo 检查点比较
 `file_cache hit/mmap_hit`、`mmap_miss`、`page_faults`、`readahead`、`ext4_read_data_lock`，并执行文件映射尾页及
 并发 truncate 的 SIGBUS 回归。
-
-### 关联 commit
-
-当前工作区未提交
 
 ## 2026-07-30：`tmp_02.ans` P10 来源验证与未对齐 ELF 读取合并
 
@@ -8479,10 +8471,6 @@ Cargo `Building 23/446`，不能作为端到端样本。末尾 ext4 reads 为 `3
 及默认 `make TARGET_ARCH=riscv64`（release 覆盖两种架构），均通过；最后重建 RISC-V perf 内核。构建仅有已有
 Cargo config、vendored `smoltcp` 与 release `ipi_sent` warning。未运行 `make run`，以免删除维护者 `disk.img` 链接；
 运行期效果待新 BuildStorm 样本。
-
-### 关联 commit
-
-当前工作区未提交
 
 ## 2026-07-30：`tmp_01.ans` 复核 P9 并实施 P10 backing-read 来源归因
 
@@ -8521,10 +8509,6 @@ epoch 语义。
 `make TARGET_ARCH=riscv64`（release 覆盖两种架构）均已通过；最后重建 RISC-V perf 内核。仅有已有 Cargo config、
 vendored `smoltcp` 与 release `ipi_sent` warning。本轮不运行 `make run`，以免删除维护者用于 BuildStorm 的 `disk.img`
 链接；新 guest 样本须含 `inode_read_source` 与 P9 标签，且未完成样本不用于端到端结论。
-
-### 关联 commit
-
-当前工作区未提交
 
 ## 2026-07-30：`tmp_17/18` BuildStorm dentry 取证与目录 epoch stat cache
 
@@ -8565,10 +8549,6 @@ QEMU 长测，使用维护者提供的 `tmp_18.ans` 作运行期观察；完整 
 `os/src/fs/dcache.rs`、`os/src/fs/kernel_fs_ops/open.rs`、`os/src/fs/ext4_lw/inode.rs`、
 `os/src/utils/perf/fs.rs`、`os/src/utils/perf/report.rs`、`Docs/决赛文档/优化方案.md`、
 `Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、`Docs/决赛文档/开发日志.md`。
-
-### 关联 commit
-
-当前工作区未提交
 
 ## 2026-07-30：P9 有界大文件文件页缓存
 
@@ -8616,10 +8596,6 @@ read/find lock wait/hold；无完整 BuildStorm 结束标记时不报告端到�
 `Docs/决赛文档/优化方案.md`、`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、
 `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/AI_INTERACTION.md`。
 
-### 关联 commit
-
-当前工作区未提交
-
 ## 2026-07-30：`tmp_20.ans` P9 运行期验证与 P10 准备
 
 ### 用户输入
@@ -8654,10 +8630,6 @@ samples 交叉检查；不在 page-cache hit 路径增加诊断 atomic，不改 
 ### 验证
 
 本轮只分析维护者提供的日志并更新文档，未修改内核代码、未重新构建或运行 QEMU。
-
-### 关联 commit
-
-当前工作区未提交
 
 ## 2026-07-30：`tmp_03.ans` 验证 P11 并准备 P12
 
@@ -8720,10 +8692,6 @@ lock、page fault/readahead、resident/capacity-bypass；根据占比再检查 `
 `cargo fmt --manifest-path os/Cargo.toml --all -- --check` 和 `git diff --check`；新字段 guest 样本待维护者运行。
 `tmp_04` 本身没有完整结束标记，不能报告端到端加速。
 
-### 关联 commit
-
-当前工作区未提交
-
 ## 2026-07-30：`tmp_05.ans` P13 mmap demand 重复加载优化
 
 ### 用户输入
@@ -8749,10 +8717,6 @@ MAP_PRIVATE/MAP_SHARED 和 COW 语义保持。处理失败时在冷路径重新�
 `os/src/mm/memory_set/handle.rs`、`Docs/决赛文档/优化方案.md`、
 `Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、`Docs/决赛文档/开发日志.md`、
 `Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
-
-### 关联 commit
-
-当前工作区未提交
 
 ## 2026-07-30：LoongArch 36GiB/12-hart 启动参数修复
 
@@ -8785,6 +8749,35 @@ MAP_PRIVATE/MAP_SHARED 和 COW 语义保持。处理失败时在冷路径重新�
 `os/src/arch/loongarch64/qemu/asms/entry.asm`、`Docs/决赛文档/problem/loongarch-36g-12hart-bootstrap.md`、
 `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/README.md`。
 
-### 关联 commit
+## 2026-07-31：`tmp_08.ans` 长静默窗口诊断与下一轮优化准备
 
-当前工作区未提交
+### 用户输入
+
+维护者提供新的 `tmp_08.ans`，询问后续长时间没有编译成功输出的原因，并要求继续完善文档、准备下一轮优化。
+
+### 分析与采纳结论
+
+`tmp_08` 已装载目录 stat 局部 epoch 与 `local_epoch_miss/global_epoch_miss` 标签。日志无
+`panic`、`TFAIL`、`TBROK`、`ERROR`、`SIGSEGV` 或 rustc `error:`；最后快照为
+`t=558003ms`、Cargo `Building 28/446`，没有 `BUILDSTORM_COMPILE`、测试组 END 或 `shutdown!`。结论是该样本
+仍是中途窗口，长时间无成功输出是 Cargo/rustc 仍在编译或等待重 crate，进度条未刷新，而不是已完成后卡死或出现新的崩溃。
+
+P15 的方向性收益是目录 fstat 压力下降：与 `tmp_07` 末尾相邻窗口相比，`ext4_fstat_lock` 从
+`3174 / 227.383s wait / 56.014s hold` 降到 `2632 / 166.707s wait / 44.491s hold`，
+`actual_ext4_fstat` 从 `3168` 降到 `2630`，`directory_epoch_cached` 从 `2119` 增至 `2682`。由于 Cargo
+阶段和并发交错不同，不能报告严格 A/B 或端到端加速。
+
+### 文档修改
+
+补充《优化方案》P15/P16，记录 `tmp_08` 的运行边界、RUST_MIN_STACK 崩溃已消失、目录 epoch 拆分结果，以及下一轮
+interval delta、namespace/create 子阶段和 pipe wait 归因计划；同步更新读路径问题复盘、开发日志和 AI 交互记录。
+
+### 验证边界
+
+本轮只做文档与日志分析，没有新增代码、未重新构建、未运行 QEMU。后续新取证字段需要再跑 RISC-V/LoongArch64 perf 与
+release 构建，并用包含完整 `BUILDSTORM_COMPILE ... ok=true`、END、`shutdown!` 的样本验收端到端性能。
+
+### 修改文件
+
+`Docs/决赛文档/优化方案.md`、`Docs/决赛文档/problem/buildstorm-read-path-lock-contention.md`、
+`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。

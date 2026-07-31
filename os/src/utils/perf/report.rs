@@ -213,8 +213,10 @@ pub(super) fn emit_report(now: usize) {
             .load(Ordering::Relaxed),
     );
     println!(
-        "[perf] ext4_fstat_directory_stat epoch_miss={}",
+        "[perf] ext4_fstat_directory_stat epoch_miss={} local_epoch_miss={} global_epoch_miss={}",
         EXT4_FSTAT_DIRECTORY_STAT_EPOCH_MISSES.load(Ordering::Relaxed),
+        EXT4_FSTAT_DIRECTORY_STAT_LOCAL_EPOCH_MISSES.load(Ordering::Relaxed),
+        EXT4_FSTAT_DIRECTORY_STAT_GLOBAL_EPOCH_MISSES.load(Ordering::Relaxed),
     );
     emit_ext4_lock_stats("ext4_write_lock", &EXT4_WRITE_LOCK_STATS);
     emit_ext4_lock_stats("ext4_write_open_lock", &EXT4_WRITE_OPEN_LOCK_STATS);

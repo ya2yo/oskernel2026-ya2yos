@@ -377,6 +377,8 @@ pub(crate) static EXT4_FSTAT_COLD_INODE_COUNTS: Ext4FstatColdInodeCounts =
 /// Directory stat cache samples discarded because a directory metadata
 /// operation completed after they were captured.
 pub(crate) static EXT4_FSTAT_DIRECTORY_STAT_EPOCH_MISSES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static EXT4_FSTAT_DIRECTORY_STAT_LOCAL_EPOCH_MISSES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static EXT4_FSTAT_DIRECTORY_STAT_GLOBAL_EPOCH_MISSES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_WRITE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_WRITE_OPEN_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_WRITE_DATA_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
@@ -1125,9 +1127,20 @@ pub fn record_ext4_fstat_cold_inode(kind: Ext4FstatColdInodeKind, has_lookup_sta
     EXT4_FSTAT_COLD_INODE_COUNTS.record(kind, has_lookup_stat);
 }
 
+/// Record a discarded directory-stat snapshot.
+///
+/// The total counter keeps continuity with older logs, while the local/global
+/// split shows whether misses came from this directory's own metadata or from
+/// the conservative mount-wide namespace boundary.
 #[inline]
-pub fn record_ext4_fstat_directory_stat_epoch_miss() {
+pub fn record_ext4_fstat_directory_stat_epoch_miss(local_miss: bool, global_miss: bool) {
     add(&EXT4_FSTAT_DIRECTORY_STAT_EPOCH_MISSES, 1);
+    if local_miss {
+        add(&EXT4_FSTAT_DIRECTORY_STAT_LOCAL_EPOCH_MISSES, 1);
+    }
+    if global_miss {
+        add(&EXT4_FSTAT_DIRECTORY_STAT_GLOBAL_EPOCH_MISSES, 1);
+    }
 }
 
 /// Mutually exclusive stages inside `Ext4Inode::rename()` while it holds the
