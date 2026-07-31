@@ -8825,3 +8825,41 @@ mode/owner 合并版本已通过 `cargo fmt --manifest-path os/Cargo.toml --all`
 `crates/lwext4_rust/c/lwext4/build_musl-generic-riscv64` 属主为 `nobody:nogroup` 而无法清理；维护者确认通过 Docker
 已经编译成功，且 `tmp_02` 为新内核运行结果。本轮未删除该可重建目录，未改维护者的 BuildStorm-only `initproc.rs`，也未运行
 O_EXCL 定向语义回归；这些回归需在不破坏当前入口的条件下补测。
+
+## 2026-07-31：`tmp_03/tmp_05/tmp_06` P17 rename 归因与下一轮方案
+
+### 用户输入
+
+维护者先要求分析 `tmp_03.ans` 并按《优化方案》继续优化，随后提供五分钟 `tmp_05.ans` 和约 30 分钟
+`tmp_06.ans`，指出短样本可达 4--5 crates/min、长样本后段低于 2 crates/min，要求给出下一轮优化方案。
+
+### 分析与采纳结论
+
+P17 将 rename 的 write-back barrier 拆成 sparse flush、dense byte-cache write-back 和 path-cache discard，
+同时记录实际提交字节、零字节 fast path 和清理次数。`tmp_05` 中 dense 阶段占 barrier 时间约 99.8%，证明
+rename 候选应针对 path-keyed whole-file cache，而不是取消 sparse 可见性边界。
+
+`tmp_06` 最后为 `t=1750035ms`、Cargo `54/446`，没有异常或完整结束标记。最后 `170.716s` interval 内
+write-open 的 136 次锁获取累计等待 `399.685s`、持锁 `12.727s`，全局单次最大等待达到 `175.954s`；同时
+find/fstat/namespace 仍持续完成。源码中 `TaskMutex` 先释放 primitive lock、再 FIFO wake sleeper，被唤醒任务调度前
+新调用者可以 try_lock 插队，因此下一轮最高优先级是仅针对 `EXT4_OP_LOCK` 增加 queue/handoff/barging 计数并实现
+可取消的 FIFO/ticket ownership handoff，不能把 lwext4 改为 rwlock或扩散到全部 inode 锁。
+
+最后窗口 create、metadata_apply、unlink、mode、ext4_stat_get 本体也已达到每批 10--28 秒，说明公平锁只能
+修长尾，不能消除后段 lwext4 transaction 退化。后续优先级依次是把新 inode mode/uid/gid 并入创建 transaction、
+在定向语义回归后对单链接 regular file 做 rename dense-cache re-key，以及继续拆分 C 层 path lookup、目录扫描、
+块分配、journal 和 cache flush。末尾页缓存为 `79776/98304` 且无 capacity bypass，不扩大缓存参数。
+
+### 修改文件
+
+P17 取证代码修改 `crates/lwext4_rust/src/file.rs`、`crates/lwext4_rust/src/perf.rs`、
+`os/src/fs/ext4_lw/inode.rs`、`os/src/utils/perf/fs.rs`、`os/src/utils/perf/report.rs`；同步更新
+`Docs/决赛文档/优化方案.md`、`Docs/决赛文档/problem/buildstorm-ext4-sparse-write-readahead.md`、
+`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log` 和 `Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+P17 代码已通过 `cargo fmt --manifest-path os/Cargo.toml --all`、`git diff --check`、
+`make perf TARGET_ARCH=riscv64` 和 `make perf TARGET_ARCH=loongarch64`。`tmp_05/tmp_06` 是维护者提供的
+运行期样本，均没有完整 BuildStorm 结束标记；公平交接、create transaction 合并和 cache re-key 仍是下一轮方案，
+尚未实施或运行语义回归。

@@ -3,7 +3,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "perf")]
-use lwext4_rust::perf::FstatStageEvent;
+use lwext4_rust::perf::{FstatStageEvent, RenameWriteBackStageEvent};
 
 use crate::arch::time::get_ticks;
 use crate::fs::{Ext4OpGuard, Ext4OpLock};
@@ -401,6 +401,9 @@ pub(crate) static EXT4_WRITE_DATA_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_WRITE_DATA_TICKS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_WRITE_DATA_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_RENAME_WRITE_BACK_CACHE: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_RENAME_SPARSE_WRITE_FLUSH: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_RENAME_DENSE_WRITE_BACK: Ext4PhaseStats = Ext4PhaseStats::new();
+pub(crate) static EXT4_RENAME_PATH_CACHE_DISCARD: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_RENAME_CLOSE: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_RENAME_LWEXT4_RENAME: Ext4PhaseStats = Ext4PhaseStats::new();
 pub(crate) static EXT4_RENAME_VFS_CACHE_INVALIDATE: Ext4PhaseStats = Ext4PhaseStats::new();
@@ -1113,6 +1116,55 @@ impl Ext4FstatStageRecorder {
             FstatStageEvent::WriteBackOverlayEnd => {
                 EXT4_FSTAT_WRITE_BACK_OVERLAY
                     .record(get_ticks().saturating_sub(self.write_back_overlay_begin));
+            }
+        }
+    }
+}
+
+/// Per-call timing state for the delayed-state visibility barrier in
+/// `Ext4Inode::rename()`. This follows the wrapper's synchronous events so
+/// each bucket excludes unrelated rename work and lock wait time.
+#[cfg(feature = "perf")]
+pub struct Ext4RenameWriteBackStageRecorder {
+    sparse_write_flush_begin: usize,
+    dense_write_back_begin: usize,
+    path_cache_discard_begin: usize,
+}
+
+#[cfg(feature = "perf")]
+impl Ext4RenameWriteBackStageRecorder {
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            sparse_write_flush_begin: 0,
+            dense_write_back_begin: 0,
+            path_cache_discard_begin: 0,
+        }
+    }
+
+    #[inline]
+    pub fn record(&mut self, event: RenameWriteBackStageEvent) {
+        match event {
+            RenameWriteBackStageEvent::SparseWriteFlushBegin => {
+                self.sparse_write_flush_begin = get_ticks();
+            }
+            RenameWriteBackStageEvent::SparseWriteFlushEnd => {
+                EXT4_RENAME_SPARSE_WRITE_FLUSH
+                    .record(get_ticks().saturating_sub(self.sparse_write_flush_begin));
+            }
+            RenameWriteBackStageEvent::DenseWriteBackBegin => {
+                self.dense_write_back_begin = get_ticks();
+            }
+            RenameWriteBackStageEvent::DenseWriteBackEnd => {
+                EXT4_RENAME_DENSE_WRITE_BACK
+                    .record(get_ticks().saturating_sub(self.dense_write_back_begin));
+            }
+            RenameWriteBackStageEvent::PathCacheDiscardBegin => {
+                self.path_cache_discard_begin = get_ticks();
+            }
+            RenameWriteBackStageEvent::PathCacheDiscardEnd => {
+                EXT4_RENAME_PATH_CACHE_DISCARD
+                    .record(get_ticks().saturating_sub(self.path_cache_discard_begin));
             }
         }
     }

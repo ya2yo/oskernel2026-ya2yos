@@ -18,6 +18,7 @@ use crate::utils::perf::{
     Ext4CreatePhase, Ext4CreatePhaseGuard, Ext4FstatColdInodeKind, Ext4FstatMissGuard,
     Ext4FstatPath, Ext4FstatPathGuard, Ext4FstatRecoveryGuard, Ext4FstatStageRecorder,
     Ext4InodePhaseGuard, Ext4MetadataPhase, Ext4NamespacePhase, Ext4RenamePhase,
+    Ext4RenameWriteBackStageRecorder,
 };
 use crate::{
     fs::{
@@ -1014,10 +1015,18 @@ impl Inode for Ext4Inode {
         // leave the published destination stale.  Do not make rename flush the
         // whole mount's block cache: rename preserves the inode and Linux does
         // not give it fsync durability semantics.
-        inner
-            .f
-            .write_back_and_discard_path_cache()
-            .map_err(SysErrNo::from)?;
+        #[cfg(feature = "perf")]
+        let write_back_result = {
+            let mut write_back_stages = Ext4RenameWriteBackStageRecorder::new();
+            inner
+                .f
+                .write_back_and_discard_path_cache_with_perf_observer(|event| {
+                    write_back_stages.record(event)
+                })
+        };
+        #[cfg(not(feature = "perf"))]
+        let write_back_result = inner.f.write_back_and_discard_path_cache();
+        write_back_result.map_err(SysErrNo::from)?;
         #[cfg(feature = "perf")]
         drop(write_back_phase);
         // The preceding helper has already handled byte-cache write-back.

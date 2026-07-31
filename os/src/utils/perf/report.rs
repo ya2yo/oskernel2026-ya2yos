@@ -528,6 +528,12 @@ pub(super) fn emit_report(now: usize) {
     );
     print!("[perf] ext4_rename_duration ");
     emit_ext4_phase_stats("write_back_cache", &EXT4_RENAME_WRITE_BACK_CACHE);
+    print!("[perf] ext4_rename_write_back_duration ");
+    emit_ext4_phase_stats("sparse_write_flush", &EXT4_RENAME_SPARSE_WRITE_FLUSH);
+    print!("[perf] ext4_rename_write_back_duration ");
+    emit_ext4_phase_stats("dense_write_back", &EXT4_RENAME_DENSE_WRITE_BACK);
+    print!("[perf] ext4_rename_write_back_duration ");
+    emit_ext4_phase_stats("path_cache_discard", &EXT4_RENAME_PATH_CACHE_DISCARD);
     print!("[perf] ext4_rename_duration ");
     emit_ext4_phase_stats("close", &EXT4_RENAME_CLOSE);
     print!("[perf] ext4_rename_duration ");
@@ -634,6 +640,14 @@ pub(super) fn emit_report(now: usize) {
             write_cache.fstat_stat_get_ops,
             write_cache.fstat_write_back_overlay_ops,
             write_cache.fstat_write_back_fallback_ops,
+        );
+        println!(
+            "[perf] ext4_rename_write_back ops={} sparse_flush_bytes={} dense_write_back_bytes={} zero_byte_fast_path_ops={} path_cache_discard_ops={}",
+            write_cache.rename_write_back_ops,
+            write_cache.rename_sparse_flush_bytes,
+            write_cache.rename_dense_write_back_bytes,
+            write_cache.rename_zero_byte_fast_path_ops,
+            write_cache.rename_path_cache_discard_ops,
         );
         println!(
             "[perf] ext4_sparse_buffer batches={} batch_runs={} batch_bytes={} batch_max_runs={} batch_max_bytes={} payload_limit_batches={} payload_limit_bytes={} run_limit_batches={} run_limit_bytes={} both_limits_batches={} both_limits_bytes={} allocation_failure_batches={} allocation_failure_bytes={} large_direct_batches={} large_direct_bytes={} global_budget_batches={} global_budget_bytes={} allocation_failure_ops={} allocation_failure_request_bytes={} large_direct_ops={} large_direct_request_bytes={} global_budget_direct_ops={} global_budget_direct_request_bytes={} resident_max_bytes={}",

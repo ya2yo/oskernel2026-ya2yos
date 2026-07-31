@@ -2087,3 +2087,16 @@
   新文件/既有文件 `O_EXCL`、新目录/既有目录和非 root/S_ISGID owner 语义回归仍待定向补测。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_03/tmp_05/tmp_06` P17 rename 归因与后段吞吐方案（7.31）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供五分钟与约 30 分钟 BuildStorm 样本，要求解释后段 crates/min 下降并制定下一轮优化方案。
+- **描述**：增加 rename barrier sparse/dense/discard 子阶段与字节统计，`tmp_05` 证明 dense byte-cache 占该阶段
+  约 99.8%。`tmp_06` 最后停在 Cargo `54/446`，末段 write-open 最大等待 `175.954s`，而其他 EXT4 请求仍在完成；
+  结合 `TaskMutex` 释放后再唤醒的实现，下一轮先为 mount-wide gate 增加 queue/handoff/barging 取证并实现公平交接，
+  再合并新 inode 创建元数据、实施受限 rename cache re-key，并拆分后段 lwext4 长事务。页缓存未触顶，不扩大参数。
+- **验证边界**：P17 通过 RISC-V/LoongArch64 perf 构建及格式/补丁检查；两个运行样本均无异常，但没有完整
+  BUILDSTORM_COMPILE、END 或 shutdown，后续行为候选尚未实施或回归。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-ext4-sparse-write-readahead.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

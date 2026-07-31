@@ -563,3 +563,144 @@ RISC-V 8 GiB/8 hart、final-2026 raw 镜像的 `-snapshot` 120 秒冒烟到达
 `TBROK`，没有改写基础镜像或维护者的 `disk.img`。该窗口没有进入 sparse 写密集的正式编译段，且未运行
 `mmap16`、`lseek11`、fstat/statx、rename/unlink 定向回归，完整 BuildStorm `elapsed_s` 和性能提升仍待同配置
 长样本验证。
+
+## `tmp_03/tmp_05` rename 写回子阶段归因（2026-07-31）
+
+### 背景
+
+`tmp_03.ans` 末尾的 rename `write_back_cache` 为 `39 / 12.292s`、最大 `2.095s`，但旧统计
+无法判断该阶段在提交 sparse ranges、dense whole-file cache，还是只在移除路径表项。
+在没有字节来源和子阶段 max 前直接跳过写回，可能使 Rustc 发布的 rmeta/rlib 文件只在旧路径
+cache 中可见，或让后续 close/eviction 重建已 rename 的临时路径。
+
+### 取证实现
+
+`lwext4_rust` 在 perf feature 下向 Ya2yOS 同步发送 rename barrier 的六个边界事件，内核以
+per-call recorder 将它们聚合为：
+
+- `sparse_write_flush`：提交 inode-keyed sparse ranges；
+- `dense_write_back`：检查并提交 path-keyed whole-file cache；
+- `path_cache_discard`：移除 FIFO/CACHE_TABLE 表项。
+
+wrapper 另记录每次成功 barrier 的 sparse/dense 实际提交字节、零字节快路径和清理次数。
+记账使用 relaxed atomic，没有动 `write_state -> io_state -> EXT4_OP_LOCK` 锁序，也没有改变
+“写回旧路径 cache -> close -> 底层 rename -> VFS/cache 失效”顺序。
+
+### `tmp_05.ans` 结果
+
+五分钟 RISC-V 样本的最后完整快照是 `t=273339ms`、Cargo `Building 25/446`，无
+panic/TFAIL/TBROK/ERROR/SIGSEGV/rustc error，但无 BUILDSTORM_COMPILE、测试组 END 或 shutdown。
+末尾统计为：
+
+| 阶段/计数 | samples/ops | total/bytes | max |
+| --- | ---: | ---: | ---: |
+| rename write_back_cache | 31 | 1,972,072 us | 378,111 us |
+| sparse_write_flush | 32 | 137 us / 0 B | 7 us |
+| dense_write_back | 31 | 1,968,769 us / 7,164,409 B | 377,985 us |
+| path_cache_discard | 31 | 2,133 us | 423 us |
+| zero-byte fast path | 3 | - | - |
+
+`sparse_write_flush` 比成功 rename 多一个 sample，表示外层五分钟终止时有一次 rename 已进入第一个
+子阶段、但未完成整个 barrier；字节和 ops 计数只在成功清理后增加，因此仍能与 31 次成功
+rename 对齐。dense 阶段占 write_back_cache 累计时间约 `99.8%`，sparse 和纯表项清理可从
+主要尖峰候选中排除。
+
+`tmp_03` 在 Cargo 25/446 附近的 write_back_cache 为 `33 / 9.670s`，`tmp_05` 为 `31 / 1.972s`；
+同期 create/unlink/mode 也整体快数倍，而 P17 只增加记账、没有行为改动。因此该差异必须解释为
+非受控宿主/QEMU/缓存变动，不能报告 P17 加速或外推完整编译时间。
+
+### 结论与后续边界
+
+下一个值得验证的行为候选是：对可证明单链接的 regular file，成功 rename 后把旧路径的
+dense cache 在 CACHE_TABLE/FIFO_TABLE 内原子 re-key 到新路径，避免 rename gate 内的整文件写回。
+该候选尚未实施；必须先通过 rename 覆盖、立即 read/exec、旧 fd 继写、失败回滚、硬链接、
+fsync/sync、unlink-open-close 和 eviction 定向回归。无法证明单一所有权或回归未通过时，保留当前先写回
+再 rename 的正确性边界。
+
+### 验证
+
+P17 代码已通过：
+
+```text
+cargo fmt --manifest-path os/Cargo.toml --all
+git diff --check
+make perf TARGET_ARCH=riscv64
+make perf TARGET_ARCH=loongarch64
+```
+
+两个架构均编译成功，只有仓库既有 Cargo config 与 `smoltcp` 未使用代码告警。本轮尝试的本地
+RISC-V QEMU 采样因受限环境不能在 `/var/tmp` 创建临时文件而未启动；运行期证据来自维护者提供的
+`tmp_05.ans`。未运行上述 rename 语义定向回归或完整 BuildStorm，因为本轮只增加 perf 观测，且
+五分钟样本没有完整结束标记。
+
+## `tmp_06` 后段吞吐退化与全局 gate 公平性（2026-07-31）
+
+### 现象
+
+本轮 `tmp_06.ans` 运行约 30 分钟，无 panic/TFAIL/TBROK/ERROR/SIGSEGV/rustc error，但没有
+`BUILDSTORM_COMPILE`、测试组 END 或 `shutdown!`。Cargo 进度随时间明显变慢：
+
+| guest 时间 | Cargo 进度 | 观察 |
+| ---: | ---: | --- |
+| 596.509s | 33/446 | 约十分钟检查点 |
+| 671.719s | 36/446 | 前段仍可连续推进 |
+| 872.646s | 38/446 | 36 -> 37 约 201s |
+| 1173.788s | 44/446 | 中段恢复一段进度 |
+| 1322.980s | 46/446 | 44 -> 45 约 149s |
+| 1579.319s | 54/446 | 最后一次进度刷新 |
+| 1750.035s | 54/446 | 至少 170.716s 无新 crate |
+
+因此“五分钟可达 4--5 crates/min”只描述早期小 crate 与当时并发交错，不能外推后半段。30 分钟样本从
+33/446 到 54/446 的 1153.526s 只完成 21 项，约 `1.09 crates/min`；这个固定区间指标仍不是完整
+BuildStorm 端到端成绩。
+
+### 最后 interval 的两层瓶颈
+
+最后 `170.716s` interval 中，EXT4 操作仍在执行而非完全空闲：
+
+| 路径 | samples | wait | hold/本体增量 |
+| --- | ---: | ---: | ---: |
+| write-open gate | 136 | 399.685s | 12.727s |
+| find gate | 39 | 57.180s | 21.536s |
+| fstat gate | 27 | 18.834s | 27.794s |
+| namespace gate | 17 | 29.243s | 48.336s |
+| read gate | 58 | 91.249s | 11.433s |
+| create | 8 | - | 10.667s |
+| metadata_apply | 7 | - | 17.993s |
+| unlink | 9 | - | 19.665s |
+| mode | 9 | - | 18.528s |
+| ext4_stat_get | 27 | - | 27.617s |
+
+上述 wait 是多个并发任务的累计值，不能相加为 wall-clock。但 `ext4_write_open_lock` 的全局
+`max_wait_us` 从此前 28,964,304 跃升到 175,953,977，一个请求几乎覆盖整个静默窗口；与此同时其他
+namespace/find/fstat 请求持续获得锁并完成。这说明第一层问题是 gate 排队长尾，而非单个 176 秒临界区。
+
+源码审计确认 `TaskMutex` 的 sleeper 虽由 `PollSet::wake_one()` 按 FIFO 取出，解锁流程却是：
+
+```text
+drop spin::Mutex guard -> wake_one sleeper -> sleeper 等待调度 -> 再次 try_lock
+```
+
+释放与被唤醒任务重新执行之间，新调用者仍可通过 `try_lock()` 抢先获得锁，所以 FIFO wake 不等于 FIFO
+ownership；高频调用可以放大 barging。聚合日志尚不能给出实际 barging 次数，因此下一轮先增加 queued、
+queue depth、handoff 和 barging 计数，再让 mount-wide gate 显式保留给队首。该改动只针对
+`EXT4_OP_LOCK`，lwext4 继续单线程串行，不能改成 rwlock。
+
+第二层问题是持锁事务本身也随工作集增大。最后窗口 create/unlink/mode/stat 的平均本体耗时已经达到秒级；
+即使公平交接消除饥饿，仍需减少创建后的第二次 metadata transaction，并在 lwext4 C 层继续拆出 path lookup、
+directory scan、block allocation、journal 和 block-cache flush，才能解释剩余吞吐退化。
+
+### rename 结论的边界
+
+P17 在长样本中仍成立：到 `t=1579.319s`，93 次 rename dense write-back 提交 `79,225,183 B`，累计
+`119.466s`、最大 `25.577s`；到末尾变为 94 次、`79,238,331 B / 122.540s`。最后 171 秒只增加一次
+`13,148 B / 3.074s`，所以受限 cache re-key 仍有收益潜力，但不能解释或修复整个末段停滞。
+
+### 下一轮顺序
+
+1. P18.1：为 `EXT4_OP_LOCK` 增加公平性交接计数并实现可取消的 FIFO/ticket handoff，先消除百秒级饥饿。
+2. P18.2：把新 inode 的最终 mode/uid/gid 并入创建 transaction，删除第二次 pathname metadata 更新。
+3. P18.3：定向语义回归通过后，仅对单链接 regular file 实施 rename dense-cache re-key。
+4. P19：若后段单次操作仍退化，拆分 lwext4 C 层 transaction/path/allocation/journal/cache-flush 时间。
+
+页缓存末尾为 `79776/98304` 且 `capacity_bypass_pages=0`，本轮没有证据支持继续扩大缓存。

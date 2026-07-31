@@ -53,6 +53,13 @@ pub struct WriteBackCachePerfStats {
     pub sparse_flush_cache_evict_bytes: usize,
     pub sparse_flush_other_ops: usize,
     pub sparse_flush_other_bytes: usize,
+    /// Successful rename barriers, split by the delayed state they actually
+    /// published. A zero-byte barrier reached only table cleanup.
+    pub rename_write_back_ops: usize,
+    pub rename_sparse_flush_bytes: usize,
+    pub rename_dense_write_back_bytes: usize,
+    pub rename_zero_byte_fast_path_ops: usize,
+    pub rename_path_cache_discard_ops: usize,
     /// Non-empty sparse flush batches, independent of their visibility
     /// barrier. `sparse_flush_ops` remains the number of individual runs.
     pub sparse_flush_batches: usize,
@@ -132,11 +139,32 @@ pub enum FstatStageEvent {
     WriteBackOverlayEnd,
 }
 
+/// Perf-only boundaries within the delayed-state barrier before rename.
+///
+/// The wrapper emits the events around the real sparse flush, dense byte-cache
+/// write-back, and path-table discard. Ya2yOS supplies the tick accounting.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum RenameWriteBackStageEvent {
+    SparseWriteFlushBegin,
+    SparseWriteFlushEnd,
+    DenseWriteBackBegin,
+    DenseWriteBackEnd,
+    PathCacheDiscardBegin,
+    PathCacheDiscardEnd,
+}
+
 /// Internal bridge for wrapper fstat stage boundaries. The no-perf build uses
 /// `()` so `file.rs` keeps one implementation of the observable fstat path.
 #[cfg_attr(not(feature = "perf"), allow(dead_code))]
 pub(crate) trait FstatStageObserver {
     fn stage(&mut self, event: FstatStageEvent);
+}
+
+/// Internal bridge for rename write-back stage boundaries. The no-perf build
+/// uses `()` so `file.rs` keeps one rename implementation.
+#[cfg_attr(not(feature = "perf"), allow(dead_code))]
+pub(crate) trait RenameWriteBackStageObserver {
+    fn stage(&mut self, event: RenameWriteBackStageEvent);
 }
 
 impl FstatStageObserver for () {
@@ -151,6 +179,22 @@ where
 {
     #[inline]
     fn stage(&mut self, event: FstatStageEvent) {
+        self(event);
+    }
+}
+
+impl RenameWriteBackStageObserver for () {
+    #[inline]
+    fn stage(&mut self, _event: RenameWriteBackStageEvent) {}
+}
+
+#[cfg(feature = "perf")]
+impl<F> RenameWriteBackStageObserver for F
+where
+    F: FnMut(RenameWriteBackStageEvent),
+{
+    #[inline]
+    fn stage(&mut self, event: RenameWriteBackStageEvent) {
         self(event);
     }
 }
@@ -258,6 +302,16 @@ static SPARSE_WRITE_FLUSH_CACHE_EVICT_BYTES: AtomicUsize = AtomicUsize::new(0);
 static SPARSE_WRITE_FLUSH_OTHER_OPS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "perf")]
 static SPARSE_WRITE_FLUSH_OTHER_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static RENAME_WRITE_BACK_OPS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static RENAME_SPARSE_FLUSH_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static RENAME_DENSE_WRITE_BACK_BYTES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static RENAME_ZERO_BYTE_FAST_PATH_OPS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+static RENAME_PATH_CACHE_DISCARD_OPS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "perf")]
 static SPARSE_WRITE_FLUSH_BATCHES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "perf")]
@@ -428,6 +482,26 @@ pub(crate) fn record_sparse_write_flush(reason: SparseWriteFlushReason, bytes: u
     reason_bytes.fetch_add(bytes, Ordering::Relaxed);
 }
 
+/// Record one successful rename visibility barrier. The two byte counters are
+/// kept separately because sparse extents and dense whole-file caches have
+/// different correctness and optimization constraints.
+#[cfg(feature = "perf")]
+#[inline]
+pub(crate) fn record_rename_write_back(sparse_bytes: usize, dense_bytes: usize) {
+    RENAME_WRITE_BACK_OPS.fetch_add(1, Ordering::Relaxed);
+    RENAME_SPARSE_FLUSH_BYTES.fetch_add(sparse_bytes, Ordering::Relaxed);
+    RENAME_DENSE_WRITE_BACK_BYTES.fetch_add(dense_bytes, Ordering::Relaxed);
+    if sparse_bytes == 0 && dense_bytes == 0 {
+        RENAME_ZERO_BYTE_FAST_PATH_OPS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(feature = "perf")]
+#[inline]
+pub(crate) fn record_rename_path_cache_discard() {
+    RENAME_PATH_CACHE_DISCARD_OPS.fetch_add(1, Ordering::Relaxed);
+}
+
 #[cfg(feature = "perf")]
 #[inline]
 fn record_max(counter: &AtomicUsize, value: usize) {
@@ -594,6 +668,11 @@ pub fn write_back_cache_perf_stats() -> WriteBackCachePerfStats {
             .load(Ordering::Relaxed),
         sparse_flush_other_ops: SPARSE_WRITE_FLUSH_OTHER_OPS.load(Ordering::Relaxed),
         sparse_flush_other_bytes: SPARSE_WRITE_FLUSH_OTHER_BYTES.load(Ordering::Relaxed),
+        rename_write_back_ops: RENAME_WRITE_BACK_OPS.load(Ordering::Relaxed),
+        rename_sparse_flush_bytes: RENAME_SPARSE_FLUSH_BYTES.load(Ordering::Relaxed),
+        rename_dense_write_back_bytes: RENAME_DENSE_WRITE_BACK_BYTES.load(Ordering::Relaxed),
+        rename_zero_byte_fast_path_ops: RENAME_ZERO_BYTE_FAST_PATH_OPS.load(Ordering::Relaxed),
+        rename_path_cache_discard_ops: RENAME_PATH_CACHE_DISCARD_OPS.load(Ordering::Relaxed),
         sparse_flush_batches: SPARSE_WRITE_FLUSH_BATCHES.load(Ordering::Relaxed),
         sparse_flush_batch_runs: SPARSE_WRITE_FLUSH_BATCH_RUNS.load(Ordering::Relaxed),
         sparse_flush_batch_bytes: SPARSE_WRITE_FLUSH_BATCH_BYTES.load(Ordering::Relaxed),

@@ -2,8 +2,13 @@ use core::ffi::c_char;
 
 use crate::bindings::*;
 #[cfg(feature = "perf")]
-use crate::perf::{self, DirectWriteReason, FileWritePath, FstatStageEvent};
-use crate::perf::{FstatStageObserver, SparseWriteCacheEvictCause, SparseWriteFlushReason};
+use crate::perf::{
+    self, DirectWriteReason, FileWritePath, FstatStageEvent, RenameWriteBackStageEvent,
+};
+use crate::perf::{
+    FstatStageObserver, RenameWriteBackStageObserver, SparseWriteCacheEvictCause,
+    SparseWriteFlushReason,
+};
 
 extern "C" {
     #[link_name = "ext4_fseek_data"]
@@ -1507,8 +1512,58 @@ impl Ext4File {
     /// mount while Ya2yOS holds its global EXT4 operation lock.  Durability
     /// remains the responsibility of the existing sync/fsync paths.
     pub fn write_back_and_discard_path_cache(&mut self) -> Result<usize, i32> {
-        let path = self.write_back_path_cache(SparseWriteFlushReason::Rename)?;
+        #[cfg(feature = "perf")]
+        return self.write_back_and_discard_path_cache_with_perf_observer(|_| {});
+        #[cfg(not(feature = "perf"))]
+        self.write_back_and_discard_path_cache_with_stage_observer(())
+    }
+
+    /// Rename visibility barrier with synchronous, perf-only stage events.
+    /// The observer reports only boundaries and cannot alter the cache or I/O
+    /// decisions made by the normal rename path.
+    #[cfg(feature = "perf")]
+    pub fn write_back_and_discard_path_cache_with_perf_observer(
+        &mut self,
+        observer: impl FnMut(RenameWriteBackStageEvent),
+    ) -> Result<usize, i32> {
+        self.write_back_and_discard_path_cache_with_stage_observer(observer)
+    }
+
+    fn write_back_and_discard_path_cache_with_stage_observer<O: RenameWriteBackStageObserver>(
+        &mut self,
+        mut observer: O,
+    ) -> Result<usize, i32> {
+        #[cfg(not(feature = "perf"))]
+        let _ = &mut observer;
+
+        #[cfg(feature = "perf")]
+        observer.stage(RenameWriteBackStageEvent::SparseWriteFlushBegin);
+        let sparse_flush = self.flush_sparse_write_buffer(SparseWriteFlushReason::Rename);
+        #[cfg(feature = "perf")]
+        observer.stage(RenameWriteBackStageEvent::SparseWriteFlushEnd);
+        let sparse_bytes = sparse_flush?;
+
+        let path = String::from((*self.file_path).to_str().unwrap());
+        #[cfg(feature = "perf")]
+        observer.stage(RenameWriteBackStageEvent::DenseWriteBackBegin);
+        let dense_write_back = if if_cache(path.clone()) {
+            write_back_cache(path.clone())
+        } else {
+            Ok(0)
+        };
+        #[cfg(feature = "perf")]
+        observer.stage(RenameWriteBackStageEvent::DenseWriteBackEnd);
+        let dense_bytes = dense_write_back?;
+
+        #[cfg(feature = "perf")]
+        observer.stage(RenameWriteBackStageEvent::PathCacheDiscardBegin);
         discard_path_cache(&path);
+        #[cfg(feature = "perf")]
+        {
+            observer.stage(RenameWriteBackStageEvent::PathCacheDiscardEnd);
+            perf::record_rename_write_back(sparse_bytes, dense_bytes);
+            perf::record_rename_path_cache_discard();
+        }
         Ok(0)
     }
 
