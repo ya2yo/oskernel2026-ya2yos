@@ -99,6 +99,7 @@
 - [BuildStorm 多线程 execve de-thread 与 SIGKILL 退出收敛](./problem/buildstorm-multithreaded-execve-dethread.md)
 - [BuildStorm 根文件系统 initfiles、/dev/null 与 /bin 符号链接兼容](./problem/buildstorm-initfiles-devfs-bin-symlink.md)
 - [BuildStorm 创建元数据连续锁交接优化](./problem/buildstorm-create-metadata-lock-merge.md)
+- [BuildStorm 新 inode 创建事务元数据合并](./problem/buildstorm-create-metadata-transaction.md)
 - [RISC-V 双 hart BuildStorm 启动栈越界与 .data 破坏](./problem/riscv-buildstorm-bootstrap-stack-overflow.md)
 - [sigaltstack(2)、SA_ONSTACK 信号帧与 rt_sigreturn 状态恢复](./problem/sigaltstack-signal-frame.md)
 - [BuildStorm final-2026 动态库路径错误重定向](./problem/buildstorm-final-2026-dynamic-library-path.md)

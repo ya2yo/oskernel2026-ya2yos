@@ -17,8 +17,26 @@ extern "C" {
     fn ext4_fseek_hole_raw(file: *mut ext4_file, offset: u64, result: *mut u64) -> i32;
     #[link_name = "ext4_mode_owner_set"]
     fn ext4_mode_owner_set_raw(path: *const c_char, mode: u32, uid: u32, gid: u32) -> i32;
+    #[link_name = "ext4_fopen2_with_metadata"]
+    fn ext4_fopen2_with_metadata_raw(
+        file: *mut ext4_file,
+        path: *const c_char,
+        flags: i32,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        stat: *mut ext4_inode_stat,
+    ) -> i32;
     #[link_name = "ext4_dir_mk_exclusive"]
     fn ext4_dir_mk_exclusive_raw(path: *const c_char) -> i32;
+    #[link_name = "ext4_dir_mk_exclusive_with_metadata"]
+    fn ext4_dir_mk_exclusive_with_metadata_raw(
+        path: *const c_char,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        stat: *mut ext4_inode_stat,
+    ) -> i32;
 }
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::string::String;
@@ -159,6 +177,44 @@ impl Ext4File {
     /// |---------------------------------------------------------------|
     pub fn file_open(&mut self, path: &str, flags: u32) -> Result<usize, i32> {
         self.file_open_inner(path, flags, true)
+    }
+
+    /// Create a new regular file while applying its final mode and owner in
+    /// the same lwext4 transaction as inode allocation and directory linking.
+    /// The caller must pass O_CREAT|O_EXCL so existing files are not modified.
+    pub fn file_open_with_metadata(
+        &mut self,
+        path: &str,
+        flags: u32,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<ext4_inode_stat, i32> {
+        let c_path = CString::new(path).expect("CString::new failed").into_raw();
+        let mut stat = ext4_inode_stat::default();
+        let r = unsafe {
+            ext4_fopen2_with_metadata_raw(
+                &mut self.file_desc,
+                c_path,
+                flags as i32,
+                mode,
+                uid,
+                gid,
+                &mut stat,
+            )
+        };
+        unsafe {
+            drop(CString::from_raw(c_path));
+        }
+        if r != EOK as i32 {
+            error!("ext4_fopen2_with_metadata: {}, rc = {}", path, r);
+            return Err(r);
+        }
+
+        self.has_opened = true;
+        self.last_flags = flags;
+        self.pending_mode = Some(mode);
+        Ok(stat)
     }
 
     /// Open a descriptor for a read-only operation without populating the
@@ -1935,6 +1991,29 @@ impl Ext4File {
             return Err(r);
         }
         Ok(EOK as usize)
+    }
+
+    /// Create a directory with its final mode and owner in the creation
+    /// transaction, preserving O_EXCL semantics.
+    pub fn dir_mk_exclusive_with_metadata(
+        &mut self,
+        path: &str,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<ext4_inode_stat, i32> {
+        let c_path = CString::new(path).expect("CString::new failed").into_raw();
+        let mut stat = ext4_inode_stat::default();
+        let r =
+            unsafe { ext4_dir_mk_exclusive_with_metadata_raw(c_path, mode, uid, gid, &mut stat) };
+        unsafe {
+            drop(CString::from_raw(c_path));
+        }
+        if r != EOK as i32 {
+            error!("ext4_dir_mk_exclusive_with_metadata: {}, rc = {}", path, r);
+            return Err(r);
+        }
+        Ok(stat)
     }
 
     /// Rename/move directory

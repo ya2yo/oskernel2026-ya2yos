@@ -909,12 +909,43 @@ static int ext4_trunc_dir(struct ext4_mountpoint *mp,
  * NOTICE: if filetype is equal to EXT4_DIRENTRY_UNKNOWN,
  * any filetype of the target dir entry will be accepted.
  */
-static int ext4_generic_open2(ext4_file *f, const char *path, int flags,
-			      int ftype, uint32_t *parent_inode,
-			      uint32_t *name_off)
+struct ext4_create_metadata {
+	uint32_t mode;
+	uint32_t uid;
+	uint32_t gid;
+};
+
+static void ext4_fill_inode_stat(struct ext4_inode_ref *inode_ref,
+				 ext4_inode_stat *stat)
+{
+	if (!stat)
+		return;
+
+	stat->st_dev = ext4_inode_get_dev(inode_ref->inode);
+	stat->st_uid = ext4_inode_get_uid(inode_ref->inode);
+	stat->st_gid = ext4_inode_get_gid(inode_ref->inode);
+	stat->st_size = ext4_inode_get_size(&inode_ref->fs->sb,
+					    inode_ref->inode);
+	stat->st_blksize = 4096;
+	stat->st_blocks = ext4_inode_get_blocks_count(&inode_ref->fs->sb,
+						      inode_ref->inode) * 4;
+	stat->st_mode = ext4_inode_get_mode(&inode_ref->fs->sb,
+					    inode_ref->inode);
+	stat->st_nlinks = ext4_inode_get_links_cnt(inode_ref->inode);
+	stat->st_atime = ext4_inode_get_access_time(inode_ref->inode);
+	stat->st_mtime = ext4_inode_get_modif_time(inode_ref->inode);
+	stat->st_ctime = ext4_inode_get_change_inode_time(inode_ref->inode);
+	stat->st_ino = inode_ref->index;
+}
+
+static int ext4_generic_open2_with_metadata(
+			  ext4_file *f, const char *path, int flags, int ftype,
+			  uint32_t *parent_inode, uint32_t *name_off,
+			  bool set_initial_metadata, uint32_t initial_mode,
+			  uint32_t initial_uid, uint32_t initial_gid,
+			  ext4_inode_stat *initial_stat)
 {
 	bool is_goal = false;
-	bool created_goal = false;
 	uint32_t imode = EXT4_INODE_MODE_DIRECTORY;
 	uint32_t next_inode;
 
@@ -986,6 +1017,24 @@ static int ext4_generic_open2(ext4_file *f, const char *path, int flags,
 
 			ext4_fs_inode_blocks_init(fs, &child_ref);
 
+			/*
+			 * A caller creating the final path component may provide the
+			 * Linux-visible mode and owner up front.  Applying them before
+			 * linking the inode keeps the metadata in the same transaction as
+			 * inode allocation and directory-entry insertion.  Intermediate
+			 * directories created by O_CREAT retain the normal defaults.
+			 */
+			if (set_initial_metadata && is_goal) {
+				uint32_t mode = initial_mode;
+				if (!(mode & EXT4_INODE_MODE_TYPE_MASK))
+					mode |= ext4_fs_correspond_inode_mode(
+						is_goal ? ftype : EXT4_DE_DIR);
+				ext4_inode_set_mode(&fs->sb, child_ref.inode, mode);
+				ext4_inode_set_uid(child_ref.inode, initial_uid);
+				ext4_inode_set_gid(child_ref.inode, initial_gid);
+				child_ref.dirty = true;
+			}
+
 			/*Link with root dir.*/
 			r = ext4_link(mp, &ref, &child_ref, path, len, false);
 			if (r != EOK) {
@@ -998,9 +1047,27 @@ static int ext4_generic_open2(ext4_file *f, const char *path, int flags,
 				break;
 			}
 
+			/*
+			 * The final component is already resolved by child_ref.  Reopening
+			 * it through the parent would scan the same directory again and
+			 * reload the inode only to initialize this file handle.
+			 */
+			if (is_goal) {
+				int child_put_r;
+				int parent_put_r;
+
+				f->mp = mp;
+				f->fsize = ext4_inode_get_size(sb, child_ref.inode);
+				f->inode = child_ref.index;
+				f->fpos = (f->flags & O_APPEND) ? f->fsize : 0;
+				ext4_fill_inode_stat(&child_ref, initial_stat);
+
+				child_put_r = ext4_fs_put_inode_ref(&child_ref);
+				parent_put_r = ext4_fs_put_inode_ref(&ref);
+				return child_put_r != EOK ? child_put_r : parent_put_r;
+			}
+
 			ext4_fs_put_inode_ref(&child_ref);
-			if (is_goal)
-				created_goal = true;
 			continue;
 		}
 
@@ -1063,8 +1130,7 @@ static int ext4_generic_open2(ext4_file *f, const char *path, int flags,
 
 	if (is_goal) {
 		if ((f->flags & (O_CREAT | O_EXCL)) ==
-			    (O_CREAT | O_EXCL) &&
-		    !created_goal) {
+			    (O_CREAT | O_EXCL)) {
 			ext4_fs_put_inode_ref(&ref);
 			return EEXIST;
 		}
@@ -1087,6 +1153,15 @@ static int ext4_generic_open2(ext4_file *f, const char *path, int flags,
 	}
 
 	return ext4_fs_put_inode_ref(&ref);
+}
+
+static int ext4_generic_open2(ext4_file *f, const char *path, int flags,
+			      int ftype, uint32_t *parent_inode,
+			      uint32_t *name_off)
+{
+	return ext4_generic_open2_with_metadata(
+		f, path, flags, ftype, parent_inode, name_off, false, 0, 0, 0,
+		NULL);
 }
 
 /****************************************************************************/
@@ -1567,6 +1642,44 @@ int ext4_fopen2(ext4_file *file, const char *path, int flags)
 		ext4_trans_start(mp);
 
 	r = ext4_generic_open2(file, path, flags, filetype, NULL, NULL);
+
+	if (flags & O_CREAT) {
+		if (r == EOK)
+			ext4_trans_stop(mp);
+		else
+			ext4_trans_abort(mp);
+	}
+
+	ext4_block_cache_write_back(mp->fs.bdev, 0);
+	EXT4_MP_UNLOCK(mp);
+
+	return r;
+}
+
+int ext4_fopen2_with_metadata(ext4_file *file, const char *path, int flags,
+			      uint32_t mode, uint32_t uid, uint32_t gid,
+			      ext4_inode_stat *stat)
+{
+	struct ext4_mountpoint *mp = ext4_get_mount(path);
+	struct ext4_create_metadata metadata;
+	int r;
+
+	if (!mp)
+		return ENOENT;
+
+	metadata.mode = mode;
+	metadata.uid = uid;
+	metadata.gid = gid;
+
+	EXT4_MP_LOCK(mp);
+	ext4_block_cache_write_back(mp->fs.bdev, 1);
+
+	if (flags & O_CREAT)
+		ext4_trans_start(mp);
+
+	r = ext4_generic_open2_with_metadata(
+		file, path, flags, EXT4_DE_REG_FILE, NULL, NULL, true,
+		metadata.mode, metadata.uid, metadata.gid, stat);
 
 	if (flags & O_CREAT) {
 		if (r == EOK)
@@ -2616,19 +2729,7 @@ int ext4_stat_get(const char *path, ext4_inode_stat *stat)
 	if (r != EOK)
 		goto Finish;
 
-	stat->st_dev = ext4_inode_get_dev(inode_ref.inode);
-	stat->st_uid = ext4_inode_get_uid(inode_ref.inode);
-	stat->st_gid = ext4_inode_get_gid(inode_ref.inode);
-	stat->st_size = ext4_inode_get_size(&inode_ref.fs->sb, inode_ref.inode);
-	stat->st_blksize = 4096;
-	stat->st_blocks =
-	    ext4_inode_get_blocks_count(&inode_ref.fs->sb, inode_ref.inode) * 4;
-	stat->st_mode = ext4_inode_get_mode(&inode_ref.fs->sb, inode_ref.inode);
-	stat->st_nlinks = ext4_inode_get_links_cnt(inode_ref.inode);
-	stat->st_atime = ext4_inode_get_access_time(inode_ref.inode);
-	stat->st_mtime = ext4_inode_get_modif_time(inode_ref.inode);
-	stat->st_ctime = ext4_inode_get_change_inode_time(inode_ref.inode);
-	stat->st_ino = f.inode;
+	ext4_fill_inode_stat(&inode_ref, stat);
 	r = ext4_fs_put_inode_ref(&inode_ref);
 
 Finish:
@@ -3387,6 +3488,38 @@ int ext4_dir_mk_exclusive(const char *path)
 
 	r = ext4_generic_open2(&f, path, O_RDWR | O_CREAT | O_EXCL,
 			       EXT4_DE_DIR, NULL, NULL);
+
+	if (r == EOK)
+		ext4_trans_stop(mp);
+	else
+		ext4_trans_abort(mp);
+
+	ext4_block_cache_write_back(mp->fs.bdev, 0);
+	EXT4_MP_UNLOCK(mp);
+	return r;
+}
+
+int ext4_dir_mk_exclusive_with_metadata(const char *path, uint32_t mode,
+					uint32_t uid, uint32_t gid,
+					ext4_inode_stat *stat)
+{
+	int r;
+	ext4_file f;
+	struct ext4_mountpoint *mp = ext4_get_mount(path);
+
+	if (!mp)
+		return ENOENT;
+
+	if (mp->fs.read_only)
+		return EROFS;
+
+	EXT4_MP_LOCK(mp);
+	ext4_block_cache_write_back(mp->fs.bdev, 1);
+	ext4_trans_start(mp);
+
+	r = ext4_generic_open2_with_metadata(
+		&f, path, O_RDWR | O_CREAT | O_EXCL, EXT4_DE_DIR, NULL, NULL,
+		true, mode, uid, gid, stat);
 
 	if (r == EOK)
 		ext4_trans_stop(mp);

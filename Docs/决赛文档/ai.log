@@ -8929,3 +8929,67 @@ lwext4 长事务和排队构成。`tmp_08` 没有本轮新增的 `ext4_fstat_dir
 本轮没有新的 QEMU/BuildStorm 运行样本；下一份样本必须出现
 `ext4_fstat_directory_parent local_updates=... global_fallbacks=...`，并在相近 Cargo 检查点比较实际 fstat、
 目录缓存命中和 fstat 锁 wait/hold，完整结束标记出现前不报告端到端加速。
+
+## 2026-07-31：`tmp_09/tmp_10/tmp_11` P18.2 创建事务元数据合并
+
+### 用户输入
+
+维护者要求根据《优化方案》及两份十分钟输出开启下一轮优化，随后提供 Docker 重编译后的 `tmp_11.ans` 并要求继续。
+
+### 分析与采纳结论
+
+`tmp_09/tmp_10` 共同显示创建后的 `metadata_apply` 约 `35.1/35.8s`、mode 约 `40.2/40.8s`，说明 P16 的
+Rust 组合入口仍在 lwext4 中重复执行创建后 pathname metadata transaction。实现 `ext4_generic_open2_with_metadata()`，
+在 inode 分配和目录项链接的同一 transaction 写入最终 mode、uid、gid；普通文件和目录新增带 metadata 的原子
+`O_EXCL` wrapper，VFS 根据已知 `InodeType` 补齐 type bits，删除创建路径额外 `ext4_mode_get()`。
+
+维护者通过 Docker 重建运行的 `tmp_11` 已出现新实现证据：`metadata_apply=0`、mode `783/3.534s`、create
+`1182/27.259s`、metadata invalidation `32`；末尾 `t=579505ms`、Cargo `28/446`，无 panic/TFAIL/TBROK/ERROR，
+但没有 `BUILDSTORM_COMPILE`、测试组 END 或 `shutdown!`，因此只记录锁级/路径级方向性收益，不报告端到端加速。
+
+### 修改文件
+
+`crates/lwext4_rust/c/lwext4/include/ext4.h`、`crates/lwext4_rust/c/lwext4/src/ext4.c`、
+`crates/lwext4_rust/src/file.rs`、`os/src/fs/ext4_lw/inode.rs`、`Docs/决赛文档/优化方案.md`、
+`Docs/决赛文档/problem/buildstorm-create-metadata-transaction.md`、`Docs/决赛文档/README.md`、
+`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check` 和 `make TARGET_ARCH=riscv64` 通过；
+该顶层构建同时完成 LoongArch64 release 子目标。此前宿主机 `make perf` 曾因 Docker 生成的
+`build_musl-generic-riscv64` 目录为 `nobody:nogroup` 而无法清理，维护者随后通过 Docker 完成静态库重编译并生成
+`tmp_11`。新建文件/目录、EEXIST、非 root/S_ISGID、ENOSPC 回滚及完整 BuildStorm 结束样本仍待验证。
+
+## 2026-07-31：`tmp_12` P18.2 创建结果复用
+
+### 用户输入
+
+维护者提供 Docker 重编译运行后的 `tmp_12.ans`，要求继续下一轮优化；随后明确要求不要移动 Docker 生成的
+只读构建目录。
+
+### 分析与采纳结论
+
+`tmp_12` 最后为 `t=568933ms`、Cargo `37/446`，无 panic/TFAIL/TBROK/ERROR/SIGSEGV/rustc error，亦无完整
+BuildStorm 结束标记。已装载的最终组件创建快路径将 create 平均从 `tmp_11` 的约 `23.06ms` 降至约
+`17.71ms`，namespace gate 平均持有从约 `30.41ms` 降至 `23.65ms`；它证明避免创建后的二次目录扫描有效，
+但两个中途样本不能给出稳定端到端加速百分比。样本中一次约 `67s` gate 排队长尾需完整复跑确认。
+
+末尾真实 fstat 为 `3183/254.672s`，cold inode `2799` 次。追踪 `create_with_metadata ->
+FsIndex::insert_inode_idx -> cache_key` 后确认，新建 inode 没有创建期 identity/stat，插入缓存时立即执行 pathname
+fstat。采纳 P18.2.2：C 创建入口从仍持有的 `child_ref` 填充与 `ext4_stat_get()` 同源的完整 stat；Rust wrapper
+返回该 stat，VFS 以 `new_with_stat()` 构造 inode，从而直接提供 `(dev, ino)`、regular stat cache 和 directory
+epoch stat cache，不伪造 blocks/timestamp，也不增加文件系统读取。
+
+### 修改文件
+
+`crates/lwext4_rust/c/lwext4/include/ext4.h`、`crates/lwext4_rust/c/lwext4/src/ext4.c`、
+`crates/lwext4_rust/src/file.rs`、`os/src/fs/ext4_lw/inode.rs`、`Docs/决赛文档/优化方案.md`、
+`Docs/决赛文档/problem/buildstorm-create-metadata-transaction.md`、`Docs/决赛文档/开发日志.md`、
+`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check` 和按已有 lwext4 RISC-V 参数执行的
+宿主 C `-fsyntax-only` 检查通过。宿主 `make perf` 因 Docker 生成目录为 `nobody:nogroup` 无法清理；遵照维护者
+要求没有移动、删除或修改这些目录，因此本轮 Rust 链接、双架构构建、QEMU 运行和创建语义回归尚未执行。

@@ -2022,6 +2022,32 @@
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
 
+#### `tmp_12` P18.2 创建结果复用（7.31）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 Docker 重编译运行后的 `tmp_12.ans`，要求继续优化，并要求保留 Docker 生成的只读目录。
+- **描述**：`tmp_12` 中 create 平均由 `tmp_11` 的约 `23.06ms` 降至 `17.71ms`，验证最终组件创建后复用
+  `child_ref`、跳过二次目录扫描有效；样本约 569 秒到 Cargo `37/446`，但未完整结束。剩余 3183 次真实 fstat
+  中 2799 次为 cold inode。创建入口现从同一 `child_ref` 返回完整 stat，VFS 用其构造 inode，使
+  `FsIndex::cache_key()` 不再为新建 inode 立即执行 pathname fstat。
+- **验证边界**：Rust 格式、补丁 whitespace 和 C `-fsyntax-only` 检查通过；只读构建目录未改动，Rust 链接、
+  双架构 Docker 构建、定向语义回归和新运行样本待后续完成。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-create-metadata-transaction.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
+#### `tmp_09/tmp_10/tmp_11` P18.2 创建事务元数据合并（7.31）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求依据两份十分钟 BuildStorm 输出开始下一轮优化，随后通过 Docker 重建并提供 `tmp_11.ans`。
+- **描述**：定位创建后 `fmode_set/owner_set` 的重复 pathname transaction，新增 lwext4 创建时写入最终 mode/uid/gid 的
+  普通文件/目录 API；`tmp_11` 的 `metadata_apply=0`、mode `783/3.534s`、create `1182/27.259s` 证明新入口已装载。
+  样本止于 `Building 28/446` 且无完整结束标记，因此只记录方向性路径收益。
+- **验证边界**：`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check`、RISC-V release 及其
+  同次顶层构建的 LoongArch64 release 子目标通过；Docker 负责重建受宿主权限影响的 lwext4 静态库。定向创建语义和完整
+  BuildStorm 仍待后续。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-create-metadata-transaction.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
 #### `tmp_05` P13 mmap demand 重复加载优化（7.30）
 
 - **工具/模型**：Codex (GPT-5)

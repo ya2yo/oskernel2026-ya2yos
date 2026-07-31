@@ -338,6 +338,21 @@ int ext4_fopen(ext4_file *file, const char *path, const char *flags);
  * @return  Standard error code.*/
 int ext4_fopen2(ext4_file *file, const char *path, int flags);
 
+/**@brief Create/open a regular file and apply initial metadata in one transaction.
+ *
+ * @param file File handle.
+ * @param path File path.
+ * @param flags Open flags, normally O_RDWR|O_CREAT|O_EXCL|O_TRUNC.
+ * @param mode Initial Linux mode including optional type bits.
+ * @param uid Initial owner user id.
+ * @param gid Initial owner group id.
+ * @param stat Receives metadata of the newly created inode.
+ *
+ * @return Standard error code. */
+int ext4_fopen2_with_metadata(ext4_file *file, const char *path, int flags,
+				      uint32_t mode, uint32_t uid, uint32_t gid,
+				      ext4_inode_stat *stat);
+
 /**@brief   File close function.
  *
  * @param   file File handle.
@@ -633,6 +648,19 @@ int ext4_dir_mk(const char *path);
  *
  * @return Standard error code.*/
 int ext4_dir_mk_exclusive(const char *path);
+
+/**@brief Create a directory and apply initial metadata in one transaction.
+ *
+ * @param path Directory path.
+ * @param mode Initial Linux mode including directory type bits.
+ * @param uid Initial owner user id.
+ * @param gid Initial owner group id.
+ * @param stat Receives metadata of the newly created inode.
+ *
+ * @return Standard error code. */
+int ext4_dir_mk_exclusive_with_metadata(const char *path, uint32_t mode,
+					uint32_t uid, uint32_t gid,
+					ext4_inode_stat *stat);
 
 /**@brief   Directory open.
  *
