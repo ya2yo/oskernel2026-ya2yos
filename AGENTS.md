@@ -148,3 +148,6 @@ When finishing a task, report:
 - Important implementation choices, for features.
 - Commands run and their results.
 - Validation not run, with the reason.
+- For every task that changes files, include a reasonable suggested commit
+  message, using the style already common in the repository when one is clear.
+  Do not create the git commit unless the maintainer explicitly asks for it.
