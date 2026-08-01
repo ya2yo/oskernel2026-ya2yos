@@ -2222,3 +2222,17 @@
   `BUILDSTORM_TOOLCHAIN ok`。旧 rustc SIGSEGV 阶段未覆盖，未设置 `RUST_MIN_STACK`，未将其宣称为已修复。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/file-page-cache-eviction-inuse-backoff.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### RISC-V BuildStorm rustc SIGSEGV 缺页现场诊断（8.1）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `unicode-ident` 与 `find-msvc-tools` 的 rustc `SIGSEGV` 输出，要求增加日志而非设置
+  `RUST_MIN_STACK`。
+- **描述**：新增默认关闭的 `fault-diagnostics`。它只在不可恢复用户缺页即将转为 `SIGSEGV/SIGBUS` 时采集
+  VMA、实际叶子 PTE flags 和页表 token，并在 SIGSEGV handler 安装 frame 时采集 restorer/alt-stack。初版
+  240 秒 RISC-V 样本已显示故障是一个已驻留 `R|X|U` file-backed mmap 的 instruction fault，尚不能断言 PTE、
+  TLB、文件内容或 runtime 中的哪一层是根因。
+- **验证边界**：RISC-V 与 LoongArch64 diagnostic/perf 构建通过。加入 PTE/token 的 180 秒 RISC-V 运行只到
+  `BUILDSTORM_TOOLCHAIN ok`，没有新 fault 样本、完整 BuildStorm 或根因修复结论。
+- **关联文档**：[问题复盘](./problem/riscv-rustc-sigsegv-fault-diagnostics.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

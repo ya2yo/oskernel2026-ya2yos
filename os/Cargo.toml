@@ -64,6 +64,10 @@ perf = ["lwext4_rust/perf"]
 # `user/src/bin/buildstorm/cache_capacity.rs`. Keep the production cache
 # capacity unchanged unless this feature is explicitly requested.
 file-cache-capacity-test = []
+# Emits one structured record only when an unrecoverable user page fault is
+# converted into SIGSEGV/SIGBUS, plus SIGSEGV signal-frame restorer details.
+# It is intended for the RISC-V rustc crash reproduction and is off by default.
+fault-diagnostics = []
 irq = []
 net = []
 scheduler-rr = []

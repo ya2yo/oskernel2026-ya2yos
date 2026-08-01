@@ -48,6 +48,52 @@ pub fn init() {
     trap_init();
 }
 
+/// Emit one snapshot only after the normal fault handler has failed and the
+/// task is about to receive a synchronous fault signal. This is deliberately
+/// feature-gated: normal lazy allocation faults can be extremely frequent.
+#[cfg(feature = "fault-diagnostics")]
+fn log_user_fault_signal(
+    hartid: usize,
+    cause: Trap,
+    stval: usize,
+    fault_va: Option<VirtAddr>,
+    signal: SigSet,
+) {
+    let task = current_task().unwrap();
+    let (tid, pid, sepc, sp) = {
+        let task_inner = task.inner_lock();
+        (
+            task.tid(),
+            task.pid(),
+            task_inner.trap_cx().get_sepc(),
+            task_inner.trap_cx().get_sp(),
+        )
+    };
+    let active_page_table_token = crate::arch::page_table::get_token_from_regs();
+    let diagnostic = fault_va.map(|fault_va| {
+        task.process
+            .memory_set_arc()
+            .fault_diagnostic(fault_va.floor())
+    });
+    let memory_set_token = diagnostic.map(|diagnostic| diagnostic.page_table_token);
+    let pte_flags_bits = diagnostic.and_then(|diagnostic| diagnostic.pte_flags_bits);
+    warn!(
+        "[fault-diagnostics] user_fault_signal hart={} pid={} tid={} cause={:?} stval={:#x} sepc={:#x} sp={:#x} signal={:?} active_page_table_token={:#x} memory_set_token={:x?} pte_flags={:x?} diagnostic={:?}",
+        hartid,
+        pid,
+        tid,
+        cause,
+        stval,
+        sepc,
+        sp,
+        signal,
+        active_page_table_token,
+        memory_set_token,
+        pte_flags_bits,
+        diagnostic,
+    );
+}
+
 #[no_mangle]
 /// handle an interrupt, exception, or system call from user space
 pub fn trap_handler() {
@@ -110,6 +156,8 @@ pub fn trap_handler() {
                         stval,
                         current_trap_cx().get_sepc(),
                     );
+                    #[cfg(feature = "fault-diagnostics")]
+                    log_user_fault_signal(hartid, cause, stval, None, SigSet::SIGSEGV);
                     send_signal_to_thread(tid, SigSet::SIGSEGV);
                     return;
                 }
@@ -138,6 +186,8 @@ pub fn trap_handler() {
                 // The VMA/EOF distinction determines SIGBUS versus SIGSEGV;
                 // signal delivery then invokes a custom handler or terminates.
                 let tid = current_task().unwrap().tid();
+                #[cfg(feature = "fault-diagnostics")]
+                log_user_fault_signal(hartid, cause, stval, Some(fault_va), signal);
                 send_signal_to_thread(tid, signal);
                 return;
             }
@@ -162,6 +212,8 @@ pub fn trap_handler() {
                     stval,
                     current_trap_cx().get_sepc(),
                 );
+                #[cfg(feature = "fault-diagnostics")]
+                log_user_fault_signal(hartid, cause, stval, None, SigSet::SIGSEGV);
                 send_signal_to_thread(tid, SigSet::SIGSEGV);
                 return;
             };
@@ -177,9 +229,9 @@ pub fn trap_handler() {
             }
         }
         Trap::Exception(Exception::PagePrivilegeIllegal) => {
-            let signal;
-            {
-                let Some(fault_va) = VirtAddr::try_from(stval) else {
+            let fault_va = match VirtAddr::try_from(stval) {
+                Some(fault_va) => fault_va,
+                None => {
                     let tid = current_task().unwrap().tid();
                     warn!(
                         "[kernel] hart {} PagePrivilegeIllegal in application, non-canonical bad addr = {:#x}, bad instruction = {:#x}, sending SIGSEGV.",
@@ -187,9 +239,14 @@ pub fn trap_handler() {
                         stval,
                         current_trap_cx().get_sepc(),
                     );
+                    #[cfg(feature = "fault-diagnostics")]
+                    log_user_fault_signal(hartid, cause, stval, None, SigSet::SIGSEGV);
                     send_signal_to_thread(tid, SigSet::SIGSEGV);
                     return;
-                };
+                }
+            };
+            let signal;
+            {
                 let task = current_task().unwrap();
                 let process = &task.process;
                 let memory_set = process.memory_set_arc();
@@ -216,6 +273,8 @@ pub fn trap_handler() {
                     current_trap_cx().get_sepc(),
                     signal,
                 );
+                #[cfg(feature = "fault-diagnostics")]
+                log_user_fault_signal(hartid, cause, stval, Some(fault_va), signal);
                 send_signal_to_thread(tid, signal);
                 return;
             }

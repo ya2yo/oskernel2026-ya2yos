@@ -277,6 +277,15 @@ impl PageTable {
             .filter(|pte| pte.get_flags().contains(LAPTEFlags::VALID))
             .map(|pte| pte.get_ppn())
     }
+    /// Return the raw leaf PTE flags for an already mapped virtual page.
+    /// This is diagnostic-only and keeps the architecture-specific layout
+    /// visible in a user-fault report.
+    #[cfg(feature = "fault-diagnostics")]
+    pub fn translate_pte_flags(&self, vpn: VirtPageNum) -> Option<usize> {
+        self.find_pte(vpn)
+            .filter(|pte| pte.get_flags().contains(LAPTEFlags::VALID))
+            .map(|pte| pte.get_flags().bits)
+    }
     /// Translate the virtual address into its corresponding `PhysAddr` if mapped in current page table.
     /// `None` is returned if nothing is found.
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {

@@ -11,6 +11,8 @@ use super::{
     accessors::{writeback_shared_mmap_pages, SharedMmapWriteback},
     MemorySetInner,
 };
+#[cfg(feature = "fault-diagnostics")]
+use crate::mm::map_area::MapType;
 use crate::{
     arch::memory_layout::PAGE_SIZE,
     fs::{FilePage, FilePageCacheSource, FilePageKey, OSFile, FILE_PAGE_CACHE},
@@ -26,6 +28,32 @@ use crate::{
 /// Thread-safe handle to a virtual address space.
 pub struct MemorySet {
     inner: RwLock<MemorySetInner>,
+}
+
+/// Read-only VMA and page-table state captured after an unrecoverable user
+/// fault. This exists only in explicit diagnostic builds so normal fault paths
+/// do not pay for VMA scanning or logging.
+#[cfg(feature = "fault-diagnostics")]
+#[derive(Debug, Clone, Copy)]
+pub struct UserFaultDiagnostic {
+    pub mapped_ppn: Option<usize>,
+    pub pte_flags_bits: Option<usize>,
+    pub page_table_token: usize,
+    pub area: Option<UserFaultVma>,
+}
+
+#[cfg(feature = "fault-diagnostics")]
+#[derive(Debug, Clone, Copy)]
+pub struct UserFaultVma {
+    pub start_vpn: usize,
+    pub end_vpn: usize,
+    pub area_type: MapAreaType,
+    pub map_type: MapType,
+    pub map_perm_bits: u8,
+    pub mmap_flags_bits: usize,
+    pub file_backed: bool,
+    pub file_offset: usize,
+    pub resident_frame: bool,
 }
 
 impl MemorySet {
@@ -248,6 +276,41 @@ impl MemorySet {
     #[inline(always)]
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PhysPageNum> {
         self.get_ref().translate(vpn)
+    }
+
+    /// Capture VMA and resident-page state for an already failed user fault.
+    /// The caller must discard this snapshot before signal delivery; it is not
+    /// an API for normal page-fault decisions.
+    #[cfg(feature = "fault-diagnostics")]
+    pub fn fault_diagnostic(&self, vpn: VirtPageNum) -> UserFaultDiagnostic {
+        let memory_set = self.get_ref();
+        let mapped_ppn = memory_set.translate(vpn).map(|ppn| ppn.0);
+        let pte_flags_bits = memory_set.page_table.translate_pte_flags(vpn);
+        let page_table_token = memory_set.page_table.token();
+        let area = memory_set
+            .areas
+            .iter()
+            .find(|area| area.vpn_range.contains_vpn(vpn))
+            .map(|area| {
+                let (start, end) = area.vpn_range.range();
+                UserFaultVma {
+                    start_vpn: start.0,
+                    end_vpn: end.0,
+                    area_type: area.area_type,
+                    map_type: area.map_type,
+                    map_perm_bits: area.map_perm.bits(),
+                    mmap_flags_bits: area.mmap_flags.bits() as usize,
+                    file_backed: area.mmap_file.file.is_some(),
+                    file_offset: area.mmap_file.offset,
+                    resident_frame: area.data_frames.contains_key(&vpn),
+                }
+            });
+        UserFaultDiagnostic {
+            mapped_ppn,
+            pte_flags_bits,
+            page_table_token,
+            area,
+        }
     }
 
     /// Eagerly map a framed area below `hint`.

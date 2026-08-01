@@ -152,3 +152,4 @@
 - [LoongArch 36GiB CMA 与 12 核启动栈配置同步](./problem/loongarch-36g-12hart-bootstrap.md)
 - [BuildStorm 文件页缓存满后 mmap 缺页误杀动态程序](./problem/file-page-cache-capacity-bypass-mmap-fault.md)
 - [BuildStorm 文件页缓存满载候选退避](./problem/file-page-cache-eviction-inuse-backoff.md)
+- [RISC-V BuildStorm rustc SIGSEGV 缺页现场诊断](./problem/riscv-rustc-sigsegv-fault-diagnostics.md)

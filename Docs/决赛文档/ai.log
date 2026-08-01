@@ -9164,3 +9164,37 @@ frame 引用，保留 capacity bypass，不进入 lwext4 或 MemorySet 写锁。
 RISC-V `special_make KERNEL_EXTRA_FEATURES=perf,file-cache-capacity-test` 均通过。沙箱外的 60 秒 RISC-V QEMU 定向
 运行已输出新计数，无 panic；外层 timeout 前未完成 BuildStorm，也未覆盖 rustc SIGSEGV 阶段。运行后清理了遗留
 `disk.img`。
+
+## 2026-08-01：RISC-V rustc SIGSEGV 缺页/信号诊断
+
+### 用户输入
+
+维护者要求为 RISC-V BuildStorm 中随机发生于 `unicode-ident`、`find-msvc-tools` 等 rustc 子进程的
+`SIGSEGV` 添加相关日志；不接受以 `RUST_MIN_STACK` 规避。
+
+### 分析与采纳结论
+
+240 秒诊断版 BuildStorm 在 Cargo `Building 0/446` 两次记录相同的
+`FetchInstructionPageFault stval=sepc=0x2a0b92ec08`。故障页属于已驻留的 file-backed `Mmap` VMA，
+逻辑权限为 `R|X|U`，且已有翻译 PPN；因此崩溃 crate 是受害者，不能归因于 Cargo 依赖，也不能直接复用
+“页缓存满后未安装页面”的旧根因。初版尚不能看见叶子 PTE flags 或当前 hart 页表根，故不下根因结论。
+
+新增默认关闭的 `fault-diagnostics` feature：只在常规缺页处理失败、即将发送 `SIGSEGV/SIGBUS` 时输出
+trap、VMA、PPN、叶子 PTE raw flags、MemorySet token 和 `satp` token；SIGSEGV 进入用户 handler 时输出
+handler/restorer/signal frame/alt-stack。RISC-V 与 LoongArch 页表均提供诊断接口。修正 frame 日志的字段名为
+`handler_sepc`，原始故障 PC 仅以 trap 记录为准。
+
+### 修改文件
+
+`os/Cargo.toml`、`os/src/trap/mod.rs`、`os/src/mm/memory_set/handle.rs`、
+`os/src/arch/riscv64/qemu/page_table.rs`、`os/src/arch/loongarch64/qemu/page_table.rs`、
+`os/src/signal/frame.rs`、`Docs/决赛文档/problem/riscv-rustc-sigsegv-fault-diagnostics.md`、
+`Docs/决赛文档/README.md`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log`、
+`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check`、RISC-V/LoongArch64
+`special_make KERNEL_EXTRA_FEATURES=perf,file-cache-capacity-test,fault-diagnostics` 与两架构 `make perf`
+均通过。加入 PTE/token 字段后的 180 秒 RISC-V QEMU 只输出 `BUILDSTORM_TOOLCHAIN ok`，未进入 Cargo
+编译阶段，不能采集新字段或证明根因；未运行完整 BuildStorm，也未修改维护者的 `initproc.rs`。

@@ -8,6 +8,8 @@ use core::mem::size_of;
 
 use log::warn;
 
+#[cfg(feature = "fault-diagnostics")]
+use super::SIGSEGV;
 use super::{KSigAction, SigActionFlags, SigInfo, SigSet, SignalStack};
 use crate::{
     arch::{
@@ -293,26 +295,40 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
     // 修改Trap
     trap_cx.set_sepc(sig_action.act.sa_handler);
     // ra
-    trap_cx.set_ra(
-        if sig_action
-            .act
-            .sa_flags
-            .contains(SigActionFlags::SA_RESTORER)
-        {
-            sig_action.act.sa_restore
-        } else {
-            let trampoline: usize;
-            cfg_if::cfg_if! {
-                if #[cfg(target_arch = "loongarch64")] {
-                    trampoline = memory_layout::sigreturn_va();
-                } else if #[cfg(target_arch = "riscv64")] {
-                    trampoline = sigreturn_trampoline as *const() as usize;
-                }
+    let restorer = if sig_action
+        .act
+        .sa_flags
+        .contains(SigActionFlags::SA_RESTORER)
+    {
+        sig_action.act.sa_restore
+    } else {
+        let trampoline: usize;
+        cfg_if::cfg_if! {
+            if #[cfg(target_arch = "loongarch64")] {
+                trampoline = memory_layout::sigreturn_va();
+            } else if #[cfg(target_arch = "riscv64")] {
+                trampoline = sigreturn_trampoline as *const() as usize;
             }
-            //warn!("set sigreturn_trampoline={:#x} as ra", trampoline);
-            trampoline
-        },
-    );
+        }
+        trampoline
+    };
+    #[cfg(feature = "fault-diagnostics")]
+    if signo == SIGSEGV {
+        warn!(
+            "[fault-diagnostics] sigsegv_frame pid={} tid={} handler_sepc={:#x} interrupted_sp={:#x} handler={:#x} sa_flags={:#x} sa_restore={:#x} selected_restorer={:#x} frame_sp={:#x} on_alt_stack={}",
+            task.pid(),
+            task.tid(),
+            trap_cx.get_sepc(),
+            interrupted_sp,
+            sig_action.act.sa_handler,
+            sig_action.act.sa_flags.bits(),
+            sig_action.act.sa_restore,
+            restorer,
+            signal_sp,
+            interrupted_on_alt_stack,
+        );
+    }
+    trap_cx.set_ra(restorer);
 
     // 默认：在处理函数执行期间阻塞当前信号 + sa_mask 中的信号
     // SA_NODEFER: 不自动阻塞当前信号

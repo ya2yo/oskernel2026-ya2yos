@@ -314,6 +314,33 @@ impl PageTable {
         }
         None
     }
+    /// Return the raw leaf PTE flags for a mapped virtual page.
+    ///
+    /// This is only used by the explicit fault diagnostic feature. Keep the
+    /// raw architectural bits so a failed instruction fetch can distinguish a
+    /// missing X/U bit from a VMA metadata mismatch.
+    #[cfg(feature = "fault-diagnostics")]
+    pub fn translate_pte_flags(&self, vpn: VirtPageNum) -> Option<usize> {
+        let indexes = vpn.indexes();
+        let mut table_ppn = self.root_ppn;
+        for (level, index) in indexes.iter().enumerate() {
+            let pte = &table_ppn.as_array::<PageTableEntry>()[*index];
+            let flags = pte.get_flags();
+            if !flags.contains(RVPTEFlags::VALID) {
+                return None;
+            }
+            if flags
+                .intersects(RVPTEFlags::READABLE | RVPTEFlags::WRITEABLE | RVPTEFlags::EXECUTABLE)
+            {
+                return Some(pte.bits & 0x3ff);
+            }
+            if level == 2 {
+                return None;
+            }
+            table_ppn = pte.get_ppn();
+        }
+        None
+    }
     /// Whether an existing leaf PTE still requires a COW write fault.
     ///
     /// Kernel-side copies use this to preserve the same COW boundary as a
