@@ -150,3 +150,4 @@
 - [BuildStorm EXT4 inode 级写回缓存并发](./problem/buildstorm-ext4-inode-cache-write-concurrency.md)
 - [RISC-V pipe 跨 hart 空闲唤醒延迟优化](./problem/riscv-pipe-remote-idle-wakeup.md)
 - [LoongArch 36GiB CMA 与 12 核启动栈配置同步](./problem/loongarch-36g-12hart-bootstrap.md)
+- [BuildStorm 文件页缓存满后 mmap 缺页误杀动态程序](./problem/file-page-cache-capacity-bypass-mmap-fault.md)

@@ -60,6 +60,10 @@ info = []
 debug = []
 trace = []
 perf = ["lwext4_rust/perf"]
+# Only used by the directed QEMU reproduction in
+# `user/src/bin/buildstorm/cache_capacity.rs`. Keep the production cache
+# capacity unchanged unless this feature is explicitly requested.
+file-cache-capacity-test = []
 irq = []
 net = []
 scheduler-rr = []

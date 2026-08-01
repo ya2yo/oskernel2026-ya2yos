@@ -17,6 +17,7 @@
 
 mod common;
 
+pub mod cache_capacity;
 pub mod compile;
 pub mod compile_time;
 pub mod minibuild;

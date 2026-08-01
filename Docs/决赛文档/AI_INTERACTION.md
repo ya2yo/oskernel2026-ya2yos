@@ -2179,3 +2179,17 @@
 - **验证边界**：本轮仅更新文档，不修改代码或运行 QEMU；完整 BuildStorm、P19 构建和文件系统语义回归待后续执行。
 - **关联文档**：[优化方案](./优化方案.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### RISC-V BuildStorm 文件页缓存容量旁路 mmap 缺页修复（8.1）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求解释 `riscv.ans` 缺少 `shutdown!` 的停止原因，并将近 80 分钟后出现的 BuildStorm
+  动态程序段错误缩短为可重复的定向回归。
+- **描述**：通过日志时间线和 `file_cache_capacity` 计数确认 96K 页缓存触顶后 bypass 页未发布；锁外 mmap
+  加载虽成功，原实现却丢弃 `Arc<FilePage>`，锁内二次只查全局缓存而失败，导致动态 ELF 获得 SIGSEGV。
+  将该页安全传入安装点，并补齐 `MAP_SHARED` fork 的预取页传递。新增默认关闭的 2,048 页 test feature 和
+  BuildStorm case；修复前等价路径为 `status=139`，修复后在 capacity bypass 下输出 `ok` 和 `shutdown!`。
+- **验证**：RISC-V final-2026 QEMU 对照/修复回归、RISC-V 与 LoongArch64 release 构建、格式与补丁检查均通过。
+  LoongArch64 未运行 QEMU，因为该 case 使用 RISC-V final-2026 镜像内的 Rustup 二进制。
+- **关联文档**：[问题复盘](./problem/file-page-cache-capacity-bypass-mmap-fault.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

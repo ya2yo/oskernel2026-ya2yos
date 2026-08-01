@@ -4,7 +4,7 @@
 //! this type so callers do not hold the process metadata lock while touching
 //! page tables or VM areas.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use spin::rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::{
@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     arch::memory_layout::PAGE_SIZE,
-    fs::{FilePageCacheSource, OSFile, FILE_PAGE_CACHE},
+    fs::{FilePage, FilePageCacheSource, FilePageKey, OSFile, FILE_PAGE_CACHE},
     mm::{
         FrameTracker, MapAreaType, MapPermission, PhysAddr, PhysPageNum, VPNRange, VirtAddr,
         VirtPageNum,
@@ -142,10 +142,10 @@ impl MemorySet {
     #[inline(always)]
     pub fn handle_page_fault(&self, vpn: VirtPageNum, scause: Trap) -> bool {
         // File-backed faults may block in EXT4. Prepare the page before
-        // taking MemorySet's write lock; the locked phase only installs the
-        // already-cached frame into the VMA and page table.
-        self.prepare_file_page(vpn);
-        self.get_mut().handle_page_fault(vpn, scause)
+        // taking MemorySet's write lock. The page can legitimately bypass the
+        // bounded global cache, so retain it until this fault installs it.
+        let prepared = self.prepare_file_page(vpn);
+        self.get_mut().handle_page_fault(vpn, scause, prepared)
     }
 
     /// Whether a faulting VPN lies in a file mapping beyond that file's EOF.
@@ -164,26 +164,30 @@ impl MemorySet {
         file_offset >= inode.size()
     }
 
-    /// Load one file-backed mmap page without holding the MemorySet lock.
-    /// Returns `Some(true)` when the page starts at or beyond EOF, `Some(false)`
-    /// for a valid page, and `None` for non-file-backed mappings.
-    fn prepare_file_page(&self, vpn: VirtPageNum) -> Option<bool> {
+    /// Load one file-backed mmap page without holding the `MemorySet` lock.
+    /// The returned `Arc` is handed to the immediately following installation
+    /// step, including when the bounded global cache cannot retain it.
+    fn prepare_file_page(&self, vpn: VirtPageNum) -> Option<Arc<FilePage>> {
         let request = self.get_ref().mmap_file_page_info(vpn);
         let (inode, page_index) = request?;
-        let page = FILE_PAGE_CACHE
+        FILE_PAGE_CACHE
             .get_or_load(inode, page_index, FilePageCacheSource::MmapDemand)
-            .ok()?;
-        Some(page.valid_len == 0)
+            .ok()
     }
 
     /// Preload all file pages in shared mappings before a fork takes the
     /// parent's MemorySet write lock to install shared frames.
-    pub fn prefetch_shared_file_pages(&self) {
+    pub fn prefetch_shared_file_pages(&self) -> BTreeMap<FilePageKey, Arc<FilePage>> {
         let requests = self.get_ref().shared_file_page_info();
+        let mut prepared = BTreeMap::new();
         for (inode, page_index) in requests {
-            let _ =
-                FILE_PAGE_CACHE.get_or_load(inode, page_index, FilePageCacheSource::MmapPrefetch);
+            if let Ok(page) =
+                FILE_PAGE_CACHE.get_or_load(inode, page_index, FilePageCacheSource::MmapPrefetch)
+            {
+                prepared.insert(page.key.clone(), page);
+            }
         }
+        prepared
     }
 
     /// Change permissions for a virtual page range.

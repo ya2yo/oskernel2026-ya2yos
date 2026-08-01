@@ -14,7 +14,7 @@ use crate::arch::memory_layout::{
 };
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
-use crate::fs::{File, Inode, OSFile, OpenFlags};
+use crate::fs::{File, FilePage, Inode, OSFile, OpenFlags};
 use crate::mm::group::GROUP_SHARE;
 use crate::mm::map_area::MapType;
 use crate::mm::memory_set::MemorySetInner;
@@ -48,32 +48,33 @@ fn handle_mmap_not_present_page_fault(
     area: &mut MapArea,
     vpn: VirtPageNum,
     scause: Trap,
+    prepared: Option<&Arc<FilePage>>,
 ) -> bool {
     // A file VMA may legally cover bytes past EOF, but faulting a complete
     // page beyond EOF is SIGBUS, never a demand-zero page.
     match scause {
         Trap::Exception(Exception::LoadPageFault) => {
             area.map_perm.contains(MapPermission::R)
-                && mmap_read_page_fault(vpn.into(), page_table, area)
+                && mmap_read_page_fault(vpn.into(), page_table, area, prepared)
         }
         Trap::Exception(Exception::FetchInstructionPageFault) => {
             area.map_perm.contains(MapPermission::X)
-                && mmap_read_page_fault(vpn.into(), page_table, area)
+                && mmap_read_page_fault(vpn.into(), page_table, area, prepared)
         }
         Trap::Exception(Exception::PagePrivilegeIllegal) => {
             if area
                 .map_perm
                 .intersects(MapPermission::R | MapPermission::X)
             {
-                mmap_read_page_fault(vpn.into(), page_table, area)
+                mmap_read_page_fault(vpn.into(), page_table, area, prepared)
             } else {
                 area.map_perm.contains(MapPermission::W)
-                    && mmap_write_page_fault(vpn.into(), page_table, area)
+                    && mmap_write_page_fault(vpn.into(), page_table, area, prepared)
             }
         }
         _ => {
             area.map_perm.contains(MapPermission::W)
-                && mmap_write_page_fault(vpn.into(), page_table, area)
+                && mmap_write_page_fault(vpn.into(), page_table, area, prepared)
         }
     }
 }
@@ -846,14 +847,24 @@ impl MemorySetInner {
         // 刷新 TLB 使新权限立即生效
         tlb_invalidate();
     }
-    pub fn handle_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
-        if self.handle_not_present_page_fault(vpn, scause) {
+    pub fn handle_page_fault(
+        &mut self,
+        vpn: VirtPageNum,
+        scause: Trap,
+        prepared: Option<Arc<FilePage>>,
+    ) -> bool {
+        if self.handle_not_present_page_fault(vpn, scause, prepared.as_ref()) {
             return true;
         }
         self.handle_write_protect_page_fault(vpn, scause)
     }
 
-    fn handle_not_present_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
+    fn handle_not_present_page_fault(
+        &mut self,
+        vpn: VirtPageNum,
+        scause: Trap,
+        prepared: Option<&Arc<FilePage>>,
+    ) -> bool {
         // debug!("[lazy_page_fault] vpn={:?} scause={:?}", vpn, scause);
         let ppn = self.page_table.translate(vpn);
         if !ppn.is_none() {
@@ -869,7 +880,13 @@ impl MemorySetInner {
                 start <= vpn && vpn < end
             })
         {
-            return handle_mmap_not_present_page_fault(&mut self.page_table, area, vpn, scause);
+            return handle_mmap_not_present_page_fault(
+                &mut self.page_table,
+                area,
+                vpn,
+                scause,
+                prepared,
+            );
         }
         // brk, fixed stack, or an ELF BSS tail registered for lazy loading
         if let Some(area) = self
@@ -951,7 +968,7 @@ impl MemorySetInner {
 
         let (page_table, areas) = (&mut self.page_table, &mut self.areas);
         let area = &mut areas[growdown_idx];
-        if !handle_mmap_not_present_page_fault(page_table, area, vpn, scause) {
+        if !handle_mmap_not_present_page_fault(page_table, area, vpn, scause, prepared) {
             return false;
         }
         area.vpn_range = VPNRange::new(vpn, growdown_end);

@@ -11,6 +11,7 @@ use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::PAGE_SIZE;
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::tlb_invalidate;
+use crate::fs::FilePageKey;
 use crate::mm::{page_fault_handler, MemorySet};
 use crate::syscall::MmapFlags;
 use alloc::sync::Arc;
@@ -32,7 +33,7 @@ impl MemorySetInner {
         // Loading file-backed MAP_SHARED pages can sleep on EXT4. Do it
         // before taking the parent's MemorySet write lock; the locked phase
         // below only allocates anonymous frames and installs cached frames.
-        user_space.prefetch_shared_file_pages();
+        let prepared_shared_pages = user_space.prefetch_shared_file_pages();
 
         user_space.with_mut(|u| {
             // Pre-fault MAP_SHARED areas: lazy mmap pages need backing frames
@@ -54,9 +55,23 @@ impl MemorySetInner {
                             area.map_one(pt, vpn); // ignore OOM — lazy fault later
                         } else {
                             // file-backed: use the write-fault handler to
-                            // read file data into the frame
+                            // install the page loaded before the MemorySet
+                            // lock was acquired.
                             let va = VirtAddr::from(vpn);
-                            page_fault_handler::mmap_write_page_fault(va, pt, area);
+                            let prepared = area.mmap_file.file.as_ref().and_then(|file| {
+                                let page_offset = (vpn.0 - area.vpn_range.start().0)
+                                    .checked_mul(PAGE_SIZE)?
+                                    .checked_add(area.mmap_file.offset)?;
+                                let path = file
+                                    .inode
+                                    .page_cache_path()
+                                    .unwrap_or_else(|| file.inode.path().into());
+                                prepared_shared_pages.get(&FilePageKey {
+                                    path,
+                                    page_index: page_offset / PAGE_SIZE,
+                                })
+                            });
+                            page_fault_handler::mmap_write_page_fault(va, pt, area, prepared);
                         }
                     }
                 }

@@ -29,10 +29,42 @@ fn cached_file_page(va: VirtAddr, vma: &MapArea) -> Option<Arc<FilePage>> {
     (page.valid_len > 0).then_some(page)
 }
 
-fn map_file_page_from_cache(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
+/// Return a page loaded before taking the `MemorySet` write lock when it still
+/// belongs to this VMA. The path and index check prevents a concurrent
+/// `munmap`/replacement from installing a page prepared for an earlier VMA.
+fn prepared_file_page(
+    va: VirtAddr,
+    vma: &MapArea,
+    prepared: Option<&Arc<FilePage>>,
+) -> Option<Arc<FilePage>> {
+    let page = prepared?;
+    let page_index = file_page_index(vma, va)?;
+    let file = vma.mmap_file.file.as_ref()?;
+    let path_matches = match file.inode.page_cache_path() {
+        Some(path) => page.key.path.as_ref() == path.as_ref(),
+        None => page.key.path.as_ref() == file.inode.path().as_str(),
+    };
+    (path_matches && page.key.page_index == page_index && page.valid_len > 0)
+        .then(|| Arc::clone(page))
+}
+
+fn file_page_for_fault(
+    va: VirtAddr,
+    vma: &MapArea,
+    prepared: Option<&Arc<FilePage>>,
+) -> Option<Arc<FilePage>> {
+    prepared_file_page(va, vma, prepared).or_else(|| cached_file_page(va, vma))
+}
+
+fn map_file_page(
+    va: VirtAddr,
+    page_table: &mut PageTable,
+    vma: &mut MapArea,
+    prepared: Option<&Arc<FilePage>>,
+) -> bool {
     #[cfg(feature = "perf")]
     crate::utils::perf::record_file_page_fault();
-    let Some(page) = cached_file_page(va, vma) else {
+    let Some(page) = file_page_for_fault(va, vma, prepared) else {
         return false;
     };
     let vpn: VirtPageNum = va.into();
@@ -45,14 +77,20 @@ fn map_file_page_from_cache(va: VirtAddr, page_table: &mut PageTable, vma: &mut 
 
 ///mmap写触发的lazy alocation，直接新分配帧
 /// Returns true on success, false if OOM (caller should SIGSEGV).
-pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
+pub fn mmap_write_page_fault(
+    va: VirtAddr,
+    page_table: &mut PageTable,
+    vma: &mut MapArea,
+    prepared: Option<&Arc<FilePage>>,
+) -> bool {
     // File-backed pages are loaded by the caller before the MemorySet write
-    // lock is acquired. Never enter EXT4 from this locked path.
+    // lock. A capacity-bypassed page is passed directly to this locked path;
+    // never enter EXT4 here just because it was not retained globally.
     let cached_page = vma
         .mmap_file
         .file
         .as_ref()
-        .and_then(|_| cached_file_page(va, vma));
+        .and_then(|_| file_page_for_fault(va, vma, prepared));
     if vma.mmap_file.file.is_some() && cached_page.is_none() {
         return false;
     }
@@ -62,7 +100,7 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
     if vma
         .mmap_flags
         .contains(crate::syscall::MmapFlags::MAP_SHARED)
-        && map_file_page_from_cache(va, page_table, vma)
+        && map_file_page(va, page_table, vma, prepared)
     {
         return true;
     }
@@ -82,7 +120,12 @@ pub fn mmap_write_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut
 }
 ///mmap读触发的lazy alocation，查看是否有共享页可直接用，没有再直接分配
 /// Returns true on success, false if OOM.
-pub fn mmap_read_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
+pub fn mmap_read_page_fault(
+    va: VirtAddr,
+    page_table: &mut PageTable,
+    vma: &mut MapArea,
+    prepared: Option<&Arc<FilePage>>,
+) -> bool {
     let frame = GROUP_SHARE.lock().find(vma.groupid, va.into());
     if let Some(frame) = frame {
         //有现成的，直接clone,需要是cow的
@@ -97,11 +140,11 @@ pub fn mmap_read_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut 
     // MAP_PRIVATE file mappings can share clean pages between processes. The
     // page-table helper marks writable private mappings COW, so a later store
     // still gets a private copy through the normal write-protect path.
-    if map_file_page_from_cache(va, page_table, vma) {
+    if map_file_page(va, page_table, vma, prepared) {
         return true;
     }
     //第一次读，分配页面
-    if !mmap_write_page_fault(va, page_table, vma) {
+    if !mmap_write_page_fault(va, page_table, vma, prepared) {
         return false;
     }
     if vma.groupid != 0 {

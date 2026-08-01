@@ -10,10 +10,18 @@ use crate::{arch::memory_layout::PAGE_SIZE, fs::Inode, mm::FrameTracker, utils::
 /// the lwext4 gate over common ELF and source-file mmap walks.
 const SEQUENTIAL_READAHEAD_MAX_PAGES: usize = 4;
 /// Keep the global page cache bounded even when one long-lived compiler walks
-/// large source and artifact files.  This is 384 MiB with the current 4 KiB
+/// large source and artifact files. This is 384 MiB with the current 4 KiB
 /// page size, leaving room for the mmap working set while permitting normal
 /// read caching above the former 8 MiB per-file threshold.
+#[cfg(not(feature = "file-cache-capacity-test"))]
 const MAX_FILE_PAGE_CACHE_PAGES: usize = 96 * 1024;
+
+/// A deliberately small capacity for the directed QEMU regression case. It
+/// leaves enough room to start Bash, then exposes the capacity-bypass mmap
+/// path without a multi-gigabyte BuildStorm compilation. This feature is
+/// never enabled by normal builds.
+#[cfg(feature = "file-cache-capacity-test")]
+const MAX_FILE_PAGE_CACHE_PAGES: usize = 2 * 1024;
 
 /// 文件页缓存的索引键。
 ///

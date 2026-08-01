@@ -9055,3 +9055,39 @@ crate 数不是等量工作，且两次独立运行的就绪 crate 列表不同�
 
 本轮只分析既有日志并更新文档，未修改内核或用户态代码，未运行构建、QEMU 或完整 BuildStorm。文档变更将执行
 `git diff --check`；P19 的计数实现和 P20 的完整性能复跑留待后续工作。
+
+## 2026-08-01：RISC-V BuildStorm 文件页缓存容量旁路 mmap SIGSEGV
+
+### 用户输入
+
+维护者要求分析 `riscv.ans` 为什么没有 `shutdown!` 却已停止，并要求把长达约 80 分钟的失败单独复现并修复。
+
+### 分析与采纳结论
+
+日志的文件时间跨度约 79 分 40 秒，guest 末尾 `t=4739263ms`，且仅有 `QEMU: Terminated`、没有
+`shutdown!`，因此不是正常 guest 关机。`END buildstorm` 是脚本无条件输出；缓存触顶
+`98304/98304` 后，capacity bypass 从 707 增至 2580，`cargo`、`timeout`、`tee`、`tail` 与 `sync`
+连续 SIGSEGV，说明新动态 ELF 映射失败而不是评分成功。
+
+追踪 `FilePageCache::get_or_load()`、`MemorySet::prepare_file_page()` 和锁内 mmap fault 后确认：缓存满时
+加载页可成功返回但不会发布到全局缓存，原代码随即丢弃该 `Arc`；锁内第二次缓存查找失败后把可读文件页当作
+映射失败，最终发送 SIGSEGV。采纳最小修复：将准备页传递到 mmap read/write 安装路径并校验 VMA path/index，
+同时让 `MAP_SHARED` fork 预取页在安装时可用；不扩大生产缓存上限，也不在 MemorySet 写锁内进入 EXT4。
+
+新增默认关闭的 `file-cache-capacity-test` 与 BuildStorm 单项 case，将测试容量降至 2,048 页。修复前等价
+对照为 `capacity_bypass_pages=1365`、case `status=139`；修复后在 `capacity_bypass_pages=1382` 时输出
+`BUILDSTORM_DEBUG_CACHE_CAPACITY ok` 和 `shutdown!`，无 SIGSEGV。临时的旧行为开关和 initproc 测试入口均已恢复。
+
+### 修改文件
+
+`os/Cargo.toml`、`os/src/fs/page_cache.rs`、`os/src/mm/memory_set/handle.rs`、
+`os/src/mm/memory_set/mmap_ops.rs`、`os/src/mm/page_fault_handler.rs`、`os/src/mm/memory_set/fork_clone.rs`、
+`user/src/bin/buildstorm/mod.rs`、`user/src/bin/buildstorm/cache_capacity.rs`、
+`Docs/决赛文档/problem/file-page-cache-capacity-bypass-mmap-fault.md`、`Docs/决赛文档/README.md`、
+`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+`cargo fmt`、`git diff --check`、`make build-arch TARGET_ARCH=riscv64` 与
+`make build-arch TARGET_ARCH=loongarch64` 通过。RISC-V final-2026 QEMU 的修复前等价与修复后定向
+回归均执行；LoongArch64 因没有相同镜像和路径只做 release 编译，未运行 QEMU。
