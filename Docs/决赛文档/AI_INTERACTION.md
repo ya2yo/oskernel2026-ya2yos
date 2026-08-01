@@ -2193,3 +2193,18 @@
   LoongArch64 未运行 QEMU，因为该 case 使用 RISC-V final-2026 镜像内的 Rustup 二进制。
 - **关联文档**：[问题复盘](./problem/file-page-cache-capacity-bypass-mmap-fault.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### `riscv.ans` 02:37:57 BuildStorm 超时方案（8.1）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 RISC-V BuildStorm 长日志，说明运行 02:37:57 后严重超时，要求分析并更新《优化方案》。
+- **描述**：确认日志只有 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，没有 `BUILDSTORM_COMPILE`、END 或 `shutdown!`，
+  末尾为 `QEMU: Terminated`；最终 `t=9477923ms` 只到 Cargo `97/446`。52 个之后吞吐约
+  `0.33 crates/min`，且后段长期处于 `cmake`、`aws-lc-sys(build.rs)` 等重型阶段。新关键证据是
+  `file_cache_capacity` 在 `t=4771219ms` 触顶，末尾 `capacity_bypass_pages=83287`；EXT4 gate 累计守恒正常，
+  但 `max_handoff_wait_us=408077260`、`wait_ge_10s=173` 显示仍有严重长尾排队。方案调整为先做文件页缓存容量
+  A/B 或 clean-page 淘汰，再补 lwext4 子阶段 interval delta，最后固定环境做完整 BuildStorm 验收。
+- **验证边界**：本轮仅更新文档，不修改代码或运行 QEMU；执行文档 diff/空白检查。缓存策略、P19B 计数实现和完整
+  wall-clock 验收待后续执行。
+- **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
