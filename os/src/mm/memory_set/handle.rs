@@ -38,6 +38,9 @@ pub struct MemorySet {
 pub struct UserFaultDiagnostic {
     pub mapped_ppn: Option<usize>,
     pub pte_flags_bits: Option<usize>,
+    pub pte_leaf_level: Option<usize>,
+    pub pte_raw_bits: Option<usize>,
+    pub pte_leaf_ppn: Option<usize>,
     pub page_table_token: usize,
     pub area: Option<UserFaultVma>,
 }
@@ -176,6 +179,15 @@ impl MemorySet {
         self.get_mut().handle_page_fault(vpn, scause, prepared)
     }
 
+    /// Check whether a RISC-V leaf PTE already permits U-mode instruction
+    /// fetch. A FetchInstructionPageFault in this state is retried once by
+    /// the trap layer after local translation/instruction synchronization.
+    #[cfg(target_arch = "riscv64")]
+    #[inline(always)]
+    pub fn is_user_executable(&self, vpn: VirtPageNum) -> bool {
+        self.get_ref().page_table.is_user_executable(vpn)
+    }
+
     /// Whether a faulting VPN lies in a file mapping beyond that file's EOF.
     ///
     /// The trap layer uses this to distinguish Linux SIGBUS from ordinary
@@ -285,7 +297,11 @@ impl MemorySet {
     pub fn fault_diagnostic(&self, vpn: VirtPageNum) -> UserFaultDiagnostic {
         let memory_set = self.get_ref();
         let mapped_ppn = memory_set.translate(vpn).map(|ppn| ppn.0);
-        let pte_flags_bits = memory_set.page_table.translate_pte_flags(vpn);
+        let pte_diagnostic = memory_set.page_table.translate_pte_diagnostic(vpn);
+        let pte_flags_bits = pte_diagnostic.map(|(_, raw_bits, _)| raw_bits & 0x3ff);
+        let pte_leaf_level = pte_diagnostic.map(|(level, _, _)| level);
+        let pte_raw_bits = pte_diagnostic.map(|(_, raw_bits, _)| raw_bits);
+        let pte_leaf_ppn = pte_diagnostic.map(|(_, _, ppn)| ppn);
         let page_table_token = memory_set.page_table.token();
         let area = memory_set
             .areas
@@ -308,6 +324,9 @@ impl MemorySet {
         UserFaultDiagnostic {
             mapped_ppn,
             pte_flags_bits,
+            pte_leaf_level,
+            pte_raw_bits,
+            pte_leaf_ppn,
             page_table_token,
             area,
         }

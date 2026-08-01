@@ -9198,3 +9198,40 @@ handler/restorer/signal frame/alt-stack。RISC-V 与 LoongArch 页表均提供�
 `special_make KERNEL_EXTRA_FEATURES=perf,file-cache-capacity-test,fault-diagnostics` 与两架构 `make perf`
 均通过。加入 PTE/token 字段后的 180 秒 RISC-V QEMU 只输出 `BUILDSTORM_TOOLCHAIN ok`，未进入 Cargo
 编译阶段，不能采集新字段或证明根因；未运行完整 BuildStorm，也未修改维护者的 `initproc.rs`。
+
+## 2026-08-01：RISC-V demand PTE 安装遗漏本地 TLB 刷新
+
+### 用户输入
+
+维护者提供新的 `log.ans`，要求继续分析其中 `find-msvc-tools` 与 `shlex` 的 rustc `SIGSEGV` 并修复。
+
+### 分析与采纳结论
+
+两次诊断均为 `FetchInstructionPageFault`，其 `satp` token 分别与受害进程的 `MemorySet` token 相等；叶子
+PTE 均为 `0x5b = V|R|X|U|A`，VMA 是已驻留的 file-backed `Mmap`。这排除了此前容量 bypass 丢页、缺少
+execute/user 权限和地址空间切换错误。两个进程在各自 home hart 上失败，也不需要以未实现的 remote TLB
+shootdown 解释。
+
+检查 RISC-V 页表实现发现 `activate()`、COW、mprotect、munmap 都会调用 `sfence.vma`，但 mmap read fault
+安装新 PTE、mmap write fault 更新权限、以及匿名 lazy fault `map_one()` 成功后的返回路径均没有刷新。RISC-V
+允许硬件保留此前的 non-present translation：第一次 fault 已将软件 PTE 写为 `0x5b`，重试仍命中陈旧 TLB；
+第二次 trap 观察到 PTE 已 present，常规缺页处理返回 false，最后才向 rustc 发送 `SIGSEGV`。该因果链与新日志
+相符。
+
+修复为只在成功缺页路径调用本 hart `tlb_invalidate()`：RISC-V mmap read/write PTE 更新后，以及通用匿名
+lazy map 成功后。LoongArch file mmap read 路径同步补现有 invalidation，保持相同的重试语义。没有以
+`RUST_MIN_STACK`、页缓存上限或额外全局锁规避问题，也不在 ELF/exec 批量建图中逐页刷新。
+
+### 修改文件
+
+`os/src/mm/page_fault_handler.rs`、`os/src/arch/riscv64/qemu/page_table.rs`、
+`os/src/arch/loongarch64/qemu/page_table.rs`、`Docs/决赛文档/problem/riscv-rustc-sigsegv-fault-diagnostics.md`、
+`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check`、双架构 release `make` 与
+RISC-V `special_make KERNEL_EXTRA_FEATURES=perf,file-cache-capacity-test,fault-diagnostics` 通过。沙箱内 QEMU
+因 `/var/tmp` 只读无法创建临时 drive 文件；在允许临时文件的环境重跑 120 秒后通过
+`BUILDSTORM_TOOLCHAIN ok` 与 `BUILDSTORM_MINIBUILD ok`，无 `fault-diagnostics`、rustc `SIGSEGV`、panic、TFAIL
+或 TBROK。timeout 时仍处于 `pre-build tg-xtask`，尚未覆盖 Cargo/rustc 失败窗口或完整 BuildStorm。

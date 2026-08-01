@@ -10,6 +10,7 @@ use crate::{
 use super::group::GROUP_SHARE;
 use super::{MapArea, VirtAddr, VirtPageNum};
 use crate::arch::page_table::PageTable;
+use crate::arch::tlb::instruction_fence;
 
 fn file_page_index(vma: &MapArea, va: VirtAddr) -> Option<usize> {
     vma.mmap_file.file.as_ref()?;
@@ -72,6 +73,9 @@ fn map_file_page(
     let ppn = frame.ppn;
     vma.data_frames.insert(vpn, frame);
     page_table.handle_mmap_read_page_fault(vpn, ppn, vma.map_perm, vma.mmap_flags);
+    if vma.map_perm.contains(super::MapPermission::X) {
+        instruction_fence();
+    }
     true
 }
 
@@ -118,6 +122,9 @@ pub fn mmap_write_page_fault(
     }
     let vpn = va.floor();
     page_table.handle_mmap_write_page_fault(vpn, vma.map_perm, vma.mmap_flags);
+    if vma.map_perm.contains(super::MapPermission::X) {
+        instruction_fence();
+    }
     true
 }
 ///mmap读触发的lazy alocation，查看是否有共享页可直接用，没有再直接分配
@@ -137,6 +144,9 @@ pub fn mmap_read_page_fault(
 
         // page_table.map(vpn, ppn, pte_flags);
         page_table.handle_mmap_read_page_fault(vpn, ppn, vma.map_perm, vma.mmap_flags);
+        if vma.map_perm.contains(super::MapPermission::X) {
+            instruction_fence();
+        }
         return true;
     }
     // MAP_PRIVATE file mappings can share clean pages between processes. The
@@ -162,7 +172,14 @@ pub fn mmap_read_page_fault(
 /// Returns true on success, false if OOM.
 pub fn lazy_page_fault(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
     // 仅映射页面
-    vma.map_one(page_table, va.into()).is_some()
+    let mapped = vma.map_one(page_table, va.into()).is_some();
+    if mapped {
+        crate::arch::tlb::tlb_invalidate();
+        if vma.map_perm.contains(super::MapPermission::X) {
+            instruction_fence();
+        }
+    }
+    mapped
 }
 
 /// Handle a store fault on a present PTE.

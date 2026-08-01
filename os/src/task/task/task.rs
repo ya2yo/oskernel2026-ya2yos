@@ -22,7 +22,7 @@ use crate::{
     },
     mm::{
         copy_to_user, copy_to_user_val, MapAreaType, MapPermission, MemorySet, MemorySetInner,
-        PhysPageNum, VirtAddr,
+        PhysPageNum, VirtAddr, VirtPageNum,
     },
     signal::{SigInfo, SigSet, SigTable, SignalStack, SIG_MAX_NUM},
     syscall::MmapFlags,
@@ -142,6 +142,10 @@ pub struct TaskControlBlockInner {
     /// VFORK: if non-zero, parent is suspended waiting for this child PID to
     /// exit or exec. Set by CLONE_VFORK, cleared when child wakes the parent.
     pub vfork_wait_child: usize,
+    /// A present executable RISC-V PTE may still transiently fault while an
+    /// instruction-side translation catches up. Keep one retry per VPN; a
+    /// consecutive second fault remains a synchronous SIGSEGV.
+    instruction_fault_retry: Option<VirtPageNum>,
     /// Perf-only vfork lifecycle boundaries. A zero value means this task is
     /// not participating in the corresponding hand-off.
     #[cfg(feature = "perf")]
@@ -218,6 +222,19 @@ impl TaskControlBlockInner {
 
     pub fn is_zombie(&self) -> bool {
         self.task_status == TaskStatus::Zombie
+    }
+
+    pub fn retry_present_instruction_fault(&mut self, vpn: VirtPageNum) -> bool {
+        if self.instruction_fault_retry == Some(vpn) {
+            false
+        } else {
+            self.instruction_fault_retry = Some(vpn);
+            true
+        }
+    }
+
+    pub fn clear_instruction_fault_retry(&mut self) {
+        self.instruction_fault_retry = None;
     }
 }
 
@@ -507,6 +524,7 @@ impl TaskControlBlock {
                 user_heapbottom,
                 clear_child_tid: 0,
                 vfork_wait_child: 0,
+                instruction_fault_retry: None,
                 #[cfg(feature = "perf")]
                 vfork_published_at: 0,
                 #[cfg(feature = "perf")]
@@ -978,6 +996,7 @@ impl TaskControlBlock {
                 user_heapbottom: parent_heapbottom,
                 clear_child_tid,
                 vfork_wait_child: 0,
+                instruction_fault_retry: None,
                 #[cfg(feature = "perf")]
                 vfork_published_at: 0,
                 #[cfg(feature = "perf")]

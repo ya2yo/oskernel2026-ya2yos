@@ -38,7 +38,11 @@ bitflags! {
 impl From<MapPermission> for RVPTEFlags {
     fn from(perm: MapPermission) -> Self {
         // TODO:是否可以通过编译检查，将这里的if判断去掉，因为MapPermission是和RVPTEFlags正好一一对应
-        let mut flags = RVPTEFlags::VALID;
+        // A mapping becomes runnable immediately after page-fault return.  Do
+        // not rely on a platform's optional hardware A-bit update mode: under
+        // Svade, an A=0 leaf itself raises a page fault before the access can
+        // proceed.  Linux likewise installs user PTEs with A already set.
+        let mut flags = RVPTEFlags::VALID | RVPTEFlags::ACCESSED;
         if perm.contains(MapPermission::R) {
             flags.insert(RVPTEFlags::READABLE);
         }
@@ -314,13 +318,13 @@ impl PageTable {
         }
         None
     }
-    /// Return the raw leaf PTE flags for a mapped virtual page.
+    /// Return the leaf PTE shape for an already mapped virtual page.
     ///
-    /// This is only used by the explicit fault diagnostic feature. Keep the
-    /// raw architectural bits so a failed instruction fetch can distinguish a
-    /// missing X/U bit from a VMA metadata mismatch.
+    /// This is diagnostic-only. In addition to the flags, retain the walk
+    /// level and raw PTE so a fault report can detect an invalid, unaligned
+    /// superpage leaf that a flag-only snapshot would conceal.
     #[cfg(feature = "fault-diagnostics")]
-    pub fn translate_pte_flags(&self, vpn: VirtPageNum) -> Option<usize> {
+    pub fn translate_pte_diagnostic(&self, vpn: VirtPageNum) -> Option<(usize, usize, usize)> {
         let indexes = vpn.indexes();
         let mut table_ppn = self.root_ppn;
         for (level, index) in indexes.iter().enumerate() {
@@ -332,7 +336,7 @@ impl PageTable {
             if flags
                 .intersects(RVPTEFlags::READABLE | RVPTEFlags::WRITEABLE | RVPTEFlags::EXECUTABLE)
             {
-                return Some(pte.bits & 0x3ff);
+                return Some((level, pte.bits, pte.get_ppn().0));
             }
             if level == 2 {
                 return None;
@@ -348,6 +352,19 @@ impl PageTable {
     pub fn is_cow_page(&self, vpn: VirtPageNum) -> bool {
         self.find_valid_pte(vpn)
             .map(|pte| pte.get_flags().contains(RVPTEFlags::COW))
+            .unwrap_or(false)
+    }
+
+    /// Whether the current software leaf permits an ordinary U-mode fetch.
+    /// This is used only to distinguish a contradictory instruction-page
+    /// fault from a genuine missing/protected mapping before one bounded
+    /// retry.
+    pub fn is_user_executable(&self, vpn: VirtPageNum) -> bool {
+        self.find_valid_pte(vpn)
+            .map(|pte| {
+                let flags = pte.get_flags();
+                flags.contains(RVPTEFlags::EXECUTABLE | RVPTEFlags::USER)
+            })
             .unwrap_or(false)
     }
     /// Translate `VirtAddr` to `PhysAddr`，页表项无效和不存在返回None
@@ -556,6 +573,7 @@ impl PageTable {
         }
 
         self.map_by_pte_flags(vpn, ppn, pte_flags);
+        tlb_invalidate();
     }
     pub fn handle_mmap_write_page_fault(
         &self,
@@ -578,6 +596,7 @@ impl PageTable {
         if let Some(pte) = self.find_valid_pte(vpn) {
             let old_flag = pte.get_flags();
             pte.set_flags(pte_flags | old_flag);
+            tlb_invalidate();
         } else {
             panic!("found not(pfh)");
             self.map_by_pte_flags(vpn, 0.into(), pte_flags);

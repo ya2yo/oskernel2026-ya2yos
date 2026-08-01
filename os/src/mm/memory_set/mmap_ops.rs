@@ -13,7 +13,7 @@ use crate::arch::memory_layout::{
     MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_SPACE_SIZE,
 };
 use crate::arch::page_table::PageTable;
-use crate::arch::tlb::tlb_invalidate;
+use crate::arch::tlb::{instruction_fence, tlb_invalidate};
 use crate::fs::{File, FilePage, Inode, OSFile, OpenFlags};
 use crate::mm::group::GROUP_SHARE;
 use crate::mm::map_area::MapType;
@@ -846,6 +846,9 @@ impl MemorySetInner {
         }
         // 刷新 TLB 使新权限立即生效
         tlb_invalidate();
+        if map_perm.contains(MapPermission::X) {
+            instruction_fence();
+        }
     }
     pub fn handle_page_fault(
         &mut self,

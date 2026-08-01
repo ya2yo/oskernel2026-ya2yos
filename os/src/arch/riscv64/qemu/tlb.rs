@@ -8,3 +8,12 @@ pub fn tlb_invalidate() {
         asm!("sfence.vma");
     }
 }
+
+/// Make stores to newly populated executable pages visible to instruction
+/// fetches on the current hart.
+#[inline(always)]
+pub fn instruction_fence() {
+    unsafe {
+        asm!("fence.i");
+    }
+}

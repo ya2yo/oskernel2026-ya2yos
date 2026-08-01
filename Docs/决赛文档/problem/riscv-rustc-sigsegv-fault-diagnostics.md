@@ -11,28 +11,40 @@ RISC-V BuildStorm 的长日志先后将 `find-msvc-tools`、`unicode-ident` 报�
 
 ## 现象
 
-启用首版诊断的 RISC-V 240 秒 BuildStorm 复现，在 Cargo `Building 0/446` 时两次捕获同一故障地址：
+启用完整诊断的 RISC-V BuildStorm 复现，在 Cargo `Building 0/446` 和 `1/446` 时分别捕获：
 
 ```text
-cause=Exception(FetchInstructionPageFault)
-stval=sepc=0x2a0b92ec08
-vma=Mmap, map_type=Framed, map_perm_bits=26 (R|X|U)
-file_backed=true, resident_frame=true, mapped_ppn=Some(...)
+hart=2 pid=115 tid=124 stval=sepc=0x2a0b92df9a
+active_page_table_token=0x90725 memory_set_token=Some(90725)
+pte_flags=Some(5b) mapped_ppn=Some(681522)
+
+hart=3 pid=116 tid=159 stval=sepc=0x2a0b8caa60
+active_page_table_token=0x90994 memory_set_token=Some(90994)
+pte_flags=Some(5b) mapped_ppn=Some(713756)
 ```
 
-随后 Rust 的 SIGSEGV handler 被调用并打印 backtrace。地址 `0x2a0b92ec08` 位于可执行、
-file-backed 的动态库映射内；它不是此前输出中 `sigreturn_trampoline` 的内核符号地址。
+两次 VMA 均为 `Mmap/Framed`、逻辑权限 `R|X|U`、file-backed 且 resident。随后 Rust 的
+SIGSEGV handler 被调用并打印 backtrace；原始 fetch PC 是上述 `stval/sepc`，而不是 backtrace
+中出现的 `sigreturn_trampoline` restorer 地址。
 
 ## 分析
 
-页故障处理在故障后看到该 VPN 已有有效映射，因此不会再走按需加载；fetch fault 也不是
-COW/write-protect 的可修复类别。VMA 元数据宣称 `R|X|U`，页面已驻留，故“容量满后页面未
-安装”不是这两次 fault 的直接解释。
+`0x5b` 即 `V|R|X|U|A`。同时，触发 fault 的 hart `satp` token 与该进程 `MemorySet` token
+相同。因此这两次 fault 不是容量旁路导致的未映射页、不是叶子 PTE 缺少 `X/U`，也没有证据表明
+执行了错误的地址空间。页故障处理在故障后看到该 VPN 已有有效映射，故不会再走按需加载；fetch
+fault 也不是 COW/write-protect 的可修复类别。
 
-但原有 `translate()` 只返回 PPN，不能判断硬件叶子 PTE 是否缺少 `X`、`U` 或 `A` 位，也
-不能判断当前 hart 的 `satp` 是否正使用该进程的页表。信号 frame 中的 restorer 地址仅用于
-在 handler 返回时执行 `rt_sigreturn`；本次原始 fetch PC 已由 trap 日志单独记录，不能把
-backtrace 中的 restorer 地址当作原始故障地址。
+RISC-V 的 PTE 更新需要在重试访问前以 `sfence.vma` 使本 hart 的地址翻译失效。源码中
+`PageTable::activate()`、COW、`mprotect`、`munmap` 都已有本地 TLB 刷新，但
+`handle_mmap_read_page_fault()` 在安装新叶子 PTE 后直接返回，
+`handle_mmap_write_page_fault()` 在修改权限后也未刷新；匿名 `lazy_page_fault()` 的 `map_one()`
+路径同样缺失。一次取指缺页可以先安装正确 PTE，随后重试却仍命中硬件缓存的 non-present
+translation；第二次进入内核时软件页表已是 `0x5b`，于是被误判为不可恢复并向 rustc 投递
+`SIGSEGV`。这与两份现场完全吻合。
+
+该问题不需要 remote TLB shootdown：调度器仍限制同一 `MemorySet` 固定在一个 `home_hart`，本修复
+只处理发生 fault 的当前 hart。signal frame 中的 restorer 仅用于 handler 返回时执行
+`rt_sigreturn`，不能作为原始故障地址或根因。
 
 ## 修复
 
@@ -47,6 +59,16 @@ backtrace 中的 restorer 地址当作原始故障地址。
   signal-frame SP 和 alt-stack 状态。原始故障 PC 由 trap 行记录，frame 行明确标作
   `handler_sepc`，避免语义混淆。
 
+基于上述现场和调用路径，补齐缺页成功路径的本地 TLB 刷新：
+
+- RISC-V `handle_mmap_read_page_fault()` 在安装 file/shared PTE 后执行 `sfence.vma`；
+  `handle_mmap_write_page_fault()` 在更新 COW/dirty/permission 后同样刷新。
+- 通用 `lazy_page_fault()` 在 `map_one()` 成功后刷新，覆盖 ELF BSS、brk 与栈等匿名懒映射。
+- LoongArch 的 file mmap read 安装路径同步执行既有 `tlb_invalidate()`，维持两架构的缺页重试语义。
+
+没有改动 `MAX_FILE_PAGE_CACHE_PAGES`，没有设置 `RUST_MIN_STACK`，也没有把本地刷新扩散到
+进程创建期间的批量映射路径。
+
 完整 BuildStorm 复现使用：
 
 ```bash
@@ -59,13 +81,15 @@ rg -a -n -C 3 '\[fault-diagnostics\]|rustc interrupted by SIGSEGV' \
 
 ## 验证
 
-- 初版诊断的 240 秒 RISC-V QEMU 已复现两次上述 fetch fault，并确认日志在发送同步信号前写出。
-- 包含 `fault-diagnostics` 的 `special_make` 已在 RISC-V 与 LoongArch64 编译通过。
-- 默认 `make perf TARGET_ARCH=riscv64` 和 `make perf TARGET_ARCH=loongarch64` 通过；该
-  feature 默认关闭，正常缺页路径不扫描 VMA 或打印日志。
-- 加入 PTE/token 字段后的 180 秒 RISC-V 运行只到 `BUILDSTORM_TOOLCHAIN ok`，没有进入 Cargo
-  编译/故障窗口，故尚无新字段的真实 fault 样本，也未声称根因或完整 BuildStorm 通过。
+- 诊断版日志已复现两次上述 fetch fault，并确认日志在发送同步信号前写出。
+- `cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check` 通过。
+- 默认 `make TARGET_ARCH=riscv64`（同时构建 RISC-V、LoongArch64 release）和
+  `make TARGET_ARCH=riscv64 special_make KERNEL_EXTRA_FEATURES=perf,file-cache-capacity-test,fault-diagnostics`
+  通过。
+- 修复后的 120 秒 RISC-V QEMU 冒烟通过 `BUILDSTORM_TOOLCHAIN ok` 与
+  `BUILDSTORM_MINIBUILD ok`，timeout 前没有 `fault-diagnostics`、rustc `SIGSEGV`、`panic`、
+  `TFAIL` 或 `TBROK`。该样本尚停在 `pre-build tg-xtask`，未进入 Cargo 编译段，不能替代完整
+  BuildStorm 或证明长程随机错误已完全消失。
 
-下一次取得 PTE flags 后：缺 `X/U` 优先检查 mmap/mprotect 的页表更新；PTE 正确但 token
-不一致或跨 hart 复现则检查地址空间切换和 TLB shootdown；两者均正确时再追文件页内容、跳转目标
-或 Rust runtime 的 signal handler。
+后续应在固定镜像和参数下完成至少一次完整 BuildStorm；若仍出现 PTE 为 `V|R|X|U` 的 fetch fault，
+再记录 fence 前后的首次/重试 fault 次数，并审查所有非缺页的当前地址空间 PTE 更新路径。

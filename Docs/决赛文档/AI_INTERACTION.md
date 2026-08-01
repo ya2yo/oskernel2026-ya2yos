@@ -2236,3 +2236,18 @@
   `BUILDSTORM_TOOLCHAIN ok`，没有新 fault 样本、完整 BuildStorm 或根因修复结论。
 - **关联文档**：[问题复盘](./problem/riscv-rustc-sigsegv-fault-diagnostics.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### RISC-V demand PTE 安装的本地 TLB 刷新（8.1）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供含 PTE flags 与 page-table token 的新 `log.ans`，要求继续修复随机 rustc `SIGSEGV`。
+- **描述**：两次 fetch fault 的 `satp` 与 `MemorySet` token 一致，叶子 PTE 都是
+  `0x5b (V|R|X|U|A)`，且 VMA/file frame 已驻留，排除容量旁路、缺 X/U 和错误页表。检查发现 RISC-V
+  mmap demand PTE 安装与匿名 lazy map 成功后没有 local `sfence.vma`，因此重试可保留旧的 non-present
+  translation，第二次 trap 才会错误地转为 SIGSEGV。为 mmap read/write 更新和 anonymous lazy map 的成功路径
+  增加本 hart TLB 刷新；LoongArch file mmap read 路径同步。
+- **验证**：格式/补丁检查、双架构 release 构建和 RISC-V diagnostic feature 构建通过。120 秒 RISC-V QEMU
+  通过 `BUILDSTORM_TOOLCHAIN/MINIBUILD` 且无 fault/SIGSEGV/panic/TFAIL/TBROK；timeout 时尚未进入 Cargo，
+  因此完整 BuildStorm 稳定性仍待验收。
+- **关联文档**：[问题复盘](./problem/riscv-rustc-sigsegv-fault-diagnostics.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

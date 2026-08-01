@@ -277,14 +277,14 @@ impl PageTable {
             .filter(|pte| pte.get_flags().contains(LAPTEFlags::VALID))
             .map(|pte| pte.get_ppn())
     }
-    /// Return the raw leaf PTE flags for an already mapped virtual page.
-    /// This is diagnostic-only and keeps the architecture-specific layout
-    /// visible in a user-fault report.
+    /// Return the leaf PTE shape for an already mapped virtual page.
+    /// LoongArch user mappings are always 4 KiB leaves in this page table;
+    /// keep the same diagnostic tuple as RISC-V for cross-architecture logs.
     #[cfg(feature = "fault-diagnostics")]
-    pub fn translate_pte_flags(&self, vpn: VirtPageNum) -> Option<usize> {
+    pub fn translate_pte_diagnostic(&self, vpn: VirtPageNum) -> Option<(usize, usize, usize)> {
         self.find_pte(vpn)
             .filter(|pte| pte.get_flags().contains(LAPTEFlags::VALID))
-            .map(|pte| pte.get_flags().bits)
+            .map(|pte| (2, pte.bits, pte.get_ppn().0))
     }
     /// Translate the virtual address into its corresponding `PhysAddr` if mapped in current page table.
     /// `None` is returned if nothing is found.
@@ -488,6 +488,7 @@ impl PageTable {
         }
 
         self.map_by_pte_flags(vpn, ppn, pte_flags);
+        tlb_invalidate();
     }
     pub fn handle_mmap_write_page_fault(
         &self,

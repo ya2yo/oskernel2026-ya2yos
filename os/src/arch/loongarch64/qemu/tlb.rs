@@ -7,3 +7,12 @@ pub fn tlb_invalidate() {
         asm!("invtlb 0x0,$zero, $zero");
     }
 }
+
+/// Make newly populated executable pages visible to instruction fetches on
+/// the current hart.
+#[inline(always)]
+pub fn instruction_fence() {
+    unsafe {
+        asm!("ibar 0");
+    }
+}

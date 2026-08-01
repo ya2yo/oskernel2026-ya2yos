@@ -60,13 +60,18 @@ fn log_user_fault_signal(
     signal: SigSet,
 ) {
     let task = current_task().unwrap();
-    let (tid, pid, sepc, sp) = {
+    let (tid, pid, sepc, sp, return_sstatus) = {
         let task_inner = task.inner_lock();
+        #[cfg(target_arch = "riscv64")]
+        let return_sstatus = Some(task_inner.trap_cx().sstatus.bits());
+        #[cfg(not(target_arch = "riscv64"))]
+        let return_sstatus = None;
         (
             task.tid(),
             task.pid(),
             task_inner.trap_cx().get_sepc(),
             task_inner.trap_cx().get_sp(),
+            return_sstatus,
         )
     };
     let active_page_table_token = crate::arch::page_table::get_token_from_regs();
@@ -77,8 +82,11 @@ fn log_user_fault_signal(
     });
     let memory_set_token = diagnostic.map(|diagnostic| diagnostic.page_table_token);
     let pte_flags_bits = diagnostic.and_then(|diagnostic| diagnostic.pte_flags_bits);
+    let pte_leaf_level = diagnostic.and_then(|diagnostic| diagnostic.pte_leaf_level);
+    let pte_raw_bits = diagnostic.and_then(|diagnostic| diagnostic.pte_raw_bits);
+    let pte_leaf_ppn = diagnostic.and_then(|diagnostic| diagnostic.pte_leaf_ppn);
     warn!(
-        "[fault-diagnostics] user_fault_signal hart={} pid={} tid={} cause={:?} stval={:#x} sepc={:#x} sp={:#x} signal={:?} active_page_table_token={:#x} memory_set_token={:x?} pte_flags={:x?} diagnostic={:?}",
+        "[fault-diagnostics] user_fault_signal hart={} pid={} tid={} cause={:?} stval={:#x} sepc={:#x} sp={:#x} signal={:?} return_sstatus={:x?} active_page_table_token={:#x} memory_set_token={:x?} pte_flags={:x?} pte_leaf_level={:?} pte_raw={:x?} pte_leaf_ppn={:x?} diagnostic={:?}",
         hartid,
         pid,
         tid,
@@ -87,9 +95,13 @@ fn log_user_fault_signal(
         sepc,
         sp,
         signal,
+        return_sstatus,
         active_page_table_token,
         memory_set_token,
         pte_flags_bits,
+        pte_leaf_level,
+        pte_raw_bits,
+        pte_leaf_ppn,
         diagnostic,
     );
 }
@@ -117,6 +129,11 @@ pub fn trap_handler() {
     // );
     match cause {
         Trap::Exception(Exception::Syscall) => {
+            #[cfg(target_arch = "riscv64")]
+            current_task()
+                .unwrap()
+                .inner_lock()
+                .clear_instruction_fault_retry();
             // jump to next instruction anyway
             let mut cx = current_trap_cx();
             cx.origin_a0 = cx.get_a0();
@@ -167,9 +184,31 @@ pub fn trap_handler() {
                 let task = current_task().unwrap();
                 let process = &task.process;
                 let memory_set = process.memory_set_arc();
-                signal = if memory_set.mmap_file_page_beyond_eof(fault_va.floor()) {
+                let beyond_eof_before = memory_set.mmap_file_page_beyond_eof(fault_va.floor());
+                let handled =
+                    !beyond_eof_before && memory_set.handle_page_fault(fault_va.floor(), cause);
+                #[cfg(target_arch = "riscv64")]
+                let retry_present_instruction_fault = cause
+                    == Trap::Exception(Exception::FetchInstructionPageFault)
+                    && !handled
+                    && memory_set.is_user_executable(fault_va.floor())
+                    && task
+                        .inner_lock()
+                        .retry_present_instruction_fault(fault_va.floor());
+                #[cfg(not(target_arch = "riscv64"))]
+                let retry_present_instruction_fault = false;
+                signal = if beyond_eof_before {
                     Some(SigSet::SIGBUS)
-                } else if memory_set.handle_page_fault(fault_va.floor(), cause) {
+                } else if handled {
+                    #[cfg(target_arch = "riscv64")]
+                    task.inner_lock().clear_instruction_fault_retry();
+                    None
+                } else if retry_present_instruction_fault {
+                    #[cfg(target_arch = "riscv64")]
+                    {
+                        crate::arch::tlb::tlb_invalidate();
+                        crate::arch::tlb::instruction_fence();
+                    }
                     None
                 } else if memory_set.mmap_file_page_beyond_eof(fault_va.floor()) {
                     // The file may have been truncated after the initial
@@ -379,6 +418,14 @@ pub fn trap_return() {
         let trap_cx = current_trap_cx();
         #[cfg(target_arch = "riscv64")]
         {
+            // Every TaskControlBlock resumes a user process. A corrupted or
+            // stale SPP=Supervisor would make sret execute the user text in
+            // S-mode, where a valid U=1 executable PTE still raises an
+            // instruction page fault. Keep the architectural return mode
+            // explicit at the final common return point.
+            current_trap_cx()
+                .sstatus
+                .set_spp(riscv::register::sstatus::SPP::User);
             trap_cx.kernel_hartid = hart_id();
         }
         // let ptr = (trap_cx as *mut TrapContext) as usize;
