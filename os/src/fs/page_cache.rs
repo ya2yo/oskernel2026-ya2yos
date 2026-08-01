@@ -14,10 +14,17 @@ use crate::{arch::memory_layout::PAGE_SIZE, fs::Inode, mm::FrameTracker, utils::
 /// the lwext4 gate over common ELF and source-file mmap walks.
 const SEQUENTIAL_READAHEAD_MAX_PAGES: usize = 4;
 
-/// Bound one full-cache CLOCK pass. A single pressure event need not walk the
+/// Bound one active-CLOCK pass. A single pressure event need not walk the
 /// whole cache, and retaining the queue position lets later events continue
 /// where this one stopped.
 const EVICTION_SCAN_BUDGET: usize = 128;
+
+/// When all known candidates are dirty or still referenced outside the cache,
+/// retry only a small subset after a bounded number of capacity misses. This
+/// keeps a mmap-heavy workload from rescanning its entire pinned working set
+/// for every cold page.
+const EVICTION_DEFERRED_RETRY_BATCH: usize = 16;
+const EVICTION_DEFERRED_RETRY_MISS_INTERVAL: usize = 256;
 
 /// Keep the global page cache bounded even when one long-lived compiler walks
 /// large source and artifact files. 192K pages is 768 MiB with the current
@@ -81,6 +88,44 @@ enum EvictionState {
     InUse,
 }
 
+/// Candidate queues for clean-page eviction. Every resident page key lives in
+/// exactly one queue: `active` participates in normal CLOCK passes, while
+/// `deferred` holds pages that were recently dirty or externally referenced.
+///
+/// `retry_misses` is only examined while `active` is empty. It intentionally
+/// counts cache-pressure misses rather than ticks, so no timer or background
+/// worker is required to make deferred candidates eligible again after an mmap
+/// is released.
+struct EvictionQueues {
+    active: VecDeque<FilePageKey>,
+    deferred: VecDeque<FilePageKey>,
+    retry_misses: usize,
+}
+
+impl EvictionQueues {
+    const fn new() -> Self {
+        Self {
+            active: VecDeque::new(),
+            deferred: VecDeque::new(),
+            retry_misses: 0,
+        }
+    }
+
+    /// Move a deliberately small FIFO batch back to the CLOCK queue. The
+    /// caller has already checked the cooldown and holds both cache locks.
+    fn refill_active_from_deferred(&mut self) -> usize {
+        let retry_pages = self.deferred.len().min(EVICTION_DEFERRED_RETRY_BATCH);
+        for _ in 0..retry_pages {
+            let key = self
+                .deferred
+                .pop_front()
+                .expect("deferred eviction queue length changed while locked");
+            self.active.push_back(key);
+        }
+        retry_pages
+    }
+}
+
 /// Identifies the VFS path that requested a page-cache load.
 #[derive(Clone, Copy)]
 pub enum FilePageCacheSource {
@@ -129,11 +174,11 @@ pub struct FilePageCache {
     /// cold page is allocated or inserted, so concurrent publishers cannot
     /// push the cache beyond its configured capacity.
     page_count: AtomicUsize,
-    /// CLOCK order for pages present in `pages`. It stores keys rather than
-    /// page Arcs, so tracking a candidate never pins its frame. The only lock
-    /// order is `pages` then `eviction_candidates`; no path takes it in the
-    /// reverse order.
-    eviction_candidates: Mutex<VecDeque<FilePageKey>>,
+    /// CLOCK and deferred order for pages present in `pages`. They store keys
+    /// rather than page Arcs, so tracking a candidate never pins its frame.
+    /// The only lock order is `pages` then `eviction_queues`; no path takes it
+    /// in the reverse order.
+    eviction_queues: Mutex<EvictionQueues>,
 }
 
 impl FilePageCache {
@@ -142,7 +187,7 @@ impl FilePageCache {
         Self {
             pages: RwLock::new(BTreeMap::new()),
             page_count: AtomicUsize::new(0),
-            eviction_candidates: Mutex::new(VecDeque::new()),
+            eviction_queues: Mutex::new(EvictionQueues::new()),
         }
     }
 
@@ -200,11 +245,25 @@ impl FilePageCache {
     /// retain the frame rather than the `FilePage` wrapper.
     fn try_evict_one(&self) -> bool {
         let mut pages = self.pages.write();
-        let mut candidates = self.eviction_candidates.lock();
-        let scan_budget = candidates.len().min(EVICTION_SCAN_BUDGET);
+        let mut queues = self.eviction_queues.lock();
+
+        if queues.active.is_empty() && !queues.deferred.is_empty() {
+            if queues.retry_misses != 0 {
+                queues.retry_misses -= 1;
+                #[cfg(feature = "perf")]
+                crate::utils::perf::record_file_cache_eviction_cooldown_bypass();
+                return false;
+            }
+
+            let retry_pages = queues.refill_active_from_deferred();
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_file_cache_eviction_deferred_retry(retry_pages);
+        }
+
+        let scan_budget = queues.active.len().min(EVICTION_SCAN_BUDGET);
 
         for _ in 0..scan_budget {
-            let Some(key) = candidates.pop_front() else {
+            let Some(key) = queues.active.pop_front() else {
                 break;
             };
             #[cfg(feature = "perf")]
@@ -247,17 +306,17 @@ impl FilePageCache {
                 Some(EvictionState::SecondChance) => {
                     #[cfg(feature = "perf")]
                     crate::utils::perf::record_file_cache_eviction_second_chance();
-                    candidates.push_back(key);
+                    queues.active.push_back(key);
                 }
                 Some(EvictionState::Dirty) => {
                     #[cfg(feature = "perf")]
                     crate::utils::perf::record_file_cache_eviction_dirty_skip();
-                    candidates.push_back(key);
+                    queues.deferred.push_back(key);
                 }
                 Some(EvictionState::InUse) => {
                     #[cfg(feature = "perf")]
                     crate::utils::perf::record_file_cache_eviction_in_use_skip();
-                    candidates.push_back(key);
+                    queues.deferred.push_back(key);
                 }
                 None => {
                     // Invalidation removes queue entries while holding the
@@ -265,6 +324,10 @@ impl FilePageCache {
                     // cache-management changes. Do not requeue a stale key.
                 }
             }
+        }
+
+        if queues.active.is_empty() && !queues.deferred.is_empty() {
+            queues.retry_misses = EVICTION_DEFERRED_RETRY_MISS_INTERVAL;
         }
         false
     }
@@ -287,7 +350,7 @@ impl FilePageCache {
             Entry::Occupied(_) => false,
         };
         if inserted {
-            self.eviction_candidates.lock().push_back(key);
+            self.eviction_queues.lock().active.push_back(key);
         }
         inserted
     }
@@ -672,11 +735,14 @@ impl FilePageCache {
         }
         if removed.0 != 0 {
             self.page_count.fetch_sub(removed.0, Ordering::AcqRel);
-            self.eviction_candidates.lock().retain(|key| {
+            let mut queues = self.eviction_queues.lock();
+            let retain = |key: &FilePageKey| {
                 key.path.as_ref() != path.as_ref()
                     || key.page_index < first
                     || key.page_index >= last
-            });
+            };
+            queues.active.retain(retain);
+            queues.deferred.retain(retain);
         }
     }
 
@@ -686,9 +752,10 @@ impl FilePageCache {
         if let Some(file_pages) = pages.remove(path) {
             self.page_count
                 .fetch_sub(file_pages.len(), Ordering::AcqRel);
-            self.eviction_candidates
-                .lock()
-                .retain(|key| key.path.as_ref() != path);
+            let mut queues = self.eviction_queues.lock();
+            let retain = |key: &FilePageKey| key.path.as_ref() != path;
+            queues.active.retain(retain);
+            queues.deferred.retain(retain);
         }
     }
 }

@@ -497,6 +497,8 @@ pub(crate) static FILE_CACHE_EVICTION_SCANS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_EVICTION_SECOND_CHANCES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_EVICTION_DIRTY_SKIPS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_EVICTION_IN_USE_SKIPS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static FILE_CACHE_EVICTION_DEFERRED_RETRY_PAGES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static FILE_CACHE_EVICTION_COOLDOWN_BYPASSES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_PAGE_FAULTS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_READAHEAD_OPS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_READAHEAD_PAGES: AtomicUsize = AtomicUsize::new(0);
@@ -1637,6 +1639,21 @@ pub fn record_file_cache_eviction_dirty_skip() {
 #[inline]
 pub fn record_file_cache_eviction_in_use_skip() {
     add(&FILE_CACHE_EVICTION_IN_USE_SKIPS, 1);
+}
+
+/// Count deferred candidates that were reintroduced to the active CLOCK queue
+/// for a bounded retry after their cooldown expired.
+#[inline]
+pub fn record_file_cache_eviction_deferred_retry(pages: usize) {
+    add(&FILE_CACHE_EVICTION_DEFERRED_RETRY_PAGES, pages);
+}
+
+/// Count capacity misses that bypassed the active scan while all candidates
+/// were deferred. This is distinct from `capacity_bypass_pages`, which counts
+/// cold pages not retained by the cache regardless of the reason.
+#[inline]
+pub fn record_file_cache_eviction_cooldown_bypass() {
+    add(&FILE_CACHE_EVICTION_COOLDOWN_BYPASSES, 1);
 }
 
 #[inline]

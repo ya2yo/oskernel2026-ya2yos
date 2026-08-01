@@ -9128,3 +9128,39 @@ crate 数不是等量工作，且两次独立运行的就绪 crate 列表不同�
 
 本轮只分析既有日志并更新文档，未修改内核或用户态代码，未运行构建、QEMU 或完整 BuildStorm。文档变更执行
 `git diff --check`。
+
+## 2026-08-01：文件页缓存 `in_use` 候选退避
+
+### 用户输入
+
+维护者要求下一轮优先处理页缓存候选连续全为 `in_use` 的情形：避免每个 miss 固定扫描 128 个候选，并改进候选项
+选择算法；明确不再以测试 `MAX_FILE_PAGE_CACHE_PAGES` 的最佳值为主线。
+
+### 分析与采纳结论
+
+2K feature 的旧 `log.ans` 在 `t=31.289s` 已有 `25790` 个 capacity bypass 却执行 `3240417` 次扫描；到
+`t=261.966s`，`eviction_scans=25690228` 中 `25650541` 次为 `in_use`。可回收页数早已停在 `16316`，说明单队列
+CLOCK 把近期不可回收项重新放回热扫描路径，造成近似每个 miss 128 次无效工作。
+
+采纳固定 192K 页经验上限和双队列候选选择：新页/二次机会页留在 active，dirty/`in_use` 页转入 deferred；active
+耗尽后冷却 256 个容量 miss，随后只重新检查 16 个 deferred 项。淘汰条件继续同时检查 clean、`FilePage` 引用和
+frame 引用，保留 capacity bypass，不进入 lwext4 或 MemorySet 写锁。新增 deferred retry/cooldown perf 计数。
+
+新 2K RISC-V 样本在 `t=33.816s` 记录 `capacity_bypass_pages=35318`、`eviction_scans=17232`、
+`eviction_cooldown_bypasses=32414`、`eviction_deferred_retry_pages=2016`，证明退避生效。该运行仅到
+`BUILDSTORM_TOOLCHAIN ok`，没有覆盖旧样本约 `t=161.948s` 的 rustc SIGSEGV；不将扫描优化视为该 SIGSEGV 的修复，
+也不采用 `RUST_MIN_STACK` 掩盖异常。
+
+### 修改文件
+
+`os/src/fs/page_cache.rs`、`os/src/utils/perf/fs.rs`、`os/src/utils/perf/report.rs`、
+`Docs/决赛文档/优化方案.md`、`Docs/决赛文档/problem/file-page-cache-eviction-inuse-backoff.md`、
+`Docs/决赛文档/README.md`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log`、
+`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check`、RISC-V/LoongArch64 `make perf` 和
+RISC-V `special_make KERNEL_EXTRA_FEATURES=perf,file-cache-capacity-test` 均通过。沙箱外的 60 秒 RISC-V QEMU 定向
+运行已输出新计数，无 panic；外层 timeout 前未完成 BuildStorm，也未覆盖 rustc SIGSEGV 阶段。运行后清理了遗留
+`disk.img`。

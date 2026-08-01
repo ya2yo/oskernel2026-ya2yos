@@ -2208,3 +2208,17 @@
   wall-clock 验收待后续执行。
 - **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### 文件页缓存 `in_use` 候选退避（8.1）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求将满载页缓存的优化方向从容量 A/B 转为避免 `in_use` 候选在每个 miss 重复扫描。
+- **描述**：2K 压力日志显示旧单队列 CLOCK 在没有更多安全页可回收后，约 99.85% 的 2,569 万次扫描都是
+  `in_use`。实现 active/deferred 双队列：dirty 或外部引用候选离开热扫描路径；active 清空后每 256 个 capacity
+  miss 冷却，再仅复检 16 项。新增 `eviction_deferred_retry_pages` 和 `eviction_cooldown_bypasses`。新 RISC-V
+  样本在 35,318 个 bypass 时仅扫描 17,232 项，其中 32,414 次走冷却 bypass。保留 clean、FilePage/frame 双引用
+  判定与原有 bypass 语义。
+- **验证边界**：RISC-V、LoongArch64 perf 构建和 2K feature 构建通过；RISC-V 60 秒 QEMU 无 panic，但只到
+  `BUILDSTORM_TOOLCHAIN ok`。旧 rustc SIGSEGV 阶段未覆盖，未设置 `RUST_MIN_STACK`，未将其宣称为已修复。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/file-page-cache-eviction-inuse-backoff.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
