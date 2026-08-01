@@ -172,14 +172,36 @@ pub trait Inode: Send + Sync {
     fn read_all(&self) -> Result<Vec<u8>, SysErrNo> {
         unimplemented!("Inode::read_all");
     }
+    /// 返回 inode 当前 VFS 路径的独立快照。
+    ///
+    /// 这是通用路径接口。调用者可以长期持有、修改返回的 `String`，或将其传给
+    /// 基于路径的文件系统 API，而无需继续借用 inode。若后端以
+    /// `RwLock<Arc<str>>` 保存路径，实现通常会短暂取得读锁，然后分配新的
+    /// `String` 并复制全部路径字节，最后释放锁。
+    ///
+    /// 当调用方需要独立拥有的路径，或后端不能提供可共享的缓存键时使用此方法。
+    /// 若 `page_cache_path()` 可用，不要在文件页缓存的高频查询中反复调用本方法：
+    /// 每次调用都可能为较长路径分配内存并复制字节。
     fn path(&self) -> String {
         unimplemented!("Inode::path");
     }
-    /// Return a shareable pathname for file-page-cache lookups.
+    /// 返回供文件页缓存查询共享使用的路径。
     ///
-    /// Backends whose VFS-side pathname changes only on rename can return a
-    /// shared allocation here.  The default preserves the existing path()
-    /// fallback for filesystems that do not maintain one.
+    /// 这是缓存键优化接口，不是通用路径接口。后端若以 `Arc<str>` 保存当前 VFS
+    /// 路径，可返回 `Some(arc.clone())`：clone 只增加 `Arc` 的引用计数，既不分配
+    /// 内存，也不复制路径字节。调用方拥有返回的 `Arc`，而不是持锁的 `&str` 引用，
+    /// 因此后端可以在页缓存查询前释放内部锁。
+    ///
+    /// `path()` 和 `page_cache_path()` 可以读取同一个内部路径字段，但所有权与开销
+    /// 不同：
+    ///
+    /// - `path()` 返回包含路径字节完整副本的新 `String`。
+    /// - `page_cache_path()` 返回共享相同路径字节的 `Arc<str>` clone。
+    ///
+    /// 仅当返回值与 [`FilePageCache`](crate::fs::FilePageCache) 的键完全一致，且后端
+    /// 会在 VFS 路径变化时同步更新它，才应返回 `Some`。路径并非 inode 身份：rename、
+    /// unlink 后重建、truncate 和写入仍须遵守已有的页缓存失效规则。默认返回 `None`
+    /// 以兼容未维护共享路径的后端；调用方此时必须回退到 `path()`。
     fn page_cache_path(&self) -> Option<Arc<str>> {
         None
     }
