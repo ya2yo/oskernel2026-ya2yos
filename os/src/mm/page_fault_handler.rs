@@ -75,7 +75,9 @@ fn map_file_page(
     true
 }
 
-///mmap写触发的lazy alocation，直接新分配帧
+// ===================== Public Interface =========================
+
+/// mmap写触发的lazy alocation，直接新分配帧
 /// Returns true on success, false if OOM (caller should SIGSEGV).
 pub fn mmap_write_page_fault(
     va: VirtAddr,
