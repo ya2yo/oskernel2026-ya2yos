@@ -9021,3 +9021,37 @@ BuildStorm 结束标记。P18.2.2 已生效：`regular_no_lookup_stat=0`，实�
 
 `cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check` 通过。Docker 生成的只读目录未移动
 或修改；双架构链接、目录 rename/rmdir 定向语义回归和新运行样本待后续完成。
+
+## 2026-08-01：`tmp_03/tmp_04` 后段 BuildStorm 吞吐取证与计划收敛
+
+### 用户输入
+
+维护者要求分析 `tmp_03.ans` 和 `tmp_04.ans`，更新《优化方案》；现象是前约十分钟可见约 40 个 crate，
+而约三十分钟只有约 60 个，后段性能下滑严重。
+
+### 分析与采纳结论
+
+`tmp_03` 最后为 `t=500354ms`、`Building 41/446`；`tmp_04` 最后为 `t=1692421ms`、`Building 64/446`。
+`tmp_04` 在 `t=822028ms` 已为 `52/446`，其后 870.393 秒只新增 12 个，观察吞吐约从前段
+`3.80 crates/min` 降至 `0.83 crates/min`。两份日志无 panic/TFAIL/TBROK/ERROR/SIGSEGV/rustc error，
+但没有完整 BuildStorm END/shutdown，不能报告端到端耗时。
+
+crate 数不是等量工作，且两次独立运行的就绪 crate 列表不同，日志也未证明 commit、镜像、缓存冷热和宿主
+负载一致；`tmp_04` 后段正进入 `cmake`/`aws-lc-sys` 等重型 build-script/C 编译。因此不将约 78% 的
+观测降幅直接归因于内核。当前最强的内核证据是末尾 `37.972s` interval 内 `EXT4_OP_LOCK` 主分类持锁约
+`22.379s`、排队等待约 `194.961s`，并有 `835` 次排队和 `194.627s` handoff wait；公平 gate 已消除
+百秒级插队饥饿，但长 transaction 的串行化仍是首要候选。页缓存 `80280/98304`、capacity bypass 为 0，
+不扩大缓存。P15.2/P18.2.2 的局部 epoch/创建 stat 复用分支已有方向性证据，不再作为吞吐主线。
+
+采纳 P19/P20：先为已有 lwext4 细分阶段计数增加 interval delta，再在固定 commit/镜像/QEMU/冷启动环境完成
+至少两次带外部 wall-clock 的完整 BuildStorm，按固定 Cargo 检查点对齐子阶段、gate 指标与重型 build-script。
+
+### 修改文件
+
+`Docs/决赛文档/优化方案.md`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log`、
+`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+本轮只分析既有日志并更新文档，未修改内核或用户态代码，未运行构建、QEMU 或完整 BuildStorm。文档变更将执行
+`git diff --check`；P19 的计数实现和 P20 的完整性能复跑留待后续工作。

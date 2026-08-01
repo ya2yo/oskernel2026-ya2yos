@@ -2165,3 +2165,17 @@
   local/global 比例、目录 epoch cache、实际 fstat 与 fstat lock wait/hold，完整结束标记前不报告端到端加速。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_03/tmp_04` 后段 BuildStorm 吞吐归因（8.1）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析十分钟与约三十分钟 BuildStorm 输出，并调整当前优化方案。
+- **描述**：`tmp_04` 从 `t=822.028s` 的 `52/446` 到 `t=1692.421s` 的 `64/446`，后段观察吞吐约
+  `0.83 crates/min`，低于到达 52 个前约 `3.80 crates/min`。末尾 37.972 秒 interval 中，lwext4
+  mount-wide gate 主分类持锁约 22.379 秒、累计排队等待约 194.961 秒，仍有 835 次排队；公平 handoff 的累计
+  守恒正常，没有恢复百秒级饥饿。页缓存未触顶，目录局部 epoch 和创建 stat 复用均已有方向性证据。
+  由于独立运行的 Cargo DAG、缓存和宿主条件未受控，且后段出现 `cmake`/`aws-lc-sys` 等重型阶段，未把 crates/min
+  降幅直接宣称为内核回归。计划先补 lwext4 子阶段 interval delta，再固定环境完成两次完整 wall-clock 验收。
+- **验证边界**：本轮仅更新文档，不修改代码或运行 QEMU；完整 BuildStorm、P19 构建和文件系统语义回归待后续执行。
+- **关联文档**：[优化方案](./优化方案.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
