@@ -1,6 +1,10 @@
-use alloc::{collections::btree_map::Entry, collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{
+    collections::{btree_map::Entry, BTreeMap, VecDeque},
+    sync::Arc,
+    vec::Vec,
+};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use spin::RwLock;
+use spin::{Mutex, RwLock};
 
 use crate::{arch::memory_layout::PAGE_SIZE, fs::Inode, mm::FrameTracker, utils::SysErrNo};
 
@@ -9,12 +13,18 @@ use crate::{arch::memory_layout::PAGE_SIZE, fs::Inode, mm::FrameTracker, utils::
 /// a fixed capacity but no eviction policy, while 16 KiB is enough to amortize
 /// the lwext4 gate over common ELF and source-file mmap walks.
 const SEQUENTIAL_READAHEAD_MAX_PAGES: usize = 4;
+
+/// Bound one full-cache CLOCK pass. A single pressure event need not walk the
+/// whole cache, and retaining the queue position lets later events continue
+/// where this one stopped.
+const EVICTION_SCAN_BUDGET: usize = 128;
+
 /// Keep the global page cache bounded even when one long-lived compiler walks
-/// large source and artifact files. This is 384 MiB with the current 4 KiB
-/// page size, leaving room for the mmap working set while permitting normal
-/// read caching above the former 8 MiB per-file threshold.
+/// large source and artifact files. 192K pages is 768 MiB with the current
+/// 4 KiB page size. The precise limit is a conservative memory budget rather
+/// than a tuning axis: when it is reached, unused clean pages are reclaimed.
 #[cfg(not(feature = "file-cache-capacity-test"))]
-const MAX_FILE_PAGE_CACHE_PAGES: usize = 96 * 1024;
+const MAX_FILE_PAGE_CACHE_PAGES: usize = 192 * 1024;
 
 /// A deliberately small capacity for the directed QEMU regression case. It
 /// leaves enough room to start Bash, then exposes the capacity-bypass mmap
@@ -50,12 +60,26 @@ pub struct FilePage {
     pub valid_len: usize,
     /// 页内容是否已经被修改但尚未同步到底层文件。
     dirty: AtomicBool,
+    /// A CLOCK reference bit. Cache lookups set it without taking the cache
+    /// write lock; a full-cache scan clears it once before considering the
+    /// page for eviction on a later pass.
+    referenced: AtomicBool,
 }
 
 /// Pages belonging to one pathname.  Grouping the page number beneath the
 /// pathname avoids comparing that pathname repeatedly while a read or mmap
 /// walk probes adjacent pages from the same file.
 type FilePages = BTreeMap<usize, Arc<FilePage>>;
+
+/// Result of inspecting one CLOCK candidate while the page-cache write lock is
+/// held. It deliberately contains no page reference, so an eviction decision
+/// does not change the reference counts it is checking.
+enum EvictionState {
+    Evict,
+    SecondChance,
+    Dirty,
+    InUse,
+}
 
 /// Identifies the VFS path that requested a page-cache load.
 #[derive(Clone, Copy)]
@@ -78,6 +102,16 @@ impl FilePage {
     pub fn is_dirty(&self) -> bool {
         self.dirty.load(Ordering::Relaxed)
     }
+
+    #[inline]
+    fn mark_referenced(&self) {
+        self.referenced.store(true, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn take_reference(&self) -> bool {
+        self.referenced.swap(false, Ordering::AcqRel)
+    }
 }
 
 /// 基于文件路径和页号组织的全局文件页缓存。
@@ -95,6 +129,11 @@ pub struct FilePageCache {
     /// cold page is allocated or inserted, so concurrent publishers cannot
     /// push the cache beyond its configured capacity.
     page_count: AtomicUsize,
+    /// CLOCK order for pages present in `pages`. It stores keys rather than
+    /// page Arcs, so tracking a candidate never pins its frame. The only lock
+    /// order is `pages` then `eviction_candidates`; no path takes it in the
+    /// reverse order.
+    eviction_candidates: Mutex<VecDeque<FilePageKey>>,
 }
 
 impl FilePageCache {
@@ -103,6 +142,7 @@ impl FilePageCache {
         Self {
             pages: RwLock::new(BTreeMap::new()),
             page_count: AtomicUsize::new(0),
+            eviction_candidates: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -146,6 +186,112 @@ impl FilePageCache {
         self.page_count.fetch_sub(1, Ordering::AcqRel);
     }
 
+    /// Reserve one slot, reclaiming at most one safely disposable page when
+    /// the cache is full. A concurrent publisher can win the released slot;
+    /// in that case the caller retains the existing capacity-bypass behavior.
+    #[inline]
+    fn reserve_page_or_evict(&self) -> bool {
+        self.try_reserve_page() || (self.try_evict_one() && self.try_reserve_page())
+    }
+
+    /// Remove one cold clean page which is neither being prepared by a caller
+    /// nor mapped by a VMA. `FilePage` references protect in-flight users;
+    /// `FrameTracker` references protect mmap and group-shared mappings, which
+    /// retain the frame rather than the `FilePage` wrapper.
+    fn try_evict_one(&self) -> bool {
+        let mut pages = self.pages.write();
+        let mut candidates = self.eviction_candidates.lock();
+        let scan_budget = candidates.len().min(EVICTION_SCAN_BUDGET);
+
+        for _ in 0..scan_budget {
+            let Some(key) = candidates.pop_front() else {
+                break;
+            };
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_file_cache_eviction_scan();
+
+            let state = pages
+                .get(key.path.as_ref())
+                .and_then(|file_pages| file_pages.get(&key.page_index))
+                .map(|page| {
+                    if page.take_reference() {
+                        EvictionState::SecondChance
+                    } else if page.is_dirty() {
+                        EvictionState::Dirty
+                    } else if Arc::strong_count(page) != 1 || Arc::strong_count(&page.frame) != 1 {
+                        EvictionState::InUse
+                    } else {
+                        EvictionState::Evict
+                    }
+                });
+
+            match state {
+                Some(EvictionState::Evict) => {
+                    let (removed, file_empty) = {
+                        let file_pages = pages
+                            .get_mut(key.path.as_ref())
+                            .expect("CLOCK candidate disappeared while page cache write lock held");
+                        let removed = file_pages.remove(&key.page_index);
+                        (removed, file_pages.is_empty())
+                    };
+                    if file_empty {
+                        pages.remove(key.path.as_ref());
+                    }
+                    debug_assert!(removed.is_some());
+                    drop(removed);
+                    self.page_count.fetch_sub(1, Ordering::AcqRel);
+                    #[cfg(feature = "perf")]
+                    crate::utils::perf::record_file_cache_eviction();
+                    return true;
+                }
+                Some(EvictionState::SecondChance) => {
+                    #[cfg(feature = "perf")]
+                    crate::utils::perf::record_file_cache_eviction_second_chance();
+                    candidates.push_back(key);
+                }
+                Some(EvictionState::Dirty) => {
+                    #[cfg(feature = "perf")]
+                    crate::utils::perf::record_file_cache_eviction_dirty_skip();
+                    candidates.push_back(key);
+                }
+                Some(EvictionState::InUse) => {
+                    #[cfg(feature = "perf")]
+                    crate::utils::perf::record_file_cache_eviction_in_use_skip();
+                    candidates.push_back(key);
+                }
+                None => {
+                    // Invalidation removes queue entries while holding the
+                    // same locks, so this is only defensive against future
+                    // cache-management changes. Do not requeue a stale key.
+                }
+            }
+        }
+        false
+    }
+
+    /// Publish a page for which the caller already owns a cache-slot
+    /// reservation. The map write lock serializes insertion with invalidation;
+    /// enqueue after the map entry exists so every queued key is live.
+    fn publish_reserved_page(&self, page: Arc<FilePage>) -> bool {
+        let key = page.key.clone();
+        let mut pages = self.pages.write();
+        let inserted = match pages
+            .entry(key.path.clone())
+            .or_default()
+            .entry(key.page_index)
+        {
+            Entry::Vacant(entry) => {
+                entry.insert(page);
+                true
+            }
+            Entry::Occupied(_) => false,
+        };
+        if inserted {
+            self.eviction_candidates.lock().push_back(key);
+        }
+        inserted
+    }
+
     #[inline]
     fn record_capacity_bypass(&self, pages: usize) {
         #[cfg(feature = "perf")]
@@ -154,15 +300,29 @@ impl FilePageCache {
         let _ = pages;
     }
 
+    /// Clone a cache entry and mark it as recently used. The reference bit is
+    /// deliberately updated after cloning: that clone itself prevents a
+    /// concurrent CLOCK pass from reclaiming the page before the caller gets
+    /// it.
+    #[inline]
+    fn lookup_page(&self, path: &str, page_index: usize) -> Option<Arc<FilePage>> {
+        let page = self
+            .pages
+            .read()
+            .get(path)
+            .and_then(|pages| pages.get(&page_index))
+            .cloned();
+        if let Some(page) = page.as_ref() {
+            page.mark_referenced();
+        }
+        page
+    }
+
     /// 查找指定文件路径和页号对应的缓存页。
     ///
     /// 如果页尚未加载到缓存中，则返回 `None`。
     pub fn get(&self, path: &str, page_index: usize) -> Option<Arc<FilePage>> {
-        self.pages
-            .read()
-            .get(path)
-            .and_then(|pages| pages.get(&page_index))
-            .cloned()
+        self.lookup_page(path, page_index)
     }
 
     /// Look up a page with a path allocation shared by the caller.
@@ -171,11 +331,7 @@ impl FilePageCache {
     /// an `Arc<str>` lets those probes borrow the same pathname without
     /// allocating and copying it for every lookup.
     pub fn get_shared(&self, path: &Arc<str>, page_index: usize) -> Option<Arc<FilePage>> {
-        self.pages
-            .read()
-            .get(path.as_ref())
-            .and_then(|pages| pages.get(&page_index))
-            .cloned()
+        self.lookup_page(path.as_ref(), page_index)
     }
 
     /// Look up a cached page through the inode's stable cache pathname.
@@ -266,7 +422,7 @@ impl FilePageCache {
             {
                 continue;
             }
-            if !self.try_reserve_page() {
+            if !self.reserve_page_or_evict() {
                 self.record_capacity_bypass(1);
                 continue;
             }
@@ -281,16 +437,9 @@ impl FilePageCache {
                 frame,
                 valid_len,
                 dirty: AtomicBool::new(false),
+                referenced: AtomicBool::new(true),
             });
-            let mut pages = self.pages.write();
-            let inserted = match pages.entry(path.clone()).or_default().entry(page_index) {
-                Entry::Vacant(entry) => {
-                    entry.insert(page);
-                    true
-                }
-                Entry::Occupied(_) => false,
-            };
-            if !inserted {
+            if !self.publish_reserved_page(page) {
                 self.release_page_reservation();
             }
         }
@@ -331,13 +480,7 @@ impl FilePageCache {
             page_index,
         };
 
-        if let Some(page) = self
-            .pages
-            .read()
-            .get(path.as_ref())
-            .and_then(|pages| pages.get(&page_index))
-            .cloned()
-        {
+        if let Some(page) = self.lookup_page(path.as_ref(), page_index) {
             #[cfg(feature = "perf")]
             {
                 crate::utils::perf::record_file_cache_hit();
@@ -442,42 +585,55 @@ impl FilePageCache {
                 frame,
                 valid_len,
                 dirty: AtomicBool::new(false),
+                referenced: AtomicBool::new(true),
             }));
         }
         let page = loaded_pages.remove(0);
 
-        let mut pages = self.pages.write();
-        if let Some(existing) = pages
-            .get(path.as_ref())
-            .and_then(|file_pages| file_pages.get(&page_index))
-            .cloned()
-        {
+        if let Some(existing) = self.lookup_page(path.as_ref(), page_index) {
             #[cfg(feature = "perf")]
             crate::utils::perf::record_file_cache_load_race();
             return Ok(existing);
         }
-        if !self.try_reserve_page() {
+        if !self.reserve_page_or_evict() {
             self.record_capacity_bypass(1 + loaded_pages.len());
             return Ok(page);
         }
-        let file_pages = pages.entry(path.clone()).or_default();
-        file_pages.insert(page_index, page.clone());
+        if !self.publish_reserved_page(page.clone()) {
+            self.release_page_reservation();
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_file_cache_load_race();
+            if let Some(existing) = self.lookup_page(path.as_ref(), page_index) {
+                return Ok(existing);
+            }
+            return Ok(page);
+        }
+
         let mut readahead_pages = 0;
         let mut readahead_bytes = 0;
         let mut readahead = loaded_pages.into_iter();
         while let Some(readahead_page) = readahead.next() {
             let readahead_page_index = readahead_page.key.page_index;
-            if !file_pages.contains_key(&readahead_page_index) {
-                if !self.try_reserve_page() {
-                    self.record_capacity_bypass(1 + readahead.len());
-                    break;
-                }
+            if self
+                .pages
+                .read()
+                .get(path.as_ref())
+                .is_some_and(|file_pages| file_pages.contains_key(&readahead_page_index))
+            {
+                continue;
+            }
+            if !self.reserve_page_or_evict() {
+                self.record_capacity_bypass(1 + readahead.len());
+                break;
+            }
+            let readahead_len = readahead_page.valid_len;
+            if self.publish_reserved_page(readahead_page) {
                 readahead_pages += 1;
-                readahead_bytes += readahead_page.valid_len;
-                file_pages.insert(readahead_page_index, readahead_page);
+                readahead_bytes += readahead_len;
+            } else {
+                self.release_page_reservation();
             }
         }
-        drop(pages);
         #[cfg(not(feature = "perf"))]
         let _ = (readahead_pages, readahead_bytes);
         #[cfg(feature = "perf")]
@@ -516,14 +672,23 @@ impl FilePageCache {
         }
         if removed.0 != 0 {
             self.page_count.fetch_sub(removed.0, Ordering::AcqRel);
+            self.eviction_candidates.lock().retain(|key| {
+                key.path.as_ref() != path.as_ref()
+                    || key.page_index < first
+                    || key.page_index >= last
+            });
         }
     }
 
     /// 失效指定文件路径的全部缓存页。
     pub fn invalidate_path(&self, path: &str) {
-        if let Some(file_pages) = self.pages.write().remove(path) {
+        let mut pages = self.pages.write();
+        if let Some(file_pages) = pages.remove(path) {
             self.page_count
                 .fetch_sub(file_pages.len(), Ordering::AcqRel);
+            self.eviction_candidates
+                .lock()
+                .retain(|key| key.path.as_ref() != path);
         }
     }
 }

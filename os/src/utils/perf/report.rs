@@ -368,10 +368,15 @@ pub(super) fn emit_report(now: usize) {
         FILE_CACHE_LOAD_RACES.load(Ordering::Relaxed),
     );
     println!(
-        "[perf] file_cache_capacity resident_pages={} max_pages={} capacity_bypass_pages={}",
+        "[perf] file_cache_capacity resident_pages={} max_pages={} capacity_bypass_pages={} evictions={} eviction_scans={} eviction_second_chances={} eviction_dirty_skips={} eviction_in_use_skips={}",
         FILE_PAGE_CACHE.cached_page_count(),
         FILE_PAGE_CACHE.max_cached_pages(),
         FILE_CACHE_CAPACITY_BYPASS_PAGES.load(Ordering::Relaxed),
+        FILE_CACHE_EVICTIONS.load(Ordering::Relaxed),
+        FILE_CACHE_EVICTION_SCANS.load(Ordering::Relaxed),
+        FILE_CACHE_EVICTION_SECOND_CHANCES.load(Ordering::Relaxed),
+        FILE_CACHE_EVICTION_DIRTY_SKIPS.load(Ordering::Relaxed),
+        FILE_CACHE_EVICTION_IN_USE_SKIPS.load(Ordering::Relaxed),
     );
     println!(
         "[perf] inode_read_source mmap_cache_fill_ops={} mmap_cache_fill_bytes={} mmap_demand_ops={} mmap_demand_bytes={} mmap_prefetch_ops={} mmap_prefetch_bytes={} page_cached_cold_run_ops={} page_cached_cold_run_bytes={} direct_bypass_ops={} direct_bypass_bytes={} other_ops={} other_bytes={}",

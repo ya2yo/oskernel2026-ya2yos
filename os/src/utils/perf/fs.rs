@@ -492,6 +492,11 @@ pub(crate) static FILE_CACHE_READ_BYPASS_NONREGULAR_BYTES: AtomicUsize = AtomicU
 pub(crate) static FILE_CACHE_LOAD_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_LOAD_RACES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_CAPACITY_BYPASS_PAGES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static FILE_CACHE_EVICTIONS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static FILE_CACHE_EVICTION_SCANS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static FILE_CACHE_EVICTION_SECOND_CHANCES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static FILE_CACHE_EVICTION_DIRTY_SKIPS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static FILE_CACHE_EVICTION_IN_USE_SKIPS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_PAGE_FAULTS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_READAHEAD_OPS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static FILE_CACHE_READAHEAD_PAGES: AtomicUsize = AtomicUsize::new(0);
@@ -1607,6 +1612,31 @@ pub fn record_file_cache_load_race() {
 #[inline]
 pub fn record_file_cache_capacity_bypass(pages: usize) {
     add(&FILE_CACHE_CAPACITY_BYPASS_PAGES, pages);
+}
+
+#[inline]
+pub fn record_file_cache_eviction() {
+    add(&FILE_CACHE_EVICTIONS, 1);
+}
+
+#[inline]
+pub fn record_file_cache_eviction_scan() {
+    add(&FILE_CACHE_EVICTION_SCANS, 1);
+}
+
+#[inline]
+pub fn record_file_cache_eviction_second_chance() {
+    add(&FILE_CACHE_EVICTION_SECOND_CHANCES, 1);
+}
+
+#[inline]
+pub fn record_file_cache_eviction_dirty_skip() {
+    add(&FILE_CACHE_EVICTION_DIRTY_SKIPS, 1);
+}
+
+#[inline]
+pub fn record_file_cache_eviction_in_use_skip() {
+    add(&FILE_CACHE_EVICTION_IN_USE_SKIPS, 1);
 }
 
 #[inline]
