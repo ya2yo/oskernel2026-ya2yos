@@ -9339,3 +9339,36 @@ bcache 或块设备改动必须至少通过双架构构建、RISC-V 定向文件
 inode data/metadata、目录 rename、block group 与 JBD2-style per-handle transaction。`mp->fs.curr_trans` 是当前
 单 transaction 指针，因此 journal 被列为 metadata 写并发的硬前置；在它完成前只允许不同 inode 的只读路径逐步
 撤退全局 gate。
+
+## 2026-08-02：lwext4 SMP P21.1 位置无关块设备
+
+### 用户输入
+
+维护者要求依据《优化方案》修改内核，实现 SMP 化文件系统。
+
+### 分析与采纳结论
+
+P21 明确禁止在 bcache、inode、目录、allocator 与 journal 并发语义完成前移除 `EXT4_OP_LOCK`。审查发现首个
+阻断项正是块设备 adapter：`Disk` 维护共享 `block_id/offset` cursor，FFI `dev_bread/dev_bwrite` 从 `p_user`
+构造 `&mut Disk` 后执行 `seek + read/write`。这既会在多 hart request 交错时访问错误 LBA，也不能满足 Rust
+共享可变别名规则。
+
+采纳 P21.1，而非未经验证地拆分 gate：将 `KernelDevOp` 改为显式 `device_size/read_at/write_at/flush`，以共享
+引用传入按位置 request；Ya2yOS `Disk` 用 submission mutex 串行一个完整设备 request 和非对齐 RMW。该 mutex
+仅保护设备，不扩展为 filesystem 锁。C bcache 仍由既有全局 gate 串行，`lwext4-smp` feature 默认启用但当前不改变
+任何 lwext4 调用路径。
+
+### 修改文件
+
+`crates/lwext4_rust/src/blockdev.rs`、`os/src/drivers/disk.rs`、`os/src/fs/ext4_lw/sb.rs` 改为位置无关块请求，
+补齐 overflow/null/short-I/O 到 `EIO` 的转换，并在 cache flush 后调用 device flush。同步更新
+`os/Cargo.toml`、`crates/lwext4_rust/Cargo.toml`、独立示例与 trait 文档；新增
+`Docs/决赛文档/problem/lwext4-smp-position-independent-block-device.md`，并更新索引和开发日志。
+
+### 验证边界
+
+`git diff --check`、RISC-V `make build-arch TARGET_ARCH=riscv64` 与 LoongArch64
+`make build-arch TARGET_ARCH=loongarch64` 都通过；只有已有 vendored `smoltcp` warning。完整 cargo fmt check
+仍受未触及的 `crates/lwext4_rust/src/file.rs` 既有格式差异影响，本次文件以单独 `rustfmt --check` 验证。
+未运行 QEMU、BuildStorm、8 HART 随机 LBA、同 LBA 重叠写或错误注入，因为 P21.0 oracle 尚未建立且 P21.2
+bcache 并发仍未启用；不得将本次构建结果解释为已经获得并行 read/write。

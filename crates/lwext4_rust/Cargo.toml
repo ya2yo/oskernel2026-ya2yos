@@ -13,11 +13,14 @@ links = "lwext4"
 build = "build.rs"
 
 [features]
-default = ["print"]
+default = ["print", "lwext4-smp"]
 print = ["printf-compat"]
 # Exposes aggregate write-back-cache counters to the kernel's perf report.
 # Keep this opt-in so ordinary release kernels do not pay for the atomics.
 perf = []
+# Reserved for the explicit-context C API introduced by P21. The default
+# wrapper remains serial until bcache and journal synchronization are ready.
+lwext4-smp = []
 
 [dependencies]
 log = "0.4"

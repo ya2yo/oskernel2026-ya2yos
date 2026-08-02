@@ -181,10 +181,10 @@ Rust OS 组件的接口，如磁盘操作相关的结构体及方法 `Disk`
 pub trait KernelDevOp {
     type DevType;
 
-    fn write(dev: &mut Self::DevType, buf: &[u8]) -> Result<usize, i32>;
-    fn read(dev: &mut Self::DevType, buf: &mut [u8]) -> Result<usize, i32>;
-    fn seek(dev: &mut Self::DevType, off: i64, whence: i32) -> Result<i64, i32>;
-    fn flush(dev: &mut Self::DevType) -> Result<usize, i32> where Self: Sized;
+    fn device_size(dev: &Self::DevType) -> Result<u64, i32>;
+    fn read_at(dev: &Self::DevType, offset: u64, buf: &mut [u8]) -> Result<usize, i32>;
+    fn write_at(dev: &Self::DevType, offset: u64, buf: &[u8]) -> Result<usize, i32>;
+    fn flush(dev: &Self::DevType) -> Result<usize, i32>;
 }
 
 impl<K: KernelDevOp> Ext4BlockWrapper<K>

@@ -1,25 +1,19 @@
-use log::*;
+use core::convert::TryFrom;
+
 use lwext4_rust::KernelDevOp;
+use spin::Mutex;
 use virtio_drivers::{
-    device::{
-        blk::{VirtIOBlk, SECTOR_SIZE},
-        gpu::VirtIOGpu,
-        input::VirtIOInput,
-    },
-    transport::{
-        mmio::{MmioTransport, VirtIOHeader},
-        DeviceType, Transport,
-    },
+    device::blk::{VirtIOBlk, SECTOR_SIZE},
+    transport::Transport,
     Hal,
 };
 
 const BLOCK_SIZE: usize = 512;
 
-/// A disk device with a cursor.
+/// A position-independent disk adapter used by the standalone example.
 pub struct Disk<H: Hal, T: Transport> {
-    block_id: usize,
-    offset: usize,
-    dev: VirtIOBlk<H, T>,
+    dev: Mutex<VirtIOBlk<H, T>>,
+    size: u64,
 }
 
 impl<H: Hal, T: Transport> Disk<H, T> {
@@ -27,171 +21,118 @@ impl<H: Hal, T: Transport> Disk<H, T> {
     pub fn new(dev: VirtIOBlk<H, T>) -> Self {
         assert_eq!(BLOCK_SIZE, SECTOR_SIZE);
         Self {
-            block_id: 0,
-            offset: 0,
-            dev,
+            size: dev.capacity() * BLOCK_SIZE as u64,
+            dev: Mutex::new(dev),
         }
     }
 
-    /// Get the size of the disk.
-    /// capacity() 以512 byte为单位
+    /// Get the size of the disk. `capacity()` is measured in 512-byte units.
     pub fn size(&self) -> u64 {
-        self.dev.capacity() * BLOCK_SIZE as u64
+        self.size
     }
 
-    /// Get the position of the cursor.
-    pub fn position(&self) -> u64 {
-        (self.block_id * BLOCK_SIZE + self.offset) as u64
+    fn check_range(&self, offset: u64, len: usize) -> Result<(), i32> {
+        let len = u64::try_from(len).map_err(|_| -1)?;
+        match offset.checked_add(len) {
+            Some(end) if end <= self.size => Ok(()),
+            _ => Err(-1),
+        }
     }
 
-    /// Set the position of the cursor.
-    pub fn set_position(&mut self, pos: u64) {
-        self.block_id = pos as usize / BLOCK_SIZE;
-        self.offset = pos as usize % BLOCK_SIZE;
-    }
+    /// Read an exact byte range without changing shared request state.
+    pub fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, i32> {
+        self.check_range(offset, buf.len())?;
+        if buf.is_empty() {
+            return Ok(0);
+        }
 
-    /// Read within one block, returns the number of bytes read.
-    pub fn read_one(&mut self, buf: &mut [u8]) -> Result<usize, i32> {
-        // info!("block id: {}", self.block_id);
-        let read_size = if self.offset == 0 && buf.len() >= BLOCK_SIZE {
-            // whole block
-            self.dev
-                .read_blocks(self.block_id, &mut buf[0..BLOCK_SIZE])
-                .map_err(as_disk_err)?;
-            self.block_id += 1;
-            BLOCK_SIZE
-        } else {
-            // partial block
-            let mut data = [0u8; BLOCK_SIZE];
-            let start = self.offset;
-            let count = buf.len().min(BLOCK_SIZE - self.offset);
-            if start > BLOCK_SIZE {
-                info!("block size: {} start {}", BLOCK_SIZE, start);
+        let mut dev = self.dev.lock();
+        let mut block_id = usize::try_from(offset / BLOCK_SIZE as u64).map_err(|_| -1)?;
+        let mut in_block = usize::try_from(offset % BLOCK_SIZE as u64).map_err(|_| -1)?;
+        let mut done = 0;
+
+        while done < buf.len() {
+            let remaining = buf.len() - done;
+            if in_block == 0 && remaining >= BLOCK_SIZE {
+                let bulk_len = remaining / BLOCK_SIZE * BLOCK_SIZE;
+                dev.read_blocks(block_id, &mut buf[done..done + bulk_len])
+                    .map_err(as_disk_err)?;
+                done += bulk_len;
+                block_id += bulk_len / BLOCK_SIZE;
+                continue;
             }
 
-            self.dev
-                .read_blocks(self.block_id, &mut data)
-                .map_err(as_disk_err)?;
-            buf[..count].copy_from_slice(&data[start..start + count]);
+            let mut block = [0u8; BLOCK_SIZE];
+            dev.read_blocks(block_id, &mut block).map_err(as_disk_err)?;
+            let count = remaining.min(BLOCK_SIZE - in_block);
+            buf[done..done + count].copy_from_slice(&block[in_block..in_block + count]);
+            done += count;
+            block_id += 1;
+            in_block = 0;
+        }
 
-            self.offset += count;
-            if self.offset >= BLOCK_SIZE {
-                self.block_id += 1;
-                self.offset -= BLOCK_SIZE;
-            }
-            count
-        };
-        Ok(read_size)
+        Ok(done)
     }
 
-    /// Write within one block, returns the number of bytes written.
-    pub fn write_one(&mut self, buf: &[u8]) -> Result<usize, i32> {
-        let write_size = if self.offset == 0 && buf.len() >= BLOCK_SIZE {
-            // whole block
-            self.dev
-                .write_blocks(self.block_id, &buf[0..BLOCK_SIZE])
-                .map_err(as_disk_err)?;
-            self.block_id += 1;
-            BLOCK_SIZE
-        } else {
-            // partial block
-            let mut data = [0u8; BLOCK_SIZE];
-            let start = self.offset;
-            let count = buf.len().min(BLOCK_SIZE - self.offset);
+    /// Write an exact byte range without changing shared request state.
+    pub fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, i32> {
+        self.check_range(offset, buf.len())?;
+        if buf.is_empty() {
+            return Ok(0);
+        }
 
-            self.dev
-                .read_blocks(self.block_id, &mut data)
-                .map_err(as_disk_err)?;
-            data[start..start + count].copy_from_slice(&buf[..count]);
-            self.dev
-                .write_blocks(self.block_id, &data)
-                .map_err(as_disk_err)?;
+        let mut dev = self.dev.lock();
+        let mut block_id = usize::try_from(offset / BLOCK_SIZE as u64).map_err(|_| -1)?;
+        let mut in_block = usize::try_from(offset % BLOCK_SIZE as u64).map_err(|_| -1)?;
+        let mut done = 0;
 
-            self.offset += count;
-            if self.offset >= BLOCK_SIZE {
-                self.block_id += 1;
-                self.offset -= BLOCK_SIZE;
+        while done < buf.len() {
+            let remaining = buf.len() - done;
+            if in_block == 0 && remaining >= BLOCK_SIZE {
+                let bulk_len = remaining / BLOCK_SIZE * BLOCK_SIZE;
+                dev.write_blocks(block_id, &buf[done..done + bulk_len])
+                    .map_err(as_disk_err)?;
+                done += bulk_len;
+                block_id += bulk_len / BLOCK_SIZE;
+                continue;
             }
-            count
-        };
-        Ok(write_size)
+
+            let mut block = [0u8; BLOCK_SIZE];
+            dev.read_blocks(block_id, &mut block).map_err(as_disk_err)?;
+            let count = remaining.min(BLOCK_SIZE - in_block);
+            block[in_block..in_block + count].copy_from_slice(&buf[done..done + count]);
+            dev.write_blocks(block_id, &block).map_err(as_disk_err)?;
+            done += count;
+            block_id += 1;
+            in_block = 0;
+        }
+
+        Ok(done)
     }
 
-    pub fn flush(&mut self) -> Result<(), i32> {
-        self.dev.flush().map_err(as_disk_err)
+    pub fn flush(&self) -> Result<(), i32> {
+        self.dev.lock().flush().map_err(as_disk_err)
     }
 }
 
 impl<H: Hal, T: Transport> KernelDevOp for Disk<H, T> {
-    //type DevType = Box<Disk>;
     type DevType = Self;
 
-    fn read(dev: &mut Self, mut buf: &mut [u8]) -> Result<usize, i32> {
-        //debug!("READ block device buf={}", buf.len());
-        let mut read_len = 0;
-        while !buf.is_empty() {
-            match dev.read_one(buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let tmp = buf;
-                    buf = &mut tmp[n..];
-                    read_len += n;
-                }
-                Err(_e) => return Err(-1),
-            }
-        }
-        //debug!("READ rt len={}", read_len);
-        Ok(read_len)
+    fn device_size(dev: &Self::DevType) -> Result<u64, i32> {
+        Ok(dev.size())
     }
-    fn write(dev: &mut Self, mut buf: &[u8]) -> Result<usize, i32> {
-        //debug!("WRITE block device buf={}", buf.len());
-        let mut write_len = 0;
-        while !buf.is_empty() {
-            match dev.write_one(buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    buf = &buf[n..];
-                    write_len += n;
-                }
-                Err(_e) => return Err(-1),
-            }
-        }
-        //debug!("WRITE rt len={}", write_len);
-        Ok(write_len)
-    }
-    fn flush(dev: &mut Self::DevType) -> Result<usize, i32> {
-        dev.flush();
-        Ok(0)
-    }
-    fn seek(dev: &mut Self, off: i64, whence: i32) -> Result<i64, i32> {
-        let size = dev.size();
-        /*
-        debug!(
-            "SEEK block device size:{}, pos:{}, offset={}, whence={}",
-            size,
-            &dev.position(),
-            off,
-            whence
-        );
-        */
-        let new_pos = match whence as u32 {
-            lwext4_rust::bindings::SEEK_SET => Some(off),
-            lwext4_rust::bindings::SEEK_CUR => {
-                dev.position().checked_add_signed(off).map(|v| v as i64)
-            }
-            lwext4_rust::bindings::SEEK_END => size.checked_add_signed(off).map(|v| v as i64),
-            _ => {
-                error!("invalid seek() whence: {}", whence);
-                Some(off)
-            }
-        }
-        .ok_or(-1)?;
 
-        if new_pos as u64 > size {
-            warn!("Seek beyond the end of the block device");
-        }
-        dev.set_position(new_pos as u64);
-        Ok(new_pos)
+    fn read_at(dev: &Self::DevType, offset: u64, buf: &mut [u8]) -> Result<usize, i32> {
+        dev.read_at(offset, buf)
+    }
+
+    fn write_at(dev: &Self::DevType, offset: u64, buf: &[u8]) -> Result<usize, i32> {
+        dev.write_at(offset, buf)
+    }
+
+    fn flush(dev: &Self::DevType) -> Result<usize, i32> {
+        dev.flush()?;
+        Ok(0)
     }
 }
 

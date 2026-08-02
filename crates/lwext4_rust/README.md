@@ -28,12 +28,16 @@ These operate the physical disk through the interface of disk driver.
 ``` rust
 impl KernelDevOp for Disk {
     type DevType = Disk;
-    fn read() {}
-    fn write() {}
-    fn seek() {}
-    fn flush() {}
+    fn device_size(dev: &Disk) -> Result<u64, i32> { /* ... */ }
+    fn read_at(dev: &Disk, offset: u64, buf: &mut [u8]) -> Result<usize, i32> { /* ... */ }
+    fn write_at(dev: &Disk, offset: u64, buf: &[u8]) -> Result<usize, i32> { /* ... */ }
+    fn flush(dev: &Disk) -> Result<usize, i32> { /* ... */ }
 }
 ```
+
+`read_at` and `write_at` must complete one position-independent request. Do
+not implement them as a shared `seek + read/write` cursor: future SMP paths
+can invoke block callbacks concurrently.
 
 ### Create a file system object
 New a file system object, initialize and mount the ext4 file system.

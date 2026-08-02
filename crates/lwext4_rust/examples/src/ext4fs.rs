@@ -25,11 +25,7 @@ unsafe impl<H: Hal, T: Transport> Send for Ext4FileSystem<H, T> {}
 
 impl<H: Hal, T: Transport> Ext4FileSystem<H, T> {
     pub fn new(disk: Disk<H, T>) -> Self {
-        info!(
-            "Got Disk size:{}, position:{}",
-            disk.size(),
-            disk.position()
-        );
+        info!("Got Disk size:{}", disk.size());
         let inner = Ext4BlockWrapper::<Disk<H, T>>::new(disk)
             .expect("failed to initialize EXT4 filesystem");
         let root = Arc::new(FileWrapper::new("/", InodeTypes::EXT4_DE_DIR));

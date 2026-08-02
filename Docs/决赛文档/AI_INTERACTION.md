@@ -2301,3 +2301,18 @@
   RISC-V 并发文件系统回归和完整 BuildStorm。
 - **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### lwext4 SMP P21.1 位置无关块设备（8.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求根据《优化方案》开始实现 SMP 化文件系统。
+- **描述**：将 `KernelDevOp` 从共享 cursor 的 `seek/read/write` 改为位置无关的
+  `device_size/read_at/write_at/flush`；FFI block callback 不再由同一原始指针构造并发 `&mut Disk`。
+  Ya2yOS `Disk` 删除 `block_id/offset`，以设备 submission mutex 覆盖完整 request 与非对齐 RMW，并将
+  overflow、空指针和短传输转换为 `EIO`。保留 `EXT4_OP_LOCK`，并默认启用后续 `lwext4-smp` feature，
+  不声称 C bcache/journal 已可并发。
+- **验证边界**：RISC-V 与 LoongArch64 release `make build-arch` 通过，`git diff --check` 通过；未运行
+  QEMU 或 BuildStorm，未进行 P21.0 的随机 LBA/error-injection oracle。全量 cargo fmt check 仍受未触及的
+  `crates/lwext4_rust/src/file.rs` 既有格式差异影响。
+- **关联文档**：[问题复盘](./problem/lwext4-smp-position-independent-block-device.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

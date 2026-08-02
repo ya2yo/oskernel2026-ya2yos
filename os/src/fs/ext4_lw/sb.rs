@@ -11,7 +11,7 @@ use crate::{
     sync::SyncUnsafeCell,
 };
 use alloc::sync::Arc;
-use log::{debug, error, warn};
+use log::debug;
 use lwext4_rust::{Ext4BlockWrapper, InodeTypes, KernelDevOp};
 use spin::Lazy;
 
@@ -98,85 +98,30 @@ impl Ext4SuperBlock {
 /// 为 Ya2yOS 磁盘驱动实现 lwext4 所需的块设备操作。
 ///
 /// `lwext4_rust` 通过 [`KernelDevOp`] 回调读写底层设备。这里把 Ya2yOS 的
-/// [`Disk`] 顺序读写接口转换成 lwext4 期望的 `read/write/seek/flush` 形式。
+/// [`Disk`] 的按位置 I/O 接口转换成 lwext4 的块请求。
+///
+/// 每个 lwext4 `bread`/`bwrite` 都带着自己的 LBA；这里不会读取或更新任何
+/// 全局 cursor。设备层负责让完整请求（含非对齐 RMW）原子提交。
 impl KernelDevOp for Disk {
-    //type DevType = Box<Disk>;
     type DevType = Disk;
 
-    /// 从当前设备位置读取数据，尽量填满调用方提供的缓冲区。
-    ///
-    /// 底层 `read_one()` 可能一次只返回部分数据，因此这里循环推进 slice。
-    fn read(dev: &mut Disk, mut buf: &mut [u8]) -> Result<usize, i32> {
-        //debug!("READ block device buf={}", buf.len());
-        let mut read_len = 0;
-        while !buf.is_empty() {
-            match dev.read_one(buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let tmp = buf;
-                    buf = &mut tmp[n..];
-                    read_len += n;
-                }
-                Err(_e) => return Err(-1),
-            }
-        }
-        //debug!("READ rt len={}", read_len);
-        Ok(read_len)
+    fn device_size(dev: &Self::DevType) -> Result<u64, i32> {
+        u64::try_from(dev.size()).map_err(|_| -1)
     }
 
-    /// 从当前设备位置写入数据，尽量写完整个缓冲区。
-    fn write(dev: &mut Self::DevType, mut buf: &[u8]) -> Result<usize, i32> {
-        //debug!("WRITE block device buf={}", buf.len());
-        let mut write_len = 0;
-        while !buf.is_empty() {
-            match dev.write_one(buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    buf = &buf[n..];
-                    write_len += n;
-                }
-                Err(_e) => return Err(-1),
-            }
-        }
-        //debug!("WRITE rt len={}", write_len);
-        Ok(write_len)
+    fn read_at(dev: &Self::DevType, offset: u64, buf: &mut [u8]) -> Result<usize, i32> {
+        let offset = usize::try_from(offset).map_err(|_| -1)?;
+        dev.read_at(offset, buf).map_err(|_| -1)
     }
-    /// 刷新设备缓存。
-    ///
-    /// 当前 `Disk` 抽象没有额外的 host-side flush 语义，lwext4 层面的同步由
-    /// `Ext4BlockWrapper::sync()` 负责，因此这里返回成功。
-    fn flush(_dev: &mut Self::DevType) -> Result<usize, i32> {
+
+    fn write_at(dev: &Self::DevType, offset: u64, buf: &[u8]) -> Result<usize, i32> {
+        let offset = usize::try_from(offset).map_err(|_| -1)?;
+        dev.write_at(offset, buf).map_err(|_| -1)
+    }
+
+    fn flush(dev: &Self::DevType) -> Result<usize, i32> {
+        dev.flush().map_err(|_| -1)?;
         Ok(0)
-    }
-
-    /// 调整块设备读写位置。
-    ///
-    /// lwext4 使用 C 风格 `SEEK_SET/SEEK_CUR/SEEK_END`，这里转换为 `Disk` 内部
-    /// 的 byte offset。越界 seek 会记录 warning，但仍更新位置，保持与底层接口兼容。
-    fn seek(dev: &mut Disk, off: i64, whence: i32) -> Result<i64, i32> {
-        let size = dev.size();
-        let new_pos = match whence as u32 {
-            lwext4_rust::bindings::SEEK_SET => Some(off),
-            lwext4_rust::bindings::SEEK_CUR => dev
-                .position()
-                .checked_add_signed(off as isize)
-                .map(|v| v as i64),
-            lwext4_rust::bindings::SEEK_END => {
-                size.checked_add_signed(off as isize).map(|v| v as i64)
-            }
-            _ => {
-                error!("invalid seek() whence: {}", whence);
-                Some(off)
-            }
-        }
-        .ok_or(-1)?;
-
-        if new_pos as usize > size {
-            warn!("Seek beyond the end of the block device");
-        }
-        dev.set_position(new_pos as usize);
-        // debug!("new_pos={}", new_pos);
-        Ok(new_pos)
     }
 }
 

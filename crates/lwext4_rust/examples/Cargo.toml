@@ -13,6 +13,7 @@ device_tree = { git = "https://github.com/rcore-os/device_tree-rs", rev = "2f2e5
 pci = { git = "https://github.com/elliott10/pci-rs.git", rev = "583a15bf" }
 virtio-drivers = { git = "https://github.com/rcore-os/virtio-drivers.git", rev = "61ece509" }
 lwext4_rust = { path = "../" }
+spin = "0.9.8"
 
 [features]
 board-fu740 = []

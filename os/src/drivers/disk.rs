@@ -1,16 +1,18 @@
-use log::info;
-
 use crate::drivers::BlockDriver;
+use spin::Mutex;
 
-use super::{BlockDeviceImpl, DevResult};
+use super::{BlockDeviceImpl, DevError, DevResult};
 
 const BLOCK_SIZE: usize = 512;
 
-/// A disk device with a cursor.
+/// A position-independent disk adapter.
+///
+/// The mutex is a device-submission boundary. It covers a complete request,
+/// including an unaligned read-modify-write, but it never protects filesystem
+/// metadata, block-cache state, or inode state.
 pub struct Disk {
-    block_id: usize,
-    offset: usize,
-    dev: BlockDeviceImpl,
+    dev: Mutex<BlockDeviceImpl>,
+    size: usize,
 }
 
 impl Disk {
@@ -18,104 +20,95 @@ impl Disk {
     pub fn new(dev: BlockDeviceImpl) -> Self {
         assert_eq!(BLOCK_SIZE, dev.block_size());
         Self {
-            block_id: 0,
-            offset: 0,
-            dev,
+            size: dev.num_blocks() * BLOCK_SIZE,
+            dev: Mutex::new(dev),
         }
     }
 
     /// Get the size of the disk.
     pub fn size(&self) -> usize {
-        self.dev.num_blocks() * BLOCK_SIZE
+        self.size
     }
 
-    /// Get the position of the cursor.
-    pub fn position(&self) -> usize {
-        self.block_id * BLOCK_SIZE + self.offset
+    #[inline]
+    fn check_range(&self, offset: usize, len: usize) -> DevResult {
+        match offset.checked_add(len) {
+            Some(end) if end <= self.size => Ok(()),
+            _ => Err(DevError::InvalidParam),
+        }
     }
 
-    /// Set the position of the cursor.
-    pub fn set_position(&mut self, pos: usize) {
-        self.block_id = pos / BLOCK_SIZE;
-        self.offset = pos % BLOCK_SIZE;
-    }
+    /// Read an exact byte range without changing shared request state.
+    pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> DevResult<usize> {
+        self.check_range(offset, buf.len())?;
+        if buf.is_empty() {
+            return Ok(0);
+        }
 
-    /// Read within one block, returns the number of bytes read.
-    pub fn read_one(&mut self, buf: &mut [u8]) -> DevResult<usize> {
-        // info!("block id: {}", self.block_id);
-        let read_size = if self.offset == 0 && buf.len() >= BLOCK_SIZE {
-            let read_size = buf.len() / BLOCK_SIZE * BLOCK_SIZE;
-            self.dev.read_block(self.block_id, &mut buf[0..read_size])?;
-            self.block_id += read_size / BLOCK_SIZE;
-            read_size
-        } else {
-            // partial block
-            let mut data = [0u8; BLOCK_SIZE];
-            let start = self.offset;
-            let count = buf.len().min(BLOCK_SIZE - self.offset);
-            if start > BLOCK_SIZE {
-                info!("block size: {} start {}", BLOCK_SIZE, start);
+        let mut dev = self.dev.lock();
+        let mut block_id = offset / BLOCK_SIZE;
+        let mut in_block = offset % BLOCK_SIZE;
+        let mut done = 0;
+
+        while done < buf.len() {
+            let remaining = buf.len() - done;
+            if in_block == 0 && remaining >= BLOCK_SIZE {
+                let bulk_len = remaining / BLOCK_SIZE * BLOCK_SIZE;
+                dev.read_block(block_id, &mut buf[done..done + bulk_len])?;
+                done += bulk_len;
+                block_id += bulk_len / BLOCK_SIZE;
+                continue;
             }
 
-            self.dev.read_block(self.block_id, &mut data)?;
-            buf[..count].copy_from_slice(&data[start..start + count]);
+            let mut block = [0u8; BLOCK_SIZE];
+            dev.read_block(block_id, &mut block)?;
+            let count = remaining.min(BLOCK_SIZE - in_block);
+            buf[done..done + count].copy_from_slice(&block[in_block..in_block + count]);
+            done += count;
+            block_id += 1;
+            in_block = 0;
+        }
 
-            self.offset += count;
-            if self.offset >= BLOCK_SIZE {
-                self.block_id += 1;
-                self.offset -= BLOCK_SIZE;
+        Ok(done)
+    }
+
+    /// Write an exact byte range without changing shared request state.
+    pub fn write_at(&self, offset: usize, buf: &[u8]) -> DevResult<usize> {
+        self.check_range(offset, buf.len())?;
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let mut dev = self.dev.lock();
+        let mut block_id = offset / BLOCK_SIZE;
+        let mut in_block = offset % BLOCK_SIZE;
+        let mut done = 0;
+
+        while done < buf.len() {
+            let remaining = buf.len() - done;
+            if in_block == 0 && remaining >= BLOCK_SIZE {
+                let bulk_len = remaining / BLOCK_SIZE * BLOCK_SIZE;
+                dev.write_block(block_id, &buf[done..done + bulk_len])?;
+                done += bulk_len;
+                block_id += bulk_len / BLOCK_SIZE;
+                continue;
             }
-            count
-        };
-        Ok(read_size)
+
+            let mut block = [0u8; BLOCK_SIZE];
+            dev.read_block(block_id, &mut block)?;
+            let count = remaining.min(BLOCK_SIZE - in_block);
+            block[in_block..in_block + count].copy_from_slice(&buf[done..done + count]);
+            dev.write_block(block_id, &block)?;
+            done += count;
+            block_id += 1;
+            in_block = 0;
+        }
+
+        Ok(done)
     }
 
-    /// Write within one block, returns the number of bytes written.
-    pub fn write_one(&mut self, buf: &[u8]) -> DevResult<usize> {
-        let write_size = if self.offset == 0 && buf.len() >= BLOCK_SIZE {
-            let write_size = buf.len() / BLOCK_SIZE * BLOCK_SIZE;
-            self.dev.write_block(self.block_id, &buf[0..write_size])?;
-            self.block_id += write_size / BLOCK_SIZE;
-            write_size
-        } else {
-            // partial block
-            let mut data = [0u8; BLOCK_SIZE];
-            let start = self.offset;
-            let count = buf.len().min(BLOCK_SIZE - self.offset);
-
-            self.dev.read_block(self.block_id, &mut data)?;
-            data[start..start + count].copy_from_slice(&buf[..count]);
-            self.dev.write_block(self.block_id, &data)?;
-
-            self.offset += count;
-            if self.offset >= BLOCK_SIZE {
-                self.block_id += 1;
-                self.offset -= BLOCK_SIZE;
-            }
-            count
-        };
-        Ok(write_size)
-    }
-
-    /// Read a single block starting from the specified offset.
-    #[allow(unused)]
-    pub fn read_offset(&mut self, offset: usize) -> [u8; BLOCK_SIZE] {
-        let block_id = offset / BLOCK_SIZE;
-        let mut block_data = [0u8; BLOCK_SIZE];
-        self.dev.read_block(block_id, &mut block_data).unwrap();
-        block_data
-    }
-
-    /// Write single block starting from the specified offset.
-    #[allow(unused)]
-    pub fn write_offset(&mut self, offset: usize, buf: &[u8]) -> DevResult<usize> {
-        assert!(
-            buf.len() == BLOCK_SIZE,
-            "Buffer length must be equal to BLOCK_SIZE"
-        );
-        assert!(offset.is_multiple_of(BLOCK_SIZE));
-        let block_id = offset / BLOCK_SIZE;
-        self.dev.write_block(block_id, buf).unwrap();
-        Ok(buf.len())
+    /// Complete writes already submitted to the device.
+    pub fn flush(&self) -> DevResult {
+        self.dev.lock().flush()
     }
 }

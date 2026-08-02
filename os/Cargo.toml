@@ -53,13 +53,17 @@ cty = { path = "../crates/cty" }
 smoltcp = { path = "../crates/smoltcp" }
 
 [features]
-default = ["net", "scheduler-cfs"]
+default = ["net", "scheduler-cfs", "lwext4-smp"]
 error = []
 warn = []
 info = []
 debug = []
 trace = []
 perf = ["lwext4_rust/perf"]
+# P21 starts from a position-independent block-device contract. The C-side
+# bcache, namespace, allocator, and journal paths are still serial, so this
+# feature does not yet relax EXT4_OP_LOCK even when enabled by default.
+lwext4-smp = ["lwext4_rust/lwext4-smp"]
 # Only used by the directed QEMU reproduction in
 # `user/src/bin/buildstorm/cache_capacity.rs`. Keep the production cache
 # capacity unchanged unless this feature is explicitly requested.
