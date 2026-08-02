@@ -184,29 +184,17 @@ impl Ext4Inode {
         let types = inner.f.types();
         let active_path = inner.f.path().into_string().unwrap();
 
-        // Rustc publishes rmeta/rlib files by renaming a populated temporary
-        // path.  Write back and detach its path-keyed cache while the source
-        // still exists; otherwise a later close can recreate the temp file and
-        // leave the published destination stale.  Do not make rename flush the
-        // whole mount's block cache: rename preserves the inode and Linux does
-        // not give it fsync durability semantics.
-        #[cfg(feature = "perf")]
-        let write_back_result = {
-            let mut write_back_stages = Ext4RenameWriteBackStageRecorder::new();
-            inner
-                .f
-                .write_back_and_discard_path_cache_with_perf_observer(|event| {
-                    write_back_stages.record(event)
-                })
-        };
-        #[cfg(not(feature = "perf"))]
-        let write_back_result = inner.f.write_back_and_discard_path_cache();
-        write_back_result.map_err(SysErrNo::from)?;
+        // Sparse ranges must be published before the directory entry moves.
+        // Dense byte caches are migrated after a successful rename so their
+        // dirty contents remain visible without a full serialized write-back.
+        inner
+            .f
+            .flush_sparse_write_buffer_for_rename()
+            .map_err(SysErrNo::from)?;
         #[cfg(feature = "perf")]
         drop(write_back_phase);
-        // The preceding helper has already handled byte-cache write-back.
-        // Closing with the normal helper would call ext4_cache_flush() a
-        // second time, again serializing every dirty block on this mount.
+        // Closing with the normal helper would call ext4_cache_flush() and
+        // serialize every dirty block on this mount.
         {
             #[cfg(feature = "perf")]
             let _phase = Ext4InodePhaseGuard::rename(Ext4RenamePhase::Close);
@@ -215,14 +203,15 @@ impl Ext4Inode {
                 .file_close_without_cache_flush()
                 .map_err(SysErrNo::from)?;
         }
-        {
+        let migrated_cache = {
             #[cfg(feature = "perf")]
             let _phase = Ext4InodePhaseGuard::rename(Ext4RenamePhase::Lwext4Rename);
             inner
                 .f
                 .file_rename(path, new_path)
                 .map_err(SysErrNo::from)?;
-        }
+            rename_path_cache(path, new_path).is_some()
+        };
         // `rename()` can replace an existing destination inode.  Invalidate
         // identity-epoch proofs before releasing the global lwext4 guard so a
         // later FsIndex collision retains the live `fstat()` reuse check.
@@ -254,8 +243,12 @@ impl Ext4Inode {
         {
             #[cfg(feature = "perf")]
             let _phase = Ext4InodePhaseGuard::rename(Ext4RenamePhase::VfsCacheInvalidate);
-            discard_path_cache(path);
-            discard_path_cache(new_path);
+            if !migrated_cache {
+                discard_path_cache(path);
+                discard_path_cache(new_path);
+            } else {
+                discard_path_cache(path);
+            }
 
             inner.aliases.retain(|alias| alias.as_str() != path);
             if inner.aliases.iter().all(|alias| alias != new_path) {

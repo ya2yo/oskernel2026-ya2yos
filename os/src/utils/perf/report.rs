@@ -27,6 +27,11 @@ impl CounterDelta {
         let previous = self.last.swap(current, Ordering::Relaxed);
         current.saturating_sub(previous)
     }
+
+    fn take_value(&self, current: usize) -> usize {
+        let previous = self.last.swap(current, Ordering::Relaxed);
+        current.saturating_sub(previous)
+    }
 }
 
 struct DurationDelta {
@@ -153,6 +158,153 @@ static DELTA_PIPE_WRITER_WAKE_TASKS: CounterDelta = CounterDelta::new();
 static DELTA_PIPE_WRITER_WAKE_POLL_TASKS: CounterDelta = CounterDelta::new();
 static DELTA_PIPE_WRITE_WAIT_RECHECKS: CounterDelta = CounterDelta::new();
 
+#[cfg(feature = "perf")]
+static DELTA_EXT4_CACHE_HIT_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_CACHE_HIT_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_CACHE_FAST_HIT_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_CACHE_FAST_HIT_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_CACHE_INIT_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_CACHE_INIT_READ_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_CACHE_EVICT_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_CACHE_EVICT_WRITEBACK_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_CACHE_LIMIT_FLUSH_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_CACHE_LIMIT_FLUSH_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_WRITE_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_WRITE_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_DISABLED_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_DISABLED_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_TOO_LARGE_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_TOO_LARGE_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_UNCACHED_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_UNCACHED_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_HOLE_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_HOLE_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_LIMIT_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_DIRECT_LIMIT_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_BUFFER_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_BUFFER_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_FSTAT_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_FSTAT_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_CLOSE_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_CLOSE_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_RENAME_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_RENAME_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_TRUNCATE_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_TRUNCATE_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_CACHE_EVICT_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_CACHE_EVICT_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_OTHER_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_OTHER_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_FSTAT_CALLS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_FSTAT_SPARSE_FLUSH_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_FSTAT_SPARSE_FLUSH_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_FSTAT_STAT_GET_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_FSTAT_WRITE_BACK_OVERLAY_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_FSTAT_WRITE_BACK_FALLBACK_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_RENAME_WRITE_BACK_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_RENAME_SPARSE_FLUSH_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_RENAME_DENSE_WRITE_BACK_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_RENAME_ZERO_BYTE_FAST_PATH_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_RENAME_PATH_CACHE_DISCARD_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_BATCHES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_BATCH_RUNS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_FLUSH_BATCH_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BATCHES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_RUN_LIMIT_BATCHES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_RUN_LIMIT_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_BOTH_LIMIT_BATCHES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_BOTH_LIMIT_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_ALLOC_FAILURE_BATCHES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_ALLOC_FAILURE_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_LARGE_DIRECT_BATCHES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_LARGE_DIRECT_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_GLOBAL_BUDGET_BATCHES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_CACHE_EVICT_GLOBAL_BUDGET_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_BUFFER_ALLOC_FAILURE_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_BUFFER_ALLOC_FAILURE_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_LARGE_DIRECT_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_LARGE_DIRECT_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_BUFFER_BUDGET_DIRECT_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_BUFFER_BUDGET_DIRECT_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_READ_OVERLAY_OPS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_READ_OVERLAY_BYTES: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_EXT4_SPARSE_READ_OVERLAY_DIRTY_BYTES: CounterDelta = CounterDelta::new();
+
 fn emit_lock_delta(label: &str, stats: &Ext4LockStats, delta: &LockDelta) {
     let samples = take_delta(&delta.samples, &stats.samples);
     let wait_ticks = take_delta(&delta.wait_ticks, &stats.wait_ticks);
@@ -209,6 +361,123 @@ fn emit_raw_phase_delta(
         sample_delta,
         ticks_to_us(tick_delta),
         ticks_to_us(max_ticks.load(Ordering::Relaxed)),
+    );
+}
+
+#[cfg(feature = "perf")]
+fn emit_write_cache_interval_deltas() {
+    let write_cache = lwext4_rust::perf::write_back_cache_perf_stats();
+    println!(
+        "[perf] interval_ext4_write_cache hit_ops={} hit_bytes={} fast_hit_ops={} fast_hit_bytes={} init_ops={} init_read_bytes={} evict_ops={} evict_writeback_bytes={} limit_flush_ops={} limit_flush_bytes={} direct_ops={} direct_bytes={} direct_disabled_ops={} direct_disabled_bytes={} direct_too_large_ops={} direct_too_large_bytes={} direct_uncached_ops={} direct_uncached_bytes={} direct_hole_ops={} direct_hole_bytes={} direct_limit_ops={} direct_limit_bytes={} sparse_buffer_ops={} sparse_buffer_bytes={} sparse_flush_ops={} sparse_flush_bytes={} sparse_flush_fstat_ops={} sparse_flush_fstat_bytes={} sparse_flush_close_ops={} sparse_flush_close_bytes={} sparse_flush_rename_ops={} sparse_flush_rename_bytes={} sparse_flush_truncate_ops={} sparse_flush_truncate_bytes={} sparse_flush_cache_evict_ops={} sparse_flush_cache_evict_bytes={} sparse_flush_other_ops={} sparse_flush_other_bytes={} sparse_read_overlay_ops={} sparse_read_overlay_bytes={} sparse_read_overlay_dirty_bytes={}",
+        DELTA_EXT4_CACHE_HIT_OPS.take_value(write_cache.cache_hit_ops),
+        DELTA_EXT4_CACHE_HIT_BYTES.take_value(write_cache.cache_hit_bytes),
+        DELTA_EXT4_CACHE_FAST_HIT_OPS.take_value(write_cache.cache_fast_hit_ops),
+        DELTA_EXT4_CACHE_FAST_HIT_BYTES.take_value(write_cache.cache_fast_hit_bytes),
+        DELTA_EXT4_CACHE_INIT_OPS.take_value(write_cache.cache_init_ops),
+        DELTA_EXT4_CACHE_INIT_READ_BYTES.take_value(write_cache.cache_init_read_bytes),
+        DELTA_EXT4_CACHE_EVICT_OPS.take_value(write_cache.cache_evict_ops),
+        DELTA_EXT4_CACHE_EVICT_WRITEBACK_BYTES.take_value(write_cache.cache_evict_writeback_bytes),
+        DELTA_EXT4_CACHE_LIMIT_FLUSH_OPS.take_value(write_cache.cache_limit_flush_ops),
+        DELTA_EXT4_CACHE_LIMIT_FLUSH_BYTES.take_value(write_cache.cache_limit_flush_bytes),
+        DELTA_EXT4_DIRECT_WRITE_OPS.take_value(write_cache.direct_write_ops),
+        DELTA_EXT4_DIRECT_WRITE_BYTES.take_value(write_cache.direct_write_bytes),
+        DELTA_EXT4_DIRECT_DISABLED_OPS.take_value(write_cache.direct_disabled_ops),
+        DELTA_EXT4_DIRECT_DISABLED_BYTES.take_value(write_cache.direct_disabled_bytes),
+        DELTA_EXT4_DIRECT_TOO_LARGE_OPS.take_value(write_cache.direct_too_large_ops),
+        DELTA_EXT4_DIRECT_TOO_LARGE_BYTES.take_value(write_cache.direct_too_large_bytes),
+        DELTA_EXT4_DIRECT_UNCACHED_OPS.take_value(write_cache.direct_uncached_ops),
+        DELTA_EXT4_DIRECT_UNCACHED_BYTES.take_value(write_cache.direct_uncached_bytes),
+        DELTA_EXT4_DIRECT_HOLE_OPS.take_value(write_cache.direct_hole_ops),
+        DELTA_EXT4_DIRECT_HOLE_BYTES.take_value(write_cache.direct_hole_bytes),
+        DELTA_EXT4_DIRECT_LIMIT_OPS.take_value(write_cache.direct_limit_ops),
+        DELTA_EXT4_DIRECT_LIMIT_BYTES.take_value(write_cache.direct_limit_bytes),
+        DELTA_EXT4_SPARSE_BUFFER_OPS.take_value(write_cache.sparse_buffer_ops),
+        DELTA_EXT4_SPARSE_BUFFER_BYTES.take_value(write_cache.sparse_buffer_bytes),
+        DELTA_EXT4_SPARSE_FLUSH_OPS.take_value(write_cache.sparse_flush_ops),
+        DELTA_EXT4_SPARSE_FLUSH_BYTES.take_value(write_cache.sparse_flush_bytes),
+        DELTA_EXT4_SPARSE_FLUSH_FSTAT_OPS.take_value(write_cache.sparse_flush_fstat_ops),
+        DELTA_EXT4_SPARSE_FLUSH_FSTAT_BYTES.take_value(write_cache.sparse_flush_fstat_bytes),
+        DELTA_EXT4_SPARSE_FLUSH_CLOSE_OPS.take_value(write_cache.sparse_flush_close_ops),
+        DELTA_EXT4_SPARSE_FLUSH_CLOSE_BYTES.take_value(write_cache.sparse_flush_close_bytes),
+        DELTA_EXT4_SPARSE_FLUSH_RENAME_OPS.take_value(write_cache.sparse_flush_rename_ops),
+        DELTA_EXT4_SPARSE_FLUSH_RENAME_BYTES.take_value(write_cache.sparse_flush_rename_bytes),
+        DELTA_EXT4_SPARSE_FLUSH_TRUNCATE_OPS.take_value(write_cache.sparse_flush_truncate_ops),
+        DELTA_EXT4_SPARSE_FLUSH_TRUNCATE_BYTES.take_value(write_cache.sparse_flush_truncate_bytes),
+        DELTA_EXT4_SPARSE_FLUSH_CACHE_EVICT_OPS
+            .take_value(write_cache.sparse_flush_cache_evict_ops),
+        DELTA_EXT4_SPARSE_FLUSH_CACHE_EVICT_BYTES
+            .take_value(write_cache.sparse_flush_cache_evict_bytes),
+        DELTA_EXT4_SPARSE_FLUSH_OTHER_OPS.take_value(write_cache.sparse_flush_other_ops),
+        DELTA_EXT4_SPARSE_FLUSH_OTHER_BYTES.take_value(write_cache.sparse_flush_other_bytes),
+        DELTA_EXT4_SPARSE_READ_OVERLAY_OPS.take_value(write_cache.sparse_read_overlay_ops),
+        DELTA_EXT4_SPARSE_READ_OVERLAY_BYTES.take_value(write_cache.sparse_read_overlay_bytes),
+        DELTA_EXT4_SPARSE_READ_OVERLAY_DIRTY_BYTES
+            .take_value(write_cache.sparse_read_overlay_dirty_bytes),
+    );
+    println!(
+        "[perf] interval_ext4_fstat_inner calls={} sparse_flush_batches={} sparse_flush_bytes={} stat_get_ops={} write_back_overlay_ops={} write_back_fallback_ops={}",
+        DELTA_EXT4_FSTAT_CALLS.take_value(write_cache.fstat_calls),
+        DELTA_EXT4_FSTAT_SPARSE_FLUSH_OPS.take_value(write_cache.sparse_flush_fstat_ops),
+        DELTA_EXT4_FSTAT_SPARSE_FLUSH_BYTES.take_value(write_cache.sparse_flush_fstat_bytes),
+        DELTA_EXT4_FSTAT_STAT_GET_OPS.take_value(write_cache.fstat_stat_get_ops),
+        DELTA_EXT4_FSTAT_WRITE_BACK_OVERLAY_OPS
+            .take_value(write_cache.fstat_write_back_overlay_ops),
+        DELTA_EXT4_FSTAT_WRITE_BACK_FALLBACK_OPS
+            .take_value(write_cache.fstat_write_back_fallback_ops),
+    );
+    println!(
+        "[perf] interval_ext4_rename_write_back ops={} sparse_flush_bytes={} dense_write_back_bytes={} zero_byte_fast_path_ops={} path_cache_discard_ops={}",
+        DELTA_EXT4_RENAME_WRITE_BACK_OPS.take_value(write_cache.rename_write_back_ops),
+        DELTA_EXT4_RENAME_SPARSE_FLUSH_BYTES.take_value(write_cache.rename_sparse_flush_bytes),
+        DELTA_EXT4_RENAME_DENSE_WRITE_BACK_BYTES
+            .take_value(write_cache.rename_dense_write_back_bytes),
+        DELTA_EXT4_RENAME_ZERO_BYTE_FAST_PATH_OPS
+            .take_value(write_cache.rename_zero_byte_fast_path_ops),
+        DELTA_EXT4_RENAME_PATH_CACHE_DISCARD_OPS
+            .take_value(write_cache.rename_path_cache_discard_ops),
+    );
+    println!(
+        "[perf] interval_ext4_sparse_buffer batches={} batch_runs={} batch_bytes={} batch_max_runs={} batch_max_bytes={} payload_limit_batches={} payload_limit_bytes={} run_limit_batches={} run_limit_bytes={} both_limits_batches={} both_limits_bytes={} allocation_failure_batches={} allocation_failure_bytes={} large_direct_batches={} large_direct_bytes={} global_budget_batches={} global_budget_bytes={} allocation_failure_ops={} allocation_failure_request_bytes={} large_direct_ops={} large_direct_request_bytes={} global_budget_direct_ops={} global_budget_direct_request_bytes={} resident_max_bytes={}",
+        DELTA_EXT4_SPARSE_FLUSH_BATCHES.take_value(write_cache.sparse_flush_batches),
+        DELTA_EXT4_SPARSE_FLUSH_BATCH_RUNS.take_value(write_cache.sparse_flush_batch_runs),
+        DELTA_EXT4_SPARSE_FLUSH_BATCH_BYTES.take_value(write_cache.sparse_flush_batch_bytes),
+        write_cache.sparse_flush_batch_max_runs,
+        write_cache.sparse_flush_batch_max_bytes,
+        DELTA_EXT4_SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BATCHES
+            .take_value(write_cache.sparse_cache_evict_payload_limit_batches),
+        DELTA_EXT4_SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BYTES
+            .take_value(write_cache.sparse_cache_evict_payload_limit_bytes),
+        DELTA_EXT4_SPARSE_CACHE_EVICT_RUN_LIMIT_BATCHES
+            .take_value(write_cache.sparse_cache_evict_run_limit_batches),
+        DELTA_EXT4_SPARSE_CACHE_EVICT_RUN_LIMIT_BYTES
+            .take_value(write_cache.sparse_cache_evict_run_limit_bytes),
+        DELTA_EXT4_SPARSE_CACHE_EVICT_BOTH_LIMIT_BATCHES
+            .take_value(write_cache.sparse_cache_evict_both_limits_batches),
+        DELTA_EXT4_SPARSE_CACHE_EVICT_BOTH_LIMIT_BYTES
+            .take_value(write_cache.sparse_cache_evict_both_limits_bytes),
+        DELTA_EXT4_SPARSE_CACHE_EVICT_ALLOC_FAILURE_BATCHES
+            .take_value(write_cache.sparse_cache_evict_allocation_failure_batches),
+        DELTA_EXT4_SPARSE_CACHE_EVICT_ALLOC_FAILURE_BYTES
+            .take_value(write_cache.sparse_cache_evict_allocation_failure_bytes),
+        DELTA_EXT4_SPARSE_CACHE_EVICT_LARGE_DIRECT_BATCHES
+            .take_value(write_cache.sparse_cache_evict_large_direct_batches),
+        DELTA_EXT4_SPARSE_CACHE_EVICT_LARGE_DIRECT_BYTES
+            .take_value(write_cache.sparse_cache_evict_large_direct_bytes),
+        DELTA_EXT4_SPARSE_CACHE_EVICT_GLOBAL_BUDGET_BATCHES
+            .take_value(write_cache.sparse_cache_evict_global_budget_batches),
+        DELTA_EXT4_SPARSE_CACHE_EVICT_GLOBAL_BUDGET_BYTES
+            .take_value(write_cache.sparse_cache_evict_global_budget_bytes),
+        DELTA_EXT4_SPARSE_BUFFER_ALLOC_FAILURE_OPS
+            .take_value(write_cache.sparse_buffer_allocation_failure_ops),
+        DELTA_EXT4_SPARSE_BUFFER_ALLOC_FAILURE_BYTES
+            .take_value(write_cache.sparse_buffer_allocation_failure_bytes),
+        DELTA_EXT4_SPARSE_LARGE_DIRECT_OPS.take_value(write_cache.sparse_large_direct_ops),
+        DELTA_EXT4_SPARSE_LARGE_DIRECT_BYTES.take_value(write_cache.sparse_large_direct_bytes),
+        DELTA_EXT4_SPARSE_BUFFER_BUDGET_DIRECT_OPS
+            .take_value(write_cache.sparse_buffer_budget_direct_ops),
+        DELTA_EXT4_SPARSE_BUFFER_BUDGET_DIRECT_BYTES
+            .take_value(write_cache.sparse_buffer_budget_direct_bytes),
+        write_cache.sparse_buffer_resident_max_bytes,
     );
 }
 
@@ -449,6 +718,8 @@ fn emit_interval_deltas(now: usize) {
         &EXT4_NAMESPACE_UNLINK,
         &DELTA_EXT4_NAMESPACE_UNLINK,
     );
+    #[cfg(feature = "perf")]
+    emit_write_cache_interval_deltas();
 }
 
 pub(super) fn emit_report(now: usize) {

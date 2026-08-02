@@ -452,6 +452,7 @@ impl Ext4File {
         if r != EOK as i32 {
             return Err(r);
         }
+        overlay_cached_stat(path, &mut stat);
         Ok((InodeTypes::from((stat.st_mode as usize) & 0xf000), stat))
     }
 
@@ -991,6 +992,13 @@ impl Ext4File {
         self.flush_sparse_write_buffer_with_cause(reason, None)
     }
 
+    /// Publish pending sparse ranges before a successful rename. Dense
+    /// byte-cache state is handled by the caller after the directory entry
+    /// move succeeds.
+    pub fn flush_sparse_write_buffer_for_rename(&mut self) -> Result<usize, i32> {
+        self.flush_sparse_write_buffer(SparseWriteFlushReason::Rename)
+    }
+
     fn flush_sparse_write_buffer_with_cache_evict_cause(
         &mut self,
         cause: SparseWriteCacheEvictCause,
@@ -1260,6 +1268,93 @@ impl Ext4File {
         self.file_desc.fsize = self.file_desc.fsize.max(end as u64);
         #[cfg(feature = "perf")]
         perf::record_sparse_write_buffer(buf.len());
+        Ok(true)
+    }
+
+    /// Try to buffer one sparse write without touching lwext4.
+    ///
+    /// This helper is safe for callers that do not hold Ya2yOS's mount-wide
+    /// lwext4 gate because it never flushes existing sparse runs and never
+    /// falls through to ext4_fwrite. Returning Ok(false) means the caller
+    /// must use the normal serialized write path, which may publish a full
+    /// sparse-buffer batch before retrying the write.
+    pub fn try_buffer_sparse_write_at(&mut self, offset: usize, buf: &[u8]) -> Result<bool, i32> {
+        if !self.sparse_write_buffer_enabled()
+            || buf.is_empty()
+            || buf.len() > MAX_SPARSE_WRITE_BUFFER_SIZE
+        {
+            return Ok(false);
+        }
+        let end = offset.checked_add(buf.len()).ok_or(EINVAL as i32)?;
+        let Some(key) = self.whole_file_cache_key() else {
+            return Ok(false);
+        };
+
+        let mut sparse_buffers = SPARSE_WRITE_BUFFERS.lock();
+        if !sparse_buffers.can_accept(buf.len()) {
+            return Ok(false);
+        }
+
+        if let Some(buffer_set) = sparse_buffers.entries.get_mut(&key) {
+            if let Some(buffer) = buffer_set.runs.iter_mut().find(|buffer| {
+                buffer
+                    .offset
+                    .checked_add(buffer.data.len())
+                    .is_some_and(|buffered_end| offset == buffered_end)
+            }) {
+                if buffer_set.bytes.saturating_add(buf.len()) > MAX_SPARSE_WRITE_BUFFER_SIZE
+                    || buffer.data.try_reserve_exact(buf.len()).is_err()
+                {
+                    return Ok(false);
+                }
+                buffer.data.extend_from_slice(buf);
+                buffer_set.bytes += buf.len();
+            } else {
+                if buffer_set.bytes.saturating_add(buf.len()) > MAX_SPARSE_WRITE_BUFFER_SIZE
+                    || buffer_set.runs.len() >= MAX_SPARSE_WRITE_BUFFER_RUNS
+                {
+                    return Ok(false);
+                }
+                let mut data = Vec::new();
+                if data.try_reserve_exact(buf.len()).is_err()
+                    || buffer_set.runs.try_reserve_exact(1).is_err()
+                {
+                    return Ok(false);
+                }
+                data.extend_from_slice(buf);
+                buffer_set
+                    .runs
+                    .push_back(SparseWriteBuffer { offset, data });
+                buffer_set.bytes += buf.len();
+            }
+            sparse_buffers.add_bytes(buf.len());
+        } else {
+            let mut data = Vec::new();
+            let mut runs = VecDeque::new();
+            if data.try_reserve_exact(buf.len()).is_err() || runs.try_reserve_exact(1).is_err() {
+                return Ok(false);
+            }
+            data.extend_from_slice(buf);
+            runs.push_back(SparseWriteBuffer { offset, data });
+            sparse_buffers.insert(
+                key,
+                SparseWriteBuffers {
+                    runs,
+                    bytes: buf.len(),
+                },
+            );
+        }
+
+        #[cfg(feature = "perf")]
+        perf::record_sparse_buffer_resident_bytes(sparse_buffers.total_bytes);
+        drop(sparse_buffers);
+        self.file_desc.fpos = end as u64;
+        self.file_desc.fsize = self.file_desc.fsize.max(end as u64);
+        #[cfg(feature = "perf")]
+        {
+            self.last_write_path = FileWritePath::SparseBuffered;
+            perf::record_sparse_write_buffer(buf.len());
+        }
         Ok(true)
     }
 
@@ -1569,12 +1664,10 @@ impl Ext4File {
 
     /// Write back and discard delayed state before renaming a pathname.
     ///
-    /// `ext4_fwrite()` has already made the bytes visible through lwext4's
-    /// shared block cache.  A rename moves the same inode, so forcing
-    /// `ext4_cache_flush()` here is neither needed for visibility nor required
-    /// by Linux rename semantics; it would flush every dirty block on the
-    /// mount while Ya2yOS holds its global EXT4 operation lock.  Durability
-    /// remains the responsibility of the existing sync/fsync paths.
+    /// Dense byte caches must be persisted before the source pathname is
+    /// detached; otherwise a later close can recreate or overwrite the
+    /// temporary path. Durability remains the responsibility of the existing
+    /// sync/fsync paths.
     pub fn write_back_and_discard_path_cache(&mut self) -> Result<usize, i32> {
         #[cfg(feature = "perf")]
         return self.write_back_and_discard_path_cache_with_perf_observer(|_| {});
@@ -2505,6 +2598,53 @@ pub fn read_cached_at(path: &str, offset: usize, buff: &mut [u8]) -> Option<usiz
     let read_size = end - offset;
     buff[..read_size].copy_from_slice(&cache.data[offset..end]);
     Some(read_size)
+}
+
+fn overlay_cached_stat(path: &str, stat: &mut ext4_inode_stat) {
+    let Some(cache) = CACHE_TABLE.lock().get(path).cloned() else {
+        return;
+    };
+    let cache = cache.read();
+    stat.st_size = cache.size as isize;
+    if stat.st_blksize > 0 {
+        stat.st_blocks = (stat.st_size + stat.st_blksize as isize - 1) / stat.st_blksize as isize;
+    }
+}
+
+/// Move a path-keyed dense write-back cache after a successful rename.
+///
+/// The directory entry has already been moved by lwext4, so new opens must
+/// observe the dirty bytes through the destination pathname until normal
+/// eviction, fsync, or close writes them back. A failed rename must not call
+/// this helper; keeping the source key then preserves retry semantics.
+pub fn rename_path_cache(old_path: &str, new_path: &str) -> Option<usize> {
+    if old_path == new_path {
+        return CACHE_TABLE.lock().get(new_path).cloned().map(|cache| cache.read().size);
+    }
+
+    let moved = {
+        let mut table = CACHE_TABLE.lock();
+        table.remove(new_path);
+        let cache = table.remove(old_path)?;
+        let size = cache.read().size;
+        table.insert(String::from(new_path), cache);
+        Some(size)
+    };
+
+    let mut fifo = FIFO_TABLE.lock();
+    let mut had_source_fifo = false;
+    fifo.retain(|entry| {
+        if entry == old_path {
+            had_source_fifo = true;
+            false
+        } else {
+            entry != new_path
+        }
+    });
+    if had_source_fifo {
+        fifo.push_back(String::from(new_path));
+    }
+    moved
 }
 
 /// Update an existing dense write-back cache without touching an `Ext4File`.

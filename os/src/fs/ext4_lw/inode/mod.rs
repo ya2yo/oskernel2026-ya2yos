@@ -25,7 +25,6 @@ use crate::utils::perf::{
     Ext4CreatePhase, Ext4CreatePhaseGuard, Ext4FstatColdInodeKind, Ext4FstatMissGuard,
     Ext4FstatPath, Ext4FstatPathGuard, Ext4FstatRecoveryGuard, Ext4FstatStageRecorder,
     Ext4InodePhaseGuard, Ext4MetadataPhase, Ext4NamespacePhase, Ext4RenamePhase,
-    Ext4RenameWriteBackStageRecorder,
 };
 use crate::{
     fs::{
@@ -41,7 +40,9 @@ use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::RwLock;
 
-use lwext4_rust::file::{discard_path_cache, read_cached_at, write_cached_at, OsDirent};
+use lwext4_rust::file::{
+    discard_path_cache, read_cached_at, rename_path_cache, write_cached_at, OsDirent,
+};
 
 mod io;
 mod lookup;

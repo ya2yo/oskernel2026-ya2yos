@@ -214,6 +214,32 @@ impl Ext4Inode {
         #[cfg(feature = "perf")]
         let data_phase =
             crate::utils::perf::Ext4WritePhaseGuard::new(crate::utils::perf::Ext4WritePhase::Data);
+        let sparse_buffered = match self
+            .inner
+            .get_unchecked_mut()
+            .f
+            .try_buffer_sparse_write_at(off, buf)
+        {
+            Ok(buffered) => buffered,
+            Err(error) => {
+                if let Some((previous, target)) = reservation {
+                    MNT_TABLE
+                        .lock()
+                        .rollback_reservation(&path, previous, target);
+                    self.quota_reserved
+                        .store(previous_reserved, Ordering::Release);
+                }
+                return Err(SysErrNo::from(error));
+            }
+        };
+        if sparse_buffered {
+            #[cfg(feature = "perf")]
+            drop(data_phase);
+            let end = off.checked_add(buf.len()).ok_or(SysErrNo::EFBIG)?;
+            self.update_known_size(current_size.max(end));
+            self.invalidate_cached_stat(Ext4FstatMissReason::SparseBufferedWrite);
+            return Ok(buf.len());
+        }
         let write_result = {
             let _ext4 = EXT4_OP_LOCK.lock_for_write_data();
             let file = &mut self.inner.get_unchecked_mut().f;
