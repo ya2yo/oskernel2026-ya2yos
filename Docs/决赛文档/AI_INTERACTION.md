@@ -2345,3 +2345,16 @@
   panic/ERROR/TFAIL/TBROK，但只到 Cargo `21/446`，没有完整 BuildStorm、并发 oracle、错误注入或 fsck。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### lwext4 SMP P21.2b dirty reclaim RB tree panic 回退（8.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `tmp_11.ans`，继续验证 P21.2b dirty-capacity 实验。
+- **描述**：日志在 TOOLCHAIN/MINIBUILD 后发生 RISC-V `LoadPageFault`；panic `sepc` 定位到
+  `ext4_buf_lru_RB_REMOVE_COLOR`，调用者为新增的 dirty victim claim。该实验直接拆装既有 LRU RB tree，未建立
+  intrusive tree/list/refcount ownership 证明，因此回退全部 dirty slack/reclaim 路径，恢复 P21.2a clean-only
+  shake。后续改为先构建生命周期 oracle 和由 bcache 内部实现的单一 claim/release API。
+- **验证边界**：已核对 `tmp_11.ans`、地址符号和工作区回退结果，并通过 `git diff --check`；尚未在回退后重跑
+  QEMU/BuildStorm 或双架构构建，不能把本次处理描述为性能改善或完整稳定性验证。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、[AI 记录](./ai.log)
+- **关联 commit**：待本轮文档提交

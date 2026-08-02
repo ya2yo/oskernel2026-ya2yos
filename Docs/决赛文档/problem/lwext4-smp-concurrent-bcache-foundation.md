@@ -95,23 +95,50 @@ start/end 暂差 1 或请求类型在相邻快照间移动，后续完整快照�
 `Disk::dev contended=0`，符合旧 `EXT4_OP_LOCK` 仍串行所有 C 调用的预期。这证明 P21.2b 应先解决 dirty-only
 压力，当前没有数据支持优先拆设备锁或实现 waiter 分桶。
 
+## P21.2b 首次实验与回退
+
+维护者提供的 `tmp_11.ans` 运行到 `BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok` 后的 untimed
+`pre-build tg-xtask`。最后一个累计快照位于 `t=74910ms`：`resident_blocks=15`、`max_resident_blocks=82`，新增
+reclaim 计数仍为零；紧随其后的高 churn workload 才达到 256-block high watermark，因此这条快照不能用于判断 fallback
+是否执行。
+
+首次 P21.2b 实现尝试在 high watermark 下，持 `index_lock` 从 `lru_root` 选择 `refctr==0` 的 dirty victim，直接
+`RB_REMOVE`，为其加 pin 后锁外调用 `ext4_block_flush_buf()`，最后回锁 drop 或重新插入。该路径在新的日志中触发：
+
+```text
+---- KERNEL PANIC IN S-MODE ----
+Cause: Exception(LoadPageFault)
+stval: 0x70
+sepc : 0xffffffc080369392
+```
+
+对包含该代码的 RISC-V ELF 运行 `riscv64-linux-gnu-addr2line -f -C`，`sepc` 定位到
+`ext4_buf_lru_RB_REMOVE_COLOR` 的 `ext4_bcache.c:67`；反汇编调用点位于新 reclaim victim 的 `RB_REMOVE`。这不是
+普通的性能样本，而是 intrusive RB tree 生命周期或所有权假设不成立导致的内核错误。即使 victim 从 LRU tree 而非
+dirty list 遍历得到，直接拆树仍会故障，因而不能把 `refctr==0` 与一次遍历结果视为可安全转移 index ownership 的证明。
+
+已撤销该实验的 dirty slack、锁外 writeback 和树/list 重插逻辑，恢复 P21.2a 的 clean-only shake 行为；不保留可能在
+默认 `lwext4-smp` 路径触发 panic 的 feature。由于回退后没有保留内核源码改动，本次不以这份中断样本报告性能结果。
+
 ## 下一步优化方案
 
-1. **P21.2b dirty-capacity 单变量收敛。** 保留 16-block clean soft target；clean-only reclaim 失败后允许有界 dirty
-   slack，首轮实验高/低水位为 256/128 blocks。达到高水位的 shared 调用返回 `NEED_EXCLUSIVE`；exclusive fallback
-   在 index lock 下为 dirty victim 设置 `EVICTING` 并 pin，锁外 writeback，回锁后转 clean/drop，批量回收到低水位
-   再重试原操作。新增 fallback、batch blocks、writeback ticks/error 和 dirty peak 计数，先在旧 gate 下验证
-   `resident <= high + in_flight_loaders`，再允许 shared admission 使用该协议。
-2. **暂缓无证据改动。** 本样本 loader/writeback wait 和设备 contended 均为 0，因此 P21.2b 不同时拆 `Disk::dev`
-   mutex，也不先做 LBA waiter 分桶；shared read 真正产生 wait/wake 数据后再决定分桶数，避免把容量 A/B 混入第二变量。
-3. **P21.2c oracle。** 覆盖同 LBA 单飞、不同 LBA 并发、dirty/flush/evict 竞争、加载和写回错误、满缓存退让与
-   10 万次随机生命周期；检查 `refctr`、tree/list membership、`ref_blocks <= high + transient_loaders` 和数据内容，
-   再做 RISC-V 8 HART QEMU 与双架构构建。
-4. **P21.3 只读并发。** 先建立稳定 inode number/generation 对应的 `Ext4InodeState` 和独立 open-file `f_pos`，
+1. **P21.2b.0 生命周期 oracle。** 先以 C 层可重复 trace 覆盖 acquire/release、load、flush、clean eviction 和
+   dirty-list 转换；在每一步检查 `refctr`、LBA/LRU tree membership、dirty-list membership 与 `ref_blocks` 守恒。
+   完成同 LBA single-flight、不同 LBA、dirty/flush/evict、读写错误和 10 万次随机生命周期后，才允许容量代码接触
+   intrusive index。
+2. **P21.2b.1 单一 ownership API。** 不让容量策略自行 `RB_REMOVE`/`RB_INSERT` 或调用内部 drop helper；先定义由
+   bcache 生命周期模块实现并由 oracle 覆盖的 claim/release API。它必须在统一状态机中完成 victim pin、index 转移、
+   writeback 完成和失败恢复，且调用者不能接触 LRU/dirty list 链接。
+3. **默认关闭的容量实验。** API 及 oracle 通过后，才以 256/128 blocks 高/低水位做单变量实验，并验证
+   `resident <= high + in_flight_loaders`、I/O error 恢复、RISC-V 8 HART QEMU 和 fsck。shared admission/read gate
+   在此之前仍不得撤退。
+4. **暂缓无证据改动。** loader/writeback wait 和设备 contended 均为 0，因此不同时拆 `Disk::dev` mutex 或做 LBA
+   waiter 分桶；shared read 真正产生 wait/wake 数据后再决定分桶数，避免把容量实验与第二变量混在一起。
+5. **P21.3 只读并发。** 先建立稳定 inode number/generation 对应的 `Ext4InodeState` 和独立 open-file `f_pos`，
    只让不同 inode 的 `read/read_all/fstat/read_dir` 获取 shared admission；修改操作和 dirty-capacity fallback 继续走
    exclusive gate。验收必须看到 `max_active_readers > 1`，并使 `read/find/fstat` gate wait 在相同 Cargo checkpoint
    明显下降。
-5. **性能验收。** 固定镜像、冷启动、QEMU `-smp`、Cargo jobs 和 crate checkpoint 做两次 A/B；比较 16-block
+6. **性能验收。** 固定镜像、冷启动、QEMU `-smp`、Cargo jobs 和 crate checkpoint 做两次 A/B；比较 16-block
    无界 overflow 与 256/128 有界退让的 full-dirty、overflow、回写批次、gate hold 和 Cargo checkpoint。最终以两次完整
    `BUILDSTORM_COMPILE ... ok=true`、测试组 `END`、`shutdown!` 和无 fsck 差异为准，不用本次 `21/446` 截断样本
    宣称加速或回退比例。

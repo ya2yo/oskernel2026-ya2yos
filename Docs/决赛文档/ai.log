@@ -9447,3 +9447,33 @@ RISC-V/LoongArch64 lwext4 C 静态库、双架构 release 内核和双架构 per
 `git diff --check` 通过。RISC-V 8 HART `log.ans` 到约 573 秒、Cargo `21/446`，有 TOOLCHAIN/MINIBUILD，且无
 panic/ERROR/TFAIL/TBROK；没有 `BUILDSTORM_COMPILE`、END 或 shutdown。P21.2 并发 oracle、错误注入、fsck 与
 完整 BuildStorm 尚未执行，不报告并行收益。
+
+## 2026-08-02：P21.2b dirty reclaim RB tree panic 回退
+
+### 用户输入
+
+维护者提供 `tmp_11.ans`，要求继续分析本轮 EXT4 SMP 优化的输出。
+
+### 分析与采纳结论
+
+日志在 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok` 后的 `tg-xtask` 发生 RISC-V `LoadPageFault`，`sepc`
+`0xffffffc080369392` 通过 `riscv64-linux-gnu-addr2line -f -C` 定位为
+`ext4_buf_lru_RB_REMOVE_COLOR (ext4_bcache.c:67)`。该地址的调用点是 P21.2b 新增的 dirty victim claim：从 LRU
+RB tree 摘下 `refctr==0` 的 dirty buffer、锁外写回，再插回或释放。末次 perf 快照的 reclaim=0 出现在实际 high
+watermark trigger 之前，不是路径未运行的证据。
+
+采纳“默认回退而非继续调水位”：删除这组直接 `RB_REMOVE`/`RB_INSERT`、锁外 writeback、tick callback 和 reclaim
+telemetry，恢复 P21.2a clean-only shake。根因是当前 bcache 对 intrusive tree/list/refcount ownership 的约束尚未形成
+可证明的 API；仅由 LRU 遍历和 `refctr==0` 不能推出可以安全转移 ownership。下一轮先做可重复生命周期 oracle 与
+由 bcache 内部实现的 claim/release API，容量实验默认关闭且不撤退 EXT4 gate。
+
+### 修改文件
+
+更新《优化方案》、`problem/lwext4-smp-concurrent-bcache-foundation.md`、开发日志和本 AI 记录；实验源码完整回退，
+不提交 panic 路径。维护者已有的 `user/src/bin/initproc.rs` 未触及。
+
+### 验证边界
+
+已检查 `tmp_11.ans` 的 BuildStorm/panic 上下文和 panic 地址，确认工作区不再含 reclaim API、dirty slack 或 timing
+callback 符号，并通过 `git diff --check`。本次回退后尚未重新运行 QEMU、BuildStorm 或双架构构建；因此仅确认移除了
+已定位的故障路径，稳定性仍待下一份运行日志验证。
