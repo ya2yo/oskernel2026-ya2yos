@@ -510,16 +510,17 @@ Finish:
 
 int ext4_block_cache_flush(struct ext4_blockdev *bdev)
 {
-	while (!SLIST_EMPTY(&bdev->bc->dirty_list)) {
+	for (;;) {
+		struct ext4_block block = EXT4_BLOCK_ZERO();
 		int r;
-		struct ext4_buf *buf = SLIST_FIRST(&bdev->bc->dirty_list);
-		ext4_assert(buf);
-		r = ext4_block_flush_buf(bdev, buf);
+
+		if (!ext4_bcache_claim_dirty(bdev->bc, &block))
+			return EOK;
+		r = ext4_block_flush_buf(bdev, block.buf);
+		ext4_bcache_release_dirty(bdev->bc, &block);
 		if (r != EOK)
 			return r;
-
 	}
-	return EOK;
 }
 
 int ext4_block_cache_write_back(struct ext4_blockdev *bdev, uint8_t on_off)

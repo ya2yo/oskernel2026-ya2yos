@@ -24,9 +24,14 @@ add_executable(lwext4-mbr lwext4_mbr.c)
 target_link_libraries(lwext4-mbr blockdev)
 target_link_libraries(lwext4-mbr lwext4)
 
+if(NOT WIN32)
+find_package(Threads REQUIRED)
+add_executable(lwext4-bcache-lifecycle bcache_lifecycle.c)
+target_link_libraries(lwext4-bcache-lifecycle lwext4 Threads::Threads)
+endif()
+
 install (TARGETS lwext4-server DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
 install (TARGETS lwext4-client DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
 install (TARGETS lwext4-generic DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
 install (TARGETS lwext4-mkfs DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
 install (TARGETS lwext4-mbr DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
-

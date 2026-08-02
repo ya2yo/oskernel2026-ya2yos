@@ -372,6 +372,19 @@ int ext4_bcache_alloc(struct ext4_bcache *bc, struct ext4_block *b,
  * @return  standard error code*/
 int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b);
 
+/** Claim one unreferenced dirty buffer and pin it outside the index lock.
+ *
+ * The returned block must be paired with ext4_bcache_release_dirty(). This is
+ * the only interface a cache-wide writeback policy should use to select dirty
+ * buffers; callers must not manipulate the LRU tree or dirty list directly.
+ */
+bool ext4_bcache_claim_dirty(struct ext4_bcache *bc, struct ext4_block *b);
+
+/** Release a block obtained from ext4_bcache_claim_dirty() without recursively
+ * starting writeback when the preceding I/O failed.
+ */
+void ext4_bcache_release_dirty(struct ext4_bcache *bc, struct ext4_block *b);
+
 /**@brief   Return a full status of block cache.
  * @param   bc block cache descriptor
  * @return  full status*/
@@ -385,6 +398,13 @@ void ext4_bcache_shake_clean(struct ext4_bcache *bc);
 
 /** Remove a successfully written buffer from the dirty index. */
 void ext4_bcache_mark_clean(struct ext4_bcache *bc, struct ext4_buf *buf);
+
+/** Verify bcache index/list/refcount invariants for lifecycle tests.
+ *
+ * The check acquires the index lock and performs no allocation or I/O. It is
+ * intentionally opt-in: production paths must not pay for a full traversal.
+ */
+int ext4_bcache_validate(struct ext4_bcache *bc);
 
 #ifdef __cplusplus
 }

@@ -9477,3 +9477,54 @@ telemetry，恢复 P21.2a clean-only shake。根因是当前 bcache 对 intrusiv
 已检查 `tmp_11.ans` 的 BuildStorm/panic 上下文和 panic 地址，确认工作区不再含 reclaim API、dirty slack 或 timing
 callback 符号，并通过 `git diff --check`。本次回退后尚未重新运行 QEMU、BuildStorm 或双架构构建；因此仅确认移除了
 已定位的故障路径，稳定性仍待下一份运行日志验证。
+
+## 2026-08-02：P21.2b.0/P21.2b.1 bcache 生命周期与 dirty ownership
+
+### 用户输入
+
+维护者要求依据《优化方案》继续实现 SMP 化 EXT4，随后询问 C 文件修改是否依据 Linux 源码；在完成本轮实现后，
+维护者提供已成功编译运行的 `tmp_12.ans`，要求补齐文档并为后续优化做准备。
+
+### 分析与采纳结论
+
+复盘 `tmp_11.ans` 的 RB tree panic 后，先建立可证伪的 bcache 生命周期 oracle，而不是重新启用容量代码。新增
+`ext4_bcache_validate()`，逐步检查 refcount、LBA/LRU tree、dirty list、`ref_blocks`，并验证两棵 RB tree 的
+parent/BST/red/black-height 性质。host 测试覆盖顺序 acquire/release、dirty/flush、clean eviction、读写错误、
+10 万步随机 trace、同/异 LBA 并发 load、同 LBA load error、writeback callback 与 shake 竞争；负向 control
+主动破坏 root color、计数和 dirty membership，确认校验器能返回 `EIO`。
+
+进一步定位旧 `ext4_block_cache_flush()` 的生命周期缺口：它从 dirty list 直接取得 `refctr==0` 裸指针；
+`BC_WRITEBACK` 只能串行 I/O，不能保证 buffer 在 `mark_clean`、callback 和 flag clear 期间存活。新增
+`ext4_bcache_claim_dirty()`/`ext4_bcache_release_dirty()`，在 `index_lock` 内选择并 pin，锁外写回，再由统一 release
+恢复 LRU/dirty membership。写失败保留 dirty，且 release 禁止隐式 writeback，保证单次 flush 不递归重试。静态审计
+确认所有生产 `ext4_block_flush_buf()` 调用均有 find/get、free-path repin、cleanup pin 或新 claim pin。
+
+C 修改不是 Linux ext4 的逐行移植。AI 使用本地 `/home/ya2yo/linux/linux-7.0` 做静态对照：Linux 的
+`get_bh()`、`write_dirty_buffer()`、`drop_buffers()` 和 JBD2 checkpoint 证明离开 list/index lock 或等待 I/O 前必须
+持有 `b_count`，I/O 状态不能替代对象引用；lwext4 的 intrusive tree/list 结构和错误恢复仍按项目自身状态机实现。
+对照文档写入 `/home/ya2yo/learning_linux/linux-ext4-buffer-writeback-lifetime-crosscheck.md`。
+
+`tmp_12.ans` 是 RISC-V 8 HART 阶段样本：有 buildstorm `START` 和 TOOLCHAIN/MINIBUILD 成功，没有 panic、SIGSEGV、
+`ERROR`、`TFAIL` 或 `TBROK`，但缺少 compile success、测试组 `END` 与 `shutdown!`。末次累计快照满足
+`538658=332749+205909`、loader `205909=205909+0`、writeback `13362=13362+0`、
+`16+218541-218541=16`；C block read/write 共 `249025` 次，submit/complete 相等且 error 为 0。末个 interval 的
+loader/read submit 与 completion 在相邻 interval 先后出现 `-1/+1` 的互补差异，属于 relaxed 分字段采样中的在途
+请求；末次累计快照闭合。
+
+日志同时记录 `shake_full_dirty=353857`、`capacity_overflows=161383`、驻留峰值 1243，以及 gate `queued=6025`、
+峰值队深 8、handoff wait 累计 `81379237us`。采纳结论是 P21.2b.0/P21.2b.1 在已观察区间稳定，但 16-block
+dirty 容量与 mount-wide gate 仍未解决；下一步只做默认关闭的 P21.2b.2 256/128 blocks 高低水位实验，不撤退 gate。
+
+### 修改文件
+
+源码修改位于 `ext4_bcache.h`、`ext4_bcache.c`、`ext4_blockdev.c`，新增
+`fs_test/bcache_lifecycle.c` 并更新其 `CMakeLists.txt`。同步更新《优化方案》、P21.2 problem 记录、开发日志、
+`ai.log` 与 `AI_INTERACTION.md`。维护者已有的 `user/src/bin/initproc.rs`、`disk.img` 和运行输出未改动。
+
+### 验证边界
+
+host ASan/UBSan oracle 以 `ASAN_OPTIONS=detect_leaks=0 /tmp/ya2yos-bcache-oracle-asan` 运行并输出
+`lwext4-bcache-lifecycle: PASS`；`git diff --check` 通过。维护者已成功编译并提供上述 RISC-V 8 HART 运行日志。
+AI 此前尝试 `make build-arch TARGET_ARCH=riscv64` 时在源码编译前受 `nobody:nogroup` 所有的
+`build_musl-generic-*` 生成目录阻断，本轮没有重复处理这些目录或重跑长测。当前改动尚未独立验证 LoongArch64、
+`e2fsck -fn` 或完整 BuildStorm，因此不报告跨架构验收、完整通过或性能提升。

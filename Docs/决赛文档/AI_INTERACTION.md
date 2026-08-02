@@ -2358,3 +2358,20 @@
   QEMU/BuildStorm 或双架构构建，不能把本次处理描述为性能改善或完整稳定性验证。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、[AI 记录](./ai.log)
 - **关联 commit**：待本轮文档提交
+
+#### lwext4 SMP P21.2b.0/P21.2b.1 生命周期 oracle 与 ownership API（8.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求继续实现 SMP 化 EXT4，确认 C 修改与 Linux 源码的关系，并用新 `tmp_12.ans` 完成本轮记录。
+- **描述**：新增可证伪的 host C lifecycle oracle 与 `ext4_bcache_validate()`，覆盖 refcount、LBA/LRU RB tree、
+  dirty list、错误注入、同/异 LBA 并发、writeback/shake 竞争和 10 万步随机 trace。审计发现旧 cache-wide flush
+  从 dirty list 使用无引用裸指针，`BC_WRITEBACK` 不能替代生命周期 pin；因此增加 bcache 内部
+  `claim_dirty/release_dirty`，在索引锁内 pin、锁外写回、callback 和状态清理后统一 release，写失败保留 dirty 且不
+  隐式递归重试。Linux 7.0 的 `buffer_head`/JBD2 只作为“离开保护域前取得引用”的设计交叉验证，不是逐行移植。
+- **验证边界**：host ASan/UBSan oracle 输出 `lwext4-bcache-lifecycle: PASS`，`git diff --check` 通过。维护者成功编译
+  运行的 RISC-V 8 HART `tmp_12.ans` 在截断区间内无 panic/error，且 bcache/writeback/block request 累计守恒；日志
+  缺少 compile success、测试组 `END` 和 `shutdown!`，当前改动也未独立完成 LoongArch64 与 fsck 验证，故不报告完整
+  BuildStorm 通过或性能提升。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、
+  [AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

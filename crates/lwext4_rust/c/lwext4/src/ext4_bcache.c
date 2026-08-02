@@ -445,6 +445,38 @@ static void ext4_bcache_reference_locked(struct ext4_bcache *bc,
 	b->data = buf->data;
 }
 
+static bool ext4_bcache_release_locked(struct ext4_bcache *bc,
+					struct ext4_buf *buf,
+					bool allow_writeback)
+{
+	struct ext4_buf *duplicate;
+
+	ext4_assert(buf->refctr);
+	ext4_bcache_dec_ref(buf);
+	if (buf->refctr)
+		return false;
+
+	if (allow_writeback && ext4_bcache_test_flag(buf, BC_DIRTY) &&
+	    ext4_bcache_test_flag(buf, BC_UPTODATE) &&
+	    (!bc->bdev->cache_write_back ||
+	     ext4_bcache_test_flag(buf, BC_FLUSH) ||
+	     ext4_bcache_test_flag(buf, BC_TMP))) {
+		/* Pin across writeback, but do not keep the index lock over I/O. */
+		ext4_bcache_inc_ref(buf);
+		return true;
+	}
+
+	duplicate = RB_INSERT(ext4_buf_lru, &bc->lru_root, buf);
+	ext4_assert(!duplicate);
+	if (ext4_bcache_test_flag(buf, BC_DIRTY) &&
+	    ext4_bcache_test_flag(buf, BC_UPTODATE))
+		ext4_bcache_insert_dirty_node(bc, buf);
+	if (!ext4_bcache_test_flag(buf, BC_UPTODATE) ||
+	    ext4_bcache_test_flag(buf, BC_TMP))
+		ext4_bcache_drop_buf_locked(bc, buf);
+	return false;
+}
+
 struct ext4_buf *ext4_buf_lowest_lru(struct ext4_bcache *bc)
 {
 	struct ext4_buf *buf;
@@ -572,7 +604,7 @@ int ext4_bcache_alloc(struct ext4_bcache *bc, struct ext4_block *b,
 int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b)
 {
 	struct ext4_buf *buf = b->buf;
-	bool flush = false;
+	bool flush;
 	int r = EOK;
 
 	ext4_assert(bc && b);
@@ -584,26 +616,7 @@ int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b)
 	ext4_assert(buf);
 
 	ext4_bcache_index_lock(bc);
-	ext4_assert(buf->refctr);
-	ext4_bcache_dec_ref(buf);
-
-	if (!buf->refctr && ext4_bcache_test_flag(buf, BC_DIRTY) &&
-	    ext4_bcache_test_flag(buf, BC_UPTODATE) &&
-	    (!bc->bdev->cache_write_back ||
-	     ext4_bcache_test_flag(buf, BC_FLUSH) ||
-	     ext4_bcache_test_flag(buf, BC_TMP))) {
-		/* Pin across writeback, but do not keep the index lock over I/O. */
-		ext4_bcache_inc_ref(buf);
-		flush = true;
-	} else if (!buf->refctr) {
-		RB_INSERT(ext4_buf_lru, &bc->lru_root, buf);
-		if (ext4_bcache_test_flag(buf, BC_DIRTY) &&
-		    ext4_bcache_test_flag(buf, BC_UPTODATE))
-			ext4_bcache_insert_dirty_node(bc, buf);
-		if (!ext4_bcache_test_flag(buf, BC_UPTODATE) ||
-		    ext4_bcache_test_flag(buf, BC_TMP))
-			ext4_bcache_drop_buf_locked(bc, buf);
-	}
+	flush = ext4_bcache_release_locked(bc, buf, true);
 	ext4_bcache_index_unlock(bc);
 
 	if (flush) {
@@ -611,24 +624,50 @@ int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b)
 
 		ext4_bcache_index_lock(bc);
 		ext4_bcache_clear_flag(buf, BC_FLUSH);
-		ext4_assert(buf->refctr);
-		ext4_bcache_dec_ref(buf);
-		if (!buf->refctr) {
-			RB_INSERT(ext4_buf_lru, &bc->lru_root, buf);
-			if (ext4_bcache_test_flag(buf, BC_DIRTY) &&
-			    ext4_bcache_test_flag(buf, BC_UPTODATE))
-				ext4_bcache_insert_dirty_node(bc, buf);
-			if (!ext4_bcache_test_flag(buf, BC_UPTODATE) ||
-			    ext4_bcache_test_flag(buf, BC_TMP))
-				ext4_bcache_drop_buf_locked(bc, buf);
-		}
+		ext4_bcache_release_locked(bc, buf, false);
 		ext4_bcache_index_unlock(bc);
 	}
 
 	b->lb_id = 0;
+	b->buf = NULL;
 	b->data = 0;
 
 	return r;
+}
+
+bool ext4_bcache_claim_dirty(struct ext4_bcache *bc, struct ext4_block *b)
+{
+	struct ext4_buf *buf;
+
+	ext4_assert(bc && b);
+	*b = (struct ext4_block)EXT4_BLOCK_ZERO();
+
+	ext4_bcache_index_lock(bc);
+	buf = SLIST_FIRST(&bc->dirty_list);
+	if (buf) {
+		ext4_assert(buf->bc == bc);
+		ext4_assert(!buf->refctr);
+		ext4_assert(buf->on_dirty_list);
+		ext4_assert(ext4_bcache_test_flag(buf, BC_DIRTY));
+		ext4_assert(ext4_bcache_test_flag(buf, BC_UPTODATE));
+		ext4_bcache_reference_locked(bc, buf, b);
+	}
+	ext4_bcache_index_unlock(bc);
+	return buf != NULL;
+}
+
+void ext4_bcache_release_dirty(struct ext4_bcache *bc, struct ext4_block *b)
+{
+	struct ext4_buf *buf;
+
+	ext4_assert(bc && b && b->buf);
+	buf = b->buf;
+	ext4_bcache_index_lock(bc);
+	ext4_bcache_release_locked(bc, buf, false);
+	ext4_bcache_index_unlock(bc);
+	b->lb_id = 0;
+	b->buf = NULL;
+	b->data = NULL;
 }
 
 bool ext4_bcache_is_full(struct ext4_bcache *bc)
@@ -669,6 +708,213 @@ void ext4_bcache_mark_clean(struct ext4_bcache *bc, struct ext4_buf *buf)
 		ext4_bcache_remove_dirty_node(bc, buf);
 	ext4_bcache_clear_flag(buf, BC_DIRTY);
 	ext4_bcache_index_unlock(bc);
+}
+
+static int ext4_bcache_validate_dirty_contains_locked(
+	struct ext4_bcache *bc, struct ext4_buf *target, bool *contains)
+{
+	struct ext4_buf *buf;
+	uint32_t visited = 0;
+
+	*contains = false;
+	SLIST_FOREACH(buf, &bc->dirty_list, dirty_node) {
+		if (++visited > bc->ref_blocks)
+			return EIO;
+		if (buf->bc != bc || !buf->on_dirty_list || buf->refctr ||
+		    !ext4_bcache_test_flag(buf, BC_DIRTY) ||
+		    !ext4_bcache_test_flag(buf, BC_UPTODATE) ||
+		    RB_FIND(ext4_buf_lba, &bc->lba_root, buf) != buf ||
+		    RB_FIND(ext4_buf_lru, &bc->lru_root, buf) != buf)
+			return EIO;
+		if (buf == target)
+			*contains = true;
+	}
+
+	return EOK;
+}
+
+#define EXT4_BCACHE_VALIDATE_MAX_DEPTH 64U
+
+struct ext4_bcache_validate_stats {
+	uint32_t lba_count;
+	uint32_t lru_count;
+	uint32_t unreferenced_count;
+	uint32_t expected_dirty_count;
+};
+
+static int ext4_bcache_validate_lba_subtree_locked(
+	struct ext4_bcache *bc, struct ext4_buf *buf,
+	struct ext4_buf *parent, bool have_min, uint64_t min_lba,
+	bool have_max, uint64_t max_lba, uint32_t depth,
+	struct ext4_bcache_validate_stats *stats, uint32_t *black_height)
+{
+	struct ext4_buf *left;
+	struct ext4_buf *right;
+	uint32_t left_black_height;
+	uint32_t right_black_height;
+	bool dirty_contains;
+	bool should_be_dirty;
+	int flags;
+	int r;
+
+	if (!buf) {
+		*black_height = 1;
+		return EOK;
+	}
+	if (depth > EXT4_BCACHE_VALIDATE_MAX_DEPTH ||
+	    ++stats->lba_count > bc->ref_blocks || buf->bc != bc ||
+	    RB_PARENT(buf, lba_node) != parent ||
+	    (have_min && buf->lba <= min_lba) ||
+	    (have_max && buf->lba >= max_lba) ||
+	    (RB_COLOR(buf, lba_node) != RB_RED &&
+	     RB_COLOR(buf, lba_node) != RB_BLACK) ||
+	    RB_FIND(ext4_buf_lba, &bc->lba_root, buf) != buf)
+		return EIO;
+
+	flags = __atomic_load_n(&buf->flags, __ATOMIC_ACQUIRE);
+	if (!buf->refctr) {
+		stats->unreferenced_count++;
+		if (RB_FIND(ext4_buf_lru, &bc->lru_root, buf) != buf)
+			return EIO;
+	} else if (RB_FIND(ext4_buf_lru, &bc->lru_root, buf)) {
+		return EIO;
+	}
+	if (!buf->refctr &&
+	    (flags & ((1 << BC_LOADING) | (1 << BC_WRITEBACK) |
+		      (1 << BC_EVICTING))))
+		return EIO;
+
+	should_be_dirty = !buf->refctr && (flags & (1 << BC_DIRTY)) &&
+		(flags & (1 << BC_UPTODATE));
+	if (should_be_dirty)
+		stats->expected_dirty_count++;
+	r = ext4_bcache_validate_dirty_contains_locked(bc, buf,
+							  &dirty_contains);
+	if (r != EOK || dirty_contains != buf->on_dirty_list ||
+	    dirty_contains != should_be_dirty)
+		return EIO;
+
+	left = RB_LEFT(buf, lba_node);
+	right = RB_RIGHT(buf, lba_node);
+	if (RB_COLOR(buf, lba_node) == RB_RED &&
+	    ((left && RB_COLOR(left, lba_node) == RB_RED) ||
+	     (right && RB_COLOR(right, lba_node) == RB_RED)))
+		return EIO;
+	r = ext4_bcache_validate_lba_subtree_locked(
+		bc, left, buf, have_min, min_lba, true, buf->lba, depth + 1,
+		stats, &left_black_height);
+	if (r != EOK)
+		return r;
+	r = ext4_bcache_validate_lba_subtree_locked(
+		bc, right, buf, true, buf->lba, have_max, max_lba, depth + 1,
+		stats, &right_black_height);
+	if (r != EOK || left_black_height != right_black_height)
+		return EIO;
+	*black_height = left_black_height +
+		(RB_COLOR(buf, lba_node) == RB_BLACK ? 1U : 0U);
+	return EOK;
+}
+
+static int ext4_bcache_validate_lru_subtree_locked(
+	struct ext4_bcache *bc, struct ext4_buf *buf,
+	struct ext4_buf *parent, bool have_min, uint32_t min_lru,
+	bool have_max, uint32_t max_lru, uint32_t depth,
+	struct ext4_bcache_validate_stats *stats, uint32_t *black_height)
+{
+	struct ext4_buf *left;
+	struct ext4_buf *right;
+	uint32_t left_black_height;
+	uint32_t right_black_height;
+	int r;
+
+	if (!buf) {
+		*black_height = 1;
+		return EOK;
+	}
+	if (depth > EXT4_BCACHE_VALIDATE_MAX_DEPTH ||
+	    ++stats->lru_count > bc->ref_blocks || buf->bc != bc ||
+	    buf->refctr || RB_PARENT(buf, lru_node) != parent ||
+	    (have_min && buf->lru_id <= min_lru) ||
+	    (have_max && buf->lru_id >= max_lru) ||
+	    (RB_COLOR(buf, lru_node) != RB_RED &&
+	     RB_COLOR(buf, lru_node) != RB_BLACK) ||
+	    RB_FIND(ext4_buf_lru, &bc->lru_root, buf) != buf ||
+	    RB_FIND(ext4_buf_lba, &bc->lba_root, buf) != buf)
+		return EIO;
+
+	left = RB_LEFT(buf, lru_node);
+	right = RB_RIGHT(buf, lru_node);
+	if (RB_COLOR(buf, lru_node) == RB_RED &&
+	    ((left && RB_COLOR(left, lru_node) == RB_RED) ||
+	     (right && RB_COLOR(right, lru_node) == RB_RED)))
+		return EIO;
+	r = ext4_bcache_validate_lru_subtree_locked(
+		bc, left, buf, have_min, min_lru, true, buf->lru_id, depth + 1,
+		stats, &left_black_height);
+	if (r != EOK)
+		return r;
+	r = ext4_bcache_validate_lru_subtree_locked(
+		bc, right, buf, true, buf->lru_id, have_max, max_lru, depth + 1,
+		stats, &right_black_height);
+	if (r != EOK || left_black_height != right_black_height)
+		return EIO;
+	*black_height = left_black_height +
+		(RB_COLOR(buf, lru_node) == RB_BLACK ? 1U : 0U);
+	return EOK;
+}
+
+int ext4_bcache_validate(struct ext4_bcache *bc)
+{
+	struct ext4_bcache_validate_stats stats = { 0 };
+	struct ext4_buf *buf;
+	uint32_t dirty_count = 0;
+	uint32_t black_height;
+	int r = EOK;
+
+	if (!bc)
+		return EINVAL;
+
+	ext4_bcache_index_lock(bc);
+	if ((RB_ROOT(&bc->lba_root) &&
+	     RB_COLOR(RB_ROOT(&bc->lba_root), lba_node) != RB_BLACK) ||
+	    (RB_ROOT(&bc->lru_root) &&
+	     RB_COLOR(RB_ROOT(&bc->lru_root), lru_node) != RB_BLACK)) {
+		r = EIO;
+		goto Finish;
+	}
+
+	SLIST_FOREACH(buf, &bc->dirty_list, dirty_node) {
+		if (++dirty_count > bc->ref_blocks || buf->bc != bc ||
+		    !buf->on_dirty_list || buf->refctr ||
+		    !ext4_bcache_test_flag(buf, BC_DIRTY) ||
+		    !ext4_bcache_test_flag(buf, BC_UPTODATE) ||
+		    RB_FIND(ext4_buf_lba, &bc->lba_root, buf) != buf ||
+		    RB_FIND(ext4_buf_lru, &bc->lru_root, buf) != buf) {
+			r = EIO;
+			goto Finish;
+		}
+	}
+
+	r = ext4_bcache_validate_lba_subtree_locked(
+		bc, RB_ROOT(&bc->lba_root), NULL, false, 0, false, 0, 1,
+		&stats, &black_height);
+	if (r != EOK || stats.lba_count != bc->ref_blocks ||
+	    bc->max_ref_blocks < bc->ref_blocks) {
+		r = EIO;
+		goto Finish;
+	}
+	r = ext4_bcache_validate_lru_subtree_locked(
+		bc, RB_ROOT(&bc->lru_root), NULL, false, 0, false, 0, 1,
+		&stats, &black_height);
+	if (r != EOK || stats.lru_count != stats.unreferenced_count ||
+	    dirty_count != stats.expected_dirty_count) {
+		r = EIO;
+		goto Finish;
+	}
+
+Finish:
+	ext4_bcache_index_unlock(bc);
+	return r;
 }
 
 
