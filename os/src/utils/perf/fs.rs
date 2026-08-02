@@ -170,6 +170,9 @@ pub(crate) struct Ext4GateStats {
     pub(crate) wait_lt_1s: AtomicUsize,
     pub(crate) wait_lt_10s: AtomicUsize,
     pub(crate) wait_ge_10s: AtomicUsize,
+    pub(crate) owner_tid: AtomicUsize,
+    pub(crate) owner_since_ticks: AtomicUsize,
+    pub(crate) owner_exit_releases: AtomicUsize,
 }
 
 impl Ext4GateStats {
@@ -191,6 +194,9 @@ impl Ext4GateStats {
             wait_lt_1s: AtomicUsize::new(0),
             wait_lt_10s: AtomicUsize::new(0),
             wait_ge_10s: AtomicUsize::new(0),
+            owner_tid: AtomicUsize::new(0),
+            owner_since_ticks: AtomicUsize::new(0),
+            owner_exit_releases: AtomicUsize::new(0),
         }
     }
 }
@@ -787,8 +793,14 @@ pub fn record_ext4_lock(wait_ticks: usize, hold_ticks: usize) {
 }
 
 #[inline]
-pub(crate) fn record_ext4_gate_fast_acquire() {
+pub(crate) fn record_ext4_gate_acquired(tid: usize) {
     add(&EXT4_GATE_STATS.fast_acquires, 1);
+    EXT4_GATE_STATS
+        .owner_since_ticks
+        .store(get_ticks(), Ordering::Relaxed);
+    // Publish the TID last so a report never treats an unset start tick as a
+    // long-held owner during this relaxed-atomic snapshot.
+    EXT4_GATE_STATS.owner_tid.store(tid, Ordering::Relaxed);
 }
 
 #[inline]
@@ -818,10 +830,14 @@ pub(crate) fn record_ext4_gate_waiter_cancelled(count: usize) {
 }
 
 #[inline]
-pub(crate) fn record_ext4_gate_handoff_acquire(wait_ticks: usize) {
+pub(crate) fn record_ext4_gate_handoff_acquire(tid: usize, wait_ticks: usize) {
     add(&EXT4_GATE_STATS.handoffs, 1);
     add(&EXT4_GATE_STATS.handoff_wait_ticks, wait_ticks);
     update_max(&EXT4_GATE_STATS.max_handoff_wait_ticks, wait_ticks);
+    EXT4_GATE_STATS
+        .owner_since_ticks
+        .store(get_ticks(), Ordering::Relaxed);
+    EXT4_GATE_STATS.owner_tid.store(tid, Ordering::Relaxed);
 
     let ticks_per_second = get_clock_freq().max(1);
     let bucket = if wait_ticks < ticks_per_second / 1_000 {
@@ -838,6 +854,20 @@ pub(crate) fn record_ext4_gate_handoff_acquire(wait_ticks: usize) {
         &EXT4_GATE_STATS.wait_ge_10s
     };
     add(bucket, 1);
+}
+
+#[inline]
+pub(crate) fn record_ext4_gate_released() {
+    EXT4_GATE_STATS.owner_tid.store(0, Ordering::Relaxed);
+    EXT4_GATE_STATS
+        .owner_since_ticks
+        .store(0, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_ext4_gate_owner_released_on_exit() {
+    add(&EXT4_GATE_STATS.owner_exit_releases, 1);
+    record_ext4_gate_released();
 }
 
 #[inline]

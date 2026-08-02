@@ -255,9 +255,9 @@ impl FilePageCache {
                 return false;
             }
 
-            let retry_pages = queues.refill_active_from_deferred();
+            let _retry_pages = queues.refill_active_from_deferred();
             #[cfg(feature = "perf")]
-            crate::utils::perf::record_file_cache_eviction_deferred_retry(retry_pages);
+            crate::utils::perf::record_file_cache_eviction_deferred_retry(_retry_pages);
         }
 
         let scan_budget = queues.active.len().min(EVICTION_SCAN_BUDGET);

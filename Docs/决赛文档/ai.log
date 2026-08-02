@@ -9235,3 +9235,37 @@ RISC-V `special_make KERNEL_EXTRA_FEATURES=perf,file-cache-capacity-test,fault-d
 因 `/var/tmp` 只读无法创建临时 drive 文件；在允许临时文件的环境重跑 120 秒后通过
 `BUILDSTORM_TOOLCHAIN ok` 与 `BUILDSTORM_MINIBUILD ok`，无 `fault-diagnostics`、rustc `SIGSEGV`、panic、TFAIL
 或 TBROK。timeout 时仍处于 `pre-build tg-xtask`，尚未覆盖 Cargo/rustc 失败窗口或完整 BuildStorm。
+
+## 2026-08-02：`tmp_03` EXT4 gate owner 退出回收
+
+### 用户输入
+
+维护者要求依据既定《优化方案》和新的约一小时 RISC-V BuildStorm 输出 `tmp_03.ans` 开始修改内核。
+
+### 分析与采纳结论
+
+`tmp_03.ans` 只完成 `BUILDSTORM_TOOLCHAIN`/`BUILDSTORM_MINIBUILD`，末尾为 `QEMU: Terminated`，没有
+`BUILDSTORM_COMPILE`、测试组 END、`shutdown!`、panic 或 LTP 失败。`t=3021715ms` 后，syscall 与所有
+`interval_ext4_lock` 基本停止增长，gate 仍有 6 个 waiter，后续增加为 7 个；累计
+`queued=46288`、`handoffs=46281`、`cancelled=0`、`queue_depth=7`，守恒闭合。页缓存为
+`85486/196608` 页且没有 capacity bypass，因此本轮不调缓存容量。
+
+结合 `exit_current_and_run_next()` 的发散生命周期，采纳待证伪假设：任务可能在持有
+`EXT4_OP_LOCK` 时通过退出汇合点离开，绕过活跃 `Ext4OpGuard` 的 Drop；旧清理只移除排队 ticket，
+会遗留 `held=true`。不放宽 lwext4 单线程约束，也不改变 FIFO 公平规则。
+
+### 修改文件
+
+`os/src/fs/ext4_lw/mod.rs` 增加 `owner_tid`，正常获取/释放与退出清理同步 owner 状态；退出 owner
+会释放 gate 并唤醒队首。`os/src/utils/perf/fs.rs`、`os/src/utils/perf/report.rs` 增加
+`owner_tid`、`owner_hold_us`、`owner_exit_releases` 诊断，并将正常 release 的 owner 清理放在
+逻辑状态锁内，避免并发 fast acquire 覆盖统计。新增 `Docs/决赛文档/problem/buildstorm-ext4-gate-owner-exit.md`，
+更新优化方案、README、开发日志和 AI 交互记录。
+
+### 验证边界
+
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check`、RISC-V/LoongArch64
+`make perf` 与双架构 release 构建通过。完整 BuildStorm、owner 退出定向回归及新字段运行期复现
+尚未完成；120 秒 RISC-V `make run` 启动 8 HART、通过 TOOLCHAIN/MINIBUILD 并进入 Cargo `4/446`，
+无 panic/TFAIL/TBROK，随后由外层 timeout 终止。下一轮按
+`owner_tid/owner_hold_us/owner_exit_releases` 与 gate 守恒关系继续判别。

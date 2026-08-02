@@ -2251,3 +2251,14 @@
   因此完整 BuildStorm 稳定性仍待验收。
 - **关联文档**：[问题复盘](./problem/riscv-rustc-sigsegv-fault-diagnostics.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_03` EXT4 gate owner 退出回收（8.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：依据约一小时 RISC-V BuildStorm 输出定位 gate 永久停滞，并实施退出生命周期修复与 perf 诊断。
+- **描述**：`tmp_03` 在 syscall/EXT4 interval 停止增长后仍残留 7 个 FIFO waiter，累计
+  `queued=handoffs+cancelled+queue_depth` 仍闭合，页缓存也未触顶。AI 沿 `exit_current_and_run_next()`
+  确认发散路径可能绕过 `Ext4OpGuard::Drop`，因此为 gate 保存 `owner_tid`，退出时释放 owner 并唤醒队首；
+  同时增加 `owner_tid`、`owner_hold_us`、`owner_exit_releases` 字段。该根因仍需下一份长测通过字段复现确认，
+  详见 `Docs/决赛文档/ai.log` 和 [problem/buildstorm-ext4-gate-owner-exit.md](./problem/buildstorm-ext4-gate-owner-exit.md)。
+- **关联 commit**：当前工作区未提交

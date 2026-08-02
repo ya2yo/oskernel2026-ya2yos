@@ -77,6 +77,10 @@ struct Ext4OpWaiter {
 
 struct Ext4OpState {
     held: bool,
+    // A task that exits through the diverging scheduler path cannot run the
+    // guard destructor. Keep the owner in the logical state so exit cleanup
+    // can release a gate that would otherwise strand every queued waiter.
+    owner_tid: usize,
     next_ticket: usize,
     waiters: VecDeque<Ext4OpWaiter>,
 }
@@ -153,6 +157,7 @@ impl Ext4OpState {
     fn new() -> Self {
         Self {
             held: false,
+            owner_tid: 0,
             next_ticket: 1,
             waiters: VecDeque::new(),
         }
@@ -167,14 +172,16 @@ impl Ext4OpLock {
     }
 
     pub(crate) fn lock(&self) -> Ext4OpGuard<'_> {
-        let (guard, reserved) = self.try_lock_unqueued();
+        let task = crate::task::current_task();
+        let tid = task.as_ref().map_or(0, |task| task.tid());
+        let (guard, reserved) = self.try_lock_unqueued(tid);
         if let Some(guard) = guard {
             return guard;
         }
 
-        let Some(task) = crate::task::current_task() else {
+        let Some(task) = task else {
             loop {
-                let (guard, _) = self.try_lock_unqueued();
+                let (guard, _) = self.try_lock_unqueued(0);
                 if let Some(guard) = guard {
                     return guard;
                 }
@@ -195,13 +202,14 @@ impl Ext4OpLock {
         })
     }
 
-    fn try_lock_unqueued(&self) -> (Option<Ext4OpGuard<'_>>, bool) {
+    fn try_lock_unqueued(&self, owner_tid: usize) -> (Option<Ext4OpGuard<'_>>, bool) {
         let mut state = self.state.lock();
         if !state.held && state.waiters.is_empty() {
             state.held = true;
+            state.owner_tid = owner_tid;
             drop(state);
             #[cfg(feature = "perf")]
-            crate::utils::perf::record_ext4_gate_fast_acquire();
+            crate::utils::perf::record_ext4_gate_acquired(owner_tid);
             return (
                 Some(Ext4OpGuard {
                     lock: self,
@@ -219,6 +227,9 @@ impl Ext4OpLock {
             let mut state = self.state.lock();
             debug_assert!(state.held, "EXT4 operation gate released while idle");
             state.held = false;
+            state.owner_tid = 0;
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_gate_released();
             state.waiters.front().map(|waiter| waiter.waker.clone())
         };
         if let Some(next) = next {
@@ -268,11 +279,18 @@ impl Ext4OpLock {
             let before = state.waiters.len();
             state.waiters.retain(|waiter| waiter.tid != tid);
             let removed = before.saturating_sub(state.waiters.len());
+            let owner_released = state.held && state.owner_tid == tid;
+            if owner_released {
+                state.held = false;
+                state.owner_tid = 0;
+                #[cfg(feature = "perf")]
+                crate::utils::perf::record_ext4_gate_owner_released_on_exit();
+            }
             #[cfg(feature = "perf")]
             if removed != 0 {
                 crate::utils::perf::record_ext4_gate_queue_depth(state.waiters.len());
             }
-            let next = (removed_front && !state.held)
+            let next = ((removed_front || owner_released) && !state.held)
                 .then(|| state.waiters.front().map(|waiter| waiter.waker.clone()))
                 .flatten();
             (removed, next)
@@ -311,6 +329,7 @@ impl<'a> Future for Ext4OpLockFuture<'a> {
                 None
             };
             state.held = true;
+            state.owner_tid = this.tid;
             let depth = state.waiters.len();
             #[cfg(feature = "perf")]
             crate::utils::perf::record_ext4_gate_queue_depth(depth);
@@ -325,10 +344,11 @@ impl<'a> Future for Ext4OpLockFuture<'a> {
                 }
                 if let Some(queued_at) = queued_at {
                     crate::utils::perf::record_ext4_gate_handoff_acquire(
+                        this.tid,
                         crate::arch::time::get_ticks().saturating_sub(queued_at),
                     );
                 } else {
-                    crate::utils::perf::record_ext4_gate_fast_acquire();
+                    crate::utils::perf::record_ext4_gate_acquired(this.tid);
                 }
             }
             #[cfg(not(feature = "perf"))]
