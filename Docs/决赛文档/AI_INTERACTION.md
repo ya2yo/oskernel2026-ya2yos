@@ -1929,6 +1929,18 @@
 - **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
 
+#### P21 lwext4 SMP 化方案（8.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求直接制定真正并行化 lwext4、尽量与 Linux ext4 一一对应的实施方案。
+- **描述**：采用锁职责与并发语义映射而非直接移植 Linux C。计划以位置无关 block I/O、并发 bcache、
+  inode/目录/allocator 锁、JBD2-style handle transaction 和逐路径撤退全局 gate 为阶段；`curr_trans` 单指针
+  被列为 metadata 写并发的硬前置。
+- **验证边界**：每一步均要求 feature fallback、文件系统一致性/恢复测试及完整 BuildStorm 验收；本轮只更新方案，
+  未运行构建或 QEMU。
+- **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
 #### BuildStorm dentry 取证与目录 epoch stat cache（7.30）
 
 - **工具/模型**：Codex (GPT-5)
@@ -2274,4 +2286,18 @@
 - **验证边界**：RISC-V/LoongArch64 release 与 perf 构建通过；允许临时文件的 120 秒 RISC-V 冒烟通过
   `BUILDSTORM_TOOLCHAIN/MINIBUILD` 并输出阶段窗口统计，未完成完整 BuildStorm，当前工作区未提交。
 - **关联文档**：[优化方案](./优化方案.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
+#### `riscv.ans` EXT4 gate 可拆分性与 Linux 对照（8.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求依据新的 RISC-V BuildStorm 长日志更新优化方案，并确认 mount-wide
+  `EXT4_OP_LOCK` 是否可按操作类型拆分。
+- **描述**：确认 Cargo 后段的 gate 排队是首要内核瓶颈，但现有 lwext4 的 bcache、事务和顺序块设备适配都不是
+  SMP-safe。lwext4 的 `ext4_mount_setup_locks()` 仅提供单 mount mutex，迁移该锁不会产生读并发。对照 Linux
+  ext4 的 inode/目录/allocator/journal 分层锁，方案明确保留当前 gate，先补 C cache telemetry 与缩短临界区；
+  完整拆锁列为需要 C 内部并发模型、块设备接口与一致性恢复回归的独立 SMP 化项目。
+- **验证边界**：本轮只更新文档，执行文档 diff/空白检查；未运行内核构建或 QEMU。后续行为改动须完成双架构构建、
+  RISC-V 并发文件系统回归和完整 BuildStorm。
+- **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交

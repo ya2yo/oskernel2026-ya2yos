@@ -9297,3 +9297,45 @@ RISC-V `special_make KERNEL_EXTRA_FEATURES=perf,file-cache-capacity-test,fault-d
 均通过。沙箱内直接 `cargo check` 受缺少 `x86_64-linux-musl-cc` 与当前 nightly/`printf-compat` 不兼容阻断；
 允许临时文件的 RISC-V 120 秒 `make run` 通过 `BUILDSTORM_TOOLCHAIN/MINIBUILD`，输出新
 `interval_ext4_phase`，未完成完整 BuildStorm，未作端到端加速结论。
+
+## 2026-08-02：`riscv.ans` EXT4 gate 可拆分性与 Linux 对照
+
+### 用户输入
+
+维护者要求依据 `riscv.ans` 和内核源码更新《优化方案》，随后询问 `os/src/fs/ext4_lw/mod.rs` 所述的
+`EXT4_OP_LOCK` 是否真的能够拆开，以及 Linux 如何处理 ext4 并发。
+
+### 分析与采纳结论
+
+`riscv.ans` 的 Cargo 后段从 46/446 到 47/446 消耗约 286 秒，末尾 read/find/fstat/write 的累计 gate 等待均远大于
+持有时间，且 `handoff_wait_us` 约 3151.7 秒，确认 mount-wide gate 是首要内核瓶颈。源码同时表明它是当前不可
+直接拆分的正确性边界：lwext4 每个 mount 共享 bcache LBA/LRU/dirty 索引、cache write-back 状态和事务；C 的
+`ext4_fread()`/`ext4_fwrite()` 也按整段操作取得 mount lock。Rust per-inode 状态锁不保护这些 C 对象。
+
+lwext4 提供的 `ext4_mount_setup_locks()` 只有一对 mount-wide `lock()/unlock()` 回调，当前 wrapper 未注册；把锁
+搬入该回调仍是串行化，不能产生读并发，还须解决 FFI callback 与 task-aware FIFO gate 的重入问题。更关键的是当前
+block-device callback 未配置 `bdif.lock/unlock`，并对同一个带 position 的 `Disk` 裸取可变引用执行 seek 与 I/O，
+并发会破坏 LBA 对应关系。
+
+Linux ext4 不使用整挂载 I/O 锁，而是通过 inode `i_rwsem`、每 inode `i_data_sem`、目录锁/跨目录 rename mutex、
+页缓存、JBD2 transaction、block-group 与短时 superblock 锁分层并发。采纳结论是：本轮保持 `EXT4_OP_LOCK`，先以
+子阶段与 bcache telemetry 缩短或绕过临界区；完整拆锁必须作为 lwext4 SMP 化项目，先改 C 数据结构、设备接口和
+事务模型，并做一致性/恢复回归。
+
+### 修改文件
+
+`Docs/决赛文档/优化方案.md` 新增 `riscv.ans` 锁争用证据、不可直接拆锁的源码依据、Linux 对照，以及 bcache
+计数与 SMP 改造边界。`Docs/决赛文档/ai.log` 与 `Docs/决赛文档/AI_INTERACTION.md` 记录本次 AI 分析。
+
+### 验证边界
+
+本轮只更新文档，不修改内核或 vendored lwext4，不运行构建和 QEMU；已执行文档 diff/空白检查。后续任何锁、
+bcache 或块设备改动必须至少通过双架构构建、RISC-V 定向文件系统并发/一致性回归和完整 BuildStorm 验收。
+
+### 后续方案补充
+
+维护者要求直接制定真正并行化 lwext4、尽量与 Linux ext4 一一对应的方案。采纳“并发语义与锁职责一一映射，
+不直接复制 Linux 子系统”的边界，新增 P21：先取消 `Disk` 的共享 cursor、重写 bcache 并发状态机，再逐步引入
+inode data/metadata、目录 rename、block group 与 JBD2-style per-handle transaction。`mp->fs.curr_trans` 是当前
+单 transaction 指针，因此 journal 被列为 metadata 写并发的硬前置；在它完成前只允许不同 inode 的只读路径逐步
+撤退全局 gate。
