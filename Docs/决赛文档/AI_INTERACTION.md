@@ -2262,3 +2262,16 @@
   同时增加 `owner_tid`、`owner_hold_us`、`owner_exit_releases` 字段。该根因仍需下一份长测通过字段复现确认，
   详见 `Docs/决赛文档/ai.log` 和 [problem/buildstorm-ext4-gate-owner-exit.md](./problem/buildstorm-ext4-gate-owner-exit.md)。
 - **关联 commit**：当前工作区未提交
+
+#### `tmp_05` 写路径重复 gate 准入与阶段窗口统计（8.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供十分钟 `tmp_05.ans`，要求继续优化内核。
+- **描述**：日志未完成 BuildStorm，但显示 `ext4_write_open_lock` 的 12008 次准入与 write-data 次数近似相等，
+  且 open 阶段实际经常只是已打开 O_RDWR 描述符上的 `ensure_open()` no-op。新增 `is_open_for_write()`，在
+  inode 状态锁和已知大小成立时跳过重复 write-open gate；同时增加 write/fstat/rename/namespace 的
+  `interval_ext4_phase` 统计，保留 data gate 和 lwext4 单线程约束。
+- **验证边界**：RISC-V/LoongArch64 release 与 perf 构建通过；允许临时文件的 120 秒 RISC-V 冒烟通过
+  `BUILDSTORM_TOOLCHAIN/MINIBUILD` 并输出阶段窗口统计，未完成完整 BuildStorm，当前工作区未提交。
+- **关联文档**：[优化方案](./优化方案.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

@@ -43,6 +43,20 @@ impl DurationDelta {
     }
 }
 
+struct PhaseDelta {
+    samples: AtomicUsize,
+    ticks: AtomicUsize,
+}
+
+impl PhaseDelta {
+    const fn new() -> Self {
+        Self {
+            samples: AtomicUsize::new(0),
+            ticks: AtomicUsize::new(0),
+        }
+    }
+}
+
 struct LockDelta {
     samples: AtomicUsize,
     wait_ticks: AtomicUsize,
@@ -113,6 +127,18 @@ static DELTA_SYSCALL_PATH: DurationDelta = DurationDelta::new();
 static DELTA_PIPE_READ_WAIT: DurationDelta = DurationDelta::new();
 static DELTA_SCHEDULER_DISPATCH: DurationDelta = DurationDelta::new();
 
+static DELTA_EXT4_WRITE_OPEN: PhaseDelta = PhaseDelta::new();
+static DELTA_EXT4_WRITE_QUOTA: PhaseDelta = PhaseDelta::new();
+static DELTA_EXT4_WRITE_DATA: PhaseDelta = PhaseDelta::new();
+static DELTA_EXT4_FSTAT_ACTUAL: PhaseDelta = PhaseDelta::new();
+static DELTA_EXT4_FSTAT_INNER_COLD: PhaseDelta = PhaseDelta::new();
+static DELTA_EXT4_FSTAT_INNER_DENSE: PhaseDelta = PhaseDelta::new();
+static DELTA_EXT4_FSTAT_INNER_SPARSE: PhaseDelta = PhaseDelta::new();
+static DELTA_EXT4_RENAME_WRITE_BACK: PhaseDelta = PhaseDelta::new();
+static DELTA_EXT4_RENAME_DENSE: PhaseDelta = PhaseDelta::new();
+static DELTA_EXT4_NAMESPACE_CREATE: PhaseDelta = PhaseDelta::new();
+static DELTA_EXT4_NAMESPACE_UNLINK: PhaseDelta = PhaseDelta::new();
+
 static DELTA_SCHED_LOCAL_ENQUEUES: CounterDelta = CounterDelta::new();
 static DELTA_SCHED_REMOTE_ENQUEUES: CounterDelta = CounterDelta::new();
 static DELTA_SCHED_REMOTE_IDLE_NOTIFICATIONS: CounterDelta = CounterDelta::new();
@@ -153,6 +179,36 @@ fn emit_duration_delta(
         label,
         sample_delta,
         ticks_to_us(tick_delta),
+    );
+}
+
+fn emit_phase_delta(label: &str, stats: &Ext4PhaseStats, delta: &PhaseDelta) {
+    let samples = take_delta(&delta.samples, &stats.samples);
+    let ticks = take_delta(&delta.ticks, &stats.ticks);
+    println!(
+        "[perf] interval_ext4_phase name={} samples={} total_us={} max_us={}",
+        label,
+        samples,
+        ticks_to_us(ticks),
+        ticks_to_us(stats.max_ticks.load(Ordering::Relaxed)),
+    );
+}
+
+fn emit_raw_phase_delta(
+    label: &str,
+    samples: &AtomicUsize,
+    ticks: &AtomicUsize,
+    max_ticks: &AtomicUsize,
+    delta: &PhaseDelta,
+) {
+    let sample_delta = take_delta(&delta.samples, samples);
+    let tick_delta = take_delta(&delta.ticks, ticks);
+    println!(
+        "[perf] interval_ext4_phase name={} samples={} total_us={} max_us={}",
+        label,
+        sample_delta,
+        ticks_to_us(tick_delta),
+        ticks_to_us(max_ticks.load(Ordering::Relaxed)),
     );
 }
 
@@ -330,6 +386,68 @@ fn emit_interval_deltas(now: usize) {
         &SYSCALL_PATH_SAMPLES,
         &SYSCALL_PATH_TICKS,
         &DELTA_SYSCALL_PATH,
+    );
+
+    emit_raw_phase_delta(
+        "write_open",
+        &EXT4_WRITE_OPEN_SAMPLES,
+        &EXT4_WRITE_OPEN_TICKS,
+        &EXT4_WRITE_OPEN_MAX_TICKS,
+        &DELTA_EXT4_WRITE_OPEN,
+    );
+    emit_raw_phase_delta(
+        "write_quota",
+        &EXT4_WRITE_QUOTA_SAMPLES,
+        &EXT4_WRITE_QUOTA_TICKS,
+        &EXT4_WRITE_QUOTA_MAX_TICKS,
+        &DELTA_EXT4_WRITE_QUOTA,
+    );
+    emit_raw_phase_delta(
+        "write_data",
+        &EXT4_WRITE_DATA_SAMPLES,
+        &EXT4_WRITE_DATA_TICKS,
+        &EXT4_WRITE_DATA_MAX_TICKS,
+        &DELTA_EXT4_WRITE_DATA,
+    );
+    emit_phase_delta(
+        "fstat_actual",
+        &EXT4_FSTAT_ACTUAL_EXT4_FSTAT,
+        &DELTA_EXT4_FSTAT_ACTUAL,
+    );
+    emit_phase_delta(
+        "fstat_inner_cold_inode",
+        &EXT4_FSTAT_INNER_MISSES.cold_inode,
+        &DELTA_EXT4_FSTAT_INNER_COLD,
+    );
+    emit_phase_delta(
+        "fstat_inner_dense_write_back",
+        &EXT4_FSTAT_INNER_MISSES.dense_write_back,
+        &DELTA_EXT4_FSTAT_INNER_DENSE,
+    );
+    emit_phase_delta(
+        "fstat_inner_sparse_buffered_write",
+        &EXT4_FSTAT_INNER_MISSES.sparse_buffered_write,
+        &DELTA_EXT4_FSTAT_INNER_SPARSE,
+    );
+    emit_phase_delta(
+        "rename_write_back_cache",
+        &EXT4_RENAME_WRITE_BACK_CACHE,
+        &DELTA_EXT4_RENAME_WRITE_BACK,
+    );
+    emit_phase_delta(
+        "rename_dense_write_back",
+        &EXT4_RENAME_DENSE_WRITE_BACK,
+        &DELTA_EXT4_RENAME_DENSE,
+    );
+    emit_phase_delta(
+        "namespace_create",
+        &EXT4_NAMESPACE_CREATE,
+        &DELTA_EXT4_NAMESPACE_CREATE,
+    );
+    emit_phase_delta(
+        "namespace_unlink",
+        &EXT4_NAMESPACE_UNLINK,
+        &DELTA_EXT4_NAMESPACE_UNLINK,
     );
 }
 

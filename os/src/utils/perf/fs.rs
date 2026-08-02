@@ -206,9 +206,9 @@ impl Ext4GateStats {
 /// Phase counters intentionally remain process- and caller-free.  Their role
 /// is to explain a long `EXT4_OP_LOCK` hold before changing its lock boundary.
 pub(crate) struct Ext4PhaseStats {
-    samples: AtomicUsize,
-    ticks: AtomicUsize,
-    max_ticks: AtomicUsize,
+    pub(crate) samples: AtomicUsize,
+    pub(crate) ticks: AtomicUsize,
+    pub(crate) max_ticks: AtomicUsize,
 }
 
 impl Ext4PhaseStats {

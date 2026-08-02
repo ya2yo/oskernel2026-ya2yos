@@ -128,28 +128,43 @@ impl Ext4Inode {
         }
 
         let (path, current_size) = {
-            let _ext4 = EXT4_OP_LOCK.lock_for_write_open();
+            let known_size = self.known_size();
             let inner = self.inner.get_unchecked_mut();
             let path = Self::live_path(inner);
             let delayed = inner.delay;
-            let file = &mut inner.f;
-            #[cfg(feature = "perf")]
-            let open_phase = crate::utils::perf::Ext4WritePhaseGuard::new(
-                crate::utils::perf::Ext4WritePhase::Open,
-            );
-            file.ensure_open(O_RDWR).map_err(SysErrNo::from)?;
-            #[cfg(feature = "perf")]
-            drop(open_phase);
-            if delayed {
-                // Keep an unlinked-but-open temporary file's cache alive until
-                // its last fd closes; the FIFO cannot otherwise distinguish it
-                // from an idle cache and will repeatedly evict/rebuild it.
-                file.pin_write_back_cache();
+            let needs_open = !inner.f.is_open_for_write(&path);
+
+            // `write_state` and `io_state` serialize every operation on this
+            // inode. Once the descriptor is already O_RDWR and the cached size
+            // is known, entering the mount-wide gate only to call the Rust-side
+            // `ensure_open()` no-op adds a second FIFO ticket to every write.
+            // Keep the gate for the first open or for the required size probe.
+            if needs_open || known_size.is_none() {
+                let _ext4 = EXT4_OP_LOCK.lock_for_write_open();
+                let file = &mut inner.f;
+                #[cfg(feature = "perf")]
+                let open_phase = crate::utils::perf::Ext4WritePhaseGuard::new(
+                    crate::utils::perf::Ext4WritePhase::Open,
+                );
+                if needs_open {
+                    file.ensure_open(O_RDWR).map_err(SysErrNo::from)?;
+                }
+                #[cfg(feature = "perf")]
+                drop(open_phase);
+                if delayed {
+                    // Keep an unlinked-but-open temporary file's cache alive until
+                    // its last fd closes; the FIFO cannot otherwise distinguish it
+                    // from an idle cache and will repeatedly evict/rebuild it.
+                    file.pin_write_back_cache();
+                }
+                let current_size = known_size.unwrap_or_else(|| file.file_size() as usize);
+                (path, current_size)
+            } else {
+                if delayed {
+                    inner.f.pin_write_back_cache();
+                }
+                (path, known_size.unwrap())
             }
-            let current_size = self
-                .known_size()
-                .unwrap_or_else(|| file.file_size() as usize);
-            (path, current_size)
         };
         #[cfg(feature = "perf")]
         let quota_phase =

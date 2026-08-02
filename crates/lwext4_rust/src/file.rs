@@ -245,6 +245,14 @@ impl Ext4File {
         self.has_opened && self.path_str() == path && matches!(self.last_flags, O_RDONLY | O_RDWR)
     }
 
+    /// Check whether this descriptor can serve an `O_RDWR` write without a
+    /// second pathname lookup. Callers must already serialize access to this
+    /// `Ext4File`.
+    #[inline]
+    pub fn is_open_for_write(&self, path: &str) -> bool {
+        self.has_opened && self.path_str() == path && self.last_flags == O_RDWR
+    }
+
     fn file_open_inner(
         &mut self,
         path: &str,

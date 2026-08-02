@@ -9269,3 +9269,31 @@ RISC-V `special_make KERNEL_EXTRA_FEATURES=perf,file-cache-capacity-test,fault-d
 尚未完成；120 秒 RISC-V `make run` 启动 8 HART、通过 TOOLCHAIN/MINIBUILD 并进入 Cargo `4/446`，
 无 panic/TFAIL/TBROK，随后由外层 timeout 终止。下一轮按
 `owner_tid/owner_hold_us/owner_exit_releases` 与 gate 守恒关系继续判别。
+
+## 2026-08-02：tmp_05 写路径重复 gate 准入与阶段窗口统计
+
+### 用户输入
+
+维护者提供十分钟 `tmp_05.ans`，要求继续优化内核。
+
+### 分析与采纳结论
+
+`tmp_05.ans` 未出现 `BUILDSTORM_COMPILE`、测试组 END 或 `shutdown!`，不能作为完整成绩。公平 gate
+守恒正常、页缓存为 `59356/196608` 且无容量旁路；主要等待仍在 read/write data。写路径累计
+`ext4_write_open_lock` 为 `12008` 次、等待约 `581.5s`，但 open 阶段大量命中同一 O_RDWR 描述符，
+`ensure_open()` 实际是 Rust 侧 no-op。采纳低风险单变量优化：在 inode 状态锁下复用已打开描述符和已知大小，
+只在首次打开或必须获取大小时进入 write-open gate；保留 data gate 和 lwext4 单线程约束。为下一轮归因，
+增加 write open/quota/data、fstat、rename write-back、namespace create/unlink 的 interval phase delta。
+
+### 修改文件
+
+`crates/lwext4_rust/src/file.rs`、`os/src/fs/ext4_lw/inode/io.rs`、`os/src/utils/perf/fs.rs`、
+`os/src/utils/perf/report.rs`、`Docs/决赛文档/优化方案.md`、`Docs/决赛文档/开发日志.md`、
+`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+`cargo fmt --manifest-path os/Cargo.toml --all`、`git diff --check`、RISC-V/LoongArch64 `make` 和 `make perf`
+均通过。沙箱内直接 `cargo check` 受缺少 `x86_64-linux-musl-cc` 与当前 nightly/`printf-compat` 不兼容阻断；
+允许临时文件的 RISC-V 120 秒 `make run` 通过 `BUILDSTORM_TOOLCHAIN/MINIBUILD`，输出新
+`interval_ext4_phase`，未完成完整 BuildStorm，未作端到端加速结论。
