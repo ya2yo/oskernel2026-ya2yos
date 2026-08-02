@@ -13,6 +13,12 @@ set(BLOCKDEV_TYPE  none)
 add_definitions(-DCONFIG_USE_DEFAULT_CONFIG=0)
 add_definitions(-DVERSION="${VERSION}")
 
+option(EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT
+       "Enable the P21.2b.2 dirty bcache 256/128 capacity experiment" OFF)
+if(EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT)
+    add_definitions(-DCONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT=1)
+endif()
+
 #Examples
 if    (CMAKE_SYSTEM_PROCESSOR STREQUAL  cortex-m0)
     #...

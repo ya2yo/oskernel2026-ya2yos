@@ -2619,7 +2619,11 @@ fn overlay_cached_stat(path: &str, stat: &mut ext4_inode_stat) {
 /// this helper; keeping the source key then preserves retry semantics.
 pub fn rename_path_cache(old_path: &str, new_path: &str) -> Option<usize> {
     if old_path == new_path {
-        return CACHE_TABLE.lock().get(new_path).cloned().map(|cache| cache.read().size);
+        return CACHE_TABLE
+            .lock()
+            .get(new_path)
+            .cloned()
+            .map(|cache| cache.read().size);
     }
 
     let moved = {

@@ -193,11 +193,59 @@ loader 与 read submit/complete 先后出现 `-1/+1` 的互补差异，是 relax
 `4/8`，handoff wait 累计 `81379237us`、单次最大 `1028110us`。因此 16-block clean soft target 仍在 dirty 压力
 下失控，mount-wide gate 争用也已显现，下一步仍应先做受控容量实验而不是撤退 gate。
 
+## P21.2b.2 默认关闭的 dirty capacity 实验
+
+P21.2b.2 已实现为 `bcache-dirty-capacity-experiment` opt-in feature。`os/Cargo.toml` 将 feature 传入
+`lwext4_rust`；build script 为默认和实验 C 配置分别使用 `-p212b2-default` 与
+`-p212b2-bcache-dirty-capacity` 的 CMake 目录、静态库名，防止 Cargo 在切换 feature 时链接到另一配置生成的 archive。
+实验 CMake 定义 `CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT=1`，默认配置仍为 0，水位固定为 high 256、low 128
+resident blocks。
+
+每次 `ext4_block_get_noread()` 在分配前仍先执行既有 clean shake；当 resident 已达 high 时，
+`ext4_block_cache_reclaim_dirty()` 开始一个回收批次，直到 resident 降至 low。每个 victim 都经
+`ext4_bcache_claim_dirty()` 在 `index_lock` 内取得：该 API 同步移除其 LRU/dirty membership 并建立 refcount pin，故
+`ext4_block_flush_buf()`、callback 和 `BC_WRITEBACK` 清理可安全地在 index lock 外进行。
+
+写回成功后，`ext4_bcache_release_dirty_reclaim()` 先由统一 release helper 恢复 LRU 成员关系，再只在最终状态为
+clean 时调用已有 drop 路径。这一顺序是关键：`ext4_bcache_drop_buf_locked()` 要求 object 已在 LRU tree 中，不能重演
+首次 P21.2b 从外部策略对未入树节点直接 `RB_REMOVE` 的 panic。写回失败则使用普通
+`ext4_bcache_release_dirty()` 恢复 dirty membership，并向本次 get 返回错误；release 不会隐式再次写回。
+
+新增 `dirty_capacity_reclaim_runs`、`dirty_capacity_reclaimed_blocks` 与 `dirty_capacity_reclaim_stalls` 三项
+telemetry。`capacity_overflows` 不表示 256 高水位，它保留原来的 `bc->cnt=16` soft-target 语义，实验下仍会大量增长。
+容量证明应看 `max_resident_blocks` 和上述三项新计数。
+
+`bcache_lifecycle.c` 扩大到 512 个内存块，并仅在 feature 启用时验证：填满 256 个 dirty blocks、注入下一次写失败、
+确认 victim 保持 dirty 且 resident 不变、下一次 get 重试并回收至 low、驻留峰值不超过 high，最后 flush 后逐块验证
+`lba ^ 0xa5` 的持久化字节。该 oracle 与既有 `ext4_bcache_validate()` 一起检查 tree/list/refcount 不变量。
+
+## log.ans 两分钟阶段验证
+
+维护者已在 Docker 内使用 RISC-V musl 工具链成功编译实验配置；当前 `log.ans` 是该配置约两分钟的 RISC-V 8 HART
+运行结果。日志包含 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，没有 panic、SIGSEGV、`ERROR`、`TFAIL` 或 `TBROK`，但
+没有 `BUILDSTORM_COMPILE ... ok=true`、测试组 `END` 或 `shutdown!`。因此它只证明已观察区间稳定，不能代表完整
+BuildStorm 通过、fsck 一致性或端到端性能改善。
+
+约 `t=114851ms` 的累计 bcache 快照闭合：
+
+```text
+get_ops 367548 = cache_hits 200149 + cache_misses 167399
+loader_ops 167399 = loader_successes 167399 + loader_errors 0
+writeback_ops 4917 = writeback_successes 4917 + writeback_errors 0
+initial 16 + allocations 172079 - drops 171901 = resident 194
+C block requests: 186059 read + 6889 write = 192948 completed, errors 0
+```
+
+实验特有的 `dirty_capacity_reclaim_runs=1`、`dirty_capacity_reclaimed_blocks=128`、
+`dirty_capacity_reclaim_stalls=0` 和 `max_resident_blocks=256` 证明 feature 已链接并完成一轮 high-to-low 回收。
+随后 workload 增长到 resident 194，符合 128/256 hysteresis；`capacity_overflows=132836` 只是超过旧 16-block
+soft target 的累计，不能解读为新高水位失守。
+
 ## 下一步优化方案
 
-P21.2b.0 与 P21.2b.1 已完成。下一项工程改动限定为 **P21.2b.2 默认关闭的容量实验**：以 256/128 blocks
-高/低水位做单变量实验，并验证 `resident <= high + in_flight_loaders`、I/O error 恢复、RISC-V 8 HART QEMU
-和 fsck。shared admission/read gate 在此之前仍不得撤退。
+P21.2b.0、P21.2b.1 与 P21.2b.2 的工程实现均已完成，但 P21.2b.2 仍保持默认关闭。剩余验收为：同一 commit、镜像、
+QEMU `-smp` 与 Cargo jobs 下完成 P0 基线；对实验配置完成 `e2fsck -fn`、RISC-V 8 HART 持续运行和两次完整 A/B；
+验证 `resident <= high + in_flight_loaders` 与 I/O error 恢复。shared admission/read gate 在这些验收前仍不得撤退。
 
 后续顺序保持如下：
 
@@ -210,16 +258,22 @@ P21.2b.0 与 P21.2b.1 已完成。下一项工程改动限定为 **P21.2b.2 默�
 3. **性能验收。** 固定镜像、冷启动、QEMU `-smp`、Cargo jobs 和 crate checkpoint 做两次 A/B；比较 16-block
    无界 overflow 与 256/128 有界退让的 full-dirty、overflow、回写批次、gate hold 和 Cargo checkpoint。最终以两次完整
    `BUILDSTORM_COMPILE ... ok=true`、测试组 `END`、`shutdown!` 和无 fsck 差异为准，不用本次 `tmp_12` 截断样本
-   宣称加速或回退比例。
+   或当前两分钟样本宣称加速或回退比例。
 
 ## 涉及文件
 
 - `crates/lwext4_rust/c/lwext4/include/ext4_bcache.h`
+- `crates/lwext4_rust/c/lwext4/include/ext4_config.h`
 - `crates/lwext4_rust/c/lwext4/src/ext4_bcache.c`
 - `crates/lwext4_rust/c/lwext4/src/ext4_blockdev.c`
 - `crates/lwext4_rust/c/lwext4/fs_test/CMakeLists.txt`
 - `crates/lwext4_rust/c/lwext4/fs_test/bcache_lifecycle.c`
+- `crates/lwext4_rust/c/lwext4/CMakeLists.txt`
+- `crates/lwext4_rust/c/lwext4/Makefile`
+- `crates/lwext4_rust/Cargo.toml`
+- `crates/lwext4_rust/build.rs`
 - `crates/lwext4_rust/src/perf.rs`
+- `os/Cargo.toml`
 - `os/src/drivers/disk.rs`
 - `os/src/fs/ext4_lw/sb.rs`
 - `os/src/utils/perf/fs.rs`
@@ -250,3 +304,17 @@ lwext4-bcache-lifecycle: PASS
 `git diff --check` 通过。维护者已成功编译运行当前工作区；RISC-V 8 HART `tmp_12.ans` 验证 bcache、writeback 和
 block request 累计守恒，且观察区间无 panic、lwext4 assert、SIGSEGV、`ERROR`、`TFAIL` 或 `TBROK`。本次改动尚未
 独立完成 LoongArch64 构建、`e2fsck -fn` 或完整 BuildStorm；日志止于 buildstorm 中途，不能报告端到端通过或加速。
+
+P21.2b.2 另已通过默认与实验配置的 host ASan/UBSan lifecycle oracle：
+
+```text
+ASAN_OPTIONS=detect_leaks=0 /tmp/ya2yos-bcache-oracle-default
+lwext4-bcache-lifecycle: PASS
+ASAN_OPTIONS=detect_leaks=0 /tmp/ya2yos-bcache-oracle-capacity
+lwext4-bcache-lifecycle: PASS
+```
+
+本地默认 `make perf TARGET_ARCH=riscv64` 与 `make perf TARGET_ARCH=loongarch64` 通过。维护者在 Docker 中成功完成实验
+RISC-V 编译，并提供上述两分钟运行日志；其末次累计/interval 均显示 reclaim `1/128/0`、resident `194`、peak `256`
+且 I/O error 为 0。实验配置尚未在 LoongArch64 编译或运行，也未完成 `e2fsck -fn`、完整 BuildStorm 与两次 wall-clock
+A/B，故 feature 继续默认关闭。

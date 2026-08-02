@@ -22,11 +22,15 @@ COMMON_DEFINITIONS =                                      \
 	-DLWEXT4_BUILD_SHARED_LIB=OFF \
 	-DCMAKE_INSTALL_PREFIX=./install \
 
+LWEXT4_EXTRA_CMAKE_ARGS ?=
+LWEXT4_LIB_SUFFIX ?=
+
 define generate_common
 	rm -R -f build_$(1)
 	mkdir build_$(1)
 	cd build_$(1) && cmake -G"Unix Makefiles"           \
 	$(COMMON_DEFINITIONS)                               \
+	$(LWEXT4_EXTRA_CMAKE_ARGS)                          \
 	$(2)                                                \
 	-DCMAKE_TOOLCHAIN_FILE=../toolchain/$(1).cmake ..
 endef
@@ -42,6 +46,7 @@ define generate_arch_build
 	mkdir $(call build_dir,$(1))
 	cd $(call build_dir,$(1)) && cmake -G"Unix Makefiles" \
 	$(COMMON_DEFINITIONS)                                  \
+	$(LWEXT4_EXTRA_CMAKE_ARGS)                             \
 	$(2)                                                   \
 	-DCMAKE_TOOLCHAIN_FILE=../toolchain/$(1).cmake ..
 endef
@@ -49,7 +54,7 @@ endef
 musl-generic:
 	$(call generate_arch_build,$@)
 	cd $(call build_dir,$@) && make lwext4
-	cp $(call build_dir,$@)/src/liblwext4.a ./liblwext4-$(ARCH).a
+	cp $(call build_dir,$@)/src/liblwext4.a ./liblwext4-$(ARCH)$(LWEXT4_LIB_SUFFIX).a
 
 generic:
 	$(call generate_common,$@)

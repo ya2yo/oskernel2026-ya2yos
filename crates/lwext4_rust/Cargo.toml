@@ -21,6 +21,9 @@ perf = []
 # Reserved for the explicit-context C API introduced by P21. The default
 # wrapper remains serial until bcache and journal synchronization are ready.
 lwext4-smp = []
+# Opt-in P21.2b.2 dirty bcache high/low-watermark experiment. The build script
+# uses an archive name and CMake build directory distinct from the default.
+bcache-dirty-capacity-experiment = []
 
 [dependencies]
 log = "0.4"

@@ -12,7 +12,7 @@
 #include <string.h>
 
 #define TEST_BLOCK_SIZE 64U
-#define TEST_BLOCK_COUNT 64U
+#define TEST_BLOCK_COUNT 512U
 #define TEST_THREADS 8U
 #define TEST_RANDOM_STEPS 100000U
 #define TEST_HELD_BLOCKS 8U
@@ -593,6 +593,86 @@ static bool test_cache_flush_ownership(void)
 	return ok;
 }
 
+#if CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT
+static bool test_dirty_capacity_watermarks(void)
+{
+	struct test_fixture fixture;
+	struct ext4_block block = EXT4_BLOCK_ZERO();
+	bool ok = fixture_init(&fixture);
+
+	for (uint64_t lba = 1;
+	     ok && lba <= CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK;
+	     ++lba) {
+		ok = get_block(&fixture, lba, &block, "capacity fill get");
+		if (ok) {
+			block.data[0] = (uint8_t)(lba ^ 0xa5U);
+			ext4_bcache_set_dirty(block.buf);
+			ok = put_block(&fixture, &block, "capacity fill put");
+		}
+	}
+	if (ok)
+		ok = fixture.bcache.ref_blocks ==
+			CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK;
+	if (ok)
+		ok = verify_cache(&fixture, "capacity high watermark");
+
+	/* The first capacity writeback must leave the victim dirty on EIO. */
+	fixture.disk.fail_next_write = true;
+	block = (struct ext4_block)EXT4_BLOCK_ZERO();
+	if (ok)
+		ok = expect(ext4_block_get(&fixture.bdev, &block,
+			CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK + 1U), EIO,
+			"capacity writeback error");
+	if (ok)
+		ok = fixture.disk.write_attempts[
+			CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK] == 1 &&
+			fixture.disk.writes[
+			CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK] == 0;
+	if (ok)
+		ok = fixture.bcache.ref_blocks ==
+			CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK;
+	if (ok)
+		ok = verify_cache(&fixture, "capacity writeback error");
+
+	/* The next request retries that victim, drops clean buffers to low, then
+	 * allocates the requested block. */
+	block = (struct ext4_block)EXT4_BLOCK_ZERO();
+	if (ok)
+		ok = get_block(&fixture,
+			CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK + 1U,
+			&block, "capacity retry get");
+	if (ok) {
+		block.data[0] = (uint8_t)(
+			(CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK + 1U) ^ 0xa5U);
+		ext4_bcache_set_dirty(block.buf);
+		ok = put_block(&fixture, &block, "capacity retry put");
+	}
+	if (ok)
+		ok = fixture.disk.write_attempts[
+			CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK] == 2 &&
+			fixture.disk.writes[
+			CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK] == 1;
+	if (ok)
+		ok = fixture.bcache.ref_blocks <=
+			CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_LOW_WATERMARK + 1U &&
+			fixture.bcache.max_ref_blocks <=
+			CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK;
+	if (ok)
+		ok = verify_cache(&fixture, "capacity retry");
+	if (ok)
+		ok = expect(ext4_block_cache_flush(&fixture.bdev), EOK,
+			"capacity final flush");
+	for (uint64_t lba = 1;
+	     ok && lba <= CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK + 1U;
+	     ++lba)
+		ok = fixture.disk.storage[lba][0] == (uint8_t)(lba ^ 0xa5U);
+	if (ok)
+		ok = verify_cache(&fixture, "capacity final flush");
+	fixture_cleanup(&fixture);
+	return ok;
+}
+#endif
+
 static bool test_oracle_negative_controls(void)
 {
 	struct test_fixture fixture;
@@ -642,6 +722,9 @@ int main(void)
 {
 	if (!test_sequential_lifecycle() || !test_random_lifecycle() ||
 	    !test_concurrent_loads() || !test_cache_flush_ownership() ||
+	#if CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT
+	    !test_dirty_capacity_watermarks() ||
+	#endif
 	    !test_oracle_negative_controls())
 		return 1;
 	puts("lwext4-bcache-lifecycle: PASS");

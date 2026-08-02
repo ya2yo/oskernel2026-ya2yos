@@ -128,6 +128,27 @@ extern "C" {
 #define CONFIG_BLOCK_DEV_CACHE_SIZE 8
 #endif
 
+/* P21.2b.2 is deliberately opt-in while its dirty writeback/reclaim policy
+ * is validated. The values are resident buffer counts, not block-device I/O
+ * batch sizes. */
+#ifndef CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT
+#define CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT 0
+#endif
+
+#ifndef CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK
+#define CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK 256U
+#endif
+
+#ifndef CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_LOW_WATERMARK
+#define CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_LOW_WATERMARK 128U
+#endif
+
+#if CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT && \
+	(CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_LOW_WATERMARK >= \
+	 CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK)
+#error "dirty bcache low watermark must be below high watermark"
+#endif
+
 
 /**@brief   Maximum block device name*/
 #ifndef CONFIG_EXT4_MAX_BLOCKDEV_NAME

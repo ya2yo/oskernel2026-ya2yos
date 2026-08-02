@@ -9528,3 +9528,51 @@ host ASan/UBSan oracle 以 `ASAN_OPTIONS=detect_leaks=0 /tmp/ya2yos-bcache-oracl
 AI 此前尝试 `make build-arch TARGET_ARCH=riscv64` 时在源码编译前受 `nobody:nogroup` 所有的
 `build_musl-generic-*` 生成目录阻断，本轮没有重复处理这些目录或重跑长测。当前改动尚未独立验证 LoongArch64、
 `e2fsck -fn` 或完整 BuildStorm，因此不报告跨架构验收、完整通过或性能提升。
+
+## 2026-08-02：P21.2b.2 dirty bcache capacity reclaim
+
+### 用户输入
+
+维护者要求根据 `Docs/决赛文档/优化方案.md` 开始新一轮内核优化，后续说明 `riscv64-linux-musl-cc` 位于 Docker 中，
+已在 Docker 成功编译，并提供当前 `log.ans` 的两分钟 RISC-V 运行结果。
+
+### 分析与采纳结论
+
+P21.2b.0/b.1 已建立可验证的 bcache tree/list/refcount 生命周期和 dirty claim/release ownership。上一轮 dirty
+capacity 代码直接拆装 intrusive LRU RB tree，已在 `ext4_buf_lru_RB_REMOVE_COLOR` 触发 `LoadPageFault`，因此本轮不
+恢复外部 `RB_REMOVE`/`RB_INSERT` 策略。实现默认关闭的 P21.2b.2：high=256、low=128，容量触发后只经
+`ext4_bcache_claim_dirty()` 取得已 pin 的 dirty buffer；`ext4_block_flush_buf()` 在 `index_lock` 外执行。成功写回后
+`ext4_bcache_release_dirty_reclaim()` 先恢复 LRU membership，再只丢弃 clean object；失败则普通 release 回 dirty list
+并将错误返给本次 get，不递归重试。
+
+为防止 feature 切换误复用不同 CMake 配置生成的 archive，`lwext4_rust/build.rs` 为默认与实验配置分别命名 build
+目录和 `liblwext4` archive。新增 Cargo feature、CMake option 与 config defaults，同时从 C struct 经 Rust FFI 到 kernel
+perf report 增加 reclaim run/reclaimed blocks/stall 三项计数。`capacity_overflows` 保留原 `bc->cnt=16` soft target
+语义，不能作为新 high watermark 是否失守的依据。
+
+host lifecycle oracle 在实验配置下填满 256 个 dirty blocks，注入第一次 write EIO，验证该 victim 仍 dirty 且 resident
+不变；重试后回收至 low，检查 peak 不超过 high，并最终校验全部落盘字节。默认和实验配置的 ASan/UBSan oracle 均 PASS。
+
+维护者提供的两分钟 `log.ans` 有 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，未出现 panic、SIGSEGV、`ERROR`、`TFAIL`
+或 `TBROK`，但没有 compile success、测试组 END 或 shutdown。约 `t=114851ms` 的累计快照闭合：
+`367548=200149+167399`、loader `167399=167399+0`、writeback `4917=4917+0`、
+`16+172079-171901=194`，C block `192948` 个 submit/complete 无 error。实验计数
+`reclaim_runs=1`、`reclaimed_blocks=128`、`stalls=0`、`max_resident=256` 证明路径已执行；resident 回升至 194 符合
+128/256 hysteresis。该样本只作阶段稳定与容量边界证据，不能声称端到端加速。
+
+### 修改文件
+
+新增 P21.2b.2 feature/build 隔离与容量回收的源码修改位于 `os/Cargo.toml`、`crates/lwext4_rust/Cargo.toml`、
+`crates/lwext4_rust/build.rs`、lwext4 的 `CMakeLists.txt`、`Makefile`、`ext4_config.h`、`ext4_bcache.h`、
+`ext4_bcache.c`、`ext4_blockdev.c`、`fs_test/bcache_lifecycle.c`、`lwext4_rust/src/perf.rs` 和
+`os/src/utils/perf/report.rs`。同步更新《优化方案》、P21.2 问题记录、开发日志、`ai.log` 与
+`AI_INTERACTION.md`。维护者已有的 `user/src/bin/initproc.rs`、`crates/lwext4_rust/src/blockdev.rs`、
+`crates/lwext4_rust/src/file.rs`、`disk.img` 和 Docker 生成物未改动。
+
+### 验证边界
+
+已通过 `cargo fmt --manifest-path os/Cargo.toml --all`、`cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml --all`、
+默认/实验 host ASan/UBSan lifecycle oracle，以及默认 `make perf TARGET_ARCH=riscv64` 和
+`make perf TARGET_ARCH=loongarch64`。实验 RISC-V archive 与两分钟 QEMU 结果由维护者在 Docker 中成功完成。
+未完成实验 LoongArch64、`e2fsck -fn`、完整 BuildStorm 与同环境两次 wall-clock A/B；这些是决定 feature 能否默认启用
+及进入 P21.3 前的剩余验收，不报告完整通过或性能提升。

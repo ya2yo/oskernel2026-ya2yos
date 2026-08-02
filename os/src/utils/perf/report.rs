@@ -330,6 +330,9 @@ storage_counter_deltas!(
     DELTA_BCACHE_SHAKE_FULL_DIRTY,
     DELTA_BCACHE_SHAKE_FULL_PINNED,
     DELTA_BCACHE_CAPACITY_OVERFLOWS,
+    DELTA_BCACHE_DIRTY_CAPACITY_RECLAIM_RUNS,
+    DELTA_BCACHE_DIRTY_CAPACITY_RECLAIMED_BLOCKS,
+    DELTA_BCACHE_DIRTY_CAPACITY_RECLAIM_STALLS,
     DELTA_BCACHE_WRITEBACK_OPS,
     DELTA_BCACHE_WRITEBACK_SUCCESSES,
     DELTA_BCACHE_WRITEBACK_ERRORS,
@@ -535,7 +538,7 @@ fn emit_write_cache_interval_deltas() {
 fn emit_ext4_storage_interval_deltas() {
     let bcache = lwext4_rust::perf::bcache_perf_stats();
     println!(
-        "[perf] interval_ext4_bcache get_ops={} cache_hits={} cache_misses={} allocations={} allocation_races={} loader_ops={} loader_successes={} loader_errors={} wait_ops={} wait_rechecks={} wake_calls={} shake_calls={} clean_evictions={} shake_full_dirty={} shake_full_pinned={} capacity_overflows={} writeback_ops={} writeback_successes={} writeback_errors={} writeback_waits={} drops={} initial_resident_blocks={} resident_blocks={} max_resident_blocks={}",
+        "[perf] interval_ext4_bcache get_ops={} cache_hits={} cache_misses={} allocations={} allocation_races={} loader_ops={} loader_successes={} loader_errors={} wait_ops={} wait_rechecks={} wake_calls={} shake_calls={} clean_evictions={} shake_full_dirty={} shake_full_pinned={} capacity_overflows={} dirty_capacity_reclaim_runs={} dirty_capacity_reclaimed_blocks={} dirty_capacity_reclaim_stalls={} writeback_ops={} writeback_successes={} writeback_errors={} writeback_waits={} drops={} initial_resident_blocks={} resident_blocks={} max_resident_blocks={}",
         DELTA_BCACHE_GET_OPS.take_value(bcache.get_ops),
         DELTA_BCACHE_CACHE_HITS.take_value(bcache.cache_hits),
         DELTA_BCACHE_CACHE_MISSES.take_value(bcache.cache_misses),
@@ -552,6 +555,12 @@ fn emit_ext4_storage_interval_deltas() {
         DELTA_BCACHE_SHAKE_FULL_DIRTY.take_value(bcache.shake_full_dirty),
         DELTA_BCACHE_SHAKE_FULL_PINNED.take_value(bcache.shake_full_pinned),
         DELTA_BCACHE_CAPACITY_OVERFLOWS.take_value(bcache.capacity_overflows),
+        DELTA_BCACHE_DIRTY_CAPACITY_RECLAIM_RUNS
+            .take_value(bcache.dirty_capacity_reclaim_runs),
+        DELTA_BCACHE_DIRTY_CAPACITY_RECLAIMED_BLOCKS
+            .take_value(bcache.dirty_capacity_reclaimed_blocks),
+        DELTA_BCACHE_DIRTY_CAPACITY_RECLAIM_STALLS
+            .take_value(bcache.dirty_capacity_reclaim_stalls),
         DELTA_BCACHE_WRITEBACK_OPS.take_value(bcache.writeback_ops),
         DELTA_BCACHE_WRITEBACK_SUCCESSES.take_value(bcache.writeback_successes),
         DELTA_BCACHE_WRITEBACK_ERRORS.take_value(bcache.writeback_errors),
@@ -599,7 +608,7 @@ fn emit_ext4_storage_interval_deltas() {
 fn emit_ext4_storage_cumulative() {
     let bcache = lwext4_rust::perf::bcache_perf_stats();
     println!(
-        "[perf] ext4_bcache get_ops={} cache_hits={} cache_misses={} allocations={} allocation_races={} loader_ops={} loader_successes={} loader_errors={} wait_ops={} wait_rechecks={} wake_calls={} shake_calls={} clean_evictions={} shake_full_dirty={} shake_full_pinned={} capacity_overflows={} writeback_ops={} writeback_successes={} writeback_errors={} writeback_waits={} drops={} initial_resident_blocks={} resident_blocks={} max_resident_blocks={}",
+        "[perf] ext4_bcache get_ops={} cache_hits={} cache_misses={} allocations={} allocation_races={} loader_ops={} loader_successes={} loader_errors={} wait_ops={} wait_rechecks={} wake_calls={} shake_calls={} clean_evictions={} shake_full_dirty={} shake_full_pinned={} capacity_overflows={} dirty_capacity_reclaim_runs={} dirty_capacity_reclaimed_blocks={} dirty_capacity_reclaim_stalls={} writeback_ops={} writeback_successes={} writeback_errors={} writeback_waits={} drops={} initial_resident_blocks={} resident_blocks={} max_resident_blocks={}",
         bcache.get_ops,
         bcache.cache_hits,
         bcache.cache_misses,
@@ -616,6 +625,9 @@ fn emit_ext4_storage_cumulative() {
         bcache.shake_full_dirty,
         bcache.shake_full_pinned,
         bcache.capacity_overflows,
+        bcache.dirty_capacity_reclaim_runs,
+        bcache.dirty_capacity_reclaimed_blocks,
+        bcache.dirty_capacity_reclaim_stalls,
         bcache.writeback_ops,
         bcache.writeback_successes,
         bcache.writeback_errors,

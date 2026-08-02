@@ -260,6 +260,9 @@ struct ext4_bcache_perf_stats {
 	uint64_t shake_full_dirty;
 	uint64_t shake_full_pinned;
 	uint64_t capacity_overflows;
+	uint64_t dirty_capacity_reclaim_runs;
+	uint64_t dirty_capacity_reclaimed_blocks;
+	uint64_t dirty_capacity_reclaim_stalls;
 	uint64_t writeback_ops;
 	uint64_t writeback_successes;
 	uint64_t writeback_errors;
@@ -296,6 +299,9 @@ void ext4_bcache_perf_record_loader_complete(int result);
 void ext4_bcache_perf_record_writeback_wait(void);
 void ext4_bcache_perf_record_writeback_start(void);
 void ext4_bcache_perf_record_writeback_complete(int result);
+void ext4_bcache_perf_record_dirty_capacity_reclaim_run(void);
+void ext4_bcache_perf_record_dirty_capacity_reclaimed_block(void);
+void ext4_bcache_perf_record_dirty_capacity_reclaim_stall(void);
 
 /** Wait until all bits in mask are clear for a pinned buffer. */
 int ext4_bcache_wait_while(struct ext4_buf *buf, int mask);
@@ -385,10 +391,18 @@ bool ext4_bcache_claim_dirty(struct ext4_bcache *bc, struct ext4_block *b);
  */
 void ext4_bcache_release_dirty(struct ext4_bcache *bc, struct ext4_block *b);
 
+/** Release a claimed dirty block and discard it only when writeback left it
+ * clean. The caller must have acquired it through ext4_bcache_claim_dirty(). */
+void ext4_bcache_release_dirty_reclaim(struct ext4_bcache *bc,
+				       struct ext4_block *b);
+
 /**@brief   Return a full status of block cache.
  * @param   bc block cache descriptor
  * @return  full status*/
 bool ext4_bcache_is_full(struct ext4_bcache *bc);
+
+/** Return whether resident buffer count has reached a caller-provided limit. */
+bool ext4_bcache_reached_limit(struct ext4_bcache *bc, uint32_t limit);
 
 /** Drop clean unreferenced buffers until the cache reaches its target size.
  * Dirty buffers are left for an exclusive writer/sync path; a shared reader

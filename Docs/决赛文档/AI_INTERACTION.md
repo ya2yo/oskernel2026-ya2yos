@@ -2375,3 +2375,21 @@
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、
   [AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### lwext4 SMP P21.2b.2 默认关闭的 dirty bcache capacity reclaim（8.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求依据《优化方案》继续内核优化，并提供 Docker 内成功编译的实验配置与两分钟 RISC-V
+  `log.ans`。
+- **描述**：以 256/128 resident blocks 实现 opt-in `bcache-dirty-capacity-experiment`。CMake/archive 配置按
+  feature 隔离；达到 high 时经 bcache 内部 `claim_dirty` 建立 refcount pin，锁外 writeback，成功后恢复 LRU 后仅
+  discard clean，EIO 则恢复 dirty 且不递归重试。新增 reclaim run/block/stall telemetry 与实验 error-injection
+  lifecycle oracle，避免重现首次 P21.2b 由外部 RB tree 操作触发的 panic。`capacity_overflows` 仍是旧 16-block
+  soft target 计数，验收读取 `max_resident_blocks` 与新 telemetry。
+- **验证边界**：默认/实验 host ASan/UBSan oracle 均 PASS；默认 RISC-V 与 LoongArch64 perf 构建通过。维护者的
+  Docker RISC-V 两分钟日志有 TOOLCHAIN/MINIBUILD、无 panic/error，reclaim 为 `1/128/0`、peak resident 为 256，
+  但缺少 BuildStorm 结束与 shutdown；未跑实验 LoongArch64、`e2fsck -fn`、完整 BuildStorm 或两次 A/B，因此 feature
+  保持默认关闭且不报告性能收益。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、
+  [AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

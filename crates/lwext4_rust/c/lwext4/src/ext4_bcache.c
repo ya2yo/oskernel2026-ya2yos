@@ -155,6 +155,9 @@ void ext4_bcache_perf_snapshot(struct ext4_bcache_perf_stats *out)
 	EXT4_BCACHE_PERF_LOAD(shake_full_dirty);
 	EXT4_BCACHE_PERF_LOAD(shake_full_pinned);
 	EXT4_BCACHE_PERF_LOAD(capacity_overflows);
+	EXT4_BCACHE_PERF_LOAD(dirty_capacity_reclaim_runs);
+	EXT4_BCACHE_PERF_LOAD(dirty_capacity_reclaimed_blocks);
+	EXT4_BCACHE_PERF_LOAD(dirty_capacity_reclaim_stalls);
 	EXT4_BCACHE_PERF_LOAD(writeback_ops);
 	EXT4_BCACHE_PERF_LOAD(writeback_successes);
 	EXT4_BCACHE_PERF_LOAD(writeback_errors);
@@ -265,6 +268,21 @@ void ext4_bcache_perf_record_writeback_complete(int result)
 		EXT4_BCACHE_PERF_INC(writeback_successes);
 	else
 		EXT4_BCACHE_PERF_INC(writeback_errors);
+}
+
+void ext4_bcache_perf_record_dirty_capacity_reclaim_run(void)
+{
+	EXT4_BCACHE_PERF_INC(dirty_capacity_reclaim_runs);
+}
+
+void ext4_bcache_perf_record_dirty_capacity_reclaimed_block(void)
+{
+	EXT4_BCACHE_PERF_INC(dirty_capacity_reclaimed_blocks);
+}
+
+void ext4_bcache_perf_record_dirty_capacity_reclaim_stall(void)
+{
+	EXT4_BCACHE_PERF_INC(dirty_capacity_reclaim_stalls);
 }
 
 static inline void ext4_bcache_index_lock(struct ext4_bcache *bc)
@@ -447,7 +465,8 @@ static void ext4_bcache_reference_locked(struct ext4_bcache *bc,
 
 static bool ext4_bcache_release_locked(struct ext4_bcache *bc,
 					struct ext4_buf *buf,
-					bool allow_writeback)
+					bool allow_writeback,
+					bool discard_clean)
 {
 	struct ext4_buf *duplicate;
 
@@ -468,6 +487,12 @@ static bool ext4_bcache_release_locked(struct ext4_bcache *bc,
 
 	duplicate = RB_INSERT(ext4_buf_lru, &bc->lru_root, buf);
 	ext4_assert(!duplicate);
+	if (discard_clean && ext4_bcache_test_flag(buf, BC_UPTODATE) &&
+	    !ext4_bcache_test_flag(buf, BC_DIRTY)) {
+		/* drop_buf_locked expects the unreferenced object in the LRU tree. */
+		ext4_bcache_drop_buf_locked(bc, buf);
+		return false;
+	}
 	if (ext4_bcache_test_flag(buf, BC_DIRTY) &&
 	    ext4_bcache_test_flag(buf, BC_UPTODATE))
 		ext4_bcache_insert_dirty_node(bc, buf);
@@ -616,7 +641,7 @@ int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b)
 	ext4_assert(buf);
 
 	ext4_bcache_index_lock(bc);
-	flush = ext4_bcache_release_locked(bc, buf, true);
+	flush = ext4_bcache_release_locked(bc, buf, true, false);
 	ext4_bcache_index_unlock(bc);
 
 	if (flush) {
@@ -624,7 +649,7 @@ int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b)
 
 		ext4_bcache_index_lock(bc);
 		ext4_bcache_clear_flag(buf, BC_FLUSH);
-		ext4_bcache_release_locked(bc, buf, false);
+		ext4_bcache_release_locked(bc, buf, false, false);
 		ext4_bcache_index_unlock(bc);
 	}
 
@@ -663,7 +688,22 @@ void ext4_bcache_release_dirty(struct ext4_bcache *bc, struct ext4_block *b)
 	ext4_assert(bc && b && b->buf);
 	buf = b->buf;
 	ext4_bcache_index_lock(bc);
-	ext4_bcache_release_locked(bc, buf, false);
+	ext4_bcache_release_locked(bc, buf, false, false);
+	ext4_bcache_index_unlock(bc);
+	b->lb_id = 0;
+	b->buf = NULL;
+	b->data = NULL;
+}
+
+void ext4_bcache_release_dirty_reclaim(struct ext4_bcache *bc,
+					       struct ext4_block *b)
+{
+	struct ext4_buf *buf;
+
+	ext4_assert(bc && b && b->buf);
+	buf = b->buf;
+	ext4_bcache_index_lock(bc);
+	ext4_bcache_release_locked(bc, buf, false, true);
 	ext4_bcache_index_unlock(bc);
 	b->lb_id = 0;
 	b->buf = NULL;
@@ -677,6 +717,17 @@ bool ext4_bcache_is_full(struct ext4_bcache *bc)
 	full = bc->cnt <= bc->ref_blocks;
 	ext4_bcache_index_unlock(bc);
 	return full;
+}
+
+bool ext4_bcache_reached_limit(struct ext4_bcache *bc, uint32_t limit)
+{
+	bool reached;
+
+	ext4_assert(bc && limit);
+	ext4_bcache_index_lock(bc);
+	reached = bc->ref_blocks >= limit;
+	ext4_bcache_index_unlock(bc);
+	return reached;
 }
 
 void ext4_bcache_shake_clean(struct ext4_bcache *bc)

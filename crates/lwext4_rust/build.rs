@@ -91,9 +91,19 @@ fn main() {
     }
 
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    let lwext4_lib = &format!("lwext4-{}", arch);
+    let dirty_capacity_experiment =
+        env::var_os("CARGO_FEATURE_BCACHE_DIRTY_CAPACITY_EXPERIMENT").is_some();
+    // Keep each P21.2b.2 CMake configuration in an independent archive. Apart
+    // from isolating the opt-in experiment, this prevents an old generated
+    // archive from being reused after its C configuration changes.
+    let build_variant_suffix = if dirty_capacity_experiment {
+        "-p212b2-bcache-dirty-capacity"
+    } else {
+        "-p212b2-default"
+    };
+    let lwext4_lib = &format!("lwext4-{}{}", arch, build_variant_suffix);
     let lwext4_lib_path = &format!("c/lwext4/lib{}.a", lwext4_lib);
-    let lwext4_build_dir = format!("build_musl-generic-{}", arch);
+    let lwext4_build_dir = format!("build_musl-generic-{}{}", arch, build_variant_suffix);
     let lwext4_build_path = c_path.join(&lwext4_build_dir);
     let archive_missing = !Path::new(lwext4_lib_path).exists();
     if archive_missing || lwext4_needs_rebuild(&c_path, Path::new(lwext4_lib_path)) {
@@ -105,6 +115,12 @@ fn main() {
             ])
             .arg(&format!("ARCH={}", arch))
             .arg(&format!("LWEXT4_BUILD_DIR={}", lwext4_build_dir))
+            .arg(&format!("LWEXT4_LIB_SUFFIX={}", build_variant_suffix))
+            .arg(if dirty_capacity_experiment {
+                "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DEXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT=ON"
+            } else {
+                "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+            })
             .status()
             .expect("failed to execute process: make lwext4");
         assert!(status.success());

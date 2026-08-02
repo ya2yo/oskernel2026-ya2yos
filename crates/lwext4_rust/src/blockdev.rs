@@ -110,7 +110,7 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
 
         let c_name = CString::new("ext4_fs").expect("CString::new ext4_fs failed");
         let c_name = c_name.as_bytes_with_nul(); // + '\0'
-        //let c_mountpoint = CString::new("/mp/").unwrap();
+                                                 //let c_mountpoint = CString::new("/mp/").unwrap();
         let c_mountpoint = CString::new("/").unwrap();
         let c_mountpoint = c_mountpoint.as_bytes_with_nul();
 

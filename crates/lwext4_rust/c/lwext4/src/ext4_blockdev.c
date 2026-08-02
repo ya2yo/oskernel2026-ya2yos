@@ -210,10 +210,49 @@ int ext4_block_flush_lba(struct ext4_blockdev *bdev, uint64_t lba)
 	return r;
 }
 
+#if CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT
+static int ext4_block_cache_reclaim_dirty(struct ext4_blockdev *bdev)
+{
+	struct ext4_bcache *bc = bdev->bc;
+
+	if (!ext4_bcache_reached_limit(
+			bc, CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_HIGH_WATERMARK))
+		return EOK;
+
+	ext4_bcache_perf_record_dirty_capacity_reclaim_run();
+	while (ext4_bcache_reached_limit(
+		bc, CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_LOW_WATERMARK + 1U)) {
+		struct ext4_block block = EXT4_BLOCK_ZERO();
+		int r;
+
+		if (!ext4_bcache_claim_dirty(bc, &block)) {
+			ext4_bcache_perf_record_dirty_capacity_reclaim_stall();
+			break;
+		}
+
+		r = ext4_block_flush_buf(bdev, block.buf);
+		if (r == EOK) {
+			ext4_bcache_release_dirty_reclaim(bc, &block);
+			ext4_bcache_perf_record_dirty_capacity_reclaimed_block();
+		} else {
+			/* Keep the failed buffer dirty for the next explicit retry. */
+			ext4_bcache_release_dirty(bc, &block);
+			return r;
+		}
+	}
+
+	return EOK;
+}
+#endif
+
 int ext4_block_cache_shake(struct ext4_blockdev *bdev)
 {
 	ext4_bcache_shake_clean(bdev->bc);
+#if CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT
+	return ext4_block_cache_reclaim_dirty(bdev);
+#else
 	return EOK;
+#endif
 }
 
 int ext4_block_get_noread(struct ext4_blockdev *bdev, struct ext4_block *b,

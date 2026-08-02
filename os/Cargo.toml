@@ -68,6 +68,9 @@ lwext4-smp = ["lwext4_rust/lwext4-smp"]
 # `user/src/bin/buildstorm/cache_capacity.rs`. Keep the production cache
 # capacity unchanged unless this feature is explicitly requested.
 file-cache-capacity-test = []
+# P21.2b.2: keep dirty bcache reclaim out of normal kernels until host oracle,
+# QEMU, and fsck validation establish the 256/128 watermarks as safe.
+bcache-dirty-capacity-experiment = ["lwext4_rust/bcache-dirty-capacity-experiment"]
 # Emits one structured record only when an unrecoverable user page fault is
 # converted into SIGSEGV/SIGBUS, plus SIGSEGV signal-frame restorer details.
 # It is intended for the RISC-V rustc crash reproduction and is off by default.
