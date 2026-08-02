@@ -9409,3 +9409,41 @@ scratch 和原子 block 计数。继续保留 `EXT4_OP_LOCK`，不把它描述�
 冒烟通过 TOOLCHAIN/MINIBUILD，停在 untimed `pre-build tg-xtask`，没有 panic、lwext4 assert、TFAIL 或 TBROK；
 由于 `timeout` 未回收 QEMU，AI 显式终止残留进程并恢复了原 `disk.img` 软链接。完整 BuildStorm、P21.2 并发 oracle、
 I/O 错误注入和 fsck 尚未执行，不报告性能提升。
+
+## 2026-08-02：lwext4 SMP P21.2a bcache 与块请求 telemetry
+
+### 用户输入
+
+维护者要求开始下一轮优化，并提供新的 `log.ans` 作为实现后的 BuildStorm 输出。
+
+### 分析与采纳结论
+
+本轮保持 mount-wide `EXT4_OP_LOCK`，只实现 P21.2a 观测面。C 侧用独立 process-wide relaxed atomic 结构统计
+bcache hit/miss、allocation/race、loader/wait、wake、shake/clean eviction/full-dirty、capacity overflow、
+writeback、drop/resident，以及同步 `bread/bwrite` submit/complete/blocks/error；不把字段嵌入 `ext4_bcache`，因为
+生成的 Rust binding 仍落后于 C 布局。Rust `Disk::dev` 在 perf feature 下统计 read/write/flush request、contended、
+bytes/error、wait/service total/max。两侧在 mount 完成后统一清零启用，排除初始化 I/O。
+
+正式 `log.ans` 首个快照满足 `get 5803=5599+204`、loader `204=204+0`、writeback `395=395+0`、
+`initial 16+alloc 516-drop 517=resident 15`，C I/O 和 Rust Disk 均为 `983 read+461 write=1444 complete`。
+末个完整累计快照仍守恒。interval 偶发 start/end 暂差 1 是多个 relaxed 字段分别读取时存在一个在途同步请求，
+后续累计快照恢复。关键压力为 `shake_full_dirty=401664`、`capacity_overflows=181972`、驻留峰值 1243；而
+allocation race、loader/writeback wait、device contention 均为 0，符合外层 gate 仍串行的预期。
+
+下一轮确定为单变量 P21.2b：保留 16-block clean soft target，以 256/128 blocks 为首轮 dirty slack 高/低水位；
+shared 路径在高水位返回 `NEED_EXCLUSIVE`，exclusive fallback 在 index lock 下 claim/pin victim、锁外 writeback、
+回锁 clean/drop，并批量回收到低水位。waiter 分桶和设备锁拆分推迟到 shared-read telemetry 出现实际等待后。
+
+### 修改文件
+
+源码修改位于 `ext4_bcache.h`、`ext4_bcache.c`、`ext4_blockdev.c`、`lwext4_rust/src/perf.rs`、
+`os/src/drivers/disk.rs`、EXT4 `sb.rs` 和 `os/src/utils/perf/{fs,report}.rs`；同步更新 P21.2 问题记录、
+《优化方案》、开发日志、`ai.log` 与 `AI_INTERACTION.md`。维护者已有的 `user/src/bin/initproc.rs`、`disk.img`
+和运行产物 `log.ans` 不纳入本轮源码范围。
+
+### 验证边界
+
+RISC-V/LoongArch64 lwext4 C 静态库、双架构 release 内核和双架构 perf 内核均构建通过，只有仓库已有 warning；
+`git diff --check` 通过。RISC-V 8 HART `log.ans` 到约 573 秒、Cargo `21/446`，有 TOOLCHAIN/MINIBUILD，且无
+panic/ERROR/TFAIL/TBROK；没有 `BUILDSTORM_COMPILE`、END 或 shutdown。P21.2 并发 oracle、错误注入、fsck 与
+完整 BuildStorm 尚未执行，不报告并行收益。

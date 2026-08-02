@@ -3,6 +3,9 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "perf")]
+use core::sync::atomic::AtomicBool;
+
+#[cfg(feature = "perf")]
 use lwext4_rust::perf::{FstatStageEvent, RenameWriteBackStageEvent};
 
 use crate::arch::time::{get_clock_freq, get_ticks};
@@ -226,6 +229,67 @@ impl Ext4PhaseStats {
     }
 }
 
+/// Request classes crossing the serialized physical block-device boundary.
+#[cfg(feature = "perf")]
+#[derive(Clone, Copy)]
+pub(crate) enum Ext4BlockRequestKind {
+    Read,
+    Write,
+    Flush,
+}
+
+/// Aggregate queue and service costs for `Disk::dev` requests.
+#[cfg(feature = "perf")]
+pub(crate) struct Ext4BlockDeviceStats {
+    pub(crate) submits: AtomicUsize,
+    pub(crate) read_requests: AtomicUsize,
+    pub(crate) write_requests: AtomicUsize,
+    pub(crate) flush_requests: AtomicUsize,
+    pub(crate) completed: AtomicUsize,
+    pub(crate) contended: AtomicUsize,
+    pub(crate) bytes: AtomicUsize,
+    pub(crate) errors: AtomicUsize,
+    pub(crate) wait_ticks: AtomicUsize,
+    pub(crate) max_wait_ticks: AtomicUsize,
+    pub(crate) service_ticks: AtomicUsize,
+    pub(crate) max_service_ticks: AtomicUsize,
+}
+
+#[cfg(feature = "perf")]
+impl Ext4BlockDeviceStats {
+    const fn new() -> Self {
+        Self {
+            submits: AtomicUsize::new(0),
+            read_requests: AtomicUsize::new(0),
+            write_requests: AtomicUsize::new(0),
+            flush_requests: AtomicUsize::new(0),
+            completed: AtomicUsize::new(0),
+            contended: AtomicUsize::new(0),
+            bytes: AtomicUsize::new(0),
+            errors: AtomicUsize::new(0),
+            wait_ticks: AtomicUsize::new(0),
+            max_wait_ticks: AtomicUsize::new(0),
+            service_ticks: AtomicUsize::new(0),
+            max_service_ticks: AtomicUsize::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        self.submits.store(0, Ordering::Relaxed);
+        self.read_requests.store(0, Ordering::Relaxed);
+        self.write_requests.store(0, Ordering::Relaxed);
+        self.flush_requests.store(0, Ordering::Relaxed);
+        self.completed.store(0, Ordering::Relaxed);
+        self.contended.store(0, Ordering::Relaxed);
+        self.bytes.store(0, Ordering::Relaxed);
+        self.errors.store(0, Ordering::Relaxed);
+        self.wait_ticks.store(0, Ordering::Relaxed);
+        self.max_wait_ticks.store(0, Ordering::Relaxed);
+        self.service_ticks.store(0, Ordering::Relaxed);
+        self.max_service_ticks.store(0, Ordering::Relaxed);
+    }
+}
+
 /// Cause retained with a regular-file stat-cache miss until `fstat()` really
 /// enters `Ext4File::fstat()`. Values are operation classes, never paths or
 /// tasks, so the counters remain low-overhead global aggregates.
@@ -401,6 +465,10 @@ impl Ext4FstatReasonPhases {
 
 pub(crate) static EXT4_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_GATE_STATS: Ext4GateStats = Ext4GateStats::new();
+#[cfg(feature = "perf")]
+pub(crate) static EXT4_BLOCK_DEVICE_STATS: Ext4BlockDeviceStats = Ext4BlockDeviceStats::new();
+#[cfg(feature = "perf")]
+static EXT4_BLOCK_DEVICE_PERF_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Aggregate across both pieces of a split `Ext4Inode::read_at()` slow path.
 /// `samples` therefore counts global-lock acquisitions, not logical reads.
 pub(crate) static EXT4_READ_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
@@ -1814,4 +1882,55 @@ pub fn record_vfs_fsidx_identity_stale_replace() {
 pub fn record_vfs_dentry_capacity_evict(entries: usize) {
     add(&VFS_DENTRY_CAPACITY_EVICTIONS, 1);
     add(&VFS_DENTRY_CAPACITY_EVICTED_ENTRIES, entries);
+}
+
+/// Align the Rust device counters with the C bcache post-mount epoch.
+#[cfg(feature = "perf")]
+pub(crate) fn enable_ext4_block_device_perf() {
+    EXT4_BLOCK_DEVICE_PERF_ENABLED.store(false, Ordering::Relaxed);
+    EXT4_BLOCK_DEVICE_STATS.reset();
+    EXT4_BLOCK_DEVICE_PERF_ENABLED.store(true, Ordering::Release);
+}
+
+#[inline]
+#[cfg(feature = "perf")]
+pub(crate) fn record_ext4_block_request_submit(kind: Ext4BlockRequestKind, bytes: usize) {
+    if !EXT4_BLOCK_DEVICE_PERF_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    add(&EXT4_BLOCK_DEVICE_STATS.submits, 1);
+    add(&EXT4_BLOCK_DEVICE_STATS.bytes, bytes);
+    let requests = match kind {
+        Ext4BlockRequestKind::Read => &EXT4_BLOCK_DEVICE_STATS.read_requests,
+        Ext4BlockRequestKind::Write => &EXT4_BLOCK_DEVICE_STATS.write_requests,
+        Ext4BlockRequestKind::Flush => &EXT4_BLOCK_DEVICE_STATS.flush_requests,
+    };
+    add(requests, 1);
+}
+
+#[inline]
+#[cfg(feature = "perf")]
+pub(crate) fn record_ext4_block_request_acquired(wait_ticks: usize, contended: bool) {
+    if !EXT4_BLOCK_DEVICE_PERF_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    add(&EXT4_BLOCK_DEVICE_STATS.wait_ticks, wait_ticks);
+    update_max(&EXT4_BLOCK_DEVICE_STATS.max_wait_ticks, wait_ticks);
+    if contended {
+        add(&EXT4_BLOCK_DEVICE_STATS.contended, 1);
+    }
+}
+
+#[inline]
+#[cfg(feature = "perf")]
+pub(crate) fn record_ext4_block_request_complete(service_ticks: usize, success: bool) {
+    if !EXT4_BLOCK_DEVICE_PERF_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    add(&EXT4_BLOCK_DEVICE_STATS.completed, 1);
+    add(&EXT4_BLOCK_DEVICE_STATS.service_ticks, service_ticks);
+    update_max(&EXT4_BLOCK_DEVICE_STATS.max_service_ticks, service_ticks);
+    if !success {
+        add(&EXT4_BLOCK_DEVICE_STATS.errors, 1);
+    }
 }

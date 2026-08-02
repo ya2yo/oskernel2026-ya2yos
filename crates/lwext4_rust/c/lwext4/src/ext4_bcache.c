@@ -73,6 +73,200 @@ static struct {
 	ext4_bcache_wake_fn wake;
 } ext4_bcache_sync;
 
+static bool ext4_bcache_perf_enabled;
+static struct ext4_bcache *ext4_bcache_perf_bc;
+static struct ext4_bcache_perf_stats ext4_bcache_perf;
+
+#define EXT4_BCACHE_PERF_INC(field) do { \
+	if (__atomic_load_n(&ext4_bcache_perf_enabled, __ATOMIC_RELAXED)) \
+		__atomic_add_fetch(&ext4_bcache_perf.field, 1, __ATOMIC_RELAXED); \
+} while (0)
+
+static void ext4_bcache_perf_update_max_resident(uint64_t resident)
+{
+	uint64_t observed = __atomic_load_n(
+		&ext4_bcache_perf.max_resident_blocks, __ATOMIC_RELAXED);
+	while (observed < resident &&
+	       !__atomic_compare_exchange_n(
+		       &ext4_bcache_perf.max_resident_blocks, &observed,
+		       resident, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+		;
+}
+
+static void ext4_bcache_perf_record_allocation(void)
+{
+	uint64_t resident;
+	if (!__atomic_load_n(&ext4_bcache_perf_enabled, __ATOMIC_RELAXED))
+		return;
+
+	__atomic_add_fetch(&ext4_bcache_perf.allocations, 1, __ATOMIC_RELAXED);
+	resident = __atomic_add_fetch(&ext4_bcache_perf.resident_blocks, 1,
+				      __ATOMIC_RELAXED);
+	ext4_bcache_perf_update_max_resident(resident);
+}
+
+static void ext4_bcache_perf_record_drop(void)
+{
+	if (!__atomic_load_n(&ext4_bcache_perf_enabled, __ATOMIC_RELAXED))
+		return;
+
+	__atomic_add_fetch(&ext4_bcache_perf.drops, 1, __ATOMIC_RELAXED);
+	__atomic_sub_fetch(&ext4_bcache_perf.resident_blocks, 1,
+			   __ATOMIC_RELAXED);
+}
+
+void ext4_bcache_perf_enable(bool enable)
+{
+	uint64_t resident = 0;
+	__atomic_store_n(&ext4_bcache_perf_enabled, false, __ATOMIC_RELEASE);
+	if (!enable)
+		return;
+
+	memset(&ext4_bcache_perf, 0, sizeof(ext4_bcache_perf));
+	if (ext4_bcache_perf_bc)
+		resident = __atomic_load_n(&ext4_bcache_perf_bc->ref_blocks,
+					   __ATOMIC_RELAXED);
+	ext4_bcache_perf.initial_resident_blocks = resident;
+	ext4_bcache_perf.resident_blocks = resident;
+	ext4_bcache_perf.max_resident_blocks = resident;
+	__atomic_store_n(&ext4_bcache_perf_enabled, true, __ATOMIC_RELEASE);
+}
+
+void ext4_bcache_perf_snapshot(struct ext4_bcache_perf_stats *out)
+{
+	if (!out)
+		return;
+
+#define EXT4_BCACHE_PERF_LOAD(field) \
+	out->field = __atomic_load_n(&ext4_bcache_perf.field, __ATOMIC_RELAXED)
+	EXT4_BCACHE_PERF_LOAD(get_ops);
+	EXT4_BCACHE_PERF_LOAD(cache_hits);
+	EXT4_BCACHE_PERF_LOAD(cache_misses);
+	EXT4_BCACHE_PERF_LOAD(allocations);
+	EXT4_BCACHE_PERF_LOAD(allocation_races);
+	EXT4_BCACHE_PERF_LOAD(loader_ops);
+	EXT4_BCACHE_PERF_LOAD(loader_successes);
+	EXT4_BCACHE_PERF_LOAD(loader_errors);
+	EXT4_BCACHE_PERF_LOAD(wait_ops);
+	EXT4_BCACHE_PERF_LOAD(wait_rechecks);
+	EXT4_BCACHE_PERF_LOAD(wake_calls);
+	EXT4_BCACHE_PERF_LOAD(shake_calls);
+	EXT4_BCACHE_PERF_LOAD(clean_evictions);
+	EXT4_BCACHE_PERF_LOAD(shake_full_dirty);
+	EXT4_BCACHE_PERF_LOAD(shake_full_pinned);
+	EXT4_BCACHE_PERF_LOAD(capacity_overflows);
+	EXT4_BCACHE_PERF_LOAD(writeback_ops);
+	EXT4_BCACHE_PERF_LOAD(writeback_successes);
+	EXT4_BCACHE_PERF_LOAD(writeback_errors);
+	EXT4_BCACHE_PERF_LOAD(writeback_waits);
+	EXT4_BCACHE_PERF_LOAD(drops);
+	EXT4_BCACHE_PERF_LOAD(initial_resident_blocks);
+	EXT4_BCACHE_PERF_LOAD(resident_blocks);
+	EXT4_BCACHE_PERF_LOAD(max_resident_blocks);
+	EXT4_BCACHE_PERF_LOAD(read_submits);
+	EXT4_BCACHE_PERF_LOAD(read_completions);
+	EXT4_BCACHE_PERF_LOAD(read_blocks);
+	EXT4_BCACHE_PERF_LOAD(read_errors);
+	EXT4_BCACHE_PERF_LOAD(write_submits);
+	EXT4_BCACHE_PERF_LOAD(write_completions);
+	EXT4_BCACHE_PERF_LOAD(write_blocks);
+	EXT4_BCACHE_PERF_LOAD(write_errors);
+#undef EXT4_BCACHE_PERF_LOAD
+}
+
+void ext4_bcache_perf_record_io_submit(bool write, uint32_t blocks)
+{
+	if (!__atomic_load_n(&ext4_bcache_perf_enabled, __ATOMIC_RELAXED))
+		return;
+
+	if (write) {
+		__atomic_add_fetch(&ext4_bcache_perf.write_submits, 1,
+				   __ATOMIC_RELAXED);
+		__atomic_add_fetch(&ext4_bcache_perf.write_blocks, blocks,
+				   __ATOMIC_RELAXED);
+	} else {
+		__atomic_add_fetch(&ext4_bcache_perf.read_submits, 1,
+				   __ATOMIC_RELAXED);
+		__atomic_add_fetch(&ext4_bcache_perf.read_blocks, blocks,
+				   __ATOMIC_RELAXED);
+	}
+}
+
+void ext4_bcache_perf_record_io_complete(bool write, int result)
+{
+	if (!__atomic_load_n(&ext4_bcache_perf_enabled, __ATOMIC_RELAXED))
+		return;
+
+	if (write) {
+		__atomic_add_fetch(&ext4_bcache_perf.write_completions, 1,
+				   __ATOMIC_RELAXED);
+		if (result != EOK)
+			__atomic_add_fetch(&ext4_bcache_perf.write_errors, 1,
+					   __ATOMIC_RELAXED);
+	} else {
+		__atomic_add_fetch(&ext4_bcache_perf.read_completions, 1,
+				   __ATOMIC_RELAXED);
+		if (result != EOK)
+			__atomic_add_fetch(&ext4_bcache_perf.read_errors, 1,
+					   __ATOMIC_RELAXED);
+	}
+}
+
+void ext4_bcache_perf_record_get(bool hit)
+{
+	if (!__atomic_load_n(&ext4_bcache_perf_enabled, __ATOMIC_RELAXED))
+		return;
+	__atomic_add_fetch(&ext4_bcache_perf.get_ops, 1, __ATOMIC_RELAXED);
+	if (hit)
+		__atomic_add_fetch(&ext4_bcache_perf.cache_hits, 1,
+				   __ATOMIC_RELAXED);
+	else
+		__atomic_add_fetch(&ext4_bcache_perf.cache_misses, 1,
+				   __ATOMIC_RELAXED);
+}
+
+void ext4_bcache_perf_record_load_wait(bool first_wait)
+{
+	if (!__atomic_load_n(&ext4_bcache_perf_enabled, __ATOMIC_RELAXED))
+		return;
+	if (first_wait)
+		__atomic_add_fetch(&ext4_bcache_perf.wait_ops, 1,
+				   __ATOMIC_RELAXED);
+	__atomic_add_fetch(&ext4_bcache_perf.wait_rechecks, 1,
+			   __ATOMIC_RELAXED);
+}
+
+void ext4_bcache_perf_record_loader_start(void)
+{
+	EXT4_BCACHE_PERF_INC(loader_ops);
+}
+
+void ext4_bcache_perf_record_loader_complete(int result)
+{
+	if (result == EOK)
+		EXT4_BCACHE_PERF_INC(loader_successes);
+	else
+		EXT4_BCACHE_PERF_INC(loader_errors);
+}
+
+void ext4_bcache_perf_record_writeback_wait(void)
+{
+	EXT4_BCACHE_PERF_INC(writeback_waits);
+}
+
+void ext4_bcache_perf_record_writeback_start(void)
+{
+	EXT4_BCACHE_PERF_INC(writeback_ops);
+}
+
+void ext4_bcache_perf_record_writeback_complete(int result)
+{
+	if (result == EOK)
+		EXT4_BCACHE_PERF_INC(writeback_successes);
+	else
+		EXT4_BCACHE_PERF_INC(writeback_errors);
+}
+
 static inline void ext4_bcache_index_lock(struct ext4_bcache *bc)
 {
 	while (__atomic_exchange_n(&bc->index_lock, 1, __ATOMIC_ACQUIRE)) {
@@ -108,6 +302,7 @@ int ext4_bcache_wait_while(struct ext4_buf *buf, int mask)
 
 void ext4_bcache_wake(struct ext4_buf *buf)
 {
+	EXT4_BCACHE_PERF_INC(wake_calls);
 	if (ext4_bcache_sync.wake)
 		ext4_bcache_sync.wake(ext4_bcache_sync.ctx, buf->lba);
 }
@@ -123,6 +318,7 @@ int ext4_bcache_init_dynamic(struct ext4_bcache *bc, uint32_t cnt,
 	bc->itemsize = itemsize;
 	bc->ref_blocks = 0;
 	bc->max_ref_blocks = 0;
+	ext4_bcache_perf_bc = bc;
 
 	return EOK;
 }
@@ -229,6 +425,7 @@ static void ext4_bcache_drop_buf_locked(struct ext4_bcache *bc,
 	ext4_buf_free(buf);
 	ext4_assert(bc->ref_blocks);
 	bc->ref_blocks--;
+	ext4_bcache_perf_record_drop();
 }
 
 static void ext4_bcache_reference_locked(struct ext4_bcache *bc,
@@ -351,13 +548,17 @@ int ext4_bcache_alloc(struct ext4_bcache *bc, struct ext4_block *b,
 		*is_new = false;
 		ext4_bcache_index_unlock(bc);
 		ext4_buf_free(allocated);
+		EXT4_BCACHE_PERF_INC(allocation_races);
 		return EOK;
 	}
 
 	RB_INSERT(ext4_buf_lba, &bc->lba_root, allocated);
 	bc->ref_blocks++;
+	ext4_bcache_perf_record_allocation();
 	if (bc->max_ref_blocks < bc->ref_blocks)
 		bc->max_ref_blocks = bc->ref_blocks;
+	if (bc->ref_blocks > bc->cnt)
+		EXT4_BCACHE_PERF_INC(capacity_overflows);
 	allocated->lru_id = ++bc->lru_ctr;
 	ext4_bcache_inc_ref(allocated);
 	b->lb_id = lba;
@@ -441,13 +642,21 @@ bool ext4_bcache_is_full(struct ext4_bcache *bc)
 
 void ext4_bcache_shake_clean(struct ext4_bcache *bc)
 {
+	EXT4_BCACHE_PERF_INC(shake_calls);
 	ext4_bcache_index_lock(bc);
 	while (bc->cnt <= bc->ref_blocks) {
-		struct ext4_buf *buf = RB_MIN(ext4_buf_lru, &bc->lru_root);
+		struct ext4_buf *first = RB_MIN(ext4_buf_lru, &bc->lru_root);
+		struct ext4_buf *buf = first;
 		while (buf && ext4_bcache_test_flag(buf, BC_DIRTY))
 			buf = RB_NEXT(ext4_buf_lru, &bc->lru_root, buf);
-		if (!buf)
+		if (!buf) {
+			if (first)
+				EXT4_BCACHE_PERF_INC(shake_full_dirty);
+			else
+				EXT4_BCACHE_PERF_INC(shake_full_pinned);
 			break;
+		}
+		EXT4_BCACHE_PERF_INC(clean_evictions);
 		ext4_bcache_drop_buf_locked(bc, buf);
 	}
 	ext4_bcache_index_unlock(bc);

@@ -21,7 +21,7 @@ use log::debug;
 use lwext4_rust::{Ext4BlockWrapper, InodeTypes, KernelDevOp};
 use spin::Lazy;
 
-use super::{EXT4_OP_LOCK, Ext4Inode};
+use super::{Ext4Inode, EXT4_OP_LOCK};
 use crate::utils::PollSet;
 
 static EXT4_BCACHE_WAITERS: PollSet = PollSet::new();
@@ -143,6 +143,11 @@ impl Ext4SuperBlock {
             Some(wait_for_bcache_state),
             Some(wake_bcache_waiters),
         );
+        #[cfg(feature = "perf")]
+        {
+            crate::utils::perf::enable_ext4_block_device_perf();
+            lwext4_rust::perf::enable_bcache_perf();
+        }
         // 创建根目录对象
         let root = Arc::new(Ext4Inode::new("/", InodeTypes::EXT4_DE_DIR));
         Self {

@@ -2331,3 +2331,17 @@
   但未完成 BuildStorm、错误注入、fsck 或 P21.2 oracle，不报告加速。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、[AI 记录](./ai.log)
 - **关联 commit**：本轮提交
+
+#### lwext4 SMP P21.2a bcache/block request telemetry（8.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求开始下一轮 EXT4 SMP 优化，并提供新的 `log.ans` 验证观测结果。
+- **描述**：在保留 mount-wide `EXT4_OP_LOCK` 的前提下，为 C bcache、同步 block callback 和 Rust `Disk::dev`
+  增加 mount 后统一清零的累计/interval telemetry。首末完整快照的 hit/miss、loader/writeback、resident 和
+  request 全部守恒；正式样本记录 `shake_full_dirty=401664`、`capacity_overflows=181972`、驻留峰值 1243，而
+  loader/writeback wait、allocation race 和设备 contention 为 0。下一轮因此限定为 256/128 blocks dirty 高低水位、
+  `NEED_EXCLUSIVE` fallback 和锁外 victim writeback，不同时拆设备锁或 waiter 分桶。
+- **验证边界**：双架构 lwext4 C、release 与 perf 构建通过，`git diff --check` 通过；RISC-V 8 HART 日志无
+  panic/ERROR/TFAIL/TBROK，但只到 Cargo `21/446`，没有完整 BuildStorm、并发 oracle、错误注入或 fsck。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

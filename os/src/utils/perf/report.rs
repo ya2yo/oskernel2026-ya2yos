@@ -305,6 +305,56 @@ static DELTA_EXT4_SPARSE_READ_OVERLAY_BYTES: CounterDelta = CounterDelta::new();
 #[cfg(feature = "perf")]
 static DELTA_EXT4_SPARSE_READ_OVERLAY_DIRTY_BYTES: CounterDelta = CounterDelta::new();
 
+#[cfg(feature = "perf")]
+macro_rules! storage_counter_deltas {
+    ($($name:ident),+ $(,)?) => {
+        $(static $name: CounterDelta = CounterDelta::new();)+
+    };
+}
+
+#[cfg(feature = "perf")]
+storage_counter_deltas!(
+    DELTA_BCACHE_GET_OPS,
+    DELTA_BCACHE_CACHE_HITS,
+    DELTA_BCACHE_CACHE_MISSES,
+    DELTA_BCACHE_ALLOCATIONS,
+    DELTA_BCACHE_ALLOCATION_RACES,
+    DELTA_BCACHE_LOADER_OPS,
+    DELTA_BCACHE_LOADER_SUCCESSES,
+    DELTA_BCACHE_LOADER_ERRORS,
+    DELTA_BCACHE_WAIT_OPS,
+    DELTA_BCACHE_WAIT_RECHECKS,
+    DELTA_BCACHE_WAKE_CALLS,
+    DELTA_BCACHE_SHAKE_CALLS,
+    DELTA_BCACHE_CLEAN_EVICTIONS,
+    DELTA_BCACHE_SHAKE_FULL_DIRTY,
+    DELTA_BCACHE_SHAKE_FULL_PINNED,
+    DELTA_BCACHE_CAPACITY_OVERFLOWS,
+    DELTA_BCACHE_WRITEBACK_OPS,
+    DELTA_BCACHE_WRITEBACK_SUCCESSES,
+    DELTA_BCACHE_WRITEBACK_ERRORS,
+    DELTA_BCACHE_WRITEBACK_WAITS,
+    DELTA_BCACHE_DROPS,
+    DELTA_BCACHE_READ_SUBMITS,
+    DELTA_BCACHE_READ_COMPLETIONS,
+    DELTA_BCACHE_READ_BLOCKS,
+    DELTA_BCACHE_READ_ERRORS,
+    DELTA_BCACHE_WRITE_SUBMITS,
+    DELTA_BCACHE_WRITE_COMPLETIONS,
+    DELTA_BCACHE_WRITE_BLOCKS,
+    DELTA_BCACHE_WRITE_ERRORS,
+    DELTA_BLOCKDEV_SUBMITS,
+    DELTA_BLOCKDEV_READ_REQUESTS,
+    DELTA_BLOCKDEV_WRITE_REQUESTS,
+    DELTA_BLOCKDEV_FLUSH_REQUESTS,
+    DELTA_BLOCKDEV_COMPLETED,
+    DELTA_BLOCKDEV_CONTENDED,
+    DELTA_BLOCKDEV_BYTES,
+    DELTA_BLOCKDEV_ERRORS,
+    DELTA_BLOCKDEV_WAIT_TICKS,
+    DELTA_BLOCKDEV_SERVICE_TICKS,
+);
+
 fn emit_lock_delta(label: &str, stats: &Ext4LockStats, delta: &LockDelta) {
     let samples = take_delta(&delta.samples, &stats.samples);
     let wait_ticks = take_delta(&delta.wait_ticks, &stats.wait_ticks);
@@ -478,6 +528,142 @@ fn emit_write_cache_interval_deltas() {
         DELTA_EXT4_SPARSE_BUFFER_BUDGET_DIRECT_BYTES
             .take_value(write_cache.sparse_buffer_budget_direct_bytes),
         write_cache.sparse_buffer_resident_max_bytes,
+    );
+}
+
+#[cfg(feature = "perf")]
+fn emit_ext4_storage_interval_deltas() {
+    let bcache = lwext4_rust::perf::bcache_perf_stats();
+    println!(
+        "[perf] interval_ext4_bcache get_ops={} cache_hits={} cache_misses={} allocations={} allocation_races={} loader_ops={} loader_successes={} loader_errors={} wait_ops={} wait_rechecks={} wake_calls={} shake_calls={} clean_evictions={} shake_full_dirty={} shake_full_pinned={} capacity_overflows={} writeback_ops={} writeback_successes={} writeback_errors={} writeback_waits={} drops={} initial_resident_blocks={} resident_blocks={} max_resident_blocks={}",
+        DELTA_BCACHE_GET_OPS.take_value(bcache.get_ops),
+        DELTA_BCACHE_CACHE_HITS.take_value(bcache.cache_hits),
+        DELTA_BCACHE_CACHE_MISSES.take_value(bcache.cache_misses),
+        DELTA_BCACHE_ALLOCATIONS.take_value(bcache.allocations),
+        DELTA_BCACHE_ALLOCATION_RACES.take_value(bcache.allocation_races),
+        DELTA_BCACHE_LOADER_OPS.take_value(bcache.loader_ops),
+        DELTA_BCACHE_LOADER_SUCCESSES.take_value(bcache.loader_successes),
+        DELTA_BCACHE_LOADER_ERRORS.take_value(bcache.loader_errors),
+        DELTA_BCACHE_WAIT_OPS.take_value(bcache.wait_ops),
+        DELTA_BCACHE_WAIT_RECHECKS.take_value(bcache.wait_rechecks),
+        DELTA_BCACHE_WAKE_CALLS.take_value(bcache.wake_calls),
+        DELTA_BCACHE_SHAKE_CALLS.take_value(bcache.shake_calls),
+        DELTA_BCACHE_CLEAN_EVICTIONS.take_value(bcache.clean_evictions),
+        DELTA_BCACHE_SHAKE_FULL_DIRTY.take_value(bcache.shake_full_dirty),
+        DELTA_BCACHE_SHAKE_FULL_PINNED.take_value(bcache.shake_full_pinned),
+        DELTA_BCACHE_CAPACITY_OVERFLOWS.take_value(bcache.capacity_overflows),
+        DELTA_BCACHE_WRITEBACK_OPS.take_value(bcache.writeback_ops),
+        DELTA_BCACHE_WRITEBACK_SUCCESSES.take_value(bcache.writeback_successes),
+        DELTA_BCACHE_WRITEBACK_ERRORS.take_value(bcache.writeback_errors),
+        DELTA_BCACHE_WRITEBACK_WAITS.take_value(bcache.writeback_waits),
+        DELTA_BCACHE_DROPS.take_value(bcache.drops),
+        bcache.initial_resident_blocks,
+        bcache.resident_blocks,
+        bcache.max_resident_blocks,
+    );
+    println!(
+        "[perf] interval_ext4_bcache_io read_submits={} read_completions={} read_blocks={} read_errors={} write_submits={} write_completions={} write_blocks={} write_errors={}",
+        DELTA_BCACHE_READ_SUBMITS.take_value(bcache.read_submits),
+        DELTA_BCACHE_READ_COMPLETIONS.take_value(bcache.read_completions),
+        DELTA_BCACHE_READ_BLOCKS.take_value(bcache.read_blocks),
+        DELTA_BCACHE_READ_ERRORS.take_value(bcache.read_errors),
+        DELTA_BCACHE_WRITE_SUBMITS.take_value(bcache.write_submits),
+        DELTA_BCACHE_WRITE_COMPLETIONS.take_value(bcache.write_completions),
+        DELTA_BCACHE_WRITE_BLOCKS.take_value(bcache.write_blocks),
+        DELTA_BCACHE_WRITE_ERRORS.take_value(bcache.write_errors),
+    );
+    println!(
+        "[perf] interval_ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={}",
+        DELTA_BLOCKDEV_SUBMITS.take(&EXT4_BLOCK_DEVICE_STATS.submits),
+        DELTA_BLOCKDEV_READ_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.read_requests),
+        DELTA_BLOCKDEV_WRITE_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.write_requests),
+        DELTA_BLOCKDEV_FLUSH_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.flush_requests),
+        DELTA_BLOCKDEV_COMPLETED.take(&EXT4_BLOCK_DEVICE_STATS.completed),
+        DELTA_BLOCKDEV_CONTENDED.take(&EXT4_BLOCK_DEVICE_STATS.contended),
+        DELTA_BLOCKDEV_BYTES.take(&EXT4_BLOCK_DEVICE_STATS.bytes),
+        DELTA_BLOCKDEV_ERRORS.take(&EXT4_BLOCK_DEVICE_STATS.errors),
+        ticks_to_us(DELTA_BLOCKDEV_WAIT_TICKS.take(&EXT4_BLOCK_DEVICE_STATS.wait_ticks)),
+        ticks_to_us(EXT4_BLOCK_DEVICE_STATS.max_wait_ticks.load(Ordering::Relaxed)),
+        ticks_to_us(
+            DELTA_BLOCKDEV_SERVICE_TICKS.take(&EXT4_BLOCK_DEVICE_STATS.service_ticks)
+        ),
+        ticks_to_us(
+            EXT4_BLOCK_DEVICE_STATS
+                .max_service_ticks
+                .load(Ordering::Relaxed)
+        ),
+    );
+}
+
+#[cfg(feature = "perf")]
+fn emit_ext4_storage_cumulative() {
+    let bcache = lwext4_rust::perf::bcache_perf_stats();
+    println!(
+        "[perf] ext4_bcache get_ops={} cache_hits={} cache_misses={} allocations={} allocation_races={} loader_ops={} loader_successes={} loader_errors={} wait_ops={} wait_rechecks={} wake_calls={} shake_calls={} clean_evictions={} shake_full_dirty={} shake_full_pinned={} capacity_overflows={} writeback_ops={} writeback_successes={} writeback_errors={} writeback_waits={} drops={} initial_resident_blocks={} resident_blocks={} max_resident_blocks={}",
+        bcache.get_ops,
+        bcache.cache_hits,
+        bcache.cache_misses,
+        bcache.allocations,
+        bcache.allocation_races,
+        bcache.loader_ops,
+        bcache.loader_successes,
+        bcache.loader_errors,
+        bcache.wait_ops,
+        bcache.wait_rechecks,
+        bcache.wake_calls,
+        bcache.shake_calls,
+        bcache.clean_evictions,
+        bcache.shake_full_dirty,
+        bcache.shake_full_pinned,
+        bcache.capacity_overflows,
+        bcache.writeback_ops,
+        bcache.writeback_successes,
+        bcache.writeback_errors,
+        bcache.writeback_waits,
+        bcache.drops,
+        bcache.initial_resident_blocks,
+        bcache.resident_blocks,
+        bcache.max_resident_blocks,
+    );
+    println!(
+        "[perf] ext4_bcache_io read_submits={} read_completions={} read_blocks={} read_errors={} write_submits={} write_completions={} write_blocks={} write_errors={}",
+        bcache.read_submits,
+        bcache.read_completions,
+        bcache.read_blocks,
+        bcache.read_errors,
+        bcache.write_submits,
+        bcache.write_completions,
+        bcache.write_blocks,
+        bcache.write_errors,
+    );
+    println!(
+        "[perf] ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={}",
+        EXT4_BLOCK_DEVICE_STATS.submits.load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS
+            .read_requests
+            .load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS
+            .write_requests
+            .load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS
+            .flush_requests
+            .load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS.completed.load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS.contended.load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS.bytes.load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS.errors.load(Ordering::Relaxed),
+        ticks_to_us(EXT4_BLOCK_DEVICE_STATS.wait_ticks.load(Ordering::Relaxed)),
+        ticks_to_us(EXT4_BLOCK_DEVICE_STATS.max_wait_ticks.load(Ordering::Relaxed)),
+        ticks_to_us(
+            EXT4_BLOCK_DEVICE_STATS
+                .service_ticks
+                .load(Ordering::Relaxed)
+        ),
+        ticks_to_us(
+            EXT4_BLOCK_DEVICE_STATS
+                .max_service_ticks
+                .load(Ordering::Relaxed)
+        ),
     );
 }
 
@@ -720,6 +906,8 @@ fn emit_interval_deltas(now: usize) {
     );
     #[cfg(feature = "perf")]
     emit_write_cache_interval_deltas();
+    #[cfg(feature = "perf")]
+    emit_ext4_storage_interval_deltas();
 }
 
 pub(super) fn emit_report(now: usize) {
@@ -1143,6 +1331,8 @@ pub(super) fn emit_report(now: usize) {
             write_cache.sparse_buffer_resident_max_bytes,
         );
     }
+    #[cfg(feature = "perf")]
+    emit_ext4_storage_cumulative();
     println!(
         "[perf] scheduler selections={} self_selections={} idle_loops={}",
         SCHEDULER_SELECTIONS.load(Ordering::Relaxed),

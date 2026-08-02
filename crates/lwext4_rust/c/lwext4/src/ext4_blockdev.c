@@ -68,8 +68,10 @@ static void ext4_bdif_unlock(struct ext4_blockdev *bdev)
 static int ext4_bdif_bread(struct ext4_blockdev *bdev, void *buf,
 			   uint64_t blk_id, uint32_t blk_cnt)
 {
+	ext4_bcache_perf_record_io_submit(false, blk_cnt);
 	ext4_bdif_lock(bdev);
 	int r = bdev->bdif->bread(bdev, buf, blk_id, blk_cnt);
+	ext4_bcache_perf_record_io_complete(false, r);
 	__atomic_add_fetch(&bdev->bdif->bread_ctr, 1, __ATOMIC_RELAXED);
 	ext4_bdif_unlock(bdev);
 	return r;
@@ -78,8 +80,10 @@ static int ext4_bdif_bread(struct ext4_blockdev *bdev, void *buf,
 static int ext4_bdif_bwrite(struct ext4_blockdev *bdev, const void *buf,
 			    uint64_t blk_id, uint32_t blk_cnt)
 {
+	ext4_bcache_perf_record_io_submit(true, blk_cnt);
 	ext4_bdif_lock(bdev);
 	int r = bdev->bdif->bwrite(bdev, buf, blk_id, blk_cnt);
+	ext4_bcache_perf_record_io_complete(true, r);
 	__atomic_add_fetch(&bdev->bdif->bwrite_ctr, 1, __ATOMIC_RELAXED);
 	ext4_bdif_unlock(bdev);
 	return r;
@@ -147,6 +151,7 @@ int ext4_block_flush_buf(struct ext4_blockdev *bdev, struct ext4_buf *buf)
 	struct ext4_bcache *bc = bdev->bc;
 	int flags;
 	const int writeback = 1 << BC_WRITEBACK;
+	bool waited = false;
 
 	for (;;) {
 		flags = __atomic_load_n(&buf->flags, __ATOMIC_ACQUIRE);
@@ -154,6 +159,10 @@ int ext4_block_flush_buf(struct ext4_blockdev *bdev, struct ext4_buf *buf)
 		    !(flags & (1 << BC_UPTODATE)))
 			return EOK;
 		if (flags & writeback) {
+			if (!waited) {
+				ext4_bcache_perf_record_writeback_wait();
+				waited = true;
+			}
 			r = ext4_bcache_wait_while(buf, writeback);
 			if (r != EOK)
 				return r;
@@ -165,6 +174,7 @@ int ext4_block_flush_buf(struct ext4_blockdev *bdev, struct ext4_buf *buf)
 						__ATOMIC_ACQUIRE))
 			break;
 	}
+	ext4_bcache_perf_record_writeback_start();
 
 	if (ext4_bcache_test_flag(buf, BC_DIRTY) &&
 	    ext4_bcache_test_flag(buf, BC_UPTODATE)) {
@@ -181,6 +191,7 @@ int ext4_block_flush_buf(struct ext4_blockdev *bdev, struct ext4_buf *buf)
 	}
 
 Finish:
+	ext4_bcache_perf_record_writeback_complete(r);
 	ext4_bcache_clear_flag(buf, BC_WRITEBACK);
 	ext4_bcache_wake(buf);
 	return r;
@@ -241,6 +252,8 @@ int ext4_block_get(struct ext4_blockdev *bdev, struct ext4_block *b,
 {
 	int r = ext4_block_get_noread(bdev, b, lba);
 	bool waited = false;
+	bool classified = false;
+	bool wait_recorded = false;
 	const int loading = 1 << BC_LOADING;
 	const int io_error = 1 << BC_IO_ERROR;
 	if (r != EOK)
@@ -249,10 +262,16 @@ int ext4_block_get(struct ext4_blockdev *bdev, struct ext4_block *b,
 	for (;;) {
 		int flags = __atomic_load_n(&b->buf->flags, __ATOMIC_ACQUIRE);
 		int desired;
+		if (!classified) {
+			ext4_bcache_perf_record_get(flags & (1 << BC_UPTODATE));
+			classified = true;
+		}
 
 		if (flags & (1 << BC_UPTODATE))
 			return EOK;
 		if (flags & loading) {
+			ext4_bcache_perf_record_load_wait(!wait_recorded);
+			wait_recorded = true;
 			r = ext4_bcache_wait_while(b->buf, loading);
 			if (r != EOK)
 				goto Error;
@@ -270,6 +289,7 @@ int ext4_block_get(struct ext4_blockdev *bdev, struct ext4_block *b,
 						 __ATOMIC_ACQUIRE))
 			continue;
 
+		ext4_bcache_perf_record_loader_start();
 		r = ext4_blocks_get_direct(bdev, b->data, lba, 1);
 		if (r == EOK) {
 			ext4_bcache_set_flag(b->buf, BC_UPTODATE);
@@ -278,6 +298,7 @@ int ext4_block_get(struct ext4_blockdev *bdev, struct ext4_block *b,
 			ext4_bcache_clear_flag(b->buf, BC_UPTODATE);
 			ext4_bcache_set_flag(b->buf, BC_IO_ERROR);
 		}
+		ext4_bcache_perf_record_loader_complete(r);
 		ext4_bcache_clear_flag(b->buf, BC_LOADING);
 		ext4_bcache_wake(b->buf);
 		if (r == EOK)

@@ -237,6 +237,66 @@ typedef void (*ext4_bcache_wake_fn)(void *ctx, uint64_t lba);
 void ext4_bcache_setup_sync(void *ctx, ext4_bcache_wait_fn wait,
 			    ext4_bcache_wake_fn wake);
 
+/** Process-wide bcache telemetry exported as one relaxed atomic snapshot.
+ *
+ * lwext4 currently exposes a process-wide mount table and Ya2yOS mounts one
+ * ext4 block cache. Keeping these counters outside struct ext4_bcache avoids
+ * changing the C/Rust allocation ABI while the SMP cache work is in flight.
+ */
+struct ext4_bcache_perf_stats {
+	uint64_t get_ops;
+	uint64_t cache_hits;
+	uint64_t cache_misses;
+	uint64_t allocations;
+	uint64_t allocation_races;
+	uint64_t loader_ops;
+	uint64_t loader_successes;
+	uint64_t loader_errors;
+	uint64_t wait_ops;
+	uint64_t wait_rechecks;
+	uint64_t wake_calls;
+	uint64_t shake_calls;
+	uint64_t clean_evictions;
+	uint64_t shake_full_dirty;
+	uint64_t shake_full_pinned;
+	uint64_t capacity_overflows;
+	uint64_t writeback_ops;
+	uint64_t writeback_successes;
+	uint64_t writeback_errors;
+	uint64_t writeback_waits;
+	uint64_t drops;
+	uint64_t initial_resident_blocks;
+	uint64_t resident_blocks;
+	uint64_t max_resident_blocks;
+	uint64_t read_submits;
+	uint64_t read_completions;
+	uint64_t read_blocks;
+	uint64_t read_errors;
+	uint64_t write_submits;
+	uint64_t write_completions;
+	uint64_t write_blocks;
+	uint64_t write_errors;
+};
+
+/** Reset and enable, or disable, the process-wide telemetry. */
+void ext4_bcache_perf_enable(bool enable);
+
+/** Copy a relaxed telemetry snapshot to out. */
+void ext4_bcache_perf_snapshot(struct ext4_bcache_perf_stats *out);
+
+/** Account a synchronous block-interface request around its callback. */
+void ext4_bcache_perf_record_io_submit(bool write, uint32_t blocks);
+void ext4_bcache_perf_record_io_complete(bool write, int result);
+
+/** Account block-get loading and dirty-buffer writeback ownership. */
+void ext4_bcache_perf_record_get(bool hit);
+void ext4_bcache_perf_record_load_wait(bool first_wait);
+void ext4_bcache_perf_record_loader_start(void);
+void ext4_bcache_perf_record_loader_complete(int result);
+void ext4_bcache_perf_record_writeback_wait(void);
+void ext4_bcache_perf_record_writeback_start(void);
+void ext4_bcache_perf_record_writeback_complete(int result);
+
 /** Wait until all bits in mask are clear for a pinned buffer. */
 int ext4_bcache_wait_while(struct ext4_buf *buf, int mask);
 

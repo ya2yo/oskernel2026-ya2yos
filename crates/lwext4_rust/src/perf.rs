@@ -7,6 +7,70 @@
 #[cfg(feature = "perf")]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+/// Process-wide lwext4 block-cache and block-interface counters.
+///
+/// Both Ya2yOS targets are 64-bit, so these fields match the C `uint64_t`
+/// snapshot exactly. The counters intentionally live outside `ext4_bcache`:
+/// the generated Rust binding still owns that allocation and must not lag a C
+/// layout extension.
+#[cfg(feature = "perf")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BcachePerfStats {
+    pub get_ops: usize,
+    pub cache_hits: usize,
+    pub cache_misses: usize,
+    pub allocations: usize,
+    pub allocation_races: usize,
+    pub loader_ops: usize,
+    pub loader_successes: usize,
+    pub loader_errors: usize,
+    pub wait_ops: usize,
+    pub wait_rechecks: usize,
+    pub wake_calls: usize,
+    pub shake_calls: usize,
+    pub clean_evictions: usize,
+    pub shake_full_dirty: usize,
+    pub shake_full_pinned: usize,
+    pub capacity_overflows: usize,
+    pub writeback_ops: usize,
+    pub writeback_successes: usize,
+    pub writeback_errors: usize,
+    pub writeback_waits: usize,
+    pub drops: usize,
+    pub initial_resident_blocks: usize,
+    pub resident_blocks: usize,
+    pub max_resident_blocks: usize,
+    pub read_submits: usize,
+    pub read_completions: usize,
+    pub read_blocks: usize,
+    pub read_errors: usize,
+    pub write_submits: usize,
+    pub write_completions: usize,
+    pub write_blocks: usize,
+    pub write_errors: usize,
+}
+
+#[cfg(feature = "perf")]
+extern "C" {
+    fn ext4_bcache_perf_enable(enable: bool);
+    fn ext4_bcache_perf_snapshot(out: *mut BcachePerfStats);
+}
+
+/// Reset and enable C-side telemetry after mount initialization has finished.
+#[cfg(feature = "perf")]
+pub fn enable_bcache_perf() {
+    unsafe { ext4_bcache_perf_enable(true) };
+}
+
+/// Return a relaxed C-side telemetry snapshot for the kernel perf report.
+#[cfg(feature = "perf")]
+pub fn bcache_perf_stats() -> BcachePerfStats {
+    let mut stats = BcachePerfStats::default();
+    unsafe { ext4_bcache_perf_snapshot(&mut stats) };
+    stats
+}
+
 /// Aggregate counters for the whole-file write-back cache and the fstat
 /// sub-operations performed by `Ext4File`.
 #[cfg(feature = "perf")]
