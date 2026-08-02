@@ -147,6 +147,26 @@ pub trait Inode: Send + Sync {
     ) -> SyscallRet {
         unimplemented!("Inode::set_timestamps")
     }
+    /// Set one extended attribute on this inode.
+    ///
+    /// `name` excludes the terminating NUL. `flags` uses the Linux
+    /// `XATTR_CREATE` / `XATTR_REPLACE` bits and is validated by the backend
+    /// while it holds the filesystem operation lock.
+    fn set_xattr(&self, _name: &[u8], _value: &[u8], _flags: u32) -> SyscallRet {
+        Err(SysErrNo::EOPNOTSUPP)
+    }
+    /// Read one extended attribute. An empty buffer queries the value length.
+    fn get_xattr(&self, _name: &[u8], _value: &mut [u8]) -> SyscallRet {
+        Err(SysErrNo::EOPNOTSUPP)
+    }
+    /// Return the NUL-separated extended-attribute name list.
+    fn list_xattr(&self, _list: &mut [u8]) -> SyscallRet {
+        Err(SysErrNo::EOPNOTSUPP)
+    }
+    /// Remove one extended attribute from this inode.
+    fn remove_xattr(&self, _name: &[u8]) -> SyscallRet {
+        Err(SysErrNo::EOPNOTSUPP)
+    }
     fn link_cnt(&self) -> SyscallRet {
         unimplemented!("Inode::link_cnt")
     }

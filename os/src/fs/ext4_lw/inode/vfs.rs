@@ -66,6 +66,22 @@ impl Inode for Ext4Inode {
         self.set_timestamps_impl(atime, mtime, ctime)
     }
 
+    fn set_xattr(&self, name: &[u8], value: &[u8], flags: u32) -> SyscallRet {
+        self.set_xattr_impl(name, value, flags)
+    }
+
+    fn get_xattr(&self, name: &[u8], value: &mut [u8]) -> SyscallRet {
+        self.get_xattr_impl(name, value)
+    }
+
+    fn list_xattr(&self, list: &mut [u8]) -> SyscallRet {
+        self.list_xattr_impl(list)
+    }
+
+    fn remove_xattr(&self, name: &[u8]) -> SyscallRet {
+        self.remove_xattr_impl(name)
+    }
+
     fn sync(&self) {
         self.sync_impl()
     }

@@ -2376,6 +2376,19 @@
   [AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
 
+#### EXT4 xattr syscall Linux 语义补齐（8.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求在完整 BuildStorm/LTP 无法于一小时内完成的前提下，优先补齐 EXT4 文件系统能力。
+- **描述**：补齐 VFS 到 lwext4 的 xattr 链路和 12 个 Linux xattr syscall，覆盖用户内存、64 KiB 边界、
+  `CREATE/REPLACE`、长度查询、fd/O_PATH 与末级符号链接；修复 remove syscall 分发和 lwext4 错误路径的
+  mount lock 泄漏。Linux 7.0 `fs/xattr.c` 与 `fs/ext4/xattr.c` 用于校准入口、边界和锁语义，不将其逐行移植到
+  lwext4。
+- **验证边界**：双架构 release 构建、格式与补丁检查通过。短小 guest LTP 运行因 final-2026 镜像没有 xattr
+  测试二进制而未获得有效内核结果；没有运行完整 LTP 或 BuildStorm。
+- **关联文档**：[问题复盘](./problem/ext4-xattr-linux-semantics.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
 #### lwext4 SMP P21.2b.2 默认关闭的 dirty bcache capacity reclaim（8.2）
 
 - **工具/模型**：Codex (GPT-5)

@@ -370,8 +370,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Llistxattr => sys_llistxattr(args[0], args[1], args[2]),
         Syscall::Flistxattr => sys_flistxattr(args[0], args[1], args[2]),
         Syscall::Removexattr => sys_removexattr(args[0], args[1]),
-        Syscall::Lremovexattr => sys_removexattr(args[0], args[1]),
-        Syscall::Fremovexattr => sys_removexattr(args[0], args[1]),
+        Syscall::Lremovexattr => sys_lremovexattr(args[0], args[1]),
+        Syscall::Fremovexattr => sys_fremovexattr(args[0], args[1]),
 
         Syscall::Getcwd => sys_getcwd(args[0] as *const u8, args[1]),
         // event

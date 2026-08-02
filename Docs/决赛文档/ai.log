@@ -9576,3 +9576,37 @@ host lifecycle oracle 在实验配置下填满 256 个 dirty blocks，注入第�
 `make perf TARGET_ARCH=loongarch64`。实验 RISC-V archive 与两分钟 QEMU 结果由维护者在 Docker 中成功完成。
 未完成实验 LoongArch64、`e2fsck -fn`、完整 BuildStorm 与同环境两次 wall-clock A/B；这些是决定 feature 能否默认启用
 及进入 P21.3 前的剩余验收，不报告完整通过或性能提升。
+
+## 2026-08-03：EXT4 xattr syscall 语义补齐
+
+### 用户输入
+
+维护者要求根据《优化方案》继续优化，随后明确当前 EXT4 尚未完整实现、完整测试一小时内无法完成，要求优先把
+文件系统向 Linux 语义对齐。
+
+### 分析与采纳结论
+
+AI 审计发现 lwext4 已有 pathname xattr C API，但 Ya2yOS 的 VFS 没有 xattr trait，12 个 Linux xattr syscall
+大多是日志桩或固定返回值；`Lremovexattr`/`Fremovexattr` 还分发到错误入口。对照 Linux 7.0 的 `fs/xattr.c`：
+syscall 层负责属性名、用户指针、64 KiB 值/列表边界和 follow/no-follow/fd 入口，filesystem 层负责 xattr state。
+Linux EXT4 的 `ext4_xattr_set_handle()` 在 xattr 写锁内同时执行存在性判断与更新，两个 flags 同时出现时按已有属性
+`EEXIST`、不存在属性 `ENODATA` 处理。
+
+采纳的实现将 xattr 加入 `Inode` trait，并在 `Ext4Inode` 的 `write_state -> io_state -> EXT4_OP_LOCK` 临界区内
+模拟 lwext4 缺少的 flags 行为，避免多 hart 下的先读后写竞争。普通 pathname 跟随末级链接，`l*` 使用项目内部
+`O_UNLINK` 保留链接 inode，fd 入口拒绝 `O_PATH`。Rust wrapper 暴露 lwext4 set/get/list/remove；同时修复
+`ext4_removexattr()` 路径打开失败时错误重锁的 C bug。
+
+### 修改文件
+
+`os/src/syscall/fs/xattr.rs`、`os/src/syscall/mod.rs`、`os/src/fs/vfs.rs`、
+`os/src/fs/ext4_lw/inode/{metadata,vfs}.rs`、`crates/lwext4_rust/src/file.rs`、
+`crates/lwext4_rust/c/lwext4/src/ext4.c`，以及本轮 problem、开发日志和 AI 记录。维护者已有的
+`user/src/bin/initproc.rs` BuildStorm 路由和 `disk.img` 未修改。
+
+### 验证边界
+
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check`、RISC-V 和 LoongArch64 release
+构建均通过。为定向回归临时将 `initproc` 切至 18 个 glibc xattr LTP 单测，guest 能启动并 `shutdown!`，但当前
+final-2026 镜像缺少 `/glibc/ltp/testcases/bin` 中对应二进制，每项在 `execve` 前以 127 退出；临时入口已恢复，
+不能把该运行结果作为 xattr 内核测试结论。未运行完整 LTP/BuildStorm，原因是维护者明确的时限约束。

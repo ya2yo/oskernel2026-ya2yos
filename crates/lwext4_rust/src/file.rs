@@ -1,4 +1,4 @@
-use core::ffi::c_char;
+use core::ffi::{c_char, c_void};
 
 use crate::bindings::*;
 #[cfg(feature = "perf")]
@@ -158,6 +158,97 @@ impl Ext4File {
 
     pub fn types(&self) -> InodeTypes {
         self.this_type.clone()
+    }
+
+    fn xattr_path(path: &str) -> Result<CString, i32> {
+        CString::new(path).map_err(|_| EINVAL as i32)
+    }
+
+    fn xattr_name(name: &[u8]) -> Result<CString, i32> {
+        CString::new(name).map_err(|_| EINVAL as i32)
+    }
+
+    /// Set an xattr through lwext4's pathname API.  The caller has already
+    /// selected a live VFS path, so a normal lookup reaches a symlink target
+    /// while an `l*` syscall can retain the final symlink itself.
+    pub fn xattr_set(&self, path: &str, name: &[u8], value: &[u8]) -> Result<usize, i32> {
+        let path = Self::xattr_path(path)?;
+        let name = Self::xattr_name(name)?;
+        let value_ptr = if value.is_empty() {
+            core::ptr::null()
+        } else {
+            value.as_ptr().cast::<c_void>()
+        };
+        let r = unsafe {
+            ext4_setxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                name.as_bytes().len(),
+                value_ptr,
+                value.len(),
+            )
+        };
+        if r == EOK as i32 {
+            Ok(0)
+        } else {
+            Err(r)
+        }
+    }
+
+    /// Read an xattr, or query its length when `value` is empty.
+    pub fn xattr_get(&self, path: &str, name: &[u8], value: &mut [u8]) -> Result<usize, i32> {
+        let path = Self::xattr_path(path)?;
+        let name = Self::xattr_name(name)?;
+        let value_ptr = if value.is_empty() {
+            core::ptr::null_mut()
+        } else {
+            value.as_mut_ptr().cast::<c_void>()
+        };
+        let mut value_len = 0usize;
+        let r = unsafe {
+            ext4_getxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                name.as_bytes().len(),
+                value_ptr,
+                value.len(),
+                &mut value_len,
+            )
+        };
+        if r == EOK as i32 {
+            Ok(value_len)
+        } else {
+            Err(r)
+        }
+    }
+
+    /// Return the NUL-separated xattr name list, or its required length when
+    /// `list` is empty.
+    pub fn xattr_list(&self, path: &str, list: &mut [u8]) -> Result<usize, i32> {
+        let path = Self::xattr_path(path)?;
+        let list_ptr = if list.is_empty() {
+            core::ptr::null_mut()
+        } else {
+            list.as_mut_ptr().cast::<c_char>()
+        };
+        let mut list_len = 0usize;
+        let r = unsafe { ext4_listxattr(path.as_ptr(), list_ptr, list.len(), &mut list_len) };
+        if r == EOK as i32 {
+            Ok(list_len)
+        } else {
+            Err(r)
+        }
+    }
+
+    pub fn xattr_remove(&self, path: &str, name: &[u8]) -> Result<usize, i32> {
+        let path = Self::xattr_path(path)?;
+        let name = Self::xattr_name(name)?;
+        let r = unsafe { ext4_removexattr(path.as_ptr(), name.as_ptr(), name.as_bytes().len()) };
+        if r == EOK as i32 {
+            Ok(0)
+        } else {
+            Err(r)
+        }
     }
 
     /// File open function.

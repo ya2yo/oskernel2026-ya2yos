@@ -3,6 +3,72 @@
 use super::*;
 
 impl Ext4Inode {
+    pub(super) fn set_xattr_impl(&self, name: &[u8], value: &[u8], flags: u32) -> SyscallRet {
+        const XATTR_CREATE: u32 = 0x1;
+        const XATTR_REPLACE: u32 = 0x2;
+
+        if flags & !(XATTR_CREATE | XATTR_REPLACE) != 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+
+        // The existence check required for CREATE/REPLACE and the update must
+        // share the mount gate.  lwext4 exposes only unconditional set, so
+        // splitting those calls would make the Linux-visible flags racy once
+        // callers run on multiple harts.
+        let _write_state = self.write_state.lock();
+        let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        let inner = self.inner.get_unchecked_mut();
+        let path = Self::live_path(inner);
+
+        if flags != 0 {
+            let mut ignored = [];
+            match inner.f.xattr_get(&path, name, &mut ignored) {
+                Ok(_) if flags & XATTR_CREATE != 0 => return Err(SysErrNo::EEXIST),
+                Ok(_) => {}
+                Err(rc) if SysErrNo::from(rc) == SysErrNo::ENODATA => {
+                    if flags & XATTR_REPLACE != 0 {
+                        return Err(SysErrNo::ENODATA);
+                    }
+                }
+                Err(rc) => return Err(SysErrNo::from(rc)),
+            }
+        }
+
+        inner
+            .f
+            .xattr_set(&path, name, value)
+            .map_err(SysErrNo::from)
+    }
+
+    pub(super) fn get_xattr_impl(&self, name: &[u8], value: &mut [u8]) -> SyscallRet {
+        let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        let inner = self.inner.get_unchecked_mut();
+        let path = Self::live_path(inner);
+        inner
+            .f
+            .xattr_get(&path, name, value)
+            .map_err(SysErrNo::from)
+    }
+
+    pub(super) fn list_xattr_impl(&self, list: &mut [u8]) -> SyscallRet {
+        let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        let inner = self.inner.get_unchecked_mut();
+        let path = Self::live_path(inner);
+        inner.f.xattr_list(&path, list).map_err(SysErrNo::from)
+    }
+
+    pub(super) fn remove_xattr_impl(&self, name: &[u8]) -> SyscallRet {
+        let _write_state = self.write_state.lock();
+        let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        let inner = self.inner.get_unchecked_mut();
+        let path = Self::live_path(inner);
+        inner.f.xattr_remove(&path, name).map_err(SysErrNo::from)
+    }
+
     /// 设置 inode 时间戳。
     pub(super) fn set_timestamps_impl(
         &self,
