@@ -12,6 +12,27 @@ use core::slice::{from_raw_parts, from_raw_parts_mut};
 /// Device block size.
 const EXT4_DEV_BSIZE: u32 = 512;
 
+/// Wait callback used by the C block cache while another hart owns a buffer
+/// state transition.
+pub type BcacheWaitFn = unsafe extern "C" fn(
+    ctx: *mut c_void,
+    flags: *const core::ffi::c_int,
+    mask: core::ffi::c_int,
+    lba: u64,
+) -> core::ffi::c_int;
+
+/// Wake callback paired with [`BcacheWaitFn`].
+pub type BcacheWakeFn = unsafe extern "C" fn(ctx: *mut c_void, lba: u64);
+
+unsafe extern "C" {
+    #[link_name = "ext4_bcache_setup_sync"]
+    fn ext4_bcache_setup_sync_ffi(
+        ctx: *mut c_void,
+        wait: Option<BcacheWaitFn>,
+        wake: Option<BcacheWakeFn>,
+    );
+}
+
 pub trait KernelDevOp {
     /// The device object retained by the lwext4 block-device callback.
     ///
@@ -89,7 +110,7 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
 
         let c_name = CString::new("ext4_fs").expect("CString::new ext4_fs failed");
         let c_name = c_name.as_bytes_with_nul(); // + '\0'
-                                                 //let c_mountpoint = CString::new("/mp/").unwrap();
+        //let c_mountpoint = CString::new("/mp/").unwrap();
         let c_mountpoint = CString::new("/").unwrap();
         let c_mountpoint = c_mountpoint.as_bytes_with_nul();
 
@@ -124,6 +145,19 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
 
         Ok(ext4bd)
     }
+
+    /// Install task-runtime wait/wake hooks for C block-cache single-flight
+    /// loads. The callbacks must remain valid until the filesystem is
+    /// unmounted; `ctx` is passed through unchanged.
+    pub fn setup_bcache_sync(
+        &self,
+        ctx: *mut c_void,
+        wait: Option<BcacheWaitFn>,
+        wake: Option<BcacheWakeFn>,
+    ) {
+        unsafe { ext4_bcache_setup_sync_ffi(ctx, wait, wake) }
+    }
+
     /// Recover the shared device object retained in `ext4_blockdev_iface`.
     ///
     /// This deliberately creates a shared reference. The former adapter made

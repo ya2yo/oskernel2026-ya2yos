@@ -11,11 +11,63 @@ use crate::{
     sync::SyncUnsafeCell,
 };
 use alloc::sync::Arc;
+use core::{
+    ffi::{c_int, c_void},
+    future::poll_fn,
+    sync::atomic::{AtomicI32, Ordering},
+    task::Poll,
+};
 use log::debug;
 use lwext4_rust::{Ext4BlockWrapper, InodeTypes, KernelDevOp};
 use spin::Lazy;
 
-use super::{Ext4Inode, EXT4_OP_LOCK};
+use super::{EXT4_OP_LOCK, Ext4Inode};
+use crate::utils::PollSet;
+
+static EXT4_BCACHE_WAITERS: PollSet = PollSet::new();
+
+unsafe extern "C" fn wait_for_bcache_state(
+    _ctx: *mut c_void,
+    flags: *const c_int,
+    mask: c_int,
+    _lba: u64,
+) -> c_int {
+    if flags.is_null() {
+        return lwext4_rust::bindings::EIO as c_int;
+    }
+
+    let flags = unsafe { &*(flags.cast::<AtomicI32>()) };
+    let is_ready = || flags.load(Ordering::Acquire) & mask == 0;
+    if is_ready() {
+        return lwext4_rust::bindings::EOK as c_int;
+    }
+
+    if crate::task::current_task().is_none() {
+        while !is_ready() {
+            core::hint::spin_loop();
+        }
+    } else {
+        crate::task::block_on(poll_fn(|cx| {
+            if is_ready() {
+                return Poll::Ready(());
+            }
+
+            EXT4_BCACHE_WAITERS.register(cx.waker());
+            if is_ready() {
+                EXT4_BCACHE_WAITERS.unregister(cx.waker());
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }));
+    }
+
+    lwext4_rust::bindings::EOK as c_int
+}
+
+unsafe extern "C" fn wake_bcache_waiters(_ctx: *mut c_void, _lba: u64) {
+    EXT4_BCACHE_WAITERS.wake();
+}
 
 /// EXT4 超级块结构体，维护文件系统的全局元数据。
 ///
@@ -86,6 +138,11 @@ impl Ext4SuperBlock {
         // 初始化底层 lwext4 库
         let inner =
             Ext4BlockWrapper::<Disk>::new(disk).expect("failed to initialize EXT4 filesystem");
+        inner.setup_bcache_sync(
+            core::ptr::null_mut(),
+            Some(wait_for_bcache_state),
+            Some(wake_bcache_waiters),
+        );
         // 创建根目录对象
         let root = Arc::new(Ext4Inode::new("/", InodeTypes::EXT4_DE_DIR));
         Self {

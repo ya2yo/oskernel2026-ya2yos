@@ -67,6 +67,51 @@ RB_GENERATE_INTERNAL(ext4_buf_lba, ext4_buf, lba_node,
 RB_GENERATE_INTERNAL(ext4_buf_lru, ext4_buf, lru_node,
 		     ext4_bcache_lru_compare, static inline)
 
+static struct {
+	void *ctx;
+	ext4_bcache_wait_fn wait;
+	ext4_bcache_wake_fn wake;
+} ext4_bcache_sync;
+
+static inline void ext4_bcache_index_lock(struct ext4_bcache *bc)
+{
+	while (__atomic_exchange_n(&bc->index_lock, 1, __ATOMIC_ACQUIRE)) {
+		while (__atomic_load_n(&bc->index_lock, __ATOMIC_RELAXED))
+			__asm__ volatile("" ::: "memory");
+	}
+}
+
+static inline void ext4_bcache_index_unlock(struct ext4_bcache *bc)
+{
+	__atomic_store_n(&bc->index_lock, 0, __ATOMIC_RELEASE);
+}
+
+void ext4_bcache_setup_sync(void *ctx, ext4_bcache_wait_fn wait,
+			    ext4_bcache_wake_fn wake)
+{
+	ext4_bcache_sync.ctx = ctx;
+	ext4_bcache_sync.wait = wait;
+	ext4_bcache_sync.wake = wake;
+}
+
+int ext4_bcache_wait_while(struct ext4_buf *buf, int mask)
+{
+	ext4_assert(buf);
+	if (ext4_bcache_sync.wait)
+		return ext4_bcache_sync.wait(ext4_bcache_sync.ctx, &buf->flags,
+					      mask, buf->lba);
+
+	while (__atomic_load_n(&buf->flags, __ATOMIC_ACQUIRE) & mask)
+		__asm__ volatile("" ::: "memory");
+	return EOK;
+}
+
+void ext4_bcache_wake(struct ext4_buf *buf)
+{
+	if (ext4_bcache_sync.wake)
+		ext4_bcache_sync.wake(ext4_bcache_sync.ctx, buf->lba);
+}
+
 int ext4_bcache_init_dynamic(struct ext4_bcache *bc, uint32_t cnt,
 			     uint32_t itemsize)
 {
@@ -84,9 +129,29 @@ int ext4_bcache_init_dynamic(struct ext4_bcache *bc, uint32_t cnt,
 
 void ext4_bcache_cleanup(struct ext4_bcache *bc)
 {
-	struct ext4_buf *buf, *tmp;
-	RB_FOREACH_SAFE(buf, ext4_buf_lba, &bc->lba_root, tmp) {
+	for (;;) {
+		struct ext4_buf *buf;
+		struct ext4_block block = EXT4_BLOCK_ZERO();
+
+		ext4_bcache_index_lock(bc);
+		buf = RB_MIN(ext4_buf_lba, &bc->lba_root);
+		if (!buf) {
+			ext4_bcache_index_unlock(bc);
+			break;
+		}
+		if (!buf->refctr) {
+			RB_REMOVE(ext4_buf_lru, &bc->lru_root, buf);
+			if (buf->on_dirty_list)
+				ext4_bcache_remove_dirty_node(bc, buf);
+		}
+		ext4_bcache_inc_ref(buf);
+		block.lb_id = buf->lba;
+		block.buf = buf;
+		block.data = buf->data;
+		ext4_bcache_index_unlock(bc);
+
 		ext4_block_flush_buf(bc->bdev, buf);
+		ext4_bcache_free(bc, &block);
 		ext4_bcache_drop_buf(bc, buf);
 	}
 }
@@ -153,34 +218,63 @@ ext4_buf_lookup(struct ext4_bcache *bc, uint64_t lba)
 	return RB_FIND(ext4_buf_lba, &bc->lba_root, &tmp);
 }
 
+static void ext4_bcache_drop_buf_locked(struct ext4_bcache *bc,
+					struct ext4_buf *buf)
+{
+	ext4_assert(!buf->refctr);
+	RB_REMOVE(ext4_buf_lru, &bc->lru_root, buf);
+	RB_REMOVE(ext4_buf_lba, &bc->lba_root, buf);
+	if (buf->on_dirty_list)
+		ext4_bcache_remove_dirty_node(bc, buf);
+	ext4_buf_free(buf);
+	ext4_assert(bc->ref_blocks);
+	bc->ref_blocks--;
+}
+
+static void ext4_bcache_reference_locked(struct ext4_bcache *bc,
+					 struct ext4_buf *buf,
+					 struct ext4_block *b)
+{
+	if (!buf->refctr) {
+		buf->lru_id = ++bc->lru_ctr;
+		RB_REMOVE(ext4_buf_lru, &bc->lru_root, buf);
+		if (buf->on_dirty_list)
+			ext4_bcache_remove_dirty_node(bc, buf);
+	}
+
+	ext4_bcache_inc_ref(buf);
+	b->lb_id = buf->lba;
+	b->buf = buf;
+	b->data = buf->data;
+}
+
 struct ext4_buf *ext4_buf_lowest_lru(struct ext4_bcache *bc)
 {
-	return RB_MIN(ext4_buf_lru, &bc->lru_root);
+	struct ext4_buf *buf;
+	ext4_bcache_index_lock(bc);
+	buf = RB_MIN(ext4_buf_lru, &bc->lru_root);
+	ext4_bcache_index_unlock(bc);
+	return buf;
 }
 
 void ext4_bcache_drop_buf(struct ext4_bcache *bc, struct ext4_buf *buf)
 {
-	/* Warn on dropping any referenced buffers.*/
+	ext4_bcache_index_lock(bc);
 	if (buf->refctr) {
 		ext4_dbg(DEBUG_BCACHE, DBG_WARN "Buffer is still referenced. "
 				"lba: %" PRIu64 ", refctr: %" PRIu32 "\n",
 				buf->lba, buf->refctr);
-	} else
-		RB_REMOVE(ext4_buf_lru, &bc->lru_root, buf);
-
-	RB_REMOVE(ext4_buf_lba, &bc->lba_root, buf);
-
-	/*Forcibly drop dirty buffer.*/
-	if (ext4_bcache_test_flag(buf, BC_DIRTY))
-		ext4_bcache_remove_dirty_node(bc, buf);
-
-	ext4_buf_free(buf);
-	bc->ref_blocks--;
+		ext4_bcache_index_unlock(bc);
+		return;
+	}
+	ext4_bcache_drop_buf_locked(bc, buf);
+	ext4_bcache_index_unlock(bc);
 }
 
 void ext4_bcache_invalidate_buf(struct ext4_bcache *bc,
 				struct ext4_buf *buf)
 {
+	ext4_bcache_index_lock(bc);
 	buf->end_write = NULL;
 	buf->end_write_arg = NULL;
 
@@ -189,87 +283,96 @@ void ext4_bcache_invalidate_buf(struct ext4_bcache *bc,
 		ext4_bcache_remove_dirty_node(bc, buf);
 
 	ext4_bcache_clear_dirty(buf);
+	ext4_bcache_index_unlock(bc);
 }
 
 void ext4_bcache_invalidate_lba(struct ext4_bcache *bc,
 				uint64_t from,
 				uint32_t cnt)
 {
-	uint64_t end = from + cnt - 1;
-	struct ext4_buf *tmp = ext4_buf_lookup(bc, from), *buf;
+	uint64_t end;
+	struct ext4_buf *tmp, *buf;
+
+	if (!cnt)
+		return;
+	end = from + cnt - 1;
+
+	ext4_bcache_index_lock(bc);
+	tmp = ext4_buf_lookup(bc, from);
 	RB_FOREACH_FROM(buf, ext4_buf_lba, tmp) {
 		if (buf->lba > end)
 			break;
 
-		ext4_bcache_invalidate_buf(bc, buf);
+		buf->end_write = NULL;
+		buf->end_write_arg = NULL;
+		if (buf->on_dirty_list)
+			ext4_bcache_remove_dirty_node(bc, buf);
+		ext4_bcache_clear_dirty(buf);
 	}
+	ext4_bcache_index_unlock(bc);
 }
 
 struct ext4_buf *
 ext4_bcache_find_get(struct ext4_bcache *bc, struct ext4_block *b,
 		     uint64_t lba)
 {
-	struct ext4_buf *buf = ext4_buf_lookup(bc, lba);
-	if (buf) {
-		/* If buffer is not referenced. */
-		if (!buf->refctr) {
-			/* Assign new value to LRU id and increment LRU counter
-			 * by 1*/
-			buf->lru_id = ++bc->lru_ctr;
-			RB_REMOVE(ext4_buf_lru, &bc->lru_root, buf);
-			if (ext4_bcache_test_flag(buf, BC_DIRTY))
-				ext4_bcache_remove_dirty_node(bc, buf);
-
-		}
-
-		ext4_bcache_inc_ref(buf);
-
-		b->lb_id = lba;
-		b->buf = buf;
-		b->data = buf->data;
-	}
+	struct ext4_buf *buf;
+	ext4_bcache_index_lock(bc);
+	buf = ext4_buf_lookup(bc, lba);
+	if (buf)
+		ext4_bcache_reference_locked(bc, buf, b);
+	ext4_bcache_index_unlock(bc);
 	return buf;
 }
 
 int ext4_bcache_alloc(struct ext4_bcache *bc, struct ext4_block *b,
 		      bool *is_new)
 {
-	/* Try to search the buffer with exaxt LBA. */
-	struct ext4_buf *buf = ext4_bcache_find_get(bc, b, b->lb_id);
+	struct ext4_buf *buf;
+	struct ext4_buf *allocated;
+	uint64_t lba = b->lb_id;
+
+	/* Try to search the buffer with exact LBA. */
+	buf = ext4_bcache_find_get(bc, b, lba);
 	if (buf) {
 		*is_new = false;
 		return EOK;
 	}
 
-	/* We need to allocate one buffer.*/
-	buf = ext4_buf_alloc(bc, b->lb_id);
-	if (!buf)
+	/* Allocation stays outside the cache index spin lock. */
+	allocated = ext4_buf_alloc(bc, lba);
+	if (!allocated)
 		return ENOMEM;
 
-	RB_INSERT(ext4_buf_lba, &bc->lba_root, buf);
-	/* One more buffer in bcache now. :-) */
-	bc->ref_blocks++;
+	ext4_bcache_index_lock(bc);
+	buf = ext4_buf_lookup(bc, lba);
+	if (buf) {
+		ext4_bcache_reference_locked(bc, buf, b);
+		*is_new = false;
+		ext4_bcache_index_unlock(bc);
+		ext4_buf_free(allocated);
+		return EOK;
+	}
 
-	/*Calc ref blocks max depth*/
+	RB_INSERT(ext4_buf_lba, &bc->lba_root, allocated);
+	bc->ref_blocks++;
 	if (bc->max_ref_blocks < bc->ref_blocks)
 		bc->max_ref_blocks = bc->ref_blocks;
-
-
-	ext4_bcache_inc_ref(buf);
-	/* Assign new value to LRU id and increment LRU counter
-	 * by 1*/
-	buf->lru_id = ++bc->lru_ctr;
-
-	b->buf = buf;
-	b->data = buf->data;
-
+	allocated->lru_id = ++bc->lru_ctr;
+	ext4_bcache_inc_ref(allocated);
+	b->lb_id = lba;
+	b->buf = allocated;
+	b->data = allocated->data;
 	*is_new = true;
+	ext4_bcache_index_unlock(bc);
 	return EOK;
 }
 
 int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b)
 {
 	struct ext4_buf *buf = b->buf;
+	bool flush = false;
+	int r = EOK;
 
 	ext4_assert(bc && b);
 
@@ -279,44 +382,84 @@ int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b)
 	/*Block should have a valid pointer to ext4_buf.*/
 	ext4_assert(buf);
 
-	/*Check if someone don't try free unreferenced block cache.*/
+	ext4_bcache_index_lock(bc);
 	ext4_assert(buf->refctr);
-
-	/*Just decrease reference counter*/
 	ext4_bcache_dec_ref(buf);
 
-	/* We are the last one touching this buffer, do the cleanups. */
-	if (!buf->refctr) {
+	if (!buf->refctr && ext4_bcache_test_flag(buf, BC_DIRTY) &&
+	    ext4_bcache_test_flag(buf, BC_UPTODATE) &&
+	    (!bc->bdev->cache_write_back ||
+	     ext4_bcache_test_flag(buf, BC_FLUSH) ||
+	     ext4_bcache_test_flag(buf, BC_TMP))) {
+		/* Pin across writeback, but do not keep the index lock over I/O. */
+		ext4_bcache_inc_ref(buf);
+		flush = true;
+	} else if (!buf->refctr) {
 		RB_INSERT(ext4_buf_lru, &bc->lru_root, buf);
-		/* This buffer is ready to be flushed. */
 		if (ext4_bcache_test_flag(buf, BC_DIRTY) &&
-		    ext4_bcache_test_flag(buf, BC_UPTODATE)) {
-			if (bc->bdev->cache_write_back &&
-			    !ext4_bcache_test_flag(buf, BC_FLUSH) &&
-			    !ext4_bcache_test_flag(buf, BC_TMP))
-				ext4_bcache_insert_dirty_node(bc, buf);
-			else {
-				ext4_block_flush_buf(bc->bdev, buf);
-				ext4_bcache_clear_flag(buf, BC_FLUSH);
-			}
-		}
-
-		/* The buffer is invalidated...drop it. */
+		    ext4_bcache_test_flag(buf, BC_UPTODATE))
+			ext4_bcache_insert_dirty_node(bc, buf);
 		if (!ext4_bcache_test_flag(buf, BC_UPTODATE) ||
 		    ext4_bcache_test_flag(buf, BC_TMP))
-			ext4_bcache_drop_buf(bc, buf);
+			ext4_bcache_drop_buf_locked(bc, buf);
+	}
+	ext4_bcache_index_unlock(bc);
 
+	if (flush) {
+		r = ext4_block_flush_buf(bc->bdev, buf);
+
+		ext4_bcache_index_lock(bc);
+		ext4_bcache_clear_flag(buf, BC_FLUSH);
+		ext4_assert(buf->refctr);
+		ext4_bcache_dec_ref(buf);
+		if (!buf->refctr) {
+			RB_INSERT(ext4_buf_lru, &bc->lru_root, buf);
+			if (ext4_bcache_test_flag(buf, BC_DIRTY) &&
+			    ext4_bcache_test_flag(buf, BC_UPTODATE))
+				ext4_bcache_insert_dirty_node(bc, buf);
+			if (!ext4_bcache_test_flag(buf, BC_UPTODATE) ||
+			    ext4_bcache_test_flag(buf, BC_TMP))
+				ext4_bcache_drop_buf_locked(bc, buf);
+		}
+		ext4_bcache_index_unlock(bc);
 	}
 
 	b->lb_id = 0;
 	b->data = 0;
 
-	return EOK;
+	return r;
 }
 
 bool ext4_bcache_is_full(struct ext4_bcache *bc)
 {
-	return (bc->cnt <= bc->ref_blocks);
+	bool full;
+	ext4_bcache_index_lock(bc);
+	full = bc->cnt <= bc->ref_blocks;
+	ext4_bcache_index_unlock(bc);
+	return full;
+}
+
+void ext4_bcache_shake_clean(struct ext4_bcache *bc)
+{
+	ext4_bcache_index_lock(bc);
+	while (bc->cnt <= bc->ref_blocks) {
+		struct ext4_buf *buf = RB_MIN(ext4_buf_lru, &bc->lru_root);
+		while (buf && ext4_bcache_test_flag(buf, BC_DIRTY))
+			buf = RB_NEXT(ext4_buf_lru, &bc->lru_root, buf);
+		if (!buf)
+			break;
+		ext4_bcache_drop_buf_locked(bc, buf);
+	}
+	ext4_bcache_index_unlock(bc);
+}
+
+void ext4_bcache_mark_clean(struct ext4_bcache *bc, struct ext4_buf *buf)
+{
+	ext4_bcache_index_lock(bc);
+	if (buf->on_dirty_list)
+		ext4_bcache_remove_dirty_node(bc, buf);
+	ext4_bcache_clear_flag(buf, BC_DIRTY);
+	ext4_bcache_index_unlock(bc);
 }
 
 

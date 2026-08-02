@@ -2316,3 +2316,18 @@
   `crates/lwext4_rust/src/file.rs` 既有格式差异影响。
 - **关联文档**：[问题复盘](./problem/lwext4-smp-position-independent-block-device.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### lwext4 SMP P21.2 并发 bcache 基础设施（8.2）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求继续实现真正并行 EXT4，分析新 `log.ans` 的 SMP 性能下降，并为本轮代码补文档、确定
+  下一步方案和创建提交。
+- **描述**：日志最后 `38.161s` interval 中 3652/4010 次 gate 准入排队，read-data 等待/持有为
+  `77.798s/3.007s`，而 scheduler dispatch 只有 `77.210ms`；确认当前是多核请求在 mount-wide gate 上形成 convoy，
+  并未启用 shared read。本轮将 bcache 改为 index 短锁、同 LBA loading single-flight、writeback pin、task-aware
+  wait/wake 和每请求 scratch，但保留 `EXT4_OP_LOCK`。下一轮先补 telemetry、dirty-only 容量退让、按 LBA waiter
+  与并发 oracle，再进入 P21.3 inode shared read。
+- **验证边界**：双架构 lwext4 C 和 release 内核构建通过；RISC-V 8 HART 冒烟通过 TOOLCHAIN/MINIBUILD 且无 panic/assert，
+  但未完成 BuildStorm、错误注入、fsck 或 P21.2 oracle，不报告加速。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、[AI 记录](./ai.log)
+- **关联 commit**：本轮提交

@@ -155,3 +155,4 @@
 - [RISC-V BuildStorm rustc SIGSEGV 缺页现场诊断](./problem/riscv-rustc-sigsegv-fault-diagnostics.md)
 - [BuildStorm EXT4 gate owner 退出泄漏](./problem/buildstorm-ext4-gate-owner-exit.md)
 - [lwext4 SMP P21.1 位置无关块设备前置](./problem/lwext4-smp-position-independent-block-device.md)
+- [lwext4 SMP P21.2 并发 bcache 基础设施与串行 gate 退化](./problem/lwext4-smp-concurrent-bcache-foundation.md)

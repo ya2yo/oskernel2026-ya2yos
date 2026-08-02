@@ -70,7 +70,7 @@ static int ext4_bdif_bread(struct ext4_blockdev *bdev, void *buf,
 {
 	ext4_bdif_lock(bdev);
 	int r = bdev->bdif->bread(bdev, buf, blk_id, blk_cnt);
-	bdev->bdif->bread_ctr++;
+	__atomic_add_fetch(&bdev->bdif->bread_ctr, 1, __ATOMIC_RELAXED);
 	ext4_bdif_unlock(bdev);
 	return r;
 }
@@ -80,7 +80,7 @@ static int ext4_bdif_bwrite(struct ext4_blockdev *bdev, const void *buf,
 {
 	ext4_bdif_lock(bdev);
 	int r = bdev->bdif->bwrite(bdev, buf, blk_id, blk_cnt);
-	bdev->bdif->bwrite_ctr++;
+	__atomic_add_fetch(&bdev->bdif->bwrite_ctr, 1, __ATOMIC_RELAXED);
 	ext4_bdif_unlock(bdev);
 	return r;
 }
@@ -143,31 +143,47 @@ int ext4_block_fini(struct ext4_blockdev *bdev)
 
 int ext4_block_flush_buf(struct ext4_blockdev *bdev, struct ext4_buf *buf)
 {
-	int r;
+	int r = EOK;
 	struct ext4_bcache *bc = bdev->bc;
+	int flags;
+	const int writeback = 1 << BC_WRITEBACK;
+
+	for (;;) {
+		flags = __atomic_load_n(&buf->flags, __ATOMIC_ACQUIRE);
+		if (!(flags & (1 << BC_DIRTY)) ||
+		    !(flags & (1 << BC_UPTODATE)))
+			return EOK;
+		if (flags & writeback) {
+			r = ext4_bcache_wait_while(buf, writeback);
+			if (r != EOK)
+				return r;
+			continue;
+		}
+		if (__atomic_compare_exchange_n(&buf->flags, &flags,
+						flags | writeback, false,
+						__ATOMIC_ACQ_REL,
+						__ATOMIC_ACQUIRE))
+			break;
+	}
 
 	if (ext4_bcache_test_flag(buf, BC_DIRTY) &&
 	    ext4_bcache_test_flag(buf, BC_UPTODATE)) {
 		r = ext4_blocks_set_direct(bdev, buf->data, buf->lba, 1);
 		if (r) {
-			if (buf->end_write) {
-				bc->dont_shake = true;
+			if (buf->end_write)
 				buf->end_write(bc, buf, r, buf->end_write_arg);
-				bc->dont_shake = false;
-			}
-
-			return r;
+			goto Finish;
 		}
 
-		ext4_bcache_remove_dirty_node(bc, buf);
-		ext4_bcache_clear_flag(buf, BC_DIRTY);
-		if (buf->end_write) {
-			bc->dont_shake = true;
+		ext4_bcache_mark_clean(bc, buf);
+		if (buf->end_write)
 			buf->end_write(bc, buf, r, buf->end_write_arg);
-			bc->dont_shake = false;
-		}
 	}
-	return EOK;
+
+Finish:
+	ext4_bcache_clear_flag(buf, BC_WRITEBACK);
+	ext4_bcache_wake(buf);
+	return r;
 }
 
 int ext4_block_flush_lba(struct ext4_blockdev *bdev, uint64_t lba)
@@ -185,29 +201,8 @@ int ext4_block_flush_lba(struct ext4_blockdev *bdev, uint64_t lba)
 
 int ext4_block_cache_shake(struct ext4_blockdev *bdev)
 {
-	int r = EOK;
-	struct ext4_buf *buf;
-	if (bdev->bc->dont_shake)
-		return EOK;
-
-	bdev->bc->dont_shake = true;
-
-	while (!RB_EMPTY(&bdev->bc->lru_root) &&
-		ext4_bcache_is_full(bdev->bc)) {
-
-		buf = ext4_buf_lowest_lru(bdev->bc);
-		ext4_assert(buf);
-		if (ext4_bcache_test_flag(buf, BC_DIRTY)) {
-			r = ext4_block_flush_buf(bdev, buf);
-			if (r != EOK)
-				break;
-
-		}
-
-		ext4_bcache_drop_buf(bdev->bc, buf);
-	}
-	bdev->bc->dont_shake = false;
-	return r;
+	ext4_bcache_shake_clean(bdev->bc);
+	return EOK;
 }
 
 int ext4_block_get_noread(struct ext4_blockdev *bdev, struct ext4_block *b,
@@ -242,29 +237,58 @@ int ext4_block_get_noread(struct ext4_blockdev *bdev, struct ext4_block *b,
 }
 
 int ext4_block_get(struct ext4_blockdev *bdev, struct ext4_block *b,
-		   uint64_t lba)
+			   uint64_t lba)
 {
 	int r = ext4_block_get_noread(bdev, b, lba);
+	bool waited = false;
+	const int loading = 1 << BC_LOADING;
+	const int io_error = 1 << BC_IO_ERROR;
 	if (r != EOK)
 		return r;
 
-	if (ext4_bcache_test_flag(b->buf, BC_UPTODATE)) {
-		/* Data in the cache is up-to-date.
-		 * Reading from physical device is not required */
-		return EOK;
+	for (;;) {
+		int flags = __atomic_load_n(&b->buf->flags, __ATOMIC_ACQUIRE);
+		int desired;
+
+		if (flags & (1 << BC_UPTODATE))
+			return EOK;
+		if (flags & loading) {
+			r = ext4_bcache_wait_while(b->buf, loading);
+			if (r != EOK)
+				goto Error;
+			waited = true;
+			continue;
+		}
+		if ((flags & io_error) && waited) {
+			r = EIO;
+			goto Error;
+		}
+
+		desired = (flags & ~io_error) | loading;
+		if (!__atomic_compare_exchange_n(&b->buf->flags, &flags, desired,
+						 false, __ATOMIC_ACQ_REL,
+						 __ATOMIC_ACQUIRE))
+			continue;
+
+		r = ext4_blocks_get_direct(bdev, b->data, lba, 1);
+		if (r == EOK) {
+			ext4_bcache_set_flag(b->buf, BC_UPTODATE);
+			ext4_bcache_clear_flag(b->buf, BC_IO_ERROR);
+		} else {
+			ext4_bcache_clear_flag(b->buf, BC_UPTODATE);
+			ext4_bcache_set_flag(b->buf, BC_IO_ERROR);
+		}
+		ext4_bcache_clear_flag(b->buf, BC_LOADING);
+		ext4_bcache_wake(b->buf);
+		if (r == EOK)
+			return EOK;
+		goto Error;
 	}
 
-	r = ext4_blocks_get_direct(bdev, b->data, lba, 1);
-	if (r != EOK) {
-		ext4_bcache_free(bdev->bc, b);
-		b->lb_id = 0;
-		return r;
-	}
-
-	/* Mark buffer up-to-date, since
-	 * fresh data is read from physical device just now. */
-	ext4_bcache_set_flag(b->buf, BC_UPTODATE);
-	return EOK;
+Error:
+	ext4_bcache_free(bdev->bc, b);
+	b->lb_id = 0;
+	return r;
 }
 
 int ext4_block_set(struct ext4_blockdev *bdev, struct ext4_block *b)
@@ -313,6 +337,7 @@ int ext4_block_writebytes(struct ext4_blockdev *bdev, uint64_t off,
 	uint32_t blen;
 	uint32_t unalg;
 	int r = EOK;
+	uint8_t *scratch = NULL;
 
 	const uint8_t *p = (void *)buf;
 
@@ -321,8 +346,15 @@ int ext4_block_writebytes(struct ext4_blockdev *bdev, uint64_t off,
 	if (!bdev->bdif->ph_refctr)
 		return EIO;
 
-	if (off + len > bdev->part_size)
+	if (off > bdev->part_size || len > bdev->part_size - off)
 		return EINVAL; /*Ups. Out of range operation*/
+
+	if ((off & (bdev->bdif->ph_bsize - 1)) ||
+	    (len & (bdev->bdif->ph_bsize - 1))) {
+		scratch = ext4_malloc(bdev->bdif->ph_bsize);
+		if (!scratch)
+			return ENOMEM;
+	}
 
 	block_idx = ((off + bdev->part_offset) / bdev->bdif->ph_bsize);
 
@@ -334,14 +366,14 @@ int ext4_block_writebytes(struct ext4_blockdev *bdev, uint64_t off,
 				    ? len
 				    : (bdev->bdif->ph_bsize - unalg);
 
-		r = ext4_bdif_bread(bdev, bdev->bdif->ph_bbuf, block_idx, 1);
+		r = ext4_bdif_bread(bdev, scratch, block_idx, 1);
 		if (r != EOK)
-			return r;
+			goto Finish;
 
-		memcpy(bdev->bdif->ph_bbuf + unalg, p, wlen);
-		r = ext4_bdif_bwrite(bdev, bdev->bdif->ph_bbuf, block_idx, 1);
+		memcpy(scratch + unalg, p, wlen);
+		r = ext4_bdif_bwrite(bdev, scratch, block_idx, 1);
 		if (r != EOK)
-			return r;
+			goto Finish;
 
 		p += wlen;
 		len -= wlen;
@@ -353,7 +385,7 @@ int ext4_block_writebytes(struct ext4_blockdev *bdev, uint64_t off,
 	if (blen != 0) {
 		r = ext4_bdif_bwrite(bdev, p, block_idx, blen);
 		if (r != EOK)
-			return r;
+			goto Finish;
 
 		p += bdev->bdif->ph_bsize * blen;
 		len -= bdev->bdif->ph_bsize * blen;
@@ -363,16 +395,19 @@ int ext4_block_writebytes(struct ext4_blockdev *bdev, uint64_t off,
 
 	/*Rest of the data*/
 	if (len) {
-		r = ext4_bdif_bread(bdev, bdev->bdif->ph_bbuf, block_idx, 1);
+		r = ext4_bdif_bread(bdev, scratch, block_idx, 1);
 		if (r != EOK)
-			return r;
+			goto Finish;
 
-		memcpy(bdev->bdif->ph_bbuf, p, len);
-		r = ext4_bdif_bwrite(bdev, bdev->bdif->ph_bbuf, block_idx, 1);
+		memcpy(scratch, p, len);
+		r = ext4_bdif_bwrite(bdev, scratch, block_idx, 1);
 		if (r != EOK)
-			return r;
+			goto Finish;
 	}
 
+Finish:
+	if (scratch)
+		ext4_free(scratch);
 	return r;
 }
 
@@ -383,6 +418,7 @@ int ext4_block_readbytes(struct ext4_blockdev *bdev, uint64_t off, void *buf,
 	uint32_t blen;
 	uint32_t unalg;
 	int r = EOK;
+	uint8_t *scratch = NULL;
 
 	uint8_t *p = (void *)buf;
 
@@ -391,8 +427,15 @@ int ext4_block_readbytes(struct ext4_blockdev *bdev, uint64_t off, void *buf,
 	if (!bdev->bdif->ph_refctr)
 		return EIO;
 
-	if (off + len > bdev->part_size)
+	if (off > bdev->part_size || len > bdev->part_size - off)
 		return EINVAL; /*Ups. Out of range operation*/
+
+	if ((off & (bdev->bdif->ph_bsize - 1)) ||
+	    (len & (bdev->bdif->ph_bsize - 1))) {
+		scratch = ext4_malloc(bdev->bdif->ph_bsize);
+		if (!scratch)
+			return ENOMEM;
+	}
 
 	block_idx = ((off + bdev->part_offset) / bdev->bdif->ph_bsize);
 
@@ -404,11 +447,11 @@ int ext4_block_readbytes(struct ext4_blockdev *bdev, uint64_t off, void *buf,
 				    ? len
 				    : (bdev->bdif->ph_bsize - unalg);
 
-		r = ext4_bdif_bread(bdev, bdev->bdif->ph_bbuf, block_idx, 1);
+		r = ext4_bdif_bread(bdev, scratch, block_idx, 1);
 		if (r != EOK)
-			return r;
+			goto Finish;
 
-		memcpy(p, bdev->bdif->ph_bbuf + unalg, rlen);
+		memcpy(p, scratch + unalg, rlen);
 
 		p += rlen;
 		len -= rlen;
@@ -421,7 +464,7 @@ int ext4_block_readbytes(struct ext4_blockdev *bdev, uint64_t off, void *buf,
 	if (blen != 0) {
 		r = ext4_bdif_bread(bdev, p, block_idx, blen);
 		if (r != EOK)
-			return r;
+			goto Finish;
 
 		p += bdev->bdif->ph_bsize * blen;
 		len -= bdev->bdif->ph_bsize * blen;
@@ -431,13 +474,16 @@ int ext4_block_readbytes(struct ext4_blockdev *bdev, uint64_t off, void *buf,
 
 	/*Rest of the data*/
 	if (len) {
-		r = ext4_bdif_bread(bdev, bdev->bdif->ph_bbuf, block_idx, 1);
+		r = ext4_bdif_bread(bdev, scratch, block_idx, 1);
 		if (r != EOK)
-			return r;
+			goto Finish;
 
-		memcpy(p, bdev->bdif->ph_bbuf, len);
+		memcpy(p, scratch, len);
 	}
 
+Finish:
+	if (scratch)
+		ext4_free(scratch);
 	return r;
 }
 

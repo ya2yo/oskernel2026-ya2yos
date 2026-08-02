@@ -135,8 +135,12 @@ struct ext4_bcache {
 	/**@brief   The blockdev binded to this block cache*/
 	struct ext4_blockdev *bdev;
 
-	/**@brief   The cache should not be shaked */
-	bool dont_shake;
+	/**@brief   Short lock protecting cache indexes and reference counts.
+	 *
+	 * This lock must never be held while allocating memory, waiting for a
+	 * buffer, issuing block I/O, or invoking an end-write callback.
+	 */
+	uint32_t index_lock;
 
 	/**@brief   A tree holding all bufs*/
 	RB_HEAD(ext4_buf_lba, ext4_buf) lba_root;
@@ -161,17 +165,25 @@ enum bcache_state_bits {
 	BC_UPTODATE,
 	BC_DIRTY,
 	BC_FLUSH,
-	BC_TMP
+	BC_TMP,
+	/** A single loader is filling the buffer from the block device. */
+	BC_LOADING,
+	/** The most recent buffer load failed. */
+	BC_IO_ERROR,
+	/** The buffer is pinned for writeback. */
+	BC_WRITEBACK,
+	/** The buffer has been selected for eviction. */
+	BC_EVICTING
 };
 
 #define ext4_bcache_set_flag(buf, b)    \
-	(buf)->flags |= 1 << (b)
+	__atomic_fetch_or(&(buf)->flags, 1 << (b), __ATOMIC_RELEASE)
 
 #define ext4_bcache_clear_flag(buf, b)    \
-	(buf)->flags &= ~(1 << (b))
+	__atomic_fetch_and(&(buf)->flags, ~(1 << (b)), __ATOMIC_RELEASE)
 
 #define ext4_bcache_test_flag(buf, b)    \
-	(((buf)->flags & (1 << (b))) >> (b))
+	(((__atomic_load_n(&(buf)->flags, __ATOMIC_ACQUIRE)) & (1 << (b))) >> (b))
 
 static inline void ext4_bcache_set_dirty(struct ext4_buf *buf) {
 	ext4_bcache_set_flag(buf, BC_UPTODATE);
@@ -210,6 +222,26 @@ ext4_bcache_remove_dirty_node(struct ext4_bcache *bc, struct ext4_buf *buf) {
 		buf->on_dirty_list = false;
 	}
 }
+
+/** Task-runtime hooks used while one hart loads a cache buffer.
+ *
+ * The callbacks are process-wide because upstream lwext4 exposes a single
+ * global mount table. The context argument keeps the ABI ready for a later
+ * per-mount registration. A missing callback falls back to CPU relaxation,
+ * which is suitable only while the outer serial gate is enabled.
+ */
+typedef int (*ext4_bcache_wait_fn)(void *ctx, const int *flags,
+					   int mask, uint64_t lba);
+typedef void (*ext4_bcache_wake_fn)(void *ctx, uint64_t lba);
+
+void ext4_bcache_setup_sync(void *ctx, ext4_bcache_wait_fn wait,
+			    ext4_bcache_wake_fn wake);
+
+/** Wait until all bits in mask are clear for a pinned buffer. */
+int ext4_bcache_wait_while(struct ext4_buf *buf, int mask);
+
+/** Wake tasks waiting for a pinned buffer state transition. */
+void ext4_bcache_wake(struct ext4_buf *buf);
 
 
 /**@brief   Dynamic initialization of block cache.
@@ -284,6 +316,15 @@ int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b);
  * @param   bc block cache descriptor
  * @return  full status*/
 bool ext4_bcache_is_full(struct ext4_bcache *bc);
+
+/** Drop clean unreferenced buffers until the cache reaches its target size.
+ * Dirty buffers are left for an exclusive writer/sync path; a shared reader
+ * must never run journal callbacks while another reader is active.
+ */
+void ext4_bcache_shake_clean(struct ext4_bcache *bc);
+
+/** Remove a successfully written buffer from the dirty index. */
+void ext4_bcache_mark_clean(struct ext4_bcache *bc, struct ext4_buf *buf);
 
 #ifdef __cplusplus
 }

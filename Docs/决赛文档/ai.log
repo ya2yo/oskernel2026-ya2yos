@@ -9372,3 +9372,40 @@ P21 明确禁止在 bcache、inode、目录、allocator 与 journal 并发语义
 仍受未触及的 `crates/lwext4_rust/src/file.rs` 既有格式差异影响，本次文件以单独 `rustfmt --check` 验证。
 未运行 QEMU、BuildStorm、8 HART 随机 LBA、同 LBA 重叠写或错误注入，因为 P21.0 oracle 尚未建立且 P21.2
 bcache 并发仍未启用；不得将本次构建结果解释为已经获得并行 read/write。
+
+## 2026-08-02：lwext4 SMP P21.2 并发 bcache 基础设施与退化归因
+
+### 用户输入
+
+维护者要求继续按《优化方案》实现真正并行化 EXT4，提供新的 `log.ans` 询问 SMP 后性能下降原因，随后要求先为
+本轮代码补充文档、确定下一步优化方案并创建 commit。
+
+### 分析与采纳结论
+
+源码和日志共同表明当前并未启用 EXT4 shared read：`HEAD` 只完成 P21.1，read/find/fstat 仍进入 mount-wide
+`EXT4_OP_LOCK`。新日志最后 `38.161s` interval 中 gate 只有 358 次 fast acquire、3652 次 queued，handoff wait
+累计 133.774 秒；read-data 等待 77.798 秒而持锁 3.007 秒，scheduler dispatch 仅 77.210 毫秒。采纳结论是
+SMP 增加了 Cargo 请求并发，但外层串行 gate 将并行度转换成 FIFO handoff、跨 hart wakeup 和锁 convoy；日志只到
+`13/446`，不能给出端到端回退比例。
+
+审计 P21.2 代码后，将本轮范围限定为“并发 bcache 基础设施”：LBA/LRU/dirty/refcount index 短锁、锁外分配后二次
+lookup、`BC_LOADING/BC_IO_ERROR` 同 LBA single-flight、`BC_WRITEBACK` pin、task-aware wait/wake、每调用 byte-I/O
+scratch 和原子 block 计数。继续保留 `EXT4_OP_LOCK`，不把它描述为已经完成 P21.2 或真正并行 EXT4。
+
+下一轮顺序确定为：先增加 bcache/block request 累计与 interval telemetry；再实现 dirty-only 满缓存时的
+`NEED_EXCLUSIVE` 退让、锁外 victim writeback/eviction 和按 LBA wait bucket；随后完成同/异 LBA、flush/evict、
+错误注入和 10 万次生命周期 oracle。只有这些守恒通过后才进入 P21.3，以稳定 inode identity/open-file `f_pos`
+为前提，首批放开不同 inode 的只读路径。
+
+### 修改文件
+
+源码修改位于 `ext4_bcache.h`、`ext4_bcache.c`、`ext4_blockdev.c`、Rust `blockdev.rs` 和 EXT4 `sb.rs`。新增
+`problem/lwext4-smp-concurrent-bcache-foundation.md`，并更新《优化方案》、开发日志、README 索引、`ai.log` 和
+`AI_INTERACTION.md`。维护者已有的 `user/src/bin/initproc.rs` 和 `disk.img` 不纳入提交。
+
+### 验证边界
+
+独立 RISC-V/LoongArch64 lwext4 C 构建和双架构 release 内核构建通过，只有既有 C/smoltcp warning。RISC-V 8 HART QEMU
+冒烟通过 TOOLCHAIN/MINIBUILD，停在 untimed `pre-build tg-xtask`，没有 panic、lwext4 assert、TFAIL 或 TBROK；
+由于 `timeout` 未回收 QEMU，AI 显式终止残留进程并恢复了原 `disk.img` 软链接。完整 BuildStorm、P21.2 并发 oracle、
+I/O 错误注入和 fsck 尚未执行，不报告性能提升。
