@@ -43,7 +43,7 @@ impl Ext4Inode {
 
     pub(super) fn get_xattr_impl(&self, name: &[u8], value: &mut [u8]) -> SyscallRet {
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        let _ext4 = EXT4_OP_LOCK.lock_for_metadata_read();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         inner
@@ -54,7 +54,7 @@ impl Ext4Inode {
 
     pub(super) fn list_xattr_impl(&self, list: &mut [u8]) -> SyscallRet {
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        let _ext4 = EXT4_OP_LOCK.lock_for_metadata_read();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         inner.f.xattr_list(&path, list).map_err(SysErrNo::from)
@@ -113,6 +113,10 @@ impl Ext4Inode {
 
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
+        // A failed pathname lookup recovers through `file_close()`, which may
+        // publish delayed data. Keep the complete fstat/recovery transaction
+        // exclusive instead of attempting an unsafe shared-to-exclusive
+        // upgrade after lwext4 has already observed an error.
         let _ext4 = EXT4_OP_LOCK.lock_for_fstat();
         // Another hart may have populated the cache while this task waited
         // for lwext4.  Recheck after acquiring the guard to avoid redundant
@@ -291,7 +295,7 @@ impl Ext4Inode {
     /// lwext4 在路径已不存在时可能返回 `ENOENT`，这里按 0 个 link 兼容延迟删除路径。
     pub(super) fn link_cnt_impl(&self) -> SyscallRet {
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
+        let _ext4 = EXT4_OP_LOCK.lock_for_metadata_read();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::LinkCount);
         let inner = self.inner.get_unchecked_mut();

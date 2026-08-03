@@ -9610,3 +9610,39 @@ Linux EXT4 的 `ext4_xattr_set_handle()` 在 xattr 写锁内同时执行存在�
 构建均通过。为定向回归临时将 `initproc` 切至 18 个 glibc xattr LTP 单测，guest 能启动并 `shutdown!`，但当前
 final-2026 镜像缺少 `/glibc/ltp/testcases/bin` 中对应二进制，每项在 `execve` 前以 127 退出；临时入口已恢复，
 不能把该运行结果作为 xattr 内核测试结论。未运行完整 LTP/BuildStorm，原因是维护者明确的时限约束。
+
+## 2026-08-03：P21.3 EXT4 shared admission 与 Linux 锁模型对照
+
+### 用户输入
+
+维护者提供 `tmp_13.ans` 继续性能优化，并询问 Linux 是否存在类似 `EXT4_OP_LOCK` 的全局锁；在确认没有后要求直接拆开。
+
+### 分析与采纳结论
+
+AI 对照本地 Linux 7.0：`fs/ext4/file.c` 的读取使用单 inode shared lock，`fs/ext4/ext4.h` 对 xattr、extent/truncate
+和 writeback 定义独立锁域，`fs/namei.c` 按目录/rename 参与 inode 的固定顺序加锁；不存在覆盖全部 ext4 pathname/file
+API 的 mount-wide operation lock。lwext4 并不具备这些全部细粒度协议，因此不直接删除 gate，而是将它改成 task-aware
+FIFO reader/writer admission：连续的队首 reader 可批量进入，writer 排队后阻止新的 reader 插队。
+
+审计 lwext4 wrapper 后只对不会改写 C 状态的路径开放 shared：已打开 descriptor 的 read-data、find/path stat、目录迭代、
+readlink、get/listxattr、link-count、statfs/ls。写入、namespace、sync、close、seek、metadata setter 和 descriptor
+open/rebind 继续 exclusive。修正了一个原始共享分类风险：`fstat()` 会 flush pending sparse range，失败恢复还会通过
+`recover_live_path()` 调用 `file_close()`；`fmode()` recovery 也会 close。因此二者都保持 exclusive，不能因常见路径是
+查询而违反 Linux 可见的 `st_size/st_blocks` 与写回语义。
+
+`tmp_13.ans` 的 RISC-V 8 HART 累计值 `shared_acquires=39042`、`shared_handoffs=2224`、`max_active_readers=7` 证明
+reader batch 已实际运行；累计 handoff wait 仍为 `567915801us`。日志到 Cargo `Building 11/446`，有 TOOLCHAIN/MINIBUILD
+成功且没有已观察到的 panic、SIGSEGV、`ERROR`、`TFAIL` 或 `TBROK`，但没有完整结束标记，因此不报告端到端加速。
+
+### 修改文件
+
+共享分类和 perf 包装修改在 `os/src/fs/ext4_lw/{mod.rs,sb.rs,inode/metadata.rs}`、
+`os/src/utils/perf/{fs.rs,report.rs}`；本轮补充 Linux 对照问题记录、优化方案、开发日志和 AI 记录。维护者已有的
+`user/src/bin/initproc.rs`、`disk.img` 以及 `tmp_13.ans` 未修改。
+
+### 验证边界
+
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、`git diff --check` 与
+`make perf TARGET_ARCH=riscv64` 通过。未运行完整 BuildStorm，因为维护者明确其当前 EXT4 实现无法在一小时内完成；
+未触碰现有 `disk.img`。本轮尚未独立运行 LoongArch64、`e2fsck -fn` 或文件系统 LTP 语义回归，不能报告跨架构或完整
+正确性通过。

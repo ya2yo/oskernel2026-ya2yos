@@ -241,20 +241,39 @@ C block requests: 186059 read + 6889 write = 192948 completed, errors 0
 随后 workload 增长到 resident 194，符合 128/256 hysteresis；`capacity_overflows=132836` 只是超过旧 16-block
 soft target 的累计，不能解读为新高水位失守。
 
+## P21.3 shared admission 与 `tmp_13.ans`
+
+Linux 7.0 没有覆盖全部 ext4 API 的 mount-wide operation lock。直接证据是 `fs/ext4/file.c` 的 direct read 使用
+`inode_lock_shared()`，`fs/ext4/ext4.h` 为 `i_data_sem`、`xattr_sem`、orphan/writeback 等资源分别定义锁，
+`fs/namei.c` 则按父目录/源目标 inode 的顺序获取 `i_rwsem`。这不是允许 Ya2yOS 直接删除 gate 的证据：lwext4 没有
+等价的 inode/目录/allocator/journal 锁协议，P21.2 只证明了 bcache 生命周期和位置无关 I/O 可并发。
+
+因此 P21.3 将 `EXT4_OP_LOCK` 改为 FIFO reader/writer admission，而非移除它。纯 read-data、pathname stat/find、
+directory iteration、readlink、get/listxattr、link-count、statfs/ls 可批量 shared；writer 排队后 reader 不得插队。
+namespace、allocator/journal 写入、sync、close、seek、metadata setter 和 descriptor open/rebind 保持 exclusive。
+尤其不能把 `fstat`/`fmode` 归为 shared：`Ext4File::fstat()` 先 flush sparse range，失败后的
+`recover_live_path()` 调用 `file_close()`，两者都可能写盘。
+
+`tmp_13.ans` 在 RISC-V 8 HART 上有 TOOLCHAIN/MINIBUILD 成功，日志到 Cargo `Building 11/446` 时未出现 panic、
+SIGSEGV、`ERROR`、`TFAIL` 或 `TBROK`；它没有 compile success、END 或 shutdown。最后累计 gate 值为
+`shared_acquires=39042`、`shared_handoffs=2224`、`max_active_readers=7`，证明 shared 路径实际并发；但 handoff wait
+仍为 `567915801us`，不能据此报告端到端加速。`fstat` sparse flush=6 是重新将 fstat 保持 exclusive 的直接依据。
+
 ## 下一步优化方案
 
-P21.2b.0、P21.2b.1 与 P21.2b.2 的工程实现均已完成，但 P21.2b.2 仍保持默认关闭。剩余验收为：同一 commit、镜像、
+P21.2b.0、P21.2b.1 与 P21.2b.2 的工程实现均已完成，但 P21.2b.2 仍保持默认关闭。P21.3 的 shared admission 已进入
+阶段验证，不能外推到写路径。剩余验收为：同一 commit、镜像、
 QEMU `-smp` 与 Cargo jobs 下完成 P0 基线；对实验配置完成 `e2fsck -fn`、RISC-V 8 HART 持续运行和两次完整 A/B；
-验证 `resident <= high + in_flight_loaders` 与 I/O error 恢复。shared admission/read gate 在这些验收前仍不得撤退。
+验证 `resident <= high + in_flight_loaders` 与 I/O error 恢复。shared admission 只能维持已审计的纯读集合，不能在这些
+验收前扩大到写路径或删除 exclusive gate。
 
 后续顺序保持如下：
 
 1. **暂缓无证据改动。** loader/writeback wait 和设备 contended 均为 0，因此不同时拆 `Disk::dev` mutex 或做 LBA
    waiter 分桶；shared read 真正产生 wait/wake 数据后再决定分桶数，避免把容量实验与第二变量混在一起。
-2. **P21.3 只读并发。** 先建立稳定 inode number/generation 对应的 `Ext4InodeState` 和独立 open-file `f_pos`，
-   只让不同 inode 的 `read/read_all/fstat/read_dir` 获取 shared admission；修改操作和 dirty-capacity fallback 继续走
-   exclusive gate。验收必须看到 `max_active_readers > 1`，并使 `read/find/fstat` gate wait 在相同 Cargo checkpoint
-   明显下降。
+2. **P21.3 冻结为过渡层。** 当前 shared admission 只保留已审计的纯读集合和回归修复，不再扩大到写路径。后续 native
+   inode identity、open-file `f_pos`、extent/directory/allocator/transaction 由 P22 Linux-aligned EXT4 重构统一实现；
+   详见《优化方案》。不能把 `fstat` 写回算作读并发，也不能仅删除 gate 宣称 Linux 对齐。
 3. **性能验收。** 固定镜像、冷启动、QEMU `-smp`、Cargo jobs 和 crate checkpoint 做两次 A/B；比较 16-block
    无界 overflow 与 256/128 有界退让的 full-dirty、overflow、回写批次、gate hold 和 Cargo checkpoint。最终以两次完整
    `BUILDSTORM_COMPILE ... ok=true`、测试组 `END`、`shutdown!` 和无 fsck 差异为准，不用本次 `tmp_12` 截断样本

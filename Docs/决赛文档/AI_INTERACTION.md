@@ -2406,3 +2406,19 @@
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、
   [AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### P21.3 EXT4 shared admission 与 Linux 锁模型对照（8.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `tmp_13.ans`，询问 Linux 是否存在全局 `EXT4_OP_LOCK` 并要求拆分当前锁争用。
+- **描述**：对照 Linux 7.0 的 inode、xattr、extent/truncate 与目录锁，确认 Linux 不使用覆盖所有 ext4 API 的
+  mount-wide gate。Ya2yOS 将现有 gate 改为公平的 shared/exclusive admission，并只开放审计为纯读的
+  read-data/find/read-dir/readlink/get-list-xattr/link-count/statfs 路径；writer 排队后禁止 reader 插队。保留
+  namespace、metadata mutation、open/rebind、sync/close/seek 及含 sparse flush/recovery 的 fstat/fmode 为 exclusive，
+  防止将真实写回当作读并发。
+- **验证边界**：`tmp_13.ans` 在 RISC-V 8 HART 中观测到 `shared_acquires=39042`、`max_active_readers=7` 且截断前无
+  已观察异常，但缺少完整 BuildStorm 结束；RISC-V perf 构建、格式和 diff 检查通过。未运行完整 BuildStorm、fsck、
+  LoongArch64 或文件系统 LTP 回归。
+- **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/ext4-linux-locking-and-lwext4-admission.md)、
+  [AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

@@ -116,8 +116,10 @@ static DELTA_EXT4_SYNC_LOCK: LockDelta = LockDelta::new();
 static DELTA_EXT4_SEEK_LOCK: LockDelta = LockDelta::new();
 
 static DELTA_EXT4_GATE_FAST_ACQUIRES: CounterDelta = CounterDelta::new();
+static DELTA_EXT4_GATE_SHARED_ACQUIRES: CounterDelta = CounterDelta::new();
 static DELTA_EXT4_GATE_QUEUED: CounterDelta = CounterDelta::new();
 static DELTA_EXT4_GATE_HANDOFFS: CounterDelta = CounterDelta::new();
+static DELTA_EXT4_GATE_SHARED_HANDOFFS: CounterDelta = CounterDelta::new();
 static DELTA_EXT4_GATE_HANDOFF_WAKES: CounterDelta = CounterDelta::new();
 static DELTA_EXT4_GATE_BARGING_PREVENTED: CounterDelta = CounterDelta::new();
 static DELTA_EXT4_GATE_CANCELLED: CounterDelta = CounterDelta::new();
@@ -775,10 +777,12 @@ fn emit_interval_deltas(now: usize) {
     );
     let (owner_tid, owner_hold_us) = ext4_gate_owner_snapshot();
     println!(
-        "[perf] interval_ext4_gate fast_acquires={} queued={} handoffs={} handoff_wakes={} barging_prevented={} cancelled={} owner_exit_releases={} handoff_wait_us={} queue_depth={} max_queue_depth={} owner_tid={} owner_hold_us={}",
+        "[perf] interval_ext4_gate fast_acquires={} shared_acquires={} queued={} handoffs={} shared_handoffs={} handoff_wakes={} barging_prevented={} cancelled={} owner_exit_releases={} handoff_wait_us={} queue_depth={} max_queue_depth={} active_readers={} max_active_readers={} owner_tid={} owner_hold_us={}",
         DELTA_EXT4_GATE_FAST_ACQUIRES.take(&EXT4_GATE_STATS.fast_acquires),
+        DELTA_EXT4_GATE_SHARED_ACQUIRES.take(&EXT4_GATE_STATS.shared_acquires),
         DELTA_EXT4_GATE_QUEUED.take(&EXT4_GATE_STATS.queued),
         DELTA_EXT4_GATE_HANDOFFS.take(&EXT4_GATE_STATS.handoffs),
+        DELTA_EXT4_GATE_SHARED_HANDOFFS.take(&EXT4_GATE_STATS.shared_handoffs),
         DELTA_EXT4_GATE_HANDOFF_WAKES.take(&EXT4_GATE_STATS.handoff_wakes),
         DELTA_EXT4_GATE_BARGING_PREVENTED.take(&EXT4_GATE_STATS.barging_prevented),
         DELTA_EXT4_GATE_CANCELLED.take(&EXT4_GATE_STATS.cancelled),
@@ -788,6 +792,8 @@ fn emit_interval_deltas(now: usize) {
         ),
         EXT4_GATE_STATS.queue_depth.load(Ordering::Relaxed),
         EXT4_GATE_STATS.max_queue_depth.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.active_readers.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.max_active_readers.load(Ordering::Relaxed),
         owner_tid,
         owner_hold_us,
     );
@@ -1226,16 +1232,20 @@ pub(super) fn emit_report(now: usize) {
     emit_ext4_lock_stats("ext4_seek_lock", &EXT4_SEEK_LOCK_STATS);
     let (owner_tid, owner_hold_us) = ext4_gate_owner_snapshot();
     println!(
-        "[perf] ext4_gate_fair fast_acquires={} queued={} handoffs={} handoff_wakes={} barging_prevented={} cancelled={} owner_exit_releases={} queue_depth={} max_queue_depth={} owner_tid={} owner_hold_us={} handoff_wait_us={} max_handoff_wait_us={} wait_lt_1ms={} wait_lt_10ms={} wait_lt_100ms={} wait_lt_1s={} wait_lt_10s={} wait_ge_10s={}",
+        "[perf] ext4_gate_fair fast_acquires={} shared_acquires={} queued={} handoffs={} shared_handoffs={} handoff_wakes={} barging_prevented={} cancelled={} owner_exit_releases={} queue_depth={} max_queue_depth={} active_readers={} max_active_readers={} owner_tid={} owner_hold_us={} handoff_wait_us={} max_handoff_wait_us={} wait_lt_1ms={} wait_lt_10ms={} wait_lt_100ms={} wait_lt_1s={} wait_lt_10s={} wait_ge_10s={}",
         EXT4_GATE_STATS.fast_acquires.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.shared_acquires.load(Ordering::Relaxed),
         EXT4_GATE_STATS.queued.load(Ordering::Relaxed),
         EXT4_GATE_STATS.handoffs.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.shared_handoffs.load(Ordering::Relaxed),
         EXT4_GATE_STATS.handoff_wakes.load(Ordering::Relaxed),
         EXT4_GATE_STATS.barging_prevented.load(Ordering::Relaxed),
         EXT4_GATE_STATS.cancelled.load(Ordering::Relaxed),
         EXT4_GATE_STATS.owner_exit_releases.load(Ordering::Relaxed),
         EXT4_GATE_STATS.queue_depth.load(Ordering::Relaxed),
         EXT4_GATE_STATS.max_queue_depth.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.active_readers.load(Ordering::Relaxed),
+        EXT4_GATE_STATS.max_active_readers.load(Ordering::Relaxed),
         owner_tid,
         owner_hold_us,
         ticks_to_us(EXT4_GATE_STATS.handoff_wait_ticks.load(Ordering::Relaxed)),

@@ -158,8 +158,10 @@ impl Ext4LockStats {
 /// accounting invariant. Fast acquisitions never entered the FIFO queue.
 pub(crate) struct Ext4GateStats {
     pub(crate) fast_acquires: AtomicUsize,
+    pub(crate) shared_acquires: AtomicUsize,
     pub(crate) queued: AtomicUsize,
     pub(crate) handoffs: AtomicUsize,
+    pub(crate) shared_handoffs: AtomicUsize,
     pub(crate) handoff_wakes: AtomicUsize,
     pub(crate) barging_prevented: AtomicUsize,
     pub(crate) cancelled: AtomicUsize,
@@ -176,14 +178,18 @@ pub(crate) struct Ext4GateStats {
     pub(crate) owner_tid: AtomicUsize,
     pub(crate) owner_since_ticks: AtomicUsize,
     pub(crate) owner_exit_releases: AtomicUsize,
+    pub(crate) active_readers: AtomicUsize,
+    pub(crate) max_active_readers: AtomicUsize,
 }
 
 impl Ext4GateStats {
     const fn new() -> Self {
         Self {
             fast_acquires: AtomicUsize::new(0),
+            shared_acquires: AtomicUsize::new(0),
             queued: AtomicUsize::new(0),
             handoffs: AtomicUsize::new(0),
+            shared_handoffs: AtomicUsize::new(0),
             handoff_wakes: AtomicUsize::new(0),
             barging_prevented: AtomicUsize::new(0),
             cancelled: AtomicUsize::new(0),
@@ -200,6 +206,8 @@ impl Ext4GateStats {
             owner_tid: AtomicUsize::new(0),
             owner_since_ticks: AtomicUsize::new(0),
             owner_exit_releases: AtomicUsize::new(0),
+            active_readers: AtomicUsize::new(0),
+            max_active_readers: AtomicUsize::new(0),
         }
     }
 }
@@ -872,6 +880,16 @@ pub(crate) fn record_ext4_gate_acquired(tid: usize) {
 }
 
 #[inline]
+pub(crate) fn record_ext4_gate_shared_acquired(active_readers: usize) {
+    add(&EXT4_GATE_STATS.fast_acquires, 1);
+    add(&EXT4_GATE_STATS.shared_acquires, 1);
+    EXT4_GATE_STATS
+        .active_readers
+        .store(active_readers, Ordering::Relaxed);
+    update_max(&EXT4_GATE_STATS.max_active_readers, active_readers);
+}
+
+#[inline]
 pub(crate) fn record_ext4_gate_queued() {
     add(&EXT4_GATE_STATS.queued, 1);
 }
@@ -900,13 +918,17 @@ pub(crate) fn record_ext4_gate_waiter_cancelled(count: usize) {
 #[inline]
 pub(crate) fn record_ext4_gate_handoff_acquire(tid: usize, wait_ticks: usize) {
     add(&EXT4_GATE_STATS.handoffs, 1);
-    add(&EXT4_GATE_STATS.handoff_wait_ticks, wait_ticks);
-    update_max(&EXT4_GATE_STATS.max_handoff_wait_ticks, wait_ticks);
+    record_ext4_gate_handoff_wait(wait_ticks);
     EXT4_GATE_STATS
         .owner_since_ticks
         .store(get_ticks(), Ordering::Relaxed);
     EXT4_GATE_STATS.owner_tid.store(tid, Ordering::Relaxed);
+}
 
+#[inline]
+fn record_ext4_gate_handoff_wait(wait_ticks: usize) {
+    add(&EXT4_GATE_STATS.handoff_wait_ticks, wait_ticks);
+    update_max(&EXT4_GATE_STATS.max_handoff_wait_ticks, wait_ticks);
     let ticks_per_second = get_clock_freq().max(1);
     let bucket = if wait_ticks < ticks_per_second / 1_000 {
         &EXT4_GATE_STATS.wait_lt_1ms
@@ -922,6 +944,24 @@ pub(crate) fn record_ext4_gate_handoff_acquire(tid: usize, wait_ticks: usize) {
         &EXT4_GATE_STATS.wait_ge_10s
     };
     add(bucket, 1);
+}
+
+#[inline]
+pub(crate) fn record_ext4_gate_shared_handoff_acquire(wait_ticks: usize, active_readers: usize) {
+    add(&EXT4_GATE_STATS.handoffs, 1);
+    add(&EXT4_GATE_STATS.shared_handoffs, 1);
+    record_ext4_gate_handoff_wait(wait_ticks);
+    EXT4_GATE_STATS
+        .active_readers
+        .store(active_readers, Ordering::Relaxed);
+    update_max(&EXT4_GATE_STATS.max_active_readers, active_readers);
+}
+
+#[inline]
+pub(crate) fn record_ext4_gate_shared_released(active_readers: usize) {
+    EXT4_GATE_STATS
+        .active_readers
+        .store(active_readers, Ordering::Relaxed);
 }
 
 #[inline]
@@ -1010,15 +1050,18 @@ pub(crate) struct Ext4ProfiledOpGuard<'a> {
 
 impl Ext4OpLock {
     pub(crate) fn lock_for_read_open(&self) -> Ext4ProfiledOpGuard<'_> {
+        // Rebinding an Ext4File descriptor can first flush a delayed sparse
+        // range left by the old pathname.  Only the subsequent data read is
+        // unconditionally read-only.
         self.lock_profiled(Ext4LockClass::ReadOpen)
     }
 
     pub(crate) fn lock_for_read_data(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::ReadData)
+        self.lock_shared_profiled(Ext4LockClass::ReadData)
     }
 
     pub(crate) fn lock_for_find(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Find)
+        self.lock_shared_profiled(Ext4LockClass::Find)
     }
 
     pub(crate) fn lock_for_fstat(&self) -> Ext4ProfiledOpGuard<'_> {
@@ -1042,19 +1085,26 @@ impl Ext4OpLock {
     }
 
     pub(crate) fn lock_for_read_all(&self) -> Ext4ProfiledOpGuard<'_> {
+        // Like ReadOpen, this scope can rebind the descriptor before reading.
         self.lock_profiled(Ext4LockClass::ReadAll)
     }
 
     pub(crate) fn lock_for_read_dir(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::ReadDir)
+        self.lock_shared_profiled(Ext4LockClass::ReadDir)
     }
 
     pub(crate) fn lock_for_path_resolve(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::PathResolve)
+        self.lock_shared_profiled(Ext4LockClass::PathResolve)
     }
 
     pub(crate) fn lock_for_metadata(&self) -> Ext4ProfiledOpGuard<'_> {
         self.lock_profiled(Ext4LockClass::Metadata)
+    }
+
+    /// Read-only metadata calls such as getxattr, listxattr, statfs and
+    /// link-count lookup.  Metadata mutation remains on `lock_for_metadata`.
+    pub(crate) fn lock_for_metadata_read(&self) -> Ext4ProfiledOpGuard<'_> {
+        self.lock_shared_profiled(Ext4LockClass::Metadata)
     }
 
     pub(crate) fn lock_for_namespace(&self) -> Ext4ProfiledOpGuard<'_> {
@@ -1072,6 +1122,18 @@ impl Ext4OpLock {
     fn lock_profiled(&self, class: Ext4LockClass) -> Ext4ProfiledOpGuard<'_> {
         let wait_start = get_ticks();
         let guard = self.lock();
+        let acquired_at = get_ticks();
+        Ext4ProfiledOpGuard {
+            guard,
+            class,
+            wait_ticks: acquired_at.saturating_sub(wait_start),
+            acquired_at,
+        }
+    }
+
+    fn lock_shared_profiled(&self, class: Ext4LockClass) -> Ext4ProfiledOpGuard<'_> {
+        let wait_start = get_ticks();
+        let guard = self.lock_shared();
         let acquired_at = get_ticks();
         Ext4ProfiledOpGuard {
             guard,

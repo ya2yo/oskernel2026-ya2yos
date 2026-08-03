@@ -1,5 +1,6 @@
 # Problem 复盘索引
 
+- [Linux EXT4 锁模型与 lwext4 admission](./problem/ext4-linux-locking-and-lwext4-admission.md)
 - [EXT4 xattr syscall 与 Linux 语义对齐](./problem/ext4-xattr-linux-semantics.md)
 
 - [netperf glibc: 12865 控制端口残留监听](./problem/netperf-glibc-port-reuse.md)
