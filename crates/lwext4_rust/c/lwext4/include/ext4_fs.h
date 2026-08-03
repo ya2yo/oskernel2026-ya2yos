@@ -68,8 +68,20 @@ extern "C" {
  */
 #define EXT4_FS_LOCK_STRIPES 257U
 
+enum ext4_fs_rwlock_kind {
+	EXT4_FS_RWLOCK_UNKNOWN = 0,
+	EXT4_FS_RWLOCK_NAMESPACE,
+	EXT4_FS_RWLOCK_INODE,
+	EXT4_FS_RWLOCK_GROUP,
+	EXT4_FS_RWLOCK_SUPER,
+	EXT4_FS_RWLOCK_JOURNAL,
+	EXT4_FS_RWLOCK_CACHE_STATE,
+	EXT4_FS_RWLOCK_CACHE_FLUSH,
+};
+
 struct ext4_fs_rwlock {
 	int state;
+	uint8_t kind;
 };
 
 /*
@@ -101,6 +113,7 @@ void ext4_fs_rwlock_read_lock(struct ext4_fs_rwlock *lock);
 void ext4_fs_rwlock_read_unlock(struct ext4_fs_rwlock *lock);
 void ext4_fs_rwlock_write_lock(struct ext4_fs_rwlock *lock);
 void ext4_fs_rwlock_write_unlock(struct ext4_fs_rwlock *lock);
+uint8_t ext4_fs_rwlock_get_kind(const struct ext4_fs_rwlock *lock);
 
 struct ext4_fs {
 	bool read_only;
@@ -124,6 +137,8 @@ struct ext4_fs {
 	struct ext4_fs_rwlock super_lock;
 	struct ext4_fs_rwlock journal_lock;
 	struct ext4_fs_rwlock cache_lock;
+	/* Serializes a complete dirty-cache flush without covering other metadata. */
+	struct ext4_fs_rwlock cache_flush_lock;
 	/*
 	 * The Rust lock is recursive for the owning task, so transaction helpers
 	 * may nest while sharing one jbd transaction.  Keep the C-side nesting

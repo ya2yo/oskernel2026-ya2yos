@@ -386,6 +386,62 @@ pub(crate) static EXT4_BLOCK_DEVICE_STATS: Ext4BlockDeviceStats = Ext4BlockDevic
 #[cfg(feature = "perf")]
 static EXT4_BLOCK_DEVICE_PERF_ENABLED: AtomicBool = AtomicBool::new(false);
 
+/// Stable resource classes for aggregate lwext4 lock reporting.
+#[derive(Clone, Copy)]
+pub(crate) enum Ext4ResourceLockClass {
+    Unknown,
+    Namespace,
+    Inode,
+    Group,
+    Super,
+    Journal,
+    CacheState,
+    CacheFlush,
+    VFileCache,
+}
+
+impl Ext4ResourceLockClass {
+    pub(crate) const ALL: [Self; 9] = [
+        Self::Unknown,
+        Self::Namespace,
+        Self::Inode,
+        Self::Group,
+        Self::Super,
+        Self::Journal,
+        Self::CacheState,
+        Self::CacheFlush,
+        Self::VFileCache,
+    ];
+
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Unknown => 0,
+            Self::Namespace => 1,
+            Self::Inode => 2,
+            Self::Group => 3,
+            Self::Super => 4,
+            Self::Journal => 5,
+            Self::CacheState => 6,
+            Self::CacheFlush => 7,
+            Self::VFileCache => 8,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Namespace => "namespace",
+            Self::Inode => "inode",
+            Self::Group => "group",
+            Self::Super => "super",
+            Self::Journal => "journal",
+            Self::CacheState => "cache_state",
+            Self::CacheFlush => "cache_flush",
+            Self::VFileCache => "vfile_cache",
+        }
+    }
+}
+
 /// Aggregate costs of task-aware lwext4 resource locks and their Rust address
 /// registry. The data is intentionally not keyed by path, inode, or task so it
 /// remains suitable for long SMP BuildStorm runs.
@@ -444,6 +500,56 @@ impl Ext4ResourceLockStats {
 pub(crate) static EXT4_RESOURCE_LOCK_STATS: Ext4ResourceLockStats = Ext4ResourceLockStats::new();
 #[cfg(feature = "perf")]
 static EXT4_RESOURCE_LOCK_PERF_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "perf")]
+pub(crate) struct Ext4ResourceLockClassStats {
+    pub(crate) acquires: AtomicUsize,
+    pub(crate) contended: AtomicUsize,
+    pub(crate) queued: AtomicUsize,
+    pub(crate) max_queue_depth: AtomicUsize,
+    pub(crate) wait_ticks: AtomicUsize,
+    pub(crate) max_wait_ticks: AtomicUsize,
+    pub(crate) hold_ticks: AtomicUsize,
+    pub(crate) max_hold_ticks: AtomicUsize,
+}
+
+#[cfg(feature = "perf")]
+impl Ext4ResourceLockClassStats {
+    const fn new() -> Self {
+        Self {
+            acquires: AtomicUsize::new(0),
+            contended: AtomicUsize::new(0),
+            queued: AtomicUsize::new(0),
+            max_queue_depth: AtomicUsize::new(0),
+            wait_ticks: AtomicUsize::new(0),
+            max_wait_ticks: AtomicUsize::new(0),
+            hold_ticks: AtomicUsize::new(0),
+            max_hold_ticks: AtomicUsize::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        self.acquires.store(0, Ordering::Relaxed);
+        self.contended.store(0, Ordering::Relaxed);
+        self.queued.store(0, Ordering::Relaxed);
+        self.max_queue_depth.store(0, Ordering::Relaxed);
+        self.wait_ticks.store(0, Ordering::Relaxed);
+        self.max_wait_ticks.store(0, Ordering::Relaxed);
+        self.hold_ticks.store(0, Ordering::Relaxed);
+        self.max_hold_ticks.store(0, Ordering::Relaxed);
+    }
+}
+
+#[cfg(feature = "perf")]
+static EXT4_RESOURCE_LOCK_CLASS_STATS: [Ext4ResourceLockClassStats; 9] =
+    [const { Ext4ResourceLockClassStats::new() }; 9];
+
+#[cfg(feature = "perf")]
+pub(crate) fn ext4_resource_lock_class_stats(
+    class: Ext4ResourceLockClass,
+) -> &'static Ext4ResourceLockClassStats {
+    &EXT4_RESOURCE_LOCK_CLASS_STATS[class.index()]
+}
 /// `fast_cached`, `directory_epoch_cached`, `post_wait_cached`, and
 /// `actual_ext4_fstat` are mutually exclusive results of `Ext4Inode::fstat()`.
 /// Alias recovery is a nested subphase of the last bucket and is deliberately
@@ -1511,6 +1617,9 @@ pub(crate) fn enable_ext4_block_device_perf() {
 pub(crate) fn enable_ext4_resource_lock_perf() {
     EXT4_RESOURCE_LOCK_PERF_ENABLED.store(false, Ordering::Relaxed);
     EXT4_RESOURCE_LOCK_STATS.reset();
+    for class in Ext4ResourceLockClass::ALL {
+        ext4_resource_lock_class_stats(class).reset();
+    }
     EXT4_RESOURCE_LOCK_PERF_ENABLED.store(true, Ordering::Release);
 }
 
@@ -1569,36 +1678,51 @@ pub(crate) fn record_ext4_block_request_complete(service_ticks: usize, success: 
 
 #[inline]
 #[cfg(feature = "perf")]
-pub(crate) fn record_ext4_resource_lock_acquired(wait_ticks: usize, contended: bool) {
+pub(crate) fn record_ext4_resource_lock_acquired(
+    class: Ext4ResourceLockClass,
+    wait_ticks: usize,
+    contended: bool,
+) {
     if !EXT4_RESOURCE_LOCK_PERF_ENABLED.load(Ordering::Relaxed) {
         return;
     }
+    let class_stats = ext4_resource_lock_class_stats(class);
     add(&EXT4_RESOURCE_LOCK_STATS.acquires, 1);
     add(&EXT4_RESOURCE_LOCK_STATS.wait_ticks, wait_ticks);
     update_max(&EXT4_RESOURCE_LOCK_STATS.max_wait_ticks, wait_ticks);
+    add(&class_stats.acquires, 1);
+    add(&class_stats.wait_ticks, wait_ticks);
+    update_max(&class_stats.max_wait_ticks, wait_ticks);
     if contended {
         add(&EXT4_RESOURCE_LOCK_STATS.contended, 1);
+        add(&class_stats.contended, 1);
     }
 }
 
 #[inline]
 #[cfg(feature = "perf")]
-pub(crate) fn record_ext4_resource_lock_queued(queue_depth: usize) {
+pub(crate) fn record_ext4_resource_lock_queued(class: Ext4ResourceLockClass, queue_depth: usize) {
     if !EXT4_RESOURCE_LOCK_PERF_ENABLED.load(Ordering::Relaxed) {
         return;
     }
+    let class_stats = ext4_resource_lock_class_stats(class);
     add(&EXT4_RESOURCE_LOCK_STATS.queued, 1);
     update_max(&EXT4_RESOURCE_LOCK_STATS.max_queue_depth, queue_depth);
+    add(&class_stats.queued, 1);
+    update_max(&class_stats.max_queue_depth, queue_depth);
 }
 
 #[inline]
 #[cfg(feature = "perf")]
-pub(crate) fn record_ext4_resource_lock_released(hold_ticks: usize) {
+pub(crate) fn record_ext4_resource_lock_released(class: Ext4ResourceLockClass, hold_ticks: usize) {
     if !EXT4_RESOURCE_LOCK_PERF_ENABLED.load(Ordering::Relaxed) {
         return;
     }
+    let class_stats = ext4_resource_lock_class_stats(class);
     add(&EXT4_RESOURCE_LOCK_STATS.hold_ticks, hold_ticks);
     update_max(&EXT4_RESOURCE_LOCK_STATS.max_hold_ticks, hold_ticks);
+    add(&class_stats.hold_ticks, hold_ticks);
+    update_max(&class_stats.max_hold_ticks, hold_ticks);
 }
 
 #[inline]

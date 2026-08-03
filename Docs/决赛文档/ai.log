@@ -9711,3 +9711,34 @@ GDB backtrace 显示四个 hart 均在 `ext4_fs_rwlock_write_lock()` 的 C 原�
 ### 验证边界
 
 本轮只补文档，未重新编译或运行 QEMU。完整 BuildStorm、`e2fsck -fn`、LTP、cache write-back 并发、owner exit/cancel、锁序检查及 LoongArch64 运行仍待维护者验证；关联 commit：当前工作区未提交。
+
+## 2026-08-03：BuildStorm 资源锁观测、锁域收缩与任务表快照死锁
+
+### 用户输入
+
+维护者持续提供 `tmp_07.ans`、`tmp_08.ans`、`tmp_09.ans`、`server.ans` 与 `client.ans` 要求优化 BuildStorm；随后指出
+`server.ans` 的最后进度为 `46/446`，并要求本次直接补齐文档，包含已暂存修改。
+
+### 分析与采纳结论
+
+`tmp_09.ans` 的分类统计将瓶颈指向 namespace：累计 wait `1,141,136,319us`、4,515 次竞争，末 interval 单独
+`679,046,748us`。据此采纳对已解析 fd 的锁域收缩、只读 open 免 delayed write-back scope、cache state/flush 分离，
+并把 lwext4 C 锁类别和 Rust task-aware lock telemetry 逐类暴露；这些均标为待 guest 语义验收，未宣称性能收益。
+
+`server.ans` 已过 TOOLCHAIN/MINIBUILD，最后停在 `Building 46/446`。`client.ans` 的 GDB 显示 CPU#6 在
+`TID_TO_TASK` guard 内的 `Vec::collect()` 扩容等待 `HEAP`，CPU#0 等待任务表，CPU#1 在线程组退出的页帧销毁中等待
+`HEAP`。采纳无分配逐项遍历：只在任务表锁内 `Arc::clone`，之后释放锁再检查 hart、PCB 和信号，消除
+`TID_TO_TASK -> HEAP` 锁依赖。
+
+### 修改文件
+
+性能与观测的暂存修改：`crates/lwext4_rust/c/lwext4/{include/ext4_fs.h,src/ext4.c,src/ext4_blockdev.c,src/ext4_fs.c}`、
+`os/src/fs/ext4_lw/mod.rs`、`os/src/utils/perf/{fs.rs,report.rs}`。死锁修复：`os/src/task/manager.rs`。
+文档修改：`Docs/决赛文档/优化方案.md`、开发日志、两个问题复盘、README、`ai.log` 与 `AI_INTERACTION.md`。维护者已有的
+`user/src/bin/initproc.rs` 和未跟踪 `disk.img` 未修改。
+
+### 验证边界
+
+`cargo fmt --manifest-path os/Cargo.toml --all -- --check` 与 `git diff --check` 通过。`make perf TARGET_ARCH=riscv64`
+在 lwext4 CMake 配置时缺少 `riscv64-linux-musl-cc`，因此没有完成 kernel 链接或 guest 运行。尚未在 Docker 重跑
+BuildStorm、`e2fsck -fn`、文件系统 LTP 或 LoongArch64 运行，不能报告该死锁的运行时解除、完整编译通过或性能收益。

@@ -1719,9 +1719,18 @@ int ext4_fopen(ext4_file *file, const char *path, const char *flags)
 	else
 		EXT4_NS_READ_LOCK(mp);
 
-	ext4_block_cache_write_back(mp->fs.bdev, 1);
+	/*
+	 * A read-only open only resolves a pathname.  Giving it a write-back
+	 * scope can make this reader drain dirty metadata left by another task
+	 * when the global nesting count returns to zero, while it still holds the
+	 * namespace read lock.  Creation and truncation remain the only open-time
+	 * mutations and retain their delayed write-back scope.
+	 */
+	if (namespace_write)
+		ext4_block_cache_write_back(mp->fs.bdev, 1);
 	r = ext4_generic_open(file, path, flags, true, 0, 0);
-	ext4_block_cache_write_back(mp->fs.bdev, 0);
+	if (namespace_write)
+		ext4_block_cache_write_back(mp->fs.bdev, 0);
 
 	if (namespace_write)
 		EXT4_NS_WRITE_UNLOCK(mp);
@@ -1735,23 +1744,27 @@ int ext4_fopen2(ext4_file *file, const char *path, int flags)
 	struct ext4_mountpoint *mp = ext4_get_mount(path);
 	int r;
 	int filetype;
+	bool namespace_write;
 
 	if (!mp)
 		return ENOENT;
 
 	filetype = EXT4_DE_REG_FILE;
+	namespace_write = (flags & (O_CREAT | O_TRUNC)) != 0;
 
-	if (flags & (O_CREAT | O_TRUNC))
+	if (namespace_write)
 		EXT4_NS_WRITE_LOCK(mp);
 	else
 		EXT4_NS_READ_LOCK(mp);
-	ext4_block_cache_write_back(mp->fs.bdev, 1);
+	if (namespace_write)
+		ext4_block_cache_write_back(mp->fs.bdev, 1);
 
 	if (flags & O_CREAT) {
 		r = ext4_trans_start(mp);
 		if (r != EOK) {
-			ext4_block_cache_write_back(mp->fs.bdev, 0);
-			if (flags & (O_CREAT | O_TRUNC))
+			if (namespace_write)
+				ext4_block_cache_write_back(mp->fs.bdev, 0);
+			if (namespace_write)
 				EXT4_NS_WRITE_UNLOCK(mp);
 			else
 				EXT4_NS_READ_UNLOCK(mp);
@@ -1768,8 +1781,9 @@ int ext4_fopen2(ext4_file *file, const char *path, int flags)
 			ext4_trans_abort(mp);
 	}
 
-	ext4_block_cache_write_back(mp->fs.bdev, 0);
-	if (flags & (O_CREAT | O_TRUNC))
+	if (namespace_write)
+		ext4_block_cache_write_back(mp->fs.bdev, 0);
+	if (namespace_write)
 		EXT4_NS_WRITE_UNLOCK(mp);
 	else
 		EXT4_NS_READ_UNLOCK(mp);
@@ -1784,6 +1798,7 @@ int ext4_fopen2_with_metadata(ext4_file *file, const char *path, int flags,
 	struct ext4_mountpoint *mp = ext4_get_mount(path);
 	struct ext4_create_metadata metadata;
 	int r;
+	bool namespace_write;
 
 	if (!mp)
 		return ENOENT;
@@ -1791,18 +1806,21 @@ int ext4_fopen2_with_metadata(ext4_file *file, const char *path, int flags,
 	metadata.mode = mode;
 	metadata.uid = uid;
 	metadata.gid = gid;
+	namespace_write = (flags & (O_CREAT | O_TRUNC)) != 0;
 
-	if (flags & (O_CREAT | O_TRUNC))
+	if (namespace_write)
 		EXT4_NS_WRITE_LOCK(mp);
 	else
 		EXT4_NS_READ_LOCK(mp);
-	ext4_block_cache_write_back(mp->fs.bdev, 1);
+	if (namespace_write)
+		ext4_block_cache_write_back(mp->fs.bdev, 1);
 
 	if (flags & O_CREAT) {
 		r = ext4_trans_start(mp);
 		if (r != EOK) {
-			ext4_block_cache_write_back(mp->fs.bdev, 0);
-			if (flags & (O_CREAT | O_TRUNC))
+			if (namespace_write)
+				ext4_block_cache_write_back(mp->fs.bdev, 0);
+			if (namespace_write)
 				EXT4_NS_WRITE_UNLOCK(mp);
 			else
 				EXT4_NS_READ_UNLOCK(mp);
@@ -1821,8 +1839,9 @@ int ext4_fopen2_with_metadata(ext4_file *file, const char *path, int flags,
 			ext4_trans_abort(mp);
 	}
 
-	ext4_block_cache_write_back(mp->fs.bdev, 0);
-	if (flags & (O_CREAT | O_TRUNC))
+	if (namespace_write)
+		ext4_block_cache_write_back(mp->fs.bdev, 0);
+	if (namespace_write)
 		EXT4_NS_WRITE_UNLOCK(mp);
 	else
 		EXT4_NS_READ_UNLOCK(mp);
@@ -1898,7 +1917,13 @@ int ext4_ftruncate(ext4_file *f, uint64_t size)
 	if (f->flags & O_RDONLY)
 		return EPERM;
 
-	EXT4_NS_READ_LOCK(f->mp);
+	/*
+	 * `f` already identifies its target inode. Namespace locking is needed
+	 * while resolving a pathname, not while changing a resolved inode. The
+	 * Ya2yOS VFS defers a last-link unlink while an fd exists, so the inode
+	 * stripe is sufficient here and avoids blocking namespace writers behind
+	 * a long truncate transaction.
+	 */
 	EXT4_INODE_WRITE_LOCK(f->mp, f->inode);
 
 	r = ext4_trans_start(f->mp);
@@ -1912,7 +1937,6 @@ int ext4_ftruncate(ext4_file *f, uint64_t size)
 
 Unlock:
 	EXT4_INODE_WRITE_UNLOCK(f->mp, f->inode);
-	EXT4_NS_READ_UNLOCK(f->mp);
 	return r;
 }
 
@@ -1939,7 +1963,6 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 	if (!size)
 		return EOK;
 
-	EXT4_NS_READ_LOCK(file->mp);
 	EXT4_INODE_READ_LOCK(file->mp, file->inode);
 
 	struct ext4_fs *const fs = &file->mp->fs;
@@ -1951,7 +1974,6 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 	r = ext4_fs_get_inode_ref(fs, file->inode, &ref);
 	if (r != EOK) {
 		EXT4_INODE_READ_UNLOCK(file->mp, file->inode);
-		EXT4_NS_READ_UNLOCK(file->mp);
 		return r;
 	}
 
@@ -2096,7 +2118,6 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 	Finish:
 	ext4_fs_put_inode_ref(&ref);
 	EXT4_INODE_READ_UNLOCK(file->mp, file->inode);
-	EXT4_NS_READ_UNLOCK(file->mp);
 	return r;
 }
 
@@ -2129,7 +2150,6 @@ int ext4_fwrite(ext4_file *file, const void *buf, size_t size, size_t *wcnt)
 	if (!size)
 		return EOK;
 
-	EXT4_NS_READ_LOCK(file->mp);
 	EXT4_INODE_WRITE_LOCK(file->mp, file->inode);
 	r = ext4_trans_start(file->mp);
 	if (r != EOK)
@@ -2145,7 +2165,6 @@ int ext4_fwrite(ext4_file *file, const void *buf, size_t size, size_t *wcnt)
 	if (r != EOK) {
 		ext4_trans_abort(file->mp);
 		EXT4_INODE_WRITE_UNLOCK(file->mp, file->inode);
-		EXT4_NS_READ_UNLOCK(file->mp);
 		return r;
 	}
 
@@ -2328,7 +2347,6 @@ Finish:
 
 Unlock:
 	EXT4_INODE_WRITE_UNLOCK(file->mp, file->inode);
-	EXT4_NS_READ_UNLOCK(file->mp);
 	return r;
 }
 
@@ -2371,7 +2389,6 @@ static int ext4_fseek_data_or_hole(ext4_file *file, uint64_t offset,
 	if (!file || !result || !file->mp)
 		return EINVAL;
 
-	EXT4_NS_READ_LOCK(file->mp);
 	EXT4_INODE_READ_LOCK(file->mp, file->inode);
 	fs = &file->mp->fs;
 	block_size = ext4_sb_get_block_size(&fs->sb);
@@ -2421,7 +2438,6 @@ Put:
 		r = rr;
 Unlock:
 	EXT4_INODE_READ_UNLOCK(file->mp, file->inode);
-	EXT4_NS_READ_UNLOCK(file->mp);
 	return r;
 }
 

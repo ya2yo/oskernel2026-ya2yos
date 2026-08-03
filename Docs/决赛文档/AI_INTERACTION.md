@@ -2454,3 +2454,17 @@
 - **验证边界**：本轮只更新开发日志、问题记录和 AI 记录，未重新编译或运行 QEMU；完整 BuildStorm、fsck、LTP、并发写回和 LoongArch64 运行待维护者后续验证。
 - **关联文档**：[问题复盘](./problem/ext4-linux-locking-and-lwext4-admission.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 资源锁分类、fd 锁域收缩与任务表快照死锁（8.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `tmp_09.ans`、`server.ans` 与 `client.ans` 继续 BuildStorm 优化和死锁修复，并要求记录包括已暂存的文件系统修改。
+- **描述**：分类 telemetry 显示 namespace wait 累计 `1,141,136,319us`，据此为 lwext4 C/Rust 资源锁引入类别与 aggregate
+  指标，令已解析 fd 的 read/write/truncate/seek 仅持 inode stripe，纯读 open 不进入 delayed write-back，cache state 与
+  长 flush 分离。GDB 则证明 BuildStorm 最后在 `46/446` 停滞的独立原因是 `TID_TO_TASK` guard 内 `Vec::collect()` 获取
+  `HEAP`；改为每轮复制一个 `Arc` 后立即释放任务表锁，再进入 PCB/信号路径。
+- **验证边界**：格式与 diff 检查通过。RISC-V `make perf` 因宿主缺少 `riscv64-linux-musl-cc` 在 lwext4 CMake 失败；未运行
+  Docker BuildStorm、fsck、文件系统 LTP 或 LoongArch64 guest，故不报告完整运行、跨架构正确性或性能提升。
+- **关联文档**：[优化方案](./优化方案.md)、[资源锁问题复盘](./problem/buildstorm-ext4-resource-lock-scope-telemetry.md)、
+  [死锁问题复盘](./problem/buildstorm-task-timer-snapshot-deadlock.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

@@ -53,6 +53,26 @@ struct PhaseDelta {
     ticks: AtomicUsize,
 }
 
+struct ResourceLockClassDelta {
+    acquires: CounterDelta,
+    contended: CounterDelta,
+    queued: CounterDelta,
+    wait_ticks: CounterDelta,
+    hold_ticks: CounterDelta,
+}
+
+impl ResourceLockClassDelta {
+    const fn new() -> Self {
+        Self {
+            acquires: CounterDelta::new(),
+            contended: CounterDelta::new(),
+            queued: CounterDelta::new(),
+            wait_ticks: CounterDelta::new(),
+            hold_ticks: CounterDelta::new(),
+        }
+    }
+}
+
 impl PhaseDelta {
     const fn new() -> Self {
         Self {
@@ -103,6 +123,9 @@ static DELTA_PIPE_WRITER_WAKE_CALLS: CounterDelta = CounterDelta::new();
 static DELTA_PIPE_WRITER_WAKE_TASKS: CounterDelta = CounterDelta::new();
 static DELTA_PIPE_WRITER_WAKE_POLL_TASKS: CounterDelta = CounterDelta::new();
 static DELTA_PIPE_WRITE_WAIT_RECHECKS: CounterDelta = CounterDelta::new();
+#[cfg(feature = "perf")]
+static DELTA_RESOURCE_LOCK_CLASSES: [ResourceLockClassDelta; 9] =
+    [const { ResourceLockClassDelta::new() }; 9];
 
 #[cfg(feature = "perf")]
 static DELTA_EXT4_CACHE_HIT_OPS: CounterDelta = CounterDelta::new();
@@ -341,6 +364,45 @@ fn emit_phase_delta(label: &str, stats: &Ext4PhaseStats, delta: &PhaseDelta) {
     );
 }
 
+#[cfg(feature = "perf")]
+fn emit_resource_lock_class_interval_deltas() {
+    for class in Ext4ResourceLockClass::ALL {
+        let stats = ext4_resource_lock_class_stats(class);
+        let delta = &DELTA_RESOURCE_LOCK_CLASSES[class.index()];
+        println!(
+            "[perf] interval_ext4_resource_lock class={} acquires={} contended={} queued={} max_queue_depth={} wait_us={} max_wait_us={} hold_us={} max_hold_us={}",
+            class.label(),
+            delta.acquires.take(&stats.acquires),
+            delta.contended.take(&stats.contended),
+            delta.queued.take(&stats.queued),
+            stats.max_queue_depth.load(Ordering::Relaxed),
+            ticks_to_us(delta.wait_ticks.take(&stats.wait_ticks)),
+            ticks_to_us(stats.max_wait_ticks.load(Ordering::Relaxed)),
+            ticks_to_us(delta.hold_ticks.take(&stats.hold_ticks)),
+            ticks_to_us(stats.max_hold_ticks.load(Ordering::Relaxed)),
+        );
+    }
+}
+
+#[cfg(feature = "perf")]
+fn emit_resource_lock_class_cumulative() {
+    for class in Ext4ResourceLockClass::ALL {
+        let stats = ext4_resource_lock_class_stats(class);
+        println!(
+            "[perf] ext4_resource_lock class={} acquires={} contended={} queued={} max_queue_depth={} wait_us={} max_wait_us={} hold_us={} max_hold_us={}",
+            class.label(),
+            stats.acquires.load(Ordering::Relaxed),
+            stats.contended.load(Ordering::Relaxed),
+            stats.queued.load(Ordering::Relaxed),
+            stats.max_queue_depth.load(Ordering::Relaxed),
+            ticks_to_us(stats.wait_ticks.load(Ordering::Relaxed)),
+            ticks_to_us(stats.max_wait_ticks.load(Ordering::Relaxed)),
+            ticks_to_us(stats.hold_ticks.load(Ordering::Relaxed)),
+            ticks_to_us(stats.max_hold_ticks.load(Ordering::Relaxed)),
+        );
+    }
+}
+
 fn emit_raw_phase_delta(
     label: &str,
     samples: &AtomicUsize,
@@ -561,6 +623,7 @@ fn emit_ext4_storage_interval_deltas() {
         ticks_to_us(DELTA_RESOURCE_LOCK_HOLD_TICKS.take(&EXT4_RESOURCE_LOCK_STATS.hold_ticks)),
         ticks_to_us(EXT4_RESOURCE_LOCK_STATS.max_hold_ticks.load(Ordering::Relaxed)),
     );
+    emit_resource_lock_class_interval_deltas();
     println!(
         "[perf] interval_ext4_resource_registry lookups={} creates={} total_us={} max_us={}",
         DELTA_RESOURCE_REGISTRY_LOOKUPS.take(&EXT4_RESOURCE_LOCK_STATS.registry_lookups),
@@ -664,6 +727,7 @@ fn emit_ext4_storage_cumulative() {
         ticks_to_us(EXT4_RESOURCE_LOCK_STATS.hold_ticks.load(Ordering::Relaxed)),
         ticks_to_us(EXT4_RESOURCE_LOCK_STATS.max_hold_ticks.load(Ordering::Relaxed)),
     );
+    emit_resource_lock_class_cumulative();
     println!(
         "[perf] ext4_resource_registry lookups={} creates={} total_us={} max_us={}",
         EXT4_RESOURCE_LOCK_STATS

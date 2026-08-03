@@ -158,6 +158,32 @@ void ext4_fs_rwlock_write_unlock(struct ext4_fs_rwlock *lock)
 	__atomic_store_n(&lock->state, 0, __ATOMIC_RELEASE);
 }
 
+uint8_t ext4_fs_rwlock_get_kind(const struct ext4_fs_rwlock *lock)
+{
+	return lock ? lock->kind : EXT4_FS_RWLOCK_UNKNOWN;
+}
+
+static void ext4_fs_rwlock_init(struct ext4_fs_rwlock *lock, uint8_t kind)
+{
+	lock->state = 0;
+	lock->kind = kind;
+}
+
+static void ext4_fs_init_rwlocks(struct ext4_fs *fs)
+{
+	uint32_t i;
+
+	ext4_fs_rwlock_init(&fs->namespace_lock, EXT4_FS_RWLOCK_NAMESPACE);
+	for (i = 0; i < EXT4_FS_LOCK_STRIPES; i++) {
+		ext4_fs_rwlock_init(&fs->inode_locks[i], EXT4_FS_RWLOCK_INODE);
+		ext4_fs_rwlock_init(&fs->group_locks[i], EXT4_FS_RWLOCK_GROUP);
+	}
+	ext4_fs_rwlock_init(&fs->super_lock, EXT4_FS_RWLOCK_SUPER);
+	ext4_fs_rwlock_init(&fs->journal_lock, EXT4_FS_RWLOCK_JOURNAL);
+	ext4_fs_rwlock_init(&fs->cache_lock, EXT4_FS_RWLOCK_CACHE_STATE);
+	ext4_fs_rwlock_init(&fs->cache_flush_lock, EXT4_FS_RWLOCK_CACHE_FLUSH);
+}
+
 int ext4_fs_init(struct ext4_fs *fs, struct ext4_blockdev *bdev,
 		 bool read_only)
 {
@@ -166,6 +192,7 @@ int ext4_fs_init(struct ext4_fs *fs, struct ext4_blockdev *bdev,
 	uint32_t bsize;
 
 	ext4_assert(fs && bdev);
+	ext4_fs_init_rwlocks(fs);
 
 	fs->bdev = bdev;
 

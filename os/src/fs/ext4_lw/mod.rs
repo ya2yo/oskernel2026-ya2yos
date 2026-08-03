@@ -21,7 +21,7 @@ mod inode;
 mod sb;
 
 use alloc::{
-    collections::{BTreeMap, VecDeque},
+    collections::{btree_map::Entry, BTreeMap, VecDeque},
     sync::Arc,
     vec::Vec,
 };
@@ -35,6 +35,10 @@ use core::{
 #[cfg(feature = "perf")]
 use crate::arch::time::get_ticks;
 use crate::utils::PollSet;
+
+extern "C" {
+    fn ext4_fs_rwlock_get_kind(lock: *const c_void) -> u8;
+}
 
 /// A task-aware mutex for mutable state of one VFS inode.
 ///
@@ -253,6 +257,7 @@ impl TaskRwLockState {
 /// to make progress concurrently.  Boot-time code has no task to park, so it
 /// retains a bounded spin fallback during early mount.
 struct TaskRwLock {
+    class: crate::utils::perf::Ext4ResourceLockClass,
     state: spin::Mutex<TaskRwLockState>,
 }
 
@@ -266,8 +271,9 @@ struct TaskRwLockFuture<'a> {
 }
 
 impl TaskRwLock {
-    fn new() -> Self {
+    fn new(class: crate::utils::perf::Ext4ResourceLockClass) -> Self {
         Self {
+            class,
             state: spin::Mutex::new(TaskRwLockState::new()),
         }
     }
@@ -279,7 +285,7 @@ impl TaskRwLock {
         let tid = task.as_ref().map_or(0, |task| task.tid());
         if self.try_lock(tid, mode, None) {
             #[cfg(feature = "perf")]
-            crate::utils::perf::record_ext4_resource_lock_acquired(0, false);
+            crate::utils::perf::record_ext4_resource_lock_acquired(self.class, 0, false);
             return;
         }
 
@@ -288,6 +294,7 @@ impl TaskRwLock {
                 if self.try_lock(0, mode, None) {
                     #[cfg(feature = "perf")]
                     crate::utils::perf::record_ext4_resource_lock_acquired(
+                        self.class,
                         get_ticks().saturating_sub(started_at),
                         true,
                     );
@@ -381,7 +388,7 @@ impl TaskRwLock {
         }
         #[cfg(feature = "perf")]
         if let Some(hold_ticks) = hold_ticks {
-            crate::utils::perf::record_ext4_resource_lock_released(hold_ticks);
+            crate::utils::perf::record_ext4_resource_lock_released(self.class, hold_ticks);
         }
     }
 
@@ -475,13 +482,14 @@ impl Future for TaskRwLockFuture<'_> {
 
         #[cfg(feature = "perf")]
         if let Some(queue_depth) = queued_depth {
-            crate::utils::perf::record_ext4_resource_lock_queued(queue_depth);
+            crate::utils::perf::record_ext4_resource_lock_queued(this.lock.class, queue_depth);
         }
 
         match next {
             Some(next) => {
                 #[cfg(feature = "perf")]
                 crate::utils::perf::record_ext4_resource_lock_acquired(
+                    this.lock.class,
                     get_ticks().saturating_sub(this.started_at),
                     true,
                 );
@@ -509,23 +517,26 @@ impl Drop for TaskRwLockFuture<'_> {
 static LWEXT4_RESOURCE_LOCKS: spin::Lazy<spin::Mutex<BTreeMap<usize, Arc<TaskRwLock>>>> =
     spin::Lazy::new(|| spin::Mutex::new(BTreeMap::new()));
 
-fn resource_lock(lock: *mut c_void) -> Arc<TaskRwLock> {
+fn resource_lock(
+    lock: *mut c_void,
+    class: impl FnOnce() -> crate::utils::perf::Ext4ResourceLockClass,
+) -> Arc<TaskRwLock> {
     assert!(!lock.is_null(), "lwext4 supplied a null resource lock");
     #[cfg(feature = "perf")]
     let started_at = get_ticks();
     let mut locks = LWEXT4_RESOURCE_LOCKS.lock();
     #[cfg(feature = "perf")]
     let mut created = false;
-    let resource = locks
-        .entry(lock as usize)
-        .or_insert_with(|| {
+    let resource = match locks.entry(lock as usize) {
+        Entry::Occupied(entry) => entry.get().clone(),
+        Entry::Vacant(entry) => {
             #[cfg(feature = "perf")]
             {
                 created = true;
             }
-            Arc::new(TaskRwLock::new())
-        })
-        .clone();
+            entry.insert(Arc::new(TaskRwLock::new(class()))).clone()
+        }
+    };
     drop(locks);
     #[cfg(feature = "perf")]
     crate::utils::perf::record_ext4_resource_registry(
@@ -535,12 +546,44 @@ fn resource_lock(lock: *mut c_void) -> Arc<TaskRwLock> {
     resource
 }
 
+fn active_resource_lock(lock: *mut c_void) -> Arc<TaskRwLock> {
+    assert!(!lock.is_null(), "lwext4 supplied a null resource lock");
+    #[cfg(feature = "perf")]
+    let started_at = get_ticks();
+    let resource = LWEXT4_RESOURCE_LOCKS
+        .lock()
+        .get(&(lock as usize))
+        .cloned()
+        .expect("lwext4 resource lock released before acquisition");
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_ext4_resource_registry(
+        get_ticks().saturating_sub(started_at),
+        false,
+    );
+    resource
+}
+
+fn lwext4_resource_lock_class(lock: *mut c_void) -> crate::utils::perf::Ext4ResourceLockClass {
+    use crate::utils::perf::Ext4ResourceLockClass;
+
+    match unsafe { ext4_fs_rwlock_get_kind(lock.cast_const()) } {
+        1 => Ext4ResourceLockClass::Namespace,
+        2 => Ext4ResourceLockClass::Inode,
+        3 => Ext4ResourceLockClass::Group,
+        4 => Ext4ResourceLockClass::Super,
+        5 => Ext4ResourceLockClass::Journal,
+        6 => Ext4ResourceLockClass::CacheState,
+        7 => Ext4ResourceLockClass::CacheFlush,
+        _ => Ext4ResourceLockClass::Unknown,
+    }
+}
+
 /// lwext4 通过已注册函数指针调用的资源加锁回调。
 ///
 /// C 库只决定何时及以何种模式保护其内部资源；具体的任务阻塞、唤醒和
 /// 读写锁实现由 Ya2yOS 提供。`write` 为 `true` 时获取写锁，否则获取读锁。
 unsafe extern "C" fn lock_lwext4_resource(_ctx: *mut c_void, lock: *mut c_void, write: bool) {
-    resource_lock(lock).lock(if write {
+    resource_lock(lock, || lwext4_resource_lock_class(lock)).lock(if write {
         TaskRwLockMode::Write
     } else {
         TaskRwLockMode::Read
@@ -555,7 +598,36 @@ unsafe extern "C" fn unlock_lwext4_resource(_ctx: *mut c_void, lock: *mut c_void
     let tid = crate::task::current_task()
         .as_ref()
         .map_or(0, |task| task.tid());
-    resource_lock(lock).unlock(
+    active_resource_lock(lock).unlock(
+        tid,
+        if write {
+            TaskRwLockMode::Write
+        } else {
+            TaskRwLockMode::Read
+        },
+    );
+}
+
+unsafe extern "C" fn lock_vfile_cache_resource(_ctx: *mut c_void, lock: *mut c_void, write: bool) {
+    resource_lock(lock, || {
+        crate::utils::perf::Ext4ResourceLockClass::VFileCache
+    })
+    .lock(if write {
+        TaskRwLockMode::Write
+    } else {
+        TaskRwLockMode::Read
+    });
+}
+
+unsafe extern "C" fn unlock_vfile_cache_resource(
+    _ctx: *mut c_void,
+    lock: *mut c_void,
+    write: bool,
+) {
+    let tid = crate::task::current_task()
+        .as_ref()
+        .map_or(0, |task| task.tid());
+    active_resource_lock(lock).unlock(
         tid,
         if write {
             TaskRwLockMode::Write
@@ -585,8 +657,8 @@ pub(super) fn install_lwext4_resource_lock_hooks() {
     );
     lwext4_rust::file::setup_vfile_cache_lock_hooks(
         core::ptr::null_mut(),
-        Some(lock_lwext4_resource),
-        Some(unlock_lwext4_resource),
+        Some(lock_vfile_cache_resource),
+        Some(unlock_vfile_cache_resource),
         Some(release_lwext4_resource),
     );
 }
