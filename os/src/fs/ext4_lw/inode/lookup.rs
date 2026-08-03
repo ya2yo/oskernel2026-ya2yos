@@ -23,10 +23,9 @@ impl Ext4Inode {
         };
         let result = {
             let _io_state = self.io_state.lock();
-            let _ext4 = EXT4_OP_LOCK.lock();
             let file = &mut self.inner.get_unchecked_mut().f;
-            // Capture the epoch while the mount gate protects the
-            // lookup result.  It must travel with `stat`, not be sampled
+            // Capture the epoch with the lookup result.  It must travel with
+            // `stat`, not be sampled
             // later while constructing the VFS wrapper outside this guard.
             let lookup_identity_epoch = EXT4_IDENTITY_EPOCH.load(Ordering::Acquire);
             let lookup_directory_stat_epoch = EXT4_DIRECTORY_STAT_EPOCH.load(Ordering::Acquire);

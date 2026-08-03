@@ -105,7 +105,8 @@ clean:
 objdump:
 	@${OBJDUMP} -d -S $(KERNEL_ELF) > $(KERNEL_BIN).dump 2>/dev/null || true
 
-gdbserver: all
+gdbserver: build-arch
+	@rm -f disk.img
 	@echo "Starting GDB server..."
 	@ln -s $(DISK_IMG) ./disk.img
 	@-$(QEMU_CMD) -s -S

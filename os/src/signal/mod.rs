@@ -20,6 +20,5 @@ pub use timer::*;
 pub use types::*;
 
 pub const SIG_MAX_NUM: usize = SIGEV_MAX_SIZE as usize;
-pub const SIG_ERR: usize = usize::MAX;
 pub const SIG_DFL: usize = 0;
 pub const SIG_IGN: usize = 1;

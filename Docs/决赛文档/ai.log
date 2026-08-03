@@ -9689,3 +9689,25 @@ GDB backtrace 显示四个 hart 均在 `ext4_fs_rwlock_write_lock()` 的 C 原�
 无已观察 panic/TFAIL/TBROK/ERROR，但没有完整结束标记。1 GiB/2 核尝试在 CMA 早期无进一步输出，且不符合固定 16 GiB
 内存布局，故没有完整 BuildStorm、fsck、文件系统 LTP 或运行时 LoongArch64 通过结论。维护者已有的
 `user/src/bin/initproc.rs` 未修改；独立 QEMU 直接使用基础镜像，结束时确认并恢复了未跟踪 `disk.img` 的原始软链接目标。
+
+## 2026-08-03：当前工作区 ext4 资源级锁迁移与文档补充
+
+### 用户输入
+
+维护者要求先针对当前工作区修改补充文档，暂停继续代码修复，等待新的 `server.ans/client.ans` 验证；并明确不要无依据地继续修改 `os/src/task/futex.rs`。
+
+### 分析与记录
+
+核对当前未提交差异后，确认 C lwext4 已从单一操作锁改为 namespace、inode/group stripe、super、journal、cache 资源锁，并通过 Rust 回调映射到按资源地址维护的 task-aware FIFO `TaskRwLock`。`VFileCache` 已分离 data/flush 锁、快照 revision、evicting 状态和写回递归深度；`EXT4_OP_LOCK` 不再出现在当前 ext4 源码调用路径。工作区仍含 futex 语义修改，但最新 GDB 没有 futex 栈，故本轮将其标为独立、未验证内容，不把它解释为 ext4 停滞原因。
+
+### 当前证据
+
+最新 `server.ans` 有 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok`，停在 Cargo `8/446`；维护者提供的最新 GDB 只显示 8 个 hart 均在 `idle_until_runnable -> wfi`，没有 ext4 锁栈。该现场不能证明任务完成、死锁已解决或资源锁设计正确。
+
+### 修改文件
+
+本轮只修改 `Docs/决赛文档/开发日志.md`、`Docs/决赛文档/problem/ext4-linux-locking-and-lwext4-admission.md`、`Docs/决赛文档/ai.log` 和 `Docs/决赛文档/AI_INTERACTION.md`。
+
+### 验证边界
+
+本轮只补文档，未重新编译或运行 QEMU。完整 BuildStorm、`e2fsck -fn`、LTP、cache write-back 并发、owner exit/cancel、锁序检查及 LoongArch64 运行仍待维护者验证；关联 commit：当前工作区未提交。

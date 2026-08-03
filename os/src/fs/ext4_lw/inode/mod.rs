@@ -18,7 +18,7 @@ use lwext4_rust::{
     Ext4File, InodeTypes,
 };
 
-use super::{TaskMutex, EXT4_OP_LOCK};
+use super::TaskMutex;
 use crate::utils::perf::Ext4FstatMissReason;
 #[cfg(feature = "perf")]
 use crate::utils::perf::{
@@ -82,9 +82,8 @@ pub struct Ext4Inode {
     inner: SyncUnsafeCell<Ext4InodeInner>,
     /// Serializes access to the mutable `Ext4File` descriptor and alias list.
     /// It stays held while one inode crosses multiple separately serialized
-    /// lwext4 calls, allowing the mount-wide gate to be released between
-    /// `open` and the actual I/O without another operation changing this
-    /// descriptor in the gap.
+    /// lwext4 calls, preventing another VFS operation from changing this
+    /// descriptor between `open` and the actual I/O.
     io_state: TaskMutex,
     /// Serializes transitions of this inode's pathname, cache policy and
     /// quota reservation.  A resident byte-cache write holds this lock but
@@ -100,7 +99,7 @@ pub struct Ext4Inode {
     path: RwLock<Arc<str>>,
     /// File-backed mmap faults check EOF for every page. Once lwext4 has
     /// established a regular file's size, serve that immutable-until-write
-    /// value without serializing on its global operation lock.
+    /// value without entering the lwext4 resource-lock path.
     known_size: AtomicUsize,
     /// Upper bound already charged to the loop-mounted filesystem quota.
     /// `write_state` serializes updates, while the atomic load permits the
@@ -172,8 +171,8 @@ pub struct Ext4InodeInner {
 }
 
 /// `find()` only needs lwext4 serialization for the metadata query itself.
-/// Constructing the VFS wrapper allocates Rust-side state and must stay outside
-/// the global operation lock so parallel Cargo lookups can hand it over sooner.
+/// Constructing the VFS wrapper allocates Rust-side state after that query so
+/// parallel Cargo lookups can hand it over sooner.
 enum Ext4FindResult {
     Dir {
         stat: ext4_inode_stat,
@@ -233,9 +232,9 @@ impl Ext4Inode {
         let inode_identity = lookup_stat
             .as_ref()
             .and_then(|stat| (stat.st_ino != 0).then_some((stat.st_dev, stat.st_ino)));
-        // `find()` captures this while it holds `EXT4_OP_LOCK`, alongside the
-        // `(st_dev, st_ino)` returned by lwext4. A later namespace mutation
-        // therefore cannot make an old lookup result appear current.
+        // `find()` captures this alongside the `(st_dev, st_ino)` returned by
+        // lwext4. A later namespace mutation therefore cannot make an old
+        // lookup result appear current.
         let identity_epoch =
             lookup_identity_epoch.unwrap_or_else(|| EXT4_IDENTITY_EPOCH.load(Ordering::Acquire));
         let (known_size, cached_stat) = if inode_type == InodeType::File {
@@ -318,7 +317,6 @@ impl Ext4Inode {
     fn add_alias_path(&self, path: &str) {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Alias);
         let inner = self.inner.get_unchecked_mut();
@@ -574,7 +572,6 @@ impl Ext4Inode {
         }
 
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock();
         let file = &mut self.inner.get_unchecked_mut().f;
         let mut prefix = String::new();
         for component in &components[..components.len() - 1] {
@@ -615,7 +612,6 @@ impl Ext4Inode {
 impl Drop for Ext4Inode {
     fn drop(&mut self) {
         let remove_quota_path = {
-            let _ext4 = EXT4_OP_LOCK.lock();
             let inner = self.inner.get_unchecked_mut();
             let path = Self::live_path(inner);
             // 如果标记了延时删除，则在关闭前移除文件。

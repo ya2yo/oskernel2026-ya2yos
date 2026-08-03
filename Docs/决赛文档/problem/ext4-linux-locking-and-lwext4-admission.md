@@ -115,3 +115,49 @@ CMA 早期初始化后无进一步输出且被 300 秒 timeout 停止；它不�
 - lwext4 的 allocator、目录修改和 journal 还没有 Linux 等价的细粒度锁，不能开放不同 inode 写入并发。
 - 需要同一镜像、QEMU `-smp`、Cargo jobs 和冷启动下至少两次完整 A/B，才能量化收益。
 - shared C 路径仍需 RISC-V/LoongArch64 压力、`e2fsck -fn` 与相关 LTP 文件语义回归。
+
+## 2026-08-03：当前工作区的资源级锁迁移（待验证）
+
+### 背景
+
+上一节记录的是 P21.3 shared admission 的回退基线。本次未提交工作区继续按 Linux 7.0 的资源分层方向推进，目标是
+让 lwext4 在保留其 on-disk 操作的前提下，使用实际资源锁而不是挂载级 `EXT4_OP_LOCK` 覆盖所有 C API。该轮仍属于
+过渡适配层实验，不能等同于已经完成 native Linux ext4。
+
+### 已实现内容
+
+- C 层 `struct ext4_fs` 增加 namespace、257 路 inode stripe、257 路 block-group stripe、super、journal 和 cache
+  锁。`ext4_fs_rwlock_set_hooks()` 允许内核在真实资源锁地址上提供等待/唤醒实现；未安装回调时保留 lwext4 的原子
+  自旋回退，便于 standalone/host 使用。事务状态另以 `journal_lock_held` 表示，避免无 on-disk journal 时的嵌套
+  journal 自锁判断错误。
+- Rust 侧以 C 锁地址为 key 建立 `TaskRwLock`，每个资源独立维护 FIFO reader/writer waiter、任务 owner、写递归深度和
+  exit 清理；竞争 task 通过 scheduler `block_on` 睡眠，不在 raw C atomic 上裸自旋。VFS 本地锁顺序记录为
+  `write_state -> io_state -> lwext4 resource lock`，资源锁回调在 mount/recovery 前安装。
+- `VFileCache` 由单一 `spin::RwLock` 拆成数据锁、独立 flush 锁和快照写回路径；快照带 `revision`，只有版本未变化时才
+  清除 dirty 状态，`evicting` 防止 FIFO 淘汰期间重新填充。写回不持有 cache 数据锁进入 lwext4，`writer_depth` 处理
+  cache write-back 资源锁的嵌套进入。
+- `Ext4BlockWrapper` 将 C 状态的内部可变性显式放入 `UnsafeCell`，`sync()` 改为共享引用并依赖资源锁保护；VFS
+  inode、namespace 和 superblock 调用点移除 `EXT4_OP_LOCK`，由 lwext4 资源锁负责实际串行化。
+
+### 当前观测
+
+维护者提供的最新 `server.ans` 在 `BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok` 后停在 Cargo
+`Building 8/446`，没有完整编译结束、测试组 `END` 或 `shutdown!`。最新 GDB backtrace 中 8 个 hart 都位于调度器
+`idle_until_runnable -> wfi`，没有一个停在 ext4 C 锁或 Rust cache 锁栈；这只能说明抓取时没有观察到锁栈，不能证明
+工作负载已经完成，也不能据此认定 ext4 或 futex 是停滞根因。
+
+此前的现场曾显示 `write_back_cache_entry()` 在 `VFileCache` 写锁上等待；本轮的 data/flush 分离、快照版本判断和
+`writer_depth` 正是针对该递归/锁粒度风险的修正，但尚未由完整 BuildStorm 或专门并发回归确认。
+
+### 相关但独立的修改
+
+当前工作区同时含有 `os/src/task/futex.rs` 的等待入队、值检查、bitset/clock flags 和不支持命令 errno 调整。它不属于
+本轮 ext4 资源锁证据，最新 GDB 也没有 futex 栈，因此不能把这些修改作为本轮停滞的解释；后续应按独立 futex 回归验证，
+而不是与 ext4 锁迁移绑定宣称已验证。
+
+### 验证边界
+
+本次只补充文档，未重新编译或启动 QEMU。工作区此前记录过 RISC-V/LoongArch64 release 构建和 Rust 格式检查通过，
+但那不能替代对当前未提交资源锁版本的复验。仍需维护者在同一镜像和 8 HART 配置下完成至少两次完整 BuildStorm，
+并补充 `e2fsck -fn`、文件系统语义/LTP、cache write-back 压力、owner exit/cancel、锁序死锁探测和 LoongArch64 运行
+验证；在出现 `BUILDSTORM_COMPILE ... ok=true`、测试组 `END` 与 `shutdown!` 前，不报告并行化收益或死锁已修复。

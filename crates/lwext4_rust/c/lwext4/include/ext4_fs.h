@@ -72,45 +72,35 @@ struct ext4_fs_rwlock {
 	int state;
 };
 
-static inline void ext4_fs_rwlock_read_lock(struct ext4_fs_rwlock *lock)
-{
-	int observed;
+/*
+ * lwext4 is also used by small single-threaded environments, where a raw
+ * atomic lock is sufficient.  A preemptible SMP kernel needs a different
+ * waiting discipline: spinning all runnable CPUs while the lock owner is
+ * descheduled can prevent that owner from ever running again.  The optional
+ * hooks below let the embedding kernel park waiters on the *actual resource
+ * lock* (inode, block group, journal, cache, ...), instead of adding a
+ * mount-wide admission lock around every API call.
+ *
+ * Hooks are process-wide because lock addresses uniquely identify live
+ * `struct ext4_fs` members.  They must be installed before the first mount
+ * and remain valid until all mounts are gone.  With no hooks installed the
+ * original atomic-spin behaviour remains available for lwext4's standalone
+ * and host test users.
+ */
+typedef void (*ext4_fs_rwlock_lock_hook_t)(void *ctx,
+						   struct ext4_fs_rwlock *lock,
+						   bool write);
+typedef void (*ext4_fs_rwlock_unlock_hook_t)(void *ctx,
+						     struct ext4_fs_rwlock *lock,
+						     bool write);
 
-	for (;;) {
-		observed = __atomic_load_n(&lock->state, __ATOMIC_ACQUIRE);
-		if (observed >= 0 &&
-		    __atomic_compare_exchange_n(&lock->state, &observed,
-						observed + 1, false,
-						__ATOMIC_ACQUIRE,
-						__ATOMIC_RELAXED))
-			return;
-		while (__atomic_load_n(&lock->state, __ATOMIC_RELAXED) < 0)
-			;
-	}
-}
-
-static inline void ext4_fs_rwlock_read_unlock(struct ext4_fs_rwlock *lock)
-{
-	__atomic_fetch_sub(&lock->state, 1, __ATOMIC_RELEASE);
-}
-
-static inline void ext4_fs_rwlock_write_lock(struct ext4_fs_rwlock *lock)
-{
-	for (;;) {
-		int expected = 0;
-		if (__atomic_compare_exchange_n(&lock->state, &expected, -1,
-						false, __ATOMIC_ACQUIRE,
-						__ATOMIC_RELAXED))
-			return;
-		while (__atomic_load_n(&lock->state, __ATOMIC_RELAXED) != 0)
-			;
-	}
-}
-
-static inline void ext4_fs_rwlock_write_unlock(struct ext4_fs_rwlock *lock)
-{
-	__atomic_store_n(&lock->state, 0, __ATOMIC_RELEASE);
-}
+void ext4_fs_rwlock_set_hooks(void *ctx,
+				      ext4_fs_rwlock_lock_hook_t lock_hook,
+				      ext4_fs_rwlock_unlock_hook_t unlock_hook);
+void ext4_fs_rwlock_read_lock(struct ext4_fs_rwlock *lock);
+void ext4_fs_rwlock_read_unlock(struct ext4_fs_rwlock *lock);
+void ext4_fs_rwlock_write_lock(struct ext4_fs_rwlock *lock);
+void ext4_fs_rwlock_write_unlock(struct ext4_fs_rwlock *lock);
 
 struct ext4_fs {
 	bool read_only;

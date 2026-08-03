@@ -2,15 +2,15 @@
 //!
 //! The VFS adapter keeps Rust-owned descriptor and cache state per inode.
 //! lwext4 owns the resource-level locks for pathname traversal, inode data,
-//! block groups, superblock counters, journal state and cache mode.  Before
-//! entering those C locks, however, Ya2yOS uses a task-aware mount gate so a
-//! contended task sleeps instead of busy-spinning while its lock owner is
+//! block groups, superblock counters, journal state and cache mode.  Ya2yOS
+//! installs task-aware hooks for those locks, so a contended task sleeps on
+//! the resource it actually needs instead of busy-spinning while its owner is
 //! preempted.
 //!
 //! Lock order across the two layers is:
 //!
 //! ```text
-//! VFS write_state -> VFS io_state -> EXT4_OP_LOCK -> lwext4 resource locks
+//! VFS write_state -> VFS io_state -> lwext4 resource locks
 //! ```
 //!
 //! The C layer never calls back into VFS while it holds a resource lock.
@@ -20,8 +20,13 @@
 mod inode;
 mod sb;
 
-use alloc::collections::VecDeque;
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+    vec::Vec,
+};
 use core::{
+    ffi::c_void,
     future::{poll_fn, Future},
     pin::Pin,
     task::{Context, Poll, Waker},
@@ -88,77 +93,134 @@ impl Drop for TaskMutexGuard<'_> {
     }
 }
 
-/// One FIFO waiter for the mount-wide lwext4 admission gate.
-struct Ext4OpWaiter {
+/// Lock mode selected by the C-side lwext4 resource lock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TaskRwLockMode {
+    Read,
+    Write,
+}
+
+/// One FIFO waiter for a particular lwext4 resource.  A waiter sleeps on its
+/// task waker; it never spins on the C atomic word while another task owns the
+/// resource.
+struct TaskRwLockWaiter {
     ticket: usize,
     tid: usize,
+    mode: TaskRwLockMode,
     waker: Waker,
 }
 
-/// Logical state of the mount-wide lwext4 admission gate.
-///
-/// This state is deliberately independent of the primitive `spin::Mutex`:
-/// waiting kernel tasks are queued and put to sleep by `block_on`, rather
-/// than spinning on the primitive lock while the current owner is preempted.
-struct Ext4OpState {
-    held: bool,
-    owner_tid: usize,
+/// State for one C `struct ext4_fs_rwlock`.  The C lock's address is the key:
+/// it identifies one namespace, inode stripe, block-group stripe, journal,
+/// superblock or cache resource for the lifetime of a mount.
+struct TaskRwLockState {
+    readers: BTreeMap<usize, usize>,
+    writer: Option<usize>,
+    writer_depth: usize,
     next_ticket: usize,
-    waiters: VecDeque<Ext4OpWaiter>,
+    waiters: VecDeque<TaskRwLockWaiter>,
 }
 
-impl Ext4OpState {
+impl TaskRwLockState {
     fn new() -> Self {
         Self {
-            held: false,
-            owner_tid: 0,
+            readers: BTreeMap::new(),
+            writer: None,
+            writer_depth: 0,
             next_ticket: 1,
             waiters: VecDeque::new(),
         }
     }
-}
 
-/// Task-aware mount-wide admission gate for all lwext4 C API calls.
-///
-/// lwext4's internal resource locks are raw C spin locks.  They cannot yield
-/// when a lock holder is preempted, so allowing several Ya2yOS tasks to enter
-/// them concurrently can deadlock all runnable harts.  This gate serializes
-/// entry at the Rust boundary and gives contended task-context callers a FIFO
-/// sleep queue.  Boot-time callers without a task retain a spin fallback.
-pub(crate) struct Ext4OpLock {
-    state: spin::Lazy<spin::Mutex<Ext4OpState>>,
-}
+    fn can_acquire(&self, tid: usize, mode: TaskRwLockMode, ticket: Option<usize>) -> bool {
+        if let Some(owner) = self.writer {
+            // lwext4's cache-write-back mode is a nesting counter.  Its
+            // callers may enter the same C resource lock more than once
+            // before balancing the corresponding `on_off = 0`; preserve that
+            // per-task recursion without allowing another task to bypass the
+            // writer.  Other resource locks remain non-reentrant in practice.
+            return mode == TaskRwLockMode::Write && ticket.is_none() && owner == tid;
+        }
 
-pub(crate) struct Ext4OpGuard<'a> {
-    lock: &'a Ext4OpLock,
-    tid: usize,
-    held: bool,
-}
-
-struct Ext4OpLockFuture<'a> {
-    lock: &'a Ext4OpLock,
-    tid: usize,
-    ticket: Option<usize>,
-}
-
-impl Ext4OpLock {
-    pub const fn new() -> Self {
-        Self {
-            state: spin::Lazy::new(|| spin::Mutex::new(Ext4OpState::new())),
+        match ticket {
+            // Do not bypass a queued writer.  This keeps the lock FIFO and
+            // avoids reader-induced writer starvation.
+            None if !self.waiters.is_empty() => false,
+            None => match mode {
+                TaskRwLockMode::Read => true,
+                TaskRwLockMode::Write => self.readers.is_empty(),
+            },
+            Some(ticket) => {
+                let Some(waiter) = self.waiters.front() else {
+                    return false;
+                };
+                if waiter.ticket != ticket || waiter.mode != mode {
+                    return false;
+                }
+                match mode {
+                    TaskRwLockMode::Read => true,
+                    TaskRwLockMode::Write => self.readers.is_empty(),
+                }
+            }
         }
     }
 
-    pub(crate) fn lock(&self) -> Ext4OpGuard<'_> {
+    fn wake_front(&self) -> Option<Waker> {
+        self.waiters.front().map(|waiter| waiter.waker.clone())
+    }
+
+    fn acquire(&mut self, tid: usize, mode: TaskRwLockMode) {
+        match mode {
+            TaskRwLockMode::Read => *self.readers.entry(tid).or_insert(0) += 1,
+            TaskRwLockMode::Write => {
+                if self.writer == Some(tid) {
+                    self.writer_depth = self.writer_depth.saturating_add(1);
+                } else {
+                    debug_assert!(self.writer.is_none());
+                    debug_assert!(self.readers.is_empty());
+                    self.writer = Some(tid);
+                    self.writer_depth = 1;
+                }
+            }
+        }
+    }
+}
+
+/// A FIFO, task-aware rwsem backing exactly one lwext4 C resource lock.
+///
+/// This is deliberately not a VFS-wide lock.  Independent C lock addresses
+/// have independent state, allowing different inode stripes and block groups
+/// to make progress concurrently.  Boot-time code has no task to park, so it
+/// retains a bounded spin fallback during early mount.
+struct TaskRwLock {
+    state: spin::Mutex<TaskRwLockState>,
+}
+
+struct TaskRwLockFuture<'a> {
+    lock: &'a TaskRwLock,
+    tid: usize,
+    mode: TaskRwLockMode,
+    ticket: Option<usize>,
+}
+
+impl TaskRwLock {
+    fn new() -> Self {
+        Self {
+            state: spin::Mutex::new(TaskRwLockState::new()),
+        }
+    }
+
+    fn lock(&self, mode: TaskRwLockMode) {
         let task = crate::task::current_task();
         let tid = task.as_ref().map_or(0, |task| task.tid());
-        if let Some(guard) = self.try_lock_unqueued(tid) {
-            return guard;
+        if self.try_lock(tid, mode, None) {
+            return;
         }
 
         let Some(task) = task else {
             loop {
-                if let Some(guard) = self.try_lock_unqueued(0) {
-                    return guard;
+                if self.try_lock(0, mode, None) {
+                    return;
                 }
                 core::hint::spin_loop();
             }
@@ -166,38 +228,68 @@ impl Ext4OpLock {
 
         let tid = task.tid();
         drop(task);
-        crate::task::block_on(Ext4OpLockFuture {
+        crate::task::block_on(TaskRwLockFuture {
             lock: self,
             tid,
+            mode,
             ticket: None,
-        })
+        });
     }
 
-    fn try_lock_unqueued(&self, tid: usize) -> Option<Ext4OpGuard<'_>> {
-        let mut state = self.state.lock();
-        if state.held || !state.waiters.is_empty() {
-            return None;
-        }
-        state.held = true;
-        state.owner_tid = tid;
-        Some(Ext4OpGuard {
-            lock: self,
-            tid,
-            held: true,
-        })
-    }
-
-    fn release(&self, tid: usize) {
+    fn try_lock(&self, tid: usize, mode: TaskRwLockMode, ticket: Option<usize>) -> bool {
         let next = {
             let mut state = self.state.lock();
-            debug_assert!(state.held, "EXT4 operation gate released while idle");
-            debug_assert_eq!(
-                state.owner_tid, tid,
-                "EXT4 operation gate released by non-owner"
-            );
-            state.held = false;
-            state.owner_tid = 0;
-            state.waiters.front().map(|waiter| waiter.waker.clone())
+            if !state.can_acquire(tid, mode, ticket) {
+                return false;
+            }
+            if ticket.is_some() {
+                state.waiters.pop_front();
+            }
+            state.acquire(tid, mode);
+            state.wake_front()
+        };
+        if let Some(waker) = next {
+            waker.wake();
+        }
+        true
+    }
+
+    fn unlock(&self, tid: usize, mode: TaskRwLockMode) {
+        let next = {
+            let mut state = self.state.lock();
+            match mode {
+                TaskRwLockMode::Read => {
+                    let remove = {
+                        let held = state
+                            .readers
+                            .get_mut(&tid)
+                            .expect("lwext4 read lock released by non-owner");
+                        debug_assert!(*held > 0);
+                        *held -= 1;
+                        *held == 0
+                    };
+                    if remove {
+                        state.readers.remove(&tid);
+                    }
+                }
+                TaskRwLockMode::Write => {
+                    assert_eq!(
+                        state.writer,
+                        Some(tid),
+                        "lwext4 write lock released by non-owner"
+                    );
+                    debug_assert!(state.writer_depth > 0);
+                    state.writer_depth -= 1;
+                    if state.writer_depth == 0 {
+                        state.writer = None;
+                    }
+                }
+            }
+            if state.writer.is_none() {
+                state.wake_front()
+            } else {
+                None
+            }
         };
         if let Some(waker) = next {
             waker.wake();
@@ -215,30 +307,27 @@ impl Ext4OpLock {
                 return;
             };
             state.waiters.remove(index);
-            (!state.held)
-                .then(|| state.waiters.front().map(|waiter| waiter.waker.clone()))
-                .flatten()
+            state.wake_front()
         };
         if let Some(waker) = next {
             waker.wake();
         }
     }
 
-    /// Removes a queued waiter or releases ownership when a task leaves by a
-    /// diverging scheduler path and therefore cannot run its Rust destructors.
-    fn cancel_waiter_by_tid(&self, tid: usize) {
+    /// Releases any resource lock a task abandoned on a diverging scheduler
+    /// exit path and removes its pending waiters.  The normal C unlock hook
+    /// handles the ordinary case; this mirrors the old gate's task-exit
+    /// cleanup without reintroducing a mount-wide synchronization point.
+    fn cancel_tid(&self, tid: usize) {
         let next = {
             let mut state = self.state.lock();
-            if let Some(index) = state.waiters.iter().position(|waiter| waiter.tid == tid) {
-                state.waiters.remove(index);
+            state.waiters.retain(|waiter| waiter.tid != tid);
+            state.readers.remove(&tid);
+            if state.writer == Some(tid) {
+                state.writer = None;
+                state.writer_depth = 0;
             }
-            if state.held && state.owner_tid == tid {
-                state.held = false;
-                state.owner_tid = 0;
-            }
-            (!state.held)
-                .then(|| state.waiters.front().map(|waiter| waiter.waker.clone()))
-                .flatten()
+            state.wake_front()
         };
         if let Some(waker) = next {
             waker.wake();
@@ -246,63 +335,58 @@ impl Ext4OpLock {
     }
 }
 
-impl<'a> Future for Ext4OpLockFuture<'a> {
-    type Output = Ext4OpGuard<'a>;
+impl Future for TaskRwLockFuture<'_> {
+    type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let mut state = this.lock.state.lock();
-        let is_front = this.ticket.is_some_and(|ticket| {
-            state
-                .waiters
-                .front()
-                .is_some_and(|waiter| waiter.ticket == ticket)
-        });
-        let can_acquire = !state.held
-            && match this.ticket {
-                Some(_) => is_front,
-                None => state.waiters.is_empty(),
-            };
-        if can_acquire {
-            if this.ticket.is_some() {
-                state.waiters.pop_front();
-                this.ticket = None;
-            }
-            state.held = true;
-            state.owner_tid = this.tid;
-            drop(state);
-            return Poll::Ready(Ext4OpGuard {
-                lock: this.lock,
-                tid: this.tid,
-                held: true,
-            });
-        }
-
-        if let Some(ticket) = this.ticket {
-            if let Some(waiter) = state
-                .waiters
-                .iter_mut()
-                .find(|waiter| waiter.ticket == ticket)
-            {
-                if !waiter.waker.will_wake(cx.waker()) {
-                    waiter.waker = cx.waker().clone();
+        let next = {
+            let mut state = this.lock.state.lock();
+            if state.can_acquire(this.tid, this.mode, this.ticket) {
+                if this.ticket.is_some() {
+                    state.waiters.pop_front();
+                    this.ticket = None;
                 }
+                state.acquire(this.tid, this.mode);
+                Some(state.wake_front())
+            } else if let Some(ticket) = this.ticket {
+                if let Some(waiter) = state
+                    .waiters
+                    .iter_mut()
+                    .find(|waiter| waiter.ticket == ticket)
+                {
+                    if !waiter.waker.will_wake(cx.waker()) {
+                        waiter.waker = cx.waker().clone();
+                    }
+                }
+                None
+            } else {
+                let ticket = state.next_ticket;
+                state.next_ticket = state.next_ticket.wrapping_add(1).max(1);
+                state.waiters.push_back(TaskRwLockWaiter {
+                    ticket,
+                    tid: this.tid,
+                    mode: this.mode,
+                    waker: cx.waker().clone(),
+                });
+                this.ticket = Some(ticket);
+                None
             }
-        } else {
-            let ticket = state.next_ticket;
-            state.next_ticket = state.next_ticket.wrapping_add(1).max(1);
-            state.waiters.push_back(Ext4OpWaiter {
-                ticket,
-                tid: this.tid,
-                waker: cx.waker().clone(),
-            });
-            this.ticket = Some(ticket);
+        };
+
+        match next {
+            Some(next) => {
+                if let Some(waker) = next {
+                    waker.wake();
+                }
+                Poll::Ready(())
+            }
+            None => Poll::Pending,
         }
-        Poll::Pending
     }
 }
 
-impl Drop for Ext4OpLockFuture<'_> {
+impl Drop for TaskRwLockFuture<'_> {
     fn drop(&mut self) {
         if let Some(ticket) = self.ticket.take() {
             self.lock.cancel_ticket(ticket);
@@ -310,25 +394,86 @@ impl Drop for Ext4OpLockFuture<'_> {
     }
 }
 
-impl Ext4OpGuard<'_> {
-    fn release(&mut self) {
-        if core::mem::take(&mut self.held) {
-            self.lock.release(self.tid);
-        }
+/// Resource locks are allocated lazily because the C mount owns their
+/// addresses.  The table lock only protects Rust bookkeeping; no C operation,
+/// device I/O or wait occurs while it is held.
+static LWEXT4_RESOURCE_LOCKS: spin::Lazy<spin::Mutex<BTreeMap<usize, Arc<TaskRwLock>>>> =
+    spin::Lazy::new(|| spin::Mutex::new(BTreeMap::new()));
+
+fn resource_lock(lock: *mut c_void) -> Arc<TaskRwLock> {
+    assert!(!lock.is_null(), "lwext4 supplied a null resource lock");
+    let mut locks = LWEXT4_RESOURCE_LOCKS.lock();
+    locks
+        .entry(lock as usize)
+        .or_insert_with(|| Arc::new(TaskRwLock::new()))
+        .clone()
+}
+
+/// lwext4 通过已注册函数指针调用的资源加锁回调。
+///
+/// C 库只决定何时及以何种模式保护其内部资源；具体的任务阻塞、唤醒和
+/// 读写锁实现由 Ya2yOS 提供。`write` 为 `true` 时获取写锁，否则获取读锁。
+unsafe extern "C" fn lock_lwext4_resource(_ctx: *mut c_void, lock: *mut c_void, write: bool) {
+    resource_lock(lock).lock(if write {
+        TaskRwLockMode::Write
+    } else {
+        TaskRwLockMode::Read
+    });
+}
+
+/// lwext4 通过已注册函数指针调用的资源解锁回调。
+///
+/// 此函数与 [`lock_lwext4_resource`] 配对，由 C 库在结束对资源的访问后
+/// 调用；它按当前任务和相同的读写模式释放 Ya2yOS 管理的锁。
+unsafe extern "C" fn unlock_lwext4_resource(_ctx: *mut c_void, lock: *mut c_void, write: bool) {
+    let tid = crate::task::current_task()
+        .as_ref()
+        .map_or(0, |task| task.tid());
+    resource_lock(lock).unlock(
+        tid,
+        if write {
+            TaskRwLockMode::Write
+        } else {
+            TaskRwLockMode::Read
+        },
+    );
+}
+
+/// Dynamic Rust cache entries use the same scheduler-aware lock callbacks as
+/// lwext4 resources. Their addresses are short-lived, so drop the bookkeeping
+/// record when the final `Arc<VFileCacheLock>` goes away.
+unsafe extern "C" fn release_lwext4_resource(_ctx: *mut c_void, lock: *mut c_void) {
+    if !lock.is_null() {
+        LWEXT4_RESOURCE_LOCKS.lock().remove(&(lock as usize));
     }
 }
 
-impl Drop for Ext4OpGuard<'_> {
-    fn drop(&mut self) {
-        self.release();
-    }
+/// Must run before `Ext4BlockWrapper::new()`: mount/recovery acquire the same
+/// C resource locks as normal I/O and therefore need the task-aware hooks
+/// from their first use.
+pub(super) fn install_lwext4_resource_lock_hooks() {
+    lwext4_rust::Ext4BlockWrapper::<crate::drivers::Disk>::setup_fs_rwlock_hooks(
+        core::ptr::null_mut(),
+        Some(lock_lwext4_resource),
+        Some(unlock_lwext4_resource),
+    );
+    lwext4_rust::file::setup_vfile_cache_lock_hooks(
+        core::ptr::null_mut(),
+        Some(lock_lwext4_resource),
+        Some(unlock_lwext4_resource),
+        Some(release_lwext4_resource),
+    );
 }
 
 pub(crate) fn cancel_ext4_op_waiter(tid: usize) {
-    EXT4_OP_LOCK.cancel_waiter_by_tid(tid);
+    // Kept as the task-exit call-site name until task teardown is moved out of
+    // this migration scope.  It now cleans only locks actually held or waited
+    // on by this task; no mount-wide EXT4 operation lock exists.
+    let locks: Vec<Arc<TaskRwLock>> = LWEXT4_RESOURCE_LOCKS.lock().values().cloned().collect();
+    for lock in locks {
+        lock.cancel_tid(tid);
+    }
 }
-
-pub(super) static EXT4_OP_LOCK: Ext4OpLock = Ext4OpLock::new();
 
 pub use inode::*;
 pub use sb::{superblock_fs_stat, superblock_ls, superblock_root_inode, superblock_sync};

@@ -11,7 +11,9 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 
-use super::{block_current_and_run_next, current_task, wakeup_futex_task, TaskControlBlock};
+use super::{
+    current_task, schedule_blocked_current, wakeup_futex_task, TaskControlBlock, TaskStatus,
+};
 use alloc::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Weak},
@@ -91,52 +93,68 @@ fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32
     num as usize
 }
 
-// 含bitset的futex
+/// Queue a waiter only while its expected user-space value still matches.
+///
+/// `FUTEX_QUEUE_BITMAP` is this implementation's counterpart to Linux's
+/// futex hash-bucket lock.  The value comparison, queue insertion and
+/// `Blocked` publication must share that critical section: a waker which
+/// changes the word and enters `FUTEX_WAKE` must observe either the mismatch
+/// or the queued, already-blocked task.  Splitting these steps loses wakeups
+/// on SMP.
 fn futex_wait_bitset(
-    pa: usize,
+    queue_key: usize,
     task: Arc<TaskControlBlock>,
+    memory_set: &MemorySet,
+    uaddr: *const i32,
+    expected: i32,
     bitset: u32,
     timeout: Option<Timespec>,
 ) -> SyscallRet {
-    debug!("wait bitset = {:b}", bitset);
     #[cfg(feature = "perf")]
     let active_guard = crate::utils::perf::FutexActiveGuard::new();
 
-    // 清除上次的定时器超时标记
-    task.inner_lock().futex_timedout = false;
-
-    let mut waitq = FUTEX_QUEUE_BITMAP.lock();
     let futex_key = new_futex_key();
     let waiter = FutexWaiter {
         task: Arc::downgrade(&task),
         bitset,
         futex_key,
     };
-    let mut inner = task.inner_lock();
-    inner.futex_pa = pa;
-    inner.futex_key = futex_key;
-    drop(inner);
+    let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+    let current_val: i32 = copy_from_user_val(memory_set, uaddr)?;
+    if current_val != expected {
+        return Err(SysErrNo::EAGAIN);
+    }
 
+    let task_cx_ptr = {
+        let mut inner = task.inner_lock();
+        // Match the interrupted-wait behavior before publishing the task as
+        // blocked.  A signal racing after this point sees `Blocked` and is
+        // able to enqueue the task, so neither signal nor futex wakeup is
+        // lost.
+        if !inner.sig_pending.difference(inner.sig_mask).is_empty() {
+            return Err(SysErrNo::EINTR);
+        }
+
+        inner.futex_timedout = false;
+        inner.futex_pa = queue_key;
+        inner.futex_key = futex_key;
+        waitq.entry(queue_key).or_default().push_back(waiter);
+        inner.task_status = TaskStatus::Blocked;
+        &mut inner.task_cx as *mut _
+    };
+    drop(waitq);
+
+    // `handle_timer()` takes the timer lock before the futex queue lock, so
+    // install the timer only after releasing the queue lock.  The waiter is
+    // already visible and Blocked, hence an immediate wake or timeout remains
+    // safe.
     if let Some(timeout) = timeout {
         add_futex_timer(timeout, &task, futex_key);
     }
-
-    if let Some(queue) = waitq.get_mut(&pa) {
-        queue.push_back(waiter);
-    } else {
-        waitq.insert(pa, {
-            let mut queue = VecDeque::new();
-            queue.push_back(waiter);
-            queue
-        });
-    }
     drop(task);
-    drop(waitq);
-    debug!("futex_wait_bitset sleeping...");
     #[cfg(feature = "perf")]
     drop(active_guard);
-    block_current_and_run_next();
-    debug!("futex_wait_bitset wake up!");
+    schedule_blocked_current(task_cx_ptr);
     #[cfg(feature = "perf")]
     let _resume_active_guard = crate::utils::perf::FutexActiveGuard::new();
     let task = current_task().unwrap();
@@ -186,6 +204,13 @@ fn futex_wait_bitset(
 }
 
 fn futex_wake_up_bitset(pa: usize, max_num: i32, bitset: u32) -> usize {
+    if bitset == 0 {
+        return 0;
+    }
+    // Keep the traditional futex(2) ABI behavior.  Linux's legacy FUTEX_WAKE
+    // path treats a nonpositive count as one wake; converting a negative
+    // `val` directly to usize would instead wake every queued task here.
+    let max_num = if max_num <= 0 { 1 } else { max_num as usize };
     // log::debug!(
     //     "[sys_futex] futex wakeup thread,max_num={},key={:?}",
     //     max_num,
@@ -197,7 +222,7 @@ fn futex_wake_up_bitset(pa: usize, max_num: i32, bitset: u32) -> usize {
         let queue_len = queue.len();
         // 我们会遍历这个deque，最多len次
         let mut cnt: usize = 0;
-        while cnt < queue_len && num < (max_num as usize) {
+        while cnt < queue_len && num < max_num {
             cnt += 1;
             if let Some(waiter) = queue.pop_front() {
                 if let Some(task) = waiter.task.upgrade() {
@@ -239,39 +264,6 @@ fn futex_queue_key(opt: FutexOpt, memory_token: usize, uaddr: usize, pa: usize) 
     }
 }
 
-fn futex_owner_alive_in_current_process(task: &TaskControlBlock, tid: usize) -> bool {
-    task.process
-        .meta_lock()
-        .tasks
-        .iter()
-        .filter_map(|task| task.upgrade())
-        .any(|task| task.tid() == tid && !task.inner_lock().is_zombie())
-}
-
-fn try_recover_owner_died_futex(
-    opt: FutexOpt,
-    task: &TaskControlBlock,
-    memory_set: &MemorySet,
-    uaddr: *mut i32,
-    current_u32: u32,
-    queue_key: usize,
-) -> bool {
-    if !opt.contains(FutexOpt::FUTEX_PRIVATE_FLAG) || current_u32 & FUTEX_OWNER_DIED == 0 {
-        return false;
-    }
-    let futex_tid = current_u32 & FUTEX_TID_MASK;
-    if futex_tid != 0 && futex_owner_alive_in_current_process(task, futex_tid as usize) {
-        return false;
-    }
-    debug!(
-        "[sys_futex] owner-died futex detected: tid={}, val={:#x}, clearing to 0",
-        futex_tid, current_u32
-    );
-    let _ = copy_to_user_val(memory_set, uaddr, &0i32);
-    futex_wake_up_bitset(queue_key, core::i32::MAX, u32::MAX);
-    true
-}
-
 /// 参考 https://man7.org/linux/man-pages/man2/futex.2.html
 pub fn sys_futex(
     uaddr: *mut i32, // point to the futex word, always four-bytes
@@ -281,8 +273,18 @@ pub fn sys_futex(
     uaddr2: *mut u32,
     val3: i32,
 ) -> SyscallRet {
-    let cmd = FutexCmd::try_from(futex_op & 0x7f).map_err(|_| SysErrNo::EINVAL)?;
+    // Linux's FUTEX_CMD_MASK removes only the two defined flag bits.  Do not
+    // mask arbitrary high bits: doing so turns an invalid user ABI request
+    // into an unrelated valid command.
+    const FUTEX_CMD_MASK: u32 = !(0x80 | 0x100);
+    let cmd = FutexCmd::try_from(futex_op & FUTEX_CMD_MASK).map_err(|_| SysErrNo::EINVAL)?;
     let opt = FutexOpt::from_bits_truncate(futex_op);
+    if opt.contains(FutexOpt::FUTEX_CLOCK_REALTIME) && cmd != FutexCmd::WaitBitset {
+        // Linux accepts CLOCK_REALTIME for FUTEX_WAIT_BITSET (and selected PI
+        // operations not implemented here), but not for plain FUTEX_WAIT or
+        // wake/requeue operations.
+        return Err(SysErrNo::ENOSYS);
+    }
     #[cfg(feature = "perf")]
     let active_guard = crate::utils::perf::FutexActiveGuard::new();
     // 检查uaddr一定是4字节对齐（因为是int*）
@@ -294,7 +296,6 @@ pub fn sys_futex(
     // debug!("[sys_futex]: strong_count = {}", Arc::strong_count(&task));
     let process = &task.process;
     let memory_set = process.memory_set_arc();
-    let task_inner = task.inner_lock();
 
     // 安全地将用户 VA 转为 PA：先通过 copy_from_user 触发延迟页分配，
     // 确保页面已映射后再查询页表，避免在未分配页面上 panic
@@ -354,25 +355,6 @@ pub fn sys_futex(
     );
     let queue_key = futex_queue_key(opt, memory_set.token(), uaddr as usize, pa);
 
-    // 在释放锁之前检查 futex 值（Wait/WaitBitset 需要原子性检查）
-    // 只恢复已经由退出路径标记 OWNER_DIED 的 robust futex。
-    // 普通 FUTEX_WAIT 的 val 可能是任意条件值，不能把低 30 位误当 owner TID；
-    // accept02 中 val=2 曾被误判成“死 owner tid=2”，导致线程同步提前完成。
-    if matches!(cmd, FutexCmd::Wait | FutexCmd::WaitBitset) {
-        let current_val: i32 = copy_from_user_val(&memory_set, uaddr)?;
-        if current_val != val {
-            return Err(SysErrNo::EAGAIN);
-        }
-        let current_u32 = current_val as u32;
-        if try_recover_owner_died_futex(opt, &task, &memory_set, uaddr, current_u32, queue_key) {
-            drop(memory_set);
-            drop(task_inner);
-            return Ok(0);
-        }
-    }
-
-    drop(memory_set);
-    drop(task_inner);
     match cmd {
         FutexCmd::Wait | FutexCmd::WaitBitset => {
             #[cfg(feature = "perf")]
@@ -382,7 +364,18 @@ pub fn sys_futex(
             } else {
                 val3 as u32
             };
-            futex_wait_bitset(queue_key, task, bitset, timeout_opt)
+            if bitset == 0 {
+                return Err(SysErrNo::EINVAL);
+            }
+            futex_wait_bitset(
+                queue_key,
+                task,
+                &memory_set,
+                uaddr,
+                val,
+                bitset,
+                timeout_opt,
+            )
         }
         FutexCmd::Wake | FutexCmd::WakeBitset => {
             drop(task);
@@ -391,6 +384,9 @@ pub fn sys_futex(
             } else {
                 val3 as u32
             };
+            if bitset == 0 {
+                return Err(SysErrNo::EINVAL);
+            }
             Ok(futex_wake_up_bitset(queue_key, val, bitset))
         }
         FutexCmd::Requeue => {
@@ -403,8 +399,10 @@ pub fn sys_futex(
         }
 
         _ => {
-            println!("Unimplemented: futex_op = {}", futex_op);
-            unimplemented!();
+            // A userspace ABI request must never turn into a kernel panic.
+            // Linux rejects unsupported futex commands; this kernel implements
+            // only the operations handled above.
+            Err(SysErrNo::ENOSYS)
         }
     }
 }

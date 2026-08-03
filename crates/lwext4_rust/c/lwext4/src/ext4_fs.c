@@ -59,6 +59,105 @@
 
 #include <string.h>
 
+/*
+ * Optional sleeping lock hooks supplied by a preemptible kernel.  Keep the
+ * fallback in this C translation unit so standalone lwext4 binaries retain
+ * their historical dependency-free behaviour.
+ */
+static void *ext4_fs_rwlock_hook_ctx;
+static ext4_fs_rwlock_lock_hook_t ext4_fs_rwlock_lock_hook;
+static ext4_fs_rwlock_unlock_hook_t ext4_fs_rwlock_unlock_hook;
+
+void ext4_fs_rwlock_set_hooks(void *ctx,
+				      ext4_fs_rwlock_lock_hook_t lock_hook,
+				      ext4_fs_rwlock_unlock_hook_t unlock_hook)
+{
+	/* Installation is completed before ext4_device_register()/ext4_mount(). */
+	__atomic_store_n(&ext4_fs_rwlock_hook_ctx, ctx, __ATOMIC_RELEASE);
+	__atomic_store_n(&ext4_fs_rwlock_unlock_hook, unlock_hook,
+			 __ATOMIC_RELEASE);
+	__atomic_store_n(&ext4_fs_rwlock_lock_hook, lock_hook,
+			 __ATOMIC_RELEASE);
+}
+
+static void ext4_fs_rwlock_spin_read_lock(struct ext4_fs_rwlock *lock)
+{
+	int observed;
+
+	for (;;) {
+		observed = __atomic_load_n(&lock->state, __ATOMIC_ACQUIRE);
+		if (observed >= 0 &&
+		    __atomic_compare_exchange_n(&lock->state, &observed,
+						observed + 1, false,
+						__ATOMIC_ACQUIRE,
+						__ATOMIC_RELAXED))
+			return;
+		while (__atomic_load_n(&lock->state, __ATOMIC_RELAXED) < 0)
+			;
+	}
+}
+
+static void ext4_fs_rwlock_spin_write_lock(struct ext4_fs_rwlock *lock)
+{
+	for (;;) {
+		int expected = 0;
+		if (__atomic_compare_exchange_n(&lock->state, &expected, -1,
+						false, __ATOMIC_ACQUIRE,
+						__ATOMIC_RELAXED))
+			return;
+		while (__atomic_load_n(&lock->state, __ATOMIC_RELAXED) != 0)
+			;
+	}
+}
+
+void ext4_fs_rwlock_read_lock(struct ext4_fs_rwlock *lock)
+{
+	ext4_fs_rwlock_lock_hook_t hook = __atomic_load_n(
+		&ext4_fs_rwlock_lock_hook, __ATOMIC_ACQUIRE);
+	if (hook) {
+		hook(__atomic_load_n(&ext4_fs_rwlock_hook_ctx, __ATOMIC_ACQUIRE),
+		     lock, false);
+		return;
+	}
+	ext4_fs_rwlock_spin_read_lock(lock);
+}
+
+void ext4_fs_rwlock_read_unlock(struct ext4_fs_rwlock *lock)
+{
+	ext4_fs_rwlock_unlock_hook_t hook = __atomic_load_n(
+		&ext4_fs_rwlock_unlock_hook, __ATOMIC_ACQUIRE);
+	if (hook) {
+		hook(__atomic_load_n(&ext4_fs_rwlock_hook_ctx, __ATOMIC_ACQUIRE),
+		     lock, false);
+		return;
+	}
+	__atomic_fetch_sub(&lock->state, 1, __ATOMIC_RELEASE);
+}
+
+void ext4_fs_rwlock_write_lock(struct ext4_fs_rwlock *lock)
+{
+	ext4_fs_rwlock_lock_hook_t hook = __atomic_load_n(
+		&ext4_fs_rwlock_lock_hook, __ATOMIC_ACQUIRE);
+	if (hook) {
+		hook(__atomic_load_n(&ext4_fs_rwlock_hook_ctx, __ATOMIC_ACQUIRE),
+		     lock, true);
+		return;
+	}
+	ext4_fs_rwlock_spin_write_lock(lock);
+}
+
+void ext4_fs_rwlock_write_unlock(struct ext4_fs_rwlock *lock)
+{
+	ext4_fs_rwlock_unlock_hook_t hook = __atomic_load_n(
+		&ext4_fs_rwlock_unlock_hook, __ATOMIC_ACQUIRE);
+	if (hook) {
+		hook(__atomic_load_n(&ext4_fs_rwlock_hook_ctx, __ATOMIC_ACQUIRE),
+		     lock, true);
+		return;
+	}
+	__atomic_store_n(&lock->state, 0, __ATOMIC_RELEASE);
+}
+
 int ext4_fs_init(struct ext4_fs *fs, struct ext4_blockdev *bdev,
 		 bool read_only)
 {

@@ -1,4 +1,8 @@
-use core::ffi::{c_char, c_void};
+use core::{
+    cell::UnsafeCell,
+    ffi::{c_char, c_void},
+    ops::{Deref, DerefMut},
+};
 
 use crate::bindings::*;
 #[cfg(feature = "perf")]
@@ -42,7 +46,7 @@ use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::{ffi::CString, vec::Vec};
-use spin::{Lazy, Mutex, RwLock};
+use spin::{Lazy, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 const PAGE_SIZE: usize = 4096;
 pub const PAGE_MASK: usize = !0xfff;
@@ -63,6 +67,57 @@ const MAX_CACHED_FILE_SIZE: usize = 16 * 0x10_0000; // 16 MiB
 const MAX_SPARSE_WRITE_BUFFER_SIZE: usize = 512 * 1024;
 const MAX_SPARSE_WRITE_BUFFER_RUNS: usize = 32;
 const MAX_TOTAL_SPARSE_WRITE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+
+/// Lock callbacks for one Rust-owned write-back cache entry.  The lock value
+/// is the stable address of `VFileCacheLock`; a preemptible kernel may park a
+/// waiter on that resource instead of executing `spin::RwLock`'s busy loop.
+pub type VFileCacheLockHook =
+    unsafe extern "C" fn(ctx: *mut c_void, lock: *mut c_void, write: bool);
+
+/// Releases the host-side lock bookkeeping after a dynamic cache entry is
+/// destroyed. Unlike lwext4's mount-owned locks, file-cache locks are created
+/// and evicted continuously, so retaining their host records would leak one
+/// scheduler lock per cached pathname.
+pub type VFileCacheLockReleaseHook = unsafe extern "C" fn(ctx: *mut c_void, lock: *mut c_void);
+
+#[derive(Clone, Copy)]
+struct VFileCacheLockHooks {
+    ctx: usize,
+    lock: Option<VFileCacheLockHook>,
+    unlock: Option<VFileCacheLockHook>,
+    release: Option<VFileCacheLockReleaseHook>,
+}
+
+impl VFileCacheLockHooks {
+    const fn empty() -> Self {
+        Self {
+            ctx: 0,
+            lock: None,
+            unlock: None,
+            release: None,
+        }
+    }
+}
+
+static VFILE_CACHE_LOCK_HOOKS: Lazy<Mutex<VFileCacheLockHooks>> =
+    Lazy::new(|| Mutex::new(VFileCacheLockHooks::empty()));
+
+/// Install the host's task-aware locking callbacks before concurrent VFS
+/// access begins.  Standalone lwext4 users intentionally retain the spin-lock
+/// fallback when no paired hooks are supplied.
+pub fn setup_vfile_cache_lock_hooks(
+    ctx: *mut c_void,
+    lock_hook: Option<VFileCacheLockHook>,
+    unlock_hook: Option<VFileCacheLockHook>,
+    release_hook: Option<VFileCacheLockReleaseHook>,
+) {
+    *VFILE_CACHE_LOCK_HOOKS.lock() = VFileCacheLockHooks {
+        ctx: ctx as usize,
+        lock: lock_hook,
+        unlock: unlock_hook,
+        release: release_hook,
+    };
+}
 
 fn aligned_down(addr: usize) -> usize {
     addr & PAGE_MASK
@@ -771,7 +826,7 @@ impl Ext4File {
             return Ok(());
         }
 
-        let cache = Arc::new(RwLock::new(VFileCache::new()));
+        let cache = Arc::new(VFileCacheLock::new(VFileCache::new()));
         let mut cache_writer = cache.write();
         cache_writer.mode = self.pending_mode;
         cache_writer.inode_key = whole_file_cache_key_for_desc(&cache_desc);
@@ -850,12 +905,15 @@ impl Ext4File {
                 self.check_cached(path.clone())?;
             }
 
-            if cache_enabled && if_cache(path.clone()) {
-                let cache = get_cache(path.clone());
-                let mut cache_writer = cache.write();
-                cache_writer.offset =
-                    seek_pos(cache_writer.offset, cache_writer.size, offset, seek_type)?;
-                return Ok(EOK as usize);
+            if cache_enabled {
+                if let Some(cache) = get_cache(&path) {
+                    let mut cache_writer = cache.write();
+                    if !cache_writer.evicting {
+                        cache_writer.offset =
+                            seek_pos(cache_writer.offset, cache_writer.size, offset, seek_type)?;
+                        return Ok(EOK as usize);
+                    }
+                }
             }
         }
 
@@ -871,38 +929,41 @@ impl Ext4File {
 
     pub fn file_read(&mut self, buff: &mut [u8]) -> Result<usize, i32> {
         let path = String::from((*self.file_path).to_str().unwrap());
-        if self.write_back_cache_enabled(&path) && if_cache(path.clone()) {
-            //找到cache直接读cache
-            let cache = get_cache(path.clone());
-            let cache_read = cache.read();
-            let data = cache_read.get_data_slice();
-            if cache_read.offset >= cache_read.size {
-                return Ok(0);
-            }
-            let length = buff.len();
-            let end = cache_read
-                .offset
-                .checked_add(length)
-                .ok_or(EINVAL as i32)?
-                .min(cache_read.size);
-            let r_sz = end - cache_read.offset;
-            //debug!("data.len={:x},end={:x}", data.len(), end);
-            if length <= 10 {
-                for i in 0..r_sz {
-                    buff[i] = data[cache_read.offset + i];
+        if self.write_back_cache_enabled(&path) {
+            if let Some(cache) = get_cache(&path) {
+                //找到cache直接读cache
+                let cache_read = cache.read();
+                if !cache_read.evicting {
+                    let data = cache_read.get_data_slice();
+                    if cache_read.offset >= cache_read.size {
+                        return Ok(0);
+                    }
+                    let length = buff.len();
+                    let end = cache_read
+                        .offset
+                        .checked_add(length)
+                        .ok_or(EINVAL as i32)?
+                        .min(cache_read.size);
+                    let r_sz = end - cache_read.offset;
+                    //debug!("data.len={:x},end={:x}", data.len(), end);
+                    if length <= 10 {
+                        for i in 0..r_sz {
+                            buff[i] = data[cache_read.offset + i];
+                        }
+                    } else {
+                        buff[..r_sz].copy_from_slice(&data[cache_read.offset..end]);
+                    }
+
+                    /*
+                    debug!(
+                        "file_read {},len = {:x},offset is {:x}",
+                        path, r_sz, cache_read.offset
+                    );
+                    */
+
+                    return Ok(r_sz);
                 }
-            } else {
-                buff[..r_sz].copy_from_slice(&data[cache_read.offset..end]);
             }
-
-            /*
-            debug!(
-                "file_read {},len = {:x},offset is {:x}",
-                path, r_sz, cache_read.offset
-            );
-            */
-
-            return Ok(r_sz);
         }
 
         let offset = self.file_desc.fpos as usize;
@@ -1468,42 +1529,46 @@ impl Ext4File {
         let path = String::from((*self.file_path).to_str().unwrap());
         #[cfg(feature = "perf")]
         let mut direct_reason = DirectWriteReason::Uncached;
-        if self.write_back_cache_enabled(&path) && if_cache(path.clone()) {
-            // 找到 cache 直接写 cache；一旦文件膨胀到阈值以上，立即回退到底层 ext4。
-            let cache = get_cache(path.clone());
-            let mut cache_writer = cache.write();
-            let next_size = cache_writer
-                .offset
-                .checked_add(buf.len())
-                .ok_or(EINVAL as i32)?;
-            let write_creates_hole = !buf.is_empty() && cache_writer.offset > cache_writer.size;
-            if next_size > MAX_CACHED_FILE_SIZE || write_creates_hole {
-                let write_offset = cache_writer.offset;
-                drop(cache_writer);
-                #[cfg(feature = "perf")]
-                {
-                    direct_reason = if write_creates_hole {
-                        DirectWriteReason::Hole
+        if self.write_back_cache_enabled(&path) {
+            if let Some(cache) = get_cache(&path) {
+                // 找到 cache 直接写 cache；一旦文件膨胀到阈值以上，立即回退到底层 ext4。
+                let mut cache_writer = cache.write();
+                if !cache_writer.evicting {
+                    let next_size = cache_writer
+                        .offset
+                        .checked_add(buf.len())
+                        .ok_or(EINVAL as i32)?;
+                    let write_creates_hole =
+                        !buf.is_empty() && cache_writer.offset > cache_writer.size;
+                    if next_size > MAX_CACHED_FILE_SIZE || write_creates_hole {
+                        let write_offset = cache_writer.offset;
+                        drop(cache_writer);
+                        #[cfg(feature = "perf")]
+                        {
+                            direct_reason = if write_creates_hole {
+                                DirectWriteReason::Hole
+                            } else {
+                                DirectWriteReason::Limit
+                            };
+                        }
+                        if write_creates_hole {
+                            self.disable_write_back_cache()?;
+                        } else {
+                            let _flushed = write_back_cache(path.clone())?;
+                            #[cfg(feature = "perf")]
+                            perf::record_write_cache_limit_flush(_flushed);
+                            remove_file_cache_state(&path);
+                        }
+                        self.file_desc.fpos = write_offset as u64;
                     } else {
-                        DirectWriteReason::Limit
-                    };
+                        cache_writer.writebuf(buf)?;
+                        drop(cache_writer);
+                        touch_fifo_path(&path);
+                        #[cfg(feature = "perf")]
+                        perf::record_write_cache_hit(buf.len());
+                        return Ok(buf.len());
+                    }
                 }
-                if write_creates_hole {
-                    self.disable_write_back_cache()?;
-                } else {
-                    let _flushed = write_back_cache(path.clone())?;
-                    #[cfg(feature = "perf")]
-                    perf::record_write_cache_limit_flush(_flushed);
-                    remove_file_cache_state(&path);
-                }
-                self.file_desc.fpos = write_offset as u64;
-            } else {
-                cache_writer.writebuf(buf)?;
-                drop(cache_writer);
-                touch_fifo_path(&path);
-                #[cfg(feature = "perf")]
-                perf::record_write_cache_hit(buf.len());
-                return Ok(buf.len());
             }
         }
 
@@ -1570,35 +1635,37 @@ impl Ext4File {
                 let mut cache_writer = cache.write();
                 let next_size = offset.checked_add(buf.len()).ok_or(EINVAL as i32)?;
                 let write_creates_hole = !buf.is_empty() && offset > cache_writer.size;
-                if next_size <= MAX_CACHED_FILE_SIZE && !write_creates_hole {
-                    cache_writer.offset = offset;
-                    cache_writer.writebuf(buf)?;
+                if !cache_writer.evicting {
+                    if next_size <= MAX_CACHED_FILE_SIZE && !write_creates_hole {
+                        cache_writer.offset = offset;
+                        cache_writer.writebuf(buf)?;
+                        drop(cache_writer);
+                        touch_fifo_path(self.path_str());
+                        #[cfg(feature = "perf")]
+                        {
+                            self.last_write_path = FileWritePath::DenseWriteBack;
+                            perf::record_write_cache_hit(buf.len());
+                        }
+                        return Ok(buf.len());
+                    }
+
                     drop(cache_writer);
-                    touch_fifo_path(self.path_str());
                     #[cfg(feature = "perf")]
                     {
-                        self.last_write_path = FileWritePath::DenseWriteBack;
-                        perf::record_write_cache_hit(buf.len());
+                        direct_reason = if write_creates_hole {
+                            DirectWriteReason::Hole
+                        } else {
+                            DirectWriteReason::Limit
+                        };
                     }
-                    return Ok(buf.len());
-                }
-
-                drop(cache_writer);
-                #[cfg(feature = "perf")]
-                {
-                    direct_reason = if write_creates_hole {
-                        DirectWriteReason::Hole
+                    if write_creates_hole {
+                        self.disable_write_back_cache()?;
                     } else {
-                        DirectWriteReason::Limit
-                    };
-                }
-                if write_creates_hole {
-                    self.disable_write_back_cache()?;
-                } else {
-                    let _flushed = write_back_cache(String::from(self.path_str()))?;
-                    #[cfg(feature = "perf")]
-                    perf::record_write_cache_limit_flush(_flushed);
-                    remove_file_cache_state(self.path_str());
+                        let _flushed = write_back_cache(String::from(self.path_str()))?;
+                        #[cfg(feature = "perf")]
+                        perf::record_write_cache_limit_flush(_flushed);
+                        remove_file_cache_state(self.path_str());
+                    }
                 }
             }
         }
@@ -1678,8 +1745,13 @@ impl Ext4File {
 
     pub fn file_size(&mut self) -> u64 {
         let path = String::from((*self.file_path).to_str().unwrap());
-        if self.write_back_cache_enabled(&path) && if_cache(path.clone()) {
-            return get_cache(path.clone()).read().size as u64;
+        if self.write_back_cache_enabled(&path) {
+            if let Some(cache) = get_cache(&path) {
+                let cache = cache.read();
+                if !cache.evicting {
+                    return cache.size as u64;
+                }
+            }
         }
         let sparse_end = self.sparse_write_buffer_end();
 
@@ -1993,39 +2065,41 @@ impl Ext4File {
             // Small files can be visible only through the write-back cache
             // until their first flush. Keep fstat usable for that transient
             // state instead of reporting a spurious filesystem error.
-            if if_cache(path.clone()) {
+            if let Some(cache) = get_cache(&path) {
                 #[cfg(feature = "perf")]
                 {
                     perf::record_fstat_write_back_fallback();
                     observer.stage(FstatStageEvent::WriteBackFallbackBegin);
                 }
-                let cache = get_cache(path);
                 let cache = cache.read();
-                stat.st_mode = cache.mode.unwrap_or(0o100000);
-                stat.st_nlink = 1;
-                stat.st_size = cache.size as isize;
-                stat.st_blksize = 512;
-                stat.st_blocks = ((cache.size + 511) / 512) as isize;
-                #[cfg(feature = "perf")]
-                observer.stage(FstatStageEvent::WriteBackFallbackEnd);
-                return Ok(stat);
+                if !cache.evicting {
+                    stat.st_mode = cache.mode.unwrap_or(0o100000);
+                    stat.st_nlink = 1;
+                    stat.st_size = cache.size as isize;
+                    stat.st_blksize = 512;
+                    stat.st_blocks = ((cache.size + 511) / 512) as isize;
+                    #[cfg(feature = "perf")]
+                    observer.stage(FstatStageEvent::WriteBackFallbackEnd);
+                    return Ok(stat);
+                }
             }
             error!("ext4_stat_get: rc = {}", r);
             return Err(r);
         }
 
-        if if_cache(path.clone()) {
+        if let Some(cache) = get_cache(&path) {
             //如果在缓存中，更新stat获得的大小
             #[cfg(feature = "perf")]
             {
                 perf::record_fstat_write_back_overlay();
                 observer.stage(FstatStageEvent::WriteBackOverlayBegin);
             }
-            let cache = get_cache(path.clone());
             let cache_reader = cache.read();
-            stat.st_size = cache_reader.size as isize;
-            stat.st_blocks =
-                (stat.st_size - 1 + (stat.st_blksize as isize)) / (stat.st_blksize as isize);
+            if !cache_reader.evicting {
+                stat.st_size = cache_reader.size as isize;
+                stat.st_blocks =
+                    (stat.st_size - 1 + (stat.st_blksize as isize)) / (stat.st_blksize as isize);
+            }
             #[cfg(feature = "perf")]
             observer.stage(FstatStageEvent::WriteBackOverlayEnd);
         }
@@ -2083,8 +2157,11 @@ impl Ext4File {
         }
         self.pending_mode = Some(mode);
         let path = String::from((*self.file_path).to_str().unwrap());
-        if if_cache(path.clone()) {
-            get_cache(path).write().mode = Some(mode);
+        if let Some(cache) = get_cache(&path) {
+            let mut cache = cache.write();
+            if !cache.evicting {
+                cache.mode = Some(mode);
+            }
         }
         Ok(EOK as usize)
     }
@@ -2102,8 +2179,11 @@ impl Ext4File {
         }
         self.pending_mode = Some(mode);
         let path = String::from((*self.file_path).to_str().unwrap());
-        if if_cache(path.clone()) {
-            get_cache(path).write().mode = Some(mode);
+        if let Some(cache) = get_cache(&path) {
+            let mut cache = cache.write();
+            if !cache.evicting {
+                cache.mode = Some(mode);
+            }
         }
         Ok(EOK as usize)
     }
@@ -2405,6 +2485,14 @@ pub struct VFileCache {
     data: Vec<u8>,
     offset: usize,
     modified: bool,
+    /// Monotonically identifies the byte image currently held in `data`.
+    /// A write-back only clears `modified` when this still matches its
+    /// snapshot, so a concurrent writer never loses its dirty state.
+    revision: u64,
+    /// FIFO eviction sets this after the data is clean. Writers which already
+    /// hold an Arc then take the direct path instead of repopulating an entry
+    /// that is about to be removed from the global table.
+    evicting: bool,
     size: usize,
     mode: Option<u32>,
     inode_key: Option<WholeFileCacheKey>,
@@ -2416,6 +2504,8 @@ impl VFileCache {
             data: Vec::new(),
             offset: 0,
             modified: false,
+            revision: 0,
+            evicting: false,
             size: 0,
             mode: None,
             inode_key: None,
@@ -2452,6 +2542,7 @@ impl VFileCache {
             self.data[self.offset..end].copy_from_slice(buf);
         }
         self.modified = true;
+        self.revision = self.revision.wrapping_add(1);
         /*
         debug!(
             "write {} bytes and size is {}, data.len() is {} now",
@@ -2481,8 +2572,227 @@ impl VFileCache {
     }
 }
 
+/// A lock for one `VFileCache` entry.
+///
+/// `spin::RwLock` is retained only as the standalone fallback.  In the
+/// kernel, the paired callbacks below use a scheduler-aware per-resource
+/// rwlock.  This prevents a task preempted while touching a cache entry from
+/// being starved by another hart spinning in `spin::RwLock::write()`.
+struct VFileCacheLock {
+    fallback: RwLock<()>,
+    /// Serializes snapshot write-back operations only. Normal readers and
+    /// writers use `data` and therefore remain parallel with device I/O.
+    flush: VFileCacheFlushLock,
+    data: UnsafeCell<VFileCache>,
+}
+
+unsafe impl Send for VFileCacheLock {}
+unsafe impl Sync for VFileCacheLock {}
+
+struct VFileCacheHookGuard {
+    ctx: usize,
+    lock: *mut c_void,
+    unlock: VFileCacheLockHook,
+    write: bool,
+}
+
+impl Drop for VFileCacheHookGuard {
+    fn drop(&mut self) {
+        unsafe { (self.unlock)(self.ctx as *mut c_void, self.lock, self.write) };
+    }
+}
+
+/// An exclusive, task-aware gate for one cache entry's write-back stream.
+/// Keeping this separate from the data lock prevents a slow lwext4 operation
+/// from blocking readers or dirtying writers while still preserving the order
+/// of independent snapshots sent to disk.
+struct VFileCacheFlushLock {
+    fallback: Mutex<()>,
+}
+
+struct VFileCacheFlushGuard<'a> {
+    _backend: VFileCacheFlushBackend<'a>,
+}
+
+#[allow(dead_code)]
+enum VFileCacheFlushBackend<'a> {
+    Hook(VFileCacheHookGuard),
+    Fallback(MutexGuard<'a, ()>),
+}
+
+#[allow(dead_code)]
+enum VFileCacheReadBackend<'a> {
+    Hook(VFileCacheHookGuard),
+    Fallback(RwLockReadGuard<'a, ()>),
+}
+
+#[allow(dead_code)]
+enum VFileCacheWriteBackend<'a> {
+    Hook(VFileCacheHookGuard),
+    Fallback(RwLockWriteGuard<'a, ()>),
+}
+
+struct VFileCacheReadGuard<'a> {
+    lock: &'a VFileCacheLock,
+    _backend: VFileCacheReadBackend<'a>,
+}
+
+struct VFileCacheWriteGuard<'a> {
+    lock: &'a VFileCacheLock,
+    _backend: VFileCacheWriteBackend<'a>,
+}
+
+impl VFileCacheLock {
+    fn new(cache: VFileCache) -> Self {
+        Self {
+            fallback: RwLock::new(()),
+            flush: VFileCacheFlushLock {
+                fallback: Mutex::new(()),
+            },
+            data: UnsafeCell::new(cache),
+        }
+    }
+
+    fn hook_guard(lock_ptr: *mut c_void, write: bool) -> Option<VFileCacheHookGuard> {
+        let hooks = *VFILE_CACHE_LOCK_HOOKS.lock();
+        let (Some(lock), Some(unlock)) = (hooks.lock, hooks.unlock) else {
+            return None;
+        };
+        unsafe { lock(hooks.ctx as *mut c_void, lock_ptr, write) };
+        Some(VFileCacheHookGuard {
+            ctx: hooks.ctx,
+            lock: lock_ptr,
+            unlock,
+            write,
+        })
+    }
+
+    fn read(&self) -> VFileCacheReadGuard<'_> {
+        let lock_ptr = self as *const Self as *mut c_void;
+        let backend = match Self::hook_guard(lock_ptr, false) {
+            Some(guard) => VFileCacheReadBackend::Hook(guard),
+            None => VFileCacheReadBackend::Fallback(self.fallback.read()),
+        };
+        VFileCacheReadGuard {
+            lock: self,
+            _backend: backend,
+        }
+    }
+
+    fn write(&self) -> VFileCacheWriteGuard<'_> {
+        let lock_ptr = self as *const Self as *mut c_void;
+        let backend = match Self::hook_guard(lock_ptr, true) {
+            Some(guard) => VFileCacheWriteBackend::Hook(guard),
+            None => VFileCacheWriteBackend::Fallback(self.fallback.write()),
+        };
+        VFileCacheWriteGuard {
+            lock: self,
+            _backend: backend,
+        }
+    }
+
+    fn snapshot_for_writeback(&self) -> Result<Option<VFileCacheSnapshot>, i32> {
+        let cache = self.read();
+        if !cache.modified {
+            return Ok(None);
+        }
+
+        let data = cache.data.get(..cache.size).ok_or(EIO as i32)?;
+        let mut snapshot = Vec::new();
+        snapshot
+            .try_reserve_exact(data.len())
+            .map_err(|_| ENOMEM as i32)?;
+        snapshot.extend_from_slice(data);
+        Ok(Some(VFileCacheSnapshot {
+            data: snapshot,
+            size: cache.size,
+            mode: cache.mode,
+            revision: cache.revision,
+        }))
+    }
+
+    fn mark_clean_if_unchanged(&self, revision: u64) {
+        let mut cache = self.write();
+        if cache.revision == revision {
+            cache.modified = false;
+        }
+    }
+
+    /// Atomically prevents new writes from using a clean entry before FIFO
+    /// removes its table reference. Existing writers which race this marker
+    /// observe `evicting` and use direct lwext4 I/O instead.
+    fn claim_clean_for_eviction(&self) -> bool {
+        let mut cache = self.write();
+        if cache.modified || cache.evicting {
+            return false;
+        }
+        cache.evicting = true;
+        true
+    }
+
+    fn cancel_eviction(&self) {
+        self.write().evicting = false;
+    }
+}
+
+impl VFileCacheFlushLock {
+    fn lock(&self) -> VFileCacheFlushGuard<'_> {
+        let lock_ptr = self as *const Self as *mut c_void;
+        let backend = match VFileCacheLock::hook_guard(lock_ptr, true) {
+            Some(guard) => VFileCacheFlushBackend::Hook(guard),
+            None => VFileCacheFlushBackend::Fallback(self.fallback.lock()),
+        };
+        VFileCacheFlushGuard { _backend: backend }
+    }
+}
+
+impl Drop for VFileCacheLock {
+    fn drop(&mut self) {
+        let hooks = *VFILE_CACHE_LOCK_HOOKS.lock();
+        let Some(release) = hooks.release else {
+            return;
+        };
+        unsafe {
+            release(hooks.ctx as *mut c_void, self as *mut Self as *mut c_void);
+            release(
+                hooks.ctx as *mut c_void,
+                &mut self.flush as *mut VFileCacheFlushLock as *mut c_void,
+            );
+        }
+    }
+}
+
+struct VFileCacheSnapshot {
+    data: Vec<u8>,
+    size: usize,
+    mode: Option<u32>,
+    revision: u64,
+}
+
+impl Deref for VFileCacheReadGuard<'_> {
+    type Target = VFileCache;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.lock.data.get() }
+    }
+}
+
+impl Deref for VFileCacheWriteGuard<'_> {
+    type Target = VFileCache;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.lock.data.get() }
+    }
+}
+
+impl DerefMut for VFileCacheWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.lock.data.get() }
+    }
+}
+
 //cache表，目前只为非目录文件使用cache
-static CACHE_TABLE: Lazy<Mutex<BTreeMap<String, Arc<RwLock<VFileCache>>>>> =
+static CACHE_TABLE: Lazy<Mutex<BTreeMap<String, Arc<VFileCacheLock>>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
 
 type WholeFileCacheKey = (usize, u32);
@@ -2632,8 +2942,8 @@ fn ext4_file_has_hole(file: &mut ext4_file) -> bool {
     r != EOK as i32 || hole < size
 }
 
-fn cached_entries_for_inode(key: WholeFileCacheKey) -> Vec<(String, Arc<RwLock<VFileCache>>)> {
-    let entries: Vec<(String, Arc<RwLock<VFileCache>>)> = CACHE_TABLE
+fn cached_entries_for_inode(key: WholeFileCacheKey) -> Vec<(String, Arc<VFileCacheLock>)> {
+    let entries: Vec<(String, Arc<VFileCacheLock>)> = CACHE_TABLE
         .lock()
         .iter()
         .map(|(path, cache)| (path.clone(), cache.clone()))
@@ -2682,6 +2992,9 @@ pub fn if_cache(file_path: String) -> bool {
 pub fn read_cached_at(path: &str, offset: usize, buff: &mut [u8]) -> Option<usize> {
     let cache = CACHE_TABLE.lock().get(path).cloned()?;
     let cache = cache.read();
+    if cache.evicting {
+        return None;
+    }
     if offset >= cache.size {
         return Some(0);
     }
@@ -2696,6 +3009,9 @@ fn overlay_cached_stat(path: &str, stat: &mut ext4_inode_stat) {
         return;
     };
     let cache = cache.read();
+    if cache.evicting {
+        return;
+    }
     stat.st_size = cache.size as isize;
     if stat.st_blksize > 0 {
         stat.st_blocks = (stat.st_size + stat.st_blksize as isize - 1) / stat.st_blksize as isize;
@@ -2751,6 +3067,9 @@ pub fn rename_path_cache(old_path: &str, new_path: &str) -> Option<usize> {
 pub fn write_cached_at(path: &str, offset: usize, buf: &[u8]) -> Option<Result<usize, i32>> {
     let cache = CACHE_TABLE.lock().get(path).cloned()?;
     let mut cache_writer = cache.write();
+    if cache_writer.evicting {
+        return None;
+    }
     let next_size = match offset.checked_add(buf.len()) {
         Some(size) => size,
         None => return Some(Err(EINVAL as i32)),
@@ -2774,11 +3093,11 @@ pub fn write_cached_at(path: &str, offset: usize, buf: &[u8]) -> Option<Result<u
     Some(Ok(buf.len()))
 }
 
-pub fn get_cache(file_path: String) -> Arc<RwLock<VFileCache>> {
-    CACHE_TABLE.lock().get(&file_path).unwrap().clone()
+fn get_cache(file_path: &str) -> Option<Arc<VFileCacheLock>> {
+    CACHE_TABLE.lock().get(file_path).cloned()
 }
 
-pub fn insert_cache(file_path: String, cache: &Arc<RwLock<VFileCache>>) {
+fn insert_cache(file_path: String, cache: &Arc<VFileCacheLock>) {
     CACHE_TABLE.lock().insert(file_path, cache.clone());
 }
 
@@ -2890,16 +3209,42 @@ fn insert_fifo(file_path: String) -> Result<(), i32> {
         #[cfg(feature = "perf")]
         perf::record_write_cache_eviction(_written);
 
-        {
-            let mut fifo = FIFO_TABLE.lock();
-            fifo.retain(|entry| entry != &path);
-        }
-        let mut table = CACHE_TABLE.lock();
-        if table
+        // A write can arrive after the snapshot reached disk. Claiming a
+        // still-clean entry makes those racing writers bypass the cache before
+        // its table reference disappears; otherwise keep the dirty entry for
+        // a later eviction rather than dropping user data.
+        let removed = if cache.claim_clean_for_eviction() {
+            let removed = {
+                let mut table = CACHE_TABLE.lock();
+                if table
+                    .get(&path)
+                    .is_some_and(|current| Arc::ptr_eq(current, &cache))
+                {
+                    table.remove(&path);
+                    true
+                } else {
+                    false
+                }
+            };
+            if !removed {
+                // Rename/unlink may have replaced this path while write-back
+                // was in flight. The cache remains reachable elsewhere, so
+                // undo the transient admission barrier.
+                cache.cancel_eviction();
+            }
+            removed
+        } else {
+            false
+        };
+
+        let cache_still_at_path = CACHE_TABLE
+            .lock()
             .get(&path)
-            .is_some_and(|current| Arc::ptr_eq(current, &cache))
-        {
-            table.remove(&path);
+            .is_some_and(|current| Arc::ptr_eq(current, &cache));
+        let mut fifo = FIFO_TABLE.lock();
+        fifo.retain(|entry| entry != &path);
+        if !removed && cache_still_at_path {
+            fifo.push_back(path);
         }
     }
 }
@@ -2912,17 +3257,17 @@ pub fn write_back_cache(path: String) -> Result<usize, i32> {
     }
 }
 
-fn write_back_cache_entry(path: &str, cache: &Arc<RwLock<VFileCache>>) -> Result<usize, i32> {
-    let mut cache_writer = cache.write();
-    if !cache_writer.modified {
+fn write_back_cache_entry(path: &str, cache: &Arc<VFileCacheLock>) -> Result<usize, i32> {
+    // Do not hold the data lock while entering lwext4. A write-back snapshot
+    // has its own lifetime, and the flush gate orders snapshots so an older
+    // I/O completion cannot overwrite a newer one on disk.
+    let _flush = cache.flush.lock();
+    let Some(snapshot) = cache.snapshot_for_writeback()? else {
         return Ok(0);
-    }
+    };
 
-    //如果被修改过，则写回
-    // debug!("{} is written back!", path);
     let c_path = CString::new(path).expect("CString::new failed");
-    let c_path = c_path.into_raw();
-    let flags = Ext4File::flags_to_cstring(2).into_raw();
+    let flags = Ext4File::flags_to_cstring(O_RDWR);
     let mut file_desc = ext4_file {
         mp: core::ptr::null_mut(),
         inode: 0,
@@ -2930,16 +3275,12 @@ fn write_back_cache_entry(path: &str, cache: &Arc<RwLock<VFileCache>>) -> Result
         fsize: 0,
         fpos: 0,
     };
-    let mut r = unsafe { ext4_fopen(&mut file_desc, c_path, flags) };
-    unsafe {
-        // deallocate the CString
-        drop(CString::from_raw(c_path));
-        drop(CString::from_raw(flags));
-    }
+    let mut r = unsafe { ext4_fopen(&mut file_desc, c_path.as_ptr(), flags.as_ptr()) };
     if r == ENOENT as i32 {
         // Runtime proc files are removed together with their task.
         // They must never be recreated from a stale write-back cache.
         if is_proc_task_runtime_file(path) {
+            cache.mark_clean_if_unchanged(snapshot.revision);
             return Ok(0);
         }
         // A newly created file can remain only in the write-back cache
@@ -2953,20 +3294,16 @@ fn write_back_cache_entry(path: &str, cache: &Arc<RwLock<VFileCache>>) -> Result
             fpos: 0,
         };
         let c_path = CString::new(path).expect("CString::new failed");
-        let c_path = c_path.into_raw();
-        let flags = Ext4File::flags_to_cstring(O_RDWR | O_CREAT | O_TRUNC).into_raw();
-        r = unsafe { ext4_fopen(&mut file_desc, c_path, flags) };
-        unsafe {
-            drop(CString::from_raw(c_path));
-            drop(CString::from_raw(flags));
-        }
+        let flags = Ext4File::flags_to_cstring(O_RDWR | O_CREAT | O_TRUNC);
+        r = unsafe { ext4_fopen(&mut file_desc, c_path.as_ptr(), flags.as_ptr()) };
         if r == EOK as i32 {
-            if let Some(mode) = cache_writer.mode {
+            if let Some(mode) = snapshot.mode {
                 let c_path = CString::new(path).expect("CString::new failed");
-                let c_path = c_path.into_raw();
-                r = unsafe { ext4_mode_set(c_path, mode) };
-                unsafe {
-                    drop(CString::from_raw(c_path));
+                r = unsafe { ext4_mode_set(c_path.as_ptr(), mode) };
+                if r != EOK as i32 {
+                    unsafe {
+                        ext4_fclose(&mut file_desc);
+                    }
                 }
             }
         }
@@ -2980,11 +3317,11 @@ fn write_back_cache_entry(path: &str, cache: &Arc<RwLock<VFileCache>>) -> Result
         // An alias may have created sparse layout after this path's cache was
         // populated. Dropping the stale byte-only cache is safer than turning
         // its holes into zero-filled allocated blocks during FIFO eviction.
-        cache_writer.modified = false;
         let close_r = unsafe { ext4_fclose(&mut file_desc) };
         if close_r != EOK as i32 {
             return Err(close_r);
         }
+        cache.mark_clean_if_unchanged(snapshot.revision);
         return Ok(0);
     }
 
@@ -2993,8 +3330,8 @@ fn write_back_cache_entry(path: &str, cache: &Arc<RwLock<VFileCache>>) -> Result
     let r = unsafe {
         ext4_fwrite(
             &mut file_desc,
-            cache_writer.data.as_ptr() as _,
-            cache_writer.size,
+            snapshot.data.as_ptr() as _,
+            snapshot.size,
             &mut rw_count,
         )
     };
@@ -3010,14 +3347,14 @@ fn write_back_cache_entry(path: &str, cache: &Arc<RwLock<VFileCache>>) -> Result
         error!("write_back_cache ext4_fclose: {}, rc = {}", path, r);
         return Err(r);
     }
-    if rw_count != cache_writer.size {
+    if rw_count != snapshot.size {
         error!(
             "write_back_cache short write: {}, expected {}, got {}",
-            path, cache_writer.size, rw_count
+            path, snapshot.size, rw_count
         );
         return Err(EIO as i32);
     }
-    cache_writer.modified = false;
+    cache.mark_clean_if_unchanged(snapshot.revision);
     Ok(rw_count)
 }
 

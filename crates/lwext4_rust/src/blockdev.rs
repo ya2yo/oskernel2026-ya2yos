@@ -4,6 +4,7 @@ use alloc::ffi::CString;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::UnsafeCell;
 use core::convert::TryFrom;
 use core::ffi::{c_char, c_void};
 use core::ptr::null_mut;
@@ -24,12 +25,28 @@ pub type BcacheWaitFn = unsafe extern "C" fn(
 /// Wake callback paired with [`BcacheWaitFn`].
 pub type BcacheWakeFn = unsafe extern "C" fn(ctx: *mut c_void, lba: u64);
 
+/// Callback installed by a preemptible kernel for one lwext4 resource lock.
+/// `lock` is the stable address of an `ext4_fs` member and `write` selects
+/// exclusive versus shared acquisition.
+pub type FsRwlockLockHook = unsafe extern "C" fn(ctx: *mut c_void, lock: *mut c_void, write: bool);
+
+/// Callback paired with [`FsRwlockLockHook`].
+pub type FsRwlockUnlockHook =
+    unsafe extern "C" fn(ctx: *mut c_void, lock: *mut c_void, write: bool);
+
 unsafe extern "C" {
     #[link_name = "ext4_bcache_setup_sync"]
     fn ext4_bcache_setup_sync_ffi(
         ctx: *mut c_void,
         wait: Option<BcacheWaitFn>,
         wake: Option<BcacheWakeFn>,
+    );
+
+    #[link_name = "ext4_fs_rwlock_set_hooks"]
+    fn ext4_fs_rwlock_set_hooks_ffi(
+        ctx: *mut c_void,
+        lock_hook: Option<FsRwlockLockHook>,
+        unlock_hook: Option<FsRwlockUnlockHook>,
     );
 }
 
@@ -61,7 +78,12 @@ pub trait KernelDevOp {
 }
 
 pub struct Ext4BlockWrapper<K: KernelDevOp> {
-    value: Box<ext4_blockdev>,
+    /// lwext4 mutates this object through its C ABI while the resource locks
+    /// installed by the host serialize the relevant fields.  Keeping the
+    /// foreign-owned state in an `UnsafeCell` makes the interior mutability
+    /// explicit instead of manufacturing aliased `&mut` references from the
+    /// VFS superblock.
+    value: Box<UnsafeCell<ext4_blockdev>>,
     //block_dev: K::DevType,
     name: [u8; 16],
     mount_point: [u8; 32],
@@ -69,6 +91,20 @@ pub struct Ext4BlockWrapper<K: KernelDevOp> {
 }
 
 impl<K: KernelDevOp> Ext4BlockWrapper<K> {
+    /// Install the host kernel's task-aware implementation for all lwext4
+    /// resource locks.  Call this before constructing the first wrapper so
+    /// mount and recovery use the same waiting discipline as normal I/O.
+    ///
+    /// The C library intentionally keeps a raw atomic fallback when these
+    /// hooks are absent, which preserves its standalone test environment.
+    pub fn setup_fs_rwlock_hooks(
+        ctx: *mut c_void,
+        lock_hook: Option<FsRwlockLockHook>,
+        unlock_hook: Option<FsRwlockUnlockHook>,
+    ) {
+        unsafe { ext4_fs_rwlock_set_hooks_ffi(ctx, lock_hook, unlock_hook) }
+    }
+
     pub fn new(block_dev: K::DevType) -> Result<Self, i32> {
         // note this ownership
         let devt_user = Box::into_raw(Box::new(block_dev)) as *mut c_void;
@@ -120,7 +156,7 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
         mount_point[..c_mountpoint.len()].copy_from_slice(c_mountpoint);
 
         let mut ext4bd = Self {
-            value: Box::new(ext4dev),
+            value: Box::new(UnsafeCell::new(ext4dev)),
             //block_dev,
             name,
             mount_point,
@@ -287,14 +323,15 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
         EOK as _
     }
 
-    pub fn sync(&mut self) -> Result<usize, i32> {
+    pub fn sync(&self) -> Result<usize, i32> {
         unsafe {
-            let r = ext4_block_cache_flush(&mut *self.value);
+            let bdev = self.value.get();
+            let r = ext4_block_cache_flush(bdev);
             if r != EOK as i32 {
                 error!("ext4_block_cache_flush: rc = {:?}\n", r);
                 return Err(r);
             }
-            let dev = Self::device_from_bdev(self.value.as_mut()).ok_or(EIO as i32)?;
+            let dev = Self::device_from_bdev(bdev).ok_or(EIO as i32)?;
             K::flush(dev)
         }
     }
@@ -303,7 +340,7 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
         let c_name = &self.name as *const _ as *const c_char;
         let c_mountpoint = &self.mount_point as *const _ as *const c_char;
 
-        let r = ext4_device_register(self.value.as_mut(), c_name);
+        let r = ext4_device_register(self.value.get(), c_name);
         if r != EOK as i32 {
             error!("ext4_device_register: rc = {:?}\n", r);
             return Err(r);
@@ -457,7 +494,7 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
     }
 
     pub fn print_lwext4_block_stats(&self) {
-        let ext4dev = &(self.value);
+        let ext4dev = unsafe { &*self.value.get() };
         //if ext4dev.is_null { return; }
 
         debug!("********************");
@@ -481,7 +518,9 @@ impl<K: KernelDevOp> Drop for Ext4BlockWrapper<K> {
     fn drop(&mut self) {
         info!("Drop struct Ext4BlockWrapper");
         self.lwext4_umount().unwrap();
-        let devtype = unsafe { Box::from_raw((*(&self.value).bdif).p_user as *mut K::DevType) };
+        let devtype = unsafe {
+            Box::from_raw((*self.value.get()).bdif.as_ref().unwrap().p_user as *mut K::DevType)
+        };
         drop(devtype);
     }
 }

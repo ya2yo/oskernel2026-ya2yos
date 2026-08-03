@@ -2445,3 +2445,12 @@
   BuildStorm 结束；不报告 fsck、LTP 或运行时跨架构通过。
 - **关联文档**：[问题复盘](./problem/ext4-linux-locking-and-lwext4-admission.md)、[优化方案](./优化方案.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### 当前工作区 ext4 资源级锁迁移与验证边界（8.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求暂停代码修复，先为当前工作区补充文档，并等待新的运行验证；同时要求不要无依据地继续改动 futex。
+- **描述**：根据当前差异记录 lwext4 的资源级 C 锁、Rust task-aware FIFO 锁回调、VFileCache data/flush 分离与快照写回修复，明确 `EXT4_OP_LOCK` 已从当前 ext4 调用路径移除。最新 `server.ans` 停在 Cargo `8/446`，GDB 只观察到 8 个 hart 均在 `wfi`，因此文档没有把该现场解释为 ext4 或 futex 死锁，也没有宣称并行化收益。
+- **验证边界**：本轮只更新开发日志、问题记录和 AI 记录，未重新编译或运行 QEMU；完整 BuildStorm、fsck、LTP、并发写回和 LoongArch64 运行待维护者后续验证。
+- **关联文档**：[问题复盘](./problem/ext4-linux-locking-and-lwext4-admission.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
