@@ -62,69 +62,13 @@ impl PhaseDelta {
     }
 }
 
-struct LockDelta {
-    samples: AtomicUsize,
-    wait_ticks: AtomicUsize,
-    hold_ticks: AtomicUsize,
-}
-
-impl LockDelta {
-    const fn new() -> Self {
-        Self {
-            samples: AtomicUsize::new(0),
-            wait_ticks: AtomicUsize::new(0),
-            hold_ticks: AtomicUsize::new(0),
-        }
-    }
-}
-
 fn take_delta(last: &AtomicUsize, counter: &AtomicUsize) -> usize {
     let current = counter.load(Ordering::Relaxed);
     let previous = last.swap(current, Ordering::Relaxed);
     current.saturating_sub(previous)
 }
 
-fn ext4_gate_owner_snapshot() -> (usize, usize) {
-    let owner_tid = EXT4_GATE_STATS.owner_tid.load(Ordering::Relaxed);
-    let owner_since = EXT4_GATE_STATS.owner_since_ticks.load(Ordering::Relaxed);
-    let owner_hold_us = if owner_tid != 0 && owner_since != 0 {
-        ticks_to_us(crate::arch::time::get_ticks().saturating_sub(owner_since))
-    } else {
-        0
-    };
-    (owner_tid, owner_hold_us)
-}
-
 static DELTA_REPORT_MS: AtomicUsize = AtomicUsize::new(0);
-
-static DELTA_EXT4_READ_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_READ_OPEN_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_READ_DATA_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_FIND_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_FSTAT_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_WRITE_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_WRITE_OPEN_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_WRITE_DATA_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_RENAME_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_CLOSE_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_READ_ALL_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_READ_DIR_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_PATH_RESOLVE_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_METADATA_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_NAMESPACE_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_SYNC_LOCK: LockDelta = LockDelta::new();
-static DELTA_EXT4_SEEK_LOCK: LockDelta = LockDelta::new();
-
-static DELTA_EXT4_GATE_FAST_ACQUIRES: CounterDelta = CounterDelta::new();
-static DELTA_EXT4_GATE_SHARED_ACQUIRES: CounterDelta = CounterDelta::new();
-static DELTA_EXT4_GATE_QUEUED: CounterDelta = CounterDelta::new();
-static DELTA_EXT4_GATE_HANDOFFS: CounterDelta = CounterDelta::new();
-static DELTA_EXT4_GATE_SHARED_HANDOFFS: CounterDelta = CounterDelta::new();
-static DELTA_EXT4_GATE_HANDOFF_WAKES: CounterDelta = CounterDelta::new();
-static DELTA_EXT4_GATE_BARGING_PREVENTED: CounterDelta = CounterDelta::new();
-static DELTA_EXT4_GATE_CANCELLED: CounterDelta = CounterDelta::new();
-static DELTA_EXT4_GATE_HANDOFF_WAIT_TICKS: CounterDelta = CounterDelta::new();
-static DELTA_EXT4_GATE_OWNER_EXIT_RELEASES: CounterDelta = CounterDelta::new();
 
 static DELTA_SYSCALL_READ: DurationDelta = DurationDelta::new();
 static DELTA_SYSCALL_WRITE: DurationDelta = DurationDelta::new();
@@ -359,19 +303,6 @@ storage_counter_deltas!(
     DELTA_BLOCKDEV_WAIT_TICKS,
     DELTA_BLOCKDEV_SERVICE_TICKS,
 );
-
-fn emit_lock_delta(label: &str, stats: &Ext4LockStats, delta: &LockDelta) {
-    let samples = take_delta(&delta.samples, &stats.samples);
-    let wait_ticks = take_delta(&delta.wait_ticks, &stats.wait_ticks);
-    let hold_ticks = take_delta(&delta.hold_ticks, &stats.hold_ticks);
-    println!(
-        "[perf] interval_ext4_lock name={} samples={} wait_us={} hold_us={}",
-        label,
-        samples,
-        ticks_to_us(wait_ticks),
-        ticks_to_us(hold_ticks),
-    );
-}
 
 fn emit_duration_delta(
     label: &str,
@@ -690,114 +621,6 @@ fn emit_interval_deltas(now: usize) {
     };
     println!("[perf] interval t={}ms elapsed_ms={}", now, elapsed_ms);
 
-    emit_lock_delta(
-        "ext4_read_lock",
-        &EXT4_READ_LOCK_STATS,
-        &DELTA_EXT4_READ_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_read_open_lock",
-        &EXT4_READ_OPEN_LOCK_STATS,
-        &DELTA_EXT4_READ_OPEN_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_read_data_lock",
-        &EXT4_READ_DATA_LOCK_STATS,
-        &DELTA_EXT4_READ_DATA_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_find_lock",
-        &EXT4_FIND_LOCK_STATS,
-        &DELTA_EXT4_FIND_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_fstat_lock",
-        &EXT4_FSTAT_LOCK_STATS,
-        &DELTA_EXT4_FSTAT_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_write_lock",
-        &EXT4_WRITE_LOCK_STATS,
-        &DELTA_EXT4_WRITE_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_write_open_lock",
-        &EXT4_WRITE_OPEN_LOCK_STATS,
-        &DELTA_EXT4_WRITE_OPEN_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_write_data_lock",
-        &EXT4_WRITE_DATA_LOCK_STATS,
-        &DELTA_EXT4_WRITE_DATA_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_rename_lock",
-        &EXT4_RENAME_LOCK_STATS,
-        &DELTA_EXT4_RENAME_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_close_lock",
-        &EXT4_CLOSE_LOCK_STATS,
-        &DELTA_EXT4_CLOSE_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_read_all_lock",
-        &EXT4_READ_ALL_LOCK_STATS,
-        &DELTA_EXT4_READ_ALL_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_read_dir_lock",
-        &EXT4_READ_DIR_LOCK_STATS,
-        &DELTA_EXT4_READ_DIR_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_path_resolve_lock",
-        &EXT4_PATH_RESOLVE_LOCK_STATS,
-        &DELTA_EXT4_PATH_RESOLVE_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_metadata_lock",
-        &EXT4_METADATA_LOCK_STATS,
-        &DELTA_EXT4_METADATA_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_namespace_lock",
-        &EXT4_NAMESPACE_LOCK_STATS,
-        &DELTA_EXT4_NAMESPACE_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_sync_lock",
-        &EXT4_SYNC_LOCK_STATS,
-        &DELTA_EXT4_SYNC_LOCK,
-    );
-    emit_lock_delta(
-        "ext4_seek_lock",
-        &EXT4_SEEK_LOCK_STATS,
-        &DELTA_EXT4_SEEK_LOCK,
-    );
-    let (owner_tid, owner_hold_us) = ext4_gate_owner_snapshot();
-    println!(
-        "[perf] interval_ext4_gate fast_acquires={} shared_acquires={} queued={} handoffs={} shared_handoffs={} handoff_wakes={} barging_prevented={} cancelled={} owner_exit_releases={} handoff_wait_us={} queue_depth={} max_queue_depth={} active_readers={} max_active_readers={} owner_tid={} owner_hold_us={}",
-        DELTA_EXT4_GATE_FAST_ACQUIRES.take(&EXT4_GATE_STATS.fast_acquires),
-        DELTA_EXT4_GATE_SHARED_ACQUIRES.take(&EXT4_GATE_STATS.shared_acquires),
-        DELTA_EXT4_GATE_QUEUED.take(&EXT4_GATE_STATS.queued),
-        DELTA_EXT4_GATE_HANDOFFS.take(&EXT4_GATE_STATS.handoffs),
-        DELTA_EXT4_GATE_SHARED_HANDOFFS.take(&EXT4_GATE_STATS.shared_handoffs),
-        DELTA_EXT4_GATE_HANDOFF_WAKES.take(&EXT4_GATE_STATS.handoff_wakes),
-        DELTA_EXT4_GATE_BARGING_PREVENTED.take(&EXT4_GATE_STATS.barging_prevented),
-        DELTA_EXT4_GATE_CANCELLED.take(&EXT4_GATE_STATS.cancelled),
-        DELTA_EXT4_GATE_OWNER_EXIT_RELEASES.take(&EXT4_GATE_STATS.owner_exit_releases),
-        ticks_to_us(
-            DELTA_EXT4_GATE_HANDOFF_WAIT_TICKS.take(&EXT4_GATE_STATS.handoff_wait_ticks)
-        ),
-        EXT4_GATE_STATS.queue_depth.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.max_queue_depth.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.active_readers.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.max_active_readers.load(Ordering::Relaxed),
-        owner_tid,
-        owner_hold_us,
-    );
-
     println!(
         "[perf] interval_scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",
         DELTA_SCHED_LOCAL_ENQUEUES.take(&SCHEDULER_LOCAL_ENQUEUES),
@@ -946,14 +769,11 @@ pub(super) fn emit_report(now: usize) {
         SYSCALL_SCHED_YIELD.load(Ordering::Relaxed),
     );
     println!(
-        "[perf] ext4 reads={} bytes={} byte_cache_read_hits={} byte_cache_read_hit_bytes={} lock={} wait_ticks={} hold_ticks={} file_cache hit={} miss={} page_faults={} readahead_ops={} readahead_pages={} readahead_bytes={}",
+        "[perf] ext4 reads={} bytes={} byte_cache_read_hits={} byte_cache_read_hit_bytes={} file_cache hit={} miss={} page_faults={} readahead_ops={} readahead_pages={} readahead_bytes={}",
         EXT4_READ_OPS.load(Ordering::Relaxed),
         EXT4_READ_BYTES.load(Ordering::Relaxed),
         EXT4_BYTE_CACHE_READ_HITS.load(Ordering::Relaxed),
         EXT4_BYTE_CACHE_READ_HIT_BYTES.load(Ordering::Relaxed),
-        EXT4_LOCK_STATS.samples.load(Ordering::Relaxed),
-        EXT4_LOCK_STATS.wait_ticks.load(Ordering::Relaxed),
-        EXT4_LOCK_STATS.hold_ticks.load(Ordering::Relaxed),
         FILE_CACHE_HITS.load(Ordering::Relaxed),
         FILE_CACHE_MISSES.load(Ordering::Relaxed),
         FILE_PAGE_FAULTS.load(Ordering::Relaxed),
@@ -1033,11 +853,6 @@ pub(super) fn emit_report(now: usize) {
         VFS_DENTRY_CAPACITY_EVICTIONS.load(Ordering::Relaxed),
         VFS_DENTRY_CAPACITY_EVICTED_ENTRIES.load(Ordering::Relaxed),
     );
-    emit_ext4_lock_stats("ext4_read_lock", &EXT4_READ_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_read_open_lock", &EXT4_READ_OPEN_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_read_data_lock", &EXT4_READ_DATA_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_find_lock", &EXT4_FIND_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_fstat_lock", &EXT4_FSTAT_LOCK_STATS);
     print!("[perf] ext4_fstat_path ");
     emit_ext4_phase_stats("fast_cached", &EXT4_FSTAT_FAST_CACHED);
     print!("[perf] ext4_fstat_path ");
@@ -1147,9 +962,6 @@ pub(super) fn emit_report(now: usize) {
         EXT4_FSTAT_DIRECTORY_PARENT_LOCAL_UPDATES.load(Ordering::Relaxed),
         EXT4_FSTAT_DIRECTORY_PARENT_GLOBAL_FALLBACKS.load(Ordering::Relaxed),
     );
-    emit_ext4_lock_stats("ext4_write_lock", &EXT4_WRITE_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_write_open_lock", &EXT4_WRITE_OPEN_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_write_data_lock", &EXT4_WRITE_DATA_LOCK_STATS);
     print!("[perf] ext4_write_duration ");
     emit_duration(
         "open",
@@ -1221,46 +1033,6 @@ pub(super) fn emit_report(now: usize) {
     emit_ext4_phase_stats("delay", &EXT4_METADATA_DELAY);
     print!("[perf] ext4_metadata_duration ");
     emit_ext4_phase_stats("read_all_prepare", &EXT4_METADATA_READ_ALL_PREPARE);
-    emit_ext4_lock_stats("ext4_rename_lock", &EXT4_RENAME_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_close_lock", &EXT4_CLOSE_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_read_all_lock", &EXT4_READ_ALL_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_read_dir_lock", &EXT4_READ_DIR_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_path_resolve_lock", &EXT4_PATH_RESOLVE_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_metadata_lock", &EXT4_METADATA_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_namespace_lock", &EXT4_NAMESPACE_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_sync_lock", &EXT4_SYNC_LOCK_STATS);
-    emit_ext4_lock_stats("ext4_seek_lock", &EXT4_SEEK_LOCK_STATS);
-    let (owner_tid, owner_hold_us) = ext4_gate_owner_snapshot();
-    println!(
-        "[perf] ext4_gate_fair fast_acquires={} shared_acquires={} queued={} handoffs={} shared_handoffs={} handoff_wakes={} barging_prevented={} cancelled={} owner_exit_releases={} queue_depth={} max_queue_depth={} active_readers={} max_active_readers={} owner_tid={} owner_hold_us={} handoff_wait_us={} max_handoff_wait_us={} wait_lt_1ms={} wait_lt_10ms={} wait_lt_100ms={} wait_lt_1s={} wait_lt_10s={} wait_ge_10s={}",
-        EXT4_GATE_STATS.fast_acquires.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.shared_acquires.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.queued.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.handoffs.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.shared_handoffs.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.handoff_wakes.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.barging_prevented.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.cancelled.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.owner_exit_releases.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.queue_depth.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.max_queue_depth.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.active_readers.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.max_active_readers.load(Ordering::Relaxed),
-        owner_tid,
-        owner_hold_us,
-        ticks_to_us(EXT4_GATE_STATS.handoff_wait_ticks.load(Ordering::Relaxed)),
-        ticks_to_us(
-            EXT4_GATE_STATS
-                .max_handoff_wait_ticks
-                .load(Ordering::Relaxed)
-        ),
-        EXT4_GATE_STATS.wait_lt_1ms.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.wait_lt_10ms.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.wait_lt_100ms.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.wait_lt_1s.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.wait_lt_10s.load(Ordering::Relaxed),
-        EXT4_GATE_STATS.wait_ge_10s.load(Ordering::Relaxed),
-    );
     #[cfg(feature = "perf")]
     {
         let write_cache = lwext4_rust::perf::write_back_cache_perf_stats();

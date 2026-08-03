@@ -2422,3 +2422,12 @@
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/ext4-linux-locking-and-lwext4-admission.md)、
   [AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### lwext4 Rust allocator `LayoutError` panic（8.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者反馈 Docker 编译正常，但 guest 运行在 `ulibc.rs:116` 因非法 `Layout` panic。
+- **描述**：审计 Rust C allocator 后确认 `free()` 信任被破坏的块头并对 `Layout::from_size_align` 使用 `unwrap()`；同时由 build script 打开 `LWEXT4_USE_USER_MALLOC`，将内核 lwext4 从裸弱 `malloc/free` 切换到显式 `ext4_user_*` wrapper，增加 magic、size 校验和溢出处理，避免 allocator ABI 混用和 panic。
+- **验证边界**：host 隔离 CMake `LIB_ONLY` 构建及静态检查通过；Docker 编译由维护者确认，AI 未重复 Docker guest 运行，未宣称完整 BuildStorm 回归。
+- **关联文档**：[问题复盘](./problem/lwext4-rust-allocator-layout-error.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

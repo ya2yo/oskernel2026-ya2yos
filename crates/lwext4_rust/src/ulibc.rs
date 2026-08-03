@@ -36,10 +36,26 @@ pub extern "C" fn ext4_user_malloc(size: c_size_t) -> *mut c_void {
     malloc(size)
 }
 
+#[no_mangle]
+pub extern "C" fn ext4_user_calloc(m: c_size_t, n: c_size_t) -> *mut c_void {
+    calloc(m, n)
+}
+
+#[no_mangle]
+pub extern "C" fn ext4_user_realloc(memblock: *mut c_void, size: c_size_t) -> *mut c_void {
+    realloc(memblock, size)
+}
+
 #[linkage = "weak"]
 #[no_mangle]
 pub extern "C" fn calloc(m: c_size_t, n: c_size_t) -> *mut c_void {
-    let mem = malloc(m * n);
+    let Some(size) = m.checked_mul(n) else {
+        return core::ptr::null_mut();
+    };
+    let mem = malloc(size);
+    if mem.is_null() {
+        return mem;
+    }
 
     extern "C" {
         pub fn memset(dest: *mut c_void, c: c_int, n: c_size_t) -> *mut c_void;
@@ -56,10 +72,17 @@ pub extern "C" fn realloc(memblock: *mut c_void, size: c_size_t) -> *mut c_void 
     }
 
     let ptr = memblock.cast::<MemoryControlBlock>();
-    let old_size = unsafe { ptr.sub(1).read().size };
+    let header = unsafe { ptr.sub(1).read() };
+    if header.magic != ALLOC_MAGIC || header.size_tag != (header.size ^ ALLOC_MAGIC) {
+        return core::ptr::null_mut();
+    }
+    let old_size = header.size;
     info!("realloc from {} to {}", old_size, size);
 
     let mem = malloc(size);
+    if mem.is_null() {
+        return mem;
+    }
 
     unsafe {
         let old_size = min(size, old_size);
@@ -77,23 +100,39 @@ pub extern "C" fn ext4_user_free(p: *mut c_void) {
 }
 
 struct MemoryControlBlock {
+    magic: usize,
     size: usize,
+    size_tag: usize,
 }
 const CTRL_BLK_SIZE: usize = core::mem::size_of::<MemoryControlBlock>();
+const ALLOC_MAGIC: usize = 0x5941_324f_5341_4c4c;
+
+#[inline]
+fn allocation_layout(size: usize) -> Option<Layout> {
+    let total = size.checked_add(CTRL_BLK_SIZE)?;
+    Layout::from_size_align(total, core::mem::align_of::<MemoryControlBlock>()).ok()
+}
 
 /// Allocate size bytes memory and return the memory address.
 #[linkage = "weak"]
 #[no_mangle]
 pub extern "C" fn malloc(size: c_size_t) -> *mut c_void {
-    // Allocate `(actual length) + 8`. The lowest 8 Bytes are stored in the actual allocated space size.
-    let layout = Layout::from_size_align(size + CTRL_BLK_SIZE, 8).unwrap();
+    let Some(layout) = allocation_layout(size) else {
+        return core::ptr::null_mut();
+    };
     unsafe {
         let ptr = alloc(layout);
-        assert!(!ptr.is_null(), "malloc failed");
+        if ptr.is_null() {
+            return core::ptr::null_mut();
+        }
         //debug!("malloc {}@{:p}", size + CTRL_BLK_SIZE, ptr);
 
         let ptr = ptr.cast::<MemoryControlBlock>();
-        ptr.write(MemoryControlBlock { size });
+        ptr.write(MemoryControlBlock {
+            magic: ALLOC_MAGIC,
+            size,
+            size_tag: size ^ ALLOC_MAGIC,
+        });
         ptr.add(1).cast()
     }
 }
@@ -109,11 +148,15 @@ pub extern "C" fn free(ptr: *mut c_void) {
     //debug!("free pointer {:p}", ptr);
 
     let ptr = ptr.cast::<MemoryControlBlock>();
-    assert!(ptr as usize > CTRL_BLK_SIZE, "free a null pointer"); // ?
     unsafe {
         let ptr = ptr.sub(1);
-        let size = ptr.read().size;
-        let layout = Layout::from_size_align(size + CTRL_BLK_SIZE, 8).unwrap();
+        let header = ptr.read();
+        if header.magic != ALLOC_MAGIC || header.size_tag != (header.size ^ ALLOC_MAGIC) {
+            return;
+        }
+        let Some(layout) = allocation_layout(header.size) else {
+            return;
+        };
         dealloc(ptr.cast(), layout)
     }
 }

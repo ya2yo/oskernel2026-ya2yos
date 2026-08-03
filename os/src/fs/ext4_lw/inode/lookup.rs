@@ -23,7 +23,6 @@ impl Ext4Inode {
         };
         let result = {
             let _io_state = self.io_state.lock();
-            let _ext4 = EXT4_OP_LOCK.lock_for_find();
             let file = &mut self.inner.get_unchecked_mut().f;
             // Capture the epoch while the same global gate protects the
             // lookup result.  It must travel with `stat`, not be sampled

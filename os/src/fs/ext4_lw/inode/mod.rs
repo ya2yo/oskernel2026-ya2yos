@@ -18,7 +18,7 @@ use lwext4_rust::{
     Ext4File, InodeTypes,
 };
 
-use super::{TaskMutex, EXT4_OP_LOCK};
+use super::TaskMutex;
 use crate::utils::perf::Ext4FstatMissReason;
 #[cfg(feature = "perf")]
 use crate::utils::perf::{
@@ -233,8 +233,8 @@ impl Ext4Inode {
         let inode_identity = lookup_stat
             .as_ref()
             .and_then(|stat| (stat.st_ino != 0).then_some((stat.st_dev, stat.st_ino)));
-        // `find()` captures this while it holds `EXT4_OP_LOCK`, alongside the
-        // `(st_dev, st_ino)` returned by lwext4.  A later namespace mutation
+        // `find()` captures this while lwext4 holds its pathname read lock,
+        // alongside the `(st_dev, st_ino)` returned by lwext4. A later namespace mutation
         // therefore cannot make an old lookup result appear current.
         let identity_epoch =
             lookup_identity_epoch.unwrap_or_else(|| EXT4_IDENTITY_EPOCH.load(Ordering::Acquire));
@@ -318,7 +318,6 @@ impl Ext4Inode {
     fn add_alias_path(&self, path: &str) {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Alias);
         let inner = self.inner.get_unchecked_mut();
@@ -574,7 +573,6 @@ impl Ext4Inode {
         }
 
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock_for_path_resolve();
         let file = &mut self.inner.get_unchecked_mut().f;
         let mut prefix = String::new();
         for component in &components[..components.len() - 1] {
@@ -615,7 +613,6 @@ impl Ext4Inode {
 impl Drop for Ext4Inode {
     fn drop(&mut self) {
         let remove_quota_path = {
-            let _ext4 = EXT4_OP_LOCK.lock_for_close();
             let inner = self.inner.get_unchecked_mut();
             let path = Self::live_path(inner);
             // 如果标记了延时删除，则在关闭前移除文件。

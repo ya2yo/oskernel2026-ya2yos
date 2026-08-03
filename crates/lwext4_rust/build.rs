@@ -117,9 +117,9 @@ fn main() {
             .arg(&format!("LWEXT4_BUILD_DIR={}", lwext4_build_dir))
             .arg(&format!("LWEXT4_LIB_SUFFIX={}", build_variant_suffix))
             .arg(if dirty_capacity_experiment {
-                "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DEXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT=ON"
+                "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DEXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT=ON -DLWEXT4_USE_USER_MALLOC=ON"
             } else {
-                "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+                "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DLWEXT4_USE_USER_MALLOC=ON"
             })
             .status()
             .expect("failed to execute process: make lwext4");

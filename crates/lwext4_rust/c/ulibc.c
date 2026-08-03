@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <limits.h>
+#include <stdio.h>
 
 #include "ext4_debug.h"
 
@@ -63,13 +64,10 @@ int strncmp(const char *_l, const char *_r, size_t n)
         return *l - *r;
 }
 
-// fix me
-__attribute__((weak)) 
-FILE *const stdout = NULL;
-
 __attribute__((weak)) 
 int fflush(FILE *f)
 {
+        (void)f;
         // printf("fflush() is not implemented !\n");
         return 0;
 }

@@ -144,7 +144,7 @@ impl DentryCache {
                 }
                 if let DentryValue::Positive { inode } = value {
                     // Keep the inode alive until the dcache lock is released:
-                    // Ext4Inode::drop() takes EXT4_OP_LOCK.
+                    // Ext4Inode::drop() can release an lwext4 descriptor.
                     removed_inodes.push(inode.clone());
                 }
                 false

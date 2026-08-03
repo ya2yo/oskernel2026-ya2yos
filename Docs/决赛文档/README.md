@@ -159,3 +159,4 @@
 - [BuildStorm EXT4 gate owner 退出泄漏](./problem/buildstorm-ext4-gate-owner-exit.md)
 - [lwext4 SMP P21.1 位置无关块设备前置](./problem/lwext4-smp-position-independent-block-device.md)
 - [lwext4 SMP P21.2 并发 bcache 基础设施与串行 gate 退化](./problem/lwext4-smp-concurrent-bcache-foundation.md)
+- [lwext4 Rust 分配器非法 Layout panic](./problem/lwext4-rust-allocator-layout-error.md)

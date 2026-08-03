@@ -564,17 +564,28 @@ int ext4_block_cache_flush(struct ext4_blockdev *bdev)
 
 int ext4_block_cache_write_back(struct ext4_blockdev *bdev, uint8_t on_off)
 {
+	int r;
+
+	/* cache_write_back is a mount-wide nesting counter, not a per-file flag. */
+	if (bdev->fs)
+		ext4_fs_rwlock_write_lock(&bdev->fs->cache_lock);
 	if (on_off)
 		bdev->cache_write_back++;
 
 	if (!on_off && bdev->cache_write_back)
 		bdev->cache_write_back--;
 
-	if (bdev->cache_write_back)
+	if (bdev->cache_write_back) {
+		if (bdev->fs)
+			ext4_fs_rwlock_write_unlock(&bdev->fs->cache_lock);
 		return EOK;
+	}
 
 	/*Flush data in all delayed cache blocks*/
-	return ext4_block_cache_flush(bdev);
+	r = ext4_block_cache_flush(bdev);
+	if (bdev->fs)
+		ext4_fs_rwlock_write_unlock(&bdev->fs->cache_lock);
+	return r;
 }
 
 /**

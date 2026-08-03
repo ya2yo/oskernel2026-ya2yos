@@ -9646,3 +9646,17 @@ reader batch 已实际运行；累计 handoff wait 仍为 `567915801us`。日志
 `make perf TARGET_ARCH=riscv64` 通过。未运行完整 BuildStorm，因为维护者明确其当前 EXT4 实现无法在一小时内完成；
 未触碰现有 `disk.img`。本轮尚未独立运行 LoongArch64、`e2fsck -fn` 或文件系统 LTP 语义回归，不能报告跨架构或完整
 正确性通过。
+
+## 2026-08-03：lwext4 Rust allocator LayoutError panic
+
+### 用户输入
+
+维护者反馈 Docker 内核已能正常编译，但运行时出现 `crates/lwext4_rust/src/ulibc.rs:116` 的 `LayoutError` panic，并要求继续当前工作。
+
+### 分析与采纳结论
+
+定位到 Rust C 兼容分配器 `free()` 对不可信块头直接构造 `Layout` 并 `unwrap()`；同时内核版 lwext4 使用裸弱 `malloc/free`，分配/释放边界不够明确。采纳 magic/size 校验、checked layout 和显式 `ext4_user_*` allocator wrapper，并由 build script 打开 `LWEXT4_USE_USER_MALLOC`。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/ulibc.rs`、`crates/lwext4_rust/c/lwext4/CMakeLists.txt`、`crates/lwext4_rust/c/lwext4/include/ext4_types.h`。维护者确认 Docker 编译通过；host 隔离 CMake `lwext4` 构建、rustfmt 和 diff 检查通过。完整 Docker 运行回归未由 AI 重跑。

@@ -15,7 +15,6 @@ impl Ext4Inode {
         }
 
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Size);
         let inner = self.inner.get_unchecked_mut();
@@ -68,7 +67,6 @@ impl Ext4Inode {
             } else {
                 let needs_open = !self.inner.get_unchecked_mut().f.is_open_for_read(&path);
                 if needs_open {
-                    let _ext4 = EXT4_OP_LOCK.lock_for_read_open();
                     self.inner
                         .get_unchecked_mut()
                         .f
@@ -76,7 +74,6 @@ impl Ext4Inode {
                         .map_err(SysErrNo::from)?;
                 }
                 let r = {
-                    let _ext4 = EXT4_OP_LOCK.lock_for_read_data();
                     self.inner
                         .get_unchecked_mut()
                         .f
@@ -107,8 +104,7 @@ impl Ext4Inode {
     /// 从指定偏移量写入数据。
     pub(super) fn write_at_impl(&self, off: usize, buf: &[u8]) -> SyscallRet {
         // The state lock keeps the path, cache policy and quota reservation
-        // stable while an in-memory write bypasses `EXT4_OP_LOCK`.  Slow paths
-        // retain the original global serialization before entering lwext4.
+        // stable while an in-memory write bypasses the backing filesystem.
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let end = off.checked_add(buf.len()).ok_or(SysErrNo::EFBIG)?;
@@ -140,7 +136,6 @@ impl Ext4Inode {
             // `ensure_open()` no-op adds a second FIFO ticket to every write.
             // Keep the gate for the first open or for the required size probe.
             if needs_open || known_size.is_none() {
-                let _ext4 = EXT4_OP_LOCK.lock_for_write_open();
                 let file = &mut inner.f;
                 #[cfg(feature = "perf")]
                 let open_phase = crate::utils::perf::Ext4WritePhaseGuard::new(
@@ -205,7 +200,6 @@ impl Ext4Inode {
             Ok(reservation) => reservation,
             Err(error) => {
                 if error == SysErrNo::ENOSPC {
-                    let _ext4 = EXT4_OP_LOCK.lock_for_write_data();
                     self.inner.get_unchecked_mut().f.defer_close_flush();
                 }
                 return Err(error);
@@ -241,7 +235,6 @@ impl Ext4Inode {
             return Ok(buf.len());
         }
         let write_result = {
-            let _ext4 = EXT4_OP_LOCK.lock_for_write_data();
             let file = &mut self.inner.get_unchecked_mut().f;
             let result = if off > current_size {
                 // A write beyond EOF creates a sparse range. The whole-file cache
@@ -305,7 +298,6 @@ impl Ext4Inode {
     pub(super) fn truncate_impl(&self, size: usize) -> SyscallRet {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock_for_namespace();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Truncate);
         let inner = self.inner.get_unchecked_mut();
@@ -322,7 +314,6 @@ impl Ext4Inode {
     /// 将 lwext4 文件缓存刷新到磁盘。
     pub(super) fn sync_impl(&self) {
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock_for_sync();
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         inner.f.file_cache_flush();
@@ -335,7 +326,6 @@ impl Ext4Inode {
         // 先提取 path 和类型，避免后续访问 self.inner 时产生重叠借用
         let (file_type, path_str) = {
             let _io_state = self.io_state.lock();
-            let _ext4 = EXT4_OP_LOCK.lock_for_metadata();
             #[cfg(feature = "perf")]
             let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::ReadAllPrepare);
             let inner = self.inner.get_unchecked_mut();
@@ -346,7 +336,6 @@ impl Ext4Inode {
 
         if file_type == InodeType::File {
             let _io_state = self.io_state.lock();
-            let _ext4 = EXT4_OP_LOCK.lock_for_read_all();
             let file = &mut self.inner.get_unchecked_mut().f;
             file.file_open_read_only(&path_str)
                 .map_err(SysErrNo::from)?;
@@ -392,7 +381,6 @@ impl Ext4Inode {
     pub(super) fn seek_data_impl(&self, offset: usize) -> SyscallRet {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock_for_seek();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         let file = &mut inner.f;
@@ -410,7 +398,6 @@ impl Ext4Inode {
     pub(super) fn seek_hole_impl(&self, offset: usize) -> SyscallRet {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
-        let _ext4 = EXT4_OP_LOCK.lock_for_seek();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         let file = &mut inner.f;

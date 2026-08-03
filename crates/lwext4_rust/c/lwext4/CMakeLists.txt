@@ -3,6 +3,9 @@ cmake_minimum_required(VERSION 3.4)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(LWEXT4_USE_USER_MALLOC
+       "Use the caller-provided ext4_user_* allocator hooks" OFF)
+
 include_directories(include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 include_directories(blockdev/filedev)
@@ -41,6 +44,7 @@ elseif(LIB_ONLY)
     add_definitions(-DCONFIG_DEBUG_ASSERT=0)
     add_definitions(-DCONFIG_HAVE_OWN_OFLAGS=1)
     add_definitions(-DCONFIG_HAVE_OWN_ERRNO=0)
+    add_definitions(-DCONFIG_USE_USER_MALLOC=1)
     add_definitions(-DCONFIG_BLOCK_DEV_CACHE_SIZE=16)
 else()
     #Generic example target
@@ -57,7 +61,11 @@ else()
     add_definitions(-DCONFIG_HAVE_OWN_OFLAGS=1)
     add_definitions(-DCONFIG_HAVE_OWN_ERRNO=1)
     add_definitions(-DCONFIG_HAVE_OWN_ASSERT=1)
-    add_definitions(-DCONFIG_USE_USER_MALLOC=0)
+    if(LWEXT4_USE_USER_MALLOC)
+      add_definitions(-DCONFIG_USE_USER_MALLOC=1)
+    else()
+      add_definitions(-DCONFIG_USE_USER_MALLOC=0)
+    endif()
     add_definitions(-DCONFIG_BLOCK_DEV_CACHE_SIZE=16)
 
     add_subdirectory(fs_test)

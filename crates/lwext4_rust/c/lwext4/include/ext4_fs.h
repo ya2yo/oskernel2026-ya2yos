@@ -53,6 +53,65 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
+/*
+ * lwext4 historically relied on one caller supplied mount lock.  That works
+ * for a single-threaded embedded caller, but turns every pathname operation
+ * into a filesystem-wide critical section in an SMP kernel.  Keep locking
+ * state with the mounted filesystem instead: namespace changes, inode data,
+ * block-group bitmaps, superblock counters, the single journal handle and
+ * cache-mode nesting are independent resources.
+ *
+ * The implementation deliberately uses striped locks.  EXT4 inode and block
+ * group numbers are stable resource identities, while a fixed-size table
+ * keeps the mount structure bounded for embedded users of lwext4.  A stripe
+ * collision only adds contention; it never weakens mutual exclusion.
+ */
+#define EXT4_FS_LOCK_STRIPES 257U
+
+struct ext4_fs_rwlock {
+	int state;
+};
+
+static inline void ext4_fs_rwlock_read_lock(struct ext4_fs_rwlock *lock)
+{
+	int observed;
+
+	for (;;) {
+		observed = __atomic_load_n(&lock->state, __ATOMIC_ACQUIRE);
+		if (observed >= 0 &&
+		    __atomic_compare_exchange_n(&lock->state, &observed,
+						observed + 1, false,
+						__ATOMIC_ACQUIRE,
+						__ATOMIC_RELAXED))
+			return;
+		while (__atomic_load_n(&lock->state, __ATOMIC_RELAXED) < 0)
+			;
+	}
+}
+
+static inline void ext4_fs_rwlock_read_unlock(struct ext4_fs_rwlock *lock)
+{
+	__atomic_fetch_sub(&lock->state, 1, __ATOMIC_RELEASE);
+}
+
+static inline void ext4_fs_rwlock_write_lock(struct ext4_fs_rwlock *lock)
+{
+	for (;;) {
+		int expected = 0;
+		if (__atomic_compare_exchange_n(&lock->state, &expected, -1,
+						false, __ATOMIC_ACQUIRE,
+						__ATOMIC_RELAXED))
+			return;
+		while (__atomic_load_n(&lock->state, __ATOMIC_RELAXED) != 0)
+			;
+	}
+}
+
+static inline void ext4_fs_rwlock_write_unlock(struct ext4_fs_rwlock *lock)
+{
+	__atomic_store_n(&lock->state, 0, __ATOMIC_RELEASE);
+}
+
 struct ext4_fs {
 	bool read_only;
 
@@ -67,7 +126,59 @@ struct ext4_fs {
 	struct jbd_fs *jbd_fs;
 	struct jbd_journal *jbd_journal;
 	struct jbd_trans *curr_trans;
+
+	/* See the locking note above.  All fields are zero-initialized at mount. */
+	struct ext4_fs_rwlock namespace_lock;
+	struct ext4_fs_rwlock inode_locks[EXT4_FS_LOCK_STRIPES];
+	struct ext4_fs_rwlock group_locks[EXT4_FS_LOCK_STRIPES];
+	struct ext4_fs_rwlock super_lock;
+	struct ext4_fs_rwlock journal_lock;
+	struct ext4_fs_rwlock cache_lock;
+	/* True only while the caller owns journal_lock for a transaction scope. */
+	bool journal_lock_held;
 };
+
+static inline struct ext4_fs_rwlock *
+ext4_fs_inode_lock_ptr(struct ext4_fs *fs, uint32_t inode)
+{
+	return &fs->inode_locks[inode % EXT4_FS_LOCK_STRIPES];
+}
+
+static inline struct ext4_fs_rwlock *
+ext4_fs_group_lock_ptr(struct ext4_fs *fs, uint32_t group)
+{
+	return &fs->group_locks[group % EXT4_FS_LOCK_STRIPES];
+}
+
+static inline void ext4_fs_inode_read_lock(struct ext4_fs *fs, uint32_t inode)
+{
+	ext4_fs_rwlock_read_lock(ext4_fs_inode_lock_ptr(fs, inode));
+}
+
+static inline void ext4_fs_inode_read_unlock(struct ext4_fs *fs, uint32_t inode)
+{
+	ext4_fs_rwlock_read_unlock(ext4_fs_inode_lock_ptr(fs, inode));
+}
+
+static inline void ext4_fs_inode_write_lock(struct ext4_fs *fs, uint32_t inode)
+{
+	ext4_fs_rwlock_write_lock(ext4_fs_inode_lock_ptr(fs, inode));
+}
+
+static inline void ext4_fs_inode_write_unlock(struct ext4_fs *fs, uint32_t inode)
+{
+	ext4_fs_rwlock_write_unlock(ext4_fs_inode_lock_ptr(fs, inode));
+}
+
+static inline void ext4_fs_group_write_lock(struct ext4_fs *fs, uint32_t group)
+{
+	ext4_fs_rwlock_write_lock(ext4_fs_group_lock_ptr(fs, group));
+}
+
+static inline void ext4_fs_group_write_unlock(struct ext4_fs *fs, uint32_t group)
+{
+	ext4_fs_rwlock_write_unlock(ext4_fs_group_lock_ptr(fs, group));
+}
 
 struct ext4_block_group_ref {
 	struct ext4_block block;

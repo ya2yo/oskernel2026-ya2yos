@@ -220,8 +220,10 @@ int ext4_ialloc_free_inode(struct ext4_fs *fs, uint32_t index, bool is_dir)
 		return rc;
 
 	/* Update superblock free inodes count */
+	ext4_fs_rwlock_write_lock(&fs->super_lock);
 	ext4_set32(sb, free_inodes_count,
 		   ext4_get32(sb, free_inodes_count) + 1);
+	ext4_fs_rwlock_write_unlock(&fs->super_lock);
 
 	return EOK;
 }
@@ -342,8 +344,10 @@ int ext4_ialloc_alloc_inode(struct ext4_fs *fs, uint32_t *idx, bool is_dir)
 				return rc;
 
 			/* Update superblock */
+			ext4_fs_rwlock_write_lock(&fs->super_lock);
 			sb_free_inodes--;
 			ext4_set32(sb, free_inodes_count, sb_free_inodes);
+			ext4_fs_rwlock_write_unlock(&fs->super_lock);
 
 			/* Compute the absolute i-nodex number */
 			*idx = ext4_ialloc_bgidx_to_inode(sb, idx_in_bg, bgid);

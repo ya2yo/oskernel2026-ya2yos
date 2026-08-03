@@ -102,7 +102,7 @@ impl FsIndex {
                     (inode.clone(), replaced, displaced)
                 };
                 // Removing a cache entry may be the last Arc and invoke
-                // Ext4Inode::drop(), which takes EXT4_OP_LOCK.  Never do that
+                // Ext4Inode::drop(), which can release an lwext4 descriptor. Never do that
                 // while holding the index lock.
                 drop(replaced);
                 drop(displaced);
@@ -132,7 +132,7 @@ impl FsIndex {
                     let displaced = Self::bind_path(&mut cache, path, &key);
                     // `inode` was constructed from `path`, so its initial
                     // alias list already contains this path.  Recording it
-                    // again would needlessly enter EXT4_OP_LOCK.
+                    // again would needlessly update the descriptor state.
                     (inode.clone(), replaced, displaced, false)
                 } else {
                     // A path already bound to this canonical inode has
@@ -199,7 +199,7 @@ impl FsIndex {
                     return true;
                 }
                 // Retain one temporary Arc until after the index write lock is
-                // released.  Ext4Inode::drop() enters EXT4_OP_LOCK.
+                // released.  Ext4Inode::drop() can release an lwext4 descriptor.
                 reclaimed.push(inode.clone());
                 false
             });

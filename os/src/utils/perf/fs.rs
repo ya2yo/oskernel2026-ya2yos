@@ -8,11 +8,9 @@ use core::sync::atomic::AtomicBool;
 #[cfg(feature = "perf")]
 use lwext4_rust::perf::{FstatStageEvent, RenameWriteBackStageEvent};
 
-use crate::arch::time::{get_clock_freq, get_ticks};
-use crate::fs::{Ext4OpGuard, Ext4OpLock};
+use crate::arch::time::get_ticks;
 
-use super::common::{add, emit_duration, record_duration, ticks_to_us, update_max};
-use super::maybe_report;
+use super::common::{add, emit_duration, record_duration, update_max};
 use super::syscall::{
     LSEEK_IMPL_MAX_TICKS, LSEEK_IMPL_SAMPLES, LSEEK_IMPL_TICKS, LSEEK_SIZE_MAX_TICKS,
     LSEEK_SIZE_SAMPLES, LSEEK_SIZE_TICKS, LSEEK_SPARSE_MAX_TICKS, LSEEK_SPARSE_SAMPLES,
@@ -118,104 +116,10 @@ pub(crate) static INODE_READ_PAGE_CACHED_COLD_RUN: InodeReadSourceStats =
 pub(crate) static INODE_READ_DIRECT_BYPASS: InodeReadSourceStats = InodeReadSourceStats::new();
 pub(crate) static INODE_READ_OTHER: InodeReadSourceStats = InodeReadSourceStats::new();
 
-/// Aggregate timing for one class of lwext4 operation.
-///
-/// This remains deliberately caller-free: BuildStorm has enough concurrent
-/// filesystem traffic that per-path maps or per-operation logging would alter
-/// the contention we are trying to measure.
-pub(crate) struct Ext4LockStats {
-    pub(crate) samples: AtomicUsize,
-    pub(crate) wait_ticks: AtomicUsize,
-    pub(crate) hold_ticks: AtomicUsize,
-    pub(crate) max_wait_ticks: AtomicUsize,
-    pub(crate) max_hold_ticks: AtomicUsize,
-}
-
-impl Ext4LockStats {
-    const fn new() -> Self {
-        Self {
-            samples: AtomicUsize::new(0),
-            wait_ticks: AtomicUsize::new(0),
-            hold_ticks: AtomicUsize::new(0),
-            max_wait_ticks: AtomicUsize::new(0),
-            max_hold_ticks: AtomicUsize::new(0),
-        }
-    }
-
-    #[inline]
-    fn record(&self, wait_ticks: usize, hold_ticks: usize) {
-        add(&self.samples, 1);
-        add(&self.wait_ticks, wait_ticks);
-        add(&self.hold_ticks, hold_ticks);
-        update_max(&self.max_wait_ticks, wait_ticks);
-        update_max(&self.max_hold_ticks, hold_ticks);
-    }
-}
-
-/// Queue and ownership-transfer counters for the mount-wide EXT4 gate.
-///
-/// `queued = handoffs + cancelled + queue_depth` is the steady-state
-/// accounting invariant. Fast acquisitions never entered the FIFO queue.
-pub(crate) struct Ext4GateStats {
-    pub(crate) fast_acquires: AtomicUsize,
-    pub(crate) shared_acquires: AtomicUsize,
-    pub(crate) queued: AtomicUsize,
-    pub(crate) handoffs: AtomicUsize,
-    pub(crate) shared_handoffs: AtomicUsize,
-    pub(crate) handoff_wakes: AtomicUsize,
-    pub(crate) barging_prevented: AtomicUsize,
-    pub(crate) cancelled: AtomicUsize,
-    pub(crate) queue_depth: AtomicUsize,
-    pub(crate) max_queue_depth: AtomicUsize,
-    pub(crate) handoff_wait_ticks: AtomicUsize,
-    pub(crate) max_handoff_wait_ticks: AtomicUsize,
-    pub(crate) wait_lt_1ms: AtomicUsize,
-    pub(crate) wait_lt_10ms: AtomicUsize,
-    pub(crate) wait_lt_100ms: AtomicUsize,
-    pub(crate) wait_lt_1s: AtomicUsize,
-    pub(crate) wait_lt_10s: AtomicUsize,
-    pub(crate) wait_ge_10s: AtomicUsize,
-    pub(crate) owner_tid: AtomicUsize,
-    pub(crate) owner_since_ticks: AtomicUsize,
-    pub(crate) owner_exit_releases: AtomicUsize,
-    pub(crate) active_readers: AtomicUsize,
-    pub(crate) max_active_readers: AtomicUsize,
-}
-
-impl Ext4GateStats {
-    const fn new() -> Self {
-        Self {
-            fast_acquires: AtomicUsize::new(0),
-            shared_acquires: AtomicUsize::new(0),
-            queued: AtomicUsize::new(0),
-            handoffs: AtomicUsize::new(0),
-            shared_handoffs: AtomicUsize::new(0),
-            handoff_wakes: AtomicUsize::new(0),
-            barging_prevented: AtomicUsize::new(0),
-            cancelled: AtomicUsize::new(0),
-            queue_depth: AtomicUsize::new(0),
-            max_queue_depth: AtomicUsize::new(0),
-            handoff_wait_ticks: AtomicUsize::new(0),
-            max_handoff_wait_ticks: AtomicUsize::new(0),
-            wait_lt_1ms: AtomicUsize::new(0),
-            wait_lt_10ms: AtomicUsize::new(0),
-            wait_lt_100ms: AtomicUsize::new(0),
-            wait_lt_1s: AtomicUsize::new(0),
-            wait_lt_10s: AtomicUsize::new(0),
-            wait_ge_10s: AtomicUsize::new(0),
-            owner_tid: AtomicUsize::new(0),
-            owner_since_ticks: AtomicUsize::new(0),
-            owner_exit_releases: AtomicUsize::new(0),
-            active_readers: AtomicUsize::new(0),
-            max_active_readers: AtomicUsize::new(0),
-        }
-    }
-}
-
-/// Aggregate duration for one named phase inside a serialized lwext4 path.
+/// Aggregate duration for one named lwext4 or VFS phase.
 ///
 /// Phase counters intentionally remain process- and caller-free.  Their role
-/// is to explain a long `EXT4_OP_LOCK` hold before changing its lock boundary.
+/// is to identify contended pathname and metadata paths without per-call logs.
 pub(crate) struct Ext4PhaseStats {
     pub(crate) samples: AtomicUsize,
     pub(crate) ticks: AtomicUsize,
@@ -471,19 +375,10 @@ impl Ext4FstatReasonPhases {
     }
 }
 
-pub(crate) static EXT4_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_GATE_STATS: Ext4GateStats = Ext4GateStats::new();
 #[cfg(feature = "perf")]
 pub(crate) static EXT4_BLOCK_DEVICE_STATS: Ext4BlockDeviceStats = Ext4BlockDeviceStats::new();
 #[cfg(feature = "perf")]
 static EXT4_BLOCK_DEVICE_PERF_ENABLED: AtomicBool = AtomicBool::new(false);
-/// Aggregate across both pieces of a split `Ext4Inode::read_at()` slow path.
-/// `samples` therefore counts global-lock acquisitions, not logical reads.
-pub(crate) static EXT4_READ_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_READ_OPEN_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_READ_DATA_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_FIND_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_FSTAT_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 /// `fast_cached`, `directory_epoch_cached`, `post_wait_cached`, and
 /// `actual_ext4_fstat` are mutually exclusive results of `Ext4Inode::fstat()`.
 /// Alias recovery is a nested subphase of the last bucket and is deliberately
@@ -510,18 +405,6 @@ pub(crate) static EXT4_FSTAT_DIRECTORY_STAT_LOCAL_EPOCH_MISSES: AtomicUsize = At
 pub(crate) static EXT4_FSTAT_DIRECTORY_STAT_GLOBAL_EPOCH_MISSES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_FSTAT_DIRECTORY_PARENT_LOCAL_UPDATES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_FSTAT_DIRECTORY_PARENT_GLOBAL_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
-pub(crate) static EXT4_WRITE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_WRITE_OPEN_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_WRITE_DATA_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_RENAME_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_CLOSE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_READ_ALL_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_READ_DIR_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_PATH_RESOLVE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_METADATA_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_NAMESPACE_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_SYNC_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
-pub(crate) static EXT4_SEEK_LOCK_STATS: Ext4LockStats = Ext4LockStats::new();
 pub(crate) static EXT4_WRITE_OPEN_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_WRITE_OPEN_TICKS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static EXT4_WRITE_OPEN_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -818,17 +701,6 @@ pub(crate) fn emit_ext4_phase_stats(label: &str, stats: &Ext4PhaseStats) {
     emit_duration(label, &stats.samples, &stats.ticks, &stats.max_ticks);
 }
 
-pub(crate) fn emit_ext4_lock_stats(label: &str, stats: &Ext4LockStats) {
-    println!(
-        "[perf] {} samples={} wait_us={} hold_us={} max_wait_us={} max_hold_us={}",
-        label,
-        stats.samples.load(Ordering::Relaxed),
-        ticks_to_us(stats.wait_ticks.load(Ordering::Relaxed)),
-        ticks_to_us(stats.hold_ticks.load(Ordering::Relaxed)),
-        ticks_to_us(stats.max_wait_ticks.load(Ordering::Relaxed)),
-        ticks_to_us(stats.max_hold_ticks.load(Ordering::Relaxed)),
-    );
-}
 pub fn record_ext4_read(bytes: usize) {
     add(&EXT4_READ_OPS, 1);
     add(&EXT4_READ_BYTES, bytes);
@@ -859,346 +731,7 @@ pub fn record_ext4_byte_cache_read_hit(bytes: usize) {
     add(&EXT4_BYTE_CACHE_READ_HIT_BYTES, bytes);
 }
 
-#[inline]
-pub fn record_ext4_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_LOCK_STATS.record(wait_ticks, hold_ticks);
-    let samples = EXT4_LOCK_STATS.samples.load(Ordering::Relaxed);
-    if samples & 0x0fff == 0 {
-        maybe_report();
-    }
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_acquired(tid: usize) {
-    add(&EXT4_GATE_STATS.fast_acquires, 1);
-    EXT4_GATE_STATS
-        .owner_since_ticks
-        .store(get_ticks(), Ordering::Relaxed);
-    // Publish the TID last so a report never treats an unset start tick as a
-    // long-held owner during this relaxed-atomic snapshot.
-    EXT4_GATE_STATS.owner_tid.store(tid, Ordering::Relaxed);
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_shared_acquired(active_readers: usize) {
-    add(&EXT4_GATE_STATS.fast_acquires, 1);
-    add(&EXT4_GATE_STATS.shared_acquires, 1);
-    EXT4_GATE_STATS
-        .active_readers
-        .store(active_readers, Ordering::Relaxed);
-    update_max(&EXT4_GATE_STATS.max_active_readers, active_readers);
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_queued() {
-    add(&EXT4_GATE_STATS.queued, 1);
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_queue_depth(depth: usize) {
-    EXT4_GATE_STATS.queue_depth.store(depth, Ordering::Relaxed);
-    update_max(&EXT4_GATE_STATS.max_queue_depth, depth);
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_barging_prevented() {
-    add(&EXT4_GATE_STATS.barging_prevented, 1);
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_handoff_wake() {
-    add(&EXT4_GATE_STATS.handoff_wakes, 1);
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_waiter_cancelled(count: usize) {
-    add(&EXT4_GATE_STATS.cancelled, count);
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_handoff_acquire(tid: usize, wait_ticks: usize) {
-    add(&EXT4_GATE_STATS.handoffs, 1);
-    record_ext4_gate_handoff_wait(wait_ticks);
-    EXT4_GATE_STATS
-        .owner_since_ticks
-        .store(get_ticks(), Ordering::Relaxed);
-    EXT4_GATE_STATS.owner_tid.store(tid, Ordering::Relaxed);
-}
-
-#[inline]
-fn record_ext4_gate_handoff_wait(wait_ticks: usize) {
-    add(&EXT4_GATE_STATS.handoff_wait_ticks, wait_ticks);
-    update_max(&EXT4_GATE_STATS.max_handoff_wait_ticks, wait_ticks);
-    let ticks_per_second = get_clock_freq().max(1);
-    let bucket = if wait_ticks < ticks_per_second / 1_000 {
-        &EXT4_GATE_STATS.wait_lt_1ms
-    } else if wait_ticks < ticks_per_second / 100 {
-        &EXT4_GATE_STATS.wait_lt_10ms
-    } else if wait_ticks < ticks_per_second / 10 {
-        &EXT4_GATE_STATS.wait_lt_100ms
-    } else if wait_ticks < ticks_per_second {
-        &EXT4_GATE_STATS.wait_lt_1s
-    } else if wait_ticks < ticks_per_second.saturating_mul(10) {
-        &EXT4_GATE_STATS.wait_lt_10s
-    } else {
-        &EXT4_GATE_STATS.wait_ge_10s
-    };
-    add(bucket, 1);
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_shared_handoff_acquire(wait_ticks: usize, active_readers: usize) {
-    add(&EXT4_GATE_STATS.handoffs, 1);
-    add(&EXT4_GATE_STATS.shared_handoffs, 1);
-    record_ext4_gate_handoff_wait(wait_ticks);
-    EXT4_GATE_STATS
-        .active_readers
-        .store(active_readers, Ordering::Relaxed);
-    update_max(&EXT4_GATE_STATS.max_active_readers, active_readers);
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_shared_released(active_readers: usize) {
-    EXT4_GATE_STATS
-        .active_readers
-        .store(active_readers, Ordering::Relaxed);
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_released() {
-    EXT4_GATE_STATS.owner_tid.store(0, Ordering::Relaxed);
-    EXT4_GATE_STATS
-        .owner_since_ticks
-        .store(0, Ordering::Relaxed);
-}
-
-#[inline]
-pub(crate) fn record_ext4_gate_owner_released_on_exit() {
-    add(&EXT4_GATE_STATS.owner_exit_releases, 1);
-    record_ext4_gate_released();
-}
-
-#[inline]
-pub fn record_ext4_read_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_READ_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_read_open_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_READ_OPEN_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_read_data_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_READ_DATA_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_find_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_FIND_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_fstat_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_FSTAT_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_write_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_WRITE_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_write_open_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_WRITE_OPEN_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_write_data_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_WRITE_DATA_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-/// Lightweight lock classes identify the most contended lwext4 entry points
-/// without changing the filesystem's single global serialization boundary.
-#[derive(Clone, Copy)]
-enum Ext4LockClass {
-    ReadOpen,
-    ReadData,
-    Find,
-    Fstat,
-    WriteOpen,
-    WriteData,
-    Rename,
-    Close,
-    ReadAll,
-    ReadDir,
-    PathResolve,
-    Metadata,
-    Namespace,
-    Sync,
-    Seek,
-}
-
-/// Perf wrapper around the single lwext4 operation guard.  It owns all lock
-/// classification and timing so `ext4_lw` itself only implements synchronization.
-pub(crate) struct Ext4ProfiledOpGuard<'a> {
-    guard: Ext4OpGuard<'a>,
-    class: Ext4LockClass,
-    wait_ticks: usize,
-    acquired_at: usize,
-}
-
-impl Ext4OpLock {
-    pub(crate) fn lock_for_read_open(&self) -> Ext4ProfiledOpGuard<'_> {
-        // Rebinding an Ext4File descriptor can first flush a delayed sparse
-        // range left by the old pathname.  Only the subsequent data read is
-        // unconditionally read-only.
-        self.lock_profiled(Ext4LockClass::ReadOpen)
-    }
-
-    pub(crate) fn lock_for_read_data(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_shared_profiled(Ext4LockClass::ReadData)
-    }
-
-    pub(crate) fn lock_for_find(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_shared_profiled(Ext4LockClass::Find)
-    }
-
-    pub(crate) fn lock_for_fstat(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Fstat)
-    }
-
-    pub(crate) fn lock_for_write_open(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::WriteOpen)
-    }
-
-    pub(crate) fn lock_for_write_data(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::WriteData)
-    }
-
-    pub(crate) fn lock_for_rename(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Rename)
-    }
-
-    pub(crate) fn lock_for_close(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Close)
-    }
-
-    pub(crate) fn lock_for_read_all(&self) -> Ext4ProfiledOpGuard<'_> {
-        // Like ReadOpen, this scope can rebind the descriptor before reading.
-        self.lock_profiled(Ext4LockClass::ReadAll)
-    }
-
-    pub(crate) fn lock_for_read_dir(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_shared_profiled(Ext4LockClass::ReadDir)
-    }
-
-    pub(crate) fn lock_for_path_resolve(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_shared_profiled(Ext4LockClass::PathResolve)
-    }
-
-    pub(crate) fn lock_for_metadata(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Metadata)
-    }
-
-    /// Read-only metadata calls such as getxattr, listxattr, statfs and
-    /// link-count lookup.  Metadata mutation remains on `lock_for_metadata`.
-    pub(crate) fn lock_for_metadata_read(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_shared_profiled(Ext4LockClass::Metadata)
-    }
-
-    pub(crate) fn lock_for_namespace(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Namespace)
-    }
-
-    pub(crate) fn lock_for_sync(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Sync)
-    }
-
-    pub(crate) fn lock_for_seek(&self) -> Ext4ProfiledOpGuard<'_> {
-        self.lock_profiled(Ext4LockClass::Seek)
-    }
-
-    fn lock_profiled(&self, class: Ext4LockClass) -> Ext4ProfiledOpGuard<'_> {
-        let wait_start = get_ticks();
-        let guard = self.lock();
-        let acquired_at = get_ticks();
-        Ext4ProfiledOpGuard {
-            guard,
-            class,
-            wait_ticks: acquired_at.saturating_sub(wait_start),
-            acquired_at,
-        }
-    }
-
-    fn lock_shared_profiled(&self, class: Ext4LockClass) -> Ext4ProfiledOpGuard<'_> {
-        let wait_start = get_ticks();
-        let guard = self.lock_shared();
-        let acquired_at = get_ticks();
-        Ext4ProfiledOpGuard {
-            guard,
-            class,
-            wait_ticks: acquired_at.saturating_sub(wait_start),
-            acquired_at,
-        }
-    }
-}
-
-impl Drop for Ext4ProfiledOpGuard<'_> {
-    fn drop(&mut self) {
-        #[cfg(feature = "perf")]
-        {
-            let released_at = get_ticks();
-            if self.guard.release() {
-                let hold_ticks = released_at.saturating_sub(self.acquired_at);
-                match self.class {
-                    Ext4LockClass::ReadOpen => {
-                        record_ext4_read_lock(self.wait_ticks, hold_ticks);
-                        record_ext4_read_open_lock(self.wait_ticks, hold_ticks);
-                    }
-                    Ext4LockClass::ReadData => {
-                        record_ext4_read_lock(self.wait_ticks, hold_ticks);
-                        record_ext4_read_data_lock(self.wait_ticks, hold_ticks);
-                    }
-                    Ext4LockClass::Find => record_ext4_find_lock(self.wait_ticks, hold_ticks),
-                    Ext4LockClass::Fstat => record_ext4_fstat_lock(self.wait_ticks, hold_ticks),
-                    Ext4LockClass::WriteOpen => {
-                        record_ext4_write_lock(self.wait_ticks, hold_ticks);
-                        record_ext4_write_open_lock(self.wait_ticks, hold_ticks);
-                    }
-                    Ext4LockClass::WriteData => {
-                        record_ext4_write_lock(self.wait_ticks, hold_ticks);
-                        record_ext4_write_data_lock(self.wait_ticks, hold_ticks);
-                    }
-                    Ext4LockClass::Rename => record_ext4_rename_lock(self.wait_ticks, hold_ticks),
-                    Ext4LockClass::Close => record_ext4_close_lock(self.wait_ticks, hold_ticks),
-                    Ext4LockClass::ReadAll => {
-                        record_ext4_read_all_lock(self.wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::ReadDir => {
-                        record_ext4_read_dir_lock(self.wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::PathResolve => {
-                        record_ext4_path_resolve_lock(self.wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::Metadata => {
-                        record_ext4_metadata_lock(self.wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::Namespace => {
-                        record_ext4_namespace_lock(self.wait_ticks, hold_ticks)
-                    }
-                    Ext4LockClass::Sync => record_ext4_sync_lock(self.wait_ticks, hold_ticks),
-                    Ext4LockClass::Seek => record_ext4_seek_lock(self.wait_ticks, hold_ticks),
-                }
-                record_ext4_lock(self.wait_ticks, hold_ticks);
-            }
-        }
-    }
-}
-
-/// A mutually exclusive phase inside `Ext4Inode::write_at()`. The quota phase
-/// is measured outside the global lwext4 operation guard so its cost is not
-/// attributed to global lock hold time.
+/// A mutually exclusive phase inside `Ext4Inode::write_at()`.
 pub enum Ext4WritePhase {
     Open,
     Quota,
@@ -1536,9 +1069,8 @@ enum Ext4InodePhase {
     Metadata(Ext4MetadataPhase),
 }
 
-/// Scope guard for a phase that executes while `EXT4_OP_LOCK` is held.  Drop
-/// based accounting keeps failed lwext4 calls in the same aggregate as
-/// successful ones without per-call logging.
+/// Scope guard for an lwext4 or VFS phase. Drop-based accounting keeps failed
+/// calls in the same aggregate as successful ones without per-call logging.
 pub struct Ext4InodePhaseGuard {
     phase: Ext4InodePhase,
     begin: usize,
@@ -1651,51 +1183,6 @@ impl Drop for Ext4CreatePhaseGuard {
             Ext4CreatePhase::VfsFinish => EXT4_NAMESPACE_CREATE_VFS_FINISH.record(elapsed),
         }
     }
-}
-
-#[inline]
-pub fn record_ext4_rename_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_RENAME_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_close_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_CLOSE_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_read_all_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_READ_ALL_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_read_dir_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_READ_DIR_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_path_resolve_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_PATH_RESOLVE_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_metadata_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_METADATA_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_namespace_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_NAMESPACE_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_sync_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_SYNC_LOCK_STATS.record(wait_ticks, hold_ticks);
-}
-
-#[inline]
-pub fn record_ext4_seek_lock(wait_ticks: usize, hold_ticks: usize) {
-    EXT4_SEEK_LOCK_STATS.record(wait_ticks, hold_ticks);
 }
 
 #[inline]
