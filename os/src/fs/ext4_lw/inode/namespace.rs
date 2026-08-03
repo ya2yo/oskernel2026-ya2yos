@@ -17,10 +17,11 @@ impl Ext4Inode {
         ty: InodeType,
     ) -> Result<Arc<dyn Inode>, SysErrNo> {
         let types = as_ext4_de_type(ty);
-        // Construct before taking the parent inode state so error paths close
-        // the descriptor after Rust-side guards are released.
+        // Drop closes the underlying handle under EXT4_OP_LOCK. Construct it
+        // before the guard so error paths release the guard before Drop runs.
         let nf = Ext4Inode::new(path, types.clone());
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Create);
 
@@ -83,6 +84,7 @@ impl Ext4Inode {
         let is_directory = types == InodeTypes::EXT4_DE_DIR;
         let (stat, identity_epoch, directory_stat_epoch) = {
             let _io_state = self.io_state.lock();
+            let _ext4 = EXT4_OP_LOCK.lock();
             #[cfg(feature = "perf")]
             let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Create);
             let stat = if is_directory {
@@ -140,6 +142,7 @@ impl Ext4Inode {
     /// `check_inode_exist()`。
     pub(super) fn create_dir_fast_impl(&self, path: &str) -> Result<Arc<dyn Inode>, SysErrNo> {
         let nf = Ext4Inode::new(path, InodeTypes::EXT4_DE_DIR);
+        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Create);
         let nfile = &mut nf.inner.get_unchecked_mut().f;
@@ -174,6 +177,7 @@ impl Ext4Inode {
         };
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let write_back_phase = Ext4InodePhaseGuard::rename(Ext4RenamePhase::WriteBackCache);
         let inner = self.inner.get_unchecked_mut();
@@ -209,7 +213,7 @@ impl Ext4Inode {
             rename_path_cache(path, new_path).is_some()
         };
         // `rename()` can replace an existing destination inode.  Invalidate
-        // identity-epoch proofs before returning so a
+        // identity-epoch proofs before releasing the mount gate so a
         // later FsIndex collision retains the live `fstat()` reuse check.
         Self::advance_identity_epoch();
         if self.inode_type == InodeType::Dir {
@@ -266,6 +270,7 @@ impl Ext4Inode {
     pub(super) fn hard_link_impl(&self, old_path: &str, new_path: &str) -> SyscallRet {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::LinkSymlink);
         let inner = self.inner.get_unchecked_mut();
@@ -285,6 +290,7 @@ impl Ext4Inode {
     /// 创建符号链接。
     pub(super) fn sym_link_impl(&self, target: &str, path: &str) -> SyscallRet {
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::LinkSymlink);
         let file = &mut self.inner.get_unchecked_mut().f;
@@ -301,6 +307,7 @@ impl Ext4Inode {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         let (ret, remove_quota) = {
+            let _ext4 = EXT4_OP_LOCK.lock();
             #[cfg(feature = "perf")]
             let _phase = Ext4InodePhaseGuard::namespace(Ext4NamespacePhase::Unlink);
             let inner = self.inner.get_unchecked_mut();
@@ -341,6 +348,7 @@ impl Ext4Inode {
     pub(super) fn delay_impl(&self) {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Delay);
         self.inner.get_unchecked_mut().delay = true;

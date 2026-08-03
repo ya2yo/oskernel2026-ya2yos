@@ -17,6 +17,7 @@ impl Ext4Inode {
         // callers run on multiple harts.
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
 
@@ -42,6 +43,7 @@ impl Ext4Inode {
 
     pub(super) fn get_xattr_impl(&self, name: &[u8], value: &mut [u8]) -> SyscallRet {
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         inner
@@ -52,6 +54,7 @@ impl Ext4Inode {
 
     pub(super) fn list_xattr_impl(&self, list: &mut [u8]) -> SyscallRet {
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         inner.f.xattr_list(&path, list).map_err(SysErrNo::from)
@@ -60,6 +63,7 @@ impl Ext4Inode {
     pub(super) fn remove_xattr_impl(&self, name: &[u8]) -> SyscallRet {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
         inner.f.xattr_remove(&path, name).map_err(SysErrNo::from)
@@ -73,6 +77,7 @@ impl Ext4Inode {
         ctime: Option<u64>,
     ) -> SyscallRet {
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Timestamp);
         let inner = self.inner.get_unchecked_mut();
@@ -110,8 +115,11 @@ impl Ext4Inode {
         let _io_state = self.io_state.lock();
         // A failed pathname lookup recovers through `file_close()`, which may
         // publish delayed data. Keep the complete fstat/recovery transaction
+        // exclusive instead of attempting an unsafe shared-to-exclusive
+        // upgrade after lwext4 has already observed an error.
+        let _ext4 = EXT4_OP_LOCK.lock();
         // Another hart may have populated the cache while this task waited
-        // for the per-inode descriptor state. Recheck before doing redundant
+        // for the mount gate. Recheck before doing redundant
         // metadata I/O during Cargo's parallel probes.
         if let Some(stat) = self.cached_stat() {
             #[cfg(feature = "perf")]
@@ -208,6 +216,7 @@ impl Ext4Inode {
         // guard so a large directory does not block unrelated file reads.
         let (path, entries) = {
             let _io_state = self.io_state.lock();
+            let _ext4 = EXT4_OP_LOCK.lock();
             let inner = self.inner.get_unchecked_mut();
             let path = Self::live_path(inner);
             let entries = inner.f.read_dir_from(off as u64).map_err(SysErrNo::from)?;
@@ -249,6 +258,7 @@ impl Ext4Inode {
     /// 只要出现除 `.` 和 `..` 之外的目录项，就认为目录非空。
     pub(super) fn is_dir_empty_impl(&self) -> Result<bool, SysErrNo> {
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         let file = &mut inner.f;
@@ -274,6 +284,7 @@ impl Ext4Inode {
     /// 读取符号链接目标路径。
     pub(super) fn read_link_impl(&self, buf: &mut [u8], bufsize: usize) -> SysResult<usize> {
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         let inner = self.inner.get_unchecked_mut();
         let _ = Self::live_path(inner);
         let file = &mut inner.f;
@@ -284,6 +295,7 @@ impl Ext4Inode {
     /// lwext4 在路径已不存在时可能返回 `ENOENT`，这里按 0 个 link 兼容延迟删除路径。
     pub(super) fn link_cnt_impl(&self) -> SyscallRet {
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::LinkCount);
         let inner = self.inner.get_unchecked_mut();
@@ -305,6 +317,7 @@ impl Ext4Inode {
     pub(super) fn fmode_impl(&self) -> Result<u32, SysErrNo> {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Mode);
         let inner = self.inner.get_unchecked_mut();
@@ -323,6 +336,7 @@ impl Ext4Inode {
     pub(super) fn fmode_set_impl(&self, mode: u32) -> SyscallRet {
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Mode);
         let inner = self.inner.get_unchecked_mut();
@@ -354,6 +368,7 @@ impl Ext4Inode {
         // Keep owner updates in the filesystem layer so stat and permission checks agree.
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
+        let _ext4 = EXT4_OP_LOCK.lock();
         #[cfg(feature = "perf")]
         let _phase = Ext4InodePhaseGuard::metadata(Ext4MetadataPhase::Owner);
         let inner = self.inner.get_unchecked_mut();

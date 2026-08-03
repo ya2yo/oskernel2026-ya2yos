@@ -9660,3 +9660,32 @@ reader batch 已实际运行；累计 handoff wait 仍为 `567915801us`。日志
 ### 修改与验证
 
 修改 `crates/lwext4_rust/src/ulibc.rs`、`crates/lwext4_rust/c/lwext4/CMakeLists.txt`、`crates/lwext4_rust/c/lwext4/include/ext4_types.h`。维护者确认 Docker 编译通过；host 隔离 CMake `lwext4` 构建、rustfmt 和 diff 检查通过。完整 Docker 运行回归未由 AI 重跑。
+
+## 2026-08-03：BuildStorm lwext4 C rwlock preemption deadlock
+
+### 用户输入
+
+维护者要求分析新的 `server.ans` 与 `client.ans`，继续修复 BuildStorm 中的 EXT4 死锁。
+
+### 分析与采纳结论
+
+`server.ans` 在 TOOLCHAIN/MINIBUILD 成功后的 `cargo build -p tg-xtask` 并行文件创建阶段卡住。`client.ans` 的全 CPU
+GDB backtrace 显示四个 hart 均在 `ext4_fs_rwlock_write_lock()` 的 C 原子忙等，调用来源为
+`ext4_fopen2_with_metadata()` 或 `ext4_dir_mk_exclusive_with_metadata()`，其余 hart idle，且没有持锁 C 栈。
+这排除普通 unlock 遗漏，定位为 `3ec47ec1` 删除 Rust admission 后，持有 C raw rwlock 的 task 被抢占、其它 task 忙等
+并剥夺其再次调度机会的死锁。
+
+采纳正确性优先的回退：实现 task-aware FIFO exclusive `Ext4OpLock`，恢复历史上所有 lwext4 C API 入口的 gate，task
+退出前清除 waiter/owner，并将 `ext4_trunc_inode()` 的外层 transaction 判断由
+`jbd_journal && curr_trans` 改为逻辑锁状态 `journal_lock_held`，修复无 on-disk journal 的嵌套 journal self-deadlock。
+不恢复 shared admission；C lock 具备可等待/唤醒或不可抢占证明前，不再允许多 task 直接进入。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/c/lwext4/src/ext4.c`、`os/src/fs/ext4_lw/{mod.rs,sb.rs,inode/{io,lookup,metadata,namespace,mod}.rs}`、
+`os/src/fs/mod.rs`、`os/src/task/mod.rs` 和关联文档。`cargo fmt --manifest-path os/Cargo.toml --all -- --check`、
+`git diff --check`、`make TARGET_ARCH=riscv64`、`make TARGET_ARCH=loongarch64` 通过。新 `kernel-rv` 能进入 BuildStorm
+预构建入口；默认 16 GiB/8 HART QEMU 在 360 秒主动 timeout 前已推进至 Cargo `15/446`（旧日志约停在 `2/446`），
+无已观察 panic/TFAIL/TBROK/ERROR，但没有完整结束标记。1 GiB/2 核尝试在 CMA 早期无进一步输出，且不符合固定 16 GiB
+内存布局，故没有完整 BuildStorm、fsck、文件系统 LTP 或运行时 LoongArch64 通过结论。维护者已有的
+`user/src/bin/initproc.rs` 未修改；独立 QEMU 直接使用基础镜像，结束时确认并恢复了未跟踪 `disk.img` 的原始软链接目标。

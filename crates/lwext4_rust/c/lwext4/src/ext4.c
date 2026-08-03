@@ -831,7 +831,19 @@ static int ext4_trunc_inode(struct ext4_mountpoint *mp, uint32_t index,
 	struct ext4_fs *const fs = &mp->fs;
 	struct ext4_inode_ref inode_ref;
 	uint64_t inode_size;
-	bool has_trans = mp->fs.jbd_journal && mp->fs.curr_trans;
+	/*
+	 * ext4_trans_start() serializes every transaction scope with
+	 * journal_lock, including mounts without an on-disk journal.  The old
+	 * jbd_journal/curr_trans test misses that latter case, so a truncate
+	 * entered from an outer transaction attempts to acquire journal_lock a
+	 * second time.  It then self-deadlocks while its caller still holds the
+	 * namespace write lock.
+	 *
+	 * Split a large truncate into independent transaction scopes whenever the
+	 * logical transaction lock is already held, then restore the caller's
+	 * scope before returning.
+	 */
+	bool has_trans = mp->fs.journal_lock_held;
 	r = ext4_fs_get_inode_ref(fs, index, &inode_ref);
 	if (r != EOK)
 		return r;

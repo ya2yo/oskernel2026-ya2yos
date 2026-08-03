@@ -2431,3 +2431,17 @@
 - **验证边界**：host 隔离 CMake `LIB_ONLY` 构建及静态检查通过；Docker 编译由维护者确认，AI 未重复 Docker guest 运行，未宣称完整 BuildStorm 回归。
 - **关联文档**：[问题复盘](./problem/lwext4-rust-allocator-layout-error.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm lwext4 C rwlock preemption deadlock（8.3）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 `server.ans` 与 `client.ans`，要求继续修复 BuildStorm 阶段的 EXT4 死锁。
+- **描述**：依据四个 hart 同时停在 `ext4_fs_rwlock_write_lock()`、其余 hart idle 且没有持锁 C 栈，定位为 raw C spin rwlock
+  不感知 Ya2yOS 调度：持锁 task 被抢占后，后续 task 忙等并饿死 owner。恢复 task-aware FIFO exclusive mount gate、
+  退出 waiter/owner 清理和历史 C API 覆盖；同时修复无 on-disk journal 下 truncate 的 journal nested-lock 判断。P21.3
+  shared admission 作为错误的过渡方案撤回，直到 C 侧具备可等待锁或不可抢占证明。
+- **验证边界**：RISC-V/LoongArch64 release 构建、Rust 格式和 diff 检查通过。默认 16 GiB/8 HART 新内核运行在
+  360 秒 timeout 前推进到 Cargo `15/446`（旧死锁样本约 `2/446`），无已观察 panic/TFAIL/TBROK/ERROR，但没有完整
+  BuildStorm 结束；不报告 fsck、LTP 或运行时跨架构通过。
+- **关联文档**：[问题复盘](./problem/ext4-linux-locking-and-lwext4-admission.md)、[优化方案](./优化方案.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
