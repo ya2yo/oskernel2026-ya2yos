@@ -76,6 +76,7 @@ mod tid;
 pub use crate::arch::context::TaskContext;
 use crate::{
     arch::cpu::hart_id,
+    drivers::cancel_disk_waiter,
     fs::{cancel_ext4_op_waiter, open, OpenFlags, NONE_MODE},
     mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
     signal::{send_exec_teardown_kill, send_signal_to_thread_group, SigSet},
@@ -358,6 +359,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // because this exit path abandons its kernel stack. Remove its FIFO ticket
     // (or release a logically owned gate) before taking process/task locks.
     cancel_ext4_op_waiter(curr_task.tid());
+    cancel_disk_waiter(curr_task.tid());
     let count = Arc::strong_count(&curr_task);
     // The current scheduler reference, the global TID table, and this local
     // reference normally account for three strong references under SMP.

@@ -260,6 +260,7 @@ int ext4_block_get_noread(struct ext4_blockdev *bdev, struct ext4_block *b,
 {
 	bool is_new;
 	int r;
+	struct ext4_buf *cached;
 
 	ext4_assert(bdev && b);
 
@@ -270,6 +271,20 @@ int ext4_block_get_noread(struct ext4_blockdev *bdev, struct ext4_block *b,
 		return ENXIO;
 
 	b->lb_id = lba;
+
+	/*
+	 * A resident block already owns a cache reference. Check it before
+	 * applying capacity pressure: the old order scanned the entire LRU (and,
+	 * with dirty-capacity reclaim enabled, could write back 128 blocks) even
+	 * when the requested LBA was a hit. This is especially costly for the
+	 * metadata-heavy parallel BuildStorm workload.
+	 */
+	cached = ext4_bcache_find_get(bdev->bc, b, lba);
+	if (cached) {
+		if (!b->data)
+			return ENOMEM;
+		return EOK;
+	}
 
 	/*If cache is full we have to (flush and) drop it anyway :(*/
 	r = ext4_block_cache_shake(bdev);

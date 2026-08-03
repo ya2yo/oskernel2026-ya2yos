@@ -298,10 +298,19 @@ storage_counter_deltas!(
     DELTA_BLOCKDEV_FLUSH_REQUESTS,
     DELTA_BLOCKDEV_COMPLETED,
     DELTA_BLOCKDEV_CONTENDED,
+    DELTA_BLOCKDEV_QUEUED,
     DELTA_BLOCKDEV_BYTES,
     DELTA_BLOCKDEV_ERRORS,
     DELTA_BLOCKDEV_WAIT_TICKS,
     DELTA_BLOCKDEV_SERVICE_TICKS,
+    DELTA_RESOURCE_LOCK_ACQUIRES,
+    DELTA_RESOURCE_LOCK_CONTENDED,
+    DELTA_RESOURCE_LOCK_QUEUED,
+    DELTA_RESOURCE_LOCK_WAIT_TICKS,
+    DELTA_RESOURCE_LOCK_HOLD_TICKS,
+    DELTA_RESOURCE_REGISTRY_LOOKUPS,
+    DELTA_RESOURCE_REGISTRY_CREATES,
+    DELTA_RESOURCE_REGISTRY_TICKS,
 );
 
 fn emit_duration_delta(
@@ -515,13 +524,17 @@ fn emit_ext4_storage_interval_deltas() {
         DELTA_BCACHE_WRITE_ERRORS.take_value(bcache.write_errors),
     );
     println!(
-        "[perf] interval_ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={}",
+        "[perf] interval_ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} queued={} max_queue_depth={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={}",
         DELTA_BLOCKDEV_SUBMITS.take(&EXT4_BLOCK_DEVICE_STATS.submits),
         DELTA_BLOCKDEV_READ_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.read_requests),
         DELTA_BLOCKDEV_WRITE_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.write_requests),
         DELTA_BLOCKDEV_FLUSH_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.flush_requests),
         DELTA_BLOCKDEV_COMPLETED.take(&EXT4_BLOCK_DEVICE_STATS.completed),
         DELTA_BLOCKDEV_CONTENDED.take(&EXT4_BLOCK_DEVICE_STATS.contended),
+        DELTA_BLOCKDEV_QUEUED.take(&EXT4_BLOCK_DEVICE_STATS.queued),
+        EXT4_BLOCK_DEVICE_STATS
+            .max_queue_depth
+            .load(Ordering::Relaxed),
         DELTA_BLOCKDEV_BYTES.take(&EXT4_BLOCK_DEVICE_STATS.bytes),
         DELTA_BLOCKDEV_ERRORS.take(&EXT4_BLOCK_DEVICE_STATS.errors),
         ticks_to_us(DELTA_BLOCKDEV_WAIT_TICKS.take(&EXT4_BLOCK_DEVICE_STATS.wait_ticks)),
@@ -532,6 +545,30 @@ fn emit_ext4_storage_interval_deltas() {
         ticks_to_us(
             EXT4_BLOCK_DEVICE_STATS
                 .max_service_ticks
+                .load(Ordering::Relaxed)
+        ),
+    );
+    println!(
+        "[perf] interval_ext4_resource_locks acquires={} contended={} queued={} max_queue_depth={} wait_us={} max_wait_us={} hold_us={} max_hold_us={}",
+        DELTA_RESOURCE_LOCK_ACQUIRES.take(&EXT4_RESOURCE_LOCK_STATS.acquires),
+        DELTA_RESOURCE_LOCK_CONTENDED.take(&EXT4_RESOURCE_LOCK_STATS.contended),
+        DELTA_RESOURCE_LOCK_QUEUED.take(&EXT4_RESOURCE_LOCK_STATS.queued),
+        EXT4_RESOURCE_LOCK_STATS
+            .max_queue_depth
+            .load(Ordering::Relaxed),
+        ticks_to_us(DELTA_RESOURCE_LOCK_WAIT_TICKS.take(&EXT4_RESOURCE_LOCK_STATS.wait_ticks)),
+        ticks_to_us(EXT4_RESOURCE_LOCK_STATS.max_wait_ticks.load(Ordering::Relaxed)),
+        ticks_to_us(DELTA_RESOURCE_LOCK_HOLD_TICKS.take(&EXT4_RESOURCE_LOCK_STATS.hold_ticks)),
+        ticks_to_us(EXT4_RESOURCE_LOCK_STATS.max_hold_ticks.load(Ordering::Relaxed)),
+    );
+    println!(
+        "[perf] interval_ext4_resource_registry lookups={} creates={} total_us={} max_us={}",
+        DELTA_RESOURCE_REGISTRY_LOOKUPS.take(&EXT4_RESOURCE_LOCK_STATS.registry_lookups),
+        DELTA_RESOURCE_REGISTRY_CREATES.take(&EXT4_RESOURCE_LOCK_STATS.registry_creates),
+        ticks_to_us(DELTA_RESOURCE_REGISTRY_TICKS.take(&EXT4_RESOURCE_LOCK_STATS.registry_ticks)),
+        ticks_to_us(
+            EXT4_RESOURCE_LOCK_STATS
+                .max_registry_ticks
                 .load(Ordering::Relaxed)
         ),
     );
@@ -582,7 +619,7 @@ fn emit_ext4_storage_cumulative() {
         bcache.write_errors,
     );
     println!(
-        "[perf] ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={}",
+        "[perf] ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} queued={} max_queue_depth={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={}",
         EXT4_BLOCK_DEVICE_STATS.submits.load(Ordering::Relaxed),
         EXT4_BLOCK_DEVICE_STATS
             .read_requests
@@ -595,6 +632,10 @@ fn emit_ext4_storage_cumulative() {
             .load(Ordering::Relaxed),
         EXT4_BLOCK_DEVICE_STATS.completed.load(Ordering::Relaxed),
         EXT4_BLOCK_DEVICE_STATS.contended.load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS.queued.load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS
+            .max_queue_depth
+            .load(Ordering::Relaxed),
         EXT4_BLOCK_DEVICE_STATS.bytes.load(Ordering::Relaxed),
         EXT4_BLOCK_DEVICE_STATS.errors.load(Ordering::Relaxed),
         ticks_to_us(EXT4_BLOCK_DEVICE_STATS.wait_ticks.load(Ordering::Relaxed)),
@@ -607,6 +648,38 @@ fn emit_ext4_storage_cumulative() {
         ticks_to_us(
             EXT4_BLOCK_DEVICE_STATS
                 .max_service_ticks
+                .load(Ordering::Relaxed)
+        ),
+    );
+    println!(
+        "[perf] ext4_resource_locks acquires={} contended={} queued={} max_queue_depth={} wait_us={} max_wait_us={} hold_us={} max_hold_us={}",
+        EXT4_RESOURCE_LOCK_STATS.acquires.load(Ordering::Relaxed),
+        EXT4_RESOURCE_LOCK_STATS.contended.load(Ordering::Relaxed),
+        EXT4_RESOURCE_LOCK_STATS.queued.load(Ordering::Relaxed),
+        EXT4_RESOURCE_LOCK_STATS
+            .max_queue_depth
+            .load(Ordering::Relaxed),
+        ticks_to_us(EXT4_RESOURCE_LOCK_STATS.wait_ticks.load(Ordering::Relaxed)),
+        ticks_to_us(EXT4_RESOURCE_LOCK_STATS.max_wait_ticks.load(Ordering::Relaxed)),
+        ticks_to_us(EXT4_RESOURCE_LOCK_STATS.hold_ticks.load(Ordering::Relaxed)),
+        ticks_to_us(EXT4_RESOURCE_LOCK_STATS.max_hold_ticks.load(Ordering::Relaxed)),
+    );
+    println!(
+        "[perf] ext4_resource_registry lookups={} creates={} total_us={} max_us={}",
+        EXT4_RESOURCE_LOCK_STATS
+            .registry_lookups
+            .load(Ordering::Relaxed),
+        EXT4_RESOURCE_LOCK_STATS
+            .registry_creates
+            .load(Ordering::Relaxed),
+        ticks_to_us(
+            EXT4_RESOURCE_LOCK_STATS
+                .registry_ticks
+                .load(Ordering::Relaxed)
+        ),
+        ticks_to_us(
+            EXT4_RESOURCE_LOCK_STATS
+                .max_registry_ticks
                 .load(Ordering::Relaxed)
         ),
     );

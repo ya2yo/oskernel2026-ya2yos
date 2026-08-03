@@ -11,6 +11,11 @@ const LWEXT4_BUILD_INPUTS: &[&str] = &[
     "c/lwext4/toolchain/musl-generic.cmake",
 ];
 
+// Keep the cache size in the Rust build contract as well as CMake.  Including
+// it in the archive suffix prevents a stale Docker-owned archive built with a
+// different capacity from being silently reused.
+const LWEXT4_BLOCK_CACHE_SIZE: usize = 2048;
+
 fn path_modified_after(path: &Path, threshold: SystemTime) -> bool {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
@@ -97,9 +102,12 @@ fn main() {
     // from isolating the opt-in experiment, this prevents an old generated
     // archive from being reused after its C configuration changes.
     let build_variant_suffix = if dirty_capacity_experiment {
-        "-p212b2-bcache-dirty-capacity"
+        format!(
+            "-p212b2-bcache-dirty-capacity-c{}",
+            LWEXT4_BLOCK_CACHE_SIZE
+        )
     } else {
-        "-p212b2-default"
+        format!("-p212b2-default-c{}", LWEXT4_BLOCK_CACHE_SIZE)
     };
     let lwext4_lib = &format!("lwext4-{}{}", arch, build_variant_suffix);
     let lwext4_lib_path = &format!("c/lwext4/lib{}.a", lwext4_lib);
@@ -117,9 +125,15 @@ fn main() {
             .arg(&format!("LWEXT4_BUILD_DIR={}", lwext4_build_dir))
             .arg(&format!("LWEXT4_LIB_SUFFIX={}", build_variant_suffix))
             .arg(if dirty_capacity_experiment {
-                "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DEXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT=ON -DLWEXT4_USE_USER_MALLOC=ON"
+                format!(
+                    "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DEXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT=ON -DLWEXT4_USE_USER_MALLOC=ON -DLWEXT4_BLOCK_CACHE_SIZE={}",
+                    LWEXT4_BLOCK_CACHE_SIZE
+                )
             } else {
-                "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DLWEXT4_USE_USER_MALLOC=ON"
+                format!(
+                    "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DLWEXT4_USE_USER_MALLOC=ON -DLWEXT4_BLOCK_CACHE_SIZE={}",
+                    LWEXT4_BLOCK_CACHE_SIZE
+                )
             })
             .status()
             .expect("failed to execute process: make lwext4");

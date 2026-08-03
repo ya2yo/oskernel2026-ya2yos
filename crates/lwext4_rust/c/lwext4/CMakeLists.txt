@@ -22,6 +22,13 @@ if(EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT)
     add_definitions(-DCONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT=1)
 endif()
 
+set(LWEXT4_BLOCK_CACHE_SIZE 2048 CACHE STRING
+    "Number of metadata blocks retained by the lwext4 block cache")
+if(NOT LWEXT4_BLOCK_CACHE_SIZE MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "LWEXT4_BLOCK_CACHE_SIZE must be a positive integer")
+endif()
+add_definitions(-DCONFIG_BLOCK_DEV_CACHE_SIZE=${LWEXT4_BLOCK_CACHE_SIZE})
+
 #Examples
 if    (CMAKE_SYSTEM_PROCESSOR STREQUAL  cortex-m0)
     #...
@@ -45,7 +52,6 @@ elseif(LIB_ONLY)
     add_definitions(-DCONFIG_HAVE_OWN_OFLAGS=1)
     add_definitions(-DCONFIG_HAVE_OWN_ERRNO=0)
     add_definitions(-DCONFIG_USE_USER_MALLOC=1)
-    add_definitions(-DCONFIG_BLOCK_DEV_CACHE_SIZE=16)
 else()
     #Generic example target
     if (WIN32)
@@ -66,8 +72,6 @@ else()
     else()
       add_definitions(-DCONFIG_USE_USER_MALLOC=0)
     endif()
-    add_definitions(-DCONFIG_BLOCK_DEV_CACHE_SIZE=16)
-
     add_subdirectory(fs_test)
 endif()
 

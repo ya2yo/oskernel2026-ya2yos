@@ -159,6 +159,8 @@ pub(crate) struct Ext4BlockDeviceStats {
     pub(crate) flush_requests: AtomicUsize,
     pub(crate) completed: AtomicUsize,
     pub(crate) contended: AtomicUsize,
+    pub(crate) queued: AtomicUsize,
+    pub(crate) max_queue_depth: AtomicUsize,
     pub(crate) bytes: AtomicUsize,
     pub(crate) errors: AtomicUsize,
     pub(crate) wait_ticks: AtomicUsize,
@@ -177,6 +179,8 @@ impl Ext4BlockDeviceStats {
             flush_requests: AtomicUsize::new(0),
             completed: AtomicUsize::new(0),
             contended: AtomicUsize::new(0),
+            queued: AtomicUsize::new(0),
+            max_queue_depth: AtomicUsize::new(0),
             bytes: AtomicUsize::new(0),
             errors: AtomicUsize::new(0),
             wait_ticks: AtomicUsize::new(0),
@@ -193,6 +197,8 @@ impl Ext4BlockDeviceStats {
         self.flush_requests.store(0, Ordering::Relaxed);
         self.completed.store(0, Ordering::Relaxed);
         self.contended.store(0, Ordering::Relaxed);
+        self.queued.store(0, Ordering::Relaxed);
+        self.max_queue_depth.store(0, Ordering::Relaxed);
         self.bytes.store(0, Ordering::Relaxed);
         self.errors.store(0, Ordering::Relaxed);
         self.wait_ticks.store(0, Ordering::Relaxed);
@@ -379,6 +385,65 @@ impl Ext4FstatReasonPhases {
 pub(crate) static EXT4_BLOCK_DEVICE_STATS: Ext4BlockDeviceStats = Ext4BlockDeviceStats::new();
 #[cfg(feature = "perf")]
 static EXT4_BLOCK_DEVICE_PERF_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Aggregate costs of task-aware lwext4 resource locks and their Rust address
+/// registry. The data is intentionally not keyed by path, inode, or task so it
+/// remains suitable for long SMP BuildStorm runs.
+#[cfg(feature = "perf")]
+pub(crate) struct Ext4ResourceLockStats {
+    pub(crate) acquires: AtomicUsize,
+    pub(crate) contended: AtomicUsize,
+    pub(crate) queued: AtomicUsize,
+    pub(crate) max_queue_depth: AtomicUsize,
+    pub(crate) wait_ticks: AtomicUsize,
+    pub(crate) max_wait_ticks: AtomicUsize,
+    pub(crate) hold_ticks: AtomicUsize,
+    pub(crate) max_hold_ticks: AtomicUsize,
+    pub(crate) registry_lookups: AtomicUsize,
+    pub(crate) registry_creates: AtomicUsize,
+    pub(crate) registry_ticks: AtomicUsize,
+    pub(crate) max_registry_ticks: AtomicUsize,
+}
+
+#[cfg(feature = "perf")]
+impl Ext4ResourceLockStats {
+    const fn new() -> Self {
+        Self {
+            acquires: AtomicUsize::new(0),
+            contended: AtomicUsize::new(0),
+            queued: AtomicUsize::new(0),
+            max_queue_depth: AtomicUsize::new(0),
+            wait_ticks: AtomicUsize::new(0),
+            max_wait_ticks: AtomicUsize::new(0),
+            hold_ticks: AtomicUsize::new(0),
+            max_hold_ticks: AtomicUsize::new(0),
+            registry_lookups: AtomicUsize::new(0),
+            registry_creates: AtomicUsize::new(0),
+            registry_ticks: AtomicUsize::new(0),
+            max_registry_ticks: AtomicUsize::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        self.acquires.store(0, Ordering::Relaxed);
+        self.contended.store(0, Ordering::Relaxed);
+        self.queued.store(0, Ordering::Relaxed);
+        self.max_queue_depth.store(0, Ordering::Relaxed);
+        self.wait_ticks.store(0, Ordering::Relaxed);
+        self.max_wait_ticks.store(0, Ordering::Relaxed);
+        self.hold_ticks.store(0, Ordering::Relaxed);
+        self.max_hold_ticks.store(0, Ordering::Relaxed);
+        self.registry_lookups.store(0, Ordering::Relaxed);
+        self.registry_creates.store(0, Ordering::Relaxed);
+        self.registry_ticks.store(0, Ordering::Relaxed);
+        self.max_registry_ticks.store(0, Ordering::Relaxed);
+    }
+}
+
+#[cfg(feature = "perf")]
+pub(crate) static EXT4_RESOURCE_LOCK_STATS: Ext4ResourceLockStats = Ext4ResourceLockStats::new();
+#[cfg(feature = "perf")]
+static EXT4_RESOURCE_LOCK_PERF_ENABLED: AtomicBool = AtomicBool::new(false);
 /// `fast_cached`, `directory_epoch_cached`, `post_wait_cached`, and
 /// `actual_ext4_fstat` are mutually exclusive results of `Ext4Inode::fstat()`.
 /// Alias recovery is a nested subphase of the last bucket and is deliberately
@@ -1441,6 +1506,14 @@ pub(crate) fn enable_ext4_block_device_perf() {
     EXT4_BLOCK_DEVICE_PERF_ENABLED.store(true, Ordering::Release);
 }
 
+/// Start a fresh measurement epoch after lwext4 mount/recovery has finished.
+#[cfg(feature = "perf")]
+pub(crate) fn enable_ext4_resource_lock_perf() {
+    EXT4_RESOURCE_LOCK_PERF_ENABLED.store(false, Ordering::Relaxed);
+    EXT4_RESOURCE_LOCK_STATS.reset();
+    EXT4_RESOURCE_LOCK_PERF_ENABLED.store(true, Ordering::Release);
+}
+
 #[inline]
 #[cfg(feature = "perf")]
 pub(crate) fn record_ext4_block_request_submit(kind: Ext4BlockRequestKind, bytes: usize) {
@@ -1472,6 +1545,16 @@ pub(crate) fn record_ext4_block_request_acquired(wait_ticks: usize, contended: b
 
 #[inline]
 #[cfg(feature = "perf")]
+pub(crate) fn record_ext4_block_request_queued(queue_depth: usize) {
+    if !EXT4_BLOCK_DEVICE_PERF_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    add(&EXT4_BLOCK_DEVICE_STATS.queued, 1);
+    update_max(&EXT4_BLOCK_DEVICE_STATS.max_queue_depth, queue_depth);
+}
+
+#[inline]
+#[cfg(feature = "perf")]
 pub(crate) fn record_ext4_block_request_complete(service_ticks: usize, success: bool) {
     if !EXT4_BLOCK_DEVICE_PERF_ENABLED.load(Ordering::Relaxed) {
         return;
@@ -1481,5 +1564,53 @@ pub(crate) fn record_ext4_block_request_complete(service_ticks: usize, success: 
     update_max(&EXT4_BLOCK_DEVICE_STATS.max_service_ticks, service_ticks);
     if !success {
         add(&EXT4_BLOCK_DEVICE_STATS.errors, 1);
+    }
+}
+
+#[inline]
+#[cfg(feature = "perf")]
+pub(crate) fn record_ext4_resource_lock_acquired(wait_ticks: usize, contended: bool) {
+    if !EXT4_RESOURCE_LOCK_PERF_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    add(&EXT4_RESOURCE_LOCK_STATS.acquires, 1);
+    add(&EXT4_RESOURCE_LOCK_STATS.wait_ticks, wait_ticks);
+    update_max(&EXT4_RESOURCE_LOCK_STATS.max_wait_ticks, wait_ticks);
+    if contended {
+        add(&EXT4_RESOURCE_LOCK_STATS.contended, 1);
+    }
+}
+
+#[inline]
+#[cfg(feature = "perf")]
+pub(crate) fn record_ext4_resource_lock_queued(queue_depth: usize) {
+    if !EXT4_RESOURCE_LOCK_PERF_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    add(&EXT4_RESOURCE_LOCK_STATS.queued, 1);
+    update_max(&EXT4_RESOURCE_LOCK_STATS.max_queue_depth, queue_depth);
+}
+
+#[inline]
+#[cfg(feature = "perf")]
+pub(crate) fn record_ext4_resource_lock_released(hold_ticks: usize) {
+    if !EXT4_RESOURCE_LOCK_PERF_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    add(&EXT4_RESOURCE_LOCK_STATS.hold_ticks, hold_ticks);
+    update_max(&EXT4_RESOURCE_LOCK_STATS.max_hold_ticks, hold_ticks);
+}
+
+#[inline]
+#[cfg(feature = "perf")]
+pub(crate) fn record_ext4_resource_registry(lookup_ticks: usize, created: bool) {
+    if !EXT4_RESOURCE_LOCK_PERF_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    add(&EXT4_RESOURCE_LOCK_STATS.registry_lookups, 1);
+    add(&EXT4_RESOURCE_LOCK_STATS.registry_ticks, lookup_ticks);
+    update_max(&EXT4_RESOURCE_LOCK_STATS.max_registry_ticks, lookup_ticks);
+    if created {
+        add(&EXT4_RESOURCE_LOCK_STATS.registry_creates, 1);
     }
 }

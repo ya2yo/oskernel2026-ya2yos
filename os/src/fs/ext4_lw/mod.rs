@@ -32,6 +32,8 @@ use core::{
     task::{Context, Poll, Waker},
 };
 
+#[cfg(feature = "perf")]
+use crate::arch::time::get_ticks;
 use crate::utils::PollSet;
 
 /// A task-aware mutex for mutable state of one VFS inode.
@@ -110,13 +112,21 @@ struct TaskRwLockWaiter {
     waker: Waker,
 }
 
+struct TaskRwLockReader {
+    depth: usize,
+    #[cfg(feature = "perf")]
+    acquired_at: usize,
+}
+
 /// State for one C `struct ext4_fs_rwlock`.  The C lock's address is the key:
 /// it identifies one namespace, inode stripe, block-group stripe, journal,
 /// superblock or cache resource for the lifetime of a mount.
 struct TaskRwLockState {
-    readers: BTreeMap<usize, usize>,
+    readers: BTreeMap<usize, TaskRwLockReader>,
     writer: Option<usize>,
     writer_depth: usize,
+    #[cfg(feature = "perf")]
+    writer_acquired_at: usize,
     next_ticket: usize,
     waiters: VecDeque<TaskRwLockWaiter>,
 }
@@ -127,6 +137,8 @@ impl TaskRwLockState {
             readers: BTreeMap::new(),
             writer: None,
             writer_depth: 0,
+            #[cfg(feature = "perf")]
+            writer_acquired_at: 0,
             next_ticket: 1,
             waiters: VecDeque::new(),
         }
@@ -152,7 +164,7 @@ impl TaskRwLockState {
             // Blocking that recursive read behind its own queued writer makes
             // the task hold the read lock forever and leaves every hart idle.
             None if mode == TaskRwLockMode::Read
-                && self.readers.get(&tid).copied().unwrap_or(0) != 0 =>
+                && self.readers.get(&tid).map_or(0, |reader| reader.depth) != 0 =>
             {
                 true
             }
@@ -176,19 +188,46 @@ impl TaskRwLockState {
         }
     }
 
-    fn wake_front(&self) -> Option<Waker> {
-        let waiter = self.waiters.front()?;
-        let can_wake = self.writer.is_none()
-            && match waiter.mode {
-                TaskRwLockMode::Read => true,
-                TaskRwLockMode::Write => self.readers.is_empty(),
-            };
-        can_wake.then(|| waiter.waker.clone())
+    fn wake_waiters(&self) -> Vec<Waker> {
+        if self.writer.is_some() {
+            return Vec::new();
+        }
+
+        let mut wakers = Vec::new();
+        for waiter in &self.waiters {
+            match waiter.mode {
+                // Readers at the head of the FIFO are mutually compatible.
+                // Wake the whole contiguous read batch so they can acquire
+                // the resource concurrently instead of handing it off one
+                // task at a time.
+                TaskRwLockMode::Read => wakers.push(waiter.waker.clone()),
+                TaskRwLockMode::Write => {
+                    if self.readers.is_empty() {
+                        wakers.push(waiter.waker.clone());
+                    }
+                    break;
+                }
+            }
+        }
+        wakers
     }
 
     fn acquire(&mut self, tid: usize, mode: TaskRwLockMode) {
         match mode {
-            TaskRwLockMode::Read => *self.readers.entry(tid).or_insert(0) += 1,
+            TaskRwLockMode::Read => {
+                if let Some(reader) = self.readers.get_mut(&tid) {
+                    reader.depth = reader.depth.saturating_add(1);
+                } else {
+                    self.readers.insert(
+                        tid,
+                        TaskRwLockReader {
+                            depth: 1,
+                            #[cfg(feature = "perf")]
+                            acquired_at: get_ticks(),
+                        },
+                    );
+                }
+            }
             TaskRwLockMode::Write => {
                 if self.writer == Some(tid) {
                     self.writer_depth = self.writer_depth.saturating_add(1);
@@ -197,6 +236,10 @@ impl TaskRwLockState {
                     debug_assert!(self.readers.is_empty());
                     self.writer = Some(tid);
                     self.writer_depth = 1;
+                    #[cfg(feature = "perf")]
+                    {
+                        self.writer_acquired_at = get_ticks();
+                    }
                 }
             }
         }
@@ -218,6 +261,8 @@ struct TaskRwLockFuture<'a> {
     tid: usize,
     mode: TaskRwLockMode,
     ticket: Option<usize>,
+    #[cfg(feature = "perf")]
+    started_at: usize,
 }
 
 impl TaskRwLock {
@@ -228,15 +273,24 @@ impl TaskRwLock {
     }
 
     fn lock(&self, mode: TaskRwLockMode) {
+        #[cfg(feature = "perf")]
+        let started_at = get_ticks();
         let task = crate::task::current_task();
         let tid = task.as_ref().map_or(0, |task| task.tid());
         if self.try_lock(tid, mode, None) {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_ext4_resource_lock_acquired(0, false);
             return;
         }
 
         let Some(task) = task else {
             loop {
                 if self.try_lock(0, mode, None) {
+                    #[cfg(feature = "perf")]
+                    crate::utils::perf::record_ext4_resource_lock_acquired(
+                        get_ticks().saturating_sub(started_at),
+                        true,
+                    );
                     return;
                 }
                 core::hint::spin_loop();
@@ -250,6 +304,8 @@ impl TaskRwLock {
             tid,
             mode,
             ticket: None,
+            #[cfg(feature = "perf")]
+            started_at,
         });
     }
 
@@ -263,15 +319,17 @@ impl TaskRwLock {
                 state.waiters.pop_front();
             }
             state.acquire(tid, mode);
-            state.wake_front()
+            state.wake_waiters()
         };
-        if let Some(waker) = next {
+        for waker in next {
             waker.wake();
         }
         true
     }
 
     fn unlock(&self, tid: usize, mode: TaskRwLockMode) {
+        #[cfg(feature = "perf")]
+        let mut hold_ticks = None;
         let next = {
             let mut state = self.state.lock();
             match mode {
@@ -281,11 +339,20 @@ impl TaskRwLock {
                             .readers
                             .get_mut(&tid)
                             .expect("lwext4 read lock released by non-owner");
-                        debug_assert!(*held > 0);
-                        *held -= 1;
-                        *held == 0
+                        debug_assert!(held.depth > 0);
+                        held.depth -= 1;
+                        held.depth == 0
                     };
                     if remove {
+                        #[cfg(feature = "perf")]
+                        {
+                            let started_at = state
+                                .readers
+                                .get(&tid)
+                                .expect("lwext4 read lock lost owner timestamp")
+                                .acquired_at;
+                            hold_ticks = Some(get_ticks().saturating_sub(started_at));
+                        }
                         state.readers.remove(&tid);
                     }
                 }
@@ -298,18 +365,23 @@ impl TaskRwLock {
                     debug_assert!(state.writer_depth > 0);
                     state.writer_depth -= 1;
                     if state.writer_depth == 0 {
+                        #[cfg(feature = "perf")]
+                        {
+                            hold_ticks = Some(get_ticks().saturating_sub(state.writer_acquired_at));
+                            state.writer_acquired_at = 0;
+                        }
                         state.writer = None;
                     }
                 }
             }
-            if state.writer.is_none() {
-                state.wake_front()
-            } else {
-                None
-            }
+            state.wake_waiters()
         };
-        if let Some(waker) = next {
+        for waker in next {
             waker.wake();
+        }
+        #[cfg(feature = "perf")]
+        if let Some(hold_ticks) = hold_ticks {
+            crate::utils::perf::record_ext4_resource_lock_released(hold_ticks);
         }
     }
 
@@ -324,9 +396,9 @@ impl TaskRwLock {
                 return;
             };
             state.waiters.remove(index);
-            state.wake_front()
+            state.wake_waiters()
         };
-        if let Some(waker) = next {
+        for waker in next {
             waker.wake();
         }
     }
@@ -343,10 +415,14 @@ impl TaskRwLock {
             if state.writer == Some(tid) {
                 state.writer = None;
                 state.writer_depth = 0;
+                #[cfg(feature = "perf")]
+                {
+                    state.writer_acquired_at = 0;
+                }
             }
-            state.wake_front()
+            state.wake_waiters()
         };
-        if let Some(waker) = next {
+        for waker in next {
             waker.wake();
         }
     }
@@ -357,6 +433,8 @@ impl Future for TaskRwLockFuture<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
+        #[cfg(feature = "perf")]
+        let mut queued_depth = None;
         let next = {
             let mut state = this.lock.state.lock();
             if state.can_acquire(this.tid, this.mode, this.ticket) {
@@ -365,7 +443,7 @@ impl Future for TaskRwLockFuture<'_> {
                     this.ticket = None;
                 }
                 state.acquire(this.tid, this.mode);
-                Some(state.wake_front())
+                Some(state.wake_waiters())
             } else if let Some(ticket) = this.ticket {
                 if let Some(waiter) = state
                     .waiters
@@ -387,13 +465,27 @@ impl Future for TaskRwLockFuture<'_> {
                     waker: cx.waker().clone(),
                 });
                 this.ticket = Some(ticket);
+                #[cfg(feature = "perf")]
+                {
+                    queued_depth = Some(state.waiters.len());
+                }
                 None
             }
         };
 
+        #[cfg(feature = "perf")]
+        if let Some(queue_depth) = queued_depth {
+            crate::utils::perf::record_ext4_resource_lock_queued(queue_depth);
+        }
+
         match next {
             Some(next) => {
-                if let Some(waker) = next {
+                #[cfg(feature = "perf")]
+                crate::utils::perf::record_ext4_resource_lock_acquired(
+                    get_ticks().saturating_sub(this.started_at),
+                    true,
+                );
+                for waker in next {
                     waker.wake();
                 }
                 Poll::Ready(())
@@ -419,11 +511,28 @@ static LWEXT4_RESOURCE_LOCKS: spin::Lazy<spin::Mutex<BTreeMap<usize, Arc<TaskRwL
 
 fn resource_lock(lock: *mut c_void) -> Arc<TaskRwLock> {
     assert!(!lock.is_null(), "lwext4 supplied a null resource lock");
+    #[cfg(feature = "perf")]
+    let started_at = get_ticks();
     let mut locks = LWEXT4_RESOURCE_LOCKS.lock();
-    locks
+    #[cfg(feature = "perf")]
+    let mut created = false;
+    let resource = locks
         .entry(lock as usize)
-        .or_insert_with(|| Arc::new(TaskRwLock::new()))
-        .clone()
+        .or_insert_with(|| {
+            #[cfg(feature = "perf")]
+            {
+                created = true;
+            }
+            Arc::new(TaskRwLock::new())
+        })
+        .clone();
+    drop(locks);
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_ext4_resource_registry(
+        get_ticks().saturating_sub(started_at),
+        created,
+    );
+    resource
 }
 
 /// lwext4 通过已注册函数指针调用的资源加锁回调。

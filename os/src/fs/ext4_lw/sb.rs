@@ -148,6 +148,7 @@ impl Ext4SuperBlock {
         #[cfg(feature = "perf")]
         {
             crate::utils::perf::enable_ext4_block_device_perf();
+            crate::utils::perf::enable_ext4_resource_lock_perf();
             lwext4_rust::perf::enable_bcache_perf();
         }
         // 创建根目录对象
