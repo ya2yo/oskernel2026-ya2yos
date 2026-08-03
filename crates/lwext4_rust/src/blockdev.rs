@@ -34,6 +34,10 @@ pub type FsRwlockLockHook = unsafe extern "C" fn(ctx: *mut c_void, lock: *mut c_
 pub type FsRwlockUnlockHook =
     unsafe extern "C" fn(ctx: *mut c_void, lock: *mut c_void, write: bool);
 
+/// Reports whether the current task owns a resource lock's write side.
+pub type FsRwlockWriteOwnedHook =
+    unsafe extern "C" fn(ctx: *mut c_void, lock: *const c_void) -> bool;
+
 unsafe extern "C" {
     #[link_name = "ext4_bcache_setup_sync"]
     fn ext4_bcache_setup_sync_ffi(
@@ -47,6 +51,7 @@ unsafe extern "C" {
         ctx: *mut c_void,
         lock_hook: Option<FsRwlockLockHook>,
         unlock_hook: Option<FsRwlockUnlockHook>,
+        write_owned_hook: Option<FsRwlockWriteOwnedHook>,
     );
 }
 
@@ -101,8 +106,9 @@ impl<K: KernelDevOp> Ext4BlockWrapper<K> {
         ctx: *mut c_void,
         lock_hook: Option<FsRwlockLockHook>,
         unlock_hook: Option<FsRwlockUnlockHook>,
+        write_owned_hook: Option<FsRwlockWriteOwnedHook>,
     ) {
-        unsafe { ext4_fs_rwlock_set_hooks_ffi(ctx, lock_hook, unlock_hook) }
+        unsafe { ext4_fs_rwlock_set_hooks_ffi(ctx, lock_hook, unlock_hook, write_owned_hook) }
     }
 
     pub fn new(block_dev: K::DevType) -> Result<Self, i32> {

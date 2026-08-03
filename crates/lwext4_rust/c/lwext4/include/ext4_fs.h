@@ -81,6 +81,8 @@ enum ext4_fs_rwlock_kind {
 
 struct ext4_fs_rwlock {
 	int state;
+	/* Used only by the single-threaded raw-lock fallback. */
+	uint32_t writer_depth;
 	uint8_t kind;
 };
 
@@ -97,7 +99,7 @@ struct ext4_fs_rwlock {
  * `struct ext4_fs` members.  They must be installed before the first mount
  * and remain valid until all mounts are gone.  With no hooks installed the
  * original atomic-spin behaviour remains available for lwext4's standalone
- * and host test users.
+ * and host test users, including nested write sections in that serial mode.
  */
 typedef void (*ext4_fs_rwlock_lock_hook_t)(void *ctx,
 						   struct ext4_fs_rwlock *lock,
@@ -105,14 +107,19 @@ typedef void (*ext4_fs_rwlock_lock_hook_t)(void *ctx,
 typedef void (*ext4_fs_rwlock_unlock_hook_t)(void *ctx,
 						     struct ext4_fs_rwlock *lock,
 						     bool write);
+/* Returns whether the calling task owns the write side of `lock`. */
+typedef bool (*ext4_fs_rwlock_write_owned_hook_t)(void *ctx,
+								  const struct ext4_fs_rwlock *lock);
 
 void ext4_fs_rwlock_set_hooks(void *ctx,
 				      ext4_fs_rwlock_lock_hook_t lock_hook,
-				      ext4_fs_rwlock_unlock_hook_t unlock_hook);
+				      ext4_fs_rwlock_unlock_hook_t unlock_hook,
+				      ext4_fs_rwlock_write_owned_hook_t write_owned_hook);
 void ext4_fs_rwlock_read_lock(struct ext4_fs_rwlock *lock);
 void ext4_fs_rwlock_read_unlock(struct ext4_fs_rwlock *lock);
 void ext4_fs_rwlock_write_lock(struct ext4_fs_rwlock *lock);
 void ext4_fs_rwlock_write_unlock(struct ext4_fs_rwlock *lock);
+bool ext4_fs_rwlock_write_owned_by_current(const struct ext4_fs_rwlock *lock);
 uint8_t ext4_fs_rwlock_get_kind(const struct ext4_fs_rwlock *lock);
 
 struct ext4_fs {
@@ -147,8 +154,6 @@ struct ext4_fs {
 	 */
 	uint32_t journal_trans_depth;
 	bool journal_trans_abort_pending;
-	/* True while the current task owns journal_lock for a transaction scope. */
-	bool journal_lock_held;
 };
 
 static inline struct ext4_fs_rwlock *

@@ -699,7 +699,6 @@ static int ext4_trans_start(struct ext4_mountpoint *mp __unused)
 			ext4_fs_rwlock_write_unlock(&mp->fs.journal_lock);
 			return r;
 		}
-		mp->fs.journal_lock_held = true;
 	}
 	mp->fs.journal_trans_depth++;
 	return r;
@@ -708,6 +707,9 @@ static int ext4_trans_start(struct ext4_mountpoint *mp __unused)
 static int ext4_trans_stop(struct ext4_mountpoint *mp __unused)
 {
 	int r = EOK;
+	/* A failed or skipped start must not consume another task's transaction. */
+	if (!ext4_fs_rwlock_write_owned_by_current(&mp->fs.journal_lock))
+		return EOK;
 	if (!mp->fs.journal_trans_depth)
 		return EOK;
 
@@ -727,13 +729,15 @@ static int ext4_trans_stop(struct ext4_mountpoint *mp __unused)
 	}
 #endif
 	mp->fs.journal_trans_abort_pending = false;
-	mp->fs.journal_lock_held = false;
 	ext4_fs_rwlock_write_unlock(&mp->fs.journal_lock);
 	return r;
 }
 
 static void ext4_trans_abort(struct ext4_mountpoint *mp __unused)
 {
+	/* See ext4_trans_stop(): journal state belongs to its lock owner. */
+	if (!ext4_fs_rwlock_write_owned_by_current(&mp->fs.journal_lock))
+		return;
 	if (!mp->fs.journal_trans_depth)
 		return;
 
@@ -749,7 +753,6 @@ static void ext4_trans_abort(struct ext4_mountpoint *mp __unused)
 	__ext4_trans_abort(mp);
 #endif
 	mp->fs.journal_trans_abort_pending = false;
-	mp->fs.journal_lock_held = false;
 	ext4_fs_rwlock_write_unlock(&mp->fs.journal_lock);
 }
 
@@ -875,22 +878,17 @@ static int ext4_trunc_inode(struct ext4_mountpoint *mp, uint32_t index,
 	 * second time.  It then self-deadlocks while its caller still holds the
 	 * namespace write lock.
 	 *
-	 * Split a large truncate into independent transaction scopes whenever the
-	 * logical transaction lock is already held, then restore the caller's
-	 * scope before returning.
+	 * The resource lock is recursive for the owning task, so the inner
+	 * transaction scopes below are safe. Do not release journal_lock here:
+	 * callers can still hold namespace or inode locks, and yielding journal_lock
+	 * between those resources creates a lock cycle with another transaction.
 	 */
-	uint32_t saved_trans_depth = mp->fs.journal_trans_depth;
-	bool has_trans = saved_trans_depth != 0;
 	r = ext4_fs_get_inode_ref(fs, index, &inode_ref);
 	if (r != EOK)
 		return r;
 
 	inode_size = ext4_inode_get_size(&fs->sb, inode_ref.inode);
 	ext4_fs_put_inode_ref(&inode_ref);
-	if (has_trans) {
-		while (mp->fs.journal_trans_depth)
-			ext4_trans_stop(mp);
-	}
 
 	while (inode_size > new_size + CONFIG_MAX_TRUNCATE_SIZE) {
 
@@ -942,17 +940,6 @@ static int ext4_trunc_inode(struct ext4_mountpoint *mp, uint32_t index,
 	}
 
 Finish:
-
-	if (has_trans) {
-		while (mp->fs.journal_trans_depth < saved_trans_depth) {
-			int restore_r = ext4_trans_start(mp);
-			if (r == EOK && restore_r != EOK)
-				r = restore_r;
-			if (restore_r != EOK)
-				break;
-		}
-	}
-
 	return r;
 }
 
@@ -3393,6 +3380,7 @@ int ext4_dir_rm(const char *path)
 		dir_end = false;
 
 		while (r == EOK && !has_children && !dir_end) {
+			bool trans_started = false;
 
 			/*Load directory node.*/
 			r = ext4_fs_get_inode_ref(fs, inode_current, &act);
@@ -3415,6 +3403,7 @@ int ext4_dir_rm(const char *path)
 			r = ext4_trans_start(mp);
 			if (r != EOK)
 				goto End;
+			trans_started = true;
 
 			/*Get up directory inode when ".." entry*/
 			if ((it.curr->name_len == 2) &&
@@ -3502,10 +3491,12 @@ int ext4_dir_rm(const char *path)
 			else
 				ext4_fs_put_inode_ref(&act);
 
-			if (r != EOK)
-				ext4_trans_abort(mp);
-			else
-				ext4_trans_stop(mp);
+			if (trans_started) {
+				if (r != EOK)
+					ext4_trans_abort(mp);
+				else
+					ext4_trans_stop(mp);
+			}
 		}
 
 		if (dir_end) {

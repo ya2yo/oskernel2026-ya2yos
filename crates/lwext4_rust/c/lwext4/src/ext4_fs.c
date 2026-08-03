@@ -67,13 +67,17 @@
 static void *ext4_fs_rwlock_hook_ctx;
 static ext4_fs_rwlock_lock_hook_t ext4_fs_rwlock_lock_hook;
 static ext4_fs_rwlock_unlock_hook_t ext4_fs_rwlock_unlock_hook;
+static ext4_fs_rwlock_write_owned_hook_t ext4_fs_rwlock_write_owned_hook;
 
 void ext4_fs_rwlock_set_hooks(void *ctx,
 				      ext4_fs_rwlock_lock_hook_t lock_hook,
-				      ext4_fs_rwlock_unlock_hook_t unlock_hook)
+				      ext4_fs_rwlock_unlock_hook_t unlock_hook,
+				      ext4_fs_rwlock_write_owned_hook_t write_owned_hook)
 {
 	/* Installation is completed before ext4_device_register()/ext4_mount(). */
 	__atomic_store_n(&ext4_fs_rwlock_hook_ctx, ctx, __ATOMIC_RELEASE);
+	__atomic_store_n(&ext4_fs_rwlock_write_owned_hook, write_owned_hook,
+			 __ATOMIC_RELEASE);
 	__atomic_store_n(&ext4_fs_rwlock_unlock_hook, unlock_hook,
 			 __ATOMIC_RELEASE);
 	__atomic_store_n(&ext4_fs_rwlock_lock_hook, lock_hook,
@@ -100,11 +104,18 @@ static void ext4_fs_rwlock_spin_read_lock(struct ext4_fs_rwlock *lock)
 static void ext4_fs_rwlock_spin_write_lock(struct ext4_fs_rwlock *lock)
 {
 	for (;;) {
+		/* The hook-less mode is serial, so its writer may recurse. */
+		if (__atomic_load_n(&lock->state, __ATOMIC_ACQUIRE) == -1) {
+			lock->writer_depth++;
+			return;
+		}
 		int expected = 0;
 		if (__atomic_compare_exchange_n(&lock->state, &expected, -1,
 						false, __ATOMIC_ACQUIRE,
-						__ATOMIC_RELAXED))
+						__ATOMIC_RELAXED)) {
+			lock->writer_depth = 1;
 			return;
+		}
 		while (__atomic_load_n(&lock->state, __ATOMIC_RELAXED) != 0)
 			;
 	}
@@ -155,7 +166,20 @@ void ext4_fs_rwlock_write_unlock(struct ext4_fs_rwlock *lock)
 		     lock, true);
 		return;
 	}
-	__atomic_store_n(&lock->state, 0, __ATOMIC_RELEASE);
+	ext4_assert(lock->writer_depth);
+	if (--lock->writer_depth == 0)
+		__atomic_store_n(&lock->state, 0, __ATOMIC_RELEASE);
+}
+
+bool ext4_fs_rwlock_write_owned_by_current(const struct ext4_fs_rwlock *lock)
+{
+	ext4_fs_rwlock_write_owned_hook_t hook = __atomic_load_n(
+		&ext4_fs_rwlock_write_owned_hook, __ATOMIC_ACQUIRE);
+	if (hook)
+		return hook(__atomic_load_n(&ext4_fs_rwlock_hook_ctx,
+					    __ATOMIC_ACQUIRE), lock);
+	/* The fallback has no task identity and is used only by serial callers. */
+	return lock && __atomic_load_n(&lock->writer_depth, __ATOMIC_ACQUIRE);
 }
 
 uint8_t ext4_fs_rwlock_get_kind(const struct ext4_fs_rwlock *lock)
@@ -166,6 +190,7 @@ uint8_t ext4_fs_rwlock_get_kind(const struct ext4_fs_rwlock *lock)
 static void ext4_fs_rwlock_init(struct ext4_fs_rwlock *lock, uint8_t kind)
 {
 	lock->state = 0;
+	lock->writer_depth = 0;
 	lock->kind = kind;
 }
 

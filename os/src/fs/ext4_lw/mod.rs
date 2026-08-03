@@ -392,6 +392,10 @@ impl TaskRwLock {
         }
     }
 
+    fn write_owned_by(&self, tid: usize) -> bool {
+        self.state.lock().writer == Some(tid)
+    }
+
     fn cancel_ticket(&self, ticket: usize) {
         let next = {
             let mut state = self.state.lock();
@@ -608,6 +612,24 @@ unsafe extern "C" fn unlock_lwext4_resource(_ctx: *mut c_void, lock: *mut c_void
     );
 }
 
+/// Lets C transaction cleanup distinguish its own journal scope from another
+/// task's in-flight transaction without exposing the Rust lock state.
+unsafe extern "C" fn lwext4_write_lock_owned_by_current(
+    _ctx: *mut c_void,
+    lock: *const c_void,
+) -> bool {
+    if lock.is_null() {
+        return false;
+    }
+    let tid = crate::task::current_task()
+        .as_ref()
+        .map_or(0, |task| task.tid());
+    LWEXT4_RESOURCE_LOCKS
+        .lock()
+        .get(&(lock as usize))
+        .map_or(false, |resource| resource.write_owned_by(tid))
+}
+
 unsafe extern "C" fn lock_vfile_cache_resource(_ctx: *mut c_void, lock: *mut c_void, write: bool) {
     resource_lock(lock, || {
         crate::utils::perf::Ext4ResourceLockClass::VFileCache
@@ -654,6 +676,7 @@ pub(super) fn install_lwext4_resource_lock_hooks() {
         core::ptr::null_mut(),
         Some(lock_lwext4_resource),
         Some(unlock_lwext4_resource),
+        Some(lwext4_write_lock_owned_by_current),
     );
     lwext4_rust::file::setup_vfile_cache_lock_hooks(
         core::ptr::null_mut(),
