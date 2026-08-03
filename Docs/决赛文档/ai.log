@@ -9742,3 +9742,41 @@ GDB backtrace 显示四个 hart 均在 `ext4_fs_rwlock_write_lock()` 的 C 原�
 `cargo fmt --manifest-path os/Cargo.toml --all -- --check` 与 `git diff --check` 通过。`make perf TARGET_ARCH=riscv64`
 在 lwext4 CMake 配置时缺少 `riscv64-linux-musl-cc`，因此没有完成 kernel 链接或 guest 运行。尚未在 Docker 重跑
 BuildStorm、`e2fsck -fn`、文件系统 LTP 或 LoongArch64 运行，不能报告该死锁的运行时解除、完整编译通过或性能收益。
+
+## 2026-08-04：BuildStorm CMA/journal 锁死与 RISC-V trap return 窗口
+
+### 用户输入
+
+维护者连续提供新的 `server.ans`、`client.ans` 和 GDB 现场，要求继续处理 BuildStorm 的停滞、死锁及 panic；最后要求依据当前工作区修改补齐文档。
+
+### 分析与采纳结论
+
+`server.ans` 在 `Building 53/446` 后无 compiler error、panic、LTP 失败或正常结束标记。`client.ans` 显示一个 hart 在
+`sys_write -> ext4_fwrite -> VirtIOBlk::write_blocks -> cma_alloc` 等待 CMA，另一个 hart 在 SIGKILL 退出回收
+`FrameTracker` 的 `cma_dealloc` 等待同一锁，其余 hart idle。由此将 `53/446` 解释为被 DMA 连续页分配阻塞的最后
+Cargo 可见进度，而非特定 crate 编译错误。原 `LockedHeap` 的 ticket 等待者或 owner 在发散 task exit 丢弃内核栈后都可能
+遗留，且旧现场没有足够的 ticket/owner 数值识别最初 tid。
+
+同时审计当前 lwext4 journal 代码：`journal_trans_depth` 是 journal write lock 下的共享嵌套深度，旧全局
+`journal_lock_held` 不能表示当前 task 所有权；未成功 start 的 `ext4_dir_rm()` 分支仍 stop/abort 时可能收尾其它 task
+的事务。RISC-V `trap_return()` 则在仍处于 S-mode 时切换 `stvec` 到 user entry 并可能恢复 `SIE`，中断会依照 user
+`sscratch`/stack 协议处理而破坏现场。
+
+### 修改与文档
+
+以私有 owner-CAS `CmaAllocator` 和非暴露 `CmaGuard` 替换 CMA 的 ticket `LockedHeap`，任务退出时仅在 task 已脱离
+调度后清除匹配 owner。
+lwext4 hook 增加 `write_owned_by_current`，transaction stop/abort 仅由 journal write owner 执行，目录删除只收尾真正启动的
+transaction；RISC-V 返回汇编在 `sret` 前清 S-mode `SIE` 并保留 `SPIE`。本轮新增三个问题复盘，并更新开发日志、索引和 AI 记录。
+
+源码涉及 `crates/lwext4_rust/c/lwext4/{include/ext4_fs.h,src/ext4.c,src/ext4_fs.c}`、
+`crates/lwext4_rust/src/blockdev.rs`、
+`os/src/{arch/riscv64/qemu/asms/trap.S,fs/ext4_lw/mod.rs,mm/frame_alloc/{buddy_cma,mod}.rs,mm/mod.rs,task/mod.rs,trap/mod.rs}`。
+维护者已有的 `user/src/bin/initproc.rs` 调整未修改；未跟踪 `disk.img` 未处理。
+
+### 验证边界
+
+`rustfmt --edition 2021` 与 `git diff --check` 通过。`make TARGET_ARCH=riscv64` 已完成 user build，但 lwext4 CMake 找不到
+`riscv64-linux-musl-cc`，没有完成 kernel 链接或 guest 启动。新 CMA、journal 与 trap 修复尚未在新内核上完成 BuildStorm、
+越过 Cargo `53/446` 的确认、GDB、LTP、`e2fsck -fn` 或 LoongArch64 回归，因此不报告运行时死锁/panic 已消除或跨架构通过；
+关联 commit：当前工作区未提交。

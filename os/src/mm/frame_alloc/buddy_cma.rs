@@ -1,6 +1,11 @@
-use core::{alloc::Layout, ptr::NonNull};
+use core::{
+    alloc::Layout,
+    cell::UnsafeCell,
+    ptr::NonNull,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
-use buddy_system_allocator::LockedHeap;
+use buddy_system_allocator::Heap;
 
 #[cfg(target_arch = "riscv64")]
 use crate::arch::memory_layout::BOOTSTRAP_PHYSICAL_MEMORY_SIZE;
@@ -17,7 +22,109 @@ use crate::{
 // 基于伙伴算法的连续物理地址分配器
 // 除了内核本身的各ELF段（堆在数据段里面）之外
 // 其他所有的空闲空间均用伙伴算法管理
-static CMA_ALLOCATOR: LockedHeap = LockedHeap::empty();
+//
+// Do not use `LockedHeap` here.  Its dependency on spin 0.7 is a ticket
+// lock: a task that is removed by the scheduler after taking a ticket can
+// permanently strand every later allocator caller.  Task exit does not unwind
+// the abandoned kernel stack, so the usual RAII unlock is not sufficient.
+const CMA_UNLOCKED: usize = 0;
+const CMA_KERNEL_OWNER: usize = usize::MAX;
+
+struct CmaAllocator {
+    owner: AtomicUsize,
+    heap: UnsafeCell<Heap>,
+}
+
+// `heap` is accessed only while `owner` is held.  The guard is intentionally
+// private so no caller can move it across a scheduling boundary.
+unsafe impl Sync for CmaAllocator {}
+
+impl CmaAllocator {
+    const fn empty() -> Self {
+        Self {
+            owner: AtomicUsize::new(CMA_UNLOCKED),
+            heap: UnsafeCell::new(Heap::empty()),
+        }
+    }
+
+    fn owner_for_current_task() -> usize {
+        crate::task::current_task()
+            .map(|task| {
+                task.tid()
+                    .checked_add(1)
+                    .filter(|owner| *owner != CMA_KERNEL_OWNER)
+                    .expect("CMA task id cannot encode lock owner")
+            })
+            .unwrap_or(CMA_KERNEL_OWNER)
+    }
+
+    fn lock(&self) -> CmaGuard<'_> {
+        let owner = Self::owner_for_current_task();
+        while self
+            .owner
+            .compare_exchange(CMA_UNLOCKED, owner, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        CmaGuard {
+            allocator: self,
+            owner,
+        }
+    }
+
+    fn with_heap<R>(&self, f: impl FnOnce(&mut Heap) -> R) -> R {
+        let guard = self.lock();
+        guard.with_heap(f)
+    }
+
+    /// Task teardown discards its kernel stack instead of unwinding it.  A
+    /// CMA guard on that stack therefore needs an explicit release point.
+    /// This is safe only after `exit_current_and_run_next()` has detached the
+    /// task, which guarantees the guarded code cannot resume.
+    fn cancel_task(&self, tid: usize) {
+        let owner = tid
+            .checked_add(1)
+            .filter(|owner| *owner != CMA_KERNEL_OWNER)
+            .expect("CMA task id cannot encode lock owner");
+        if self
+            .owner
+            .compare_exchange(owner, CMA_UNLOCKED, Ordering::Release, Ordering::Relaxed)
+            .is_ok()
+        {
+            log::warn!("releasing CMA lock abandoned by exiting tid {}", tid);
+        }
+    }
+}
+
+struct CmaGuard<'a> {
+    allocator: &'a CmaAllocator,
+    owner: usize,
+}
+
+impl CmaGuard<'_> {
+    fn with_heap<R>(&self, f: impl FnOnce(&mut Heap) -> R) -> R {
+        // SAFETY: `CmaGuard` is constructed only after the acquire operation
+        // above succeeds, and its Drop releases the owner exactly once.
+        unsafe { f(&mut *self.allocator.heap.get()) }
+    }
+}
+
+impl Drop for CmaGuard<'_> {
+    fn drop(&mut self) {
+        self.allocator
+            .owner
+            .compare_exchange(
+                self.owner,
+                CMA_UNLOCKED,
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .expect("CMA lock released by non-owner");
+    }
+}
+
+static CMA_ALLOCATOR: CmaAllocator = CmaAllocator::empty();
 
 /// initiate heap allocator
 pub fn init_cma() {
@@ -44,28 +151,29 @@ pub fn init_cma() {
 #[cfg(target_arch = "loongarch64")]
 fn init_cma_heap(ekernel_va: usize) -> usize {
     let mut total = 0usize;
-    let mut allocator = CMA_ALLOCATOR.lock();
-    for &(start, size) in PHYSICAL_MEMORY_RANGES {
-        assert!(start % PAGE_SIZE == 0);
-        assert!(size % PAGE_SIZE == 0);
-        let range_start = KERNEL_ADDR_OFFSET + start;
-        let range_end = range_start + size;
-        let left = if ekernel_va > range_start && ekernel_va < range_end {
-            ekernel_va
-        } else {
-            range_start
-        };
-        if left >= range_end {
-            continue;
+    CMA_ALLOCATOR.with_heap(|allocator| {
+        for &(start, size) in PHYSICAL_MEMORY_RANGES {
+            assert!(start % PAGE_SIZE == 0);
+            assert!(size % PAGE_SIZE == 0);
+            let range_start = KERNEL_ADDR_OFFSET + start;
+            let range_end = range_start + size;
+            let left = if ekernel_va > range_start && ekernel_va < range_end {
+                ekernel_va
+            } else {
+                range_start
+            };
+            if left >= range_end {
+                continue;
+            }
+            println!("from: {:#x}", left);
+            println!("size: {:#x}", range_end - left);
+            println!("to:   {:#x}", range_end);
+            unsafe {
+                allocator.add_to_heap(left, range_end);
+            }
+            total += range_end - left;
         }
-        println!("from: {:#x}", left);
-        println!("size: {:#x}", range_end - left);
-        println!("to:   {:#x}", range_end);
-        unsafe {
-            allocator.add_to_heap(left, range_end);
-        }
-        total += range_end - left;
-    }
+    });
     total
 }
 
@@ -81,12 +189,12 @@ fn init_cma_heap(ekernel_va: usize) -> usize {
     println!("from: {:#x}", left);
     println!("size: {:#x}", size);
     println!("to:   {:#x}", left + size);
-    unsafe {
-        CMA_ALLOCATOR.lock().init(
+    CMA_ALLOCATOR.with_heap(|allocator| unsafe {
+        allocator.init(
             left, // 其实就是ekernel???
             size,
         );
-    }
+    });
     size
 }
 
@@ -103,9 +211,7 @@ pub fn init_cma_late() {
     println!("from: {:#x}", start);
     println!("size: {:#x}", end - start);
     println!("to:   {:#x}", end);
-    unsafe {
-        CMA_ALLOCATOR.lock().add_to_heap(start, end);
-    }
+    CMA_ALLOCATOR.with_heap(|allocator| unsafe { allocator.add_to_heap(start, end) });
 }
 
 #[cfg(not(target_arch = "riscv64"))]
@@ -120,8 +226,7 @@ pub fn cma_alloc(pages: usize) -> Option<PhysAddr> {
     .ok();
     match layout_opt {
         Some(layout) => {
-            let mut locked = CMA_ALLOCATOR.lock();
-            let ptr_result = match locked.alloc(layout) {
+            let ptr_result = match CMA_ALLOCATOR.with_heap(|allocator| allocator.alloc(layout)) {
                 Ok(ptr) => ptr,
                 Err(_) => return None,
             };
@@ -142,5 +247,11 @@ pub fn cma_dealloc(paddr: PhysAddr, pages: usize) {
         Layout::from_size_align(pages * PAGE_SIZE, PAGE_SIZE).expect("Invalid deallocation layout");
     let va = KernelAddr::from(paddr);
     let ptr = NonNull::new(va.0 as *mut u8).expect("Pointer must not be null!");
-    CMA_ALLOCATOR.lock().dealloc(ptr, layout);
+    CMA_ALLOCATOR.with_heap(|allocator| allocator.dealloc(ptr, layout));
+}
+
+/// Release a CMA critical section that belongs to a task whose kernel stack is
+/// about to be abandoned by task exit.
+pub(crate) fn cancel_cma_lock_owner(tid: usize) {
+    CMA_ALLOCATOR.cancel_task(tid);
 }

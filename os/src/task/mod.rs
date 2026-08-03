@@ -78,7 +78,10 @@ use crate::{
     arch::cpu::hart_id,
     drivers::cancel_disk_waiter,
     fs::{cancel_ext4_op_waiter, open, OpenFlags, NONE_MODE},
-    mm::{activate_kernel_space, copy_to_user, copy_to_user_val, MapAreaType, VirtAddr},
+    mm::{
+        activate_kernel_space, cancel_cma_lock_owner, copy_to_user, copy_to_user_val, MapAreaType,
+        VirtAddr,
+    },
     signal::{send_exec_teardown_kill, send_signal_to_thread_group, SigSet},
     syscall::fs::file_lock,
     task::acct::write_process_acct_record,
@@ -355,9 +358,9 @@ pub fn exit_current_group_and_run_next(exit_code: i32) {
 pub fn exit_current_and_run_next(exit_code: i32) {
     debug!("[exit_current_and_run_next] enter!");
     let curr_task = take_current_task().unwrap();
-    // A task blocked in the EXT4 mount gate cannot unwind its lock future
-    // because this exit path abandons its kernel stack. Remove its FIFO ticket
-    // (or release a logically owned gate) before taking process/task locks.
+    // This exit path abandons the kernel stack instead of unwinding it. Clear
+    // every task-owned lock/waiter that would otherwise survive its guard.
+    cancel_cma_lock_owner(curr_task.tid());
     cancel_ext4_op_waiter(curr_task.tid());
     cancel_disk_waiter(curr_task.tid());
     let count = Arc::strong_count(&curr_task);

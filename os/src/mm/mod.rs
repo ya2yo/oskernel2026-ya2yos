@@ -23,6 +23,7 @@ use crate::utils::simple_range::{SimpleRange, StepByOne};
 type VPNRange = SimpleRange<VirtPageNum>;
 
 pub use address::{KernelAddr, PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
+pub(crate) use frame_alloc::cancel_cma_lock_owner;
 pub use frame_alloc::{cma_alloc, cma_dealloc, FrameTracker};
 pub use map_area::{MapArea, MapAreaType, MapPermission};
 pub(crate) use memory_set::read_elf_metadata_with_prefix;

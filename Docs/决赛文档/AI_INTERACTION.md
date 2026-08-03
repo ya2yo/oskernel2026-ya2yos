@@ -2468,3 +2468,12 @@
 - **关联文档**：[优化方案](./优化方案.md)、[资源锁问题复盘](./problem/buildstorm-ext4-resource-lock-scope-telemetry.md)、
   [死锁问题复盘](./problem/buildstorm-task-timer-snapshot-deadlock.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm CMA/journal 锁死与 RISC-V trap return 窗口（8.4）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 BuildStorm `server.ans/client.ans` 与 GDB 现场，要求持续修复 `53/446` 停滞、死锁和 panic，随后要求依当前工作区补齐文档。
+- **描述**：GDB 将 Cargo 停滞关联到 ext4 写入所需的 VirtIO DMA CMA 分配与 SIGKILL 页帧回收同时等待 ticket `LockedHeap`；改为 task-owner CAS CMA 锁，并在发散 task exit 中显式清理 owner。lwext4 journal 改以当前 task 是否拥有 resource write lock 决定 transaction stop/abort，防止共享 depth 被跨任务收尾；RISC-V user return 在 `sret` 前抑制当前 S-mode `SIE`，关闭 user `stvec` 已生效时的错误陷入窗口。
+- **验证边界**：格式和 diff 检查通过。RISC-V `make` 因宿主缺少 `riscv64-linux-musl-cc` 在 lwext4 CMake 失败，未得到新 guest；未完成完整 BuildStorm、Cargo `53/446` 越过确认、LTP、fsck、GDB 回归或 LoongArch64 运行，故不宣称死锁/panic 已运行时消除或跨架构通过。
+- **关联文档**：[CMA 问题复盘](./problem/buildstorm-cma-ticket-lock-owner-exit.md)、[journal 问题复盘](./problem/lwext4-journal-transaction-owner.md)、[RISC-V trap 问题复盘](./problem/riscv-user-return-interrupt-window.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
