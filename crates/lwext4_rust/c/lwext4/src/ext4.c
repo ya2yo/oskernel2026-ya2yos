@@ -681,26 +681,52 @@ int ext4_recover(const char *mount_point __unused)
 static int ext4_trans_start(struct ext4_mountpoint *mp __unused)
 {
 	int r = EOK;
+	bool first;
+
 	ext4_fs_rwlock_write_lock(&mp->fs.journal_lock);
-	mp->fs.journal_lock_held = true;
+	first = mp->fs.journal_trans_depth == 0;
+	/*
+	 * Every start still acquires the recursive Rust lock.  Only the outermost
+	 * scope creates the shared transaction; nested helpers merely extend its
+	 * lifetime.  This also keeps the raw-lock fallback correct for the normal
+	 * non-nested path.
+	 */
+	if (first) {
 #if CONFIG_JOURNALING_ENABLE
-	r = __ext4_trans_start(mp);
+		r = __ext4_trans_start(mp);
 #endif
-	if (r != EOK) {
-		mp->fs.journal_lock_held = false;
-		ext4_fs_rwlock_write_unlock(&mp->fs.journal_lock);
+		if (r != EOK) {
+			ext4_fs_rwlock_write_unlock(&mp->fs.journal_lock);
+			return r;
+		}
+		mp->fs.journal_lock_held = true;
 	}
+	mp->fs.journal_trans_depth++;
 	return r;
 }
 
 static int ext4_trans_stop(struct ext4_mountpoint *mp __unused)
 {
 	int r = EOK;
-	if (!mp->fs.journal_lock_held)
+	if (!mp->fs.journal_trans_depth)
 		return EOK;
+
+	mp->fs.journal_trans_depth--;
+	if (mp->fs.journal_trans_depth) {
+		/* Inner scope: keep curr_trans and the ownership marker alive. */
+		ext4_fs_rwlock_write_unlock(&mp->fs.journal_lock);
+		return EOK;
+	}
+
 #if CONFIG_JOURNALING_ENABLE
-	r = __ext4_trans_stop(mp);
+	if (mp->fs.journal_trans_abort_pending) {
+		__ext4_trans_abort(mp);
+		r = EIO;
+	} else {
+		r = __ext4_trans_stop(mp);
+	}
 #endif
+	mp->fs.journal_trans_abort_pending = false;
 	mp->fs.journal_lock_held = false;
 	ext4_fs_rwlock_write_unlock(&mp->fs.journal_lock);
 	return r;
@@ -708,11 +734,21 @@ static int ext4_trans_stop(struct ext4_mountpoint *mp __unused)
 
 static void ext4_trans_abort(struct ext4_mountpoint *mp __unused)
 {
-	if (!mp->fs.journal_lock_held)
+	if (!mp->fs.journal_trans_depth)
 		return;
+
+	/* An inner failure aborts the shared transaction at the outer boundary. */
+	mp->fs.journal_trans_abort_pending = true;
+	mp->fs.journal_trans_depth--;
+	if (mp->fs.journal_trans_depth) {
+		ext4_fs_rwlock_write_unlock(&mp->fs.journal_lock);
+		return;
+	}
+
 #if CONFIG_JOURNALING_ENABLE
 	__ext4_trans_abort(mp);
 #endif
+	mp->fs.journal_trans_abort_pending = false;
 	mp->fs.journal_lock_held = false;
 	ext4_fs_rwlock_write_unlock(&mp->fs.journal_lock);
 }
@@ -843,15 +879,18 @@ static int ext4_trunc_inode(struct ext4_mountpoint *mp, uint32_t index,
 	 * logical transaction lock is already held, then restore the caller's
 	 * scope before returning.
 	 */
-	bool has_trans = mp->fs.journal_lock_held;
+	uint32_t saved_trans_depth = mp->fs.journal_trans_depth;
+	bool has_trans = saved_trans_depth != 0;
 	r = ext4_fs_get_inode_ref(fs, index, &inode_ref);
 	if (r != EOK)
 		return r;
 
 	inode_size = ext4_inode_get_size(&fs->sb, inode_ref.inode);
 	ext4_fs_put_inode_ref(&inode_ref);
-	if (has_trans)
-		ext4_trans_stop(mp);
+	if (has_trans) {
+		while (mp->fs.journal_trans_depth)
+			ext4_trans_stop(mp);
+	}
 
 	while (inode_size > new_size + CONFIG_MAX_TRUNCATE_SIZE) {
 
@@ -905,9 +944,13 @@ static int ext4_trunc_inode(struct ext4_mountpoint *mp, uint32_t index,
 Finish:
 
 	if (has_trans) {
-		int restore_r = ext4_trans_start(mp);
-		if (r == EOK)
-			r = restore_r;
+		while (mp->fs.journal_trans_depth < saved_trans_depth) {
+			int restore_r = ext4_trans_start(mp);
+			if (r == EOK && restore_r != EOK)
+				r = restore_r;
+			if (restore_r != EOK)
+				break;
+		}
 	}
 
 	return r;

@@ -124,7 +124,15 @@ struct ext4_fs {
 	struct ext4_fs_rwlock super_lock;
 	struct ext4_fs_rwlock journal_lock;
 	struct ext4_fs_rwlock cache_lock;
-	/* True only while the caller owns journal_lock for a transaction scope. */
+	/*
+	 * The Rust lock is recursive for the owning task, so transaction helpers
+	 * may nest while sharing one jbd transaction.  Keep the C-side nesting
+	 * state separately from the lock implementation; a boolean lets an inner
+	 * stop commit and detach the outer transaction too early.
+	 */
+	uint32_t journal_trans_depth;
+	bool journal_trans_abort_pending;
+	/* True while the current task owns journal_lock for a transaction scope. */
 	bool journal_lock_held;
 };
 

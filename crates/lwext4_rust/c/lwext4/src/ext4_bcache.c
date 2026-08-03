@@ -343,6 +343,9 @@ int ext4_bcache_init_dynamic(struct ext4_bcache *bc, uint32_t cnt,
 
 void ext4_bcache_cleanup(struct ext4_bcache *bc)
 {
+	if (!bc)
+		return;
+
 	for (;;) {
 		struct ext4_buf *buf;
 		struct ext4_block block = EXT4_BLOCK_ZERO();
@@ -364,7 +367,9 @@ void ext4_bcache_cleanup(struct ext4_bcache *bc)
 		block.data = buf->data;
 		ext4_bcache_index_unlock(bc);
 
-		ext4_block_flush_buf(bc->bdev, buf);
+		/* A failed mount may never have bound the cache to a device. */
+		if (bc->bdev)
+			ext4_block_flush_buf(bc->bdev, buf);
 		ext4_bcache_free(bc, &block);
 		ext4_bcache_drop_buf(bc, buf);
 	}
@@ -477,7 +482,7 @@ static bool ext4_bcache_release_locked(struct ext4_bcache *bc,
 
 	if (allow_writeback && ext4_bcache_test_flag(buf, BC_DIRTY) &&
 	    ext4_bcache_test_flag(buf, BC_UPTODATE) &&
-	    (!bc->bdev->cache_write_back ||
+	    (!bc->bdev || !bc->bdev->cache_write_back ||
 	     ext4_bcache_test_flag(buf, BC_FLUSH) ||
 	     ext4_bcache_test_flag(buf, BC_TMP))) {
 		/* Pin across writeback, but do not keep the index lock over I/O. */
@@ -645,7 +650,12 @@ int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b)
 	ext4_bcache_index_unlock(bc);
 
 	if (flush) {
-		r = ext4_block_flush_buf(bc->bdev, buf);
+		if (!bc->bdev || buf->bc != bc) {
+			/* The device detached while this reference was released. */
+			r = EIO;
+		} else {
+			r = ext4_block_flush_buf(bc->bdev, buf);
+		}
 
 		ext4_bcache_index_lock(bc);
 		ext4_bcache_clear_flag(buf, BC_FLUSH);

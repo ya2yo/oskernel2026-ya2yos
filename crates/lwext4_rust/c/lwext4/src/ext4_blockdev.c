@@ -148,10 +148,20 @@ int ext4_block_fini(struct ext4_blockdev *bdev)
 int ext4_block_flush_buf(struct ext4_blockdev *bdev, struct ext4_buf *buf)
 {
 	int r = EOK;
-	struct ext4_bcache *bc = bdev->bc;
+	struct ext4_bcache *bc;
 	int flags;
 	const int writeback = 1 << BC_WRITEBACK;
 	bool waited = false;
+
+	/*
+	 * Cleanup of a failed mount can encounter a cache that was initialized
+	 * before it was bound, and an abandoned operation can observe a cache
+	 * after its device has been detached. Do not turn that lifecycle error
+	 * into a kernel page fault while trying to write a dirty buffer.
+	 */
+	if (!bdev || !buf || !buf->bc || buf->bc->bdev != bdev)
+		return EIO;
+	bc = bdev->bc;
 
 	for (;;) {
 		flags = __atomic_load_n(&buf->flags, __ATOMIC_ACQUIRE);

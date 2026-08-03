@@ -102,10 +102,7 @@ fn main() {
     // from isolating the opt-in experiment, this prevents an old generated
     // archive from being reused after its C configuration changes.
     let build_variant_suffix = if dirty_capacity_experiment {
-        format!(
-            "-p212b2-bcache-dirty-capacity-c{}",
-            LWEXT4_BLOCK_CACHE_SIZE
-        )
+        format!("-p212b2-bcache-dirty-capacity-c{}", LWEXT4_BLOCK_CACHE_SIZE)
     } else {
         format!("-p212b2-default-c{}", LWEXT4_BLOCK_CACHE_SIZE)
     };
