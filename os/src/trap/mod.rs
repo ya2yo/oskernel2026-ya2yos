@@ -405,7 +405,6 @@ pub fn trap_return() {
             break;
         }
     }
-    set_user_trap_entry();
     extern "C" {
         #[allow(improper_ctypes)]
         fn __return_to_user(cx: *mut TrapContext);
@@ -427,6 +426,12 @@ pub fn trap_return() {
                 .sstatus
                 .set_spp(riscv::register::sstatus::SPP::User);
             trap_cx.kernel_hartid = hart_id();
+
+            // __trap_from_user treats sscratch as a TrapContext pointer. Keep
+            // S-mode interrupts disabled until sret makes the user trap entry
+            // active, otherwise a kernel interrupt could be decoded as a user
+            // trap and overwrite the saved hart id/context.
+            riscv::register::sstatus::clear_sie();
         }
         // let ptr = (trap_cx as *mut TrapContext) as usize;
         // debug!(
@@ -436,6 +441,8 @@ pub fn trap_return() {
         //     trap_cx.kernel_stack,
         //     ptr
         // );
+        // This must be immediately followed by the non-returning user restore.
+        set_user_trap_entry();
         __return_to_user(trap_cx as *mut TrapContext);
     }
     panic!("You should not return from __return_to_user!");

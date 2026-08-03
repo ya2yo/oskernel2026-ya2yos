@@ -187,6 +187,12 @@ __return_to_user:
     # 包括中断使能位(SIE)、之前的特权模式(SPP)等信息。
     ld t0, TRAPCONTEXT_SSTATUS(sp)
     csrw sstatus, t0
+    # stvec already points at __trap_from_user, but this is still S-mode
+    # until sret. A newly created or otherwise stale TrapContext can carry
+    # SIE=1 here; an interrupt in that window would enter the user trap path
+    # with a kernel stack and corrupt its saved context. Keep SPIE intact so
+    # sret restores the intended user interrupt state.
+    csrci sstatus, 2
     # 恢复 sepc
     # 这决定了 sret 执行后跳转回哪里(即用户程序下一条要执行的指令地址)。
     ld t0, TRAPCONTEXT_SEPC(sp)
