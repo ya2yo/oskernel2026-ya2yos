@@ -138,13 +138,24 @@ impl TaskRwLockState {
             // callers may enter the same C resource lock more than once
             // before balancing the corresponding `on_off = 0`; preserve that
             // per-task recursion without allowing another task to bypass the
-            // writer.  Other resource locks remain non-reentrant in practice.
-            return mode == TaskRwLockMode::Write && ticket.is_none() && owner == tid;
+            // writer.  A writer-owned task may also take a read section while
+            // calling a helper that uses the same C resource; the matching
+            // read unlock is tracked separately below.
+            return ticket.is_none() && owner == tid;
         }
 
         match ticket {
             // Do not bypass a queued writer.  This keeps the lock FIFO and
             // avoids reader-induced writer starvation.
+            // An already-held read lock is the exception: C wrappers such as
+            // readlink -> fread reacquire namespace_lock in the same task.
+            // Blocking that recursive read behind its own queued writer makes
+            // the task hold the read lock forever and leaves every hart idle.
+            None if mode == TaskRwLockMode::Read
+                && self.readers.get(&tid).copied().unwrap_or(0) != 0 =>
+            {
+                true
+            }
             None if !self.waiters.is_empty() => false,
             None => match mode {
                 TaskRwLockMode::Read => true,
@@ -166,7 +177,13 @@ impl TaskRwLockState {
     }
 
     fn wake_front(&self) -> Option<Waker> {
-        self.waiters.front().map(|waiter| waiter.waker.clone())
+        let waiter = self.waiters.front()?;
+        let can_wake = self.writer.is_none()
+            && match waiter.mode {
+                TaskRwLockMode::Read => true,
+                TaskRwLockMode::Write => self.readers.is_empty(),
+            };
+        can_wake.then(|| waiter.waker.clone())
     }
 
     fn acquire(&mut self, tid: usize, mode: TaskRwLockMode) {
