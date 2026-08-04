@@ -1314,14 +1314,27 @@ static void jbd_trans_end_write(struct ext4_bcache *bc __unused,
  * This routine is only suitable to committed transactions. */
 static void jbd_journal_flush_trans(struct jbd_trans *trans)
 {
-	struct jbd_buf *jbd_buf, *tmp;
+	struct jbd_buf *jbd_buf;
 	struct jbd_journal *journal = trans->journal;
 	struct ext4_fs *fs = journal->jbd_fs->inode_ref.fs;
 	void *tmp_data = ext4_malloc(journal->block_size);
 	ext4_assert(tmp_data);
 
-	TAILQ_FOREACH_SAFE(jbd_buf, &trans->buf_queue, buf_node,
-			tmp) {
+	/*
+	 * A synchronous flush invokes the same end_write callback as normal
+	 * writeback.  Keep the transaction alive while callbacks remove nodes,
+	 * and rescan the live queue instead of following a cached successor.
+	 */
+	trans->checkpoint_submit_active = true;
+	for (;;) {
+		TAILQ_FOREACH(jbd_buf, &trans->buf_queue, buf_node) {
+			if (!jbd_buf->checkpoint_flush_attempted)
+				break;
+		}
+		if (!jbd_buf)
+			break;
+		jbd_buf->checkpoint_flush_attempted = true;
+
 		struct ext4_buf *buf;
 		struct ext4_block block;
 		/* The buffer is not yet flushed. */
@@ -1347,6 +1360,10 @@ static void jbd_journal_flush_trans(struct jbd_trans *trans)
 		if (buf)
 			ext4_block_set(fs->bdev, &block);
 	}
+	/* A buffer that was already clean can remain queued; retry it later. */
+	TAILQ_FOREACH(jbd_buf, &trans->buf_queue, buf_node)
+		jbd_buf->checkpoint_flush_attempted = false;
+	trans->checkpoint_submit_active = false;
 
 	ext4_free(tmp_data);
 }
@@ -1379,6 +1396,15 @@ jbd_journal_purge_cp_trans(struct jbd_journal *journal,
 		} else {
 			if (trans->data_cnt ==
 					trans->written_cnt) {
+				/*
+				 * cp_trans() can synchronously complete every checkpoint
+				 * callback while it is still walking this transaction.  Keep
+				 * the descriptor alive until that walk has released all of its
+				 * retained cache references.
+				 */
+				if (trans->checkpoint_submit_active ||
+				    journal->callback_depth)
+					break;
 				journal->start =
 					trans->start_iblock +
 					trans->alloc_blocks;
@@ -1587,11 +1613,13 @@ jbd_trans_finish_callback(struct jbd_journal *journal,
 		return;
 
 	if (!abort) {
-		struct jbd_buf *jbd_buf, *tmp;
-		TAILQ_FOREACH_SAFE(jbd_buf,
-				&block_rec->dirty_buf_queue,
-				dirty_buf_node,
-				tmp) {
+		struct jbd_buf *jbd_buf;
+		/*
+		 * end_write() can recursively consume every remaining descriptor
+		 * for this block record.  Always reload the queue head after that
+		 * callback instead of following a cached, possibly freed successor.
+		 */
+		while ((jbd_buf = TAILQ_FIRST(&block_rec->dirty_buf_queue))) {
 			jbd_trans_end_write(fs->bdev->bc,
 					NULL,
 					EOK,
@@ -1897,8 +1925,8 @@ static int jbd_journal_prepare(struct jbd_journal *journal,
 	void *data;
 
 	/* Try to remove any non-dirty buffers from the tail of
-	 * buf_queue.  The rollback callback can remove another jbd_buf from
-	 * this queue, so do not cache the predecessor before invoking it. */
+	 * buf_queue. The rollback callback can update the live queue, so
+	 * read the predecessor only after it returns. */
 	jbd_buf = TAILQ_LAST(&trans->buf_queue, jbd_trans_buf);
 	while (jbd_buf) {
 		struct jbd_revoke_rec tmp_rec = {
@@ -1908,7 +1936,6 @@ static int jbd_journal_prepare(struct jbd_journal *journal,
 		if (ext4_bcache_test_flag(jbd_buf->block.buf,
 					BC_DIRTY))
 			break;
-	
 		TAILQ_REMOVE(&jbd_buf->block_rec->dirty_buf_queue,
 			jbd_buf,
 			dirty_buf_node);
@@ -1919,9 +1946,9 @@ static int jbd_journal_prepare(struct jbd_journal *journal,
 				trans,
 				jbd_buf->block_rec,
 				true,
-					RB_FIND(jbd_revoke_tree,
-						&trans->revoke_root,
-						&tmp_rec));
+				RB_FIND(jbd_revoke_tree,
+					&trans->revoke_root,
+					&tmp_rec));
 		tmp = TAILQ_PREV(jbd_buf, jbd_trans_buf, buf_node);
 		jbd_trans_remove_block_rec(journal,
 					jbd_buf->block_rec, trans);
@@ -1933,9 +1960,8 @@ static int jbd_journal_prepare(struct jbd_journal *journal,
 		jbd_buf = tmp;
 	}
 
-	/* Prepare the remaining dirty buffers.  A clean-buffer rollback may
-	 * release any other node, therefore refresh the successor after that
-	 * callback instead of using TAILQ_FOREACH_SAFE's stale snapshot. */
+	/* Prepare the remaining dirty buffers. A clean-buffer rollback can
+	 * update the live queue, so read the successor after the callback. */
 	jbd_buf = TAILQ_FIRST(&trans->buf_queue);
 	while (jbd_buf) {
 		struct tag_info tag_info;
@@ -1959,9 +1985,9 @@ static int jbd_journal_prepare(struct jbd_journal *journal,
 					trans,
 					jbd_buf->block_rec,
 					true,
-						RB_FIND(jbd_revoke_tree,
-							&trans->revoke_root,
-							&tmp_rec));
+					RB_FIND(jbd_revoke_tree,
+						&trans->revoke_root,
+						&tmp_rec));
 			tmp = TAILQ_NEXT(jbd_buf, buf_node);
 			jbd_trans_remove_block_rec(journal,
 						jbd_buf->block_rec, trans);
@@ -2184,13 +2210,32 @@ again:
  * @param  trans transaction*/
 void jbd_journal_cp_trans(struct jbd_journal *journal, struct jbd_trans *trans)
 {
-	struct jbd_buf *jbd_buf, *tmp;
+	struct jbd_buf *jbd_buf;
 	struct ext4_fs *fs = journal->jbd_fs->inode_ref.fs;
-	TAILQ_FOREACH_SAFE(jbd_buf, &trans->buf_queue, buf_node,
-			tmp) {
+
+	/*
+	 * Releasing a retained cache reference can write the block immediately,
+	 * invoke jbd_trans_end_write(), and free this descriptor or any following
+	 * descriptor for the same block.  Mark a descriptor before dropping its
+	 * reference, then rescan for another live descriptor; no queue link is
+	 * retained across ext4_block_set().
+	 */
+	trans->checkpoint_submit_active = true;
+	for (;;) {
+		TAILQ_FOREACH(jbd_buf, &trans->buf_queue, buf_node) {
+			if (!jbd_buf->checkpoint_ref_released)
+				break;
+		}
+		if (!jbd_buf)
+			break;
+
+		jbd_buf->checkpoint_ref_released = true;
 		struct ext4_block block = jbd_buf->block;
 		ext4_block_set(fs->bdev, &block);
 	}
+	trans->checkpoint_submit_active = false;
+	/* The final synchronous callback may have completed this transaction. */
+	jbd_journal_purge_cp_trans(journal, false, false);
 }
 
 /**@brief  Update the start block of the journal when
@@ -2206,6 +2251,7 @@ static void jbd_trans_end_write(struct ext4_bcache *bc __unused,
 	struct jbd_journal *journal = trans->journal;
 	bool first_in_queue =
 		trans == TAILQ_FIRST(&journal->cp_queue);
+	journal->callback_depth++;
 	if (res != EOK)
 		trans->error = res;
 
@@ -2232,11 +2278,13 @@ static void jbd_trans_end_write(struct ext4_bcache *bc __unused,
 		jbd_buf->block.buf->end_write = NULL;
 		jbd_buf->block.buf->end_write_arg = NULL;
 	}
-
 	ext4_free(jbd_buf);
 
 	trans->written_cnt++;
-	if (trans->written_cnt == trans->data_cnt) {
+	journal->callback_depth--;
+	if (trans->written_cnt == trans->data_cnt &&
+	    !trans->checkpoint_submit_active &&
+	    !journal->callback_depth) {
 		/* If it is the first transaction on checkpoint queue,
 		 * we will shift the start of the journal to the next
 		 * transaction, and remove subsequent written

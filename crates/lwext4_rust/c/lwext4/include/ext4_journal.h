@@ -56,6 +56,8 @@ struct jbd_fs {
 
 struct jbd_buf {
 	uint32_t jbd_lba;
+	bool checkpoint_ref_released;
+	bool checkpoint_flush_attempted;
 	struct ext4_block block;
 	struct jbd_trans *trans;
 	struct jbd_block_rec *block_rec;
@@ -85,6 +87,7 @@ struct jbd_trans {
 	uint32_t data_csum;
 	int written_cnt;
 	int error;
+	bool checkpoint_submit_active;
 
 	struct jbd_journal *journal;
 
@@ -102,6 +105,8 @@ struct jbd_journal {
 	uint32_t alloc_trans_id;
 
 	uint32_t block_size;
+	/* Defer transaction/block-record reclamation across nested callbacks. */
+	uint32_t callback_depth;
 
 	TAILQ_HEAD(jbd_cp_queue, jbd_trans) cp_queue;
 	RB_HEAD(jbd_block, jbd_block_rec) block_rec_root;

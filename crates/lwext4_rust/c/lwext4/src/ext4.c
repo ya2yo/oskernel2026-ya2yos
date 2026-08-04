@@ -1573,9 +1573,14 @@ int ext4_cache_flush(const char *path)
 	if (!mp)
 		return ENOENT;
 
+	/* Checkpoint callbacks mutate the same JBD queues as transaction commit. */
+	ext4_fs_rwlock_write_lock(&mp->fs.journal_lock);
+	ext4_fs_rwlock_write_lock(&mp->fs.cache_flush_lock);
 	ext4_fs_rwlock_write_lock(&mp->fs.cache_lock);
 	ret = ext4_block_cache_flush(mp->fs.bdev);
 	ext4_fs_rwlock_write_unlock(&mp->fs.cache_lock);
+	ext4_fs_rwlock_write_unlock(&mp->fs.cache_flush_lock);
+	ext4_fs_rwlock_write_unlock(&mp->fs.journal_lock);
 	return ret;
 }
 

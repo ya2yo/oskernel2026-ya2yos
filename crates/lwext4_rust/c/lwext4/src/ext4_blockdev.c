@@ -597,9 +597,12 @@ int ext4_block_cache_write_back(struct ext4_blockdev *bdev, uint8_t on_off)
 	 * Keep its short state update separate from the potentially long bcache
 	 * writeback.  The flush lock gates transitions through the zero point so a
 	 * new write-back scope cannot add dirty blocks while the previous scope is
-	 * draining them.
+	 * draining them. A flush may invoke journal checkpoint callbacks, so keep
+	 * the global lock order journal -> cache flush -> cache state.
 	 */
 	flush = false;
+	if (bdev->fs)
+		ext4_fs_rwlock_write_lock(&bdev->fs->journal_lock);
 	if (bdev->fs)
 		ext4_fs_rwlock_write_lock(&bdev->fs->cache_flush_lock);
 	if (bdev->fs)
@@ -617,6 +620,8 @@ int ext4_block_cache_write_back(struct ext4_blockdev *bdev, uint8_t on_off)
 	if (!flush) {
 		if (bdev->fs)
 			ext4_fs_rwlock_write_unlock(&bdev->fs->cache_flush_lock);
+		if (bdev->fs)
+			ext4_fs_rwlock_write_unlock(&bdev->fs->journal_lock);
 		return EOK;
 	}
 
@@ -624,6 +629,8 @@ int ext4_block_cache_write_back(struct ext4_blockdev *bdev, uint8_t on_off)
 	r = ext4_block_cache_flush(bdev);
 	if (bdev->fs)
 		ext4_fs_rwlock_write_unlock(&bdev->fs->cache_flush_lock);
+	if (bdev->fs)
+		ext4_fs_rwlock_write_unlock(&bdev->fs->journal_lock);
 	return r;
 }
 
