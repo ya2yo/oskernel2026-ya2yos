@@ -114,8 +114,16 @@ gdbserver: build-arch
 
 gdbclient:
 	@$(GDB_TOOL) $(KERNEL_ELF) \
+		-ex 'set logging file client.ans' \
+		-ex 'set logging enabled on' \
         -ex 'target remote localhost:1234' \
 		-ex 'b os::lang_items::panic' 
+
+gdb:
+	@tmux kill-session -t os-debug 2>/dev/null || true
+	@tmux new-session -d -s os-debug 'make gdbserver'
+	@tmux split-window -h 'sleep 1 && make gdbclient'
+	@tmux attach-session -t os-debug
 
 setup_cargo:
 	-@cd ./os && mkdir -p .cargo && cp -f dotcargo/config .cargo/
@@ -134,6 +142,6 @@ docker:
 	docker run --rm -it -v $(PROJECT_ROOT):/workplace -w /workplace zhouzhouyi/os-contest:20260510 bash
 
 .PHONY: all all-arch riscv64-build loongarch64-build build-arch set_env_arch \
-        run log perf doc clean objdump gdbserver gdbclient setup_cargo cleanup_cargo set_env
+        run log perf doc clean objdump gdbserver gdbclient gdb setup_cargo cleanup_cargo set_env
 
 .DEFAULT_GOAL := all
