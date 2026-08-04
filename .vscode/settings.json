@@ -12,5 +12,8 @@
         "crates/lwext4_rust/Cargo.toml"
     ],
     "rust-analyzer.cargo.allTargets": false,
-    "rust-analyzer.checkOnSave": true
+    "rust-analyzer.checkOnSave": true,
+    "workbench.experimental.modernUI": false,
+    "editor.fontSize": 14,
+    "window.zoomLevel": 0,    
 }
