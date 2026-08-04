@@ -18,6 +18,19 @@ pub struct TrapContext {
     pub fp: FloatRegs,    // 37-70(含fcsr)
 }
 
+// Keep the Rust ABI contract explicit: trap.S accesses these offsets before
+// Rust code can validate the saved context.  A field reordering or alignment
+// change must therefore fail the build rather than silently corrupt tp/sp.
+const _: () = {
+    assert!(core::mem::offset_of!(TrapContext, gp) == 0);
+    assert!(core::mem::offset_of!(TrapContext, sstatus) == 32 * 8);
+    assert!(core::mem::offset_of!(TrapContext, sepc) == 33 * 8);
+    assert!(core::mem::offset_of!(TrapContext, kernel_stack) == 34 * 8);
+    assert!(core::mem::offset_of!(TrapContext, kernel_hartid) == 35 * 8);
+    assert!(core::mem::offset_of!(TrapContext, origin_a0) == 36 * 8);
+    assert!(core::mem::offset_of!(TrapContext, fp) == 37 * 8);
+};
+
 use super::regs::*;
 use crate::signal::{SigSet, SignalStack};
 #[repr(C)]

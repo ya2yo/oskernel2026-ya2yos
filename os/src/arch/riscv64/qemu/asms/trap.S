@@ -40,6 +40,19 @@ TRAPCONTEXT_FCSR = TRAPCONTEXT_FP+32*8 # fcsr是fp的一部分
     .endr
 .endm
 
+# __trap_entry uses t0/t1 before it reaches the regular user-save path.
+# They are saved explicitly, so do not overwrite their original values here.
+.macro SAVE_GPS_EXCEPT_SP_T0_T1
+    SAVE_GP 1
+    SAVE_GP 3
+    SAVE_GP 4
+    .set n, 7
+    .rept 25
+        SAVE_GP %n
+        .set n, n+1
+    .endr
+.endm
+
 .macro LOAD_GPS_EXCEPT_SP
     LOAD_GP 1
     .set n, 3
@@ -75,38 +88,59 @@ TRAPCONTEXT_FCSR = TRAPCONTEXT_FP+32*8 # fcsr是fp的一部分
 # ======正文======
 
 .section .text
+.globl __trap_entry
 .globl __trap_from_user
 .globl __return_to_user
 .align 2
 
 # 声明外部函数
 .extern trap_entry
+.extern trap_from_kernel
 
-# 用户态代码陷入中断后会转到进入此处
-# 此函数的入口即stvec的值
+# A single stvec is kept active in both U-mode and S-mode.  The former
+# two-vector scheme could send an S-mode synchronous exception through
+# __trap_from_user during a vector handoff.  At that point sscratch contains a
+# user stack pointer rather than a TrapContext, so the old entry loaded an
+# arbitrary stack value as tp/kernel_hartid.
+#
+# sscratch is zero while executing normal kernel code.  Returning to user
+# installs its TrapContext in sscratch.  Swap t0 first: a zero result is the
+# ordinary S-mode case, while a non-zero result is either U-mode or the short
+# return-to-user handoff.  SPP resolves that latter case without relying on an
+# interrupt-enable window.
+__trap_entry:
 __trap_from_user:
+    csrrw t0, sscratch, t0
+    beqz t0, .Ltrap_from_kernel
+
+    # Preserve t1 before using it to inspect the previous privilege level.
+    # t0 is the candidate TrapContext pointer here.
+    sd t1, (6*8+TRAPCONTEXT_GP)(t0)
+    csrr t1, sstatus
+    andi t1, t1, 0x100 # SSTATUS.SPP
+    bnez t1, .Ltrap_from_kernel_during_return
+
     # ---------------------------------------------------------------------
     # 1. 关键栈指针切换 (The Magic Switch)
     # ---------------------------------------------------------------------
-    # csrrw (Atomic Read/Write CSR): 
-    # 将 sp (当前用户栈指针) 写入 sscratch，同时将 sscratch (预先存好的内核TrapContext指针) 读入 sp。
-    # 
-    # 执行前: 
-    #   sp = 用户栈顶
-    #   sscratch = 内核态为该线程准备的 TrapContext 地址 (在 return_to_user 时设置)
-    #
-    # 执行后: 
-    #   sp = TrapContext 地址 (现在 sp 指向内核空间的安全区域，后续保存操作都在这里进行)
-    #   sscratch = 原来的用户栈 sp (暂存用户栈，稍后保存)
+    # The entry swap above put the user t0 in sscratch and the TrapContext in
+    # t0.  Save t0, restore sscratch to the TrapContext, then perform the
+    # conventional sp swap.
     # ---------------------------------------------------------------------
+    csrr t1, sscratch
+    sd t1, (5*8+TRAPCONTEXT_GP)(t0)
+    csrw sscratch, t0
     csrrw sp, sscratch, sp
+    csrr t1, sscratch
+    sd t1, TRAPCONTEXT_SP(sp)
+    # Kernel code must not be mistaken for a U-mode trap by the fixed vector.
+    csrw sscratch, zero
+
     # ---------------------------------------------------------------------
     # 2. 保存通用寄存器
     # ---------------------------------------------------------------------
-    # 宏 SAVE_GPS_EXCEPT_SP 会将 x1 到 x31 的所有通用寄存器保存到 sp 指向的内存 (TrapContext) 中。
-    # 这里不保存 x2 (sp)，因为刚才 sp 已经被交换成了 TrapContext 的地址，而不是用户原本的 sp。
-    # 用户原本的 sp 此时正躺在 sscratch 寄存器里。
-    SAVE_GPS_EXCEPT_SP
+    # t0/t1 were saved before the SPP test; x2 is saved just above.
+    SAVE_GPS_EXCEPT_SP_T0_T1
     # ---------------------------------------------------------------------
     # 3. 保存浮点寄存器 (如果启用)
     # ---------------------------------------------------------------------
@@ -135,16 +169,7 @@ __trap_from_user:
     sd t0, TRAPCONTEXT_SSTATUS(sp)
     sd t1, TRAPCONTEXT_SEPC(sp)
     # ---------------------------------------------------------------------
-    # 5. 恢复并保存用户栈指针
-    # ---------------------------------------------------------------------
-    # 此时 sscratch 中存放的是第 1 步交换进来的“用户态 sp”。
-    # 我们将其读出到 t2
-    csrr t2, sscratch
-    # 将这个用户态的 sp 保存到 TrapContext 的 sp 字段中。
-    # 这样，当以后要从内核返回用户态时，就能从这里把 sp 还原回去。
-    sd t2, TRAPCONTEXT_SP(sp)
-    # ---------------------------------------------------------------------
-    # 6. 切换到内核控制流
+    # 5. 切换到内核控制流
     # ---------------------------------------------------------------------
     # 初始化帧指针 s0/fp 为 0，表示没有调用帧，防止内核回溯栈时出错
     mv s0, zero     # s0/fp是帧指针，初始化成0比较好吧
@@ -157,6 +182,24 @@ __trap_from_user:
     # 从此以后，push/pop 操作都在内核栈上进行，TrapContext 被留在了身后。
     ld sp, TRAPCONTEXT_KERNEL_STACK(sp)
     j trap_entry
+
+.Ltrap_from_kernel:
+    # The first exchange observed sscratch == 0 and put the original t0
+    # there.  Restore it before reporting the kernel trap.
+    csrrw t0, sscratch, t0
+    csrw sscratch, zero
+    j trap_from_kernel
+
+.Ltrap_from_kernel_during_return:
+    # A synchronous S-mode trap can still occur after __return_to_user has
+    # installed a TrapContext in sscratch.  Restore the two temporaries and
+    # route it as a kernel trap instead of interpreting its stack as a user
+    # TrapContext.
+    csrrw t0, sscratch, t0
+    csrr t1, sscratch
+    ld t1, (6*8+TRAPCONTEXT_GP)(t1)
+    csrw sscratch, zero
+    j trap_from_kernel
 
 # kernel -> user
 __return_to_user:

@@ -47,19 +47,19 @@ pub fn get_trap_virt_addr() -> usize {
 #[inline]
 pub fn set_kernel_trap_entry() {
     extern "C" {
-        pub fn trap_from_kernel() -> !;
+        fn __trap_entry();
     }
     unsafe {
-        stvec::write(trap_from_kernel as *const () as usize, TrapMode::Direct);
+        stvec::write(__trap_entry as *const () as usize, TrapMode::Direct);
     }
 }
 #[inline]
 pub fn set_user_trap_entry() {
     extern "C" {
-        fn __trap_from_user();
+        fn __trap_entry();
     }
     unsafe {
-        stvec::write(__trap_from_user as *const () as usize, TrapMode::Direct);
+        stvec::write(__trap_entry as *const () as usize, TrapMode::Direct);
     }
 }
 
