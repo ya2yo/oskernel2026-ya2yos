@@ -32,6 +32,13 @@ static CMA_HEAP_GROW_LOCK: Mutex<()> = Mutex::new(());
 /// Bytes permanently transferred from CMA to the global kernel heap.
 static CMA_HEAP_BACKING_BYTES: AtomicUsize = AtomicUsize::new(0);
 
+/// Cap intrusive buddy-list work while holding the global allocator mutex.
+/// BuildStorm creates enough short-lived metadata objects that a small free
+/// can otherwise scan an unbounded list and stall every kernel allocation.
+/// A skipped merge leaves the block immediately reusable in its current class;
+/// CMA-backed heap growth remains available for genuinely larger requests.
+const HEAP_BUDDY_SCAN_LIMIT: usize = 256;
+
 /// Prefer a substantial high-memory range when recovering from heap pressure.
 /// On the LoongArch QEMU layout the remaining low RAM is smaller than this,
 /// so the first extension naturally comes from the high RAM segment.
@@ -47,7 +54,11 @@ unsafe impl GlobalAlloc for KernelHeapAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        HEAP.lock().dealloc(NonNull::new_unchecked(ptr), layout);
+        HEAP.lock().dealloc_with_bounded_merge(
+            NonNull::new_unchecked(ptr),
+            layout,
+            HEAP_BUDDY_SCAN_LIMIT,
+        );
     }
 }
 
@@ -232,6 +243,7 @@ impl ContinuousPages {
 impl Drop for ContinuousPages {
     fn drop(&mut self) {
         let non_null = NonNull::new(self.base as *mut u8).unwrap();
-        HEAP.lock().dealloc(non_null, self.layout);
+        HEAP.lock()
+            .dealloc_with_bounded_merge(non_null, self.layout, HEAP_BUDDY_SCAN_LIMIT);
     }
 }

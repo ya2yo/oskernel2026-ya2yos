@@ -102,6 +102,26 @@ fn test_heap_alloc_and_free() {
 }
 
 #[test]
+fn test_heap_dealloc_with_bounded_merge_reuses_exact_class() {
+    let mut heap = Heap::new();
+    #[repr(align(4096))]
+    struct PageAligned([u8; 8192]);
+    let mut space = PageAligned([0; 8192]);
+    let layout = Layout::from_size_align(4096, 4096).unwrap();
+    unsafe {
+        heap.add_to_heap(
+            space.0.as_mut_ptr() as usize,
+            space.0.as_ptr().add(space.0.len()) as usize,
+        );
+    }
+
+    let first = heap.alloc(layout).unwrap();
+    heap.dealloc_with_bounded_merge(first, layout, 0);
+    let reused = heap.alloc(layout).unwrap();
+    assert_eq!(reused, first);
+}
+
+#[test]
 fn test_empty_frame_allocator() {
     let mut frame = FrameAllocator::new();
     assert!(frame.alloc(1).is_none());

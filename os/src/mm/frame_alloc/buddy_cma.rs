@@ -126,6 +126,11 @@ impl Drop for CmaGuard<'_> {
 
 static CMA_ALLOCATOR: CmaAllocator = CmaAllocator::empty();
 
+/// Bound the work done by a 4 KiB CMA recycle.  DMA descriptor pages are
+/// short-lived and can be reused from their existing size class; an
+/// unbounded search for a merge partner must not stall a completed I/O.
+const CMA_PAGE_BUDDY_SCAN_LIMIT: usize = 256;
+
 /// initiate heap allocator
 pub fn init_cma() {
     extern "C" {
@@ -242,12 +247,26 @@ pub fn cma_alloc(pages: usize) -> Option<PhysAddr> {
 
 /// 释放连续物理内存
 pub fn cma_dealloc(paddr: PhysAddr, pages: usize) {
+    assert!(pages > 0, "cannot deallocate an empty CMA range");
     assert_eq!(paddr.0 % PAGE_SIZE, 0);
     let layout =
         Layout::from_size_align(pages * PAGE_SIZE, PAGE_SIZE).expect("Invalid deallocation layout");
     let va = KernelAddr::from(paddr);
     let ptr = NonNull::new(va.0 as *mut u8).expect("Pointer must not be null!");
-    CMA_ALLOCATOR.with_heap(|allocator| allocator.dealloc(ptr, layout));
+    CMA_ALLOCATOR.with_heap(|allocator| {
+        if pages == 1 {
+            // VirtIO descriptors and FrameTracker pages are recycled at page
+            // granularity. Heap::dealloc() scans an entire order-12 intrusive
+            // list looking for a buddy; BuildStorm can make that list large
+            // enough for one completed 4 KiB DMA request to busy-loop for
+            // minutes. Keep ordinary coalescing, but cap the search. When the
+            // cap is hit the page remains immediately reusable at order 12;
+            // multi-page DMA ranges retain the full coalescing path below.
+            allocator.dealloc_with_bounded_merge(ptr, layout, CMA_PAGE_BUDDY_SCAN_LIMIT);
+        } else {
+            allocator.dealloc(ptr, layout);
+        }
+    });
 }
 
 /// Release a CMA critical section that belongs to a task whose kernel stack is

@@ -186,6 +186,70 @@ impl Heap {
         self.allocated -= size;
     }
 
+    /// Return a block to the heap, limiting the number of intrusive free-list
+    /// nodes inspected while looking for mergeable buddies.
+    ///
+    /// [`Self::dealloc`] scans each order's complete list.  That is normally
+    /// appropriate for general allocation, but a page allocator can build a
+    /// very long order-12 list from transient pages.  A bounded scan retains
+    /// the usual coalescing behaviour under ordinary load and caps the
+    /// release latency under extreme fragmentation.  If the budget is
+    /// exhausted, the block remains available in its current size class.
+    ///
+    /// # Safety contract
+    ///
+    /// As with [`Self::dealloc`], `ptr` and `layout` must describe one live
+    /// allocation returned by this heap exactly once.
+    pub fn dealloc_with_bounded_merge(
+        &mut self,
+        ptr: NonNull<u8>,
+        layout: Layout,
+        max_buddy_scan: usize,
+    ) {
+        let size = max(
+            layout.size().next_power_of_two(),
+            max(layout.align(), size_of::<usize>()),
+        );
+        let class = size.trailing_zeros() as usize;
+
+        unsafe {
+            self.free_list[class].push(ptr.as_ptr() as *mut usize);
+        }
+
+        let mut remaining_scan = max_buddy_scan;
+        let mut current_ptr = ptr.as_ptr() as usize;
+        let mut current_class = class;
+        while current_class + 1 < self.free_list.len() && remaining_scan != 0 {
+            let buddy = current_ptr ^ (1 << current_class);
+            let mut found = false;
+            for block in self.free_list[current_class].iter_mut() {
+                if remaining_scan == 0 {
+                    break;
+                }
+                remaining_scan -= 1;
+                if block.value() as usize == buddy {
+                    block.pop();
+                    found = true;
+                    break;
+                }
+            }
+
+            if !found {
+                break;
+            }
+            unsafe {
+                self.free_list[current_class]
+                    .pop()
+                    .expect("the released block should still head its free list");
+                current_ptr = min(current_ptr, buddy);
+                current_class += 1;
+                self.free_list[current_class].push(current_ptr as *mut usize);
+            }
+        }
+        self.user -= layout.size();
+        self.allocated -= size;
+    }
+
     /// Return the number of bytes that user requests
     pub fn stats_alloc_user(&self) -> usize {
         self.user
