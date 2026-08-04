@@ -670,6 +670,23 @@ int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b)
 	return r;
 }
 
+int ext4_bcache_retain(struct ext4_bcache *bc, struct ext4_buf *buf)
+{
+	int r = EOK;
+
+	if (!bc || !buf || buf->bc != bc)
+		return EINVAL;
+
+	ext4_bcache_index_lock(bc);
+	/* A retained reference must be derived from an existing owner. */
+	if (!buf->refctr)
+		r = EIO;
+	else
+		ext4_bcache_inc_ref(buf);
+	ext4_bcache_index_unlock(bc);
+	return r;
+}
+
 bool ext4_bcache_claim_dirty(struct ext4_bcache *bc, struct ext4_block *b)
 {
 	struct ext4_buf *buf;

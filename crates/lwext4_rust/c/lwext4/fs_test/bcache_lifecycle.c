@@ -718,6 +718,32 @@ static bool test_oracle_negative_controls(void)
 	return ok;
 }
 
+static bool test_retained_reference(void)
+{
+	struct test_fixture fixture;
+	struct ext4_block owner = EXT4_BLOCK_ZERO();
+	struct ext4_block retained;
+	bool ok = fixture_init(&fixture);
+
+	if (ok)
+		ok = get_block(&fixture, 63, &owner, "retain setup get");
+	if (ok) {
+		retained = owner;
+		ok = expect(ext4_bcache_retain(&fixture.bcache, owner.buf), EOK,
+				"retain additional reference");
+	}
+	if (ok)
+		ok = put_block(&fixture, &owner, "retain owner put");
+	if (ok)
+		ok = verify_cache(&fixture, "retain owner released");
+	if (ok)
+		ok = put_block(&fixture, &retained, "retain checkpoint put");
+	if (ok)
+		ok = verify_cache(&fixture, "retain checkpoint released");
+	fixture_cleanup(&fixture);
+	return ok;
+}
+
 int main(void)
 {
 	if (!test_sequential_lifecycle() || !test_random_lifecycle() ||
@@ -725,7 +751,7 @@ int main(void)
 	#if CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT
 	    !test_dirty_capacity_watermarks() ||
 	#endif
-	    !test_oracle_negative_controls())
+	    !test_oracle_negative_controls() || !test_retained_reference())
 		return 1;
 	puts("lwext4-bcache-lifecycle: PASS");
 	return 0;

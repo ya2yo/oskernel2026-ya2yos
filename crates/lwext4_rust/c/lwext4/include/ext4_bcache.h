@@ -378,6 +378,16 @@ int ext4_bcache_alloc(struct ext4_bcache *bc, struct ext4_block *b,
  * @return  standard error code*/
 int ext4_bcache_free(struct ext4_bcache *bc, struct ext4_block *b);
 
+/** Retain one additional reference to an already pinned cache buffer.
+ *
+ * Callers must already own a reference to @buf.  The additional reference is
+ * released through the usual ext4_bcache_free() path using a copied
+ * ext4_block descriptor.  This is required for deferred journal/checkpoint
+ * ownership: direct refctr increments bypass the bcache index lock and can
+ * lose a concurrent release on SMP.
+ */
+int ext4_bcache_retain(struct ext4_bcache *bc, struct ext4_buf *buf);
+
 /** Claim one unreferenced dirty buffer and pin it outside the index lock.
  *
  * The returned block must be paired with ext4_bcache_release_dirty(). This is

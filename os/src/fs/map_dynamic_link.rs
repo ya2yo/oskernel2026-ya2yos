@@ -64,6 +64,14 @@ fn is_native_multiarch_library_path(path: &str) -> bool {
     .any(|prefix| path.starts_with(prefix))
 }
 
+/// Binutils loads linker plugins by their absolute path.  These are native
+/// toolchain components, not compatibility DSOs: keep both successful opens
+/// and `ENOENT` failures visible to the caller instead of trying the legacy
+/// basename fallback.
+fn is_native_toolchain_plugin_path(path: &str) -> bool {
+    path.starts_with("/usr/lib/bfd-plugins/")
+}
+
 /// The compatibility store only substitutes libraries requested from legacy
 /// linker search roots.  For other absolute paths, including RPATH entries,
 /// an `ENOENT` is meaningful: the dynamic linker must be allowed to continue
@@ -162,6 +170,7 @@ pub fn map_dynamic_link_file(path: &str) -> &str {
     // is not an ELF dependency list and does not itself perform linking.
     if DYNAMIC_PATH.contains(path)
         || is_native_multiarch_library_path(path)
+        || is_native_toolchain_plugin_path(path)
         || !is_legacy_library_search_path(path)
     {
         return path;

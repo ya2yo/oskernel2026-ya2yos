@@ -9819,3 +9819,38 @@ abort/cleanup；descriptor/data/revoke/commit 四类 journal block 分配都传�
 此前 `make build-arch TARGET_ARCH=riscv64` 已通过，只有既有 `smoltcp` 警告。本轮按要求只补文档，未重新构建或启动
 QEMU。没有完成完整 BuildStorm、`e2fsck -fn`、文件系统 LTP、LoongArch64 构建/运行或 journal `EIO` 的定向语义回归；
 关联 commit：当前工作区未提交。
+
+## 2026-08-04：BuildStorm bcache checkpoint 引用与 journal callback UAF
+
+### 用户输入
+
+维护者要求根据 `server.ans` 和 `client.ans` 修复 BuildStorm：消除
+`/usr/lib/bfd-plugins/liblto_plugin.so` 的 dynamic-link warning，并解决编译约 117 crate 后 CPU 持续计算但内核卡死的问题；
+验收要求 RISC-V 能无问题超过 117 crate。
+
+### 分析与采纳结论
+
+日志栈显示持锁 hart 在 `ext4_bcache_release_locked()` 的 `ext4_assert(buf->refctr)` 内永久自旋，其他 hart
+忙等 bcache index lock。审计确认 `jbd_trans_set_block_dirty()` 对 checkpoint 的额外引用使用裸 `refctr++`，与
+index lock 内 release 并发时会丢失更新。测试修复后先后发现两个独立生命周期错误：clean-buffer rollback callback
+能释放 `TAILQ_FOREACH_*_SAFE` 预取的相邻 `jbd_buf`；`jbd_trans_end_write()` 在 `buf == NULL` 的直接 callback 路径不
+清理 `end_write_arg`，使下次 writeback 回调到已释放 descriptor。RISC-V page fault 的地址含构建路径 ASCII 片段，
+以及 `stval=0x48`，与这两种 UAF 相符，并由 `addr2line` 定位到 journal prepare/end-write。
+
+`/usr/lib/bfd-plugins/liblto_plugin.so` 是 Binutils 以绝对路径加载的 native plugin，并非 legacy compatibility DSO；
+应保持原路径及真实 `ENOENT`，不进入 basename fallback。
+
+### 修改与验证
+
+新增 bcache lock-protected retain API，并由 journal checkpoint 使用和在失败路径归还引用；journal prepare 在 callback
+后重新取得队列邻居，end-write 仅当缓存 callback 槽仍匹配当前 descriptor 时清理该槽。动态库映射对
+`/usr/lib/bfd-plugins/` 直接返回原路径；host lifecycle oracle 增加 retain/release 场景。
+
+`make build-arch TARGET_ARCH=riscv64` 通过；`lwext4-bcache-lifecycle: PASS`；`git diff --check` 通过。最终
+RISC-V `timeout 900s make run TARGET_ARCH=riscv64` 从 `0/446` 连续到 `131/446`，期间筛查不到
+`map_dynamic_link_file`、`liblto_plugin.so`、`ext4_assert`、panic、`EIO`、`TFAIL`、`TBROK` 或 compiler fatal error。
+运行在超过验收点后人工终止，未完成 446 crate、`e2fsck -fn`、文件系统 LTP 或 LoongArch64 runtime。
+
+修改文件：`os/src/fs/map_dynamic_link.rs`、
+`crates/lwext4_rust/c/lwext4/{include/ext4_bcache.h,src/ext4_bcache.c,src/ext4_journal.c,fs_test/bcache_lifecycle.c}`，
+以及本轮开发日志、问题复盘、索引和 AI 记录。维护者已有的 `user/src/bin/initproc.rs` 未修改；关联 commit：当前工作区未提交。

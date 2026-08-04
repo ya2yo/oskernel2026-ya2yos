@@ -2493,3 +2493,18 @@
   fsck、LTP、LoongArch64 或 journal 错误语义回归。
 - **关联文档**：[问题复盘](./problem/lwext4-journal-full-buildstorm.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm bcache checkpoint 引用与 journal callback 生命周期（8.4）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `server.ans/client.ans`，要求消除 BuildStorm `liblto_plugin.so` 路径 warning，并修复 Cargo
+  约 `117/446` 后的高 CPU 卡死。
+- **描述**：依据 bcache index-lock 栈和 `ext4_assert(buf->refctr)`，将 journal checkpoint 的裸 refcount 增量改为
+  index lock 内 retain。后续 RISC-V 实跑定位并修复两条 journal UAF：clean-buffer callback 释放了 TAILQ 的预取邻居，
+  以及 `buf == NULL` callback 遗留已释放的 `end_write_arg`。同时将 `/usr/lib/bfd-plugins/` 作为 native Binutils
+  plugin 路径，避开 compatibility basename fallback 而保留真实打开/`ENOENT` 语义。
+- **验证边界**：RISC-V release 构建、host `lwext4-bcache-lifecycle` 和补丁检查通过。最终 8 HART RISC-V
+  BuildStorm 从 `0/446` 连续运行到 `131/446`，没有目标 warning、panic、`EIO`、`TFAIL`、`TBROK` 或 compiler error；
+  运行在超过需求的 `117` 后人工终止。未完成 446 crate、`e2fsck -fn`、文件系统 LTP 或 LoongArch64 guest runtime。
+- **关联文档**：[问题复盘](./problem/buildstorm-bcache-checkpoint-refcount.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

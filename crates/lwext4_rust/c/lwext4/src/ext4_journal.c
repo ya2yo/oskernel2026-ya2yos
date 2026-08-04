@@ -1678,6 +1678,7 @@ int jbd_trans_set_block_dirty(struct jbd_trans *trans,
 		.lba = block->lb_id
 	};
 	struct jbd_block_rec *block_rec;
+	int r;
 
 	if (block->buf->end_write == jbd_trans_end_write) {
 		jbd_buf = block->buf->end_write_arg;
@@ -1688,8 +1689,22 @@ int jbd_trans_set_block_dirty(struct jbd_trans *trans,
 	if (!jbd_buf)
 		return ENOMEM;
 
+	/*
+	 * The checkpoint descriptor outlives this caller's block reference.
+	 * Keep its extra pin under the bcache index lock; using refctr++ here
+	 * races ext4_block_set() on another hart and can leave cp_trans with a
+	 * descriptor whose reference has already reached zero.
+	 */
+	r = ext4_bcache_retain(block->buf->bc, block->buf);
+	if (r != EOK) {
+		ext4_free(jbd_buf);
+		return r;
+	}
+
 	if ((block_rec = jbd_trans_insert_block_rec(trans,
 					block->lb_id)) == NULL) {
+		struct ext4_block retained = *block;
+		ext4_bcache_free(block->buf->bc, &retained);
 		ext4_free(jbd_buf);
 		return ENOMEM;
 	}
@@ -1701,7 +1716,6 @@ int jbd_trans_set_block_dirty(struct jbd_trans *trans,
 	jbd_buf->block_rec = block_rec;
 	jbd_buf->trans = trans;
 	jbd_buf->block = *block;
-	ext4_bcache_inc_ref(block->buf);
 
 	/* If the content reach the disk, notify us
 	 * so that we may do a checkpoint. */
@@ -1883,9 +1897,10 @@ static int jbd_journal_prepare(struct jbd_journal *journal,
 	void *data;
 
 	/* Try to remove any non-dirty buffers from the tail of
-	 * buf_queue. */
-	TAILQ_FOREACH_REVERSE_SAFE(jbd_buf, &trans->buf_queue,
-			jbd_trans_buf, buf_node, tmp) {
+	 * buf_queue.  The rollback callback can remove another jbd_buf from
+	 * this queue, so do not cache the predecessor before invoking it. */
+	jbd_buf = TAILQ_LAST(&trans->buf_queue, jbd_trans_buf);
+	while (jbd_buf) {
 		struct jbd_revoke_rec tmp_rec = {
 			.lba = jbd_buf->block_rec->lba
 		};
@@ -1904,9 +1919,10 @@ static int jbd_journal_prepare(struct jbd_journal *journal,
 				trans,
 				jbd_buf->block_rec,
 				true,
-				RB_FIND(jbd_revoke_tree,
-					&trans->revoke_root,
-					&tmp_rec));
+					RB_FIND(jbd_revoke_tree,
+						&trans->revoke_root,
+						&tmp_rec));
+		tmp = TAILQ_PREV(jbd_buf, jbd_trans_buf, buf_node);
 		jbd_trans_remove_block_rec(journal,
 					jbd_buf->block_rec, trans);
 		trans->data_cnt--;
@@ -1914,9 +1930,14 @@ static int jbd_journal_prepare(struct jbd_journal *journal,
 		ext4_block_set(fs->bdev, &jbd_buf->block);
 		TAILQ_REMOVE(&trans->buf_queue, jbd_buf, buf_node);
 		ext4_free(jbd_buf);
+		jbd_buf = tmp;
 	}
 
-	TAILQ_FOREACH_SAFE(jbd_buf, &trans->buf_queue, buf_node, tmp) {
+	/* Prepare the remaining dirty buffers.  A clean-buffer rollback may
+	 * release any other node, therefore refresh the successor after that
+	 * callback instead of using TAILQ_FOREACH_SAFE's stale snapshot. */
+	jbd_buf = TAILQ_FIRST(&trans->buf_queue);
+	while (jbd_buf) {
 		struct tag_info tag_info;
 		bool uuid_exist = false;
 		bool is_escape = false;
@@ -1938,16 +1959,18 @@ static int jbd_journal_prepare(struct jbd_journal *journal,
 					trans,
 					jbd_buf->block_rec,
 					true,
-					RB_FIND(jbd_revoke_tree,
-						&trans->revoke_root,
-						&tmp_rec));
+						RB_FIND(jbd_revoke_tree,
+							&trans->revoke_root,
+							&tmp_rec));
+			tmp = TAILQ_NEXT(jbd_buf, buf_node);
 			jbd_trans_remove_block_rec(journal,
-					jbd_buf->block_rec, trans);
+						jbd_buf->block_rec, trans);
 			trans->data_cnt--;
 
 			ext4_block_set(fs->bdev, &jbd_buf->block);
 			TAILQ_REMOVE(&trans->buf_queue, jbd_buf, buf_node);
 			ext4_free(jbd_buf);
+			jbd_buf = tmp;
 			continue;
 		}
 		checksum = jbd_block_csum(journal->jbd_fs,
@@ -2051,6 +2074,7 @@ again:
 		tag_tbl_size -= tag_info.tag_bytes;
 
 		i++;
+		jbd_buf = TAILQ_NEXT(jbd_buf, buf_node);
 	}
 	if (rc == EOK && desc_iblock) {
 		jbd_meta_csum_set(journal->jbd_fs,
@@ -2172,7 +2196,7 @@ void jbd_journal_cp_trans(struct jbd_journal *journal, struct jbd_trans *trans)
 /**@brief  Update the start block of the journal when
  *         all the contents in a transaction reach the disk.*/
 static void jbd_trans_end_write(struct ext4_bcache *bc __unused,
-			  struct ext4_buf *buf,
+			  struct ext4_buf *buf __unused,
 			  int res,
 			  void *arg)
 {
@@ -2195,10 +2219,18 @@ static void jbd_trans_end_write(struct ext4_bcache *bc __unused,
 			jbd_buf->block_rec,
 			false,
 			false);
-	if (block_rec->trans == trans && buf) {
-		/* Clear the end_write and end_write_arg fields. */
-		buf->end_write = NULL;
-		buf->end_write_arg = NULL;
+	/*
+	 * finish_callback() also calls us directly with buf == NULL.  The old
+	 * condition therefore left a freed jbd_buf in the cache callback slot;
+	 * a later writeback reused that slot and entered here with a dangling
+	 * block_rec.  Clear only when the slot still names this exact descriptor,
+	 * so a newer transaction which took ownership cannot be disturbed.
+	 */
+	if (jbd_buf->block.buf &&
+	    jbd_buf->block.buf->end_write == jbd_trans_end_write &&
+	    jbd_buf->block.buf->end_write_arg == jbd_buf) {
+		jbd_buf->block.buf->end_write = NULL;
+		jbd_buf->block.buf->end_write_arg = NULL;
 	}
 
 	ext4_free(jbd_buf);
