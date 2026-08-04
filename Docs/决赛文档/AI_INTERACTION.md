@@ -2477,3 +2477,19 @@
 - **验证边界**：格式和 diff 检查通过。RISC-V `make` 因宿主缺少 `riscv64-linux-musl-cc` 在 lwext4 CMake 失败，未得到新 guest；未完成完整 BuildStorm、Cargo `53/446` 越过确认、LTP、fsck、GDB 回归或 LoongArch64 运行，故不宣称死锁/panic 已运行时消除或跨架构通过。
 - **关联文档**：[CMA 问题复盘](./problem/buildstorm-cma-ticket-lock-owner-exit.md)、[journal 问题复盘](./problem/lwext4-journal-transaction-owner.md)、[RISC-V trap 问题复盘](./problem/riscv-user-return-interrupt-window.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### lwext4 journal 满时断言自旋与 BuildStorm 117 crate 验证（8.4）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供持续更新的 `server.ans/client.ans`，要求修复 BuildStorm 无输出卡死与 panic；最新日志推进到
+  Cargo `117/446` 后，要求先完成文档记录，其他问题下轮处理。
+- **描述**：GDB 和反汇编确认 lwext4 `jbd_journal_alloc_block()` 在环形 journal 满后经 `ext4_assert()` 进入打印后的
+  永久自跳转。实现改为保留最后一个空 slot、强制 checkpoint 后再回收完成项，并在仍无空间时返回 `EIO` 由
+  transaction abort/cleanup 处理；journal 的 descriptor/data/revoke/commit 分配均传播错误。同步将
+  `ext4_trans_stop()` 的失败返回上层，并把 dense write-back cache 单文件上限降至 4 MiB。C 层 1 MiB transaction
+  分片因暴露新的 `jbd_buf` 生命周期/链表 panic 已撤回。
+- **验证边界**：RISC-V 构建曾通过；最新 `server.ans` 已到 `117/446`，新的 GDB 不在旧 assertion 自旋点。日志仍有
+  `liblto_plugin.so` 动态链接路径警告，且未出现完整 BuildStorm 成功标记；本轮只补文档，未重新构建或运行 QEMU，未完成
+  fsck、LTP、LoongArch64 或 journal 错误语义回归。
+- **关联文档**：[问题复盘](./problem/lwext4-journal-full-buildstorm.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

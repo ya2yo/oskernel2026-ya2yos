@@ -50,12 +50,11 @@ use spin::{Lazy, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 const PAGE_SIZE: usize = 4096;
 pub const PAGE_MASK: usize = !0xfff;
-// Keep ordinary small-file workloads in one write-back transaction.  The
-// mmap16 regression fills a 10 MiB loop-backed filesystem with 1 KiB writes;
-// flushing after 4 MiB turns the remainder into thousands of slow ext4
-// allocations and can miss its checkpoint deadline.  A 16 MiB bound still
-// limits cache growth to a bounded amount per FIFO entry.
-const MAX_CACHED_FILE_SIZE: usize = 16 * 0x10_0000; // 16 MiB
+// The image has a 32 MiB journal. One dense cache write is committed by
+// lwext4 as a transaction, so bound each FIFO entry at 4 MiB and reserve
+// enough journal space for descriptor/revoke blocks plus checkpoint
+// transactions from other compiler jobs.
+const MAX_CACHED_FILE_SIZE: usize = 4 * 0x10_0000; // 4 MiB
 
 // Sparse files cannot use the byte-only whole-file cache because writing that
 // cache back would allocate every hole. Still, compiler/linker output often

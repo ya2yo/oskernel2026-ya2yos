@@ -9780,3 +9780,42 @@ transaction；RISC-V 返回汇编在 `sret` 前清 S-mode `SIE` 并保留 `SPIE`
 `riscv64-linux-musl-cc`，没有完成 kernel 链接或 guest 启动。新 CMA、journal 与 trap 修复尚未在新内核上完成 BuildStorm、
 越过 Cargo `53/446` 的确认、GDB、LTP、`e2fsck -fn` 或 LoongArch64 回归，因此不报告运行时死锁/panic 已消除或跨架构通过；
 关联 commit：当前工作区未提交。
+
+## 2026-08-04：lwext4 journal 满时断言自旋与 BuildStorm 117 crate 验证
+
+### 用户输入
+
+维护者要求分析连续更新的 `server.ans`、`client.ans`，继续修复 BuildStorm 的卡死和 panic；在最新运行达到
+`117/446` 后，明确要求本轮先补充文档，其余问题留待下一轮处理。
+
+### 分析与采纳结论
+
+旧 GDB 现场和反汇编确认 `jbd_journal_alloc_block()` 在 journal 环形空间耗尽后进入 `ext4_assert()` 的打印后自跳转，
+不是 trap、idle 或 hart 调度问题。旧分配器在检查空间前消费最后一个 slot，并错误地假定一次 forced checkpoint 必须马上
+推进 `journal->start`。deferred checkpoint 未及时回收时，该假定不成立，资源不足被转换为不可恢复的 CPU 自旋。
+
+采纳可失败分配：保留最后一个 slot，强制 checkpoint 后再作非 I/O 回收，仍无空间则返回 `EIO` 进入 transaction
+abort/cleanup；descriptor/data/revoke/commit 四类 journal block 分配都传播该错误。`ext4.c` 同时将原先被忽略的
+`ext4_trans_stop()` 结果返回上层，`file.rs` 将 dense cache 上限由 16 MiB 收紧到 4 MiB。曾试验 C 层 1 MiB 写入分片，
+但其提高 checkpoint 交错并触发 `jbd_buf` 生命周期/链表相关新 panic，已撤回，不记录为最终方案。
+
+### 当前证据
+
+最新 `server.ans` 最后为 `Building 117/446`；`client.ans` 不再包含旧 `ext4_assert()` 自旋现场，而是有
+`ext4_bcache_index_lock()`、`ext4_bcache_release_locked()`、`jbd_journal_cp_trans()` 和 `ext4_fwrite()` 的活动栈。
+日志含 `/usr/lib/bfd-plugins/liblto_plugin.so` 的 dynamic-link path warning，且没有 BuildStorm 完成标记；这些都属于下轮
+独立排查对象，不能据此报告 BuildStorm 全量通过或把 warning/现有栈直接定性为新根因。
+
+### 修改文件
+
+代码：`crates/lwext4_rust/c/lwext4/src/ext4_journal.c`、
+`crates/lwext4_rust/c/lwext4/src/ext4.c`、`crates/lwext4_rust/src/file.rs`。
+文档：`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/problem/lwext4-journal-full-buildstorm.md`、
+`Docs/决赛文档/README.md`、`Docs/决赛文档/ai.log` 和 `Docs/决赛文档/AI_INTERACTION.md`。维护者既有的
+`.vscode/`、allocator、trap、`user/src/bin/initproc.rs` 改动和未跟踪 `disk.img` 均未处理。
+
+### 验证边界
+
+此前 `make build-arch TARGET_ARCH=riscv64` 已通过，只有既有 `smoltcp` 警告。本轮按要求只补文档，未重新构建或启动
+QEMU。没有完成完整 BuildStorm、`e2fsck -fn`、文件系统 LTP、LoongArch64 构建/运行或 journal `EIO` 的定向语义回归；
+关联 commit：当前工作区未提交。

@@ -1448,27 +1448,81 @@ int jbd_journal_stop(struct jbd_journal *journal)
 	return jbd_write_sb(journal->jbd_fs);
 }
 
+/* Return the log slot following @block, wrapping at the journal tail. */
+static uint32_t jbd_journal_next_block(struct jbd_journal *journal,
+					       uint32_t block)
+{
+	block++;
+	wrap(&journal->jbd_fs->sb, block);
+	return block;
+}
+
+/*
+ * Make room before handing the caller the final free journal slot.
+ *
+ * `last == start` is ambiguous in this circular log: it describes an empty
+ * log after all checkpoints have completed, but also a full log after the
+ * last free slot was consumed.  The old allocator consumed that final slot
+ * first and then asserted that a checkpoint had made progress.  Under the
+ * BuildStorm write-back load a deferred checkpoint can remain queued, so the
+ * assertion printed once and spun forever in kernel mode.
+ *
+ * Keep one slot in reserve instead.  A forced checkpoint is allowed to
+ * complete synchronously, and the following non-I/O pass reaps a transaction
+ * whose callback completed while the forced pass was running.  If the
+ * checkpoint queue still cannot provide room, report EIO to the normal
+ * transaction-abort path; never turn a recoverable resource shortage into a
+ * permanent CPU loop.
+ */
+static int jbd_journal_make_room(struct jbd_journal *journal,
+					 struct jbd_trans *trans)
+{
+	uint32_t next = jbd_journal_next_block(journal, journal->last);
+
+	if (journal->last == journal->start) {
+		if (TAILQ_EMPTY(&journal->cp_queue)) {
+			/* Empty journal, unless this single transaction filled it. */
+			return trans->alloc_blocks ? EIO : EOK;
+		}
+		jbd_journal_purge_cp_trans(journal, true, true);
+	}
+
+	/* Do not consume the final free slot before the oldest checkpoint moves. */
+	if (next == journal->start) {
+		jbd_journal_purge_cp_trans(journal, true, true);
+		/* The forced write may have completed synchronously. Reap it now. */
+		jbd_journal_purge_cp_trans(journal, false, true);
+	}
+
+	next = jbd_journal_next_block(journal, journal->last);
+	if (journal->last == journal->start) {
+		if (TAILQ_EMPTY(&journal->cp_queue) && !trans->alloc_blocks)
+			return EOK;
+		return EIO;
+	}
+
+	return next == journal->start ? EIO : EOK;
+}
+
 /**@brief  Allocate a block in the journal.
  * @param  journal current journal session
  * @param  trans transaction
- * @return allocated block address*/
-static uint32_t jbd_journal_alloc_block(struct jbd_journal *journal,
-					struct jbd_trans *trans)
+ * @param  block allocated block address
+ * @return standard error code*/
+static int jbd_journal_alloc_block(struct jbd_journal *journal,
+					   struct jbd_trans *trans,
+					   uint32_t *block)
 {
-	uint32_t start_block;
+	int r;
 
-	start_block = journal->last++;
+	r = jbd_journal_make_room(journal, trans);
+	if (r != EOK)
+		return r;
+
+	*block = journal->last;
+	journal->last = jbd_journal_next_block(journal, journal->last);
 	trans->alloc_blocks++;
-	wrap(&journal->jbd_fs->sb, journal->last);
-	
-	/* If there is no space left, flush just one journalled
-	 * transaction.*/
-	if (journal->last == journal->start) {
-		jbd_journal_purge_cp_trans(journal, true, true);
-		ext4_assert(journal->last != journal->start);
-	}
-
-	return start_block;
+	return EOK;
 }
 
 static struct jbd_block_rec *
@@ -1782,7 +1836,9 @@ static int jbd_trans_write_commit_block(struct jbd_trans *trans)
 	uint32_t commit_iblock;
 	struct jbd_journal *journal = trans->journal;
 
-	commit_iblock = jbd_journal_alloc_block(journal, trans);
+	rc = jbd_journal_alloc_block(journal, trans, &commit_iblock);
+	if (rc != EOK)
+		return rc;
 
 	rc = jbd_block_get_noread(journal->jbd_fs, &block, commit_iblock);
 	if (rc != EOK)
@@ -1904,7 +1960,9 @@ static int jbd_journal_prepare(struct jbd_journal *journal,
 
 again:
 		if (!desc_iblock) {
-			desc_iblock = jbd_journal_alloc_block(journal, trans);
+			rc = jbd_journal_alloc_block(journal, trans, &desc_iblock);
+			if (rc != EOK)
+				break;
 			rc = jbd_block_get_noread(journal->jbd_fs, &desc_block, desc_iblock);
 			if (rc != EOK)
 				break;
@@ -1957,7 +2015,13 @@ again:
 			goto again;
 		}
 
-		data_iblock = jbd_journal_alloc_block(journal, trans);
+		rc = jbd_journal_alloc_block(journal, trans, &data_iblock);
+		if (rc != EOK) {
+			desc_iblock = 0;
+			ext4_bcache_clear_dirty(desc_block.buf);
+			jbd_block_set(journal->jbd_fs, &desc_block);
+			break;
+		}
 		rc = jbd_block_get_noread(journal->jbd_fs, &data_block, data_iblock);
 		if (rc != EOK) {
 			desc_iblock = 0;
@@ -2024,7 +2088,9 @@ jbd_journal_prepare_revoke(struct jbd_journal *journal,
 			  tmp) {
 again:
 		if (!desc_iblock) {
-			desc_iblock = jbd_journal_alloc_block(journal, trans);
+			rc = jbd_journal_alloc_block(journal, trans, &desc_iblock);
+			if (rc != EOK)
+				break;
 			rc = jbd_block_get_noread(journal->jbd_fs, &desc_block,
 						  desc_iblock);
 			if (rc != EOK)

@@ -165,3 +165,4 @@
 - [lwext4 journal 事务跨任务误解锁](./problem/lwext4-journal-transaction-owner.md)
 - [RISC-V 返回用户态的 S-mode 中断窗口](./problem/riscv-user-return-interrupt-window.md)
 - [BuildStorm CMA ticket 锁 owner 退出泄漏](./problem/buildstorm-cma-ticket-lock-owner-exit.md)
+- [lwext4 journal 满时断言自旋导致 BuildStorm 卡死](./problem/lwext4-journal-full-buildstorm.md)
