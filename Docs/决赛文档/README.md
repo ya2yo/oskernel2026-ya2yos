@@ -167,3 +167,4 @@
 - [BuildStorm CMA ticket 锁 owner 退出泄漏](./problem/buildstorm-cma-ticket-lock-owner-exit.md)
 - [lwext4 journal 满时断言自旋导致 BuildStorm 卡死](./problem/lwext4-journal-full-buildstorm.md)
 - [BuildStorm bcache checkpoint 引用与 journal 回调生命周期](./problem/buildstorm-bcache-checkpoint-refcount.md)
+- [BuildStorm journal 回调与 cache flush 并发串行化](./problem/buildstorm-journal-cache-flush-serialization.md)

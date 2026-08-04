@@ -9881,3 +9881,37 @@ bindgen 与 musl C 工具链依赖。所有阶段均以 Linux 工具生成/检�
 
 已执行 Markdown 内容复核、路径/阶段编号搜索和 `git diff --check`；本轮是设计文档更新，未运行内核构建、QEMU、LTP、
 BuildStorm、`e2fsck` 或性能 A/B，文档没有把规划中的 native 后端描述为已实现。
+
+## 2026-08-04：BuildStorm journal callback 与 cache flush 并发串行化
+
+### 用户输入
+
+维护者提供新的 `server.ans` 与 `client.ans`，反馈 BuildStorm 又停在 Cargo `431/446`，并要求为当前工作区修改补充文档。
+
+### 分析与采纳结论
+
+GDB 同时显示 `jbd_journal_prepare() -> jbd_block_set()` 和
+`ext4_block_cache_flush() -> ext4_cache_flush()`；panic 的 `sepc` 符号化到
+`jbd_journal_prepare()`，说明普通 transaction commit 与 close-time/global cache flush 共同修改 journal
+transaction、`jbd_buf`、block record 和 checkpoint queue。前一轮只修复单路径 TAILQ callback 生命周期，仍可能在嵌套
+callback 期间提前 purge。一次停在 Rust `FilePageCache::publish_reserved_page()` 的 GDB 栈经连续运行后被证伪：日志从
+431 推进到 444/446，因此没有把该采样误记为页缓存 BTreeMap 死循环。
+
+### 修改与验证
+
+journal 增加 live queue 重扫、checkpoint/flush 标记、callback depth 和 transaction 回收保护；
+`jbd_trans_end_write()` 只在 callback 槽仍精确指向当前 descriptor 时清理槽位。`ext4_block_cache_write_back()` 与
+`ext4_cache_flush()` 统一取得 `journal_lock -> cache_flush_lock -> cache_lock`，并覆盖所有错误返回的解锁路径。
+
+当前工作区的 host `lwext4-bcache-lifecycle` 测试和 `git diff --check` 已通过；已有 RISC-V 构建通过。最新
+`server.ans` 已观察到 444/446，未出现本轮 journal panic、`rmeta` 缺失或 compiler fatal error，但尚无完整 BuildStorm
+结束标记，未报告 446/446、fsck、LTP 或 LoongArch64 runtime 通过。
+
+### 修改文件
+
+代码：`crates/lwext4_rust/c/lwext4/include/ext4_journal.h`、
+`crates/lwext4_rust/c/lwext4/src/ext4_journal.c`、
+`crates/lwext4_rust/c/lwext4/src/ext4_blockdev.c`、
+`crates/lwext4_rust/c/lwext4/src/ext4.c`。文档：新增
+`Docs/决赛文档/problem/buildstorm-journal-cache-flush-serialization.md`，并更新开发日志、README、`ai.log` 和
+`AI_INTERACTION.md`。维护者已有的 `user/src/bin/initproc.rs` 与未跟踪 `disk.img` 未处理；关联 commit：当前工作区未提交。

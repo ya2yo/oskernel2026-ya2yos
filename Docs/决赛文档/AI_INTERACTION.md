@@ -2517,3 +2517,18 @@
 - **验证边界**：本轮仅更新设计文档与 AI 记录，完成 Markdown/差异检查；没有实现 native 后端，也没有运行内核构建、QEMU、LTP、BuildStorm、fsck 或性能测试，不将任一规划阶段描述为已完成。
 - **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm journal callback 与 cache flush 并发串行化（8.4）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 `server.ans/client.ans`，反馈 Cargo `431/446` 附近再次停滞，随后要求先为当前工作区修改补充文档。
+- **描述**：GDB 将 `jbd_journal_prepare()` 与 close-time `ext4_block_cache_flush()` 的并发 callback 确认为同一 journal
+  链表和 transaction 生命周期的竞争；增加 checkpoint/flush live queue 重扫、callback depth/transaction 回收保护，并在
+  `ext4_block_cache_write_back()`、`ext4_cache_flush()` 统一 `journal -> cache_flush -> cache` 锁序。一次
+  `FilePageCache::publish_reserved_page()` 栈经连续运行后被证实只是采样点，BuildStorm 从 431 推进到 444/446。
+- **验证边界**：host `lwext4-bcache-lifecycle`、已有 RISC-V 构建和 `git diff --check` 通过；最新日志无本轮 journal
+  panic、`rmeta` 缺失或 compiler fatal error，但未出现完整 BuildStorm 结束标记，未运行本轮修改后的完整构建、fsck、LTP
+  或 LoongArch64 runtime。
+- **关联文档**：[问题复盘](./problem/buildstorm-journal-cache-flush-serialization.md)、[开发日志](./开发日志.md)、
+  [AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
