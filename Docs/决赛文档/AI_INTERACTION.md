@@ -2508,3 +2508,12 @@
   运行在超过需求的 `117` 后人工终止。未完成 446 crate、`e2fsck -fn`、文件系统 LTP 或 LoongArch64 guest runtime。
 - **关联文档**：[问题复盘](./problem/buildstorm-bcache-checkpoint-refcount.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### `lwext4_rust` 全 Rust 化阶段方案（8.4）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者希望降低文件系统维护难度，要求将 `crates/lwext4_rust` 下 C 代码全部替换为 Rust 的工作按阶段拆分，写明目的、策略和修改范围，并更新优化方案。
+- **描述**：审计当前生产路径的 C 核心、Rust FFI 适配和既有 P22 高层路线后，将方案细化为 P22-R0 至 P22-R7：冻结镜像/行为契约和性能基线，隔离 legacy C ABI，建立纯 Rust readonly on-disk 实现，建立 native inode/cache/lock ownership，受控实现 metadata 写入，完成 JBD2-compatible journal/recovery，按完整 feature profile 切换 native backend，最后删除 C/CMake/bindgen/musl 工具链和 C 宿主测试。方案明确禁止机械 `c2rust` 作为最终实现，禁止在同一可写挂载混用 C/Rust 的 cache、inode 或 journal，并要求每阶段由 Linux `e2fsck -fn`/`debugfs`、LTP、BuildStorm、双架构和故障恢复验证。
+- **验证边界**：本轮仅更新设计文档与 AI 记录，完成 Markdown/差异检查；没有实现 native 后端，也没有运行内核构建、QEMU、LTP、BuildStorm、fsck 或性能测试，不将任一规划阶段描述为已完成。
+- **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

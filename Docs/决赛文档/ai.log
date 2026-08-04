@@ -9854,3 +9854,30 @@ RISC-V `timeout 900s make run TARGET_ARCH=riscv64` 从 `0/446` 连续到 `131/44
 修改文件：`os/src/fs/map_dynamic_link.rs`、
 `crates/lwext4_rust/c/lwext4/{include/ext4_bcache.h,src/ext4_bcache.c,src/ext4_journal.c,fs_test/bcache_lifecycle.c}`，
 以及本轮开发日志、问题复盘、索引和 AI 记录。维护者已有的 `user/src/bin/initproc.rs` 未修改；关联 commit：当前工作区未提交。
+
+## 2026-08-04：`lwext4_rust` 全 Rust 化阶段方案
+
+### 用户输入
+
+维护者希望以降低文件系统维护难度为目标，要求把 `crates/lwext4_rust` 下 C 代码全部转换为 Rust 的工作拆分为详细阶段，
+说明各阶段目的、策略和修改范围，并更新 `Docs/决赛文档/优化方案.md`。
+
+### 分析与采纳结论
+
+审计确认当前生产静态库由 21 个 `c/lwext4/src/*.c` 文件和 `c/ulibc.c` 构成，核心约 19,336 行；Rust 侧仍通过 bindgen
+定义和 C-owned `ext4_file`/`ext4_blockdev`/`ext4_bcache` 调用 105 个 `ext4_*` FFI 接口。现有 C 树不是可直接丢弃的
+上游副本，近期已包含 journal-full、checkpoint refcount、callback 生命周期和 SMP resource lock 修复。
+
+因此方案不采纳机械 `c2rust` 迁移，也不允许在同一可写 mount 中混合 C/Rust 的 inode、bcache 或 journal。采纳按整个
+mount/profile 切换的 P22-R0 至 P22-R7 路线：先冻结行为契约和隔离 legacy FFI，再依次实现只读 on-disk、native
+inode/cache/locks、实验性 metadata 写入、JBD2-compatible journal/recovery、完整 profile 切换，最后删除 C 代码、CMake、
+bindgen 与 musl C 工具链依赖。所有阶段均以 Linux 工具生成/检查镜像、LTP、BuildStorm、双架构和故障恢复为退出条件。
+
+### 修改与验证
+
+`Docs/决赛文档/优化方案.md` 新增 4.1 节，给出目标 native 目录、现有 C/Rust 文件到目标模块的映射、每个 P22-R 阶段的
+目的/策略/修改范围/退出条件、回退规则以及性能和维护性验收。仅修改文档和 AI 记录；维护者已有的
+`user/src/bin/initproc.rs` 改动与未跟踪 `disk.img` 未处理。
+
+已执行 Markdown 内容复核、路径/阶段编号搜索和 `git diff --check`；本轮是设计文档更新，未运行内核构建、QEMU、LTP、
+BuildStorm、`e2fsck` 或性能 A/B，文档没有把规划中的 native 后端描述为已实现。
