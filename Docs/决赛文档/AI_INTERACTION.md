@@ -2590,3 +2590,13 @@
 - **验证边界**：目标文件 rustfmt、`git diff --check`、RISC-V/LoongArch64 release 构建通过；RISC-V 180 秒 QEMU 已输出 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok` 并推进到 pre-build `444/446`，但在进入最终 linker 调用前超时，因此未观察到原错误不能等同于 linker 或完整 BuildStorm 已通过。
 - **关联文档**：[linker wrapper 问题复盘](./problem/buildstorm-linker-script-shebang.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+#### BuildStorm exclusive 创建 EEXIST 日志误报（8.5）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `server.ans`，要求修复 `ext4_dir_mk_exclusive_with_metadata` 的 `rc = 17` 报错。
+- **描述**：确认 Cargo 并发创建随机 `rmeta*` 临时目录时，失败竞争者收到的 `EEXIST` 是
+  `O_CREAT|O_EXCL` 的正常 Linux 结果；原 wrapper 将其误记为 error。保留 errno 返回和用户态重试，
+  仅将 metadata 文件/目录创建 wrapper 的 `EEXIST` 日志降为 debug，其他 errno 仍记 error。
+- **验证边界**：目标 crate `cargo fmt` 与 `git diff --check` 通过；完整 QEMU BuildStorm 尚未重跑。
+- **关联文档**：[问题复盘](./problem/buildstorm-exclusive-create-eexist-log.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

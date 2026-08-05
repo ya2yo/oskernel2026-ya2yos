@@ -10066,3 +10066,25 @@ LoongArch64 `make build-arch` 均通过。`timeout 180s make run TARGET_ARCH=ris
 linker 调用前以 rc=124 结束；采集范围内未出现 `linking with`、`unexpected "("` 或
 `could not compile`，但不能据此宣称 linker 或完整 BuildStorm 已通过。全仓 `cargo fmt --check`
 仍受本次修改之外的两架构格式差异阻挡；未修改外部只读的 `/work/tgoskits`。
+## 2026-08-05：BuildStorm exclusive 创建 EEXIST 日志误报
+
+### 用户输入
+
+维护者提供 `server.ans`，要求修复 `ext4_dir_mk_exclusive_with_metadata` 返回 `rc = 17` 的报错。
+
+### 分析与采纳结论
+
+日志显示该路径位于 Cargo 并发预构建的随机 `rmeta*` 临时目录创建阶段；随后 `tg-xtask` 输出
+`Finished`，没有编译失败。审阅 `open_inner()`、`create_with_metadata()` 和 lwext4
+`ext4_generic_open2_with_metadata()` 后确认这是两个 task 竞争 `O_CREAT|O_EXCL` 的正常
+`EEXIST`，不是目录损坏或错误吞掉。
+
+采纳保留 `EEXIST` 返回语义，仅将 `file_open_with_metadata()` 和
+`dir_mk_exclusive_with_metadata()` 中的该 errno 从 `error!` 降为 `debug!`；其他 errno 仍按
+`error!` 记录。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs`，新增 `Docs/决赛文档/problem/buildstorm-exclusive-create-eexist-log.md`
+并更新开发日志和 README。`cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml`、`git diff --check`
+通过；完整 QEMU BuildStorm 未重跑。

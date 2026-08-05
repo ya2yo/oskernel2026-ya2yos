@@ -352,7 +352,11 @@ impl Ext4File {
             drop(CString::from_raw(c_path));
         }
         if r != EOK as i32 {
-            error!("ext4_fopen2_with_metadata: {}, rc = {}", path, r);
+            if r == EEXIST as i32 {
+                debug!("ext4_fopen2_with_metadata: {}, rc = {}", path, r);
+            } else {
+                error!("ext4_fopen2_with_metadata: {}, rc = {}", path, r);
+            }
             return Err(r);
         }
 
@@ -2281,7 +2285,11 @@ impl Ext4File {
             drop(CString::from_raw(c_path));
         }
         if r != EOK as i32 {
-            error!("ext4_dir_mk_exclusive_with_metadata: {}, rc = {}", path, r);
+            if r == EEXIST as i32 {
+                debug!("ext4_dir_mk_exclusive_with_metadata: {}, rc = {}", path, r);
+            } else {
+                error!("ext4_dir_mk_exclusive_with_metadata: {}, rc = {}", path, r);
+            }
             return Err(r);
         }
         Ok(stat)
