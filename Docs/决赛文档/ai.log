@@ -9915,3 +9915,35 @@ journal 增加 live queue 重扫、checkpoint/flush 标记、callback depth 和 
 `crates/lwext4_rust/c/lwext4/src/ext4.c`。文档：新增
 `Docs/决赛文档/problem/buildstorm-journal-cache-flush-serialization.md`，并更新开发日志、README、`ai.log` 和
 `AI_INTERACTION.md`。维护者已有的 `user/src/bin/initproc.rs` 与未跟踪 `disk.img` 未处理；关联 commit：当前工作区未提交。
+
+## 2026-08-05：根据暂存区补录 rustc 稳定性与调度 perf 改动
+
+### 用户输入
+
+维护者要求根据当前工作区暂存的修改补充项目文档。
+
+### 分析与采纳结论
+
+审阅 `git diff --cached` 后确认暂存区包含四类相关改动：RISC-V trap 汇编从不保存浮点上下文改为保存/恢复完整 FPR
+与 `fcsr`；RISC-V/LoongArch64 的 `USER_HEAP_SIZE` 和 `MAX_BRK_SIZE` 从 512 MiB 提升到 2 GiB；RISC-V 页表增加
+用户可读叶子检查，trap 层将已存在 PTE 的 load/fetch fault 统一为按 VPN 一次性重试并刷新本地 TLB；调度选择计数
+用 `fetch_add` 返回值替代额外的原子 `load`。已有 SIGSEGV 复盘追加了该重试阶段，FPU/brk 与 scheduler perf 分别建立
+独立问题记录，避免将缺页、浮点状态污染和计数器微优化混为同一根因。
+
+### 修改与验证
+
+本轮只更新文档，未修改暂存区中的内核代码，也未处理未暂存的 `Makefile`、`user/src/bin/initproc.rs` 或未跟踪
+`disk.img`。新增/更新 `Docs/决赛文档/problem/` 记录，更新 `Docs/决赛文档/README.md`、`开发日志.md` 和本文件，
+并同步追加 `AI_INTERACTION.md`。已执行 `git diff --cached --check`；文档改动完成后另行执行工作区
+`git diff --check`。未重新运行 kernel build、QEMU、LTP、fsck、perf 或完整 BuildStorm，不能据此宣称新暂存代码已经
+通过运行时回归或完整编译。
+
+### 关联文件
+
+代码：`os/src/arch/loongarch64/qemu/memory_layout.rs`、`os/src/arch/riscv64/qemu/asms/trap.S`、
+`os/src/arch/riscv64/qemu/memory_layout.rs`、`os/src/arch/riscv64/qemu/page_table.rs`、
+`os/src/mm/memory_set/handle.rs`、`os/src/task/task/task.rs`、`os/src/trap/mod.rs`、
+`os/src/utils/perf/scheduler.rs`。文档：`Docs/决赛文档/problem/riscv-rustc-sigsegv-fault-diagnostics.md`、
+`Docs/决赛文档/problem/buildstorm-rustc-fpu-and-brk-budget.md`、
+`Docs/决赛文档/problem/scheduler-selection-counter-atomic-overhead.md`、README、开发日志和 AI 记录。
+关联 commit：当前工作区未提交。

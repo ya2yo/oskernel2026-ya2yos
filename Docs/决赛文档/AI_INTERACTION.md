@@ -2532,3 +2532,18 @@
 - **关联文档**：[问题复盘](./problem/buildstorm-journal-cache-flush-serialization.md)、[开发日志](./开发日志.md)、
   [AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### 暂存区 rustc 稳定性与调度 perf 改动文档补录（8.5）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求根据当前工作区暂存的内核修改补齐文档。
+- **描述**：审阅暂存差异后记录 RISC-V FPU 上下文保存、双架构 2 GiB brk 虚拟预算、已存在用户页的 load/fetch fault
+  一次性重试与本地 TLB 刷新，以及调度选择计数器去除冗余原子读取。已有 RISC-V rustc SIGSEGV 复盘追加 fault 重试
+  阶段，并为 FPU/brk 与 scheduler perf 建立独立问题记录。
+- **验证边界**：仅执行文档检查和 `git diff --check`；未重新构建或运行 kernel、QEMU、LTP、fsck、perf 或完整
+  BuildStorm，因此不报告新暂存代码的运行时通过或完整编译结果。
+- **关联文档**：[SIGSEGV 问题复盘](./problem/riscv-rustc-sigsegv-fault-diagnostics.md)、
+  [FPU/brk 问题复盘](./problem/buildstorm-rustc-fpu-and-brk-budget.md)、
+  [调度 perf 问题复盘](./problem/scheduler-selection-counter-atomic-overhead.md)、[开发日志](./开发日志.md)、
+  [AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

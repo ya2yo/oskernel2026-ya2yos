@@ -93,3 +93,37 @@ rg -a -n -C 3 '\[fault-diagnostics\]|rustc interrupted by SIGSEGV' \
 
 后续应在固定镜像和参数下完成至少一次完整 BuildStorm；若仍出现 PTE 为 `V|R|X|U` 的 fetch fault，
 再记录 fence 前后的首次/重试 fault 次数，并审查所有非缺页的当前地址空间 PTE 更新路径。
+
+## 后续修复：已存在用户页的 load/fetch fault 重试
+
+### 背景
+
+前一阶段为按需映射成功路径补充了本地 TLB 刷新，但多线程 rustc 仍可能在另一个线程安装同一页的过程中
+先取得缺页现场。缺页处理重新取得地址空间锁后，软件页表已经有有效叶子 PTE，因而不会再次加载页面；若陷入原因为
+普通用户 load，旧代码只对 instruction fetch 提供一次重试，load fault 会直接进入 `SIGSEGV` 分支。
+
+### 根因
+
+RISC-V 的当前 hart 可能仍缓存安装前的 non-present translation。软件页表中的 `V|R|U` 或 `V|R|X|U` 叶子并不代表
+本 hart 的地址翻译已经更新；没有在 fault 返回前失效该 VPN 的 TLB 时，重试仍会再次触发相同 fault。原有
+`instruction_fault_retry` 只覆盖取指，无法覆盖同一竞态下的普通读取。
+
+### 修复
+
+- 在 RISC-V `PageTable` 和 `MemorySet` 增加 `is_user_readable()`，只接受同时具备 `R` 与 `U` 的有效叶子 PTE。
+- 将 task 内的一次性重试状态改名为 `present_page_fault_retry`，同时覆盖 `LoadPageFault` 与
+  `FetchInstructionPageFault`；同一 VPN 的连续第二次 fault 仍发送 `SIGSEGV`，避免真实错误进入无限重试。
+- 重试前执行本地 `tlb_invalidate()`；只有取指 fault 额外执行 `instruction_fence()`。成功处理缺页或进入 syscall 时清除
+  重试状态，避免状态泄漏到下一次独立访问。
+
+### 涉及文件
+
+- `os/src/arch/riscv64/qemu/page_table.rs`
+- `os/src/mm/memory_set/handle.rs`
+- `os/src/task/task/task.rs`
+- `os/src/trap/mod.rs`
+
+### 验证边界
+
+本轮依据暂存区补写文档，未重新编译内核或启动 QEMU；暂存区没有附带新的 fault 计数或完整 BuildStorm 结束标记。
+此前问题记录中的诊断版构建与 120 秒冒烟结果仍只证明前一阶段成功路径 fence，不能替代本次 load/fetch 重试的定向回归。

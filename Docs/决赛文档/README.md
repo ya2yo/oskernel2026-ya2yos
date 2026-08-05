@@ -168,3 +168,5 @@
 - [lwext4 journal 满时断言自旋导致 BuildStorm 卡死](./problem/lwext4-journal-full-buildstorm.md)
 - [BuildStorm bcache checkpoint 引用与 journal 回调生命周期](./problem/buildstorm-bcache-checkpoint-refcount.md)
 - [BuildStorm journal 回调与 cache flush 并发串行化](./problem/buildstorm-journal-cache-flush-serialization.md)
+- [BuildStorm rustc 浮点上下文与 brk 预算](./problem/buildstorm-rustc-fpu-and-brk-budget.md)
+- [调度选择 perf 计数的原子开销](./problem/scheduler-selection-counter-atomic-overhead.md)
