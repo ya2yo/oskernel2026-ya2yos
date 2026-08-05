@@ -1,3 +1,13 @@
+//! 文件页缓存。
+//!
+//! 本模块为普通文件的 `read`、`mmap` 和 `splice` 路径提供共享的页级缓存。缓存以
+//! `(文件路径, 页号)` 为键保存页帧及其有效长度，并通过引用计数保护正在使用的页。
+//! 缺页时由调用者从 inode 读取数据；成功加载的页可以被后续读操作和文件映射复用。
+//!
+//! 缓存容量由全局页数上限控制。容量不足时，模块使用带延迟队列的 CLOCK 策略回收
+//! 未被引用的干净页；脏页、仍被其他对象引用的页和刚刚访问过的页不会被回收。
+//! 本模块只负责缓存页的查找、加载、预读和失效，不负责把脏页写回文件。
+
 use alloc::{
     collections::{btree_map::Entry, BTreeMap, VecDeque},
     sync::Arc,
@@ -8,35 +18,38 @@ use spin::{Mutex, RwLock};
 
 use crate::{arch::memory_layout::PAGE_SIZE, fs::Inode, mm::FrameTracker, utils::SysErrNo};
 
-/// Maximum number of adjacent pages a confirmed sequential fault may load in
-/// one filesystem read.  This deliberately stays small: the global cache has
-/// a fixed capacity but no eviction policy, while 16 KiB is enough to amortize
-/// the lwext4 gate over common ELF and source-file mmap walks.
+/// 一次确认的顺序缺页最多通过一次文件系统读取加载的相邻页数。
+///
+/// 该值有意保持较小：全局缓存容量固定，且一次预读不能绕过容量限制；对常见的
+/// ELF 和源文件 mmap 遍历来说，16 KiB 已足以摊薄 lwext4 锁和文件读取的开销。
 const SEQUENTIAL_READAHEAD_MAX_PAGES: usize = 4;
 
-/// Bound one active-CLOCK pass. A single pressure event need not walk the
-/// whole cache, and retaining the queue position lets later events continue
-/// where this one stopped.
+/// 限制一次 CLOCK 活跃队列扫描的步数。
+///
+/// 一次容量压力事件不必遍历整个缓存；保留队列位置可以让后续事件从本次扫描停止
+/// 的位置继续处理。
 const EVICTION_SCAN_BUDGET: usize = 128;
 
-/// When all known candidates are dirty or still referenced outside the cache,
-/// retry only a small subset after a bounded number of capacity misses. This
-/// keeps a mmap-heavy workload from rescanning its entire pinned working set
-/// for every cold page.
+/// 当已知候选页全部为脏页或仍被缓存外对象引用时，经过有限次数的容量失败后，
+/// 只重新尝试其中一小批页面。
+///
+/// 这样可以避免 mmap 密集型工作负载为了每个冷页反复扫描整个被固定的工作集。
 const EVICTION_DEFERRED_RETRY_BATCH: usize = 16;
+/// 延迟队列重新尝试前需要累计的容量失败次数。
 const EVICTION_DEFERRED_RETRY_MISS_INTERVAL: usize = 256;
 
-/// Keep the global page cache bounded even when one long-lived compiler walks
-/// large source and artifact files. 192K pages is 768 MiB with the current
-/// 4 KiB page size. The precise limit is a conservative memory budget rather
-/// than a tuning axis: when it is reached, unused clean pages are reclaimed.
+/// 限制全局文件页缓存的大小，避免长期运行的编译器遍历大型源文件和构建产物时
+/// 无限占用内存。
+///
+/// 当前页大小为 4 KiB 时，192K 页约为 768 MiB。该上限是保守的内存预算，而不是
+/// 用于运行时调优的参数；达到上限后会优先回收未使用的干净页。
 #[cfg(not(feature = "file-cache-capacity-test"))]
 const MAX_FILE_PAGE_CACHE_PAGES: usize = 192 * 1024;
 
-/// A deliberately small capacity for the directed QEMU regression case. It
-/// leaves enough room to start Bash, then exposes the capacity-bypass mmap
-/// path without a multi-gigabyte BuildStorm compilation. This feature is
-/// never enabled by normal builds.
+/// 定向 QEMU 回归测试使用的较小缓存容量。
+///
+/// 该容量为启动 Bash 留出空间，同时无需执行数 GiB 的 BuildStorm 编译即可暴露
+/// mmap 绕过容量限制的路径。普通构建不会启用此特性。
 #[cfg(feature = "file-cache-capacity-test")]
 const MAX_FILE_PAGE_CACHE_PAGES: usize = 2 * 1024;
 
@@ -67,42 +80,52 @@ pub struct FilePage {
     pub valid_len: usize,
     /// 页内容是否已经被修改但尚未同步到底层文件。
     dirty: AtomicBool,
-    /// A CLOCK reference bit. Cache lookups set it without taking the cache
-    /// write lock; a full-cache scan clears it once before considering the
-    /// page for eviction on a later pass.
+    /// CLOCK 算法的访问标记。
+    ///
+    /// 缓存查找无需获取缓存写锁即可设置该标记；缓存扫描会先清除标记，若下一次
+    /// 扫描前页面再次被访问，则给予该页一次“第二次机会”，暂不回收。
     referenced: AtomicBool,
 }
 
-/// Pages belonging to one pathname.  Grouping the page number beneath the
-/// pathname avoids comparing that pathname repeatedly while a read or mmap
-/// walk probes adjacent pages from the same file.
+/// 同一路径下的所有缓存页。
+///
+/// 将页号放在路径下的第二层映射中，可以避免 read 或 mmap 连续探测同一文件的
+/// 相邻页面时反复比较路径字符串。
 type FilePages = BTreeMap<usize, Arc<FilePage>>;
 
-/// Result of inspecting one CLOCK candidate while the page-cache write lock is
-/// held. It deliberately contains no page reference, so an eviction decision
-/// does not change the reference counts it is checking.
+/// 持有页缓存写锁检查一个 CLOCK 候选页后的结果。
+///
+/// 该枚举不保存页引用，因此回收判断不会因为检查过程本身改变正在检查的引用计数。
 enum EvictionState {
+    /// 页面满足回收条件。
     Evict,
+    /// 页面最近被访问，应保留到下一轮扫描。
     SecondChance,
+    /// 页面包含尚未回写的数据。
     Dirty,
+    /// 页面仍被缓存外对象使用。
     InUse,
 }
 
-/// Candidate queues for clean-page eviction. Every resident page key lives in
-/// exactly one queue: `active` participates in normal CLOCK passes, while
-/// `deferred` holds pages that were recently dirty or externally referenced.
+/// 干净页回收使用的候选队列。
 ///
-/// `retry_misses` is only examined while `active` is empty. It intentionally
-/// counts cache-pressure misses rather than ticks, so no timer or background
-/// worker is required to make deferred candidates eligible again after an mmap
-/// is released.
+/// 每个驻留页的键恰好位于一个队列中：`active` 参与普通 CLOCK 扫描，`deferred`
+/// 保存最近发现为脏页或仍被缓存外对象引用的页面。
+///
+/// 只有 `active` 为空时才检查 `retry_misses`。它统计的是缓存压力导致的失败次数，
+/// 而不是时钟 tick，因此 mmap 释放后无需定时器或后台线程即可让延迟候选页重新参与
+/// 回收。
 struct EvictionQueues {
+    /// 正常 CLOCK 扫描队列。
     active: VecDeque<FilePageKey>,
+    /// 暂时不适合扫描的候选页队列。
     deferred: VecDeque<FilePageKey>,
+    /// 距离下一批延迟候选页重新加入活跃队列还需经历的失败次数。
     retry_misses: usize,
 }
 
 impl EvictionQueues {
+    /// 创建三个队列均为空的回收状态。
     const fn new() -> Self {
         Self {
             active: VecDeque::new(),
@@ -111,8 +134,9 @@ impl EvictionQueues {
         }
     }
 
-    /// Move a deliberately small FIFO batch back to the CLOCK queue. The
-    /// caller has already checked the cooldown and holds both cache locks.
+    /// 将一小批 FIFO 延迟候选页移回 CLOCK 活跃队列。
+    ///
+    /// 调用者必须已经检查冷却计数，并同时持有页表锁和回收队列锁。
     fn refill_active_from_deferred(&mut self) -> usize {
         let retry_pages = self.deferred.len().min(EVICTION_DEFERRED_RETRY_BATCH);
         for _ in 0..retry_pages {
@@ -126,12 +150,16 @@ impl EvictionQueues {
     }
 }
 
-/// Identifies the VFS path that requested a page-cache load.
+/// 标识请求加载文件页的 VFS 操作来源。
 #[derive(Clone, Copy)]
 pub enum FilePageCacheSource {
+    /// mmap 触发的实际缺页访问。
     MmapDemand,
+    /// mmap 路径主动发起的预读。
     MmapPrefetch,
+    /// 普通 `read(2)` 请求。
     Read,
+    /// `splice(2)` 或相关零拷贝路径。
     Splice,
 }
 
@@ -149,11 +177,13 @@ impl FilePage {
     }
 
     #[inline]
+    /// 设置 CLOCK 访问标记，表示该页最近被使用。
     fn mark_referenced(&self) {
         self.referenced.store(true, Ordering::Relaxed);
     }
 
     #[inline]
+    /// 清除并返回 CLOCK 访问标记。
     fn take_reference(&self) -> bool {
         self.referenced.swap(false, Ordering::AcqRel)
     }
@@ -170,14 +200,14 @@ pub struct FilePageCache {
     /// BuildStorm 的 mmap 和多页 read 会在同一文件中连续探测大量页。把路径
     /// 放在外层能让内层查询只比较页号，而不是在全局页表中反复比较同一段路径。
     pages: RwLock<BTreeMap<Arc<str>, FilePages>>,
-    /// Number of pages published in `pages`. Reservations are taken before a
-    /// cold page is allocated or inserted, so concurrent publishers cannot
-    /// push the cache beyond its configured capacity.
+    /// 已发布到 `pages` 中的页数。
+    ///
+    /// 冷页分配或插入前会先预留容量，因此并发发布者不会让缓存超过配置的容量上限。
     page_count: AtomicUsize,
-    /// CLOCK and deferred order for pages present in `pages`. They store keys
-    /// rather than page Arcs, so tracking a candidate never pins its frame.
-    /// The only lock order is `pages` then `eviction_queues`; no path takes it
-    /// in the reverse order.
+    /// `pages` 中各页的 CLOCK 活跃队列和延迟队列顺序。
+    ///
+    /// 队列只保存键而不是页的 `Arc`，因此跟踪候选页不会固定其页帧。锁的唯一
+    /// 获取顺序是先获取 `pages`、再获取 `eviction_queues`，不存在反向获取路径。
     eviction_queues: Mutex<EvictionQueues>,
 }
 
@@ -191,22 +221,22 @@ impl FilePageCache {
         }
     }
 
-    /// Number of resident pages currently retained by the global cache.
+    /// 返回当前由全局缓存保留的驻留页数量。
     #[inline]
     pub fn cached_page_count(&self) -> usize {
         self.page_count.load(Ordering::Relaxed)
     }
 
-    /// Fixed global cache capacity, expressed in pages.
+    /// 返回以页为单位表示的全局缓存固定容量。
     #[inline]
     pub const fn max_cached_pages(&self) -> usize {
         MAX_FILE_PAGE_CACHE_PAGES
     }
 
-    /// Reserve one cache slot before a cold page is allocated. The reservation
-    /// is released when allocation fails or a concurrent publisher won the
-    /// same key, keeping the global cap exact without holding the map lock
-    /// across allocation or filesystem I/O.
+    /// 在分配冷页前预留一个缓存槽位。
+    ///
+    /// 如果页帧分配失败，或并发发布者已经赢得相同键，则释放该预留。这样既能
+    /// 精确维持全局容量，又无需在页帧分配或文件系统 I/O 期间持有映射锁。
     #[inline]
     fn try_reserve_page(&self) -> bool {
         let mut count = self.page_count.load(Ordering::Relaxed);
@@ -231,18 +261,19 @@ impl FilePageCache {
         self.page_count.fetch_sub(1, Ordering::AcqRel);
     }
 
-    /// Reserve one slot, reclaiming at most one safely disposable page when
-    /// the cache is full. A concurrent publisher can win the released slot;
-    /// in that case the caller retains the existing capacity-bypass behavior.
+    /// 预留一个槽位；缓存已满时，最多回收一个可以安全丢弃的页面后再尝试预留。
+    ///
+    /// 并发发布者可能抢先使用刚释放的槽位；这种情况下调用者继续沿用原有的
+    /// 容量绕过行为。
     #[inline]
     fn reserve_page_or_evict(&self) -> bool {
         self.try_reserve_page() || (self.try_evict_one() && self.try_reserve_page())
     }
 
-    /// Remove one cold clean page which is neither being prepared by a caller
-    /// nor mapped by a VMA. `FilePage` references protect in-flight users;
-    /// `FrameTracker` references protect mmap and group-shared mappings, which
-    /// retain the frame rather than the `FilePage` wrapper.
+    /// 移除一个冷的干净页；该页不能正在由调用者准备，也不能被 VMA 映射。
+    ///
+    /// `FilePage` 的引用计数保护正在执行的缓存操作；`FrameTracker` 的引用计数
+    /// 保护 mmap 和组共享映射，因为这些映射持有的是页帧而不是 `FilePage` 包装器。
     fn try_evict_one(&self) -> bool {
         let mut pages = self.pages.write();
         let mut queues = self.eviction_queues.lock();
@@ -319,9 +350,8 @@ impl FilePageCache {
                     queues.deferred.push_back(key);
                 }
                 None => {
-                    // Invalidation removes queue entries while holding the
-                    // same locks, so this is only defensive against future
-                    // cache-management changes. Do not requeue a stale key.
+                    // 失效操作会在持有相同锁时移除队列项，因此这里仅用于防御未来的
+                    // 缓存管理改动。过期的键不应重新加入队列。
                 }
             }
         }
@@ -332,9 +362,10 @@ impl FilePageCache {
         false
     }
 
-    /// Publish a page for which the caller already owns a cache-slot
-    /// reservation. The map write lock serializes insertion with invalidation;
-    /// enqueue after the map entry exists so every queued key is live.
+    /// 发布调用者已经预留槽位的页面。
+    ///
+    /// 映射写锁将插入与失效操作串行化；只有映射项创建成功后才加入队列，从而保证
+    /// 队列中的每个键都对应一个仍然存在的页面。
     fn publish_reserved_page(&self, page: Arc<FilePage>) -> bool {
         let key = page.key.clone();
         let mut pages = self.pages.write();
@@ -356,6 +387,7 @@ impl FilePageCache {
     }
 
     #[inline]
+    /// 记录因缓存容量不足而绕过缓存的页面数量。
     fn record_capacity_bypass(&self, pages: usize) {
         #[cfg(feature = "perf")]
         crate::utils::perf::record_file_cache_capacity_bypass(pages);
@@ -363,10 +395,10 @@ impl FilePageCache {
         let _ = pages;
     }
 
-    /// Clone a cache entry and mark it as recently used. The reference bit is
-    /// deliberately updated after cloning: that clone itself prevents a
-    /// concurrent CLOCK pass from reclaiming the page before the caller gets
-    /// it.
+    /// 克隆缓存项并将其标记为最近使用。
+    ///
+    /// 引用标记会在克隆之后更新：克隆本身已经阻止并发 CLOCK 扫描在调用者拿到
+    /// 页面前回收它。
     #[inline]
     fn lookup_page(&self, path: &str, page_index: usize) -> Option<Arc<FilePage>> {
         let page = self
@@ -388,22 +420,19 @@ impl FilePageCache {
         self.lookup_page(path, page_index)
     }
 
-    /// Look up a page with a path allocation shared by the caller.
+    /// 使用调用者已经持有的共享路径字符串查找页面。
     ///
-    /// A single `read(2)` commonly probes several pages.  Keeping the path in
-    /// an `Arc<str>` lets those probes borrow the same pathname without
-    /// allocating and copying it for every lookup.
+    /// 一次 `read(2)` 通常会探测多个页面。使用 `Arc<str>` 保存路径，可以让这些
+    /// 查找共享同一份路径字符串，避免每次查找都重新分配和复制。
     pub fn get_shared(&self, path: &Arc<str>, page_index: usize) -> Option<Arc<FilePage>> {
         self.lookup_page(path.as_ref(), page_index)
     }
 
-    /// Look up a cached page through the inode's stable cache pathname.
+    /// 通过 inode 稳定的缓存路径查找缓存页。
     ///
-    /// File-backed page faults first load a page through `get_or_load()` and
-    /// then install that page in a VMA.  Rebuilding `inode.path()` for the
-    /// second lookup allocates and copies a pathname on every fault.  EXT4
-    /// inodes retain an `Arc<str>` specifically for this cache key, while
-    /// other backends keep the original path-string fallback.
+    /// 文件映射缺页首先通过 `get_or_load()` 加载页面，然后将页面安装到 VMA 中。
+    /// 第二次查找时重新构造 `inode.path()` 会在每次缺页时分配并复制路径。EXT4
+    /// inode 专门保留 `Arc<str>` 作为缓存键，其他后端则回退到原始路径字符串。
     pub fn get_inode(&self, inode: &dyn Inode, page_index: usize) -> Option<Arc<FilePage>> {
         if let Some(path) = inode.page_cache_path() {
             self.get_shared(&path, page_index)
@@ -413,11 +442,10 @@ impl FilePageCache {
         }
     }
 
-    /// Copy a range when every page is already cached.
+    /// 在范围内所有页面都已缓存时复制该范围的数据。
     ///
-    /// A miss returns `None` without entering the filesystem.  Callers can
-    /// then perform one normal read and publish the returned full pages with
-    /// [`insert_read_range`].
+    /// 只要有一页未命中，就返回 `None` 且不进入文件系统。调用者随后可以执行一次
+    /// 普通读取，并通过 [`insert_read_range`] 发布其中完整覆盖的页面。
     pub fn read_cached_at(&self, path: &str, offset: usize, buf: &mut [u8]) -> Option<usize> {
         if buf.is_empty() {
             return Some(0);
@@ -446,10 +474,10 @@ impl FilePageCache {
         Some(copied)
     }
 
-    /// Publish complete pages covered by a normal read.
+    /// 发布普通读取完整覆盖的页面。
     ///
-    /// Only bytes wholly covered by the read are inserted, so a partial first
-    /// or last page can never expose uninitialised data to a later reader.
+    /// 只有被读取数据完整覆盖的页才会插入缓存，因此部分覆盖的首尾页不会把未初始化
+    /// 的数据暴露给后续读取者。
     pub fn insert_read_range(&self, path: &str, offset: usize, data: &[u8], file_size: usize) {
         if data.is_empty() || offset >= file_size {
             return;
@@ -594,8 +622,8 @@ impl FilePageCache {
         }
         .clamp(1, SEQUENTIAL_READAHEAD_MAX_PAGES);
 
-        // Allocation failure only shortens the speculative tail.  The faulting
-        // page must still be available or this is a real ENOMEM for the caller.
+        // 分配失败只会缩短推测性预读尾部；触发缺页的首个页面仍必须可用，否则应向
+        // 调用者报告真正的 ENOMEM。
         let mut frames = Vec::with_capacity(wanted_pages);
         frames.push(FrameTracker::alloc().ok_or(SysErrNo::ENOMEM)?);
         while frames.len() < wanted_pages {
@@ -632,8 +660,8 @@ impl FilePageCache {
         for (index, frame) in frames.into_iter().enumerate() {
             let page_start = index * PAGE_SIZE;
             let valid_len = read_len.saturating_sub(page_start).min(PAGE_SIZE);
-            // The first page represents the fault itself, including an EOF
-            // sentinel.  Empty trailing speculative pages are not published.
+            // 第一个页面代表实际缺页，包括文件尾的零长度哨兵页。尾部空的推测性
+            // 预读页不发布到缓存。
             if index != 0 && valid_len == 0 {
                 break;
             }
@@ -709,7 +737,7 @@ impl FilePageCache {
     /// 失效指定文件路径在字节范围 `[start, start + len)` 内覆盖的缓存页。
     ///
     /// `len` 为 0 时不做任何处理。范围端点会按页大小向外扩展，确保所有与该字节
-    /// 范围相交的页都会从缓存中移除。
+    /// 范围相交的页面都会从缓存中移除。失效不会负责把脏页写回底层文件。
     pub fn invalidate_path_range(&self, path: &str, start: usize, len: usize) {
         if len == 0 {
             return;
@@ -747,6 +775,9 @@ impl FilePageCache {
     }
 
     /// 失效指定文件路径的全部缓存页。
+    ///
+    /// 该操作同时从 CLOCK 活跃队列和延迟队列删除路径对应的候选项，并更新全局
+    /// 驻留页计数。调用者应确保底层文件的最新内容已经可供后续缺页读取。
     pub fn invalidate_path(&self, path: &str) {
         let mut pages = self.pages.write();
         if let Some(file_pages) = pages.remove(path) {
