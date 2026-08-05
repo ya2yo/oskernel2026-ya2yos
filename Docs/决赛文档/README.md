@@ -176,3 +176,4 @@
 - [BuildStorm linker wrapper shebang 解释器语义](./problem/buildstorm-linker-script-shebang.md)
 - [BuildStorm exclusive 创建的 EEXIST 日志误报](./problem/buildstorm-exclusive-create-eexist-log.md)
 - [BuildStorm LoongArch64 MAP_FIXED 重叠 VMA 导致 rustc SIGSEGV](./problem/buildstorm-map-fixed-overlap-sigsegv.md)
+- [LoongArch BuildStorm 抢占后 FCC 条件状态丢失](./problem/loongarch-buildstorm-fcc-context-loss.md)

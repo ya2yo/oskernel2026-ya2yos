@@ -10110,3 +10110,27 @@ VMA 而被直接追加，重叠 VMA 的顺序查找
 并更新开发日志、README 和 `AI_INTERACTION.md`。LoongArch64 诊断版 QEMU 修复前在 Cargo `2/446`
 复现 fault，修复后 180 秒推进至 `41/446` 且无 fault/panic/compiler error；RISC-V 与 LoongArch64
 release 构建通过。完整 BuildStorm 未在本轮完成。
+
+## 2026-08-06：LoongArch BuildStorm FCC 条件状态丢失
+
+### 用户输入
+
+维护者要求分析新的 `server.ans` 并修复其中的 BuildStorm bug。
+
+### 分析与采纳结论
+
+日志中 `sigaltstack`/`rseq`、BuildStorm toolchain 和 MINIBUILD 均通过；失败发生在
+LoongArch 并发编译 `core`/`compiler_builtins` 时，guest `rustc` 收到 `SIGSEGV`，内核同时
+报告非规范 `badv=0x617461646f723e`（小端为 `>rodata`）。检查 LoongArch LSX trap 上下文
+发现 FCC 保存循环每次用 `movcf2gr` 覆盖同一临时寄存器，移位结果没有累积，TrapContext
+只保留 `fcc0`。`fcc1..fcc7` 在每次抢占/信号返回后清零，会污染 rustc 浮点比较控制流，
+与长时间多 hart 编译后出现非法用户指针相符。
+
+采纳在 `os/src/arch/loongarch64/qemu/asms/trap.S` 中增加累加器，按 bit 0..7 打包全部
+FCC；恢复路径和 TrapContext 布局保持不变。
+
+### 修改与验证
+
+LoongArch64、RISC-V release 构建及 `git diff --check` 均通过。未重新运行数小时的完整
+LoongArch BuildStorm，因此不把 `446/446` 或运行期 SIGSEGV 消失作为已验证结论；新增
+`Docs/决赛文档/problem/loongarch-buildstorm-fcc-context-loss.md` 并更新开发日志和索引。

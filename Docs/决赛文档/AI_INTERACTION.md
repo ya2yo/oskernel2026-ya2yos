@@ -2609,3 +2609,12 @@
 - **验证边界**：RISC-V 与 LoongArch64 release 构建通过；修复后 LoongArch64 诊断版 QEMU 在 180 秒内从原 `2/446` 推进至 `41/446`，无 `fault-diagnostics`、rustc `SIGSEGV`、panic 或 compiler error，但未完成完整 BuildStorm。
 - **关联文档**：[问题复盘](./problem/buildstorm-map-fixed-overlap-sigsegv.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### LoongArch BuildStorm FCC 条件状态丢失（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans`，要求分析 LoongArch BuildStorm 中 `rustc SIGSEGV` 和用户态非规范地址 fault。
+- **描述**：日志在 `core`/`compiler_builtins` 并发编译阶段同时出现 `rustc interrupted by SIGSEGV` 与 `badv=0x617461646f723e`。审计 LoongArch LSX trap 汇编发现 FCC 保存循环覆盖临时寄存器，实际只保存 `fcc0`；修复为逐位累积 `fcc0..fcc7` 后保存，保留现有恢复顺序。
+- **验证边界**：RISC-V/LoongArch64 release 构建和差异检查通过；未重跑完整 LoongArch BuildStorm，待后续确认长时间抢占下不再出现同类 fault。
+- **关联文档**：[FCC 问题复盘](./problem/loongarch-buildstorm-fcc-context-loss.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

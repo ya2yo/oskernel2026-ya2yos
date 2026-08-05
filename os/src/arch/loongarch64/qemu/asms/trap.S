@@ -74,23 +74,33 @@ __alltraps:
     movfcsr2gr $t0, $fcsr0
     st.w $t0, $sp, 96*8
 
-    # save FCC
-    movcf2gr $t0, $fcc7
-    slli.w $t0, $t0, 1
-    movcf2gr $t0, $fcc6
-    slli.w $t0, $t0, 1
-    movcf2gr $t0, $fcc5
-    slli.w $t0, $t0, 1
-    movcf2gr $t0, $fcc4
-    slli.w $t0, $t0, 1
-    movcf2gr $t0, $fcc3
-    slli.w $t0, $t0, 1
-    movcf2gr $t0, $fcc2
-    slli.w $t0, $t0, 1
-    movcf2gr $t0, $fcc1
-    slli.w $t0, $t0, 1
+    # save all eight FCC bits in one byte.  Each movcf2gr overwrites its
+    # destination, so shifting without accumulating would preserve fcc0 only.
+    move $t1, $zero
     movcf2gr $t0, $fcc0
-    st.b $t0, $sp, 96*8+4
+    or $t1, $t1, $t0
+    movcf2gr $t0, $fcc1
+    slli.d $t0, $t0, 1
+    or $t1, $t1, $t0
+    movcf2gr $t0, $fcc2
+    slli.d $t0, $t0, 2
+    or $t1, $t1, $t0
+    movcf2gr $t0, $fcc3
+    slli.d $t0, $t0, 3
+    or $t1, $t1, $t0
+    movcf2gr $t0, $fcc4
+    slli.d $t0, $t0, 4
+    or $t1, $t1, $t0
+    movcf2gr $t0, $fcc5
+    slli.d $t0, $t0, 5
+    or $t1, $t1, $t0
+    movcf2gr $t0, $fcc6
+    slli.d $t0, $t0, 6
+    or $t1, $t1, $t0
+    movcf2gr $t0, $fcc7
+    slli.d $t0, $t0, 7
+    or $t1, $t1, $t0
+    st.b $t1, $sp, 96*8+4
 
     # save other general purpose registers
     st.d $a0, $sp, 98*8
