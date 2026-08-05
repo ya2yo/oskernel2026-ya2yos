@@ -1,21 +1,18 @@
-//! lwext4-backed EXT4 filesystem adapter.
+//! 基于 lwext4 的 EXT4 文件系统适配器。
 //!
-//! The VFS adapter keeps Rust-owned descriptor and cache state per inode.
-//! lwext4 owns the resource-level locks for pathname traversal, inode data,
-//! block groups, superblock counters, journal state and cache mode.  Ya2yOS
-//! installs task-aware hooks for those locks, so a contended task sleeps on
-//! the resource it actually needs instead of busy-spinning while its owner is
-//! preempted.
+//! VFS 适配层为每个 inode 保存由 Rust 管理的描述符和缓存状态。路径遍历、inode
+//! 数据、块组、超级块计数器、日志状态和缓存模式的资源级锁由 lwext4 管理。
+//! Ya2yOS 为这些锁安装支持任务调度的回调，因此发生竞争时，任务会睡眠在它
+//! 实际需要的资源上，而不是在锁持有者被抢占时忙等。
 //!
-//! Lock order across the two layers is:
+//! 两层之间的锁顺序为：
 //!
 //! ```text
 //! VFS write_state -> VFS io_state -> lwext4 resource locks
 //! ```
 //!
-//! The C layer never calls back into VFS while it holds a resource lock.
-//! Rust-side dentry, inode-index and page-cache locks are short lived and are
-//! released before entering lwext4 or issuing block I/O.
+//! C 层持有资源锁时不会回调 VFS。Rust 侧的 dentry、inode 索引和页缓存锁的
+//! 持有时间很短，并且会在进入 lwext4 或发起块 I/O 前释放。
 
 mod inode;
 mod sb;
@@ -37,26 +34,32 @@ use crate::arch::time::get_ticks;
 use crate::utils::PollSet;
 
 extern "C" {
+    /// 查询 lwext4 资源锁的类别编号。
     fn ext4_fs_rwlock_get_kind(lock: *const c_void) -> u8;
 }
 
-/// A task-aware mutex for mutable state of one VFS inode.
+/// 用于保护单个 VFS inode 可变状态的任务感知互斥锁。
 ///
-/// Contended task-context callers sleep instead of spinning, while boot-time
-/// callers without a current task retain the spin fallback.  It protects an
-/// `Ext4File` descriptor, aliases and Rust-only delayed-write state; it does
-/// not serialize unrelated inodes or the mounted filesystem.
+/// 发生竞争时，任务上下文中的调用者会睡眠而不是自旋；启动阶段没有当前任务的
+/// 调用者则保留自旋回退路径。该锁保护 `Ext4File` 描述符、别名和仅由 Rust
+/// 管理的延迟写状态，不会串行化无关 inode 或整个挂载的文件系统。
 pub(super) struct TaskMutex {
+    /// 保存受保护状态的底层自旋锁。
     inner: spin::Mutex<()>,
+    /// 等待获取互斥锁的任务集合。
     waiters: PollSet,
 }
 
+/// `TaskMutex` 的持有凭证。
 pub(super) struct TaskMutexGuard<'a> {
+    /// 对应的互斥锁。
     lock: &'a TaskMutex,
+    /// 底层锁守卫；使用 `Option` 以便在唤醒等待者前主动释放。
     guard: Option<spin::MutexGuard<'a, ()>>,
 }
 
 impl TaskMutex {
+    /// 创建一个未加锁且没有等待者的任务感知互斥锁。
     pub const fn new() -> Self {
         Self {
             inner: spin::Mutex::new(()),
@@ -64,6 +67,7 @@ impl TaskMutex {
         }
     }
 
+    /// 获取互斥锁；任务上下文中的竞争者会阻塞等待唤醒。
     pub fn lock(&self) -> TaskMutexGuard<'_> {
         let guard = match self.inner.try_lock() {
             Some(guard) => guard,
@@ -73,8 +77,8 @@ impl TaskMutex {
                     return Poll::Ready(guard);
                 }
 
-                // Register before the second attempt so an unlock cannot be
-                // lost between observing contention and blocking this task.
+                // 在第二次尝试前登记等待者，避免观察到竞争后、任务阻塞前发生解锁
+                // 而导致唤醒丢失。
                 self.waiters.register(cx.waker());
                 match self.inner.try_lock() {
                     Some(guard) => {
@@ -93,49 +97,67 @@ impl TaskMutex {
 }
 
 impl Drop for TaskMutexGuard<'_> {
+    /// 释放底层互斥锁并唤醒一个等待任务。
     fn drop(&mut self) {
         self.guard.take();
         self.lock.waiters.wake_one();
     }
 }
 
-/// Lock mode selected by the C-side lwext4 resource lock.
+/// C 侧 lwext4 资源锁选择的锁模式。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TaskRwLockMode {
+    /// 共享读锁。
     Read,
+    /// 独占写锁。
     Write,
 }
 
-/// One FIFO waiter for a particular lwext4 resource.  A waiter sleeps on its
-/// task waker; it never spins on the C atomic word while another task owns the
-/// resource.
+/// 某个 lwext4 资源上的一个 FIFO 等待者。
+///
+/// 等待者通过任务的 waker 睡眠；当其他任务持有资源时，不会在 C 原子变量上自旋。
 struct TaskRwLockWaiter {
+    /// 在该资源等待队列中的单调递增票号。
     ticket: usize,
+    /// 等待任务的线程 ID。
     tid: usize,
+    /// 请求的读写模式。
     mode: TaskRwLockMode,
+    /// 资源可用时用于唤醒任务的 waker。
     waker: Waker,
 }
 
+/// 某个任务持有的可递归读锁状态。
 struct TaskRwLockReader {
+    /// 同一任务递归获取读锁的次数。
     depth: usize,
     #[cfg(feature = "perf")]
+    /// 读锁首次获取时的时间戳。
     acquired_at: usize,
 }
 
-/// State for one C `struct ext4_fs_rwlock`.  The C lock's address is the key:
-/// it identifies one namespace, inode stripe, block-group stripe, journal,
-/// superblock or cache resource for the lifetime of a mount.
+/// 一个 C `struct ext4_fs_rwlock` 对应的 Rust 状态。
+///
+/// C 锁的地址就是资源键；在一次挂载的生命周期内，它标识一个命名空间、inode
+/// 分片、块组分片、日志、超级块或缓存资源。
 struct TaskRwLockState {
+    /// 按任务 ID 记录读锁持有者及其递归深度。
     readers: BTreeMap<usize, TaskRwLockReader>,
+    /// 当前写锁持有者的任务 ID。
     writer: Option<usize>,
+    /// 当前写锁的递归获取次数。
     writer_depth: usize,
     #[cfg(feature = "perf")]
+    /// 写锁首次获取时的时间戳。
     writer_acquired_at: usize,
+    /// 下一个等待者使用的票号。
     next_ticket: usize,
+    /// 按进入顺序排列的等待队列。
     waiters: VecDeque<TaskRwLockWaiter>,
 }
 
 impl TaskRwLockState {
+    /// 创建一个没有持有者和等待者的资源锁状态。
     fn new() -> Self {
         Self {
             readers: BTreeMap::new(),
@@ -148,25 +170,21 @@ impl TaskRwLockState {
         }
     }
 
+    /// 判断指定任务能否立即以给定模式获取锁。
     fn can_acquire(&self, tid: usize, mode: TaskRwLockMode, ticket: Option<usize>) -> bool {
         if let Some(owner) = self.writer {
-            // lwext4's cache-write-back mode is a nesting counter.  Its
-            // callers may enter the same C resource lock more than once
-            // before balancing the corresponding `on_off = 0`; preserve that
-            // per-task recursion without allowing another task to bypass the
-            // writer.  A writer-owned task may also take a read section while
-            // calling a helper that uses the same C resource; the matching
-            // read unlock is tracked separately below.
+            // lwext4 的回写缓存模式使用嵌套计数器。调用者可能在平衡对应的
+            // `on_off = 0` 之前多次进入同一个 C 资源锁；这里保留这种按任务递归，
+            // 但不允许其他任务绕过写者。持有写锁的任务也可能在调用使用同一 C
+            // 资源的辅助函数时进入读区间；匹配的读解锁在下方单独跟踪。
             return ticket.is_none() && owner == tid;
         }
 
         match ticket {
-            // Do not bypass a queued writer.  This keeps the lock FIFO and
-            // avoids reader-induced writer starvation.
-            // An already-held read lock is the exception: C wrappers such as
-            // readlink -> fread reacquire namespace_lock in the same task.
-            // Blocking that recursive read behind its own queued writer makes
-            // the task hold the read lock forever and leaves every hart idle.
+            // 不绕过已排队的写者，以保持 FIFO 顺序并避免读者导致写者饥饿。
+            // 已持有读锁的任务是例外：readlink -> fread 等 C 封装会在同一任务中
+            // 重新获取 namespace_lock。如果把这次递归读锁排在自己的写者之后，
+            // 该任务会永久持有读锁，并使所有 hart 都无法继续运行。
             None if mode == TaskRwLockMode::Read
                 && self.readers.get(&tid).map_or(0, |reader| reader.depth) != 0 =>
             {
@@ -192,6 +210,7 @@ impl TaskRwLockState {
         }
     }
 
+    /// 返回当前可以被唤醒的等待者。
     fn wake_waiters(&self) -> Vec<Waker> {
         if self.writer.is_some() {
             return Vec::new();
@@ -200,10 +219,8 @@ impl TaskRwLockState {
         let mut wakers = Vec::new();
         for waiter in &self.waiters {
             match waiter.mode {
-                // Readers at the head of the FIFO are mutually compatible.
-                // Wake the whole contiguous read batch so they can acquire
-                // the resource concurrently instead of handing it off one
-                // task at a time.
+                // FIFO 队首的读者彼此兼容。唤醒连续的整批读者，使它们可以并发
+                // 获取资源，而不是一次只交给一个任务。
                 TaskRwLockMode::Read => wakers.push(waiter.waker.clone()),
                 TaskRwLockMode::Write => {
                     if self.readers.is_empty() {
@@ -216,6 +233,7 @@ impl TaskRwLockState {
         wakers
     }
 
+    /// 记录指定任务成功获取一次锁。
     fn acquire(&mut self, tid: usize, mode: TaskRwLockMode) {
         match mode {
             TaskRwLockMode::Read => {
@@ -250,27 +268,34 @@ impl TaskRwLockState {
     }
 }
 
-/// A FIFO, task-aware rwsem backing exactly one lwext4 C resource lock.
+/// 为一个 lwext4 C 资源锁提供支持的 FIFO 任务感知读写信号量。
 ///
-/// This is deliberately not a VFS-wide lock.  Independent C lock addresses
-/// have independent state, allowing different inode stripes and block groups
-/// to make progress concurrently.  Boot-time code has no task to park, so it
-/// retains a bounded spin fallback during early mount.
+/// 这不是 VFS 全局锁。不同的 C 锁地址拥有独立状态，因此不同 inode 分片和块组
+/// 可以并发推进。启动阶段没有可阻塞的任务，所以早期挂载仍保留自旋回退路径。
 struct TaskRwLock {
+    /// 用于性能统计的资源类别。
     class: crate::utils::perf::Ext4ResourceLockClass,
+    /// 保护该资源锁所有权和等待队列的内部锁。
     state: spin::Mutex<TaskRwLockState>,
 }
 
+/// 等待获取 lwext4 资源锁的 Future。
 struct TaskRwLockFuture<'a> {
+    /// 要获取的资源锁。
     lock: &'a TaskRwLock,
+    /// 请求任务的线程 ID。
     tid: usize,
+    /// 请求的读写模式。
     mode: TaskRwLockMode,
+    /// 已分配的等待票号；尚未排队时为空。
     ticket: Option<usize>,
     #[cfg(feature = "perf")]
+    /// 开始等待锁的时间戳。
     started_at: usize,
 }
 
 impl TaskRwLock {
+    /// 创建一个尚未被任何任务持有的资源锁。
     fn new(class: crate::utils::perf::Ext4ResourceLockClass) -> Self {
         Self {
             class,
@@ -278,6 +303,7 @@ impl TaskRwLock {
         }
     }
 
+    /// 获取指定模式的资源锁；任务上下文发生竞争时会异步阻塞。
     fn lock(&self, mode: TaskRwLockMode) {
         #[cfg(feature = "perf")]
         let started_at = get_ticks();
@@ -316,6 +342,9 @@ impl TaskRwLock {
         });
     }
 
+    /// 在不阻塞的情况下尝试获取资源锁。
+    ///
+    /// `ticket` 非空时，调用者必须同时位于等待队列队首，才能完成获取。
     fn try_lock(&self, tid: usize, mode: TaskRwLockMode, ticket: Option<usize>) -> bool {
         let next = {
             let mut state = self.state.lock();
@@ -334,6 +363,7 @@ impl TaskRwLock {
         true
     }
 
+    /// 释放任务持有的一次读锁或写锁，并唤醒后续等待者。
     fn unlock(&self, tid: usize, mode: TaskRwLockMode) {
         #[cfg(feature = "perf")]
         let mut hold_ticks = None;
@@ -392,10 +422,12 @@ impl TaskRwLock {
         }
     }
 
+    /// 判断指定任务当前是否持有该资源的写锁。
     fn write_owned_by(&self, tid: usize) -> bool {
         self.state.lock().writer == Some(tid)
     }
 
+    /// 从等待队列中移除指定票号的等待者。
     fn cancel_ticket(&self, ticket: usize) {
         let next = {
             let mut state = self.state.lock();
@@ -414,10 +446,10 @@ impl TaskRwLock {
         }
     }
 
-    /// Releases any resource lock a task abandoned on a diverging scheduler
-    /// exit path and removes its pending waiters.  The normal C unlock hook
-    /// handles the ordinary case; this mirrors the old gate's task-exit
-    /// cleanup without reintroducing a mount-wide synchronization point.
+    /// 释放任务在调度器退出分支中遗留的资源锁，并移除该任务的等待者。
+    ///
+    /// 普通情况由 C 解锁回调处理；此函数复现旧 gate 的任务退出清理行为，
+    /// 但不会重新引入挂载范围的同步点。
     fn cancel_tid(&self, tid: usize) {
         let next = {
             let mut state = self.state.lock();
@@ -508,6 +540,7 @@ impl Future for TaskRwLockFuture<'_> {
 }
 
 impl Drop for TaskRwLockFuture<'_> {
+    /// Future 被取消时，从资源等待队列中撤销其票号。
     fn drop(&mut self) {
         if let Some(ticket) = self.ticket.take() {
             self.lock.cancel_ticket(ticket);
@@ -515,12 +548,15 @@ impl Drop for TaskRwLockFuture<'_> {
     }
 }
 
-/// Resource locks are allocated lazily because the C mount owns their
-/// addresses.  The table lock only protects Rust bookkeeping; no C operation,
-/// device I/O or wait occurs while it is held.
+/// 资源锁采用延迟分配，因为它们的地址由 C 挂载实例所有。
+///
+/// 表锁只保护 Rust 侧的登记信息；持有表锁时不会执行 C 操作、设备 I/O 或等待。
 static LWEXT4_RESOURCE_LOCKS: spin::Lazy<spin::Mutex<BTreeMap<usize, Arc<TaskRwLock>>>> =
     spin::Lazy::new(|| spin::Mutex::new(BTreeMap::new()));
 
+/// 根据 C 资源锁地址查找或创建对应的任务感知锁。
+///
+/// `class` 仅在首次登记该地址时调用。
 fn resource_lock(
     lock: *mut c_void,
     class: impl FnOnce() -> crate::utils::perf::Ext4ResourceLockClass,
@@ -550,6 +586,10 @@ fn resource_lock(
     resource
 }
 
+/// 查找已经登记的 C 资源锁。
+///
+/// 如果 C 层在未完成加锁登记前尝试解锁，则说明调用顺序违反了预期，函数会触发
+/// panic。
 fn active_resource_lock(lock: *mut c_void) -> Arc<TaskRwLock> {
     assert!(!lock.is_null(), "lwext4 supplied a null resource lock");
     #[cfg(feature = "perf")]
@@ -567,6 +607,7 @@ fn active_resource_lock(lock: *mut c_void) -> Arc<TaskRwLock> {
     resource
 }
 
+/// 根据 lwext4 C 锁的类型编号转换为性能统计中的资源类别。
 fn lwext4_resource_lock_class(lock: *mut c_void) -> crate::utils::perf::Ext4ResourceLockClass {
     use crate::utils::perf::Ext4ResourceLockClass;
 
@@ -612,8 +653,8 @@ unsafe extern "C" fn unlock_lwext4_resource(_ctx: *mut c_void, lock: *mut c_void
     );
 }
 
-/// Lets C transaction cleanup distinguish its own journal scope from another
-/// task's in-flight transaction without exposing the Rust lock state.
+/// 让 C 事务清理逻辑区分当前任务自己的日志作用域和其他任务正在执行的事务，
+/// 同时不暴露 Rust 锁状态。
 unsafe extern "C" fn lwext4_write_lock_owned_by_current(
     _ctx: *mut c_void,
     lock: *const c_void,
@@ -630,6 +671,7 @@ unsafe extern "C" fn lwext4_write_lock_owned_by_current(
         .map_or(false, |resource| resource.write_owned_by(tid))
 }
 
+/// 获取 lwext4 动态 vfile 缓存使用的资源锁。
 unsafe extern "C" fn lock_vfile_cache_resource(_ctx: *mut c_void, lock: *mut c_void, write: bool) {
     resource_lock(lock, || {
         crate::utils::perf::Ext4ResourceLockClass::VFileCache
@@ -641,6 +683,7 @@ unsafe extern "C" fn lock_vfile_cache_resource(_ctx: *mut c_void, lock: *mut c_v
     });
 }
 
+/// 释放 lwext4 动态 vfile 缓存使用的资源锁。
 unsafe extern "C" fn unlock_vfile_cache_resource(
     _ctx: *mut c_void,
     lock: *mut c_void,
@@ -659,18 +702,20 @@ unsafe extern "C" fn unlock_vfile_cache_resource(
     );
 }
 
-/// Dynamic Rust cache entries use the same scheduler-aware lock callbacks as
-/// lwext4 resources. Their addresses are short-lived, so drop the bookkeeping
-/// record when the final `Arc<VFileCacheLock>` goes away.
+/// 动态 Rust 缓存条目与 lwext4 资源共用支持调度的锁回调。
+///
+/// 这些条目的地址生命周期较短，因此最后一个 `Arc<VFileCacheLock>` 释放时，
+/// 同时删除对应的登记记录。
 unsafe extern "C" fn release_lwext4_resource(_ctx: *mut c_void, lock: *mut c_void) {
     if !lock.is_null() {
         LWEXT4_RESOURCE_LOCKS.lock().remove(&(lock as usize));
     }
 }
 
-/// Must run before `Ext4BlockWrapper::new()`: mount/recovery acquire the same
-/// C resource locks as normal I/O and therefore need the task-aware hooks
-/// from their first use.
+/// 必须在 `Ext4BlockWrapper::new()` 之前调用。
+///
+/// 挂载和恢复过程会获取与普通 I/O 相同的 C 资源锁，因此从第一次使用开始就需要
+/// 任务感知的锁回调。
 pub(super) fn install_lwext4_resource_lock_hooks() {
     lwext4_rust::Ext4BlockWrapper::<crate::drivers::Disk>::setup_fs_rwlock_hooks(
         core::ptr::null_mut(),
@@ -686,10 +731,10 @@ pub(super) fn install_lwext4_resource_lock_hooks() {
     );
 }
 
+/// 清理指定任务遗留的 EXT4 资源锁持有状态和等待项。
 pub(crate) fn cancel_ext4_op_waiter(tid: usize) {
-    // Kept as the task-exit call-site name until task teardown is moved out of
-    // this migration scope.  It now cleans only locks actually held or waited
-    // on by this task; no mount-wide EXT4 operation lock exists.
+    // 在任务清理逻辑迁出本次迁移范围前，保留任务退出调用点使用的名称。
+    // 现在只清理该任务实际持有或等待的锁；不存在挂载范围的 EXT4 操作锁。
     let locks: Vec<Arc<TaskRwLock>> = LWEXT4_RESOURCE_LOCKS.lock().values().cloned().collect();
     for lock in locks {
         lock.cancel_tid(tid);
