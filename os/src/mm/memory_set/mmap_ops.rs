@@ -1,9 +1,8 @@
-//! mmap / munmap / mprotect / shm / page-fault handlers.
+//! `mmap`、`munmap`、`mprotect`、共享内存和缺页异常处理逻辑。
 //!
-//! These are the methods of [`MemorySetInner`] that implement the user-facing
-//! virtual memory operations: allocating anonymous/file-backed mappings,
-//! unmapping, protecting, shared memory attach, and the associated
-//! lazy- / COW- / mmap- page-fault handlers.
+//! 这些是 [`MemorySetInner`] 中实现用户态虚拟内存操作的方法，负责匿名映射和
+//! 文件映射的建立、解除映射、修改保护属性、挂载共享内存，以及相应的延迟分配、
+//! 写时复制和 `mmap` 缺页异常处理。
 
 use super::{
     FrameTracker, MapArea, MapAreaType, MapPermission, PhysAddr, UserBuffer, VPNRange, VirtAddr,
@@ -30,19 +29,24 @@ use log::{debug, warn};
 
 const STACK_GUARD_GAP_PAGES: usize = 256;
 
-// pthread stacks are allocated with mmap(MAP_STACK), but the area type is
-// kept as Stack so page faults use the regular stack lazy-allocation path.
-// They are nevertheless ordinary dynamic VMAs and must be reclaimed by
-// munmap.  The fixed process stack is a Stack without MAP_STACK and remains
-// excluded.
+/// 判断映射区域是否为通过 `MAP_STACK` 创建的动态线程栈。
+///
+/// 动态线程栈虽然使用栈区域类型以复用栈的延迟分配逻辑，但仍属于可由
+/// `munmap` 回收的普通 mmap 映射；进程固定栈不设置 `MAP_STACK`，不会被识别为
+/// 动态栈。
 fn is_dynamic_mmap_stack(area: &MapArea) -> bool {
     area.area_type == MapAreaType::Stack && area.mmap_flags.contains(MmapFlags::MAP_STACK)
 }
 
+/// 判断区域是否属于可由 mmap 系列操作管理的 VMA。
 fn is_mmap_vma(area: &MapArea) -> bool {
     area.area_type == MapAreaType::Mmap || is_dynamic_mmap_stack(area)
 }
 
+/// 处理 mmap VMA 中尚未建立页表映射的缺页异常。
+///
+/// 根据异常类型和区域权限选择文件读缺页或写缺页路径。文件 EOF 之后的完整页
+/// 不会被错误地按匿名零页分配，而是由底层缺页处理报告总线错误。
 fn handle_mmap_not_present_page_fault(
     page_table: &mut PageTable,
     area: &mut MapArea,
@@ -50,8 +54,8 @@ fn handle_mmap_not_present_page_fault(
     scause: Trap,
     prepared: Option<&Arc<FilePage>>,
 ) -> bool {
-    // A file VMA may legally cover bytes past EOF, but faulting a complete
-    // page beyond EOF is SIGBUS, never a demand-zero page.
+    // 文件 VMA 可以合法地覆盖文件 EOF 之后的字节，但访问完全位于 EOF 之后的
+    // 页必须产生 SIGBUS，不能将其当作按需分配的零页处理。
     match scause {
         Trap::Exception(Exception::LoadPageFault) => {
             area.map_perm.contains(MapPermission::R)
@@ -80,9 +84,9 @@ fn handle_mmap_not_present_page_fault(
 }
 
 impl MemorySetInner {
-    /// Return the backing inode and page index for a file-backed mmap VMA.
-    /// The caller may use this snapshot after releasing the MemorySet lock to
-    /// perform the potentially blocking filesystem read.
+    /// 返回文件映射 VMA 对应的底层 inode 和文件页索引。
+    ///
+    /// 调用者可以在释放 MemorySet 锁后使用该快照执行可能阻塞的文件系统读取。
     pub fn mmap_file_page_info(&self, vpn: VirtPageNum) -> Option<(Arc<dyn Inode>, usize)> {
         let area = self
             .areas
@@ -95,9 +99,10 @@ impl MemorySetInner {
         Some((file.inode.clone(), page_offset / PAGE_SIZE))
     }
 
-    /// Collect all file pages required to materialize shared mappings during
-    /// fork. Only metadata and inode Arcs are copied while the MemorySet read
-    /// lock is held; actual EXT4 reads happen in the caller's unlocked phase.
+    /// 收集 fork 期间实例化共享映射所需的全部文件页。
+    ///
+    /// 持有 MemorySet 读锁时只复制元数据和 inode 的引用计数指针；实际的 EXT4
+    /// 读取在调用者释放锁后的阶段执行。
     pub fn shared_file_page_info(&self) -> Vec<(Arc<dyn Inode>, usize)> {
         let mut requests = Vec::new();
         for area in &self.areas {
@@ -117,6 +122,10 @@ impl MemorySetInner {
         requests
     }
 
+    /// 将给定的物理页挂载到当前地址空间中的共享内存区域。
+    ///
+    /// 当 `addr` 为 0 时自动选择 mmap 区域内的空闲地址；指定地址的挂载目前
+    /// 尚未实现。
     pub fn shm(
         &mut self,
         addr: usize,
@@ -141,7 +150,7 @@ impl MemorySetInner {
         panic!("[shm_attach] unimplement attach addr");
     }
 
-    /// Detach a SysV shared memory mapping from the current address space.
+    /// 从当前地址空间解除一个 SysV 共享内存映射。
     pub fn shm_detach(&mut self, addr: usize) -> SyscallRet {
         if addr % PAGE_SIZE != 0 {
             return Err(SysErrNo::EINVAL);
@@ -158,7 +167,11 @@ impl MemorySetInner {
         Ok(0)
     }
 
-    /// mmap
+    /// 建立一个匿名或文件支持的用户态虚拟内存映射。
+    ///
+    /// 对普通映射，函数在地址空间中寻找空闲范围并创建延迟分配的 VMA；对固定
+    /// 映射，使用调用者指定的地址，并根据标志处理冲突映射。成功时返回映射起始
+    /// 地址，失败时返回 0，由系统调用层转换为相应的 errno。
     pub fn mmap(
         &mut self,
         addr: usize,
@@ -198,10 +211,9 @@ impl MemorySetInner {
                     return 0;
                 }
             }
-            // MAP_FIXED replaces any existing mapping in the requested range.
-            // Appending a new VMA when the range extends beyond an old VMA
-            // leaves overlapping entries; fault lookup then stops at the old
-            // (often PROT_NONE) entry and hides the replacement mapping.
+            // MAP_FIXED 会替换请求范围内已有的映射。如果范围超出旧 VMA，直接
+            // 追加新 VMA 会留下重叠条目；缺页查找可能先命中旧条目（通常是
+            // PROT_NONE），从而遮蔽新的替换映射。
             if flags.contains(MmapFlags::MAP_FIXED) {
                 let _ = self.munmap(addr, len);
             }
@@ -218,20 +230,19 @@ impl MemorySetInner {
             // MAP_FIXED / MAP_FIXED_NOREPLACE 使用指定地址，不计入 mmap 总量
             return addr;
         }
-        // Reject if this allocation would exceed the per-process mmap limit.
-        // Without this check, runaway mmap (e.g. glibc ungetc on a char device)
-        // can allocate unlimited virtual space and exhaust physical memory
-        // through subsequent lazy page faults.
+        // 拒绝超过单进程 mmap 限额的分配。没有此检查时，失控的 mmap（例如
+        // glibc 在字符设备上调用 ungetc）可能无限分配虚拟空间，并在后续延迟
+        // 缺页时耗尽物理内存。
         if self.total_mmap_size + len > MAX_MMAP_SIZE {
             debug!(
                 "[mmap] ENOMEM: total_mmap_size={}, request={}, max={}",
                 self.total_mmap_size, len, MAX_MMAP_SIZE
             );
-            return 0; // signals failure to sys_mmap, which returns ENOMEM
+            return 0; // 向 sys_mmap 表示失败，由其返回 ENOMEM
         }
         let addr = self.find_insert_addr(MMAP_TOP, len);
         if addr == 0 {
-            return 0; // no space found
+            return 0; // 未找到可用空间
         }
         let area_type = if flags.contains(MmapFlags::MAP_STACK) {
             MapAreaType::Stack
@@ -252,7 +263,10 @@ impl MemorySetInner {
         addr
     }
 
-    /// munmap
+    /// 解除指定范围内的 mmap 映射，并按需要截断或拆分 VMA。
+    ///
+    /// 解除范围与现有 VMA 的交集，释放对应页表项和物理页；对于被部分覆盖的
+    /// VMA，保留范围外部分及其已分配页。
     pub fn munmap(&mut self, addr: usize, len: usize) -> SyscallRet {
         debug!("[munmap] addr={:x}, len={}", addr, len);
         // 检查 addr + len 是否溢出
@@ -280,14 +294,14 @@ impl MemorySetInner {
             let unmap_start = area_start.max(start_vpn);
             let unmap_end = area_end.min(end_vpn);
 
-            // Shared-mmap writeback is performed by `MemorySet::munmap`
-            // before this lock-protected metadata/page-table update.
+            // 共享映射的回写由 `MemorySet::munmap` 在本锁保护的元数据和页表更新
+            // 之前完成。
             // 卸载交集范围内的所有页
             for vpn in VPNRange::new(unmap_start, unmap_end) {
                 area.unmap_one(&mut self.page_table, vpn);
             }
-            // Fixed mappings are excluded from the mmap budget when created,
-            // so removing one must not charge the budget for its pages.
+            // 固定映射创建时不计入 mmap 预算，因此移除固定映射时也不能从
+            // 预算中扣除其页数。
             if !area
                 .mmap_flags
                 .intersects(MmapFlags::MAP_FIXED | MmapFlags::MAP_FIXED_NOREPLACE)
@@ -327,7 +341,7 @@ impl MemorySetInner {
         Ok(0)
     }
 
-    /// Validate that a memory-advice range is fully covered by existing VMAs.
+    /// 验证内存建议操作的范围是否完全由已有 VMA 覆盖。
     pub fn validate_madvise_range(&self, addr: usize, len: usize) -> SyscallRet {
         if addr % PAGE_SIZE != 0 {
             return Err(SysErrNo::EINVAL);
@@ -355,13 +369,11 @@ impl MemorySetInner {
         Ok(0)
     }
 
-    /// Discard resident pages in a mapped range and leave the VMAs intact.
+    /// 丢弃映射范围内的驻留页，同时保留 VMA 元数据。
     ///
-    /// `MADV_DONTNEED` is implemented by removing resident pages from the
-    /// lazy VMAs. A later access faults them back in as zero-filled anonymous
-    /// pages or from the backing file. Fixed ELF mappings are deliberately
-    /// left resident because their fault path has no file metadata with which
-    /// to reconstruct the original segment contents.
+    /// `MADV_DONTNEED` 通过从延迟分配的 VMA 中移除驻留页实现。之后再次访问时，
+    /// 缺页处理会重新分配填零的匿名页，或从底层文件载入页面。固定 ELF 映射被
+    /// 有意保留，因为其缺页路径没有足够的文件元数据来重建原始段内容。
     pub fn discard_madvise_pages(&mut self, addr: usize, len: usize) -> SyscallRet {
         self.validate_madvise_range(addr, len)?;
         if len == 0 {
@@ -390,16 +402,13 @@ impl MemorySetInner {
         Ok(0)
     }
 
-    /// Move a complete mmap VMA to a new free range while retaining
-    /// the contents of every resident page.
+    /// 将完整的 mmap VMA 移动到新的空闲范围，同时保留所有驻留页的内容。
     ///
-    /// `MREMAP_MAYMOVE` is used by Rust's allocator to grow its backing
-    /// mappings. Recreating the VMA after unmapping the source loses the
-    /// allocator's live contents, so construct the destination first and
-    /// commit the source teardown only after every resident page is copied.
-    /// For MAP_SHARED mappings, resident pages are deep-copied into new frames
-    /// and lazy pages stay lazy; old GROUP_SHARE entries become orphaned but
-    /// harmlessly unreachable since the old VPN range is unmapped.
+    /// Rust 分配器使用 `MREMAP_MAYMOVE` 扩大其后备映射。解除源映射后再重建
+    /// VMA 会丢失分配器仍在使用的内容，因此先构造目标映射，待所有驻留页复制
+    /// 完成后再提交源映射的拆除。对于 `MAP_SHARED` 映射，驻留页会深复制到新
+    /// 的物理帧，延迟页仍保持延迟状态；旧的 GROUP_SHARE 条目会成为孤儿，但
+    /// 由于旧 VPN 范围已经解除映射，它们不会再被访问。
     pub fn mremap_maymove(
         &mut self,
         old_addr: usize,
@@ -419,11 +428,11 @@ impl MemorySetInner {
             return Err(SysErrNo::EFAULT);
         };
 
-        // Trim the VMA to exactly [old_start_vpn, old_end_vpn).
+        // 将 VMA 截取为精确的 [old_start_vpn, old_end_vpn) 范围。
         let area_start_vpn = self.areas[old_idx].vpn_range.start();
         let area_end_vpn = self.areas[old_idx].vpn_range.end();
 
-        // Split off the front if the VMA begins before the requested range.
+        // 如果 VMA 在请求范围之前开始，则先拆出前部。
         if area_start_vpn < old_start_vpn {
             let mut front_area = MapArea::from_another(&self.areas[old_idx]);
             front_area.vpn_range = VPNRange::new(area_start_vpn, old_start_vpn);
@@ -438,8 +447,8 @@ impl MemorySetInner {
                 }
             }
             self.areas[old_idx].vpn_range = VPNRange::new(old_start_vpn, area_end_vpn);
-            // The VMA now starts later; bump the file offset so that
-            // (va - start + offset) still maps to the correct file page.
+            // VMA 起点后移，因此调整文件偏移，使 (va - start + offset) 仍然
+            // 对应正确的文件页。
             self.areas[old_idx].mmap_file.offset +=
                 (old_start_vpn.0 - area_start_vpn.0) * PAGE_SIZE;
             if front_area.groupid != 0 {
@@ -448,11 +457,11 @@ impl MemorySetInner {
             self.areas.push(front_area);
         }
 
-        // Split off the tail if the VMA extends beyond the requested range.
+        // 如果 VMA 超出请求范围，则拆出尾部。
         if old_end_vpn < area_end_vpn {
             let mut tail_area = MapArea::from_another(&self.areas[old_idx]);
             tail_area.vpn_range = VPNRange::new(old_end_vpn, area_end_vpn);
-            // Tail area starts later than the source VMA; bump its file offset.
+            // 尾部区域起点晚于源 VMA，因此调整其文件偏移。
             tail_area.mmap_file.offset += (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
             let tail_keys: Vec<VirtPageNum> = self.areas[old_idx]
                 .data_frames
@@ -471,7 +480,7 @@ impl MemorySetInner {
             self.areas.push(tail_area);
         }
 
-        // MREMAP_FIXED path: validate and prepare the target range.
+        // MREMAP_FIXED 路径：验证并准备目标范围。
         if fixed {
             let new_end = new_addr.checked_add(new_len).ok_or(SysErrNo::EINVAL)?;
             if new_end > USER_SPACE_SIZE
@@ -480,13 +489,13 @@ impl MemorySetInner {
             {
                 return Err(SysErrNo::EINVAL);
             }
-            // Source and destination must not overlap.
+            // 源范围和目标范围不能重叠。
             if new_addr < old_end_addr && old_addr < new_end {
                 return Err(SysErrNo::EINVAL);
             }
-            // Unmap any existing mappings at the destination range.
+            // 解除目标范围内已有的映射。
             self.munmap(new_addr, new_len)?;
-            // Re-find the old area — munmap may have shifted self.areas indices.
+            // 重新查找旧区域，因为 munmap 可能改变 self.areas 中的索引。
             let Some(reidx) = self.areas.iter().position(|area| {
                 (is_mmap_vma(area) || area.area_type == MapAreaType::Shm)
                     && area.vpn_range.start() <= old_start_vpn
@@ -522,8 +531,7 @@ impl MemorySetInner {
             return Err(SysErrNo::ENOMEM);
         }
 
-        // Keep the source VMA in the obstacle set while selecting a target,
-        // so the two ranges can never overlap during the copy.
+        // 选择目标时将源 VMA 保留在障碍集合中，确保复制过程中两个范围不会重叠。
         let dest_addr = if fixed {
             new_addr
         } else {
@@ -553,9 +561,8 @@ impl MemorySetInner {
                 continue;
             };
 
-            // Pin the source frame while allocating the destination. Normally
-            // the first lookup succeeds. The fallback also tolerates an older
-            // VMA split that left a valid PTE's tracker in a neighboring area.
+            // 在分配目标页期间固定源帧。通常第一次查找即可成功；备用查找还可以
+            // 容忍较早的 VMA 拆分将有效 PTE 的帧跟踪器留在相邻区域的情况。
             let source_frame = self.areas[old_idx]
                 .data_frames
                 .get(&old_vpn)
@@ -586,8 +593,8 @@ impl MemorySetInner {
                 .copy_from_slice(source_frame.ppn.bytes_array());
         }
 
-        // Commit only after the destination has a complete copy of all pages
-        // that were resident in the old VMA. Lazy pages remain lazy.
+        // 只有在目标映射完整复制旧 VMA 的所有驻留页后才提交变更；延迟页继续
+        // 保持延迟状态。
         let mut old_area = self.areas.remove(old_idx);
         old_area.unmap(&mut self.page_table);
         self.areas.push(new_area);
@@ -596,13 +603,12 @@ impl MemorySetInner {
         Ok(dest_addr)
     }
 
-    /// Resize a complete VMA without changing its starting address.
+    /// 在不改变起始地址的情况下调整完整 VMA 的大小。
     ///
-    /// Without `MREMAP_MAYMOVE`, Linux can only grow into an entirely free
-    /// adjacent range.  The VMA stays lazy, so expansion only changes its
-    /// metadata; newly touched pages will follow the existing mmap fault path
-    /// (including shared-file page-cache handling).  Shrinking delegates to
-    /// `munmap` so resident shared pages receive the normal writeback path.
+    /// 不带 `MREMAP_MAYMOVE` 时，Linux 只能将映射扩展到完全空闲的相邻范围。
+    /// VMA 仍保持延迟分配状态，因此扩展只修改元数据；新访问的页沿用现有的
+    /// mmap 缺页路径（包括共享文件页缓存处理）。缩小操作委托给 `munmap`，
+    /// 使驻留的共享页经过正常的回写路径。
     pub fn mremap_in_place(
         &mut self,
         old_addr: usize,
@@ -620,11 +626,11 @@ impl MemorySetInner {
             return Err(SysErrNo::EFAULT);
         };
 
-        // Trim the VMA to exactly [old_start_vpn, old_end_vpn).
+        // 将 VMA 截取为精确的 [old_start_vpn, old_end_vpn) 范围。
         let area_start_vpn = self.areas[old_idx].vpn_range.start();
         let area_end_vpn = self.areas[old_idx].vpn_range.end();
 
-        // Split off the front if the VMA begins before the requested range.
+        // 如果 VMA 在请求范围之前开始，则先拆出前部。
         if area_start_vpn < old_start_vpn {
             let mut front_area = MapArea::from_another(&self.areas[old_idx]);
             front_area.vpn_range = VPNRange::new(area_start_vpn, old_start_vpn);
@@ -647,9 +653,8 @@ impl MemorySetInner {
             self.areas.push(front_area);
         }
 
-        // Split off the tail if the VMA extends beyond the requested range,
-        // so the expansion check below can detect the collision and return
-        // ENOMEM (as Linux does when the rest of the VMA blocks in-place growth).
+        // 如果 VMA 超出请求范围，则拆出尾部，使下面的扩展检查能够检测冲突并
+        // 返回 ENOMEM；当 VMA 的其余部分阻塞原地扩展时，Linux 也采用此行为。
         if old_end_vpn < area_end_vpn {
             let mut tail_area = MapArea::from_another(&self.areas[old_idx]);
             tail_area.vpn_range = VPNRange::new(old_end_vpn, area_end_vpn);
@@ -720,7 +725,7 @@ impl MemorySetInner {
         Ok(old_addr)
     }
 
-    /// 修改一段虚拟地址空间的访问权限（mprotect 核心逻辑）。
+    /// 修改一段虚拟地址空间的访问权限（`mprotect` 核心逻辑）。
     ///
     /// 此函数完成两件事：
     /// 1. **逻辑段（MapArea）拆分**：将现有 area 按 `[start_vpn, end_vpn)` 范围切分，
@@ -915,6 +920,11 @@ impl MemorySetInner {
             instruction_fence();
         }
     }
+    /// 处理用户地址空间中的缺页异常。
+    ///
+    /// 先尝试处理尚未建立页表映射的延迟分配、文件映射和栈增长，再处理写保护
+    /// 缺页（例如写时复制）。返回 `true` 表示异常已经修复，返回 `false` 表示
+    /// 当前地址空间无法处理该异常。
     pub fn handle_page_fault(
         &mut self,
         vpn: VirtPageNum,
@@ -927,6 +937,11 @@ impl MemorySetInner {
         self.handle_write_protect_page_fault(vpn, scause)
     }
 
+    /// 处理目标页尚未建立页表映射的缺页异常。
+    ///
+    /// 根据 VMA 类型分别执行 mmap 文件页载入、匿名页延迟分配，或按需扩展
+    /// `MAP_GROWSDOWN` 匿名映射。`prepared` 是调用者在释放外层锁期间准备好的
+    /// 文件页缓存页。
     fn handle_not_present_page_fault(
         &mut self,
         vpn: VirtPageNum,
@@ -938,7 +953,7 @@ impl MemorySetInner {
         if !ppn.is_none() {
             return false;
         }
-        // mmap
+        // 文件映射。
         if let Some(area) = self
             .areas
             .iter_mut()
@@ -956,7 +971,7 @@ impl MemorySetInner {
                 prepared,
             );
         }
-        // brk, fixed stack, or an ELF BSS tail registered for lazy loading
+        // brk、固定栈，或注册为延迟加载的 ELF BSS 尾部。
         if let Some(area) = self
             .areas
             .iter_mut()
@@ -985,9 +1000,9 @@ impl MemorySetInner {
             return allowed && lazy_page_fault(vpn.into(), &mut self.page_table, area);
         }
 
-        // Linux grows an anonymous MAP_GROWSDOWN VMA when its guard page is
-        // touched.  Do not grow through another VMA and keep the default
-        // 256-page stack guard gap from the nearest lower mapping.
+        // Linux 在访问匿名 MAP_GROWSDOWN VMA 的保护页时会向下扩展该 VMA。
+        // 不能跨越其他 VMA 扩展，并且要与最近的下方映射保持默认的 256 页栈
+        // 保护间隔。
         if self
             .areas
             .iter()
@@ -1043,9 +1058,10 @@ impl MemorySetInner {
         true
     }
 
+    /// 处理写保护页引起的缺页异常，例如写时复制或恢复可写权限。
     fn handle_write_protect_page_fault(&mut self, vpn: VirtPageNum, scause: Trap) -> bool {
-        // Only store/page-modify faults can be fixed by COW or write permission
-        // restoration. Load/fetch permission faults must remain SIGSEGV.
+        // 只有存储或页修改异常可以通过写时复制或恢复写权限修复；加载和取指
+        // 权限异常必须继续报告为 SIGSEGV。
         if scause == Trap::Exception(Exception::LoadPageFault)
             || scause == Trap::Exception(Exception::FetchInstructionPageFault)
         {
