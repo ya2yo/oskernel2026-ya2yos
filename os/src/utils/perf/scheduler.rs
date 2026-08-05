@@ -34,11 +34,13 @@ pub fn record_scheduler_enqueue(remote: bool, target_idle: bool, ipi_sent: bool)
 }
 
 pub fn record_scheduler_selection(self_selected: bool) {
-    add(&SCHEDULER_SELECTIONS, 1);
+    // fetch_add 返回递增后的序号，避免在每次调度选择后再次执行一次
+    // 原子 load。BuildStorm 的 perf 快照中该计数超过十亿次，这个路径
+    // 的额外原子操作会直接放大调度器测量开销。
+    let selections = SCHEDULER_SELECTIONS.fetch_add(1, Ordering::Relaxed) + 1;
     if self_selected {
         add(&SCHEDULER_SELF_SELECTIONS, 1);
     }
-    let selections = SCHEDULER_SELECTIONS.load(Ordering::Relaxed);
     if selections & 0x0fff == 0 {
         maybe_report();
     }
