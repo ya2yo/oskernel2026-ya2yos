@@ -10001,3 +10001,39 @@ LoongArch64 release 构建通过。最新 RISC-V BuildStorm 到达 `444/446` 且
 标记；未运行 LoongArch64 QEMU BuildStorm。
 
 维护者已有的 `user/src/bin/initproc.rs` 与运行中的 `disk.img` 未处理；关联 commit：当前工作区未提交。
+
+## 2026-08-05：BuildStorm 原生动态库搜索误报 WARN
+
+### 用户输入
+
+维护者要求分析 `server.ans` 并修复其中的 WARN。
+
+### 分析与采纳结论
+
+日志共有 35 条 `[WARN]`，全部由 `map_dynamic_link_file()` 报告没有动态库兼容路径，涉及
+`/usr/lib/libatomic.so.1`、LLVM/Clang、`libstdc++`、`libz3`、`libz`、`libzstd` 和
+`/lib/lib/libffi.so.8` 等路径。调用链为 `sys_openat() -> map_dynamic_link_file() -> open()`：
+兼容 mapper 未命中时本来就返回原路径，实际文件查找和 `ENOENT` 仍由后续 `open()` 及用户态
+动态链接器处理。日志在 WARN 后继续编译，也证明这些是 native loader 的正常候选路径探测，
+不是缺库或兼容映射失败。
+
+因此没有为每个 basename 扩展静态白名单，也没有把 native 请求重定向到旧 `/glibc/lib`；那会
+再次引入 final Debian loader/libc 混配。采纳的修复仅把“没有 legacy mapping”降为 debug，继续
+保留原 pathname 和真实 `open(2)` 结果。ELF 解释器原路径与兼容路径均失败的
+`map_dynamic_link_file_directly_map()` warning 保留，因为该路径会实际导致 `execve` 失败。
+
+另外区分了日志中的用户态 warning：0 字节 `dep-graph.bin` 是既有 rename 问题遗留缓存的自动
+重建，`set_fdt_addr_phys_if_valid` dead-code 来自只读 BuildStorm 测试源码，均不属于本轮内核
+WARN 根因。
+
+### 修改与验证
+
+修改 `os/src/fs/map_dynamic_link.rs`，新增
+`Docs/决赛文档/problem/buildstorm-dynamic-library-probe-warning.md`，并更新开发日志、README 和
+`AI_INTERACTION.md`。定向 rustfmt 检查通过；`make build-arch TARGET_ARCH=riscv64` 与
+`make build-arch TARGET_ARCH=loongarch64` 均通过，只有既有 Cargo config 和 customized `smoltcp`
+warning。
+
+全仓 `cargo fmt --check` 被本次修改之外的两架构 `memory_layout.rs` 与 `trap/mod.rs` 既有格式差异
+挡住，没有格式化或改动这些文件。分析期间已有 QEMU/GDB 会话使用修改前内核持续运行，本次未终止
+该会话，也未重跑完整 BuildStorm；关联 commit：当前工作区未提交。

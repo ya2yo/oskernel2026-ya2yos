@@ -2572,3 +2572,12 @@
 - **验证边界**：host lwext4 C 构建、rename 覆盖回归、`e2fsck -fn` 和 RISC-V/LoongArch64 release 构建通过；最新 RISC-V BuildStorm 从 Cargo `440/446` 推进到 `444/446`，无原 rename `EEXIST` 或 pipe panic，但尚未取得完整结束标记，也未运行 LoongArch64 QEMU BuildStorm。
 - **关联文档**：[pipe 问题复盘](./problem/pipe-concurrent-io-stale-availability.md)、[rename 问题复盘](./problem/buildstorm-ext4-rename-replace.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 原生动态库探测 WARN 误报（8.5）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者要求分析 `server.ans` 并修复其中的 WARN。
+- **描述**：确认 35 条内核 WARN 全部来自动态库兼容 mapper 未命中；该分支会保留原路径并由后续 `open(2)` 返回真实结果，是 Debian native loader 搜索 LLVM/Clang、libatomic、libstdc++ 等候选路径的正常控制流。将记录降为 debug，不增加 basename 白名单、不重定向到旧 `/glibc`/`/musl`，并保留真正会导致解释器加载失败的 direct-map warning。日志中的 0 字节 dep-graph 和 BuildStorm 源码 dead-code warning 与本问题分开处理。
+- **验证边界**：目标文件 rustfmt 检查和 RISC-V/LoongArch64 release 构建通过；未重跑完整 BuildStorm，未终止维护者已有的修改前内核 QEMU/GDB 会话。
+- **关联文档**：[问题复盘](./problem/buildstorm-dynamic-library-probe-warning.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

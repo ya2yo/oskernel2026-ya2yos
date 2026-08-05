@@ -188,10 +188,10 @@ pub fn map_dynamic_link_file(path: &str) -> &str {
         // debug!("Failed");
     }
 
-    warn!(
-        "Warning: map_dynamic_link_file cannot find DL path for path:{}",
-        path
-    );
+    // A missing compatibility mapping is normal while the native dynamic
+    // linker probes its search paths. Preserve the pathname and let open(2)
+    // report the real result without promoting the probe to a kernel warning.
+    debug!("no legacy dynamic-library mapping for path:{path}");
     path
 }
 
