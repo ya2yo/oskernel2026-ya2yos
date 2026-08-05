@@ -325,6 +325,69 @@ impl MemorySetInner {
         Ok(0)
     }
 
+    /// Validate that a memory-advice range is fully covered by existing VMAs.
+    pub fn validate_madvise_range(&self, addr: usize, len: usize) -> SyscallRet {
+        if addr % PAGE_SIZE != 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+        let end_addr = addr.checked_add(len).ok_or(SysErrNo::EINVAL)?;
+        if len == 0 {
+            return Ok(0);
+        }
+        if VirtAddr::try_from(addr).is_none() || VirtAddr::try_from(end_addr - 1).is_none() {
+            return Err(SysErrNo::EINVAL);
+        }
+
+        let start_vpn = VirtAddr::from(addr).floor();
+        let end_vpn = VirtAddr::from(end_addr).ceil();
+        let mut cursor = start_vpn;
+        while cursor < end_vpn {
+            let Some(area) = self.areas.iter().find(|area| {
+                let (start, end) = area.vpn_range.range();
+                start <= cursor && cursor < end
+            }) else {
+                return Err(SysErrNo::ENOMEM);
+            };
+            cursor = area.vpn_range.end();
+        }
+        Ok(0)
+    }
+
+    /// Discard resident pages in a mapped range and leave the VMAs intact.
+    ///
+    /// `MADV_DONTNEED` is implemented by removing resident pages from the
+    /// lazy VMAs. A later access faults them back in as zero-filled anonymous
+    /// pages or from the backing file. Fixed ELF mappings are deliberately
+    /// left resident because their fault path has no file metadata with which
+    /// to reconstruct the original segment contents.
+    pub fn discard_madvise_pages(&mut self, addr: usize, len: usize) -> SyscallRet {
+        self.validate_madvise_range(addr, len)?;
+        if len == 0 {
+            return Ok(0);
+        }
+        let end_addr = addr.checked_add(len).ok_or(SysErrNo::EINVAL)?;
+        let start_vpn = VirtAddr::from(addr).floor();
+        let end_vpn = VirtAddr::from(end_addr).ceil();
+
+        for area in self.areas.iter_mut() {
+            let (area_start, area_end) = area.vpn_range.range();
+            let discard_start = area_start.max(start_vpn);
+            let discard_end = area_end.min(end_vpn);
+            if discard_start >= discard_end
+                || !(area.area_type == MapAreaType::Brk || is_mmap_vma(area))
+                || area.mmap_flags.contains(MmapFlags::MAP_SHARED)
+            {
+                continue;
+            }
+
+            for vpn in VPNRange::new(discard_start, discard_end) {
+                area.unmap_one(&mut self.page_table, vpn);
+            }
+        }
+        tlb_invalidate();
+        Ok(0)
+    }
+
     /// Move a complete mmap VMA to a new free range while retaining
     /// the contents of every resident page.
     ///

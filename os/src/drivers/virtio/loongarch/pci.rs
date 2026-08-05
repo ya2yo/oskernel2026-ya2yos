@@ -3,7 +3,7 @@ use crate::arch::memory_layout::{KERNEL_ADDR_OFFSET, MMIO_MAP_OFFSET};
 use crate::arch::page_table::get_token_from_regs;
 use crate::drivers::{BaseDriver, BlockDriver, DevResult, DeviceType};
 use crate::mm::{self, cma_alloc, VirtAddr, VirtPageNum, KERNEL_SPACE};
-use log::{debug, warn};
+use log::debug;
 use spin::Mutex;
 use virtio_drivers::device::blk::VirtIOBlk;
 use virtio_drivers::transport::mmio::VirtIOHeader;
@@ -189,7 +189,7 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                         MemoryBarType::Width32 => {
                             if size > 0 {
                                 let addr = 0x40000000;
-                                warn!("Allocated address: {:#x}", addr);
+                                debug!("Allocated address: {:#x}", addr);
                                 root.set_bar_32(func, i, addr as u32);
                                 //device.ranges.push(addr..addr + size);
                             }
@@ -197,7 +197,7 @@ impl<H: Hal> VirtIoBlkDev2<H> {
                         MemoryBarType::Width64 => {
                             if size > 0 {
                                 let addr = 0x40008000;
-                                warn!("Allocated address: {:#x}", addr);
+                                debug!("Allocated address: {:#x}", addr);
                                 root.set_bar_64(func, i, addr as u64);
                             }
                         }

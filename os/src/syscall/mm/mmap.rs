@@ -1,7 +1,10 @@
 //! memory related syscall
 
 use alloc::format;
-use linux_raw_sys::general::{MAP_SHARED_VALIDATE, MAP_TYPE};
+use linux_raw_sys::general::{
+    MADV_DONTNEED, MADV_NORMAL, MADV_RANDOM, MADV_SEQUENTIAL, MADV_WILLNEED, MAP_SHARED_VALIDATE,
+    MAP_TYPE,
+};
 use log::{debug, warn};
 
 use crate::{
@@ -261,13 +264,35 @@ pub fn sys_mprotect(addr: usize, len: usize, prot: u32) -> SyscallRet {
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/madvise.2.html
-pub fn sys_madvise(_addr: usize, _len: usize, _advice: usize) -> SyscallRet {
-    //伪实现，该系统调用用于给内存提建议
-    // debug!(
-    //     "[sys_madvise] addr is {}, len is {}, advice is {}",
-    //     addr, len, advice
-    // );
-    Ok(0)
+pub fn sys_madvise(addr: usize, len: usize, advice: usize) -> SyscallRet {
+    // Keep the non-destructive hints compatible with libc users. DONTNEED is
+    // handled by MemorySet so it can drop the resident frames under its lock.
+    match advice as u32 {
+        MADV_NORMAL | MADV_RANDOM | MADV_SEQUENTIAL | MADV_WILLNEED | MADV_DONTNEED => {}
+        _ => return Err(SysErrNo::EINVAL),
+    }
+    if addr % PAGE_SIZE != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    if len == 0 {
+        return Ok(0);
+    }
+    let end = addr.checked_add(len).ok_or(SysErrNo::EINVAL)?;
+    if VirtAddr::try_from(addr).is_none() || VirtAddr::try_from(end - 1).is_none() {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    let memory_set = task.process.memory_set_arc();
+    match advice as u32 {
+        MADV_DONTNEED => memory_set.discard_madvise_pages(addr, len),
+        // These are ordering/readahead hints. This kernel has no swap or
+        // readahead policy, so accepting them has no resident-page effect.
+        MADV_NORMAL | MADV_RANDOM | MADV_SEQUENTIAL | MADV_WILLNEED => {
+            memory_set.validate_madvise_range(addr, len)
+        }
+        _ => unreachable!("madvise advice was validated above"),
+    }
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/mincore.2.html

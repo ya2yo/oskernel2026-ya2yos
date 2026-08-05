@@ -169,6 +169,18 @@ impl MemorySet {
         self.get_mut().munmap(addr, len)
     }
 
+    /// Validate that a memory-advice range is fully mapped.
+    #[inline]
+    pub fn validate_madvise_range(&self, addr: usize, len: usize) -> SyscallRet {
+        self.get_ref().validate_madvise_range(addr, len)
+    }
+
+    /// Discard resident pages in a mapped range and leave the VMAs intact.
+    #[inline]
+    pub fn discard_madvise_pages(&self, addr: usize, len: usize) -> SyscallRet {
+        self.get_mut().discard_madvise_pages(addr, len)
+    }
+
     /// Handle a user page fault in this address space.
     #[inline(always)]
     pub fn handle_page_fault(&self, vpn: VirtPageNum, scause: Trap) -> bool {
