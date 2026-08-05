@@ -32,14 +32,16 @@ struct SignalCred {
     sid: usize,
 }
 
-/// Internal signal origins that need semantics beyond the signal number.
+/// 需要表达信号编号之外语义的内核信号来源。
 ///
-/// `execve()` uses SIGKILL only to remove stale sibling threads before it
-/// replaces the shared address space. A real SIGKILL must always win over
-/// this cleanup request and terminate the whole thread group.
+/// `execve()` 使用 `SIGKILL` 仅用于在替换共享地址空间前清理遗留的兄弟
+/// 线程。真正的 `SIGKILL` 必须始终优先于该清理请求，并终止整个线程组，
+/// 而不能被误认为只是 exec 清理线程的内部操作。
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SignalDeliverySource {
+    /// 普通信号投递，包括用户态系统调用和内核产生的正常信号。
     Normal,
+    /// `execve()` 为拆除同一进程中的其他线程而发出的内部信号。
     ExecTeardown,
 }
 
@@ -63,11 +65,10 @@ fn add_signal_with_info(
     siginfo: Option<SigInfo>,
     source: SignalDeliverySource,
 ) -> bool {
-    // SIGKILL cannot be caught or ignored. Record its process-exit cause at
-    // user-signal delivery time because a blocked task may exit through the
-    // scheduler fast path before trap-return dispatches handle_signal().
-    // Internal SIGKILL users such as execve thread teardown carry no siginfo
-    // and must not affect the eventual process wait status.
+    // SIGKILL 不能被捕获或忽略。用户信号投递时就记录进程退出原因，
+    // 因为被阻塞的任务可能在陷阱返回分发 handle_signal() 之前，
+    // 通过调度器的快速路径退出。execve 线程清理等内部 SIGKILL 不携带
+    // siginfo，因此不能影响进程最终对父进程暴露的等待状态。
     if signal.contains(SigSet::SIGKILL) && siginfo.is_some() {
         let mut process_meta = task.process.meta_lock();
         if process_meta.group_exit_code.is_none() {
@@ -77,10 +78,9 @@ fn add_signal_with_info(
         }
     }
 
-    // Snapshot the disposition before taking TaskControlBlockInner.  Signal
-    // delivery can race with trap-return handling on another hart; taking the
-    // signal-table lock while holding the task lock reverses the task lock
-    // ordering and can deadlock that path.
+    // 在获取 TaskControlBlockInner 之前先读取信号处置方式。信号投递可能
+    // 与另一个 hart 上的陷阱返回处理并发；若持有任务锁时再获取信号表锁，
+    // 就会反转该路径的任务锁顺序，从而造成死锁。
     let interrupt_wait = signal.peek_front().is_some_and(|signo| {
         if signo == SIGCHLD {
             return task
@@ -95,7 +95,7 @@ fn add_signal_with_info(
     });
 
     let mut task_inner = task.inner_lock();
-    // debug!("add signal: tid {}, signal: {}", task.tid(), signal.bits());
+    // debug!("添加信号：tid {}，信号：{}", task.tid(), signal.bits());
     if signal.contains(SigSet::SIGKILL) {
         match source {
             SignalDeliverySource::ExecTeardown
@@ -103,9 +103,8 @@ fn add_signal_with_info(
             {
                 task_inner.exec_teardown_kill = true;
             }
-            // A regular SIGKILL that races with exec teardown takes priority:
-            // it carries Linux process-termination semantics rather than
-            // merely removing this sibling thread.
+            // 与 exec 清理并发的普通 SIGKILL 优先级更高：它具有 Linux
+            // 进程终止语义，而不只是删除当前兄弟线程。
             SignalDeliverySource::Normal => task_inner.exec_teardown_kill = false,
             SignalDeliverySource::ExecTeardown => {}
         }
@@ -121,9 +120,9 @@ fn add_signal_with_info(
     let wake_vfork_parent =
         task_inner.task_status == TaskStatus::VforkBlocked && signal.intersects(SigSet::SIGKILL);
     if wake_stopped || wake_vfork_parent {
-        // A vfork parent normally remains asleep until its child exits or
-        // execs. SIGKILL is not deferrable, including while that wait is
-        // active, so make it runnable to consume the pending signal.
+        // vfork 父线程通常会一直睡眠，直到子线程退出或执行 exec。
+        // 即使 vfork 等待正在进行，SIGKILL 也不能被延迟，因此必须将其
+        // 设为可运行，以便及时消费 pending 信号。
         if wake_vfork_parent {
             task_inner.vfork_wait_child = 0;
             #[cfg(feature = "perf")]
@@ -174,6 +173,12 @@ fn signal_cred_from_task(task: &TaskControlBlock) -> SignalCred {
     }
 }
 
+/// 从进程的任意一个存活线程提取信号权限检查所需的凭证。
+///
+/// 进程级的 UID 通常由线程共享，但本实现中的部分凭证字段存储在线程
+/// 内部，因此这里复制进程会话 ID 后，从线程列表中寻找第一个仍然存活
+/// 的线程读取这些字段。进程没有存活线程时返回 `None`，调用方应将其
+/// 视为目标不存在并返回 `ESRCH`。
 fn signal_cred_from_process(proc: &Process) -> Option<SignalCred> {
     let (sid, tasks) = {
         let meta = proc.meta_lock();
@@ -190,6 +195,12 @@ fn signal_cred_from_process(proc: &Process) -> Option<SignalCred> {
     })
 }
 
+/// 判断发送者是否有权向目标投递指定信号。
+///
+/// 有效 UID 为 0 的发送者可以绕过普通 UID 匹配。`SIGCONT` 还允许同一
+/// 会话中的发送者投递；其他情况要求发送者的 real/effective UID 至少
+/// 与目标的 real/saved UID 之一匹配。这里仅负责权限判断，不检查目标
+/// 是否存在，也不实际修改 pending 信号集合。
 fn can_send_signal(sender: SignalCred, target: SignalCred, signo: usize) -> bool {
     if sender.effective_uid == 0 {
         return true;
@@ -229,7 +240,7 @@ fn deliver_signal_to_thread_group(proc: &Process, sig: SigSet, siginfo: Option<S
         return 0;
     }
 
-    // debug!("{} receive signal, my parent is {}", proc.pid, proc.ppid());
+    // debug!("进程 {} 收到信号，其父进程为 {}", proc.pid, proc.ppid());
     let tasks = proc.meta_lock().tasks.clone();
     let mut resumed = 0;
     for task in tasks.iter() {
@@ -271,6 +282,11 @@ fn current_signal_cred() -> Result<SignalCred, SysErrNo> {
 }
 
 /// `kill(2)` 路径：按 Linux 权限规则向单个进程发送信号。
+///
+/// `pid` 按进程 ID 查找目标，实际投递会遍历目标线程组中的存活线程。
+/// `signo` 用于权限判断和生成 `siginfo_t`，而 `sig` 是真正写入 pending
+/// 集合的位集合；因此 `signo == 0` 只执行存在性与权限检查，不会设置
+/// pending 位。
 pub fn send_user_signal_to_thread_group(
     pid: usize,
     sig: SigSet,
@@ -282,6 +298,10 @@ pub fn send_user_signal_to_thread_group(
 }
 
 /// `kill(2)` 路径：按 Linux 权限规则向整个进程组发送信号。
+///
+/// 遍历全局任务表时使用 `seen` 将同一进程的多个线程去重。只要至少有
+/// 一个目标进程存在但全部权限检查失败，就返回 `EPERM`；如果进程组中
+/// 没有目标，则返回 `ESRCH`。
 pub fn send_user_signal_to_process_group(
     pgid: usize,
     sig: SigSet,
@@ -319,6 +339,10 @@ pub fn send_user_signal_to_process_group(
 }
 
 /// `kill(-1, sig)` 路径：向除 init 和自身之外的可访问进程发送信号。
+///
+/// 同样按进程去重，并忽略单个目标的 `EPERM`，只有全部候选目标都不可
+/// 访问时才返回 `EPERM`。这里不向 PID 1 或当前进程发送信号，符合本项
+/// 目当前对 `kill(-1, sig)` 的语义实现。
 pub fn send_user_signal_to_accessible_processes(
     sig: SigSet,
     signo: usize,
@@ -373,11 +397,10 @@ pub fn send_signal_to_thread(tid: usize, sig: SigSet) {
     }
 }
 
-/// Mark an internal SIGKILL used solely to collapse execve sibling threads.
+/// 标记一个仅用于拆除 `execve` 兄弟线程的内部 `SIGKILL`。
 ///
-/// The origin is stored while publishing the pending bit, so a normal SIGKILL
-/// racing with this request wins deterministically instead of being mistaken
-/// for thread-only exec cleanup.
+/// 信号来源会与 pending 位一起发布，因此并发到达的普通 `SIGKILL` 能够
+/// 确定性地覆盖该内部清理语义，不会被误认为只是 exec 清理线程的请求。
 pub(crate) fn send_exec_teardown_kill(tid: usize) {
     if let Some(task) = tid_to_task::tid2task(tid) {
         add_signal_with_info(
@@ -417,6 +440,11 @@ pub fn send_user_signal_to_thread_of_proc(pid: usize, tid: usize, sig: SigSet, s
     }
 }
 
+/// 向指定进程组中的每个进程投递一次内核内部信号。
+///
+/// 任务表按线程展开，因此通过 `sent` 按进程 ID 去重。该接口是内核
+/// 内部路径，不执行用户态 UID 权限检查，也不向调用方返回目标不存在
+/// 或投递失败的错误。
 pub fn send_signal_to_process_group(pgid: usize, sig: SigSet) {
     let mut sent = BTreeSet::new();
     for (_, task) in tid_to_task::get_all_tasks() {
