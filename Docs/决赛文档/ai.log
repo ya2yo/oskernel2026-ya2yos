@@ -9971,3 +9971,33 @@ journal 增加 live queue 重扫、checkpoint/flush 标记、callback depth 和 
 修改 `os/src/fs/kernel_fs_ops/proc_file.rs`，新增 `Docs/决赛文档/problem/procfs-persistent-task-directory-reuse.md`，并更新开发日志、README、`AI_INTERACTION.md`。RISC-V 与 LoongArch64 release 构建通过；在保留旧 procfs 条目的持久化 RISC-V 镜像上运行 45 秒，没有再次出现 `panic`、`EISDIR` 或 `create initproc proc files`，已越过 initproc、`sigaltstack regression: PASS`、`rseq regression: PASS`、BuildStorm toolchain/minibuild 和 `pre-build tg-xtask`。该窗口在正式 BuildStorm 阶段超时，未完成全量 BuildStorm、LTP、fsck 或 LoongArch64 QEMU 回归。
 
 维护者已有的 `user/src/bin/initproc.rs` 改动未纳入本次修复，QEMU 产生的临时 `disk.img` 链接已清理；关联 commit：当前工作区未提交。
+
+## 2026-08-05：pipe 并发 panic 与 BuildStorm dep-graph rename 覆盖
+
+### 用户输入
+
+维护者要求分析 `server.ans` 和 GDB 调试记录 `client.ans`、修复 panic，并继续解释新
+`server.ans` 中 `dep-graph.bin: memory map must have a non-zero length` warning 的原因和处理方式。
+
+### 分析与采纳结论
+
+pipe 的可读/可写长度检查与实际数据移动分属两次锁临界区；并发 reader/writer 可在两次加锁之间
+消费数据或占用空间，使旧长度触发空队列读取或 `pipe buffer overflow`。修复将检查和实际 I/O 合并到
+同一个 pipe 锁临界区，阻塞调度仍在释放锁后进行。
+
+BuildStorm 旧错误链为 lwext4 `ext4_frename()` 在目标已存在时返回 `EEXIST`，Cargo 因此无法用新
+dep-graph 替换旧文件，并在持久化镜像中遗留 0 字节缓存。lwext4 rename 现在在同一 transaction 内
+替换普通文件目标，支持同 inode no-op，并对类型不匹配返回 `EISDIR/ENOTDIR`；目录覆盖仍保持
+`EEXIST`。最新日志的 mmap warning 只是 Cargo 读取历史 0 字节缓存后丢弃并重建，crate 进度已从
+440 推进到 444，且不再出现 rename `EEXIST` 或 `could not compile`。如需立即清理，可在 guest 删除
+`/work/tgoskits/target/debug/incremental`，但这会丢失增量缓存，不属于内核修复。
+
+### 修改与验证
+
+修改 `os/src/fs/files/pipe/file_impl.rs` 和 `crates/lwext4_rust/c/lwext4/src/ext4.c`；新增 pipe 与
+rename 两篇 problem 记录，并更新 README、开发日志、旧 rename/write-back 边界和
+`AI_INTERACTION.md`。host lwext4 C 构建、rename 覆盖/同 inode 回归、`e2fsck -fn`、RISC-V 与
+LoongArch64 release 构建通过。最新 RISC-V BuildStorm 到达 `444/446` 且无原错误，但尚无完整结束
+标记；未运行 LoongArch64 QEMU BuildStorm。
+
+维护者已有的 `user/src/bin/initproc.rs` 与运行中的 `disk.img` 未处理；关联 commit：当前工作区未提交。

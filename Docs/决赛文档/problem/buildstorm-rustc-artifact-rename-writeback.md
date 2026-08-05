@@ -75,8 +75,9 @@ rename 前的 flush 失败，cache 不会被 discard，rename 也不会继续执
 
 ## 当前边界
 
-- 本修复覆盖成功的 pathname rename 发布链路，不扩展 lwext4 已有的“目标已存在时返回
-  `EEXIST`”限制；Linux rename 覆盖语义仍需单独实现。
+- pathname cache 迁移修复本身只覆盖成功的 rename 发布链路。后续已补充普通文件目标替换、
+  同 inode no-op 和类型不匹配错误；目录覆盖仍返回 `EEXIST`。详见
+  [BuildStorm 增量缓存发布缺少 rename 覆盖语义](./buildstorm-ext4-rename-replace.md)。
 - dense cache 仍以 pathname 为索引，迁移只覆盖当前成功 rename 的 source/destination 两个 key；
   hard link 的其他 alias、目录后代和多 alias 同时写入仍需 inode 身份级 cache 才能完整覆盖。
 - `ext4_rename_write_back` 现有计数器只统计显式 sparse/dense write-back/discard 阶段，尚未统计

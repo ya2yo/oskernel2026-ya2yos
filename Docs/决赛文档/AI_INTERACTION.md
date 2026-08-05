@@ -2563,3 +2563,12 @@
 - **验证边界**：RISC-V 与 LoongArch64 release 构建通过；持久化 RISC-V 运行越过 initproc、sigaltstack/rseq 回归、BuildStorm toolchain/minibuild 和 `pre-build tg-xtask`，未完成正式 446 crate BuildStorm、LTP、fsck 或 LoongArch64 QEMU 运行。
 - **关联文档**：[procfs 问题复盘](./problem/procfs-persistent-task-directory-reuse.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### pipe 并发 panic 与 BuildStorm rename 覆盖语义（8.5）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `server.ans/client.ans` 要求修复 panic，并询问新日志中的 0 字节 dep-graph mmap warning。
+- **描述**：确认 pipe 检查可用长度后释放锁会让并发 reader/writer 在实际 I/O 前使长度失效；将检查、数据移动和唤醒合并到同一锁临界区。另确认 lwext4 缺少普通文件 rename 覆盖语义，使 Cargo 发布 dep-graph 时返回 `EEXIST` 并遗留 0 字节缓存；补齐普通文件目标替换、同 inode no-op 和 `EISDIR/ENOTDIR`，目录覆盖仍保持 `EEXIST`。新日志中的 mmap warning 是 Cargo 丢弃旧缓存并自动重建，不是新 panic。
+- **验证边界**：host lwext4 C 构建、rename 覆盖回归、`e2fsck -fn` 和 RISC-V/LoongArch64 release 构建通过；最新 RISC-V BuildStorm 从 Cargo `440/446` 推进到 `444/446`，无原 rename `EEXIST` 或 pipe panic，但尚未取得完整结束标记，也未运行 LoongArch64 QEMU BuildStorm。
+- **关联文档**：[pipe 问题复盘](./problem/pipe-concurrent-io-stale-availability.md)、[rename 问题复盘](./problem/buildstorm-ext4-rename-replace.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

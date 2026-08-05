@@ -172,3 +172,5 @@
 - [BuildStorm rustc 浮点上下文与 brk 预算](./problem/buildstorm-rustc-fpu-and-brk-budget.md)
 - [调度选择 perf 计数的原子开销](./problem/scheduler-selection-counter-atomic-overhead.md)
 - [持久化镜像下 procfs 任务目录复用与启动 panic](./problem/procfs-persistent-task-directory-reuse.md)
+- [pipe 并发 I/O 使用过期可用长度导致 panic](./problem/pipe-concurrent-io-stale-availability.md)
+- [BuildStorm 增量缓存发布缺少 rename 覆盖语义](./problem/buildstorm-ext4-rename-replace.md)
