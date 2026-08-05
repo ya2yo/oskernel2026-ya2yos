@@ -115,6 +115,7 @@ gdbserver: build-arch
 gdbclient:
 	@$(GDB_TOOL) $(KERNEL_ELF) \
 		-ex 'set logging file client.ans' \
+		-ex 'set logging overwrite on' \
 		-ex 'set logging enabled on' \
         -ex 'target remote localhost:1234' \
 		-ex 'b os::lang_items::panic' 
