@@ -10,7 +10,8 @@
 //! - [`elf_loader`]: ELF program and dynamic-linker loading;
 //! - [`fork_clone`]: fork/clone address-space duplication;
 //! - [`kernel_init`]: kernel address-space construction;
-//! - [`mmap_ops`]: mmap/munmap/mprotect, shared memory attach/detach and faults.
+//! - [`mmap_ops`]: mmap/munmap/mprotect and shared memory attach/detach;
+//! - [`pagefault`]: user-space page-fault handling.
 
 mod accessors;
 mod area_ops;
@@ -19,6 +20,7 @@ mod fork_clone;
 mod handle;
 mod kernel_init;
 mod mmap_ops;
+mod pagefault;
 mod types;
 
 use crate::mm::{
