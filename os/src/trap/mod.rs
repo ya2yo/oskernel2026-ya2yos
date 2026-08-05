@@ -62,10 +62,7 @@ fn log_user_fault_signal(
     let task = current_task().unwrap();
     let (tid, pid, sepc, sp, return_sstatus) = {
         let task_inner = task.inner_lock();
-        #[cfg(target_arch = "riscv64")]
-        let return_sstatus = Some(task_inner.trap_cx().sstatus.bits());
-        #[cfg(not(target_arch = "riscv64"))]
-        let return_sstatus = None;
+        let return_sstatus = Some(task_inner.trap_cx().get_status_bits());
         (
             task.tid(),
             task.pid(),

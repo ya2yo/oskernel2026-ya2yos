@@ -132,6 +132,11 @@ impl TrapContext {
         self.sepc
     }
 
+    /// Return the raw saved status register value used when returning to user mode.
+    pub fn get_status_bits(&self) -> usize {
+        self.sstatus.bits()
+    }
+
     pub fn set_sepc(&mut self, val: usize) {
         self.sepc = val
     }
