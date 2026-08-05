@@ -2581,3 +2581,12 @@
 - **验证边界**：目标文件 rustfmt 检查和 RISC-V/LoongArch64 release 构建通过；未重跑完整 BuildStorm，未终止维护者已有的修改前内核 QEMU/GDB 会话。
 - **关联文档**：[问题复盘](./problem/buildstorm-dynamic-library-probe-warning.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm linker wrapper 的 `.sh` 后缀误判（8.5）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供 `server.ans`，要求修复 `linker-riscv64gc-unknown-linux-musl-dynamic.sh` 在第 6 行的 `syntax error: unexpected "("`。
+- **描述**：确认 `sys_execve()` 在 shebang 解析前把所有 `.sh` 路径强制改写为 BusyBox `sh`，绕过了 linker wrapper 的 `#!/bin/bash`，从而把 Bash 语法交给不兼容的解释器。删除该后缀特判，恢复按 shebang 选择解释器；新增问题复盘并更新开发日志和索引。
+- **验证边界**：目标文件 rustfmt、`git diff --check`、RISC-V/LoongArch64 release 构建通过；RISC-V 180 秒 QEMU 已输出 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok` 并推进到 pre-build `444/446`，但在进入最终 linker 调用前超时，因此未观察到原错误不能等同于 linker 或完整 BuildStorm 已通过。
+- **关联文档**：[linker wrapper 问题复盘](./problem/buildstorm-linker-script-shebang.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

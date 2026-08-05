@@ -266,22 +266,6 @@ pub fn sys_execve(path: *const u8, mut argv: *const usize, mut envp: *const usiz
         argv_vec.push(Vec::new());
     }
 
-    // 这个还得留着，因为busybox真的会试图exec这样的文件
-    // 以后也许可以改成检测Shebang
-    if path.ends_with(".sh") {
-        //.sh文件不是可执行文件，需要用busybox的sh来启动
-        argv_vec.try_reserve(2).map_err(|_| SysErrNo::ENOMEM)?;
-        argv_vec.insert(0, b"sh".to_vec());
-        argv_vec.insert(0, b"busybox".to_vec());
-        path = String::from("/musl/busybox");
-    }
-
-    // if path.ends_with("ls") || path.ends_with("xargs") || path.ends_with("sleep") {
-    //     //ls,xargs,sleep文件为busybox调用，需要用busybox来启动
-    //     argv_vec.insert(0, String::from("busybox"));
-    //     path = String::from("/musl/busybox");
-    // }
-
     debug!("[sys_execve] path is {},arg is {:?}", path, argv_vec);
     let mut env = Vec::<Vec<u8>>::new();
     // 处理运行环境，如果为空，加载默认的运行环境

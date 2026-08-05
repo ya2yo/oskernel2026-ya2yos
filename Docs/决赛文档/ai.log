@@ -10037,3 +10037,32 @@ warning。
 全仓 `cargo fmt --check` 被本次修改之外的两架构 `memory_layout.rs` 与 `trap/mod.rs` 既有格式差异
 挡住，没有格式化或改动这些文件。分析期间已有 QEMU/GDB 会话使用修改前内核持续运行，本次未终止
 该会话，也未重跑完整 BuildStorm；关联 commit：当前工作区未提交。
+
+## 2026-08-05：BuildStorm linker wrapper 的 `.sh` 后缀误判
+
+### 用户输入
+
+维护者提供 `server.ans` 的 BuildStorm 编译失败，并指出
+`linker-riscv64gc-unknown-linux-musl-dynamic.sh: line 6: syntax error: unexpected "("` 似乎是
+之前遇到过的问题，要求继续修复。
+
+### 分析与采纳结论
+
+日志边界显示 `BUILDSTORM_TOOLCHAIN`、`BUILDSTORM_MINIBUILD` 和 `tg-xtask` 预构建均已完成，
+失败只发生在 Rust 直接启动动态 linker wrapper 时。审阅 `sys_execve()` 发现旧逻辑在 shebang
+解析前按 `.sh` 后缀将任意脚本改写为 `/musl/busybox sh`，会绕过 wrapper 的 `#!/bin/bash`。
+因此 Bash 数组语法被 BusyBox `sh` 解析并报告 `unexpected "("`，根因不是 ELF linker 或
+动态库映射。
+
+采纳删除 `.sh` 后缀强制重写，统一使用已有 shebang 解析流程；`#!/bin/sh` 仍按既有路径兼容
+到 BusyBox，`#!/bin/bash` 则由 Bash 执行。修改文件为 `os/src/syscall/task/execve.rs`，并新增
+`Docs/决赛文档/problem/buildstorm-linker-script-shebang.md`、更新开发日志和 README 索引。
+
+### 验证边界
+
+`rustfmt --edition 2021 --check os/src/syscall/task/execve.rs`、`git diff --check`、RISC-V 和
+LoongArch64 `make build-arch` 均通过。`timeout 180s make run TARGET_ARCH=riscv64` 输出
+`BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok`，预构建推进到 `444/446`，窗口在进入最终
+linker 调用前以 rc=124 结束；采集范围内未出现 `linking with`、`unexpected "("` 或
+`could not compile`，但不能据此宣称 linker 或完整 BuildStorm 已通过。全仓 `cargo fmt --check`
+仍受本次修改之外的两架构格式差异阻挡；未修改外部只读的 `/work/tgoskits`。

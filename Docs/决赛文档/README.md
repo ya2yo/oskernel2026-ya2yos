@@ -173,3 +173,4 @@
 - [pipe 并发 I/O 使用过期可用长度导致 panic](./problem/pipe-concurrent-io-stale-availability.md)
 - [BuildStorm 增量缓存发布缺少 rename 覆盖语义](./problem/buildstorm-ext4-rename-replace.md)
 - [BuildStorm 原生动态库探测误报内核 WARN](./problem/buildstorm-dynamic-library-probe-warning.md)
+- [BuildStorm linker wrapper shebang 解释器语义](./problem/buildstorm-linker-script-shebang.md)
