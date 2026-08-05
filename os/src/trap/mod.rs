@@ -188,6 +188,11 @@ pub fn trap_handler() {
                 let handled =
                     !beyond_eof_before && memory_set.handle_page_fault(fault_va.floor(), cause);
                 #[cfg(target_arch = "riscv64")]
+                // If the PTE already permits this user load/fetch but the CPU
+                // still faulted, another thread may have just installed the
+                // page while this fault was in progress. Allow one retry
+                // after flushing the stale TLB entry; the task-local VPN
+                // guard prevents an endless retry loop for a real fault.
                 let retry_present_user_fault = !handled
                     && matches!(
                         cause,
