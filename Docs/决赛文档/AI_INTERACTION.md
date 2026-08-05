@@ -2554,3 +2554,12 @@
 - **场景**：维护者提供新的 `server.ans`，要求分析 BuildStorm 在 Tokio runtime 初始化阶段的 `Bad file descriptor` 并修复。
 - **描述**：确认全局 epoll 注册表错误使用进程局部 raw fd 作为 key；并发构建子进程复用 fd 号时会覆盖仍存活的实例。改为以 `EpollFile` 对象身份索引弱引用，并从当前进程 `FdTable` 解析后按 `Arc::ptr_eq` 匹配，更新 `epoll_ctl`、`epoll_pwait` 和等待路径。RISC-V 构建、debug 构建通过；短时 BuildStorm 进入 `pre-build tg-xtask`，尚未再次执行正式 runtime 或完整 BuildStorm，不报告原错误已运行时消除或端到端性能通过。详见 [problem/buildstorm-epoll-registry-fd-reuse.md](./problem/buildstorm-epoll-registry-fd-reuse.md) 与 `ai.log` 对应条目。
 - **关联 commit**：当前工作区未提交
+
+#### 持久化镜像下 procfs 任务目录复用与启动 panic（8.5）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 `server.ans/client.ans` 和 GDB 输出，要求按 Linux 语义修复持久化镜像启动时的 procfs panic，避免每轮使用 `-snapshot` 丢失 BuildStorm 编译缓存。
+- **描述**：GDB 将 panic 定位到 `TaskControlBlock::new()` 中的 `create_proc_dir_and_file(...).expect(...)`；`server.ans` 的错误为既有 `/proc/1` 目录被 `O_CREATE | O_DIRECTORY | O_RDWR` 打开时返回 `EISDIR`。目录打开改为只读 `O_DIRECTORY` 探测，只有 `ENOENT` 才创建；`stat/status/maps/pagemap` 统一 `O_TRUNC` 覆盖残留文件，并移除 `stat` 打开的 `unwrap()`。
+- **验证边界**：RISC-V 与 LoongArch64 release 构建通过；持久化 RISC-V 运行越过 initproc、sigaltstack/rseq 回归、BuildStorm toolchain/minibuild 和 `pre-build tg-xtask`，未完成正式 446 crate BuildStorm、LTP、fsck 或 LoongArch64 QEMU 运行。
+- **关联文档**：[procfs 问题复盘](./problem/procfs-persistent-task-directory-reuse.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

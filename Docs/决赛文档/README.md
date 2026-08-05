@@ -171,3 +171,4 @@
 - [BuildStorm journal 回调与 cache flush 并发串行化](./problem/buildstorm-journal-cache-flush-serialization.md)
 - [BuildStorm rustc 浮点上下文与 brk 预算](./problem/buildstorm-rustc-fpu-and-brk-budget.md)
 - [调度选择 perf 计数的原子开销](./problem/scheduler-selection-counter-atomic-overhead.md)
+- [持久化镜像下 procfs 任务目录复用与启动 panic](./problem/procfs-persistent-task-directory-reuse.md)

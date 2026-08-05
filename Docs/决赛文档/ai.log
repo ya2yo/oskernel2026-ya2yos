@@ -9955,3 +9955,19 @@ journal 增加 live queue 重扫、checkpoint/flush 标记、callback depth 和 
 `Docs/决赛文档/problem/buildstorm-rustc-fpu-and-brk-budget.md`、
 `Docs/决赛文档/problem/scheduler-selection-counter-atomic-overhead.md`、README、开发日志和 AI 记录。
 关联 commit：当前工作区未提交。
+
+## 2026-08-05：持久化镜像下 procfs 任务目录复用与启动 panic
+
+### 用户输入
+
+维护者要求分析新的 `server.ans`、`client.ans` 和 GDB 输出，解释 initproc 启动时的 panic，并按正确的 Linux 语义让 `create_proc_dir_and_file()` 先探测并复用已有 `/proc/<pid>` 目录；由于持久化镜像用于保留 BuildStorm 编译缓存，不能通过恢复 `-snapshot` 规避问题。
+
+### 分析与采纳结论
+
+`client.ans` 的 GDB 栈停在 `TaskControlBlock::new()` 的 `task.rs:582`，`server.ans` 明确报告 `create initproc proc files: EISDIR`。持久化镜像中的 `/proc/1` 已存在，旧代码再次以 `O_CREATE | O_DIRECTORY | O_RDWR` 打开目录；`open_inner()` 正确按 Linux 语义拒绝目录写打开并返回 `EISDIR`，随后 `expect()` 触发内核 panic。修复采用只读 `O_DIRECTORY` 探测，只有 `ENOENT` 才创建目录；对 `stat/status/maps/pagemap` 使用 `O_TRUNC` 覆盖残留内容，并把 `stat` 打开的 `unwrap()` 改为错误传播。
+
+### 修改与验证
+
+修改 `os/src/fs/kernel_fs_ops/proc_file.rs`，新增 `Docs/决赛文档/problem/procfs-persistent-task-directory-reuse.md`，并更新开发日志、README、`AI_INTERACTION.md`。RISC-V 与 LoongArch64 release 构建通过；在保留旧 procfs 条目的持久化 RISC-V 镜像上运行 45 秒，没有再次出现 `panic`、`EISDIR` 或 `create initproc proc files`，已越过 initproc、`sigaltstack regression: PASS`、`rseq regression: PASS`、BuildStorm toolchain/minibuild 和 `pre-build tg-xtask`。该窗口在正式 BuildStorm 阶段超时，未完成全量 BuildStorm、LTP、fsck 或 LoongArch64 QEMU 回归。
+
+维护者已有的 `user/src/bin/initproc.rs` 改动未纳入本次修复，QEMU 产生的临时 `disk.img` 链接已清理；关联 commit：当前工作区未提交。
