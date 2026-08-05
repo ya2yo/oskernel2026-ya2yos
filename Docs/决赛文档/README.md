@@ -23,6 +23,7 @@
 - [open14 O_TMPFILE 深层路径超时](./problem/open14-otmpfile-path-slow.md)
 - [tst_virt /proc/cpuinfo 缺失导致 TBROK](./problem/proc-cpuinfo-tst-virt.md)
 - [epoll_create02 RISC-V musl libc 包装语义](./problem/epoll-create02-riscv-musl-libc.md)
+- [BuildStorm epoll 注册表与跨进程 fd 复用](./problem/buildstorm-epoll-registry-fd-reuse.md)
 - [iperf IPPROTO_IPV6/IPV6_V6ONLY 兼容](./problem/iperf-ipv6-v6only.md)
 - [mkdir09 LoongArch mmap 栈缺页与 tmpfs 挂载隔离](./problem/mkdir09-loongarch-map-stack-tmpfs.md)
 - [fanotify01 mark 与基础事件投递](./problem/fanotify01-mark-events.md)

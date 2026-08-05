@@ -29,8 +29,9 @@ QEMU_CMD := qemu-system-riscv64 \
     -no-reboot \
     -device virtio-net-device,netdev=net \
     -netdev user,id=net \
-    -rtc base=utc \
-    -snapshot
+    -rtc base=utc
+# Keep guest filesystem changes so final-2026's in-guest build artifacts can
+# be reused by subsequent runs instead of rebuilding the project every time.
 
 OBJDUMP := rust-objdump --arch-name=$(ARCH)
 OBJCOPY := rust-objcopy --binary-architecture=$(ARCH)

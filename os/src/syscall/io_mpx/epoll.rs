@@ -34,7 +34,7 @@ pub fn sys_epoll_create1(flags: u32) -> SyscallRet {
         FileDescriptor::new(open_flags, FileClass::Abs(epoll_file.clone())),
     )?;
 
-    EpollFile::register_fd(fd, &epoll_file);
+    EpollFile::register_instance(&epoll_file);
 
     debug!("[sys_epoll_create1] created epoll fd={}", fd);
     Ok(fd)
@@ -51,7 +51,7 @@ pub fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event_ptr: usize) -> Sys
     let memory_set = process.memory_set_arc();
     let fd_table = &process.fd_table;
     let fd_i32 = fd as i32;
-    let epoll_file = EpollFile::lookup(epfd)?;
+    let epoll_file = EpollFile::lookup(epfd, fd_table)?;
 
     fd_table.get(fd)?;
     if fd == epfd {
@@ -127,7 +127,8 @@ pub fn sys_epoll_pwait(
     // Linux would block until a signal arrives, but we don't have that
     // wakeup mechanism yet.
     {
-        let epoll_file = EpollFile::lookup(epfd)?;
+        let task = current_task().unwrap();
+        let epoll_file = EpollFile::lookup(epfd, &task.process.fd_table)?;
         if epoll_file.is_interests_empty() {
             return Ok(0);
         }
@@ -161,8 +162,8 @@ fn epoll_wait_once(epfd: usize, events_ptr: usize, maxevents: usize) -> SyscallR
     let task = current_task().unwrap();
     let process = &task.process;
     let memory_set = process.memory_set_arc();
-    let epoll_file = EpollFile::lookup(epfd)?;
     let fd_table = &process.fd_table;
+    let epoll_file = EpollFile::lookup(epfd, fd_table)?;
     let mut poll_one = |fd: i32, registered: u32| {
         let desc = fd_table.try_get(fd as usize)?;
         let file = desc.any();

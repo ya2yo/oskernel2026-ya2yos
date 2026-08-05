@@ -9781,6 +9781,14 @@ transaction；RISC-V 返回汇编在 `sret` 前清 S-mode `SIE` 并保留 `SPIE`
 越过 Cargo `53/446` 的确认、GDB、LTP、`e2fsck -fn` 或 LoongArch64 回归，因此不报告运行时死锁/panic 已消除或跨架构通过；
 关联 commit：当前工作区未提交。
 
+## 2026-08-05：BuildStorm Tokio runtime 的 epoll fd 跨进程复用
+
+维护者提供新的 `server.ans` 并要求分析修复。日志显示 `BUILDSTORM_TOOLCHAIN`、`BUILDSTORM_MINIBUILD` 和 `tg-xtask` 预构建均完成，但首次 `arceos build` 的 Tokio runtime 初始化因 `Os { code: 9, message: "Bad file descriptor" }` 失败；并发 Cargo 清理产生的 `ext4_stat_get: rc = 2` 是删除后 stat 的噪声。审阅 epoll 创建、控制、等待路径后确认 `EPOLL_TABLE` 以进程局部 raw fd 作为全局 key，多个进程复用同一 fd 号会覆盖仍存活的 epoll 对象。修复 `os/src/fs/files/epoll/registry.rs`，以 `EpollFile` 对象地址索引 `Weak`，lookup 时从当前进程 `FdTable` 解析对象并用 `Arc::ptr_eq` 匹配；更新 `os/src/syscall/io_mpx/epoll.rs` 的三个调用点。
+
+`make TARGET_ARCH=riscv64`（完成 RISC-V 与 LoongArch64 release）、`make TARGET_ARCH=riscv64 log`、针对本轮文件的 rustfmt 检查和 `git diff --check` 通过。直接运行宿主 `cargo check --manifest-path os/Cargo.toml --target riscv64gc-unknown-none-elf` 因锁定 nightly 与缓存 `printf-compat` 的 `VaList` API 不兼容失败，错误来自第三方依赖。修复后的 RISC-V 短时 BuildStorm 已进入 `pre-build tg-xtask`，但尚未再次执行正式 runtime，未报告原 `Bad file descriptor` 已运行时消除、完整 BuildStorm 或性能项通过；全量 `cargo fmt --check` 仍受工作区其他既有 rustfmt 差异影响。
+
+在保留 guest 文件系统状态的配置下再次启动 QEMU 时，initproc 因已有 `/proc/1` 目录返回 `EISDIR` 并提前退出；该环境性启动失败未用于判断 epoll 修复结果。
+
 ## 2026-08-04：lwext4 journal 满时断言自旋与 BuildStorm 117 crate 验证
 
 ### 用户输入

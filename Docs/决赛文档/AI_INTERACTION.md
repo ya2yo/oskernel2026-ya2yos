@@ -2547,3 +2547,10 @@
   [调度 perf 问题复盘](./problem/scheduler-selection-counter-atomic-overhead.md)、[开发日志](./开发日志.md)、
   [AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm Tokio runtime 的 epoll fd 跨进程复用（8.5）
+
+- **工具/模型**：Codex (GPT-5)
+- **场景**：维护者提供新的 `server.ans`，要求分析 BuildStorm 在 Tokio runtime 初始化阶段的 `Bad file descriptor` 并修复。
+- **描述**：确认全局 epoll 注册表错误使用进程局部 raw fd 作为 key；并发构建子进程复用 fd 号时会覆盖仍存活的实例。改为以 `EpollFile` 对象身份索引弱引用，并从当前进程 `FdTable` 解析后按 `Arc::ptr_eq` 匹配，更新 `epoll_ctl`、`epoll_pwait` 和等待路径。RISC-V 构建、debug 构建通过；短时 BuildStorm 进入 `pre-build tg-xtask`，尚未再次执行正式 runtime 或完整 BuildStorm，不报告原错误已运行时消除或端到端性能通过。详见 [problem/buildstorm-epoll-registry-fd-reuse.md](./problem/buildstorm-epoll-registry-fd-reuse.md) 与 `ai.log` 对应条目。
+- **关联 commit**：当前工作区未提交
