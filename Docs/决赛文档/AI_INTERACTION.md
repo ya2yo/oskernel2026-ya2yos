@@ -2600,3 +2600,12 @@
 - **验证边界**：目标 crate `cargo fmt` 与 `git diff --check` 通过；完整 QEMU BuildStorm 尚未重跑。
 - **关联文档**：[问题复盘](./problem/buildstorm-exclusive-create-eexist-log.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm LoongArch64 MAP_FIXED 重叠 VMA 与 rustc SIGSEGV（8.5）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans`，要求修复 LoongArch64 BuildStorm 中用户态 `StorePageFault`、`SIGSEGV` 及 rustc 崩溃。
+- **描述**：读取 fault diagnostics 并沿缺页、mmap VMA 和页表路径追踪；临时记录确认 jemalloc 以 `MAP_FIXED` 提交范围超出旧 `PROT_NONE` VMA，旧代码追加重叠 area，按顺序查找时旧权限遮蔽新映射。修复 `MemorySetInner::mmap`，`MAP_FIXED` 先用内部 `munmap` 清理重叠动态 mmap，再插入替换 VMA；保留 `MAP_FIXED_NOREPLACE` 的 `EEXIST`。
+- **验证边界**：RISC-V 与 LoongArch64 release 构建通过；修复后 LoongArch64 诊断版 QEMU 在 180 秒内从原 `2/446` 推进至 `41/446`，无 `fault-diagnostics`、rustc `SIGSEGV`、panic 或 compiler error，但未完成完整 BuildStorm。
+- **关联文档**：[问题复盘](./problem/buildstorm-map-fixed-overlap-sigsegv.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

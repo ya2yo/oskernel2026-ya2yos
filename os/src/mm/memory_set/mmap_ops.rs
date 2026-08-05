@@ -198,28 +198,23 @@ impl MemorySetInner {
                     return 0;
                 }
             }
-            let need_split = self.areas.iter().any(|area| {
-                let (l, r) = area.vpn_range.range();
-                if l <= start_vpn && end_vpn <= r {
-                    !(l == start_vpn && r == end_vpn && map_perm == area.map_perm)
-                } else {
-                    false
-                }
-            });
-            if need_split {
-                self.mprotect(start_vpn, end_vpn, map_perm, file, off, Some(flags));
-            } else {
-                self.push_lazily(MapArea::new_mmap(
-                    VirtAddr::from(addr),
-                    VirtAddr::from(end_addr),
-                    MapType::Framed,
-                    map_perm,
-                    MapAreaType::Mmap,
-                    file,
-                    off,
-                    flags,
-                ));
+            // MAP_FIXED replaces any existing mapping in the requested range.
+            // Appending a new VMA when the range extends beyond an old VMA
+            // leaves overlapping entries; fault lookup then stops at the old
+            // (often PROT_NONE) entry and hides the replacement mapping.
+            if flags.contains(MmapFlags::MAP_FIXED) {
+                let _ = self.munmap(addr, len);
             }
+            self.push_lazily(MapArea::new_mmap(
+                VirtAddr::from(addr),
+                VirtAddr::from(end_addr),
+                MapType::Framed,
+                map_perm,
+                MapAreaType::Mmap,
+                file,
+                off,
+                flags,
+            ));
             // MAP_FIXED / MAP_FIXED_NOREPLACE 使用指定地址，不计入 mmap 总量
             return addr;
         }
@@ -291,8 +286,15 @@ impl MemorySetInner {
             for vpn in VPNRange::new(unmap_start, unmap_end) {
                 area.unmap_one(&mut self.page_table, vpn);
             }
-            let trimmed = (unmap_end.0 - unmap_start.0) * PAGE_SIZE;
-            self.total_mmap_size = self.total_mmap_size.saturating_sub(trimmed);
+            // Fixed mappings are excluded from the mmap budget when created,
+            // so removing one must not charge the budget for its pages.
+            if !area
+                .mmap_flags
+                .intersects(MmapFlags::MAP_FIXED | MmapFlags::MAP_FIXED_NOREPLACE)
+            {
+                let trimmed = (unmap_end.0 - unmap_start.0) * PAGE_SIZE;
+                self.total_mmap_size = self.total_mmap_size.saturating_sub(trimmed);
+            }
 
             if area_start >= start_vpn && area_end <= end_vpn {
                 // 情况1：area 完全在卸载范围内 → 删除整个 area

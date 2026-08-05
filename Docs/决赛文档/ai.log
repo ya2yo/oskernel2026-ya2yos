@@ -10088,3 +10088,25 @@ linker 调用前以 rc=124 结束；采集范围内未出现 `linking with`、`u
 修改 `crates/lwext4_rust/src/file.rs`，新增 `Docs/决赛文档/problem/buildstorm-exclusive-create-eexist-log.md`
 并更新开发日志和 README。`cargo fmt --manifest-path crates/lwext4_rust/Cargo.toml`、`git diff --check`
 通过；完整 QEMU BuildStorm 未重跑。
+
+## 2026-08-05：BuildStorm MAP_FIXED 重叠 VMA 导致 LoongArch64 rustc SIGSEGV
+
+### 用户输入
+
+维护者提供 `server.ans`，要求根据 `StorePageFault`、`SIGSEGV` 和 fault diagnostics 修复 BuildStorm。
+
+### 分析与采纳结论
+
+沿 `trap_handler -> MemorySet::handle_page_fault -> mmap VMA` 追踪，并用临时观测记录固定匿名
+映射序列。`server.ans` 的 fault VPN 为 `0x2a1b05c`，对应诊断中的旧 `PROT_NONE` VMA
+`[0x2a1b044,0x2a1b060)`；后续更大的 `mmap(MAP_FIXED, PROT_READ|WRITE)` 请求因目标超出旧
+VMA 而被直接追加，重叠 VMA 的顺序查找
+始终命中旧的 `U` 权限区域。采纳在 `MAP_FIXED` 插入新 VMA 前调用内部 `munmap` 清理重叠
+动态 mmap 区域；`MAP_FIXED_NOREPLACE` 的 `EEXIST` 语义保持不变。
+
+### 修改与验证
+
+修改 `os/src/mm/memory_set/mmap_ops.rs`，新增 `Docs/决赛文档/problem/buildstorm-map-fixed-overlap-sigsegv.md`
+并更新开发日志、README 和 `AI_INTERACTION.md`。LoongArch64 诊断版 QEMU 修复前在 Cargo `2/446`
+复现 fault，修复后 180 秒推进至 `41/446` 且无 fault/panic/compiler error；RISC-V 与 LoongArch64
+release 构建通过。完整 BuildStorm 未在本轮完成。

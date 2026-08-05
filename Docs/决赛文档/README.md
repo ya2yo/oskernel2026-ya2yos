@@ -175,3 +175,4 @@
 - [BuildStorm 原生动态库探测误报内核 WARN](./problem/buildstorm-dynamic-library-probe-warning.md)
 - [BuildStorm linker wrapper shebang 解释器语义](./problem/buildstorm-linker-script-shebang.md)
 - [BuildStorm exclusive 创建的 EEXIST 日志误报](./problem/buildstorm-exclusive-create-eexist-log.md)
+- [BuildStorm LoongArch64 MAP_FIXED 重叠 VMA 导致 rustc SIGSEGV](./problem/buildstorm-map-fixed-overlap-sigsegv.md)
