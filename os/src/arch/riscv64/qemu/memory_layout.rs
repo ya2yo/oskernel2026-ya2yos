@@ -20,10 +20,14 @@ pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 4;
 // Full pre-test runs retain kernel objects while execing the 1.7 MiB glibc
 // busybox image. Keep one 2 MiB buddy block available for that normal load.
 pub const KERNEL_HEAP_SIZE: usize = 0x8_000_000; // 128MB
-pub const USER_HEAP_SIZE: usize = 0x2000_0000; // 512MB (virtual reservation)
+// Rustc's linker-stage workers can grow the process brk beyond 512 MiB.
+// Keep the virtual reservation aligned with the lazy mmap budget; pages remain
+// demand-allocated, so this does not reserve physical memory up front.
+pub const USER_HEAP_SIZE: usize = 0x8000_0000; // 2 GiB (virtual reservation)
 /// Maximum heap (brk) growth per process.
-/// Caps runaway brk from exhausting physical memory.
-pub const MAX_BRK_SIZE: usize = 0x2000_0000; // 512MB
+/// Caps runaway brk from exhausting physical memory while leaving room for
+/// the Rust toolchain's normal peak working set.
+pub const MAX_BRK_SIZE: usize = 0x8000_0000; // 2 GiB
 /// Maximum total lazy mmap virtual reservation per process.
 /// Rustc reserves several 128 MiB PROT_NONE arenas before those pages are
 /// faulted in, so this must leave room beyond the physical-memory working set

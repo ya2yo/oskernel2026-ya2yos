@@ -15,10 +15,13 @@ pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 2;
 // The kernel image, including this static heap, must remain in the 256MiB
 // low RAM segment where QEMU loads the LoongArch kernel image.
 pub const KERNEL_HEAP_SIZE: usize = 0x8_000_000; // 128MB
-pub const USER_HEAP_SIZE: usize = 0x2000_0000; // 512MB (virtual reservation)
+// Keep the brk reservation large enough for the Rust toolchain's linker-stage
+// workers. Pages are still allocated lazily on first access.
+pub const USER_HEAP_SIZE: usize = 0x8000_0000; // 2 GiB (virtual reservation)
 /// Maximum heap (brk) growth per process.
-/// Caps runaway brk from exhausting physical memory.
-pub const MAX_BRK_SIZE: usize = 0x2000_0000; // 512MB
+/// Caps runaway brk from exhausting physical memory while leaving room for
+/// the Rust toolchain's normal peak working set.
+pub const MAX_BRK_SIZE: usize = 0x8000_0000; // 2 GiB
 /// Maximum total lazy mmap virtual reservation per process.
 /// Rustc reserves several 128 MiB PROT_NONE arenas before those pages are
 /// faulted in, so this must leave room beyond the physical-memory working set

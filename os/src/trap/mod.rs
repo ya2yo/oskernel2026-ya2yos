@@ -133,7 +133,7 @@ pub fn trap_handler() {
             current_task()
                 .unwrap()
                 .inner_lock()
-                .clear_instruction_fault_retry();
+                .clear_present_page_fault_retry();
             // jump to next instruction anyway
             let mut cx = current_trap_cx();
             cx.origin_a0 = cx.get_a0();
@@ -188,26 +188,34 @@ pub fn trap_handler() {
                 let handled =
                     !beyond_eof_before && memory_set.handle_page_fault(fault_va.floor(), cause);
                 #[cfg(target_arch = "riscv64")]
-                let retry_present_instruction_fault = cause
-                    == Trap::Exception(Exception::FetchInstructionPageFault)
-                    && !handled
-                    && memory_set.is_user_executable(fault_va.floor())
+                let retry_present_user_fault = !handled
+                    && matches!(
+                        cause,
+                        Trap::Exception(Exception::LoadPageFault)
+                            | Trap::Exception(Exception::FetchInstructionPageFault)
+                    )
+                    && ((cause == Trap::Exception(Exception::LoadPageFault)
+                        && memory_set.is_user_readable(fault_va.floor()))
+                        || (cause == Trap::Exception(Exception::FetchInstructionPageFault)
+                            && memory_set.is_user_executable(fault_va.floor())))
                     && task
                         .inner_lock()
-                        .retry_present_instruction_fault(fault_va.floor());
+                        .retry_present_page_fault(fault_va.floor());
                 #[cfg(not(target_arch = "riscv64"))]
-                let retry_present_instruction_fault = false;
+                let retry_present_user_fault = false;
                 signal = if beyond_eof_before {
                     Some(SigSet::SIGBUS)
                 } else if handled {
                     #[cfg(target_arch = "riscv64")]
-                    task.inner_lock().clear_instruction_fault_retry();
+                    task.inner_lock().clear_present_page_fault_retry();
                     None
-                } else if retry_present_instruction_fault {
+                } else if retry_present_user_fault {
                     #[cfg(target_arch = "riscv64")]
                     {
                         crate::arch::tlb::tlb_invalidate();
-                        crate::arch::tlb::instruction_fence();
+                        if cause == Trap::Exception(Exception::FetchInstructionPageFault) {
+                            crate::arch::tlb::instruction_fence();
+                        }
                     }
                     None
                 } else if memory_set.mmap_file_page_beyond_eof(fault_va.floor()) {

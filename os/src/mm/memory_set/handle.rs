@@ -180,12 +180,19 @@ impl MemorySet {
     }
 
     /// Check whether a RISC-V leaf PTE already permits U-mode instruction
-    /// fetch. A FetchInstructionPageFault in this state is retried once by
-    /// the trap layer after local translation/instruction synchronization.
+    /// fetch. A present instruction/load fault in this state is retried once
+    /// by the trap layer after local translation synchronization.
     #[cfg(target_arch = "riscv64")]
     #[inline(always)]
     pub fn is_user_executable(&self, vpn: VirtPageNum) -> bool {
         self.get_ref().page_table.is_user_executable(vpn)
+    }
+
+    /// Check whether a present RISC-V leaf PTE permits a U-mode load.
+    #[cfg(target_arch = "riscv64")]
+    #[inline(always)]
+    pub fn is_user_readable(&self, vpn: VirtPageNum) -> bool {
+        self.get_ref().page_table.is_user_readable(vpn)
     }
 
     /// Whether a faulting VPN lies in a file mapping beyond that file's EOF.

@@ -367,6 +367,21 @@ impl PageTable {
             })
             .unwrap_or(false)
     }
+
+    /// Whether the current software leaf permits an ordinary U-mode load.
+    ///
+    /// A second thread can take a load fault for a page while the first
+    /// thread is installing that same page under the address-space lock. Once
+    /// the lock is reacquired, the PTE is present and the fault can be
+    /// retried after flushing the stale translation.
+    pub fn is_user_readable(&self, vpn: VirtPageNum) -> bool {
+        self.find_valid_pte(vpn)
+            .map(|pte| {
+                let flags = pte.get_flags();
+                flags.contains(RVPTEFlags::READABLE | RVPTEFlags::USER)
+            })
+            .unwrap_or(false)
+    }
     /// Translate `VirtAddr` to `PhysAddr`，页表项无效和不存在返回None
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
         let vpn = va.floor();

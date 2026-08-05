@@ -81,9 +81,11 @@ TRAPCONTEXT_FCSR = TRAPCONTEXT_FP+32*8 # fcsr是fp的一部分
 
 # ======浮点开关======
 
-# 如果设成1，则一切正常；
-# 如果设成0，则不会保存和恢复fp寄存器以及fcsr
-.set ENABLE_FPU, 0
+# 用户态 Rust 程序（包括 rustc）会使用 F/D 扩展。trap_init 已经打开
+# sstatus.FS，因此每次用户态 trap 都必须保存并恢复完整的浮点上下文；
+# 否则任务切换后下一个任务会继承上一个任务的 FPR/fcsr，导致浮点常量
+# 解析结果被污染（BuildStorm 中表现为 apfloat 的 NaN 断言失败）。
+.set ENABLE_FPU, 1
 
 # ======正文======
 
