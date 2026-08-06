@@ -19,7 +19,9 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use log::{debug, error};
-use spin::{Lazy, Mutex, MutexGuard};
+use spin::Lazy;
+
+use crate::sync::RemoteTlbMutex;
 
 // ------------------------- robust futex constants ------------------------
 /// Bit 31: there are waiters sleeping on this futex
@@ -42,23 +44,9 @@ pub struct FutexWaiter {
 type BitsetWaitQueue = VecDeque<FutexWaiter>; // 这个u32是sys_wait_bitset的那个bitset
 
 // bitset用的队列的映射
-pub static FUTEX_QUEUE_BITMAP: Lazy<Mutex<BTreeMap<usize, BitsetWaitQueue>>> =
-    Lazy::new(|| Mutex::new(BTreeMap::new()));
+pub static FUTEX_QUEUE_BITMAP: Lazy<RemoteTlbMutex<BTreeMap<usize, BitsetWaitQueue>>> =
+    Lazy::new(|| RemoteTlbMutex::new(BTreeMap::new()));
 static FUTEX_QUEUE_VERSION: AtomicUsize = AtomicUsize::new(0);
-
-/// Acquire the futex hash-table lock while continuing to service remote TLB
-/// mailboxes. Wake, requeue, timer, and cleanup paths may hold this lock while
-/// touching task state; without polling, a hart waiting here can be a
-/// shootdown target and leave the MemorySet writer waiting forever.
-fn lock_futex_queue() -> MutexGuard<'static, BTreeMap<usize, BitsetWaitQueue>> {
-    loop {
-        if let Some(guard) = FUTEX_QUEUE_BITMAP.try_lock() {
-            return guard;
-        }
-        crate::mm::remote_tlb::poll();
-        core::hint::spin_loop();
-    }
-}
 
 #[inline]
 fn bump_futex_queue_version() {
@@ -88,7 +76,7 @@ fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32
     //     max_requeue
     // );
     bump_futex_queue_version();
-    let mut futex_queue = lock_futex_queue();
+    let mut futex_queue = FUTEX_QUEUE_BITMAP.lock();
     let mut num = 0;
     let mut num2 = 0;
     let mut tmp = VecDeque::new();
@@ -141,7 +129,7 @@ fn futex_wait_bitset(
             return Err(SysErrNo::EAGAIN);
         }
         let version = FUTEX_QUEUE_VERSION.load(Ordering::Acquire);
-        let mut waitq = lock_futex_queue();
+        let mut waitq = FUTEX_QUEUE_BITMAP.lock();
         if FUTEX_QUEUE_VERSION.load(Ordering::Acquire) != version {
             drop(waitq);
             continue;
@@ -199,7 +187,7 @@ fn futex_wait_bitset(
         drop(task_inner);
         if futex_key != 0 {
             bump_futex_queue_version();
-            let mut waitq = lock_futex_queue();
+            let mut waitq = FUTEX_QUEUE_BITMAP.lock();
             if let Some(queue) = waitq.get_mut(&futex_pa) {
                 if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
                     queue.remove(idx);
@@ -219,7 +207,7 @@ fn futex_wait_bitset(
         // futex_key 在 wakeup_futex_task 里已被清 0，此处是安全网。
         if futex_key != 0 {
             bump_futex_queue_version();
-            let mut waitq = lock_futex_queue();
+            let mut waitq = FUTEX_QUEUE_BITMAP.lock();
             if let Some(queue) = waitq.get_mut(&futex_pa) {
                 if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
                     queue.remove(idx);
@@ -247,7 +235,7 @@ fn futex_wake_up_bitset(pa: usize, max_num: i32, bitset: u32) -> usize {
     //     pa
     // );
     bump_futex_queue_version();
-    let mut futex_queue = lock_futex_queue();
+    let mut futex_queue = FUTEX_QUEUE_BITMAP.lock();
     let mut num: usize = 0;
     if let Some(queue) = futex_queue.get_mut(&pa) {
         let queue_len = queue.len();
@@ -602,7 +590,7 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, memory_set: &MemoryS
 
 pub fn handle_timer(task: Arc<TaskControlBlock>, futex_key: usize) {
     bump_futex_queue_version();
-    let mut waitq = lock_futex_queue();
+    let mut waitq = FUTEX_QUEUE_BITMAP.lock();
     let inner = task.inner_lock();
     if inner.futex_key != futex_key {
         // do nothing

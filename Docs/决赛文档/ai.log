@@ -10291,3 +10291,7 @@ GDB 显示 `mprotect` writer 在 `remote_tlb::shootdown()` 等 ACK，同时多�
 ### 修改与验证
 
 修改 `os/src/task/manager.rs`；新增 `Docs/决赛文档/problem/buildstorm-task-table-remote-tlb-deadlock.md`，并更新 README、开发日志和 AI 交互记录。RISC-V/LoongArch64 CFS、RISC-V RR、RISC-V perf 构建及差异检查通过；完整 BuildStorm/LTP 尚未重跑。
+
+### RemoteTlbMutex<T> 统一锁封装
+
+维护者要求将任务表锁、futex 队列锁和 remote-TLB 更新锁的重复 `try_lock + poll` 逻辑抽到 `os/src/sync`。新增 `RemoteTlbMutex<T>`，保留 `spin::Mutex` 的 guard、`try_lock`、`get_mut`、`into_inner`、`Default` 和 `From` 基本接口，仅在竞争等待时轮询本地 mailbox；三类敏感锁已完成替换，普通锁不受影响。RISC-V/LoongArch64 CFS、RISC-V RR、RISC-V perf 构建及 `git diff --check` 通过，完整 BuildStorm/LTP 尚未重跑。

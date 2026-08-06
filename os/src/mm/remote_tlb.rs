@@ -10,9 +10,9 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use spin::{Mutex, MutexGuard};
-
 use crate::arch::{config::HART_NUM, cpu::hart_id};
+use crate::sync::RemoteTlbMutex;
+use spin::MutexGuard;
 
 struct TlbMailbox {
     pending: AtomicBool,
@@ -37,20 +37,11 @@ static MAILBOXES: [TlbMailbox; HART_NUM] = [const { TlbMailbox::new() }; HART_NU
 /// This lock is acquired before the corresponding `MemorySet` write lock.
 /// A waiter can itself be a target of the current shootdown, so it must keep
 /// servicing its mailbox while another hart owns the lock.
-static UPDATE_LOCK: Mutex<()> = Mutex::new(());
+static UPDATE_LOCK: RemoteTlbMutex<()> = RemoteTlbMutex::new(());
 
 #[inline]
 pub(crate) fn lock_updates() -> MutexGuard<'static, ()> {
-    loop {
-        if let Some(guard) = UPDATE_LOCK.try_lock() {
-            return guard;
-        }
-        // Kernel-mode update paths execute with interrupts disabled.  Poll
-        // directly so a hart blocked on UPDATE_LOCK can still acknowledge a
-        // shootdown from the hart currently holding it.
-        poll();
-        core::hint::spin_loop();
-    }
+    UPDATE_LOCK.lock()
 }
 
 /// Flush the local translation and instruction caches, then acknowledge a

@@ -2701,4 +2701,12 @@
 - **验证边界**：RISC-V/LoongArch64 CFS、RISC-V RR、RISC-V perf 构建及差异检查通过；完整 BuildStorm/LTP 尚未重跑。
 - **关联问题**：[任务表锁问题复盘](./problem/buildstorm-task-table-remote-tlb-deadlock.md)
 - **关联 commit**：当前工作区未提交
+
+#### RemoteTlbMutex<T> 统一锁封装（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求将多个 remote-TLB 敏感锁的重复等待逻辑抽到 `os/src/sync`。
+- **描述**：新增显式 `RemoteTlbMutex<T>`，在竞争时轮询 mailbox；替换任务表、futex 队列和 `UPDATE_LOCK`，并覆盖任务退出路径的 futex 直接锁访问。
+- **验证边界**：RISC-V/LoongArch64 CFS、RISC-V RR、RISC-V perf 构建及差异检查通过；完整 BuildStorm/LTP 尚未重跑。
+- **关联问题**：[任务表锁问题复盘](./problem/buildstorm-task-table-remote-tlb-deadlock.md)
 - **关联 commit**：当前工作区未提交

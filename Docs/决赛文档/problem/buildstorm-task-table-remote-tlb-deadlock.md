@@ -28,14 +28,17 @@ futex 队列锁不同，等待时不会处理远程 TLB mailbox。
 
 ## 修复
 
-- 在 `os/src/task/manager.rs` 增加 `lock_task_table()`，使用 `try_lock()` 失败时调用
+- 在 `os/src/sync/remote_tlb.rs` 增加 `RemoteTlbMutex<T>`，其 `lock()` 在 `try_lock()` 失败时调用
   `crate::mm::remote_tlb::poll()` 并执行 `spin_loop()`。
-- `tid2task`、`insert`、`remove`、`task_num`、`get_all_tasks` 和 `for_each_task` 统一使用该 helper。
+- 任务表、futex 队列和 `UPDATE_LOCK` 统一使用 `RemoteTlbMutex<T>`；任务表的所有入口因此共享同一等待协议。
 - `get_all_tasks()` 改为复用 `for_each_task()`；任务表锁内只 clone 单个 `Arc`，`Vec` 扩容和调用方处理均在锁外。
 
 ## 涉及文件
 
 - `os/src/task/manager.rs`
+- `os/src/sync/{mod.rs,remote_tlb.rs}`
+- `os/src/mm/remote_tlb.rs`
+- `os/src/task/futex.rs`
 - `server.ans`
 - `client.ans`
 
@@ -45,5 +48,5 @@ futex 队列锁不同，等待时不会处理远程 TLB mailbox。
 - `make build-arch TARGET_ARCH=loongarch64`：通过。
 - `make build-arch TARGET_ARCH=riscv64 SCHEDULER=rr`：通过。
 - `make perf TARGET_ARCH=riscv64`：通过。
-- `rustfmt --edition 2021 os/src/task/manager.rs`、`git diff --check`：通过。
+- `rustfmt --edition 2021 os/src/sync/remote_tlb.rs os/src/sync/mod.rs os/src/mm/remote_tlb.rs os/src/task/manager.rs os/src/task/futex.rs`、`git diff --check`：通过。
 - 完整 BuildStorm/LTP 尚未重跑；当前正式 `disk.img` 仍可能被维护者 QEMU 占用，不能据此宣称运行期卡死已消失。

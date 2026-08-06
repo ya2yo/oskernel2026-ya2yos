@@ -50,42 +50,29 @@ pub mod tid_to_task {
     use alloc::vec::Vec;
     use log::debug;
 
-    use super::{Arc, BTreeMap, Lazy, Mutex, TaskControlBlock};
-    use spin::MutexGuard;
-    static TID_TO_TASK: Lazy<Mutex<BTreeMap<usize, Arc<TaskControlBlock>>>> =
-        Lazy::new(|| Mutex::new(BTreeMap::new()));
-
-    /// Acquire the global task table while continuing to service remote TLB
-    /// mailboxes.  Task-table lookups are used from trap return, timer scans,
-    /// and signal paths; a hart waiting here may itself be a shootdown target.
-    fn lock_task_table() -> MutexGuard<'static, BTreeMap<usize, Arc<TaskControlBlock>>> {
-        loop {
-            if let Some(guard) = TID_TO_TASK.try_lock() {
-                return guard;
-            }
-            crate::mm::remote_tlb::poll();
-            core::hint::spin_loop();
-        }
-    }
+    use super::{Arc, BTreeMap, Lazy, TaskControlBlock};
+    use crate::sync::RemoteTlbMutex;
+    static TID_TO_TASK: Lazy<RemoteTlbMutex<BTreeMap<usize, Arc<TaskControlBlock>>>> =
+        Lazy::new(|| RemoteTlbMutex::new(BTreeMap::new()));
 
     pub fn tid2task(tid: usize) -> Option<Arc<TaskControlBlock>> {
-        lock_task_table().get(&tid).map(Arc::clone)
+        TID_TO_TASK.lock().get(&tid).map(Arc::clone)
     }
     /// 仅在clone时发生
     pub fn insert(tid: usize, task: &Arc<TaskControlBlock>) {
-        lock_task_table().insert(tid, task.clone());
+        TID_TO_TASK.lock().insert(tid, task.clone());
     }
     /// 仅在exit时发生
     pub fn remove(tid: usize) {
         // debug!("[tid_to_task]: remove {}!", tid);
-        let ret = lock_task_table().remove(&tid);
+        let ret = TID_TO_TASK.lock().remove(&tid);
         if ret.is_none() {
             panic!("fail to remove task {}! it does not exist!", tid);
         }
     }
     /// tid_to_task模块记录的task数量
     pub fn task_num() -> usize {
-        lock_task_table().len()
+        TID_TO_TASK.lock().len()
     }
 
     /// 构造一个vector，包括所有的TCB和他们的tid
@@ -103,7 +90,7 @@ pub mod tid_to_task {
         let mut next_tid = 0;
         loop {
             let next = {
-                let tasks = lock_task_table();
+                let tasks = TID_TO_TASK.lock();
                 tasks
                     .range(next_tid..)
                     .next()
