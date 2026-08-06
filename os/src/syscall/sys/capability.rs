@@ -1,3 +1,9 @@
+//! `capget(2)` / `capset(2)` 系统调用实现。
+//!
+//! 通过用户态传入的 header（版本 + 目标 pid）和 data 数组读写目标进程的
+//! capability 集合（effective / permitted / inheritable），行为与 Linux
+//! 保持一致：版本回填、未知 capability 位检查、capset 的权限约束等。
+
 use alloc::sync::Arc;
 
 use linux_raw_sys::general::{
@@ -21,7 +27,9 @@ use crate::{
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct CapUserHeader {
+    /// capability 接口版本，见 `_LINUX_CAPABILITY_VERSION_*`，决定 data 数组长度
     pub version: u32,
+    /// 目标进程 pid；0 表示当前进程
     pub pid: i32,
 }
 
@@ -44,10 +52,16 @@ impl Default for CapUserData {
     }
 }
 
+/// V1 版本 capability 数据长度为 1 个 u32（仅低 32 个 capability）
 const CAPABILITY_U32S_1: usize = 1;
+/// V2 版本 capability 数据长度为 2 个 u32
 const CAPABILITY_U32S_2: usize = 2;
+/// V3 版本 capability 数据长度与 V2 相同（仅文件能力标志的语义不同）
 const CAPABILITY_U32S_3: usize = 2;
 
+/// 根据 capability 版本号返回对应的数据数组长度（u32 个数）。
+///
+/// 不支持的版本返回 `None`，由调用方回填内核首选版本并返回 `EINVAL`。
 fn cap_version_u32s(version: u32) -> Option<usize> {
     match version {
         _LINUX_CAPABILITY_VERSION_1 => Some(CAPABILITY_U32S_1),
@@ -57,14 +71,20 @@ fn cap_version_u32s(version: u32) -> Option<usize> {
     }
 }
 
+/// 返回用户态 data 数组第 `index` 个元素的只读指针。
 fn cap_data_user_ptr(datap: *const CapUserData, index: usize) -> *const CapUserData {
     (datap as usize + index * core::mem::size_of::<CapUserData>()) as *const CapUserData
 }
 
+/// 返回用户态 data 数组第 `index` 个元素的可写指针。
 fn cap_data_user_mut_ptr(datap: *mut CapUserData, index: usize) -> *mut CapUserData {
     (datap as usize + index * core::mem::size_of::<CapUserData>()) as *mut CapUserData
 }
 
+/// 解析 header 中的 pid 得到目标任务。
+///
+/// `pid == 0` 或等于当前线程 pid 时操作当前任务，否则按 pid 查找进程并取其
+/// 任意一个线程；进程不存在返回 `ESRCH`。
 fn cap_target_task(
     pid: i32,
     current: &Arc<TaskControlBlock>,
@@ -81,6 +101,7 @@ fn cap_target_task(
     target.ok_or(SysErrNo::ESRCH)
 }
 
+/// 取 capability 集合第 `index` 个 u32 组成一份用户态 data 结构。
 fn cap_data_from_sets(caps: CapabilitySets, index: usize) -> CapUserData {
     CapUserData {
         effective: caps.effective[index],
@@ -89,6 +110,7 @@ fn cap_data_from_sets(caps: CapabilitySets, index: usize) -> CapUserData {
     }
 }
 
+/// 将用户态 data 数组（2 个 u32 槽位）组装为内核 capability 集合。
 fn cap_sets_from_data(data: &[CapUserData; CAPABILITY_U32S]) -> CapabilitySets {
     let mut caps = CapabilitySets {
         effective: [0; CAPABILITY_U32S],
@@ -103,6 +125,9 @@ fn cap_sets_from_data(data: &[CapUserData; CAPABILITY_U32S]) -> CapabilitySets {
     caps
 }
 
+/// 检查请求的 data 数组是否设置了未定义（超出 `CAP_LAST_CAP`）的 capability 位。
+///
+/// 只检查前 `u32s` 个槽位；存在未知位返回 `true`，调用方应返回 `EINVAL`。
 fn cap_data_has_unknown_bits(data: &[CapUserData; CAPABILITY_U32S], u32s: usize) -> bool {
     for i in 0..u32s {
         let invalid = !CAPABILITY_FULL_MASK[i];
@@ -113,10 +138,12 @@ fn cap_data_has_unknown_bits(data: &[CapUserData; CAPABILITY_U32S], u32s: usize)
     false
 }
 
+/// 逐 u32 判断 `lhs` 是否为 `rhs` 的子集（lhs 中每一位都包含于 rhs）。
 fn cap_subset(lhs: &[u32; CAPABILITY_U32S], rhs: &[u32; CAPABILITY_U32S]) -> bool {
     (0..CAPABILITY_U32S).all(|i| lhs[i] & !rhs[i] == 0)
 }
 
+/// 逐 u32 判断 `lhs` 是否为 `rhs_a` 与 `rhs_b` 并集的子集。
 fn cap_union_subset(
     lhs: &[u32; CAPABILITY_U32S],
     rhs_a: &[u32; CAPABILITY_U32S],
@@ -125,6 +152,12 @@ fn cap_union_subset(
     (0..CAPABILITY_U32S).all(|i| lhs[i] & !(rhs_a[i] | rhs_b[i]) == 0)
 }
 
+/// `capget(2)`：读取目标进程的 capability 集合。
+///
+/// - `hdrp` 指向 header（版本 + pid），`datap` 指向输出 data 数组；
+/// - `pid < 0` 返回 `EINVAL`；不支持的版本会回填内核首选版本（V3）后返回 `EINVAL`；
+/// - 目标进程不存在返回 `ESRCH`。
+///
 /// 参考 https://man7.org/linux/man-pages/man2/capget.2.html
 pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallRet {
     let task = current_task().unwrap();
@@ -166,6 +199,15 @@ pub fn sys_capget(hdrp: *mut CapUserHeader, datap: *mut CapUserData) -> SyscallR
     Ok(0)
 }
 
+/// `capset(2)`：设置目标进程的 capability 集合。
+///
+/// - 仅允许操作自身（`pid == 0` 或等于当前 pid），其它 pid 返回 `ESRCH`；
+/// - `pid < 0` 或不支持的版本（回填 V3 后）返回 `EINVAL`；
+/// - 设置了未定义的 capability 位返回 `EINVAL`；
+/// - effective 必须是 permitted 的子集，否则返回 `EPERM`；
+/// - 非特权进程（effective uid != 0）只能收缩 permitted、且 inheritable 不得
+///   超出旧 inheritable 与旧 permitted 的并集，否则返回 `EPERM`。
+///
 /// 参考 https://man7.org/linux/man-pages/man2/capset.2.html
 pub fn sys_capset(hdrp: *mut CapUserHeader, datap: *const CapUserData) -> SyscallRet {
     let task = current_task().unwrap();
