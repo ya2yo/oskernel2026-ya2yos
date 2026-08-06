@@ -1,6 +1,7 @@
 //! epoll 实例：兴趣列表 + [`File`] trait。
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use core::task::Context;
 use linux_raw_sys::general::EPOLL_CLOEXEC;
 use spin::Mutex;
 
@@ -41,6 +42,15 @@ impl EpollFile {
     pub fn poll_mask(file: &dyn File, registered_events: u32) -> u32 {
         let pe = epoll_events_to_poll(registered_events);
         poll_to_epoll_events(file.poll(pe))
+    }
+
+    /// Register a waiter with the underlying file for an epoll interest mask.
+    pub fn register_mask(
+        file: &dyn File,
+        registered_events: u32,
+        context: &mut Context<'_>,
+    ) {
+        file.register(context, epoll_events_to_poll(registered_events));
     }
 
     pub(crate) fn snapshot_interests(&self) -> Vec<(i32, EpollEntry)> {

@@ -1,6 +1,7 @@
 //! `epoll_create1` / `epoll_ctl` / `epoll_pwait` — 参数与用户缓冲区，语义在 `fs::files::epoll`。
 
 use alloc::sync::Arc;
+use core::{future::poll_fn, task::Poll, time::Duration};
 use log::debug;
 
 use linux_raw_sys::general::{epoll_event, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
@@ -8,8 +9,7 @@ use linux_raw_sys::general::{epoll_event, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CT
 use crate::{
     fs::{EpollCreateFlags, EpollFile, FileClass, FileDescriptor, OpenFlags},
     mm::{copy_from_user, copy_to_user},
-    task::{current_task, suspend_current_and_run_next},
-    timer::get_time_ms,
+    task::{block_on, current_task, timeout as timeout_future},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -134,27 +134,52 @@ pub fn sys_epoll_pwait(
         }
     }
 
-    let waittime: isize = if timeout == usize::MAX {
-        -1
-    } else {
-        timeout as isize
-    };
-
-    if waittime == 0 {
+    if timeout == 0 {
         return epoll_wait_once(epfd, events_ptr, maxevents);
     }
 
-    let begin = get_time_ms();
-    loop {
+    // Register the current task with every underlying pollable fd before
+    // blocking. The second scan closes the race between the first scan and
+    // registration when an event arrives in that interval.
+    let wait_future = poll_fn(|cx| {
         let count = epoll_wait_once(epfd, events_ptr, maxevents)?;
         if count > 0 {
-            return Ok(count);
+            return Poll::Ready(Ok(count));
         }
-        if waittime > 0 && (get_time_ms() - begin) >= waittime as usize {
-            return Ok(0);
+
+        register_epoll_watchers(epfd, cx)?;
+
+        let count = epoll_wait_once(epfd, events_ptr, maxevents)?;
+        if count > 0 {
+            Poll::Ready(Ok(count))
+        } else {
+            Poll::Pending
         }
-        suspend_current_and_run_next();
+    });
+
+    let duration = (timeout != usize::MAX).then(|| Duration::from_millis(timeout as u64));
+    match block_on(timeout_future(duration, wait_future)) {
+        Ok(result) => result,
+        Err(_) => Ok(0),
     }
+}
+
+/// Register the current waiter's waker with each fd in the epoll interest
+/// list. Invalid fds are intentionally skipped; the next scan reports them
+/// as `EPOLLERR|EPOLLHUP` and removes them from the set.
+fn register_epoll_watchers(
+    epfd: usize,
+    cx: &mut core::task::Context<'_>,
+) -> Result<(), SysErrNo> {
+    let task = current_task().unwrap();
+    let epoll_file = EpollFile::lookup(epfd, &task.process.fd_table)?;
+    let interests = epoll_file.snapshot_interests();
+    for (fd, entry) in interests {
+        if let Some(desc) = task.process.fd_table.try_get(fd as usize) {
+            EpollFile::register_mask(desc.any().as_ref(), entry.events, cx);
+        }
+    }
+    Ok(())
 }
 
 /// 单次扫描：写用户 `epoll_event` 数组并返回就绪数量。
