@@ -256,8 +256,7 @@ impl MemorySet {
     /// `MemorySetInner::mprotect`.
     #[inline(always)]
     pub fn mprotect(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) {
-        self.get_mut()
-            .mprotect(start_vpn, end_vpn, map_perm, None, usize::MAX, None);
+        self.get_mut().mprotect(start_vpn, end_vpn, map_perm);
     }
 
     /// Activate this address space's page table on the current CPU.

@@ -679,8 +679,6 @@ impl MemorySetInner {
     /// # 参数
     /// - `start_vpn`, `end_vpn`: 目标虚拟页号范围（左闭右开）。
     /// - `map_perm`: 要设置的新权限。
-    /// - `file` / `offset` / `if_mmap`: mmap 调用时传入的文件和偏移信息；
-    ///   普通 mprotect 系统调用时 `if_mmap=false`，这些参数不使用。
     ///
     /// # Area 拆分策略（四种情况）
     ///
@@ -719,9 +717,6 @@ impl MemorySetInner {
         start_vpn: VirtPageNum,
         end_vpn: VirtPageNum,
         map_perm: MapPermission,
-        file: Option<Arc<OSFile>>,
-        offset: usize,
-        mmap_flags: Option<MmapFlags>,
     ) {
         // 防御性检查：如果范围无效（start >= end）则直接返回
         if start_vpn >= end_vpn {
@@ -739,12 +734,6 @@ impl MemorySetInner {
             // 例: area=[4,8) 被 [3,10) 覆盖 → 整个 area 改权限
             if start >= start_vpn && end <= end_vpn {
                 area.map_perm = map_perm;
-                if mmap_flags.is_some() {
-                    area.mmap_file.replace(file.clone(), offset);
-                }
-                if let Some(flags) = mmap_flags {
-                    area.mmap_flags = flags;
-                }
                 continue;
             // 情况2：area 左侧在范围外，右侧在范围内
             // 例: area=[2,6) 目标=[4,9) → 拆为 [2,4)原权限 + [4,6)新权限
@@ -753,12 +742,6 @@ impl MemorySetInner {
                 let mut new_area = MapArea::from_another(area);
                 new_area.map_perm = map_perm;
                 new_area.vpn_range = VPNRange::new(start_vpn, end);
-                if mmap_flags.is_some() {
-                    new_area.mmap_file.replace(file.clone(), offset);
-                }
-                if let Some(flags) = mmap_flags {
-                    new_area.mmap_flags = flags;
-                }
                 // area: 左半部，保持原权限，收缩范围
                 area.vpn_range = VPNRange::new(start, start_vpn);
                 // 注册到共享内存组
@@ -782,12 +765,6 @@ impl MemorySetInner {
                 let mut new_area = MapArea::from_another(area);
                 new_area.map_perm = map_perm;
                 new_area.vpn_range = VPNRange::new(start, end_vpn);
-                if mmap_flags.is_some() {
-                    new_area.mmap_file.replace(file.clone(), offset);
-                }
-                if let Some(flags) = mmap_flags {
-                    new_area.mmap_flags = flags;
-                }
                 // area: 右半部，保持原权限，收缩范围
                 area.vpn_range = VPNRange::new(end_vpn, end);
                 // 注册到共享内存组
@@ -817,12 +794,6 @@ impl MemorySetInner {
                 front_area.vpn_range = VPNRange::new(start, start_vpn); // 前部，原权限
                 back_area.vpn_range = VPNRange::new(end_vpn, end); // 后部，原权限
                 area.vpn_range = VPNRange::new(start_vpn, end_vpn); // 中部，新权限
-                if mmap_flags.is_some() {
-                    area.mmap_file.replace(file.clone(), offset);
-                }
-                if let Some(flags) = mmap_flags {
-                    area.mmap_flags = flags;
-                }
                 // 注册到共享内存组
                 GROUP_SHARE.lock().add_area(front_area.groupid);
                 GROUP_SHARE.lock().add_area(back_area.groupid);
