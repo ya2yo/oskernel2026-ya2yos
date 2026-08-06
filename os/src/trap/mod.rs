@@ -505,11 +505,11 @@ pub fn trap_from_kernel() -> ! {
 
     backtrace();
     let stval = get_trap_virt_addr();
-    let stval_vpn = VirtAddr::from(stval).floor();
+    let stval_vpn = VirtAddr::try_from(stval).map(|va| va.floor().0);
     panic!(
-        "stval = {:#x}(vpn {}), 
+        "stval = {:#x}(vpn {:?}),
         a trap {:?} from kernel!",
-        stval, stval_vpn.0, cause
+        stval, stval_vpn, cause
     );
 }
 

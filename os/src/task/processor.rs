@@ -306,6 +306,12 @@ pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
     // debug!("[processor]: take_current_task!");
     let task = get_proc_by_hartid(hart_id()).take_current();
     if let Some(task) = &task {
+        // The task's satp remains installed until the scheduler switches away
+        // from its saved context.  Move to the immutable kernel page table
+        // before clearing the active bit; otherwise a remote address-space
+        // writer may reclaim the old root while this hart is still executing
+        // scheduler code with that satp.
+        crate::mm::activate_kernel_space();
         task.process.memory_set_arc().deactivate_current_hart();
         ready_queue::account_current(task);
     }
@@ -347,6 +353,10 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// 不会复制上下文，只会把当前寄存器状态写入该地址并恢复 idle 上下文；
 /// 当前任务以后再次被选中时，函数才会从这里返回。
 pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
+    // `suspend_current_and_run_next()` can call schedule directly without
+    // first detaching the processor's current slot.  Ensure the saved task's
+    // user page table is never used while the idle scheduler runs.
+    crate::mm::activate_kernel_space();
     let processor = get_proc_by_hartid(hart_id());
     // debug!(
     //     "[schedule] processor pid = {} , tid = {}",

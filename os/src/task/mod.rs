@@ -272,8 +272,13 @@ pub fn stop_current_and_run_next() {
 
 pub fn schedule_blocked_current(task_cx_ptr: *mut TaskContext) {
     // 等待队列已经把当前任务置为 Blocked，这里只负责切回调度器。
-    let task = take_current_task().unwrap();
-    drop(task);
+    // Some blocking paths can observe a wakeup/timeout race after the task has
+    // already been detached from this hart's `current` slot.  The saved task
+    // context is still the switch source, so treat the detach as idempotent
+    // instead of panicking in the scheduler.
+    if let Some(task) = take_current_task() {
+        drop(task);
+    }
     schedule(task_cx_ptr);
 }
 
@@ -402,9 +407,21 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     let memory_set = curr_proc.memory_set_arc();
     let fd_table = Arc::clone(&curr_proc.fd_table);
     let fs_info = Arc::clone(&curr_proc.fs_info);
-    let mut curr_task_inner = curr_task.inner_lock();
+    // Snapshot fields needed by teardown, then release the TCB lock before
+    // touching user memory or the address space.  MemorySet updates may wait
+    // for remote TLB acknowledgements while interrupts are disabled; keeping
+    // this lock held would let a sibling's SIGKILL exit path form an AB-BA
+    // cycle on the two harts.
+    let (clear_child_tid, robust_list, trap_cx_bottom) = {
+        let task_inner = curr_task.inner_lock();
+        (
+            task_inner.clear_child_tid,
+            task_inner.robust_list,
+            task_inner.trap_cx_bottom,
+        )
+    };
     #[cfg(feature = "perf")]
-    let vfork_published_at = curr_task_inner.vfork_published_at;
+    let vfork_published_at = curr_task.inner_lock().vfork_published_at;
     // debug!(
     //     "[sys_exit] exit_current_and_run_next() -- thread {} exit, exit_code = {}",
     //     curr_task.tid(),
@@ -412,22 +429,18 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // );
 
     // CLONE_CHILD_CLEARTID
-    if curr_task_inner.clear_child_tid != 0 {
-        let _ = copy_to_user_val(
-            &memory_set,
-            curr_task_inner.clear_child_tid as *mut u32,
-            &0u32,
-        );
+    if clear_child_tid != 0 {
+        let _ = copy_to_user_val(&memory_set, clear_child_tid as *mut u32, &0u32);
         // 唤醒等待在 child_tid 的进程
         // 线程的 clear_child_tid 可能已被用户态 munmap 释放，
         // translate_va 会返回 None，此时跳过 futex_wake 即可。
-        if let Some(pa) = memory_set.translate_va(VirtAddr::from(curr_task_inner.clear_child_tid)) {
+        if let Some(pa) = memory_set.translate_va(VirtAddr::from(clear_child_tid)) {
             futex_wake_up(pa.0, 1);
         }
     }
     // 释放futex (必须用 tid 而非 pid，因为 futex word 低 30 位存的是 TID)
     {
-        handle_futex_when_exit(&curr_task_inner.robust_list, &memory_set, curr_task.tid());
+        handle_futex_when_exit(&robust_list, &memory_set, curr_task.tid());
     }
     // debug!("exit_current_and_run_next: futex released");
 
@@ -470,10 +483,12 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     // 无论如何一个轻量级进程都会是一个线程
     // 释放线程相关资源
-    memory_set.remove_area_with_start_vpn(VirtAddr::from(curr_task_inner.trap_cx_bottom).floor());
-    curr_task_inner.task_status = TaskStatus::Zombie;
+    memory_set.remove_area_with_start_vpn(VirtAddr::from(trap_cx_bottom).floor());
+    {
+        let mut task_inner = curr_task.inner_lock();
+        task_inner.task_status = TaskStatus::Zombie;
+    }
     let curr_tid = curr_task.tid();
-    drop(curr_task_inner);
 
     curr_task.process.meta_lock().tasks.retain(|weak| {
         weak.upgrade()
