@@ -34,14 +34,23 @@ static MAILBOXES: [TlbMailbox; HART_NUM] = [const { TlbMailbox::new() }; HART_NU
 
 /// Only one hart may wait for remote shootdown acknowledgements at a time.
 ///
-/// This lock is acquired before the corresponding `MemorySet` write lock.  A
-/// second updater therefore stays out of the non-interruptible kernel path
-/// instead of becoming a remote target that is itself waiting for an IPI.
+/// This lock is acquired before the corresponding `MemorySet` write lock.
+/// A waiter can itself be a target of the current shootdown, so it must keep
+/// servicing its mailbox while another hart owns the lock.
 static UPDATE_LOCK: Mutex<()> = Mutex::new(());
 
 #[inline]
 pub(crate) fn lock_updates() -> MutexGuard<'static, ()> {
-    UPDATE_LOCK.lock()
+    loop {
+        if let Some(guard) = UPDATE_LOCK.try_lock() {
+            return guard;
+        }
+        // Kernel-mode update paths execute with interrupts disabled.  Poll
+        // directly so a hart blocked on UPDATE_LOCK can still acknowledge a
+        // shootdown from the hart currently holding it.
+        poll();
+        core::hint::spin_loop();
+    }
 }
 
 /// Flush the local translation and instruction caches, then acknowledge a
@@ -72,20 +81,24 @@ pub(crate) fn poll() {
 ///
 /// The caller holds both [`UPDATE_LOCK`] and the affected `MemorySet` write
 /// lock.  The local flush is unconditional: it also handles operations on an
-/// address space that has just stopped being current on this hart.
+/// address space that has just stopped being current on this hart.  The live
+/// active-hart mask is re-read while waiting: a target that has detached from
+/// this address space cannot return to user mode until the write lock drops,
+/// whereupon its normal activation flushes the local translation cache.
 #[inline]
-pub(crate) fn shootdown(active_harts: usize) {
+pub(crate) fn shootdown(active_harts: &AtomicUsize) {
     crate::arch::tlb::tlb_invalidate();
     crate::arch::tlb::instruction_fence();
 
     #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
     {
         let source = hart_id();
-        let remote_harts = active_harts & !(1usize << source);
+        let remote_harts = active_harts.load(Ordering::Acquire) & !(1usize << source);
         #[cfg(feature = "perf")]
         crate::utils::perf::record_remote_tlb_shootdown(remote_harts.count_ones() as usize);
         for target in 0..HART_NUM {
-            if remote_harts & (1usize << target) == 0 {
+            let target_bit = 1usize << target;
+            if remote_harts & target_bit == 0 {
                 continue;
             }
 
@@ -99,6 +112,9 @@ pub(crate) fn shootdown(active_harts: usize) {
                 panic!("remote TLB shootdown could not wake hart {}", target);
             }
             while mailbox.acknowledged.load(Ordering::Acquire) != sequence {
+                if active_harts.load(Ordering::Acquire) & target_bit == 0 {
+                    break;
+                }
                 core::hint::spin_loop();
             }
         }

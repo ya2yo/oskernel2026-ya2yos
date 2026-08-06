@@ -57,3 +57,59 @@
 - `make build-arch TARGET_ARCH=loongarch64`、`make perf TARGET_ARCH=loongarch64`：通过。
 - LoongArch QEMU：原镜像以只读方式启动可达 early init，但 EXT4 初始化需要写入而按预期失败；随后将镜像副本置于 `/tmp` 后，以 `-smp 12` 可写启动。移除 kernel-trap 短路后的 45 秒运行确认 hart 1--11 已进入 `rust_main`，并通过 `sigaltstack regression: PASS`、`rseq regression: PASS` 后启动 Bash/BuildStorm 脚本，无 panic、TLB 或 IPI 错误。perf 版本在 120 秒窗口内同样稳定运行到脚本启动，但未打印 perf 快照或进入 Cargo 输出。
 - RISC-V 直接 QEMU 运行仍未完成：现有维护者 QEMU 实例持有 `disk.img` 写锁，第二实例收到 `Failed to get "write" lock` 后立即退出。没有终止该实例或覆盖 `disk.img`，因此本轮未声称 RISC-V QEMU 回归、LTP 或完整 BuildStorm 已通过。
+
+## 2026-08-06：shootdown 等待环修复
+
+### 新现场
+
+新的 RISC-V `server.ans` 仍只到 `OS COMP TEST GROUP START buildstorm`。最新
+`client.ans` 表明此前的 address-space writer 已在 `MemorySet::mprotect()` 中：hart 7 持有
+`UPDATE_LOCK` 和 `MemorySet` write lock，在 `remote_tlb::shootdown()` 等待 hart 0 的 ACK；hart
+0 则在 `trap_return() -> rseq_prepare_user_return() -> copy_to_user() -> MemorySet::get_ref()`
+等待同一把 read lock。hart 0 仍在该 `MemorySet` 的 active mask 内，不能让发起方根据
+live mask 放弃等待。
+
+此前一份 GDB 现场还有相邻变体：hart 7 对匿名 `mmap(PROT_NONE)` 做无条件 shootdown，hart 0
+已清除 active bit 后在 `lock_updates()` 自旋。该映射只新增 lazy VMA、没有改写现有 PTE，却触发
+了不必要的全 hart IPI。
+
+### 根因
+
+mailbox 协议原先只在 IPI trap、idle 返回和最终 `trap_return()` 处轮询。只要一个 active hart
+在关中断的内核路径中等待 `UPDATE_LOCK` 或 `MemorySet` read lock，就可能在到达这些轮询点之前
+成为 shootdown target。于是 writer 等 ACK、target 等 writer 所持的锁，形成死锁。单次
+`active_harts` 快照还会让 writer 等待已经脱离该地址空间的 hart。
+
+### 修复
+
+- `lock_updates()` 改用 `try_lock()` 循环；每次竞争失败先调用 `remote_tlb::poll()`，使等待
+  update lock 的 target 可以直接完成本地 TLB/指令缓存失效和 ACK。
+- `MemorySet::get_ref()` 同样改为 `try_read()` 加 mailbox poll 循环，`activate_for_user()` 复用
+  此入口。因而 rseq、用户内存复制、权限检查或最终地址空间激活在等待 write lock 时也可 ACK。
+- `shootdown()` 接收 `active_harts` 原子对象而非一次性值，在每个 ACK 等待循环重新读取目标 bit；
+  目标已清除 bit 时可安全退出等待，因为它无法在 writer 释放 write lock 前重新发布用户态 active bit，
+  后续 `activate_for_user()` 会做本地页表激活和刷新。
+- 非 `MAP_FIXED` 的 `mmap`（包括 `MAP_FIXED_NOREPLACE`）只创建 lazy VMA，不会删除或替换 PTE，
+  改走不保留全量 frame、也不发 remote shootdown 的专用写路径。`MAP_FIXED`、`munmap`、
+  `mprotect`、COW 和所有可能回收旧 frame 的路径仍使用完整 ACK 协议。
+
+该协议位于共同的 `remote_tlb`/`MemorySet` 层；RISC-V 的 SBI software IPI 和 LoongArch 的 IOCSR
+IPI 接收路径都继续使用同一个 mailbox，不需要为本修复分叉架构语义。
+
+### 验证更新
+
+- `rustfmt --edition 2021 os/src/mm/remote_tlb.rs os/src/mm/memory_set/handle.rs` 与
+  `git diff --check`：通过。
+- `make perf TARGET_ARCH=riscv64`：通过，生成包含本修复的 `kernel-rv`。
+- `make build-arch TARGET_ARCH=loongarch64`：通过。
+- 最新 GDB 现场是在加入 `UPDATE_LOCK`/live-mask 修复后、加入 `get_ref()` 轮询前采集，直接证明
+  第二个读锁等待环；因此不能把它当成最终运行期通过。受限环境的本地 QEMU `-snapshot` 不能在只读
+  `/var/tmp` 创建临时 overlay，且没有覆盖维护者镜像；完整 RISC-V BuildStorm、LTP 以及 LoongArch
+  跨 hart 长时回归仍待用最新镜像执行。
+- 随后维护者运行的最新 `kernel-rv` 已越过旧的启动卡点，在 `t=188070ms` 到达
+  `443/446: axbuild, axvmconfig`。该快照的 `remote_tlb` 为 `shootdowns=21578`、
+  `target_harts=2654`、`acknowledgements=2654`，没有未确认目标；所有 8 个 hart 都有 scheduler
+  selection，且累计 `remote_enqueues=2831`。日志尚无 `BUILDSTORM_COMPILE`、测试组 END 或
+  `shutdown`，因此这只验收两个已定位的 shootdown 等待环被越过，不作为完整 BuildStorm 通过或
+  axbuild 性能结论。当前 `client.ans` 只含 GDB 连接记录，若再次长时间无输出，需要在 live QEMU
+  上采集各 hart backtrace 才能定位下一处阻塞。

@@ -77,8 +77,19 @@ impl MemorySet {
     }
 
     /// Borrow the inner address space read-only.
+    ///
+    /// A page-table writer holds this lock while waiting for remote TLB
+    /// acknowledgements. A reader can be one of those remote harts while it
+    /// returns from a syscall with interrupts disabled, so service the
+    /// mailbox between failed lock attempts instead of spinning forever.
     pub(crate) fn get_ref(&self) -> RwLockReadGuard<'_, MemorySetInner> {
-        self.inner.read()
+        loop {
+            if let Some(guard) = self.inner.try_read() {
+                return guard;
+            }
+            crate::mm::remote_tlb::poll();
+            core::hint::spin_loop();
+        }
     }
 
     /// Execute a page-table update with the remote TLB protocol in place.
@@ -97,8 +108,7 @@ impl MemorySet {
             .flat_map(|area| area.data_frames.values().cloned())
             .collect();
         let result = f(&mut inner);
-        let active_harts = self.active_harts.load(Ordering::Acquire);
-        crate::mm::remote_tlb::shootdown(active_harts);
+        crate::mm::remote_tlb::shootdown(&self.active_harts);
         if was_active {
             self.activate_current_hart();
         }
@@ -147,7 +157,11 @@ impl MemorySet {
         file: Option<Arc<OSFile>>,
         off: usize,
     ) -> usize {
-        self.with_mut(|inner| inner.mmap(addr, len, map_perm, flags, file, off))
+        if flags.contains(MmapFlags::MAP_FIXED) {
+            self.with_mut(|inner| inner.mmap(addr, len, map_perm, flags, file, off))
+        } else {
+            self.with_vma_mut(|inner| inner.mmap(addr, len, map_perm, flags, file, off))
+        }
     }
 
     /// Attach a SysV shared memory segment.
@@ -227,8 +241,7 @@ impl MemorySet {
             .unwrap_or_default();
         let handled = inner.handle_page_fault(vpn, scause, prepared);
         if replaces_present_pte {
-            let active_harts = self.active_harts.load(Ordering::Acquire);
-            crate::mm::remote_tlb::shootdown(active_harts);
+            crate::mm::remote_tlb::shootdown(&self.active_harts);
         }
         if was_active {
             self.activate_current_hart();
@@ -312,7 +325,7 @@ impl MemorySet {
     /// completes before this hart installs the page table locally.
     #[inline(always)]
     pub fn activate_for_user(&self) {
-        let inner = self.inner.read();
+        let inner = self.get_ref();
         inner.activate();
         self.activate_current_hart();
     }
@@ -340,6 +353,22 @@ impl MemorySet {
         let hart = crate::arch::cpu::hart_id();
         self.active_harts
             .fetch_or(1usize << hart, Ordering::Release);
+    }
+
+    /// Update only VMA metadata without changing an existing PTE.
+    ///
+    /// Non-fixed `mmap` and `MAP_FIXED_NOREPLACE` first establish that the
+    /// destination does not overlap an existing VMA, then append a lazy VMA.
+    /// They therefore cannot leave a stale valid translation on another hart
+    /// and do not need frame retention or a remote TLB shootdown.
+    fn with_vma_mut<T>(&self, f: impl FnOnce(&mut MemorySetInner) -> T) -> T {
+        let was_active = self.deactivate_current_hart();
+        let mut inner = self.inner.write();
+        let result = f(&mut inner);
+        if was_active {
+            self.activate_current_hart();
+        }
+        result
     }
 
     /// Drop all user VM areas and write back dirty shared mmap pages first.

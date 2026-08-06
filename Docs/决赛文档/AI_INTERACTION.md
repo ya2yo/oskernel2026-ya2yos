@@ -2654,6 +2654,21 @@
 - **关联文档**：[共享地址空间 SMP 问题复盘](./problem/buildstorm-shared-address-space-smp.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
 
+#### BuildStorm remote TLB shootdown 锁等待环（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供新的 RISC-V `server.ans`/`client.ans`，BuildStorm 在启动后仍卡住。
+- **描述**：GDB 显示 `mprotect` writer 等 remote TLB ACK 时持有 `MemorySet` write lock，而 target hart 在
+  trap-return 的 rseq 用户内存复制中等待同一把读锁，无法到达原有 IPI poll 点。将 update lock 和
+  MemorySet read-lock 的竞争等待改为主动 poll mailbox；shootdown ACK 改用 live active-hart mask；仅新增 lazy
+  VMA 的非固定 mmap 不再做全 hart TLB 广播，回收/替换旧 PTE 的路径保持完整协议。
+- **验证边界**：`rustfmt`、差异检查、RISC-V perf 和 LoongArch64 release 构建通过。最新读锁修复尚未完成
+  本机 QEMU BuildStorm 复跑，因为受限环境不能为 `-snapshot` 在 `/var/tmp` 建立临时层；没有修改维护者镜像。
+- **阶段运行**：维护者后续 RISC-V perf 日志运行到 Cargo `443/446`，并记录 `target_harts=2654` 与
+  `acknowledgements=2654` 完全相等、八核均有调度选择；没有完整 END/shutdown，仍不报告端到端通过。
+- **关联文档**：[共享地址空间 SMP 问题复盘](./problem/buildstorm-shared-address-space-smp.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
 #### LoongArch 共享地址空间 SMP 对应实现（8.6）
 
 - **工具/模型**：Codex（GPT-5）

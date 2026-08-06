@@ -10214,3 +10214,32 @@ RISC-V/LoongArch64 release 构建、消息队列相关 `rustfmt --check` 和 `gi
 ### 修改与验证
 
 修改 `os/src/arch/loongarch64/qemu/{cpu.rs,trap_interface.rs,asms/trap.S}`、`os/src/mm/remote_tlb.rs`、`os/src/task/task/task.rs`、`os/src/trap/{mod.rs,trap_types.rs}`，并更新共享地址空间 SMP 复盘与开发日志。移除 `__kern_trap` 的无条件停机分支，且删除其 256-byte register frame 外的无效 user-TrapContext 写入。RISC-V/LoongArch64 release 和 LoongArch64 perf 构建通过。只读镜像在 EXT4 写入时按预期失败；使用 `/tmp/sdcard-la-smp.img` 副本可写启动后，hart 1--11 均打印启动日志，`sigaltstack`、`rseq` 回归通过并启动 Bash/BuildStorm 脚本，无 panic/ERROR/IPI/TLB 报错。120 秒 perf 窗口未输出 Cargo 或 perf snapshot，因此没有运行触发 rustc 跨 hart 的完整 BuildStorm，吞吐提升尚未宣称。
+
+## 2026-08-06：BuildStorm remote TLB shootdown 锁等待环
+
+### 用户输入
+
+维护者提供新的 `server.ans` 与 `client.ans`，说明 BuildStorm 仍在启动后卡住，要求继续修复。
+
+### 分析与采纳结论
+
+最新 GDB 表明 hart 7 在 `mprotect -> with_mut -> shootdown` 中持有 `MemorySet` write lock 等 hart 0 ACK；hart 0
+在 `trap_return -> rseq_prepare_user_return -> copy_to_user -> get_ref` 等该 write lock。此前同一协议还会让清除
+active bit 后等待 `UPDATE_LOCK` 的 hart 无法 ACK。根因不是 IPI 未发送，而是关中断的内核自旋点没有主动轮询
+mailbox。对普通 `mmap(PROT_NONE)` 的无条件 shootdown 也没有 PTE 变更必要性。
+
+### 修改与验证
+
+`lock_updates()` 与 `MemorySet::get_ref()` 改为 `try_lock`/`try_read` 加 `remote_tlb::poll()`；
+`activate_for_user()` 统一经过可轮询读锁；shootdown 等待循环改为读取 `MemorySet` live active-hart mask。
+非 `MAP_FIXED` 的 lazy mmap 走 VMA-only 写入口，保留 `MAP_FIXED`、munmap、mprotect、COW 的完整远端 ACK/frame
+保留协议。修改 `os/src/mm/remote_tlb.rs`、`os/src/mm/memory_set/handle.rs` 并更新共享地址空间 SMP 复盘。
+
+`rustfmt`、`git diff --check`、`make perf TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64` 均通过。
+本地安全 QEMU snapshot 因沙箱 `/var/tmp` 只读无法启动，未覆盖维护者 `disk.img` 或基础镜像；完整 BuildStorm/LTP
+及最新读锁修复的运行期回归待维护者复测。
+
+维护者随后提供的同一 RISC-V perf 运行日志已通过 TOOLCHAIN/MINIBUILD 并推进到 Cargo `443/446`。`t=188070ms`
+快照中 remote TLB 的 `target_harts=2654` 与 `acknowledgements=2654` 相等，per-hart scheduler selection 八核均非零，
+且 `remote_enqueues=2831`；说明这两个邮箱 ACK 锁环已在实际运行中越过。日志还没有 `BUILDSTORM_COMPILE`/END/shutdown，
+当前 `client.ans` 只保存 GDB 连接、没有新的 hart 栈，故不进一步猜测 axbuild 的后续无输出原因。
