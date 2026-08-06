@@ -10259,3 +10259,35 @@ mailbox。对普通 `mmap(PROT_NONE)` 的无条件 shootdown 也没有 PTE 变�
 修改 `os/src/task/scheduler/cfs.rs`、`os/src/task/scheduler/mod.rs`、`os/src/task/processor.rs`、`os/src/task/task/task.rs`、`os/src/syscall/task/schedule.rs` 和 `os/src/task/mod.rs`；保留维护者已有的 `user/src/bin/initproc.rs` 修改。CFS 入队按共享队列长度有限唤醒允许运行的 idle Hart，affinity 更新额外唤醒新 mask 中的 idle Hart，RR 分支维持原有 per-hart placement。
 
 `make build-arch TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64`、`make build-arch TARGET_ARCH=riscv64 SCHEDULER=rr`、`make perf TARGET_ARCH=riscv64`、目标文件 rustfmt 和 `git diff --check` 均通过。普通 `make run` 受已有 `disk.img` 写锁阻断；使用 `/tmp` qcow2 overlay 的 RISC-V 短时运行确认 8 个 Hart 在线、通过 `sigaltstack`/`rseq` 回归并进入 BuildStorm，无 panic、`TFAIL` 或 `TBROK`。样本未完成完整 BuildStorm，未宣称吞吐提升百分比；共享 CFS 单锁和 affinity 竞争窗口列为后续审计点。
+
+## 2026-08-06：BuildStorm futex 队列锁阻塞 remote TLB ACK
+
+### 用户输入
+
+维护者提供新的 `server.ans` 和含 GDB 栈的 `client.ans`，说明 all-hart CFS 版本再次在 BuildStorm 启动后卡住。
+
+### 分析与采纳结论
+
+`server.ans` 已确认 8 个 Hart 在线并通过 `sigaltstack`/`rseq`；`client.ans` 显示 hart 4 在 `mprotect -> MemorySet::with_mut -> remote_tlb::shootdown()` 等 ACK，hart 3 等 `UPDATE_LOCK`，hart 0/2 等同一 `MemorySet` 读锁，hart 1 在 `FUTEX_QUEUE_BITMAP.lock()`。hart 5--7 的 `wfi` 是无候选任务的正常 idle 状态。根因是 futex 队列锁等待不轮询 mailbox，且 futex wait 持队列锁执行 `copy_from_user()`，形成 `MemorySet` writer、remote ACK、futex 队列锁和读锁之间的等待环。
+
+采纳增加 mailbox-aware 的 futex 队列锁；同时加入全局队列版本，在锁外读取用户 futex 值，获取队列锁后校验版本，wake/requeue/timer/清理递增版本。这样消除 futex 锁到 `MemorySet` 读锁的反向边，并保留 compare-and-block 的唤醒顺序。
+
+### 修改与验证
+
+修改 `os/src/task/futex.rs`；新增 `Docs/决赛文档/problem/buildstorm-futex-remote-tlb-deadlock.md`，并更新 README、开发日志和 AI 交互记录。RISC-V/LoongArch64 release 构建、RISC-V perf、目标文件 rustfmt 和 `git diff --check` 通过。修复后尚未重跑完整 BuildStorm/LTP，不能声称端到端卡死已消失。
+
+## 2026-08-06：BuildStorm 任务表锁阻塞 remote TLB ACK
+
+### 用户输入
+
+维护者提供新的 `client.ans`，说明 futex 修复后的 BuildStorm 仍在启动后的 `buildstorm` 测试组卡住。
+
+### 分析与采纳结论
+
+GDB 显示 `mprotect` writer 在 `remote_tlb::shootdown()` 等 ACK，同时多个 Hart 在 `TID_TO_TASK.lock()`；任务表锁等待者不能轮询 mailbox，导致地址空间写锁、读锁和全局任务表形成等待环。另审计发现 `get_all_tasks()` 在任务表锁内 `Vec::collect()`，保留了 `TID_TO_TASK -> HEAP` 反向锁链风险。
+
+采纳在 `os/src/task/manager.rs` 增加 `try_lock + remote_tlb::poll()` 的统一任务表锁，替换全部任务表入口，并让 `get_all_tasks()` 复用无分配临界区的 `for_each_task()`。
+
+### 修改与验证
+
+修改 `os/src/task/manager.rs`；新增 `Docs/决赛文档/problem/buildstorm-task-table-remote-tlb-deadlock.md`，并更新 README、开发日志和 AI 交互记录。RISC-V/LoongArch64 CFS、RISC-V RR、RISC-V perf 构建及差异检查通过；完整 BuildStorm/LTP 尚未重跑。

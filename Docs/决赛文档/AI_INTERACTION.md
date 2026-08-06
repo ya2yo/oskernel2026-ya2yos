@@ -2685,3 +2685,20 @@
 - **描述**：确认 per-hart CFS 的局部 ready queue 会让没有本地候选的 Hart 正常进入 idle/WFI；这不等于次核未启动。将 CFS 改为共享 `(vruntime, tid)` 最小堆，按线程 affinity 过滤候选，入队及 affinity 更新后按需唤醒 idle Hart；`scheduled_hart` 仅表示最近实际运行 Hart，RR 分支保持原 placement。
 - **验证边界**：RISC-V/LoongArch64 CFS 构建、RISC-V RR 构建、RISC-V perf 构建、目标文件 rustfmt 和差异检查通过；overlay 短时 RISC-V 运行确认 8 个 Hart 在线并进入 BuildStorm，无 panic/TFAIL/TBROK，但完整 BuildStorm、LTP 和性能 A/B 尚未完成。详见 [all-hart CFS 问题复盘](./problem/all-hart-cfs-scheduler.md)、[开发日志](./开发日志.md) 和 `ai.log`。
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm futex 队列锁阻塞 remote TLB ACK（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供新的 `server.ans`/`client.ans`，BuildStorm 在 all-hart CFS 版本启动后再次卡住。
+- **描述**：GDB 显示 `mprotect` writer 在 `remote_tlb::shootdown()` 等 ACK，另一 Hart 等 `UPDATE_LOCK`，多个 Hart 等 `MemorySet` 读锁，且一个 Hart 在裸等 `FUTEX_QUEUE_BITMAP.lock()`。将 futex 队列锁竞争改为 `try_lock + remote_tlb::poll()`，并用队列版本把用户 futex 值检查移到锁外，覆盖 wait/wake/requeue/timer/清理路径。
+- **验证边界**：RISC-V/LoongArch64 release 构建、RISC-V perf、目标文件 rustfmt 和差异检查通过；修复后尚未重跑完整 BuildStorm/LTP，不能报告端到端通过。详见 [futex/remote TLB 问题复盘](./problem/buildstorm-futex-remote-tlb-deadlock.md)、[开发日志](./开发日志.md) 和 `ai.log`。
+
+#### BuildStorm 任务表锁阻塞 remote TLB ACK（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供新的 `client.ans`，BuildStorm 在 futex 修复后仍卡住。
+- **描述**：确认 `TID_TO_TASK` 的裸 `Mutex::lock()` 让 shootdown target 无法处理 mailbox ACK；统一任务表锁的轮询等待，并将 `get_all_tasks()` 的向量分配移出任务表锁。
+- **验证边界**：RISC-V/LoongArch64 CFS、RISC-V RR、RISC-V perf 构建及差异检查通过；完整 BuildStorm/LTP 尚未重跑。
+- **关联问题**：[任务表锁问题复盘](./problem/buildstorm-task-table-remote-tlb-deadlock.md)
+- **关联 commit**：当前工作区未提交
+- **关联 commit**：当前工作区未提交

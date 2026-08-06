@@ -182,3 +182,5 @@
 - [System V 消息队列 syscall 实现](./problem/sysv-msg-queue.md)
 - [BuildStorm 共享地址空间 SMP 与远程 TLB 一致性](./problem/buildstorm-shared-address-space-smp.md)
 - [All-hart CFS 共享就绪队列](./problem/all-hart-cfs-scheduler.md)
+- [BuildStorm futex 队列锁阻塞 remote TLB ACK](./problem/buildstorm-futex-remote-tlb-deadlock.md)
+- [BuildStorm 任务表锁阻塞 remote TLB ACK](./problem/buildstorm-task-table-remote-tlb-deadlock.md)

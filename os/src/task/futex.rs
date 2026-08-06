@@ -19,7 +19,7 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use log::{debug, error};
-use spin::{Lazy, Mutex};
+use spin::{Lazy, Mutex, MutexGuard};
 
 // ------------------------- robust futex constants ------------------------
 /// Bit 31: there are waiters sleeping on this futex
@@ -44,6 +44,26 @@ type BitsetWaitQueue = VecDeque<FutexWaiter>; // 这个u32是sys_wait_bitset的�
 // bitset用的队列的映射
 pub static FUTEX_QUEUE_BITMAP: Lazy<Mutex<BTreeMap<usize, BitsetWaitQueue>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
+static FUTEX_QUEUE_VERSION: AtomicUsize = AtomicUsize::new(0);
+
+/// Acquire the futex hash-table lock while continuing to service remote TLB
+/// mailboxes. Wake, requeue, timer, and cleanup paths may hold this lock while
+/// touching task state; without polling, a hart waiting here can be a
+/// shootdown target and leave the MemorySet writer waiting forever.
+fn lock_futex_queue() -> MutexGuard<'static, BTreeMap<usize, BitsetWaitQueue>> {
+    loop {
+        if let Some(guard) = FUTEX_QUEUE_BITMAP.try_lock() {
+            return guard;
+        }
+        crate::mm::remote_tlb::poll();
+        core::hint::spin_loop();
+    }
+}
+
+#[inline]
+fn bump_futex_queue_version() {
+    FUTEX_QUEUE_VERSION.fetch_add(1, Ordering::AcqRel);
+}
 // 唤醒在 pa 等待的线程
 pub fn futex_wake_up(pa: usize, max_num: i32) -> usize {
     // 重定向需求
@@ -67,7 +87,8 @@ fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32
     //     new_pa,
     //     max_requeue
     // );
-    let mut futex_queue = FUTEX_QUEUE_BITMAP.lock();
+    bump_futex_queue_version();
+    let mut futex_queue = lock_futex_queue();
     let mut num = 0;
     let mut num2 = 0;
     let mut tmp = VecDeque::new();
@@ -96,11 +117,11 @@ fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32
 /// Queue a waiter only while its expected user-space value still matches.
 ///
 /// `FUTEX_QUEUE_BITMAP` is this implementation's counterpart to Linux's
-/// futex hash-bucket lock.  The value comparison, queue insertion and
-/// `Blocked` publication must share that critical section: a waker which
-/// changes the word and enters `FUTEX_WAKE` must observe either the mismatch
-/// or the queued, already-blocked task.  Splitting these steps loses wakeups
-/// on SMP.
+/// futex hash-bucket lock.  User memory is checked before taking the queue
+/// lock, while `FUTEX_QUEUE_VERSION` closes the race with a waker that enters
+/// the queue lock between the check and waiter insertion.  This keeps the
+/// queue lock out of the `MemorySet` read path while preserving the
+/// compare-and-block ordering.
 fn futex_wait_bitset(
     queue_key: usize,
     task: Arc<TaskControlBlock>,
@@ -114,35 +135,42 @@ fn futex_wait_bitset(
     let active_guard = crate::utils::perf::FutexActiveGuard::new();
 
     let futex_key = new_futex_key();
-    let waiter = FutexWaiter {
-        task: Arc::downgrade(&task),
-        bitset,
-        futex_key,
-    };
-    let mut waitq = FUTEX_QUEUE_BITMAP.lock();
-    let current_val: i32 = copy_from_user_val(memory_set, uaddr)?;
-    if current_val != expected {
-        return Err(SysErrNo::EAGAIN);
-    }
-
-    let task_cx_ptr = {
-        let mut inner = task.inner_lock();
-        // Match the interrupted-wait behavior before publishing the task as
-        // blocked.  A signal racing after this point sees `Blocked` and is
-        // able to enqueue the task, so neither signal nor futex wakeup is
-        // lost.
-        if !inner.sig_pending.difference(inner.sig_mask).is_empty() {
-            return Err(SysErrNo::EINTR);
+    let task_cx_ptr = loop {
+        let current_val: i32 = copy_from_user_val(memory_set, uaddr)?;
+        if current_val != expected {
+            return Err(SysErrNo::EAGAIN);
+        }
+        let version = FUTEX_QUEUE_VERSION.load(Ordering::Acquire);
+        let mut waitq = lock_futex_queue();
+        if FUTEX_QUEUE_VERSION.load(Ordering::Acquire) != version {
+            drop(waitq);
+            continue;
         }
 
-        inner.futex_timedout = false;
-        inner.futex_pa = queue_key;
-        inner.futex_key = futex_key;
-        waitq.entry(queue_key).or_default().push_back(waiter);
-        inner.task_status = TaskStatus::Blocked;
-        &mut inner.task_cx as *mut _
+        let task_cx_ptr = {
+            let mut inner = task.inner_lock();
+            // Match the interrupted-wait behavior before publishing the task
+            // as blocked. A signal racing after this point sees `Blocked` and
+            // is able to enqueue the task, so neither signal nor futex wakeup
+            // is lost.
+            if !inner.sig_pending.difference(inner.sig_mask).is_empty() {
+                return Err(SysErrNo::EINTR);
+            }
+
+            inner.futex_timedout = false;
+            inner.futex_pa = queue_key;
+            inner.futex_key = futex_key;
+            waitq.entry(queue_key).or_default().push_back(FutexWaiter {
+                task: Arc::downgrade(&task),
+                bitset,
+                futex_key,
+            });
+            inner.task_status = TaskStatus::Blocked;
+            &mut inner.task_cx as *mut _
+        };
+        drop(waitq);
+        break task_cx_ptr;
     };
-    drop(waitq);
 
     // `handle_timer()` takes the timer lock before the futex queue lock, so
     // install the timer only after releasing the queue lock.  The waiter is
@@ -170,7 +198,8 @@ fn futex_wait_bitset(
         let futex_pa = task_inner.futex_pa;
         drop(task_inner);
         if futex_key != 0 {
-            let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+            bump_futex_queue_version();
+            let mut waitq = lock_futex_queue();
             if let Some(queue) = waitq.get_mut(&futex_pa) {
                 if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
                     queue.remove(idx);
@@ -189,7 +218,8 @@ fn futex_wait_bitset(
         // 超时定时器已通过 handle_timer 将 waiter 摘下并设置了 timedout 标记；
         // futex_key 在 wakeup_futex_task 里已被清 0，此处是安全网。
         if futex_key != 0 {
-            let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+            bump_futex_queue_version();
+            let mut waitq = lock_futex_queue();
             if let Some(queue) = waitq.get_mut(&futex_pa) {
                 if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
                     queue.remove(idx);
@@ -216,7 +246,8 @@ fn futex_wake_up_bitset(pa: usize, max_num: i32, bitset: u32) -> usize {
     //     max_num,
     //     pa
     // );
-    let mut futex_queue = FUTEX_QUEUE_BITMAP.lock();
+    bump_futex_queue_version();
+    let mut futex_queue = lock_futex_queue();
     let mut num: usize = 0;
     if let Some(queue) = futex_queue.get_mut(&pa) {
         let queue_len = queue.len();
@@ -570,7 +601,8 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, memory_set: &MemoryS
 }
 
 pub fn handle_timer(task: Arc<TaskControlBlock>, futex_key: usize) {
-    let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+    bump_futex_queue_version();
+    let mut waitq = lock_futex_queue();
     let inner = task.inner_lock();
     if inner.futex_key != futex_key {
         // do nothing
