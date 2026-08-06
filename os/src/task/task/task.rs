@@ -1152,19 +1152,21 @@ impl TaskControlBlock {
     }
 
     ///修改数据段大小，懒分配
-    pub fn growproc(&self, grow_size: isize) -> usize {
+    pub fn growproc(&self, grow_size: isize) -> Option<usize> {
         let mut inner = self.inner_lock();
         let process = &self.process;
         let memory_set = process.memory_set_arc();
 
         if grow_size == 0 {
-            return inner.user_heappoint;
+            return Some(inner.user_heappoint);
         }
 
         let ret = memory_set
             .with_mut(|ms| ms.grow(grow_size, inner.user_heappoint, inner.user_heapbottom));
 
-        inner.user_heappoint = ret;
+        if let Some(ret) = ret {
+            inner.user_heappoint = ret;
+        }
         ret
     }
     pub fn set_status(&self, status: TaskStatus) {

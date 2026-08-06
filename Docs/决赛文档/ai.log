@@ -10134,3 +10134,17 @@ FCC；恢复路径和 TrapContext 布局保持不变。
 LoongArch64、RISC-V release 构建及 `git diff --check` 均通过。未重新运行数小时的完整
 LoongArch BuildStorm，因此不把 `446/446` 或运行期 SIGSEGV 消失作为已验证结论；新增
 `Docs/决赛文档/problem/loongarch-buildstorm-fcc-context-loss.md` 并更新开发日志和索引。
+
+## 2026-08-06：brk 与 MAP_FIXED VMA 重叠边界修正
+
+### 用户输入
+
+维护者要求确认 `MemorySetInner::grow()` 只调整 brk VMA 范围而不检查其他 `MapArea` 重叠是否需要修正。
+
+### 分析与采纳结论
+
+普通 `mmap` 从 `MMAP_TOP` 向下查找空闲范围，会避开 brk；但 `MAP_FIXED` 原路径只通过面向 mmap VMA 的 `munmap()` 清理目标，不能清理 brk。因此在初始零长度 brk 区域内建立固定映射后，后续 brk 扩展可能产生重叠 VMA。另发现 `sys_brk()` 用 `usize` 直接计算向下调整量，非法地址可能在转换为 `isize` 前下溢。
+
+### 修改与验证
+
+`MemorySetInner::grow()` 改为在扩展前检查目标 brk 区间与其他 VMA 的交叠，并以 `Option` 表示地址溢出、上限超出或重叠失败；`MAP_FIXED` 拒绝覆盖 brk；`sys_brk()` 改用分支后的有符号差值计算。RISC-V 与 LoongArch64 release 构建通过；`cargo fmt --all -- --check` 受工作区其他既有文件格式差异影响未通过，未格式化无关文件。

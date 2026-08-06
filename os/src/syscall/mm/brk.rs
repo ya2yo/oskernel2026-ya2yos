@@ -10,7 +10,7 @@ use crate::{
 pub fn sys_brk(brk_addr: usize) -> SyscallRet {
     debug!("[sys_brk] brk_addr={:#x}", brk_addr);
     let task = current_task().unwrap();
-    let former_addr = task.growproc(0);
+    let former_addr = task.growproc(0).unwrap();
     if brk_addr == 0 {
         return Ok(former_addr);
     }
@@ -26,6 +26,18 @@ pub fn sys_brk(brk_addr: usize) -> SyscallRet {
         );
         return Err(SysErrNo::ENOMEM);
     }
-    let grow_size: isize = (brk_addr - former_addr) as isize;
-    Ok(task.growproc(grow_size))
+    let grow_size = if brk_addr >= former_addr {
+        let delta = brk_addr - former_addr;
+        let Ok(delta) = isize::try_from(delta) else {
+            return Err(SysErrNo::ENOMEM);
+        };
+        delta
+    } else {
+        let delta = former_addr - brk_addr;
+        let Ok(delta) = isize::try_from(delta) else {
+            return Err(SysErrNo::EINVAL);
+        };
+        -delta
+    };
+    task.growproc(grow_size).ok_or(SysErrNo::ENOMEM)
 }

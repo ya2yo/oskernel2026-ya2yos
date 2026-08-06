@@ -2618,3 +2618,11 @@
 - **验证边界**：RISC-V/LoongArch64 release 构建和差异检查通过；未重跑完整 LoongArch BuildStorm，待后续确认长时间抢占下不再出现同类 fault。
 - **关联文档**：[FCC 问题复盘](./problem/loongarch-buildstorm-fcc-context-loss.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### brk 与 MAP_FIXED VMA 重叠边界修正（8.6）
+
+- **工具/模型**：Codex（GPT-5.6）
+- **场景**：确认 brk lazy allocation 的 VMA 边界安全性、`MAP_FIXED` 冲突处理和 `sys_brk` 算术错误。
+- **描述**：检查发现普通 `mmap` 会避开 brk，但 `MAP_FIXED` 只能清理 mmap VMA，无法清理 brk；在零长度 brk 区域内固定映射后，后续 brk 扩展可能留下重叠 VMA。修复为 `grow()` 扩展前检查其他 VMA，`MAP_FIXED` 拒绝覆盖 brk，并将 `sys_brk` 的地址差值改为安全的有符号计算。
+- **验证边界**：RISC-V 与 LoongArch64 release 构建通过；全仓 `cargo fmt --all -- --check` 被工作区已有格式差异阻断，未执行格式化以避免修改无关文件。
+- **关联 commit**：当前工作区未提交

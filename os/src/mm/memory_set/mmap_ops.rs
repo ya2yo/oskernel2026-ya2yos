@@ -159,6 +159,17 @@ impl MemorySetInner {
             // 追加新 VMA 会留下重叠条目；缺页查找可能先命中旧条目（通常是
             // PROT_NONE），从而遮蔽新的替换映射。
             if flags.contains(MmapFlags::MAP_FIXED) {
+                // brk 的起止位置由进程状态单独维护，不能像 mmap VMA 一样由
+                // munmap 截断。拒绝覆盖 brk，避免留下重叠 VMA 和不一致的 brk。
+                if self.areas.iter().any(|area| {
+                    if area.area_type != MapAreaType::Brk {
+                        return false;
+                    }
+                    let (l, r) = area.vpn_range.range();
+                    l < end_vpn && start_vpn < r
+                }) {
+                    return 0;
+                }
                 let _ = self.munmap(addr, len);
             }
             self.push_lazily(MapArea::new_mmap(

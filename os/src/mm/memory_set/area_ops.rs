@@ -165,39 +165,48 @@ impl MemorySetInner {
         grow_size: isize,
         user_heappoint: usize,
         user_heapbottom: usize,
-    ) -> usize {
-        let new_addr = user_heappoint
-            .checked_add_signed(grow_size)
-            .expect("USER_HEAP address overflow");
+    ) -> Option<usize> {
+        let new_addr = user_heappoint.checked_add_signed(grow_size)?;
         let new_vpn: VirtPageNum = VirtAddr::from(new_addr).ceil();
         let heap_bottom_vpn: VirtPageNum = (user_heapbottom / PAGE_SIZE).into();
         let (areas, page_table) = (&mut self.areas, &mut self.page_table);
-        let area = areas
-            .iter_mut()
-            .find(|area| area.area_type == MapAreaType::Brk)
+        let area_idx = areas
+            .iter()
+            .position(|area| area.area_type == MapAreaType::Brk)
             .unwrap();
-        let old_end_vpn = area.vpn_range.end();
+        let old_end_vpn = areas[area_idx].vpn_range.end();
         if grow_size > 0 {
             let user_vpn_top: VirtPageNum = ((user_heapbottom + USER_HEAP_SIZE) / PAGE_SIZE).into();
             if new_vpn >= user_vpn_top {
-                panic!("USER_HEAP overflow as {:#X}!", new_addr);
+                return None;
             }
-            area.vpn_range = VPNRange::new(heap_bottom_vpn, new_vpn);
+            // MAP_FIXED may have installed a VMA inside the reserved brk range.
+            // Do not let a later brk expansion create overlapping VMAs.
+            if areas.iter().any(|other| {
+                if other.area_type == MapAreaType::Brk {
+                    return false;
+                }
+                let (start, end) = other.vpn_range.range();
+                start < new_vpn && heap_bottom_vpn < end
+            }) {
+                return None;
+            }
+            areas[area_idx].vpn_range = VPNRange::new(heap_bottom_vpn, new_vpn);
         } else {
             if new_addr < user_heapbottom {
-                panic!("USER_HEAP downflow at {:#X}!", new_addr);
+                return None;
             }
-            area.vpn_range = VPNRange::new(heap_bottom_vpn, new_vpn);
+            areas[area_idx].vpn_range = VPNRange::new(heap_bottom_vpn, new_vpn);
             // Clear the complete old tail, not only data_frames entries.  A
             // stale PTE without a FrameTracker must not survive shrink/grow
             // and later become an unpinned COW source during fork.
             for vpn in VPNRange::new(new_vpn, old_end_vpn) {
                 page_table.unmap(vpn);
-                area.data_frames.remove(&vpn);
+                areas[area_idx].data_frames.remove(&vpn);
             }
         }
         tlb_invalidate();
-        new_addr
+        Some(new_addr)
     }
 
     /// Copy pages for a lazily allocated area, faulting destination pages as needed.
