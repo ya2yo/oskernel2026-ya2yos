@@ -1,3 +1,10 @@
+//! 进程记账（process accounting）实现。
+//!
+//! 由 `acct(2)` 系统调用开启：`sys_acct` 校验权限与目标文件后，通过
+//! [`set_process_acct_file`] 把记账文件注册到内核；此后每个进程退出时，
+//! 由 [`write_process_acct_record`] 以 Linux 旧版 `struct acct` 格式追加一条
+//! 记账记录。
+
 use crate::{
     fs::{File, OSFile, SEEK_END},
     task::{ProcessUsage, TaskControlBlock},
@@ -8,8 +15,13 @@ use spin::{Lazy, Mutex};
 
 use log::warn;
 
+/// 全局记账文件句柄。`Some(file)` 表示记账已开启，所有进程退出时都会向该文件
+/// 追加记录；`None` 表示未开启（或已由 `acct(NULL)` 关闭）。
 static ACCT_FILE: Lazy<Mutex<Option<Arc<OSFile>>>> = Lazy::new(|| Mutex::new(None));
 
+/// 设置或关闭全局记账文件，供 `sys_acct` 调用。
+///
+/// 传 `None` 表示关闭记账；传 `Some(file)` 表示开启记账。
 pub(crate) fn set_process_acct_file(file: Option<Arc<OSFile>>) {
     *ACCT_FILE.lock() = file;
 }
@@ -43,6 +55,10 @@ struct AcctRecord {
 
 const _: () = assert!(size_of::<AcctRecord>() == 64);
 
+/// 将计数编码为 Linux `comp_t`（13 位尾数 + 3 位 2^3 指数）。
+///
+/// 与内核 `encode_comp_t` 的舍入规则一致：每次右移 3 位前先加 7（四舍五入），
+/// 指数上限为 7，超出部分截断。
 fn encode_comp_t(mut value: u64) -> u16 {
     let mut exp = 0u16;
     while value > 0x1fff && exp < 7 {
@@ -52,6 +68,9 @@ fn encode_comp_t(mut value: u64) -> u16 {
     ((exp & 0x7) << 13) | (value as u16 & 0x1fff)
 }
 
+/// 将毫秒时间换算为用户态时钟 tick（HZ = 100），供 ac_utime/ac_stime/ac_etime 使用。
+///
+/// 非正值（含出错产生的负值）一律按 0 处理。
 fn ms_to_user_ticks(ms: isize) -> u64 {
     if ms <= 0 {
         0
@@ -60,6 +79,10 @@ fn ms_to_user_ticks(ms: isize) -> u64 {
     }
 }
 
+/// 由退出码和终止信号构造 `ac_exitcode`（即 wait 状态字）。
+///
+/// 被信号终止时返回 `signo | (core_dumped ? 0x80 : 0)`，与 Linux 的
+/// `W_EXITCODE`/`W_STOPCODE` 语义一致；正常退出时返回 `exit_code << 8`。
 fn wait_status_from_exit_code(exit_code: i32, termination_signal: Option<(usize, bool)>) -> u32 {
     if let Some((signo, dumped_core)) = termination_signal {
         signo as u32 | if dumped_core { 0x80 } else { 0 }
@@ -68,6 +91,10 @@ fn wait_status_from_exit_code(exit_code: i32, termination_signal: Option<(usize,
     }
 }
 
+/// 从任务及其累计用量构建一条 [`AcctRecord`]。
+///
+/// 读取 uid/gid 时需要持任务锁，读取 comm 与终止信号时需持进程元数据锁；
+/// 两处锁按任务锁在前、元数据锁在后的顺序获取，避免与进程退出路径死锁。
 fn build_acct_record(task: &TaskControlBlock, exit_code: i32, usage: &ProcessUsage) -> AcctRecord {
     let task_inner = task.inner_lock();
     let uid = task_inner.user_id as u16;
@@ -111,6 +138,10 @@ fn build_acct_record(task: &TaskControlBlock, exit_code: i32, usage: &ProcessUsa
     }
 }
 
+/// 若记账已开启，将当前进程的记账记录以追加方式写入记账文件并落盘。
+///
+/// 在进程退出路径（`exit` 回收阶段）调用；记账未开启时直接返回。
+/// 写入失败只记录告警日志，不影响进程退出流程。
 pub(crate) fn write_process_acct_record(
     task: &TaskControlBlock,
     exit_code: i32,
