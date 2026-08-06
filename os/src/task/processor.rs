@@ -159,6 +159,36 @@ pub(crate) fn notify_hart_of_runnable_task(target_hart: usize) {
     crate::utils::perf::record_scheduler_enqueue(true, target_idle, _ipi_sent);
 }
 
+/// Wake idle Harts that are allowed to run a newly runnable CFS task.
+///
+/// The CFS queue is shared by every Hart, so a task is no longer tied to the
+/// Hart that last ran it. Wake at most one idle Hart per queued task to avoid a
+/// broadcast storm while still preventing runnable work from waiting behind
+/// sleeping Harts.
+pub(crate) fn notify_harts_of_runnable_task(cpu_mask: usize, ready_tasks: usize) {
+    let source_hart = hart_id();
+    let mut remote_target = false;
+    let mut target_idle = false;
+    let mut ipi_sent = false;
+    let mut wake_budget = ready_tasks.min(HART_NUM.saturating_sub(1));
+    for target_hart in 0..HART_NUM {
+        if target_hart == source_hart || cpu_mask & (1usize << target_hart) == 0 {
+            continue;
+        }
+        remote_target = true;
+        let idle = HART_IDLE[target_hart].load(Ordering::Acquire);
+        target_idle |= idle;
+        if idle && wake_budget != 0 && crate::arch::cpu::wake_hart(target_hart) {
+            ipi_sent = true;
+            wake_budget -= 1;
+        }
+    }
+    #[cfg(not(feature = "perf"))]
+    let _ = (remote_target, target_idle, ipi_sent);
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_scheduler_enqueue(remote_target, target_idle, ipi_sent);
+}
+
 /// 在指定 Hart 没有本地就绪任务时进入架构 idle 状态。
 ///
 /// 先发布 idle 状态，再检查一次就绪队列，只有队列仍为空时才执行架构
@@ -194,7 +224,7 @@ fn get_proc_by_hartid(hartid: usize) -> &'static mut Processor {
 ///
 /// 1. 按时间桶执行异步计时器、阻塞任务和 futex 的定时器维护。
 /// 2. 取出上一个任务，结算其运行时间；仍处于 `Ready` 或 `Running` 的任务
-///    重新加入本 Hart 的就绪队列，阻塞、停止或退出的任务不会重新入队。
+///    重新加入共享就绪队列，阻塞、停止或退出的任务不会重新入队。
 /// 3. 从当前 Hart 的调度策略中选择下一个任务，将其状态设置为 `Running`，
 ///    并记录新的 CFS 运行片段起点。
 /// 4. 通过 [`switch`] 从 idle 上下文切换到选中任务；如果没有任务，则发布
@@ -231,14 +261,15 @@ pub fn run_tasks() {
         }
 
         if let Some(next_task) = ready_queue::fetch_task(hartid) {
-            // An affinity change can race after CFS removes the old queue
-            // entry and before this hart publishes Running.  Put it back on
-            // the current destination instead of running it on a disallowed
-            // hart for one full timeslice.
-            if next_task.scheduled_hart() != hartid {
+            // An affinity change can race after CFS removes the queue entry
+            // and before this Hart publishes Running.  Put the task back if
+            // this Hart is no longer allowed, otherwise publish its actual
+            // execution Hart for timer ownership and affinity migration.
+            if !next_task.can_run_on(hartid) {
                 ready_queue::add_task(&next_task);
                 continue;
             }
+            next_task.set_scheduled_hart(hartid);
             #[cfg(feature = "perf")]
             {
                 crate::utils::perf::record_scheduler_selection(

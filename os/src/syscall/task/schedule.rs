@@ -125,6 +125,8 @@ pub fn sys_sched_setaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
     let old_hart = target.set_cpu_affinity(requested_mask);
     let new_hart = target.scheduled_hart();
     if old_hart != new_hart {
+        #[cfg(feature = "scheduler-cfs")]
+        crate::task::notify_harts_of_runnable_task(target.cpu_affinity(), 1);
         if target.tid() == task.tid() {
             drop(target);
             drop(task);
@@ -134,7 +136,8 @@ pub fn sys_sched_setaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
         } else {
             // A running remote task observes this IPI in user mode and moves
             // at the common trap/scheduler boundary.  A queued task is moved
-            // lazily when its stale CFS entry is fetched.
+            // lazily when its stale entry is fetched; all-hart CFS also wakes
+            // an idle Hart from the new affinity mask above.
             let _ = crate::arch::cpu::wake_hart(old_hart);
         }
     }

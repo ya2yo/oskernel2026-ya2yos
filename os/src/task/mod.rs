@@ -98,6 +98,7 @@ use log::{debug, warn};
 pub use manager::*;
 pub use process::*;
 pub use process::*;
+pub(crate) use processor::notify_harts_of_runnable_task;
 pub use processor::{
     current_task, current_token, current_trap_cx, run_tasks, schedule, take_current_task,
     Processor, PROCESSORS,
@@ -141,7 +142,7 @@ pub fn suspend_current_and_run_next() {
     exit_current_if_group_exited_or_killed();
 }
 
-/// Preempt the current task only when another task is queued on this hart.
+/// Preempt the current task only when another task is queued for this hart.
 /// Timer interrupts otherwise return directly to the interrupted task; this
 /// avoids switching through the idle context when there is no scheduling
 /// decision to make.  Blocking and sleep paths continue to use
@@ -162,10 +163,10 @@ pub fn preempt_current_and_run_next() {
     suspend_current_and_run_next();
 }
 
-/// Yield only when another task is ready on this task's home hart.
+/// Yield only when another task is ready for the current hart.
 ///
-/// `sched_yield()` is allowed to return immediately when there is no local
-/// competitor.  Avoiding the ready-queue round trip matters for userspace
+/// `sched_yield()` is allowed to return immediately when there is no eligible
+/// competitor. Avoiding the ready-queue round trip matters for userspace
 /// polling loops that use yield as a backoff hint.
 pub fn yield_current_and_run_next() {
     let task = current_task().unwrap();

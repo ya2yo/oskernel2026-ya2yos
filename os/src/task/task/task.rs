@@ -112,7 +112,8 @@ pub struct TaskControlBlock {
     pub process: Arc<Process>,
     /// Linux-visible CPU affinity mask for this thread (not its whole process).
     cpu_affinity: AtomicUsize,
-    /// Hart whose ready queue owns the next execution of this thread.
+    /// Hart that last selected this thread, also used for timer ownership and
+    /// affinity-directed migration notifications.
     scheduled_hart: AtomicUsize,
     // mutable
     // 异步中断/信号同步
@@ -531,9 +532,22 @@ impl TaskControlBlock {
         self.scheduled_hart.load(Ordering::Acquire)
     }
 
-    /// Update the thread's affinity and return the hart it was previously
-    /// placed on.  Queue consumers observe a changed placement and re-enqueue
-    /// stale entries on the newly selected hart.
+    /// Return whether this thread may be dispatched on the specified Hart.
+    #[inline]
+    pub(crate) fn can_run_on(&self, hartid: usize) -> bool {
+        hartid < HART_NUM && self.cpu_affinity() & (1usize << hartid) != 0
+    }
+
+    /// Publish the Hart that actually selected this task.
+    #[inline]
+    pub(crate) fn set_scheduled_hart(&self, hartid: usize) {
+        debug_assert!(hartid < HART_NUM);
+        self.scheduled_hart.store(hartid, Ordering::Release);
+    }
+
+    /// Update the thread's affinity and return the Hart it was previously
+    /// running on. Shared CFS entries remain in one queue and are filtered by
+    /// the new mask when selected.
     pub fn set_cpu_affinity(&self, requested_mask: usize) -> usize {
         let mask = requested_mask & self.allowed_cpu_mask();
         debug_assert_ne!(mask, 0);

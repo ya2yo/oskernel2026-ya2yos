@@ -10243,3 +10243,19 @@ mailbox。对普通 `mmap(PROT_NONE)` 的无条件 shootdown 也没有 PTE 变�
 快照中 remote TLB 的 `target_harts=2654` 与 `acknowledgements=2654` 相等，per-hart scheduler selection 八核均非零，
 且 `remote_enqueues=2831`；说明这两个邮箱 ACK 锁环已在实际运行中越过。日志还没有 `BUILDSTORM_COMPILE`/END/shutdown，
 当前 `client.ans` 只保存 GDB 连接、没有新的 hart 栈，故不进一步猜测 axbuild 的后续无输出原因。
+
+## 2026-08-06：all-hart CFS 共享就绪队列
+
+### 用户输入
+
+维护者继续要求将 per-hart CFS 优化为 all-hart CFS，并追问 `client.ans` 的 GDB 现场为什么仍显示有几个 CPU 没有运行。
+
+### 分析与采纳结论
+
+确认原 CFS 的多个 `READY_QUEUES` 按 `scheduled_hart` 隔离任务；某个 Hart 没有本地候选时进入 idle/WFI，并不等于该 Hart 未启动。即使使用共享队列，可运行任务数量不足或线程 affinity 受限时，仍可能存在空闲 Hart。采纳将 CFS 竞争范围扩大到全局 `(vruntime, tid)` 最小堆，同时保留线程 affinity 过滤，并将 `scheduled_hart` 收敛为最近一次实际运行 Hart。
+
+### 修改与验证
+
+修改 `os/src/task/scheduler/cfs.rs`、`os/src/task/scheduler/mod.rs`、`os/src/task/processor.rs`、`os/src/task/task/task.rs`、`os/src/syscall/task/schedule.rs` 和 `os/src/task/mod.rs`；保留维护者已有的 `user/src/bin/initproc.rs` 修改。CFS 入队按共享队列长度有限唤醒允许运行的 idle Hart，affinity 更新额外唤醒新 mask 中的 idle Hart，RR 分支维持原有 per-hart placement。
+
+`make build-arch TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64`、`make build-arch TARGET_ARCH=riscv64 SCHEDULER=rr`、`make perf TARGET_ARCH=riscv64`、目标文件 rustfmt 和 `git diff --check` 均通过。普通 `make run` 受已有 `disk.img` 写锁阻断；使用 `/tmp` qcow2 overlay 的 RISC-V 短时运行确认 8 个 Hart 在线、通过 `sigaltstack`/`rseq` 回归并进入 BuildStorm，无 panic、`TFAIL` 或 `TBROK`。样本未完成完整 BuildStorm，未宣称吞吐提升百分比；共享 CFS 单锁和 affinity 竞争窗口列为后续审计点。

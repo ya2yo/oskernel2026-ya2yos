@@ -34,8 +34,15 @@ pub mod ready_queue {
     use super::*;
 
     pub fn add_task(task: &Arc<TaskControlBlock>) {
-        policy::add_task(task);
-        crate::task::processor::notify_hart_of_runnable_task(task.scheduled_hart());
+        #[cfg(feature = "scheduler-cfs")]
+        if let Some(ready_tasks) = policy::add_task(task) {
+            crate::task::processor::notify_harts_of_runnable_task(task.cpu_affinity(), ready_tasks);
+        }
+        #[cfg(feature = "scheduler-rr")]
+        {
+            policy::add_task(task);
+            crate::task::processor::notify_hart_of_runnable_task(task.scheduled_hart());
+        }
     }
 
     pub fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {

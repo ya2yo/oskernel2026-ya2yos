@@ -2677,3 +2677,11 @@
 - **验证边界**：RISC-V、LoongArch64 release 和 LoongArch64 perf 构建通过；副本镜像 `-smp 12` 在汇编修正后确认 hart 1--11 在线、`sigaltstack`/`rseq` 通过并启动 BuildStorm 脚本，无 IPI/TLB panic。完整 BuildStorm、跨 hart codegen 与 COW/mmap 长时回归尚未完成。
 - **关联文档**：[共享地址空间 SMP 问题复盘](./problem/buildstorm-shared-address-space-smp.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### all-hart CFS 共享就绪队列（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求继续将 per-hart CFS 改为 all-hart CFS，并解释 `client.ans` 中部分 CPU 处于 idle 的原因。
+- **描述**：确认 per-hart CFS 的局部 ready queue 会让没有本地候选的 Hart 正常进入 idle/WFI；这不等于次核未启动。将 CFS 改为共享 `(vruntime, tid)` 最小堆，按线程 affinity 过滤候选，入队及 affinity 更新后按需唤醒 idle Hart；`scheduled_hart` 仅表示最近实际运行 Hart，RR 分支保持原 placement。
+- **验证边界**：RISC-V/LoongArch64 CFS 构建、RISC-V RR 构建、RISC-V perf 构建、目标文件 rustfmt 和差异检查通过；overlay 短时 RISC-V 运行确认 8 个 Hart 在线并进入 BuildStorm，无 panic/TFAIL/TBROK，但完整 BuildStorm、LTP 和性能 A/B 尚未完成。详见 [all-hart CFS 问题复盘](./problem/all-hart-cfs-scheduler.md)、[开发日志](./开发日志.md) 和 `ai.log`。
+- **关联 commit**：当前工作区未提交
