@@ -261,11 +261,13 @@ pub fn run_tasks() {
         }
 
         if let Some(next_task) = ready_queue::fetch_task(hartid) {
-            // An affinity change can race after CFS removes the queue entry
-            // and before this Hart publishes Running.  Put the task back if
-            // this Hart is no longer allowed, otherwise publish its actual
-            // execution Hart for timer ownership and affinity migration.
+            // CFS reserves Running while holding the queue lock.  An affinity
+            // change can still race after that reservation, so return the
+            // reservation to Ready before putting the task back.
             if !next_task.can_run_on(hartid) {
+                let mut next_task_inner = next_task.inner_lock();
+                next_task_inner.task_status = TaskStatus::Ready;
+                drop(next_task_inner);
                 ready_queue::add_task(&next_task);
                 continue;
             }

@@ -210,12 +210,18 @@ static READY_QUEUE: Lazy<Mutex<CfsRunQueue>> = Lazy::new(|| Mutex::new(CfsRunQue
 /// 放入队列；调用方仍负责持有任务的有效 `Arc`。
 pub(super) fn add_task(task: &Arc<TaskControlBlock>) -> Option<usize> {
     let tid = task.tid();
+    let mut queue = READY_QUEUE.lock();
+    // The queue lock serializes this check with fetch_task's transition to
+    // Running.  Checking status before taking the queue lock leaves a window
+    // where another hart can select the same task while it is being enqueued.
+    let status = task.inner_lock().task_status;
+    if status != TaskStatus::Ready {
+        return None;
+    }
     if !task.sched_entity.try_mark_queued() {
         warn!("add_task: task tid={} already in CFS queue, skipping", tid);
         return None;
     }
-
-    let mut queue = READY_QUEUE.lock();
     let vruntime = task.sched_entity.place_at(queue.min_vruntime);
     queue.tasks.push(CfsEntry {
         key: (vruntime, tid),
@@ -240,10 +246,17 @@ pub(super) fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {
             warn!("fetch task got a dropped task");
             continue;
         };
+        let can_run = task.can_run_on(hartid);
         let status = {
-            let inner = task.inner_lock();
+            let mut inner = task.inner_lock();
             let status = inner.task_status;
-            if status != TaskStatus::Ready {
+            if status == TaskStatus::Ready && can_run {
+                // Reserve the task before releasing the queue lock.  A wakeup
+                // on another hart can otherwise observe Ready after
+                // mark_dequeued() and dispatch this TCB concurrently.
+                inner.task_status = TaskStatus::Running;
+                task.sched_entity.mark_dequeued();
+            } else if status != TaskStatus::Ready {
                 // Keep the queue claim and task-state observation ordered so a
                 // concurrent waker can publish a replacement entry safely.
                 task.sched_entity.mark_dequeued();
@@ -258,7 +271,7 @@ pub(super) fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {
             );
             continue;
         }
-        if !task.can_run_on(hartid) {
+        if !can_run {
             // Keep the queue membership claim while the entry waits for an
             // allowed Hart. Rebuilding the weak entry drops the old heap item
             // without changing task lifetime ownership.
@@ -268,7 +281,6 @@ pub(super) fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {
             });
             continue;
         }
-        task.sched_entity.mark_dequeued();
         queue.advance_min_vruntime(entry.key.0);
         return Some(task);
     }

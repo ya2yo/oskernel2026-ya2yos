@@ -10295,3 +10295,30 @@ GDB 显示 `mprotect` writer 在 `remote_tlb::shootdown()` 等 ACK，同时多�
 ### RemoteTlbMutex<T> 统一锁封装
 
 维护者要求将任务表锁、futex 队列锁和 remote-TLB 更新锁的重复 `try_lock + poll` 逻辑抽到 `os/src/sync`。新增 `RemoteTlbMutex<T>`，保留 `spin::Mutex` 的 guard、`try_lock`、`get_mut`、`into_inner`、`Default` 和 `From` 基本接口，仅在竞争等待时轮询本地 mailbox；三类敏感锁已完成替换，普通锁不受影响。RISC-V/LoongArch64 CFS、RISC-V RR、RISC-V perf 构建及 `git diff --check` 通过，完整 BuildStorm/LTP 尚未重跑。
+
+## 2026-08-06：BuildStorm all-hart CFS 重复调度导致 page fault panic
+
+### 用户输入
+
+维护者要求分析 `server.ans` 和 `client.ans` 并修复 panic。
+
+### 分析与采纳结论
+
+`server.ans` 的首发异常是 `LoadPageFault`（`stval=0x2a`），`client.ans` 随后显示
+`spin::Once`、任务表、页缺失处理和当前任务路径的连锁 panic。回溯中的
+`Arc<DetachedMountFd>::clone` 与异常当前任务指针说明共享 all-hart CFS 允许同一 TCB
+被并发恢复：`fetch_task` 清除 `on_rq` 后，任务在 `run_tasks` 设置 `Running` 前仍可见为
+`Ready`，从而被重新入队/再次选择。
+
+采纳在共享队列锁内完成 `Ready -> Running` 预留和 `on_rq` 清除；入队也在该锁内检查
+`Ready`，affinity 在预留后变化时恢复 `Ready` 并重新入队。
+
+### 修改与验证
+
+修改 `os/src/task/scheduler/cfs.rs` 和 `os/src/task/processor.rs`；保留维护者已有的
+`user/src/bin/initproc.rs` 修改。`make TARGET_ARCH=riscv64`、默认流程中的 LoongArch64
+构建及 `git diff --check` 通过。RISC-V `/tmp` qcow2 overlay 运行 240 秒，8 个 Hart
+在线，`sigaltstack`/`rseq` 通过并进入 `BUILDSTORM_TOOLCHAIN ok`，无 panic 或 page fault；
+因完整 BuildStorm 尚未结束，未报告 446/446 完成。
+
+详见 [CFS panic 问题复盘](./problem/buildstorm-cfs-dispatch-panic.md)。

@@ -2710,3 +2710,15 @@
 - **验证边界**：RISC-V/LoongArch64 CFS、RISC-V RR、RISC-V perf 构建及差异检查通过；完整 BuildStorm/LTP 尚未重跑。
 - **关联问题**：[任务表锁问题复盘](./problem/buildstorm-task-table-remote-tlb-deadlock.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm all-hart CFS 重复调度导致 page fault panic（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans`/`client.ans`，要求定位 BuildStorm 的首发 panic 并修复。
+- **描述**：确认首发是 `LoadPageFault(stval=0x2a)`，后续 `spin::Once` 和页缺失处理 panic
+  属于同一 TCB 被多个 Hart 重复调度后的连锁损坏。修复 CFS 在共享队列锁内完成
+  `Ready -> Running` 预留、`on_rq` 清除和入队状态检查，并处理 affinity 变化回滚。
+- **验证边界**：RISC-V/默认跨架构构建和差异检查通过；240 秒 qcow2 overlay 运行进入
+  `BUILDSTORM_TOOLCHAIN ok`，无 panic/page fault，但完整 BuildStorm、LTP 和正式镜像运行仍待维护者复测。
+- **关联文档**：[CFS panic 问题复盘](./problem/buildstorm-cfs-dispatch-panic.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
