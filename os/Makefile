@@ -29,6 +29,7 @@ endif
 kernel:
 	@echo "In os/Makefile, BUILD_ARGS: $(KERNEL_BUILD_ARGS)"
 	@echo "Scheduler: $(SCHEDULER)"
+	@echo "Kernel features: $(KERNEL_FEATURES)"
 	@cargo build $(KERNEL_BUILD_ARGS) $(SCHEDULER_BUILD_ARGS) --features $(KERNEL_FEATURES)
 
 clean:

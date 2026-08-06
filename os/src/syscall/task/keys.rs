@@ -162,10 +162,6 @@ fn emit_key_notification(key_id: i32, subtype: u8) {
     }
 }
 
-// ===========================================================================
-// add_key(2)
-// ===========================================================================
-
 /// 参考 https://man7.org/linux/man-pages/man2/add_key.2.html
 pub fn sys_add_key(
     key_type: *const u8,
@@ -261,10 +257,6 @@ pub fn sys_add_key(
     Ok(serial as usize)
 }
 
-// ===========================================================================
-// request_key(2) — 伪实现
-// ===========================================================================
-
 /// 参考 https://man7.org/linux/man-pages/man2/request_key.2.html
 pub fn sys_request_key(
     _key_type: *const u8,
@@ -277,10 +269,6 @@ pub fn sys_request_key(
     debug!("[request_key] stub, assigned serial={}", serial);
     Ok(serial as usize)
 }
-
-// ===========================================================================
-// keyctl(2)
-// ===========================================================================
 
 /// 参考 https://man7.org/linux/man-pages/man2/keyctl.2.html
 pub fn sys_keyctl(option: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> SyscallRet {
