@@ -2722,3 +2722,11 @@
   `BUILDSTORM_TOOLCHAIN ok`，无 panic/page fault，但完整 BuildStorm、LTP 和正式镜像运行仍待维护者复测。
 - **关联文档**：[CFS panic 问题复盘](./problem/buildstorm-cfs-dispatch-panic.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+#### BuildStorm vfork 子 TCB 强引用生命周期（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans`/`client.ans`，要求分析 BuildStorm worker 退出时的 TCB 引用异常并修复。
+- **描述**：确认 `sys_clone()` 将子 TCB 的 `Arc` 跨 vfork 父线程挂起路径保留，导致子线程退出时 `strong_count` 多一；在入队后释放该临时引用，保持 TID 表和调度器负责生命周期。
+- **验证边界**：RISC-V/LoongArch64 release 构建、RISC-V perf 和 `git diff --check` 通过。普通及 perf 短时 RISC-V QEMU 均进入 `BUILDSTORM_TOOLCHAIN ok`，且不再出现 `strong_count`/`extra TCB refs`；随后触发 `spin::Lazy`/`spin::Once` poisoned panic，完整 BuildStorm/QEMU 测试未完成。
+- **关联问题**：[BuildStorm vfork 子 TCB 强引用生命周期](./problem/buildstorm-vfork-tcb-arc-lifetime.md)
+- **关联 commit**：当前工作区未提交

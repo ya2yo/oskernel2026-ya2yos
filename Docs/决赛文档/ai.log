@@ -10322,3 +10322,6 @@ GDB 显示 `mprotect` writer 在 `remote_tlb::shootdown()` 等 ACK，同时多�
 因完整 BuildStorm 尚未结束，未报告 446/446 完成。
 
 详见 [CFS panic 问题复盘](./problem/buildstorm-cfs-dispatch-panic.md)。
+### 2026-08-06：BuildStorm vfork 子 TCB 强引用
+
+维护者提供新的 `server.ans`/`client.ans`，指出 BuildStorm 阶段反复出现 TCB `strong_count` warning。分析 `exit_current_and_run_next()` 的引用组成后确认，`sys_clone()` 将 `new_task: Arc<TaskControlBlock>` 跨 `CLONE_VFORK` 的 `suspend_current_and_run_next()` 保存在父线程内核栈，形成退出期间的额外强引用。采纳在子任务入队并保存 TID 后立即 `drop(new_task)`；修改 `os/src/syscall/task/clone.rs`，并完成 RISC-V/LoongArch64 release 构建与 `git diff --check` 验证。随后普通及 perf RISC-V QEMU 运行均进入 `BUILDSTORM_TOOLCHAIN ok`，且不再输出 `strong_count`/`extra TCB refs`；测试之后仍触发 `spin::Lazy`/`spin::Once` poisoned panic，完整 BuildStorm 未完成。

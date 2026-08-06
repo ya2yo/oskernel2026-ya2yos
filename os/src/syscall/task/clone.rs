@@ -109,6 +109,11 @@ pub fn sys_clone(
     crate::utils::perf::record_clone_enqueue_duration(
         crate::arch::time::get_ticks().saturating_sub(enqueue_begin),
     );
+    // The child is already owned by the TID table and the weak ready queue.
+    // Do not keep a strong reference on the parent's suspended vfork stack;
+    // otherwise the child observes that transient Arc as a leaked TCB owner
+    // while exiting.
+    drop(new_task);
     // Do not charge the semantic vfork parent wait to child creation work.
     #[cfg(feature = "perf")]
     drop(clone_active_guard);

@@ -185,3 +185,4 @@
 - [BuildStorm all-hart CFS 重复调度导致的 page fault panic](./problem/buildstorm-cfs-dispatch-panic.md)
 - [BuildStorm futex 队列锁阻塞 remote TLB ACK](./problem/buildstorm-futex-remote-tlb-deadlock.md)
 - [BuildStorm 任务表锁阻塞 remote TLB ACK](./problem/buildstorm-task-table-remote-tlb-deadlock.md)
+- [BuildStorm vfork 子 TCB 强引用生命周期](./problem/buildstorm-vfork-tcb-arc-lifetime.md)
