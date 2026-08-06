@@ -1,11 +1,10 @@
 //! Metadata and directory operations for the lwext4 inode adapter.
 
 use super::*;
+use linux_raw_sys::general::{XATTR_CREATE, XATTR_REPLACE};
 
 impl Ext4Inode {
     pub(super) fn set_xattr_impl(&self, name: &[u8], value: &[u8], flags: u32) -> SyscallRet {
-        const XATTR_CREATE: u32 = 0x1;
-        const XATTR_REPLACE: u32 = 0x2;
 
         if flags & !(XATTR_CREATE | XATTR_REPLACE) != 0 {
             return Err(SysErrNo::EINVAL);

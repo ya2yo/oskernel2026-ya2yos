@@ -1321,7 +1321,7 @@
 - **场景**：维护者根据新的 `log.ans` 指出 `execve` 是主要耗时并要求继续优化，随后要求先补充文档。
 - **描述**：阶段 perf 计时确认 `from_elf` 和动态解释器 PT_LOAD eager 映射占主要时间。修复 ELF 前缀增量读取、动态解释器页对齐文件段按需 `MAP_PRIVATE` 映射，并让 ELF BSS 缺页分配零页；可写页保持 COW 私有语义。
 - **验证**：当前 RISC-V `log.ans` 的 12 次 `execve` 累计 `208763 us`，CAgent `fs-search pass 764` 并正常 `shutdown!`，无 `panic/TFAIL/TBROK`；RISC-V、LoongArch64 release 构建通过。详见 `ai.log` 对应条目和 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md)。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`311040d7`
 
 #### `tmp_06` fstat 分析与 FsIndex identity epoch 优化（7.29）
 
@@ -1350,7 +1350,7 @@
 - **验证**：RISC-V、LoongArch64 `make perf` 及 fmt/diff check 均通过，仅有既有 Cargo config 和
   vendored smoltcp warning；guest 10 分钟样本待维护者运行。
 - **关联文档**：[BuildStorm 读路径与 lwext4 锁竞争](./problem/buildstorm-read-path-lock-contention.md)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`27eafda6`
 
 #### `tmp_08` directory lookup-stat 一次性 fstat 优化（7.29）
 
@@ -1364,7 +1364,7 @@
 - **验证**：fmt/diff check、RISC-V/LoongArch64 `make perf` 和 `make TARGET_ARCH=riscv64` 均通过；最后保留
   perf 版 RISC-V `kernel-rv`。未自行运行新的 QEMU，下一轮样本待验证 guest hit/miss 与完整 BuildStorm 状态。
 - **关联文档**：[BuildStorm 读路径与 lwext4 锁竞争](./problem/buildstorm-read-path-lock-contention.md)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`bdd7e30b`
 
 #### BuildStorm EXT4 查找元数据复用（7.27）
 
@@ -1372,7 +1372,7 @@
 - **场景**：维护者要求继续分析 BuildStorm `log.ans` 并优化 Cargo 并行编译中的文件系统瓶颈，随后提供 360 秒 `log.ans` 和三分钟 `1.ans`。
 - **描述**：AI 追踪 `find()`、`FsIndex::insert_inode_idx()`、`fstat()` 与首个文件页缓存读取，确认同一次路径查找已获得的 `ext4_stat_get()` 结果被重复查询。实现类型与 stat 联合查询，并用其初始化普通文件的可失效 `Kstat/known_size`；同时只为真正新增的 canonical inode alias 进入 EXT4 全局锁。目录、链接和特殊节点保持原有动态路径。
 - **验证**：RISC-V `make perf`、LoongArch64 `make build-arch`、格式检查与补丁检查通过。三分钟 RISC-V 样本无 panic/TFAIL/TBROK，且相近读量下 `ext4_fstat_lock` samples、hold、wait 分别由 `8929/7.39 s/4.22 s` 降至 `6028/4.11 s/1.23 s`；日志未完成，未报告完整 BuildStorm wall-clock。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`ad2c3ce0`
 
 #### BuildStorm 多 hart VFS 读/元数据吞吐优化（7.26）
 
@@ -1380,7 +1380,7 @@
 - **场景**：维护者在 BuildStorm 不再报错后要求继续将 8 hart 并行编译的吞吐降到可接受范围，并禁止通过修改测试脚本掩盖内核问题。
 - **描述**：确认所有 hart 已启动，修正 `CLONE_VM|CLONE_VFORK` exec worker 的 hart 放置；保留普通共享地址空间线程的原 hart 约束。将有界 VFS lookup cache 跨短命 compiler worker 保留，扩展普通单页读取的共享页缓存，并为普通文件增加带写入/元数据变更失效的 `Kstat` cache。lwext4 全局串行约束保持不变。
 - **验证**：最新 RISC-V `log.ans` 无 panic/TFAIL/TBROK，在约 303 s 前到达 `11/446`；同阶段旧样本在约 519 s 后才到达，二者不是严格 A/B。RISC-V perf、RISC-V/LoongArch64 release 构建和 `git diff --check` 通过。完整 BuildStorm 与 `fstat` cache 的运行期样本尚未完成。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`fb7de7b5`, `6e5ae378`
 
 #### BuildStorm EXT4 全局锁可睡眠等待（7.26）
 
@@ -1393,7 +1393,7 @@
   `panic/TFAIL/TBROK`；QEMU 在 Cargo `3/446` 被外部终止。RISC-V、LoongArch64 `make perf`
   与补丁检查通过。详见 `ai.log` 对应条目和
   [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`3248f37b`
 
 #### BuildStorm `ppoll` 忙让出调度热循环修复（7.26）
 
@@ -1406,7 +1406,7 @@
 - **验证**：RISC-V perf、LoongArch64 release 构建与补丁检查通过。RISC-V 新 `log.ans` 在
   guest 341684 ms 时调度选择为 153080 次，Cargo 已至 `6/446`，无 `panic/TFAIL/TBROK`；QEMU
   被外层终止，未将完整 BuildStorm 标为通过。详见 [problem/buildstorm-ppoll-busy-yield.md](./problem/buildstorm-ppoll-busy-yield.md) 与 `ai.log`。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`a29e6ef1`
 
 #### BuildStorm MINIBUILD inode cache 命中路径优化（7.25）
 
@@ -1423,7 +1423,7 @@
   `read`、`write`、`stat` 分别为 `4318737`、`3599279`、`3742446`、`3631424`、`2613611 us`。
   QEMU 新一轮未取得独立 A/B 样本，因宿主 `/var/tmp` 权限限制且后续运行被中断，未报告加速
   比例。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`06217943`
 
 #### execve 解释器元数据读取优化（7.25）
 
@@ -1431,7 +1431,7 @@
 - **场景**：维护者要求继续优化 `log.ans` 中的 `execve`，并确认 CAgent `fs-create pass 472` 的耗时组成。
 - **描述**：AI 对比动态解释器 VMA 路径与 perf 快照，确认页对齐解释器段虽已按需映射，仍先被完整读入内核 `Vec`。修复为仅读 ELF/program header，页对齐段继续使用 `MAP_PRIVATE` 文件 VMA，未对齐 RW 段直接读入已分配用户页，维持零填充、动态库字节补丁与私有 COW 语义。`472` 被确认是 `agent_lite` 的用户态 wall-clock，不是单个内核时间桶；相邻 494 ms 快照的首尾并不与 agent 窗口对齐，故其中 4 次 `execve` 仅可给出近似内核活动，不能视为 472 ms 的精确组成。
 - **验证**：RISC-V `log.ans` 中 10 次 `execve` 由 `188572 us` 降至 `170980 us`，8 次解释器读取由 `23402 us` 降至 `8371 us`；`fs-create pass 472` 后正常 `shutdown!`，无 `panic/TFAIL/TBROK`。RISC-V、LoongArch64 release 与 RISC-V perf 构建通过；未运行 LoongArch64 QEMU、完整 LTP/BuildStorm 或第二次独立性能样本。详见 [problem/execve-dynamic-interpreter-demand-paging.md](./problem/execve-dynamic-interpreter-demand-paging.md) 和 `ai.log`。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`59f3e60f`
 
 #### BuildStorm MINIBUILD `lseek` 热路径计时（7.25）
 
@@ -1445,7 +1445,7 @@
 - **验证**：RISC-V perf、RISC-V/LoongArch64 release 构建和格式检查通过；QEMU 因宿主
   `/var/tmp` 只读在启动前失败，尚无新的 guest perf 快照。详见 `ai.log` 对应条目和
   [problem/buildstorm-read-path-lock-contention.md](./buildstorm-read-path-lock-contention.md)。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`a8d924ac`
 
 #### 阻塞型 wait/futex perf 改用实际运行时间（7.25）
 
@@ -1469,7 +1469,7 @@
 - **场景**：维护者提供全量 CAgent 的评测机耗时，指出其相对 Linux 存在数量级性能差距，并要求针对内核优化及补充文档。
 - **描述**：AI 对齐 `log.ans` 的最终 perf 快照，确认 EXT4 全局锁累计等待约 29.034 秒是首要吞吐瓶颈。修复将高频 `inode.path()` 和已知大小查询移出 lwext4 全局锁，页缓存命中改用共享读锁；同时收缩 TCP 无效全栈轮询和 router RX 队列复制。rename、alias recovery、写入、截断和缓存重复加载的语义边界保持保护。详见 `ai.log` 和 [problem/cagent-ext4-tcp-throughput.md](./problem/cagent-ext4-tcp-throughput.md)。
 - **验证**：RISC-V、LoongArch64 `make perf` 及格式检查通过。变更后本机 QEMU 全量运行被中断，未报告伪造的 A/B 比例；维护者反馈评测性能提升明显。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`17466f1b`
 
 #### BuildStorm `cc` 符号链接缓存污染修复（7.26）
 
@@ -1483,7 +1483,7 @@
   Cargo `1--2/446` 的 `ext4_fopen`/LTO 失败推进到 `37/446` 且未出现对应错误；日志未完成，
   因此未宣称全量 BuildStorm 或 LoongArch64 通过。详见
   [problem/buildstorm-cc-symlink-cache-poisoning.md](./problem/buildstorm-cc-symlink-cache-poisoning.md)。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`df0601d3`
 
 #### BuildStorm EXT4 锁 FIFO 单唤醒优化（7.26）
 
@@ -1496,7 +1496,7 @@
   `buildstorm-compile` 预构建，外层 timeout 结束前未观察到 panic；没有可比的完整 guest 快照，
 未报告端到端加速比例。详见 `ai.log` 和
 [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`a0c27f2c`
 
 #### BuildStorm 普通 `read()` 文件页缓存复用（7.26）
 
@@ -1508,7 +1508,7 @@
 - **验证**：RISC-V/LoongArch64 release 构建、RISC-V perf 构建通过；RISC-V `/tmp` qcow2 叠加盘
   180 秒定向运行无 panic/TFAIL/TBROK，Cargo 推进到 `1/446`。完整 BuildStorm 与严格 A/B
   wall-clock 尚未完成。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`c3293124`
 
 #### BuildStorm MemorySet 与 EXT4 可睡眠锁死锁（7.26）
 
@@ -1524,7 +1524,7 @@
 - **验证**：`git diff --check`、格式检查及 RISC-V/LoongArch64 release 构建通过。沙箱 QEMU
   受宿主 `/var/tmp` 临时文件权限限制未启动；维护者确认死锁已修复，未记录为 AI 独立完成的
   完整 BuildStorm 回归。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`023192e1`
 
 #### BuildStorm write-back cache LRU 优化（7.27）
 
@@ -1539,7 +1539,7 @@
 - **验证**：`cargo fmt`、补丁检查，以及 RISC-V/LoongArch64 `make perf` 通过，仅有既有
   smoltcp warning。`3.ans` 在修复前生成，尚未取得新 kernel 的同配置运行样本或完整 BuildStorm
   结果，未报告加速比例。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`806bcf2b`
 
 #### BuildStorm cached-parent miss 去除无效中间链接扫描（7.27）
 
@@ -1553,7 +1553,7 @@
 - **验证**：`cargo fmt`、`git diff --check`、RISC-V/LoongArch64 `make perf` 均通过，仅有既有
   smoltcp warning。`4.ans` 早于新 fast path，未取得其 QEMU 运行样本或完整 BuildStorm 数据，未报告
   端到端加速比例。详见 [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`8df86386`
 
 #### BuildStorm Rustc rename 全挂载 flush 优化（7.27）
 
@@ -1568,7 +1568,7 @@
 - **验证**：`cargo fmt`、`git diff --check`、RISC-V/LoongArch64 `make perf` 均通过，仅有既有
   smoltcp warning。`5.ans` 早于修复；未取得修复后的 QEMU/完整 BuildStorm 数据，未报告端到端
   加速比例。详见 [problem/buildstorm-read-path-lock-contention.md](./problem/buildstorm-read-path-lock-contention.md)。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`c6cb38d0`
 
 #### BuildStorm `6.ans` rename 验证与 stat cache 优化（7.27）
 
@@ -1581,7 +1581,7 @@
 - **验证**：格式检查、补丁检查及 RISC-V/LoongArch64 `make perf` 均通过，仅有既有 smoltcp warning。
   `6.ans` 早于 stat-cache 改动，未报告该改动的运行期 A/B 或完整 BuildStorm 结果。详见
   `ai.log` 和 [BuildStorm 普通 read 路径与 EXT4 全局锁争用](./problem/buildstorm-read-path-lock-contention.md)。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`7b1640a9`
 
 #### BuildStorm `7.ans` 后段性能复核（7.27）
 
@@ -1597,7 +1597,7 @@
 - **场景**：维护者连续提供 BuildStorm `*.ans`/`log.ans`，要求根据实时 perf 输出直接优化；随后明确要求补齐当前工作区和本轮优化的文档。
 - **描述**：确认三页预读会以更长的 lwext4 临界区抵消较少的读锁请求，已恢复为当前页加下一页的两页读取。实现按 `(mount, inode)` 索引、16 个 range/64 KiB 上限的 sparse 写缓冲与读时覆盖，避免洞被 whole-file cache 零填充，也避免同路径 descriptor 切换把脏 range 过早提交；同时复用首次 lookup identity、收紧保留最终 symlink 的 cache 边界，并新增 VFS、预读、write-back cache 与 write `open/quota/data` 聚合统计。详见 [problem/buildstorm-ext4-sparse-write-readahead.md](./problem/buildstorm-ext4-sparse-write-readahead.md) 与 `ai.log`。
 - **验证**：当前两页预读样本在相近 `Building 9/446` 阶段的 read lock 累计 wait/hold 为 `424.939/53.579 s`，低于三页试验的 `525.574/68.484 s`；sparse read overlay 已实际命中。RISC-V、LoongArch64 perf 构建和双架构 release 构建通过，`git diff --check` 通过。最终新增的 write phase 统计尚未取得 guest 样本；未报告完整 BuildStorm 或严格 A/B 加速比例。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`bcca8808`, `7b1640a9`, `c6cb38d0`
 
 #### BuildStorm 读写 descriptor 往返重开优化（7.28）
 
@@ -1660,7 +1660,7 @@
   和 `git diff --check` 通过，仅有既有 smoltcp warning。QEMU 因沙箱 `/var/tmp` 只读未能独立
   启动，`tmp_02` 为维护者提供的运行验证；完整 446 crate、Linux 端到端和正式评分仍待后续。
 - **关联文档**：[BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`e2946030`
 
 #### 更新版 `tmp_03.ans` 的混合命中读取优化（7.28）
 
@@ -1835,7 +1835,7 @@
 - **场景**：维护者要求为 pipe 补齐 wait/copy/short-write/wakeup 聚合统计，并提供可独立运行的 lmbench pipe workload。
 - **描述**：AI 在 perf feature 下新增 relaxed pipe I/O、wait/copy duration、任务/poll wakeup 及 wakeup 后重检计数；wait 只包围 `schedule_blocked_current()`，copy 只包围 `UserBuffer` 与 `PipeBuf` 数据移动，未改动 pipe 容量、阻塞条件、队列或唤醒策略。lmbench 增加 glibc/musl 的显式 `bw_pipe -P 1` 单项入口和成对日志标记，不接入默认全量流程。
 - **验证**：RISC-V、LoongArch64 `make perf` 与普通 release 构建通过，只有既有 `smoltcp` warning；RISC-V QEMU 已打印新 pipe 字段，但预制 `sdcard-rv.img` 不会被 `make run` 回写 user ELF，新增独立入口未实际装入 guest，且 120 秒运行未到 `shutdown!`。临时路由与 `disk.img` 链接均已恢复/删除；未以 raw `syscall_duration write` 或单次吞吐样本声称加速。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`a0c27f2c`
 
 #### RISC-V pipe 跨 hart idle IPI 唤醒优化（7.29）
 
@@ -2135,7 +2135,7 @@
   Docker 编译并生成 `tmp_02` 运行证据。宿主机因 Docker 生成目录属主为 `nobody:nogroup` 无法重编译，本轮未删除该目录；
   新文件/既有文件 `O_EXCL`、新目录/既有目录和非 root/S_ISGID owner 语义回归仍待定向补测。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/buildstorm-read-path-lock-contention.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`5b38602b`
 
 #### `tmp_03/tmp_05/tmp_06` P17 rename 归因与后段吞吐方案（7.31）
 
@@ -2330,7 +2330,7 @@
 - **验证边界**：双架构 lwext4 C 和 release 内核构建通过；RISC-V 8 HART 冒烟通过 TOOLCHAIN/MINIBUILD 且无 panic/assert，
   但未完成 BuildStorm、错误注入、fsck 或 P21.2 oracle，不报告加速。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、[AI 记录](./ai.log)
-- **关联 commit**：本轮提交
+- **关联 commit**：`34293e86`
 
 #### lwext4 SMP P21.2a bcache/block request telemetry（8.2）
 
@@ -2344,7 +2344,7 @@
 - **验证边界**：双架构 lwext4 C、release 与 perf 构建通过，`git diff --check` 通过；RISC-V 8 HART 日志无
   panic/ERROR/TFAIL/TBROK，但只到 Cargo `21/446`，没有完整 BuildStorm、并发 oracle、错误注入或 fsck。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`e35c4c5c`
 
 #### lwext4 SMP P21.2b dirty reclaim RB tree panic 回退（8.2）
 
@@ -2357,7 +2357,7 @@
 - **验证边界**：已核对 `tmp_11.ans`、地址符号和工作区回退结果，并通过 `git diff --check`；尚未在回退后重跑
   QEMU/BuildStorm 或双架构构建，不能把本次处理描述为性能改善或完整稳定性验证。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、[AI 记录](./ai.log)
-- **关联 commit**：待本轮文档提交
+- **关联 commit**：`467f56b1`
 
 #### lwext4 SMP P21.2b.0/P21.2b.1 生命周期 oracle 与 ownership API（8.2）
 
@@ -2374,7 +2374,7 @@
   BuildStorm 通过或性能提升。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、
   [AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`55fb8154`
 
 #### EXT4 xattr syscall Linux 语义补齐（8.3）
 
@@ -2387,7 +2387,7 @@
 - **验证边界**：双架构 release 构建、格式与补丁检查通过。短小 guest LTP 运行因 final-2026 镜像没有 xattr
   测试二进制而未获得有效内核结果；没有运行完整 LTP 或 BuildStorm。
 - **关联文档**：[问题复盘](./problem/ext4-xattr-linux-semantics.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`99947f41`
 
 #### lwext4 SMP P21.2b.2 默认关闭的 dirty bcache capacity reclaim（8.2）
 
@@ -2405,7 +2405,7 @@
   保持默认关闭且不报告性能收益。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/lwext4-smp-concurrent-bcache-foundation.md)、
   [AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`36f858b9`
 
 #### P21.3 EXT4 shared admission 与 Linux 锁模型对照（8.3）
 
@@ -2421,7 +2421,7 @@
   LoongArch64 或文件系统 LTP 回归。
 - **关联文档**：[优化方案](./优化方案.md)、[问题复盘](./problem/ext4-linux-locking-and-lwext4-admission.md)、
   [AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`4e0738a0`
 
 #### lwext4 Rust allocator `LayoutError` panic（8.3）
 
@@ -2430,7 +2430,7 @@
 - **描述**：审计 Rust C allocator 后确认 `free()` 信任被破坏的块头并对 `Layout::from_size_align` 使用 `unwrap()`；同时由 build script 打开 `LWEXT4_USE_USER_MALLOC`，将内核 lwext4 从裸弱 `malloc/free` 切换到显式 `ext4_user_*` wrapper，增加 magic、size 校验和溢出处理，避免 allocator ABI 混用和 panic。
 - **验证边界**：host 隔离 CMake `LIB_ONLY` 构建及静态检查通过；Docker 编译由维护者确认，AI 未重复 Docker guest 运行，未宣称完整 BuildStorm 回归。
 - **关联文档**：[问题复盘](./problem/lwext4-rust-allocator-layout-error.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`3ec47ec1`
 
 #### BuildStorm lwext4 C rwlock preemption deadlock（8.3）
 
@@ -2444,7 +2444,7 @@
   360 秒 timeout 前推进到 Cargo `15/446`（旧死锁样本约 `2/446`），无已观察 panic/TFAIL/TBROK/ERROR，但没有完整
   BuildStorm 结束；不报告 fsck、LTP 或运行时跨架构通过。
 - **关联文档**：[问题复盘](./problem/ext4-linux-locking-and-lwext4-admission.md)、[优化方案](./优化方案.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`a9d2cde2`, `77a07a3a`
 
 #### 当前工作区 ext4 资源级锁迁移与验证边界（8.3）
 
@@ -2453,7 +2453,7 @@
 - **描述**：根据当前差异记录 lwext4 的资源级 C 锁、Rust task-aware FIFO 锁回调、VFileCache data/flush 分离与快照写回修复，明确 `EXT4_OP_LOCK` 已从当前 ext4 调用路径移除。最新 `server.ans` 停在 Cargo `8/446`，GDB 只观察到 8 个 hart 均在 `wfi`，因此文档没有把该现场解释为 ext4 或 futex 死锁，也没有宣称并行化收益。
 - **验证边界**：本轮只更新开发日志、问题记录和 AI 记录，未重新编译或运行 QEMU；完整 BuildStorm、fsck、LTP、并发写回和 LoongArch64 运行待维护者后续验证。
 - **关联文档**：[问题复盘](./problem/ext4-linux-locking-and-lwext4-admission.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`22013868`
 
 #### BuildStorm 资源锁分类、fd 锁域收缩与任务表快照死锁（8.3）
 
@@ -2467,7 +2467,7 @@
   Docker BuildStorm、fsck、文件系统 LTP 或 LoongArch64 guest，故不报告完整运行、跨架构正确性或性能提升。
 - **关联文档**：[优化方案](./优化方案.md)、[资源锁问题复盘](./problem/buildstorm-ext4-resource-lock-scope-telemetry.md)、
   [死锁问题复盘](./problem/buildstorm-task-timer-snapshot-deadlock.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`15dd439e`
 
 #### BuildStorm CMA/journal 锁死与 RISC-V trap return 窗口（8.4）
 
@@ -2476,7 +2476,7 @@
 - **描述**：GDB 将 Cargo 停滞关联到 ext4 写入所需的 VirtIO DMA CMA 分配与 SIGKILL 页帧回收同时等待 ticket `LockedHeap`；改为 task-owner CAS CMA 锁，并在发散 task exit 中显式清理 owner。lwext4 journal 改以当前 task 是否拥有 resource write lock 决定 transaction stop/abort，防止共享 depth 被跨任务收尾；RISC-V user return 在 `sret` 前抑制当前 S-mode `SIE`，关闭 user `stvec` 已生效时的错误陷入窗口。
 - **验证边界**：格式和 diff 检查通过。RISC-V `make` 因宿主缺少 `riscv64-linux-musl-cc` 在 lwext4 CMake 失败，未得到新 guest；未完成完整 BuildStorm、Cargo `53/446` 越过确认、LTP、fsck、GDB 回归或 LoongArch64 运行，故不宣称死锁/panic 已运行时消除或跨架构通过。
 - **关联文档**：[CMA 问题复盘](./problem/buildstorm-cma-ticket-lock-owner-exit.md)、[journal 问题复盘](./problem/lwext4-journal-transaction-owner.md)、[RISC-V trap 问题复盘](./problem/riscv-user-return-interrupt-window.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`905023fa`, `2f07bd0c`, `44486f29`
 
 #### lwext4 journal 满时断言自旋与 BuildStorm 117 crate 验证（8.4）
 
@@ -2492,7 +2492,7 @@
   `liblto_plugin.so` 动态链接路径警告，且未出现完整 BuildStorm 成功标记；本轮只补文档，未重新构建或运行 QEMU，未完成
   fsck、LTP、LoongArch64 或 journal 错误语义回归。
 - **关联文档**：[问题复盘](./problem/lwext4-journal-full-buildstorm.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`dfcb1e09`
 
 #### BuildStorm bcache checkpoint 引用与 journal callback 生命周期（8.4）
 
@@ -2507,7 +2507,7 @@
   BuildStorm 从 `0/446` 连续运行到 `131/446`，没有目标 warning、panic、`EIO`、`TFAIL`、`TBROK` 或 compiler error；
   运行在超过需求的 `117` 后人工终止。未完成 446 crate、`e2fsck -fn`、文件系统 LTP 或 LoongArch64 guest runtime。
 - **关联文档**：[问题复盘](./problem/buildstorm-bcache-checkpoint-refcount.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`12fc866d`, `219fbf61`
 
 #### `lwext4_rust` 全 Rust 化阶段方案（8.4）
 
@@ -2516,7 +2516,7 @@
 - **描述**：审计当前生产路径的 C 核心、Rust FFI 适配和既有 P22 高层路线后，将方案细化为 P22-R0 至 P22-R7：冻结镜像/行为契约和性能基线，隔离 legacy C ABI，建立纯 Rust readonly on-disk 实现，建立 native inode/cache/lock ownership，受控实现 metadata 写入，完成 JBD2-compatible journal/recovery，按完整 feature profile 切换 native backend，最后删除 C/CMake/bindgen/musl 工具链和 C 宿主测试。方案明确禁止机械 `c2rust` 作为最终实现，禁止在同一可写挂载混用 C/Rust 的 cache、inode 或 journal，并要求每阶段由 Linux `e2fsck -fn`/`debugfs`、LTP、BuildStorm、双架构和故障恢复验证。
 - **验证边界**：本轮仅更新设计文档与 AI 记录，完成 Markdown/差异检查；没有实现 native 后端，也没有运行内核构建、QEMU、LTP、BuildStorm、fsck 或性能测试，不将任一规划阶段描述为已完成。
 - **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`255f11f5`
 
 #### BuildStorm journal callback 与 cache flush 并发串行化（8.4）
 
@@ -2531,7 +2531,7 @@
   或 LoongArch64 runtime。
 - **关联文档**：[问题复盘](./problem/buildstorm-journal-cache-flush-serialization.md)、[开发日志](./开发日志.md)、
   [AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`ae9a772c`
 
 #### 暂存区 rustc 稳定性与调度 perf 改动文档补录（8.5）
 
@@ -2553,7 +2553,7 @@
 - **工具/模型**：Codex (GPT-5)
 - **场景**：维护者提供新的 `server.ans`，要求分析 BuildStorm 在 Tokio runtime 初始化阶段的 `Bad file descriptor` 并修复。
 - **描述**：确认全局 epoll 注册表错误使用进程局部 raw fd 作为 key；并发构建子进程复用 fd 号时会覆盖仍存活的实例。改为以 `EpollFile` 对象身份索引弱引用，并从当前进程 `FdTable` 解析后按 `Arc::ptr_eq` 匹配，更新 `epoll_ctl`、`epoll_pwait` 和等待路径。RISC-V 构建、debug 构建通过；短时 BuildStorm 进入 `pre-build tg-xtask`，尚未再次执行正式 runtime 或完整 BuildStorm，不报告原错误已运行时消除或端到端性能通过。详见 [problem/buildstorm-epoll-registry-fd-reuse.md](./problem/buildstorm-epoll-registry-fd-reuse.md) 与 `ai.log` 对应条目。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`e01b3ca7`
 
 #### 持久化镜像下 procfs 任务目录复用与启动 panic（8.5）
 
@@ -2562,7 +2562,7 @@
 - **描述**：GDB 将 panic 定位到 `TaskControlBlock::new()` 中的 `create_proc_dir_and_file(...).expect(...)`；`server.ans` 的错误为既有 `/proc/1` 目录被 `O_CREATE | O_DIRECTORY | O_RDWR` 打开时返回 `EISDIR`。目录打开改为只读 `O_DIRECTORY` 探测，只有 `ENOENT` 才创建；`stat/status/maps/pagemap` 统一 `O_TRUNC` 覆盖残留文件，并移除 `stat` 打开的 `unwrap()`。
 - **验证边界**：RISC-V 与 LoongArch64 release 构建通过；持久化 RISC-V 运行越过 initproc、sigaltstack/rseq 回归、BuildStorm toolchain/minibuild 和 `pre-build tg-xtask`，未完成正式 446 crate BuildStorm、LTP、fsck 或 LoongArch64 QEMU 运行。
 - **关联文档**：[procfs 问题复盘](./problem/procfs-persistent-task-directory-reuse.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`22afcbd3`
 
 #### pipe 并发 panic 与 BuildStorm rename 覆盖语义（8.5）
 
@@ -2571,7 +2571,7 @@
 - **描述**：确认 pipe 检查可用长度后释放锁会让并发 reader/writer 在实际 I/O 前使长度失效；将检查、数据移动和唤醒合并到同一锁临界区。另确认 lwext4 缺少普通文件 rename 覆盖语义，使 Cargo 发布 dep-graph 时返回 `EEXIST` 并遗留 0 字节缓存；补齐普通文件目标替换、同 inode no-op 和 `EISDIR/ENOTDIR`，目录覆盖仍保持 `EEXIST`。新日志中的 mmap warning 是 Cargo 丢弃旧缓存并自动重建，不是新 panic。
 - **验证边界**：host lwext4 C 构建、rename 覆盖回归、`e2fsck -fn` 和 RISC-V/LoongArch64 release 构建通过；最新 RISC-V BuildStorm 从 Cargo `440/446` 推进到 `444/446`，无原 rename `EEXIST` 或 pipe panic，但尚未取得完整结束标记，也未运行 LoongArch64 QEMU BuildStorm。
 - **关联文档**：[pipe 问题复盘](./problem/pipe-concurrent-io-stale-availability.md)、[rename 问题复盘](./problem/buildstorm-ext4-rename-replace.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`1ce48b3a`, `67708809`
 
 #### BuildStorm 原生动态库探测 WARN 误报（8.5）
 
@@ -2580,7 +2580,7 @@
 - **描述**：确认 35 条内核 WARN 全部来自动态库兼容 mapper 未命中；该分支会保留原路径并由后续 `open(2)` 返回真实结果，是 Debian native loader 搜索 LLVM/Clang、libatomic、libstdc++ 等候选路径的正常控制流。将记录降为 debug，不增加 basename 白名单、不重定向到旧 `/glibc`/`/musl`，并保留真正会导致解释器加载失败的 direct-map warning。日志中的 0 字节 dep-graph 和 BuildStorm 源码 dead-code warning 与本问题分开处理。
 - **验证边界**：目标文件 rustfmt 检查和 RISC-V/LoongArch64 release 构建通过；未重跑完整 BuildStorm，未终止维护者已有的修改前内核 QEMU/GDB 会话。
 - **关联文档**：[问题复盘](./problem/buildstorm-dynamic-library-probe-warning.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`219fbf61`
 
 #### BuildStorm linker wrapper 的 `.sh` 后缀误判（8.5）
 
@@ -2589,7 +2589,7 @@
 - **描述**：确认 `sys_execve()` 在 shebang 解析前把所有 `.sh` 路径强制改写为 BusyBox `sh`，绕过了 linker wrapper 的 `#!/bin/bash`，从而把 Bash 语法交给不兼容的解释器。删除该后缀特判，恢复按 shebang 选择解释器；新增问题复盘并更新开发日志和索引。
 - **验证边界**：目标文件 rustfmt、`git diff --check`、RISC-V/LoongArch64 release 构建通过；RISC-V 180 秒 QEMU 已输出 `BUILDSTORM_TOOLCHAIN/MINIBUILD ok` 并推进到 pre-build `444/446`，但在进入最终 linker 调用前超时，因此未观察到原错误不能等同于 linker 或完整 BuildStorm 已通过。
 - **关联文档**：[linker wrapper 问题复盘](./problem/buildstorm-linker-script-shebang.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`e6ee97f0`
 #### BuildStorm exclusive 创建 EEXIST 日志误报（8.5）
 
 - **工具/模型**：Codex (GPT-5)
@@ -2599,7 +2599,7 @@
   仅将 metadata 文件/目录创建 wrapper 的 `EEXIST` 日志降为 debug，其他 errno 仍记 error。
 - **验证边界**：目标 crate `cargo fmt` 与 `git diff --check` 通过；完整 QEMU BuildStorm 尚未重跑。
 - **关联文档**：[问题复盘](./problem/buildstorm-exclusive-create-eexist-log.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`746bdf65`
 
 #### BuildStorm LoongArch64 MAP_FIXED 重叠 VMA 与 rustc SIGSEGV（8.5）
 
@@ -2608,7 +2608,7 @@
 - **描述**：读取 fault diagnostics 并沿缺页、mmap VMA 和页表路径追踪；临时记录确认 jemalloc 以 `MAP_FIXED` 提交范围超出旧 `PROT_NONE` VMA，旧代码追加重叠 area，按顺序查找时旧权限遮蔽新映射。修复 `MemorySetInner::mmap`，`MAP_FIXED` 先用内部 `munmap` 清理重叠动态 mmap，再插入替换 VMA；保留 `MAP_FIXED_NOREPLACE` 的 `EEXIST`。
 - **验证边界**：RISC-V 与 LoongArch64 release 构建通过；修复后 LoongArch64 诊断版 QEMU 在 180 秒内从原 `2/446` 推进至 `41/446`，无 `fault-diagnostics`、rustc `SIGSEGV`、panic 或 compiler error，但未完成完整 BuildStorm。
 - **关联文档**：[问题复盘](./problem/buildstorm-map-fixed-overlap-sigsegv.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`fa8906e2`
 
 #### LoongArch BuildStorm FCC 条件状态丢失（8.6）
 
@@ -2617,7 +2617,7 @@
 - **描述**：日志在 `core`/`compiler_builtins` 并发编译阶段同时出现 `rustc interrupted by SIGSEGV` 与 `badv=0x617461646f723e`。审计 LoongArch LSX trap 汇编发现 FCC 保存循环覆盖临时寄存器，实际只保存 `fcc0`；修复为逐位累积 `fcc0..fcc7` 后保存，保留现有恢复顺序。
 - **验证边界**：RISC-V/LoongArch64 release 构建和差异检查通过；未重跑完整 LoongArch BuildStorm，待后续确认长时间抢占下不再出现同类 fault。
 - **关联文档**：[FCC 问题复盘](./problem/loongarch-buildstorm-fcc-context-loss.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`cd5896c6`
 
 #### brk 与 MAP_FIXED VMA 重叠边界修正（8.6）
 
@@ -2625,4 +2625,4 @@
 - **场景**：确认 brk lazy allocation 的 VMA 边界安全性、`MAP_FIXED` 冲突处理和 `sys_brk` 算术错误。
 - **描述**：检查发现普通 `mmap` 会避开 brk，但 `MAP_FIXED` 只能清理 mmap VMA，无法清理 brk；在零长度 brk 区域内固定映射后，后续 brk 扩展可能留下重叠 VMA。修复为 `grow()` 扩展前检查其他 VMA，`MAP_FIXED` 拒绝覆盖 brk，并将 `sys_brk` 的地址差值改为安全的有符号计算。
 - **验证边界**：RISC-V 与 LoongArch64 release 构建通过；全仓 `cargo fmt --all -- --check` 被工作区已有格式差异阻断，未执行格式化以避免修改无关文件。
-- **关联 commit**：当前工作区未提交
+- **关联 commit**：`70c045bb`
