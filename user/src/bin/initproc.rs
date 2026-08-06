@@ -25,6 +25,9 @@ mod libctest;
 mod lmbench;
 mod ltp;
 mod lua;
+#[path = "initproc/msg_regression.rs"]
+#[allow(dead_code)]
+mod msg_regression;
 #[path = "netdev_test/cases.rs"]
 mod netdev_test_cases;
 mod netperf;

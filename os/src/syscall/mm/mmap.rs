@@ -349,38 +349,3 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> SyscallRet {
 
     Ok(0)
 }
-
-// System V 消息队列 (msgget/msgsnd/msgrcv/msgctl) — 桩实现
-/// https://man7.org/linux/man-pages/man2/msgget.2.html
-/// 获取 System V 消息队列标识符（通过 key 创建或打开）
-pub fn sys_msgget(_key: i32, _msgflg: i32) -> SyscallRet {
-    warn!("[sys_msgget] not implement!");
-    Err(SysErrNo::ENOSYS)
-}
-
-/// https://man7.org/linux/man-pages/man2/msgsnd.2.html
-/// 向消息队列发送消息
-pub fn sys_msgsnd(_msqid: i32, _msgp: *const u8, _msgsz: usize, _msgflg: i32) -> SyscallRet {
-    warn!("[sys_msgsnd] not implement!");
-    Err(SysErrNo::ENOSYS)
-}
-
-/// https://man7.org/linux/man-pages/man2/msgrcv.2.html
-/// 从消息队列接收消息
-pub fn sys_msgrcv(
-    _msqid: i32,
-    _msgp: *mut u8,
-    _msgsz: usize,
-    _msgtyp: i64,
-    _msgflg: i32,
-) -> SyscallRet {
-    warn!("[sys_msgrcv] not implement!");
-    Err(SysErrNo::ENOSYS)
-}
-
-/// https://man7.org/linux/man-pages/man2/msgctl.2.html
-/// 消息队列控制操作
-pub fn sys_msgctl(_msqid: i32, _cmd: i32, _buf: *mut u8) -> SyscallRet {
-    warn!("[sys_msgctl] not implement!");
-    Err(SysErrNo::ENOSYS)
-}

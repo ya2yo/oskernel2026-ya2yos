@@ -54,6 +54,10 @@ const SYSCALL_GETTIMEOFDAY: usize = 169;
 const SYSCALL_GETPID: usize = 172;
 const SYSCALL_GETPPID: usize = 173;
 const SYSCALL_SYSINFO: usize = 179;
+const SYSCALL_MSGGET: usize = 186;
+const SYSCALL_MSGSND: usize = 187;
+const SYSCALL_MSGRCV: usize = 188;
+const SYSCALL_MSGCTL: usize = 189;
 const SYSCALL_SOCKET: usize = 198;
 const SYSCALL_BIND: usize = 200;
 const SYSCALL_SENDTO: usize = 206;
@@ -173,6 +177,45 @@ pub fn sys_gettimeofday(ts: &mut [u8]) -> isize {
 
 pub fn sys_getpid() -> isize {
     syscall(SYSCALL_GETPID, [0, 0, 0, 0, 0, 0])
+}
+
+pub fn sys_msgget(key: i32, msgflg: i32) -> isize {
+    syscall(SYSCALL_MSGGET, [key as isize, msgflg as isize, 0, 0, 0, 0])
+}
+
+pub fn sys_msgsnd(msqid: i32, msgp: *const u8, msgsz: usize, msgflg: i32) -> isize {
+    syscall(
+        SYSCALL_MSGSND,
+        [
+            msqid as isize,
+            msgp as isize,
+            msgsz as isize,
+            msgflg as isize,
+            0,
+            0,
+        ],
+    )
+}
+
+pub fn sys_msgrcv(msqid: i32, msgp: *mut u8, msgsz: usize, msgtyp: isize, msgflg: i32) -> isize {
+    syscall(
+        SYSCALL_MSGRCV,
+        [
+            msqid as isize,
+            msgp as isize,
+            msgsz as isize,
+            msgtyp,
+            msgflg as isize,
+            0,
+        ],
+    )
+}
+
+pub fn sys_msgctl(msqid: i32, cmd: i32, buf: *mut u8) -> isize {
+    syscall(
+        SYSCALL_MSGCTL,
+        [msqid as isize, cmd as isize, buf as isize, 0, 0, 0],
+    )
 }
 
 pub fn sys_rseq(rseq: *mut u8, rseq_len: u32, flags: u32, sig: u32) -> isize {

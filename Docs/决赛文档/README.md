@@ -178,3 +178,4 @@
 - [BuildStorm LoongArch64 MAP_FIXED 重叠 VMA 导致 rustc SIGSEGV](./problem/buildstorm-map-fixed-overlap-sigsegv.md)
 - [LoongArch BuildStorm 抢占后 FCC 条件状态丢失](./problem/loongarch-buildstorm-fcc-context-loss.md)
 - [brk 与 MAP_FIXED VMA 重叠边界](./problem/brk-map-fixed-overlap.md)
+- [System V 消息队列 syscall 实现](./problem/sysv-msg-queue.md)

@@ -113,6 +113,22 @@ pub fn getpid() -> isize {
     sys_getpid()
 }
 
+pub fn msgget(key: i32, msgflg: i32) -> isize {
+    sys_msgget(key, msgflg)
+}
+
+pub fn msgsnd(msqid: i32, msgp: *const u8, msgsz: usize, msgflg: i32) -> isize {
+    sys_msgsnd(msqid, msgp, msgsz, msgflg)
+}
+
+pub fn msgrcv(msqid: i32, msgp: *mut u8, msgsz: usize, msgtyp: isize, msgflg: i32) -> isize {
+    sys_msgrcv(msqid, msgp, msgsz, msgtyp, msgflg)
+}
+
+pub fn msgctl(msqid: i32, cmd: i32, buf: *mut u8) -> isize {
+    sys_msgctl(msqid, cmd, buf)
+}
+
 /// Classic Linux rseq ABI area.  Ya2yOS currently supports this original
 /// 32-byte layout and does not advertise newer rseq extension fields.
 #[repr(C, align(32))]

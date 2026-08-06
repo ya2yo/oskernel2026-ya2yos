@@ -2626,3 +2626,12 @@
 - **描述**：检查发现普通 `mmap` 会避开 brk，但 `MAP_FIXED` 只能清理 mmap VMA，无法清理 brk；在零长度 brk 区域内固定映射后，后续 brk 扩展可能留下重叠 VMA。修复为 `grow()` 扩展前检查其他 VMA，`MAP_FIXED` 拒绝覆盖 brk，并将 `sys_brk` 的地址差值改为安全的有符号计算。
 - **验证边界**：RISC-V 与 LoongArch64 release 构建通过；全仓 `cargo fmt --all -- --check` 被工作区已有格式差异阻断，未执行格式化以避免修改无关文件。
 - **关联 commit**：`70c045bb`
+
+#### System V 消息队列 syscall 实现（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：新增 IPC 能力、Linux System V 消息队列 syscall 接入、用户内存 ABI 复制选择和回归验证。
+- **描述**：在 `os/src/syscall/ipc` 增加全局消息队列管理器和 `msgget`、`msgsnd`、`msgrcv`、`msgctl`，覆盖权限、容量、消息类型选择、阻塞/中断、`IPC_RMID` 唤醒和主要 Linux flags；固定结构使用 `copy_from_user_val`/`copy_to_user_val`，正文使用字节复制，并按 RISC-V/LoongArch64 匹配 `ipc_perm` 布局。新增用户态薄封装和非默认回归模块。
+- **验证边界**：RISC-V 与 LoongArch64 release 构建、相关 `rustfmt --check`、`git diff --check` 通过；RISC-V QEMU 回归输出 `msg regression passed`。当前磁盘镜像缺少 musl LTP `msg*` 可执行文件，完整 LTP 和 LoongArch64 QEMU 运行回归尚未完成。
+- **关联文档**：[消息队列问题复盘](./problem/sysv-msg-queue.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

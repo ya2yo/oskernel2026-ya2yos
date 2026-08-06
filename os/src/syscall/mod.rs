@@ -283,6 +283,7 @@ pub enum Syscall {
 
 pub(crate) mod fs;
 mod io_mpx;
+mod ipc;
 mod mm;
 #[cfg(feature = "net")]
 mod net;
@@ -304,6 +305,7 @@ use crate::{
 };
 use fs::*;
 use io_mpx::*;
+use ipc::*;
 use mm::*;
 #[cfg(feature = "net")]
 use net::*;

@@ -1,0 +1,627 @@
+//! System V message queues.
+//!
+//! The queue table is intentionally kept in the IPC syscall module for now:
+//! message queues are kernel-global objects and are not file descriptors.
+//! User pointers are copied before entering a potentially blocking wait, and
+//! the queue locks are never held while touching user memory or scheduling.
+
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+    vec,
+    vec::Vec,
+};
+use core::{future::poll_fn, task::Poll};
+
+use spin::{Lazy, Mutex};
+
+use crate::{
+    mm::{copy_from_user, copy_from_user_val, copy_to_user, copy_to_user_val},
+    task::{block_on, current_task, interruptible},
+    timer::realtime,
+    utils::{PollSet, SysErrNo, SysResult, SyscallRet},
+};
+
+const IPC_PRIVATE: i32 = 0;
+const IPC_CREAT: i32 = 0o1000;
+const IPC_EXCL: i32 = 0o2000;
+const IPC_NOWAIT: i32 = 0o4000;
+
+const IPC_RMID: i32 = 0;
+const IPC_SET: i32 = 1;
+const IPC_STAT: i32 = 2;
+const IPC_INFO: i32 = 3;
+const MSG_STAT: i32 = 11;
+const MSG_INFO: i32 = 12;
+const MSG_STAT_ANY: i32 = 13;
+
+const MSG_NOERROR: i32 = 0o10000;
+const MSG_EXCEPT: i32 = 0o20000;
+const MSG_COPY: i32 = 0o40000;
+
+/// Linux defaults. `msg_qbytes` can be lowered with IPC_SET and is bounded by
+/// MSGMNB for unprivileged callers.
+const MSGMNI: usize = 32_000;
+const MSGMAX: usize = 8192;
+const MSGMNB: usize = 16_384;
+
+#[derive(Clone, Copy)]
+struct IpcPerm {
+    key: i32,
+    uid: u32,
+    gid: u32,
+    cuid: u32,
+    cgid: u32,
+    mode: u32,
+    seq: i32,
+}
+
+#[derive(Clone)]
+struct Message {
+    kind: i64,
+    text: Vec<u8>,
+}
+
+struct QueueState {
+    perm: IpcPerm,
+    messages: VecDeque<Message>,
+    bytes: usize,
+    qbytes: usize,
+    stime: usize,
+    rtime: usize,
+    ctime: usize,
+    lspid: u32,
+    lrpid: u32,
+    removed: bool,
+}
+
+struct MsgQueue {
+    state: Mutex<QueueState>,
+    recv_wait: PollSet,
+    send_wait: PollSet,
+}
+
+struct MsgManager {
+    next_id: i32,
+    queues: BTreeMap<i32, Arc<MsgQueue>>,
+    keys: BTreeMap<i32, i32>,
+}
+
+impl MsgManager {
+    fn new() -> Self {
+        Self {
+            next_id: 1,
+            queues: BTreeMap::new(),
+            keys: BTreeMap::new(),
+        }
+    }
+}
+
+static MSG_MANAGER: Lazy<Mutex<MsgManager>> = Lazy::new(|| Mutex::new(MsgManager::new()));
+
+#[cfg(target_arch = "riscv64")]
+type UserMode = u16;
+#[cfg(target_arch = "loongarch64")]
+type UserMode = u32;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct UserIpcPerm {
+    key: i32,
+    uid: u32,
+    gid: u32,
+    cuid: u32,
+    cgid: u32,
+    #[cfg(target_arch = "riscv64")]
+    mode: UserMode,
+    #[cfg(target_arch = "riscv64")]
+    pad1: u16,
+    #[cfg(target_arch = "riscv64")]
+    seq: u16,
+    #[cfg(target_arch = "riscv64")]
+    pad2: u16,
+    #[cfg(target_arch = "loongarch64")]
+    mode: UserMode,
+    #[cfg(target_arch = "loongarch64")]
+    seq: i32,
+    unused1: usize,
+    unused2: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct UserMsqidDs {
+    msg_perm: UserIpcPerm,
+    msg_stime: usize,
+    msg_rtime: usize,
+    msg_ctime: usize,
+    msg_cbytes: usize,
+    msg_qnum: usize,
+    msg_qbytes: usize,
+    msg_lspid: u32,
+    msg_lrpid: u32,
+    pad1: usize,
+    pad2: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct UserMsgInfo {
+    msgpool: i32,
+    msgmap: i32,
+    msgmax: i32,
+    msgmnb: i32,
+    msgmni: i32,
+    msgssz: i32,
+    msgtql: i32,
+    msgseg: u16,
+}
+
+fn now() -> usize {
+    realtime().tv_sec
+}
+
+fn current_credentials() -> SysResult<(u32, u32, u32)> {
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let inner = task.inner_lock();
+    Ok((inner.effective_uid, inner.effective_gid, task.pid() as u32))
+}
+
+fn has_cap_or_root(uid: u32) -> bool {
+    uid == 0
+}
+
+fn access_allowed(perm: IpcPerm, uid: u32, gid: u32, read: bool, write: bool) -> bool {
+    if has_cap_or_root(uid) {
+        return true;
+    }
+    let bits = if uid == perm.uid {
+        (perm.mode >> 6) & 7
+    } else if gid == perm.gid {
+        (perm.mode >> 3) & 7
+    } else {
+        perm.mode & 7
+    };
+    (!read || bits & 4 != 0) && (!write || bits & 2 != 0)
+}
+
+fn owner_allowed(perm: IpcPerm, uid: u32) -> bool {
+    has_cap_or_root(uid) || uid == perm.uid || uid == perm.cuid
+}
+
+fn get_queue(msqid: i32) -> SysResult<Arc<MsgQueue>> {
+    if msqid < 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    MSG_MANAGER
+        .lock()
+        .queues
+        .get(&msqid)
+        .cloned()
+        .ok_or(SysErrNo::EINVAL)
+}
+
+fn create_queue(key: i32, msgflg: i32, uid: u32, gid: u32) -> SyscallRet {
+    let mut manager = MSG_MANAGER.lock();
+    if manager.queues.len() >= MSGMNI {
+        return Err(SysErrNo::ENOSPC);
+    }
+    let id = manager.next_id;
+    manager.next_id = manager.next_id.checked_add(1).ok_or(SysErrNo::ENOSPC)?;
+    let perm = IpcPerm {
+        key,
+        uid,
+        gid,
+        cuid: uid,
+        cgid: gid,
+        mode: (msgflg as u32) & 0o777,
+        seq: 0,
+    };
+    let queue = Arc::new(MsgQueue {
+        state: Mutex::new(QueueState {
+            perm,
+            messages: VecDeque::new(),
+            bytes: 0,
+            qbytes: MSGMNB,
+            stime: 0,
+            rtime: 0,
+            ctime: now(),
+            lspid: 0,
+            lrpid: 0,
+            removed: false,
+        }),
+        recv_wait: PollSet::new(),
+        send_wait: PollSet::new(),
+    });
+    manager.queues.insert(id, queue);
+    if key != IPC_PRIVATE {
+        manager.keys.insert(key, id);
+    }
+    Ok(id as usize)
+}
+
+fn write_user_bytes(ptr: *mut u8, data: &[u8]) -> SyscallRet {
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let memory_set = task.process.memory_set_arc();
+    copy_to_user(&memory_set, ptr as usize, data)
+}
+
+fn read_user_value<T: Sized>(ptr: *const u8) -> SysResult<T> {
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let memory_set = task.process.memory_set_arc();
+    copy_from_user_val(&memory_set, ptr as *const T)
+}
+
+fn write_user_value<T: Sized>(ptr: *mut u8, value: &T) -> SysResult {
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let memory_set = task.process.memory_set_arc();
+    copy_to_user_val(&memory_set, ptr as *mut T, value)
+}
+
+fn queue_snapshot(state: &QueueState) -> UserMsqidDs {
+    let p = state.perm;
+    let result = UserMsqidDs {
+        msg_perm: UserIpcPerm {
+            key: p.key,
+            uid: p.uid,
+            gid: p.gid,
+            cuid: p.cuid,
+            cgid: p.cgid,
+            mode: p.mode as UserMode,
+            unused1: 0,
+            unused2: 0,
+            ..UserIpcPerm::default()
+        },
+        msg_stime: state.stime,
+        msg_rtime: state.rtime,
+        msg_ctime: state.ctime,
+        msg_cbytes: state.bytes,
+        msg_qnum: state.messages.len(),
+        msg_qbytes: state.qbytes,
+        msg_lspid: state.lspid,
+        msg_lrpid: state.lrpid,
+        pad1: 0,
+        pad2: 0,
+    };
+    result
+}
+
+fn queue_info() -> UserMsgInfo {
+    let manager = MSG_MANAGER.lock();
+    let mut messages = 0usize;
+    let mut bytes = 0usize;
+    for queue in manager.queues.values() {
+        let state = queue.state.lock();
+        messages += state.messages.len();
+        bytes += state.bytes;
+    }
+    UserMsgInfo {
+        msgpool: manager.queues.len() as i32,
+        msgmap: messages as i32,
+        msgmax: MSGMAX as i32,
+        msgmnb: MSGMNB as i32,
+        msgmni: MSGMNI as i32,
+        msgssz: 1,
+        msgtql: bytes as i32,
+        msgseg: 0xffff,
+    }
+}
+
+fn find_message(state: &QueueState, msgtyp: i64, flags: i32) -> Option<usize> {
+    if flags & MSG_COPY != 0 {
+        return if msgtyp < 0 {
+            None
+        } else {
+            state.messages.get(msgtyp as usize).map(|_| msgtyp as usize)
+        };
+    }
+    if msgtyp == 0 {
+        return (!state.messages.is_empty()).then_some(0);
+    }
+    if msgtyp > 0 {
+        return state
+            .messages
+            .iter()
+            .enumerate()
+            .find(|(_, message)| {
+                if flags & MSG_EXCEPT != 0 {
+                    message.kind != msgtyp
+                } else {
+                    message.kind == msgtyp
+                }
+            })
+            .map(|(index, _)| index);
+    }
+
+    let limit = msgtyp.saturating_neg();
+    state
+        .messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| message.kind <= limit)
+        .min_by_key(|(index, message)| (message.kind, *index))
+        .map(|(index, _)| index)
+}
+
+fn try_send(state: &mut QueueState, message: &Message, pid: u32) -> Result<bool, SysErrNo> {
+    if state.removed {
+        return Err(SysErrNo::EIDRM);
+    }
+    let size = message.text.len();
+    if size > state.qbytes.saturating_sub(state.bytes) || state.messages.len() >= state.qbytes {
+        return Ok(false);
+    }
+    state.bytes += size;
+    state.messages.push_back(message.clone());
+    state.stime = now();
+    state.lspid = pid;
+    Ok(true)
+}
+
+fn try_receive(
+    state: &mut QueueState,
+    msgtyp: i64,
+    msgflg: i32,
+    msgsz: usize,
+    pid: u32,
+) -> Result<Option<Message>, SysErrNo> {
+    if state.removed {
+        return Err(SysErrNo::EIDRM);
+    }
+    let Some(index) = find_message(state, msgtyp, msgflg) else {
+        return Ok(None);
+    };
+    let message = &state.messages[index];
+    if msgflg & MSG_COPY == 0 && message.text.len() > msgsz && msgflg & MSG_NOERROR == 0 {
+        return Err(SysErrNo::E2BIG);
+    }
+    if msgflg & MSG_COPY != 0 {
+        return Ok(Some(Message {
+            kind: message.kind,
+            text: message.text.clone(),
+        }));
+    }
+    let message = state.messages.remove(index).ok_or(SysErrNo::EIDRM)?;
+    state.bytes = state.bytes.saturating_sub(message.text.len());
+    state.rtime = now();
+    state.lrpid = pid;
+    Ok(Some(message))
+}
+
+fn wait_send(queue: Arc<MsgQueue>, message: Message, pid: u32) -> SyscallRet {
+    let result = block_on(interruptible(poll_fn(move |cx| {
+        let mut state = queue.state.lock();
+        match try_send(&mut state, &message, pid) {
+            Ok(true) => Poll::Ready(Ok(())),
+            Ok(false) => {
+                drop(state);
+                queue.send_wait.register(cx.waker());
+                let mut state = queue.state.lock();
+                match try_send(&mut state, &message, pid) {
+                    Ok(true) => Poll::Ready(Ok(())),
+                    Ok(false) => Poll::Pending,
+                    Err(error) => Poll::Ready(Err(error)),
+                }
+            }
+            Err(error) => Poll::Ready(Err(error)),
+        }
+    })));
+    match result {
+        Ok(value) => value.map(|_| 0),
+        Err(_) => Err(SysErrNo::EINTR),
+    }
+}
+
+fn wait_receive(
+    queue: Arc<MsgQueue>,
+    msgtyp: i64,
+    msgflg: i32,
+    msgsz: usize,
+    pid: u32,
+) -> SysResult<Message> {
+    let result = block_on(interruptible(poll_fn(move |cx| {
+        let mut state = queue.state.lock();
+        match try_receive(&mut state, msgtyp, msgflg, msgsz, pid) {
+            Ok(Some(message)) => Poll::Ready(Ok(message)),
+            Ok(None) => {
+                drop(state);
+                queue.recv_wait.register(cx.waker());
+                let mut state = queue.state.lock();
+                match try_receive(&mut state, msgtyp, msgflg, msgsz, pid) {
+                    Ok(Some(message)) => Poll::Ready(Ok(message)),
+                    Ok(None) => Poll::Pending,
+                    Err(error) => Poll::Ready(Err(error)),
+                }
+            }
+            Err(error) => Poll::Ready(Err(error)),
+        }
+    })));
+    match result {
+        Ok(value) => value,
+        Err(_) => Err(SysErrNo::EINTR),
+    }
+}
+
+/// 获取或创建 System V 消息队列。
+pub fn sys_msgget(key: i32, msgflg: i32) -> SyscallRet {
+    let (uid, gid, _) = current_credentials()?;
+    if key != IPC_PRIVATE {
+        let existing = MSG_MANAGER.lock().keys.get(&key).copied();
+        if let Some(msqid) = existing {
+            let queue = get_queue(msqid)?;
+            let state = queue.state.lock();
+            if msgflg & IPC_CREAT != 0 && msgflg & IPC_EXCL != 0 {
+                return Err(SysErrNo::EEXIST);
+            }
+            let read = (msgflg & 0o444) != 0;
+            let write = (msgflg & 0o222) != 0;
+            if !access_allowed(state.perm, uid, gid, read, write) {
+                return Err(SysErrNo::EACCES);
+            }
+            return Ok(msqid as usize);
+        }
+        if msgflg & IPC_CREAT == 0 {
+            return Err(SysErrNo::ENOENT);
+        }
+    }
+    create_queue(key, msgflg, uid, gid)
+}
+
+/// 向消息队列发送消息。
+pub fn sys_msgsnd(msqid: i32, msgp: *const u8, msgsz: usize, msgflg: i32) -> SyscallRet {
+    if msgsz > MSGMAX {
+        return Err(SysErrNo::EINVAL);
+    }
+    let queue = get_queue(msqid)?;
+    let (uid, gid, pid) = current_credentials()?;
+    {
+        let state = queue.state.lock();
+        if !access_allowed(state.perm, uid, gid, false, true) {
+            return Err(SysErrNo::EACCES);
+        }
+    }
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let memory_set = task.process.memory_set_arc();
+    let kind = copy_from_user_val::<usize>(&memory_set, msgp as *const usize)? as i64;
+    if kind <= 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    let text_addr = (msgp as usize)
+        .checked_add(core::mem::size_of::<usize>())
+        .ok_or(SysErrNo::EFAULT)?;
+    let mut text = vec![0; msgsz];
+    copy_from_user(&memory_set, text_addr, &mut text)?;
+    let message = Message { kind, text };
+    let mut state = queue.state.lock();
+    match try_send(&mut state, &message, pid)? {
+        true => {
+            drop(state);
+            queue.recv_wait.wake();
+            Ok(0)
+        }
+        false if msgflg & IPC_NOWAIT != 0 => Err(SysErrNo::EAGAIN),
+        false => {
+            drop(state);
+            wait_send(queue, message, pid)
+        }
+    }
+}
+
+/// 从消息队列接收消息。
+pub fn sys_msgrcv(msqid: i32, msgp: *mut u8, msgsz: usize, msgtyp: i64, msgflg: i32) -> SyscallRet {
+    if msgsz > MSGMAX
+        || (msgflg & MSG_COPY != 0 && msgflg & IPC_NOWAIT == 0)
+        || (msgflg & MSG_COPY != 0 && msgflg & MSG_EXCEPT != 0)
+    {
+        return Err(SysErrNo::EINVAL);
+    }
+    let queue = get_queue(msqid)?;
+    let (uid, gid, pid) = current_credentials()?;
+    {
+        let state = queue.state.lock();
+        if !access_allowed(state.perm, uid, gid, true, false) {
+            return Err(SysErrNo::EACCES);
+        }
+    }
+    let message = if msgflg & IPC_NOWAIT != 0 {
+        let mut state = queue.state.lock();
+        try_receive(&mut state, msgtyp, msgflg, msgsz, pid)?.ok_or(SysErrNo::ENOMSG)?
+    } else {
+        wait_receive(queue.clone(), msgtyp, msgflg, msgsz, pid)?
+    };
+    let copy_len = message.text.len().min(msgsz);
+    let mut result = Vec::with_capacity(core::mem::size_of::<usize>() + copy_len);
+    result.extend_from_slice(&(message.kind as usize).to_ne_bytes());
+    result.extend_from_slice(&message.text[..copy_len]);
+    write_user_bytes(msgp, &result)?;
+    if msgflg & MSG_COPY == 0 {
+        queue.send_wait.wake();
+    }
+    Ok(copy_len)
+}
+
+/// 消息队列控制操作。
+pub fn sys_msgctl(msqid: i32, cmd: i32, buf: *mut u8) -> SyscallRet {
+    if cmd == IPC_INFO || cmd == MSG_INFO {
+        let info = queue_info();
+        write_user_value(buf, &info)?;
+        return Ok(MSG_MANAGER
+            .lock()
+            .queues
+            .keys()
+            .next_back()
+            .copied()
+            .unwrap_or(0) as usize);
+    }
+
+    let queue = get_queue(msqid)?;
+    let (uid, gid, _) = current_credentials()?;
+    match cmd {
+        IPC_STAT | MSG_STAT | MSG_STAT_ANY => {
+            let state = queue.state.lock();
+            if cmd != MSG_STAT_ANY && !access_allowed(state.perm, uid, gid, true, false) {
+                return Err(SysErrNo::EACCES);
+            }
+            let snapshot = queue_snapshot(&state);
+            drop(state);
+            write_user_value(buf, &snapshot)?;
+            if cmd == MSG_STAT || cmd == MSG_STAT_ANY {
+                Ok(msqid as usize)
+            } else {
+                Ok(0)
+            }
+        }
+        IPC_SET => {
+            let requested: UserMsqidDs = read_user_value(buf as *const u8)?;
+            let (new_uid, new_gid) = (requested.msg_perm.uid, requested.msg_perm.gid);
+            let new_mode = requested.msg_perm.mode as u32 & 0o777;
+            let queue_was_full;
+            {
+                let mut state = queue.state.lock();
+                if !owner_allowed(state.perm, uid) {
+                    return Err(SysErrNo::EPERM);
+                }
+                if new_uid != state.perm.uid && !has_cap_or_root(uid) {
+                    return Err(SysErrNo::EPERM);
+                }
+                if new_gid != state.perm.gid && !has_cap_or_root(uid) {
+                    return Err(SysErrNo::EPERM);
+                }
+                if requested.msg_qbytes > MSGMNB && !has_cap_or_root(uid) {
+                    return Err(SysErrNo::EPERM);
+                }
+                queue_was_full =
+                    state.bytes >= state.qbytes || state.messages.len() >= state.qbytes;
+                state.perm.uid = new_uid;
+                state.perm.gid = new_gid;
+                state.perm.mode = new_mode;
+                state.qbytes = requested.msg_qbytes;
+                state.ctime = now();
+            }
+            if queue_was_full {
+                queue.send_wait.wake();
+            }
+            Ok(0)
+        }
+        IPC_RMID => {
+            if !owner_allowed(queue.state.lock().perm, uid) {
+                return Err(SysErrNo::EPERM);
+            }
+            let mut manager = MSG_MANAGER.lock();
+            let Some(existing) = manager.queues.remove(&msqid) else {
+                return Err(SysErrNo::EINVAL);
+            };
+            if existing.state.lock().perm.key != IPC_PRIVATE {
+                manager.keys.remove(&existing.state.lock().perm.key);
+            }
+            {
+                let mut state = existing.state.lock();
+                state.removed = true;
+            }
+            existing.recv_wait.wake();
+            existing.send_wait.wake();
+            Ok(0)
+        }
+        _ => Err(SysErrNo::EINVAL),
+    }
+}

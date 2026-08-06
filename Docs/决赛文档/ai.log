@@ -10148,3 +10148,21 @@ LoongArch BuildStorm，因此不把 `446/446` 或运行期 SIGSEGV 消失作为�
 ### 修改与验证
 
 `MemorySetInner::grow()` 改为在扩展前检查目标 brk 区间与其他 VMA 的交叠，并以 `Option` 表示地址溢出、上限超出或重叠失败；`MAP_FIXED` 拒绝覆盖 brk；`sys_brk()` 改用分支后的有符号差值计算。RISC-V 与 LoongArch64 release 构建通过；`cargo fmt --all -- --check` 受工作区其他既有文件格式差异影响未通过，未格式化无关文件。
+
+## 2026-08-06：System V 消息队列 syscall
+
+### 用户输入
+
+维护者要求在 `os/src/syscall/ipc` 实现消息机制及相关 `msgget`、`msgsnd`、`msgrcv`、`msgctl` 系统调用，并继续确认用户内存复制应使用 `copy_from_user_val` 一类 helper。
+
+### 分析与采纳结论
+
+按 Linux System V IPC 语义新增内核全局消息队列管理器。队列状态由 `Arc<MsgQueue>` 和内部互斥锁保护；用户指针在进入阻塞等待前完成复制，等待路径采用 `PollSet` 注册后重新检查，避免持锁调度和丢唤醒。实现消息类型选择、容量限制、权限检查、`IPC_RMID` 删除唤醒、信号中断，以及 `IPC_STAT/IPC_SET/IPC_INFO/MSG_INFO/MSG_STAT/MSG_STAT_ANY` 与 `MSG_NOERROR/MSG_EXCEPT/MSG_COPY`。
+
+固定大小的消息类型和 `msgctl` ABI 结构使用 `copy_from_user_val`/`copy_to_user_val`，变长消息正文使用 `copy_from_user`/`copy_to_user`；RISC-V 与 LoongArch64 分别匹配各自 `ipc_perm` 布局。用户态新增 syscall 号 186--189 的薄封装和独立回归模块，默认 initproc 流程不改变。
+
+### 修改与验证
+
+修改 `os/src/syscall/ipc/msg.rs`、`os/src/syscall/ipc/mod.rs`、`os/src/syscall/mod.rs`、`user/src/syscall/mod.rs`、`user/src/lib.rs`、`user/src/bin/initproc/msg_regression.rs` 和 `user/src/bin/initproc.rs`；新增 `Docs/决赛文档/problem/sysv-msg-queue.md` 并更新开发日志和 README 索引。
+
+RISC-V/LoongArch64 release 构建、消息队列相关 `rustfmt --check` 和 `git diff --check` 通过。RISC-V QEMU 回归输出 `msg regression passed`/`shutdown!`，覆盖普通收发、消息选择、复制/截断、队列控制、阻塞发送/接收和删除唤醒。镜像内缺少 musl LTP `msg*` 可执行文件，相关尝试均为 `execve fail`，完整 LTP 尚未验证。
