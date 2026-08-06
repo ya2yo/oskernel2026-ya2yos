@@ -22,29 +22,43 @@ use crate::{
     utils::{PollSet, SysErrNo, SysResult, SyscallRet},
 };
 
+/// `msgget` 的 key 值：0 表示私有队列，必然新建
 const IPC_PRIVATE: i32 = 0;
+/// 队列不存在时创建（与 IPC_EXCL 结合使用）
 const IPC_CREAT: i32 = 0o1000;
+/// 队列已存在时报 EEXIST（须与 IPC_CREAT 同时使用）
 const IPC_EXCL: i32 = 0o2000;
+/// 非阻塞标志：队列满/空时立即返回 EAGAIN/ENOMSG
 const IPC_NOWAIT: i32 = 0o4000;
 
+/// `msgctl` 命令：删除队列
 const IPC_RMID: i32 = 0;
+/// `msgctl` 命令：更新队列权限、uid/gid 与 msg_qbytes
 const IPC_SET: i32 = 1;
+/// `msgctl` 命令：读取队列状态到 struct msqid64_ds
 const IPC_STAT: i32 = 2;
+/// `msgctl` 命令：读取全局 msginfo，返回值是最大已用队列 id
 const IPC_INFO: i32 = 3;
+/// `msgctl` 命令：按 id 读取队列状态，返回值是该队列 id（不校验读权限）
 const MSG_STAT: i32 = 11;
+/// `msgctl` 命令：读取全局 msginfo，返回值是最大已用队列 id
 const MSG_INFO: i32 = 12;
+/// `msgctl` 命令：按 id 读取队列状态，返回队列 id，且不校验权限
 const MSG_STAT_ANY: i32 = 13;
 
+/// `msgrcv` 标志：消息长度超过 msgsz 时截断而不是报 E2BIG
 const MSG_NOERROR: i32 = 0o10000;
+/// `msgrcv` 标志：msgtyp > 0 时读取第一条类型不同的消息
 const MSG_EXCEPT: i32 = 0o20000;
+/// `msgrcv` 标志：按数组下标拷贝消息而不从队列移除（须与 IPC_NOWAIT 同用）
 const MSG_COPY: i32 = 0o40000;
 
-/// Linux defaults. `msg_qbytes` can be lowered with IPC_SET and is bounded by
-/// MSGMNB for unprivileged callers.
+/// Linux 默认值。`msg_qbytes` 可通过 IPC_SET 调低，非特权调用者受 MSGMNB 限制。
 const MSGMNI: usize = 32_000;
 const MSGMAX: usize = 8192;
 const MSGMNB: usize = 16_384;
 
+/// 内核侧的队列权限元数据，对应 Linux `struct ipc_perm` 的内核表示。
 #[derive(Clone, Copy)]
 struct IpcPerm {
     key: i32,
@@ -56,31 +70,46 @@ struct IpcPerm {
     seq: i32,
 }
 
+/// 队列中的一条消息：`kind` 为消息类型（mtype），`text` 为消息正文（mtext）。
 #[derive(Clone)]
 struct Message {
     kind: i64,
     text: Vec<u8>,
 }
 
+/// 单条消息队列的可变状态，由 [`MsgQueue::state`] 的互斥锁保护。
 struct QueueState {
     perm: IpcPerm,
+    /// 消息本体，按入队顺序排列
     messages: VecDeque<Message>,
+    /// 队列中消息正文的总字节数
     bytes: usize,
+    /// 队列字节上限（默认 MSGMNB，可用 IPC_SET 调整）
     qbytes: usize,
+    /// 最后一次 msgsnd 的时间（秒），0 表示尚未发生过
     stime: usize,
+    /// 最后一次 msgrcv 的时间（秒），0 表示尚未发生过
     rtime: usize,
+    /// 队列最近一次创建或 IPC_SET 的时间（秒）
     ctime: usize,
+    /// 最后一个发送消息的进程 pid
     lspid: u32,
+    /// 最后一个接收消息的进程 pid
     lrpid: u32,
+    /// IPC_RMID 后置位；置位后阻塞中的收发方会以 EIDRM 唤醒
     removed: bool,
 }
 
+/// 一条消息队列：状态加等待集合。
 struct MsgQueue {
     state: Mutex<QueueState>,
+    /// 因队列为空而阻塞的接收者
     recv_wait: PollSet,
+    /// 因队列满而阻塞的发送者
     send_wait: PollSet,
 }
 
+/// 全局消息队列管理器，负责 id 分配、id → 队列、key → id 三张表。
 struct MsgManager {
     next_id: i32,
     queues: BTreeMap<i32, Arc<MsgQueue>>,
@@ -97,13 +126,16 @@ impl MsgManager {
     }
 }
 
+/// 全局唯一的管理器实例（kernel-global，非 fd 对象）。
 static MSG_MANAGER: Lazy<Mutex<MsgManager>> = Lazy::new(|| Mutex::new(MsgManager::new()));
 
+/// 用户态 `struct ipc_perm::mode` 的宽度与架构相关：riscv64 为 u16，loongarch64 为 u32。
 #[cfg(target_arch = "riscv64")]
 type UserMode = u16;
 #[cfg(target_arch = "loongarch64")]
 type UserMode = u32;
 
+/// 用户态 `struct ipc_perm` 的镜像，按架构保留 C ABI 布局与 padding。
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct UserIpcPerm {
@@ -128,6 +160,7 @@ struct UserIpcPerm {
     unused2: usize,
 }
 
+/// 用户态 `struct msqid64_ds` 的镜像（IPC_STAT/IPC_SET 的缓冲布局）。
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct UserMsqidDs {
@@ -144,6 +177,7 @@ struct UserMsqidDs {
     pad2: usize,
 }
 
+/// 用户态 `struct msginfo` 的镜像（IPC_INFO/MSG_INFO 的输出）。
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct UserMsgInfo {
@@ -157,20 +191,27 @@ struct UserMsgInfo {
     msgseg: u16,
 }
 
+/// 当前实时时钟的秒数，用作队列时间戳。
 fn now() -> usize {
     realtime().tv_sec
 }
 
+/// 读取当前任务的 (effective uid, effective gid, pid)，用于权限检查与记账。
 fn current_credentials() -> SysResult<(u32, u32, u32)> {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
     let inner = task.inner_lock();
     Ok((inner.effective_uid, inner.effective_gid, task.pid() as u32))
 }
 
+/// 是否拥有特权：目前等价于 root（uid == 0）。
 fn has_cap_or_root(uid: u32) -> bool {
     uid == 0
 }
 
+/// 按 IPC 权限位（owner/group/other 三组 rwx 位）检查读/写访问。
+///
+/// 特权用户直接放行；否则按 uid/gid 选取对应权限组，
+/// 同时要求 `!read || 有读位` 且 `!write || 有写位`。
 fn access_allowed(perm: IpcPerm, uid: u32, gid: u32, read: bool, write: bool) -> bool {
     if has_cap_or_root(uid) {
         return true;
@@ -185,10 +226,12 @@ fn access_allowed(perm: IpcPerm, uid: u32, gid: u32, read: bool, write: bool) ->
     (!read || bits & 4 != 0) && (!write || bits & 2 != 0)
 }
 
+/// 是否对该队列拥有管理权：root、当前 owner 或创建者。
 fn owner_allowed(perm: IpcPerm, uid: u32) -> bool {
     has_cap_or_root(uid) || uid == perm.uid || uid == perm.cuid
 }
 
+/// 按 msqid 取出队列；id 非法返回 EINVAL。
 fn get_queue(msqid: i32) -> SysResult<Arc<MsgQueue>> {
     if msqid < 0 {
         return Err(SysErrNo::EINVAL);
@@ -201,6 +244,10 @@ fn get_queue(msqid: i32) -> SysResult<Arc<MsgQueue>> {
         .ok_or(SysErrNo::EINVAL)
 }
 
+/// 新建一条队列并返回其 id。
+///
+/// 队列总数达到 MSGMNI 时报 ENOSPC；非私有 key 会登记到 key → id 表，
+/// 权限模式取自 `msgflg` 的低 9 位。持 MSG_MANAGER 锁期间不触碰用户内存。
 fn create_queue(key: i32, msgflg: i32, uid: u32, gid: u32) -> SyscallRet {
     let mut manager = MSG_MANAGER.lock();
     if manager.queues.len() >= MSGMNI {
@@ -240,24 +287,28 @@ fn create_queue(key: i32, msgflg: i32, uid: u32, gid: u32) -> SyscallRet {
     Ok(id as usize)
 }
 
+/// 向用户地址写入字节串（供 msgrcv 回填 mtype + mtext）。
 fn write_user_bytes(ptr: *mut u8, data: &[u8]) -> SyscallRet {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
     let memory_set = task.process.memory_set_arc();
     copy_to_user(&memory_set, ptr as usize, data)
 }
 
+/// 从用户地址读取一个任意大小的值。
 fn read_user_value<T: Sized>(ptr: *const u8) -> SysResult<T> {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
     let memory_set = task.process.memory_set_arc();
     copy_from_user_val(&memory_set, ptr as *const T)
 }
 
+/// 向用户地址写入一个任意大小的值。
 fn write_user_value<T: Sized>(ptr: *mut u8, value: &T) -> SysResult {
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
     let memory_set = task.process.memory_set_arc();
     copy_to_user_val(&memory_set, ptr as *mut T, value)
 }
 
+/// 由队列状态生成用户态 `msqid64_ds` 快照（IPC_STAT 输出）。
 fn queue_snapshot(state: &QueueState) -> UserMsqidDs {
     let p = state.perm;
     let result = UserMsqidDs {
@@ -286,6 +337,7 @@ fn queue_snapshot(state: &QueueState) -> UserMsqidDs {
     result
 }
 
+/// 汇总全部队列生成 `msginfo`（IPC_INFO/MSG_INFO 输出），并返回最大已用队列 id。
 fn queue_info() -> UserMsgInfo {
     let manager = MSG_MANAGER.lock();
     let mut messages = 0usize;
@@ -307,6 +359,13 @@ fn queue_info() -> UserMsgInfo {
     }
 }
 
+/// 在队列中查找符合 msgtyp 规则的消息下标，规则与 Linux 一致：
+///
+/// - `MSG_COPY`：按数组下标取，下标非负才有效；
+/// - `msgtyp == 0`：取队首第一条；
+/// - `msgtyp > 0`：取第一条 `kind == msgtyp` 的消息（`MSG_EXCEPT` 时取第一条
+///   `kind != msgtyp` 的）；
+/// - `msgtyp < 0`：取第一条 `kind <= -msgtyp` 中 kind 最小的消息。
 fn find_message(state: &QueueState, msgtyp: i64, flags: i32) -> Option<usize> {
     if flags & MSG_COPY != 0 {
         return if msgtyp < 0 {
@@ -343,6 +402,10 @@ fn find_message(state: &QueueState, msgtyp: i64, flags: i32) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
+/// 非阻塞尝试入队一条消息。
+///
+/// 队列已被删除返回 `Err(EIDRM)`；空间不足返回 `Ok(false)`（调用方决定
+/// 立即报错还是阻塞等待）；成功入队时更新 `stime`/`lspid`。
 fn try_send(state: &mut QueueState, message: &Message, pid: u32) -> Result<bool, SysErrNo> {
     if state.removed {
         return Err(SysErrNo::EIDRM);
@@ -358,6 +421,11 @@ fn try_send(state: &mut QueueState, message: &Message, pid: u32) -> Result<bool,
     Ok(true)
 }
 
+/// 非阻塞尝试取出一条符合 msgtyp 规则的消息。
+///
+/// 队列已被删除返回 `Err(EIDRM)`；没有匹配消息返回 `Ok(None)`；消息过长且
+/// 未设 `MSG_NOERROR` 返回 `Err(E2BIG)`；`MSG_COPY` 模式只拷贝不移除，
+/// 其余模式移除消息并更新 `rtime`/`lrpid`。
 fn try_receive(
     state: &mut QueueState,
     msgtyp: i64,
@@ -388,6 +456,10 @@ fn try_receive(
     Ok(Some(message))
 }
 
+/// 阻塞式发送：队列满时挂起当前任务等待空间。
+///
+/// 等待期间不持锁；挂起前先注册 waker，唤醒后二次尝试，避免丢失通知。
+/// 被信号打断返回 EINTR。
 fn wait_send(queue: Arc<MsgQueue>, message: Message, pid: u32) -> SyscallRet {
     let result = block_on(interruptible(poll_fn(move |cx| {
         let mut state = queue.state.lock();
@@ -412,6 +484,10 @@ fn wait_send(queue: Arc<MsgQueue>, message: Message, pid: u32) -> SyscallRet {
     }
 }
 
+/// 阻塞式接收：队列无匹配消息时挂起当前任务等待。
+///
+/// 等待期间不持锁；挂起前先注册 waker，唤醒后二次尝试，避免丢失通知。
+/// 被信号打断返回 EINTR。
 fn wait_receive(
     queue: Arc<MsgQueue>,
     msgtyp: i64,
@@ -442,7 +518,13 @@ fn wait_receive(
     }
 }
 
+/// 参考 https://www.man7.org/linux/man-pages/man2/msgget.2.html
 /// 获取或创建 System V 消息队列。
+///
+/// - key 为 IPC_PRIVATE 时总是新建；
+/// - 队列已存在：IPC_CREAT|IPC_EXCL 报 EEXIST，无读/写权限报 EACCES，
+///   否则直接返回既有 id；
+/// - 队列不存在：未带 IPC_CREAT 报 ENOENT，否则新建（总数达到 MSGMNI 报 ENOSPC）。
 pub fn sys_msgget(key: i32, msgflg: i32) -> SyscallRet {
     let (uid, gid, _) = current_credentials()?;
     if key != IPC_PRIVATE {
@@ -467,7 +549,12 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> SyscallRet {
     create_queue(key, msgflg, uid, gid)
 }
 
+/// 参考 https://www.man7.org/linux/man-pages/man2/msgsnd.2.html
 /// 向消息队列发送消息。
+///
+/// `msgp` 指向 `long mtype + char mtext[msgsz]`；mtype 必须为正（否则 EINVAL），
+/// 正文长度超过 MSGMAX 报 EINVAL。队列满时：IPC_NOWAIT 报 EAGAIN，
+/// 否则阻塞等待空间；队列被删除时报 EIDRM。
 pub fn sys_msgsnd(msqid: i32, msgp: *const u8, msgsz: usize, msgflg: i32) -> SyscallRet {
     if msgsz > MSGMAX {
         return Err(SysErrNo::EINVAL);
@@ -507,7 +594,12 @@ pub fn sys_msgsnd(msqid: i32, msgp: *const u8, msgsz: usize, msgflg: i32) -> Sys
     }
 }
 
+/// 参考 https://www.man7.org/linux/man-pages/man2/msgrcv.2.html
 /// 从消息队列接收消息。
+///
+/// 向用户缓冲区写 `long mtype + mtext`，返回正文长度；消息过长且未设
+/// MSG_NOERROR 报 E2BIG；MSG_COPY 须与 IPC_NOWAIT 同用且不得与 MSG_EXCEPT
+/// 同用（否则 EINVAL）；无匹配消息时 IPC_NOWAIT 报 ENOMSG，否则阻塞等待。
 pub fn sys_msgrcv(msqid: i32, msgp: *mut u8, msgsz: usize, msgtyp: i64, msgflg: i32) -> SyscallRet {
     if msgsz > MSGMAX
         || (msgflg & MSG_COPY != 0 && msgflg & IPC_NOWAIT == 0)
@@ -540,7 +632,14 @@ pub fn sys_msgrcv(msqid: i32, msgp: *mut u8, msgsz: usize, msgtyp: i64, msgflg: 
     Ok(copy_len)
 }
 
-/// 消息队列控制操作。
+/// 消息队列控制操作，`cmd` 支持：
+///
+/// - `IPC_INFO` / `MSG_INFO`：写 `msginfo`，返回最大已用队列 id；
+/// - `IPC_STAT`：写 `msqid64_ds` 快照，无读权限报 EACCES；
+/// - `MSG_STAT` / `MSG_STAT_ANY`：按 id 写快照，返回队列 id（前者查权限）；
+/// - `IPC_SET`：非 owner/创建者/root 报 EPERM，改 uid/gid 或把 qbytes 调超
+///   MSGMNB 需要特权；若原队列已满则唤醒等待中的发送者；
+/// - `IPC_RMID`：删除队列并唤醒所有阻塞的收发方（后续访问报 EIDRM）。
 pub fn sys_msgctl(msqid: i32, cmd: i32, buf: *mut u8) -> SyscallRet {
     if cmd == IPC_INFO || cmd == MSG_INFO {
         let info = queue_info();
