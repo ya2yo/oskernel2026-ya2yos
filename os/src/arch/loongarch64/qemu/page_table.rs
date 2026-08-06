@@ -286,6 +286,30 @@ impl PageTable {
             .filter(|pte| pte.get_flags().contains(LAPTEFlags::VALID))
             .map(|pte| (2, pte.bits, pte.get_ppn().0))
     }
+
+    /// Whether the current software leaf permits an ordinary U-mode fetch.
+    ///
+    /// A fetch fault with these permissions can only be a stale local
+    /// translation, so the trap layer may invalidate and retry it once.
+    pub fn is_user_executable(&self, vpn: VirtPageNum) -> bool {
+        self.find_valid_pte(vpn)
+            .map(|pte| {
+                let flags = pte.get_flags();
+                flags.contains(LAPTEFlags::PLV3) && !flags.contains(LAPTEFlags::UNEXECUTABLE)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Whether the current software leaf permits an ordinary U-mode load.
+    pub fn is_user_readable(&self, vpn: VirtPageNum) -> bool {
+        self.find_valid_pte(vpn)
+            .map(|pte| {
+                let flags = pte.get_flags();
+                flags.contains(LAPTEFlags::PLV3) && !flags.contains(LAPTEFlags::UNREADEABLE)
+            })
+            .unwrap_or(false)
+    }
+
     /// Translate the virtual address into its corresponding `PhysAddr` if mapped in current page table.
     /// `None` is returned if nothing is found.
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {

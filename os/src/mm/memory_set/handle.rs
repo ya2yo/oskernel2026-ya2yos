@@ -191,17 +191,17 @@ impl MemorySet {
         self.get_mut().handle_page_fault(vpn, scause, prepared)
     }
 
-    /// Check whether a RISC-V leaf PTE already permits U-mode instruction
-    /// fetch. A present instruction/load fault in this state is retried once
-    /// by the trap layer after local translation synchronization.
-    #[cfg(target_arch = "riscv64")]
+    /// Check whether a leaf PTE already permits U-mode instruction fetch.
+    /// A present instruction/load fault in this state is retried once by the
+    /// trap layer after local translation synchronization.
+    #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
     #[inline(always)]
     pub fn is_user_executable(&self, vpn: VirtPageNum) -> bool {
         self.get_ref().page_table.is_user_executable(vpn)
     }
 
-    /// Check whether a present RISC-V leaf PTE permits a U-mode load.
-    #[cfg(target_arch = "riscv64")]
+    /// Check whether a present leaf PTE permits a U-mode load.
+    #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
     #[inline(always)]
     pub fn is_user_readable(&self, vpn: VirtPageNum) -> bool {
         self.get_ref().page_table.is_user_readable(vpn)

@@ -122,8 +122,8 @@ gdbclient:
 
 gdb:
 	@tmux kill-session -t os-debug 2>/dev/null || true
-	@tmux new-session -d -s os-debug 'make gdbserver'
-	@tmux split-window -h 'sleep 1 && make gdbclient'
+	@tmux new-session -d -s os-debug '$(MAKE) TARGET_ARCH=$(TARGET_ARCH) gdbserver'
+	@tmux split-window -h 'sleep 1 && $(MAKE) TARGET_ARCH=$(TARGET_ARCH) gdbclient'
 	@tmux attach-session -t os-debug
 
 setup_cargo:

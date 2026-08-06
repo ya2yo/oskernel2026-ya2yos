@@ -142,9 +142,9 @@ pub struct TaskControlBlockInner {
     /// VFORK: if non-zero, parent is suspended waiting for this child PID to
     /// exit or exec. Set by CLONE_VFORK, cleared when child wakes the parent.
     pub vfork_wait_child: usize,
-    /// A present RISC-V user PTE may still transiently fault while another
-    /// thread installs the same page or while a translation catches up. Keep
-    /// one retry per VPN; a consecutive second fault remains a SIGSEGV.
+    /// A present user PTE may still transiently fault while a translation
+    /// catches up. Keep one retry per VPN; a consecutive second fault remains
+    /// a SIGSEGV.
     present_page_fault_retry: Option<VirtPageNum>,
     /// Perf-only vfork lifecycle boundaries. A zero value means this task is
     /// not participating in the corresponding hand-off.

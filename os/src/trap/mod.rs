@@ -126,7 +126,7 @@ pub fn trap_handler() {
     // );
     match cause {
         Trap::Exception(Exception::Syscall) => {
-            #[cfg(target_arch = "riscv64")]
+            #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
             current_task()
                 .unwrap()
                 .inner_lock()
@@ -184,7 +184,7 @@ pub fn trap_handler() {
                 let beyond_eof_before = memory_set.mmap_file_page_beyond_eof(fault_va.floor());
                 let handled =
                     !beyond_eof_before && memory_set.handle_page_fault(fault_va.floor(), cause);
-                #[cfg(target_arch = "riscv64")]
+                #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
                 // If the PTE already permits this user load/fetch but the CPU
                 // still faulted, another thread may have just installed the
                 // page while this fault was in progress. Allow one retry
@@ -200,19 +200,17 @@ pub fn trap_handler() {
                         && memory_set.is_user_readable(fault_va.floor()))
                         || (cause == Trap::Exception(Exception::FetchInstructionPageFault)
                             && memory_set.is_user_executable(fault_va.floor())))
-                    && task
-                        .inner_lock()
-                        .retry_present_page_fault(fault_va.floor());
-                #[cfg(not(target_arch = "riscv64"))]
+                    && task.inner_lock().retry_present_page_fault(fault_va.floor());
+                #[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
                 let retry_present_user_fault = false;
                 signal = if beyond_eof_before {
                     Some(SigSet::SIGBUS)
                 } else if handled {
-                    #[cfg(target_arch = "riscv64")]
+                    #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
                     task.inner_lock().clear_present_page_fault_retry();
                     None
                 } else if retry_present_user_fault {
-                    #[cfg(target_arch = "riscv64")]
+                    #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
                     {
                         crate::arch::tlb::tlb_invalidate();
                         if cause == Trap::Exception(Exception::FetchInstructionPageFault) {

@@ -10166,3 +10166,21 @@ LoongArch BuildStorm，因此不把 `446/446` 或运行期 SIGSEGV 消失作为�
 修改 `os/src/syscall/ipc/msg.rs`、`os/src/syscall/ipc/mod.rs`、`os/src/syscall/mod.rs`、`user/src/syscall/mod.rs`、`user/src/lib.rs`、`user/src/bin/initproc/msg_regression.rs` 和 `user/src/bin/initproc.rs`；新增 `Docs/决赛文档/problem/sysv-msg-queue.md` 并更新开发日志和 README 索引。
 
 RISC-V/LoongArch64 release 构建、消息队列相关 `rustfmt --check` 和 `git diff --check` 通过。RISC-V QEMU 回归输出 `msg regression passed`/`shutdown!`，覆盖普通收发、消息选择、复制/截断、队列控制、阻塞发送/接收和删除唤醒。镜像内缺少 musl LTP `msg*` 可执行文件，相关尝试均为 `execve fail`，完整 LTP 尚未验证。
+
+## 2026-08-06：LoongArch BuildStorm 有效用户页取指 fault 重试
+
+### 用户输入
+
+维护者指出 `server.ans` 的修改时间晚于 `cd5896c6`，该 FCC 修复没有解决新日志，要求重新分析并修复。
+
+### 分析与采纳结论
+
+核对时间线确认 `server.ans` 为 11:09:42，`cd5896c6` 为 01:05:07，不能沿用 FCC 问题结论。日志中的 LoongArch `FetchInstructionPageFault` 现场显示软件页表叶子 `pte_flags=0x9d`，VMA 权限为 `R|X|U` 且页面已驻留；旧代码只在 RISC-V cfg 下对这种 present-PTE fault 做一次本地 TLB 刷新重试，LoongArch 会直接发 SIGSEGV。
+
+采纳为 LoongArch 页表增加 U/R、U/X 判定，并将现有一次性 present-PTE load/fetch 重试扩展到双架构。第二次同 VPN fault 仍失败，避免真实权限错误无限重试。
+
+### 修改与验证
+
+修改 `os/src/arch/loongarch64/qemu/page_table.rs`、`os/src/mm/memory_set/handle.rs`、`os/src/task/task/task.rs` 和 `os/src/trap/mod.rs`；新增 `Docs/决赛文档/problem/loongarch-present-pte-fetch-retry.md` 并更新开发日志、README。
+
+本次四个 Rust 文件 targeted rustfmt、RISC-V/LoongArch64 release 构建和 LoongArch `fault-diagnostics` debug 构建通过。`timeout 240s make run TARGET_ARCH=loongarch64` 通过 sigaltstack/rseq 与 `BUILDSTORM_TOOLCHAIN ok`，尚未进入原始 Cargo 长时编译窗口；全仓 cargo fmt 仍被既有未格式化文件阻断。

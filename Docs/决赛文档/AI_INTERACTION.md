@@ -2635,3 +2635,12 @@
 - **验证边界**：RISC-V 与 LoongArch64 release 构建、相关 `rustfmt --check`、`git diff --check` 通过；RISC-V QEMU 回归输出 `msg regression passed`。当前磁盘镜像缺少 musl LTP `msg*` 可执行文件，完整 LTP 和 LoongArch64 QEMU 运行回归尚未完成。
 - **关联文档**：[消息队列问题复盘](./problem/sysv-msg-queue.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### LoongArch BuildStorm 有效用户页取指 fault 重试（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者指出新的 `server.ans` 修改时间晚于 `cd5896c6`，要求重新定位 FCC 修复未解决的 LoongArch rustc SIGSEGV。
+- **描述**：确认有效用户 PTE `0x9d` 与 `R|X|U` VMA 同时存在，旧代码却只在 RISC-V 路径对 present-PTE load/fetch fault 做本地 TLB 刷新和一次重试；扩展页表权限判定、MemorySet 接口和 trap 重试到 LoongArch，保留同 VPN 第二次 fault 失败语义。
+- **验证边界**：双架构 release 构建、LoongArch fault-diagnostics debug 构建及 240 秒 QEMU 前置冒烟通过；完整 Cargo/BuildStorm 编译窗口尚未完成。
+- **关联文档**：[问题复盘](./problem/loongarch-present-pte-fetch-retry.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
