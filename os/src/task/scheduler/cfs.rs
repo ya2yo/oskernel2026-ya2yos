@@ -12,7 +12,7 @@
 //! 时，取任务路径可以直接丢弃该项而不延长任务生命周期。
 
 use super::TaskControlBlock;
-use crate::arch::{config::HART_NUM, time::get_ticks};
+use crate::arch::{config::HART_NUM, cpu::hart_id, time::get_ticks};
 use crate::task::TaskStatus;
 use alloc::{
     collections::BinaryHeap,
@@ -197,12 +197,12 @@ impl CfsHartRunQueue {
 
 /// 每个 Hart 独立的 CFS 就绪队列。
 ///
-/// 任务按 `Process::home_hart` 固定归属队列；当前实现不执行跨 Hart 迁移
-/// 或负载均衡，因此每次访问都只锁定目标 Hart 的队列。
+/// 任务按 `TaskControlBlock::scheduled_hart` 归属队列。亲和性更新可能让旧
+/// 队列留下过期项，取出时会将其转投新 hart 的队列。
 static READY_QUEUES: Lazy<[Mutex<CfsHartRunQueue>; HART_NUM]> =
     Lazy::new(|| core::array::from_fn(|_| Mutex::new(CfsHartRunQueue::new())));
 
-/// 将可运行任务加入其 home Hart 的 CFS 队列。
+/// 将可运行任务加入其 placement Hart 的 CFS 队列。
 ///
 /// 入队前通过 `on_rq` 去重，并把任务的 `vruntime` 提升到队列当前的
 /// `min_vruntime`，然后以 `(vruntime, tid)` 作为堆键。任务本体只以弱引用
@@ -214,7 +214,7 @@ pub(super) fn add_task(task: &Arc<TaskControlBlock>) {
         return;
     }
 
-    let hartid = task.process.home_hart();
+    let hartid = task.scheduled_hart();
     let mut hart_queue = READY_QUEUES[hartid].lock();
     let vruntime = task.sched_entity.place_at(hart_queue.min_vruntime);
     hart_queue.tasks.push(CfsEntry {
@@ -229,34 +229,45 @@ pub(super) fn add_task(task: &Arc<TaskControlBlock>) {
 /// 弱引用和非 `Ready` 任务，直到找到有效任务或队列为空。取项期间保留
 /// `on_rq` 标志，待任务状态检查结束后再清除，以协调并发唤醒。
 pub(super) fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {
-    let mut hart_queue = READY_QUEUES[hartid].lock();
     loop {
-        let Some(entry) = hart_queue.tasks.pop() else {
-            return None;
+        let moved_task = {
+            let mut hart_queue = READY_QUEUES[hartid].lock();
+            loop {
+                let Some(entry) = hart_queue.tasks.pop() else {
+                    return None;
+                };
+                let Some(task) = entry.task.upgrade() else {
+                    warn!("fetch task got a dropped task");
+                    continue;
+                };
+                let status = {
+                    let inner = task.inner_lock();
+                    let status = inner.task_status;
+                    // Keep membership set until the task-state inspection is complete.
+                    // A concurrent waker then either sees the entry as still claimed,
+                    // or observes membership cleared and can enqueue a replacement.
+                    task.sched_entity.mark_dequeued();
+                    status
+                };
+                if status != TaskStatus::Ready {
+                    warn!(
+                        "fetch_task: discard stale CFS entry tid={}, status={:?}",
+                        task.tid(),
+                        status
+                    );
+                    continue;
+                }
+                if task.scheduled_hart() != hartid {
+                    break task;
+                }
+                hart_queue.advance_min_vruntime(entry.key.0);
+                return Some(task);
+            }
         };
-        let Some(task) = entry.task.upgrade() else {
-            warn!("fetch task got a dropped task");
-            continue;
-        };
-        let status = {
-            let inner = task.inner_lock();
-            let status = inner.task_status;
-            // Keep membership set until the task-state inspection is complete.
-            // A concurrent waker then either sees the entry as still claimed,
-            // or observes membership cleared and can enqueue a replacement.
-            task.sched_entity.mark_dequeued();
-            status
-        };
-        if status != TaskStatus::Ready {
-            warn!(
-                "fetch_task: discard stale CFS entry tid={}, status={:?}",
-                task.tid(),
-                status
-            );
-            continue;
-        }
-        hart_queue.advance_min_vruntime(entry.key.0);
-        return Some(task);
+
+        // Do not recursively lock two CFS queues.  The affinity setter may
+        // have changed placement while this weak entry waited in the old heap.
+        add_task(&moved_task);
     }
 }
 
@@ -287,7 +298,7 @@ pub(super) fn mark_running(task: &Arc<TaskControlBlock>) {
     task.sched_entity.mark_running();
 }
 
-/// 结算当前任务刚结束的运行片段，并推进其 home Hart 的时间基准。
+/// 结算当前任务刚结束的运行片段，并推进实际执行 hart 的时间基准。
 ///
 /// 调用方应在任务离开 processor、重新进入就绪队列之前调用此函数；随后
 /// `add_task` 会使用更新后的 `vruntime` 参与下一轮选择。
@@ -295,7 +306,7 @@ pub(super) fn account_current(task: &Arc<TaskControlBlock>) {
     let nice = task.inner_lock().nice;
     task.sched_entity.account_runtime(nice);
 
-    let hartid = task.process.home_hart();
+    let hartid = hart_id();
     READY_QUEUES[hartid]
         .lock()
         .advance_min_vruntime(task.sched_entity.vruntime());

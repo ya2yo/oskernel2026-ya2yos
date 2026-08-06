@@ -18,6 +18,7 @@ fn scause_to_trap(value: scause::Trap) -> Trap {
     match value {
         scause::Trap::Interrupt(interrupt) => match interrupt {
             scause::Interrupt::SupervisorTimer => Trap::Interrupt(Interrupt::Timer),
+            scause::Interrupt::SupervisorSoft => Trap::Interrupt(Interrupt::Ipi),
             _ => Trap::Unknown,
         },
         scause::Trap::Exception(exception) => match exception {
@@ -75,6 +76,10 @@ pub fn trap_init() {
     //开启rustsbi的浮点指令
     unsafe {
         sstatus::set_fs(FS::Clean);
+        // Software interrupts are delivered only after sret enables user
+        // interrupts.  Kernel-mode SIE remains disabled because its trap path
+        // is intentionally non-returning.
+        sie::set_ssoft();
     }
 }
 

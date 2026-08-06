@@ -1,12 +1,12 @@
 use core::sync::atomic::AtomicU32;
 
 use crate::{
-    arch::{config::HART_NUM, time::get_clock_freq},
+    arch::time::get_clock_freq,
     mm::{copy_from_user, copy_to_user, if_bad_address},
     signal::check_if_any_sig_for_current_task,
     task::{
         block_on, current_task, interruptible, sleep_until, suspend_current_and_run_next,
-        tid_to_task, yield_current_and_run_next, Process,
+        tid_to_task, yield_current_and_run_next, Process, TaskControlBlock,
     },
     timer::{
         calculate_left_timespec, get_time_ms, get_time_spec, Timespec, MSEC_PER_SEC, NANOS_PER_SEC,
@@ -111,25 +111,32 @@ pub fn sys_sched_setaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
     }
 
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let target_process = if pid == 0 {
-        task.process.clone()
-    } else if let Some(process) = Process::get_process_arc_by_pid(pid) {
-        process
-    } else if let Some(target) = tid_to_task::tid2task(pid) {
-        target.process.clone()
-    } else {
-        return Err(SysErrNo::ESRCH);
-    };
+    let target = resolve_affinity_target(pid, &task)?;
 
     let process = &task.process;
     let memory_set = process.memory_set_arc();
     let mut raw_mask = [0u8; core::mem::size_of::<usize>()];
     copy_from_user(&memory_set, mask, &mut raw_mask)?;
-    let requested_mask = usize::from_ne_bytes(raw_mask);
-    let home_hart_mask = 1usize << target_process.home_hart();
-    // Processes stay pinned until remote TLB shootdown supports migration.
-    if requested_mask & home_hart_mask == 0 {
+    let requested_mask = usize::from_ne_bytes(raw_mask) & target.allowed_cpu_mask();
+    if requested_mask == 0 {
         return Err(SysErrNo::EINVAL);
+    }
+
+    let old_hart = target.set_cpu_affinity(requested_mask);
+    let new_hart = target.scheduled_hart();
+    if old_hart != new_hart {
+        if target.tid() == task.tid() {
+            drop(target);
+            drop(task);
+            // The saved syscall context resumes only after the task reaches
+            // an allowed hart, matching Linux's observable affinity contract.
+            suspend_current_and_run_next();
+        } else {
+            // A running remote task observes this IPI in user mode and moves
+            // at the common trap/scheduler boundary.  A queued task is moved
+            // lazily when its stale CFS entry is fetched.
+            let _ = crate::arch::cpu::wake_hart(old_hart);
+        }
     }
     Ok(0)
 }
@@ -145,26 +152,36 @@ pub fn sys_sched_getaffinity(pid: usize, cpusetsize: usize, mask: usize) -> Sysc
     }
 
     let task = current_task().ok_or(SysErrNo::ESRCH)?;
-    let _target = if pid == 0 {
-        task.process.clone()
-    } else if let Some(process) = Process::get_process_arc_by_pid(pid) {
-        process
-    } else if let Some(target) = tid_to_task::tid2task(pid) {
-        target.process.clone()
-    } else {
-        return Err(SysErrNo::ESRCH);
-    };
+    let target = resolve_affinity_target(pid, &task)?;
 
     let process = &task.process;
     let memory_set = process.memory_set_arc();
-    // The scheduler pins a process to its home hart internally because remote
-    // TLB shootdown is not available yet. Keep the Linux-visible machine
-    // topology at the configured SMP width: cargo/rustc use this mask to size
-    // their process worker pool, and each child process has its own address
-    // space and can be placed on a different home hart.
-    let online_mask = ((1usize << HART_NUM) - 1).to_ne_bytes();
-    copy_to_user(&memory_set, mask, &online_mask)?;
+    let affinity = target.cpu_affinity().to_ne_bytes();
+    copy_to_user(&memory_set, mask, &affinity)?;
     Ok(mask_bytes)
+}
+
+/// Resolve Linux's `pid` argument to a concrete thread.  The kernel tracks
+/// scheduling state per TID, so a process lookup is only a compatibility
+/// fallback for callers that pass a thread-group ID.
+fn resolve_affinity_target(
+    pid: usize,
+    current: &alloc::sync::Arc<TaskControlBlock>,
+) -> Result<alloc::sync::Arc<TaskControlBlock>, SysErrNo> {
+    if pid == 0 {
+        return Ok(current.clone());
+    }
+    if let Some(task) = tid_to_task::tid2task(pid) {
+        return Ok(task);
+    }
+    let process = Process::get_process_arc_by_pid(pid).ok_or(SysErrNo::ESRCH)?;
+    let target = process
+        .meta_lock()
+        .tasks
+        .iter()
+        .find_map(|task| task.upgrade())
+        .ok_or(SysErrNo::ESRCH);
+    target
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/sched_setscheduler.2.html

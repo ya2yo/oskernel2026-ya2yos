@@ -2644,3 +2644,21 @@
 - **验证边界**：双架构 release 构建、LoongArch fault-diagnostics debug 构建及 240 秒 QEMU 前置冒烟通过；完整 Cargo/BuildStorm 编译窗口尚未完成。
 - **关联文档**：[问题复盘](./problem/loongarch-present-pte-fetch-retry.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 共享地址空间 SMP 与远程 TLB（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求根据 `server.ans` 和既有 GDB 观察，先解决单个 `rustc` 线程池只有一个 CPU 工作的问题，并明确共享地址空间一致性优先于线程 round-robin。
+- **描述**：确认 `Process::home_hart` 是单核根因；实现 RISC-V SBI software IPI + per-hart TLB mailbox/ACK、MemorySet active-hart 和 frame 延迟回收，再将 placement、CFS/RR、唤醒、timer scan 与 affinity 下沉到 TCB。LoongArch 由于没有可恢复 IPI trap/return，继续限制共享地址空间为单 hart；加入 per-hart scheduler/shootdown perf 汇总。
+- **验证边界**：`make build-arch TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64` 通过。直接 QEMU 启动被已有维护者实例占用 `disk.img` 写锁阻断，未运行完整 BuildStorm、LTP 或运行期 SMP 验收。
+- **关联文档**：[共享地址空间 SMP 问题复盘](./problem/buildstorm-shared-address-space-smp.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
+#### LoongArch 共享地址空间 SMP 对应实现（8.6）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求确认龙芯是否也应具备 RISC-V 的共享地址空间 SMP、IPI 和实际 affinity 语义。
+- **描述**：复核 LoongArch QEMU 的 12 hart 配置、IOCSR IPI 控制器和 `ECFG.LIE.IPI`，补齐 IPI 发送/清除/译码与 kernel/idle 处理。审计发现 `__kern_trap` 被无条件 shutdown 短路，且有两处越出 256-byte kernel register frame 的 user-TrapContext 写入；移除后将既有 remote-TLB mailbox/ACK 协议扩展到 LoongArch，并把默认 affinity 从 home-hart 单 bit 扩展为在线 hart mask。
+- **验证边界**：RISC-V、LoongArch64 release 和 LoongArch64 perf 构建通过；副本镜像 `-smp 12` 在汇编修正后确认 hart 1--11 在线、`sigaltstack`/`rseq` 通过并启动 BuildStorm 脚本，无 IPI/TLB panic。完整 BuildStorm、跨 hart codegen 与 COW/mmap 长时回归尚未完成。
+- **关联文档**：[共享地址空间 SMP 问题复盘](./problem/buildstorm-shared-address-space-smp.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

@@ -40,6 +40,7 @@ fn estat_to_trap(value: estat::Trap) -> Trap {
     match value {
         estat::Trap::Interrupt(interrupt) => match interrupt {
             estat::Interrupt::Timer => Trap::Interrupt(Interrupt::Timer),
+            estat::Interrupt::IPI => Trap::Interrupt(Interrupt::Ipi),
             _ => Trap::Unknown,
         },
         estat::Trap::Exception(exception) => match exception {
@@ -136,7 +137,7 @@ pub fn set_user_trap_entry() {
 pub fn enable_timer_interrupt() {
     ticlr::clear_timer_interrupt();
     // 开启全局中断
-    ecfg::set_lie(LineBasedInterrupt::TIMER);
+    ecfg::set_lie(LineBasedInterrupt::TIMER | LineBasedInterrupt::IPI);
     // crmd::set_ie(true);
 }
 

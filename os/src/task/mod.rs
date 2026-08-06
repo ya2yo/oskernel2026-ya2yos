@@ -150,7 +150,12 @@ pub fn suspend_current_and_run_next() {
 pub fn preempt_current_and_run_next() {
     exit_current_if_group_exited_or_killed();
     let task = current_task().unwrap();
-    if !ready_queue::has_ready_for_hart(task.process.home_hart()) {
+    if task.scheduled_hart() != hart_id() {
+        drop(task);
+        suspend_current_and_run_next();
+        return;
+    }
+    if !ready_queue::has_ready_for_hart(task.scheduled_hart()) {
         return;
     }
     drop(task);
@@ -164,7 +169,26 @@ pub fn preempt_current_and_run_next() {
 /// polling loops that use yield as a backoff hint.
 pub fn yield_current_and_run_next() {
     let task = current_task().unwrap();
-    if !ready_queue::has_ready_for_hart(task.process.home_hart()) {
+    if task.scheduled_hart() != hart_id() {
+        drop(task);
+        suspend_current_and_run_next();
+        return;
+    }
+    if !ready_queue::has_ready_for_hart(task.scheduled_hart()) {
+        return;
+    }
+    drop(task);
+    suspend_current_and_run_next();
+}
+
+/// Leave the current hart after an affinity change selected another one.
+///
+/// Called from the RISC-V software-interrupt path.  `schedule()` returns only
+/// once this task has been selected on its new placement hart, so the pending
+/// user trap can safely complete there.
+pub(crate) fn migrate_current_if_needed() {
+    let task = current_task().unwrap();
+    if task.scheduled_hart() == hart_id() {
         return;
     }
     drop(task);

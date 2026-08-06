@@ -10184,3 +10184,33 @@ RISC-V/LoongArch64 release 构建、消息队列相关 `rustfmt --check` 和 `gi
 修改 `os/src/arch/loongarch64/qemu/page_table.rs`、`os/src/mm/memory_set/handle.rs`、`os/src/task/task/task.rs` 和 `os/src/trap/mod.rs`；新增 `Docs/决赛文档/problem/loongarch-present-pte-fetch-retry.md` 并更新开发日志、README。
 
 本次四个 Rust 文件 targeted rustfmt、RISC-V/LoongArch64 release 构建和 LoongArch `fault-diagnostics` debug 构建通过。`timeout 240s make run TARGET_ARCH=loongarch64` 通过 sigaltstack/rseq 与 `BUILDSTORM_TOOLCHAIN ok`，尚未进入原始 Cargo 长时编译窗口；全仓 cargo fmt 仍被既有未格式化文件阻断。
+
+## 2026-08-06：BuildStorm 共享地址空间 SMP 与远程 TLB
+
+### 用户输入
+
+维护者要求继续处理 `server.ans` 中 axbuild 构建过慢的问题，并明确先实现真实共享地址空间 SMP：远程 TLB shootdown、任务级 CPU mask/placement、CFS/唤醒/定时器与 `sched_{set,get}affinity` 实际语义；不得只将 `CLONE_THREAD` round-robin 到其他 hart。
+
+### 分析与采纳结论
+
+沿 `CLONE_THREAD -> Process::home_hart -> scheduler -> sched affinity` 审计，确认单个 rustc 的共享线程被进程级 home hart 固定，而 affinity 仅伪装在线 CPU mask。RISC-V 已有 SBI software IPI 和本地 `sfence.vma`，但 kernel-mode trap 不可恢复，因此采用每 hart mailbox、用户/idle poll、全局 shootdown 发起锁、MemorySet active-hart 生命周期和 frame 引用延迟释放；LoongArch 保持单 hart。
+
+### 修改与验证
+
+修改 RISC-V IPI/trap、`MemorySet` 同步写路径、任务 placement、CFS/RR/唤醒/定时器、affinity syscall 及 perf per-hart/shootdown 统计；新增 `Docs/决赛文档/problem/buildstorm-shared-address-space-smp.md`。`make build-arch TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64` 均通过。直接 QEMU 运行因维护者已有实例持有 `disk.img` 写锁而未执行，没有终止该实例或覆盖镜像；完整 BuildStorm、LTP 和运行期 SMP 统计待释放镜像锁后验证。
+
+## 2026-08-06：LoongArch 共享地址空间 SMP 对应实现
+
+### 用户输入
+
+维护者追问龙芯是否也需要对应 RISC-V 的 SMP 修改。
+
+### 分析与采纳结论
+
+审计发现 LoongArch QEMU 已配置 12 hart，依赖 crate 提供 IOCSR IPI send/status/clear，`ECFG` 也有 IPI 使能位；旧 `wake_hart()` 返回 `false` 和 trap decoder 未识别 IPI 才是功能缺口。`__kern_trap` 已保存现场并从 `trap_from_kernel()` 返回后执行 `ertn`，因此 IPI 可以在内核 idle 路径完成本地 TLB 刷新/ACK，而不必维持 home-hart 限制。
+
+采纳将 per-hart mailbox/ACK shootdown 泛化到 LoongArch，补齐 IOCSR IPI 清除、IPI 线使能、IPI cause 映射、idle 与 kernel trap 处理，并让 LoongArch 使用全在线 affinity mask。RISC-V 的 active-hart/frame 延迟回收协议保持不变，两架构共用。
+
+### 修改与验证
+
+修改 `os/src/arch/loongarch64/qemu/{cpu.rs,trap_interface.rs,asms/trap.S}`、`os/src/mm/remote_tlb.rs`、`os/src/task/task/task.rs`、`os/src/trap/{mod.rs,trap_types.rs}`，并更新共享地址空间 SMP 复盘与开发日志。移除 `__kern_trap` 的无条件停机分支，且删除其 256-byte register frame 外的无效 user-TrapContext 写入。RISC-V/LoongArch64 release 和 LoongArch64 perf 构建通过。只读镜像在 EXT4 写入时按预期失败；使用 `/tmp/sdcard-la-smp.img` 副本可写启动后，hart 1--11 均打印启动日志，`sigaltstack`、`rseq` 回归通过并启动 Bash/BuildStorm 脚本，无 panic/ERROR/IPI/TLB 报错。120 秒 perf 窗口未输出 Cargo 或 perf snapshot，因此没有运行触发 rustc 跨 hart 的完整 BuildStorm，吞吐提升尚未宣称。

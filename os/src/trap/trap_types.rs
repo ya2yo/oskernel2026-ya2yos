@@ -34,4 +34,7 @@ pub enum Exception {
 pub enum Interrupt {
     ///Timer Interrupt 在riscv64版本中等价于SupervisorTimer
     Timer,
+    /// Inter-processor interrupt used for scheduler wakeups and remote
+    /// translation-cache shootdown.
+    Ipi,
 }

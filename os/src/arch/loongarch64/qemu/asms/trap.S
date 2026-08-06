@@ -102,12 +102,11 @@ __alltraps:
     or $t1, $t1, $t0
     st.b $t1, $sp, 96*8+4
 
-    # save other general purpose registers
-    st.d $a0, $sp, 98*8
-    csrrd $t0, CSR_PRMD
-    csrrd $t1, CSR_ERA
-    st.d $t0, $sp, 99*8
-    st.d $t1, $sp, 0
+    # Save the kernel return PC inside this 256-byte register frame.  The
+    # user TrapContext-only slots at 98*8 and 99*8 are outside this frame and
+    # must not be touched by a resumable kernel IPI trap.
+    csrrd $t0, CSR_ERA
+    st.d $t0, $sp, 0
     # read user stack from SAVE and save it in TrapContext
     csrrd $t2, CSR_SAVE0
     st.d $t2, $sp, 3*8
@@ -179,7 +178,6 @@ sigreturn_trampoline:
     .globl __kern_trap
     .align 12
 __kern_trap:
-    bl __shutdown
     # Keep the original $sp in SAVE
     csrwr $sp, CSR_SAVE1
     csrrd $sp, CSR_SAVE1

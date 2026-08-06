@@ -35,7 +35,7 @@ pub mod ready_queue {
 
     pub fn add_task(task: &Arc<TaskControlBlock>) {
         policy::add_task(task);
-        crate::task::processor::notify_hart_of_runnable_task(task.process.home_hart());
+        crate::task::processor::notify_hart_of_runnable_task(task.scheduled_hart());
     }
 
     pub fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {

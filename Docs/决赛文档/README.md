@@ -180,3 +180,4 @@
 - [LoongArch BuildStorm 有效用户页取指 fault 重试](./problem/loongarch-present-pte-fetch-retry.md)
 - [brk 与 MAP_FIXED VMA 重叠边界](./problem/brk-map-fixed-overlap.md)
 - [System V 消息队列 syscall 实现](./problem/sysv-msg-queue.md)
+- [BuildStorm 共享地址空间 SMP 与远程 TLB 一致性](./problem/buildstorm-shared-address-space-smp.md)

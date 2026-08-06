@@ -336,6 +336,14 @@ pub fn trap_handler() {
             // debug!("Timer Interupt!");
             crate::task::preempt_current_and_run_next();
         }
+        Trap::Interrupt(Interrupt::Ipi) => {
+            #[cfg(target_arch = "riscv64")]
+            crate::arch::cpu::clear_ipi();
+            #[cfg(target_arch = "loongarch64")]
+            crate::arch::cpu::clear_ipi();
+            crate::mm::remote_tlb::poll();
+            crate::task::migrate_current_if_needed();
+        }
         // Trap::Exception(Exception::Breakpoint) => {
         //     warn!("[kernel] Breakpoint from application");
         //     // jump to next instruction anyway
@@ -418,7 +426,12 @@ pub fn trap_return() {
         fn __return_to_user(cx: *mut TrapContext);
     }
     // 启动任务的页表
-    current_task().unwrap().process.memory_set_arc().activate();
+    crate::mm::remote_tlb::poll();
+    current_task()
+        .unwrap()
+        .process
+        .memory_set_arc()
+        .activate_for_user();
 
     unsafe {
         // 方便调试进入__return_to_user
@@ -503,14 +516,18 @@ pub fn trap_from_kernel() -> ! {
 #[cfg(target_arch = "loongarch64")]
 #[no_mangle]
 pub fn trap_from_kernel() {
-    use log::error;
-
     let cause = get_trap_cause();
-    if cause == Trap::Interrupt(Interrupt::Timer) {
-        // 中断返回？
-        return;
+    match cause {
+        Trap::Interrupt(Interrupt::Timer) => return,
+        Trap::Interrupt(Interrupt::Ipi) => {
+            crate::arch::cpu::clear_ipi();
+            crate::mm::remote_tlb::poll();
+            return;
+        }
+        _ => {}
     }
 
+    use log::error;
     backtrace();
     let stval = get_trap_virt_addr();
     let stval_vpn = VirtAddr::from(stval).floor();

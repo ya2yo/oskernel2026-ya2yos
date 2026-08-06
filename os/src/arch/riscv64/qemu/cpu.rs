@@ -50,12 +50,19 @@ pub fn idle() {
         crate::timer::set_next_trigger();
         riscv::asm::wfi();
         sie::clear_ssoft();
-        #[allow(deprecated)]
-        {
-            sbi_rt::legacy::clear_ipi();
-        }
+        clear_ipi();
     }
+    crate::mm::remote_tlb::poll();
     crate::timer::set_next_trigger();
+}
+
+/// Acknowledge the SBI supervisor software interrupt source.
+#[inline]
+pub fn clear_ipi() {
+    #[allow(deprecated)]
+    {
+        sbi_rt::legacy::clear_ipi();
+    }
 }
 
 /// Wake a hart that has published an idle state after receiving a runnable

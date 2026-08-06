@@ -5,7 +5,8 @@
 //! page tables or VM areas.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use spin::rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use core::sync::atomic::{AtomicUsize, Ordering};
+use spin::rwlock::{RwLock, RwLockReadGuard};
 
 use super::{
     accessors::{writeback_shared_mmap_pages, SharedMmapWriteback},
@@ -28,6 +29,13 @@ use crate::{
 /// Thread-safe handle to a virtual address space.
 pub struct MemorySet {
     inner: RwLock<MemorySetInner>,
+    /// Harts which may still access this page table or its user frames.
+    ///
+    /// A bit is installed while holding `inner`'s read lock immediately before
+    /// returning to user mode, and remains set through user traps until the
+    /// scheduler detaches the task.  Keeping it set in kernel mode also covers
+    /// direct `copy_{from,to}_user` accesses during a syscall.
+    active_harts: AtomicUsize,
 }
 
 /// Read-only VMA and page-table state captured after an unrecoverable user
@@ -64,26 +72,38 @@ impl MemorySet {
     pub fn new(memory_set: MemorySetInner) -> Self {
         Self {
             inner: RwLock::new(memory_set),
+            active_harts: AtomicUsize::new(0),
         }
     }
 
-    /// Borrow the inner address space mutably.
-    ///
-    /// Keep this guard short-lived. Do not hold it across filesystem, network,
-    /// futex, signal-delivery, or scheduler paths.
-    pub fn get_mut(&self) -> RwLockWriteGuard<'_, MemorySetInner> {
-        self.inner.write()
-    }
-
     /// Borrow the inner address space read-only.
-    pub fn get_ref(&self) -> RwLockReadGuard<'_, MemorySetInner> {
+    pub(crate) fn get_ref(&self) -> RwLockReadGuard<'_, MemorySetInner> {
         self.inner.read()
     }
 
-    /// Execute a closure while holding the write lock.
-    pub fn with_mut<T>(&self, f: impl FnOnce(&mut MemorySetInner) -> T) -> T {
-        let mut inner = self.get_mut();
-        f(&mut inner)
+    /// Execute a page-table update with the remote TLB protocol in place.
+    ///
+    /// The retained frame list deliberately covers the full resident set, not
+    /// just a best-effort list of pages touched by the caller.  This keeps
+    /// unmapped or COW-replaced frames alive until all remote stale TLB entries
+    /// have been invalidated.
+    pub(crate) fn with_mut<T>(&self, f: impl FnOnce(&mut MemorySetInner) -> T) -> T {
+        let was_active = self.deactivate_current_hart();
+        let _update_guard = crate::mm::remote_tlb::lock_updates();
+        let mut inner = self.inner.write();
+        let retained_frames: Vec<Arc<FrameTracker>> = inner
+            .areas
+            .iter()
+            .flat_map(|area| area.data_frames.values().cloned())
+            .collect();
+        let result = f(&mut inner);
+        let active_harts = self.active_harts.load(Ordering::Acquire);
+        crate::mm::remote_tlb::shootdown(active_harts);
+        if was_active {
+            self.activate_current_hart();
+        }
+        drop(retained_frames);
+        result
     }
 
     /// Execute a closure while holding the read lock.
@@ -107,14 +127,13 @@ impl MemorySet {
         permission: MapPermission,
         area_type: MapAreaType,
     ) {
-        self.get_mut()
-            .insert_framed_area(start_va, end_va, permission, area_type)
+        self.with_mut(|inner| inner.insert_framed_area(start_va, end_va, permission, area_type))
     }
 
     /// Remove an area identified by its starting VPN.
     #[inline(always)]
     pub fn remove_area_with_start_vpn(&self, start_vpn: VirtPageNum) {
-        self.get_mut().remove_area_with_start_vpn(start_vpn);
+        self.with_mut(|inner| inner.remove_area_with_start_vpn(start_vpn));
     }
 
     /// Create an anonymous/file-backed mmap area.
@@ -128,7 +147,7 @@ impl MemorySet {
         file: Option<Arc<OSFile>>,
         off: usize,
     ) -> usize {
-        self.get_mut().mmap(addr, len, map_perm, flags, file, off)
+        self.with_mut(|inner| inner.mmap(addr, len, map_perm, flags, file, off))
     }
 
     /// Attach a SysV shared memory segment.
@@ -140,13 +159,13 @@ impl MemorySet {
         map_perm: MapPermission,
         pages: Vec<Arc<FrameTracker>>,
     ) -> usize {
-        self.get_mut().shm(addr, size, map_perm, pages)
+        self.with_mut(|inner| inner.shm(addr, size, map_perm, pages))
     }
 
     /// Detach a SysV shared memory segment from this address space.
     #[inline(always)]
     pub fn shm_detach(&self, addr: usize) -> SyscallRet {
-        self.get_mut().shm_detach(addr)
+        self.with_mut(|inner| inner.shm_detach(addr))
     }
 
     /// Unmap an mmap-created range.
@@ -166,7 +185,7 @@ impl MemorySet {
         for writeback in &writebacks {
             writeback_shared_mmap_pages(writeback)?;
         }
-        self.get_mut().munmap(addr, len)
+        self.with_mut(|inner| inner.munmap(addr, len))
     }
 
     /// Validate that a memory-advice range is fully mapped.
@@ -178,7 +197,7 @@ impl MemorySet {
     /// Discard resident pages in a mapped range and leave the VMAs intact.
     #[inline]
     pub fn discard_madvise_pages(&self, addr: usize, len: usize) -> SyscallRet {
-        self.get_mut().discard_madvise_pages(addr, len)
+        self.with_mut(|inner| inner.discard_madvise_pages(addr, len))
     }
 
     /// Handle a user page fault in this address space.
@@ -188,7 +207,34 @@ impl MemorySet {
         // taking MemorySet's write lock. The page can legitimately bypass the
         // bounded global cache, so retain it until this fault installs it.
         let prepared = self.prepare_file_page(vpn);
-        self.get_mut().handle_page_fault(vpn, scause, prepared)
+
+        // A first demand mapping cannot leave a valid remote translation for
+        // this VPN, so it needs no IPI broadcast.  A present PTE may be a COW
+        // or permission-protected mapping; retain its frames and flush every
+        // active hart before allowing the old mapping to be reclaimed.
+        let was_active = self.deactivate_current_hart();
+        let _update_guard = crate::mm::remote_tlb::lock_updates();
+        let mut inner = self.inner.write();
+        let replaces_present_pte = inner.page_table.translate(vpn).is_some();
+        let retained_frames: Vec<Arc<FrameTracker>> = replaces_present_pte
+            .then(|| {
+                inner
+                    .areas
+                    .iter()
+                    .flat_map(|area| area.data_frames.values().cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let handled = inner.handle_page_fault(vpn, scause, prepared);
+        if replaces_present_pte {
+            let active_harts = self.active_harts.load(Ordering::Acquire);
+            crate::mm::remote_tlb::shootdown(active_harts);
+        }
+        if was_active {
+            self.activate_current_hart();
+        }
+        drop(retained_frames);
+        handled
     }
 
     /// Check whether a leaf PTE already permits U-mode instruction fetch.
@@ -256,13 +302,44 @@ impl MemorySet {
     /// `MemorySetInner::mprotect`.
     #[inline(always)]
     pub fn mprotect(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) {
-        self.get_mut().mprotect(start_vpn, end_vpn, map_perm);
+        self.with_mut(|inner| inner.mprotect(start_vpn, end_vpn, map_perm));
     }
 
-    /// Activate this address space's page table on the current CPU.
+    /// Activate this address space for a user-mode return on the current CPU.
+    ///
+    /// The active bit is published before the read lock is released.  A page
+    /// table writer therefore either sees this hart in its shootdown mask or
+    /// completes before this hart installs the page table locally.
     #[inline(always)]
-    pub fn activate(&self) {
+    pub fn activate_for_user(&self) {
+        let inner = self.inner.read();
+        inner.activate();
+        self.activate_current_hart();
+    }
+
+    /// Install this page table without publishing a user-mode active bit.
+    ///
+    /// `execve` uses this while replacing the process resource slot: the old
+    /// address space remains active until that swap clears its bit, and the
+    /// final `trap_return()` publishes the new one.
+    #[inline(always)]
+    pub(crate) fn activate(&self) {
         self.get_ref().activate();
+    }
+
+    /// Mark the current hart as no longer executing this address space.
+    #[inline(always)]
+    pub(crate) fn deactivate_current_hart(&self) -> bool {
+        let hart = crate::arch::cpu::hart_id();
+        let bit = 1usize << hart;
+        self.active_harts.fetch_and(!bit, Ordering::AcqRel) & bit != 0
+    }
+
+    #[inline(always)]
+    fn activate_current_hart(&self) {
+        let hart = crate::arch::cpu::hart_id();
+        self.active_harts
+            .fetch_or(1usize << hart, Ordering::Release);
     }
 
     /// Drop all user VM areas and write back dirty shared mmap pages first.
@@ -277,7 +354,7 @@ impl MemorySet {
                 }
             }
         }
-        let clear_result = self.get_mut().recycle_data_pages();
+        let clear_result = self.with_mut(|inner| inner.recycle_data_pages());
         match first_error {
             Some(error) => Err(error),
             None => clear_result,
@@ -361,8 +438,7 @@ impl MemorySet {
         map_perm: MapPermission,
         area_type: MapAreaType,
     ) -> (usize, usize) {
-        self.get_mut()
-            .insert_framed_area_with_hint(hint, size, map_perm, area_type)
+        self.with_mut(|inner| inner.insert_framed_area_with_hint(hint, size, map_perm, area_type))
     }
 
     /// Lazily map a framed area below `hint`.
@@ -376,14 +452,15 @@ impl MemorySet {
         map_perm: MapPermission,
         area_type: MapAreaType,
     ) -> (usize, usize) {
-        self.get_mut()
-            .lazy_insert_framed_area_with_hint(hint, size, map_perm, area_type)
+        self.with_mut(|inner| {
+            inner.lazy_insert_framed_area_with_hint(hint, size, map_perm, area_type)
+        })
     }
 
     /// Copy a lazily allocated logical area from another address space.
     #[inline(always)]
     pub fn lazy_clone_area(&self, start_vpn: VirtPageNum, another: &MemorySetInner) {
-        self.get_mut().lazy_clone_area(start_vpn, another)
+        self.with_mut(|inner| inner.lazy_clone_area(start_vpn, another))
     }
 
     /// Translate a virtual address to a physical address if already mapped.

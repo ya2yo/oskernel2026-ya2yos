@@ -9,7 +9,6 @@ use crate::{
     rust_main,
 };
 use core::arch::asm;
-use loongArch64::ipi::{csr_mail_send, send_ipi_single};
 use loongArch64::register::prcfg1::{self, Prcfg1};
 use loongArch64::register::{asid, tlbidx};
 use loongArch64::register::{
@@ -17,8 +16,14 @@ use loongArch64::register::{
     pwch::{self, set_dir3_base},
     pwcl, stlbps, tcfg, ticlr, tlbrehi, tlbrentry, CpuMode, MemoryAccessType,
 };
+use loongArch64::{
+    consts::{LOONGARCH_IOCSR_IPI_CLEAR, LOONGARCH_IOCSR_IPI_EN, LOONGARCH_IOCSR_IPI_STATUS},
+    iocsr::{iocsr_read_w, iocsr_write_w},
+    ipi::{csr_mail_send, send_ipi_single},
+};
 
 const BOOT_IPI_VECTOR: u32 = 1 << 0;
+const SCHEDULER_IPI_VECTOR: u32 = 1 << 1;
 
 // LA库似乎有点问题，没把这个暴露出来……
 fn set_merrentry(val: usize) {
@@ -60,18 +65,32 @@ pub fn boot_secondary_harts(boot_hart: usize) {
     }
 }
 
-/// LoongArch's current kernel-mode trap entry is not resumable, so it cannot
-/// enable interrupts around `idle` yet.  Keep the existing polling behavior
-/// until that entry gains a complete save/restore path.
+/// Wait briefly with local interrupts enabled.  LoongArch's kernel trap entry
+/// saves/restores the interrupted kernel context, so scheduler and TLB IPIs
+/// can safely wake an idle hart and return to this loop.
 pub fn idle() {
+    crmd::set_ie(true);
     core::hint::spin_loop();
+    crmd::set_ie(false);
+    crate::mm::remote_tlb::poll();
 }
 
-/// LoongArch's idle path currently spins, so an enqueued task is observed on
-/// the next scheduler iteration without an IPI.  Keep the scheduler API
-/// uniform while the resumable kernel IPI trap path is not implemented here.
-pub fn wake_hart(_hartid: usize) -> bool {
-    false
+/// Wake a hart through the LoongArch IOCSR IPI controller.
+pub fn wake_hart(hartid: usize) -> bool {
+    if hartid >= HART_NUM {
+        return false;
+    }
+    send_ipi_single(hartid, SCHEDULER_IPI_VECTOR);
+    true
+}
+
+/// Clear all currently pending LoongArch IPI vectors after entering the trap.
+#[inline]
+pub fn clear_ipi() {
+    let pending = iocsr_read_w(LOONGARCH_IOCSR_IPI_STATUS);
+    if pending != 0 {
+        iocsr_write_w(LOONGARCH_IOCSR_IPI_CLEAR, pending);
+    }
 }
 
 /// 初始化csr寄存器
@@ -103,6 +122,7 @@ pub fn init_csr_regs() {
 
     // 设置中断
     ticlr::clear_timer_interrupt(); // 清除定时器中断，
+    iocsr_write_w(LOONGARCH_IOCSR_IPI_EN, u32::MAX);
     tcfg::set_en(false); // 关闭定时器
     crmd::set_ie(false); // 关闭全局中断
 

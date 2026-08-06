@@ -33,10 +33,9 @@ pub struct Process {
     /// 文件系统上下文。本身带锁，不再放入 PCB 内部锁。
     pub fs_info: Arc<FSInfo>,
     pub pid: usize,
-    /// First-generation SMP keeps all threads sharing one address space on a
-    /// single hart. This prevents stale remote TLB entries until shootdown IPI
-    /// support is available. Forked processes have independent page tables and
-    /// are spread across harts by pid.
+    /// Initial placement for a process's first task.  Thread placement and
+    /// affinity live in `TaskControlBlock`; this value remains useful for
+    /// deterministic initial PID distribution and LoongArch's safe fallback.
     home_hart: usize,
     pub meta: Mutex<ProcessMeta>,
     /// RLIMIT_FSIZE 文件大小限制。写路径在持有文件锁之前读取此值，因此需要独立 Mutex。
@@ -164,11 +163,7 @@ impl Process {
         )
     }
 
-    /// Create a process pinned to a specific hart.
-    ///
-    /// `CLONE_VM` creates a distinct process that still shares its parent's
-    /// address space, so it must use the parent's hart until remote TLB
-    /// shootdown is available.
+    /// Create a process with a specified initial task placement.
     pub(crate) fn new_on_hart(
         memory_set: Arc<MemorySet>,
         sig_table: Arc<Mutex<SigTable>>,
@@ -268,8 +263,8 @@ impl Process {
     pub fn memory_set_arc(&self) -> Arc<MemorySet> {
         self.memory_set.get()
     }
-    /// The only hart allowed to execute this process until remote TLB
-    /// invalidation is implemented.
+    /// Initial placement used when creating a task that has no inherited
+    /// per-thread affinity yet.
     #[inline]
     pub fn home_hart(&self) -> usize {
         self.home_hart
@@ -342,6 +337,10 @@ impl Process {
         new_memory_set: MemorySet,
         new_sigtable: SigTable,
     ) {
+        // The current task is about to switch page tables.  It must stop
+        // contributing to the old address space's shootdown mask before that
+        // resource slot can release its final reference.
+        self.memory_set.get().deactivate_current_hart();
         self.memory_set.replace_with(new_memory_set);
         self.sig_table.replace_with(Mutex::new(new_sigtable));
     }

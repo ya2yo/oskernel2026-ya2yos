@@ -48,7 +48,7 @@ pub(super) fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {
             warn!("fetch task got a dropped task");
             continue;
         };
-        if task.process.home_hart() == hartid {
+        if task.scheduled_hart() == hartid {
             queue.queued_tids.remove(&tid);
             let status = task.inner_lock().task_status;
             if status != TaskStatus::Ready {
@@ -72,7 +72,7 @@ pub(super) fn ready_procs_num() -> usize {
 pub(super) fn has_ready_for_hart(hartid: usize) -> bool {
     READY_QUEUE.lock().tasks.iter().any(|(_, task)| {
         task.upgrade()
-            .map(|task| task.process.home_hart() == hartid)
+            .map(|task| task.scheduled_hart() == hartid)
             .unwrap_or(false)
     })
 }

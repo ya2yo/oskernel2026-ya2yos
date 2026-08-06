@@ -13,6 +13,7 @@ mod map_area;
 mod memory_set;
 mod mmap_bad_address;
 mod page_fault_handler;
+pub(crate) mod remote_tlb;
 // mod page_table;
 mod shm;
 use core::{arch::asm, fmt::Debug};

@@ -144,7 +144,7 @@ static HART_IDLE: [AtomicBool; HART_NUM] = [const { AtomicBool::new(false) }; HA
 /// 检查之后，发送方会通过 Acquire 读取到 idle 状态并发送 IPI。这样可以关
 /// 闭“入队发生在队列检查之后、WFI 之前”的丢失唤醒窗口。
 ///
-/// `target_hart` 必须是有效的 Hart ID；调用方通常传入任务的 `home_hart()`。
+/// `target_hart` 必须是有效的 Hart ID；调用方传入任务当前的 placement。
 pub(crate) fn notify_hart_of_runnable_task(target_hart: usize) {
     let source_hart = hart_id();
     if target_hart == source_hart {
@@ -231,9 +231,18 @@ pub fn run_tasks() {
         }
 
         if let Some(next_task) = ready_queue::fetch_task(hartid) {
+            // An affinity change can race after CFS removes the old queue
+            // entry and before this hart publishes Running.  Put it back on
+            // the current destination instead of running it on a disallowed
+            // hart for one full timeslice.
+            if next_task.scheduled_hart() != hartid {
+                ready_queue::add_task(&next_task);
+                continue;
+            }
             #[cfg(feature = "perf")]
             {
                 crate::utils::perf::record_scheduler_selection(
+                    hartid,
                     _current_tid == Some(next_task.tid()),
                 );
                 crate::utils::perf::record_scheduler_dispatch_duration(
@@ -249,7 +258,7 @@ pub fn run_tasks() {
             switch(idle_task_cx_ptr, next_task_cx_ptr);
         } else {
             #[cfg(feature = "perf")]
-            crate::utils::perf::record_idle_loop();
+            crate::utils::perf::record_idle_loop(hartid);
             idle_until_runnable(hartid);
         }
     }
@@ -264,6 +273,7 @@ pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
     // debug!("[processor]: take_current_task!");
     let task = get_proc_by_hartid(hart_id()).take_current();
     if let Some(task) = &task {
+        task.process.memory_set_arc().deactivate_current_hart();
         ready_queue::account_current(task);
     }
     task

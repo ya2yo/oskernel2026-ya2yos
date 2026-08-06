@@ -1270,6 +1270,17 @@ pub(super) fn emit_report(now: usize) {
         SCHEDULER_SELF_SELECTIONS.load(Ordering::Relaxed),
         IDLE_LOOPS.load(Ordering::Relaxed),
     );
+    let (scheduler_selections_by_hart, idle_loops_by_hart) = scheduler_hart_snapshot();
+    println!(
+        "[perf] scheduler_harts selections_by_hart={:?} idle_loops_by_hart={:?}",
+        scheduler_selections_by_hart, idle_loops_by_hart,
+    );
+    println!(
+        "[perf] remote_tlb shootdowns={} target_harts={} acknowledgements={}",
+        REMOTE_TLB_SHOOTDOWNS.load(Ordering::Relaxed),
+        REMOTE_TLB_TARGET_HARTS.load(Ordering::Relaxed),
+        REMOTE_TLB_ACKNOWLEDGEMENTS.load(Ordering::Relaxed),
+    );
     println!(
         "[perf] scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",
         SCHEDULER_LOCAL_ENQUEUES.load(Ordering::Relaxed),

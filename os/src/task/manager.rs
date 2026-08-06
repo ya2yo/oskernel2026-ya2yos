@@ -27,10 +27,10 @@ pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
 pub fn check_blocked_task_timers() {
     let hartid = crate::arch::cpu::hart_id();
     tid_to_task::for_each_task(|task| {
-        // A process is pinned to one hart until remote TLB shootdown exists.
-        // Its owner alone drives blocked-wait timer delivery, avoiding both a
-        // cross-hart data race on the per-task timer and duplicated scans.
-        if task.process.home_hart() != hartid {
+        // A blocked wait is owned by its thread's current scheduler placement.
+        // This keeps timer delivery singular even when sibling threads sharing
+        // an address space run on different harts.
+        if task.scheduled_hart() != hartid {
             return;
         }
         // 这条补扫主要服务于阻塞在 accept/recv 等路径中的任务，避免它们在

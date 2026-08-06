@@ -9,6 +9,7 @@ use super::super::{
 use crate::arch::time::get_ticks;
 use crate::{
     arch::{
+        config::HART_NUM,
         context::TrapContext,
         memory_layout::{
             PAGE_SIZE, PRE_ALLOC_PAGES, USER_HEAP_SIZE, USER_STACK_SIZE, USER_STACK_TOP,
@@ -42,7 +43,7 @@ use alloc::{
 };
 use core::fmt::Debug;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use futures_util::task::AtomicWaker;
 use linux_raw_sys::general::CAP_LAST_CAP;
 use log::{debug, error};
@@ -109,6 +110,10 @@ pub struct TaskControlBlock {
     tid: TidHandle,
     kernel_stack: KernelStackOnHeap,
     pub process: Arc<Process>,
+    /// Linux-visible CPU affinity mask for this thread (not its whole process).
+    cpu_affinity: AtomicUsize,
+    /// Hart whose ready queue owns the next execution of this thread.
+    scheduled_hart: AtomicUsize,
     // mutable
     // 异步中断/信号同步
     pub interrupted: AtomicBool,
@@ -462,6 +467,47 @@ fn prepare_exec_stack(
 }
 
 impl TaskControlBlock {
+    /// Mask of all harts configured into this kernel image.
+    #[inline]
+    pub const fn online_cpu_mask() -> usize {
+        if HART_NUM >= usize::BITS as usize {
+            usize::MAX
+        } else {
+            (1usize << HART_NUM) - 1
+        }
+    }
+
+    #[inline]
+    fn default_cpu_affinity(home_hart: usize) -> usize {
+        #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+        {
+            let _ = home_hart;
+            Self::online_cpu_mask()
+        }
+    }
+
+    /// CPU mask that this architecture can safely use for this task's address
+    /// space. Both supported SMP targets have a resumable IPI and remote TLB
+    /// shootdown path, so a shared `MemorySet` may execute on any online hart.
+    #[inline]
+    pub fn allowed_cpu_mask(&self) -> usize {
+        let _ = self;
+        Self::online_cpu_mask()
+    }
+
+    /// Pick the first allowed hart at or after `start`, wrapping at the end.
+    #[inline]
+    fn choose_hart(mask: usize, start: usize) -> usize {
+        debug_assert_ne!(mask & Self::online_cpu_mask(), 0);
+        for offset in 0..HART_NUM {
+            let hart = (start + offset) % HART_NUM;
+            if mask & (1usize << hart) != 0 {
+                return hart;
+            }
+        }
+        unreachable!("CPU affinity contains no online hart")
+    }
+
     pub fn inner_lock(&self) -> MutexGuard<'_, TaskControlBlockInner> {
         self.inner.lock()
     }
@@ -473,6 +519,31 @@ impl TaskControlBlock {
     }
     pub fn tid(&self) -> usize {
         self.tid.0
+    }
+
+    #[inline]
+    pub fn cpu_affinity(&self) -> usize {
+        self.cpu_affinity.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn scheduled_hart(&self) -> usize {
+        self.scheduled_hart.load(Ordering::Acquire)
+    }
+
+    /// Update the thread's affinity and return the hart it was previously
+    /// placed on.  Queue consumers observe a changed placement and re-enqueue
+    /// stale entries on the newly selected hart.
+    pub fn set_cpu_affinity(&self, requested_mask: usize) -> usize {
+        let mask = requested_mask & self.allowed_cpu_mask();
+        debug_assert_ne!(mask, 0);
+        self.cpu_affinity.store(mask, Ordering::Release);
+        let old_hart = self.scheduled_hart();
+        if mask & (1usize << old_hart) == 0 {
+            let new_hart = Self::choose_hart(mask, old_hart.wrapping_add(1));
+            self.scheduled_hart.store(new_hart, Ordering::Release);
+        }
+        old_hart
     }
     /// 获取当前进程的pid
     pub fn pid(&self) -> usize {
@@ -509,6 +580,8 @@ impl TaskControlBlock {
             tid: tid_handle,
             kernel_stack,
             process: process.clone(),
+            cpu_affinity: AtomicUsize::new(Self::default_cpu_affinity(process.home_hart())),
+            scheduled_hart: AtomicUsize::new(process.home_hart()),
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             sched_entity: SchedEntity::new(),
@@ -937,12 +1010,13 @@ impl TaskControlBlock {
         let process_arc = if flags.contains(CloneFlags::CLONE_THREAD) {
             self.process.clone()
         } else if flags.contains(CloneFlags::CLONE_VM) && !flags.contains(CloneFlags::CLONE_VFORK) {
-            // A regular CLONE_VM child can run concurrently with its parent,
-            // so it must retain the parent's hart until remote TLB shootdown
-            // is available.  CLONE_VM | CLONE_VFORK is different: the parent
-            // is marked VforkBlocked before this child is made runnable, and
-            // the child replaces the shared address space with execve() before
-            // the parent can resume.  Giving that exec hand-off a new process
+            // Start a regular CLONE_VM child on its parent's hart for cache
+            // locality. Its task-level all-hart affinity remains movable
+            // because remote TLB shootdown now protects the shared MemorySet.
+            // CLONE_VM | CLONE_VFORK is different: the parent is marked
+            // VforkBlocked before this child is made runnable, and the child
+            // replaces the shared address space with execve() before the
+            // parent can resume. Giving that exec hand-off a new process
             // placement lets Cargo's posix_spawn rustc workers use all harts.
             Process::new_on_hart(
                 child_memory_set_arc.clone(),
@@ -977,10 +1051,24 @@ impl TaskControlBlock {
         let task_setup_begin = get_ticks();
         process_arc.meta_lock().comm = parent_comm;
 
+        let (child_cpu_affinity, child_scheduled_hart) = if flags.contains(CloneFlags::CLONE_THREAD)
+        {
+            let affinity = self.cpu_affinity();
+            (
+                affinity,
+                Self::choose_hart(affinity, self.scheduled_hart().wrapping_add(1)),
+            )
+        } else {
+            let home_hart = process_arc.home_hart();
+            (Self::default_cpu_affinity(home_hart), home_hart)
+        };
+
         let child = Arc::new(TaskControlBlock {
             tid: tid_handle,
             kernel_stack,
             process: process_arc,
+            cpu_affinity: AtomicUsize::new(child_cpu_affinity),
+            scheduled_hart: AtomicUsize::new(child_scheduled_hart),
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             // First enqueue places the child in its destination hart's
