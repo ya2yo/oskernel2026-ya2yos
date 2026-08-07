@@ -531,7 +531,7 @@ impl MemorySetInner {
             copied = copied.checked_add(read).ok_or(())?;
         }
 
-        self.areas.push(map_area);
+        self.push_lazily(map_area);
         Ok(())
     }
 

@@ -17,6 +17,7 @@ use crate::{
         map_area::MapType, FrameTracker, MapArea, MapAreaType, MapPermission, VPNRange, VirtAddr,
         VirtPageNum,
     },
+    syscall::MmapFlags,
 };
 
 impl MemorySetInner {
@@ -134,19 +135,42 @@ impl MemorySetInner {
 
     /// Find a free range ending at or below `hint`.
     ///
-    /// The returned address is page-aligned. Existing areas are treated as
-    /// closed obstacles; if the candidate overlaps one, the search continues
-    /// below that area.
+    /// `areas` is kept sorted by start VPN, so a top-down search can move the
+    /// candidate below the VMA that it actually intersects and continue from
+    /// there. This avoids rescanning the lower VMAs after every collision.
     pub fn find_insert_addr(&self, hint: usize, size: usize) -> usize {
-        let end_vpn = VirtAddr::from(hint).floor();
-        let start_vpn = VirtAddr::from(hint - size).floor();
+        let pages = match size.checked_add(PAGE_SIZE - 1) {
+            Some(size) => size / PAGE_SIZE,
+            None => return 0,
+        };
+        if pages == 0 {
+            return 0;
+        }
+        let mut end_vpn = VirtAddr::from(hint).floor();
+        let mut start_vpn = match end_vpn.0.checked_sub(pages) {
+            Some(start) => VirtPageNum(start),
+            None => return 0,
+        };
 
-        for area in self.areas.iter() {
-            let (start, end) = area.vpn_range.range();
-            if end_vpn > start && start_vpn < end {
-                let new_hint = VirtAddr::from(start_vpn).0 - PAGE_SIZE;
-                return self.find_insert_addr(new_hint, size);
+        for area in self.areas.iter().rev() {
+            let (area_start, area_end) = area.vpn_range.range();
+            if area_end <= start_vpn {
+                // All remaining VMAs start even lower, so this candidate is
+                // free and the downward hint fast path can return directly.
+                break;
             }
+            if area_start >= end_vpn {
+                // This VMA is above the candidate; continue toward lower VMAs.
+                continue;
+            }
+
+            // The candidate overlaps this VMA. Move its end below the VMA and
+            // preserve the requested number of pages for the next attempt.
+            end_vpn = area_start;
+            start_vpn = match end_vpn.0.checked_sub(pages) {
+                Some(start) => VirtPageNum(start),
+                None => return 0,
+            };
         }
         VirtAddr::from(start_vpn).0
     }
@@ -244,13 +268,63 @@ impl MemorySetInner {
         }
     }
 
+    /// Insert an area by start VPN and merge compatible adjacent anonymous
+    /// private VMAs. Keeping this invariant in one helper prevents split and
+    /// relocation paths from reintroducing an unsorted `areas` vector.
+    fn insert_area_sorted(&mut self, map_area: MapArea) {
+        let start_vpn = map_area.vpn_range.start();
+        let index = self
+            .areas
+            .binary_search_by_key(&start_vpn, |area| area.vpn_range.start())
+            .unwrap_or_else(|index| index);
+        self.areas.insert(index, map_area);
+        self.merge_adjacent_areas(index);
+    }
+
+    fn can_merge_areas(left: &MapArea, right: &MapArea) -> bool {
+        left.vpn_range.end() == right.vpn_range.start()
+            && left.map_type == right.map_type
+            && left.map_perm == right.map_perm
+            && left.area_type == right.area_type
+            && left.mmap_flags == right.mmap_flags
+            && left.groupid == 0
+            && right.groupid == 0
+            && left.mmap_file.file.is_none()
+            && right.mmap_file.file.is_none()
+            && left.mmap_flags.contains(MmapFlags::MAP_PRIVATE)
+            && left.mmap_flags.contains(MmapFlags::MAP_ANONYMOUS)
+    }
+
+    fn merge_adjacent_areas(&mut self, mut index: usize) {
+        loop {
+            if index > 0 && Self::can_merge_areas(&self.areas[index - 1], &self.areas[index]) {
+                let mut right = self.areas.remove(index);
+                let left = &mut self.areas[index - 1];
+                left.vpn_range = VPNRange::new(left.vpn_range.start(), right.vpn_range.end());
+                left.data_frames.append(&mut right.data_frames);
+                index -= 1;
+                continue;
+            }
+            if index + 1 < self.areas.len()
+                && Self::can_merge_areas(&self.areas[index], &self.areas[index + 1])
+            {
+                let mut right = self.areas.remove(index + 1);
+                let left = &mut self.areas[index];
+                left.vpn_range = VPNRange::new(left.vpn_range.start(), right.vpn_range.end());
+                left.data_frames.append(&mut right.data_frames);
+                continue;
+            }
+            break;
+        }
+    }
+
     /// Push a `MapArea` with eager frame allocation.
     pub(crate) fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> Result<(), ()> {
         map_area.map(&mut self.page_table)?;
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data, 0);
         }
-        self.areas.push(map_area);
+        self.insert_area_sorted(map_area);
         Ok(())
     }
 
@@ -265,7 +339,7 @@ impl MemorySetInner {
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data, offset);
         }
-        self.areas.push(map_area);
+        self.insert_area_sorted(map_area);
         Ok(())
     }
 
@@ -276,11 +350,11 @@ impl MemorySetInner {
         frames: Vec<Arc<FrameTracker>>,
     ) {
         map_area.map_given_frames(&mut self.page_table, frames);
-        self.areas.push(map_area);
+        self.insert_area_sorted(map_area);
     }
 
     /// Add a `MapArea` without immediately mapping pages.
     pub fn push_lazily(&mut self, map_area: MapArea) {
-        self.areas.push(map_area);
+        self.insert_area_sorted(map_area);
     }
 }

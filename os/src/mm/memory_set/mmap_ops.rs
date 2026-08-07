@@ -289,7 +289,7 @@ impl MemorySetInner {
                     }
                 }
                 area.vpn_range = VPNRange::new(area_start, start_vpn);
-                self.areas.push(right_area);
+                self.push_lazily(right_area);
             }
             tlb_invalidate();
         }
@@ -409,7 +409,7 @@ impl MemorySetInner {
             if front_area.groupid != 0 {
                 GROUP_SHARE.lock().add_area(front_area.groupid);
             }
-            self.areas.push(front_area);
+            self.push_lazily(front_area);
         }
 
         // 如果 VMA 超出请求范围，则拆出尾部。
@@ -432,7 +432,7 @@ impl MemorySetInner {
             if tail_area.groupid != 0 {
                 GROUP_SHARE.lock().add_area(tail_area.groupid);
             }
-            self.areas.push(tail_area);
+            self.push_lazily(tail_area);
         }
 
         // MREMAP_FIXED 路径：验证并准备目标范围。
@@ -552,7 +552,7 @@ impl MemorySetInner {
         // 保持延迟状态。
         let mut old_area = self.areas.remove(old_idx);
         old_area.unmap(&mut self.page_table);
-        self.areas.push(new_area);
+        self.push_lazily(new_area);
         self.total_mmap_size = new_total_mmap_size;
         tlb_invalidate();
         Ok(dest_addr)
@@ -605,7 +605,7 @@ impl MemorySetInner {
             if front_area.groupid != 0 {
                 GROUP_SHARE.lock().add_area(front_area.groupid);
             }
-            self.areas.push(front_area);
+            self.push_lazily(front_area);
         }
 
         // 如果 VMA 超出请求范围，则拆出尾部，使下面的扩展检查能够检测冲突并
@@ -628,7 +628,7 @@ impl MemorySetInner {
             if tail_area.groupid != 0 {
                 GROUP_SHARE.lock().add_area(tail_area.groupid);
             }
-            self.areas.push(tail_area);
+            self.push_lazily(tail_area);
         }
 
         let old_len = (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;
@@ -834,7 +834,7 @@ impl MemorySetInner {
         }
         // 将拆分产生的新 area 统一插入
         for area in new_areas {
-            self.areas.push(area);
+            self.push_lazily(area);
         }
         // 遍历目标范围内的每个 VPN，修改硬件页表项中的权限位
         for vpn in start_vpn.0..end_vpn.0 {
