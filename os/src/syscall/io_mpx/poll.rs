@@ -1,4 +1,8 @@
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{
+    sync::{Arc, Weak},
+    vec,
+    vec::Vec,
+};
 use core::{
     future::poll_fn,
     slice,
@@ -17,7 +21,11 @@ use crate::{
 };
 
 struct PpollSigMaskGuard {
-    task: Arc<crate::task::TaskControlBlock>,
+    // A ppoll can be interrupted by a fatal signal.  Exit abandons the
+    // current kernel stack instead of unwinding it, so an owning Arc here
+    // would survive forever when Drop is skipped.  The TCB is only needed to
+    // restore the mask while the task is still alive.
+    task: Weak<crate::task::TaskControlBlock>,
     old_mask: Option<SigSet>,
 }
 
@@ -29,14 +37,19 @@ impl PpollSigMaskGuard {
             inner.sig_mask = new_mask;
             old_mask
         });
-        Self { task, old_mask }
+        Self {
+            task: Arc::downgrade(&task),
+            old_mask,
+        }
     }
 }
 
 impl Drop for PpollSigMaskGuard {
     fn drop(&mut self) {
         if let Some(old_mask) = self.old_mask {
-            self.task.inner_lock().sig_mask = old_mask;
+            if let Some(task) = self.task.upgrade() {
+                task.inner_lock().sig_mask = old_mask;
+            }
         }
     }
 }

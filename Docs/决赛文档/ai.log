@@ -10467,3 +10467,31 @@ checksum 或 HTree 结构损坏。保留维护者已有的 `user/src/bin/initpro
 `446/446`，不报告完整 BuildStorm 通过；既有 `extra TCB refs` 告警另案处理。
 
 详见 [问题复盘](./problem/buildstorm-memoryset-full-resident-retention.md)。
+
+## 2026-08-07：BuildStorm ppoll 退出路径的 TCB 强引用泄露
+
+### 用户输入
+
+维护者指出最新 `server.ans` 报告引用泄露，要求检查本轮修改是否忘记 `drop`，并要求
+继续完成定位和修复。
+
+### 分析与采纳结论
+
+日志实际报告的是 tid 13、14、15 退出时 `TCB strong_count = 4`，不是
+`FrameTracker`。复核本轮 MM 范围化代码确认 `retained_frames` 已在 remote TLB ACK 后
+显式释放，相关修改没有新增 TCB 强引用。进一步审计阻塞 syscall 后发现
+`PpollSigMaskGuard` 跨 `block_on` 保存 `Arc<TaskControlBlock>`；致命信号会通过
+`exit_current_and_run_next()` 和 `abandon()` 丢弃内核栈，栈上 guard 不执行 `Drop`，因此
+强引用永久残留。
+
+采纳弱引用修复：guard 只保存 `Weak<TaskControlBlock>`，正常返回时升级并恢复旧信号
+掩码；退出中的任务无需恢复掩码，弱引用也不会阻止 TCB 回收。
+
+### 修改与验证
+
+修改 `os/src/syscall/io_mpx/poll.rs`，并补充问题复盘、README、开发日志和 AI 交互记录。
+目标文件 rustfmt、`git diff --check` 及 RISC-V/LoongArch64 release 构建通过。修复后的
+180 秒 RISC-V snapshot 运行通过 toolchain/minibuild 并推进到 `444/446: axbuild`，原
+启动阶段三条 `extra TCB refs` 未再出现，无 panic；外层 timeout 前未完成 BuildStorm。
+
+详见 [问题复盘](./problem/buildstorm-ppoll-tcb-reference-leak.md)。

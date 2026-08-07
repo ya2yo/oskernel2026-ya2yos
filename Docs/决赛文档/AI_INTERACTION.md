@@ -2780,3 +2780,12 @@
 - **验证边界**：目标文件 rustfmt、差异检查和 RISC-V/LoongArch64 release 构建通过。全新 overlay 的 15 分钟 RISC-V 运行通过 toolchain/minibuild，`axbuild` 单次约 8 分钟并推进到 `445/446: tg-xtask(bin)`，无 panic、`EIO`、Cargo fatal/error 或 remote-TLB 异常；没有完成 `446/446`，不报告端到端通过。
 - **关联问题**：[MemorySet 全驻留帧保留问题复盘](./problem/buildstorm-memoryset-full-resident-retention.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm ppoll 退出路径的 TCB 强引用泄露（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者指出最新 `server.ans` 在 BuildStorm 启动时报告多个任务 `strong_count = 4`，要求检查是否遗漏 `drop`。
+- **描述**：确认告警对象是 TCB，本轮 MM 保留帧已显式释放且未新增 TCB 强引用。真正的生命周期问题是 `PpollSigMaskGuard` 以 `Arc` 跨阻塞点持有当前任务，而致命退出通过 `abandon()` 丢弃内核栈，不会执行 guard 的 `Drop`。将 guard 改持 `Weak`，正常返回仍恢复旧信号掩码，致命退出不再阻止 TCB 回收。
+- **验证边界**：目标文件 rustfmt、差异检查和 RISC-V/LoongArch64 release 构建通过。180 秒 RISC-V snapshot 通过 toolchain/minibuild，推进到 `444/446: axbuild`，原三条 `extra TCB refs` 未再出现；未完成完整 BuildStorm。
+- **关联问题**：[ppoll TCB 引用泄露问题复盘](./problem/buildstorm-ppoll-tcb-reference-leak.md)
+- **关联 commit**：当前工作区未提交

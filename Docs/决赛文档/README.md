@@ -141,6 +141,7 @@
 - [CAgent 全量并发 EXT4/TCP 吞吐优化](./problem/cagent-ext4-tcp-throughput.md)
 - [BuildStorm `cc` 符号链接缓存污染](./problem/buildstorm-cc-symlink-cache-poisoning.md)
 - [BuildStorm `ppoll` 忙让出导致调度器热循环](./problem/buildstorm-ppoll-busy-yield.md)
+- [BuildStorm `ppoll` 退出路径的 TCB 强引用泄露](./problem/buildstorm-ppoll-tcb-reference-leak.md)
 - [BuildStorm MemorySet 与 EXT4 可睡眠锁死锁](./problem/memoryset-ext4-sleeping-lock-deadlock.md)
 - [BuildStorm EXT4 稀疏写缓冲、顺序预读与锁统计收敛](./problem/buildstorm-ext4-sparse-write-readahead.md)
 - [BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
