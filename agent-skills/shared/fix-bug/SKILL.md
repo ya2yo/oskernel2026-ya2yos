@@ -60,6 +60,7 @@ strings -n 4 log.ans | rg -n -i 'TPASS|TFAIL|TBROK|Summary|regression: (PASS|FAI
 - `ResourceSlot` 只保护可替换 `Arc<T>` 指针槽。只能短暂 `get` / `replace`，不能在槽锁内进入资源内部锁、用户内存访问、文件系统、网络、调度、futex 或信号发送路径。
 - 排查死锁或卡住时，优先画出实际锁链；如果出现反向锁顺序，修正锁边界或先 clone/copy 所需状态再释放锁，不要只延长 timeout 或绕过 `try_lock`。
 - 不用 `unwrap()` 处理用户输入或可失败内核路径。
+- 不得通过修改测试脚本、超时、并发度、`RUST_MIN_STACK` 等用户配置参数规避内核 bug。除非维护者明确要求，或已证明配置本身是被测对象，配置修改只能作为独立诊断对照，不能作为最终修复。
 - 不在修 bug 时顺手重排大文件、改格式、改测试策略，除非这是修复必要条件。
 
 ## 验证
