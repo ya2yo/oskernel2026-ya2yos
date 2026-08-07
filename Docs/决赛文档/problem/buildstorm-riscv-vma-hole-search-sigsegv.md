@@ -44,3 +44,34 @@ error: could not compile `ax-cpumask`
 
 - `make TARGET_ARCH=riscv64`：RISC-V 与 LoongArch64 release 构建通过；仅有 vendored `smoltcp` 的既有 unused warning。
 - `timeout 180s make run TARGET_ARCH=riscv64`（修正后的搜索）：`sigaltstack regression: PASS`、`rseq regression: PASS`、toolchain/minibuild 通过，BuildStorm 从 `440/446` 推进到 `444/446`；无 SIGSEGV、panic 或 Cargo error。超时发生在完整测试组结束前，不能宣称 `446/446` 或 75 分钟稳定性已验证。
+
+## 后续复核：mremap VMA 拆分索引回归
+
+### 现象
+
+源码修正空洞搜索后，继续审计 `f9dc0703` 对所有 `MapArea` 插入点的改动，发现
+`mremap_maymove()` 和 `mremap_in_place()` 的前段/尾段拆分仍使用会排序并合并相邻匿名私有
+VMA 的插入路径。该路径可能让 mremap 操作继续使用失效的 `old_idx`，并把尾部阻塞区域重新
+合并回源 VMA；这与 `tg-xtask` 编译期间高频 `mmap`/`mremap` 生命周期不兼容。
+
+### 根因
+
+`f9dc0703` 将原先的 `Vec::push()` 统一替换为排序插入和匿名私有 VMA 合并。mremap 在
+操作尚未提交时需要同时保留前段、精确源段和尾段，但相邻段具有相同属性，自动合并会撤销
+拆分；前段按起始 VPN 插入到源段之前还会使 `old_idx` 增加一位。后续按旧索引访问可能复制
+错误帧、检查错误的 VMA，或错误放行原地扩展。
+
+### 修复
+
+- 在 `area_ops.rs` 增加 `insert_area_sorted_unmerged()`，只维护按起始 VPN 排序，不执行合并。
+- mremap 的前段和尾段拆分改用该中间态插入接口；前段插入后同步修正 `old_idx`。
+- 普通 mmap、ELF、fork 和最终提交路径继续使用排序加兼容 VMA 合并。
+
+涉及文件：`os/src/mm/memory_set/area_ops.rs`、`os/src/mm/memory_set/mmap_ops.rs`。
+
+### 验证
+
+- `make build-arch TARGET_ARCH=riscv64`：通过。
+- `make build-arch TARGET_ARCH=loongarch64`：通过。
+- `git diff --check`：通过。
+- 未重复运行完整 QEMU/BuildStorm；`server.ans` 已提供触发现场，完整 `tg-xtask` 编译窗口较长。

@@ -270,16 +270,26 @@ impl MemorySetInner {
         }
     }
 
-    /// Insert an area by start VPN and merge compatible adjacent anonymous
-    /// private VMAs. Keeping this invariant in one helper prevents split and
-    /// relocation paths from reintroducing an unsorted `areas` vector.
-    fn insert_area_sorted(&mut self, map_area: MapArea) {
+    /// Insert an area by start VPN without coalescing it with its neighbors.
+    ///
+    /// VMA transformation paths use this while an existing area is being
+    /// split. Coalescing at that point would undo the split and invalidate the
+    /// caller's area index before the operation has finished.
+    pub(super) fn insert_area_sorted_unmerged(&mut self, map_area: MapArea) -> usize {
         let start_vpn = map_area.vpn_range.start();
         let index = self
             .areas
             .binary_search_by_key(&start_vpn, |area| area.vpn_range.start())
             .unwrap_or_else(|index| index);
         self.areas.insert(index, map_area);
+        index
+    }
+
+    /// Insert an area by start VPN and merge compatible adjacent anonymous
+    /// private VMAs. Keeping this invariant in one helper prevents ordinary
+    /// allocation paths from reintroducing an unsorted `areas` vector.
+    fn insert_area_sorted(&mut self, map_area: MapArea) {
+        let index = self.insert_area_sorted_unmerged(map_area);
         self.merge_adjacent_areas(index);
     }
 

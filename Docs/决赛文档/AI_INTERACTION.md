@@ -2832,3 +2832,12 @@
 - **验证边界**：RISC-V/LoongArch64 release 构建通过；修正后的 RISC-V 180 秒 QEMU 通过内置回归、toolchain/minibuild 并推进至 `444/446`，无 SIGSEGV/panic/Cargo error；完整 446/446 和 75 分钟运行未完成。
 - **关联文档**：[VMA 空洞搜索回归复盘](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)、[开发日志](./开发日志.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm `tg-xtask` mremap VMA 拆分索引修复（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求继续修复 `server.ans` 暴露的内核 bug，并明确故障位于 `tg-xtask` 编译过程。
+- **描述**：审计 `f9dc0703` 的排序插入/匿名私有 VMA 合并后，确认 mremap 拆分阶段会因自动合并撤销前段、源段、尾段边界，且前段插入会使 `old_idx` 失效。新增只排序不合并的中间态插入接口，mremap 拆分改用该接口并同步修正索引；普通映射仍使用合并优化。
+- **验证边界**：RISC-V、LoongArch64 release 构建和 `git diff --check` 通过；未重复运行完整 QEMU/BuildStorm，完整 `tg-xtask` 编译耗时不作为本轮验证条件。
+- **关联文档**：[VMA 空洞搜索回归复盘](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

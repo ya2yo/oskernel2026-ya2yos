@@ -409,7 +409,13 @@ impl MemorySetInner {
             if front_area.groupid != 0 {
                 GROUP_SHARE.lock().add_area(front_area.groupid);
             }
-            self.push_lazily(front_area);
+            // Keep the split visible until the source VMA is removed or
+            // resized. Merging here would restore the original range and
+            // make `old_idx` refer to the wrong logical VMA.
+            let front_idx = self.insert_area_sorted_unmerged(front_area);
+            if front_idx <= old_idx {
+                old_idx += 1;
+            }
         }
 
         // 如果 VMA 超出请求范围，则拆出尾部。
@@ -432,7 +438,7 @@ impl MemorySetInner {
             if tail_area.groupid != 0 {
                 GROUP_SHARE.lock().add_area(tail_area.groupid);
             }
-            self.push_lazily(tail_area);
+            self.insert_area_sorted_unmerged(tail_area);
         }
 
         // MREMAP_FIXED 路径：验证并准备目标范围。
@@ -573,7 +579,7 @@ impl MemorySetInner {
         let old_end_addr = old_addr.checked_add(old_len).ok_or(SysErrNo::EINVAL)?;
         let old_start_vpn = VirtAddr::from(old_addr).floor();
         let old_end_vpn = VirtAddr::from(old_end_addr).ceil();
-        let Some(old_idx) = self.areas.iter().position(|area| {
+        let Some(mut old_idx) = self.areas.iter().position(|area| {
             (is_mmap_vma(area) || area.area_type == MapAreaType::Shm)
                 && area.vpn_range.start() <= old_start_vpn
                 && old_end_vpn <= area.vpn_range.end()
@@ -605,7 +611,12 @@ impl MemorySetInner {
             if front_area.groupid != 0 {
                 GROUP_SHARE.lock().add_area(front_area.groupid);
             }
-            self.push_lazily(front_area);
+            // Keep the split visible until the in-place resize has checked
+            // the tail for conflicts; coalescing would hide that blocker.
+            let front_idx = self.insert_area_sorted_unmerged(front_area);
+            if front_idx <= old_idx {
+                old_idx += 1;
+            }
         }
 
         // 如果 VMA 超出请求范围，则拆出尾部，使下面的扩展检查能够检测冲突并
@@ -628,7 +639,7 @@ impl MemorySetInner {
             if tail_area.groupid != 0 {
                 GROUP_SHARE.lock().add_area(tail_area.groupid);
             }
-            self.push_lazily(tail_area);
+            self.insert_area_sorted_unmerged(tail_area);
         }
 
         let old_len = (old_end_vpn.0 - old_start_vpn.0) * PAGE_SIZE;

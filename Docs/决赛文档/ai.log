@@ -10562,6 +10562,27 @@ LoongArch64 release 构建通过；两架构 QEMU 均输出 `rseq regression: PA
 
 详见 [问题复盘](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)。
 
+## 2026-08-07：BuildStorm `tg-xtask` mremap VMA 拆分索引修复
+
+### 用户输入
+
+维护者要求在已有 `server.ans` 分析基础上继续修复源码问题，并指出故障发生在 `tg-xtask`
+编译过程，不需要用短时 QEMU 运行替代完整日志证据。
+
+### 分析与采纳结论
+
+继续审计 `f9dc0703` 的排序插入改动，确认 mremap 前段/尾段拆分调用自动合并路径会撤销
+中间 VMA 拆分；前段插入到源段之前还会使 `old_idx` 失效。该状态可能让 mremap 读取错误的
+区域或错误判断尾部冲突，属于 `tg-xtask` 高并发 mmap/mremap 生命周期中的内核语义 bug。
+
+### 修改与验证
+
+修改 `os/src/mm/memory_set/area_ops.rs` 和 `os/src/mm/memory_set/mmap_ops.rs`：增加只排序不合并
+的中间态插入接口，mremap 拆分使用该接口并修正索引；普通映射提交仍保留兼容 VMA 合并。
+`make build-arch TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64` 和
+`git diff --check` 通过。按维护者要求未重复运行完整 QEMU/BuildStorm，保留已有维护者的
+`user/src/bin/initproc.rs` 改动。
+
 ## 2026-08-07：BuildStorm RISC-V rustc SIGSEGV 与 VMA 空洞搜索修复
 
 ### 用户输入
