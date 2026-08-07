@@ -10613,3 +10613,31 @@ LoongArch64 release 构建通过；两架构 QEMU 均输出 `rseq regression: PA
 修改 `os/src/mm/memory_set/area_ops.rs`，并更新问题复盘、README、开发日志和 AI 交互记录。RISC-V/LoongArch64 release 构建通过；修正后的 180 秒 RISC-V QEMU 通过两个内置回归、toolchain/minibuild 并推进至 `444/446`，没有 SIGSEGV、panic 或 Cargo error；完整 446/446 和 75 分钟运行未完成。
 
 详见 [问题复盘](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)。
+
+## 2026-08-07：rseq 回归的实际调度触发修复
+
+### 用户输入
+
+维护者要求分析 `server.ans` 并修复其中的 bug。
+
+### 分析与采纳结论
+
+日志的首个确定失败是 `rseq regression: FAIL (scheduled return cleanup)`。源码和临时
+诊断确认 `sleep_until()` 的计时器可在 Future 返回 `Pending` 与任务发布 `Blocked` 之间
+到期；waker 会让 `block_on()` 直接返回而不调用 `schedule()`。这次没有实际上下文切出，
+因此 rseq pending 状态保持 false，符合“无调度 syscall 不触发 rseq event”的实现语义。
+将 sleep 延长到 20ms 后仍能复现，说明不能以等待时长修复。
+
+采纳 `vfork()` 子进程立即 `exit(0)` 作为回归触发器。vfork 强制父任务在子进程结束前
+切出，子进程拥有独立的未注册 rseq 状态且仅执行 async-signal-safe 的 `exit`，可以稳定
+验证父任务恢复前的 rseq pending 消费。
+
+### 修改与验证
+
+修改 `user/src/bin/initproc/rseq_regression.rs`，移除 `sleep(1)`，改用 vfork/exit；新增
+问题复盘、README 索引、开发日志和本条 AI 记录。`make build-arch TARGET_ARCH=riscv64`
+通过，仅有 vendored `smoltcp` 既有 unused warning。`timeout 45s make TARGET_ARCH=riscv64 run`
+输出 sigaltstack/rseq 两项 PASS，并进入 `BUILDSTORM_TOOLCHAIN ok` 与
+`BUILDSTORM_MINIBUILD ok`；时间窗在后续预构建阶段结束，未完成完整 BuildStorm。
+
+详见 [问题复盘](./problem/rseq-regression-schedule-trigger.md)。

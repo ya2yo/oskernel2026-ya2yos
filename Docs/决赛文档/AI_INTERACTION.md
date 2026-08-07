@@ -2850,3 +2850,12 @@
 - **验证边界**：RISC-V、LoongArch64 release 构建和 `git diff --check` 通过；未重复运行完整 QEMU/BuildStorm，完整 `tg-xtask` 编译耗时不作为本轮验证条件。
 - **关联文档**：[VMA 空洞搜索回归复盘](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### rseq 回归的实际调度触发（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `server.ans` 中 initproc 的 `rseq regression: FAIL (scheduled return cleanup)` 并修复。
+- **描述**：确认 `sleep_until()` 的到期 waker 可在任务发布 `Blocked` 前被消费，令 `block_on()` 无需 `schedule()` 即返回；原探针错误地把这种无调度路径当作 rseq event。保持内核“普通 syscall 不清理 rseq critical section”语义，改用 vfork 子进程立即 exit 强制父任务实际切出，再检查恢复时的 descriptor 清理。
+- **验证边界**：RISC-V release 构建通过。45 秒 RISC-V QEMU 输出 sigaltstack/rseq PASS，进入 BuildStorm toolchain/minibuild；时间窗结束前未完成完整 BuildStorm。LoongArch64 尚未运行此探针。
+- **关联问题**：[rseq 回归的实际调度触发](./problem/rseq-regression-schedule-trigger.md)
+- **关联 commit**：当前工作区未提交

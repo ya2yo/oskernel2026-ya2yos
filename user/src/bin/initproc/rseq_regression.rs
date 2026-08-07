@@ -1,4 +1,6 @@
-use user_lib::{println, rseq, sleep, RseqAbi, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER};
+use user_lib::{
+    exit, println, rseq, vfork, RseqAbi, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER,
+};
 
 const RSEQ_LEN: u32 = 32;
 // The kernel stores the caller-provided signature for matching unregistration
@@ -89,9 +91,16 @@ pub fn run() -> bool {
             return Err("unexpected syscall cleanup");
         }
 
-        // Blocking causes a real context switch; the resumed task must then
-        // consume the pending event and clear the descriptor.
-        sleep(1);
+        // vfork() forces the parent off CPU until its child exits, even when
+        // there is no other runnable task. The child has a separate rseq
+        // state and immediately exits without touching the shared ABI area.
+        let child = unsafe { vfork() };
+        if child < 0 {
+            return Err("vfork");
+        }
+        if child == 0 {
+            exit(0);
+        }
         if read_area().rseq_cs != 0 {
             return Err("scheduled return cleanup");
         }

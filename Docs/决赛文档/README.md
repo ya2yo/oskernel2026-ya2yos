@@ -104,6 +104,7 @@
 - [ext4 getdents64 d_type ABI 映射错误](./problem/ext4-getdents64-d-type.md)
 - [BuildStorm Rust 子进程管道 FIONBIO 兼容](./problem/buildstorm-fionbio-nonblocking.md)
 - [rseq(293) 系统调用接入](./problem/rseq-syscall.md)
+- [rseq 回归的实际调度触发](./problem/rseq-regression-schedule-trigger.md)
 - [RISC-V 8GiB CMA 阶数越界与八核启动栈破坏](./problem/riscv-8g-8hart-bootstrap.md)
 - [RISC-V VirtIO-MMIO 网卡自动总线分配](./problem/riscv-virtio-net-mmio-autobus.md)
 - [BuildStorm MINIBUILD mmap 预算与动态栈 fork EFAULT](./problem/buildstorm-minibuild-post-toolchain-stall.md)
