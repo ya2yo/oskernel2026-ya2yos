@@ -98,6 +98,7 @@ TRAPCONTEXT_FCSR = TRAPCONTEXT_FP+32*8 # fcsr是fp的一部分
 # 声明外部函数
 .extern trap_entry
 .extern trap_from_kernel
+.extern trap_from_kernel_frame
 
 # A single stvec is kept active in both U-mode and S-mode.  The former
 # two-vector scheme could send an S-mode synchronous exception through
@@ -187,10 +188,26 @@ __trap_from_user:
 
 .Ltrap_from_kernel:
     # The first exchange observed sscratch == 0 and put the original t0
-    # there.  Restore it before reporting the kernel trap.
+    # there. Restore it before building a resumable kernel trap frame.
     csrrw t0, sscratch, t0
     csrw sscratch, zero
-    j trap_from_kernel
+
+    # S-mode traps used to jump straight into Rust without saving the
+    # interrupted register set. That made a fault in direct user access
+    # impossible to resume safely: the Rust handler could clobber ra/a*
+    # before the fixup path ran. Keep a full 32-register frame on the current
+    # kernel stack, pass its address to Rust, then restore it before sret.
+    addi sp, sp, -32*8
+    sd t0, (5*8)(sp)
+    sd t1, (6*8)(sp)
+    addi t0, sp, 32*8
+    sd t0, (2*8)(sp)
+    SAVE_GPS_EXCEPT_SP_T0_T1
+    mv a0, sp
+    call trap_from_kernel_frame
+    LOAD_GPS_EXCEPT_SP
+    ld sp, (2*8)(sp)
+    sret
 
 .Ltrap_from_kernel_during_return:
     # A synchronous S-mode trap can still occur after __return_to_user has

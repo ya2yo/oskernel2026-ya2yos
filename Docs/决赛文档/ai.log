@@ -10655,3 +10655,26 @@ LoongArch64 release 构建通过；两架构 QEMU 均输出 `rseq regression: PA
 ### 修改与验证
 
 修改 `os/src/mm/translate.rs`、`os/src/arch/riscv64/qemu/page_table.rs`、`os/src/arch/loongarch64/qemu/page_table.rs` 和 `os/src/mm/memory_set/mod.rs`。`make TARGET_ARCH=riscv64`、`make TARGET_ARCH=loongarch64` 通过；`server.ans` 新日志显示 sigaltstack/rseq 仍为 PASS，并推进到 `445/446: tg-xtask(bin)`，未看到完整结束标记。
+
+## 2026-08-08：P3 uaccess fault 路径任务锁自锁
+
+### 用户输入
+
+维护者要求分析新的 `server.ans`/`client.ans` 并修复卡死，随后指出 `uaccess` 获取任务锁
+违反 `os/src/task/mod.rs` 的锁序，并说明 `server.ans` 是修复后的运行结果。
+
+### 分析与采纳结论
+
+旧 `client.ans` 的 CPU#1 停在 `uaccess::handle_kernel_fault -> TaskControlBlock::inner_lock`
+的自旋，其他 Hart 均 idle。旧回溯无法识别具体 syscall，但可确认该 handler 从直接用户
+访问的同步内核 fault 进入，不能在嵌套路径中再次获取任务锁。新 `server.ans` 已通过 sigaltstack/rseq 并进入
+`BUILDSTORM_BEGIN mode=multi`；更新后的 `client.ans` 仅显示 VirtIO/EXT4 读取和大块缺页分配，
+不再有 uaccess 锁栈。
+
+### 修改与验证
+
+修改 `os/src/mm/uaccess.rs`：将 present-PTE 一次重试状态移到 per-hart `AtomicUsize`，由
+uaccess scope 初始化、恢复和清理；移除 fault handler 中的 `task.inner_lock()`，保留缺页
+修复、TLB 重试和 fixup/EFAULT 语义。新增问题复盘并更新开发日志、README、AI 交互记录。
+`make TARGET_ARCH=riscv64`（同时完成 LoongArch64）和 `git diff --check` 通过；完整
+BuildStorm END 尚未出现在日志中。

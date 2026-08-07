@@ -478,6 +478,48 @@ pub extern "C" fn trap_entry() {
 
 #[cfg(target_arch = "riscv64")]
 #[no_mangle]
+pub extern "C" fn trap_from_kernel_frame(_frame: *mut usize) {
+    use riscv::register::{sepc, stval};
+
+    let cause = get_trap_cause();
+    let stval_val = stval::read();
+    match crate::mm::uaccess::handle_kernel_fault(cause, stval_val) {
+        crate::mm::uaccess::KernelFaultAction::Retry => return,
+        crate::mm::uaccess::KernelFaultAction::Fixup(fixup_pc) => {
+            unsafe {
+                core::arch::asm!("csrw sepc, {}", in(reg) fixup_pc, options(nostack));
+            }
+            return;
+        }
+        crate::mm::uaccess::KernelFaultAction::Unhandled => {}
+    }
+
+    let sepc_val = sepc::read();
+    let ra: usize;
+    let sp: usize;
+    unsafe {
+        core::arch::asm!("mv {}, ra", out(reg) ra);
+        core::arch::asm!("mv {}, sp", out(reg) sp);
+    }
+    println!("\n---- KERNEL PANIC IN S-MODE ----");
+    println!("Cause: {:?}", cause);
+    println!("stval: {:#x}", stval_val);
+    println!("sepc : {:#x}", sepc_val);
+    println!("ra   : {:#x}", ra);
+    println!("sp   : {:#x}", sp);
+    println!("--------------------------------\n");
+    backtrace();
+    let stval = get_trap_virt_addr();
+    let stval_vpn = VirtAddr::try_from(stval).map(|va| va.floor().0);
+    panic!(
+        "stval = {:#x}(vpn {:?}),
+        a trap {:?} from kernel!",
+        stval, stval_vpn, cause
+    );
+}
+
+#[cfg(target_arch = "riscv64")]
+#[no_mangle]
 pub fn trap_from_kernel() -> ! {
     use riscv::register::{sepc, stval};
 
@@ -515,8 +557,17 @@ pub fn trap_from_kernel() -> ! {
 
 #[cfg(target_arch = "loongarch64")]
 #[no_mangle]
-pub fn trap_from_kernel() {
+pub extern "C" fn trap_from_kernel(frame: *mut usize) {
     let cause = get_trap_cause();
+    let stval = get_trap_virt_addr();
+    match crate::mm::uaccess::handle_kernel_fault(cause, stval) {
+        crate::mm::uaccess::KernelFaultAction::Retry => return,
+        crate::mm::uaccess::KernelFaultAction::Fixup(fixup_pc) => {
+            unsafe { frame.write(fixup_pc) };
+            return;
+        }
+        crate::mm::uaccess::KernelFaultAction::Unhandled => {}
+    }
     match cause {
         Trap::Interrupt(Interrupt::Timer) => return,
         Trap::Interrupt(Interrupt::Ipi) => {
@@ -529,7 +580,6 @@ pub fn trap_from_kernel() {
 
     use log::error;
     backtrace();
-    let stval = get_trap_virt_addr();
     let stval_vpn = VirtAddr::from(stval).floor();
     error!(
         "stval = {:#x}(vpn {}), 

@@ -4,6 +4,7 @@ pub mod memory_layout;
 pub mod page_table;
 pub mod time;
 pub mod tlb;
+pub mod uaccess;
 // pub mod trap;
 mod asms;
 pub mod config;

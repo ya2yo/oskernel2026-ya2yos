@@ -2868,3 +2868,12 @@
 - **验证边界**：`make TARGET_ARCH=riscv64`、`make TARGET_ARCH=loongarch64` 通过；`server.ans` 新日志显示 sigaltstack/rseq 仍为 PASS，并推进到 `445/446: tg-xtask(bin)`，未看到完整结束标记。
 - **关联文档**：[优化方案](./优化方案.md)、[开发日志](./开发日志.md)
 - **关联 commit**：当前工作区未提交
+
+#### P3 uaccess fault 路径任务锁自锁（8.8）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans`/`client.ans` 分析卡死，并指出 uaccess 获取任务锁违反项目锁序；随后确认 `server.ans` 为修复后的运行结果。
+- **描述**：旧 GDB 现场显示 CPU#1 在 `uaccess::handle_kernel_fault -> TaskControlBlock::inner_lock` 自旋，其余 Hart idle，属于同步 fault handler 在 syscall 锁上下文中递归拿任务锁。将“一次 present-PTE 重试”改为每 Hart `AtomicUsize retry_vpn`，由 `Scope` 管理生命周期，完全移除 uaccess fault 路径的任务锁获取。新日志无该锁栈，已进入 `BUILDSTORM_BEGIN mode=multi`。
+- **验证边界**：RISC-V/LoongArch64 release 构建和 `git diff --check` 通过；新 `server.ans` 通过 sigaltstack/rseq 并进入 BuildStorm，完整 BuildStorm END 尚未出现。
+- **关联问题**：[uaccess 缺页路径递归获取任务锁](./problem/buildstorm-uaccess-fault-task-lock-deadlock.md)
+- **关联 commit**：当前工作区未提交

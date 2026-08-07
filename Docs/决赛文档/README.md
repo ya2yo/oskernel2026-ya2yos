@@ -186,6 +186,7 @@
 - [All-hart CFS 共享就绪队列](./problem/all-hart-cfs-scheduler.md)
 - [BuildStorm all-hart CFS 重复调度导致的 page fault panic](./problem/buildstorm-cfs-dispatch-panic.md)
 - [BuildStorm futex 队列锁阻塞 remote TLB ACK](./problem/buildstorm-futex-remote-tlb-deadlock.md)
+- [BuildStorm uaccess 缺页路径递归获取任务锁](./problem/buildstorm-uaccess-fault-task-lock-deadlock.md)
 - [BuildStorm 任务表锁阻塞 remote TLB ACK](./problem/buildstorm-task-table-remote-tlb-deadlock.md)
 - [BuildStorm vfork 子 TCB 强引用生命周期](./problem/buildstorm-vfork-tcb-arc-lifetime.md)
 - [BuildStorm 零长度 EXT4 目录项死循环与损坏传播](./problem/buildstorm-ext4-zero-dir-entry.md)

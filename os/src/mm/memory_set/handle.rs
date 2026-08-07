@@ -385,6 +385,34 @@ impl MemorySet {
         self.get_ref().page_table.is_user_readable(vpn)
     }
 
+    /// Whether a kernel-originated load may access a present user leaf.
+    #[cfg(target_arch = "riscv64")]
+    #[inline(always)]
+    pub(crate) fn is_kernel_user_readable(&self, vpn: VirtPageNum) -> bool {
+        self.get_ref().page_table.is_user_readable(vpn)
+    }
+
+    /// Whether a kernel-originated load may access a present user leaf.
+    #[cfg(target_arch = "loongarch64")]
+    #[inline(always)]
+    pub(crate) fn is_kernel_user_readable(&self, vpn: VirtPageNum) -> bool {
+        self.get_ref().page_table.is_kernel_user_readable(vpn)
+    }
+
+    /// Whether a kernel-originated store may access a present user leaf.
+    #[cfg(target_arch = "riscv64")]
+    #[inline(always)]
+    pub(crate) fn is_kernel_user_writable(&self, vpn: VirtPageNum) -> bool {
+        self.get_ref().page_table.is_user_writable(vpn)
+    }
+
+    /// Whether a kernel-originated store may access a present user leaf.
+    #[cfg(target_arch = "loongarch64")]
+    #[inline(always)]
+    pub(crate) fn is_kernel_user_writable(&self, vpn: VirtPageNum) -> bool {
+        self.get_ref().page_table.is_kernel_user_writable(vpn)
+    }
+
     /// Whether a faulting VPN lies in a file mapping beyond that file's EOF.
     ///
     /// The trap layer uses this to distinguish Linux SIGBUS from ordinary
@@ -536,6 +564,16 @@ impl MemorySet {
         let hart = crate::arch::cpu::hart_id();
         let bit = 1usize << hart;
         self.active_harts.fetch_and(!bit, Ordering::AcqRel) & bit != 0
+    }
+
+    /// Return whether this address space is still published on the current
+    /// hart. Direct uaccess uses this lock-free check before touching user
+    /// virtual addresses; page-table writers retain frames for every
+    /// published hart until their shootdown completes.
+    #[inline(always)]
+    pub(crate) fn is_current_hart_active(&self) -> bool {
+        let hart = crate::arch::cpu::hart_id();
+        self.active_harts.load(Ordering::Acquire) & (1usize << hart) != 0
     }
 
     #[inline(always)]
