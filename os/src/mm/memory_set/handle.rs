@@ -116,6 +116,23 @@ impl MemorySet {
         result
     }
 
+    /// Update page-table state without retiring or replacing resident frames.
+    ///
+    /// Permission-only updates still need the normal remote TLB protocol, but
+    /// cloning the full resident set is unnecessary when every frame remains
+    /// owned by the address space throughout the update.
+    fn with_frame_preserving_mut<T>(&self, f: impl FnOnce(&mut MemorySetInner) -> T) -> T {
+        let was_active = self.deactivate_current_hart();
+        let _update_guard = crate::mm::remote_tlb::lock_updates();
+        let mut inner = self.inner.write();
+        let result = f(&mut inner);
+        crate::mm::remote_tlb::shootdown(&self.active_harts);
+        if was_active {
+            self.activate_current_hart();
+        }
+        result
+    }
+
     /// Execute a closure while holding the read lock.
     pub fn with_ref<T>(&self, f: impl FnOnce(&MemorySetInner) -> T) -> T {
         let inner = self.get_ref();
@@ -315,7 +332,7 @@ impl MemorySet {
     /// `MemorySetInner::mprotect`.
     #[inline(always)]
     pub fn mprotect(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) {
-        self.with_mut(|inner| inner.mprotect(start_vpn, end_vpn, map_perm));
+        self.with_frame_preserving_mut(|inner| inner.mprotect(start_vpn, end_vpn, map_perm));
     }
 
     /// Activate this address space for a user-mode return on the current CPU.

@@ -2739,3 +2739,12 @@
 - **验证边界**：RISC-V/LoongArch64 CFS release 与 RISC-V RR 构建、`git diff --check` 通过。维护者日志越过原 `440/446` panic 点到 `444/446: axbuild`，无 panic且八 Hart 均有累计选择；该处仅一个 Cargo 单元可运行，正式计时构建尚未开始，完整 446/446 未完成。
 - **关联问题**：[CFS panic 问题复盘](./problem/buildstorm-cfs-dispatch-panic.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 零长度 EXT4 目录项与镜像损坏（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供新的 `server.ans`、`client.ans` 和首个错误调用栈，要求修复 `BUILDSTORM_TOOLCHAIN ok` 后的 lwext4 目录遍历卡死及后续 `EIO`，并明确禁止修改 `Makefile`。
+- **描述**：条件断点确认 `/proc/67` 的目录块整块为零、首项 `rec_len=0`；`debugfs` 与只读 `e2fsck` 进一步确认原镜像目录和 journal 损坏。修复 lwext4 对目录项长度、对齐、边界和名称长度的验证，同时让线性目录与 HTree 仅对 `ENOSPC` 继续分配/分裂，防止 cleanup 覆盖 `EIO`。新增 host 损坏目录项回归，不修改 `Makefile`，不对原镜像做写入式修复。
+- **验证边界**：host 回归通过；RISC-V/LoongArch64 release 构建通过。离线修复的 `/tmp` 镜像副本在 120 秒内越过原错误并推进到 Cargo `443/446`，但未完成完整 BuildStorm；原镜像仍保持损坏状态。
+- **关联问题**：[零长度目录项问题复盘](./problem/buildstorm-ext4-zero-dir-entry.md)
+- **关联 commit**：当前工作区未提交

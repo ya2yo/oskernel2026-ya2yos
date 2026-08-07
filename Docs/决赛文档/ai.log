@@ -10359,3 +10359,19 @@ RISC-V perf/GDB 日志从 `440/446` 推进到 `444/446: axbuild`，无 panic，�
 `axbuild` 位于非计时 tg-xtask 预构建的依赖图尾部，只剩一个 Cargo 编译单元，因此 GDB 采样中
 仅一个 Hart 执行 `mmap/mprotect` 属于用户态并行度不足，不是 CFS 单核限制。完整 446/446 与正式
 计时构建尚未结束，不报告端到端通过。
+
+## 2026-08-07：BuildStorm 零长度 EXT4 目录项与镜像损坏
+
+### 用户输入
+
+维护者先指出内核卡在 `ext4_dir_try_insert_entry()` 的目录项遍历循环，随后提供新的 `server.ans`、`client.ans` 和第一个错误的 GDB 调用栈，要求继续定位 `BUILDSTORM_TOOLCHAIN ok` 后的 `EIO`；同时明确不要修改 `Makefile`。
+
+### 分析与采纳结论
+
+GDB 条件断点捕获到 `/proc/67/maps` 创建失败现场：父目录 inode 22480 的目标块 490744 整块为零，首个目录项 `inode=0, rec_len=0`。`debugfs` 确认 inode 22480 是 `/proc/67`，只读 `e2fsck -fn` 报告其目录损坏。由此区分两个问题：旧 lwext4 未校验 `rec_len`，零长度记录会让游标永久不动；新增校验返回的 `EIO` 则正确反映原始持久化镜像的真实损坏，不能吞掉。
+
+采纳在目录插入前校验记录最小长度、对齐、块边界和名称长度；线性目录与 HTree 只对 `ENOSPC` 继续分配或分裂，并保留 cleanup 前的原始插入结果。没有修改 `Makefile`，也没有对原镜像执行写入式 `e2fsck`。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/c/lwext4/src/ext4_dir.c`、`ext4_dir_idx.c` 和 host fs_test CMake 配置，新增 `dir_entry_validation.c`；补充问题复盘、README、开发日志和 AI 交互记录。host 目录项损坏回归通过；`make TARGET_ARCH=loongarch64` 完成 RISC-V/LoongArch64 release 构建。仅对 `/tmp` 镜像副本执行 `e2fsck -fy` 后，同一内核可输出 `BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok` 并推进到 Cargo `443/446`，未再出现 `/proc/67/maps, rc = 5`；120 秒窗口内未完成完整 BuildStorm。

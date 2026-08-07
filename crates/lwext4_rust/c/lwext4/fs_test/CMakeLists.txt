@@ -28,6 +28,9 @@ if(NOT WIN32)
 find_package(Threads REQUIRED)
 add_executable(lwext4-bcache-lifecycle bcache_lifecycle.c)
 target_link_libraries(lwext4-bcache-lifecycle lwext4 Threads::Threads)
+
+add_executable(lwext4-dir-entry-validation dir_entry_validation.c)
+target_link_libraries(lwext4-dir-entry-validation lwext4)
 endif()
 
 install (TARGETS lwext4-server DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)

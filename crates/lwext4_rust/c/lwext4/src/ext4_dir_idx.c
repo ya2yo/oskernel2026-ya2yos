@@ -1233,6 +1233,7 @@ int ext4_dir_dx_add_entry(struct ext4_inode_ref *parent,
 {
 	int rc2 = EOK;
 	int r;
+	int insert_r;
 	/* Get direct block 0 (index root) */
 	ext4_fsblk_t rblock_addr;
 	r =  ext4_fs_get_inode_dblk_idx(parent, 0, &rblock_addr, false);
@@ -1312,6 +1313,8 @@ int ext4_dir_dx_add_entry(struct ext4_inode_ref *parent,
 					name, name_len);
 	if (r == EOK)
 		goto release_target_index;
+	if (r != ENOSPC)
+		goto release_target_index;
 
 	/* Split entries to two blocks (includes sorting by hash value) */
 	struct ext4_block new_block;
@@ -1330,11 +1333,13 @@ int ext4_dir_dx_add_entry(struct ext4_inode_ref *parent,
 	else
 		r = ext4_dir_try_insert_entry(&fs->sb, parent, &target_block,
 						child, name, name_len);
+	insert_r = r;
 
 	/* Cleanup */
 	r = ext4_block_set(fs->bdev, &new_block);
 	if (r != EOK)
 		return r;
+	r = insert_r;
 
 /* Cleanup operations */
 

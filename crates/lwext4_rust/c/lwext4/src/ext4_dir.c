@@ -375,7 +375,6 @@ int ext4_dir_add_entry(struct ext4_inode_ref *parent, const char *name,
 	uint32_t total_blocks = (uint32_t)(inode_size / block_size);
 
 	/* Find block, where is space for new entry and try to add */
-	bool success = false;
 	for (iblock = 0; iblock < total_blocks; ++iblock) {
 		r = ext4_fs_get_inode_dblk_idx(parent, iblock, &fblock, false);
 		if (r != EOK)
@@ -398,15 +397,16 @@ int ext4_dir_add_entry(struct ext4_inode_ref *parent, const char *name,
 		/* If adding is successful, function can finish */
 		r = ext4_dir_try_insert_entry(sb, parent, &block, child,
 						name, name_len);
-		if (r == EOK)
-			success = true;
+		int insert_r = r;
 
 		r = ext4_block_set(fs->bdev, &block);
 		if (r != EOK)
 			return r;
 
-		if (success)
+		if (insert_r == EOK)
 			return EOK;
+		if (insert_r != ENOSPC)
+			return insert_r;
 	}
 
 	/* No free block found - needed to allocate next data block */
@@ -599,8 +599,23 @@ int ext4_dir_try_insert_entry(struct ext4_sblock *sb,
 	 * or entries with free space for new entry
 	 */
 	while (start < stop) {
+		uint32_t remaining = (uint8_t *)stop - (uint8_t *)start;
+		if (remaining < sizeof(struct ext4_fake_dir_entry))
+			return EIO;
+
 		uint32_t inode = ext4_dir_en_get_inode(start);
 		uint16_t rec_len = ext4_dir_en_get_entry_len(start);
+		uint16_t existing_name_len = ext4_dir_en_get_name_len(sb, start);
+
+		/*
+		 * A malformed record must not control pointer advancement.  In
+		 * particular, rec_len == 0 would keep start unchanged forever.
+		 */
+		if (rec_len < sizeof(struct ext4_fake_dir_entry) ||
+		    (rec_len & 3) || rec_len > remaining ||
+		    existing_name_len > rec_len - sizeof(struct ext4_fake_dir_entry))
+			return EIO;
+
 		uint8_t itype = ext4_dir_en_get_inode_type(sb, start);
 
 		/* If invalid and large enough entry, use it */
@@ -616,8 +631,7 @@ int ext4_dir_try_insert_entry(struct ext4_sblock *sb,
 
 		/* Valid entry, try to split it */
 		if (inode != 0) {
-			uint16_t used_len;
-			used_len = ext4_dir_en_get_name_len(sb, start);
+			uint16_t used_len = existing_name_len;
 
 			uint16_t sz;
 			sz = sizeof(struct ext4_fake_dir_entry) + used_len;
