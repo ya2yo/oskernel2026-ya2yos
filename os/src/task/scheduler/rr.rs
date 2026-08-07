@@ -26,6 +26,10 @@ static READY_QUEUE: Lazy<Mutex<RrRunQueue>> = Lazy::new(|| Mutex::new(RrRunQueue
 
 pub(super) fn add_task(task: &Arc<TaskControlBlock>) {
     let mut queue = READY_QUEUE.lock();
+    let status = task.inner_lock().task_status;
+    if status != TaskStatus::Ready || task.is_on_cpu() {
+        return;
+    }
     if !queue.queued_tids.insert(task.tid()) {
         warn!(
             "add_task: task tid={} already in RR queue, skipping",

@@ -10325,3 +10325,37 @@ GDB 显示 `mprotect` writer 在 `remote_tlb::shootdown()` 等 ACK，同时多�
 ### 2026-08-06：BuildStorm vfork 子 TCB 强引用
 
 维护者提供新的 `server.ans`/`client.ans`，指出 BuildStorm 阶段反复出现 TCB `strong_count` warning。分析 `exit_current_and_run_next()` 的引用组成后确认，`sys_clone()` 将 `new_task: Arc<TaskControlBlock>` 跨 `CLONE_VFORK` 的 `suspend_current_and_run_next()` 保存在父线程内核栈，形成退出期间的额外强引用。采纳在子任务入队并保存 TID 后立即 `drop(new_task)`；修改 `os/src/syscall/task/clone.rs`，并完成 RISC-V/LoongArch64 release 构建与 `git diff --check` 验证。随后普通及 perf RISC-V QEMU 运行均进入 `BUILDSTORM_TOOLCHAIN ok`，且不再输出 `strong_count`/`extra TCB refs`；测试之后仍触发 `spin::Lazy`/`spin::Once` poisoned panic，完整 BuildStorm 未完成。
+
+## 2026-08-07：BuildStorm 阻塞唤醒与 on_cpu 交接
+
+### 用户输入
+
+维护者要求分析新的 `server.ans`/`client.ans` 并修复 BuildStorm panic，随后明确要求不要增加
+`Blocking` 任务状态，直接参考 Linux task 状态；更新日志后又询问 CFS 重复入队 warning 和
+`axbuild` 阶段单 CPU 活跃的原因。
+
+### 分析与采纳结论
+
+首轮日志在 `440/446` 报告 `FetchInstructionPageFault`，`sepc/stval=0x38`，GDB 提示内核栈损坏。
+审计发现 pipe、futex 与通用阻塞路径在 `switch()` 保存 `TaskContext` 前移除了
+`Processor::current`，并发唤醒可将同一上下文放入共享 CFS 并由另一 Hart 提前恢复。
+
+对照 Linux 7.0 `include/linux/sched.h` 和 `kernel/sched/core.c` 后，采纳 Linux 的正交属性模型：
+继续使用 `Ready/Running/Blocked` 表达任务状态，新增 TCB 原子 `on_cpu` 表达旧 Hart 是否仍持有
+执行上下文。dispatch 前置位，`switch()` 返回 idle 栈后清零；CFS/RR 仅在 `Ready && !on_cpu`
+时入队。阻塞、Future 和 stop 路径保留 current 到切换完成。源 Hart 补入队与并发唤醒同时发生
+时，既有 `on_rq` CAS 合并同一 runnable task；这是合法竞争，删除了误导性的 WARN。
+
+### 修改与验证
+
+修改 `os/src/task/task/task.rs`、`os/src/task/processor.rs`、`os/src/task/scheduler/cfs.rs`、
+`os/src/task/scheduler/rr.rs`、`os/src/task/mod.rs`、`os/src/task/future/mod.rs`、
+`os/src/fs/files/pipe/file_impl.rs` 和 `os/src/task/futex.rs`，保留维护者已有的
+`user/src/bin/initproc.rs` 修改。
+
+`make TARGET_ARCH=riscv64` 完成 RISC-V/LoongArch64 CFS release 构建；
+`make build-arch TARGET_ARCH=riscv64 SCHEDULER=rr` 通过；`git diff --check` 通过。维护者的新
+RISC-V perf/GDB 日志从 `440/446` 推进到 `444/446: axbuild`，无 panic，八 Hart 累计选择均非零。
+`axbuild` 位于非计时 tg-xtask 预构建的依赖图尾部，只剩一个 Cargo 编译单元，因此 GDB 采样中
+仅一个 Hart 执行 `mmap/mprotect` 属于用户态并行度不足，不是 CFS 单核限制。完整 446/446 与正式
+计时构建尚未结束，不报告端到端通过。

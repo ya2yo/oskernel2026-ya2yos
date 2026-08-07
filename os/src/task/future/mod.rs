@@ -16,11 +16,10 @@ use super::{TaskRef, WeakTaskRef};
 use crate::{
     task::{
         current_task, exit_current_if_group_exited_or_killed, ready_queue, schedule,
-        take_current_task, TaskContext, TaskStatus,
+        TaskContext, TaskStatus,
     },
     utils::SysErrNo,
 };
-use kernel_guard::NoPreemptIrqSave;
 use spin::Mutex;
 
 mod poll;
@@ -61,7 +60,7 @@ impl MyWaker {
             return;
         }
 
-        let task = take_current_task().unwrap();
+        let task = current_task().unwrap();
         let task_cx_ptr = {
             let mut inner = task.inner_lock();
             inner.task_status = TaskStatus::Blocked;

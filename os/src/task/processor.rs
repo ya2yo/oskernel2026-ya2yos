@@ -40,9 +40,9 @@ use log::{debug, error};
 pub struct Processor {
     /// 当前 Hart 正在执行的任务。
     ///
-    /// 该引用在任务被切出前由 [`Processor::take_current`] 移除，在选定下一个
-    /// 任务并将其状态发布为 `Running` 后重新写入。任务阻塞或退出路径必须先更新
-    /// 任务状态，再移除这份引用，以便唤醒和调度路径正确判断任务是否可运行。
+    /// 该引用在任务完成上下文切出后由 [`Processor::take_current`] 移除，在选定
+    /// 下一个任务并将其状态发布为 `Running` 后重新写入。阻塞路径只发布睡眠态，
+    /// 调度循环在 idle 栈上清除 `on_cpu` 后才允许其他 Hart 恢复该上下文。
     pub current: Option<Arc<TaskControlBlock>>,
     /// 当前 Hart 的 idle 调度上下文。
     ///
@@ -248,6 +248,9 @@ pub fn run_tasks() {
         let processor = get_proc_by_hartid(hartid);
         let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
         if let Some(cur_task) = cur_task {
+            // Linux finish_task(prev) 的对应点：switch() 已完整保存 prev
+            // 上下文，此后并发唤醒才可将它放到任意 Hart 的就绪队列。
+            cur_task.mark_off_cpu();
             let runnable = matches!(
                 cur_task.inner_lock().task_status,
                 TaskStatus::Ready | TaskStatus::Running
@@ -287,6 +290,9 @@ pub fn run_tasks() {
             next_task_inner.task_status = TaskStatus::Running;
             drop(next_task_inner);
             ready_queue::mark_running(&next_task);
+            // Linux prepare_task(next) 的对应点：在恢复保存的上下文之前
+            // 发布 CPU 所有权，阻止其他 Hart 同时调度同一任务。
+            next_task.mark_on_cpu();
             processor.current = Some(next_task);
             switch(idle_task_cx_ptr, next_task_cx_ptr);
         } else {

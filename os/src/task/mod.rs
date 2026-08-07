@@ -235,8 +235,7 @@ pub fn block_current_and_run_next() {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
     // A signal may have arrived after the caller's last pending check but
-    // before it reached this lock.  Keep the task runnable in that case so a
-    // signal cannot be stranded behind a newly published Blocked state.
+    // before it reached this lock. Keep the current task running in that case.
     if !task_inner
         .sig_pending
         .difference(task_inner.sig_mask)
@@ -250,18 +249,14 @@ pub fn block_current_and_run_next() {
     task_inner.task_status = TaskStatus::Blocked;
     drop(task_inner);
     drop(task);
-    // Publish Blocked before detaching the current task. A signal arriving in
-    // this interval can then transition it back to Ready and enqueue it,
-    // instead of being lost while the task is still marked Running.
-    let task = take_current_task().unwrap();
-    drop(task);
-    // error!("schedule() BEGIN!");
+    // Keep Processor::current and on_cpu published until switch() has saved
+    // this task's context. The scheduler clears on_cpu on the idle stack.
     schedule(task_cx_ptr);
 }
 
 pub fn stop_current_and_run_next() {
     debug!("[stop_current_and_run_next()] BEGIN!");
-    let task = take_current_task().unwrap();
+    let task = current_task().unwrap();
     let mut task_inner = task.inner_lock();
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
     task_inner.task_status = TaskStatus::Stopped;
@@ -271,14 +266,8 @@ pub fn stop_current_and_run_next() {
 }
 
 pub fn schedule_blocked_current(task_cx_ptr: *mut TaskContext) {
-    // 等待队列已经把当前任务置为 Blocked，这里只负责切回调度器。
-    // Some blocking paths can observe a wakeup/timeout race after the task has
-    // already been detached from this hart's `current` slot.  The saved task
-    // context is still the switch source, so treat the detach as idempotent
-    // instead of panicking in the scheduler.
-    if let Some(task) = take_current_task() {
-        drop(task);
-    }
+    // 等待队列已经发布睡眠态。保留 current/on_cpu，直到 switch 完整保存
+    // 当前上下文；这是 Linux prepare_task()/finish_task() 的同类约束。
     schedule(task_cx_ptr);
 }
 

@@ -2730,3 +2730,12 @@
 - **验证边界**：RISC-V/LoongArch64 release 构建、RISC-V perf 和 `git diff --check` 通过。普通及 perf 短时 RISC-V QEMU 均进入 `BUILDSTORM_TOOLCHAIN ok`，且不再出现 `strong_count`/`extra TCB refs`；随后触发 `spin::Lazy`/`spin::Once` poisoned panic，完整 BuildStorm/QEMU 测试未完成。
 - **关联问题**：[BuildStorm vfork 子 TCB 强引用生命周期](./problem/buildstorm-vfork-tcb-arc-lifetime.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 阻塞唤醒与 `on_cpu` 上下文交接（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供新的 BuildStorm panic/GDB 日志，要求按 Linux task 状态修复，并询问重复入队 warning 与 `axbuild` 单 CPU 活跃原因。
+- **描述**：确认阻塞路径在 `switch()` 保存上下文前移除 current，使远端唤醒可提前恢复同一 TCB。对照 Linux 7.0 `try_to_wake_up()`、`prepare_task()` 和 `finish_task()`，保留既有任务状态并新增正交 `on_cpu` 原子属性；dispatch 前置位、切出完成后清零，CFS/RR 只入队 `Ready && !on_cpu` 任务。阻塞、Future 和 stop 路径保留 current 至切出完成，`on_rq` 静默合并合法的并发重复入队。
+- **验证边界**：RISC-V/LoongArch64 CFS release 与 RISC-V RR 构建、`git diff --check` 通过。维护者日志越过原 `440/446` panic 点到 `444/446: axbuild`，无 panic且八 Hart 均有累计选择；该处仅一个 Cargo 单元可运行，正式计时构建尚未开始，完整 446/446 未完成。
+- **关联问题**：[CFS panic 问题复盘](./problem/buildstorm-cfs-dispatch-panic.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

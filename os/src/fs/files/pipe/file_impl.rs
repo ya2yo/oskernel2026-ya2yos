@@ -57,15 +57,15 @@ impl File for Pipe {
                     return Err(SysErrNo::EINTR);
                 }
                 let task = current_task().ok_or(SysErrNo::ESRCH)?;
-                // 先置 Blocked 再入队，避免写者并发唤醒时丢失 wakeup。
+                // 与 Linux wait queue 一致：先发布睡眠态，再在同一条件锁下
+                // 复查并登记 waiter；on_cpu 会阻止并发唤醒过早调度本上下文。
                 let task_cx_ptr = {
                     let mut task_inner = task.inner_lock();
                     task_inner.task_status = TaskStatus::Blocked;
                     &mut task_inner.task_cx as *mut _
                 };
                 let mut ring_buffer = self.inner_lock();
-                if ring_buffer.available_read() > 0 {
-                    // 入队前已有写者写入，恢复 Running 并直接重试读取。
+                if ring_buffer.available_read() > 0 || ring_buffer.all_write_ends_closed() {
                     let mut task_inner = task.inner_lock();
                     task_inner.task_status = TaskStatus::Running;
                     continue;
@@ -153,7 +153,8 @@ impl File for Pipe {
                     return Err(SysErrNo::EINTR);
                 }
                 let task = current_task().ok_or(SysErrNo::ESRCH)?;
-                // 先置 Blocked 再入队，避免读者并发唤醒时丢失 wakeup。
+                // 先发布睡眠态，再在 pipe 锁下复查条件；并发唤醒只把状态
+                // 改回 Ready，直到当前上下文完成切出后才允许重新入队。
                 let task_cx_ptr = {
                     let mut task_inner = task.inner_lock();
                     task_inner.task_status = TaskStatus::Blocked;
@@ -168,7 +169,6 @@ impl File for Pipe {
                     return Err(Self::broken_pipe());
                 }
                 if ring_buffer.available_write() > 0 {
-                    // 入队前已有读者释放空间，恢复 Running 并直接重试写入。
                     let mut task_inner = task.inner_lock();
                     task_inner.task_status = TaskStatus::Running;
                     continue;

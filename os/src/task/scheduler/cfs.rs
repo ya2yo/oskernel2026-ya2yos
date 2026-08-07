@@ -215,11 +215,15 @@ pub(super) fn add_task(task: &Arc<TaskControlBlock>) -> Option<usize> {
     // Running.  Checking status before taking the queue lock leaves a window
     // where another hart can select the same task while it is being enqueued.
     let status = task.inner_lock().task_status;
-    if status != TaskStatus::Ready {
+    // 唤醒可以在旧 Hart 完成上下文切出前把睡眠态改回 Ready；此时只记录
+    // 状态变化，由 finish_task 对应路径清除 on_cpu 后再负责入队。
+    if status != TaskStatus::Ready || task.is_on_cpu() {
         return None;
     }
     if !task.sched_entity.try_mark_queued() {
-        warn!("add_task: task tid={} already in CFS queue, skipping", tid);
+        // finish_task-side requeue and a concurrent wakeup may both arrive
+        // after on_cpu is cleared. They represent one runnable task, so merge
+        // the duplicate exactly like Linux's already-on-rq wakeup path.
         return None;
     }
     let vruntime = task.sched_entity.place_at(queue.min_vruntime);

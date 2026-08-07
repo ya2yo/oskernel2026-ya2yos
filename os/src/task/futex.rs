@@ -137,10 +137,8 @@ fn futex_wait_bitset(
 
         let task_cx_ptr = {
             let mut inner = task.inner_lock();
-            // Match the interrupted-wait behavior before publishing the task
-            // as blocked. A signal racing after this point sees `Blocked` and
-            // is able to enqueue the task, so neither signal nor futex wakeup
-            // is lost.
+            // 与 Linux futex 等待一致：在 bucket 锁下完成信号复查、waiter
+            // 登记和睡眠态发布；on_cpu 在真正切出前阻止唤醒者重新调度。
             if !inner.sig_pending.difference(inner.sig_mask).is_empty() {
                 return Err(SysErrNo::EINTR);
             }

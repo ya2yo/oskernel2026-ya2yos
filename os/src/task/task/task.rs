@@ -115,6 +115,9 @@ pub struct TaskControlBlock {
     /// Hart that last selected this thread, also used for timer ownership and
     /// affinity-directed migration notifications.
     scheduled_hart: AtomicUsize,
+    /// Linux task_struct::on_cpu equivalent. It remains set until the previous
+    /// Hart has completely switched away from this task's saved context.
+    on_cpu: AtomicBool,
     // mutable
     // 异步中断/信号同步
     pub interrupted: AtomicBool,
@@ -545,6 +548,24 @@ impl TaskControlBlock {
         self.scheduled_hart.store(hartid, Ordering::Release);
     }
 
+    /// Return whether a Hart still owns this task's live execution context.
+    #[inline]
+    pub(crate) fn is_on_cpu(&self) -> bool {
+        self.on_cpu.load(Ordering::Acquire)
+    }
+
+    /// Claim the task immediately before restoring its saved context.
+    #[inline]
+    pub(crate) fn mark_on_cpu(&self) {
+        self.on_cpu.store(true, Ordering::Release);
+    }
+
+    /// Publish that the previous context switch has completed.
+    #[inline]
+    pub(crate) fn mark_off_cpu(&self) {
+        self.on_cpu.store(false, Ordering::Release);
+    }
+
     /// Update the thread's affinity and return the Hart it was previously
     /// running on. Shared CFS entries remain in one queue and are filtered by
     /// the new mask when selected.
@@ -596,6 +617,7 @@ impl TaskControlBlock {
             process: process.clone(),
             cpu_affinity: AtomicUsize::new(Self::default_cpu_affinity(process.home_hart())),
             scheduled_hart: AtomicUsize::new(process.home_hart()),
+            on_cpu: AtomicBool::new(false),
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             sched_entity: SchedEntity::new(),
@@ -1083,6 +1105,7 @@ impl TaskControlBlock {
             process: process_arc,
             cpu_affinity: AtomicUsize::new(child_cpu_affinity),
             scheduled_hart: AtomicUsize::new(child_scheduled_hart),
+            on_cpu: AtomicBool::new(false),
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             // First enqueue places the child in its destination hart's
