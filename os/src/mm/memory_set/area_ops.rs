@@ -155,18 +155,20 @@ impl MemorySetInner {
         for area in self.areas.iter().rev() {
             let (area_start, area_end) = area.vpn_range.range();
             if area_end <= start_vpn {
-                // All remaining VMAs start even lower, so this candidate is
-                // free and the downward hint fast path can return directly.
                 break;
             }
             if area_start >= end_vpn {
-                // This VMA is above the candidate; continue toward lower VMAs.
                 continue;
             }
 
-            // The candidate overlaps this VMA. Move its end below the VMA and
-            // preserve the requested number of pages for the next attempt.
-            end_vpn = area_start;
+            // Keep the historical one-page separation below an occupied VMA.
+            // Besides matching the old recursive search, this protects the
+            // guard page expected by MAP_GROWSDOWN stacks.
+            let candidate_end = match area_start.0.checked_sub(1) {
+                Some(end) => VirtPageNum(end),
+                None => return 0,
+            };
+            end_vpn = candidate_end;
             start_vpn = match end_vpn.0.checked_sub(pages) {
                 Some(start) => VirtPageNum(start),
                 None => return 0,

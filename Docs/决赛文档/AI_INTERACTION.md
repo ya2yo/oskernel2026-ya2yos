@@ -2814,3 +2814,21 @@
 - **验证边界**：RISC-V/LoongArch64 release、RISC-V debug 构建和差异检查通过；120 秒 RISC-V QEMU 已进入 BuildStorm 并观察到兄弟 TCB 逐个 dropped，但未完成完整 BuildStorm。
 - **关联问题**：[BuildStorm 多 Hart 线程组退出时的 TCB 强引用放大](./problem/buildstorm-tcb-sibling-exit-arc-amplification.md)
 - **关联 commit**：当前工作区未提交
+
+#### P1 rseq 事件驱动与批量用户访问（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求按《优化方案》实现 P1，P0 已完成。
+- **描述**：将 rseq 用户返回从每次 trap return 访问改为调度、迁核、注册、exec 和信号事件驱动；新增短小多段用户复制接口，在一次 `MemorySet` 读锁临界区内更新相邻 ID 字段，并保留缺页/COW 与坏指针错误语义。回归探针补充无调度 syscall、迁核 CPU ID 和信号清理场景。
+- **验证边界**：RISC-V/LoongArch64 release 构建通过；双架构 QEMU 均通过 `rseq regression: PASS` 并进入 BuildStorm toolchain/minibuild，完整 BuildStorm 和正式性能对比仍待复测。
+- **关联问题**：[rseq 优化的回归与后续 VMA 修复](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm RISC-V rustc SIGSEGV 与 VMA 空洞搜索修复（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans`，要求优先排查当前工作区、限制 Git 范围不早于 `b913068c32d198e292c9373320084e217e83ec17`，并要求修复而不是简单撤销。
+- **描述**：确认 `440/446` 的 rustc SIGSEGV 地址落在 `sigreturn_trampoline`；撤回未提交 rseq runtime 优化后仍复现。分量对照定位到 `f9dc0703` 新空洞搜索丢失碰撞后的一页边界；保留 VMA 排序/合并和反向扫描，改为 `area_start - 1` 并做 checked arithmetic。
+- **验证边界**：RISC-V/LoongArch64 release 构建通过；修正后的 RISC-V 180 秒 QEMU 通过内置回归、toolchain/minibuild 并推进至 `444/446`，无 SIGSEGV/panic/Cargo error；完整 446/446 和 75 分钟运行未完成。
+- **关联文档**：[VMA 空洞搜索回归复盘](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)、[开发日志](./开发日志.md)
+- **关联 commit**：当前工作区未提交

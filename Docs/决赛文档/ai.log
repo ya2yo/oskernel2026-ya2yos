@@ -10537,3 +10537,43 @@ exception-table fixup，rseq 则应优先改为调度/迁核事件驱动。
 修改 `os/src/task/mod.rs`，两处兄弟遍历均改为 `Weak` 快照和逐项短生命周期 `upgrade()`；未增加高频 debug 引用计数。目标文件格式检查、`git diff --check`、RISC-V/LoongArch64 release 构建和 RISC-V debug 构建通过。`timeout 120s make run TARGET_ARCH=riscv64` 已进入 BuildStorm 并观察到 PID 28 退出时兄弟 TCB 逐个 dropped，但来宾编译完整 Rust 依赖导致外层超时，未完成 446/446。
 
 详见 [问题复盘](./problem/buildstorm-tcb-sibling-exit-arc-amplification.md)。
+
+## 2026-08-07：P1 rseq 事件驱动与批量用户访问
+
+### 用户输入
+
+维护者要求根据 `Docs/决赛文档/优化方案.md` 实现 P1 优化，说明 P0 已完成。
+
+### 分析与采纳结论
+
+源码审计确认 `trap_return()` 每次返回用户态都会执行 rseq 用户内存访问；Linux 风格的
+pending 事件应由实际切出、迁核、注册、exec 和信号路径发布。采纳线程级 `rseq_pending`
+并在用户返回时消费；同时将 rseq 的两个相邻 ID 对合并为批量 segment，在一次读锁临界区
+完成短复制，缺页/COW 准备仍在锁外完成。
+
+### 修改与验证
+
+修改 `os/src/task/{rseq.rs,processor.rs,task/task.rs}`、`os/src/signal/{delivery.rs,timer.rs}`、
+`os/src/mm/translate.rs` 和 `user/src/bin/initproc/rseq_regression.rs`，补充
+`Docs/决赛文档/problem/buildstorm-riscv-vma-hole-search-sigsegv.md`、开发日志和 README 索引。RISC-V 与
+LoongArch64 release 构建通过；两架构 QEMU 均输出 `rseq regression: PASS` 并进入
+`BUILDSTORM_TOOLCHAIN ok`/`BUILDSTORM_MINIBUILD ok`，外层 timeout 前未完成完整 BuildStorm，
+未报告端到端性能百分比。
+
+详见 [问题复盘](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)。
+
+## 2026-08-07：BuildStorm RISC-V rustc SIGSEGV 与 VMA 空洞搜索修复
+
+### 用户输入
+
+维护者要求分析 `server.ans`，优先排查当前工作区修改，并将 Git 排查范围限制在 `b913068c32d198e292c9373320084e217e83ec17` 之后；随后明确要求修复 bug 而不是简单撤销。
+
+### 分析与采纳结论
+
+`server.ans` 在 `440/446` 的 `ax-cpumask` 编译中报告 rustc `SIGSEGV`，地址落在 `sigreturn_trampoline`；前置 sigaltstack/rseq 回归通过。撤回未提交的 rseq runtime 优化后仍复现。分量对照确认 `f9dc0703` 的新 VMA 空洞搜索是触发点：碰撞后直接把候选终点放在障碍 VMA 起点，丢失旧实现的一页边界。保留排序/合并和反向线性扫描，仅将碰撞后的终点改为 `area_start - 1` 并增加 checked arithmetic。
+
+### 修改与验证
+
+修改 `os/src/mm/memory_set/area_ops.rs`，并更新问题复盘、README、开发日志和 AI 交互记录。RISC-V/LoongArch64 release 构建通过；修正后的 180 秒 RISC-V QEMU 通过两个内置回归、toolchain/minibuild 并推进至 `444/446`，没有 SIGSEGV、panic 或 Cargo error；完整 446/446 和 75 分钟运行未完成。
+
+详见 [问题复盘](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)。
