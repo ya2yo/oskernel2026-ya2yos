@@ -117,6 +117,10 @@ pub fn sys_clone(
     // Do not charge the semantic vfork parent wait to child creation work.
     #[cfg(feature = "perf")]
     drop(clone_active_guard);
+    // The parent only needs the child TID after publication.  Do not retain a
+    // strong reference to the parent across the vfork sleep: a fatal signal
+    // abandons this kernel stack without running Rust destructors.
+    drop(task);
     if flags.contains(CloneFlags::CLONE_VFORK) {
         // vfork(2) must not return to the parent until the child has called
         // execve() or exited. clone_process() already marked this task as
@@ -129,6 +133,7 @@ pub fn sys_clone(
         {
             let vfork_wait_end = crate::arch::time::get_ticks();
             let vfork_parent_ready_at = {
+                let task = current_task().unwrap();
                 let mut task_inner = task.inner_lock();
                 core::mem::take(&mut task_inner.vfork_parent_ready_at)
             };

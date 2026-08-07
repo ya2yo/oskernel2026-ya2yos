@@ -494,11 +494,13 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // 唤醒被阻塞的兄弟线程，防止它们因等待本线程清理资源而永久死锁
     {
         let bro_tasks = curr_task.process.meta_lock().tasks.clone();
-        let bro_tasks: Vec<Arc<TaskControlBlock>> = bro_tasks
-            .into_iter()
-            .filter_map(|weak| weak.upgrade())
-            .collect();
-        for bro_task in &bro_tasks {
+        // Keep only weak references in the snapshot. Several harts can enter
+        // this path at once, and retaining a full Arc vector on each hart
+        // amplifies every sibling's temporary strong count.
+        for bro_task_weak in bro_tasks {
+            let Some(bro_task) = bro_task_weak.upgrade() else {
+                continue;
+            };
             if bro_task.tid() != curr_tid {
                 let mut bro_inner = bro_task.inner_lock();
                 if bro_inner.task_status == TaskStatus::Blocked {
@@ -517,7 +519,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
                             }
                         }
                     }
-                    ready_queue::add_task(bro_task);
+                    ready_queue::add_task(&bro_task);
                 }
             }
         }
@@ -526,15 +528,16 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // 一个进程的所有线程都退出了,此时回收资源
     {
         let bro_tasks = curr_task.process.meta_lock().tasks.clone();
-        let bro_tasks: Vec<Arc<TaskControlBlock>> = bro_tasks
-            .into_iter()
-            .filter_map(|weak| weak.upgrade()) // 自动过滤无效引用
-            .collect();
-        // bro_tasks.iter().for_each(|t: &Arc<TaskControlBlock>|debug!("My bro_task is {}, status is {:?}.", t.tid(), t.inner_lock().task_status));
-        if bro_tasks
-            .iter()
-            .all(|bro_task| bro_task.inner_lock().is_zombie())
-        {
+        // Do not turn the whole weak snapshot into owning Arcs. On SMP every
+        // concurrently exiting thread would otherwise retain all siblings
+        // until its teardown finishes.
+        let all_zombie = bro_tasks.iter().all(|task_weak| {
+            task_weak
+                .upgrade()
+                .map(|task| task.inner_lock().is_zombie())
+                .unwrap_or(true)
+        });
+        if all_zombie {
             debug!(
                 "[exit] pid {}: all tasks zombie, calling exit_and_reparent",
                 curr_task.pid()
@@ -549,13 +552,15 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             usage.cutime += time_data.cutime;
             usage.cstime += time_data.cstime;
             usage.cmaxrss = usage.cmaxrss.max(time_data.cmaxrss);
-            for task in &bro_tasks {
-                let time_data = task.inner_lock().time_data.clone();
-                usage.utime += time_data.utime;
-                usage.stime += time_data.stime;
-                usage.cutime += time_data.cutime;
-                usage.cstime += time_data.cstime;
-                usage.cmaxrss = usage.cmaxrss.max(time_data.cmaxrss);
+            for task_weak in &bro_tasks {
+                if let Some(task) = task_weak.upgrade() {
+                    let time_data = task.inner_lock().time_data.clone();
+                    usage.utime += time_data.utime;
+                    usage.stime += time_data.stime;
+                    usage.cutime += time_data.cutime;
+                    usage.cstime += time_data.cstime;
+                    usage.cmaxrss = usage.cmaxrss.max(time_data.cmaxrss);
+                }
             }
             write_process_acct_record(&curr_task, exit_code, &usage);
             curr_task.process.meta_lock().usage = usage;
@@ -605,7 +610,10 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             debug!(
                 "[exit] pid {}: NOT all tasks zombie, bro_tasks count: {}",
                 curr_task.pid(),
-                bro_tasks.len()
+                bro_tasks
+                    .iter()
+                    .filter(|task_weak| task_weak.upgrade().is_some())
+                    .count()
             );
         }
     }

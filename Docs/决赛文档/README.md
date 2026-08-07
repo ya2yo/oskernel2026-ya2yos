@@ -189,3 +189,4 @@
 - [BuildStorm vfork 子 TCB 强引用生命周期](./problem/buildstorm-vfork-tcb-arc-lifetime.md)
 - [BuildStorm 零长度 EXT4 目录项死循环与损坏传播](./problem/buildstorm-ext4-zero-dir-entry.md)
 - [BuildStorm MemorySet 全驻留帧保留导致局部 MM 更新放大](./problem/buildstorm-memoryset-full-resident-retention.md)
+- [BuildStorm 多 Hart 线程组退出时的 TCB 强引用放大](./problem/buildstorm-tcb-sibling-exit-arc-amplification.md)

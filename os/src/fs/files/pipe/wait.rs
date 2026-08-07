@@ -41,6 +41,7 @@ impl Pipe {
             }
             ring_buffer.push_reader(&task);
             drop(ring_buffer);
+            drop(task);
             schedule_blocked_current(task_cx_ptr);
         }
     }
@@ -84,6 +85,7 @@ impl Pipe {
             }
             ring_buffer.push_writer(&task);
             drop(ring_buffer);
+            drop(task);
             schedule_blocked_current(task_cx_ptr);
         }
     }

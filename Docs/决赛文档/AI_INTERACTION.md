@@ -2805,3 +2805,12 @@
   写入和 `git diff --check`、工作区状态等静态检查。
 - **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 多 Hart 退出路径的 TCB 强引用放大（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `tmp_01.ans`，要求分析时序相关的 TCB 引用计数，并询问是否存在多个 Hart 同时取得同一 task。
+- **描述**：确认 PID 8、18、28 等线程组的 `strong_count=4/5` 后均有对应 `TCB dropped`，根因是 `exit_current_and_run_next()` 将完整兄弟 `Weak` 快照升级成 `Vec<Arc<TaskControlBlock>>`。并发退出 Hart 各自持有一份集合，形成临时引用放大；CFS `Ready -> Running` 队列内预留与 `on_cpu` 不支持稳定重复调度。将两处退出遍历改为逐项 `Weak::upgrade()`，不再保存整组 owning `Arc`。
+- **验证边界**：RISC-V/LoongArch64 release、RISC-V debug 构建和差异检查通过；120 秒 RISC-V QEMU 已进入 BuildStorm 并观察到兄弟 TCB 逐个 dropped，但未完成完整 BuildStorm。
+- **关联问题**：[BuildStorm 多 Hart 线程组退出时的 TCB 强引用放大](./problem/buildstorm-tcb-sibling-exit-arc-amplification.md)
+- **关联 commit**：当前工作区未提交

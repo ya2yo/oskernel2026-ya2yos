@@ -38,6 +38,9 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
         )
     })?;
     drop(memory_set);
+    // `block_on` may abandon this kernel stack on a fatal signal.  The task
+    // reference must not survive that non-unwinding exit path.
+    drop(task);
     let req = req_val;
 
     if req.tv_nsec >= NANOS_PER_SEC as usize || (req.tv_sec as isize) < 0 {
@@ -55,6 +58,7 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
         if check_if_any_sig_for_current_task().is_some() {
             return true;
         }
+        let task = current_task().unwrap();
         let mut task_inner = task.inner_lock();
         let eintr = task_inner.sig_eintr;
         if eintr {
@@ -65,8 +69,7 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
 
     if interrupted() {
         if rem as usize != 0 {
-            let process = &task.process;
-            let memory_set = process.memory_set_arc();
+            let memory_set = current_task().unwrap().process.memory_set_arc();
             let left = calculate_left_timespec(endtime);
             copy_to_user(&memory_set, rem as usize, unsafe {
                 core::slice::from_raw_parts(
@@ -85,8 +88,7 @@ pub fn sys_nanosleep(req: *const Timespec, rem: *mut Timespec) -> SyscallRet {
     let timer_result = block_on(interruptible(sleep_until(endtime)));
     if timer_result.is_err() || interrupted() {
         if rem as usize != 0 {
-            let process = &task.process;
-            let memory_set = process.memory_set_arc();
+            let memory_set = current_task().unwrap().process.memory_set_arc();
             let left = calculate_left_timespec(endtime);
             copy_to_user(&memory_set, rem as usize, unsafe {
                 core::slice::from_raw_parts(
@@ -300,6 +302,9 @@ pub fn sys_clock_nanosleep(
     };
     // 记录起始时间 (毫秒)
     let begin_ticks = crate::arch::time::get_ticks();
+    // The sleep loop yields repeatedly.  Keep no owning TCB reference across
+    // a yield because fatal-signal exit abandons this kernel stack.
+    drop(task);
 
     loop {
         let now_ticks = crate::arch::time::get_ticks();
@@ -313,6 +318,7 @@ pub fn sys_clock_nanosleep(
 
         // 检查信号：pending 信号或已被 trap handler 拦截的信号
         if check_if_any_sig_for_current_task().is_some() || {
+            let task = current_task().unwrap();
             let mut task_inner = task.inner_lock();
             let eintr = task_inner.sig_eintr;
             if eintr {
@@ -321,8 +327,7 @@ pub fn sys_clock_nanosleep(
             eintr
         } {
             if !remain.is_null() {
-                let process = &task.process;
-                let memory_set = process.memory_set_arc();
+                let memory_set = current_task().unwrap().process.memory_set_arc();
                 let left = calculate_left_timespec(endtime);
                 copy_to_user(&memory_set, remain as usize, unsafe {
                     core::slice::from_raw_parts(

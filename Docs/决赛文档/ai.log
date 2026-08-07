@@ -10521,3 +10521,19 @@ exception-table fixup，rseq 则应优先改为调度/迁核事件驱动。
 `os/src/mm/memory_set/handle.rs`、`user/src/bin/initproc.rs` 修改及 `disk.img` symlink。
 本轮未修改内核源码，未运行构建、测试、QEMU 或 GDB，也未删除或停止运行中的实例；仅做
 文档和静态差异检查。
+
+## 2026-08-07：BuildStorm 多 Hart 退出路径的 TCB 强引用放大
+
+### 用户输入
+
+维护者要求分析 `tmp_01.ans`，并在无法定位引用来源时在可疑路径增加 `debug!` 引用计数；随后询问是否可能多个 Hart 同时取得同一 task。
+
+### 分析与采纳结论
+
+`tmp_01.ans` 显示多个线程组同时收到 `SIGKILL`，退出告警中的 `strong_count = 4/5` 均紧邻对应 `TCB dropped`。审计 `exit_current_and_run_next()` 发现退出路径把 `ProcessMeta::tasks` 的完整 `Weak` 快照一次性升级成 `Vec<Arc<TaskControlBlock>>`，并发退出 Hart 会互相持有完整兄弟集合，造成时序相关的临时强引用放大。CFS 的队列锁内 `Ready -> Running` 预留和 `on_cpu` 机制仍阻止稳定的同一 TCB 重复调度，因此没有把该现象误判为多 Hart 重复取 task。
+
+### 修改与验证
+
+修改 `os/src/task/mod.rs`，两处兄弟遍历均改为 `Weak` 快照和逐项短生命周期 `upgrade()`；未增加高频 debug 引用计数。目标文件格式检查、`git diff --check`、RISC-V/LoongArch64 release 构建和 RISC-V debug 构建通过。`timeout 120s make run TARGET_ARCH=riscv64` 已进入 BuildStorm 并观察到 PID 28 退出时兄弟 TCB 逐个 dropped，但来宾编译完整 Rust 依赖导致外层超时，未完成 446/446。
+
+详见 [问题复盘](./problem/buildstorm-tcb-sibling-exit-arc-amplification.md)。

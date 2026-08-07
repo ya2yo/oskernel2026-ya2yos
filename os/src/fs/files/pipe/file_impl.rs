@@ -72,6 +72,7 @@ impl File for Pipe {
                 }
                 ring_buffer.push_reader(&task);
                 drop(ring_buffer);
+                drop(task);
                 #[cfg(feature = "perf")]
                 let wait_begin = crate::arch::time::get_ticks();
                 schedule_blocked_current(task_cx_ptr);
@@ -175,6 +176,7 @@ impl File for Pipe {
                 }
                 ring_buffer.push_writer(&task);
                 drop(ring_buffer);
+                drop(task);
                 #[cfg(feature = "perf")]
                 let wait_begin = crate::arch::time::get_ticks();
                 schedule_blocked_current(task_cx_ptr);
