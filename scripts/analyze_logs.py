@@ -44,14 +44,14 @@ LTP_TEST_RE = re.compile(
 def analyze_log(file_path):
     """Parse the log file and print syscall sequences + LTP test output."""
 
-    pid_syscall: dict[int, str] = {}   # pid -> pending syscall name from last begin
-    pid_user_out: dict[int, list[str]] = {}  # pid -> accumulated user-mode output
+    tid_syscall: dict[int, str] = {}   # tid -> pending syscall name from last begin
+    tid_user_out: dict[int, list[str]] = {}  # tid -> accumulated user-mode output
     user_mode = False  # True once we see the first syscall (boot phase over)
 
-    def _show_user_out(pid: int) -> str:
-        """Return the reconstructed user-mode output for *pid* as an
+    def _show_user_out(tid: int) -> str:
+        """Return the reconstructed user-mode output for *tid* as an
         escaped string, or '' if there is none."""
-        parts = pid_user_out.get(pid)
+        parts = tid_user_out.get(tid)
         if not parts:
             return ""
         text = "".join(parts)
@@ -83,16 +83,16 @@ def analyze_log(file_path):
                 m = LINE_RE.search(clean)
                 if m:
                     raw_prefix = clean[:m.start()]  # user output before [LEVEL]
-                    pid = int(m.group("pid"))
+                    tid = int(m.group("tid"))
                     msg = m.group("msg")
 
                     # Track syscall begin
                     s_begin = SYSCALL_BEGIN_RE.search(msg)
                     if s_begin:
                         sc_name = s_begin.group(1)
-                        pid_syscall[pid] = sc_name
+                        tid_syscall[tid] = sc_name
                         # Clear accumulated user output for each new syscall
-                        pid_user_out.pop(pid, None)
+                        tid_user_out.pop(tid, None)
                         user_mode = True
                         continue
 
@@ -102,15 +102,15 @@ def analyze_log(file_path):
                         user_mode = True
                         status = s_ret.group(1)
                         rest = s_ret.group(2).strip()
-                        sc_name = pid_syscall.pop(pid, "?")
+                        sc_name = tid_syscall.pop(tid, "?")
                         color = "\033[32m" if status == "OK" else "\033[31m"
 
                         if raw_prefix:
-                            pid_user_out.setdefault(pid, []).append(raw_prefix)
+                            tid_user_out.setdefault(tid, []).append(raw_prefix)
 
-                        user_str = _show_user_out(pid)
+                        user_str = _show_user_out(tid)
 
-                        line = (f"  L{line_no:>6d} [PID {pid:>3}] "
+                        line = (f"  L{line_no:>6d} [TID {tid:>3}] "
                                 f"\033[36m{sc_name:20s}\033[0m "
                                 f"{color}=> {status}  {rest}\033[0m")
                         if user_str:
