@@ -12,6 +12,22 @@
 //! - [`kernel_init`]: kernel address-space construction;
 //! - [`mmap_ops`]: mmap/munmap/mprotect and shared memory attach/detach;
 //! - [`pagefault`]: user-space page-fault handling.
+//!
+//! # Lock ordering
+//!
+//! Page-table mutation follows this order:
+//!
+//! 1. `remote_tlb::UPDATE_LOCK`;
+//! 2. exactly one `MemorySet::inner` write lock;
+//! 3. MM child locks reached by the operation, such as `GROUP_SHARE`, frame
+//!    allocation, or page-cache locks.
+//!
+//! Never acquire `UPDATE_LOCK` while a `MemorySet` guard is held, and never
+//! hold two `MemorySet` guards at once. Cross-address-space operations must
+//! snapshot `Arc`-owned frames or scalar metadata from the source, release its
+//! guard, and only then lock the destination. Do not enter filesystem, network,
+//! scheduler, futex, signal-delivery, or user-memory access while holding a
+//! `MemorySet` guard.
 
 mod accessors;
 mod area_ops;

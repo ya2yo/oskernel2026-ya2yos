@@ -10375,3 +10375,32 @@ GDB 条件断点捕获到 `/proc/67/maps` 创建失败现场：父目录 inode 2
 ### 修改与验证
 
 修改 `crates/lwext4_rust/c/lwext4/src/ext4_dir.c`、`ext4_dir_idx.c` 和 host fs_test CMake 配置，新增 `dir_entry_validation.c`；补充问题复盘、README、开发日志和 AI 交互记录。host 目录项损坏回归通过；`make TARGET_ARCH=loongarch64` 完成 RISC-V/LoongArch64 release 构建。仅对 `/tmp` 镜像副本执行 `e2fsck -fy` 后，同一内核可输出 `BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok` 并推进到 Cargo `443/446`，未再出现 `/proc/67/maps, rc = 5`；120 秒窗口内未完成完整 BuildStorm。
+
+## 2026-08-07：BuildStorm fork 栈复制与 remote TLB 锁反转
+
+### 用户输入
+
+维护者要求分析 `server.ans` 和 `client.ans`、修复死锁，并在相应模块顶部声明项目锁的
+获取顺序。
+
+### 分析与采纳结论
+
+`client.ans` 显示 hart 0 在 fork 的 `lazy_clone_area()` 中等待 `UPDATE_LOCK`，hart 2
+已持有 `UPDATE_LOCK` 并等待 `MemorySet` write lock，hart 1 也在 page fault 中等待
+`UPDATE_LOCK`。结合源码确认 hart 0 调用前仍持有父 `MemorySet` read guard，形成
+“父 MM read -> update”与“update -> 父 MM write”的 AB-BA。
+
+采纳两阶段跨地址空间复制：在父 MM read guard 内只克隆已驻留栈页的
+`Arc<FrameTracker>`，释放 guard 后再获取 `UPDATE_LOCK` 和子 MM write lock。同步补充
+task 全局锁层级及 memory_set 模块的 `UPDATE_LOCK -> 单个 MemorySet -> MM 子锁` 规则。
+
+### 修改与验证
+
+修改 `os/src/task/{mod.rs,task/task.rs}` 和
+`os/src/mm/memory_set/{mod.rs,handle.rs,area_ops.rs}`，保留维护者已有的
+`user/src/bin/initproc.rs` 变更。`git diff --check` 通过；`make TARGET_ARCH=riscv64`
+完成 RISC-V/LoongArch64 release 构建。修复后的 RISC-V QEMU 从旧 `440/446` 卡点推进至
+`444/446: axbuild` 并输出 `BUILDSTORM_BEGIN mode=multi`，无同类死锁或 panic；后续独立
+ext4 `EIO` 使完整 BuildStorm、LTP 未完成。全仓 `cargo fmt --check` 被已有无关格式差异阻断。
+
+详见 [共享地址空间 SMP 问题复盘](./problem/buildstorm-shared-address-space-smp.md)。

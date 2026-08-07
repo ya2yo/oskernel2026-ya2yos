@@ -113,3 +113,58 @@ IPI 接收路径都继续使用同一个 mailbox，不需要为本修复分叉�
   `shutdown`，因此这只验收两个已定位的 shootdown 等待环被越过，不作为完整 BuildStorm 通过或
   axbuild 性能结论。当前 `client.ans` 只含 GDB 连接记录，若再次长时间无输出，需要在 live QEMU
   上采集各 hart backtrace 才能定位下一处阻塞。
+
+## 2026-08-07：fork 固定栈复制的 MemorySet 锁反转
+
+### 新现场
+
+`server.ans` 停在 tg-xtask 预构建的 `ax-cpumask` 与 `ax-memory-addr`。对应
+`client.ans` 中 5 个 hart 已进入 idle，另外 3 个 hart 的调用栈为：
+
+- hart 0 在 `clone_process() -> MemorySet::lazy_clone_area() -> with_mut()` 中等待
+  `UPDATE_LOCK`；
+- hart 2 在 `handle_page_fault()` 中已经取得 `UPDATE_LOCK`，随后等待
+  `MemorySet::inner` write lock；
+- hart 1 在另一个 `handle_page_fault()` 中等待 `UPDATE_LOCK`。
+
+`clone_process()` 在进入 `lazy_clone_area()` 前通过 `parent_memory_set_arc.get_ref()`
+持有父地址空间 read guard。因而 hart 0 的实际锁链是“父 `MemorySet` read ->
+`UPDATE_LOCK`”，hart 2 则是协议规定的“`UPDATE_LOCK` -> 父 `MemorySet` write”，
+两者构成 AB-BA 循环。
+
+### 根因
+
+远程 TLB 协议引入 `UPDATE_LOCK -> MemorySet::inner` 顺序后，旧的跨地址空间栈复制接口
+仍要求调用者把源 `MemorySetInner` guard 传入目标地址空间写操作。该接口隐式要求同时持有
+源、目标两侧锁，违反了新协议；`RemoteTlbMutex` 的 mailbox 轮询只能处理 ACK，不能解除
+这种真正的锁依赖环。
+
+### 修复
+
+- `MemorySet::lazy_clone_area()` 改为接收源 `MemorySet`，先在源 read guard 内克隆固定栈
+  已驻留页的 `Arc<FrameTracker>`，随即释放源 guard；然后才通过 `with_mut()` 获取
+  `UPDATE_LOCK` 和目标 write lock。
+- `MemorySetInner::lazy_clone_area()` 只消费上述 frame 快照。`Arc` 保证源物理页在复制完成前
+  不会回收，同时避免为最多 8 MiB 的固定栈再分配一份中间字节缓冲。
+- 在 `task` 总入口和 `mm::memory_set` 模块顶部声明完整顺序：task/process/resource-slot 层之后，
+  MM 写路径固定为 `UPDATE_LOCK -> 单个 MemorySet -> MM 子锁`；禁止持有任意
+  `MemorySet` guard 时获取 `UPDATE_LOCK`，跨地址空间操作必须先快照再换锁。
+
+### 涉及文件
+
+- `os/src/task/mod.rs`
+- `os/src/task/task/task.rs`
+- `os/src/mm/memory_set/mod.rs`
+- `os/src/mm/memory_set/handle.rs`
+- `os/src/mm/memory_set/area_ops.rs`
+
+### 验证更新
+
+- `git diff --check`：通过。
+- `make TARGET_ARCH=riscv64`：默认 `all` 目标完成 RISC-V 与 LoongArch64 release 构建。
+- RISC-V QEMU 使用现有 BuildStorm-only initproc 运行：从旧日志固定的 `440/446`
+  两个 crate 继续完成 `axvm-types`、`axvmconfig` 并推进到 `444/446: axbuild`，之后进入
+  `BUILDSTORM_BEGIN mode=multi`，期间没有 panic 或同类锁等待。
+- tg-xtask 预构建后段写 `libaxbuild*.rmeta` 时遇到独立的 ext4 `EIO`，因此本轮没有报告
+  完整 BuildStorm 通过；确认正式阶段开始后人工结束 QEMU。完整端到端与 LTP 未执行。
+- `cargo fmt --all -- --check` 仍被本次范围外的既有格式差异阻断，没有格式化无关文件。

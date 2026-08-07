@@ -209,17 +209,13 @@ impl MemorySetInner {
         Some(new_addr)
     }
 
-    /// Copy pages for a lazily allocated area, faulting destination pages as needed.
-    pub fn lazy_clone_area(&mut self, start_vpn: VirtPageNum, another: &MemorySetInner) {
-        let another_area = if let Some(area) = another
-            .areas
-            .iter()
-            .find(|area| area.vpn_range.start() == start_vpn)
-        {
-            area
-        } else {
-            return;
-        };
+    /// Copy snapshotted pages into a lazily allocated area, faulting destination
+    /// pages as needed.
+    pub fn lazy_clone_area(
+        &mut self,
+        start_vpn: VirtPageNum,
+        source_pages: &[(VirtPageNum, Arc<FrameTracker>)],
+    ) {
         let (areas, this_page_table) = (&mut self.areas, &mut self.page_table);
         let this_area = if let Some(area) = areas
             .iter_mut()
@@ -229,15 +225,14 @@ impl MemorySetInner {
         } else {
             return;
         };
-        for vpn in another_area.vpn_range {
-            let src_ppn = match another.page_table.translate(vpn) {
-                Some(ppn) => ppn,
-                None => continue,
-            };
+        for (vpn, source_frame) in source_pages {
+            if !this_area.vpn_range.contains_vpn(*vpn) {
+                continue;
+            }
 
-            let dst_ppn = match this_page_table.translate(vpn) {
+            let dst_ppn = match this_page_table.translate(*vpn) {
                 Some(ppn) => ppn,
-                None => match this_area.map_one(this_page_table, vpn) {
+                None => match this_area.map_one(this_page_table, *vpn) {
                     Some(ppn) => ppn,
                     None => continue,
                 },
@@ -245,7 +240,7 @@ impl MemorySetInner {
 
             dst_ppn
                 .bytes_array_mut()
-                .copy_from_slice(src_ppn.bytes_array());
+                .copy_from_slice(source_frame.ppn.bytes_array());
         }
     }
 

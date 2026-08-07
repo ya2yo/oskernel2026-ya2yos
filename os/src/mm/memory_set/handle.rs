@@ -504,9 +504,31 @@ impl MemorySet {
     }
 
     /// Copy a lazily allocated logical area from another address space.
+    ///
+    /// Snapshot source frame references before acquiring the destination's
+    /// update and write locks. Holding the source read guard while entering
+    /// `with_mut` would invert `UPDATE_LOCK -> MemorySet::inner` and deadlock
+    /// against a concurrent source page fault.
     #[inline(always)]
-    pub fn lazy_clone_area(&self, start_vpn: VirtPageNum, another: &MemorySetInner) {
-        self.with_mut(|inner| inner.lazy_clone_area(start_vpn, another))
+    pub fn lazy_clone_area(&self, start_vpn: VirtPageNum, another: &MemorySet) {
+        let source_pages: Vec<(VirtPageNum, Arc<FrameTracker>)> = {
+            let another = another.get_ref();
+            let Some(area) = another
+                .areas
+                .iter()
+                .find(|area| area.vpn_range.start() == start_vpn)
+            else {
+                return;
+            };
+            area.data_frames
+                .iter()
+                .filter_map(|(vpn, frame)| {
+                    (another.page_table.translate(*vpn) == Some(frame.ppn))
+                        .then(|| (*vpn, Arc::clone(frame)))
+                })
+                .collect()
+        };
+        self.with_mut(|inner| inner.lazy_clone_area(start_vpn, &source_pages))
     }
 
     /// Translate a virtual address to a physical address if already mapped.

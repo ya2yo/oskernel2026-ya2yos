@@ -36,8 +36,10 @@
 //! 3. `TaskControlBlockInner`.
 //! 4. Instant resource-slot `get` / `replace` only; never hold it across the
 //!    next layers.
-//! 5. Resource-internal locks: `MemorySet`, `SigTable`, `FdTable`, `FSInfo`.
-//! 6. Child-resource locks such as inode, socket, pipe, futex bucket, and device
+//! 5. The remote-TLB `UPDATE_LOCK`, only when the next resource lock is a
+//!    `MemorySet` write lock.
+//! 6. Resource-internal locks: `MemorySet`, `SigTable`, `FdTable`, `FSInfo`.
+//! 7. Child-resource locks such as inode, socket, pipe, futex bucket, and device
 //!    locks.
 //!
 //! Additional rules:
@@ -47,6 +49,10 @@
 //!   needed `Arc`, copy arguments/results, then acquire other locks.
 //! - Do not hold `MemorySet` internals while entering filesystem, network,
 //!   scheduler, futex, or signal-delivery paths.
+//! - Never acquire the remote-TLB `UPDATE_LOCK` while holding any `MemorySet`
+//!   read or write guard. MM writers acquire `UPDATE_LOCK` first and then one
+//!   `MemorySet`; cross-address-space operations must snapshot one side and
+//!   release it before locking the other.
 //! - If multiple processes or tasks must be locked at the same time, lock by
 //!   increasing pid/tid. Prefer cloning `Arc`s or copying scalar state and
 //!   releasing the first lock instead of holding multiple locks.

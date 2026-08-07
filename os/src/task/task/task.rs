@@ -1190,8 +1190,7 @@ impl TaskControlBlock {
                 })
                 .map(|area| area.vpn_range.start())
                 .expect("fork: child has no Stack area");
-            let parent_ref = parent_memory_set_arc.get_ref();
-            child_mm.lazy_clone_area(child_stack_bottom, &parent_ref);
+            child_mm.lazy_clone_area(child_stack_bottom, &parent_memory_set_arc);
             child_inner.trap_cx().set_a0(0);
         }
 

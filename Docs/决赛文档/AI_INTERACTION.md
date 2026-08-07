@@ -2748,3 +2748,17 @@
 - **验证边界**：host 回归通过；RISC-V/LoongArch64 release 构建通过。离线修复的 `/tmp` 镜像副本在 120 秒内越过原错误并推进到 Cargo `443/446`，但未完成完整 BuildStorm；原镜像仍保持损坏状态。
 - **关联问题**：[零长度目录项问题复盘](./problem/buildstorm-ext4-zero-dir-entry.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm fork 栈复制与 remote TLB 锁反转（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans`/`client.ans`，要求修复死锁并声明项目锁获取顺序。
+- **描述**：GDB 栈确认 fork 持有父 `MemorySet` read guard 后进入子 MM 更新，与 page fault 的
+  `UPDATE_LOCK -> 父 MemorySet write` 构成 AB-BA。将固定栈复制改为源 frame `Arc` 快照与
+  目标写入两个阶段，并在 task/MM 模块顶部声明 `UPDATE_LOCK -> 单个 MemorySet -> MM 子锁`，
+  禁止跨地址空间同时持锁。
+- **验证边界**：RISC-V/LoongArch64 release 构建及差异检查通过；RISC-V QEMU 从旧
+  `440/446` 卡点推进到 `444/446` 并进入 `BUILDSTORM_BEGIN mode=multi`。后续 ext4 `EIO`
+  阻止完整 BuildStorm，LTP 未运行。
+- **关联文档**：[共享地址空间 SMP 问题复盘](./problem/buildstorm-shared-address-space-smp.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
