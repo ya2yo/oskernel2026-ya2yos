@@ -10435,3 +10435,35 @@ panic 或 Cargo error。外层 timeout 终止时尚未有完整 BuildStorm 标�
 端到端通过。强制终止留下不可重放的 journal transaction 和空闲计数差异，
 再次离线修复后最终 `e2fsck -fn` 五阶段通过；未发现本轮新增目录、extent、
 checksum 或 HTree 结构损坏。保留维护者已有的 `user/src/bin/initproc.rs` 变更。
+
+## 2026-08-07：BuildStorm MemorySet 全驻留帧保留性能退化
+
+### 用户输入
+
+维护者要求分析 `server.ans` 和 `client.ans` 为什么卡在循环中并修复，随后补充旧版
+`axbuild` 单次耗时约 12 分钟。
+
+### 分析与采纳结论
+
+`server.ans` 停在非计时 `tg-xtask` 预构建的 `444/446: axbuild`；`client.ans` 中唯一
+活跃 Hart 反复出现在 `sys_brk/growproc` 或 `sys_munmap` 下的
+`MemorySet::with_mut()`，具体执行 `BTreeMap::values()` 到
+`Vec<Arc<FrameTracker>>::collect()`。两次 GDB `continue` 之间现场能从 `brk` 前进到
+`munmap`，排除不推进的结构性死循环。根因是 remote TLB ACK 前的旧帧保护对任何局部
+页表更新都复制整个 rustc 驻留集，使高频小范围 MM 操作退化为全量扫描。
+
+采纳范围化帧保留：统一协议仍在 ACK 前持有所有可能退休的旧帧，但 `munmap`、堆收缩、
+`mremap`、`MAP_FIXED`、`MADV_DONTNEED` 和 present-page fault 只保留对应 VPN；纯新增
+映射和权限更新不复制帧但仍执行 shootdown。全量入口只保留给整地址空间回收。
+
+### 修改与验证
+
+修改 `os/src/mm/memory_set/{handle.rs,fork_clone.rs}`、
+`os/src/syscall/mm/mmap.rs` 和 `os/src/task/task/task.rs`，并补充问题复盘、README、开发
+日志和 AI 交互记录。目标文件 rustfmt、`git diff --check`、RISC-V/LoongArch64 release
+构建通过。全新 qcow2 overlay 的 15 分钟 RISC-V 运行通过 toolchain/minibuild，推进到
+`445/446: tg-xtask(bin)`；`axbuild` 单次约 8 分钟，相比维护者提供的旧基线约 12 分钟
+有所缩短，且无 panic、`EIO`、Cargo fatal/error 或 remote-TLB 异常。timeout 前未完成
+`446/446`，不报告完整 BuildStorm 通过；既有 `extra TCB refs` 告警另案处理。
+
+详见 [问题复盘](./problem/buildstorm-memoryset-full-resident-retention.md)。

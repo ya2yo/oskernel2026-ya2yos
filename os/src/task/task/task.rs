@@ -326,7 +326,7 @@ fn checked_exec_stack_sub(user_sp: &mut usize, bytes: usize) -> Result<usize, Sy
 fn alloc_user_res_in_memory_set(
     memory_set: &MemorySet,
 ) -> Result<(usize, usize, PhysPageNum), SysErrNo> {
-    memory_set.with_mut(|ms| {
+    memory_set.with_frame_preserving_mut(|ms| {
         let (u_bottom, u_top) = ms.lazy_insert_framed_area_with_hint(
             USER_STACK_TOP,
             USER_STACK_SIZE,
@@ -1285,8 +1285,7 @@ impl TaskControlBlock {
             return Some(inner.user_heappoint);
         }
 
-        let ret = memory_set
-            .with_mut(|ms| ms.grow(grow_size, inner.user_heappoint, inner.user_heapbottom));
+        let ret = memory_set.grow(grow_size, inner.user_heappoint, inner.user_heapbottom);
 
         if let Some(ret) = ret {
             inner.user_heappoint = ret;
@@ -1354,7 +1353,7 @@ impl TaskControlBlock {
         let (trap_cx_bottom, trap_cx_ppn) = {
             let proc_inner = &self.process;
             let memory_set = proc_inner.memory_set_arc();
-            memory_set.with_mut(|ms| {
+            memory_set.with_frame_preserving_mut(|ms| {
                 let (t_cx, _) = ms.insert_framed_area_with_hint(
                     USER_TRAP_CONTEXT_TOP,
                     PAGE_SIZE,

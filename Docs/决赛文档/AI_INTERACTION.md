@@ -2771,3 +2771,12 @@
 - **验证边界**：修复前证据闭环、RISC-V release 构建、修复后 fsck 和 30 分钟 BuildStorm 回归完成。回归通过 toolchain/minibuild，从原 `444/446: axbuild` 失败点推进到 `445/446: tg-xtask(bin)`，无 `EIO`/panic/Cargo error；未输出完整 BuildStorm END，强制终止后已再次离线修复并确认镜像五阶段清洁。
 - **关联问题**：[BuildStorm 零长度 EXT4 目录项与镜像损坏](./problem/buildstorm-ext4-zero-dir-entry.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm MemorySet 全驻留帧保留性能退化（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `server.ans/client.ans` 中疑似卡在循环的 BuildStorm，并补充旧版 `axbuild` 约 12 分钟的耗时基线。
+- **描述**：GDB 连续现场证明 `BTreeMap::values()` 迭代会从 `brk` 前进到后续 `munmap`，不是结构性无限循环；根因是 remote TLB 更新入口为每次局部 MM 操作克隆 rustc 的全部驻留帧。将 ACK 前帧生命周期保护收缩到可能被解除映射或替换的 VPN 范围，纯新增和权限更新不复制帧，同时保持原 shootdown/ACK 协议。
+- **验证边界**：目标文件 rustfmt、差异检查和 RISC-V/LoongArch64 release 构建通过。全新 overlay 的 15 分钟 RISC-V 运行通过 toolchain/minibuild，`axbuild` 单次约 8 分钟并推进到 `445/446: tg-xtask(bin)`，无 panic、`EIO`、Cargo fatal/error 或 remote-TLB 异常；没有完成 `446/446`，不报告端到端通过。
+- **关联问题**：[MemorySet 全驻留帧保留问题复盘](./problem/buildstorm-memoryset-full-resident-retention.md)
+- **关联 commit**：当前工作区未提交

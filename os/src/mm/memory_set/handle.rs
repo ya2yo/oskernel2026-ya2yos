@@ -92,21 +92,17 @@ impl MemorySet {
         }
     }
 
-    /// Execute a page-table update with the remote TLB protocol in place.
-    ///
-    /// The retained frame list deliberately covers the full resident set, not
-    /// just a best-effort list of pages touched by the caller.  This keeps
-    /// unmapped or COW-replaced frames alive until all remote stale TLB entries
-    /// have been invalidated.
-    pub(crate) fn with_mut<T>(&self, f: impl FnOnce(&mut MemorySetInner) -> T) -> T {
+    /// Execute a page-table update while retaining the frames selected before
+    /// the update until every remote stale translation has been invalidated.
+    fn with_retained_frames_mut<T>(
+        &self,
+        retain: impl FnOnce(&MemorySetInner) -> Vec<Arc<FrameTracker>>,
+        f: impl FnOnce(&mut MemorySetInner) -> T,
+    ) -> T {
         let was_active = self.deactivate_current_hart();
         let _update_guard = crate::mm::remote_tlb::lock_updates();
         let mut inner = self.inner.write();
-        let retained_frames: Vec<Arc<FrameTracker>> = inner
-            .areas
-            .iter()
-            .flat_map(|area| area.data_frames.values().cloned())
-            .collect();
+        let retained_frames = retain(&inner);
         let result = f(&mut inner);
         crate::mm::remote_tlb::shootdown(&self.active_harts);
         if was_active {
@@ -116,21 +112,69 @@ impl MemorySet {
         result
     }
 
+    /// Execute a broad page-table update which may retire any resident frame.
+    /// Prefer a range-targeted or frame-preserving entry for bounded updates.
+    pub(crate) fn with_mut<T>(&self, f: impl FnOnce(&mut MemorySetInner) -> T) -> T {
+        self.with_retained_frames_mut(
+            |inner| {
+                inner
+                    .areas
+                    .iter()
+                    .flat_map(|area| area.data_frames.values().cloned())
+                    .collect()
+            },
+            f,
+        )
+    }
+
+    /// Execute an update which can retire frames only inside `ranges`.
+    fn with_ranges_mut<T>(
+        &self,
+        ranges: &[(VirtPageNum, VirtPageNum)],
+        f: impl FnOnce(&mut MemorySetInner) -> T,
+    ) -> T {
+        self.with_retained_frames_mut(
+            |inner| {
+                let mut retained = Vec::new();
+                for area in &inner.areas {
+                    let (area_start, area_end) = area.vpn_range.range();
+                    for &(start, end) in ranges {
+                        if start >= end || area_start >= end || start >= area_end {
+                            continue;
+                        }
+                        retained.extend(
+                            area.data_frames
+                                .range(start..end)
+                                .map(|(_, frame)| Arc::clone(frame)),
+                        );
+                    }
+                }
+                retained
+            },
+            f,
+        )
+    }
+
+    #[inline]
+    fn with_range_mut<T>(
+        &self,
+        start: VirtPageNum,
+        end: VirtPageNum,
+        f: impl FnOnce(&mut MemorySetInner) -> T,
+    ) -> T {
+        self.with_ranges_mut(&[(start, end)], f)
+    }
+
     /// Update page-table state without retiring or replacing resident frames.
     ///
     /// Permission-only updates still need the normal remote TLB protocol, but
     /// cloning the full resident set is unnecessary when every frame remains
     /// owned by the address space throughout the update.
-    fn with_frame_preserving_mut<T>(&self, f: impl FnOnce(&mut MemorySetInner) -> T) -> T {
-        let was_active = self.deactivate_current_hart();
-        let _update_guard = crate::mm::remote_tlb::lock_updates();
-        let mut inner = self.inner.write();
-        let result = f(&mut inner);
-        crate::mm::remote_tlb::shootdown(&self.active_harts);
-        if was_active {
-            self.activate_current_hart();
-        }
-        result
+    pub(crate) fn with_frame_preserving_mut<T>(
+        &self,
+        f: impl FnOnce(&mut MemorySetInner) -> T,
+    ) -> T {
+        self.with_retained_frames_mut(|_| Vec::new(), f)
     }
 
     /// Execute a closure while holding the read lock.
@@ -154,13 +198,25 @@ impl MemorySet {
         permission: MapPermission,
         area_type: MapAreaType,
     ) {
-        self.with_mut(|inner| inner.insert_framed_area(start_va, end_va, permission, area_type))
+        self.with_frame_preserving_mut(|inner| {
+            inner.insert_framed_area(start_va, end_va, permission, area_type)
+        })
     }
 
     /// Remove an area identified by its starting VPN.
     #[inline(always)]
     pub fn remove_area_with_start_vpn(&self, start_vpn: VirtPageNum) {
-        self.with_mut(|inner| inner.remove_area_with_start_vpn(start_vpn));
+        self.with_retained_frames_mut(
+            |inner| {
+                inner
+                    .areas
+                    .iter()
+                    .find(|area| area.vpn_range.start() == start_vpn)
+                    .map(|area| area.data_frames.values().cloned().collect())
+                    .unwrap_or_default()
+            },
+            |inner| inner.remove_area_with_start_vpn(start_vpn),
+        );
     }
 
     /// Create an anonymous/file-backed mmap area.
@@ -175,7 +231,14 @@ impl MemorySet {
         off: usize,
     ) -> usize {
         if flags.contains(MmapFlags::MAP_FIXED) {
-            self.with_mut(|inner| inner.mmap(addr, len, map_perm, flags, file, off))
+            let Some(end_addr) = addr.checked_add(len) else {
+                return 0;
+            };
+            self.with_range_mut(
+                VirtAddr::from(addr).floor(),
+                VirtAddr::from(end_addr).ceil(),
+                |inner| inner.mmap(addr, len, map_perm, flags, file, off),
+            )
         } else {
             self.with_vma_mut(|inner| inner.mmap(addr, len, map_perm, flags, file, off))
         }
@@ -190,13 +253,24 @@ impl MemorySet {
         map_perm: MapPermission,
         pages: Vec<Arc<FrameTracker>>,
     ) -> usize {
-        self.with_mut(|inner| inner.shm(addr, size, map_perm, pages))
+        self.with_frame_preserving_mut(|inner| inner.shm(addr, size, map_perm, pages))
     }
 
     /// Detach a SysV shared memory segment from this address space.
     #[inline(always)]
     pub fn shm_detach(&self, addr: usize) -> SyscallRet {
-        self.with_mut(|inner| inner.shm_detach(addr))
+        let start_vpn = VirtAddr::from(addr).floor();
+        self.with_retained_frames_mut(
+            |inner| {
+                inner
+                    .areas
+                    .iter()
+                    .find(|area| area.vpn_range.start() == start_vpn)
+                    .map(|area| area.data_frames.values().cloned().collect())
+                    .unwrap_or_default()
+            },
+            |inner| inner.shm_detach(addr),
+        )
     }
 
     /// Unmap an mmap-created range.
@@ -216,7 +290,7 @@ impl MemorySet {
         for writeback in &writebacks {
             writeback_shared_mmap_pages(writeback)?;
         }
-        self.with_mut(|inner| inner.munmap(addr, len))
+        self.with_range_mut(start_vpn, end_vpn, |inner| inner.munmap(addr, len))
     }
 
     /// Validate that a memory-advice range is fully mapped.
@@ -228,7 +302,14 @@ impl MemorySet {
     /// Discard resident pages in a mapped range and leave the VMAs intact.
     #[inline]
     pub fn discard_madvise_pages(&self, addr: usize, len: usize) -> SyscallRet {
-        self.with_mut(|inner| inner.discard_madvise_pages(addr, len))
+        let end_addr = addr
+            .checked_add(len)
+            .ok_or(crate::utils::SysErrNo::EINVAL)?;
+        self.with_range_mut(
+            VirtAddr::from(addr).floor(),
+            VirtAddr::from(end_addr).ceil(),
+            |inner| inner.discard_madvise_pages(addr, len),
+        )
     }
 
     /// Handle a user page fault in this address space.
@@ -252,7 +333,7 @@ impl MemorySet {
                 inner
                     .areas
                     .iter()
-                    .flat_map(|area| area.data_frames.values().cloned())
+                    .filter_map(|area| area.data_frames.get(&vpn).cloned())
                     .collect()
             })
             .unwrap_or_default();
@@ -333,6 +414,77 @@ impl MemorySet {
     #[inline(always)]
     pub fn mprotect(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) {
         self.with_frame_preserving_mut(|inner| inner.mprotect(start_vpn, end_vpn, map_perm));
+    }
+
+    /// Adjust an mmap range while retaining only frames which the operation can
+    /// remove from the old or fixed destination ranges.
+    pub fn mremap(
+        &self,
+        old_addr: usize,
+        old_len: usize,
+        new_len: usize,
+        new_addr: usize,
+        may_move: bool,
+        fixed: bool,
+    ) -> SyscallRet {
+        let old_end = old_addr
+            .checked_add(old_len)
+            .ok_or(crate::utils::SysErrNo::EINVAL)?;
+        let old_range = (
+            VirtAddr::from(old_addr).floor(),
+            VirtAddr::from(old_end).ceil(),
+        );
+
+        let update = |inner: &mut MemorySetInner| {
+            if may_move {
+                inner.mremap_maymove(old_addr, old_len, new_len, new_addr, fixed)
+            } else {
+                inner.mremap_in_place(old_addr, old_len, new_len)
+            }
+        };
+
+        if !may_move && new_len >= old_len {
+            return self.with_frame_preserving_mut(update);
+        }
+        if fixed {
+            let new_end = new_addr
+                .checked_add(new_len)
+                .ok_or(crate::utils::SysErrNo::EINVAL)?;
+            let new_range = (
+                VirtAddr::from(new_addr).floor(),
+                VirtAddr::from(new_end).ceil(),
+            );
+            self.with_ranges_mut(&[old_range, new_range], update)
+        } else {
+            self.with_range_mut(old_range.0, old_range.1, update)
+        }
+    }
+
+    /// Adjust the process brk VMA without scanning unrelated resident mappings.
+    pub fn grow(
+        &self,
+        grow_size: isize,
+        user_heappoint: usize,
+        user_heapbottom: usize,
+    ) -> Option<usize> {
+        if grow_size >= 0 {
+            return self.with_frame_preserving_mut(|inner| {
+                inner.grow(grow_size, user_heappoint, user_heapbottom)
+            });
+        }
+
+        let new_addr = user_heappoint.checked_add_signed(grow_size)?;
+        let start_vpn = VirtAddr::from(new_addr).ceil();
+        let end_vpn = VirtAddr::from(user_heappoint).ceil();
+        if start_vpn >= end_vpn {
+            self.with_frame_preserving_mut(|inner| {
+                inner.grow(grow_size, user_heappoint, user_heapbottom)
+            })
+        } else {
+            self.with_range_mut(start_vpn, end_vpn, |inner| {
+                inner.grow(grow_size, user_heappoint, user_heapbottom)
+            })
+        }
     }
 
     /// Activate this address space for a user-mode return on the current CPU.
@@ -484,7 +636,9 @@ impl MemorySet {
         map_perm: MapPermission,
         area_type: MapAreaType,
     ) -> (usize, usize) {
-        self.with_mut(|inner| inner.insert_framed_area_with_hint(hint, size, map_perm, area_type))
+        self.with_frame_preserving_mut(|inner| {
+            inner.insert_framed_area_with_hint(hint, size, map_perm, area_type)
+        })
     }
 
     /// Lazily map a framed area below `hint`.
@@ -498,7 +652,7 @@ impl MemorySet {
         map_perm: MapPermission,
         area_type: MapAreaType,
     ) -> (usize, usize) {
-        self.with_mut(|inner| {
+        self.with_frame_preserving_mut(|inner| {
             inner.lazy_insert_framed_area_with_hint(hint, size, map_perm, area_type)
         })
     }
@@ -528,7 +682,7 @@ impl MemorySet {
                 })
                 .collect()
         };
-        self.with_mut(|inner| inner.lazy_clone_area(start_vpn, &source_pages))
+        self.with_frame_preserving_mut(|inner| inner.lazy_clone_area(start_vpn, &source_pages))
     }
 
     /// Translate a virtual address to a physical address if already mapped.

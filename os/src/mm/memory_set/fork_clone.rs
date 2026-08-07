@@ -35,7 +35,7 @@ impl MemorySetInner {
         // below only allocates anonymous frames and installs cached frames.
         let prepared_shared_pages = user_space.prefetch_shared_file_pages();
 
-        user_space.with_mut(|u| {
+        user_space.with_frame_preserving_mut(|u| {
             // Pre-fault MAP_SHARED areas: lazy mmap pages need backing frames
             // allocated before forking, otherwise parent and child would each
             // independently allocate their own frames on page fault, breaking

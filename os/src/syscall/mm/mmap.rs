@@ -208,13 +208,7 @@ pub fn sys_mremap(
 
     let task = current_task().unwrap();
     let memory_set = task.process.memory_set_arc();
-    let result = memory_set.with_mut(|memory_set| {
-        if may_move {
-            memory_set.mremap_maymove(old_addr, old_len, new_len, new_addr, fixed)
-        } else {
-            memory_set.mremap_in_place(old_addr, old_len, new_len)
-        }
-    });
+    let result = memory_set.mremap(old_addr, old_len, new_len, new_addr, may_move, fixed);
     if result.is_ok() && if_bad_address(old_addr) {
         remove_bad_address(old_addr);
     }
