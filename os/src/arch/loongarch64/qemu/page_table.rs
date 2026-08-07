@@ -310,6 +310,35 @@ impl PageTable {
             .unwrap_or(false)
     }
 
+    /// Whether a PLV0 kernel access may directly load from a user leaf.
+    ///
+    /// LoongArch has no RISC-V-style SUM bit. A PLV0 access to a PLV3 mapping
+    /// is permitted only while RPLV is clear, which is the state Ya2yOS uses
+    /// for ordinary user mappings.
+    pub fn is_kernel_user_readable(&self, vpn: VirtPageNum) -> bool {
+        self.find_valid_pte(vpn)
+            .map(|pte| {
+                let flags = pte.get_flags();
+                flags.contains(LAPTEFlags::PLV3)
+                    && !flags.intersects(LAPTEFlags::UNREADEABLE | LAPTEFlags::RPLV)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Whether a PLV0 kernel access may directly store to a user leaf.
+    ///
+    /// A non-dirty or COW PTE must go through the existing fault handler so
+    /// page-modification and private-frame semantics remain unchanged.
+    pub fn is_kernel_user_writable(&self, vpn: VirtPageNum) -> bool {
+        self.find_valid_pte(vpn)
+            .map(|pte| {
+                let flags = pte.get_flags();
+                flags.contains(LAPTEFlags::PLV3 | LAPTEFlags::WRITEABLE | LAPTEFlags::DIRTY)
+                    && !flags.intersects(LAPTEFlags::COW | LAPTEFlags::RPLV)
+            })
+            .unwrap_or(false)
+    }
+
     /// Translate the virtual address into its corresponding `PhysAddr` if mapped in current page table.
     /// `None` is returned if nothing is found.
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {

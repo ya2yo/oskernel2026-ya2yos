@@ -382,6 +382,22 @@ impl PageTable {
             })
             .unwrap_or(false)
     }
+
+    /// Whether the current software leaf permits an ordinary U-mode store.
+    ///
+    /// A COW leaf deliberately remains ineligible even if a stale writable
+    /// bit were observed: callers must take the normal write-fault path so
+    /// the private frame is installed before directly accessing user VA.
+    pub fn is_user_writable(&self, vpn: VirtPageNum) -> bool {
+        self.find_valid_pte(vpn)
+            .map(|pte| {
+                let flags = pte.get_flags();
+                flags.contains(RVPTEFlags::WRITEABLE | RVPTEFlags::USER)
+                    && !flags.contains(RVPTEFlags::COW)
+            })
+            .unwrap_or(false)
+    }
+
     /// Translate `VirtAddr` to `PhysAddr`，页表项无效和不存在返回None
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
         let vpn = va.floor();

@@ -14,7 +14,10 @@ use crate::{
 
 use crate::mm::MapPermission;
 
-use super::{MemorySet, StepByOne, VirtAddr};
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+use crate::arch::memory_layout::USER_SPACE_SIZE;
+
+use super::{MemorySet, MemorySetInner, StepByOne, VirtAddr};
 use alloc::{string::String, vec, vec::Vec};
 
 use crate::trap::trap_types::*;
@@ -33,6 +36,42 @@ fn checked_user_range(start: usize, len: usize) -> Result<usize, SysErrNo> {
         return Err(SysErrNo::EFAULT);
     }
     start.checked_add(len).ok_or(SysErrNo::EFAULT)
+}
+
+/// Keep direct current-address-space accesses bounded. Larger buffers retain
+/// the software translation path so VMA writers are not held behind bulk I/O.
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+const CURRENT_USER_COPY_FAST_LIMIT: usize = 256;
+
+#[cfg(target_arch = "riscv64")]
+struct SupervisorUserAccess {
+    restore_sum: bool,
+}
+
+#[cfg(target_arch = "riscv64")]
+impl SupervisorUserAccess {
+    #[inline]
+    fn enable() -> Self {
+        use riscv::register::sstatus;
+
+        let restore_sum = !sstatus::read().sum();
+        if restore_sum {
+            // This guard is created only after the current address space,
+            // VMA permissions, and every PTE in the bounded range are checked.
+            unsafe { sstatus::set_sum() };
+        }
+        Self { restore_sum }
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+impl Drop for SupervisorUserAccess {
+    fn drop(&mut self) {
+        if self.restore_sum {
+            // Preserve SUM when an outer uaccess scope already enabled it.
+            unsafe { riscv::register::sstatus::clear_sum() };
+        }
+    }
 }
 
 fn translated_user_page(
@@ -63,6 +102,18 @@ fn user_range_has_perm(
         Some(end) => end,
         None => return false,
     };
+    let memory_set = memory_set.get_ref();
+    user_range_has_perm_in(&memory_set, start, end, wanted, false)
+}
+
+fn user_range_has_perm_in(
+    memory_set: &MemorySetInner,
+    start: usize,
+    end: usize,
+    wanted: MapPermission,
+    require_user_mapping: bool,
+) -> bool {
+    debug_assert!(start < end);
     let mut current = match VirtAddr::try_from(start) {
         Some(va) => va.floor().0,
         None => return false,
@@ -72,7 +123,6 @@ fn user_range_has_perm(
         None => return false,
     };
 
-    let memory_set = memory_set.get_ref();
     while current <= end_vpn {
         let Some(area) = memory_set.areas.iter().find(|area| {
             let (start, end) = area.vpn_range.range();
@@ -80,13 +130,112 @@ fn user_range_has_perm(
         }) else {
             return false;
         };
-        if !area.map_perm.contains(wanted) {
+        if !area.map_perm.contains(wanted)
+            || (require_user_mapping && !area.map_perm.contains(MapPermission::U))
+        {
             return false;
         }
         let (_, area_end) = area.vpn_range.range();
         current = area_end.0;
     }
     true
+}
+
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+fn range_has_current_user_pte_permission(
+    memory_set: &MemorySetInner,
+    start: usize,
+    end: usize,
+    write: bool,
+) -> bool {
+    let mut vpn = match VirtAddr::try_from(start) {
+        Some(va) => va.floor(),
+        None => return false,
+    };
+    let end_vpn = match VirtAddr::try_from(end - 1) {
+        Some(va) => va.floor(),
+        None => return false,
+    };
+
+    while vpn <= end_vpn {
+        #[cfg(target_arch = "riscv64")]
+        let permitted = if write {
+            memory_set.page_table.is_user_writable(vpn)
+        } else {
+            memory_set.page_table.is_user_readable(vpn)
+        };
+        #[cfg(target_arch = "loongarch64")]
+        let permitted = if write {
+            memory_set.page_table.is_kernel_user_writable(vpn)
+        } else {
+            memory_set.page_table.is_kernel_user_readable(vpn)
+        };
+        if !permitted {
+            return false;
+        }
+        vpn.0 += 1;
+    }
+    true
+}
+
+#[cfg(target_arch = "riscv64")]
+#[inline]
+fn current_address_space_is_active(memory_set: &MemorySetInner) -> bool {
+    memory_set.token() == crate::arch::page_table::get_token_from_regs()
+}
+
+#[cfg(target_arch = "loongarch64")]
+#[inline]
+fn current_address_space_is_active(memory_set: &MemorySetInner) -> bool {
+    let crmd = loongArch64::register::crmd::read();
+    crmd.pg() && !crmd.da() && memory_set.token() == crate::arch::page_table::get_token_from_regs()
+}
+
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+fn try_copy_from_current_user(
+    memory_set: &MemorySet,
+    src: usize,
+    end: usize,
+    dst: &mut [u8],
+) -> bool {
+    if dst.len() > CURRENT_USER_COPY_FAST_LIMIT || src >= USER_SPACE_SIZE || end > USER_SPACE_SIZE {
+        return false;
+    }
+
+    memory_set.with_ref(|inner| {
+        if !current_address_space_is_active(inner)
+            || !user_range_has_perm_in(inner, src, end, MapPermission::R, true)
+            || !range_has_current_user_pte_permission(inner, src, end, false)
+        {
+            return false;
+        }
+
+        #[cfg(target_arch = "riscv64")]
+        let _uaccess = SupervisorUserAccess::enable();
+        unsafe { core::ptr::copy_nonoverlapping(src as *const u8, dst.as_mut_ptr(), dst.len()) };
+        true
+    })
+}
+
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+fn try_copy_to_current_user(memory_set: &MemorySet, dst: usize, end: usize, src: &[u8]) -> bool {
+    if src.len() > CURRENT_USER_COPY_FAST_LIMIT || dst >= USER_SPACE_SIZE || end > USER_SPACE_SIZE {
+        return false;
+    }
+
+    memory_set.with_ref(|inner| {
+        if !current_address_space_is_active(inner)
+            || !user_range_has_perm_in(inner, dst, end, MapPermission::W, true)
+            || !range_has_current_user_pte_permission(inner, dst, end, true)
+        {
+            return false;
+        }
+
+        #[cfg(target_arch = "riscv64")]
+        let _uaccess = SupervisorUserAccess::enable();
+        unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut u8, src.len()) };
+        true
+    })
 }
 
 #[cfg(target_arch = "loongarch64")]
@@ -174,6 +323,10 @@ pub fn copy_from_user(memory_set: &MemorySet, src: usize, dst: &mut [u8]) -> Sys
         return Ok(0);
     }
     let end = checked_user_range(src, len)?;
+    #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+    if try_copy_from_current_user(memory_set, src, end, dst) {
+        return Ok(len);
+    }
     if !user_range_has_perm(memory_set, src, len, MapPermission::R) {
         return Err(SysErrNo::EFAULT);
     }
@@ -220,6 +373,10 @@ pub fn copy_to_user(memory_set: &MemorySet, dst: usize, src: &[u8]) -> SyscallRe
         return Ok(0);
     }
     let end = checked_user_range(dst, len)?;
+    #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+    if try_copy_to_current_user(memory_set, dst, end, src) {
+        return Ok(len);
+    }
     if !user_range_has_perm(memory_set, dst, len, MapPermission::W) {
         return Err(SysErrNo::EFAULT);
     }

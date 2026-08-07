@@ -2859,3 +2859,12 @@
 - **验证边界**：RISC-V release 构建通过。45 秒 RISC-V QEMU 输出 sigaltstack/rseq PASS，进入 BuildStorm toolchain/minibuild；时间窗结束前未完成完整 BuildStorm。LoongArch64 尚未运行此探针。
 - **关联问题**：[rseq 回归的实际调度触发](./problem/rseq-regression-schedule-trigger.md)
 - **关联 commit**：当前工作区未提交
+
+#### P2 当前地址空间 uaccess fast path（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求根据 `Docs/决赛文档/优化方案.md` 实现 P2，并提醒不要漏掉 LoongArch64。
+- **描述**：实现了受限的当前地址空间 uaccess fast path：RISC-V 在短小复制前用 SUM RAII 打开/恢复用户访问，LoongArch64 用分页模式与 PTE 条件判断直访资格；未命中、跨地址空间和 bulk copy 仍回退软件翻译。
+- **验证边界**：`make TARGET_ARCH=riscv64`、`make TARGET_ARCH=loongarch64` 通过；`server.ans` 新日志显示 sigaltstack/rseq 仍为 PASS，并推进到 `445/446: tg-xtask(bin)`，未看到完整结束标记。
+- **关联文档**：[优化方案](./优化方案.md)、[开发日志](./开发日志.md)
+- **关联 commit**：当前工作区未提交

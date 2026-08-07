@@ -26,8 +26,10 @@
 //! hold two `MemorySet` guards at once. Cross-address-space operations must
 //! snapshot `Arc`-owned frames or scalar metadata from the source, release its
 //! guard, and only then lock the destination. Do not enter filesystem, network,
-//! scheduler, futex, signal-delivery, or user-memory access while holding a
-//! `MemorySet` guard.
+//! scheduler, futex, or signal-delivery while holding a `MemorySet` guard.
+//! The only user-memory exception is the bounded current-address-space fast
+//! path: it verifies every PTE before entering its architecture-specific
+//! uaccess mode (RISC-V SUM) and must not fault.
 
 mod accessors;
 mod area_ops;
