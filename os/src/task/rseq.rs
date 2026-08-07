@@ -20,7 +20,6 @@ const RSEQ_FLAG_UNREGISTER: u32 = 1;
 const RSEQ_CPU_ID_UNINITIALIZED: u32 = u32::MAX;
 
 const RSEQ_CPU_ID_START_OFFSET: usize = 0;
-const RSEQ_CPU_ID_OFFSET: usize = 4;
 const RSEQ_CS_OFFSET: usize = 8;
 const RSEQ_NODE_ID_OFFSET: usize = 20;
 const RSEQ_MM_CID_OFFSET: usize = 24;
@@ -72,28 +71,23 @@ fn user_addr(base: usize, offset: usize) -> Result<usize, SysErrNo> {
 }
 
 fn write_ids(memory_set: &MemorySet, abi_addr: usize, cpu_id: u32) -> SysResult {
+    // The CPU fields are adjacent in the ABI.  Keep them in one copy so the
+    // hot pending path performs one range check/page-table walk for both
+    // stores.  The node/mm fields are likewise a single short segment.
+    let cpu_ids = [cpu_id; 2];
     copy_to_user_val(
         memory_set,
-        user_addr(abi_addr, RSEQ_CPU_ID_START_OFFSET)? as *mut u32,
-        &cpu_id,
-    )?;
-    copy_to_user_val(
-        memory_set,
-        user_addr(abi_addr, RSEQ_CPU_ID_OFFSET)? as *mut u32,
-        &cpu_id,
+        user_addr(abi_addr, RSEQ_CPU_ID_START_OFFSET)? as *mut [u32; 2],
+        &cpu_ids,
     )?;
 
     // Ya2yOS has no NUMA topology or per-mm concurrency ID yet.  Publishing
     // zero matches the single-node/non-extended ABI contract.
+    let node_mm = [0u32; 2];
     copy_to_user_val(
         memory_set,
-        user_addr(abi_addr, RSEQ_NODE_ID_OFFSET)? as *mut u32,
-        &0u32,
-    )?;
-    copy_to_user_val(
-        memory_set,
-        user_addr(abi_addr, RSEQ_MM_CID_OFFSET)? as *mut u32,
-        &0u32,
+        user_addr(abi_addr, RSEQ_NODE_ID_OFFSET)? as *mut [u32; 2],
+        &node_mm,
     )?;
     Ok(())
 }
@@ -132,6 +126,7 @@ impl TaskControlBlock {
             let mut inner = self.inner_lock();
             if inner.rseq == state {
                 inner.rseq = RseqState::default();
+                inner.rseq_pending = false;
             }
             return Ok(());
         }
@@ -173,18 +168,19 @@ impl TaskControlBlock {
             return Err(SysErrNo::EBUSY);
         }
         inner.rseq = RseqState { abi_addr, len, sig };
+        inner.rseq_pending = true;
         Ok(())
     }
 
     /// Publish the current CPU and abort a user rseq critical section before
     /// returning to user mode.  Callers convert a user-memory/descriptor error
     /// into SIGSEGV, matching Linux's fatal handling for broken rseq state.
-    pub(crate) fn rseq_prepare_user_return(&self) -> SysResult {
-        let (state, instruction_pointer) = {
+    pub(crate) fn rseq_prepare_user_return(&self, force: bool) -> SysResult {
+        let (state, instruction_pointer, pending) = {
             let inner = self.inner_lock();
-            (inner.rseq, inner.trap_cx().get_sepc())
+            (inner.rseq, inner.trap_cx().get_sepc(), inner.rseq_pending)
         };
-        if !state.is_registered() {
+        if !state.is_registered() || (!force && !pending) {
             return Ok(());
         }
 
@@ -196,6 +192,10 @@ impl TaskControlBlock {
             user_addr(state.abi_addr, RSEQ_CS_OFFSET)? as *const u64,
         )? as usize;
         if cs_addr == 0 {
+            let mut inner = self.inner_lock();
+            if inner.rseq == state {
+                inner.rseq_pending = false;
+            }
             return Ok(());
         }
 
@@ -203,6 +203,10 @@ impl TaskControlBlock {
         if instruction_pointer.wrapping_sub(cs.start_ip as usize) >= cs.post_commit_offset as usize
         {
             clear_rseq_cs(&memory_set, state.abi_addr)?;
+            let mut inner = self.inner_lock();
+            if inner.rseq == state {
+                inner.rseq_pending = false;
+            }
             return Ok(());
         }
 
@@ -216,9 +220,10 @@ impl TaskControlBlock {
         }
 
         clear_rseq_cs(&memory_set, state.abi_addr)?;
-        let inner = self.inner_lock();
+        let mut inner = self.inner_lock();
         if inner.rseq == state {
             inner.trap_cx().set_sepc(abort_ip);
+            inner.rseq_pending = false;
         }
         Ok(())
     }
@@ -226,6 +231,8 @@ impl TaskControlBlock {
     /// Stop retrying user-memory access after the rseq area became invalid.
     /// The trap return path will deliver SIGSEGV to the affected thread.
     pub(crate) fn disable_rseq(&self) {
-        self.inner_lock().rseq = RseqState::default();
+        let mut inner = self.inner_lock();
+        inner.rseq = RseqState::default();
+        inner.rseq_pending = false;
     }
 }

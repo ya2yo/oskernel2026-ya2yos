@@ -181,6 +181,9 @@ pub struct TaskControlBlockInner {
     /// rseq ABI registration is thread-local, just like the user TLS area it
     /// references.
     pub(crate) rseq: RseqState,
+    /// Set when an rseq-visible event requires publication before user return.
+    /// Ordinary syscall returns leave this clear and avoid user-memory access.
+    pub(crate) rseq_pending: bool,
     pub timer: Arc<Timer>,
     pub robust_list: RobustListHead,
     /// POSIX 进程凭证（Credentials）
@@ -244,6 +247,14 @@ impl TaskControlBlockInner {
 
     pub fn clear_present_page_fault_retry(&mut self) {
         self.present_page_fault_retry = None;
+    }
+
+    /// Publish that a real context switch requires rseq state to be refreshed
+    /// before this task next resumes in user mode.
+    pub(crate) fn mark_rseq_pending(&mut self) {
+        if self.rseq != RseqState::default() {
+            self.rseq_pending = true;
+        }
     }
 }
 
@@ -647,6 +658,7 @@ impl TaskControlBlock {
                 sig_pending_info: [None; SIG_MAX_NUM + 1],
                 exec_teardown_kill: false,
                 rseq: RseqState::default(),
+                rseq_pending: false,
                 timer: Arc::new(Timer::new()),
                 robust_list: RobustListHead::default(),
                 user_id: 0,
@@ -804,6 +816,7 @@ impl TaskControlBlock {
         // rseq retains a pointer into the replaced user image, so exec starts
         // with no registered area.
         task_inner.rseq = RseqState::default();
+        task_inner.rseq_pending = true;
         self.process.fd_table.close_on_exec();
         task_inner.trap_cx_ppn = trap_cx_ppn;
         task_inner.trap_cx_bottom = trap_cx_bottom;
@@ -1135,6 +1148,7 @@ impl TaskControlBlock {
                 sig_pending_info: [None; SIG_MAX_NUM + 1],
                 exec_teardown_kill: false,
                 rseq: parent_rseq,
+                rseq_pending: parent_rseq != RseqState::default(),
                 timer: child_timer,
                 robust_list: RobustListHead::default(),
                 user_id: parent_user_id,

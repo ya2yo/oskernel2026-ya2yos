@@ -75,3 +75,16 @@ VMA 的插入路径。该路径可能让 mremap 操作继续使用失效的 `old
 - `make build-arch TARGET_ARCH=loongarch64`：通过。
 - `git diff --check`：通过。
 - 未重复运行完整 QEMU/BuildStorm；`server.ans` 已提供触发现场，完整 `tg-xtask` 编译窗口较长。
+## P0/P1 实现补充（2026-08-07）
+
+在上述排序和碰撞边界修复基础上，P0 增加 `MemorySetInner::mmap_hint`：普通 `mmap`、动态
+共享内存和非固定 `mremap` 优先从上一次成功位置向下分配，固定映射、回收高地址区间或
+hint 失效时仍回退到有序 VMA 的完整 top-down 查找。`munmap` 会把新释放的高地址空洞重新
+暴露给下一次分配；hint 不参与地址合法性判断，因此不改变 `MAP_FIXED`、拆分或增长语义。
+
+P1 在任务内增加 `rseq_pending`。实际上下文切出、注册、exec 和信号返回路径设置或强制消费
+该状态；没有事件的普通 syscall 返回跳过 rseq 用户内存访问。CPU ID 与 node/mm 字段改为
+两个连续的小段复制，坏指针仍沿用原 EFAULT/SIGSEGV 路径。`rseq_regression` 已改为同时
+覆盖“无调度 syscall 不清理”和“阻塞切换后清理”两种语义。
+
+本次仅完成静态检查和双架构 release 构建；按维护者要求未启动 QEMU/BuildStorm 运行验证。

@@ -369,10 +369,10 @@ pub fn trap_handler() {
 /// execution resumes.  A stale or malformed user rseq area is fatal in Linux;
 /// disable it here before queueing SIGSEGV so the signal path cannot retry an
 /// inaccessible pointer indefinitely.
-fn prepare_rseq_user_return() -> bool {
+fn prepare_rseq_user_return(force: bool) -> bool {
     let task = current_task().unwrap();
     let tid = task.tid();
-    match task.rseq_prepare_user_return() {
+    match task.rseq_prepare_user_return(force) {
         Ok(()) => true,
         Err(errno) => {
             warn!(
@@ -393,7 +393,7 @@ pub fn trap_return() {
         if let Some(signo) = check_if_any_sig_for_current_task() {
             // The signal frame must save the rseq abort PC, not the interrupted
             // critical-section PC.  Do this before handle_signal/setup_frame.
-            let rseq_ok = prepare_rseq_user_return();
+            let rseq_ok = prepare_rseq_user_return(true);
             // 默认信号可以连续消费；遇到用户自定义 handler 时需要立刻返回用户态，
             // 让用户 handler 先运行，避免在同一个 trap_return 中覆盖信号栈帧。
             let has_handler = current_task()
@@ -410,7 +410,7 @@ pub fn trap_return() {
         // Timer preemption and migration both resume through trap_return.
         // This common point publishes the actual hart and aborts a live rseq
         // critical section before any instruction can run in user mode.
-        if prepare_rseq_user_return() {
+        if prepare_rseq_user_return(false) {
             // rt_sigsuspend() 有 handler 时由 rt_sigreturn 恢复旧 mask。若
             // trap return 仅消费默认/忽略信号，就没有 signal frame 可负责恢复。
             let task = current_task().unwrap();

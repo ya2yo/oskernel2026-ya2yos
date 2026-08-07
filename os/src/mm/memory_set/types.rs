@@ -26,4 +26,9 @@ pub struct MemorySetInner {
     /// runaway lazy mmap allocation exhausting physical memory later through
     /// page faults.
     pub total_mmap_size: usize,
+    /// Top-down allocation cursor for non-fixed mmap-like mappings.
+    ///
+    /// The cursor is only a hint: fixed mappings and holes can invalidate it,
+    /// so callers must still use the ordered VMA search as a fallback.
+    pub(crate) mmap_hint: usize,
 }

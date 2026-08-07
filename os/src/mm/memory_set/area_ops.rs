@@ -9,7 +9,7 @@ use alloc::{sync::Arc, vec::Vec};
 use super::MemorySetInner;
 use crate::{
     arch::{
-        memory_layout::{PAGE_SIZE, USER_HEAP_SIZE},
+        memory_layout::{MMAP_TOP, PAGE_SIZE, USER_HEAP_SIZE},
         page_table::PageTable,
         tlb::tlb_invalidate,
     },
@@ -27,6 +27,7 @@ impl MemorySetInner {
             page_table: PageTable::new(),
             areas: Vec::new(),
             total_mmap_size: 0,
+            mmap_hint: MMAP_TOP,
         }
     }
 
@@ -36,6 +37,7 @@ impl MemorySetInner {
             page_table: PageTable::new_from_kernel(),
             areas: Vec::new(),
             total_mmap_size: 0,
+            mmap_hint: MMAP_TOP,
         }
     }
 
@@ -175,6 +177,20 @@ impl MemorySetInner {
             };
         }
         VirtAddr::from(start_vpn).0
+    }
+
+    /// Find a non-fixed mmap address using the last successful top-down
+    /// position before falling back to the full address-space search.
+    pub(crate) fn find_mmap_addr(&mut self, size: usize) -> usize {
+        let hint = self.mmap_hint.max(PAGE_SIZE).min(MMAP_TOP);
+        let mut addr = self.find_insert_addr(hint, size);
+        if addr == 0 && hint != MMAP_TOP {
+            addr = self.find_insert_addr(MMAP_TOP, size);
+        }
+        if addr != 0 {
+            self.mmap_hint = addr;
+        }
+        addr
     }
 
     /// Find an area whose range exactly equals `[l, r)`.

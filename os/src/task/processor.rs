@@ -251,10 +251,13 @@ pub fn run_tasks() {
             // Linux finish_task(prev) 的对应点：switch() 已完整保存 prev
             // 上下文，此后并发唤醒才可将它放到任意 Hart 的就绪队列。
             cur_task.mark_off_cpu();
+            let mut cur_task_inner = cur_task.inner_lock();
+            cur_task_inner.mark_rseq_pending();
             let runnable = matches!(
-                cur_task.inner_lock().task_status,
+                cur_task_inner.task_status,
                 TaskStatus::Ready | TaskStatus::Running
             );
+            drop(cur_task_inner);
             if runnable {
                 // Enqueue before selection so CFS can compare the current task
                 // with every other runnable entity. For RR this preserves the

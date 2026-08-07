@@ -78,7 +78,7 @@ impl MemorySetInner {
         pages: Vec<Arc<FrameTracker>>,
     ) -> usize {
         if addr == 0 {
-            let va = self.find_insert_addr(MMAP_TOP, size);
+            let va = self.find_mmap_addr(size);
             self.push_with_given_frames(
                 MapArea::new(
                     va.into(),
@@ -195,7 +195,7 @@ impl MemorySetInner {
             );
             return 0; // 向 sys_mmap 表示失败，由其返回 ENOMEM
         }
-        let addr = self.find_insert_addr(MMAP_TOP, len);
+        let addr = self.find_mmap_addr(len);
         if addr == 0 {
             return 0; // 未找到可用空间
         }
@@ -292,6 +292,12 @@ impl MemorySetInner {
                 self.push_lazily(right_area);
             }
             tlb_invalidate();
+        }
+        // Reuse a newly freed high hole on the next top-down allocation.  A
+        // lower hint remains valid; only move it upward when this unmap opens
+        // a range above the current cursor.
+        if end_addr > self.mmap_hint {
+            self.mmap_hint = end_addr.min(MMAP_TOP);
         }
         Ok(0)
     }
@@ -496,7 +502,7 @@ impl MemorySetInner {
         let dest_addr = if fixed {
             new_addr
         } else {
-            self.find_insert_addr(MMAP_TOP, new_len)
+            self.find_mmap_addr(new_len)
         };
         if dest_addr == 0 {
             return Err(SysErrNo::ENOMEM);

@@ -1,4 +1,4 @@
-use user_lib::{println, rseq, RseqAbi, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER};
+use user_lib::{println, rseq, sleep, RseqAbi, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER};
 
 const RSEQ_LEN: u32 = 32;
 // The kernel stores the caller-provided signature for matching unregistration
@@ -77,17 +77,23 @@ pub fn run() -> bool {
             return Err("duplicate register errno");
         }
 
-        // An active descriptor whose range cannot contain the return PC must
-        // be cleared before user mode resumes.  This exercises the common
-        // return-to-user rseq cleanup without architecture-specific assembly.
+        // A syscall which does not schedule is not an rseq event.  Its return
+        // must leave an active descriptor untouched.
         let mut area_value = read_area();
         area_value.rseq_cs = core::ptr::addr_of!(RSEQ_CS_OUTSIDE) as u64;
         write_area(area_value);
         if rseq(area, RSEQ_LEN, 0, RSEQ_SIG) != EBUSY {
             return Err("cleanup trigger errno");
         }
+        if read_area().rseq_cs == 0 {
+            return Err("unexpected syscall cleanup");
+        }
+
+        // Blocking causes a real context switch; the resumed task must then
+        // consume the pending event and clear the descriptor.
+        sleep(1);
         if read_area().rseq_cs != 0 {
-            return Err("return cleanup");
+            return Err("scheduled return cleanup");
         }
 
         if rseq(

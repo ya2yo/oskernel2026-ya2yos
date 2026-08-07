@@ -166,6 +166,7 @@ impl MemorySetInner {
         self.areas.clear();
         self.page_table.clear();
         self.total_mmap_size = 0;
+        self.mmap_hint = crate::arch::memory_layout::MMAP_TOP;
         Ok(0)
     }
 

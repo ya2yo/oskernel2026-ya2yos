@@ -2824,6 +2824,15 @@
 - **关联问题**：[rseq 优化的回归与后续 VMA 修复](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)
 - **关联 commit**：当前工作区未提交
 
+#### 按优化方案实现 P0/P1（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求按 `Docs/决赛文档/优化方案.md` 实现 P0、P1，并说明当前程序仍在运行验证、不要求本轮运行验证 P1。
+- **描述**：在已有有序 VMA/反向查找和一页保护边界基础上增加 `mmap_hint`，普通 mmap、动态 shm 和非固定 mremap 使用可回退的 downward hint；新增线程级 `rseq_pending`，由上下文切出、注册、exec 和信号事件触发，普通无调度 syscall 返回跳过用户内存访问，并合并 rseq 的短小用户写入段。同步调整 regression 对无调度 syscall 与阻塞切换语义的断言。
+- **验证边界**：RISC-V/LoongArch64 release 构建和 `git diff --check` 通过；仅有 vendored `smoltcp` 的既有 unused warning。未启动 QEMU/BuildStorm，P1 运行验证按维护者要求暂不执行。
+- **关联文档**：[VMA 空洞搜索与 P0/P1 实现复盘](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
 #### BuildStorm RISC-V rustc SIGSEGV 与 VMA 空洞搜索修复（8.7）
 
 - **工具/模型**：Codex（GPT-5）
