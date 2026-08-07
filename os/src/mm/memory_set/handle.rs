@@ -320,13 +320,34 @@ impl MemorySet {
         // bounded global cache, so retain it until this fault installs it.
         let prepared = self.prepare_file_page(vpn);
 
-        // A first demand mapping cannot leave a valid remote translation for
-        // this VPN, so it needs no IPI broadcast.  A present PTE may be a COW
-        // or permission-protected mapping; retain its frames and flush every
-        // active hart before allowing the old mapping to be reclaimed.
         let was_active = self.deactivate_current_hart();
+
+        // Fast path: the faulting VPN has no present PTE, so this is a fresh
+        // demand mapping that cannot leave a stale remote translation behind.
+        // It needs neither the global UPDATE_LOCK nor a shootdown broadcast;
+        // the translate check and the install run atomically under the
+        // address-space write lock, so no other writer can slip a present PTE
+        // in between them.
+        {
+            let mut inner = self.inner.write();
+            if inner.page_table.translate(vpn).is_none() {
+                let handled = inner.handle_page_fault(vpn, scause, prepared);
+                if was_active {
+                    self.activate_current_hart();
+                }
+                return handled;
+            }
+        }
+
+        // Slow path: the VPN already has a present PTE, which may be a COW or
+        // permission-protected mapping.  Retain its frames and flush every
+        // active hart before allowing the old mapping to be reclaimed.  Lock
+        // order stays UPDATE_LOCK -> MemorySet write lock, matching
+        // with_retained_frames_mut.
         let _update_guard = crate::mm::remote_tlb::lock_updates();
         let mut inner = self.inner.write();
+        // Re-check: another writer may have changed the PTE while the write
+        // lock was released between the fast-path check and this point.
         let replaces_present_pte = inner.page_table.translate(vpn).is_some();
         let retained_frames: Vec<Arc<FrameTracker>> = replaces_present_pte
             .then(|| {

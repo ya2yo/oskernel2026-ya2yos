@@ -10495,3 +10495,29 @@ checksum 或 HTree 结构损坏。保留维护者已有的 `user/src/bin/initpro
 启动阶段三条 `extra TCB refs` 未再出现，无 panic；外层 timeout 前未完成 BuildStorm。
 
 详见 [问题复盘](./problem/buildstorm-ppoll-tcb-reference-leak.md)。
+
+## 2026-08-07：BuildStorm `MemorySet` 锁争用与用户内存访问优化方案
+
+### 用户输入
+
+维护者要求分析 `client.ans` 最后一次多 Hart backtrace，确认多个 CPU 卡在同一个
+`MemorySet` lock 的原因，并参考 Linux 优化锁和 `copy_to_*` 用户内存访问提出后续方案；
+随后明确本现场没有死锁，只需直接考虑优化，并要求将完整分析写入
+`Docs/决赛文档/优化方案.md`，删除该文件原有内容。
+
+### 分析与采纳结论
+
+按 Hart 栈和源码路径复核后，确认 CPU2 已持有 `MemorySet` 写锁，正在
+`mmap -> with_vma_mut -> find_insert_addr` 中执行无序 `Vec` 的递归重扫；其他 Hart 的
+缺页、mmap 和 rseq 用户返回路径只是排队者。根因是长写临界区内的 VMA 空洞查找退化，
+不是锁循环或 remote-TLB ACK 死锁。当前 `handle.rs` 的 fresh-PTE fast path 方向可保留，
+但不能解决 VMA 查找热点；直接改成裸 `satp` 用户指针复制还缺少 RISC-V `SUM` 和 fault-safe
+exception-table fixup，rseq 则应优先改为调度/迁核事件驱动。
+
+### 修改与验证
+
+重写 `Docs/决赛文档/优化方案.md`，内容包括现场证据、当前工作区修改审计、Linux/RISC-V
+对照、P0-P4 优化路线、锁序与 remote-TLB 约束、观测指标和验证计划。保留维护者已有的
+`os/src/mm/memory_set/handle.rs`、`user/src/bin/initproc.rs` 修改及 `disk.img` symlink。
+本轮未修改内核源码，未运行构建、测试、QEMU 或 GDB，也未删除或停止运行中的实例；仅做
+文档和静态差异检查。

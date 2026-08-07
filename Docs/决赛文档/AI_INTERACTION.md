@@ -2789,3 +2789,19 @@
 - **验证边界**：目标文件 rustfmt、差异检查和 RISC-V/LoongArch64 release 构建通过。180 秒 RISC-V snapshot 通过 toolchain/minibuild，推进到 `444/446: axbuild`，原三条 `extra TCB refs` 未再出现；未完成完整 BuildStorm。
 - **关联问题**：[ppoll TCB 引用泄露问题复盘](./problem/buildstorm-ppoll-tcb-reference-leak.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm `MemorySet` 锁争用与用户内存访问优化方案（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `client.ans` 最后一次多 Hart backtrace，区分
+  `MemorySet` 锁争用与死锁，并参考 Linux 锁和 `copy_to_*` 设计后续优化；随后要求覆盖
+  既有内容重写 `Docs/决赛文档/优化方案.md`。
+- **描述**：确认 CPU2 持有写锁执行退化的 `find_insert_addr()`，CPU0/7 的
+  `copy_to_user -> rseq`、缺页和其他 mmap 栈是排队者，现场不是死锁。记录了有序 VMA/迭代
+  空洞查找、rseq 事件驱动、受限 uaccess fast path、RISC-V `SUM` 与 fault fixup、VMA/页表
+  锁拆分和 remote-TLB/锁序约束等 P0-P4 方案。当前 `handle.rs` 与 `initproc.rs` 修改仅做
+  审计，未在本轮改动源码。
+- **验证边界**：未运行构建、测试、QEMU 或 GDB；未干预正在运行的 QEMU/GDB。仅完成文档
+  写入和 `git diff --check`、工作区状态等静态检查。
+- **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
