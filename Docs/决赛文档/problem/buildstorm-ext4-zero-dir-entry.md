@@ -73,3 +73,34 @@ e2fsck: aborted
 - 仅在 `/tmp/buildstorm-dir-eio.img` 副本执行 `e2fsck -fy`。同一内核从该修复副本启动后输出 `BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok`，并在 120 秒窗口内推进到 Cargo `443/446`，没有再次出现 `/proc/67/maps, rc = 5` 或 `ext4_fremove ext4_dir_rm: rc = 5`。
 
 修复副本的运行在 timeout 前没有完成 446 个 crate，因此不能据此宣称完整 BuildStorm 已通过。原始镜像仍需在备份后离线修复或替换；本次代码修复的保证是损坏目录项不会再卡死内核，并且真实文件系统错误不会被静默覆盖。
+
+## 原镜像修复闭环（2026-08-07）
+
+后续 `server.ans` 在预构建的 `444/446: axbuild` 处同时报告
+`ext4_fremove`/`ext4_frename rc = 5` 和 `.rmeta` 写入 `EIO`。对实际启动的
+`2026_testsuits_img/final-2026/sdcard-rv.img` 执行只读检查后，确认原镜像仍有
+inode checksum、extent、HTree 和 `/proc/67` 目录损坏。`debugfs ncheck` 还确认，
+extent 损坏的 inode 27822 正是：
+
+```text
+/work/tgoskits/target/debug/deps/libaxbuild-2f7732ec1e5a9f24.rmeta
+```
+
+这将 Cargo 报错与镜像元数据损坏直接关联起来：当前内核正确向用户态传播
+`EIO`，不应在 unlink、rename 或 write 路径把它伪装成成功。
+
+修复前将原镜像逐字节备份到
+`/tmp/sdcard-rv-before-fsck-20260807-1227.img`，再离线执行
+`e2fsck -fy 2026_testsuits_img/final-2026/sdcard-rv.img`。修复处理了损坏 extent、HTree、
+目录块、inode checksum 和计数，随后 `e2fsck -fn` 五阶段通过。
+
+修复后的 RISC-V BuildStorm 回归通过 toolchain 和 minibuild，并从原失败点
+`444/446: axbuild` 推进到 `445/446: tg-xtask(bin)`；30 分钟窗口内没有再出现
+`rc = 5`、`Input/output error`、panic 或 Cargo error。本轮在外层 timeout 强制终止时
+尚未输出 `BUILDSTORM_COMPILE ... ok=true` 和测试组 END，因此仅验收原 EIO 修复，
+不宣称完整 BuildStorm 通过。
+
+强制终止后镜像的 journal transaction 280800 无法重放，但只读检查未发现新的
+目录、extent、checksum 或 HTree 结构损坏。再次离线修复计数并清理 journal 后，
+最终 `e2fsck -fn` 五阶段通过。持久化 BuildStorm 镜像应在 QEMU 停止后执行一致性
+检查；本次强制终止不能单独证明最初损坏的产生路径。

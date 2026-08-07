@@ -10404,3 +10404,34 @@ task 全局锁层级及 memory_set 模块的 `UPDATE_LOCK -> 单个 MemorySet ->
 ext4 `EIO` 使完整 BuildStorm、LTP 未完成。全仓 `cargo fmt --check` 被已有无关格式差异阻断。
 
 详见 [共享地址空间 SMP 问题复盘](./problem/buildstorm-shared-address-space-smp.md)。
+
+## 2026-08-07：BuildStorm artifact EIO 与原镜像离线修复
+
+### 用户输入
+
+维护者要求分析 `server.ans` 的输出并进行修复。
+
+### 分析与采纳结论
+
+日志中 BuildStorm toolchain/minibuild 通过，但预构建与正式 multi 构建均在
+`axbuild` 的 `.rmeta` 发布时同时出现 `ext4_fremove`/`ext4_frename rc = 5` 和
+`Input/output error`。结合已有目录项损坏复盘，对本次实际启动的
+`2026_testsuits_img/final-2026/sdcard-rv.img` 执行 `e2fsck -fn`，稳定复现 inode
+checksum、extent、HTree 和 `/proc/67` 目录损坏。`debugfs ncheck` 确认 inode
+27822 就是日志报错的 `libaxbuild-2f7732ec1e5a9f24.rmeta`，因此不修改内核
+errno 传播，而是修复镜像元数据。
+
+### 修改与验证
+
+先将 14 GiB 原镜像备份到 `/tmp/sdcard-rv-before-fsck-20260807-1227.img`，并用
+`cmp` 确认逐字节一致；再对原镜像执行 `e2fsck -fy`，修复损坏 extent、HTree、
+目录块、inode checksum 和计数。修复后 `e2fsck -fn` 五阶段通过，
+`make build-arch TARGET_ARCH=riscv64` 通过。
+
+RISC-V 回归日志 `/tmp/buildstorm-after-fsck.ans` 输出
+`BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok`，并从原 `444/446: axbuild` 失败点
+推进到 `445/446: tg-xtask(bin)`；30 分钟内无 `rc = 5`、`Input/output error`、
+panic 或 Cargo error。外层 timeout 终止时尚未有完整 BuildStorm 标记，因此不报告
+端到端通过。强制终止留下不可重放的 journal transaction 和空闲计数差异，
+再次离线修复后最终 `e2fsck -fn` 五阶段通过；未发现本轮新增目录、extent、
+checksum 或 HTree 结构损坏。保留维护者已有的 `user/src/bin/initproc.rs` 变更。

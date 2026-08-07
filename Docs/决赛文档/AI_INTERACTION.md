@@ -2762,3 +2762,12 @@
   阻止完整 BuildStorm，LTP 未运行。
 - **关联文档**：[共享地址空间 SMP 问题复盘](./problem/buildstorm-shared-address-space-smp.md)、[开发日志](./开发日志.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm artifact EIO 与原镜像离线修复（8.7）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans`，要求分析 BuildStorm 的 `.rmeta` 写入 `EIO` 并修复。
+- **描述**：只读 fsck 确认实际 RISC-V 持久化镜像仍有 inode checksum、extent、HTree 和目录损坏；`debugfs` 将损坏 inode 27822 解析为日志中失败的 `libaxbuild-*.rmeta`。在逐字节备份后离线修复原镜像，保留内核对真实损坏的 `EIO` 传播。
+- **验证边界**：修复前证据闭环、RISC-V release 构建、修复后 fsck 和 30 分钟 BuildStorm 回归完成。回归通过 toolchain/minibuild，从原 `444/446: axbuild` 失败点推进到 `445/446: tg-xtask(bin)`，无 `EIO`/panic/Cargo error；未输出完整 BuildStorm END，强制终止后已再次离线修复并确认镜像五阶段清洁。
+- **关联问题**：[BuildStorm 零长度 EXT4 目录项与镜像损坏](./problem/buildstorm-ext4-zero-dir-entry.md)
+- **关联 commit**：当前工作区未提交
