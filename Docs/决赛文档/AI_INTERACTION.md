@@ -2903,3 +2903,16 @@
   检查通过。本轮未启动新的 QEMU/BuildStorm，未修改内核和用户代码。
 - **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### libctest 动态 ELF 启动失败修复（8.8）
+
+- **工具/模型**：Codex（GPT-5.6 Luna）
+- **场景**：分析 `log.ans` 中动态 libc 测试全部以 255 退出并修复 ELF loader。
+- **描述**：确认静态 ELF 测试全部通过，动态 ELF 测试全部失败；debug 复现显示
+  动态链接器初始化后直接 `exit_group(-1)`。根因是对齐 `PT_LOAD` 段使用 file-backed
+  lazy VMA 改变了动态解释器启动时的读取、重定位和写入行为。修复恢复主程序和
+  动态解释器 ELF 段的 eager framed 映射，普通用户 mmap 懒加载不变。
+- **验证边界**：RISC-V、LoongArch64 release 构建通过；RISC-V libctest 运行至
+  `shutdown!`，动态测试无 `FAIL`，217 项输出 `Pass!`。
+- **关联问题**：[libctest 动态 ELF 启动失败](./problem/libctest-dynamic-elf-eager-load.md)
+- **关联 commit**：当前工作区未提交

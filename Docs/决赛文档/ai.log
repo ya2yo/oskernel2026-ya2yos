@@ -10727,3 +10727,25 @@ vfile cache 长锁，以及 pipe 读等待累计 4,947 s 但拷贝不足 1 s。�
 用户程序或测试镜像。运行 `python3 scripts/judge_buildstorm-glibc.py server.ans`，结果为
 脚本计分 180/180，但 stderr 明确显示 `elapsed=0s`，因此只记录为计时契约缺陷；运行
 `git diff --check` 和静态文档检查，未启动新的 QEMU/BuildStorm。
+
+## 2026-08-08: libctest 动态 ELF 启动失败修复
+
+### 用户输入
+
+维护者要求分析 `log.ans` 并进行修复。
+
+### 分析与结论
+
+日志显示 `libctest-musl` 的静态 ELF 用例全部通过，但动态 ELF 用例全部以
+`status 255` 结束，没有 panic。debug 复现确认动态程序完成 `execve` 后在动态
+链接器初始化期间执行 `exit_group(-1)`。根因是近期 ELF loader 优化将对齐的
+`PT_LOAD` 段改为 file-backed lazy VMA，改变了动态解释器启动阶段的读取、重定位
+和写入行为。
+
+### 修改与验证
+
+恢复 `os/src/mm/memory_set/elf_loader.rs` 中主程序和动态解释器 `PT_LOAD` 段的
+eager framed 映射，保留普通用户 `mmap` 的懒加载。`make TARGET_ARCH=riscv64` 与
+`make TARGET_ARCH=loongarch64` 通过；`timeout 60s make run TARGET_ARCH=riscv64`
+运行至 `shutdown!`，动态测试无 `FAIL`，共 217 个 `Pass!`。详见
+`Docs/决赛文档/problem/libctest-dynamic-elf-eager-load.md`。

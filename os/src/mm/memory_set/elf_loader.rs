@@ -399,58 +399,25 @@ impl MemorySetInner {
                 map_perm |= MapPermission::X;
             }
 
+            // Keep ELF text/data eager.  The dynamic linker writes its own
+            // relocation state during startup, and file-backed ELF VMAs can
+            // otherwise turn that path into a fault before libc is ready.
             let page_offset = start_va.0 - start_va.floor().0 * PAGE_SIZE;
-            let can_lazy_map = page_offset == 0 && (ph.offset() as usize) % PAGE_SIZE == 0;
-            if !can_lazy_map {
-                // Preserve the exact zero-before/after-segment semantics for
-                // unusual unaligned ELF segments.
-                let map_area = MapArea::new(
-                    start_va,
-                    end_va,
-                    MapType::Framed,
-                    map_perm,
-                    MapAreaType::Elf,
-                );
-                max_end_vpn = max_end_vpn.max(map_area.vpn_range.end());
-                self.push_elf_segment_from_file(
-                    map_area,
-                    page_offset,
-                    file,
-                    ph.offset() as usize,
-                    file_size,
-                )?;
-                continue;
-            }
-
-            let file_end = start_va.0.checked_add(file_size).ok_or(())?;
-            let file_end_vpn = VirtAddr::from(file_end).ceil();
-            if file_size != 0 {
-                let file_area = MapArea::new_mmap(
-                    start_va,
-                    file_end_vpn.into(),
-                    MapType::Framed,
-                    map_perm,
-                    MapAreaType::Mmap,
-                    Some(file.clone()),
-                    ph.offset() as usize,
-                    MmapFlags::MAP_PRIVATE,
-                );
-                max_end_vpn = max_end_vpn.max(file_area.vpn_range.end());
-                self.push_lazily(file_area);
-            }
-
-            let mem_end_vpn = end_va.ceil();
-            if file_end_vpn < mem_end_vpn {
-                let bss_area = MapArea::new(
-                    file_end_vpn.into(),
-                    mem_end_vpn.into(),
-                    MapType::Framed,
-                    map_perm,
-                    MapAreaType::Elf,
-                );
-                max_end_vpn = max_end_vpn.max(bss_area.vpn_range.end());
-                self.push_lazily(bss_area);
-            }
+            let map_area = MapArea::new(
+                start_va,
+                end_va,
+                MapType::Framed,
+                map_perm,
+                MapAreaType::Elf,
+            );
+            max_end_vpn = max_end_vpn.max(map_area.vpn_range.end());
+            self.push_elf_segment_from_file(
+                map_area,
+                page_offset,
+                file,
+                ph.offset() as usize,
+                file_size,
+            )?;
         }
         Ok((max_end_vpn, header_va.into()))
     }

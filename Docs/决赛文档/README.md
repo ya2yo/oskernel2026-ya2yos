@@ -194,3 +194,4 @@
 - [BuildStorm MemorySet 全驻留帧保留导致局部 MM 更新放大](./problem/buildstorm-memoryset-full-resident-retention.md)
 - [BuildStorm 多 Hart 线程组退出时的 TCB 强引用放大](./problem/buildstorm-tcb-sibling-exit-arc-amplification.md)
 - [BuildStorm RISC-V rustc SIGSEGV 与 VMA 空洞搜索回归](./problem/buildstorm-riscv-vma-hole-search-sigsegv.md)
+- [libctest 动态 ELF 启动失败与 eager 映射恢复](./problem/libctest-dynamic-elf-eager-load.md)
