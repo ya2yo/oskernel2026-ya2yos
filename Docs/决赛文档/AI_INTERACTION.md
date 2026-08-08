@@ -3063,3 +3063,18 @@
   BuildStorm 和 LTP MM 专项未运行，未报告端到端加速。
 - **关联问题**：[BuildStorm P1 页表更新批处理与 remote-TLB 观测](./problem/buildstorm-remote-tlb-batching.md)
 - **关联 commit**：当前工作区未提交
+
+#### cagent exec 路径优化（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：根据 `log.ans` 做一轮性能优化，运行输出直接写 `log.ans`。
+- **描述**：逐层埋点确认 `interp_map` 的 setup 是主要开销，且其根因是 QEMU 匿名
+  内存宿主 COW/换页（首次写 105us、二次写 7us、首次读 8us），非 TLB/清零指令。
+  落地两项 guest 侧优化：exec 段读取先查内核文件页缓存并发布完整页（重复 exec 不再
+  重走 lwext4），loongarch64 批量页表映射收敛为一次 `invtlb`（RISC-V 同步接口）。
+  `trap.S` 全量刷新的实验性移除无收益，已回退。
+- **验证边界**：双架构 release、loongarch64 debug/perf 构建通过；loongarch64 QEMU
+  连续两次回归 PASS；ext4 读取 571→555 次（6.29→5.25MiB）。端到端时间在噪声带内，
+  未声明加速比例，BuildStorm/LTP 未运行。
+- **关联问题**：[LoongArch exec 段读取页缓存化与帧清零首触成本分析](./problem/loongarch-exec-segment-read-cache.md)
+- **关联 commit**：当前工作区未提交

@@ -263,6 +263,17 @@ impl PageTable {
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission) {
         self.map_by_pte_flags(vpn, ppn, RVPTEFlags::from(flags));
     }
+    /// RISC-V mappings do not flush the TLB per page; this mirrors `map` and
+    /// exists so arch-independent bulk mappers share one code path.
+    #[inline]
+    pub fn map_no_flush(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission) {
+        self.map_by_pte_flags(vpn, ppn, RVPTEFlags::from(flags));
+    }
+    /// Invalidate the whole local TLB after a batch of `map_no_flush` calls.
+    #[inline]
+    pub fn flush_tlb_all(&self) {
+        tlb_invalidate();
+    }
     /// Direct-map an aligned kernel physical range with the largest Sv39 leaves
     /// possible. This is only used for the kernel's immutable direct map.
     pub fn map_direct_range(

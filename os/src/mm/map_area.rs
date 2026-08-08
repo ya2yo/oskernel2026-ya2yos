@@ -114,7 +114,7 @@ impl MapArea {
             }
         }
 
-        page_table.map(vpn, ppn, self.map_perm);
+        page_table.map_no_flush(vpn, ppn, self.map_perm);
         Some(ppn)
     }
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
@@ -137,13 +137,19 @@ impl MapArea {
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn).ok_or(())?;
         }
+        // Bulk mapping builds the whole range first, then performs a single
+        // TLB flush. LoongArch invalidates the entire local TLB per entry
+        // otherwise; one flush after the loop preserves the same visibility
+        // guarantee for freshly installed mappings.
+        page_table.flush_tlb_all();
         Ok(())
     }
     pub fn map_given_frames(&mut self, page_table: &mut PageTable, frames: Vec<Arc<FrameTracker>>) {
         for (vpn, frame) in self.vpn_range.clone().into_iter().zip(frames.into_iter()) {
-            page_table.map(vpn, frame.ppn, self.map_perm);
+            page_table.map_no_flush(vpn, frame.ppn, self.map_perm);
             self.data_frames.insert(vpn, frame);
         }
+        page_table.flush_tlb_all();
     }
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         debug!("[unmap] start! page_table's ppn={:#x}", page_table.token());

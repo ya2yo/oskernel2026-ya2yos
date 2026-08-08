@@ -197,6 +197,16 @@ impl PageTable {
             .map(|pte| pte)
     }
     fn map_by_pte_flags(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, pte_flags: LAPTEFlags) {
+        self.map_by_pte_flags_no_flush(vpn, ppn, pte_flags);
+        tlb_invalidate(); // 保险起见 TODO:不刷新是不是也可以？
+    }
+
+    fn map_by_pte_flags_no_flush(
+        &mut self,
+        vpn: VirtPageNum,
+        ppn: PhysPageNum,
+        pte_flags: LAPTEFlags,
+    ) {
         let pte = self.find_pte_create(vpn).unwrap();
         assert!(
             !pte.get_flags().contains(LAPTEFlags::VALID),
@@ -205,7 +215,6 @@ impl PageTable {
             vpn.0 << PAGE_SIZE_BITS
         );
         *pte = PageTableEntry::new(ppn, pte_flags | LAPTEFlags::VALID);
-        tlb_invalidate(); // 保险起见 TODO:不刷新是不是也可以？
     }
 }
 // 实现PageTable的通用函数
@@ -258,6 +267,17 @@ impl PageTable {
     #[inline]
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission) {
         self.map_by_pte_flags(vpn, ppn, LAPTEFlags::from(flags));
+    }
+    /// Map a single page without flushing the local TLB. Bulk mappers use this
+    /// to build a range first and issue one `invtlb` at the end.
+    #[inline]
+    pub fn map_no_flush(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission) {
+        self.map_by_pte_flags_no_flush(vpn, ppn, LAPTEFlags::from(flags));
+    }
+    /// Invalidate the whole local TLB after a batch of `map_no_flush` calls.
+    #[inline]
+    pub fn flush_tlb_all(&self) {
+        tlb_invalidate();
     }
     /// Unmap the `vpn` to `ppn` with the `flags`.
     /// # Exceptions

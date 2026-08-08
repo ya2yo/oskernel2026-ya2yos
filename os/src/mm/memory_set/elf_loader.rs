@@ -10,7 +10,8 @@ use crate::arch::memory_layout::{DL_INTERP_OFFSET, PAGE_SIZE, USER_HEAP_SIZE};
 #[cfg(feature = "perf")]
 use crate::arch::time::get_ticks;
 use crate::fs::{
-    map_dynamic_link_file_directly_map, open_direct, File, Inode, OSFile, OpenFlags, NONE_MODE,
+    map_dynamic_link_file_directly_map, open_direct, File, Inode, OSFile, OpenFlags,
+    FILE_PAGE_CACHE, NONE_MODE,
 };
 use crate::mm::memory_set::MemorySetInner;
 use crate::syscall::MmapFlags;
@@ -556,13 +557,41 @@ impl MemorySetInner {
         map_area.map(&mut self.page_table)?;
 
         let mut copied = 0;
+        let cache_path = file.inode.page_cache_path();
+        let file_size_for_cache = file.inode.size();
         while copied < file_size {
             let chunk_len = (file_size - copied).min(read_buf.len());
             let file_read_offset = file_offset.checked_add(copied).ok_or(())?;
-            let read = file
-                .inode
-                .read_at(file_read_offset, &mut read_buf[..chunk_len])
-                .map_err(|_| ())?;
+            // The interpreter and unaligned main-program segments are read
+            // again on every exec. Serve the chunk from the shared file page
+            // cache when the whole range is resident; otherwise read through
+            // lwext4 once and publish the fully covered pages for the next
+            // exec (bytes are already compatibility-patched by read_at).
+            let read = if let Some(path) = cache_path.as_deref() {
+                if let Some(cached) =
+                    FILE_PAGE_CACHE.read_cached_at(path, file_read_offset, &mut read_buf[..chunk_len])
+                {
+                    cached
+                } else {
+                    let r = file
+                        .inode
+                        .read_at(file_read_offset, &mut read_buf[..chunk_len])
+                        .map_err(|_| ())?;
+                    if r != 0 {
+                        FILE_PAGE_CACHE.insert_read_range(
+                            path,
+                            file_read_offset,
+                            &read_buf[..r],
+                            file_size_for_cache,
+                        );
+                    }
+                    r
+                }
+            } else {
+                file.inode
+                    .read_at(file_read_offset, &mut read_buf[..chunk_len])
+                    .map_err(|_| ())?
+            };
             #[cfg(feature = "perf")]
             crate::utils::perf::record_inode_read_source(
                 crate::utils::perf::InodeReadSource::Other,

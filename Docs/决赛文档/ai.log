@@ -11159,3 +11159,35 @@ perf 版本记录来源、mailbox wait 和 ACK latency；release 版本用条件
 `make perf TARGET_ARCH=loongarch64` 均通过。最终 RISC-V perf QEMU 运行到 `shutdown!`，
 四项启动回归 PASS；remote-TLB 快照为 720 次 shootdown、707 local-only、13 remote target
 且 13 ACK。完整 BuildStorm 与 LTP MM 专项未在本轮执行，未声明加速比例。
+
+## 2026-08-09：cagent exec 路径优化（段读取页缓存化 + LoongArch 批量 TLB 刷新）
+
+### 用户需求
+
+根据 `log.ans` 做一轮性能优化；明确运行输出直接写 `log.ans`。
+
+### 分析与采纳结论
+
+热点排序：accept 等待（测试自身 1s 延迟驱动）、exec `from_elf`/`interp_map`
+（180~230ms）、vfork 父进程恢复（155~200ms，被长 syscall 卡住）、ext4 块设备服务
+（160~370ms，宿主噪声大）。用 perf 埋点逐层定位 `interp_map`：`setup` 130~142ms
+（帧分配+页表）、`read` 30~37ms、`copy` 1.5ms。帧分配内部再拆：页池 1us、清零
+105~127us、Arc 1us；“首次写 105us / 二次写 7us / 首次读 8us”的实验证明瓶颈是
+QEMU 匿名内存宿主 COW/换页（环境内存压力），而非指令宽度、TLB refill 或逐页
+`invtlb`。因此不宣称端到端加速，只做可归因的 guest 侧优化。
+
+采纳三项改动：exec 段 64KiB 分块先查内核 `FILE_PAGE_CACHE`、未命中再走 lwext4 并
+发布完整页（重复 exec 不再重读解释器/未对齐段）；loongarch64 `MapArea::map`/
+`map_given_frames` 批量映射后一次 `invtlb`（新增 `map_no_flush`/`flush_tlb_all`）；
+RISC-V 同步提供同接口。`trap.S` 出入口全量 `invtlb` 的实验性移除无收益且涉 TLB
+一致性风险，已回退。
+
+### 修改与验证
+
+修改 `os/src/mm/memory_set/elf_loader.rs`、`os/src/mm/map_area.rs`、
+`os/src/arch/{loongarch64,riscv64}/qemu/page_table.rs`；新增
+`problem/loongarch-exec-segment-read-cache.md`。`make`（双架构 release）、`make log`
+（loongarch64 debug）、`make perf` 均通过；`timeout 600s make run > log.ans 2>&1`
+连续两次 `END cagent kernel pass` + `shutdown!`。ext4 读取 571→555 次、
+6.29→5.25MiB，块设备请求 974→958、字节 10.15→9.10MiB。端到端时间落在既有噪声带
+（1.7~2.1s），未声明加速比例；BuildStorm/LTP 动态用例未运行。
