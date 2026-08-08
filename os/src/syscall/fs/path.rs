@@ -410,7 +410,7 @@ fn do_faccessat(dirfd: i32, path: *const u8, mode: u32, flags: usize) -> Syscall
     } else {
         OpenFlags::O_RDONLY
     };
-    let inode = open(&abs_path, open_flags, NONE_MODE)?.file()?;
+    let file = open(&abs_path, open_flags, NONE_MODE)?.any();
     if mode.contains(FaccessatMode::W_OK) {
         if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(&abs_path) {
             if mountflags.contains(MountFlags::RDONLY) {
@@ -419,9 +419,8 @@ fn do_faccessat(dirfd: i32, path: *const u8, mode: u32, flags: usize) -> Syscall
             }
         }
     }
-    let file_mode = inode.inode.fmode()? & 0xfff;
-    let file_mode = FileMode::from_bits_truncate(file_mode);
-    let file_stat = inode.inode.fstat();
+    let file_stat = file.fstat();
+    let file_mode = FileMode::from_bits_truncate(file_stat.st_mode & 0xfff);
     check_faccessat_access(file_mode, &file_stat, uid, gid, mode)
 }
 

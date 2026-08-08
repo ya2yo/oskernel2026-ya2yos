@@ -21,6 +21,7 @@ mod os_file;
 mod pagemap;
 mod signalfd;
 mod tmp_file;
+mod uptime;
 pub use {
     dummyfd::DummyFd,
     epoll::{EpollCreateFlags, EpollFile, EpollReady},
@@ -37,4 +38,5 @@ pub use {
     pagemap::PagemapFile,
     signalfd::SignalFd,
     tmp_file::TmpFile,
+    uptime::UptimeFile,
 };

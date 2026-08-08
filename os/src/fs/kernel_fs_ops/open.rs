@@ -420,6 +420,24 @@ fn open_inner(
         }
     }
 
+    // `/proc/uptime` is a dynamic proc entry rather than an ext4 file.  Keep
+    // this in the common VFS open path so stat/access helpers and sys_openat
+    // observe the same node instead of only the syscall-specific path.
+    if abs_path == "/proc/uptime" {
+        if flags.contains(OpenFlags::O_DIRECTORY) {
+            return Err(SysErrNo::ENOTDIR);
+        }
+        if flags.read_write().1
+            || (!flags.contains(OpenFlags::O_PATH) && flags.contains(OpenFlags::O_TRUNC))
+        {
+            return Err(SysErrNo::EACCES);
+        }
+        if flags.contains(OpenFlags::O_CREATE | OpenFlags::O_EXCL) {
+            return Err(SysErrNo::EEXIST);
+        }
+        return Ok(FileClass::Abs(UptimeFile::new()));
+    }
+
     // O_PATH creates a path-only descriptor. Linux ignores creation, truncation,
     // access-mode, and atime-related flags in this mode.
     let path_only = flags.contains(OpenFlags::O_PATH);

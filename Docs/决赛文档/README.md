@@ -202,3 +202,4 @@
 - [嵌套 RISC-V QEMU 的 Zicond 非法指令](./problem/nested-qemu-zicond-illegal-instruction.md)
 - [嵌套 RISC-V QEMU 的 OpenSBI 固件查找](./problem/nested-qemu-opensbi-firmware-lookup.md)
 - [嵌套 LoongArch64 QEMU 的 EFI 启动流程](./problem/nested-loongarch-qemu-boot.md)
+- [BuildStorm P0-A 动态 `/proc/uptime` 计时](./problem/buildstorm-proc-uptime.md)

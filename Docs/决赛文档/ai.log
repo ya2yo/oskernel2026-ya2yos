@@ -11032,3 +11032,45 @@ LoongArch64 条件编译函数，RISC-V 路径保持不变。
 `rustfmt --edition 2021 --check`（涉及 Rust 文件）、`git diff --check`、
 `make build-arch TARGET_ARCH=riscv64` 和 `make build-arch TARGET_ARCH=loongarch64` 均通过；
 未运行需等待完整 BuildStorm 的 QEMU 运行时验证。
+
+---
+
+## 2026-08-08：BuildStorm P0-A 动态 `/proc/uptime` 计时
+
+### 用户需求
+
+维护者要求根据《Docs/决赛文档/优化方案.md》先实现 P0-A。
+
+### 分析与采纳结论
+
+BuildStorm 脚本通过 `cut -d' ' -f1 /proc/uptime` 计算正式编译时间，而启动期 proc 兼容文件只写入静态 ext4 文件，缺少 `/proc/uptime` 动态实现，导致 `elapsed_s=0.00`。采用路径化 proc 模型下的虚拟文件分发，不向镜像写入静态 uptime 文件；时间由架构层 `get_ticks()/get_clock_freq()` 生成，避免复用 RISC-V 频率常数。第二列按所有 Hart 的 idle 区间累计，符合 `/proc/uptime` 的 Linux 展示方式。
+
+为保证 shell/工具的普通读取语义，`UptimeFile` 对每个打开描述保存一份快照，连续小读和跨用户页读取共享同一内容，读完返回 EOF；`lseek(SEEK_SET, 0)` 重新采样。新增 initproc 回归逐字节读取两次，校验格式、EOF 和 uptime 单调性。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/fs/files/uptime.rs` | 新增动态只读 `UptimeFile`，实现读取、EOF、`fstat`、`lseek` 和 poll。 |
+| `os/src/fs/files/mod.rs` | 注册并导出 `UptimeFile`。 |
+| `os/src/fs/kernel_fs_ops/mod.rs` | 让内核文件操作模块可使用动态文件类型。 |
+| `os/src/fs/kernel_fs_ops/open.rs` | 在公共 VFS `/proc/uptime` 路径分发虚拟文件并校验打开标志。 |
+| `os/src/syscall/fs/path.rs` | 让 `faccessat` 能读取动态 proc 文件的通用 `File` 元数据。 |
+| `os/src/task/processor.rs` | 统计每 Hart idle 区间并导出累计时间。 |
+| `os/src/task/mod.rs` | 导出 `idle_ticks`。 |
+| `user/src/bin/initproc/uptime_regression.rs` | 新增 proc uptime 格式、EOF、连续读取回归。 |
+| `user/src/bin/initproc.rs` | 将 uptime 回归接入 final-2026 前置检查。 |
+| `Docs/决赛文档/problem/buildstorm-proc-uptime.md` | 记录现象、根因、修复和验证边界。 |
+
+### 验证
+
+已执行：
+
+```text
+make TARGET_ARCH=riscv64
+make TARGET_ARCH=loongarch64
+timeout 90s qemu-system-riscv64 ... -smp 8 ... -snapshot
+git diff --check
+```
+
+RISC-V 和 LoongArch64 release 构建通过。RISC-V QEMU 日志显示 `uptime regression: PASS`，并且没有出现 panic；外层运行随后进入嵌套 QEMU 启动阶段，因 90 秒 timeout 结束。LoongArch64 QEMU、完整 BuildStorm 和正式 `elapsed_s` 5% 对齐验证尚未运行。

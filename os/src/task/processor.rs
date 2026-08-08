@@ -31,6 +31,7 @@ use crate::{
 };
 use alloc::{boxed::Box, sync::Arc};
 use log::{debug, error};
+use spin::Mutex;
 /// 单个 Hart 的处理器本地调度状态。
 ///
 /// 每个 Hart 只访问 [`PROCESSORS`] 中与自身 Hart ID 对应的槽位，因此这些
@@ -131,6 +132,23 @@ const EMPTY_PROCESSOR: Processor = Processor::new();
 pub static PROCESSORS: SyncUnsafeCell<[Processor; HART_NUM]> =
     SyncUnsafeCell::new([EMPTY_PROCESSOR; HART_NUM]);
 
+/// Accumulated time spent in the scheduler's idle path for each Hart.
+///
+/// The value is updated when an idle interval ends.  A reader also includes
+/// the currently open interval, so `/proc/uptime` remains monotonic while a
+/// Hart is sleeping.
+struct IdleAccounting {
+    total_ticks: usize,
+    started_at: Option<usize>,
+}
+
+static IDLE_ACCOUNTING: [Mutex<IdleAccounting>; HART_NUM] = [const {
+    Mutex::new(IdleAccounting {
+        total_ticks: 0,
+        started_at: None,
+    })
+}; HART_NUM];
+
 /// Hart 即将进入或正在执行架构 idle 指令时发布的状态。
 ///
 /// 唤醒方只在目标值为 `true` 时发送 IPI，避免打扰已经执行有用工作的
@@ -198,9 +216,32 @@ pub(crate) fn notify_harts_of_runnable_task(cpu_mask: usize, ready_tasks: usize)
 fn idle_until_runnable(hartid: usize) {
     HART_IDLE[hartid].store(true, Ordering::Release);
     if !ready_queue::has_ready_for_hart(hartid) {
+        let idle_started = crate::arch::time::get_ticks();
+        IDLE_ACCOUNTING[hartid].lock().started_at = Some(idle_started);
         crate::arch::cpu::idle();
+        let mut accounting = IDLE_ACCOUNTING[hartid].lock();
+        accounting.total_ticks = accounting
+            .total_ticks
+            .saturating_add(crate::arch::time::get_ticks().saturating_sub(idle_started));
+        accounting.started_at = None;
     }
     HART_IDLE[hartid].store(false, Ordering::Release);
+}
+
+/// Return the total time all Harts have spent idle, including active intervals.
+pub fn idle_ticks() -> usize {
+    let now = crate::arch::time::get_ticks();
+    (0..HART_NUM).fold(0usize, |total, hartid| {
+        let accounting = IDLE_ACCOUNTING[hartid].lock();
+        total.saturating_add(
+            accounting.total_ticks.saturating_add(
+                accounting
+                    .started_at
+                    .map(|started| now.saturating_sub(started))
+                    .unwrap_or(0),
+            ),
+        )
+    })
 }
 
 /// 获取指定 Hart 的处理器本地状态。

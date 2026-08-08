@@ -106,8 +106,8 @@ pub use process::*;
 pub use process::*;
 pub(crate) use processor::notify_harts_of_runnable_task;
 pub use processor::{
-    current_task, current_token, current_trap_cx, run_tasks, schedule, take_current_task,
-    Processor, PROCESSORS,
+    current_task, current_token, current_trap_cx, idle_ticks, run_tasks, schedule,
+    take_current_task, Processor, PROCESSORS,
 };
 pub(crate) use rseq::RseqState;
 pub use scheduler::ready_queue;

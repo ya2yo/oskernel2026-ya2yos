@@ -37,6 +37,8 @@ mod netperf;
 mod rseq_regression;
 #[path = "initproc/sigaltstack_regression.rs"]
 mod sigaltstack_regression;
+#[path = "initproc/uptime_regression.rs"]
+mod uptime_regression;
 mod vfork_bench;
 
 // ---------------------------------------------------------------------------
@@ -70,6 +72,7 @@ fn boot_arceos_helloworld_in_qemu() -> i32 {
         "export LD_LIBRARY_PATH=/opt/qemu-rv64/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}; ",
         "exec /opt/qemu-rv64/bin/qemu-system-riscv64 ",
         "-machine virt -cpu rv64 -m 512M -smp 1 -nographic ",
+        "-bios /opt/qemu-rv64/share/opensbi-riscv64-generic-fw_dynamic.bin ",
         "-kernel /work/tgoskits/target/riscv64gc-unknown-linux-musl/release/arceos-helloworld\0"
     );
 
@@ -81,7 +84,11 @@ fn boot_arceos_helloworld_in_qemu() -> i32 {
         return pid as i32;
     }
     if pid == 0 {
-        chdir("/work/tgoskits\0");
+        let ret = chdir("/work/tgoskits\0");
+        if ret != 0 {
+            println!("chdir /work/tgoskits failed: {}", ret);
+            exit(127);
+        }
         let args = ["/bin/bash\0", "-c\0", QEMU_COMMAND];
         let ret = execve(&args);
         println!("exec arceos qemu failed: {}", ret);
@@ -89,7 +96,14 @@ fn boot_arceos_helloworld_in_qemu() -> i32 {
     }
 
     let mut exit_code: i32 = 0;
-    let _ = waitpid(pid as usize, &mut exit_code);
+    let waited = waitpid(pid as usize, &mut exit_code);
+    if waited != pid as isize {
+        println!("waitpid arceos qemu failed: {}", waited);
+        return -1;
+    }
+    if exit_code != 0 {
+        println!("arceos qemu exited with status: {}", exit_code);
+    }
     exit_code
 }
 
@@ -121,7 +135,11 @@ fn boot_arceos_helloworld_in_qemu() -> i32 {
         return pid as i32;
     }
     if pid == 0 {
-        chdir("/work/tgoskits\0");
+        let ret = chdir("/work/tgoskits\0");
+        if ret != 0 {
+            println!("chdir /work/tgoskits failed: {}", ret);
+            exit(127);
+        }
         let args = ["/bin/bash\0", "-c\0", QEMU_COMMAND];
         let ret = execve(&args);
         println!("exec arceos qemu failed: {}", ret);
@@ -129,7 +147,14 @@ fn boot_arceos_helloworld_in_qemu() -> i32 {
     }
 
     let mut exit_code: i32 = 0;
-    let _ = waitpid(pid as usize, &mut exit_code);
+    let waited = waitpid(pid as usize, &mut exit_code);
+    if waited != pid as isize {
+        println!("waitpid arceos qemu failed: {}", waited);
+        return -1;
+    }
+    if exit_code != 0 {
+        println!("arceos qemu exited with status: {}", exit_code);
+    }
     exit_code
 }
 
@@ -241,6 +266,10 @@ fn test_final_2026() -> i32 {
         return 1;
     }
     if !rseq_regression::run() {
+        shutdown();
+        return 1;
+    }
+    if !uptime_regression::run() {
         shutdown();
         return 1;
     }

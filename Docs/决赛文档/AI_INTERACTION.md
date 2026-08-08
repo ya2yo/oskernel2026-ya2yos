@@ -3021,3 +3021,12 @@
 - **验证边界**：RISC-V、LoongArch64 release 构建和格式/补丁检查通过；未运行需先完成完整 BuildStorm 的嵌套 QEMU。
 - **关联问题**：[嵌套 RISC-V QEMU 的 OpenSBI 固件查找](./problem/nested-qemu-opensbi-firmware-lookup.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm P0-A 动态 `/proc/uptime` 计时（8.08）
+
+- **工具/模型**：OpenCode（GPT-5.6 Luna）
+- **场景**：根据《优化方案》先实现 P0-A，恢复 BuildStorm guest 计时并补齐 proc 文件读取回归。
+- **描述**：确认 `elapsed_s=0.00` 的直接原因是路径化 proc 模型缺少动态 `/proc/uptime`。新增只读虚拟 `UptimeFile`，按架构 `get_ticks()/get_clock_freq()` 生成 uptime 和所有 Hart idle 累计时间，处理每 fd 快照、跨页/小读、EOF、`lseek` 和打开标志；增加 initproc 连续读取与单调性回归。
+- **验证边界**：RISC-V、LoongArch64 release 构建通过；RISC-V QEMU 中 uptime 回归 PASS，随后进入嵌套 QEMU 阶段并由 90 秒 timeout 结束；LoongArch64 QEMU 和完整 BuildStorm 未运行。
+- **关联问题**：[BuildStorm P0-A 动态 `/proc/uptime` 计时](./problem/buildstorm-proc-uptime.md)
+- **关联 commit**：当前工作区未提交
