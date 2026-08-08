@@ -10827,5 +10827,28 @@ ext4/lwext4 核心。此前短时 RISC-V QEMU 已显示 `fstat unlink regression
 退出，这是独立镜像依赖问题，尚未完成下一层 guest 启动验证。后续确认
 `test_final_2026()` 原本会在 LoongArch64 无条件调用硬编码的 RISC-V 嵌套 QEMU；已为该函数
 定义和调用添加 `#[cfg(target_arch = "riscv64")]`，让 LoongArch64 保持原生测试路径。
+`timeout 120s make run TARGET_ARCH=loongarch64` 输出三个前置回归 PASS 后直接 `shutdown!`，
+没有 RISC-V 嵌套 QEMU 启动行或非法指令。
 
 详见 [问题复盘](./problem/nested-qemu-zicond-illegal-instruction.md)。
+
+## 2026-08-08：补齐 LoongArch64 嵌套 ArceOS QEMU 启动
+
+### 用户需求
+
+用户要求根据 `2026_testsuits_img/final-2026/sdcard-la.img` 的内容，为
+`user/src/bin/initproc.rs` 中的 `boot_arceos_helloworld_in_qemu` 增加龙芯版本。
+
+### 分析与修改
+
+确认镜像为 `starry-rootfs` ext4 文件系统，并从镜像内 BuildStorm 脚本提取出
+LoongArch64 启动约定：产物位于
+`/work/tgoskits/target/loongarch64-unknown-linux-musl/release/`，其 `.bin` 文件需复制为
+`/work/buildstorm.esp/EFI/BOOT/BOOTLOONGARCH64.EFI`，然后使用 `/opt/qemu-la64` 下的
+动态加载器、QEMU 和 EDK2 `code.fd`/`vars.fd`，以 FAT ESP 启动。`initproc.rs` 新增
+LoongArch64 条件编译函数，RISC-V 路径保持不变。
+
+### 验证边界
+
+本轮已完成镜像只读元数据和脚本内容检查；尚未运行 LoongArch64 QEMU 或完整双架构构建。
+关联问题：[嵌套 LoongArch64 QEMU 的 EFI 启动流程](./problem/nested-loongarch-qemu-boot.md)。

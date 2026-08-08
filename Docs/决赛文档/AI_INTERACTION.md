@@ -1455,12 +1455,21 @@
 - **验证**：RISC-V、LoongArch64 `make perf` 通过；旧 `log.ans` 解析后 `wait` 采用 `wait_active` 的 `25.291 ms`。QEMU 因宿主 `/var/tmp` 只读在启动前失败，未取得新的 guest perf 快照。
 - **关联 commit**：当前工作区未提交
 
+#### 嵌套 LoongArch64 QEMU 的 EFI 启动流程（8.8）
+
+- **工具/模型**：Codex（GPT-5.6-luna）
+- **场景**：根据 final-2026 LoongArch64 镜像内容补齐 `initproc` 的嵌套 ArceOS QEMU 启动路径
+- **描述**：检查 `sdcard-la.img` 中的 BuildStorm 启动脚本，确认 LoongArch64 `arceos-helloworld` 不是 RISC-V 的 `-kernel` 启动模式，而是通过 `.bin` EFI 文件、FAT ESP、EDK2 pflash 和 `/opt/qemu-la64` QEMU 启动。在 `user/src/bin/initproc.rs` 增加对应 `#[cfg(target_arch = "loongarch64")]` 实现，并让 final 入口在两个架构下分别调用原生启动函数。
+- **验证边界**：已完成镜像元数据和脚本内容检查；尚未运行 LoongArch64 QEMU 或完整双架构构建。
+- **关联问题**：[嵌套 LoongArch64 QEMU 的 EFI 启动流程](./problem/nested-loongarch-qemu-boot.md)
+- **关联 commit**：当前工作区未提交
+
 #### 嵌套 RISC-V QEMU Zicond 非法指令（8.8）
 
 - **工具/模型**：Codex（GPT-5）
 - **场景**：维护者要求分析 `log.ans` 末尾的 `IllegalInstruction at 0x4b267e`，实施修复并运行验证。
 - **描述**：确认异常发生在作为用户进程运行的嵌套 QEMU，其二进制使用 Zicond `czero.eqz`，外层 QEMU 的默认 `rv64` CPU 未启用该扩展。由于评测机外层 QEMU 参数固定，修复改为在内核用户态非法指令路径精确模拟 `czero.eqz`/`czero.nez`，未匹配的非法指令仍终止进程；删除本地 QEMU 的 `-cpu rv64,zicond=on`，防止验证绕过该内核路径。嵌套 QEMU 的定义与调用均限定在 RISC-V，避免 LoongArch64 final 镜像执行 RISC-V ELF。
-- **验证边界**：根目录 RISC-V/LoongArch64 release 构建通过。RISC-V 运行中三项前置回归 PASS，PID 4 不再触发原 `IllegalInstruction`，并已执行到后续系统调用；嵌套 QEMU 随后因镜像缺失 OpenSBI 固件退出，未完成下一层 guest 启动。
+- **验证边界**：根目录 RISC-V/LoongArch64 release 构建通过。RISC-V 运行中三项前置回归 PASS，PID 4 不再触发原 `IllegalInstruction`，并已执行到后续系统调用；嵌套 QEMU 随后因镜像缺失 OpenSBI 固件退出，未完成下一层 guest 启动。LoongArch64 final 运行中三项前置回归 PASS 后直接 `shutdown!`，未启动 RISC-V QEMU。
 - **关联问题**：[嵌套 RISC-V QEMU 的 Zicond 非法指令](./problem/nested-qemu-zicond-illegal-instruction.md)
 - **关联 commit**：当前工作区未提交
 

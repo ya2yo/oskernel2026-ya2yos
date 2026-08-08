@@ -63,6 +63,8 @@ czero.nez rd, rs1, rs2
 - `make TARGET_ARCH=riscv64`：根目录流程依次完成 RISC-V 和 LoongArch64 release 构建。
 - `timeout 240s make run TARGET_ARCH=riscv64`：未添加任何 Zicond 外层 CPU 参数，三项前置
   回归均为 PASS，PID 4 不再产生 `IllegalInstruction`，并继续执行多个系统调用。
+- `timeout 120s make run TARGET_ARCH=loongarch64`：三个前置回归均为 PASS，随后直接
+  `shutdown!`；未出现 RISC-V 嵌套 QEMU 启动行或非法指令。
 - 嵌套 QEMU 随后报告缺少
   `opensbi-riscv64-generic-fw_dynamic.bin` 并退出；这证明本次修复已越过原异常点，但
   下一层 guest 尚未启动，固件打包或 QEMU `-bios` 配置应作为独立问题处理。
