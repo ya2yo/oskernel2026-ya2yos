@@ -96,6 +96,7 @@ impl MemorySet {
     /// the update until every remote stale translation has been invalidated.
     fn with_retained_frames_mut<T>(
         &self,
+        #[cfg(feature = "perf")] kind: crate::mm::remote_tlb::ShootdownKind,
         retain: impl FnOnce(&MemorySetInner) -> Vec<Arc<FrameTracker>>,
         f: impl FnOnce(&mut MemorySetInner) -> T,
     ) -> T {
@@ -104,7 +105,11 @@ impl MemorySet {
         let mut inner = self.inner.write();
         let retained_frames = retain(&inner);
         let result = f(&mut inner);
-        crate::mm::remote_tlb::shootdown(&self.active_harts);
+        crate::mm::remote_tlb::shootdown(
+            &self.active_harts,
+            #[cfg(feature = "perf")]
+            kind,
+        );
         if was_active {
             self.activate_current_hart();
         }
@@ -116,6 +121,8 @@ impl MemorySet {
     /// Prefer a range-targeted or frame-preserving entry for bounded updates.
     pub(crate) fn with_mut<T>(&self, f: impl FnOnce(&mut MemorySetInner) -> T) -> T {
         self.with_retained_frames_mut(
+            #[cfg(feature = "perf")]
+            crate::mm::remote_tlb::ShootdownKind::Other,
             |inner| {
                 inner
                     .areas
@@ -130,10 +137,13 @@ impl MemorySet {
     /// Execute an update which can retire frames only inside `ranges`.
     fn with_ranges_mut<T>(
         &self,
+        #[cfg(feature = "perf")] kind: crate::mm::remote_tlb::ShootdownKind,
         ranges: &[(VirtPageNum, VirtPageNum)],
         f: impl FnOnce(&mut MemorySetInner) -> T,
     ) -> T {
         self.with_retained_frames_mut(
+            #[cfg(feature = "perf")]
+            kind,
             |inner| {
                 let mut retained = Vec::new();
                 for area in &inner.areas {
@@ -158,11 +168,17 @@ impl MemorySet {
     #[inline]
     fn with_range_mut<T>(
         &self,
+        #[cfg(feature = "perf")] kind: crate::mm::remote_tlb::ShootdownKind,
         start: VirtPageNum,
         end: VirtPageNum,
         f: impl FnOnce(&mut MemorySetInner) -> T,
     ) -> T {
-        self.with_ranges_mut(&[(start, end)], f)
+        self.with_ranges_mut(
+            #[cfg(feature = "perf")]
+            kind,
+            &[(start, end)],
+            f,
+        )
     }
 
     /// Update page-table state without retiring or replacing resident frames.
@@ -174,7 +190,26 @@ impl MemorySet {
         &self,
         f: impl FnOnce(&mut MemorySetInner) -> T,
     ) -> T {
-        self.with_retained_frames_mut(|_| Vec::new(), f)
+        self.with_frame_preserving_mut_with_kind(
+            #[cfg(feature = "perf")]
+            crate::mm::remote_tlb::ShootdownKind::Other,
+            f,
+        )
+    }
+
+    /// Update page-table state without retiring resident frames, preserving
+    /// the source category in remote-TLB diagnostics.
+    pub(crate) fn with_frame_preserving_mut_with_kind<T>(
+        &self,
+        #[cfg(feature = "perf")] kind: crate::mm::remote_tlb::ShootdownKind,
+        f: impl FnOnce(&mut MemorySetInner) -> T,
+    ) -> T {
+        self.with_retained_frames_mut(
+            #[cfg(feature = "perf")]
+            kind,
+            |_| Vec::new(),
+            f,
+        )
     }
 
     /// Execute a closure while holding the read lock.
@@ -207,6 +242,8 @@ impl MemorySet {
     #[inline(always)]
     pub fn remove_area_with_start_vpn(&self, start_vpn: VirtPageNum) {
         self.with_retained_frames_mut(
+            #[cfg(feature = "perf")]
+            crate::mm::remote_tlb::ShootdownKind::Other,
             |inner| {
                 inner
                     .areas
@@ -235,6 +272,8 @@ impl MemorySet {
                 return 0;
             };
             self.with_range_mut(
+                #[cfg(feature = "perf")]
+                crate::mm::remote_tlb::ShootdownKind::Other,
                 VirtAddr::from(addr).floor(),
                 VirtAddr::from(end_addr).ceil(),
                 |inner| inner.mmap(addr, len, map_perm, flags, file, off),
@@ -261,6 +300,8 @@ impl MemorySet {
     pub fn shm_detach(&self, addr: usize) -> SyscallRet {
         let start_vpn = VirtAddr::from(addr).floor();
         self.with_retained_frames_mut(
+            #[cfg(feature = "perf")]
+            crate::mm::remote_tlb::ShootdownKind::Other,
             |inner| {
                 inner
                     .areas
@@ -290,7 +331,13 @@ impl MemorySet {
         for writeback in &writebacks {
             writeback_shared_mmap_pages(writeback)?;
         }
-        self.with_range_mut(start_vpn, end_vpn, |inner| inner.munmap(addr, len))
+        self.with_range_mut(
+            #[cfg(feature = "perf")]
+            crate::mm::remote_tlb::ShootdownKind::Munmap,
+            start_vpn,
+            end_vpn,
+            |inner| inner.munmap(addr, len),
+        )
     }
 
     /// Validate that a memory-advice range is fully mapped.
@@ -306,6 +353,8 @@ impl MemorySet {
             .checked_add(len)
             .ok_or(crate::utils::SysErrNo::EINVAL)?;
         self.with_range_mut(
+            #[cfg(feature = "perf")]
+            crate::mm::remote_tlb::ShootdownKind::Other,
             VirtAddr::from(addr).floor(),
             VirtAddr::from(end_addr).ceil(),
             |inner| inner.discard_madvise_pages(addr, len),
@@ -360,7 +409,19 @@ impl MemorySet {
             .unwrap_or_default();
         let handled = inner.handle_page_fault(vpn, scause, prepared);
         if replaces_present_pte {
-            crate::mm::remote_tlb::shootdown(&self.active_harts);
+            #[cfg(feature = "perf")]
+            let kind = match scause {
+                Trap::Exception(
+                    crate::trap::trap_types::Exception::StorePageFault
+                    | crate::trap::trap_types::Exception::PageModifyFault,
+                ) => crate::mm::remote_tlb::ShootdownKind::Cow,
+                _ => crate::mm::remote_tlb::ShootdownKind::PageFault,
+            };
+            crate::mm::remote_tlb::shootdown(
+                &self.active_harts,
+                #[cfg(feature = "perf")]
+                kind,
+            );
         }
         if was_active {
             self.activate_current_hart();
@@ -462,7 +523,11 @@ impl MemorySet {
     /// `MemorySetInner::mprotect`.
     #[inline(always)]
     pub fn mprotect(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) {
-        self.with_frame_preserving_mut(|inner| inner.mprotect(start_vpn, end_vpn, map_perm));
+        self.with_frame_preserving_mut_with_kind(
+            #[cfg(feature = "perf")]
+            crate::mm::remote_tlb::ShootdownKind::Mprotect,
+            |inner| inner.mprotect(start_vpn, end_vpn, map_perm),
+        );
     }
 
     /// Adjust an mmap range while retaining only frames which the operation can
@@ -493,7 +558,11 @@ impl MemorySet {
         };
 
         if !may_move && new_len >= old_len {
-            return self.with_frame_preserving_mut(update);
+            return self.with_frame_preserving_mut_with_kind(
+                #[cfg(feature = "perf")]
+                crate::mm::remote_tlb::ShootdownKind::Mremap,
+                update,
+            );
         }
         if fixed {
             let new_end = new_addr
@@ -503,9 +572,20 @@ impl MemorySet {
                 VirtAddr::from(new_addr).floor(),
                 VirtAddr::from(new_end).ceil(),
             );
-            self.with_ranges_mut(&[old_range, new_range], update)
+            self.with_ranges_mut(
+                #[cfg(feature = "perf")]
+                crate::mm::remote_tlb::ShootdownKind::Mremap,
+                &[old_range, new_range],
+                update,
+            )
         } else {
-            self.with_range_mut(old_range.0, old_range.1, update)
+            self.with_range_mut(
+                #[cfg(feature = "perf")]
+                crate::mm::remote_tlb::ShootdownKind::Mremap,
+                old_range.0,
+                old_range.1,
+                update,
+            )
         }
     }
 
@@ -530,9 +610,13 @@ impl MemorySet {
                 inner.grow(grow_size, user_heappoint, user_heapbottom)
             })
         } else {
-            self.with_range_mut(start_vpn, end_vpn, |inner| {
-                inner.grow(grow_size, user_heappoint, user_heapbottom)
-            })
+            self.with_range_mut(
+                #[cfg(feature = "perf")]
+                crate::mm::remote_tlb::ShootdownKind::Other,
+                start_vpn,
+                end_vpn,
+                |inner| inner.grow(grow_size, user_heappoint, user_heapbottom),
+            )
         }
     }
 
@@ -611,7 +695,18 @@ impl MemorySet {
                 }
             }
         }
-        let clear_result = self.with_mut(|inner| inner.recycle_data_pages());
+        let clear_result = self.with_retained_frames_mut(
+            #[cfg(feature = "perf")]
+            crate::mm::remote_tlb::ShootdownKind::ForkExec,
+            |inner| {
+                inner
+                    .areas
+                    .iter()
+                    .flat_map(|area| area.data_frames.values().cloned())
+                    .collect()
+            },
+            |inner| inner.recycle_data_pages(),
+        );
         match first_error {
             Some(error) => Err(error),
             None => clear_result,

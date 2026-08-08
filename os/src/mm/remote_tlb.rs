@@ -18,6 +18,8 @@ struct TlbMailbox {
     pending: AtomicBool,
     sequence: AtomicUsize,
     acknowledged: AtomicUsize,
+    #[cfg(feature = "perf")]
+    requested_at: AtomicUsize,
 }
 
 impl TlbMailbox {
@@ -26,6 +28,8 @@ impl TlbMailbox {
             pending: AtomicBool::new(false),
             sequence: AtomicUsize::new(0),
             acknowledged: AtomicUsize::new(0),
+            #[cfg(feature = "perf")]
+            requested_at: AtomicUsize::new(0),
         }
     }
 }
@@ -38,6 +42,21 @@ static MAILBOXES: [TlbMailbox; HART_NUM] = [const { TlbMailbox::new() }; HART_NU
 /// A waiter can itself be a target of the current shootdown, so it must keep
 /// servicing its mailbox while another hart owns the lock.
 static UPDATE_LOCK: RemoteTlbMutex<()> = RemoteTlbMutex::new(());
+
+/// Logical owner of a page-table update that needs translation invalidation.
+/// This is diagnostic-only and does not alter the invalidation protocol.
+#[cfg(feature = "perf")]
+#[derive(Clone, Copy, Debug)]
+#[repr(usize)]
+pub(crate) enum ShootdownKind {
+    PageFault,
+    Cow,
+    Munmap,
+    Mprotect,
+    Mremap,
+    ForkExec,
+    Other,
+}
 
 #[inline]
 pub(crate) fn lock_updates() -> MutexGuard<'static, ()> {
@@ -63,7 +82,10 @@ pub(crate) fn poll() {
             let sequence = mailbox.sequence.load(Ordering::Acquire);
             mailbox.acknowledged.store(sequence, Ordering::Release);
             #[cfg(feature = "perf")]
-            crate::utils::perf::record_remote_tlb_acknowledgement();
+            crate::utils::perf::record_remote_tlb_acknowledgement(
+                crate::arch::time::get_ticks()
+                    .saturating_sub(mailbox.requested_at.load(Ordering::Relaxed)),
+            );
         }
     }
 }
@@ -77,7 +99,10 @@ pub(crate) fn poll() {
 /// this address space cannot return to user mode until the write lock drops,
 /// whereupon its normal activation flushes the local translation cache.
 #[inline]
-pub(crate) fn shootdown(active_harts: &AtomicUsize) {
+pub(crate) fn shootdown(active_harts: &AtomicUsize, #[cfg(feature = "perf")] kind: ShootdownKind) {
+    #[cfg(feature = "perf")]
+    let shootdown_begin = crate::arch::time::get_ticks();
+
     crate::arch::tlb::tlb_invalidate();
     crate::arch::tlb::instruction_fence();
 
@@ -85,8 +110,15 @@ pub(crate) fn shootdown(active_harts: &AtomicUsize) {
     {
         let source = hart_id();
         let remote_harts = active_harts.load(Ordering::Acquire) & !(1usize << source);
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_remote_tlb_shootdown(remote_harts.count_ones() as usize);
+        if remote_harts == 0 {
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_remote_tlb_shootdown(
+                kind as usize,
+                0,
+                crate::arch::time::get_ticks().saturating_sub(shootdown_begin),
+            );
+            return;
+        }
         for target in 0..HART_NUM {
             let target_bit = 1usize << target;
             if remote_harts & target_bit == 0 {
@@ -98,6 +130,12 @@ pub(crate) fn shootdown(active_harts: &AtomicUsize) {
                 .sequence
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1);
+            #[cfg(feature = "perf")]
+            let mailbox_wait_begin = crate::arch::time::get_ticks();
+            #[cfg(feature = "perf")]
+            mailbox
+                .requested_at
+                .store(mailbox_wait_begin, Ordering::Relaxed);
             mailbox.pending.store(true, Ordering::Release);
             if !crate::arch::cpu::wake_hart(target) {
                 panic!("remote TLB shootdown could not wake hart {}", target);
@@ -108,9 +146,27 @@ pub(crate) fn shootdown(active_harts: &AtomicUsize) {
                 }
                 core::hint::spin_loop();
             }
+            #[cfg(feature = "perf")]
+            crate::utils::perf::record_remote_tlb_mailbox_wait(
+                crate::arch::time::get_ticks().saturating_sub(mailbox_wait_begin),
+            );
         }
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_remote_tlb_shootdown(
+            kind as usize,
+            remote_harts.count_ones() as usize,
+            crate::arch::time::get_ticks().saturating_sub(shootdown_begin),
+        );
     }
 
     #[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
-    let _ = active_harts;
+    {
+        let _ = active_harts;
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_remote_tlb_shootdown(
+            kind as usize,
+            0,
+            crate::arch::time::get_ticks().saturating_sub(shootdown_begin),
+        );
+    }
 }

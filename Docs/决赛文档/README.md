@@ -204,3 +204,4 @@
 - [嵌套 RISC-V QEMU 的 OpenSBI 固件查找](./problem/nested-qemu-opensbi-firmware-lookup.md)
 - [嵌套 LoongArch64 QEMU 的 EFI 启动流程](./problem/nested-loongarch-qemu-boot.md)
 - [BuildStorm P0-A 动态 `/proc/uptime` 计时](./problem/buildstorm-proc-uptime.md)
+- [BuildStorm P1 页表更新批处理与 remote-TLB 观测](./problem/buildstorm-remote-tlb-batching.md)

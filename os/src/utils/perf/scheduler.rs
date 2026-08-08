@@ -22,6 +22,20 @@ pub(crate) static IDLE_LOOPS_BY_HART: [AtomicUsize; HART_NUM] =
 pub(crate) static REMOTE_TLB_SHOOTDOWNS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static REMOTE_TLB_TARGET_HARTS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static REMOTE_TLB_ACKNOWLEDGEMENTS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_SHOOTDOWNS_BY_SOURCE: [AtomicUsize; 7] =
+    [const { AtomicUsize::new(0) }; 7];
+pub(crate) static REMOTE_TLB_LOCAL_ONLY_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_LOCAL_ONLY_TICKS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_LOCAL_ONLY_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_REMOTE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_REMOTE_TICKS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_REMOTE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_MAILBOX_WAIT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_MAILBOX_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_MAILBOX_WAIT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_ACK_LATENCY_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_ACK_LATENCY_TICKS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static REMOTE_TLB_ACK_LATENCY_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_DISPATCH_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_DISPATCH_TICKS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_DISPATCH_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -81,17 +95,51 @@ pub fn record_idle_loop(hartid: usize) {
     }
 }
 
-/// Record a completed page-table update and how many active remote harts it
-/// had to invalidate.
+/// Record a completed page-table update, its logical source, and its total
+/// local-only or remote invalidation time.
 #[inline]
-pub fn record_remote_tlb_shootdown(remote_targets: usize) {
+pub fn record_remote_tlb_shootdown(source: usize, remote_targets: usize, elapsed: usize) {
     add(&REMOTE_TLB_SHOOTDOWNS, 1);
     add(&REMOTE_TLB_TARGET_HARTS, remote_targets);
+    if let Some(counter) = REMOTE_TLB_SHOOTDOWNS_BY_SOURCE.get(source) {
+        add(counter, 1);
+    }
+    if remote_targets == 0 {
+        record_duration(
+            &REMOTE_TLB_LOCAL_ONLY_SAMPLES,
+            &REMOTE_TLB_LOCAL_ONLY_TICKS,
+            &REMOTE_TLB_LOCAL_ONLY_MAX_TICKS,
+            elapsed,
+        );
+    } else {
+        record_duration(
+            &REMOTE_TLB_REMOTE_SAMPLES,
+            &REMOTE_TLB_REMOTE_TICKS,
+            &REMOTE_TLB_REMOTE_MAX_TICKS,
+            elapsed,
+        );
+    }
 }
 
 #[inline]
-pub fn record_remote_tlb_acknowledgement() {
+pub fn record_remote_tlb_mailbox_wait(elapsed: usize) {
+    record_duration(
+        &REMOTE_TLB_MAILBOX_WAIT_SAMPLES,
+        &REMOTE_TLB_MAILBOX_WAIT_TICKS,
+        &REMOTE_TLB_MAILBOX_WAIT_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_remote_tlb_acknowledgement(elapsed: usize) {
     add(&REMOTE_TLB_ACKNOWLEDGEMENTS, 1);
+    record_duration(
+        &REMOTE_TLB_ACK_LATENCY_SAMPLES,
+        &REMOTE_TLB_ACK_LATENCY_TICKS,
+        &REMOTE_TLB_ACK_LATENCY_MAX_TICKS,
+        elapsed,
+    );
 }
 
 pub(crate) fn scheduler_hart_snapshot() -> ([usize; HART_NUM], [usize; HART_NUM]) {
@@ -99,4 +147,8 @@ pub(crate) fn scheduler_hart_snapshot() -> ([usize; HART_NUM], [usize; HART_NUM]
         core::array::from_fn(|hart| SCHEDULER_SELECTIONS_BY_HART[hart].load(Ordering::Relaxed)),
         core::array::from_fn(|hart| IDLE_LOOPS_BY_HART[hart].load(Ordering::Relaxed)),
     )
+}
+
+pub(crate) fn remote_tlb_shootdown_source_snapshot() -> [usize; 7] {
+    core::array::from_fn(|source| REMOTE_TLB_SHOOTDOWNS_BY_SOURCE[source].load(Ordering::Relaxed))
 }

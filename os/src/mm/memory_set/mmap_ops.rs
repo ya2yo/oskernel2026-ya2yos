@@ -10,7 +10,6 @@ use super::{
 use crate::arch::memory_layout::{
     MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_SPACE_SIZE,
 };
-use crate::arch::tlb::{instruction_fence, tlb_invalidate};
 use crate::fs::{File, Inode, OSFile, OpenFlags};
 use crate::mm::group::GROUP_SHARE;
 use crate::mm::map_area::MapType;
@@ -107,7 +106,6 @@ impl MemorySetInner {
         };
         let mut area = self.areas.remove(idx);
         area.unmap(&mut self.page_table);
-        tlb_invalidate();
         Ok(0)
     }
 
@@ -291,7 +289,6 @@ impl MemorySetInner {
                 area.vpn_range = VPNRange::new(area_start, start_vpn);
                 self.push_lazily(right_area);
             }
-            tlb_invalidate();
         }
         // Reuse a newly freed high hole on the next top-down allocation.  A
         // lower hint remains valid; only move it upward when this unmap opens
@@ -359,7 +356,6 @@ impl MemorySetInner {
                 area.unmap_one(&mut self.page_table, vpn);
             }
         }
-        tlb_invalidate();
         Ok(0)
     }
 
@@ -545,14 +541,12 @@ impl MemorySetInner {
                 });
             let Some(source_frame) = source_frame else {
                 new_area.unmap(&mut self.page_table);
-                tlb_invalidate();
                 return Err(SysErrNo::EFAULT);
             };
 
             let new_vpn = VirtPageNum(new_start_vpn.0 + page_offset);
             let Some(new_ppn) = new_area.map_one(&mut self.page_table, new_vpn) else {
                 new_area.unmap(&mut self.page_table);
-                tlb_invalidate();
                 return Err(SysErrNo::ENOMEM);
             };
             new_ppn
@@ -566,7 +560,6 @@ impl MemorySetInner {
         old_area.unmap(&mut self.page_table);
         self.push_lazily(new_area);
         self.total_mmap_size = new_total_mmap_size;
-        tlb_invalidate();
         Ok(dest_addr)
     }
 
@@ -693,7 +686,6 @@ impl MemorySetInner {
 
         self.areas[old_idx].vpn_range = VPNRange::new(old_start_vpn, new_end_vpn);
         self.total_mmap_size = new_total_mmap_size;
-        tlb_invalidate();
         Ok(old_addr)
     }
 
@@ -739,7 +731,8 @@ impl MemorySetInner {
     ///   不重叠的 area 会被忽略（跳过循环体）。
     /// - 新创建的 area 先存入 `new_areas`，在遍历完所有 area 后统一插入，
     ///   避免在迭代 `self.areas` 的同时修改 Vec 导致迭代器失效。
-    /// - 最后必须 `tlb_invalidate()` 以刷新 TLB，确保新权限立即生效。
+    /// - 外层 `MemorySet` 在全部 PTE 更新后执行一次本地/远端 TLB
+    ///   shootdown，确保新权限立即生效。
     pub fn mprotect(
         &mut self,
         start_vpn: VirtPageNum,
@@ -856,11 +849,6 @@ impl MemorySetInner {
         // 遍历目标范围内的每个 VPN，修改硬件页表项中的权限位
         for vpn in start_vpn.0..end_vpn.0 {
             self.page_table.handle_mprotect(vpn.into(), map_perm);
-        }
-        // 刷新 TLB 使新权限立即生效
-        tlb_invalidate();
-        if map_perm.contains(MapPermission::X) {
-            instruction_fence();
         }
     }
 }

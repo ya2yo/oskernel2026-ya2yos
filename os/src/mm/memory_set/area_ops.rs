@@ -11,7 +11,6 @@ use crate::{
     arch::{
         memory_layout::{MMAP_TOP, PAGE_SIZE, USER_HEAP_SIZE},
         page_table::PageTable,
-        tlb::tlb_invalidate,
     },
     mm::{
         map_area::MapType, FrameTracker, MapArea, MapAreaType, MapPermission, VPNRange, VirtAddr,
@@ -90,7 +89,6 @@ impl MemorySetInner {
             area.unmap(&mut self.page_table);
             self.areas.remove(idx);
         }
-        tlb_invalidate();
     }
 
     /// Eagerly insert a framed area below `hint`.
@@ -247,7 +245,6 @@ impl MemorySetInner {
                 areas[area_idx].data_frames.remove(&vpn);
             }
         }
-        tlb_invalidate();
         Some(new_addr)
     }
 

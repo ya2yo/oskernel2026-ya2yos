@@ -1271,15 +1271,49 @@ pub(super) fn emit_report(now: usize) {
         IDLE_LOOPS.load(Ordering::Relaxed),
     );
     let (scheduler_selections_by_hart, idle_loops_by_hart) = scheduler_hart_snapshot();
+    let remote_tlb_shootdowns_by_source = remote_tlb_shootdown_source_snapshot();
     println!(
         "[perf] scheduler_harts selections_by_hart={:?} idle_loops_by_hart={:?}",
         scheduler_selections_by_hart, idle_loops_by_hart,
     );
     println!(
-        "[perf] remote_tlb shootdowns={} target_harts={} acknowledgements={}",
+        "[perf] remote_tlb shootdowns={} local_only={} remote={} target_harts={} acknowledgements={} page_fault={} cow={} munmap={} mprotect={} mremap={} fork_exec={} other={}",
         REMOTE_TLB_SHOOTDOWNS.load(Ordering::Relaxed),
+        REMOTE_TLB_LOCAL_ONLY_SAMPLES.load(Ordering::Relaxed),
+        REMOTE_TLB_REMOTE_SAMPLES.load(Ordering::Relaxed),
         REMOTE_TLB_TARGET_HARTS.load(Ordering::Relaxed),
         REMOTE_TLB_ACKNOWLEDGEMENTS.load(Ordering::Relaxed),
+        remote_tlb_shootdowns_by_source[0],
+        remote_tlb_shootdowns_by_source[1],
+        remote_tlb_shootdowns_by_source[2],
+        remote_tlb_shootdowns_by_source[3],
+        remote_tlb_shootdowns_by_source[4],
+        remote_tlb_shootdowns_by_source[5],
+        remote_tlb_shootdowns_by_source[6],
+    );
+    emit_duration(
+        "[perf] remote_tlb_local_only",
+        &REMOTE_TLB_LOCAL_ONLY_SAMPLES,
+        &REMOTE_TLB_LOCAL_ONLY_TICKS,
+        &REMOTE_TLB_LOCAL_ONLY_MAX_TICKS,
+    );
+    emit_duration(
+        "[perf] remote_tlb_remote",
+        &REMOTE_TLB_REMOTE_SAMPLES,
+        &REMOTE_TLB_REMOTE_TICKS,
+        &REMOTE_TLB_REMOTE_MAX_TICKS,
+    );
+    emit_duration(
+        "[perf] remote_tlb_mailbox_wait",
+        &REMOTE_TLB_MAILBOX_WAIT_SAMPLES,
+        &REMOTE_TLB_MAILBOX_WAIT_TICKS,
+        &REMOTE_TLB_MAILBOX_WAIT_MAX_TICKS,
+    );
+    emit_duration(
+        "[perf] remote_tlb_ack_latency",
+        &REMOTE_TLB_ACK_LATENCY_SAMPLES,
+        &REMOTE_TLB_ACK_LATENCY_TICKS,
+        &REMOTE_TLB_ACK_LATENCY_MAX_TICKS,
     );
     println!(
         "[perf] scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",

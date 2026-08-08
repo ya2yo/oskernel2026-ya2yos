@@ -11132,3 +11132,30 @@ requested interests 过滤。MM、madvise、resident-page 扫描和进程级 ica
 最终必要组合明确重新编译后，`timeout 240s make run TARGET_ARCH=riscv64 > log.ans 2>&1`
 通过；日志包含第二段 `OpenSBI v1.6`、连续 `Hello, world!` 和 `shutdown!`。QEMU 参数和固定
 配置未修改。
+
+## 2026-08-09：BuildStorm P1 页表更新批处理与 remote-TLB 观测
+
+### 用户需求
+
+维护者要求根据《Docs/决赛文档/优化方案.md》实现 P1；实现中进一步指出
+`ShootdownKind` 不应进入非 perf release 的函数参数。
+
+### 分析与采纳结论
+
+确认 `MemorySet` handle 已在整次更新后统一执行 remote-TLB 协议，但
+`MemorySetInner::munmap` 会按 VMA 重复本地 flush，`mprotect`/`mremap`/fork 等路径也与
+外层 flush 重叠。保留既有帧生命周期和锁序，将本地失效统一放到最后的
+`remote_tlb::shootdown()`；它在 remote mask 为空时仅做 local-only 处理，非空时逐目标
+等待 ACK。
+
+perf 版本记录来源、mailbox wait 和 ACK latency；release 版本用条件编译移除
+`ShootdownKind`、请求时间与全部分类函数参数，不给常规路径保留诊断 ABI。
+
+### 修改与验证
+
+修改 `remote_tlb`、MemorySet handle/inner VMA 操作和 perf scheduler/report，并新增
+`problem/buildstorm-remote-tlb-batching.md`。`make build-arch TARGET_ARCH=riscv64`、
+`make perf TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64` 和
+`make perf TARGET_ARCH=loongarch64` 均通过。最终 RISC-V perf QEMU 运行到 `shutdown!`，
+四项启动回归 PASS；remote-TLB 快照为 720 次 shootdown、707 local-only、13 remote target
+且 13 ACK。完整 BuildStorm 与 LTP MM 专项未在本轮执行，未声明加速比例。

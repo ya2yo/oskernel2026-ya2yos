@@ -3048,3 +3048,18 @@
 - **验证边界**：最终最小组合的固定参数运行输出第二段 `OpenSBI v1.6`、`Hello, world!` 和 `shutdown!`；最终双架构 release 构建另行执行。
 - **关联问题**：[嵌套 RISC-V QEMU 的 poll readiness 与 Zicond 语义修复](./problem/nested-qemu-zicond-emulation-semantics.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm P1 页表更新批处理与 remote-TLB 观测（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：根据《优化方案》实现 P1，并按维护者反馈将 `ShootdownKind` 从非 perf release
+  的数据路径移除。
+- **描述**：将 `munmap` 等批量 VMA/PTE 更新的内层本地 TLB 刷新收敛为外层一次统一
+  shootdown；保留 UPDATE_LOCK、active-hart ACK 和旧帧释放顺序。perf 模式下加入来源、
+  local-only/remote、mailbox wait 与 ACK latency 聚合；release 使用 `#[cfg(feature =
+  "perf")]` 移除诊断枚举、mailbox 时间戳和函数参数。
+- **验证边界**：RISC-V/LoongArch64 的 release 与 perf 构建均通过；最终 RISC-V 8 Hart
+  perf QEMU 运行到 `shutdown!`，四项启动回归 PASS，remote 目标与 ACK 均为 13。完整
+  BuildStorm 和 LTP MM 专项未运行，未报告端到端加速。
+- **关联问题**：[BuildStorm P1 页表更新批处理与 remote-TLB 观测](./problem/buildstorm-remote-tlb-batching.md)
+- **关联 commit**：当前工作区未提交
