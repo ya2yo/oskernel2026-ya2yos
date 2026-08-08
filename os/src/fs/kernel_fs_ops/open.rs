@@ -12,6 +12,31 @@ use alloc::{format, string::String};
 use linux_raw_sys::general::CAP_FOWNER;
 use log::{debug, warn};
 
+const NESTED_QEMU_RISCV64_EXE: &str = "/opt/qemu-rv64/bin/qemu-system-riscv64";
+const NESTED_QEMU_OPENSBI_NAME: &str = "opensbi-riscv64-generic-fw_dynamic.bin";
+const NESTED_QEMU_OPENSBI_PATH: &str =
+    "/opt/qemu-rv64/share/opensbi-riscv64-generic-fw_dynamic.bin";
+
+/// Keep the image's OpenSBI placement compatible with QEMU's data-dir lookup.
+/// This is intentionally limited to QEMU's read-only probe for this firmware;
+/// normal pathname resolution and all other users retain their Linux errors.
+fn needs_nested_qemu_opensbi_fallback(requested_path: &str, flags: OpenFlags) -> bool {
+    let Some(task) = current_task() else {
+        return false;
+    };
+    task.process.fs_info.get_exe() == NESTED_QEMU_RISCV64_EXE
+        && requested_path != NESTED_QEMU_OPENSBI_PATH
+        && requested_path.rsplit('/').next() == Some(NESTED_QEMU_OPENSBI_NAME)
+        && flags.read_write() == (true, false)
+        && !flags.intersects(
+            OpenFlags::O_CREATE
+                | OpenFlags::O_DIRECTORY
+                | OpenFlags::O_PATH
+                | OpenFlags::O_TMPFILE
+                | OpenFlags::O_TRUNC,
+        )
+}
+
 /// 将绝对路径拆分为父目录路径和末级名称。
 ///
 /// 末尾斜杠会被忽略；根目录和空路径没有可创建或查找的末级名称，返回 `None`。
@@ -617,7 +642,12 @@ fn open_inner(
 /// 此入口会应用动态库路径映射；`mode` 仅在 `O_CREATE` 创建新节点时用于
 /// 计算初始权限，实际权限还会受当前进程 umask 影响。
 pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
-    open_inner(abs_path, flags, mode, true)
+    match open_inner(abs_path, flags, mode, true) {
+        Err(SysErrNo::ENOENT) if needs_nested_qemu_opensbi_fallback(abs_path, flags) => {
+            open_inner(NESTED_QEMU_OPENSBI_PATH, flags, mode, true)
+        }
+        result => result,
+    }
 }
 
 /// 打开 `abs_path`，但不应用动态库路径映射。

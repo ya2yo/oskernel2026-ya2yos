@@ -3012,3 +3012,12 @@
 - **场景**：实现已有 425 号 syscall 的基础 setup 语义，替换原 `DummyFd` 占位实现。
 - **描述**：新增独立 `IoUringFd`，校验 entries、用户参数地址和 flags，按 Linux `io_uring_params` ABI 回写 SQ/CQ 几何参数。SQ/CQ mmap、异步执行以及 `io_uring_enter/register` 尚未实现。RISC-V、LoongArch64 release 构建通过，未运行 QEMU/LTP 专项测试。详见 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：待提交
+
+#### 嵌套 RISC-V QEMU OpenSBI 固件查找（8.08）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `log.ans` 中嵌套 QEMU 找不到 OpenSBI 的错误，并明确不改 QEMU 启动参数，只修改内核文件查找。
+- **描述**：确认 `PATH` 不参与 QEMU 固件查找，`-bios default` 依赖 QEMU data directory；将仅针对 `/opt/qemu-rv64/bin/qemu-system-riscv64`、OpenSBI 固件基名、只读 `ENOENT` 的回退放入公共 VFS `open()`，覆盖 `access/stat/open` 共享路径。
+- **验证边界**：RISC-V、LoongArch64 release 构建和格式/补丁检查通过；未运行需先完成完整 BuildStorm 的嵌套 QEMU。
+- **关联问题**：[嵌套 RISC-V QEMU 的 OpenSBI 固件查找](./problem/nested-qemu-opensbi-firmware-lookup.md)
+- **关联 commit**：当前工作区未提交

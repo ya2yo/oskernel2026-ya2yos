@@ -11003,3 +11003,32 @@ LoongArch64 条件编译函数，RISC-V 路径保持不变。
 ### 验证
 
 `git diff --check` 通过；`cargo check --manifest-path os/Cargo.toml` 受环境缺少 `x86_64-linux-musl-cc` 和当前 nightly 与 `printf-compat` ABI 不兼容阻塞，未完成 kernel/QEMU/LTP 验证。
+
+## 2026-08-08：嵌套 RISC-V QEMU OpenSBI 固件查找
+
+### 用户需求
+
+维护者提供 `log.ans` 中的 `qemu-system-riscv64: Unable to find the RISC-V BIOS
+"opensbi-riscv64-generic-fw_dynamic.bin"`，指出固件实际位于
+`/opt/qemu-rv64/share/opensbi-riscv64-generic-fw_dynamic.bin`，并要求不修改 QEMU 启动参数，
+只通过内核文件查找修复。
+
+### 分析与采纳结论
+
+确认 BuildStorm 编译已经成功，失败发生在嵌套 QEMU 固件定位阶段。Linux 的 `PATH` 只用于
+可执行文件查找，QEMU 的 `-bios default` 使用编译期 data directory；Linux VFS 不会扫描
+根目录寻找同名固件。Ya2yOS 的 `faccessat`、`statx/fstatat` 和 `openat` 均经公共 VFS
+`open()` 路径，因此将严格的 QEMU/OpenSBI 别名放在公共打开入口，覆盖存在性探测和实际
+读取，同时不改变启动参数或普通用户路径语义。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/fs/kernel_fs_ops/open.rs` | QEMU 进程只读请求该 OpenSBI 基名且常规查找为 `ENOENT` 时，回退到镜像内固定路径。 |
+
+### 验证
+
+`rustfmt --edition 2021 --check`（涉及 Rust 文件）、`git diff --check`、
+`make build-arch TARGET_ARCH=riscv64` 和 `make build-arch TARGET_ARCH=loongarch64` 均通过；
+未运行需等待完整 BuildStorm 的 QEMU 运行时验证。
