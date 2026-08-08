@@ -1462,6 +1462,13 @@
 - **验证**：RISC-V、LoongArch64 `make perf` 通过；旧 `log.ans` 解析后 `wait` 采用 `wait_active` 的 `25.291 ms`。QEMU 因宿主 `/var/tmp` 只读在启动前失败，未取得新的 guest perf 快照。
 - **关联 commit**：当前工作区未提交
 
+#### RISC-V riscv_flush_icache(259) 系统调用接入（8.8）
+
+- **工具/模型**：Codex（GPT-5.6-Luna）
+- **场景**：新增 RISC-V 专用系统调用、复用架构 instruction fence、双架构构建验证。
+- **描述**：确认 259 号 syscall 为 `riscv_flush_icache(2)`。项目已有 RISC-V `instruction_fence()`，但缺少 syscall 枚举、分发和用户态封装；实现 RISC-V 条件编译入口，校验 flags 并执行当前 hart 的 `fence.i`，地址范围按 ABI 接收。详见 `Docs/决赛文档/ai.log` 对应条目和 [problem/riscv-flush-icache-259.md](./problem/riscv-flush-icache-259.md)。
+- **关联 commit**：当前工作区未提交
+
 #### 嵌套 LoongArch64 QEMU 的 EFI 启动流程（8.8）
 
 - **工具/模型**：Codex（GPT-5.6-luna）

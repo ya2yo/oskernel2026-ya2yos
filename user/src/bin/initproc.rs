@@ -64,6 +64,7 @@ pub(crate) fn run_final_testsuit(root: &str, script: &str) -> i32 {
 ///
 /// The final RISC-V image ships its nested QEMU under `/opt/qemu-rv64`; this
 /// invocation intentionally does not rebuild the artifact or add a timeout.
+#[cfg(target_arch = "riscv64")]
 fn boot_arceos_helloworld_in_qemu() -> i32 {
     const QEMU_COMMAND: &str = concat!(
         "export LD_LIBRARY_PATH=/opt/qemu-rv64/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}; ",
@@ -73,6 +74,46 @@ fn boot_arceos_helloworld_in_qemu() -> i32 {
     );
 
     println!("----- boot arceos-helloworld in qemu (untimed, arch=riscv64) -----");
+
+    let pid = fork();
+    if pid < 0 {
+        println!("fork arceos qemu failed: {}", pid);
+        return pid as i32;
+    }
+    if pid == 0 {
+        chdir("/work/tgoskits\0");
+        let args = ["/bin/bash\0", "-c\0", QEMU_COMMAND];
+        let ret = execve(&args);
+        println!("exec arceos qemu failed: {}", ret);
+        exit(127);
+    }
+
+    let mut exit_code: i32 = 0;
+    let _ = waitpid(pid as usize, &mut exit_code);
+    exit_code
+}
+
+#[cfg(target_arch = "loongarch64")]
+fn boot_arceos_helloworld_in_qemu() -> i32 {
+    const QEMU_COMMAND: &str = concat!(
+        "QEMU_ROOT=/opt/qemu-la64; ",
+        "ART=/work/tgoskits/target/loongarch64-unknown-linux-musl/release/arceos-helloworld; ",
+        "rm -rf /work/buildstorm.esp; ",
+        "mkdir -p /work/buildstorm.esp/EFI/BOOT; ",
+        "cp \"${ART}.bin\" /work/buildstorm.esp/EFI/BOOT/BOOTLOONGARCH64.EFI; ",
+        "cp \"${QEMU_ROOT}/share/edk2/loongarch64/vars.fd\" /work/buildstorm.vars.fd; ",
+        "exec \"${QEMU_ROOT}/lib/ld-linux-loongarch-lp64d.so.1\" ",
+        "--library-path \"${QEMU_ROOT}/lib\" ",
+        "\"${QEMU_ROOT}/bin/qemu-system-loongarch64\" ",
+        "-L \"${QEMU_ROOT}/share/qemu\" ",
+        "-machine virt -cpu la464 -smp 1 -m 2G -nographic -serial mon:stdio ",
+        "-drive if=pflash,format=raw,unit=0,readonly=on,",
+        "file=\"${QEMU_ROOT}/share/edk2/loongarch64/code.fd\" ",
+        "-drive if=pflash,format=raw,unit=1,file=/work/buildstorm.vars.fd ",
+        "-drive format=raw,file=fat:rw:/work/buildstorm.esp\0"
+    );
+
+    println!("----- boot arceos-helloworld in qemu (untimed, arch=loongarch64) -----");
 
     let pid = fork();
     if pid < 0 {
@@ -205,6 +246,7 @@ fn test_final_2026() -> i32 {
     }
     run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
     run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
+    #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
     boot_arceos_helloworld_in_qemu();
     shutdown();
     0

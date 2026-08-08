@@ -10865,3 +10865,17 @@ LoongArch64 条件编译函数，RISC-V 路径保持不变。
 ### 验证
 
 执行根目录 `make`，RISC-V 与 LoongArch64 release 构建均通过。未单独运行 QEMU/LTP 的 277 号直接调用测试。
+
+## 2026-08-08: RISC-V riscv_flush_icache(259) 系统调用接入
+
+### 用户需求
+
+用户要求实现 259 号系统调用，并明确其为 RISC-V `riscv_flush_icache`。
+
+### 分析与修改
+
+确认项目已有 `os/src/arch/riscv64/qemu/tlb.rs` 的 `instruction_fence()`，执行 `fence.i`，但缺少 259 号 syscall 枚举、分发和用户态封装。新增 RISC-V 条件编译的 `RiscvFlushIcache` 和 `sys_riscv_flush_icache()`，校验未知 flags 并复用当前 hart 的架构 instruction fence；地址范围参数保留 ABI 兼容，当前后端不细分 flush 粒度。
+
+### 验证
+
+执行 `make TARGET_ARCH=riscv64` 和 `make TARGET_ARCH=loongarch64`，双架构 release 构建通过。未单独运行 QEMU/LTP 的 259 号直接调用测试。

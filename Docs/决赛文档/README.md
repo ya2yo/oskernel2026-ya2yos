@@ -111,6 +111,7 @@
 - [prctl PR_SET_CHILD_SUBREAPER 子进程收养语义](./problem/prctl-child-subreaper.md)
 - [LTP prctl04 seccomp strict/filter 语义](./problem/prctl-seccomp-prctl04.md)
 - [seccomp(277) 系统调用入口](./problem/seccomp-syscall-277.md)
+- [RISC-V riscv_flush_icache(259) 系统调用](./problem/riscv-flush-icache-259.md)
 - [LoongArch QEMU 8GiB/8 核启动与分段内存](./problem/loongarch-8g-8hart-bootstrap.md)
 - [LoongArch 八核 basic clone 的 COW 源帧并发释放](./problem/loongarch-cow-source-frame-race.md)
 - [BuildStorm clone3/vfork 共享地址空间交接](./problem/buildstorm-vfork-clone3-lifecycle.md)

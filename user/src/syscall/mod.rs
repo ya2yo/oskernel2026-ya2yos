@@ -65,6 +65,8 @@ const SYSCALL_RECVFROM: usize = 207;
 const SYSCALL_CLONE: usize = 220;
 const SYSCALL_EXECVE: usize = 221;
 const SYSCALL_WAIT4: usize = 260;
+#[cfg(target_arch = "riscv64")]
+const SYSCALL_RISCV_FLUSH_ICACHE: usize = 259;
 const SYSCALL_RENAMEAT2: usize = 276;
 const SYSCALL_SECCOMP: usize = 277;
 const SYSCALL_GETRANDOM: usize = 278;
@@ -390,6 +392,15 @@ pub fn sys_waitpid(pid: isize, exit_code: *mut i32, options: i32) -> isize {
     }
     rv
 }
+
+#[cfg(target_arch = "riscv64")]
+pub fn sys_riscv_flush_icache(start: usize, end: usize, flags: usize) -> isize {
+    syscall(
+        SYSCALL_RISCV_FLUSH_ICACHE,
+        [start as isize, end as isize, flags as isize, 0, 0, 0],
+    )
+}
+
 pub fn sys_getcwd(buf: &mut [u8], size: usize) -> isize {
     syscall(
         SYSCALL_GETCWD,

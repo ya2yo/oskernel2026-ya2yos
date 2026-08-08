@@ -237,6 +237,8 @@ pub enum Syscall {
     Accept4 = 242,
     #[cfg(target_arch = "riscv64")]
     RiscvHwprobe = 258,
+    #[cfg(target_arch = "riscv64")]
+    RiscvFlushIcache = 259,
     Wait4 = 260,
     Prlimit = 261,
     FanotifyInit = 262,
@@ -789,6 +791,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Clone3 => sys_clone3(args[0] as *const clone_args, args[1]),
         #[cfg(target_arch = "riscv64")]
         Syscall::RiscvHwprobe => sys_riscv_hwprobe(args[0] as *mut u8, args[1], args[2]),
+        #[cfg(target_arch = "riscv64")]
+        Syscall::RiscvFlushIcache => sys_riscv_flush_icache(args[0], args[1], args[2]),
         Syscall::Rseq => sys_rseq(
             args[0] as *mut u8,
             args[1] as u32,
