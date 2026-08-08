@@ -1,7 +1,11 @@
-//! 本文件主要实现了关于虚拟地址到物理地址转换的相关功能
-//! 再原来的基础上，本人使用Cursor内部的ChatGPT5.5对改文件进行了修改
-//! 为了兼容性和封装性，未来的地址转换不应该直接暴露出去，只应该给外部暴露 copy_from 和 copy_to 两个接口
-//! Implementation of [`PageTableEntry`] and [`PageTable`].
+//! 用户地址访问与虚拟地址转换辅助函数。
+//!
+//! 本模块将用户指针访问封装为带错误返回值的复制接口。复制过程中会校验
+//! VMA 权限、按页查找物理页，并在需要时触发 lazy allocation 或 COW 写缺页
+//! 处理，从而避免调用方直接操作用户页表和物理页。
+//!
+//! [`UserBuffer`] 用于表示由多个用户页片段组成的连续逻辑缓冲区；其余公开
+//! 接口主要服务于系统调用参数和结果的安全读写。
 use crate::{
     arch::{
         memory_layout::{PAGE_SIZE, PAGE_SIZE_BITS},
@@ -216,7 +220,10 @@ pub fn try_copy_from_user_val<T: Sized>(memory_set: &MemorySet, src: *const T) -
 
 /// 将数据从用户空间安全地复制到内核空间
 ///
-/// - `token`: 源用户空间的页表 token
+/// `src` 可以不按页对齐，`dst` 会被填充为从该地址开始的用户数据。
+/// 函数支持跨页复制，并会在访问 lazy 页面时处理缺页。
+///
+/// - `memory_set`: 用户进程的地址空间
 /// - `src`: 用户空间的源虚拟地址
 /// - `dst`: 内核空间的目标缓冲区
 ///
@@ -266,7 +273,9 @@ pub fn copy_from_user(memory_set: &MemorySet, src: usize, dst: &mut [u8]) -> Sys
 
 /// 将数据从内核空间安全地复制到用户空间（对应 Linux 的 copy_to_user）
 ///
-/// - `token`: 目标用户空间的页表 token
+/// 目标地址可以不按页对齐，函数支持跨页复制，并会处理写缺页和 COW 页面。
+///
+/// - `memory_set`: 用户进程的地址空间
 /// - `dst`: 用户空间的目标虚拟地址
 /// - `src`: 内核空间的源数据切片
 ///
@@ -309,7 +318,10 @@ pub fn copy_to_user(memory_set: &MemorySet, dst: usize, src: &[u8]) -> SyscallRe
     Ok(len)
 }
 
-/// 检查用户写缓冲区是否可访问，但不修改缓冲区内容。
+/// 检查用户空间的一段写缓冲区是否完整可写，但不修改缓冲区内容。
+///
+/// 函数会遍历覆盖范围内的所有页面，并可能触发写缺页处理。因此，返回
+/// 成功后调用方可以在随后执行写入；长度为零时直接成功。
 pub fn probe_user_write(memory_set: &MemorySet, dst: usize, len: usize) -> SyscallRet {
     if len == 0 {
         return Ok(0);
@@ -353,6 +365,11 @@ pub fn translate_user_va_safe(memory_set: &MemorySet, va: VirtAddr) -> Result<us
         .ok_or(SysErrNo::EFAULT)
 }
 
+/// 读取以 NUL 结尾的用户字符串。
+///
+/// 最多读取 [`MAX_PATH_LEN`] 个字节。遇到 NUL 时立即返回；如果在读取上限
+/// 内没有遇到 NUL，则返回已读取内容。空指针按空字符串处理，无法访问的
+/// 用户内存返回 [`SysErrNo::EFAULT`]。
 pub fn read_user_cstr(memory_set: &MemorySet, ptr: *const u8) -> Result<String, SysErrNo> {
     if ptr.is_null() {
         return Ok(String::new());
@@ -466,8 +483,10 @@ pub fn read_user_cstr_with_limit(
 
 // Internal helpers for mm-crate use (pages guaranteed mapped)
 
-/// Internal: read bytes from user memory via page table into an existing buffer.
-/// Pages must already be mapped (used in writeback scenarios).
+/// 通过页表将用户内存读取到已有的内核缓冲区。
+///
+/// 这是供 `mm` 内部使用的低层接口，不会处理缺页，也不会触发页面分配；
+/// 调用者必须保证覆盖范围内的页面已经映射。地址或页面无效时返回 `None`。
 pub(crate) fn read_user_bytes_direct_into(token: usize, src: usize, dst: &mut [u8]) -> Option<()> {
     let len = dst.len();
     if len == 0 {
@@ -492,8 +511,10 @@ pub(crate) fn read_user_bytes_direct_into(token: usize, src: usize, dst: &mut [u
     Some(())
 }
 
-/// Internal: read bytes from user memory via page table.
-/// Pages must already be mapped (used in writeback scenarios).
+/// 通过页表读取一段已经映射的用户内存。
+///
+/// 这是 [`read_user_bytes_direct_into`] 的分配缓冲区版本。页面未映射、地址
+/// 溢出或地址格式无效时返回 `None`。
 pub(crate) fn read_user_bytes_direct(token: usize, src: usize, len: usize) -> Option<Vec<u8>> {
     if len == 0 {
         return Some(Vec::new());
@@ -503,8 +524,10 @@ pub(crate) fn read_user_bytes_direct(token: usize, src: usize, len: usize) -> Op
     Some(buf)
 }
 
-/// Internal: write bytes to user memory via page table.
-/// Pages must already be mapped (used in page-fault scenarios).
+/// 通过页表写入一段已经映射的用户内存。
+///
+/// 这是供 `mm` 内部使用的低层接口，不会处理缺页或 COW；调用者必须保证
+/// 目标页面已经映射且可直接写入。地址或页面无效时返回 `None`。
 pub(crate) fn write_user_bytes_direct(token: usize, dst: usize, src: &[u8]) -> Option<()> {
     let len = src.len();
     if len == 0 {
@@ -539,18 +562,22 @@ pub unsafe fn user_buffer_from_kernel(buf: &mut [u8]) -> UserBuffer {
     UserBuffer::new(vec![core::slice::from_raw_parts_mut(ptr, len)])
 }
 
-///Array of u8 slice that user communicate with os
+/// 由多个用户页片段组成的逻辑字节缓冲区。
+///
+/// `buffers` 中的切片可能分别位于不同的用户页，但本类型将它们按顺序视为
+/// 一个连续缓冲区。切片的生命周期由构造方保证；该类型本身不负责释放底层
+/// 页面。
 pub struct UserBuffer {
-    ///U8 vec
+    /// 按逻辑顺序排列的用户页片段。
     pub buffers: Vec<&'static mut [u8]>,
 }
 
 impl UserBuffer {
-    ///Create a `UserBuffer` by parameter
+    /// 使用用户页片段创建一个逻辑缓冲区。
     pub fn new(buffers: Vec<&'static mut [u8]>) -> Self {
         Self { buffers }
     }
-    ///Length of `UserBuffer`
+    /// 返回所有页片段的总字节数。
     pub fn len(&self) -> usize {
         let mut total: usize = 0;
         for b in self.buffers.iter() {
@@ -558,7 +585,9 @@ impl UserBuffer {
         }
         total
     }
-    /// 将内容数组返回
+    /// 读取最多 `len` 个字节并返回新分配的连续缓冲区。
+    ///
+    /// 当请求长度超过缓冲区总长度时，只读取实际可用的数据。
     pub fn read(&mut self, len: usize) -> Vec<u8> {
         let len = self.len().min(len);
         let mut bytes = vec![0; len];
@@ -580,7 +609,10 @@ impl UserBuffer {
         bytes.truncate(current);
         bytes
     }
-    /// 直接读取内容到传入的缓冲区中，返回实际读取的长度
+    /// 将内容直接读取到 `dst`，返回实际读取的字节数。
+    ///
+    /// 如果 `dst` 小于本缓冲区，只填满 `dst`；如果 `dst` 更大，则不会修改
+    /// 剩余部分。
     pub fn read_to(&self, dst: &mut [u8]) -> usize {
         let len = dst.len();
         let mut current = 0;
@@ -601,7 +633,7 @@ impl UserBuffer {
         }
         current
     }
-    /// 将一个Buffer的数据写入UserBuffer，返回写入长度
+    /// 将 `buff` 的前缀写入用户缓冲区，返回实际写入的字节数。
     pub fn write(&mut self, buff: &[u8]) -> usize {
         let len = self.len().min(buff.len());
         if len == 0 {
@@ -678,7 +710,9 @@ impl UserBuffer {
         written
     }
 
-    //在指定位置写入数据
+    /// 从逻辑偏移 `offset` 开始写入数据。
+    ///
+    /// 如果写入范围超出缓冲区，返回 `-1`；否则返回写入的字节数。
     pub fn write_at(&mut self, offset: usize, buff: &[u8]) -> isize {
         //未被使用，暂不做优化
         let len = buff.len();
@@ -715,6 +749,7 @@ impl UserBuffer {
         0
     }
 
+    /// 将整个缓冲区填充为零，返回填充的字节数。
     pub fn fill0(&mut self) -> usize {
         for sub_buff in self.buffers.iter_mut() {
             let sblen = (*sub_buff).len();
@@ -725,6 +760,9 @@ impl UserBuffer {
         self.len()
     }
 
+    /// 使用基于时钟 tick 的伪随机字节填充整个缓冲区。
+    ///
+    /// 返回填充的字节数。该函数不用于密码学安全的随机数生成。
     pub fn fillrandom(&mut self) -> usize {
         //随机数生成方法： 线性计算+噪声+零特殊处理
         let mut random: u8 = (get_ticks() % 256) as u8;
@@ -741,6 +779,7 @@ impl UserBuffer {
         self.len()
     }
 
+    /// 将前 `size` 个字节打印到内核控制台。
     pub fn printbuf(&mut self, size: usize) {
         if size == 0 {
             return;
@@ -759,6 +798,7 @@ impl UserBuffer {
         }
     }
 
+    /// 清空页片段列表并返回清空后的缓冲区长度。
     pub fn clear(&mut self) -> usize {
         self.buffers.clear();
         self.len()
@@ -768,6 +808,8 @@ impl UserBuffer {
 impl IntoIterator for UserBuffer {
     type Item = *mut u8;
     type IntoIter = UserBufferIterator;
+
+    /// 消费缓冲区并创建按字节遍历的迭代器。
     fn into_iter(self) -> Self::IntoIter {
         UserBufferIterator {
             buffers: self.buffers,
@@ -776,7 +818,9 @@ impl IntoIterator for UserBuffer {
         }
     }
 }
-/// Iterator of `UserBuffer`
+/// 按字节遍历 [`UserBuffer`] 的迭代器。
+///
+/// 迭代器按页片段顺序返回每个字节的可写裸指针，并跳过空片段。
 pub struct UserBufferIterator {
     buffers: Vec<&'static mut [u8]>,
     current_buffer: usize,
@@ -785,6 +829,8 @@ pub struct UserBufferIterator {
 
 impl Iterator for UserBufferIterator {
     type Item = *mut u8;
+
+    /// 返回下一个字节的可写裸指针。
     fn next(&mut self) -> Option<Self::Item> {
         while self.current_buffer < self.buffers.len() {
             // Skip empty buffers
