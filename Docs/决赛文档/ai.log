@@ -10903,3 +10903,26 @@ LoongArch64 条件编译函数，RISC-V 路径保持不变。
 `make TARGET_ARCH=riscv64` 通过，并同时完成 RISC-V、LoongArch64 release 构建。未运行 QEMU/LTP 专项测试。
 
 ---
+
+## 2026-08-08：prctl option 29 PR_SET_TIMERSLACK
+
+### 用户需求
+
+维护者提供 `[prctl] unsupported option 29`，要求实现该选项。
+
+### 分析与采纳结论
+
+确认 option 29 是 `PR_SET_TIMERSLACK`，配套 option 30 为 `PR_GET_TIMERSLACK`。实现在线程控制块保存纳秒级 timer slack，Linux 默认值为 50,000ns，设置值为 0 时恢复默认值，并在 fork/clone 时继承。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/sys/prctl.rs` | 接入 `PR_SET_TIMERSLACK` 与 `PR_GET_TIMERSLACK`。 |
+| `os/src/task/task/task.rs` | 增加 timer slack 状态及 fork/clone 继承。 |
+
+### 验证
+
+`make TARGET_ARCH=riscv64` 通过，并同时完成 LoongArch64 release 构建；未运行 QEMU/LTP 专项测试。
+
+---

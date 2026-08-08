@@ -2984,3 +2984,10 @@
 - **场景**：实现既有 `prctl(167)` 的 option 33，并补齐线程状态与继承语义。
 - **描述**：确认 option 33 是 `PR_MCE_KILL`。实现 SET/CLEAR/GET 对应的 MCE kill policy 校验、保存及 fork/clone 继承；RISC-V 与 LoongArch64 release 构建通过，未运行 QEMU/LTP 专项测试。详见 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：待提交
+
+#### prctl option 29 PR_SET_TIMERSLACK 实现（8.08）
+
+- **工具/模型**：Codex (GPT-5.6-Luna)
+- **场景**：实现既有 `prctl(167)` 的 option 29，消除运行日志中的 unsupported option。
+- **描述**：补齐 `PR_SET_TIMERSLACK`/`PR_GET_TIMERSLACK`，保存线程级纳秒 timer slack，支持默认 50us 和设置值 0 恢复默认值，并由 fork/clone 继承。RISC-V、LoongArch64 release 构建通过，未运行 QEMU/LTP 专项测试。详见 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：待提交

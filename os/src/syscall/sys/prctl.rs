@@ -5,10 +5,11 @@ use linux_raw_sys::{
     prctl::{
         PR_CAPBSET_DROP, PR_CAPBSET_READ, PR_CAP_AMBIENT, PR_GET_CHILD_SUBREAPER, PR_GET_DUMPABLE,
         PR_GET_NO_NEW_PRIVS, PR_GET_PDEATHSIG, PR_GET_SECCOMP, PR_GET_SPECULATION_CTRL,
-        PR_GET_THP_DISABLE, PR_MCE_KILL, PR_MCE_KILL_CLEAR, PR_MCE_KILL_DEFAULT, PR_MCE_KILL_EARLY,
-        PR_MCE_KILL_GET, PR_MCE_KILL_LATE, PR_MCE_KILL_SET, PR_SET_CHILD_SUBREAPER,
-        PR_SET_DUMPABLE, PR_SET_NAME, PR_SET_NO_NEW_PRIVS, PR_SET_PDEATHSIG, PR_SET_SECCOMP,
-        PR_SET_SECUREBITS, PR_SET_THP_DISABLE, PR_SET_TIMING,
+        PR_GET_THP_DISABLE, PR_GET_TIMERSLACK, PR_MCE_KILL, PR_MCE_KILL_CLEAR, PR_MCE_KILL_DEFAULT,
+        PR_MCE_KILL_EARLY, PR_MCE_KILL_GET, PR_MCE_KILL_LATE, PR_MCE_KILL_SET,
+        PR_SET_CHILD_SUBREAPER, PR_SET_DUMPABLE, PR_SET_NAME, PR_SET_NO_NEW_PRIVS,
+        PR_SET_PDEATHSIG, PR_SET_SECCOMP, PR_SET_SECUREBITS, PR_SET_THP_DISABLE, PR_SET_TIMERSLACK,
+        PR_SET_TIMING,
     },
 };
 use log::{debug, warn};
@@ -156,6 +157,12 @@ pub fn sys_prctl(option: u32, arg2: u32, arg3: usize, arg4: usize, arg5: usize) 
             // 仅支持 PR_TIMING_STATISTICAL(0)
             Err(SysErrNo::EINVAL)
         }
+        PR_SET_TIMERSLACK => {
+            // Zero restores Linux's default 50us timer slack.
+            task.inner_lock().timer_slack_ns = if arg2 == 0 { 50_000 } else { arg2 as usize };
+            Ok(0)
+        }
+        PR_GET_TIMERSLACK => Ok(task.inner_lock().timer_slack_ns),
         PR_SET_NAME => {
             // EFAULT: 非法地址
             if (arg2 as isize) <= 0 || if_bad_address(arg2 as usize) {

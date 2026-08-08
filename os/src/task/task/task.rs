@@ -216,6 +216,8 @@ pub struct TaskControlBlockInner {
     pub seccomp_state: SeccompState,
     /// PR_MCE_KILL policy, inherited by clone/fork.
     pub mce_kill_policy: u32,
+    /// Timer slack in nanoseconds, inherited by fork/clone.
+    pub timer_slack_ns: usize,
 
     // 用于futex
     pub futex_pa: usize,      // 当前正在等待的pa
@@ -674,6 +676,7 @@ impl TaskControlBlock {
                 no_new_privs: false,
                 seccomp_state: SeccompState::Disabled,
                 mce_kill_policy: 2,
+                timer_slack_ns: 50_000,
                 futex_pa: 0,
                 futex_key: 0,
                 futex_timedout: false,
@@ -927,6 +930,7 @@ impl TaskControlBlock {
             parent_no_new_privs,
             parent_seccomp_state,
             parent_mce_kill_policy,
+            parent_timer_slack_ns,
             parent_comm,
             parent_pgid,
             parent_sid,
@@ -1000,6 +1004,7 @@ impl TaskControlBlock {
             parent_no_new_privs = parent_inner.no_new_privs;
             parent_seccomp_state = parent_inner.seccomp_state.clone();
             parent_mce_kill_policy = parent_inner.mce_kill_policy;
+            parent_timer_slack_ns = parent_inner.timer_slack_ns;
             // Linux inherits rseq on fork but clears it for CLONE_VM, whose
             // child gets a distinct thread-local rseq ABI area.
             parent_rseq = if flags.contains(CloneFlags::CLONE_VM) {
@@ -1167,6 +1172,7 @@ impl TaskControlBlock {
                 no_new_privs: parent_no_new_privs,
                 seccomp_state: parent_seccomp_state,
                 mce_kill_policy: parent_mce_kill_policy,
+                timer_slack_ns: parent_timer_slack_ns,
                 futex_pa: 0,
                 futex_key: 0,
                 futex_timedout: false,
