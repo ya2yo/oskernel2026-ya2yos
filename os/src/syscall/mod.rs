@@ -454,6 +454,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         ),
         Syscall::Chdir => sys_chdir(args[0] as *const u8),
         Syscall::Fchdir => sys_fchdir(args[0] as i32),
+        Syscall::Chroot => sys_chroot(args[0] as *const u8),
         Syscall::Fchmod => sys_fchmod(args[0] as usize, args[1] as u32),
         Syscall::Fchmodat => sys_fchmodat(
             args[0] as isize,
@@ -572,6 +573,10 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[2] as *const Timespec,
             args[3],
         ),
+        Syscall::Acct => sys_acct(args[0] as *const u8),
+        Syscall::Capget => sys_capget(args[0] as *mut CapUserHeader, args[1] as *mut CapUserData),
+        Syscall::Capset => sys_capset(args[0] as *mut CapUserHeader, args[1] as *const CapUserData),
+        Syscall::Personality => sys_personality(args[0] as u32),
         Syscall::Exit => sys_exit(args[0] as i32),
         Syscall::ExitGroup => sys_exit_group(args[0] as i32),
         Syscall::Futex => sys_futex(
@@ -960,11 +965,6 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::FsMount => sys_fsmount(args[0] as i32, args[1] as u32, args[2] as u32),
         Syscall::Fspick => sys_fspick(args[0] as i32, args[1] as *mut u8, args[2] as u32),
         Syscall::MemfdSecret => sys_memfd_secret(args[0] as u32),
-        Syscall::Acct => sys_acct(args[0] as *const u8),
-        Syscall::Capget => sys_capget(args[0] as *mut CapUserHeader, args[1] as *mut CapUserData),
-        Syscall::Capset => sys_capset(args[0] as *mut CapUserHeader, args[1] as *const CapUserData),
-        Syscall::Personality => sys_personality(args[0] as u32),
-        Syscall::Chroot => sys_chroot(args[0] as *const u8),
         Syscall::Vhangup => sys_vhangup(),
         Syscall::Prctl => sys_prctl(args[0] as u32, args[1] as u32, args[2], args[3], args[4]),
         _ => {
