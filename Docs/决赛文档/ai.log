@@ -10879,3 +10879,27 @@ LoongArch64 条件编译函数，RISC-V 路径保持不变。
 ### 验证
 
 执行 `make TARGET_ARCH=riscv64` 和 `make TARGET_ARCH=loongarch64`，双架构 release 构建通过。未单独运行 QEMU/LTP 的 259 号直接调用测试。
+## 2026-08-08：prctl option 33 PR_MCE_KILL
+
+### 用户需求
+
+维护者要求实现 `[prctl] option 33`。
+
+### 分析与采纳结论
+
+对照仓库使用的 `linux-raw-sys` 常量确认 option 33 是 `PR_MCE_KILL`，不是 `PR_SET_PTRACER`。现有分支只返回成功，未保存线程策略，也未实现配套 option 34 `PR_MCE_KILL_GET`。
+
+采纳在线程控制块增加 MCE kill policy，默认值为 `PR_MCE_KILL_DEFAULT`，支持 `PR_MCE_KILL_SET` 的 EARLY/LATE/DEFAULT、`PR_MCE_KILL_CLEAR` 恢复默认值，以及 GET 返回当前策略；非法操作或策略返回 `EINVAL`。该状态随 fork/clone 继承。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/sys/prctl.rs` | 实现 `PR_MCE_KILL` 和 `PR_MCE_KILL_GET` 参数及状态语义。 |
+| `os/src/task/task/task.rs` | 增加线程级 MCE kill policy，并补齐创建和 fork/clone 继承。 |
+
+### 验证
+
+`make TARGET_ARCH=riscv64` 通过，并同时完成 RISC-V、LoongArch64 release 构建。未运行 QEMU/LTP 专项测试。
+
+---

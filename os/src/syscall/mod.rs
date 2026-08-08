@@ -961,7 +961,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Personality => sys_personality(args[0] as u32),
         Syscall::Chroot => sys_chroot(args[0] as *const u8),
         Syscall::Vhangup => sys_vhangup(),
-        Syscall::Prctl => sys_prctl(args[0] as u32, args[1], args[2], args[3], args[4]),
+        Syscall::Prctl => sys_prctl(args[0] as u32, args[1] as u32, args[2], args[3], args[4]),
         _ => {
             warn!("Unsupported syscall_id: {}!", id);
             // sys_memfd_secret(args[0] as u32)

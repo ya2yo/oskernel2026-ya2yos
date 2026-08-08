@@ -5,9 +5,10 @@ use linux_raw_sys::{
     prctl::{
         PR_CAPBSET_DROP, PR_CAPBSET_READ, PR_CAP_AMBIENT, PR_GET_CHILD_SUBREAPER, PR_GET_DUMPABLE,
         PR_GET_NO_NEW_PRIVS, PR_GET_PDEATHSIG, PR_GET_SECCOMP, PR_GET_SPECULATION_CTRL,
-        PR_GET_THP_DISABLE, PR_SET_CHILD_SUBREAPER, PR_SET_DUMPABLE, PR_SET_NAME,
-        PR_SET_NO_NEW_PRIVS, PR_SET_PDEATHSIG, PR_SET_SECCOMP, PR_SET_SECUREBITS,
-        PR_SET_THP_DISABLE, PR_SET_TIMING,
+        PR_GET_THP_DISABLE, PR_MCE_KILL, PR_MCE_KILL_CLEAR, PR_MCE_KILL_DEFAULT, PR_MCE_KILL_EARLY,
+        PR_MCE_KILL_GET, PR_MCE_KILL_LATE, PR_MCE_KILL_SET, PR_SET_CHILD_SUBREAPER,
+        PR_SET_DUMPABLE, PR_SET_NAME, PR_SET_NO_NEW_PRIVS, PR_SET_PDEATHSIG, PR_SET_SECCOMP,
+        PR_SET_SECUREBITS, PR_SET_THP_DISABLE, PR_SET_TIMING,
     },
 };
 use log::{debug, warn};
@@ -18,8 +19,8 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 
-const SECCOMP_MODE_STRICT: usize = 1;
-const SECCOMP_MODE_FILTER: usize = 2;
+const SECCOMP_MODE_STRICT: u32 = 1;
+const SECCOMP_MODE_FILTER: u32 = 2;
 const SECCOMP_SET_MODE_STRICT: u32 = 0;
 const SECCOMP_SET_MODE_FILTER: u32 = 1;
 
@@ -107,7 +108,7 @@ fn current_has_cap_sys_admin() -> bool {
 
 // prctl(2) — 进程控制
 /// 参考 https://man7.org/linux/man-pages/man2/prctl.2.html
-pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> SyscallRet {
+pub fn sys_prctl(option: u32, arg2: u32, arg3: usize, arg4: usize, arg5: usize) -> SyscallRet {
     debug!(
         "[prctl] option={}, arg2=0x{:x}, arg3=0x{:x}, arg4=0x{:x}, arg5=0x{:x}",
         option, arg2, arg3, arg4, arg5
@@ -133,7 +134,7 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
                 let proc_inner = &task.process;
                 let memory_set = proc_inner.memory_set_arc();
                 let sig_val = sig as i32;
-                copy_to_user(&memory_set, arg2, unsafe {
+                copy_to_user(&memory_set, arg2 as usize, unsafe {
                     core::slice::from_raw_parts(
                         &sig_val as *const i32 as *const u8,
                         core::mem::size_of::<i32>(),
@@ -151,9 +152,13 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
             }
             Ok(0)
         }
+        PR_SET_TIMING => {
+            // 仅支持 PR_TIMING_STATISTICAL(0)
+            Err(SysErrNo::EINVAL)
+        }
         PR_SET_NAME => {
             // EFAULT: 非法地址
-            if (arg2 as isize) <= 0 || if_bad_address(arg2) {
+            if (arg2 as isize) <= 0 || if_bad_address(arg2 as usize) {
                 return Err(SysErrNo::EFAULT);
             }
             Ok(0)
@@ -220,10 +225,24 @@ pub fn sys_prctl(option: u32, arg2: usize, arg3: usize, arg4: usize, arg5: usize
             // 没有 CAP_SETPCAP → EPERM
             Err(SysErrNo::EPERM)
         }
-        PR_SET_TIMING => {
-            // 仅支持 PR_TIMING_STATISTICAL(0)
-            Err(SysErrNo::EINVAL)
+        PR_MCE_KILL => {
+            let mut inner = task.inner_lock();
+            match arg2 {
+                PR_MCE_KILL_CLEAR => {
+                    inner.mce_kill_policy = PR_MCE_KILL_DEFAULT;
+                    Ok(0)
+                }
+                PR_MCE_KILL_SET => match arg3 as u32 {
+                    PR_MCE_KILL_LATE | PR_MCE_KILL_EARLY | PR_MCE_KILL_DEFAULT => {
+                        inner.mce_kill_policy = arg3 as u32;
+                        Ok(0)
+                    }
+                    _ => Err(SysErrNo::EINVAL),
+                },
+                _ => Err(SysErrNo::EINVAL),
+            }
         }
+        PR_MCE_KILL_GET => Ok(task.inner_lock().mce_kill_policy as usize),
         PR_SET_CHILD_SUBREAPER => {
             // Linux 将任意非零值规范化为 true，未使用的参数不参与校验。
             task.process.set_child_subreaper(arg2 != 0);

@@ -2978,3 +2978,9 @@
   通过，原 warning 未再出现；完整 BuildStorm 未在本轮确认。
 - **关联问题**：[BuildStorm 跨进程 unlink 后 fstat 返回 ENOENT](./problem/buildstorm-cross-process-unlink-fstat.md)
 - **关联 commit**：当前工作区未提交
+#### prctl option 33 PR_MCE_KILL 实现（8.08）
+
+- **工具/模型**：Codex (GPT-5.6-Luna)
+- **场景**：实现既有 `prctl(167)` 的 option 33，并补齐线程状态与继承语义。
+- **描述**：确认 option 33 是 `PR_MCE_KILL`。实现 SET/CLEAR/GET 对应的 MCE kill policy 校验、保存及 fork/clone 继承；RISC-V 与 LoongArch64 release 构建通过，未运行 QEMU/LTP 专项测试。详见 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：待提交
