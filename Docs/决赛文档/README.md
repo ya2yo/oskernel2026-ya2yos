@@ -197,3 +197,4 @@
 - [libctest 动态 ELF 启动失败与 eager 映射恢复](./problem/libctest-dynamic-elf-eager-load.md)
 - [BuildStorm 主 ELF 全量 eager 映射回归](./problem/buildstorm-main-elf-eager-mapping-regression.md)
 - [BuildStorm 跨进程 unlink 后 fstat 返回 ENOENT](./problem/buildstorm-cross-process-unlink-fstat.md)
+- [嵌套 RISC-V QEMU 的 Zicond 非法指令](./problem/nested-qemu-zicond-illegal-instruction.md)

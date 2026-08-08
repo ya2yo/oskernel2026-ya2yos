@@ -1455,6 +1455,15 @@
 - **验证**：RISC-V、LoongArch64 `make perf` 通过；旧 `log.ans` 解析后 `wait` 采用 `wait_active` 的 `25.291 ms`。QEMU 因宿主 `/var/tmp` 只读在启动前失败，未取得新的 guest perf 快照。
 - **关联 commit**：当前工作区未提交
 
+#### 嵌套 RISC-V QEMU Zicond 非法指令（8.8）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `log.ans` 末尾的 `IllegalInstruction at 0x4b267e`，实施修复并运行验证。
+- **描述**：确认异常发生在作为用户进程运行的嵌套 QEMU，其二进制使用 Zicond `czero.eqz`，外层 QEMU 的默认 `rv64` CPU 未启用该扩展。由于评测机外层 QEMU 参数固定，修复改为在内核用户态非法指令路径精确模拟 `czero.eqz`/`czero.nez`，未匹配的非法指令仍终止进程；删除本地 QEMU 的 `-cpu rv64,zicond=on`，防止验证绕过该内核路径。嵌套 QEMU 的定义与调用均限定在 RISC-V，避免 LoongArch64 final 镜像执行 RISC-V ELF。
+- **验证边界**：根目录 RISC-V/LoongArch64 release 构建通过。RISC-V 运行中三项前置回归 PASS，PID 4 不再触发原 `IllegalInstruction`，并已执行到后续系统调用；嵌套 QEMU 随后因镜像缺失 OpenSBI 固件退出，未完成下一层 guest 启动。
+- **关联问题**：[嵌套 RISC-V QEMU 的 Zicond 非法指令](./problem/nested-qemu-zicond-illegal-instruction.md)
+- **关联 commit**：当前工作区未提交
+
 #### perf 饼图中的 accept 改用实际运行时间（7.25）
 
 - **工具/模型**：Codex (GPT-5)

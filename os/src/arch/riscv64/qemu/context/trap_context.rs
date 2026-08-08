@@ -108,6 +108,16 @@ impl TrapContext {
         self.gp.x[10]
     }
 
+    pub fn get_reg(&self, index: usize) -> usize {
+        self.gp.x[index]
+    }
+
+    pub fn set_reg(&mut self, index: usize, value: usize) {
+        if index != 0 {
+            self.gp.x[index] = value;
+        }
+    }
+
     pub fn set_a0(&mut self, val: usize) {
         self.gp.x[10] = val;
     }

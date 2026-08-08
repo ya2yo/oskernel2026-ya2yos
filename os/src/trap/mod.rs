@@ -40,6 +40,36 @@ use trap_types::{Exception, Interrupt, Trap};
 
 use crate::arch::context::*;
 
+#[cfg(target_arch = "riscv64")]
+fn emulate_zicond(cx: &mut TrapContext) -> bool {
+    let instruction = {
+        let task = current_task().unwrap();
+        let memory_set = task.process.memory_set_arc();
+        let mut bytes = [0u8; 4];
+        if crate::mm::copy_from_user(&memory_set, cx.get_sepc(), &mut bytes).is_err() {
+            return false;
+        }
+        u32::from_le_bytes(bytes)
+    };
+
+    // Zicond czero.eqz/czero.nez are R-type instructions.
+    let funct3 = (instruction >> 12) & 0x7;
+    if instruction & 0x7f != 0x33
+        || (instruction >> 25) & 0x7f != 0x07
+        || !matches!(funct3, 0x5 | 0x7)
+    {
+        return false;
+    }
+    let rd = ((instruction >> 7) & 0x1f) as usize;
+    let rs1 = ((instruction >> 15) & 0x1f) as usize;
+    let rs2 = ((instruction >> 20) & 0x1f) as usize;
+    let is_zero = cx.get_reg(rs2) == 0;
+    let select = (funct3 == 0x5) == is_zero;
+    cx.set_reg(rd, if select { cx.get_reg(rs1) } else { 0 });
+    cx.sepc_step(4);
+    true
+}
+
 extern "C" {
     fn __trap_from_user();
 }
@@ -240,6 +270,10 @@ pub fn trap_handler() {
             }
         }
         Trap::Exception(Exception::IllegalInstruction) => {
+            #[cfg(target_arch = "riscv64")]
+            if emulate_zicond(current_trap_cx()) {
+                return;
+            }
             backtrace();
             warn!(
                 "[kernel] [hart {}] IllegalInstruction at {:#x} in application, kernel killed it.",

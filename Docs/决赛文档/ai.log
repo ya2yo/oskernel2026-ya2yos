@@ -10801,3 +10801,31 @@ ext4/lwext4 核心。此前短时 RISC-V QEMU 已显示 `fstat unlink regression
 后续验证，本轮只补文档。
 
 详见 [问题复盘](./problem/buildstorm-cross-process-unlink-fstat.md)。
+
+## 2026-08-08: 嵌套 RISC-V QEMU Zicond 非法指令
+
+### 用户输入
+
+维护者要求分析 `log.ans` 最后的报错、实施正确修复并运行验证。
+
+### 分析与结论
+
+原日志中三个前置回归均为 PASS，随后 PID 4 在 `0x4b267e` 触发
+`IllegalInstruction`。该 PID 是 `initproc` 启动的嵌套
+`qemu-system-riscv64`；故障指令为 Zicond `czero.eqz`，而外层
+`scripts/riscv64.mk` 的 QEMU 命令未声明 `zicond`。嵌套 QEMU 命令里的
+`-cpu rv64` 只描述下一层 guest，不能改变该 QEMU 用户进程本身可执行的 ISA。
+
+### 修改与验证
+
+考虑到评测机外层 QEMU 参数固定，保留 `os/src/trap/mod.rs` 中仅匹配 Zicond
+`czero.eqz`/`czero.nez` 的用户态指令模拟，并移除本地 `scripts/riscv64.mk` 的
+`-cpu rv64,zicond=on`，避免本地验证绕过内核路径。`make TARGET_ARCH=riscv64` 的根目录
+流程完成 RISC-V 和 LoongArch64 release 构建；`timeout 240s make run TARGET_ARCH=riscv64`
+输出 fstat unlink、sigaltstack、rseq 三项 PASS，PID 4 已继续执行多个系统调用，未再出现
+`IllegalInstruction`。嵌套 QEMU 随后因镜像缺少 `opensbi-riscv64-generic-fw_dynamic.bin`
+退出，这是独立镜像依赖问题，尚未完成下一层 guest 启动验证。后续确认
+`test_final_2026()` 原本会在 LoongArch64 无条件调用硬编码的 RISC-V 嵌套 QEMU；已为该函数
+定义和调用添加 `#[cfg(target_arch = "riscv64")]`，让 LoongArch64 保持原生测试路径。
+
+详见 [问题复盘](./problem/nested-qemu-zicond-illegal-instruction.md)。
