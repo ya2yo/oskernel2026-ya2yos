@@ -10678,3 +10678,19 @@ uaccess scope 初始化、恢复和清理；移除 fault handler 中的 `task.in
 修复、TLB 重试和 fixup/EFAULT 语义。新增问题复盘并更新开发日志、README、AI 交互记录。
 `make TARGET_ARCH=riscv64`（同时完成 LoongArch64）和 `git diff --check` 通过；完整
 BuildStorm END 尚未出现在日志中。
+
+## 2026-08-08：BuildStorm RISC-V uaccess trap frame 迁移导致取指 panic
+
+维护者提供新的 `server.ans`/`client.ans`，要求分析 CAgent 后的 RISC-V
+`FetchInstructionPageFault` panic。日志中的 `sepc == stval` 是用户地址，临时 CSR 诊断
+确认 fault 时 `SPP=0`，但 `trap_from_kernel_frame` 的栈已经是内核栈；这不是用户程序把
+内核代码当作取指地址，而是同步 uaccess fault 的返回现场被破坏。
+
+审计发现 P3 fault handler 在架构 trap frame 内调用完整 `MemorySet::handle_page_fault()`。
+文件页缺失时该路径可以等待 EXT4/磁盘并调度，任务若迁移到另一 Hart，`sepc`、`sstatus`
+和 `sscratch` 等 CSR 不会随普通 `TaskContext` 保存，随后 `sret` 使用错误的 trap 状态
+并触发 kernel panic。修复为 kernel fault handler 只检查现存、权限匹配的 PTE，并对本地
+TLB 做一次原子状态保护的重试；缺页、COW、文件页和坏指针统一走 copy helper fixup，
+由软件翻译路径在正常 syscall 上下文处理。
+
+修改 `os/src/mm/uaccess.rs`，新增 `Docs/决赛文档/problem/buildstorm-uaccess-trap-frame-migration-panic.md`，并更新开发日志、README 和本记录。`make build-arch TARGET_ARCH=riscv64`、`git diff --check` 通过；修复后的 RISC-V qcow2 overlay 运行 180 秒通过 sigaltstack/rseq 与全部 CAgent 项，进入 BuildStorm toolchain/minibuild 并推进到 `443/446`，未出现 panic、取指 fault、TFAIL 或 TBROK，完整 BuildStorm END 尚未完成。

@@ -106,8 +106,8 @@ impl Drop for Scope {
 /// Outcome for a synchronous kernel fault taken while a direct user copy is
 /// active.
 pub(crate) enum KernelFaultAction {
-    /// The mapping was repaired (or a stale translation was flushed); retry
-    /// the instruction at the current `sepc`/`era`.
+    /// A stale translation was flushed; retry the instruction at the current
+    /// `sepc`/`era`.
     Retry,
     /// The copy helper cannot make progress; redirect to its fixup label.
     Fixup(usize),
@@ -131,10 +131,10 @@ fn is_user_access_fault(cause: Trap) -> bool {
 
 /// Handle a page fault raised by an architecture-specific direct user copy.
 ///
-/// The fast path deliberately does not hold a `MemorySet` read guard. A
-/// missing/COW/file-backed page can therefore take the normal write-side page
-/// fault path here and resume the exact faulting load/store after the mapping
-/// has been installed. Invalid pointers return through the assembly fixup.
+/// The fast path never enters a potentially blocking page-fault resolver from
+/// the architecture trap frame. Missing/COW/file-backed pages return through
+/// the copy helper fixup and are handled by the software fallback. Only a
+/// present mapping with a stale local translation is retried in place.
 pub(crate) fn handle_kernel_fault(cause: Trap, stval: usize) -> KernelFaultAction {
     let state = current_state();
     if !state.active.load(Ordering::Acquire) || !is_user_access_fault(cause) {
@@ -167,11 +167,14 @@ pub(crate) fn handle_kernel_fault(cause: Trap, stval: usize) -> KernelFaultActio
     }
 
     let vpn = fault_va.floor();
-    if memory_set.handle_page_fault(vpn, cause) {
-        state.retry_vpn.store(NO_RETRY_VPN, Ordering::Release);
-        return KernelFaultAction::Retry;
-    }
 
+    // Do not enter the normal page-fault resolver from this synchronous trap.
+    // File-backed demand faults may block in the filesystem, and switching a
+    // task while sepc/sstatus are live only in the current Hart's CSRs would
+    // resume the trap frame with another Hart's architectural state.  Return
+    // through the copy helper's fixup instead; the caller then retries through
+    // the software path, where a blocking fault is a regular syscall event.
+    //
     // A present PTE can still fault once while a remote update or local TLB
     // refill catches up. Keep this retry state per Hart: this handler is
     // nested in a syscall and must not reacquire TaskControlBlockInner.

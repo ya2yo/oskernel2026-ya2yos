@@ -2877,3 +2877,12 @@
 - **验证边界**：RISC-V/LoongArch64 release 构建和 `git diff --check` 通过；新 `server.ans` 通过 sigaltstack/rseq 并进入 BuildStorm，完整 BuildStorm END 尚未出现。
 - **关联问题**：[uaccess 缺页路径递归获取任务锁](./problem/buildstorm-uaccess-fault-task-lock-deadlock.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm RISC-V uaccess trap frame 迁移导致取指 panic（8.8）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans`/`client.ans`，要求修复 CAgent 启动后的 RISC-V kernel panic。
+- **描述**：确认 `sepc == stval` 为用户取指地址，但 fault 已进入 `trap_from_kernel_frame`；根因是同步 uaccess fault 中执行可阻塞文件页缺页处理，任务迁移后 `sepc/sstatus/sscratch` 等 Hart-local CSR 与 trap frame 不再匹配。缺页/COW/文件页现在通过 copy helper fixup 回退软件翻译路径，仅现存 PTE 做本地 TLB 一次重试，避免在架构 trap frame 内调度。
+- **验证边界**：RISC-V release 构建、`git diff --check` 通过；180 秒 RISC-V qcow2 overlay 通过 sigaltstack/rseq、全部 CAgent，并推进 BuildStorm 到 `443/446`，无 panic 或取指 fault；完整 BuildStorm 尚未结束。
+- **关联问题**：[RISC-V uaccess trap frame 迁移 panic 复盘](./problem/buildstorm-uaccess-trap-frame-migration-panic.md)
+- **关联 commit**：当前工作区未提交
