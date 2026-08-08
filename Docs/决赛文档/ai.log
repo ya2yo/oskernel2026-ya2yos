@@ -11074,3 +11074,28 @@ git diff --check
 ```
 
 RISC-V 和 LoongArch64 release 构建通过。RISC-V QEMU 日志显示 `uptime regression: PASS`，并且没有出现 panic；外层运行随后进入嵌套 QEMU 启动阶段，因 90 秒 timeout 结束。LoongArch64 QEMU、完整 BuildStorm 和正式 `elapsed_s` 5% 对齐验证尚未运行。
+
+## 2026-08-08：嵌套 RISC-V QEMU Zicond 模拟语义修复
+
+### 用户需求
+
+维护者要求根据 `log.ans` 修复 RISC-V final-2026 在 `boot arceos-helloworld in qemu` 后卡死的问题，不能修改 QEMU 启动参数或固定配置，最终必须输出 `Hello, world!`。
+
+### 分析与采纳结论
+
+先确认固件、ArceOS artifact 和固定 guest QEMU 参数在宿主侧均可正常输出，排除产物和启动参数问题。Ya2yOS 内核日志显示嵌套 QEMU 已执行 `riscv_flush_icache`、futex 握手和 TCG 初始化，但旧 Zicond 兼容路径把 `czero.eqz/nez` 的条件结果反转：条件成立时错误地写入 `rs1`，条件不成立时才写零。修正为按规范的条件选择后，嵌套 QEMU 正常完成 OpenSBI 启动并运行 ArceOS。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/trap/mod.rs` | 将 Zicond 模拟的选择条件从相等改为不等，恢复 `czero.eqz/nez` 真值语义。 |
+| `Docs/决赛文档/problem/nested-qemu-zicond-emulation-semantics.md` | 新增根因、真值表、修复和验证记录。 |
+| `Docs/决赛文档/README.md` | 增加问题复盘索引。 |
+| `Docs/决赛文档/开发日志.md` | 追加本次修复摘要。 |
+| `Docs/决赛文档/ai.log` | 记录 AI 分析路径和验证边界。 |
+| `Docs/决赛文档/AI_INTERACTION.md` | 追加本次 AI 协作摘要。 |
+
+### 验证
+
+`make log TARGET_ARCH=riscv64` 通过；debug 运行中已观察到嵌套 guest 的 OpenSBI 和逐字符 `Hello, world!` 输出。随后 `make TARGET_ARCH=riscv64` 完成 RISC-V 与 LoongArch64 release 构建，固定命令 `timeout 240s make run TARGET_ARCH=riscv64 > log.ans 2>&1` 通过，日志连续包含 `OpenSBI v1.6`、`Hello, world!` 和 `shutdown!`，没有 `panic`、`IllegalInstruction` 或 `QEMU: Terminated`。

@@ -64,7 +64,7 @@ fn emulate_zicond(cx: &mut TrapContext) -> bool {
     let rs1 = ((instruction >> 15) & 0x1f) as usize;
     let rs2 = ((instruction >> 20) & 0x1f) as usize;
     let is_zero = cx.get_reg(rs2) == 0;
-    let select = (funct3 == 0x5) == is_zero;
+    let select = (funct3 == 0x5) != is_zero;
     cx.set_reg(rd, if select { cx.get_reg(rs1) } else { 0 });
     cx.sepc_step(4);
     true

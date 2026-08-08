@@ -3030,3 +3030,12 @@
 - **验证边界**：RISC-V、LoongArch64 release 构建通过；RISC-V QEMU 中 uptime 回归 PASS，随后进入嵌套 QEMU 阶段并由 90 秒 timeout 结束；LoongArch64 QEMU 和完整 BuildStorm 未运行。
 - **关联问题**：[BuildStorm P0-A 动态 `/proc/uptime` 计时](./problem/buildstorm-proc-uptime.md)
 - **关联 commit**：当前工作区未提交
+
+#### 嵌套 RISC-V QEMU Zicond 模拟语义修复（8.08）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：根据 `log.ans` 排查嵌套 RISC-V QEMU 在固定 `rv64` 参数下启动后卡死，要求最终输出 `Hello, world!` 且不改 QEMU 参数和固定配置。
+- **描述**：先排除固件、artifact、ppoll 时钟和 futex 唤醒问题；确认已有 Zicond 非法指令兼容路径的条件判断反转。修正 `czero.eqz/nez` 的“条件成立写零”语义后，嵌套 OpenSBI 和 ArceOS 均正常启动。
+- **验证边界**：RISC-V debug/release 运行、RISC-V 与 LoongArch64 release 构建均通过；`log.ans` 连续包含 `OpenSBI v1.6`、`Hello, world!`、`shutdown!`，未出现 `panic`、`IllegalInstruction` 或 `QEMU: Terminated`。
+- **关联问题**：[嵌套 RISC-V QEMU 的 Zicond 模拟语义反转](./problem/nested-qemu-zicond-emulation-semantics.md)
+- **关联 commit**：当前工作区未提交
