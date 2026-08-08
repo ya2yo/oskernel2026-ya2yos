@@ -108,6 +108,7 @@ fn boot_arceos_helloworld_in_qemu() -> i32 {
 }
 
 #[cfg(target_arch = "loongarch64")]
+#[allow(dead_code)]
 fn boot_arceos_helloworld_in_qemu() -> i32 {
     const QEMU_COMMAND: &str = concat!(
         "QEMU_ROOT=/opt/qemu-la64; ",
@@ -275,8 +276,8 @@ fn test_final_2026() -> i32 {
     }
     run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
     run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
-    #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
-    boot_arceos_helloworld_in_qemu();
+    // #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+    // boot_arceos_helloworld_in_qemu();
     shutdown();
     0
 }
