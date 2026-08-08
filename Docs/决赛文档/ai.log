@@ -10979,3 +10979,27 @@ LoongArch64 条件编译函数，RISC-V 路径保持不变。
 `make TARGET_ARCH=riscv64` 和 `make TARGET_ARCH=loongarch64` 均通过；未运行 QEMU/LTP 专项测试。
 
 ---
+
+## 2026-08-08：signalfd4(74) 基础接入
+
+### 用户需求
+
+维护者要求实现 `sys_signalfd4`。
+
+### 分析与采纳结论
+
+原 syscall 入口仅返回 `DummyFd`，而 `os/src/fs/files/signalfd.rs` 为空。本轮新增真实 `SignalFd` 文件对象，复用当前 task 的 pending signal 与 `SigInfo`，支持创建/更新 mask、非阻塞读取、poll 和 `SFD_CLOEXEC`/`SFD_NONBLOCK`；同时补齐 syscall 的第四个 `sigsetsize` ABI 参数。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/fs/files/signalfd.rs` | 新增 signalfd 文件对象和读取/poll 语义。 |
+| `os/src/fs/files/mod.rs` | 导出 `SignalFd`。 |
+| `os/src/fs/vfs.rs` | 增加更新 signalfd mask 的可选文件接口。 |
+| `os/src/syscall/fs/mod.rs` | 实现参数校验、创建和更新 fd。 |
+| `os/src/syscall/mod.rs` | 传递 `sigsetsize`。 |
+
+### 验证
+
+`git diff --check` 通过；`cargo check --manifest-path os/Cargo.toml` 受环境缺少 `x86_64-linux-musl-cc` 和当前 nightly 与 `printf-compat` ABI 不兼容阻塞，未完成 kernel/QEMU/LTP 验证。

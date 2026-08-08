@@ -278,6 +278,9 @@ pub trait Inode: Send + Sync {
 
 /// 文件接口
 pub trait File: Send + Sync {
+    fn update_signal_mask(&self, _mask: crate::signal::SigSet) -> bool {
+        false
+    }
     /// 默认: 可读（子类型可按需覆写）
     fn readable(&self) -> bool {
         true

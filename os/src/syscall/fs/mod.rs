@@ -23,10 +23,10 @@ use log::warn;
 
 use crate::{
     fs::{
-        DummyFd, FileClass, FileDescriptor, IoCqringOffsets, IoSqringOffsets, IoUringFd,
-        IoUringParams, OpenFlags, TmpFile, IORING_MAX_ENTRIES,
+        DummyFd, File, FileClass, FileDescriptor, IORING_MAX_ENTRIES, IoCqringOffsets, IoSqringOffsets, IoUringFd, IoUringParams, OpenFlags, TmpFile
     },
     mm::{copy_from_user, copy_to_user, if_bad_address, read_user_cstr_with_limit},
+    signal::SigSet,
     task::current_task,
     utils::{SysErrNo, SyscallRet},
 };
@@ -35,6 +35,9 @@ pub use self::{
     ctl::*, event::*, fanotify::*, fcntl::*, fd_ops::*, handle::*, inotify::*, misc::*, mount::*,
     mqueue::*, path::*, pipe::*, space::*, stat::*, xattr::*,
 };
+
+const SFD_CLOEXEC: u32 = 0x80000;
+const SFD_NONBLOCK: u32 = 0x800;
 
 fn dummyfd_create() -> SyscallRet {
     let dummy_file = DummyFd::new();
@@ -157,9 +160,54 @@ pub fn sys_perf_event_open(
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/signalfd4.2.html
-pub fn sys_signalfd4(_siglfd: u32, _mask: *const u8, _flags: u32) -> SyscallRet {
-    warn!("[sys_signalfd4] not implement!");
-    dummyfd_create()
+pub fn sys_signalfd4(
+    siglfd: u32,
+    mask: *const u8,
+    flags: u32,
+    sigsetsize: usize,
+) -> SyscallRet {
+    if sigsetsize != core::mem::size_of::<SigSet>() {
+        return Err(SysErrNo::EINVAL);
+    }
+    if mask.is_null() || if_bad_address(mask as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+    if flags & !(SFD_CLOEXEC | SFD_NONBLOCK) != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    let task = current_task().unwrap();
+    let memory_set = task.process.memory_set_arc();
+    let mut set = SigSet::empty();
+    copy_from_user(&memory_set, mask as usize, unsafe {
+        core::slice::from_raw_parts_mut(
+            &mut set as *mut SigSet as *mut u8,
+            core::mem::size_of::<SigSet>(),
+        )
+    })?;
+    set.remove(SigSet::SIGKILL | SigSet::SIGSTOP);
+    let mut open_flags = OpenFlags::O_RDONLY;
+    if flags & SFD_CLOEXEC != 0 {
+        open_flags |= OpenFlags::O_CLOEXEC;
+    }
+    if flags & SFD_NONBLOCK != 0 {
+        open_flags |= OpenFlags::O_NONBLOCK;
+    }
+    if siglfd != u32::MAX {
+        let desc = task.process.fd_table.get(siglfd as usize)?;
+        if !desc.any().update_signal_mask(set) {
+            return Err(SysErrNo::EINVAL);
+        }
+        return Ok(siglfd as usize);
+    }
+    let file = crate::fs::SignalFd::new(task.clone(), set);
+    if flags & SFD_NONBLOCK != 0 {
+        file.set_nonblocking(true)?;
+    }
+    let fd = task.process.fd_table.alloc_fd()?;
+    task.process
+        .fd_table
+        .set(fd, FileDescriptor::new(open_flags, FileClass::Abs(file)))?;
+    Ok(fd)
 }
 
 /// https://www.man7.org/linux/man-pages/man2/timerfd_create.2.html

@@ -5,7 +5,6 @@ use linux_raw_sys::general::{XATTR_CREATE, XATTR_REPLACE};
 
 impl Ext4Inode {
     pub(super) fn set_xattr_impl(&self, name: &[u8], value: &[u8], flags: u32) -> SyscallRet {
-
         if flags & !(XATTR_CREATE | XATTR_REPLACE) != 0 {
             return Err(SysErrNo::EINVAL);
         }

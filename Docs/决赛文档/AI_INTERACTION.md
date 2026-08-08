@@ -1,5 +1,12 @@
 # 决赛文档说明
 
+#### signalfd4(74) 基础接入（8.8）
+
+- **工具/模型**：OpenCode (GPT-5.6)
+- **场景**：新增 Linux syscall、signal fd 文件对象、ABI 参数校验
+- **描述**：AI 根据现有 signal pending、文件对象和 fd table 实现 `signalfd4` 基础语义，支持创建/更新 mask、`siginfo_t` 读取、非阻塞和 poll；验证受本机 musl 编译器缺失及 nightly 依赖兼容问题阻塞。详见 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：待提交
+
 #### open14 O_TMPFILE 匿名临时文件语义修复（7.2）
 
 - **工具/模型**：Codex (GPT-5)

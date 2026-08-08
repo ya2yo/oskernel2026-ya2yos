@@ -35,5 +35,6 @@ pub use {
     mqueue::{MqAttr, Mqueue},
     os_file::OSFile,
     pagemap::PagemapFile,
+    signalfd::SignalFd,
     tmp_file::TmpFile,
 };
