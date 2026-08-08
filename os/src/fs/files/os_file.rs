@@ -26,6 +26,11 @@ use spin::{Lazy, Mutex};
 
 static WRITE_OPEN_COUNTS: Lazy<Mutex<BTreeMap<String, usize>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
+/// Number of live open file descriptions for each VFS inode object.  This is
+/// deliberately separate from `FSInfo`: a process may unlink a pathname that
+/// is still open by a sibling process or retained by a file-backed mapping.
+static OPEN_FILE_COUNTS: Lazy<Mutex<BTreeMap<usize, usize>>> =
+    Lazy::new(|| Mutex::new(BTreeMap::new()));
 static FILE_FLAGS: Lazy<Mutex<BTreeMap<String, u32>>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
 static NEXT_OFD_LOCK_OWNER: AtomicI32 = AtomicI32::new(1);
 const PIPE_MAX_SIZE_PATH: &str = "/proc/sys/fs/pipe-max-size";
@@ -61,6 +66,30 @@ fn unregister_write_open(path: &str) {
             counts.remove(path);
         }
     }
+}
+
+fn register_open_inode(inode: &Arc<dyn Inode>) -> usize {
+    // The canonical FsIndex inode Arc is shared by all opens of one live
+    // object. Pointer identity also cannot confuse a newly reused ext4 inode
+    // number with an older delayed-unlink object.
+    let key = Arc::as_ptr(inode) as *const () as usize;
+    let mut counts = OPEN_FILE_COUNTS.lock();
+    *counts.entry(key).or_insert(0) += 1;
+    key
+}
+
+fn unregister_open_inode(key: usize) {
+    let mut counts = OPEN_FILE_COUNTS.lock();
+    if let Some(count) = counts.get_mut(&key) {
+        *count -= 1;
+        if *count == 0 {
+            counts.remove(&key);
+        }
+    }
+}
+
+fn has_other_open_inode(key: usize) -> bool {
+    OPEN_FILE_COUNTS.lock().get(&key).copied().unwrap_or(0) > 1
 }
 
 fn get_file_flags(path: &str) -> u32 {
@@ -115,6 +144,8 @@ pub struct OSFile {
     /// 全局特殊节点表。对普通 inode 直接复用 inode.types()，对 FIFO/设备/socket
     /// 则保留创建时登记在 FsIndex 中的类型。
     seek_type: InodeType,
+    /// Stable key used by [`OPEN_FILE_COUNTS`] for this open file description.
+    open_inode_key: usize,
     write_path: Option<String>,
     suppress_fanotify: bool,
     ofd_lock_owner: i32,
@@ -127,6 +158,7 @@ struct OSFileInner {
 impl OSFile {
     pub fn new(readable: bool, writable: bool, append: bool, inode: Arc<dyn Inode>) -> Self {
         let seek_type = Self::resolve_seek_type(&inode);
+        let open_inode_key = register_open_inode(&inode);
         let write_path = if writable {
             let path = inode.path();
             register_write_open(&path);
@@ -140,6 +172,7 @@ impl OSFile {
             append,
             inode,
             seek_type,
+            open_inode_key,
             write_path,
             suppress_fanotify: false,
             ofd_lock_owner: alloc_ofd_lock_owner(),
@@ -158,12 +191,14 @@ impl OSFile {
         inode: Arc<dyn Inode>,
     ) -> Self {
         let seek_type = Self::resolve_seek_type(&inode);
+        let open_inode_key = register_open_inode(&inode);
         Self {
             readable,
             writable,
             append,
             inode,
             seek_type,
+            open_inode_key,
             write_path: None,
             suppress_fanotify: true,
             ofd_lock_owner: alloc_ofd_lock_owner(),
@@ -183,6 +218,13 @@ impl OSFile {
 
     pub fn is_write_open_path(path: &str) -> bool {
         WRITE_OPEN_COUNTS.lock().get(path).copied().unwrap_or(0) != 0
+    }
+
+    /// Whether a different open file description still refers to this inode.
+    /// The current `OSFile` itself is included in the count, so unlink callers
+    /// can distinguish their temporary lookup from a real live fd or mapping.
+    pub fn has_other_open_reference(&self) -> bool {
+        has_other_open_inode(self.open_inode_key)
     }
 
     pub fn is_immutable_path(path: &str) -> bool {
@@ -351,6 +393,7 @@ impl Drop for OSFile {
         if let Some(path) = self.write_path.as_deref() {
             unregister_write_open(path);
         }
+        unregister_open_inode(self.open_inode_key);
         if !self.suppress_fanotify && !fanotify_events_suppressed() {
             let mask = if self.writable {
                 FAN_CLOSE_WRITE

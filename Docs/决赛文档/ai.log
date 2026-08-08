@@ -10776,3 +10776,28 @@ loader 优化后确认：`map_elf_lazy_file()` 同时服务动态解释器与 `e
 要求未运行新的 QEMU、LTP 或 BuildStorm，运行时结果不在本轮宣称通过。
 
 详见 [问题复盘](./problem/buildstorm-main-elf-eager-mapping-regression.md)。
+
+## 2026-08-08：BuildStorm 跨进程 unlink 后 fstat 返回 ENOENT
+
+### 用户输入
+
+维护者要求分析 `server.ans` 末尾的 `ext4_stat_get: rc = 2`/`Ext4Inode::fstat` warning，
+优先检查最近修改，避免随意改动 fs 模块；随后要求先直接补文档，运行时验证留待后续执行。
+
+### 分析与结论
+
+确认 `rc = 2` 为 `ENOENT`，触发路径是 Cargo/rustc 兄弟进程共享增量缓存时，一个进程
+unlink `query-cache.bin`，另一个仍持有 fd 并执行 `fstat`。原 `unlinkat` 通过当前进程
+`FSInfo::has_fd` 判断打开引用，无法看到兄弟进程，导致目录项和路径缓存过早失效；这不
+是近期 MM/页表修改破坏 EXT4 元数据。修复将打开引用统计提升到 `OSFile` 的全局 inode
+对象计数，link count 为 1 且存在其他引用时延迟删除，并新增最小跨进程回归。
+
+### 修改与验证
+
+修改 `os/src/fs/files/os_file.rs`、`os/src/syscall/fs/ctl/unlink.rs`、
+`user/src/bin/initproc.rs` 和 `user/src/bin/initproc/fstat_unlink_regression.rs`，未修改
+ext4/lwext4 核心。此前短时 RISC-V QEMU 已显示 `fstat unlink regression: PASS`、
+`sigaltstack`、`rseq` 和全部 CAgent 通过，原 warning 未重现；完整 BuildStorm 尚待维护者
+后续验证，本轮只补文档。
+
+详见 [问题复盘](./problem/buildstorm-cross-process-unlink-fstat.md)。

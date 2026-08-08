@@ -20,6 +20,8 @@ mod buildstorm;
 mod busybox;
 #[allow(dead_code)]
 mod cagent;
+#[path = "initproc/fstat_unlink_regression.rs"]
+mod fstat_unlink_regression;
 mod iozone;
 mod libctest;
 mod lmbench;
@@ -56,6 +58,38 @@ pub(crate) fn run_final_testsuit(root: &str, script: &str) -> i32 {
     let status = fork_and_run(root, &args);
     cleanup_testsuit_children();
     status
+}
+
+/// Boot the BuildStorm artifact after the timed build has completed.
+///
+/// The final RISC-V image ships its nested QEMU under `/opt/qemu-rv64`; this
+/// invocation intentionally does not rebuild the artifact or add a timeout.
+fn boot_arceos_helloworld_in_qemu() -> i32 {
+    const QEMU_COMMAND: &str = concat!(
+        "export LD_LIBRARY_PATH=/opt/qemu-rv64/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}; ",
+        "exec /opt/qemu-rv64/bin/qemu-system-riscv64 ",
+        "-machine virt -cpu rv64 -m 512M -smp 1 -nographic ",
+        "-kernel /work/tgoskits/target/riscv64gc-unknown-linux-musl/release/arceos-helloworld\0"
+    );
+
+    println!("----- boot arceos-helloworld in qemu (untimed, arch=riscv64) -----");
+
+    let pid = fork();
+    if pid < 0 {
+        println!("fork arceos qemu failed: {}", pid);
+        return pid as i32;
+    }
+    if pid == 0 {
+        chdir("/work/tgoskits\0");
+        let args = ["/bin/bash\0", "-c\0", QEMU_COMMAND];
+        let ret = execve(&args);
+        println!("exec arceos qemu failed: {}", ret);
+        exit(127);
+    }
+
+    let mut exit_code: i32 = 0;
+    let _ = waitpid(pid as usize, &mut exit_code);
+    exit_code
 }
 
 fn cleanup_testsuit_children() {
@@ -108,14 +142,14 @@ fn run_interactive_shell() -> i32 {
 #[no_mangle]
 fn main() -> i32 {
     // run_interactive_shell()
-    // get_score()
+    // test_pre()
     test_final_2026()
 }
 
 // Score helpers (kept for ad-hoc testing)
 #[allow(unused)]
-fn get_score() -> i32 {
-    println!("get_score start!");
+fn test_pre() -> i32 {
+    println!("test_pre start!");
     netdev_test_cases::run_all();
     // basic
     run_testsuit("musl\0", "basic_testcode.sh\0");
@@ -157,6 +191,10 @@ fn get_score() -> i32 {
 // final-2026
 #[allow(unused)]
 fn test_final_2026() -> i32 {
+    if !fstat_unlink_regression::run() {
+        shutdown();
+        return 1;
+    }
     if !sigaltstack_regression::run() {
         shutdown();
         return 1;
@@ -167,6 +205,7 @@ fn test_final_2026() -> i32 {
     }
     run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
     run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
+    boot_arceos_helloworld_in_qemu();
     shutdown();
     0
 }

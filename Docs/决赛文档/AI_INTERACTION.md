@@ -2931,3 +2931,18 @@
   未宣称运行时修复已验证。
 - **关联问题**：[BuildStorm 主 ELF eager 映射回归](./problem/buildstorm-main-elf-eager-mapping-regression.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 跨进程 unlink 后 fstat 返回 ENOENT（8.8）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans` 末尾的 `ext4_stat_get: rc = 2` 和
+  `Ext4Inode::fstat` warning，要求优先检查近期改动并避免随意修改 fs 模块；随后要求先
+  补齐文档，运行时验证留待后续。
+- **描述**：确认 `rc = 2` 为 `ENOENT`，根因是 `unlinkat` 用进程本地 `FSInfo::has_fd`
+  判断打开引用，无法识别 Cargo/rustc 兄弟进程持有的同一 inode。将引用统计放到
+  `OSFile` 全局 inode 对象计数，在仍有其他引用且 link count 为 1 时延迟删除；新增
+  跨进程 unlink/fstat 回归，未修改 ext4/lwext4 核心。
+- **验证边界**：此前短时 RISC-V QEMU 中新增回归、sigaltstack、rseq 和全部 CAgent
+  通过，原 warning 未再出现；完整 BuildStorm 未在本轮确认。
+- **关联问题**：[BuildStorm 跨进程 unlink 后 fstat 返回 ENOENT](./problem/buildstorm-cross-process-unlink-fstat.md)
+- **关联 commit**：当前工作区未提交

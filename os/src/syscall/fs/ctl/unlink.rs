@@ -2,8 +2,8 @@ use super::*;
 
 /// 实现 `unlinkat(2)`，删除普通目录项或按 `AT_REMOVEDIR` 删除空目录。
 ///
-/// 该函数区分文件和目录错误码，目录删除前检查是否为空；普通文件若仍被 fd 持有且
-/// link count 为 1，则标记延迟删除，等待最后一个 inode 引用释放后再由底层清理。
+/// 该函数区分文件和目录错误码，目录删除前检查是否为空；普通文件若仍被任意进程的
+/// 打开文件描述持有且 link count 为 1，则标记延迟删除，等待最后一个 inode 引用释放后再由底层清理。
 /// 成功删除或延迟删除后会失效 dentry 和 inode cache。
 /// 参考 https://man7.org/linux/man-pages/man2/unlinkat.2.html
 pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
@@ -48,17 +48,11 @@ pub fn sys_unlinkat(dirfd: isize, path: *const u8, flags: u32) -> SyscallRet {
         return Ok(0);
     }
 
-    let locked_fs_info = &proc.fs_info;
-
-    // debug!(
-    //     "[sys_unlinkat] path={},link_cnt={},has_activate_fd={}",
-    //     &abs_path,
-    //     osfile.inode.link_cnt()?,
-    //     locked_fs_info.has_fd(&abs_path)
-    // );
-    // TODO: HXC: 我怀疑这里的has_fd是有问题的
-    let has_fd = locked_fs_info.has_fd(&abs_path);
-    if has_fd && osfile.inode.link_cnt()? == 1 {
+    // `osfile` is the temporary lookup made above.  Do not mistake it for a
+    // live fd: only another open file description requires delayed removal.
+    // FSInfo is process-local and therefore misses Cargo/rustc sibling
+    // processes that keep the same inode open across an unlink.
+    if osfile.has_other_open_reference() && osfile.inode.link_cnt()? == 1 {
         osfile.inode.delay();
         MNT_TABLE.lock().remove_file(&abs_path);
         invalidate_dentry_path(&abs_path);
