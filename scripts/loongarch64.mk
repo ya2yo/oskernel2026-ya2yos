@@ -33,7 +33,7 @@ QEMU_CMD := qemu-system-loongarch64 \
     -device virtio-net-pci,netdev=net0 \
     -netdev user,id=net0 \
     -rtc base=utc \
-# 	-snapshot #-d in_asm,cpu -D log.txt
+	-snapshot #-d in_asm,cpu -D log.txt
 # 暂时移除 -snapshot,保留前期构建的结果
 # -snapshot是为了避免修改被保存仅镜像
 OBJDUMP := rust-objdump --arch-name=$(ARCH)
