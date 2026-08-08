@@ -14,6 +14,7 @@ mod epoll;
 mod events;
 mod fanotify;
 mod inotify;
+mod io_uring;
 mod mountfd;
 pub mod mqueue;
 mod os_file;
@@ -29,6 +30,7 @@ pub use {
         FAN_ACCESS, FAN_CLOSE_NOWRITE, FAN_CLOSE_WRITE, FAN_MODIFY, FAN_OPEN,
     },
     inotify::{InotifyFd, InotifyMask},
+    io_uring::{IoCqringOffsets, IoSqringOffsets, IoUringFd, IoUringParams, IORING_MAX_ENTRIES},
     mountfd::{DetachedMountFd, FsConfigOption, FsConfigValue, FsContext, FsContextFd},
     mqueue::{MqAttr, Mqueue},
     os_file::OSFile,

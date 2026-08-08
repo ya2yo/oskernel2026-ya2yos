@@ -22,8 +22,11 @@ use linux_raw_sys::{
 use log::warn;
 
 use crate::{
-    fs::{DummyFd, FileClass, FileDescriptor, OpenFlags, TmpFile},
-    mm::{if_bad_address, read_user_cstr_with_limit},
+    fs::{
+        DummyFd, FileClass, FileDescriptor, IoCqringOffsets, IoSqringOffsets, IoUringFd,
+        IoUringParams, OpenFlags, TmpFile, IORING_MAX_ENTRIES,
+    },
+    mm::{copy_from_user, copy_to_user, if_bad_address, read_user_cstr_with_limit},
     task::current_task,
     utils::{SysErrNo, SyscallRet},
 };
@@ -46,9 +49,51 @@ fn dummyfd_create() -> SyscallRet {
 }
 
 /// https://man7.org/linux/man-pages/man2/io_uring_setup.2.html
-pub fn sys_io_uring_setup(_entriers: u32, _params: *mut u8) -> SyscallRet {
-    warn!("[sys_io_uring_setup] not implement!");
-    dummyfd_create()
+pub fn sys_io_uring_setup(entries: u32, params: *mut u8) -> SyscallRet {
+    if entries == 0 || entries > IORING_MAX_ENTRIES {
+        return Err(SysErrNo::EINVAL);
+    }
+    if params.is_null() || if_bad_address(params as usize) {
+        return Err(SysErrNo::EFAULT);
+    }
+
+    // This backend does not expose setup flags yet. Keep the ABI-visible
+    // parameter block deterministic so callers can inspect the ring geometry.
+    let task = current_task().unwrap();
+    let memory_set = task.process.memory_set_arc();
+    let mut params_value = IoUringParams::default();
+    let params_bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            &mut params_value as *mut IoUringParams as *mut u8,
+            core::mem::size_of::<IoUringParams>(),
+        )
+    };
+    copy_from_user(&memory_set, params as usize, params_bytes)?;
+    if params_value.flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+    params_value.sq_entries = entries.next_power_of_two();
+    params_value.cq_entries = entries.next_power_of_two();
+    params_value.sq_thread_cpu = 0;
+    params_value.sq_thread_idle = 0;
+    params_value.features = 0;
+    params_value.wq_fd = 0;
+    params_value.sq_off = IoSqringOffsets::default();
+    params_value.cq_off = IoCqringOffsets::default();
+    let params_bytes = unsafe {
+        core::slice::from_raw_parts(
+            &params_value as *const IoUringParams as *const u8,
+            core::mem::size_of::<IoUringParams>(),
+        )
+    };
+    copy_to_user(&memory_set, params as usize, params_bytes)?;
+
+    let fd = task.process.fd_table.alloc_fd()?;
+    task.process.fd_table.set(
+        fd,
+        FileDescriptor::new(OpenFlags::empty(), FileClass::Abs(IoUringFd::new())),
+    );
+    Ok(fd)
 }
 
 /// https://man7.org/linux/man-pages/man2/memfd_create.2.html

@@ -45,11 +45,7 @@ impl EpollFile {
     }
 
     /// Register a waiter with the underlying file for an epoll interest mask.
-    pub fn register_mask(
-        file: &dyn File,
-        registered_events: u32,
-        context: &mut Context<'_>,
-    ) {
+    pub fn register_mask(file: &dyn File, registered_events: u32, context: &mut Context<'_>) {
         file.register(context, epoll_events_to_poll(registered_events));
     }
 

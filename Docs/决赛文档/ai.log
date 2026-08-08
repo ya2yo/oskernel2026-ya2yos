@@ -10953,3 +10953,29 @@ LoongArch64 条件编译函数，RISC-V 路径保持不变。
 `make TARGET_ARCH=riscv64` 和 `make TARGET_ARCH=loongarch64` 均通过；未运行 QEMU/LTP 专项测试。
 
 ---
+
+## 2026-08-08：io_uring_setup(425) 基础接入
+
+### 用户需求
+
+维护者要求实现 `sys_io_uring_setup`。
+
+### 分析与采纳结论
+
+项目已有 425 号 syscall，但原实现仅返回 `DummyFd`，且没有校验用户态 `io_uring_params`。本轮增加独立 `IoUringFd` 文件对象，校验 entries 范围、参数地址和 setup flags，读取并回写 Linux ABI 参数结构，返回独立的 ring fd。
+
+当前只实现 setup 的参数/句柄层，尚未实现 SQ/CQ ring 的 mmap、提交队列消费、完成队列生成以及 `io_uring_enter`/`io_uring_register` 配套语义。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/fs/mod.rs` | 实现 `sys_io_uring_setup` 参数校验、ABI 回写和 fd 创建。 |
+| `os/src/fs/files/io_uring.rs` | 新增独立的 io_uring fd 文件对象。 |
+| `os/src/fs/files/mod.rs` | 导出 `IoUringFd`。 |
+
+### 验证
+
+`make TARGET_ARCH=riscv64` 和 `make TARGET_ARCH=loongarch64` 均通过；未运行 QEMU/LTP 专项测试。
+
+---
