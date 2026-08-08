@@ -10926,3 +10926,30 @@ LoongArch64 条件编译函数，RISC-V 路径保持不变。
 `make TARGET_ARCH=riscv64` 通过，并同时完成 LoongArch64 release 构建；未运行 QEMU/LTP 专项测试。
 
 ---
+
+## 2026-08-08：memfd_create(279) 接入
+
+### 用户需求
+
+维护者要求实现 `sys_memfd_create`。
+
+### 分析与采纳结论
+
+项目已有 279 号 syscall 分发，但实现仅创建 `DummyFd`。同时已有用于 `O_TMPFILE` 的匿名内存普通文件 `TmpFile`，具备读写、`lseek`、`fstat` 和 poll 能力，因此复用该对象实现 memfd，避免增加重复的内存文件后端。
+
+实现校验名称用户指针、空名称、超过 Linux 允许长度的名称和未知 flags；支持 `MFD_CLOEXEC`、`MFD_ALLOW_SEALING`、`MFD_NOEXEC_SEAL` 的创建参数记录/校验，`MFD_HUGETLB` 因暂无 hugetlb 后端返回 `EINVAL`。当前未实现 `F_ADD_SEALS`/`F_GET_SEALS` 的 seal 状态语义。
+
+### 修改内容
+
+| 文件 | 修改 |
+| --- | --- |
+| `os/src/syscall/fs/mod.rs` | 实现 `sys_memfd_create`，完成用户名称读取、flag 校验和 fd 创建。 |
+| `os/src/fs/files/tmp_file.rs` | 为匿名内存文件补充 `ftruncate` 支持。 |
+| `os/src/fs/vfs.rs` | 为通用 `File` 接口增加默认 `truncate` 入口。 |
+| `os/src/syscall/fs/space.rs` | 让 `ftruncate` 支持抽象内存文件 fd。 |
+
+### 验证
+
+`make TARGET_ARCH=riscv64` 和 `make TARGET_ARCH=loongarch64` 均通过；未运行 QEMU/LTP 专项测试。
+
+---

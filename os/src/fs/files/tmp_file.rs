@@ -89,6 +89,15 @@ impl File for TmpFile {
         Ok(bytes.len())
     }
 
+    fn truncate(&self, size: usize) -> SyscallRet {
+        let mut inner = self.inner.lock();
+        inner.data.resize(size, 0);
+        if inner.offset > size {
+            inner.offset = size;
+        }
+        Ok(0)
+    }
+
     fn fstat(&self) -> Kstat {
         let inner = self.inner.lock();
         Kstat {

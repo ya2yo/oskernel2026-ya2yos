@@ -2991,3 +2991,10 @@
 - **场景**：实现既有 `prctl(167)` 的 option 29，消除运行日志中的 unsupported option。
 - **描述**：补齐 `PR_SET_TIMERSLACK`/`PR_GET_TIMERSLACK`，保存线程级纳秒 timer slack，支持默认 50us 和设置值 0 恢复默认值，并由 fork/clone 继承。RISC-V、LoongArch64 release 构建通过，未运行 QEMU/LTP 专项测试。详见 `Docs/决赛文档/ai.log` 对应条目。
 - **关联 commit**：待提交
+
+#### memfd_create(279) 接入（8.08）
+
+- **工具/模型**：Codex (GPT-5.6-Luna)
+- **场景**：实现已有 279 号 syscall 的真实匿名内存文件语义，替换原 `DummyFd` 占位实现。
+- **描述**：复用已有 `TmpFile` 实现 memfd 的匿名读写文件能力，补充名称/长度/flags 校验和 `MFD_CLOEXEC` 支持；`MFD_HUGETLB` 因无 hugetlb 后端返回 `EINVAL`，seal 操作暂未实现。RISC-V、LoongArch64 release 构建通过，未运行 QEMU/LTP 专项测试。详见 `Docs/决赛文档/ai.log` 对应条目。
+- **关联 commit**：待提交

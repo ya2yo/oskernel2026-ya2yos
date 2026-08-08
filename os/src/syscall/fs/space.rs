@@ -40,9 +40,11 @@ pub fn sys_ftruncate(fd: usize, length: i32) -> SyscallRet {
     }
 
     if let Some(file) = inner.fd_table.try_get(fd) {
-        let file = file.file()?;
-        file_lock::notify_file_lease_break(&file.inode.path(), task.pid() as i32, true);
-        return file.inode.truncate(length as usize);
+        if let Ok(file) = file.file() {
+            file_lock::notify_file_lease_break(&file.inode.path(), task.pid() as i32, true);
+            return file.inode.truncate(length as usize);
+        }
+        return file.any().truncate(length as usize);
     }
     Err(SysErrNo::EBADF)
 }
