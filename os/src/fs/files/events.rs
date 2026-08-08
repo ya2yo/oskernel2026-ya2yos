@@ -148,11 +148,15 @@ impl File for EventFd {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn poll(&self, _events: PollEvents) -> PollEvents {
+    fn poll(&self, events: PollEvents) -> PollEvents {
         let mut revents = PollEvents::empty();
         let count = self.counter.load(Ordering::Acquire);
-        revents.set(PollEvents::IN, count > 0);
-        revents.set(PollEvents::OUT, count < u64::MAX - 1);
+        if events.contains(PollEvents::IN) {
+            revents.set(PollEvents::IN, count > 0);
+        }
+        if events.contains(PollEvents::OUT) {
+            revents.set(PollEvents::OUT, count < u64::MAX - 1);
+        }
         revents
     }
 

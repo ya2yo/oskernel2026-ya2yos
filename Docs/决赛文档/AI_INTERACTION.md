@@ -3039,3 +3039,12 @@
 - **验证边界**：RISC-V debug/release 运行、RISC-V 与 LoongArch64 release 构建均通过；`log.ans` 连续包含 `OpenSBI v1.6`、`Hello, world!`、`shutdown!`，未出现 `panic`、`IllegalInstruction` 或 `QEMU: Terminated`。
 - **关联问题**：[嵌套 RISC-V QEMU 的 Zicond 模拟语义反转](./problem/nested-qemu-zicond-emulation-semantics.md)
 - **关联 commit**：当前工作区未提交
+
+#### 嵌套 RISC-V QEMU 最小修改复验纠正（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者指出回退后未用最终源码重跑，要求基于新的卡死日志重新验证并只保留必要修改。
+- **描述**：承认并纠正旧产物误判；每个组合先强制触发 `Compiling os` 和 `kernel-rv` 重建。减法验证确认 Zicond 修复之外，stdin 必须按真实输入报告 `POLLIN`，eventfd 必须过滤未请求事件；进程级 icache、MM 和 madvise 尝试均非必要并已回退。
+- **验证边界**：最终最小组合的固定参数运行输出第二段 `OpenSBI v1.6`、`Hello, world!` 和 `shutdown!`；最终双架构 release 构建另行执行。
+- **关联问题**：[嵌套 RISC-V QEMU 的 poll readiness 与 Zicond 语义修复](./problem/nested-qemu-zicond-emulation-semantics.md)
+- **关联 commit**：当前工作区未提交

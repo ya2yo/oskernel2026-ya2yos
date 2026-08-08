@@ -13,8 +13,9 @@ use alloc::vec::Vec;
 use core::{
     mem::size_of,
     slice,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
+use spin::Mutex;
 
 const LF: u8 = 0x0a;
 const CR: u8 = 0x0d;
@@ -38,6 +39,8 @@ const IEXTEN: u32 = 0x08000;
 
 const DEFAULT_LFLAG: u32 = ISIG | ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | IEXTEN;
 static TERMINAL_LFLAG: AtomicU32 = AtomicU32::new(DEFAULT_LFLAG);
+static STDIN_BUFFER: Mutex<Option<u8>> = Mutex::new(None);
+static STDIN_NONBLOCKING: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -137,6 +140,18 @@ fn echo_input(c: u8) {
     }
 }
 
+fn stdin_getchar() -> Option<u8> {
+    STDIN_BUFFER.lock().take().or_else(console_getchar)
+}
+
+fn stdin_has_input() -> bool {
+    let mut buffered = STDIN_BUFFER.lock();
+    if buffered.is_none() {
+        *buffered = console_getchar();
+    }
+    buffered.is_some()
+}
+
 pub struct Stdin;
 
 pub struct Stdout;
@@ -157,8 +172,14 @@ impl File for Stdin {
         let echo_enabled = lflag & ECHO != 0;
         let canonical = lflag & ICANON != 0;
         while count < user_buf.len() {
-            match console_getchar() {
+            match stdin_getchar() {
                 None => {
+                    if STDIN_NONBLOCKING.load(Ordering::Acquire) {
+                        if count == 0 {
+                            return Err(SysErrNo::EAGAIN);
+                        }
+                        break;
+                    }
                     // 没有输入，阻塞，挂起当前任务并运行下一个任务
                     suspend_current_and_run_next();
                     continue;
@@ -217,10 +238,21 @@ impl File for Stdin {
     }
     fn poll(&self, events: PollEvents) -> PollEvents {
         let mut revents = PollEvents::empty();
-        if events.contains(PollEvents::IN) {
+        if events.contains(PollEvents::IN) && stdin_has_input() {
             revents |= PollEvents::IN;
         }
         revents
+    }
+    fn register(&self, _context: &mut core::task::Context<'_>, _events: PollEvents) {
+        // SBI/UART polling has no interrupt-backed waker. ppoll still wakes on
+        // its timeout or on the other registered file descriptors.
+    }
+    fn nonblocking(&self) -> bool {
+        STDIN_NONBLOCKING.load(Ordering::Acquire)
+    }
+    fn set_nonblocking(&self, nonblocking: bool) -> Result<(), SysErrNo> {
+        STDIN_NONBLOCKING.store(nonblocking, Ordering::Release);
+        Ok(())
     }
     fn fstat(&self) -> Kstat {
         Kstat {
