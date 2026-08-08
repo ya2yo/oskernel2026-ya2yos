@@ -10749,3 +10749,30 @@ eager framed 映射，保留普通用户 `mmap` 的懒加载。`make TARGET_ARCH
 `make TARGET_ARCH=loongarch64` 通过；`timeout 60s make run TARGET_ARCH=riscv64`
 运行至 `shutdown!`，动态测试无 `FAIL`，共 217 个 `Pass!`。详见
 `Docs/决赛文档/problem/libctest-dynamic-elf-eager-load.md`。
+
+## 2026-08-08：BuildStorm 主 ELF eager 映射回归
+
+### 用户输入
+
+维护者要求分析 `log.ans` 并修复，已知 `ed27f13bed92da1490b7218ff39e382ce9438dde`
+会导致当前错误，但该提交对 LTP 是必要的；随后要求直接补齐文档，运行时验证留待后续执行。
+
+### 分析与结论
+
+日志的首个可操作错误为 BuildStorm Cargo 启动 RISC-V `rustc` 时的
+`Bad file descriptor (os error 9)`，不是 `QEMU: Terminated`。审计该提交和前序
+loader 优化后确认：`map_elf_lazy_file()` 同时服务动态解释器与 `execve()` 主 ELF；提交
+删除对齐段的 `MAP_PRIVATE` lazy 分支后，二者都变为全量 eager framed 映射。历史
+`libctest` 复盘表明动态解释器必须 eager，以避免启动期重定位进入 file-backed fault/COW
+路径；BuildStorm 的大型主程序不应因此失去 lazy 映射。
+
+### 修改与验证
+
+修改 `os/src/mm/memory_set/elf_loader.rs`：新增解释器专用
+`map_elf_eager_file()`，并让 `load_dl_interp_if_needed()` 使用它；恢复
+`map_elf_lazy_file()` 作为主 ELF 的页对齐私有 file-backed 映射，非对齐段保持 eager。
+新增问题复盘并更新索引、开发日志和 AI 交互记录。`make TARGET_ARCH=riscv64` 返回成功，
+根目录流程同时完成 RISC-V/LoongArch64 release 构建；`git diff --check` 通过。按维护者
+要求未运行新的 QEMU、LTP 或 BuildStorm，运行时结果不在本轮宣称通过。
+
+详见 [问题复盘](./problem/buildstorm-main-elf-eager-mapping-regression.md)。

@@ -248,8 +248,8 @@ impl MemorySetInner {
                     }
                 })
                 .ok_or(())?;
-            // 动态解释器的页对齐段会登记为 file-backed VMA，因此这里只读取
-            // ELF 元数据；未对齐段在下面直接装入新地址空间的用户页。
+            // 动态解释器在重定位期间会修改自身状态。保持它的 PT_LOAD 段为
+            // eager framed 映射，避免解释器尚未就绪时进入文件页/COW 缺页路径。
             #[cfg(feature = "perf")]
             let interp_read_begin = get_ticks();
             let interp_elf_data = read_elf_metadata(&interp_file.inode).map_err(|_| ())?;
@@ -260,7 +260,7 @@ impl MemorySetInner {
             let interp_elf = xmas_elf::ElfFile::new(&interp_elf_data).map_err(|_| ())?;
             #[cfg(feature = "perf")]
             let interp_map_begin = get_ticks();
-            self.map_elf_lazy_file(&interp_elf, DL_INTERP_OFFSET.into(), &interp_file)?;
+            self.map_elf_eager_file(&interp_elf, DL_INTERP_OFFSET.into(), &interp_file)?;
             #[cfg(feature = "perf")]
             crate::utils::perf::record_exec_interp_map_duration(
                 get_ticks().saturating_sub(interp_map_begin),
@@ -353,11 +353,12 @@ impl MemorySetInner {
         Ok((max_end_vpn, header_va.into()))
     }
 
-    /// Register an interpreter's PT_LOAD segments as demand-paged private
-    /// file mappings.  The interpreter is executed repeatedly by execve, so
-    /// allocating and copying every segment up front wastes most of the work:
-    /// the file page cache can provide clean read-only pages on first fault,
-    /// while writable pages still become private through the normal COW path.
+    /// Register a main executable's PT_LOAD segments as demand-paged private
+    /// file mappings.  The dynamic interpreter uses the eager path below:
+    /// it modifies its relocation state before user-space fault handling is
+    /// fully available. Main executable text and read-only data can instead
+    /// use the file page cache on first access, while writable pages remain
+    /// private through the normal COW path.
     fn map_elf_lazy_file(
         &mut self,
         elf: &ElfFile,
@@ -399,9 +400,106 @@ impl MemorySetInner {
                 map_perm |= MapPermission::X;
             }
 
-            // Keep ELF text/data eager.  The dynamic linker writes its own
-            // relocation state during startup, and file-backed ELF VMAs can
-            // otherwise turn that path into a fault before libc is ready.
+            let page_offset = start_va.0 - start_va.floor().0 * PAGE_SIZE;
+            let can_lazy_map = page_offset == 0 && (ph.offset() as usize) % PAGE_SIZE == 0;
+            if !can_lazy_map {
+                // Preserve the exact zero-before/after-segment semantics for
+                // unusual unaligned ELF segments.
+                let map_area = MapArea::new(
+                    start_va,
+                    end_va,
+                    MapType::Framed,
+                    map_perm,
+                    MapAreaType::Elf,
+                );
+                max_end_vpn = max_end_vpn.max(map_area.vpn_range.end());
+                self.push_elf_segment_from_file(
+                    map_area,
+                    page_offset,
+                    file,
+                    ph.offset() as usize,
+                    file_size,
+                )?;
+                continue;
+            }
+
+            let file_end = start_va.0.checked_add(file_size).ok_or(())?;
+            let file_end_vpn = VirtAddr::from(file_end).ceil();
+            if file_size != 0 {
+                let file_area = MapArea::new_mmap(
+                    start_va,
+                    file_end_vpn.into(),
+                    MapType::Framed,
+                    map_perm,
+                    MapAreaType::Mmap,
+                    Some(file.clone()),
+                    ph.offset() as usize,
+                    MmapFlags::MAP_PRIVATE,
+                );
+                max_end_vpn = max_end_vpn.max(file_area.vpn_range.end());
+                self.push_lazily(file_area);
+            }
+
+            let mem_end_vpn = end_va.ceil();
+            if file_end_vpn < mem_end_vpn {
+                let bss_area = MapArea::new(
+                    file_end_vpn.into(),
+                    mem_end_vpn.into(),
+                    MapType::Framed,
+                    map_perm,
+                    MapAreaType::Elf,
+                );
+                max_end_vpn = max_end_vpn.max(bss_area.vpn_range.end());
+                self.push_lazily(bss_area);
+            }
+        }
+        Ok((max_end_vpn, header_va.into()))
+    }
+
+    /// Eagerly map a dynamic interpreter's PT_LOAD segments from its backing
+    /// file. The interpreter writes relocation state while starting, before
+    /// its own file-backed fault path is reliable.
+    fn map_elf_eager_file(
+        &mut self,
+        elf: &ElfFile,
+        offset: VirtAddr,
+        file: &Arc<OSFile>,
+    ) -> Result<(VirtPageNum, VirtAddr), ()> {
+        let ph_count = elf.header.pt2.ph_count();
+        let mut max_end_vpn = offset.floor();
+        let mut header_va = 0;
+        let mut has_found_header_va = false;
+
+        for i in 0..ph_count {
+            let ph = elf.program_header(i).map_err(|_| ())?;
+            if ph.get_type().map_err(|_| ())? != xmas_elf::program::Type::Load {
+                continue;
+            }
+
+            let start_va: VirtAddr = (ph.virtual_addr() as usize + offset.0).into();
+            let end_va: VirtAddr = ((ph.virtual_addr() + ph.mem_size()) as usize + offset.0).into();
+            let file_size = ph.file_size() as usize;
+            let mem_size = ph.mem_size() as usize;
+            if file_size > mem_size {
+                return Err(());
+            }
+            if !has_found_header_va {
+                header_va = start_va.0;
+                has_found_header_va = true;
+            }
+
+            let mut map_perm = MapPermission::U;
+            let ph_flags = ph.flags();
+            if ph_flags.is_read() {
+                map_perm |= MapPermission::R;
+            }
+            if ph_flags.is_write() {
+                map_perm |= MapPermission::W;
+            }
+            if ph_flags.is_execute() {
+                map_perm |= MapPermission::X;
+            }
+
             let page_offset = start_va.0 - start_va.floor().0 * PAGE_SIZE;
             let map_area = MapArea::new(
                 start_va,
@@ -422,10 +520,10 @@ impl MemorySetInner {
         Ok((max_end_vpn, header_va.into()))
     }
 
-    /// Eagerly map an unaligned interpreter segment and fill only its file
-    /// bytes. The common aligned segments remain lazy file mappings; this path
-    /// preserves the zero-before/after-segment behavior that a single mmap VMA
-    /// cannot express.
+    /// Eagerly map an ELF segment and fill only its file bytes. This preserves
+    /// the zero-before/after-segment behavior that a single mmap VMA cannot
+    /// express for unaligned main-program segments, and is also used for all
+    /// dynamic-interpreter segments.
     fn push_elf_segment_from_file(
         &mut self,
         mut map_area: MapArea,

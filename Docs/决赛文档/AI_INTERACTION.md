@@ -2916,3 +2916,18 @@
   `shutdown!`，动态测试无 `FAIL`，217 项输出 `Pass!`。
 - **关联问题**：[libctest 动态 ELF 启动失败](./problem/libctest-dynamic-elf-eager-load.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 主 ELF eager 映射回归修复（8.8）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `log.ans`，指出 `ed27f13bed92da1490b7218ff39e382ce9438dde`
+  会导致 BuildStorm Cargo 启动 `rustc` 返回 `EBADF`，但该提交修复动态 LTP 必不可少。
+- **描述**：确认该提交将解释器和主 ELF 共用的 `map_elf_lazy_file()` 全量改为 eager
+  framed 映射。拆分为解释器专用 eager 路径和主程序 lazy/private file-backed 路径：解释器
+  保留启动期重定位所需的 eager 语义，主程序恢复页对齐段按需加载；非对齐主程序段继续
+  eager，以保留零填充和共享页语义。
+- **验证边界**：`make TARGET_ARCH=riscv64` 的根目录流程完成 RISC-V 与 LoongArch64
+  release 构建，`git diff --check` 通过。按维护者要求未启动新的 QEMU、LTP 或 BuildStorm，
+  未宣称运行时修复已验证。
+- **关联问题**：[BuildStorm 主 ELF eager 映射回归](./problem/buildstorm-main-elf-eager-mapping-regression.md)
+- **关联 commit**：当前工作区未提交
