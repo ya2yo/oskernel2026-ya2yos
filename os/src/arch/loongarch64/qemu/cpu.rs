@@ -70,7 +70,9 @@ pub fn boot_secondary_harts(boot_hart: usize) {
 /// can safely wake an idle hart and return to this loop.
 pub fn idle() {
     crmd::set_ie(true);
-    core::hint::spin_loop();
+    unsafe {
+        loongArch64::asm::idle();
+    }
     crmd::set_ie(false);
     crate::mm::remote_tlb::poll();
 }
