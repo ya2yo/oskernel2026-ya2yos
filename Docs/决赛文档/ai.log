@@ -10852,3 +10852,16 @@ LoongArch64 条件编译函数，RISC-V 路径保持不变。
 
 本轮已完成镜像只读元数据和脚本内容检查；尚未运行 LoongArch64 QEMU 或完整双架构构建。
 关联问题：[嵌套 LoongArch64 QEMU 的 EFI 启动流程](./problem/nested-loongarch-qemu-boot.md)。
+## 2026-08-08: seccomp(277) 系统调用接入
+
+### 用户需求
+
+用户要求在当前项目实现第 277 号系统调用。
+
+### 分析与修改
+
+确认 Linux syscall 277 为 `seccomp(2)`。项目已有 `Syscall::Seccomp = 277`、线程级 `SeccompState`、strict/filter 处理和 classic BPF 校验，但 syscall 分发缺少对应分支。新增 `sys_seccomp()`，支持 `SECCOMP_SET_MODE_STRICT` 与 `SECCOMP_SET_MODE_FILTER`，复用既有用户内存复制、`no_new_privs`/`CAP_SYS_ADMIN` 权限检查和过滤器执行状态；同时接入内核分发并增加用户态封装。
+
+### 验证
+
+执行根目录 `make`，RISC-V 与 LoongArch64 release 构建均通过。未单独运行 QEMU/LTP 的 277 号直接调用测试。

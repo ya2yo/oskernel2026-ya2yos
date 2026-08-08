@@ -20,12 +20,77 @@ use crate::{
 
 const SECCOMP_MODE_STRICT: usize = 1;
 const SECCOMP_MODE_FILTER: usize = 2;
+const SECCOMP_SET_MODE_STRICT: u32 = 0;
+const SECCOMP_SET_MODE_FILTER: u32 = 1;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SockFprog {
     len: u16,
     filter: *const SockFilter,
+}
+
+/// https://man7.org/linux/man-pages/man2/seccomp.2.html
+/// `seccomp(operation, flags, uargs)` — install a seccomp policy directly.
+pub fn sys_seccomp(operation: u32, flags: u32, uargs: usize) -> SyscallRet {
+    if flags != 0 {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let task = current_task().unwrap();
+    match operation {
+        SECCOMP_SET_MODE_STRICT => {
+            if uargs != 0 {
+                return Err(SysErrNo::EINVAL);
+            }
+            let mut inner = task.inner_lock();
+            if !inner.seccomp_state.is_disabled() {
+                return Err(SysErrNo::EINVAL);
+            }
+            inner.seccomp_state = SeccompState::Strict;
+            Ok(0)
+        }
+        SECCOMP_SET_MODE_FILTER => {
+            if !task.inner_lock().seccomp_state.is_disabled() {
+                return Err(SysErrNo::EINVAL);
+            }
+            let no_new_privs = task.inner_lock().no_new_privs;
+            if !no_new_privs && !current_has_cap_sys_admin() {
+                return Err(SysErrNo::EACCES);
+            }
+            if uargs == 0 || if_bad_address(uargs) {
+                return Err(SysErrNo::EFAULT);
+            }
+
+            let memory_set = task.process.memory_set_arc();
+            let fprog = copy_from_user_val(&memory_set, uargs as *const SockFprog)?;
+            let filter_len = fprog.len as usize;
+            if filter_len == 0 || filter_len > SECCOMP_FILTER_MAX_INSNS {
+                return Err(SysErrNo::EINVAL);
+            }
+            if fprog.filter.is_null() || if_bad_address(fprog.filter as usize) {
+                return Err(SysErrNo::EFAULT);
+            }
+
+            let mut filter = alloc::vec![SockFilter::default(); filter_len];
+            let filter_bytes = unsafe {
+                core::slice::from_raw_parts_mut(
+                    filter.as_mut_ptr() as *mut u8,
+                    filter_len * size_of::<SockFilter>(),
+                )
+            };
+            copy_from_user(&memory_set, fprog.filter as usize, filter_bytes)?;
+            let seccomp_state = SeccompState::new_filter(filter).ok_or(SysErrNo::EINVAL)?;
+
+            let mut inner = task.inner_lock();
+            if !inner.seccomp_state.is_disabled() {
+                return Err(SysErrNo::EINVAL);
+            }
+            inner.seccomp_state = seccomp_state;
+            Ok(0)
+        }
+        _ => Err(SysErrNo::EINVAL),
+    }
 }
 
 fn current_has_cap_sys_admin() -> bool {

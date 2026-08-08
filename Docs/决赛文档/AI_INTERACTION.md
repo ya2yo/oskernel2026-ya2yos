@@ -1047,6 +1047,13 @@
 - **描述**：AI 对照 LTP `prctl04.c`、当前 syscall 分发、task clone 和 signal return 路径，确认问题是 seccomp 只在 handler 中伪返回成功，未在线程状态保存或统一 syscall 入口强制执行。实现线程级 strict/filter 状态，安全复制并验证测试所用 classic BPF 子集，在 fork/clone 中继承，并在拒绝时投递 strict 的 `SIGKILL` 或 filter 的 `SIGSYS`。同时修正 variadic `prctl()` 未使用寄存器不得强制为零的 ABI 假设。RISC-V、LoongArch64 的 musl/glibc `prctl04` 均为 `passed 9 failed 0 broken 0` 并正常关机；未实现的 BPF 指令、TSYNC、filter 叠加和其他 seccomp action 已明确记录。详见 [problem/prctl-seccomp-prctl04.md](./problem/prctl-seccomp-prctl04.md) 与 `ai.log` 对应条目。
 - **关联 commit**：`8c437ff2`
 
+#### seccomp(277) 系统调用接入（8.08）
+
+- **工具/模型**：Codex (GPT-5.6-Luna)
+- **场景**：新增 Linux 系统调用、复用既有 seccomp 状态与过滤器实现、双架构构建验证和文档记录。
+- **描述**：AI 确认 277 号调用是 `seccomp(2)`，项目已有 `prctl(PR_SET_SECCOMP)` 的线程状态和 classic BPF 子集执行器，但缺少 syscall 分发。实现 strict/filter 两种操作、参数和权限校验，接入内核分发并补充用户态封装；RISC-V 与 LoongArch64 `make` 通过。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/seccomp-syscall-277.md](./problem/seccomp-syscall-277.md)。
+- **关联 commit**：待提交
+
 #### LoongArch 8GiB/8 核 QEMU bring-up（7.21）
 
 - **工具/模型**：Codex (GPT-5)

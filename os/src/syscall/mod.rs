@@ -246,6 +246,7 @@ pub enum Syscall {
     ClockAdjtime = 266,
     Kcmp = 272,
     Renameat2 = 276,
+    Seccomp = 277,
     Getrandom = 278,
     MemfdCreate = 279,
     Bpf = 280,
@@ -921,6 +922,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         }
         Syscall::MemfdCreate => sys_memfd_create(args[0] as *const u8, args[1] as u32),
         Syscall::Bpf => sys_bpf(args[0] as i32, args[1] as *mut u8, args[2] as u32),
+        Syscall::Seccomp => sys_seccomp(args[0] as u32, args[1] as u32, args[2]),
         Syscall::UserFaultfd => sys_user_faultfd(args[0] as u32),
         Syscall::PerfEventOpen => sys_perf_event_open(
             args[0] as *mut u8,

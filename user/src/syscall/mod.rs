@@ -66,6 +66,7 @@ const SYSCALL_CLONE: usize = 220;
 const SYSCALL_EXECVE: usize = 221;
 const SYSCALL_WAIT4: usize = 260;
 const SYSCALL_RENAMEAT2: usize = 276;
+const SYSCALL_SECCOMP: usize = 277;
 const SYSCALL_GETRANDOM: usize = 278;
 const SYSCALL_COPYFILERANGE: usize = 285;
 const SYSCALL_RSEQ: usize = 293;
@@ -229,6 +230,13 @@ pub fn sys_rseq(rseq: *mut u8, rseq_len: u32, flags: u32, sig: u32) -> isize {
             0,
             0,
         ],
+    )
+}
+
+pub fn sys_seccomp(operation: u32, flags: u32, uargs: *const u8) -> isize {
+    syscall(
+        SYSCALL_SECCOMP,
+        [operation as isize, flags as isize, uargs as isize, 0, 0, 0],
     )
 }
 
