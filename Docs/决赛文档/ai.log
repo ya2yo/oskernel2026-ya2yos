@@ -10694,3 +10694,36 @@ TLB 做一次原子状态保护的重试；缺页、COW、文件页和坏指针�
 由软件翻译路径在正常 syscall 上下文处理。
 
 修改 `os/src/mm/uaccess.rs`，新增 `Docs/决赛文档/problem/buildstorm-uaccess-trap-frame-migration-panic.md`，并更新开发日志、README 和本记录。`make build-arch TARGET_ARCH=riscv64`、`git diff --check` 通过；修复后的 RISC-V qcow2 overlay 运行 180 秒通过 sigaltstack/rseq 与全部 CAgent 项，进入 BuildStorm toolchain/minibuild 并推进到 `443/446`，未出现 panic、取指 fault、TFAIL 或 TBROK，完整 BuildStorm END 尚未完成。
+
+## 2026-08-08：分析 `server.ans` 并重写性能优化方案
+
+### 用户输入
+
+维护者要求分析 `server.ans` 的输出结果，制定后续优化方向，并写入
+`Docs/决赛文档/优化方案.md`，允许删除原有内容。
+
+### 分析与采纳结论
+
+复核确认该样本为 RISC-V 8 Hart、CFS、启用 perf 的完整 BuildStorm：环境检查、正式编译、
+测试组 END 和 `shutdown!` 均出现，未见 `TFAIL/TBROK/panic/ERROR`。但脚本报告
+`BUILDSTORM_COMPILE ... elapsed_s=0.00`，评测脚本因此把计时项错误算满分；源码显示当前
+proc 初始化只写静态文件，没有动态 `/proc/uptime`，而 BuildStorm 以该文件计算 T0/T1。
+日志同时显示 timed 区间内再次编译 `tg-xtask`（16m36s），说明预构建复用失效，必须先
+恢复计时和构建基线，不能把本次 180/180 当作性能成绩。
+
+最终 perf 快照给出 4,573,860 次 syscall、743,109 次 MM syscall、3,497,313 次缺页、
+911,051 次 remote-TLB shootdown、623,785 次 EXT4 读取（5.864 GB）、文件页缓存 192K
+页上限与 589,827 次驱逐、块缓存约 99.44% 命中、稀疏缓冲 600.7 MB（其中约 99.25% 的
+flush 字节由 cache eviction 触发）、写数据累计 433.1 s、inode/journal/namespace/
+vfile cache 长锁，以及 pipe 读等待累计 4,947 s 但拷贝不足 1 s。采纳的方向按 P0-P4
+排序：动态 uptime 与预构建复用、关闭成绩路径高频遥测、MM/remote-TLB 批处理、稀疏写
+回写和 EXT4 锁边界、页缓存回收与块请求合并，最后才验证目录索引/调度/pipe。
+
+### 修改与验证
+
+重写 `Docs/决赛文档/优化方案.md`，删除原先只针对 MemorySet backtrace 的方案，加入
+日志证据、阶段边界、累计指标的解释边界、可证伪优化假设、验证矩阵和证据索引。按
+`write-docs` 规则同步更新本文件和 `Docs/决赛文档/AI_INTERACTION.md`；本轮未修改内核、
+用户程序或测试镜像。运行 `python3 scripts/judge_buildstorm-glibc.py server.ans`，结果为
+脚本计分 180/180，但 stderr 明确显示 `elapsed=0s`，因此只记录为计时契约缺陷；运行
+`git diff --check` 和静态文档检查，未启动新的 QEMU/BuildStorm。

@@ -2886,3 +2886,20 @@
 - **验证边界**：RISC-V release 构建、`git diff --check` 通过；180 秒 RISC-V qcow2 overlay 通过 sigaltstack/rseq、全部 CAgent，并推进 BuildStorm 到 `443/446`，无 panic 或取指 fault；完整 BuildStorm 尚未结束。
 - **关联问题**：[RISC-V uaccess trap frame 迁移 panic 复盘](./problem/buildstorm-uaccess-trap-frame-migration-panic.md)
 - **关联 commit**：当前工作区未提交
+
+#### `server.ans` BuildStorm 性能分析与优化方案重写（8.8）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `server.ans`，制定后续性能优化方向并覆盖写入
+  `Docs/决赛文档/优化方案.md`。
+- **描述**：按 `optimize-kernel-performance` 流程提取 BuildStorm 阶段、结束标记和 perf
+  快照，回溯 `buildstorm_testcode.sh`、proc 初始化、文件页缓存、EXT4 sparse write/fstat/
+  namespace、MemorySet/remote-TLB、调度和 pipe 路径。确认 `BUILDSTORM_COMPILE` 的
+  `elapsed_s=0.00` 来自缺少动态 `/proc/uptime`，且 timed 阶段重复编译 `tg-xtask`；最终
+  快照另显示 MM/TLB、稀疏写回、EXT4 锁长尾和页缓存驱逐是待验证热点。重写方案按 P0-P4
+  排列，并明确累计计数、阻塞等待和高频串口遥测不能直接当作 wall-clock。
+- **验证边界**：`python3 scripts/judge_buildstorm-glibc.py server.ans` 输出脚本计分
+  180/180，但记录的 `elapsed=0s` 被判定为无效性能证据；`git diff --check` 和文档静态
+  检查通过。本轮未启动新的 QEMU/BuildStorm，未修改内核和用户代码。
+- **关联文档**：[优化方案](./优化方案.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
