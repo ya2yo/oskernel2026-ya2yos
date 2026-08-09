@@ -3193,7 +3193,7 @@
 
 - **工具/模型**：Codex（GPT-5）
 - **场景**：维护者要求完善《优化方案》P0 的已有计数，并反馈 `report.rs:1451` 的 idle snapshot 无法正常跳转。
-- **描述**：用 `TaskControlBlock` 的 perf 专用 resource-lock 类别计数代替不可靠的 per-Hart 归因；在实际获得 `Disk::submission` 后，按锁类别关联 read/write/flush 的提交、submission queue wait 与 service，bcache completion wait 分为持锁/解锁。相邻请求改以串行设备提交顺序判断，flush 截断连续链。`ext4_journal` 在真实 `jbd_journal_commit_trans()` 返回后计数 commit 和错误，不把 block flush 伪作 journal commit。`task/mod.rs` 增加明确的 crate 内 idle snapshot 包装函数，供 report 直接跳转。未改变 EXT4 锁序、写回或 I/O 语义。
-- **验证边界**：RISC-V64 与 LoongArch64 的 perf 和无 perf release 构建均通过。未运行 QEMU、LTP、CAgent 或完整 BuildStorm，因为根目录 `make run` 会删除并重建维护者未跟踪的 `disk.img` 链接；未报告性能结果。
+- **描述**：用 `TaskControlBlock` 的 perf 专用 resource-lock 类别计数代替不可靠的 per-Hart 归因；在实际获得 `Disk::submission` 后，按锁类别关联 read/write/flush 的提交、submission queue wait 与 service，bcache completion wait 分为持锁/解锁。相邻请求改以串行设备提交顺序判断，flush 截断连续链。为避免新增 C 侧 telemetry，撤回了 journal commit 计数，不以 block flush 冒充该事件；C 侧既有 bcache telemetry 仅在 perf feature 编译。`task/mod.rs` 增加明确的 crate 内 idle snapshot 包装函数，供 report 直接跳转。未改变 EXT4 锁序、写回或 I/O 语义。
+- **验证边界**：RISC-V64 与 LoongArch64 的 perf 和无 perf release 构建均通过；两个 no-perf lwext4 archive 均经交叉 `nm -g --defined-only` 确认不导出 `ext4_bcache_perf_*`，对应 perf archive 会导出该组函数。未运行 QEMU、LTP、CAgent 或完整 BuildStorm，因为根目录 `make run` 会删除并重建维护者未跟踪的 `disk.img` 链接；未报告性能结果。
 - **关联问题**：[BuildStorm P0 分解计数与阶段基线](./problem/buildstorm-p0-perf-baseline-telemetry.md)、[优化方案](./优化方案.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交

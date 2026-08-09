@@ -279,10 +279,13 @@ struct ext4_bcache_perf_stats {
 	uint64_t write_completions;
 	uint64_t write_blocks;
 	uint64_t write_errors;
-	uint64_t journal_commits;
-	uint64_t journal_commit_errors;
 };
 
+/*
+ * CMake defines EXT4_PERF_TELEMETRY only for the Rust `perf` feature.  Keep
+ * normal kernels free of telemetry calls and atomic accesses altogether.
+ */
+#if defined(EXT4_PERF_TELEMETRY)
 /** Reset and enable, or disable, the process-wide telemetry. */
 void ext4_bcache_perf_enable(bool enable);
 
@@ -292,7 +295,6 @@ void ext4_bcache_perf_snapshot(struct ext4_bcache_perf_stats *out);
 /** Account a synchronous block-interface request around its callback. */
 void ext4_bcache_perf_record_io_submit(bool write, uint32_t blocks);
 void ext4_bcache_perf_record_io_complete(bool write, int result);
-void ext4_bcache_perf_record_journal_commit(int result);
 
 /** Account block-get loading and dirty-buffer writeback ownership. */
 void ext4_bcache_perf_record_get(bool hit);
@@ -305,6 +307,22 @@ void ext4_bcache_perf_record_writeback_complete(int result);
 void ext4_bcache_perf_record_dirty_capacity_reclaim_run(void);
 void ext4_bcache_perf_record_dirty_capacity_reclaimed_block(void);
 void ext4_bcache_perf_record_dirty_capacity_reclaim_stall(void);
+#else
+#define ext4_bcache_perf_enable(enable) ((void)0)
+#define ext4_bcache_perf_snapshot(out) ((void)0)
+#define ext4_bcache_perf_record_io_submit(write, blocks) ((void)0)
+#define ext4_bcache_perf_record_io_complete(write, result) ((void)0)
+#define ext4_bcache_perf_record_get(hit) ((void)0)
+#define ext4_bcache_perf_record_load_wait(first_wait) ((void)0)
+#define ext4_bcache_perf_record_loader_start() ((void)0)
+#define ext4_bcache_perf_record_loader_complete(result) ((void)0)
+#define ext4_bcache_perf_record_writeback_wait() ((void)0)
+#define ext4_bcache_perf_record_writeback_start() ((void)0)
+#define ext4_bcache_perf_record_writeback_complete(result) ((void)0)
+#define ext4_bcache_perf_record_dirty_capacity_reclaim_run() ((void)0)
+#define ext4_bcache_perf_record_dirty_capacity_reclaimed_block() ((void)0)
+#define ext4_bcache_perf_record_dirty_capacity_reclaim_stall() ((void)0)
+#endif
 
 /** Wait until all bits in mask are clear for a pinned buffer. */
 int ext4_bcache_wait_while(struct ext4_buf *buf, int mask);

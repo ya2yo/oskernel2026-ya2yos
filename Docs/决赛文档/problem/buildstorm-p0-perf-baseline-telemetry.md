@@ -10,8 +10,8 @@
 - 为 Rust block request 增加读/写/flush 分类、请求字节、队列等待、设备 service、错误、最大请求大小和 512 字节对齐。连续性以已经取得 `Disk::submission` 的真实设备顺序计算；flush 会截断相邻请求链。
 - 为 lwext4 bcache 状态等待增加 tick 聚合，单独输出 `ext4_bcache_completion_wait`，不与 Rust 设备 submission queue wait 混算。
 - 为每个任务维护 perf 专用的 resource-lock 类别引用计数。`ext4_lock_io` 将该稳定上下文与 read/write/flush 请求关联，分别记录提交、submission queue wait 和 device service；bcache completion wait 还拆分为仍持锁和已解锁两部分。
-- 保留现有 resource lock class 的 acquire、contended、queued、wait、hold、max hold 统计，并继续输出 sparse/dense/metadata/writeback 阶段统计。`ext4_journal` 在实际
-  `jbd_journal_commit_trans()` 返回后记录 commit 与失败数，不把 block flush 伪作 journal commit。
+- 保留现有 resource lock class 的 acquire、contended、queued、wait、hold、max hold 统计，并继续输出 sparse/dense/metadata/writeback 阶段统计。为避免在 C 侧增加 telemetry，当前不统计
+  journal commit，也不把 block flush 伪作 journal commit。
 - 在 `initproc` 的 CAgent、正式 BuildStorm 和嵌套 QEMU 前后增加一次性 `BUILDSTORM_PHASE` marker，便于按阶段截取 perf interval。
 - `task::idle_hart_snapshot()` 改为显式 crate 内包装函数，避免 `report.rs` 经私有模块重导出时无法可靠跳转到定义。
 
@@ -21,9 +21,8 @@
 
 `interval_ext4_lock_io` / `ext4_lock_io` 的 `lock_class` 是请求提交时当前任务仍持有的 lwext4 资源锁类别，行中的 `queue_wait_*` 是提交前等待设备 token 的时间，`service_*` 是提交后同步设备服务时间。一个请求同时持有嵌套类别时会在每个类别行中出现，这些行不是可相加分区。`ext4_bcache_completion_wait` 的 `lock_held_*` 与 `unlocked_*` 分别对应回调开始时仍有/没有 resource lock；该回调不携带 read/write 方向，因而不把它伪造为某类块请求的 service。
 
-`interval_ext4_journal` 是报告周期内的真实 JBD transaction commit 数，`ext4_journal` 是自 perf
-epoch 开始的累计值；两者的 `errors` 都按 `jbd_journal_commit_trans()` 返回非 `EOK` 聚合。它们和
-block flush 是独立事件，不能相互替代。
+`Journal` resource-lock 行仍可用于查看持有 journal 锁时的 block I/O 与等待；它不等同于 JBD
+transaction commit 数。后续如需该计数，应优先寻找 Rust 可见且不增加 C 侧统计代码的事务边界。
 
 ## 涉及文件
 
@@ -39,11 +38,14 @@ block flush 是独立事件，不能相互替代。
 - `user/src/bin/initproc.rs`
 - `crates/lwext4_rust/c/lwext4/include/ext4_bcache.h`
 - `crates/lwext4_rust/c/lwext4/src/ext4_bcache.c`
-- `crates/lwext4_rust/c/lwext4/src/ext4.c`
 - `crates/lwext4_rust/src/perf.rs`
 
 ## 验证
 
 `make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64`、`make build-arch TARGET_ARCH=riscv64` 和 `make build-arch TARGET_ARCH=loongarch64` 均通过。构建只报告既有 `.cargo/config` 弃用、`smoltcp` 未使用项和 `lwext4_rust` 的未构造枚举警告。
+
+对两种架构的 lwext4 `no-perf` archive 使用交叉 `nm -g --defined-only` 检查，均未发现
+`ext4_bcache_perf_*` 导出符号；对应 `perf` archive 则导出 `enable`、`snapshot` 和 I/O/writeback
+记录函数。这证明普通构建没有链接 C 侧 telemetry 实现。
 
 未运行 QEMU、LTP、CAgent 或完整 BuildStorm：工作区未跟踪的 `disk.img` 是指向正式 LoongArch 镜像的符号链接，而根目录 `make run` 会先删除并重建该链接。新增统计仍须在固定源码 commit、架构、Hart 数、镜像、initproc 测例和 perf 开关下取得完整阶段日志后再比较；本轮不报告性能收益。

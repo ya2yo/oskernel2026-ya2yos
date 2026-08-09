@@ -362,8 +362,6 @@ storage_counter_deltas!(
     DELTA_BCACHE_WRITE_COMPLETIONS,
     DELTA_BCACHE_WRITE_BLOCKS,
     DELTA_BCACHE_WRITE_ERRORS,
-    DELTA_BCACHE_JOURNAL_COMMITS,
-    DELTA_BCACHE_JOURNAL_COMMIT_ERRORS,
     DELTA_BCACHE_WAIT_SAMPLES,
     DELTA_BCACHE_WAIT_TICKS,
     DELTA_BCACHE_LOCKED_WAIT_SAMPLES,
@@ -727,11 +725,6 @@ fn emit_ext4_storage_interval_deltas() {
         DELTA_BCACHE_WRITE_ERRORS.take_value(bcache.write_errors),
     );
     println!(
-        "[perf] interval_ext4_journal commits={} errors={}",
-        DELTA_BCACHE_JOURNAL_COMMITS.take_value(bcache.journal_commits),
-        DELTA_BCACHE_JOURNAL_COMMIT_ERRORS.take_value(bcache.journal_commit_errors),
-    );
-    println!(
         "[perf] interval_ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} queued={} max_queue_depth={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={} aligned_requests={} unaligned_requests={} sequential_requests={} max_request_bytes={}",
         DELTA_BLOCKDEV_SUBMITS.take(&EXT4_BLOCK_DEVICE_STATS.submits),
         DELTA_BLOCKDEV_READ_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.read_requests),
@@ -843,11 +836,6 @@ fn emit_ext4_storage_cumulative() {
         bcache.write_completions,
         bcache.write_blocks,
         bcache.write_errors,
-    );
-    println!(
-        "[perf] ext4_journal commits={} errors={}",
-        bcache.journal_commits,
-        bcache.journal_commit_errors,
     );
     println!(
         "[perf] ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} queued={} max_queue_depth={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={} aligned_requests={} unaligned_requests={} sequential_requests={} max_request_bytes={}",

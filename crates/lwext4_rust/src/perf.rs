@@ -52,8 +52,6 @@ pub struct BcachePerfStats {
     pub write_completions: usize,
     pub write_blocks: usize,
     pub write_errors: usize,
-    pub journal_commits: usize,
-    pub journal_commit_errors: usize,
 }
 
 #[cfg(feature = "perf")]

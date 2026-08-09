@@ -96,15 +96,24 @@ fn main() {
     }
 
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let perf_telemetry = env::var_os("CARGO_FEATURE_PERF").is_some();
     let dirty_capacity_experiment =
         env::var_os("CARGO_FEATURE_BCACHE_DIRTY_CAPACITY_EXPERIMENT").is_some();
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_PERF");
     // Keep each P21.2b.2 CMake configuration in an independent archive. Apart
     // from isolating the opt-in experiment, this prevents an old generated
     // archive from being reused after its C configuration changes.
+    let perf_variant = if perf_telemetry { "perf" } else { "no-perf" };
     let build_variant_suffix = if dirty_capacity_experiment {
-        format!("-p212b2-bcache-dirty-capacity-c{}", LWEXT4_BLOCK_CACHE_SIZE)
+        format!(
+            "-p212b2-bcache-dirty-capacity-{}-c{}",
+            perf_variant, LWEXT4_BLOCK_CACHE_SIZE
+        )
     } else {
-        format!("-p212b2-default-c{}", LWEXT4_BLOCK_CACHE_SIZE)
+        format!(
+            "-p212b2-default-{}-c{}",
+            perf_variant, LWEXT4_BLOCK_CACHE_SIZE
+        )
     };
     let lwext4_lib = &format!("lwext4-{}{}", arch, build_variant_suffix);
     let lwext4_lib_path = &format!("c/lwext4/lib{}.a", lwext4_lib);
@@ -112,6 +121,14 @@ fn main() {
     let lwext4_build_path = c_path.join(&lwext4_build_dir);
     let archive_missing = !Path::new(lwext4_lib_path).exists();
     if archive_missing || lwext4_needs_rebuild(&c_path, Path::new(lwext4_lib_path)) {
+        let mut extra_cmake_args = format!(
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DEXT4_PERF_TELEMETRY={} -DLWEXT4_USE_USER_MALLOC=ON -DLWEXT4_BLOCK_CACHE_SIZE={}",
+            if perf_telemetry { "ON" } else { "OFF" },
+            LWEXT4_BLOCK_CACHE_SIZE,
+        );
+        if dirty_capacity_experiment {
+            extra_cmake_args.push_str(" -DEXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT=ON");
+        }
         let status = Command::new("make")
             .args(&[
                 "musl-generic",
@@ -121,17 +138,7 @@ fn main() {
             .arg(&format!("ARCH={}", arch))
             .arg(&format!("LWEXT4_BUILD_DIR={}", lwext4_build_dir))
             .arg(&format!("LWEXT4_LIB_SUFFIX={}", build_variant_suffix))
-            .arg(if dirty_capacity_experiment {
-                format!(
-                    "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DEXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT=ON -DLWEXT4_USE_USER_MALLOC=ON -DLWEXT4_BLOCK_CACHE_SIZE={}",
-                    LWEXT4_BLOCK_CACHE_SIZE
-                )
-            } else {
-                format!(
-                    "LWEXT4_EXTRA_CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DLWEXT4_USE_USER_MALLOC=ON -DLWEXT4_BLOCK_CACHE_SIZE={}",
-                    LWEXT4_BLOCK_CACHE_SIZE
-                )
-            })
+            .arg(format!("LWEXT4_EXTRA_CMAKE_ARGS={extra_cmake_args}"))
             .status()
             .expect("failed to execute process: make lwext4");
         assert!(status.success());

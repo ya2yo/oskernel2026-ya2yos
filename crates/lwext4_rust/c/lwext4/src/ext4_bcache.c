@@ -73,6 +73,7 @@ static struct {
 	ext4_bcache_wake_fn wake;
 } ext4_bcache_sync;
 
+#if defined(EXT4_PERF_TELEMETRY)
 static bool ext4_bcache_perf_enabled;
 static struct ext4_bcache *ext4_bcache_perf_bc;
 static struct ext4_bcache_perf_stats ext4_bcache_perf;
@@ -174,8 +175,6 @@ void ext4_bcache_perf_snapshot(struct ext4_bcache_perf_stats *out)
 	EXT4_BCACHE_PERF_LOAD(write_completions);
 	EXT4_BCACHE_PERF_LOAD(write_blocks);
 	EXT4_BCACHE_PERF_LOAD(write_errors);
-	EXT4_BCACHE_PERF_LOAD(journal_commits);
-	EXT4_BCACHE_PERF_LOAD(journal_commit_errors);
 #undef EXT4_BCACHE_PERF_LOAD
 }
 
@@ -215,18 +214,6 @@ void ext4_bcache_perf_record_io_complete(bool write, int result)
 			__atomic_add_fetch(&ext4_bcache_perf.read_errors, 1,
 					   __ATOMIC_RELAXED);
 	}
-}
-
-void ext4_bcache_perf_record_journal_commit(int result)
-{
-	if (!__atomic_load_n(&ext4_bcache_perf_enabled, __ATOMIC_RELAXED))
-		return;
-
-	__atomic_add_fetch(&ext4_bcache_perf.journal_commits, 1,
-				   __ATOMIC_RELAXED);
-	if (result != EOK)
-		__atomic_add_fetch(&ext4_bcache_perf.journal_commit_errors, 1,
-				   __ATOMIC_RELAXED);
 }
 
 void ext4_bcache_perf_record_get(bool hit)
@@ -298,6 +285,11 @@ void ext4_bcache_perf_record_dirty_capacity_reclaim_stall(void)
 {
 	EXT4_BCACHE_PERF_INC(dirty_capacity_reclaim_stalls);
 }
+#else
+#define EXT4_BCACHE_PERF_INC(field) ((void)0)
+#define ext4_bcache_perf_record_allocation() ((void)0)
+#define ext4_bcache_perf_record_drop() ((void)0)
+#endif
 
 static inline void ext4_bcache_index_lock(struct ext4_bcache *bc)
 {
@@ -350,7 +342,9 @@ int ext4_bcache_init_dynamic(struct ext4_bcache *bc, uint32_t cnt,
 	bc->itemsize = itemsize;
 	bc->ref_blocks = 0;
 	bc->max_ref_blocks = 0;
+#ifdef EXT4_PERF_TELEMETRY
 	ext4_bcache_perf_bc = bc;
+#endif
 
 	return EOK;
 }
@@ -633,8 +627,10 @@ int ext4_bcache_alloc(struct ext4_bcache *bc, struct ext4_block *b,
 	ext4_bcache_perf_record_allocation();
 	if (bc->max_ref_blocks < bc->ref_blocks)
 		bc->max_ref_blocks = bc->ref_blocks;
+#ifdef EXT4_PERF_TELEMETRY
 	if (bc->ref_blocks > bc->cnt)
 		EXT4_BCACHE_PERF_INC(capacity_overflows);
+#endif
 	allocated->lru_id = ++bc->lru_ctr;
 	ext4_bcache_inc_ref(allocated);
 	b->lb_id = lba;

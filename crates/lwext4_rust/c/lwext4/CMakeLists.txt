@@ -6,6 +6,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(LWEXT4_USE_USER_MALLOC
        "Use the caller-provided ext4_user_* allocator hooks" OFF)
 
+option(EXT4_PERF_TELEMETRY
+       "Build Ya2yOS aggregate performance telemetry" OFF)
+if(EXT4_PERF_TELEMETRY)
+    add_definitions(-DEXT4_PERF_TELEMETRY=1)
+endif()
+
 include_directories(include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 include_directories(blockdev/filedev)

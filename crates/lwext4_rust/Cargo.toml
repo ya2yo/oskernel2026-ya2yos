@@ -16,7 +16,8 @@ build = "build.rs"
 default = ["print"]
 print = ["printf-compat"]
 # Exposes aggregate write-back-cache counters to the kernel's perf report.
-# Keep this opt-in so ordinary release kernels do not pay for the atomics.
+# The build script forwards this to CMake so ordinary release kernels do not
+# compile the C-side hooks, atomics, or telemetry storage.
 perf = []
 # Opt-in P21.2b.2 dirty bcache high/low-watermark experiment. The build script
 # uses an archive name and CMake build directory distinct from the default.

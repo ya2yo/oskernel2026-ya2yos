@@ -11497,17 +11497,21 @@ queue wait 和提交后 service。bcache callback 单列持锁/解锁 completion
 连续性改为在串行设备提交边界维护全局最近结束偏移，flush 清空该链。此改动仅在 `perf` 特性
 下编译，不改变锁序、文件可见性、设备请求顺序或合并策略。为修复源代码导航，`task/mod.rs`
 提供明确的 crate 内 `idle_hart_snapshot()` 包装函数，`report.rs` 跳转不再依赖私有
-`processor` 模块重导出。P0 所需的 journal commit 不再由 flush 推测：C 侧在
-`__ext4_trans_stop()` 调用 `jbd_journal_commit_trans()` 后记录 commit 与非 `EOK` 错误，Rust
-按现有 `repr(C)` 快照输出 `interval_ext4_journal` 与累计 `ext4_journal`。
+`processor` 模块重导出。维护者要求避免新增 C 侧 telemetry 后，撤回 journal commit 计数及其
+FFI/report 字段；不以 flush 推测 commit。现有 C bcache telemetry 由 CMake 的
+`EXT4_PERF_TELEMETRY` 控制，非 perf 构建中 hook 和原子访问在预处理阶段被移除，且 perf/no-perf
+使用不同 archive/build-dir，避免错误复用静态库。
 
 ### 修改与验证
 
 修改 `os/src/utils/perf/fs.rs`、`block.rs`、`report.rs`、`os/src/fs/ext4_lw/mod.rs`、
-`os/src/task/mod.rs`、`os/src/task/task/task.rs`、`crates/lwext4_rust/c/lwext4/{include/ext4_bcache.h,src/ext4_bcache.c,src/ext4.c}` 与
+`os/src/task/mod.rs`、`os/src/task/task/task.rs`、`crates/lwext4_rust/{build.rs,Cargo.toml,c/lwext4/CMakeLists.txt,c/lwext4/include/ext4_bcache.h,c/lwext4/src/ext4_bcache.c}` 与
 `crates/lwext4_rust/src/perf.rs`，并更新 P0 方案、问题复盘、开发日志和 AI 记录。
 `make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64`、
 `make build-arch TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64` 均通过。
+两种架构 `no-perf` lwext4 archive 的交叉 `nm -g --defined-only` 均无
+`ext4_bcache_perf_*` 导出符号，对应 `perf` archive 导出 enable、snapshot 及 I/O/writeback
+记录函数。
 
 未运行 QEMU、LTP、CAgent 或完整 BuildStorm：根目录 `make run` 会删除并重建未跟踪的
 `disk.img`，而当前链接指向维护者的正式 LoongArch 镜像。未报告端到端性能收益。
