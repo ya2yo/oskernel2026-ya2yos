@@ -1,7 +1,15 @@
 use super::regs::*;
 use crate::signal::{SigSet, SignalStack};
 use core::fmt::Debug;
-use loongArch64::register::prmd;
+use loongArch64::register::{prmd, CpuMode};
+
+const PRMD_PPLV_MASK: usize = 0b11;
+const PRMD_PIE: usize = 1 << 2;
+
+fn user_return_prmd(bits: usize) -> prmd::Prmd {
+    let bits = (bits & !PRMD_PPLV_MASK) | CpuMode::Ring3 as usize | PRMD_PIE;
+    bits.into()
+}
 #[repr(C)]
 #[derive(Default, Debug, Clone, Copy)]
 pub struct MachineContext {
@@ -55,18 +63,23 @@ const _: () = {
 
 impl TrapContext {
     pub fn app_init_context(entry: usize, sp: usize, kernel_sp: usize) -> Self {
-        let pr_md = prmd::read();
         let mut cx = Self {
             gp: GeneralRegs::default(),
             fp: FloatRegs::default(),
             origin_a0: 0,
-            sstatus: pr_md,
+            sstatus: user_return_prmd(0),
             kernel_stack: kernel_sp,
         };
         cx.gp.pc = entry;
         cx.set_sp(sp);
         cx
     }
+
+    /// Force the architectural state required by every return to userspace.
+    pub fn prepare_user_return(&mut self) {
+        self.sstatus = user_return_prmd(self.sstatus.raw());
+    }
+
     pub fn as_mctx(&self) -> MachineContext {
         MachineContext {
             gp: self.gp,
