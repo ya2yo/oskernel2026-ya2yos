@@ -24,6 +24,7 @@ use loongArch64::{
 
 const BOOT_IPI_VECTOR: u32 = 1 << 0;
 const SCHEDULER_IPI_VECTOR: u32 = 1 << 1;
+const POLLING_HARTS: usize = if HART_NUM < 8 { HART_NUM } else { 8 };
 
 // LA库似乎有点问题，没把这个暴露出来……
 fn set_merrentry(val: usize) {
@@ -65,15 +66,27 @@ pub fn boot_secondary_harts(boot_hart: usize) {
     }
 }
 
-/// Wait briefly with local interrupts enabled.  LoongArch's kernel trap entry
-/// saves/restores the interrupted kernel context, so scheduler and TLB IPIs
-/// can safely wake an idle hart and return to this loop.
+/// Advance one idle interval.
+///
+/// The polling cohort checks the shared CFS run queue without relying on an
+/// IPI wakeup. Other harts enter the architectural idle state with local
+/// interrupts enabled and resume here after an interrupt.
 pub fn idle() {
-    crmd::set_ie(true);
-    unsafe {
-        loongArch64::asm::idle();
+    // QEMU's LoongArch idle instruction does not reliably return for the
+    // scheduler IPI used by this kernel. Keep a small polling cohort so the
+    // shared CFS queue remains responsive, while the remaining harts can use
+    // the architectural idle state instead of burning host CPU continuously.
+    if hart_id() < POLLING_HARTS {
+        for _ in 0..4096 {
+            core::hint::spin_loop();
+        }
+    } else {
+        crmd::set_ie(true);
+        unsafe {
+            core::arch::asm!("idle 0", options(nomem, nostack, preserves_flags));
+        }
+        crmd::set_ie(false);
     }
-    crmd::set_ie(false);
     crate::mm::remote_tlb::poll();
 }
 

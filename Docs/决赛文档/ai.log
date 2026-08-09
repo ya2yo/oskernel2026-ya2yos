@@ -11191,3 +11191,37 @@ RISC-V 同步提供同接口。`trap.S` 出入口全量 `invtlb` 的实验性移
 连续两次 `END cagent kernel pass` + `shutdown!`。ext4 读取 571→555 次、
 6.29→5.25MiB，块设备请求 974→958、字节 10.15→9.10MiB。端到端时间落在既有噪声带
 （1.7~2.1s），未声明加速比例；BuildStorm/LTP 动态用例未运行。
+
+## 2026-08-09：LoongArch CAgent idle polling cohort 性能优化
+
+### 用户需求
+
+维护者提供 `log.ans` 中十项 CAgent 都通过但分别耗时 3864--5384 ms 的结果，要求分析原因并
+进行优化。
+
+### 分析与采纳结论
+
+AI 对齐 CAgent 起止标记、perf syscall/pipe/EXT4 指标与每 hart scheduler 统计。`read`、
+`recv`、`accept` 与 `vfork` 的秒级值是十个并发任务的累计阻塞时间，不能相加；决定性证据是
+12-hart 配置的 `selections_by_hart=[0,0,21034,...]` 和其他 hart 仅一次 idle，同时
+`remote_ipi_sent=21033`。因此瓶颈不是单一文件系统热路径，而是 LoongArch QEMU idle 后没有
+可靠返回 scheduler loop，导致共享 CFS 队列的任务几乎全落在一个 hart。
+
+比较全 idle、4/8/12 个 polling hart 后采用 8 个：全 12 个最快（4.55s），但 QEMU 累计用户
+CPU 为 46.07s；8 个的两次 wall-clock 为 5.20/5.19s，约比原始 11.37s 快 54%，同时保留 4 个
+架构 idle hart。该结论限于当前 LoongArch QEMU/内核 IPI 组合，未把它归因于硬件或修改 CFS
+任务语义。
+
+### 修改与验证
+
+修改 `os/src/arch/loongarch64/qemu/cpu.rs`：新增 `POLLING_HARTS=min(HART_NUM, 8)`；低编号
+hart 在 idle interval 中有界 `spin_loop()` 后重查调度路径，其余 hart 开启中断并执行 `idle 0`。
+同时校正该函数 rustdoc，使其准确描述两种 idle 分支。新增
+`problem/loongarch-cagent-idle-polling.md`，并更新问题索引、开发日志和 AI 交互记录。
+
+`make TARGET_ARCH=riscv64`、`make TARGET_ARCH=loongarch64`、`make perf TARGET_ARCH=riscv64`
+和 `make perf TARGET_ARCH=loongarch64` 均通过。LoongArch `timeout 180s make run` 的重复样本
+以 `shutdown!` 结束，十项 CAgent 全部 PASS，wall-clock `5.19s`、host user/sys `41.26/7.02s`；
+调度选择分布到 hart 0--7。RISC-V perf QEMU 同样十项 CAgent PASS 并 `shutdown!`，只作回归。
+目标文件 `rustfmt --check` 与 `git diff --check` 通过；全仓 `cargo fmt --check` 仅报告本轮未触及
+文件的既有格式问题。完整 BuildStorm/LTP 未运行。

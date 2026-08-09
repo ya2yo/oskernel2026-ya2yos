@@ -3078,3 +3078,12 @@
   未声明加速比例，BuildStorm/LTP 未运行。
 - **关联问题**：[LoongArch exec 段读取页缓存化与帧清零首触成本分析](./problem/loongarch-exec-segment-read-cache.md)
 - **关联 commit**：当前工作区未提交
+
+#### LoongArch CAgent idle polling cohort 性能优化（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `log.ans` 中 CAgent 十项任务虽然通过、却持续 3.8--5.4 秒的原因并实施优化。
+- **描述**：AI 以 per-hart 调度统计确认 12 个 LoongArch hart 中仅一个实际执行约 21034 次调度选择；远端 IPI 发送成功但 idle hart 未可靠返回 CFS 循环。架构层保留 8 个有界 polling hart，其余 4 个继续执行 `idle 0`。该策略将同一 CAgent 端到端时间由约 11.37 秒降至两次稳定的 5.20/5.19 秒，十项均 PASS；全 12-hart polling 更快但宿主 CPU 成本明显更高，未采用。
+- **验证边界**：LoongArch 两次 QEMU CAgent 运行均 `shutdown!`；RISC-V QEMU 回归及两架构 release/perf 构建均通过。未执行完整 BuildStorm/LTP；该绕过仅适用于当前 LoongArch QEMU idle/IPI 行为。
+- **关联问题**：[LoongArch CAgent idle hart 唤醒与 CFS polling cohort](./problem/loongarch-cagent-idle-polling.md)
+- **关联 commit**：当前工作区未提交
