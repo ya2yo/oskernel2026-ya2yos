@@ -11287,3 +11287,116 @@ LoongArch `CRMD.IE`；这两项为独立 trap 正确性修复，不作为 ADEM �
 `PagePrivilegeIllegal`、`user_fault_signal`、panic、`TFAIL` 或 `TBROK`；十项 CAgent
 均通过，BuildStorm 输出 `BUILDSTORM_TOOLCHAIN ok` 和 `BUILDSTORM_MINIBUILD ok`。
 完整 BuildStorm/LTP 未运行，QEMU 在上述冒烟标记后由宿主终止。
+
+## 2026-08-09：BuildStorm remote TLB 广播式 ACK 收集
+
+### 用户需求
+
+维护者要求分析 `server.ans` 和 `client.ans`，定位当前内核运行缓慢的原因并优化。
+
+### AI 分析与采纳结论
+
+先区分两类证据。`server.ans` 是带 perf 的 RISC-V BuildStorm 长跑，最后仍为
+`Building 445/446: tg-xtask(bin)`，没有 BuildStorm 结束标记，不能用作端到端 A/B 样本。
+但 `t=1633466ms` 的快照已包含 `remote=788891`、`target_harts=1541228`，发起端
+`remote_tlb_remote=135170056us`，以及 `mailbox_wait=131391699us`、接收端
+`ack_latency=125197952us`。`Cow=1050895` 说明此阶段频繁 COW 是最主要的更新来源。
+
+`client.ans` 为 LoongArch64 GDB 瞬时栈：一个 Hart 位于
+`remote_tlb::shootdown(... Cow)`，部分 Hart 在共享 CFS `READY_QUEUE` 的自旋锁
+`fetch_task()`，其余处于 idle。它用于重建 COW shootdown 与调度竞争会相互放大的路径，
+不用于宣称 CFS 锁占据多少累计时间。
+
+检查原协议后确认发送端将“发布一个 mailbox、发送该目标 IPI、等该 ACK”置于同一循环。
+多目标 shootdown 的等待因此近似为各 target IPI/ACK 延迟之和。采用最小时序调整：先为
+所有 active remote Hart 分配 sequence 并 `Release` 发布 mailbox，然后发送完整 IPI
+fan-out，最后按各保存 sequence 收集 ACK。`UPDATE_LOCK` 已保证不会有第二个 sender
+在收集前复用 mailbox；`pending.swap(false, AcqRel)`、ACK release/acquire、active-hart
+脱离规则、MemorySet write lock 和旧帧 ACK 后释放均不改变。
+
+同时记录残余热点：shootdown 指标停止增长后 `tg-xtask` 仍慢，日志中有满载文件页缓存、
+32MiB 以上文件直读旁路以及密集 `read`/`lseek`。该 I/O 长尾是后续独立优化方向，不能
+错归因给本轮 remote-TLB/CFS 路径。
+
+### 修改与验证
+
+修改 `os/src/mm/remote_tlb.rs`，新增
+`problem/buildstorm-remote-tlb-broadcast.md` 并更新问题索引、开发日志和 AI 交互记录。
+`rustfmt --edition 2021 --check os/src/mm/remote_tlb.rs`、`git diff --check`、
+`make TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=riscv64`、
+`make perf TARGET_ARCH=loongarch64` 均通过，只有既有 user/smoltcp warnings。
+
+未运行根目录 `make run`，因为工作区未跟踪的 `disk.img` 链接会被该目标删除重建；未运行
+完整 BuildStorm A/B，因为 `server.ans` 尚未结束。后续需通过独立 `/tmp` qcow2 overlay
+运行同配置基线与修复版本，确认 `TPASS`/`TFAIL`/`TBROK` 并比较完成阶段 wall-clock 与
+`remote_tlb_remote`，才可量化加速。
+
+## 2026-08-09：BuildStorm 全局 timer maintenance 去重与 COW 独占页提升
+
+### 用户需求
+
+维护者持续提供更新的 `server.ans` 与 `client.ans`，反馈内核在 BuildStorm `axbuild` 阶段仍
+运行缓慢，要求继续定位并优化。
+
+### AI 分析与采纳结论
+
+`client.ans` 的多 Hart GDB 现场先显示多个 CPU 同时自旋于
+`check_timer_events() -> TIMER_RUNTIME.lock()`。结合 trap 与 scheduler 源码，确认每个 10 ms
+bucket 的所有 Hart 都重复维护全局 future timer、futex timeout 和 blocked task timer；采用
+单原子 CAS claim，只让一个 Hart 执行共享维护，当前运行任务的 interval timer 投递保留逐 Hart
+路径。
+
+新的 LoongArch64 `server.ans` 在 `Building 444/446: axbuild` 后继续增长至
+`cow=815133`、`remote=598852` 与 `mailbox_wait=125105607us`。进一步检查
+`MemorySet::handle_page_fault()` 和两套架构 page table 后确认：外层为远端 ACK 预先 clone
+旧 `FrameTracker`，破坏了内层在 clone 前用 `Arc::strong_count` 作出的 COW 独占判断。
+原本独占的页被误作共享页复制、替换 PPN 并广播 IPI。采纳“先判断、仅真实共享 COW 保活与
+shootdown”的修复；同 PPN 的权限/dirty 更新只做本地 TLB 失效，远端 stale 项更严格，写入会
+本地 fault/reload，不能访问错误物理页。
+
+`<jemalloc>: MADV_DONTNEED does not work` 是 QEMU 下的预期回退提示，且当前样本的直接计时
+热点是 COW remote-TLB；本轮未基于该提示猜测或修改 madvise 语义。
+
+### 修改与验证
+
+修改 `os/src/timer/mod.rs`、`os/src/task/{processor.rs,manager.rs}`、`os/src/trap/mod.rs`，以及
+`os/src/mm/memory_set/{mod.rs,handle.rs,pagefault.rs}`、
+`os/src/arch/loongarch64/qemu/page_table.rs`、`os/src/utils/perf/{scheduler.rs,report.rs}`；新增
+两个 problem 复盘并更新索引、开发日志与 AI 交互记录。
+
+`rustfmt --edition 2021 --check`、`git diff --check`、`make perf TARGET_ARCH=loongarch64` 和
+`make perf TARGET_ARCH=riscv64` 通过，只有既有 user/smoltcp warnings。独立 LoongArch64 qcow2
+overlay 的 12 Hart 运行使十项 CAgent 通过并输出 toolchain/minibuild OK；perf 记录
+`exclusive_upgrade=60`、`shared_frame_copy=72`。运行在 pre-build `tg-xtask` 后由宿主环境
+结束，未完成完整 BuildStorm A/B，因而不报告端到端百分比。
+
+## 2026-08-09：LoongArch BuildStorm 全 Hart polling cohort
+
+### 用户需求
+
+维护者提供新的 `server.ans`，反馈 BuildStorm 仍然长时间停在 `axbuild`/`tg-xtask` 预构建阶段，要求继续定位内核侧慢因并优化。
+
+### AI 分析与采纳结论
+
+最新日志明确启用了此前 COW 修复：`cow_fault_resolution exclusive_upgrade=210513`，真实共享复制仅
+`3101`，因此旧的“独占 COW 被强制复制”不再是当前主因。运行仍在 `Building 444/446: axbuild` 后停留，
+`t=223544ms` 快照显示 `scheduler_harts selections_by_hart` 的 Hart 0--7 均有选择记录，而 Hart 8--11 为
+`0,0,0,1`。
+
+启动日志同时确认 12 个 Hart 都已上线。检查 LoongArch QEMU `cpu::idle()` 后发现 `POLLING_HARTS` 被人为限制为
+8；其余 Hart 执行 `idle 0`。该架构层已有注释承认 QEMU 的 `idle` 不可靠响应 scheduler IPI，因此四个非轮询
+Hart 可以永久停在 idle 控制流，CFS 共享就绪队列实际只有前 8 核消费。采纳全配置 Hart 轮询：BuildStorm 是高并发
+CPU/内存负载，避免缺核比该阶段的空闲宿主 CPU 成本更重要。
+
+### 修改与验证
+
+修改 `os/src/arch/loongarch64/qemu/cpu.rs`，将 polling cohort 从上限 8 提升至 `HART_NUM`，并同步修正注释；
+新增 problem 复盘并更新索引、开发日志与 AI 交互记录。
+
+`rustfmt --edition 2021 --check os/src/arch/loongarch64/qemu/cpu.rs`、`git diff --check`、
+`make perf TARGET_ARCH=loongarch64` 和 `make perf TARGET_ARCH=riscv64` 均通过，仅有既有 user/smoltcp
+warnings。使用 final LoongArch64 原始镜像的 `/tmp` qcow2 覆盖层启动 12-Hart perf 内核，十项 CAgent
+全部通过；首个快照显示 `selections_by_hart=[261,175,483,238,221,365,396,479,464,427,337,250]`，116892 ms
+快照仍为 `[...,2849,2891,2870,2657]`，全部 Hart 持续参与调度。运行通过 toolchain/minibuild，在
+`Building 442/446` 由 180 秒 `timeout` 终止；未获得完整 `BUILDSTORM_COMPILE`，因此不报告 BuildStorm
+总耗时或加速百分比。

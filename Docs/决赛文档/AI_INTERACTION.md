@@ -3119,3 +3119,45 @@
   未运行。
 - **关联问题**：[ELF 部分文件末页泄漏到 BSS](./problem/elf-partial-page-bss-leak.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm remote TLB 广播式 ACK 收集（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求从 `server.ans` 与 `client.ans` 定位当前内核运行缓慢原因并优化。
+- **描述**：perf 长跑中 remote TLB 已累计 `788891` 次、目标 Hart `1541228` 个，发送端
+  等待累计 `135.17s`；GDB 栈将 COW shootdown 与共享 CFS 队列竞争联系到同一调用路径。
+  sender 改为先发布全部 mailbox、完整 fan-out IPI、再按 sequence 收集 ACK，消除多目标
+  IPI/ACK 的发送侧串行化；保留 UPDATE_LOCK、active-hart 协议、内存序及旧帧 ACK 后释放。
+- **验证边界**：RISC-V/LoongArch64 release 与 perf 构建、目标文件 rustfmt 和差异检查均
+  通过。`server.ans` 未完成，根目录 `make run` 会覆盖维护者的 `disk.img` 链接，故未跑
+  QEMU/完整 BuildStorm A/B，也未声称具体加速比例；后段满页缓存和大文件 direct-bypass
+  读取仍需独立处理。
+- **关联问题**：[BuildStorm remote TLB 广播式 ACK 收集](./problem/buildstorm-remote-tlb-broadcast.md)
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm 全局 timer maintenance 去重（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供多 Hart GDB 与 BuildStorm 慢运行日志，要求定位 `axtask`/`axbuild` 长时间停滞的内核侧原因。
+- **描述**：确认 future timer wheel、futex timeout heap 和 blocked-task timer 扫描是共享全局状态，但旧路径在每个 Hart 的 timer interrupt 与 scheduler loop 重复执行。新增按 10 ms bucket CAS claim 的唯一维护者；per-task `ITIMER_REAL` 仍保留在每个运行 Hart 的 trap 路径。
+- **验证边界**：RISC-V/LoongArch64 release/perf 构建通过；两次 LoongArch64 12-Hart CAgent 通过并到达 BuildStorm toolchain。没有完整 BuildStorm 结束样本，未声称端到端加速比例。
+- **关联问题**：[BuildStorm 全局 timer maintenance 重复执行](./problem/buildstorm-global-timer-maintenance.md)
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm 独占 COW 页提升（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：新 `server.ans` 仍停在 `Building 444/446: axbuild`，且 perf 显示 COW remote-TLB 与 mailbox wait 持续增长。
+- **描述**：发现 `MemorySet` 在 `Arc::strong_count` 判断前为 ACK clone 旧 frame，迫使独占 COW 走复制、替换 PPN 和远端同步。改为在持锁且未 pin 的状态判断引用数；仅真实共享 COW 进入 `UPDATE_LOCK`、旧帧保活和 ACK，增加 exclusive-upgrade/shared-copy 聚合计数。
+- **验证边界**：两架构 perf 构建通过。独立 LoongArch64 final overlay 的十项 CAgent 通过，BuildStorm toolchain/minibuild OK，perf 显示 `exclusive_upgrade=60`、`shared_frame_copy=72`；运行未完成 446/446，未报告完成时间或加速百分比。
+- **关联问题**：[BuildStorm 独占 COW 页被误判为共享复制](./problem/buildstorm-cow-exclusive-frame-promotion.md)
+- **关联 commit**：当前工作区未提交
+
+#### LoongArch BuildStorm 全 Hart polling cohort（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供新的 `server.ans`，其中 BuildStorm 在 `Building 444/446: axbuild` 后仍缓慢，要求继续定位并优化。
+- **描述**：日志显示 12 个 Hart 都启动，但调度选择仅落在 Hart 0--7；架构层的 8-Hart polling 上限让 Hart 8--11 落入 QEMU `idle 0`，且该指令不能可靠响应 scheduler IPI。将 LoongArch polling cohort 扩展至 `HART_NUM`，保证共享 CFS 队列可以由全部 12 核消费。
+- **验证边界**：RISC-V/LoongArch64 perf 构建通过。独立 qcow2 覆盖层的 12-Hart CAgent 十项通过，两个 perf 快照的 `selections_by_hart` 12 项均为正；180 秒 timeout 前预构建推进到 `442/446`，但未得到完整 BuildStorm 完成标记，未声称端到端加速比例。
+- **关联问题**：[LoongArch BuildStorm 12 Hart polling cohort 缺核](./problem/loongarch-buildstorm-polling-cohort.md)
+- **关联 commit**：当前工作区未提交
