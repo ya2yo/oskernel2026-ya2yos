@@ -82,6 +82,11 @@ impl PhaseDelta {
     }
 }
 
+/// Print a module banner so cumulative output can be split by subsystem.
+fn emit_section(name: &str) {
+    println!("### {} PERF ###", name);
+}
+
 fn take_delta(last: &AtomicUsize, counter: &AtomicUsize) -> usize {
     let current = counter.load(Ordering::Relaxed);
     let previous = last.swap(current, Ordering::Relaxed);
@@ -758,6 +763,7 @@ fn emit_interval_deltas(now: usize) {
     };
     println!("[perf] interval t={}ms elapsed_ms={}", now, elapsed_ms);
 
+    emit_section("INTERVAL SCHEDULER");
     println!(
         "[perf] interval_scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",
         DELTA_SCHED_LOCAL_ENQUEUES.take(&SCHEDULER_LOCAL_ENQUEUES),
@@ -766,6 +772,14 @@ fn emit_interval_deltas(now: usize) {
         DELTA_SCHED_REMOTE_IPI_SENT.take(&SCHEDULER_REMOTE_IPI_SENT),
         DELTA_SCHED_REMOTE_IPI_FAILED.take(&SCHEDULER_REMOTE_IPI_FAILED),
     );
+    emit_duration_delta(
+        "scheduler_dispatch",
+        &SCHEDULER_DISPATCH_SAMPLES,
+        &SCHEDULER_DISPATCH_TICKS,
+        &DELTA_SCHEDULER_DISPATCH,
+    );
+
+    emit_section("INTERVAL PIPE");
     println!(
         "[perf] interval_pipe_wakeup reader_calls={} reader_tasks={} reader_poll_tasks={} reader_wait_rechecks={} writer_calls={} writer_tasks={} writer_poll_tasks={} writer_wait_rechecks={}",
         DELTA_PIPE_READER_WAKE_CALLS.take(&PIPE_READER_WAKE_CALLS),
@@ -777,19 +791,14 @@ fn emit_interval_deltas(now: usize) {
         DELTA_PIPE_WRITER_WAKE_POLL_TASKS.take(&PIPE_WRITER_WAKE_POLL_TASKS),
         DELTA_PIPE_WRITE_WAIT_RECHECKS.take(&PIPE_WRITE_WAIT_RECHECKS),
     );
-
     emit_duration_delta(
         "pipe_read_wait",
         &PIPE_READ_WAIT_SAMPLES,
         &PIPE_READ_WAIT_TICKS,
         &DELTA_PIPE_READ_WAIT,
     );
-    emit_duration_delta(
-        "scheduler_dispatch",
-        &SCHEDULER_DISPATCH_SAMPLES,
-        &SCHEDULER_DISPATCH_TICKS,
-        &DELTA_SCHEDULER_DISPATCH,
-    );
+
+    emit_section("INTERVAL SYSCALL");
     emit_duration_delta(
         "syscall_read",
         &SYSCALL_READ_SAMPLES,
@@ -821,6 +830,7 @@ fn emit_interval_deltas(now: usize) {
         &DELTA_SYSCALL_PATH,
     );
 
+    emit_section("INTERVAL FS");
     emit_raw_phase_delta(
         "write_open",
         &EXT4_WRITE_OPEN_SAMPLES,
@@ -885,26 +895,14 @@ fn emit_interval_deltas(now: usize) {
     #[cfg(feature = "perf")]
     emit_write_cache_interval_deltas();
     #[cfg(feature = "perf")]
-    emit_ext4_storage_interval_deltas();
+    {
+        emit_section("INTERVAL EXT4 STORAGE");
+        emit_ext4_storage_interval_deltas();
+    }
 }
 
 pub(super) fn emit_report(now: usize) {
-    println!(
-        "[perf] t={}ms syscalls total={} read={} write={} open={} close={} stat={} lseek={} mm={} process={} futex={} sigaction={} yield={}",
-        now,
-        SYSCALL_TOTAL.load(Ordering::Relaxed),
-        SYSCALL_READ.load(Ordering::Relaxed),
-        SYSCALL_WRITE.load(Ordering::Relaxed),
-        SYSCALL_OPEN.load(Ordering::Relaxed),
-        SYSCALL_CLOSE.load(Ordering::Relaxed),
-        SYSCALL_STAT.load(Ordering::Relaxed),
-        SYSCALL_LSEEK.load(Ordering::Relaxed),
-        SYSCALL_MM.load(Ordering::Relaxed),
-        SYSCALL_PROCESS.load(Ordering::Relaxed),
-        SYSCALL_FUTEX.load(Ordering::Relaxed),
-        SYSCALL_SIGACTION.load(Ordering::Relaxed),
-        SYSCALL_SCHED_YIELD.load(Ordering::Relaxed),
-    );
+    emit_section("FS");
     println!(
         "[perf] ext4 reads={} bytes={} byte_cache_read_hits={} byte_cache_read_hit_bytes={} file_cache hit={} miss={} page_faults={} readahead_ops={} readahead_pages={} readahead_bytes={}",
         EXT4_READ_OPS.load(Ordering::Relaxed),
@@ -1263,7 +1261,11 @@ pub(super) fn emit_report(now: usize) {
         );
     }
     #[cfg(feature = "perf")]
-    emit_ext4_storage_cumulative();
+    {
+        emit_section("EXT4 STORAGE");
+        emit_ext4_storage_cumulative();
+    }
+    emit_section("SCHEDULER");
     println!(
         "[perf] scheduler selections={} self_selections={} idle_loops={}",
         SCHEDULER_SELECTIONS.load(Ordering::Relaxed),
@@ -1276,6 +1278,22 @@ pub(super) fn emit_report(now: usize) {
         "[perf] scheduler_harts selections_by_hart={:?} idle_loops_by_hart={:?}",
         scheduler_selections_by_hart, idle_loops_by_hart,
     );
+    println!(
+        "[perf] scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",
+        SCHEDULER_LOCAL_ENQUEUES.load(Ordering::Relaxed),
+        SCHEDULER_REMOTE_ENQUEUES.load(Ordering::Relaxed),
+        SCHEDULER_REMOTE_IDLE_NOTIFICATIONS.load(Ordering::Relaxed),
+        SCHEDULER_REMOTE_IPI_SENT.load(Ordering::Relaxed),
+        SCHEDULER_REMOTE_IPI_FAILED.load(Ordering::Relaxed),
+    );
+    print!("[perf] scheduler_duration ");
+    emit_duration(
+        "dispatch",
+        &SCHEDULER_DISPATCH_SAMPLES,
+        &SCHEDULER_DISPATCH_TICKS,
+        &SCHEDULER_DISPATCH_MAX_TICKS,
+    );
+    emit_section("MM");
     println!(
         "[perf] remote_tlb shootdowns={} local_only={} remote={} target_harts={} acknowledgements={} page_fault={} cow={} munmap={} mprotect={} mremap={} fork_exec={} other={}",
         REMOTE_TLB_SHOOTDOWNS.load(Ordering::Relaxed),
@@ -1320,14 +1338,7 @@ pub(super) fn emit_report(now: usize) {
         &REMOTE_TLB_ACK_LATENCY_TICKS,
         &REMOTE_TLB_ACK_LATENCY_MAX_TICKS,
     );
-    println!(
-        "[perf] scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",
-        SCHEDULER_LOCAL_ENQUEUES.load(Ordering::Relaxed),
-        SCHEDULER_REMOTE_ENQUEUES.load(Ordering::Relaxed),
-        SCHEDULER_REMOTE_IDLE_NOTIFICATIONS.load(Ordering::Relaxed),
-        SCHEDULER_REMOTE_IPI_SENT.load(Ordering::Relaxed),
-        SCHEDULER_REMOTE_IPI_FAILED.load(Ordering::Relaxed),
-    );
+    emit_section("PIPE");
     println!(
         "[perf] pipe_io read_calls={} read_completed={} read_requested_bytes={} read_bytes={} read_short_calls={} write_calls={} write_completed={} write_requested_bytes={} write_bytes={} write_short_calls={}",
         PIPE_READ_CALLS.load(Ordering::Relaxed),
@@ -1408,19 +1419,65 @@ pub(super) fn emit_report(now: usize) {
         &PIPE_WRITE_PIPEBUF_COPY_TICKS,
         &PIPE_WRITE_PIPEBUF_COPY_MAX_TICKS,
     );
-    print!("[perf] scheduler_duration ");
-    emit_duration(
-        "dispatch",
-        &SCHEDULER_DISPATCH_SAMPLES,
-        &SCHEDULER_DISPATCH_TICKS,
-        &SCHEDULER_DISPATCH_MAX_TICKS,
-    );
+    emit_section("NET");
     print!("[perf] socket_duration ");
     emit_duration(
         "tcp_recv_active",
         &TCP_RECV_ACTIVE_SAMPLES,
         &TCP_RECV_ACTIVE_TICKS,
         &TCP_RECV_ACTIVE_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "connect",
+        &SYSCALL_NET_CONNECT_SAMPLES,
+        &SYSCALL_NET_CONNECT_TICKS,
+        &SYSCALL_NET_CONNECT_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "accept",
+        &SYSCALL_NET_ACCEPT_SAMPLES,
+        &SYSCALL_NET_ACCEPT_TICKS,
+        &SYSCALL_NET_ACCEPT_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "accept_active",
+        &SYSCALL_NET_ACCEPT_ACTIVE_SAMPLES,
+        &SYSCALL_NET_ACCEPT_ACTIVE_TICKS,
+        &SYSCALL_NET_ACCEPT_ACTIVE_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "send",
+        &SYSCALL_NET_SEND_SAMPLES,
+        &SYSCALL_NET_SEND_TICKS,
+        &SYSCALL_NET_SEND_MAX_TICKS,
+    );
+    print!("[perf] syscall_duration ");
+    emit_duration(
+        "recv",
+        &SYSCALL_NET_RECV_SAMPLES,
+        &SYSCALL_NET_RECV_TICKS,
+        &SYSCALL_NET_RECV_MAX_TICKS,
+    );
+    emit_section("SYSCALL");
+    println!(
+        "[perf] t={}ms syscalls total={} read={} write={} open={} close={} stat={} lseek={} mm={} process={} futex={} sigaction={} yield={}",
+        now,
+        SYSCALL_TOTAL.load(Ordering::Relaxed),
+        SYSCALL_READ.load(Ordering::Relaxed),
+        SYSCALL_WRITE.load(Ordering::Relaxed),
+        SYSCALL_OPEN.load(Ordering::Relaxed),
+        SYSCALL_CLOSE.load(Ordering::Relaxed),
+        SYSCALL_STAT.load(Ordering::Relaxed),
+        SYSCALL_LSEEK.load(Ordering::Relaxed),
+        SYSCALL_MM.load(Ordering::Relaxed),
+        SYSCALL_PROCESS.load(Ordering::Relaxed),
+        SYSCALL_FUTEX.load(Ordering::Relaxed),
+        SYSCALL_SIGACTION.load(Ordering::Relaxed),
+        SYSCALL_SCHED_YIELD.load(Ordering::Relaxed),
     );
     print!("[perf] syscall_duration ");
     emit_duration(
@@ -1534,41 +1591,7 @@ pub(super) fn emit_report(now: usize) {
         &SYSCALL_SIGACTION_TICKS,
         &SYSCALL_SIGACTION_MAX_TICKS,
     );
-    print!("[perf] syscall_duration ");
-    emit_duration(
-        "connect",
-        &SYSCALL_NET_CONNECT_SAMPLES,
-        &SYSCALL_NET_CONNECT_TICKS,
-        &SYSCALL_NET_CONNECT_MAX_TICKS,
-    );
-    print!("[perf] syscall_duration ");
-    emit_duration(
-        "accept",
-        &SYSCALL_NET_ACCEPT_SAMPLES,
-        &SYSCALL_NET_ACCEPT_TICKS,
-        &SYSCALL_NET_ACCEPT_MAX_TICKS,
-    );
-    print!("[perf] syscall_duration ");
-    emit_duration(
-        "accept_active",
-        &SYSCALL_NET_ACCEPT_ACTIVE_SAMPLES,
-        &SYSCALL_NET_ACCEPT_ACTIVE_TICKS,
-        &SYSCALL_NET_ACCEPT_ACTIVE_MAX_TICKS,
-    );
-    print!("[perf] syscall_duration ");
-    emit_duration(
-        "send",
-        &SYSCALL_NET_SEND_SAMPLES,
-        &SYSCALL_NET_SEND_TICKS,
-        &SYSCALL_NET_SEND_MAX_TICKS,
-    );
-    print!("[perf] syscall_duration ");
-    emit_duration(
-        "recv",
-        &SYSCALL_NET_RECV_SAMPLES,
-        &SYSCALL_NET_RECV_TICKS,
-        &SYSCALL_NET_RECV_MAX_TICKS,
-    );
+    emit_section("TASK");
     print!("[perf] syscall_duration ");
     emit_duration(
         "clone_total",
