@@ -24,7 +24,11 @@ use loongArch64::{
 
 const BOOT_IPI_VECTOR: u32 = 1 << 0;
 const SCHEDULER_IPI_VECTOR: u32 = 1 << 1;
-const POLLING_HARTS: usize = if HART_NUM < 8 { HART_NUM } else { 8 };
+// QEMU's LoongArch `idle` instruction does not reliably resume on the
+// scheduler IPI. Every configured Hart must therefore poll while the shared
+// CFS queue has work; limiting the cohort to eight strands the remaining
+// harts indefinitely and turns a 12-Hart BuildStorm run into an 8-Hart run.
+const POLLING_HARTS: usize = HART_NUM;
 
 // LA库似乎有点问题，没把这个暴露出来……
 fn set_merrentry(val: usize) {
@@ -73,9 +77,10 @@ pub fn boot_secondary_harts(boot_hart: usize) {
 /// interrupts enabled and resume here after an interrupt.
 pub fn idle() {
     // QEMU's LoongArch idle instruction does not reliably return for the
-    // scheduler IPI used by this kernel. Keep a small polling cohort so the
-    // shared CFS queue remains responsive, while the remaining harts can use
-    // the architectural idle state instead of burning host CPU continuously.
+    // scheduler IPI used by this kernel. Keep every configured Hart polling:
+    // the scheduler can enqueue CFS work on any Hart, so leaving an idle Hart
+    // in the architectural sleep state can permanently remove it from the
+    // runnable CPU set.
     if hart_id() < POLLING_HARTS {
         for _ in 0..4096 {
             core::hint::spin_loop();
