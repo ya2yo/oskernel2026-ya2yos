@@ -11515,3 +11515,44 @@ FFI/report 字段；不以 flush 推测 commit。现有 C bcache telemetry 由 C
 
 未运行 QEMU、LTP、CAgent 或完整 BuildStorm：根目录 `make run` 会删除并重建未跟踪的
 `disk.img`，而当前链接指向维护者的正式 LoongArch 镜像。未报告端到端性能收益。
+
+## 2026-08-09：LoongArch signal-vDSO `rt_sigreturn` 入口未映射
+
+### 用户需求
+
+维护者要求分析 `server.ans` 第 11421 行附近的 LoongArch64 `FetchInstructionPageFault`，
+并优先修复 PID 1568、1569、1570 在 `0xfffffffffffe4c44` 的用户态取指故障。
+
+### AI 分析与采纳结论
+
+原始 ANSI 日志的故障在物理行 11389--11391；`strings` 清理控制字符后的三条 fault 位于
+11417--11419，11421 实际为后续 perf 行。三进程拥有不同 page-table token，但都在同一
+`0xfffffffffffe4c44` 取指，诊断中的 PTE、leaf PPN 和 VMA 全为空，说明是公共返回入口页
+缺失而非单进程页表或权限损坏。
+
+对照本机 Linux 7.0 LoongArch 源码：`arch_setup_additional_pages()` 建立 vDSO，
+`ARCH_DLINFO` 公开 `AT_SYSINFO_EHDR`；`handle_signal()` 用
+`vdso + offset_sigreturn` 建立 rt 信号帧的返回地址。vDSO 的
+`__vdso_rt_sigreturn` 只加载 `__NR_rt_sigreturn` 到 `a7` 后执行 `syscall 0`。
+现有 Ya2yOS user page table 已映射私有 trampoline，但旧 `sigreturn_va()` 为
+`0xffff_ffff_f000_0000`，没有覆盖日志中需要的 `0xffff_ffff_fffe_4000` 页。
+
+采纳最小架构兼容修复：将入口改为 `0xffff_ffff_fffe_4c44`，并让 trampoline 的物理代码也
+位于页内 `0xc44`。保留 `PageTable::new_user()` 既有的 `R | X | U` 映射机制，避免改动用户
+程序、QEMU 参数或 BuildStorm 脚本。
+
+### 修改与验证
+
+修改 `os/src/arch/loongarch64/qemu/memory_layout.rs` 与
+`os/src/arch/loongarch64/qemu/asms/trap.S`；新增本问题复盘并更新索引、开发日志和 AI 交互记录。
+
+`readelf -sW os/target/loongarch64-unknown-none/release/os` 确认
+`sigreturn_trampoline=0x9000000000202c44`；经用户页 `0xffff_ffff_fffe_4000` 映射后入口恰为
+`0xffff_ffff_fffe_4c44`。`make build-arch TARGET_ARCH=loongarch64` 与
+`make build-arch TARGET_ARCH=riscv64` 均通过，`git diff --check` 通过。
+
+经宿主授权运行 `timeout 180s make run TARGET_ARCH=loongarch64` 后，`sigaltstack`、`rseq`、
+`uptime` 回归均 PASS，十项 CAgent 均 pass，并出现 `BUILDSTORM_TOOLCHAIN ok` 和
+`BUILDSTORM_MINIBUILD ok`；日志中没有 `user_fault_signal`、`FetchInstructionPageFault`、
+panic、`TFAIL` 或 `TBROK`。运行仍在 `pre-build tg-xtask` 被 timeout 终止，未覆盖原日志约
+3698 秒的完整 BuildStorm 故障窗口，因此不宣称长程回归已完成。

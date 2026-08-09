@@ -3197,3 +3197,19 @@
 - **验证边界**：RISC-V64 与 LoongArch64 的 perf 和无 perf release 构建均通过；两个 no-perf lwext4 archive 均经交叉 `nm -g --defined-only` 确认不导出 `ext4_bcache_perf_*`，对应 perf archive 会导出该组函数。未运行 QEMU、LTP、CAgent 或完整 BuildStorm，因为根目录 `make run` 会删除并重建维护者未跟踪的 `disk.img` 链接；未报告性能结果。
 - **关联问题**：[BuildStorm P0 分解计数与阶段基线](./problem/buildstorm-p0-perf-baseline-telemetry.md)、[优化方案](./优化方案.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### LoongArch signal-vDSO `rt_sigreturn` 入口映射（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans` 中三次 LoongArch64
+  `FetchInstructionPageFault`，要求优先定位并修复共同的
+  `0xfffffffffffe4c44` 用户态取指地址。
+- **描述**：确认三进程的 PTE/VMA 同时缺失，且 Linux 7.0 LoongArch 信号帧以
+  `vdso + offset_sigreturn` 作为 handler 返回入口。将 Ya2yOS 私有
+  `sigreturn_trampoline` 对齐到 signal-vDSO 页内偏移 `0xc44`，用户映射入口改为
+  `0xffff_ffff_fffe_4c44`；保留既有 `R | X | U` 页表映射机制。
+- **验证边界**：双架构 release 构建通过；180 秒 LoongArch QEMU 运行中内置三项回归和十项
+  CAgent 均 PASS，且无原 fault。运行未覆盖原约 3698 秒的完整 BuildStorm 窗口，未声称
+  BuildStorm/LTP 端到端通过。
+- **关联问题**：[LoongArch signal-vDSO `rt_sigreturn` 入口映射](./problem/loongarch-signal-vdso-sigreturn.md)
+- **关联 commit**：当前工作区未提交

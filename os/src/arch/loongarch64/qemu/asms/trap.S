@@ -172,6 +172,9 @@ __return_to_user:
     .section .text.trampoline
     .globl sigreturn_trampoline
     .align 12
+    # Keep the entry at Linux LoongArch64's __vdso_rt_sigreturn offset.  The
+    # user page table aliases this page at 0xffff_ffff_fffe_4000.
+    .space 0xc44
 sigreturn_trampoline:
     # ecall sys_sigreturn 用户态信号处理结束后调用
     addi.d	$a7, $zero, 139

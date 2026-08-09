@@ -107,5 +107,7 @@ pub fn sigreturn_pa() -> usize {
 }
 
 pub fn sigreturn_va() -> usize {
-    0xFFFF_FFFF_F000_0000 // 我们计划把sigreturn_trampoline映射到用户页表的这一出
+    // Linux LoongArch64 places __vdso_rt_sigreturn at this fixed offset in
+    // the signal-vDSO page.  Glibc signal handlers return here directly.
+    0xFFFF_FFFF_FFFE_4C44
 }
