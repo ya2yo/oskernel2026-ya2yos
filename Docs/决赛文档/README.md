@@ -147,6 +147,7 @@
 - [BuildStorm `ppoll` 退出路径的 TCB 强引用泄露](./problem/buildstorm-ppoll-tcb-reference-leak.md)
 - [BuildStorm MemorySet 与 EXT4 可睡眠锁死锁](./problem/memoryset-ext4-sleeping-lock-deadlock.md)
 - [BuildStorm EXT4 稀疏写缓冲、顺序预读与锁统计收敛](./problem/buildstorm-ext4-sparse-write-readahead.md)
+- [BuildStorm EXT4 稀疏写缓冲 run 合并](./problem/buildstorm-sparse-write-run-coalescing.md)
 - [BuildStorm `lseek` open-file 类型缓存优化](./problem/buildstorm-lseek-open-file-type-cache.md)
 - [BuildStorm EXT4 inode 级写回缓存并发](./problem/buildstorm-ext4-inode-cache-write-concurrency.md)
 - [execve 主 ELF lazy/file-backed 映射优化](./problem/execve-main-elf-lazy-file-mapping.md)

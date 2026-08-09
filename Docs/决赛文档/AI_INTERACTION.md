@@ -3170,3 +3170,12 @@
 - **验证边界**：目标文件格式检查和 LoongArch64 release 构建通过；未运行 QEMU，避免根目录 `make run` 重建维护者未跟踪的 `disk.img`。运行时应显式确认 `-accel tcg` 并观察 IPI 后的 CFS selection。
 - **关联问题**：[LoongArch QEMU TCG idle IPI 唤醒语义](./problem/loongarch-qemu-tcg-idle-ipi.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm sparse EXT4 run 合并（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求依据人工终止的 LoongArch64 `server.ans` 实施下一轮性能优化，同时明确全量测试正在运行，禁止启动构建、QEMU 或测试；idle 控制流改动不在本轮范围内。
+- **描述**：以 sparse buffer 最终计数 `run_limit_batches=7363/7634`（约 `96.4%`）定位 32-run 上限的高频回写。将仅支持严格后向追加的插入逻辑改为合并连续/重叠连通区间；按旧写入顺序重放后覆盖新数据，保持 last-write-wins，未连接区间保持独立以保留 sparse hole。预算改为替换实际驻留字节，两个入口共享同一 helper，并加入纯内存回归覆盖。
+- **验证边界**：未运行构建、Cargo 测试、QEMU、CAgent、LTP 或 BuildStorm，仅静态审查代码和差异。当前不存在可报告的端到端加速比例；待全量测试结束后进行同配置 A/B 对比。
+- **关联问题**：[BuildStorm EXT4 稀疏写缓冲 run 合并](./problem/buildstorm-sparse-write-run-coalescing.md)
+- **关联 commit**：当前工作区未提交

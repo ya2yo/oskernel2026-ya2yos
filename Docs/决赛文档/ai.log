@@ -11428,3 +11428,34 @@ TCG 源码审计推翻。
 `rustfmt --edition 2021 --check os/src/arch/loongarch64/qemu/cpu.rs`、`git diff --check` 与
 `make build-arch TARGET_ARCH=loongarch64` 均通过，只有既有 `.cargo/config` 弃用和 `smoltcp`
 未使用项警告。未运行 QEMU，因为未跟踪的 `disk.img` 会被根目录 `make run` 删除并重建。
+
+## 2026-08-09：BuildStorm sparse EXT4 run 合并
+
+### 用户需求
+
+维护者要求根据被其人工终止的 `server.ans` 继续实施下一轮性能优化，并明确当前正在进行
+全量测试，禁止启动构建、QEMU、Cargo 测试或任何运行验证；此前维护者已自行修改 idle
+控制流，本轮不处理该方向。
+
+### AI 分析与采纳结论
+
+日志的最终 sparse buffer 统计为 `batches=7634`、`batch_runs=236719`、
+`batch_bytes=285332888`，其中 `run_limit_batches=7363`、`payload_limit_batches=266`、
+`global_budget_batches=0`。即约 `96.4%` 的 batch 因 32-run 容量提交，平均约 31 个 run；
+早期 57 秒快照已出现 `sparse_buffer_ops=1837`、`batches=32`、`run_limit_batches=24`。
+该证据支持优化 run 数，不能据未完成运行推算完整 BuildStorm 的百分比收益。
+
+旧 sparse 插入只支持严格后向追加，无法处理前向相邻、重叠或桥接两个 run 的小写。采纳的
+实现先计算与新写入连续或重叠的连通分量，预分配合并数据后才更新队列；重放已有 run 后再
+覆盖新写入以维持 last-write-wins。未连接范围保持独立，故 sparse hole 不会被零填充物化。
+同时以合并后的实际字节替换 inode/global buffer 预算，两个 sparse 写入口共享同一 helper。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs`，新增纯内存 unit tests；新增
+`problem/buildstorm-sparse-write-run-coalescing.md` 并更新问题索引、开发日志和 AI 交互记录。
+
+按维护者要求，未运行 `cargo test`、`make`、`make run`、QEMU、CAgent、LTP 或完整
+BuildStorm，也没有运行编译检查。仅进行了源码与差异的静态审查；测试代码已加入但尚未执行。
+全量测试结束后需先编译/运行单元测试，再以相同 LoongArch64 入口重复比较
+`run_limit_batches`、平均 runs/batch、EXT4 写锁等待和完成 wall-clock，才能量化收益。
