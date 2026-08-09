@@ -3079,6 +3079,21 @@
 - **关联问题**：[LoongArch exec 段读取页缓存化与帧清零首触成本分析](./problem/loongarch-exec-segment-read-cache.md)
 - **关联 commit**：当前工作区未提交
 
+#### BuildStorm Rust 子进程 socketpair fd 分配竞态（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供提交 `a9aaf908067c17f8ac6416d8396b67e8d4b0fdb5` 的评测机
+  BuildStorm 失败日志，要求定位并修复 `CLOEXEC pipe failed`。
+- **描述**：确认 Rust 1.98 的 Linux 子进程状态通道使用 `AF_UNIX/SOCK_SEQPACKET`
+  socketpair；`FdTable::alloc_fd()` 在 `set()` 前不保留空槽，Cargo worker 并发创建
+  fd 时可重复取得同一编号并覆盖 socket。新增 fd-table reservation 位图，覆盖普通和
+  `alloc_fd_larger_than()` 分配，同时保持 clone/clear/resize 的槽状态一致。
+- **验证边界**：双架构 release 构建、RISC-V 四项启动回归和 CAgent 十项通过；RISC-V
+  BuildStorm 推进至 `445/446: tg-xtask(bin)` 且未出现原 socket/fd 错误，完整组和
+  LoongArch final 运行待补充。
+- **关联问题**：[BuildStorm Rust 子进程 socketpair fd 分配竞态](./problem/buildstorm-fd-allocation-reservation-race.md)
+- **关联 commit**：当前工作区未提交
+
 #### LoongArch CAgent idle polling cohort 性能优化（8.09）
 
 - **工具/模型**：Codex（GPT-5）

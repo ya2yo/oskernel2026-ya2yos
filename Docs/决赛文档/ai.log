@@ -11192,6 +11192,30 @@ RISC-V 同步提供同接口。`trap.S` 出入口全量 `invtlb` 的实验性移
 6.29→5.25MiB，块设备请求 974→958、字节 10.15→9.10MiB。端到端时间落在既有噪声带
 （1.7~2.1s），未声明加速比例；BuildStorm/LTP 动态用例未运行。
 
+## 2026-08-09：BuildStorm Rust 子进程 socketpair fd 分配竞态
+
+### 用户输入
+
+维护者提供评测机在提交 `a9aaf908067c17f8ac6416d8396b67e8d4b0fdb5` 上的完整日志，要求
+定位 `CLOEXEC pipe failed`、`ENOTSOCK`、`Bad file descriptor` 并修复。
+
+### AI 分析与采纳结论
+
+日志中的 `CLOEXEC pipe` 是 Rust 1.98 Linux 标准库对 `AF_UNIX/SOCK_SEQPACKET` 状态
+`socketpair` 的旧错误文本，不是 `pipe2(59)` 本身失败。检查 `FdTable::alloc_fd()` 发现
+它在 `set()` 之前不保留空槽；同一进程的 Cargo worker 可并发取得同一 fd，并由后完成的
+`set()` 覆盖 socket，正好解释父进程读状态通道时的 `ENOTSOCK`。
+
+采纳在 `FdTableInner` 增加 `reserved` 位图：所有普通和带最小 fd 参数的分配在表锁内
+保留槽，`set()` 提交、`take()` 清理；复制、清空和 resize 同步维护位图。
+
+### 修改与验证
+
+修改 `os/src/fs/fstruct.rs`，新增问题复盘和文档索引。`make TARGET_ARCH=riscv64`（包含
+两架构 release 构建）通过，RISC-V final 回归四项和 CAgent 十项通过；同一镜像的
+BuildStorm 已越过原 `CLOEXEC pipe` 失败点至 `445/446: tg-xtask(bin)`，当时未见
+`ENOTSOCK`/`EBADF`。完整 BuildStorm 与 LoongArch final 运行结果待本轮 QEMU 结束后补记。
+
 ## 2026-08-09：LoongArch CAgent idle polling cohort 性能优化
 
 ### 用户需求

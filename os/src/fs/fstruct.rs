@@ -178,6 +178,10 @@ pub struct FdTableInner {
     soft_limit: usize,
     hard_limit: usize,
     files: Vec<Option<FileDescriptor>>,
+    // `alloc_fd()` reserves a vacant slot before returning it.  Installing the
+    // descriptor happens later, outside this lock, so a reservation prevents a
+    // concurrent syscall sharing this table from selecting the same fd.
+    reserved: Vec<bool>,
 }
 
 impl FdTableInner {
@@ -187,6 +191,7 @@ impl FdTableInner {
             soft_limit: 128,
             hard_limit: 256,
             files: Vec::new(),
+            reserved: Vec::new(),
         }
     }
 
@@ -195,6 +200,7 @@ impl FdTableInner {
         Self {
             soft_limit,
             hard_limit,
+            reserved: vec![false; files.len()],
             files,
         }
     }
@@ -239,6 +245,9 @@ impl FdTable {
                 soft_limit: other.soft_limit,
                 hard_limit: other.hard_limit,
                 files: other.files.clone(),
+                // An in-flight allocation in the parent has not installed a
+                // descriptor, therefore it must not appear in a copied table.
+                reserved: vec![false; other.files.len()],
             }),
             owners: AtomicUsize::new(1),
         }
@@ -266,6 +275,7 @@ impl FdTable {
     pub fn clear(&self) {
         let files = {
             let mut inner = self.get_mut();
+            inner.reserved.clear();
             core::mem::take(&mut inner.files)
         };
         for desc in files.into_iter().flatten() {
@@ -273,46 +283,64 @@ impl FdTable {
         }
     }
 
-    /// 分配当前 soft limit 内最小的可用 fd 槽。
+    /// 分配当前 soft limit 内最小的可用 fd 槽，并在返回前保留该槽。
+    ///
+    /// fd 创建 syscall 通常需要先分配编号、再构造或复制文件对象，二者之间
+    /// 不能一直持有 fd table 锁。没有保留标记时，两个并发线程会拿到同一个
+    /// 空槽，后完成的 `set()` 会覆盖前一个新 fd。
     pub fn alloc_fd(&self) -> SyscallRet {
         let mut inner = self.get_mut();
         let soft_limit = inner.soft_limit;
-        let fd_table = &mut inner.files;
-
-        if let Some(fd) = fd_table.iter().position(|slot| slot.is_none()) {
+        if let Some(fd) = inner
+            .files
+            .iter()
+            .zip(inner.reserved.iter())
+            .position(|(slot, reserved)| slot.is_none() && !reserved)
+        {
+            inner.reserved[fd] = true;
             return Ok(fd);
         }
 
-        if fd_table.len() >= soft_limit {
+        if inner.files.len() >= soft_limit {
             return Err(SysErrNo::EMFILE);
         }
 
-        fd_table.push(None);
-        Ok(fd_table.len() - 1)
+        inner.files.push(None);
+        inner.reserved.push(true);
+        Ok(inner.files.len() - 1)
     }
 
     /// 分配一个不小于 `arg` 的可用 fd 槽，用于 `F_DUPFD` 等接口。
     pub fn alloc_fd_larger_than(&self, arg: usize) -> SyscallRet {
         let mut inner = self.get_mut();
         let soft_limit = inner.soft_limit;
-        let fd_table = &mut inner.files;
 
         if arg >= soft_limit {
             return Err(SysErrNo::EINVAL);
         }
-        if fd_table.len() < arg {
-            fd_table.resize(arg, None);
+        if inner.files.len() < arg {
+            inner.files.resize(arg, None);
+            inner.reserved.resize(arg, false);
         }
-        if let Some(fd) = fd_table.iter().skip(arg).position(|slot| slot.is_none()) {
-            return Ok(fd + arg);
+        if let Some(fd) = inner
+            .files
+            .iter()
+            .zip(inner.reserved.iter())
+            .skip(arg)
+            .position(|(slot, reserved)| slot.is_none() && !reserved)
+        {
+            let fd = fd + arg;
+            inner.reserved[fd] = true;
+            return Ok(fd);
         }
 
-        if fd_table.len() >= soft_limit {
+        if inner.files.len() >= soft_limit {
             return Err(SysErrNo::EMFILE);
         }
 
-        fd_table.push(None);
-        Ok(fd_table.len() - 1)
+        inner.files.push(None);
+        inner.reserved.push(true);
+        Ok(inner.files.len() - 1)
     }
 
     /// 执行 exec 时关闭所有带 `O_CLOEXEC` 的 fd。
@@ -354,6 +382,7 @@ impl FdTable {
             return Err(SysErrNo::EMFILE);
         }
         fd_table.resize(size, None);
+        inner.reserved.resize(size, false);
         Ok(())
     }
 
@@ -460,19 +489,22 @@ impl FdTable {
         inner.hard_limit = hard_limit;
     }
 
-    /// 将指定 fd 槽设置为给定文件描述符。
+    /// 将指定 fd 槽设置为给定文件描述符，并提交先前的分配保留。
     ///
     /// 若原槽已有描述符且没有其它 fd 引用同一 socket，会主动关闭旧 socket。
     pub fn set(&self, fd: usize, file: FileDescriptor) -> Result<(), SysErrNo> {
         let old = {
             let mut inner = self.get_mut();
-            if fd >= inner.soft_limit {
+            let reserved = inner.reserved.get(fd).copied().unwrap_or(false);
+            if fd >= inner.soft_limit && !reserved {
                 return Err(SysErrNo::EMFILE);
             }
             if fd >= inner.files.len() {
                 inner.files.resize(fd + 1, None);
+                inner.reserved.resize(fd + 1, false);
             }
             let old = inner.files[fd].replace(file);
+            inner.reserved[fd] = false;
             old.map(|desc| {
                 let should_close = !desc.has_fd_alias(&inner.files);
                 (desc, should_close)
@@ -492,6 +524,9 @@ impl FdTable {
     /// 从 fd 表中取出并清空指定 fd 槽，不执行 socket shutdown。
     pub fn take(&self, fd: usize) -> Option<FileDescriptor> {
         let mut inner = self.get_mut();
+        if let Some(reserved) = inner.reserved.get_mut(fd) {
+            *reserved = false;
+        }
         inner.files.get_mut(fd).and_then(|slot| slot.take())
     }
 
