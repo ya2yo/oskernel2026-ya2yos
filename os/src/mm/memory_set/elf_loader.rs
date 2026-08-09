@@ -424,12 +424,17 @@ impl MemorySetInner {
                 continue;
             }
 
-            let file_end = start_va.0.checked_add(file_size).ok_or(())?;
-            let file_end_vpn = VirtAddr::from(file_end).ceil();
-            if file_size != 0 {
+            // A file-backed VMA always exposes complete pages.  Do not map
+            // the partial final page directly from the executable: bytes
+            // after p_filesz belong to the zero-initialized BSS, while the
+            // file can contain section headers or other unrelated data there.
+            let full_file_size = file_size / PAGE_SIZE * PAGE_SIZE;
+            let full_file_end = start_va.0.checked_add(full_file_size).ok_or(())?;
+            let full_file_end_vpn = VirtAddr::from(full_file_end).ceil();
+            if full_file_size != 0 {
                 let file_area = MapArea::new_mmap(
                     start_va,
-                    file_end_vpn.into(),
+                    full_file_end_vpn.into(),
                     MapType::Framed,
                     map_perm,
                     MapAreaType::Mmap,
@@ -442,9 +447,43 @@ impl MemorySetInner {
             }
 
             let mem_end_vpn = end_va.ceil();
-            if file_end_vpn < mem_end_vpn {
+            let final_page_file_size = file_size - full_file_size;
+            if final_page_file_size != 0 {
+                let final_page_end_vpn = VirtPageNum(full_file_end_vpn.0.checked_add(1).ok_or(())?);
+                let final_page_area = MapArea::new(
+                    full_file_end.into(),
+                    final_page_end_vpn.into(),
+                    MapType::Framed,
+                    map_perm,
+                    MapAreaType::Elf,
+                );
+                max_end_vpn = max_end_vpn.max(final_page_area.vpn_range.end());
+                self.push_elf_segment_from_file(
+                    final_page_area,
+                    0,
+                    file,
+                    (ph.offset() as usize)
+                        .checked_add(full_file_size)
+                        .ok_or(())?,
+                    final_page_file_size,
+                )?;
+                if final_page_end_vpn < mem_end_vpn {
+                    let bss_area = MapArea::new(
+                        final_page_end_vpn.into(),
+                        mem_end_vpn.into(),
+                        MapType::Framed,
+                        map_perm,
+                        MapAreaType::Elf,
+                    );
+                    max_end_vpn = max_end_vpn.max(bss_area.vpn_range.end());
+                    self.push_lazily(bss_area);
+                }
+                continue;
+            }
+
+            if full_file_end_vpn < mem_end_vpn {
                 let bss_area = MapArea::new(
-                    file_end_vpn.into(),
+                    full_file_end_vpn.into(),
                     mem_end_vpn.into(),
                     MapType::Framed,
                     map_perm,

@@ -11249,3 +11249,41 @@ hart 在 idle interval 中有界 `spin_loop()` 后重查调度路径，其余 ha
 调度选择分布到 hart 0--7。RISC-V perf QEMU 同样十项 CAgent PASS 并 `shutdown!`，只作回归。
 目标文件 `rustfmt --check` 与 `git diff --check` 通过；全仓 `cargo fmt --check` 仅报告本轮未触及
 文件的既有格式问题。完整 BuildStorm/LTP 未运行。
+
+## 2026-08-09：LoongArch ELF 部分文件页 BSS 泄漏与 ADEM 修复
+
+### 用户输入
+
+维护者提供 `server.ans` 的 LoongArch64 warning：PID 63 在 `sepc=0xb554` 访问
+`0x617461646f723e`，内核记录 `PagePrivilegeIllegal` 后发送 `SIGSEGV`，要求修复。
+
+### AI 分析与采纳结论
+
+在 `fault-diagnostics` 构建中读取 `ESTAT`、用户寄存器、有效 PTE/VMA、指令字和 VMA
+后备文件路径。确认 `ESTAT=0x480800` 是 ADEM，不是 PTE 权限错误；故障 ELF 为
+`/usr/bin/find`，`0xb554` 是 `ldptr.w $r14,$r12,16`，而 `$r12` 是小端字符串
+`".rodata"`。
+
+提取镜像中的 `find` 后核对到可写 `PT_LOAD`：`vaddr=0x3a000`、`filesz=0x2508`、
+`memsz=0x2f38`。旧 lazy loader 将 `ceil(p_filesz)` 所在的整页 file-backed 映射，文件
+尾 section header string table 在 `0x3c610` 的 `".rodata"` 因而覆盖了该段的 BSS
+零值。动态链接器之后将此值作为全局对象中的指针使用，精确解释故障地址和指令。
+
+采纳将主 ELF 段拆为完整 file-backed 页与 framed 的部分末页：后者仅复制有效文件字节，
+其余部分保持零初始化；随后的完整 BSS 页仍维持匿名 lazy 映射。排查期间还恢复 `__alltraps` 对完整用户
+TrapContext 的 `origin_a0`/`PRMD` 保存，并在返回用户态设置用户 trap entry 前清除
+LoongArch `CRMD.IE`；这两项为独立 trap 正确性修复，不作为 ADEM 的直接根因。
+
+### 修改与验证
+
+修改 `os/src/mm/memory_set/elf_loader.rs`、
+`os/src/arch/loongarch64/qemu/asms/trap.S` 和 `os/src/trap/mod.rs`，新增
+`problem/elf-partial-page-bss-leak.md` 并更新文档索引。
+
+`make build-arch TARGET_ARCH=loongarch64 KERNEL_EXTRA_FEATURES=fault-diagnostics`、
+`make build-arch TARGET_ARCH=loongarch64` 与
+`make build-arch TARGET_ARCH=riscv64` 均通过。基于 final `sdcard-la.img` 新建 qcow2
+覆盖层的 12-hart LoongArch64 复验中，修复后没有
+`PagePrivilegeIllegal`、`user_fault_signal`、panic、`TFAIL` 或 `TBROK`；十项 CAgent
+均通过，BuildStorm 输出 `BUILDSTORM_TOOLCHAIN ok` 和 `BUILDSTORM_MINIBUILD ok`。
+完整 BuildStorm/LTP 未运行，QEMU 在上述冒烟标记后由宿主终止。

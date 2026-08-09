@@ -488,6 +488,15 @@ pub fn trap_return() {
             // trap and overwrite the saved hart id/context.
             riscv::register::sstatus::clear_sie();
         }
+        #[cfg(target_arch = "loongarch64")]
+        {
+            // `__alltraps` expects a user TrapContext in CSR_SAVE0.  Once
+            // EENTRY points there, a kernel-mode interrupt would otherwise
+            // be decoded as a user trap and overwrite that context with
+            // kernel registers.  Keep interrupts disabled until `ertn`
+            // restores the user IE bit from the saved PRMD.
+            loongArch64::register::crmd::set_ie(false);
+        }
         // let ptr = (trap_cx as *mut TrapContext) as usize;
         // debug!(
         //     "### [return_to_user], trap_cx.sepc={:#x}, sp={:#x}, kstack={:#x}, trap_cx={:#x}",

@@ -208,3 +208,4 @@
 - [LoongArch exec 段读取页缓存化与帧清零首触成本分析](./problem/loongarch-exec-segment-read-cache.md)
 - [LoongArch CAgent idle hart 唤醒与 CFS polling cohort](./problem/loongarch-cagent-idle-polling.md)
 - [BuildStorm Rust 子进程 socketpair fd 分配竞态](./problem/buildstorm-fd-allocation-reservation-race.md)
+- [ELF 部分文件末页泄漏到 BSS](./problem/elf-partial-page-bss-leak.md)

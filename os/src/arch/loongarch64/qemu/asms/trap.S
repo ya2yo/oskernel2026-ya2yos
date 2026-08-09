@@ -102,9 +102,13 @@ __alltraps:
     or $t1, $t1, $t0
     st.b $t1, $sp, 96*8+4
 
-    # Save the kernel return PC inside this 256-byte register frame.  The
-    # user TrapContext-only slots at 98*8 and 99*8 are outside this frame and
-    # must not be touched by a resumable kernel IPI trap.
+    # Save the user trap context fields.  __alltraps runs with the user
+    # TrapContext as its stack, so the origin-a0 and PRMD slots are part of the
+    # full context.  The separate __kern_trap entry below uses a 256-byte
+    # kernel-only frame and deliberately does not write these slots.
+    st.d $a0, $sp, 98*8
+    csrrd $t0, CSR_PRMD
+    st.d $t0, $sp, 99*8
     csrrd $t0, CSR_ERA
     st.d $t0, $sp, 0
     # read user stack from SAVE and save it in TrapContext

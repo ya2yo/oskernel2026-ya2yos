@@ -3102,3 +3102,20 @@
 - **验证边界**：LoongArch 两次 QEMU CAgent 运行均 `shutdown!`；RISC-V QEMU 回归及两架构 release/perf 构建均通过。未执行完整 BuildStorm/LTP；该绕过仅适用于当前 LoongArch QEMU idle/IPI 行为。
 - **关联问题**：[LoongArch CAgent idle hart 唤醒与 CFS polling cohort](./problem/loongarch-cagent-idle-polling.md)
 - **关联 commit**：当前工作区未提交
+
+#### LoongArch ELF 部分文件页 BSS 泄漏修复（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans` 中 LoongArch64 用户态 `PagePrivilegeIllegal` /
+  `SIGSEGV`，地址为小端字符串 `".rodata"`，要求定位并修复。
+- **描述**：确认 LoongArch `ESTAT` 实际为 ADEM，并将 `sepc=0xb554` 定位到
+  `/usr/bin/find`。页对齐主 ELF lazy loader 把含 `p_filesz` 末尾的整页映射为文件，
+  使 section header string table 覆盖了本应清零的 BSS；改为仅懒映射完整文件页，部分
+  末页走 framed 映射并只复制有效字节，后续 BSS 继续按需映射。同步恢复用户 TrapContext 的 `a0`/`PRMD` 保存，
+  并关闭用户 trap entry 切换窗口中的内核中断。
+- **验证边界**：LoongArch64 fault-diagnostics/release 和 RISC-V64 release 构建通过；
+  final LoongArch64 镜像的 12-hart CAgent 十项均 PASS，日志不再包含原 ADEM/
+  `user_fault_signal`，BuildStorm toolchain/minibuild 冒烟通过。完整 BuildStorm/LTP
+  未运行。
+- **关联问题**：[ELF 部分文件末页泄漏到 BSS](./problem/elf-partial-page-bss-leak.md)
+- **关联 commit**：当前工作区未提交
