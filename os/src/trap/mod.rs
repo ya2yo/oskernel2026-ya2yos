@@ -362,10 +362,14 @@ pub fn trap_handler() {
         }
 
         Trap::Interrupt(Interrupt::Timer) => {
-            check_timer_events();
+            if crate::timer::claim_global_timer_maintenance() {
+                check_timer_events();
+                crate::task::check_blocked_task_timers();
+                // The futex timeout heap is global for the same reason as the
+                // Future timer wheel: one Hart services each time bucket.
+                check_futex_timer();
+            }
             deliver_itimer_signal(&current_task().unwrap());
-            // 检查futex操作是否超时
-            check_futex_timer();
             set_next_trigger();
             // debug!("Timer Interupt!");
             crate::task::preempt_current_and_run_next();

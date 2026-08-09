@@ -106,6 +106,7 @@ pub use timex::{timex_apply, timex_get_realtime, Timex, TIME_OK};
 pub use tms::Tms;
 
 use crate::arch::time::{get_clock_freq, get_ticks, set_oneshot_timer};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::{Lazy, Mutex};
 
 //* 时间常量
@@ -116,6 +117,40 @@ const TICKS_PER_SEC: usize = 100;
 pub const MSEC_PER_SEC: usize = 1000;
 /// Scheduler-side timer maintenance interval.
 pub const TIMER_INTERVAL_MS: usize = MSEC_PER_SEC / TICKS_PER_SEC;
+
+/// The time bucket most recently used to service globally shared timer state.
+///
+/// The Future timer wheel and futex timeout heap are global, so checking them
+/// on every Hart's timer interrupt only creates lock contention.  A single
+/// winner per scheduler tick is sufficient because expiry is based on the
+/// shared monotonic clock rather than a Hart-local deadline.
+static LAST_GLOBAL_TIMER_MAINTENANCE_TICK: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// Claim this 10 ms bucket for globally shared timer maintenance.
+///
+/// Per-task interval timers are deliberately not covered: their delivery must
+/// still happen from the interrupt path of the task currently running on each
+/// Hart. The Future timer wheel, futex timeout heap, and blocked-task interval
+/// timer scan only need one concurrent maintainer.
+#[inline]
+pub(crate) fn claim_global_timer_maintenance() -> bool {
+    let tick = get_time_ms() / TIMER_INTERVAL_MS;
+    let mut observed = LAST_GLOBAL_TIMER_MAINTENANCE_TICK.load(Ordering::Relaxed);
+    loop {
+        if observed == tick {
+            return false;
+        }
+        match LAST_GLOBAL_TIMER_MAINTENANCE_TICK.compare_exchange_weak(
+            observed,
+            tick,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return true,
+            Err(current) => observed = current,
+        }
+    }
+}
 /// 每秒钟的微秒数
 pub const USEC_PER_SEC: u64 = 1_000_000;
 /// 每秒钟的纳秒数

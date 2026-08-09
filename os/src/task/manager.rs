@@ -25,17 +25,10 @@ pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
 }
 
 pub fn check_blocked_task_timers() {
-    let hartid = crate::arch::cpu::hart_id();
     tid_to_task::for_each_task(|task| {
-        // A blocked wait is owned by its thread's current scheduler placement.
-        // This keeps timer delivery singular even when sibling threads sharing
-        // an address space run on different harts.
-        if task.scheduled_hart() != hartid {
-            return;
-        }
-        // 这条补扫主要服务于阻塞在 accept/recv 等路径中的任务，避免它们在
-        // 内核态调度循环中错过 ITIMER_REAL。具体到期判断和 SIGALRM 投递由
-        // timer/signal 模块负责，任务管理器只负责遍历候选任务。
+        // This scan is invoked by the globally claimed timer-maintenance
+        // bucket.  One owner visits every blocked task, avoiding an otherwise
+        // identical full task-table walk on every active Hart.
         let should_check = {
             let inner = task.inner_lock();
             inner.task_status == TaskStatus::Blocked

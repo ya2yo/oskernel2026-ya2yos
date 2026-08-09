@@ -27,7 +27,7 @@ use crate::task::Process;
 use crate::{
     arch::config::HART_NUM,
     task::switch::switch,
-    timer::{check_futex_timer, get_time_ms, TIMER_INTERVAL_MS},
+    timer::{check_futex_timer, claim_global_timer_maintenance},
 };
 use alloc::{boxed::Box, sync::Arc};
 use log::{debug, error};
@@ -51,11 +51,6 @@ pub struct Processor {
     /// 通过 [`schedule`] 切回此上下文。该 Box 在初始化后保持稳定，因而可以
     /// 将其内部地址传给底层汇编切换函数。
     pub idle_task_cx: Option<Box<TaskContext>>,
-    /// 上一次执行调度器侧定时器维护的 10 ms 时间桶。
-    ///
-    /// 使用时间桶而不是每次上下文切换都执行全局扫描，可以降低高频调度
-    /// 场景下的锁竞争；`usize::MAX` 表示尚未执行过维护。
-    last_timer_maintenance_tick: usize,
 }
 
 /// 初始化所有 Hart 的 idle 调度上下文。
@@ -79,21 +74,7 @@ impl Processor {
         Self {
             current: None,
             idle_task_cx: None,
-            last_timer_maintenance_tick: usize::MAX,
         }
-    }
-    /// 判断当前 10 ms 时间桶是否需要执行调度器侧定时器维护。
-    ///
-    /// 定时器中断通常会驱动这些维护任务；Hart 从 idle 状态被唤醒后，调度
-    /// 循环也必须补做一次检查。但在每次上下文切换都执行全局扫描会造成
-    /// 严重锁竞争，因此每个 Hart 只在进入新的时间桶时返回 `true`。
-    fn should_run_timer_maintenance(&mut self) -> bool {
-        let tick = get_time_ms() / TIMER_INTERVAL_MS;
-        if tick == self.last_timer_maintenance_tick {
-            return false;
-        }
-        self.last_timer_maintenance_tick = tick;
-        true
     }
     /// 获取当前 Hart idle 上下文的可变裸指针。
     ///
@@ -277,7 +258,7 @@ fn get_proc_by_hartid(hartid: usize) -> &'static mut Processor {
 pub fn run_tasks() {
     loop {
         let hartid = hart_id();
-        if get_proc_by_hartid(hartid).should_run_timer_maintenance() {
+        if claim_global_timer_maintenance() {
             check_timer_events();
             check_blocked_task_timers();
             check_futex_timer();
