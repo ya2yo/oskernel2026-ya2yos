@@ -1,4 +1,4 @@
-/* riscv64版本的内核链接文件，在os下的makefile中被复制并使用 */
+/* RISC-V64 QEMU kernel linker script. */
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 /* BASE_ADDRESS = 0x80200000; */

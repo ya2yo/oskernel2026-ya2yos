@@ -2,9 +2,8 @@
 target = "riscv64gc-unknown-none-elf"
 # target = "loongarch64-unknown-none"
 [target.riscv64gc-unknown-none-elf]
-# TODO: 这里的链接文件？
 rustflags = [
-    "-Clink-arg=-Tsrc/linker-qemu.ld", "-Cforce-frame-pointers=yes"
+    "-Clink-arg=-Tsrc/arch/riscv64/qemu/linker.ld", "-Cforce-frame-pointers=yes"
 ]
 
 [target.loongarch64-unknown-none]
