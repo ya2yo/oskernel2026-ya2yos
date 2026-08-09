@@ -7,6 +7,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::timer::get_time_ms;
 
+#[cfg(feature = "perf")]
+mod block;
 mod common;
 mod fs;
 mod net;
@@ -15,6 +17,8 @@ mod scheduler;
 mod syscall;
 mod task;
 
+#[cfg(feature = "perf")]
+pub(crate) use block::BlockRequestPerf;
 pub use fs::*;
 pub use net::*;
 pub use scheduler::*;

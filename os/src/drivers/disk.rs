@@ -12,12 +12,8 @@ use core::{
 
 use crate::drivers::BlockDriver;
 #[cfg(feature = "perf")]
-use crate::{
-    arch::time::get_ticks,
-    utils::perf::{
-        record_ext4_block_request_acquired, record_ext4_block_request_complete,
-        record_ext4_block_request_queued, record_ext4_block_request_submit, Ext4BlockRequestKind,
-    },
+use crate::utils::perf::{
+    record_ext4_block_request_queued, BlockRequestPerf, Ext4BlockRequestKind,
 };
 use spin::{Lazy, Mutex, MutexGuard};
 
@@ -354,21 +350,11 @@ impl Disk {
         }
 
         #[cfg(feature = "perf")]
-        let request_started = {
-            record_ext4_block_request_submit(Ext4BlockRequestKind::Read, buf.len());
-            get_ticks()
-        };
+        let mut perf = BlockRequestPerf::new(Ext4BlockRequestKind::Read, offset, buf.len());
         #[cfg(feature = "perf")]
         let mut dev = self.submission.lock();
         #[cfg(feature = "perf")]
-        let service_started = {
-            let acquired = get_ticks();
-            record_ext4_block_request_acquired(
-                acquired.saturating_sub(request_started),
-                dev.contended(),
-            );
-            get_ticks()
-        };
+        perf.acquired(dev.contended());
         #[cfg(not(feature = "perf"))]
         let mut dev = self.submission.lock();
 
@@ -399,10 +385,7 @@ impl Disk {
             Ok(done)
         })();
         #[cfg(feature = "perf")]
-        record_ext4_block_request_complete(
-            get_ticks().saturating_sub(service_started),
-            result.is_ok(),
-        );
+        perf.finish(result.is_ok());
         result
     }
 
@@ -414,21 +397,11 @@ impl Disk {
         }
 
         #[cfg(feature = "perf")]
-        let request_started = {
-            record_ext4_block_request_submit(Ext4BlockRequestKind::Write, buf.len());
-            get_ticks()
-        };
+        let mut perf = BlockRequestPerf::new(Ext4BlockRequestKind::Write, offset, buf.len());
         #[cfg(feature = "perf")]
         let mut dev = self.submission.lock();
         #[cfg(feature = "perf")]
-        let service_started = {
-            let acquired = get_ticks();
-            record_ext4_block_request_acquired(
-                acquired.saturating_sub(request_started),
-                dev.contended(),
-            );
-            get_ticks()
-        };
+        perf.acquired(dev.contended());
         #[cfg(not(feature = "perf"))]
         let mut dev = self.submission.lock();
 
@@ -460,40 +433,24 @@ impl Disk {
             Ok(done)
         })();
         #[cfg(feature = "perf")]
-        record_ext4_block_request_complete(
-            get_ticks().saturating_sub(service_started),
-            result.is_ok(),
-        );
+        perf.finish(result.is_ok());
         result
     }
 
     /// Complete writes already submitted to the device.
     pub fn flush(&self) -> DevResult {
         #[cfg(feature = "perf")]
-        let request_started = {
-            record_ext4_block_request_submit(Ext4BlockRequestKind::Flush, 0);
-            get_ticks()
-        };
+        let mut perf = BlockRequestPerf::new(Ext4BlockRequestKind::Flush, 0, 0);
         #[cfg(feature = "perf")]
         let mut dev = self.submission.lock();
         #[cfg(feature = "perf")]
-        let service_started = {
-            let acquired = get_ticks();
-            record_ext4_block_request_acquired(
-                acquired.saturating_sub(request_started),
-                dev.contended(),
-            );
-            get_ticks()
-        };
+        perf.acquired(dev.contended());
         #[cfg(not(feature = "perf"))]
         let mut dev = self.submission.lock();
 
         let result = dev.flush();
         #[cfg(feature = "perf")]
-        record_ext4_block_request_complete(
-            get_ticks().saturating_sub(service_started),
-            result.is_ok(),
-        );
+        perf.finish(result.is_ok());
         result
     }
 }

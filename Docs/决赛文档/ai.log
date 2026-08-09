@@ -11459,3 +11459,55 @@ TCG 源码审计推翻。
 BuildStorm，也没有运行编译检查。仅进行了源码与差异的静态审查；测试代码已加入但尚未执行。
 全量测试结束后需先编译/运行单元测试，再以相同 LoongArch64 入口重复比较
 `run_limit_batches`、平均 runs/batch、EXT4 写锁等待和完成 wall-clock，才能量化收益。
+
+## 2026-08-09：BuildStorm P0 分解计数与 perf helper 归位
+
+### 用户需求
+
+维护者要求根据《Docs/决赛文档/优化方案.md》实现 P0，并明确本轮不需要运行验证；随后要求将 `os/src/drivers/disk.rs` 中新增的 perf 请求结构体和方法移入 `os/src/utils/perf`，允许新建文件。
+
+### AI 分析与采纳结论
+
+现有 perf 已有 EXT4 resource lock class、block request queue/service、lwext4 bcache、sparse/dense/metadata phase 聚合，但缺少可区分物理设备队列等待与 bcache 状态等待的独立字段，以及请求形态的低开销统计。将 `BlockRequestPerf` 移至 `os/src/utils/perf/block.rs`，由 `disk.rs` 只负责实际请求生命周期；新增读/写/flush 请求字节、最大请求大小、512 字节对齐、按 Hart 顺序请求命中统计，并在 bcache wait hook 中累计 tick duration。没有改变 EXT4 锁序、bcache 所有权、写回策略或设备请求合并。
+
+同时在 initproc 的 CAgent、正式 BuildStorm 和嵌套 QEMU 前后增加 `BUILDSTORM_PHASE` marker，并新增 P0 问题复盘，说明 interval/cumulative 计数口径和固定基线要求。尝试设计按调用点的 per-Hart operation context 后撤回，因为任务阻塞期间 Hart context 会被复用，未经 task-local 生命周期证明不能作为可靠归因数据。
+
+### 修改与验证
+
+修改：`os/src/utils/perf/block.rs`、`os/src/utils/perf/fs.rs`、`os/src/utils/perf/mod.rs`、`os/src/utils/perf/report.rs`、`os/src/drivers/disk.rs`、`os/src/fs/ext4_lw/sb.rs`、`user/src/bin/initproc.rs`，以及 P0 problem、README、开发日志和本文件。
+
+按维护者要求未运行 `make`、Cargo、QEMU、LTP、CAgent 或 BuildStorm，也未将本轮改动宣称为性能收益。当前工作树中 `.vscode/settings.json`、`Makefile`、`user/src/bin/initproc.rs` 和 `os/src/task/processor.rs` 另有维护者已有改动，未回退或重写。
+
+## 2026-08-09：BuildStorm P0 关联计数补全与诊断导航修复
+
+### 用户需求
+
+维护者要求根据《Docs/决赛文档/优化方案.md》完善已有 P0 修改；随后指出
+`os/src/utils/perf/report.rs:1451` 的 `idle_hart_snapshot()` 调用不能正常跳转。
+
+### AI 分析与采纳结论
+
+原有 P0 只能分别观察 resource lock 类别与块请求，无法回答“哪类锁持有期间让哪类请求排队”。
+按 Hart 保存上一个请求结束偏移也会在任务迁移或同 Hart 任务交错时给出错误连续性。采纳任务
+稳定的 perf 专用锁类别引用计数：资源锁成功获取/释放时更新 `TaskControlBlock`，块请求在获得
+`Disk::submission` 后快照上下文，并按 `lock_class × read/write/flush` 聚合提交、提交前
+queue wait 和提交后 service。bcache callback 单列持锁/解锁 completion wait。嵌套锁类别可重复
+归因，因此报告行不构成可相加分区。
+
+连续性改为在串行设备提交边界维护全局最近结束偏移，flush 清空该链。此改动仅在 `perf` 特性
+下编译，不改变锁序、文件可见性、设备请求顺序或合并策略。为修复源代码导航，`task/mod.rs`
+提供明确的 crate 内 `idle_hart_snapshot()` 包装函数，`report.rs` 跳转不再依赖私有
+`processor` 模块重导出。P0 所需的 journal commit 不再由 flush 推测：C 侧在
+`__ext4_trans_stop()` 调用 `jbd_journal_commit_trans()` 后记录 commit 与非 `EOK` 错误，Rust
+按现有 `repr(C)` 快照输出 `interval_ext4_journal` 与累计 `ext4_journal`。
+
+### 修改与验证
+
+修改 `os/src/utils/perf/fs.rs`、`block.rs`、`report.rs`、`os/src/fs/ext4_lw/mod.rs`、
+`os/src/task/mod.rs`、`os/src/task/task/task.rs`、`crates/lwext4_rust/c/lwext4/{include/ext4_bcache.h,src/ext4_bcache.c,src/ext4.c}` 与
+`crates/lwext4_rust/src/perf.rs`，并更新 P0 方案、问题复盘、开发日志和 AI 记录。
+`make perf TARGET_ARCH=riscv64`、`make perf TARGET_ARCH=loongarch64`、
+`make build-arch TARGET_ARCH=riscv64`、`make build-arch TARGET_ARCH=loongarch64` 均通过。
+
+未运行 QEMU、LTP、CAgent 或完整 BuildStorm：根目录 `make run` 会删除并重建未跟踪的
+`disk.img`，而当前链接指向维护者的正式 LoongArch 镜像。未报告端到端性能收益。

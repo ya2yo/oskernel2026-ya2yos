@@ -136,6 +136,15 @@ static IDLE_ACCOUNTING: [Mutex<IdleAccounting>; HART_NUM] = [const {
 /// Hart。该状态与就绪队列检查配合使用，不能单独作为“队列为空”的判断。
 static HART_IDLE: [AtomicBool; HART_NUM] = [const { AtomicBool::new(false) }; HART_NUM];
 
+/// Return the idle publication state of every Hart for a diagnostic snapshot.
+///
+/// This is intentionally an approximate, lock-free view.  It distinguishes a
+/// quiescent ready queue from a scheduler stall without adding work to the
+/// timer-preemption hot path.
+pub(crate) fn idle_hart_snapshot() -> [bool; HART_NUM] {
+    core::array::from_fn(|hartid| HART_IDLE[hartid].load(Ordering::Relaxed))
+}
+
 /// 在目标 Hart 的就绪队列加入任务后通知目标 Hart。
 ///
 /// 目标 Hart 会在重新检查就绪队列前以 Release 顺序发布 `HART_IDLE = true`：

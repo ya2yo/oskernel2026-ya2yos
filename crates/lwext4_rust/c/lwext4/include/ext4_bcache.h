@@ -279,6 +279,8 @@ struct ext4_bcache_perf_stats {
 	uint64_t write_completions;
 	uint64_t write_blocks;
 	uint64_t write_errors;
+	uint64_t journal_commits;
+	uint64_t journal_commit_errors;
 };
 
 /** Reset and enable, or disable, the process-wide telemetry. */
@@ -290,6 +292,7 @@ void ext4_bcache_perf_snapshot(struct ext4_bcache_perf_stats *out);
 /** Account a synchronous block-interface request around its callback. */
 void ext4_bcache_perf_record_io_submit(bool write, uint32_t blocks);
 void ext4_bcache_perf_record_io_complete(bool write, int result);
+void ext4_bcache_perf_record_journal_commit(int result);
 
 /** Account block-get loading and dirty-buffer writeback ownership. */
 void ext4_bcache_perf_record_get(bool hit);

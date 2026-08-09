@@ -174,6 +174,8 @@ void ext4_bcache_perf_snapshot(struct ext4_bcache_perf_stats *out)
 	EXT4_BCACHE_PERF_LOAD(write_completions);
 	EXT4_BCACHE_PERF_LOAD(write_blocks);
 	EXT4_BCACHE_PERF_LOAD(write_errors);
+	EXT4_BCACHE_PERF_LOAD(journal_commits);
+	EXT4_BCACHE_PERF_LOAD(journal_commit_errors);
 #undef EXT4_BCACHE_PERF_LOAD
 }
 
@@ -213,6 +215,18 @@ void ext4_bcache_perf_record_io_complete(bool write, int result)
 			__atomic_add_fetch(&ext4_bcache_perf.read_errors, 1,
 					   __ATOMIC_RELAXED);
 	}
+}
+
+void ext4_bcache_perf_record_journal_commit(int result)
+{
+	if (!__atomic_load_n(&ext4_bcache_perf_enabled, __ATOMIC_RELAXED))
+		return;
+
+	__atomic_add_fetch(&ext4_bcache_perf.journal_commits, 1,
+				   __ATOMIC_RELAXED);
+	if (result != EOK)
+		__atomic_add_fetch(&ext4_bcache_perf.journal_commit_errors, 1,
+				   __ATOMIC_RELAXED);
 }
 
 void ext4_bcache_perf_record_get(bool hit)

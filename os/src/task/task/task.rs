@@ -120,6 +120,12 @@ pub struct TaskControlBlock {
     /// Linux task_struct::on_cpu equivalent. It remains set until the previous
     /// Hart has completely switched away from this task's saved context.
     on_cpu: AtomicBool,
+    /// Counts of lwext4 resource-lock classes currently held by this task.
+    ///
+    /// This exists only in diagnostic builds. Unlike a per-Hart marker, it
+    /// remains valid while a blocked task is resumed on another Hart.
+    #[cfg(feature = "perf")]
+    ext4_resource_lock_counts: [AtomicUsize; 9],
     // mutable
     // 异步中断/信号同步
     pub interrupted: AtomicBool,
@@ -543,6 +549,48 @@ impl TaskControlBlock {
         self.tid.0
     }
 
+    #[cfg(feature = "perf")]
+    #[inline]
+    pub(crate) fn ext4_resource_lock_acquired(
+        &self,
+        class: crate::utils::perf::Ext4ResourceLockClass,
+    ) {
+        self.ext4_resource_lock_counts[class.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "perf")]
+    #[inline]
+    pub(crate) fn ext4_resource_lock_released(
+        &self,
+        class: crate::utils::perf::Ext4ResourceLockClass,
+    ) {
+        let previous =
+            self.ext4_resource_lock_counts[class.index()].fetch_sub(1, Ordering::Relaxed);
+        debug_assert_ne!(previous, 0, "lwext4 resource-lock context underflow");
+    }
+
+    #[cfg(feature = "perf")]
+    #[inline]
+    pub(crate) fn ext4_resource_lock_context(&self) -> usize {
+        self.ext4_resource_lock_counts
+            .iter()
+            .enumerate()
+            .fold(0, |context, (index, count)| {
+                if count.load(Ordering::Relaxed) != 0 {
+                    context | (1usize << index)
+                } else {
+                    context
+                }
+            })
+    }
+
+    #[cfg(feature = "perf")]
+    pub(crate) fn clear_ext4_resource_lock_context(&self) {
+        for count in &self.ext4_resource_lock_counts {
+            count.store(0, Ordering::Relaxed);
+        }
+    }
+
     #[inline]
     pub fn cpu_affinity(&self) -> usize {
         self.cpu_affinity.load(Ordering::Acquire)
@@ -636,6 +684,8 @@ impl TaskControlBlock {
             cpu_affinity: AtomicUsize::new(Self::default_cpu_affinity(process.home_hart())),
             scheduled_hart: AtomicUsize::new(process.home_hart()),
             on_cpu: AtomicBool::new(false),
+            #[cfg(feature = "perf")]
+            ext4_resource_lock_counts: [const { AtomicUsize::new(0) }; 9],
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             sched_entity: SchedEntity::new(),
@@ -1132,6 +1182,8 @@ impl TaskControlBlock {
             cpu_affinity: AtomicUsize::new(child_cpu_affinity),
             scheduled_hart: AtomicUsize::new(child_scheduled_hart),
             on_cpu: AtomicBool::new(false),
+            #[cfg(feature = "perf")]
+            ext4_resource_lock_counts: [const { AtomicUsize::new(0) }; 9],
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             // First enqueue places the child in its destination hart's

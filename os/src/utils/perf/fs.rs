@@ -150,6 +150,27 @@ pub(crate) enum Ext4BlockRequestKind {
     Flush,
 }
 
+#[cfg(feature = "perf")]
+impl Ext4BlockRequestKind {
+    pub(crate) const ALL: [Self; 3] = [Self::Read, Self::Write, Self::Flush];
+
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Read => 0,
+            Self::Write => 1,
+            Self::Flush => 2,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Flush => "flush",
+        }
+    }
+}
+
 /// Aggregate queue and service costs for `Disk::dev` requests.
 #[cfg(feature = "perf")]
 pub(crate) struct Ext4BlockDeviceStats {
@@ -167,6 +188,10 @@ pub(crate) struct Ext4BlockDeviceStats {
     pub(crate) max_wait_ticks: AtomicUsize,
     pub(crate) service_ticks: AtomicUsize,
     pub(crate) max_service_ticks: AtomicUsize,
+    pub(crate) aligned_requests: AtomicUsize,
+    pub(crate) unaligned_requests: AtomicUsize,
+    pub(crate) sequential_requests: AtomicUsize,
+    pub(crate) max_request_bytes: AtomicUsize,
 }
 
 #[cfg(feature = "perf")]
@@ -187,6 +212,10 @@ impl Ext4BlockDeviceStats {
             max_wait_ticks: AtomicUsize::new(0),
             service_ticks: AtomicUsize::new(0),
             max_service_ticks: AtomicUsize::new(0),
+            aligned_requests: AtomicUsize::new(0),
+            unaligned_requests: AtomicUsize::new(0),
+            sequential_requests: AtomicUsize::new(0),
+            max_request_bytes: AtomicUsize::new(0),
         }
     }
 
@@ -205,6 +234,10 @@ impl Ext4BlockDeviceStats {
         self.max_wait_ticks.store(0, Ordering::Relaxed);
         self.service_ticks.store(0, Ordering::Relaxed);
         self.max_service_ticks.store(0, Ordering::Relaxed);
+        self.aligned_requests.store(0, Ordering::Relaxed);
+        self.unaligned_requests.store(0, Ordering::Relaxed);
+        self.sequential_requests.store(0, Ordering::Relaxed);
+        self.max_request_bytes.store(0, Ordering::Relaxed);
     }
 }
 
@@ -385,6 +418,14 @@ impl Ext4FstatReasonPhases {
 pub(crate) static EXT4_BLOCK_DEVICE_STATS: Ext4BlockDeviceStats = Ext4BlockDeviceStats::new();
 #[cfg(feature = "perf")]
 static EXT4_BLOCK_DEVICE_PERF_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "perf")]
+static EXT4_BLOCK_DEVICE_LAST_END: AtomicUsize = AtomicUsize::new(usize::MAX);
+#[cfg(feature = "perf")]
+pub(crate) static EXT4_BCACHE_WAIT_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+pub(crate) static EXT4_BCACHE_WAIT_TICKS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "perf")]
+pub(crate) static EXT4_BCACHE_WAIT_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 
 /// Stable resource classes for aggregate lwext4 lock reporting.
 #[derive(Clone, Copy)]
@@ -550,6 +591,104 @@ pub(crate) fn ext4_resource_lock_class_stats(
 ) -> &'static Ext4ResourceLockClassStats {
     &EXT4_RESOURCE_LOCK_CLASS_STATS[class.index()]
 }
+
+/// Block-device time attributed to a resource-lock class held by the current
+/// task. A task holding nested classes is represented in each held class; the
+/// rows diagnose lock membership and are intentionally not a partition.
+#[cfg(feature = "perf")]
+pub(crate) struct Ext4ResourceLockIoStats {
+    pub(crate) submits: AtomicUsize,
+    pub(crate) bytes: AtomicUsize,
+    pub(crate) queue_wait_samples: AtomicUsize,
+    pub(crate) queue_wait_ticks: AtomicUsize,
+    pub(crate) max_queue_wait_ticks: AtomicUsize,
+    pub(crate) service_samples: AtomicUsize,
+    pub(crate) service_ticks: AtomicUsize,
+    pub(crate) max_service_ticks: AtomicUsize,
+}
+
+#[cfg(feature = "perf")]
+impl Ext4ResourceLockIoStats {
+    const fn new() -> Self {
+        Self {
+            submits: AtomicUsize::new(0),
+            bytes: AtomicUsize::new(0),
+            queue_wait_samples: AtomicUsize::new(0),
+            queue_wait_ticks: AtomicUsize::new(0),
+            max_queue_wait_ticks: AtomicUsize::new(0),
+            service_samples: AtomicUsize::new(0),
+            service_ticks: AtomicUsize::new(0),
+            max_service_ticks: AtomicUsize::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        self.submits.store(0, Ordering::Relaxed);
+        self.bytes.store(0, Ordering::Relaxed);
+        self.queue_wait_samples.store(0, Ordering::Relaxed);
+        self.queue_wait_ticks.store(0, Ordering::Relaxed);
+        self.max_queue_wait_ticks.store(0, Ordering::Relaxed);
+        self.service_samples.store(0, Ordering::Relaxed);
+        self.service_ticks.store(0, Ordering::Relaxed);
+        self.max_service_ticks.store(0, Ordering::Relaxed);
+    }
+}
+
+#[cfg(feature = "perf")]
+pub(crate) struct Ext4DurationStats {
+    pub(crate) samples: AtomicUsize,
+    pub(crate) ticks: AtomicUsize,
+    pub(crate) max_ticks: AtomicUsize,
+}
+
+#[cfg(feature = "perf")]
+impl Ext4DurationStats {
+    const fn new() -> Self {
+        Self {
+            samples: AtomicUsize::new(0),
+            ticks: AtomicUsize::new(0),
+            max_ticks: AtomicUsize::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        self.samples.store(0, Ordering::Relaxed);
+        self.ticks.store(0, Ordering::Relaxed);
+        self.max_ticks.store(0, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn record(&self, ticks: usize) {
+        record_duration(&self.samples, &self.ticks, &self.max_ticks, ticks);
+    }
+}
+
+#[cfg(feature = "perf")]
+static EXT4_RESOURCE_LOCK_IO_STATS: [Ext4ResourceLockIoStats; 27] =
+    [const { Ext4ResourceLockIoStats::new() }; 27];
+#[cfg(feature = "perf")]
+static EXT4_RESOURCE_LOCK_BCACHE_WAIT_STATS: [Ext4DurationStats; 9] =
+    [const { Ext4DurationStats::new() }; 9];
+#[cfg(feature = "perf")]
+pub(crate) static EXT4_BCACHE_LOCKED_WAIT: Ext4DurationStats = Ext4DurationStats::new();
+#[cfg(feature = "perf")]
+pub(crate) static EXT4_BCACHE_UNLOCKED_WAIT: Ext4DurationStats = Ext4DurationStats::new();
+
+#[cfg(feature = "perf")]
+pub(crate) fn ext4_resource_lock_io_stats(
+    class: Ext4ResourceLockClass,
+    kind: Ext4BlockRequestKind,
+) -> &'static Ext4ResourceLockIoStats {
+    &EXT4_RESOURCE_LOCK_IO_STATS[class.index() * Ext4BlockRequestKind::ALL.len() + kind.index()]
+}
+
+#[cfg(feature = "perf")]
+pub(crate) fn ext4_resource_lock_bcache_wait_stats(
+    class: Ext4ResourceLockClass,
+) -> &'static Ext4DurationStats {
+    &EXT4_RESOURCE_LOCK_BCACHE_WAIT_STATS[class.index()]
+}
+
 /// `fast_cached`, `directory_epoch_cached`, `post_wait_cached`, and
 /// `actual_ext4_fstat` are mutually exclusive results of `Ext4Inode::fstat()`.
 /// Alias recovery is a nested subphase of the last bucket and is deliberately
@@ -1609,6 +1748,12 @@ pub fn record_vfs_dentry_capacity_evict(entries: usize) {
 pub(crate) fn enable_ext4_block_device_perf() {
     EXT4_BLOCK_DEVICE_PERF_ENABLED.store(false, Ordering::Relaxed);
     EXT4_BLOCK_DEVICE_STATS.reset();
+    EXT4_BLOCK_DEVICE_LAST_END.store(usize::MAX, Ordering::Relaxed);
+    EXT4_BCACHE_WAIT_SAMPLES.store(0, Ordering::Relaxed);
+    EXT4_BCACHE_WAIT_TICKS.store(0, Ordering::Relaxed);
+    EXT4_BCACHE_WAIT_MAX_TICKS.store(0, Ordering::Relaxed);
+    EXT4_BCACHE_LOCKED_WAIT.reset();
+    EXT4_BCACHE_UNLOCKED_WAIT.reset();
     EXT4_BLOCK_DEVICE_PERF_ENABLED.store(true, Ordering::Release);
 }
 
@@ -1619,29 +1764,77 @@ pub(crate) fn enable_ext4_resource_lock_perf() {
     EXT4_RESOURCE_LOCK_STATS.reset();
     for class in Ext4ResourceLockClass::ALL {
         ext4_resource_lock_class_stats(class).reset();
+        ext4_resource_lock_bcache_wait_stats(class).reset();
+        for kind in Ext4BlockRequestKind::ALL {
+            ext4_resource_lock_io_stats(class, kind).reset();
+        }
     }
     EXT4_RESOURCE_LOCK_PERF_ENABLED.store(true, Ordering::Release);
 }
 
 #[inline]
 #[cfg(feature = "perf")]
-pub(crate) fn record_ext4_block_request_submit(kind: Ext4BlockRequestKind, bytes: usize) {
+pub(crate) fn record_ext4_block_request_submit(
+    kind: Ext4BlockRequestKind,
+    offset: usize,
+    bytes: usize,
+) -> usize {
     if !EXT4_BLOCK_DEVICE_PERF_ENABLED.load(Ordering::Relaxed) {
-        return;
+        return 0;
     }
     add(&EXT4_BLOCK_DEVICE_STATS.submits, 1);
     add(&EXT4_BLOCK_DEVICE_STATS.bytes, bytes);
+    update_max(&EXT4_BLOCK_DEVICE_STATS.max_request_bytes, bytes);
+    if bytes != 0 {
+        let aligned = offset % 512 == 0 && bytes % 512 == 0;
+        // This function runs only after Disk::submission has been acquired,
+        // so one global last-end value follows the real device order instead
+        // of a task's temporary Hart placement.
+        let previous_end =
+            EXT4_BLOCK_DEVICE_LAST_END.swap(offset.saturating_add(bytes), Ordering::Relaxed);
+        if aligned {
+            add(&EXT4_BLOCK_DEVICE_STATS.aligned_requests, 1);
+        } else {
+            add(&EXT4_BLOCK_DEVICE_STATS.unaligned_requests, 1);
+        }
+        if previous_end != usize::MAX && offset == previous_end {
+            add(&EXT4_BLOCK_DEVICE_STATS.sequential_requests, 1);
+        }
+    } else {
+        // A flush establishes an ordering barrier, so no later data request
+        // should be classified as adjacent to the pre-flush request.
+        EXT4_BLOCK_DEVICE_LAST_END.store(usize::MAX, Ordering::Relaxed);
+    }
     let requests = match kind {
         Ext4BlockRequestKind::Read => &EXT4_BLOCK_DEVICE_STATS.read_requests,
         Ext4BlockRequestKind::Write => &EXT4_BLOCK_DEVICE_STATS.write_requests,
         Ext4BlockRequestKind::Flush => &EXT4_BLOCK_DEVICE_STATS.flush_requests,
     };
     add(requests, 1);
+
+    let context = crate::task::current_task()
+        .map(|task| task.ext4_resource_lock_context())
+        .unwrap_or(0);
+    if EXT4_RESOURCE_LOCK_PERF_ENABLED.load(Ordering::Relaxed) {
+        for class in Ext4ResourceLockClass::ALL {
+            if context & (1usize << class.index()) != 0 {
+                let stats = ext4_resource_lock_io_stats(class, kind);
+                add(&stats.submits, 1);
+                add(&stats.bytes, bytes);
+            }
+        }
+    }
+    context
 }
 
 #[inline]
 #[cfg(feature = "perf")]
-pub(crate) fn record_ext4_block_request_acquired(wait_ticks: usize, contended: bool) {
+pub(crate) fn record_ext4_block_request_acquired(
+    kind: Ext4BlockRequestKind,
+    wait_ticks: usize,
+    contended: bool,
+    context: usize,
+) {
     if !EXT4_BLOCK_DEVICE_PERF_ENABLED.load(Ordering::Relaxed) {
         return;
     }
@@ -1649,6 +1842,19 @@ pub(crate) fn record_ext4_block_request_acquired(wait_ticks: usize, contended: b
     update_max(&EXT4_BLOCK_DEVICE_STATS.max_wait_ticks, wait_ticks);
     if contended {
         add(&EXT4_BLOCK_DEVICE_STATS.contended, 1);
+    }
+    if EXT4_RESOURCE_LOCK_PERF_ENABLED.load(Ordering::Relaxed) {
+        for class in Ext4ResourceLockClass::ALL {
+            if context & (1usize << class.index()) != 0 {
+                let stats = ext4_resource_lock_io_stats(class, kind);
+                record_duration(
+                    &stats.queue_wait_samples,
+                    &stats.queue_wait_ticks,
+                    &stats.max_queue_wait_ticks,
+                    wait_ticks,
+                );
+            }
+        }
     }
 }
 
@@ -1664,7 +1870,12 @@ pub(crate) fn record_ext4_block_request_queued(queue_depth: usize) {
 
 #[inline]
 #[cfg(feature = "perf")]
-pub(crate) fn record_ext4_block_request_complete(service_ticks: usize, success: bool) {
+pub(crate) fn record_ext4_block_request_complete(
+    kind: Ext4BlockRequestKind,
+    service_ticks: usize,
+    success: bool,
+    context: usize,
+) {
     if !EXT4_BLOCK_DEVICE_PERF_ENABLED.load(Ordering::Relaxed) {
         return;
     }
@@ -1673,6 +1884,50 @@ pub(crate) fn record_ext4_block_request_complete(service_ticks: usize, success: 
     update_max(&EXT4_BLOCK_DEVICE_STATS.max_service_ticks, service_ticks);
     if !success {
         add(&EXT4_BLOCK_DEVICE_STATS.errors, 1);
+    }
+    if EXT4_RESOURCE_LOCK_PERF_ENABLED.load(Ordering::Relaxed) {
+        for class in Ext4ResourceLockClass::ALL {
+            if context & (1usize << class.index()) != 0 {
+                let stats = ext4_resource_lock_io_stats(class, kind);
+                record_duration(
+                    &stats.service_samples,
+                    &stats.service_ticks,
+                    &stats.max_service_ticks,
+                    service_ticks,
+                );
+            }
+        }
+    }
+}
+
+/// Record time spent waiting for a bcache buffer state transition. This is
+/// separate from the Rust device submission queue and therefore identifies
+/// completion waits inside lwext4 rather than physical-device queue waits.
+#[inline]
+#[cfg(feature = "perf")]
+pub fn record_ext4_bcache_completion_wait(wait_ticks: usize) {
+    if !EXT4_BLOCK_DEVICE_PERF_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    record_duration(
+        &EXT4_BCACHE_WAIT_SAMPLES,
+        &EXT4_BCACHE_WAIT_TICKS,
+        &EXT4_BCACHE_WAIT_MAX_TICKS,
+        wait_ticks,
+    );
+    let context = crate::task::current_task()
+        .map(|task| task.ext4_resource_lock_context())
+        .unwrap_or(0);
+    if context == 0 || !EXT4_RESOURCE_LOCK_PERF_ENABLED.load(Ordering::Relaxed) {
+        EXT4_BCACHE_UNLOCKED_WAIT.record(wait_ticks);
+        return;
+    }
+
+    EXT4_BCACHE_LOCKED_WAIT.record(wait_ticks);
+    for class in Ext4ResourceLockClass::ALL {
+        if context & (1usize << class.index()) != 0 {
+            ext4_resource_lock_bcache_wait_stats(class).record(wait_ticks);
+        }
     }
 }
 

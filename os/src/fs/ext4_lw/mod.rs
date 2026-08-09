@@ -311,7 +311,10 @@ impl TaskRwLock {
         let tid = task.as_ref().map_or(0, |task| task.tid());
         if self.try_lock(tid, mode, None) {
             #[cfg(feature = "perf")]
-            crate::utils::perf::record_ext4_resource_lock_acquired(self.class, 0, false);
+            {
+                self.record_current_task_lock_context_acquired();
+                crate::utils::perf::record_ext4_resource_lock_acquired(self.class, 0, false);
+            }
             return;
         }
 
@@ -340,6 +343,22 @@ impl TaskRwLock {
             #[cfg(feature = "perf")]
             started_at,
         });
+    }
+
+    #[cfg(feature = "perf")]
+    #[inline]
+    fn record_current_task_lock_context_acquired(&self) {
+        if let Some(task) = crate::task::current_task() {
+            task.ext4_resource_lock_acquired(self.class);
+        }
+    }
+
+    #[cfg(feature = "perf")]
+    #[inline]
+    fn record_current_task_lock_context_released(&self) {
+        if let Some(task) = crate::task::current_task() {
+            task.ext4_resource_lock_released(self.class);
+        }
     }
 
     /// 在不阻塞的情况下尝试获取资源锁。
@@ -417,8 +436,11 @@ impl TaskRwLock {
             waker.wake();
         }
         #[cfg(feature = "perf")]
-        if let Some(hold_ticks) = hold_ticks {
-            crate::utils::perf::record_ext4_resource_lock_released(self.class, hold_ticks);
+        {
+            self.record_current_task_lock_context_released();
+            if let Some(hold_ticks) = hold_ticks {
+                crate::utils::perf::record_ext4_resource_lock_released(self.class, hold_ticks);
+            }
         }
     }
 
@@ -524,11 +546,14 @@ impl Future for TaskRwLockFuture<'_> {
         match next {
             Some(next) => {
                 #[cfg(feature = "perf")]
-                crate::utils::perf::record_ext4_resource_lock_acquired(
-                    this.lock.class,
-                    get_ticks().saturating_sub(this.started_at),
-                    true,
-                );
+                {
+                    this.lock.record_current_task_lock_context_acquired();
+                    crate::utils::perf::record_ext4_resource_lock_acquired(
+                        this.lock.class,
+                        get_ticks().saturating_sub(this.started_at),
+                        true,
+                    );
+                }
                 for waker in next {
                     waker.wake();
                 }
@@ -732,13 +757,16 @@ pub(super) fn install_lwext4_resource_lock_hooks() {
 }
 
 /// 清理指定任务遗留的 EXT4 资源锁持有状态和等待项。
-pub(crate) fn cancel_ext4_op_waiter(tid: usize) {
+pub(crate) fn cancel_ext4_op_waiter(task: &crate::task::TaskControlBlock) {
     // 在任务清理逻辑迁出本次迁移范围前，保留任务退出调用点使用的名称。
     // 现在只清理该任务实际持有或等待的锁；不存在挂载范围的 EXT4 操作锁。
+    let tid = task.tid();
     let locks: Vec<Arc<TaskRwLock>> = LWEXT4_RESOURCE_LOCKS.lock().values().cloned().collect();
     for lock in locks {
         lock.cancel_tid(tid);
     }
+    #[cfg(feature = "perf")]
+    task.clear_ext4_resource_lock_context();
 }
 
 pub use inode::*;

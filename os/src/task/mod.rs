@@ -120,6 +120,15 @@ pub use tid::TidHandle;
 /// 初始进程的pid
 pub const INITPROC_PID: usize = 1;
 
+/// Return the scheduler idle-publication snapshot used by diagnostic reports.
+///
+/// Keep this forwarding function in `task` rather than re-exporting the
+/// private `processor` module so source navigation from perf reports has a
+/// concrete local definition.
+pub(crate) fn idle_hart_snapshot() -> [bool; crate::arch::config::HART_NUM] {
+    processor::idle_hart_snapshot()
+}
+
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     // debug!("[suspend_current_and_run_next]!");
@@ -386,7 +395,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // This exit path abandons the kernel stack instead of unwinding it. Clear
     // every task-owned lock/waiter that would otherwise survive its guard.
     cancel_cma_lock_owner(curr_task.tid());
-    cancel_ext4_op_waiter(curr_task.tid());
+    cancel_ext4_op_waiter(&curr_task);
     cancel_disk_waiter(curr_task.tid());
     let count = Arc::strong_count(&curr_task);
     // The current scheduler reference, the global TID table, and this local

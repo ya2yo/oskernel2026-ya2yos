@@ -636,6 +636,7 @@ __unused static int __ext4_trans_stop(struct ext4_mountpoint *mp)
 		struct jbd_journal *journal = mp->fs.jbd_journal;
 		struct jbd_trans *trans = mp->fs.curr_trans;
 		r = jbd_journal_commit_trans(journal, trans);
+		ext4_bcache_perf_record_journal_commit(r);
 		mp->fs.curr_trans = NULL;
 	}
 	return r;

@@ -42,6 +42,8 @@ unsafe extern "C" fn wait_for_bcache_state(
         return lwext4_rust::bindings::EOK as c_int;
     }
 
+    #[cfg(feature = "perf")]
+    let wait_started = crate::arch::time::get_ticks();
     if crate::task::current_task().is_none() {
         while !is_ready() {
             core::hint::spin_loop();
@@ -61,6 +63,11 @@ unsafe extern "C" fn wait_for_bcache_state(
             }
         }));
     }
+
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_ext4_bcache_completion_wait(
+        crate::arch::time::get_ticks().saturating_sub(wait_started),
+    );
 
     lwext4_rust::bindings::EOK as c_int
 }

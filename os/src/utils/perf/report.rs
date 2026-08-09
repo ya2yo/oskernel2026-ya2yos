@@ -73,6 +73,42 @@ impl ResourceLockClassDelta {
     }
 }
 
+struct ResourceLockIoDelta {
+    submits: CounterDelta,
+    bytes: CounterDelta,
+    queue_wait_samples: CounterDelta,
+    queue_wait_ticks: CounterDelta,
+    service_samples: CounterDelta,
+    service_ticks: CounterDelta,
+}
+
+impl ResourceLockIoDelta {
+    const fn new() -> Self {
+        Self {
+            submits: CounterDelta::new(),
+            bytes: CounterDelta::new(),
+            queue_wait_samples: CounterDelta::new(),
+            queue_wait_ticks: CounterDelta::new(),
+            service_samples: CounterDelta::new(),
+            service_ticks: CounterDelta::new(),
+        }
+    }
+}
+
+struct DurationCounterDelta {
+    samples: CounterDelta,
+    ticks: CounterDelta,
+}
+
+impl DurationCounterDelta {
+    const fn new() -> Self {
+        Self {
+            samples: CounterDelta::new(),
+            ticks: CounterDelta::new(),
+        }
+    }
+}
+
 impl PhaseDelta {
     const fn new() -> Self {
         Self {
@@ -131,6 +167,12 @@ static DELTA_PIPE_WRITE_WAIT_RECHECKS: CounterDelta = CounterDelta::new();
 #[cfg(feature = "perf")]
 static DELTA_RESOURCE_LOCK_CLASSES: [ResourceLockClassDelta; 9] =
     [const { ResourceLockClassDelta::new() }; 9];
+#[cfg(feature = "perf")]
+static DELTA_RESOURCE_LOCK_IO: [ResourceLockIoDelta; 27] =
+    [const { ResourceLockIoDelta::new() }; 27];
+#[cfg(feature = "perf")]
+static DELTA_RESOURCE_LOCK_BCACHE_WAIT: [DurationCounterDelta; 9] =
+    [const { DurationCounterDelta::new() }; 9];
 
 #[cfg(feature = "perf")]
 static DELTA_EXT4_CACHE_HIT_OPS: CounterDelta = CounterDelta::new();
@@ -320,6 +362,14 @@ storage_counter_deltas!(
     DELTA_BCACHE_WRITE_COMPLETIONS,
     DELTA_BCACHE_WRITE_BLOCKS,
     DELTA_BCACHE_WRITE_ERRORS,
+    DELTA_BCACHE_JOURNAL_COMMITS,
+    DELTA_BCACHE_JOURNAL_COMMIT_ERRORS,
+    DELTA_BCACHE_WAIT_SAMPLES,
+    DELTA_BCACHE_WAIT_TICKS,
+    DELTA_BCACHE_LOCKED_WAIT_SAMPLES,
+    DELTA_BCACHE_LOCKED_WAIT_TICKS,
+    DELTA_BCACHE_UNLOCKED_WAIT_SAMPLES,
+    DELTA_BCACHE_UNLOCKED_WAIT_TICKS,
     DELTA_BLOCKDEV_SUBMITS,
     DELTA_BLOCKDEV_READ_REQUESTS,
     DELTA_BLOCKDEV_WRITE_REQUESTS,
@@ -331,6 +381,9 @@ storage_counter_deltas!(
     DELTA_BLOCKDEV_ERRORS,
     DELTA_BLOCKDEV_WAIT_TICKS,
     DELTA_BLOCKDEV_SERVICE_TICKS,
+    DELTA_BLOCKDEV_ALIGNED_REQUESTS,
+    DELTA_BLOCKDEV_UNALIGNED_REQUESTS,
+    DELTA_BLOCKDEV_SEQUENTIAL_REQUESTS,
     DELTA_RESOURCE_LOCK_ACQUIRES,
     DELTA_RESOURCE_LOCK_CONTENDED,
     DELTA_RESOURCE_LOCK_QUEUED,
@@ -390,6 +443,53 @@ fn emit_resource_lock_class_interval_deltas() {
 }
 
 #[cfg(feature = "perf")]
+fn emit_resource_lock_io_interval_deltas() {
+    for class in Ext4ResourceLockClass::ALL {
+        for kind in Ext4BlockRequestKind::ALL {
+            let stats = ext4_resource_lock_io_stats(class, kind);
+            let delta = &DELTA_RESOURCE_LOCK_IO
+                [class.index() * Ext4BlockRequestKind::ALL.len() + kind.index()];
+            let submits = delta.submits.take(&stats.submits);
+            let bytes = delta.bytes.take(&stats.bytes);
+            let queue_wait_samples = delta.queue_wait_samples.take(&stats.queue_wait_samples);
+            let queue_wait_ticks = delta.queue_wait_ticks.take(&stats.queue_wait_ticks);
+            let service_samples = delta.service_samples.take(&stats.service_samples);
+            let service_ticks = delta.service_ticks.take(&stats.service_ticks);
+            if submits == 0 && queue_wait_samples == 0 && service_samples == 0 {
+                continue;
+            }
+            println!(
+                "[perf] interval_ext4_lock_io lock_class={} request={} submits={} bytes={} queue_wait_samples={} queue_wait_us={} max_queue_wait_us={} service_samples={} service_us={} max_service_us={}",
+                class.label(),
+                kind.label(),
+                submits,
+                bytes,
+                queue_wait_samples,
+                ticks_to_us(queue_wait_ticks),
+                ticks_to_us(stats.max_queue_wait_ticks.load(Ordering::Relaxed)),
+                service_samples,
+                ticks_to_us(service_ticks),
+                ticks_to_us(stats.max_service_ticks.load(Ordering::Relaxed)),
+            );
+        }
+
+        let stats = ext4_resource_lock_bcache_wait_stats(class);
+        let delta = &DELTA_RESOURCE_LOCK_BCACHE_WAIT[class.index()];
+        let samples = delta.samples.take(&stats.samples);
+        let ticks = delta.ticks.take(&stats.ticks);
+        if samples != 0 {
+            println!(
+                "[perf] interval_ext4_lock_bcache_wait lock_class={} samples={} wait_us={} max_wait_us={}",
+                class.label(),
+                samples,
+                ticks_to_us(ticks),
+                ticks_to_us(stats.max_ticks.load(Ordering::Relaxed)),
+            );
+        }
+    }
+}
+
+#[cfg(feature = "perf")]
 fn emit_resource_lock_class_cumulative() {
     for class in Ext4ResourceLockClass::ALL {
         let stats = ext4_resource_lock_class_stats(class);
@@ -405,6 +505,42 @@ fn emit_resource_lock_class_cumulative() {
             ticks_to_us(stats.hold_ticks.load(Ordering::Relaxed)),
             ticks_to_us(stats.max_hold_ticks.load(Ordering::Relaxed)),
         );
+    }
+}
+
+#[cfg(feature = "perf")]
+fn emit_resource_lock_io_cumulative() {
+    for class in Ext4ResourceLockClass::ALL {
+        for kind in Ext4BlockRequestKind::ALL {
+            let stats = ext4_resource_lock_io_stats(class, kind);
+            if stats.submits.load(Ordering::Relaxed) == 0 {
+                continue;
+            }
+            println!(
+                "[perf] ext4_lock_io lock_class={} request={} submits={} bytes={} queue_wait_samples={} queue_wait_us={} max_queue_wait_us={} service_samples={} service_us={} max_service_us={}",
+                class.label(),
+                kind.label(),
+                stats.submits.load(Ordering::Relaxed),
+                stats.bytes.load(Ordering::Relaxed),
+                stats.queue_wait_samples.load(Ordering::Relaxed),
+                ticks_to_us(stats.queue_wait_ticks.load(Ordering::Relaxed)),
+                ticks_to_us(stats.max_queue_wait_ticks.load(Ordering::Relaxed)),
+                stats.service_samples.load(Ordering::Relaxed),
+                ticks_to_us(stats.service_ticks.load(Ordering::Relaxed)),
+                ticks_to_us(stats.max_service_ticks.load(Ordering::Relaxed)),
+            );
+        }
+
+        let stats = ext4_resource_lock_bcache_wait_stats(class);
+        if stats.samples.load(Ordering::Relaxed) != 0 {
+            println!(
+                "[perf] ext4_lock_bcache_wait lock_class={} samples={} wait_us={} max_wait_us={}",
+                class.label(),
+                stats.samples.load(Ordering::Relaxed),
+                ticks_to_us(stats.ticks.load(Ordering::Relaxed)),
+                ticks_to_us(stats.max_ticks.load(Ordering::Relaxed)),
+            );
+        }
     }
 }
 
@@ -591,7 +727,12 @@ fn emit_ext4_storage_interval_deltas() {
         DELTA_BCACHE_WRITE_ERRORS.take_value(bcache.write_errors),
     );
     println!(
-        "[perf] interval_ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} queued={} max_queue_depth={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={}",
+        "[perf] interval_ext4_journal commits={} errors={}",
+        DELTA_BCACHE_JOURNAL_COMMITS.take_value(bcache.journal_commits),
+        DELTA_BCACHE_JOURNAL_COMMIT_ERRORS.take_value(bcache.journal_commit_errors),
+    );
+    println!(
+        "[perf] interval_ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} queued={} max_queue_depth={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={} aligned_requests={} unaligned_requests={} sequential_requests={} max_request_bytes={}",
         DELTA_BLOCKDEV_SUBMITS.take(&EXT4_BLOCK_DEVICE_STATS.submits),
         DELTA_BLOCKDEV_READ_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.read_requests),
         DELTA_BLOCKDEV_WRITE_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.write_requests),
@@ -614,6 +755,22 @@ fn emit_ext4_storage_interval_deltas() {
                 .max_service_ticks
                 .load(Ordering::Relaxed)
         ),
+        DELTA_BLOCKDEV_ALIGNED_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.aligned_requests),
+        DELTA_BLOCKDEV_UNALIGNED_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.unaligned_requests),
+        DELTA_BLOCKDEV_SEQUENTIAL_REQUESTS.take(&EXT4_BLOCK_DEVICE_STATS.sequential_requests),
+        EXT4_BLOCK_DEVICE_STATS
+            .max_request_bytes
+            .load(Ordering::Relaxed),
+    );
+    println!(
+        "[perf] interval_ext4_bcache_completion_wait samples={} wait_us={} max_wait_us={} lock_held_samples={} lock_held_wait_us={} unlocked_samples={} unlocked_wait_us={}",
+        DELTA_BCACHE_WAIT_SAMPLES.take(&EXT4_BCACHE_WAIT_SAMPLES),
+        ticks_to_us(DELTA_BCACHE_WAIT_TICKS.take(&EXT4_BCACHE_WAIT_TICKS)),
+        ticks_to_us(EXT4_BCACHE_WAIT_MAX_TICKS.load(Ordering::Relaxed)),
+        DELTA_BCACHE_LOCKED_WAIT_SAMPLES.take(&EXT4_BCACHE_LOCKED_WAIT.samples),
+        ticks_to_us(DELTA_BCACHE_LOCKED_WAIT_TICKS.take(&EXT4_BCACHE_LOCKED_WAIT.ticks)),
+        DELTA_BCACHE_UNLOCKED_WAIT_SAMPLES.take(&EXT4_BCACHE_UNLOCKED_WAIT.samples),
+        ticks_to_us(DELTA_BCACHE_UNLOCKED_WAIT_TICKS.take(&EXT4_BCACHE_UNLOCKED_WAIT.ticks)),
     );
     println!(
         "[perf] interval_ext4_resource_locks acquires={} contended={} queued={} max_queue_depth={} wait_us={} max_wait_us={} hold_us={} max_hold_us={}",
@@ -629,6 +786,7 @@ fn emit_ext4_storage_interval_deltas() {
         ticks_to_us(EXT4_RESOURCE_LOCK_STATS.max_hold_ticks.load(Ordering::Relaxed)),
     );
     emit_resource_lock_class_interval_deltas();
+    emit_resource_lock_io_interval_deltas();
     println!(
         "[perf] interval_ext4_resource_registry lookups={} creates={} total_us={} max_us={}",
         DELTA_RESOURCE_REGISTRY_LOOKUPS.take(&EXT4_RESOURCE_LOCK_STATS.registry_lookups),
@@ -687,7 +845,12 @@ fn emit_ext4_storage_cumulative() {
         bcache.write_errors,
     );
     println!(
-        "[perf] ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} queued={} max_queue_depth={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={}",
+        "[perf] ext4_journal commits={} errors={}",
+        bcache.journal_commits,
+        bcache.journal_commit_errors,
+    );
+    println!(
+        "[perf] ext4_block_device submits={} read_requests={} write_requests={} flush_requests={} completed={} contended={} queued={} max_queue_depth={} bytes={} errors={} wait_us={} max_wait_us={} service_us={} max_service_us={} aligned_requests={} unaligned_requests={} sequential_requests={} max_request_bytes={}",
         EXT4_BLOCK_DEVICE_STATS.submits.load(Ordering::Relaxed),
         EXT4_BLOCK_DEVICE_STATS
             .read_requests
@@ -718,6 +881,28 @@ fn emit_ext4_storage_cumulative() {
                 .max_service_ticks
                 .load(Ordering::Relaxed)
         ),
+        EXT4_BLOCK_DEVICE_STATS
+            .aligned_requests
+            .load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS
+            .unaligned_requests
+            .load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS
+            .sequential_requests
+            .load(Ordering::Relaxed),
+        EXT4_BLOCK_DEVICE_STATS
+            .max_request_bytes
+            .load(Ordering::Relaxed),
+    );
+    println!(
+        "[perf] ext4_bcache_completion_wait samples={} wait_us={} max_wait_us={} lock_held_samples={} lock_held_wait_us={} unlocked_samples={} unlocked_wait_us={}",
+        EXT4_BCACHE_WAIT_SAMPLES.load(Ordering::Relaxed),
+        ticks_to_us(EXT4_BCACHE_WAIT_TICKS.load(Ordering::Relaxed)),
+        ticks_to_us(EXT4_BCACHE_WAIT_MAX_TICKS.load(Ordering::Relaxed)),
+        EXT4_BCACHE_LOCKED_WAIT.samples.load(Ordering::Relaxed),
+        ticks_to_us(EXT4_BCACHE_LOCKED_WAIT.ticks.load(Ordering::Relaxed)),
+        EXT4_BCACHE_UNLOCKED_WAIT.samples.load(Ordering::Relaxed),
+        ticks_to_us(EXT4_BCACHE_UNLOCKED_WAIT.ticks.load(Ordering::Relaxed)),
     );
     println!(
         "[perf] ext4_resource_locks acquires={} contended={} queued={} max_queue_depth={} wait_us={} max_wait_us={} hold_us={} max_hold_us={}",
@@ -733,6 +918,7 @@ fn emit_ext4_storage_cumulative() {
         ticks_to_us(EXT4_RESOURCE_LOCK_STATS.max_hold_ticks.load(Ordering::Relaxed)),
     );
     emit_resource_lock_class_cumulative();
+    emit_resource_lock_io_cumulative();
     println!(
         "[perf] ext4_resource_registry lookups={} creates={} total_us={} max_us={}",
         EXT4_RESOURCE_LOCK_STATS
@@ -1273,10 +1459,15 @@ pub(super) fn emit_report(now: usize) {
         IDLE_LOOPS.load(Ordering::Relaxed),
     );
     let (scheduler_selections_by_hart, idle_loops_by_hart) = scheduler_hart_snapshot();
+    let scheduler_ready_tasks = crate::task::ready_queue::ready_procs_num();
+    let idle_published_by_hart = crate::task::idle_hart_snapshot();
     let remote_tlb_shootdowns_by_source = remote_tlb_shootdown_source_snapshot();
     println!(
-        "[perf] scheduler_harts selections_by_hart={:?} idle_loops_by_hart={:?}",
-        scheduler_selections_by_hart, idle_loops_by_hart,
+        "[perf] scheduler_harts selections_by_hart={:?} idle_loops_by_hart={:?} ready_tasks={} idle_published_by_hart={:?}",
+        scheduler_selections_by_hart,
+        idle_loops_by_hart,
+        scheduler_ready_tasks,
+        idle_published_by_hart,
     );
     println!(
         "[perf] scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",

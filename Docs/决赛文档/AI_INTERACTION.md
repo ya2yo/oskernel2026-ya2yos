@@ -3179,3 +3179,21 @@
 - **验证边界**：未运行构建、Cargo 测试、QEMU、CAgent、LTP 或 BuildStorm，仅静态审查代码和差异。当前不存在可报告的端到端加速比例；待全量测试结束后进行同配置 A/B 对比。
 - **关联问题**：[BuildStorm EXT4 稀疏写缓冲 run 合并](./problem/buildstorm-sparse-write-run-coalescing.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm P0 分解计数与 perf helper 归位（8.09）
+
+- **工具/模型**：OpenCode（GPT-5.6-Luna）
+- **场景**：根据《优化方案》实现 P0、补充 EXT4/block request/bcache 聚合计数、整理 perf helper、增加 BuildStorm 阶段 marker；本轮按维护者要求不运行验证。
+- **描述**：复核现有 resource lock class、block device queue/service、lwext4 bcache 和写回 phase 统计后，将 `BlockRequestPerf` 从 `os/src/drivers/disk.rs` 移到 `os/src/utils/perf/block.rs`。新增 block request 的 read/write/flush、字节数、最大请求、对齐和按 Hart 顺序命中统计；新增独立 `ext4_bcache_completion_wait` tick 聚合，避免把 bcache 状态等待与设备 submission queue wait 混算；在 initproc 的 CAgent、正式 BuildStorm、嵌套 QEMU 边界输出 `BUILDSTORM_PHASE`。未改变锁、写回或请求合并语义。未接入的 per-Hart operation context 设计已撤回，避免任务阻塞换 Hart 后造成错误归因。
+- **验证边界**：未运行 `make`、Cargo、QEMU、LTP、CAgent 或 BuildStorm；仅完成源码静态审阅和文档记录，不报告性能收益。
+- **关联问题**：[BuildStorm P0 分解计数与阶段基线](./problem/buildstorm-p0-perf-baseline-telemetry.md)、[优化方案](./优化方案.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm P0 任务级锁-I/O、journal 计数与 report 导航（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求完善《优化方案》P0 的已有计数，并反馈 `report.rs:1451` 的 idle snapshot 无法正常跳转。
+- **描述**：用 `TaskControlBlock` 的 perf 专用 resource-lock 类别计数代替不可靠的 per-Hart 归因；在实际获得 `Disk::submission` 后，按锁类别关联 read/write/flush 的提交、submission queue wait 与 service，bcache completion wait 分为持锁/解锁。相邻请求改以串行设备提交顺序判断，flush 截断连续链。`ext4_journal` 在真实 `jbd_journal_commit_trans()` 返回后计数 commit 和错误，不把 block flush 伪作 journal commit。`task/mod.rs` 增加明确的 crate 内 idle snapshot 包装函数，供 report 直接跳转。未改变 EXT4 锁序、写回或 I/O 语义。
+- **验证边界**：RISC-V64 与 LoongArch64 的 perf 和无 perf release 构建均通过。未运行 QEMU、LTP、CAgent 或完整 BuildStorm，因为根目录 `make run` 会删除并重建维护者未跟踪的 `disk.img` 链接；未报告性能结果。
+- **关联问题**：[BuildStorm P0 分解计数与阶段基线](./problem/buildstorm-p0-perf-baseline-telemetry.md)、[优化方案](./优化方案.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
