@@ -30,6 +30,9 @@ mod lua;
 #[path = "initproc/msg_regression.rs"]
 #[allow(dead_code)]
 mod msg_regression;
+#[path = "initproc/sigreturn_regression.rs"]
+#[allow(dead_code)]
+mod sigreturn_regression;
 #[path = "netdev_test/cases.rs"]
 mod netdev_test_cases;
 mod netperf;
@@ -274,9 +277,12 @@ fn test_final_2026() -> i32 {
         shutdown();
         return 1;
     }
+    if !sigreturn_regression::run() {
+        shutdown();
+        return 1;
+    }
     run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
     run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
-    // #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
     // boot_arceos_helloworld_in_qemu();
     shutdown();
     0

@@ -10,4 +10,7 @@ cfg_if::cfg_if! {
 // 中断请求
 mod irq;
 pub use irq::*;
+
+use crate::signal::SigSet;
 pub const PADDING_SIZE: usize = 128;
+pub const __PAD_SIZE:usize = PADDING_SIZE - core::mem::size_of::<SigSet>();

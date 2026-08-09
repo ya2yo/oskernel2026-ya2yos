@@ -13,10 +13,9 @@ use super::SIGSEGV;
 use super::{KSigAction, SigActionFlags, SigInfo, SigSet, SignalStack};
 use crate::{
     arch::{
-        context::{MachineContext, UserContext},
-        memory_layout::{self, USER_STACK_SIZE},
+        __PAD_SIZE, PADDING_SIZE, context::{MachineContext, UserContext}, memory_layout::{self, USER_STACK_SIZE}
     },
-    mm::{copy_from_user_val, copy_to_user, copy_to_user_val, probe_user_write, VirtAddr},
+    mm::{VirtAddr, copy_from_user_val, copy_to_user, copy_to_user_val, probe_user_write},
     task::{current_task, exit_current_and_run_next},
     utils::{SysErrNo, SyscallRet},
 };
@@ -247,7 +246,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
             link: 0,
             stack: alt_signal_stack,
             sigmask: restore_sig_mask,
-            __pad: [0u8; 128],
+            __pad: [0u8; __PAD_SIZE],
             mcontext: trap_cx.as_mctx(),
         };
         if copy_to_user(&memory_set, uctx_addr, unsafe {

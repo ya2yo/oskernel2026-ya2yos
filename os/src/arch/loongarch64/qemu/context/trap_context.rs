@@ -1,5 +1,5 @@
 use super::regs::*;
-use crate::{arch::PADDING_SIZE, signal::{SigSet, SignalStack}};
+use crate::{arch::__PAD_SIZE, signal::{SigSet, SignalStack}};
 use core::fmt::Debug;
 use loongArch64::register::{prmd, CpuMode};
 
@@ -24,7 +24,7 @@ pub struct UserContext {
     pub link: usize,
     pub stack: SignalStack,
     pub sigmask: SigSet,
-    pub __pad: [u8; PADDING_SIZE-core::mem::size_of::<SigSet>()],
+    pub __pad: [u8; __PAD_SIZE],
     pub mcontext: MachineContext,
 }
 

@@ -1,7 +1,7 @@
 use super::regs::*;
 use crate::trap::trap_return;
 use riscv::register::sstatus::{self, Sstatus, SPP};
-
+use crate::arch::__PAD_SIZE;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 ///trap context structure containing sstatus, sepc and registers
@@ -47,7 +47,7 @@ pub struct UserContext {
     pub link: usize,
     pub stack: SignalStack,
     pub sigmask: SigSet,
-    pub __pad: [u8; PADDING_SIZE-core::mem::size_of::<SigSet>()],
+    pub __pad: [u8; __PAD_SIZE],
     pub mcontext: MachineContext,
 }
 
