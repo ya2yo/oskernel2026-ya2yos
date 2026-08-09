@@ -3161,3 +3161,12 @@
 - **验证边界**：RISC-V/LoongArch64 perf 构建通过。独立 qcow2 覆盖层的 12-Hart CAgent 十项通过，两个 perf 快照的 `selections_by_hart` 12 项均为正；180 秒 timeout 前预构建推进到 `442/446`，但未得到完整 BuildStorm 完成标记，未声称端到端加速比例。
 - **关联问题**：[LoongArch BuildStorm 12 Hart polling cohort 缺核](./problem/loongarch-buildstorm-polling-cohort.md)
 - **关联 commit**：当前工作区未提交
+
+#### LoongArch QEMU TCG idle IPI 语义勘误（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者依据当前工作树 QEMU 源码，要求修正 LoongArch `idle 0` 不能被 scheduler IPI 唤醒的既有假设。
+- **描述**：核对 TCG 翻译、`helper_idle()`、Loongson IPI、LoongArch IRQ 和 vCPU kick 路径后确认，已使能的 pending IPI 会使 halted vCPU 离开 idle 并在 `CRMD.IE`/`ECFG.LIE` 允许时进入中断入口。删除全 Hart polling，统一执行中断使能的 `idle 0`；旧复盘标注为已勘误。KVM 语义仍需由宿主 Linux KVM 和硬件单独验证。
+- **验证边界**：目标文件格式检查和 LoongArch64 release 构建通过；未运行 QEMU，避免根目录 `make run` 重建维护者未跟踪的 `disk.img`。运行时应显式确认 `-accel tcg` 并观察 IPI 后的 CFS selection。
+- **关联问题**：[LoongArch QEMU TCG idle IPI 唤醒语义](./problem/loongarch-qemu-tcg-idle-ipi.md)
+- **关联 commit**：当前工作区未提交

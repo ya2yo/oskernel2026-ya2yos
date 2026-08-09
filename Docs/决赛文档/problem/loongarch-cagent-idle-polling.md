@@ -1,5 +1,11 @@
 # LoongArch CAgent idle hart 唤醒与 CFS polling cohort
 
+> 2026-08-09 勘误：本复盘保留当时的性能观测，但其中“QEMU TCG 的 `idle 0`
+> 不能可靠由 scheduler IPI 唤醒”的根因结论不成立。当前 QEMU TCG 源码在
+> `idle 0` 后会将 vCPU 置为 halted，已使能的 pending IPI 会 kick vCPU、清除
+> halted 并进入中断入口。相关轮询绕过已移除；详见
+> [LoongArch QEMU TCG idle IPI 唤醒语义](./loongarch-qemu-tcg-idle-ipi.md)。
+
 ## 背景
 
 `final-2026/sdcard-la.img` 的 CAgent 会同时启动 cpu、文件系统、网络和 kernel

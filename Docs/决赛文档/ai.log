@@ -11400,3 +11400,31 @@ warnings。使用 final LoongArch64 原始镜像的 `/tmp` qcow2 覆盖层启动
 快照仍为 `[...,2849,2891,2870,2657]`，全部 Hart 持续参与调度。运行通过 toolchain/minibuild，在
 `Building 442/446` 由 180 秒 `timeout` 终止；未获得完整 `BUILDSTORM_COMPILE`，因此不报告 BuildStorm
 总耗时或加速百分比。
+
+## 2026-08-09：LoongArch QEMU TCG idle IPI 语义勘误
+
+### 用户需求
+
+维护者提供当前工作树 QEMU 的 LoongArch 源码路径，指出 TCG 下 `idle 0` 会在 enabled pending
+IPI 后唤醒 vCPU，要求调整 `os/src/arch/loongarch64/qemu/cpu.rs` 的 `idle()` 实现。
+
+### AI 分析与采纳结论
+
+核对 QEMU 后确认：翻译器将 `idle` 交给 `helper_idle()`，后者只设置 `CPUState.halted`；IPI
+控制器在 status 与 enable 相交时拉高中断线，LoongArch CPU 设置 `ESTAT.IS12` 和
+`CPU_INTERRUPT_HARD`，TCG kick 目标 vCPU，再依据 `CRMD.IE` 和 `ECFG.LIE` 进入中断入口。
+Ya2yOS 已在每个 Hart 启用 IOCSR IPI vectors、`ECFG.LIE` 的 IPI 位，且 idle 前设置
+`CRMD.IE`。此前将 polling workaround 归因于 QEMU TCG idle/IPI 的结论不成立。
+
+KVM 不在此结论范围内：QEMU 仅通过 `KVM_INTERRUPT` 注入中断，idle 唤醒语义须由宿主 Linux
+KVM 与硬件确认。
+
+### 修改与验证
+
+删除 `POLLING_HARTS` 和自旋分支，所有 LoongArch QEMU Hart 统一以启用中断的 `idle 0` 等待
+timer 或 scheduler IPI。新增语义复盘，且在两份旧 polling 复盘顶部标记历史根因结论已被
+TCG 源码审计推翻。
+
+`rustfmt --edition 2021 --check os/src/arch/loongarch64/qemu/cpu.rs`、`git diff --check` 与
+`make build-arch TARGET_ARCH=loongarch64` 均通过，只有既有 `.cargo/config` 弃用和 `smoltcp`
+未使用项警告。未运行 QEMU，因为未跟踪的 `disk.img` 会被根目录 `make run` 删除并重建。

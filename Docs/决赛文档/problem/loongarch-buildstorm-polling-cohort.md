@@ -1,5 +1,10 @@
 # LoongArch BuildStorm 12 Hart polling cohort 缺核
 
+> 2026-08-09 勘误：本复盘中的调度统计是当时的观测，但把 Hart 未重新参与调度归因于
+> QEMU TCG `idle 0` 不响应 scheduler IPI 并不正确。当前 QEMU TCG 已实现 idle 到
+> enabled pending IPI 的完整唤醒路径；内核已删除全 Hart polling workaround。详见
+> [LoongArch QEMU TCG idle IPI 唤醒语义](./loongarch-qemu-tcg-idle-ipi.md)。
+
 ## 背景
 
 LoongArch64 final 配置声明 `HART_NUM = 12`，BuildStorm 评分脚本也以 12 个 CPU 为期望。Cargo 的
