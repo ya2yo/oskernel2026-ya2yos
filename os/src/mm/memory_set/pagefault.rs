@@ -57,6 +57,45 @@ fn handle_mmap_not_present_page_fault(
 }
 
 impl MemorySetInner {
+    /// Return whether a present COW fault needs a new physical frame.
+    ///
+    /// The answer is sampled while the caller holds the address-space write
+    /// lock, before it pins the old frame for a remote invalidation.  Taking
+    /// that pin first would make an otherwise exclusive frame look shared to
+    /// `Arc::strong_count`, forcing an unnecessary copy-on-write split.
+    pub(crate) fn cow_fault_requires_frame_copy(
+        &self,
+        vpn: VirtPageNum,
+        scause: Trap,
+    ) -> Option<bool> {
+        if matches!(
+            scause,
+            Trap::Exception(Exception::LoadPageFault | Exception::FetchInstructionPageFault)
+        ) || !self.page_table.is_cow_page(vpn)
+        {
+            return None;
+        }
+
+        self.areas
+            .iter()
+            .filter(|area| {
+                matches!(
+                    area.area_type,
+                    MapAreaType::Elf | MapAreaType::Brk | MapAreaType::Mmap | MapAreaType::Stack
+                )
+            })
+            .find(|area| area.vpn_range.contains_vpn(vpn))
+            .map(|area| {
+                area.data_frames
+                    .get(&vpn)
+                    .map(|frame| Arc::strong_count(frame) > 1)
+                    // A COW PTE without a tracked frame is retained for
+                    // compatibility with forked brk mappings. The page-table
+                    // handler already uses the same conservative copy path.
+                    .unwrap_or(true)
+            })
+    }
+
     /// 处理用户地址空间中的缺页异常。
     ///
     /// 先尝试处理尚未建立页表映射的延迟分配、文件映射和栈增长，再处理写保护

@@ -388,17 +388,41 @@ impl MemorySet {
             }
         }
 
-        // Slow path: the VPN already has a present PTE, which may be a COW or
-        // permission-protected mapping.  Retain its frames and flush every
-        // active hart before allowing the old mapping to be reclaimed.  Lock
-        // order stays UPDATE_LOCK -> MemorySet write lock, matching
-        // with_retained_frames_mut.
+        // A present page can require only a local permission/dirty-bit update.
+        // Do that under the address-space lock alone: its PPN is unchanged, so
+        // stale remote entries are conservatively more restrictive and will
+        // fault/reload locally before a remote store can proceed.  In
+        // particular, decide whether a COW page is shared before cloning its
+        // frame below; the clone is only for a real PPN replacement and would
+        // otherwise turn a refcount-one page into a forced COW copy.
+        {
+            let mut inner = self.inner.write();
+            let cow_copy = inner.cow_fault_requires_frame_copy(vpn, scause);
+            if cow_copy != Some(true) {
+                let handled = inner.handle_page_fault(vpn, scause, prepared);
+                #[cfg(feature = "perf")]
+                if handled {
+                    if let Some(requires_copy) = cow_copy {
+                        crate::utils::perf::record_cow_fault_resolution(requires_copy);
+                    }
+                }
+                if was_active {
+                    self.activate_current_hart();
+                }
+                return handled;
+            }
+        }
+
+        // A shared COW page is the one present-fault case which replaces a
+        // PPN. Serialize the sender, pin the old frame, then wait for every
+        // active remote hart before that pin is released. Lock order remains
+        // UPDATE_LOCK -> MemorySet write lock as required by all replacement
+        // paths. Re-check after reacquiring `inner`: another writer may have
+        // resolved this COW fault while this hart waited for UPDATE_LOCK.
         let _update_guard = crate::mm::remote_tlb::lock_updates();
         let mut inner = self.inner.write();
-        // Re-check: another writer may have changed the PTE while the write
-        // lock was released between the fast-path check and this point.
-        let replaces_present_pte = inner.page_table.translate(vpn).is_some();
-        let retained_frames: Vec<Arc<FrameTracker>> = replaces_present_pte
+        let cow_copy = inner.cow_fault_requires_frame_copy(vpn, scause);
+        let retained_frames: Vec<Arc<FrameTracker>> = (cow_copy == Some(true))
             .then(|| {
                 inner
                     .areas
@@ -408,19 +432,17 @@ impl MemorySet {
             })
             .unwrap_or_default();
         let handled = inner.handle_page_fault(vpn, scause, prepared);
-        if replaces_present_pte {
-            #[cfg(feature = "perf")]
-            let kind = match scause {
-                Trap::Exception(
-                    crate::trap::trap_types::Exception::StorePageFault
-                    | crate::trap::trap_types::Exception::PageModifyFault,
-                ) => crate::mm::remote_tlb::ShootdownKind::Cow,
-                _ => crate::mm::remote_tlb::ShootdownKind::PageFault,
-            };
+        #[cfg(feature = "perf")]
+        if handled {
+            if let Some(requires_copy) = cow_copy {
+                crate::utils::perf::record_cow_fault_resolution(requires_copy);
+            }
+        }
+        if handled && cow_copy == Some(true) {
             crate::mm::remote_tlb::shootdown(
                 &self.active_harts,
                 #[cfg(feature = "perf")]
-                kind,
+                crate::mm::remote_tlb::ShootdownKind::Cow,
             );
         }
         if was_active {

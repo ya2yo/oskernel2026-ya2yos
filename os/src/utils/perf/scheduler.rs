@@ -36,6 +36,8 @@ pub(crate) static REMOTE_TLB_MAILBOX_WAIT_MAX_TICKS: AtomicUsize = AtomicUsize::
 pub(crate) static REMOTE_TLB_ACK_LATENCY_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static REMOTE_TLB_ACK_LATENCY_TICKS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static REMOTE_TLB_ACK_LATENCY_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static COW_EXCLUSIVE_UPGRADES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static COW_SHARED_FRAME_COPIES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_DISPATCH_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_DISPATCH_TICKS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_DISPATCH_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
@@ -140,6 +142,19 @@ pub fn record_remote_tlb_acknowledgement(elapsed: usize) {
         &REMOTE_TLB_ACK_LATENCY_MAX_TICKS,
         elapsed,
     );
+}
+
+/// Record how a present COW fault was resolved.
+///
+/// An exclusive source frame only needs a local PTE permission upgrade; a
+/// shared frame receives a private replacement and follows remote TLB ACKs.
+#[inline]
+pub fn record_cow_fault_resolution(requires_copy: bool) {
+    if requires_copy {
+        add(&COW_SHARED_FRAME_COPIES, 1);
+    } else {
+        add(&COW_EXCLUSIVE_UPGRADES, 1);
+    }
 }
 
 pub(crate) fn scheduler_hart_snapshot() -> ([usize; HART_NUM], [usize; HART_NUM]) {

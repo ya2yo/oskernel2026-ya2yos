@@ -1291,6 +1291,11 @@ pub(super) fn emit_report(now: usize) {
         remote_tlb_shootdowns_by_source[5],
         remote_tlb_shootdowns_by_source[6],
     );
+    println!(
+        "[perf] cow_fault_resolution exclusive_upgrade={} shared_frame_copy={}",
+        COW_EXCLUSIVE_UPGRADES.load(Ordering::Relaxed),
+        COW_SHARED_FRAME_COPIES.load(Ordering::Relaxed),
+    );
     emit_duration(
         "[perf] remote_tlb_local_only",
         &REMOTE_TLB_LOCAL_ONLY_SAMPLES,

@@ -359,6 +359,18 @@ impl PageTable {
             .unwrap_or(false)
     }
 
+    /// Whether an existing leaf PTE still requires a COW write fault.
+    ///
+    /// The lock-guarded `MemorySet` path uses this before pinning an old frame
+    /// for a possible remote TLB invalidation.  Keeping the query aligned with
+    /// the RISC-V implementation prevents an exclusive COW page from being
+    /// mistaken for a shared page solely because of that temporary pin.
+    pub fn is_cow_page(&self, vpn: VirtPageNum) -> bool {
+        self.find_valid_pte(vpn)
+            .map(|pte| pte.get_flags().contains(LAPTEFlags::COW))
+            .unwrap_or(false)
+    }
+
     /// Translate the virtual address into its corresponding `PhysAddr` if mapped in current page table.
     /// `None` is returned if nothing is found.
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
