@@ -368,28 +368,42 @@ pub fn restore_frame() -> SyscallRet {
     let memory_set = task.process.memory_set_arc();
     let mut user_sp = signal_sp;
 
-    let checkout: usize = copy_from_user_val(&*memory_set, user_sp as *const usize).unwrap();
-    assert!(checkout == 0xdeadbeef, "restore frame checkout error!");
+    // 用户态可能不带合法 frame 直接调用 rt_sigreturn，或在 handler 返回前
+    // 破坏 sp 处的 frame。magic 校验和后续 frame 解析都是可失败的：校验失败
+    // 按 rt_sigreturn(2) 的语义返回 -EINVAL，不能 panic 内核，也不应终止进程。
+    let checkout: usize = copy_from_user_val(&*memory_set, user_sp as *const usize)
+        .map_err(|_| SysErrNo::EINVAL)?;
+    if checkout != 0xdeadbeef {
+        warn!(
+            "restore_frame: invalid frame magic {:#x} at sp={:#x}; rt_sigreturn returns EINVAL",
+            checkout, signal_sp
+        );
+        return Err(SysErrNo::EINVAL);
+    }
     user_sp += size_of::<usize>();
 
     // sigInfo标志位
-    let sa_siginfo_flag: usize = copy_from_user_val(&*memory_set, user_sp as *const usize).unwrap();
+    let sa_siginfo_flag: usize = copy_from_user_val(&*memory_set, user_sp as *const usize)
+        .map_err(|_| SysErrNo::EINVAL)?;
     let sa_siginfo = sa_siginfo_flag == usize::MAX;
     user_sp += size_of::<usize>();
 
     let (restored_sig_mask, restored_stack, restored_mctx) = if !sa_siginfo {
         let saved_stack: SignalStack =
-            copy_from_user_val(&*memory_set, user_sp as *const SignalStack).unwrap();
+            copy_from_user_val(&*memory_set, user_sp as *const SignalStack)
+                .map_err(|_| SysErrNo::EINVAL)?;
         user_sp += size_of::<SignalStack>();
-        let sig_mask = copy_from_user_val(&*memory_set, user_sp as *const SigSet).unwrap();
+        let sig_mask = copy_from_user_val(&*memory_set, user_sp as *const SigSet)
+            .map_err(|_| SysErrNo::EINVAL)?;
         user_sp += size_of::<SigSet>();
-        let mctx = copy_from_user_val(&*memory_set, user_sp as *const MachineContext).unwrap();
+        let mctx = copy_from_user_val(&*memory_set, user_sp as *const MachineContext)
+            .map_err(|_| SysErrNo::EINVAL)?;
         (sig_mask, saved_stack, mctx)
     } else {
         let uctx_addr = user_sp as usize + size_of::<SigInfo>();
         // debug!("load: uctx_addr = {:#x}", uctx_addr);
-        let uctx: UserContext =
-            copy_from_user_val(&*memory_set, uctx_addr as *const UserContext).unwrap();
+        let uctx: UserContext = copy_from_user_val(&*memory_set, uctx_addr as *const UserContext)
+            .map_err(|_| SysErrNo::EINVAL)?;
         (uctx.sigmask, uctx.stack, uctx.mcontext)
     };
 
