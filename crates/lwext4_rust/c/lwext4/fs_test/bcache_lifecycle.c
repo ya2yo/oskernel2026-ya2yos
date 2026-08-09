@@ -23,6 +23,8 @@ struct test_disk {
 	uint32_t reads[TEST_BLOCK_COUNT];
 	uint32_t write_attempts[TEST_BLOCK_COUNT];
 	uint32_t writes[TEST_BLOCK_COUNT];
+	uint32_t write_requests;
+	uint32_t max_write_blocks;
 	uint32_t read_delay_yields;
 	bool fail_next_read;
 	bool fail_next_write;
@@ -115,6 +117,9 @@ static int test_write(struct ext4_blockdev *bdev, const void *buf,
 	if (block + count > TEST_BLOCK_COUNT)
 		return EIO;
 	pthread_mutex_lock(&disk->lock);
+	disk->write_requests++;
+	if (disk->max_write_blocks < count)
+		disk->max_write_blocks = count;
 	for (uint32_t i = 0; i < count; ++i)
 		disk->write_attempts[block + i]++;
 	if (disk->fail_next_write) {
@@ -289,6 +294,71 @@ static bool test_sequential_lifecycle(void)
 			ok = expect(ext4_block_cache_flush(&fixture.bdev), EOK,
 				    "dirty claim final flush");
 	}
+	fixture_cleanup(&fixture);
+	return ok;
+}
+
+static bool test_contiguous_cache_flush_coalescing(void)
+{
+	struct test_fixture fixture;
+	bool ok = fixture_init(&fixture);
+	uint32_t requests_before;
+
+	for (uint64_t lba = 100; ok && lba < 104; ++lba) {
+		struct ext4_block block;
+
+		ok = get_block(&fixture, lba, &block, "coalesced flush get");
+		if (ok)
+			memset(block.data, (int)(0x80 + lba), TEST_BLOCK_SIZE);
+		if (ok)
+			ext4_bcache_set_dirty(block.buf);
+		if (ok)
+			ok = put_block(&fixture, &block, "coalesced flush put");
+	}
+	requests_before = fixture.disk.write_requests;
+	if (ok)
+		ok = expect(ext4_block_cache_flush(&fixture.bdev), EOK,
+			    "coalesced cache flush");
+	if (ok)
+		ok = fixture.disk.write_requests == requests_before + 1 &&
+		     fixture.disk.max_write_blocks >= 4;
+	for (uint64_t lba = 100; ok && lba < 104; ++lba)
+		ok = fixture.disk.storage[lba][0] == (uint8_t)(0x80 + lba);
+	if (ok)
+		ok = verify_cache(&fixture, "coalesced cache flush");
+
+	for (uint64_t lba = 100; ok && lba < 104; ++lba) {
+		struct ext4_block block;
+
+		ok = get_block(&fixture, lba, &block, "coalesced retry get");
+		if (ok)
+			memset(block.data, (int)(0x40 + lba), TEST_BLOCK_SIZE);
+		if (ok)
+			ext4_bcache_set_dirty(block.buf);
+		if (ok)
+			ok = put_block(&fixture, &block, "coalesced retry put");
+	}
+	requests_before = fixture.disk.write_requests;
+	fixture.disk.fail_next_write = true;
+	if (ok)
+		ok = expect(ext4_block_cache_flush(&fixture.bdev), EIO,
+			    "coalesced cache flush error");
+	if (ok)
+		ok = fixture.disk.write_requests == requests_before + 1;
+	for (uint64_t lba = 100; ok && lba < 104; ++lba)
+		ok = fixture.disk.storage[lba][0] == (uint8_t)(0x80 + lba);
+	if (ok)
+		ok = verify_cache(&fixture, "coalesced cache flush error");
+	if (ok)
+		ok = expect(ext4_block_cache_flush(&fixture.bdev), EOK,
+			    "coalesced cache flush retry");
+	if (ok)
+		ok = fixture.disk.write_requests == requests_before + 2;
+	for (uint64_t lba = 100; ok && lba < 104; ++lba)
+		ok = fixture.disk.storage[lba][0] == (uint8_t)(0x40 + lba);
+	if (ok)
+		ok = verify_cache(&fixture, "coalesced cache flush retry");
+
 	fixture_cleanup(&fixture);
 	return ok;
 }
@@ -746,7 +816,8 @@ static bool test_retained_reference(void)
 
 int main(void)
 {
-	if (!test_sequential_lifecycle() || !test_random_lifecycle() ||
+	if (!test_sequential_lifecycle() || !test_contiguous_cache_flush_coalescing() ||
+	    !test_random_lifecycle() ||
 	    !test_concurrent_loads() || !test_cache_flush_ownership() ||
 	#if CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT
 	    !test_dirty_capacity_watermarks() ||

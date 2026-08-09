@@ -3213,3 +3213,18 @@
   BuildStorm/LTP 端到端通过。
 - **关联问题**：[LoongArch signal-vDSO `rt_sigreturn` 入口映射](./problem/loongarch-signal-vdso-sigreturn.md)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 连续 bcache 写回请求合并（8.09）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans`、最新十分钟 `log.ans` 和《优化方案》，要求继续优化内核。
+- **描述**：P0 数据显示块写请求碎片和设备服务仍是直接热点。将 lwext4 全局 bcache flush
+  的连续、同方向、无 `end_write` callback 脏块合并为最多 32 个逻辑块的一次设备请求；反向
+  dirty-list range 先复制为升序连续缓冲。journal checkpoint callback、非连续范围与分配失败保留
+  原逐块路径；整批 I/O 出错时不清理 dirty 状态。新增 C 生命周期回归验证四连续块单请求、失败后
+  内容不变及重试恢复。
+- **验证边界**：独立 `lwext4-bcache-lifecycle` 通过；RISC-V64、LoongArch64 release 和
+  LoongArch64 perf 构建通过。未运行 QEMU/CAgent/LTP/完整 BuildStorm，以保留根目录未跟踪
+  `disk.img`；日志没有完整结束标记，未声称端到端加速。
+- **关联问题**：[BuildStorm 连续 bcache 写回请求合并](./problem/buildstorm-bcache-contiguous-writeback.md)、[优化方案](./优化方案.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

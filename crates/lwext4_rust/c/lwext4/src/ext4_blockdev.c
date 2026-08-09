@@ -47,6 +47,9 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* Keep staged writes below the block-device request limit. */
+#define EXT4_BLOCK_CACHE_FLUSH_BATCH_MAX_BLOCKS 32U
+
 static void ext4_bdif_lock(struct ext4_blockdev *bdev)
 {
 	if (!bdev->bdif->lock)
@@ -218,6 +221,92 @@ int ext4_block_flush_lba(struct ext4_blockdev *bdev, uint64_t lba)
 		ext4_bcache_free(bdev->bc, &b);
 	}
 	return r;
+}
+
+/*
+ * Journal checkpoint buffers retain their individual end_write callbacks.
+ * Callback-free adjacent buffers can use one request without changing that
+ * completion order.
+ */
+static int ext4_block_flush_contiguous_claims(struct ext4_blockdev *bdev,
+					      struct ext4_block *blocks,
+					      uint32_t count, int direction)
+{
+	struct ext4_bcache *bc = bdev->bc;
+	uint8_t *data;
+	uint32_t i;
+	uint32_t data_index;
+	uint64_t first_lba;
+	size_t bytes;
+	int r;
+
+	if (count == 1)
+		return ext4_block_flush_buf(bdev, blocks[0].buf);
+
+	/* Allocation failure retains the former one-buffer-at-a-time behavior. */
+	if (!bdev->lg_bsize || bdev->lg_bsize > UINT32_MAX / count)
+		goto FlushIndividually;
+	bytes = (size_t)bdev->lg_bsize * count;
+	data = ext4_malloc(bytes);
+	if (!data)
+		goto FlushIndividually;
+
+	for (i = 0; i < count; ++i) {
+		struct ext4_buf *buf = blocks[i].buf;
+
+		ext4_assert(buf && !buf->end_write);
+		ext4_assert(ext4_bcache_test_flag(buf, BC_DIRTY));
+		ext4_assert(ext4_bcache_test_flag(buf, BC_UPTODATE));
+		ext4_assert(!ext4_bcache_test_flag(buf, BC_WRITEBACK));
+		ext4_bcache_set_flag(buf, BC_WRITEBACK);
+		ext4_bcache_perf_record_writeback_start();
+
+		data_index = direction < 0 ? count - i - 1 : i;
+		memcpy(data + (size_t)data_index * bdev->lg_bsize, buf->data,
+		       bdev->lg_bsize);
+	}
+	first_lba = direction < 0 ? blocks[count - 1].lb_id : blocks[0].lb_id;
+	r = ext4_blocks_set_direct(bdev, data, first_lba, count);
+
+	for (i = 0; i < count; ++i) {
+		struct ext4_buf *buf = blocks[i].buf;
+
+		if (r == EOK)
+			ext4_bcache_mark_clean(bc, buf);
+		ext4_bcache_perf_record_writeback_complete(r);
+		ext4_bcache_clear_flag(buf, BC_WRITEBACK);
+		ext4_bcache_wake(buf);
+	}
+	ext4_free(data);
+	return r;
+
+FlushIndividually:
+	for (i = 0; i < count; ++i) {
+		r = ext4_block_flush_buf(bdev, blocks[i].buf);
+		if (r != EOK)
+			return r;
+	}
+	return EOK;
+}
+
+static bool ext4_block_can_extend_contiguous_flush(
+		const struct ext4_block *previous, const struct ext4_block *next,
+		int *direction)
+{
+	int next_direction;
+
+	if (next->buf->end_write)
+		return false;
+	if (previous->lb_id == next->lb_id + 1)
+		next_direction = -1;
+	else if (next->lb_id == previous->lb_id + 1)
+		next_direction = 1;
+	else
+		return false;
+	if (*direction && *direction != next_direction)
+		return false;
+	*direction = next_direction;
+	return true;
 }
 
 #if CONFIG_EXT4_BCACHE_DIRTY_CAPACITY_EXPERIMENT
@@ -574,14 +663,45 @@ Finish:
 
 int ext4_block_cache_flush(struct ext4_blockdev *bdev)
 {
+	struct ext4_block pending = EXT4_BLOCK_ZERO();
+	struct ext4_bcache *bc = bdev->bc;
+
 	for (;;) {
-		struct ext4_block block = EXT4_BLOCK_ZERO();
+		struct ext4_block blocks[EXT4_BLOCK_CACHE_FLUSH_BATCH_MAX_BLOCKS];
+		uint32_t count = 0;
+		int direction = 0;
 		int r;
 
-		if (!ext4_bcache_claim_dirty(bdev->bc, &block))
+		if (pending.buf) {
+			blocks[count++] = pending;
+			pending = (struct ext4_block)EXT4_BLOCK_ZERO();
+		} else if (!ext4_bcache_claim_dirty(bc, &blocks[count])) {
 			return EOK;
-		r = ext4_block_flush_buf(bdev, block.buf);
-		ext4_bcache_release_dirty(bdev->bc, &block);
+		} else {
+			count++;
+		}
+
+		if (!blocks[0].buf->end_write) {
+			while (count < EXT4_BLOCK_CACHE_FLUSH_BATCH_MAX_BLOCKS) {
+				struct ext4_block next = EXT4_BLOCK_ZERO();
+
+				if (!ext4_bcache_claim_dirty(bc, &next))
+					break;
+				if (!ext4_block_can_extend_contiguous_flush(
+						&blocks[count - 1], &next, &direction)) {
+					pending = next;
+					break;
+				}
+				blocks[count++] = next;
+			}
+		}
+
+		r = ext4_block_flush_contiguous_claims(bdev, blocks, count,
+						       direction);
+		for (uint32_t i = 0; i < count; ++i)
+			ext4_bcache_release_dirty(bc, &blocks[i]);
+		if (r != EOK && pending.buf)
+			ext4_bcache_release_dirty(bc, &pending);
 		if (r != EOK)
 			return r;
 	}

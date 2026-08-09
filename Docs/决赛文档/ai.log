@@ -11556,3 +11556,36 @@ FFI/report 字段；不以 flush 推测 commit。现有 C bcache telemetry 由 C
 `BUILDSTORM_MINIBUILD ok`；日志中没有 `user_fault_signal`、`FetchInstructionPageFault`、
 panic、`TFAIL` 或 `TBROK`。运行仍在 `pre-build tg-xtask` 被 timeout 终止，未覆盖原日志约
 3698 秒的完整 BuildStorm 故障窗口，因此不宣称长程回归已完成。
+
+## 2026-08-09：BuildStorm P2 连续 bcache 写回请求合并
+
+### 用户需求
+
+维护者要求根据 `server.ans`、最新约 10 分钟 `log.ans` 和
+`Docs/决赛文档/优化方案.md` 对内核进行优化。
+
+### AI 分析与采纳结论
+
+`server.ans` 的 P0 中途窗口已经指出 block queue/resource lock 是高优先级。最新 `log.ans`
+的最后一个 `185912ms` interval 显示 `146045` 次块写、`856701952` 字节、`37533100us` 写服务，
+其中 `direct_too_large=4686/279670793`，而 journal 锁竞争仅 4 次。由此选择 P2 的低风险
+请求合并，而不依据中途累计时间拆分锁或扩大缓存容量。
+
+源码审计确认 `ext4_block_cache_flush()` 逐个 claim dirty buffer，并固定以
+`ext4_blocks_set_direct(..., 1)` 写回；该接口实际支持连续多块。journal 的 `end_write` callback
+会递归回收 checkpoint descriptor，故只对 LBA 连续、同方向且 callback 为空的范围合并，最多
+32 个逻辑块；反向 dirty-list run 在临时缓冲区中恢复为升序设备数据。任何 callback、不连续边界
+或分配失败都保持逐块路径。整批 `EIO` 不清除任何 dirty 标记，保证原有重试语义。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/c/lwext4/src/ext4_blockdev.c` 和
+`crates/lwext4_rust/c/lwext4/fs_test/bcache_lifecycle.c`，新增 4 连续块单请求和批量失败重试
+回归；同步更新优化方案、问题索引、开发日志和 AI 记录。
+
+`lwext4-bcache-lifecycle: PASS`；`make TARGET_ARCH=riscv64`、
+`make TARGET_ARCH=loongarch64` 与 `make TARGET_ARCH=loongarch64 perf` 均通过。普通构建的
+首次沙箱内交叉 C 编译被 `Bad system call` 终止，改在授权的沙箱外重跑后通过。
+
+未运行 QEMU、CAgent、LTP 或完整 BuildStorm：`make run` 会删除维护者未跟踪的 `disk.img`
+软链接。两个日志均未提供最终完成标记，故未报告端到端性能加速或完整测试通过。
