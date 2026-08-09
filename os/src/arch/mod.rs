@@ -10,3 +10,4 @@ cfg_if::cfg_if! {
 // 中断请求
 mod irq;
 pub use irq::*;
+pub const PADDING_SIZE: usize = 128;
