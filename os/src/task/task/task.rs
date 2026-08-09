@@ -49,6 +49,8 @@ use linux_raw_sys::general::CAP_LAST_CAP;
 use log::{debug, error};
 use spin::{Mutex, MutexGuard};
 
+use crate::sync::RemoteTlbMutex;
+
 #[repr(C)]
 /// 对应 linux 的 robust_list_head
 #[derive(Clone, Copy, Debug)]
@@ -124,8 +126,9 @@ pub struct TaskControlBlock {
     pub interrupt_waker: AtomicWaker,
     /// 调度器私有运行时间状态；RR 下为空，CFS 下保存 vruntime。
     pub(crate) sched_entity: SchedEntity,
-    /// 内部主要数据，使用锁进行包含保护
-    inner: Mutex<TaskControlBlockInner>,
+    /// Internal task state. Timer-interrupt paths can contend on this lock
+    /// while a page-table update awaits a remote TLB acknowledgement.
+    inner: RemoteTlbMutex<TaskControlBlockInner>,
 }
 
 impl Drop for TaskControlBlock {
@@ -636,7 +639,7 @@ impl TaskControlBlock {
             interrupted: AtomicBool::new(false),
             interrupt_waker: AtomicWaker::new(),
             sched_entity: SchedEntity::new(),
-            inner: Mutex::new(TaskControlBlockInner {
+            inner: RemoteTlbMutex::new(TaskControlBlockInner {
                 trap_cx_ppn: 0.into(),
                 trap_cx_bottom: 0,
                 task_cx: TaskContext::goto_trap_return(kernel_stack_top),
@@ -1134,7 +1137,7 @@ impl TaskControlBlock {
             // First enqueue places the child in its destination hart's
             // min_vruntime coordinate system.
             sched_entity: SchedEntity::new(),
-            inner: Mutex::new(TaskControlBlockInner {
+            inner: RemoteTlbMutex::new(TaskControlBlockInner {
                 trap_cx_ppn: 0.into(),
                 trap_cx_bottom: 0,
                 task_cx: TaskContext::goto_trap_return(kernel_stack_top),
