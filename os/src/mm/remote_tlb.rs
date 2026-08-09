@@ -119,6 +119,13 @@ pub(crate) fn shootdown(active_harts: &AtomicUsize, #[cfg(feature = "perf")] kin
             );
             return;
         }
+        // Prepare every mailbox before notifying any target.  Waiting for an
+        // acknowledgement inside this loop serializes an N-hart shootdown
+        // behind the sum of each target's IPI latency.  UPDATE_LOCK already
+        // guarantees that no second sender can reuse a mailbox sequence.
+        let mut sequences = [0usize; HART_NUM];
+        #[cfg(feature = "perf")]
+        let mut requested_at = [0usize; HART_NUM];
         for target in 0..HART_NUM {
             let target_bit = 1usize << target;
             if remote_harts & target_bit == 0 {
@@ -130,16 +137,36 @@ pub(crate) fn shootdown(active_harts: &AtomicUsize, #[cfg(feature = "perf")] kin
                 .sequence
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1);
+            sequences[target] = sequence;
             #[cfg(feature = "perf")]
-            let mailbox_wait_begin = crate::arch::time::get_ticks();
-            #[cfg(feature = "perf")]
-            mailbox
-                .requested_at
-                .store(mailbox_wait_begin, Ordering::Relaxed);
+            {
+                let begin = crate::arch::time::get_ticks();
+                requested_at[target] = begin;
+                mailbox.requested_at.store(begin, Ordering::Relaxed);
+            }
             mailbox.pending.store(true, Ordering::Release);
+        }
+
+        // Dispatch the complete IPI fan-out before observing any mailbox.
+        // Targets can now invalidate concurrently, so the protocol waits for
+        // the slowest active Hart instead of summing every target latency.
+        for target in 0..HART_NUM {
+            let target_bit = 1usize << target;
+            if remote_harts & target_bit == 0 {
+                continue;
+            }
             if !crate::arch::cpu::wake_hart(target) {
                 panic!("remote TLB shootdown could not wake hart {}", target);
             }
+        }
+
+        for target in 0..HART_NUM {
+            let target_bit = 1usize << target;
+            if remote_harts & target_bit == 0 {
+                continue;
+            }
+            let mailbox = &MAILBOXES[target];
+            let sequence = sequences[target];
             while mailbox.acknowledged.load(Ordering::Acquire) != sequence {
                 if active_harts.load(Ordering::Acquire) & target_bit == 0 {
                     break;
@@ -148,7 +175,7 @@ pub(crate) fn shootdown(active_harts: &AtomicUsize, #[cfg(feature = "perf")] kin
             }
             #[cfg(feature = "perf")]
             crate::utils::perf::record_remote_tlb_mailbox_wait(
-                crate::arch::time::get_ticks().saturating_sub(mailbox_wait_begin),
+                crate::arch::time::get_ticks().saturating_sub(requested_at[target]),
             );
         }
         #[cfg(feature = "perf")]
