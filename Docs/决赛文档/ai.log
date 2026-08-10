@@ -11691,3 +11691,43 @@ ELF 内容不一致，非法 signal 返回和高地址回调只是继续执行�
 的 `.cargo/config`、`smoltcp` 和 `lwext4_rust` 警告。
 
 按维护者要求未运行 QEMU、LTP、CAgent 或 BuildStorm；长程行为闭环由维护者后续执行。
+
+## 2026-08-10：嵌套 RISC-V QEMU 文件映射 VMA 切分偏移修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并直接修复嵌套 RISC-V QEMU 崩溃，明确拒绝通过回退
+`initproc.rs` 的动态加载器命令、调整 QEMU 内存或 CPU 参数规避问题。修复后的新
+`log.ans` 已通过，随后要求补充文档。
+
+### AI 分析与采纳结论
+
+原始故障为 `FetchInstructionPageFault`，`sepc=stval=0xc00000fe`。从 final 镜像只读提取
+QEMU 10.0.11 ELF 后，按 PIE load bias 将故障现场 `$ra=0x2a22b0e624` 定位到
+`riscv_cpu_register_gdb_regs_for_features()` 的 `jalr a5`；该指令从 `csr_ops` 表项读取
+回调，RISC-V 会清除跳转目标最低位。
+
+动态加载器将 QEMU 可写段以 `offset=0xd54000` 映射到 `0x2a2311d000`，随后对前
+`0x1ce000` 字节调用 `mprotect(PROT_READ)`。审计 `MemorySetInner::mprotect()` 发现其右侧
+VMA 起点变为 `0x2a232eb000` 后仍保留旧文件偏移。于是 `csr_ops[0x57].read` 的惰性缺页从
+错误文件偏移 `0xd67518` 读到 `0x00000000c00000ff`；`jalr` 对齐后实际跳至
+`0xc00000fe`。正确位置为 `0xf35518`。审计 `munmap()` 发现右侧幸存 VMA 也遗漏同一偏移
+维护，因此一并修复。
+
+采纳修复：凡 VMA 片段的起点右移，都将 `(new_start_vpn - old_start_vpn) * PAGE_SIZE`
+加入其 `mmap_file.offset`。覆盖 `mprotect` 的两段/三段切分和 `munmap` 的右半段保留/创建
+路径。未改动 QEMU 命令行、镜像、用户动态加载器配置或 COW 算法；此前为取证添加的
+临时日志已删除。
+
+### 修改与验证
+
+修改 `os/src/mm/memory_set/mmap_ops.rs`，并新增本问题复盘、更新问题索引、开发日志和 AI
+交互记录。
+
+`make log TARGET_ARCH=riscv64` 通过，构建仅有仓库已有告警。维护者提供的新 `log.ans`
+显示四项前置回归 `PASS`，QEMU 10.0.11 在原手工动态加载器命令下启动嵌套 guest，连续输出
+`OpenSBI v1.6`、`Hello, world!`、`shutdown!`；未出现 `FetchInstructionPageFault`、
+`0xc00000fe` 或 `status: 139`。
+
+本轮未重新运行 LoongArch64 构建或运行回归，不能将本次 RISC-V 运行结果外推为双架构
+行为闭环。

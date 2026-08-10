@@ -3267,3 +3267,20 @@
   长程行为回归已闭环。
 - **关联问题**：[LoongArch 跨 Hart 指令流失同步误导为 signal/vDSO 故障](./problem/loongarch-signal-vdso-sigreturn.md)
 - **关联 commit**：当前工作区未提交
+
+#### 嵌套 RISC-V QEMU 文件映射 VMA 切分偏移（8.10）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求直接修复嵌套 RISC-V QEMU 的 `FetchInstructionPageFault`
+  (`sepc=0xc00000fe`)，明确保留 `initproc.rs` 中的手工动态加载器启动方式；修复后提供
+  新 `log.ans` 并要求补充记录。
+- **描述**：将实际 QEMU 10.0.11 的 `$ra` 反汇编到 `jalr a5`，定位为 CSR 回调表中的
+  错误函数指针。审计确认 `mprotect` 将文件私有映射切分后，后侧 VMA 没有按新虚拟起点调整
+  `mmap_file.offset`；`csr_ops[0x57].read` 因而从错误文件位置读得
+  `0x00000000c00000ff`，`jalr` 对齐后跳至 `0xc00000fe`。修复 `mprotect` 与 `munmap` 所有
+  起点右移片段的文件偏移维护；未修改 QEMU 参数、加载器命令或 COW 语义。
+- **验证边界**：`make log TARGET_ARCH=riscv64` 通过。维护者的新 `log.ans` 显示四项
+  前置回归 PASS，嵌套 guest 输出 `OpenSBI v1.6`、`Hello, world!`、`shutdown!`，无原
+  取指故障或退出码 139。LoongArch64 未在本轮重新验证。
+- **关联问题**：[嵌套 RISC-V QEMU 文件映射 VMA 切分偏移错误](./problem/nested-qemu-file-mmap-vma-split-offset.md)
+- **关联 commit**：当前工作区未提交

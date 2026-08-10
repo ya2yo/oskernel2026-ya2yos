@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SHARED = ROOT / "agent-skills" / "shared"
+SHARED = ROOT / ".agents" / "skills"
 TARGETS = (ROOT / ".codex" / "skills", ROOT / ".claude" / "skills", ROOT / ".opencode" / "skills")
 
 

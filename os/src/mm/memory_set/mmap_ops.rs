@@ -272,12 +272,16 @@ impl MemorySetInner {
             } else if area_start >= start_vpn && area_end > end_vpn {
                 // 情况3：area 右侧伸出卸载范围 → 截断左端
                 area.vpn_range = VPNRange::new(end_vpn, area_end);
+                // The surviving VMA now starts later in the backing file.
+                // Keep lazy file faults aligned with the original mapping.
+                area.mmap_file.offset += (end_vpn.0 - area_start.0) * PAGE_SIZE;
             } else {
                 // 情况4：area 完全包围卸载范围 → 拆分为左右两个 area
                 // 左部 [area_start, start_vpn) 保留在原 area
                 // 右部 [end_vpn, area_end) 创建新 area
                 let mut right_area = MapArea::from_another(area);
                 right_area.vpn_range = VPNRange::new(end_vpn, area_end);
+                right_area.mmap_file.offset += (end_vpn.0 - area_start.0) * PAGE_SIZE;
                 // 迁移属于右部的 data_frames
                 let right_keys: Vec<VirtPageNum> =
                     area.data_frames.range(end_vpn..).map(|(k, _)| *k).collect();
@@ -763,6 +767,7 @@ impl MemorySetInner {
                 let mut new_area = MapArea::from_another(area);
                 new_area.map_perm = map_perm;
                 new_area.vpn_range = VPNRange::new(start_vpn, end);
+                new_area.mmap_file.offset += (start_vpn.0 - start.0) * PAGE_SIZE;
                 // area: 左半部，保持原权限，收缩范围
                 area.vpn_range = VPNRange::new(start, start_vpn);
                 // 注册到共享内存组
@@ -788,6 +793,7 @@ impl MemorySetInner {
                 new_area.vpn_range = VPNRange::new(start, end_vpn);
                 // area: 右半部，保持原权限，收缩范围
                 area.vpn_range = VPNRange::new(end_vpn, end);
+                area.mmap_file.offset += (end_vpn.0 - start.0) * PAGE_SIZE;
                 // 注册到共享内存组
                 GROUP_SHARE.lock().add_area(new_area.groupid);
                 // 将 VPN < end_vpn 的已分配物理帧从 area 迁移到 new_area
@@ -815,6 +821,8 @@ impl MemorySetInner {
                 front_area.vpn_range = VPNRange::new(start, start_vpn); // 前部，原权限
                 back_area.vpn_range = VPNRange::new(end_vpn, end); // 后部，原权限
                 area.vpn_range = VPNRange::new(start_vpn, end_vpn); // 中部，新权限
+                area.mmap_file.offset += (start_vpn.0 - start.0) * PAGE_SIZE;
+                back_area.mmap_file.offset += (end_vpn.0 - start.0) * PAGE_SIZE;
                 // 注册到共享内存组
                 GROUP_SHARE.lock().add_area(front_area.groupid);
                 GROUP_SHARE.lock().add_area(back_area.groupid);

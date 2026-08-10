@@ -70,13 +70,24 @@ pub(crate) fn run_final_testsuit(root: &str, script: &str) -> i32 {
 /// The final RISC-V image ships its nested QEMU under `/opt/qemu-rv64`; this
 /// invocation intentionally does not rebuild the artifact or add a timeout.
 #[cfg(target_arch = "riscv64")]
+#[allow(dead_code)]
 fn boot_arceos_helloworld_in_qemu() -> i32 {
     const QEMU_COMMAND: &str = concat!(
-        "export LD_LIBRARY_PATH=/opt/qemu-rv64/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}; ",
-        "exec /opt/qemu-rv64/bin/qemu-system-riscv64 ",
-        "-machine virt -cpu rv64 -m 512M -smp 1 -nographic ",
-        "-bios /opt/qemu-rv64/share/opensbi-riscv64-generic-fw_dynamic.bin ",
-        "-kernel /work/tgoskits/target/riscv64gc-unknown-linux-musl/release/arceos-helloworld\0"
+        "export QEMU_LD=/opt/qemu-rv64/lib/ld-linux-riscv64-lp64d.so.1; ",
+        "export QEMU_BIN=/opt/qemu-rv64/bin/qemu-system-riscv64; ",
+        "export QEMU_BIOS=/opt/qemu-rv64/share/opensbi-riscv64-generic-fw_dynamic.bin; ",
+        "export ART=/work/tgoskits/target/riscv64gc-unknown-linux-musl/release/arceos-helloworld; ",
+        "echo '----- nested qemu diagnostics -----'; ",
+        "printf 'QEMU_LD=%s\\nQEMU_BIN=%s\\nQEMU_BIOS=%s\\nART=%s\\n' ",
+        "  \"$QEMU_LD\" \"$QEMU_BIN\" \"$QEMU_BIOS\" \"$ART\"; ",
+        "ls -l \"$QEMU_LD\" \"$QEMU_BIN\" \"$QEMU_BIOS\" \"$ART\" 2>&1 || true; ",
+        "printf '%s\\n' '----- nested qemu loader probe -----'; ",
+        "\"$QEMU_LD\" --version 2>&1 || true; ",
+        "\"$QEMU_LD\" --library-path \"$(dirname \"$QEMU_LD\")\" \"$QEMU_BIN\" --version 2>&1 || true; ",
+        "printf '%s\\n' '----- nested qemu launch (evaluation command) -----'; ",
+        "exec \"$QEMU_LD\" --library-path \"$(dirname \"$QEMU_LD\")\" \"$QEMU_BIN\" ",
+        "-machine virt -smp 1 -m 256M -nographic ",
+        "-bios \"$QEMU_BIOS\" -kernel \"$ART\"\0"
     );
 
     println!("----- boot arceos-helloworld in qemu (untimed, arch=riscv64) -----");
