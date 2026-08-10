@@ -26,10 +26,6 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 
-extern "C" {
-    pub fn sigreturn_trampoline();
-}
-
 const SIGNAL_STACK_ALIGN: usize = 16;
 const SIGNAL_FRAME_MAGIC: usize = 0xdeadbeef;
 

@@ -174,7 +174,7 @@ __return_to_user:
     .align 12
 sigreturn_trampoline:
     # ecall sys_sigreturn 用户态信号处理结束后调用
-    addi.d	$a7, $zero, 139
+    li.w   $a7, 139
     syscall 0
 
 # Kernel Trap Section

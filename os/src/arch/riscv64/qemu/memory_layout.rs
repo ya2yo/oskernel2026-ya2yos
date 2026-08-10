@@ -70,7 +70,7 @@ pub const MMIO: &[(usize, usize)] = &[
 pub const MMIO_MAP_OFFSET: usize = KERNEL_ADDR_OFFSET;
 
 extern "C" {
-    fn sigreturn_trampoline();
+    pub fn sigreturn_trampoline();
 }
 
 pub fn sigreturn_ka() -> usize {

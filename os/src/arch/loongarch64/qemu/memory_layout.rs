@@ -95,7 +95,7 @@ pub fn print_memlayout() {
 }
 
 extern "C" {
-    fn sigreturn_trampoline();
+    pub fn sigreturn_trampoline();
 }
 
 pub fn sigreturn_ka() -> usize {
