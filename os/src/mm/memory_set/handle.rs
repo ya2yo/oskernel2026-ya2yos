@@ -651,7 +651,13 @@ impl MemorySet {
     pub fn activate_for_user(&self) {
         let inner = self.get_ref();
         inner.activate();
-        self.activate_current_hart();
+        // Executable frames can outlive the address space that previously
+        // used the same physical pages. A task migrating to another hart must
+        // invalidate that hart's stale instruction stream before its first
+        // user-mode fetch from this address space.
+        if self.activate_current_hart() {
+            crate::arch::tlb::instruction_fence();
+        }
     }
 
     /// Install this page table without publishing a user-mode active bit.
@@ -683,10 +689,10 @@ impl MemorySet {
     }
 
     #[inline(always)]
-    fn activate_current_hart(&self) {
+    fn activate_current_hart(&self) -> bool {
         let hart = crate::arch::cpu::hart_id();
-        self.active_harts
-            .fetch_or(1usize << hart, Ordering::Release);
+        let bit = 1usize << hart;
+        self.active_harts.fetch_or(bit, Ordering::AcqRel) & bit == 0
     }
 
     /// Update only VMA metadata without changing an existing PTE.

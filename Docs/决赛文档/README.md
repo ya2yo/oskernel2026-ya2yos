@@ -166,7 +166,7 @@
 - [lwext4 Rust 分配器非法 Layout panic](./problem/lwext4-rust-allocator-layout-error.md)
 - [BuildStorm EXT4 资源锁分类观测与已解析 fd 锁域收缩](./problem/buildstorm-ext4-resource-lock-scope-telemetry.md)
 - [BuildStorm P0 分解计数与阶段基线](./problem/buildstorm-p0-perf-baseline-telemetry.md)
-- [LoongArch 固定 helper 地址与 `rt_sigreturn` 入口混用](./problem/loongarch-signal-vdso-sigreturn.md)
+- [LoongArch 跨 Hart 指令流失同步误导为 signal/vDSO 故障](./problem/loongarch-signal-vdso-sigreturn.md)
 - [BuildStorm 定时扫描任务表快照与 HEAP 锁死锁](./problem/buildstorm-task-timer-snapshot-deadlock.md)
 - [lwext4 journal 事务跨任务误解锁](./problem/lwext4-journal-transaction-owner.md)
 - [RISC-V 返回用户态的 S-mode 中断窗口](./problem/riscv-user-return-interrupt-window.md)

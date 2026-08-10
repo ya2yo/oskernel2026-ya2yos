@@ -3201,9 +3201,9 @@
 #### LoongArch signal-vDSO `rt_sigreturn` 入口映射（8.09）
 
 - **工具/模型**：Codex（GPT-5）
-- **后续勘误**：该入口语义判断已被 8.10 的 signal provenance 日志和实际 glibc 2.36
-  反汇编证据推翻；旧条目仅保留诊断时间线，最终结论见后续“固定 helper 与
-  `rt_sigreturn` 入口分离”条目。
+- **后续勘误**：signal provenance 排除了固定 signal restorer；更晚的 libc 合法 `bl`
+  运行时异常又排除了合法普通 helper。旧条目仅保留诊断时间线，最终结论见后续“跨 Hart
+  指令流同步”条目。
 - **场景**：维护者提供 `server.ans` 中三次 LoongArch64
   `FetchInstructionPageFault`，要求优先定位并修复共同的
   `0xfffffffffffe4c44` 用户态取指地址。
@@ -3235,6 +3235,8 @@
 #### LoongArch 固定 helper 与 `rt_sigreturn` 入口分离（8.10）
 
 - **工具/模型**：Codex（GPT-5）
+- **后续勘误**：本条正确排除了 Linux 固定 `rt_sigreturn`，但把普通间接调用返回点解释为
+  合法 helper 入口的结论仍不成立。最终根因和修复见后续“跨 Hart 指令流同步”条目。
 - **场景**：维护者提供新的 `log.ans`，要求修复 LoongArch BuildStorm 的非法
   `rt_sigreturn` 和随后发生的 `0xfffffffffffe4c4c` 取指异常，并补充根因文档。
 - **描述**：`setup_frame` provenance、signal magic 扫描和 `$ra` 证明 PID 1572--1574 的
@@ -3248,4 +3250,20 @@
   `git diff --check` 通过，链接符号和指令偏移经交叉 `nm/objdump` 核对。按维护者要求未运行
   QEMU、LTP、CAgent 或完整 BuildStorm，不能宣称行为回归已闭环。
 - **关联问题**：[LoongArch 固定 helper 地址与 `rt_sigreturn` 入口混用](./problem/loongarch-signal-vdso-sigreturn.md)
+- **关联 commit**：当前工作区未提交
+
+#### LoongArch 跨 Hart 指令流同步（8.10）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者反馈上一版 helper/signal 入口分离后，BuildStorm 仍在两个 libc PC 触发
+  `IllegalInstruction`，并从另一个 libc PC 产生非 canonical `PagePrivilegeIllegal`。
+- **描述**：将 `0x2a173021c4`、`0x2a17304418` 映射回实际 BuildStorm libc 后，确认两处
+  都是合法 `bl`，说明运行时 Hart 取到的指令流与 ELF 内容不一致。源码审计定位到
+  `MemorySet::activate_for_user()` 在地址空间重新进入某 Hart 时缺少本地 instruction fence；
+  现仅在 active bit 由 0 变为 1 时执行 LoongArch `ibar 0`。删除证据不足的
+  `0xfffffffffffe4c44`、`-ENOSYS` helper 映射，保留独立 Ya2yOS signal restorer。
+- **验证边界**：RISC-V、LoongArch release 和 LoongArch fault-diagnostics 构建通过，
+  `git diff --check` 通过。按维护者要求未运行 QEMU、LTP、CAgent 或 BuildStorm，不能宣称
+  长程行为回归已闭环。
+- **关联问题**：[LoongArch 跨 Hart 指令流失同步误导为 signal/vDSO 故障](./problem/loongarch-signal-vdso-sigreturn.md)
 - **关联 commit**：当前工作区未提交

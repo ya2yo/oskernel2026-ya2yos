@@ -11518,9 +11518,9 @@ FFI/report 字段；不以 flush 推测 commit。现有 C bcache telemetry 由 C
 
 ## 2026-08-09：LoongArch signal-vDSO `rt_sigreturn` 入口未映射
 
-> 后续勘误：8.10 的 signal provenance 日志和实际 glibc 2.36 反汇编证明，
-> `0xfffffffffffe4c44` 是需要正常返回的普通 helper 入口，不是 Linux 固定 signal restorer。
-> 本节仅保留第一阶段分析时间线，最终结论见 8.10 条目和对应 problem 文档。
+> 后续勘误：signal provenance 排除了固定 signal restorer；更晚的 libc 合法 `bl` 运行时
+> 异常又排除了合法普通 helper，最终根因是跨 Hart 指令流同步缺失。本节仅保留第一阶段
+> 分析时间线，最终结论见后续“LoongArch 跨 Hart 指令流同步修复”和对应 problem 文档。
 
 ### 用户需求
 
@@ -11596,6 +11596,11 @@ panic、`TFAIL` 或 `TBROK`。运行仍在 `pre-build tg-xtask` 被 timeout 终�
 
 ## 2026-08-10：纠正 LoongArch 固定 helper 与 `rt_sigreturn` 入口混用
 
+> 后续勘误：本节正确排除了“Linux 固定 `rt_sigreturn`”解释，但把动态链接器的普通间接
+> 调用返回点进一步解释为合法 helper 入口，证据不足。后续 libc 合法指令在运行时触发
+> `IllegalInstruction` 的日志证明根因是跨 Hart 指令流同步缺失；最终修复删除了本节所述
+> `-ENOSYS` 兼容入口。下文保留为诊断时间线。
+
 ### 用户需求
 
 维护者提供新的 `log.ans`，要求直接修复 BuildStorm 中连续出现的
@@ -11638,3 +11643,51 @@ LoongArch signal-vDSO 问题复盘并更新 README 索引、开发日志和 AI �
 `legacy_vdso_fallback=0x9000000000202c44`，反汇编确认后者返回 `-ENOSYS`。
 
 按维护者要求未运行 QEMU、LTP、CAgent 或 BuildStorm 回归，行为闭环由维护者后续执行。
+
+## 2026-08-10：LoongArch 跨 Hart 指令流同步修复
+
+### 用户需求
+
+维护者反馈上一版修复后仍出现三条异常：PID 1568 在 `sepc=0x2a17304418` 产生
+`stval=0x170de53000000000` 的 `PagePrivilegeIllegal`，PID 1569、1570 则都在
+`0x2a173021c4` 触发 `IllegalInstruction`，要求继续完成修复。
+
+### AI 分析与采纳结论
+
+按实际 BuildStorm `libc.so.6` 的运行时基址 `0x2a17200000` 换算，两个 PC 分别对应 ELF
+偏移 `0x104418` 和 `0x1021c4`。反汇编中两处均为合法 LoongArch `bl`，不是非法编码：
+
+```text
+0x1021c4: 57fcafff  bl 0x101e70
+0x104418: 558d3bfc  bl 0x1d150
+```
+
+这组证据推翻了“`0xfffffffffffe4c44` 是合法普通 helper”的剩余假设：此前 loader
+反汇编只证明 `$ra=0x1500001084` 是普通间接调用的返回点，没有证明被调用的 `$r12` 内容
+正确。合法 ELF 指令在运行时被当作非法指令，说明当前 Hart 观察到的用户指令流与页表所指
+ELF 内容不一致，非法 signal 返回和高地址回调只是继续执行错误指令后的次生症状。
+
+审计缺页、COW、remote TLB shootdown 和用户页表激活路径后确认，各类页表更新已有
+`instruction_fence()`，但 `MemorySet::activate_for_user()` 在任务重新进入一个 Hart 时只
+切换页表和发布 active bit，没有执行该 Hart 的 LoongArch `ibar 0`。`active_harts` 会在任务
+离开处理器时清除，适合用来识别地址空间重新进入当前 Hart 的边界。
+
+采纳修复：让 `activate_current_hart()` 返回 active bit 是否由 0 变为 1，并在
+`activate_for_user()` 首次发布时执行 `instruction_fence()`。同时删除
+`legacy_vdso_fallback`、`legacy_vdso_fallback_va()` 和
+`0xffff_ffff_fffe_4000` 用户映射，避免 `-ENOSYS` fallback 掩盖损坏控制流。保留 Ya2yOS
+私有 `0xffff_ffff_f000_0000` signal restorer；Linux 的完整 vDSO 仍应通过
+`AT_SYSINFO_EHDR + offset_sigreturn` 实现，而不是硬编码某次运行中的绝对地址。
+
+### 修改与验证
+
+修改 `os/src/mm/memory_set/handle.rs` 与
+`os/src/arch/loongarch64/qemu/{memory_layout.rs,page_table.rs,asms/trap.S}`，重写对应问题
+复盘并更新索引、开发日志和 AI 交互记录。
+
+`make build-arch TARGET_ARCH=loongarch64`、
+`make build-arch TARGET_ARCH=loongarch64 KERNEL_EXTRA_FEATURES=fault-diagnostics` 和
+`make build-arch TARGET_ARCH=riscv64` 均通过，`git diff --check` 通过。构建只出现仓库已有
+的 `.cargo/config`、`smoltcp` 和 `lwext4_rust` 警告。
+
+按维护者要求未运行 QEMU、LTP、CAgent 或 BuildStorm；长程行为闭环由维护者后续执行。

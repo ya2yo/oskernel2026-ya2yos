@@ -107,14 +107,6 @@ pub fn sigreturn_pa() -> usize {
 }
 
 pub fn sigreturn_va() -> usize {
-    // Keep the signal restorer separate from the legacy glibc helper page.
     // A successful rt_sigreturn never returns to this trampoline.
     0xFFFF_FFFF_F000_0000
-}
-
-/// Compatibility entry used by the LoongArch glibc shipped in the BuildStorm
-/// image.  It invokes this fixed address as a normal, returning helper, so it
-/// must never alias the non-returning rt_sigreturn trampoline.
-pub fn legacy_vdso_fallback_va() -> usize {
-    0xFFFF_FFFF_FFFE_4C44
 }

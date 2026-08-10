@@ -177,16 +177,6 @@ sigreturn_trampoline:
     addi.d	$a7, $zero, 139
     syscall 0
 
-    # The BuildStorm glibc uses 0xffff_ffff_fffe_4c44 as a normal indirect
-    # helper call and expects it to return.  Keep that ABI entry distinct from
-    # sigreturn_trampoline and report ENOSYS so the caller can take its regular
-    # syscall fallback path.
-    .space 0xc3c
-    .globl legacy_vdso_fallback
-legacy_vdso_fallback:
-    addi.w  $a0, $zero, -38
-    jirl    $zero, $ra, 0
-
 # Kernel Trap Section
     .section .text.kern_trap
     .globl __kern_trap
