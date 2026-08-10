@@ -11518,6 +11518,10 @@ FFI/report 字段；不以 flush 推测 commit。现有 C bcache telemetry 由 C
 
 ## 2026-08-09：LoongArch signal-vDSO `rt_sigreturn` 入口未映射
 
+> 后续勘误：8.10 的 signal provenance 日志和实际 glibc 2.36 反汇编证明，
+> `0xfffffffffffe4c44` 是需要正常返回的普通 helper 入口，不是 Linux 固定 signal restorer。
+> 本节仅保留第一阶段分析时间线，最终结论见 8.10 条目和对应 problem 文档。
+
 ### 用户需求
 
 维护者要求分析 `server.ans` 第 11421 行附近的 LoongArch64 `FetchInstructionPageFault`，
@@ -11589,3 +11593,48 @@ panic、`TFAIL` 或 `TBROK`。运行仍在 `pre-build tg-xtask` 被 timeout 终�
 
 未运行 QEMU、CAgent、LTP 或完整 BuildStorm：`make run` 会删除维护者未跟踪的 `disk.img`
 软链接。两个日志均未提供最终完成标记，故未报告端到端性能加速或完整测试通过。
+
+## 2026-08-10：纠正 LoongArch 固定 helper 与 `rt_sigreturn` 入口混用
+
+### 用户需求
+
+维护者提供新的 `log.ans`，要求直接修复 BuildStorm 中连续出现的
+`restore_frame: invalid frame magic` 与 `sepc=0xfffffffffffe4c4c`；随后要求补充文档，写清
+根因以及为什么不再把 `0xffff_ffff_fffe_4c44` 当作 Linux 固定 signal restorer。
+
+### AI 分析与采纳结论
+
+新诊断显示 PID 1572、1573、1574 没有任何成功 `setup_frame()` provenance，栈附近也没有
+`0xdeadbeef` signal frame magic；进入固定地址时 `$ra=0x1500001084`。因此这些调用不是
+signal handler `ret`，而是普通用户态间接调用。当前固定入口执行
+`addi.d a7, 139; syscall 0`，导致动态链接器普通栈被误解析为 signal frame；`EINVAL` 返回后
+PC 前进到 `0xfffffffffffe4c4c`，再触发 `PagePrivilegeIllegal`。
+
+为消除符号归因猜测，复制实际 LoongArch BuildStorm ext4 镜像到 `/tmp`，仅在副本上修复
+journal/校验和后通过 `debugfs` 提取 glibc 2.36 动态链接器。反汇编确认运行时
+`0x1500001084` 对应 `_dl_catch_exception` 中 `jirl $r1,$r12,0` 后的返回点，证明
+`0xfffffffffffe4c44` 是需要返回的 helper 入口。诊断完成后删除临时镜像和提取文件，原始镜像
+未修改。
+
+重新核对 Linux 7.0 LoongArch 源码后确认，Linux 没有规定全局固定绝对
+`__vdso_rt_sigreturn=0xfffffffffffe4c44`。Linux 映射完整 vDSO ELF，通过
+`AT_SYSINFO_EHDR` 发布每进程基址，并以“基址 + image 内 `offset_sigreturn`”设置 handler
+返回地址。页内 `0xc44` 不能脱离对应 ELF 链接布局作为 ABI 常量。Ya2yOS 当前没有完整 vDSO
+ELF、有效 `AT_SYSINFO_EHDR` 或动态 symbol offset，因此此前映射属于错误类比。
+
+采纳双入口修复：`sigreturn_va()` 恢复为内核私有 `0xffff_ffff_f000_0000`，页内 `+0x0`
+执行 syscall 139；`0xffff_ffff_fffe_4c44` 保留为兼容入口，页内 `+0xc44` 返回
+`-ENOSYS` 并通过 `$ra` 正常返回。两个虚拟页复用同一只读可执行物理 trampoline 页。
+
+### 修改与验证
+
+修改 `os/src/arch/loongarch64/qemu/{memory_layout.rs,page_table.rs,asms/trap.S}`，修订原
+LoongArch signal-vDSO 问题复盘并更新 README 索引、开发日志和 AI 记录。
+
+`make build-arch TARGET_ARCH=loongarch64`、
+`make build-arch TARGET_ARCH=loongarch64 KERNEL_EXTRA_FEATURES=fault-diagnostics` 和
+`make build-arch TARGET_ARCH=riscv64` 均通过；`git diff --check` 通过。链接符号为
+`sigreturn_trampoline=0x9000000000202000`、
+`legacy_vdso_fallback=0x9000000000202c44`，反汇编确认后者返回 `-ENOSYS`。
+
+按维护者要求未运行 QEMU、LTP、CAgent 或 BuildStorm 回归，行为闭环由维护者后续执行。

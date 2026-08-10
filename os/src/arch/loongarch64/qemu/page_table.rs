@@ -244,6 +244,15 @@ impl PageTable {
             PhysAddr::from(memory_layout::sigreturn_pa()).floor(),
             MapPermission::X | MapPermission::R | MapPermission::U,
         );
+        // The BuildStorm glibc calls 0xffff_ffff_fffe_4c44 as a normal
+        // returning helper.  Alias the trampoline physical page at that
+        // legacy virtual page; the entry at +0xc44 returns -ENOSYS so glibc
+        // can use its syscall fallback instead of entering rt_sigreturn.
+        ret.map(
+            VirtAddr::from(memory_layout::legacy_vdso_fallback_va()).floor(),
+            PhysAddr::from(memory_layout::sigreturn_pa()).floor(),
+            MapPermission::X | MapPermission::R | MapPermission::U,
+        );
         ret
     }
     pub fn activate(&self) {

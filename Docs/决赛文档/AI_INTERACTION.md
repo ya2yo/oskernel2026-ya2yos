@@ -3201,6 +3201,9 @@
 #### LoongArch signal-vDSO `rt_sigreturn` 入口映射（8.09）
 
 - **工具/模型**：Codex（GPT-5）
+- **后续勘误**：该入口语义判断已被 8.10 的 signal provenance 日志和实际 glibc 2.36
+  反汇编证据推翻；旧条目仅保留诊断时间线，最终结论见后续“固定 helper 与
+  `rt_sigreturn` 入口分离”条目。
 - **场景**：维护者提供 `server.ans` 中三次 LoongArch64
   `FetchInstructionPageFault`，要求优先定位并修复共同的
   `0xfffffffffffe4c44` 用户态取指地址。
@@ -3227,4 +3230,22 @@
   LoongArch64 perf 构建通过。未运行 QEMU/CAgent/LTP/完整 BuildStorm，以保留根目录未跟踪
   `disk.img`；日志没有完整结束标记，未声称端到端加速。
 - **关联问题**：[BuildStorm 连续 bcache 写回请求合并](./problem/buildstorm-bcache-contiguous-writeback.md)、[优化方案](./优化方案.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
+#### LoongArch 固定 helper 与 `rt_sigreturn` 入口分离（8.10）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供新的 `log.ans`，要求修复 LoongArch BuildStorm 的非法
+  `rt_sigreturn` 和随后发生的 `0xfffffffffffe4c4c` 取指异常，并补充根因文档。
+- **描述**：`setup_frame` provenance、signal magic 扫描和 `$ra` 证明 PID 1572--1574 的
+  固定地址调用不是 signal handler 返回。从实际 BuildStorm 镜像提取的 glibc 2.36
+  `ld-linux` 进一步将 `0x1500001084` 定位为 `_dl_catch_exception` 普通间接调用返回点。
+  同时纠正此前的 Linux ABI 解释：LoongArch Linux 使用每进程 vDSO ELF 基址加
+  `offset_sigreturn`，没有规定全局固定绝对地址 `0xfffffffffffe4c44`。恢复 Ya2yOS 私有
+  `0xffff_ffff_f000_0000` signal restorer，并将旧地址保留为正常返回 `-ENOSYS` 的兼容
+  helper；两个虚拟入口复用同一只读可执行物理页。
+- **验证边界**：LoongArch release、LoongArch fault-diagnostics 和 RISC-V release 构建通过，
+  `git diff --check` 通过，链接符号和指令偏移经交叉 `nm/objdump` 核对。按维护者要求未运行
+  QEMU、LTP、CAgent 或完整 BuildStorm，不能宣称行为回归已闭环。
+- **关联问题**：[LoongArch 固定 helper 地址与 `rt_sigreturn` 入口混用](./problem/loongarch-signal-vdso-sigreturn.md)
 - **关联 commit**：当前工作区未提交

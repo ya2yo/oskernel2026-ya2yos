@@ -134,10 +134,6 @@ pub fn suspend_current_and_run_next() {
     // debug!("[suspend_current_and_run_next]!");
     exit_current_if_group_exited_or_killed();
     let task = current_task().unwrap();
-    // debug!(
-    //     "[suspend_current_and_run_next] strong_count = {}",
-    //     Arc::strong_count(&task)
-    // );
     let mut task_inner = task.inner_lock();
 
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
@@ -397,16 +393,16 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     cancel_cma_lock_owner(curr_task.tid());
     cancel_ext4_op_waiter(&curr_task);
     cancel_disk_waiter(curr_task.tid());
-    let count = Arc::strong_count(&curr_task);
+    // let count = Arc::strong_count(&curr_task);
     // The current scheduler reference, the global TID table, and this local
     // reference normally account for three strong references under SMP.
-    if count > 3 {
-        warn!(
-            "[exit_current_and_run_next] tid {} exits with extra TCB refs, strong_count = {}",
-            curr_task.tid(),
-            count
-        );
-    }
+    // if count > 3 {
+    //     warn!(
+    //         "[exit_current_and_run_next] tid {} exits with extra TCB refs, strong_count = {}",
+    //         curr_task.tid(),
+    //         count
+    //     );
+    // }
     let curr_proc = &curr_task.process;
     let memory_set = curr_proc.memory_set_arc();
     let fd_table = Arc::clone(&curr_proc.fd_table);
