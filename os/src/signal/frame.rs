@@ -9,6 +9,8 @@ use core::mem::size_of;
 use log::warn;
 
 #[cfg(feature = "fault-diagnostics")]
+use super::SignalFrameTraceEntry;
+#[cfg(feature = "fault-diagnostics")]
 use super::SIGSEGV;
 use super::{
     KSigAction, NormalSignalFrame, SigActionFlags, SigInfo, SigInfoSignalFrame, SigSet, SignalStack,
@@ -314,7 +316,8 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
     // translation path for all frame fields.
     let signal_sp = frame_start;
     let expected_pc = trap_cx.get_sepc();
-    if !sig_action.act.sa_flags.contains(SigActionFlags::SA_SIGINFO) {
+    let is_siginfo_frame = sig_action.act.sa_flags.contains(SigActionFlags::SA_SIGINFO);
+    if !is_siginfo_frame {
         // 普通 handler: void (*sa_handler)(int)。用户栈从低到高布局为：
         // [magic][siginfo 标记 = 0][SignalStack][SigSet][MachineContext]。
         // Save the configured stack_t state, rather than the dynamic
@@ -411,6 +414,19 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
         new_mask |= SigSet::from_sig(signo);
     }
     let mut task_inner = task.inner_lock();
+    #[cfg(feature = "fault-diagnostics")]
+    task_inner.signal_frame_trace.record(SignalFrameTraceEntry {
+        valid: true,
+        generation: 0,
+        signo,
+        frame_sp: signal_sp,
+        frame_size: raw_frame_size,
+        siginfo: is_siginfo_frame,
+        interrupted_pc: expected_pc,
+        interrupted_sp,
+        handler: sig_action.act.sa_handler,
+        restorer,
+    });
     *task_inner.trap_cx() = trap_cx;
     task_inner.sig_mask = active_sig_mask | new_mask;
     // Each frame saves the prior stack state, so rt_sigreturn can restore an
@@ -448,6 +464,18 @@ fn dump_invalid_sigreturn_frame(
     // rt_sigreturn 陷入内核时保存的用户寄存器快照：syscall_pc 在 trampoline
     // 页内（0xffff_ffff_fffe_4c4c）说明是 handler 返回路径；否则是用户代码
     // 显式调用 rt_sigreturn。
+    #[cfg(feature = "fault-diagnostics")]
+    let (syscall_pc, user_ra, user_fp, frame_trace) = {
+        let inner = task.inner_lock();
+        let tc = inner.trap_cx();
+        (
+            tc.get_sepc(),
+            tc.get_ra(),
+            tc.get_fp(),
+            inner.signal_frame_trace.entries,
+        )
+    };
+    #[cfg(not(feature = "fault-diagnostics"))]
     let (syscall_pc, user_ra, user_fp) = {
         let inner = task.inner_lock();
         let tc = inner.trap_cx();
@@ -487,6 +515,61 @@ fn dump_invalid_sigreturn_frame(
         read_word(signal_sp + mctx_off).unwrap_or(0),
         read_word(signal_sp + mctx_off + mctx_sp_off).unwrap_or(0),
     );
+    #[cfg(feature = "fault-diagnostics")]
+    {
+        let mut recorded_frames = 0usize;
+        let mut matching_sp = false;
+        for entry in frame_trace.into_iter().filter(|entry| entry.valid) {
+            recorded_frames += 1;
+            let sp_relation = if entry.frame_sp == signal_sp {
+                matching_sp = true;
+                "match"
+            } else {
+                "different"
+            };
+            let delta_txt = if entry.frame_sp >= signal_sp {
+                alloc::format!("+{:#x}", entry.frame_sp - signal_sp)
+            } else {
+                alloc::format!("-{:#x}", signal_sp - entry.frame_sp)
+            };
+            let entry_mctx_off = if entry.siginfo {
+                SIGINFO_FRAME_MCONTEXT_OFFSET
+            } else {
+                NORMAL_FRAME_MCONTEXT_OFFSET
+            };
+            warn!(
+                "[fault-diagnostics] bad rt_sigreturn setup generation={} signal={} kind={} frame_sp={:#x} frame_size={:#x} restore_sp_relation={} delta={} interrupted_pc={:#x} interrupted_sp={:#x} handler={:#x} restorer={:#x} current_magic={:#x} current_flag={:#x} current_saved_pc={:#x} current_saved_sp={:#x}",
+                entry.generation,
+                entry.signo,
+                if entry.siginfo { "siginfo" } else { "normal" },
+                entry.frame_sp,
+                entry.frame_size,
+                sp_relation,
+                delta_txt,
+                entry.interrupted_pc,
+                entry.interrupted_sp,
+                entry.handler,
+                entry.restorer,
+                read_word(entry.frame_sp).unwrap_or(0),
+                read_word(entry.frame_sp + size_of::<usize>()).unwrap_or(0),
+                read_word(entry.frame_sp + entry_mctx_off).unwrap_or(0),
+                read_word(entry.frame_sp + entry_mctx_off + mctx_sp_off).unwrap_or(0),
+            );
+        }
+        if recorded_frames == 0 {
+            warn!(
+                "[fault-diagnostics] bad rt_sigreturn has no successful setup_frame record for pid={} tid={}",
+                task.pid(),
+                task.tid(),
+            );
+        } else if !matching_sp {
+            warn!(
+                "[fault-diagnostics] bad rt_sigreturn restore sp={:#x} matches none of {} successful setup_frame records",
+                signal_sp,
+                recorded_frames,
+            );
+        }
+    }
     // 扫描 sp 上下是否存在真实帧 magic，定位 signal_sp 与 rt_sigreturn sp 的差。
     let scan_start = signal_sp.saturating_sub(0x1000);
     let scan_end = signal_sp.saturating_add(0x800);

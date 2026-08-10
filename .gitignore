@@ -22,6 +22,7 @@ compile_commands.json
 build-musl-generic
 kernel-rv
 kernel-la
+disk.img
 /2026_testsuits_img
 
 *.dtb

@@ -7,6 +7,8 @@ use super::super::{
 };
 #[cfg(feature = "perf")]
 use crate::arch::time::get_ticks;
+#[cfg(feature = "fault-diagnostics")]
+use crate::signal::SignalFrameTrace;
 use crate::{
     arch::{
         config::HART_NUM,
@@ -180,6 +182,11 @@ pub struct TaskControlBlockInner {
     pub sigsuspend_restore_mask: Option<SigSet>,
     /// Per-thread alternate signal stack configured by sigaltstack(2).
     pub alt_signal_stack: SignalStack,
+    /// Recent successfully constructed signal frames, retained only to
+    /// diagnose a later `rt_sigreturn` that arrives with a bad stack pointer
+    /// or a corrupted user frame.
+    #[cfg(feature = "fault-diagnostics")]
+    pub(crate) signal_frame_trace: SignalFrameTrace,
     /// 待处理信号集合
     pub sig_pending: SigSet,
     /// 与 sig_pending 位图并行保存的 siginfo_t；标准信号不排队，每个信号保留一份。
@@ -711,6 +718,8 @@ impl TaskControlBlock {
                 sig_mask: SigSet::empty(),
                 sigsuspend_restore_mask: None,
                 alt_signal_stack: SignalStack::disabled(),
+                #[cfg(feature = "fault-diagnostics")]
+                signal_frame_trace: SignalFrameTrace::new(),
                 sig_pending: SigSet::empty(),
                 sig_pending_info: [None; SIG_MAX_NUM + 1],
                 exec_teardown_kill: false,
@@ -865,6 +874,10 @@ impl TaskControlBlock {
         task_inner.sig_mask = SigSet::empty();
         task_inner.sigsuspend_restore_mask = None;
         task_inner.alt_signal_stack = SignalStack::disabled();
+        #[cfg(feature = "fault-diagnostics")]
+        {
+            task_inner.signal_frame_trace = SignalFrameTrace::new();
+        }
         task_inner.sig_pending = SigSet::empty();
         task_inner.sig_pending_info = [None; SIG_MAX_NUM + 1];
         task_inner.exec_teardown_kill = false;
@@ -1209,6 +1222,8 @@ impl TaskControlBlock {
                 sig_mask: child_sig_mask,
                 sigsuspend_restore_mask: None,
                 alt_signal_stack: child_alt_signal_stack,
+                #[cfg(feature = "fault-diagnostics")]
+                signal_frame_trace: SignalFrameTrace::new(),
                 sig_pending: SigSet::empty(),
                 sig_pending_info: [None; SIG_MAX_NUM + 1],
                 exec_teardown_kill: false,

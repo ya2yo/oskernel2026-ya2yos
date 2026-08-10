@@ -115,6 +115,76 @@ pub(crate) struct SigInfoSignalFrame {
     pub(crate) ucontext: UserContext,
 }
 
+/// `setup_frame()` 成功提交后保留的少量 provenance。
+///
+/// 这不是 signal ABI 的一部分，只在 fault-diagnostics 构建中用于把
+/// `rt_sigreturn` 失败时的 SP 与最近一次真正构造过的 frame 对上。固定容量
+/// 避免在异常路径分配内存；嵌套信号或高频信号只保留最近几次记录。
+#[cfg(feature = "fault-diagnostics")]
+#[derive(Clone, Copy)]
+pub(crate) struct SignalFrameTraceEntry {
+    pub(crate) valid: bool,
+    pub(crate) generation: usize,
+    pub(crate) signo: usize,
+    pub(crate) frame_sp: usize,
+    pub(crate) frame_size: usize,
+    pub(crate) siginfo: bool,
+    pub(crate) interrupted_pc: usize,
+    pub(crate) interrupted_sp: usize,
+    pub(crate) handler: usize,
+    pub(crate) restorer: usize,
+}
+
+#[cfg(feature = "fault-diagnostics")]
+impl SignalFrameTraceEntry {
+    pub(crate) const EMPTY: Self = Self {
+        valid: false,
+        generation: 0,
+        signo: 0,
+        frame_sp: 0,
+        frame_size: 0,
+        siginfo: false,
+        interrupted_pc: 0,
+        interrupted_sp: 0,
+        handler: 0,
+        restorer: 0,
+    };
+}
+
+/// 每个线程最近成功构造的 signal frame 小环形记录。
+#[cfg(feature = "fault-diagnostics")]
+#[derive(Clone, Copy)]
+pub(crate) struct SignalFrameTrace {
+    pub(crate) entries: [SignalFrameTraceEntry; Self::CAPACITY],
+    next_generation: usize,
+}
+
+#[cfg(feature = "fault-diagnostics")]
+impl SignalFrameTrace {
+    pub(crate) const CAPACITY: usize = 8;
+
+    pub(crate) const fn new() -> Self {
+        Self {
+            entries: [SignalFrameTraceEntry::EMPTY; Self::CAPACITY],
+            next_generation: 0,
+        }
+    }
+
+    pub(crate) fn record(&mut self, mut entry: SignalFrameTraceEntry) {
+        entry.valid = true;
+        entry.generation = self.next_generation;
+        self.entries[self.next_generation % Self::CAPACITY] = entry;
+        self.next_generation = self.next_generation.wrapping_add(1);
+    }
+}
+
+#[cfg(feature = "fault-diagnostics")]
+impl Default for SignalFrameTrace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SigSet {
     pub fn default_op(&self) -> SigOp {
         let terminate_signals = SigSet::SIGHUP
