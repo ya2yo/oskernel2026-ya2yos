@@ -7,6 +7,7 @@
 use log::warn;
 
 use crate::{
+    arch::context::{MachineContext, UserContext},
     signal::{SIG_DFL, SIG_IGN, SIG_MAX_NUM},
     utils::{SysErrNo, SysResult},
 };
@@ -87,6 +88,31 @@ bitflags! {
         const SIGRTMIN  = 1 << (SIGRTMIN- 1);
         const SIGRT_1   = 1 << (SIGRT_1 - 1);
     }
+}
+
+/// 内核构造普通 signal handler 栈帧时使用的连续 ABI 镜像。
+///
+/// 该类型仅供 signal frame 代码使用；用户态布局从低地址到高地址依次为
+/// magic、SA_SIGINFO 标记、`stack_t`、signal mask 和 machine context。
+#[repr(C)]
+pub(crate) struct NormalSignalFrame {
+    pub(crate) magic: usize,
+    pub(crate) siginfo_flag: usize,
+    pub(crate) stack: SignalStack,
+    pub(crate) sigmask: SigSet,
+    pub(crate) mcontext: MachineContext,
+}
+
+/// 内核构造 `SA_SIGINFO` signal handler 栈帧时使用的连续 ABI 镜像。
+///
+/// 用户态布局从低地址到高地址依次为 magic、SA_SIGINFO 标记、`siginfo_t`
+/// 与 `ucontext_t`。该类型不属于用户可直接访问的 Rust API。
+#[repr(C)]
+pub(crate) struct SigInfoSignalFrame {
+    pub(crate) magic: usize,
+    pub(crate) siginfo_flag: usize,
+    pub(crate) siginfo: SigInfo,
+    pub(crate) ucontext: UserContext,
 }
 
 impl SigSet {

@@ -10,12 +10,16 @@ use log::warn;
 
 #[cfg(feature = "fault-diagnostics")]
 use super::SIGSEGV;
-use super::{KSigAction, SigActionFlags, SigInfo, SigSet, SignalStack};
+use super::{
+    KSigAction, NormalSignalFrame, SigActionFlags, SigInfo, SigInfoSignalFrame, SigSet, SignalStack,
+};
 use crate::{
     arch::{
-        __PAD_SIZE, PADDING_SIZE, context::{MachineContext, UserContext}, memory_layout::{self, USER_STACK_SIZE}
+        context::{MachineContext, UserContext},
+        memory_layout::{self, USER_STACK_SIZE},
+        __PAD_SIZE,
     },
-    mm::{VirtAddr, copy_from_user_val, copy_to_user, copy_to_user_val, probe_user_write},
+    mm::{copy_from_user_val, copy_to_user_val, probe_user_write, VirtAddr},
     task::{current_task, exit_current_and_run_next},
     utils::{SysErrNo, SyscallRet},
 };
@@ -25,6 +29,142 @@ extern "C" {
 }
 
 const SIGNAL_STACK_ALIGN: usize = 16;
+const SIGNAL_FRAME_MAGIC: usize = 0xdeadbeef;
+
+const NORMAL_FRAME_MCONTEXT_OFFSET: usize = core::mem::offset_of!(NormalSignalFrame, mcontext);
+const SIGINFO_FRAME_SIGINFO_OFFSET: usize = core::mem::offset_of!(SigInfoSignalFrame, siginfo);
+const SIGINFO_FRAME_UCONTEXT_OFFSET: usize = core::mem::offset_of!(SigInfoSignalFrame, ucontext);
+const SIGINFO_FRAME_MCONTEXT_OFFSET: usize =
+    SIGINFO_FRAME_UCONTEXT_OFFSET + core::mem::offset_of!(UserContext, mcontext);
+
+// The frame representation is part of the user ABI.  In particular,
+// MachineContext is 16-byte aligned on LoongArch because it contains LSX
+// registers, so deriving the siginfo mcontext offset is safer than carrying a
+// hard-coded value through diagnostics and restore code.
+const _: () = {
+    assert!(
+        NORMAL_FRAME_MCONTEXT_OFFSET
+            == 2 * size_of::<usize>() + size_of::<SignalStack>() + size_of::<SigSet>()
+    );
+    assert!(
+        size_of::<NormalSignalFrame>()
+            == 2 * size_of::<usize>()
+                + size_of::<SignalStack>()
+                + size_of::<SigSet>()
+                + size_of::<MachineContext>()
+    );
+    assert!(SIGINFO_FRAME_SIGINFO_OFFSET == 2 * size_of::<usize>());
+    assert!(SIGINFO_FRAME_UCONTEXT_OFFSET == 2 * size_of::<usize>() + size_of::<SigInfo>());
+    assert!(
+        SIGINFO_FRAME_MCONTEXT_OFFSET
+            == 2 * size_of::<usize>()
+                + size_of::<SigInfo>()
+                + core::mem::offset_of!(UserContext, mcontext)
+    );
+    assert!(
+        size_of::<SigInfoSignalFrame>()
+            == 2 * size_of::<usize>() + size_of::<SigInfo>() + size_of::<UserContext>()
+    );
+};
+
+#[inline]
+fn saved_mcontext_pc(mcontext: &MachineContext) -> usize {
+    // Both supported MachineContext ABIs store the interrupted PC in their
+    // first word: LoongArch GeneralRegs.pc and RISC-V's temporary x[0].
+    unsafe { *(mcontext as *const MachineContext as *const usize) }
+}
+
+fn verify_signal_frame_values(
+    memory_set: &crate::mm::MemorySet,
+    signal_sp: usize,
+    expected_siginfo_flag: usize,
+    expected_pc: usize,
+    actual_magic: usize,
+    actual_siginfo_flag: usize,
+    actual_pc: usize,
+) -> bool {
+    if actual_magic == SIGNAL_FRAME_MAGIC
+        && actual_siginfo_flag == expected_siginfo_flag
+        && actual_pc == expected_pc
+    {
+        return true;
+    }
+
+    warn!(
+        "setup_frame: signal frame verification failed at sp={:#x}, expected magic={:#x} flag={:#x} pc={:#x}, read magic={:#x} flag={:#x} pc={:#x}, memory_set_token={:#x}",
+        signal_sp,
+        SIGNAL_FRAME_MAGIC,
+        expected_siginfo_flag,
+        expected_pc,
+        actual_magic,
+        actual_siginfo_flag,
+        actual_pc,
+        memory_set.token(),
+    );
+    false
+}
+
+fn verify_normal_signal_frame_write(
+    memory_set: &crate::mm::MemorySet,
+    signal_sp: usize,
+    expected_pc: usize,
+) -> bool {
+    let frame = match copy_from_user_val::<NormalSignalFrame>(
+        memory_set,
+        signal_sp as *const NormalSignalFrame,
+    ) {
+        Ok(frame) => frame,
+        Err(err) => {
+            warn!(
+                "setup_frame: cannot read back normal signal frame at sp={:#x}, error={:?}, memory_set_token={:#x}",
+                signal_sp,
+                err,
+                memory_set.token(),
+            );
+            return false;
+        }
+    };
+    verify_signal_frame_values(
+        memory_set,
+        signal_sp,
+        0,
+        expected_pc,
+        frame.magic,
+        frame.siginfo_flag,
+        saved_mcontext_pc(&frame.mcontext),
+    )
+}
+
+fn verify_siginfo_signal_frame_write(
+    memory_set: &crate::mm::MemorySet,
+    signal_sp: usize,
+    expected_pc: usize,
+) -> bool {
+    let frame = match copy_from_user_val::<SigInfoSignalFrame>(
+        memory_set,
+        signal_sp as *const SigInfoSignalFrame,
+    ) {
+        Ok(frame) => frame,
+        Err(err) => {
+            warn!(
+                "setup_frame: cannot read back SA_SIGINFO signal frame at sp={:#x}, error={:?}, memory_set_token={:#x}",
+                signal_sp,
+                err,
+                memory_set.token(),
+            );
+            return false;
+        }
+    };
+    verify_signal_frame_values(
+        memory_set,
+        signal_sp,
+        usize::MAX,
+        expected_pc,
+        frame.magic,
+        frame.siginfo_flag,
+        saved_mcontext_pc(&frame.ucontext.mcontext),
+    )
+}
 
 /// 在用户态栈空间构建一个 Frame。
 ///
@@ -106,16 +246,9 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
     };
 
     let raw_frame_size = if sig_action.act.sa_flags.contains(SigActionFlags::SA_SIGINFO) {
-        // 实时信号
-        // 上下文 + SigInfo + 返回地址 + 对齐占位
-        size_of::<UserContext>() + size_of::<SigInfo>() + 2 * size_of::<usize>()
+        size_of::<SigInfoSignalFrame>()
     } else {
-        // Traditional handler: mcontext + signal mask + saved alternate-stack
-        // state + frame marker + return magic.
-        size_of::<MachineContext>()
-            + size_of::<SigSet>()
-            + size_of::<SignalStack>()
-            + 2 * size_of::<usize>()
+        size_of::<NormalSignalFrame>()
     };
     let Some(raw_frame_start) = user_sp.checked_sub(raw_frame_size) else {
         warn!(
@@ -136,8 +269,6 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
     // `frame_size`/`frame_start` 覆盖实际 frame 与其顶部对齐填充，用于完整预检。
     let frame_size = raw_frame_size + frame_padding;
     let frame_start = raw_frame_start - frame_padding;
-    // `frame_top` 是实际保存 mcontext/ucontext 的顶部，不包含上方的填充字节。
-    let frame_top = user_sp - frame_padding;
     if frame_start < stack_bottom || probe_user_write(&memory_set, frame_start, frame_size).is_err()
     {
         warn!(
@@ -176,71 +307,36 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
         }
     }
 
-    let signal_sp;
+    // Build a complete contiguous image and write it with one large copy.  In
+    // particular, do not split the same frame between the direct small-copy
+    // uaccess path and the software PPN/COW path.  The full copy is larger
+    // than the direct-copy threshold, so it also uses one consistent software
+    // translation path for all frame fields.
+    let signal_sp = frame_start;
+    let expected_pc = trap_cx.get_sepc();
     if !sig_action.act.sa_flags.contains(SigActionFlags::SA_SIGINFO) {
-        // 普通 handler: void (*sa_handler)(int)。用户栈从高到低布局为：
-        // [MachineContext][SigSet][SignalStack][siginfo 标记 = 0][magic]。
-        // `signal_sp` 最终指向最低地址的 magic，rt_sigreturn 从此处反向恢复。
-        let mctx_addr = frame_top - size_of::<MachineContext>();
-        // 保存进入 handler 前的用户寄存器，以便 rt_sigreturn 恢复被打断的执行点。
-        let mctx = trap_cx.as_mctx();
-        if copy_to_user(&memory_set, mctx_addr, unsafe {
-            core::slice::from_raw_parts(
-                &mctx as *const MachineContext as *const _,
-                core::mem::size_of::<MachineContext>(),
-            )
-        })
-        .is_err()
-        {
-            return signal_frame_write_failed(signo, mctx_addr, task);
-        }
-
-        // 保存进入 handler 前的 signal mask；handler 结束后必须恢复该 mask。
-        let sigset_addr = mctx_addr - size_of::<SigSet>();
-        if copy_to_user(&memory_set, sigset_addr, unsafe {
-            core::slice::from_raw_parts(
-                &restore_sig_mask as *const SigSet as *const _,
-                core::mem::size_of::<SigSet>(),
-            )
-        })
-        .is_err()
-        {
-            return signal_frame_write_failed(signo, sigset_addr, task);
-        }
-
+        // 普通 handler: void (*sa_handler)(int)。用户栈从低到高布局为：
+        // [magic][siginfo 标记 = 0][SignalStack][SigSet][MachineContext]。
         // Save the configured stack_t state, rather than the dynamic
         // sigaltstack(2) query view.  Linux exposes SS_ONSTACK to a live query
         // but preserves the raw configuration in a signal frame.
-        let stack_addr = sigset_addr - size_of::<SignalStack>();
-        if copy_to_user_val(
-            &*memory_set,
-            stack_addr as *mut SignalStack,
-            &alt_signal_stack,
-        )
-        .is_err()
-        {
-            return signal_frame_write_failed(signo, stack_addr, task);
+        let frame = NormalSignalFrame {
+            magic: SIGNAL_FRAME_MAGIC,
+            siginfo_flag: 0,
+            stack: alt_signal_stack,
+            sigmask: restore_sig_mask,
+            mcontext: trap_cx.as_mctx(),
+        };
+        if copy_to_user_val(&*memory_set, signal_sp as *mut NormalSignalFrame, &frame).is_err() {
+            return signal_frame_write_failed(signo, signal_sp, task);
         }
-
-        // 标记普通 frame。restore_frame() 读到 0 后按 SigSet + MachineContext 解析。
-        let siginfo_flag_addr = stack_addr - size_of::<usize>();
-        if copy_to_user(
-            &memory_set,
-            siginfo_flag_addr,
-            &[0u8; core::mem::size_of::<usize>()],
-        )
-        .is_err()
-        {
-            return signal_frame_write_failed(signo, siginfo_flag_addr, task);
+        if !verify_normal_signal_frame_write(&memory_set, signal_sp, expected_pc) {
+            return signal_frame_write_failed(signo, signal_sp, task);
         }
-        signal_sp = siginfo_flag_addr - size_of::<usize>();
     } else {
         // SA_SIGINFO handler: void (*sa_sigaction)(int, siginfo_t *, void *)。
-        // 用户栈从高到低布局为：[UserContext][SigInfo][标记 = usize::MAX][magic]。
+        // 用户栈从低到高布局为：[magic][标记 = usize::MAX][SigInfo][UserContext]。
         // UserContext 与 SigInfo 必须相邻，rt_sigreturn 依赖这一固定相对偏移。
-        let uctx_addr = frame_top - size_of::<UserContext>();
-        let siginfo_addr = uctx_addr - size_of::<SigInfo>();
-        signal_sp = siginfo_addr - 2 * size_of::<usize>();
         let uctx = UserContext {
             flags: 0,
             link: 0,
@@ -249,43 +345,22 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
             __pad: [0u8; __PAD_SIZE],
             mcontext: trap_cx.as_mctx(),
         };
-        if copy_to_user(&memory_set, uctx_addr, unsafe {
-            core::slice::from_raw_parts(
-                &uctx as *const UserContext as *const _,
-                core::mem::size_of::<UserContext>(),
-            )
-        })
-        .is_err()
-        {
-            return signal_frame_write_failed(signo, uctx_addr, task);
+        let frame = SigInfoSignalFrame {
+            magic: SIGNAL_FRAME_MAGIC,
+            siginfo_flag: usize::MAX,
+            siginfo: siginfo.unwrap_or_else(|| SigInfo::new(signo as u32, 0, 0, 0)),
+            ucontext: uctx,
+        };
+        if copy_to_user_val(&*memory_set, signal_sp as *mut SigInfoSignalFrame, &frame).is_err() {
+            return signal_frame_write_failed(signo, signal_sp, task);
+        }
+        if !verify_siginfo_signal_frame_write(&memory_set, signal_sp, expected_pc) {
+            return signal_frame_write_failed(signo, signal_sp, task);
         }
         // 第三个 handler 参数 a2 指向用户栈中的 UserContext。
-        trap_cx.set_a2(uctx_addr);
-
-        // 第二个 handler 参数所指的 siginfo_t：优先保留投递时记录的发送者信息，
-        // 没有附加信息的内核信号则构造零初始化的默认记录。
-        if copy_to_user_val(
-            &*memory_set,
-            siginfo_addr as *mut SigInfo,
-            &siginfo.unwrap_or_else(|| SigInfo::new(signo as u32, 0, 0, 0)),
-        )
-        .is_err()
-        {
-            return signal_frame_write_failed(signo, siginfo_addr, task);
-        }
+        trap_cx.set_a2(signal_sp + SIGINFO_FRAME_UCONTEXT_OFFSET);
         // 第二个 handler 参数 a1 指向用户栈中的 SigInfo。
-        trap_cx.set_a1(siginfo_addr);
-
-        // 标记 SA_SIGINFO frame。restore_frame() 读到 usize::MAX 后从 SigInfo 后读取 UserContext。
-        let siginfo_flag_addr = siginfo_addr - size_of::<usize>();
-        if copy_to_user_val(&*memory_set, siginfo_flag_addr as *mut usize, &usize::MAX).is_err() {
-            return signal_frame_write_failed(signo, siginfo_flag_addr, task);
-        }
-    }
-
-    // checkout(Magic Num)
-    if copy_to_user_val(&*memory_set, signal_sp as *mut usize, &0xdeadbeefusize).is_err() {
-        return signal_frame_write_failed(signo, signal_sp, task);
+        trap_cx.set_a1(signal_sp + SIGINFO_FRAME_SIGINFO_OFFSET);
     }
     // a0
     trap_cx.set_a0(signo);
@@ -358,6 +433,128 @@ fn signal_frame_write_failed(
     exit_current_and_run_next((super::SIGSEGV + 128) as i32);
 }
 
+/// 临时诊断：rt_sigreturn 帧 magic 校验失败时，输出帧内保存的现场和 sp 附近内存，
+/// 用于定位帧被破坏的根因（handler 覆盖、sp 不对、setup_frame 写错位置等）。
+/// 定位完成后删除本函数及其调用点。
+fn dump_invalid_sigreturn_frame(
+    task: &alloc::sync::Arc<crate::task::TaskControlBlock>,
+    signal_sp: usize,
+    checkout: usize,
+    memory_set: &crate::mm::MemorySet,
+) {
+    let read_word = |addr: usize| -> Option<usize> {
+        copy_from_user_val(memory_set, addr as *const usize).ok()
+    };
+    // rt_sigreturn 陷入内核时保存的用户寄存器快照：syscall_pc 在 trampoline
+    // 页内（0xffff_ffff_fffe_4c4c）说明是 handler 返回路径；否则是用户代码
+    // 显式调用 rt_sigreturn。
+    let (syscall_pc, user_ra, user_fp) = {
+        let inner = task.inner_lock();
+        let tc = inner.trap_cx();
+        (tc.get_sepc(), tc.get_ra(), tc.get_fp())
+    };
+    let flag = read_word(signal_sp + size_of::<usize>());
+    // 诊断偏移必须与用户 ABI 共用同一组结构计算：LoongArch 的
+    // MachineContext 具有 16 字节对齐，不能把 UserContext 的字段字节和
+    // mcontext 的实际起点混为一谈。
+    let (mctx_off, kind) = match flag {
+        Some(usize::MAX) => (SIGINFO_FRAME_MCONTEXT_OFFSET, "siginfo"),
+        _ => (NORMAL_FRAME_MCONTEXT_OFFSET, "normal"),
+    };
+    // MachineContext 内保存用户 sp 的字段偏移：loongarch gp.sp 在 +0x18，
+    // riscv64 GeneralRegs.x[2] 在 +0x10。
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "loongarch64")] {
+            let mctx_sp_off = 0x18usize;
+        } else {
+            let mctx_sp_off = 0x10usize;
+        }
+    }
+    let flag_txt = flag
+        .map(|v| alloc::format!("{:#x}", v))
+        .unwrap_or_else(|| "unreadable".into());
+    warn!(
+        "[fault-diagnostics] bad rt_sigreturn pid={} tid={} checkout={:#x} sp={:#x} kind={} flag={} syscall_pc={:#x} user_ra={:#x} user_fp={:#x} saved_pc={:#x} saved_sp={:#x}",
+        task.pid(),
+        task.tid(),
+        checkout,
+        signal_sp,
+        kind,
+        flag_txt,
+        syscall_pc,
+        user_ra,
+        user_fp,
+        read_word(signal_sp + mctx_off).unwrap_or(0),
+        read_word(signal_sp + mctx_off + mctx_sp_off).unwrap_or(0),
+    );
+    // 扫描 sp 上下是否存在真实帧 magic，定位 signal_sp 与 rt_sigreturn sp 的差。
+    let scan_start = signal_sp.saturating_sub(0x1000);
+    let scan_end = signal_sp.saturating_add(0x800);
+    let mut magic_hits = 0usize;
+    let mut scan_off = scan_start;
+    while scan_off < scan_end {
+        if read_word(scan_off) == Some(SIGNAL_FRAME_MAGIC) {
+            magic_hits += 1;
+            let delta_txt = if scan_off >= signal_sp {
+                alloc::format!("+{:#x}", scan_off - signal_sp)
+            } else {
+                alloc::format!("-{:#x}", signal_sp - scan_off)
+            };
+            warn!(
+                "[fault-diagnostics] bad rt_sigreturn FOUND magic at {:#x} (delta {})",
+                scan_off, delta_txt
+            );
+            let around = scan_off.saturating_sub(0x40);
+            let mut line = alloc::string::String::new();
+            for j in (0..0x90usize).step_by(8) {
+                match read_word(around + j) {
+                    Some(v) => line.push_str(&alloc::format!(" {:016x}", v)),
+                    None => line.push_str(" ????????????????"),
+                }
+            }
+            warn!(
+                "[fault-diagnostics] bad rt_sigreturn frame[{:#x}..{:#x}):{}",
+                around,
+                around + 0x90,
+                line
+            );
+        }
+        scan_off += 8;
+    }
+    if magic_hits == 0 {
+        warn!(
+            "[fault-diagnostics] bad rt_sigreturn no {:#x} in [{:#x}, {:#x})",
+            SIGNAL_FRAME_MAGIC, scan_start, scan_end
+        );
+    }
+    // sp-0x400 起连续输出 0x740 字节（覆盖 sp 下方可能存在的真实帧 + 期望帧区域）。
+    let start = signal_sp.saturating_sub(0x400);
+    let mut line = alloc::string::String::new();
+    for i in (0..0x740usize).step_by(8) {
+        match read_word(start + i) {
+            Some(v) => line.push_str(&alloc::format!(" {:016x}", v)),
+            None => line.push_str(" ????????????????"),
+        }
+        if (i / 8) % 8 == 7 {
+            warn!(
+                "[fault-diagnostics] bad rt_sigreturn mem[{:#x}..{:#x}):{}",
+                start + i - 0x38,
+                start + i + 8,
+                line
+            );
+            line.clear();
+        }
+    }
+    if !line.is_empty() {
+        warn!(
+            "[fault-diagnostics] bad rt_sigreturn mem[{:#x}..{:#x}):{}",
+            start,
+            start + 0x740,
+            line
+        );
+    }
+}
+
 /// 恢复栈帧。
 pub fn restore_frame() -> SyscallRet {
     let task = current_task().unwrap();
@@ -371,20 +568,21 @@ pub fn restore_frame() -> SyscallRet {
     // 用户态可能不带合法 frame 直接调用 rt_sigreturn，或在 handler 返回前
     // 破坏 sp 处的 frame。magic 校验和后续 frame 解析都是可失败的：校验失败
     // 按 rt_sigreturn(2) 的语义返回 -EINVAL，不能 panic 内核，也不应终止进程。
-    let checkout: usize = copy_from_user_val(&*memory_set, user_sp as *const usize)
-        .map_err(|_| SysErrNo::EINVAL)?;
-    if checkout != 0xdeadbeef {
+    let checkout: usize =
+        copy_from_user_val(&*memory_set, user_sp as *const usize).map_err(|_| SysErrNo::EINVAL)?;
+    if checkout != SIGNAL_FRAME_MAGIC {
         warn!(
             "restore_frame: invalid frame magic {:#x} at sp={:#x}; rt_sigreturn returns EINVAL",
             checkout, signal_sp
         );
+        dump_invalid_sigreturn_frame(&task, signal_sp, checkout, &memory_set);
         return Err(SysErrNo::EINVAL);
     }
     user_sp += size_of::<usize>();
 
     // sigInfo标志位
-    let sa_siginfo_flag: usize = copy_from_user_val(&*memory_set, user_sp as *const usize)
-        .map_err(|_| SysErrNo::EINVAL)?;
+    let sa_siginfo_flag: usize =
+        copy_from_user_val(&*memory_set, user_sp as *const usize).map_err(|_| SysErrNo::EINVAL)?;
     let sa_siginfo = sa_siginfo_flag == usize::MAX;
     user_sp += size_of::<usize>();
 

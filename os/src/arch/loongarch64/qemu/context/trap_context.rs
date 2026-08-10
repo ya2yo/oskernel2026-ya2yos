@@ -159,6 +159,11 @@ impl TrapContext {
     pub fn set_ra(&mut self, ra: usize) {
         self.gp.ra = ra;
     }
+
+    /// 用户态 frame pointer（r22），用于临时诊断时手动回溯用户栈。
+    pub fn get_fp(&self) -> usize {
+        self.gp.fp
+    }
 }
 
 impl Debug for TrapContext {
