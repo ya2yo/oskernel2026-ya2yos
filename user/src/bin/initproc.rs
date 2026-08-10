@@ -27,12 +27,11 @@ mod libctest;
 mod lmbench;
 mod ltp;
 mod lua;
+#[path = "initproc/mprotect_split_regression.rs"]
+mod mprotect_split_regression;
 #[path = "initproc/msg_regression.rs"]
 #[allow(dead_code)]
 mod msg_regression;
-#[path = "initproc/sigreturn_regression.rs"]
-#[allow(dead_code)]
-mod sigreturn_regression;
 #[path = "netdev_test/cases.rs"]
 mod netdev_test_cases;
 mod netperf;
@@ -40,6 +39,9 @@ mod netperf;
 mod rseq_regression;
 #[path = "initproc/sigaltstack_regression.rs"]
 mod sigaltstack_regression;
+#[path = "initproc/sigreturn_regression.rs"]
+#[allow(dead_code)]
+mod sigreturn_regression;
 #[path = "initproc/uptime_regression.rs"]
 mod uptime_regression;
 mod vfork_bench;
@@ -222,16 +224,16 @@ fn run_interactive_shell() -> i32 {
 
 #[no_mangle]
 fn main() -> i32 {
+    test()
     // run_interactive_shell()
     // test_pre()
-    test_final_2026()
+    // test_final_2026()
 }
 
 // Score helpers (kept for ad-hoc testing)
 #[allow(unused)]
 fn test_pre() -> i32 {
     println!("test_pre start!");
-    netdev_test_cases::run_all();
     // basic
     run_testsuit("musl\0", "basic_testcode.sh\0");
     run_testsuit("glibc\0", "basic_testcode.sh\0");
@@ -272,6 +274,19 @@ fn test_pre() -> i32 {
 // final-2026
 #[allow(unused)]
 fn test_final_2026() -> i32 {
+    run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
+    run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
+    // boot_arceos_helloworld_in_qemu();
+    shutdown();
+    0
+}
+
+#[allow(unused)]
+fn test() -> i32 {
+    if netdev_test_cases::run_all()==1 {
+        shutdown();
+        return 1;
+    }
     if !fstat_unlink_regression::run() {
         shutdown();
         return 1;
@@ -288,9 +303,13 @@ fn test_final_2026() -> i32 {
         shutdown();
         return 1;
     }
-    run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
-    run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
-    // boot_arceos_helloworld_in_qemu();
-    shutdown();
+    if !mprotect_split_regression::run() {
+        shutdown();
+        return 1;
+    }
+    if !sigreturn_regression::run() {
+        shutdown();
+        return 1;
+    }
     0
 }
