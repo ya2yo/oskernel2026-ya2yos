@@ -29,23 +29,29 @@ Ya2yOS 将可调度执行单元与进程级资源分开建模。`TaskControlBloc
 多个 TCB 因而观察同一组进程资源。
 
 ```rust
+// 代码块只摘录影响本章流程的字段；源码还包含调度、资源限制等字段。
 pub struct Process {
     memory_set: ResourceSlot<MemorySet>,
     sig_table: ResourceSlot<Mutex<SigTable>>,
     pub fd_table: Arc<FdTable>,
     pub fs_info: Arc<FSInfo>,
     pub pid: usize,
+    home_hart: usize,
     pub meta: Mutex<ProcessMeta>,
+    pub rlimit_fsize: Mutex<RLimit>,
 }
 
 pub struct TaskControlBlock {
     tid: TidHandle,
     kernel_stack: KernelStackOnHeap,
     pub process: Arc<Process>,
+    cpu_affinity: AtomicUsize,
+    scheduled_hart: AtomicUsize,
+    on_cpu: AtomicBool,
     pub interrupted: AtomicBool,
     pub interrupt_waker: AtomicWaker,
     pub(crate) sched_entity: SchedEntity,
-    inner: Mutex<TaskControlBlockInner>,
+    inner: RemoteTlbMutex<TaskControlBlockInner>,
 }
 ```
 
@@ -56,10 +62,12 @@ pub struct TaskControlBlock {
 文件操作不需要持有一个覆盖整个 `Process` 的大锁。
 
 `ProcessMeta` 保存不属于资源槽位的线程组关系和可等待状态：活线程弱引用列表、
-子进程弱引用列表、父 PID、进程组 ID（PGID）、会话 ID（SID）、子进程事件
-`AtomicWaker`、退出信号、线程组退出码、stop/continue 事件、终止信号和资源使用
-快照。全局 `PID_2_PROCESS_ARC` 是 `BTreeMap<usize, Arc<Process>>`；进程创建时
-插入，父进程实际回收 zombie 时才由 `Process::remove_from_global_map()` 删除。
+子进程弱引用列表、父 PID、`is_child_subreaper`、进程组 ID（PGID）、会话 ID（SID）、
+子进程事件 `AtomicWaker`、退出信号、线程组退出码、stop/continue 事件、终止信号、
+资源使用快照、`comm` 和 `personality`。全局 `PID_2_PROCESS_ARC` 是
+`BTreeMap<usize, Arc<Process>>`；进程创建时插入，父进程实际回收 zombie 时才由
+`Process::remove_from_global_map()` 删除。`tasks` 与 `children` 都是弱引用列表，
+退出或等待路径会清理其中已经失效的引用。
 
 #figure(
   relation((
@@ -97,19 +105,20 @@ TCB 的 trap 上下文实际位于用户地址空间的专用映射页，`TaskCo
 == 调度策略与全局任务表
 
 `task::ready_queue` 是稳定门面，具体实现由互斥的 `scheduler-cfs` 与 `scheduler-rr`
-Cargo feature 在编译期选择。默认 `scheduler-cfs` 为每个 Hart 建立一个
-`Mutex<CfsHartRunQueue>`，其内部 `BinaryHeap<CfsEntry>` 以 `(vruntime, tid)`
-反向排序，使 `pop()` 取得
-虚拟运行时间最小的任务。TCB 的 `SchedEntity` 保存 `vruntime`、`exec_start` 与原子
-`on_rq` 去重位；任务离开 `Processor.current` 时按硬件 tick 统计执行时间，并使用
-Linux nice -20..19 的权重表折算 `vruntime`。每个 Hart 的 `min_vruntime` 单调推进，
-新任务首次入队时被放置到目标 Hart 的这一坐标，避免跨 Hart 使用不同 runqueue 基线。
+Cargo feature 在编译期选择。默认 `scheduler-cfs` 使用所有 Hart 共享的
+`Mutex<CfsRunQueue>`，内部 `BinaryHeap<CfsEntry>` 以 `(vruntime, tid)` 反向排序，使
+`pop()` 取得虚拟运行时间最小的任务。`fetch_task(hartid)` 会保留暂时不满足当前 Hart
+CPU affinity 的堆项，并从同一共享堆中选择可运行任务；因此不存在每 Hart 独立的
+CFS heap 或 `min_vruntime`。TCB 的 `SchedEntity` 保存 `vruntime`、`exec_start` 与
+原子 `on_rq` 去重位；任务离开 `Processor.current` 时按硬件 tick 统计执行时间，并
+使用 Linux nice -20..19 的权重表折算 `vruntime`。共享队列的 `min_vruntime` 单调推进，
+新任务首次入队时被放置到这一全局坐标。
 
 `scheduler-rr` 保留原有 FIFO 语义：单个全局 `VecDeque` 从队尾入队、队首出队，
-辅以 TID 集合去重，并在取任务时跳过不属于当前 `home_hart` 的项。CFS 使用 per-Hart
-heap，RR 使用全局队列，但二者都通过同一 `add_task()` / `fetch_task()` API 服务唤醒
-路径。`tid_to_task` 独立维护 `BTreeMap<usize, Arc<TaskControlBlock>>`，用于按 TID
-查找线程、遍历计时器候选和在线程退出的 idle 控制流中移除条目。
+辅以 TID 集合去重，并在取任务时跳过不属于当前 `scheduled_hart` 的项。CFS 与 RR
+都通过同一 `add_task()` / `fetch_task()` API 服务唤醒路径。`tid_to_task` 独立维护
+`BTreeMap<usize, Arc<TaskControlBlock>>`，用于按 TID 查找线程、遍历计时器候选和
+在线程退出的 idle 控制流中移除条目。
 
 每个 Hart 有一个 `Processor`，其中包含 `current: Option<Arc<TaskControlBlock>>` 和
 `idle_task_cx`。`run_tasks()` 检查普通计时器、阻塞任务计时器和 futex 超时，记账并
@@ -134,6 +143,26 @@ stealing 或负载均衡策略，也没有实现实时调度类。已有远程�
   caption: [调度入口与状态转换的当前控制流。]
 )
 
+== rseq：线程级可重启序列
+
+Ya2yOS 在 `os/src/task/rseq.rs` 实现 classic 32 字节 Linux `rseq(2)` ABI。注册状态
+保存在 TCB 的 `TaskControlBlockInner.rseq` 中，因此它属于线程而不是 `Process`；
+`abi_addr` 必须按 32 字节对齐，长度必须为 32，内核会先探测并初始化用户 ABI 区域。
+当前实现发布当前 Hart 的 CPU 编号；由于尚无 NUMA 拓扑或 per-mm 并发 ID，`node_id`
+和 `mm_cid` 写为 0，未通过 auxv 宣布更新的扩展布局。
+
+注册时只接受 `flags == 0`；重复注册按 ABI 参数返回 `EBUSY` 或参数错误。注销使用
+`RSEQ_FLAG_UNREGISTER`，要求地址、长度和签名与当前注册完全匹配，否则返回
+`EINVAL` 或 `EPERM`。线程执行 `execve` 时清除旧映像中的 rseq 注册，`CLONE_VM` 创建的
+子线程也清除 rseq，以避免继承指向旧线程局部区域的用户指针；普通 fork 路径则继承
+该状态。
+
+在返回用户态前，内核将当前 Hart 写入 `cpu_id_start/cpu_id`，检查用户的
+`rseq_cs` 描述符和 abort 签名：若指令指针仍位于可重启临界区内，就清除 `rseq_cs`
+并把 trap 返回地址改为 `abort_ip`；否则仅清除已完成的描述符。用户内存或描述符
+无效时停止继续尝试，并按错误路径向线程交付 `SIGSEGV`。这使 rseq 的 CPU 发布和
+临界区回滚与 TCB 调度、exec、clone 生命周期保持一致。
+
 == 创建：clone 与 clone3
 
 `sys_clone()` 先解析低位退出信号和 `CloneFlags`，校验不支持或互斥的组合，再调用
@@ -146,7 +175,7 @@ TCB、建立 trap 上下文、登记进程任务表和全局 TID 表。这样避
 #table(
   columns: (1.6fr, 3fr),
   table.header([*标志或情形*], [*当前实现*]),
-  [`CLONE_VM`], [共享父 `MemorySet`；若 `stack != 0` 仅为子线程分配 trap context，否则分配用户资源。非 `CLONE_VM` 路径使用 `MemorySetInner::from_existed_user()`，并复制用户栈和 trap context 区域。],
+  [`CLONE_VM`], [共享父 `MemorySet`，但不必然共享 `Process`：与 `CLONE_THREAD` 一起使用时复用父线程组；非线程型 `CLONE_VM` 子进程创建新的 `Process`/PID，但引用同一地址空间。非 `CLONE_VM` 路径复制用户地址空间。`CLONE_VM` 子任务通常清空 alternate signal stack 并清除 rseq；`CLONE_VM | CLONE_VFORK` 是例外。],
   [`CLONE_FS`], [共享 `FSInfo`；否则以 `FSInfo::from_another()` 复制。],
   [`CLONE_FILES`], [共享 `FdTable`；否则以 `FdTable::from_another()` 复制。],
   [`CLONE_SIGHAND`], [共享信号动作表；否则复制，`CLONE_CLEAR_SIGHAND` 则创建空表。],
@@ -162,8 +191,10 @@ TCB、建立 trap 上下文、登记进程任务表和全局 TID 表。这样避
 `/proc/<pid>` 目录项。`CLONE_THREAD` 不创建新的 `/proc` 进程目录。
 
 `sys_clone3()` 已接入 `clone_args` 的用户内存读取和版本长度检查，但它是一个适配层：
-将可支持字段转换为 legacy `sys_clone()` 参数。`set_tid`/`set_tid_size` 被拒绝；
-pidfd/cgroup 相关请求最终会被 flags 校验拒绝。因此不能将 `clone3` 记为完整实现。
+将可支持字段转换为 legacy `sys_clone()` 参数。`set_tid`/`set_tid_size` 非零会直接返回
+`EINVAL`；`pidfd` 非零时先执行用户指针可读性检查，但 pidfd 功能本身仍因
+`CLONE_PIDFD` 校验失败而不可用；`CLONE_INTO_CGROUP` 等 cgroup 请求也会被 flags
+校验拒绝。因此不能将 `clone3` 记为完整实现。
 
 #figure(
   flow((
@@ -221,10 +252,12 @@ ELF 末尾预留 guard page 后建立初始 brk 区域，并生成 `AT_PHDR`、`
 `ProcessMeta.tasks` 移除自身的弱引用。它还会唤醒阻塞的兄弟线程，并从相关 futex
 等待队列删除条目，避免后续 futex 唤醒或超时把已经清理的线程再次入队。
 
-当最后一个线程退出时，退出路径冻结使用量，清理文件描述符与文件系统上下文，调用
-`exit_and_reparent()` 将仍存活的子进程改挂到 PID 1，并按子进程的 `exit_signal`
-通知父进程和唤醒 `child_exit_event`。`Process` 本身在此时仍保留在全局 PID 映射中，
-以供父进程观察 zombie；真正删除发生在成功的等待调用中。
+当最后一个线程退出时，退出路径冻结使用量，清理 trap area、地址空间数据、文件描述符
+与文件系统上下文、POSIX 文件锁和文件租约，调用 `exit_and_reparent()` 将仍存活的
+子进程优先改挂到父系中最近的存活 `child subreaper`，没有时才回退到 PID 1，并按
+子进程的 `exit_signal` 通知父进程和唤醒 `child_exit_event`。已经是 zombie 的被收养
+子进程也会通知新的父进程。`Process` 本身在此时仍保留在全局 PID 映射中，以供父进程
+观察 zombie；真正删除发生在成功的等待调用中。
 
 `sys_waitpid()` 支持 POSIX PID 选择语义（指定 PID、当前/指定进程组、任意子进程），
 并处理 `WNOHANG`、`WNOWAIT`、`WUNTRACED`/`WSTOPPED`、`__WALL` 与 `__WCLONE`。
@@ -261,5 +294,5 @@ ELF 末尾预留 guard page 后建立初始 brk 区域，并生成 `AT_PHDR`、`
   [clone3], [仅将支持的 `clone_args` 字段转换到 `sys_clone`；set_tid、pidfd 和 cgroup 等扩展未实现。],
   [ELF 动态加载], [内核映射 `PT_INTERP` 指定的解释器并提供 auxv；共享库解析与重定位在用户态完成。],
   [Linux 调度 ABI], [`sched_setscheduler`/`sched_getscheduler` 等仍为兼容实现，不代表完整 `SCHED_OTHER`/实时类语义。],
-  [多核], [CFS 按 Hart 分队列，RR 使用按 `home_hart` 过滤的全局队列；已有远程入队和 IPI/空闲 Hart 通知，但尚无完整迁移、work stealing 或负载均衡。TID 映射仍为全局锁保护结构。],
+  [多核], [CFS 使用所有 Hart 共享的就绪堆，并按线程 CPU affinity 过滤当前 Hart 不可运行的任务；RR 使用全局 FIFO 队列并按 `scheduled_hart` 过滤。任务 affinity 可允许任务在多个在线 Hart 上运行，已有远程入队和 IPI/空闲 Hart 通知，但尚无完整主动迁移、work stealing 或负载均衡策略。TID 映射仍为全局锁保护结构。],
 )
