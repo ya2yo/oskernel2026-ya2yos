@@ -12,6 +12,8 @@ use hashbrown::HashSet;
 use log::{debug, warn};
 use spin::Lazy;
 
+use crate::task::current_task;
+
 // TODO: 该位置很可能与具体的img有关，后人如果基于我们的进行修改，请注意修改这里
 static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
@@ -46,6 +48,20 @@ static DYNAMIC_PATH: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 });
 
 static DYNAMIC_PREFIX: Lazy<Vec<&'static str>> = Lazy::new(|| vec!["/glibc/lib/", "/musl/lib/"]);
+
+/// Whether basename-based compatibility redirection belongs to the current
+/// executable. Native final-round programs must keep failed RPATH probes as
+/// `ENOENT` so their loader can continue into the multiarch directories.
+fn current_executable_uses_legacy_library_store() -> bool {
+    let Some(task) = current_task() else {
+        return false;
+    };
+    let exe = task.process.fs_info.get_exe();
+    exe == "/glibc"
+        || exe.starts_with("/glibc/")
+        || exe == "/musl"
+        || exe.starts_with("/musl/")
+}
 
 /// Debian-style multiarch directories and GCC toolchain directories contain
 /// authoritative files from the mounted root filesystem. They must not fall
@@ -91,6 +107,10 @@ fn is_legacy_library_search_path(path: &str) -> bool {
 
 pub fn map_library_path(requested_path: &str) -> Option<&str> {
     if is_native_multiarch_library_path(requested_path) {
+        return None;
+    }
+
+    if !current_executable_uses_legacy_library_store() {
         return None;
     }
 
@@ -173,6 +193,10 @@ pub fn map_dynamic_link_file(path: &str) -> &str {
         || is_native_toolchain_plugin_path(path)
         || !is_legacy_library_search_path(path)
     {
+        return path;
+    }
+
+    if !current_executable_uses_legacy_library_store() {
         return path;
     }
 

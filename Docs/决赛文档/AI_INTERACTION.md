@@ -3293,3 +3293,21 @@
   取指故障或退出码 139。LoongArch64 未在本轮重新验证。
 - **关联问题**：[嵌套 RISC-V QEMU 文件映射 VMA 切分偏移错误](./problem/nested-qemu-file-mmap-vma-split-offset.md)
 - **关联 commit**：当前工作区未提交
+
+#### LoongArch clang native/legacy GLIBC 混用（8.11）
+
+- **工具/模型**：Codex（GPT-5）
+- **后续勘误**：本条取代此前把同一高地址故障归因于 signal helper、跨 Hart 指令流或
+  无条件 `ibar` 的结论；相关实验已撤回。
+- **场景**：维护者要求持续分析 GDB 与多轮 `log.ans`，直至修复 clang 在
+  `0xfffffffffffe4c44` 的共同 `FetchInstructionPageFault`，正式输出直接写入 `log.ans`。
+- **描述**：loader 反汇编和 `LD_DEBUG=libs` 证明 native GLIBC 2.41 loader 被内核动态库
+  basename 兼容层与 `/glibc` GLIBC 2.38 libraries 混用，导致 `_rtld_global_ro` 私有布局
+  错配，把 `_dl_catch_error` 槽当成 `_dl_find_object`，callback=0 后跳到故障地址。修复为
+  仅对 executable provenance 位于 `/glibc` 或 `/musl` 的程序启用 legacy fallback；原生
+  RUNPATH 探测保留 `ENOENT` 并继续 native multiarch 搜索。
+- **验证边界**：`LD_DEBUG=libs` 已确认 native multiarch 库；1850 次 clang 串行/并发压力
+  全部通过，无 WARN、原 fault、SIGSEGV 或 panic。正式 LoongArch BuildStorm 结果见根目录
+  `log.ans`。
+- **关联问题**：[LoongArch clang 取指异常](./problem/loongarch-signal-vdso-sigreturn.md)、[BuildStorm 动态库路径](./problem/buildstorm-final-2026-dynamic-library-path.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

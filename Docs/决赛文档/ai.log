@@ -11734,3 +11734,36 @@ VMA 起点变为 `0x2a232eb000` 后仍保留旧文件偏移。于是 `csr_ops[0x
 ## 2026-08-11：LoongArch 同地址空间并发 Hart 取指同步补强
 
 维护者要求分析 `log.ans` 中 PID 870--872 在 `0xfffffffffffe4c44` 的共同 `FetchInstructionPageFault`，并质疑 `activate_current_hart()` 是否只是判断函数以及为何无条件调用。源码确认它通过 `active_harts.fetch_or()` 发布当前 Hart，返回值只表示 bit 是否由 0 变 1；`trap_return()` 已先安装当前任务页表，因此调用对象就是对应地址空间。修复为 LoongArch 每次用户态返回执行 `ibar 0`，RISC-V 保持迁入时 fence；同时统一 `memory_layout::sigreturn_va()` API，修复 RISC-V 遗留 `E0425`。双架构 release、LoongArch `fault-diagnostics`、格式及差异检查通过；QEMU 因沙箱 `/var/tmp` 只读未启动。
+
+## 2026-08-11：LoongArch clang native/legacy GLIBC 混用修复
+
+### 用户需求
+
+维护者连续提供 `log.ans`、`server.ans`、`tmp_01.ans` 和 GDB 运行结果，要求不要停在
+`activate_current_hart`、eager ELF 映射等猜测上，持续修复 clang 进程共同发生的
+`FetchInstructionPageFault`，并要求正式 QEMU 输出直接写入根目录 `log.ans`。
+
+### AI 分析与采纳结论
+
+反汇编实际 loader 后，将 `ra=0x1500001084` 定位到 `_dl_catch_exception` 的
+`jirl $ra,$r12,0` 返回点。进一步追踪 `_Unwind_Find_FDE -> _dl_find_object`，发现执行却
+进入 `_dl_catch_error`，其 callback 为 0。`LD_DEBUG=libs` 证明 native clang 的
+`/usr/bin/../lib/libc.so.6`、`libm.so.6` 和 `libgcc_s.so.1` 探测被内核 basename 兼容层
+重定向到 `/glibc/lib`。
+
+实际解释器来自 Debian GLIBC 2.41，而 `/glibc/lib` 是 GLIBC 2.38。两者私有
+`_rtld_global_ro` 布局不兼容，旧 libc 把 loader 的 `_dl_catch_error` 槽当成
+`_dl_find_object`；`0xfffffffffffe4c44` 是错误回调后的结果，不是 signal/vDSO、TLB、
+Hart 激活、`ibar`、DMW、eager mapping 或 QEMU 解码问题。此前相关实验全部撤回。
+
+采纳修复：以当前 executable provenance 限制 legacy basename fallback。只有从 `/glibc`
+或 `/musl` 启动的历史程序使用该兼容规则；原生程序的失败 RUNPATH 探测保留 `ENOENT`，
+让 loader 继续进入 native multiarch 目录，显式旧库路径仍保持有效。
+
+### 修改与验证
+
+代码只修改 `os/src/fs/map_dynamic_link.rs`，并修订 signal/动态库问题复盘、开发日志和 AI
+记录。`LD_DEBUG=libs` 确认 clang 改为加载 `/lib/loongarch64-linux-gnu` 下的 GLIBC 2.41
+libraries。串行 50 次与三轮并发 600 次 clang 压力共 1850 次全部通过，无原 fault、WARN、
+SIGSEGV 或 panic。正式 LoongArch BuildStorm 通过
+`make run TARGET_ARCH=loongarch64 > log.ans 2>&1` 直接记录最终结果。

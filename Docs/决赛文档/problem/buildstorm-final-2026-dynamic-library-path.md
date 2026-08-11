@@ -79,3 +79,21 @@ timeout 120s make run TARGET_ARCH=riscv64 > log.ans 2>&1
 - 当前宿主只能运行 QEMU `2G / 2 CPU`，而 final 测例正式配置要求 `8G / 8 CPU`。
   在该受限配置下，后续静默 minibuild 编译持续满载运行并被外层 timeout 终止，未将
   完整 BuildStorm 编译或性能分项记为通过。
+
+## 2026-08-11：LoongArch native loader 与旧 libc 混用
+
+LoongArch clang 的新故障表面为 `_dl_find_object` 路径中的
+`FetchInstructionPageFault`，`sepc=stval=0xfffffffffffe4c44`。实际解释器是 Debian
+GLIBC 2.41，而内核把 native clang 的 `/usr/bin/../lib/*.so` 探测按 basename 改写到
+`/glibc/lib` 的旧 GLIBC 2.38 库。两套版本的 `_rtld_global_ro` 私有布局不兼容，loader
+把 `_dl_catch_error` 槽当成 `_dl_find_object`，callback=0 后才跳到该高地址；这不是
+TLB、Hart 激活、`ibar` 或 signal restorer 问题。
+
+`map_dynamic_link.rs` 现在只允许 executable provenance 位于 `/glibc` 或 `/musl` 的历史
+程序使用 basename 兼容回退。原生 `/usr`、`/bin` 和 Rust toolchain 的失败探测保留
+`ENOENT`，由 Debian loader 继续搜索 `/lib/loongarch64-linux-gnu` 等 multiarch 目录；
+显式 `/glibc/lib/...` 请求仍可工作。LoongArch native `libc`、`libm` 和 `libgcc_s` 已由
+`LD_DEBUG=libs` 确认从 multiarch 目录加载。
+
+串行 50 次与三轮并发 600 次 clang 压力全部通过，共 1850 次；正式 BuildStorm 的最终
+`BUILDSTORM_COMPILE` 与 shutdown 结果记录在根目录 `log.ans`。
