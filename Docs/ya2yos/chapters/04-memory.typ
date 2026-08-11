@@ -13,12 +13,16 @@ COW 的高层接口，页表格式、内核映射和物理 RAM 布局由 `os/src
   table.header([*位置*], [*当前职责*]),
   [`os/src/mm/address.rs`], [物理/虚拟地址与页号类型，以及页边界转换。],
   [`os/src/mm/frame_alloc/`], [伙伴式 CMA 物理页分配、`FrameTracker` 和页缓存接口。],
+  [`os/src/mm/group.rs`], [`GROUP_SHARE` 共享组：mmap 共享 VMA 的 groupid 分配与共享帧登记。],
   [`os/src/mm/heap_allocator.rs`], [静态内核堆与 `ContinuousPages`。],
   [`os/src/mm/map_area.rs`], [`MapArea`、映射权限、映射类型与 mmap 文件元数据。],
   [`os/src/mm/memory_set/`], [`MemorySet` 锁封装、ELF 装载、fork/COW、VMA 操作、mmap 与缺页分发。],
+  [`os/src/mm/remote_tlb.rs`], [跨 hart TLB shootdown：全局更新锁、per-hart mailbox、IPI 与确认协议。],
   [`os/src/mm/page_fault_handler.rs`], [匿名/文件 mmap 缺页、COW 写保护缺页和文件 EOF 判断。],
   [`os/src/mm/translate.rs`], [用户地址校验、跨页复制、按需分配触发和安全 VA 到 PA 转换。],
+  [`os/src/mm/uaccess.rs`], [per-hart uaccess 状态、`Scope`、fixup/retry 与同步内核 fault 分类。],
   [`os/src/mm/shm.rs`], [System V 共享内存段的创建、附加、分离和删除。],
+  [`os/src/mm/mmap_bad_address.rs`], [mmap 坏地址表：`if_bad_address` 与坏地址的插入、移除。],
   [`os/src/arch/*/qemu/page_table.rs`], [RISC-V Sv39 与 LoongArch 页表项、激活、COW 与 TLB 操作。],
 )
 
@@ -101,10 +105,46 @@ CMA，然后执行 `remap_test()`。RISC-V 的测试检查内核映射权限；L
 并建立 PTE，`unmap_one()` 删除 PTE 与相应 tracker。`push()` 立即映射整个区域，
 `push_lazily()` 只登记 VMA，`push_with_given_frames()` 将既有的共享帧映射到新的 VMA。
 
+CMA 是全局的伙伴式连续物理页分配器，页缓存以 32/128 页为低、高水位，空时批量
+补充 16 页，超过高水位时最多刷回 64 页。RISC-V 启动页表只覆盖首个 1 GiB，
+所以 `init_cma()` 先纳管可访问部分，完整内核直映射激活后再由 `init_cma_late()`
+加入其余 RAM；LoongArch 则遍历分段物理范围，避免把 PCI/MMIO hole 当作 RAM。
+这解决的是启动映射和物理布局差异，不是 NUMA 感知分配。CMA OOM 会使帧分配返回
+失败，用户缺页随后无法建立映射并由 trap 层转为相应错误信号。
+
 用户页表由 `PageTable::new_from_kernel()` 创建。RISC-V 路径复制内核高地址部分的根
 页表项，使陷入内核后可继续访问内核映射；架构相关激活函数在切换地址空间时写入页表
 根并刷新 TLB。该共享的是内核映射结构，而用户 VMA、用户页表下层和用户 `MapArea`
 仍属于各自 `MemorySet`。
+
+== 多核与异构架构下的一致性
+
+这里的“异构”指同一套内存管理抽象运行在 RISC-V64 与 LoongArch64 两种架构上，
+而不是已经实现了 NUMA、多种内存一致性域或异构内存节点。`MemorySet`、`MapArea`、
+`MapPermission`、缺页和 COW 逻辑共用；页表项格式、TLB 指令、权限位和物理 RAM
+布局由 `os/src/arch/` 的实现分别适配。RISC-V 使用 Sv39 和内核物理直映射，
+LoongArch 使用自己的页表/TLB 机制，并用 `PHYSICAL_MEMORY_RANGES` 跳过 PCI/MMIO
+空洞。物理页目前仍由全局 CMA 与页缓存管理，不按 hart、架构或 NUMA 节点分区。
+
+多 hart 共享一个 `MemorySet` 时，`active_harts` 是该地址空间当前可能仍被硬件访问的
+hart 位图。用户返回前，`activate_for_user()` 在持有地址空间读锁时安装页表并发布
+当前 hart；调度离开时先清除对应位。页表写者据此决定是否广播失效请求。会替换或移除
+PPN 的操作（COW、`munmap`、`mremap`、fork/exec 回收等）还会暂时保留旧的
+`Arc<FrameTracker>`，直到所有目标 hart 完成确认，避免远端仍持有旧 TLB 时物理页被
+重新分配。只改变同一 PPN 的权限或脏位时，旧翻译至多更严格，可以走不保留帧的更新路径。
+
+更新协议由 `remote_tlb::UPDATE_LOCK` 与 `MemorySet` 写锁组成，顺序固定为
+`UPDATE_LOCK -> MemorySet 写锁 -> 子模块锁`；禁止在持有 `MemorySet` guard 时反向
+获取 `UPDATE_LOCK`，也不在地址空间锁内进入文件系统、调度、网络或信号路径。新建
+lazy PTE 的缺页快路径不会留下旧的有效翻译，因此不必广播；真正替换 PPN 或修改权限
+则执行 shootdown。发起 hart 先刷新本地 TLB 和指令缓存，再为所有活动远端 hart 准备
+带 sequence 的 mailbox，并一次性发送 IPI。目标 hart 在 trap/用户返回等可重入点轮询
+mailbox，执行本地 TLB invalidate 与 instruction fence 后写入 acknowledged；等待者
+会重新读取活动位图，已脱离该地址空间的 hart 不再阻塞协议。可执行页也必须做指令
+同步，以防 hart 复用旧的译码指令流。
+
+因此，异构支持的核心是“共用地址空间生命周期与一致性协议，架构层提供页表、TLB、
+IPI 和用户访问原语”，而不是把两种架构强行统一为同一套硬件页表操作。
 
 == ELF、brk 与按需分配
 
@@ -190,13 +230,20 @@ fork 前，匿名或文件后备的 `MAP_SHARED` VMA 会被预先 fault：否则
 `map_perm` 和既有 PTE；它不把未分配页面 materialize。系统调用入口要求地址与长度
 页对齐，并检查 `addr + len` 溢出。
 
-`mremap()` 当前仅支持完整 `MapAreaType::Mmap` 私有 VMA 的 `MREMAP_MAYMOVE` 迁移。等长
-请求直接返回原地址；变长时在同一 `MemorySet` 写锁内保留旧 VMA，选择不相交的目标地址，
-先复制全部已驻留页，全部成功后才卸载旧映射并刷新 TLB。私有文件映射保留其 metadata 和
-未驻留页的 lazy fault 语义。`MAP_SHARED`/`MAP_SHARED_VALIDATE` VMA、`MREMAP_FIXED`、
-`MREMAP_DONTUNMAP` 以及没有 `MREMAP_MAYMOVE` 的请求尚未实现，返回 `ENOSYS`；
-`MREMAP_FIXED` 缺少 `MREMAP_MAYMOVE` 时返回 `EINVAL`。`mincore()` 检查范围覆盖和读权限，
-并按 PTE 是否已存在向用户返回驻留位；内核没有 swap，已映射页即视为驻留。
+`madvise()` 先要求整个范围被现有 VMA 覆盖。`MADV_NORMAL`、`RANDOM`、`SEQUENTIAL`
+和 `WILLNEED` 完成参数兼容检查；`MADV_DONTNEED` 对匿名 brk 和私有 mmap 释放驻留
+帧而保留 VMA，后续访问重新缺页，`MAP_SHARED` 和固定 ELF 映射按实现例外保留。
+`mlock`/`munlock`/`mlockall`/`munlockall`/`mlock2` 目前只有参数校验路径：由于没有
+swap，已分配页本来就驻留，因此不建立真正的锁页记账和资源限制。
+
+`mremap()` 由 `MemorySet::mremap()` 根据 flags 分派到原地扩展/收缩或可移动迁移路径。完整覆盖的 `Mmap`（以及当前实现允许的 `Shm`）区域可以原地调整；带
+`MREMAP_MAYMOVE` 时选择不相交的新范围，先复制所有已驻留页，成功后才卸载旧映射，
+未驻留页仍保持 lazy fault。`MAP_SHARED` 的驻留页也会深复制到目标帧，因而当前
+语义不是跨地址范围继续共享同一 PPN；`MAP_SHARED_VALIDATE` 明确返回 `ENOSYS`。
+`MREMAP_FIXED` 需要同时带 `MREMAP_MAYMOVE`，目标范围不能与源范围重叠，并会先处理
+目标区已有映射。所有可能替换/释放 PPN 的路径都通过地址空间更新协议刷新 TLB。
+`mincore()` 检查范围覆盖和读权限，并按 PTE 是否存在返回驻留位；内核没有 swap，
+已映射页即视为驻留。
 
 #figure(
   sequence(((
@@ -206,6 +253,33 @@ fork 前，匿名或文件后备的 `MAP_SHARED` VMA 会被预先 fault：否则
   )),
   caption: [VMA 系统调用的当前交互。]
 )
+
+== uaccess 设计方案
+
+用户指针不能在 syscall 中直接当作内核指针解引用。当前方案把访问分成“检查、按页
+转换、架构 fast path”三层。`checked_user_range()` 先拒绝空首地址、非规范虚拟地址
+和整数溢出；随后扫描所有覆盖页的 VMA 权限。普通 `copy_from_user()`/
+`copy_to_user()` 按页取得 PPN，缺页时调用 `MemorySet::handle_page_fault()`，写入时
+还显式处理 present COW PTE，最终以 `EFAULT` 表示地址、权限或缺页失败。
+
+`translate_user_va_safe()` 先用一次安全读触发 lazy allocation，再返回已经存在的
+VA 到 PA；只用于已确认映射的内部路径的 direct helper 则不处理缺页、不处理 COW，
+调用者必须先保证页面有效。这一划分避免把“查询物理地址”误写成会隐式分配的操作。
+
+对当前 hart 正在运行、且长度不超过 256 字节的小型复制，`translate.rs` 会尝试架构
+uaccess fast path。RISC-V 在 `Scope` 期间临时启用 sstatus.SUM，LoongArch 使用
+对应的汇编复制原语；两者都由 `Scope` 记录当前 `MemorySet` 和 fault fixup 地址，
+退出时恢复 per-hart 状态。更大的缓冲区、非当前地址空间或 fast path 失败时，回到
+软件按页转换路径，因而不会让大块 I/O 长时间占用地址空间写者需要的锁。
+
+直接复制引起的同步内核 fault 由 `os/src/mm/uaccess.rs` 的每 hart 状态接管。状态含
+`active`、地址空间指针、fixup PC 和一次性 `retry_vpn`：若故障页已经有允许当前
+访问的 present PTE，只把它视为本地陈旧 TLB，刷新一次后重试；若是缺页、文件后备
+页、COW 或权限不满足，则跳转 fixup。fixup 不会在 trap frame 中进入可能阻塞的
+普通缺页解析器，调用方随后在可阻塞的软件路径中重新执行。无法确认是当前任务的
+地址空间、用户地址范围之外的内核故障或其他异常则返回 `Unhandled`，保留内核错误
+处理路径。这样既避免了直接访问用户内存的安全问题，也避免在同步 fault 中重新取得
+任务锁或阻塞文件系统而形成死锁。
 
 == System V 共享内存与用户复制
 
@@ -233,9 +307,15 @@ VMA 起始页移除映射；`shm_drop()` 删除全局段记录。当前 `MemoryS
   columns: (1.5fr, 2.9fr),
   table.header([*主题*], [*当前实现边界*]),
   [物理页回收], [无 swap；`FrameTracker` 最后引用释放后归还 CMA。],
+  [多核一致性], [`active_harts`、全局更新锁和 mailbox/ IPI shootdown 保证共享地址空间的旧 TLB 在帧回收前失效；当前没有 per-hart 或 NUMA 本地分配器。],
+  [uaccess 快路径], [仅当前 hart 的活动地址空间和不超过 256 字节的小复制使用架构原语；缺页/COW/文件 fault 回退到可阻塞的软件按页路径。],
+  [mlock 系列], [无 swap 时已分配页天然驻留；`mlock`/`munlock`/`mlockall`/`munlockall`/`mlock2` 仅做参数校验并 no-op。],
+  [异构架构], [RISC-V64 与 LoongArch64 共用 VMA/COW/uaccess 高层协议，但 PTE、权限编码、TLB、IPI 和物理 RAM 分段分别实现；未实现 NUMA 拓扑或不同内存一致性域。],
   [mmap 地址空间], [普通 mmap 有 2 GiB 延迟 VMA 计数上限；固定 mmap 不计入该计数。],
-  [mremap], [仅完整 private mmap 的 `MREMAP_MAYMOVE`：先复制 resident 页，成功后迁移；shared、fixed、DONTUNMAP 和无 MAYMOVE 未实现。],
+  [mremap], [支持完整 `Mmap`/`Shm` 区域的原地调整和 `MREMAP_MAYMOVE` 迁移；驻留页先复制后提交，`MAP_SHARED_VALIDATE` 与 `MREMAP_DONTUNMAP` 未实现；fixed 必须配合 MAYMOVE。],
   [SysV shmat], [仅自动选址；显式非零地址尚未实现。],
   [文件 mmap EOF], [完整页落在映射时 EOF 外会发 `SIGBUS`；最后一个部分页允许零填充。],
   [跨架构差异], [高层 VMA/COW 接口通用，PTE 格式、TLB 和内核物理映射依 RISC-V/LoongArch 不同。],
 )
+
+#text(size: 8.5pt, fill: rgb("536471"))[_实现追溯：_ 本章对应 `os/src/mm/`、`os/src/syscall/mm/`、`os/src/mm/remote_tlb.rs`、`os/src/mm/uaccess.rs` 以及 `os/src/arch/riscv64/`、`os/src/arch/loongarch64/` 的当前实现；异构与多核部分描述的是共享抽象、分架构适配和现有 hart shootdown 协议，不扩展为尚未实现的 NUMA 能力。]
