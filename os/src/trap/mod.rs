@@ -13,7 +13,7 @@
 //! to [`syscall()`].
 
 pub mod trap_types;
-use core::panic::PanicInfo;
+use core::{mem::size_of, panic::PanicInfo};
 
 use crate::{
     arch::{cpu::hart_id, page_table::PageTable, trap_interface::tlb_page_modify_handler},
@@ -82,6 +82,40 @@ pub fn init() {
 /// task is about to receive a synchronous fault signal. This is deliberately
 /// feature-gated: normal lazy allocation faults can be extremely frequent.
 #[cfg(feature = "fault-diagnostics")]
+#[derive(Debug)]
+struct UserFaultStackSample {
+    sp_plus_8: usize,
+    sp_plus_16: usize,
+    sp_plus_0x178: usize,
+    sp_plus_0x1b8: usize,
+    instruction_before_ra: Option<u32>,
+}
+
+#[cfg(feature = "fault-diagnostics")]
+fn user_fault_stack_sample(
+    memory_set: &crate::mm::MemorySet,
+    sp: usize,
+    ra: usize,
+) -> Option<UserFaultStackSample> {
+    const WORDS_THROUGH_SP_PLUS_0X1B8: usize = 56;
+    let words = crate::mm::copy_from_user_val::<[usize; WORDS_THROUGH_SP_PLUS_0X1B8]>(
+        memory_set,
+        sp as *const [usize; WORDS_THROUGH_SP_PLUS_0X1B8],
+    )
+    .ok()?;
+    let instruction_before_ra = ra.checked_sub(size_of::<u32>()).and_then(|address| {
+        crate::mm::copy_from_user_val::<u32>(memory_set, address as *const u32).ok()
+    });
+    Some(UserFaultStackSample {
+        sp_plus_8: words[1],
+        sp_plus_16: words[2],
+        sp_plus_0x178: words[0x178 / size_of::<usize>()],
+        sp_plus_0x1b8: words[0x1b8 / size_of::<usize>()],
+        instruction_before_ra,
+    })
+}
+
+#[cfg(feature = "fault-diagnostics")]
 fn log_user_fault_signal(
     hartid: usize,
     cause: Trap,
@@ -90,37 +124,53 @@ fn log_user_fault_signal(
     signal: SigSet,
 ) {
     let task = current_task().unwrap();
-    let (tid, pid, sepc, sp, return_sstatus) = {
+    let (tid, pid, sepc, sp, ra, tp, indirect_target, a0, a1, a2, fp, return_sstatus, signal_frame) = {
         let task_inner = task.inner_lock();
+        let trap_cx = task_inner.trap_cx();
         let return_sstatus = Some(task_inner.trap_cx().get_status_bits());
         (
             task.tid(),
             task.pid(),
-            task_inner.trap_cx().get_sepc(),
-            task_inner.trap_cx().get_sp(),
+            trap_cx.get_sepc(),
+            trap_cx.get_sp(),
+            trap_cx.get_ra(),
+            trap_cx.get_tp(),
+            trap_cx.get_t0(),
+            trap_cx.get_a0(),
+            trap_cx.get_a1(),
+            trap_cx.get_a2(),
+            trap_cx.get_fp(),
             return_sstatus,
+            task_inner.signal_frame_trace.latest(),
         )
     };
+    let comm = task.process.meta_lock().comm.clone();
     let active_page_table_token = crate::arch::page_table::get_token_from_regs();
-    let diagnostic = fault_va.map(|fault_va| {
-        task.process
-            .memory_set_arc()
-            .fault_diagnostic(fault_va.floor())
-    });
+    let memory_set = task.process.memory_set_arc();
+    let stack_sample = user_fault_stack_sample(&memory_set, sp, ra);
+    let diagnostic = fault_va.map(|fault_va| memory_set.fault_diagnostic(fault_va.floor()));
     let memory_set_token = diagnostic.map(|diagnostic| diagnostic.page_table_token);
     let pte_flags_bits = diagnostic.and_then(|diagnostic| diagnostic.pte_flags_bits);
     let pte_leaf_level = diagnostic.and_then(|diagnostic| diagnostic.pte_leaf_level);
     let pte_raw_bits = diagnostic.and_then(|diagnostic| diagnostic.pte_raw_bits);
     let pte_leaf_ppn = diagnostic.and_then(|diagnostic| diagnostic.pte_leaf_ppn);
     warn!(
-        "[fault-diagnostics] user_fault_signal hart={} pid={} tid={} cause={:?} stval={:#x} sepc={:#x} sp={:#x} signal={:?} return_sstatus={:x?} active_page_table_token={:#x} memory_set_token={:x?} pte_flags={:x?} pte_leaf_level={:?} pte_raw={:x?} pte_leaf_ppn={:x?} diagnostic={:?}",
+        "[fault-diagnostics] user_fault_signal hart={} pid={} tid={} comm={:?} cause={:?} stval={:#x} sepc={:#x} sp={:#x} ra={:#x} tp={:#x} indirect_target={:#x} a0={:#x} a1={:#x} a2={:#x} fp={:#x} signal={:?} return_sstatus={:x?} active_page_table_token={:#x} memory_set_token={:x?} pte_flags={:x?} pte_leaf_level={:?} pte_raw={:x?} pte_leaf_ppn={:x?} stack={:?} last_signal_frame={:?} diagnostic={:?}",
         hartid,
         pid,
         tid,
+        comm,
         cause,
         stval,
         sepc,
         sp,
+        ra,
+        tp,
+        indirect_target,
+        a0,
+        a1,
+        a2,
+        fp,
         signal,
         return_sstatus,
         active_page_table_token,
@@ -129,6 +179,8 @@ fn log_user_fault_signal(
         pte_leaf_level,
         pte_raw_bits,
         pte_leaf_ppn,
+        stack_sample,
+        signal_frame,
         diagnostic,
     );
 }

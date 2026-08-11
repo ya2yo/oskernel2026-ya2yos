@@ -655,22 +655,10 @@ impl MemorySet {
         // used the same physical pages. A task migrating to another hart must
         // invalidate that hart's stale instruction stream before its first
         // user-mode fetch from this address space.
-        // LoongArch QEMU can retain a stale decoded instruction stream even
-        // when this address space was already active on the current hart.
-        // Another hart may have populated or replaced an executable frame
-        // while this hart stayed in the same address space. Fence every user
-        // return there; RISC-V keeps the cheaper migration-only fence.
         // `inner.activate()` above has already installed this MemorySet's
         // page table. Publish the current hart in the shootdown mask
         // idempotently; this is not a page-table ownership probe.
-        let newly_active = self.activate_current_hart();
-        #[cfg(target_arch = "loongarch64")]
-        {
-            let _ = newly_active;
-            crate::arch::tlb::instruction_fence();
-        }
-        #[cfg(not(target_arch = "loongarch64"))]
-        if newly_active {
+        if self.activate_current_hart() {
             crate::arch::tlb::instruction_fence();
         }
     }

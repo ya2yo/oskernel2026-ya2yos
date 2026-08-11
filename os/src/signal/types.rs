@@ -121,7 +121,7 @@ pub(crate) struct SigInfoSignalFrame {
 /// `rt_sigreturn` 失败时的 SP 与最近一次真正构造过的 frame 对上。固定容量
 /// 避免在异常路径分配内存；嵌套信号或高频信号只保留最近几次记录。
 #[cfg(feature = "fault-diagnostics")]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct SignalFrameTraceEntry {
     pub(crate) valid: bool,
     pub(crate) generation: usize,
@@ -175,6 +175,14 @@ impl SignalFrameTrace {
         entry.generation = self.next_generation;
         self.entries[self.next_generation % Self::CAPACITY] = entry;
         self.next_generation = self.next_generation.wrapping_add(1);
+    }
+
+    pub(crate) fn latest(&self) -> Option<SignalFrameTraceEntry> {
+        self.entries
+            .iter()
+            .copied()
+            .filter(|entry| entry.valid)
+            .max_by_key(|entry| entry.generation)
     }
 }
 

@@ -1,7 +1,7 @@
 use super::regs::*;
+use crate::arch::__PAD_SIZE;
 use crate::trap::trap_return;
 use riscv::register::sstatus::{self, Sstatus, SPP};
-use crate::arch::__PAD_SIZE;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 ///trap context structure containing sstatus, sepc and registers
@@ -173,6 +173,10 @@ impl TrapContext {
 
     pub fn get_ra(&self) -> usize {
         self.gp.x[1]
+    }
+
+    pub fn get_t0(&self) -> usize {
+        self.gp.x[5]
     }
 
     pub fn set_ra(&mut self, ra: usize) {

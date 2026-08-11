@@ -222,6 +222,20 @@ impl TaskControlBlock {
         clear_rseq_cs(&memory_set, state.abi_addr)?;
         let mut inner = self.inner_lock();
         if inner.rseq == state {
+            #[cfg(feature = "fault-diagnostics")]
+            log::warn!(
+                "[fault-diagnostics] rseq_abort pid={} tid={} hart={} interrupted_pc={:#x} abi={:#x} cs={:#x} start_ip={:#x} post_commit_offset={:#x} abort_ip={:#x} signature={:#x}",
+                self.pid(),
+                self.tid(),
+                hart_id(),
+                instruction_pointer,
+                state.abi_addr,
+                cs_addr,
+                cs.start_ip,
+                cs.post_commit_offset,
+                abort_ip,
+                signature,
+            );
             inner.trap_cx().set_sepc(abort_ip);
             inner.rseq_pending = false;
         }

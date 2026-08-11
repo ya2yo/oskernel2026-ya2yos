@@ -1,5 +1,8 @@
 use super::regs::*;
-use crate::{arch::__PAD_SIZE, signal::{SigSet, SignalStack}};
+use crate::{
+    arch::__PAD_SIZE,
+    signal::{SigSet, SignalStack},
+};
 use core::fmt::Debug;
 use loongArch64::register::{prmd, CpuMode};
 
@@ -154,6 +157,10 @@ impl TrapContext {
 
     pub fn get_ra(&self) -> usize {
         self.gp.ra
+    }
+
+    pub fn get_t0(&self) -> usize {
+        self.gp.t0
     }
 
     pub fn set_ra(&mut self, ra: usize) {

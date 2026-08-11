@@ -224,10 +224,10 @@ fn run_interactive_shell() -> i32 {
 
 #[no_mangle]
 fn main() -> i32 {
-    test()
+    // test()
     // run_interactive_shell()
     // test_pre()
-    // test_final_2026()
+    test_final_2026()
 }
 
 // Score helpers (kept for ad-hoc testing)
