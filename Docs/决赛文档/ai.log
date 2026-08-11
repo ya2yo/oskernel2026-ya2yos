@@ -11731,3 +11731,6 @@ VMA 起点变为 `0x2a232eb000` 后仍保留旧文件偏移。于是 `csr_ops[0x
 
 本轮未重新运行 LoongArch64 构建或运行回归，不能将本次 RISC-V 运行结果外推为双架构
 行为闭环。
+## 2026-08-11：LoongArch 同地址空间并发 Hart 取指同步补强
+
+维护者要求分析 `log.ans` 中 PID 870--872 在 `0xfffffffffffe4c44` 的共同 `FetchInstructionPageFault`，并质疑 `activate_current_hart()` 是否只是判断函数以及为何无条件调用。源码确认它通过 `active_harts.fetch_or()` 发布当前 Hart，返回值只表示 bit 是否由 0 变 1；`trap_return()` 已先安装当前任务页表，因此调用对象就是对应地址空间。修复为 LoongArch 每次用户态返回执行 `ibar 0`，RISC-V 保持迁入时 fence；同时统一 `memory_layout::sigreturn_va()` API，修复 RISC-V 遗留 `E0425`。双架构 release、LoongArch `fault-diagnostics`、格式及差异检查通过；QEMU 因沙箱 `/var/tmp` 只读未启动。

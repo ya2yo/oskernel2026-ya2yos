@@ -375,15 +375,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
     {
         sig_action.act.sa_restore
     } else {
-        let trampoline: usize;
-        cfg_if::cfg_if! {
-            if #[cfg(target_arch = "loongarch64")] {
-                trampoline = memory_layout::sigreturn_va();
-            } else if #[cfg(target_arch = "riscv64")] {
-                trampoline = sigreturn_trampoline as *const() as usize;
-            }
-        }
-        trampoline
+        memory_layout::sigreturn_va()
     };
     #[cfg(feature = "fault-diagnostics")]
     if signo == SIGSEGV {

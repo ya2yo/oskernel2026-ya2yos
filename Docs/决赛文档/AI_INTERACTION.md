@@ -1469,6 +1469,15 @@
 - **验证**：RISC-V、LoongArch64 `make perf` 通过；旧 `log.ans` 解析后 `wait` 采用 `wait_active` 的 `25.291 ms`。QEMU 因宿主 `/var/tmp` 只读在启动前失败，未取得新的 guest perf 快照。
 - **关联 commit**：当前工作区未提交
 
+#### LoongArch 同地址空间并发 Hart 取指同步补强（8.11）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `log.ans` 中 PID 870--872 在 `0xfffffffffffe4c44` 的共同 `FetchInstructionPageFault`，并询问 `activate_current_hart()` 的无条件调用是否正确。
+- **描述**：确认该函数通过 `active_harts.fetch_or()` 发布当前 Hart，返回值只是 bit 的首次发布标记；调用点已由 `trap_return()` 的当前任务页表切换保证属于对应 `MemorySet`。修复为 LoongArch 每次返回用户态执行 `ibar 0`，覆盖同地址空间其他 Hart 填充可执行页后的 stale instruction stream；RISC-V 保持迁入时 fence。统一 signal restorer API 并修复 RISC-V 遗留符号引用。
+- **验证边界**：双架构 release、LoongArch fault-diagnostics、格式检查和差异检查通过；QEMU 因沙箱 `/var/tmp` 只读无法启动，未完成行为回归。
+- **关联问题**：[LoongArch signal-vDSO 与跨 Hart 指令流问题](./problem/loongarch-signal-vdso-sigreturn.md)
+- **关联 commit**：当前工作区未提交
+
 #### RISC-V riscv_flush_icache(259) 系统调用接入（8.8）
 
 - **工具/模型**：Codex（GPT-5.6-Luna）

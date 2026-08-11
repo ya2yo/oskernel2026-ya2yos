@@ -207,3 +207,30 @@ Ya2yOS 当前没有完整 LoongArch vDSO ELF，也没有发布与该 image 对�
 - 不再从 `0x2a17304418` 产生非 canonical 访问；
 - 不再出现普通 loader 栈触发的 `invalid frame magic`；
 - 合法 signal handler 仍从 `0xffff_ffff_f000_0000` 执行 syscall 139 并成功恢复。
+
+## 2026-08-11：同一地址空间并发 Hart 的取指同步补强
+
+### 现象
+
+新的 `log.ans` 在 `sigreturn regression: arceos-helloworld-compile triggering` 后，
+三个并行编译子进程再次同时在 `0xfffffffffffe4c44` 触发
+`FetchInstructionPageFault`。诊断中三个进程的 page-table token 不同，且 PTE、VMA 和
+映射页均为空；这仍不是一个应被硬编码映射的用户 ABI 地址。
+
+### 根因补充
+
+此前的修复只在 `active_harts` 从未设置到当前 Hart 时执行 `ibar 0`。同一地址空间可以
+同时运行在多个 Hart：其中一个 Hart 首次装入或替换可执行页后，其他已经标记为 active 的
+Hart 会直接走到用户态，沿用旧的译码指令流。随后错误指令会破坏间接调用寄存器或返回地址，
+高地址 fault 只是次生症状。页缓存写入已有路径失效，不足以替代每个执行 Hart 的取指同步。
+
+### 修复
+
+`MemorySet::activate_for_user()` 现在在 LoongArch 每次返回用户态前执行 `instruction_fence()`，
+同时保留 `active_harts` 迁移检测；RISC-V 仍只在地址空间首次进入当前 Hart 时 fence，避免扩大
+其常规返回开销。删除固定 `0xfffffffffffe4c44` 映射和 fallback 的既有结论不变。
+
+### 本轮验证
+
+已完成源码审查、目标文件格式检查和 `git diff --check`；尚未运行 QEMU 或完整 BuildStorm，
+因此需在覆盖原异常窗口的长程 LoongArch 运行中确认 fault 不再出现。
