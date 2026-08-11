@@ -90,7 +90,8 @@ UID 与目标 real/saved UID；effective UID 为 0 可越过普通比较，同�
 
 `sys_rt_sigreturn()` 调用 `restore_frame()`，从受检用户内存读取信号帧，恢复保存的
 trap context、信号掩码和备用栈状态，并返回原始 `a0`。帧解析失败返回 `EFAULT`，避免
-直接信任用户提供的栈内容。RISC-V 和 LoongArch 使用各自的 machine/trap context，
+直接信任用户提供的栈内容。最新 trampoline 调整后，restorer 地址、用户态返回入口和
+架构 trap context 必须作为一个 ABI 整体核对：RISC-V 和 LoongArch 的低层布局不同，
 但高层 action、pending 与恢复协议共用。
 
 #figure(

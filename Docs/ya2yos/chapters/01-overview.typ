@@ -65,9 +65,11 @@ os/src/
 `vruntime` 选择，RR 配置按 FIFO 轮转。首次运行由 `trap_return` 恢复用户 trap context。
 
 其他 hart 在 `INIT_FINISHED` 前自旋等待，之后安装 trap 向量、激活内核地址空间并设置
-定时器。当前 RISC-V QEMU 配置为两个 hart，进程按 PID 固定到 `home_hart`；
-LoongArch64 保持单 hart 运行。网络由 `net` feature 控制，默认启用：RISC-V 在未发现
-VirtIO-net 时仍保留 loopback，LoongArch 通过 PCI 路径建立设备 transport。
+定时器。RISC-V64 与 LoongArch64 的 QEMU 配置分别提供 8 个和 12 个 hart；当前代码已
+接入 per-Hart processor、远程入队、空闲 hart 通知、IPI 协作和 remote TLB mailbox，但
+尚未形成完整的跨 hart 迁移、work stealing 或负载均衡策略。网络由 `net` feature 控制，
+默认启用：RISC-V 在未发现 VirtIO-net 时仍保留 loopback，LoongArch 通过 PCI 路径建立
+设备 transport。
 
 #figure(
   flow((

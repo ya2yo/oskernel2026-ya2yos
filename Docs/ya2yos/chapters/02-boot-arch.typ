@@ -10,7 +10,10 @@
   `entry.asm` → `rust_main` → `mm::init` → `logger::init` → `trap::init` → `task::init` → `fs::init` → `net::init_network` → `add_initproc` → 开启时钟中断 → `run_tasks`
 ]
 
-非首 hart 等待 `INIT_FINISHED`，随后各自安装 trap 向量、激活内核页表、开启定时器并进入调度循环。`START_HART_ID` 用于区分负责列举应用和启动初始调度的 hart。当前 `HART_NUM` 为 2，RISC-V QEMU 启动两个 hart；LoongArch64 的进程固定到 hart 0，并以单 hart QEMU 配置运行。
+非首 hart 等待 `INIT_FINISHED`，随后各自安装 trap 向量、激活内核页表、开启定时器并进入
+调度循环。`START_HART_ID` 用于区分负责列举应用和启动初始调度的 hart；RISC-V64 与
+LoongArch64 的 QEMU 配置分别声明 8 个和 12 个 hart。当前已存在远程入队、空闲 hart
+通知和 IPI 路径，但调度迁移与负载均衡仍不完整。
 
 == 架构抽象
 
@@ -38,5 +41,21 @@
 )
 
 异常路径不能信任用户提供的地址、长度或结构体。所有跨地址空间读写使用内存模块的受检辅助函数，错误以 Linux errno 或适当信号反馈给用户程序。
+
+== 信号返回的架构入口
+
+信号 handler 的返回地址由 `setup_frame()` 写入 libc restorer 或架构相关的
+`sigreturn_trampoline`。用户 handler 返回后，trampoline 进入 `rt_sigreturn`，由
+`restore_frame()` 通过用户地址访问辅助函数读取信号帧，恢复架构 trap context、signal
+mask、备用栈状态和原始返回值，再经统一的用户态返回路径继续执行。高层协议在两种
+架构间共用，但 machine/trap context 布局和汇编入口分别由 `arch/riscv64/` 与
+`arch/loongarch64/` 提供；因此修改 trampoline 时必须同时检查信号帧布局和 `trap.S`。
+
+== 异常边界
+
+异常路径对用户地址、长度和结构体执行受检访问；可修复的页故障进入懒分配、文件映射
+或 COW，无法修复的访问转换为 `SIGSEGV`/`SIGBUS`。架构 IRQ 抽象仍有未完成的硬件
+acknowledge/enable 路径，部分未支持 trap 和 timer condvar 分支仍可能 `panic`，不能将
+统一 trap 入口表述为所有硬件异常均已实现。
 
 RISC-V 的特权级、异常和地址转换语义以《The RISC-V Instruction Set Manual, Volume II: Privileged Architecture》为准；LoongArch 的平台差异遵循《LoongArch Architecture Reference Manual, Volume 1: Basic Architecture》。完整报告的参考资料统一列于 `main.typ` 末尾。

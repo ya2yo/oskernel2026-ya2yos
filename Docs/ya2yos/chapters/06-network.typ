@@ -247,7 +247,9 @@ pub enum Socket {
 
 
 1. *协议范围*：主要覆盖 IPv4 TCP/UDP 和 Unix socket；IPv6 地址解析存在，但完整 IPv6 路由、邻居发现和上层语义并不完整。
-2. *驱动方式*：网络通过 `poll_interfaces()` 周期性轮询推进，尚未使用 VirtIO 网络中断形成完整的中断驱动收包路径。
+2. *驱动方式*：网络通过 `poll_interfaces()` 周期性轮询推进；VirtIO-net 内部已有部分
+中断确认和 waker 逻辑，但架构 IRQ 抽象仍有未完成的 enable/disable/acknowledge 钩子，
+尚未形成完整的中断驱动收包与 socket 唤醒路径。
 3. *socket option*：只覆盖常见选项，部分选项仅兼容返回，`getsockopt` 行为还需继续贴近 Linux。
 4. *Unix socket 唤醒*：Unix socket 可读写和 socketpair 已有基础实现，但 waker 注册仍是空实现。
 5. *高级能力*：缺少 netlink、raw socket、packet socket、完整防火墙/路由管理、TCP_INFO 等能力。

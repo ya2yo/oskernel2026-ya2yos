@@ -171,7 +171,9 @@ LoongArch64 平台通过 `os/src/drivers/virtio/loongarch/pci.rs` 枚举 PCI 设
 当前 IO 路径偏同步和轮询：
 
 - virtio-blk 读写使用同步调用，系统调用或文件系统操作会等待设备请求完成；
-- virtio-net 的收发由 `poll_interfaces()` 推进，设备中断只做了部分 ack/waker 能力，尚未形成完整 NAPI 风格路径；
+- virtio-net 的收发由 `poll_interfaces()` 推进，设备中断只做了部分 ack/waker 能力；架构
+  IRQ 抽象中的硬件 enable/disable/complete 路径仍有 `unimplemented!()`，尚未形成完整
+  NAPI 风格路径；
 - 控制台输入输出采用轮询式访问。
 
 这种设计便于在竞赛内核中保持实现简单和可调试，但在高吞吐或低延迟 IO 场景下会产生额外 CPU 开销。

@@ -4,7 +4,7 @@
 == 项目成果总结
 
 
-Ya2yOS 是一个基于 Rust 的宏内核实验操作系统，面向 Linux 用户态兼容和双架构运行环境持续演进。当前内核已经具备从启动、进程调度、虚拟内存、文件系统、网络、信号到设备驱动的完整主线能力，可以运行 BusyBox、libc-test、LTP 子集等较复杂的用户态负载。
+Ya2yOS 是一个基于 Rust 的宏内核实验操作系统，面向 Linux 用户态兼容和双架构运行环境持续演进。当前内核已贯通启动、进程调度、虚拟内存、文件系统、网络、信号到设备驱动的主要用户态路径，可以运行 BusyBox、libc-test、LTP 子集等负载；但若干关键边界仍是兼容实现、轮询路径或尚未完成的语义，不能将接口覆盖等同于完整 Linux 能力。
 
 === 系统完整性
 
@@ -83,7 +83,9 @@ Ya2yOS 实现了大量 Linux syscall，并围绕 glibc、musl、BusyBox、libc-t
 
 5. *权限和安全模型有限*：已有 uid/gid、mode、umask 和部分访问检查，但 capabilities、seccomp、namespace、LSM 等机制仍缺失。
 
-6. *调度和多核能力有限*：已有 100Hz 抢占及编译期可选 CFS/RR，但尚无跨 Hart 迁移、负载均衡、NUMA 感知、实时类和完整 Linux `SCHED_*` 运行时策略。
+6. *调度和多核能力有限*：已有多 Hart processor、远程入队、IPI/空闲 Hart 通知及 100Hz
+抢占，并可编译期选择 CFS/RR；但尚无完整跨 Hart 迁移、work stealing、负载均衡、NUMA
+感知、实时类和完整 Linux `SCHED_*` 运行时策略。
 
 7. *设备模型不完整*：`/dev` 主要是手工注册兼容层，loop 设备尚无真实 backing file 数据路径，图形/输入/熵设备未系统接入。
 

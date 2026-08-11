@@ -119,9 +119,10 @@ heap，RR 使用全局队列，但二者都通过同一 `add_task()` / `fetch_ta
 
 时钟中断仍以 100Hz 调用 `suspend_current_and_run_next()` 驱动抢占，自愿 yield 和阻塞
 路径也可切回调度循环。因此这是基于 nice 加权 `vruntime` 的简化 CFS，而非 Linux
-完整调度子系统：尚无 target latency/sched period、调度组、跨 Hart 迁移或负载均衡，
-也没有实现实时调度类。feature 只选择内核内部 runqueue；`sched_setscheduler(2)` 等
-用户 ABI 仍是兼容 stub，不提供运行时 CFS/RR 切换。
+完整调度子系统：尚无 target latency/sched period、调度组、完整的跨 Hart 迁移、work
+stealing 或负载均衡策略，也没有实现实时调度类。已有远程入队和空闲 Hart 通知，用于
+唤醒协作而非完整负载均衡。feature 只选择内核内部 runqueue；`sched_setscheduler(2)`
+等用户 ABI 仍是兼容 stub，不提供运行时 CFS/RR 切换。
 
 #figure(
   sequence(((
@@ -260,5 +261,5 @@ ELF 末尾预留 guard page 后建立初始 brk 区域，并生成 `AT_PHDR`、`
   [clone3], [仅将支持的 `clone_args` 字段转换到 `sys_clone`；set_tid、pidfd 和 cgroup 等扩展未实现。],
   [ELF 动态加载], [内核映射 `PT_INTERP` 指定的解释器并提供 auxv；共享库解析与重定位在用户态完成。],
   [Linux 调度 ABI], [`sched_setscheduler`/`sched_getscheduler` 等仍为兼容实现，不代表完整 `SCHED_OTHER`/实时类语义。],
-  [多核], [CFS 按 Hart 分队列，RR 使用按 `home_hart` 过滤的全局队列；进程固定到所属 Hart，尚无迁移、work stealing 或负载均衡。TID 映射仍为全局锁保护结构。],
+  [多核], [CFS 按 Hart 分队列，RR 使用按 `home_hart` 过滤的全局队列；已有远程入队和 IPI/空闲 Hart 通知，但尚无完整迁移、work stealing 或负载均衡。TID 映射仍为全局锁保护结构。],
 )

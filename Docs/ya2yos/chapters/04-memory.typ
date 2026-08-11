@@ -116,9 +116,10 @@ CMA，然后执行 `remap_test()`。RISC-V 的测试检查内核映射权限；L
 
 ELF 末端与 brk 之间保留一页 guard。brk VMA 从零长度开始，`sys_brk()` 通过
 `TaskControlBlock::growproc()` 调整范围；增长不立即分配物理帧，首次访问才处理缺页。
-单进程 brk 增长上限为 `MAX_BRK_SIZE = 512 MiB`，虚拟保留范围为
-`USER_HEAP_SIZE = 512 MiB`。收缩时，`MemorySetInner::grow()` 会解除新末端之后已经
-存在的 PTE 并释放相应 tracker。
+单进程 brk 增长上限为 `MAX_BRK_SIZE = 2 GiB`，架构配置中的用户堆保留范围
+`USER_HEAP_SIZE = 2 GiB`。这两个值与独立的 `MAX_MMAP_SIZE = 2 GiB` 预算不同；它们
+描述虚拟地址空间限制，不代表启动时已经分配对应物理内存。收缩时，
+`MemorySetInner::grow()` 会解除新末端之后已经存在的 PTE 并释放相应 tracker。
 
 `MemorySetInner::handle_page_fault()` 首先查找覆盖 VPN 的 VMA。未映射页的 read、
 write 或 fetch fault 在权限允许时走以下路径：`Brk` 与 `Stack` 分配匿名零页；
@@ -212,7 +213,8 @@ fork 前，匿名或文件后备的 `MAP_SHARED` VMA 会被预先 fault：否则
 `shm_attach()` 把这些既有帧作为 `MapAreaType::Shm` 通过 `push_with_given_frames()` 映射
 到当前进程，地址为零时从 `MMAP_TOP` 向下选择地址。`shm_detach()` 要求地址页对齐并按
 VMA 起始页移除映射；`shm_drop()` 删除全局段记录。当前 `MemorySet::shm()` 对非零指定
-附加地址会 panic，因此固定地址 `shmat` 不应表述为已支持能力。
+附加地址会 `panic`，因此固定地址 `shmat` 不是可用的兼容返回路径，文档和测试应将其
+视为需要修复的危险边界。
 
 所有 syscall 用户指针通过 `copy_from_user`、`copy_to_user` 或其 typed wrapper 访问。
 这些函数拒绝空首地址、不可表示的规范虚拟地址和范围溢出，并按页复制；遇到尚未映射

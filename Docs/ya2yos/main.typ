@@ -1,9 +1,9 @@
 // Ya2yOS 内核设计文档（Typst 入口）
 // 对外发布建议：typst compile --pdf-standard a-2u main.typ ya2yos-kernel-design.pdf
 
-#let doc-version = "0.4"
-#let doc-date = datetime(year: 2026, month: 7, day: 18)
-#let source-snapshot = "未提交工作树快照（2026-07-18，含 CFS/RR 调度器改动）"
+#let doc-version = "0.5"
+#let doc-date = datetime(year: 2026, month: 8, day: 11)
+#let source-snapshot = "HEAD 9bc59656（2026-08-11，含 sigreturn trampoline 调整）；工作树另有 Makefile/.vscode 本地修改"
 #let ink = rgb("161616")
 #let muted = rgb("555555")
 #let line = rgb("9a9a9a")
@@ -24,7 +24,7 @@
 )
 #set text(font: ("Libertinus Serif", "WenQuanYi Zen Hei"), size: 10.5pt, fill: ink, lang: "zh")
 #set par(justify: true, leading: 0.55em, first-line-indent: 2em)
-#let chinese-chapter = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一")
+#let chinese-chapter = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
 #set heading(numbering: (..nums) => {
   if nums.len() == 1 {
     [第#chinese-chapter.at(nums.at(0) - 1)章]
@@ -55,7 +55,7 @@
 #let source(path) = text(size: 8.5pt, fill: muted)[实现追溯：`#path`]
 
 #align(center)[
-  #image("../img/华南理工大学.png")
+  #image("../../img/华南理工大学.png")
   #v(3.6cm)
   #text(font: "New Computer Modern", size: 29pt, weight: "bold")[Ya2yOS]
   #v(0.7cm)
@@ -126,13 +126,14 @@ Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作
   table.header([*主题*], [*主要实现位置*], [*本文位置*]),
   [内核入口与初始化], [`os/src/main.rs`], [第 2 章],
   [架构实现], [`os/src/arch/riscv64/`、`os/src/arch/loongarch64/`], [第 2 章],
-  [进程、调度与 futex], [`os/src/task/`、`os/src/task/scheduler/`], [第 3 章],
-  [页表、VMA 与用户复制], [`os/src/mm/`], [第 4 章],
-  [信号动作、pending 与 frame], [`os/src/signal/`], [第 5 章],
-  [syscall ABI 与实现分发], [`os/src/syscall/`], [第 3--8 章],
-  [socket 和协议栈封装], [`os/src/net/`], [第 6 章],
-  [VirtIO 与平台设备], [`os/src/drivers/`], [第 7 章],
+  [进程、调度与 futex], [`os/src/task/`、`os/src/task/scheduler/`、`os/src/timer/`], [第 3 章],
+  [页表、VMA 与用户复制], [`os/src/mm/`、`os/src/sync/remote_tlb.rs`], [第 4 章],
+  [信号动作、pending、frame 与 trampoline], [`os/src/signal/`、`os/src/syscall/signal.rs`、`os/src/arch/*/qemu/`], [第 5 章],
+  [syscall ABI 与实现分发], [`os/src/syscall/`（fs/mm/task/net/ipc/io_mpx/sys/sync）], [第 3--8 章],
+  [socket 和协议栈封装], [`os/src/net/`、`os/src/drivers/net/`], [第 6--7 章],
+  [VirtIO、IRQ 与平台设备], [`os/src/drivers/virtio/`、`os/src/arch/irq/`], [第 7 章],
   [VFS、ext4、proc、pipe 与挂载], [`os/src/fs/`], [第 8 章],
+  [时间、同步与性能诊断], [`os/src/timer/`、`os/src/sync/`、`os/src/utils/`、`os/src/utils/perf/`], [第 3--5、10 章],
 )
 
 == 参考资料
