@@ -11767,3 +11767,30 @@ Hart 激活、`ibar`、DMW、eager mapping 或 QEMU 解码问题。此前相关�
 libraries。串行 50 次与三轮并发 600 次 clang 压力共 1850 次全部通过，无原 fault、WARN、
 SIGSEGV 或 panic。正式 LoongArch BuildStorm 通过
 `make run TARGET_ARCH=loongarch64 > log.ans 2>&1` 直接记录最终结果。
+
+## 2026-08-11：BuildStorm 优化实现文档汇总
+
+### 用户需求
+
+维护者要求依据近一个月修改，在 `Docs/决赛文档/` 直接提交 BuildStorm 的人工评审文档，
+覆盖问题定位、设计实现、修改前后编译时间/加速比，以及 AI 使用说明和可复现步骤。
+
+### AI 分析与采纳结论
+
+检索 2026-07-12 至 2026-08-11 的 Git 历史、官方 `scripts/buildstorm_testcode.sh`、当前
+`log.ans`、性能优化技能和既有 BuildStorm 问题复盘。确认正式的端到端成功和计时唯一以
+`BUILDSTORM_COMPILE mode=multi ok=true elapsed_s=<...>` 为准；当前 `log.ans` 仅有
+toolchain/minibuild/BEGIN，不能生成完整 446 crate 的虚构 A/B。可追溯的定向数据为
+`axbuild` 约 12 分钟降至约 8 分钟，故仅报告约 1.50x、33.3% 缩短，并显式限定为尾部
+编译单元观测。
+
+采纳做法：新建 Typst 报告，按并行调度、MM/remote-TLB、页缓存/EXT4、稀疏写/bcache 与
+观测护栏组织已实现修改；列出日志、提交和源码证据，提供 overlay 隔离、双架构构建、完整
+A/B 命令、marker 提取及 `speedup` 计算，说明 AI 仅协助分析和汇总，所有结论由源码/日志
+人工核验。
+
+### 修改与验证
+
+新增 `Docs/决赛文档/buildstorm-优化实现文档.typ`，更新决赛文档索引、开发日志和 AI
+交互记录。随后用 `typst compile` 编译到 `/tmp`，并用 `git diff --check` 检查；本轮为文档
+整理，不运行内核构建或 QEMU，以免对维护者保留的 `disk.img` 及长测状态产生影响。

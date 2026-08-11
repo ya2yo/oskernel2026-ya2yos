@@ -3311,3 +3311,12 @@
   `log.ans`。
 - **关联问题**：[LoongArch clang 取指异常](./problem/loongarch-signal-vdso-sigreturn.md)、[BuildStorm 动态库路径](./problem/buildstorm-final-2026-dynamic-library-path.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
+#### BuildStorm 优化实现文档汇总（8.11）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求根据近一个月 BuildStorm 修改提交人工评审文档，需覆盖根因、实现、实验数据、AI 说明和可复现步骤，直接存放于 `Docs/决赛文档/`。
+- **描述**：检索 Git 历史、官方脚本、当前日志和逐项复盘，按工具链正确性、并行调度、MemorySet/remote-TLB、页缓存/EXT4、稀疏写/bcache 和 perf 观测归纳已实现修改。以官方 `BUILDSTORM_COMPILE ... ok=true elapsed_s=...` 定义端到端计时；当前日志没有该标记，故只报告可追溯的 `axbuild` 定向观测约 12 分钟到约 8 分钟（约 1.50x、缩短约 33.3%），不把阶段进度或累计锁时间伪装成全量加速。
+- **验证边界**：文档将用 Typst 编译并做差异检查。本轮不运行内核构建、QEMU 或完整 BuildStorm，避免触及维护者现有镜像和长测状态；完整 A/B 复现流程与 marker 检查已写入文档。
+- **关联文档**：[BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.typ)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

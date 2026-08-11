@@ -1,5 +1,7 @@
 # Problem 复盘索引
 
+- [BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.typ)
+
 - [netperf glibc: 12865 控制端口残留监听](./problem/netperf-glibc-port-reuse.md)
 - [splice syscall 兼容实现](./problem/splice-syscall.md)
 - [pipe SIGPIPE 与 FIONREAD 语义修复](./problem/pipe-sigpipe-fionread.md)
