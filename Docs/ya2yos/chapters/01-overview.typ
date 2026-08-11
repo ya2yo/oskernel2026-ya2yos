@@ -109,6 +109,6 @@ trap 层转换为用户可见的负 errno 返回值。
 POSIX 风格信号、TCP/UDP/Unix socket、pipe/eventfd/epoll、VirtIO block/net 与
 RISC-V MMIO、LoongArch PCI 传输等主线能力。挂载记录同时支持叠加、bind/move 子树和
 shared/slave 传播状态，但路径解析仍使用底层 ext4 目录；它不是完整的 VFS 挂载树或
-mount namespace 实现。其余限制分别在第 4 至第 8 章中说明。
+mount namespace 实现。其余限制分别在第 4 至第 9 章中说明。
 
 #text(size: 8.5pt, fill: rgb("536471"))[_实现追溯：_ `os/src/main.rs`、`os/src/syscall/mod.rs`、`os/src/task/`、`os/src/mm/`、`os/src/fs/`、`os/src/signal/`、`os/src/net/`]

@@ -145,8 +145,9 @@ Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作
 #include "chapters/06-network.typ"
 #include "chapters/07-devices.typ"
 #include "chapters/08-filesystem.typ"
-#include "chapters/09-ai-usage.typ"
-#include "chapters/10-conclusion.typ"
+#include "chapters/09-lwext4.typ"
+#include "chapters/10-ai-usage.typ"
+#include "chapters/11-conclusion.typ"
 
 #pagebreak()
 = 实现追溯与参考资料
@@ -164,8 +165,9 @@ Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作
   [syscall ABI 与实现分发], [`os/src/syscall/`（fs/mm/task/net/ipc/io_mpx/sys/sync）], [第 3--8 章],
   [socket 和协议栈封装], [`os/src/net/`、`os/src/drivers/net/`], [第 6--7 章],
   [VirtIO、IRQ 与平台设备], [`os/src/drivers/virtio/`、`os/src/arch/irq/`], [第 7 章],
-  [VFS、ext4、proc、pipe 与挂载], [`os/src/fs/`], [第 8 章],
-  [时间、同步与性能诊断], [`os/src/timer/`、`os/src/sync/`、`os/src/utils/`、`os/src/utils/perf/`], [第 3--5、10 章],
+  [VFS、ext4、proc、pipe 与挂载], [`os/src/fs/`、`os/src/drivers/disk.rs`], [第 8 章],
+  [lwext4 磁盘文件系统引擎], [`crates/lwext4_rust/`、`os/src/fs/ext4_lw/`], [第 9 章],
+  [时间、同步与性能诊断], [`os/src/timer/`、`os/src/sync/`、`os/src/utils/`、`os/src/utils/perf/`], [第 3--5、11 章],
 )
 
 == 参考资料

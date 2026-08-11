@@ -467,6 +467,31 @@ fresh `tmpfs` 挂载会清空底层挂载点目录，以在该简化模型中近
 通过 fd 访问的路径被缓存污染。挂载表还为每个挂载维护模拟配额：`reserve_write` 在
 写前预留字节配额，失败回滚，容量由 loop 设备格式化镜像大小推导。
 
+== 文件系统锁设计
+
+文件系统是当前内核中并发最密集的子系统之一。锁按 `VFS 层 → ext4 适配层 → lwext4 C 资源锁 → 块设备` 分层组织，设计目标是把竞争收敛到真正需要的资源粒度上，而不是让整个文件系统或单个挂载成为单一临界区。
+
+=== VFS 层锁
+
+VFS 对象锁保护各缓存与描述符的短期状态，锁持有时间都很短，且不跨越文件系统 I/O、调度或信号路径：
+
+- `FsIndex` 与 `DENTRY_CACHE` 用 `RwLock` 保护路径索引与目录项缓存，路径到 inode 的映射在同一次锁持有中更新，避免 inode 号复用被观察到中间态；
+- 文件页缓存 `FILE_PAGE_CACHE` 用 `RwLock` 保护两级索引，驱逐队列用独立 `Mutex` 保护；
+- `OSFile` 的偏移与可变状态用 `Mutex`，管道共享缓冲用 `Arc<Mutex<PipeRingBuffer>>`；
+- `FdTable`、`FSInfo` 分别用 `RwLock` 保护进程级描述符表与文件系统环境，`MNT_TABLE` 用 `Mutex` 保护挂载表。
+
+这些锁在进入 lwext4 或发起块 I/O 前释放，因此不会与底层锁嵌套。
+
+=== 任务感知锁
+
+ext4 适配层把 C 侧锁钩子接到任务感知的 `TaskMutex`/`TaskRwLock`：发生竞争时调用者睡眠在它实际需要的资源上，而不是在锁持有者被抢占时自旋；没有当前任务（启动阶段）的调用者保留自旋回退。锁按任务递归——同一任务可重入读锁（适配 readlink → fread 等 C 封装），写锁持有者可进入读区间；等待者按票号 FIFO 排队，已排队的写者之前新读者不能插队，避免读者饿死写者。任务退出时通过 `cancel_ext4_op_waiter` 清理被抛弃的锁等待。C 侧 `struct ext4_fs_rwlock` 的地址即资源键，标识命名空间、inode 分片、块组分片、日志、超级块或缓存资源，具体分片与锁序详见第九章。
+
+=== 锁序与内存衔接
+
+两层之间的锁顺序固定为 `VFS write_state -> VFS io_state -> lwext4 resource locks`；C 侧资源锁之间为 `journal_lock -> cache_flush_lock -> cache_lock`，超级块计数始终在 `super_lock` 下更新。C 层持锁时不回调 VFS。块设备层（`os/src/drivers/disk.rs`）也用任务感知的 FIFO 提交队列：单一同步 VirtIO 队列要求请求独占通过对齐批量或未对齐 RMW，任务用 `block_on` 挂起而不是自旋，任务退出时 `cancel_disk_waiter` 清理票号。
+
+与内存管理的衔接遵循既有约定：页表更新遵守 `UPDATE_LOCK -> MemorySet 写锁`，跨地址空间操作先快照 `Arc` 帧再切换锁；进入文件系统、调度、网络或信号路径前释放 `MemorySet` guard。文件缺页、fork 预取与共享页写回均做"锁外 I/O、锁内短暂页表更新"，避免把可睡眠的文件系统锁嵌套进内存锁，也避免在持有内存锁时进入 lwext4。
+
 == 文件锁、fcntl 与 xattr
 
 `fcntl()` 支持 fd 复制、`FD_CLOEXEC`、`O_NONBLOCK` 查询/设置、pipe 大小查询、文件 owner 相关兼容返回，以及 POSIX record lock / OFD lock 的基本语义。`F_SETLEASE/F_GETLEASE` 提供文件租约，`F_SETOWN/F_SETSIG` 等配置异步 I/O 信号目标。`fchdir` 与 `fchmodat2` 提供基于 fd 与 `AT_*` 标志的目录/权限操作。

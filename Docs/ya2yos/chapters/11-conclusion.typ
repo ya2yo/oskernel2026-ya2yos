@@ -73,13 +73,13 @@ Ya2yOS 实现了大量 Linux syscall，并围绕 glibc、musl、BusyBox、libc-t
 == 已知局限
 
 
-1. *页缓存缺失*：普通文件读写直接进入 lwext4 和块设备，mmap 与 read/write 的一致性和性能仍受限制。
+1. *页缓存写回深化*：文件页缓存已覆盖 read/mmap/splice 并共享物理页，但脏页回写仍由 lwext4 与 `sync` 路径完成，缓存模块自身不承担回写调度。
 
 2. *挂载语义仍受路径式 VFS 限制*：挂载表已处理叠加层、bind/move 子树及 shared/slave 传播，但尚未实现独立 superblock、挂载点 dentry 切换和 mount namespace；当前 bind 可见性通过目录镜像近似。
 
 3. *网络轮询驱动*：TCP/UDP 依赖 `poll_interfaces()` 周期性推进，VirtIO-net 中断路径尚未完整接管收包和唤醒。
 
-4. *部分 syscall 为兼容 stub*：如 `io_uring_setup`、`signalfd4`、`memfd_create`、部分 xattr、fanotify 等接口尚未提供完整语义。
+4. *部分 syscall 为兼容 stub*：如 `io_uring_setup`（仅占位 fd 与 ring offsets ABI）、`timerfd_create`、`memfd_secret`、`perf_event_open` 及 fanotify 权限事件响应等尚未提供完整语义。
 
 5. *权限和安全模型有限*：已有 uid/gid、mode、umask 和部分访问检查，但 capabilities、seccomp、namespace、LSM 等机制仍缺失。
 
@@ -95,7 +95,7 @@ Ya2yOS 实现了大量 Linux syscall，并围绕 glibc、musl、BusyBox、libc-t
 === 短期目标
 
 
-1. *页缓存与文件一致性*：建立统一 page cache，让 read/write、mmap 和回写共享缓存页。
+1. *页缓存与文件一致性*：在现有 read/mmap/splice 共享缓存页基础上，完善脏页回写调度与缓存容量策略。
 
 2. *网络中断与唤醒*：完善 VirtIO-net 中断、socket waker 和 epoll 唤醒路径，降低轮询延迟和 CPU 消耗。
 
