@@ -61,7 +61,10 @@
 #show heading.where(level: 3): set block(above: 0.8em, below: 0.3em)
 #show raw: set text(font: code-font, size: code-size, lang: "en")
 #set raw(block: true, lang: "en")
-#show raw.where(block: true): set block(above: 0.55em, below: 0.65em, inset: (x: 1.1em, y: 0.45em))
+#show raw.where(block: true): it => {
+  set block(above: 0.55em, below: 0.65em, inset: (x: 0.6em, y: 0.4em), fill: rgb("e6e6e6"))
+  pad(x: 1.3em, it)
+}
 #show link: set text(fill: ink)
 #set table(stroke: line, inset: 6pt)
 #show figure.caption: set text(font: body-font, size: caption-size, fill: muted)
