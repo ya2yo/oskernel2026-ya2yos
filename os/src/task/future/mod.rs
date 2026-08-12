@@ -15,8 +15,8 @@ use log::debug;
 use super::{TaskRef, WeakTaskRef};
 use crate::{
     task::{
-        current_task, exit_current_if_group_exited_or_killed, ready_queue, schedule,
-        TaskContext, TaskStatus,
+        current_task, exit_current_if_group_exited_or_killed, ready_queue, schedule, TaskContext,
+        TaskStatus,
     },
     utils::SysErrNo,
 };

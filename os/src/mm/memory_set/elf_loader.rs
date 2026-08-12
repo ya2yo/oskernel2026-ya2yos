@@ -607,9 +607,11 @@ impl MemorySetInner {
             // lwext4 once and publish the fully covered pages for the next
             // exec (bytes are already compatibility-patched by read_at).
             let read = if let Some(path) = cache_path.as_deref() {
-                if let Some(cached) =
-                    FILE_PAGE_CACHE.read_cached_at(path, file_read_offset, &mut read_buf[..chunk_len])
-                {
+                if let Some(cached) = FILE_PAGE_CACHE.read_cached_at(
+                    path,
+                    file_read_offset,
+                    &mut read_buf[..chunk_len],
+                ) {
                     cached
                 } else {
                     let r = file

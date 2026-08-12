@@ -57,10 +57,7 @@ fn current_executable_uses_legacy_library_store() -> bool {
         return false;
     };
     let exe = task.process.fs_info.get_exe();
-    exe == "/glibc"
-        || exe.starts_with("/glibc/")
-        || exe == "/musl"
-        || exe.starts_with("/musl/")
+    exe == "/glibc" || exe.starts_with("/glibc/") || exe == "/musl" || exe.starts_with("/musl/")
 }
 
 /// Debian-style multiarch directories and GCC toolchain directories contain

@@ -167,10 +167,7 @@ pub fn sys_epoll_pwait(
 /// Register the current waiter's waker with each fd in the epoll interest
 /// list. Invalid fds are intentionally skipped; the next scan reports them
 /// as `EPOLLERR|EPOLLHUP` and removes them from the set.
-fn register_epoll_watchers(
-    epfd: usize,
-    cx: &mut core::task::Context<'_>,
-) -> Result<(), SysErrNo> {
+fn register_epoll_watchers(epfd: usize, cx: &mut core::task::Context<'_>) -> Result<(), SysErrNo> {
     let task = current_task().unwrap();
     let epoll_file = EpollFile::lookup(epfd, &task.process.fd_table)?;
     let interests = epoll_file.snapshot_interests();

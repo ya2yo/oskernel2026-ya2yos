@@ -111,12 +111,7 @@ pub fn sys_perf_event_open(
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/signalfd4.2.html
-pub fn sys_signalfd4(
-    siglfd: u32,
-    mask: *const u8,
-    flags: u32,
-    sigsetsize: usize,
-) -> SyscallRet {
+pub fn sys_signalfd4(siglfd: u32, mask: *const u8, flags: u32, sigsetsize: usize) -> SyscallRet {
     if sigsetsize != core::mem::size_of::<SigSet>() {
         return Err(SysErrNo::EINVAL);
     }

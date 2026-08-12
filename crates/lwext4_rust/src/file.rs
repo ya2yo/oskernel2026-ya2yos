@@ -2910,9 +2910,7 @@ fn try_insert_sparse_write_buffer(
             #[cfg(feature = "perf")]
             perf::record_sparse_buffer_allocation_failure(data.len());
             (
-                SparseWriteBufferInsertResult::Flush(
-                    SparseWriteCacheEvictCause::AllocationFailure,
-                ),
+                SparseWriteBufferInsertResult::Flush(SparseWriteCacheEvictCause::AllocationFailure),
                 None,
             )
         } else {
