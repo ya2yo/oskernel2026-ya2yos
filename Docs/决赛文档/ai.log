@@ -11839,3 +11839,19 @@ A/B 命令、marker 提取及 `speedup` 计算，说明 AI 仅协助分析和汇
 ### 修改与验证
 
 修改 `os/src/arch/hardware.rs`、启动入口及架构时钟/CPU/内存消费者，并更新开发日志。`git diff --check`、`make TARGET_ARCH=riscv64` 与 `make TARGET_ARCH=loongarch64` 均通过。`timeout 30s make run TARGET_ARCH=riscv64` 启动后内核打印 FDT 实测值 `ram_start=0x80000000`、`ram_size=0x400000000`、`harts=8`、`timebase=10000000 Hz`，完成内存初始化、8 核启动和 cagent 基础测试；30 秒超时前进入 BuildStorm，未作完整长测。
+
+## 2026-08-12：SD 卡运行时配置
+
+### 用户需求
+
+维护者要求继续减少运行时参数硬编码，让部分内核配置从 SD 卡镜像获取。
+
+### 分析与实现
+
+对 `pre_tests/sdcard-rv.img` 做只读检查，确认它是单 ext4 根文件系统，未提供现成内核配置、bootloader 配置或硬件拓扑；RAM、hart、时钟和 MMIO 仍必须来自 FDT/SBI。选择已具备运行时安全边界的资源参数：`pipe_max_size` 和内核小页缓存的 high/low watermark、refill/flush batch。
+
+新增 `os/src/fs/kernel_fs_ops/sdcard_config.rs`，在 `create_init_files()` 后、创建 init 进程前读取可选的 `/etc/ya2yos.conf`。格式为十进制 `key=value`，限制文件 16 KiB，忽略空行与 `#` 注释；未知、溢出或非法配置只记录 warning。页缓存配置通过原子快照应用，强制 `low <= high`、批量非零及上限；管道配置复用既有校验并刷新 `/proc/sys/fs/pipe-max-size`。缺少配置文件保持原始默认行为。
+
+### 修改与验证
+
+修改 fs 初始化、frame allocator 的 page cache 配置接口及其导出，并新增 SD 卡配置加载模块。`make TARGET_ARCH=riscv64`、`make TARGET_ARCH=loongarch64` 与 `git diff --check` 均通过。全仓 `cargo fmt --check` 报告维护者现有文件格式差异，因此仅对本轮文件执行 `rustfmt`。将原始镜像复制到 `/tmp/ya2yos-sdcard-config-test.img` 后写入测试配置，RISC-V QEMU 启动日志输出 `[kernel] config: loaded /etc/ya2yos.conf (pipe_max_size=32768, page_cache=96/24/8/32)`，随后正常执行 `shutdown!`；原始测试镜像未修改。

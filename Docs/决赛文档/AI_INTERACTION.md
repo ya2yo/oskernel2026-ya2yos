@@ -3341,3 +3341,11 @@
 - **描述**：审计 SBI/FDT 启动参数、架构入口、CMA 与调度静态数组边界；新增无堆 FDT 解析与运行时硬件配置快照，接入 RISC-V RAM、hart 数、timebase-frequency、页表/CMA/时钟/CPU affinity。LoongArch 启动协议未提供 FDT，保留本地 CSR/平台默认路径。
 - **验证边界**：`git diff --check`、RISC-V/LoongArch64 release 构建均通过；RISC-V QEMU 启动实测 FDT 值为 `0x80000000`、16 GiB、8 harts、10 MHz，并完成 cagent 基础测试。30 秒窗口结束时进入 BuildStorm，未运行完整长测。
 - **关联 commit**：当前工作区未提交
+
+#### SD 卡运行时配置（8.12）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求将一部分运行时内核参数从 SD 卡读取，减少硬编码。
+- **描述**：只读检查 `pre_tests/sdcard-rv.img` 后确认镜像不含硬件配置文件；实现可选 `/etc/ya2yos.conf`，在根 ext4 就绪后读取 `pipe_max_size` 与 page-cache 水位/批量。解析受 16 KiB、十进制、范围和不变量约束，未知或非法项降级告警，缺失文件保持默认值；更新 pipe sysctl 可见值。
+- **验证边界**：RISC-V64、LoongArch64 release 构建和 `git diff --check` 已通过；全仓格式检查暴露预存差异，故仅格式化本轮文件。使用 `/tmp` 镜像副本启动 RISC-V QEMU，日志确认 `pipe_max_size=32768`、page-cache `96/24/8/32` 已生效并正常 `shutdown!`；原始 SD 卡镜像未修改。
+- **关联 commit**：当前工作区未提交

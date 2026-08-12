@@ -35,9 +35,9 @@ pub use vfs::*;
 mod kernel_fs_ops;
 pub use kernel_fs_ops::{
     cache_positive_dentry_path, create_init_files, create_proc_dir, create_proc_dir_and_file,
-    ensure_proc_dir, ensure_proc_path, invalidate_dentry_path, materialize_proc_dirs, open,
-    open_direct, refresh_proc_maps, refresh_proc_stat, refresh_proc_status,
-    remove_proc_dir_and_file, FsIndex,
+    ensure_proc_dir, ensure_proc_path, invalidate_dentry_path, load_sdcard_config,
+    materialize_proc_dirs, open, open_direct, refresh_proc_maps, refresh_proc_stat,
+    refresh_proc_status, remove_proc_dir_and_file, FsIndex,
 };
 mod map_dynamic_link;
 
@@ -254,6 +254,8 @@ impl InodeType {
 pub fn init() {
     if let Err(err) = create_init_files() {
         error!("fs: create_init_files failed: {:?}", err);
+    } else if let Err(err) = load_sdcard_config() {
+        error!("fs: load_sdcard_config failed: {:?}", err);
     }
     // TODO(ZMY):为了过libc-test utime的权宜之计,读取RTC太麻烦了
     superblock_root_inode().set_timestamps(Some(0), Some(0), Some(0));

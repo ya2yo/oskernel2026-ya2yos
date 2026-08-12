@@ -5,6 +5,7 @@ mod fsidx;
 mod initfiles;
 mod open;
 mod proc_file;
+mod sdcard_config;
 use super::{
     find_device, open_device_file, register_device, superblock_root_inode, File, FileClass, Inode,
     InodeType, OSFile, OpenFlags, UptimeFile, DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, SEEK_END,
@@ -18,3 +19,4 @@ pub use proc_file::{
     materialize_proc_dirs, refresh_proc_maps, refresh_proc_stat, refresh_proc_status,
     remove_proc_dir_and_file,
 };
+pub use sdcard_config::load_sdcard_config;
