@@ -19,6 +19,7 @@ mod mountfd;
 pub mod mqueue;
 mod os_file;
 mod pagemap;
+mod secretmem;
 mod signalfd;
 mod tmp_file;
 mod uptime;
@@ -36,6 +37,7 @@ pub use {
     mqueue::{MqAttr, Mqueue},
     os_file::OSFile,
     pagemap::PagemapFile,
+    secretmem::SecretMemFile,
     signalfd::SignalFd,
     tmp_file::TmpFile,
     uptime::UptimeFile,
