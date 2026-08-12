@@ -267,7 +267,7 @@ fn get_proc_by_hartid(hartid: usize) -> &'static mut Processor {
 pub fn run_tasks() {
     loop {
         let hartid = hart_id();
-        if claim_global_timer_maintenance() {
+        if let Some(_maintenance) = claim_global_timer_maintenance() {
             check_timer_events();
             check_blocked_task_timers();
             check_futex_timer();

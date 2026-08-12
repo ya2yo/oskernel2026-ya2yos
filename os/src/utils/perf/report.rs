@@ -1472,6 +1472,19 @@ pub(super) fn emit_report(now: usize) {
         &SCHEDULER_DISPATCH_TICKS,
         &SCHEDULER_DISPATCH_MAX_TICKS,
     );
+    println!(
+        "[perf] timer_maintenance claims={} completed={} active_skips={} bucket_skips={}",
+        TIMER_MAINTENANCE_CLAIMS.load(Ordering::Relaxed),
+        TIMER_MAINTENANCE_SAMPLES.load(Ordering::Relaxed),
+        TIMER_MAINTENANCE_ACTIVE_SKIPS.load(Ordering::Relaxed),
+        TIMER_MAINTENANCE_BUCKET_SKIPS.load(Ordering::Relaxed),
+    );
+    emit_duration(
+        "[perf] timer_maintenance_duration",
+        &TIMER_MAINTENANCE_SAMPLES,
+        &TIMER_MAINTENANCE_TICKS,
+        &TIMER_MAINTENANCE_MAX_TICKS,
+    );
     emit_section("MM");
     println!(
         "[perf] remote_tlb shootdowns={} local_only={} remote={} target_harts={} acknowledgements={} page_fault={} cow={} munmap={} mprotect={} mremap={} fork_exec={} other={}",

@@ -414,7 +414,7 @@ pub fn trap_handler() {
         }
 
         Trap::Interrupt(Interrupt::Timer) => {
-            if crate::timer::claim_global_timer_maintenance() {
+            if let Some(_maintenance) = crate::timer::claim_global_timer_maintenance() {
                 check_timer_events();
                 crate::task::check_blocked_task_timers();
                 // The futex timeout heap is global for the same reason as the

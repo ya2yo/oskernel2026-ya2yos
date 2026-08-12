@@ -106,7 +106,7 @@ pub use timex::{timex_apply, timex_get_realtime, Timex, TIME_OK};
 pub use tms::Tms;
 
 use crate::arch::time::{get_clock_freq, get_ticks, set_oneshot_timer};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::{Lazy, Mutex};
 
 //* 时间常量
@@ -126,30 +126,65 @@ pub const TIMER_INTERVAL_MS: usize = MSEC_PER_SEC / TICKS_PER_SEC;
 /// shared monotonic clock rather than a Hart-local deadline.
 static LAST_GLOBAL_TIMER_MAINTENANCE_TICK: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-/// Claim this 10 ms bucket for globally shared timer maintenance.
+/// Whether one Hart is currently servicing the globally shared timer state.
+///
+/// A maintenance pass can take longer than one timer bucket when the task
+/// table is busy.  The last-tick check alone would then admit another Hart for
+/// the next bucket before the first pass completed, eventually allowing every
+/// Hart to contend on the same global locks.
+static GLOBAL_TIMER_MAINTENANCE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Exclusive ownership of one global timer-maintenance pass.
+///
+/// Dropping the guard publishes completion.  A later caller recomputes the
+/// current bucket, so buckets elapsed during a long pass are serviced without
+/// overlapping the pass already in progress.
+pub(crate) struct GlobalTimerMaintenanceGuard {
+    #[cfg(feature = "perf")]
+    started_at: usize,
+}
+
+impl Drop for GlobalTimerMaintenanceGuard {
+    fn drop(&mut self) {
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_timer_maintenance_duration(
+            get_ticks().saturating_sub(self.started_at),
+        );
+        GLOBAL_TIMER_MAINTENANCE_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+/// Claim an exclusive pass for this 10 ms timer-maintenance bucket.
 ///
 /// Per-task interval timers are deliberately not covered: their delivery must
 /// still happen from the interrupt path of the task currently running on each
 /// Hart. The Future timer wheel, futex timeout heap, and blocked-task interval
 /// timer scan only need one concurrent maintainer.
 #[inline]
-pub(crate) fn claim_global_timer_maintenance() -> bool {
-    let tick = get_time_ms() / TIMER_INTERVAL_MS;
-    let mut observed = LAST_GLOBAL_TIMER_MAINTENANCE_TICK.load(Ordering::Relaxed);
-    loop {
-        if observed == tick {
-            return false;
-        }
-        match LAST_GLOBAL_TIMER_MAINTENANCE_TICK.compare_exchange_weak(
-            observed,
-            tick,
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => return true,
-            Err(current) => observed = current,
-        }
+pub(crate) fn claim_global_timer_maintenance() -> Option<GlobalTimerMaintenanceGuard> {
+    if GLOBAL_TIMER_MAINTENANCE_ACTIVE
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_timer_maintenance_active_skip();
+        return None;
     }
+
+    let tick = get_time_ms() / TIMER_INTERVAL_MS;
+    if LAST_GLOBAL_TIMER_MAINTENANCE_TICK.load(Ordering::Relaxed) == tick {
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_timer_maintenance_bucket_skip();
+        GLOBAL_TIMER_MAINTENANCE_ACTIVE.store(false, Ordering::Release);
+        return None;
+    }
+    LAST_GLOBAL_TIMER_MAINTENANCE_TICK.store(tick, Ordering::Relaxed);
+    #[cfg(feature = "perf")]
+    crate::utils::perf::record_timer_maintenance_claim();
+    Some(GlobalTimerMaintenanceGuard {
+        #[cfg(feature = "perf")]
+        started_at: get_ticks(),
+    })
 }
 /// 每秒钟的微秒数
 pub const USEC_PER_SEC: u64 = 1_000_000;

@@ -41,6 +41,12 @@ pub(crate) static COW_SHARED_FRAME_COPIES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_DISPATCH_SAMPLES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_DISPATCH_TICKS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_DISPATCH_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static TIMER_MAINTENANCE_CLAIMS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static TIMER_MAINTENANCE_ACTIVE_SKIPS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static TIMER_MAINTENANCE_BUCKET_SKIPS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static TIMER_MAINTENANCE_SAMPLES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static TIMER_MAINTENANCE_TICKS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static TIMER_MAINTENANCE_MAX_TICKS: AtomicUsize = AtomicUsize::new(0);
 pub fn record_scheduler_enqueue(remote: bool, target_idle: bool, ipi_sent: bool) {
     if !remote {
         add(&SCHEDULER_LOCAL_ENQUEUES, 1);
@@ -83,6 +89,31 @@ pub fn record_scheduler_dispatch_duration(elapsed: usize) {
         &SCHEDULER_DISPATCH_SAMPLES,
         &SCHEDULER_DISPATCH_TICKS,
         &SCHEDULER_DISPATCH_MAX_TICKS,
+        elapsed,
+    );
+}
+
+#[inline]
+pub fn record_timer_maintenance_claim() {
+    add(&TIMER_MAINTENANCE_CLAIMS, 1);
+}
+
+#[inline]
+pub fn record_timer_maintenance_active_skip() {
+    add(&TIMER_MAINTENANCE_ACTIVE_SKIPS, 1);
+}
+
+#[inline]
+pub fn record_timer_maintenance_bucket_skip() {
+    add(&TIMER_MAINTENANCE_BUCKET_SKIPS, 1);
+}
+
+#[inline]
+pub fn record_timer_maintenance_duration(elapsed: usize) {
+    record_duration(
+        &TIMER_MAINTENANCE_SAMPLES,
+        &TIMER_MAINTENANCE_TICKS,
+        &TIMER_MAINTENANCE_MAX_TICKS,
         elapsed,
     );
 }
