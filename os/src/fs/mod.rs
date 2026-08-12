@@ -40,10 +40,6 @@ pub use kernel_fs_ops::{
     remove_proc_dir_and_file, FsIndex,
 };
 mod map_dynamic_link;
-pub use map_dynamic_link::{
-    is_dynamic_loader_path, map_dynamic_link_file, map_dynamic_link_file_directly_map,
-    map_library_path, patch_dynamic_link_file_bytes,
-};
 
 bitflags! {
     /// 定义一份打开文件的标志

@@ -1,7 +1,4 @@
-use crate::fs::{
-    is_dynamic_loader_path, map_library_path, DentryLookup, MountFlags, DENTRY_CACHE, MNT_TABLE,
-    NONE_MODE,
-};
+use crate::fs::{DentryLookup, MountFlags, DENTRY_CACHE, MNT_TABLE};
 use crate::syscall::{fs::file_lock, FileMode};
 use crate::task::current_task;
 use crate::utils::SysResult;
@@ -372,23 +369,13 @@ fn create_file(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileCla
 }
 /// 实现打开文件的共享逻辑。
 ///
-/// `map_dynamic` 为真时会映射动态库路径；普通用户态打开使用该模式，直接
-/// 打开入口则保留调用方提供的路径。该函数同时处理 inode/目录项缓存、
-/// 创建、`O_EXCL`、`O_DIRECTORY`、`O_NOATIME`、写权限、文件租约和 `O_TRUNC`。
-fn open_inner(
-    abs_path: &str,
-    flags: OpenFlags,
-    mode: u32,
-    map_dynamic: bool,
-) -> SysResult<FileClass> {
+/// 处理 inode/目录项缓存、创建、`O_EXCL`、`O_DIRECTORY`、`O_NOATIME`、
+/// 写权限、文件租约和 `O_TRUNC`。路径解析完全交给 VFS，不对动态库做重写。
+fn open_inner(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
     debug!("open({},{:?},{})", abs_path, flags, mode);
     // log::info!("[open] abs_path={}", abs_path);
-    // 如果是动态链接文件,转换路径
-    // HXC: 转个锤子，本来输入的路径就是转换后的
-    // HXC: 我错了还是得转，因为用户态也可能想要这个文件
-    // 也许以后可以改成符号链接实现这种映射？
     debug!("abs_path is {}", abs_path);
-    let mut abs_path: &str = abs_path;
+    let abs_path: &str = abs_path;
     // If the mount has NOSYMFOLLOW, prevent symlink traversal by adding O_NOFOLLOW.
     // This must be done before the inode lookup so that find() rejects symlinks.
     //
@@ -406,20 +393,6 @@ fn open_inner(
             }
         }
     }
-    if map_dynamic {
-        // The linker can name its interpreter explicitly from a native libc
-        // script. Prefer that matching loader; legacy images still fall back
-        // to the compatibility target when the original path is absent.
-        let native_loader_exists = is_dynamic_loader_path(abs_path)
-            && open_direct(abs_path, OpenFlags::O_RDONLY, NONE_MODE).is_ok();
-        if !native_loader_exists {
-            if let Some(newpath) = map_library_path(abs_path) {
-                debug!("new path is {}", newpath);
-                abs_path = newpath;
-            }
-        }
-    }
-
     // `/proc/uptime` is a dynamic proc entry rather than an ext4 file.  Keep
     // this in the common VFS open path so stat/access helpers and sys_openat
     // observe the same node instead of only the syscall-specific path.
@@ -655,22 +628,23 @@ fn open_inner(
     Err(SysErrNo::ENOENT)
 }
 
-/// 按常规用户态语义打开 `abs_path`。
+/// 按常规 Linux VFS 语义打开 `abs_path`。
 ///
-/// 此入口会应用动态库路径映射；`mode` 仅在 `O_CREATE` 创建新节点时用于
-/// 计算初始权限，实际权限还会受当前进程 umask 影响。
+/// `mode` 仅在 `O_CREATE` 创建新节点时用于计算初始权限，实际权限还会受
+/// 当前进程 umask 影响。动态链接器的库搜索属于用户态，本入口不会改写路径。
 pub fn open(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
-    match open_inner(abs_path, flags, mode, true) {
+    match open_inner(abs_path, flags, mode) {
         Err(SysErrNo::ENOENT) if needs_nested_qemu_opensbi_fallback(abs_path, flags) => {
-            open_inner(NESTED_QEMU_OPENSBI_PATH, flags, mode, true)
+            open_inner(NESTED_QEMU_OPENSBI_PATH, flags, mode)
         }
         result => result,
     }
 }
 
-/// 打开 `abs_path`，但不应用动态库路径映射。
+/// 按精确路径打开 `abs_path`。
 ///
-/// 供内核内部需要精确访问调用方路径的场景使用，其余打开语义与 [`open`] 相同。
+/// 保留该命名入口以标明 `PT_INTERP` 等内核调用点不承担用户态 loader 的
+/// 路径搜索；其 VFS 语义与 [`open`] 相同。
 pub fn open_direct(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClass> {
-    open_inner(abs_path, flags, mode, false)
+    open_inner(abs_path, flags, mode)
 }

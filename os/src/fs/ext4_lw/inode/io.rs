@@ -30,8 +30,8 @@ impl Ext4Inode {
     }
     /// 从指定偏移量读取数据到缓冲区。
     ///
-    /// 动态链接文件可能需要按路径 patch 内容，因此读取完成后会调用
-    /// `patch_dynamic_link_file_bytes()` 做兼容修补。
+    /// 读取结果始终是底层文件的原始字节；动态链接器和 ELF 文件不在 VFS
+    /// 读路径中做内容修补。
     pub(super) fn read_at_impl(&self, off: usize, buf: &mut [u8]) -> SyscallRet {
         if buf.is_empty() {
             return Ok(0);
@@ -48,14 +48,12 @@ impl Ext4Inode {
                 crate::utils::perf::record_ext4_read(r);
                 crate::utils::perf::record_ext4_byte_cache_read_hit(r);
             }
-            patch_dynamic_link_file_bytes(&cached_path, off, &mut buf[..r]);
             return Ok(r);
         }
         // Keep this inode's descriptor stable across the two lwext4 calls.
         // The C layer sleeps on its namespace/inode resources, so a different
         // inode can make progress while this read waits for its own resource.
-        // The compatibility patch below only mutates an already-read buffer.
-        let (path, r, byte_cache_hit) = {
+        let (r, byte_cache_hit) = {
             let _io_state = self.io_state.lock();
             let path = self.cached_path();
             // Read-back caches may contain dirty bytes which are not on disk yet.
@@ -81,7 +79,7 @@ impl Ext4Inode {
                 };
                 (r, false)
             };
-            (path, r, byte_cache_hit)
+            (r, byte_cache_hit)
         };
         #[cfg(not(feature = "perf"))]
         let _ = byte_cache_hit;
@@ -96,7 +94,6 @@ impl Ext4Inode {
         // position; atime changes go through the explicit set_timestamps()
         // path. Keeping the immutable regular-file stat cache here avoids
         // turning the next fstat() into another serialized metadata lookup.
-        patch_dynamic_link_file_bytes(&path, off, &mut buf[..r]);
         Ok(r)
     }
 
@@ -347,7 +344,6 @@ impl Ext4Inode {
             if let Err(e) = r {
                 Err(SysErrNo::from(e))
             } else {
-                patch_dynamic_link_file_bytes(&path_str, 0, buf.as_mut_slice());
                 Ok(buf)
             }
         } else if file_type == InodeType::SymLink {

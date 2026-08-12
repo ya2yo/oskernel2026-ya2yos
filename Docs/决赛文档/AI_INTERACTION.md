@@ -3320,3 +3320,9 @@
 - **验证边界**：文档将用 Typst 编译并做差异检查。本轮不运行内核构建、QEMU 或完整 BuildStorm，避免触及维护者现有镜像和长测状态；完整 A/B 复现流程与 marker 检查已写入文档。
 - **关联文档**：[BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.typ)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+#### 动态链接路径去硬编码（8.12）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：参考 Linux ELF/VFS 语义重写动态链接兼容层，移除镜像布局和库内容硬编码。
+- **描述**：确认内核只应按 `PT_INTERP` 精确打开解释器；`DT_NEEDED`、`RPATH/RUNPATH`、`ld.so.cache`、符号链接及重定位由用户态 loader 负责。删除 `/glibc`、`/musl` basename fallback、工具链版本白名单、架构固定偏移机器码补丁，并同步收敛 `open/openat`、ELF loader 和 ext4 读取调用点，保留 `ENOENT` 搜索语义。详见 `Docs/决赛文档/ai.log` 对应条目和 [dynamic-link-linux-vfs-boundary.md](./problem/dynamic-link-linux-vfs-boundary.md)。
+- **关联 commit**：当前工作区未提交

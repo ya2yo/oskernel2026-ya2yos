@@ -6,9 +6,8 @@ mod initfiles;
 mod open;
 mod proc_file;
 use super::{
-    find_device, map_dynamic_link_file_directly_map, open_device_file, register_device,
-    superblock_root_inode, File, FileClass, Inode, InodeType, OSFile, OpenFlags, UptimeFile,
-    DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, SEEK_END,
+    find_device, open_device_file, register_device, superblock_root_inode, File, FileClass, Inode,
+    InodeType, OSFile, OpenFlags, UptimeFile, DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, SEEK_END,
 };
 use crate::utils::SysErrNo;
 pub use fsidx::FsIndex;

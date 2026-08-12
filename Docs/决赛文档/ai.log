@@ -11794,3 +11794,8 @@ A/B 命令、marker 提取及 `speedup` 计算，说明 AI 仅协助分析和汇
 新增 `Docs/决赛文档/buildstorm-优化实现文档.typ`，更新决赛文档索引、开发日志和 AI
 交互记录。随后用 `typst compile` 编译到 `/tmp`，并用 `git diff --check` 检查；本轮为文档
 整理，不运行内核构建或 QEMU，以免对维护者保留的 `disk.img` 及长测状态产生影响。
+## 2026-08-12：动态链接路径去硬编码
+
+维护者要求重写 `os/src/fs/map_dynamic_link.rs` 并参考 Linux 删除硬编码。分析确认旧实现把 `/glibc`、`/musl` 目录、Rust toolchain 版本、共享库 basename 和架构固定文件偏移写入通用 VFS；这会在 Debian multiarch、Alpine 或其它 libc 版本中混用 loader/libc。采纳 Linux 边界：内核仅按 ELF `PT_INTERP` 精确打开解释器，`DT_NEEDED`、RPATH/RUNPATH、cache、符号链接和重定位由用户态 loader 处理；VFS 保留原路径及 `ENOENT`。
+
+修改 `map_dynamic_link.rs` 为边界说明模块，移除所有重定向和二进制补丁 API；同步删除 `open/openat`、ELF loader、ext4 读取路径的调用。新增动态链接问题复盘并更新开发日志与问题索引。验证：定向 rustfmt、`git diff --check` 和旧 API 残留搜索通过；双架构构建与 QEMU/LTP/BuildStorm 回归待执行。

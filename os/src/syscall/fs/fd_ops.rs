@@ -4,9 +4,9 @@ use super::fcntl::*;
 use super::file_lock;
 use crate::arch::memory_layout::PAGE_SIZE;
 use crate::fs::{
-    ensure_proc_dir, ensure_proc_path, map_dynamic_link_file, notify_path_event, open, open_fifo,
-    refresh_proc_maps, refresh_proc_stat, refresh_proc_status, superblock_root_inode, File,
-    FileClass, FileDescriptor, FsIndex, OpenFlags, PagemapFile, TmpFile, FAN_OPEN, MNT_TABLE,
+    ensure_proc_dir, ensure_proc_path, notify_path_event, open, open_fifo, refresh_proc_maps,
+    refresh_proc_stat, refresh_proc_status, superblock_root_inode, File, FileClass, FileDescriptor,
+    FsIndex, OpenFlags, PagemapFile, TmpFile, FAN_OPEN, MNT_TABLE,
 };
 use crate::mm::{copy_from_user, if_bad_address, translate::read_user_cstr};
 use crate::syscall::fs::has_too_long_path_component;
@@ -403,9 +403,6 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
         fs_info.insert(abs_path, new_fd);
         return Ok(new_fd);
     }
-
-    // 动态库路径重定向：将动态链接器请求的标准路径映射到实际文件位置
-    let abs_path = map_dynamic_link_file(&abs_path).to_string();
 
     let inode = open(&abs_path, flags, mode)?;
     let inode = match inode {

@@ -9,10 +9,7 @@ use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::{DL_INTERP_OFFSET, PAGE_SIZE, USER_HEAP_SIZE};
 #[cfg(feature = "perf")]
 use crate::arch::time::get_ticks;
-use crate::fs::{
-    map_dynamic_link_file_directly_map, open_direct, File, Inode, OSFile, OpenFlags,
-    FILE_PAGE_CACHE, NONE_MODE,
-};
+use crate::fs::{open_direct, File, Inode, OSFile, OpenFlags, FILE_PAGE_CACHE, NONE_MODE};
 use crate::mm::memory_set::MemorySetInner;
 use crate::syscall::MmapFlags;
 use crate::task::{Aux, AuxType};
@@ -231,23 +228,13 @@ impl MemorySetInner {
         }
 
         if let Some(interp) = interp {
-            // A real interpreter path from the mounted image is authoritative.
-            // The legacy mapper is only a fallback for older test images that
-            // do not provide the ELF's declared `/lib/ld-*.so` entry.
+            // Linux executes the interpreter named by PT_INTERP.  Library
+            // search and compatibility aliases are userspace loader work;
+            // replacing this pathname in the kernel can mix incompatible
+            // loader/libc ABIs from different rootfs layouts.
             let interp_file = open_direct(&interp, OpenFlags::O_RDONLY, NONE_MODE)
                 .ok()
                 .and_then(|file| file.file().ok())
-                .or_else(|| {
-                    let mapped_interp = map_dynamic_link_file_directly_map(&interp);
-                    // 映射路径和原始路径相同则不用重复打开。
-                    if mapped_interp == interp {
-                        None
-                    } else {
-                        open_direct(mapped_interp, OpenFlags::O_RDONLY, NONE_MODE)
-                            .ok()
-                            .and_then(|file| file.file().ok())
-                    }
-                })
                 .ok_or(())?;
             // 动态解释器在重定位期间会修改自身状态。保持它的 PT_LOAD 段为
             // eager framed 映射，避免解释器尚未就绪时进入文件页/COW 缺页路径。
