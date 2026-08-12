@@ -184,5 +184,5 @@ pub fn init_csr_regs() {
 
     asid::set_asid_width(0);
 
-    rust_main(hart_id());
+    rust_main(hart_id(), 0);
 }

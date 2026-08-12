@@ -12,9 +12,7 @@ use crate::arch::memory_layout::BOOTSTRAP_PHYSICAL_MEMORY_SIZE;
 #[cfg(target_arch = "loongarch64")]
 use crate::arch::memory_layout::PHYSICAL_MEMORY_RANGES;
 use crate::{
-    arch::memory_layout::{
-        KERNEL_ADDR_OFFSET, PAGE_SIZE, PHYSICAL_MEMORY_SIZE, PHYSICAL_MEMORY_START,
-    },
+    arch::memory_layout::{KERNEL_ADDR_OFFSET, PAGE_SIZE},
     mm::{KernelAddr, PhysAddr},
 };
 
@@ -137,8 +135,8 @@ pub fn init_cma() {
         fn ekernel();
     }
     assert!(ekernel as *const () as usize % 4096 == 0);
-    assert!(PHYSICAL_MEMORY_START % 4096 == 0);
-    assert!(PHYSICAL_MEMORY_SIZE % 4096 == 0);
+    assert!(crate::arch::memory_layout::physical_memory_start() % 4096 == 0);
+    assert!(crate::arch::memory_layout::physical_memory_size() % 4096 == 0);
 
     println!("init_cma:");
     let ekernel_va = ekernel as *const () as usize;
@@ -147,7 +145,7 @@ pub fn init_cma() {
 
     // println!(
     //     "CMA allocator initialized: start = {:#x}, size = {:#x}",
-    //     KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_START,
+    //     KERNEL_ADDR_OFFSET + crate::arch::memory_layout::physical_memory_start(),
     //     total
     // );
     return;
@@ -187,10 +185,13 @@ fn init_cma_heap(ekernel_va: usize) -> usize {
     // entry.asm only maps the first 1GiB before mm::activate_kernel_space().
     // Buddy free-list nodes are stored in the managed range itself, so adding
     // the second GiB here would touch an address that is not mapped yet.
-    let used_physical_memory = (ekernel_va - PHYSICAL_MEMORY_START) - KERNEL_ADDR_OFFSET;
-    assert!(used_physical_memory < BOOTSTRAP_PHYSICAL_MEMORY_SIZE);
-    let size = BOOTSTRAP_PHYSICAL_MEMORY_SIZE - used_physical_memory;
-    let left = KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_START + used_physical_memory;
+    let physical_start = crate::arch::memory_layout::physical_memory_start();
+    let physical_size = crate::arch::memory_layout::physical_memory_size();
+    let used_physical_memory = (ekernel_va - physical_start) - KERNEL_ADDR_OFFSET;
+    let bootstrap_size = BOOTSTRAP_PHYSICAL_MEMORY_SIZE.min(physical_size);
+    assert!(used_physical_memory < bootstrap_size);
+    let size = bootstrap_size - used_physical_memory;
+    let left = KERNEL_ADDR_OFFSET + physical_start + used_physical_memory;
     println!("from: {:#x}", left);
     println!("size: {:#x}", size);
     println!("to:   {:#x}", left + size);
@@ -209,9 +210,12 @@ fn init_cma_heap(ekernel_va: usize) -> usize {
 /// direct map, because `add_to_heap()` writes free-list links into this range.
 #[cfg(target_arch = "riscv64")]
 pub fn init_cma_late() {
-    assert!(BOOTSTRAP_PHYSICAL_MEMORY_SIZE <= PHYSICAL_MEMORY_SIZE);
-    let start = KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_START + BOOTSTRAP_PHYSICAL_MEMORY_SIZE;
-    let end = KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_START + PHYSICAL_MEMORY_SIZE;
+    let physical_start = crate::arch::memory_layout::physical_memory_start();
+    let physical_size = crate::arch::memory_layout::physical_memory_size();
+    let bootstrap_size = BOOTSTRAP_PHYSICAL_MEMORY_SIZE.min(physical_size);
+    assert!(bootstrap_size <= physical_size);
+    let start = KERNEL_ADDR_OFFSET + physical_start + bootstrap_size;
+    let end = KERNEL_ADDR_OFFSET + physical_start + physical_size;
     println!("init_cma_late:");
     println!("from: {:#x}", start);
     println!("size: {:#x}", end - start);

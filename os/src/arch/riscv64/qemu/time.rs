@@ -1,7 +1,8 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
 use riscv::register::time;
 use sbi_rt;
 
-pub const CLOCK_FREQ: usize = 0x989680; // 由设备树文件获取
+static CLOCK_FREQ: AtomicUsize = AtomicUsize::new(10_000_000);
 
 /// get current ticks
 pub fn get_ticks() -> usize {
@@ -19,7 +20,9 @@ pub fn set_oneshot_timer(ticks: usize) {
 
 #[inline(always)]
 pub fn get_clock_freq() -> usize {
-    CLOCK_FREQ
+    CLOCK_FREQ.load(Ordering::Acquire)
 }
 
-pub fn init_clock_freq() {}
+pub fn init_clock_freq() {
+    CLOCK_FREQ.store(crate::arch::hardware::timebase_hz(), Ordering::Release);
+}

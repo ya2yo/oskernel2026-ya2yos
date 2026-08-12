@@ -15,8 +15,8 @@ pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 2;
 // The kernel image, including this static heap, must remain in the 256MiB
 // low RAM segment where QEMU loads the LoongArch kernel image.
 pub const KERNEL_HEAP_SIZE: usize = 0x8_000_000; // 128MB
-// Keep the brk reservation large enough for the Rust toolchain's linker-stage
-// workers. Pages are still allocated lazily on first access.
+                                                 // Keep the brk reservation large enough for the Rust toolchain's linker-stage
+                                                 // workers. Pages are still allocated lazily on first access.
 pub const USER_HEAP_SIZE: usize = 0x8000_0000; // 2 GiB (virtual reservation)
 /// Maximum heap (brk) growth per process.
 /// Caps runaway brk from exhausting physical memory while leaving room for
@@ -59,6 +59,16 @@ pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 // PHYSICAL_MEMORY_RANGES。
 pub const MEMORY_END: usize =
     KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_RANGES[0].0 + PHYSICAL_MEMORY_RANGES[0].1;
+
+#[inline]
+pub fn physical_memory_start() -> usize {
+    crate::arch::hardware::ram_start()
+}
+
+#[inline]
+pub fn physical_memory_size() -> usize {
+    crate::arch::hardware::ram_size()
+}
 
 // la64的MMIO相关
 // 当entry.asm中启用了la64CPU的0x9000_...的直接映射窗口后，物理地址0x_0000_xxxx_xxxx_xxxx将被映射到虚拟地址0x9000_xxxx_xxxx_xxxx

@@ -86,13 +86,18 @@ fn clear_bss() {
 /// ADD KERNEL_ADDR_OFFSET and jump to rust_main
 #[cfg(target_arch = "riscv64")]
 #[no_mangle]
-pub fn trampoline(hartid: usize) {
+pub extern "C" fn trampoline(hartid: usize, fdt: usize) {
     unsafe {
-        asm!("add sp, sp, {}", in(reg) arch::memory_layout::KERNEL_ADDR_OFFSET);
-        asm!("la t0, rust_main");
-        asm!("add t0, t0, {}", in(reg) arch::memory_layout::KERNEL_ADDR_OFFSET);
-        asm!("mv a0, {}", in(reg) hartid);
-        asm!("jalr zero, 0(t0)");
+        asm!(
+            "add sp, sp, {offset}",
+            "la t0, rust_main",
+            "add t0, t0, {offset}",
+            "jalr zero, 0(t0)",
+            offset = in(reg) arch::memory_layout::KERNEL_ADDR_OFFSET,
+            in("a0") hartid,
+            in("a1") fdt,
+            options(noreturn),
+        );
     }
 }
 
@@ -131,7 +136,7 @@ static START_HART_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[no_mangle]
 /// the rust entry-point of os
-pub fn rust_main(hartid: usize) -> ! {
+pub fn rust_main(hartid: usize, fdt: usize) -> ! {
     let is_bootstrap = BOOT_STATE
         .compare_exchange(
             BOOT_UNINITIALIZED,
@@ -142,7 +147,20 @@ pub fn rust_main(hartid: usize) -> ! {
         .is_ok();
 
     if is_bootstrap {
+        #[cfg(target_arch = "loongarch64")]
+        let _ = fdt;
         clear_bss();
+        #[cfg(target_arch = "riscv64")]
+        arch::hardware::init_from_fdt(fdt);
+        #[cfg(target_arch = "loongarch64")]
+        arch::hardware::init_without_fdt();
+        println!(
+            "[kernel] hardware: ram_start={:#x}, ram_size={:#x}, harts={}, timebase={} Hz",
+            arch::hardware::ram_start(),
+            arch::hardware::ram_size(),
+            arch::hardware::hart_count(),
+            arch::hardware::timebase_hz()
+        );
         println!("[kernel] Hello, world!");
         println!(
             r#"

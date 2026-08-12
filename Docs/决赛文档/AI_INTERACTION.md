@@ -3334,4 +3334,10 @@
 - **描述**：梳理提交历史、既有设计文档与 BuildStorm 实现报告后，将近期内存/remote-TLB、信号/ELF、ext4 并发、调度/计时/观测更新直接并入原有章节。新增 12 页 16:9 答辩演示源，输出 PDF 与可编辑 PPTX。性能页仅使用可追溯的 `axbuild` 定向 1.50x 观测，并明确完整 BuildStorm 仍需官方 `ok=true elapsed_s` 对照。
 - **验证边界**：正式设计 PDF、演示 PDF 均由 Typst 编译；PPTX 通过 ZIP 完整性检查，`git diff --check` 通过。本轮未运行内核构建、QEMU、LTP 或 BuildStorm。
 - **关联文档**：[Ya2yOS 设计文档](../ya2yos/README.md)、[答辩演示源](../ya2yos/slides/defense.typ)、[AI 记录](./ai.log)
+#### 启动期硬件参数自动配置（8.12）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求消除内核硬件参数硬编码，在启动期通过硬件自动配置。
+- **描述**：审计 SBI/FDT 启动参数、架构入口、CMA 与调度静态数组边界；新增无堆 FDT 解析与运行时硬件配置快照，接入 RISC-V RAM、hart 数、timebase-frequency、页表/CMA/时钟/CPU affinity。LoongArch 启动协议未提供 FDT，保留本地 CSR/平台默认路径。
+- **验证边界**：`git diff --check`、RISC-V/LoongArch64 release 构建均通过；RISC-V QEMU 启动实测 FDT 值为 `0x80000000`、16 GiB、8 harts、10 MHz，并完成 cagent 基础测试。30 秒窗口结束时进入 BuildStorm，未运行完整长测。
 - **关联 commit**：当前工作区未提交

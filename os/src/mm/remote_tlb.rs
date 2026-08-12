@@ -126,7 +126,8 @@ pub(crate) fn shootdown(active_harts: &AtomicUsize, #[cfg(feature = "perf")] kin
         let mut sequences = [0usize; HART_NUM];
         #[cfg(feature = "perf")]
         let mut requested_at = [0usize; HART_NUM];
-        for target in 0..HART_NUM {
+        let hart_count = crate::arch::hardware::hart_count().min(HART_NUM);
+        for target in 0..hart_count {
             let target_bit = 1usize << target;
             if remote_harts & target_bit == 0 {
                 continue;
@@ -150,7 +151,7 @@ pub(crate) fn shootdown(active_harts: &AtomicUsize, #[cfg(feature = "perf")] kin
         // Dispatch the complete IPI fan-out before observing any mailbox.
         // Targets can now invalidate concurrently, so the protocol waits for
         // the slowest active Hart instead of summing every target latency.
-        for target in 0..HART_NUM {
+        for target in 0..hart_count {
             let target_bit = 1usize << target;
             if remote_harts & target_bit == 0 {
                 continue;
@@ -160,7 +161,7 @@ pub(crate) fn shootdown(active_harts: &AtomicUsize, #[cfg(feature = "perf")] kin
             }
         }
 
-        for target in 0..HART_NUM {
+        for target in 0..hart_count {
             let target_bit = 1usize << target;
             if remote_harts & target_bit == 0 {
                 continue;

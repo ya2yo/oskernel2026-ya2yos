@@ -178,8 +178,9 @@ pub(crate) fn notify_harts_of_runnable_task(cpu_mask: usize, ready_tasks: usize)
     let mut remote_target = false;
     let mut target_idle = false;
     let mut ipi_sent = false;
-    let mut wake_budget = ready_tasks.min(HART_NUM.saturating_sub(1));
-    for target_hart in 0..HART_NUM {
+    let hart_count = crate::arch::hardware::hart_count().min(HART_NUM);
+    let mut wake_budget = ready_tasks.min(hart_count.saturating_sub(1));
+    for target_hart in 0..hart_count {
         if target_hart == source_hart || cpu_mask & (1usize << target_hart) == 0 {
             continue;
         }
@@ -221,7 +222,8 @@ fn idle_until_runnable(hartid: usize) {
 /// Return the total time all Harts have spent idle, including active intervals.
 pub fn idle_ticks() -> usize {
     let now = crate::arch::time::get_ticks();
-    (0..HART_NUM).fold(0usize, |total, hartid| {
+    let hart_count = crate::arch::hardware::hart_count().min(HART_NUM);
+    (0..hart_count).fold(0usize, |total, hartid| {
         let accounting = IDLE_ACCOUNTING[hartid].lock();
         total.saturating_add(
             accounting.total_ticks.saturating_add(

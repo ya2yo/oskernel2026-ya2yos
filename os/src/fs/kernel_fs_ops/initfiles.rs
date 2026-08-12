@@ -81,7 +81,7 @@ const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nnobody:x:1:0:nobody:/nobo
 const GROUP: &str = "root:x:0:\ndaemon:x:2:\nusers:x:100:\nnobody:x:1:\n";
 fn cpuinfo() -> String {
     let mut info = String::new();
-    for hart in 0..HART_NUM {
+    for hart in 0..crate::arch::hardware::hart_count().min(HART_NUM) {
         #[cfg(target_arch = "riscv64")]
         info.push_str(&format!(
             "processor\t: {hart}\nhart\t\t: {hart}\nisa\t\t: rv64imafdch\nmmu\t\t: sv39\nuarch\t\t: ya2yos\n\n"

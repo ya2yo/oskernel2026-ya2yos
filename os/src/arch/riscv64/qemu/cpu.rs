@@ -21,7 +21,8 @@ pub fn boot_secondary_harts(boot_hart: usize) {
     }
 
     let start_addr = _start as *const () as usize - KERNEL_ADDR_OFFSET;
-    for hart in 0..HART_NUM {
+    let hart_count = crate::arch::hardware::hart_count().min(HART_NUM);
+    for hart in 0..hart_count {
         if hart == boot_hart {
             continue;
         }

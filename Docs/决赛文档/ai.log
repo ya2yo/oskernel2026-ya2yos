@@ -11794,6 +11794,7 @@ A/B 命令、marker 提取及 `speedup` 计算，说明 AI 仅协助分析和汇
 新增 `Docs/决赛文档/buildstorm-优化实现文档.typ`，更新决赛文档索引、开发日志和 AI
 交互记录。随后用 `typst compile` 编译到 `/tmp`，并用 `git diff --check` 检查；本轮为文档
 整理，不运行内核构建或 QEMU，以免对维护者保留的 `disk.img` 及长测状态产生影响。
+
 ## 2026-08-12：动态链接路径去硬编码
 
 维护者要求重写 `os/src/fs/map_dynamic_link.rs` 并参考 Linux 删除硬编码。分析确认旧实现把 `/glibc`、`/musl` 目录、Rust toolchain 版本、共享库 basename 和架构固定文件偏移写入通用 VFS；这会在 Debian multiarch、Alpine 或其它 libc 版本中混用 loader/libc。采纳 Linux 边界：内核仅按 ELF `PT_INTERP` 精确打开解释器，`DT_NEEDED`、RPATH/RUNPATH、cache、符号链接和重定位由用户态 loader 处理；VFS 保留原路径及 `ENOENT`。
@@ -11825,3 +11826,16 @@ A/B 命令、marker 提取及 `speedup` 计算，说明 AI 仅协助分析和汇
 生成的 12 页 PPTX 通过 `unzip -t` 完整性检查，`git diff --check` 通过。本轮为文档与答辩
 材料整理，未运行内核构建、QEMU、LTP 或 BuildStorm；未触碰维护者工作树中的 Makefile、VS Code
 设置和 `initproc.rs` 修改。
+## 2026-08-12：启动期硬件参数自动配置
+
+### 用户需求
+
+维护者要求把内核中通过硬编码传入的硬件参数改为启动期自动配置。
+
+### 分析与实现
+
+检查启动汇编、RISC-V SBI 入口、LoongArch QEMU 入口、内存布局、CMA、调度器和时钟路径后，确认 RISC-V 可直接使用 SBI 传入的 FDT 地址。新增无堆 FDT reader，读取根节点 cell 宽度、`/memory/reg`、`/cpus` 子节点和 `timebase-frequency`，以原子运行时快照提供 RAM 起点/大小、实际 hart 数与时钟频率；畸形 FDT 在边界检查后回退默认值。内存页表和 CMA 改用运行时 RAM 范围，RISC-V 次核启动与任务 CPU affinity 使用实际核数并受静态数组上限约束。LoongArch 当前启动入口不携带 FDT，因此保留其 CSR timer 与平台布局，避免改变既有启动协议。
+
+### 修改与验证
+
+修改 `os/src/arch/hardware.rs`、启动入口及架构时钟/CPU/内存消费者，并更新开发日志。`git diff --check`、`make TARGET_ARCH=riscv64` 与 `make TARGET_ARCH=loongarch64` 均通过。`timeout 30s make run TARGET_ARCH=riscv64` 启动后内核打印 FDT 实测值 `ram_start=0x80000000`、`ram_size=0x400000000`、`harts=8`、`timebase=10000000 Hz`，完成内存初始化、8 核启动和 cagent 基础测试；30 秒超时前进入 BuildStorm，未作完整长测。

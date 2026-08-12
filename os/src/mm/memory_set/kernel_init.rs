@@ -6,7 +6,7 @@
 use super::super::map_area::MapType;
 use super::super::memory_set::MemorySetInner;
 use super::{MapArea, MapAreaType, MapPermission};
-use crate::arch::memory_layout::{MEMORY_END, MMIO, MMIO_MAP_OFFSET, PAGE_SIZE};
+use crate::arch::memory_layout::{MMIO, MMIO_MAP_OFFSET, PAGE_SIZE};
 use crate::mm::memory_set::KERNEL_SPACE;
 
 extern "C" {
@@ -137,7 +137,7 @@ impl MemorySetInner {
             .push(
                 MapArea::new(
                     (ekernel as *const () as usize).into(),
-                    MEMORY_END.into(),
+                    crate::arch::memory_layout::memory_end().into(),
                     MapType::Direct,
                     MapPermission::R | MapPermission::W,
                     MapAreaType::Physical,

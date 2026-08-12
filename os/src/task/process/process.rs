@@ -157,7 +157,7 @@ impl Process {
         pgid: usize,
         sid: usize,
     ) -> Arc<Self> {
-        let home_hart = (pid - 1) % HART_NUM;
+        let home_hart = (pid - 1) % crate::arch::hardware::hart_count().min(HART_NUM);
         Self::new_on_hart(
             memory_set, sig_table, fd_table, fs_info, pid, parent_pid, pgid, sid, home_hart,
         )
@@ -175,7 +175,7 @@ impl Process {
         sid: usize,
         home_hart: usize,
     ) -> Arc<Self> {
-        assert!(home_hart < HART_NUM);
+        assert!(home_hart < crate::arch::hardware::hart_count().min(HART_NUM));
         let ret = Arc::new(Self {
             memory_set: ResourceSlot::new(memory_set),
             sig_table: ResourceSlot::new(sig_table),

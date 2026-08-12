@@ -504,11 +504,12 @@ fn prepare_exec_stack(
 impl TaskControlBlock {
     /// Mask of all harts configured into this kernel image.
     #[inline]
-    pub const fn online_cpu_mask() -> usize {
-        if HART_NUM >= usize::BITS as usize {
+    pub fn online_cpu_mask() -> usize {
+        let hart_num = crate::arch::hardware::hart_count().min(HART_NUM);
+        if hart_num >= usize::BITS as usize {
             usize::MAX
         } else {
-            (1usize << HART_NUM) - 1
+            (1usize << hart_num) - 1
         }
     }
 
@@ -534,8 +535,9 @@ impl TaskControlBlock {
     #[inline]
     fn choose_hart(mask: usize, start: usize) -> usize {
         debug_assert_ne!(mask & Self::online_cpu_mask(), 0);
-        for offset in 0..HART_NUM {
-            let hart = (start + offset) % HART_NUM;
+        let hart_num = crate::arch::hardware::hart_count().min(HART_NUM);
+        for offset in 0..hart_num {
+            let hart = (start + offset) % hart_num;
             if mask & (1usize << hart) != 0 {
                 return hart;
             }
@@ -611,13 +613,14 @@ impl TaskControlBlock {
     /// Return whether this thread may be dispatched on the specified Hart.
     #[inline]
     pub(crate) fn can_run_on(&self, hartid: usize) -> bool {
-        hartid < HART_NUM && self.cpu_affinity() & (1usize << hartid) != 0
+        hartid < crate::arch::hardware::hart_count().min(HART_NUM)
+            && self.cpu_affinity() & (1usize << hartid) != 0
     }
 
     /// Publish the Hart that actually selected this task.
     #[inline]
     pub(crate) fn set_scheduled_hart(&self, hartid: usize) {
-        debug_assert!(hartid < HART_NUM);
+        debug_assert!(hartid < crate::arch::hardware::hart_count().min(HART_NUM));
         self.scheduled_hart.store(hartid, Ordering::Release);
     }
 

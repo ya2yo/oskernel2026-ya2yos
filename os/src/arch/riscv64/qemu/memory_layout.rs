@@ -20,9 +20,9 @@ pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 4;
 // Full pre-test runs retain kernel objects while execing the 1.7 MiB glibc
 // busybox image. Keep one 2 MiB buddy block available for that normal load.
 pub const KERNEL_HEAP_SIZE: usize = 0x8_000_000; // 128MB
-// Rustc's linker-stage workers can grow the process brk beyond 512 MiB.
-// Keep the virtual reservation aligned with the lazy mmap budget; pages remain
-// demand-allocated, so this does not reserve physical memory up front.
+                                                 // Rustc's linker-stage workers can grow the process brk beyond 512 MiB.
+                                                 // Keep the virtual reservation aligned with the lazy mmap budget; pages remain
+                                                 // demand-allocated, so this does not reserve physical memory up front.
 pub const USER_HEAP_SIZE: usize = 0x8000_0000; // 2 GiB (virtual reservation)
 /// Maximum heap (brk) growth per process.
 /// Caps runaway brk from exhausting physical memory while leaving room for
@@ -57,6 +57,15 @@ pub const DL_INTERP_OFFSET: usize = 0x15_0000_0000;
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 
 // 内核虚拟地址空间中对应的内存结束地址
+pub fn physical_memory_start() -> usize {
+    crate::arch::hardware::ram_start()
+}
+pub fn physical_memory_size() -> usize {
+    crate::arch::hardware::ram_size()
+}
+pub fn memory_end() -> usize {
+    physical_memory_start() + physical_memory_size() + KERNEL_ADDR_OFFSET
+}
 pub const MEMORY_END: usize = PHYSICAL_MEMORY_START + PHYSICAL_MEMORY_SIZE + KERNEL_ADDR_OFFSET;
 
 pub const MMIO: &[(usize, usize)] = &[
