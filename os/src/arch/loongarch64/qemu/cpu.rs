@@ -5,10 +5,11 @@ use super::{
 };
 use crate::trap::trap_handler;
 use crate::{
-    arch::{config::HART_NUM, memory_layout::PAGE_SIZE},
+    arch::{hardware::MAX_SUPPORTED_HARTS, memory_layout::PAGE_SIZE},
     rust_main,
 };
 use core::arch::asm;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use loongArch64::register::prcfg1::{self, Prcfg1};
 use loongArch64::register::{asid, tlbidx};
 use loongArch64::register::{
@@ -24,6 +25,9 @@ use loongArch64::{
 
 const BOOT_IPI_VECTOR: u32 = 1 << 0;
 const SCHEDULER_IPI_VECTOR: u32 = 1 << 1;
+// A non-zero initializer keeps this in `.data`: bootstrap clears `.bss`
+// after publishing the table offset and before it starts secondary harts.
+static BOOT_SYSTEM_TABLE_OFFSET: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 // LA库似乎有点问题，没把这个暴露出来……
 fn set_merrentry(val: usize) {
@@ -56,7 +60,7 @@ pub fn boot_secondary_harts(boot_hart: usize) {
     // QEMU loads CPU0 at the high-half ELF entry and its slave boot ROM must
     // jump to that same address. Direct-address translation supplies the PA.
     let entry = _start as *const () as usize as u64;
-    for hart in 0..HART_NUM {
+    for hart in 0..crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS) {
         if hart == boot_hart {
             continue;
         }
@@ -86,7 +90,7 @@ pub fn idle() {
 
 /// Wake a hart through the LoongArch IOCSR IPI controller.
 pub fn wake_hart(hartid: usize) -> bool {
-    if hartid >= HART_NUM {
+    if hartid >= crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS) {
         return false;
     }
     send_ipi_single(hartid, SCHEDULER_IPI_VECTOR);
@@ -104,7 +108,10 @@ pub fn clear_ipi() {
 
 /// 初始化csr寄存器
 #[no_mangle]
-pub fn init_csr_regs() {
+pub fn init_csr_regs(system_table_offset: usize) {
+    if system_table_offset != 0 {
+        BOOT_SYSTEM_TABLE_OFFSET.store(system_table_offset, Ordering::Release);
+    }
     println!("init_csr_regs");
     println!("init_csr_regs: save num = {}", prcfg1::read().save_num());
     // 设置直接地址翻译模式下的映射窗口
@@ -184,5 +191,14 @@ pub fn init_csr_regs() {
 
     asid::set_asid_width(0);
 
-    rust_main(hart_id(), 0);
+    let system_table_offset = loop {
+        let offset = BOOT_SYSTEM_TABLE_OFFSET.load(Ordering::Acquire);
+        if offset != usize::MAX {
+            break offset;
+        }
+        core::hint::spin_loop();
+    };
+    let fdt = crate::arch::hardware::loongarch_fdt_from_efi(system_table_offset)
+        .expect("LoongArch bootloader did not provide an EFI FDT table");
+    rust_main(hart_id(), fdt);
 }

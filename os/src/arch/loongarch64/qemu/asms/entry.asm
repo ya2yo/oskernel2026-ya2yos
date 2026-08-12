@@ -2,8 +2,8 @@
     .globl _start
 
 .equ BOOT_STACK_SIZE, 0x40000
-# Keep this in sync with crate::arch::config::HART_NUM.
-.equ MAX_HARTS, 12
+# Keep this resource capacity in sync with hardware::MAX_SUPPORTED_HARTS.
+.equ MAX_HARTS, 16
 
 _start:
     # 清空 TLB
@@ -20,6 +20,7 @@ _start:
     mul.d       $a0, $a0, $a1
     add.d       $sp, $sp, $a0
 
+    addi.d      $a0, $a2, 0 # QEMU direct boot passes EFI system-table offset in a2
     bl          init_csr_regs
 spin:
     b           spin

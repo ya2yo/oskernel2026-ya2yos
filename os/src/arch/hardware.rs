@@ -1,26 +1,63 @@
 //! 启动期硬件参数探测。
 //!
-//! RISC-V SBI 启动约定把 FDT 地址放在 `a1`。这里实现一个不依赖堆的
-//! 最小 FDT reader，在清空 BSS 后尽早读取内存、CPU 和计时器参数。
+//! 启动器通过 FDT 描述的硬件参数。
+//!
+//! RISC-V SBI 直接在 `a1` 传递 FDT；LoongArch QEMU 则通过启动器传入的
+//! EFI system table 提供 FDT。这里实现一个不依赖堆的最小 reader，在
+//! 清空 BSS 后尽早读取所有 RAM 段、CPU 和计时器参数。
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-pub const DEFAULT_RAM_START: usize = 0x8000_0000;
-pub const DEFAULT_RAM_SIZE: usize = 0x4_0000_0000;
-pub const DEFAULT_TIMEBASE_HZ: usize = 10_000_000;
+const MAX_RAM_RANGES: usize = 8;
+/// 编译期每 Hart 状态容量；实际在线核数由启动器 FDT 提供。
+pub const MAX_SUPPORTED_HARTS: usize = 16;
+const DEFAULT_TIMEBASE_HZ: usize = 10_000_000;
+const FDT_MAGIC: usize = 0xd00d_feed;
+const EFI_SYSTEM_TABLE_SIGNATURE: usize = 0x5453_5953_2049_4249;
+const EFI_SYSTEM_TABLE_HEADER_SIZE: usize = 24;
+const EFI_SYSTEM_TABLE_CONFIGURATION_TABLE_COUNT_OFFSET: usize = 104;
+const EFI_SYSTEM_TABLE_CONFIGURATION_TABLE_OFFSET: usize = 112;
+const EFI_CONFIGURATION_TABLE_SIZE: usize = 24;
+const EFI_DEVICE_TREE_GUID: [u8; 16] = [
+    0xd5, 0x21, 0xb6, 0xb1, 0x9c, 0xf1, 0xa5, 0x41, 0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0,
+];
 
-static RAM_START: AtomicUsize = AtomicUsize::new(DEFAULT_RAM_START);
-static RAM_SIZE: AtomicUsize = AtomicUsize::new(DEFAULT_RAM_SIZE);
+static RAM_RANGE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static RAM_RANGE_STARTS: [AtomicUsize; MAX_RAM_RANGES] =
+    [const { AtomicUsize::new(0) }; MAX_RAM_RANGES];
+static RAM_RANGE_SIZES: [AtomicUsize; MAX_RAM_RANGES] =
+    [const { AtomicUsize::new(0) }; MAX_RAM_RANGES];
 static HART_COUNT: AtomicUsize = AtomicUsize::new(1);
 static TIMEBASE_HZ: AtomicUsize = AtomicUsize::new(DEFAULT_TIMEBASE_HZ);
 
 #[inline]
 pub fn ram_start() -> usize {
-    RAM_START.load(Ordering::Acquire)
+    ram_range(0).map(|(start, _)| start).unwrap_or(0)
 }
 #[inline]
 pub fn ram_size() -> usize {
-    RAM_SIZE.load(Ordering::Acquire)
+    let mut total = 0usize;
+    for index in 0..ram_range_count() {
+        let Some((_, size)) = ram_range(index) else {
+            break;
+        };
+        total = total.saturating_add(size);
+    }
+    total
+}
+#[inline]
+pub fn ram_range_count() -> usize {
+    RAM_RANGE_COUNT.load(Ordering::Acquire)
+}
+#[inline]
+pub fn ram_range(index: usize) -> Option<(usize, usize)> {
+    if index >= ram_range_count() {
+        return None;
+    }
+    Some((
+        RAM_RANGE_STARTS[index].load(Ordering::Acquire),
+        RAM_RANGE_SIZES[index].load(Ordering::Acquire),
+    ))
 }
 #[inline]
 pub fn hart_count() -> usize {
@@ -71,26 +108,47 @@ fn align4(value: usize) -> usize {
     (value + 3) & !3
 }
 
-/// 从启动固件提供的 FDT 读取平台参数。解析失败时保留架构默认值。
-pub fn init_from_fdt(fdt: usize) {
-    // `clear_bss()` runs before this function, so Atomics whose initializers
-    // reside in BSS must be restored before any malformed-FDT fallback.
-    RAM_START.store(DEFAULT_RAM_START, Ordering::Release);
-    RAM_SIZE.store(DEFAULT_RAM_SIZE, Ordering::Release);
+fn reset_from_bootloader() {
+    RAM_RANGE_COUNT.store(0, Ordering::Release);
+    for index in 0..MAX_RAM_RANGES {
+        RAM_RANGE_STARTS[index].store(0, Ordering::Release);
+        RAM_RANGE_SIZES[index].store(0, Ordering::Release);
+    }
     HART_COUNT.store(1, Ordering::Release);
     TIMEBASE_HZ.store(DEFAULT_TIMEBASE_HZ, Ordering::Release);
+}
+
+fn add_ram_range(start: usize, size: usize) -> bool {
+    if size == 0 || start % 4096 != 0 || size % 4096 != 0 {
+        return false;
+    }
+    let index = RAM_RANGE_COUNT.load(Ordering::Relaxed);
+    if index == MAX_RAM_RANGES || start.checked_add(size).is_none() {
+        return false;
+    }
+    RAM_RANGE_STARTS[index].store(start, Ordering::Relaxed);
+    RAM_RANGE_SIZES[index].store(size, Ordering::Relaxed);
+    RAM_RANGE_COUNT.store(index + 1, Ordering::Release);
+    true
+}
+
+/// 从启动器提供的 FDT 读取平台参数。
+///
+/// 返回 `false` 表示启动器未传递有效 FDT 或 FDT 没有可用的 RAM `reg` 段。
+pub fn init_from_fdt(fdt: usize) -> bool {
+    reset_from_bootloader();
     if fdt == 0 || fdt & 3 != 0 {
-        return;
+        return false;
     }
     let base = fdt as *const u8;
-    if be32(base) != 0xd00d_feed {
-        return;
+    if be32(base) != FDT_MAGIC {
+        return false;
     }
     let total = be32(unsafe { base.add(4) });
     let struct_off = be32(unsafe { base.add(8) });
     let strings_off = be32(unsafe { base.add(12) });
     if total < struct_off || total < strings_off || total > 16 * 1024 * 1024 {
-        return;
+        return false;
     }
     let end = fdt.saturating_add(total);
     let strings = fdt.saturating_add(strings_off);
@@ -166,14 +224,21 @@ pub fn init_from_fdt(fdt: usize) {
                         && depth == memory_depth
                         && len >= (address_cells + size_cells) * 4
                     {
-                        if let (Some(start), Some(size)) = (
-                            cells(value, address_cells, end),
-                            cells(value + address_cells * 4, size_cells, end),
-                        ) {
-                            if size != 0 {
-                                RAM_START.store(start, Ordering::Release);
-                                RAM_SIZE.store(size, Ordering::Release);
+                        let entry_size = (address_cells + size_cells) * 4;
+                        let mut entry = value;
+                        let reg_end = value + len;
+                        while entry + entry_size <= reg_end {
+                            let Some(start) = cells(entry, address_cells, end) else {
+                                break;
+                            };
+                            let Some(size) = cells(entry + address_cells * 4, size_cells, end)
+                            else {
+                                break;
+                            };
+                            if !add_ram_range(start, size) {
+                                break;
                             }
+                            entry += entry_size;
                         }
                     }
                 }
@@ -185,20 +250,48 @@ pub fn init_from_fdt(fdt: usize) {
         }
     }
     if cpu_count != 0 {
-        HART_COUNT.store(
-            cpu_count.min(crate::arch::config::HART_NUM),
-            Ordering::Release,
-        );
+        HART_COUNT.store(cpu_count.min(MAX_SUPPORTED_HARTS), Ordering::Release);
     }
+    ram_range_count() != 0
 }
 
-pub fn init_without_fdt() {
-    #[cfg(target_arch = "loongarch64")]
-    {
-        RAM_START.store(0, Ordering::Release);
-        RAM_SIZE.store(0x9_0000_0000, Ordering::Release);
-        HART_COUNT.store(crate::arch::config::HART_NUM, Ordering::Release);
+/// Locate the FDT published by the LoongArch direct-kernel bootloader's EFI
+/// system table. `system_table_offset` is the physical offset passed in `a2`.
+#[cfg(target_arch = "loongarch64")]
+pub fn loongarch_fdt_from_efi(system_table_offset: usize) -> Option<usize> {
+    if system_table_offset == 0 || system_table_offset & 7 != 0 {
+        return None;
     }
-    #[cfg(not(target_arch = "loongarch64"))]
-    HART_COUNT.store(1, Ordering::Release);
+    let direct = crate::arch::memory_layout::KERNEL_ADDR_OFFSET;
+    let system_table = direct.checked_add(system_table_offset)? as *const u8;
+    if unsafe { core::ptr::read_unaligned(system_table as *const usize) }
+        != EFI_SYSTEM_TABLE_SIGNATURE
+    {
+        return None;
+    }
+    let table_count = unsafe {
+        core::ptr::read_unaligned(
+            system_table.add(EFI_SYSTEM_TABLE_CONFIGURATION_TABLE_COUNT_OFFSET) as *const usize,
+        )
+    };
+    let tables_offset = unsafe {
+        core::ptr::read_unaligned(
+            system_table.add(EFI_SYSTEM_TABLE_CONFIGURATION_TABLE_OFFSET) as *const usize,
+        )
+    };
+    if table_count > 32 || tables_offset < EFI_SYSTEM_TABLE_HEADER_SIZE {
+        return None;
+    }
+    let tables = direct.checked_add(tables_offset)? as *const u8;
+    for index in 0..table_count {
+        let table = unsafe { tables.add(index.checked_mul(EFI_CONFIGURATION_TABLE_SIZE)?) };
+        let guid = unsafe { core::slice::from_raw_parts(table, EFI_DEVICE_TREE_GUID.len()) };
+        if guid == EFI_DEVICE_TREE_GUID {
+            let fdt = unsafe { core::ptr::read_unaligned(table.add(16) as *const usize) };
+            if fdt != 0 {
+                return direct.checked_add(fdt);
+            }
+        }
+    }
+    None
 }

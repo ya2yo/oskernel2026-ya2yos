@@ -9,8 +9,6 @@ use buddy_system_allocator::Heap;
 
 #[cfg(target_arch = "riscv64")]
 use crate::arch::memory_layout::BOOTSTRAP_PHYSICAL_MEMORY_SIZE;
-#[cfg(target_arch = "loongarch64")]
-use crate::arch::memory_layout::PHYSICAL_MEMORY_RANGES;
 use crate::{
     arch::memory_layout::{KERNEL_ADDR_OFFSET, PAGE_SIZE},
     mm::{KernelAddr, PhysAddr},
@@ -135,8 +133,7 @@ pub fn init_cma() {
         fn ekernel();
     }
     assert!(ekernel as *const () as usize % 4096 == 0);
-    assert!(crate::arch::memory_layout::physical_memory_start() % 4096 == 0);
-    assert!(crate::arch::memory_layout::physical_memory_size() % 4096 == 0);
+    assert!(crate::arch::hardware::ram_range_count() != 0);
 
     println!("init_cma:");
     let ekernel_va = ekernel as *const () as usize;
@@ -145,7 +142,7 @@ pub fn init_cma() {
 
     // println!(
     //     "CMA allocator initialized: start = {:#x}, size = {:#x}",
-    //     KERNEL_ADDR_OFFSET + crate::arch::memory_layout::physical_memory_start(),
+    //     KERNEL_ADDR_OFFSET + crate::arch::hardware::ram_start(),
     //     total
     // );
     return;
@@ -155,7 +152,9 @@ pub fn init_cma() {
 fn init_cma_heap(ekernel_va: usize) -> usize {
     let mut total = 0usize;
     CMA_ALLOCATOR.with_heap(|allocator| {
-        for &(start, size) in PHYSICAL_MEMORY_RANGES {
+        for index in 0..crate::arch::hardware::ram_range_count() {
+            let (start, size) = crate::arch::hardware::ram_range(index)
+                .expect("RAM range count changed during boot");
             assert!(start % PAGE_SIZE == 0);
             assert!(size % PAGE_SIZE == 0);
             let range_start = KERNEL_ADDR_OFFSET + start;
@@ -185,8 +184,9 @@ fn init_cma_heap(ekernel_va: usize) -> usize {
     // entry.asm only maps the first 1GiB before mm::activate_kernel_space().
     // Buddy free-list nodes are stored in the managed range itself, so adding
     // the second GiB here would touch an address that is not mapped yet.
-    let physical_start = crate::arch::memory_layout::physical_memory_start();
-    let physical_size = crate::arch::memory_layout::physical_memory_size();
+    assert_eq!(crate::arch::hardware::ram_range_count(), 1);
+    let (physical_start, physical_size) =
+        crate::arch::hardware::ram_range(0).expect("RISC-V bootloader did not provide RAM");
     let used_physical_memory = (ekernel_va - physical_start) - KERNEL_ADDR_OFFSET;
     let bootstrap_size = BOOTSTRAP_PHYSICAL_MEMORY_SIZE.min(physical_size);
     assert!(used_physical_memory < bootstrap_size);
@@ -210,8 +210,9 @@ fn init_cma_heap(ekernel_va: usize) -> usize {
 /// direct map, because `add_to_heap()` writes free-list links into this range.
 #[cfg(target_arch = "riscv64")]
 pub fn init_cma_late() {
-    let physical_start = crate::arch::memory_layout::physical_memory_start();
-    let physical_size = crate::arch::memory_layout::physical_memory_size();
+    assert_eq!(crate::arch::hardware::ram_range_count(), 1);
+    let (physical_start, physical_size) =
+        crate::arch::hardware::ram_range(0).expect("RISC-V bootloader did not provide RAM");
     let bootstrap_size = BOOTSTRAP_PHYSICAL_MEMORY_SIZE.min(physical_size);
     assert!(bootstrap_size <= physical_size);
     let start = KERNEL_ADDR_OFFSET + physical_start + bootstrap_size;

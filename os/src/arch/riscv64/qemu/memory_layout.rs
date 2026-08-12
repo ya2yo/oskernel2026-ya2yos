@@ -2,11 +2,6 @@
 
 use crate::config::THREAD_MAX_NUM;
 
-// 物理内存的起始地址
-pub const PHYSICAL_MEMORY_START: usize = 0x8000_0000;
-// QEMU virt RAM is one contiguous range starting at PHYSICAL_MEMORY_START.
-pub const PHYSICAL_MEMORY_SIZE: usize = 0x4_0000_0000; // 16GB
-
 // The boot page table in entry.asm has a single 1GiB direct-map leaf. CMA
 // must not place its free-list metadata above this range before the full
 // kernel page table is active.
@@ -56,17 +51,9 @@ pub const DL_INTERP_OFFSET: usize = 0x15_0000_0000;
 /// Kernel Stack Start
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 
-// 内核虚拟地址空间中对应的内存结束地址
-pub fn physical_memory_start() -> usize {
-    crate::arch::hardware::ram_start()
-}
-pub fn physical_memory_size() -> usize {
-    crate::arch::hardware::ram_size()
-}
 pub fn memory_end() -> usize {
-    physical_memory_start() + physical_memory_size() + KERNEL_ADDR_OFFSET
+    crate::arch::hardware::ram_start() + crate::arch::hardware::ram_size() + KERNEL_ADDR_OFFSET
 }
-pub const MEMORY_END: usize = PHYSICAL_MEMORY_START + PHYSICAL_MEMORY_SIZE + KERNEL_ADDR_OFFSET;
 
 pub const MMIO: &[(usize, usize)] = &[
     (0x0010_0000, 0x00_1000), // VIRT_TEST

@@ -123,16 +123,6 @@ const BOOT_ONLINE: usize = 1;
 /// or modify a BSS-resident synchronisation flag.
 static BOOT_STATE: AtomicUsize = AtomicUsize::new(BOOT_UNINITIALIZED);
 static START_HART_ID: AtomicUsize = AtomicUsize::new(0);
-// /// boot start_hart之外的所有 hart
-// pub fn boot_all_harts(hartid: usize) {
-//     for i in (0..arch::config::HART_NUM).filter(|id| *id != hartid) {
-//         let sbi_ret = arch::cpu::hart_start(i, arch::memory_layout::HART_START_ADDR).into_result();
-//         match sbi_ret {
-//             Ok(_) => (), // 啥也不做
-//             Err(_) => println!("Error when booting No.{} hart", i),
-//         }
-//     }
-// }
 
 #[no_mangle]
 /// the rust entry-point of os
@@ -147,13 +137,11 @@ pub fn rust_main(hartid: usize, fdt: usize) -> ! {
         .is_ok();
 
     if is_bootstrap {
-        #[cfg(target_arch = "loongarch64")]
-        let _ = fdt;
         clear_bss();
-        #[cfg(target_arch = "riscv64")]
-        arch::hardware::init_from_fdt(fdt);
-        #[cfg(target_arch = "loongarch64")]
-        arch::hardware::init_without_fdt();
+        assert!(
+            arch::hardware::init_from_fdt(fdt),
+            "bootloader did not provide a usable FDT RAM description"
+        );
         println!(
             "[kernel] hardware: ram_start={:#x}, ram_size={:#x}, harts={}, timebase={} Hz",
             arch::hardware::ram_start(),

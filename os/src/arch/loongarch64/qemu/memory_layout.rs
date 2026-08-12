@@ -2,11 +2,6 @@
 
 use crate::config::THREAD_MAX_NUM;
 
-pub const PHYSICAL_MEMORY_START: usize = 0; // la64的物理内存从0开始，而riscv的物理内存从0x8000_0000开始
-pub const PHYSICAL_MEMORY_SIZE: usize = 0x9_0000_0000; // 36GiB total: low 256MiB + high 35.75GiB
-pub const PHYSICAL_MEMORY_RANGES: &[(usize, usize)] =
-    &[(0x0000_0000, 0x1000_0000), (0x8000_0000, 0x8_f000_0000)];
-
 pub const PAGE_SIZE: usize = 0x1000; // 4KB
 pub const PAGE_SIZE_BITS: usize = 12;
 
@@ -54,22 +49,6 @@ pub const DL_INTERP_OFFSET: usize = 0x15_0000_0000;
 // Kernel stack top (high address)
 pub const KSTACK_TOP: usize = usize::MAX - PAGE_SIZE + 1;
 
-// 内核虚拟地址空间中对应的低端连续内存结束地址。
-// LoongArch QEMU virt 的 8GiB RAM 被 PCI/MMIO hole 切成两段，完整 RAM 见
-// PHYSICAL_MEMORY_RANGES。
-pub const MEMORY_END: usize =
-    KERNEL_ADDR_OFFSET + PHYSICAL_MEMORY_RANGES[0].0 + PHYSICAL_MEMORY_RANGES[0].1;
-
-#[inline]
-pub fn physical_memory_start() -> usize {
-    crate::arch::hardware::ram_start()
-}
-
-#[inline]
-pub fn physical_memory_size() -> usize {
-    crate::arch::hardware::ram_size()
-}
-
 // la64的MMIO相关
 // 当entry.asm中启用了la64CPU的0x9000_...的直接映射窗口后，物理地址0x_0000_xxxx_xxxx_xxxx将被映射到虚拟地址0x9000_xxxx_xxxx_xxxx
 // 所以下面的MMIO地址都是直接映射的虚拟地址
@@ -98,7 +77,11 @@ pub fn print_memlayout() {
     }
     println!("===MEMLAYOUT===");
     println!("ekernel:        {:#x}", ekernel as *const () as usize);
-    println!("MEMORY_END:     {:#x}", MEMORY_END);
+    for index in 0..crate::arch::hardware::ram_range_count() {
+        if let Some((start, size)) = crate::arch::hardware::ram_range(index) {
+            println!("RAM[{}]:        [{:#x}, {:#x})", index, start, start + size);
+        }
+    }
     println!("UART_ADDR:      {:#x}", UART_ADDR);
     println!("POWER_OFF_ADDR: {:#x}", POWER_OFF_ADDR);
     println!("MMIO_END:       {:#x}", 0x9000_0000_1fe2_0000 as usize);
