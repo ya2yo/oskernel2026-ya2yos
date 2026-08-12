@@ -436,7 +436,7 @@ epoll 文件对象内部维护：
 
 POSIX mqueue 通过全局名称表管理队列，`mq_open()` 创建或打开命名队列，`mq_timedsend()` 和 `mq_timedreceive()` 发送/接收消息，支持非阻塞语义。`mq_notify()` 当前返回 `ENOSYS`。
 
-`memfd_create()` 返回匿名内存文件（`TmpFile`），校验 `MFD_*` 标志并支持 `MFD_CLOEXEC`。`io_uring_setup()` 返回独立的 `IoUringFd` 占位 fd，并提供真实的 SQ/CQ ring offsets 与 `IORING_MAX_ENTRIES` ABI 结构，但提交/完成环引擎尚未实现。`timerfd_create`、`memfd_secret`、`perf_event_open` 等仍返回 dummy fd 或 `ENOSYS`，用于避免用户程序在能力探测阶段直接失败。
+`memfd_create()` 返回匿名内存文件（`TmpFile`），校验 `MFD_*` 标志并支持 `MFD_CLOEXEC`。`memfd_secret()` 返回每次调用独立的 `SecretMemFile`：它具有独立读写偏移、可增长字节存储、`0600` 普通文件 stat、`read`/`write`/`truncate`/`lseek` 与读写就绪的 `poll` 语义；当前尚未实现 Linux 的专用 secret 页面映射、不可交换和隔离保证，因此仅能称为匿名私有 fd 兼容实现。`io_uring_setup()` 返回独立的 `IoUringFd` 占位 fd，并提供真实的 SQ/CQ ring offsets 与 `IORING_MAX_ENTRIES` ABI 结构，但提交/完成环引擎尚未实现。`timerfd_create`、`perf_event_open` 等仍返回 dummy fd 或 `ENOSYS`，用于避免用户程序在能力探测阶段直接失败。
 
 == 挂载接口
 
@@ -506,9 +506,7 @@ ext4 适配层把 C 侧锁钩子接到任务感知的 `TaskMutex`/`TaskRwLock`�
 
 == 动态链接支持
 
-`map_dynamic_link` 模块负责兼容用户程序期望的动态链接器和共享库路径。`open()` 和 `openat()` 会在进入 ext4 前做路径映射；`read_at()` 和 `read_all()` 会通过 `patch_dynamic_link_file_bytes()` 对部分动态链接文件内容做运行时修补。
-
-这套机制让固定镜像中的 musl/glibc 程序可以在内核统一的文件系统布局上运行，同时避免把所有路径兼容都硬编码到用户态。链接器从原生 libc script 显式命名解释器时优先使用该解释器，镜像缺失时才回退到兼容目标路径。
+ELF 装载器读取 `PT_INTERP` 后以该段给出的绝对路径直接经 VFS 打开动态解释器；路径不存在时保留 VFS 的 `ENOENT`，不再把镜像布局、特定 libc 路径或二进制字节修补藏在内核中。共享对象普通读取也返回 ext4 的原始字节。这样把解释器选择、库搜索、重定位和兼容策略严格留在用户态动态链接器与镜像配置中，内核只承担 ELF/VFS 边界应有的“按路径打开、映射和报告错误”职责。
 
 == 当前边界与后续方向
 

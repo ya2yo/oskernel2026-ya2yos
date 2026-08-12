@@ -1,9 +1,9 @@
 // Ya2yOS 内核设计文档（Typst 入口）
 // 对外发布建议：typst compile --pdf-standard a-2u main.typ ya2yos-kernel-design.pdf
 
-#let doc-version = "0.5"
-#let doc-date = datetime(year: 2026, month: 8, day: 11)
-#let source-snapshot = "HEAD 9bc59656（2026-08-11，含 sigreturn trampoline 调整）；工作树另有 Makefile/.vscode 本地修改"
+#let doc-version = "0.6"
+#let doc-date = datetime(year: 2026, month: 8, day: 12)
+#let source-snapshot = "HEAD 088f10b82bb8（2026-08-12）；工作树另有 Makefile、.vscode/settings.json 与 user/src/bin/initproc.rs 本地修改"
 #let ink = rgb("161616")
 #let muted = rgb("555555")
 #let line = rgb("9a9a9a")

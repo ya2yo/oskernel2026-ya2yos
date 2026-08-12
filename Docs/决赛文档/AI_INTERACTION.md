@@ -3326,3 +3326,12 @@
 - **场景**：参考 Linux ELF/VFS 语义重写动态链接兼容层，移除镜像布局和库内容硬编码。
 - **描述**：确认内核只应按 `PT_INTERP` 精确打开解释器；`DT_NEEDED`、`RPATH/RUNPATH`、`ld.so.cache`、符号链接及重定位由用户态 loader 负责。删除 `/glibc`、`/musl` basename fallback、工具链版本白名单、架构固定偏移机器码补丁，并同步收敛 `open/openat`、ELF loader 和 ext4 读取调用点，保留 `ENOENT` 搜索语义。详见 `Docs/决赛文档/ai.log` 对应条目和 [dynamic-link-linux-vfs-boundary.md](./problem/dynamic-link-linux-vfs-boundary.md)。
 - **关联 commit**：当前工作区未提交
+
+#### 设计文档与答辩材料同步（8.12）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求根据近一个月代码修改更新 `Docs/ya2yos/`，并生成答辩 PDF/PPTX；明确要求不新增独立“近月演进”章节。
+- **描述**：梳理提交历史、既有设计文档与 BuildStorm 实现报告后，将近期内存/remote-TLB、信号/ELF、ext4 并发、调度/计时/观测更新直接并入原有章节。新增 12 页 16:9 答辩演示源，输出 PDF 与可编辑 PPTX。性能页仅使用可追溯的 `axbuild` 定向 1.50x 观测，并明确完整 BuildStorm 仍需官方 `ok=true elapsed_s` 对照。
+- **验证边界**：正式设计 PDF、演示 PDF 均由 Typst 编译；PPTX 通过 ZIP 完整性检查，`git diff --check` 通过。本轮未运行内核构建、QEMU、LTP 或 BuildStorm。
+- **关联文档**：[Ya2yOS 设计文档](../ya2yos/README.md)、[答辩演示源](../ya2yos/slides/defense.typ)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交

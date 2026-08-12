@@ -6,6 +6,28 @@
 
 Ya2yOS 是一个基于 Rust 的宏内核实验操作系统，面向 Linux 用户态兼容和双架构运行环境持续演进。当前内核已贯通启动、进程调度、虚拟内存、文件系统、网络、信号到设备驱动的主要用户态路径，可以运行 BusyBox、libc-test、LTP 子集等负载；但若干关键边界仍是兼容实现、轮询路径或尚未完成的语义，不能将接口覆盖等同于完整 Linux 能力。
 
+=== 近月设计收敛
+
+2026-07-12 至 2026-08-12 的迭代重点不是单纯增加 syscall 数量，而是把高频真实负载的
+语义、并发边界和可观测性一起收敛。运行时侧补齐了 `openat2`、`mremap`、`memfd_create`、
+`memfd_secret`、`signalfd4`、System V 消息队列、`rseq` 等路径；动态 ELF 解释器现严格按
+`PT_INTERP` 的原始路径经 VFS 打开，缺失时保留 `ENOENT`，不再由内核重写库路径或修补
+共享对象字节。这个调整把镜像布局与动态链接策略归还给用户态 loader，内核仅维持 ELF/VFS
+边界。
+
+并发路径中，地址空间更新保持 `UPDATE_LOCK -> MemorySet` 写锁顺序，替换 PTE 后向所有
+活动远端 hart 广播 TLB mailbox 并收集 ACK，旧页帧只在 ACK 收敛后释放；独占 COW 页恢复
+原 PPN 的写权限，真实共享页才复制。文件系统则不把 lwext4 当成可任意并行的后端，而是用
+任务感知资源锁保留 journal、bcache 和块设备的安全串行域，并通过页缓存复用、连续冷页读取、
+目录局部 stat epoch、稀疏写 range 与连续 bcache 写回合并减少安全域内的重复工作。全局
+timer maintenance 由单 hart 排他执行，避免多 hart 对同一共享 timer 状态重复扫描。
+
+性能观测以 `os/src/utils/perf/` 的模块聚合计数与动态 `/proc/uptime` 为基础。已留档的同一
+BuildStorm 尾部编译单元从约 12 分钟降至约 8 分钟（约 `1.50x`、时间缩短约 33.3%）；这是
+定向观测，不外推为完整 446 crate 成绩。完整结果只以官方
+`BUILDSTORM_COMPILE ... ok=true elapsed_s=...` 的同配置对照为准。详细证据位于
+`Docs/决赛文档/buildstorm-优化实现文档.typ` 和 `Docs/决赛文档/problem/`。
+
 === 系统完整性
 
 
@@ -79,7 +101,7 @@ Ya2yOS 实现了大量 Linux syscall，并围绕 glibc、musl、BusyBox、libc-t
 
 3. *网络轮询驱动*：TCP/UDP 依赖 `poll_interfaces()` 周期性推进，VirtIO-net 中断路径尚未完整接管收包和唤醒。
 
-4. *部分 syscall 为兼容 stub*：如 `io_uring_setup`（仅占位 fd 与 ring offsets ABI）、`timerfd_create`、`memfd_secret`、`perf_event_open` 及 fanotify 权限事件响应等尚未提供完整语义。
+4. *部分 syscall 为兼容 stub*：如 `io_uring_setup`（仅占位 fd 与 ring offsets ABI）、`timerfd_create`、`perf_event_open` 及 fanotify 权限事件响应等尚未提供完整语义；`memfd_secret` 已有匿名私有 fd 的基础读写语义，但尚不具备 Linux secret memory 的映射与隔离保证。
 
 5. *权限和安全模型有限*：已有 uid/gid、mode、umask 和部分访问检查，但 capabilities、seccomp、namespace、LSM 等机制仍缺失。
 

@@ -11799,3 +11799,29 @@ A/B 命令、marker 提取及 `speedup` 计算，说明 AI 仅协助分析和汇
 维护者要求重写 `os/src/fs/map_dynamic_link.rs` 并参考 Linux 删除硬编码。分析确认旧实现把 `/glibc`、`/musl` 目录、Rust toolchain 版本、共享库 basename 和架构固定文件偏移写入通用 VFS；这会在 Debian multiarch、Alpine 或其它 libc 版本中混用 loader/libc。采纳 Linux 边界：内核仅按 ELF `PT_INTERP` 精确打开解释器，`DT_NEEDED`、RPATH/RUNPATH、cache、符号链接和重定位由用户态 loader 处理；VFS 保留原路径及 `ENOENT`。
 
 修改 `map_dynamic_link.rs` 为边界说明模块，移除所有重定向和二进制补丁 API；同步删除 `open/openat`、ELF loader、ext4 读取路径的调用。新增动态链接问题复盘并更新开发日志与问题索引。验证：定向 rustfmt、`git diff --check` 和旧 API 残留搜索通过；双架构构建与 QEMU/LTP/BuildStorm 回归待执行。
+
+## 2026-08-12：设计文档与答辩材料同步
+
+### 用户需求
+
+维护者要求依据近一个月修改更新 `Docs/ya2yos/` 设计文档，并生成答辩 PPT；随后明确不新增
+独立的“近月演进”章节，应直接更新既有设计文档结构。
+
+### AI 分析与采纳结论
+
+检索 2026-07-12 至 2026-08-12 的非 merge 提交、现有设计章节与 BuildStorm 优化实现文档。
+将内容按内存/远程 TLB、信号与动态 ELF、ext4 并发、CFS/timer/观测四条主线归纳；仅使用可
+追溯的同一尾部 `axbuild` 单元约 12 分钟到约 8 分钟（约 1.50x）作为定向性能观测，并明确
+当前没有官方完整 `BUILDSTORM_COMPILE ... ok=true elapsed_s=...` 对照，不能宣称全量 446 crate
+成绩。采纳维护者意见：不新增章节，近月总结融入既有总结章节，文件系统章节同步修正
+`PT_INTERP` 精确 VFS 路径与 `memfd_secret` 基础兼容边界。
+
+### 修改与验证
+
+更新 `Docs/ya2yos/main.typ`、`chapters/08-filesystem.typ`、`chapters/11-conclusion.typ`、README
+与忽略规则；新增 `Docs/ya2yos/slides/defense.typ`（16:9 PDF 源）和无 npm 依赖的
+`generate-pptx.mjs`。`typst compile --pdf-standard a-2u Docs/ya2yos/main.typ /tmp/ya2yos-kernel-design.pdf`
+与 `typst compile Docs/ya2yos/slides/defense.typ Docs/ya2yos/slides/ya2yos-defense.pdf` 均通过；
+生成的 12 页 PPTX 通过 `unzip -t` 完整性检查，`git diff --check` 通过。本轮为文档与答辩
+材料整理，未运行内核构建、QEMU、LTP 或 BuildStorm；未触碰维护者工作树中的 Makefile、VS Code
+设置和 `initproc.rs` 修改。
