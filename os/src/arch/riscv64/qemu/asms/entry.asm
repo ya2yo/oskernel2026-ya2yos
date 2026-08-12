@@ -1,10 +1,10 @@
-    # Keep BOOT_HARTS in sync with crate::arch::config::HART_NUM.  The bootstrap
+    # Keep this resource capacity in sync with hardware::MAX_SUPPORTED_HARTS.
     # path mounts the filesystem and initializes the network before switching
     # to dynamically allocated kernel stacks, so 64 KiB can overflow when
     # hart 1 wins the bootstrap race and overwrite adjacent .data.
     .equ BOOT_STACK_SHIFT, 17
     .equ BOOT_STACK_SIZE, (1 << BOOT_STACK_SHIFT)
-    .equ BOOT_HARTS, 8
+    .equ BOOT_HARTS, 16
 
     .section .text.entry
     .globl _start

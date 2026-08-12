@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::arch::config::HART_NUM;
+use crate::arch::hardware::MAX_SUPPORTED_HARTS;
 
 use super::common::{add, record_duration};
 use super::maybe_report;
@@ -15,10 +15,10 @@ pub(crate) static SCHEDULER_REMOTE_IPI_FAILED: AtomicUsize = AtomicUsize::new(0)
 pub(crate) static SCHEDULER_SELECTIONS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_SELF_SELECTIONS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static IDLE_LOOPS: AtomicUsize = AtomicUsize::new(0);
-pub(crate) static SCHEDULER_SELECTIONS_BY_HART: [AtomicUsize; HART_NUM] =
-    [const { AtomicUsize::new(0) }; HART_NUM];
-pub(crate) static IDLE_LOOPS_BY_HART: [AtomicUsize; HART_NUM] =
-    [const { AtomicUsize::new(0) }; HART_NUM];
+pub(crate) static SCHEDULER_SELECTIONS_BY_HART: [AtomicUsize; MAX_SUPPORTED_HARTS] =
+    [const { AtomicUsize::new(0) }; MAX_SUPPORTED_HARTS];
+pub(crate) static IDLE_LOOPS_BY_HART: [AtomicUsize; MAX_SUPPORTED_HARTS] =
+    [const { AtomicUsize::new(0) }; MAX_SUPPORTED_HARTS];
 pub(crate) static REMOTE_TLB_SHOOTDOWNS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static REMOTE_TLB_TARGET_HARTS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static REMOTE_TLB_ACKNOWLEDGEMENTS: AtomicUsize = AtomicUsize::new(0);
@@ -188,7 +188,8 @@ pub fn record_cow_fault_resolution(requires_copy: bool) {
     }
 }
 
-pub(crate) fn scheduler_hart_snapshot() -> ([usize; HART_NUM], [usize; HART_NUM]) {
+pub(crate) fn scheduler_hart_snapshot(
+) -> ([usize; MAX_SUPPORTED_HARTS], [usize; MAX_SUPPORTED_HARTS]) {
     (
         core::array::from_fn(|hart| SCHEDULER_SELECTIONS_BY_HART[hart].load(Ordering::Relaxed)),
         core::array::from_fn(|hart| IDLE_LOOPS_BY_HART[hart].load(Ordering::Relaxed)),

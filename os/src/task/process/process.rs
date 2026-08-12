@@ -10,7 +10,6 @@ use log::{debug, warn};
 use spin::{Lazy, Mutex, MutexGuard};
 
 use crate::{
-    arch::config::HART_NUM,
     fs::{remove_proc_dir_and_file, FSInfo, FdTable},
     mm::MemorySet,
     signal::{send_signal_to_thread_group, SigSet, SigTable, SIGCHLD},
@@ -157,7 +156,8 @@ impl Process {
         pgid: usize,
         sid: usize,
     ) -> Arc<Self> {
-        let home_hart = (pid - 1) % crate::arch::hardware::hart_count().min(HART_NUM);
+        let home_hart = (pid - 1)
+            % crate::arch::hardware::hart_count().min(crate::arch::hardware::MAX_SUPPORTED_HARTS);
         Self::new_on_hart(
             memory_set, sig_table, fd_table, fs_info, pid, parent_pid, pgid, sid, home_hart,
         )
@@ -175,7 +175,11 @@ impl Process {
         sid: usize,
         home_hart: usize,
     ) -> Arc<Self> {
-        assert!(home_hart < crate::arch::hardware::hart_count().min(HART_NUM));
+        assert!(
+            home_hart
+                < crate::arch::hardware::hart_count()
+                    .min(crate::arch::hardware::MAX_SUPPORTED_HARTS)
+        );
         let ret = Arc::new(Self {
             memory_set: ResourceSlot::new(memory_set),
             sig_table: ResourceSlot::new(sig_table),

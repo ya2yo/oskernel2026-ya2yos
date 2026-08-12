@@ -11855,3 +11855,46 @@ A/B 命令、marker 提取及 `speedup` 计算，说明 AI 仅协助分析和汇
 ### 修改与验证
 
 修改 fs 初始化、frame allocator 的 page cache 配置接口及其导出，并新增 SD 卡配置加载模块。`make TARGET_ARCH=riscv64`、`make TARGET_ARCH=loongarch64` 与 `git diff --check` 均通过。全仓 `cargo fmt --check` 报告维护者现有文件格式差异，因此仅对本轮文件执行 `rustfmt`。将原始镜像复制到 `/tmp/ya2yos-sdcard-config-test.img` 后写入测试配置，RISC-V QEMU 启动日志输出 `[kernel] config: loaded /etc/ya2yos.conf (pipe_max_size=32768, page_cache=96/24/8/32)`，随后正常执行 `shutdown!`；原始测试镜像未修改。
+
+## 2026-08-13：启动器探测 RAM 布局
+
+### 用户需求
+
+维护者要求删除 `os/src/arch/loongarch64/qemu/memory_layout.rs` 和
+`os/src/arch/riscv64/qemu/memory_layout.rs` 中的内存布局硬编码，改由启动器探测。
+
+### 分析与实现
+
+审计现有 FDT reader、CMA、页表与两种启动协议。RISC-V SBI 已在 `a1` 传递 FDT；LoongArch
+QEMU 9.2 的直接启动器把 EFI system table 物理偏移放在 `a2`，其 Device Tree configuration
+table 指向 FDT。用 QEMU `dumpdtb` 核验 LoongArch `virt -m 16G` 的 FDT 确实以两个
+`memory@.../reg` 节点表达 PCI/MMIO 空洞两侧 RAM。
+
+将无堆 FDT reader 改为保存所有页对齐 RAM `reg` 元组的固定上限原子段表；没有有效 RAM
+描述即停止启动。LoongArch 入口传递 `a2`，bootstrap hart 通过 EFI GUID 找到 FDT 并在 `.data`
+中发布启动参数供次核复用，避免 BSS 清零导致的竞态。删除两份 memory layout 文件中的 RAM
+起址、大小、`MEMORY_END` 和分段表；LoongArch CMA 遍历探测段，RISC-V 显式保持当前启动页表
+只能覆盖一个连续段的约束。
+
+### 修改与验证
+
+修改 `os/src/arch/hardware.rs`、启动入口、LoongArch CPU 初始化、两份 memory layout、CMA 与
+`main.rs`；新增问题复盘并更新索引、开发日志和 AI 交互记录。`cargo fmt --manifest-path
+os/Cargo.toml`、`make build-arch TARGET_ARCH=riscv64` 和 `make build-arch
+TARGET_ARCH=loongarch64` 均通过。两条 45 秒 `make run` 在 QEMU 为 block drive 创建
+`/var/tmp/vl.*` 文件时被当前沙箱只读文件系统阻断；权限提升请求未获执行，因此本轮未进入
+内核，未宣称 QEMU/LTP/BuildStorm 行为回归通过。
+
+### 后续：Hart 拓扑去硬编码
+
+维护者要求继续删除 `os/src/arch/loongarch64/qemu/config.rs` 与
+`os/src/arch/riscv64/qemu/config.rs`。审计确认其仅含 `HART_NUM`，但该常量混用了两类完全
+不同的含义：QEMU 实际拓扑，以及 Rust 静态数组/汇编启动栈的编译期长度。删除两个模块后，
+启动、CPU affinity、进程 placement、scheduler、IPI、remote TLB、uaccess、`/proc/cpuinfo` 和
+perf 输出都读取 FDT 的 `hart_count()`；FDT reader 将该数限制为 `MAX_SUPPORTED_HARTS=16`。
+后者只表示每 Hart 静态资源和 bootstrap stack 的编译期容量，绝不描述机器实际核数。
+
+修改架构入口汇编，使 RISC-V `BOOT_HARTS` 与 LoongArch `MAX_HARTS` 一同表示此容量；perf 报告
+仅打印实际在线 Hart 的槽位。`cargo fmt --manifest-path os/Cargo.toml`、`make build-arch
+TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过。运行验证仍受前述
+`/var/tmp` 沙箱限制，未重试 QEMU。

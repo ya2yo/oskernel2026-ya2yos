@@ -25,7 +25,7 @@ use crate::arch::context::TrapContext;
 use crate::arch::page_table::get_token_from_regs;
 use crate::task::Process;
 use crate::{
-    arch::config::HART_NUM,
+    arch::hardware::MAX_SUPPORTED_HARTS,
     task::switch::switch,
     timer::{check_futex_timer, claim_global_timer_maintenance},
 };
@@ -110,8 +110,8 @@ const EMPTY_PROCESSOR: Processor = Processor::new();
 /// 只读写自己的槽位；该保证依赖 Hart ID 的正确性和处理器初始化顺序，
 /// 不是由类型系统自动检查的。跨 Hart 访问某个槽位时必须另行建立同步，
 /// 不能把该数组当作普通共享可变数据结构使用。
-pub static PROCESSORS: SyncUnsafeCell<[Processor; HART_NUM]> =
-    SyncUnsafeCell::new([EMPTY_PROCESSOR; HART_NUM]);
+pub static PROCESSORS: SyncUnsafeCell<[Processor; MAX_SUPPORTED_HARTS]> =
+    SyncUnsafeCell::new([EMPTY_PROCESSOR; MAX_SUPPORTED_HARTS]);
 
 /// Accumulated time spent in the scheduler's idle path for each Hart.
 ///
@@ -123,25 +123,26 @@ struct IdleAccounting {
     started_at: Option<usize>,
 }
 
-static IDLE_ACCOUNTING: [Mutex<IdleAccounting>; HART_NUM] = [const {
+static IDLE_ACCOUNTING: [Mutex<IdleAccounting>; MAX_SUPPORTED_HARTS] = [const {
     Mutex::new(IdleAccounting {
         total_ticks: 0,
         started_at: None,
     })
-}; HART_NUM];
+}; MAX_SUPPORTED_HARTS];
 
 /// Hart 即将进入或正在执行架构 idle 指令时发布的状态。
 ///
 /// 唤醒方只在目标值为 `true` 时发送 IPI，避免打扰已经执行有用工作的
 /// Hart。该状态与就绪队列检查配合使用，不能单独作为“队列为空”的判断。
-static HART_IDLE: [AtomicBool; HART_NUM] = [const { AtomicBool::new(false) }; HART_NUM];
+static HART_IDLE: [AtomicBool; MAX_SUPPORTED_HARTS] =
+    [const { AtomicBool::new(false) }; MAX_SUPPORTED_HARTS];
 
 /// Return the idle publication state of every Hart for a diagnostic snapshot.
 ///
 /// This is intentionally an approximate, lock-free view.  It distinguishes a
 /// quiescent ready queue from a scheduler stall without adding work to the
 /// timer-preemption hot path.
-pub(crate) fn idle_hart_snapshot() -> [bool; HART_NUM] {
+pub(crate) fn idle_hart_snapshot() -> [bool; MAX_SUPPORTED_HARTS] {
     core::array::from_fn(|hartid| HART_IDLE[hartid].load(Ordering::Relaxed))
 }
 
@@ -178,7 +179,7 @@ pub(crate) fn notify_harts_of_runnable_task(cpu_mask: usize, ready_tasks: usize)
     let mut remote_target = false;
     let mut target_idle = false;
     let mut ipi_sent = false;
-    let hart_count = crate::arch::hardware::hart_count().min(HART_NUM);
+    let hart_count = crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS);
     let mut wake_budget = ready_tasks.min(hart_count.saturating_sub(1));
     for target_hart in 0..hart_count {
         if target_hart == source_hart || cpu_mask & (1usize << target_hart) == 0 {
@@ -222,7 +223,7 @@ fn idle_until_runnable(hartid: usize) {
 /// Return the total time all Harts have spent idle, including active intervals.
 pub fn idle_ticks() -> usize {
     let now = crate::arch::time::get_ticks();
-    let hart_count = crate::arch::hardware::hart_count().min(HART_NUM);
+    let hart_count = crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS);
     (0..hart_count).fold(0usize, |total, hartid| {
         let accounting = IDLE_ACCOUNTING[hartid].lock();
         total.saturating_add(
@@ -239,10 +240,10 @@ pub fn idle_ticks() -> usize {
 /// 获取指定 Hart 的处理器本地状态。
 ///
 /// `PROCESSORS` 的无锁访问依赖调用方只在对应 Hart 上访问对应槽位；索引
-/// 超出 [`HART_NUM`] 是内核逻辑错误，会立即 panic。当前实现的调用方均
+/// 超出 [`MAX_SUPPORTED_HARTS`] 是内核逻辑错误，会立即 panic。当前实现的调用方均
 /// 使用当前 Hart ID，并通过返回的独占引用更新本地调度状态。
 fn get_proc_by_hartid(hartid: usize) -> &'static mut Processor {
-    if hartid >= HART_NUM {
+    if hartid >= MAX_SUPPORTED_HARTS {
         panic!(
             "get_proc_by_hartid: fail because hartid={} is too large!",
             hartid

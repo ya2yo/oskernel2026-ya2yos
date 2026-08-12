@@ -11,8 +11,8 @@ use crate::arch::time::get_ticks;
 use crate::signal::SignalFrameTrace;
 use crate::{
     arch::{
-        config::HART_NUM,
         context::TrapContext,
+        hardware::MAX_SUPPORTED_HARTS,
         memory_layout::{
             PAGE_SIZE, PRE_ALLOC_PAGES, USER_HEAP_SIZE, USER_STACK_SIZE, USER_STACK_TOP,
             USER_TRAP_CONTEXT_TOP,
@@ -505,7 +505,7 @@ impl TaskControlBlock {
     /// Mask of all harts configured into this kernel image.
     #[inline]
     pub fn online_cpu_mask() -> usize {
-        let hart_num = crate::arch::hardware::hart_count().min(HART_NUM);
+        let hart_num = crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS);
         if hart_num >= usize::BITS as usize {
             usize::MAX
         } else {
@@ -535,7 +535,7 @@ impl TaskControlBlock {
     #[inline]
     fn choose_hart(mask: usize, start: usize) -> usize {
         debug_assert_ne!(mask & Self::online_cpu_mask(), 0);
-        let hart_num = crate::arch::hardware::hart_count().min(HART_NUM);
+        let hart_num = crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS);
         for offset in 0..hart_num {
             let hart = (start + offset) % hart_num;
             if mask & (1usize << hart) != 0 {
@@ -613,14 +613,14 @@ impl TaskControlBlock {
     /// Return whether this thread may be dispatched on the specified Hart.
     #[inline]
     pub(crate) fn can_run_on(&self, hartid: usize) -> bool {
-        hartid < crate::arch::hardware::hart_count().min(HART_NUM)
+        hartid < crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS)
             && self.cpu_affinity() & (1usize << hartid) != 0
     }
 
     /// Publish the Hart that actually selected this task.
     #[inline]
     pub(crate) fn set_scheduled_hart(&self, hartid: usize) {
-        debug_assert!(hartid < crate::arch::hardware::hart_count().min(HART_NUM));
+        debug_assert!(hartid < crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS));
         self.scheduled_hart.store(hartid, Ordering::Release);
     }
 

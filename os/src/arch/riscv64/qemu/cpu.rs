@@ -2,7 +2,7 @@ use core::arch::asm;
 use riscv::register::sie;
 use sbi_rt::{system_reset, NoReason, Shutdown, SystemFailure};
 
-use crate::arch::{config::HART_NUM, memory_layout::KERNEL_ADDR_OFFSET};
+use crate::arch::{hardware::MAX_SUPPORTED_HARTS, memory_layout::KERNEL_ADDR_OFFSET};
 
 pub fn hart_id() -> usize {
     let hartid: usize;
@@ -21,7 +21,7 @@ pub fn boot_secondary_harts(boot_hart: usize) {
     }
 
     let start_addr = _start as *const () as usize - KERNEL_ADDR_OFFSET;
-    let hart_count = crate::arch::hardware::hart_count().min(HART_NUM);
+    let hart_count = crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS);
     for hart in 0..hart_count {
         if hart == boot_hart {
             continue;
@@ -69,7 +69,9 @@ pub fn clear_ipi() {
 /// Wake a hart that has published an idle state after receiving a runnable
 /// task.  The SBI sPI extension delivers a supervisor software interrupt.
 pub fn wake_hart(hartid: usize) -> bool {
-    if hartid >= usize::BITS as usize {
+    if hartid >= crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS)
+        || hartid >= usize::BITS as usize
+    {
         return false;
     }
     sbi_rt::send_ipi(1usize << hartid, 0).is_ok()

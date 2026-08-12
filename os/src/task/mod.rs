@@ -125,7 +125,7 @@ pub const INITPROC_PID: usize = 1;
 /// Keep this forwarding function in `task` rather than re-exporting the
 /// private `processor` module so source navigation from perf reports has a
 /// concrete local definition.
-pub(crate) fn idle_hart_snapshot() -> [bool; crate::arch::config::HART_NUM] {
+pub(crate) fn idle_hart_snapshot() -> [bool; crate::arch::hardware::MAX_SUPPORTED_HARTS] {
     processor::idle_hart_snapshot()
 }
 

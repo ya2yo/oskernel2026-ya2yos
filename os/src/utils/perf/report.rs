@@ -1449,13 +1449,14 @@ pub(super) fn emit_report(now: usize) {
     let (scheduler_selections_by_hart, idle_loops_by_hart) = scheduler_hart_snapshot();
     let scheduler_ready_tasks = crate::task::ready_queue::ready_procs_num();
     let idle_published_by_hart = crate::task::idle_hart_snapshot();
+    let hart_count = crate::arch::hardware::hart_count();
     let remote_tlb_shootdowns_by_source = remote_tlb_shootdown_source_snapshot();
     println!(
         "[perf] scheduler_harts selections_by_hart={:?} idle_loops_by_hart={:?} ready_tasks={} idle_published_by_hart={:?}",
-        scheduler_selections_by_hart,
-        idle_loops_by_hart,
+        &scheduler_selections_by_hart[..hart_count],
+        &idle_loops_by_hart[..hart_count],
         scheduler_ready_tasks,
-        idle_published_by_hart,
+        &idle_published_by_hart[..hart_count],
     );
     println!(
         "[perf] scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",

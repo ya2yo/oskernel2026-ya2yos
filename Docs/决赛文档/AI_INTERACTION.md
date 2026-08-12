@@ -3349,3 +3349,30 @@
 - **描述**：只读检查 `pre_tests/sdcard-rv.img` 后确认镜像不含硬件配置文件；实现可选 `/etc/ya2yos.conf`，在根 ext4 就绪后读取 `pipe_max_size` 与 page-cache 水位/批量。解析受 16 KiB、十进制、范围和不变量约束，未知或非法项降级告警，缺失文件保持默认值；更新 pipe sysctl 可见值。
 - **验证边界**：RISC-V64、LoongArch64 release 构建和 `git diff --check` 已通过；全仓格式检查暴露预存差异，故仅格式化本轮文件。使用 `/tmp` 镜像副本启动 RISC-V QEMU，日志确认 `pipe_max_size=32768`、page-cache `96/24/8/32` 已生效并正常 `shutdown!`；原始 SD 卡镜像未修改。
 - **关联 commit**：当前工作区未提交
+
+#### 启动器探测 RAM 布局（8.13）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求删除 RISC-V 与 LoongArch64 `memory_layout.rs` 的 RAM 布局硬编码，
+  使内存管理改用启动器探测。
+- **描述**：审计启动 ABI、QEMU 9.2 源码和导出的 LoongArch `virt` FDT。RISC-V 从 SBI `a1`
+  读取 FDT；LoongArch 直接启动器经 `a2` 的 EFI system table Device Tree configuration table
+  获取 FDT。FDT reader 扩展为无堆多段 RAM 快照，LoongArch CMA 直接遍历这些段，RISC-V
+  保留其单段 bootstrap 页表约束。删除两份 memory layout 的 RAM 起址、容量和固定分段表。
+- **验证边界**：RISC-V/LoongArch64 release 构建通过。QEMU 运行在创建 `/var/tmp/vl.*` 时受
+  当前沙箱只读 `/var/tmp` 阻断，未进入内核；因此没有 QEMU、LTP 或 BuildStorm 通过结论。
+- **关联问题**：[启动器探测 RAM 布局](./problem/bootloader-discovered-ram-layout.md)
+- **关联 commit**：当前工作区未提交
+
+#### 启动器探测 Hart 拓扑（8.13）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求删除 RISC-V、LoongArch64 QEMU `config.rs` 中的固定 `HART_NUM`。
+- **描述**：删除两个配置文件及导出，将 FDT 探测到的 `hart_count()` 接入次核启动、IPI、
+  scheduler、CPU affinity、进程 placement、remote TLB、uaccess、`/proc/cpuinfo` 与 perf 输出。
+  为 Rust 静态数组和汇编启动栈保留 `MAX_SUPPORTED_HARTS=16`，明确它是资源容量而非机器拓扑；
+  FDT CPU 数在启动期受此上限约束。
+- **验证边界**：RISC-V/LoongArch64 release 构建通过。未运行 QEMU，原因同本轮 RAM 探测变更：
+  当前沙箱的只读 `/var/tmp` 阻断 QEMU drive 初始化。
+- **关联问题**：[启动器探测 RAM 布局](./problem/bootloader-discovered-ram-layout.md)
+- **关联 commit**：当前工作区未提交

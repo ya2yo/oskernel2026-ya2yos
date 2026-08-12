@@ -7,6 +7,5 @@ pub mod tlb;
 pub mod uaccess;
 // pub mod trap;
 mod asms;
-pub mod config;
 pub mod context;
 pub mod trap_interface;

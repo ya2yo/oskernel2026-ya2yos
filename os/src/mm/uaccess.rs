@@ -8,7 +8,7 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::{
-    arch::{config::HART_NUM, memory_layout::USER_SPACE_SIZE},
+    arch::{hardware::MAX_SUPPORTED_HARTS, memory_layout::USER_SPACE_SIZE},
     task::current_task,
     trap::trap_types::{Exception, Trap},
 };
@@ -35,7 +35,8 @@ impl UaccessState {
     }
 }
 
-static UACCESS_STATE: [UaccessState; HART_NUM] = [const { UaccessState::new() }; HART_NUM];
+static UACCESS_STATE: [UaccessState; MAX_SUPPORTED_HARTS] =
+    [const { UaccessState::new() }; MAX_SUPPORTED_HARTS];
 
 #[derive(Clone, Copy)]
 struct UaccessSnapshot {
@@ -48,7 +49,7 @@ struct UaccessSnapshot {
 #[inline]
 fn current_state() -> &'static UaccessState {
     let hart = crate::arch::cpu::hart_id();
-    assert!(hart < HART_NUM, "invalid hart id {}", hart);
+    assert!(hart < MAX_SUPPORTED_HARTS, "invalid hart id {}", hart);
     &UACCESS_STATE[hart]
 }
 

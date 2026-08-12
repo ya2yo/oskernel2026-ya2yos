@@ -10,7 +10,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::arch::{config::HART_NUM, cpu::hart_id};
+use crate::arch::{cpu::hart_id, hardware::MAX_SUPPORTED_HARTS};
 use crate::sync::RemoteTlbMutex;
 use spin::MutexGuard;
 
@@ -34,7 +34,8 @@ impl TlbMailbox {
     }
 }
 
-static MAILBOXES: [TlbMailbox; HART_NUM] = [const { TlbMailbox::new() }; HART_NUM];
+static MAILBOXES: [TlbMailbox; MAX_SUPPORTED_HARTS] =
+    [const { TlbMailbox::new() }; MAX_SUPPORTED_HARTS];
 
 /// Only one hart may wait for remote shootdown acknowledgements at a time.
 ///
@@ -123,10 +124,10 @@ pub(crate) fn shootdown(active_harts: &AtomicUsize, #[cfg(feature = "perf")] kin
         // acknowledgement inside this loop serializes an N-hart shootdown
         // behind the sum of each target's IPI latency.  UPDATE_LOCK already
         // guarantees that no second sender can reuse a mailbox sequence.
-        let mut sequences = [0usize; HART_NUM];
+        let mut sequences = [0usize; MAX_SUPPORTED_HARTS];
         #[cfg(feature = "perf")]
-        let mut requested_at = [0usize; HART_NUM];
-        let hart_count = crate::arch::hardware::hart_count().min(HART_NUM);
+        let mut requested_at = [0usize; MAX_SUPPORTED_HARTS];
+        let hart_count = crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS);
         for target in 0..hart_count {
             let target_bit = 1usize << target;
             if remote_harts & target_bit == 0 {
