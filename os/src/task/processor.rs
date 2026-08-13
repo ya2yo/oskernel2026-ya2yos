@@ -397,9 +397,14 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// 当前任务以后再次被选中时，函数才会从这里返回。
 pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     // `suspend_current_and_run_next()` can call schedule directly without
-    // first detaching the processor's current slot.  Ensure the saved task's
-    // user page table is never used while the idle scheduler runs.
+    // first detaching the processor's current slot.  Move to the kernel page
+    // table before dropping the user address-space active bit, so a remote
+    // writer can stop waiting for this hart without reclaiming a page table
+    // still used by scheduler code.
     crate::mm::activate_kernel_space();
+    if let Some(task) = current_task() {
+        task.process.memory_set_arc().deactivate_current_hart();
+    }
     let processor = get_proc_by_hartid(hart_id());
     // debug!(
     //     "[schedule] processor pid = {} , tid = {}",
