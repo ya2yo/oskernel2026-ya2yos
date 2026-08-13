@@ -27,10 +27,10 @@ Hart 持续消耗宿主 CPU，也把历史性能统计的现象直接归因于 Q
    `accel/tcg/cpu-exec.c` 随后清除 `halted`；`target/loongarch/tcg/tcg_cpu.c`
    在 `CRMD.IE` 与 `ECFG.LIE` 允许时进入中断入口。
 
-内核已经满足这条路径的必要条件：`init_csr_regs()` 在每个 Hart 启用 IOCSR IPI vectors，
-`enable_timer_interrupt()` 设置 `ECFG.LIE` 的 IPI 位，`idle()` 执行前设置 `CRMD.IE`，而
-IPI trap 会清除 IOCSR 状态。仓库的 `scripts/loongarch64.mk` 也没有请求 KVM accelerator，
-默认测试路径为 QEMU TCG。
+内核必须在每个 Hart 启用 IOCSR IPI vectors，并使 `ECFG.LIE` 包含 timer 与 IPI 位。原先
+这依赖启动期间 `enable_timer_interrupt()` 的一次性设置；但该外部状态可被后续代码改变，不能
+作为 idle 进入条件。仓库的 `scripts/loongarch64.mk` 也没有请求 KVM accelerator，默认测试
+路径为 QEMU TCG。
 
 ## 根因
 
@@ -46,7 +46,16 @@ KVM 是独立边界：QEMU 在 LoongArch IRQ 注入中调用 `KVM_INTERRUPT`，�
 
 删除 `POLLING_HARTS` 及其自旋分支。所有 LoongArch QEMU Hart 都在本地中断启用后执行
 `idle 0`，并在 timer 或 scheduler IPI 返回后关闭 `CRMD.IE`、继续 remote TLB polling 和
-调度循环。函数注释明确限定为 QEMU TCG 的已使能中断唤醒语义，不对 KVM 或实际硬件作保证。
+调度循环。
+
+后续将 `idle()` 调整为与 RISC-V `wfi` 路径相同的自包含临界区：先关闭 `CRMD.IE`，紧接着
+无条件写入 `ECFG.LIE = TIMER | IPI`，再设置 one-shot timer 并执行 `idle 0`。这样不会依赖
+`enable_timer_interrupt()` 或其他外部路径保留 ECFG 掩码；全局中断保持关闭，pending interrupt
+仅负责使 QEMU TCG 恢复 vCPU。`idle 0` 返回后先将掩码收窄为 `TIMER`，对应 RISC-V 的
+`sie::clear_ssoft()`，再由 `clear_ipi()` 确认挂起的 IPI。remote-TLB mailbox 仍在 idle 返回和
+`trap_return()` 轮询；对正在用户态运行的目标 Hart，IPI 请求会保留到下一次 timer trap 后推进
+该轮询，因此其 ACK 延迟至多增加一个 scheduler tick。函数注释明确限定为 QEMU TCG 的已使能
+中断唤醒语义，不对 KVM 或实际硬件作保证。
 
 ## 涉及文件
 

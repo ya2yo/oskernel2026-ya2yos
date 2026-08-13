@@ -3364,6 +3364,23 @@
 - **关联问题**：[启动器探测 RAM 布局](./problem/bootloader-discovered-ram-layout.md)
 - **关联 commit**：当前工作区未提交
 
+#### LoongArch idle ECFG 自包含配置（8.13）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求 LoongArch QEMU `idle()` 采用与 RISC-V 相同的临界区结构，不依赖外部
+  初始化路径保留 `ECFG` 状态。
+- **描述**：对照 RISC-V WFI 与 LoongArch trap 初始化，确认 timer/IPI 的 ECFG API 为
+  `ecfg::set_lie(LineBasedInterrupt::TIMER | LineBasedInterrupt::IPI)`。在关闭 `CRMD.IE` 后立即
+  重建该 mask，再设置 one-shot timer 和执行 `idle 0`；返回后收窄为 `TIMER`，对应
+  `sie::clear_ssoft()`，再沿用 IPI 清除、remote-TLB poll 和 timer 重编程。用户态目标的
+  remote-TLB mailbox 由下一次 timer trap 的 `trap_return()` 轮询推进，不改 scheduler 或 trap
+  控制流。
+- **验证边界**：已执行目标文件 `rustfmt`、`make TARGET_ARCH=loongarch64`（完成 RISC-V 与
+  LoongArch64 release 构建）和 `git diff --check`，均通过。为避免根目录 `make run` 删除维护者
+  工作区的 `disk.img`，未运行 QEMU/LTP/BuildStorm。
+- **关联问题**：[LoongArch QEMU TCG idle IPI 唤醒语义](./problem/loongarch-qemu-tcg-idle-ipi.md)
+- **关联 commit**：当前工作区未提交
+
 #### 启动器探测 Hart 拓扑（8.13）
 
 - **工具/模型**：Codex（GPT-5）

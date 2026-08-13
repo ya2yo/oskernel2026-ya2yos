@@ -13,7 +13,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use loongArch64::register::prcfg1::{self, Prcfg1};
 use loongArch64::register::{asid, tlbidx};
 use loongArch64::register::{
-    cpuid, crmd, dmw0, dmw1, dmw2, dmw3, ecfg, eentry, euen, prmd,
+    cpuid, crmd, dmw0, dmw1, dmw2, dmw3,
+    ecfg::{self, LineBasedInterrupt},
+    eentry, euen, prmd,
     pwch::{self, set_dir3_base},
     pwcl, stlbps, tcfg, ticlr, tlbrehi, tlbrentry, CpuMode, MemoryAccessType,
 };
@@ -72,17 +74,20 @@ pub fn boot_secondary_harts(boot_hart: usize) {
 /// Wait for a local timer or a targeted scheduler IPI while this Hart's run
 /// queue is empty.
 ///
-/// QEMU TCG wakes a halted LoongArch vCPU for an ECFG-enabled pending
-/// interrupt even while CRMD.IE is clear. Keep it clear across `idle 0` so an
-/// IPI cannot be taken and acknowledged between enabling interrupts and
-/// entering idle. The pending sources are acknowledged in normal control flow
-/// after the vCPU resumes.
+/// Like RISC-V WFI, QEMU TCG resumes a halted LoongArch vCPU when a locally
+/// enabled interrupt becomes pending while `CRMD.IE` is clear. Re-establish
+/// the timer and IPI ECFG mask here so the idle path does not rely on state
+/// established by an external initialization path. Disable the IPI source
+/// again before resuming the kernel scheduler, matching RISC-V's
+/// `sie::clear_ssoft()`.
 pub fn idle() {
     crmd::set_ie(false);
+    ecfg::set_lie(LineBasedInterrupt::TIMER | LineBasedInterrupt::IPI);
     crate::timer::set_next_trigger();
     unsafe {
         core::arch::asm!("idle 0", options(nomem, nostack, preserves_flags));
     }
+    ecfg::set_lie(LineBasedInterrupt::TIMER);
     clear_ipi();
     crate::mm::remote_tlb::poll();
     crate::timer::set_next_trigger();

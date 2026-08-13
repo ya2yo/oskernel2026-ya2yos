@@ -11898,3 +11898,30 @@ perf 输出都读取 FDT 的 `hart_count()`；FDT reader 将该数限制为 `MAX
 仅打印实际在线 Hart 的槽位。`cargo fmt --manifest-path os/Cargo.toml`、`make build-arch
 TARGET_ARCH=riscv64` 与 `make build-arch TARGET_ARCH=loongarch64` 均通过。运行验证仍受前述
 `/var/tmp` 沙箱限制，未重试 QEMU。
+
+## 2026-08-13：LoongArch idle ECFG 自包含配置
+
+### 用户需求
+
+维护者要求将 `os/src/arch/loongarch64/qemu/cpu.rs` 的 `idle()` 调整为与 RISC-V 相同的结构：
+关闭全局中断后立即启用 ECFG，不依赖外部初始化路径遗留的 ECFG 状态。
+
+### 分析与实现
+
+对照 RISC-V `idle()`，其在关闭 `sstatus.SIE` 后在同一临界区显式设置本地软件中断、设置
+one-shot timer 并执行 `wfi`。LoongArch 原实现只关闭 `CRMD.IE`、设置 timer 后执行 `idle 0`，
+虽然启动期 `enable_timer_interrupt()` 通常会设置 `ECFG.LIE = TIMER | IPI`，但这使 idle 的
+唤醒正确性依赖可变的外部 CSR 状态。LoongArch crate 的既有 API 和 trap 初始化均使用
+`ecfg::set_lie(LineBasedInterrupt::TIMER | LineBasedInterrupt::IPI)`。
+
+因此在 `CRMD.IE` 关闭的下一语句写入该 ECFG mask，再设置 timer 与执行 `idle 0`；返回后先将
+ECFG 收窄为 `TIMER`，对应 RISC-V 的 `sie::clear_ssoft()`，再 ACK IPI、轮询 remote-TLB mailbox
+和重编程 timer。运行用户任务的 Hart 仍会在下一次 timer trap 的 `trap_return()` 轮询 mailbox，
+因此 remote-TLB ACK 最多等待一个 scheduler tick，未改变 scheduler 或 trap 的控制流边界。
+
+### 修改与验证
+
+修改 `os/src/arch/loongarch64/qemu/cpu.rs`，并更新 LoongArch QEMU idle IPI 问题记录、开发日志
+和 AI 交互记录。执行 `rustfmt --edition 2021 os/src/arch/loongarch64/qemu/cpu.rs`、
+`make TARGET_ARCH=loongarch64`（完成 RISC-V 与 LoongArch64 release 构建）和 `git diff --check`
+均通过；QEMU 行为回归不执行，避免触碰维护者现有的 `disk.img`。
