@@ -2,6 +2,7 @@
 
 - [BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.typ)
 - [启动器探测 RAM 布局](./problem/bootloader-discovered-ram-layout.md)
+- [VisionFive 2 板级启动与 UART 驱动](./problem/visionfive2-board-bringup.md)
 
 - [netperf glibc: 12865 控制端口残留监听](./problem/netperf-glibc-port-reuse.md)
 - [splice syscall 兼容实现](./problem/splice-syscall.md)

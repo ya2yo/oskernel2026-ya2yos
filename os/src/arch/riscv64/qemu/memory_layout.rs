@@ -30,6 +30,9 @@ pub const MAX_BRK_SIZE: usize = 0x8000_0000; // 2 GiB
 pub const MAX_MMAP_SIZE: usize = 0x8000_0000; // 2 GiB
 pub const PRE_ALLOC_PAGES: usize = 8;
 
+#[cfg(feature = "visionfive2")]
+pub const KERNEL_ADDR_OFFSET: usize = 0xffff_ffc0_4000_0000;
+#[cfg(not(feature = "visionfive2"))]
 pub const KERNEL_ADDR_OFFSET: usize = 0xffff_ffc0_0000_0000;
 
 /// When directly map: vpn = ppn + kernel direct offset
@@ -61,6 +64,15 @@ pub const MMIO: &[(usize, usize)] = &[
     (0x1000_0000, 0x00_1000), // UART0
     (0x1000_1000, 0x00_1000), // Virtio Block
     (0x1000_8000, 0x00_1000), // Virtio Net
+];
+
+#[cfg(feature = "visionfive2")]
+pub const BOARD_MMIO: &[(usize, usize)] = &[
+    (0x1602_0000, 0x01_0000), // JH7110 SD/MMC
+    (0x1604_0000, 0x01_0000), // JH7110 GMAC
+    (0x1302_0000, 0x00_1000), // JH7110 clock/reset controller
+    (0x1303_0000, 0x00_1000), // JH7110 syscon
+    (0x1600_0000, 0x00_1000), // JH7110 GPIO
 ];
 
 pub const MMIO_MAP_OFFSET: usize = KERNEL_ADDR_OFFSET;

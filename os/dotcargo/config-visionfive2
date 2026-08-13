@@ -1,0 +1,19 @@
+[target.riscv64gc-unknown-none-elf]
+rustflags = [
+    "-Clink-arg=-Tsrc/arch/riscv64/qemu/visionfive2.ld",
+    "-Cforce-frame-pointers=yes"
+]
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/rcore-os/riscv"]
+git = "https://github.com/rcore-os/riscv"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/Godones/loongArch64"]
+git = "https://github.com/Godones/loongArch64"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

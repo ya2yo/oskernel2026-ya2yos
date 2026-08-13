@@ -1,4 +1,6 @@
 pub mod console;
+#[cfg(feature = "visionfive2")]
+pub mod visionfive2_uart;
 pub mod cpu;
 pub mod memory_layout;
 pub mod page_table;

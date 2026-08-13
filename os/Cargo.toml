@@ -75,6 +75,7 @@ irq = []
 net = []
 scheduler-rr = []
 scheduler-cfs = []
+visionfive2 = []
 
 # 这里不再需要 riscv64 = ["riscv", "sbi-rt"]，因为 target 会自动处理
 # 但如果你代码里还在用 #[cfg(feature = "riscv64")]，建议改为 #[cfg(target_arch = "riscv64")]

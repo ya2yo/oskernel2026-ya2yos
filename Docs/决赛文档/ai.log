@@ -11925,3 +11925,12 @@ ECFG 收窄为 `TIMER`，对应 RISC-V 的 `sie::clear_ssoft()`，再 ACK IPI、
 和 AI 交互记录。执行 `rustfmt --edition 2021 os/src/arch/loongarch64/qemu/cpu.rs`、
 `make TARGET_ARCH=loongarch64`（完成 RISC-V 与 LoongArch64 release 构建）和 `git diff --check`
 均通过；QEMU 行为回归不执行，避免触碰维护者现有的 `disk.img`。
+#### VisionFive 2 板级启动基础（8.13）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求新增内核驱动，使 Ya2yOS 能在 VisionFive 2 开发板运行，并提供 RocketOS 作为参考。
+- **描述**：审计 Ya2yOS 的 RISC-V QEMU 启动、FDT 硬件探测、链接脚本、MMIO 映射和 VirtIO 驱动，结合 RocketOS 确认 JH7110 板级入口与高地址布局。新增 `visionfive2` 构建目标、板级启动页表、VisionFive 2 链接脚本、NS16550 UART 和 JH7110 MMIO 区域；保留 QEMU 默认路径。RocketOS 的 GMAC/SDIO 依赖独立时钟、PHY、DMA 与 `dw_sd`，未在未验证条件下接入半成品网卡/SD 驱动。
+- **修改文件**：`Makefile`、`os/Makefile`、`os/Cargo.toml`、`scripts/visionfive2.mk`、`os/dotcargo/config-visionfive2`、`os/src/arch/riscv64/qemu/{asms/entry_visionfive2.asm,asms/mod.rs,visionfive2.ld,visionfive2_uart.rs,console.rs,memory_layout.rs,mod.rs}`、`os/src/mm/memory_set/kernel_init.rs`、`.gitignore`。
+- **验证边界**：`make TARGET_ARCH=visionfive2 build-arch` 通过，生成 `kernel-vf2`；ELF `.text` 起始为 `0xffffffc040200000`。未执行真实 VisionFive 2、GMAC/SDIO 或 QEMU JH7110 行为回归。
+- **关联文档**：[VisionFive 2 板级启动与 UART 驱动](./problem/visionfive2-board-bringup.md)
+- **关联 commit**：当前工作区未提交

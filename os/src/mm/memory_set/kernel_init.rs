@@ -163,6 +163,23 @@ impl MemorySetInner {
                 )
                 .expect("kernel OOM");
         }
+        #[cfg(feature = "visionfive2")]
+        for pair in crate::arch::memory_layout::BOARD_MMIO {
+            let start_va = (*pair).0 + MMIO_MAP_OFFSET;
+            let end_va = (*pair).0 + (*pair).1 + MMIO_MAP_OFFSET;
+            memory_set
+                .push(
+                    MapArea::new(
+                        start_va.into(),
+                        end_va.into(),
+                        MapType::Direct,
+                        MapPermission::R | MapPermission::W,
+                        MapAreaType::MMIO,
+                    ),
+                    None,
+                )
+                .expect("kernel MMIO mapping OOM");
+        }
         println!("create new kernel successfully!");
         memory_set
     }

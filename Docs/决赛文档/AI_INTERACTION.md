@@ -3393,3 +3393,11 @@
   当前沙箱的只读 `/var/tmp` 阻断 QEMU drive 初始化。
 - **关联问题**：[启动器探测 RAM 布局](./problem/bootloader-discovered-ram-layout.md)
 - **关联 commit**：当前工作区未提交
+#### VisionFive 2 板级启动基础（8.13）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：新增 VisionFive 2 内核板级支持。
+- **描述**：参考 RocketOS 的 JH7110 适配资料，完成高地址启动页表、板级链接脚本、NS16550 UART、MMIO 映射和 `TARGET_ARCH=visionfive2` 构建入口；GMAC/SDIO 因缺少已验证依赖暂未接入。
+- **验证边界**：VisionFive 2 release 构建通过并检查 ELF 地址；无实板或 JH7110 QEMU，未宣称行为回归通过。
+- **关联问题**：[VisionFive 2 板级启动与 UART 驱动](./problem/visionfive2-board-bringup.md)
+- **关联 commit**：当前工作区未提交

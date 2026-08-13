@@ -14,6 +14,8 @@ ifeq ($(TARGET_ARCH), riscv64)
 	include scripts/riscv64.mk
 else ifeq ($(TARGET_ARCH), loongarch64)
 	include scripts/loongarch64.mk
+else ifeq ($(TARGET_ARCH), visionfive2)
+	include scripts/visionfive2.mk
 else
 	$(error Unsupported TARGET_ARCH: $(TARGET_ARCH))
 endif
@@ -52,6 +54,9 @@ ifeq ($(TARGET_ARCH), riscv64)
 	$(eval include scripts/user.mk)
 else ifeq ($(TARGET_ARCH), loongarch64)
 	$(eval include scripts/loongarch64.mk)
+	$(eval include scripts/user.mk)
+else ifeq ($(TARGET_ARCH), visionfive2)
+	$(eval include scripts/visionfive2.mk)
 	$(eval include scripts/user.mk)
 else
 	$(error Unsupported TARGET_ARCH: $(TARGET_ARCH))
@@ -127,7 +132,7 @@ gdb:
 	@tmux attach-session -t os-debug
 
 setup_cargo:
-	-@cd ./os && mkdir -p .cargo && cp -f dotcargo/config .cargo/
+	-@cd ./os && mkdir -p .cargo && if [ "$(PLATFORM)" = "visionfive2" ]; then cp -f dotcargo/config-visionfive2 .cargo/config; else cp -f dotcargo/config .cargo/; fi
 	-@cd ./user && mkdir -p .cargo && cp -f dotcargo/config .cargo/
 
 cleanup_cargo:
