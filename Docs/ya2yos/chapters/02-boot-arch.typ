@@ -53,9 +53,6 @@ mask、备用栈状态和原始返回值，再经统一的用户态返回路径�
 
 == 异常边界
 
-异常路径对用户地址、长度和结构体执行受检访问；可修复的页故障进入懒分配、文件映射
-或 COW，无法修复的访问转换为 `SIGSEGV`/`SIGBUS`。架构 IRQ 抽象仍有未完成的硬件
-acknowledge/enable 路径，部分未支持 trap 和 timer condvar 分支仍可能 `panic`，不能将
-统一 trap 入口表述为所有硬件异常均已实现。
+异常路径对用户地址、长度和结构体执行受检访问；可修复的页故障进入懒分配、文件映射或 COW，无法修复的访问转换为 `SIGSEGV`/`SIGBUS`。架构 IRQ 抽象仍有未完成的硬件acknowledge/enable 路径，部分未支持 trap 和 timer condvar 分支仍可能 `panic`，不能将统一 trap 入口表述为所有硬件异常均已实现。
 
 RISC-V 的特权级、异常和地址转换语义以《The RISC-V Instruction Set Manual, Volume II: Privileged Architecture》为准；LoongArch 的平台差异遵循《LoongArch Architecture Reference Manual, Volume 1: Basic Architecture》。完整报告的参考资料统一列于 `main.typ` 末尾。

@@ -139,7 +139,7 @@ Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作
 #include "diagrams.typ"
 #include "chapters/01-overview.typ"
 #include "chapters/02-boot-arch.typ"
-#include "chapters/03-process-image.typ"
+#include "chapters/03-task.typ"
 #include "chapters/04-memory.typ"
 #include "chapters/05-signal.typ"
 #include "chapters/06-network.typ"
