@@ -116,12 +116,10 @@ __alltraps:
     st.d $t2, $sp, 3*8
     # move to kernel_sp
     ld.d $sp, $sp, 100*8
-    invtlb 0x0, $zero, $zero
     bl trap_entry   # 应该前往trap_entry，而后者是一个常数
 
 __return_to_user:
     # a0: *TrapContext in user space(Constant), 
-    invtlb 0x0, $zero, $zero
     move $sp, $a0
     csrwr  $a0, CSR_SAVE0
     # now sp points to TrapContext in user space, start restoring based on it

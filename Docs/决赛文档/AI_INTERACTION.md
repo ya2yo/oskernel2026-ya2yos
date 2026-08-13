@@ -3401,3 +3401,12 @@
 - **验证边界**：VisionFive 2 release 构建通过并检查 ELF 地址；无实板或 JH7110 QEMU，未宣称行为回归通过。
 - **关联问题**：[VisionFive 2 板级启动与 UART 驱动](./problem/visionfive2-board-bringup.md)
 - **关联 commit**：当前工作区未提交
+
+#### LoongArch BuildStorm trap TLB thrashing（8.13）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求继续分析单核仍会卡住的 LoongArch64 BuildStorm，且不得中断或重启当前 GDB/QEMU 会话。
+- **描述**：将 GDB 停止 PC `0x9000000000203000` 离线解析为 `srfill/__tlb_rfill`，并对照 Linux LoongArch refill 入口与本项目页表激活路径。确认 refill 无显式循环，而用户 trap 进入、返回及同根页表激活的全 TLB 失效会在 rustc 高频 syscall 下制造 software refill thrashing。删除 trap 边界两处无条件 `invtlb`，并将页表激活收敛为仅根页表变化时失效；保留所有 PTE 更新和 remote-TLB 的显式失效。
+- **验证边界**：`git diff --check`、RISC-V/LoongArch64 release 构建通过，生成 ELF 反汇编确认 trap 边界不再含该两条失效。未启动新 QEMU/BuildStorm，避免触碰维护者当前调试会话；尚未宣称完整回归通过。
+- **关联问题**：[LoongArch BuildStorm trap 边界全 TLB 失效](./problem/loongarch-buildstorm-trap-tlb-thrash.md)
+- **关联 commit**：当前工作区未提交

@@ -11925,6 +11925,31 @@ ECFG 收窄为 `TIMER`，对应 RISC-V 的 `sie::clear_ssoft()`，再 ACK IPI、
 和 AI 交互记录。执行 `rustfmt --edition 2021 os/src/arch/loongarch64/qemu/cpu.rs`、
 `make TARGET_ARCH=loongarch64`（完成 RISC-V 与 LoongArch64 release 构建）和 `git diff --check`
 均通过；QEMU 行为回归不执行，避免触碰维护者现有的 `disk.img`。
+
+## 2026-08-13：LoongArch BuildStorm trap TLB thrashing
+
+### 用户需求
+
+维护者要求继续定位 LoongArch64 BuildStorm 停在 `Compiling arceos-helloworld` 的原因并直接修复，
+同时明确要求不能停止、重启、detach 当前 GDB/QEMU 或删除已有断点。单核 `-smp 1 -m 8G` 复现仍
+卡住；GDB 最终成功中断在 `0x9000000000203000 in srfill ()`。
+
+### 分析与实现
+
+离线符号和反汇编确认该 PC 是 `__tlb_rfill`，它只执行三级页表 walk、`tlbfill` 与 `ertn`；
+用户返回地址 `0x2a1859dd00` 位于合法低半用户地址。审计发现 LoongArch trap 汇编在用户 trap
+进入和返回均无条件 `invtlb 0x0`，且 `PageTable::activate()` 即使页表根未变也再次清空 local TLB。
+BuildStorm rustc/动态链接器高频 syscall 时，该组合迫使每次返回用户态重新进入软件 refill。
+
+删除两处 trap 边界无条件失效，并使 `PageTable::activate()` 仅在 `PGDL/PGDH` 与目标根不同才
+失效。map/unmap、COW、权限修改、缺页和 remote-TLB 路径原有的显式失效均保持不变。详见
+`problem/loongarch-buildstorm-trap-tlb-thrash.md`。
+
+### 验证
+
+`git diff --check` 与 `make TARGET_ARCH=loongarch64` 通过，后者实际完成 RISC-V 与 LoongArch64
+release 构建。重新生成的 `kernel-la` 反汇编确认两个 trap 边界不再含该无条件 `invtlb`。未启动
+QEMU/BuildStorm，以免破坏维护者保留的现有 GDB/QEMU 会话，因此完整运行级验证待独立实例执行。
 #### VisionFive 2 板级启动基础（8.13）
 
 - **工具/模型**：Codex（GPT-5）

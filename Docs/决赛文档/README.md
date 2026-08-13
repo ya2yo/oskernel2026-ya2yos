@@ -224,3 +224,4 @@
 - [BuildStorm 独占 COW 页被误判为共享复制](./problem/buildstorm-cow-exclusive-frame-promotion.md)
 - [LoongArch BuildStorm 12 Hart polling cohort 缺核](./problem/loongarch-buildstorm-polling-cohort.md)
 - [BuildStorm 连续 bcache 写回请求合并](./problem/buildstorm-bcache-contiguous-writeback.md)
+- [LoongArch BuildStorm trap 边界全 TLB 失效](./problem/loongarch-buildstorm-trap-tlb-thrash.md)

@@ -250,9 +250,17 @@ impl PageTable {
         asid::set_asid_width(0);
         // 用户和内核共用一个页表
         let pa = PhysAddr::from(self.root_ppn).0;
+        // LoongArch uses ASID 0, so changing either page-table root requires
+        // dropping translations from the previous address space.  Returning
+        // from a syscall normally activates the same MemorySet that remained
+        // installed while handling the trap; invalidating in that case turns
+        // every user/kernel transition into a full software TLB refill.
+        let changed = pgdl::read().base() != pa || pgdh::read().base() != pa;
         pgdl::set_base(pa);
         pgdh::set_base(pa);
-        tlb_invalidate();
+        if changed {
+            tlb_invalidate();
+        }
     }
     pub fn clear(&mut self) {
         self.frames.clear();
