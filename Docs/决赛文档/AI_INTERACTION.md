@@ -3410,3 +3410,11 @@
 - **验证边界**：`git diff --check`、RISC-V/LoongArch64 release 构建通过，生成 ELF 反汇编确认 trap 边界不再含该两条失效。未启动新 QEMU/BuildStorm，避免触碰维护者当前调试会话；尚未宣称完整回归通过。
 - **关联问题**：[LoongArch BuildStorm trap 边界全 TLB 失效](./problem/loongarch-buildstorm-trap-tlb-thrash.md)
 - **关联 commit**：当前工作区未提交
+#### LoongArch 用户页表直映别名与 QEMU GDB 中断失败（8.13）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 QEMU SIGSTOP 现场，要求修复 BuildStorm 编译阶段卡死且 GDB/QEMU 无法中断的问题。
+- **描述**：根据 host GDB 调用链 `gdb_read_byte -> vm_stop -> pause_all_vcpus` 和 CPU0 的 `PPI`/TLBRERA 快照，定位到 LoongArch 用户页表的两层缺陷：内核 DMW0 根分支泄漏，以及空目录项被 `lddir` 当作物理页 0 继续 walk。删除前者，并以零叶表/空目录哨兵使未映射地址稳定生成页无效异常；首次映射时复制私有分支。撤回会误杀 `rt_sigreturn` 显式映射的 VMA-only trap-return 防护。
+- **验证边界**：RISC-V/LoongArch64 release 构建、`git diff --check` 通过；QEMU 9.2 源码确认零叶 PTE 触发普通 `PIF`。当前现场 PID 2574 未恢复或终止，且运行的是新修复前的内核；尚未宣称新内核的 QEMU/LTP/BuildStorm 行为回归通过。
+- **关联问题**：[LoongArch 用户页表内核直映别名导致 QEMU GDB 无法中断](./problem/loongarch-user-pagetable-directmap-alias.md)
+- **关联 commit**：当前工作区未提交

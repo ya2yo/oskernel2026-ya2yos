@@ -1,14 +1,9 @@
 use core::arch::asm;
 
-use super::{
-    memory_layout::{KERNEL_PGNUM_OFFSET, PAGE_SIZE_BITS},
-    tlb::tlb_invalidate,
-};
+use super::{memory_layout::PAGE_SIZE_BITS, tlb::tlb_invalidate};
 use crate::{
     arch::memory_layout::{self, KERNEL_ADDR_OFFSET},
-    mm::{
-        address::*, cma_alloc, FrameTracker, MapArea, MapPermission, MemorySetInner, KERNEL_SPACE,
-    },
+    mm::{address::*, cma_alloc, FrameTracker, MapArea, MapPermission, MemorySetInner},
     syscall::MmapFlags,
 };
 use alloc::{sync::Arc, vec, vec::Vec};
@@ -143,10 +138,38 @@ impl PageTableEntry {
 
 pub struct PageTable {
     root_ppn: PhysPageNum,
+    /// A shared empty level-1 directory and level-0 leaf table keep hardware
+    /// page-table refill away from physical page 0 for unmapped addresses.
+    empty_dir_ppn: PhysPageNum,
+    empty_leaf_ppn: PhysPageNum,
     frames: Vec<Arc<FrameTracker>>,
 }
 // 实现页表的私有方法
 impl PageTable {
+    fn init_empty_directory(dir_ppn: PhysPageNum, empty_leaf_ppn: PhysPageNum) {
+        let leaf_pa = PhysAddr::from(empty_leaf_ppn).0;
+        dir_ppn.as_array::<usize>().fill(leaf_pa);
+    }
+
+    fn init_root(root_ppn: PhysPageNum, empty_dir_ppn: PhysPageNum) {
+        let dir_pa = PhysAddr::from(empty_dir_ppn).0;
+        root_ppn.as_array::<usize>().fill(dir_pa);
+    }
+
+    fn new_with_empty_walk() -> Self {
+        let root = FrameTracker::alloc().unwrap();
+        let empty_dir = FrameTracker::alloc().unwrap();
+        let empty_leaf = FrameTracker::alloc().unwrap();
+        Self::init_empty_directory(empty_dir.ppn, empty_leaf.ppn);
+        Self::init_root(root.ppn, empty_dir.ppn);
+        PageTable {
+            root_ppn: root.ppn,
+            empty_dir_ppn: empty_dir.ppn,
+            empty_leaf_ppn: empty_leaf.ppn,
+            frames: vec![root, empty_dir, empty_leaf],
+        }
+    }
+
     /// Find the page in the page table, creating the page on the way if not exists.
     /// Note: It does NOT create the terminal node. The caller must verify its validity and create according to his own needs.
     fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
@@ -161,8 +184,17 @@ impl PageTable {
                 break;
             } else {
                 let next = &mut ppn.as_array::<usize>()[*idx];
-                if *next == 0 {
-                    // 目录项无效
+                if i == 0 && *next == PhysAddr::from(self.empty_dir_ppn).0 {
+                    // A root entry still shares the empty walk directory.
+                    // Give this top-level branch a private directory before
+                    // replacing one of its leaf-table links.
+                    let frame = FrameTracker::alloc().unwrap();
+                    Self::init_empty_directory(frame.ppn, self.empty_leaf_ppn);
+                    *next = PhysAddr::from(frame.ppn).0;
+                    self.frames.push(frame);
+                } else if i == 1 && *next == PhysAddr::from(self.empty_leaf_ppn).0 {
+                    // This directory entry still shares the all-zero leaf
+                    // table. Map into a private leaf table instead.
                     let frame = FrameTracker::alloc().unwrap();
                     *next = PhysAddr::from(frame.ppn).0;
                     self.frames.push(frame);
@@ -220,24 +252,19 @@ impl PageTable {
 // 实现PageTable的通用函数
 impl PageTable {
     pub fn new() -> Self {
-        let frame = FrameTracker::alloc().unwrap();
-        PageTable {
-            root_ppn: frame.ppn,
-            frames: vec![frame],
-        }
+        Self::new_with_empty_walk()
     }
     pub fn new_from_kernel() -> Self {
-        let frame = FrameTracker::alloc().unwrap();
-        let locked_kernel = KERNEL_SPACE.lock();
-        let kernel_root_ppn = locked_kernel.page_table.root_ppn;
-        // 第一级页表
-        let index = VirtPageNum::from(KERNEL_PGNUM_OFFSET).indexes()[0];
-        frame.ppn.as_array::<PageTableEntry>()[index..]
-            .copy_from_slice(&kernel_root_ppn.as_array::<PageTableEntry>()[index..]);
-        let mut ret = PageTable {
-            root_ppn: frame.ppn,
-            frames: vec![frame],
-        };
+        // The LoongArch DMW0 window maps kernel physical memory through the
+        // 0x9000... direct-address segment and does not need page-table PTEs.
+        //
+        // Do not copy kernel root entries into a user page table here.
+        // With the three-level page-table layout, 0x9000_... and its low
+        // physical alias have the same VPN indices.  Copying the root entry
+        // therefore exposes kernel direct-map leaves at low user addresses:
+        // a corrupted user PC can hit a PLV0 boot-stack page rather than take
+        // a normal unmapped-user-page fault.
+        let mut ret = Self::new_with_empty_walk();
         // HXC：我想loongarch的用户页表需要这个
         ret.map(
             VirtAddr::from(memory_layout::sigreturn_va()).floor(),
@@ -403,6 +430,8 @@ impl PageTable {
     pub fn from_token(token: usize) -> Self {
         PageTable {
             root_ppn: token.into(),
+            empty_dir_ppn: PhysPageNum(0),
+            empty_leaf_ppn: PhysPageNum(0),
             frames: Vec::new(),
         }
     }
