@@ -25,6 +25,7 @@ kernel-la
 kernel-vf2
 disk.img
 /2026_testsuits_img
+qemu-*
 
 *.dtb
 *.dts
