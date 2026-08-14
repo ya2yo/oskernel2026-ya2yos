@@ -138,9 +138,23 @@ impl PageTableEntry {
 
 pub struct PageTable {
     root_ppn: PhysPageNum,
-    /// A shared empty level-1 directory and level-0 leaf table keep hardware
-    /// page-table refill away from physical page 0 for unmapped addresses.
+    /// The common second-level directory for all currently unmapped root
+    /// branches. LoongArch `lddir` treats a zero directory entry as physical
+    /// address zero and continues the hardware refill walk, so an all-zero
+    /// root table could accidentally interpret contents of physical page zero
+    /// as a page table. Every unused root entry points here instead.
+    ///
+    /// Each entry in this directory points at `empty_leaf_ppn`. A real mapping
+    /// first replaces the relevant root entry with a private copy, so changing
+    /// one virtual-address branch never changes another branch's empty walk.
     empty_dir_ppn: PhysPageNum,
+    /// The common all-zero final-level table used by `empty_dir_ppn`. It makes
+    /// an unmapped address finish the three-level walk at an invalid leaf PTE,
+    /// producing a normal page-invalid exception instead of a refill walk
+    /// through physical page zero.
+    ///
+    /// A real mapping first replaces the relevant second-level entry with a
+    /// private leaf table, preserving this table as immutable empty fallback.
     empty_leaf_ppn: PhysPageNum,
     frames: Vec<Arc<FrameTracker>>,
 }

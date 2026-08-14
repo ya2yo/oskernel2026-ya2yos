@@ -49,12 +49,13 @@
   #text(size: 25pt, weight: "bold", fill: color)[#value]\
   #text(size: 11pt, fill: muted)[#label]
 ]
-#let card(title, body, color: blue) = block(fill: pale, stroke: 0.7pt + rgb("cbd5df"), radius: 4pt, inset: 10pt)[
+#let card(title, body, color: blue, height: auto) = block(height: height, fill: pale, stroke: 0.7pt + rgb("cbd5df"), radius: 4pt, inset: 10pt)[
   #text(size: 15pt, weight: "bold", fill: color)[#title]\
   #text(size: 12.5pt, fill: ink)[#body]
 ]
-#let two(left, right) = grid(columns: (1fr, 1fr), gutter: 14pt, left, right)
+#let two(left, right) = block(width: 100%)[#grid(columns: (1fr, 1fr), gutter: 14pt, left, right)]
 #let three(a, b, c) = grid(columns: (1fr, 1fr, 1fr), gutter: 10pt, a, b, c)
+
 
 // 1
 #ya-slide[
@@ -66,185 +67,200 @@
       #text(size: 46pt, weight: "bold", fill: navy)[Ya2yOS]
       #text(size: 46pt, weight: "bold", fill: blue)[答辩演示稿]
       #v(0.45cm)
-      #text(size: 18pt, fill: muted)[Rust 宏内核　·　Linux 用户态兼容　·　双架构支持]
-      #v(1.15cm)
+      #text(size: 18pt, fill: muted)[面向真实 Linux 用户态的双架构 Rust 宏内核]
+      #v(1.05cm)
       #grid(columns: (auto, auto, auto), gutter: 14pt,
         pill("RISC-V64", color: cyan), pill("LoongArch64", color: orange), pill("Linux ABI", color: blue),
       )
-      #v(1.1cm)
+      #v(1.0cm)
       #text(size: 13pt, fill: muted)[参赛队员：饶晓杰　　指导老师：杨磊]
       #v(0.18cm)
-      #text(size: 10pt, fill: muted)[代码快照：HEAD 088f10b82bb8　·　2026-08-12]
+      #text(size: 10pt, fill: muted)[真实负载：BusyBox · LTP · Cargo · Rustc · CAgent · BuildStorm]
     ]
   ]
 ]
 ]
 
-#ya-slide[
 // 2
-#titlebar("01 · 内核启动阶段", "从汇编入口到调度循环", subtitle: "Ya2yOS 先建立一套可运行的核心环境，再启动第一个用户进程")
-#align(center)[
-  #box(fill: rgb("dbeef7"), inset: 11pt, radius: 5pt)[
-    #text(size: 16pt, weight: "bold", fill: navy)[entry.asm]
-    #text(size: 16pt, fill: blue)[　→　]
-    #text(size: 16pt, weight: "bold", fill: navy)[rust_main(hartid)]
-    #text(size: 16pt, fill: blue)[　→　]
-    #text(size: 16pt, weight: "bold", fill: cyan)[mm / trap / task / fs / net]
-    #text(size: 16pt, fill: blue)[　→　]
-    #text(size: 16pt, weight: "bold", fill: orange)[initproc]
-    #text(size: 16pt, fill: blue)[　→　]
-    #text(size: 16pt, weight: "bold", fill: red)[run_tasks]
-  ]
-]
-#v(0.55cm)
-#three(
-  card("首个 hart 的行为", [完成 BSS 清零与时钟频率初始化；依次建立内存、日志、异常、任务、文件系统和网络环境；列举应用并创建初始进程。], color: blue),
-  card("多 hart 的行为", [等待 `INIT_FINISHED` 后安装 trap 向量、激活内核页表、开启定时器，随后进入调度循环；当前已具备远程入队、空闲 hart 通知与 IPI 路径。], color: cyan),
-  card("架构差异的边界", [RISC-V64 与 LoongArch64 分别提供启动汇编、上下文切换、页表与 TLB、时钟、中断、UART 和平台设备接入；上层通过统一接口调用。], color: orange),
+#ya-slide[
+#titlebar("01 · 项目定位", "让真实 Linux 用户态运行在双架构 Rust 内核上", subtitle: "Ya2yOS 以 Linux ABI 为边界，贯通从用户程序到硬件设备的核心路径")
+#two(
+  card("项目形态", [基于 Rust 的宏内核实验系统；
+  面向 RISC-V64 与 LoongArch64 平台。], color:blue, height: 3cm),
+  card("兼容目标", [以 Linux ABI、errno、uaccess
+  和真实用户态语义为边界。], color:cyan, height: 3cm),
 )
-#v(0.55cm)
+#v(0.6cm)
 #align(center)[
-  #pill("启动完成：内核页表就绪 · trap 就绪 · 时钟开启 · 初始任务进入调度", color: navy)
+  #text(size: 15pt, weight: "bold", fill: navy)[用户态负载]
+  #v(0.2cm)
+  #grid(columns: (auto, auto, auto, auto, auto), gutter: 10pt,
+    pill("BusyBox", color: blue), pill("LTP", color: cyan), pill("Cargo / Rustc", color: orange), pill("CAgent", color: red), pill("BuildStorm", color: navy),
+  )
 ]
 ]
 
-#ya-slide[
 // 3
-#titlebar("02 · 总体架构", "一条用户态请求如何穿过内核？")
+#ya-slide[
+#titlebar("02 · 系统框架", "用户态、内核机制与硬件设备的完整闭环", subtitle: "分层组织内核能力，将语义、机制与硬件差异放在正确的位置")
 #align(center)[
-  #grid(columns: (1fr,), gutter: 7pt,
-    box(fill: rgb("dbeef7"), inset: 10pt, radius: 4pt)[#text(size: 16pt, weight: "bold", fill: navy)[Cargo / Rustc / BusyBox / LTP]],
-    text(size: 20pt, fill: blue)[↓],
-    box(fill: rgb("e6f4f1"), inset: 10pt, radius: 4pt)[#text(size: 15pt, weight: "bold", fill: cyan)[syscall · trap · uaccess · ABI 校验]],
-    text(size: 20pt, fill: blue)[↓],
-    box(fill: rgb("fff0e4"), inset: 10pt, radius: 4pt)[#text(size: 15pt, weight: "bold", fill: orange)[task / mm / fs / net / signal / timer]],
-    text(size: 20pt, fill: blue)[↓],
-    box(fill: rgb("f3e9f4"), inset: 10pt, radius: 4pt)[#text(size: 15pt, weight: "bold", fill: red)[VFS + lwext4 + page cache + VirtIO + smoltcp]],
+  #grid(columns: (1fr,), gutter: 6pt,
+    box(fill: rgb("dbeef7"), inset: 9pt, radius: 4pt)[#text(size: 16pt, weight: "bold", fill: navy)[用户程序与测试负载]#h(1em)#text(size: 12pt, fill: muted)[BusyBox · LTP · Cargo · Rustc · CAgent]],
+    text(size: 18pt, fill: blue)[↓],
+    box(fill: rgb("e6f4f1"), inset: 9pt, radius: 4pt)[#text(size: 15pt, weight: "bold", fill: cyan)[Linux ABI / syscall / trap / uaccess / errno]],
+    text(size: 18pt, fill: blue)[↓],
+    box(fill: rgb("fff0e4"), inset: 9pt, radius: 4pt)[#text(size: 15pt, weight: "bold", fill: orange)[task / scheduler / mm / VFS / signal / net / timer]],
+    text(size: 18pt, fill: blue)[↓],
+    box(fill: rgb("f3e9f4"), inset: 9pt, radius: 4pt)[#text(size: 15pt, weight: "bold", fill: red)[lwext4 / page cache / VirtIO / smoltcp / arch]],
   )
 ]
 #v(0.45cm)
-#align(center)[#text(size: 13pt, fill: muted)[核心设计原则：syscall 入口保持薄；语义落在所属子系统；锁外 I/O、锁内短更新。]]
+#align(center)[#text(size: 13pt, fill: muted)[syscall 入口保持薄；语义落在所属子系统；锁外 I/O、锁内短更新。]]
 ]
 
-#ya-slide[
 // 4
-#titlebar("03 · 近月主线 A", "共享地址空间：把一致性协议做成可解释的状态机")
-#two(
-  card("问题", [多 hart 同时执行 fork / COW / munmap / mremap：逐目标等待、全量帧保留和旧 TLB 可能放大延迟与错误], color:red),
-  card("方案", [范围化旧帧保留；广播 mailbox 后收集 ACK；ACK 收敛前不释放旧帧；独占 COW 就地恢复写权限], color: blue),
-)
-#v(0.55cm)
-#align(center)[
-  #text(size: 14pt, weight: "bold", fill: navy)[UPDATE_LOCK → MemorySet 写锁 → PTE 更新 → TLB / I-cache shootdown → 释放旧帧]
-  #v(0.35cm)
-  #three(pill("RISC-V Sv39", color: cyan), pill("LoongArch PTE / IBar", color: orange), pill("同一生命周期协议", color: blue))
-]
-]
-
 #ya-slide[
+#titlebar("03 · 进程与 Linux 语义", "完善进程模型，承载真实 Linux 程序")
+#three(
+  card("统一进程模型", [task、线程、fork / clone / exec / wait 形成完整进程链；调度和阻塞共享同一套状态。], color:blue),
+  card("动态程序加载", [`PT_INTERP` 经 VFS 打开；处理用户栈、aux 和映射边界；库搜索与重定位由用户态 loader 负责。], color:cyan),
+  card("统一资源接口", [signal / sigreturn、futex、file、pipe、socket、eventfd 和 epoll 纳入可组合的 fd / ABI 模型。], color:orange),
+)
+#v(0.7cm)
+#align(center)[#text(size: 14pt, weight: "bold", fill: navy)[用户态现象 → 内核语义 → 错误返回 → 回归测试]]
+#v(0.3cm)
+#align(center)[#text(size: 13pt, fill: muted)[兼容的核心不是接口存在，而是程序在边界条件下仍能得到正确语义。]]
+]
 
 // 5
-#titlebar("04 · 近月主线 B", "从信号帧到动态链接：边界回归 Linux 语义")
-#three(
-  card("信号 ABI", [`rt_sigreturn` 读取完整受检 frame；非法 frame 返回 `EINVAL`；两架构统一布局与 trampoline], color: blue),
-  card("动态 ELF", [`PT_INTERP` 原路径经 VFS 打开；缺失保留 `ENOENT`；共享对象返回原始字节], color: cyan),
-  card("新增兼容面", [`memfd_secret` 基础匿名 fd、`signalfd4`、System V 消息队列、`rseq`、`seccomp` 等], color: orange),
-)
-#v(0.55cm)
-#align(center)[#text(size: 13pt, fill: muted)[关键取舍：内核负责 ELF/VFS 边界；库搜索、重定位和安全增强不伪装成内核已实现。]]
-]
-
 #ya-slide[
-
-// 6
-#titlebar("05 · 近月主线 C", "ext4 并发优化：缩短安全串行域，而不是取消它")
+#titlebar("04 · 内存管理", "构建高效且一致的共享地址空间")
 #two(
-  card("必须保留的边界", [lwext4 C API、journal、bcache callback、单一 VirtIO 队列存在不可并行资源；任务感知锁负责 park/wake 与退出清理], color: orange),
-  card("可安全消除的重复", [页缓存复用、连续冷页 read、目录局部 stat epoch、稀疏 range 合并、连续 bcache 写回批处理], color: cyan),
+  card("内存机制", [mmap / munmap / mremap、缺页、COW 和地址空间更新由统一 MemorySet 抽象承载；独占 COW 页可就地恢复写权限。], color:blue),
+  card("并发协议", [范围化保留旧页帧；remote TLB 广播 mailbox 并收集 ACK；ACK 收敛前不释放可能仍被使用的旧映射。], color:cyan),
 )
 #v(0.65cm)
 #align(center)[
-  #grid(columns: (1fr, 1fr, 1fr, 1fr), gutter: 8pt,
-    pill("VFS 短锁", color: blue), pill("资源锁 FIFO", color: orange), pill("锁外 I/O", color: cyan), pill("失败可重试", color: red),
-  )
+  #text(size: 15pt, weight: "bold", fill: navy)[PTE 更新 → TLB / I-cache shootdown → ACK → 旧帧回收]
+  #v(0.35cm)
+  #three(pill("RISC-V Sv39", color: cyan), pill("LoongArch PTE / IBar", color: orange), pill("同一生命周期协议", color: blue))
 ]
+#v(0.4cm)
+#align(center)[#text(size: 13pt, fill: muted)[正确性不变量：所有可能使用旧映射的 hart 完成失效确认前，旧物理页不能回收。]]
 ]
 
+// 6
 #ya-slide[
-
-// 7
-#titlebar("06 · 近月主线 D", "调度与时间：让多核真实可见、让计时可信")
+#titlebar("05 · 调度与多核", "多个 HART 协同推进任务")
 #three(
-  card("共享 CFS", [all-hart ready queue、affinity 过滤、空闲远端 hart IPI 唤醒，避免 runnable task 困在 home hart], color: blue),
-  card("全局 timer", [每 10ms 由单一 hart 排他维护共享 timer/futex 状态；当前线程 interval timer 仍在本 hart 投递], color: cyan),
-  card("可观测性", [`/proc/uptime` 动态生成；perf 按 scheduler / COW / TLB / EXT4 / block 聚合，release 默认低开销], color: orange),
-)
-#v(0.55cm)
-#align(center)[#text(size: 13pt, fill: muted)[时间口径先正确，性能数字才有意义。累计计数用于定位，不冒充 wall-clock。]]
-]
-
-#ya-slide[
-
-// 8
-#titlebar("07 · 性能证据", "BuildStorm：从“跑不通”进入“可优化”")
-#two(
-  block(fill: rgb("eaf4fb"), radius: 4pt, inset: 14pt)[
-    #text(size: 15pt, weight: "bold", fill: navy)[可追溯定向观测]\
-    #v(0.3em)
-    #text(size: 31pt, weight: "bold", fill: blue)[12 min → 8 min]\
-    #text(size: 15pt, fill: muted)[同一尾部编译单元 · 时间缩短约 33.3% · 加速约 1.50×]
-  ],
-  card("证据边界", [根目录当前日志尚未形成官方完整 `BUILDSTORM_COMPILE ... ok=true elapsed_s=...` 收尾行，因此不宣称 446 crate 全量成绩。长测必须同源码、架构、SMP/内存、镜像和缓存条件对照。], color:red),
-)
-#v(0.6cm)
-#align(center)[#text(size: 14pt, weight: "bold", fill: navy)[正确性 → 可观测性 → 热点归因 → 局部优化 → 双架构回归]]
-]
-
-#ya-slide[
-
-// 9
-#titlebar("08 · 验证方法", "我们如何知道改动没有破坏内核？")
-#three(
-  card("语义证据", [`TPASS / TFAIL / TBROK`、panic、errno 与 summary；关注测试断言而非包装脚本返回码], color: blue),
-  card("架构证据", [`make TARGET_ARCH=riscv64` 与 `loongarch64`；共享状态改动尽量双侧构建/运行], color: cyan),
-  card("设计证据", [每个高风险问题保留 problem 复盘：背景、现象、根因、修复、涉及文件、验证与已知边界], color: orange),
+  card("统一调度", [all-hart ready queue、affinity 过滤和任务状态转换，让可运行任务不被困在 home hart。], color:blue),
+  card("远端唤醒", [空闲 hart 通过 IPI 被唤醒；futex、文件等待和设备等待回到统一 park / wake 路径。], color:cyan),
+  card("全局时间", [共享 timer / futex 状态由全局 timer 协调；`/proc/uptime` 动态生成，时间口径可追溯。], color:orange),
 )
 #v(0.7cm)
-#align(center)[#pill("当前快照：HEAD 088f10b82bb8 · 文档版本 0.6", color:navy)]
-]
-
-#ya-slide[
-// 10
-#titlebar("09 · 设计选择", "我们刻意没有把什么写成“已经完成”？")
-#two(
-  card("明确边界", [完整 `io_uring` 引擎、timerfd、独立 procfs/devtmpfs、真实 loop backing file、网络中断唤醒、NUMA、完整 namespace/cgroup/LSM 仍是后续方向], color: red),
-  card("答辩口径", [把“基础兼容 fd”与“完整 Linux 安全语义”分开；把“定向加速”与“完整成绩”分开；把“接口存在”与“测试通过”分开], color: blue),
-)
-#v(0.75cm)
-#align(center)[#text(size: 14pt, fill: muted)[诚实的边界描述，本身是内核设计可维护性的组成部分。]]
-]
-
-#ya-slide[
-// 11
-#titlebar("10 · 下一步", "从兼容面走向更深的系统语义")
-#grid(columns: (1fr, 1fr), gutter: 12pt,
-  card("短期", [完善脏页回写调度、VirtIO-net 中断/唤醒、真实 loop 数据路径、stub 分类与双架构自动化矩阵], color:blue),
-  card("中期", [独立 tmpfs/procfs/devtmpfs、mount namespace 与真实 dentry 切换、CPU affinity/负载均衡、io_uring/AIO], color:cyan),
-  card("长期", [namespace/cgroup/capability/seccomp 深化、更多 VirtIO 设备、IPv6/netlink/raw socket 与工程化持续测试], color:orange),
-  block(fill: rgb("eaf4fb"), stroke: 0.8pt + navy, radius: 4pt, inset: 13pt)[#text(size: 18pt, weight: "bold", fill: navy)[主线：减少兼容假设，把已经跑通的路径做深。]],
-)
-]
-
-#ya-slide[
-// 12
 #align(center)[
-  #v(1.6cm)
-  #text(font: "Ubuntu Mono", size: 23pt, weight: "bold", fill: blue)[Ya2yOS]
+  #text(size: 16pt, weight: "bold", fill: navy)[runnable task → 调度 → 阻塞 → IPI / timer 唤醒 → 再次运行]
+  #v(0.3cm)
+  #text(size: 13pt, fill: muted)[多核性能的前提是先让调度、唤醒和资源生命周期可观察。]
+]
+]
+
+// 7
+#ya-slide[
+#titlebar("06 · 文件系统与网络", "用真实设备路径承载用户态程序")
+#two(
+  card("文件系统", [VFS 统一管理文件、目录、链接和 fd；通过 `lwext4_rust` 接入真实 ext4，并对接 page cache 与 VirtIO block。], color:blue),
+  card("网络路径", [以 smoltcp 支撑 TCP / UDP / Unix socket 等用户态路径；VirtIO-net 与设备等待接入统一抽象。], color:cyan),
+)
+#v(0.65cm)
+#three(
+  card("缓存复用", [页缓存复用；普通 read 路径收敛；目录局部 stat epoch。], color:cyan),
+  card("I/O 合并", [连续冷页 read-ahead；稀疏 range 合并；连续 bcache 写回批处理。], color:blue),
+  card("安全边界", [保留 lwext4 C API、journal、bcache callback 和单队列的必要串行域。], color:orange),
+)
+#v(0.45cm)
+#align(center)[#pill("不是取消锁，而是缩短安全串行域、删除重复工作", color: navy)]
+]
+
+// 8
+#ya-slide[
+#titlebar("07 · 双架构与设备", "一套上层语义，如何落到两种硬件？")
+#two(
+  card("RISC-V64", [启动与异常入口、Sv39 页表、TLB / IPI 和 VirtIO-MMIO 由架构层提供；上层 task / mm / fs 尽量复用。], color:cyan),
+  card("LoongArch64", [启动与异常入口、PTE / TLB、IBar 和 PCI VirtIO 由架构层提供；保持同一用户态 ABI 和内核服务接口。], color:orange),
+)
+#v(0.7cm)
+#align(center)[
+  #grid(columns: (1fr, 1fr, 1fr), gutter: 10pt,
+    pill("启动 / trap", color: blue), pill("页表 / TLB", color: cyan), pill("设备 / 中断", color: orange),
+  )
+]
+#v(0.55cm)
+#align(center)[#text(size: 15pt, weight: "bold", fill: navy)[架构差异止于接口边界，不向 task / mm / fs 语义层扩散。]]
+]
+
+// 9
+#ya-slide[
+#titlebar("08 · 核心优化专题", "从“跑不通”到“可定位、可优化”")
+#two(
+  card("问题定位", [真实 BuildStorm 负载暴露 futex、EXT4、remote shootdown、COW 和 block I/O 热点；perf 计数器与 tick 埋点用于归因。], color:red),
+  card("优化方法", [保留底层安全边界，减少缓存探测与小块写回；通过锁外 I/O、范围化协议和批处理降低重复工作。], color:blue),
+)
+#v(0.7cm)
+#align(center)[
+  #text(size: 15pt, weight: "bold", fill: navy)[发现耗时异常 → 追踪调用路径 → 加入观测 → 局部优化 → 双架构回归]
+  #v(0.35cm)
+  #three(pill("可观测", color: cyan), pill("可解释", color: orange), pill("可复现", color: blue))
+]
+]
+
+// 10
+#ya-slide[
+#titlebar("09 · 工作总结与验证", "我们如何证明系统能力？")
+#three(
+  card("语义验证", [libc-test / LTP、TPASS / TFAIL / TBROK、panic、errno 和 summary，关注测试断言而非包装脚本返回码。], color:blue),
+  card("真实负载", [BusyBox、Cargo、Rustc、CAgent 和 BuildStorm 连接进程、内存、文件、调度和设备路径。], color:cyan),
+  card("双架构回归", [RISC-V64 与 LoongArch64 双侧构建/运行；问题复盘保留现象、根因、修复和验证边界。], color:orange),
+)
+#v(0.65cm)
+#two(
+  block(fill: rgb("eaf4fb"), radius: 4pt, inset: 13pt)[
+    #text(size: 15pt, weight: "bold", fill: navy)[定向观测]\
+    #v(0.25em)
+    #text(size: 29pt, weight: "bold", fill: blue)[12 min → 8 min]\
+    #text(size: 13pt, fill: muted)[同一尾部 axbuild 单元 · 约 1.50×]
+  ],
+  card("证据边界", [当前日志没有官方完整 `BUILDSTORM_COMPILE ... ok=true elapsed_s=...` 收尾行；因此不宣称完整 446 crate 成绩。], color:red),
+)
+]
+
+// 11
+#ya-slide[
+#titlebar("10 · 发展目标", "从核心路径跑通走向系统语义做深")
+#three(
+  card("已验证", [双架构启动；进程与地址空间；动态 ELF；signal / sigreturn；COW / mmap；VFS / ext4；网络基础路径。], color:blue),
+  card("持续完善", [更多 Linux 语义、LTP 场景、多核边界、文件系统异常恢复、网络复杂场景和页缓存写回。], color:cyan),
+  card("明确边界", [完整 io_uring、timerfd、独立 procfs/devtmpfs、真实 loop backing file、完整 namespace/cgroup/LSM 仍是后续方向。], color:red),
+)
+#v(0.6cm)
+#grid(columns: (1fr, 1fr, 1fr), gutter: 10pt,
+  card("短期", [双架构自动化矩阵；脏页回写；VirtIO-net 唤醒；stub 分类。], color:blue),
+  card("中期", [tmpfs / procfs / devtmpfs；mount namespace；负载均衡；io_uring / AIO。], color:cyan),
+  card("长期", [namespace / cgroup 深化；更多 VirtIO 设备；IPv6 / netlink / raw socket。], color:orange),
+)
+#v(0.45cm)
+#align(center)[#pill("主线：减少兼容假设，把已经跑通的路径做深、做稳、做可复现", color: navy)]
+]
+
+// 12
+#ya-slide[
+#align(center + horizon)[
+  #text(font: "Ubuntu Mono", size: 35pt, weight: "bold", fill: blue)[Ya2yOS]
   #v(0.35cm)
   #text(size: 34pt, weight: "bold", fill: navy)[谢谢！]
   #v(0.7cm)
   #text(size: 17pt, fill: muted)[问题与讨论]
-  #v(1.1cm)
+  #v(0.9cm)
   #text(size: 12pt, fill: muted)[设计文档：`Docs/ya2yos/`　·　问题复盘：`Docs/决赛文档/problem/`]
 ]
 ]
