@@ -1,6 +1,9 @@
 //! Linux-compatible timerfd file object backed by the shared monotonic timer wheel.
 
-use alloc::{collections::BTreeMap, sync::{Arc, Weak}};
+use alloc::{
+    collections::BTreeMap,
+    sync::{Arc, Weak},
+};
 use core::{future::Future, pin::Pin, task::Context};
 use spin::{Lazy, Mutex};
 

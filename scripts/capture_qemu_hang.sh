@@ -153,6 +153,9 @@ while $cpu != 0 && $cpu_count < 64
   p/x $la->env.CSR_ESTAT
   p/x $la->env.CSR_CRMD
   p/x $la->env.CSR_PRMD
+  p/x $la->env.CSR_ECFG
+  p/x $la->env.CSR_TCFG
+  p/x $la->env.CSR_TVAL
   p/x $la->env.CSR_EENTRY
   p/x $la->env.CSR_TLBRENTRY
   p/x $la->env.CSR_TLBRERA

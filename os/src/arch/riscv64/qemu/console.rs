@@ -26,12 +26,12 @@ pub fn console_getchar() -> Option<u8> {
     }
     #[cfg(not(feature = "visionfive2"))]
     {
-    #[allow(deprecated)]
-    let c = sbi_rt::legacy::console_getchar();
-    if c > 255 {
-        None
-    } else {
-        Some(c as u8)
-    }
+        #[allow(deprecated)]
+        let c = sbi_rt::legacy::console_getchar();
+        if c > 255 {
+            None
+        } else {
+            Some(c as u8)
+        }
     }
 }
