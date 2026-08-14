@@ -6,22 +6,58 @@ use alloc::sync::Arc;
 use log::debug;
 use spin::{Lazy, Mutex};
 
-pub fn wakeup_futex_task(task: Arc<TaskControlBlock>) {
+/// Complete one specific futex wait generation.
+///
+/// A task can enter a new wait before an older timeout or queued wakeup is
+/// observed.  Only the waiter generation recorded in the queue may change
+/// this task back to Ready; otherwise a stale entry could consume a
+/// FUTEX_WAKE(1) and clear the new wait's bookkeeping.
+pub fn wakeup_futex_task(task: Arc<TaskControlBlock>, futex_key: usize) -> bool {
     let mut task_inner = task.inner_lock();
     // A timeout and a signal can race after the blocked task has already been
     // scheduled again.  Only the transition from Blocked owns a new enqueue;
     // changing Running or Zombie back to Ready creates a stale run-queue entry
     // that can execute after its kernel stack has been released.
-    let should_enqueue = task_inner.task_status == TaskStatus::Blocked;
+    let should_enqueue =
+        task_inner.task_status == TaskStatus::Blocked && task_inner.futex_key == futex_key;
     if should_enqueue {
         task_inner.task_status = TaskStatus::Ready;
+        task_inner.futex_key = 0;
+        task_inner.futex_pa = 0;
     }
-    task_inner.futex_key = 0;
-    task_inner.futex_pa = 0;
     drop(task_inner);
     if should_enqueue {
         ready_queue::add_task(&task);
     }
+    should_enqueue
+}
+
+/// Complete a matching futex wait because its deadline expired.
+pub fn timeout_futex_task(task: Arc<TaskControlBlock>, futex_key: usize) -> bool {
+    let mut task_inner = task.inner_lock();
+    let should_enqueue =
+        task_inner.task_status == TaskStatus::Blocked && task_inner.futex_key == futex_key;
+    if should_enqueue {
+        task_inner.futex_timedout = true;
+        task_inner.task_status = TaskStatus::Ready;
+        task_inner.futex_key = 0;
+        task_inner.futex_pa = 0;
+    }
+    drop(task_inner);
+    if should_enqueue {
+        ready_queue::add_task(&task);
+    }
+    should_enqueue
+}
+
+/// Move one still-blocked futex wait to a different queue key.
+pub fn requeue_futex_task(task: &TaskControlBlock, futex_key: usize, new_futex_pa: usize) -> bool {
+    let mut task_inner = task.inner_lock();
+    if task_inner.task_status != TaskStatus::Blocked || task_inner.futex_key != futex_key {
+        return false;
+    }
+    task_inner.futex_pa = new_futex_pa;
+    true
 }
 
 pub fn check_blocked_task_timers() {

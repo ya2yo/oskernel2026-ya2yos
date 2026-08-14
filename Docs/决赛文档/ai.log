@@ -11999,3 +11999,33 @@ LoongArch64 用户进程发布实际存在的能力。
 以最长 120 秒的 LoongArch64 QEMU 重放确认内层 OVMF 输出 `PROGRESS CODE`，不再出现 UAL
 拒绝或 guest RAM `ENOMEM`。窗口结束前未观察到内层 guest `Hello, world!`，因此未宣称完整
 EFI guest 回归完成。
+
+## 2026-08-14：嵌套 LoongArch64 QEMU 12 hart futex waiter 丢失修复
+
+### 用户需求
+
+维护者要求继续修复外层 12 hart 下嵌套 QEMU 卡死，直到内层 guest 实际输出
+`Hello, world!` 与 `shutdown!` 才通知；明确要求不修改 LoongArch `cpu.rs`，优先排查并发时序。
+
+### AI 分析与采纳结论
+
+检查 `log.ans`、host GDB 快照和单核对照后，确认高频 `ppoll` 等待的是 eventfd，且
+`ppoll(timeout=1s)` 能在不同 hart 到期，排除 timerfd 和全局时钟失效。临时将线程 affinity
+固定到 home hart 的 12 核对照可完成嵌套 guest；该改动仅用于缩小范围并已撤销。
+
+审计 `FUTEX_QUEUE_BITMAP` 发现 wake/requeue 队列项虽然记录了唯一 `futex_key`，实际唤醒却
+没有核对 generation，也没有仅对真实 `Blocked -> Ready` 转换计数。`FUTEX_REQUEUE` 还会丢弃
+超出重排限额的 waiter，并遗漏更新任务记录的队列 key。QEMU 的 eventfd/pthread 协作在多核下
+由此丢失 wakeup。
+
+### 修改文件与验证
+
+修改 `os/src/task/futex.rs`、`os/src/task/manager.rs`：按 generation 完成 wake/timeout，过期项
+不消耗 `WAKE` 配额；requeue 保留未移动项并更新被移动 waiter 的 `futex_pa`。未改动
+`os/src/arch/loongarch64/qemu/cpu.rs`、核数、超时或测试脚本。
+
+`make build-arch TARGET_ARCH=loongarch64`、`make log TARGET_ARCH=loongarch64` 和
+`git diff --check` 通过。使用原始默认 all-hart affinity 执行
+`make run TARGET_ARCH=loongarch64 SMP=12`，内层 guest 输出 `Hello, world!`、`shutdown!`，日志
+中未见 `panic`、`TFAIL` 或 `TBROK`。详见
+`problem/nested-loongarch-qemu-smp-futex-requeue.md`。

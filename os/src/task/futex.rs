@@ -12,7 +12,8 @@ use crate::{
 };
 
 use super::{
-    current_task, schedule_blocked_current, wakeup_futex_task, TaskControlBlock, TaskStatus,
+    current_task, requeue_futex_task, schedule_blocked_current, timeout_futex_task,
+    wakeup_futex_task, TaskControlBlock, TaskStatus,
 };
 use alloc::{
     collections::{BTreeMap, VecDeque},
@@ -76,30 +77,50 @@ fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32
     //     max_requeue
     // );
     bump_futex_queue_version();
+    let wake_limit = max_wakeup.max(0) as usize;
+    let requeue_limit = max_requeue.max(0) as usize;
     let mut futex_queue = FUTEX_QUEUE_BITMAP.lock();
-    let mut num = 0;
-    let mut num2 = 0;
-    let mut tmp = VecDeque::new();
-    if let Some(queue) = futex_queue.get_mut(&old_pa) {
-        while let Some(waiter) = queue.pop_front() {
-            if let Some(task) = waiter.task.upgrade() {
-                if num < max_wakeup {
-                    wakeup_futex_task(task);
-                    num += 1;
-                } else if num2 < max_requeue {
-                    tmp.push_back(waiter);
-                    num2 += 1;
-                }
+    let Some(mut old_queue) = futex_queue.remove(&old_pa) else {
+        return 0;
+    };
+    let mut woken = 0;
+    let mut moved = VecDeque::new();
+    let mut requeued = 0;
+    let mut retained = VecDeque::new();
+    while let Some(waiter) = old_queue.pop_front() {
+        let Some(task) = waiter.task.upgrade() else {
+            continue;
+        };
+        if woken < wake_limit {
+            if wakeup_futex_task(task, waiter.futex_key) {
+                woken += 1;
             }
+        } else if requeued < requeue_limit {
+            if requeue_futex_task(&task, waiter.futex_key, new_pa) {
+                moved.push_back(waiter);
+                requeued += 1;
+            }
+        } else {
+            // Entries beyond the requested requeue count remain waiters on
+            // the original futex.  Dropping them loses a blocking thread.
+            retained.push_back(waiter);
         }
     }
-    if !tmp.is_empty() {
-        futex_queue
-            .entry(new_pa)
-            .or_insert_with(VecDeque::new)
-            .extend(tmp);
+
+    if old_pa == new_pa {
+        retained.extend(moved);
+        if !retained.is_empty() {
+            futex_queue.insert(old_pa, retained);
+        }
+    } else {
+        if !retained.is_empty() {
+            futex_queue.insert(old_pa, retained);
+        }
+        if !moved.is_empty() {
+            futex_queue.entry(new_pa).or_default().extend(moved);
+        }
     }
-    num as usize
+    woken + requeued
 }
 
 /// Queue a waiter only while its expected user-space value still matches.
@@ -246,15 +267,14 @@ fn futex_wake_up_bitset(pa: usize, max_num: i32, bitset: u32) -> usize {
                     // 需要检查：是不是确实相交不为0
 
                     if bitset & waiter.bitset != 0 {
-                        wakeup_futex_task(task);
-                        num += 1;
+                        if wakeup_futex_task(task, waiter.futex_key) {
+                            num += 1;
+                        }
                     } else {
                         // 我还得给它还回去
                         // TODO: 这里也许可以做性能优化？
                         queue.push_back(waiter);
                     }
-                } else {
-                    panic!("Fail to upgrate weak_task!");
                 }
             } else {
                 // 队列空！
@@ -602,12 +622,9 @@ pub fn handle_timer(task: Arc<TaskControlBlock>, futex_key: usize) {
     let idx = queue.iter().position(|x| x.futex_key == futex_key);
     if let Some(idx) = idx {
         queue.remove(idx);
-        // 标记超时，确保 futex_wait_bitset 返回 ETIMEDOUT 而非 Ok(0)
-        {
-            let mut inner = task.inner_lock();
-            inner.futex_timedout = true;
-        }
-        wakeup_futex_task(task);
+        // The timer wins only if this is still the same blocked generation.
+        // A concurrent normal wake must retain its successful result.
+        timeout_futex_task(task, futex_key);
     }
 }
 

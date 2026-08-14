@@ -1469,6 +1469,20 @@
 - **验证**：RISC-V、LoongArch64 `make perf` 通过；旧 `log.ans` 解析后 `wait` 采用 `wait_active` 的 `25.291 ms`。QEMU 因宿主 `/var/tmp` 只读在启动前失败，未取得新的 guest perf 快照。
 - **关联 commit**：当前工作区未提交
 
+#### 嵌套 LoongArch64 QEMU 12 hart futex waiter 丢失（8.14）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求修复外层 12 hart 环境下嵌套 LoongArch64 QEMU 卡死，直至内层 guest 完整关机。
+- **描述**：结合单核/多核对照、`ppoll` eventfd 行为与 host GDB 快照，排除 timerfd、时钟和
+  `cpu.rs` 路径。以可撤销 affinity 对照确认问题只在并发线程协作时触发，随后审计 futex generation
+  状态机，修复 stale waiter 消耗 `WAKE(1)`、`REQUEUE` 丢弃未移动 waiter 及重排后任务队列 key 未更新。
+  最终保留 all-hart CFS 调度，不以固定 affinity 规避问题。
+- **修改文件**：`os/src/task/futex.rs`、`os/src/task/manager.rs`，以及本条关联文档。
+- **验证边界**：LoongArch64 release/debug 构建通过；原始 `SMP=12` 运行中内层 ArceOS 输出
+  `Hello, world!`、`shutdown!`，未见 `panic`、`TFAIL` 或 `TBROK`。
+- **关联问题**：[嵌套 LoongArch64 QEMU 多核 futex requeue 丢 waiter](./problem/nested-loongarch-qemu-smp-futex-requeue.md)
+- **关联 commit**：当前工作区未提交
+
 #### LoongArch 同地址空间并发 Hart 取指同步补强（8.11）
 
 - **工具/模型**：Codex（GPT-5）
