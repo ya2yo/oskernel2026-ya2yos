@@ -150,23 +150,39 @@ fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
 /// `sleep_until` 返回的异步计时器 Future。
 ///
 /// Future 内部只保存计时器键；实际截止时间和 Waker 存放在共享的
-/// [`TimerRuntime`] 中。Future 被轮询到期后完成，提前丢弃则取消对应注册。
+/// [`TimerRuntime`] 中。截止时间已经到达时不注册键，Future 首次轮询时立即
+/// 完成；提前丢弃仍在等待的 Future 则取消对应注册。
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct TimerFuture(TimerKey);
+pub struct TimerFuture(Option<TimerKey>);
+
+impl TimerFuture {
+    /// 创建一个等待到绝对单调时间 `deadline` 的 Future。
+    ///
+    /// 若 `deadline` 已经过期，返回的 Future 会在首次轮询时立即完成。
+    /// 这使调用方无需为注册计时器与检查到期状态之间的竞争额外分支。
+    pub fn new(deadline: Timespec) -> Self {
+        Self(with_current(|r| r.add(deadline)))
+    }
+}
 
 impl Future for TimerFuture {
     type Output = ();
 
     /// 注册当前执行上下文的 Waker，或在计时器已被移出时返回完成。
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        with_current(|r| r.poll(&self.0, cx))
+        self.0
+            .as_ref()
+            .map(|key| with_current(|r| r.poll(key, cx)))
+            .unwrap_or(Poll::Ready(()))
     }
 }
 
 impl Drop for TimerFuture {
     /// Future 未完成就被丢弃时，从共享计时器表中移除注册。
     fn drop(&mut self) {
-        with_current(|r| r.cancel(&self.0));
+        if let Some(key) = self.0.as_ref() {
+            with_current(|r| r.cancel(key));
+        }
     }
 }
 
@@ -176,10 +192,7 @@ impl Drop for TimerFuture {
 /// Waker。这里的 `deadline` 使用 `get_time_spec()` 同一套开机后单调时间，
 /// 不受墙上时间调整影响。
 pub async fn sleep_until(deadline: Timespec) {
-    let key = with_current(|r| r.add(deadline));
-    if let Some(key) = key {
-        TimerFuture(key).await;
-    }
+    TimerFuture::new(deadline).await;
 }
 
 /// `timeout` 或 `timeout_at` 在等待超时时返回的错误。

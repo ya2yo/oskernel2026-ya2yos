@@ -15,8 +15,8 @@ use alloc::vec::Vec;
 use core::{mem::size_of, net::Ipv4Addr};
 use linux_raw_sys::general::iovec;
 use linux_raw_sys::net::{
-    msghdr, socklen_t, MSG_CMSG_CLOEXEC, MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOR,
-    MSG_MORE, MSG_NOSIGNAL, MSG_OOB, MSG_PEEK, MSG_TRUNC, MSG_WAITALL,
+    mmsghdr, msghdr, socklen_t, MSG_CMSG_CLOEXEC, MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT,
+    MSG_EOR, MSG_MORE, MSG_NOSIGNAL, MSG_OOB, MSG_PEEK, MSG_TRUNC, MSG_WAITALL,
 };
 use log::debug;
 
@@ -43,6 +43,29 @@ fn copy_msghdr_to_user(ptr: *mut msghdr, msg: &msghdr) -> SysResult {
     let memory_set = process.memory_set_arc();
     let bytes = unsafe {
         core::slice::from_raw_parts(msg as *const msghdr as *const u8, size_of::<msghdr>())
+    };
+    copy_to_user(&memory_set, ptr as usize, bytes).map(|_| ())
+}
+
+fn copy_mmsghdr_from_user(ptr: *const mmsghdr) -> SysResult<mmsghdr> {
+    if ptr.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let memory_set = task.process.memory_set_arc();
+    let mut bytes = vec![0u8; size_of::<mmsghdr>()];
+    copy_from_user(&memory_set, ptr as usize, &mut bytes).map(|_| ())?;
+    Ok(unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<mmsghdr>()) })
+}
+
+fn copy_mmsghdr_to_user(ptr: *mut mmsghdr, msg: &mmsghdr) -> SysResult {
+    if ptr.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+    let task = current_task().ok_or(SysErrNo::ESRCH)?;
+    let memory_set = task.process.memory_set_arc();
+    let bytes = unsafe {
+        core::slice::from_raw_parts(msg as *const mmsghdr as *const u8, size_of::<mmsghdr>())
     };
     copy_to_user(&memory_set, ptr as usize, bytes).map(|_| ())
 }
@@ -282,8 +305,7 @@ pub fn sys_sendto(
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/sendmsg.2.html
-pub fn sys_sendmsg(sockfd: usize, msg_ptr: *const msghdr, flags: u32) -> SyscallRet {
-    let msg = copy_msghdr_from_user(msg_ptr)?;
+fn send_msg(sockfd: usize, msg: msghdr, flags: u32) -> SyscallRet {
     let (_kernel_buf, user_buffer) = iovecs_to_buf_and_ub(&read_iovecs(&msg)?)?;
     let cmsgs = parse_cmsgs(&msg)?;
     send_impl(
@@ -294,6 +316,56 @@ pub fn sys_sendmsg(sockfd: usize, msg_ptr: *const msghdr, flags: u32) -> Syscall
         msg.msg_namelen as socklen_t,
         cmsgs,
     )
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/sendmsg.2.html
+pub fn sys_sendmsg(sockfd: usize, msg_ptr: *const msghdr, flags: u32) -> SyscallRet {
+    send_msg(sockfd, copy_msghdr_from_user(msg_ptr)?, flags)
+}
+
+/// 参考 https://man7.org/linux/man-pages/man2/sendmmsg.2.html
+///
+/// `mmsghdr` 是用户态数组；每条消息独立发送，发生后续错误时返回已经
+/// 成功发送的消息数，并将每条成功消息的字节数写回 `msg_len`。
+pub fn sys_sendmmsg(sockfd: usize, msgvec: *mut mmsghdr, vlen: usize, flags: u32) -> SyscallRet {
+    if vlen == 0 {
+        return Ok(0);
+    }
+    if msgvec.is_null() {
+        return Err(SysErrNo::EFAULT);
+    }
+    if vlen > MAX_IOV {
+        return Err(SysErrNo::EINVAL);
+    }
+
+    let base = msgvec as usize;
+    let mut sent_messages = 0;
+    for idx in 0..vlen {
+        let offset = idx
+            .checked_mul(size_of::<mmsghdr>())
+            .and_then(|offset| base.checked_add(offset))
+            .ok_or(SysErrNo::EFAULT)?;
+        let mut mmsg = match copy_mmsghdr_from_user(offset as *const mmsghdr) {
+            Ok(mmsg) => mmsg,
+            Err(_) if sent_messages != 0 => return Ok(sent_messages),
+            Err(err) => return Err(err),
+        };
+        let sent = match send_msg(sockfd, mmsg.msg_hdr, flags) {
+            Ok(sent) => sent,
+            Err(_) if sent_messages != 0 => return Ok(sent_messages),
+            Err(err) => return Err(err),
+        };
+        mmsg.msg_len = u32::try_from(sent).map_err(|_| SysErrNo::EOVERFLOW)?;
+        if let Err(err) = copy_mmsghdr_to_user(offset as *mut mmsghdr, &mmsg) {
+            return if sent_messages == 0 {
+                Err(err)
+            } else {
+                Ok(sent_messages)
+            };
+        }
+        sent_messages += 1;
+    }
+    Ok(sent_messages)
 }
 
 // ====================== 以下是 recv 的实现逻辑 ============================

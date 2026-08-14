@@ -13,7 +13,7 @@ use core::arch;
 
 use linux_raw_sys::general::{clone_args, open_how, statx};
 #[cfg(feature = "net")]
-use linux_raw_sys::net::{msghdr, socklen_t};
+use linux_raw_sys::net::{mmsghdr, msghdr, socklen_t};
 use log::{error, warn};
 use num_enum::FromPrimitive;
 #[derive(Debug, PartialEq, FromPrimitive)]
@@ -246,6 +246,8 @@ pub enum Syscall {
     NameToHandleAt = 264,
     OpenByHandleAt = 265,
     ClockAdjtime = 266,
+    #[cfg(feature = "net")]
+    SendMmsg = 269,
     Kcmp = 272,
     Renameat2 = 276,
     Seccomp = 277,
@@ -788,6 +790,10 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Shutdown => sys_shutdown(args[0], args[1] as u32),
         #[cfg(feature = "net")]
         Syscall::SendMsg => sys_sendmsg(args[0], args[1] as *const msghdr, args[2] as u32),
+        #[cfg(feature = "net")]
+        Syscall::SendMmsg => {
+            sys_sendmmsg(args[0], args[1] as *mut mmsghdr, args[2], args[3] as u32)
+        }
         #[cfg(feature = "net")]
         Syscall::RecvMsg => sys_recvmsg(args[0], args[1] as *mut msghdr, args[2] as u32),
         #[cfg(feature = "net")]

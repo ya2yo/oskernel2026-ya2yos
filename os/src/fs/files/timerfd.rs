@@ -194,7 +194,7 @@ impl File for TimerFd {
             return;
         }
         if state.timer.is_none() {
-            state.timer = TimerFuture::new(state.next_expiry.unwrap());
+            state.timer = Some(TimerFuture::new(state.next_expiry.unwrap()));
         }
         if let Some(timer) = state.timer.as_mut() {
             if Pin::new(timer).poll(cx).is_ready() {
