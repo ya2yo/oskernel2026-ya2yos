@@ -14,6 +14,7 @@ mod path;
 mod pipe;
 mod space;
 mod stat;
+mod timerfd;
 mod xattr;
 
 use linux_raw_sys::ctypes::c_int;
@@ -32,12 +33,11 @@ use crate::{
 
 pub use self::{
     ctl::*, event::*, fanotify::*, fcntl::*, fd_ops::*, handle::*, inotify::*, memfd::*, misc::*,
-    mount::*, mqueue::*, path::*, pipe::*, space::*, stat::*, xattr::*,
+    mount::*, mqueue::*, path::*, pipe::*, space::*, stat::*, timerfd::*, xattr::*,
 };
 
 const SFD_CLOEXEC: u32 = 0x80000;
 const SFD_NONBLOCK: u32 = 0x800;
-
 fn dummyfd_create() -> SyscallRet {
     let dummy_file = DummyFd::new();
     let task = current_task().unwrap();
@@ -154,23 +154,4 @@ pub fn sys_signalfd4(siglfd: u32, mask: *const u8, flags: u32, sigsetsize: usize
         .fd_table
         .set(fd, FileDescriptor::new(open_flags, FileClass::Abs(file)))?;
     Ok(fd)
-}
-
-/// https://www.man7.org/linux/man-pages/man2/timerfd_create.2.html
-pub fn sys_timerfd_create(_clockid: u32, _flags: u32) -> SyscallRet {
-    warn!("[sys_timerfd_create] not implement!");
-    dummyfd_create()
-}
-pub fn sys_timerfd_settime(
-    _fd: u32,
-    _flags: u32,
-    _new_value: *const u8,
-    _old_value: *mut u8,
-) -> SyscallRet {
-    warn!("[sys_timerfd_settime] not implement!");
-    Ok(0)
-}
-pub fn sys_timerfd_gettime(_fd: u32, _curr_value: *mut u8) -> SyscallRet {
-    warn!("[sys_timerfd_gettime] not implement!");
-    Ok(0)
 }

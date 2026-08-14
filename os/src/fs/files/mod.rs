@@ -21,6 +21,7 @@ mod os_file;
 mod pagemap;
 mod secretmem;
 mod signalfd;
+mod timerfd;
 mod tmp_file;
 mod uptime;
 pub use {
@@ -39,6 +40,7 @@ pub use {
     pagemap::PagemapFile,
     secretmem::SecretMemFile,
     signalfd::SignalFd,
+    timerfd::{TimerFd, TimerFdSpec},
     tmp_file::TmpFile,
     uptime::UptimeFile,
 };
