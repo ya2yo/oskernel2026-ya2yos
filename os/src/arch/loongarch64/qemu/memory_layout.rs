@@ -18,10 +18,10 @@ pub const USER_HEAP_SIZE: usize = 0x8000_0000; // 2 GiB (virtual reservation)
 /// the Rust toolchain's normal peak working set.
 pub const MAX_BRK_SIZE: usize = 0x8000_0000; // 2 GiB
 /// Maximum total lazy mmap virtual reservation per process.
-/// Rustc reserves several 128 MiB PROT_NONE arenas before those pages are
-/// faulted in, so this must leave room beyond the physical-memory working set
-/// while still bounding VMA growth.
-pub const MAX_MMAP_SIZE: usize = 0x8000_0000; // 2 GiB
+/// The nested LoongArch QEMU workload reserves a 2 GiB guest-RAM VMA in
+/// addition to its runtime mappings. Keep that reservation lazy while
+/// retaining a finite per-process bound.
+pub const MAX_MMAP_SIZE: usize = 0x1_0000_0000; // 4 GiB
 pub const PRE_ALLOC_PAGES: usize = 8;
 
 // 内核虚拟地址的起始地址

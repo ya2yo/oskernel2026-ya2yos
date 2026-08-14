@@ -3418,3 +3418,17 @@
 - **验证边界**：RISC-V/LoongArch64 release 构建、`git diff --check` 通过；QEMU 9.2 源码确认零叶 PTE 触发普通 `PIF`。当前现场 PID 2574 未恢复或终止，且运行的是新修复前的内核；尚未宣称新内核的 QEMU/LTP/BuildStorm 行为回归通过。
 - **关联问题**：[LoongArch 用户页表内核直映别名导致 QEMU GDB 无法中断](./problem/loongarch-user-pagetable-directmap-alias.md)
 - **关联 commit**：当前工作区未提交
+
+#### 嵌套 LoongArch64 QEMU auxv HWCAP 与 mmap 配额（8.14）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析新的 `server.ans` 并修复 LoongArch64 嵌套 EFI QEMU 启动失败。
+- **描述**：日志先显示内层 QEMU 因 `AT_HWCAP` 缺少 `HWCAP_LOONGARCH_UAL` 拒绝初始化；ELF
+  loader 改为依据 `CPUCFG1.UAL` 发布该 Linux ABI 能力。随后出现的 2 GiB guest-RAM `ENOMEM`
+  来自同为 2 GiB 的总懒 mmap 配额与 QEMU 运行库映射叠加；仅将 LoongArch64 配额提升至 4 GiB，
+  不改变按需物理页分配和 RISC-V 行为。
+- **验证边界**：`make TARGET_ARCH=loongarch64` 完成双架构 release 构建，`git diff --check` 通过。
+  最长 120 秒的 LoongArch64 重放已进入内层 OVMF `PROGRESS CODE`，未再出现 UAL 或 guest-RAM
+  错误；尚未获得内层 guest `Hello, world!`/关机，完整回归仍待确认。详见
+  [nested-loongarch-qemu-boot.md](./problem/nested-loongarch-qemu-boot.md)。
+- **关联 commit**：当前工作区未提交

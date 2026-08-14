@@ -19,6 +19,27 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use xmas_elf::ElfFile;
 
+#[cfg(target_arch = "loongarch64")]
+const HWCAP_LOONGARCH_UAL: usize = 1 << 2;
+
+/// Return the Linux-compatible hardware capabilities exposed through auxv.
+///
+/// QEMU's LoongArch TCG backend requires the UAL bit before it can safely use
+/// its generated unaligned host memory accesses.
+fn elf_hwcap() -> usize {
+    #[cfg(target_arch = "loongarch64")]
+    {
+        return if loongArch64::cpu::get_ual() {
+            HWCAP_LOONGARCH_UAL
+        } else {
+            0
+        };
+    }
+
+    #[cfg(not(target_arch = "loongarch64"))]
+    0
+}
+
 const ELF_PROBE_SIZE: usize = 256;
 /// Bound temporary storage while coalescing an unaligned ELF segment's
 /// formerly page-at-a-time reads. This is large enough to amortize lwext4's
@@ -752,9 +773,9 @@ impl MemorySetInner {
         auxv.push(Aux::new(AuxType::EUID, 0 as usize));
         auxv.push(Aux::new(AuxType::GID, 0 as usize));
         auxv.push(Aux::new(AuxType::EGID, 0 as usize));
-        // 平台字符串、硬件能力、secure exec 等字段先用最小兼容值。
+        // 平台字符串、硬件能力、secure exec 等字段提供给 libc 和动态加载器。
         auxv.push(Aux::new(AuxType::PLATFORM, 0 as usize));
-        auxv.push(Aux::new(AuxType::HWCAP, 0 as usize));
+        auxv.push(Aux::new(AuxType::HWCAP, elf_hwcap()));
         auxv.push(Aux::new(AuxType::CLKTCK, 100 as usize));
         auxv.push(Aux::new(AuxType::SECURE, 0 as usize));
         auxv.push(Aux::new(AuxType::NOTELF, 0x112d as usize));

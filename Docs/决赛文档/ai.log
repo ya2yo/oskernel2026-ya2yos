@@ -11972,3 +11972,30 @@ QEMU/BuildStorm，以免破坏维护者保留的现有 GDB/QEMU 会话，因此�
 ### 修改文件与验证
 
 修改 `os/src/arch/loongarch64/qemu/page_table.rs`，隔离用户页表和内核 DMW 分支，并为未映射目录建立零叶表哨兵，防止 LoongArch refill 将零目录项继续解释为物理页 0。曾尝试在 `trap_return()` 校验 VMA，但运行日志证明它会错误拒绝显式映射的 `rt_sigreturn` trampoline，已撤回该非根因改动。新采集 `qemu-hang-20260814-011127-pid2574` 确认 CPU0 在 `0xa4dd70` 的 PPI/refill 循环；`make TARGET_ARCH=loongarch64`（含双架构 release 构建）和 `git diff --check` 通过，完整 QEMU/BuildStorm 行为回归待以新内核启动独立实例。
+
+## 2026-08-14：嵌套 LoongArch64 QEMU auxv HWCAP 与 mmap 配额修复
+
+### 用户需求
+
+维护者要求分析新的 `server.ans` 并直接修复其中的启动错误。
+
+### AI 分析与采纳结论
+
+日志表明内核和 `initproc` 正常启动，第一处实际失败是内层 QEMU 的
+`TCG: unaligned access support required; exiting`。对照 Linux LoongArch UAPI 与本地 QEMU
+源码，确认 QEMU 从 `AT_HWCAP` 读取 bit 2 的 `HWCAP_LOONGARCH_UAL`；Ya2yOS ELF loader
+此前无条件写入零。采用现有 `loongArch64::cpu::get_ual()` 读取 `CPUCFG1.UAL`，只向
+LoongArch64 用户进程发布实际存在的能力。
+
+修复 UAL 后的下一条失败为 QEMU guest RAM `ENOMEM`。审计 `sys_mmap` 和内层 QEMU 的
+`-m 2G` 参数确认，旧的 2 GiB 总 mmap 虚拟配额无法同时容纳 guest RAM、动态加载器和运行库
+映射。将 LoongArch64 配额提高到 4 GiB；VMA 和物理页仍按原有的惰性缺页机制处理。
+
+### 修改文件与验证
+
+修改 `os/src/mm/memory_set/elf_loader.rs`、`os/src/arch/loongarch64/qemu/memory_layout.rs`，并更新
+`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/problem/nested-loongarch-qemu-boot.md` 与本记录。
+`make TARGET_ARCH=loongarch64` 完成 RISC-V/LoongArch64 release 构建；`git diff --check` 通过。
+以最长 120 秒的 LoongArch64 QEMU 重放确认内层 OVMF 输出 `PROGRESS CODE`，不再出现 UAL
+拒绝或 guest RAM `ENOMEM`。窗口结束前未观察到内层 guest `Hello, world!`，因此未宣称完整
+EFI guest 回归完成。
