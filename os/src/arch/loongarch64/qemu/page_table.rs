@@ -185,16 +185,17 @@ impl PageTable {
             } else {
                 let next = &mut ppn.as_array::<usize>()[*idx];
                 if i == 0 && *next == PhysAddr::from(self.empty_dir_ppn).0 {
-                    // A root entry still shares the empty walk directory.
-                    // Give this top-level branch a private directory before
-                    // replacing one of its leaf-table links.
+                    // 根页表的未使用 entry 全部共享 empty_dir。
+                    // 即将映射此 root 分支时，先复制出私有二级目录；
+                    // 否则修改 empty_dir 会影响其他尚未映射的 root 分支。
                     let frame = FrameTracker::alloc().unwrap();
                     Self::init_empty_directory(frame.ppn, self.empty_leaf_ppn);
                     *next = PhysAddr::from(frame.ppn).0;
                     self.frames.push(frame);
                 } else if i == 1 && *next == PhysAddr::from(self.empty_leaf_ppn).0 {
-                    // This directory entry still shares the all-zero leaf
-                    // table. Map into a private leaf table instead.
+                    // 私有二级目录的未使用 entry 仍共享 empty_leaf。
+                    // 即将写入真正的叶 PTE 时，先分配私有末级页表，
+                    // 防止修改共享的全零叶表。
                     let frame = FrameTracker::alloc().unwrap();
                     *next = PhysAddr::from(frame.ppn).0;
                     self.frames.push(frame);
