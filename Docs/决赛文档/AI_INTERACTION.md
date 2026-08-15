@@ -3608,3 +3608,17 @@
   `readlink(...)=EINVAL` 仍为 `TBROK`，未宣称通过。RISC-V/LoongArch64 release 构建通过。
   详见 [问题复盘](./problem/lwext4-invalid-directory-handle-panic.md) 与 `ai.log` 对应条目。
 - **关联 commit**：当前工作区未提交
+
+#### LTP getpriority02 选择器 errno 语义修复（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求修复 LTP `getpriority02`。
+- **描述**：核对原始 `TFAIL`、LTP 源码和 syscall 实现后，确认内核把非法 `which` 与
+  `PRIO_PGRP`/`PRIO_USER` 均错误降级为当前任务优先级。实现三个 Linux `PRIO_*` 选择器：非法值
+  返回 `EINVAL`，PID/进程组/真实 UID 没有匹配目标时返回 `ESRCH`，组和用户查询选择最低 nice 值；
+  任务遍历遵循全局表、`ProcessMeta`、TCB 的既有锁顺序。
+- **验证边界**：RISC-V/LoongArch64 release 构建和 `git diff --check` 通过。RISC-V QEMU 能启动，
+  但当前完整套件在前序 `iperf REVERSE_TCP` 停止推进，未运行到 `getpriority02`；已终止本次专属
+  QEMU 进程组，未将目标测例标为通过。详见
+  [问题复盘](./problem/getpriority-selector-semantics.md) 与 `ai.log` 对应条目。
+- **关联 commit**：当前工作区未提交

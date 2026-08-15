@@ -12344,3 +12344,31 @@ debug 内核复测时，debug 热路径输出导致 `pthread_cond_smasher` 在 5
 `readlink(...)=EINVAL` / `TBROK`，但未再输出 `KERNEL PANIC`，并完成组结束及 `shutdown!`。
 执行 `make TARGET_ARCH=riscv64` 和 `make TARGET_ARCH=loongarch64`；两架构 release 构建通过，
 仅有既有 warning。未运行完整 LTP，也未解决 `readlink` 的语义失败。
+
+## 2026-08-15：LTP getpriority02 选择器 errno 语义
+
+### 用户需求
+
+维护者要求修复 `getpriority02`。
+
+### AI 分析与采纳结论
+
+检查 `log.ans` 与 LTP `getpriority02.c` 后，确认失败并非 LTP wrapper 的退出码：非法
+`which = -1` 本应为 `EINVAL`，而 `PRIO_PROCESS`、`PRIO_PGRP`、`PRIO_USER` 配合
+`who = -1` 本应为 `ESRCH`。原 `sys_getpriority()` 只实现 `PRIO_PROCESS`，对其余选择器（包括
+非法值）一律返回当前任务优先级，造成三个假成功。
+
+采纳 Linux 选择器语义：非法 `which` 返回 `EINVAL`；进程、进程组和真实 UID 三类目标均按其匹配
+任务中最低 nice 值返回优先级，无匹配任务返回 `ESRCH`。任务表 API 在回调前释放全局表锁；进程路径
+也在读取可升级任务引用后释放 `ProcessMeta`，再获取 TCB 锁，避免违反既有锁顺序。
+
+### 修改与验证
+
+修改 `os/src/syscall/task/resource.rs`，并新增问题复盘、开发日志、索引与 AI 记录。执行
+`make TARGET_ARCH=riscv64`，其根 Makefile 同次完成 RISC-V 和 LoongArch64 release 构建；两者均通过，
+仅有既有 `smoltcp` warning。执行 `git diff --check` 通过。
+
+尝试 `timeout 600s make TARGET_ARCH=riscv64 run`：初次受沙箱 `/var/tmp` 只读限制未启动，允许本地
+QEMU 创建运行时临时文件后可正常进入内核并完成 busybox、lua，随后在前序
+`iperf REVERSE_TCP` 无新输出，尚未到达 LTP；已终止该专属 QEMU 进程组。没有将
+`getpriority02` 标记为运行通过。

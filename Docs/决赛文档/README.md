@@ -71,6 +71,7 @@
 - [LTP clone02 共享资源退出清理修复](./problem/clone02-shared-resource-exit.md)
 - [LTP clone08 legacy clone 线程退出信号兼容](./problem/clone08-legacy-clone-thread-signal.md)
 - [LTP getcwd03 符号链接 cwd 与 readlink 语义修复](./problem/getcwd03-symlink-cwd-readlink-cache.md)
+- [LTP getpriority02 选择器与 errno 语义修复](./problem/getpriority-selector-semantics.md)
 - [lwext4 目录句柄打开失败后的空指针 panic](./problem/lwext4-invalid-directory-handle-panic.md)
 - [LTP writev01 writev 参数与管道错误码修复](./problem/writev01-writev-errno.md)
 - [LTP waitpid04 非法 options 错误码修复](./problem/waitpid04-invalid-options.md)

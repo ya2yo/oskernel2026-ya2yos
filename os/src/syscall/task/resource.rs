@@ -1,7 +1,7 @@
 use crate::{
     mm::{copy_from_user, copy_to_user, if_bad_address},
     syscall::RLimit,
-    task::{current_task, Process},
+    task::{current_task, tid_to_task, Process, TaskControlBlock},
     utils::{SysErrNo, SyscallRet},
 };
 
@@ -22,40 +22,65 @@ const MAX_NICE: i32 = 19;
 
 /// 参考 https://man7.org/linux/man-pages/man2/getpriority.2.html
 ///
-/// 返回 `which`/`who` 匹配进程的优先级（20 - nice 值）。
-/// 目前仅支持 PRIO_PROCESS。
+/// 返回 `which`/`who` 匹配任务的优先级（20 - nice 值）。
 pub fn sys_getpriority(which: i32, who: usize) -> SyscallRet {
-    if which != PRIO_PROCESS {
-        // PRIO_PGRP / PRIO_USER 暂不支持，返回当前进程的优先级作为退化行为
-        let task = current_task().unwrap();
-        let inner = task.inner_lock();
-        return Ok((20 - inner.nice) as usize);
-    }
-
-    if who == 0 {
-        // who == 0 表示调用进程自身
-        let task = current_task().unwrap();
-        let inner = task.inner_lock();
-        return Ok((20 - inner.nice) as usize);
-    }
-
-    // who != 0: 按 pid 查找目标进程
-    let proc = Process::get_process_arc_by_pid(who);
-    match proc {
-        Some(proc) => {
-            // 获取该进程中第一个可用线程的 nice 值
-            let meta = proc.meta_lock();
-            let nice = match meta.tasks.first().and_then(|w| w.upgrade()) {
-                Some(task) => {
-                    let inner = task.inner_lock();
-                    inner.nice
-                }
-                None => 0, // 进程无活跃线程，返回默认值
-            };
-            Ok((20 - nice) as usize)
+    let current = current_task().ok_or(SysErrNo::ESRCH)?;
+    let nice = match which {
+        PRIO_PROCESS => {
+            if who == 0 {
+                Some(task_nice(&current))
+            } else {
+                Process::get_process_arc_by_pid(who).and_then(|process| {
+                    // ProcessMeta 只用于取出任务引用；进入 TCB 锁前必须释放它。
+                    let task = process
+                        .meta_lock()
+                        .tasks
+                        .iter()
+                        .find_map(|task| task.upgrade());
+                    task.map(|task| task_nice(&task))
+                })
+            }
         }
+        PRIO_PGRP => {
+            let pgid = if who == 0 {
+                current.process.pgid()
+            } else {
+                who
+            };
+            matching_task_nice(|task| task.process.pgid() == pgid)
+        }
+        PRIO_USER => {
+            let uid = if who == 0 {
+                current.inner_lock().user_id
+            } else {
+                who
+            };
+            matching_task_nice(|task| task.inner_lock().user_id == uid)
+        }
+        _ => return Err(SysErrNo::EINVAL),
+    };
+
+    match nice {
+        Some(nice) => Ok((20 - nice) as usize),
         None => Err(SysErrNo::ESRCH),
     }
+}
+
+fn task_nice(task: &TaskControlBlock) -> i32 {
+    task.inner_lock().nice
+}
+
+/// `getpriority()` returns the numerically lowest nice value among all tasks
+/// selected by a process group or real user ID.
+fn matching_task_nice(matches: impl Fn(&TaskControlBlock) -> bool) -> Option<i32> {
+    let mut lowest_nice: Option<i32> = None;
+    tid_to_task::for_each_task(|task| {
+        if matches(task) {
+            let nice = task_nice(task);
+            lowest_nice = Some(lowest_nice.map_or(nice, |lowest| lowest.min(nice)));
+        }
+    });
+    lowest_nice
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/setpriority.2.html
