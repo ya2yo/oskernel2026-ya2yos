@@ -12122,3 +12122,27 @@ RISC-V/LoongArch64 CFS release、RISC-V RR release、`git diff --check` 通过�
 ### 修改文件与验证
 
 修改 `os/src/drivers/{mod.rs,virtio/mod.rs}`、`os/src/arch/{riscv64,loongarch64}/mod.rs`，新增两套 `arch/<arch>/drivers/virtio` 模块并迁移原架构 VirtIO 文件；同步修正设备设计文档中的当前路径和开发记录。`cargo fmt`、`git diff --check` 通过，`make TARGET_ARCH=riscv64` 封装完成 RISC-V64 与 LoongArch64 release 构建。未运行 QEMU、LTP 或 BuildStorm，本轮不宣称行为回归结果。
+
+## 2026-08-15：VisionFive 2 JH7110 DWMAC 轮询网卡驱动
+
+### 用户输入
+
+维护者要求在已有 VisionFive 2 UART 基础上增加 VF2 驱动，先参考 RocketOS；在参考实现
+不适配时，直接采用 Linux 实现。
+
+### AI 分析与采纳结论
+
+RocketOS 的 GMAC1 代码不能直接接入当前 Ya2yOS：其网络抽象不同，DMA 可引用普通堆内存，
+而 TX 回收和 RX 生命周期也与 `NetDriverOps` 不一致。以 Linux 7.0 的
+`dwmac-starfive.c`、DWMAC4/5 描述符路径、VF2 DTS 与 `motorcomm.c` 为事实来源，新增单队列
+轮询 GMAC1 驱动。描述符和硬件缓冲区从 CMA 分配，RX/TX 通过复制与既有 `NetBufPool` 交接；
+启用 GMAC1 时钟/复位、RGMII、MDIO PHY 扫描、MAC/MTL/DMA 寄存器和 16 项 DMA 环。普通
+RISC-V 保留 VirtIO-net，只有 `visionfive2` 选择新驱动。
+
+### 修改文件与验证
+
+新增 `os/src/arch/riscv64/drivers/visionfive2.rs`，并修改 RISC-V 驱动选择、开发日志、问题
+复盘、索引与 AI 记录。`cargo fmt --manifest-path os/Cargo.toml -- --check`、
+`git diff --check` 和 `make TARGET_ARCH=visionfive2` 通过；后者同时完成 RISC-V64 与
+LoongArch64 release 构建。没有可用 VF2 实板或 JH7110 QEMU 网卡模型，未执行链路、DHCP、ARP
+或 TCP/UDP 运行验证。详见 [problem/visionfive2-dwmac-driver.md](./problem/visionfive2-dwmac-driver.md)。

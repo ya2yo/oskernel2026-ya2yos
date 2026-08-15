@@ -1469,6 +1469,19 @@
 - **验证**：RISC-V、LoongArch64 `make perf` 通过；旧 `log.ans` 解析后 `wait` 采用 `wait_active` 的 `25.291 ms`。QEMU 因宿主 `/var/tmp` 只读在启动前失败，未取得新的 guest perf 快照。
 - **关联 commit**：当前工作区未提交
 
+#### VisionFive 2 JH7110 DWMAC 轮询网卡驱动（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求为 VisionFive 2 增加驱动，并指定 RocketOS 仅作参考，必要时采用 Linux
+  源码实现。
+- **描述**：根据 Linux `dwmac-starfive`、`stmmac`、VF2 DTS 与 `motorcomm` 的硬件语义，新增
+  CMA 支持的 GMAC1 轮询网卡驱动，接入当前 `NetDriverOps`；默认 VirtIO-net 路径不变。
+  该实现明确不包含尚未具备基础设施的 IRQ/NAPI/cache-sync 性能路径。
+- **验证边界**：`make TARGET_ARCH=visionfive2` 完成 RISC-V64/LoongArch64 release 构建；
+  没有实板或 JH7110 网络模拟器，运行网络验证待执行。详见
+  `Docs/决赛文档/ai.log` 和 [问题复盘](./problem/visionfive2-dwmac-driver.md)。
+- **关联 commit**：当前工作区未提交
+
 #### 嵌套 LoongArch64 QEMU 12 hart futex waiter 丢失（8.14）
 
 - **工具/模型**：Codex（GPT-5）
