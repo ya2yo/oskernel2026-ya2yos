@@ -931,6 +931,7 @@ fn emit_ext4_storage_cumulative() {
 }
 
 fn emit_interval_deltas(now: usize) {
+    println!("######### INTERVAL DELTAS REPORT #########");
     let previous = DELTA_REPORT_MS.swap(now, Ordering::Relaxed);
     let elapsed_ms = if previous == 0 {
         now
