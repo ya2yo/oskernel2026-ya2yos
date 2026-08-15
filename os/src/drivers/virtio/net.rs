@@ -1,3 +1,15 @@
+//! VirtIO 网络设备驱动实现。
+//!
+//! 本模块将 `virtio-drivers` 提供的原始 VirtIO 网络设备封装为内核统一的
+//! [`NetDriverOps`] 接口，负责初始化收发队列、管理网络缓冲区，并处理设备
+//! 完成的收发请求。
+//!
+//! 接收方向为每个 VirtIO 描述符预先提交一个 [`NetBuf`]；收到数据后，驱动
+//! 将缓冲区交给网络协议栈，协议栈使用完毕后通过
+//! [`NetDriverOps::recycle_rx_buffer`] 将其重新提交给设备。发送方向从缓冲
+//! 区池中取得空闲缓冲区，提交完成后由 [`NetDriverOps::recycle_tx_buffers`]
+//! 回收。
+
 use crate::drivers::{VirtError, VirtResult};
 use alloc::{sync::Arc, vec::Vec};
 use log::warn;
@@ -9,26 +21,54 @@ use virtio_drivers::{device::net::VirtIONetRaw as InnerDev, transport::Transport
 
 use super::as_dev_err;
 
+/// The size of each network buffer, including the VirtIO net header area.
 const NET_BUF_LEN: usize = 1526;
+/// The largest Ethernet frame accepted by the network buffer interface.
 const MAX_BUFFER_LEN: usize = 65535;
+/// The smallest Ethernet frame size used by the network buffer interface.
 const MIN_BUFFER_LEN: usize = 1526;
 
-/// The VirtIO network device driver.
+/// A VirtIO network device backed by one receive and one transmit queue.
 ///
-/// `QS` is the VirtIO queue size.
+/// The driver keeps one buffer associated with every receive descriptor and
+/// takes ownership of a transmit buffer until the device reports completion.
+/// `QS` is the number of descriptors in each VirtIO queue. `H` supplies the
+/// DMA and memory-management operations required by `virtio-drivers`, while
+/// `T` identifies the platform-specific VirtIO transport.
+///
+/// Receive buffers are returned to the device by [`Self::recycle_rx_buffer`]
+/// after the network stack has finished using them. Transmit buffers follow a
+/// similar lifecycle: [`Self::alloc_tx_buffer`] removes one from the free
+/// list, [`Self::transmit`] submits it, and [`Self::recycle_tx_buffers`] puts
+/// it back after completion.
 pub struct VirtIoNetDev<H: Hal, T: Transport, const QS: usize> {
-    rx_buffers: [Option<NetBufBox>; QS], // 接收缓冲区
-    tx_buffers: [Option<NetBufBox>; QS], // 发生缓冲区
-    free_tx_bufs: Vec<NetBufBox>,        // 空闲发送缓冲区
-    buf_pool: Arc<NetBufPool>,           // 网络缓冲区内存池
-    inner: InnerDev<H, T, QS>,           // 底层设备实例
-    irq: Option<usize>,                  // 中断号
+    /// Buffers currently posted to the receive virtqueue, indexed by token.
+    rx_buffers: [Option<NetBufBox>; QS],
+    /// Buffers submitted to the transmit virtqueue, indexed by token.
+    tx_buffers: [Option<NetBufBox>; QS],
+    /// Transmit buffers that are not currently owned by the device.
+    free_tx_bufs: Vec<NetBufBox>,
+    /// Shared allocator backing all receive and transmit buffers.
+    buf_pool: Arc<NetBufPool>,
+    /// The transport-specific VirtIO network device implementation.
+    inner: InnerDev<H, T, QS>,
+    /// Interrupt number associated with the device, when one is configured.
+    irq: Option<usize>,
 }
 
+// SAFETY: NetBuf and the underlying VirtIO device are designed to be moved
+// between the contexts that own the driver; queue access is serialized by the
+// network-driver layer.
 unsafe impl<H: Hal, T: Transport, const QS: usize> Send for VirtIoNetDev<H, T, QS> {}
+// SAFETY: Shared access is exposed only through the driver interfaces, whose
+// callers provide the required synchronization around mutable queue access.
 unsafe impl<H: Hal, T: Transport, const QS: usize> Sync for VirtIoNetDev<H, T, QS> {}
 
 impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
+    /// Converts a VirtIO descriptor token into a queue-array index.
+    ///
+    /// A token outside the configured queue range indicates corrupted device
+    /// state and is rejected instead of indexing the buffer arrays.
     fn token_index(token: u16) -> DevResult<usize> {
         let idx = token as usize;
         if idx >= QS {
@@ -39,8 +79,20 @@ impl<H: Hal, T: Transport, const QS: usize> VirtIoNetDev<H, T, QS> {
         }
     }
 
-    /// Creates a new driver instance and initializes the device, or returns
-    /// an error if any step fails.
+    /// Creates and initializes a VirtIO network device.
+    ///
+    /// The constructor allocates a shared pool containing enough buffers for
+    /// all receive and transmit descriptors, posts every receive buffer to the
+    /// device, and prepares every transmit buffer with a VirtIO network header.
+    ///
+    /// `irq` is retained as the device's optional interrupt number; interrupt
+    /// registration itself is performed by the caller or platform layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transport cannot initialize the device, the
+    /// buffer pool cannot be allocated, or a VirtIO network header cannot be
+    /// prepared.
     pub fn try_new(transport: T, irq: Option<usize>) -> DevResult<Self> {
         // 0. Create a new driver instance.
         const NONE_BUF: Option<NetBufBox> = None;
