@@ -239,3 +239,4 @@
 - [Preliminary basic 脚本权限与动态解释器路径](./problem/preliminary-basic-script-interpreter.md)
 - [fork 处理懒分配页时的 COW panic](./problem/fork-cow-lazy-page-panic.md)
 - [pthread_cancel 的信号来源与 ucontext ABI](./problem/pthread-cancel-signal-ucontext.md)
+- [RISC-V QEMU `setuid04` 后 futex requeue 自旋](./problem/riscv-qemu-futex-requeue-task-lock-spin.md)

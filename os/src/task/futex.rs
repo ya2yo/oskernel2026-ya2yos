@@ -12,12 +12,13 @@ use crate::{
 };
 
 use super::{
-    current_task, requeue_futex_task, schedule_blocked_current, timeout_futex_task,
-    wakeup_futex_task, TaskControlBlock, TaskStatus,
+    current_task, mark_futex_task_ready, mark_futex_task_timeout, ready_queue, requeue_futex_task,
+    schedule_blocked_current, TaskControlBlock, TaskStatus,
 };
 use alloc::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Weak},
+    vec::Vec,
 };
 use log::{debug, error};
 use spin::Lazy;
@@ -47,6 +48,9 @@ type BitsetWaitQueue = VecDeque<FutexWaiter>; // 这个u32是sys_wait_bitset的�
 // bitset用的队列的映射
 pub static FUTEX_QUEUE_BITMAP: Lazy<RemoteTlbMutex<BTreeMap<usize, BitsetWaitQueue>>> =
     Lazy::new(|| RemoteTlbMutex::new(BTreeMap::new()));
+/// Serialize futex queue transitions without holding the queue map lock while
+/// taking a task lock or publishing scheduler work.
+static FUTEX_OP_LOCK: Lazy<RemoteTlbMutex<()>> = Lazy::new(|| RemoteTlbMutex::new(()));
 static FUTEX_QUEUE_VERSION: AtomicUsize = AtomicUsize::new(0);
 
 #[inline]
@@ -76,14 +80,15 @@ fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32
     //     new_pa,
     //     max_requeue
     // );
-    bump_futex_queue_version();
     let wake_limit = max_wakeup.max(0) as usize;
     let requeue_limit = max_requeue.max(0) as usize;
-    let mut futex_queue = FUTEX_QUEUE_BITMAP.lock();
-    let Some(mut old_queue) = futex_queue.remove(&old_pa) else {
+    let _op_lock = FUTEX_OP_LOCK.lock();
+    bump_futex_queue_version();
+    let Some(mut old_queue) = FUTEX_QUEUE_BITMAP.lock().remove(&old_pa) else {
         return 0;
     };
     let mut woken = 0;
+    let mut ready = Vec::new();
     let mut moved = VecDeque::new();
     let mut requeued = 0;
     let mut retained = VecDeque::new();
@@ -92,8 +97,9 @@ fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32
             continue;
         };
         if woken < wake_limit {
-            if wakeup_futex_task(task, waiter.futex_key) {
+            if mark_futex_task_ready(&task, waiter.futex_key) {
                 woken += 1;
+                ready.push(task);
             }
         } else if requeued < requeue_limit {
             if requeue_futex_task(&task, waiter.futex_key, new_pa) {
@@ -107,6 +113,7 @@ fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32
         }
     }
 
+    let mut futex_queue = FUTEX_QUEUE_BITMAP.lock();
     if old_pa == new_pa {
         retained.extend(moved);
         if !retained.is_empty() {
@@ -119,6 +126,11 @@ fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32
         if !moved.is_empty() {
             futex_queue.entry(new_pa).or_default().extend(moved);
         }
+    }
+    drop(futex_queue);
+    drop(_op_lock);
+    for task in ready {
+        ready_queue::add_task(&task);
     }
     // FUTEX_REQUEUE reports only the number of waiters woken directly.
     // Requeued waiters remain blocked on the destination futex and must not
@@ -153,9 +165,9 @@ fn futex_wait_bitset(
             return Err(SysErrNo::EAGAIN);
         }
         let version = FUTEX_QUEUE_VERSION.load(Ordering::Acquire);
-        let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+        let _op_lock = FUTEX_OP_LOCK.lock();
         if FUTEX_QUEUE_VERSION.load(Ordering::Acquire) != version {
-            drop(waitq);
+            drop(_op_lock);
             continue;
         }
 
@@ -170,15 +182,17 @@ fn futex_wait_bitset(
             inner.futex_timedout = false;
             inner.futex_pa = queue_key;
             inner.futex_key = futex_key;
-            waitq.entry(queue_key).or_default().push_back(FutexWaiter {
-                task: Arc::downgrade(&task),
-                bitset,
-                futex_key,
-            });
             inner.task_status = TaskStatus::Blocked;
             &mut inner.task_cx as *mut _
         };
+        let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+        waitq.entry(queue_key).or_default().push_back(FutexWaiter {
+            task: Arc::downgrade(&task),
+            bitset,
+            futex_key,
+        });
         drop(waitq);
+        drop(_op_lock);
         break task_cx_ptr;
     };
 
@@ -208,6 +222,7 @@ fn futex_wait_bitset(
         let futex_pa = task_inner.futex_pa;
         drop(task_inner);
         if futex_key != 0 {
+            let _op_lock = FUTEX_OP_LOCK.lock();
             bump_futex_queue_version();
             let mut waitq = FUTEX_QUEUE_BITMAP.lock();
             if let Some(queue) = waitq.get_mut(&futex_pa) {
@@ -228,6 +243,7 @@ fn futex_wait_bitset(
         // 超时定时器已通过 handle_timer 将 waiter 摘下并设置了 timedout 标记；
         // futex_key 在 wakeup_futex_task 里已被清 0，此处是安全网。
         if futex_key != 0 {
+            let _op_lock = FUTEX_OP_LOCK.lock();
             bump_futex_queue_version();
             let mut waitq = FUTEX_QUEUE_BITMAP.lock();
             if let Some(queue) = waitq.get_mut(&futex_pa) {
@@ -256,23 +272,25 @@ fn futex_wake_up_bitset(pa: usize, max_num: i32, bitset: u32) -> usize {
     //     max_num,
     //     pa
     // );
+    let _op_lock = FUTEX_OP_LOCK.lock();
     bump_futex_queue_version();
+    let mut wake_list = Vec::new();
     let mut futex_queue = FUTEX_QUEUE_BITMAP.lock();
     let mut num: usize = 0;
+    let mut selected: usize = 0;
     if let Some(queue) = futex_queue.get_mut(&pa) {
         let queue_len = queue.len();
         // 我们会遍历这个deque，最多len次
         let mut cnt: usize = 0;
-        while cnt < queue_len && num < max_num {
+        while cnt < queue_len && selected < max_num {
             cnt += 1;
             if let Some(waiter) = queue.pop_front() {
                 if let Some(task) = waiter.task.upgrade() {
                     // 需要检查：是不是确实相交不为0
 
                     if bitset & waiter.bitset != 0 {
-                        if wakeup_futex_task(task, waiter.futex_key) {
-                            num += 1;
-                        }
+                        wake_list.push((task, waiter.futex_key));
+                        selected += 1;
                     } else {
                         // 我还得给它还回去
                         // TODO: 这里也许可以做性能优化？
@@ -284,6 +302,18 @@ fn futex_wake_up_bitset(pa: usize, max_num: i32, bitset: u32) -> usize {
                 break;
             }
         }
+    }
+    drop(futex_queue);
+    let mut ready = Vec::new();
+    for (task, futex_key) in wake_list {
+        if mark_futex_task_ready(&task, futex_key) {
+            num += 1;
+            ready.push(task);
+        }
+    }
+    drop(_op_lock);
+    for task in ready {
+        ready_queue::add_task(&task);
     }
     // debug!("futex_wake_up_bitset: wake {} threads", num);
     num
@@ -610,24 +640,36 @@ pub fn handle_futex_when_exit(robust_list: &RobustListHead, memory_set: &MemoryS
 }
 
 pub fn handle_timer(task: Arc<TaskControlBlock>, futex_key: usize) {
+    let _op_lock = FUTEX_OP_LOCK.lock();
     bump_futex_queue_version();
-    let mut waitq = FUTEX_QUEUE_BITMAP.lock();
-    let inner = task.inner_lock();
-    if inner.futex_key != futex_key {
-        // do nothing
-        return;
-    }
-    let futex_pa = inner.futex_pa;
-    drop(inner);
-    // 从链表中取下这次Wait
-    let queue = waitq.get_mut(&futex_pa).expect("How could get_mut fail?");
+    let futex_pa = {
+        let inner = task.inner_lock();
+        if inner.futex_key != futex_key {
+            return;
+        }
+        inner.futex_pa
+    };
 
-    let idx = queue.iter().position(|x| x.futex_key == futex_key);
-    if let Some(idx) = idx {
-        queue.remove(idx);
+    // Remove the waiter without holding the queue lock while touching the TCB.
+    let removed = {
+        let mut waitq = FUTEX_QUEUE_BITMAP.lock();
+        let Some(queue) = waitq.get_mut(&futex_pa) else {
+            return;
+        };
+        if let Some(idx) = queue.iter().position(|x| x.futex_key == futex_key) {
+            queue.remove(idx).is_some()
+        } else {
+            false
+        }
+    };
+    if removed {
         // The timer wins only if this is still the same blocked generation.
-        // A concurrent normal wake must retain its successful result.
-        timeout_futex_task(task, futex_key);
+        // A concurrent normal wake is serialized by FUTEX_OP_LOCK.
+        let should_enqueue = mark_futex_task_timeout(&task, futex_key);
+        drop(_op_lock);
+        if should_enqueue {
+            ready_queue::add_task(&task);
+        }
     }
 }
 

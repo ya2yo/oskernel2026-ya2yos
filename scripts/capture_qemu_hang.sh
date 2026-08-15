@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Capture a hung LoongArch QEMU from the host when its guest gdbstub is dead.
+# Capture a hung QEMU from the host when its guest gdbstub is dead.
 set -euo pipefail
 
 usage() {
     cat <<'EOF'
 Usage: ./capture_qemu_hang.sh [--pid PID] [--gcore] [--resume] [--sudo]
 
-Freeze a running qemu-system-loongarch64 process with SIGSTOP, then save host
-thread stacks and the guest LoongArch CPU state in a directory below the
-current working directory.
+Freeze a running qemu-system-riscv64 or qemu-system-loongarch64 process with
+SIGSTOP, then save host thread stacks and guest CPU state in a directory below
+the current working directory. The architecture is detected from /proc/PID/exe.
 
 Options:
   --pid PID  Target QEMU PID. Required when more than one QEMU is running.
@@ -73,19 +73,18 @@ fi
 
 if [[ -z "$pid" ]]; then
     # Linux /proc/<pid>/comm is limited to 15 bytes, so pgrep -x cannot
-    # match qemu-system-loongarch64. Match the complete argv, then verify
-    # /proc/<pid>/exe below before sending SIGSTOP.
-    mapfile -t qemu_pids < <(pgrep -f '^qemu-system-loongarch64( |$)' || true)
+    # match either QEMU name. Match complete argv, then verify /proc/<pid>/exe.
+    mapfile -t qemu_pids < <(pgrep -f '^qemu-system-(riscv64|loongarch64)( |$)' || true)
     case ${#qemu_pids[@]} in
         0)
-            echo 'no qemu-system-loongarch64 process found' >&2
+            echo 'no qemu-system-riscv64 or qemu-system-loongarch64 process found' >&2
             exit 1
             ;;
         1)
             pid="${qemu_pids[0]}"
             ;;
         *)
-            echo 'multiple qemu-system-loongarch64 processes found; choose one with --pid:' >&2
+            echo 'multiple supported QEMU processes found; choose one with --pid:' >&2
             ps -o pid=,stat=,pcpu=,args= -p "${qemu_pids[@]}" >&2
             exit 2
             ;;
@@ -96,18 +95,23 @@ fi
 [[ -d "/proc/$pid" ]] || { echo "process $pid does not exist" >&2; exit 1; }
 
 qemu_bin=$(readlink -f "/proc/$pid/exe")
-if [[ ${qemu_bin##*/} != qemu-system-loongarch64 ]]; then
-    echo "PID $pid is not qemu-system-loongarch64: $qemu_bin" >&2
-    exit 1
-fi
+qemu_name=${qemu_bin##*/}
+case "$qemu_name" in
+    qemu-system-riscv64) qemu_arch=riscv64 ;;
+    qemu-system-loongarch64) qemu_arch=loongarch64 ;;
+    *)
+        echo "PID $pid is not a supported QEMU system binary: $qemu_bin" >&2
+        exit 1
+        ;;
+esac
 
 timestamp=$(date +%Y%m%d-%H%M%S)
 output_dir="$PWD/qemu-hang-$timestamp-pid$pid"
 mkdir -p "$output_dir"
 output_dir=$(readlink -f "$output_dir")
 
-printf 'pid=%s\nqemu_bin=%s\ncaptured_at=%s\n' \
-    "$pid" "$qemu_bin" "$(date -Is)" > "$output_dir/metadata.txt"
+printf 'pid=%s\nqemu_bin=%s\nqemu_arch=%s\ncaptured_at=%s\n' \
+    "$pid" "$qemu_bin" "$qemu_arch" "$(date -Is)" > "$output_dir/metadata.txt"
 ps -o pid,ppid,stat,pcpu,pmem,etime,args -p "$pid" > "$output_dir/process.txt"
 ps -L -o pid,tid,stat,pcpu,comm -p "$pid" > "$output_dir/threads-before-stop.txt"
 
@@ -135,6 +139,10 @@ info threads
 thread apply all bt 32
 printf "\n=== QEMU current_cpu ===\n"
 p/x current_cpu
+EOF
+
+if [[ "$qemu_arch" == loongarch64 ]]; then
+    cat >> "$gdb_commands" <<'EOF'
 if current_cpu != 0
   set $la = (struct ArchCPU *)current_cpu
 else
@@ -167,6 +175,40 @@ while $cpu != 0 && $cpu_count < 64
   set $cpu = $cpu->node.tqe_next
   set $cpu_count = $cpu_count + 1
 end
+EOF
+else
+    cat >> "$gdb_commands" <<'EOF'
+if current_cpu != 0
+  set $rv = (struct ArchCPU *)current_cpu
+else
+  printf "current_cpu is NULL in this host thread.\n"
+end
+printf "\n=== All QEMU RISC-V vCPU states ===\n"
+set $cpu = cpus_queue.tqh_first
+set $cpu_count = 0
+while $cpu != 0 && $cpu_count < 64
+  set $rv = (struct ArchCPU *)$cpu
+  printf "\n--- CPU index %d, CPUState=%p ---\n", $cpu->cpu_index, $cpu
+  printf "running=%d stopped=%d stop=%d halted=%u exception_index=%d interrupt_request=0x%x\n", $cpu->running, $cpu->stopped, $cpu->stop, $cpu->halted, $cpu->exception_index, $cpu->interrupt_request
+  p/x $rv->env.pc
+  p/x $rv->env.priv
+  p/x $rv->env.satp
+  p/x $rv->env.scause
+  p/x $rv->env.sepc
+  p/x $rv->env.stval
+  p/x $rv->env.mcause
+  p/x $rv->env.mepc
+  p/x $rv->env.mtval
+  p/x $rv->env.gpr[1]
+  p/x $rv->env.gpr[2]
+  p/x $rv->env.gpr[10]
+  set $cpu = $cpu->node.tqe_next
+  set $cpu_count = $cpu_count + 1
+end
+EOF
+fi
+
+cat >> "$gdb_commands" <<'EOF'
 printf "\ncollected %d CPUState entries\n", $cpu_count
 if $cpu_count == 64
   printf "warning: CPU list traversal reached its safety limit\n"
