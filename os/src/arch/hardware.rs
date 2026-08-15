@@ -13,6 +13,13 @@ const MAX_RAM_RANGES: usize = 8;
 pub const MAX_SUPPORTED_HARTS: usize = 16;
 const DEFAULT_TIMEBASE_HZ: usize = 10_000_000;
 const FDT_MAGIC: usize = 0xd00d_feed;
+// FDT structure block token values defined by the flattened device tree
+// format and shared with Linux/libfdt headers.
+const FDT_BEGIN_NODE: usize = 1;
+const FDT_END_NODE: usize = 2;
+const FDT_PROP: usize = 3;
+const FDT_NOP: usize = 4;
+const FDT_END: usize = 9;
 const EFI_SYSTEM_TABLE_SIGNATURE: usize = 0x5453_5953_2049_4249;
 const EFI_SYSTEM_TABLE_HEADER_SIZE: usize = 24;
 const EFI_SYSTEM_TABLE_CONFIGURATION_TABLE_COUNT_OFFSET: usize = 104;
@@ -164,7 +171,7 @@ pub fn init_from_fdt(fdt: usize) -> bool {
         let token = be32(cursor as *const u8);
         cursor += 4;
         match token {
-            1 => {
+            FDT_BEGIN_NODE => {
                 let start = cursor;
                 while cursor < end && unsafe { *(cursor as *const u8) } != 0 {
                     cursor += 1;
@@ -186,7 +193,7 @@ pub fn init_from_fdt(fdt: usize) -> bool {
                 }
                 cursor = align4(cursor + 1);
             }
-            2 => {
+            FDT_END_NODE => {
                 if depth == memory_depth {
                     memory_depth = 0;
                 }
@@ -195,7 +202,7 @@ pub fn init_from_fdt(fdt: usize) -> bool {
                 }
                 depth = depth.saturating_sub(1);
             }
-            3 => {
+            FDT_PROP => {
                 if cursor + 8 > end {
                     break;
                 }
@@ -244,8 +251,8 @@ pub fn init_from_fdt(fdt: usize) -> bool {
                 }
                 cursor = align4(value.saturating_add(len));
             }
-            4 => {}
-            9 => break,
+            FDT_NOP => {}
+            FDT_END => break,
             _ => break,
         }
     }
