@@ -3552,3 +3552,17 @@
   `2k1000.txt`。文档覆盖串口连接、`kernel-la.bin` 构建、TFTP 及 `loady/loadx` 备用传输、
   `go 0x9000000090000000` 启动、分级成功判据和无 SATA/网线时的边界。
 - **验证边界**：仅新增操作文档，未运行内核构建；执行 `git diff --check`。当前工作区未提交。
+
+#### Preliminary basic 脚本权限与 PT_INTERP 路径修复（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求定位 `log.ans` 最后未成功运行的原因并修复。
+- **描述**：核对日志、Makefile 默认镜像、ext4 inode mode 与 basic ELF program header，确认
+  preliminary `run-all.sh` 缺少执行位，且 ELF 的 `/lib`/`/lib64` PT_INTERP 路径未在 legacy
+  根文件系统物化；`exec` 层将后一个打开失败泛化记录为 OOM。保留内核执行权限和精确 PT_INTERP
+  路径语义，在 `initproc` 显式修正仅 basic wrapper 的脚本 mode，并在 legacy `initfiles` 中补齐
+  指向 `/glibc/lib` loader 的精确符号链接，避免影响拥有原生根目录的 final 镜像。
+- **验证边界**：RISC-V default preliminary `make run` 已完整执行 musl/glibc 两套各 32 项 basic 并
+  正常 `shutdown!`；RISC-V/LoongArch64 release 构建均通过。详见
+  [问题复盘](./problem/preliminary-basic-script-interpreter.md) 与 `ai.log` 对应条目。
+- **关联 commit**：当前工作区未提交

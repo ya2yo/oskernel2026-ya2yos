@@ -503,6 +503,55 @@ fn has_musl_busybox() -> bool {
     open("/musl/busybox", OpenFlags::O_RDONLY, 0).is_ok()
 }
 
+fn create_legacy_loader_alias(path: &str, target: &str) -> SysResult {
+    match open(path, OpenFlags::O_UNLINK, 0) {
+        Ok(_) => Ok(()),
+        Err(SysErrNo::ENOENT) => superblock_root_inode().sym_link(target, path).map(|_| ()),
+        Err(err) => Err(err),
+    }
+}
+
+/// Complete the legacy preliminary image's root-level PT_INTERP pathname.
+///
+/// Its executables name a normal Linux loader path (`/lib` or `/lib64`), but
+/// the image only stores that loader below `/glibc/lib`.  Materializing the
+/// missing pathname lets the ELF loader retain exact PT_INTERP/VFS semantics.
+/// A normal final root filesystem already supplies the directory and is left
+/// unchanged.
+fn create_legacy_test_loader_alias() -> SysResult {
+    if !has_musl_busybox() {
+        return Ok(());
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    {
+        match open("/lib", OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY, 0) {
+            Ok(_) => return Ok(()),
+            Err(SysErrNo::ENOENT) => create_dir("/lib")?,
+            Err(err) => return Err(err),
+        }
+        create_legacy_loader_alias(
+            "/lib/ld-linux-riscv64-lp64d.so.1",
+            "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
+        )?;
+    }
+
+    #[cfg(target_arch = "loongarch64")]
+    {
+        match open("/lib64", OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY, 0) {
+            Ok(_) => return Ok(()),
+            Err(SysErrNo::ENOENT) => create_dir("/lib64")?,
+            Err(err) => return Err(err),
+        }
+        create_legacy_loader_alias(
+            "/lib64/ld-linux-loongarch-lp64d.so.1",
+            "/glibc/lib/ld-linux-loongarch-lp64d.so.1",
+        )?;
+    }
+
+    Ok(())
+}
+
 fn bin_is_symlink() -> bool {
     // Preserve the final path component so Debian's `/bin -> /usr/bin` is not
     // mistaken for an ordinary directory into which compatibility wrappers can
@@ -542,6 +591,7 @@ pub fn create_init_files() -> SysResult {
     create_dev_files()?;
     create_etc_files()?;
     create_dir("/tmp")?;
+    create_legacy_test_loader_alias()?;
     create_bin_files()?;
 
     // 磁盘镜像中 glibc/lib 下已同时存在 libm.so 和 libm.so.6（两个独立文件），

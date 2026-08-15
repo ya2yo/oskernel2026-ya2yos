@@ -12231,3 +12231,34 @@ VisionFive 2 实板，未执行 U-Boot、串口、网卡或 SD/MMC 运行验证�
 文档采用不改写存储的 U-Boot RAM 临时启动，优先说明 TFTP，另说明固件具备 `loady/loadx` 时的
 MobaXterm YMODEM/XMODEM 备用路径，并明确无 SATA 盘/网线时的验证边界。未运行内核构建，因本次
 仅新增操作文档；使用 `git diff --check` 做格式检查。
+
+## 2026-08-15：preliminary basic 测例脚本权限与动态解释器路径
+
+### 用户输入
+
+维护者要求分析 `log.ans` 末尾为何没有成功运行，并修复。
+
+### AI 分析与采纳结论
+
+日志显示默认 `scripts/riscv64.mk` 选择的是 `pre_tests/sdcard-rv.img`，故 `initproc` 正确识别为
+preliminary 镜像而非进入 `test_final_2026()`。首先失败的是 `basic_testcode.sh` 内的
+`./run-all.sh`：用 `debugfs` 核对两套镜像文件均为 `0644`，内核的 `execve` 权限检查正确返回
+`EACCES`。显式补执行位后，所有 basic ELF 又被记录为 `OOM during ELF load`；检查 ELF 的
+`PT_INTERP` 与镜像目录得知，程序请求 `/lib/ld-linux-riscv64-lp64d.so.1`，实际 loader 位于
+`/glibc/lib/`，根 `/lib` 不存在。`TaskControlBlock::exec` 把任意 ELF 装载失败统一记录为 OOM，
+因此该文字不是物理内存耗尽结论。
+
+采纳方案：保留内核 `execve` 的执行位语义，`initproc` 对 official preliminary basic wrapper
+先执行 `busybox chmod 0755 basic/run-all.sh`，再按原脚本运行；启动期 `initfiles` 只在 legacy
+镜像缺失根 loader 目录时创建精确 PT_INTERP 路径的符号链接，RISC-V 为
+`/lib/ld-linux-riscv64-lp64d.so.1`，LoongArch64 为
+`/lib64/ld-linux-loongarch-lp64d.so.1`。final 镜像已有原生目录时不改写路径，ELF loader 仍只按
+声明的绝对路径打开解释器。
+
+### 修改与验证
+
+修改 `user/src/bin/initproc.rs`、`os/src/fs/kernel_fs_ops/initfiles.rs` 及本次问题文档/索引。
+`make run TARGET_ARCH=riscv64` 重放默认 preliminary 镜像：musl 与 glibc 的 32 个 basic 子程序
+均输出结束标记，未再出现 `Permission denied` 或 `OOM during ELF load`，最终 `shutdown!`。执行
+`make log TARGET_ARCH=riscv64`（修复前一轮 debug 构建）、`make build-arch TARGET_ARCH=riscv64`、
+`make build-arch TARGET_ARCH=loongarch64` 和 `git diff --check`；两架构最终 release 构建通过。

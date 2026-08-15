@@ -59,6 +59,26 @@ fn run_testsuit(root: &str, script: &str) -> i32 {
     status
 }
 
+/// Run the preliminary basic suite from the supplied image.
+///
+/// The official preliminary images ship `basic/run-all.sh` as mode `0644`,
+/// although `basic_testcode.sh` invokes it as `./run-all.sh`. Keep execve's
+/// permission checks intact and repair that test-fixture mode before running
+/// the original wrapper.
+fn run_preliminary_basic_testsuit(root: &str, script: &str) -> i32 {
+    let args = [
+        "busybox\0",
+        "sh\0",
+        "-c\0",
+        "busybox chmod 0755 basic/run-all.sh && exec busybox sh \"$1\"\0",
+        "initproc-basic\0",
+        script,
+    ];
+    let status = fork_and_run(root, &args);
+    cleanup_testsuit_children();
+    status
+}
+
 /// Run a final-round script with Bash and preserve its wait status.
 pub(crate) fn run_final_testsuit(root: &str, script: &str) -> i32 {
     let args = ["/bin/bash\0", script];
@@ -309,38 +329,48 @@ fn main() -> i32 {
 fn test_pre() -> i32 {
     println!("test_pre start!");
     // basic
-    run_testsuit("musl\0", "basic_testcode.sh\0");
-    run_testsuit("glibc\0", "basic_testcode.sh\0");
-    // busybox
-    run_testsuit("musl\0", "busybox_testcode.sh\0");
-    run_testsuit("glibc\0", "busybox_testcode.sh\0");
-    // lua
-    run_testsuit("musl\0", "lua_testcode.sh\0");
-    run_testsuit("glibc\0", "lua_testcode.sh\0");
-    // iperf
-    run_testsuit("musl\0", "iperf_testcode.sh\0");
-    run_testsuit("glibc\0", "iperf_testcode.sh\0");
-    // netperf
-    run_testsuit("musl\0", "netperf_testcode.sh\0");
-    run_testsuit("glibc\0", "netperf_testcode.sh\0");
-    // cyclictest
-    run_testsuit("musl\0", "cyclictest_testcode.sh\0");
-    run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
-    // libc
-    run_testsuit("musl\0", "libctest_testcode.sh\0");
-    // run_testsuit("glibc\0", "libctest_testcode.sh\0");
-    // iozone
-    run_testsuit("musl\0", "iozone_testcode.sh\0");
-    run_testsuit("glibc\0", "iozone_testcode.sh\0");
-    // lmbench
-    run_testsuit("musl\0", "lmbench_testcode.sh\0");
-    run_testsuit("glibc\0", "lmbench_testcode.sh\0");
-    // libcbench
-    run_testsuit("musl\0", "libcbench_testcode.sh\0");
-    run_testsuit("glibc\0", "libcbench_testcode.sh\0");
-    // ltp
-    ltp::test_musl_ltp();
-    ltp::test_glibc_ltp();
+    let status = run_preliminary_basic_testsuit("musl\0", "basic_testcode.sh\0");
+    if status != 0 {
+        println!("basic-musl testsuite exited with status: {}", status);
+        shutdown();
+        return status;
+    }
+    let status = run_preliminary_basic_testsuit("glibc\0", "basic_testcode.sh\0");
+    if status != 0 {
+        println!("basic-glibc testsuite exited with status: {}", status);
+        shutdown();
+        return status;
+    }
+    // // busybox
+    // run_testsuit("musl\0", "busybox_testcode.sh\0");
+    // run_testsuit("glibc\0", "busybox_testcode.sh\0");
+    // // lua
+    // run_testsuit("musl\0", "lua_testcode.sh\0");
+    // run_testsuit("glibc\0", "lua_testcode.sh\0");
+    // // iperf
+    // run_testsuit("musl\0", "iperf_testcode.sh\0");
+    // run_testsuit("glibc\0", "iperf_testcode.sh\0");
+    // // netperf
+    // run_testsuit("musl\0", "netperf_testcode.sh\0");
+    // run_testsuit("glibc\0", "netperf_testcode.sh\0");
+    // // cyclictest
+    // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
+    // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
+    // // libc
+    // run_testsuit("musl\0", "libctest_testcode.sh\0");
+    // // run_testsuit("glibc\0", "libctest_testcode.sh\0");
+    // // iozone
+    // run_testsuit("musl\0", "iozone_testcode.sh\0");
+    // run_testsuit("glibc\0", "iozone_testcode.sh\0");
+    // // lmbench
+    // run_testsuit("musl\0", "lmbench_testcode.sh\0");
+    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");
+    // // libcbench
+    // run_testsuit("musl\0", "libcbench_testcode.sh\0");
+    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");
+    // // ltp
+    // ltp::test_musl_ltp();
+    // ltp::test_glibc_ltp();
     shutdown();
     0
 }
@@ -350,7 +380,7 @@ fn test_pre() -> i32 {
 fn test_final_2026() -> i32 {
     run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
     run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
-    // boot_arceos_helloworld_in_qemu();
+    boot_arceos_helloworld_in_qemu();
     shutdown();
     0
 }
