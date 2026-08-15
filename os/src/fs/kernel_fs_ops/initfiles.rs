@@ -503,6 +503,12 @@ fn has_musl_busybox() -> bool {
     open("/musl/busybox", OpenFlags::O_RDONLY, 0).is_ok()
 }
 
+fn has_legacy_preliminary_image() -> bool {
+    has_musl_busybox()
+        && open("/work/tgoskits", OpenFlags::O_RDONLY, 0).is_err()
+        && open("/glibc/cagent_testcode.sh", OpenFlags::O_RDONLY, 0).is_err()
+}
+
 fn create_legacy_loader_alias(path: &str, target: &str) -> SysResult {
     match open(path, OpenFlags::O_UNLINK, 0) {
         Ok(_) => Ok(()),
@@ -519,34 +525,53 @@ fn create_legacy_loader_alias(path: &str, target: &str) -> SysResult {
 /// A normal final root filesystem already supplies the directory and is left
 /// unchanged.
 fn create_legacy_test_loader_alias() -> SysResult {
-    if !has_musl_busybox() {
+    if !has_legacy_preliminary_image() {
         return Ok(());
     }
 
     #[cfg(target_arch = "riscv64")]
     {
         match open("/lib", OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY, 0) {
-            Ok(_) => return Ok(()),
+            Ok(_) => {}
             Err(SysErrNo::ENOENT) => create_dir("/lib")?,
             Err(err) => return Err(err),
         }
-        create_legacy_loader_alias(
-            "/lib/ld-linux-riscv64-lp64d.so.1",
-            "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
-        )?;
+        for (path, target) in [
+            (
+                "/lib/ld-linux-riscv64-lp64d.so.1",
+                "/glibc/lib/ld-linux-riscv64-lp64d.so.1",
+            ),
+            ("/lib/ld-musl-riscv64-sf.so.1", "/musl/lib/libc.so"),
+            ("/lib/ld-musl-riscv64.so.1", "/musl/lib/libc.so"),
+            ("/lib/libc.so", "/glibc/lib/libc.so"),
+            ("/lib/libc.so.6", "/glibc/lib/libc.so.6"),
+            ("/lib/libm.so", "/glibc/lib/libm.so"),
+            ("/lib/libm.so.6", "/glibc/lib/libm.so.6"),
+        ] {
+            create_legacy_loader_alias(path, target)?;
+        }
     }
 
     #[cfg(target_arch = "loongarch64")]
     {
         match open("/lib64", OpenFlags::O_RDONLY | OpenFlags::O_DIRECTORY, 0) {
-            Ok(_) => return Ok(()),
+            Ok(_) => {}
             Err(SysErrNo::ENOENT) => create_dir("/lib64")?,
             Err(err) => return Err(err),
         }
-        create_legacy_loader_alias(
-            "/lib64/ld-linux-loongarch-lp64d.so.1",
-            "/glibc/lib/ld-linux-loongarch-lp64d.so.1",
-        )?;
+        for (path, target) in [
+            (
+                "/lib64/ld-linux-loongarch-lp64d.so.1",
+                "/glibc/lib/ld-linux-loongarch-lp64d.so.1",
+            ),
+            ("/lib64/ld-musl-loongarch-lp64d.so.1", "/musl/lib/libc.so"),
+            ("/lib64/libc.so", "/glibc/lib/libc.so"),
+            ("/lib64/libc.so.6", "/glibc/lib/libc.so.6"),
+            ("/lib64/libm.so", "/glibc/lib/libm.so"),
+            ("/lib64/libm.so.6", "/glibc/lib/libm.so.6"),
+        ] {
+            create_legacy_loader_alias(path, target)?;
+        }
     }
 
     Ok(())

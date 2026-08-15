@@ -69,3 +69,45 @@ LoongArch64 preliminary 镜像同样将 loader 存在 `/glibc/lib/`，其 ELF �
 - `make build-arch TARGET_ARCH=loongarch64`：通过。
 - 未运行 LoongArch64 QEMU preliminary 全路径，故该架构的 loader 别名目前仅通过构建与镜像 ELF/目录
   检查验证。
+
+## 后续：netperf 动态库路径
+
+### 现象
+
+同一 preliminary 镜像切换到 `netperf_testcode.sh` 后，musl 组的 `netperf` 与 `netserver` 都显示
+`exec: OOM during ELF load` / `Out of memory`；glibc 组可以进入动态加载器，但所有项目均显示：
+
+```text
+error while loading shared libraries: libm.so.6: cannot open shared object file
+```
+
+### 分析与根因
+
+镜像内 `/musl/netperf` 的 `PT_INTERP` 是 `/lib/ld-musl-riscv64-sf.so.1`，并需要 `libc.so`；
+`/glibc/netperf` 的 `PT_INTERP` 是 `/lib/ld-linux-riscv64-lp64d.so.1`，其 `DT_NEEDED` 包含
+`libm.so.6` 与 `libc.so.6`。但实际镜像将上述文件分别放在 `/musl/lib/` 和 `/glibc/lib/`，根目录
+没有完整的 `/lib` 标准路径。
+
+此前只补齐了 glibc loader，因此 musl 在打开 `PT_INTERP` 时仍失败，而 glibc loader 启动后找不到
+`libm.so.6`。`TaskControlBlock::exec()` 当前仍把这类 ELF 装载错误统一映射为 `ENOMEM`，故日志中的
+OOM 不是物理内存不足。
+
+### 后续修复
+
+`create_legacy_test_loader_alias()` 现仅对同时满足 legacy musl 标记、且不含 final 镜像标记的根文件
+系统生效。它即使 `/lib` 或 `/lib64` 已存在，也逐项确保缺失的别名存在：
+
+- RISC-V：补齐 glibc/musl loader、`libc.so`、`libc.so.6`、`libm.so`、`libm.so.6` 到实际
+  `/glibc/lib/` 或 `/musl/lib/` 文件的符号链接。
+- LoongArch64：以 `/lib64` 的对应 ABI 路径补齐同类 loader 与库别名。
+
+此修复不改变 `MemorySetInner::load_dl_interp_if_needed()` 的精确 `PT_INTERP` 打开语义，也不恢复
+按 basename 搜索动态库的兼容逻辑；它只让固定旧镜像提供其 ELF 已声明的绝对文件名。
+
+### 后续验证
+
+- `make run TARGET_ARCH=riscv64`：musl 与 glibc 的 `UDP_STREAM`、`TCP_STREAM`、`UDP_RR`、
+  `TCP_RR`、`TCP_CRR` 各五项均输出 `end: success`，两组均到达结束标记与 `shutdown!`；未出现
+  `OOM during ELF load`、`Out of memory` 或共享库缺失错误。
+- `make build-arch TARGET_ARCH=loongarch64`：通过。
+- 未运行 LoongArch64 QEMU 的 netperf 全路径，因此该架构的运行期别名行为仍待设备/QEMU 环境复测。

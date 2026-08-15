@@ -12262,3 +12262,30 @@ preliminary 镜像而非进入 `test_final_2026()`。首先失败的是 `basic_t
 均输出结束标记，未再出现 `Permission denied` 或 `OOM during ELF load`，最终 `shutdown!`。执行
 `make log TARGET_ARCH=riscv64`（修复前一轮 debug 构建）、`make build-arch TARGET_ARCH=riscv64`、
 `make build-arch TARGET_ARCH=loongarch64` 和 `git diff --check`；两架构最终 release 构建通过。
+
+## 2026-08-15：preliminary netperf 动态加载器与库路径
+
+### 用户输入
+
+维护者提供新的 `log.ans`，要求继续分析并修复 preliminary 镜像的 netperf 失败：musl 显示
+`OOM during ELF load`，glibc 显示缺少 `libm.so.6`。
+
+### AI 分析与采纳结论
+
+检查 netperf ELF 的 `PT_INTERP`、`DT_NEEDED` 和镜像目录后，确认 musl 程序请求
+`/lib/ld-musl-riscv64-sf.so.1`，glibc 程序除 `/lib/ld-linux-riscv64-lp64d.so.1` 外还需
+`libm.so.6`、`libc.so.6`；真实文件却在 `/musl/lib/`、`/glibc/lib/`。此前补齐单一 glibc loader
+不足以覆盖这两个 ABI 依赖，且 `exec` 将解释器打开失败泛化输出为 OOM。
+
+采纳方案：不修改 ELF loader 的精确路径语义，也不恢复 basename fallback。仅在启动期识别出的
+legacy preliminary 根文件系统中，逐项创建标准 `/lib`（RISC-V）或 `/lib64`（LoongArch64）路径的
+loader、`libc` 和 `libm` 别名；即使目录已由旧启动创建，也继续补齐尚缺的条目，并排除含 final
+镜像标记的文件系统。
+
+### 修改与验证
+
+修改 `os/src/fs/kernel_fs_ops/initfiles.rs` 与既有 preliminary 问题复盘、开发日志、AI 记录。
+`make run TARGET_ARCH=riscv64` 完整执行 musl/glibc 两组 netperf，各组的 `UDP_STREAM`、
+`TCP_STREAM`、`UDP_RR`、`TCP_RR`、`TCP_CRR` 都输出 `end: success`，随后输出组结束标记和
+`shutdown!`；没有 OOM 或共享库缺失。`make build-arch TARGET_ARCH=loongarch64` 通过。
+未运行 LoongArch64 QEMU netperf 全路径。

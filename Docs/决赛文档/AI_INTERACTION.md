@@ -3566,3 +3566,18 @@
   正常 `shutdown!`；RISC-V/LoongArch64 release 构建均通过。详见
   [问题复盘](./problem/preliminary-basic-script-interpreter.md) 与 `ai.log` 对应条目。
 - **关联 commit**：当前工作区未提交
+
+#### Preliminary netperf 动态加载器与库路径修复（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供新的 `log.ans`，要求继续修复 preliminary netperf 的 musl ELF 装载失败与
+  glibc `libm.so.6` 缺失。
+- **描述**：检查 ELF `PT_INTERP`、`DT_NEEDED` 与镜像布局，确认旧镜像只在 `/musl/lib`、
+  `/glibc/lib` 保存 loader 和运行库，未物化程序声明的 `/lib`/`/lib64` 路径。启动期逻辑现仅在
+  legacy preliminary 镜像中逐项创建 loader、`libc` 与 `libm` 别名，并排除 final 镜像；没有改变
+  ELF loader 的精确绝对路径语义或引入 basename fallback。
+- **验证边界**：`make run TARGET_ARCH=riscv64` 已完整通过 musl/glibc 两组各五项 UDP/TCP netperf，
+  两组均结束并 `shutdown!`，无 OOM 或共享库缺失。`make build-arch TARGET_ARCH=loongarch64` 通过；
+  尚未运行 LoongArch64 QEMU netperf。
+- **关联问题**：[Preliminary basic 脚本权限与动态解释器路径](./problem/preliminary-basic-script-interpreter.md)
+- **关联 commit**：当前工作区未提交
