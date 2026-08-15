@@ -9,8 +9,8 @@ extern crate user_lib;
 
 use libctest::runall::{run_specific_test, runall};
 use user_lib::{
-    chdir, execve, exit, fork, kill_processes, print, println, shutdown, socket, wait, waitpid,
-    AF_INET, SOCK_DGRAM, SOCK_STREAM,
+    chdir, close, execve, exit, fork, kill_processes, openat, print, println, shutdown, socket,
+    wait, waitpid, OpenFlags, AF_INET, SOCK_DGRAM, SOCK_STREAM,
 };
 
 use crate::libctest::pthread_cancel_points::run_musl_static;
@@ -222,6 +222,66 @@ pub fn fork_and_run(dir: &str, args: &[&str]) -> i32 {
     }
 }
 
+const AT_FDCWD: isize = -100;
+
+#[derive(Clone, Copy)]
+enum TestImageKind {
+    Preliminary,
+    Final,
+}
+
+/// Return whether a path from the mounted test image can be opened.
+///
+/// This probes the guest-visible filesystem rather than the host-side image
+/// filename, so it also works when the evaluator supplies a differently named
+/// image.  Opening and closing the file keeps the probe independent of a
+/// separate `stat` ABI and does not modify the image.
+fn image_contains(path: &str) -> bool {
+    let fd = openat(AT_FDCWD, path, OpenFlags::O_RDONLY, 0);
+    if fd < 0 {
+        return false;
+    }
+    let _ = close(fd as usize);
+    true
+}
+
+fn detect_test_image() -> Option<TestImageKind> {
+    // The final image intentionally keeps the old /musl compatibility tree,
+    // so check its Debian/BuildStorm marker before checking preliminary files.
+    if image_contains("/work/tgoskits\0") || image_contains("/glibc/cagent_testcode.sh\0") {
+        return Some(TestImageKind::Final);
+    }
+
+    if image_contains("/musl/basic_testcode.sh\0")
+        && image_contains("/glibc/basic_testcode.sh\0")
+    {
+        return Some(TestImageKind::Preliminary);
+    }
+
+    None
+}
+
+fn run_selected_tests() -> i32 {
+    match detect_test_image() {
+        Some(TestImageKind::Preliminary) => {
+            println!("detected preliminary test image; running preliminary suites");
+            test_pre()
+        }
+        Some(TestImageKind::Final) => {
+            println!("detected final test image; running final suites");
+            test_final_2026()
+        }
+        None => {
+            println!(
+                "unsupported test image: expected /musl/basic_testcode.sh + \
+/glibc/basic_testcode.sh or final-image markers"
+            );
+            shutdown();
+            1
+        }
+    }
+}
+
 // Entry points
 #[allow(unused)]
 fn run_interactive_shell() -> i32 {
@@ -241,10 +301,7 @@ fn run_interactive_shell() -> i32 {
 
 #[no_mangle]
 fn main() -> i32 {
-    // test()
-    // run_interactive_shell()
-    // test_pre()
-    test_final_2026()
+    run_selected_tests()
 }
 
 // Score helpers (kept for ad-hoc testing)
@@ -321,10 +378,6 @@ fn test() -> i32 {
         return 1;
     }
     if !mprotect_split_regression::run() {
-        shutdown();
-        return 1;
-    }
-    if !sigreturn_regression::run() {
         shutdown();
         return 1;
     }

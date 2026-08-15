@@ -3535,3 +3535,11 @@
   U-Boot/串口/网络/SD/MMC 尚未验证。详见
   [RISC-V 平台构建入口统一](./problem/riscv-platform-build-unification.md)。
 - **关联 commit**：当前工作区未提交
+
+#### initproc 按镜像内容自动选择初赛/决赛测例（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求根据实际测试镜像内容自动选择 `initproc` 的初赛或决赛脚本，取消源码中的手动切换。
+- **描述**：检查 `user/src/bin/initproc.rs`、用户态 `openat` API、Makefile 镜像配置及初赛/决赛镜像目录后，确认决赛镜像仍可能保留 `/musl` 兼容树，不能只按目录存在性判断。新增只读路径探测：优先识别 `/work/tgoskits` 或 `/glibc/cagent_testcode.sh` 的决赛特征，再识别 `/musl/basic_testcode.sh` 与 `/glibc/basic_testcode.sh` 的初赛特征；未知镜像打印错误、关机并返回 1。
+- **验证边界**：`make build-arch TARGET_ARCH=riscv64`、`git diff --check` 通过。使用初赛镜像的 `make run` 冒烟因宿主 `/var/tmp` 只读无法启动 QEMU，未宣称运行期测例选择已回归。
+- **关联 commit**：当前工作区未提交

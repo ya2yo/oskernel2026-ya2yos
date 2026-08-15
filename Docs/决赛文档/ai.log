@@ -12214,3 +12214,11 @@ U-Boot 启动提示而不错误执行 QEMU `virt`。
 `scripts/visionfive2.mk`，并新增构建入口复盘。依次执行 VisionFive 2、RISC-V QEMU、
 LoongArch64 QEMU 与 2K1000 release 构建，以及 ELF 入口和 `git diff --check` 检查。没有
 VisionFive 2 实板，未执行 U-Boot、串口、网卡或 SD/MMC 运行验证。
+
+## 2026-08-15：initproc 按镜像内容自动选择测例
+
+用户要求解决初赛/决赛测试镜像结构不一致导致 `user/src/bin/initproc.rs` 需要手动切换入口的问题。AI 检查 `initproc` 启动路径、`openat` 用户 API、Makefile 镜像配置和两类镜像目录特征，确认用户态应读取挂载后的文件树而不是宿主 `DISK_IMG` 文件名；初赛稳定包含 `/musl/basic_testcode.sh` 与 `/glibc/basic_testcode.sh`，决赛保留 `/musl` 兼容树但包含 `/work/tgoskits` 或 `/glibc/cagent_testcode.sh`。
+
+采纳方案：在 `initproc` 增加只读 `openat` 探测和镜像类型枚举，决赛特征优先匹配，随后匹配初赛双脚本；未识别镜像打印错误并关机返回 1。`main` 改为调用统一选择入口，保留现有初赛/决赛脚本实现。
+
+修改文件：`user/src/bin/initproc.rs`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。验证：`make build-arch TARGET_ARCH=riscv64` 与 `git diff --check` 通过；初赛镜像 `make run` 冒烟受宿主 `/var/tmp` 只读阻断，未报告运行期探测通过。
