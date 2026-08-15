@@ -29,7 +29,6 @@ qemu-*
 
 *.dtb
 *.dts
-*.txt
 !crates/lwext4_rust/**/CMakeLists.txt
 !os/vendor/**
 *.ans
