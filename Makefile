@@ -94,7 +94,7 @@ doc: set_env_arch
 
 # 注意，make run会创建一个临时软链接
 run:
-	@$(MAKE) build-arch TARGET_ARCH=$(TARGET_ARCH) PLATFORM=$(PLATFORM)
+# 	@$(MAKE) build-arch TARGET_ARCH=$(TARGET_ARCH) PLATFORM=$(PLATFORM)
 ifeq ($(PLATFORM),2k1000)
 	@echo "2K1000 is a physical-board target; QEMU virt cannot validate its AHCI path."
 	@echo "At the U-Boot prompt run:"
