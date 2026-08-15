@@ -12191,3 +12191,26 @@ MDIO PHY 探测、MAC 地址、RGMII 链路刷新、16 项正常描述符 RX/TX 
 空容器，保持 QEMU VirtIO 路径不变。补充 Linux 源码分析文档、开发日志、问题复盘和索引。
 `make build-arch TARGET_ARCH=loongarch64 PLATFORM=2k1000`、此前的普通 LoongArch64 与 RISC-V64
 release 构建和 `git diff --check` 通过；无实板，未验证 DMA reset、PHY、ARP、DHCP 或 TCP/UDP。
+
+## 2026-08-15：RISC-V 平台构建入口统一
+
+### 用户输入
+
+维护者要求将 VisionFive 2 迁移为
+`TARGET_ARCH=riscv64 PLATFORM=visionfive2`，统一板级平台选择方式。
+
+### AI 分析与采纳结论
+
+审计根 Makefile、RISC-V 和 LoongArch64 平台脚本后，确认 VisionFive 2 原先被错误建模为第三种
+`TARGET_ARCH`，其独立脚本重复了 RISC-V target、工具链与产物变量。参照已落地的
+`TARGET_ARCH=loongarch64 PLATFORM=2k1000` 模式，将平台选择收敛到 `scripts/riscv64.mk`：
+默认 QEMU 保持 `kernel-rv` 与 VirtIO QEMU 命令，VisionFive 2 选择 2 GiB、4 核、`kernel-vf2`
+和 `visionfive2` Cargo feature。根 Makefile 仅保留真实 CPU 架构分支，`run` 对实板输出
+U-Boot 启动提示而不错误执行 QEMU `virt`。
+
+### 修改与验证
+
+修改 `Makefile`、`scripts/riscv64.mk`、VisionFive 2 当前文档和索引，删除
+`scripts/visionfive2.mk`，并新增构建入口复盘。依次执行 VisionFive 2、RISC-V QEMU、
+LoongArch64 QEMU 与 2K1000 release 构建，以及 ELF 入口和 `git diff --check` 检查。没有
+VisionFive 2 实板，未执行 U-Boot、串口、网卡或 SD/MMC 运行验证。

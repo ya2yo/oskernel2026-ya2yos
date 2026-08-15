@@ -15,10 +15,8 @@ ifeq ($(TARGET_ARCH), riscv64)
 	include scripts/riscv64.mk
 else ifeq ($(TARGET_ARCH), loongarch64)
 	include scripts/loongarch64.mk
-else ifeq ($(TARGET_ARCH), visionfive2)
-	include scripts/visionfive2.mk
 else
-	$(error Unsupported TARGET_ARCH: $(TARGET_ARCH))
+$(error Unsupported TARGET_ARCH: $(TARGET_ARCH))
 endif
 
 include scripts/user.mk
@@ -55,9 +53,6 @@ ifeq ($(TARGET_ARCH), riscv64)
 	$(eval include scripts/user.mk)
 else ifeq ($(TARGET_ARCH), loongarch64)
 	$(eval include scripts/loongarch64.mk)
-	$(eval include scripts/user.mk)
-else ifeq ($(TARGET_ARCH), visionfive2)
-	$(eval include scripts/visionfive2.mk)
 	$(eval include scripts/user.mk)
 else
 	$(error Unsupported TARGET_ARCH: $(TARGET_ARCH))
@@ -105,6 +100,10 @@ ifeq ($(PLATFORM),2k1000)
 	@echo "At the U-Boot prompt run:"
 	@echo "  tftpboot $(KERNEL_LOAD_ADDR) $(KERNEL_RAW_BIN)"
 	@echo "  go $(KERNEL_ENTRY_ADDR)"
+else ifeq ($(PLATFORM),visionfive2)
+	@echo "VisionFive 2 is a physical-board target; QEMU virt cannot validate its board path."
+	@echo "Package $(KERNEL_BIN) as a U-Boot legacy image, then boot it with the board FDT."
+	@echo "See Docs/vf2.txt for the required mkimage, ext4load, and bootm commands."
 else
 	@rm -f disk.img
 	@ln -s $(DISK_IMG) ./disk.img

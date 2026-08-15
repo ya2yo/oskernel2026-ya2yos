@@ -2,7 +2,7 @@ Ya2yOS 在 StarFive VisionFive 2 实板启动指南
 ===============================================
 
 版本：2026-08-15
-适用源码快照：Ya2yOS 当前工作树，使用 TARGET_ARCH=visionfive2 构建。
+适用源码快照：Ya2yOS 当前工作树，使用 `TARGET_ARCH=riscv64 PLATFORM=visionfive2` 构建。
 读者：使用 Windows 和 MobaXterm 操作一块已能启动官方 Linux/OpenSBI/U-Boot 的 VisionFive 2 的开发者。
 
 本文的目标和边界
@@ -79,7 +79,7 @@ MobaXterm 的职责是串口终端、SSH 终端和 SFTP 文件传输。它不是
 
 以下命令在仓库根目录的 Linux 构建机执行：
 
-   make build-arch TARGET_ARCH=visionfive2
+   make build-arch TARGET_ARCH=riscv64 PLATFORM=visionfive2
    readelf -h os/target/riscv64gc-unknown-none-elf/release/os
    sha256sum kernel-vf2
 

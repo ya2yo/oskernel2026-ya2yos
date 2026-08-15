@@ -24,7 +24,8 @@ RocketOS 中的 GMAC/SDIO 实现还依赖独立的 JH7110 时钟、PHY、DMA 和
 
 ## 修复
 
-- 新增 `visionfive2` Cargo feature、`scripts/visionfive2.mk` 和板级 Cargo 配置。
+- 新增 `visionfive2` Cargo feature 和板级 Cargo 配置；通过
+  `TARGET_ARCH=riscv64 PLATFORM=visionfive2` 选择 RISC-V VisionFive 2 平台。
 - 新增 `visionfive2.ld`，把内核链接到 `0xffffffc040200000`。
 - 新增 `entry_visionfive2.asm`，建立 `0x40000000` 恒等映射与
   `0xffffffc040000000` 高地址映射，并保留 `sigreturn_trampoline`。
@@ -34,7 +35,7 @@ RocketOS 中的 GMAC/SDIO 实现还依赖独立的 JH7110 时钟、PHY、DMA 和
 
 ## 验证
 
-- `make TARGET_ARCH=visionfive2 build-arch`：通过，用户态和内核均完成构建并生成 `kernel-vf2`。
+- `make build-arch TARGET_ARCH=riscv64 PLATFORM=visionfive2`：通过，用户态和内核均完成构建并生成 `kernel-vf2`。
 - `rust-objdump -h os/target/riscv64gc-unknown-none-elf/release/os`：`.text` 起始为
   `0xffffffc040200000`。
 - 默认 RISC-V 构建回归已发起；未在本记录中宣称 QEMU 运行或 LTP/BuildStorm 通过。

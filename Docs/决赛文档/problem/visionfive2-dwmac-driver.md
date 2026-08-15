@@ -46,9 +46,8 @@ MDIO/DMA reset 等待和协议栈调用点轮询。
 
 - `cargo fmt --manifest-path os/Cargo.toml -- --check`：通过。
 - `git diff --check`：通过。
-- `make TARGET_ARCH=visionfive2`：通过；根 Makefile 默认同时完成 RISC-V64 与
-  LoongArch64 release 构建。RISC-V 内核特性为 `warn,scheduler-cfs,visionfive2`，并成功
-  生成板级镜像。
+- `make build-arch TARGET_ARCH=riscv64 PLATFORM=visionfive2`：通过；RISC-V 内核特性为
+  `warn,scheduler-cfs,visionfive2`，并成功生成板级镜像。
 
 当前环境没有 VisionFive 2 实板，也没有可模拟 JH7110 GMAC 的 QEMU machine，因此没有宣称
 链路协商、DHCP、ARP、TCP/UDP 或 IRQ 路径的运行通过。实板应先通过串口检查

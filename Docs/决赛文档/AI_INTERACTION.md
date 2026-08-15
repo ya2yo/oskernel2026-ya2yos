@@ -3522,3 +3522,16 @@
   链路、ARP、DHCP、TCP/UDP，也未接入 GMAC1、LIOINTC IRQ/NAPI。
 - **关联问题**：[Loongson 2K1000 板级启动、AHCI 与 GMAC0 驱动](./problem/loongson-2k1000-board-ahci.md)
 - **关联 commit**：当前工作区未提交
+
+#### RISC-V 平台构建入口统一（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求将 VisionFive 2 收敛为 RISC-V 的 `PLATFORM` 选择。
+- **描述**：将原本伪装为 `TARGET_ARCH=visionfive2` 的独立脚本合并进
+  `scripts/riscv64.mk`。`PLATFORM=visionfive2` 注入已有 Cargo feature 并选择板级内存、核数
+  与 `kernel-vf2`；`PLATFORM=qemu` 保持原有 QEMU 配置。根 Makefile 仅按真实 CPU 架构分发，
+  而 VisionFive 2 `run` 明确提示使用 U-Boot 实板流程。
+- **验证边界**：依次构建 VisionFive 2、RISC-V QEMU、LoongArch64 QEMU 和 2K1000；实板
+  U-Boot/串口/网络/SD/MMC 尚未验证。详见
+  [RISC-V 平台构建入口统一](./problem/riscv-platform-build-unification.md)。
+- **关联 commit**：当前工作区未提交
