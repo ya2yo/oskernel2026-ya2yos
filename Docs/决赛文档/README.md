@@ -12,6 +12,7 @@
 - [pipe SIGPIPE 与 FIONREAD 语义修复](./problem/pipe-sigpipe-fionread.md)
 - [RISC-V Alpine initfiles 与动态链接路径兼容](./problem/riscv-alpine-initfiles-dynamic-link.md)
 - [动态链接路径去硬编码与 Linux ELF/VFS 边界](./problem/dynamic-link-linux-vfs-boundary.md)
+- [preliminary LoongArch iozone-glibc 共享库搜索路径](./problem/preliminary-loongarch-iozone-glibc-library-path.md)
 - [iperf: 5001 端口复用与 glibc TCGETS 栈破坏](./problem/iperf-port-reuse-termios-stack-smash.md)
 - [cyclictest STRESS_P1: socketpair fd 分配覆盖导致 hackbench ready Broken pipe](./problem/cyclictest-socketpair-fd-allocation.md)
 - [libctest: sigtimedwait 后 wait4 误返回 EINTR](./problem/libctest-sigtimedwait-eintr.md)

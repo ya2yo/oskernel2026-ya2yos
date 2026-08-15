@@ -12372,3 +12372,32 @@ debug 内核复测时，debug 热路径输出导致 `pthread_cond_smasher` 在 5
 QEMU 创建运行时临时文件后可正常进入内核并完成 busybox、lua，随后在前序
 `iperf REVERSE_TCP` 无新输出，尚未到达 LTP；已终止该专属 QEMU 进程组。没有将
 `getpriority02` 标记为运行通过。
+
+## 2026-08-15：preliminary LoongArch iozone-glibc libc 搜索路径
+
+### 用户需求
+
+维护者报告 `iozone-glibc` automatic measurements 在启动时输出
+`libc.so.6: cannot open shared object file`，要求修复。
+
+### AI 分析与采纳结论
+
+检查 iozone 入口、legacy preliminary 镜像的 initfiles 兼容层和动态 ELF loader
+后，确认内核已正确遵循 Linux 的 `PT_INTERP` 精确路径语义；问题不应通过重新引入
+内核路径重写或全局 `LD_LIBRARY_PATH` 解决。LoongArch legacy glibc loader 的默认
+搜索目录为 `/usr/lib64`，而已有启动期别名只覆盖 `/lib64`，故 loader 能执行却在
+打开 `/usr/lib64/libc.so.6` 时失败。
+
+采纳在 legacy LoongArch preliminary 镜像中创建 `/usr/lib64` 的 libc/libm 兼容
+别名。路径仅在缺失时创建，实际库仍为镜像的 `/glibc/lib` 文件，避免污染最终
+rootfs 或混用 musl/glibc 库。
+
+### 修改与验证
+
+修改 `os/src/fs/kernel_fs_ops/initfiles.rs`，新增问题复盘、索引和开发日志。执行
+`make`，根 Makefile 完成 RISC-V64 与 LoongArch64 release 构建，均通过；
+`git diff --check` 通过，只有既有 Cargo config/vendored `smoltcp` warning。
+
+两次 LoongArch QEMU 完整入口均未形成目标测例结果：180 秒运行仅完成
+`iozone-musl` 的前七项；300 秒运行未推进至目标且 `timeout` 未回收 QEMU，已手动
+终止专属进程。未将 `iozone-glibc` 标记为运行通过。

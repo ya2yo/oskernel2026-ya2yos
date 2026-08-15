@@ -3622,3 +3622,17 @@
   QEMU 进程组，未将目标测例标为通过。详见
   [问题复盘](./problem/getpriority-selector-semantics.md) 与 `ai.log` 对应条目。
 - **关联 commit**：当前工作区未提交
+
+#### preliminary LoongArch iozone-glibc libc 搜索路径修复（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者报告 iozone-glibc 启动时 glibc loader 找不到 `libc.so.6`。
+- **描述**：审计 legacy preliminary 镜像的启动期兼容路径后，确认 LoongArch glibc loader
+  默认查询 `/usr/lib64`，已有 `/lib64` 别名不足。仅为 legacy 镜像创建
+  `/usr/lib64/{libc,libm}` 指向 `/glibc/lib` 的缺失别名，保留严格 `PT_INTERP`/VFS
+  语义，避免以全局 `LD_LIBRARY_PATH` 混用 musl 与 glibc。
+- **验证边界**：RISC-V64/LoongArch64 release 构建与 `git diff --check` 通过。两次
+  LoongArch 完整 QEMU 均未抵达 iozone-glibc：180 秒仅完成 iozone-musl 前七项，300 秒
+  运行停滞且超时未回收 QEMU，已手动终止；未将目标测例标记为通过。详见
+  [问题复盘](./problem/preliminary-loongarch-iozone-glibc-library-path.md) 与 `ai.log` 对应条目。
+- **关联 commit**：当前工作区未提交

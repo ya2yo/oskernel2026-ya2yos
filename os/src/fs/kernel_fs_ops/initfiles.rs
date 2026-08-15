@@ -572,6 +572,21 @@ fn create_legacy_test_loader_alias() -> SysResult {
         ] {
             create_legacy_loader_alias(path, target)?;
         }
+
+        // The legacy LoongArch glibc loader searches /usr/lib64 by default.
+        // Keep that lookup inside the image's /glibc tree instead of relying
+        // on an inherited LD_LIBRARY_PATH (which is not part of Linux exec
+        // semantics and may mix musl/glibc libraries).
+        create_dir("/usr")?;
+        create_dir("/usr/lib64")?;
+        for (path, target) in [
+            ("/usr/lib64/libc.so", "/glibc/lib/libc.so"),
+            ("/usr/lib64/libc.so.6", "/glibc/lib/libc.so.6"),
+            ("/usr/lib64/libm.so", "/glibc/lib/libm.so"),
+            ("/usr/lib64/libm.so.6", "/glibc/lib/libm.so.6"),
+        ] {
+            create_legacy_loader_alias(path, target)?;
+        }
     }
 
     Ok(())
