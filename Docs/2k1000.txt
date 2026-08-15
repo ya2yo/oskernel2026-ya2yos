@@ -1,0 +1,306 @@
+Ya2yOS 在 Loongson 2K1000 实际开发板上的验证操作说明
+========================================================
+
+版本：2026-08-15
+适用源码快照：Ya2yOS 当前工作树，使用 `TARGET_ARCH=loongarch64 PLATFORM=2k1000` 构建。
+适用读者：Windows 11 + WSL2（Ubuntu 24.04）+ MobaXterm，拥有一块可进入 U-Boot 的
+Loongson 2K1000 单板。
+
+一、先确认本次验证的边界
+--------------------------
+
+本说明采用“从 U-Boot 加载到 RAM，临时跳转执行”的方式，不擦写 SPI Flash、eMMC、SD 卡或
+板载 bootloader。每次重新上电都会回到原来的 U-Boot 启动流程，因此适合第一次上板验证。
+
+本仓库已经为 2K1000 提供：
+
+* LoongArch64 2K1000 启动入口和高端 DRAM 链接地址；
+* 0x1fe20000 NS16550A UART 控制台；
+* 轮询 AHCI/SATA 根块设备；
+* GMAC0 轮询网卡驱动（需要网线和可用 PHY 链路）。
+
+必须注意：
+
+1. 你列出的“数据线”如果是 USB 调试线，通常只负责串口控制台，不等于网络线，也不一定能
+   把文件传给 U-Boot。
+2. 推荐的镜像传输方式是 TFTP，因此需要额外的以太网链路（板卡网口接交换机/路由器，或接
+   Windows 主机的网口）。如果没有网线，只有在板卡 U-Boot 确实提供 `loady` 或 `loadx` 时，
+   才能用 MobaXterm 的 YMODEM/XMODEM 通过串口传输；文档后面给出该检查和备用流程。
+3. 2K1000 内核的根文件系统使用板载 AHCI/SATA。没有 SATA 硬盘（或硬盘没有正确连接）时，
+   内核仍可能已经成功启动并打印早期日志，但在 `fs::init` 附近报告没有 SATA 盘，这是存储
+   条件不足，不代表 UART、U-Boot 加载地址或内核入口错误。
+4. 当前 GMAC0、AHCI、LIOINTC 中断路径尚未在本机实体板上完成回归。首次测试应保存完整串口
+   日志，按本文的分级判据报告结果，不要把一次早期串口输出写成“所有驱动已验证”。
+
+二、硬件和连线
+--------------
+
+### 2.1 串口线
+
+如果单板带 USB 调试串口，使用数据线连接板卡的 DEBUG/UART USB 口和 Windows 11。若是外置
+USB-TTL 适配器，必须为 3.3 V 电平，并按下表连接：
+
+    单板 TX  -> 适配器 RX
+    单板 RX  -> 适配器 TX
+    单板 GND -> 适配器 GND
+
+不得将 RS-232 电平或 5 V TTL 直接接到 2K1000 UART。只接电源线而不接 UART 时，内核即使运行
+也无法在 MobaXterm 中看到输出。
+
+### 2.2 可选的网络和存储
+
+* TFTP 传输和 GMAC0 验证：板卡网口接入和 Windows/WSL2 可互通的局域网；
+* 完整 `fs::init`、initproc 和用户程序验证：接好板卡支持的 SATA 盘，并确认盘上有 Ya2yOS
+  所需的 ext4 测试镜像。仅验证 UART/入口时不要求 SATA 盘。
+
+三、Windows 11 与 MobaXterm 准备
+--------------------------------
+
+1. 打开“设备管理器 -> 端口（COM 和 LPT）”，记下 USB 串口对应的 COM 号。插拔数据线一次，
+   观察哪个 COM 口出现或消失，以免选错端口。
+2. 在 MobaXterm 新建 `Serial` session，选择上述 COM 口，参数设置为：
+
+       Speed       115200
+       Data bits   8
+       Stop bits   1
+       Parity      None
+       Flow control None
+
+   即通常所说的 `115200 8N1`。关闭 MobaXterm 的本地回显，打开日志记录（例如保存为
+   `2k1000-YYYYMMDD-HHMMSS.log`）。
+3. 串口终端应始终保持打开，再给开发板上电。首次上电先完整记录原有 U-Boot 的版本和启动
+   输出，确认板卡本身可以启动；不要在没有串口日志的情况下盲目执行加载命令。
+
+四、WSL2/Ubuntu 24.04 构建环境
+-------------------------------
+
+在 WSL2 Ubuntu 终端进入仓库根目录：
+
+    cd /home/ya2yo/projects/oskernel2026-ya2yos
+
+检查工具链：
+
+    rustc --version
+    cargo --version
+    rustup target list | grep loongarch64-unknown-none
+
+仓库使用 vendored Rust 依赖；按照项目既有环境安装 Rust、`rust-src` 和 `llvm-tools-preview`。
+如工具链尚未准备好，可执行：
+
+    rustup component add rust-src
+    rustup component add llvm-tools-preview
+
+不要在 WSL2 中强行访问 Windows 的 COM 口来做串口终端；串口由 Windows 上的 MobaXterm 使用，
+WSL2 只负责构建和计算校验值。
+
+五、构建 2K1000 内核镜像
+------------------------
+
+在仓库根目录执行：
+
+    make build-arch TARGET_ARCH=loongarch64 PLATFORM=2k1000
+
+该命令会使用 2K1000 专用 Cargo 配置和 linker，生成：
+
+* `kernel-la`：保留 ELF 头和符号，供地址检查、调试使用；
+* `kernel-la.bin`：去除 ELF 头后的原始二进制，供 U-Boot 的 `tftpboot`/`loady` 使用。
+
+检查产物和入口地址：
+
+    ls -lh kernel-la kernel-la.bin
+    sha256sum kernel-la.bin
+    rust-readobj --file-headers --program-headers kernel-la
+
+`rust-readobj` 输出中的 Entry point 和首个 `PT_LOAD` 地址应为：
+
+    0x9000000090000000
+
+本说明后面的加载地址、跳转地址都必须保持为 `0x9000000090000000`。不要把
+`os/target/loongarch64-unknown-none/release/os` 或 `kernel-la` ELF 直接传给下面的 U-Boot
+命令；U-Boot 此处需要 `kernel-la.bin`。
+
+可选：保存构建信息，便于和串口日志对应：
+
+    git rev-parse --short HEAD
+    sha256sum kernel-la.bin
+    stat -c '%n %s bytes' kernel-la.bin
+
+六、进入 U-Boot 并检查可用的传输命令
+--------------------------------------
+
+1. 保持 MobaXterm 串口窗口打开，给板卡上电或执行复位。
+2. 在出现类似 `Hit any key to stop autoboot` 的倒计时期间按任意键，进入 `U-Boot` 提示符。
+   不同固件的提示符可能是 `LS2K1000 #`、`Loongson #` 或其他名称。
+3. 先执行只读检查并把输出保存到日志：
+
+       version
+       printenv bootcmd bootdelay baudrate ipaddr serverip
+       help tftpboot
+       help loady
+       help loadx
+
+   `help` 报 “Unknown command” 不影响后续判断，但决定你能否使用对应传输方式。不要执行
+   `saveenv`，不要修改 `bootcmd` 后保存环境。
+
+七、方案 A：通过 TFTP 加载（推荐）
+----------------------------------
+
+该方案需要板卡网口和 Windows/WSL2 之间有网络链路。它不修改板卡存储，只把文件放入内存。
+
+### 7.1 准备 TFTP
+
+可以在 Windows 上安装并运行可信的 TFTP 服务（例如 Tftpd64），将 TFTP 根目录设为一个只放
+置本次文件的目录；也可以在 WSL2 中运行已有的 TFTP 服务，但必须确认 Windows 防火墙、WSL2
+网络模式和板卡路由允许 UDP 69 端口访问。MobaXterm 本身主要用于串口/SSH/SFTP，不应假设它
+自动提供 TFTP 服务。
+
+把 WSL2 中的文件复制到 TFTP 根目录，或直接使用 Windows 可见的仓库路径。例如在 WSL2 查询：
+
+    sha256sum kernel-la.bin
+
+在 TFTP 服务端确认文件名确实为 `kernel-la.bin`，大小与上面一致。首次测试建议临时关闭仅针对
+该 UDP 端口的防火墙拦截，测试完恢复防火墙策略。
+
+### 7.2 配置 U-Boot 网络并加载
+
+在 U-Boot 中将下面的占位地址替换为实际地址：
+
+    setenv ipaddr <board-ip>
+    setenv serverip <tftp-server-ip>
+    ping ${serverip}
+
+`ping` 成功后执行：
+
+    tftpboot 0x9000000090000000 kernel-la.bin
+    crc32 0x9000000090000000 ${filesize}
+    go 0x9000000090000000
+
+`tftpboot` 成功后应显示传输字节数，`${filesize}` 应与 `kernel-la.bin` 大小一致。`crc32` 用于
+   记录传输后的校验值；不同 TFTP 工具计算 SHA-256 的方式不一致时，以文件大小、TFTP 成功和
+   内核串口输出共同判断。`go` 执行后不要再输入 U-Boot 命令，等待串口输出。
+
+如果板卡已有可用的 `ipaddr`/`serverip`，也可以只执行 `ping ${serverip}`、`tftpboot` 和 `go`。
+本次 `setenv` 仅改变内存中的环境，不会写入 Flash；不要跟随执行 `saveenv`。
+
+八、方案 B：只有串口线时尝试 YMODEM/XMODEM
+---------------------------------------------
+
+此方案只在第六节 `help loady` 或 `help loadx` 显示命令存在时适用。串口传输比 TFTP 慢，
+5 MiB 左右的镜像在 115200 波特率下可能需要数分钟；传输期间不要关闭 MobaXterm 或给板卡
+断电。
+
+### 8.1 YMODEM（优先）
+
+在 U-Boot 输入：
+
+    loady 0x9000000090000000
+
+看到 U-Boot 等待 YMODEM 的提示后，在 MobaXterm 菜单选择类似 `Transfer -> Send file using
+YMODEM`（不同版本菜单名称可能略有差异），选择 WSL2 构建得到的 `kernel-la.bin`，等待传输
+完成并回到 U-Boot 提示符。随后执行：
+
+    go 0x9000000090000000
+
+### 8.2 XMODEM（仅当固件没有 loady）
+
+如果只有 `loadx`，执行：
+
+    loadx 0x9000000090000000
+
+然后在 MobaXterm 中选择对应的 XMODEM 发送功能。若 MobaXterm 版本不提供 XMODEM，或 U-Boot
+提示命令不存在，不能靠串口终端直接“粘贴”二进制文件；改用方案 A、U-Boot 的 USB 存储
+命令，或准备一根网络线。不要把二进制文件当作文本粘贴到终端。
+
+九、启动成功的判定
+------------------
+
+串口中最早的成功标志应包括以下类似行（具体内存大小和 timebase 由板卡 FDT 决定）：
+
+    [kernel] hardware: ram_start=0x..., ram_size=0x..., harts=2, timebase=... Hz
+    [kernel] Hello, world!
+    ===MEMLAYOUT(2K1000)===
+    UART_ADDR:      0x1fe20000
+    mm::init...complete.
+    logger::init...complete.
+    trap::init...complete.
+
+看到 `[kernel] Hello, world!`，说明 U-Boot 已跳转到 Ya2yOS，LoongArch 入口、早期页表和 UART
+至少已经工作。继续看到 `task::init...complete`、`fs::init...complete` 和 `net::init...complete`
+则说明启动流程进一步推进。
+
+若已接 SATA 盘并且盘内镜像正确，期望继续看到 initproc 和用户态程序输出；若未接 SATA 盘，
+`ahci: no SATA disk found on 2K1000 controller` 或 `fs::init` 附近停机属于存储条件不满足，
+记录最后 100 行日志即可，不要因此重复刷写 bootloader。
+
+若已接网线且 GMAC0 初始化成功，日志可能包含：
+
+    2K1000 GMAC0 initialized with PHY 0
+
+该日志只证明控制器初始化和 PHY 探测通过；ARP、DHCP、UDP/TCP 仍需在用户态继续测试。
+
+十、故障排查
+------------
+
+### 10.1 串口完全没有输出
+
+检查 COM 号、TX/RX 是否交叉、GND 是否连接、TTL 电平是否为 3.3 V、波特率是否为 115200，
+并确认 MobaXterm 使用的是 Serial session 而不是 SSH session。先断电、打开串口窗口，再上电。
+如果连原有 U-Boot 输出也看不到，先排查线材、驱动和供电，不要排查内核。
+
+### 10.2 进入 U-Boot 但传输失败
+
+* TFTP：检查 `ping ${serverip}`、板卡 IP、Windows 防火墙、TFTP 根目录和文件名；
+* YMODEM/XMODEM：确认使用了对应的发送协议，等待 U-Boot 出现接收提示后再点击发送；
+* `loady/loadx` 不存在：这是固件能力限制，改用 TFTP 或 U-Boot 支持的 USB 存储加载，不要
+  继续尝试文本粘贴。
+
+### 10.3 `Bad Magic Number`、`Wrong Image Format`
+
+这是把 raw binary 当成 U-Boot image 使用，或者误传了 ELF。2K1000 当前流程使用 `go`，不是
+`bootm`；请确认发送的是 `kernel-la.bin`，加载地址和跳转地址都是
+`0x9000000090000000`。
+
+### 10.4 `go` 后立刻没有内核输出
+
+确认 `tftpboot`/串口传输确实完成，传输字节数与 `stat` 结果一致；确认没有输入
+`0x90000000`、`0x9000000080000000` 等其他地址。保存 U-Boot `version`、完整串口日志和
+`sha256sum kernel-la.bin`，再检查固件是否按 LoongArch U-Boot/EFI 启动约定提供了系统表参数。
+
+### 10.5 出现 `2K1000 bootloader did not provide an EFI FDT table`
+
+当前 2K1000 启动代码需要 U-Boot/固件提供 EFI system table，并从中取得 FDT。此错误不是 SATA
+或网卡错误。请记录 U-Boot 版本和启动方式；不要自行改 linker 地址或把 QEMU 的 FDT 地址硬编码
+进内核。优先确认板卡固件是否为项目支持的 2K1000 Reference Board 启动链。
+
+### 10.6 `fs::init` 阶段 panic 或无 SATA 盘
+
+确认 SATA 盘已接好、供电正常、线材可靠，并且盘内是 Ya2yOS 使用的 LoongArch ext4 镜像。
+没有 SATA 盘时，首次验证的结论应写成“已进入 Ya2yOS 并完成早期初始化，AHCI 存储条件不足”，
+而不是“内核未启动”。
+
+十一、恢复和重复测试
+--------------------
+
+本说明使用的是 RAM 临时加载。Ya2yOS 卡住时直接复位或断电重启即可；只要没有执行 `saveenv`
+或写入 Flash，U-Boot 会恢复原有 `bootcmd`。重新测试时按以下顺序操作：
+
+1. 关闭或保存上一份 MobaXterm 串口日志；
+2. 打开新的串口日志窗口；
+3. 上电并按任意键进入 U-Boot；
+4. 重新执行 TFTP 或 YMODEM/XMODEM 加载和 `go`；
+5. 记录 Git 提交号、镜像 SHA-256、U-Boot 版本、最后 100 行串口输出、是否接 SATA/网线。
+
+十二、建议的验证等级
+--------------------
+
+按以下等级填写测试记录：
+
+    L1  串口可见原有 U-Boot 输出，能进入 U-Boot。
+    L2  kernel-la.bin 传输成功，go 后看到 [kernel] Hello, world! 和 MEMLAYOUT(2K1000)。
+    L3  mm/logger/trap/task 初始化完成；已接 SATA 时 fs::init 和 initproc 继续运行。
+    L4  已接网线，出现 GMAC0 PHY 初始化日志，并完成 ARP/ping/UDP/TCP 测试。
+    L5  SATA 文件系统读写、双核调度、网络和目标用户测试均完成，且保存了完整日志。
+
+在只有电源线和 USB 数据线、没有 SATA 盘和网线的条件下，合理目标是 L1-L2；若 U-Boot 支持
+`loady/loadx`，可以尝试用串口完成镜像传输。不要把未完成的 L3-L5 写成“2K1000 驱动已全部
+验证”。

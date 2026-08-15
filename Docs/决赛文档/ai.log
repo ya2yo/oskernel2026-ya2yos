@@ -12222,3 +12222,12 @@ VisionFive 2 实板，未执行 U-Boot、串口、网卡或 SD/MMC 运行验证�
 采纳方案：在 `initproc` 增加只读 `openat` 探测和镜像类型枚举，决赛特征优先匹配，随后匹配初赛双脚本；未识别镜像打印错误并关机返回 1。`main` 改为调用统一选择入口，保留现有初赛/决赛脚本实现。
 
 修改文件：`user/src/bin/initproc.rs`、`Docs/决赛文档/开发日志.md`、`Docs/决赛文档/ai.log`、`Docs/决赛文档/AI_INTERACTION.md`。验证：`make build-arch TARGET_ARCH=riscv64` 与 `git diff --check` 通过；初赛镜像 `make run` 冒烟受宿主 `/var/tmp` 只读阻断，未报告运行期探测通过。
+
+## 2026-08-15：Loongson 2K1000 实板验证操作文档
+
+维护者提供 Windows 11、WSL2 Ubuntu 24.04、MobaXterm、2K1000 单板、电源线和数据线，要求编写
+实机验证流程。AI 核对仓库的 `PLATFORM=2k1000` 构建入口、`kernel-la.bin` 产物、
+`0x9000000090000000` 加载/入口地址及现有 AHCI、GMAC0 实现，新增根目录 `2k1000.txt`。
+文档采用不改写存储的 U-Boot RAM 临时启动，优先说明 TFTP，另说明固件具备 `loady/loadx` 时的
+MobaXterm YMODEM/XMODEM 备用路径，并明确无 SATA 盘/网线时的验证边界。未运行内核构建，因本次
+仅新增操作文档；使用 `git diff --check` 做格式检查。

@@ -3543,3 +3543,12 @@
 - **描述**：检查 `user/src/bin/initproc.rs`、用户态 `openat` API、Makefile 镜像配置及初赛/决赛镜像目录后，确认决赛镜像仍可能保留 `/musl` 兼容树，不能只按目录存在性判断。新增只读路径探测：优先识别 `/work/tgoskits` 或 `/glibc/cagent_testcode.sh` 的决赛特征，再识别 `/musl/basic_testcode.sh` 与 `/glibc/basic_testcode.sh` 的初赛特征；未知镜像打印错误、关机并返回 1。
 - **验证边界**：`make build-arch TARGET_ARCH=riscv64`、`git diff --check` 通过。使用初赛镜像的 `make run` 冒烟因宿主 `/var/tmp` 只读无法启动 QEMU，未宣称运行期测例选择已回归。
 - **关联 commit**：当前工作区未提交
+
+#### Loongson 2K1000 实板验证操作文档（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求面向 Windows 11、WSL2 Ubuntu 24.04、MobaXterm 和 2K1000 单板编写实机验证说明。
+- **描述**：根据仓库现有 `PLATFORM=2k1000` 构建、U-Boot RAM 加载地址和板级驱动实现，新增根目录
+  `2k1000.txt`。文档覆盖串口连接、`kernel-la.bin` 构建、TFTP 及 `loady/loadx` 备用传输、
+  `go 0x9000000090000000` 启动、分级成功判据和无 SATA/网线时的边界。
+- **验证边界**：仅新增操作文档，未运行内核构建；执行 `git diff --check`。当前工作区未提交。
