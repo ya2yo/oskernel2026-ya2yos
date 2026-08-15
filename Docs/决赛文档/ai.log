@@ -12080,3 +12080,31 @@ Docker 内执行 `make build-arch TARGET_ARCH=riscv64` 生成新 `kernel-rv`，`
 通过。以原始 Docker QEMU 10.0.2、`make run`、`-m 16G` 重放 12 秒：日志保留
 `Next Arg1: 0x47fe00000`，随后完成内核初始化、八核启动和全部 cagent 项，进入
 `BUILDSTORM_TOOLCHAIN ok`；时限主动终止，未将其视为 BuildStorm 完整通过。
+
+## 2026-08-15：BuildStorm P1-A 当前任务重入队远程 IPI 抑制
+
+### 用户输入
+
+维护者要求“根据 `optimize.txt` 进行 P1-A 优化”，并说明 P0 无法实现，因为具体评测机
+沿单一入口运行全部阶段。
+
+### AI 分析与采纳结论
+
+对照 `optimize.txt` 与调度器源码确认，`run_tasks()` 在当前任务切出后将仍可运行任务
+重新放入共享 CFS/RR 队列时使用了普通 `ready_queue::add_task()`。队列去重不能阻止该
+API 的远程 Hart 通知，因此调度记账路径会制造无效 IPI；阻塞唤醒、新任务发布和
+affinity 失败路径仍需要通知。新增 `ready_queue::requeue_current()`，只调用策略层
+入队而跳过通知，并在 perf 报告中增加 `current_requeues` 与
+`current_requeue_notifications`，用于确认没有误抑制外部 wake-up。
+
+### 修改与验证
+
+修改 `os/src/task/scheduler/mod.rs`、`os/src/utils/perf/scheduler.rs`、
+`os/src/utils/perf/report.rs`；当前任务调用点已包含在维护者同步提交的
+`os/src/task/processor.rs` 中。新增问题复盘并更新开发日志、README、AI 记录。
+RISC-V/LoongArch64 CFS release、RISC-V RR release、`git diff --check` 通过；带 perf
+的 RISC-V QEMU 120 秒窗口观测到 `current_requeues=80771`、
+`current_requeue_notifications=0`，同时 `remote_enqueues=9421`、
+`remote_ipi_sent=8393` 仍增长。标准入口 180 秒已完成 cagent 并进入 BuildStorm，
+但尚未到达嵌套 QEMU 关机，因此未宣称完整 P1-A 长测验收。详见
+`Docs/决赛文档/problem/buildstorm-p1a-current-requeue-ipi.md`。

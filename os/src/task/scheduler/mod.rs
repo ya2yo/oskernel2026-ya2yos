@@ -45,6 +45,22 @@ pub mod ready_queue {
         }
     }
 
+    /// Requeue the task that just left the current Hart without waking another
+    /// Hart.  The scheduler is already running on the Hart that will compete
+    /// for this task, so publishing an IPI for this bookkeeping enqueue only
+    /// creates redundant remote wakeups.  External wakeups must continue to
+    /// use [`add_task`] so an idle allowed Hart is notified.
+    pub(crate) fn requeue_current(task: &Arc<TaskControlBlock>) {
+        #[cfg(feature = "scheduler-cfs")]
+        {
+            let _ = policy::add_task(task);
+        }
+        #[cfg(feature = "scheduler-rr")]
+        policy::add_task(task);
+        #[cfg(feature = "perf")]
+        crate::utils::perf::record_scheduler_current_requeue(false);
+    }
+
     pub fn fetch_task(hartid: usize) -> Option<Arc<TaskControlBlock>> {
         policy::fetch_task(hartid)
     }

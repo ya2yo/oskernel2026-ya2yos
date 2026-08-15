@@ -156,6 +156,8 @@ static DELTA_SCHED_REMOTE_ENQUEUES: CounterDelta = CounterDelta::new();
 static DELTA_SCHED_REMOTE_IDLE_NOTIFICATIONS: CounterDelta = CounterDelta::new();
 static DELTA_SCHED_REMOTE_IPI_SENT: CounterDelta = CounterDelta::new();
 static DELTA_SCHED_REMOTE_IPI_FAILED: CounterDelta = CounterDelta::new();
+static DELTA_SCHED_CURRENT_REQUEUES: CounterDelta = CounterDelta::new();
+static DELTA_SCHED_CURRENT_REQUEUE_NOTIFICATIONS: CounterDelta = CounterDelta::new();
 static DELTA_PIPE_READER_WAKE_CALLS: CounterDelta = CounterDelta::new();
 static DELTA_PIPE_READER_WAKE_TASKS: CounterDelta = CounterDelta::new();
 static DELTA_PIPE_READER_WAKE_POLL_TASKS: CounterDelta = CounterDelta::new();
@@ -939,12 +941,14 @@ fn emit_interval_deltas(now: usize) {
 
     emit_section("INTERVAL SCHEDULER");
     println!(
-        "[perf] interval_scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",
+        "[perf] interval_scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={} current_requeues={} current_requeue_notifications={}",
         DELTA_SCHED_LOCAL_ENQUEUES.take(&SCHEDULER_LOCAL_ENQUEUES),
         DELTA_SCHED_REMOTE_ENQUEUES.take(&SCHEDULER_REMOTE_ENQUEUES),
         DELTA_SCHED_REMOTE_IDLE_NOTIFICATIONS.take(&SCHEDULER_REMOTE_IDLE_NOTIFICATIONS),
         DELTA_SCHED_REMOTE_IPI_SENT.take(&SCHEDULER_REMOTE_IPI_SENT),
         DELTA_SCHED_REMOTE_IPI_FAILED.take(&SCHEDULER_REMOTE_IPI_FAILED),
+        DELTA_SCHED_CURRENT_REQUEUES.take(&SCHEDULER_CURRENT_REQUEUES),
+        DELTA_SCHED_CURRENT_REQUEUE_NOTIFICATIONS.take(&SCHEDULER_CURRENT_REQUEUE_NOTIFICATIONS),
     );
     emit_duration_delta(
         "scheduler_dispatch",
@@ -1459,12 +1463,14 @@ pub(super) fn emit_report(now: usize) {
         &idle_published_by_hart[..hart_count],
     );
     println!(
-        "[perf] scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={}",
+        "[perf] scheduler_wakeup local_enqueues={} remote_enqueues={} remote_idle_notifications={} remote_ipi_sent={} remote_ipi_failed={} current_requeues={} current_requeue_notifications={}",
         SCHEDULER_LOCAL_ENQUEUES.load(Ordering::Relaxed),
         SCHEDULER_REMOTE_ENQUEUES.load(Ordering::Relaxed),
         SCHEDULER_REMOTE_IDLE_NOTIFICATIONS.load(Ordering::Relaxed),
         SCHEDULER_REMOTE_IPI_SENT.load(Ordering::Relaxed),
         SCHEDULER_REMOTE_IPI_FAILED.load(Ordering::Relaxed),
+        SCHEDULER_CURRENT_REQUEUES.load(Ordering::Relaxed),
+        SCHEDULER_CURRENT_REQUEUE_NOTIFICATIONS.load(Ordering::Relaxed),
     );
     print!("[perf] scheduler_duration ");
     emit_duration(

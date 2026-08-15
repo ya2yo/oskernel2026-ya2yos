@@ -12,6 +12,8 @@ pub(crate) static SCHEDULER_REMOTE_ENQUEUES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_REMOTE_IDLE_NOTIFICATIONS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_REMOTE_IPI_SENT: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_REMOTE_IPI_FAILED: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static SCHEDULER_CURRENT_REQUEUES: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static SCHEDULER_CURRENT_REQUEUE_NOTIFICATIONS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_SELECTIONS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static SCHEDULER_SELF_SELECTIONS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static IDLE_LOOPS: AtomicUsize = AtomicUsize::new(0);
@@ -61,6 +63,17 @@ pub fn record_scheduler_enqueue(remote: bool, target_idle: bool, ipi_sent: bool)
         } else {
             add(&SCHEDULER_REMOTE_IPI_FAILED, 1);
         }
+    }
+}
+
+/// Record the scheduler's current-task requeue separately from external
+/// wakeups. `notified` is kept explicit so a regression that routes this path
+/// through the normal wakeup helper is visible in the report.
+#[inline]
+pub fn record_scheduler_current_requeue(notified: bool) {
+    add(&SCHEDULER_CURRENT_REQUEUES, 1);
+    if notified {
+        add(&SCHEDULER_CURRENT_REQUEUE_NOTIFICATIONS, 1);
     }
 }
 

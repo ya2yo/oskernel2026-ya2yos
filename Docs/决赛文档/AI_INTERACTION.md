@@ -3456,6 +3456,13 @@
 - **关联问题**：[QEMU 10 高地址 FDT 启动映射](./problem/riscv-qemu10-high-fdt-bootstrap-map.md)
 - **关联 commit**：当前工作区未提交
 
+#### BuildStorm P1-A 当前任务重入队远程 IPI 抑制（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：根据 `optimize.txt` 实施调度器 P1-A，区分当前任务记账重入队和外部 wake-up，补充 perf 聚合计数与验证记录。
+- **描述**：AI 沿 `run_tasks()`、`ready_queue::add_task()` 和 CFS/RR 策略实现追踪，确认当前任务重入队虽已由队列去重，却仍进入远程 Hart 通知；新增不通知的 `requeue_current()`，保留普通唤醒和 affinity 失败路径，并输出 `current_requeues/current_requeue_notifications`。CFS/LoongArch64、RISC-V CFS/RR 构建通过；120 秒 perf QEMU 观察到重入队通知为 0，完整嵌套 QEMU 长测尚未结束。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/buildstorm-p1a-current-requeue-ipi.md](./problem/buildstorm-p1a-current-requeue-ipi.md)。
+- **关联 commit**：当前工作区未提交（当前任务调用点随维护者的注释提交进入 HEAD）
+
 #### 嵌套 LoongArch64 QEMU auxv HWCAP 与 mmap 配额（8.14）
 
 - **工具/模型**：Codex（GPT-5）
