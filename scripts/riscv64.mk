@@ -3,7 +3,8 @@ MODE := release
 
 ARCH := riscv64
 TARGET := riscv64gc-unknown-none-elf
-DISK_IMG ?= ./2026_testsuits_img/final-2026/sdcard-rv.img
+DISK_IMG ?= ./2026_testsuits_img/pre_tests/sdcard-rv.img
+# DISK_IMG ?= ./2026_testsuits_img/final-2026/sdcard-rv.img
 
 ifeq ($(PLATFORM),visionfive2)
 MEMORY_SIZE := 2G
@@ -20,7 +21,7 @@ $(error Unsupported RISC-V PLATFORM: $(PLATFORM), expected qemu or visionfive2)
 endif
 
 
-KERNEL_ELF := $(PROJECT_ROOT)/os/target/$(TARGET)/$(MODE)/os
+KERNEL_ELF := $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),$(PROJECT_ROOT)/os/target)/$(TARGET)/$(MODE)/os
 
 KERNEL_BUILD_ARGS := --$(MODE) --target $(TARGET)
 
