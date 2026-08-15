@@ -60,11 +60,12 @@ const MAX_CACHED_FILE_SIZE: usize = 4 * 0x10_0000; // 4 MiB
 // cache back would allocate every hole. Still, compiler/linker output often
 // arrives as many adjacent sub-page writes to one sparse inode. Keep only a
 // bounded range set so those writes can be committed together without
-// changing the inode's extent layout. Both the payload and run-count caps are
-// enforced after adjacent and overlapping writes have been coalesced. The
-// global budget below keeps the per-inode batches bounded across inodes.
+// changing the inode's extent layout. Adjacent and overlapping writes are
+// coalesced into one dirty range; disjoint ranges remain separate so holes are
+// never materialized. The payload and global budgets bound memory/journal
+// pressure, like ext4's extent and block-layer limits, rather than imposing an
+// arbitrary number of sparse runs.
 const MAX_SPARSE_WRITE_BUFFER_SIZE: usize = 512 * 1024;
-const MAX_SPARSE_WRITE_BUFFER_RUNS: usize = 32;
 const MAX_TOTAL_SPARSE_WRITE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 /// Lock callbacks for one Rust-owned write-back cache entry.  The lock value
@@ -1172,6 +1173,14 @@ impl Ext4File {
         let Some(mut buffers) = SPARSE_WRITE_BUFFERS.lock().remove(&key) else {
             return Ok(0);
         };
+        // Linux writeback walks the page cache in file-offset order and lets
+        // ext4 merge adjacent blocks into one bio. Keep the disjoint sparse
+        // ranges ordered before issuing their individual writes; holes remain
+        // separate and are never represented by zero-filled bytes.
+        buffers
+            .runs
+            .make_contiguous()
+            .sort_unstable_by_key(|buffer| buffer.offset);
         #[cfg(feature = "perf")]
         {
             perf::record_sparse_write_flush_trigger(reason);
@@ -2686,9 +2695,8 @@ struct SparseWriteBuffers {
 
 /// A fallible insertion is planned before mutating the buffered ranges, so an
 /// allocation failure never leaves a partially coalesced sparse inode behind.
-#[derive(Clone, Copy)]
 struct SparseWriteInsertPlan {
-    selected_mask: u64,
+    selected_indices: Vec<usize>,
     insert_index: usize,
     start: usize,
     len: usize,
@@ -2698,59 +2706,53 @@ struct SparseWriteInsertPlan {
 #[derive(Debug)]
 enum SparseWriteInsertPlanError {
     Overflow,
-    RunLimit,
+    AllocationFailure,
 }
 
 impl SparseWriteBuffers {
     fn plan_insert(
-        &self,
+        &mut self,
         offset: usize,
         len: usize,
     ) -> Result<SparseWriteInsertPlan, SparseWriteInsertPlanError> {
         let end = offset
             .checked_add(len)
             .ok_or(SparseWriteInsertPlanError::Overflow)?;
-        if self.runs.len() >= u64::BITS as usize {
-            return Err(SparseWriteInsertPlanError::Overflow);
-        }
-
-        let mut selected_count = 0usize;
+        // Linux writeback walks the mapping in file-offset order. Keep the
+        // local dirty-range index ordered as well, so finding one connected
+        // component is a linear scan instead of repeatedly searching every
+        // existing range.
+        self.runs
+            .make_contiguous()
+            .sort_unstable_by_key(|run| run.offset);
+        let mut selected_indices = Vec::new();
+        selected_indices
+            .try_reserve(self.runs.len())
+            .map_err(|_| SparseWriteInsertPlanError::AllocationFailure)?;
         let mut selected_bytes = 0usize;
-        let mut selected_mask = 0u64;
         let mut start = offset;
         let mut range_end = end;
 
-        // A newly written interval may bridge two older runs. Keep expanding
-        // until the whole connected component has been selected.
-        loop {
-            let mut expanded = false;
-            for (index, run) in self.runs.iter().enumerate() {
-                let bit = 1u64 << index;
-                if selected_mask & bit != 0 {
-                    continue;
-                }
-                let run_end = run
-                    .offset
-                    .checked_add(run.data.len())
-                    .ok_or(SparseWriteInsertPlanError::Overflow)?;
-                if run.offset <= range_end && start <= run_end {
-                    selected_mask |= bit;
-                    selected_count += 1;
-                    selected_bytes = selected_bytes
-                        .checked_add(run.data.len())
-                        .ok_or(SparseWriteInsertPlanError::Overflow)?;
-                    start = start.min(run.offset);
-                    range_end = range_end.max(run_end);
-                    expanded = true;
-                }
+        // Because runs are sorted, a run after the first gap cannot become
+        // connected later. A single write can still bridge multiple adjacent
+        // ranges because range_end is extended as each one is selected.
+        for (index, run) in self.runs.iter().enumerate() {
+            let run_end = run
+                .offset
+                .checked_add(run.data.len())
+                .ok_or(SparseWriteInsertPlanError::Overflow)?;
+            if run_end < start {
+                continue;
             }
-            if !expanded {
+            if run.offset > range_end {
                 break;
             }
-        }
-
-        if selected_count == 0 && self.runs.len() >= MAX_SPARSE_WRITE_BUFFER_RUNS {
-            return Err(SparseWriteInsertPlanError::RunLimit);
+            selected_indices.push(index);
+            selected_bytes = selected_bytes
+                .checked_add(run.data.len())
+                .ok_or(SparseWriteInsertPlanError::Overflow)?;
+            start = start.min(run.offset);
+            range_end = range_end.max(run_end);
         }
 
         let len = range_end
@@ -2761,17 +2763,17 @@ impl SparseWriteBuffers {
             .checked_sub(selected_bytes)
             .and_then(|bytes| bytes.checked_add(len))
             .ok_or(SparseWriteInsertPlanError::Overflow)?;
-        let insert_index = if selected_count == 0 {
-            self.runs.len()
+        let insert_index = if selected_indices.is_empty() {
+            self.runs
+                .iter()
+                .position(|run| run.offset > offset)
+                .unwrap_or(self.runs.len())
         } else {
-            let last_selected = u64::BITS as usize - 1 - selected_mask.leading_zeros() as usize;
-            (0..last_selected)
-                .filter(|index| selected_mask & (1u64 << index) == 0)
-                .count()
+            selected_indices[0]
         };
 
         Ok(SparseWriteInsertPlan {
-            selected_mask,
+            selected_indices,
             insert_index,
             start,
             len,
@@ -2787,7 +2789,7 @@ impl SparseWriteBuffers {
     ) -> Result<(), ()> {
         let mut merged_data = Vec::new();
         if merged_data.try_reserve_exact(plan.len).is_err()
-            || (plan.selected_mask == 0 && self.runs.try_reserve_exact(1).is_err())
+            || (plan.selected_indices.is_empty() && self.runs.try_reserve_exact(1).is_err())
         {
             return Err(());
         }
@@ -2797,7 +2799,7 @@ impl SparseWriteBuffers {
         // write is copied last, preserving pwrite-style last-write-wins
         // semantics inside the compacted connected component.
         for (index, run) in self.runs.iter().enumerate() {
-            if plan.selected_mask & (1u64 << index) == 0 {
+            if !plan.selected_indices.contains(&index) {
                 continue;
             }
             let begin = run.offset - plan.start;
@@ -2810,13 +2812,11 @@ impl SparseWriteBuffers {
             offset: plan.start,
             data: merged_data,
         };
-        if plan.selected_mask == 0 {
-            self.runs.push_back(merged_run);
+        if plan.selected_indices.is_empty() {
+            self.runs.insert(plan.insert_index, merged_run);
         } else {
-            for index in (0..self.runs.len()).rev() {
-                if plan.selected_mask & (1u64 << index) != 0 {
-                    let _ = self.runs.remove(index);
-                }
+            for index in plan.selected_indices.iter().rev() {
+                let _ = self.runs.remove(*index);
             }
             self.runs.insert(plan.insert_index, merged_run);
         }
@@ -2886,12 +2886,14 @@ fn try_insert_sparse_write_buffer(
         let old_bytes = buffer_set.bytes;
         let plan = match buffer_set.plan_insert(offset, data.len()) {
             Ok(plan) => plan,
-            Err(SparseWriteInsertPlanError::RunLimit) => {
+            Err(SparseWriteInsertPlanError::Overflow) => return Err(EFBIG as i32),
+            Err(SparseWriteInsertPlanError::AllocationFailure) => {
+                #[cfg(feature = "perf")]
+                perf::record_sparse_buffer_allocation_failure(data.len());
                 return Ok(SparseWriteBufferInsertResult::Flush(
-                    SparseWriteCacheEvictCause::RunLimit,
+                    SparseWriteCacheEvictCause::AllocationFailure,
                 ));
             }
-            Err(SparseWriteInsertPlanError::Overflow) => return Err(EFBIG as i32),
         };
         let budget_available = plan.new_bytes <= MAX_TOTAL_SPARSE_WRITE_BUFFER_BYTES
             && total_bytes.saturating_sub(old_bytes)
@@ -2906,18 +2908,23 @@ fn try_insert_sparse_write_buffer(
                 SparseWriteBufferInsertResult::Flush(SparseWriteCacheEvictCause::GlobalBudget),
                 None,
             )
-        } else if buffer_set.apply_insert(plan, offset, data).is_err() {
-            #[cfg(feature = "perf")]
-            perf::record_sparse_buffer_allocation_failure(data.len());
-            (
-                SparseWriteBufferInsertResult::Flush(SparseWriteCacheEvictCause::AllocationFailure),
-                None,
-            )
         } else {
-            (
-                SparseWriteBufferInsertResult::Buffered,
-                Some((old_bytes, plan.new_bytes)),
-            )
+            let new_bytes = plan.new_bytes;
+            if buffer_set.apply_insert(plan, offset, data).is_err() {
+                #[cfg(feature = "perf")]
+                perf::record_sparse_buffer_allocation_failure(data.len());
+                (
+                    SparseWriteBufferInsertResult::Flush(
+                        SparseWriteCacheEvictCause::AllocationFailure,
+                    ),
+                    None,
+                )
+            } else {
+                (
+                    SparseWriteBufferInsertResult::Buffered,
+                    Some((old_bytes, new_bytes)),
+                )
+            }
         }
     } else {
         let mut buffer_set = SparseWriteBuffers {
@@ -2926,8 +2933,12 @@ fn try_insert_sparse_write_buffer(
         };
         let plan = match buffer_set.plan_insert(offset, data.len()) {
             Ok(plan) => plan,
-            Err(SparseWriteInsertPlanError::RunLimit) => unreachable!(),
             Err(SparseWriteInsertPlanError::Overflow) => return Err(EFBIG as i32),
+            Err(SparseWriteInsertPlanError::AllocationFailure) => {
+                #[cfg(feature = "perf")]
+                perf::record_sparse_buffer_allocation_failure(data.len());
+                return Ok(SparseWriteBufferInsertResult::Direct);
+            }
         };
         if plan.new_bytes > MAX_SPARSE_WRITE_BUFFER_SIZE
             || !sparse_buffers.can_replace(0, plan.new_bytes)
@@ -3026,19 +3037,14 @@ mod sparse_write_buffer_tests {
     }
 
     #[test]
-    fn sparse_runs_at_capacity_can_still_coalesce_a_connected_component() {
+    fn sparse_ranges_do_not_have_a_bitmap_run_limit() {
         let mut buffers = buffers();
-        for index in 0..MAX_SPARSE_WRITE_BUFFER_RUNS {
+        for index in 0..128 {
             insert(&mut buffers, index * 3, b"x");
         }
-
-        assert!(matches!(
-            buffers.plan_insert(MAX_SPARSE_WRITE_BUFFER_RUNS * 3, 1),
-            Err(SparseWriteInsertPlanError::RunLimit)
-        ));
-
+        assert_eq!(buffers.runs.len(), 128);
         insert(&mut buffers, 1, b"xx");
-        assert_eq!(buffers.runs.len(), MAX_SPARSE_WRITE_BUFFER_RUNS - 1);
+        assert_eq!(buffers.runs.len(), 127);
         assert_eq!(run(&buffers, 0), (0, b"xxx".as_slice()));
     }
 
@@ -3054,7 +3060,12 @@ mod sparse_write_buffer_tests {
         store.insert(key, buffers);
 
         let old_bytes = store.entries.get(&key).unwrap().bytes;
-        let plan = store.entries.get(&key).unwrap().plan_insert(2, 2).unwrap();
+        let plan = store
+            .entries
+            .get_mut(&key)
+            .unwrap()
+            .plan_insert(2, 2)
+            .unwrap();
         assert_eq!(plan.new_bytes, 4);
         store
             .entries

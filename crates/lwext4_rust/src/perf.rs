@@ -139,6 +139,8 @@ pub struct WriteBackCachePerfStats {
     /// own bucket so the two single-limit counters remain unambiguous.
     pub sparse_cache_evict_payload_limit_batches: usize,
     pub sparse_cache_evict_payload_limit_bytes: usize,
+    // Kept in the snapshot ABI for existing log parsers. Linux-style range
+    // collection has no run-count limit, so these counters are always zero.
     pub sparse_cache_evict_run_limit_batches: usize,
     pub sparse_cache_evict_run_limit_bytes: usize,
     pub sparse_cache_evict_both_limits_batches: usize,
@@ -286,8 +288,6 @@ pub(crate) enum SparseWriteFlushReason {
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SparseWriteCacheEvictCause {
     PayloadLimit,
-    RunLimit,
-    BothLimits,
     AllocationFailure,
     LargeDirect,
     GlobalBudget,
@@ -590,14 +590,6 @@ fn sparse_cache_evict_cause_counters(
         SparseWriteCacheEvictCause::PayloadLimit => (
             &SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BATCHES,
             &SPARSE_CACHE_EVICT_PAYLOAD_LIMIT_BYTES,
-        ),
-        SparseWriteCacheEvictCause::RunLimit => (
-            &SPARSE_CACHE_EVICT_RUN_LIMIT_BATCHES,
-            &SPARSE_CACHE_EVICT_RUN_LIMIT_BYTES,
-        ),
-        SparseWriteCacheEvictCause::BothLimits => (
-            &SPARSE_CACHE_EVICT_BOTH_LIMITS_BATCHES,
-            &SPARSE_CACHE_EVICT_BOTH_LIMITS_BYTES,
         ),
         SparseWriteCacheEvictCause::AllocationFailure => (
             &SPARSE_CACHE_EVICT_ALLOCATION_FAILURE_BATCHES,
