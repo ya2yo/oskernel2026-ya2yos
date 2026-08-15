@@ -120,7 +120,10 @@ fn futex_requeue(old_pa: usize, max_wakeup: i32, new_pa: usize, max_requeue: i32
             futex_queue.entry(new_pa).or_default().extend(moved);
         }
     }
-    woken + requeued
+    // FUTEX_REQUEUE reports only the number of waiters woken directly.
+    // Requeued waiters remain blocked on the destination futex and must not
+    // be counted as successful wakeups by pthread condition-variable code.
+    woken
 }
 
 /// Queue a waiter only while its expected user-space value still matches.

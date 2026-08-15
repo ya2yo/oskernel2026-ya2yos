@@ -12029,3 +12029,28 @@ EFI guest 回归完成。
 `make run TARGET_ARCH=loongarch64 SMP=12`，内层 guest 输出 `Hello, world!`、`shutdown!`，日志
 中未见 `panic`、`TFAIL` 或 `TBROK`。详见
 `problem/nested-loongarch-qemu-smp-futex-requeue.md`。
+
+## 2026-08-15：BuildStorm futex requeue 返回值过报修复
+
+### 用户需求
+
+维护者要求分析 `qemu-hang-20260815-074639-pid6568`，指出 `log.ans` 长时间没有增长，
+并检查提交 `cadc845b778ff646a74c2c5a9ee3dc98be629456` 引入的修复。
+
+### AI 分析与采纳结论
+
+日志在 BuildStorm 的 `arceos-helloworld` 构建阶段停止，最后调度快照为
+`ready_tasks=0`；此前 futex 调用仍在增长，说明不是启动失败，而是用户态同步对象最终
+全部等待。审计提交后的 `futex_requeue()` 发现返回 `woken + requeued`，但 Linux
+`FUTEX_REQUEUE` 只返回直接唤醒的 waiter 数。pthread 条件变量据此维护用户态 waiter
+计数，过报会让计数超过实际 Ready 线程，后续 wake 丢失并形成死锁。
+
+### 修改文件与验证
+
+`os/src/task/futex.rs` 现仅返回 `woken`，保留 waiter generation 检查、超时竞争保护、
+未移动 waiter 保留及 futex_pa 更新。新增问题复盘并更新开发日志、README、
+`AI_INTERACTION.md`。
+
+`git diff --check`、`cargo fmt --manifest-path os/Cargo.toml -- --check` 和
+`make build-arch TARGET_ARCH=loongarch64` 通过。完整长时 QEMU/BuildStorm 本轮未重跑，
+因此没有宣称端到端死锁回归完成。

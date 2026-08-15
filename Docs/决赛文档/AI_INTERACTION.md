@@ -1483,6 +1483,16 @@
 - **关联问题**：[嵌套 LoongArch64 QEMU 多核 futex requeue 丢 waiter](./problem/nested-loongarch-qemu-smp-futex-requeue.md)
 - **关联 commit**：当前工作区未提交
 
+#### BuildStorm futex requeue 返回值过报（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `qemu-hang-20260815-074639-pid6568`，指出 `log.ans` 长时间没有增长，要求分析 `cadc845b778ff646a74c2c5a9ee3dc98be629456` 引入的回归。
+- **描述**：对照挂起日志末尾的 BuildStorm `arceos-helloworld` 构建阶段、`ready_tasks=0` 的调度快照和 futex 队列实现，确认 `FUTEX_REQUEUE` 将 `requeued` waiter 错误计入 syscall 返回值。Linux ABI 只返回直接 wake 数，过报会破坏 pthread 条件变量用户态计数并形成全局阻塞。
+- **修改文件**：`os/src/task/futex.rs` 与决赛文档记录。
+- **验证边界**：`git diff --check`、Rust 格式检查和 LoongArch64 release 构建通过；未重新执行完整长时 QEMU/BuildStorm，未宣称端到端回归完成。
+- **关联问题**：[BuildStorm futex requeue 返回值过报导致死锁](./problem/buildstorm-futex-requeue-return-count.md)
+- **关联 commit**：当前工作区未提交
+
 #### LoongArch 同地址空间并发 Hart 取指同步补强（8.11）
 
 - **工具/模型**：Codex（GPT-5）
