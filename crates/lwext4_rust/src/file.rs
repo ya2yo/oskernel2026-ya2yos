@@ -2214,9 +2214,15 @@ impl Ext4File {
         let mut d: ext4_dir = unsafe { core::mem::zeroed() };
         let mut entries: Vec<_> = Vec::new();
 
+        let open_rc = unsafe { ext4_dir_open(&mut d, c_path) };
         unsafe {
-            ext4_dir_open(&mut d, c_path);
             drop(CString::from_raw(c_path));
+        }
+        if open_rc != EOK as i32 {
+            return Err(open_rc);
+        }
+
+        unsafe {
             d.next_off = off;
             let mut de = ext4_dir_entry_next(&mut d);
             while !de.is_null() {

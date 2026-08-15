@@ -3595,3 +3595,16 @@
   LoongArch64 完整 QEMU 运行回归尚未执行。详见 [fork COW panic](./problem/fork-cow-lazy-page-panic.md)
   和 [pthread_cancel signal/ucontext](./problem/pthread-cancel-signal-ucontext.md)。
 - **关联 commit**：当前工作区未提交
+
+#### lwext4 空目录句柄导致 getcwd03 panic（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `log.ans` 并修复 LTP `getcwd03` 后的内核 panic。
+- **描述**：根据 `stval=0x4a8`、当前 ELF 符号及 `ext4_fs_rwlock_get_kind()` 的成员偏移，定位到
+  目录打开失败后仍调用 `ext4_dir_entry_next()`，将空 `dir->f.mp` 计算为 `0x4a0` inode 锁地址。
+  Rust 包装层现传播 `ext4_dir_open()` 错误，C 目录迭代和 `ext4_fread()` 增加空句柄防御，避免可恢复
+  lookup 错误升级为内核 panic。
+- **验证边界**：定向 RISC-V QEMU `getcwd03` 已不再 panic，测例可结束并关机；该测例的
+  `readlink(...)=EINVAL` 仍为 `TBROK`，未宣称通过。RISC-V/LoongArch64 release 构建通过。
+  详见 [问题复盘](./problem/lwext4-invalid-directory-handle-panic.md) 与 `ai.log` 对应条目。
+- **关联 commit**：当前工作区未提交

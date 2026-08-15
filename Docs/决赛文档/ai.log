@@ -12317,3 +12317,30 @@ debug 内核复测时，debug 热路径输出导致 `pthread_cond_smasher` 在 5
 执行 `make log TARGET_ARCH=riscv64`、定向 pthread_cancel 运行，以及 `make TARGET_ARCH=riscv64`
 后再执行完整 `make run TARGET_ARCH=riscv64`。warn 级运行的 217 项测试（含静态/动态
 `pthread_cancel`、`pthread_cond_smasher`）均通过并正常关机；LoongArch64 完整 QEMU 回归尚未执行。
+
+## 2026-08-15：lwext4 空目录句柄导致 getcwd03 panic
+
+### 用户输入
+
+维护者要求分析 `log.ans` 并修复其中的 bug。
+
+### AI 分析与采纳结论
+
+筛选 LTP 日志后确认 `getcwd03` 在 `readlink(...)=EINVAL` 后触发 RISC-V kernel
+`LoadPageFault`，`stval=0x4a8`、`sepc=ext4_fs_rwlock_get_kind`。对当前 ELF 符号化和
+反汇编表明读取 `kind` 使用 `lock+8`，因此传入锁地址是 `0x4a0`；这正是空
+`ext4_mountpoint` 上计算 `fs.inode_locks[]` 的成员偏移。
+
+进一步检查发现 Rust `Ext4File::read_dir_from()` 忽略 `ext4_dir_open()` 的失败返回，随后仍以
+零初始化的 `ext4_dir` 调用 `ext4_dir_entry_next()`。后者原本无空句柄检查，立即进入 namespace
+和 inode 锁宏，最终在任务感知锁分类回调中解引用低地址。另将 `ext4_fread()` 中依赖编译期可能
+失效的 `ext4_assert(file && file->mp)` 改为显式 `EINVAL` 返回，避免同类无效文件句柄路径。
+
+### 修改与验证
+
+修改 `crates/lwext4_rust/src/file.rs` 传播目录打开错误，修改
+`crates/lwext4_rust/c/lwext4/src/ext4.c` 为目录迭代和 `ext4_fread()` 加入有效句柄检查，并新增
+问题复盘和索引。临时定向 `getcwd03` 的 RISC-V QEMU 运行仍报告
+`readlink(...)=EINVAL` / `TBROK`，但未再输出 `KERNEL PANIC`，并完成组结束及 `shutdown!`。
+执行 `make TARGET_ARCH=riscv64` 和 `make TARGET_ARCH=loongarch64`；两架构 release 构建通过，
+仅有既有 warning。未运行完整 LTP，也未解决 `readlink` 的语义失败。

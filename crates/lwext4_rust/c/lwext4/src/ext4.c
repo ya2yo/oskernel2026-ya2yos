@@ -2038,7 +2038,8 @@ int ext4_fread(ext4_file *file, void *buf, size_t size, size_t *rcnt)
 	int r;
 	struct ext4_inode_ref ref;
 
-	ext4_assert(file && file->mp);
+	if (!file || !file->mp)
+		return EINVAL;
 
 	if (file->flags & O_WRONLY)
 		return EPERM;
@@ -3797,6 +3798,10 @@ const ext4_direntry *ext4_dir_entry_next(ext4_dir *dir)
 	ext4_direntry *de = 0;
 	struct ext4_inode_ref dir_inode;
 	struct ext4_dir_iter it;
+
+	/* ext4_dir_open() leaves the descriptor empty on lookup failure. */
+	if (!dir || !dir->f.mp)
+		return NULL;
 
 	EXT4_NS_READ_LOCK(dir->f.mp);
 	EXT4_INODE_READ_LOCK(dir->f.mp, dir->f.inode);
