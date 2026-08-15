@@ -420,7 +420,13 @@ pub fn send_user_signal_to_thread(tid: usize, sig: SigSet, signo: usize) {
     if let Some(task) = tid_to_task::tid2task(tid) {
         let siginfo = current_signal_cred()
             .ok()
-            .and_then(|sender| siginfo_from_sender(sender, signo));
+            .and_then(|sender| {
+                Some(SigInfo::new_tkill(
+                    signo as u32,
+                    sender.pid as u32,
+                    sender.real_uid,
+                ))
+            });
         add_signal_with_info(&task, sig, siginfo, SignalDeliverySource::Normal);
     }
 }
@@ -434,7 +440,13 @@ pub fn send_user_signal_to_thread_of_proc(pid: usize, tid: usize, sig: SigSet, s
         if task.pid() == pid {
             let siginfo = current_signal_cred()
                 .ok()
-                .and_then(|sender| siginfo_from_sender(sender, signo));
+            .and_then(|sender| {
+                Some(SigInfo::new_tkill(
+                    signo as u32,
+                    sender.pid as u32,
+                    sender.real_uid,
+                ))
+            });
             add_signal_with_info(&task, sig, siginfo, SignalDeliverySource::Normal);
         }
     }

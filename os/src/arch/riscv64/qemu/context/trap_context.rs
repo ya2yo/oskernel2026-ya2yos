@@ -48,6 +48,10 @@ pub struct UserContext {
     pub stack: SignalStack,
     pub sigmask: SigSet,
     pub __pad: [u8; __PAD_SIZE],
+    // Linux's RISC-V ucontext keeps one ABI padding word between the
+    // extensible sigset_t area and uc_mcontext.  musl's cancellation handler
+    // uses the resulting offset when rewriting the interrupted PC.
+    pub __uc_pad: usize,
     pub mcontext: MachineContext,
 }
 

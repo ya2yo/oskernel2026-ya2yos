@@ -556,7 +556,12 @@ impl PageTable {
         vpn: VirtPageNum,
         memory_set: &mut MemorySetInner,
     ) {
-        let pte = self.find_valid_pte(vpn).unwrap();
+        let Some(pte) = self.find_valid_pte(vpn) else {
+            // ELF/Brk VMAs may cover lazy or already-unmapped pages.  Fork
+            // only needs to COW a present leaf; a missing leaf is inherited
+            // lazily by the child and must not turn fork into a kernel panic.
+            return;
+        };
         let mut pte_flags = pte.get_flags();
         let src_ppn = pte.get_ppn();
         // 对于可写的页，或者有写时复制的标志位的页

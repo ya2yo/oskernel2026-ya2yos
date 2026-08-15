@@ -12289,3 +12289,31 @@ loader、`libc` 和 `libm` 别名；即使目录已由旧启动创建，也继�
 `TCP_STREAM`、`UDP_RR`、`TCP_RR`、`TCP_CRR` 都输出 `end: success`，随后输出组结束标记和
 `shutdown!`；没有 OOM 或共享库缺失。`make build-arch TARGET_ARCH=loongarch64` 通过。
 未运行 LoongArch64 QEMU netperf 全路径。
+
+## 2026-08-15：preliminary musl fork/COW panic 与 pthread_cancel
+
+### 用户输入
+
+维护者要求分析 `log.ans` 中出现的 panic 和 fail，并说明测试源码已切换到初赛分支。
+
+### AI 分析与采纳结论
+
+对 `log.ans` 的真实失败信号进行筛选，区分测试 wrapper 输出与内核 panic。确认 fork
+遍历 ELF/`brk` VMA 时会遇到没有有效叶子 PTE 的懒分配页，页表 COW 代码不应对
+`find_valid_pte()` 结果执行无条件 `unwrap()`。同时确认 musl `pthread_cancel` 使用
+signal 33，并要求 `tkill` 来源 `SI_TKILL`；其 `SA_SIGINFO` handler 还按 ABI 偏移修改
+`ucontext_t.uc_mcontext` 的返回 PC，而两个架构的 `UserContext` 少一个 padding word。
+
+采纳方案：RISC-V/LoongArch64 缺失叶子只跳过 COW；按线程信号构造 `SI_TKILL`；两个
+架构的 signal context 增加 `__uc_pad` 并在 frame 初始化。没有修改 futex：此前的完整
+warn 级运行已显示 `libctest-musl` 全部 `Pass!`、`shutdown!`；后续用 `make log` 的
+debug 内核复测时，debug 热路径输出导致 `pthread_cond_smasher` 在 500 ms 窗口内超时，
+不能把该观测配置诱发的失败当作 futex 语义回归。
+
+### 修改与验证
+
+修改 `os/src/arch/riscv64/qemu/page_table.rs`、`os/src/arch/loongarch64/qemu/page_table.rs`、
+两个架构的 `context/trap_context.rs`、`os/src/signal/types.rs`、`delivery.rs` 和 `frame.rs`。
+执行 `make log TARGET_ARCH=riscv64`、定向 pthread_cancel 运行，以及 `make TARGET_ARCH=riscv64`
+后再执行完整 `make run TARGET_ARCH=riscv64`。warn 级运行的 217 项测试（含静态/动态
+`pthread_cancel`、`pthread_cond_smasher`）均通过并正常关机；LoongArch64 完整 QEMU 回归尚未执行。

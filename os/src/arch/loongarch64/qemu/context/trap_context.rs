@@ -28,6 +28,9 @@ pub struct UserContext {
     pub stack: SignalStack,
     pub sigmask: SigSet,
     pub __pad: [u8; __PAD_SIZE],
+    // LoongArch's musl ucontext_t has the same ABI padding word before
+    // uc_mcontext.
+    pub __uc_pad: usize,
     pub mcontext: MachineContext,
 }
 

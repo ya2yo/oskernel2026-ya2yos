@@ -3581,3 +3581,17 @@
   尚未运行 LoongArch64 QEMU netperf。
 - **关联问题**：[Preliminary basic 脚本权限与动态解释器路径](./problem/preliminary-basic-script-interpreter.md)
 - **关联 commit**：当前工作区未提交
+
+#### Preliminary musl fork/COW panic 与 pthread_cancel ABI 修复（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `log.ans` 中的 panic/fail；测试源码已切换到 preliminary 分支。
+- **描述**：定位 fork 的 ELF/`brk` VMA COW 遍历对缺失叶子 PTE 的 `unwrap()` panic，以及
+  musl `pthread_cancel` 所需的 `SI_TKILL` 来源码和 RISC-V/LoongArch64 `ucontext_t` padding
+  偏移问题。修复缺失叶子跳过、按线程信号来源和两个架构 context 布局。
+- **验证边界**：RISC-V `make log` 和定向 pthread_cancel 构建/运行通过；debug 内核完整复测
+  曾使 `pthread_cond_smasher` 在 500 ms 窗口超时。随后用 `make TARGET_ARCH=riscv64` 重建
+  warn 级内核，完整 preliminary musl libc 的 217 项测试全部 `Pass!` 并 `shutdown!`；
+  LoongArch64 完整 QEMU 运行回归尚未执行。详见 [fork COW panic](./problem/fork-cow-lazy-page-panic.md)
+  和 [pthread_cancel signal/ucontext](./problem/pthread-cancel-signal-ucontext.md)。
+- **关联 commit**：当前工作区未提交

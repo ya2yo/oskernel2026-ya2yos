@@ -342,6 +342,7 @@ pub fn setup_frame(signo: usize, sig_action: KSigAction, siginfo: Option<SigInfo
             stack: alt_signal_stack,
             sigmask: restore_sig_mask,
             __pad: [0u8; __PAD_SIZE],
+            __uc_pad: 0,
             mcontext: trap_cx.as_mctx(),
         };
         let frame = SigInfoSignalFrame {

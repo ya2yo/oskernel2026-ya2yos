@@ -518,6 +518,17 @@ impl SigInfo {
         }
     }
 
+    /// Construct the `siginfo_t` used by `tkill(2)`/`tgkill(2)`.
+    ///
+    /// Linux exposes `SI_TKILL` in `si_code`; libc cancellation handlers use
+    /// this provenance to distinguish the internal cancellation signal from a
+    /// user `kill(2)` carrying the same signal number.
+    pub fn new_tkill(si_signo: u32, pid: u32, uid: u32) -> Self {
+        let mut info = Self::new_user(si_signo, pid, uid);
+        info.si_code = (-6i32) as u32; // SI_TKILL
+        info
+    }
+
     /// 构造 waitid()/SIGCHLD 使用的 siginfo_t。
     ///
     /// Linux/musl 在 SIGCHLD 场景下会从 siginfo union 的 child 分支读取
