@@ -4,6 +4,7 @@
 # loongarch64
 TARGET_ARCH := riscv64
 # TARGET_ARCH := loongarch64
+comma := ,
 
 all: riscv64-build loongarch64-build
 # all: $(TARGET_ARCH)-build
@@ -43,7 +44,7 @@ build-arch: set_env_arch
 	@cd ./user && $(MAKE) build
 	@echo "------------------------------------------- user programs built successfully"
 	@echo "Building kernel for $(TARGET_ARCH)..."
-	@cd ./os && $(MAKE) build KERNEL_OUTPUT_LOG_LEVEL=warn
+	@cd ./os && $(MAKE) build KERNEL_OUTPUT_LOG_LEVEL=warn KERNEL_EXTRA_FEATURES=$(KERNEL_PLATFORM_FEATURES)
 	@$(MAKE) cleanup_cargo
 	@echo "$(TARGET_ARCH) build completed successfully!"
 
@@ -75,17 +76,17 @@ special_make:set_env
 	@cd ./os && $(MAKE) build KERNEL_OUTPUT_LOG_LEVEL=warn
 	@$(MAKE) cleanup_cargo
 
-log: set_env
+log: set_env_arch
 	@$(MAKE) setup_cargo
 	@cd ./user && $(MAKE) build
-	@cd ./os && $(MAKE) build KERNEL_OUTPUT_LOG_LEVEL=debug
+	@cd ./os && $(MAKE) build KERNEL_OUTPUT_LOG_LEVEL=debug KERNEL_EXTRA_FEATURES=$(KERNEL_PLATFORM_FEATURES)
 	@$(MAKE) cleanup_cargo
 
 # 构建带内核性能统计埋点的版本
-perf: set_env
+perf: set_env_arch
 	@$(MAKE) setup_cargo
 	@cd ./user && $(MAKE) build
-	@cd ./os && $(MAKE) build KERNEL_EXTRA_FEATURES=perf
+	@cd ./os && $(MAKE) build KERNEL_EXTRA_FEATURES=$(if $(KERNEL_PLATFORM_FEATURES),perf$(comma)$(KERNEL_PLATFORM_FEATURES),perf)
 	@$(MAKE) cleanup_cargo
 
 # 仅生成内核 crate 的 rustdoc；依赖仍会参与类型检查，但不生成其文档页面。
@@ -98,10 +99,18 @@ doc: set_env_arch
 
 # 注意，make run会创建一个临时软链接
 run:
+	@$(MAKE) build-arch TARGET_ARCH=$(TARGET_ARCH) PLATFORM=$(PLATFORM)
+ifeq ($(PLATFORM),2k1000)
+	@echo "2K1000 is a physical-board target; QEMU virt cannot validate its AHCI path."
+	@echo "At the U-Boot prompt run:"
+	@echo "  tftpboot $(KERNEL_LOAD_ADDR) $(KERNEL_RAW_BIN)"
+	@echo "  go $(KERNEL_ENTRY_ADDR)"
+else
 	@rm -f disk.img
 	@ln -s $(DISK_IMG) ./disk.img
 	@-$(QEMU_CMD)
 	@rm -f disk.img
+endif
 
 clean:
 	@cd ./os && $(MAKE) clean
@@ -132,7 +141,7 @@ gdb:
 	@tmux attach-session -t os-debug
 
 setup_cargo:
-	-@cd ./os && mkdir -p .cargo && if [ "$(PLATFORM)" = "visionfive2" ]; then cp -f dotcargo/config-visionfive2 .cargo/config; else cp -f dotcargo/config .cargo/; fi
+	-@cd ./os && mkdir -p .cargo && if [ "$(PLATFORM)" = "visionfive2" ]; then cp -f dotcargo/config-visionfive2 .cargo/config; elif [ "$(PLATFORM)" = "2k1000" ]; then cp -f dotcargo/config-2k1000 .cargo/config; else cp -f dotcargo/config .cargo/; fi
 	-@cd ./user && mkdir -p .cargo && cp -f dotcargo/config .cargo/
 
 cleanup_cargo:

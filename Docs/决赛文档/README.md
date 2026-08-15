@@ -231,3 +231,4 @@
 - [BuildStorm P1-A 当前任务重入队远程 IPI 风暴](./problem/buildstorm-p1a-current-requeue-ipi.md)
 - [LoongArch BuildStorm trap 边界全 TLB 失效](./problem/loongarch-buildstorm-trap-tlb-thrash.md)
 - [LoongArch 用户页表内核直映别名导致 QEMU GDB 无法中断](./problem/loongarch-user-pagetable-directmap-alias.md)
+- [Loongson 2K1000 板级启动、AHCI 与 GMAC0 驱动](./problem/loongson-2k1000-board-ahci.md)

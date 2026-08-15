@@ -24,6 +24,10 @@ ifeq ($(ARCH), riscv64)
 	@$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $(PROJECT_ROOT)/$(KERNEL_BIN)
 else ifeq ($(ARCH), loongarch64)
 	@cp $(KERNEL_ELF) $(PROJECT_ROOT)/$(KERNEL_BIN)
+ifeq ($(PLATFORM),2k1000)
+	@echo "Generating 2K1000 raw image: $(PROJECT_ROOT)/$(KERNEL_RAW_BIN)"
+	@$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $(PROJECT_ROOT)/$(KERNEL_RAW_BIN)
+endif
 endif
 
 kernel:

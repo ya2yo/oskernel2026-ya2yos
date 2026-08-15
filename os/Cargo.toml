@@ -54,6 +54,7 @@ smoltcp = { path = "../crates/smoltcp" }
 
 [features]
 default = ["net", "scheduler-cfs"]
+2k1000 = []
 error = []
 warn = []
 info = []

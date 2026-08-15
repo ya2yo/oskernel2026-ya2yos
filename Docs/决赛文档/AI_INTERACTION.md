@@ -3497,3 +3497,28 @@
   错误；尚未获得内层 guest `Hello, world!`/关机，完整回归仍待确认。详见
   [nested-loongarch-qemu-boot.md](./problem/nested-loongarch-qemu-boot.md)。
 - **关联 commit**：当前工作区未提交
+
+#### Loongson 2K1000 板级启动与 AHCI 块驱动（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求参考 Linux 为 Loongson 2K1000 开发板补充驱动。
+- **描述**：依据 Linux 7.0 2K1000 Reference Board DTS，接入高端 DRAM 链接、EFI-FDT 启动、
+  NS16550 UART、PMC poweroff 和轮询 AHCI 根盘；将 AHCI 放到当前架构专属 drivers 层，并让
+  2K1000 feature 不再初始化 QEMU PCI VirtIO-net。构建产物包括供 U-Boot 使用的原始镜像。
+- **验证边界**：2K1000、普通 LoongArch64 和 RISC-V64 release 构建通过，ELF/DMA 地址检查通过；
+  没有 2K1000 实板或 SATA I/O 回归，GMAC/LIOINTC 尚未接入。详见
+  [问题复盘](./problem/loongson-2k1000-board-ahci.md) 与 `ai.log` 2026-08-15 条目。
+- **关联 commit**：当前工作区未提交
+
+#### Loongson 2K1000 GMAC0 DWMAC 轮询网卡（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者确认 2K1000 是否具备网卡后，要求继续补齐板载网卡支持。
+- **描述**：核对 Linux 7.0 2K1000 DTS、`dwmac-loongson`、DWMAC1000 DMA/正常描述符路径，并以
+  本机 DP 固件 FDT 的 `0x40040000`/PHY 0 为实际板级地址，新增 GMAC0 单通道轮询驱动。驱动使用
+  CMA RX/TX 环，限制 32-bit 物理地址，并在 `2k1000` 下替代 QEMU VirtIO-net；初始化失败仅留下空
+  网络容器，不阻塞 AHCI 根盘启动。
+- **验证边界**：2K1000 release 构建、ELF 符号检查与 `git diff --check` 通过；未执行实体板 PHY、
+  链路、ARP、DHCP、TCP/UDP，也未接入 GMAC1、LIOINTC IRQ/NAPI。
+- **关联问题**：[Loongson 2K1000 板级启动、AHCI 与 GMAC0 驱动](./problem/loongson-2k1000-board-ahci.md)
+- **关联 commit**：当前工作区未提交

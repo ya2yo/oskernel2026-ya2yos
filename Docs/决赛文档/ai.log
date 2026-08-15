@@ -12146,3 +12146,48 @@ RISC-V 保留 VirtIO-net，只有 `visionfive2` 选择新驱动。
 `git diff --check` 和 `make TARGET_ARCH=visionfive2` 通过；后者同时完成 RISC-V64 与
 LoongArch64 release 构建。没有可用 VF2 实板或 JH7110 QEMU 网卡模型，未执行链路、DHCP、ARP
 或 TCP/UDP 运行验证。详见 [problem/visionfive2-dwmac-driver.md](./problem/visionfive2-dwmac-driver.md)。
+
+## 2026-08-15：Loongson 2K1000 板级驱动补充
+
+### 用户需求
+
+维护者要求“补充龙芯2k1000开发板的驱动，参考linux”。
+
+### AI 分析与采纳结论
+
+阅读 Linux 7.0 `loongson-2k1000-ref.dts`、`loongson-2k1000.dtsi` 和 PCI/AHCI 相关驱动，确认
+该 LoongArch 参考板的 UART0、PMC poweroff、AHCI 和高端 DRAM 地址均不同于 QEMU virt。发现
+仓库存在非祖先悬挂提交 `f85120f6` 的旧 2K1000 AHCI 实现；没有直接恢复其旧 QEMU 假设，而是将
+板级启动和 AHCI 迁移到当前 `arch/loongarch64/drivers` 分层，并保留当前 EFI-FDT RAM/CPU 探测。
+
+### 修改与验证
+
+新增 `2k1000` feature、专用 linker/Cargo 配置、板级 UART/PMC/双核启动和轮询 AHCI。
+`BlockDeviceImpl` 在该 feature 下选择 AHCI，网络初始化为空避免误探测 QEMU VirtIO。新增问题复盘、
+README 索引和开发日志。`make build-arch TARGET_ARCH=loongarch64 PLATFORM=2k1000`、普通
+LoongArch64 QEMU 构建和 RISC-V64 构建均通过；ELF entry/PT_LOAD 为
+`0x9000000090000000`，AHCI DMA 静态区物理地址为 `0x90568000`。未执行实板 SATA/EXT4 或
+GMAC/LIOINTC 测试，不能报告硬件 I/O 回归通过。
+
+## 2026-08-15：Loongson 2K1000 GMAC0 DWMAC 轮询网卡
+
+### 用户输入
+
+维护者在要求补充 2K1000 开发板驱动后追问“2k1000没有网卡吗”。
+
+### AI 分析与采纳结论
+
+Linux 7.0 的 2K1000 Reference Board DTS 明确启用两路 GMAC；此前 Ya2yOS 的空网络容器表示
+驱动尚未接入，不表示硬件不存在。进一步核对 `dwmac-loongson.c`，确认控制器属于 DWMAC 3.x，
+不能复用 VisionFive 2 的 DWMAC 5.20 DMA 寄存器与描述符。Linux 通用 DTS 以内部 PCI 描述
+GMAC，而本机 `LS2K1000-DP-V10` 固件 FDT 给出实际直接 MMIO 基址 `0x40040000` 与 PHY 地址 0；
+实现据此选择 GMAC0，不猜测 PCI BAR。
+
+### 修改与验证
+
+新增 `os/src/arch/loongarch64/drivers/ls2k1000_gmac.rs`，实现 DWMAC 3.70a 的 DMA reset、Clause-22
+MDIO PHY 探测、MAC 地址、RGMII 链路刷新、16 项正常描述符 RX/TX 环和 CMA DMA 缓冲区；CMA 地址
+超过 32 位即拒绝。仅在 `2k1000` feature 下选择该设备，并将启动期网络初始化改为探测失败可回退
+空容器，保持 QEMU VirtIO 路径不变。补充 Linux 源码分析文档、开发日志、问题复盘和索引。
+`make build-arch TARGET_ARCH=loongarch64 PLATFORM=2k1000`、此前的普通 LoongArch64 与 RISC-V64
+release 构建和 `git diff --check` 通过；无实板，未验证 DMA reset、PHY、ARP、DHCP 或 TCP/UDP。

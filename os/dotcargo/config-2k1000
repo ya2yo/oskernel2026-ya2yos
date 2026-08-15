@@ -1,0 +1,27 @@
+[build]
+target = "riscv64gc-unknown-none-elf"
+
+[target.riscv64gc-unknown-none-elf]
+rustflags = [
+    "-Clink-arg=-Tlinkers/linker_riscv64.ld", "-Cforce-frame-pointers=yes"
+]
+
+[target.loongarch64-unknown-none]
+rustflags = [
+    "-Clink-arg=-Tlinkers/linker_loongarch64_2k1000.ld", "-Cforce-frame-pointers=yes",
+    "-Clink-arg=-nostdlib", "-Clink-arg=-static", "-Cpanic=abort"
+]
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/rcore-os/riscv"]
+git = "https://github.com/rcore-os/riscv"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/Godones/loongArch64"]
+git = "https://github.com/Godones/loongArch64"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
