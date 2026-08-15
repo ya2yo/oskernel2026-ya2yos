@@ -638,6 +638,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             args[0],
             args[1] as *const SigAction,
             args[2] as *mut SigAction,
+            args[3],
         ),
         Syscall::SigProcMask => sys_rt_sigprocmask(
             args[0] as u32,

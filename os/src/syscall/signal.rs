@@ -107,11 +107,17 @@ pub fn sys_rt_sigaction(
     signo: usize,
     act: *const SigAction,
     old_act: *mut SigAction,
+    sigsetsize: usize,
 ) -> SyscallRet {
     debug!(
         "[sys_rt_sigaction] signo is {:#b}, act is {:?}, old_act is {:?}",
         signo, act, old_act
     );
+    // Linux requires the kernel-sized signal set, currently one u64.
+    // Validate it before touching user memory or changing the signal table.
+    if sigsetsize != core::mem::size_of::<SigSet>() {
+        return Err(SysErrNo::EINVAL);
+    }
     // signo == 0 用于检查进程是否存在，这里不允许
     if signo == 0 || signo > SIG_MAX_NUM {
         error!("invalid signo: {}", signo);
