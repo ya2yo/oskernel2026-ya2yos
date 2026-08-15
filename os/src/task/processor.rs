@@ -168,12 +168,28 @@ pub(crate) fn notify_hart_of_runnable_task(target_hart: usize) {
     crate::utils::perf::record_scheduler_enqueue(true, target_idle, _ipi_sent);
 }
 
-/// Wake idle Harts that are allowed to run a newly runnable CFS task.
+/// 唤醒允许运行新就绪 CFS 任务的 idle Hart。
 ///
-/// The CFS queue is shared by every Hart, so a task is no longer tied to the
-/// Hart that last ran it. Wake at most one idle Hart per queued task to avoid a
-/// broadcast storm while still preventing runnable work from waiting behind
-/// sleeping Harts.
+/// CFS 就绪队列由所有 Hart 共享，因此任务不再固定属于最近运行它的 Hart。
+/// 函数只向 `cpu_mask` 允许的远端 Hart 发送通知，并且每个就绪任务至多唤醒
+/// 一个 idle Hart，避免广播风暴；同时仍能让就绪任务尽快被休眠中的 Hart
+/// 执行。当前 Hart 不会向自身发送 IPI，因为它会在当前调度循环中观察共享
+/// 就绪队列。
+///
+/// # 参数
+///
+/// - `cpu_mask`：允许接收唤醒通知的 Hart 位掩码。第 `n` 位为 `1` 表示允许
+///   向 Hart `n` 发送通知；超出当前实际 Hart 数量或
+///   [`MAX_SUPPORTED_HARTS`] 的位会被忽略。
+/// - `ready_tasks`：当前待运行的就绪任务数量，用于限制本次最多发送的唤醒
+///   数量。实际唤醒数还会受到允许的远端 Hart 数量、Hart idle 状态以及
+///   `wake_hart` 是否成功的限制。
+///
+/// # 返回值
+///
+/// 返回 `()`。函数通过向符合条件的 idle Hart 发送 IPI 产生唤醒副作用；没有
+/// 合适的目标、没有 idle Hart 或唤醒失败时不会报告错误，调用方可通过调度器
+/// 后续迭代再次尝试。
 pub(crate) fn notify_harts_of_runnable_task(cpu_mask: usize, ready_tasks: usize) {
     let source_hart = hart_id();
     let mut remote_target = false;
@@ -296,7 +312,7 @@ pub fn run_tasks() {
                 // Enqueue before selection so CFS can compare the current task
                 // with every other runnable entity. For RR this preserves the
                 // original behavior of appending the current task at the tail.
-                ready_queue::add_task(&cur_task);
+                ready_queue::requeue_current(&cur_task);
             }
         }
 
