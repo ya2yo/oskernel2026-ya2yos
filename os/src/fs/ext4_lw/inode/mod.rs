@@ -438,6 +438,18 @@ impl Ext4Inode {
         }
     }
 
+    /// Return a mode from the same cache used by `fstat()` when it is still
+    /// valid.  Permission checks commonly ask for `fstat()` and `fmode()` for
+    /// the same inode; re-entering lwext4 for the second query only repeats a
+    /// serialized pathname lookup.
+    #[inline]
+    pub(super) fn cached_mode(&self) -> Option<u32> {
+        if let Some(stat) = self.cached_stat() {
+            return Some(stat.st_mode as u32);
+        }
+        self.cached_directory_stat().map(|stat| stat.st_mode as u32)
+    }
+
     /// Return a directory stat while the conservative metadata epoch is
     /// unchanged.  Path lookup and a successful `fstat()` both populate this
     /// cache, so repeated stats on a stable directory avoid the mount-wide

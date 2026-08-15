@@ -301,6 +301,13 @@ impl Ext4Inode {
     ///
     /// 当前路径失败时会尝试从 alias 恢复，兼容 rename/hard link 后的已打开 fd。
     pub(super) fn fmode_impl(&self) -> Result<u32, SysErrNo> {
+        // Path lookup and fstat already populate this cache.  Reuse it for
+        // the frequent permission-check sequence (`fstat` followed by
+        // `fmode`) and retain the serialized lwext4 path only as a fallback
+        // for uncached or invalidated metadata.
+        if let Some(mode) = self.cached_mode() {
+            return Ok(mode);
+        }
         let _write_state = self.write_state.lock();
         let _io_state = self.io_state.lock();
         #[cfg(feature = "perf")]

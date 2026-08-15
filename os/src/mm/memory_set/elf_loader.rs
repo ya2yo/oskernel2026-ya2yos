@@ -9,7 +9,9 @@ use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::{DL_INTERP_OFFSET, PAGE_SIZE, USER_HEAP_SIZE};
 #[cfg(feature = "perf")]
 use crate::arch::time::get_ticks;
-use crate::fs::{open_direct, File, Inode, OSFile, OpenFlags, FILE_PAGE_CACHE, NONE_MODE};
+use crate::fs::{
+    open_direct, File, FilePageCacheSource, Inode, OSFile, OpenFlags, FILE_PAGE_CACHE, NONE_MODE,
+};
 use crate::mm::memory_set::MemorySetInner;
 use crate::syscall::MmapFlags;
 use crate::task::{Aux, AuxType};
@@ -549,6 +551,31 @@ impl MemorySetInner {
             }
 
             let page_offset = start_va.0 - start_va.floor().0 * PAGE_SIZE;
+            // Read-only interpreter segments never receive relocation writes.
+            // When both the virtual address and file offset are page aligned,
+            // map their cached file frames directly and leave only the BSS tail
+            // lazy. Writable or unaligned segments retain the private eager
+            // path below because their zero-fill and relocation semantics need
+            // process-owned frames.
+            let file_offset = ph.offset() as usize;
+            let can_share_cached_pages = !ph_flags.is_write()
+                && page_offset == 0
+                && file_offset % PAGE_SIZE == 0
+                && file_size != 0
+                && file.inode.page_cache_path().is_some();
+            if can_share_cached_pages {
+                self.push_elf_readonly_segment_from_cache(
+                    start_va,
+                    end_va,
+                    map_perm,
+                    file,
+                    file_offset,
+                    file_size,
+                )?;
+                max_end_vpn = max_end_vpn.max(end_va.ceil());
+                continue;
+            }
+
             let map_area = MapArea::new(
                 start_va,
                 end_va,
@@ -557,15 +584,67 @@ impl MemorySetInner {
                 MapAreaType::Elf,
             );
             max_end_vpn = max_end_vpn.max(map_area.vpn_range.end());
-            self.push_elf_segment_from_file(
-                map_area,
-                page_offset,
-                file,
-                ph.offset() as usize,
-                file_size,
-            )?;
+            self.push_elf_segment_from_file(map_area, page_offset, file, file_offset, file_size)?;
         }
         Ok((max_end_vpn, header_va.into()))
+    }
+
+    /// Map a page-aligned, read-only ELF segment from the shared file-page
+    /// cache. The process retains an `Arc<FrameTracker>` for every mapped page,
+    /// so a capacity bypass in the global cache still leaves this address space
+    /// valid; later execs can reuse the page when the cache retains it.
+    fn push_elf_readonly_segment_from_cache(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        map_perm: MapPermission,
+        file: &Arc<OSFile>,
+        file_offset: usize,
+        file_size: usize,
+    ) -> Result<(), ()> {
+        let file_end = start_va.0.checked_add(file_size).ok_or(())?;
+        let file_area = MapArea::new(
+            start_va,
+            VirtAddr(file_end),
+            MapType::Framed,
+            map_perm,
+            MapAreaType::Elf,
+        );
+        let page_count = file_area
+            .vpn_range
+            .end()
+            .0
+            .checked_sub(file_area.vpn_range.start().0)
+            .ok_or(())?;
+        let first_page = file_offset / PAGE_SIZE;
+        let mut frames = Vec::with_capacity(page_count);
+        for page_delta in 0..page_count {
+            let page_index = first_page.checked_add(page_delta).ok_or(())?;
+            let page = FILE_PAGE_CACHE
+                .get_or_load(
+                    file.inode.clone(),
+                    page_index,
+                    FilePageCacheSource::MmapPrefetch,
+                )
+                .map_err(|_| ())?;
+            frames.push(page.frame.clone());
+        }
+        self.push_with_given_frames(file_area, frames);
+
+        // The final file page is already zero-filled beyond valid_len by the
+        // page cache. Any remaining segment memory is the ELF BSS tail.
+        let bss_start = VirtAddr(file_end).ceil();
+        let bss_end = end_va.ceil();
+        if bss_start < bss_end {
+            self.push_lazily(MapArea::new(
+                bss_start.into(),
+                bss_end.into(),
+                MapType::Framed,
+                map_perm,
+                MapAreaType::Elf,
+            ));
+        }
+        Ok(())
     }
 
     /// Eagerly map an ELF segment and fill only its file bytes. This preserves
@@ -666,8 +745,8 @@ impl MemorySetInner {
                 );
                 let page_offset = area_offset % PAGE_SIZE;
                 let copy_len = (read - chunk_copied).min(PAGE_SIZE - page_offset);
-                let ppn = self.page_table.translate(vpn).ok_or(())?;
-                ppn.bytes_array_mut()[page_offset..page_offset + copy_len]
+                let frame = map_area.data_frames.get(&vpn).ok_or(())?;
+                frame.ppn.bytes_array_mut()[page_offset..page_offset + copy_len]
                     .copy_from_slice(&read_buf[chunk_copied..chunk_copied + copy_len]);
                 chunk_copied = chunk_copied.checked_add(copy_len).ok_or(())?;
             }
