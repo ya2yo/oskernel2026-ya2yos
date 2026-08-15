@@ -17,11 +17,21 @@ _start:
     la sp, boot_stack_top
     sub sp, sp, t0  # sp = stack top - hart_id * stack_size
 
-    # la sp, boot_stack_top
-    # since the base addr is 0xffff_ffc0_8020_0000
-    # we need to activate pagetable here in case of absolute addressing
+    # The kernel is linked in the high half, so activate the bootstrap page
+    # table before jumping to Rust.  QEMU 10 may place the SBI FDT near the
+    # end of guest RAM; map its 1 GiB physical leaf before paging so
+    # hardware::init_from_fdt() can read a1 immediately after this switch.
     # satp: 8 << 60 | boot_pagetable
     la t0, boot_pagetable
+    srli t1, a1, 30
+    li t2, 512
+    bgeu t1, t2, .Lbootstrap_fdt_map_done
+    slli t2, t1, 3
+    add t2, t0, t2
+    slli t1, t1, 28
+    ori t1, t1, 0xcf # VRWXAD 1 GiB identity leaf
+    sd t1, 0(t2)
+.Lbootstrap_fdt_map_done:
     li t1, 8 << 60
     srli t0, t0, 12
     or t0, t0, t1
@@ -41,7 +51,8 @@ boot_stack_top:
 .section .data
     .align 12
 boot_pagetable:
-    # we need 2 pte here
+    # Keep the kernel's first GiB identity and high-half aliases.  The FDT
+    # leaf is installed dynamically above because firmware may move it.
     # 0x0000_0000_8000_0000 -> 0x0000_0000_8000_0000
     # 0xffff_fc00_8000_0000 -> 0x0000_0000_8000_0000
     .quad 0

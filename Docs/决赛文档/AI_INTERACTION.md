@@ -3443,6 +3443,19 @@
 - **关联问题**：[LoongArch 用户页表内核直映别名导致 QEMU GDB 无法中断](./problem/loongarch-user-pagetable-directmap-alias.md)
 - **关联 commit**：当前工作区未提交
 
+#### Docker QEMU 10 高地址 FDT 启动映射（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求诊断并修复 Docker 中 RISC-V QEMU 在 OpenSBI 后无内核输出的卡住问题。
+- **描述**：对照 Docker QEMU 10.0.2、宿主 QEMU 9.2.1 及 QEMU 10 的 1 GiB guest 对照，确认问题由
+  QEMU 10 在 16 GiB 配置下将 SBI FDT 放至 `0x47fe00000` 引起。启动汇编原本仅映射首个 1 GiB，
+  Sv39 开启后的 FDT 解引用在 trap 初始化前异常循环。入口现在按 `a1` 动态映射 FDT 所在的 1 GiB
+  物理叶项，不改变 CMA 的首 1 GiB 初始化边界。
+- **验证边界**：Docker 内 RISC-V release 构建生成新 `kernel-rv`；原始 QEMU 10.0.2、16 GiB、8 hart
+  `make run` 已完成内核和 cagent，进入 BuildStorm 工具链检查。12 秒时限结束，未宣称完整 BuildStorm。
+- **关联问题**：[QEMU 10 高地址 FDT 启动映射](./problem/riscv-qemu10-high-fdt-bootstrap-map.md)
+- **关联 commit**：当前工作区未提交
+
 #### 嵌套 LoongArch64 QEMU auxv HWCAP 与 mmap 配额（8.14）
 
 - **工具/模型**：Codex（GPT-5）

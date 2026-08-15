@@ -181,9 +181,9 @@ fn init_cma_heap(ekernel_va: usize) -> usize {
 
 #[cfg(target_arch = "riscv64")]
 fn init_cma_heap(ekernel_va: usize) -> usize {
-    // entry.asm only maps the first 1GiB before mm::activate_kernel_space().
-    // Buddy free-list nodes are stored in the managed range itself, so adding
-    // the second GiB here would touch an address that is not mapped yet.
+    // Keep early allocator metadata inside the first GiB.  entry.asm also
+    // maps the firmware FDT leaf when necessary, but the full RAM direct map
+    // is still installed by mm::activate_kernel_space().
     assert_eq!(crate::arch::hardware::ram_range_count(), 1);
     let (physical_start, physical_size) =
         crate::arch::hardware::ram_range(0).expect("RISC-V bootloader did not provide RAM");

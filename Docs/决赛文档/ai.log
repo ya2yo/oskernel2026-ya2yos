@@ -12054,3 +12054,29 @@ EFI guest 回归完成。
 `git diff --check`、`cargo fmt --manifest-path os/Cargo.toml -- --check` 和
 `make build-arch TARGET_ARCH=loongarch64` 通过。完整长时 QEMU/BuildStorm 本轮未重跑，
 因此没有宣称端到端死锁回归完成。
+
+## 2026-08-15：Docker QEMU 10 高地址 FDT 启动映射修复
+
+### 用户需求
+
+维护者要求分析 Docker 环境中 `make run` 停在 OpenSBI 输出后的原因，并直接修复。
+
+### AI 分析与采纳结论
+
+`log.ans` 仅包含 OpenSBI 输出，Docker 容器中的 QEMU 10.0.2 持续占用一个 CPU 核。相同
+内核和启动参数在宿主 QEMU 9.2.1 可进入 cagent。对照 OpenSBI 参数确认 QEMU 10 在 16 GiB
+内存下将 FDT 指针 `a1` 置为 `0x47fe00000`，而 QEMU 9 和 QEMU 10 的 1 GiB 对照均为
+`0xbfe00000`。启动汇编只恒等映射第一个 1 GiB；开启 Sv39 后 `rust_main()` 立即解引用 FDT，
+因而高地址 FDT 在 trap 初始化前触发异常循环。
+
+### 修改文件与验证
+
+修改 `os/src/arch/riscv64/qemu/asms/entry.asm`，在写入 `satp` 前由 `a1` 计算 FDT 所在
+1 GiB 根页表项并写入恒等映射；保留已有内核低端/高半区映射和 CMA 的首 1 GiB早期分配策略。
+同步修正 `os/src/mm/frame_alloc/buddy_cma.rs` 的启动映射注释，并更新开发日志、问题复盘、索引
+与 AI 记录。
+
+Docker 内执行 `make build-arch TARGET_ARCH=riscv64` 生成新 `kernel-rv`，`git diff --check`
+通过。以原始 Docker QEMU 10.0.2、`make run`、`-m 16G` 重放 12 秒：日志保留
+`Next Arg1: 0x47fe00000`，随后完成内核初始化、八核启动和全部 cagent 项，进入
+`BUILDSTORM_TOOLCHAIN ok`；时限主动终止，未将其视为 BuildStorm 完整通过。
