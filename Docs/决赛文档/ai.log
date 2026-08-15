@@ -12108,3 +12108,17 @@ RISC-V/LoongArch64 CFS release、RISC-V RR release、`git diff --check` 通过�
 `remote_ipi_sent=8393` 仍增长。标准入口 180 秒已完成 cagent 并进入 BuildStorm，
 但尚未到达嵌套 QEMU 关机，因此未宣称完整 P1-A 长测验收。详见
 `Docs/决赛文档/problem/buildstorm-p1a-current-requeue-ipi.md`。
+
+## 2026-08-15：drivers 与 arch 设备模块重构
+
+### 用户输入
+
+维护者要求参考 Linux 的 `arch`/`drivers` 项目结构，重构 `os/src/drivers`，并将架构相关驱动模块放入 `arch`。
+
+### AI 分析与采纳结论
+
+审计现有设备目录后，将公共设备 trait、设备容器、磁盘适配、网络缓冲区和通用 VirtIO HAL/net driver 定义为 `drivers` 层；将 RISC-V VirtIO MMIO block/net 初始化、LoongArch VirtIO PCI block/net transport 及平台 MMIO 地址规范化定义为架构层。新增 `arch/riscv64/drivers` 与 `arch/loongarch64/drivers`，由 `drivers/mod.rs` 统一 re-export，保留文件系统、网络和任务代码已有 `crate::drivers::*` 路径。
+
+### 修改文件与验证
+
+修改 `os/src/drivers/{mod.rs,virtio/mod.rs}`、`os/src/arch/{riscv64,loongarch64}/mod.rs`，新增两套 `arch/<arch>/drivers/virtio` 模块并迁移原架构 VirtIO 文件；同步修正设备设计文档中的当前路径和开发记录。`cargo fmt`、`git diff --check` 通过，`make TARGET_ARCH=riscv64` 封装完成 RISC-V64 与 LoongArch64 release 构建。未运行 QEMU、LTP 或 BuildStorm，本轮不宣称行为回归结果。

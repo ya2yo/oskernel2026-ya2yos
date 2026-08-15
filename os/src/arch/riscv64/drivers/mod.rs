@@ -1,0 +1,11 @@
+//! RISC-V platform drivers.
+//!
+//! Device interfaces and transport-independent implementations live in
+//! [`crate::drivers`]. This module contains the RISC-V transport bindings and
+//! startup addresses needed to instantiate those drivers.
+
+pub mod virtio;
+
+pub use virtio::BlockDeviceImpl;
+#[cfg(feature = "net")]
+pub use virtio::NetDeviceImpl;

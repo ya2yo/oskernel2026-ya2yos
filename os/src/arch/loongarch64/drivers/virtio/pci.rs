@@ -14,7 +14,7 @@ use virtio_drivers::transport::pci::PciTransport;
 use virtio_drivers::transport::{DeviceStatus, Transport};
 use virtio_drivers::{Hal, PhysAddr, PAGE_SIZE};
 
-use super::super::as_dev_err;
+use crate::drivers::virtio::as_dev_err;
 
 pub struct VirtIoBlkDev2<H: Hal> {
     inner: Mutex<VirtIOBlk<H, PciTransport>>,
@@ -311,7 +311,7 @@ fn find_virtio_net_device() -> Option<DeviceFunction> {
 /// 在 PCI 总线上查找 VirtIO 网络设备，分配 BAR 并返回初始化好的 PciTransport。
 #[cfg(feature = "net")]
 pub fn create_net_transport() -> PciTransport {
-    use super::super::VirtIoHalCMAImpl;
+    use crate::drivers::virtio::VirtIoHalCMAImpl;
 
     let net_func = find_virtio_net_device().expect("No VirtIO network device found on PCI bus");
     println!(

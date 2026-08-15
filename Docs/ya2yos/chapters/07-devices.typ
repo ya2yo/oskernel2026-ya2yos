@@ -39,7 +39,7 @@ pub trait BlockDriver: BaseDriver {
 
 Ya2yOS 使用 `virtio-drivers` crate 驱动虚拟 IO 设备：
 
-- RISC-V64 使用 MMIO transport。块设备默认位于 `0x10001000 + KERNEL_ADDR_OFFSET`，网络设备默认位于 `0x10002000 + KERNEL_ADDR_OFFSET`；
+- RISC-V64 使用 MMIO transport。块设备默认位于 `0x10001000 + KERNEL_ADDR_OFFSET`，网络设备默认位于 `0x10008000 + KERNEL_ADDR_OFFSET`；
 - LoongArch64 使用 PCI transport。内核枚举 PCI 配置空间，识别 VirtIO 设备并构造 `PciTransport`。
 
 当前实际使用的 VirtIO 设备包括 virtio-blk 和 virtio-net。
@@ -52,7 +52,7 @@ Ya2yOS 使用 `virtio-drivers` crate 驱动虚拟 IO 设备：
 - 通过 CMA 分配物理连续页作为 DMA 缓冲区；
 - 将物理地址转换为内核虚拟地址；
 - 在 `share/unshare` 中为设备可见缓冲区分配、拷贝和释放内存；
-- 在 LoongArch64 上修正 PCI BAR/MMIO 物理地址到 QEMU MMIO 窗口。
+- 平台相关的 PCI BAR/MMIO 物理地址规范化由 `arch/<arch>/drivers/virtio` 提供。
 
 这套 HAL 让 virtqueue 描述符可以指向设备可访问的物理内存。
 
@@ -155,7 +155,7 @@ pub type NetDeviceImpl = VirtIoNetDev<VirtIoHalCMAImpl, PciTransport, QUEUE_SIZE
 == LoongArch64 PCI
 
 
-LoongArch64 平台通过 `os/src/drivers/virtio/loongarch/pci.rs` 枚举 PCI 设备：
+LoongArch64 平台通过 `os/src/arch/loongarch64/drivers/virtio/pci.rs` 枚举 PCI 设备：
 
 1. 遍历 bus/device/function；
 2. 读取 vendor/device ID；

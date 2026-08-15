@@ -1,29 +1,22 @@
-#[cfg(target_arch = "loongarch64")]
-pub mod loongarch;
-#[cfg(target_arch = "riscv64")]
-pub mod riscv;
 use core::ptr::NonNull;
 
 use alloc::slice;
 use log::debug;
 use virtio_drivers::{BufferDirection, Hal};
+#[cfg(feature = "net")]
 mod net;
+#[cfg(feature = "net")]
 pub use net::*;
 
-#[cfg(target_arch = "loongarch64")]
-pub use loongarch::VirtIoBlkDev2;
-#[cfg(target_arch = "riscv64")]
-pub use riscv::*;
-
 use crate::{
-    arch::{memory_layout::KERNEL_ADDR_OFFSET, page_table::PageTable},
+    arch::memory_layout::KERNEL_ADDR_OFFSET,
     drivers::DevError,
     mm::{cma_alloc, cma_dealloc, KernelAddr, PhysAddr, PhysPageNum, VirtAddr},
     task::current_token,
 };
 
 #[allow(dead_code)]
-const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
+pub(crate) const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
     use virtio_drivers::Error::*;
     match e {
         NotReady => DevError::Again,
@@ -40,29 +33,8 @@ const fn as_dev_err(e: virtio_drivers::Error) -> DevError {
 
 pub struct VirtIoHalCMAImpl;
 
-/// 将 PCI 读出的物理地址规范到 QEMU 分配的 MMIO 窗口（与 `pci.rs` 中 set_bar 一致）
-#[cfg(target_arch = "loongarch64")]
-fn loongarch_mmio_paddr(paddr: usize) -> usize {
-    use crate::arch::memory_layout::{VIRTIO_PCI_MMIO_BASE, VIRTIO_PCI_MMIO_SIZE};
-
-    if paddr >= VIRTIO_PCI_MMIO_BASE && paddr < VIRTIO_PCI_MMIO_BASE + VIRTIO_PCI_MMIO_SIZE {
-        return paddr;
-    }
-    // 误读为 0x1_0000_0000_40000 等形式时，低 20 位常对应 BAR 内偏移
-    if paddr >= 0x1_0000_0000_0000 {
-        let lo = paddr as u32 as usize;
-        if lo < VIRTIO_PCI_MMIO_SIZE {
-            return VIRTIO_PCI_MMIO_BASE + lo;
-        }
-    }
-    paddr
-}
-
-#[cfg(not(target_arch = "loongarch64"))]
-fn loongarch_mmio_paddr(paddr: usize) -> usize {
-    paddr
-}
-
+/// HAL for the common VirtIO drivers; platform address normalization is
+/// delegated to `arch::<target>::drivers::virtio`.
 unsafe impl Hal for VirtIoHalCMAImpl {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (usize, NonNull<u8>) {
         match cma_alloc(pages) {
@@ -98,7 +70,7 @@ unsafe impl Hal for VirtIoHalCMAImpl {
         paddr: virtio_drivers::PhysAddr,
         _size: usize,
     ) -> core::ptr::NonNull<u8> {
-        let pa = loongarch_mmio_paddr(paddr);
+        let pa = crate::arch::drivers::virtio::mmio_phys_addr(paddr);
         let vaddr = pa + KERNEL_ADDR_OFFSET;
         NonNull::new(vaddr as *mut u8).unwrap()
     }

@@ -208,7 +208,7 @@ static READY_QUEUE: Lazy<Mutex<CfsRunQueue>> = Lazy::new(|| Mutex::new(CfsRunQue
 /// 入队前通过 `on_rq` 去重，并把任务的 `vruntime` 提升到队列当前的
 /// `min_vruntime`，然后以 `(vruntime, tid)` 作为堆键。任务本体只以弱引用
 /// 放入队列；调用方仍负责持有任务的有效 `Arc`。
-/// 
+///
 /// 返回值：新队列的长度
 pub(super) fn add_task(task: &Arc<TaskControlBlock>) -> Option<usize> {
     let tid = task.tid();

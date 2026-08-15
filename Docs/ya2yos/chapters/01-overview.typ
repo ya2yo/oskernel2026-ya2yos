@@ -17,7 +17,7 @@ Ya2yOS 是以 Rust 编写的宏内核实验系统，基于 TatlinOS 持续演进
 
 1. *Linux ABI 优先*：通过 Linux syscall 编号、架构 ABI、errno 和用户内存访问规则，确保测例的正常运行；
 2. *完整核心链路*：覆盖 ELF 装载、`clone`/`execve`/`wait`、页表和 COW、ext4 文件访问、信号递送、socket 与 VirtIO 设备，使用户负载可从启动到退出闭环运行；
-3. *双架构复用*：把页表、陷入上下文、时钟和设备传输差异隔离在 `arch/` 与`drivers/virtio/`，让任务、内存、文件和 syscall 高层逻辑共用；
+3. *双架构复用*：把页表、陷入上下文、时钟和设备传输差异隔离在 `arch/` 与 `drivers/virtio/`，让任务、内存、文件和 syscall 高层逻辑共用；架构专属 VirtIO transport 位于各自的 `arch/<arch>/drivers/`。
 
 
 == 模块组织
@@ -27,8 +27,8 @@ Ya2yOS 是以 Rust 编写的宏内核实验系统，基于 TatlinOS 持续演进
 
 ```text
 os/src/
-├── arch/       # RISC-V64 / LoongArch64 上下文、页表、时钟、trap 与平台代码
-├── drivers/    # VirtIO block/net、设备容器及架构相关 transport
+├── arch/       # RISC-V64 / LoongArch64 上下文、页表、时钟、trap 与平台代码，含架构 drivers
+├── drivers/    # VirtIO block/net、设备容器及通用驱动抽象
 ├── trap/       # 用户陷入、页故障、时钟中断与返回用户态
 ├── syscall/    # Linux syscall 分发；task/mm/fs/net/signal/sync/io_mpx 等 ABI 入口
 ├── task/       # Process、TCB、可选 CFS/RR 调度、futex、clone/exit/wait 支撑

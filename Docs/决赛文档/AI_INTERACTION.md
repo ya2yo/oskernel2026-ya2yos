@@ -3463,6 +3463,14 @@
 - **描述**：AI 沿 `run_tasks()`、`ready_queue::add_task()` 和 CFS/RR 策略实现追踪，确认当前任务重入队虽已由队列去重，却仍进入远程 Hart 通知；新增不通知的 `requeue_current()`，保留普通唤醒和 affinity 失败路径，并输出 `current_requeues/current_requeue_notifications`。CFS/LoongArch64、RISC-V CFS/RR 构建通过；120 秒 perf QEMU 观察到重入队通知为 0，完整嵌套 QEMU 长测尚未结束。详见 `Docs/决赛文档/ai.log` 对应条目与 [problem/buildstorm-p1a-current-requeue-ipi.md](./problem/buildstorm-p1a-current-requeue-ipi.md)。
 - **关联 commit**：当前工作区未提交（当前任务调用点随维护者的注释提交进入 HEAD）
 
+#### drivers 与 arch 设备模块重构（8.15）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求参考 Linux 的 `arch`/`drivers` 分类重构 `os/src/drivers`。
+- **描述**：按设备类别与平台实现拆分模块：公共设备 trait、设备容器、磁盘适配、网络缓冲区及通用 VirtIO HAL/net driver 保留在 `os/src/drivers`；RISC-V MMIO block/net 初始化和 LoongArch PCI block/net transport 移至 `os/src/arch/<arch>/drivers/virtio`。`drivers/mod.rs` 通过 `arch::drivers` re-export 既有 `crate::drivers::*` 类型接口，并将平台 MMIO 地址规范化留在架构模块。
+- **验证边界**：`cargo fmt`、`git diff --check`、`make TARGET_ARCH=riscv64`（封装同时完成 RISC-V64 与 LoongArch64 release 构建）通过；未运行 QEMU/LTP/BuildStorm，因为本次只改变模块组织，不改变设备行为。
+- **关联 commit**：当前工作区未提交
+
 #### 嵌套 LoongArch64 QEMU auxv HWCAP 与 mmap 配额（8.14）
 
 - **工具/模型**：Codex（GPT-5）

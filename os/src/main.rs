@@ -66,6 +66,7 @@ use core::{
 use log::info;
 use smoltcp::phy::DeviceCapabilities;
 
+#[cfg(feature = "net")]
 use crate::drivers::{DeviceContainer, NetDeviceImpl};
 
 /// clear BSS segment
