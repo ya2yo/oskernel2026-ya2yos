@@ -148,7 +148,7 @@
   #grid(columns: (1fr, 1fr), gutter: 14pt,
     panel("01  ·  系统定位", [Rust 宏内核、Linux ABI、RISC-V64 / LoongArch64；面向真实 Linux 用户态路径与工具链负载。], color: blue, fill: pale-blue),
     panel("02  ·  系统介绍", [从系统架构图出发，依次介绍进程管理、多核调度、内存管理、信号机制、网络模块和设备驱动。], color: teal, fill: pale-teal),
-    panel("03  ·  当前成果", [测例与回归证据；任务调度、多核异构；文件缓存、用户可见锁与内部锁边界。], color: orange, fill: pale-orange),
+    panel("03  ·  关键增量", [多核运行、CFS 调度、StarryOS 网络移植、uaccess、文件锁、syscall 扩展与模块重构。], color: orange, fill: pale-orange),
     panel("04  ·  发展规划", [完整 BuildStorm 闭环、运行中迁移、双架构压力回归，以及可证明的资源级并发。], color: red, fill: pale-red),
   )
   #v(0.62cm)
@@ -356,65 +356,102 @@
   #align(center)[#tag("平台发现与传输层可变，块设备 / 网卡接口稳定，上层内核语义保持共享", color: navy)]
 ]
 
-// 10 · achievements overview
-#chapter-cover("03", "当前成果", "测例证据 · 任务调度 · 多核异构 · 文件操作与锁", color: orange, fill: pale-orange)
+// 12 · incremental work overview
+#chapter-cover("03", "关键增量工作", "并发运行 · Linux 语义 · 网络移植 · 工程结构", color: orange, fill: pale-orange)
 #slide[
-  #titlebar("03  ·  CURRENT RESULTS", "当前成果：从接口实现走向可复核证据", subtitle: "通过事实、定向观测和未完成边界分开陈述")
+  #titlebar("03  ·  KEY INCREMENTAL WORK", "关键增量工作：围绕并发、兼容与工程化", subtitle: "七项工作共同把可启动的内核基础推进为能承载真实用户态路径的系统")
+  #v(0.18cm)
+  #grid(columns: (1fr, 1fr, 1fr, 1fr), gutter: 8pt,
+    compact-panel("01  ·  多核运行", [维护 online-Hart 状态、核间唤醒和共享地址空间的跨核可见性。], color: blue, fill: pale-blue),
+    compact-panel("02  ·  CFS 调度", [共享 ready queue、线程 affinity 过滤与 idle-Hart 唤醒形成闭环。], color: teal, fill: pale-teal),
+    compact-panel("03  ·  StarryOS 网络", [移植网络模块与 `NetDriverOps` 抽象，接入 smoltcp 与 VirtIO-net。], color: orange, fill: pale-orange),
+    compact-panel("04  ·  uaccess", [`copy_from_user` / `copy_to_user` 提供架构快路径、跨页安全路径和 EFAULT 语义。], color: red, fill: pale-red),
+    compact-panel("05  ·  文件锁", [细化 POSIX/OFD/lease 锁、阻塞等待、死锁检测和 close/exit 回收。], color: teal, fill: pale-teal),
+    compact-panel("06  ·  syscall", [扩展 task、mm、fs、net、同步与 I/O multiplexing 的 Linux 接口。], color: orange, fill: pale-orange),
+    compact-panel("07  ·  模块重构", [以职责拆分 signal、MemorySet、syscall、网络服务和驱动，提升内聚度。], color: blue, fill: pale-blue),
+    grid.cell[],
+  )
   #v(0.32cm)
-  #grid(columns: (1fr, 1fr, 1fr, 1fr), gutter: 9pt,
-    stat("16", "access02 核心断言 TPASS", color: blue),
-    stat("566", "splice07 passed / 0 failed", color: teal),
-    stat("156", "fanotify01 passed / 0 failed", color: orange),
-    stat("1.50x", "定向 axbuild 观测", color: red),
+  #align(center)[#tag("增量主线：先让多核与资源正确运行，再扩展 ABI 覆盖并收敛模块边界", color: navy)]
+]
+
+// 13 · SMP and CFS
+#slide[
+  #titlebar("03  ·  KEY INCREMENTAL WORK", "实现多核运行与 CFS 调度", subtitle: "从任务入队到目标 Hart 执行，在线拓扑、affinity、队列和唤醒路径必须保持一致")
+  #v(0.22cm)
+  #grid(columns: (1fr, 0.16fr, 1fr, 0.16fr, 1fr, 0.16fr, 1fr), gutter: 4pt,
+    flow-step("READY", "任务入共享队列", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
+    flow-step("affinity", "过滤不可运行 Hart", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
+    flow-step("all-hart CFS", "选择下一任务", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
+    flow-step("wake_hart", "唤醒空闲目标核", color: red, fill: pale-red),
+  )
+  #v(0.42cm)
+  #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
+    panel("多核运行基础", [维护 online-Hart mask；共享地址空间的 PTE 更新通过 remote TLB MailBox / IPI 收集 ACK，避免其他 Hart 使用失效映射。], color: blue, fill: pale-blue),
+    panel("CFS 可运行性", [CFS 在共享 ready queue 中选择任务；TCB 持有 Linux 可见的 CPU affinity，暂不满足条件的任务保留在队列而不是错误执行。], color: teal, fill: pale-teal),
+    panel("唤醒与边界", [任务变为 ready 后按 affinity 通知可运行 Hart；空闲核可被平台唤醒。运行中迁移、per-CPU queue 与 work stealing 仍是后续工作。], color: orange, fill: pale-orange),
+  )
+  #v(0.48cm)
+  #align(center)[#tag("SMP 的完成标准不是“启动多个核”，而是任务放置、TLB 一致性与唤醒路径均正确", color: navy)]
+]
+
+// 14 · StarryOS network port
+#slide[
+  #titlebar("03  ·  KEY INCREMENTAL WORK", "移植 StarryOS 网络模块并接入 Ya2yOS", subtitle: "保留 StarryOS 的网络抽象优势，在 Ya2yOS 的任务、fd 和双架构驱动边界中重新落地")
+  #v(0.22cm)
+  #grid(columns: (1fr, 0.16fr, 1fr, 0.16fr, 1fr, 0.16fr, 1fr), gutter: 4pt,
+    flow-step("StarryOS net", "NetDriverOps / NetBuf", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
+    flow-step("Ya2yOS adapter", "fd / poll / waiter", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
+    flow-step("smoltcp service", "SocketSet / interface", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
+    flow-step("VirtIO-net", "RX / TX / recycle", color: red, fill: pale-red),
+  )
+  #v(0.42cm)
+  #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
+    panel("移植范围", [`os/src/net` 与 `drivers/net` 明确来自 StarryOS；移植的核心是 `NetDriverOps`、`NetBuf`、socket 封装和 smoltcp 服务组织。], color: blue, fill: pale-blue),
+    panel("Ya2yOS 集成", [TCP、UDP 和 Unix socket 以文件描述符暴露；poll waiter 将协议状态转为任务就绪事件，监听表参与 SYN 到达后的连接建立。], color: teal, fill: pale-teal),
+    panel("设备资源协议", [VirtIO-net 为 RX 描述符预置缓冲，TX 从共享池取用；协议栈消费后通过 recycle 接口归还队列，避免收发缓冲生命周期不清。], color: orange, fill: pale-orange),
+  )
+  #v(0.48cm)
+  #align(center)[#tag("移植不是复制目录：必须把网络对象、任务唤醒和设备缓冲区所有权接入本内核语义", color: navy)]
+]
+
+// 15 · uaccess and filesystem locking
+#slide[
+  #titlebar("03  ·  KEY INCREMENTAL WORK", "uaccess 双路径与文件系统锁细化", subtitle: "用户指针访问与文件并发控制都必须同时满足常见路径效率和异常路径的 Linux 语义")
+  #v(0.22cm)
+  #grid(columns: (1fr, 0.16fr, 1fr, 0.16fr, 1fr, 0.16fr, 1fr), gutter: 4pt,
+    flow-step("user pointer", "范围与溢出检查", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
+    flow-step("fast path", "架构 uaccess 复制", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
+    flow-step("safe path", "跨页 / COW / 缺页", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
+    flow-step("Linux result", "复制成功或 EFAULT", color: red, fill: pale-red),
   )
   #v(0.4cm)
   #grid(columns: (1fr, 1fr), gutter: 13pt,
-    panel("已验证的回归", [`abort01 2/0/0`、`open14 3/0/0`、`fcntl01/11/13/33/34` 已有通过记录；`splice07` 另有 25 项 skipped，按 summary 原样保留。], color: blue, fill: pale-blue),
-    panel("证据边界", [`fcntl DUPFD/pipe size` 只到 ext4 mount 失败，未进入 LTP；BuildStorm 只有 `ok=true elapsed_s=X` 才是完整 446 crate 成功判据，当前不宣称全量成绩。], color: red, fill: pale-red),
+    panel("copy_from_user / copy_to_user 快路径", [`translate.rs` 在长度、用户范围和当前地址空间满足条件时调用架构 `copy_from_user` / `copy_to_user`；短复制避免逐页通用翻译开销。], color: blue, fill: pale-blue),
+    panel("安全与异常路径", [跨页、延迟分配、文件页和 COW 回到通用映射路径；uaccess scope 与 trap fixup 处理内核态访问异常，最终向 syscall 传播 EFAULT。], color: teal, fill: pale-teal),
+    panel("细化用户可见文件锁", [`file_lock` 分离 POSIX record lock、BSD flock、OFD lock 与 lease；`F_SETLKW` 支持等待图死锁检测、waker 注册和 close/exit 自动释放。], color: orange, fill: pale-orange),
+    panel("保守的内部锁边界", [lwext4 C API / bcache 的内部并发仍采用可等待的准入保护；先保证一致性与锁序，再逐步评估资源级细粒度并发。], color: red, fill: pale-red),
   )
 ]
 
-// 11 · scheduling and heterogeneous
+// 16 · syscall enrichment and refactoring
 #slide[
-  #titlebar("03  ·  CURRENT RESULTS", "任务调度与多核异构：让拓扑真实可见")
-  #v(0.28cm)
-  #grid(columns: (1fr, 1fr), gutter: 14pt,
-    panel("已落地", [在线 HART mask；共享 all-hart CFS ready queue；affinity 过滤和 idle-hart 唤醒；ppoll 无事件不忙让出；全局 timer/futex/task timeout 每 10ms 由单一 hart 维护。], color: blue, fill: pale-blue),
-    panel("双架构事实", [RISC-V 与 LoongArch64 release 构建通过；评测配置已启动 8 Hart，并出现并行编译队列；动态 `/proc/uptime` 为测例提供真实 guest 时间。], color: teal, fill: pale-teal),
-    panel("仍待完成", [运行中任务迁移、通用 reschedule IPI、per-CPU queue / work stealing 和完整同配置 A/B 仍属于后续工作。], color: orange, fill: pale-orange),
-    panel("优化口径", [累计 wait/hold、Hart 计数用于定位结构性变化，不等同 wall-clock；性能结论仍以同配置、成功收尾的 elapsed_s 为准。], color: red, fill: pale-red),
+  #titlebar("03  ·  KEY INCREMENTAL WORK", "丰富 syscall，并重构模块边界", subtitle: "扩大 ABI 覆盖面时，入口保持薄，核心语义与高风险状态机回到各自子系统")
+  #v(0.22cm)
+  #grid(columns: (1fr, 0.16fr, 1fr, 0.16fr, 1fr, 0.16fr, 1fr), gutter: 4pt,
+    flow-step("Linux ABI", "number + arguments", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
+    flow-step("thin handler", "uaccess / fd / errno", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
+    flow-step("domain module", "task / mm / fs / net", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
+    flow-step("kernel object", "state / lock / lifetime", color: red, fill: pale-red),
   )
-  #v(0.55cm)
-  #align(center)[#tag("已完成：SMP 可见性与唤醒路径　|　未完成：运行中迁移与负载均衡", color: navy)]
-]
-
-// 12 · file locks
-#slide[
-  #titlebar("03  ·  CURRENT RESULTS", "文件操作与锁：区分用户语义和内部并发边界")
-  #v(0.27cm)
-  #grid(columns: (1fr, 1fr), gutter: 14pt,
-    panel("用户可见锁：已落地", [POSIX record lock 支持区间拆分/合并、`F_GETLK`、`F_SETLKW` 阻塞、死锁检测和 close/exit 释放；OFD lock 按 open file description 区分 owner。对应 `fcntl11/14/34` 等已有通过记录。], color: blue, fill: pale-blue),
-    panel("内部 EXT4：保守正确", [lwext4 C API / bcache 仍由可等待的挂载级排他准入保护；已收敛只读 `read_at`、64 KiB 跨页合并、干净文件页缓存复用和重复 path/metadata 工作。], color: teal, fill: pale-teal),
-    panel("为什么不直接并发化", [allocator、目录、journal 等 lwext4 资源尚无完整 Linux 等价锁序证明；撤回 shared admission，避免以死锁或一致性换吞吐。], color: orange, fill: pale-orange),
-    panel("当前结论", [“用户可见文件锁已完成多项语义回归”不等于“内部 EXT4 已完成资源级细粒度并发锁”；后者必须经过压力、e2fsck、LTP 和同配置 A/B。], color: red, fill: pale-red),
-  )
-]
-
-// 13 · buildstorm evidence
-#slide[
-  #titlebar("03  ·  CURRENT RESULTS", "BuildStorm：定向优化有效，但全量成绩仍待闭环")
-  #v(0.33cm)
-  #grid(columns: (1fr, 0.24fr, 1fr), gutter: 8pt,
-    block(fill: pale-orange, stroke: 1pt + orange, radius: 5pt, inset: 14pt)[#align(center)[#text(size: 17pt, weight: "bold", fill: orange)[定向观测]#v(0.35em)#text(size: 32pt, weight: "bold", fill: navy)[12 min → 8 min]#v(0.28em)#text(size: 11.5pt, fill: muted)[尾部 axbuild；约缩短 33.3%，约 1.50x；不是 446 crate 全量成绩。]]],
-    align(center + horizon)[#text(size: 27pt, weight: "bold", fill: blue)[→]],
-    block(fill: pale-red, stroke: 1pt + red, radius: 5pt, inset: 14pt)[#align(center)[#text(size: 17pt, weight: "bold", fill: red)[正式判据]#v(0.35em)#text(size: 16pt, weight: "bold", fill: navy)[BUILDSTORM_COMPILE]#v(0.28em)#text(size: 11.5pt, fill: muted)[必须出现 `ok=true elapsed_s=X`；当前材料没有该完整收尾标记。]]],
-  )
-  #v(0.55cm)
+  #v(0.42cm)
   #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
-    panel("正确性先行", [工具链路径、fork/exec/mmap/COW、rename、epoll、journal 等阻断项先修复，避免把故障伪装成性能。], color: blue, fill: pale-blue),
-    panel("优化主线", [页缓存复用、read_at、稀疏写合并、EXT4 入口收敛、all-hart 调度和动态 uptime 共同缩短热路径。], color: teal, fill: pale-teal),
-    panel("证据纪律", [`BUILDSTORM_BEGIN`、`Building N/446`、累计 wait/hold 或 timeout 都不能单独作为成功或加速证明。], color: orange, fill: pale-orange),
+    panel("syscall 功能扩展", [覆盖 clone3、rseq、key、IPC、xattr、inotify / fanotify、socket 消息收发、epoll / poll、timerfd 等更多真实用户态路径。], color: blue, fill: pale-blue),
+    panel("按领域拆分入口", [`syscall` 划分 task、mm、fs、net、sync、io_mpx、ipc、time、sys 等目录；handler 负责解码、复制、查表和 errno，语义不堆积在大分发函数。], color: teal, fill: pale-teal),
+    panel("提高内聚度", [signal 拆为 delivery/pending/frame/timer；MemorySet 拆分 handle、pagefault、fork_clone 等；网络服务、驱动和文件锁也按资源职责拆分。], color: orange, fill: pale-orange),
   )
+  #v(0.48cm)
+  #align(center)[#tag("工程目标：扩展接口不制造巨型模块，让每条 ABI 路径都落到可维护的对象、锁和生命周期", color: navy)]
 ]
 
 // 14 · roadmap
@@ -439,7 +476,7 @@
     #v(0.18cm)
     #text(size: 28pt, weight: "bold", fill: blue)[内核设计与工程实践]
     #v(0.35cm)
-    #text(size: 16pt, fill: muted)[系统定位 · 系统介绍 · 当前成果 · 发展规划]
+    #text(size: 16pt, fill: muted)[系统定位 · 系统介绍 · 关键增量工作 · 发展规划]
     #v(0.55cm)
     #text(size: 13pt, fill: muted)[谢谢！]
   ]
