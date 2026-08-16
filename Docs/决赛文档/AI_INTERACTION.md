@@ -1,5 +1,13 @@
 # 决赛文档说明
 
+#### waitpid/waitid ProcessMeta 锁边界修复（8.16）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：根据 `log.ans` 与 QEMU hang 静态检查结果修复 wait-family 的跨进程锁嵌套和持锁用户内存访问。
+- **描述**：将 `waitpid`/`waitid` 改为先快照 child 列表、释放父 `ProcessMeta`，再读取 child 状态和执行 `copy_to_user`；回收时通过短锁确认 child 仍在父列表，避免并发 waiter 重复回收。QEMU 快照未能证明这些风险是原始卡死的直接根因，因此未修改定时器路径。
+- **验证边界**：定向 `rustfmt --check`、`git diff --check` 和 RISC-V64/LoongArch64 release 构建通过；使用维护者已有定向入口运行 `timeout 120s make run TARGET_ARCH=riscv64`，`oom01` 四个场景 `passed 4 failed 0 broken 0 skipped 0` 并正常 `shutdown!`。未复现原始偶发卡死，未宣称时序问题已完全消除。详见 [waitpid ProcessMeta 锁边界](./problem/waitpid-process-meta-lock-boundary.md)。
+- **关联 commit**：当前工作区未提交
+
 #### signalfd4(74) 基础接入（8.8）
 
 - **工具/模型**：OpenCode (GPT-5.6)

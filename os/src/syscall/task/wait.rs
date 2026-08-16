@@ -106,6 +106,36 @@ fn wait_pending_signal_errno(task: &TaskControlBlock, signo: usize) -> Option<Sy
     }
 }
 
+/// Snapshot the parent's child list without retaining the `ProcessMeta` guard.
+///
+/// Child state is protected by each child's own metadata lock. Keeping the
+/// parent lock while taking those locks, touching user memory, or removing a
+/// process from the global pid table creates cross-process lock chains.
+fn snapshot_children(process: &Arc<Process>) -> Vec<Arc<Process>> {
+    let weak_children = process.meta_lock().children.clone();
+    weak_children
+        .into_iter()
+        .filter_map(|child| child.upgrade())
+        .collect()
+}
+
+/// Remove a child from the parent's list, returning whether this waiter won
+/// the reap race against another concurrent waiter.
+fn remove_child_from_parent(process: &Arc<Process>, pid: usize) -> bool {
+    let mut process_meta = process.meta_lock();
+    if let Some(idx) = process_meta.children.iter().position(|child| {
+        child
+            .upgrade()
+            .map(|child| child.pid == pid)
+            .unwrap_or(false)
+    }) {
+        process_meta.children.remove(idx);
+        true
+    } else {
+        false
+    }
+}
+
 /// 实现 Linux `wait4(2)` / `waitpid(2)` 的主体。
 ///
 /// 本内核 syscall 分发表把 Linux `wait4(pid, wstatus, options, rusage)` 的前
@@ -166,23 +196,20 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
         let _active_guard = crate::utils::perf::WaitActiveGuard::new();
 
         let task = current_task().unwrap();
-        let mut process_meta = task.process.meta_lock();
+        let children = snapshot_children(&task.process);
 
         // Debug-only snapshot: children 中可能有已经 drop 的 Weak，也可能有
         // clone child。这里把 exit_signal 和 all_tasks_exited 打出来，便于
         // 排查 ECHILD / wait 过滤条件不符合预期的问题。
-        let all_weak_children: Vec<_> = process_meta
-            .children
+        let all_weak_children: Vec<_> = children
             .iter()
-            .filter_map(|w| {
-                w.upgrade().map(|c| {
-                    let meta = c.meta_lock();
-                    (
-                        c.pid,
-                        meta.exit_signal,
-                        meta.tasks.iter().all(|x| x.upgrade().is_none()),
-                    )
-                })
+            .map(|c| {
+                let meta = c.meta_lock();
+                (
+                    c.pid,
+                    meta.exit_signal,
+                    meta.tasks.iter().all(|x| x.upgrade().is_none()),
+                )
             })
             .collect();
         debug!(
@@ -190,10 +217,8 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
             all_weak_children
         );
 
-        let children: Vec<Arc<Process>> = process_meta
-            .children
-            .iter()
-            .filter_map(|w| w.upgrade())
+        let children: Vec<Arc<Process>> = children
+            .into_iter()
             .filter(|child| wait_pid.apply(child))
             .filter(|child| {
                 // __WALL: wait for all children regardless of exit_signal
@@ -292,6 +317,13 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
             if !options.contains(WaitOption::WNOWAIT) {
                 // 回收 zombie 时，把子进程及其 descendants 的资源使用量累计
                 // 到当前进程，供后续 getrusage(RUSAGE_CHILDREN) 查询。
+                if !remove_child_from_parent(&task.process, found_pid) {
+                    // A concurrent waiter already reaped this child after we
+                    // copied its status. Do not account usage or report a second
+                    // successful reap.
+                    return Poll::Ready(Err(SysErrNo::ECHILD));
+                }
+
                 {
                     let mut task_inner = task.inner_lock();
                     task_inner.time_data.cutime += child_usage.utime + child_usage.cutime;
@@ -302,18 +334,9 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
                         .max(child_usage.maxrss)
                         .max(child_usage.cmaxrss);
                 }
-                if let Some(idx) = process_meta.children.iter().position(|child| {
-                    child
-                        .upgrade()
-                        .map(|child| child.pid == found_pid)
-                        .unwrap_or(false)
-                }) {
-                    process_meta.children.remove(idx);
-                }
                 drop(child);
                 // The child has left this parent's list. Do not carry
                 // ProcessMeta into procfs and PID-table teardown.
-                drop(process_meta);
                 Process::remove_from_global_map(found_pid);
             }
 
@@ -326,7 +349,6 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
             // task::interruptible() wrapper: the wrapper would turn the wakeup
             // into EINTR before wait can inspect SA_RESTART.
             if let Some(signo) = check_if_any_sig_for_current_task() {
-                drop(process_meta);
                 if let Some(errno) = wait_pending_signal_errno(&task, signo) {
                     drop(task);
                     return Poll::Ready(Err(errno));
@@ -337,8 +359,10 @@ pub fn sys_waitpid(pid: i32, wstatus: *mut i32, options: u32) -> SyscallRet {
 
             // 注册在父进程级 child_exit_event 上。子进程 exit/stop/continue
             // 时会 wake 这个 event，使 block_on 重新 poll 一轮 children 状态。
-            process_meta.child_exit_event.register(cx.waker());
-            drop(process_meta);
+            {
+                let process_meta = task.process.meta_lock();
+                process_meta.child_exit_event.register(cx.waker());
+            }
             drop(task);
             Poll::Pending
         }
@@ -400,14 +424,12 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
         let _active_guard = crate::utils::perf::WaitActiveGuard::new();
 
         let task = current_task().unwrap();
-        let mut process_meta = task.process.meta_lock();
+        let children = snapshot_children(&task.process);
 
         // 先按 selector 与 __W* clone 过滤出本次 waitid 可以观察的子进程。
         // 如果一个都没有，说明调用者没有符合条件的 child，返回 ECHILD。
-        let children: Vec<Arc<Process>> = process_meta
-            .children
-            .iter()
-            .filter_map(|w| w.upgrade())
+        let children: Vec<Arc<Process>> = children
+            .into_iter()
             .filter(|child| wait_pid.apply(child))
             .filter(|child| {
                 if options.contains(WaitOption::__WALL) {
@@ -563,6 +585,9 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
             // WNOWAIT 表示只观察，不回收 zombie。否则与 waitpid 一样累计
             // RUSAGE_CHILDREN 相关时间/RSS，并从父进程 children 与全局 pid map 中移除。
             if !options.contains(WaitOption::WNOWAIT) {
+                if !remove_child_from_parent(&task.process, found_pid) {
+                    return Poll::Ready(Err(SysErrNo::ECHILD));
+                }
                 {
                     let mut task_inner = task.inner_lock();
                     task_inner.time_data.cutime += child_usage.utime + child_usage.cutime;
@@ -573,18 +598,9 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
                         .max(child_usage.maxrss)
                         .max(child_usage.cmaxrss);
                 }
-                if let Some(idx) = process_meta.children.iter().position(|child| {
-                    child
-                        .upgrade()
-                        .map(|child| child.pid == found_pid)
-                        .unwrap_or(false)
-                }) {
-                    process_meta.children.remove(idx);
-                }
                 drop(child);
                 // The child has left this parent's list. Do not carry
                 // ProcessMeta into procfs and PID-table teardown.
-                drop(process_meta);
                 Process::remove_from_global_map(found_pid);
             }
 
@@ -616,7 +632,6 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
             // 没有可返回 child 且允许阻塞时，先按 waitpid 相同规则处理待决信号；
             // 再把当前任务注册到父进程的 child_exit_event，等待子进程退出唤醒。
             if let Some(signo) = check_if_any_sig_for_current_task() {
-                drop(process_meta);
                 if let Some(errno) = wait_pending_signal_errno(&task, signo) {
                     drop(task);
                     return Poll::Ready(Err(errno));
@@ -625,8 +640,10 @@ pub fn sys_waitid(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> Sy
                 return Poll::Pending;
             }
 
-            process_meta.child_exit_event.register(cx.waker());
-            drop(process_meta);
+            {
+                let process_meta = task.process.meta_lock();
+                process_meta.child_exit_event.register(cx.waker());
+            }
             drop(task);
             Poll::Pending
         }
