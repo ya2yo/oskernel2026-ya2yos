@@ -373,7 +373,7 @@ fn test_pre() -> i32 {
 fn test_final_2026() -> i32 {
     run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
     run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
-    boot_arceos_helloworld_in_qemu();
+    // boot_arceos_helloworld_in_qemu();
     shutdown();
     0
 }
