@@ -8,7 +8,7 @@ use super::{
     VirtPageNum,
 };
 use crate::arch::memory_layout::{
-    MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_SPACE_SIZE,
+    HUGE_PAGE_SIZE, MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_SPACE_SIZE,
 };
 use crate::fs::{File, Inode, OSFile, OpenFlags};
 use crate::mm::group::GROUP_SHARE;
@@ -127,6 +127,9 @@ impl MemorySetInner {
             "[mmap] addr={:x}, len={}, map_perm={:?}, flags={:?}",
             addr, len, map_perm, flags
         );
+        if flags.contains(MmapFlags::MAP_HUGETLB) {
+            return self.mmap_huge(addr, len, map_perm, flags, file, off);
+        }
         if flags.contains(MmapFlags::MAP_FIXED) || flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
             // 检查 addr + len 是否溢出
             let end_addr = match addr.checked_add(len) {
@@ -216,17 +219,114 @@ impl MemorySetInner {
         addr
     }
 
+    /// Establish an eager anonymous 2 MiB hugetlb mapping.
+    fn mmap_huge(
+        &mut self,
+        addr: usize,
+        len: usize,
+        map_perm: MapPermission,
+        flags: MmapFlags,
+        file: Option<Arc<OSFile>>,
+        _off: usize,
+    ) -> usize {
+        if file.is_some() || len == 0 || len % HUGE_PAGE_SIZE != 0 || map_perm.is_empty() {
+            return 0;
+        }
+
+        let fixed = flags.intersects(MmapFlags::MAP_FIXED | MmapFlags::MAP_FIXED_NOREPLACE);
+        let start = if fixed {
+            if addr % HUGE_PAGE_SIZE != 0 {
+                return 0;
+            }
+            let end = match addr.checked_add(len) {
+                Some(end) => end,
+                None => return 0,
+            };
+            if end > USER_SPACE_SIZE
+                || VirtAddr::try_from(addr).is_none()
+                || VirtAddr::try_from(end - 1).is_none()
+            {
+                return 0;
+            }
+            let start_vpn = VirtAddr::from(addr).floor();
+            let end_vpn = VirtAddr::from(end).ceil();
+            if flags.contains(MmapFlags::MAP_FIXED_NOREPLACE)
+                && self.areas.iter().any(|area| {
+                    let (left, right) = area.vpn_range.range();
+                    left < end_vpn && start_vpn < right
+                })
+            {
+                return 0;
+            }
+            if flags.contains(MmapFlags::MAP_FIXED) {
+                if self.areas.iter().any(|area| {
+                    if area.area_type == MapAreaType::Brk {
+                        let (left, right) = area.vpn_range.range();
+                        return left < end_vpn && start_vpn < right;
+                    }
+                    false
+                }) {
+                    return 0;
+                }
+                if self.munmap(addr, len).is_err() {
+                    return 0;
+                }
+            }
+            addr
+        } else {
+            if self
+                .total_mmap_size
+                .checked_add(len)
+                .map_or(true, |total| total > MAX_MMAP_SIZE)
+            {
+                return 0;
+            }
+            self.find_mmap_addr_aligned(len, HUGE_PAGE_SIZE)
+        };
+        if start == 0 {
+            return 0;
+        }
+
+        let mut area = MapArea::new_mmap(
+            VirtAddr::from(start),
+            VirtAddr::from(start + len),
+            MapType::Framed,
+            map_perm,
+            MapAreaType::Mmap,
+            None,
+            0,
+            flags,
+        );
+        if area.map_huge(&mut self.page_table).is_err() {
+            area.unmap(&mut self.page_table);
+            return 0;
+        }
+        self.push_lazily(area);
+        if !fixed {
+            self.total_mmap_size += len;
+        }
+        start
+    }
+
     /// 解除指定范围内的 mmap 映射，并按需要截断或拆分 VMA。
     ///
     /// 解除范围与现有 VMA 的交集，释放对应页表项和物理页；对于被部分覆盖的
     /// VMA，保留范围外部分及其已分配页。
     pub fn munmap(&mut self, addr: usize, len: usize) -> SyscallRet {
         debug!("[munmap] addr={:x}, len={}", addr, len);
+        let end_addr = addr.checked_add(len).ok_or(SysErrNo::EINVAL)?;
+        if self.areas.iter().any(|area| {
+            area.is_huge()
+                && (area.vpn_range.contains_vpn(VirtAddr::from(addr).floor())
+                    || (len != 0
+                        && area
+                            .vpn_range
+                            .contains_vpn(VirtAddr::from(end_addr - 1).floor())))
+        }) && (addr % HUGE_PAGE_SIZE != 0 || len % HUGE_PAGE_SIZE != 0)
+        {
+            return Err(SysErrNo::EINVAL);
+        }
         // 检查 addr + len 是否溢出
-        let end_addr = match addr.checked_add(len) {
-            Some(v) => v,
-            None => return Err(SysErrNo::EINVAL),
-        };
         let start_vpn = VirtAddr::from(addr).floor();
         let end_vpn = VirtAddr::from(end_addr).ceil();
         if start_vpn >= end_vpn {
@@ -345,6 +445,15 @@ impl MemorySetInner {
         let start_vpn = VirtAddr::from(addr).floor();
         let end_vpn = VirtAddr::from(end_addr).ceil();
 
+        if self.areas.iter().any(|area| {
+            area.is_huge() && {
+                let (area_start, area_end) = area.vpn_range.range();
+                area_start < end_vpn && start_vpn < area_end
+            }
+        }) {
+            return Err(SysErrNo::EOPNOTSUPP);
+        }
+
         for area in self.areas.iter_mut() {
             let (area_start, area_end) = area.vpn_range.range();
             let discard_start = area_start.max(start_vpn);
@@ -388,6 +497,9 @@ impl MemorySetInner {
         }) else {
             return Err(SysErrNo::EFAULT);
         };
+        if self.areas[old_idx].is_huge() {
+            return Err(SysErrNo::EOPNOTSUPP);
+        }
 
         // 将 VMA 截取为精确的 [old_start_vpn, old_end_vpn) 范围。
         let area_start_vpn = self.areas[old_idx].vpn_range.start();
@@ -589,6 +701,9 @@ impl MemorySetInner {
         }) else {
             return Err(SysErrNo::EFAULT);
         };
+        if self.areas[old_idx].is_huge() {
+            return Err(SysErrNo::EOPNOTSUPP);
+        }
 
         // 将 VMA 截取为精确的 [old_start_vpn, old_end_vpn) 范围。
         let area_start_vpn = self.areas[old_idx].vpn_range.start();
@@ -742,14 +857,24 @@ impl MemorySetInner {
         start_vpn: VirtPageNum,
         end_vpn: VirtPageNum,
         map_perm: MapPermission,
-    ) {
+    ) -> SyscallRet {
         // 防御性检查：如果范围无效（start >= end）则直接返回
         if start_vpn >= end_vpn {
             warn!(
                 "[mprotect] invalid range: start_vpn={:?} >= end_vpn={:?}",
                 start_vpn, end_vpn
             );
-            return;
+            return Err(SysErrNo::EINVAL);
+        }
+        if self.areas.iter().any(|area| {
+            if !area.is_huge() {
+                return false;
+            }
+            let (area_start, area_end) = area.vpn_range.range();
+            let overlaps = area_start < end_vpn && start_vpn < area_end;
+            overlaps && (map_perm.is_empty() || !(start_vpn <= area_start && area_end <= end_vpn))
+        }) {
+            return Err(SysErrNo::EOPNOTSUPP);
         }
         // 收集拆分过程中新产生的 area，遍历结束后再统一插入
         let mut new_areas = Vec::new();
@@ -858,5 +983,6 @@ impl MemorySetInner {
         for vpn in start_vpn.0..end_vpn.0 {
             self.page_table.handle_mprotect(vpn.into(), map_perm);
         }
+        Ok(0)
     }
 }

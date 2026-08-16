@@ -227,15 +227,30 @@ impl PageTable {
             if ppn.0 == 0 {
                 return None;
             }
-            if i == 2 {
-                let pte = &mut ppn.as_array::<PageTableEntry>()[*idx];
+            let pte = &mut ppn.as_array::<PageTableEntry>()[*idx];
+            let flags = pte.get_flags();
+            if i == 2
+                || (i < 2
+                    && flags.contains(LAPTEFlags::VALID)
+                    && flags.intersects(
+                        LAPTEFlags::WRITEABLE
+                            | LAPTEFlags::UNREADEABLE
+                            | LAPTEFlags::UNEXECUTABLE
+                            | LAPTEFlags::PLV3,
+                    ))
+            {
                 return Some(pte);
-            } else {
-                let next = ppn.as_array::<usize>()[*idx];
-                ppn = PhysAddr::from(next).floor();
             }
+            // Directory entries in this page-table implementation are raw
+            // physical pointers without VALID/P flags.  A zero pointer is the
+            // only terminal miss; a high-level leaf was returned above.
+            let next = pte.get_ppn();
+            if next.0 == 0 {
+                return None;
+            }
+            ppn = next;
         }
-        return None;
+        None
     }
     /// return: 有效的页表项
     fn find_valid_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
@@ -324,6 +339,29 @@ impl PageTable {
     pub fn map_no_flush(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission) {
         self.map_by_pte_flags_no_flush(vpn, ppn, LAPTEFlags::from(flags));
     }
+    /// Map one user 2 MiB leaf in the level-1 directory.
+    pub fn map_huge_page(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission) {
+        const HUGE_PAGE_NUM: usize = 1 << (21 - PAGE_SIZE_BITS);
+        assert_eq!(vpn.0 % HUGE_PAGE_NUM, 0);
+        assert_eq!(ppn.0 % HUGE_PAGE_NUM, 0);
+
+        let indexes = vpn.indexes();
+        let root_next = &mut self.root_ppn.as_array::<usize>()[indexes[0]];
+        if *root_next == PhysAddr::from(self.empty_dir_ppn).0 {
+            let frame = FrameTracker::alloc().unwrap();
+            Self::init_empty_directory(frame.ppn, self.empty_leaf_ppn);
+            *root_next = PhysAddr::from(frame.ppn).0;
+            self.frames.push(frame);
+        }
+        let dir_ppn = PhysAddr::from(*root_next).floor();
+        let pte = &mut dir_ppn.as_array::<PageTableEntry>()[indexes[1]];
+        assert_eq!(
+            pte.get_ppn(),
+            self.empty_leaf_ppn,
+            "huge mapping overlaps an existing VMA"
+        );
+        *pte = PageTableEntry::new(ppn, LAPTEFlags::from(flags));
+    }
     /// Invalidate the whole local TLB after a batch of `map_no_flush` calls.
     #[inline]
     pub fn flush_tlb_all(&self) {
@@ -343,18 +381,63 @@ impl PageTable {
     /// Translate the `vpn` into its corresponding `Some(PageTableEntry)` if exists
     /// `None` is returned if nothing is found.
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PhysPageNum> {
-        self.find_pte(vpn)
-            .filter(|pte| pte.get_flags().contains(LAPTEFlags::VALID))
-            .map(|pte| pte.get_ppn())
+        let indexes = vpn.indexes();
+        let mut table_ppn = self.root_ppn;
+        for (level, index) in indexes.iter().enumerate() {
+            if table_ppn.0 == 0 {
+                return None;
+            }
+            let pte = &table_ppn.as_array::<PageTableEntry>()[*index];
+            let flags = pte.get_flags();
+            if level == 2 {
+                return flags.contains(LAPTEFlags::VALID).then(|| pte.get_ppn());
+            }
+            if flags.contains(LAPTEFlags::VALID)
+                && flags.intersects(
+                    LAPTEFlags::WRITEABLE
+                        | LAPTEFlags::UNREADEABLE
+                        | LAPTEFlags::UNEXECUTABLE
+                        | LAPTEFlags::PLV3,
+                )
+            {
+                let lower_vpn_bits = (2 - level) * 9;
+                let lower_vpn = vpn.0 & ((1 << lower_vpn_bits) - 1);
+                return Some(PhysPageNum(pte.get_ppn().0 + lower_vpn));
+            }
+            table_ppn = pte.get_ppn();
+        }
+        None
     }
     /// Return the leaf PTE shape for an already mapped virtual page.
     /// LoongArch user mappings are always 4 KiB leaves in this page table;
     /// keep the same diagnostic tuple as RISC-V for cross-architecture logs.
     #[cfg(feature = "fault-diagnostics")]
     pub fn translate_pte_diagnostic(&self, vpn: VirtPageNum) -> Option<(usize, usize, usize)> {
-        self.find_pte(vpn)
-            .filter(|pte| pte.get_flags().contains(LAPTEFlags::VALID))
-            .map(|pte| (2, pte.bits, pte.get_ppn().0))
+        let indexes = vpn.indexes();
+        let mut table_ppn = self.root_ppn;
+        for (level, index) in indexes.iter().enumerate() {
+            if table_ppn.0 == 0 {
+                return None;
+            }
+            let pte = &table_ppn.as_array::<PageTableEntry>()[*index];
+            let flags = pte.get_flags();
+            if level == 2
+                || (level < 2
+                    && flags.contains(LAPTEFlags::VALID)
+                    && flags.intersects(
+                        LAPTEFlags::WRITEABLE
+                            | LAPTEFlags::UNREADEABLE
+                            | LAPTEFlags::UNEXECUTABLE
+                            | LAPTEFlags::PLV3,
+                    ))
+            {
+                return flags
+                    .contains(LAPTEFlags::VALID)
+                    .then(|| (level, pte.bits, pte.get_ppn().0));
+            }
+            table_ppn = pte.get_ppn();
+        }
+        None
     }
 
     /// Whether the current software leaf permits an ordinary U-mode fetch.

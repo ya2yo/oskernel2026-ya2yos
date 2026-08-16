@@ -2,8 +2,8 @@
 
 use alloc::format;
 use linux_raw_sys::general::{
-    MADV_DONTNEED, MADV_NORMAL, MADV_RANDOM, MADV_SEQUENTIAL, MADV_WILLNEED, MAP_SHARED_VALIDATE,
-    MAP_TYPE,
+    MADV_DONTNEED, MADV_NORMAL, MADV_RANDOM, MADV_SEQUENTIAL, MADV_WILLNEED, MAP_HUGETLB,
+    MAP_HUGE_MASK, MAP_HUGE_SHIFT, MAP_SHARED_VALIDATE, MAP_TYPE,
 };
 use log::{debug, warn};
 
@@ -35,9 +35,38 @@ pub fn sys_mmap(
         "[sysmap] addr={:#x},len={:#x},prot={:#x},flags={:?},fd={},off={:#x}",
         addr, len, prot, flags, fd, off
     );
+    let huge = raw_flags & MAP_HUGETLB != 0;
+    if huge {
+        // The first usable huge-page ABI is one anonymous 2 MiB leaf.  An
+        // omitted size encoding selects the same default, while other sizes
+        // are rejected instead of silently falling back to 4 KiB pages.
+        let encoded_order = (raw_flags >> MAP_HUGE_SHIFT) & MAP_HUGE_MASK;
+        if encoded_order != 0 && encoded_order != 21 {
+            return Err(SysErrNo::EOPNOTSUPP);
+        }
+        if !flags.contains(MmapFlags::MAP_ANONYMOUS) {
+            return Err(SysErrNo::EOPNOTSUPP);
+        }
+        if off != 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+        if len == 0 || len % crate::arch::memory_layout::HUGE_PAGE_SIZE != 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+        if prot & (MmapProt::PROT_READ | MmapProt::PROT_WRITE | MmapProt::PROT_EXEC).bits() == 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+    }
     // Linux ignores unknown mmap bits for MAP_SHARED/MAP_PRIVATE, but
     // MAP_SHARED_VALIDATE turns them into a strict capability check.
-    if raw_flags & MAP_TYPE == MAP_SHARED_VALIDATE && raw_flags & !MmapFlags::all().bits() != 0 {
+    let huge_size_bits = if huge {
+        MAP_HUGE_MASK << MAP_HUGE_SHIFT
+    } else {
+        0
+    };
+    if raw_flags & MAP_TYPE == MAP_SHARED_VALIDATE
+        && raw_flags & !(MmapFlags::all().bits() | huge_size_bits) != 0
+    {
         return Err(SysErrNo::EOPNOTSUPP);
     }
     if flags
@@ -66,7 +95,7 @@ pub fn sys_mmap(
     let process = &task.process;
     let memory_set = process.memory_set_arc();
 
-    let len = page_round_up(len);
+    let len = if huge { len } else { page_round_up(len) };
     // Reject requests beyond the configured per-process mmap budget.
     if len > MAX_MMAP_SIZE {
         return Err(SysErrNo::ENOMEM);
@@ -253,8 +282,7 @@ pub fn sys_mprotect(addr: usize, len: usize, prot: u32) -> SyscallRet {
     let start_vpn = VirtAddr::from(addr).floor();
     let end_vpn = VirtAddr::from(end_addr).ceil();
     // 修改各逻辑段的权限并更新页表
-    memory_set.mprotect(start_vpn, end_vpn, map_perm);
-    Ok(0)
+    memory_set.mprotect(start_vpn, end_vpn, map_perm)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/madvise.2.html

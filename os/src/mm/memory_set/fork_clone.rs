@@ -94,6 +94,40 @@ impl MemorySetInner {
                         // 父子在后续 lazy fault 中从 GROUP_SHARE 找到同一共享帧。
                         GROUP_SHARE.lock().add_area(new_area.groupid);
                     }
+                    if area.is_huge() {
+                        if area.mmap_flags.contains(MmapFlags::MAP_SHARED) {
+                            let frames: Vec<_> = area.data_frames.values().cloned().collect();
+                            if new_area
+                                .map_huge_given_frames(&mut memory_set.page_table, &frames)
+                                .is_ok()
+                            {
+                                memory_set.push_lazily(new_area);
+                            }
+                        } else {
+                            // A private huge leaf cannot be downgraded to a
+                            // per-4 KiB COW PTE without splitting the parent
+                            // leaf. Copy the resident block eagerly instead;
+                            // this preserves parent/child isolation while
+                            // keeping the minimum huge-page implementation
+                            // independent from ordinary COW paths.
+                            if new_area.map_huge(&mut memory_set.page_table).is_err() {
+                                continue;
+                            }
+                            for vpn in area.vpn_range {
+                                let (Some(src_ppn), Some(dst_ppn)) = (
+                                    u.page_table.translate(vpn),
+                                    memory_set.page_table.translate(vpn),
+                                ) else {
+                                    continue;
+                                };
+                                dst_ppn
+                                    .bytes_array_mut()
+                                    .copy_from_slice(src_ppn.bytes_array());
+                            }
+                            memory_set.push_lazily(new_area);
+                        }
+                        continue;
+                    }
                     // Mmap and brk are lazy allocation
                     if is_mmap_vma(area) || area.area_type == MapAreaType::Brk {
                         if area.mmap_flags.contains(MmapFlags::MAP_SHARED) {

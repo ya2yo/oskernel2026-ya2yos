@@ -145,6 +145,7 @@
 - [LTP mmap3 并发临时文件缓存抖动与动态栈回收](./problem/mmap3-cache-churn-and-map-stack-leak.md)
 - [BuildStorm 普通 read 路径与 EXT4 全局锁争用](./problem/buildstorm-read-path-lock-contention.md)
 - [LTP mmap18 MAP_GROWSDOWN 与 SIGSEGV 线程组退出修复](./problem/mmap18-growsdown-sigsegv-group-exit.md)
+- [用户态匿名 2 MiB hugepage 映射](./problem/user-hugepage-mmap-2m.md)
 - [定时器无竞争抢占的调度路径优化](./problem/scheduler-uncontended-preemption.md)
 - [LTP mmap16 ext4 loop 容量与 mmap 写回](./problem/mmap16-ext4-loop-enospc-writeback.md)
 - [LTP mmap14 MAP_LOCKED 与 VmLck 统计](./problem/mmap14-map-locked-vmlck.md)

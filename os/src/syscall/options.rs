@@ -87,6 +87,8 @@ bitflags! {
         const MAP_NORESERVE = linux::MAP_NORESERVE;
         /// 预先填充页表（MAP_POPULATE），我们作为 no-op 接受
         const MAP_POPULATE = linux::MAP_POPULATE;
+        /// Anonymous 2 MiB hugetlb mapping (the minimum supported huge page).
+        const MAP_HUGETLB = linux::MAP_HUGETLB;
         /// MAP_FIXED_NOREPLACE: 类似 MAP_FIXED，但如果地址已被映射则返回 EEXIST 而不是替换
         const MAP_FIXED_NOREPLACE = linux::MAP_FIXED_NOREPLACE;
         const MAP_SHARED_VALIDATE = linux::MAP_SHARED_VALIDATE;

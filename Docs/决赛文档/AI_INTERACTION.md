@@ -3707,3 +3707,15 @@
   `pwd`、引号管道、读写/追加重定向、`cd; pwd` 和后台任务回收的真实 guest 执行；未运行
   LoongArch64 QEMU 交互回归。
 - **关联 commit**：当前工作区未提交
+
+#### 用户态匿名 2 MiB hugepage 映射（8.16）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求实现用户态最小可用的大页分配映射。
+- **描述**：新增 `MAP_HUGETLB` 匿名 2 MiB 映射，接入 2 MiB 对齐虚拟地址、CMA 连续块、
+  RISC-V/LoongArch64 高级页表叶子和共享块生命周期；shared fork 复用帧，private fork
+  eager copy。部分拆分、文件后备和 huge `mremap` 明确返回不支持。
+- **验证边界**：RISC-V64/LoongArch64 release 构建通过；RISC-V QEMU smoke test
+  输出 `hugepage regression: PASS`。LoongArch64 QEMU 运行时回归尚未执行。
+- **关联问题**：[用户态匿名 2 MiB hugepage 映射](./problem/user-hugepage-mmap-2m.md)
+- **关联 commit**：当前工作区未提交

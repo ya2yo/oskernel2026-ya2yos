@@ -145,19 +145,24 @@ impl PageTable {
     fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
         let idxs = vpn.indexes();
         let mut ppn = self.root_ppn;
-        let mut result: Option<&mut PageTableEntry> = None;
         for (i, idx) in idxs.iter().enumerate() {
             let pte = &mut ppn.as_array::<PageTableEntry>()[*idx];
-            if i == 2 {
-                result = Some(pte);
-                break;
+            let flags = pte.get_flags();
+            if i == 2
+                || (i < 2
+                    && flags.contains(RVPTEFlags::VALID)
+                    && flags.intersects(
+                        RVPTEFlags::READABLE | RVPTEFlags::WRITEABLE | RVPTEFlags::EXECUTABLE,
+                    ))
+            {
+                return Some(pte);
             }
-            if !pte.get_flags().contains(RVPTEFlags::VALID) {
+            if !flags.contains(RVPTEFlags::VALID) {
                 return None;
             }
             ppn = pte.get_ppn();
         }
-        result
+        None
     }
     /// return: 有效的页表项
     fn find_valid_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
@@ -268,6 +273,10 @@ impl PageTable {
     #[inline]
     pub fn map_no_flush(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission) {
         self.map_by_pte_flags(vpn, ppn, RVPTEFlags::from(flags));
+    }
+    /// Map one user 2 MiB leaf without allocating 512 terminal PTEs.
+    pub fn map_huge_page(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: MapPermission) {
+        self.map_mega_page(vpn, ppn, RVPTEFlags::from(flags));
     }
     /// Invalidate the whole local TLB after a batch of `map_no_flush` calls.
     #[inline]
@@ -445,7 +454,9 @@ impl PageTable {
     /// - 新旧标志做位或(`|`)而非替换，因此当前实现不会移除已有权限。
     ///   这可能导致"只降不升"的语义偏差（真正的 mprotect 应完全替换权限）。
     pub fn handle_mprotect(&mut self, vpn: VirtPageNum, add_flags: MapPermission) {
-        let pte = self.find_pte_create(vpn).unwrap();
+        let Some(pte) = self.find_valid_pte(vpn) else {
+            return;
+        };
         let old_flags = pte.get_flags();
         // Do not use `RVPTEFlags::from` here: mprotect also visits lazy PTEs
         // and must not make their PPN=0 entries valid.  It still needs the
@@ -509,7 +520,9 @@ impl PageTable {
         // allocates and copies the replacement page, then swaps the PTE.
         // Keep the same order here: do not tear down a working mapping before
         // allocation succeeds, and keep source_frame pinned through the copy.
-        let src_ppn = pte.get_ppn();
+        // `translate` includes the VPN offset for a superpage leaf.  The raw
+        // PTE contains only the aligned base PPN.
+        let src_ppn = self.translate(vpn).unwrap_or_else(|| pte.get_ppn());
         if let Some(frame) = source_frame.as_ref() {
             if frame.ppn != src_ppn {
                 return false;
@@ -545,6 +558,10 @@ impl PageTable {
         vpn: VirtPageNum,
         memory_set: &mut MemorySetInner,
     ) {
+        let src_ppn = match self.translate(vpn) {
+            Some(ppn) => ppn,
+            None => return,
+        };
         let Some(pte) = self.find_valid_pte(vpn) else {
             // ELF/Brk VMAs may cover lazy or already-unmapped pages.  Fork
             // only needs to COW a present leaf; a missing leaf is inherited
@@ -552,7 +569,6 @@ impl PageTable {
             return;
         };
         let mut pte_flags = pte.get_flags();
-        let src_ppn = pte.get_ppn();
         // 对于可写的页，或者有写时复制的标志位的页
         // 需要考虑写时复制
         if pte_flags.contains(RVPTEFlags::WRITEABLE) {

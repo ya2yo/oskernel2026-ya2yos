@@ -5,7 +5,10 @@
 mod frame_tracker;
 mod page_cache;
 pub use frame_tracker::FrameTracker;
+pub(crate) use frame_tracker::HugeFrameBlock;
 pub use page_cache::PAGE_CACHE;
 mod buddy_cma;
 pub(crate) use buddy_cma::cancel_cma_lock_owner;
-pub use buddy_cma::{cma_alloc, cma_dealloc, init_cma, init_cma_late};
+pub use buddy_cma::{
+    cma_alloc, cma_alloc_aligned, cma_dealloc, cma_dealloc_aligned, init_cma, init_cma_late,
+};

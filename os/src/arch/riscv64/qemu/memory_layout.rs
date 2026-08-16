@@ -9,6 +9,9 @@ pub const BOOTSTRAP_PHYSICAL_MEMORY_SIZE: usize = 0x4000_0000; // 1GB
 
 pub const PAGE_SIZE: usize = 0x1000; // 4KB
 pub const PAGE_SIZE_BITS: usize = 12;
+/// User hugetlb mappings use the Sv39 2 MiB leaf size.
+pub const HUGE_PAGE_SIZE: usize = 0x20_0000;
+pub const HUGE_PAGE_PAGES: usize = HUGE_PAGE_SIZE / PAGE_SIZE;
 
 pub const USER_STACK_SIZE: usize = 1024 * 1024 * 8; // 8MB
 pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 4;

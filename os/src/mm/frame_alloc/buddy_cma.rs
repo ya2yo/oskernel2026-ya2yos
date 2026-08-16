@@ -227,13 +227,14 @@ pub fn init_cma_late() {
 #[cfg(not(target_arch = "riscv64"))]
 pub fn init_cma_late() {}
 
-/// 分配连续物理内存页（返回起始物理地址）
-pub fn cma_alloc(pages: usize) -> Option<PhysAddr> {
-    let layout_opt = Layout::from_size_align(
-        pages * PAGE_SIZE,
-        PAGE_SIZE, // 按页对齐
-    )
-    .ok();
+/// Allocate a physically contiguous page range with an explicit alignment.
+pub fn cma_alloc_aligned(pages: usize, align_pages: usize) -> Option<PhysAddr> {
+    if pages == 0 || align_pages == 0 {
+        return None;
+    }
+    let size = pages.checked_mul(PAGE_SIZE)?;
+    let align = align_pages.checked_mul(PAGE_SIZE)?;
+    let layout_opt = Layout::from_size_align(size, align).ok();
     match layout_opt {
         Some(layout) => {
             let ptr_result = match CMA_ALLOCATOR.with_heap(|allocator| allocator.alloc(layout)) {
@@ -250,12 +251,24 @@ pub fn cma_alloc(pages: usize) -> Option<PhysAddr> {
     }
 }
 
+/// 分配连续物理内存页（返回起始物理地址）。
+pub fn cma_alloc(pages: usize) -> Option<PhysAddr> {
+    cma_alloc_aligned(pages, 1)
+}
+
 /// 释放连续物理内存
-pub fn cma_dealloc(paddr: PhysAddr, pages: usize) {
+pub fn cma_dealloc_aligned(paddr: PhysAddr, pages: usize, align_pages: usize) {
     assert!(pages > 0, "cannot deallocate an empty CMA range");
     assert_eq!(paddr.0 % PAGE_SIZE, 0);
-    let layout =
-        Layout::from_size_align(pages * PAGE_SIZE, PAGE_SIZE).expect("Invalid deallocation layout");
+    let layout = Layout::from_size_align(
+        pages
+            .checked_mul(PAGE_SIZE)
+            .expect("CMA deallocation size overflow"),
+        align_pages
+            .checked_mul(PAGE_SIZE)
+            .expect("CMA deallocation alignment overflow"),
+    )
+    .expect("Invalid deallocation layout");
     let va = KernelAddr::from(paddr);
     let ptr = NonNull::new(va.0 as *mut u8).expect("Pointer must not be null!");
     CMA_ALLOCATOR.with_heap(|allocator| {
@@ -272,6 +285,11 @@ pub fn cma_dealloc(paddr: PhysAddr, pages: usize) {
             allocator.dealloc(ptr, layout);
         }
     });
+}
+
+/// Release a contiguous range allocated with [`cma_alloc_aligned`].
+pub fn cma_dealloc(paddr: PhysAddr, pages: usize) {
+    cma_dealloc_aligned(paddr, pages, 1)
 }
 
 /// Release a CMA critical section that belongs to a task whose kernel stack is

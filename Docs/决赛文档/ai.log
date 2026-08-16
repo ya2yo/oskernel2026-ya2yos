@@ -12548,3 +12548,30 @@ AI 交互记录。`make` 完成 RISC-V64/LoongArch64 release 构建，只有既�
 `printf 'redirect-ok\\n' > /tmp/ya2yos-shell-check`、`cat < ...` 及
 `echo append-one >> ...` 均输出预期结果；`cd /tmp; pwd` 保持 shell 当前目录，
 `sleep 1 &` 立即返回且下一次命令前显示任务回收。QEMU 使用 `-snapshot`，验证未修改测试镜像。
+
+## 2026-08-16：用户态匿名 2 MiB hugepage 映射
+
+### 用户需求
+
+维护者要求为当前不支持用户态大页的内核实现最小可用的大页分配映射。
+
+### AI 分析与采纳结论
+
+沿 `mmap` syscall、MemorySet VMA、CMA buddy allocator 和 RISC-V/LoongArch64 页表路径
+检查后，采用 Linux 兼容的 `MAP_HUGETLB` 最小 ABI：只支持匿名 2 MiB 映射。实现需要同时
+满足虚拟地址 2 MiB 对齐、连续物理块分配、高级页表叶子和完整粒度解除映射；不能把按
+2 MiB 布局分配的块拆给普通 4 KiB `FrameTracker` 释放。
+
+最终采纳 eager huge VMA、CMA 对齐接口、共享 `HugeFrameBlock` 生命周期 token、RISC-V
+Sv39/LoongArch64 level-1 leaf，以及 shared fork 复用/private fork eager copy。文件
+后备 hugepage、hugetlbfs、部分拆分和 huge `mremap` 留作后续范围；不支持的拆分操作明确
+返回错误，避免破坏页表和 VMA 一致性。
+
+### 修改与验证
+
+修改 `os/src/arch/{riscv64,loongarch64}/qemu/{memory_layout.rs,page_table.rs}`、
+`os/src/mm/frame_alloc/*`、`os/src/mm/map_area.rs`、`os/src/mm/memory_set/*`、
+`os/src/syscall/mm/mmap.rs` 和 `os/src/syscall/options.rs`，并新增
+`Docs/决赛文档/problem/user-hugepage-mmap-2m.md`。RISC-V64/LoongArch64 release 构建
+通过；RISC-V QEMU 临时 smoke test 输出 `hugepage regression: PASS`。LoongArch64 QEMU
+运行时回归尚未执行；最终用户态临时测试入口已删除。

@@ -191,6 +191,40 @@ impl MemorySetInner {
         addr
     }
 
+    /// Find a free mmap range whose start is aligned to `align` bytes.
+    pub(crate) fn find_mmap_addr_aligned(&mut self, size: usize, align: usize) -> usize {
+        if align == 0 || !align.is_power_of_two() {
+            return 0;
+        }
+        let search_size = match size.checked_add(align - 1) {
+            Some(value) => value,
+            None => return 0,
+        };
+        let hint = self.mmap_hint.max(PAGE_SIZE).min(MMAP_TOP);
+        for search_hint in [hint, MMAP_TOP] {
+            if search_hint != MMAP_TOP && search_hint == hint && hint == MMAP_TOP {
+                continue;
+            }
+            let candidate = self.find_insert_addr(search_hint, search_size);
+            if candidate == 0 {
+                continue;
+            }
+            let Some(addr_base) = candidate.checked_add(align - 1) else {
+                continue;
+            };
+            let addr = addr_base & !(align - 1);
+            let Some(end) = addr.checked_add(size) else {
+                continue;
+            };
+            if end > search_hint || end > MMAP_TOP {
+                continue;
+            }
+            self.mmap_hint = addr;
+            return addr;
+        }
+        0
+    }
+
     /// Find an area whose range exactly equals `[l, r)`.
     pub fn find_area_by_range(&mut self, l: VirtPageNum, r: VirtPageNum) -> Option<&mut MapArea> {
         let target = (l, r);

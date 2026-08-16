@@ -1,7 +1,7 @@
 use super::group::GROUP_SHARE;
 use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VPNRange, VirtAddr, VirtPageNum};
 
-use crate::arch::memory_layout::{MMIO_MAP_OFFSET, PAGE_SIZE_BITS};
+use crate::arch::memory_layout::{HUGE_PAGE_PAGES, MMIO_MAP_OFFSET, PAGE_SIZE_BITS};
 use crate::{
     arch::memory_layout::{KERNEL_PGNUM_OFFSET, PAGE_SIZE},
     arch::page_table::PageTable,
@@ -150,6 +150,85 @@ impl MapArea {
             self.data_frames.insert(vpn, frame);
         }
         page_table.flush_tlb_all();
+    }
+
+    /// Map an existing set of resident frames using 2 MiB leaves.
+    pub fn map_huge_given_frames(
+        &mut self,
+        page_table: &mut PageTable,
+        frames: &[Arc<FrameTracker>],
+    ) -> Result<(), ()> {
+        let page_count = self.vpn_range.end().0 - self.vpn_range.start().0;
+        if self.map_type != MapType::Framed
+            || self.map_perm.is_empty()
+            || page_count != frames.len()
+            || self.vpn_range.start().0 % HUGE_PAGE_PAGES != 0
+            || page_count % HUGE_PAGE_PAGES != 0
+        {
+            return Err(());
+        }
+
+        let mut frame_index = 0;
+        let mut vpn = self.vpn_range.start();
+        while vpn < self.vpn_range.end() {
+            let base_ppn = frames[frame_index].ppn;
+            if base_ppn.0 % HUGE_PAGE_PAGES != 0 {
+                return Err(());
+            }
+            for offset in 0..HUGE_PAGE_PAGES {
+                let frame = frames[frame_index + offset].clone();
+                self.data_frames.insert(VirtPageNum(vpn.0 + offset), frame);
+            }
+            page_table.map_huge_page(vpn, base_ppn, self.map_perm);
+            frame_index += HUGE_PAGE_PAGES;
+            vpn.0 += HUGE_PAGE_PAGES;
+        }
+        page_table.flush_tlb_all();
+        Ok(())
+    }
+
+    /// Eagerly allocate and map anonymous 2 MiB leaves.
+    ///
+    /// The existing VMA bookkeeping remains 4 KiB granular so resident-size,
+    /// fork, and user-copy code can continue to use the established frame map.
+    /// The hardware page table, however, receives one level-1 leaf per huge
+    /// chunk and therefore avoids 512 terminal PTEs for each chunk.
+    pub fn map_huge(&mut self, page_table: &mut PageTable) -> Result<(), ()> {
+        if self.map_type != MapType::Framed
+            || self.vpn_range.start().0 % HUGE_PAGE_PAGES != 0
+            || self.vpn_range.end().0 % HUGE_PAGE_PAGES != 0
+            || self.map_perm.is_empty()
+        {
+            return Err(());
+        }
+
+        let mut vpn = self.vpn_range.start();
+        while vpn < self.vpn_range.end() {
+            let base = match crate::mm::cma_alloc_aligned(HUGE_PAGE_PAGES, HUGE_PAGE_PAGES) {
+                Some(base) => base,
+                None => {
+                    self.unmap(page_table);
+                    return Err(());
+                }
+            };
+            let base_ppn = PhysPageNum::from(base);
+            let block =
+                frame_alloc::HugeFrameBlock::new(base_ppn, HUGE_PAGE_PAGES, HUGE_PAGE_PAGES);
+            for offset in 0..HUGE_PAGE_PAGES {
+                let page_vpn = VirtPageNum(vpn.0 + offset);
+                let frame =
+                    FrameTracker::from_huge_ppn(PhysPageNum(base_ppn.0 + offset), block.clone());
+                self.data_frames.insert(page_vpn, frame);
+            }
+            page_table.map_huge_page(vpn, base_ppn, self.map_perm);
+            vpn.0 += HUGE_PAGE_PAGES;
+        }
+        page_table.flush_tlb_all();
+        Ok(())
+    }
+
+    pub fn is_huge(&self) -> bool {
+        self.mmap_flags.contains(MmapFlags::MAP_HUGETLB)
     }
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         debug!("[unmap] start! page_table's ppn={:#x}", page_table.token());

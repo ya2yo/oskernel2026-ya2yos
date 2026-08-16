@@ -267,6 +267,11 @@ impl MemorySet {
         file: Option<Arc<OSFile>>,
         off: usize,
     ) -> usize {
+        if flags.contains(MmapFlags::MAP_HUGETLB) {
+            return self.with_frame_preserving_mut(|inner| {
+                inner.mmap(addr, len, map_perm, flags, file, off)
+            });
+        }
         if flags.contains(MmapFlags::MAP_FIXED) {
             let Some(end_addr) = addr.checked_add(len) else {
                 return 0;
@@ -544,12 +549,17 @@ impl MemorySet {
     /// untouched. Area splitting and hardware PTE updates are implemented by
     /// `MemorySetInner::mprotect`.
     #[inline(always)]
-    pub fn mprotect(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) {
+    pub fn mprotect(
+        &self,
+        start_vpn: VirtPageNum,
+        end_vpn: VirtPageNum,
+        map_perm: MapPermission,
+    ) -> SyscallRet {
         self.with_frame_preserving_mut_with_kind(
             #[cfg(feature = "perf")]
             crate::mm::remote_tlb::ShootdownKind::Mprotect,
             |inner| inner.mprotect(start_vpn, end_vpn, map_perm),
-        );
+        )
     }
 
     /// Adjust an mmap range while retaining only frames which the operation can
