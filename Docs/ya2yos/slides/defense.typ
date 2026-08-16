@@ -55,11 +55,18 @@
   #v(0.12em)
   #text(size: 10.5pt, fill: muted)[#label]
 ]
-#let panel(title, body, color: blue, fill: pale-blue) = block(fill: fill, stroke: 0.7pt + border, radius: 4pt, inset: 11pt)[
-  #text(size: 15pt, weight: "bold", fill: color)[#title]
-  #v(0.22em)
-  #text(size: 12.2pt, fill: ink)[#body]
-]
+#let panel(title, body, color: blue, fill: pale-blue, height: auto) = {
+  let content = [
+    #text(size: 15pt, weight: "bold", fill: color)[#title]
+    #v(0.22em)
+    #text(size: 12.2pt, fill: ink)[#body]
+  ]
+  if height == auto {
+    block(fill: fill, stroke: 0.7pt + border, radius: 4pt, inset: 11pt)[#content]
+  } else {
+    block(fill: fill, stroke: 0.7pt + border, radius: 4pt, inset: 11pt, height: height)[#content]
+  }
+}
 #let chapter-cover(no, title, subtitle, color: blue, fill: pale-blue) = slide[
   #align(center + horizon)[
     #block(fill: fill, stroke: 1.2pt + color, radius: 8pt, width: 78%, inset: 24pt)[
@@ -142,9 +149,7 @@
         tag("RISC-V64", color: teal), tag("LoongArch64", color: orange), tag("Linux ABI", color: blue),
       )
       #v(0.72cm)
-      #text(size: 12pt, fill: muted)[参赛队员：饶晓杰　　指导老师：杨磊]
-      #v(0.13cm)
-      #text(size: 10pt, fill: muted)[syscall · task · scheduler · mm · VFS · signal · net · arch]
+      #text(size: 12pt, fill: muted)[参赛队员：饶晓杰\ 指导老师：杨磊]
     ]
   ]
 ]
@@ -159,8 +164,6 @@
     panel("03  ·  关键增量", [多核运行、CFS 调度、StarryOS 网络移植、uaccess、文件锁、syscall 扩展与模块重构。], color: orange, fill: pale-orange),
     panel("04  ·  发展规划", [扩展文件系统类型、提升文件 I/O、持续丰富网络模块，并完成开发板实机运行与验证。], color: red, fill: pale-red),
   )
-  #v(0.62cm)
-  #align(center)[#tag("关键词：兼容边界 · 状态机 · 并发控制 · 证据边界", color: navy)]
 ]
 
 // 3 · positioning
@@ -179,8 +182,6 @@
     panel("系统边界", [Ya2yOS 直接运行在 QEMU / 部分板级适配环境中，不是用户态模拟器；以 Linux 用户可见语义为兼容边界，但不宣称完整 Linux ABI。], color: teal, fill: pale-teal),
     panel("目标平台与负载", [以 RISC-V64 / LoongArch64 为目标架构，重点验证 fork / exec / mmap、ext4 和 SMP 共享地址空间等高频路径；完整实机与压力回归仍在推进。], color: orange, fill: pale-orange),
   )
-  #v(0.42cm)
-  #align(center)[#tag("定位：用 Rust 构建可运行、可扩展、可验证的 Linux ABI 宏内核", color: navy)]
 ]
 
 // 4 · design highlights
@@ -189,14 +190,12 @@
   #v(0.18cm)
   #grid(columns: (1fr, 1fr, 1fr), gutter: 8pt,
     compact-panel("01  ·  对象与生命周期", [Rust 的引用计数与显式所有权贯穿任务、地址空间、文件和 socket；`Process` 与 `TaskControlBlock` 分离资源和执行上下文。], color: blue, fill: pale-blue, height: 80pt),
-    compact-panel("02  ·  SMP 并发一致性", [以 `Running → Blocked → Ready → Running` 表达主要任务状态转换；简化 CFS、线程 affinity 和 remote-TLB MailBox / IPI / ACK 共同处理多核路径。], color: teal, fill: pale-teal, height: 80pt),
+    compact-panel("02  ·  SMP 并发一致性", [以 `Running → Blocked → Ready → Running` 表达主要任务状态转换；简化 CFS 和 Remote-TLB MailBox 共同处理多核路径。], color: teal, fill: pale-teal, height: 80pt),
     compact-panel("03  ·  Linux ABI 路径", [`uaccess` 对满足条件的短复制使用架构快路径，其余回退安全路径；COW、socket、文件锁和 syscall 按当前验证范围逐步接入。], color: orange, fill: pale-orange, height: 80pt),
     compact-panel("04  ·  架构适配边界", [RISC-V64 与 LoongArch64 共享主要内核接口，trap、页表 / TLB、timer、IPI 和 VirtIO 由架构层适配；部分硬件中断路径仍在完善。], color: red, fill: pale-red, height: 80pt),
     compact-panel("05  ·  验证口径", [“支持”绑定到指定架构、配置下的构建、启动或定向回归；不把局部接口接入表述为完整 Linux 语义或全量压力验收。], color: blue, fill: pale-blue, height: 80pt),
     compact-panel("06  ·  演进方向", [在语义和锁序正确的基础上，继续推进 VFS、I/O、网络和实机验证；性能收益以可追溯的同配置对照为准。], color: teal, fill: pale-teal, height: 80pt),
   )
-  #v(0.22cm)
-  #align(center)[#tag("设计主线：薄入口 → 快路径 → MailBox / IPI 协议 → 内核对象 → 状态转换 → 资源回收", color: navy)]
 ]
 
 // 5 · system introduction
@@ -261,8 +260,6 @@
     panel("资源共享语义", [clone flags 决定 `MemorySet`、FileTable、信号处理状态等资源是共享、复制还是新建；线程 affinity 保存在 TCB 而非进程全局。], color: teal, fill: pale-teal),
     panel("主要生命周期路径", [fork / clone 建立执行实体；execve 替换用户态映像；exit 与 waitpid 负责退出资源和状态的传递与回收。], color: orange, fill: pale-orange),
   )
-  #v(0.48cm)
-  #align(center)[#tag("对象边界清晰：进程拥有资源，线程承载执行，退出路径负责成对回收", color: navy)]
 ]
 
 // 7 · SMP scheduling
@@ -281,8 +278,6 @@
     panel("亲和性与唤醒", [TCB 保存 Linux 可见的 CPU affinity mask；调度器保留暂不满足 affinity 的任务，空闲目标 Hart 可由平台唤醒。], color: teal, fill: pale-teal),
     panel("当前边界", [已实现 online-Hart mask、affinity 过滤和 idle-Hart 唤醒；运行中迁移、per-CPU queue、work stealing 和完整负载均衡仍属于后续演进。], color: orange, fill: pale-orange),
   )
-  #v(0.48cm)
-  #align(center)[#tag("调度目标：可运行性正确优先，再通过拓扑与队列策略提升并行度", color: navy)]
 ]
 
 // 8 · memory management
@@ -320,8 +315,6 @@
     panel("选择语义", [pending 模块在 trap 返回前选择未被 mask 的信号；标准信号重复到达时保留 pending 位与首次 `siginfo_t`，不无限排队。], color: teal, fill: pale-teal),
     panel("用户态 frame", [有 handler 时在用户栈构造 signal frame；`rt_sigreturn` 校验 frame magic 与布局后恢复寄存器、PC 和栈指针，非法 frame 返回 EINVAL。], color: orange, fill: pale-orange),
   )
-  #v(0.48cm)
-  #align(center)[#tag("常规 handler / rt_sigreturn 路径已接通；实时队列、signalfd4 和部分异常语义仍在完善", color: navy)]
 ]
 
 // 10 · network
@@ -336,12 +329,10 @@
   )
   #v(0.42cm)
   #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
-    panel("Linux socket 边界", [当前支持 TCP、UDP 与 Unix socket 的主要 fd 路径；poll waiter 将已实现的连接、可读写和错误状态转化为任务可观察的就绪事件。], color: blue, fill: pale-blue),
+    panel("Linux socket 边界", [支持 TCP、UDP 与 Unix socket 的主要 fd 路径；poll waiter 将已实现的连接、可读写和错误状态转化为任务可观察的就绪事件。], color: blue, fill: pale-blue),
     panel("协议栈封装", [`Service` 持有 smoltcp Interface；`SocketSet` 管理协议 socket，网络服务以 poll 为主推进协议状态。], color: teal, fill: pale-teal),
     panel("设备适配边界", [`Router` 对接 loopback、Ethernet 与 VirtIO-net 的 RX / TX token；完整中断/NAPI 和高级协议语义仍在完善。], color: orange, fill: pale-orange),
   )
-  #v(0.48cm)
-  #align(center)[#tag("主要 socket 路径：readiness → poll waiter → 协议栈 / 设备 poll → 就绪；中断与高级语义持续完善", color: navy)]
 ]
 
 // 11 · device drivers
@@ -356,26 +347,22 @@
   )
   #v(0.42cm)
   #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
-    panel("双架构适配", [RISC-V64 主要使用 VirtIO-MMIO；LoongArch64 通过 PCI transport 适配 VirtIO。上层依赖 `BlockDeviceImpl` / `NetDeviceImpl`，但不同设备与 IRQ 完成语义仍有边界。], color: blue, fill: pale-blue),
-    panel("块设备路径", [块设备封装 VirtIO 队列并以同步访问为主；文件系统经统一块接口提交读写，当前重点是 QEMU 和已有回归路径。], color: teal, fill: pale-teal),
-    panel("网卡路径", [VirtIO-net 维护 RX 描述符和 TX 缓冲，网络服务主要通过 poll_interfaces() 推进；完整 IRQ enable/disable/complete 与实板网络验证属于后续工作。], color: orange, fill: pale-orange),
+    panel("双架构适配", [RISC-V64 主要使用 VirtIO-MMIO；LoongArch64 通过 PCI transport 适配 VirtIO。上层依赖 `BlockDeviceImpl` / `NetDeviceImpl`，但不同设备与 IRQ 完成语义仍有边界。], color: blue, fill: pale-blue, height: 126pt),
+    panel("块设备路径", [块设备封装 VirtIO 队列并以同步访问为主；文件系统经统一块接口提交读写，当前重点是 QEMU 和已有回归路径。], color: teal, fill: pale-teal, height: 126pt),
+    panel("网卡路径", [VirtIO-net 维护 RX 描述符和 TX 缓冲，网络服务主要通过 poll_interfaces() 推进；完整 IRQ enable/disable/complete 与实板网络验证属于后续工作。], color: orange, fill: pale-orange, height: 126pt),
   )
-  #v(0.48cm)
-  #align(center)[#tag("平台与传输层可变，主要设备接口共享；完整中断、实机网络与高级设备语义仍在验证", color: navy)]
 ]
 
 // 12 · incremental work overview
 #chapter-cover("03", "关键增量工作", "并发运行 · Linux 语义 · 网络移植 · 工程结构", color: orange, fill: pale-orange)
 #slide[
-  #titlebar("03  ·  KEY INCREMENTAL WORK", "关键增量工作：三条主线", subtitle: "SMP 一致性、用户内存与 I/O 路径、ABI 工程化")
+  #titlebar("03  ·  KEY INCREMENTAL WORK", "关键增量工作：三个方向", subtitle: "SMP 一致性、用户内存与 I/O 路径、ABI 工程化")
   #v(0.18cm)
   #grid(columns: (1fr, 1fr, 1fr), gutter: 10pt,
-    compact-panel("01  ·  SMP 与一致性", [简化 CFS、共享 ready queue、线程 affinity、idle-Hart 唤醒与 remote TLB MailBox / IPI / ACK。], color: blue, fill: pale-blue),
+    compact-panel("01  ·  SMP 与一致性", [简化 CFS、共享 ready queue、线程 affinity、idle-Hart 唤醒与 remote TLB MailBox / IPI / ACK。], color: blue, fill: pale-blue, height: 76pt),
     compact-panel("02  ·  用户内存与锁", [uaccess 双路径、文件映射缺页、COW 以及 POSIX/OFD/BSD/lease 文件锁的主要接口与定向语义。], color: teal, fill: pale-teal),
     compact-panel("03  ·  网络与 ABI 工程化", [适配 StarryOS 网络抽象，接入 smoltcp 与 VirtIO-net；clone3、rseq、epoll 等入口按领域拆分并逐步验证。], color: orange, fill: pale-orange),
   )
-  #v(0.32cm)
-  #align(center)[#tag("增量主线：先让多核与资源正确运行，再扩展 ABI 覆盖并收敛模块边界", color: navy)]
 ]
 
 // 13 · SMP and CFS
@@ -392,10 +379,8 @@
   #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
     panel("多核运行基础", [维护 online-Hart mask；相关 PTE 更新通过专用 remote TLB MailBox / IPI 收集 ACK，保证目标 Hart 完成本地失效。], color: blue, fill: pale-blue),
     panel("简化 CFS 可运行性", [共享 ready queue 按 vruntime 和权重选择任务；TCB 持有线程 affinity，暂不满足条件的任务保留在队列而不是错误执行。], color: teal, fill: pale-teal),
-    panel("唤醒与边界", [任务变为 Ready 后按 affinity 通知可运行 Hart；空闲核可被平台唤醒。运行中迁移、per-CPU queue、work stealing 和完整负载均衡仍是后续工作。], color: orange, fill: pale-orange),
+    panel("唤醒与边界", [任务变为 Ready 后按 affinity 通知可运行 Hart；空闲核可被平台唤醒。work stealing 和完整负载均衡仍是后续工作。], color: orange, fill: pale-orange),
   )
-  #v(0.48cm)
-  #align(center)[#tag("完成标准：任务放置、TLB 失效确认与唤醒路径可解释；不是完整负载均衡实现", color: navy)]
 ]
 
 // 14 · StarryOS network port
@@ -410,12 +395,10 @@
   )
   #v(0.42cm)
   #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
-    panel("移植范围", [`os/src/net` 与 `drivers/net` 保留并适配 StarryOS 的 `NetDriverOps`、`NetBuf`、socket 封装和 smoltcp 服务组织；贡献重点是接入 Ya2yOS 语义。], color: blue, fill: pale-blue),
+    panel("移植范围", [`os/src/net` 与 `drivers/net` 保留并适配 StarryOS 的 `NetDriverOps`、`NetBuf`、socket 封装和 smoltcp 服务组织。], color: blue, fill: pale-blue),
     panel("Ya2yOS 集成边界", [TCP、UDP 和 Unix socket 提供主要 fd 路径；poll waiter 将已实现的协议状态转为任务就绪事件，网络服务当前以 poll 为主。], color: teal, fill: pale-teal),
     panel("设备资源协议", [VirtIO-net 为 RX 描述符预置缓冲，TX 从共享池取用；协议栈消费后通过 recycle 归还队列，完整中断和实板网络验证仍在推进。], color: orange, fill: pale-orange),
   )
-  #v(0.48cm)
-  #align(center)[#tag("移植的核心是边界适配：网络对象、fd/poll 语义和设备缓冲区所有权接入 Ya2yOS", color: navy)]
 ]
 
 // 15 · uaccess and filesystem locking
@@ -430,10 +413,10 @@
   )
   #v(0.4cm)
   #grid(columns: (1fr, 1fr), gutter: 13pt,
-    panel("uaccess 快路径边界", [`translate.rs` 仅在当前活动地址空间、用户范围合法且长度满足限制时调用架构复制；其他场景回退逐页安全路径并传播 EFAULT。], color: blue, fill: pale-blue),
+    panel("uaccess 快路径边界", [`translate.rs` 仅在当前活动地址空间、用户范围合法且长度满足限制时调用架构复制；其他场景回退逐页安全路径并传播 EFAULT。], color: blue, fill: pale-blue, height: 93pt),
     panel("安全与异常路径", [跨页、延迟分配、文件页和 COW 回到通用映射路径；uaccess scope 与 trap fixup 处理内核态访问异常，最终向 syscall 传播 EFAULT。], color: teal, fill: pale-teal),
     panel("细化用户可见文件锁", [`file_lock` 提供 POSIX、OFD、BSD flock 与 lease 的主要接口；当前以基本语义、F_SETLKW 等定向等待路径和 close/exit 回收为主，底层锁表仍是简化实现。], color: orange, fill: pale-orange),
-    panel("保守的内部锁边界", [lwext4 C API / bcache 的内部并发仍采用可等待的准入保护；先保证一致性与锁序，再逐步评估资源级细粒度并发。], color: red, fill: pale-red),
+    panel("保守的内部锁边界", [lwext4 C API / bcache 的内部并发仍采用可等待的准入保护；先保证一致性与锁序，再逐步评估资源级细粒度并发。], color: red, fill: pale-red, height: 93pt),
   )
 ]
 
@@ -453,8 +436,6 @@
     panel("按领域拆分入口", [`syscall` 划分 task、mm、fs、net、sync、io_mpx、ipc、time、sys 等目录；handler 负责解码、复制、查表和 errno，语义不堆积在大分发函数。], color: teal, fill: pale-teal),
     panel("提高内聚度", [signal 拆为 delivery/pending/frame/timer；MemorySet 拆分 handle、pagefault、fork_clone 等；网络服务、驱动和文件锁也按资源职责拆分。], color: orange, fill: pale-orange),
   )
-  #v(0.48cm)
-  #align(center)[#tag("入口保持薄，语义回到领域模块；“支持”绑定到指定架构、配置和定向回归，不等同于完整 ABI", color: navy)]
 ]
 
 // 14 · roadmap
@@ -468,8 +449,6 @@
     panel("03  ·  继续丰富网络模块", [补齐 socket 选项、协议语义、路由与设备事件处理；持续加强 TCP / UDP / Unix socket 与 poll / epoll、VirtIO-net 之间的一致性。], color: orange, fill: pale-orange),
     panel("04  ·  在开发板上成功运行", [完成实机启动、内存与中断初始化、块设备/网卡驱动和串口观测；在开发板上跑通用户态程序、文件 I/O、网络通信与压力回归。], color: red, fill: pale-red),
   )
-  #v(0.6cm)
-  #align(center)[#tag("路线：VFS 扩展 → I/O 优化 → 网络完善 → 实机验证；逐步扩大可复核的系统能力", color: navy)]
 ]
 
 // 15 · closing
