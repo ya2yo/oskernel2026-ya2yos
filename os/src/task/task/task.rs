@@ -1,54 +1,27 @@
 //!Implementation of [`TaskControlBlock`]
 use super::super::process::Process;
-use super::super::{
-    aux::{Aux, AuxType},
-    scheduler::SchedEntity,
-    tid_to_task, RseqState, TaskContext, TidHandle,
-};
-#[cfg(feature = "perf")]
-use crate::arch::time::get_ticks;
-#[cfg(feature = "fault-diagnostics")]
-use crate::signal::SignalFrameTrace;
+use super::super::{scheduler::SchedEntity, tid_to_task, RseqState, TaskContext, TidHandle};
+use super::exec::alloc_user_res_in_memory_set;
 use crate::{
     arch::{
         context::TrapContext,
         hardware::MAX_SUPPORTED_HARTS,
-        memory_layout::{
-            PAGE_SIZE, PRE_ALLOC_PAGES, USER_HEAP_SIZE, USER_STACK_SIZE, USER_STACK_TOP,
-            USER_TRAP_CONTEXT_TOP,
-        },
-        page_table::PageTable,
+        memory_layout::{PAGE_SIZE, USER_TRAP_CONTEXT_TOP},
     },
-    fs::{
-        create_proc_dir, create_proc_dir_and_file, open, FSInfo, FdTable, OSFile, OpenFlags,
-        DEFAULT_DIR_MODE, DEFAULT_FILE_MODE,
-    },
+    fs::{create_proc_dir_and_file, FSInfo, FdTable, DEFAULT_DIR_MODE, DEFAULT_FILE_MODE},
     mm::{
-        copy_to_user, copy_to_user_val, MapAreaType, MapPermission, MemorySet, MemorySetInner,
-        PhysPageNum, VirtAddr, VirtPageNum,
+        MapAreaType, MapPermission, MemorySet, MemorySetInner, PhysPageNum, VirtAddr, VirtPageNum,
     },
     signal::{SigInfo, SigSet, SigTable, SignalStack, SIG_MAX_NUM},
-    syscall::MmapFlags,
-    task::{
-        futex::futex_wake_up, kernel_stack::KernelStackOnHeap, tid, CloneFlags, SeccompAction,
-        SeccompState,
-    },
+    task::{kernel_stack::KernelStackOnHeap, SeccompAction, SeccompState},
     timer::{TimeData, Timer},
-    trap::trap_types::{Exception, Trap},
-    utils::{get_abs_path, is_abs_path, SysErrNo},
 };
-use alloc::{
-    format,
-    string::String,
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+use alloc::sync::{Arc, Weak};
 use core::fmt::Debug;
-use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use futures_util::task::AtomicWaker;
 use linux_raw_sys::general::CAP_LAST_CAP;
-use log::{debug, error};
+use log::debug;
 use spin::{Mutex, MutexGuard};
 
 use crate::sync::RemoteTlbMutex;
@@ -111,23 +84,23 @@ impl CapabilitySets {
 
 pub struct TaskControlBlock {
     // immutable
-    tid: TidHandle,
-    kernel_stack: KernelStackOnHeap,
+    pub(super) tid: TidHandle,
+    pub(super) kernel_stack: KernelStackOnHeap,
     pub process: Arc<Process>,
     /// Linux-visible CPU affinity mask for this thread (not its whole process).
-    cpu_affinity: AtomicUsize,
+    pub(super) cpu_affinity: AtomicUsize,
     /// Hart that last selected this thread, also used for timer ownership and
     /// affinity-directed migration notifications.
-    scheduled_hart: AtomicUsize,
+    pub(super) scheduled_hart: AtomicUsize,
     /// Linux task_struct::on_cpu equivalent. It remains set until the previous
     /// Hart has completely switched away from this task's saved context.
-    on_cpu: AtomicBool,
+    pub(super) on_cpu: AtomicBool,
     /// Counts of lwext4 resource-lock classes currently held by this task.
     ///
     /// This exists only in diagnostic builds. Unlike a per-Hart marker, it
     /// remains valid while a blocked task is resumed on another Hart.
     #[cfg(feature = "perf")]
-    ext4_resource_lock_counts: [AtomicUsize; 9],
+    pub(super) ext4_resource_lock_counts: [AtomicUsize; 9],
     // mutable
     // 异步中断/信号同步
     pub interrupted: AtomicBool,
@@ -136,7 +109,7 @@ pub struct TaskControlBlock {
     pub(crate) sched_entity: SchedEntity,
     /// Internal task state. Timer-interrupt paths can contend on this lock
     /// while a page-table update awaits a remote TLB acknowledgement.
-    inner: RemoteTlbMutex<TaskControlBlockInner>,
+    pub(super) inner: RemoteTlbMutex<TaskControlBlockInner>,
 }
 
 impl Drop for TaskControlBlock {
@@ -146,8 +119,8 @@ impl Drop for TaskControlBlock {
 }
 
 pub struct TaskControlBlockInner {
-    trap_cx_ppn: PhysPageNum,  // TrapContext缓冲区物理页
-    pub trap_cx_bottom: usize, // TrapContext缓冲区虚拟地址基地址
+    pub(super) trap_cx_ppn: PhysPageNum, // TrapContext缓冲区物理页
+    pub trap_cx_bottom: usize,           // TrapContext缓冲区虚拟地址基地址
 
     pub task_cx: TaskContext,
     pub task_status: TaskStatus,
@@ -165,7 +138,7 @@ pub struct TaskControlBlockInner {
     /// A present user PTE may still transiently fault while a translation
     /// catches up. Keep one retry per VPN; a consecutive second fault remains
     /// a SIGSEGV.
-    present_page_fault_retry: Option<VirtPageNum>,
+    pub(super) present_page_fault_retry: Option<VirtPageNum>,
     /// Perf-only vfork lifecycle boundaries. A zero value means this task is
     /// not participating in the corresponding hand-off.
     #[cfg(feature = "perf")]
@@ -278,229 +251,6 @@ impl TaskControlBlockInner {
     }
 }
 
-fn task_comm_from_argv0(argv0: &[u8]) -> String {
-    let mut name = argv0;
-    while name.last() == Some(&b'/') {
-        name = &name[..name.len() - 1];
-    }
-    let name = name.rsplit(|byte| *byte == b'/').next().unwrap_or(name);
-    let mut comm = String::new();
-    if let Ok(name) = core::str::from_utf8(name) {
-        for ch in name.chars().take(16) {
-            comm.push(ch);
-        }
-    }
-    if comm.is_empty() {
-        String::from("?")
-    } else {
-        comm
-    }
-}
-
-const EXEC_STACK_LAYOUT_SLACK: usize = 64;
-
-fn checked_exec_stack_add(total: &mut usize, bytes: usize) -> Result<(), SysErrNo> {
-    *total = total.checked_add(bytes).ok_or(SysErrNo::E2BIG)?;
-    Ok(())
-}
-
-/// Reject an exec image whose initial argv/envp stack cannot fit before the
-/// address space is replaced.  The slack covers the random bytes and all
-/// alignment/padding steps in `TaskControlBlock::exec` below.
-fn validate_exec_stack_layout(
-    argv: &[Vec<u8>],
-    env: &[Vec<u8>],
-    elf_auxv_count: usize,
-) -> Result<(), SysErrNo> {
-    let mut required = 0;
-    for value in argv.iter().chain(env.iter()) {
-        checked_exec_stack_add(
-            &mut required,
-            value.len().checked_add(1).ok_or(SysErrNo::E2BIG)?,
-        )?;
-    }
-
-    // argv/envp each have a trailing NULL, and argc occupies one word.
-    let pointer_words = argv
-        .len()
-        .checked_add(env.len())
-        .and_then(|count| count.checked_add(3))
-        .ok_or(SysErrNo::E2BIG)?;
-    checked_exec_stack_add(
-        &mut required,
-        pointer_words
-            .checked_mul(size_of::<usize>())
-            .ok_or(SysErrNo::E2BIG)?,
-    )?;
-
-    // exec appends AT_RANDOM, AT_EXECFN, and AT_NULL to the ELF auxiliary vector.
-    let aux_entries = elf_auxv_count.checked_add(3).ok_or(SysErrNo::E2BIG)?;
-    checked_exec_stack_add(
-        &mut required,
-        aux_entries
-            .checked_mul(size_of::<Aux>())
-            .ok_or(SysErrNo::E2BIG)?,
-    )?;
-    checked_exec_stack_add(&mut required, EXEC_STACK_LAYOUT_SLACK)?;
-
-    if required > USER_STACK_SIZE {
-        return Err(SysErrNo::E2BIG);
-    }
-    Ok(())
-}
-
-fn checked_exec_stack_sub(user_sp: &mut usize, bytes: usize) -> Result<usize, SysErrNo> {
-    *user_sp = user_sp.checked_sub(bytes).ok_or(SysErrNo::E2BIG)?;
-    Ok(*user_sp)
-}
-
-fn alloc_user_res_in_memory_set(
-    memory_set: &MemorySet,
-) -> Result<(usize, usize, PhysPageNum), SysErrNo> {
-    memory_set.with_frame_preserving_mut(|ms| {
-        let (u_bottom, u_top) = ms.lazy_insert_framed_area_with_hint(
-            USER_STACK_TOP,
-            USER_STACK_SIZE,
-            MapPermission::R | MapPermission::W | MapPermission::U,
-            MapAreaType::Stack,
-        );
-        let (trap_cx_bottom, _) = ms.insert_framed_area_with_hint(
-            USER_TRAP_CONTEXT_TOP,
-            PAGE_SIZE,
-            MapPermission::R | MapPermission::W,
-            MapAreaType::Trap,
-        );
-        let trap_cx_ppn = ms
-            .translate(VirtAddr::from(trap_cx_bottom).floor())
-            .ok_or(SysErrNo::ENOMEM)?;
-
-        let stack_range = (
-            VirtAddr::from(u_bottom).floor(),
-            VirtAddr::from(u_top).floor(),
-        );
-        let area_idx = ms
-            .areas
-            .iter()
-            .position(|area| area.vpn_range.range() == stack_range)
-            .ok_or(SysErrNo::ENOMEM)?;
-        let stack_end = ms.areas[area_idx].vpn_range.end().0;
-        let (page_table, areas) = (&mut ms.page_table, &mut ms.areas);
-        let area = &mut areas[area_idx];
-        for i in 1..=PRE_ALLOC_PAGES {
-            let vpn = (stack_end - i).into();
-            if page_table.translate(vpn).is_none() && area.map_one(page_table, vpn).is_none() {
-                return Err(SysErrNo::ENOMEM);
-            }
-        }
-
-        Ok((u_top, trap_cx_bottom, trap_cx_ppn))
-    })
-}
-
-fn prepare_exec_stack(
-    memory_set: &MemorySet,
-    ustack_top: usize,
-    argv: &[Vec<u8>],
-    env: &[Vec<u8>],
-    auxv: &mut Vec<Aux>,
-) -> Result<(usize, usize, usize), SysErrNo> {
-    let mut envp = Vec::new();
-    envp.try_reserve(env.len().checked_add(1).ok_or(SysErrNo::E2BIG)?)
-        .map_err(|_| SysErrNo::ENOMEM)?;
-    let mut argvp = Vec::new();
-    argvp
-        .try_reserve(argv.len().checked_add(1).ok_or(SysErrNo::E2BIG)?)
-        .map_err(|_| SysErrNo::ENOMEM)?;
-    auxv.try_reserve(3).map_err(|_| SysErrNo::ENOMEM)?;
-
-    let mut user_sp = ustack_top;
-    for value in env {
-        let value_len = value.len().checked_add(1).ok_or(SysErrNo::E2BIG)?;
-        let value_sp = checked_exec_stack_sub(&mut user_sp, value_len)?;
-        envp.push(value_sp);
-        copy_to_user(memory_set, value_sp, value)?;
-        copy_to_user(
-            memory_set,
-            value_sp.checked_add(value.len()).ok_or(SysErrNo::E2BIG)?,
-            &[0],
-        )?;
-    }
-    envp.push(0);
-    user_sp -= user_sp % size_of::<usize>();
-
-    for value in argv {
-        let value_len = value.len().checked_add(1).ok_or(SysErrNo::E2BIG)?;
-        let value_sp = checked_exec_stack_sub(&mut user_sp, value_len)?;
-        argvp.push(value_sp);
-        copy_to_user(memory_set, value_sp, value)?;
-        copy_to_user(
-            memory_set,
-            value_sp.checked_add(value.len()).ok_or(SysErrNo::E2BIG)?,
-            &[0],
-        )?;
-    }
-    user_sp -= user_sp % size_of::<usize>();
-    argvp.push(0);
-
-    let random_sp = checked_exec_stack_sub(&mut user_sp, 16)?;
-    let mut random = [0u8; 15];
-    for (index, byte) in random.iter_mut().enumerate() {
-        *byte = index as u8;
-    }
-    copy_to_user(memory_set, random_sp, &random)?;
-    user_sp -= user_sp % 16;
-
-    let execfn = *argvp.first().ok_or(SysErrNo::E2BIG)?;
-    auxv.push(Aux::new(AuxType::RANDOM, random_sp));
-    auxv.push(Aux::new(AuxType::EXECFN, execfn));
-    auxv.push(Aux::new(AuxType::NULL, 0));
-
-    let initial_stack_words = 1 + argvp.len() + envp.len();
-    if initial_stack_words % 2 != 0 {
-        checked_exec_stack_sub(&mut user_sp, size_of::<usize>())?;
-    }
-    for aux in auxv.iter().rev() {
-        let aux_sp = checked_exec_stack_sub(&mut user_sp, size_of::<Aux>())?;
-        copy_to_user_val(memory_set, aux_sp as *mut usize, &(aux.aux_type as usize))?;
-        copy_to_user_val(
-            memory_set,
-            (aux_sp + size_of::<usize>()) as *mut usize,
-            &aux.value,
-        )?;
-    }
-
-    let envp_bytes = envp
-        .len()
-        .checked_mul(size_of::<usize>())
-        .ok_or(SysErrNo::E2BIG)?;
-    let envp_base = checked_exec_stack_sub(&mut user_sp, envp_bytes)?;
-    for (index, value) in envp.iter().enumerate() {
-        copy_to_user_val(
-            memory_set,
-            (envp_base + index * size_of::<usize>()) as *mut usize,
-            value,
-        )?;
-    }
-
-    let argvp_bytes = argvp
-        .len()
-        .checked_mul(size_of::<usize>())
-        .ok_or(SysErrNo::E2BIG)?;
-    let argv_base = checked_exec_stack_sub(&mut user_sp, argvp_bytes)?;
-    for (index, value) in argvp.iter().enumerate() {
-        copy_to_user_val(
-            memory_set,
-            (argv_base + index * size_of::<usize>()) as *mut usize,
-            value,
-        )?;
-    }
-
-    let argc_sp = checked_exec_stack_sub(&mut user_sp, size_of::<usize>())?;
-    copy_to_user_val(memory_set, argc_sp as *mut usize, &argv.len())?;
-    debug_assert_eq!(argc_sp % 16, 0);
-    Ok((argc_sp, argv_base, envp_base))
-}
-
 impl TaskControlBlock {
     /// Mask of all harts configured into this kernel image.
     #[inline]
@@ -514,7 +264,7 @@ impl TaskControlBlock {
     }
 
     #[inline]
-    fn default_cpu_affinity(home_hart: usize) -> usize {
+    pub(super) fn default_cpu_affinity(home_hart: usize) -> usize {
         #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
         {
             let _ = home_hart;
@@ -533,7 +283,7 @@ impl TaskControlBlock {
 
     /// Pick the first allowed hart at or after `start`, wrapping at the end.
     #[inline]
-    fn choose_hart(mask: usize, start: usize) -> usize {
+    pub(super) fn choose_hart(mask: usize, start: usize) -> usize {
         debug_assert_ne!(mask & Self::online_cpu_mask(), 0);
         let hart_num = crate::arch::hardware::hart_count().min(MAX_SUPPORTED_HARTS);
         for offset in 0..hart_num {
@@ -774,606 +524,6 @@ impl TaskControlBlock {
         .expect("create initproc proc files");
         arc_task
     }
-    /// exec的主逻辑
-    pub fn exec(
-        &self,
-        elf_data: &[u8],
-        executable_file: &Arc<OSFile>,
-        argv: &[Vec<u8>],
-        env: &[Vec<u8>],
-    ) -> Result<(), SysErrNo> {
-        //用户栈高地址到低地址：环境变量字符串/参数字符串/aux辅助向量/环境变量地址数组/参数地址数组/参数数量
-        // memory_set with elf program headers/trampoline/trap context/user stack
-        debug!("exec: goto from_elf");
-        #[cfg(feature = "perf")]
-        let from_elf_begin = get_ticks();
-        let (memory_set, user_hp, entry_point, mut auxv) =
-            MemorySetInner::from_elf_file(elf_data, executable_file).map_err(|_| {
-                error!("exec: OOM during ELF load");
-                SysErrNo::ENOMEM
-            })?;
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_exec_from_elf_duration(
-            get_ticks().saturating_sub(from_elf_begin),
-        );
-        validate_exec_stack_layout(argv, env, auxv.len())?;
-
-        debug!("exec: return from from_elf");
-        #[cfg(feature = "perf")]
-        let stack_begin = get_ticks();
-        let memory_set = MemorySet::new(memory_set);
-        let (ustack_top, trap_cx_bottom, trap_cx_ppn) = alloc_user_res_in_memory_set(&memory_set)?;
-        let (user_sp, argv_base, envp_base) =
-            prepare_exec_stack(&memory_set, ustack_top, argv, env, &mut auxv)?;
-        let mut trap_cx =
-            TrapContext::app_init_context(entry_point, user_sp, self.kernel_stack.top());
-        trap_cx.set_a0(argv.len());
-        trap_cx.set_a1(argv_base);
-        trap_cx.set_a2(envp_base);
-        let new_comm = argv.first().map(|argv0| task_comm_from_argv0(argv0));
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_exec_stack_duration(get_ticks().saturating_sub(stack_begin));
-
-        #[cfg(feature = "perf")]
-        let commit_begin = get_ticks();
-        // execve replaces a process-wide address space.  No sibling may keep
-        // an old trap context or user stack once that replacement happens.
-        crate::task::kill_other_threads_before_exec(self);
-        // The SIGKILLs used to collapse sibling threads are an internal exec
-        // detail, not a termination of the replacement program.
-        self.process.meta_lock().termination_signal = None;
-
-        // Snapshot the parent task list before taking this task's inner lock.
-        // The lock order is ProcessMeta -> TaskControlBlockInner; retaining
-        // the metadata guard while waking a parent task would otherwise let a
-        // concurrent scheduler path form an AB-BA cycle.
-        let ppid = self.ppid();
-        let parent_tasks = Process::get_process_arc_by_pid(ppid)
-            .map(|parent_proc| parent_proc.meta_lock().tasks.clone());
-        let mut wake_parent_tasks = Vec::new();
-        wake_parent_tasks
-            .try_reserve(parent_tasks.as_ref().map_or(0, Vec::len))
-            .map_err(|_| SysErrNo::ENOMEM)?;
-
-        let mut task_inner = self.inner_lock();
-        task_inner.time_data.clear();
-        #[cfg(feature = "perf")]
-        let vfork_exec_started_at = task_inner.vfork_exec_started_at;
-
-        debug!(
-            "task_inner.clear_child_tid={:#x}",
-            task_inner.clear_child_tid
-        );
-
-        // execve会替换当前活跃的地址空间，clear_child_tid指向旧地址空间，
-        // 替换后在新地址空间中没有对应映射，退出时translate_va会panic
-        // 因此必须在替换前，在旧地址空间中完成写0和futex_wake
-        if task_inner.clear_child_tid != 0 {
-            let old_proc = &self.process;
-            let old_memory_set = old_proc.memory_set_arc();
-            let _ = copy_to_user(
-                &old_memory_set,
-                task_inner.clear_child_tid as usize,
-                &[0u8; 4],
-            );
-            if let Some(pa) =
-                old_memory_set.translate_va(VirtAddr::from(task_inner.clear_child_tid))
-            {
-                futex_wake_up(pa.0, 1);
-            }
-            drop(old_memory_set);
-            task_inner.clear_child_tid = 0;
-        }
-
-        // Install the new page table on this hart before replacing the process
-        // slot.  Replacing the slot drops the last Arc to the old address space
-        // in the usual exec path; without this activation, its root page can be
-        // recycled while satp still points at it and the next kernel allocation
-        // faults or spins on a corrupted allocator lock.
-        memory_set.activate();
-        self.process
-            .change_memory_set_and_sigtable(memory_set, SigTable::new());
-
-        task_inner.sig_mask = SigSet::empty();
-        task_inner.sigsuspend_restore_mask = None;
-        task_inner.alt_signal_stack = SignalStack::disabled();
-        #[cfg(feature = "fault-diagnostics")]
-        {
-            task_inner.signal_frame_trace = SignalFrameTrace::new();
-        }
-        task_inner.sig_pending = SigSet::empty();
-        task_inner.sig_pending_info = [None; SIG_MAX_NUM + 1];
-        task_inner.exec_teardown_kill = false;
-        // robust_list is an address in the old image.  Keeping it across exec
-        // would make a signal arriving before the new libc calls
-        // set_robust_list() interpret stale user memory during thread exit.
-        task_inner.robust_list = RobustListHead::default();
-        // rseq retains a pointer into the replaced user image, so exec starts
-        // with no registered area.
-        task_inner.rseq = RseqState::default();
-        task_inner.rseq_pending = true;
-        self.process.fd_table.close_on_exec();
-        task_inner.trap_cx_ppn = trap_cx_ppn;
-        task_inner.trap_cx_bottom = trap_cx_bottom;
-        *task_inner.trap_cx() = trap_cx;
-        task_inner.user_heappoint = user_hp;
-        task_inner.user_heapbottom = user_hp;
-        drop(task_inner);
-        if let Some(new_comm) = new_comm {
-            self.process.meta_lock().comm = new_comm;
-        }
-
-        // vfork(2) releases its parent only after the child no longer uses
-        // the shared address space. The new page table and trap context above
-        // are fully installed at this point.
-        #[cfg(feature = "perf")]
-        let vfork_parent_ready_at = get_ticks();
-        #[cfg(feature = "perf")]
-        let mut released_vfork_parent = false;
-        if let Some(parent_tasks) = parent_tasks {
-            for task_weak in &parent_tasks {
-                if let Some(t) = task_weak.upgrade() {
-                    let mut parent_inner = t.inner_lock();
-                    if parent_inner.vfork_wait_child == self.tid()
-                        && parent_inner.task_status == TaskStatus::VforkBlocked
-                    {
-                        parent_inner.vfork_wait_child = 0;
-                        #[cfg(feature = "perf")]
-                        {
-                            parent_inner.vfork_parent_ready_at = vfork_parent_ready_at;
-                            released_vfork_parent = true;
-                        }
-                        parent_inner.task_status = TaskStatus::Ready;
-                        drop(parent_inner);
-                        wake_parent_tasks.push(t);
-                    }
-                }
-            }
-        }
-        for parent_task in wake_parent_tasks {
-            crate::task::ready_queue::add_task(&parent_task);
-        }
-        #[cfg(feature = "perf")]
-        if released_vfork_parent {
-            crate::utils::perf::record_vfork_release_exec();
-            if vfork_exec_started_at != 0 {
-                crate::utils::perf::record_vfork_exec_to_parent_ready_duration(
-                    vfork_parent_ready_at.saturating_sub(vfork_exec_started_at),
-                );
-            }
-        }
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_exec_commit_duration(get_ticks().saturating_sub(commit_begin));
-        Ok(())
-    }
-    /// 复制进程，注意这里需要实现 fork 的主要逻辑
-    ///
-    /// 采用两阶段模式避免死锁：
-    /// 1. 在父进程锁内提取所有需要的数据（Arc clone + Copy 字段）
-    /// 2. 释放父进程锁后再构造和设置子进程
-    pub fn clone_process(
-        self: &Arc<TaskControlBlock>,
-        flags: CloneFlags,
-        exit_signal: i32,
-        stack: usize,
-        parent_tid: *mut u32,
-        tls: usize,
-        child_tid: *mut u32,
-    ) -> Result<Arc<TaskControlBlock>, SysErrNo> {
-        #[cfg(feature = "perf")]
-        let clone_process_begin = get_ticks();
-        let tid_handle = TidHandle::alloc().unwrap();
-        let kernel_stack = KernelStackOnHeap::new();
-        let kernel_stack_top = kernel_stack.top();
-        debug!("TCB::new kstack top = {:#x}", kernel_stack_top);
-
-        // ==================== Phase 1: 提取父进程元数据和任务状态 ====================
-        //
-        // 退出路径的锁顺序是 ProcessMeta -> TaskControlBlockInner。不要在
-        // 持有 TaskControlBlockInner 时再获取 ProcessMeta，否则父进程并发
-        // fork、子进程退出会形成 AB-BA 死锁。
-        let (
-            child_memory_set_arc,
-            child_fs_info,
-            child_fd_table,
-            child_sig_table,
-            child_pid,
-            child_ppid,
-            child_timer,
-            child_sig_mask,
-            child_alt_signal_stack,
-            clear_child_tid,
-            parent_memory_set_arc,
-            parent_trap_cx,
-            parent_heappoint,
-            parent_heapbottom,
-            parent_user_id,
-            parent_euid,
-            parent_suid,
-            parent_rgid,
-            parent_egid,
-            parent_sgid,
-            parent_capabilities,
-            parent_nice,
-            parent_rseq,
-            parent_no_new_privs,
-            parent_seccomp_state,
-            parent_mce_kill_policy,
-            parent_timer_slack_ns,
-            parent_comm,
-            parent_pgid,
-            parent_sid,
-        );
-        let parent_pid;
-        {
-            let parent_meta = self.process.meta_lock();
-            parent_pid = parent_meta.parent_pid;
-            parent_pgid = parent_meta.pgid;
-            parent_sid = parent_meta.sid;
-            parent_comm = parent_meta.comm.clone();
-        }
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_clone_bootstrap_duration(
-            get_ticks().saturating_sub(clone_process_begin),
-        );
-
-        // Snapshot the resource-slot Arc while holding TaskControlBlockInner,
-        // following the documented lock order. This only takes and releases
-        // the slot lock; no MemorySet-internal lock is acquired here.
-        #[cfg(feature = "perf")]
-        let parent_state_begin = get_ticks();
-        {
-            let parent_inner = self.inner.lock();
-            parent_memory_set_arc = self.process.memory_set_arc();
-
-            clear_child_tid = if flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) {
-                child_tid as usize
-            } else {
-                0
-            };
-
-            // 确定 pid / 进程归属
-            if flags.contains(CloneFlags::CLONE_THREAD) {
-                child_pid = self.pid();
-                child_ppid = parent_pid;
-                child_timer = Arc::clone(&parent_inner.timer);
-                child_sig_mask = parent_inner.sig_mask;
-            } else {
-                child_pid = tid_handle.0;
-                child_ppid = if flags.contains(CloneFlags::CLONE_PARENT) {
-                    parent_pid
-                } else {
-                    self.pid()
-                };
-                child_timer = Arc::new(Timer::new());
-                child_sig_mask = parent_inner.sig_mask;
-            }
-            // Linux clears the alternate stack for clone(CLONE_VM) threads,
-            // except the CLONE_VM | CLONE_VFORK exec hand-off case.
-            child_alt_signal_stack = if flags.contains(CloneFlags::CLONE_VM)
-                && !flags.contains(CloneFlags::CLONE_VFORK)
-            {
-                SignalStack::disabled()
-            } else {
-                parent_inner.alt_signal_stack
-            };
-
-            // 提取父进程 inner 中需要复制给子进程的字段
-            parent_trap_cx = *parent_inner.trap_cx();
-            parent_heappoint = parent_inner.user_heappoint;
-            parent_heapbottom = parent_inner.user_heapbottom;
-            parent_user_id = parent_inner.user_id;
-            parent_euid = parent_inner.effective_uid;
-            parent_suid = parent_inner.saved_uid;
-            parent_rgid = parent_inner.real_gid;
-            parent_egid = parent_inner.effective_gid;
-            parent_sgid = parent_inner.saved_gid;
-            parent_capabilities = parent_inner.capabilities;
-            parent_nice = parent_inner.nice;
-            parent_no_new_privs = parent_inner.no_new_privs;
-            parent_seccomp_state = parent_inner.seccomp_state.clone();
-            parent_mce_kill_policy = parent_inner.mce_kill_policy;
-            parent_timer_slack_ns = parent_inner.timer_slack_ns;
-            // Linux inherits rseq on fork but clears it for CLONE_VM, whose
-            // child gets a distinct thread-local rseq ABI area.
-            parent_rseq = if flags.contains(CloneFlags::CLONE_VM) {
-                RseqState::default()
-            } else {
-                parent_inner.rseq
-            };
-        } // parent_inner 在此释放
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_clone_parent_state_duration(
-            get_ticks().saturating_sub(parent_state_begin),
-        );
-
-        #[cfg(feature = "perf")]
-        let address_space_start = get_ticks();
-        // Do not hold TaskControlBlockInner while taking MemorySet's write
-        // lock. Pre-faulting a shared mapping can enter ext4 and block, which
-        // would otherwise strand this task's PCB lock and the parent MM lock.
-        child_memory_set_arc = if flags.contains(CloneFlags::CLONE_VM) {
-            Arc::clone(&parent_memory_set_arc)
-        } else {
-            Arc::new(MemorySet::new(MemorySetInner::from_existed_user(
-                &parent_memory_set_arc,
-            )))
-        };
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_clone_address_space_duration(
-            get_ticks().saturating_sub(address_space_start),
-        );
-
-        child_fs_info = if flags.contains(CloneFlags::CLONE_FS) {
-            Arc::clone(&self.process.fs_info)
-        } else {
-            Arc::new(FSInfo::from_another(&self.process.fs_info))
-        };
-        child_fd_table = if flags.contains(CloneFlags::CLONE_FILES) {
-            Arc::clone(&self.process.fd_table)
-        } else {
-            Arc::new(FdTable::from_another(&self.process.fd_table))
-        };
-        child_sig_table = if flags.contains(CloneFlags::CLONE_SIGHAND) {
-            self.process.sig_table_arc()
-        } else if flags.contains(CloneFlags::CLONE_CLEAR_SIGHAND) {
-            Arc::new(Mutex::new(SigTable::new()))
-        } else {
-            Arc::new(Mutex::new(
-                self.process
-                    .with_sigtable(|sigtable| SigTable::from_another(sigtable)),
-            ))
-        };
-
-        // CLONE_PARENT_SETTID accesses user memory, so it must stay outside
-        // the parent PCB lock as well.
-        if flags.contains(CloneFlags::CLONE_PARENT_SETTID) {
-            copy_to_user_val(&*parent_memory_set_arc, parent_tid, &(tid_handle.0 as u32))?;
-        }
-
-        // Process::new() 会登记父子关系并获取 ProcessMeta。必须在父任务
-        // inner 锁释放后执行，避免与子进程退出路径反向获取锁。
-        #[cfg(feature = "perf")]
-        let process_create_begin = get_ticks();
-        let process_arc = if flags.contains(CloneFlags::CLONE_THREAD) {
-            self.process.clone()
-        } else if flags.contains(CloneFlags::CLONE_VM) && !flags.contains(CloneFlags::CLONE_VFORK) {
-            // Start a regular CLONE_VM child on its parent's hart for cache
-            // locality. Its task-level all-hart affinity remains movable
-            // because remote TLB shootdown now protects the shared MemorySet.
-            // CLONE_VM | CLONE_VFORK is different: the parent is marked
-            // VforkBlocked before this child is made runnable, and the child
-            // replaces the shared address space with execve() before the
-            // parent can resume. Giving that exec hand-off a new process
-            // placement lets Cargo's posix_spawn rustc workers use all harts.
-            Process::new_on_hart(
-                child_memory_set_arc.clone(),
-                child_sig_table.clone(),
-                child_fd_table,
-                child_fs_info,
-                child_pid,
-                child_ppid,
-                parent_pgid,
-                parent_sid,
-                self.process.home_hart(),
-            )
-        } else {
-            Process::new(
-                child_memory_set_arc.clone(),
-                child_sig_table.clone(),
-                child_fd_table,
-                child_fs_info,
-                child_pid,
-                child_ppid,
-                parent_pgid,
-                parent_sid,
-            )
-        };
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_clone_process_create_duration(
-            get_ticks().saturating_sub(process_create_begin),
-        );
-
-        // ==================== Phase 2: 构造子进程（不持有父进程锁）====================
-        #[cfg(feature = "perf")]
-        let task_setup_begin = get_ticks();
-        process_arc.meta_lock().comm = parent_comm;
-
-        let (child_cpu_affinity, child_scheduled_hart) = if flags.contains(CloneFlags::CLONE_THREAD)
-        {
-            let affinity = self.cpu_affinity();
-            (
-                affinity,
-                Self::choose_hart(affinity, self.scheduled_hart().wrapping_add(1)),
-            )
-        } else {
-            let home_hart = process_arc.home_hart();
-            (Self::default_cpu_affinity(home_hart), home_hart)
-        };
-
-        let child = Arc::new(TaskControlBlock {
-            tid: tid_handle,
-            kernel_stack,
-            process: process_arc,
-            cpu_affinity: AtomicUsize::new(child_cpu_affinity),
-            scheduled_hart: AtomicUsize::new(child_scheduled_hart),
-            on_cpu: AtomicBool::new(false),
-            #[cfg(feature = "perf")]
-            ext4_resource_lock_counts: [const { AtomicUsize::new(0) }; 9],
-            interrupted: AtomicBool::new(false),
-            interrupt_waker: AtomicWaker::new(),
-            // First enqueue places the child in its destination hart's
-            // min_vruntime coordinate system.
-            sched_entity: SchedEntity::new(),
-            inner: RemoteTlbMutex::new(TaskControlBlockInner {
-                trap_cx_ppn: 0.into(),
-                trap_cx_bottom: 0,
-                task_cx: TaskContext::goto_trap_return(kernel_stack_top),
-                task_status: TaskStatus::Ready,
-                time_data: TimeData::new(),
-                user_heappoint: parent_heappoint,
-                user_heapbottom: parent_heapbottom,
-                clear_child_tid,
-                vfork_wait_child: 0,
-                present_page_fault_retry: None,
-                #[cfg(feature = "perf")]
-                vfork_published_at: 0,
-                #[cfg(feature = "perf")]
-                vfork_exec_started_at: 0,
-                #[cfg(feature = "perf")]
-                vfork_parent_ready_at: 0,
-                sig_mask: child_sig_mask,
-                sigsuspend_restore_mask: None,
-                alt_signal_stack: child_alt_signal_stack,
-                #[cfg(feature = "fault-diagnostics")]
-                signal_frame_trace: SignalFrameTrace::new(),
-                sig_pending: SigSet::empty(),
-                sig_pending_info: [None; SIG_MAX_NUM + 1],
-                exec_teardown_kill: false,
-                rseq: parent_rseq,
-                rseq_pending: parent_rseq != RseqState::default(),
-                timer: child_timer,
-                robust_list: RobustListHead::default(),
-                user_id: parent_user_id,
-                effective_uid: parent_euid,
-                saved_uid: parent_suid,
-                real_gid: parent_rgid,
-                effective_gid: parent_egid,
-                saved_gid: parent_sgid,
-                capabilities: parent_capabilities,
-                pdeath_signal: 0,
-                no_new_privs: parent_no_new_privs,
-                seccomp_state: parent_seccomp_state,
-                mce_kill_policy: parent_mce_kill_policy,
-                timer_slack_ns: parent_timer_slack_ns,
-                futex_pa: 0,
-                futex_key: 0,
-                futex_timedout: false,
-                sig_eintr: false,
-                sigtimedwait_timedout: false,
-                nice: parent_nice,
-            }),
-        });
-
-        // 将子进程/线程注册到进程的任务列表
-        {
-            let mut child_meta = child.process.meta_lock();
-            child_meta.tasks.retain(|weak| weak.upgrade().is_some());
-            child_meta.tasks.push(Arc::downgrade(&child));
-        }
-
-        let mut child_inner = child.inner_lock();
-
-        if flags.contains(CloneFlags::CLONE_VM) {
-            if stack != 0 {
-                child.alloc_trap_context_only(&mut child_inner);
-            } else {
-                child.alloc_user_res(&mut child_inner);
-            }
-            *child_inner.trap_cx() = parent_trap_cx;
-            child_inner.trap_cx().set_a0(0);
-        } else {
-            // fork: 从父进程复制内存
-            child.alloc_user_res(&mut child_inner);
-            *child_inner.trap_cx() = parent_trap_cx;
-
-            let child_proc = &child.process;
-            let child_mm = child_proc.memory_set_arc();
-            let child_stack_bottom = child_mm
-                .get_ref()
-                .areas
-                .iter()
-                .find(|area| {
-                    area.area_type == MapAreaType::Stack
-                        && !area.mmap_flags.contains(MmapFlags::MAP_STACK)
-                })
-                .map(|area| area.vpn_range.start())
-                .expect("fork: child has no Stack area");
-            child_mm.lazy_clone_area(child_stack_bottom, &parent_memory_set_arc);
-            child_inner.trap_cx().set_a0(0);
-        }
-
-        let trap_cx = child_inner.trap_cx();
-        trap_cx.kernel_stack = kernel_stack_top;
-        if stack != 0 {
-            trap_cx.set_sp(stack);
-        }
-        if flags.contains(CloneFlags::CLONE_SETTLS) {
-            trap_cx.set_tp(tls);
-        }
-
-        drop(child_inner);
-
-        // CLONE_CHILD_SETTID: 写入子进程地址空间
-        if flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-            let child_proc_inner = &child.process;
-            let child_mem = child_proc_inner.memory_set_arc();
-            copy_to_user_val(&*child_mem, child_tid, &(child.tid() as u32))?;
-        }
-
-        // exit_signal: 仅 fork（非线程）才设置，线程共享进程不能覆盖已有值
-        if !flags.contains(CloneFlags::CLONE_THREAD) {
-            let mut child_meta = child.process.meta_lock();
-            child_meta.exit_signal = exit_signal;
-            debug!(
-                "[clone_process] fork pid={}, flags={:?}, exit_signal={}",
-                child_pid, flags, child_meta.exit_signal
-            );
-        }
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_clone_task_setup_duration(
-            get_ticks().saturating_sub(task_setup_begin),
-        );
-
-        // Threads share the process, so /proc/<pid> is only created for a new process.
-        if !flags.contains(CloneFlags::CLONE_THREAD) {
-            #[cfg(feature = "perf")]
-            let procfs_start = get_ticks();
-            let _ = create_proc_dir(child_pid);
-            #[cfg(feature = "perf")]
-            crate::utils::perf::record_clone_procfs_register_duration(
-                get_ticks().saturating_sub(procfs_start),
-            );
-        }
-
-        // VFORK: 挂起父进程直到子进程 exec 或退出
-        #[cfg(feature = "perf")]
-        let publish_begin = get_ticks();
-        {
-            let mut parent_inner = self.inner_lock();
-            if flags.contains(CloneFlags::CLONE_VFORK) {
-                parent_inner.vfork_wait_child = child.tid();
-                #[cfg(feature = "perf")]
-                {
-                    parent_inner.vfork_parent_ready_at = 0;
-                }
-                parent_inner.task_status = TaskStatus::VforkBlocked;
-            }
-        }
-        #[cfg(feature = "perf")]
-        if flags.contains(CloneFlags::CLONE_VFORK) {
-            child.inner_lock().vfork_published_at = get_ticks();
-        }
-        tid_to_task::insert(child.tid(), &child);
-        if !flags.contains(CloneFlags::CLONE_THREAD) {
-            if flags.contains(CloneFlags::CLONE_FILES) {
-                child.process.fd_table.acquire_owner();
-            }
-            if flags.contains(CloneFlags::CLONE_FS) {
-                child.process.fs_info.acquire_owner();
-            }
-        }
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_clone_publish_duration(
-            get_ticks().saturating_sub(publish_begin),
-        );
-        #[cfg(feature = "perf")]
-        crate::utils::perf::record_clone_process_total_duration(
-            get_ticks().saturating_sub(clone_process_begin),
-        );
-        Ok(child.clone())
-    }
-
     ///修改数据段大小，懒分配
     pub fn growproc(&self, grow_size: isize) -> Option<usize> {
         let mut inner = self.inner_lock();
@@ -1438,7 +588,7 @@ impl TaskControlBlock {
         }
     }
     /// 分配用户栈和 trap context 区域，并返回用户栈顶地址
-    fn alloc_user_res(&self, task_inner: &mut TaskControlBlockInner) -> usize {
+    pub(super) fn alloc_user_res(&self, task_inner: &mut TaskControlBlockInner) -> usize {
         let memory_set = self.process.memory_set_arc();
         let (ustack_top, trap_cx_bottom, trap_cx_ppn) = alloc_user_res_in_memory_set(&memory_set)
             .expect("failed to allocate task user resources");
@@ -1448,7 +598,7 @@ impl TaskControlBlock {
     }
     /// 仅为线程分配 trap context 区域（不分配栈空间，栈由用户提供）。
     /// 用于 CLONE_THREAD 且用户指定了栈地址的场景。
-    fn alloc_trap_context_only(&self, task_inner: &mut TaskControlBlockInner) {
+    pub(super) fn alloc_trap_context_only(&self, task_inner: &mut TaskControlBlockInner) {
         let (trap_cx_bottom, trap_cx_ppn) = {
             let proc_inner = &self.process;
             let memory_set = proc_inner.memory_set_arc();
