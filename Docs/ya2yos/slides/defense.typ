@@ -147,7 +147,7 @@
   #v(0.42cm)
   #grid(columns: (1fr, 1fr), gutter: 14pt,
     panel("01  ·  系统定位", [Rust 宏内核、Linux ABI、RISC-V64 / LoongArch64；面向真实 Linux 用户态路径与工具链负载。], color: blue, fill: pale-blue),
-    panel("02  ·  系统介绍", [从 syscall / trap 入口，依次介绍 task、调度、内存、ELF、VFS、fd、同步和网络。], color: teal, fill: pale-teal),
+    panel("02  ·  系统介绍", [从系统架构图出发，依次介绍进程管理、多核调度、内存管理、信号机制、网络模块和设备驱动。], color: teal, fill: pale-teal),
     panel("03  ·  当前成果", [测例与回归证据；任务调度、多核异构；文件缓存、用户可见锁与内部锁边界。], color: orange, fill: pale-orange),
     panel("04  ·  发展规划", [完整 BuildStorm 闭环、运行中迁移、双架构压力回归，以及可证明的资源级并发。], color: red, fill: pale-red),
   )
@@ -192,7 +192,7 @@
 ]
 
 // 5 · system introduction
-#chapter-cover("02", "系统介绍", "从系统架构图出发，沿 syscall、task、mm、fs、net 走完整实现路径", color: teal, fill: pale-teal)
+#chapter-cover("02", "系统介绍", "从系统架构图出发，沿进程、调度、内存、信号、网络与驱动走完整实现路径", color: teal, fill: pale-teal)
 #slide[
   #titlebar("02  ·  SYSTEM INTRODUCTION", "系统架构", subtitle: "五类内核组件由 Linux ABI 统一入口衔接，并通过 HAL 收敛架构与设备差异")
   #v(0.03cm)
@@ -238,87 +238,122 @@
   )
 ]
 
-// 6 · syscall
+// 6 · process management
 #slide[
-  #titlebar("02  ·  SYSTEM INTRODUCTION", "用户态请求如何进入内核")
-  #v(0.28cm)
+  #titlebar("02  ·  SYSTEM INTRODUCTION", "进程管理：对象、资源与生命周期", subtitle: "以 ProcessControlBlock 和 TaskControlBlock 建立进程语义与线程执行边界")
+  #v(0.22cm)
   #grid(columns: (1fr, 0.18fr, 1fr, 0.18fr, 1fr), gutter: 6pt,
-    flow-step("用户寄存器", "syscall number + args", color: blue, fill: pale-blue), text(size: 22pt, fill: blue)[→], flow-step("trap handler", "保存 TrapContext，切换内核栈", color: teal, fill: pale-teal), text(size: 22pt, fill: blue)[→], flow-step("dispatcher", "参数解码、查 fd、委托语义", color: orange, fill: pale-orange),
+    flow-step("fork / clone", "按 clone flags 创建或共享资源", color: blue, fill: pale-blue), text(size: 22pt, fill: blue)[→],
+    flow-step("PCB + TCB", "进程资源 + 线程上下文", color: teal, fill: pale-teal), text(size: 22pt, fill: blue)[→],
+    flow-step("exec / exit / wait", "替换、回收并向父进程报告", color: orange, fill: pale-orange),
   )
-  #v(0.55cm)
-  #grid(columns: (1fr, 1fr), gutter: 15pt,
-    panel("uaccess 边界", [`copy_from_user` / `copy_to_user`、用户地址检查、跨页复制和 EFAULT 路径集中在 `mm/uaccess.rs` 与架构汇编实现。], color: blue, fill: pale-blue),
-    panel("系统调用分层", [`fs`、`mm`、`process`、`signal`、`time`、`net`、`sys` 分组；handler 只负责解码、拷贝、查表和传播 errno。], color: teal, fill: pale-teal),
-  )
-  #v(0.5cm)
-  #align(center)[#tag("薄入口 → 子系统语义 → 统一阻塞 / 唤醒 → 资源回收", color: navy)]
-]
-
-// 6 · task and scheduler
-#slide[
-  #titlebar("02  ·  SYSTEM INTRODUCTION", "进程、线程与调度：共享同一任务生命周期")
-  #v(0.25cm)
-  #grid(columns: (1fr, 0.2fr, 1fr, 0.2fr, 1fr), gutter: 7pt,
-    flow-step("ProcessControlBlock", "地址空间、父子关系、信号与资源", color: blue, fill: pale-blue), text(size: 22pt, fill: blue)[→], flow-step("TaskControlBlock", "trap context、调度状态、线程私有数据", color: teal, fill: pale-teal), text(size: 22pt, fill: blue)[→], flow-step("ready queue", "affinity 过滤、选择与唤醒", color: orange, fill: pale-orange),
+  #v(0.44cm)
+  #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
+    panel("进程与线程分层", [`ProcessControlBlock` 持有地址空间、父子关系、信号与共享资源；`TaskControlBlock` 保存 TrapContext、调度状态和线程私有数据。], color: blue, fill: pale-blue),
+    panel("资源共享语义", [clone flags 决定 `MemorySet`、FileTable、信号处理状态等资源是共享、复制还是新建；线程 affinity 保存在 TCB 而非进程全局。], color: teal, fill: pale-teal),
+    panel("完整生命周期", [fork / clone 建立执行实体；execve 替换用户态映像；exit 清理 fd、VMA 与等待关系；waitpid 回收退出状态。], color: orange, fill: pale-orange),
   )
   #v(0.48cm)
-  #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
-    panel("生命周期", [fork / clone 建立子任务；execve 替换地址空间；exit 清理 fd、VMA、锁上下文；waitpid 回收状态。], color: blue, fill: pale-blue),
-    panel("状态转换", [RUNNING → BLOCKED → WAKING → RUNNABLE；futex、pipe、socket、epoll 和文件锁统一进入 park / wake。], color: teal, fill: pale-teal),
-    panel("多核路径", [共享 all-hart CFS ready queue；按 affinity 过滤；空闲 hart 可被唤醒；全局 timer/futex/task timeout 每 10ms 由单一 hart 维护。], color: orange, fill: pale-orange),
-  )
+  #align(center)[#tag("对象边界清晰：进程拥有资源，线程承载执行，退出路径负责成对回收", color: navy)]
 ]
 
-// 7 · memory and elf
+// 7 · SMP scheduling
 #slide[
-  #titlebar("02  ·  SYSTEM INTRODUCTION", "地址空间与程序执行：从 VMA 到动态 ELF")
+  #titlebar("02  ·  SYSTEM INTRODUCTION", "多核调度：让可运行任务到达合适的 Hart", subtitle: "共享 CFS 就绪队列与线程 affinity 共同决定任务选择和远端唤醒")
   #v(0.22cm)
   #grid(columns: (1fr, 0.16fr, 1fr, 0.16fr, 1fr, 0.16fr, 1fr), gutter: 4pt,
-    flow-step("VMA", "mmap / munmap / mremap", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→], flow-step("fault", "按需分配、权限检查", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→], flow-step("COW", "fork 后写保护与复制", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→], flow-step("ELF", "PT_LOAD / PT_INTERP / enter", color: red, fill: pale-red),
+    flow-step("READY", "任务入队", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
+    flow-step("affinity", "过滤不可运行 Hart", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
+    flow-step("all-hart CFS", "选择下一任务", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
+    flow-step("wake idle Hart", "IPI / 平台唤醒", color: red, fill: pale-red),
   )
-  #v(0.45cm)
-  #grid(columns: (1fr, 1fr), gutter: 15pt,
-    panel("MemorySet", [`MemorySet` 管理用户 / 内核地址空间；文件映射保留 backing inode；缺页从 page cache / ext4 获取页面。], color: blue, fill: pale-blue),
-    panel("一致性协议", [PTE 更新后通过 remote TLB mailbox / IPI 收集 ACK；ACK 收敛前不释放旧帧，避免跨 Hart 使用失效映射。], color: teal, fill: pale-teal),
-    panel("execve", [`elf_loader.rs` 解析 program header；`PT_INTERP` 经 VFS 打开；新的地址空间保留可继续触发缺页的文件映射。], color: orange, fill: pale-orange),
-    panel("用户态 loader", [内核负责 ELF/VFS 边界；库搜索、重定位和安全增强交给用户态动态链接器，不把边界外能力写成内核完成。], color: red, fill: pale-red),
-  )
-]
-
-// 8 · fs and fd
-#slide[
-  #titlebar("02  ·  SYSTEM INTRODUCTION", "文件系统与 fd：从路径名到真实块设备")
-  #v(0.24cm)
-  #grid(columns: (1fr, 0.18fr, 1fr, 0.18fr, 1fr), gutter: 6pt,
-    flow-step("path lookup", "mount / dentry / inode", color: blue, fill: pale-blue), text(size: 22pt, fill: blue)[→], flow-step("VFS file", "File / OpenFile / fd table", color: teal, fill: pale-teal), text(size: 22pt, fill: blue)[→], flow-step("Ext4Inode", "lwext4 C API + VirtIO block", color: orange, fill: pale-orange),
+  #v(0.43cm)
+  #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
+    panel("共享就绪队列", [CFS 从同一 ready queue 选择任务；任务状态由原子字段或任务锁保护，避免队列选择与状态转换脱节。], color: blue, fill: pale-blue),
+    panel("亲和性与唤醒", [TCB 保存 Linux 可见的 CPU affinity mask；调度器保留暂不满足 affinity 的任务，空闲目标 Hart 可由平台唤醒。], color: teal, fill: pale-teal),
+    panel("当前边界", [已实现 online-Hart mask、affinity 过滤和 idle-Hart 唤醒；运行中迁移、per-CPU queue 与 work stealing 仍属于后续演进。], color: orange, fill: pale-orange),
   )
   #v(0.48cm)
-  #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
-    panel("命名空间", [openat、symlink、rename、mount / umount、cwd 和 proc 路径由 VFS 统一解析。], color: blue, fill: pale-blue),
-    panel("缓存与一致性", [PageCache 复用普通文件页；write / truncate / rename 主动失效相关缓存；fd 对象统一 read / write / poll / close。], color: teal, fill: pale-teal),
-    panel("资源类型", [pipe、epoll、socket、eventfd、signalfd 和 timerfd 都可挂入 FileTable，以引用计数管理生命周期。], color: orange, fill: pale-orange),
-  )
-  #v(0.45cm)
-  #align(center)[#tag("同一 fd 生命周期：创建 → 安装 FileTable → 阻塞 / 唤醒 → close / exit 清理", color: navy)]
+  #align(center)[#tag("调度目标：可运行性正确优先，再通过拓扑与队列策略提升并行度", color: navy)]
 ]
 
-// 9 · sync and net
+// 8 · memory management
 #slide[
-  #titlebar("02  ·  SYSTEM INTRODUCTION", "同步与网络：等待机制共享任务生命周期")
-  #v(0.3cm)
-  #grid(columns: (1fr, 1fr, 1fr), gutter: 13pt,
-    panel("SignalManager", [标准与实时信号进入 pending 集；delivery 选择可唤醒任务；rt_sigreturn 校验 frame 并恢复上下文。], color: blue, fill: pale-blue),
-    panel("Futex / timer", [按虚拟地址建立 waiter 队列；wait / wake / requeue 处理 bitset、超时和远端唤醒；timer 统一回到调度器。], color: teal, fill: pale-teal),
-    panel("smoltcp / socket", [`SocketSet` 承载 TCP / UDP 状态机；loopback、Ethernet、VirtIO-net 共享 RX/TX 和 poll waiter 入口。], color: orange, fill: pale-orange),
+  #titlebar("02  ·  SYSTEM INTRODUCTION", "内存管理：从 VMA 到跨核页表一致性", subtitle: "MemorySet 管理地址空间；缺页、COW 与 TLB shootdown 共同维护映射语义")
+  #v(0.22cm)
+  #grid(columns: (1fr, 0.16fr, 1fr, 0.16fr, 1fr, 0.16fr, 1fr), gutter: 4pt,
+    flow-step("VMA", "mmap / munmap / mremap", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
+    flow-step("page fault", "按需分配与权限检查", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
+    flow-step("COW", "共享页写入时复制", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
+    flow-step("remote TLB", "IPI 与 ACK 收敛", color: red, fill: pale-red),
   )
-  #v(0.6cm)
-  #align(center)[
-    #grid(columns: (auto, 0.18fr, auto, 0.18fr, auto), gutter: 7pt,
-      tag("pending", color: blue), text(size: 20pt, fill: blue)[→], tag("park", color: teal), text(size: 20pt, fill: blue)[→], tag("delivery / wake", color: orange),
-    )
-  ]
   #v(0.4cm)
-  #align(center)[#text(size: 14pt, fill: muted)[信号、futex、I/O 等待和网络就绪都通过 TaskControlBlock 的状态转换回到调度器。]]
+  #grid(columns: (1fr, 1fr), gutter: 13pt,
+    panel("地址空间对象", [`MemorySet` 以 RwLock 包装 `MemorySetInner`；VMA、页表与映射生命周期集中管理，文件映射保留 backing inode。], color: blue, fill: pale-blue),
+    panel("缺页与 COW", [文件页先在锁外获取，再在写锁阶段安装；私有可写映射在 fork 后保留 COW 语义，写入时才复制物理页。], color: teal, fill: pale-teal),
+    panel("跨核一致性", [PTE 替换遵循 UPDATE_LOCK → MemorySet 写锁顺序；remote TLB 经 MailBox / IPI 收集 ACK，收敛前不释放旧帧。], color: orange, fill: pale-orange),
+    panel("用户访问边界", [`copy_from_user` / `copy_to_user` 与页表检查共同保证 uaccess 失败返回 EFAULT，而不是越界访问内核内存。], color: red, fill: pale-red),
+  )
+]
+
+// 9 · signals
+#slide[
+  #titlebar("02  ·  SYSTEM INTRODUCTION", "信号机制：从 pending 集合到用户态处理函数", subtitle: "信号投递、选择、用户栈 frame 构造与 rt_sigreturn 构成完整闭环")
+  #v(0.22cm)
+  #grid(columns: (1fr, 0.16fr, 1fr, 0.16fr, 1fr, 0.16fr, 1fr), gutter: 4pt,
+    flow-step("kill / timer", "生成 SigInfo", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
+    flow-step("pending + mask", "选择可投递信号", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
+    flow-step("signal frame", "保存 UserContext", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
+    flow-step("rt_sigreturn", "校验并恢复现场", color: red, fill: pale-red),
+  )
+  #v(0.42cm)
+  #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
+    panel("投递与唤醒", [信号写入目标线程或线程组的 pending 集；若任务处于可中断阻塞状态，投递路径将其置为可运行，以便及时消费。], color: blue, fill: pale-blue),
+    panel("选择语义", [pending 模块在 trap 返回前选择未被 mask 的信号；标准信号重复到达时保留 pending 位与首次 `siginfo_t`，不无限排队。], color: teal, fill: pale-teal),
+    panel("用户态 frame", [有 handler 时在用户栈构造 signal frame；`rt_sigreturn` 校验 frame magic 与布局后恢复寄存器、PC 和栈指针，非法 frame 返回 EINVAL。], color: orange, fill: pale-orange),
+  )
+  #v(0.48cm)
+  #align(center)[#tag("信号既是异步通知，也是从任务状态、用户内存到 trap 返回路径的完整协议", color: navy)]
+]
+
+// 10 · network
+#slide[
+  #titlebar("02  ·  SYSTEM INTRODUCTION", "网络模块：socket 语义落到 smoltcp 与网卡收发", subtitle: "系统调用创建文件描述符；协议状态机与底层设备通过统一 poll / RX / TX 路径衔接")
+  #v(0.22cm)
+  #grid(columns: (1fr, 0.16fr, 1fr, 0.16fr, 1fr, 0.16fr, 1fr), gutter: 4pt,
+    flow-step("socket fd", "TCP / UDP / Unix", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
+    flow-step("SocketSet", "连接与缓冲状态", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
+    flow-step("smoltcp service", "协议栈 poll", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
+    flow-step("Router / NIC", "RX / TX token", color: red, fill: pale-red),
+  )
+  #v(0.42cm)
+  #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
+    panel("Linux socket 边界", [TCP、UDP 与 Unix socket 以 fd 方式暴露给用户态；poll waiter 将连接、可读写和错误状态转化为任务可观察的就绪事件。], color: blue, fill: pale-blue),
+    panel("协议栈封装", [`Service` 持有 smoltcp Interface；`SocketSet` 管理协议 socket，监听表在 SYN 到达时参与连接建立。], color: teal, fill: pale-teal),
+    panel("设备适配", [`Router` 实现 smoltcp 的 Device 抽象；RX / TX token 对接 loopback、Ethernet 与 VirtIO-net，实现从数据包到任务唤醒的路径。], color: orange, fill: pale-orange),
+  )
+  #v(0.48cm)
+  #align(center)[#tag("socket readiness → poll waiter → packet RX / TX → wake task", color: navy)]
+]
+
+// 11 · device drivers
+#slide[
+  #titlebar("02  ·  SYSTEM INTRODUCTION", "设备驱动：把架构差异收敛为块设备与网卡接口", subtitle: "RISC-V64 与 LoongArch64 选择不同总线传输方式，上层文件系统和协议栈共享设备语义")
+  #v(0.22cm)
+  #grid(columns: (1fr, 0.16fr, 1fr, 0.16fr, 1fr, 0.16fr, 1fr), gutter: 4pt,
+    flow-step("platform bus", "MMIO / PCI", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
+    flow-step("VirtIO transport", "地址转换与队列", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
+    flow-step("block / net impl", "请求与缓冲区", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
+    flow-step("kernel consumer", "VFS / smoltcp", color: red, fill: pale-red),
+  )
+  #v(0.42cm)
+  #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
+    panel("双架构适配", [RISC-V64 使用 VirtIO-MMIO 绑定；LoongArch64 通过 PCI transport 发现和绑定 VirtIO 能力。上层仅依赖 `BlockDeviceImpl` / `NetDeviceImpl`。], color: blue, fill: pale-blue),
+    panel("块设备路径", [块设备实现封装 VirtIO 队列与同步访问；文件系统经统一块接口提交读写，不依赖具体 MMIO 寄存器或 PCI 配置空间。], color: teal, fill: pale-teal),
+    panel("网卡路径", [VirtIO-net 预置接收描述符并维护发送缓冲；队列访问串行化，随后将收发事件交给网络模块的 RX / TX 路径。], color: orange, fill: pale-orange),
+  )
+  #v(0.48cm)
+  #align(center)[#tag("平台发现与传输层可变，块设备 / 网卡接口稳定，上层内核语义保持共享", color: navy)]
 ]
 
 // 10 · achievements overview
