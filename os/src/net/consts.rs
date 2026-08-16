@@ -24,5 +24,9 @@ pub const UDP_RX_BUF_LEN: usize = 64 * 1024;
 pub const UDP_TX_BUF_LEN: usize = 64 * 1024;
 pub const LISTEN_QUEUE_SIZE: usize = 512;
 
-pub const SOCKET_BUFFER_SIZE: usize = 64;
+// The router and loopback queues hold whole IP packets. A 4096-byte loopback
+// TCP segment expands to three IPv4 fragments, so 64 slots can be exhausted
+// by one high-throughput burst before its peer runs; leave room for data and
+// ACK traffic instead of silently dropping fragments.
+pub const SOCKET_BUFFER_SIZE: usize = 256;
 pub const ETHERNET_MAX_PENDING_PACKETS: usize = 32;

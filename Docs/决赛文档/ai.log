@@ -12491,3 +12491,32 @@ lost-wakeup，而是权限检查持有当前任务 inner lock 跨越可阻塞 lw
 恢复入口后执行 `make TARGET_ARCH=riscv64 build-arch` 与
 `make TARGET_ARCH=loongarch64 build-arch` 均通过，只有既有 Cargo/vendored `smoltcp` warning。
 完整 LTP/BuildStorm 尚未重跑。
+
+## 2026-08-16：preliminary iperf REVERSE_TCP 环回分片卡死
+
+### 用户需求
+
+维护者要求分析 `log.ans` 中的内核卡住并进行修复。
+
+### AI 分析与采纳结论
+
+日志显示前序 basic、busybox、lua，以及 iperf 的 UDP、基础 TCP、五连接 TCP、反向 UDP
+均结束；唯一停点是 musl `REVERSE_TCP` 建连后，未出现 2 秒统计或测试组结束。检查
+loopback 配置发现 TCP 使用 4096-byte MSS，但环回设备与路由器只各有 64 个 IP 包槽位；
+一个 64 KiB TCP burst 会产生约 48 个 IPv4 分片，叠加 ACK 后可静默填满 FIFO 并丢失分片。
+
+同时确认近期将 `Interface::poll` 拆分为 ingress/egress 循环时漏掉了
+`iface.poll_maintenance(timestamp)`。该阶段负责回收过期分片重组状态，缺失会使丢包后的
+重组资源长期残留，扩大反向 TCP 的恢复失败概率。
+
+采纳同时恢复维护阶段、将内部 IP 包队列升至 256。该修复保留 4096-byte loopback MSS，
+不改测试脚本、超时、并发度或用户态配置。
+
+### 修改与验证
+
+修改 `os/src/net/service.rs` 和 `os/src/net/consts.rs`，新增
+`Docs/决赛文档/problem/loopback-tcp-fragment-queue-stall.md`，并更新开发日志、索引和
+AI 交互记录。`make` 完成 RISC-V64/LoongArch64 release 构建，只有既有 vendored
+`smoltcp` warning。RISC-V `make run` 中 musl、glibc 两轮 `REVERSE_TCP` 都输出完整吞吐、
+`iperf Done.` 与 `end: success`，随后完成 netperf 并进入 cyclictest；为避免完整 preliminary
+套件长时间运行，在后续 cyclictest 阶段人工终止 QEMU，未宣称整轮完成。

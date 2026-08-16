@@ -46,6 +46,12 @@ impl Service {
     pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
         let timestamp = now();
 
+        // Keep the interface maintenance phase from smoltcp::Interface::poll.
+        // Loopback TCP advertises a 4096-byte MSS and therefore uses IPv4
+        // fragmentation; expired reassembly entries must be removed even when
+        // no ingress packet is available, otherwise one lost fragment can
+        // permanently consume the assembler and stall later TCP data.
+        self.iface.poll_maintenance(timestamp);
         self.router.poll(timestamp);
         loop {
             // The listener table must see a SYN before smoltcp matches this

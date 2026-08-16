@@ -3682,3 +3682,16 @@
   LoongArch64 release 构建通过。完整 LTP/BuildStorm 尚未重跑。
 - **关联问题**：[LTP `setuid04` open 权限检查任务锁自锁](./problem/setuid04-open-task-lock-self-deadlock.md)
 - **关联 commit**：当前工作区未提交
+
+#### preliminary iperf REVERSE_TCP 环回分片卡死（8.16）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `log.ans` 中停在 `iperf REVERSE_TCP` 的内核卡死并修复。
+- **描述**：确认 4096-byte loopback TCP MSS 在 64 槽 IP 队列中产生分片突发并静默丢包；
+  同时发现自定义 smoltcp ingress/egress 轮询漏掉 `poll_maintenance()`，导致过期分片重组
+  状态不能回收。恢复该维护阶段并将内部 IP 包队列扩至 256，未改动测试脚本、超时或用户配置。
+- **验证边界**：RISC-V64/LoongArch64 release 构建通过。RISC-V QEMU 的 musl 与 glibc
+  `REVERSE_TCP` 都完成并继续进入 netperf/cyclictest；完整 preliminary 套件未跑完，QEMU
+  在后续 cyclictest 阶段由维护操作终止。
+- **关联问题**：[Loopback TCP 分片队列耗尽导致 iperf 卡死](./problem/loopback-tcp-fragment-queue-stall.md)
+- **关联 commit**：当前工作区未提交
