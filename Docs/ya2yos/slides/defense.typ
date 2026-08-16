@@ -484,8 +484,6 @@
     #v(0.18cm)
     #text(size: 28pt, weight: "bold", fill: blue)[内核设计与工程实践]
     #v(0.35cm)
-    #text(size: 16pt, fill: muted)[系统定位 · 系统介绍 · 关键增量工作 · 发展规划]
-    #v(0.55cm)
-    #text(size: 13pt, fill: muted)[谢谢！]
+    #text(size: 25pt, fill: muted)[谢谢！]
   ]
 ]
