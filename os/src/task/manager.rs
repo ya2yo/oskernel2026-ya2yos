@@ -13,20 +13,6 @@ use spin::{Lazy, Mutex};
 /// this task back to Ready; otherwise a stale entry could consume a
 /// FUTEX_WAKE(1) and clear the new wait's bookkeeping.
 pub fn wakeup_futex_task(task: Arc<TaskControlBlock>, futex_key: usize) -> bool {
-    let should_enqueue = mark_futex_task_ready(&task, futex_key);
-    if should_enqueue {
-        ready_queue::add_task(&task);
-    }
-    should_enqueue
-}
-
-/// Mark a matching futex waiter ready without publishing it to the scheduler.
-///
-/// Futex wake paths call this while the futex operation lock is held, then add
-/// the task to the ready queue after releasing all futex locks.  Keeping the
-/// scheduler notification out of the futex critical section avoids a lock
-/// chain through the ready queue.
-pub fn mark_futex_task_ready(task: &TaskControlBlock, futex_key: usize) -> bool {
     let mut task_inner = task.inner_lock();
     // A timeout and a signal can race after the blocked task has already been
     // scheduled again.  Only the transition from Blocked owns a new enqueue;
@@ -39,20 +25,15 @@ pub fn mark_futex_task_ready(task: &TaskControlBlock, futex_key: usize) -> bool 
         task_inner.futex_key = 0;
         task_inner.futex_pa = 0;
     }
-    should_enqueue
-}
-
-/// Complete a matching futex wait because its deadline expired.
-pub fn timeout_futex_task(task: Arc<TaskControlBlock>, futex_key: usize) -> bool {
-    let should_enqueue = mark_futex_task_timeout(&task, futex_key);
+    drop(task_inner);
     if should_enqueue {
         ready_queue::add_task(&task);
     }
     should_enqueue
 }
 
-/// Mark a matching futex waiter timed out without touching the scheduler.
-pub fn mark_futex_task_timeout(task: &TaskControlBlock, futex_key: usize) -> bool {
+/// Complete a matching futex wait because its deadline expired.
+pub fn timeout_futex_task(task: Arc<TaskControlBlock>, futex_key: usize) -> bool {
     let mut task_inner = task.inner_lock();
     let should_enqueue =
         task_inner.task_status == TaskStatus::Blocked && task_inner.futex_key == futex_key;
@@ -61,6 +42,10 @@ pub fn mark_futex_task_timeout(task: &TaskControlBlock, futex_key: usize) -> boo
         task_inner.task_status = TaskStatus::Ready;
         task_inner.futex_key = 0;
         task_inner.futex_pa = 0;
+    }
+    drop(task_inner);
+    if should_enqueue {
+        ready_queue::add_task(&task);
     }
     should_enqueue
 }
