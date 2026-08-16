@@ -3636,3 +3636,11 @@
   运行停滞且超时未回收 QEMU，已手动终止；未将目标测例标记为通过。详见
   [问题复盘](./problem/preliminary-loongarch-iozone-glibc-library-path.md) 与 `ai.log` 对应条目。
 - **关联 commit**：当前工作区未提交
+#### LTP fs_bind01 空 fstype 导致 bind mount 失败（8.16）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `log.ans`、修复 `fsbind` 测例并验证后续 `fs_bind`。
+- **描述**：确认 BusyBox 对 `MS_BIND` 和 propagation-only `mount(2)` 传入空 `fstype`，而 syscall 入口在分派前无条件返回 `EINVAL`。删除该过早校验，保留普通挂载的文件系统类型检查；没有修改测试脚本或维护者已有的定向入口。
+- **验证边界**：RISC-V `fs_bind01` 为 `passed 29 failed 0 broken 0` 并正常 `shutdown!`；RISC-V/LoongArch64 release 构建通过。批量基础 `fs_bind` 验证中 `02..06`、`08..10`、`12..20`、`23..24` 为 `failed 0`，其余少数项目仍是已有路径化 mount-root/卸载模型限制。
+- **关联问题**：[fs_bind01 空文件系统类型导致 bind mount 失败](./problem/fs-bind01-empty-fstype.md)
+- **关联 commit**：当前工作区未提交

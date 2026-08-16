@@ -92,6 +92,7 @@
 - [LTP fs_bind peer/slave 传播与同树 bind panic](./problem/fs-bind-peer-slave-propagation.md)
 - [LTP fs_bind23 MS_MOVE 子树重定位与 shared peer 传播](./problem/fs-bind23-move-propagation.md)
 - [LTP fs_bind24 子目录 bind 的 shared-slave 传播](./problem/fs-bind24-subtree-shared-slave-propagation.md)
+- [LTP fs_bind01 空文件系统类型导致 bind mount 失败](./problem/fs-bind01-empty-fstype.md)
 - [LTP fs_bind_move05 私有子树移入 shared 父挂载后的传播](./problem/fs-bind-move05-private-shared-propagation.md)
 - [CAgent Bash 运行器与 Debian `/bin` 符号链接](./problem/cagent.md)
 - [RISC-V 双 hart SMP bring-up](./problem/riscv-smp-bringup.md)

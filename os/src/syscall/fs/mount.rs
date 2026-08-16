@@ -333,9 +333,9 @@ pub fn sys_mount(
     let ftype_raw = read_user_cstr(&memory_set, ftype)?;
 
     // -- 基本校验 --
-    if ftype_raw.is_empty() {
-        return Err(SysErrNo::EINVAL);
-    }
+    // MS_BIND、MS_MOVE、MS_REMOUNT 和传播属性操作不使用文件系统类型；
+    // BusyBox 会为这些 mount(2) 调用传入空字符串。仅普通新挂载需要
+    // 在后续的文件系统类型校验中拒绝空值。
     if dir_raw.len() >= MAX_PATH_LEN {
         return Err(SysErrNo::ENAMETOOLONG);
     }

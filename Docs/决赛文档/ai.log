@@ -12401,3 +12401,21 @@ rootfs 或混用 musl/glibc 库。
 两次 LoongArch QEMU 完整入口均未形成目标测例结果：180 秒运行仅完成
 `iozone-musl` 的前七项；300 秒运行未推进至目标且 `timeout` 未回收 QEMU，已手动
 终止专属进程。未将 `iozone-glibc` 标记为运行通过。
+## 2026-08-16：LTP fs_bind01 空 fstype 导致 bind mount 失败
+
+维护者要求分析 `log.ans`、修复 `fsbind` 测例并验证后续 `fs_bind`。日志中首个
+`mount --bind sandbox sandbox` 以及所有后续 bind/propagation 调用均返回
+`EINVAL`。对照 BusyBox mount 参数和 `sys_mount` 分派路径后确认：入口在识别
+操作类型前无条件拒绝空 `fstype`，而 `MS_BIND`、`MS_MOVE`、`MS_REMOUNT` 和
+传播属性操作本来不使用该参数。
+
+采纳的修复是删除入口处的无条件空类型检查，保留普通新挂载分支的
+`is_known_fs` 校验。修改 `os/src/syscall/fs/mount.rs`；维护者原有的
+`user/src/bin/initproc.rs` fs_bind01 定向入口未改变。
+
+验证：`make TARGET_ARCH=riscv64` 完成 RISC-V64/LoongArch64 release 构建；
+RISC-V `make run TARGET_ARCH=riscv64` 的 `fs_bind01.sh` 为
+`passed 29 failed 0 broken 0` 并正常关机。批量探索 `fs_bind02..24` 时，
+`02..06`、`08..10`、`12..20`、`23..24` 为 `failed 0`；`07/07-2/11/21/22`
+仍显示路径化挂载模型已有的 propagation、卸载栈或同树 mount-root 限制，未将
+这些结果归因于本次空 `fstype` 修复。
