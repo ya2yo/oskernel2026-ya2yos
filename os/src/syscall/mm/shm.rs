@@ -9,7 +9,10 @@ use crate::{
 pub fn sys_shmget(key: i32, size: usize, shmflag: i32) -> SyscallRet {
     const IPC_PRIVATE: i32 = 0;
     // 忽略权限位
-    let flags = ShmFlags::from_bits(shmflag & !0x1ff).unwrap();
+    let flags = match ShmFlags::from_bits(shmflag & !0x1ff) {
+        Some(flags) => flags,
+        None => return Err(SysErrNo::EINVAL),
+    };
     match key {
         IPC_PRIVATE => Ok(shm_create(size)),
         key if key > 0 => {
@@ -52,7 +55,10 @@ pub fn sys_shmat(shmid: i32, shmaddr: usize, shmflag: i32) -> SyscallRet {
     if shmflag == 0 {
         permission |= MapPermission::W | MapPermission::X
     } else {
-        let shmflg = ShmFlags::from_bits(shmflag).unwrap();
+        let shmflg = match ShmFlags::from_bits(shmflag) {
+            Some(flags) => flags,
+            None => return Err(SysErrNo::EINVAL),
+        };
         if shmflg.contains(ShmFlags::SHM_EXEC) {
             permission |= MapPermission::X;
         }

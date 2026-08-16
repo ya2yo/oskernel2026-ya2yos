@@ -3719,3 +3719,21 @@
   输出 `hugepage regression: PASS`。LoongArch64 QEMU 运行时回归尚未执行。
 - **关联问题**：[用户态匿名 2 MiB hugepage 映射](./problem/user-hugepage-mmap-2m.md)
 - **关联 commit**：当前工作区未提交
+
+#### LTP huge 测例回归与 MAP_FIXED 页表修复（8.16）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求直接复用现有 LTP huge 测例，并在测试后恢复临时镜像配置。
+- **描述**：临时切换 `scripts/riscv64.mk` 到初赛镜像，让 `initproc` 逐项调用 blacklist
+  中 31 个 `hugemmap*`；测试所需的 fake hugepage proc/sys 文件仅在测试期间存在，随后
+  全部恢复。只有匿名 `hugemmap06` 进入映射逻辑，最终为 `passed 5 failed 0 broken 0`。
+  首次运行发现 `MAP_FIXED` 清除 4 KiB 映射后留下空的 RISC-V level-0 页表，后续 2 MiB
+  leaf 安装触发断言；修复为仅回收已确认全空的中间页表，避免覆盖活动映射。
+- **验证边界**：文件后备 `hugemmap*` 在挂载 hugetlbfs 时为 `TBROK/ENODEV`，依赖
+  `nr_overcommit_hugepages` 或 gigantic hugepages 的条目为 `TCONF`；另行的 `futex_wake04`
+  因静态 proc 缺少 `/proc/<pid>/task` 为 `TBROK`。RISC-V64 与 LoongArch64 release 构建
+  均通过，LoongArch64 QEMU 运行回归未执行。继续运行 `hugefallocate*`、`hugefork*` 和
+  `hugeshm*` 时发现 `hugeshmat05` 会触发 SysV shm 未知标志的 `unwrap()`；加入 `EINVAL`
+  校验后复测为 `shmget failed: EINVAL`，不再 panic。
+- **关联问题**：[用户态匿名 2 MiB hugepage 映射](./problem/user-hugepage-mmap-2m.md)
+- **关联 commit**：当前工作区未提交

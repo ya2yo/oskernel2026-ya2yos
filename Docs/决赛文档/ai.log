@@ -12575,3 +12575,30 @@ Sv39/LoongArch64 level-1 leaf，以及 shared fork 复用/private fork eager cop
 `Docs/决赛文档/problem/user-hugepage-mmap-2m.md`。RISC-V64/LoongArch64 release 构建
 通过；RISC-V QEMU 临时 smoke test 输出 `hugepage regression: PASS`。LoongArch64 QEMU
 运行时回归尚未执行；最终用户态临时测试入口已删除。
+
+## 2026-08-16：LTP huge 测例回归与 MAP_FIXED 页表修复
+
+维护者要求不新增测试，直接复用已有 LTP huge 测例，并同步切换 Makefile 中的测试镜像，
+测试后恢复配置。临时将 `scripts/riscv64.mk` 的 `DISK_IMG` 切到初赛镜像，令
+`user/src/bin/initproc.rs` 的 `test_pre()` 临时调用现有 `ltp::test_glibc_single()` 入口，
+先运行 `hugemmap06`，再按 blacklist 扩展；同时临时提供 LTP 查询所需的 fake hugepage
+proc/sys 文件。测试结束后恢复 `initproc`、
+决赛镜像以及 `HugePages_Total/Free: 0`，fake 文件全部删除。
+
+逐项调用 blacklist 中 31 个 `hugemmap*` 后，只有匿名 `hugemmap06` 进入映射逻辑；其余
+文件后备 hugetlbfs 测例在挂载阶段为 `TBROK: ... ENODEV`，`hugemmap05/08/10` 因缺少
+`nr_overcommit_hugepages` 为 `TCONF`，`hugemmap32` 因 gigantic hugepages 为 `TCONF`。
+`hugemmap06` 首次运行在 `MAP_FIXED` 重映射处触发 RISC-V 页表断言。现场 PTE 为只有
+`VALID` 位的 level-0 中间页表指针，说明下级 4 KiB PTE 已清空但中间页表未回收；在
+`map_mega_page()` 中加入下级 512 项全无效检查，仅对空中间页表清零，仍有活动映射时保留
+原断言。修复后重复运行输出 5 项 `TPASS`，汇总 `passed 5 failed 0 broken 0 skipped 0`
+并正常 `shutdown!`。另行的 `futex_wake04` 因静态 proc 缺少 `/proc/<pid>/task` 为 `TBROK`，
+不归因于匿名 hugepage 映射。
+
+继续运行 `blacklist.rs` 中的 `hugefallocate*`、`hugefork*` 和 `hugeshm*`，发现
+`hugeshmat05` 在 `sys_shmget()` 对 `SHM_HUGETLB` 未知标志执行 `from_bits().unwrap()`，
+触发 `os/src/syscall/mm/shm.rs:12` panic。当前内核不支持 SysV huge shm，因此不扩展
+功能范围；改为在 `sys_shmget()`/`sys_shmat()` 对未知标志返回 `EINVAL`。RISC-V QEMU
+复测 `hugeshmat05` 输出 `shmget failed: EINVAL` 和 `TBROK`，随后正常 `shutdown!`，不再
+发生内核 panic。其余额外 huge 测例因 hugetlbfs、`shmmax` 或内存条件限制报告
+`TBROK/TCONF`。

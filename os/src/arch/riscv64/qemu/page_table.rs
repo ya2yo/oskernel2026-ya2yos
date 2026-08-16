@@ -199,6 +199,22 @@ impl PageTable {
         );
 
         let pte = &mut root_pte.get_ppn().as_array::<PageTableEntry>()[indexes[1]];
+        if pte.get_flags().contains(RVPTEFlags::VALID)
+            && !pte
+                .get_flags()
+                .intersects(RVPTEFlags::READABLE | RVPTEFlags::WRITEABLE | RVPTEFlags::EXECUTABLE)
+        {
+            // MAP_FIXED may leave an empty level-0 page table behind after
+            // removing all of its 4 KiB leaves. Reclaim it before installing a
+            // 2 MiB leaf; a live lower-level mapping still trips the assert.
+            let child = pte.get_ppn().as_array::<PageTableEntry>();
+            if child
+                .iter()
+                .all(|entry| !entry.get_flags().contains(RVPTEFlags::VALID))
+            {
+                pte.bits = 0;
+            }
+        }
         assert!(
             !pte.get_flags().contains(RVPTEFlags::VALID),
             "vpn {:?} is mapped before mapping",

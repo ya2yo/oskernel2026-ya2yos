@@ -51,3 +51,33 @@ RISC-V/LoongArch64 的高级叶子页表操作，以及与连续物理块匹配�
 - RISC-V QEMU 使用 `/tmp` qcow2 overlay 启动，临时用户态 smoke test 成功申请
   2 MiB 对齐地址，读写首尾 `usize`，并完整 `munmap`，输出 `hugepage regression: PASS`。
 - LoongArch64 完成 release 编译；尚未运行 LoongArch64 QEMU hugepage smoke test。
+
+## LTP huge 测例验证
+
+为复用现有 LTP 测例，测试期间临时将 `scripts/riscv64.mk` 的 `DISK_IMG` 切换到
+`2026_testsuits_img/pre_tests/sdcard-rv.img`，并让 `initproc::test_pre()` 临时调用现有的
+`ltp::test_glibc_single()` 入口（先验证 `hugemmap06`，再按 blacklist 扩展）；测试完成后已
+恢复决赛镜像和原始 `initproc`。
+同时为满足 LTP 的 hugepage 预置查询，临时创建了 fake `/proc/sys/vm` 和 `/sys` 文件，
+随后全部删除，`/proc/meminfo` 的 `HugePages_Total/Free` 也恢复为 0，这些接口不属于正式
+实现。
+
+按 `user/src/bin/ltp/blacklist.rs` 逐项调用 31 个 `hugemmap*` 入口后，只有匿名
+`MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB` 的 `hugemmap06` 真正进入映射逻辑，最终输出
+5 项 `TPASS`，汇总为 `passed 5 failed 0 broken 0` 并正常 `shutdown!`。测试过程中
+`MAP_FIXED` 重新映射曾触发页表断言：旧的 4 KiB 子页表已清空但 level-1 中间项仍为
+`VALID`。`os/src/arch/riscv64/qemu/page_table.rs` 现仅在确认下级 512 项全部无效时回收
+该中间项，若仍有活动映射则继续拒绝覆盖；修复后重复运行 `hugemmap06` 无 panic。
+
+其余 `hugemmap01/02/04/07/09/11-31` 都是文件后备 `hugetlbfs`，在挂载阶段报告
+`TBROK: ... mount ... ENODEV`；`hugemmap05/08/10` 因未实现
+`nr_overcommit_hugepages` 报 `TCONF`，`hugemmap32` 因 gigantic hugepages 报 `TCONF`。
+另行运行的 `futex_wake04` 因静态 proc 未提供 `/proc/<pid>/task` 报 `TBROK`。这些结果
+说明 blacklist 的其余条目确实超出当前匿名 2 MiB 最小实现范围，并非匿名映射回归失败。
+
+继续复用 blacklist 中的 `hugefallocate*`、`hugefork*` 和 `hugeshm*` 后，前两类同样在
+`hugetlbfs` 挂载阶段为 `TBROK/ENODEV`，`hugeshmat01-03` 在读取缺失的
+`/proc/sys/kernel/shmmax` 时为 `TBROK`，`hugeshmat04` 因内存条件为 `TCONF`。其中
+`hugeshmat05` 曾暴露 SysV shm 标志解析的 `unwrap()` panic；`os/src/syscall/mm/shm.rs`
+现对未知标志返回 `EINVAL`，复测结果为 `shmget failed: EINVAL`，内核不再崩溃。SysV
+huge shm 仍不属于本次匿名映射实现范围。
