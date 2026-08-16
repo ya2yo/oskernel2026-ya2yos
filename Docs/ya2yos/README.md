@@ -10,11 +10,10 @@ Markdown 仅保留给 README、开发日志、问题复盘和轻量索引。报�
 
 ```bash
 cd /path/to/oskernel2026-ya2yos
-typst compile --root . --pdf-standard a-2u \
-  Docs/ya2yos/main.typ ya2yos-kernel-design.pdf
+typst compile --root . --pdf-standard a-2u Docs/ya2yos/main.typ Docs/ya2yos/ya2yos-kernel-design.pdf
 
 typst compile --root . Docs/ya2yos/slides/defense.typ Docs/ya2yos/slides/ya2yos-defense.pdf
-node Docs/ya2yos/slides/generate-pptx.mjs
+python3 Docs/ya2yos/slides/export_pptx.py
 ```
 
 PPTX 生成器不依赖 npm 包，会直接生成可编辑的 Office Open XML 文字/版式对象；PDF 演示稿
