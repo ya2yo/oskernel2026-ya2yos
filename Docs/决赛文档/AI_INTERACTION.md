@@ -3652,3 +3652,17 @@
 - **验证边界**：RISC-V `fs_bind01` 为 `passed 29 failed 0 broken 0` 并正常 `shutdown!`；RISC-V/LoongArch64 release 构建通过。批量基础 `fs_bind` 验证中 `02..06`、`08..10`、`12..20`、`23..24` 为 `failed 0`，其余少数项目仍是已有路径化 mount-root/卸载模型限制。
 - **关联问题**：[fs_bind01 空文件系统类型导致 bind mount 失败](./problem/fs-bind01-empty-fstype.md)
 - **关联 commit**：当前工作区未提交
+
+#### LTP setuid04 wait-family 子进程退出丢唤醒（8.16）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析 `log.ans` 末尾的 QEMU 卡死并完成修复。
+- **描述**：`setuid04` 的嵌套 `fork` 使 child 退出与父进程 `waitpid` 并发；此前状态检查
+  后才注册 `child_exit_event` waker，child 恰在两者之间退出时会丢失唯一唤醒。现在
+  `waitpid` 与 `waitid` 都在父 `ProcessMeta` 锁内先注册 waker，再快照 child；状态读取、
+  uaccess 和 zombie 回收继续在锁外，保持既有锁序修复。
+- **验证边界**：RISC-V64 debug/release 定向 `setuid04` 均为两个 `TPASS`，汇总
+  `passed 2 failed 0 broken 0 skipped 0` 并正常关机；RISC-V64/LoongArch64 release 构建通过。
+  尚未重跑完整 LTP/BuildStorm。
+- **关联问题**：[waitpid/waitid 子进程退出事件丢唤醒](./problem/waitpid-child-exit-lost-wakeup.md)
+- **关联 commit**：当前工作区未提交

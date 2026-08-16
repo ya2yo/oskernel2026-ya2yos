@@ -242,3 +242,4 @@
 - [pthread_cancel 的信号来源与 ucontext ABI](./problem/pthread-cancel-signal-ucontext.md)
 - [RISC-V QEMU `setuid04` 后 futex requeue 自旋](./problem/riscv-qemu-futex-requeue-task-lock-spin.md)
 - [waitpid/waitid 跨进程 ProcessMeta 锁边界](./problem/waitpid-process-meta-lock-boundary.md)
+- [waitpid/waitid 子进程退出事件丢唤醒](./problem/waitpid-child-exit-lost-wakeup.md)

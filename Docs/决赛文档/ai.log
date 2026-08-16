@@ -12434,3 +12434,32 @@ RISC-V `make run TARGET_ARCH=riscv64` 的 `fs_bind01.sh` 为
 ### 修改与验证
 
 修改 `os/src/syscall/task/wait.rs`，新增 `Docs/决赛文档/problem/waitpid-process-meta-lock-boundary.md`，并更新开发日志、问题索引与 AI 交互记录。`rustfmt --check`、`git diff --check` 通过；`make TARGET_ARCH=riscv64` 完成 RISC-V64 和 LoongArch64 release 构建。使用维护者已有定向入口运行 `timeout 120s make run TARGET_ARCH=riscv64`，`oom01` 四个场景 `passed 4 failed 0 broken 0 skipped 0` 并正常 `shutdown!`；未复现原始偶发卡死，未宣称时序问题已完全消除。
+
+## 2026-08-16：LTP setuid04 wait-family 子进程退出丢唤醒
+
+### 用户需求
+
+维护者要求分析 `log.ans` 最后的卡死原因并修复。
+
+### AI 分析与采纳结论
+
+`log.ans` 停在 `RUN LTP CASE setuid04`，仅有第一个 `TPASS`，没有第二个 `TPASS`、
+`Summary` 或后续测例。同一测例在 LoongArch64 正常完成，结合其嵌套 `fork`/`waitpid`
+结构，判断是 RISC-V SMP 的退出等待时序问题。
+
+检查上一轮 wait-family 锁边界修复后确认：`waitpid` 和 `waitid` 都先检查 child 状态，
+只有准备返回 `Poll::Pending` 时才注册 `child_exit_event` waker；子进程则在父
+`ProcessMeta` 锁内 wake。若 child 在状态检查后、waker 注册前退出，wake 不会被保留，
+父进程随后永久睡眠。
+
+采纳在父 `ProcessMeta` 锁内先注册 waker、再快照 child 列表的顺序。child 状态检查、
+用户内存写入和 zombie 回收仍在释放父锁后完成，保留既有跨进程锁序与回收归属复核。
+
+### 修改与验证
+
+修改 `os/src/syscall/task/wait.rs`，新增
+`Docs/决赛文档/problem/waitpid-child-exit-lost-wakeup.md`，并更新开发日志、问题索引与
+AI 交互记录。`make TARGET_ARCH=riscv64` 完成 RISC-V64/LoongArch64 release 构建；临时
+定向 RISC-V64 `setuid04` 的 debug 与 release QEMU 运行均输出两个 `TPASS`、
+`passed 2 failed 0 broken 0 skipped 0` 并正常 `shutdown!`。`git diff --check` 通过。
+完整 LTP/BuildStorm 尚未重跑。
