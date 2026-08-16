@@ -341,36 +341,36 @@ fn test_pre() -> i32 {
         shutdown();
         return status;
     }
-    // // busybox
-    // run_testsuit("musl\0", "busybox_testcode.sh\0");
-    // run_testsuit("glibc\0", "busybox_testcode.sh\0");
-    // // lua
-    // run_testsuit("musl\0", "lua_testcode.sh\0");
-    // run_testsuit("glibc\0", "lua_testcode.sh\0");
-    // // iperf
-    // run_testsuit("musl\0", "iperf_testcode.sh\0");
-    // run_testsuit("glibc\0", "iperf_testcode.sh\0");
-    // // netperf
-    // run_testsuit("musl\0", "netperf_testcode.sh\0");
-    // run_testsuit("glibc\0", "netperf_testcode.sh\0");
-    // // cyclictest
-    // run_testsuit("musl\0", "cyclictest_testcode.sh\0");
-    // run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
-    // // libc
-    // run_testsuit("musl\0", "libctest_testcode.sh\0");
-    // // run_testsuit("glibc\0", "libctest_testcode.sh\0");
-    // // iozone
-    // run_testsuit("musl\0", "iozone_testcode.sh\0");
-    // run_testsuit("glibc\0", "iozone_testcode.sh\0");
-    // // lmbench
-    // run_testsuit("musl\0", "lmbench_testcode.sh\0");
-    // run_testsuit("glibc\0", "lmbench_testcode.sh\0");
-    // // libcbench
-    // run_testsuit("musl\0", "libcbench_testcode.sh\0");
-    // run_testsuit("glibc\0", "libcbench_testcode.sh\0");
-    // // ltp
-    // ltp::test_musl_ltp();
-    // ltp::test_glibc_ltp();
+    // busybox
+    run_testsuit("musl\0", "busybox_testcode.sh\0");
+    run_testsuit("glibc\0", "busybox_testcode.sh\0");
+    // lua
+    run_testsuit("musl\0", "lua_testcode.sh\0");
+    run_testsuit("glibc\0", "lua_testcode.sh\0");
+    // iperf
+    run_testsuit("musl\0", "iperf_testcode.sh\0");
+    run_testsuit("glibc\0", "iperf_testcode.sh\0");
+    // netperf
+    run_testsuit("musl\0", "netperf_testcode.sh\0");
+    run_testsuit("glibc\0", "netperf_testcode.sh\0");
+    // cyclictest
+    run_testsuit("musl\0", "cyclictest_testcode.sh\0");
+    run_testsuit("glibc\0", "cyclictest_testcode.sh\0");
+    // libc
+    run_testsuit("musl\0", "libctest_testcode.sh\0");
+    // run_testsuit("glibc\0", "libctest_testcode.sh\0");
+    // iozone
+    run_testsuit("musl\0", "iozone_testcode.sh\0");
+    run_testsuit("glibc\0", "iozone_testcode.sh\0");
+    // lmbench
+    run_testsuit("musl\0", "lmbench_testcode.sh\0");
+    run_testsuit("glibc\0", "lmbench_testcode.sh\0");
+    // libcbench
+    run_testsuit("musl\0", "libcbench_testcode.sh\0");
+    run_testsuit("glibc\0", "libcbench_testcode.sh\0");
+    // ltp
+    ltp::test_musl_ltp();
+    ltp::test_glibc_ltp();
     shutdown();
     0
 }

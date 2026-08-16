@@ -3,8 +3,8 @@ MODE := release
 
 ARCH := loongarch64
 TARGET := loongarch64-unknown-none
-DISK_IMG ?= ./2026_testsuits_img/pre_tests/sdcard-la.img
-# DISK_IMG := ./2026_testsuits_img/final-2026/sdcard-la.img
+# DISK_IMG := ./2026_testsuits_img/pre_tests/sdcard-la.img
+DISK_IMG := ./2026_testsuits_img/final-2026/sdcard-la.img
 # DISK_IMG := ./2026_testsuits_img/onsite-2026/alpine-linux-loongarch64-ext4fs.img
 
 ifeq ($(PLATFORM),2k1000)
