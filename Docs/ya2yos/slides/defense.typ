@@ -1,4 +1,5 @@
 // Ya2yOS 答辩演示稿。构建：typst compile --root . defense.typ ya2yos-defense.pdf
+// PowerPoint 导出：python3 export_pptx.py
 #import "@preview/touying:0.7.4": *
 #import themes.simple: *
 
