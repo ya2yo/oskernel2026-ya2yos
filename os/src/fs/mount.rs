@@ -1,3 +1,19 @@
+//! 路径化 VFS 的挂载表与挂载传播管理。
+//!
+//! 本模块维护 [`MountTable`]，将挂载源、挂载目标、文件系统类型、挂载属性
+//! 以及 bind/shared/slave 等传播关系保存为路径级模型。它为 `mount(2)`、
+//! `umount(2)` 和 `/proc/mounts` 提供状态管理，同时为同一 ext4 镜像的挂载
+//! 实例维护共享的逻辑容量配额。
+//!
+//! 由于当前 VFS 使用路径和单一根 superblock 建模，而不是为每个挂载点建立
+//! 独立的块设备分配器，本模块不直接执行物理块分配。普通挂载的容量限制由
+//! [`MountUsage`] 统计，bind mount 则与源挂载共享配额。挂载表通过全局的
+//! [`MNT_TABLE`] 由上层系统调用串行访问。
+//!
+//! 挂载操作按照 Linux 语义区分普通挂载、bind、move、remount 和传播属性修改。
+//! 同一个挂载事件产生的传播副本使用事件组关联，以便卸载时一致移除；shared
+//! 和 slave 关系则控制后续子挂载事件的传播方向。
+
 use alloc::{collections::BTreeMap, format, string::String, sync::Arc, vec, vec::Vec};
 use linux_raw_sys::general::*;
 use spin::{Lazy, Mutex};
@@ -130,6 +146,12 @@ struct MountUsage {
 // 容量；这样既为元数据留出空间，又能在不分配整个假设备的情况下保持 ENOSPC 检查的
 // 确定性。
 
+/// 挂载表中的一个挂载实例。
+///
+/// `MountEntry` 同时保存挂载本身的属性和传播拓扑：`is_bind` 区分 bind
+/// 挂载的持久语义，`shared_group` / `master_group` 描述 shared/slave 关系，
+/// `event_group` 用于将同一挂载事件产生的副本关联起来，`quota` 则让共享
+/// 同一 ext4 镜像的挂载实例共享容量统计。
 #[derive(Clone)]
 struct MountEntry {
     /// "special" 是 mount(2) 的第一个参数，即挂载的"源"：
@@ -156,6 +178,11 @@ struct MountEntry {
     quota: Option<Arc<Mutex<MountUsage>>>,
 }
 
+/// 当前进程树使用的路径化挂载表。
+///
+/// `mnt_list` 保存所有挂载层；同一路径允许存在多层挂载，查询时选择覆盖
+/// 该路径的最顶层条目。`next_group` 生成 shared peer group 和 mount event
+/// 使用的非零标识。
 pub struct MountTable {
     mnt_list: Vec<MountEntry>,
     next_group: u64,
@@ -803,6 +830,11 @@ impl MountTable {
     }
 }
 
+/// 全局挂载表。
+///
+/// 通过 [`Arc`] 和 [`Mutex`] 共享给文件系统及挂载相关系统调用；访问者应在
+/// 持有互斥锁期间完成对挂载表状态的读取或修改，避免传播副本和路径查询看到
+/// 不一致的中间状态。
 pub static MNT_TABLE: Lazy<Arc<Mutex<MountTable>>> = Lazy::new(|| {
     Arc::new(Mutex::new(MountTable {
         mnt_list: Vec::new(),
