@@ -243,3 +243,4 @@
 - [RISC-V QEMU `setuid04` 后 futex requeue 自旋](./problem/riscv-qemu-futex-requeue-task-lock-spin.md)
 - [waitpid/waitid 跨进程 ProcessMeta 锁边界](./problem/waitpid-process-meta-lock-boundary.md)
 - [waitpid/waitid 子进程退出事件丢唤醒](./problem/waitpid-child-exit-lost-wakeup.md)
+- [LTP `setuid04` open 权限检查任务锁自锁](./problem/setuid04-open-task-lock-self-deadlock.md)

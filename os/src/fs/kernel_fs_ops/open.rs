@@ -561,18 +561,29 @@ fn open_inner(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClas
         // 如果以写模式打开，检查文件的写权限
         if writable {
             if let Some(task) = current_task() {
-                let task_inner = task.inner_lock();
+                // Credential fields are protected by TaskControlBlockInner,
+                // but inode metadata lookup may sleep on TaskMutex. Snapshot
+                // them before entering the VFS so block_on() never attempts
+                // to re-lock the current task while this guard is live.
+                let (user_id, effective_uid, effective_gid) = {
+                    let task_inner = task.inner_lock();
+                    (
+                        task_inner.user_id,
+                        task_inner.effective_uid,
+                        task_inner.effective_gid,
+                    )
+                };
                 debug!(
                     "[open] existing file writable check: uid={} euid={} abs_path={}",
-                    task_inner.user_id, task_inner.effective_uid, abs_path
+                    user_id, effective_uid, abs_path
                 );
-                if task_inner.effective_uid != 0 {
+                if effective_uid != 0 {
                     let file_stat = inode.fstat();
                     let file_fmode = inode.fmode()?;
                     let file_mode = file_fmode & 0xfff;
                     let file_mode = FileMode::from_bits_truncate(file_mode);
-                    let my_uid = task_inner.effective_uid;
-                    let my_gid = task_inner.effective_gid;
+                    let my_uid = effective_uid;
+                    let my_gid = effective_gid;
                     let owner_uid = file_stat.st_uid;
                     let owner_gid = file_stat.st_gid;
 

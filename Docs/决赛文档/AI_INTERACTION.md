@@ -3666,3 +3666,19 @@
   尚未重跑完整 LTP/BuildStorm。
 - **关联问题**：[waitpid/waitid 子进程退出事件丢唤醒](./problem/waitpid-child-exit-lost-wakeup.md)
 - **关联 commit**：当前工作区未提交
+
+#### LTP setuid04 open 权限检查任务锁自锁（8.16）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供新的 `log.ans`，指出 `setuid04` 在上轮 wait-family 修复后仍停在第一个
+  `TPASS`，要求继续定位并修复。
+- **描述**：借助 RISC-V QEMU GDB stub 现场确认，`open_inner()` 在持有当前任务
+  `TaskControlBlockInner` 时调用可能在 lwext4 `TaskMutex` 上睡眠的 `inode.fstat()`；
+  `block_on()` 的退出检查随后重入申请同一任务锁，导致两个 hart 在该锁的 remote-TLB mutex
+  上自旋。现在先快照凭据并释放任务锁，再读取 inode metadata 和执行权限判断；未修改 LTP
+  测例或保留诊断插桩。
+- **验证边界**：无插桩 RISC-V64 release 对 `setuid04` 连续 64 次均输出两个 `TPASS`，每次
+  `passed 2 failed 0 broken 0 skipped 0 warnings 0` 并正常关机；恢复入口后 RISC-V64、
+  LoongArch64 release 构建通过。完整 LTP/BuildStorm 尚未重跑。
+- **关联问题**：[LTP `setuid04` open 权限检查任务锁自锁](./problem/setuid04-open-task-lock-self-deadlock.md)
+- **关联 commit**：当前工作区未提交

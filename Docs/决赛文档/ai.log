@@ -12463,3 +12463,31 @@ AI 交互记录。`make TARGET_ARCH=riscv64` 完成 RISC-V64/LoongArch64 release
 定向 RISC-V64 `setuid04` 的 debug 与 release QEMU 运行均输出两个 `TPASS`、
 `passed 2 failed 0 broken 0 skipped 0` 并正常 `shutdown!`。`git diff --check` 通过。
 完整 LTP/BuildStorm 尚未重跑。
+
+## 2026-08-16：LTP setuid04 open 权限检查任务锁自锁
+
+### 用户需求
+
+维护者提供新的 `log.ans`，指出修复 child-exit waker 后仍卡在同一处，要求继续分析并修复。
+
+### AI 分析与采纳结论
+
+日志仍只停在 `setuid04` 的第一个 `TPASS`。通过 RISC-V QEMU GDB stub 中断现场，确认两个
+运行 hart 都在 `RemoteTlbMutex<TaskControlBlockInner>` 自旋；其中一个的调用链为
+`open_inner -> inode.fstat -> lwext4 TaskMutex::lock -> block_on ->
+exit_current_if_group_exited_or_killed -> inner_lock`。因此本次不是上轮 wait-family
+lost-wakeup，而是权限检查持有当前任务 inner lock 跨越可阻塞 lwext4 元数据读取，`block_on()`
+的退出检查重入申请同一把非重入锁。
+
+采纳在进入 VFS 前快照 `user_id`、effective UID/GID 并释放 `TaskControlBlockInner`，后续
+权限判断只使用快照。这样保持 `open()` 判定所需凭据，同时遵守任务锁不能跨文件系统/
+`block_on()` 的边界。
+
+### 修改与验证
+
+修改 `os/src/fs/kernel_fs_ops/open.rs`，新增问题复盘、索引、开发日志和 AI 交互记录。无临时
+插桩的 RISC-V64 release 内核连续运行 64 次定向 `setuid04`，每次均有两个 `TPASS`、
+`passed 2 failed 0 broken 0 skipped 0 warnings 0`，最后正常 `shutdown!`；压力入口随后恢复。
+恢复入口后执行 `make TARGET_ARCH=riscv64 build-arch` 与
+`make TARGET_ARCH=loongarch64 build-arch` 均通过，只有既有 Cargo/vendored `smoltcp` warning。
+完整 LTP/BuildStorm 尚未重跑。
