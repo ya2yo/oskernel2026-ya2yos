@@ -3720,6 +3720,19 @@
 - **关联问题**：[用户态匿名 2 MiB hugepage 映射](./problem/user-hugepage-mmap-2m.md)
 - **关联 commit**：当前工作区未提交
 
+#### 用户态 hugepage 定向回归测例（8.16）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求补充一个模仿 `fstat_unlink_regression.rs` 的用户态大页测例。
+- **描述**：新增 `user/src/bin/initproc/hugepage_regression.rs`，使用 RISC-V64/LoongArch64
+  原始 syscall ABI，覆盖长度校验、2 MiB 地址对齐、跨两个大页读写、`MAP_FIXED` 重映射
+  数据保持和逐页 `munmap`；通过 `#[path]` 接入 `initproc::test()`，不改变正式启动入口。
+- **验证边界**：临时让 `main()` 单跑该测例的 RISC-V QEMU 输出
+  `hugepage regression: PASS` 并正常 `shutdown!`；恢复 `main()` 后 RISC-V64、LoongArch64
+  release 构建均通过，LoongArch64 QEMU 运行未执行。
+- **关联问题**：[用户态匿名 2 MiB hugepage 映射](./problem/user-hugepage-mmap-2m.md)
+- **关联 commit**：当前工作区未提交
+
 #### LTP huge 测例回归与 MAP_FIXED 页表修复（8.16）
 
 - **工具/模型**：Codex（GPT-5）

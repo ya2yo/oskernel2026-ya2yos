@@ -22,6 +22,8 @@ mod busybox;
 mod cagent;
 #[path = "initproc/fstat_unlink_regression.rs"]
 mod fstat_unlink_regression;
+#[path = "initproc/hugepage_regression.rs"]
+mod hugepage_regression;
 mod iozone;
 mod libctest;
 mod lmbench;
@@ -401,6 +403,10 @@ fn test() -> i32 {
         return 1;
     }
     if !mprotect_split_regression::run() {
+        shutdown();
+        return 1;
+    }
+    if !hugepage_regression::run() {
         shutdown();
         return 1;
     }

@@ -81,3 +81,14 @@ RISC-V/LoongArch64 的高级叶子页表操作，以及与连续物理块匹配�
 `hugeshmat05` 曾暴露 SysV shm 标志解析的 `unwrap()` panic；`os/src/syscall/mm/shm.rs`
 现对未知标志返回 `EINVAL`，复测结果为 `shmget failed: EINVAL`，内核不再崩溃。SysV
 huge shm 仍不属于本次匿名映射实现范围。
+
+## 用户态定向回归测例
+
+新增 `user/src/bin/initproc/hugepage_regression.rs`，按现有
+`fstat_unlink_regression.rs` 的结构实现跨架构原始 syscall 回归，并在 `initproc::test()`
+中顺序调用。测例检查非 2 MiB 整数倍长度被拒绝、返回地址按 2 MiB 对齐、两个连续大页的
+首尾读写、`MAP_FIXED` 重映射后第二页数据保持不变，以及两个 2 MiB 区间分别 `munmap`。
+
+RISC-V64 QEMU 定向运行输出 `hugepage regression: PASS` 并正常 `shutdown!`；恢复原始
+`main()` 后，RISC-V64 和 LoongArch64 release 构建均通过。该测例只接入已有定向 `test()`
+入口，不改变正式镜像的 `run_selected_tests()` 启动路径。

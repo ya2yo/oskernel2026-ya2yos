@@ -12602,3 +12602,14 @@ proc/sys 文件。测试结束后恢复 `initproc`、
 复测 `hugeshmat05` 输出 `shmget failed: EINVAL` 和 `TBROK`，随后正常 `shutdown!`，不再
 发生内核 panic。其余额外 huge 测例因 hugetlbfs、`shmmax` 或内存条件限制报告
 `TBROK/TCONF`。
+
+## 2026-08-16：新增用户态 hugepage 定向回归测例
+
+维护者要求补充一个模仿 `user/src/bin/initproc/fstat_unlink_regression.rs` 的用户态大页
+测例。新增 `user/src/bin/initproc/hugepage_regression.rs`，通过跨架构原始 syscall 封装
+验证：非 2 MiB 整数倍长度拒绝、2 MiB 地址对齐、两个连续大页的首尾读写、`MAP_FIXED`
+重映射后未覆盖页数据保持，以及两个大页分别解除映射；并将其接入 `initproc::test()`。
+
+为获得独立证据，临时把 `main()` 改为只运行该测例，RISC-V64 QEMU 输出
+`hugepage regression: PASS` 和 `shutdown!`；随后恢复原 `run_selected_tests()`。恢复后
+RISC-V64 与 LoongArch64 release 构建均通过，正式启动入口未改变。
