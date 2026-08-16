@@ -72,11 +72,18 @@
     ]
   ]
 ]
-#let compact-panel(title, body, color: blue, fill: pale-blue) = block(fill: fill, stroke: 0.7pt + border, radius: 4pt, inset: 8pt)[
-  #text(size: 13pt, weight: "bold", fill: color)[#title]
-  #v(0.12em)
-  #text(size: 10.5pt, fill: ink)[#body]
-]
+#let compact-panel(title, body, color: blue, fill: pale-blue, height: auto) = {
+  let content = [
+    #text(size: 13pt, weight: "bold", fill: color)[#title]
+    #v(0.12em)
+    #text(size: 10.5pt, fill: ink)[#body]
+  ]
+  if height == auto {
+    block(fill: fill, stroke: 0.7pt + border, radius: 4pt, inset: 8pt)[#content]
+  } else {
+    block(fill: fill, stroke: 0.7pt + border, radius: 4pt, inset: 8pt, height: height)[#content]
+  }
+}
 #let flow-step(label, desc, color: blue, fill: pale-blue) = block(fill: fill, stroke: 0.8pt + color, radius: 4pt, inset: (x: 10pt, y: 9pt))[
   #text(size: 14pt, weight: "bold", fill: color)[#label]
   #v(0.13em)
@@ -180,12 +187,12 @@
   #titlebar("01  ·  SYSTEM POSITIONING", "设计亮点：把复杂性收敛到可解释的内核路径", subtitle: "不仅实现接口，更统一对象、状态和资源生命周期")
   #v(0.18cm)
   #grid(columns: (1fr, 1fr, 1fr), gutter: 8pt,
-    compact-panel("01  ·  Rust 所有权贯穿生命周期", [任务、地址空间、文件和 socket 以引用计数与显式所有权管理；fork / exec / exit / close 的共享、复制和回收边界清晰。], color: blue, fill: pale-blue),
-    compact-panel("02  ·  统一任务状态机", [RUNNING → BLOCKED → WAKING → RUNNABLE；futex、pipe、socket、epoll、文件锁和定时器共享 park / wake。], color: teal, fill: pale-teal),
-    compact-panel("03  ·  uaccess 快路径", [`copy_from_user` / `copy_to_user` 优先走对齐、单页和权限已知的快速复制；异常路径保留 EFAULT 语义。], color: orange, fill: pale-orange),
-    compact-panel("04  ·  MailBox 核间通信", [TLB shootdown、任务唤醒和同步请求通过 MailBox 发布，由 IPI 通知目标 Hart 并收集 ACK。], color: red, fill: pale-red),
-    compact-panel("05  ·  架构差异硬件层收敛", [RISC-V64 与 LoongArch64 的 trap、页表 / TLB、timer、IPI 和 VirtIO 由架构层适配，上层共享内核语义。], color: blue, fill: pale-blue),
-    compact-panel("06  ·  正确性与性能并重", [先保证 Linux 语义、锁序和可唤醒路径，再通过页缓存、read_at、COW、调度和可观测性优化。], color: teal, fill: pale-teal),
+    compact-panel("01  ·  Rust 所有权贯穿生命周期", [任务、地址空间、文件和 socket 以引用计数与显式所有权管理；fork / exec / exit / close 的共享、复制和回收边界清晰。], color: blue, fill: pale-blue, height: 80pt),
+    compact-panel("02  ·  统一任务状态机", [RUNNING → BLOCKED → WAKING → RUNNABLE；futex、pipe、socket、epoll、文件锁和定时器共享 park / wake。], color: teal, fill: pale-teal, height: 80pt),
+    compact-panel("03  ·  uaccess 快路径", [`copy_from_user` / `copy_to_user` 优先走对齐、单页和权限已知的快速复制；异常路径保留 EFAULT 语义。], color: orange, fill: pale-orange, height: 80pt),
+    compact-panel("04  ·  MailBox 核间通信", [TLB shootdown、任务唤醒和同步请求通过 MailBox 发布，由 IPI 通知目标 Hart 并收集 ACK。], color: red, fill: pale-red, height: 80pt),
+    compact-panel("05  ·  架构差异硬件层收敛", [RISC-V64 与 LoongArch64 的 trap、页表 / TLB、timer、IPI 和 VirtIO 由架构层适配，上层共享内核语义。], color: blue, fill: pale-blue, height: 80pt),
+    compact-panel("06  ·  正确性与性能并重", [先保证 Linux 语义、锁序和可唤醒路径，再通过页缓存、read_at、COW、调度和可观测性优化。], color: teal, fill: pale-teal, height: 80pt),
   )
   #v(0.22cm)
   #align(center)[#tag("设计主线：薄入口 → 快路径 → MailBox / IPI 协议 → 内核对象 → 状态转换 → 资源回收", color: navy)]
