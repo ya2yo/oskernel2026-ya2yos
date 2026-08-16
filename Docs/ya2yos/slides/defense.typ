@@ -149,7 +149,7 @@
     panel("01  ·  系统定位", [Rust 宏内核、Linux ABI、RISC-V64 / LoongArch64；面向真实 Linux 用户态路径与工具链负载。], color: blue, fill: pale-blue),
     panel("02  ·  系统介绍", [从系统架构图出发，依次介绍进程管理、多核调度、内存管理、信号机制、网络模块和设备驱动。], color: teal, fill: pale-teal),
     panel("03  ·  关键增量", [多核运行、CFS 调度、StarryOS 网络移植、uaccess、文件锁、syscall 扩展与模块重构。], color: orange, fill: pale-orange),
-    panel("04  ·  发展规划", [完整 BuildStorm 闭环、运行中迁移、双架构压力回归，以及可证明的资源级并发。], color: red, fill: pale-red),
+    panel("04  ·  发展规划", [扩展文件系统类型、提升文件 I/O、持续丰富网络模块，并完成开发板实机运行与验证。], color: red, fill: pale-red),
   )
   #v(0.62cm)
   #align(center)[#tag("关键词：兼容边界 · 状态机 · 并发控制 · 证据边界", color: navy)]
@@ -455,18 +455,18 @@
 ]
 
 // 14 · roadmap
-#chapter-cover("04", "发展规划", "完整验证闭环 · 任务迁移 · 资源级并发 · 双架构回归", color: red, fill: pale-red)
+#chapter-cover("04", "发展规划", "文件系统扩展 · I/O 优化 · 网络完善 · 开发板实机运行", color: red, fill: pale-red)
 #slide[
-  #titlebar("04  ·  ROADMAP", "发展规划：从兼容面走向更深的系统语义")
+  #titlebar("04  ·  ROADMAP", "发展规划：从可运行走向更完整的系统能力", subtitle: "围绕存储、网络与实机部署持续扩展，所有优化以语义正确和可复核验证为前提")
   #v(0.3cm)
   #grid(columns: (1fr, 1fr), gutter: 14pt,
-    panel("01  ·  完整测例闭环", [完成官方 BuildStorm 446 crate 的 `BUILDSTORM_COMPILE ok=true elapsed_s=X`；在相同镜像、架构、内存、SMP 和冷/热缓存条件下完成 A/B。], color: blue, fill: pale-blue),
-    panel("02  ·  调度与异构", [补齐运行中任务迁移、通用 reschedule IPI、per-CPU queue / work stealing；建立 RISC-V / LoongArch64 自动化压力矩阵。], color: teal, fill: pale-teal),
-    panel("03  ·  文件系统并发", [为 allocator、目录、journal 等资源建立可证明的锁序和生命周期模型，再评估从挂载级准入向资源级细粒度并发演进。], color: orange, fill: pale-orange),
-    panel("04  ·  验证护栏", [压力测试、e2fsck、文件系统 LTP、跨架构回归和失败可重试路径全部纳入发布前证据链。], color: red, fill: pale-red),
+    panel("01  ·  支持更多文件系统", [在统一 VFS、dentry/inode 和 mount 语义下接入更多文件系统类型；完善不同文件系统的路径解析、权限、元数据和挂载参数兼容性。], color: blue, fill: pale-blue),
+    panel("02  ·  提高文件系统 I/O 速率", [围绕 PageCache 命中、顺序/批量读写、跨页复制和块设备提交路径减少重复工作；使用同配置、成功收尾的基准和文件系统回归验证优化收益。], color: teal, fill: pale-teal),
+    panel("03  ·  继续丰富网络模块", [补齐 socket 选项、协议语义、路由与设备事件处理；持续加强 TCP / UDP / Unix socket 与 poll / epoll、VirtIO-net 之间的一致性。], color: orange, fill: pale-orange),
+    panel("04  ·  在开发板上成功运行", [完成实机启动、内存与中断初始化、块设备/网卡驱动和串口观测；在开发板上跑通用户态程序、文件 I/O、网络通信与压力回归。], color: red, fill: pale-red),
   )
   #v(0.6cm)
-  #align(center)[#tag("目标：让“已经跑通”进一步成为“语义正确、并发可控、证据可复核”", color: navy)]
+  #align(center)[#tag("路线：VFS 扩展 → I/O 优化 → 网络完善 → 实机验证，逐步形成可用且可验证的操作系统", color: navy)]
 ]
 
 // 15 · closing
