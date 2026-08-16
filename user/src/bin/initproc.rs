@@ -37,6 +37,8 @@ mod netdev_test_cases;
 mod netperf;
 #[path = "initproc/rseq_regression.rs"]
 mod rseq_regression;
+#[path = "initproc/shell.rs"]
+mod shell;
 #[path = "initproc/sigaltstack_regression.rs"]
 mod sigaltstack_regression;
 #[path = "initproc/sigreturn_regression.rs"]
@@ -305,23 +307,14 @@ fn run_selected_tests() -> i32 {
 // Entry points
 #[allow(unused)]
 fn run_interactive_shell() -> i32 {
-    println!("initproc launching interactive shell......");
-
-    let args = ["/bin/sh\0", "-i\0"];
-    let ret = execve(&args);
-    println!("exec /bin/sh -i failed: {}", ret);
-
-    let args = ["/musl/busybox\0", "sh\0", "-i\0"];
-    let ret = execve(&args);
-    println!("exec /musl/busybox sh -i failed: {}", ret);
-
-    shutdown();
-    ret as i32
+    println!("Ya2yOS interactive shell");
+    shell::run()
 }
 
 #[no_mangle]
 fn main() -> i32 {
     run_selected_tests()
+    // run_interactive_shell()
 }
 
 // Score helpers (kept for ad-hoc testing)

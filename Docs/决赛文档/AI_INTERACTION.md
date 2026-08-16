@@ -3695,3 +3695,15 @@
   在后续 cyclictest 阶段由维护操作终止。
 - **关联问题**：[Loopback TCP 分片队列耗尽导致 iperf 卡死](./problem/loopback-tcp-fragment-queue-stall.md)
 - **关联 commit**：当前工作区未提交
+#### Ya2yOS 用户态交互 shell（8.16）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求实现可在 Ya2yOS Linux 兼容用户态实际运行的 shell。
+- **描述**：基于已有 `fork/execve/waitpid/pipe2/dup3/openat/chdir/getcwd` 用户 ABI，在
+  `initproc` 内实现交互式 shell，避免 PID 1 依赖镜像是否提供 `/bin/sh`。支持内建命令、外部
+  命令查找、引号/转义、管道、`<`/`>`/`>>`/`2>`/`2>>`、顺序及后台执行；未实现 Bash 的变量展开、
+  命令替换、脚本控制流和终端作业控制。
+- **验证边界**：RISC-V64/LoongArch64 release 构建通过。RISC-V QEMU 已验证 shell 提示符、
+  `pwd`、引号管道、读写/追加重定向、`cd; pwd` 和后台任务回收的真实 guest 执行；未运行
+  LoongArch64 QEMU 交互回归。
+- **关联 commit**：当前工作区未提交

@@ -12520,3 +12520,31 @@ AI 交互记录。`make` 完成 RISC-V64/LoongArch64 release 构建，只有既�
 `smoltcp` warning。RISC-V `make run` 中 musl、glibc 两轮 `REVERSE_TCP` 都输出完整吞吐、
 `iperf Done.` 与 `end: success`，随后完成 netperf 并进入 cyclictest；为避免完整 preliminary
 套件长时间运行，在后续 cyclictest 阶段人工终止 QEMU，未宣称整轮完成。
+## 2026-08-16：Ya2yOS 用户态交互 shell
+
+### 用户需求
+
+维护者要求完善 shell，实现可在 Ya2yOS Linux 兼容用户态实际运行的交互 shell。
+
+### AI 分析与采纳结论
+
+现有 `initproc` 仅 `execve("/bin/sh -i")` 并回退到 BusyBox；该入口依赖测试镜像的
+文件布局，仓库没有可维护的 shell 实现。用户 ABI 已具备 `fork`、`execve`、`waitpid`、
+`pipe2`、`dup3`、`openat`、`chdir` 和 `getcwd`，终端 stdin 也已有 canonical mode、回显和
+退格，因此在 initproc 内实现 shell 不需要新增 syscall 或内核接口。
+
+采纳新增 `initproc/shell.rs`：它解析空白、单/双引号、反斜杠、注释、`;`、`&`、`|` 与
+`<`/`>`/`>>`/`2>`/`2>>`，按 Linux fork/exec/pipe/fd-dup 模型运行每个 pipeline stage；外部
+命令按 `/bin`、`/usr/bin`、`/sbin`、`/usr/sbin`、`/musl`、`/glibc` 查找。实现 `cd`、`pwd`、
+`echo`、`true`、`false`、`help`、`exit` 内建，并让内建在 pipeline/redirection 子进程中同样
+生效。未伪称为 Bash：变量展开、命令替换、脚本控制流、作业控制和信号前台组语义不在本次范围。
+
+### 修改与验证
+
+修改 `user/src/bin/initproc.rs`，新增 `user/src/bin/initproc/shell.rs`，并更新开发日志和 AI
+交互记录。`make TARGET_ARCH=riscv64 build-arch`、`make TARGET_ARCH=loongarch64 build-arch`
+均通过，只有既有 `smoltcp`/未调用测试入口 warning。RISC-V QEMU 实际启动到
+`Ya2yOS interactive shell`；`pwd`、`echo 'quoted text' | cat`、
+`printf 'redirect-ok\\n' > /tmp/ya2yos-shell-check`、`cat < ...` 及
+`echo append-one >> ...` 均输出预期结果；`cd /tmp; pwd` 保持 shell 当前目录，
+`sleep 1 &` 立即返回且下一次命令前显示任务回收。QEMU 使用 `-snapshot`，验证未修改测试镜像。
