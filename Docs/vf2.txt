@@ -1,273 +1,273 @@
-Ya2yOS 在 StarFive VisionFive 2 实板启动指南
-===============================================
+Ya2yOS 在 StarFive VisionFive 2 实板启动指南（TFTP RAM 临时加载）
+=====================================================================
 
-版本：2026-08-15
+版本：2026-08-17
 适用源码快照：Ya2yOS 当前工作树，使用 `TARGET_ARCH=riscv64 PLATFORM=visionfive2` 构建。
-读者：使用 Windows 和 MobaXterm 操作一块已能启动官方 Linux/OpenSBI/U-Boot 的 VisionFive 2 的开发者。
+读者：有一块能进入 OpenSBI/U-Boot 的 VisionFive 2、串口控制台和以太网链路的开发者。
 
 本文的目标和边界
 ------------------
 
-本文提供的是“不改写板载 bootloader、从 RAM 临时启动 Ya2yOS”的流程。成功后，串口应看到
-Ya2yOS 的早期启动输出；该结果能够验证 U-Boot/OpenSBI 到内核的交接、FDT、VF2 专用高地址
-映射和 UART。重复上电会回到 SD 卡上原有 Linux 系统。
+本文使用 U-Boot 的 TFTP 客户端把 Ya2yOS 镜像仅加载到 RAM，不写入 SPI flash、eMMC 或 SD 卡。
+成功后，串口应看到 Ya2yOS 的早期启动输出；这验证 OpenSBI/U-Boot 到内核的交接、FDT、VF2
+专用高地址映射和 UART。断电或复位后，RAM 中的 Ya2yOS 镜像消失，板子恢复原有的固件启动行为。
+
+TFTP 只负责传输内核镜像，不能替代最初的固件引导。即使没有 SD 卡，板子也必须已经能从 SPI
+flash、eMMC 或其他现有启动介质进入支持网络命令的 U-Boot。若上电时到不了 U-Boot，或 U-Boot
+没有 `ping` / `tftpboot` 命令，本指南不能解决该固件引导问题。
 
 当前仓库已经包含：
 
-* VisionFive 2 链接地址和启动页表：物理加载地址 0x40200000，内核高地址
-  0xffffffc040200000；
-* JH7110 UART0（0x10000000）控制台；
-* JH7110 GMAC1（0x16040000）轮询网络驱动和 YT8531 MDIO 探测。
+* VisionFive 2 链接地址和启动页表：物理加载地址 `0x40200000`，内核高地址
+  `0xffffffc040200000`；
+* JH7110 UART0（`0x10000000`）控制台；
+* JH7110 GMAC1（`0x16040000`）轮询网络驱动和 YT8531 MDIO 探测。
 
 当前仓库尚未包含 JH7110 SD/MMC 块设备驱动。`fs::init()` 仍会尝试访问 QEMU VirtIO block
-地址 0x10001000，因此在真正 VF2 上不能把本流程当作“完整启动用户态和 SD 文件系统”的方案。
-第一次实板验证应把成功标准限定为：内核已从 UART 打印早期信息，并且没有在进入内核前死机。
-完成 JH7110 SD/MMC 驱动的替换或绕过文件系统初始化后，才能继续验证 initproc、文件系统和
-完整网络栈。
+地址 `0x10001000`，因此在真正 VF2 上不能把本流程当作“完整启动用户态和文件系统”的方案。
+没有 SD 卡时尤其应将首次验证的成功标准限定为：内核已从 UART 打印早期信息，并且没有在进入
+内核前死机。完成 JH7110 SD/MMC 驱动的替换或绕过文件系统初始化后，才能继续验证 initproc、
+文件系统和完整网络栈。
 
 不要执行以下操作：
 
-* 不要向 SPI flash、eMMC boot 区或 SD 卡的 bootloader 分区写入任何内容；
-* 不要在 U-Boot 输入 `saveenv`；本文中所有 `setenv` 只在本次上电有效；
-* 不要覆写原有 `/boot/Image`、`u-boot.itb`、`fw_payload.bin` 或现有 DTB；
-* 第一次启动不要拔掉串口，也不要只通过 SSH 操作。内核接管后原有 Linux 网络会停止，SSH
-  会断开是预期现象。
+* 不要向 SPI flash、eMMC boot 区或其他 bootloader 存储区域写入任何内容；
+* 不要在 U-Boot 输入 `saveenv`；本文中的 `setenv` 只在本次上电有效；
+* 不要将 `kernel-vf2`、ELF 或 Ya2yOS 镜像误写为原有的 `Image`、`u-boot.itb`、`fw_payload.bin`
+  或 DTB；
+* 第一次启动必须保持串口连接。内核接管后，U-Boot 的网络连接不会继续存在。
 
 一、准备条件
 ------------
 
-硬件：
+硬件和固件：
 
-1. 一块 VisionFive 2（JH7110），已用官方或发行版 SD 卡正常启动 Linux；
-2. 一根可用于板载调试串口的 USB 线，或 USB-to-TTL 适配器。使用外置 TTL 时必须是 3.3 V
-   电平，TX/RX 交叉并接地；不得使用 RS-232 电平；
-3. 一根接到局域网的以太网线。网络不是早期串口启动的前置条件，但 GMAC 验证需要它；
-4. Windows 主机已安装 MobaXterm，并知道 Linux 系统的 IP 地址和登录账户。
+1. 一块 VisionFive 2（JH7110），上电后能看到 OpenSBI/U-Boot 输出并可中断自动启动；不要求
+   装有 SD 卡或 Linux 根文件系统；
+2. 一条调试串口链路。若使用外置 USB-to-TTL，必须为 3.3 V 电平，TX/RX 交叉并接地；不得使用
+   RS-232 电平；
+3. 板卡网口与 TFTP 服务器在可互通的以太网中。可接交换机/路由器，也可直连主机网口；
+4. U-Boot 支持 `ping`、`tftpboot`、`iminfo`、`bootm` 和 `fdt` 命令。后文会先检查这些命令。
 
 软件：
 
-1. 一个可构建本仓库的 Linux 环境。可以是 MobaXterm SSH 连接到的开发服务器、WSL，或其他
-   Linux 主机；
-2. Rust 工具链和本仓库原有的依赖；
-3. 打包 U-Boot legacy image 所需的 `mkimage`。Debian/Ubuntu 开发机安装命令为：
+1. 一个可构建本仓库的 Linux 环境，具备项目所需 Rust 工具链；
+2. 用于打包 U-Boot legacy image 的 `mkimage`。Debian/Ubuntu 可安装：
 
-   sudo apt-get update
-   sudo apt-get install u-boot-tools
+       sudo apt-get update
+       sudo apt-get install u-boot-tools
 
-MobaXterm 的职责是串口终端、SSH 终端和 SFTP 文件传输。它不是本方案所需的 TFTP 服务器，
-所以不需要在 Windows 防火墙上开放 TFTP 端口。
+3. 一台可被板卡访问的 TFTP 服务器。Windows 可使用 Tftpd64；Linux 可使用 `tftpd-hpa` 或现有
+   TFTP 服务。MobaXterm 可作为串口终端和日志记录工具，但它本身不是 TFTP 服务器。
 
-二、连接并确认原系统
-----------------------
+二、建立串口并检查 U-Boot
+---------------------------
 
-1. 将 VF2 接通串口和以太网，接上电源。
-2. 在 MobaXterm 创建 Serial session：选择正确的 COM 口，参数设为 115200 baud、8 data bits、
-   no parity、1 stop bit、flow control 设为 None。若设备管理器显示的是 `USB-SERIAL CH340`
-   或类似名称，选择对应 COM 口。
-3. 上电后先完整看一次原有 OpenSBI/U-Boot/Linux 启动日志，并记录 Linux 的 IP。
-4. 另建 MobaXterm SSH session 登录该 Linux，执行：
+1. 将 VF2 接通调试串口和以太网，再上电。
+2. 在 MobaXterm 或其他终端新建串口连接：`115200 8N1`，无流控。建议立即开启串口日志记录。
+3. 出现类似 `Hit any key to stop autoboot` 时按任意键，进入 `StarFive #`、`U-Boot #` 或类似提示符。
+4. 执行下列只读检查并保存输出：
 
-   uname -a
-   ip -br addr
-   lsblk -f
-   sudo -v
+       version
+       printenv bootcmd bootdelay baudrate ipaddr serverip netmask fdtcontroladdr fdtfile
+       help ping
+       help tftpboot
+       help iminfo
+       help bootm
+       help fdt
 
-这一步既确认板子工作正常，也能在出问题时分辨“原系统问题”和“Ya2yOS 问题”。
+若 `ping` 或 `tftpboot` 显示 `Unknown command`，当前 U-Boot 不具备本流程所需网络加载能力；先
+记录 U-Boot 版本和完整启动日志，不要改写 flash。若串口中连 U-Boot 都没有输出，先排查供电、
+COM 口、TX/RX/GND 和 3.3 V 电平，不要排查内核。
 
 三、构建 VF2 内核和 U-Boot image
 -------------------------------
 
 以下命令在仓库根目录的 Linux 构建机执行：
 
-   make build-arch TARGET_ARCH=riscv64 PLATFORM=visionfive2
-   readelf -h os/target/riscv64gc-unknown-none-elf/release/os
-   sha256sum kernel-vf2
+       make build-arch TARGET_ARCH=riscv64 PLATFORM=visionfive2
+       readelf -h os/target/riscv64gc-unknown-none-elf/release/os
+       sha256sum kernel-vf2
 
 第一条命令会生成根目录下的 `kernel-vf2`。该文件是从 ELF 去除调试和 ELF 头后的原始二进制，
 不是 Linux `Image`，不能直接作为 `booti` 输入。`readelf` 输出中的 Entry point 应为：
 
-   0xffffffc040200000
+       0xffffffc040200000
 
-将原始二进制包装成 U-Boot legacy image。`-a` 和 `-e` 必须等于实际物理加载和入口地址
-0x40200000：
+将 raw binary 包装成 U-Boot legacy image。`-a` 和 `-e` 必须等于实际物理加载和入口地址
+`0x40200000`：
 
-   mkimage -A riscv -O linux -T kernel -C none \
-       -a 0x40200000 -e 0x40200000 \
-       -n 'Ya2yOS VisionFive 2' \
-       -d kernel-vf2 ya2yos-vf2.uImage
-   mkimage -l ya2yos-vf2.uImage
-   sha256sum ya2yos-vf2.uImage
+       mkimage -A riscv -O linux -T kernel -C none \
+           -a 0x40200000 -e 0x40200000 \
+           -n 'Ya2yOS VisionFive 2' \
+           -d kernel-vf2 ya2yos-vf2.uImage
+       mkimage -l ya2yos-vf2.uImage
+       sha256sum ya2yos-vf2.uImage
+       stat -c '%n %s bytes' ya2yos-vf2.uImage
 
 `mkimage -l` 应显示 Architecture 为 RISC-V、Type 为 Kernel Image、Load Address 和 Entry Point
-都为 0x40200000。不要把 ELF 文件 `os/.../release/os` 传给 U-Boot；U-Boot 此处需要的是上一步的
-`ya2yos-vf2.uImage`。
+均为 `0x40200000`。不要把 ELF 文件 `os/.../release/os` 或 raw `kernel-vf2` 传给 `bootm`；
+本流程的输入是 `ya2yos-vf2.uImage`。
 
-四、通过 MobaXterm 传送文件到 VF2
-----------------------------------
+四、准备 TFTP 服务器
+--------------------
 
-推荐先把文件上传到 Linux 用户目录，再由板上 Linux 使用 sudo 放入现有 ext4 启动分区。这样
-无需猜测 Windows 磁盘符，也不会覆盖原系统文件。
+在 TFTP 服务器上建立一个只存放本次传输文件的根目录，将 `ya2yos-vf2.uImage` 放入其中。TFTP
+客户端以文件名请求文件，下面示例统一使用 `ya2yos-vf2.uImage`，不要在 U-Boot 中填写构建机的
+绝对路径。
 
-方式 A：构建机和板子网络可直接互通。在构建机执行（将 user 和 vf2-ip 替换为实际值）：
+Windows 示例：运行可信的 TFTP 服务（如 Tftpd64），将其 TFTP root 设为一个包含
+`ya2yos-vf2.uImage` 的目录。确认 Windows 防火墙允许该服务接收 UDP 69 和后续 TFTP 数据包。
 
-   scp ya2yos-vf2.uImage user@vf2-ip:/tmp/ya2yos-vf2.uImage
-   ssh user@vf2-ip 'sha256sum /tmp/ya2yos-vf2.uImage'
+Linux `tftpd-hpa` 示例：
 
-方式 B：只使用 MobaXterm 图形 SFTP。
+       sudo apt-get install tftpd-hpa
+       sudo install -d -m 0755 /srv/tftp
+       sudo install -m 0644 ya2yos-vf2.uImage /srv/tftp/ya2yos-vf2.uImage
+       sha256sum /srv/tftp/ya2yos-vf2.uImage
+       stat -c '%n %s bytes' /srv/tftp/ya2yos-vf2.uImage
 
-1. 用一个 SSH session 连接构建机，在左侧 SFTP 面板把 `ya2yos-vf2.uImage` 下载到 Windows；
-2. 用另一个 SSH session 连接 VF2，在其左侧 SFTP 面板上传到 `/tmp/ya2yos-vf2.uImage`；
-3. 在 VF2 SSH 终端验证哈希：
+不同发行版的 TFTP 根目录和服务配置可能不同；若服务没有以 `/srv/tftp` 为根，请使用该服务实际
+配置的根目录。记录 TFTP 服务器的 IPv4 地址，例如：
 
-   sha256sum /tmp/ya2yos-vf2.uImage
+       ip -4 -br addr
 
-在 VF2 的 Linux SSH 终端执行以下命令。`/boot` 必须是 U-Boot 能以 ext4 读取的分区；先用
-`findmnt /boot` 确认，不应假设 `/boot` 是 FAT 或网络挂载：
+板卡和服务器必须在同一二层网络或具有可用路由。首次测试建议使用同一网段的静态 IPv4 地址，
+避免依赖 DHCP 或网关配置。例如，服务器为 `192.168.10.2/24` 时，可给 U-Boot 临时设置
+`192.168.10.20/24`。地址只是示例，必须避开局域网内已经使用的地址。
 
-   findmnt /boot
-   sudo install -d -m 0755 /boot/ya2yos
-   sudo install -m 0644 /tmp/ya2yos-vf2.uImage /boot/ya2yos/ya2yos-vf2.uImage
-   sync
-   sha256sum /boot/ya2yos/ya2yos-vf2.uImage
+五、通过 TFTP 加载并传入 U-Boot FDT
+------------------------------------
 
-此处只新建 `/boot/ya2yos/ya2yos-vf2.uImage`，没有替换发行版的正常启动文件。记下最后打印的
-SHA-256；它必须与构建机的结果相同。
+在 U-Boot 中将下列地址替换为实际、未被占用的板卡和 TFTP 服务器地址。不要执行 `saveenv`：
 
-五、在 U-Boot 发现实际 SD 分区
-------------------------------
+       setenv ipaddr 192.168.10.20
+       setenv serverip 192.168.10.2
+       setenv netmask 255.255.255.0
+       ping ${serverip}
 
-必须通过串口观察并在 U-Boot 执行本节命令。SSH 在重启时会断开。
+只有 `ping` 成功后继续。然后将 image 传到内核物理加载地址，校验 image 头，并检查 U-Boot
+当前持有的 FDT：
 
-1. 在 Linux 中执行：
+       setenv ya2yos_addr 0x40200000
+       tftpboot ${ya2yos_addr} ya2yos-vf2.uImage
+       setenv ya2yos_size ${filesize}
+       iminfo ${ya2yos_addr}
+       crc32 ${ya2yos_addr} ${ya2yos_size}
 
-   sudo reboot
+       printenv fdtcontroladdr
+       fdt addr ${fdtcontroladdr}
+       fdt header
+       fdt print /
 
-2. 串口出现倒计时（常见为 `Hit any key to stop autoboot`）时按任意键，进入 `StarFive #`、
-   `U-Boot #` 或类似提示符。
-3. 先保存信息并检查 U-Boot 当前正常启动方案：
+`tftpboot` 成功时会显示传输字节数；它应等于构建机上 `stat` 看到的文件大小。`iminfo` 必须确认
+U-Boot image 头和 CRC 正确；失败时绝不能执行 `bootm`。`crc32` 的值用于记录和重复测试对比，
+它不是 SHA-256 的替代品。
 
-   version
-   printenv bootcmd boot_targets boot_prefixes boot_scripts fdtcontroladdr fdtfile
-   mmc list
-   part list mmc 0
-   part list mmc 1
+`fdt header` 必须成功。`fdt print /` 的输出应包含一个 `memory@...` 节点；对 VF2 通常是
+`memory@40000000`。使用实际显示的节点名继续查看其 `reg`，例如：
 
-VisionFive 2 的不同 U-Boot 和镜像可能将 SD 卡编号为 `mmc 0` 或 `mmc 1`，启动分区也可能是
-第 1、2 或 3 分区。因此不能把网上某一条固定的 `mmc 1:2` 命令直接套用到所有 SD 卡。
+       fdt print /memory@40000000
 
-对每个存在的 `<设备>:<分区>`，以只读方式查找本文件。例如先尝试：
+该节点的 `reg` 应描述以 `0x40000000` 为起点的 VF2 RAM。满足以上条件后，执行：
 
-   ext4ls mmc 0:1 /ya2yos
-   ext4ls mmc 0:2 /ya2yos
-   ext4ls mmc 0:3 /ya2yos
-   ext4ls mmc 1:1 /ya2yos
-   ext4ls mmc 1:2 /ya2yos
-   ext4ls mmc 1:3 /ya2yos
+       bootm ${ya2yos_addr} - ${fdtcontroladdr}
 
-哪一条列出 `ya2yos-vf2.uImage`，就把该设备和分区记为 `<bootpart>`。例如得到
-`ext4ls mmc 1:2 /ya2yos` 成功，则本指南下文中的 `<bootpart>` 就是 `1:2`。
+这就是 DTB 的传入动作：`bootm` 通过 RISC-V Linux 启动 ABI 将 hart ID 放在 `a0`、将
+`${fdtcontroladdr}` 指向的 FDT 地址放在 `a1`。Ya2yOS 从 `a1` 接收 FDT，并读取 RAM 范围、hart
+数和 timebase；DTB 不需要被打进 `ya2yos-vf2.uImage`。
 
-若所有 `ext4ls` 均报文件系统类型不支持，请不要格式化 SD 卡。先在 Linux 中用 `lsblk -f` 和
-`findmnt /boot` 确认实际文件系统；若启动分区是 FAT，使用等价的 `fatls` / `fatload`，并将文件
-放入该 FAT 分区。一般 root ext4 分区则可以继续使用 `ext4load`。
+六、`fdtcontroladdr` 无效时通过 TFTP 传入 DTB
+-----------------------------------------------
 
-六、一次性从 RAM 启动 Ya2yOS
-------------------------------
+`fdtcontroladdr` 是 U-Boot 当前使用的控制 FDT 的 RAM 地址。多数能正常进入 U-Boot 的 VF2
+固件都应使其可用。若它为空、`fdt header` 失败，或 FDT 中没有正确的 RAM 描述，不能传入 `0`，
+也不能猜测 FDT 地址。先从该板原有启动镜像或与该固件匹配的发行版中取得正在使用的 VF2
+DTB，放进与 `ya2yos-vf2.uImage` 相同的 TFTP root。
 
-以下示例假设上一步确定 `<bootpart>` 为 `1:2`。请先把它替换成自己的真实值。所有命令仅修改
-内存中的 U-Boot 环境，切勿输入 `saveenv`。
+假设该文件在 TFTP root 中名为 `jh7110-starfive-visionfive-2-v1.3b.dtb`，在 U-Boot 执行：
 
-   setenv ya2yos_part 1:2
-   setenv ya2yos_addr 0x40200000
-   ext4load mmc ${ya2yos_part} ${ya2yos_addr} /ya2yos/ya2yos-vf2.uImage
-   iminfo ${ya2yos_addr}
-   printenv fdtcontroladdr
-   fdt addr ${fdtcontroladdr}
-   fdt header
-   bootm ${ya2yos_addr} - ${fdtcontroladdr}
+       setenv ya2yos_fdt_addr 0x46000000
+       tftpboot ${ya2yos_fdt_addr} jh7110-starfive-visionfive-2-v1.3b.dtb
+       setenv ya2yos_fdt_size ${filesize}
+       fdt addr ${ya2yos_fdt_addr}
+       fdt header
+       fdt print /
+       fdt print /memory@40000000
+       bootm ${ya2yos_addr} - ${ya2yos_fdt_addr}
 
-解释：
-
-* `ext4load` 把 image 放到 0x40200000，和 `visionfive2.ld` 的物理交接地址一致；
-* `iminfo` 在跳转前校验 U-Boot image 头和 CRC。它失败时绝不能继续 `bootm`；
-* `fdtcontroladdr` 是当前 U-Boot 使用的 VF2 设备树地址。Ya2yOS 在 `a1` 接收该 FDT，并从其中
-  读取 RAM 范围、hart 数和 timebase；
-* `bootm ... - ${fdtcontroladdr}` 通过 U-Boot 的 RISC-V Linux 启动路径把 hart ID 放在 `a0`、
-  FDT 指针放在 `a1`。中间的 `-` 表示没有 initrd。
-
-若 `fdtcontroladdr` 为空或 `fdt header` 失败，不要用 0 作为 FDT 参数。先从 `printenv bootcmd`
-中找发行版正常启动时加载 DTB 的路径、设备和地址，然后采用同一个 DTB。例如：
-
-   setenv ya2yos_fdt_addr 0x46000000
-   ext4load mmc ${ya2yos_part} ${ya2yos_fdt_addr} /boot/dtbs/<实际内核版本>/<实际 vf2 dtb 文件>
-   fdt addr ${ya2yos_fdt_addr}
-   fdt header
-   bootm ${ya2yos_addr} - ${ya2yos_fdt_addr}
-
-这里的 DTB 路径必须来自板上的实际 `bootcmd` 或 `find /boot -name '*visionfive*2*.dtb'` 结果，
-不要照抄占位路径。
+DTB 文件名仅为示例，必须替换为实际板卡、板卡修订版和固件所使用的文件名。若 `fdt print /`
+显示的 RAM 节点不是 `memory@40000000`，也要将下一条 `fdt print` 的路径替换为实际节点名。FDT
+地址 `0x46000000` 位于 VF2 早期启动页表恒等映射的 RAM 范围内，并且与 `0x40200000` 的内核 image
+加载地址分开。应确认两者没有因异常大的镜像或 DTB 而重叠。
 
 七、串口结果判定与故障定位
 --------------------------
 
-启动成功的最早标志是 Ya2yOS 在 MobaXterm 串口中打印类似以下内容：
+启动成功的最早标志是在串口中看到类似以下输出：
 
-   [kernel] hardware: ram_start=0x40000000, ram_size=..., harts=..., timebase=... Hz
-   [kernel] Hello, world!
-   mm::init...complete.
-   logger::init...complete.
-   trap::init...complete.
+       [kernel] hardware: ram_start=0x40000000, ram_size=..., harts=..., timebase=... Hz
+       [kernel] Hello, world!
+       mm::init...complete.
+       logger::init...complete.
+       trap::init...complete.
 
 GMAC 驱动成功创建时，日志还应包含：
 
-   VisionFive2 GMAC1 initialized with PHY 0
+       VisionFive2 GMAC1 initialized with PHY 0
 
 在当前存储支持状态下，`fs::init...` 之后的错误、panic 或卡住很可能是预期的 VirtIO block
-访问问题，不足以否定“内核已经成功进入 VF2”。务必完整保存串口日志，并记录最后一行。
+访问问题，不足以否定“内核已经成功进入 VF2”。没有 SD 卡时更不应把这一阶段当作完整用户态启动。
+务必完整保存串口日志，并记录最后一行。
 
 常见现象和处理：
 
-1. `Bad Magic Number` 或 `Wrong Image Format`：确认传入 `bootm` 的是 `ya2yos-vf2.uImage`，而非
+1. `ping ${serverip}` 失败：检查网线链路、板卡与服务器 IP/掩码、交换机 VLAN、主机防火墙和
+   地址冲突。TFTP 前必须先让 U-Boot ping 通服务器。
+2. `TFTP error`、超时或找不到文件：检查 TFTP 服务运行状态、TFTP root、文件名大小写、UDP 69
+   防火墙规则和服务器 IP；不要把主机上的绝对路径作为 U-Boot 文件名。
+3. `Bad Magic Number` 或 `Wrong Image Format`：确认传入 `bootm` 的是 `ya2yos-vf2.uImage`，而非
    `kernel-vf2` 或 ELF；重新执行 `iminfo ${ya2yos_addr}`。
-2. `ext4load` 找不到文件：重新执行 `part list mmc 0`、`part list mmc 1` 和 `ext4ls`。不要修改
-   mmc 编号或分区前先确认当前 SD 卡布局。
-3. `bootm` 后立即无串口输出：检查 `iminfo`、确认地址是 0x40200000、确认传入有效 DTB；再在
-   U-Boot 执行 `fdt print /memory`，应看到 base 为 0x40000000 的 RAM 节点。
-4. 出现 `bootloader did not provide a usable FDT RAM description`：U-Boot 没有传入有效 FDT，或 DTB
-   的 `/memory` 节点无有效 `reg`。按第六节的 fallback 显式加载正常系统正在使用的 DTB。
-5. 有早期 Ya2yOS 文本但随后死机：记录最后 100 行；这已经证明加载地址、入口、页表和 UART
-   基本路径可工作。按当前仓库状态，优先排查仍指向 0x10001000 的 VirtIO block 初始化，而不是
-   重新刷写 bootloader。
-6. 没有 `VisionFive2 GMAC1 initialized...`：确认网线已接入、PHY 地址为 0、以及串口日志中是否有
-   `VisionFive2 GMAC1 initialization failed`。该驱动尚未在实板验证，需保留完整日志用于比对 CRG、
-   syscon、MDIO 和 DMA 初始化阶段。
+4. `bootm` 后立即无串口输出：检查 `iminfo`、确认 image 地址是 `0x40200000`、确认传入有效 DTB，
+   并按第五节先执行 `fdt print /`，再查看实际的 `memory@...` 节点。不要使用 `go` 或 `booti`
+   代替本指南的 `bootm`。
+5. 出现 `bootloader did not provide a usable FDT RAM description`：U-Boot 没有传入有效 FDT，或
+   DTB 的 `memory@...` 节点无有效 `reg`。按第六节通过 TFTP 加载与板卡匹配的 DTB。
+6. 有早期 Ya2yOS 文本但随后死机：记录最后 100 行；这已经证明加载地址、入口、页表、FDT 和
+   UART 基本路径可工作。按当前仓库状态，优先排查仍指向 `0x10001000` 的 VirtIO block 初始化，
+   而不是重新刷写 bootloader。
+7. 没有 `VisionFive2 GMAC1 initialized...`：确认网线已接入、PHY 地址为 0，以及串口日志中是否
+   有 `VisionFive2 GMAC1 initialization failed`。该驱动尚未在实板验证，需保留完整日志用于比对
+   CRG、syscon、MDIO 和 DMA 初始化阶段。
 
-八、恢复原 Linux
-----------------
+八、恢复和重复测试
+------------------
 
-若 Ya2yOS 停住，短按或断电重启 VF2。在没有执行 `saveenv` 或覆盖发行版 boot 文件的前提下，
-U-Boot 会恢复原有 `bootcmd` 并重新启动 SD 卡上的 Linux。若停留在 U-Boot，可直接执行：
+本流程没有向板卡持久存储写入 Ya2yOS。Ya2yOS 停住时可短按复位或断电重启；RAM 中的 image 和
+本次 `setenv` 设置都会消失，板子将回到原有固件的默认启动行为。没有 SD 卡时，默认行为可能是
+停在 U-Boot 或尝试其他已配置启动介质，而不是启动 Linux。
 
-   run bootcmd
+重复测试时按以下顺序操作：
 
-只有确认不再需要临时 image 时，才在正常 Linux 下删除独立目录：
-
-   sudo rm -f /boot/ya2yos/ya2yos-vf2.uImage
-   sync
-
-这不是启动所必需的步骤；保留该文件不会改变默认启动。
+1. 保存上一份串口日志，重新开启日志记录；
+2. 上电并中断自动启动，进入 U-Boot；
+3. 检查 `fdtcontroladdr` 和网络环境；
+4. 重新执行 TFTP 加载、`iminfo`、FDT 检查和 `bootm`；
+5. 记录 Git commit、`ya2yos-vf2.uImage` SHA-256、镜像大小、U-Boot 版本、`fdtcontroladdr`、
+   TFTP 服务器 IP、完整串口日志和最后 100 行输出。
 
 九、后续验证顺序
 ----------------
 
 建议严格按以下顺序推进，避免把多个未验证硬件路径混在一起：
 
-1. UART：确认第七节的早期内核输出和 FDT RAM 信息；
+1. UART 和 FDT：确认第七节的早期输出、RAM、hart 和 timebase；
 2. 存储：补齐 JH7110 SD/MMC 块设备驱动，替换 `BlockDeviceImpl` 的 VirtIO MMIO 实现，然后验证
    `fs::init()` 和 initproc；
 3. GMAC：在存储路径稳定后，观察 PHY 发现日志，给接口设置静态 IPv4，依次验证 ARP、ping、
    UDP 和 TCP；
 4. 并发和回归：验证多 hart 启动、定时器、文件系统读写以及现有网络测试。
 
-每一次实板测试请保存：Git commit、`sha256sum ya2yos-vf2.uImage`、U-Boot `version`、`printenv`
-中 bootcmd/fdtcontroladdr、串口完整日志和网络拓扑。这样才能把软件回归与板级固件或 SD 卡差异区分开。
+在当前“串口 + 网线、无 SD 卡”的条件下，合理的首轮目标是：进入 U-Boot、TFTP 成功、`bootm`
+传入有效 FDT，并在 UART 上得到 Ya2yOS 早期输出；不要将其记录为已完成文件系统、initproc 或
+完整网络栈验证。

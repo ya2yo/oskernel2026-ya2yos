@@ -1,7 +1,7 @@
 Ya2yOS 在 Loongson 2K1000 实际开发板上的验证操作说明
 ========================================================
 
-版本：2026-08-15
+版本：2026-08-17
 适用源码快照：Ya2yOS 当前工作树，使用 `TARGET_ARCH=loongarch64 PLATFORM=2k1000` 构建。
 适用读者：Windows 11 + WSL2（Ubuntu 24.04）+ MobaXterm，拥有一块可进入 U-Boot 的
 Loongson 2K1000 单板。
@@ -24,8 +24,9 @@ Loongson 2K1000 单板。
 1. 你列出的“数据线”如果是 USB 调试线，通常只负责串口控制台，不等于网络线，也不一定能
    把文件传给 U-Boot。
 2. 推荐的镜像传输方式是 TFTP，因此需要额外的以太网链路（板卡网口接交换机/路由器，或接
-   Windows 主机的网口）。如果没有网线，只有在板卡 U-Boot 确实提供 `loady` 或 `loadx` 时，
-   才能用 MobaXterm 的 YMODEM/XMODEM 通过串口传输；文档后面给出该检查和备用流程。
+   Windows 主机的网口）。若 U-Boot 支持 USB 大容量存储，也可把镜像放入 U 盘后从 U-Boot
+   加载到 RAM；没有网线和 U 盘时，只有在板卡 U-Boot 确实提供 `loady` 或 `loadx`，才可使用
+   MobaXterm 的 YMODEM/XMODEM 串口传输。文档后面给出三种方式及检查方法。
 3. 2K1000 内核的根文件系统使用板载 AHCI/SATA。没有 SATA 硬盘（或硬盘没有正确连接）时，
    内核仍可能已经成功启动并打印早期日志，但在 `fs::init` 附近报告没有 SATA 盘，这是存储
    条件不足，不代表 UART、U-Boot 加载地址或内核入口错误。
@@ -50,6 +51,8 @@ USB-TTL 适配器，必须为 3.3 V 电平，并按下表连接：
 ### 2.2 可选的网络和存储
 
 * TFTP 传输和 GMAC0 验证：板卡网口接入和 Windows/WSL2 可互通的局域网；
+* USB 备用传输：一个用于 U-Boot 的 USB Host 口、一只可被 `usb start` 识别的 U 盘，以及
+  U-Boot 的 `fatload` 或 `ext4load` 命令。建议使用专门用于测试的 FAT32 U 盘；
 * 完整 `fs::init`、initproc 和用户程序验证：接好板卡支持的 SATA 盘，并确认盘上有 Ya2yOS
   所需的 ext4 测试镜像。仅验证 UART/入口时不要求 SATA 盘。
 
@@ -103,7 +106,8 @@ WSL2 只负责构建和计算校验值。
 该命令会使用 2K1000 专用 Cargo 配置和 linker，生成：
 
 * `kernel-la`：保留 ELF 头和符号，供地址检查、调试使用；
-* `kernel-la.bin`：去除 ELF 头后的原始二进制，供 U-Boot 的 `tftpboot`/`loady` 使用。
+* `kernel-la.bin`：去除 ELF 头后的原始二进制，供 U-Boot 的 `tftpboot`、USB 存储或
+  `loady`/`loadx` 使用。
 
 检查产物和入口地址：
 
@@ -136,6 +140,12 @@ WSL2 只负责构建和计算校验值。
        version
        printenv bootcmd bootdelay baudrate ipaddr serverip
        help tftpboot
+       help part
+       help usb
+       help fatload
+       help fatls
+       help ext4load
+       help ext4ls
        help loady
        help loadx
 
@@ -182,14 +192,76 @@ WSL2 只负责构建和计算校验值。
 如果板卡已有可用的 `ipaddr`/`serverip`，也可以只执行 `ping ${serverip}`、`tftpboot` 和 `go`。
 本次 `setenv` 仅改变内存中的环境，不会写入 Flash；不要跟随执行 `saveenv`。
 
-八、方案 B：只有串口线时尝试 YMODEM/XMODEM
+八、方案 B：通过 USB 大容量存储加载（备选）
+--------------------------------------------
+
+本节是“U-Boot 已经启动后，从 U 盘读取文件到 RAM”的方案；它不表示从 U 盘引导 Boot ROM、
+刷写 SPI Flash 或修改 U-Boot。只有第六节中 `help usb` 与 `help fatload` 或 `help ext4load`
+显示对应命令时才可使用。若 `usb start` 无法识别 U 盘，应回到 TFTP 或串口传输，不要尝试写入
+固件存储。
+
+### 8.1 准备 U 盘
+
+使用专门用于测试的 U 盘，建议其第一个分区使用 FAT32，并将构建机生成的 `kernel-la.bin` 放在
+分区根目录。不要把 `kernel-la` ELF、`os` ELF 或其他架构的镜像放入同名文件。复制后在构建机
+记录文件信息：
+
+    sha256sum kernel-la.bin
+    stat -c '%n %s bytes' kernel-la.bin
+
+安全卸载 U 盘后，将其插入 2K1000 上连接到 U-Boot USB Host 控制器的端口；USB 调试串口通常
+不能作为 USB 存储 Host 使用。若板卡有多个 USB 口，以其硬件手册和 U-Boot `usb start` 输出为准。
+
+### 8.2 在 U-Boot 中识别 FAT32 U 盘并加载
+
+在 U-Boot 执行：
+
+    usb start
+    part list usb 0
+    fatls usb 0:1
+
+`usb start` 必须报告已发现 USB storage 设备；`part list` 和 `fatls` 用于确认实际设备号、分区号
+及 `kernel-la.bin` 文件名。示例中的 `usb 0:1` 仅表示第一个 USB 设备的第一个分区；若输出不同，
+必须替换成实际编号。
+
+确认后，将 raw image 加载到 2K1000 固定入口地址：
+
+    setenv ya2yos_addr 0x9000000090000000
+    fatload usb 0:1 ${ya2yos_addr} kernel-la.bin
+    setenv ya2yos_size ${filesize}
+    crc32 ${ya2yos_addr} ${ya2yos_size}
+    go ${ya2yos_addr}
+
+`fatload` 成功后，`${filesize}` 应与构建机 `stat` 的字节数一致。此处的 `kernel-la.bin` 是 raw
+binary，必须使用 `go`，不是 `bootm`。`go` 后等待串口输出，不要再输入 U-Boot 命令。
+
+### 8.3 U 盘为 Ext4 时的等价命令
+
+若测试 U 盘使用 Ext4 且 U-Boot 支持 `ext4load`，先定位文件：
+
+    usb start
+    part list usb 0
+    ext4ls usb 0:1 /
+
+若 `kernel-la.bin` 位于根目录，使用：
+
+    setenv ya2yos_addr 0x9000000090000000
+    ext4load usb 0:1 ${ya2yos_addr} /kernel-la.bin
+    setenv ya2yos_size ${filesize}
+    crc32 ${ya2yos_addr} ${ya2yos_size}
+    go ${ya2yos_addr}
+
+若 U-Boot 列出的 USB 设备或分区号不是 `0:1`，或镜像不在根目录，必须据 `part list` / `ext4ls`
+输出替换命令中的设备、分区和路径。不要因 `fatload` 失败就重新格式化包含重要数据的 U 盘。
+
+九、方案 C：只有串口线时尝试 YMODEM/XMODEM
 ---------------------------------------------
 
 此方案只在第六节 `help loady` 或 `help loadx` 显示命令存在时适用。串口传输比 TFTP 慢，
 5 MiB 左右的镜像在 115200 波特率下可能需要数分钟；传输期间不要关闭 MobaXterm 或给板卡
 断电。
 
-### 8.1 YMODEM（优先）
+### 9.1 YMODEM（优先）
 
 在 U-Boot 输入：
 
@@ -201,17 +273,17 @@ YMODEM`（不同版本菜单名称可能略有差异），选择 WSL2 构建得�
 
     go 0x9000000090000000
 
-### 8.2 XMODEM（仅当固件没有 loady）
+### 9.2 XMODEM（仅当固件没有 loady）
 
 如果只有 `loadx`，执行：
 
     loadx 0x9000000090000000
 
 然后在 MobaXterm 中选择对应的 XMODEM 发送功能。若 MobaXterm 版本不提供 XMODEM，或 U-Boot
-提示命令不存在，不能靠串口终端直接“粘贴”二进制文件；改用方案 A、U-Boot 的 USB 存储
-命令，或准备一根网络线。不要把二进制文件当作文本粘贴到终端。
+提示命令不存在，不能靠串口终端直接“粘贴”二进制文件；改用方案 A 的 TFTP、方案 B 的 USB
+存储，或准备一根网络线。不要把二进制文件当作文本粘贴到终端。
 
-九、启动成功的判定
+十、启动成功的判定
 ------------------
 
 串口中最早的成功标志应包括以下类似行（具体内存大小和 timebase 由板卡 FDT 决定）：
@@ -238,47 +310,49 @@ YMODEM`（不同版本菜单名称可能略有差异），选择 WSL2 构建得�
 
 该日志只证明控制器初始化和 PHY 探测通过；ARP、DHCP、UDP/TCP 仍需在用户态继续测试。
 
-十、故障排查
-------------
+十一、故障排查
+--------------
 
-### 10.1 串口完全没有输出
+### 11.1 串口完全没有输出
 
 检查 COM 号、TX/RX 是否交叉、GND 是否连接、TTL 电平是否为 3.3 V、波特率是否为 115200，
 并确认 MobaXterm 使用的是 Serial session 而不是 SSH session。先断电、打开串口窗口，再上电。
 如果连原有 U-Boot 输出也看不到，先排查线材、驱动和供电，不要排查内核。
 
-### 10.2 进入 U-Boot 但传输失败
+### 11.2 进入 U-Boot 但传输失败
 
 * TFTP：检查 `ping ${serverip}`、板卡 IP、Windows 防火墙、TFTP 根目录和文件名；
+* USB 存储：先重新执行 `usb start`，再根据输出确认 USB 设备号和分区号。检查 U 盘是否接在
+  Host 口、供电是否足够、文件系统与 `fatload`/`ext4load` 是否匹配、以及文件路径大小写；
 * YMODEM/XMODEM：确认使用了对应的发送协议，等待 U-Boot 出现接收提示后再点击发送；
-* `loady/loadx` 不存在：这是固件能力限制，改用 TFTP 或 U-Boot 支持的 USB 存储加载，不要
-  继续尝试文本粘贴。
+* `loady/loadx` 不存在：这是固件能力限制，改用 TFTP 或本指南第八节的 U-Boot USB 存储加载，
+  不要继续尝试文本粘贴。
 
-### 10.3 `Bad Magic Number`、`Wrong Image Format`
+### 11.3 `Bad Magic Number`、`Wrong Image Format`
 
 这是把 raw binary 当成 U-Boot image 使用，或者误传了 ELF。2K1000 当前流程使用 `go`，不是
 `bootm`；请确认发送的是 `kernel-la.bin`，加载地址和跳转地址都是
 `0x9000000090000000`。
 
-### 10.4 `go` 后立刻没有内核输出
+### 11.4 `go` 后立刻没有内核输出
 
-确认 `tftpboot`/串口传输确实完成，传输字节数与 `stat` 结果一致；确认没有输入
-`0x90000000`、`0x9000000080000000` 等其他地址。保存 U-Boot `version`、完整串口日志和
+确认 `tftpboot`、USB `fatload`/`ext4load` 或串口传输确实完成，传输字节数与 `stat` 结果一致；
+确认没有输入 `0x90000000`、`0x9000000080000000` 等其他地址。保存 U-Boot `version`、完整串口日志和
 `sha256sum kernel-la.bin`，再检查固件是否按 LoongArch U-Boot/EFI 启动约定提供了系统表参数。
 
-### 10.5 出现 `2K1000 bootloader did not provide an EFI FDT table`
+### 11.5 出现 `2K1000 bootloader did not provide an EFI FDT table`
 
 当前 2K1000 启动代码需要 U-Boot/固件提供 EFI system table，并从中取得 FDT。此错误不是 SATA
 或网卡错误。请记录 U-Boot 版本和启动方式；不要自行改 linker 地址或把 QEMU 的 FDT 地址硬编码
 进内核。优先确认板卡固件是否为项目支持的 2K1000 Reference Board 启动链。
 
-### 10.6 `fs::init` 阶段 panic 或无 SATA 盘
+### 11.6 `fs::init` 阶段 panic 或无 SATA 盘
 
 确认 SATA 盘已接好、供电正常、线材可靠，并且盘内是 Ya2yOS 使用的 LoongArch ext4 镜像。
 没有 SATA 盘时，首次验证的结论应写成“已进入 Ya2yOS 并完成早期初始化，AHCI 存储条件不足”，
 而不是“内核未启动”。
 
-十一、恢复和重复测试
+十二、恢复和重复测试
 --------------------
 
 本说明使用的是 RAM 临时加载。Ya2yOS 卡住时直接复位或断电重启即可；只要没有执行 `saveenv`
@@ -287,10 +361,11 @@ YMODEM`（不同版本菜单名称可能略有差异），选择 WSL2 构建得�
 1. 关闭或保存上一份 MobaXterm 串口日志；
 2. 打开新的串口日志窗口；
 3. 上电并按任意键进入 U-Boot；
-4. 重新执行 TFTP 或 YMODEM/XMODEM 加载和 `go`；
-5. 记录 Git 提交号、镜像 SHA-256、U-Boot 版本、最后 100 行串口输出、是否接 SATA/网线。
+4. 重新执行 TFTP、USB 存储或 YMODEM/XMODEM 加载和 `go`；
+5. 记录 Git 提交号、镜像 SHA-256、U-Boot 版本、最后 100 行串口输出、使用的传输方式、是否接
+   SATA/网线。
 
-十二、建议的验证等级
+十三、建议的验证等级
 --------------------
 
 按以下等级填写测试记录：
@@ -301,6 +376,6 @@ YMODEM`（不同版本菜单名称可能略有差异），选择 WSL2 构建得�
     L4  已接网线，出现 GMAC0 PHY 初始化日志，并完成 ARP/ping/UDP/TCP 测试。
     L5  SATA 文件系统读写、双核调度、网络和目标用户测试均完成，且保存了完整日志。
 
-在只有电源线和 USB 数据线、没有 SATA 盘和网线的条件下，合理目标是 L1-L2；若 U-Boot 支持
-`loady/loadx`，可以尝试用串口完成镜像传输。不要把未完成的 L3-L5 写成“2K1000 驱动已全部
-验证”。
+在只有电源线和 USB 调试串口、没有 SATA 盘和网线的条件下，合理目标是 L1；若 U-Boot 支持
+`loady/loadx`，可以尝试用串口完成镜像传输以达到 L2。若还接有被 U-Boot 识别的 USB 存储，
+也可按第八节完成 L2。不要把未完成的 L3-L5 写成“2K1000 驱动已全部验证”。
