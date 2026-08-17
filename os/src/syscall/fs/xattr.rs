@@ -205,10 +205,14 @@ fn get_xattr_path(
         Err(err) => return Err(err),
         Ok(len) => len,
     };
-    if len > output.len() {
+    // A zero-length buffer is the Linux size-query form. No bytes are copied
+    // in that case, but the required value length is still returned.
+    if size != 0 && len > output.len() {
         return Err(SysErrNo::ERANGE);
     }
-    copy_xattr_result_to_user(&memory_set, value, &output[..len])?;
+    if size != 0 {
+        copy_xattr_result_to_user(&memory_set, value, &output[..len])?;
+    }
     Ok(len)
 }
 
@@ -225,10 +229,14 @@ fn get_xattr_fd(fd: usize, name: usize, value: usize, size: usize) -> SyscallRet
         Err(err) => return Err(err),
         Ok(len) => len,
     };
-    if len > output.len() {
+    // A zero-length buffer is the Linux size-query form. No bytes are copied
+    // in that case, but the required value length is still returned.
+    if size != 0 && len > output.len() {
         return Err(SysErrNo::ERANGE);
     }
-    copy_xattr_result_to_user(&memory_set, value, &output[..len])?;
+    if size != 0 {
+        copy_xattr_result_to_user(&memory_set, value, &output[..len])?;
+    }
     Ok(len)
 }
 
@@ -244,10 +252,14 @@ fn list_xattr_path(path: usize, list: usize, size: usize, nofollow: bool) -> Sys
         Err(err) => return Err(err),
         Ok(len) => len,
     };
-    if len > output.len() {
+    // A zero-length buffer is the Linux size-query form. No names are copied
+    // in that case, but the required list length is still returned.
+    if size != 0 && len > output.len() {
         return Err(SysErrNo::ERANGE);
     }
-    copy_xattr_result_to_user(&memory_set, list, &output[..len])?;
+    if size != 0 {
+        copy_xattr_result_to_user(&memory_set, list, &output[..len])?;
+    }
     Ok(len)
 }
 
@@ -263,10 +275,14 @@ fn list_xattr_fd(fd: usize, list: usize, size: usize) -> SyscallRet {
         Err(err) => return Err(err),
         Ok(len) => len,
     };
-    if len > output.len() {
+    // A zero-length buffer is the Linux size-query form. No names are copied
+    // in that case, but the required list length is still returned.
+    if size != 0 && len > output.len() {
         return Err(SysErrNo::ERANGE);
     }
-    copy_xattr_result_to_user(&memory_set, list, &output[..len])?;
+    if size != 0 {
+        copy_xattr_result_to_user(&memory_set, list, &output[..len])?;
+    }
     Ok(len)
 }
 

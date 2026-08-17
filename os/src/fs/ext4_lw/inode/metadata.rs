@@ -17,6 +17,19 @@ impl Ext4Inode {
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
 
+        let inode_type = FsIndex::special_node_type(&path).unwrap_or(self.inode_type);
+        if name.starts_with(b"user.")
+            && !matches!(
+                inode_type,
+                InodeType::File | InodeType::Dir | InodeType::SymLink
+            )
+        {
+            return Err(SysErrNo::EPERM);
+        }
+        if OSFile::xattr_write_protected_path(&path) {
+            return Err(SysErrNo::EPERM);
+        }
+
         if flags != 0 {
             let mut ignored = [];
             match inner.f.xattr_get(&path, name, &mut ignored) {
@@ -59,6 +72,9 @@ impl Ext4Inode {
         let _io_state = self.io_state.lock();
         let inner = self.inner.get_unchecked_mut();
         let path = Self::live_path(inner);
+        if OSFile::xattr_write_protected_path(&path) {
+            return Err(SysErrNo::EPERM);
+        }
         inner.f.xattr_remove(&path, name).map_err(SysErrNo::from)
     }
 

@@ -19,7 +19,7 @@ use super::{
 use alloc::{borrow::Cow, collections::BTreeMap, string::String, sync::Arc, vec};
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use linux_raw_sys::{
-    general::FS_IMMUTABLE_FL,
+    general::{FS_APPEND_FL, FS_IMMUTABLE_FL},
     ioctl::{FS_IOC32_GETFLAGS, FS_IOC32_SETFLAGS, FS_IOC_GETFLAGS, FS_IOC_SETFLAGS},
 };
 use spin::{Lazy, Mutex};
@@ -133,6 +133,10 @@ fn is_immutable_path(path: &str) -> bool {
     get_file_flags(path) & FS_IMMUTABLE_FL != 0
 }
 
+fn xattr_write_protected_path(path: &str) -> bool {
+    get_file_flags(path) & (FS_IMMUTABLE_FL | FS_APPEND_FL) != 0
+}
+
 /// “普通”的文件类
 /// 区别于管道、设备、套接字等特殊文件
 pub struct OSFile {
@@ -229,6 +233,13 @@ impl OSFile {
 
     pub fn is_immutable_path(path: &str) -> bool {
         is_immutable_path(path)
+    }
+
+    /// Extended-attribute updates are metadata writes and are forbidden on
+    /// immutable or append-only inodes. Keep this separate from ordinary
+    /// `write(2)`: append-only files remain writable at their end.
+    pub fn xattr_write_protected_path(path: &str) -> bool {
+        xattr_write_protected_path(path)
     }
 
     pub fn set_offset(&self, offset: usize) {
