@@ -191,6 +191,31 @@ impl MemorySetInner {
         addr
     }
 
+    /// Use a non-fixed mmap address as a hint when its whole page-rounded
+    /// range is currently free. Linux is allowed to choose a different range
+    /// when the hint collides, but callers such as mremap users rely on a
+    /// freshly reserved hole being honored.
+    pub(crate) fn try_mmap_hint(&mut self, hint: usize, size: usize) -> Option<usize> {
+        if hint == 0 {
+            return None;
+        }
+        let start = hint & !(PAGE_SIZE - 1);
+        let end = start.checked_add(size)?;
+        if start == 0 || end > MMAP_TOP {
+            return None;
+        }
+        let start_vpn = VirtAddr::from(start).floor();
+        let end_vpn = VirtAddr::from(end).ceil();
+        if self.areas.iter().any(|area| {
+            let (area_start, area_end) = area.vpn_range.range();
+            area_start < end_vpn && start_vpn < area_end
+        }) {
+            return None;
+        }
+        self.mmap_hint = start;
+        Some(start)
+    }
+
     /// Find a free mmap range whose start is aligned to `align` bytes.
     pub(crate) fn find_mmap_addr_aligned(&mut self, size: usize, align: usize) -> usize {
         if align == 0 || !align.is_power_of_two() {
@@ -242,44 +267,107 @@ impl MemorySetInner {
     ) -> Option<usize> {
         let new_addr = user_heappoint.checked_add_signed(grow_size)?;
         let new_vpn: VirtPageNum = VirtAddr::from(new_addr).ceil();
-        let heap_bottom_vpn: VirtPageNum = (user_heapbottom / PAGE_SIZE).into();
-        let (areas, page_table) = (&mut self.areas, &mut self.page_table);
-        let area_idx = areas
-            .iter()
-            .position(|area| area.area_type == MapAreaType::Brk)
-            .unwrap();
-        let old_end_vpn = areas[area_idx].vpn_range.end();
+        let old_vpn: VirtPageNum = VirtAddr::from(user_heappoint).ceil();
         if grow_size > 0 {
             let user_vpn_top: VirtPageNum = ((user_heapbottom + USER_HEAP_SIZE) / PAGE_SIZE).into();
             if new_vpn >= user_vpn_top {
                 return None;
             }
-            // MAP_FIXED may have installed a VMA inside the reserved brk range.
-            // Do not let a later brk expansion create overlapping VMAs.
-            if areas.iter().any(|other| {
-                if other.area_type == MapAreaType::Brk {
-                    return false;
-                }
-                let (start, end) = other.vpn_range.range();
-                start < new_vpn && heap_bottom_vpn < end
-            }) {
-                return None;
+            if old_vpn >= new_vpn {
+                return Some(new_addr);
             }
-            areas[area_idx].vpn_range = VPNRange::new(heap_bottom_vpn, new_vpn);
-        } else {
+
+            // A MAP_FIXED mapping may occupy part of the logical brk span.
+            // Keep the user-visible brk pointer independent from those holes:
+            // only materialize Brk VMAs in the newly grown, currently free
+            // subranges. This yields the Linux layout "brk | mmap | brk".
+            let mut free_ranges = Vec::new();
+            let mut cursor = old_vpn;
+            for area in &self.areas {
+                if area.area_type == MapAreaType::Brk {
+                    continue;
+                }
+                let (start, end) = area.vpn_range.range();
+                if end <= cursor || start >= new_vpn {
+                    continue;
+                }
+                if cursor < start {
+                    free_ranges.push((cursor, start.min(new_vpn)));
+                }
+                if end > cursor {
+                    cursor = end.min(new_vpn);
+                }
+                if cursor >= new_vpn {
+                    break;
+                }
+            }
+            if cursor < new_vpn {
+                free_ranges.push((cursor, new_vpn));
+            }
+            for (start, end) in free_ranges {
+                if start < end {
+                    self.push_lazily(MapArea::new(
+                        VirtAddr::from(start),
+                        VirtAddr::from(end),
+                        MapType::Framed,
+                        MapPermission::R | MapPermission::W | MapPermission::U,
+                        MapAreaType::Brk,
+                    ));
+                }
+            }
+        } else if grow_size < 0 {
             if new_addr < user_heapbottom {
                 return None;
             }
-            areas[area_idx].vpn_range = VPNRange::new(heap_bottom_vpn, new_vpn);
-            // Clear the complete old tail, not only data_frames entries.  A
-            // stale PTE without a FrameTracker must not survive shrink/grow
-            // and later become an unpinned COW source during fork.
-            for vpn in VPNRange::new(new_vpn, old_end_vpn) {
-                page_table.unmap(vpn);
-                areas[area_idx].data_frames.remove(&vpn);
-            }
+            self.remove_brk_range(new_vpn, old_vpn);
         }
         Some(new_addr)
+    }
+
+    /// Remove only the brk portions covered by a range, leaving unrelated
+    /// fixed mappings intact. The logical brk pointer is owned by TaskInner,
+    /// so callers may use this to create or shrink holes in the heap layout.
+    pub(crate) fn remove_brk_range(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) {
+        if start_vpn >= end_vpn {
+            return;
+        }
+        while let Some(idx) = self.areas.iter().position(|area| {
+            if area.area_type != MapAreaType::Brk {
+                return false;
+            }
+            let (start, end) = area.vpn_range.range();
+            start < end_vpn && end > start_vpn
+        }) {
+            let (area_start, area_end) = self.areas[idx].vpn_range.range();
+            let removed_start = area_start.max(start_vpn);
+            let removed_end = area_end.min(end_vpn);
+            for vpn in VPNRange::new(removed_start, removed_end) {
+                self.areas[idx].unmap_one(&mut self.page_table, vpn);
+            }
+
+            if area_start >= start_vpn && area_end <= end_vpn {
+                self.areas.remove(idx);
+            } else if area_start < start_vpn && area_end <= end_vpn {
+                self.areas[idx].vpn_range = VPNRange::new(area_start, start_vpn);
+            } else if area_start >= start_vpn && area_end > end_vpn {
+                self.areas[idx].vpn_range = VPNRange::new(end_vpn, area_end);
+            } else {
+                let mut right_area = MapArea::from_another(&self.areas[idx]);
+                right_area.vpn_range = VPNRange::new(end_vpn, area_end);
+                let right_keys: Vec<VirtPageNum> = self.areas[idx]
+                    .data_frames
+                    .range(end_vpn..)
+                    .map(|(vpn, _)| *vpn)
+                    .collect();
+                for vpn in right_keys {
+                    if let Some(frame) = self.areas[idx].data_frames.remove(&vpn) {
+                        right_area.data_frames.insert(vpn, frame);
+                    }
+                }
+                self.areas[idx].vpn_range = VPNRange::new(area_start, start_vpn);
+                self.insert_area_sorted_unmerged(right_area);
+            }
+        }
     }
 
     /// Copy snapshotted pages into a lazily allocated area, faulting destination

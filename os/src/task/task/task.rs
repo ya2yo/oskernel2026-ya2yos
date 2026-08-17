@@ -2,6 +2,8 @@
 use super::super::process::Process;
 use super::super::{scheduler::SchedEntity, tid_to_task, RseqState, TaskContext, TidHandle};
 use super::exec::alloc_user_res_in_memory_set;
+#[cfg(feature = "fault-diagnostics")]
+use crate::signal::SignalFrameTrace;
 use crate::{
     arch::{
         context::TrapContext,

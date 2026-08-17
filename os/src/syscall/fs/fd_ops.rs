@@ -2,6 +2,7 @@ use core::{future::poll_fn, task::Poll};
 
 use super::fcntl::*;
 use super::file_lock;
+use super::path::parse_proc_self_fd;
 use crate::arch::memory_layout::PAGE_SIZE;
 use crate::fs::{
     ensure_proc_dir, ensure_proc_path, notify_path_event, open, open_fifo, refresh_proc_maps,
@@ -171,6 +172,44 @@ fn parse_proc_pid_file(path: &str, name: &str) -> Option<usize> {
     pid.parse::<usize>().ok()
 }
 
+/// Follow the procfs magic-link view of a reopenable anonymous file. Unlike
+/// dup(2), opening `/proc/self/fd/<n>` creates a fresh open-file description
+/// with its own offset while retaining the same underlying memfd seals/data.
+fn open_proc_self_fd(
+    fd_table: &Arc<crate::fs::FdTable>,
+    fs_info: &Arc<crate::fs::FSInfo>,
+    source_fd: usize,
+    flags: OpenFlags,
+) -> SyscallRet {
+    if flags.contains(OpenFlags::O_NOFOLLOW) {
+        return Err(SysErrNo::ELOOP);
+    }
+    if flags.contains(OpenFlags::O_CREATE) && flags.contains(OpenFlags::O_EXCL) {
+        return Err(SysErrNo::EEXIST);
+    }
+
+    let source = fd_table.get(source_fd)?;
+    let (readable, writable) = flags.read_write();
+    let file = source
+        .abs()?
+        .reopen(readable, writable, flags.contains(OpenFlags::O_APPEND))?;
+
+    if flags.contains(OpenFlags::O_DIRECTORY) {
+        return Err(SysErrNo::ENOTDIR);
+    }
+    if !flags.contains(OpenFlags::O_PATH) && flags.contains(OpenFlags::O_TRUNC) {
+        file.truncate(0)?;
+    }
+
+    let new_fd = fd_table.alloc_fd()?;
+    if let Err(err) = fd_table.set(new_fd, FileDescriptor::new(flags, FileClass::Abs(file))) {
+        fd_table.take(new_fd);
+        return Err(err);
+    }
+    fs_info.dup_fd_path(source_fd, new_fd);
+    Ok(new_fd)
+}
+
 /// 参考 https://man7.org/linux/man-pages/man2/openat.2.html
 pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> SyscallRet {
     debug!(
@@ -209,6 +248,10 @@ fn sys_openat_path(dirfd: isize, path: &str, flags: u32, mode: u32) -> SyscallRe
         "[sys_openat] path is {}, flags is {:?}, mode is {:o}",
         &abs_path, flags, mode
     );
+
+    if let Some(source_fd) = parse_proc_self_fd(&abs_path) {
+        return open_proc_self_fd(&fd_table, &fs_info, source_fd, flags);
+    }
 
     if flags.contains(OpenFlags::O_TMPFILE) {
         // O_TMPFILE takes a directory path but returns an unnamed regular file

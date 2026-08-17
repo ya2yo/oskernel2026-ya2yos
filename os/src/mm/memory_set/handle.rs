@@ -16,7 +16,7 @@ use super::{
 use crate::mm::map_area::MapType;
 use crate::{
     arch::memory_layout::PAGE_SIZE,
-    fs::{FilePage, FilePageCacheSource, FilePageKey, OSFile, FILE_PAGE_CACHE},
+    fs::{FilePage, FilePageCacheSource, FilePageKey, Inode, MmapLease, OSFile, FILE_PAGE_CACHE},
     mm::{
         FrameTracker, MapAreaType, MapPermission, PhysAddr, PhysPageNum, VPNRange, VirtAddr,
         VirtPageNum,
@@ -25,6 +25,29 @@ use crate::{
     trap::trap_types::Trap,
     utils::SyscallRet,
 };
+
+/// File-VMA state observed before doing potentially blocking page-cache I/O.
+///
+/// A fault cannot retain the MemorySet lock while reading EXT4. Keep the
+/// source identity alongside the prepared page so a concurrent munmap/mmap
+/// replacement can be retried for its new VMA rather than cause SIGSEGV.
+enum FilePagePreparation {
+    Missing,
+    File {
+        inode: Arc<dyn Inode>,
+        page_index: usize,
+        page: Option<Arc<FilePage>>,
+    },
+}
+
+impl FilePagePreparation {
+    fn page(&self) -> Option<&Arc<FilePage>> {
+        match self {
+            Self::Missing => None,
+            Self::File { page, .. } => page.as_ref(),
+        }
+    }
+}
 
 /// Thread-safe handle to a virtual address space.
 pub struct MemorySet {
@@ -311,10 +334,11 @@ impl MemorySet {
         flags: MmapFlags,
         file: Option<Arc<OSFile>>,
         off: usize,
+        mmap_lease: Option<Arc<dyn MmapLease>>,
     ) -> usize {
         if flags.contains(MmapFlags::MAP_HUGETLB) {
             return self.with_frame_preserving_mut(|inner| {
-                inner.mmap(addr, len, map_perm, flags, file, off)
+                inner.mmap(addr, len, map_perm, flags, file, off, mmap_lease)
             });
         }
         if flags.contains(MmapFlags::MAP_FIXED) {
@@ -326,10 +350,10 @@ impl MemorySet {
                 crate::mm::remote_tlb::ShootdownKind::Other,
                 VirtAddr::from(addr).floor(),
                 VirtAddr::from(end_addr).ceil(),
-                |inner| inner.mmap(addr, len, map_perm, flags, file, off),
+                |inner| inner.mmap(addr, len, map_perm, flags, file, off, mmap_lease),
             )
         } else {
-            self.with_vma_mut(|inner| inner.mmap(addr, len, map_perm, flags, file, off))
+            self.with_vma_mut(|inner| inner.mmap(addr, len, map_perm, flags, file, off, mmap_lease))
         }
     }
 
@@ -415,91 +439,114 @@ impl MemorySet {
     #[inline(always)]
     pub fn handle_page_fault(&self, vpn: VirtPageNum, scause: Trap) -> bool {
         // File-backed faults may block in EXT4. Prepare the page before
-        // taking MemorySet's write lock. The page can legitimately bypass the
-        // bounded global cache, so retain it until this fault installs it.
-        let prepared = self.prepare_file_page(vpn);
+        // taking MemorySet's write lock. A concurrent munmap/mmap can replace
+        // the VMA during that window, so retry preparation once when that VMA
+        // identity has changed.
+        let mut retried_file_vma_change = false;
+        loop {
+            let prepared = self.prepare_file_page(vpn);
+            let was_active = self.deactivate_current_hart();
 
-        let was_active = self.deactivate_current_hart();
-
-        // Fast path: the faulting VPN has no present PTE, so this is a fresh
-        // demand mapping that cannot leave a stale remote translation behind.
-        // It needs neither the global UPDATE_LOCK nor a shootdown broadcast;
-        // the translate check and the install run atomically under the
-        // address-space write lock, so no other writer can slip a present PTE
-        // in between them.
-        {
-            let mut inner = self.inner.write();
-            if inner.page_table.translate(vpn).is_none() {
-                let handled = inner.handle_page_fault(vpn, scause, prepared);
+            // A new demand PTE can replace a negative translation cached by
+            // another hart in the same address space. Serialize it with the
+            // ordinary page-table writers and flush every active remote hart
+            // before either thread resumes user execution.
+            let handled_not_present = {
+                let _update_guard = crate::mm::remote_tlb::lock_updates();
+                let mut inner = self.inner.write();
+                if inner.page_table.translate(vpn).is_none() {
+                    let handled = inner.handle_page_fault(vpn, scause, prepared.page().cloned());
+                    if handled {
+                        crate::mm::remote_tlb::shootdown(
+                            &self.active_harts,
+                            #[cfg(feature = "perf")]
+                            crate::mm::remote_tlb::ShootdownKind::PageFault,
+                        );
+                    }
+                    Some(handled)
+                } else {
+                    None
+                }
+            };
+            if let Some(handled) = handled_not_present {
                 if was_active {
                     self.activate_current_hart();
                 }
-                return handled;
+                if handled
+                    || retried_file_vma_change
+                    || !self.mmap_file_page_changed(vpn, &prepared)
+                {
+                    return handled;
+                }
+                retried_file_vma_change = true;
+                continue;
             }
-        }
 
-        // A present page can require only a local permission/dirty-bit update.
-        // Do that under the address-space lock alone: its PPN is unchanged, so
-        // stale remote entries are conservatively more restrictive and will
-        // fault/reload locally before a remote store can proceed.  In
-        // particular, decide whether a COW page is shared before cloning its
-        // frame below; the clone is only for a real PPN replacement and would
-        // otherwise turn a refcount-one page into a forced COW copy.
-        {
+            // A present page can require only a local permission/dirty-bit
+            // update. Do that under the address-space lock alone: its PPN is
+            // unchanged, so stale remote entries are conservatively more
+            // restrictive and will fault/reload locally before a remote store
+            // can proceed. In particular, decide whether a COW page is shared
+            // before cloning its frame below; the clone is only for a real PPN
+            // replacement and would otherwise turn a refcount-one page into a
+            // forced COW copy.
+            {
+                let mut inner = self.inner.write();
+                let cow_copy = inner.cow_fault_requires_frame_copy(vpn, scause);
+                if cow_copy != Some(true) {
+                    let handled = inner.handle_page_fault(vpn, scause, prepared.page().cloned());
+                    #[cfg(feature = "perf")]
+                    if handled {
+                        if let Some(requires_copy) = cow_copy {
+                            crate::utils::perf::record_cow_fault_resolution(requires_copy);
+                        }
+                    }
+                    if was_active {
+                        self.activate_current_hart();
+                    }
+                    return handled;
+                }
+            }
+
+            // A shared COW page is the one present-fault case which replaces
+            // a PPN. Serialize the sender, pin the old frame, then wait for
+            // every active remote hart before that pin is released. Lock order
+            // remains UPDATE_LOCK -> MemorySet write lock as required by all
+            // replacement paths. Re-check after reacquiring `inner`: another
+            // writer may have resolved this COW fault while this hart waited
+            // for UPDATE_LOCK.
+            let _update_guard = crate::mm::remote_tlb::lock_updates();
             let mut inner = self.inner.write();
             let cow_copy = inner.cow_fault_requires_frame_copy(vpn, scause);
-            if cow_copy != Some(true) {
-                let handled = inner.handle_page_fault(vpn, scause, prepared);
-                #[cfg(feature = "perf")]
-                if handled {
-                    if let Some(requires_copy) = cow_copy {
-                        crate::utils::perf::record_cow_fault_resolution(requires_copy);
-                    }
+            let retained_frames: Vec<Arc<FrameTracker>> = (cow_copy == Some(true))
+                .then(|| {
+                    inner
+                        .areas
+                        .iter()
+                        .filter_map(|area| area.data_frames.get(&vpn).cloned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let handled = inner.handle_page_fault(vpn, scause, prepared.page().cloned());
+            #[cfg(feature = "perf")]
+            if handled {
+                if let Some(requires_copy) = cow_copy {
+                    crate::utils::perf::record_cow_fault_resolution(requires_copy);
                 }
-                if was_active {
-                    self.activate_current_hart();
-                }
-                return handled;
             }
-        }
-
-        // A shared COW page is the one present-fault case which replaces a
-        // PPN. Serialize the sender, pin the old frame, then wait for every
-        // active remote hart before that pin is released. Lock order remains
-        // UPDATE_LOCK -> MemorySet write lock as required by all replacement
-        // paths. Re-check after reacquiring `inner`: another writer may have
-        // resolved this COW fault while this hart waited for UPDATE_LOCK.
-        let _update_guard = crate::mm::remote_tlb::lock_updates();
-        let mut inner = self.inner.write();
-        let cow_copy = inner.cow_fault_requires_frame_copy(vpn, scause);
-        let retained_frames: Vec<Arc<FrameTracker>> = (cow_copy == Some(true))
-            .then(|| {
-                inner
-                    .areas
-                    .iter()
-                    .filter_map(|area| area.data_frames.get(&vpn).cloned())
-                    .collect()
-            })
-            .unwrap_or_default();
-        let handled = inner.handle_page_fault(vpn, scause, prepared);
-        #[cfg(feature = "perf")]
-        if handled {
-            if let Some(requires_copy) = cow_copy {
-                crate::utils::perf::record_cow_fault_resolution(requires_copy);
+            if handled && cow_copy == Some(true) {
+                crate::mm::remote_tlb::shootdown(
+                    &self.active_harts,
+                    #[cfg(feature = "perf")]
+                    crate::mm::remote_tlb::ShootdownKind::Cow,
+                );
             }
+            if was_active {
+                self.activate_current_hart();
+            }
+            drop(retained_frames);
+            return handled;
         }
-        if handled && cow_copy == Some(true) {
-            crate::mm::remote_tlb::shootdown(
-                &self.active_harts,
-                #[cfg(feature = "perf")]
-                crate::mm::remote_tlb::ShootdownKind::Cow,
-            );
-        }
-        if was_active {
-            self.activate_current_hart();
-        }
-        drop(retained_frames);
-        handled
     }
 
     /// Check whether a leaf PTE already permits U-mode instruction fetch.
@@ -565,12 +612,38 @@ impl MemorySet {
     /// Load one file-backed mmap page without holding the `MemorySet` lock.
     /// The returned `Arc` is handed to the immediately following installation
     /// step, including when the bounded global cache cannot retain it.
-    fn prepare_file_page(&self, vpn: VirtPageNum) -> Option<Arc<FilePage>> {
-        let request = self.get_ref().mmap_file_page_info(vpn);
-        let (inode, page_index) = request?;
-        FILE_PAGE_CACHE
-            .get_or_load(inode, page_index, FilePageCacheSource::MmapDemand)
-            .ok()
+    fn prepare_file_page(&self, vpn: VirtPageNum) -> FilePagePreparation {
+        let Some((inode, page_index)) = self.get_ref().mmap_file_page_info(vpn) else {
+            return FilePagePreparation::Missing;
+        };
+        let page = FILE_PAGE_CACHE
+            .get_or_load(
+                Arc::clone(&inode),
+                page_index,
+                FilePageCacheSource::MmapDemand,
+            )
+            .ok();
+        FilePagePreparation::File {
+            inode,
+            page_index,
+            page,
+        }
+    }
+
+    /// Report whether a file VMA appeared or changed while page preparation
+    /// ran without the MemorySet lock.
+    fn mmap_file_page_changed(&self, vpn: VirtPageNum, prepared: &FilePagePreparation) -> bool {
+        let current = self.get_ref().mmap_file_page_info(vpn);
+        match (prepared, current) {
+            (FilePagePreparation::Missing, Some(_)) => true,
+            (
+                FilePagePreparation::File {
+                    inode, page_index, ..
+                },
+                Some((current_inode, current_page_index)),
+            ) => current_page_index != *page_index || !Arc::ptr_eq(&current_inode, inode),
+            _ => false,
+        }
     }
 
     /// Preload all file pages in shared mappings before a fork takes the
@@ -701,23 +774,24 @@ impl MemorySet {
 
     /// Activate this address space for a user-mode return on the current CPU.
     ///
-    /// The active bit is published before the read lock is released.  A page
+    /// The active bit is published before the read lock is released. A page
     /// table writer therefore either sees this hart in its shootdown mask or
-    /// completes before this hart installs the page table locally.
+    /// completes before this hart installs the page table locally. A hart
+    /// returning after it was absent from the mask must first discard local
+    /// translations, because it may have missed a completed shootdown while
+    /// the same page-table root remained installed.
     #[inline(always)]
     pub fn activate_for_user(&self) {
         let inner = self.get_ref();
         inner.activate();
-        // Executable frames can outlive the address space that previously
-        // used the same physical pages. A task migrating to another hart must
-        // invalidate that hart's stale instruction stream before its first
-        // user-mode fetch from this address space.
-        // `inner.activate()` above has already installed this MemorySet's
-        // page table. Publish the current hart in the shootdown mask
-        // idempotently; this is not a page-table ownership probe.
-        if self.activate_current_hart() {
+        // Keep the read lock until the flush and publication are both done.
+        // A writer cannot update the page table between them, and afterwards
+        // it includes this hart in the remote shootdown mask.
+        if !self.is_current_hart_active() {
+            crate::arch::tlb::tlb_invalidate();
             crate::arch::tlb::instruction_fence();
         }
+        self.activate_current_hart();
     }
 
     /// Install this page table without publishing a user-mode active bit.

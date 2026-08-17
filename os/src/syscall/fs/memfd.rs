@@ -32,11 +32,15 @@ pub fn sys_memfd_create(name: *const u8, flags: u32) -> SyscallRet {
     let (uid, gid) = (inner.effective_uid, inner.effective_gid);
     drop(inner);
     let fd = task.process.fd_table.alloc_fd()?;
-    let open_flags = if flags & MFD_CLOEXEC != 0 {
-        OpenFlags::O_CLOEXEC
-    } else {
-        OpenFlags::empty()
-    };
+    // memfd_create() always returns a read/write file descriptor. Keep the
+    // access mode in the open-file status so fcntl() can distinguish it from
+    // a later O_RDONLY reopen through /proc/self/fd.
+    let open_flags = OpenFlags::O_RDWR
+        | if flags & MFD_CLOEXEC != 0 {
+            OpenFlags::O_CLOEXEC
+        } else {
+            OpenFlags::empty()
+        };
     task.process.fd_table.set(
         fd,
         FileDescriptor::new(

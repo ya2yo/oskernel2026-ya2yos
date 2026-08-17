@@ -479,6 +479,9 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             if arg > u32::MAX as usize {
                 return Err(SysErrNo::EINVAL);
             }
+            if fd_desc.getfl_flags() & OpenFlags::O_ACCMODE.bits() == OpenFlags::O_RDONLY.bits() {
+                return Err(SysErrNo::EPERM);
+            }
             fd_desc.any().add_seals(arg as u32)?;
             return Ok(0);
         }

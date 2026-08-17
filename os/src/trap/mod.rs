@@ -315,6 +315,16 @@ pub fn trap_handler() {
                 // The VMA/EOF distinction determines SIGBUS versus SIGSEGV;
                 // signal delivery then invokes a custom handler or terminates.
                 let tid = current_task().unwrap().tid();
+                #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+                // The one-shot present-PTE retry is meaningful only until this
+                // fault is resolved. A signal handler may longjmp back into
+                // userspace without making a syscall or a handled fault, so
+                // retaining the VPN here would incorrectly suppress a later,
+                // unrelated stale-TLB retry after mmap reuses the same page.
+                current_task()
+                    .unwrap()
+                    .inner_lock()
+                    .clear_present_page_fault_retry();
                 #[cfg(feature = "fault-diagnostics")]
                 log_user_fault_signal(hartid, cause, stval, Some(fault_va), signal);
                 send_signal_to_thread(tid, signal);

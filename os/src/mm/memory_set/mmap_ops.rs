@@ -10,7 +10,7 @@ use super::{
 use crate::arch::memory_layout::{
     HUGE_PAGE_SIZE, MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_SPACE_SIZE,
 };
-use crate::fs::{File, Inode, OSFile, OpenFlags};
+use crate::fs::{File, Inode, MmapLease, OSFile, OpenFlags};
 use crate::mm::group::GROUP_SHARE;
 use crate::mm::map_area::MapType;
 use crate::mm::memory_set::MemorySetInner;
@@ -122,13 +122,14 @@ impl MemorySetInner {
         flags: MmapFlags,
         file: Option<Arc<OSFile>>,
         off: usize,
+        mmap_lease: Option<Arc<dyn MmapLease>>,
     ) -> usize {
         debug!(
             "[mmap] addr={:x}, len={}, map_perm={:?}, flags={:?}",
             addr, len, map_perm, flags
         );
         if flags.contains(MmapFlags::MAP_HUGETLB) {
-            return self.mmap_huge(addr, len, map_perm, flags, file, off);
+            return self.mmap_huge(addr, len, map_perm, flags, file, off, mmap_lease);
         }
         if flags.contains(MmapFlags::MAP_FIXED) || flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
             // 检查 addr + len 是否溢出
@@ -160,17 +161,10 @@ impl MemorySetInner {
             // 追加新 VMA 会留下重叠条目；缺页查找可能先命中旧条目（通常是
             // PROT_NONE），从而遮蔽新的替换映射。
             if flags.contains(MmapFlags::MAP_FIXED) {
-                // brk 的起止位置由进程状态单独维护，不能像 mmap VMA 一样由
-                // munmap 截断。拒绝覆盖 brk，避免留下重叠 VMA 和不一致的 brk。
-                if self.areas.iter().any(|area| {
-                    if area.area_type != MapAreaType::Brk {
-                        return false;
-                    }
-                    let (l, r) = area.vpn_range.range();
-                    l < end_vpn && start_vpn < r
-                }) {
-                    return 0;
-                }
+                // MAP_FIXED is permitted to punch a hole in the logical brk
+                // range. Remove the affected brk VMA fragments before adding
+                // the replacement, while TaskInner keeps the brk pointer.
+                self.remove_brk_range(start_vpn, end_vpn);
                 let _ = self.munmap(addr, len);
             }
             self.push_lazily(MapArea::new_mmap(
@@ -182,6 +176,7 @@ impl MemorySetInner {
                 file,
                 off,
                 flags,
+                mmap_lease,
             ));
             // MAP_FIXED / MAP_FIXED_NOREPLACE 使用指定地址，不计入 mmap 总量
             return addr;
@@ -196,7 +191,9 @@ impl MemorySetInner {
             );
             return 0; // 向 sys_mmap 表示失败，由其返回 ENOMEM
         }
-        let addr = self.find_mmap_addr(len);
+        let addr = self
+            .try_mmap_hint(addr, len)
+            .unwrap_or_else(|| self.find_mmap_addr(len));
         if addr == 0 {
             return 0; // 未找到可用空间
         }
@@ -214,6 +211,7 @@ impl MemorySetInner {
             file,
             off,
             flags,
+            mmap_lease,
         ));
         self.total_mmap_size += len;
         addr
@@ -228,8 +226,14 @@ impl MemorySetInner {
         flags: MmapFlags,
         file: Option<Arc<OSFile>>,
         _off: usize,
+        mmap_lease: Option<Arc<dyn MmapLease>>,
     ) -> usize {
-        if file.is_some() || len == 0 || len % HUGE_PAGE_SIZE != 0 || map_perm.is_empty() {
+        if file.is_some()
+            || mmap_lease.is_some()
+            || len == 0
+            || len % HUGE_PAGE_SIZE != 0
+            || map_perm.is_empty()
+        {
             return 0;
         }
 
@@ -296,6 +300,7 @@ impl MemorySetInner {
             None,
             0,
             flags,
+            None,
         );
         if area.map_huge(&mut self.page_table).is_err() {
             area.unmap(&mut self.page_table);
@@ -875,6 +880,20 @@ impl MemorySetInner {
             overlaps && (map_perm.is_empty() || !(start_vpn <= area_start && area_end <= end_vpn))
         }) {
             return Err(SysErrNo::EOPNOTSUPP);
+        }
+        if map_perm.contains(MapPermission::W)
+            && self.areas.iter().any(|area| {
+                let (area_start, area_end) = area.vpn_range.range();
+                area_start < end_vpn
+                    && start_vpn < area_end
+                    && area
+                        .mmap_file
+                        .lease
+                        .as_ref()
+                        .is_some_and(|lease| !lease.allows_write())
+            })
+        {
+            return Err(SysErrNo::EPERM);
         }
         // 收集拆分过程中新产生的 area，遍历结束后再统一插入
         let mut new_areas = Vec::new();

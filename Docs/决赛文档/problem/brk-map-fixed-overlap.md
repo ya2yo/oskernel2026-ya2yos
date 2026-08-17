@@ -8,15 +8,15 @@
 
 ## 修复
 
-- `MemorySetInner::grow()` 在扩大 brk 前检查目标 `[heap_bottom, new_brk)` 与其他 VMA 是否重叠。
-- `MAP_FIXED` 拒绝覆盖 brk，不再让 mmap 替换路径破坏 brk 的独立边界状态。
-- `sys_brk()` 分别计算向上和向下的地址差值，避免 `usize` 减法下溢。
-- `grow()` 用 `Option` 返回地址溢出、超出上限或 VMA 冲突，失败时不更新进程 brk 指针。
+- `MAP_FIXED` 覆盖 brk 时先调用 `remove_brk_range()`，按页解除被覆盖的 brk VMA，保留未覆盖的左右片段，再插入固定映射；不再留下重叠 VMA。
+- `TaskInner` 继续单独保存逻辑 brk 指针。`MemorySetInner::grow()` 扩大 brk 时只在目标范围的空闲子区间建立 `Brk` VMA，因此允许形成 `brk | mmap | brk`；收缩时只移除 brk 尾部。
+- `sys_brk()` 分别计算向上和向下的地址差值，避免 `usize` 减法下溢；`grow()` 用 `Option` 返回地址溢出、超出上限或 VMA 冲突，失败时不更新进程 brk 指针。
 
 ## 验证
 
 ```text
-make TARGET_ARCH=riscv64
+make TARGET_ARCH=riscv64 build-arch
+make TARGET_ARCH=loongarch64 build-arch
 ```
 
-通过。该命令同时完成 RISC-V 与 LoongArch64 的构建，两个架构均成功。全仓 `cargo fmt --all -- --check` 受工作区既有格式差异影响未通过，未格式化无关文件。
+双架构构建通过。LoongArch64 `mmapstress03` 输出 `TPASS: Test passed` 并返回 0；固定映射覆盖 brk 后的后续扩展不再出现重叠 VMA。

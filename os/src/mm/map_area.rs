@@ -5,7 +5,7 @@ use crate::arch::memory_layout::{HUGE_PAGE_PAGES, MMIO_MAP_OFFSET, PAGE_SIZE_BIT
 use crate::{
     arch::memory_layout::{KERNEL_PGNUM_OFFSET, PAGE_SIZE},
     arch::page_table::PageTable,
-    fs::{Inode, OSFile},
+    fs::{Inode, MmapLease, OSFile},
     syscall::MmapFlags,
 };
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
@@ -61,6 +61,7 @@ impl MapArea {
         file: Option<Arc<OSFile>>,
         offset: usize,
         mmap_flags: MmapFlags,
+        mmap_lease: Option<Arc<dyn MmapLease>>,
     ) -> Self {
         let start_vpn: VirtPageNum = start_va.floor();
         let end_vpn: VirtPageNum = end_va.ceil();
@@ -79,7 +80,7 @@ impl MapArea {
             map_type,
             map_perm,
             area_type,
-            mmap_file: MmapFile::new(file, offset),
+            mmap_file: MmapFile::new(file, offset, mmap_lease),
             mmap_flags,
             groupid,
         }
@@ -317,6 +318,7 @@ pub enum MapAreaType {
 pub struct MmapFile {
     pub file: Option<Arc<OSFile>>,
     pub offset: usize,
+    pub lease: Option<Arc<dyn MmapLease>>,
 }
 
 impl MmapFile {
@@ -324,15 +326,29 @@ impl MmapFile {
         Self {
             file: None,
             offset: 0,
+            lease: None,
         }
     }
 
-    pub fn new(file: Option<Arc<OSFile>>, offset: usize) -> Self {
-        Self { file, offset }
+    pub fn new(
+        file: Option<Arc<OSFile>>,
+        offset: usize,
+        lease: Option<Arc<dyn MmapLease>>,
+    ) -> Self {
+        Self {
+            file,
+            offset,
+            lease,
+        }
     }
 
     /// Replace a VMA's file backing.
-    pub fn replace(&mut self, file: Option<Arc<OSFile>>, offset: usize) {
-        *self = Self::new(file, offset);
+    pub fn replace(
+        &mut self,
+        file: Option<Arc<OSFile>>,
+        offset: usize,
+        lease: Option<Arc<dyn MmapLease>>,
+    ) {
+        *self = Self::new(file, offset, lease);
     }
 }

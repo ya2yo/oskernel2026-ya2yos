@@ -249,3 +249,4 @@
 - [BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.md)
 - [Loongson 2K1000 hugepage 内存布局常量遗漏导致构建失败](./problem/loongarch-2k1000-hugepage-layout-build.md)
 - [BuildStorm 父目录 rename 后打开子文件 fstat 返回 ENOENT](./problem/buildstorm-directory-rename-fstat.md)
+- [mmap LTP 并发、地址 hint 与 memfd 映射语义修复](./problem/mmap-ltp-concurrency-hint-and-memfd.md)

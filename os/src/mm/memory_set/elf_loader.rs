@@ -451,6 +451,7 @@ impl MemorySetInner {
                     Some(file.clone()),
                     ph.offset() as usize,
                     MmapFlags::MAP_PRIVATE,
+                    None,
                 );
                 max_end_vpn = max_end_vpn.max(file_area.vpn_range.end());
                 self.push_lazily(file_area);

@@ -101,7 +101,7 @@ pub fn sys_mmap(
         return Err(SysErrNo::ENOMEM);
     }
     if flags.contains(MmapFlags::MAP_ANONYMOUS) {
-        let rv = memory_set.mmap(addr, len, map_perm, flags, None, usize::MAX);
+        let rv = memory_set.mmap(addr, len, map_perm, flags, None, usize::MAX, None);
         if rv == 0 {
             if flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
                 return Err(SysErrNo::EEXIST);
@@ -115,6 +115,7 @@ pub fn sys_mmap(
         return Err(SysErrNo::EBADF);
     }
     let descriptor = process.fd_table.get(fd)?;
+    let mut mmap_lease = None;
     let file = match descriptor.file() {
         Ok(file) => {
             // 访问权限检查
@@ -130,22 +131,25 @@ pub fn sys_mmap(
             Some(file)
         }
         Err(SysErrNo::EINVAL) => {
-            let device = descriptor.abs()?;
-            if device.fstat().st_rdev != get_devno("/dev/zero") {
-                return Err(SysErrNo::EINVAL);
-            }
-            if map_perm.contains(MapPermission::R) && !device.readable()
+            let abs_file = descriptor.abs()?;
+            if !abs_file.readable()
                 || flags.contains(MmapFlags::MAP_SHARED)
                     && map_perm.contains(MapPermission::W)
-                    && !device.writable()
+                    && !abs_file.writable()
             {
                 return Err(SysErrNo::EACCES);
+            }
+            if abs_file.fstat().st_rdev != get_devno("/dev/zero") {
+                mmap_lease = Some(abs_file.mmap_lease(
+                    flags.contains(MmapFlags::MAP_SHARED),
+                    map_perm.contains(MapPermission::W),
+                )?);
             }
             None
         }
         Err(err) => return Err(err),
     };
-    let rv = memory_set.mmap(addr, len, map_perm, flags, file, off);
+    let rv = memory_set.mmap(addr, len, map_perm, flags, file, off, mmap_lease);
     debug!("[sys_mmap] alloc addr={:#x}", rv);
     if rv == 0 {
         if flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {

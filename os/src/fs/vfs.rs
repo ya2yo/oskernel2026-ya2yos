@@ -316,6 +316,10 @@ pub trait File: Send + Sync {
     fn truncate(&self, _size: usize) -> SyscallRet {
         Err(SysErrNo::EINVAL)
     }
+    /// Preallocate or punch a range in an anonymous regular file.
+    fn fallocate(&self, _mode: u32, _offset: usize, _len: usize) -> SyscallRet {
+        Err(SysErrNo::EOPNOTSUPP)
+    }
     /// 内核内部向抽象文件注入数据，默认不支持。
     fn write_kernel_bytes(&self, _buf: &[u8]) -> SyscallRet {
         Err(SysErrNo::EOPNOTSUPP)
@@ -352,6 +356,21 @@ pub trait File: Send + Sync {
     fn add_seals(&self, _seals: u32) -> SysResult {
         Err(SysErrNo::EINVAL)
     }
+    /// Create an independent open-file description for a procfd magic-link.
+    /// Only anonymous files with reopenable backing state implement this.
+    fn reopen(
+        &self,
+        _readable: bool,
+        _writable: bool,
+        _append: bool,
+    ) -> Result<Arc<dyn File>, SysErrNo> {
+        Err(SysErrNo::EINVAL)
+    }
+    /// Retain file-specific state for an mmap VMA which has no inode-backed
+    /// page-cache representation. Only memfd currently implements this.
+    fn mmap_lease(&self, _shared: bool, _writable: bool) -> Result<Arc<dyn MmapLease>, SysErrNo> {
+        Err(SysErrNo::EINVAL)
+    }
     /// ppoll处理
     fn poll(&self, _events: PollEvents) -> PollEvents {
         unimplemented!("File::poll")
@@ -371,5 +390,17 @@ pub trait File: Send + Sync {
     /// 获取异步 I/O 信号 owner。默认无 owner。
     fn fasync_owner(&self) -> FasyncOwner {
         FasyncOwner::default()
+    }
+}
+
+/// State retained by a VMA for file types which need mmap lifetime callbacks.
+///
+/// The VMA owns an `Arc` to this marker. Splitting a VMA clones the same Arc,
+/// so its `Drop` implementation runs only after every remaining fragment has
+/// been unmapped.
+pub trait MmapLease: Send + Sync {
+    /// Whether this VMA may gain write permission through `mprotect`.
+    fn allows_write(&self) -> bool {
+        true
     }
 }

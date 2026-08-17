@@ -57,9 +57,6 @@ pub fn sys_fallocate(fd: usize, mode: u32, offset: usize, len: usize) -> Syscall
     if offset < 0 || len <= 0 {
         return Err(SysErrNo::EINVAL);
     }
-    if mode & !FALLOC_SUPPORTED_FLAGS != 0 {
-        return Err(SysErrNo::EOPNOTSUPP);
-    }
 
     let end = (offset as usize)
         .checked_add(len as usize)
@@ -68,41 +65,50 @@ pub fn sys_fallocate(fd: usize, mode: u32, offset: usize, len: usize) -> Syscall
         return Err(SysErrNo::EFBIG);
     }
 
-    let file = {
+    let descriptor = {
         let task = current_task().unwrap();
         let inner = &task.process;
         if fd >= inner.fd_table.len() {
             return Err(SysErrNo::EBADF);
         }
-        let file = inner.fd_table.try_get(fd).ok_or(SysErrNo::EBADF)?.file()?;
+        inner.fd_table.try_get(fd).ok_or(SysErrNo::EBADF)?
+    };
+    if let Ok(file) = descriptor.file() {
+        if mode & !FALLOC_SUPPORTED_FLAGS != 0 {
+            return Err(SysErrNo::EOPNOTSUPP);
+        }
         if !file.writable() {
             return Err(SysErrNo::EBADF);
         }
-        file
-    };
 
-    if !file.inode.types().is_file() {
-        return Err(SysErrNo::ENODEV);
+        if !file.inode.types().is_file() {
+            return Err(SysErrNo::ENODEV);
+        }
+
+        let stat = superblock_fs_stat();
+        let block_size = stat.f_bsize.max(1) as usize;
+        let current_size = file.inode.size();
+        let reserve_len = if mode & FALLOC_FL_KEEP_SIZE != 0 {
+            len as usize
+        } else {
+            end.saturating_sub(current_size)
+        };
+        let needed_blocks = reserve_len.saturating_add(block_size - 1) / block_size;
+        if needed_blocks > stat.f_bavail.max(0) as usize {
+            return Err(SysErrNo::ENOSPC);
+        }
+
+        if mode & FALLOC_FL_KEEP_SIZE == 0 && end > current_size {
+            file.inode.truncate(end)?;
+        }
+        return Ok(0);
     }
 
-    let stat = superblock_fs_stat();
-    let block_size = stat.f_bsize.max(1) as usize;
-    let current_size = file.inode.size();
-    let reserve_len = if mode & FALLOC_FL_KEEP_SIZE != 0 {
-        len as usize
-    } else {
-        end.saturating_sub(current_size)
-    };
-    let needed_blocks = reserve_len.saturating_add(block_size - 1) / block_size;
-    if needed_blocks > stat.f_bavail.max(0) as usize {
-        return Err(SysErrNo::ENOSPC);
+    let file = descriptor.any();
+    if !file.writable() {
+        return Err(SysErrNo::EBADF);
     }
-
-    if mode & FALLOC_FL_KEEP_SIZE == 0 && end > current_size {
-        file.inode.truncate(end)?;
-    }
-
-    Ok(0)
+    file.fallocate(mode, offset as usize, len as usize)
 }
 
 /// https://man7.org/linux/man-pages/man2/posix_fadvise.2.html
