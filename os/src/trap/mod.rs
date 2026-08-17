@@ -427,19 +427,10 @@ pub fn trap_handler() {
             crate::task::preempt_current_and_run_next();
         }
         Trap::Interrupt(Interrupt::Ipi) => {
-            #[cfg(target_arch = "riscv64")]
-            crate::arch::cpu::clear_ipi();
-            #[cfg(target_arch = "loongarch64")]
             crate::arch::cpu::clear_ipi();
             crate::mm::remote_tlb::poll();
             crate::task::migrate_current_if_needed();
         }
-        // Trap::Exception(Exception::Breakpoint) => {
-        //     warn!("[kernel] Breakpoint from application");
-        //     // jump to next instruction anyway
-        //     let cx = current_trap_cx();
-        //     cx.sepc_step(2);
-        // }
         _ => {
             panic!("Unsupported trap {:?}, stval = {:#x}!", cause, stval);
         }

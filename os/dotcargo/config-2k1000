@@ -8,7 +8,7 @@ rustflags = [
 
 [target.loongarch64-unknown-none]
 rustflags = [
-    "-Clink-arg=-Tlinkers/linker_loongarch64_2k1000.ld", "-Cforce-frame-pointers=yes",
+    "-Clink-arg=-Tsrc/arch/loongarch64/linker_loongarch64_2k1000.ld", "-Cforce-frame-pointers=yes",
     "-Clink-arg=-nostdlib", "-Clink-arg=-static", "-Cpanic=abort"
 ]
 
