@@ -161,6 +161,10 @@ impl Inode for Ext4Inode {
         self.add_alias_path(path);
     }
 
+    fn remap_path_prefix(&self, old_prefix: &str, new_prefix: &str) {
+        self.remap_path_prefix_impl(old_prefix, new_prefix);
+    }
+
     fn delay(&self) {
         self.delay_impl();
     }

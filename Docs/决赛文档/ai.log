@@ -12631,3 +12631,34 @@ RISC-V64 与 LoongArch64 release 构建均通过，正式启动入口未改变�
 新增 `Docs/决赛文档/buildstorm-优化实现文档.md`，删除对应 `.typ` 文件，并更新决赛文档
 索引、开发日志、AI 交互记录及 Ya2yOS 结论章节中的链接。`git diff --check` 通过，代码围栏
 成对闭合，仓库中没有旧 `.typ` 链接；本轮仅处理文档，未运行内核构建、QEMU、LTP 或 BuildStorm。
+
+## 2026-08-17：BuildStorm 父目录 rename 后打开子文件 fstat 修复
+
+### 用户需求
+
+维护者提供 `server.ans` 中 `ext4_stat_get: rc = 2` 与
+`Ext4Inode::fstat: ext4_stat_get failed rc=2`，要求分析原因并直接修复。
+
+### 分析与实现
+
+确认 `rc = 2` 为 lwext4 的 `ENOENT`。BuildStorm/rustc 发布增量缓存时会把
+`...-working` 目录整体 rename；原实现只更新目录 inode 和 `FsIndex` 根路径，已打开的
+子文件仍保留旧的 `Ext4File.file_path`、inode alias、写回缓存和索引路径。后续按旧路径
+执行 `fstat()` 即使 inode 仍然存在，也会从 lwext4 得到 `ENOENT`。该问题与此前跨进程
+unlink 的延迟删除问题不同，属于目录子树路径重定位缺失。
+
+实现 `Ext4File::remap_path`、`Inode::remap_path_prefix` 和
+`FsIndex::remap_subtree_paths`，在目录 `renameat2()` 成功后迁移整个旧前缀子树；按既有
+锁序更新 live path、alias、dirty dense write-back cache、页缓存路径和 VFS mirror，避免
+再次执行底层 rename。对 alias 恢复阶段可预期的旧路径 `ENOENT` 从 ERROR 调整为带路径的
+DEBUG，最终恢复失败仍由 `Ext4Inode::fstat` 输出 WARN。新增用户态父目录 rename/fstat
+回归测例并接入 final 测试入口。
+
+### 验证
+
+`make TARGET_ARCH=riscv64` 完成 RISC-V64 与 LoongArch64 release 构建。RISC-V QEMU 输出
+`fstat rename subtree regression: PASS`，CAgent 全部通过，BuildStorm 输出
+`BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok` 并进入
+`pre-build tg-xtask (untimed)`；日志中不再出现对应 ERROR/WARN。完整 BuildStorm 本轮只
+确认到 pre-build 阶段，未将完整评分结果记为通过。关联问题复盘见
+`Docs/决赛文档/problem/buildstorm-directory-rename-fstat.md`。

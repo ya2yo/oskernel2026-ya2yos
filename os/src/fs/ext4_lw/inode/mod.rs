@@ -347,6 +347,53 @@ impl Ext4Inode {
         *self.path.write() = Arc::from(path);
     }
 
+    fn remap_descendant_path(path: &str, old_prefix: &str, new_prefix: &str) -> Option<String> {
+        if path == old_prefix {
+            return Some(new_prefix.to_string());
+        }
+        let suffix = path.strip_prefix(old_prefix)?;
+        suffix
+            .starts_with('/')
+            .then(|| format!("{}{}", new_prefix, suffix))
+    }
+
+    /// Update a pathname-based ext4 wrapper after one of its ancestor
+    /// directories moved.  This is deliberately separate from `rename_impl`:
+    /// the directory entry has already been changed by the source directory's
+    /// rename, and performing another lwext4 rename here would move the child
+    /// a second time.
+    fn remap_path_prefix_impl(&self, old_prefix: &str, new_prefix: &str) {
+        let _write_state = self.write_state.lock();
+        let _io_state = self.io_state.lock();
+        let inner = self.inner.get_unchecked_mut();
+        let current = Self::live_path(inner);
+        let remapped_current = Self::remap_descendant_path(&current, old_prefix, new_prefix);
+
+        if let Some(new_current) = remapped_current.as_deref() {
+            // Preserve dirty dense data under the new pathname.  Sparse data
+            // is keyed by the opened inode and therefore needs no path move.
+            rename_path_cache(&current, new_current);
+            FILE_PAGE_CACHE.invalidate_path(&current);
+            debug_assert!(inner.f.remap_path(&current, new_current));
+            self.update_cached_path(new_current);
+        }
+
+        let mut aliases = Vec::with_capacity(inner.aliases.len());
+        for alias in inner.aliases.drain(..) {
+            let alias =
+                Self::remap_descendant_path(&alias, old_prefix, new_prefix).unwrap_or(alias);
+            if aliases.iter().all(|existing| existing != &alias) {
+                aliases.push(alias);
+            }
+        }
+        if let Some(new_current) = remapped_current {
+            if aliases.iter().all(|alias| alias != &new_current) {
+                aliases.push(new_current);
+            }
+        }
+        inner.aliases = aliases;
+    }
+
     #[inline]
     fn known_size(&self) -> Option<usize> {
         match self.known_size.load(Ordering::Acquire) {

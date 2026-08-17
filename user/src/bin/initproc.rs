@@ -20,6 +20,8 @@ mod buildstorm;
 mod busybox;
 #[allow(dead_code)]
 mod cagent;
+#[path = "initproc/fstat_rename_subtree_regression.rs"]
+mod fstat_rename_subtree_regression;
 #[path = "initproc/fstat_unlink_regression.rs"]
 mod fstat_unlink_regression;
 #[path = "initproc/hugepage_regression.rs"]
@@ -276,9 +278,7 @@ fn detect_test_image() -> Option<TestImageKind> {
         return Some(TestImageKind::Final);
     }
 
-    if image_contains("/musl/basic_testcode.sh\0")
-        && image_contains("/glibc/basic_testcode.sh\0")
-    {
+    if image_contains("/musl/basic_testcode.sh\0") && image_contains("/glibc/basic_testcode.sh\0") {
         return Some(TestImageKind::Preliminary);
     }
 
@@ -382,7 +382,7 @@ fn test_final_2026() -> i32 {
 
 #[allow(unused)]
 fn test() -> i32 {
-    if netdev_test_cases::run_all()==1 {
+    if netdev_test_cases::run_all() == 1 {
         shutdown();
         return 1;
     }
@@ -407,6 +407,10 @@ fn test() -> i32 {
         return 1;
     }
     if !hugepage_regression::run() {
+        shutdown();
+        return 1;
+    }
+    if !fstat_rename_subtree_regression::run() {
         shutdown();
         return 1;
     }

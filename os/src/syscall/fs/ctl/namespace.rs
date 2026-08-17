@@ -68,8 +68,15 @@ pub fn sys_renameat2(
     if ret.is_ok() {
         invalidate_dentry_path(&old_abs_path);
         invalidate_dentry_path(&new_abs_path);
-        FsIndex::remove_inode_idx(&old_abs_path);
-        FsIndex::remove_inode_idx(&new_abs_path);
+        if osfile.inode.types() == InodeType::Dir {
+            // `lwext4` metadata APIs are pathname-based.  Moving a directory
+            // must therefore retarget every cached descendant that may still
+            // back an open fd, rather than only invalidating the directory.
+            FsIndex::remap_subtree_paths(&old_abs_path, &new_abs_path);
+        } else {
+            FsIndex::remove_inode_idx(&old_abs_path);
+            FsIndex::remove_inode_idx(&new_abs_path);
+        }
     }
     ret
 }

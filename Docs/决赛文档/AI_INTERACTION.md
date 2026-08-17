@@ -3365,6 +3365,7 @@
 - **验证边界**：文档当时用 Typst 编译并做差异检查。本轮不运行内核构建、QEMU 或完整 BuildStorm，避免触及维护者现有镜像和长测状态；完整 A/B 复现流程与 marker 检查已写入文档。
 - **关联文档**：[BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
+
 #### 动态链接路径去硬编码（8.12）
 
 - **工具/模型**：Codex（GPT-5）
@@ -3758,4 +3759,23 @@
 - **描述**：保留版本/快照边界、实现与实验分析、所有数据表、代码块和完整 A/B 复现步骤；将 Typst 的封面、页眉页脚、分页和目录等版式指令改为 Markdown 标题、表格和引用块。删除原 `.typ`，使 `.md` 成为唯一主文档；同步更新决赛文档索引、开发日志、AI 记录和 Ya2yOS 结论章节的引用。
 - **验证边界**：`git diff --check` 通过，Markdown 的 10 个代码围栏成对闭合，仓库中没有指向旧 `.typ` 的链接。本轮未运行内核构建、QEMU、LTP 或 BuildStorm，因为只修改文档。
 - **关联文档**：[BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.md)、[AI 记录](./ai.log)
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm 父目录 rename 后打开子文件 fstat 修复（8.17）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者提供 `server.ans` 中 `ext4_stat_get: rc = 2` 与
+  `Ext4Inode::fstat` warning，要求分析原因并直接修复。
+- **描述**：确认 `rc = 2` 为 `ENOENT`，根因不是 EXT4 损坏，而是 rustc 将增量缓存的
+  `...-working` 父目录整体 rename 后，打开的 `query-cache.bin` 仍持有旧路径。原实现只
+  更新目录 inode 和 `FsIndex` 根项，没有迁移后代 inode 的 live path、alias、写回缓存、
+  descriptor wrapper 路径和索引路径。新增 `Ext4File::remap_path`、`Inode::remap_path_prefix`
+  与 `FsIndex::remap_subtree_paths`，并在目录 `renameat2()` 成功后迁移整个子树；可恢复的
+  旧路径 `ENOENT` 从 ERROR 降为 DEBUG，最终 alias 恢复失败仍保留 WARN。该修复与此前的
+  跨进程 unlink 延迟删除问题分开处理。
+- **验证边界**：RISC-V64 与 LoongArch64 release 构建通过。RISC-V QEMU 输出
+  `fstat rename subtree regression: PASS`，CAgent 全部通过，BuildStorm 完成
+  `BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok` 并进入
+  `pre-build tg-xtask (untimed)`；未跑完整 BuildStorm，未宣称完整评分通过。详见
+  [BuildStorm 父目录 rename 后打开子文件 fstat 返回 ENOENT](./problem/buildstorm-directory-rename-fstat.md)。
 - **关联 commit**：当前工作区未提交

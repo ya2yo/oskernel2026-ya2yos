@@ -211,6 +211,18 @@ impl Ext4File {
         self.file_path.to_str().unwrap_or("")
     }
 
+    /// Update the pathname paired with this descriptor after an ancestor
+    /// directory entry has already moved.  The underlying `ext4_file` still
+    /// refers to the same inode, so reopening or metadata operations must use
+    /// the new pathname without issuing another rename.
+    pub fn remap_path(&mut self, old_path: &str, new_path: &str) -> bool {
+        if self.path_str() != old_path {
+            return false;
+        }
+        self.file_path = CString::new(new_path).expect("CString::new Ext4File path failed");
+        true
+    }
+
     pub fn types(&self) -> InodeTypes {
         self.this_type.clone()
     }
@@ -1957,7 +1969,11 @@ impl Ext4File {
                     return Ok(stat);
                 }
             }
-            error!("ext4_stat_get: rc = {}", r);
+            // Ext4Inode retries through its alias list before reporting a
+            // failure.  A missing current pathname is therefore expected
+            // during rename/unlink recovery and should not look like an
+            // independent kernel error in the normal log.
+            debug!("ext4_stat_get: rc = {}, path={:?}", r, path);
             return Err(r);
         }
 

@@ -253,6 +253,13 @@ pub trait Inode: Send + Sync {
     /// 真正的 inode cache 会让硬链接等多个路径复用同一个 inode 对象。
     /// 默认实现为空，路径敏感的具体文件系统可以用它维护底层路径别名。
     fn cache_path_alias(&self, _path: &str) {}
+    /// Rewrite paths below a directory that has already been renamed.
+    ///
+    /// Backends whose open-file state is pathname-based must update the
+    /// descendant's live pathname here.  Linux keeps an inode-backed file
+    /// handle, so an fd below a renamed directory remains usable even though
+    /// its former absolute pathname no longer resolves.
+    fn remap_path_prefix(&self, _old_prefix: &str, _new_prefix: &str) {}
     ///获取文件的mode，遇到需要文件访问权限的需要使用，暂时放在这里
     fn fmode(&self) -> Result<u32, SysErrNo> {
         unimplemented!("Inode:;fmode");

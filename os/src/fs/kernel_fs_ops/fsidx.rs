@@ -184,6 +184,109 @@ impl FsIndex {
         SPECIAL_NODE_TYPES.write().remove(path);
     }
 
+    /// Move cached pathname bindings below a directory that has already been
+    /// renamed.  The cache mutation is kept atomic with respect to lookups;
+    /// each inode's pathname wrapper is adjusted afterwards, without holding
+    /// the index lock across inode-local locks or filesystem work.
+    pub fn remap_subtree_paths(old_prefix: &str, new_prefix: &str) {
+        if old_prefix == new_prefix {
+            return;
+        }
+
+        let (affected, retired) = {
+            let mut cache = INODE_CACHE.write();
+            let moved = cache
+                .paths
+                .iter()
+                .filter_map(|(path, key)| {
+                    Self::remap_descendant_path(path, old_prefix, new_prefix)
+                        .map(|new_path| (path.clone(), new_path, key.clone()))
+                })
+                .collect::<Vec<_>>();
+            if moved.is_empty() {
+                (Vec::new(), Vec::new())
+            } else {
+                let destination_paths = cache
+                    .paths
+                    .keys()
+                    .filter(|path| {
+                        Self::remap_descendant_path(path, new_prefix, old_prefix).is_some()
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut displaced_keys =
+                    Vec::with_capacity(destination_paths.len() + moved.len());
+                for path in destination_paths {
+                    if let Some(key) = cache.paths.remove(&path) {
+                        displaced_keys.push(key);
+                    }
+                }
+                for (old_path, _, _) in &moved {
+                    if let Some(key) = cache.paths.remove(old_path) {
+                        displaced_keys.push(key);
+                    }
+                }
+                for (_, new_path, key) in &moved {
+                    if let Some(replaced) = cache.paths.insert(new_path.clone(), key.clone()) {
+                        displaced_keys.push(replaced);
+                    }
+                }
+
+                let mut affected = Vec::new();
+                for (_, _, key) in &moved {
+                    let Some(inode) = cache.inodes.get(key).cloned() else {
+                        continue;
+                    };
+                    if affected
+                        .iter()
+                        .all(|existing| !Arc::ptr_eq(existing, &inode))
+                    {
+                        affected.push(inode);
+                    }
+                }
+
+                let mut retired = Vec::new();
+                for key in displaced_keys {
+                    if cache.paths.values().any(|candidate| candidate == &key) {
+                        continue;
+                    }
+                    if let Some(inode) = cache.inodes.remove(&key) {
+                        retired.push(inode);
+                    }
+                }
+                (affected, retired)
+            }
+        };
+
+        for inode in affected {
+            inode.remap_path_prefix(old_prefix, new_prefix);
+        }
+        drop(retired);
+
+        let mut special_nodes = SPECIAL_NODE_TYPES.write();
+        let destination_paths = special_nodes
+            .keys()
+            .filter(|path| Self::remap_descendant_path(path, new_prefix, old_prefix).is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        for path in destination_paths {
+            special_nodes.remove(&path);
+        }
+        let moved = special_nodes
+            .iter()
+            .filter_map(|(path, inode_type)| {
+                Self::remap_descendant_path(path, old_prefix, new_prefix)
+                    .map(|new_path| (path.clone(), new_path, *inode_type))
+            })
+            .collect::<Vec<_>>();
+        for (old_path, _, _) in &moved {
+            special_nodes.remove(old_path);
+        }
+        for (_, new_path, inode_type) in moved {
+            special_nodes.insert(new_path, inode_type);
+        }
+    }
+
     /// Evict inode cache entries that are no longer referenced by a live VFS
     /// user.  `INODE_CACHE` itself owns one strong Arc per key.  Callers clear
     /// the strong dentry cache first, so a count of one means this cache is the
@@ -232,6 +335,18 @@ impl FsIndex {
 
     pub fn print_inner() {
         println!("{:#?}", INODE_CACHE.read().paths.keys());
+    }
+
+    fn remap_descendant_path(path: &str, old_prefix: &str, new_prefix: &str) -> Option<String> {
+        if path == old_prefix {
+            return Some(new_prefix.to_string());
+        }
+        let suffix = path.strip_prefix(old_prefix)?;
+        suffix.starts_with('/').then(|| {
+            let mut remapped = new_prefix.to_string();
+            remapped.push_str(suffix);
+            remapped
+        })
     }
 
     fn cache_key(path: &str, inode: &Arc<dyn Inode>) -> InodeCacheKey {
