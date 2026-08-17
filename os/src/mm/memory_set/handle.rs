@@ -117,6 +117,51 @@ impl MemorySet {
         result
     }
 
+    /// Update mprotect metadata and PTE permissions without serializing
+    /// unrelated address spaces when no other hart can retain this page table
+    /// in its TLB.
+    ///
+    /// The current hart is removed from `active_harts` before taking the VMA
+    /// write lock. A hart entering user mode must take that lock before it
+    /// publishes its active bit, so an empty mask observed while holding the
+    /// lock proves that a local invalidation is sufficient. Re-publish the
+    /// current hart before releasing the write lock; otherwise a second
+    /// writer could miss it and leave it with a stale translation.
+    fn with_mprotect_mut(
+        &self,
+        f: impl FnOnce(&mut MemorySetInner) -> crate::utils::SyscallRet,
+    ) -> (crate::utils::SyscallRet, bool) {
+        let was_active = self.deactivate_current_hart();
+        let mut inner = self.inner.write();
+        if self.active_harts.load(Ordering::Acquire) == 0 {
+            let result = f(&mut inner);
+            if result.is_ok() {
+                crate::arch::tlb::tlb_invalidate();
+                crate::arch::tlb::instruction_fence();
+            }
+            if was_active {
+                self.activate_current_hart();
+            }
+            return (result, true);
+        }
+        drop(inner);
+
+        let _update_guard = crate::mm::remote_tlb::lock_updates();
+        let mut inner = self.inner.write();
+        let result = f(&mut inner);
+        if result.is_ok() {
+            crate::mm::remote_tlb::shootdown(
+                &self.active_harts,
+                #[cfg(feature = "perf")]
+                crate::mm::remote_tlb::ShootdownKind::Mprotect,
+            );
+        }
+        if was_active {
+            self.activate_current_hart();
+        }
+        (result, false)
+    }
+
     /// Execute a broad page-table update which may retire any resident frame.
     /// Prefer a range-targeted or frame-preserving entry for bounded updates.
     pub(crate) fn with_mut<T>(&self, f: impl FnOnce(&mut MemorySetInner) -> T) -> T {
@@ -555,11 +600,13 @@ impl MemorySet {
         end_vpn: VirtPageNum,
         map_perm: MapPermission,
     ) -> SyscallRet {
-        self.with_frame_preserving_mut_with_kind(
-            #[cfg(feature = "perf")]
-            crate::mm::remote_tlb::ShootdownKind::Mprotect,
-            |inner| inner.mprotect(start_vpn, end_vpn, map_perm),
-        )
+        let (result, _local_fast_path) =
+            self.with_mprotect_mut(|inner| inner.mprotect(start_vpn, end_vpn, map_perm));
+        #[cfg(feature = "perf")]
+        if _local_fast_path && result.is_ok() {
+            crate::utils::perf::record_mprotect_local_fastpath();
+        }
+        result
     }
 
     /// Adjust an mmap range while retaining only frames which the operation can

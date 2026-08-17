@@ -1495,7 +1495,7 @@ pub(super) fn emit_report(now: usize) {
     );
     emit_section("MM");
     println!(
-        "[perf] remote_tlb shootdowns={} local_only={} remote={} target_harts={} acknowledgements={} page_fault={} cow={} munmap={} mprotect={} mremap={} fork_exec={} other={}",
+        "[perf] remote_tlb shootdowns={} local_only={} remote={} target_harts={} acknowledgements={} page_fault={} cow={} munmap={} mprotect={} mprotect_local_fastpath={} mremap={} fork_exec={} other={}",
         REMOTE_TLB_SHOOTDOWNS.load(Ordering::Relaxed),
         REMOTE_TLB_LOCAL_ONLY_SAMPLES.load(Ordering::Relaxed),
         REMOTE_TLB_REMOTE_SAMPLES.load(Ordering::Relaxed),
@@ -1505,6 +1505,7 @@ pub(super) fn emit_report(now: usize) {
         remote_tlb_shootdowns_by_source[1],
         remote_tlb_shootdowns_by_source[2],
         remote_tlb_shootdowns_by_source[3],
+        MPROTECT_LOCAL_FASTPATHS.load(Ordering::Relaxed),
         remote_tlb_shootdowns_by_source[4],
         remote_tlb_shootdowns_by_source[5],
         remote_tlb_shootdowns_by_source[6],

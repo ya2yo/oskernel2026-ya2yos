@@ -23,9 +23,12 @@
 //! 3. MM child locks reached by the operation, such as `GROUP_SHARE`, frame
 //!    allocation, or page-cache locks.
 //!
-//! A PTE update which retains the same PPN and only relaxes a local
-//! permission/dirty bit may use `inner` alone: a stale remote TLB entry is more
-//! restrictive and faults before it can access a different physical frame.
+//! A PTE update which retains the same PPN may use `inner` alone only after
+//! confirming that no remote hart is active in the address space. It must then
+//! invalidate the local TLB before republishing the current hart. A stale
+//! remote TLB entry is safe without a shootdown only for a permission/dirty-bit
+//! relaxation, because it remains more restrictive and faults before it can
+//! access a different physical frame.
 //! Never acquire `UPDATE_LOCK` while a `MemorySet` guard is held, and never
 //! hold two `MemorySet` guards at once. Cross-address-space operations must
 //! snapshot `Arc`-owned frames or scalar metadata from the source, release its
