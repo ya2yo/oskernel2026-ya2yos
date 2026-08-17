@@ -26,7 +26,7 @@ timer maintenance 由单 hart 排他执行，避免多 hart 对同一共享 time
 BuildStorm 尾部编译单元从约 12 分钟降至约 8 分钟（约 `1.50x`、时间缩短约 33.3%）；这是
 定向观测，不外推为完整 446 crate 成绩。完整结果只以官方
 `BUILDSTORM_COMPILE ... ok=true elapsed_s=...` 的同配置对照为准。详细证据位于
-`Docs/决赛文档/buildstorm-优化实现文档.typ` 和 `Docs/决赛文档/problem/`。
+`Docs/决赛文档/buildstorm-优化实现文档.md` 和 `Docs/决赛文档/problem/`。
 
 === 系统完整性
 

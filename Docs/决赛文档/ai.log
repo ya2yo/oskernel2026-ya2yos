@@ -12613,3 +12613,21 @@ proc/sys 文件。测试结束后恢复 `initproc`、
 为获得独立证据，临时把 `main()` 改为只运行该测例，RISC-V64 QEMU 输出
 `hugepage regression: PASS` 和 `shutdown!`；随后恢复原 `run_selected_tests()`。恢复后
 RISC-V64 与 LoongArch64 release 构建均通过，正式启动入口未改变。
+
+## 2026-08-17：BuildStorm 优化实现文档转 Markdown
+
+### 用户需求
+
+维护者要求将 `Docs/决赛文档/buildstorm-优化实现文档.typ` 转换为 Markdown 格式文件。
+
+### AI 分析与采纳结论
+
+将 Typst 的封面和排版指令转换为 Markdown 标题、元数据表和引用块；正文的章节、实现边界、
+数据表、代码块、实验限制及完整 A/B 复现步骤逐项保留。移除版式专用的页眉、页脚、分页和
+目录指令。为避免两个版本后续内容漂移，采纳以 `.md` 作为唯一主文档并删除原 `.typ` 的做法。
+
+### 修改与验证
+
+新增 `Docs/决赛文档/buildstorm-优化实现文档.md`，删除对应 `.typ` 文件，并更新决赛文档
+索引、开发日志、AI 交互记录及 Ya2yOS 结论章节中的链接。`git diff --check` 通过，代码围栏
+成对闭合，仓库中没有旧 `.typ` 链接；本轮仅处理文档，未运行内核构建、QEMU、LTP 或 BuildStorm。

@@ -3362,8 +3362,8 @@
 - **工具/模型**：Codex（GPT-5）
 - **场景**：维护者要求根据近一个月 BuildStorm 修改提交人工评审文档，需覆盖根因、实现、实验数据、AI 说明和可复现步骤，直接存放于 `Docs/决赛文档/`。
 - **描述**：检索 Git 历史、官方脚本、当前日志和逐项复盘，按工具链正确性、并行调度、MemorySet/remote-TLB、页缓存/EXT4、稀疏写/bcache 和 perf 观测归纳已实现修改。以官方 `BUILDSTORM_COMPILE ... ok=true elapsed_s=...` 定义端到端计时；当前日志没有该标记，故只报告可追溯的 `axbuild` 定向观测约 12 分钟到约 8 分钟（约 1.50x、缩短约 33.3%），不把阶段进度或累计锁时间伪装成全量加速。
-- **验证边界**：文档将用 Typst 编译并做差异检查。本轮不运行内核构建、QEMU 或完整 BuildStorm，避免触及维护者现有镜像和长测状态；完整 A/B 复现流程与 marker 检查已写入文档。
-- **关联文档**：[BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.typ)、[AI 记录](./ai.log)
+- **验证边界**：文档当时用 Typst 编译并做差异检查。本轮不运行内核构建、QEMU 或完整 BuildStorm，避免触及维护者现有镜像和长测状态；完整 A/B 复现流程与 marker 检查已写入文档。
+- **关联文档**：[BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交
 #### 动态链接路径去硬编码（8.12）
 
@@ -3749,4 +3749,13 @@
   `hugeshm*` 时发现 `hugeshmat05` 会触发 SysV shm 未知标志的 `unwrap()`；加入 `EINVAL`
   校验后复测为 `shmget failed: EINVAL`，不再 panic。
 - **关联问题**：[用户态匿名 2 MiB hugepage 映射](./problem/user-hugepage-mmap-2m.md)
+- **关联 commit**：当前工作区未提交
+
+#### BuildStorm 优化实现文档转 Markdown（8.17）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求将 BuildStorm 优化实现文档从 Typst 转换为 Markdown。
+- **描述**：保留版本/快照边界、实现与实验分析、所有数据表、代码块和完整 A/B 复现步骤；将 Typst 的封面、页眉页脚、分页和目录等版式指令改为 Markdown 标题、表格和引用块。删除原 `.typ`，使 `.md` 成为唯一主文档；同步更新决赛文档索引、开发日志、AI 记录和 Ya2yOS 结论章节的引用。
+- **验证边界**：`git diff --check` 通过，Markdown 的 10 个代码围栏成对闭合，仓库中没有指向旧 `.typ` 的链接。本轮未运行内核构建、QEMU、LTP 或 BuildStorm，因为只修改文档。
+- **关联文档**：[BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.md)、[AI 记录](./ai.log)
 - **关联 commit**：当前工作区未提交

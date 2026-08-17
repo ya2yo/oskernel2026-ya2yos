@@ -1,6 +1,6 @@
 # Problem 复盘索引
 
-- [BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.typ)
+- [BuildStorm 测例内核设计与优化实现文档](./buildstorm-优化实现文档.md)
 - [启动器探测 RAM 布局](./problem/bootloader-discovered-ram-layout.md)
 - [QEMU 10 高地址 FDT 启动映射](./problem/riscv-qemu10-high-fdt-bootstrap-map.md)
 - [VisionFive 2 板级启动与 UART 驱动](./problem/visionfive2-board-bringup.md)
