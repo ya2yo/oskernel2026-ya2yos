@@ -160,7 +160,7 @@
   #v(0.42cm)
   #grid(columns: (1fr, 1fr), gutter: 14pt,
     panel("01  ·  系统定位", [Rust 宏内核、Linux ABI、RISC-V64 / LoongArch64；面向真实 Linux 用户态路径与工具链负载。], color: blue, fill: pale-blue),
-    panel("02  ·  系统介绍", [从系统架构图出发，依次介绍进程管理、多核调度、内存管理、信号机制、网络模块和设备驱动。], color: teal, fill: pale-teal),
+    panel("02  ·  系统介绍", [从系统架构图出发，依次介绍进程管理、多核调度、内存管理、信号机制、文件系统和设备驱动。], color: teal, fill: pale-teal),
     panel("03  ·  关键增量", [多核运行、CFS 调度、StarryOS 网络移植、uaccess、文件锁、syscall 扩展与模块重构。], color: orange, fill: pale-orange),
     panel("04  ·  发展规划", [扩展文件系统类型、提升文件 I/O、持续丰富网络模块，并完成开发板实机运行与验证。], color: red, fill: pale-red),
   )
@@ -199,7 +199,7 @@
 ]
 
 // 5 · system introduction
-#chapter-cover("02", "系统介绍", "从系统架构图出发，沿进程、调度、内存、信号、网络与驱动走完整实现路径", color: teal, fill: pale-teal)
+#chapter-cover("02", "系统介绍", "从系统架构图出发，沿进程、调度、内存、信号、文件系统与驱动走完整实现路径", color: teal, fill: pale-teal)
 #slide[
   #titlebar("02  ·  SYSTEM INTRODUCTION", "系统架构", subtitle: "五类内核组件由 Linux ABI 统一入口衔接，并通过 HAL 收敛架构与设备差异")
   #v(0.03cm)
@@ -317,21 +317,21 @@
   )
 ]
 
-// 10 · network
+// 10 · file systems
 #slide[
-  #titlebar("02  ·  SYSTEM INTRODUCTION", "网络模块：主要 socket 路径落到 smoltcp 与设备收发", subtitle: "当前以 poll 驱动为主，协议状态与设备缓冲区通过适配层衔接")
+  #titlebar("02  ·  SYSTEM INTRODUCTION", "文件系统：VFS 统一路径与 inode 语义", subtitle: "路径解析、缓存和 EXT4 / ProcFS 适配共同承接 Linux 文件 I/O")
   #v(0.22cm)
   #grid(columns: (1fr, 0.16fr, 1fr, 0.16fr, 1fr, 0.16fr, 1fr), gutter: 4pt,
-    flow-step("socket fd", "TCP / UDP / Unix", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
-    flow-step("SocketSet", "连接与缓冲状态", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
-    flow-step("smoltcp service", "协议栈 poll", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
-    flow-step("Router / NIC", "RX / TX token", color: red, fill: pale-red),
+    flow-step("path syscall", "open / stat / mount", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
+    flow-step("VFS", "path / dentry / inode", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
+    flow-step("filesystem", "EXT4 / ProcFS", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
+    flow-step("cache + block", "Page Cache / VirtIO", color: red, fill: pale-red),
   )
   #v(0.42cm)
   #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
-    panel("Linux socket 边界", [支持 TCP、UDP 与 Unix socket 的主要 fd 路径；poll waiter 将已实现的连接、可读写和错误状态转化为任务可观察的就绪事件。], color: blue, fill: pale-blue),
-    panel("协议栈封装", [`Service` 持有 smoltcp Interface；`SocketSet` 管理协议 socket，网络服务以 poll 为主推进协议状态。], color: teal, fill: pale-teal),
-    panel("设备适配边界", [`Router` 对接 loopback、Ethernet 与 VirtIO-net 的 RX / TX token；完整中断/NAPI 和高级协议语义仍在完善。], color: orange, fill: pale-orange),
+    panel("VFS 对象模型", [`FileTable` 持有文件描述符；路径解析通过 mount、dentry 和 inode 找到对象，目录、普通文件与符号链接共享统一接口。], color: blue, fill: pale-blue),
+    panel("文件系统适配", [`Ext4Inode` 将 lwext4 暴露为 VFS `Inode`；根 superblock 提供 EXT4 挂载、statfs、目录遍历和同步，`/proc` 由内核文件接口承接。], color: teal, fill: pale-teal),
+    panel("缓存与 I/O 边界", [Page Cache、dentry cache 和 inode 状态减少重复访问；块设备通过统一接口提交 VirtIO I/O，文件页缺页与写回再与内存管理衔接。], color: orange, fill: pale-orange),
   )
 ]
 
