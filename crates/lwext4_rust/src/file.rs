@@ -2273,7 +2273,15 @@ impl Ext4File {
         let mut result: u64 = 0;
         let rc = unsafe { ext4_fseek_data_raw(&mut self.file_desc, offset, &mut result) };
         if rc != EOK as i32 {
-            error!("ext4_fseek_data: rc = {}", rc);
+            if rc == ENXIO as i32 {
+                debug!(
+                    "ext4_fseek_data: no data at or after offset {} for {}, rc = ENXIO",
+                    offset,
+                    self.path_str()
+                );
+            } else {
+                error!("ext4_fseek_data: rc = {}", rc);
+            }
             return Err(rc);
         }
         Ok(result)
@@ -2286,7 +2294,15 @@ impl Ext4File {
         let mut result: u64 = 0;
         let rc = unsafe { ext4_fseek_hole_raw(&mut self.file_desc, offset, &mut result) };
         if rc != EOK as i32 {
-            error!("ext4_fseek_hole: rc = {}", rc);
+            if rc == ENXIO as i32 {
+                debug!(
+                    "ext4_fseek_hole: offset {} is at or beyond EOF for {}, rc = ENXIO",
+                    offset,
+                    self.path_str()
+                );
+            } else {
+                error!("ext4_fseek_hole: rc = {}", rc);
+            }
             return Err(rc);
         }
         Ok(result)
