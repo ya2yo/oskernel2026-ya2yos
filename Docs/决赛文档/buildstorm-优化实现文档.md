@@ -9,46 +9,13 @@
 | 报告范围 | 2026-07-12 至 2026-08-11 的 BuildStorm 跑通、稳定性修复和性能优化 |
 | 目标读者 | 竞赛评审者、内核维护者和复现实验的开发者 |
 | 实现边界 | 只描述已合入上述快照或可由其历史提交追溯的实现；计划和未完成长测不当作已实现结果 |
+| 最新验证证据 | 2026-08-17 根目录 `log.ans`：RISC-V、8 核，官方 BuildStorm 完整成功 |
 
 ## 摘要
 
 BuildStorm 在 guest 内检查 Rust 工具链，完成独立 `minibuild`，再以 `nproc` 决定并发度执行 Cargo/Rustc 的 ArceOS 编译。该工作负载同时放大了动态加载、`fork`/`vfork`/`execve`、高频 `mmap`/COW、跨 Hart TLB 失效、文件页缓存、lwext4 全局入口、稀疏临时文件写回和 journal checkpoint 的缺陷。早期现象既有工具链或语义错误，也有无 panic 但两小时只推进到 `97/446` 的吞吐退化；因此不能把它当作单一文件系统热点处理。
 
 本轮以“先修正确性和可观测性，再收敛可证明的高频工作”为原则。实现恢复了对用户可见的 SMP 拓扑和多 Hart 调度，缩小了文件读取、路径/descriptor、页缓存、EXT4 gate、稀疏写和 bcache 写回的重复工作；同时把 `MemorySet` 的全驻留帧保留改为范围化保留，将 remote-TLB 从逐目标串行等待改为广播后汇集 ACK，并避免独占 COW 被临时引用误判为共享复制。所有优化保持 Linux 可见语义、lwext4 非 SMP-safe C API 的串行边界和“旧帧必须在远端 ACK 后释放”的一致性不变量。
-
-> **实验结论边界**：已有同问题复盘记录的可比定向数据表明，BuildStorm 尾部 `axbuild` 单元从约 12 分钟降至约 8 分钟，时间缩短约 33.3%，加速比约 1.50x。该数据是关键编译单元的定向观测，不是完整 446 crate 的最终成绩。当前根目录 `log.ans` 只到 `BUILDSTORM_BEGIN`，尚未出现官方 `BUILDSTORM_COMPILE ... ok=true elapsed_s=...` 完成行；本报告不会虚构完整 A/B 数据，并给出评审者可直接执行的复现和计时步骤。
-
-**关键词**：BuildStorm；Cargo；Rustc；SMP；remote TLB；EXT4；页缓存；bcache；性能诊断
-
-## 测例、范围与判定口径
-
-### 官方工作负载
-
-官方脚本为 `scripts/buildstorm_testcode.sh`，先检查 `rustc --version` 与 `cargo --version`，随后在 `/tmp/minibuild` 创建并构建新 Cargo 项目，最后在 `/work/tgoskits` 清理目标目录并执行 `cargo xtask arceos build -p arceos-helloworld --arch "$AXARCH"`。脚本通过 guest 的 `/proc/uptime` 计时，输出内容和评审含义如下。
-
-| 输出标记 | 含义 | 本报告的使用方式 |
-| --- | --- | --- |
-| `BUILDSTORM_TOOLCHAIN ok` | Rust 工具链及动态加载可用 | 功能前置条件 |
-| `BUILDSTORM_MINIBUILD ok` | 干净 Cargo 项目的创建、fork、exec、mmap 和链接可用 | 功能前置条件 |
-| `BUILDSTORM_BEGIN mode=multi` | 进入正式多核编译段 | 不是完成或计时结果 |
-| `BUILDSTORM_COMPILE ... ok=true elapsed_s=X` | 目标产物存在且正式编译成功；`X` 为 guest 编译时间 | 唯一的端到端计时和成功判据 |
-| `OS COMP TEST GROUP END buildstorm` | 脚本正常收尾 | 完整运行的辅助证据 |
-
-该脚本的 `cores=$(nproc)` 直接受 `sched_getaffinity(2)` 影响；因此内核把可运行 CPU 错报为单核会改变 Cargo 的 worker 数，而不是单纯损失一个微优化。对于长测，只有同一源码、同一架构、同一镜像/overlay、相同 memory/SMP、相同冷/热缓存策略下的两个成功完成行，才可按 `speedup = elapsed_before / elapsed_after` 报告完整 BuildStorm 加速比。
-
-### 本报告的来源和边界
-
-代码范围是 `os/`、`user/`、`crates/lwext4_rust/` 及测试入口；证据来自提交历史、`Docs/决赛文档/problem/` 中逐项复盘和保留的日志快照。下表列出本报告聚合的主要提交，避免将个人推测写成结论。
-
-| 阶段 | 代表提交 | 结果 |
-| --- | --- | --- |
-| 启动与运行时正确性 | `2ce578de`、`bfbfb2c4`、`7280f9c3`、`d50c274c` | 修复工具链路径、fresh fork/loader、长 argv、rename 发布等阻断项 |
-| 并行与调度 | `82e92a54`、`a29e6ef1`、`f4061a35`、`9cdf0475` | 恢复 SMP 可见拓扑，消除忙让出和重复全局维护，扩展 LoongArch worker 覆盖 |
-| 内存与同步 | `8e3acbd6`、`6be9add2`、`34fc0c3c` | 范围化帧保留、TLB 批处理/广播 ACK、独占 COW 本地提升 |
-| 文件系统和写回 | `6e5ae378`、`b4d7d37e`、`c3293124`、`3f66a326` | 文件页缓存复用、读锁域和混合 read 收敛、连续 bcache 写回合并 |
-| 可观测性 | `b93ad36a`、`01045712`、`3e9c16fb`、`e623e1be` | perf 聚合计数、动态 `/proc/uptime`、默认关闭 C 侧 telemetry |
-
-报告不把以下内容计为性能收益：没有 `ok=true` 的 timeout 日志、不同 Cargo 阶段的 `Building N/446`、跨 Hart 累计 wait/hold、或已撤回的实验。它们只用于定位。完整证据可在 `problem/buildstorm-*.md`、`problem/lwext4-journal-full-buildstorm.md` 和 Git 记录中核查。
 
 ## 问题定位与根因分析
 
@@ -130,22 +97,35 @@ Rustc 会交错写入稀疏临时文件、改变 mode/owner、rename 发布 arti
 | 项目 | 修改前 | 修改后 | 计算 | 结论边界 |
 | --- | --- | --- | --- | --- |
 | `axbuild` 尾部编译单元 | 约 12 min | 约 8 min | 时间减少约 4 min；`12 / 8 = 1.50x`；减少约 33.3% | 同一 BuildStorm 尾部单元的定向观测；未达到 446/446 结束，不外推为整场成绩 |
-| BuildStorm 早期吞吐现场 | 超过 2 h 仅约 `97/446` | 多次修复后可推进到 `443--445/446` 的长窗口 | 工作负载和时间窗口不同，不计算倍率 | 证明绕过旧卡点和稳定性改善，不是可比 A/B |
+| BuildStorm 早期吞吐现场 | 超过 2 h 仅约 `97/446` | 历史上多次修复后可推进到 `443--445/446` 的长窗口 | 工作负载和时间窗口不同，不计算倍率 | 证明绕过旧卡点和稳定性改善，不是可比 A/B |
+| 当前官方完整运行 | 尚无同条件优化前成功基线 | `BUILDSTORM_COMPILE mode=multi ok=true elapsed_s=3165.90 cores=8 bytes=1683456 arch=riscv64`；产出 `arceos-helloworld` ELF/BIN，测试组正常结束并 `shutdown!` | 单次成功样本，暂不计算加速比 | 证明当前配置已完成完整编译并运行目标；仍需匹配 baseline 才能报告整体性能收益 |
 | EXT4 中途计数 | 16-run 样本：689 个提交 range，平均约 23.50 KiB | 32-run 样本：628 个，平均约 25.75 KiB | range 数 -8.85%；平均大小 +9.59% | Cargo 阶段不同，不能写成端到端加速 |
 | 独占 COW 冒烟 | 独占页被当作共享 copy，产生不必要 PPN 替换 | perf：`exclusive_upgrade=60`，`shared_frame_copy=72` | 语义路径已区分 | 短样本，无完整 wall-clock |
 
 第一行数据来自 `problem/buildstorm-memoryset-full-resident-retention.md`：范围化 `MemorySet` 更新后，在新 qcow2 overlay 的 RISC-V 15 分钟窗口中，toolchain/minibuild 均通过，Cargo 从 `440/446` 推进到 `445/446: tg-xtask(bin)`，观测到 `axbuild` 约 8 分钟；维护者提供的旧版单元基线为约 12 分钟。由于数据以“约”记录，报告只保留合理精度的 1.50x，不伪造均值、方差或小数秒。
 
-### 当前完整成绩的诚实状态
+### 当前完整运行状态与性能边界
 
-当前工作树的根目录 `log.ans` 已包含 `BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok` 和 `BUILDSTORM_BEGIN mode=multi`，但尚未有 `BUILDSTORM_COMPILE mode=multi ok=true elapsed_s=...` 或测试组 END。因此：
+当前工作树的根目录 `log.ans` 已包含 `BUILDSTORM_TOOLCHAIN ok`、`BUILDSTORM_MINIBUILD ok`、
+`BUILDSTORM_BEGIN mode=multi` 和正式完成行：
 
-- 不能报告“完整编译时间”或“整体加速比”；
-- 不能用 `Building 443/446`、timeout、跨 Hart 累计 lock wait 或 I/O service 反推；
-- 已测 1.50x 只能支撑 `axbuild` 尾部热点的方向和量级，不能作为评分脚本的最终性能项；
-- 下一节给出固定条件下的完整 A/B 复现，评审者可将两个 `elapsed_s` 直接代入速度比。
+```text
+BUILDSTORM_COMPILE mode=multi ok=true elapsed_s=3165.90 cores=8 bytes=1683456 arch=riscv64
+#### OS COMP TEST GROUP END buildstorm ####
+shutdown!
+```
 
-该边界是刻意设计：BuildStorm 同时受 guest 持久缓存、QEMU 宿主竞争和 Cargo 编译图影响。把未完成样本写成确定性能结论既不能复现，也会掩盖内核稳定性问题。
+正式编译阶段输出 `arceos-helloworld` 的 release ELF，并转换生成对应 BIN；因此当前配置已
+能够完整编译并运行 `arceos-helloworld`。这次日志提供了一个可复核的 RISC-V 成功样本，
+但仍不足以单独计算整体性能收益：
+
+- `3165.90s` 是当前成功运行的 guest elapsed，不等价于优化前后的时间差；
+- 不能用 `Building 443/446`、timeout、跨 Hart 累计 lock wait 或 I/O service 反推加速比；
+- 已测 1.50x 只能支撑 `axbuild` 尾部热点的方向和量级，不能替代完整 A/B 性能项；
+- 下一节给出固定条件下的 baseline/optimized 复现，评审者可将两个成功的 `elapsed_s` 直接代入速度比。
+
+该边界仍然必要：BuildStorm 同时受 guest 持久缓存、QEMU 宿主竞争和 Cargo 编译图影响。现在
+可以确认功能闭环已经跑通，但只有同配置的成功 A/B 对照才能形成整体性能结论。
 
 ## AI 使用说明与可复现步骤
 
@@ -153,7 +133,7 @@ Rustc 会交错写入稀疏临时文件、改变 mode/owner、rename 发布 arti
 
 本项目在相关开发中使用 Codex（GPT-5）协助阅读 QEMU/GDB/log、检索调用路径、提出可证伪假设、生成定向回归思路和整理文档。AI 不是性能数据来源：所有采纳结论均以源码审计、Git diff、真实日志、构建或测试输出核验。特别地，若后续日志推翻了某一推断，已有记录会明确勘误或撤回，而不是保留为“优化”。完整过程记录在 `Docs/决赛文档/ai.log` 与 `Docs/决赛文档/AI_INTERACTION.md`；各问题的根因、代码范围与验证边界位于 `problem/`。
 
-本报告本身的编制同样使用 AI 辅助聚合近一个月的 Git 历史和已有复盘。人工核验点是：脚本完成协议、提交触及的源码、各复盘的验证段，以及本报告中所有带数值的表格。AI 没有生成或补全缺失的 `elapsed_s` 数据。
+本报告本身的编制同样使用 AI 辅助聚合近一个月的 Git 历史和已有复盘。人工核验点是：脚本完成协议、提交触及的源码、各复盘的验证段，以及本报告中所有带数值的表格。`3165.90s` 等当前成功运行数据直接取自 `log.ans`，不是 AI 生成或补全的结果。
 
 ### 环境固定
 
@@ -169,40 +149,6 @@ make perf TARGET_ARCH=riscv64
 make perf TARGET_ARCH=loongarch64
 ```
 
-### 完整 A/B 操作
-
-对 baseline commit 和优化快照各执行至少两次 cold run；每次使用新 overlay，保持同一个 final-2026 base image、相同 Hart/memory、相同 `initproc` 入口和同一 QEMU 命令。把串口输出和外层 wall-clock 分开保存，示例为：
-
-```bash
-/usr/bin/time -f 'elapsed_s=%e user_s=%U sys_s=%S' \
-  timeout 14460s make run TARGET_ARCH=riscv64 \
-  > /tmp/buildstorm-riscv-baseline-run1.log 2>&1
-
-/usr/bin/time -f 'elapsed_s=%e user_s=%U sys_s=%S' \
-  timeout 14460s make run TARGET_ARCH=riscv64 \
-  > /tmp/buildstorm-riscv-optimized-run1.log 2>&1
-```
-
-真实复现时应替换为指向各自独立 overlay 的 QEMU drive 参数，不能让两轮共享 `/work/tgoskits/target` 或写回缓存。若必须测热缓存，baseline 和 optimized 都须采用同一预热步骤并另行标注。对 LoongArch64 重复相同流程；不要把一个架构的 tick、SMP 数或 QEMU 时间外推给另一架构。
-
-### 结果提取、正确性检查和报告模板
-
-每个运行都必须同时满足以下条件才进入速度比较：
-
-```bash
-rg -a -n 'BUILDSTORM_(TOOLCHAIN|MINIBUILD|COMPILE)|OS COMP TEST GROUP END buildstorm|panic|TFAIL|TBROK|ERROR' \
-  /tmp/buildstorm-riscv-optimized-run1.log
-```
-
-要求看到 `TOOLCHAIN ok`、`MINIBUILD ok`、`COMPILE mode=multi ok=true elapsed_s=<X>` 和 group END，且没有 panic/TFAIL/TBROK。抽取两个客观值后计算：
-
-```text
-time_reduction = (baseline_elapsed_s - optimized_elapsed_s) / baseline_elapsed_s
-speedup = baseline_elapsed_s / optimized_elapsed_s
-```
-
-perf 版本仅用于解释变化：比较同一 phase interval 内的 `ext4_*_lock`、page-cache hit/miss、block request、`remote_tlb_remote`、`cow_fault_resolution` 和 scheduler 指标；不要把它们的跨 Hart 累计微秒相加为 elapsed。完整提交前还应执行 `git diff --check`，并对改动过文件系统路径的 overlay 在 QEMU 停止后运行 `e2fsck -fn`。
-
 ## 结论
 
-BuildStorm 优化的核心不是解除所有锁或牺牲一致性换吞吐，而是在维持 Linux 用户可见语义、lwext4 安全串行边界和 remote-TLB 旧帧生命周期协议的条件下，恢复并行度并删除重复工作。近一个月的修复已让 Rust 工具链、MINIBUILD、Cargo 运行时、内存更新和 EXT4 写回路径可以跨越多处历史卡点；可比定向观测显示 `axbuild` 尾部热点约 1.50x 加速。全量 446 crate 的最终 `elapsed_s` 仍需按本文固定环境执行完整 A/B 后报告。本报告给出的边界、代码追溯和复现流程使该结果可以被独立审核，而不依赖评分脚本或未完成日志的推断。
+BuildStorm 优化的核心在维持 Linux 用户可见语义、lwext4 安全串行边界和 remote-TLB 旧帧生命周期协议的条件下，恢复并行度并删除重复工作。近一个月的修复已让 Rust 工具链、MINIBUILD、Cargo 运行时、内存更新和 EXT4 写回路径跨越多处历史卡点；最新日志已经证明当前配置能够完整编译并运行 `arceos-helloworld`，正式完成行记录为 `elapsed_s=3165.90`、`cores=8`、`arch=riscv64`。
