@@ -14,9 +14,9 @@ pub mod virtio;
 pub use ahci::AhciBlkDev;
 #[cfg(feature = "2k1000")]
 pub type BlockDeviceImpl = AhciBlkDev;
-#[cfg(not(feature = "2k1000"))]
-pub use virtio::BlockDeviceImpl;
 #[cfg(all(feature = "net", feature = "2k1000"))]
 pub use ls2k1000_gmac::Ls2k1000Gmac as NetDeviceImpl;
+#[cfg(not(feature = "2k1000"))]
+pub use virtio::BlockDeviceImpl;
 #[cfg(all(feature = "net", not(feature = "2k1000")))]
 pub use virtio::NetDeviceImpl;

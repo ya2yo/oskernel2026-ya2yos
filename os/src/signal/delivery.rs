@@ -418,15 +418,13 @@ pub(crate) fn send_exec_teardown_kill(tid: usize) {
 /// `send_signal_to_thread()` 的区别是会为 `SA_SIGINFO` 保存发送者 siginfo。
 pub fn send_user_signal_to_thread(tid: usize, sig: SigSet, signo: usize) {
     if let Some(task) = tid_to_task::tid2task(tid) {
-        let siginfo = current_signal_cred()
-            .ok()
-            .and_then(|sender| {
-                Some(SigInfo::new_tkill(
-                    signo as u32,
-                    sender.pid as u32,
-                    sender.real_uid,
-                ))
-            });
+        let siginfo = current_signal_cred().ok().and_then(|sender| {
+            Some(SigInfo::new_tkill(
+                signo as u32,
+                sender.pid as u32,
+                sender.real_uid,
+            ))
+        });
         add_signal_with_info(&task, sig, siginfo, SignalDeliverySource::Normal);
     }
 }
@@ -438,9 +436,7 @@ pub fn send_user_signal_to_thread(tid: usize, sig: SigSet, signo: usize) {
 pub fn send_user_signal_to_thread_of_proc(pid: usize, tid: usize, sig: SigSet, signo: usize) {
     if let Some(task) = tid_to_task::tid2task(tid) {
         if task.pid() == pid {
-            let siginfo = current_signal_cred()
-                .ok()
-            .and_then(|sender| {
+            let siginfo = current_signal_cred().ok().and_then(|sender| {
                 Some(SigInfo::new_tkill(
                     signo as u32,
                     sender.pid as u32,

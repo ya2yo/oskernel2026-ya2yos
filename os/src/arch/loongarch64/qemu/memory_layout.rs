@@ -2,17 +2,16 @@
 
 use crate::config::THREAD_MAX_NUM;
 
-pub use super::super::page_geometry::{
-    HUGE_PAGE_PAGES, HUGE_PAGE_SIZE, PAGE_SIZE, PAGE_SIZE_BITS,
-};
+pub use super::super::page_geometry::{HUGE_PAGE_PAGES, HUGE_PAGE_SIZE, PAGE_SIZE, PAGE_SIZE_BITS};
 
 pub const USER_STACK_SIZE: usize = 1024 * 1024 * 8; // 8MB
 pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 2;
 // The kernel image, including this static heap, must remain in the 256MiB
 // low RAM segment where QEMU loads the LoongArch kernel image.
 pub const KERNEL_HEAP_SIZE: usize = 0x8_000_000; // 128MB
-                                                 // Keep the brk reservation large enough for the Rust toolchain's linker-stage
-                                                 // workers. Pages are still allocated lazily on first access.
+
+// Keep the brk reservation large enough for the Rust toolchain's linker-stage
+// workers. Pages are still allocated lazily on first access.
 pub const USER_HEAP_SIZE: usize = 0x8000_0000; // 2 GiB (virtual reservation)
 /// Maximum heap (brk) growth per process.
 /// Caps runaway brk from exhausting physical memory while leaving room for

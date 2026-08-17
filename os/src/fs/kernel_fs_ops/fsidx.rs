@@ -214,8 +214,7 @@ impl FsIndex {
                     })
                     .cloned()
                     .collect::<Vec<_>>();
-                let mut displaced_keys =
-                    Vec::with_capacity(destination_paths.len() + moved.len());
+                let mut displaced_keys = Vec::with_capacity(destination_paths.len() + moved.len());
                 for path in destination_paths {
                     if let Some(key) = cache.paths.remove(&path) {
                         displaced_keys.push(key);

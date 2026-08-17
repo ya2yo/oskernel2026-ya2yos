@@ -7,18 +7,17 @@ use crate::config::THREAD_MAX_NUM;
 // kernel page table is active.
 pub const BOOTSTRAP_PHYSICAL_MEMORY_SIZE: usize = 0x4000_0000; // 1GB
 
-pub use super::super::page_geometry::{
-    HUGE_PAGE_PAGES, HUGE_PAGE_SIZE, PAGE_SIZE, PAGE_SIZE_BITS,
-};
+pub use super::super::page_geometry::{HUGE_PAGE_PAGES, HUGE_PAGE_SIZE, PAGE_SIZE, PAGE_SIZE_BITS};
 
 pub const USER_STACK_SIZE: usize = 1024 * 1024 * 8; // 8MB
 pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 4;
 // Full pre-test runs retain kernel objects while execing the 1.7 MiB glibc
 // busybox image. Keep one 2 MiB buddy block available for that normal load.
 pub const KERNEL_HEAP_SIZE: usize = 0x8_000_000; // 128MB
-                                                 // Rustc's linker-stage workers can grow the process brk beyond 512 MiB.
-                                                 // Keep the virtual reservation aligned with the lazy mmap budget; pages remain
-                                                 // demand-allocated, so this does not reserve physical memory up front.
+
+// Rustc's linker-stage workers can grow the process brk beyond 512 MiB.
+// Keep the virtual reservation aligned with the lazy mmap budget; pages remain
+// demand-allocated, so this does not reserve physical memory up front.
 pub const USER_HEAP_SIZE: usize = 0x8000_0000; // 2 GiB (virtual reservation)
 /// Maximum heap (brk) growth per process.
 /// Caps runaway brk from exhausting physical memory while leaving room for
