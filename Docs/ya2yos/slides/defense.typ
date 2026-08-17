@@ -80,11 +80,11 @@
     ]
   ]
 ]
-#let compact-panel(title, body, color: blue, fill: pale-blue, height: auto) = {
+#let compact-panel(title, body, color: blue, fill: pale-blue, height: auto, body-size: 10.5pt) = {
   let content = [
     #text(size: 13pt, weight: "bold", fill: color)[#title]
     #v(0.12em)
-    #text(size: 10.5pt, fill: ink)[#body]
+    #text(size: body-size, fill: ink)[#body]
   ]
   if height == auto {
     block(fill: fill, stroke: 0.7pt + border, radius: 4pt, inset: 8pt)[#content]
@@ -154,55 +154,59 @@
   ]
 ]
 
-// 2 · contents
+// 2 · positioning
 #slide[
-  #titlebar("CONTENTS", "目录", subtitle: "从系统定位出发，沿实现路径走向可复核成果")
-  #v(0.42cm)
-  #grid(columns: (1fr, 1fr), gutter: 14pt,
-    panel("01  ·  系统定位", [Rust 宏内核、Linux ABI、RISC-V64 / LoongArch64；面向真实 Linux 用户态路径与工具链负载。], color: blue, fill: pale-blue),
-    panel("02  ·  系统介绍", [从系统架构图出发，依次介绍进程管理、多核调度、内存管理、信号机制、文件系统和设备驱动。], color: teal, fill: pale-teal),
-    panel("03  ·  关键增量", [多核运行、CFS 调度、StarryOS 网络移植、uaccess、文件锁、syscall 扩展与模块重构。], color: orange, fill: pale-orange),
-    panel("04  ·  AI 使用", [辅助日志分析、源码追踪和文档整理；关键修改经过人工审查与可追溯验证。], color: red, fill: pale-red),
-    panel("05  ·  发展规划", [扩展文件系统类型、提升文件 I/O、持续丰富网络模块，并完成开发板实机运行与验证。], color: blue, fill: pale-blue),
-  )
+  #titlebar("01  ·  SYSTEM POSITIONING", "系统定位")
+  #v(1.15cm)
+  #align(center + horizon)[
+    #text(size: 25pt, weight: "bold", fill: navy)[Ya2yOS 是一个使用 Rust 语言编写，面向 Linux ABI 的宏内核]
+  ]
+  #v(0.7cm)
+  #align(center + horizon)[#line(length: 58%, stroke: 1.2pt + teal)]
+  #v(0.62cm)
+  #align(center + horizon)[
+    #text(size: 18pt, fill: muted)[项目的主要目标是保证 Linux ABI 语义正确，提高性能，正确运行 Linux 用户态程序]
+  ]
 ]
 
-// 3 · positioning
-#chapter-cover("01", "系统定位", "Rust 宏内核 · Linux ABI · RISC-V64 / LoongArch64", color: blue, fill: pale-blue)
+// 3 · design highlights
 #slide[
-  #titlebar("01  ·  SYSTEM POSITIONING", "项目定位：Ya2yOS 是什么？", subtitle: "面向真实 Linux 用户态负载的 Rust 宏内核")
-  #v(0.25cm)
-  #grid(columns: (1fr, 0.18fr, 1fr, 0.18fr, 1fr), gutter: 6pt,
-    flow-step("Rust", "内核主体 · 类型安全 · 显式所有权", color: blue, fill: pale-blue), text(size: 22pt, fill: blue)[→],
-    flow-step("宏内核", "task · mm · fs · net · signal 共享地址空间", color: teal, fill: pale-teal), text(size: 22pt, fill: blue)[→],
-    flow-step("Linux ABI", "syscall · errno · fd · signal · mmap", color: orange, fill: pale-orange),
-  )
-  #v(0.48cm)
-  #grid(columns: (1fr, 1fr, 1fr), gutter: 11pt,
-    panel("我们要解决什么问题", [面向 glibc / musl、BusyBox、LTP 子集和 Rust 工具链等真实用户态路径，逐步补齐 Linux ABI；当前结论绑定到具体架构、配置和已完成的定向回归。], color: blue, fill: pale-blue),
-    panel("系统边界", [Ya2yOS 直接运行在 QEMU / 部分板级适配环境中，不是用户态模拟器；以 Linux 用户可见语义为兼容边界，但不宣称完整 Linux ABI。], color: teal, fill: pale-teal),
-    panel("目标平台与负载", [以 RISC-V64 / LoongArch64 为目标架构，重点验证 fork / exec / mmap、ext4 和 SMP 共享地址空间等高频路径；完整实机与压力回归仍在推进。], color: orange, fill: pale-orange),
-  )
-]
-
-// 4 · design highlights
-#slide[
-  #titlebar("01  ·  SYSTEM POSITIONING", "设计亮点：把复杂性收敛到可解释的内核路径", subtitle: "不仅实现接口，更统一对象、状态和资源生命周期")
+  #titlebar("01  ·  SYSTEM POSITIONING", "设计亮点")
   #v(0.18cm)
   #grid(columns: (1fr, 1fr, 1fr), gutter: 8pt,
-    compact-panel("01  ·  对象与生命周期", [Rust 的引用计数与显式所有权贯穿任务、地址空间、文件和 socket；`Process` 与 `TaskControlBlock` 分离资源和执行上下文。], color: blue, fill: pale-blue, height: 80pt),
-    compact-panel("02  ·  SMP 并发一致性", [以 `Running → Blocked → Ready → Running` 表达主要任务状态转换；简化 CFS 和 Remote-TLB MailBox 共同处理多核路径。], color: teal, fill: pale-teal, height: 80pt),
-    compact-panel("03  ·  Linux ABI 路径", [`uaccess` 对满足条件的短复制使用架构快路径，其余回退安全路径；COW、socket、文件锁和 syscall 按当前验证范围逐步接入。], color: orange, fill: pale-orange, height: 80pt),
-    compact-panel("04  ·  架构适配边界", [RISC-V64 与 LoongArch64 共享主要内核接口，trap、页表 / TLB、timer、IPI 和 VirtIO 由架构层适配；部分硬件中断路径仍在完善。], color: red, fill: pale-red, height: 80pt),
-    compact-panel("05  ·  验证口径", [“支持”绑定到指定架构、配置下的构建、启动或定向回归；不把局部接口接入表述为完整 Linux 语义或全量压力验收。], color: blue, fill: pale-blue, height: 80pt),
-    compact-panel("06  ·  演进方向", [在语义和锁序正确的基础上，继续推进 VFS、I/O、网络和实机验证；性能收益以可追溯的同配置对照为准。], color: teal, fill: pale-teal, height: 80pt),
+    compact-panel("01  ·  进程管理", [#stack(spacing: 0.25em,
+      [- 实现简化的 CFS 多核调度。],
+      [- `Process` 和 `Task` 分离进程资源与调度任务。],
+      [- `clone` 按 `clone flags` 决定资源共享或复制。],
+      [- `execve/exit/wait` 完成映像替换、资源回收与父子状态传递。],
+    )], color: blue, fill: pale-blue, height: 136pt, body-size: 12pt),
+    compact-panel("02  ·  内存管理", [#stack(spacing: 0.2em,
+      [- 实现 `uaccess` 快速内存访问路径。],
+      [- 支持写时复制（COW）与懒分配。],
+      [- 借助 RemoteTLB 机制实现跨核页表一致性同步。],
+    )], color: teal, fill: pale-teal, height: 136pt, body-size: 12pt),
+    compact-panel("03  ·  架构管理", [#stack(spacing: 0.2em,
+      [- 支持 RISC-V64 与 LoongArch64 双架构。],
+      [- 通过架构抽象层隔离 trap、页表等平台差异。],
+    )], color: orange, fill: pale-orange, height: 136pt, body-size: 12pt),
+  )
+  #v(0.12cm)
+  #grid(columns: (1fr, 1fr), gutter: 8pt,
+    compact-panel("04  ·  文件系统", [#stack(spacing: 0.25em,
+      [- 支持细粒度锁，竞争时阻塞唤醒任务。],
+      [- 支持 EXT4 文件系统，并通过 VFS 统一 inode / superblock 接口。],
+    )], color: red, fill: pale-red, height: 112pt, body-size: 12pt),
+    compact-panel("05  ·  设备驱动", [#stack(spacing: 0.2em,
+      [- 支持 VirtIO 块设备与网卡驱动。],
+      [- 通过 CMA 管理 DMA，统一块设备和网卡接口。],
+      [- RISC-V64 使用 MMIO，LoongArch64 使用 PCI transport。],
+    )], color: blue, fill: pale-blue, height: 112pt, body-size: 12pt),
   )
 ]
 
-// 5 · system introduction
-#chapter-cover("02", "系统介绍", "从系统架构图出发，沿进程、调度、内存、信号、文件系统与驱动走完整实现路径", color: teal, fill: pale-teal)
+// 4 · system architecture
 #slide[
-  #titlebar("02  ·  SYSTEM INTRODUCTION", "系统架构", subtitle: "五类内核组件由 Linux ABI 统一入口衔接，并通过 HAL 收敛架构与设备差异")
+  #titlebar("02  ·  SYSTEM INTRODUCTION", "系统架构")
   #v(0.03cm)
   #grid(columns: (1fr, 68pt), column-gutter: 8pt, row-gutter: 2pt,
     arch-node([User Applications: glibc · musl · BusyBox · LTP · Rustc / Cargo], fill: arch-user, stroke: 0.6pt + blue, height: 20pt, size: 8.2pt),
@@ -246,7 +250,9 @@
   )
 ]
 
-// 6 · process management
+// Detailed subsystem slides are retained in source but disabled for the five-minute defense.
+#if false [
+// Process, scheduler, memory, signal, filesystem, and device-driver details.
 #slide[
   #titlebar("02  ·  SYSTEM INTRODUCTION", "进程管理：对象、资源与生命周期", subtitle: "以 Process 和 TaskControlBlock 建立进程资源与线程执行边界")
   #v(0.22cm)
@@ -354,21 +360,22 @@
   )
 ]
 
-// 12 · incremental work overview
-#chapter-cover("03", "关键增量工作", "并发运行 · Linux 语义 · 网络移植 · 工程结构", color: orange, fill: pale-orange)
+]
+
+// 5 · incremental work overview
 #slide[
-  #titlebar("03  ·  KEY INCREMENTAL WORK", "关键增量工作：三个方向", subtitle: "SMP 一致性、用户内存与 I/O 路径、ABI 工程化")
-  #v(0.18cm)
+  #titlebar("03  ·  KEY INCREMENTAL WORK", "关键增量")
+  #v(0.3cm)
   #grid(columns: (1fr, 1fr, 1fr), gutter: 10pt,
-    compact-panel("01  ·  SMP 与一致性", [简化 CFS、共享 ready queue、线程 affinity、idle-Hart 唤醒与 remote TLB MailBox / IPI / ACK。], color: blue, fill: pale-blue, height: 76pt),
-    compact-panel("02  ·  用户内存与锁", [uaccess 双路径、文件映射缺页、COW 以及 POSIX/OFD/BSD/lease 文件锁的主要接口与定向语义。], color: teal, fill: pale-teal),
-    compact-panel("03  ·  网络与 ABI 工程化", [适配 StarryOS 网络抽象，接入 smoltcp 与 VirtIO-net；clone3、rseq、epoll 等入口按领域拆分并逐步验证。], color: orange, fill: pale-orange),
+    compact-panel("01  ·  SMP 一致性", [简化 CFS、共享 ready queue、线程 affinity 与空闲核唤醒；RemoteTLB 以 MailBox、IPI、ACK 维护跨核页表一致性。], color: blue, fill: pale-blue, height: 92pt),
+    compact-panel("02  ·  内存与文件并发", [`uaccess` 为常见短复制提供架构快路径；COW 与懒分配减少不必要的物理页复制；EXT4 使用可等待的细粒度锁。], color: teal, fill: pale-teal, height: 92pt),
+    compact-panel("03  ·  网络与 ABI", [适配 StarryOS 网络抽象并接入 smoltcp 与 VirtIO-net；syscall 按 task、mm、fs、net 等领域拆分，能力以回归结果为准。], color: orange, fill: pale-orange, height: 92pt),
   )
 ]
 
-// 13 · SMP and CFS
+// 6 · SMP scheduling and RemoteTLB
 #slide[
-  #titlebar("03  ·  KEY INCREMENTAL WORK", "简化 CFS 与多核一致性", subtitle: "任务选择、线程 affinity、idle-Hart 唤醒与 remote TLB 分工明确")
+  #titlebar("03  ·  KEY INCREMENTAL WORK", "简化 CFS 与多核一致性")
   #v(0.22cm)
   #grid(columns: (1fr, 0.16fr, 1fr, 0.16fr, 1fr, 0.16fr, 1fr), gutter: 4pt,
     flow-step("READY", "任务入共享队列", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
@@ -384,7 +391,9 @@
   )
 ]
 
-// 14 · StarryOS network port
+// Network and syscall implementation details remain available in source.
+#if false [
+// StarryOS network port
 #slide[
   #titlebar("03  ·  KEY INCREMENTAL WORK", "移植 StarryOS 网络模块并接入 Ya2yOS", subtitle: "保留 StarryOS 的网络抽象优势，在 Ya2yOS 的任务、fd 和双架构驱动边界中重新落地")
   #v(0.22cm)
@@ -402,7 +411,9 @@
   )
 ]
 
-// 15 · uaccess and filesystem locking
+]
+
+// 7 · uaccess and filesystem locking
 #slide[
   #titlebar("03  ·  KEY INCREMENTAL WORK", "uaccess 双路径与文件系统锁细化", subtitle: "用户指针访问与文件并发控制都必须同时满足常见路径效率和异常路径的 Linux 语义")
   #v(0.22cm)
@@ -421,7 +432,9 @@
   )
 ]
 
-// 16 · syscall enrichment and refactoring
+// Syscall implementation details remain available in source.
+#if false [
+// Syscall enrichment and refactoring
 #slide[
   #titlebar("03  ·  KEY INCREMENTAL WORK", "丰富 syscall，并重构模块边界", subtitle: "扩大 ABI 覆盖面时，入口保持薄，核心语义与高风险状态机回到各自子系统")
   #v(0.22cm)
@@ -439,41 +452,19 @@
   )
 ]
 
-// 17 · AI usage
-#chapter-cover("04", "AI 使用情况", "需求拆解 · 源码分析 · 人工复核 · 可追溯验证", color: red, fill: pale-red)
+]
+
+// 8 · roadmap
 #slide[
-  #titlebar("04  ·  AI USAGE", "AI 使用情况：辅助工程判断，不替代验证", subtitle: "AI 参与分析、实现和文档整理；最终结论由源码、构建和回归证据决定")
-  #v(0.18cm)
+  #titlebar("04  ·  ROADMAP", "发展规划", subtitle: "以可追溯的构建、启动和回归结果推进后续工作")
+  #v(0.36cm)
   #grid(columns: (1fr, 1fr, 1fr), gutter: 10pt,
-    compact-panel("01  ·  问题定位", [读取 panic、LTP/BuildStorm 日志和源码调用链，整理候选根因，并明确还需要哪些实验或回归证据。], color: blue, fill: pale-blue, height: 82pt),
-    compact-panel("02  ·  实现协作", [围绕 syscall、task、mm、fs、net 和用户态测试起草小范围修改；入口、核心语义和资源生命周期仍回到领域模块。], color: teal, fill: pale-teal, height: 82pt),
-    compact-panel("03  ·  人工把关", [维护者确认范围并审查 diff，通过双架构构建、QEMU/LTP 或定向回归验证；未验证的语义不宣称为完整支持。], color: orange, fill: pale-orange, height: 82pt),
-  )
-  #v(0.34cm)
-  #grid(columns: (1fr, 0.12fr, 1fr, 0.12fr, 1fr, 0.12fr, 1fr), gutter: 4pt,
-    flow-step("需求 + 证据", "日志、源码、边界", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
-    flow-step("AI 分析", "候选根因与方案", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
-    flow-step("人工复核", "语义、锁序、改动范围", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
-    flow-step("构建 + 回归", "证据与结论留痕", color: red, fill: pale-red),
-  )
-  #v(0.24cm)
-  #align(center)[#text(size: 11pt, fill: muted)[对有实质修改的协作，记录需求、分析路径、修改文件和验证边界，并同步到 `ai.log` 与 `AI_INTERACTION.md`。]]
-]
-
-// 18 · roadmap
-#chapter-cover("05", "发展规划", "文件系统扩展 · I/O 优化 · 网络完善 · 开发板实机运行", color: red, fill: pale-red)
-#slide[
-  #titlebar("05  ·  ROADMAP", "发展规划：从已验证路径走向更完整能力", subtitle: "扩展 VFS、I/O、网络和实机验证；所有优化以可复核证据为前提")
-  #v(0.3cm)
-  #grid(columns: (1fr, 1fr), gutter: 14pt,
-    panel("01  ·  支持更多文件系统", [在统一 VFS、dentry/inode 和 mount 语义下接入更多文件系统类型；完善不同文件系统的路径解析、权限、元数据和挂载参数兼容性。], color: blue, fill: pale-blue),
-    panel("02  ·  提高文件系统 I/O 速率", [围绕 PageCache 命中、顺序/批量读写、跨页复制和块设备提交路径减少重复工作；使用同配置、成功收尾的基准和文件系统回归验证优化收益。], color: teal, fill: pale-teal),
-    panel("03  ·  继续丰富网络模块", [补齐 socket 选项、协议语义、路由与设备事件处理；持续加强 TCP / UDP / Unix socket 与 poll / epoll、VirtIO-net 之间的一致性。], color: orange, fill: pale-orange),
-    panel("04  ·  在开发板上成功运行", [完成实机启动、内存与中断初始化、块设备/网卡驱动和串口观测；在开发板上跑通用户态程序、文件 I/O、网络通信与压力回归。], color: red, fill: pale-red),
+    panel("01  ·  VFS 与 I/O", [扩展文件系统类型，围绕 Page Cache、批量读写和块设备路径提升文件 I/O。], color: blue, fill: pale-blue, height: 105pt),
+    panel("02  ·  网络与实机", [补齐网络协议和设备事件路径，完成开发板启动、块设备、网卡与压力回归。], color: teal, fill: pale-teal, height: 105pt),
   )
 ]
 
-// 19 · closing
+// 9 · closing
 #slide[
   #align(center + horizon)[
     #text(size: 48pt, weight: "bold", fill: navy)[Ya2yOS]
