@@ -330,8 +330,9 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
     }
 
     let iovec_size = core::mem::size_of::<Iovec>();
-    let mut kernel_bufs: Vec<Vec<u8>> = Vec::new();
-    let mut bufs: Vec<UserBuffer> = Vec::new();
+    // Fault in every source range before making any file data visible. This
+    // preserves writev's all-or-error behavior for a late faulting iovec.
+    let mut kernel_buf = Vec::new();
     {
         let memory_set = proc.memory_set_arc();
         for i in 0..iovcnt {
@@ -343,22 +344,25 @@ pub fn sys_writev(fd: usize, iov: *const u8, iovcnt: usize) -> SyscallRet {
             if iovinfo.iov_len == 0 {
                 continue;
             }
-            // 单个 iovec 的缓冲区上界：防止内核堆 OOM
+            // Keep the existing per-iovec bound while joining adjacent
+            // iovecs into one VFS write below.
             let copy_len = IO_CHUNK_SIZE.min(iovinfo.iov_len);
-            let mut kb = vec![0u8; copy_len];
-            copy_from_user(&memory_set, iovinfo.iov_base as usize, &mut kb)?;
-            let ub = unsafe { user_buffer_from_kernel(&mut kb) };
-            kernel_bufs.push(kb);
-            bufs.push(ub);
+            let start = kernel_buf.len();
+            let end = start.checked_add(copy_len).ok_or(SysErrNo::EINVAL)?;
+            kernel_buf.resize(end, 0);
+            copy_from_user(
+                &memory_set,
+                iovinfo.iov_base as usize,
+                &mut kernel_buf[start..end],
+            )?;
         }
     }
     drop(task);
-    let mut ret: usize = 0;
-    for buf in bufs {
-        let write_ret = file.write(buf)?;
-        ret += write_ret as usize;
+    if kernel_buf.is_empty() {
+        return Ok(0);
     }
-    Ok(ret)
+    let buf = unsafe { user_buffer_from_kernel(&mut kernel_buf) };
+    file.write(buf)
 }
 
 /// 参考 https://man7.org/linux/man-pages/man2/readv.2.html
