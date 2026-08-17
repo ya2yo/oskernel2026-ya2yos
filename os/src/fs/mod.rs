@@ -40,6 +40,7 @@ pub use kernel_fs_ops::{
     refresh_proc_status, remove_proc_dir_and_file, FsIndex,
 };
 mod map_dynamic_link;
+pub(crate) use map_dynamic_link::patch_dynamic_link_file_bytes;
 
 bitflags! {
     /// 定义一份打开文件的标志

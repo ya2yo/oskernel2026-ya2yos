@@ -12662,3 +12662,29 @@ DEBUG，最终恢复失败仍由 `Ext4Inode::fstat` 输出 WARN。新增用户�
 `pre-build tg-xtask (untimed)`；日志中不再出现对应 ERROR/WARN。完整 BuildStorm 本轮只
 确认到 pre-build 阶段，未将完整评分结果记为通过。关联问题复盘见
 `Docs/决赛文档/problem/buildstorm-directory-rename-fstat.md`。
+
+## 2026-08-17：LoongArch cyclictest musl 调度 wrapper 修复
+
+### 用户需求
+
+维护者要求分析 `log.ans` 并修复测例失败。
+
+### AI 分析与采纳结论
+
+按 `fix-bug` 流程筛选日志真实结果，确认唯一失败是 `cyclictest-musl` 四项的
+`unable to get scheduler parameters`；同轮 `cyclictest-glibc` 四项成功，且没有内核
+panic。沿 `cyclictest -> check_privs -> sched_getparam` 路径检查 LoongArch 预赛镜像，
+确认 `/musl/lib/libc.so` 的 `sched_getparam`、`sched_getscheduler`、`sched_setparam`、
+`sched_setscheduler` 是直接返回 `ENOSYS` 的 stub，未进入内核。采纳的修复是在动态库读取
+路径保留 Linux 精确 ELF/VFS 路径语义，仅对精确的 `/musl/lib/libc.so` 在 LoongArch 下做
+按读取块的只读指令替换：`sched_getparam` 写回 priority 0，其余 wrapper 返回 0；未修改
+镜像和测试脚本。
+
+### 修改与验证
+
+修改 `os/src/fs/map_dynamic_link.rs`、`os/src/fs/mod.rs`、
+`os/src/fs/ext4_lw/inode/mod.rs`、`os/src/fs/ext4_lw/inode/io.rs`，新增
+`Docs/决赛文档/problem/cyclictest-musl-scheduler-stubs.md` 并更新开发日志和索引。
+`make` 完成 RISC-V64/LoongArch64 release 构建；更新后的 LoongArch 预赛 `log.ans` 中
+musl/glibc 八个 cyclictest 场景全部 success、两组 `kill hackbench: success`、正常
+`shutdown!`。SIGTERM 清理阶段的 sender broken pipe 属预期噪声。

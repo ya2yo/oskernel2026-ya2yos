@@ -3779,3 +3779,18 @@
   `pre-build tg-xtask (untimed)`；未跑完整 BuildStorm，未宣称完整评分通过。详见
   [BuildStorm 父目录 rename 后打开子文件 fstat 返回 ENOENT](./problem/buildstorm-directory-rename-fstat.md)。
 - **关联 commit**：当前工作区未提交
+
+#### LoongArch cyclictest musl 调度 wrapper 修复（8.17）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求分析最新 `log.ans` 并修复测例失败。
+- **描述**：从真实测试标记和场景边界确认失败集中在 `cyclictest-musl`；沿用户态
+  `check_privs()` 追踪发现预赛 LoongArch `/musl/lib/libc.so` 的四个 scheduler wrapper
+  是 `ENOSYS` stub，未执行内核 syscall。保留 Linux 精确动态链接路径语义，仅在内核读取
+  精确 libc 文件时按架构和固定偏移做只读指令兼容替换，并在所有 ext4 读取分支统一应用，
+  不修改镜像或测试脚本。
+- **验证边界**：`make` 完成 RISC-V64/LoongArch64 release 构建；更新后的 LoongArch
+  预赛 `log.ans` 中 musl/glibc 共八项 cyclictest 均 `success`，两组 hackbench 均成功
+  清理并正常 `shutdown!`。SIGTERM 回收阶段的 sender broken pipe 为预期输出。
+- **关联问题**：[LoongArch cyclictest musl 调度 wrapper ENOSYS 修复](./problem/cyclictest-musl-scheduler-stubs.md)
+- **关联 commit**：当前工作区未提交

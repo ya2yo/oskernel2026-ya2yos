@@ -30,8 +30,7 @@ impl Ext4Inode {
     }
     /// 从指定偏移量读取数据到缓冲区。
     ///
-    /// 读取结果始终是底层文件的原始字节；动态链接器和 ELF 文件不在 VFS
-    /// 读路径中做内容修补。
+    /// 对已知兼容镜像的动态库，返回前应用只读字节补丁；普通文件仍原样返回。
     pub(super) fn read_at_impl(&self, off: usize, buf: &mut [u8]) -> SyscallRet {
         if buf.is_empty() {
             return Ok(0);
@@ -48,6 +47,7 @@ impl Ext4Inode {
                 crate::utils::perf::record_ext4_read(r);
                 crate::utils::perf::record_ext4_byte_cache_read_hit(r);
             }
+            patch_dynamic_link_file_bytes(&cached_path, off, &mut buf[..r]);
             return Ok(r);
         }
         // Keep this inode's descriptor stable across the two lwext4 calls.
@@ -90,6 +90,7 @@ impl Ext4Inode {
                 crate::utils::perf::record_ext4_byte_cache_read_hit(r);
             }
         }
+        patch_dynamic_link_file_bytes(&cached_path, off, &mut buf[..r]);
         // lwext4's ext4_fread() only reads blocks and advances the descriptor
         // position; atime changes go through the explicit set_timestamps()
         // path. Keeping the immutable regular-file stat cache here avoids
@@ -344,6 +345,7 @@ impl Ext4Inode {
             if let Err(e) = r {
                 Err(SysErrNo::from(e))
             } else {
+                patch_dynamic_link_file_bytes(&path_str, 0, buf.as_mut_slice());
                 Ok(buf)
             }
         } else if file_type == InodeType::SymLink {

@@ -6,6 +6,7 @@
 - [RISC-V Alpine initfiles 与动态链接路径兼容](./problem/riscv-alpine-initfiles-dynamic-link.md)
 - [iperf: 5001 端口复用与 glibc TCGETS 栈破坏](./problem/iperf-port-reuse-termios-stack-smash.md)
 - [cyclictest STRESS_P1: socketpair fd 分配覆盖导致 hackbench ready Broken pipe](./problem/cyclictest-socketpair-fd-allocation.md)
+- [LoongArch cyclictest musl 调度 wrapper ENOSYS 修复](./problem/cyclictest-musl-scheduler-stubs.md)
 - [libctest: sigtimedwait 后 wait4 误返回 EINTR](./problem/libctest-sigtimedwait-eintr.md)
 - [waitpid SA_RESTART 信号打断语义修复](./problem/waitpid-sa-restart-eintr.md)
 - [access01 wait4 ERESTART 与非空目录 rmdir 语义](./problem/access01-rmdir-nonempty.md)
