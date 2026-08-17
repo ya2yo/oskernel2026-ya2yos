@@ -7,15 +7,25 @@
 //! therefore stores data, offset, mode and owner in memory, and intentionally
 //! does not create an ext4 directory entry.
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use super::super::{File, Kstat, StMode};
 use crate::mm::UserBuffer;
 use crate::syscall::PollEvents;
-use crate::utils::{SysErrNo, SyscallRet};
+use crate::utils::{SysErrNo, SysResult, SyscallRet};
 
 static NEXT_TMP_INO: AtomicUsize = AtomicUsize::new(0x7000_0000);
+
+const F_SEAL_SEAL: u32 = linux_raw_sys::general::F_SEAL_SEAL;
+const F_SEAL_SHRINK: u32 = linux_raw_sys::general::F_SEAL_SHRINK;
+const F_SEAL_GROW: u32 = linux_raw_sys::general::F_SEAL_GROW;
+const F_SEAL_WRITE: u32 = linux_raw_sys::general::F_SEAL_WRITE;
+const F_SEAL_FUTURE_WRITE: u32 = linux_raw_sys::general::F_SEAL_FUTURE_WRITE;
+const F_SEAL_EXEC: u32 = linux_raw_sys::general::F_SEAL_EXEC;
+const WRITE_SEALS: u32 = F_SEAL_WRITE | F_SEAL_FUTURE_WRITE;
+const SUPPORTED_SEALS: u32 =
+    F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE | F_SEAL_EXEC;
 
 /// Anonymous regular file returned by `openat(..., O_TMPFILE, ...)`.
 ///
@@ -28,6 +38,10 @@ pub struct TmpFile {
     uid: u32,
     gid: u32,
     ino: usize,
+    append: AtomicBool,
+    is_memfd: bool,
+    allow_sealing: bool,
+    seals: AtomicU32,
     inner: Mutex<TmpFileInner>,
 }
 
@@ -38,6 +52,43 @@ struct TmpFileInner {
 
 impl TmpFile {
     pub fn new(readable: bool, writable: bool, mode: u32, uid: u32, gid: u32) -> Arc<Self> {
+        Self::new_with_seals(readable, writable, mode, uid, gid, false, false, false)
+    }
+
+    /// Build the anonymous file used by `memfd_create(2)`.
+    pub fn new_memfd(
+        readable: bool,
+        writable: bool,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        allow_sealing: bool,
+        noexec_seal: bool,
+    ) -> Arc<Self> {
+        Self::new_with_seals(
+            readable,
+            writable,
+            mode,
+            uid,
+            gid,
+            allow_sealing,
+            noexec_seal,
+            true,
+        )
+    }
+
+    fn new_with_seals(
+        readable: bool,
+        writable: bool,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        allow_sealing: bool,
+        noexec_seal: bool,
+        is_memfd: bool,
+    ) -> Arc<Self> {
+        let initial_seals = (if allow_sealing { 0 } else { F_SEAL_SEAL })
+            | (if noexec_seal { F_SEAL_EXEC } else { 0 });
         Arc::new(Self {
             readable,
             writable,
@@ -45,11 +96,19 @@ impl TmpFile {
             uid,
             gid,
             ino: NEXT_TMP_INO.fetch_add(1, Ordering::Relaxed),
+            append: AtomicBool::new(false),
+            is_memfd,
+            allow_sealing,
+            seals: AtomicU32::new(initial_seals),
             inner: Mutex::new(TmpFileInner {
                 data: Vec::new(),
                 offset: 0,
             }),
         })
+    }
+
+    fn seals(&self) -> u32 {
+        self.seals.load(Ordering::Acquire)
     }
 }
 
@@ -76,10 +135,20 @@ impl File for TmpFile {
     fn write(&self, buf: UserBuffer) -> SyscallRet {
         let bytes = buf.read_to_vec();
         let mut inner = self.inner.lock();
+        let seals = self.seals();
+        if seals & WRITE_SEALS != 0 {
+            return Err(SysErrNo::EPERM);
+        }
+        if self.append.load(Ordering::Acquire) {
+            inner.offset = inner.data.len();
+        }
         let end = inner
             .offset
             .checked_add(bytes.len())
             .ok_or(SysErrNo::EFBIG)?;
+        if end > inner.data.len() && seals & F_SEAL_GROW != 0 {
+            return Err(SysErrNo::EPERM);
+        }
         if end > inner.data.len() {
             inner.data.resize(end, 0);
         }
@@ -91,6 +160,13 @@ impl File for TmpFile {
 
     fn truncate(&self, size: usize) -> SyscallRet {
         let mut inner = self.inner.lock();
+        let seals = self.seals();
+        if seals & WRITE_SEALS != 0
+            || (size < inner.data.len() && seals & F_SEAL_SHRINK != 0)
+            || (size > inner.data.len() && seals & F_SEAL_GROW != 0)
+        {
+            return Err(SysErrNo::EPERM);
+        }
         inner.data.resize(size, 0);
         if inner.offset > size {
             inner.offset = size;
@@ -140,6 +216,45 @@ impl File for TmpFile {
             revents |= PollEvents::OUT;
         }
         revents
+    }
+
+    fn set_append(&self, append: bool) -> SysResult {
+        self.append.store(append, Ordering::Release);
+        Ok(())
+    }
+
+    fn get_seals(&self) -> Result<u32, SysErrNo> {
+        if self.is_memfd {
+            Ok(self.seals())
+        } else {
+            Err(SysErrNo::EINVAL)
+        }
+    }
+
+    fn add_seals(&self, seals: u32) -> SysResult {
+        if !self.is_memfd || seals & !SUPPORTED_SEALS != 0 {
+            return Err(SysErrNo::EINVAL);
+        }
+        if !self.allow_sealing {
+            return Err(SysErrNo::EPERM);
+        }
+
+        let mut current = self.seals();
+        loop {
+            if current & F_SEAL_SEAL != 0 {
+                return Err(SysErrNo::EPERM);
+            }
+            let updated = current | seals;
+            match self.seals.compare_exchange_weak(
+                current,
+                updated,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(observed) => current = observed,
+            }
+        }
     }
 }
 

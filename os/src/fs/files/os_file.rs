@@ -17,7 +17,7 @@ use super::{
     pipe::set_pipe_max_size,
 };
 use alloc::{borrow::Cow, collections::BTreeMap, string::String, sync::Arc, vec};
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use linux_raw_sys::{
     general::FS_IMMUTABLE_FL,
     ioctl::{FS_IOC32_GETFLAGS, FS_IOC32_SETFLAGS, FS_IOC_GETFLAGS, FS_IOC_SETFLAGS},
@@ -136,9 +136,9 @@ fn is_immutable_path(path: &str) -> bool {
 /// “普通”的文件类
 /// 区别于管道、设备、套接字等特殊文件
 pub struct OSFile {
-    readable: bool, // 该文件是否允许通过 sys_read 进行读
-    writable: bool, // 该文件是否允许通过 sys_write 进行写
-    append: bool,   // O_APPEND: 每次 write 前都定位到文件末尾
+    readable: bool,     // 该文件是否允许通过 sys_read 进行读
+    writable: bool,     // 该文件是否允许通过 sys_write 进行写
+    append: AtomicBool, // O_APPEND: 每次 write 前都定位到文件末尾
     pub inode: Arc<dyn Inode>,
     /// 文件类型在 open() 时已经确定；lseek() 不应每次重新构造路径并查询
     /// 全局特殊节点表。对普通 inode 直接复用 inode.types()，对 FIFO/设备/socket
@@ -169,7 +169,7 @@ impl OSFile {
         Self {
             readable,
             writable,
-            append,
+            append: AtomicBool::new(append),
             inode,
             seek_type,
             open_inode_key,
@@ -195,7 +195,7 @@ impl OSFile {
         Self {
             readable,
             writable,
-            append,
+            append: AtomicBool::new(append),
             inode,
             seek_type,
             open_inode_key,
@@ -490,7 +490,7 @@ impl File for OSFile {
         if is_immutable_path(&path) {
             return Err(SysErrNo::EPERM);
         }
-        if self.append {
+        if self.append.load(Ordering::Acquire) {
             inner.offset = self.inode.size();
         }
         let mut total_write_size = 0usize;
@@ -515,6 +515,11 @@ impl File for OSFile {
 
     fn path(&self) -> Cow<'_, str> {
         Cow::Owned(self.inode.path())
+    }
+
+    fn set_append(&self, append: bool) -> Result<(), SysErrNo> {
+        self.append.store(append, Ordering::Release);
+        Ok(())
     }
 
     fn poll(&self, events: PollEvents) -> PollEvents {

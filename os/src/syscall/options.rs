@@ -214,6 +214,12 @@ bitflags! {
         const F_DUPFD_CLOEXEC = linux::F_DUPFD_CLOEXEC as usize;
         const F_SETPIPE_SZ = linux::F_SETPIPE_SZ as usize;
         const F_GETPIPE_SZ = linux::F_GETPIPE_SZ as usize;
+        const F_ADD_SEALS = linux::F_ADD_SEALS as usize;
+        const F_GET_SEALS = linux::F_GET_SEALS as usize;
+        const F_GET_RW_HINT = linux::F_GET_RW_HINT as usize;
+        const F_SET_RW_HINT = linux::F_SET_RW_HINT as usize;
+        const F_GET_FILE_RW_HINT = linux::F_GET_FILE_RW_HINT as usize;
+        const F_SET_FILE_RW_HINT = linux::F_SET_FILE_RW_HINT as usize;
     }
 }
 

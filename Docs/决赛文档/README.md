@@ -29,6 +29,7 @@
 - [fanotify02 目录子项事件与 remove mask 语义](./problem/fanotify02-event-on-child.md)
 - [chown04 chown errno 语义修复](./problem/chown04-chown-errno.md)
 - [fcntl01 F_GETFL/F_SETFL 文件状态标志修复](./problem/fcntl01-f-getfl-setfl.md)
+- [fcntl OFD 状态、memfd sealing 与 write-life hint 扩展](./problem/fcntl-ofd-seals-rw-hints.md)
 - [fcntl DUPFD 与 pipe size 兼容性完善](./problem/fcntl-dupfd-pipe-size.md)
 - [fcntl11 POSIX record lock 区间语义修复](./problem/fcntl11-record-lock.md)
 - [fcntl13 record lock EFAULT 优先级修复](./problem/fcntl13-lock-efault-priority.md)

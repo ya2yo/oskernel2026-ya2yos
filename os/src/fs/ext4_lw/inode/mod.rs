@@ -37,7 +37,7 @@ use crate::{
 
 use alloc::{format, string::ToString, vec};
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::RwLock;
 
 use lwext4_rust::file::{
@@ -106,6 +106,8 @@ pub struct Ext4Inode {
     /// cache-only write fast path to reject unreserved extensions before it
     /// reaches lwext4 or the mount table.
     quota_reserved: AtomicUsize,
+    /// Inode-wide write-life hint exposed through `F_{GET,SET}_RW_HINT`.
+    write_hint: AtomicU64,
     /// Delayed-unlink files must pin their cache before accepting another
     /// write.  Keep them on the established slow path, which performs that
     /// pinning, rather than allowing a FIFO eviction to recreate an unlinked
@@ -269,6 +271,7 @@ impl Ext4Inode {
             path: RwLock::new(Arc::from(path)),
             known_size: AtomicUsize::new(known_size),
             quota_reserved: AtomicUsize::new(0),
+            write_hint: AtomicU64::new(0),
             delayed: AtomicBool::new(false),
             inode_identity,
             identity_epoch,

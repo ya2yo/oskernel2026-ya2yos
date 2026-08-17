@@ -20,37 +20,43 @@ pub struct FdTable {
     owners: AtomicUsize,
 }
 
+struct OpenFileStatus {
+    flags: OpenFlags,
+    file_rw_hint: u64,
+}
+
 #[derive(Clone)]
 pub struct FileDescriptor {
-    flags: OpenFlags,
+    // `FD_CLOEXEC` belongs to the descriptor table entry, not the open file
+    // description. Duplicating an fd must therefore copy this field by value.
+    descriptor_flags: OpenFlags,
+    // Access/status flags and F_SET_FILE_RW_HINT belong to the open file
+    // description, so dup(2), fcntl(F_DUPFD*) and fork() share this state.
+    status: Arc<RwLock<OpenFileStatus>>,
     file: FileClass,
 }
 
 impl FileDescriptor {
     /// 创建一个带指定 open flags 和文件对象分类的文件描述符。
     pub fn new(flags: OpenFlags, file: FileClass) -> Self {
-        Self { flags, file }
-    }
-
-    /// 创建一个不带额外 flags 的文件描述符。
-    pub fn default(file: FileClass) -> Self {
+        let visible = Self::getfl_visible_flags();
         Self {
-            flags: OpenFlags::empty(),
+            descriptor_flags: flags & OpenFlags::O_CLOEXEC,
+            status: Arc::new(RwLock::new(OpenFileStatus {
+                flags: flags & visible,
+                file_rw_hint: 0,
+            })),
             file,
         }
     }
 
-    /// 返回文件描述符内部保存的完整 flags 位图。
-    pub fn flags(&self) -> u32 {
-        self.flags.bits()
+    /// 创建一个不带额外 flags 的文件描述符。
+    pub fn default(file: FileClass) -> Self {
+        Self::new(OpenFlags::empty(), file)
     }
 
-    /// 返回 Linux `fcntl(F_GETFL)` 可见的访问模式和文件状态 flags。
-    ///
-    /// 创建时 flags 和 fd descriptor flags（例如 `O_CREAT`、`O_EXCL`、
-    /// `O_TRUNC`、`O_CLOEXEC`）不会通过 `F_GETFL` 暴露。
-    pub fn getfl_flags(&self) -> u32 {
-        let visible = OpenFlags::O_ACCMODE
+    fn getfl_visible_flags() -> OpenFlags {
+        OpenFlags::O_ACCMODE
             | OpenFlags::O_APPEND
             | OpenFlags::O_NONBLOCK
             | OpenFlags::O_DSYNC
@@ -60,13 +66,26 @@ impl FileDescriptor {
             | OpenFlags::O_DIRECT
             | OpenFlags::O_LARGEFILE
             | OpenFlags::O_NOATIME
-            | OpenFlags::O_PATH;
-        (self.flags & visible).bits()
+            | OpenFlags::O_PATH
+    }
+
+    /// 返回当前 fd 可见的标志位。创建期标志不会保留，`O_CLOEXEC` 仅供内部
+    /// descriptor 标志查询使用，不能通过 `F_GETFL` 观察。
+    pub fn flags(&self) -> u32 {
+        (self.descriptor_flags | self.status.read().flags).bits()
+    }
+
+    /// 返回 Linux `fcntl(F_GETFL)` 可见的访问模式和文件状态 flags。
+    ///
+    /// 创建时 flags 和 fd descriptor flags（例如 `O_CREAT`、`O_EXCL`、
+    /// `O_TRUNC`、`O_CLOEXEC`）不会通过 `F_GETFL` 暴露。
+    pub fn getfl_flags(&self) -> u32 {
+        self.status.read().flags.bits()
     }
 
     /// 判断该 fd 是否是 `O_PATH` 路径句柄。
     pub fn is_path_only(&self) -> bool {
-        self.flags.contains(OpenFlags::O_PATH)
+        self.status.read().flags.contains(OpenFlags::O_PATH)
     }
 
     /// 以普通 `OSFile` 类型取出文件对象。
@@ -132,32 +151,32 @@ impl FileDescriptor {
 
     /// 清除该描述符的 close-on-exec 标志。
     pub fn unset_cloexec(&mut self) {
-        self.flags.remove(OpenFlags::O_CLOEXEC);
+        self.descriptor_flags.remove(OpenFlags::O_CLOEXEC);
     }
 
     /// 设置该描述符的 close-on-exec 标志。
     pub fn set_cloexec(&mut self) {
-        self.flags.insert(OpenFlags::O_CLOEXEC);
+        self.descriptor_flags.insert(OpenFlags::O_CLOEXEC);
     }
 
     /// 判断该描述符是否带 close-on-exec 标志。
     pub fn cloexec(&self) -> bool {
-        self.flags.contains(OpenFlags::O_CLOEXEC)
+        self.descriptor_flags.contains(OpenFlags::O_CLOEXEC)
     }
 
     /// 判断该描述符是否带非阻塞 I/O 标志。
     pub fn non_block(&self) -> bool {
-        self.flags.contains(OpenFlags::O_NONBLOCK)
+        self.status.read().flags.contains(OpenFlags::O_NONBLOCK)
     }
 
     /// 清除该描述符的非阻塞 I/O 标志。
     pub fn unset_nonblock(&mut self) {
-        self.flags.remove(OpenFlags::O_NONBLOCK);
+        self.status.write().flags.remove(OpenFlags::O_NONBLOCK);
     }
 
     /// 设置该描述符的非阻塞 I/O 标志。
     pub fn set_nonblock(&mut self) {
-        self.flags.insert(OpenFlags::O_NONBLOCK);
+        self.status.write().flags.insert(OpenFlags::O_NONBLOCK);
     }
 
     /// 按 `fcntl(F_SETFL)` 语义更新可修改的文件状态 flags。
@@ -169,8 +188,48 @@ impl FileDescriptor {
             | OpenFlags::O_ASYNC
             | OpenFlags::O_DIRECT
             | OpenFlags::O_NOATIME;
-        self.flags.remove(mutable);
-        self.flags.insert(flags & mutable);
+        let mut status = self.status.write();
+        status.flags.remove(mutable);
+        status.flags.insert(flags & mutable);
+    }
+
+    /// 返回 F_SET_FILE_RW_HINT 保存在当前 open file description 上的提示。
+    pub fn file_rw_hint(&self) -> u64 {
+        self.status.read().file_rw_hint
+    }
+
+    /// 更新当前 open file description 的 write-life 提示。
+    pub fn set_file_rw_hint(&self, hint: u64) {
+        self.status.write().file_rw_hint = hint;
+    }
+
+    /// 判断两个 fd 是否引用同一个 open file description。
+    pub fn same_open_file_description(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.status, &other.status)
+    }
+
+    /// 读取普通文件 inode 的 write-life 提示。
+    pub fn rw_hint(&self) -> Result<u64, SysErrNo> {
+        match &self.file {
+            FileClass::File(file) => file.inode.rw_hint(),
+            _ => Err(SysErrNo::EOPNOTSUPP),
+        }
+    }
+
+    /// 设置普通文件 inode 的 write-life 提示。
+    pub fn set_rw_hint(&self, hint: u64) -> SyscallRet {
+        match &self.file {
+            FileClass::File(file) => file.inode.set_rw_hint(hint),
+            _ => Err(SysErrNo::EOPNOTSUPP),
+        }
+    }
+
+    /// 返回 inode owner，供 `F_SET_RW_HINT` 做 Linux 兼容权限检查。
+    pub fn rw_hint_owner_uid(&self) -> Result<u32, SysErrNo> {
+        match &self.file {
+            FileClass::File(file) => Ok(file.inode.fstat().st_uid),
+            _ => Err(SysErrNo::EOPNOTSUPP),
+        }
     }
 }
 
@@ -221,18 +280,9 @@ impl FdTable {
             128,
             256,
             vec![
-                Some(FileDescriptor {
-                    flags: OpenFlags::empty(),
-                    file: FileClass::Abs(Arc::new(Stdin)),
-                }),
-                Some(FileDescriptor {
-                    flags: OpenFlags::empty(),
-                    file: FileClass::Abs(Arc::new(Stdout)),
-                }),
-                Some(FileDescriptor {
-                    flags: OpenFlags::empty(),
-                    file: FileClass::Abs(Arc::new(Stdout)),
-                }),
+                Some(FileDescriptor::default(FileClass::Abs(Arc::new(Stdin)))),
+                Some(FileDescriptor::default(FileClass::Abs(Arc::new(Stdout)))),
+                Some(FileDescriptor::default(FileClass::Abs(Arc::new(Stdout)))),
             ],
         ))
     }
@@ -351,11 +401,7 @@ impl FdTable {
                 .files
                 .iter()
                 .enumerate()
-                .filter_map(|(fd, desc)| {
-                    desc.as_ref()
-                        .filter(|desc| desc.flags.contains(OpenFlags::O_CLOEXEC))
-                        .map(|_| fd)
-                })
+                .filter_map(|(fd, desc)| desc.as_ref().filter(|desc| desc.cloexec()).map(|_| fd))
                 .collect::<Vec<_>>()
         };
         for fd in fds {
@@ -408,7 +454,7 @@ impl FdTable {
             .get(fd)
             .and_then(|x| x.as_ref())
             .ok_or(SysErrNo::EBADF)?;
-        Ok(desc.flags.contains(OpenFlags::O_CLOEXEC))
+        Ok(desc.cloexec())
     }
 
     /// 为指定 fd 设置 close-on-exec 标志。
@@ -420,7 +466,7 @@ impl FdTable {
             .and_then(|slot| slot.as_mut())
             .ok_or(SysErrNo::EBADF)?;
 
-        file_desc.flags.insert(OpenFlags::O_CLOEXEC);
+        file_desc.set_cloexec();
         Ok(0)
     }
 
@@ -432,7 +478,7 @@ impl FdTable {
             .get_mut(fd)
             .and_then(|x| x.as_mut())
             .ok_or(SysErrNo::EBADF)?;
-        desc.flags.remove(OpenFlags::O_CLOEXEC);
+        desc.unset_cloexec();
         Ok(0)
     }
 
@@ -444,7 +490,7 @@ impl FdTable {
             .get_mut(fd)
             .and_then(|x| x.as_mut())
             .ok_or(SysErrNo::EBADF)?;
-        desc.flags.insert(OpenFlags::O_NONBLOCK);
+        desc.set_nonblock();
         Ok(0)
     }
 
@@ -456,7 +502,7 @@ impl FdTable {
             .get_mut(fd)
             .and_then(|x| x.as_mut())
             .ok_or(SysErrNo::EBADF)?;
-        desc.flags.remove(OpenFlags::O_NONBLOCK);
+        desc.unset_nonblock();
         Ok(0)
     }
 

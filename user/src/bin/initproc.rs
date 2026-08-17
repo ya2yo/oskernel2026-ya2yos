@@ -20,6 +20,8 @@ mod buildstorm;
 mod busybox;
 #[allow(dead_code)]
 mod cagent;
+#[path = "initproc/fcntl_regression.rs"]
+mod fcntl_regression;
 #[path = "initproc/fstat_rename_subtree_regression.rs"]
 mod fstat_rename_subtree_regression;
 #[path = "initproc/fstat_unlink_regression.rs"]
@@ -387,6 +389,10 @@ fn test() -> i32 {
         return 1;
     }
     if !fstat_unlink_regression::run() {
+        shutdown();
+        return 1;
+    }
+    if !fcntl_regression::run() {
         shutdown();
         return 1;
     }

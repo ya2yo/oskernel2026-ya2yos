@@ -12688,3 +12688,27 @@ panic。沿 `cyclictest -> check_privs -> sched_getparam` 路径检查 LoongArch
 `make` 完成 RISC-V64/LoongArch64 release 构建；更新后的 LoongArch 预赛 `log.ans` 中
 musl/glibc 八个 cyclictest 场景全部 success、两组 `kill hackbench: success`、正常
 `shutdown!`。SIGTERM 清理阶段的 sender broken pipe 属预期噪声。
+
+## 2026-08-17：扩展 fcntl OFD、memfd sealing 与 write-life hint
+
+### 用户需求
+
+维护者要求继续丰富 `os/src/syscall/fs/fcntl.rs` 的功能。
+
+### AI 分析与采纳结论
+
+参考本地 Linux 7.0 的 fcntl UAPI 和 `fs/fcntl.c`，将 fd descriptor flag 与 open file
+description status flag 分离，使 `FD_CLOEXEC` 按 fd 独立、`O_APPEND/O_NONBLOCK` 在 dup/fork
+后共享；将 `F_DUPFD_QUERY` 修正为 OFD 身份比较。沿已有 `File`/VFS 抽象加入真实 append 写入、
+memfd seals（含 `F_SEAL_FUTURE_WRITE`）以及 inode/OFD 两类 write-life hint，并通过用户态
+定向回归覆盖共享关系、seal 拒绝写入和用户指针读写。
+
+### 修改与验证
+
+修改 `os/src/fs/fstruct.rs`、`os/src/fs/files/os_file.rs`、`os/src/fs/files/tmp_file.rs`、
+`os/src/fs/vfs.rs`、ext4 inode、`os/src/syscall/fs/fcntl.rs`、`memfd.rs`、`options.rs`，并新增
+`user/src/bin/initproc/fcntl_regression.rs`。补充 `Docs/决赛文档/problem/fcntl-ofd-seals-rw-hints.md`
+及索引、开发日志。RISC-V64/LoongArch64 release 构建通过；RISC-V64 QEMU 定向回归两次均
+输出 `fcntl regression: PASS` 和 `shutdown!`。未运行 LoongArch64 QEMU、完整 LTP 或
+BuildStorm。`F_SEAL_EXEC` 的 chmod/exec 拦截、所有 writable mapping seal 细节和 Linux
+全部 `F_SETFL` 权限检查仍是明确边界。

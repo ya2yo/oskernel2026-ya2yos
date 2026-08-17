@@ -152,6 +152,15 @@ impl Inode for Ext4Inode {
             && self.identity_epoch == EXT4_IDENTITY_EPOCH.load(Ordering::Acquire)
     }
 
+    fn rw_hint(&self) -> Result<u64, SysErrNo> {
+        Ok(self.write_hint.load(Ordering::Acquire))
+    }
+
+    fn set_rw_hint(&self, hint: u64) -> SyscallRet {
+        self.write_hint.store(hint, Ordering::Release);
+        Ok(0)
+    }
+
     #[cfg(feature = "perf")]
     fn mark_fstat_cache_fsidx_rebuild(&self) {
         self.mark_stat_cache_fsidx_rebuild();

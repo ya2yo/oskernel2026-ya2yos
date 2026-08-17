@@ -281,6 +281,14 @@ pub trait Inode: Send + Sync {
     fn seek_hole(&self, _offset: usize) -> SyscallRet {
         Err(SysErrNo::ENXIO)
     }
+    /// Return the inode-wide write-life hint used by `F_GET_RW_HINT`.
+    fn rw_hint(&self) -> Result<u64, SysErrNo> {
+        Err(SysErrNo::EOPNOTSUPP)
+    }
+    /// Update the inode-wide write-life hint used by `F_SET_RW_HINT`.
+    fn set_rw_hint(&self, _hint: u64) -> SyscallRet {
+        Err(SysErrNo::EOPNOTSUPP)
+    }
 }
 
 /// 文件接口
@@ -331,6 +339,18 @@ pub trait File: Send + Sync {
     /// 设置为非阻塞
     fn set_nonblocking(&self, _nonblocking: bool) -> SysResult {
         Ok(())
+    }
+    /// Toggle `O_APPEND` on this open file description.
+    fn set_append(&self, _append: bool) -> SysResult {
+        Ok(())
+    }
+    /// Return memfd seals for this file. Other file types reject the command.
+    fn get_seals(&self) -> Result<u32, SysErrNo> {
+        Err(SysErrNo::EINVAL)
+    }
+    /// Add memfd seals to this file. Other file types reject the command.
+    fn add_seals(&self, _seals: u32) -> SysResult {
+        Err(SysErrNo::EINVAL)
     }
     /// ppoll处理
     fn poll(&self, _events: PollEvents) -> PollEvents {

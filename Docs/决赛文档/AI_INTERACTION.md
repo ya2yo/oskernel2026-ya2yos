@@ -3794,3 +3794,18 @@
   清理并正常 `shutdown!`。SIGTERM 回收阶段的 sender broken pipe 为预期输出。
 - **关联问题**：[LoongArch cyclictest musl 调度 wrapper ENOSYS 修复](./problem/cyclictest-musl-scheduler-stubs.md)
 - **关联 commit**：当前工作区未提交
+
+#### fcntl OFD、memfd sealing 与 write-life hint 扩展（8.17）
+
+- **工具/模型**：Codex（GPT-5）
+- **场景**：维护者要求继续丰富 `os/src/syscall/fs/fcntl.rs`。
+- **描述**：依据本地 Linux 7.0 UAPI 与 fcntl 实现，拆分每-fd `FD_CLOEXEC` 和共享 OFD
+  status flags，修正 `F_DUPFD_QUERY`，让 `F_SETFL(O_APPEND)` 改变实际写入位置；新增
+  memfd `F_ADD_SEALS/F_GET_SEALS`（含 `F_SEAL_FUTURE_WRITE`）和 inode/OFD write-life
+  hint，并接入 `fcntl_regression` 用户态回归。
+- **验证边界**：RISC-V64 与 LoongArch64 release 构建通过；RISC-V64 QEMU 两次输出
+  `fcntl regression: PASS` 和 `shutdown!`。LoongArch64 QEMU、完整 LTP 与 BuildStorm
+  本轮未运行；`F_SEAL_EXEC` chmod 拦截、已有 writable mapping 细节及全部 `F_SETFL`
+  权限检查未实现。
+- **关联问题**：[fcntl OFD 状态、memfd sealing 与 write-life hint 扩展](./problem/fcntl-ofd-seals-rw-hints.md)
+- **关联 commit**：当前工作区未提交

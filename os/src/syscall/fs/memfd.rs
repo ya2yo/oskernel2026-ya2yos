@@ -41,7 +41,15 @@ pub fn sys_memfd_create(name: *const u8, flags: u32) -> SyscallRet {
         fd,
         FileDescriptor::new(
             open_flags,
-            FileClass::Abs(TmpFile::new(true, true, 0o666, uid, gid)),
+            FileClass::Abs(TmpFile::new_memfd(
+                true,
+                true,
+                0o666,
+                uid,
+                gid,
+                flags & (MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL) != 0,
+                flags & MFD_NOEXEC_SEAL != 0,
+            )),
         ),
     );
     Ok(fd)

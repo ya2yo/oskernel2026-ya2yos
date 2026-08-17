@@ -5,12 +5,13 @@ use core::{future::poll_fn, task::Poll};
 use super::file_lock::{self, Flock};
 use crate::{
     fs::{File, OpenFlags, SEEK_CUR as FS_SEEK_CUR},
-    mm::{copy_from_user, copy_to_user},
+    mm::{copy_from_user, copy_from_user_val, copy_to_user, copy_to_user_val},
     syscall::options::FcntlCmd,
     task::{block_on, current_task, interruptible},
     utils::{SysErrNo, SyscallRet},
 };
 use alloc::string::String;
+use linux_raw_sys::general::{CAP_FOWNER, RWH_WRITE_LIFE_EXTREME};
 
 pub const F_DUPFD: u32 = 0; /* dup */
 pub const F_GETFD: u32 = 1; /* get close_on_exec */
@@ -39,6 +40,12 @@ pub const F_DUPFD_QUERY: u32 = 1027;
 pub const F_DUPFD_CLOEXEC: u32 = 1030;
 pub const F_SETPIPE_SZ: u32 = 1031;
 pub const F_GETPIPE_SZ: u32 = 1032;
+pub const F_ADD_SEALS: u32 = 1033;
+pub const F_GET_SEALS: u32 = 1034;
+pub const F_GET_RW_HINT: u32 = 1035;
+pub const F_SET_RW_HINT: u32 = 1036;
+pub const F_GET_FILE_RW_HINT: u32 = 1037;
+pub const F_SET_FILE_RW_HINT: u32 = 1038;
 
 /* for F_[GET|SET]FL */
 pub const FD_CLOEXEC: u32 = 1; /* actually anything with low bit set goes */
@@ -95,6 +102,22 @@ impl FOwnerEx {
         bytes[4..8].copy_from_slice(&self.pid.to_ne_bytes());
         bytes
     }
+}
+
+fn rw_hint_from_user(memory_set: &crate::mm::MemorySet, arg: usize) -> Result<u64, SysErrNo> {
+    let hint = copy_from_user_val::<u64>(memory_set, arg as *const u64)?;
+    if hint > RWH_WRITE_LIFE_EXTREME as u64 {
+        return Err(SysErrNo::EINVAL);
+    }
+    Ok(hint)
+}
+
+fn can_set_inode_rw_hint(task: &crate::task::TaskControlBlock, owner_uid: u32) -> bool {
+    let inner = task.inner_lock();
+    let cap = CAP_FOWNER as usize;
+    inner.effective_uid == owner_uid
+        || (cap / 32 < inner.capabilities.effective.len()
+            && inner.capabilities.effective[cap / 32] & (1u32 << (cap % 32)) != 0)
 }
 
 fn setlk_blocking(
@@ -162,18 +185,24 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
 
     match cmd {
         FcntlCmd::F_DUPFD => {
-            let mut file = proc_inner.fd_table.get(fd)?;
+            let mut file = fd_desc.clone();
             file.unset_cloexec();
             let fd_new = proc_inner.fd_table.alloc_fd_larger_than(arg)?;
-            proc_inner.fd_table.set(fd_new, file);
+            if let Err(err) = proc_inner.fd_table.set(fd_new, file) {
+                proc_inner.fd_table.take(fd_new);
+                return Err(err);
+            }
             proc_inner.fs_info.dup_fd_path(fd, fd_new);
             return Ok(fd_new);
         }
         FcntlCmd::F_DUPFD_CLOEXEC => {
-            let mut file = proc_inner.fd_table.get(fd)?;
+            let mut file = fd_desc.clone();
             file.set_cloexec();
             let fd_new = proc_inner.fd_table.alloc_fd_larger_than(arg)?;
-            proc_inner.fd_table.set(fd_new, file);
+            if let Err(err) = proc_inner.fd_table.set(fd_new, file) {
+                proc_inner.fd_table.take(fd_new);
+                return Err(err);
+            }
             proc_inner.fs_info.dup_fd_path(fd, fd_new);
             return Ok(fd_new);
         }
@@ -196,14 +225,14 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
             return Ok(file.getfl_flags() as usize);
         }
         FcntlCmd::F_SETFL => {
-            let file = proc_inner.fd_table.get(fd)?;
             let flags = OpenFlags::from_bits_truncate(arg as u32);
+            fd_desc
+                .any()
+                .set_nonblocking(flags.contains(OpenFlags::O_NONBLOCK))?;
+            fd_desc
+                .any()
+                .set_append(flags.contains(OpenFlags::O_APPEND))?;
             proc_inner.fd_table.set_status_flags(fd, flags)?;
-            if flags.contains(OpenFlags::O_NONBLOCK) {
-                file.any().set_nonblocking(true)?;
-            } else {
-                file.any().set_nonblocking(false)?;
-            }
         }
         // 文件记录锁（F_GETLK / F_SETLK / F_SETLKW）
         // 按 inode 路径在全局锁表中管理 POSIX advisory record lock
@@ -427,19 +456,10 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         FcntlCmd::F_NOTIFY => {
             return Err(SysErrNo::EINVAL);
         }
-        // DUPFD_QUERY — 查询 F_DUPFD 将分配的 fd 编号（不实际分配）
+        // F_DUPFD_QUERY compares two fd entries without creating a new one.
         FcntlCmd::F_DUPFD_QUERY => {
-            let fd_table = &proc_inner.fd_table;
-            let soft_limit = fd_table.get_soft_limit();
-            if arg >= soft_limit {
-                return Err(SysErrNo::EINVAL);
-            }
-            for candidate in arg..soft_limit {
-                if fd_table.try_get(candidate).is_none() {
-                    return Ok(candidate);
-                }
-            }
-            return Err(SysErrNo::EMFILE);
+            let other = proc_inner.fd_table.get(arg)?;
+            return Ok(fd_desc.same_open_file_description(&other) as usize);
         }
         // pipe 大小
         FcntlCmd::F_SETPIPE_SZ => {
@@ -452,6 +472,47 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         FcntlCmd::F_GETPIPE_SZ => {
             let pipe = proc_inner.fd_table.get(fd)?.pipe()?;
             return Ok(pipe.capacity());
+        }
+        // memfd sealing. The file implementation validates both the target
+        // type and the set of seals accepted by this kernel.
+        FcntlCmd::F_ADD_SEALS => {
+            if arg > u32::MAX as usize {
+                return Err(SysErrNo::EINVAL);
+            }
+            fd_desc.any().add_seals(arg as u32)?;
+            return Ok(0);
+        }
+        FcntlCmd::F_GET_SEALS => {
+            return Ok(fd_desc.any().get_seals()? as usize);
+        }
+        // Linux keeps F_{GET,SET}_RW_HINT on the inode, while the FILE variant
+        // is associated with this particular open file description.
+        FcntlCmd::F_GET_RW_HINT => {
+            let hint = fd_desc.rw_hint()?;
+            let memory_set = proc_inner.memory_set_arc();
+            copy_to_user_val(&memory_set, arg as *mut u64, &hint)?;
+            return Ok(0);
+        }
+        FcntlCmd::F_SET_RW_HINT => {
+            let memory_set = proc_inner.memory_set_arc();
+            let hint = rw_hint_from_user(&memory_set, arg)?;
+            if !can_set_inode_rw_hint(&task, fd_desc.rw_hint_owner_uid()?) {
+                return Err(SysErrNo::EPERM);
+            }
+            fd_desc.set_rw_hint(hint)?;
+            return Ok(0);
+        }
+        FcntlCmd::F_GET_FILE_RW_HINT => {
+            let hint = fd_desc.file_rw_hint();
+            let memory_set = proc_inner.memory_set_arc();
+            copy_to_user_val(&memory_set, arg as *mut u64, &hint)?;
+            return Ok(0);
+        }
+        FcntlCmd::F_SET_FILE_RW_HINT => {
+            let memory_set = proc_inner.memory_set_arc();
+            let hint = rw_hint_from_user(&memory_set, arg)?;
+            fd_desc.set_file_rw_hint(hint);
+            return Ok(0);
         }
 
         _ => {
