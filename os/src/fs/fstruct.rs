@@ -455,17 +455,13 @@ impl FdTable {
             .files
             .iter()
             .enumerate()
-            .any(|(other_fd, desc)| {
-                other_fd != fd
-                    && matches!(
-                        desc,
-                        Some(desc)
-                            if matches!(
-                                &desc.file,
-                                FileClass::File(other)
-                                    if Arc::ptr_eq(&other.inode, &file.inode)
-                            )
-                    )
+            .filter(|(other_fd, _)| *other_fd != fd)
+            .filter_map(|(_, desc)| desc.as_ref())
+            .any(|desc| {
+                matches!(
+                    &desc.file,
+                    FileClass::File(other) if Arc::ptr_eq(&other.inode, &file.inode)
+                )
             })
     }
 
