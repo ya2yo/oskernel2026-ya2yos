@@ -446,6 +446,29 @@ impl FdTable {
         self.try_get(fd).ok_or(SysErrNo::EBADF)
     }
 
+    /// Return whether a different descriptor in this table refers to the
+    /// same regular-file inode. `F_SETLEASE(F_WRLCK)` requires that no other
+    /// open file description exists for the file, including an independently
+    /// opened fd in the caller's own process.
+    pub fn has_other_regular_file_reference(&self, fd: usize, file: &Arc<OSFile>) -> bool {
+        self.get_ref()
+            .files
+            .iter()
+            .enumerate()
+            .any(|(other_fd, desc)| {
+                other_fd != fd
+                    && matches!(
+                        desc,
+                        Some(desc)
+                            if matches!(
+                                &desc.file,
+                                FileClass::File(other)
+                                    if Arc::ptr_eq(&other.inode, &file.inode)
+                            )
+                    )
+            })
+    }
+
     /// 读取指定 fd 的 close-on-exec 状态。
     pub fn get_cloexec(&self, fd: usize) -> Result<bool, SysErrNo> {
         let fd_inner = self.get_ref();

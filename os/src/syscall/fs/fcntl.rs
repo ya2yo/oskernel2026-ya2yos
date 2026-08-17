@@ -439,11 +439,22 @@ pub fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> SyscallRet {
         // 文件租约（file lease）-
         FcntlCmd::F_SETLEASE => {
             let osfile = fd_desc.file()?;
-            let flags = OpenFlags::from_bits_truncate(fd_desc.flags());
+            let lease_type = arg as i16;
+            // A write lease is exclusive even against another independently
+            // opened fd in this process. Duplicated descriptors count too:
+            // they keep another reference to the same open file description.
+            if lease_type == F_WRLCK
+                && proc_inner
+                    .fd_table
+                    .has_other_regular_file_reference(fd, &osfile)
+            {
+                return Err(SysErrNo::EAGAIN);
+            }
+            let flags = OpenFlags::from_bits_truncate(fd_desc.getfl_flags());
             let (_, fd_opened_for_write) = flags.read_write();
             return file_lock::set_file_lease(
                 &osfile.inode.path(),
-                arg as i16,
+                lease_type,
                 owner_pid,
                 fd_opened_for_write,
             );
