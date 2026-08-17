@@ -162,7 +162,8 @@
     panel("01  ·  系统定位", [Rust 宏内核、Linux ABI、RISC-V64 / LoongArch64；面向真实 Linux 用户态路径与工具链负载。], color: blue, fill: pale-blue),
     panel("02  ·  系统介绍", [从系统架构图出发，依次介绍进程管理、多核调度、内存管理、信号机制、文件系统和设备驱动。], color: teal, fill: pale-teal),
     panel("03  ·  关键增量", [多核运行、CFS 调度、StarryOS 网络移植、uaccess、文件锁、syscall 扩展与模块重构。], color: orange, fill: pale-orange),
-    panel("04  ·  发展规划", [扩展文件系统类型、提升文件 I/O、持续丰富网络模块，并完成开发板实机运行与验证。], color: red, fill: pale-red),
+    panel("04  ·  AI 使用", [辅助日志分析、源码追踪和文档整理；关键修改经过人工审查与可追溯验证。], color: red, fill: pale-red),
+    panel("05  ·  发展规划", [扩展文件系统类型、提升文件 I/O、持续丰富网络模块，并完成开发板实机运行与验证。], color: blue, fill: pale-blue),
   )
 ]
 
@@ -438,10 +439,31 @@
   )
 ]
 
-// 14 · roadmap
-#chapter-cover("04", "发展规划", "文件系统扩展 · I/O 优化 · 网络完善 · 开发板实机运行", color: red, fill: pale-red)
+// 17 · AI usage
+#chapter-cover("04", "AI 使用情况", "需求拆解 · 源码分析 · 人工复核 · 可追溯验证", color: red, fill: pale-red)
 #slide[
-  #titlebar("04  ·  ROADMAP", "发展规划：从已验证路径走向更完整能力", subtitle: "扩展 VFS、I/O、网络和实机验证；所有优化以可复核证据为前提")
+  #titlebar("04  ·  AI USAGE", "AI 使用情况：辅助工程判断，不替代验证", subtitle: "AI 参与分析、实现和文档整理；最终结论由源码、构建和回归证据决定")
+  #v(0.18cm)
+  #grid(columns: (1fr, 1fr, 1fr), gutter: 10pt,
+    compact-panel("01  ·  问题定位", [读取 panic、LTP/BuildStorm 日志和源码调用链，整理候选根因，并明确还需要哪些实验或回归证据。], color: blue, fill: pale-blue, height: 82pt),
+    compact-panel("02  ·  实现协作", [围绕 syscall、task、mm、fs、net 和用户态测试起草小范围修改；入口、核心语义和资源生命周期仍回到领域模块。], color: teal, fill: pale-teal, height: 82pt),
+    compact-panel("03  ·  人工把关", [维护者确认范围并审查 diff，通过双架构构建、QEMU/LTP 或定向回归验证；未验证的语义不宣称为完整支持。], color: orange, fill: pale-orange, height: 82pt),
+  )
+  #v(0.34cm)
+  #grid(columns: (1fr, 0.12fr, 1fr, 0.12fr, 1fr, 0.12fr, 1fr), gutter: 4pt,
+    flow-step("需求 + 证据", "日志、源码、边界", color: blue, fill: pale-blue), text(size: 20pt, fill: blue)[→],
+    flow-step("AI 分析", "候选根因与方案", color: teal, fill: pale-teal), text(size: 20pt, fill: blue)[→],
+    flow-step("人工复核", "语义、锁序、改动范围", color: orange, fill: pale-orange), text(size: 20pt, fill: blue)[→],
+    flow-step("构建 + 回归", "证据与结论留痕", color: red, fill: pale-red),
+  )
+  #v(0.24cm)
+  #align(center)[#text(size: 11pt, fill: muted)[对有实质修改的协作，记录需求、分析路径、修改文件和验证边界，并同步到 `ai.log` 与 `AI_INTERACTION.md`。]]
+]
+
+// 18 · roadmap
+#chapter-cover("05", "发展规划", "文件系统扩展 · I/O 优化 · 网络完善 · 开发板实机运行", color: red, fill: pale-red)
+#slide[
+  #titlebar("05  ·  ROADMAP", "发展规划：从已验证路径走向更完整能力", subtitle: "扩展 VFS、I/O、网络和实机验证；所有优化以可复核证据为前提")
   #v(0.3cm)
   #grid(columns: (1fr, 1fr), gutter: 14pt,
     panel("01  ·  支持更多文件系统", [在统一 VFS、dentry/inode 和 mount 语义下接入更多文件系统类型；完善不同文件系统的路径解析、权限、元数据和挂载参数兼容性。], color: blue, fill: pale-blue),
@@ -451,7 +473,7 @@
   )
 ]
 
-// 15 · closing
+// 19 · closing
 #slide[
   #align(center + horizon)[
     #text(size: 48pt, weight: "bold", fill: navy)[Ya2yOS]
