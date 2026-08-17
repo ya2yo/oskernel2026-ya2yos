@@ -2,15 +2,10 @@ use super::*;
 
 /// 修改 inode 的 uid/gid 元数据，是 `chown` 系列 syscall 的公共实现。
 ///
-/// 只有 effective uid 为 0 的任务可修改 owner/group；`usize::MAX` 表示 Linux
+/// 只有 effective uid 为 0 的任务可修改 owner/group；`u32::MAX` 表示 Linux
 /// ABI 中的 `(uid_t)-1` 或 `(gid_t)-1`，即保持对应字段不变。
 /// 参考 https://www.man7.org/linux/man-pages/man2/fchownat.2.html
-fn chown_inode(
-    inode: Arc<dyn Inode>,
-    path: Option<&str>,
-    owner: usize,
-    group: usize,
-) -> SyscallRet {
+fn chown_inode(inode: Arc<dyn Inode>, path: Option<&str>, owner: u32, group: u32) -> SyscallRet {
     if let Some(path) = path {
         if let Some((_, _, _, mountflags)) = MNT_TABLE.lock().mount_for_path(path) {
             if mountflags.contains(MountFlags::RDONLY) {
@@ -19,31 +14,38 @@ fn chown_inode(
         }
     }
 
+    let stat = inode.fstat();
     let task = current_task().unwrap();
-    {
+    let (euid, egid) = {
         let task_inner = task.inner_lock();
-        if task_inner.effective_uid != 0 {
-            return Err(SysErrNo::EPERM);
-        }
+        (task_inner.effective_uid, task_inner.effective_gid)
+    };
+
+    // An unprivileged owner may retain the current uid and change the file
+    // group to its effective group.  The credential model currently exposes
+    // only that group, so supplementary-group membership is not available
+    // here yet.
+    if euid != 0
+        && (euid != stat.st_uid
+            || (owner != u32::MAX && owner != stat.st_uid)
+            || (group != u32::MAX && group != egid))
+    {
+        return Err(SysErrNo::EPERM);
     }
 
-    let stat = inode.fstat();
     // POSIX uses (uid_t)-1/(gid_t)-1 to mean "leave this field unchanged".
-    let uid = if owner == usize::MAX {
+    // uid_t/gid_t are 32-bit ABI values.  Cast at syscall dispatch before
+    // reaching here so both zero- and sign-extended `(uid_t)-1` map to this
+    // sentinel instead of being persisted as an on-disk id.
+    let uid = if owner == u32::MAX {
         stat.st_uid
     } else {
-        if owner > u32::MAX as usize {
-            return Err(SysErrNo::EINVAL);
-        }
-        owner as u32
+        owner
     };
-    let gid = if group == usize::MAX {
+    let gid = if group == u32::MAX {
         stat.st_gid
     } else {
-        if group > u32::MAX as usize {
-            return Err(SysErrNo::EINVAL);
-        }
-        group as u32
+        group
     };
 
     inode.owner_set(uid, gid)?;
@@ -107,8 +109,8 @@ fn chmod_inode(inode: Arc<dyn Inode>, path: Option<&str>, mode: u32) -> SyscallR
 pub fn sys_fchownat(
     dirfd: isize,
     pathname: *const u8,
-    owner: usize,
-    group: usize,
+    owner: u32,
+    group: u32,
     flags: u32,
 ) -> SyscallRet {
     // chown/fchown wrappers reach this syscall; do not report success without
@@ -173,7 +175,7 @@ pub fn sys_fchownat(
 /// `O_PATH` fd 只作为路径句柄，不代表可修改的已打开文件，因此返回 `EBADF`；其余
 /// 语义委托给 `chown_inode()`。
 /// 参考 https://www.man7.org/linux/man-pages/man2/fchown.2.html
-pub fn sys_fchown(fd: usize, owner: usize, group: usize) -> SyscallRet {
+pub fn sys_fchown(fd: usize, owner: u32, group: u32) -> SyscallRet {
     let task = current_task().unwrap();
     let proc = &task.process;
     let fd_desc = proc.fd_table.get(fd)?;

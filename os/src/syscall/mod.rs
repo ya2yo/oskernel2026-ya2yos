@@ -473,11 +473,11 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
         Syscall::Fchownat => sys_fchownat(
             args[0] as isize,
             args[1] as *const u8,
-            args[2] as usize,
-            args[3] as usize,
+            args[2] as u32,
+            args[3] as u32,
             args[4] as u32,
         ),
-        Syscall::Fchown => sys_fchown(args[0], args[1], args[2]),
+        Syscall::Fchown => sys_fchown(args[0], args[1] as u32, args[2] as u32),
         Syscall::Openat => sys_openat(
             args[0] as isize,
             args[1] as *const u8,
