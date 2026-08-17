@@ -2,6 +2,7 @@
 mod board_2k1000;
 #[cfg(not(feature = "2k1000"))]
 mod qemu;
+mod page_geometry;
 
 #[cfg(feature = "2k1000")]
 pub use board_2k1000::*;

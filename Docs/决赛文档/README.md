@@ -246,3 +246,4 @@
 - [waitpid/waitid 子进程退出事件丢唤醒](./problem/waitpid-child-exit-lost-wakeup.md)
 - [LTP `setuid04` open 权限检查任务锁自锁](./problem/setuid04-open-task-lock-self-deadlock.md)
 - [Loopback TCP 分片队列耗尽导致 iperf 卡死](./problem/loopback-tcp-fragment-queue-stall.md)
+- [Loongson 2K1000 hugepage 内存布局常量遗漏导致构建失败](./problem/loongarch-2k1000-hugepage-layout-build.md)

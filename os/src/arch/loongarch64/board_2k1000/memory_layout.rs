@@ -2,8 +2,10 @@
 
 use crate::config::THREAD_MAX_NUM;
 
-pub const PAGE_SIZE: usize = 0x1000;
-pub const PAGE_SIZE_BITS: usize = 12;
+pub use super::super::page_geometry::{
+    HUGE_PAGE_PAGES, HUGE_PAGE_SIZE, PAGE_SIZE, PAGE_SIZE_BITS,
+};
+
 pub const USER_STACK_SIZE: usize = 1024 * 1024 * 8;
 pub const KERNEL_STACK_SIZE: usize = PAGE_SIZE * 2;
 pub const KERNEL_HEAP_SIZE: usize = 0x8_000_000;
