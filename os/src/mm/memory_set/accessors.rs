@@ -1,4 +1,9 @@
-//! Page-table access, accounting and teardown helpers for `MemorySetInner`.
+//! `MemorySetInner` 的页表访问、内存统计、范围校验与回收辅助函数。
+//!
+//! 本模块中的函数都直接操作未加锁的 [`MemorySetInner`]，可以检查或修改
+//! 页表以及 VMA（`MapArea`）列表，但不会自行获取外层的
+//! `MemorySet::inner` 锁。需要执行 I/O 的调用者必须先在这里创建拥有所有权
+//! 的快照，释放地址空间锁之后，再调用文件系统或特殊 mmap 后端。
 
 use alloc::{sync::Arc, vec, vec::Vec};
 
@@ -14,15 +19,31 @@ use crate::{
     utils::{SysErrNo, SyscallRet},
 };
 
-/// A snapshot of resident shared-mmap pages. Filesystem I/O is performed from
-/// this snapshot after the owning `MemorySet` lock has been released.
+/// 一个共享映射中驻留页面的独立快照。
+///
+/// 共享映射可以由 [`OSFile`] 或实现了 [`MmapBacking`] 的对象提供后端。
+/// 因此 `file` 与 `backing` 互斥：inode 文件映射填充 `file`，特殊映射
+///（例如 `memfd`）填充 `backing`。`pages` 只包含已经驻留的页面；尚未访问
+///的惰性页面没有物理帧，也就无需回写。
+///
+/// 这里有意保存 `Arc` 帧引用，使地址空间写锁释放后页面内容仍然有效，
+/// 从而可以在不持有内存管理锁的情况下执行可能阻塞的 I/O。
 pub(super) struct SharedMmapWriteback {
     pub(super) file: Option<Arc<OSFile>>,
     pub(super) backing: Option<Arc<dyn MmapBacking>>,
     pub(super) pages: Vec<(usize, Arc<FrameTracker>)>,
 }
 
-/// Write a shared-mmap snapshot without touching a MemorySet lock.
+/// 将共享 mmap 快照中的驻留页面持久化。
+///
+/// 本函数不会访问 `MemorySetInner`，因此调用者可以在释放地址空间锁后执行
+/// 回写。对于 inode 文件映射，函数会临时将共享文件定位到每个页面的文件
+/// 偏移，写入完整页面，并在返回前恢复原文件偏移；对于特殊后端，则逐页
+/// 调用 [`MmapBacking::writeback_page`]。
+///
+/// 如果 inode 已被删除，则视为成功的空操作，因为已经不存在可写入的文件
+/// 对象。文件写入长度为零或小于预期时返回 [`SysErrNo::EIO`]；无法转换为
+/// 文件接口所需有符号偏移的偏移量返回 [`SysErrNo::EOVERFLOW`]。
 pub(super) fn writeback_shared_mmap_pages(snapshot: &SharedMmapWriteback) -> SyscallRet {
     if let Some(file) = snapshot.file.as_ref() {
         if file.inode.link_cnt()? == 0 {
@@ -59,9 +80,16 @@ pub(super) fn writeback_shared_mmap_pages(snapshot: &SharedMmapWriteback) -> Sys
 }
 
 impl MemorySetInner {
-    /// Snapshot resident shared-mmap pages for writeback. The returned frames
-    /// keep their contents alive while filesystem I/O runs without the
-    /// MemorySet lock.
+    /// 收集共享映射中需要回写的驻留页面。
+    ///
+    /// `range` 是可选的半开 VPN 区间。指定该参数时，只处理它与每个 VMA
+    /// 的交集；`munmap` 使用此模式，仅回写即将解除映射的部分，避免影响无关
+    /// 映射。传入 `None` 时，处理地址空间销毁阶段的全部可写
+    /// `MAP_SHARED` mmap VMA。
+    ///
+    /// 快照记录的是文件偏移或后端对象的页面索引，而不是虚拟地址，因此在
+    /// 调用者释放 `MemorySet` guard 后仍然有效。只有 `data_frames` 中已有的
+    /// 驻留帧会被收集；从未访问过的惰性页面没有需要持久化的修改内容。
     pub(super) fn collect_shared_mmap_writebacks(
         &self,
         range: Option<(VirtPageNum, VirtPageNum)>,
@@ -134,31 +162,46 @@ impl MemorySetInner {
         snapshots
     }
 
-    /// Return the hardware page-table token.
+    /// 返回硬件页表标识。
+    ///
+    /// 该标识是将此页表安装为当前地址空间时使用的体系结构相关值，
+    /// 例如根页表标识。它对调用者是不透明的，不能在未使用目标体系结构
+    /// API 的情况下将其当作物理页号解释。
     pub fn token(&self) -> usize {
         self.page_table.token()
     }
 
-    /// Borrow the underlying page table mutably.
+    /// 以可变方式借用底层页表。
     ///
-    /// This is for low-level memory-management code that must edit page-table
-    /// entries directly. Prefer higher-level `MemorySetInner` methods when the
-    /// operation also needs to keep `areas` metadata in sync.
+    /// 仅供必须直接修改页表项的底层内存管理代码使用。如果操作还需要
+    /// 同步更新 `areas` 元数据，应优先使用更高层的 `MemorySetInner` 方法。
     pub fn page_table_mut(&mut self) -> &mut PageTable {
         &mut self.page_table
     }
 
-    /// Activate this page table on the current CPU.
+    /// 在当前 CPU 上激活此页表。
+    ///
+    /// 调用后，当前 hart 的地址转换将使用此地址空间。调用者负责在切换
+    /// 或修改页表时遵守本模块规定的 TLB 与 `MemorySet` 锁顺序。
     pub fn activate(&self) {
         self.page_table.activate();
     }
 
-    /// Translate a VPN through this page table.
+    /// 通过此页表转换虚拟页号。
+    ///
+    /// 如果页表遍历找到有效的叶子项，则返回对应的物理页号；VPN 未映射
+    /// 时返回 `None`。这是一次不会触发缺页异常的查询：它不检查 VMA 元数据，
+    /// 也不会分配惰性页面。
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PhysPageNum> {
         self.page_table.translate(vpn)
     }
 
-    /// Resident physical memory in KiB.
+    /// 返回此地址空间对应的驻留物理内存大小，单位为 KiB。
+    ///
+    /// 该值是所有 VMA 所跟踪驻留帧大小之和，并通过整数除法从字节转换为
+    /// KiB。它统计的是已驻留的映射帧，而不是虚拟地址空间大小；由于这是
+    /// 按地址空间统计的视图，被多个 VMA 通过 `Arc` 共享的帧会在每个 VMA
+    /// 中分别计入。
     pub fn resident_size_kb(&self) -> usize {
         self.areas
             .iter()
@@ -166,10 +209,11 @@ impl MemorySetInner {
             .sum()
     }
 
-    /// Return pages covered by `MAP_LOCKED` mappings.
+    /// 返回 `MAP_LOCKED` 映射覆盖的虚拟内存大小，单位为 KiB。
     ///
-    /// This follows VMA metadata rather than resident frames so `/proc` shows
-    /// the lock immediately after a lazy `mmap` call.
+    /// 该统计依据 VMA 元数据，而不是驻留帧数量，因此惰性 `mmap` 调用完成
+    /// 后，`/proc` 也会立即显示被锁定的范围。结果表示承诺保持驻留的虚拟
+    /// 内存大小，而不是已经触发缺页并装入的页面数量。
     pub fn locked_size_kb(&self) -> usize {
         self.areas
             .iter()
@@ -181,7 +225,11 @@ impl MemorySetInner {
             .sum()
     }
 
-    /// Virtual address space size in KiB.
+    /// 返回所有 VMA 覆盖的虚拟地址空间总大小，单位为 KiB。
+    ///
+    /// 每个 VMA 都使用半开 VPN 区间表示，因此计算结果包含每个区域完整的
+    /// 页对齐范围。该值统计虚拟地址覆盖范围，与页面是否驻留无关，也不包含
+    /// VMA 之间未映射的空洞。
     pub fn virtual_size_kb(&self) -> usize {
         self.areas
             .iter()
@@ -192,10 +240,12 @@ impl MemorySetInner {
             .sum()
     }
 
-    /// Clear all user VM areas and page-table entries.
+    /// 删除所有用户 VMA，并清除对应的页表项。
     ///
-    /// Shared-mmap writeback is intentionally performed by the locked handle
-    /// in a separate phase, because filesystem I/O may sleep.
+    /// 除了丢弃区域元数据和页表映射，该操作还会重置 mmap 统计值与分配提示
+    /// 地址。共享 mmap 的回写由持有锁的 `MemorySet` handle 在单独阶段完成，
+    /// 因为文件系统 I/O 可能阻塞，不能在地址空间状态锁定期间执行。调用者
+    /// 必须在调用本方法前安排所需的 TLB shootdown 并保留必要的物理帧引用。
     pub fn recycle_data_pages(&mut self) -> SyscallRet {
         self.areas.clear();
         self.page_table.clear();
@@ -204,7 +254,12 @@ impl MemorySetInner {
         Ok(0)
     }
 
-    /// Check that a VPN range is fully covered by user-accessible areas with permissions.
+    /// 检查半开 VPN 区间是否被具有所需权限的 VMA 完整覆盖。
+    ///
+    /// 区间不能包含 VMA 之间的空洞，并且其中每个区域都必须包含
+    /// `wanted_map_perm` 中的全部权限位。本函数只检查 VMA 元数据，不要求每个
+    /// 页面都存在驻留 PTE，也不会触发惰性分配。调用者应传入非空区间；字节
+    /// 范围的调用者会在进入本函数前处理长度为零的情况。
     pub(super) fn check_user_range(
         &self,
         vpn_range: VPNRange,
