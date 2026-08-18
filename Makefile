@@ -97,9 +97,8 @@ run:
 # 	@$(MAKE) build-arch TARGET_ARCH=$(TARGET_ARCH) PLATFORM=$(PLATFORM)
 ifeq ($(PLATFORM),2k1000)
 	@echo "2K1000 is a physical-board target; QEMU virt cannot validate its AHCI path."
-	@echo "At the U-Boot prompt run:"
-	@echo "  tftpboot $(KERNEL_LOAD_ADDR) $(KERNEL_RAW_BIN)"
-	@echo "  go $(KERNEL_ENTRY_ADDR)"
+	@echo "Build the raw image with: make build-arch TARGET_ARCH=loongarch64 PLATFORM=2k1000"
+	@echo "At U-Boot: load kernel-la.bin at 0x9000000090000000, then run go 0x9000000090000000 <fdt_addr>."
 else ifeq ($(PLATFORM),visionfive2)
 	@echo "VisionFive 2 is a physical-board target; QEMU virt cannot validate its board path."
 	@echo "Package $(KERNEL_BIN) as a U-Boot legacy image, then boot it with the board FDT."
@@ -110,6 +109,9 @@ else
 	@-$(QEMU_CMD)
 	@rm -f disk.img
 endif
+
+2k1000-uimage:
+	@python3 ./scripts/mk_2k1000_uimage.py
 
 clean:
 	@cd ./os && $(MAKE) clean
@@ -156,6 +158,6 @@ docker:
 	docker run --rm -it -v $(PROJECT_ROOT):/workplace -w /workplace zhouzhouyi/os-contest:20260510 bash
 
 .PHONY: all all-arch riscv64-build loongarch64-build build-arch set_env_arch \
-        run log perf doc clean objdump gdbserver gdbclient gdb setup_cargo cleanup_cargo set_env
+        run 2k1000-uimage log perf doc clean objdump gdbserver gdbclient gdb setup_cargo cleanup_cargo set_env
 
 .DEFAULT_GOAL := all

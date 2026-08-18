@@ -138,9 +138,16 @@ pub fn rust_main(hartid: usize, fdt: usize) -> ! {
         .is_ok();
 
     if is_bootstrap {
+        #[cfg(feature = "2k1000")]
+        arch::cpu::early_uart_marker(b'H');
         clear_bss();
+        #[cfg(feature = "2k1000")]
+        arch::cpu::early_uart_marker(b'I');
+        let fdt_ok = arch::hardware::init_from_fdt(fdt);
+        #[cfg(feature = "2k1000")]
+        arch::cpu::early_uart_marker(b'J');
         assert!(
-            arch::hardware::init_from_fdt(fdt),
+            fdt_ok,
             "bootloader did not provide a usable FDT RAM description"
         );
         println!(

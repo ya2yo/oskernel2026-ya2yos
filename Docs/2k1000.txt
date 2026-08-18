@@ -106,8 +106,7 @@ WSL2 只负责构建和计算校验值。
 该命令会使用 2K1000 专用 Cargo 配置和 linker，生成：
 
 * `kernel-la`：保留 ELF 头和符号，供地址检查、调试使用；
-* `kernel-la.bin`：去除 ELF 头后的原始二进制，供 U-Boot 的 `tftpboot`、USB 存储或
-  `loady`/`loadx` 使用。
+* `kernel-la.bin`：去除 ELF 头后的原始二进制，供 U-Boot `go` 直接加载和执行。
 
 检查产物和入口地址：
 
@@ -119,9 +118,11 @@ WSL2 只负责构建和计算校验值。
 
     0x9000000090000000
 
-本说明后面的加载地址、跳转地址都必须保持为 `0x9000000090000000`。不要把
+内核 ELF 的链接入口和原始镜像的 RAM 加载地址必须保持为 `0x9000000090000000`。不要把
 `os/target/loongarch64-unknown-none/release/os` 或 `kernel-la` ELF 直接传给下面的 U-Boot
-命令；U-Boot 此处需要 `kernel-la.bin`。
+命令。此板厂商 U-Boot 的 `bootm` 路径只适用于其 Linux 镜像，会在加载独立内核时进入 DDR
+解析分支；本流程必须使用 raw `kernel-la.bin` 和 `go`。Ya2yOS 的 2K1000 入口会从
+`go <entry> <fdt-address>` 的第二个参数读取 FDT，因此不能省略 FDT 地址。
 
 可选：保存构建信息，便于和串口日志对应：
 
@@ -132,10 +133,21 @@ WSL2 只负责构建和计算校验值。
 六、进入 U-Boot 并检查可用的传输命令
 --------------------------------------
 
+先确认当前命令行属于哪个环境：`LS2K1000 #`、`Loongson #`、`=>` 等是 U-Boot
+提示符；`LS-GD login:` 或 `[root@LS-GD ~]#` 是板载原厂 Linux 的登录界面和 shell。
+只有在 U-Boot 提示符下，`version`、`printenv` 和 `help tftpboot` 才是有效命令；如果
+串口日志出现 `stmmaceth`、systemd 服务或自动登录，说明已经错过 U-Boot 倒计时，尚未
+加载 Ya2yOS 镜像。
+
 1. 保持 MobaXterm 串口窗口打开，给板卡上电或执行复位。
 2. 在出现类似 `Hit any key to stop autoboot` 的倒计时期间按任意键，进入 `U-Boot` 提示符。
-   不同固件的提示符可能是 `LS2K1000 #`、`Loongson #` 或其他名称。
-3. 先执行只读检查并把输出保存到日志：
+   不同固件的提示符可能是 `LS2K1000 #`、`Loongson #`、`=>` 或其他名称。建议在倒计时
+   的整个窗口连续按几次空格或回车，避免串口终端焦点或按键时机造成漏按。
+3. 如果已经看到 `LS-GD login:` 或 `[root@LS-GD ~]#`，不要在该 shell 中继续执行本节命令。
+   输入 `reboot`，或使用板卡复位键/重新上电；串口窗口保持打开，在下一次 U-Boot 倒计时
+   期间立即按键。如果复位后始终没有倒计时或 U-Boot 提示符，保存上电后的前几十行日志，
+   这通常表示固件关闭了可中断自动启动，需要先进入该固件提供的启动菜单。
+4. 进入 U-Boot 后，先执行只读检查并把输出保存到日志：
 
        version
        printenv bootcmd bootdelay baudrate ipaddr serverip
@@ -181,15 +193,17 @@ WSL2 只负责构建和计算校验值。
 
 `ping` 成功后执行：
 
+    fdt addr ${fdtcontroladdr}
+    fdt header
     tftpboot 0x9000000090000000 kernel-la.bin
-    crc32 0x9000000090000000 ${filesize}
-    go 0x9000000090000000
+    go 0x9000000090000000 ${fdtcontroladdr}
 
-`tftpboot` 成功后应显示传输字节数，`${filesize}` 应与 `kernel-la.bin` 大小一致。`crc32` 用于
-   记录传输后的校验值；不同 TFTP 工具计算 SHA-256 的方式不一致时，以文件大小、TFTP 成功和
-   内核串口输出共同判断。`go` 执行后不要再输入 U-Boot 命令，等待串口输出。
+`fdt header` 必须成功；如果出现 `FDT_ERR_BADMAGIC`，说明当前控制 FDT 无效，不能继续执行
+`go`。`tftpboot` 成功后应显示传输字节数，`${filesize}` 应与 `kernel-la.bin` 大小一致。执行
+`go` 后不要再输入 U-Boot 命令，等待串口输出。
 
-如果板卡已有可用的 `ipaddr`/`serverip`，也可以只执行 `ping ${serverip}`、`tftpboot` 和 `go`。
+如果板卡已有可用的 `ipaddr`/`serverip`，也可以只执行 `ping ${serverip}`、`fdt addr`、`tftpboot`
+和 `go`。
 本次 `setenv` 仅改变内存中的环境，不会写入 Flash；不要跟随执行 `saveenv`。
 
 八、方案 B：通过 USB 大容量存储加载（备选）
@@ -203,11 +217,25 @@ WSL2 只负责构建和计算校验值。
 ### 8.1 准备 U 盘
 
 使用专门用于测试的 U 盘，建议其第一个分区使用 FAT32，并将构建机生成的 `kernel-la.bin` 放在
-分区根目录。不要把 `kernel-la` ELF、`os` ELF 或其他架构的镜像放入同名文件。复制后在构建机
+分区根目录。不要把 `kernel-la` ELF、`kernel-la.uImage`、`os` ELF 或其他架构的镜像放入同名文件。复制后在构建机
 记录文件信息：
 
     sha256sum kernel-la.bin
     stat -c '%n %s bytes' kernel-la.bin
+
+WSL2 不一定会自动把插入的 Windows U 盘映射到 `/mnt/e`、`/mnt/f` 等路径；这不影响本方案，
+也不需要使用 `usbipd` 将 U 盘转交给 WSL2。用 Windows 文件资源管理器把 WSL2 中生成的文件
+复制到 U 盘即可。可以在 WSL2 仓库目录执行：
+
+    explorer.exe "$(wslpath -w "$PWD")"
+
+该命令会打开当前仓库目录，然后在资源管理器中将 `kernel-la.bin` 复制到 U 盘根目录。
+也可以在资源管理器地址栏打开 `\\wsl$\<发行版名称>\home\ya2yo\projects\oskernel2026-ya2yos`；
+发行版名称可在 Windows 终端用 `wsl.exe -l -q` 查询。如果 U 盘恰好已经出现在 WSL2 的
+`/mnt/<盘符>` 下，也可以直接执行 `cp kernel-la.bin /mnt/<盘符>/`，但这不是必需条件。
+
+复制完成后在 Windows 资源管理器中安全弹出 U 盘，再插到板卡的 USB Host 口。不要把 USB
+调试串口所在的口当作 U-Boot USB 存储 Host 口。
 
 安全卸载 U 盘后，将其插入 2K1000 上连接到 U-Boot USB Host 控制器的端口；USB 调试串口通常
 不能作为 USB 存储 Host 使用。若板卡有多个 USB 口，以其硬件手册和 U-Boot `usb start` 输出为准。
@@ -217,41 +245,48 @@ WSL2 只负责构建和计算校验值。
 在 U-Boot 执行：
 
     usb start
-    part list usb 0
-    fatls usb 0:1
+    usb part 0
+    fatls usb 0 /
 
-`usb start` 必须报告已发现 USB storage 设备；`part list` 和 `fatls` 用于确认实际设备号、分区号
-及 `kernel-la.bin` 文件名。示例中的 `usb 0:1` 仅表示第一个 USB 设备的第一个分区；若输出不同，
-必须替换成实际编号。
+`usb start` 必须报告已发现 USB storage 设备；`fatls` 用于确认设备和 `kernel-la.bin` 文件名。
+部分 U-Boot 没有独立的 `part` 命令，但提供 `usb part`；如果 `usb part 0` 报告没有分区表，
+直接使用 `usb 0` 访问整盘文件系统。
 
-确认后，将 raw image 加载到 2K1000 固定入口地址：
+如果 `usb part 0` 报告 `no usb partition table available`，说明 U 盘可能是“整盘直接格式化为
+FAT32”的无分区表布局（Windows 可以正常识别，但不存在 `0:1` 分区号）。先尝试直接访问整盘：
 
-    setenv ya2yos_addr 0x9000000090000000
-    fatload usb 0:1 ${ya2yos_addr} kernel-la.bin
-    setenv ya2yos_size ${filesize}
-    crc32 ${ya2yos_addr} ${ya2yos_size}
-    go ${ya2yos_addr}
+    fatls usb 0 /
 
-`fatload` 成功后，`${filesize}` 应与构建机 `stat` 的字节数一致。此处的 `kernel-la.bin` 是 raw
-binary，必须使用 `go`，不是 `bootm`。`go` 后等待串口输出，不要再输入 U-Boot 命令。
+若能列出 `kernel-la.bin`，下面的加载命令使用整盘设备号 `usb 0`：
+
+    fdt addr ${fdtcontroladdr}
+    fdt header
+    fatload usb 0 0x9000000090000000 kernel-la.bin
+    go 0x9000000090000000 ${fdtcontroladdr}
+
+如果 `fatls usb 0 /` 也无法读取文件系统，再将 U 盘重新准备为带 MBR 分区表的 FAT32 主分区；
+重新分区会删除 U 盘内容，确认没有重要数据后再操作。
+
+`fatload` 成功后，`${filesize}` 应与构建机 `stat` 的字节数一致。此处使用 raw
+`kernel-la.bin`，必须以带 FDT 参数的 `go` 启动，不能使用 `bootm`。不要把 `kernel-la.uImage`
+或 FIT `.itb` 当作本流程的启动文件。
 
 ### 8.3 U 盘为 Ext4 时的等价命令
 
 若测试 U 盘使用 Ext4 且 U-Boot 支持 `ext4load`，先定位文件：
 
     usb start
-    part list usb 0
-    ext4ls usb 0:1 /
+    usb part 0
+    ext4ls usb 0 /
 
 若 `kernel-la.bin` 位于根目录，使用：
 
-    setenv ya2yos_addr 0x9000000090000000
-    ext4load usb 0:1 ${ya2yos_addr} /kernel-la.bin
-    setenv ya2yos_size ${filesize}
-    crc32 ${ya2yos_addr} ${ya2yos_size}
-    go ${ya2yos_addr}
+    fdt addr ${fdtcontroladdr}
+    fdt header
+    ext4load usb 0 0x9000000090000000 /kernel-la.bin
+    go 0x9000000090000000 ${fdtcontroladdr}
 
-若 U-Boot 列出的 USB 设备或分区号不是 `0:1`，或镜像不在根目录，必须据 `part list` / `ext4ls`
+若 U-Boot 列出的 USB 设备或分区号不同，或镜像不在根目录，必须据 `usb part` / `ext4ls`
 输出替换命令中的设备、分区和路径。不要因 `fatload` 失败就重新格式化包含重要数据的 U 盘。
 
 九、方案 C：只有串口线时尝试 YMODEM/XMODEM
@@ -269,9 +304,11 @@ binary，必须使用 `go`，不是 `bootm`。`go` 后等待串口输出，不�
 
 看到 U-Boot 等待 YMODEM 的提示后，在 MobaXterm 菜单选择类似 `Transfer -> Send file using
 YMODEM`（不同版本菜单名称可能略有差异），选择 WSL2 构建得到的 `kernel-la.bin`，等待传输
-完成并回到 U-Boot 提示符。随后执行：
+完成并回到 U-Boot 提示符。随后先设置并检查固件控制 FDT，再执行：
 
-    go 0x9000000090000000
+    fdt addr ${fdtcontroladdr}
+    fdt header
+    go 0x9000000090000000 ${fdtcontroladdr}
 
 ### 9.2 XMODEM（仅当固件没有 loady）
 
@@ -328,25 +365,35 @@ YMODEM`（不同版本菜单名称可能略有差异），选择 WSL2 构建得�
 * `loady/loadx` 不存在：这是固件能力限制，改用 TFTP 或本指南第八节的 U-Boot USB 存储加载，
   不要继续尝试文本粘贴。
 
-### 11.3 `Bad Magic Number`、`Wrong Image Format`
+### 11.3 `go` 后立即停住
 
-这是把 raw binary 当成 U-Boot image 使用，或者误传了 ELF。2K1000 当前流程使用 `go`，不是
-`bootm`；请确认发送的是 `kernel-la.bin`，加载地址和跳转地址都是
-`0x9000000090000000`。
+确认使用的是 `kernel-la.bin`，传输字节数与 `stat` 结果一致；确认执行过
+`fdt addr ${fdtcontroladdr}` 和 `fdt header`，并且命令完整包含第二个 FDT 参数：
 
-### 11.4 `go` 后立刻没有内核输出
+    go 0x9000000090000000 ${fdtcontroladdr}
 
-确认 `tftpboot`、USB `fatload`/`ext4load` 或串口传输确实完成，传输字节数与 `stat` 结果一致；
-确认没有输入 `0x90000000`、`0x9000000080000000` 等其他地址。保存 U-Boot `version`、完整串口日志和
-`sha256sum kernel-la.bin`，再检查固件是否按 LoongArch U-Boot/EFI 启动约定提供了系统表参数。
+不得改用 `bootm`、`go 0x9000000090000000`（缺少 FDT 参数）、低 32 位地址
+`0x90000000`，或把 ELF 文件作为 raw 镜像执行。
 
-### 11.5 出现 `2K1000 bootloader did not provide an EFI FDT table`
+### 11.4 `FDT_ERR_BADMAGIC` 或 `Warning: invalid device tree`
 
-当前 2K1000 启动代码需要 U-Boot/固件提供 EFI system table，并从中取得 FDT。此错误不是 SATA
-或网卡错误。请记录 U-Boot 版本和启动方式；不要自行改 linker 地址或把 QEMU 的 FDT 地址硬编码
-进内核。优先确认板卡固件是否为项目支持的 2K1000 Reference Board 启动链。
+SPI 分区读取显示 `Read: OK` 只代表读取完成，不代表读出的内容是设备树。先执行
+`fdt addr ${fdtcontroladdr}` 和 `fdt header`；有效 FDT 的 magic 必须为 `d00dfeed`。
+如果校验失败，先检查 U-Boot 当前控制 FDT：
 
-### 11.6 `fs::init` 阶段 panic 或无 SATA 盘
+    printenv fdtcontroladdr fdtfile dtb fdt_addr
+    fdt addr ${fdtcontroladdr}
+    fdt header
+
+若固件没有有效的控制 FDT，需要从与该板卡匹配的 DTS 编译出 `.dtb`，通过 U 盘或 TFTP 加载到
+RAM，再用 `go 0x9000000090000000 <dtb_addr>` 启动。不要把包含固件包装头、压缩数据或无效分区
+内容的 SPI 区域直接作为 DTB 传入。
+
+`Warning: invalid device tree`、`ddr: parse device tree failed!` 或 `Failed to find ram node`
+来自此厂商 U-Boot 的 `bootm` Linux 分支，不是 Ya2yOS 的 FDT 解析报错。不要为这些报错修改
+`/memory`、`/ram@0` 或其它控制 FDT 节点；复位后重新使用 `go` 流程。
+
+### 11.5 `fs::init` 阶段 panic 或无 SATA 盘
 
 确认 SATA 盘已接好、供电正常、线材可靠，并且盘内是 Ya2yOS 使用的 LoongArch ext4 镜像。
 没有 SATA 盘时，首次验证的结论应写成“已进入 Ya2yOS 并完成早期初始化，AHCI 存储条件不足”，
@@ -361,7 +408,7 @@ YMODEM`（不同版本菜单名称可能略有差异），选择 WSL2 构建得�
 1. 关闭或保存上一份 MobaXterm 串口日志；
 2. 打开新的串口日志窗口；
 3. 上电并按任意键进入 U-Boot；
-4. 重新执行 TFTP、USB 存储或 YMODEM/XMODEM 加载和 `go`；
+4. 重新执行 FDT 检查、TFTP/USB/YMODEM/XMODEM 加载和带 FDT 参数的 `go`；
 5. 记录 Git 提交号、镜像 SHA-256、U-Boot 版本、最后 100 行串口输出、使用的传输方式、是否接
    SATA/网线。
 
@@ -371,7 +418,7 @@ YMODEM`（不同版本菜单名称可能略有差异），选择 WSL2 构建得�
 按以下等级填写测试记录：
 
     L1  串口可见原有 U-Boot 输出，能进入 U-Boot。
-    L2  kernel-la.bin 传输成功，go 后看到 [kernel] Hello, world! 和 MEMLAYOUT(2K1000)。
+    L2  kernel-la.bin 传输成功，带 FDT 参数的 go 后看到 [kernel] Hello, world! 和 MEMLAYOUT(2K1000)。
     L3  mm/logger/trap/task 初始化完成；已接 SATA 时 fs::init 和 initproc 继续运行。
     L4  已接网线，出现 GMAC0 PHY 初始化日志，并完成 ARP/ping/UDP/TCP 测试。
     L5  SATA 文件系统读写、双核调度、网络和目标用户测试均完成，且保存了完整日志。

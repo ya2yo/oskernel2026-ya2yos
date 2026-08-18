@@ -23,6 +23,7 @@ build-musl-generic
 kernel-rv
 kernel-la
 kernel-la.bin
+kernel-la.uImage
 kernel-vf2
 disk.img
 /2026_testsuits_img
