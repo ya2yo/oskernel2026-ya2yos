@@ -29,7 +29,7 @@ pub(crate) use frame_alloc::cancel_cma_lock_owner;
 pub use frame_alloc::{
     cma_alloc, cma_alloc_aligned, cma_dealloc, cma_dealloc_aligned, FrameTracker, PAGE_CACHE,
 };
-pub use map_area::{MapArea, MapAreaType, MapPermission};
+pub use map_area::{MapArea, MapAreaType, MapPermission, MmapFile};
 pub(crate) use memory_set::read_elf_metadata_with_prefix;
 pub use memory_set::{MemorySet, MemorySetInner, KERNEL_SPACE};
 pub use mmap_bad_address::{if_bad_address, insert_bad_address, remove_bad_address};

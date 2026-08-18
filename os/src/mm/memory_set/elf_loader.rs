@@ -4,7 +4,7 @@
 //! user address space (program headers, heap/Brk area), plus the dynamic
 //! linker / INTERP handling.
 
-use super::super::map_area::MapType;
+use super::super::map_area::{MapType, MmapFile};
 use super::{MapArea, MapAreaType, MapPermission, VirtAddr, VirtPageNum};
 use crate::arch::memory_layout::{DL_INTERP_OFFSET, PAGE_SIZE, USER_HEAP_SIZE};
 #[cfg(feature = "perf")]
@@ -448,10 +448,8 @@ impl MemorySetInner {
                     MapType::Framed,
                     map_perm,
                     MapAreaType::Mmap,
-                    Some(file.clone()),
-                    ph.offset() as usize,
                     MmapFlags::MAP_PRIVATE,
-                    None,
+                    MmapFile::file(file.clone(), ph.offset() as usize),
                 );
                 max_end_vpn = max_end_vpn.max(file_area.vpn_range.end());
                 self.push_lazily(file_area);

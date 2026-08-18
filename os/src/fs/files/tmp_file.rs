@@ -6,14 +6,21 @@
 //! later materialized with `linkat("/proc/self/fd/<fd>", ...)`. This object
 //! therefore stores data, offset, mode and owner in memory, and intentionally
 //! does not create an ext4 directory entry.
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{
+    collections::BTreeMap,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use spin::Mutex;
 
-use super::super::{File, Kstat, MmapLease, StMode};
-use crate::mm::UserBuffer;
+use super::super::{File, Kstat, MmapBacking, StMode};
 use crate::syscall::PollEvents;
 use crate::utils::{SysErrNo, SysResult, SyscallRet};
+use crate::{
+    arch::memory_layout::PAGE_SIZE,
+    mm::{FrameTracker, UserBuffer},
+};
 
 static NEXT_TMP_INO: AtomicUsize = AtomicUsize::new(0x7000_0000);
 
@@ -55,16 +62,18 @@ struct TmpFileInner {
 
 struct TmpFileMmapState {
     writable_shared_mappings: Mutex<usize>,
+    shared_pages: Mutex<BTreeMap<usize, Weak<FrameTracker>>>,
 }
 
-struct TmpFileMmapLease {
+struct TmpFileMmapBacking {
     state: Arc<TmpFileMmapState>,
     seals: Arc<AtomicU32>,
+    inner: Arc<Mutex<TmpFileInner>>,
     shared: bool,
     writable_shared: bool,
 }
 
-impl Drop for TmpFileMmapLease {
+impl Drop for TmpFileMmapBacking {
     fn drop(&mut self) {
         if self.writable_shared {
             let mut mappings = self.state.writable_shared_mappings.lock();
@@ -74,10 +83,114 @@ impl Drop for TmpFileMmapLease {
     }
 }
 
-impl MmapLease for TmpFileMmapLease {
+impl TmpFileMmapBacking {
+    fn page_bounds(data_len: usize, page_index: usize) -> Option<(usize, usize)> {
+        let start = page_index.checked_mul(PAGE_SIZE)?;
+        (start < data_len).then(|| (start, (data_len - start).min(PAGE_SIZE)))
+    }
+
+    fn flush_shared_pages(
+        pages: &mut BTreeMap<usize, Weak<FrameTracker>>,
+        inner: &mut TmpFileInner,
+    ) {
+        let stale: Vec<usize> = pages
+            .iter()
+            .filter_map(|(page_index, frame)| frame.upgrade().is_none().then_some(*page_index))
+            .collect();
+        for page_index in stale {
+            pages.remove(&page_index);
+        }
+        for (page_index, frame) in pages.iter() {
+            let Some(frame) = frame.upgrade() else {
+                continue;
+            };
+            let Some((start, valid_len)) = Self::page_bounds(inner.data.len(), *page_index) else {
+                continue;
+            };
+            inner.data[start..start + valid_len]
+                .copy_from_slice(&frame.ppn.bytes_array()[..valid_len]);
+        }
+    }
+
+    fn refresh_shared_pages(pages: &mut BTreeMap<usize, Weak<FrameTracker>>, inner: &TmpFileInner) {
+        let stale: Vec<usize> = pages
+            .iter()
+            .filter_map(|(page_index, frame)| frame.upgrade().is_none().then_some(*page_index))
+            .collect();
+        for page_index in stale {
+            pages.remove(&page_index);
+        }
+        for (page_index, frame) in pages.iter() {
+            let Some(frame) = frame.upgrade() else {
+                continue;
+            };
+            let bytes = frame.ppn.bytes_array_mut();
+            bytes.fill(0);
+            let Some((start, valid_len)) = Self::page_bounds(inner.data.len(), *page_index) else {
+                continue;
+            };
+            bytes[..valid_len].copy_from_slice(&inner.data[start..start + valid_len]);
+        }
+    }
+}
+
+impl MmapBacking for TmpFileMmapBacking {
     fn allows_write(&self) -> bool {
         !self.shared
             || self.seals.load(Ordering::Acquire) & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) == 0
+    }
+
+    fn shared_page(&self, page_index: usize) -> Result<Option<Arc<FrameTracker>>, SysErrNo> {
+        if !self.shared {
+            return Ok(None);
+        }
+        let mut pages = self.state.shared_pages.lock();
+        if let Some(frame) = pages.get(&page_index).and_then(Weak::upgrade) {
+            return Ok(Some(frame));
+        }
+        let inner = self.inner.lock();
+        let Some((start, valid_len)) = Self::page_bounds(inner.data.len(), page_index) else {
+            return Ok(None);
+        };
+        let frame = FrameTracker::alloc().ok_or(SysErrNo::ENOMEM)?;
+        frame.ppn.bytes_array_mut()[..valid_len]
+            .copy_from_slice(&inner.data[start..start + valid_len]);
+        pages.insert(page_index, Arc::downgrade(&frame));
+        Ok(Some(frame))
+    }
+
+    fn load_page(
+        &self,
+        page_index: usize,
+        frame: &FrameTracker,
+    ) -> Result<Option<usize>, SysErrNo> {
+        let mut pages = self.state.shared_pages.lock();
+        let mut inner = self.inner.lock();
+        Self::flush_shared_pages(&mut pages, &mut inner);
+        let Some((start, valid_len)) = Self::page_bounds(inner.data.len(), page_index) else {
+            return Ok(None);
+        };
+        frame.ppn.bytes_array_mut()[..valid_len]
+            .copy_from_slice(&inner.data[start..start + valid_len]);
+        Ok(Some(valid_len))
+    }
+
+    fn page_valid_len(&self, page_index: usize) -> Option<usize> {
+        let inner = self.inner.lock();
+        Self::page_bounds(inner.data.len(), page_index).map(|(_, valid_len)| valid_len)
+    }
+
+    fn writeback_page(&self, page_index: usize, frame: &FrameTracker) -> SysResult {
+        if !self.shared {
+            return Ok(());
+        }
+        let _pages = self.state.shared_pages.lock();
+        let mut inner = self.inner.lock();
+        let Some((start, valid_len)) = Self::page_bounds(inner.data.len(), page_index) else {
+            return Ok(());
+        };
+        inner.data[start..start + valid_len].copy_from_slice(&frame.ppn.bytes_array()[..valid_len]);
+        Ok(())
     }
 }
 
@@ -133,6 +246,7 @@ impl TmpFile {
             seals: Arc::new(AtomicU32::new(initial_seals)),
             mmap_state: Arc::new(TmpFileMmapState {
                 writable_shared_mappings: Mutex::new(0),
+                shared_pages: Mutex::new(BTreeMap::new()),
             }),
             inner: Arc::new(Mutex::new(TmpFileInner { data: Vec::new() })),
             offset: Mutex::new(0),
@@ -154,7 +268,9 @@ impl File for TmpFile {
     }
 
     fn read(&self, mut buf: UserBuffer) -> SyscallRet {
-        let inner = self.inner.lock();
+        let mut pages = self.mmap_state.shared_pages.lock();
+        let mut inner = self.inner.lock();
+        TmpFileMmapBacking::flush_shared_pages(&mut pages, &mut inner);
         let mut offset = self.offset.lock();
         if *offset >= inner.data.len() {
             return Ok(0);
@@ -167,7 +283,9 @@ impl File for TmpFile {
 
     fn write(&self, buf: UserBuffer) -> SyscallRet {
         let bytes = buf.read_to_vec();
+        let mut pages = self.mmap_state.shared_pages.lock();
         let mut inner = self.inner.lock();
+        TmpFileMmapBacking::flush_shared_pages(&mut pages, &mut inner);
         let mut offset = self.offset.lock();
         let seals = self.seals();
         if seals & WRITE_SEALS != 0 {
@@ -185,11 +303,14 @@ impl File for TmpFile {
         }
         inner.data[*offset..end].copy_from_slice(&bytes);
         *offset = end;
+        TmpFileMmapBacking::refresh_shared_pages(&mut pages, &inner);
         Ok(bytes.len())
     }
 
     fn truncate(&self, size: usize) -> SyscallRet {
+        let mut pages = self.mmap_state.shared_pages.lock();
         let mut inner = self.inner.lock();
+        TmpFileMmapBacking::flush_shared_pages(&mut pages, &mut inner);
         let mut offset = self.offset.lock();
         let seals = self.seals();
         if (size < inner.data.len() && seals & F_SEAL_SHRINK != 0)
@@ -201,6 +322,7 @@ impl File for TmpFile {
         if *offset > size {
             *offset = size;
         }
+        TmpFileMmapBacking::refresh_shared_pages(&mut pages, &inner);
         Ok(0)
     }
 
@@ -215,7 +337,9 @@ impl File for TmpFile {
             return Err(SysErrNo::EINVAL);
         }
         let end = offset.checked_add(len).ok_or(SysErrNo::EFBIG)?;
+        let mut pages = self.mmap_state.shared_pages.lock();
         let mut inner = self.inner.lock();
+        TmpFileMmapBacking::flush_shared_pages(&mut pages, &mut inner);
         let seals = self.seals();
         if mode & FALLOC_FL_PUNCH_HOLE != 0 {
             if seals & WRITE_SEALS != 0 {
@@ -227,6 +351,7 @@ impl File for TmpFile {
                     *byte = 0;
                 }
             }
+            TmpFileMmapBacking::refresh_shared_pages(&mut pages, &inner);
             return Ok(0);
         }
         if mode & FALLOC_FL_KEEP_SIZE == 0 && end > inner.data.len() {
@@ -235,6 +360,7 @@ impl File for TmpFile {
             }
             inner.data.resize(end, 0);
         }
+        TmpFileMmapBacking::refresh_shared_pages(&mut pages, &inner);
         Ok(0)
     }
 
@@ -305,7 +431,7 @@ impl File for TmpFile {
         }
 
         // Linux rejects F_SEAL_WRITE while a shared writable mapping exists.
-        // Serialize that check with mmap_lease() so a new mapping cannot race
+        // Serialize that check with mmap_backing() so a new mapping cannot race
         // the seal installation between the check and the CAS below.
         let mappings = self.mmap_state.writable_shared_mappings.lock();
         if seals & F_SEAL_WRITE != 0 && *mappings != 0 {
@@ -355,7 +481,7 @@ impl File for TmpFile {
         }))
     }
 
-    fn mmap_lease(&self, shared: bool, writable: bool) -> Result<Arc<dyn MmapLease>, SysErrNo> {
+    fn mmap_backing(&self, shared: bool, writable: bool) -> Result<Arc<dyn MmapBacking>, SysErrNo> {
         if !self.is_memfd {
             return Err(SysErrNo::EINVAL);
         }
@@ -367,9 +493,10 @@ impl File for TmpFile {
             }
             *mappings += 1;
         }
-        Ok(Arc::new(TmpFileMmapLease {
+        Ok(Arc::new(TmpFileMmapBacking {
             state: Arc::clone(&self.mmap_state),
             seals: Arc::clone(&self.seals),
+            inner: Arc::clone(&self.inner),
             shared,
             writable_shared: shared_writable,
         }))

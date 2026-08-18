@@ -317,7 +317,7 @@ fn refresh_proc_maps_inner(
                     area.map_perm,
                     area.mmap_flags,
                     area.mmap_file.offset,
-                    area.mmap_file.file.clone(),
+                    area.mmap_file.inode_file().cloned(),
                 )
             })
             .collect::<Vec<_>>()

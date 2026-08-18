@@ -436,8 +436,8 @@ impl MemorySetInner {
             && left.mmap_flags == right.mmap_flags
             && left.groupid == 0
             && right.groupid == 0
-            && left.mmap_file.file.is_none()
-            && right.mmap_file.file.is_none()
+            && left.mmap_file.is_anonymous()
+            && right.mmap_file.is_anonymous()
             && left.mmap_flags.contains(MmapFlags::MAP_PRIVATE)
             && left.mmap_flags.contains(MmapFlags::MAP_ANONYMOUS)
     }

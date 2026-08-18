@@ -263,7 +263,7 @@ pub fn trap_handler() {
                 let task = current_task().unwrap();
                 let process = &task.process;
                 let memory_set = process.memory_set_arc();
-                let beyond_eof_before = memory_set.mmap_file_page_beyond_eof(fault_va.floor());
+                let beyond_eof_before = memory_set.mmap_page_beyond_eof(fault_va.floor());
                 let handled =
                     !beyond_eof_before && memory_set.handle_page_fault(fault_va.floor(), cause);
                 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
@@ -300,7 +300,7 @@ pub fn trap_handler() {
                         }
                     }
                     None
-                } else if memory_set.mmap_file_page_beyond_eof(fault_va.floor()) {
+                } else if memory_set.mmap_page_beyond_eof(fault_va.floor()) {
                     // The file may have been truncated after the initial
                     // check but before the page-cache load. Recheck only on
                     // failure so that this race still reports SIGBUS without
@@ -393,11 +393,11 @@ pub fn trap_handler() {
                 let task = current_task().unwrap();
                 let process = &task.process;
                 let memory_set = process.memory_set_arc();
-                signal = if memory_set.mmap_file_page_beyond_eof(fault_va.floor()) {
+                signal = if memory_set.mmap_page_beyond_eof(fault_va.floor()) {
                     Some(SigSet::SIGBUS)
                 } else if memory_set.handle_page_fault(fault_va.floor(), cause) {
                     None
-                } else if memory_set.mmap_file_page_beyond_eof(fault_va.floor()) {
+                } else if memory_set.mmap_page_beyond_eof(fault_va.floor()) {
                     // See the load-fault path above: distinguish a truncate
                     // race from an ordinary protection or mapping failure.
                     Some(SigSet::SIGBUS)

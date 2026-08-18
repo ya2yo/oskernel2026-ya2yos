@@ -16,10 +16,10 @@ use super::{
 use crate::mm::map_area::MapType;
 use crate::{
     arch::memory_layout::PAGE_SIZE,
-    fs::{FilePage, FilePageCacheSource, FilePageKey, Inode, MmapLease, OSFile, FILE_PAGE_CACHE},
+    fs::{FilePage, FilePageCacheSource, FilePageKey, Inode, MmapBacking, OSFile, FILE_PAGE_CACHE},
     mm::{
-        FrameTracker, MapAreaType, MapPermission, PhysAddr, PhysPageNum, VPNRange, VirtAddr,
-        VirtPageNum,
+        FrameTracker, MapAreaType, MapPermission, MmapFile, PhysAddr, PhysPageNum, VPNRange,
+        VirtAddr, VirtPageNum,
     },
     syscall::MmapFlags,
     trap::trap_types::Trap,
@@ -332,13 +332,11 @@ impl MemorySet {
         len: usize,
         map_perm: MapPermission,
         flags: MmapFlags,
-        file: Option<Arc<OSFile>>,
-        off: usize,
-        mmap_lease: Option<Arc<dyn MmapLease>>,
+        mmap_file: MmapFile,
     ) -> usize {
         if flags.contains(MmapFlags::MAP_HUGETLB) {
             return self.with_frame_preserving_mut(|inner| {
-                inner.mmap(addr, len, map_perm, flags, file, off, mmap_lease)
+                inner.mmap(addr, len, map_perm, flags, mmap_file)
             });
         }
         if flags.contains(MmapFlags::MAP_FIXED) {
@@ -350,10 +348,10 @@ impl MemorySet {
                 crate::mm::remote_tlb::ShootdownKind::Other,
                 VirtAddr::from(addr).floor(),
                 VirtAddr::from(end_addr).ceil(),
-                |inner| inner.mmap(addr, len, map_perm, flags, file, off, mmap_lease),
+                |inner| inner.mmap(addr, len, map_perm, flags, mmap_file),
             )
         } else {
-            self.with_vma_mut(|inner| inner.mmap(addr, len, map_perm, flags, file, off, mmap_lease))
+            self.with_vma_mut(|inner| inner.mmap(addr, len, map_perm, flags, mmap_file))
         }
     }
 
@@ -599,14 +597,27 @@ impl MemorySet {
     /// unmapped/protection faults, which result in SIGSEGV. Do not load the
     /// backing page here: an in-range fault immediately calls
     /// `handle_page_fault()`, which would otherwise duplicate the cache load.
-    pub fn mmap_file_page_beyond_eof(&self, vpn: VirtPageNum) -> bool {
-        let Some((inode, page_index)) = self.get_ref().mmap_file_page_info(vpn) else {
+    pub fn mmap_page_beyond_eof(&self, vpn: VirtPageNum) -> bool {
+        let memory_set = self.get_ref();
+        let Some(area) = memory_set
+            .areas
+            .iter()
+            .find(|area| area.area_type == MapAreaType::Mmap && area.vpn_range.contains_vpn(vpn))
+        else {
             return false;
         };
-        let Some(file_offset) = page_index.checked_mul(PAGE_SIZE) else {
-            return true;
+        let Some(page_index) = area.mmap_file.page_index(vpn, area.vpn_range.start()) else {
+            return false;
         };
-        file_offset >= inode.size()
+        if let Some(file) = area.mmap_file.inode_file() {
+            let Some(file_offset) = page_index.checked_mul(PAGE_SIZE) else {
+                return true;
+            };
+            return file_offset >= file.inode.size();
+        }
+        area.mmap_file
+            .special_backing()
+            .is_some_and(|backing| backing.page_valid_len(page_index).is_none())
     }
 
     /// Load one file-backed mmap page without holding the `MemorySet` lock.
@@ -925,7 +936,7 @@ impl MemorySet {
                     map_type: area.map_type,
                     map_perm_bits: area.map_perm.bits(),
                     mmap_flags_bits: area.mmap_flags.bits() as usize,
-                    file_backed: area.mmap_file.file.is_some(),
+                    file_backed: !area.mmap_file.is_anonymous(),
                     file_offset: area.mmap_file.offset,
                     resident_frame: area.data_frames.contains_key(&vpn),
                 }

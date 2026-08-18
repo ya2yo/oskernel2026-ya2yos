@@ -5,7 +5,7 @@ use crate::arch::memory_layout::{HUGE_PAGE_PAGES, MMIO_MAP_OFFSET, PAGE_SIZE_BIT
 use crate::{
     arch::memory_layout::{KERNEL_PGNUM_OFFSET, PAGE_SIZE},
     arch::page_table::PageTable,
-    fs::{Inode, MmapLease, OSFile},
+    fs::{Inode, MmapBacking, OSFile},
     syscall::MmapFlags,
 };
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
@@ -58,10 +58,8 @@ impl MapArea {
         map_type: MapType,
         map_perm: MapPermission,
         area_type: MapAreaType,
-        file: Option<Arc<OSFile>>,
-        offset: usize,
         mmap_flags: MmapFlags,
-        mmap_lease: Option<Arc<dyn MmapLease>>,
+        mmap_file: MmapFile,
     ) -> Self {
         let start_vpn: VirtPageNum = start_va.floor();
         let end_vpn: VirtPageNum = end_va.ceil();
@@ -80,7 +78,7 @@ impl MapArea {
             map_type,
             map_perm,
             area_type,
-            mmap_file: MmapFile::new(file, offset, mmap_lease),
+            mmap_file,
             mmap_flags,
             groupid,
         }
@@ -315,40 +313,73 @@ pub enum MapAreaType {
 }
 
 #[derive(Clone)]
+enum MmapSource {
+    Anonymous,
+    Inode(Arc<OSFile>),
+    Special(Arc<dyn MmapBacking>),
+}
+
+/// Complete source description for one mmap VMA.
+///
+/// A VMA has exactly one source: anonymous memory, an inode-backed file, or
+/// an object that provides its own mmap backing (currently memfd). Keeping
+/// this as an enum prevents callers from accidentally creating a VMA with
+/// unrelated file and special backing objects.
+#[derive(Clone)]
 pub struct MmapFile {
-    pub file: Option<Arc<OSFile>>,
+    source: MmapSource,
     pub offset: usize,
-    pub lease: Option<Arc<dyn MmapLease>>,
 }
 
 impl MmapFile {
     pub fn empty() -> Self {
         Self {
-            file: None,
+            source: MmapSource::Anonymous,
             offset: 0,
-            lease: None,
         }
     }
 
-    pub fn new(
-        file: Option<Arc<OSFile>>,
-        offset: usize,
-        lease: Option<Arc<dyn MmapLease>>,
-    ) -> Self {
+    pub fn file(file: Arc<OSFile>, offset: usize) -> Self {
         Self {
-            file,
+            source: MmapSource::Inode(file),
             offset,
-            lease,
         }
     }
 
-    /// Replace a VMA's file backing.
-    pub fn replace(
-        &mut self,
-        file: Option<Arc<OSFile>>,
-        offset: usize,
-        lease: Option<Arc<dyn MmapLease>>,
-    ) {
-        *self = Self::new(file, offset, lease);
+    pub fn backing(offset: usize, backing: Arc<dyn MmapBacking>) -> Self {
+        Self {
+            source: MmapSource::Special(backing),
+            offset,
+        }
+    }
+
+    pub fn inode_file(&self) -> Option<&Arc<OSFile>> {
+        match &self.source {
+            MmapSource::Inode(file) => Some(file),
+            _ => None,
+        }
+    }
+
+    pub fn special_backing(&self) -> Option<&Arc<dyn MmapBacking>> {
+        match &self.source {
+            MmapSource::Special(backing) => Some(backing),
+            _ => None,
+        }
+    }
+
+    pub fn page_index(&self, vpn: VirtPageNum, start_vpn: VirtPageNum) -> Option<usize> {
+        vpn.0
+            .checked_sub(start_vpn.0)?
+            .checked_mul(PAGE_SIZE)
+            .and_then(|offset| offset.checked_add(self.offset))
+            .map(|offset| offset / PAGE_SIZE)
+    }
+
+    pub fn is_special(&self) -> bool {
+        matches!(&self.source, MmapSource::Special(_))
+    }
+
+    pub fn is_anonymous(&self) -> bool {
+        matches!(&self.source, MmapSource::Anonymous)
     }
 }

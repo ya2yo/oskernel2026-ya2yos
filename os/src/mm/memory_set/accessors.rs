@@ -5,7 +5,7 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use super::MemorySetInner;
 use crate::{
     arch::{memory_layout::PAGE_SIZE, page_table::PageTable},
-    fs::{File, OSFile, SEEK_CUR, SEEK_SET},
+    fs::{File, MmapBacking, OSFile, SEEK_CUR, SEEK_SET},
     mm::{
         user_buffer_from_kernel, FrameTracker, MapArea, MapAreaType, MapPermission, PhysPageNum,
         VPNRange, VirtAddr, VirtPageNum,
@@ -17,38 +17,45 @@ use crate::{
 /// A snapshot of resident shared-mmap pages. Filesystem I/O is performed from
 /// this snapshot after the owning `MemorySet` lock has been released.
 pub(super) struct SharedMmapWriteback {
-    pub(super) file: Arc<OSFile>,
+    pub(super) file: Option<Arc<OSFile>>,
+    pub(super) backing: Option<Arc<dyn MmapBacking>>,
     pub(super) pages: Vec<(usize, Arc<FrameTracker>)>,
 }
 
 /// Write a shared-mmap snapshot without touching a MemorySet lock.
 pub(super) fn writeback_shared_mmap_pages(snapshot: &SharedMmapWriteback) -> SyscallRet {
-    if snapshot.file.inode.link_cnt()? == 0 {
-        return Ok(0);
-    }
-    let saved_offset = snapshot.file.lseek(0, SEEK_CUR)?;
-    let saved_offset = isize::try_from(saved_offset).map_err(|_| SysErrNo::EOVERFLOW)?;
-    let writeback_result = (|| -> SyscallRet {
-        for (file_offset, frame) in &snapshot.pages {
-            let file_offset = isize::try_from(*file_offset).map_err(|_| SysErrNo::EOVERFLOW)?;
-            let mut kernel_buf = vec![0u8; PAGE_SIZE];
-            kernel_buf.copy_from_slice(frame.ppn.bytes_array());
-            snapshot.file.lseek(file_offset, SEEK_SET)?;
-            let ret = snapshot
-                .file
-                .write(unsafe { user_buffer_from_kernel(&mut kernel_buf) })?;
-            if ret == 0 || ret > PAGE_SIZE {
-                return Err(SysErrNo::EIO);
-            }
+    if let Some(file) = snapshot.file.as_ref() {
+        if file.inode.link_cnt()? == 0 {
+            return Ok(0);
         }
-        Ok(0)
-    })();
-    let restore_result = snapshot.file.lseek(saved_offset, SEEK_SET);
-    match (writeback_result, restore_result) {
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Ok(_), Ok(_)) => Ok(0),
+        let saved_offset = file.lseek(0, SEEK_CUR)?;
+        let saved_offset = isize::try_from(saved_offset).map_err(|_| SysErrNo::EOVERFLOW)?;
+        let writeback_result = (|| -> SyscallRet {
+            for (file_offset, frame) in &snapshot.pages {
+                let file_offset = isize::try_from(*file_offset).map_err(|_| SysErrNo::EOVERFLOW)?;
+                let mut kernel_buf = vec![0u8; PAGE_SIZE];
+                kernel_buf.copy_from_slice(frame.ppn.bytes_array());
+                file.lseek(file_offset, SEEK_SET)?;
+                let ret = file.write(unsafe { user_buffer_from_kernel(&mut kernel_buf) })?;
+                if ret == 0 || ret > PAGE_SIZE {
+                    return Err(SysErrNo::EIO);
+                }
+            }
+            Ok(0)
+        })();
+        let restore_result = file.lseek(saved_offset, SEEK_SET);
+        return match (writeback_result, restore_result) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Ok(_), Ok(_)) => Ok(0),
+        };
     }
+    if let Some(backing) = snapshot.backing.as_ref() {
+        for (page_index, frame) in &snapshot.pages {
+            backing.writeback_page(*page_index, frame)?;
+        }
+    }
+    Ok(0)
 }
 
 impl MemorySetInner {
@@ -67,7 +74,33 @@ impl MemorySetInner {
             {
                 continue;
             }
-            let Some(file) = area.mmap_file.file.as_ref() else {
+            let Some(file) = area.mmap_file.inode_file() else {
+                let Some(backing) = area.mmap_file.special_backing() else {
+                    continue;
+                };
+                let (area_start, area_end) = area.vpn_range.range();
+                let (start, end) = range
+                    .map(|(start, end)| (area_start.max(start), area_end.min(end)))
+                    .unwrap_or((area_start, area_end));
+                if start >= end {
+                    continue;
+                }
+                let pages = area
+                    .data_frames
+                    .iter()
+                    .filter_map(|(vpn, frame)| {
+                        if *vpn < start || *vpn >= end {
+                            return None;
+                        }
+                        let page_index = area.mmap_file.page_index(*vpn, area_start)?;
+                        Some((page_index, frame.clone()))
+                    })
+                    .collect();
+                snapshots.push(SharedMmapWriteback {
+                    file: None,
+                    backing: Some(backing.clone()),
+                    pages,
+                });
                 continue;
             };
             let (area_start, area_end) = area.vpn_range.range();
@@ -93,7 +126,8 @@ impl MemorySetInner {
                 })
                 .collect();
             snapshots.push(SharedMmapWriteback {
-                file: file.clone(),
+                file: Some(file.clone()),
+                backing: None,
                 pages,
             });
         }

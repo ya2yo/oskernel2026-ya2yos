@@ -4,20 +4,27 @@ use alloc::sync::Arc;
 
 use crate::{
     arch::memory_layout::PAGE_SIZE,
-    fs::{FilePage, FILE_PAGE_CACHE},
+    fs::{FilePage, MmapBacking, FILE_PAGE_CACHE},
 };
 
 use super::group::GROUP_SHARE;
-use super::{MapArea, VirtAddr, VirtPageNum};
+use super::{FrameTracker, MapArea, VirtAddr, VirtPageNum};
 use crate::arch::page_table::PageTable;
 use crate::arch::tlb::instruction_fence;
 
 fn file_page_index(vma: &MapArea, va: VirtAddr) -> Option<usize> {
-    vma.mmap_file.file.as_ref()?;
+    vma.mmap_file.inode_file()?;
     let start_addr: VirtAddr = vma.vpn_range.start().into();
     va.0.checked_sub(start_addr.0)?
         .checked_add(vma.mmap_file.offset)
         .map(|offset| offset / PAGE_SIZE)
+}
+
+fn special_page_index(vma: &MapArea, va: VirtAddr) -> Option<usize> {
+    let backing = vma.mmap_file.special_backing()?;
+    vma.mmap_file
+        .page_index(va.floor(), vma.vpn_range.start())
+        .and_then(|index| backing.page_valid_len(index).map(|_| index))
 }
 
 /// Return a file page that was loaded before taking the `MemorySet` lock.
@@ -25,7 +32,7 @@ fn file_page_index(vma: &MapArea, va: VirtAddr) -> Option<usize> {
 /// materializable by a mmap fault.
 fn cached_file_page(va: VirtAddr, vma: &MapArea) -> Option<Arc<FilePage>> {
     let page_index = file_page_index(vma, va)?;
-    let file = vma.mmap_file.file.as_ref()?;
+    let file = vma.mmap_file.inode_file()?;
     let page = FILE_PAGE_CACHE.get_inode(file.inode.as_ref(), page_index)?;
     (page.valid_len > 0).then_some(page)
 }
@@ -40,7 +47,7 @@ fn prepared_file_page(
 ) -> Option<Arc<FilePage>> {
     let page = prepared?;
     let page_index = file_page_index(vma, va)?;
-    let file = vma.mmap_file.file.as_ref()?;
+    let file = vma.mmap_file.inode_file()?;
     let path_matches = match file.inode.page_cache_path() {
         Some(path) => page.key.path.as_ref() == path.as_ref(),
         None => page.key.path.as_ref() == file.inode.path().as_str(),
@@ -79,6 +86,53 @@ fn map_file_page(
     true
 }
 
+fn map_special_shared_page(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
+    let Some(backing) = vma.mmap_file.special_backing() else {
+        return false;
+    };
+    let Some(page_index) = special_page_index(vma, va) else {
+        return false;
+    };
+    let Ok(Some(frame)) = backing.shared_page(page_index) else {
+        return false;
+    };
+    let vpn: VirtPageNum = va.into();
+    let ppn = frame.ppn;
+    vma.data_frames.insert(vpn, frame);
+    page_table.handle_mmap_read_page_fault(vpn, ppn, vma.map_perm, vma.mmap_flags);
+    if vma.map_perm.contains(super::MapPermission::X) {
+        instruction_fence();
+    }
+    true
+}
+
+fn map_special_private_page(va: VirtAddr, page_table: &mut PageTable, vma: &mut MapArea) -> bool {
+    let Some(backing) = vma.mmap_file.special_backing() else {
+        return false;
+    };
+    let Some(page_index) = special_page_index(vma, va) else {
+        return false;
+    };
+    let Some(frame) = FrameTracker::alloc() else {
+        return false;
+    };
+    if !matches!(backing.load_page(page_index, &frame), Ok(Some(_))) {
+        return false;
+    }
+    let vpn: VirtPageNum = va.into();
+    let ppn = frame.ppn;
+    vma.data_frames.insert(vpn, frame);
+    // Unlike MapArea::map_one(), a special backing provides the frame itself.
+    // Install its initial PTE before the common helper turns a writable
+    // MAP_PRIVATE mapping into COW or a MAP_SHARED mapping into writable.
+    page_table.map_no_flush(vpn, ppn, vma.map_perm);
+    page_table.handle_mmap_write_page_fault(vpn, vma.map_perm, vma.mmap_flags);
+    if vma.map_perm.contains(super::MapPermission::X) {
+        instruction_fence();
+    }
+    true
+}
+
 // ===================== Public Interface =========================
 
 /// mmap写触发的lazy alocation，直接新分配帧
@@ -89,15 +143,23 @@ pub fn mmap_write_page_fault(
     vma: &mut MapArea,
     prepared: Option<&Arc<FilePage>>,
 ) -> bool {
+    if vma.mmap_file.is_special() {
+        if vma
+            .mmap_flags
+            .contains(crate::syscall::MmapFlags::MAP_SHARED)
+        {
+            return map_special_shared_page(va, page_table, vma);
+        }
+        return map_special_private_page(va, page_table, vma);
+    }
     // File-backed pages are loaded by the caller before the MemorySet write
     // lock. A capacity-bypassed page is passed directly to this locked path;
     // never enter EXT4 here just because it was not retained globally.
     let cached_page = vma
         .mmap_file
-        .file
-        .as_ref()
+        .inode_file()
         .and_then(|_| file_page_for_fault(va, vma, prepared));
-    if vma.mmap_file.file.is_some() && cached_page.is_none() {
+    if vma.mmap_file.inode_file().is_some() && cached_page.is_none() {
         return false;
     }
     // A MAP_SHARED writable fault can reuse the clean file page. Private
@@ -148,6 +210,15 @@ pub fn mmap_read_page_fault(
             instruction_fence();
         }
         return true;
+    }
+    if vma.mmap_file.is_special() {
+        if vma
+            .mmap_flags
+            .contains(crate::syscall::MmapFlags::MAP_SHARED)
+        {
+            return map_special_shared_page(va, page_table, vma);
+        }
+        return map_special_private_page(va, page_table, vma);
     }
     // MAP_PRIVATE file mappings can share clean pages between processes. The
     // page-table helper marks writable private mappings COW, so a later store

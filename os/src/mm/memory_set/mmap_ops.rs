@@ -10,9 +10,9 @@ use super::{
 use crate::arch::memory_layout::{
     HUGE_PAGE_SIZE, MAX_MMAP_SIZE, MMAP_TOP, PAGE_SIZE, PAGE_SIZE_BITS, USER_SPACE_SIZE,
 };
-use crate::fs::{File, Inode, MmapLease, OSFile, OpenFlags};
+use crate::fs::{File, Inode, MmapBacking, OpenFlags};
 use crate::mm::group::GROUP_SHARE;
-use crate::mm::map_area::MapType;
+use crate::mm::map_area::{MapType, MmapFile};
 use crate::mm::memory_set::MemorySetInner;
 use crate::syscall::MmapFlags;
 use crate::utils::{SysErrNo, SyscallRet};
@@ -35,7 +35,7 @@ impl MemorySetInner {
             .areas
             .iter()
             .find(|area| area.area_type == MapAreaType::Mmap && area.vpn_range.contains_vpn(vpn))?;
-        let file = area.mmap_file.file.as_ref()?;
+        let file = area.mmap_file.inode_file()?;
         let page_offset = (vpn.0 - area.vpn_range.start().0)
             .checked_mul(PAGE_SIZE)?
             .checked_add(area.mmap_file.offset)?;
@@ -52,7 +52,7 @@ impl MemorySetInner {
             if !area.mmap_flags.contains(MmapFlags::MAP_SHARED) || !is_mmap_vma(area) {
                 continue;
             }
-            let Some(file) = area.mmap_file.file.as_ref() else {
+            let Some(file) = area.mmap_file.inode_file() else {
                 continue;
             };
             for vpn in area.vpn_range {
@@ -120,16 +120,14 @@ impl MemorySetInner {
         len: usize,
         map_perm: MapPermission,
         flags: MmapFlags,
-        file: Option<Arc<OSFile>>,
-        off: usize,
-        mmap_lease: Option<Arc<dyn MmapLease>>,
+        mmap_file: MmapFile,
     ) -> usize {
         debug!(
             "[mmap] addr={:x}, len={}, map_perm={:?}, flags={:?}",
             addr, len, map_perm, flags
         );
         if flags.contains(MmapFlags::MAP_HUGETLB) {
-            return self.mmap_huge(addr, len, map_perm, flags, file, off, mmap_lease);
+            return self.mmap_huge(addr, len, map_perm, flags, mmap_file);
         }
         if flags.contains(MmapFlags::MAP_FIXED) || flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
             // 检查 addr + len 是否溢出
@@ -173,10 +171,8 @@ impl MemorySetInner {
                 MapType::Framed,
                 map_perm,
                 MapAreaType::Mmap,
-                file,
-                off,
                 flags,
-                mmap_lease,
+                mmap_file,
             ));
             // MAP_FIXED / MAP_FIXED_NOREPLACE 使用指定地址，不计入 mmap 总量
             return addr;
@@ -208,10 +204,8 @@ impl MemorySetInner {
             MapType::Framed,
             map_perm,
             area_type,
-            file,
-            off,
             flags,
-            mmap_lease,
+            mmap_file,
         ));
         self.total_mmap_size += len;
         addr
@@ -224,15 +218,9 @@ impl MemorySetInner {
         len: usize,
         map_perm: MapPermission,
         flags: MmapFlags,
-        file: Option<Arc<OSFile>>,
-        _off: usize,
-        mmap_lease: Option<Arc<dyn MmapLease>>,
+        mmap_file: MmapFile,
     ) -> usize {
-        if file.is_some()
-            || mmap_lease.is_some()
-            || len == 0
-            || len % HUGE_PAGE_SIZE != 0
-            || map_perm.is_empty()
+        if !mmap_file.is_anonymous() || len == 0 || len % HUGE_PAGE_SIZE != 0 || map_perm.is_empty()
         {
             return 0;
         }
@@ -297,10 +285,8 @@ impl MemorySetInner {
             MapType::Framed,
             map_perm,
             MapAreaType::Mmap,
-            None,
-            0,
             flags,
-            None,
+            mmap_file,
         );
         if area.map_huge(&mut self.page_table).is_err() {
             area.unmap(&mut self.page_table);
@@ -888,8 +874,7 @@ impl MemorySetInner {
                     && start_vpn < area_end
                     && area
                         .mmap_file
-                        .lease
-                        .as_ref()
+                        .special_backing()
                         .is_some_and(|lease| !lease.allows_write())
             })
         {

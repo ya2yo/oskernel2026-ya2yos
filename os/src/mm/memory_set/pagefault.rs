@@ -193,7 +193,7 @@ impl MemorySetInner {
                 area.area_type == MapAreaType::Mmap
                     && area.mmap_flags.contains(MmapFlags::MAP_GROWSDOWN)
                     && area.mmap_flags.contains(MmapFlags::MAP_PRIVATE)
-                    && area.mmap_file.file.is_none()
+                    && area.mmap_file.is_anonymous()
                     && vpn < area.vpn_range.start()
             })
             .map(|(idx, area)| (idx, area.vpn_range.start(), area.vpn_range.end()))

@@ -5,7 +5,7 @@ use core::task::Context;
 use super::{InodeType, Kstat, Statfs};
 use crate::{
     fs::{OpenFlags, String},
-    mm::UserBuffer,
+    mm::{FrameTracker, UserBuffer},
     syscall::PollEvents,
     utils::{SysErrNo, SysResult, SyscallRet},
 };
@@ -366,9 +366,13 @@ pub trait File: Send + Sync {
     ) -> Result<Arc<dyn File>, SysErrNo> {
         Err(SysErrNo::EINVAL)
     }
-    /// Retain file-specific state for an mmap VMA which has no inode-backed
+    /// Create the backing object for an mmap VMA which has no inode-backed
     /// page-cache representation. Only memfd currently implements this.
-    fn mmap_lease(&self, _shared: bool, _writable: bool) -> Result<Arc<dyn MmapLease>, SysErrNo> {
+    fn mmap_backing(
+        &self,
+        _shared: bool,
+        _writable: bool,
+    ) -> Result<Arc<dyn MmapBacking>, SysErrNo> {
         Err(SysErrNo::EINVAL)
     }
     /// ppoll处理
@@ -393,14 +397,40 @@ pub trait File: Send + Sync {
     }
 }
 
-/// State retained by a VMA for file types which need mmap lifetime callbacks.
+/// Backing state retained by a VMA for file types which do not use an inode
+/// page cache. The object is shared by copied/split VMAs through `Arc`.
 ///
-/// The VMA owns an `Arc` to this marker. Splitting a VMA clones the same Arc,
-/// so its `Drop` implementation runs only after every remaining fragment has
-/// been unmapped.
-pub trait MmapLease: Send + Sync {
+/// Besides lifetime/seal policy, a special backing must provide the page
+/// operations needed by the page-fault and shared-mmap writeback paths.
+pub trait MmapBacking: Send + Sync {
     /// Whether this VMA may gain write permission through `mprotect`.
     fn allows_write(&self) -> bool {
         true
+    }
+
+    /// Return the shared physical page for a file page, loading it on demand.
+    /// `None` means that the access is beyond the current backing size.
+    fn shared_page(&self, _page_index: usize) -> Result<Option<Arc<FrameTracker>>, SysErrNo> {
+        Ok(None)
+    }
+
+    /// Load a file page into a newly allocated private frame. The return value
+    /// is the valid byte count; `None` means that the access is beyond EOF.
+    fn load_page(
+        &self,
+        _page_index: usize,
+        _frame: &FrameTracker,
+    ) -> Result<Option<usize>, SysErrNo> {
+        Ok(None)
+    }
+
+    /// Return the valid byte count for a file page, or `None` past EOF.
+    fn page_valid_len(&self, _page_index: usize) -> Option<usize> {
+        None
+    }
+
+    /// Write a shared mmap page back into the backing object.
+    fn writeback_page(&self, _page_index: usize, _frame: &FrameTracker) -> SysResult {
+        Ok(())
     }
 }

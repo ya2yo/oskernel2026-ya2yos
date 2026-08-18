@@ -5,6 +5,9 @@ use user_lib::{close, fcntl, lseek, openat, println, read, write, OpenFlags};
 
 const AT_FDCWD: isize = -100;
 const SYS_MEMFD_CREATE: usize = 279;
+const SYS_MUNMAP: usize = 215;
+const SYS_MMAP: usize = 222;
+const PAGE_SIZE: usize = 4096;
 
 const F_DUPFD: usize = 0;
 const F_GETFD: usize = 1;
@@ -28,6 +31,10 @@ const F_SEAL_SHRINK: usize = 2;
 const F_SEAL_GROW: usize = 4;
 const F_SEAL_WRITE: usize = 8;
 const F_SEAL_FUTURE_WRITE: usize = 16;
+const PROT_READ: usize = 1;
+const PROT_WRITE: usize = 2;
+const MAP_SHARED: usize = 1;
+const MAP_PRIVATE: usize = 2;
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn syscall3(number: usize, args: [usize; 3]) -> isize {
@@ -38,6 +45,38 @@ unsafe fn syscall3(number: usize, args: [usize; 3]) -> isize {
         in("a1") args[1],
         in("a2") args[2],
         in("a7") number,
+    );
+    result
+}
+
+#[cfg(target_arch = "riscv64")]
+unsafe fn syscall6(number: usize, args: [usize; 6]) -> isize {
+    let result: isize;
+    asm!(
+        "ecall",
+        inlateout("a0") args[0] => result,
+        in("a1") args[1],
+        in("a2") args[2],
+        in("a3") args[3],
+        in("a4") args[4],
+        in("a5") args[5],
+        in("a7") number,
+    );
+    result
+}
+
+#[cfg(target_arch = "loongarch64")]
+unsafe fn syscall6(number: usize, args: [usize; 6]) -> isize {
+    let result: isize;
+    asm!(
+        "syscall 0",
+        inlateout("$a0") args[0] => result,
+        in("$a1") args[1],
+        in("$a2") args[2],
+        in("$a3") args[3],
+        in("$a4") args[4],
+        in("$a5") args[5],
+        in("$a7") number,
     );
     result
 }
@@ -57,6 +96,17 @@ unsafe fn syscall3(number: usize, args: [usize; 3]) -> isize {
 
 unsafe fn memfd_create(name: &[u8], flags: usize) -> isize {
     syscall3(SYS_MEMFD_CREATE, [name.as_ptr() as usize, flags, 0])
+}
+
+unsafe fn mmap_memfd(fd: usize, flags: usize) -> isize {
+    syscall6(
+        SYS_MMAP,
+        [0, PAGE_SIZE, PROT_READ | PROT_WRITE, flags, fd, 0],
+    )
+}
+
+unsafe fn munmap_page(addr: usize) -> isize {
+    syscall6(SYS_MUNMAP, [addr, PAGE_SIZE, 0, 0, 0, 0])
 }
 
 fn close_all(fds: &[isize]) {
@@ -125,6 +175,65 @@ pub fn run() -> bool {
         let mut data = [0u8; 3];
         if read(fds[1] as usize, &mut data, 3) != 3 || &data != b"abc" {
             return Err("append contents");
+        }
+
+        let shared_mapping = unsafe { mmap_memfd(fds[0] as usize, MAP_SHARED) };
+        if shared_mapping < 0 {
+            return Err("memfd shared mmap");
+        }
+        let private_mapping = unsafe { mmap_memfd(fds[0] as usize, MAP_PRIVATE) };
+        if private_mapping < 0 {
+            unsafe {
+                munmap_page(shared_mapping as usize);
+            }
+            return Err("memfd private mmap");
+        }
+        let shared = shared_mapping as usize as *mut u8;
+        let private = private_mapping as usize as *mut u8;
+        if unsafe { shared.read_volatile() } != b'a' {
+            return Err("memfd shared mmap initial contents");
+        }
+        unsafe {
+            shared.add(1).write_volatile(b'Z');
+        }
+        // A writable shared mapping retains the backing until every VMA
+        // fragment is unmapped, so F_SEAL_WRITE must reject this request.
+        if fcntl(fds[0] as usize, F_ADD_SEALS, F_SEAL_WRITE) >= 0 {
+            return Err("memfd shared mmap seal busy");
+        }
+        if lseek(fds[0] as usize, 0, 0) != 0
+            || read(fds[1] as usize, &mut data, 3) != 3
+            || &data != b"aZc"
+        {
+            return Err("memfd shared mmap to fd");
+        }
+        unsafe {
+            private.write_volatile(b'p');
+        }
+        if lseek(fds[0] as usize, 0, 0) != 0
+            || read(fds[1] as usize, &mut data, 3) != 3
+            || &data != b"aZc"
+        {
+            return Err("memfd private mmap isolation");
+        }
+        if fcntl(fds[0] as usize, F_SETFL, flags as usize) != 0
+            || lseek(fds[0] as usize, 0, 0) != 0
+            || write(fds[0] as usize, b"Q", 1) != 1
+            || unsafe { shared.read_volatile() } != b'Q'
+            || unsafe { private.read_volatile() } != b'p'
+        {
+            return Err("memfd fd write to mmap");
+        }
+        if unsafe { munmap_page(private_mapping as usize) } != 0
+            || unsafe { munmap_page(shared_mapping as usize) } != 0
+        {
+            return Err("memfd mmap munmap");
+        }
+        if lseek(fds[0] as usize, 0, 0) != 0
+            || read(fds[1] as usize, &mut data, 3) != 3
+            || &data != b"QZc"
+        {
+            return Err("memfd mmap writeback");
         }
 
         fds[3] = unsafe { memfd_create(b"fcntl-independent\0", MFD_ALLOW_SEALING) };

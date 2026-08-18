@@ -52,15 +52,15 @@ impl MemorySetInner {
                     let pt = unsafe { &mut *pt_ptr };
                     for vpn in area.vpn_range {
                         if !area.data_frames.contains_key(&vpn) {
-                            if area.mmap_file.file.is_none() {
+                            if area.mmap_file.is_anonymous() {
                                 // MAP_ANONYMOUS: just allocate a zeroed frame
                                 area.map_one(pt, vpn); // ignore OOM — lazy fault later
-                            } else {
+                            } else if area.mmap_file.inode_file().is_some() {
                                 // file-backed: use the write-fault handler to
                                 // install the page loaded before the MemorySet
                                 // lock was acquired.
                                 let va = VirtAddr::from(vpn);
-                                let prepared = area.mmap_file.file.as_ref().and_then(|file| {
+                                let prepared = area.mmap_file.inode_file().and_then(|file| {
                                     let page_offset = (vpn.0 - area.vpn_range.start().0)
                                         .checked_mul(PAGE_SIZE)?
                                         .checked_add(area.mmap_file.offset)?;
@@ -74,6 +74,16 @@ impl MemorySetInner {
                                     })
                                 });
                                 page_fault_handler::mmap_write_page_fault(va, pt, area, prepared);
+                            } else {
+                                // Special backings (memfd) own the shared-page
+                                // cache themselves, so no inode prefetch is
+                                // needed before installing the parent's frame.
+                                page_fault_handler::mmap_write_page_fault(
+                                    VirtAddr::from(vpn),
+                                    pt,
+                                    area,
+                                    None,
+                                );
                             }
                         }
                     }

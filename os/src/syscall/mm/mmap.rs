@@ -12,7 +12,7 @@ use crate::{
     fs::{get_devno, File},
     mm::{
         copy_to_user, if_bad_address, remove_bad_address, MapArea, MapAreaType, MapPermission,
-        MremapFlags, VirtAddr, VirtPageNum,
+        MmapFile, MremapFlags, VirtAddr, VirtPageNum,
     },
     signal::{send_signal_to_thread, SigSet},
     syscall::options::{MmapFlags, MmapProt},
@@ -101,7 +101,7 @@ pub fn sys_mmap(
         return Err(SysErrNo::ENOMEM);
     }
     if flags.contains(MmapFlags::MAP_ANONYMOUS) {
-        let rv = memory_set.mmap(addr, len, map_perm, flags, None, usize::MAX, None);
+        let rv = memory_set.mmap(addr, len, map_perm, flags, MmapFile::empty());
         if rv == 0 {
             if flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
                 return Err(SysErrNo::EEXIST);
@@ -115,8 +115,7 @@ pub fn sys_mmap(
         return Err(SysErrNo::EBADF);
     }
     let descriptor = process.fd_table.get(fd)?;
-    let mut mmap_lease = None;
-    let file = match descriptor.file() {
+    let mmap_file = match descriptor.file() {
         Ok(file) => {
             // 访问权限检查
             if !file.readable() {
@@ -128,7 +127,7 @@ pub fn sys_mmap(
             {
                 return Err(SysErrNo::EACCES);
             }
-            Some(file)
+            MmapFile::file(file, off)
         }
         Err(SysErrNo::EINVAL) => {
             let abs_file = descriptor.abs()?;
@@ -140,16 +139,18 @@ pub fn sys_mmap(
                 return Err(SysErrNo::EACCES);
             }
             if abs_file.fstat().st_rdev != get_devno("/dev/zero") {
-                mmap_lease = Some(abs_file.mmap_lease(
+                let backing = abs_file.mmap_backing(
                     flags.contains(MmapFlags::MAP_SHARED),
                     map_perm.contains(MapPermission::W),
-                )?);
+                )?;
+                MmapFile::backing(off, backing)
+            } else {
+                MmapFile::empty()
             }
-            None
         }
         Err(err) => return Err(err),
     };
-    let rv = memory_set.mmap(addr, len, map_perm, flags, file, off, mmap_lease);
+    let rv = memory_set.mmap(addr, len, map_perm, flags, mmap_file);
     debug!("[sys_mmap] alloc addr={:#x}", rv);
     if rv == 0 {
         if flags.contains(MmapFlags::MAP_FIXED_NOREPLACE) {
