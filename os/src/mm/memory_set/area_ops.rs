@@ -1,8 +1,14 @@
-//! Logical VM-area management for `MemorySetInner`.
+//! `MemorySetInner` 的虚拟内存区域（VMA）管理操作。
 //!
-//! This module contains operations that create, remove, locate, or copy
-//! `MapArea`s. It deliberately avoids ELF loading, fork construction and mmap
-//! details, which live in their own submodules.
+//! 本模块负责 `MapArea` 的创建、查找、插入、拆分、合并、删除以及页面内容
+//! 复制等基础操作，并维护 `areas` 按起始 VPN 排序的核心不变量。这里处理的
+//! 是地址空间布局和页表映射本身；ELF 装载、fork 地址空间复制、mmap 参数
+//! 解析等更高层逻辑分别位于其他子模块。
+//!
+//! 大多数操作将“逻辑区域”与“实际页表映射”分开处理：eager 路径立即分配并
+//! 映射物理页，lazy 路径只登记 `MapArea`，待缺页异常发生时再分配页面。区域
+//! 插入通常会合并相邻且属性完全兼容的匿名私有映射，但涉及拆分的变换路径
+//! 可以显式跳过合并，以避免破坏调用者正在使用的区域索引。
 
 use alloc::{sync::Arc, vec::Vec};
 
@@ -20,7 +26,10 @@ use crate::{
 };
 
 impl MemorySetInner {
-    /// Create an empty user-style address space with a fresh page table.
+    /// 创建一个仅包含全新页表的空用户地址空间。
+    ///
+    /// 该构造函数不预先加入任何区域，也不复制内核映射，适用于需要完全
+    /// 独立建立地址空间内容的场景。mmap 搜索提示初始化为 [`MMAP_TOP`]。
     pub fn new_bare() -> Self {
         Self {
             page_table: PageTable::new(),
@@ -30,7 +39,10 @@ impl MemorySetInner {
         }
     }
 
-    /// Create an empty address space whose page table already contains kernel mappings.
+    /// 创建一个已包含内核映射的空地址空间。
+    ///
+    /// 与 [`Self::new_bare`] 的区别仅在于页表由 [`PageTable::new_from_kernel`]
+    /// 初始化，因此新地址空间可以直接访问内核所需的共享映射。
     pub fn new_from_kernel() -> Self {
         Self {
             page_table: PageTable::new_from_kernel(),
@@ -40,11 +52,11 @@ impl MemorySetInner {
         }
     }
 
-    /// Eagerly insert a framed logical area.
+    /// 立即分配并插入一个基于物理帧的逻辑区域。
     ///
-    /// The caller must ensure the new range does not overlap existing areas.
-    /// Frame allocation failures are ignored because these call sites are
-    /// kernel-internal setup paths where OOM is not expected.
+    /// `start_va..end_va` 会被转换为页范围并立即建立页表映射。调用者必须
+    /// 保证新区域不与已有区域重叠；底层插入失败时该方法会忽略错误，原因是
+    /// 当前调用点属于内核内部初始化路径，按设计不预期出现分配失败。
     pub fn insert_framed_area(
         &mut self,
         start_va: VirtAddr,
@@ -59,9 +71,10 @@ impl MemorySetInner {
         .ok();
     }
 
-    /// Insert a framed logical area without mapping pages immediately.
+    /// 插入一个暂不建立页表映射的懒分配区域。
     ///
-    /// The pages are allocated later by the page-fault handler.
+    /// 此方法只登记区域范围和权限，不立即分配物理页；实际页面由缺页处理
+    /// 路径在首次访问时分配并映射。适合堆、栈或其他允许按需提交的用户区域。
     pub fn lazy_insert_framed_area(
         &mut self,
         start_va: VirtAddr,
@@ -78,7 +91,10 @@ impl MemorySetInner {
         ));
     }
 
-    /// Remove the logical area whose start VPN equals `start_vpn`.
+    /// 删除起始 VPN 等于 `start_vpn` 的逻辑区域。
+    ///
+    /// 删除前会先解除该区域覆盖的所有页表映射并释放其帧跟踪对象，然后从
+    /// 有序区域列表中移除区域。如果没有匹配区域，该操作不产生任何影响。
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtPageNum) {
         if let Some((idx, area)) = self
             .areas
@@ -91,9 +107,11 @@ impl MemorySetInner {
         }
     }
 
-    /// Eagerly insert a framed area below `hint`.
+    /// 在 `hint` 以下查找空洞并立即插入一个基于物理帧的区域。
     ///
-    /// Returns the selected virtual address range `(start_va, end_va)`.
+    /// `size` 会按页向上取整，返回实际选择的半开地址区间
+    /// `(start_va, end_va)`。如果地址空间不足，底层查找可能返回零地址；
+    /// 调用者应结合返回值判断分配是否成功。
     pub fn insert_framed_area_with_hint(
         &mut self,
         hint: usize,
@@ -112,9 +130,10 @@ impl MemorySetInner {
         (start_va, end_va)
     }
 
-    /// Lazily insert a framed area below `hint`.
+    /// 在 `hint` 以下查找空洞并懒惰插入一个基于物理帧的区域。
     ///
-    /// Returns the selected virtual address range `(start_va, end_va)`.
+    /// 只登记逻辑区域，不立即分配页面；返回实际选择的半开地址区间
+    /// `(start_va, end_va)`。地址不足时返回的起始地址为零。
     pub fn lazy_insert_framed_area_with_hint(
         &mut self,
         hint: usize,
@@ -133,11 +152,12 @@ impl MemorySetInner {
         (start_va, end_va)
     }
 
-    /// Find a free range ending at or below `hint`.
+    /// 查找一个结束地址不超过 `hint` 的空闲虚拟地址范围。
     ///
-    /// `areas` is kept sorted by start VPN, so a top-down search can move the
-    /// candidate below the VMA that it actually intersects and continue from
-    /// there. This avoids rescanning the lower VMAs after every collision.
+    /// `areas` 始终按起始 VPN 排序，因此可以从上到下搜索：候选范围发生
+    /// 冲突时，将候选位置移动到冲突 VMA 下方，再继续检查更低区域，避免每次
+    /// 碰撞都重新扫描已经排除的部分。返回值按页对齐；无法找到或算术溢出时
+    /// 返回零。为兼容历史布局，已占用 VMA 与新区域之间保留一个保护页。
     pub fn find_insert_addr(&self, hint: usize, size: usize) -> usize {
         let pages = match size.checked_add(PAGE_SIZE - 1) {
             Some(size) => size / PAGE_SIZE,
@@ -177,8 +197,11 @@ impl MemorySetInner {
         VirtAddr::from(start_vpn).0
     }
 
-    /// Find a non-fixed mmap address using the last successful top-down
-    /// position before falling back to the full address-space search.
+    /// 查找非 `MAP_FIXED` mmap 映射的地址。
+    ///
+    /// 优先从上一次成功分配的位置 [`Self::mmap_hint`] 向下搜索；该位置无
+    /// 可用空间时，再从完整的地址空间上界 [`MMAP_TOP`] 重新搜索。找到地址
+    /// 后更新提示，供后续 mmap 调用复用。
     pub(crate) fn find_mmap_addr(&mut self, size: usize) -> usize {
         let hint = self.mmap_hint.max(PAGE_SIZE).min(MMAP_TOP);
         let mut addr = self.find_insert_addr(hint, size);
@@ -191,10 +214,13 @@ impl MemorySetInner {
         addr
     }
 
-    /// Use a non-fixed mmap address as a hint when its whole page-rounded
-    /// range is currently free. Linux is allowed to choose a different range
-    /// when the hint collides, but callers such as mremap users rely on a
-    /// freshly reserved hole being honored.
+    /// 在非 `MAP_FIXED` 映射中尝试直接采用调用者提供的地址提示。
+    ///
+    /// 方法会将起始地址向下页对齐、将结束地址向上覆盖完整页，并检查整个
+    /// 范围是否位于用户 mmap 上界内且不与现有 VMA 重叠。提示为零、范围溢出
+    /// 或发生冲突时返回 `None`；成功时更新 [`Self::mmap_hint`] 并返回对齐后的
+    /// 起始地址。虽然 Linux 在提示冲突时可以另选地址，但某些 mremap 路径
+    /// 需要新近预留的空洞被准确采用。
     pub(crate) fn try_mmap_hint(&mut self, hint: usize, size: usize) -> Option<usize> {
         if hint == 0 {
             return None;
@@ -216,7 +242,11 @@ impl MemorySetInner {
         Some(start)
     }
 
-    /// Find a free mmap range whose start is aligned to `align` bytes.
+    /// 查找起始地址按 `align` 字节对齐的空闲 mmap 范围。
+    ///
+    /// `align` 必须是非零二次幂；搜索时会为对齐余量扩大候选范围，再验证
+    /// 对齐后的真实区间仍位于搜索上界和 [`MMAP_TOP`] 内。成功后更新 mmap
+    /// 搜索提示，失败或发生整数溢出时返回零。
     pub(crate) fn find_mmap_addr_aligned(&mut self, size: usize, align: usize) -> usize {
         if align == 0 || !align.is_power_of_two() {
             return 0;
@@ -250,7 +280,10 @@ impl MemorySetInner {
         0
     }
 
-    /// Find an area whose range exactly equals `[l, r)`.
+    /// 查找范围恰好等于 `[l, r)` 的 VMA。
+    ///
+    /// 参数使用半开 VPN 区间；找到时返回该区域的可变引用，未找到时返回
+    /// `None`。调用者应注意，可变借用期间不能同时修改 `areas` 列表。
     pub fn find_area_by_range(&mut self, l: VirtPageNum, r: VirtPageNum) -> Option<&mut MapArea> {
         let target = (l, r);
         self.areas
@@ -258,7 +291,12 @@ impl MemorySetInner {
             .find(|area| area.vpn_range.range() == target)
     }
 
-    /// Adjust the process brk area and return the new heap pointer.
+    /// 调整进程 `brk` 区域并返回新的堆指针。
+    ///
+    /// 正增长只为新增且未被其他固定映射占用的子区间登记懒分配 Brk VMA，
+    /// 从而保留用户可见的连续 `brk` 指针，同时允许 `MAP_FIXED` 在堆范围内
+    /// 留下空洞。负增长会移除收缩范围内的 Brk 区域和页表映射。若新地址
+    /// 越过堆上界、低于堆底或发生地址溢出，返回 `None`。
     pub fn grow(
         &mut self,
         grow_size: isize,
@@ -324,9 +362,11 @@ impl MemorySetInner {
         Some(new_addr)
     }
 
-    /// Remove only the brk portions covered by a range, leaving unrelated
-    /// fixed mappings intact. The logical brk pointer is owned by TaskInner,
-    /// so callers may use this to create or shrink holes in the heap layout.
+    /// 仅删除指定范围覆盖的 Brk 区域部分，并保留无关的固定映射。
+    ///
+    /// 该方法会解除被覆盖 VPN 的页表映射，并根据删除位置将原 VMA 完整删除、
+    /// 截短为左半段或右半段，必要时拆成两个区域。逻辑 `brk` 指针由
+    /// `TaskInner` 持有，因此调用者可以借此在堆布局中创建或收缩空洞。
     pub(crate) fn remove_brk_range(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) {
         if start_vpn >= end_vpn {
             return;
@@ -370,8 +410,11 @@ impl MemorySetInner {
         }
     }
 
-    /// Copy snapshotted pages into a lazily allocated area, faulting destination
-    /// pages as needed.
+    /// 将快照页面复制到懒分配区域，按需建立目标页映射。
+    ///
+    /// `source_pages` 提供源 VPN 与物理帧的配对。目标区域必须已经登记且
+    /// 起始 VPN 匹配；目标页尚未映射时先通过 `map_one` 分配，随后复制完整
+    /// 页面内容。超出目标区域或目标页分配失败的项目会被跳过。
     pub fn lazy_clone_area(
         &mut self,
         start_vpn: VirtPageNum,
@@ -405,11 +448,10 @@ impl MemorySetInner {
         }
     }
 
-    /// Insert an area by start VPN without coalescing it with its neighbors.
+    /// 按起始 VPN 插入区域，但不与相邻区域合并。
     ///
-    /// VMA transformation paths use this while an existing area is being
-    /// split. Coalescing at that point would undo the split and invalidate the
-    /// caller's area index before the operation has finished.
+    /// 返回插入后的索引。VMA 拆分等变换路径在中间状态需要保持两个区域
+    /// 独立，若此时合并会撤销拆分结果，并可能使调用者持有的区域索引失效。
     pub(super) fn insert_area_sorted_unmerged(&mut self, map_area: MapArea) -> usize {
         let start_vpn = map_area.vpn_range.start();
         let index = self
@@ -420,14 +462,20 @@ impl MemorySetInner {
         index
     }
 
-    /// Insert an area by start VPN and merge compatible adjacent anonymous
-    /// private VMAs. Keeping this invariant in one helper prevents ordinary
-    /// allocation paths from reintroducing an unsorted `areas` vector.
+    /// 按起始 VPN 插入区域，并合并兼容的相邻匿名私有 VMA。
+    ///
+    /// `areas` 的排序和相邻区域合并由该辅助函数统一维护，普通分配路径
+    /// 因而不会重新引入无序区域。只有映射类型、权限、区域类型、mmap 标志
+    /// 等属性完全一致且两侧均为匿名私有映射时才允许合并。
     fn insert_area_sorted(&mut self, map_area: MapArea) {
         let index = self.insert_area_sorted_unmerged(map_area);
         self.merge_adjacent_areas(index);
     }
 
+    /// 判断两个相邻区域是否可以安全合并。
+    ///
+    /// 除了地址连续外，映射类型、权限、区域类型和 mmap 标志必须一致；
+    /// 带有组标识或文件后端的区域不会合并，以避免改变共享、文件映射等语义。
     fn can_merge_areas(left: &MapArea, right: &MapArea) -> bool {
         left.vpn_range.end() == right.vpn_range.start()
             && left.map_type == right.map_type
@@ -442,6 +490,10 @@ impl MemorySetInner {
             && left.mmap_flags.contains(MmapFlags::MAP_ANONYMOUS)
     }
 
+    /// 从给定索引开始反复合并左右两侧的兼容相邻区域。
+    ///
+    /// 每次合并都会迁移右侧区域持有的页帧记录，并继续检查新的邻接关系，
+    /// 直到左右两侧都不存在可合并区域。
     fn merge_adjacent_areas(&mut self, mut index: usize) {
         loop {
             if index > 0 && Self::can_merge_areas(&self.areas[index - 1], &self.areas[index]) {
@@ -465,7 +517,10 @@ impl MemorySetInner {
         }
     }
 
-    /// Push a `MapArea` with eager frame allocation.
+    /// 立即分配 `MapArea` 覆盖的页面并将其插入地址空间。
+    ///
+    /// 映射成功后，如果提供了 `data`，会从区域起始位置复制初始化内容；
+    /// 任一步骤失败都会返回 `Err(())`，成功区域会按起始 VPN 排序并尝试合并。
     pub(crate) fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> Result<(), ()> {
         map_area.map(&mut self.page_table)?;
         if let Some(data) = data {
@@ -475,7 +530,10 @@ impl MemorySetInner {
         Ok(())
     }
 
-    /// Push an eagerly allocated `MapArea` and copy data starting at `offset`.
+    /// 立即分配 `MapArea`，并从指定 `offset` 开始复制初始化数据。
+    ///
+    /// `offset` 是区域内部的字节偏移，适用于需要将文件或镜像内容放置在
+    /// 映射区域中间的场景。映射和数据复制失败时返回 `Err(())`。
     pub(crate) fn push_with_offset(
         &mut self,
         mut map_area: MapArea,
@@ -490,7 +548,11 @@ impl MemorySetInner {
         Ok(())
     }
 
-    /// Push an area backed by already allocated frames.
+    /// 使用已分配的物理帧插入一个区域。
+    ///
+    /// 该路径不会重新分配页面，而是把 `frames` 交给 `MapArea` 建立映射，
+    /// 适用于 fork、共享内存或其他已经准备好页帧所有权的复制流程。插入后
+    /// 仍会维护区域排序并尝试合并兼容邻接区域。
     pub(crate) fn push_with_given_frames(
         &mut self,
         mut map_area: MapArea,
@@ -500,7 +562,10 @@ impl MemorySetInner {
         self.insert_area_sorted(map_area);
     }
 
-    /// Add a `MapArea` without immediately mapping pages.
+    /// 仅登记一个 `MapArea`，不立即建立页面映射。
+    ///
+    /// 该方法用于懒分配区域：页面在后续缺页处理时才会实际分配。区域会
+    /// 按起始 VPN 插入，并与属性兼容的相邻匿名私有区域合并。
     pub fn push_lazily(&mut self, map_area: MapArea) {
         self.insert_area_sorted(map_area);
     }
