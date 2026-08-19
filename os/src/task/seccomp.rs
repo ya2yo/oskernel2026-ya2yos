@@ -1,6 +1,7 @@
 //! Per-thread seccomp state and the small classic-BPF subset used by prctl(2).
 
 use alloc::vec::Vec;
+use linux_raw_sys::general::__NR_exit;
 
 /// Linux limits classic BPF seccomp programs to 4096 instructions.
 pub const SECCOMP_FILTER_MAX_INSNS: usize = 4096;
@@ -31,7 +32,7 @@ pub enum SeccompAction {
     /// The supported filter rejection path is reported as SIGSYS.
     Trap,
     /// Strict Fail mode rejects a syscall with ENOSYS
-    Fail
+    Fail,
 }
 
 /// Seccomp is thread-local. Fork and clone inherit this state from the caller.
@@ -39,8 +40,9 @@ pub enum SeccompAction {
 pub enum SeccompState {
     Disabled,
     Strict,
-    StrictFail,
     Filter(Vec<SockFilter>),
+    StrictFail,
+    WhiteLists(Vec<u32>),
 }
 
 impl Default for SeccompState {
@@ -56,6 +58,7 @@ impl SeccompState {
             Self::Strict => 1,
             Self::Filter(_) => 2,
             Self::StrictFail => 3,
+            Self::WhiteLists(_) => 4,
         }
     }
 
@@ -68,6 +71,11 @@ impl SeccompState {
     /// constant action. The LTP prctl04 program uses exactly this subset.
     pub fn new_filter(program: Vec<SockFilter>) -> Option<Self> {
         validate_filter(&program).then_some(Self::Filter(program))
+    }
+
+    /// allowed white lists
+    pub fn new_white_list(list: Vec<u32>) -> Option<Self> {
+        Some(Self::WhiteLists(list))
     }
 
     pub fn action_for_syscall(&self, syscall_nr: usize) -> SeccompAction {
@@ -86,10 +94,18 @@ impl SeccompState {
                 Some(ret) if ret & SECCOMP_RET_ACTION == SECCOMP_RET_ALLOW => SeccompAction::Allow,
                 _ => SeccompAction::Trap,
             },
-            Self::StrictFail => {
-                match syscall_nr {
-                    63 | 64 | 93 => SeccompAction::Allow,
-                    _ => SeccompAction::Fail,
+            Self::StrictFail => match syscall_nr {
+                63 | 64 | 93 => SeccompAction::Allow,
+                _ => SeccompAction::Fail,
+            },
+            // 遍历白名单
+            Self::WhiteLists(list) => {
+                if syscall_nr as u32 == __NR_exit {
+                    return SeccompAction::Allow
+                }
+                match list.iter().find(|&&x| x == syscall_nr as u32) {
+                    Some(_) => SeccompAction::Allow,
+                    None => SeccompAction::Fail,
                 }
             }
         }

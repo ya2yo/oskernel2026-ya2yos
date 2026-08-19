@@ -1,5 +1,6 @@
 use core::mem::size_of;
 
+use alloc::sync::Arc;
 use linux_raw_sys::{
     general::CAP_SYS_ADMIN,
     prctl::{
@@ -32,6 +33,13 @@ const SECCOMP_SET_MODE_WHITELIST: u32 = 0x101;
 struct SockFprog {
     len: u16,
     filter: *const SockFilter,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct seccomp_whitelist {
+    len: u16,
+    syscalls: *const i32,
 }
 
 /// https://man7.org/linux/man-pages/man2/seccomp.2.html
@@ -101,7 +109,44 @@ pub fn sys_seccomp(operation: u32, flags: u32, uargs: usize) -> SyscallRet {
             if !inner.seccomp_state.is_disabled() {
                 return Err(SysErrNo::EINVAL);
             }
-            inner.seccomp_state = SeccompState::Strict;
+            inner.seccomp_state = SeccompState::StrictFail;
+            Ok(0)
+        }
+        SECCOMP_SET_MODE_WHITELIST => {
+            if !task.inner_lock().seccomp_state.is_disabled() {
+                return Err(SysErrNo::EINVAL);
+            }
+            let no_new_privs = task.inner_lock().no_new_privs;
+            if !no_new_privs && !current_has_cap_sys_admin() {
+                return Err(SysErrNo::EACCES);
+            }
+            if uargs == 0 || if_bad_address(uargs) {
+                return Err(SysErrNo::EFAULT);
+            }
+            let memory_set = task.process.memory_set_arc();
+
+            let seccomp_whitelist =
+                copy_from_user_val(&memory_set, uargs as *const seccomp_whitelist)?;
+            let white_len = seccomp_whitelist.len as usize;
+            if seccomp_whitelist.syscalls.is_null()
+                || if_bad_address(seccomp_whitelist.syscalls as usize)
+            {
+                return Err(SysErrNo::EFAULT);
+            }
+            let mut white_lists = alloc::vec![0u32; white_len];
+            let white_lists_bytes = unsafe {
+                core::slice::from_raw_parts_mut(
+                    white_lists.as_mut_ptr() as *mut u8,
+                    white_len * size_of::<u32>(),
+                )
+            };
+            copy_from_user(&memory_set, seccomp_whitelist.syscalls as usize, white_lists_bytes)?;
+            let seccomp_state = SeccompState::new_white_list(white_lists).ok_or(SysErrNo::EINVAL)?;
+            let mut inner = task.inner_lock();
+            if !inner.seccomp_state.is_disabled() {
+                return Err(SysErrNo::EINVAL);
+            }
+            inner.seccomp_state = seccomp_state;
             Ok(0)
         }
         _ => Err(SysErrNo::EINVAL),
