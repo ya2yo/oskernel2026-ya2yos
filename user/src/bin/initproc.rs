@@ -256,6 +256,7 @@ const AT_FDCWD: isize = -100;
 enum TestImageKind {
     Preliminary,
     Final,
+    OnSite,
 }
 
 /// Return whether a path from the mounted test image can be opened.
@@ -284,6 +285,9 @@ fn detect_test_image() -> Option<TestImageKind> {
         return Some(TestImageKind::Preliminary);
     }
 
+    if image_contains("/musl/keydb_testcode.sh\0") && image_contains("glibc/keydb_testcode.sh\0"){
+        return Some(TestImageKind::OnSite)
+    }
     None
 }
 
@@ -296,6 +300,10 @@ fn run_selected_tests() -> i32 {
         Some(TestImageKind::Final) => {
             println!("detected final test image; running final suites");
             test_final_2026()
+        }
+        Some(TestImageKind::OnSite) => {
+            println!("detected onsite test image; running onsite suites");
+            test_onsite_2026()
         }
         None => {
             println!(
@@ -317,14 +325,8 @@ fn run_interactive_shell() -> i32 {
 
 #[no_mangle]
 fn main() -> i32 {
-    // run_selected_tests()
+    run_selected_tests()
     // run_interactive_shell()
-    run_testsuit("musl\0", "seccomp_testcode.sh\0");
-    run_testsuit("glibc\0", "seccomp_testcode.sh");
-    run_testsuit("musl\0", "keydb_testcode.sh");
-    run_testsuit("glibc\0", "keydb_testcode.sh");
-    shutdown();
-    0
 }
 
 // Score helpers (kept for ad-hoc testing)
@@ -384,6 +386,15 @@ fn test_final_2026() -> i32 {
     run_final_testsuit("glibc\0", "cagent_testcode.sh\0");
     run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
     // boot_arceos_helloworld_in_qemu();
+    shutdown();
+    0
+}
+
+fn test_onsite_2026() -> i32 {
+    run_testsuit("musl\0", "seccomp_testcode.sh\0");
+    run_testsuit("glibc\0", "seccomp_testcode.sh");
+    run_testsuit("musl\0", "keydb_testcode.sh");
+    run_testsuit("glibc\0", "keydb_testcode.sh");
     shutdown();
     0
 }
