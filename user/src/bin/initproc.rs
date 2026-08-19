@@ -317,8 +317,14 @@ fn run_interactive_shell() -> i32 {
 
 #[no_mangle]
 fn main() -> i32 {
-    run_selected_tests()
+    // run_selected_tests()
     // run_interactive_shell()
+    run_testsuit("musl\0", "seccomp_testcode.sh\0");
+    run_testsuit("glibc\0", "seccomp_testcode.sh");
+    run_testsuit("musl\0", "keydb_testcode.sh");
+    run_testsuit("glibc\0", "keydb_testcode.sh");
+    shutdown();
+    0
 }
 
 // Score helpers (kept for ad-hoc testing)

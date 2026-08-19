@@ -114,8 +114,11 @@ endif
 	@python3 ./scripts/mk_2k1000_uimage.py
 
 clean:
-	@cd ./os && $(MAKE) clean
-	@cd ./user && $(MAKE) clean
+	@cd ./os && rm -rf target/
+	@cd ./user && rm -rf target/
+	@cd crates/cty && rm -rf target/
+	@cd crates/lwext4_rust && rm -rf target/
+	@cd crates/lwext4_rust/c/lwext4 && rm -rf *.a build_musl*
 
 objdump:
 	@${OBJDUMP} -d -S $(KERNEL_ELF) > $(KERNEL_BIN).dump 2>/dev/null || true
