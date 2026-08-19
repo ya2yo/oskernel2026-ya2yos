@@ -1,3 +1,10 @@
+//! `Pipe` 对 [`File`] trait 的实现。
+//!
+//! 本文件连接用户缓冲区与共享 `PipeRingBuffer`：读操作从队头消费片段，写
+//! 操作把用户数据追加到队尾，并在满/空时进入带信号检查的阻塞等待。`poll`、
+//! `ioctl`、非阻塞和异步通知提供管道的文件描述符语义；所有数据和端点状态
+//! 的修改都在同一缓冲区锁下完成，以避免并发读写使用过期计数。
+
 use super::Pipe;
 use crate::fs::{FasyncOwner, File, Kstat, StMode};
 use crate::mm::{copy_to_user, UserBuffer};

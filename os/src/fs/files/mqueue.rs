@@ -13,15 +13,20 @@ use crate::mm::UserBuffer;
 use crate::syscall::PollEvents;
 use crate::utils::{SysErrNo, SysResult, SyscallRet};
 
-/// 消息结构
+/// 队列中保存的一条消息。
+///
+/// 消息数据按发送时的字节序列保存，优先级目前记录在对象中，具体的
+/// 排序/调度由上层消息队列系统调用负责。
 struct MqMessage {
     data: Vec<u8>,
     prio: u32,
 }
 
-/// Mqueue 定义
+/// POSIX 消息队列文件对象。
+///
+/// 名称用于注册表查找，队列内容及属性由 `inner` 统一保护。
 pub struct Mqueue {
-    /// 队列名称 ("/myqueue")
+    /// 队列名称（例如 `/myqueue`）。
     name: Mutex<String>,
     /// 内部可变状态
     inner: Mutex<MqueueInner>,

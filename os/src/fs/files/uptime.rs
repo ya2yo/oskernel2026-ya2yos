@@ -1,4 +1,9 @@
-//! Dynamic read-only `/proc/uptime` file.
+//! 动态只读 `/proc/uptime` 文件。
+//!
+//! 每个打开描述符首次读取时生成一个快照，内容为“系统运行时间 空闲时间”两
+//! 个保留两位小数的秒数；同一描述符后续分段读取和 seek 不会因时钟推进而改变
+//! 已经开始读取的文本。重新 seek 到文件起点会重新生成快照。该文件没有持久
+//! 化数据，也不接受写入，`poll(POLLIN)` 始终报告可读。
 
 use crate::{
     arch::{
@@ -20,8 +25,11 @@ use spin::Mutex;
 
 const UPTIME_PATH: &str = "/proc/uptime";
 
-/// A per-open descriptor for the dynamic uptime view.
+/// 每次打开 `/proc/uptime` 对应的动态文件视图。
+///
+/// `inner` 同时保护读取偏移和当前快照，确保分段读取期间内容稳定。
 pub struct UptimeFile {
+    /// 当前描述符的偏移和已生成的内容快照。
     inner: Mutex<UptimeFileInner>,
 }
 
@@ -71,6 +79,7 @@ fn push_two_digits(content: &mut String, value: u8) {
 }
 
 impl File for UptimeFile {
+    /// `/proc/uptime` 是只读动态视图，读取从当前快照和偏移继续。
     fn readable(&self) -> bool {
         true
     }

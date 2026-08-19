@@ -1,3 +1,9 @@
+//! pipe、文件页缓存之间的零拷贝数据转移辅助操作。
+//!
+//! `splice_to_pipe` 移动片段，`tee_to_pipe` 只克隆片段引用并保留输入数据；
+//! `push_file_page` 将页缓存页包装为 `PipeBuf`，把真正的用户态拷贝推迟到
+//! 管道读取时。涉及两个管道时统一按缓冲区地址加锁，避免锁顺序反转。
+
 use super::buffer::PipeBuf;
 use super::Pipe;
 use crate::fs::{File, FilePage};

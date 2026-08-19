@@ -1,4 +1,8 @@
 //! 收集就绪事件（水平/边缘触发、ONESHOT、已关闭 fd）。
+//!
+//! 等待逻辑先复制兴趣项快照，再逐项调用回调查询目标 fd，避免在轮询过程中
+//! 长时间持有兴趣锁。边缘触发通过 `current & !last_events` 只报告新出现的
+//! 状态；错误和挂断始终强制报告，`EPOLLONESHOT` 返回一次后移除注册项。
 
 use alloc::vec::Vec;
 use linux_raw_sys::general::{EPOLLERR, EPOLLET, EPOLLHUP, EPOLLONESHOT};
@@ -7,14 +11,18 @@ use super::file::EpollFile;
 
 /// 单次 `epoll_wait` 返回给用户态的一条记录。
 pub struct EpollReady {
+    /// 本次轮询匹配到的 Linux `epoll` 事件掩码。
     pub events: u32,
+    /// 注册兴趣项携带的用户数据，原样返回给调用者。
     pub data: u64,
 }
 
 impl EpollFile {
-    /// 轮询兴趣列表。
+    /// 遍历兴趣列表并收集本次调用中已就绪的事件。
     ///
-    /// `poll_one(fd, registered_events)` 返回 `None` 表示 fd 已关闭。
+    /// `poll_one` 负责查询目标文件当前状态，并以 `None` 表示目标文件已关闭。
+    /// 普通模式报告当前就绪状态，`EPOLLET` 只报告相对上次轮询新增的状态，
+    /// `EPOLLONESHOT` 项在报告后移除；结果数量不会超过 `maxevents`。
     pub fn collect_ready<F>(&self, poll_one: &mut F, maxevents: usize) -> Vec<EpollReady>
     where
         F: FnMut(i32, u32) -> Option<u32>,

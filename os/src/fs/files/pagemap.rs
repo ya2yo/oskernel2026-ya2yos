@@ -4,6 +4,10 @@
 //! 物理页帧号（PFN），最高位表示该虚拟页当前是否存在于页表中。与普通文件
 //! 不同，pagemap 不在磁盘上保存内容，而是在每次读取时根据关联的
 //! [`MemorySet`] 即时生成结果。
+//!
+//! 每个打开对象拥有独立的字节偏移，允许非 8 字节对齐的分段读取；未映射页
+//! 返回零条目，已映射页设置 present 位并编码 PFN。该视图只读、始终报告
+//! `POLLIN` 就绪，逻辑大小随最高 VMA 端点动态计算。
 
 use crate::{
     arch::memory_layout::PAGE_SIZE,
@@ -16,6 +20,8 @@ use alloc::{borrow::Cow, string::String, sync::Arc, vec};
 use spin::Mutex;
 
 /// 每个虚拟页在 pagemap 中占用的字节数。
+///
+/// 条目按原生字节序编码，以便直接兼容当前架构上的用户态读取方式。
 const PAGEMAP_ENTRY_SIZE: usize = core::mem::size_of::<u64>();
 /// pagemap 条目中用于保存 PFN 的低 55 位掩码。
 const PAGEMAP_PFN_MASK: u64 = (1u64 << 55) - 1;

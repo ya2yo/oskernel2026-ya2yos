@@ -1,8 +1,15 @@
 //! fanotify 实例文件对象。
 //!
-//! 当前实现 `fanotify_init(2)` 创建出的 fd 载体、`fanotify_mark(2)` 的 mark
+//! 本模块把一次 [`fanotify_init(2)`] 调用得到的 notification group 表示为一个
+//! [`FanotifyFd`]，并负责维护该 group 的 mark、待读事件以及阻塞读的唤醒状态。
+//! 文件系统相关代码在实际发生访问、修改、打开或关闭等操作时，通过
+//! [`notify_path_event`] 将路径事件广播到所有匹配的 group；用户态随后从
+//! fanotify fd 读取 Linux `fanotify_event_metadata` 兼容的定长记录。
+//!
+//! 当前实现覆盖 `fanotify_init(2)` 创建出的 fd 载体、`fanotify_mark(2)` 的 mark
 //! 表管理，以及覆盖 LTP `fanotify01` 所需的基础事件队列。权限事件响应、FID
-//! 附加信息和完整 mount/filesystem 传播语义仍需要后续接入。
+//! 附加信息和完整 mount/filesystem 传播语义仍需要后续接入。这里的注释描述的是
+//! 当前代码已经实现的路径匹配和事件编码规则，不代表尚未接入的 Linux 语义。
 
 use alloc::{
     collections::{BTreeMap, VecDeque},
@@ -76,9 +83,17 @@ struct FanotifyEvent {
 }
 
 /// 一个 fanotify notification group。
+///
+/// 实例本身实现 [`File`]，因此会直接作为特殊文件对象放入进程 fd 表。
+/// `marks` 保存该 group 关注的路径及事件位，`event_queue` 保存已经匹配成功、
+/// 等待用户态 `read(2)` 取走的事件。全局表只保存本对象的弱引用，避免为了
+/// 支持 syscall 按 fd 查找而额外延长 fd 对象的生命周期。
 pub struct FanotifyFd {
+    /// `fanotify_init(2)` 创建 group 时指定的初始化标志。
     init_flags: u32,
+    /// 由后续事件 fd 继承的 open flags。
     event_f_flags: u32,
+    /// fd 是否处于非阻塞模式；该状态可由通用文件接口修改。
     nonblocking: AtomicBool,
     /// mark 表：`(mark_type, absolute_path)` → mark 状态。
     marks: Mutex<BTreeMap<(u32, String), FanotifyMark>>,
@@ -222,12 +237,22 @@ impl FanotifyFd {
         Ok(0)
     }
 
+    /// 判断该 group 是否请求 file-handle reporting。
+    ///
+    /// 当前版本尚未编码 FID 附加信息，因此只要设置任一 `FAN_REPORT_*` 标志，
+    /// 事件元数据中的 `fd` 就使用 [`FAN_NOFD`]；legacy 模式则尝试为目标路径
+    /// 打开一个事件 fd。
     fn reports_file_handle(&self) -> bool {
         self.init_flags
             & (FAN_REPORT_FID | FAN_REPORT_DIR_FID | FAN_REPORT_NAME | FAN_REPORT_TARGET_FID)
             != 0
     }
 
+    /// 为 legacy 事件元数据创建并分配一个指向目标 inode 的事件 fd。
+    ///
+    /// 打开路径期间使用抑制 guard，防止“为报告事件而打开文件”再次触发
+    /// fanotify 内部事件。无法打开目标、分配进程 fd 或安装文件对象时，按
+    /// Linux legacy metadata 约定返回 [`FAN_NOFD`]。
     fn allocate_event_fd(&self, path: &str) -> i32 {
         let flags = OpenFlags::from_bits_truncate(self.event_f_flags);
         let suppress = suppress_fanotify_events();
@@ -265,6 +290,12 @@ impl FanotifyFd {
         fd as i32
     }
 
+    /// 将一个内部事件编码为用户态可读取的 metadata 记录。
+    ///
+    /// 记录采用本机字节序，长度固定为 [`FANOTIFY_EVENT_METADATA_LEN`]；当 group
+    /// 未请求 FID reporting 时，`fd` 字段由 [`allocate_event_fd`] 填充，否则写入
+    /// [`FAN_NOFD`]。调用者已经保证缓冲区足够大，返回值用于保持与其他事件
+    /// 序列化接口一致。
     fn serialize_event(&self, event: &FanotifyEvent, buf: &mut [u8]) -> Option<usize> {
         if buf.len() < FANOTIFY_EVENT_METADATA_LEN {
             return None;
@@ -295,6 +326,11 @@ impl FanotifyFd {
         Some(FANOTIFY_EVENT_METADATA_LEN)
     }
 
+    /// 非阻塞地从事件队列取出尽可能多的完整 metadata 记录。
+    ///
+    /// 事件只在成功从队列取出后才会被消费；缓冲区不足一个完整记录返回
+    /// `EINVAL`，队列为空返回 `EAGAIN`。阻塞与否由 [`File::read`] 外层的
+    /// [`poll_io`] 负责，本函数只执行一次队列检查和编码。
     fn try_read_events(&self, buf: &mut [u8]) -> SysResult<usize> {
         if buf.len() < FANOTIFY_EVENT_METADATA_LEN {
             return Err(SysErrNo::EINVAL);
@@ -322,6 +358,11 @@ impl FanotifyFd {
         Ok(written)
     }
 
+    /// 判断事件路径是否命中某个 mark。
+    ///
+    /// 精确路径始终命中；只有 mark 带有 `FAN_EVENT_ON_CHILD` 时，目录 mark
+    /// 才会额外匹配它的直接子项。这里按路径字符串逐级比较，因此不会把更
+    /// 深层的后代或仅具有相同字符串前缀的路径误判为直接子项。
     fn path_matches_mark(marked_path: &str, path: &str, mark_mask: u64) -> bool {
         if marked_path == path {
             return true;
@@ -348,6 +389,11 @@ impl FanotifyFd {
         !child.is_empty() && !child.contains('/')
     }
 
+    /// 根据路径和事件位检查 mark，并在命中时排队一个事件。
+    ///
+    /// `ignored_mask` 会过滤普通事件；对于 `FAN_MODIFY`，非持久 ignore 位会
+    /// 在本次检查前清除，从而实现当前实现所采用的 modify 后重新允许通知的
+    /// 规则。真正入队后才唤醒等待中的读者，避免无事件时产生无效唤醒。
     fn push_if_marked(&self, path: &str, mask: u64, pid: i32) {
         let mut should_push = false;
         {
@@ -382,6 +428,10 @@ impl FanotifyFd {
 }
 
 /// 向所有匹配 mark 的 fanotify group 投递路径事件。
+///
+/// 先复制出当前仍然存活的 group 强引用，再逐个执行匹配和入队；这样既允许
+/// 全局注册表只持有弱引用，也避免在持有注册表锁时触发各实例的 mark/队列锁。
+/// 没有当前任务时无法确定事件来源 pid，因此直接忽略该通知。
 pub fn notify_path_event(path: &str, mask: u64) {
     let Some(task) = current_task() else {
         return;

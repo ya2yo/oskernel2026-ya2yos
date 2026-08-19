@@ -1,3 +1,10 @@
+//! 共享的管道片段队列、容量计数和等待者管理。
+//!
+//! 虽然类型名保留为 `PipeRingBuffer`，当前实现实际是 `VecDeque<PipeBuf>`：
+//! `bytes` 维护队列中有效字节数，`capacity` 限制总量。读写通过队头弹出、
+//! 拆分和尾部追加完成；任务等待队列与 poll 唤醒集合分别服务阻塞 I/O 和
+//! 事件通知，端点计数则用于检测 EOF/EPIPE 条件。
+
 use super::buffer::PipeBuf;
 use super::PIPE_DEFAULT_SIZE;
 use crate::fs::FasyncOwner;

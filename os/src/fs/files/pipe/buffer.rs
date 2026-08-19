@@ -1,3 +1,9 @@
+//! 管道数据片段及其底层存储的统一表示。
+//!
+//! 普通写入使用 `Bytes`，文件页缓存路径使用 `FilePage`。片段只保存底层
+//! 存储的窗口（偏移和长度），因此 `splice` 可以移动窗口，`tee` 可以克隆
+//! `Arc` 和元数据而不复制实际字节。
+
 use crate::fs::FilePage;
 use alloc::sync::Arc;
 use alloc::vec::Vec;

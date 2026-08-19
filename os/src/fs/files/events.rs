@@ -1,4 +1,8 @@
-//! eventfd 文件对象：内核线程/进程间事件通知。
+//! `eventfd` 文件对象：内核线程/进程间事件通知。
+//!
+//! [`EventFd`] 使用原子 64 位计数器和两组等待者集合实现生产者/消费者同步：
+//! 读者等待计数器非零，写者等待计数器不会达到 Linux 规定的饱和值。所有阻塞
+//! 逻辑通过 `poll_io` 复用统一的文件等待框架，避免在文件对象中重复实现调度。
 //!
 //! 参考 https://man7.org/linux/man-pages/man2/eventfd.2.html
 //!
@@ -26,7 +30,7 @@ use crate::{
 /// * **普通模式** (`semaphore = false`)：`read` 返回并清零计数器。
 /// * **信号量模式** (`semaphore = true`)：`read` 返回 1 并将计数器减 1。
 pub struct EventFd {
-    /// 64 位无符号整数计数器
+    /// 64 位无符号事件计数器；读写通过原子更新避免丢失并发事件。
     counter: AtomicU64,
     /// 是否为信号量语义（EFD_SEMAPHORE）
     semaphore: bool,

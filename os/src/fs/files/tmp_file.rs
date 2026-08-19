@@ -1,4 +1,11 @@
-//! In-memory anonymous regular file used for `O_TMPFILE`.
+//! `O_TMPFILE` 与 `memfd_create(2)` 使用的内存匿名普通文件。
+//!
+//! 文件数据、当前偏移、权限和 seal 状态全部保存在内核内存中，不创建 ext4
+//! 目录项；只有通过后续 `linkat` 物化时才可能获得路径。`memfd` 还共享 seal
+//! 与 mmap 页状态，使 `F_SEAL_*` 能约束写入、扩展、收缩及可写共享映射。
+//!
+//! [`TmpFile`] 实现 [`File`] 的读写、truncate、fallocate、seek、poll、append、
+//! seal 和 mmap backing 行为；普通 O_TMPFILE 与 memfd 的差异由 `is_memfd` 控制。
 //!
 //! Linux `O_TMPFILE` opens a regular file that is not linked into any
 //! directory yet. The directory path passed to `openat` only selects the
@@ -41,21 +48,37 @@ const SUPPORTED_SEALS: u32 =
 /// It deliberately implements only fd-visible state. A real filesystem inode is
 /// created later only if userspace links `/proc/self/fd/<fd>` into a directory.
 pub struct TmpFile {
+    /// 当前打开描述符是否允许 read(2)。
     readable: bool,
+    /// 当前打开描述符是否允许 write(2)。
     writable: bool,
+    /// fstat 返回的权限位。
     mode: u32,
+    /// 文件所有者 uid/gid。
     uid: u32,
     gid: u32,
+    /// 匿名 inode 编号。
     ino: usize,
+    /// O_APPEND 状态；每次写入前将偏移移到文件末尾。
     append: AtomicBool,
+    /// 是否为 memfd；仅 memfd 支持 seal、fallocate 和 mmap backing。
     is_memfd: bool,
+    /// 创建时是否允许添加 seal。
     allow_sealing: bool,
+    /// 与 reopen/mmap 共享的 seal 位图。
     seals: Arc<AtomicU32>,
+    /// 共享映射及其页缓存状态。
     mmap_state: Arc<TmpFileMmapState>,
+    /// 文件数据，供读写和 mmap 回写共同访问。
     inner: Arc<Mutex<TmpFileInner>>,
+    /// 本 open file description 的独立文件偏移。
     offset: Mutex<usize>,
 }
 
+/// 匿名文件的实际字节内容。
+///
+/// 访问该向量必须持有外层互斥锁；共享 mmap 的脏页会在读写、截断或
+/// 分配操作前同步回这里，从而让文件描述符操作观察到映射产生的修改。
 struct TmpFileInner {
     data: Vec<u8>,
 }
@@ -74,6 +97,7 @@ struct TmpFileMmapBacking {
 }
 
 impl Drop for TmpFileMmapBacking {
+    /// 释放可写共享映射登记，使后续 `F_SEAL_WRITE` 可以成功安装。
     fn drop(&mut self) {
         if self.writable_shared {
             let mut mappings = self.state.writable_shared_mappings.lock();
@@ -84,11 +108,13 @@ impl Drop for TmpFileMmapBacking {
 }
 
 impl TmpFileMmapBacking {
+    /// 返回页在文件中的有效范围；文件末页可能短于一个完整页。
     fn page_bounds(data_len: usize, page_index: usize) -> Option<(usize, usize)> {
         let start = page_index.checked_mul(PAGE_SIZE)?;
         (start < data_len).then(|| (start, (data_len - start).min(PAGE_SIZE)))
     }
 
+    /// 将仍存活的共享映射页写回文件内容，并清理已经释放的页引用。
     fn flush_shared_pages(
         pages: &mut BTreeMap<usize, Weak<FrameTracker>>,
         inner: &mut TmpFileInner,
@@ -112,6 +138,7 @@ impl TmpFileMmapBacking {
         }
     }
 
+    /// 用最新文件内容刷新已建立的共享映射页；缩短文件时会清零页尾。
     fn refresh_shared_pages(pages: &mut BTreeMap<usize, Weak<FrameTracker>>, inner: &TmpFileInner) {
         let stale: Vec<usize> = pages
             .iter()
@@ -135,11 +162,13 @@ impl TmpFileMmapBacking {
 }
 
 impl MmapBacking for TmpFileMmapBacking {
+    /// 共享映射只有在对应写入 seal 未安装时才允许写入。
     fn allows_write(&self) -> bool {
         !self.shared
             || self.seals.load(Ordering::Acquire) & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) == 0
     }
 
+    /// 获取或创建共享映射页，并以当前文件内容初始化新页。
     fn shared_page(&self, page_index: usize) -> Result<Option<Arc<FrameTracker>>, SysErrNo> {
         if !self.shared {
             return Ok(None);
@@ -159,6 +188,7 @@ impl MmapBacking for TmpFileMmapBacking {
         Ok(Some(frame))
     }
 
+    /// 将文件指定页加载到调用方提供的物理帧中，并返回有效字节数。
     fn load_page(
         &self,
         page_index: usize,
@@ -180,6 +210,7 @@ impl MmapBacking for TmpFileMmapBacking {
         Self::page_bounds(inner.data.len(), page_index).map(|(_, valid_len)| valid_len)
     }
 
+    /// 将共享映射的脏页写回匿名文件；私有映射不产生文件回写。
     fn writeback_page(&self, page_index: usize, frame: &FrameTracker) -> SysResult {
         if !self.shared {
             return Ok(());
@@ -195,11 +226,12 @@ impl MmapBacking for TmpFileMmapBacking {
 }
 
 impl TmpFile {
+    /// 创建不支持 seals 的匿名 `O_TMPFILE` 文件。
     pub fn new(readable: bool, writable: bool, mode: u32, uid: u32, gid: u32) -> Arc<Self> {
         Self::new_with_seals(readable, writable, mode, uid, gid, false, false, false)
     }
 
-    /// Build the anonymous file used by `memfd_create(2)`.
+    /// 创建 `memfd_create(2)` 使用的匿名文件，并按参数初始化 seal 状态。
     pub fn new_memfd(
         readable: bool,
         writable: bool,
@@ -221,6 +253,7 @@ impl TmpFile {
         )
     }
 
+    /// 统一构造 O_TMPFILE 与 memfd；`is_memfd` 决定是否开放 memfd 专有接口。
     fn new_with_seals(
         readable: bool,
         writable: bool,
@@ -253,6 +286,7 @@ impl TmpFile {
         })
     }
 
+    /// 以 acquire 顺序读取当前 seal 位图，确保观察到最新限制。
     fn seals(&self) -> u32 {
         self.seals.load(Ordering::Acquire)
     }
@@ -267,6 +301,7 @@ impl File for TmpFile {
         self.writable
     }
 
+    /// 先同步共享映射脏页，再按本打开描述的独立偏移读取文件内容。
     fn read(&self, mut buf: UserBuffer) -> SyscallRet {
         let mut pages = self.mmap_state.shared_pages.lock();
         let mut inner = self.inner.lock();
@@ -281,6 +316,7 @@ impl File for TmpFile {
         Ok(read_len)
     }
 
+    /// 检查写入相关 seals 后写入内容，并刷新已有共享映射页。
     fn write(&self, buf: UserBuffer) -> SyscallRet {
         let bytes = buf.read_to_vec();
         let mut pages = self.mmap_state.shared_pages.lock();
@@ -307,6 +343,7 @@ impl File for TmpFile {
         Ok(bytes.len())
     }
 
+    /// 调整文件长度；扩展或收缩分别受 `F_SEAL_GROW`/`F_SEAL_SHRINK` 约束。
     fn truncate(&self, size: usize) -> SyscallRet {
         let mut pages = self.mmap_state.shared_pages.lock();
         let mut inner = self.inner.lock();
@@ -326,6 +363,7 @@ impl File for TmpFile {
         Ok(0)
     }
 
+    /// 实现 memfd 支持的保留大小和打洞操作；打洞区域保留文件长度并清零。
     fn fallocate(&self, mode: u32, offset: usize, len: usize) -> SyscallRet {
         if !self.is_memfd {
             return Err(SysErrNo::EOPNOTSUPP);
@@ -364,6 +402,7 @@ impl File for TmpFile {
         Ok(0)
     }
 
+    /// 返回匿名普通文件的元数据；未链接文件的硬链接数固定为零。
     fn fstat(&self) -> Kstat {
         let inner = self.inner.lock();
         Kstat {
@@ -381,6 +420,7 @@ impl File for TmpFile {
         }
     }
 
+    /// 按起点、当前位置或文件末尾计算新的非负文件偏移。
     fn lseek(&self, offset: isize, whence: usize) -> SyscallRet {
         let inner = self.inner.lock();
         let mut current_offset = self.offset.lock();
@@ -422,6 +462,7 @@ impl File for TmpFile {
         }
     }
 
+    /// 原子地追加 seal；安装写 seal 前拒绝仍存在的可写共享映射。
     fn add_seals(&self, seals: u32) -> SysResult {
         if !self.is_memfd || seals & !SUPPORTED_SEALS != 0 {
             return Err(SysErrNo::EINVAL);
@@ -455,6 +496,7 @@ impl File for TmpFile {
         }
     }
 
+    /// 以新的访问标志重新打开同一个 memfd，共享内容和 seal，但拥有独立偏移。
     fn reopen(
         &self,
         readable: bool,
@@ -481,6 +523,7 @@ impl File for TmpFile {
         }))
     }
 
+    /// 创建 memfd 的 mmap 后端，并登记可写共享映射数量以协调 seals。
     fn mmap_backing(&self, shared: bool, writable: bool) -> Result<Arc<dyn MmapBacking>, SysErrNo> {
         if !self.is_memfd {
             return Err(SysErrNo::EINVAL);
@@ -503,6 +546,7 @@ impl File for TmpFile {
     }
 }
 
+/// 将分散的用户缓冲区拼接为独立内核快照，避免锁内持有用户切片。
 trait UserBufferExt {
     fn read_to_vec(&self) -> Vec<u8>;
 }

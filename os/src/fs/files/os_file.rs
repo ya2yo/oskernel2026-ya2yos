@@ -1,3 +1,10 @@
+//! 普通文件的打开文件描述实现。
+//!
+//! [`OSFile`] 将一个打开的 VFS inode 与进程可见的状态绑定在一起：包括访问
+//! 权限、当前文件偏移、追加写标志以及 OFD 锁所有者。读写路径在这里统一
+//! 处理偏移更新、页缓存、fanotify 通知和特殊文件标志；具体数据仍由 inode
+//! 提供的 `read_at`/`write_at` 完成，因此本模块不改变底层文件系统的布局。
+
 use crate::arch::memory_layout::PAGE_SIZE;
 #[cfg(feature = "perf")]
 use crate::arch::time::get_ticks;
@@ -40,6 +47,11 @@ const MAX_AGGREGATED_READ: usize = 64 * 1024;
 /// retaining a fixed upper bound on retained physical pages.
 const MAX_PAGE_CACHED_READ_FILE_SIZE: usize = 32 * 1024 * 1024;
 
+/// 在无符号文件偏移上应用有符号增量，并把下溢/上溢转换为 `EINVAL`。
+///
+/// `lseek` 的 `SEEK_CUR` 和 `SEEK_END` 都会经过此函数。单独封装可以
+/// 保证所有相对定位使用相同的溢出规则，而不会因 `isize` 转换为 `usize`
+/// 的细节产生错误的大偏移。
 fn seek_offset(base: usize, offset: isize) -> Result<usize, SysErrNo> {
     if offset < 0 {
         let magnitude = offset.checked_neg().ok_or(SysErrNo::EINVAL)? as usize;
@@ -49,15 +61,22 @@ fn seek_offset(base: usize, offset: isize) -> Result<usize, SysErrNo> {
     }
 }
 
+/// 分配一个仅用于当前打开文件描述的 OFD 锁所有者标识。
+///
+/// 该标识不代表进程或线程身份；它只需在内核生命周期内与其他打开描述
+/// 区分即可，因此采用单调递增的原子计数器，并用负值避免与传统 POSIX
+/// 锁所有者的正值空间混淆。
 fn alloc_ofd_lock_owner() -> i32 {
     -NEXT_OFD_LOCK_OWNER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// 增加指定路径的可写打开计数，供删除/属性更新逻辑判断是否仍有写者。
 fn register_write_open(path: &str) {
     let mut counts = WRITE_OPEN_COUNTS.lock();
     *counts.entry(String::from(path)).or_insert(0) += 1;
 }
 
+/// 对称减少路径级可写打开计数；计数归零后移除该路径，避免全局表增长。
 fn unregister_write_open(path: &str) {
     let mut counts = WRITE_OPEN_COUNTS.lock();
     if let Some(count) = counts.get_mut(path) {
@@ -68,6 +87,7 @@ fn unregister_write_open(path: &str) {
     }
 }
 
+/// 登记一个打开文件描述对 inode 的引用，并返回稳定的指针身份键。
 fn register_open_inode(inode: &Arc<dyn Inode>) -> usize {
     // The canonical FsIndex inode Arc is shared by all opens of one live
     // object. Pointer identity also cannot confuse a newly reused ext4 inode
@@ -78,6 +98,7 @@ fn register_open_inode(inode: &Arc<dyn Inode>) -> usize {
     key
 }
 
+/// 释放一个 inode 打开引用，并在最后一个引用消失时清理计数项。
 fn unregister_open_inode(key: usize) {
     let mut counts = OPEN_FILE_COUNTS.lock();
     if let Some(count) = counts.get_mut(&key) {
@@ -105,6 +126,11 @@ fn set_file_flags(path: &str, flags: u32) {
     }
 }
 
+/// 当写入管道大小 sysctl 时同步内核中的运行时上限。
+///
+/// 普通文件写入本身仍由 inode 处理；这里只对精确匹配的 proc 节点解析
+/// 十进制内容。遇到空内容视为无需更新，遇到非数字前缀或数值溢出则按
+/// 用户可见的 `EINVAL` 拒绝，避免把部分输入静默写入配置状态。
 fn sync_pipe_max_size_sysctl(path: &str, bytes: &[u8]) -> Result<(), SysErrNo> {
     if path != PIPE_MAX_SIZE_PATH {
         return Ok(());
@@ -129,10 +155,12 @@ fn sync_pipe_max_size_sysctl(path: &str, bytes: &[u8]) -> Result<(), SysErrNo> {
     set_pipe_max_size(value)
 }
 
+/// 判断路径是否设置了 immutable 标志；该标志会禁止普通写入。
 fn is_immutable_path(path: &str) -> bool {
     get_file_flags(path) & FS_IMMUTABLE_FL != 0
 }
 
+/// 判断扩展属性更新是否被 immutable/append-only 标志禁止。
 fn xattr_write_protected_path(path: &str) -> bool {
     get_file_flags(path) & (FS_IMMUTABLE_FL | FS_APPEND_FL) != 0
 }
@@ -160,6 +188,11 @@ struct OSFileInner {
 }
 
 impl OSFile {
+    /// 从 inode 创建一个新的打开文件描述。
+    ///
+    /// 创建时记录稳定的 inode 引用计数，并为可写打开登记路径级写者计数；
+    /// 这些计数会在 [`Drop`] 中对称释放，用于延迟删除、写入状态和关闭通知
+    /// 等语义。文件偏移则从零开始，追加模式只影响后续每次写入的位置。
     pub fn new(readable: bool, writable: bool, append: bool, inode: Arc<dyn Inode>) -> Self {
         let seek_type = Self::resolve_seek_type(&inode);
         let open_inode_key = register_open_inode(&inode);
@@ -242,6 +275,7 @@ impl OSFile {
         xattr_write_protected_path(path)
     }
 
+    /// 直接设置文件偏移，供目录遍历等需要恢复不透明游标的调用方使用。
     pub fn set_offset(&self, offset: usize) {
         self.inner.lock().offset = offset;
     }

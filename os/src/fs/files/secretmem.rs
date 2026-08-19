@@ -1,4 +1,8 @@
-//! Anonymous file object used by `memfd_secret(2)`.
+//! `memfd_secret(2)` 创建的匿名内存文件对象。
+//!
+//! 该实现以受内核锁保护的字节向量保存内容，并为每个打开对象维护独立文件
+//! 偏移。它不创建目录项，主要用于为 secret memory syscall 提供可读写、可
+//! 截断和可 seek 的 `File` 接口；真正的页隔离策略由内存管理层负责。
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
@@ -10,13 +14,22 @@ use crate::utils::{SysErrNo, SyscallRet};
 
 static NEXT_SECRET_INO: AtomicUsize = AtomicUsize::new(0x7100_0000);
 
+/// `memfd_secret` 返回的匿名文件描述符对象。
+///
+/// `inner` 保护文件内容和描述符偏移；`ino` 是仅用于 `fstat` 的稳定匿名 inode
+/// 编号，不对应磁盘上的目录项。
 pub struct SecretMemFile {
+    /// 内容与当前读写偏移。
     inner: Mutex<SecretMemFileInner>,
+    /// 自动分配的匿名 inode 编号。
     ino: usize,
 }
 
+/// secretmem 文件的可变状态。
 struct SecretMemFileInner {
+    /// 文件字节内容。
     data: Vec<u8>,
+    /// 下次 read/write 使用的文件偏移。
     offset: usize,
 }
 
@@ -33,6 +46,7 @@ impl SecretMemFile {
 }
 
 impl File for SecretMemFile {
+    /// secretmem 始终允许读取；实际 EOF 由内存内容长度决定。
     fn readable(&self) -> bool {
         true
     }

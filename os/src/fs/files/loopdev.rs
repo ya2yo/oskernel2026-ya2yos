@@ -1,3 +1,14 @@
+//! loop 块设备的简化实现。
+//!
+//! 本模块提供 `/dev/loopN`、`/dev/loop/N`、`/dev/block/loopN` 以及
+//! `/dev/loop-control` 的文件接口，覆盖常见格式化和挂载流程所需的
+//! `ioctl`、读写、定位、轮询与状态查询。每个 loop 编号由全局表中的
+//! [`LoopState`] 描述，并使用互斥锁保护。
+//!
+//! 当前实现刻意不把写入内容持久化到 backing file；写入只推进设备偏移并
+//! 记录格式化过程中达到的最大位置。这样既保持接口和容量语义，又适配内核
+//! 当前的简化 ext4 挂载模型。
+
 use crate::{
     fs::{stat::StMode, File, Kstat, SEEK_CUR, SEEK_END, SEEK_SET},
     mm::{copy_from_user, copy_to_user, MemorySet, UserBuffer},
@@ -18,6 +29,11 @@ const LOOP_COUNT: usize = 256;
 const LOOP_DEFAULT_CAPACITY: usize = 64 * 1024 * 1024;
 const LOOP_SECTOR_SIZE: usize = 512;
 
+/// 单个 loop 编号的共享状态。
+///
+/// `backing_fd` 表示是否已经通过 `LOOP_SET_FD` 关联后端文件，`info` 保存
+/// Linux loop 设备状态结构，`formatted_size` 则记录简化实现中格式化写入
+/// 达到的最大偏移。该结构不包含实际数据缓存，数据持久化由上层模型处理。
 struct LoopState {
     backing_fd: Option<usize>,
     info: loop_info64,
@@ -47,6 +63,11 @@ static LOOP_TABLE: Lazy<Vec<Mutex<LoopState>>> = Lazy::new(|| {
     v
 });
 
+/// 根据 loop 状态计算对外可见容量。
+///
+/// 若用户通过 `LOOP_SET_STATUS*` 设置了非零大小限制，则使用该限制；
+/// 否则使用固定的默认容量。返回值同时用于读写边界、`fstat` 和块设备
+/// 大小查询，因此这些接口保持一致。
 fn loop_capacity(state: &LoopState) -> usize {
     if state.info.lo_sizelimit != 0 {
         state.info.lo_sizelimit as usize
@@ -73,8 +94,13 @@ pub fn parse_loop_device(path: &str) -> Option<u32> {
     None
 }
 
+/// loop 控制设备的固定路径。
 pub const LOOP_CONTROL_PATH: &str = "/dev/loop-control";
 
+/// `/dev/loop-control` 文件对象。
+///
+/// 该对象不保存单个 loop 设备的偏移，只负责分配、添加和移除编号，
+/// 以及报告控制设备自身的属性。
 pub struct DevLoopControl;
 
 impl DevLoopControl {
@@ -145,6 +171,11 @@ impl File for DevLoopControl {
     }
 }
 
+/// 一个已打开的 loop 块设备文件对象。
+///
+/// `number` 用于索引全局 [`LOOP_TABLE`] 并访问共享设备状态；`path` 保留
+/// 用户打开时使用的路径；`offset` 是当前文件描述符独立的读写位置，因而
+/// 同一 loop 设备的多个打开实例可以拥有不同的定位状态。
 pub struct DevLoop {
     number: u32,
     path: String,
@@ -356,12 +387,11 @@ impl File for DevLoop {
     }
 }
 
-/// Return the largest offset written while formatting a loop device.
+/// 返回格式化 loop 设备时写入达到的最大偏移。
 ///
-/// `mke2fs` writes the requested filesystem image through `/dev/loopN`, while
-/// the current loop implementation intentionally discards the payload.  The
-/// offset is nevertheless enough to preserve the capacity contract needed by
-/// the simplified ext4 mount model.
+/// `mke2fs` 会通过 `/dev/loopN` 写入文件系统镜像，而当前 loop 实现有意
+/// 丢弃具体数据。最大偏移仍足以为简化 ext4 挂载模型保留所需的容量约定；
+/// 若尚未发生写入，则回退到设备按状态计算出的默认容量。
 pub fn formatted_size(path: &str) -> Option<usize> {
     let number = parse_loop_device(path)? as usize;
     let state = LOOP_TABLE[number].lock();

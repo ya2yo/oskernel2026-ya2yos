@@ -10,7 +10,12 @@ use crate::{
     utils::{PollSet, SysErrNo, SysResult, SyscallRet},
 };
 
-/// The per-task signal queue exposed by signalfd(2).
+/// 通过 `signalfd(2)` 暴露的、绑定到单个任务的信号文件。
+///
+/// 文件不拥有独立的信号队列，而是从关联任务的待处理信号集合中筛选
+/// `mask` 指定的信号。读取成功后会从任务状态中消费一个信号，并将其
+/// `SigInfo` 写入用户缓冲区；因此同一信号不会同时被普通信号处理路径
+/// 和 signalfd 重复消费。任务销毁后，文件会将待处理集合视为空。
 pub struct SignalFd {
     task: WeakTaskRef,
     mask: spin::Mutex<SigSet>,

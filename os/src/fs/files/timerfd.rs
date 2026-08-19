@@ -1,4 +1,13 @@
-//! Linux-compatible timerfd file object backed by the shared monotonic timer wheel.
+//! Linux 兼容的 `timerfd` 文件对象实现。
+//!
+//! 本模块把内核的单调时钟和 [`TimerFuture`] 封装为一个可读、可轮询的文件
+//! 描述符：到期后，读取操作返回累计到期次数，而不是返回时间值本身。一次性
+//! 定时器只产生一次通知；周期定时器在进程未及时读取时会合并错过的周期，
+//! 因而不会为每个周期额外分配内核对象。`poll`/`register` 与 epoll、ppoll
+//! 使用同一套 `File` 就绪和唤醒协议。
+//!
+//! 系统调用层负责 Linux ABI 结构与 fd 参数转换，本文件只维护定时器状态和
+//! `File` trait 行为。
 
 use alloc::{
     collections::BTreeMap,
@@ -16,9 +25,15 @@ use crate::{
     utils::{SysErrNo, SysResult, SyscallRet},
 };
 
+/// `timerfd_gettime`/`timerfd_settime` 使用的内部时间规格。
+///
+/// `value` 表示首次到期前的剩余时间（设置时表示起始延迟），`interval` 表示
+/// 后续周期；两个字段均使用内核统一的秒、纳秒 [`Timespec`] 表示。
 #[derive(Clone, Copy, Default)]
 pub struct TimerFdSpec {
+    /// 周期长度；全零表示一次性定时器。
     pub interval: Timespec,
+    /// 首次到期时间或当前剩余时间，具体含义取决于调用方向。
     pub value: Timespec,
 }
 
@@ -91,7 +106,9 @@ impl TimerFdState {
 /// A timerfd descriptor. Its retained [`TimerFuture`] makes the existing
 /// timer wheel wake ppoll/epoll waiters at the programmed deadline.
 pub struct TimerFd {
+    /// 创建时的 O_NONBLOCK 标志；timerfd 本身不支持运行时切换该字段。
     non_blocking: bool,
+    /// 到期时间、周期、累计次数和唤醒 future。
     state: Mutex<TimerFdState>,
 }
 

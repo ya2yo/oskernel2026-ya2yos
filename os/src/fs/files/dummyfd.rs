@@ -1,4 +1,9 @@
-//! 这是一个临时文件，这里实现的是虚假的文件描述符供那些没有真正实现的文件描述符使用
+//! 虚拟文件描述符的最小占位实现。
+//!
+//! 当某个系统调用已经能够创建并返回一个文件描述符，但对应的内核对象
+//! 尚未具备真实的读写语义时，可暂时使用 [`DummyFd`] 作为其底层文件。
+//! 该对象只负责满足文件表和 `File` trait 的类型要求，不伪造任何有效数据：
+//! 读写操作统一返回 `EINVAL`，轮询也不会报告就绪事件。
 
 use alloc::sync::Arc;
 
@@ -7,6 +12,9 @@ use crate::mm::UserBuffer;
 use crate::syscall::PollEvents;
 use crate::utils::{SysErrNo, SyscallRet};
 
+/// 不提供实际数据的占位文件对象。
+///
+/// 该类型用于暂未实现完整语义的文件描述符，所有实例均无内部状态。
 pub struct DummyFd;
 
 impl DummyFd {

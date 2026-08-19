@@ -11,6 +11,11 @@
 //! * inotify fd 的 read/write/poll/fstat — 完整实现
 //! * watch 管理（add/rm）— 完整实现
 //! * 文件系统事件自动生成 — 待完成（第二步）
+//!
+//! 每个实例同时实现 [`File`] trait，因此可以像其他内核文件对象一样参与
+//! fd 表查找、阻塞读和 poll。实例的全局注册表只保存 [`Weak`] 引用，系统调用
+//! 通过 fd 查找到仍存活的实例后，再操作其 watch 表或事件队列；该注册表不是
+//! 事件的来源，真正的事件生产接口是 [`InotifyFd::push_event`]。
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
@@ -107,7 +112,11 @@ const INOTIFY_EVENT_HEADER_SIZE: usize = size_of::<i32>() * 1 // wd
 
 impl InotifyEvent {
     /// 序列化到字节缓冲区。
-    /// 返回写入的字节数，若 buf 空间不足返回 None。
+    ///
+    /// 字段按 Linux `struct inotify_event` 的顺序以本机字节序写入；`name`
+    /// 已由事件生产者负责准备（通常包含末尾的 `NUL`），本函数只负责原样
+    /// 复制，不会修改或补齐名称内容。返回写入的字节数，若 buf 空间不足返回
+    /// `None`。
     pub fn serialize_to(&self, buf: &mut [u8]) -> Option<usize> {
         let total = self.encoded_size();
         if buf.len() < total {
@@ -128,7 +137,10 @@ impl InotifyEvent {
         Some(total)
     }
 
-    /// 编码后总字节数（含 name 字段）
+    /// 返回编码后总字节数（固定头部加 `name` 字段）。
+    ///
+    /// 事件没有额外的对齐填充；因此调用者可以用该值判断一个完整事件是否
+    /// 能放入用户提供的 read 缓冲区。
     pub fn encoded_size(&self) -> usize {
         INOTIFY_EVENT_HEADER_SIZE + self.name.len()
     }
@@ -136,7 +148,10 @@ impl InotifyEvent {
 
 // ---- 监视条目和 inotify fd ------------------------------------------------
 
-/// 每个 add_watch 对应一个 WatchEntry。
+/// 每个 `add_watch` 对应一个 `WatchEntry`。
+///
+/// 当前 watch 表按描述符保存路径和掩码；事件自动生成尚未接入，因此路径
+/// 目前主要用于保留 watch 的内核状态，供后续文件系统事件匹配逻辑使用。
 struct WatchEntry {
     /// 被监视的路径
     #[allow(dead_code)]
@@ -146,6 +161,10 @@ struct WatchEntry {
 }
 
 /// inotify 实例 — `inotify_init1` 创建，以 `FileClass::Abs` 存入 fd 表。
+///
+/// `watches` 负责保存用户注册的监视项，`event_queue` 是生产者与 `read(2)`
+/// 消费者之间的 FIFO 队列。两者使用独立锁，入队只需持有队列锁，随后通过
+/// `poll_rx` 唤醒可能阻塞的读者。
 pub struct InotifyFd {
     /// 下一个可分配的 watch descriptor（从 1 开始自增）
     next_wd: AtomicI32,
@@ -197,6 +216,9 @@ impl InotifyFd {
     }
 
     /// 分配一个 watch descriptor 并存入监视列表。
+    ///
+    /// 描述符从 1 开始按实例递增分配；当前实现不复用已经删除的描述符，
+    /// 也不在这里验证路径或解释标志位，相关参数语义由系统调用入口负责。
     pub fn add_watch(&self, path: String, mask: u32) -> SyscallRet {
         let wd = self.next_wd.fetch_add(1, Ordering::Relaxed);
         self.watches.lock().insert(wd, WatchEntry { path, mask });
@@ -218,8 +240,13 @@ impl InotifyFd {
         self.poll_rx.wake();
     }
 
-    /// 尝试从队列中取出最多 `max_bytes` 字节的事件并写入 `buf`。
-    /// 返回值：写入的字节数，或 `Err(EAGAIN)` 表示队列为空。
+    /// 尝试从队列中取出最多 `buf.len()` 字节的完整事件并写入 `buf`。
+    ///
+    /// 事件不会被拆分：若当前事件无法放入但此前已经写入事件，则保留当前
+    /// 事件供下次读取；若连一个事件也放不下则返回 `EINVAL`。返回值为写入
+    /// 的字节数，队列为空时返回 `EAGAIN`。阻塞等待由 [`File::read`] 外层的
+    /// [`poll_io`] 完成。
+
     fn try_read_events(&self, buf: &mut [u8]) -> SysResult<usize> {
         let mut queue = self.event_queue.lock();
         let mut written = 0usize;

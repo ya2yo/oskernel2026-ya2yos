@@ -1,3 +1,9 @@
+//! 管道阻塞等待、唤醒竞态和双缓冲区加锁顺序。
+//!
+//! 读写等待都采用“先发布阻塞状态，再在缓冲区锁下复查条件并登记 waiter”
+//! 的模式，覆盖检查与入队之间的唤醒竞态。跨管道操作使用地址排序获取两把
+//! 锁，从而保证 `splice` 与 `tee` 并发时不会因锁顺序不同而死锁。
+
 use super::ring_buffer::PipeRingBuffer;
 use super::Pipe;
 use crate::fs::File;

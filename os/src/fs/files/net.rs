@@ -1,3 +1,10 @@
+//! 套接字文件对象适配层。
+//!
+//! [`Socket`] 将网络子系统中的 [`SocketInner`] 包装成文件系统能够识别的
+//! [`File`]。文件接口中的读、写、非阻塞和轮询操作都直接委托给网络对象，
+//! 因而不会在文件层重复维护套接字状态。套接字没有磁盘内容，`fstat` 和
+//! `path` 只提供符合 proc 风格和 socket 文件类型的描述信息。
+
 use alloc::{borrow::Cow, format, sync::Arc};
 use core::{ffi::c_int, ops::Deref, task::Context};
 
@@ -16,6 +23,9 @@ use super::super::{File, Kstat};
 pub type IoDst<'a> = &'a mut [u8]; // 用于 Read，数据写入这里
 pub type IoSrc<'a> = &'a [u8]; // 用于 Write，从这里读出数据
 
+/// 网络套接字在文件描述符表中的包装对象。
+///
+/// 内部值负责协议状态与收发缓冲区，本层仅实现文件接口适配。
 pub struct Socket(pub SocketInner);
 
 impl Deref for Socket {

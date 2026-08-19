@@ -1,6 +1,9 @@
-// 该文件定义了两个特殊的文件类：Stdin和Stdout
-// 它们没有成员，但是实现了File trait
-// 它们的底层是sbi.rs
+//! 标准输入和标准输出对应的字符设备文件。
+//!
+//! [`Stdin`] 与 [`Stdout`] 本身不保存实例字段，底层通过架构控制台接口访问
+//! SBI/UART。标准输入提供规范模式、回显、退格处理、非阻塞读取和终端 ioctl；
+//! 标准输出将用户缓冲区逐段转换为 UTF-8 后写入内核控制台。终端状态采用
+//! 模块级原子变量，因此同一内核中的标准输入描述符共享终端配置。
 use super::super::{File, Kstat, StMode};
 use crate::utils::{SysErrNo, SyscallRet};
 use crate::{
@@ -42,6 +45,7 @@ static TERMINAL_LFLAG: AtomicU32 = AtomicU32::new(DEFAULT_LFLAG);
 static STDIN_BUFFER: Mutex<Option<u8>> = Mutex::new(None);
 static STDIN_NONBLOCKING: AtomicBool = AtomicBool::new(false);
 
+/// 与 Linux `struct termios` 布局兼容的最小终端属性快照。
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct RawTermios {
@@ -81,6 +85,8 @@ impl RawTermios {
 }
 
 #[repr(C)]
+/// 与终端窗口大小 ioctl 对应的 C 布局结构。
+#[repr(C)]
 struct RawWinSize {
     ws_row: u16,
     ws_col: u16,
@@ -103,6 +109,11 @@ impl RawWinSize {
     }
 }
 
+/// 处理标准输入/输出共用的终端控制请求。
+///
+/// 这里仅实现当前内核需要的 termios 和窗口大小查询/设置；用户指针通过
+/// `copy_to_user`/`copy_from_user` 访问，避免直接解引用用户地址。`TCSETS*`
+/// 当前只更新行规程标志，暂不模拟输入输出波特率等未使用字段。
 fn terminal_ioctl(cmd: u32, arg: usize, memory_set: &MemorySet) -> SyscallRet {
     match cmd {
         TCGETS => {
@@ -125,6 +136,10 @@ fn terminal_ioctl(cmd: u32, arg: usize, memory_set: &MemorySet) -> SyscallRet {
     }
 }
 
+/// 按终端回显规则把输入字符显示到控制台。
+///
+/// 回车统一显示为 CRLF，退格/DEL 用“退格、空格、退格”擦除一个字符；
+/// 其他字节直接输出。该函数只负责显示，不改变规范模式下的输入缓冲。
 fn echo_input(c: u8) {
     match c {
         LF | CR => {
@@ -140,10 +155,12 @@ fn echo_input(c: u8) {
     }
 }
 
+/// 优先消费内核暂存的单字节，再轮询架构控制台。
 fn stdin_getchar() -> Option<u8> {
     STDIN_BUFFER.lock().take().or_else(console_getchar)
 }
 
+/// 查询输入是否就绪，并在必要时把控制台字节放入暂存槽。
 fn stdin_has_input() -> bool {
     let mut buffered = STDIN_BUFFER.lock();
     if buffered.is_none() {
@@ -152,8 +169,10 @@ fn stdin_has_input() -> bool {
     buffered.is_some()
 }
 
+/// 内核标准输入文件对象；所有实例共享终端状态和输入暂存字节。
 pub struct Stdin;
 
+/// 内核标准输出文件对象；写入内容直接发送到架构控制台。
 pub struct Stdout;
 
 impl File for Stdin {
@@ -163,6 +182,8 @@ impl File for Stdin {
     fn writable(&self) -> bool {
         false
     }
+    /// 按当前终端行规程读取输入：规范模式读到换行即返回，非规范模式
+    /// 读到一个字节即返回；无输入时根据全局非阻塞标志返回 `EAGAIN` 或让出 CPU。
     fn read(&self, mut user_buf: UserBuffer) -> SyscallRet {
         // panic!("HXC: What do you want from stdin??");
         //一次读取多个字符

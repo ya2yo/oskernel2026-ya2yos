@@ -1,4 +1,11 @@
-//! 这个模块专门存放 File 的各个 Impl
+//! 文件对象实现集合。
+//!
+//! 本模块集中放置 VFS [`File`] trait 的具体实现，并在末尾统一导出供文件描述符
+//! 表和 syscall 层使用。各子模块分别覆盖普通 inode 文件、管道、设备、epoll、
+//! eventfd、信号 fd、定时器 fd、proc 动态文件以及匿名内存文件等类型。
+//!
+//! `mod`/`pub mod` 的可见性是有意设计的：实现细节留在本模块内部，调用方只
+//! 依赖这里重新导出的对象和 ABI 结构，从而避免 syscall 层直接耦合内部状态。
 
 pub mod devfs;
 pub mod loopdev;
