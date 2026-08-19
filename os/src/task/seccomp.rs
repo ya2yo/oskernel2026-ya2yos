@@ -30,6 +30,8 @@ pub enum SeccompAction {
     Kill,
     /// The supported filter rejection path is reported as SIGSYS.
     Trap,
+    /// Strict Fail mode rejects a syscall with ENOSYS
+    Fail
 }
 
 /// Seccomp is thread-local. Fork and clone inherit this state from the caller.
@@ -37,6 +39,7 @@ pub enum SeccompAction {
 pub enum SeccompState {
     Disabled,
     Strict,
+    StrictFail,
     Filter(Vec<SockFilter>),
 }
 
@@ -52,6 +55,7 @@ impl SeccompState {
             Self::Disabled => 0,
             Self::Strict => 1,
             Self::Filter(_) => 2,
+            Self::StrictFail => 3,
         }
     }
 
@@ -82,6 +86,12 @@ impl SeccompState {
                 Some(ret) if ret & SECCOMP_RET_ACTION == SECCOMP_RET_ALLOW => SeccompAction::Allow,
                 _ => SeccompAction::Trap,
             },
+            Self::StrictFail => {
+                match syscall_nr {
+                    63 | 64 | 93 => SeccompAction::Allow,
+                    _ => SeccompAction::Fail,
+                }
+            }
         }
     }
 }

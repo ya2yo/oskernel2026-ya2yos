@@ -359,6 +359,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallRet {
             send_signal_to_thread(tid, SigSet::SIGSYS);
             return Err(SysErrNo::EPERM);
         }
+        SeccompAction::Fail => {
+            return Err(SysErrNo::ENOSYS);
+        }
     }
     log::debug!(
         "[syscall begin] {:?} sepc = {:#x}",

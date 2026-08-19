@@ -24,6 +24,8 @@ const SECCOMP_MODE_STRICT: u32 = 1;
 const SECCOMP_MODE_FILTER: u32 = 2;
 const SECCOMP_SET_MODE_STRICT: u32 = 0;
 const SECCOMP_SET_MODE_FILTER: u32 = 1;
+const SECCOMP_SET_MODE_STRICT_FAIL: u32 = 0x100;
+const SECCOMP_SET_MODE_WHITELIST: u32 = 0x101;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -89,6 +91,17 @@ pub fn sys_seccomp(operation: u32, flags: u32, uargs: usize) -> SyscallRet {
                 return Err(SysErrNo::EINVAL);
             }
             inner.seccomp_state = seccomp_state;
+            Ok(0)
+        }
+        SECCOMP_SET_MODE_STRICT_FAIL => {
+            if uargs != 0 {
+                return Err(SysErrNo::EINVAL);
+            }
+            let mut inner = task.inner_lock();
+            if !inner.seccomp_state.is_disabled() {
+                return Err(SysErrNo::EINVAL);
+            }
+            inner.seccomp_state = SeccompState::Strict;
             Ok(0)
         }
         _ => Err(SysErrNo::EINVAL),
