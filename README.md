@@ -91,13 +91,6 @@ Ya2yOS 采用“内核、用户态程序、可复用 crate、构建脚本、文�
 仓库根目录中执行 `typst compile --root . Docs/ya2yos/typst/main.typ Docs/ya2yos/typst/ya2yos-kernel-design.pdf` 
 可生成 PDF。关于文档，更详细的构建信息参考[Doc](Docs/ya2yos/README.md)。
 
-在引入 skills 后，AI 的每一次修改均会在 [Docs/初赛文档/AI_INTERACTION.md](./Docs/决赛文档/AI_INTERACTION.md) 
-和 [Docs/初赛文档/ai.log](./Docs/决赛文档/ai.log) 这两个文件中记录。前者注重人机交互过程，后者注重 AI 的修改范围。
-与 AI 的主要交互方式是让 AI 通过输出日志进行修改，本人只做最后的原因分析和验收。
-[bug 修复文档](./Docs/决赛文档/problem/)
-文档中的图均在 [Docs/img/](./Docs/img/) 目录下。
-[演示视频(TODO)](https://1839796361.share.123pan.cn/123pan/ihR2Td-F5MpH?pwd=ya2y#)
-
 主要开发分支在 `nightly`，`main` 分支只记录可以在评测机正常跑分的版本。
 
 ## 参考项目及书籍:
