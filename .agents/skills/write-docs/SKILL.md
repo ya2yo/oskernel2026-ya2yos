@@ -2,7 +2,7 @@
 name: write-docs
 description: >-
   Ya2yOS 文档记录。用于写或更新开发日志、Docs/决赛文档/problem/ 问题复盘、
-  Docs/决赛文档/ai.log、Docs/决赛文档/AI_INTERACTION.md，尤其是完成功能、syscall 或 bug 修复后的记录。
+  尤其是完成功能、syscall 或 bug 修复后的记录。
 ---
 
 # 写文档
@@ -11,12 +11,12 @@ description: >-
 
 ## 写哪些
 
-| 情况 | 开发日志 | problem/ | ai.log | AI_INTERACTION |
-|------|----------|----------|--------|----------------|
-| 新 syscall / 明显新功能 | 要 | 视复杂度 | 用 AI 则要 | 用 AI 则要 |
-| 修通测例 / panic / 语义 bug | 要 | 要 | 用 AI 则要 | 用 AI 则要 |
-| 只改 typo / fmt / obvious 一行 | 不要 | 不要 | 不要 | 不要 |
-| 只咨询 AI，未改代码 | 不要 | 不要 | 要 | 要 |
+| 情况 | 开发日志 | problem/ |
+|------|----------|----------|
+| 新 syscall / 明显新功能 | 要 | 视复杂度 |
+| 修通测例 / panic / 语义 bug | 要 | 要 |
+| 只改 typo / fmt / obvious 一行 | 不要 | 不要 |
+| 只咨询 AI，未改代码 | 不要 | 不要 |
 
 ## 开发日志
 
@@ -61,25 +61,8 @@ description: >-
 ## 验证
 ```
 
-## ai.log
-
-文件：`Docs/决赛文档/ai.log`
-
-- 只有用了 AI 才写。
-- 记录用户输入、AI 分析路径、采纳的结论、修改文件和验证结果。
-- 新条目追加到文件末尾，风格跟随现有内容。
-
-## AI_INTERACTION.md
-
-文件：`Docs/决赛文档/AI_INTERACTION.md`
-
-- 只有用了 AI 才写。
-- 在合适阶段追加条目，包含工具/模型、场景、描述、关联 commit。
-- 描述偏合规摘要，可指向 `ai.log` 对应条目，避免重复长文。
-
 ## 检查
 
 - 开发日志短。
 - problem 能让后来者理解根因和修法。
-- 用了 AI 时 `ai.log` 与 `AI_INTERACTION.md` 都更新。
 - 最终回复列出写了哪些文档；没写某类文档要说明原因。
