@@ -132,13 +132,6 @@ impl FileDescriptor {
         }
     }
 
-    /// 进程 fd 表整体清理时主动 shutdown socket。
-    fn shutdown_socket(&self) {
-        if let FileClass::Socket(socket) = &self.file {
-            let _ = socket.0.shutdown(Shutdown::Both);
-        }
-    }
-
     /// 判断同一 fd 表中是否还有别的 fd 指向同一个 socket 对象。
     fn has_fd_alias(&self, files: &[Option<FileDescriptor>]) -> bool {
         let FileClass::Socket(socket) = &self.file else {
@@ -321,16 +314,17 @@ impl FdTable {
         }
     }
 
-    /// 清空 fd table，并主动关闭表中 socket 资源。
+    /// 清空 fd table，释放当前进程持有的描述符。
+    ///
+    /// fork 后的 fd table 会共享 socket 的 `Arc`；这里不能强制 shutdown，
+    /// 否则子进程退出会断开父进程仍在使用的 socket。
     pub fn clear(&self) {
         let files = {
             let mut inner = self.get_mut();
             inner.reserved.clear();
             core::mem::take(&mut inner.files)
         };
-        for desc in files.into_iter().flatten() {
-            desc.shutdown_socket();
-        }
+        drop(files);
     }
 
     /// 分配当前 soft limit 内最小的可用 fd 槽，并在返回前保留该槽。
