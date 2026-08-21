@@ -8,7 +8,8 @@ mod proc_file;
 mod sdcard_config;
 use super::{
     find_device, open_device_file, register_device, superblock_root_inode, File, FileClass, Inode,
-    InodeType, OSFile, OpenFlags, UptimeFile, DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, SEEK_END,
+    InodeType, OSFile, OpenFlags, TracingFile, UptimeFile, DEFAULT_DIR_MODE, DEFAULT_FILE_MODE,
+    SEEK_END,
 };
 use crate::utils::SysErrNo;
 pub use fsidx::FsIndex;

@@ -312,6 +312,17 @@ fn create_proc_files() -> SysResult {
     Ok(())
 }
 
+fn create_tracing_dirs() -> SysResult {
+    create_dir("/sys")?;
+    create_dir("/sys/kernel")?;
+    create_dir("/sys/kernel/tracing")?;
+    write_init_file("/sys/kernel/tracing/tracing_on", "0\n")?;
+    write_init_file("/sys/kernel/tracing/trace", "\n")?;
+    write_init_file("/sys/kernel/tracing/trace_mode", "list\n")?;
+    write_init_file("/sys/kernel/tracing/max_entries", "1024\n")?;
+    Ok(())
+}
+
 fn create_boot_files() -> SysResult {
     // LTP tst_kconfig 会按 uname release 探测 /boot/config-<release>。
     // 提供最小配置，声明 acct(2) 可用但不启用 v3 accounting 记录格式。
@@ -627,6 +638,7 @@ pub fn create_init_files() -> SysResult {
     flush_libgcc_s();
 
     create_proc_files()?;
+    create_tracing_dirs()?;
     create_boot_files()?;
     create_dev_files()?;
     create_etc_files()?;

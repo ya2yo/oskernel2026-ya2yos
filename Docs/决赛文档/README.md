@@ -1,5 +1,9 @@
 # Problem 复盘索引
 
+- [onsite ftrace tracefs 虚拟文件系统](./problem/ftrace-tracefs-vfs.md)
+
+- [KeyDB 双地址族监听与 onsite 脚本不收敛](./problem/keydb-ip-family-listener.md)
+
 - [splice syscall 兼容实现](./problem/splice-syscall.md)
 - [pipe SIGPIPE 与 FIONREAD 语义修复](./problem/pipe-sigpipe-fionread.md)
 - [netperf glibc: 12865 控制端口残留监听](./problem/netperf-glibc-port-reuse.md)

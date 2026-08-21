@@ -27,7 +27,7 @@ python3 scripts/sync_agent_skills.py --check
 |------|------|------|
 | 添加功能 / Syscall | [add-syscall-feature/SKILL.md](./add-syscall-feature/SKILL.md) | 新功能、新 syscall、syscall 语义修改 |
 | 修复 Bug | [fix-bug/SKILL.md](./fix-bug/SKILL.md) | panic、LTP 失败、卡死、语义错误、日志分析 |
-| 写文档 | [write-docs/SKILL.md](./write-docs/SKILL.md) | 开发日志、problem/、ai.log、AI_INTERACTION |
+| 写文档 | [write-docs/SKILL.md](./write-docs/SKILL.md) | 开发日志、problem/|
 | 内核性能优化 | [optimize-kernel-performance/SKILL.md](./optimize-kernel-performance/SKILL.md) | 根据 `log.ans` 定位调用路径，使用 `os/src/utils/perf.rs` 测量耗时并验证优化 |
 
 ## 使用建议

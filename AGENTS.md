@@ -32,8 +32,7 @@ Use the repo skills when the task matches their scope:
   wiring, or syscall semantic changes.
 - `fix-bug`: panic, LTP failure, blocking/hang, semantic bug, log analysis, or
   architecture-specific failure.
-- `write-docs`: development log entries, `problem/` writeups, `ai.log`, or
-  `AI_INTERACTION.md` updates.
+- `write-docs`: development log entries, `problem/` writeups.
 
 When changing skills, edit only `agent-skills/shared/`, then run:
 
@@ -132,12 +131,6 @@ strings log.ans | tail -80
 - Use one file per issue in `Docs/决赛文档/problem/` for non-trivial bugs,
   testcase fixes, panic analysis, or syscall behavior investigations.
 - Update `Docs/决赛文档/README.md` when adding a new problem writeup.
-- When AI assistance is used for a substantive code/debugging change, update
-  both `Docs/决赛文档/ai.log` and `Docs/决赛文档/AI_INTERACTION.md`, following the
-  existing style.
-- For trivial typo, formatting, or project-guidance-only edits, keep the final
-  response clear about what was changed and avoid unnecessary log noise unless
-  the maintainer asks for full AI records.
 
 ## Final Response
 

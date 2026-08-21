@@ -31,6 +31,7 @@ mod signalfd;
 mod timerfd;
 mod tmp_file;
 mod uptime;
+pub mod tracing;
 pub use {
     dummyfd::DummyFd,
     epoll::{EpollCreateFlags, EpollFile, EpollReady},
@@ -49,5 +50,6 @@ pub use {
     signalfd::SignalFd,
     timerfd::{TimerFd, TimerFdSpec},
     tmp_file::TmpFile,
+    tracing::TracingFile,
     uptime::UptimeFile,
 };

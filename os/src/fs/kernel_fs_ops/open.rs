@@ -411,6 +411,10 @@ fn open_inner(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClas
         return Ok(FileClass::Abs(UptimeFile::new()));
     }
 
+    if let Some(file) = TracingFile::open(abs_path, flags)? {
+        return Ok(FileClass::Abs(file));
+    }
+
     // O_PATH creates a path-only descriptor. Linux ignores creation, truncation,
     // access-mode, and atime-related flags in this mode.
     let path_only = flags.contains(OpenFlags::O_PATH);
@@ -622,6 +626,7 @@ fn open_inner(abs_path: &str, flags: OpenFlags, mode: u32) -> SysResult<FileClas
             flags.contains(OpenFlags::O_APPEND),
             inode,
         );
+        crate::fs::files::tracing::record_event("vfs_open");
         if !path_only && flags.contains(OpenFlags::O_TRUNC) {
             osfile.inode.truncate(0)?;
         }
