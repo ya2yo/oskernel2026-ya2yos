@@ -284,7 +284,7 @@ fn detect_test_image() -> Option<TestImageKind> {
         return Some(TestImageKind::Preliminary);
     } else if image_contains("/musl/keydb_testcode.sh\0") && image_contains("glibc/keydb_testcode.sh\0"){
         return Some(TestImageKind::OnSite1)
-    } else if image_contains("/glibc/ftrace_testcode.sh\0") && image_contains("/glibc/ftrace_testcode.sh\0") {
+    } else if image_contains("/glibc/ftrace_testcode.sh\0") || image_contains("/ftrace_testcode.sh\0") {
         return Some(TestImageKind::Onsite2)
     }else {
     None
