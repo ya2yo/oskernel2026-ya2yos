@@ -256,7 +256,8 @@ const AT_FDCWD: isize = -100;
 enum TestImageKind {
     Preliminary,
     Final,
-    OnSite,
+    OnSite1,
+    Onsite2,
 }
 
 /// Return whether a path from the mounted test image can be opened.
@@ -277,18 +278,17 @@ fn image_contains(path: &str) -> bool {
 fn detect_test_image() -> Option<TestImageKind> {
     // The final image intentionally keeps the old /musl compatibility tree,
     // so check its Debian/BuildStorm marker before checking preliminary files.
-    if image_contains("/work/tgoskits\0") || image_contains("/glibc/cagent_testcode.sh\0") {
+    if image_contains("/glibc/cagent_testcode.sh\0") && image_contains("/glibc/buildstorm_testcode.sh\0") {
         return Some(TestImageKind::Final);
-    }
-
-    if image_contains("/musl/basic_testcode.sh\0") && image_contains("/glibc/basic_testcode.sh\0") {
+    } else if image_contains("/musl/basic_testcode.sh\0") && image_contains("/glibc/basic_testcode.sh\0") {
         return Some(TestImageKind::Preliminary);
-    }
-
-    if image_contains("/musl/keydb_testcode.sh\0") && image_contains("glibc/keydb_testcode.sh\0"){
-        return Some(TestImageKind::OnSite)
-    }
+    } else if image_contains("/musl/keydb_testcode.sh\0") && image_contains("glibc/keydb_testcode.sh\0"){
+        return Some(TestImageKind::OnSite1)
+    } else if image_contains("/glibc/ftrace_testcode.sh\0") && image_contains("/glibc/ftrace_testcode.sh\0") {
+        return Some(TestImageKind::Onsite2)
+    }else {
     None
+    }
 }
 
 fn run_selected_tests() -> i32 {
@@ -301,9 +301,13 @@ fn run_selected_tests() -> i32 {
             println!("detected final test image; running final suites");
             test_final_2026()
         }
-        Some(TestImageKind::OnSite) => {
+        Some(TestImageKind::OnSite1) => {
             println!("detected onsite test image; running onsite suites");
-            test_onsite_2026()
+            test_onsite_2026_1()
+        }
+        Some(TestImageKind::Onsite2) => {
+            println!("detected Onsite2 test image; running onsite2 suites");
+            test_onsite_2026_2()
         }
         None => {
             println!(
@@ -390,11 +394,18 @@ fn test_final_2026() -> i32 {
     0
 }
 
-fn test_onsite_2026() -> i32 {
+fn test_onsite_2026_1() -> i32 {
     run_testsuit("musl\0", "seccomp_testcode.sh\0");
     run_testsuit("glibc\0", "seccomp_testcode.sh");
     run_testsuit("musl\0", "keydb_testcode.sh");
     run_testsuit("glibc\0", "keydb_testcode.sh");
+    shutdown();
+    0
+}
+
+fn test_onsite_2026_2() -> i32 {
+    run_final_testsuit("glibc\0", "ftrace_testcode.sh\0");
+    run_final_testsuit("glibc\0", "buildstorm_testcode.sh\0");
     shutdown();
     0
 }
