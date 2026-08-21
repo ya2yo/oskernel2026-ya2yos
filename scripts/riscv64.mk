@@ -5,7 +5,8 @@ ARCH := riscv64
 TARGET := riscv64gc-unknown-none-elf
 # DISK_IMG ?= ./2026_testsuits_img/pre_tests/sdcard-rv.img
 # DISK_IMG ?= ./2026_testsuits_img/final-2026/sdcard-rv.img
-DISK_IMG ?= 2026_testsuits_img/onsite-2026/sdcard-rv.img
+# DISK_IMG ?= 2026_testsuits_img/onsite-2026/sdcard-rv.img
+DISK_IMG ?= 2026_testsuits_img/onsite-2026/rv.img
 
 
 ifeq ($(PLATFORM),visionfive2)
