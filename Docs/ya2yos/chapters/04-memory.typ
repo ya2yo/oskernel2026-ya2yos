@@ -51,10 +51,10 @@ pub struct MemorySetInner {
 
 #figure(
   relation((
-    [*MemorySet*\锁保护的页表与 VMA 集合],
-    [*MapArea*\范围、权限、后备对象、帧引用],
-    [*FrameTracker*\物理页的零填充与 RAII 回收],
-    [*PageTable*\架构相关的 VPN 到 PPN 转换]
+    [*MemorySet*\ 锁保护的页表与 VMA 集合],
+    [*MapArea*\ 范围、权限、后备对象、帧引用],
+    [*FrameTracker*\ 物理页的零填充与 RAII 回收],
+    [*PageTable*\ 架构相关的 VPN 到 PPN 转换]
   )),
   caption: [地址空间的高层对象关系。]
 )
@@ -76,7 +76,7 @@ LoongArch 内核栈为 2 页。
   [页表格式], [Sv39；内核物理直映射尽可能使用 1 GiB、2 MiB 大页。], [LoongArch 页表与 TLB 机制；高层 `MapPermission` 映射为 LAPTE flags。],
 )
 
-RISC-V 启动页表只覆盖第一个 1 GiB。`init_cma()` 因此先把内核镜像之后、首 GiB
+#h(2em)RISC-V 启动页表只覆盖第一个 1 GiB。`init_cma()` 因此先把内核镜像之后、首 GiB
 以内的 RAM 加入 CMA；`activate_kernel_space()` 建立完整内核映射后，
 `init_cma_late()` 再加入第二个 GiB。这样伙伴分配器写入自身 free-list 元数据时不会
 访问启动期尚未映射的物理页。LoongArch 使用 `PHYSICAL_MEMORY_RANGES` 分段纳管，
@@ -100,7 +100,7 @@ CMA，然后执行 `remap_test()`。RISC-V 的测试检查内核映射权限；L
   [`MMIO`], [按 `MMIO_MAP_OFFSET` 计算设备物理页，不建立帧追踪器。], [架构定义的 UART、块设备或 PCI 相关区域。],
 )
 
-`FrameTracker::alloc()` 从页缓存获得一页并在构造时清零；最后一个
+#h(2em)`FrameTracker::alloc()` 从页缓存获得一页并在构造时清零；最后一个
 `Arc<FrameTracker>` 销毁时经页缓存归还。`MapArea::map_one()` 对 framed 页分配 tracker
 并建立 PTE，`unmap_one()` 删除 PTE 与相应 tracker。`push()` 立即映射整个区域，
 `push_lazily()` 只登记 VMA，`push_with_given_frames()` 将既有的共享帧映射到新的 VMA。
@@ -117,10 +117,9 @@ CMA 是全局的伙伴式连续物理页分配器，页缓存以 32/128 页为�
 根并刷新 TLB。该共享的是内核映射结构，而用户 VMA、用户页表下层和用户 `MapArea`
 仍属于各自 `MemorySet`。
 
-== 多核与异构架构下的一致性
+== 多核与不同架构下的一致性
 
-这里的“异构”指同一套内存管理抽象运行在 RISC-V64 与 LoongArch64 两种架构上，
-而不是已经实现了 NUMA、多种内存一致性域或异构内存节点。`MemorySet`、`MapArea`、
+`MemorySet`、`MapArea`、
 `MapPermission`、缺页和 COW 逻辑共用；页表项格式、TLB 指令、权限位和物理 RAM
 布局由 `os/src/arch/` 的实现分别适配。RISC-V 使用 Sv39 和内核物理直映射，
 LoongArch 使用自己的页表/TLB 机制，并用 `PHYSICAL_MEMORY_RANGES` 跳过 PCI/MMIO
@@ -177,7 +176,7 @@ fault 上尝试 COW 或写权限恢复，读/取指权限错误不会被误作 C
   caption: [当前用户缺页处理的高层分支。]
 )
 
-文件 mmap 的 EOF 语义按 backing inode 的当前长度判断。最后一个部分页面可以零填充；若
+#h(2em)文件 mmap 的 EOF 语义按 backing inode 的当前长度判断。最后一个部分页面可以零填充；若
 fault 页的起始文件偏移已在当前 EOF 之外，`mmap_file_page_beyond_eof()` 令 trap 层报告
 `SIGBUS`，而不是错误地建立零页。建立或替换 VMA 时会先让 ext4 inode 记录当前长度，
 因此 unlink 后仍可使用打开 inode 的长度；后续 write/truncate 更新该长度，文件扩展后新
@@ -294,7 +293,7 @@ VMA 起始页移除映射；`shm_drop()` 删除全局段记录。当前 `MemoryS
 这些函数拒绝空首地址、不可表示的规范虚拟地址和范围溢出，并按页复制；遇到尚未映射
 的合法用户页时，会带 Load 或 Store fault 调用 `MemorySet::handle_page_fault()`。写入
 路径还会触发 COW 处理。LoongArch 额外使用 VMA 权限检查；两种架构最终都以失败返回
-`EFAULT`，而不是直接解引用用户虚拟地址。
+`EFAULT`。
 
 `translate_user_va_safe()` 在地址转换前先通过读取触发需要的懒分配，适用于 futex 等
 必须取得物理地址的调用点；`translate_va()` 则只查询现有 PTE，不会隐式分配。内部缺页

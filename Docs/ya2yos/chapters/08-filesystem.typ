@@ -177,7 +177,6 @@ struct FSInfoInner {
 == 路径解析与打开文件
 
 `sys_openat()` 是用户态打开文件的主要入口。它从用户空间读取路径字符串，根据 `dirfd` 和进程 `cwd` 生成绝对路径，处理 `/proc/self/*` 等动态路径后调用 `open(abs_path, flags, mode)`；分配 fd 时写入 `FdTable` 并更新 `FSInfo.fd2path`。
-
 `open()` 内部的查找采用分层缓存，尽量让热路径不进入 lwext4：
 
 1. 先查 `FsIndex` inode 缓存（以 `(st_dev, st_ino)` 为身份键的路径索引）；

@@ -6,7 +6,7 @@
 
 Ya2yOS 的网络模块位于 `os/src/net/` 与 `os/src/syscall/net/`，整体沿用了 ArceOS 风格的 smoltcp 集成方式，并结合当前内核的文件描述符、任务阻塞和 VirtIO 设备层做了适配。网络功能受 `feature = "net"` 控制；启用后，socket fd 通过 `FileClass::Socket` 纳入统一的文件描述符模型。
 
-当前网络模块的目标是提供 Linux socket API 的主要兼容面，而不是完整复刻 Linux 网络栈。已实现的重点包括 IPv4 TCP/UDP、loopback、VirtIO-net、Unix domain socket、常见 socket syscall、poll/epoll 接入和部分 socket option。
+当前网络模块的目标是提供 Linux socket API 的主要兼容面，确保网络相关的核心功能能够正常运行。已实现的重点包括 IPv4 TCP/UDP、loopback、VirtIO-net、Unix domain socket、常见 socket syscall、poll/epoll 接入和部分 socket option。
 
 == 架构分层
 

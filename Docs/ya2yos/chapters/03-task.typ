@@ -10,9 +10,8 @@
 最后由父进程等待并释放内核记录。
 
 本章选择 PID 1 的 `INITPROC` 作为主线。它是内核启动后创建的第一个普通用户进程，既是
-系统开始执行用户代码的入口，也是后续测试进程树的根。沿着它的生命线，可以把任务对象、
-调度器、`clone`、`execve`、futex、IPC、信号、`exit` 和 `wait` 放进同一条因果链，而不是
-把它们看成互不相关的系统调用。
+系统开始执行用户代码的入口，也是后续测试进程树的根。沿着它的生命线，方便把任务对象、
+调度器、`clone`、`execve`、futex、IPC、信号、`exit` 和 `wait` 放进同一条因果链，因为并不是所有应用程序都会使用这些功能。
 
 == task 模块结构概览
 
@@ -103,9 +102,7 @@ Rust 函数。`TidHandle` 的分配器从 1 开始，当前 `Drop` 不归还 PID
 futex 超时和阻塞任务计时器，记账后把可再次运行的当前任务放回就绪队列，再取出一个
 `Ready` 任务，标记为 `Running`，并调用架构相关的 `switch()` 切换到它的 `TaskContext`。
 于是 PID 1 的第一次用户态执行可以概括为：
-
 `Ready → Running → trap_return → /initproc 用户入口`。
-
 任务状态的含义如下：
 
 #table(
@@ -119,6 +116,7 @@ futex 超时和阻塞任务计时器，记账后把可再次运行的当前任�
   [`Zombie`], [线程已退出；进程资源和 PID 记录是否最终删除取决于等待回收。],
 )
 
+#h(2em)
 当前默认调度器是编译期选择的简化 CFS：所有 Hart 共享按 `vruntime` 排序的
 `BinaryHeap<CfsEntry>`，首次入队的新任务放在共享 `min_vruntime` 坐标上；`scheduler-rr`
 则提供全局 FIFO 队列。两者都通过 `ready_queue::add_task()` / `fetch_task()` 服务
@@ -143,7 +141,6 @@ futex 超时和阻塞任务计时器，记账后把可再次运行的当前任�
 `fetch_task(hartid)` 从全局堆中挑选 `vruntime` 最小且满足 CPU affinity 的 `Ready` 任务，
 将其标记为 `Running`，最后由 `switch()` 切换到该任务的 `TaskContext`。所以 INITPROC
 第一次运行和后续测试任务的运行遵循同一条路径：
-
 `Ready → CFS 选择 → Running → 被抢占/阻塞 → 重新入队或等待唤醒`。
 
 当 INITPROC `fork`/`clone` 测试任务时，子任务也必须经过这条路径；创建系统调用返回后，
@@ -232,7 +229,7 @@ Process。`sys_clone3()` 当前是适配层：读取并校验 `clone_args` 后�
 
 == INITPROC 如何执行测例
 
-内核完成首次调度后，PID 1 并不是一个交互式 shell，而是用户态的
+内核完成首次调度后，PID 1 对应用户态的
 `user/src/bin/initproc.rs`。用户运行库的 `_start()` 先初始化 32 KiB 堆，再调用弱符号
 `main()`，最后把返回值传给 `exit()`；因此 INITPROC 的用户入口仍然遵循普通用户程序的
 启动与退出 ABI。
@@ -300,7 +297,7 @@ lmbench、libcbench 和 LTP；`test()` 则直接运行网络、文件、信号�
   [`futex / signal`], [`futex` 为共享内存上的同步控制面；信号则从 pending 队列经用户态 signal frame 投递 handler，再由 `sigreturn` 恢复上下文。`SIGCHLD` 通知父进程 wait，`SIGKILL` 驱动 exit_group，`SIGPIPE` 报告 pipe 读端消失。`SIGIO` 可报告异步 pipe 就绪。],
 )
 
-以消息队列测例为例，用户先用 `msgget(IPC_PRIVATE, IPC_CREAT)` 获得队列，再用
+#h(2em)以消息队列测例为例，用户先用 `msgget(IPC_PRIVATE, IPC_CREAT)` 获得队列，再用
 `msgsnd` 放入不同类型的消息，用 `msgrcv` 按类型选择或 `MSG_COPY` 观察队列，最后用
 `msgctl(IPC_RMID)` 删除资源。这个过程与匿名 pipe 的共享 ring buffer 不同，但都遵循
 “内核对象创建 → 数据传递或阻塞等待 → 唤醒对端 → 显式关闭/删除”的生命周期。

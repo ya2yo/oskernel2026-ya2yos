@@ -3,8 +3,8 @@
 = 概述
 
 == 定位与范围
-Ya2yOS 是以 Rust 编写的宏内核实验系统，基于 TatlinOS 持续演进，面向 RISC-V64
-和 LoongArch64 QEMU 平台提供 Linux 用户态 ABI 的高频兼容路径。内核运行在各架构
+Ya2yOS 是使用 Rust 编写的宏内核实验系统，基于 TatlinOS 持续演进，面向 RISC-V64
+和 LoongArch64 QEMU 平台，并提供 Linux 用户态 ABI 的高频兼容路径。内核运行在各架构
 的内核特权级；进程、内存、VFS、信号、网络和驱动位于同一内核映像中，由 Rust 类型、
 引用计数和显式同步原语约束对象生命周期。
 
@@ -91,10 +91,10 @@ trap 层转换为用户可见的负 errno 返回值。
 
 #figure(
   relation((
-    [*Process*\MemorySet、FdTable、FSInfo、SigTable],
-    [*TCB*\线程上下文、内核栈、pending signal、futex],
-    [*FileDescriptor*\file、pipe、socket、event、mount fd],
-    [*MemorySet*\页表、VMA、frame 引用]
+    [*Process*\ MemorySet、FdTable、FSInfo、SigTable],
+    [*TCB*\ 线程上下文、内核栈、pending signal、futex],
+    [*FileDescriptor*\ file、pipe、socket、event、mount fd],
+    [*MemorySet*\ 页表、VMA、frame 引用]
   )),
   caption: [进程资源、线程执行状态、文件描述符和地址空间的主要归属关系。],
 )

@@ -1,9 +1,9 @@
 // Ya2yOS 内核设计文档（Typst 入口）
 // 对外发布建议：typst compile --pdf-standard a-2u main.typ ya2yos-kernel-design.pdf
 
-#let doc-version = "0.6"
-#let doc-date = datetime(year: 2026, month: 8, day: 12)
-#let source-snapshot = "HEAD 088f10b82bb8（2026-08-12）；工作树另有 Makefile、.vscode/settings.json 与 user/src/bin/initproc.rs 本地修改"
+#let doc-version = "0.7"
+#let doc-date = datetime(year: 2026, month: 9, day: 9)
+#let source-snapshot = "HEAD abecd9e654b（2026-08-22）"
 #let ink = rgb("161616")
 #let muted = rgb("555555")
 #let line = rgb("9a9a9a")
@@ -61,10 +61,13 @@
 #show heading.where(level: 3): set block(above: 0.8em, below: 0.3em)
 #show raw: set text(font: code-font, size: code-size, lang: "en")
 #set raw(block: true, lang: "en")
+
 #show raw.where(block: true): it => {
   set block(above: 0.55em, below: 0.65em, inset: (x: 0.6em, y: 0.4em), fill: rgb("e6e6e6"))
   pad(x: 1.3em, it)
 }
+
+
 #show link: set text(fill: ink)
 #set table(stroke: line, inset: 6pt)
 #show figure.caption: set text(font: body-font, size: caption-size, fill: muted)
@@ -94,8 +97,6 @@
   #text(font: heading-font, size: 20pt, weight: "bold")[内核设计文档]
   #v(1.5cm)
   #text(size: 20pt)[参赛队员：饶晓杰\ 指导老师：杨磊]
-  #v(0.3cm)
-  #text(size: 11pt)[面向外部人员的实现级设计报告]
   #v(0.5cm)
   #text(font: "Libertinus Serif", size: 10.5pt)[Rust · RISC-V 64 · LoongArch64]
   #v(2.7cm)
@@ -111,13 +112,11 @@
   #text(font: body-font, size: 16pt, weight: "bold")[摘要]
 ]
 
-Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作系统内核，当前支持 RISC-V 64 与 LoongArch64 QEMU 平台。本文档从可复核的实现视角阐述内核的启动与异常入口、地址空间和页面生命周期、进程线程与编译期可选的 CFS/RR 调度、信号、Linux 风格系统调用与 VFS、网络栈和 VirtIO 设备接入，并给出模块边界、关键不变量、验证约定和已知边界。设计描述以当前源代码为准；对未完成能力使用明确的边界表述，避免将规划误作已实现功能。
+Ya2yOS 是一个使用 Rust 语言实现、面向 Linux 用户态兼容的实验性操作系统内核，当前支持 RISC-V 64 与 LoongArch64 QEMU 平台。本文档从可复核的实现视角阐述内核的启动与异常入口、地址空间和页面生命周期、进程线程与编译期可选的 CFS/RR 调度、信号、Linux 风格系统调用与 VFS、网络栈和 VirtIO 设备接入，并给出模块边界、关键不变量、验证约定和已知边界。
 
 #v(0.5em)
 *关键词*：操作系统内核；Rust；Linux ABI；CFS；进程调度；虚拟内存；VFS；RISC-V；LoongArch
 
-#v(1.2em)
-#callout([文档范围], [本文面向评审、协作者和后续维护者。其描述对应 #source-snapshot；源代码变更后，应同步核对受影响章节。测试故障的逐案证据不在本文展开，而位于 `Docs/决赛文档/problem/`。])
 
 #v(1em)
 #text(font: heading-font, size: 15pt, weight: "bold")[版本与阅读约定]
@@ -126,7 +125,7 @@ Ya2yOS 是一个以 Rust 实现、面向 Linux 用户态兼容的实验性操作
   columns: (5.2em, 1fr),
   table.header([*项目*], [*说明*]),
   [文档版本], [#doc-version],
-  [适用范围], [Ya2yOS 当前工作树的内核实现；不将规划能力视为既有功能],
+  [适用范围], [Ya2yOS 当前工作树的内核实现],
   [主体源码], [`os/src/`；构建入口为仓库根目录 `Makefile`],
   [术语约定], [代码标识符、Linux ABI 名称和路径保持原文；其他叙述使用中文],
   [可追溯性], [各章给出关键目录；末章提供源码—章节索引与外部参考文献],

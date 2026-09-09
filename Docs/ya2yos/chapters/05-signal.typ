@@ -20,7 +20,7 @@
   [`syscall/signal.rs`], [`rt_sigaction`、mask、等待、发送和返回相关 syscall 的 ABI 检查。],
 )
 
-`SigSet` 是一个 `usize` 位图，定义了 1--31 号标准信号、`SIGRTMIN` 和一个项目使用的
+#h(2em)`SigSet` 是一个 `usize` 位图，定义了 1--31 号标准信号、`SIGRTMIN` 和一个项目使用的
 实时扩展位。每个 `Process` 持有 `SigTable`；表项将用户可见的 `SigAction` 与内部
 `SigDisposition::{Default, Ignore, Handler}` 分开保存。默认动作不能用内核函数指针编码，
 因此用户通过 `SIG_DFL` 查询或恢复 action 时仍看到 Linux ABI 规定的值。
@@ -75,7 +75,7 @@ UID 与目标 real/saved UID；effective UID 为 0 可越过普通比较，同�
   [`Default: Continue`], [恢复停止任务并记录可供父进程等待的 continue 事件。],
 )
 
-来自用户页故障的不可恢复访问通常转为 `SIGSEGV`；文件 mmap 的映射时 EOF 之外页面
+#h(2em)来自用户页故障的不可恢复访问通常转为 `SIGSEGV`；文件 mmap 的映射时 EOF 之外页面
 转为 `SIGBUS`。非法指令当前直接走任务退出路径，未支持的 trap 仍会 panic，不能表述为
 所有硬件异常都已具备完整 POSIX 信号语义。
 

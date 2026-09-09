@@ -28,7 +28,7 @@ pub trait BlockDriver: BaseDriver {
     fn flush(&mut self) -> DevResult;
 }
 ```
-
+#h(2em)
 网络设备还定义了 `NetDriverOps`，提供 MAC 地址、收发队列状态、收包、发包、TX buffer 分配与回收等接口。`DeviceContainer<D>` 用一个小型容器保存探测到的设备，网络初始化时从中取出一个设备作为 eth0。
 
 == VirtIO 支持
